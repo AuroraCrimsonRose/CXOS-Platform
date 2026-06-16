@@ -50,6 +50,10 @@ set(INIT_C      ${SRC_DIR}/kernel/init.c)
 
 # --- kernel subsystem sources ---
 set(IDT_ASM     ${SRC_DIR}/kernel/cpu/int/idt.asm)
+set(GDT_C       ${SRC_DIR}/kernel/cpu/gdt.c)
+set(GDT_ASM     ${SRC_DIR}/kernel/cpu/gdt_flush.asm)
+set(UM_C        ${SRC_DIR}/kernel/cpu/usermode.c)
+set(UM_ASM      ${SRC_DIR}/kernel/cpu/usermode.asm)
 set(IDT_C       ${SRC_DIR}/kernel/cpu/int/idt.c)
 set(PIC_C       ${SRC_DIR}/kernel/cpu/int/pic.c)
 set(VGA_C       ${SRC_DIR}/kernel/drivers/video/vga.c)
@@ -91,6 +95,10 @@ set(INIT_CO     ${BUILD_DIR}/init_c.o)
 
 # --- subsystem objects ---
 set(IDT_ASM_O   ${BUILD_DIR}/idt_asm.o)
+set(GDT_CO      ${BUILD_DIR}/gdt_c.o)
+set(GDT_ASM_O   ${BUILD_DIR}/gdt_asm.o)
+set(UM_CO       ${BUILD_DIR}/usermode_c.o)
+set(UM_ASM_O    ${BUILD_DIR}/usermode_asm.o)
 set(IDT_CO      ${BUILD_DIR}/idt_c.o)
 set(PIC_CO      ${BUILD_DIR}/pic_c.o)
 set(VGA_CO      ${BUILD_DIR}/vga_c.o)
@@ -127,7 +135,7 @@ set(KERNEL_ELF  ${BUILD_DIR}/kernel.elf)
 set(KERNEL_BIN  ${BUILD_DIR}/kernel.bin)
 
 # kernel.o MUST be first (kernel_entry at 0x10000)
-set(KERNEL_OBJS ${KERNEL_O} ${KERNEL_CO} ${INIT_CO} ${IDT_ASM_O} ${IDT_CO} ${PIC_CO} ${VGA_CO} ${TIMER_CO} ${KBD_CO} ${CONSOLE_CO} ${STRING_CO} ${SHELL_CO} ${COMMANDS_CO} ${POWER_CO} ${PMM_CO} ${HEAP_CO} ${PAGING_CO} ${ATA_CO} ${RTC_CO} ${FB_CO} ${PCI_CO} ${AHCI_CO} ${DISK_CO} ${ACPI_CO} ${OHCI_CO} ${E1000_CO} ${NETIF_CO} ${ARP_CO} ${IP_CO} ${ICMP_CO} ${FPU_CO} ${KMATH_CO} ${DEMO_CO} ${FONT_CO} ${CXFS_CO})
+set(KERNEL_OBJS ${KERNEL_O} ${KERNEL_CO} ${INIT_CO} ${IDT_ASM_O} ${GDT_ASM_O} ${GDT_CO} ${UM_ASM_O} ${UM_CO} ${IDT_CO} ${PIC_CO} ${VGA_CO} ${TIMER_CO} ${KBD_CO} ${CONSOLE_CO} ${STRING_CO} ${SHELL_CO} ${COMMANDS_CO} ${POWER_CO} ${PMM_CO} ${HEAP_CO} ${PAGING_CO} ${ATA_CO} ${RTC_CO} ${FB_CO} ${PCI_CO} ${AHCI_CO} ${DISK_CO} ${ACPI_CO} ${OHCI_CO} ${E1000_CO} ${NETIF_CO} ${ARP_CO} ${IP_CO} ${ICMP_CO} ${FPU_CO} ${KMATH_CO} ${DEMO_CO} ${FONT_CO} ${CXFS_CO})
 
 set(DIST_DIR    ${SRC_DIR}/dist/CXK_x86_32)
 set(DISK_IMG    ${DIST_DIR}/cxk_x86_32.img)
@@ -184,6 +192,30 @@ add_custom_command(
     OUTPUT ${IDT_ASM_O}
     COMMAND nasm -f elf32 ${IDT_ASM} -o ${IDT_ASM_O}
     DEPENDS ${IDT_ASM}
+)
+
+add_custom_command(
+    OUTPUT ${GDT_ASM_O}
+    COMMAND nasm -f elf32 ${GDT_ASM} -o ${GDT_ASM_O}
+    DEPENDS ${GDT_ASM}
+)
+
+add_custom_command(
+    OUTPUT ${GDT_CO}
+    COMMAND ${CMAKE_C_COMPILER} ${KCFLAGS} -c ${GDT_C} -o ${GDT_CO}
+    DEPENDS ${GDT_C} ${SRC_DIR}/kernel/cpu/gdt.h
+)
+
+add_custom_command(
+    OUTPUT ${UM_ASM_O}
+    COMMAND nasm -f elf32 ${UM_ASM} -o ${UM_ASM_O}
+    DEPENDS ${UM_ASM}
+)
+
+add_custom_command(
+    OUTPUT ${UM_CO}
+    COMMAND ${CMAKE_C_COMPILER} ${KCFLAGS} -c ${UM_C} -o ${UM_CO}
+    DEPENDS ${UM_C} ${SRC_DIR}/kernel/cpu/usermode.h
 )
 
 # -------------------------------------------------

@@ -13,7 +13,7 @@ REM ---- Absolute paths ----
 set BOCHS_EXE="C:\Program Files\Bochs-3.0\bochs.exe"
 set BOCHS_ROMDIR="C:\Program Files\Bochs-3.0"
 
-set BOOT_BIN="C:\Users\Aurora\Documents\VS Code\CXOS Lite\CXLite\build\boot.bin"
+set BOOT_BIN="C:\Users\Aurora\Documents\VS Code\CXK\CXK\build\boot.bin"
 set BOCHSRC="%ROOT%\bochsrc2.txt"
 
 set BIOS_ROM=%BOCHS_ROMDIR%\BIOS-bochs-latest

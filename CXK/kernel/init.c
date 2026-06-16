@@ -3,6 +3,8 @@
 /* System initialization + consolidated boot status reporting. */
 
 #include "init.h"
+#include "gdt.h"
+#include "usermode.h"
 #include "idt.h"
 #include "timer.h"
 #include "keyboard.h"
@@ -134,8 +136,14 @@ int system_init(void) {
     console_set_color(VGA_LIGHT_CYAN, VGA_BLACK);
     console_print("CXK - CATX SYSTEMS LLC\n");
 
+    /* GDT + TSS FIRST: install the kernel's own GDT (ring-0 selectors kept at
+       0x08/0x10, plus ring-3 segments and a TSS for privilege transitions).
+       Done before the IDT so interrupt gates reference the stable 0x08 CS. */
+    gdt_init();                         rec("GDT", ST_OK);
+
     /* Core CPU/IRQ + input - essential, effectively always succeed. */
     idt_init();                         rec("IDT", ST_OK);
+    usermode_init();   /* install the ring-3 syscall gate (int 0x80, DPL=3) */
     timer_init();                       rec("TIMER", ST_OK);
     keyboard_init();                    rec("KBD", ST_OK);
     rec(fb_active() ? "FB" : "VGA", ST_OK);

@@ -38,6 +38,16 @@ void paging_map(uint32_t virt, uint32_t phys, uint32_t flags) {
     uint32_t *table = get_table(virt, 1);
     if (!table) return;
     table[PT_INDEX(virt)] = (phys & ~0xFFFu) | (flags & 0xFFF) | PAGE_PRESENT;
+
+    /* The CPU ANDs the privilege/permission bits across BOTH paging levels: a
+       page is only user-accessible (or writable) if the page-directory entry
+       ALSO grants it. The PDE may already exist (e.g. boot identity map) as
+       supervisor-only, so OR the requested USER/WRITE bits into it too -
+       otherwise a ring-3 access faults even though the PTE allows it. */
+    uint32_t pd_i = PD_INDEX(virt);
+    if (flags & PAGE_USER)  page_directory[pd_i] |= PAGE_USER;
+    if (flags & PAGE_WRITE) page_directory[pd_i] |= PAGE_WRITE;
+
     /* flush this page from the TLB so the new mapping takes effect */
     __asm__ volatile ("invlpg (%0)" : : "r"(virt) : "memory");
 }

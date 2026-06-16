@@ -3,6 +3,7 @@
 /* All shell command handlers and the command table. */
 
 #include "commands.h"
+#include "usermode.h"
 #include "console.h"
 #include "demo.h"
 #include "pci.h"
@@ -69,7 +70,7 @@ static void cmd_ver(const char *args) {
     console_set_color(VGA_LIGHT_CYAN, VGA_BLACK);
     console_print("CXK");
     console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
-    console_print(" - V0.0.1.10 - Made by Aurora Tejeda\n");
+    console_print(" - V0.0.1.24 - Made by Aurora Tejeda\n");
 }
 
 static void cmd_meminfo(const char *args) {
@@ -1440,7 +1441,23 @@ static void cmd_arping(const char *args) {
 
 /* ---- command table ---- */
 
+/* usermode - Ring 3 Stage 1 test: drop to user mode, run a tiny routine that
+   makes syscalls (write + exit), and return to the shell. */
+static void cmd_usermode(const char *args) {
+    (void)args;
+    console_print("Entering ring 3...\n");
+    int r = usermode_test();
+    console_print("Returned to kernel (ring 0). exit code = ");
+    console_print_dec((uint32_t)r);
+    console_putc('\n');
+}
+
 const struct command commands[] = {
+    { "usermode", cmd_usermode,  "ring 3 test: enter user mode, syscall, return",
+      "usermode - drop into ring 3, run a user routine that uses syscalls,\n"
+      "and return to the kernel. The Stage-1 proof that the privilege\n"
+      "boundary and syscall gate work.\n" },
+
     { "help",     cmd_help,     "show this command list",
       "help - list commands, or show detail for one\n"
       "Usage: help [command]\n"
