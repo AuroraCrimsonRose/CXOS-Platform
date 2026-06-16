@@ -89,6 +89,15 @@ static void idt_set_gate(int n, uint32_t handler) {
     idt[n].offset_high = (handler >> 16) & 0xFFFF;
 }
 
+/* like idt_set_gate but DPL=3, so ring-3 code may invoke it (syscall gate). */
+void idt_set_user_gate(int n, uint32_t handler) {
+    idt[n].offset_low  = handler & 0xFFFF;
+    idt[n].selector    = 0x08;
+    idt[n].zero        = 0;
+    idt[n].type_attr   = IDT_GATE_INT32_DPL3;
+    idt[n].offset_high = (handler >> 16) & 0xFFFF;
+}
+
 void isr_handler(struct registers *r) {
     panic_pos = 0;   /* text mode: top-left */
     panic_col = 0;   /* framebuffer: top-left */
