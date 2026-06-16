@@ -11,6 +11,8 @@
 #include "e1000.h"
 #include "netif.h"
 #include "arp.h"
+#include "ip.h"
+#include "icmp.h"
 #include "disk.h"
 #include "vga.h"
 #include "string.h"
@@ -358,14 +360,7 @@ static void cmd_fstest(const char *args) {
 
 /* case-insensitive ASCII string compare (local to the shell commands) */
 static int ci_equals(const char *a, const char *b) {
-    while (*a && *b) {
-        char ca = *a, cb = *b;
-        if (ca >= 'A' && ca <= 'Z') ca += 32;
-        if (cb >= 'A' && cb <= 'Z') cb += 32;
-        if (ca != cb) return 0;
-        a++; b++;
-    }
-    return *a == *b;
+    return strcasecmp(a, b) == 0;   /* uses the shared library strcasecmp */
 }
 
 static uint32_t cwd_id = 0;   /* 0 = root */
@@ -1026,7 +1021,8 @@ static void cmd_ahci(const char *args) {
     for (int p = 0; p < 32; p++) {
         if (!ahci_present(p)) continue;
         static uint8_t sec[512];
-        if (ahci_read(p, 0, 1, sec) == 0) {
+        int r = ahci_read(p, 0, 1, sec);
+        if (r == DISK_OK) {
             console_print("Port ");
             console_print_dec(p);
             console_print(" sector 0 sig[510,511]: ");
@@ -1035,7 +1031,9 @@ static void cmd_ahci(const char *args) {
         } else {
             console_print("Port ");
             console_print_dec(p);
-            console_print(": read FAILED\n");
+            console_print(": read FAILED (");
+            console_print(disk_err_str(r));
+            console_print(")\n");
         }
         break;
     }
@@ -1341,7 +1339,71 @@ static void cmd_ipset(const char *args) {
     }
 }
 
-/* arping <a.b.c.d> - resolve an IP to a MAC via ARP. */
+/* ping <a.b.c.d> [count] - ICMP echo (Stage 3 milestone) */
+static void cmd_ping(const char *args) {
+    while (*args == ' ') args++;
+    if (*args == '\0') {
+        console_print("Usage: ping <a.b.c.d> [count]\n");
+        return;
+    }
+    if (!netif_ready()) {
+        console_print("Network interface not ready.\n");
+        return;
+    }
+    ip4_t target;
+    if (!netif_parse_ip(args, target)) {
+        console_print("Could not parse address.\n");
+        return;
+    }
+    /* optional count after the address (default 4) */
+    int count = 4;
+    const char *p = args;
+    while (*p && *p != ' ') p++;        /* skip the address */
+    while (*p == ' ') p++;
+    if (*p >= '0' && *p <= '9') {
+        int n = 0;
+        while (*p >= '0' && *p <= '9') { n = n * 10 + (*p - '0'); p++; }
+        if (n > 0 && n <= 100) count = n;
+    }
+
+    char b[16]; netif_ip_str(target, b);
+    console_print("PING ");
+    console_print(b);
+    console_print(" - 32 bytes of data:\n");
+
+    int sent = 0, recvd = 0;
+    for (int i = 0; i < count; i++) {
+        uint32_t rtt = 0;
+        sent++;
+        if (icmp_ping(target, (uint16_t)(i + 1), &rtt)) {
+            recvd++;
+            console_print("  reply from ");
+            console_print(b);
+            console_print("  seq=");
+            console_print_dec((uint32_t)(i + 1));
+            console_print("  time=");
+            console_print_dec(rtt);
+            console_print(" ms\n");
+        } else {
+            console_set_color(VGA_BROWN, VGA_BLACK);
+            console_print("  request timed out  seq=");
+            console_print_dec((uint32_t)(i + 1));
+            console_putc('\n');
+            console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+        }
+        if (i + 1 < count) timer_sleep(500);   /* 0.5s between pings */
+    }
+
+    console_print("--- ");
+    console_print(b);
+    console_print(" ping statistics ---\n  ");
+    console_print_dec((uint32_t)sent);
+    console_print(" sent, ");
+    console_print_dec((uint32_t)recvd);
+    console_print(" received, ");
+    console_print_dec((uint32_t)(sent - recvd));
+    console_print(" lost\n");
+}
 static void cmd_arping(const char *args) {
     while (*args == ' ') args++;
     if (*args == '\0') {
@@ -1406,6 +1468,12 @@ const struct command commands[] = {
       "arping - send an ARP request and show the resolved MAC\n"
       "Usage: arping <a.b.c.d>\n"
       "e.g. arping 10.0.2.2  (the gateway). Proves link-layer send/receive.\n" },
+
+    { "ping",     cmd_ping,     "send ICMP echo requests to a host",
+      "ping - send ICMP echo requests (the network 'are you there?' test)\n"
+      "Usage: ping <a.b.c.d> [count]\n"
+      "  count   optional, 1-100 (default 4)\n"
+      "e.g. ping 10.0.2.2   (the QEMU gateway)\n" },
 
     { "usb",      cmd_usb,      "show USB (OHCI) controller and port status",
       "usb - show the OHCI USB controller and which ports have devices\n"
@@ -1630,7 +1698,7 @@ static void cmd_help(const char *args) {
 
     /* `help <command>`: show that command's detail (or short help if none) */
     for (unsigned i = 0; i < NUM_COMMANDS; i++) {
-        if (strcmp(args, commands[i].name) == 0) {
+        if (strcasecmp(args, commands[i].name) == 0) {
             if (commands[i].detail[0] != '\0') {
                 console_print(commands[i].detail);
             } else {

@@ -14,6 +14,8 @@
  */
 
 #include "ata.h"
+#include "timer.h"
+#include "disk.h"
 #include "io.h"
 
 /* per-channel I/O base ports */
@@ -63,27 +65,36 @@ static int drive_is_slave(uint8_t drive) {
     return drive & 1;
 }
 
+/* fallback spin bound retained as a safety net for the timer-off spin path */
 #define ATA_TIMEOUT 1000000
+/* wall-clock budget for ATA waits (ms). Generous for slow real drives. */
+#define ATA_TIMEOUT_MS 3000
 
-/* wait while BSY is set on the given channel. 0 = cleared, -1 = timeout/none */
+/* wait while BSY is set. returns DISK_OK when cleared, DISK_ERR_NO_DEVICE on a
+   floating bus (0xFF), DISK_ERR_TIMEOUT if it never clears in time. */
 static int ata_wait_busy(uint16_t base) {
-    for (int t = 0; t < ATA_TIMEOUT; t++) {
+    struct timeout to;
+    timer_timeout_start(&to, ATA_TIMEOUT_MS);
+    for (;;) {
         uint8_t s = inb(base + REG_STATUS);
-        if (s == 0xFF) return -1;          /* floating bus: no drive */
-        if (!(s & ATA_SR_BSY)) return 0;
+        if (s == 0xFF) return DISK_ERR_NO_DEVICE;   /* floating bus: no drive */
+        if (!(s & ATA_SR_BSY)) return DISK_OK;
+        if (timer_timeout_expired(&to)) return DISK_ERR_TIMEOUT;
     }
-    return -1;
 }
 
-/* wait for DRQ on the given channel. 0 = ok, -1 = error/timeout */
+/* wait for DRQ. returns DISK_OK when ready, DISK_ERR_NO_DEVICE on floating bus,
+   DISK_ERR_FAULT if the device sets ERR, DISK_ERR_TIMEOUT on timeout. */
 static int ata_wait_drq(uint16_t base) {
-    for (int t = 0; t < ATA_TIMEOUT; t++) {
+    struct timeout to;
+    timer_timeout_start(&to, ATA_TIMEOUT_MS);
+    for (;;) {
         uint8_t s = inb(base + REG_STATUS);
-        if (s == 0xFF) return -1;
-        if (s & ATA_SR_ERR) return -1;
-        if (!(s & ATA_SR_BSY) && (s & ATA_SR_DRQ)) return 0;
+        if (s == 0xFF) return DISK_ERR_NO_DEVICE;
+        if (s & ATA_SR_ERR) return DISK_ERR_FAULT;
+        if (!(s & ATA_SR_BSY) && (s & ATA_SR_DRQ)) return DISK_OK;
+        if (timer_timeout_expired(&to)) return DISK_ERR_TIMEOUT;
     }
-    return -1;
 }
 
 /* select drive on its channel and set high LBA bits.
@@ -166,12 +177,13 @@ uint32_t ata_sectors(uint8_t drive) {
 }
 
 int ata_read(uint8_t drive, uint32_t lba, uint8_t count, void *buffer) {
-    if (drive >= ATA_DRIVE_COUNT || count == 0) return -1;
-    if (!drive_present[drive]) return -1;
+    if (drive >= ATA_DRIVE_COUNT || count == 0 || !buffer) return DISK_ERR_PARAMS;
+    if (!drive_present[drive]) return DISK_ERR_NO_DEVICE;
     uint16_t base = drive_base(drive);
     uint16_t *buf = (uint16_t *)buffer;
 
-    if (ata_wait_busy(base) != 0) return -1;
+    int r = ata_wait_busy(base);
+    if (r != DISK_OK) return r;
     ata_select(drive, lba);
     outb(base + REG_SECCOUNT, count);
     outb(base + REG_LBA_LO,  (uint8_t)(lba & 0xFF));
@@ -180,20 +192,22 @@ int ata_read(uint8_t drive, uint32_t lba, uint8_t count, void *buffer) {
     outb(base + REG_COMMAND, ATA_CMD_READ);
 
     for (int s = 0; s < count; s++) {
-        if (ata_wait_drq(base) != 0) return -1;
+        r = ata_wait_drq(base);
+        if (r != DISK_OK) return r;
         for (int i = 0; i < ATA_SECTOR_SIZE / 2; i++)
             *buf++ = inw(base + REG_DATA);
     }
-    return 0;
+    return DISK_OK;
 }
 
 int ata_write(uint8_t drive, uint32_t lba, uint8_t count, const void *buffer) {
-    if (drive >= ATA_DRIVE_COUNT || count == 0) return -1;
-    if (!drive_present[drive]) return -1;
+    if (drive >= ATA_DRIVE_COUNT || count == 0 || !buffer) return DISK_ERR_PARAMS;
+    if (!drive_present[drive]) return DISK_ERR_NO_DEVICE;
     uint16_t base = drive_base(drive);
     const uint16_t *buf = (const uint16_t *)buffer;
 
-    if (ata_wait_busy(base) != 0) return -1;
+    int r = ata_wait_busy(base);
+    if (r != DISK_OK) return r;
     ata_select(drive, lba);
     outb(base + REG_SECCOUNT, count);
     outb(base + REG_LBA_LO,  (uint8_t)(lba & 0xFF));
@@ -202,12 +216,14 @@ int ata_write(uint8_t drive, uint32_t lba, uint8_t count, const void *buffer) {
     outb(base + REG_COMMAND, ATA_CMD_WRITE);
 
     for (int s = 0; s < count; s++) {
-        if (ata_wait_drq(base) != 0) return -1;
+        r = ata_wait_drq(base);
+        if (r != DISK_OK) return r;
         for (int i = 0; i < ATA_SECTOR_SIZE / 2; i++)
             outw(base + REG_DATA, *buf++);
     }
 
     outb(base + REG_COMMAND, ATA_CMD_FLUSH);
-    if (ata_wait_busy(base) != 0) return -1;
-    return 0;
+    r = ata_wait_busy(base);
+    if (r != DISK_OK) return r;
+    return DISK_OK;
 }

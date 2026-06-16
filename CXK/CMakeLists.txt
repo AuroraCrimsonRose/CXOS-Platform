@@ -64,6 +64,8 @@ set(OHCI_C      ${SRC_DIR}/kernel/drivers/usb/ohci.c)
 set(E1000_C     ${SRC_DIR}/kernel/drivers/net/e1000.c)
 set(NETIF_C     ${SRC_DIR}/kernel/drivers/net/netif.c)
 set(ARP_C       ${SRC_DIR}/kernel/drivers/net/arp.c)
+set(IP_C        ${SRC_DIR}/kernel/drivers/net/ip.c)
+set(ICMP_C      ${SRC_DIR}/kernel/drivers/net/icmp.c)
 set(FPU_C       ${SRC_DIR}/kernel/cpu/fpu.c)
 set(KMATH_C     ${SRC_DIR}/kernel/lib/kmath.c)
 set(DEMO_C      ${SRC_DIR}/kernel/shell/demo.c)
@@ -103,6 +105,8 @@ set(OHCI_CO     ${BUILD_DIR}/ohci_c.o)
 set(E1000_CO    ${BUILD_DIR}/e1000_c.o)
 set(NETIF_CO    ${BUILD_DIR}/netif_c.o)
 set(ARP_CO      ${BUILD_DIR}/arp_c.o)
+set(IP_CO       ${BUILD_DIR}/ip_c.o)
+set(ICMP_CO     ${BUILD_DIR}/icmp_c.o)
 set(FPU_CO      ${BUILD_DIR}/fpu_c.o)
 set(KMATH_CO    ${BUILD_DIR}/kmath_c.o)
 set(DEMO_CO     ${BUILD_DIR}/demo_c.o)
@@ -123,7 +127,7 @@ set(KERNEL_ELF  ${BUILD_DIR}/kernel.elf)
 set(KERNEL_BIN  ${BUILD_DIR}/kernel.bin)
 
 # kernel.o MUST be first (kernel_entry at 0x10000)
-set(KERNEL_OBJS ${KERNEL_O} ${KERNEL_CO} ${INIT_CO} ${IDT_ASM_O} ${IDT_CO} ${PIC_CO} ${VGA_CO} ${TIMER_CO} ${KBD_CO} ${CONSOLE_CO} ${STRING_CO} ${SHELL_CO} ${COMMANDS_CO} ${POWER_CO} ${PMM_CO} ${HEAP_CO} ${PAGING_CO} ${ATA_CO} ${RTC_CO} ${FB_CO} ${PCI_CO} ${AHCI_CO} ${DISK_CO} ${ACPI_CO} ${OHCI_CO} ${E1000_CO} ${NETIF_CO} ${ARP_CO} ${FPU_CO} ${KMATH_CO} ${DEMO_CO} ${FONT_CO} ${CXFS_CO})
+set(KERNEL_OBJS ${KERNEL_O} ${KERNEL_CO} ${INIT_CO} ${IDT_ASM_O} ${IDT_CO} ${PIC_CO} ${VGA_CO} ${TIMER_CO} ${KBD_CO} ${CONSOLE_CO} ${STRING_CO} ${SHELL_CO} ${COMMANDS_CO} ${POWER_CO} ${PMM_CO} ${HEAP_CO} ${PAGING_CO} ${ATA_CO} ${RTC_CO} ${FB_CO} ${PCI_CO} ${AHCI_CO} ${DISK_CO} ${ACPI_CO} ${OHCI_CO} ${E1000_CO} ${NETIF_CO} ${ARP_CO} ${IP_CO} ${ICMP_CO} ${FPU_CO} ${KMATH_CO} ${DEMO_CO} ${FONT_CO} ${CXFS_CO})
 
 set(DIST_DIR    ${SRC_DIR}/dist/CXK_x86_32)
 set(DISK_IMG    ${DIST_DIR}/cxk_x86_32.img)
@@ -297,6 +301,18 @@ add_custom_command(
     OUTPUT ${ARP_CO}
     COMMAND ${CMAKE_C_COMPILER} ${KCFLAGS} -c ${ARP_C} -o ${ARP_CO}
     DEPENDS ${ARP_C} ${SRC_DIR}/kernel/drivers/net/arp.h
+)
+
+add_custom_command(
+    OUTPUT ${IP_CO}
+    COMMAND ${CMAKE_C_COMPILER} ${KCFLAGS} -c ${IP_C} -o ${IP_CO}
+    DEPENDS ${IP_C} ${SRC_DIR}/kernel/drivers/net/ip.h
+)
+
+add_custom_command(
+    OUTPUT ${ICMP_CO}
+    COMMAND ${CMAKE_C_COMPILER} ${KCFLAGS} -c ${ICMP_C} -o ${ICMP_CO}
+    DEPENDS ${ICMP_C} ${SRC_DIR}/kernel/drivers/net/icmp.h
 )
 
 add_custom_command(
