@@ -8,6 +8,7 @@
 #include "timer.h"
 #include "console.h"
 #include "string.h"
+#include "disk.h"
 
 /* ---- HBA memory registers (the ABAR-mapped structure) ---- */
 
@@ -122,6 +123,10 @@ struct fis_reg_h2d {
 
 #define HBA_TFD_BSY       0x80
 #define HBA_TFD_DRQ       0x08
+#define HBA_TFD_ERR       0x01      /* task file error bit (status bit 0) */
+
+/* wall-clock budget for AHCI command waits (ms). Generous for slow drives. */
+#define AHCI_TIMEOUT_MS   3000
 
 /* ---- driver state ---- */
 
@@ -242,22 +247,25 @@ static int port_cmd(int p, uint8_t cmd, uint64_t lba, uint32_t count,
     fis->counth = (uint8_t)((count >> 8) & 0xFF);
 
     /* wait until the port isn't busy */
-    uint32_t spin = 1000000;
-    while ((px->tfd & (HBA_TFD_BSY | HBA_TFD_DRQ)) && spin--) { }
-    if (spin == 0) return -1;
+    struct timeout to;
+    timer_timeout_start(&to, AHCI_TIMEOUT_MS);
+    while (px->tfd & (HBA_TFD_BSY | HBA_TFD_DRQ)) {
+        if (px->tfd & HBA_TFD_ERR) return DISK_ERR_FAULT;
+        if (timer_timeout_expired(&to)) return DISK_ERR_NOT_READY;
+    }
 
     px->ci = 1u << slot;              /* issue the command */
 
     /* wait for completion */
-    spin = 5000000;
-    while (spin--) {
+    timer_timeout_start(&to, AHCI_TIMEOUT_MS);
+    for (;;) {
         if (!(px->ci & (1u << slot))) break;
-        if (px->is & HBA_PxIS_TFES) return -1;   /* task file error */
+        if (px->is & HBA_PxIS_TFES) return DISK_ERR_FAULT;   /* task file error */
+        if (timer_timeout_expired(&to)) return DISK_ERR_TIMEOUT;
     }
-    if (spin == 0) return -1;
-    if (px->is & HBA_PxIS_TFES) return -1;
+    if (px->is & HBA_PxIS_TFES) return DISK_ERR_FAULT;
 
-    return 0;
+    return DISK_OK;
 }
 
 /* read the IDENTIFY data for a port to get model + sector count */
