@@ -1,4 +1,10 @@
-; /CXLite/boot/stage2.asm - sometimes i wonder if its better to make lots of tiny files that do specific things for readability and suffer through mapping them or if its better to just use a monolitic stage 2. edit: i think i figured it out.
+; ============================================================================
+;  CXK - the CXOS Kernel : Bootloader (Stage 2)
+;  Copyright (c) 2026 CATX Systems LLC.  All rights reserved.
+;  Licensed under the CXK and CXOS Project License v1.0.7. See LICENSE.
+;  Author: Aurora Tejeda / CATX Systems LLC
+; ============================================================================
+; /CXK/boot/stage2.asm - sometimes i wonder if its better to make lots of tiny files that do specific things for readability and suffer through mapping them or if its better to just use a monolitic stage 2. edit: i think i figured it out.
 ; Aurora Tejeda
 org 0x7E00
 bits 16
