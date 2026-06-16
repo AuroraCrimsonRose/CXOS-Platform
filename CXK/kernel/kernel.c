@@ -13,6 +13,17 @@
 #include "shell.h"
 #include "init.h"
 
+/* Copyright notice embedded directly in the kernel BINARY. The `used` attribute
+   forces the compiler/linker to keep it even though no code references it, so
+   it lands in .rodata and shows up in any strings/hexdump of the kernel image.
+   Anyone inspecting the binary will see it. */
+__attribute__((used))
+static const char cxk_copyright[] =
+    "CXK - the CXOS Kernel. Copyright (c) 2026 CATX Systems LLC. "
+    "All rights reserved. Licensed under the CXK and CXOS Project "
+    "License v1.0.7 (Effective 2026-06-16). Author: Aurora Tejeda / "
+    "CATX Systems LLC.";
+
 void kmain(void)
 {
     /* Framebuffer FIRST: if the bootloader set a VBE mode, bring up the
