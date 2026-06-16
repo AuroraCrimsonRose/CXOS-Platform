@@ -14,9 +14,11 @@
 
 #include <stdint.h>
 
-/* syscall numbers (Stage 1: just these two) */
-#define SYS_EXIT   0
-#define SYS_WRITE  1
+/* syscall numbers */
+#define SYS_EXIT    0
+#define SYS_WRITE   1
+#define SYS_GETPID  2    /* returns the current process id (0 for now - no
+                            process model yet; placeholder for Stage 2) */
 
 /* install the syscall IDT gate (int 0x80, DPL=3). call once at boot. */
 void usermode_init(void);
