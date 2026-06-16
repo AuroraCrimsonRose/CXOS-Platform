@@ -96,30 +96,26 @@ saved_kernel_esp:   resd 1
 saved_kernel_flags: resd 1
 
 ; ---------------------------------------------------------------------------
-; A tiny, position-independent ring-3 routine (only int 0x80, no relative
-; calls/jumps that would break when copied to the user page). It expects the
-; address of its message string passed in via the user stack is NOT used;
-; instead the kernel patches the message pointer into ebx by convention:
-; we load the string address from a fixed location the kernel sets up.
+; ---------------------------------------------------------------------------
+; user_blob - a tiny ring-3 demo routine, copied into the user code page by the
+; kernel. Position-independent: it uses only `int 0x80` and reads its one
+; argument off the user stack (no relative calls/jumps that would break when
+; relocated). The kernel seeds the message pointer at the top of the user stack
+; before entry, so [esp] holds it on the first instruction.
 ;
-; To keep it truly position-independent and simple, the kernel passes the
-; message pointer in the user stack and this routine reads it. But simplest of
-; all: the kernel writes the msg pointer into a known user page slot. Here we
-; take the message pointer in the initial eax/ebx set by the kernel before
-; entry is not possible (iret clears regs path), so we embed the syscall
-; sequence and read the pointer from [user_esp] which the kernel pre-seeds.
+;   SYS_WRITE(ebx = msg)   then   SYS_EXIT(0)
 ; ---------------------------------------------------------------------------
 section .text
 global user_blob_start
 global user_blob_end
 user_blob_start:
-    ; ebx = message pointer was placed at [esp] by the kernel (top of user stack)
-    mov ebx, [esp]
+    mov ebx, [esp]      ; arg1: msg pointer (seeded by kernel at top of user stack)
+    xor ecx, ecx        ; arg2: length 0 = bounded NUL-scan
     mov eax, 1          ; SYS_WRITE
     int 0x80
     mov eax, 0          ; SYS_EXIT
     xor ebx, ebx
     int 0x80
 .hang:
-    jmp .hang
+    jmp .hang           ; never reached (SYS_EXIT does not return to user)
 user_blob_end:

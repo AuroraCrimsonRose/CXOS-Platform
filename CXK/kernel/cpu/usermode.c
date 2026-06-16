@@ -22,16 +22,42 @@ extern void return_to_kernel(int retval);
 
 /* The syscall dispatcher (called from syscall_stub).
    num = syscall number, a1/a2 = args. Returns the syscall's result. */
+/* validate that a user-supplied buffer [ptr, ptr+len) lies within the mapped
+   user region. With a privilege boundary now in place, the kernel must not
+   blindly dereference pointers handed up from ring 3. (Stage 1: a single fixed
+   user region; per-process address-space checks come with the process model.) */
+static int user_ptr_ok(uint32_t ptr, uint32_t len) {
+    uint32_t lo = USER_CODE_ADDR;
+    uint32_t hi = USER_STACK_ADDR + 0x1000;   /* end of the user stack page */
+    if (len > 0x1000) return 0;
+    if (ptr < lo || ptr >= hi) return 0;
+    if (ptr + len < ptr) return 0;            /* overflow */
+    if (ptr + len > hi) return 0;
+    return 1;
+}
+
+/* The syscall dispatcher (called from syscall_stub).
+   num = syscall number, a1/a2 = args. Returns the syscall's result. */
 int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
-    (void)a2;
     switch (num) {
         case SYS_WRITE: {
-            /* a1 = pointer to a NUL-terminated string in user memory.
-               (Stage 1: we trust it. Real validation comes later.) */
+            /* a1 = pointer to a string in user memory, a2 = length (0 = scan to
+               NUL, bounded). Validate the pointer is inside the user region
+               before touching it. */
+            uint32_t len = a2;
+            if (len == 0) {
+                /* bounded NUL scan within the user region */
+                const char *p = (const char *)a1;
+                while (len < 0x1000 && user_ptr_ok(a1 + len, 1) && p[len]) len++;
+            }
+            if (!user_ptr_ok(a1, len ? len : 1)) return -1;
             const char *s = (const char *)a1;
-            console_print(s);
-            return 0;
+            for (uint32_t i = 0; i < len; i++) console_putc(s[i]);
+            return (int)len;
         }
+        case SYS_GETPID:
+            /* no process model yet; everything is "process 0" for now. */
+            return 0;
         case SYS_EXIT:
             /* return to the kernel. does not return from here. */
             return_to_kernel((int)a1);
@@ -39,6 +65,7 @@ int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
         default:
             return -1;
     }
+    (void)a2;
 }
 
 /* the position-independent ring-3 routine, defined in usermode.asm */
