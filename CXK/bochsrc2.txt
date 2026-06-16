@@ -1,0 +1,56 @@
+# Memory
+megs: 2048
+
+# CPU - ips (instructions per second) paces Bochs's emulated time against
+# real wall-clock time.
+# IMPORTANT: ips is a SIGNED 32-bit value - the max is 2147483647 (~2.1 billion).
+# Setting it higher overflows to a negative value and breaks timing entirely
+# (the log will show a negative "IPS is set to ..." line). Stay at/below ~2.1B.
+# On this host even the max is still slightly fast; that is a Bochs limitation.
+# For accurate wall-clock time later, use the RTC, not the PIT. QEMU keeps
+# better time if you need it now.
+cpu: ips=2100000000
+
+# Clock - sync emulated time to the real host clock.
+#   sync=realtime  -> Bochs throttles so emulated time tracks wall-clock,
+#                     instead of depending on a perfect ips value (which we
+#                     can't reach anyway due to the 32-bit ips cap).
+#   time0=local    -> initialize the CMOS/RTC to the host's local time, so
+#                     the emulated machine's real-time clock is accurate.
+clock: sync=realtime, time0=local
+
+# BIOS / VGA ROM
+romimage: file="C:\Program Files\Bochs-3.0\BIOS-bochs-latest"
+vgaromimage: file="C:\Program Files\Bochs-3.0\VGABIOS-lgpl-latest.bin"
+
+# Boot from hard disk
+boot: disk
+
+# ata0-master = boot disk (bootloader + stage2 + kernel)
+ata0-master: type=disk, path="C:\Users\Aurora\Documents\VS Code\CXK\CXK\dist\CXK_x86_32\cxk_x86_32.img", mode=flat
+
+# ata0-slave = filesystem data disk
+ata0-slave: type=disk, path="C:\Users\Aurora\Documents\VS Code\CXK\CXK\dist\CXK_x86_32\cxk_filesystem.img", mode=flat
+
+# Logging
+log: bochs.log
+panic: action=report
+error: action=report
+info: action=report
+# -------------------------------------------------
+# USB - OHCI controller (USB 1.x). OHCI matches the likely real-hardware
+# (AMD southbridge) controller type and is simple to program - the right
+# target for the planned "treat everything as USB 1" driver.
+# (Bochs also supports uhci/ehci/xhci if you want to experiment.)
+# -------------------------------------------------
+usb_ohci: enabled=1, port1=disk, options1="path:C:\Users\Aurora\Documents\VS Code\CXK\CXK\dist\CXK_x86_32\cxk_usb.img"
+
+# -------------------------------------------------
+# Network - NE2000 PCI NIC (Realtek 10ec:8029). 
+# NOTE: Bochs networking on Windows needs a working ethmod backend; if the
+# backend can't init, Bochs may not present the card at all (it won't appear
+# in lspci). If it doesn't show up, that's a Bochs/Windows limitation - use
+# QEMU's e1000 (run_qemu.bat) for networking development instead.
+# 'slirp' is the no-host-config backend (user-mode NAT), if your build has it.
+# -------------------------------------------------
+ne2k: enabled=1, mac=b0:c4:20:00:00:01, ethmod=slirp
