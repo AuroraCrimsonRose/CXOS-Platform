@@ -1,0 +1,356 @@
+; /CXLite/boot/boot.asm made by Aurora Tejeda
+; Refactor and E820h has led me to be 32 over the size of 512 time to go two stange.
+
+org 0x7c00
+bits 16
+
+; standard entry point
+jmp start
+
+; start routine
+start:
+    cli
+
+    xor ax, ax
+    mov ds, ax
+    mov es, ax
+
+    mov ax, STACK_SEGMENT
+    mov ss, ax
+    mov sp, STACK_TOP
+
+    jmp init_boot
+
+; struct def
+MEM_REGION_SIZE        equ 24
+MEM_BASE               equ 0
+MEM_LENGTH             equ 8
+MEM_TYPE               equ 16
+MEM_FLAGS              equ 20
+
+E820_TYPE_USABLE       equ 1
+E820_TYPE_RESERVED     equ 2
+E820_TYPE_ACPI_RECLAIM equ 3
+E820_TYPE_ACPI_NVS     equ 4
+E820_TYPE_BADRAM       equ 5
+
+; CXOS MEMORY MAP CONSTANTS
+IVT_START           equ 0x0000
+IVT_END             equ 0x03FF
+
+BDA_SEGMENT         equ 0x0000
+BDA_START           equ 0x0400
+BDA_MEM             equ 0x0413
+BDA_KEYBOARD        equ 0x0417
+
+BOOTLOADER_START    equ 0x7C00
+BOOTLOADER_END      equ 0x7DFF
+
+SCRATCH_START       equ 0x7E00
+SCRATCH_END         equ 0x8FFF
+
+; updated memory map to have safer bounds
+E820_BUFFER         equ 0x8000   ; 64 × 24 = 0x600, runs to 0x85FF
+E820_ENTRY_COUNT    equ 0x8600
+E820_CLEAN_COUNT    equ 0x8602
+E820_CLEAN_BUFFER   equ 0x8620   ; 64 × 24 = 0x600, runs to 0x8C1F
+E820_MAX_ENTRIES    equ 64
+KERNEL_RAM_BASE_LO  equ 0x8C20
+KERNEL_RAM_BASE_HI  equ 0x8C24
+KERNEL_RAM_SIZE_LO  equ 0x8C28  
+KERNEL_RAM_SIZE_HI  equ 0x8C2C
+
+STACK_SEGMENT       equ 0x9000
+STACK_TOP           equ 0xFFFF
+
+VGA_SEGMENT         equ 0xB800
+VGA_START           equ 0xB8000
+; CXOS MEMORY MAP CONSTANTS
+
+; init mem
+init_memory:
+    xor ebx, ebx
+    xor bp, bp
+
+    mov di, E820_BUFFER
+    xor ax, ax
+    mov es, ax
+
+    .next:
+        mov eax, 0xE820
+        mov edx, 0x534D4150
+
+        mov dword [es:di + 20], 1
+        mov ecx, 24
+
+        int 0x15
+        jc .done
+
+        cmp eax, 0x534D4150
+        jne .done
+
+        cmp ecx, 20
+        jb .done
+
+        ; always advance by fixed 24 bytes, not variable cx
+        add di, MEM_REGION_SIZE     ; <-- was: add di, cx
+
+        inc bp
+
+        cmp bp, E820_MAX_ENTRIES
+        jae .done
+
+        test ebx, ebx
+        jz .done
+        jmp .next
+
+    .done:
+        mov word [E820_ENTRY_COUNT], bp
+        ret
+
+process_e820:
+    cld
+    mov si, E820_BUFFER
+    mov di, E820_CLEAN_BUFFER       ; explicitly pinned every call
+
+    xor cx, cx                      ; source entry index
+    xor dx, dx                      ; clean entry count
+
+    mov bx, [E820_ENTRY_COUNT]
+
+    test bx, bx                     ; no entries at all?
+    jz .done
+
+    .loop:
+        cmp cx, bx
+        jae .done
+
+        mov eax, [si + MEM_TYPE]
+        cmp eax, E820_TYPE_USABLE
+        jne .skip
+
+        ; minimum size filter — skip regions below 1MB
+        mov eax, [si + MEM_LENGTH + 4]  ; length_hi
+        test eax, eax
+        jnz .size_ok                     ; hi nonzero = definitely >= 1MB
+        mov eax, [si + MEM_LENGTH]       ; length_lo
+        cmp eax, 0x100000
+        jb .skip
+
+    .size_ok:
+        push cx
+        push si
+
+        mov cx, 6                   ; 24 bytes / 4 = 6 dwords
+        rep movsd                   ; di auto-advances by 24
+
+        pop si
+        pop cx
+
+        inc dx
+
+    .skip:
+        add si, MEM_REGION_SIZE
+        inc cx
+        jmp .loop
+
+    .done:
+        mov word [E820_CLEAN_COUNT], dx
+        ret
+
+find_largest_region:
+    mov si, E820_CLEAN_BUFFER
+    mov cx, [E820_CLEAN_COUNT]
+
+    test cx, cx
+    jz .no_memory
+
+    mov dword [KERNEL_RAM_BASE_LO], 0
+    mov dword [KERNEL_RAM_BASE_HI], 0
+    mov dword [KERNEL_RAM_SIZE_LO], 0
+    mov dword [KERNEL_RAM_SIZE_HI], 0
+
+    .loop:
+        test cx, cx
+        jz .done
+
+        ; compare length_hi first
+        mov eax, [si + MEM_LENGTH + 4]
+        cmp eax, [KERNEL_RAM_SIZE_HI]
+        ja  .new_largest
+        jb  .next
+
+        ; high dwords equal, compare length_lo
+        mov eax, [si + MEM_LENGTH]
+        cmp eax, [KERNEL_RAM_SIZE_LO]
+        jbe .next
+
+    .new_largest:
+        mov eax, [si + MEM_BASE]
+        mov [KERNEL_RAM_BASE_LO], eax
+
+        mov eax, [si + MEM_BASE + 4]
+        mov [KERNEL_RAM_BASE_HI], eax
+
+        mov eax, [si + MEM_LENGTH]
+        mov [KERNEL_RAM_SIZE_LO], eax
+
+        mov eax, [si + MEM_LENGTH + 4]
+        mov [KERNEL_RAM_SIZE_HI], eax
+
+    .next:
+        add si, MEM_REGION_SIZE
+        dec cx
+        jmp .loop
+
+    .done:
+        ret
+
+    .no_memory:
+        mov si, msg_no_mem
+        call print_string
+        jmp halt
+
+; print clear
+print_clr:
+    mov ax, VGA_SEGMENT ; set video memory base address
+    mov es, ax
+    xor di, di
+    mov cx, 2000
+    mov ax, 0x0720  ; 0x07 is light grey | 0x20 is space char
+
+    rep stosw   ; repeat for cx
+
+    mov ah, 0x02    ; select cursor mode
+    mov bh, 0x00    ; select video page 0
+    mov dh, 0x00    ; select y 0
+    mov dl, 0x00    ; select x 0
+    int 0x10    ; execute queued operations
+
+    ret
+
+; print_char
+; in:  AL = character to print
+; trashes: AH
+print_char:
+    mov ah, 0x0E
+    mov bh, 0x00
+    mov bl, 0x07        ; light grey, page 0
+    int 0x10
+    ret
+
+; in:  DS:SI -> null terminated string
+; trashes: AL
+print_string:
+    push ax
+    .loop:
+        lodsb
+        test al, al
+        jz .done
+        call print_char
+        jmp .loop
+    .done:
+    pop ax
+    ret
+
+; print_newline
+print_newline:
+    push ax
+    mov al, 0x0D
+    call print_char
+    mov al, 0x0A
+    call print_char
+    pop ax
+    ret
+
+; print_hex32
+; in:  EAX = 32 bit value to print
+; prints 8 hex digits, uppercase
+print_hex32:
+    push eax
+    push ebx
+    push ecx
+
+    mov cx, 8
+    .loop:
+        rol eax, 4
+        mov bl, al
+        and bl, 0x0F
+        cmp bl, 9
+        jbe .is_digit
+        add bl, 'A' - 10
+        jmp .emit
+    .is_digit:
+        add bl, '0'
+    .emit:
+        mov al, bl
+        call print_char
+        loop .loop
+
+    pop ecx
+    pop ebx
+    pop eax
+    ret
+
+; print_hex64
+; in:  high dword in EBX
+;      low  dword in EAX
+; prints 16 hex digits, uppercase
+print_hex64:
+    push eax
+    mov eax, ebx
+    call print_hex32    ; print high dword
+    pop eax
+    call print_hex32    ; print low dword
+    ret
+
+; prints kernel RAM base and size
+; reads from KERNEL_RAM_BASE/SIZE
+debug_memory:
+    push eax
+    push ebx
+
+    call print_newline
+
+    mov si, msg_base
+    call print_string
+    mov ebx, [KERNEL_RAM_BASE_HI]
+    mov eax, [KERNEL_RAM_BASE_LO]
+    call print_hex64
+    call print_newline
+
+    mov si, msg_size
+    call print_string
+    mov ebx, [KERNEL_RAM_SIZE_HI]
+    mov eax, [KERNEL_RAM_SIZE_LO]
+    call print_hex64
+    call print_newline
+
+    pop ebx
+    pop eax
+    ret
+
+; Message Strings
+
+msg_base db 'BASE: ',0
+msg_size db 'SIZE: ',0
+msg_no_mem db 'FATAL: no usable memory regions found', 0
+
+; start boot init
+init_boot:
+    call print_clr
+    call init_memory
+    call process_e820
+    call find_largest_region
+    call debug_memory
+
+    jmp halt
+
+; halt process
+halt:
+    hlt
+    jmp $
+
+; file padding and signiture
+times 510-($-$$) db 0
+dw 0xAA55

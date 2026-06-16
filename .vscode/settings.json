@@ -1,0 +1,35 @@
+{
+    "files.autoSave": "afterDelay",
+
+    // Disable noisy autocomplete for ASM only
+    "[asm]": {
+        "editor.quickSuggestions": {
+            "comments": "off",
+            "strings": "off",
+            "other": "off"
+        },
+        "editor.suggestOnTriggerCharacters": false,
+        "editor.wordBasedSuggestions": "off",
+        "editor.hover.enabled": "off"
+    },
+
+    "[nasm]": {
+        "editor.quickSuggestions": {
+            "comments": "off",
+            "strings": "off",
+            "other": "off"
+        },
+        "editor.suggestOnTriggerCharacters": false,
+        "editor.wordBasedSuggestions": "off",
+        "editor.hover.enabled": "off"
+    },
+
+    // Keep UI clean for OSDev work
+    "editor.minimap.enabled": false,
+    "editor.renderWhitespace": "none",
+    "editor.guides.indentation": false,
+
+    // Optional: reduce distractions
+    "editor.parameterHints.enabled": false,
+    "cmake.sourceDirectory": "C:/Users/Aurora/Documents/VS Code/CXK/CXK"
+}

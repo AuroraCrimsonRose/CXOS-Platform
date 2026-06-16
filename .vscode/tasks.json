@@ -1,0 +1,40 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build CXK",
+            "type": "shell",
+            "command": "CXK/tools/build.bat",
+            "group": { "kind": "build", "isDefault": true },
+            "problemMatcher": []
+        },
+        {
+            "label": "Clean Build CXK",
+            "type": "shell",
+            "command": "CXK/tools/clean.bat",
+            "group": "build",
+            "problemMatcher": []
+        },
+        {
+            "label": "Run QEMU",
+            "type": "shell",
+            "command": "CXK/tools/run_qemu.bat",
+            "group": { "kind": "test", "isDefault": true },
+            "problemMatcher": []
+        },
+        {
+            "label": "Run QEMU (AHCI / q35)",
+            "type": "shell",
+            "command": "CXK/tools/run_qemu_ahci.bat",
+            "group": "test",
+            "problemMatcher": []
+        },
+        {
+            "label": "Run Bochs",
+            "type": "shell",
+            "command": "CXK/tools/run_bochs.bat",
+            "group": "test",
+            "problemMatcher": []
+        }
+    ]
+}

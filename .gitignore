@@ -1,0 +1,55 @@
+# =========================
+# CXK - Git Ignore
+# =========================
+
+# -------------------------
+# Build outputs (NEVER commit)
+# -------------------------
+CXK/build/
+CXK/dist/
+CXK/iso/
+*.o
+*.obj
+*.elf
+*.bin
+*.img
+
+# -------------------------
+# OSDev tool junk
+# -------------------------
+*.map
+*.d
+*.log
+
+# -------------------------
+# OSDev temp folders
+# -------------------------
+tmp/
+logs/
+cache/
+config/
+
+# -------------------------
+# Editor / workspace files
+# -------------------------
+CXK.code-workspace
+
+# -------------------------
+# Personal / notes / memory files
+# -------------------------
+memory_store.json
+
+# -------------------------
+# Windows / system noise
+# -------------------------
+Thumbs.db
+Desktop.ini
+
+# -------------------------
+# Keep tool scripts + source tracked
+# -------------------------
+!CXK/tools/
+!CXK/boot/
+!CXK/kernel/
+!CXK/linker.ld
+!CXK/CMakeLists.txt
