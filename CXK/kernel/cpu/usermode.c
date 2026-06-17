@@ -5,14 +5,15 @@
 #include "usermode.h"
 #include "idt.h"
 #include "gdt.h"
+#include "sched.h"
 #include "paging.h"
 #include "console.h"
 #include "vga.h"
 
 /* asm entry points */
-extern int  enter_usermode(uint32_t entry_eip, uint32_t user_esp);
+extern int  enter_usermode(uint32_t entry_eip, uint32_t user_esp, uint32_t *save_slot);
 extern void syscall_stub(void);
-extern void return_to_kernel(int retval);
+extern void return_to_kernel(int retval, uint32_t *save_slot);
 
 /* dedicated user pages (separate from kernel memory, marked PAGE_USER).
    chosen in the identity-mapped low region, clear of other DMA users. */
@@ -63,11 +64,12 @@ int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
             return (int)len;
         }
         case SYS_GETPID:
-            /* no process model yet; everything is "process 0" for now. */
-            return 0;
+            return thread_current_id();
+        case SYS_GETUID:
+            return (int)thread_current_uid();
         case SYS_EXIT:
             /* return to the kernel. does not return from here. */
-            return_to_kernel((int)a1);
+            return_to_kernel((int)a1, thread_current_usave());
             return 0;   /* unreachable */
         default:
             return -1;
@@ -118,7 +120,7 @@ int usermode_test(void) {
        override it here. */
 
     /* enter ring 3 at the copied routine; returns when the routine SYS_EXITs */
-    return enter_usermode(USER_CODE_ADDR, USER_STACK_TOP);
+    return enter_usermode(USER_CODE_ADDR, USER_STACK_TOP, thread_current_usave());
 }
 
 /* ---- scheduler-integrated ring-3 processes (Checkpoint 3a.2) ----
@@ -178,7 +180,7 @@ static void process_trampoline(void) {
     uint32_t ustack_top = s->stack_addr + 0x1000 - 16;
     *(uint32_t *)ustack_top = (uint32_t)umsg;
 
-    enter_usermode(s->code_addr, ustack_top);   /* -> ring 3; returns on SYS_EXIT */
+    enter_usermode(s->code_addr, ustack_top, thread_current_usave());   /* -> ring 3; returns on SYS_EXIT */
 
     thread_exit();   /* never returns */
 }
@@ -188,6 +190,9 @@ int process_create_ring3(const char *name,
                          const char *msg) {
     int pid = thread_create(name, process_trampoline);
     if (pid < 0) return -1;
+    /* give this process its own esp0 stack so syscalls/preemption from ring 3
+       land on it, separate from the trampoline's stack. */
+    if (thread_alloc_kstack(pid) < 0) { return -1; }
     r3[pid].blob       = blob;
     r3[pid].blob_len   = blob_len;
     r3[pid].msg        = msg;

@@ -2,6 +2,7 @@
 /* Aurora Tejeda */
 
 #include "idt.h"
+#include "sched.h"
 
 void pic_remap(void);
 void pic_send_eoi(uint32_t int_no);
@@ -206,6 +207,10 @@ void irq_handler(struct registers *r) {
     void (*handler)(struct registers *) = irq_routines[irq];
     if (handler) handler(r);
     pic_send_eoi(r->int_no);
+
+    /* AFTER the EOI: if the timer flagged a preemptive switch, do it now.
+       Post-EOI so the PIC keeps delivering ticks and preemption continues. */
+    if (irq == 0) sched_preempt_point();
 }
 
 void idt_init(void) {

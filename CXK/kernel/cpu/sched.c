@@ -4,6 +4,8 @@
 
 #include "sched.h"
 #include "heap.h"
+#include "gdt.h"
+#include "uid.h"
 
 extern void context_switch(uint32_t *old_esp, uint32_t new_esp);
 
@@ -39,6 +41,7 @@ void sched_init(void) {
     threads[0].state = THREAD_RUNNING;
     threads[0].name  = "main";
     threads[0].stack_base = 0;   /* uses the existing kernel stack */
+    threads[0].uid   = UID_SYSTEM;   /* the boot/kernel context is the machine (User 0) */
     current = 0;
     initialized = 1;
 }
@@ -77,7 +80,15 @@ int thread_create(const char *name, void (*entry)(void)) {
     threads[slot].name       = name;
     threads[slot].is_user    = 0;
     threads[slot].exit_code  = 0;
+    threads[slot].uid        = threads[current].uid;   /* inherit creator UID */
     threads[slot].user_stack_base = 0;
+    threads[slot].u_saved_esp   = 0;
+    threads[slot].u_saved_flags = 0;
+    /* kstack_top stays 0 for now: cooperative ring-3 uses the single dedicated
+       TSS stack (set in gdt_init), which is correct when only one process is in
+       ring 3 at a time. Per-process esp0 is wired in step 2b (ring-3 preemption). */
+    threads[slot].kstack_top  = 0;
+    threads[slot].kstack_base = 0;
     thread_entry[slot]       = entry;
     return slot;
 }
@@ -92,6 +103,15 @@ static int next_runnable(void) {
     return current;   /* nobody else: keep running current */
 }
 
+/* Point the TSS ring-0 stack at the current thread's kernel stack, so a
+   syscall/interrupt arriving while THIS process is in ring 3 lands on its own
+   kernel stack (not another process's). Kernel-only threads have kstack_top 0
+   and keep the default dedicated TSS stack. Called on every context switch. */
+static void update_tss_esp0(void) {
+    uint32_t top = threads[current].kstack_top;
+    if (top) tss_set_kernel_stack(top);
+}
+
 void yield(void) {
     if (!initialized) return;
     int prev = current;
@@ -101,6 +121,7 @@ void yield(void) {
     if (threads[prev].state == THREAD_RUNNING) threads[prev].state = THREAD_READY;
     threads[next].state = THREAD_RUNNING;
     current = next;
+    update_tss_esp0();
 
     context_switch(&threads[prev].esp, threads[next].esp);
     /* when we resume here later, we're `prev` again, now running */
@@ -122,6 +143,10 @@ static void sched_reap(void) {
                 kfree((void *)threads[i].user_stack_base);
                 threads[i].user_stack_base = 0;
             }
+            if (threads[i].kstack_base) {
+                kfree((void *)threads[i].kstack_base);
+                threads[i].kstack_base = 0;
+            }
             threads[i].state = THREAD_UNUSED;   /* slot reusable */
         }
     }
@@ -142,6 +167,7 @@ void thread_exit(void) {
     }
     threads[next].state = THREAD_RUNNING;
     current = next;
+    update_tss_esp0();
     uint32_t dummy;
     context_switch(&dummy, threads[next].esp);   /* save into dummy (discarded) */
     /* never reached */
@@ -170,28 +196,38 @@ void sched_preempt_disable(void) {
     preempt_on = 0;
 }
 
-/* called from the timer IRQ. Performs an involuntary yield every quantum ticks.
-   The switch reuses the proven context_switch path: because we're inside the
-   timer IRQ, the IRQ stub has already saved the caller-saved registers, and
-   context_switch preserves the callee-saved set - so the full state of the
-   preempted thread is intact and it resumes exactly where it left off. */
+/* called from the timer IRQ (BEFORE the EOI). Flags that a preemptive switch is
+   due every `quantum` ticks; the actual switch is deferred to
+   sched_preempt_point(), which the IRQ handler calls AFTER the EOI. Deferring
+   past the EOI keeps the PIC delivering further ticks so preemption continues. */
+static volatile int need_resched = 0;
+
 void sched_tick(void) {
     if (!preempt_on || !initialized) return;
     if (in_switch) return;                 /* don't preempt mid-switch */
     if (++preempt_counter < preempt_quantum) return;
     preempt_counter = 0;
+    need_resched = 1;   /* the actual switch happens after EOI (sched_preempt_point) */
+}
+
+/* called from the IRQ handler AFTER pic_send_eoi. Performs the deferred
+   preemptive switch if one is due. Doing the switch AFTER the EOI is essential:
+   switching before would leave the PIC's in-service bit set, so no further
+   timer ticks would arrive and preemption would stall after one switch. */
+void sched_preempt_point(void) {
+    if (!need_resched) return;
+    need_resched = 0;
+    if (!preempt_on || !initialized || in_switch) return;
 
     int prev = current;
     int next = next_runnable();
-    if (next == prev) return;              /* only one runnable: nothing to do */
+    if (next == prev) return;
 
-    /* mark that a switch is in progress, then clear it right before handing
-       off, so the thread we switch TO is immediately preemptible again. The
-       counter reset above already prevents an immediate re-fire. */
     in_switch = 1;
     if (threads[prev].state == THREAD_RUNNING) threads[prev].state = THREAD_READY;
     threads[next].state = THREAD_RUNNING;
     current = next;
+    update_tss_esp0();
     in_switch = 0;
     context_switch(&threads[prev].esp, threads[next].esp);
     /* resumed as `prev` later */
@@ -202,4 +238,39 @@ int thread_current_id(void) { return current; }
 
 void thread_mark_user(int id) {
     if (id >= 0 && id < MAX_THREADS) threads[id].is_user = 1;
+}
+
+uint32_t *thread_current_usave(void) {
+    return &threads[current].u_saved_esp;   /* [0]=esp, [1]=flags (contiguous) */
+}
+
+void thread_set_kstack_top(int id, uint32_t top) {
+    if (id >= 0 && id < MAX_THREADS) threads[id].kstack_top = top;
+}
+
+uint32_t thread_current_kstack_top(void) {
+    return threads[current].kstack_top;
+}
+
+/* Allocate a dedicated esp0 (ring-0 entry) stack for a ring-3 process, separate
+   from its trampoline stack. When the process is in ring 3 and takes a syscall
+   or is preempted by the timer, the CPU switches to THIS stack - so the
+   interrupt frame never collides with the trampoline's saved frame on the main
+   kernel stack. Returns 0 on success, -1 on alloc failure. */
+int thread_alloc_kstack(int id) {
+    if (id <= 0 || id >= MAX_THREADS) return -1;
+    uint32_t k = (uint32_t)kmalloc(THREAD_STACK);
+    if (!k) return -1;
+    threads[id].kstack_base = k;
+    threads[id].kstack_top  = k + THREAD_STACK - 16;   /* 16-byte slack at top */
+    return 0;
+}
+
+uint32_t thread_current_uid(void) {
+    if (!initialized) return UID_SYSTEM;   /* bare kernel boot context = SYSTEM */
+    return threads[current].uid;
+}
+
+void thread_set_uid(int id, uint32_t uid) {
+    if (id >= 0 && id < MAX_THREADS) threads[id].uid = uid;
 }

@@ -5,6 +5,7 @@
 #include "commands.h"
 #include "usermode.h"
 #include "sched.h"
+#include "uid.h"
 #include "console.h"
 #include "demo.h"
 #include "pci.h"
@@ -1442,134 +1443,185 @@ static void cmd_arping(const char *args) {
 
 /* ---- command table ---- */
 
-/* usermode - Ring 3 Stage 1 test: drop to user mode, run a tiny routine that
-   makes syscalls (write + exit), and return to the shell. */
-static void cmd_usermode(const char *args) {
-    (void)args;
-    console_print("Entering ring 3...\n");
-    int r = usermode_test();
-    console_print("Returned to kernel (ring 0). exit code = ");
-    console_print_dec((uint32_t)r);
-    console_putc('\n');
-}
+/* ============================================================================
+ *  ringtest - consolidated process-model / ring-3 test suite
+ *
+ *  One command with subcommands, each exercising a distinct, proven capability
+ *  of the process model (they double as regression tests):
+ *
+ *    ringtest user      - enter ring 3, syscall, return         (privilege boundary)
+ *    ringtest threads   - two cooperative kernel threads        (context switch)
+ *    ringtest preempt   - two no-yield threads, timer-switched  (preemption)
+ *    ringtest proc [N]  - N cooperative ring-3 processes         (scheduled processes)
+ *    ringtest procp     - two preemptive ring-3 processes        (full model)
+ *    ringtest all       - run user, threads, preempt, proc in sequence
+ * ========================================================================== */
 
-/* two cooperative kernel threads that yield back and forth - Checkpoint 1
-   proof that context switching works. */
+extern uint8_t user_blob_start[];
+extern uint8_t user_blob_end[];
+extern uint8_t user_blob_busy_start[];
+extern uint8_t user_blob_busy_end[];
+
+/* -- cooperative kernel threads (context-switch test) -- */
 static volatile int demo_done_a, demo_done_b;
-
 static void demo_thread_a(void) {
     for (int i = 0; i < 5; i++) {
-        console_print("  [thread A] tick ");
-        console_print_dec((uint32_t)i);
-        console_putc('\n');
+        console_print("  [thread A] tick "); console_print_dec((uint32_t)i); console_putc('\n');
         yield();
     }
     demo_done_a = 1;
 }
 static void demo_thread_b(void) {
     for (int i = 0; i < 5; i++) {
-        console_print("  [thread B] tock ");
-        console_print_dec((uint32_t)i);
-        console_putc('\n');
+        console_print("  [thread B] tock "); console_print_dec((uint32_t)i); console_putc('\n');
         yield();
     }
     demo_done_b = 1;
 }
 
-/* proc - create a scheduler-managed ring-3 PROCESS (checkpoint 3a.2):
-   a process that runs in user mode, syscalls, exits, and is reaped. */
-extern uint8_t user_blob_start[];
-extern uint8_t user_blob_end[];
-
-static void cmd_proc(const char *args) {
-    (void)args;
-    uint32_t blen = (uint32_t)(user_blob_end - user_blob_start);
-    console_print("Creating a ring-3 process via the scheduler...\n");
-    int pid = process_create_ring3("userproc", user_blob_start, blen,
-                                   "  [ring3 proc] hello from a scheduled user process!\n");
-    if (pid < 0) { console_print("process_create failed.\n"); return; }
-    console_print("Created pid ");
-    console_print_dec((uint32_t)pid);
-    console_print("; yielding to it...\n");
-    for (int i = 0; i < 20; i++) yield();
-    console_print("Back in shell. Process ran in ring 3 and exited cleanly.\n");
-}
-
-/* ---- preemptive demo (Checkpoint 2): threads that DON'T yield ---- */
+/* -- no-yield kernel threads (preemption test) -- */
 static volatile int pre_done_a, pre_done_b;
-
 static void preempt_thread_a(void) {
-    /* busy work with NO yield - only the timer can switch us out */
     for (uint32_t i = 0; i < 5; i++) {
         for (volatile uint32_t spin = 0; spin < 8000000; spin++) { }
-        console_print("  [preempt A] step ");
-        console_print_dec(i);
-        console_putc('\n');
+        console_print("  [preempt A] step "); console_print_dec(i); console_putc('\n');
     }
-    pre_done_a = 1;
-    thread_exit();   /* finished - leave cleanly */
+    pre_done_a = 1; thread_exit();
 }
 static void preempt_thread_b(void) {
     for (uint32_t i = 0; i < 5; i++) {
         for (volatile uint32_t spin = 0; spin < 8000000; spin++) { }
-        console_print("  [preempt B] step ");
-        console_print_dec(i);
-        console_putc('\n');
+        console_print("  [preempt B] step "); console_print_dec(i); console_putc('\n');
     }
-    pre_done_b = 1;
-    thread_exit();   /* finished - leave cleanly */
+    pre_done_b = 1; thread_exit();
 }
 
-static void cmd_preempt(const char *args) {
-    (void)args;
-    pre_done_a = pre_done_b = 0;
-    console_print("Starting two threads that never yield...\n");
-    console_print("(only the timer can switch between them)\n");
-    int a = thread_create("preA", preempt_thread_a);
-    int b = thread_create("preB", preempt_thread_b);
-    if (a < 0 || b < 0) { console_print("thread_create failed.\n"); return; }
+/* -- individual test routines -- */
 
-    sched_preempt_enable(5);   /* switch every ~5 timer ticks */
-
-    /* main thread waits (also preemptible) until both demo threads finish */
-    while (!(pre_done_a && pre_done_b)) {
-        for (volatile uint32_t spin = 0; spin < 1000000; spin++) { }
-    }
-
-    sched_preempt_disable();
-    console_print("Both threads finished under PREEMPTION (no yields).\n");
-    console_print("Context switches were driven entirely by the timer.\n");
+static void rt_user(void) {
+    console_print("[ring3] entering user mode...\n");
+    int r = usermode_test();
+    console_print("[ring3] returned to ring 0, exit code = ");
+    console_print_dec((uint32_t)r); console_putc('\n');
 }
 
-static void cmd_threads(const char *args) {
-    (void)args;
+static void rt_threads(void) {
     demo_done_a = demo_done_b = 0;
-    console_print("Creating two cooperative threads...\n");
+    console_print("[threads] two cooperative kernel threads (yield)...\n");
     int a = thread_create("demoA", demo_thread_a);
     int b = thread_create("demoB", demo_thread_b);
     if (a < 0 || b < 0) { console_print("thread_create failed.\n"); return; }
-    /* yield among them until both finish */
     while (!(demo_done_a && demo_done_b)) yield();
-    console_print("Both threads finished. Context switching works.\n");
+    console_print("[threads] both finished - context switching works.\n");
+}
+
+static void rt_preempt(void) {
+    pre_done_a = pre_done_b = 0;
+    console_print("[preempt] two threads that never yield (timer switches them)...\n");
+    int a = thread_create("preA", preempt_thread_a);
+    int b = thread_create("preB", preempt_thread_b);
+    if (a < 0 || b < 0) { console_print("thread_create failed.\n"); return; }
+    sched_preempt_enable(5);
+    while (!(pre_done_a && pre_done_b)) {
+        for (volatile uint32_t spin = 0; spin < 1000000; spin++) { }
+    }
+    sched_preempt_disable();
+    console_print("[preempt] both finished under preemption (no yields).\n");
+}
+
+static void rt_proc(int count) {
+    uint32_t blen = (uint32_t)(user_blob_end - user_blob_start);
+    static const char *msgs[4] = {
+        "  [proc 1] hello from scheduled user process #1\n",
+        "  [proc 2] hello from scheduled user process #2\n",
+        "  [proc 3] hello from scheduled user process #3\n",
+        "  [proc 4] hello from scheduled user process #4\n",
+    };
+    if (count < 1) count = 1;
+    if (count > 4) count = 4;
+    console_print("[proc] creating "); console_print_dec((uint32_t)count);
+    console_print(" cooperative ring-3 process(es)...\n");
+    for (int i = 0; i < count; i++) {
+        int pid = process_create_ring3("userproc", user_blob_start, blen, msgs[i]);
+        if (pid < 0) { console_print("process_create failed.\n"); return; }
+    }
+    for (int i = 0; i < 40; i++) yield();
+    console_print("[proc] all processes ran in ring 3 and exited.\n");
+}
+
+static void rt_procp(void) {
+    uint32_t blen = (uint32_t)(user_blob_busy_end - user_blob_busy_start);
+    console_print("[procp] two PREEMPTIVE ring-3 processes (timer-switched)...\n");
+    int a = process_create_ring3("busyA", user_blob_busy_start, blen,
+                                 "  [proc A] working in ring 3...\n");
+    int b = process_create_ring3("busyB", user_blob_busy_start, blen,
+                                 "  [proc B] working in ring 3...\n");
+    if (a < 0 || b < 0) { console_print("process_create failed.\n"); return; }
+    sched_preempt_enable(3);
+    int guard = 0;
+    while (sched_active_count() > 1 && guard < 100000000) {
+        for (volatile int s = 0; s < 1000; s++) { }
+        guard++;
+    }
+    sched_preempt_disable();
+    console_print("[procp] both ring-3 processes finished under preemption.\n");
+}
+
+static void cmd_ringtest(const char *args) {
+    /* parse the subcommand (first token of args) */
+    if (!args || args[0] == '\0') {
+        console_print("usage: ringtest <user|threads|preempt|proc [N]|procp|all>\n");
+        return;
+    }
+    if (strncmp(args, "user", 4) == 0)         rt_user();
+    else if (strncmp(args, "threads", 7) == 0) rt_threads();
+    else if (strncmp(args, "preempt", 7) == 0) rt_preempt();
+    else if (strncmp(args, "procp", 5) == 0)   rt_procp();
+    else if (strncmp(args, "proc", 4) == 0) {
+        /* optional count after "proc " */
+        int n = 1;
+        const char *p = args + 4;
+        while (*p == ' ') p++;
+        if (*p >= '1' && *p <= '4') n = *p - '0';
+        rt_proc(n);
+    }
+    else if (strncmp(args, "all", 3) == 0) {
+        rt_user();
+        rt_threads();
+        rt_preempt();
+        rt_proc(3);
+        console_print("[ringtest] all cooperative tests passed.\n");
+    }
+    else {
+        console_print("unknown subtest. usage: ringtest <user|threads|preempt|proc [N]|procp|all>\n");
+    }
+}
+
+/* whoami - show the current identity (UID). The shell currently runs as
+   SYSTEM (User 0); a user/login layer will change this later. */
+static void cmd_whoami(const char *args) {
+    (void)args;
+    uint32_t u = current_uid();
+    console_print(uid_name(u));
+    console_print("  (uid=");
+    console_print_dec(u);
+    if (u == UID_SYSTEM) console_print(", machine identity / OS context");
+    console_print(")\n");
 }
 
 const struct command commands[] = {
-    { "proc",     cmd_proc,     "create a scheduled ring-3 process (proc model)",
-      "proc - create a user-mode process managed by the scheduler; it runs in\n"
-      "ring 3, makes syscalls, exits, and is reaped (checkpoint 3a.2).\n" },
+    { "whoami",   cmd_whoami,   "show the current user identity (UID)",
+      "whoami - print the identity the current context runs as. UID 0 is\n"
+      "SYSTEM (the machine identity / OS context), not a human account.\n" },
 
-    { "preempt",  cmd_preempt,  "preemptive multitasking demo (timer-driven)",
-      "preempt - run two threads that never yield; the timer preempts them.\n"
-      "Proves timer-driven preemptive context switching (checkpoint 2).\n" },
-
-    { "threads",  cmd_threads,  "run two cooperative kernel threads (ctx-switch test)",
-      "threads - create two kernel threads that yield back and forth,\n"
-      "proving the context-switch mechanism (process model checkpoint 1).\n" },
-
-    { "usermode", cmd_usermode,  "ring 3 test: enter user mode, syscall, return",
-      "usermode - drop into ring 3, run a user routine that uses syscalls,\n"
-      "and return to the kernel. The Stage-1 proof that the privilege\n"
-      "boundary and syscall gate work.\n" },
+    { "ringtest", cmd_ringtest, "process-model / ring-3 test suite (see: help ringtest)",
+      "ringtest <subtest> - exercise the process model. Subtests:\n"
+      "  user     - enter ring 3, syscall, return (privilege boundary)\n"
+      "  threads  - two cooperative kernel threads (context switch)\n"
+      "  preempt  - two no-yield threads, timer-switched (preemption)\n"
+      "  proc [N] - N (1-4) cooperative ring-3 processes (scheduled procs)\n"
+      "  procp    - two preemptive ring-3 processes (full model)\n"
+      "  all      - run user, threads, preempt, proc in sequence\n" },
 
     { "help",     cmd_help,     "show this command list",
       "help - list commands, or show detail for one\n"

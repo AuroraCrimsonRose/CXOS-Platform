@@ -10,23 +10,26 @@ global return_to_kernel
 extern syscall_dispatch     ; C: int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2)
 
 ; ---------------------------------------------------------------------------
-; int enter_usermode(uint32_t entry_eip, uint32_t user_esp)
-;   Saves the kernel context, builds an iret frame, and drops to ring 3.
-;   Returns ONLY when user code invokes SYS_EXIT, which routes through
-;   return_to_kernel and makes this function return the exit value.
+; int enter_usermode(uint32_t entry_eip, uint32_t user_esp, uint32_t *save_slot)
+;   save_slot points at a 2-word per-process area: [0]=saved kernel esp,
+;   [1]=saved kernel eflags. Using per-process storage (instead of a global)
+;   lets multiple ring-3 processes be in flight at once (preemption during
+;   ring 3): each has its own return state.
+;   Returns ONLY when user code invokes SYS_EXIT (via return_to_kernel).
 ; ---------------------------------------------------------------------------
 enter_usermode:
     push ebp
     push ebx
     push esi
     push edi                 ; save callee-saved regs (cdecl)
+
+    mov edi, [esp + 28]      ; save_slot (4 saved*4 + ret(4) + arg1(4) + arg2(4) = 28)
     pushfd                   ; save the kernel's EFLAGS (esp. the IF state)
     pop eax
-    mov [saved_kernel_flags], eax
-    ; save the kernel ESP at this point so return_to_kernel can restore it
-    mov [saved_kernel_esp], esp
+    mov [edi + 4], eax       ; save_slot[1] = eflags
+    mov [edi], esp           ; save_slot[0] = kernel esp
 
-    mov eax, [esp + 20]      ; entry_eip  (4 saved regs*4 + ret(4) + arg1)
+    mov eax, [esp + 20]      ; entry_eip
     mov ecx, [esp + 24]      ; user_esp
 
     cli
@@ -46,10 +49,13 @@ enter_usermode:
     push eax                 ; entry EIP
     iretd                    ; -> ring 3
 
-; return_to_kernel(int retval): restore kernel stack + callee regs, return.
+; return_to_kernel(int retval, uint32_t *save_slot): restore the per-process
+; kernel stack + callee regs from save_slot, and return from enter_usermode.
 return_to_kernel:
-    mov eax, [esp + 4]       ; retval
-    mov esp, [saved_kernel_esp]
+    mov eax, [esp + 4]       ; retval (kept in eax through to the ret)
+    mov edi, [esp + 8]       ; save_slot
+    mov ecx, [edi + 4]       ; ecx = saved kernel eflags
+    mov esp, [edi]           ; restore kernel esp = save_slot[0]
     mov bx, 0x10             ; kernel data
     mov ds, bx
     mov es, bx
@@ -59,10 +65,7 @@ return_to_kernel:
     pop esi
     pop ebx
     pop ebp
-    ; restore the kernel's original EFLAGS (re-enables interrupts if the kernel
-    ; had them on before entering usermode; the syscall path left IF=0, which
-    ; would otherwise deadlock the kernel on its next hlt).
-    push dword [saved_kernel_flags]
+    push ecx                 ; restore the kernel's original EFLAGS
     popfd
     ret                      ; returns retval (in eax) from enter_usermode
 
@@ -92,8 +95,8 @@ syscall_stub:
     iretd
 
 section .bss
-saved_kernel_esp:   resd 1
-saved_kernel_flags: resd 1
+; (per-process ring-3 return state now lives in the process struct, passed to
+;  enter_usermode/return_to_kernel as save_slot - no globals needed)
 
 ; ---------------------------------------------------------------------------
 ; ---------------------------------------------------------------------------
@@ -119,3 +122,34 @@ user_blob_start:
 .hang:
     jmp .hang           ; never reached (SYS_EXIT does not return to user)
 user_blob_end:
+
+; ---------------------------------------------------------------------------
+; user_blob_busy - a longer-running ring-3 routine: it writes its message, then
+; spins in a long busy loop (staying in ring 3 the whole time so the timer can
+; PREEMPT it mid-execution), writes again, and exits. Used to demonstrate
+; preemption during ring 3 (multiple of these interleave under the timer).
+; The message pointer is seeded at [esp] by the kernel.
+; ---------------------------------------------------------------------------
+global user_blob_busy_start
+global user_blob_busy_end
+user_blob_busy_start:
+    mov esi, [esp]      ; save msg pointer in esi (callee-ish; we control it)
+    mov edi, 3          ; repeat count
+.loop:
+    mov ebx, esi        ; arg1: msg
+    xor ecx, ecx        ; arg2: NUL-scan
+    mov eax, 1          ; SYS_WRITE
+    int 0x80
+    ; busy work in RING 3 (preemptible): a big spin
+    mov ecx, 0x02000000
+.spin:
+    dec ecx
+    jnz .spin
+    dec edi
+    jnz .loop
+    mov eax, 0          ; SYS_EXIT
+    xor ebx, ebx
+    int 0x80
+.bhang:
+    jmp .bhang
+user_blob_busy_end:
