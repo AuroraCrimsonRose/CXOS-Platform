@@ -98,7 +98,27 @@ void idt_set_user_gate(int n, uint32_t handler) {
     idt[n].offset_high = (handler >> 16) & 0xFFFF;
 }
 
+/* Optional hook for handling a fault that occurred in USER mode (ring 3).
+   The process model registers this so a user fault kills just the offending
+   process and reschedules, instead of panicking the whole kernel. If no hook
+   is registered (or the fault was in kernel mode), we fall through to panic.
+   The hook should NOT return if it successfully handles the fault (it switches
+   to another process); returning means "couldn't handle it, panic." */
+static void (*user_fault_hook)(struct registers *r) = 0;
+
+void set_user_fault_hook(void (*hook)(struct registers *)) {
+    user_fault_hook = hook;
+}
+
 void isr_handler(struct registers *r) {
+    /* If the fault came from ring 3 (saved CS has RPL=3) and the process model
+       has registered a handler, let it deal with the faulting process. This
+       lets a buggy user program die without taking down the kernel. */
+    if ((r->cs & 3) == 3 && user_fault_hook) {
+        user_fault_hook(r);
+        /* if the hook returned, it couldn't handle it - fall through to panic */
+    }
+
     panic_pos = 0;   /* text mode: top-left */
     panic_col = 0;   /* framebuffer: top-left */
     panic_row = 0;

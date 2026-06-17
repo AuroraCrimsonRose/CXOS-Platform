@@ -4,6 +4,7 @@
 
 #include "commands.h"
 #include "usermode.h"
+#include "sched.h"
 #include "console.h"
 #include "demo.h"
 #include "pci.h"
@@ -70,7 +71,7 @@ static void cmd_ver(const char *args) {
     console_set_color(VGA_LIGHT_CYAN, VGA_BLACK);
     console_print("CXK");
     console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
-    console_print(" - V0.0.1.24 - Made by Aurora Tejeda\n");
+    console_print(" - V0.0.1.10 - Made by Aurora Tejeda\n");
 }
 
 static void cmd_meminfo(const char *args) {
@@ -1452,7 +1453,119 @@ static void cmd_usermode(const char *args) {
     console_putc('\n');
 }
 
+/* two cooperative kernel threads that yield back and forth - Checkpoint 1
+   proof that context switching works. */
+static volatile int demo_done_a, demo_done_b;
+
+static void demo_thread_a(void) {
+    for (int i = 0; i < 5; i++) {
+        console_print("  [thread A] tick ");
+        console_print_dec((uint32_t)i);
+        console_putc('\n');
+        yield();
+    }
+    demo_done_a = 1;
+}
+static void demo_thread_b(void) {
+    for (int i = 0; i < 5; i++) {
+        console_print("  [thread B] tock ");
+        console_print_dec((uint32_t)i);
+        console_putc('\n');
+        yield();
+    }
+    demo_done_b = 1;
+}
+
+/* proc - create a scheduler-managed ring-3 PROCESS (checkpoint 3a.2):
+   a process that runs in user mode, syscalls, exits, and is reaped. */
+extern uint8_t user_blob_start[];
+extern uint8_t user_blob_end[];
+
+static void cmd_proc(const char *args) {
+    (void)args;
+    uint32_t blen = (uint32_t)(user_blob_end - user_blob_start);
+    console_print("Creating a ring-3 process via the scheduler...\n");
+    int pid = process_create_ring3("userproc", user_blob_start, blen,
+                                   "  [ring3 proc] hello from a scheduled user process!\n");
+    if (pid < 0) { console_print("process_create failed.\n"); return; }
+    console_print("Created pid ");
+    console_print_dec((uint32_t)pid);
+    console_print("; yielding to it...\n");
+    for (int i = 0; i < 20; i++) yield();
+    console_print("Back in shell. Process ran in ring 3 and exited cleanly.\n");
+}
+
+/* ---- preemptive demo (Checkpoint 2): threads that DON'T yield ---- */
+static volatile int pre_done_a, pre_done_b;
+
+static void preempt_thread_a(void) {
+    /* busy work with NO yield - only the timer can switch us out */
+    for (uint32_t i = 0; i < 5; i++) {
+        for (volatile uint32_t spin = 0; spin < 8000000; spin++) { }
+        console_print("  [preempt A] step ");
+        console_print_dec(i);
+        console_putc('\n');
+    }
+    pre_done_a = 1;
+    thread_exit();   /* finished - leave cleanly */
+}
+static void preempt_thread_b(void) {
+    for (uint32_t i = 0; i < 5; i++) {
+        for (volatile uint32_t spin = 0; spin < 8000000; spin++) { }
+        console_print("  [preempt B] step ");
+        console_print_dec(i);
+        console_putc('\n');
+    }
+    pre_done_b = 1;
+    thread_exit();   /* finished - leave cleanly */
+}
+
+static void cmd_preempt(const char *args) {
+    (void)args;
+    pre_done_a = pre_done_b = 0;
+    console_print("Starting two threads that never yield...\n");
+    console_print("(only the timer can switch between them)\n");
+    int a = thread_create("preA", preempt_thread_a);
+    int b = thread_create("preB", preempt_thread_b);
+    if (a < 0 || b < 0) { console_print("thread_create failed.\n"); return; }
+
+    sched_preempt_enable(5);   /* switch every ~5 timer ticks */
+
+    /* main thread waits (also preemptible) until both demo threads finish */
+    while (!(pre_done_a && pre_done_b)) {
+        for (volatile uint32_t spin = 0; spin < 1000000; spin++) { }
+    }
+
+    sched_preempt_disable();
+    console_print("Both threads finished under PREEMPTION (no yields).\n");
+    console_print("Context switches were driven entirely by the timer.\n");
+}
+
+static void cmd_threads(const char *args) {
+    (void)args;
+    demo_done_a = demo_done_b = 0;
+    console_print("Creating two cooperative threads...\n");
+    int a = thread_create("demoA", demo_thread_a);
+    int b = thread_create("demoB", demo_thread_b);
+    if (a < 0 || b < 0) { console_print("thread_create failed.\n"); return; }
+    /* yield among them until both finish */
+    while (!(demo_done_a && demo_done_b)) yield();
+    console_print("Both threads finished. Context switching works.\n");
+}
+
 const struct command commands[] = {
+    { "proc",     cmd_proc,     "create a scheduled ring-3 process (proc model)",
+      "proc - create a user-mode process managed by the scheduler; it runs in\n"
+      "ring 3, makes syscalls, exits, and is reaped (checkpoint 3a.2).\n" },
+
+    { "preempt",  cmd_preempt,  "preemptive multitasking demo (timer-driven)",
+      "preempt - run two threads that never yield; the timer preempts them.\n"
+      "Proves timer-driven preemptive context switching (checkpoint 2).\n" },
+
+    { "threads",  cmd_threads,  "run two cooperative kernel threads (ctx-switch test)",
+      "threads - create two kernel threads that yield back and forth,\n"
+      "proving the context-switch mechanism (process model checkpoint 1).\n" },
+
     { "usermode", cmd_usermode,  "ring 3 test: enter user mode, syscall, return",
       "usermode - drop into ring 3, run a user routine that uses syscalls,\n"
       "and return to the kernel. The Stage-1 proof that the privilege\n"
