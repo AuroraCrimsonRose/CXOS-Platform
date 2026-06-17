@@ -36,7 +36,15 @@ struct thread {
     const char *name;
     int       is_user;         /* 1 = runs in ring 3 (a user process) */
     int       exit_code;       /* set on exit */
+    uint32_t  uid;             /* owning user id; 0 = SYSTEM (machine identity) */
     uint32_t  user_stack_base; /* allocated ring-3 stack (user processes) */
+    /* per-process ring-3 return state: enter_usermode saves the kernel esp +
+       eflags here so SYS_EXIT (return_to_kernel) can come back, even if another
+       ring-3 process runs in between (preemption during ring 3). */
+    uint32_t  u_saved_esp;
+    uint32_t  u_saved_flags;
+    uint32_t  kstack_top;      /* top of this process's esp0 stack -> TSS esp0 */
+    uint32_t  kstack_base;     /* allocated esp0 stack (for free on exit) */
 };
 
 /* initialize the scheduler (registers the currently-running code as thread 0). */
@@ -66,10 +74,33 @@ void sched_preempt_disable(void);
    safe to call always - does nothing unless preemption is enabled. */
 void sched_tick(void);
 
+/* called from the IRQ handler AFTER the EOI; performs a deferred preemptive
+   switch if one is due. */
+void sched_preempt_point(void);
+
 /* the id (pid) of the currently running thread/process. */
 int thread_current_id(void);
 
 /* mark a thread as a user (ring-3) process. */
 void thread_mark_user(int id);
+
+/* pointer to the current process's [saved_esp, saved_flags] slot (2 words),
+   for enter_usermode/return_to_kernel to stash per-process ring-3 return state. */
+uint32_t *thread_current_usave(void);
+
+/* set/get a process's kernel-stack top (used for the TSS esp0). */
+void     thread_set_kstack_top(int id, uint32_t top);
+uint32_t thread_current_kstack_top(void);
+
+/* allocate a dedicated esp0 (ring-0 entry) stack for a ring-3 process so timer
+   preemption / syscalls from ring 3 land on it (not the trampoline stack).
+   returns 0 on success, -1 on failure. */
+int thread_alloc_kstack(int id);
+
+/* ---- identity (UID) ---- */
+/* owning UID of the current process; SYSTEM (0) for kernel/boot context. */
+uint32_t thread_current_uid(void);
+/* set a thread's owning UID (used when launching a process as a given user). */
+void     thread_set_uid(int id, uint32_t uid);
 
 #endif

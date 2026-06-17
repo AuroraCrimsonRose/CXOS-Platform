@@ -189,5 +189,114 @@ Until then, all entries are owned by SYSTEM (uid 0), unlocked, and unrestricted.
 
 ---
 
-*CXFS v1 — the native filesystem of CXK. This document describes the v1 on-disk
-format. Reserved fields are part of the format but inert until v2.*
+## 11. CXFS v2 — Goal & Direction
+
+> **Status:** Design goal / north-star. v1 is the implemented base; v2 is the
+> target the design evolves toward now that CXK has a user/process model (see
+> `PROCESS_MODEL.md`). This section records the intended end-state. It is an
+> **evolution of the v1 manifest**, not a new on-disk format — most of v2 is
+> activating reserved fields and layering policy on top of the existing
+> manifest.
+
+**The v2 goal in one sentence:** a manifest-based filesystem where the manifest
+is the source of truth; the OS is **User 0 / SYSTEM** (a machine identity, not
+an account); human users have UIDs with **owner / group / system** permission
+evaluation; `/System` is protected; files carry ownership, permissions, and
+**process-leased locks**; storage uses extents with real free-space management;
+and `/Mount` exposes each physical disk (each with its own Master Manifest) as a
+named device.
+
+### 11.1 Identity model
+
+- **User 0 is SYSTEM** — the machine identity / OS execution context, *not* a
+  human account. Kernel threads and the boot context run as SYSTEM. SYSTEM may
+  override protections (write OS-critical files, override locks).
+- **Human users** have UIDs ≥ 1, living under `/Users`.
+- Privilege is determined by **role / permission level**, not by the numeric UID
+  — UID 0 being SYSTEM is a convention, not a magic privilege number.
+- *(Foundation in place: processes now carry an owning UID; `current_uid()` /
+  `SYS_GETUID` report it. The account layer that assigns human UIDs comes later.)*
+
+### 11.2 Standard directory layout (convention over the manifest)
+
+```
+/                      (root of the OS disk)
+├── System             OS-owned; protected
+│   ├── Shared         readable by all users
+│   ├── Drivers        SYSTEM write only
+│   ├── x86            SYSTEM write only
+│   ├── Temp
+│   ├── Config
+│   └── Security       SYSTEM write only
+├── Users
+│   └── <user>
+│       ├── Home
+│       ├── Media
+│       ├── Temp
+│       └── Shared     link to /System/Shared
+└── Mount              storage device mount points
+```
+
+### 11.3 Permissions
+
+Access is evaluated in order: **(1) system context (User 0)** → **(2) owner** →
+**(3) group** → **(4) other**. `/System` enforces protected rules: OS-critical
+folders (`Drivers`, `x86`, `Security`) are SYSTEM-write-only; `Shared` is
+readable by all.
+
+### 11.4 Locks (process-leased)
+
+Each entry has a `lock_state` (LOCKED / UNLOCKED). A write to a LOCKED file is
+denied; SYSTEM can override. **Locks are leased to the holding process**: the
+lock records the owning PID, and when that process exits or is reaped, its locks
+are released automatically. This prevents the "a crashed program leaves a file
+locked forever" problem — and ties directly into the scheduler's reaper.
+
+### 11.5 Storage & free space
+
+- Variable-sized **extent** allocation (v1 already stores extents).
+- Real **free-space management** and allocation tracking in the manifest.
+- **Fragmentation avoidance** in the allocator (esp. for HDD/ATA), with a
+  **defrag tool** planned later.
+- A **reserved system region** on the OS's main disk, so the system keeps
+  functioning even when the disk is otherwise full (shown in the tree as a
+  reserved/system area).
+
+### 11.6 Mount system
+
+`/Mount` exposes each storage device under a raw system name (`SSD0`, `HDD0`,
+`NVME0`, `USB0`, `CDROM0`, …). Each device carries its **own Master Manifest**;
+the filesystem is defined by the manifest, not physical layout.
+
+### 11.7 Linking
+
+`/System/Shared` is the primary shared store; `/Users/<user>/Shared` is a
+**manifest link** to it — no data duplication, only a reference entry.
+
+### 11.8 Data hygiene (later)
+
+- Tool to **zero out free blocks** (data not referenced by the manifest).
+- **Deletion** = remove the entry from the manifest; the freed blocks are simply
+  available to be overwritten.
+- **Optional secure-delete** config: when enabled, deletion also clears the
+  on-disk data, not just the manifest entry.
+
+### 11.9 Scaling (later)
+
+- **Sub-manifests** linked to the Master Manifest, so reads on a full/large disk
+  aren't bottlenecked by one huge manifest.
+- The system reports occupied-but-inaccessible space (the manifests themselves)
+  as **system space** so accounting stays honest.
+
+### 11.10 Build order
+
+The foundation lands first (done): processes carry a UID, SYSTEM = User 0.
+From there the intended order is: process-leased locks → ownership + permission
+evaluation → the `/System` `/Users` `/Mount` layout and protection → mount /
+multi-disk → program loading from CXFS → the later hygiene/scaling tools. Each
+step is incremental and testable on top of the v1 manifest.
+
+---
+
+*CXFS v1 is the implemented base; v2 (this section) is the design goal it
+evolves toward, layered on the same manifest.*
