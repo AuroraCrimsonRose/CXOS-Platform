@@ -5,6 +5,7 @@
 #include "init.h"
 #include "gdt.h"
 #include "usermode.h"
+#include "sched.h"
 #include "idt.h"
 #include "timer.h"
 #include "keyboard.h"
@@ -144,6 +145,8 @@ int system_init(void) {
     /* Core CPU/IRQ + input - essential, effectively always succeed. */
     idt_init();                         rec("IDT", ST_OK);
     usermode_init();   /* install the ring-3 syscall gate (int 0x80, DPL=3) */
+    sched_init();      /* cooperative kernel-thread scheduler (checkpoint 1) */
+    usermode_register_fault_handler();  /* user faults kill the process, not the kernel */
     timer_init();                       rec("TIMER", ST_OK);
     keyboard_init();                    rec("KBD", ST_OK);
     rec(fb_active() ? "FB" : "VGA", ST_OK);

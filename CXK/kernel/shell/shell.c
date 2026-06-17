@@ -189,7 +189,10 @@ static void shell_execute(char *line) {
                 (strcmp(commands[i].name, "write") == 0)  ||  /* multi-line input prompt */
                 (strcmp(commands[i].name, "cat") == 0)    ||  /* may page / read a key */
                 (strcmp(commands[i].name, "arping") == 0)    ||  /* blocks polling for ARP reply */
-                (strcmp(commands[i].name, "ping") == 0);       /* blocks polling for ICMP reply */
+                (strcmp(commands[i].name, "ping") == 0)    ||  /* blocks polling for ICMP reply */
+                (strcmp(commands[i].name, "threads") == 0)    ||  /* loops yielding between threads */
+                (strcmp(commands[i].name, "preempt") == 0)    ||  /* timer-driven multitasking demo */
+                (strcmp(commands[i].name, "proc") == 0);       /* yields to a ring-3 process */
 
             if (interactive) {
                 commands[i].handler(args);

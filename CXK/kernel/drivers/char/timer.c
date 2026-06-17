@@ -2,6 +2,7 @@
 /* Aurora Tejeda */
 
 #include <stdint.h>
+#include "sched.h"
 #include "timer.h"
 #include "idt.h"
 
@@ -20,6 +21,7 @@ static volatile uint32_t ticks = 0;
 static void timer_callback(struct registers *r) {
     (void)r;
     ticks++;
+    sched_tick();          /* preemptive scheduler (no-op unless enabled) */
 }
 
 uint32_t timer_ticks(void) {
