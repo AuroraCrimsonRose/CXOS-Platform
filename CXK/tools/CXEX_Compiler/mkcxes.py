@@ -81,7 +81,7 @@ def parse_elf(data):
          p_memsz, p_flags, p_align) = struct.unpack_from("<IIIIIIII", data, off)
         if p_type == PT_LOAD:
             segments.append({
-                "offset": p_offset, "vaddr": p_vaddr,
+                "offset": p_offset, "vaddr": p_vaddr, "paddr": p_paddr,
                 "filesz": p_filesz, "memsz": p_memsz, "flags": p_flags,
             })
     if not segments:
@@ -103,7 +103,7 @@ def seg_name(flags, idx):
 # flags(4) entry_point(4) load_base(4) image_min(4) image_max(4)
 # section_count(2) section_offset(2) reloc_offset(4) signature_offset(4)
 # dependency_offset(4) reserved(8)
-HEADER_FMT = "<4sHHHHIIIIIHHIII8s"
+HEADER_FMT = "<4sHHHHIIIIIHHIIII4s"   # ...phys_base(4) reserved(4)
 HEADER_SIZE = struct.calcsize(HEADER_FMT)
 
 # section table entry (9.4): name(8) file_offset(4) virt_addr(4)
@@ -117,6 +117,7 @@ def build_cxex(elf_data, type_code):
     image_min = min(s["vaddr"] for s in segments)
     image_max = max(s["vaddr"] + s["memsz"] for s in segments)
     load_base = image_min
+    phys_base = min(s["paddr"] for s in segments)   # physical load base (LMA)
 
     section_count = len(segments)
     section_offset = HEADER_SIZE
@@ -158,14 +159,14 @@ def build_cxex(elf_data, type_code):
         HEADER_FMT,
         CXEX_MAGIC, type_code, FORMAT_VERSION, ARCH_X86_32, ABI_VERSION,
         flags, entry, load_base, image_min, image_max,
-        section_count, section_offset, 0, 0, 0, b"\x00" * 8,
+        section_count, section_offset, 0, 0, 0, phys_base, b"\x00" * 4,
     )
 
     table = b""
     for (name, foff, vaddr, fsz, msz, fl) in sec_entries:
         table += struct.pack(SECENT_FMT, name, foff, vaddr, fsz, msz, fl)
 
-    return header + table + blob, entry, image_min, image_max, sec_entries
+    return header + table + blob, entry, image_min, image_max, sec_entries, phys_base
 
 def main():
     args = [a for a in sys.argv[1:]]
@@ -192,13 +193,14 @@ def main():
     with open(inp, "rb") as f:
         elf_data = f.read()
 
-    cxex, entry, imin, imax, secs = build_cxex(elf_data, type_code)
+    cxex, entry, imin, imax, secs, pbase = build_cxex(elf_data, type_code)
 
     with open(outp, "wb") as f:
         f.write(cxex)
 
     print(f"wrote {outp}: {len(cxex)} bytes")
     print(f"  entry_point = 0x{entry:08x}")
+    print(f"  phys_base   = 0x{pbase:08x}")
     print(f"  image span  = 0x{imin:08x} .. 0x{imax:08x} "
           f"({imax - imin} bytes)")
     print(f"  sections    = {len(secs)}")

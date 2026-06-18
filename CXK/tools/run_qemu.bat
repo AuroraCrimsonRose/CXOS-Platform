@@ -33,11 +33,8 @@ REM -netdev user is built-in SLIRP (no host setup).
 
 qemu-system-i386 -m 4G ^
     -drive format=raw,file=%BOOT%,if=ide,index=0 ^
-    -drive format=raw,file=%FS%,if=ide,index=1 ^
     -netdev user,id=net0 ^
     -device e1000,netdev=net0 ^
-    -device pci-ohci,id=ohci ^
-    -drive id=usbdisk,format=raw,file=%USB%,if=none ^
-    -device usb-storage,bus=ohci.0,drive=usbdisk
+    -device pci-ohci,id=ohci 
 
 endlocal
