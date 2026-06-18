@@ -2,6 +2,7 @@
 /* Aurora Tejeda */
 
 #include "idt.h"
+#include "sched.h"
 
 void pic_remap(void);
 void pic_send_eoi(uint32_t int_no);
@@ -89,7 +90,36 @@ static void idt_set_gate(int n, uint32_t handler) {
     idt[n].offset_high = (handler >> 16) & 0xFFFF;
 }
 
+/* like idt_set_gate but DPL=3, so ring-3 code may invoke it (syscall gate). */
+void idt_set_user_gate(int n, uint32_t handler) {
+    idt[n].offset_low  = handler & 0xFFFF;
+    idt[n].selector    = 0x08;
+    idt[n].zero        = 0;
+    idt[n].type_attr   = IDT_GATE_INT32_DPL3;
+    idt[n].offset_high = (handler >> 16) & 0xFFFF;
+}
+
+/* Optional hook for handling a fault that occurred in USER mode (ring 3).
+   The process model registers this so a user fault kills just the offending
+   process and reschedules, instead of panicking the whole kernel. If no hook
+   is registered (or the fault was in kernel mode), we fall through to panic.
+   The hook should NOT return if it successfully handles the fault (it switches
+   to another process); returning means "couldn't handle it, panic." */
+static void (*user_fault_hook)(struct registers *r) = 0;
+
+void set_user_fault_hook(void (*hook)(struct registers *)) {
+    user_fault_hook = hook;
+}
+
 void isr_handler(struct registers *r) {
+    /* If the fault came from ring 3 (saved CS has RPL=3) and the process model
+       has registered a handler, let it deal with the faulting process. This
+       lets a buggy user program die without taking down the kernel. */
+    if ((r->cs & 3) == 3 && user_fault_hook) {
+        user_fault_hook(r);
+        /* if the hook returned, it couldn't handle it - fall through to panic */
+    }
+
     panic_pos = 0;   /* text mode: top-left */
     panic_col = 0;   /* framebuffer: top-left */
     panic_row = 0;
@@ -177,6 +207,10 @@ void irq_handler(struct registers *r) {
     void (*handler)(struct registers *) = irq_routines[irq];
     if (handler) handler(r);
     pic_send_eoi(r->int_no);
+
+    /* AFTER the EOI: if the timer flagged a preemptive switch, do it now.
+       Post-EOI so the PIC keeps delivering ticks and preemption continues. */
+    if (irq == 0) sched_preempt_point();
 }
 
 void idt_init(void) {

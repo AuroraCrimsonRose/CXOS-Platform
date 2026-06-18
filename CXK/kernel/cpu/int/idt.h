@@ -29,9 +29,17 @@ struct registers {
 
 void idt_init(void);
 
+/* install a handler reachable from ring 3 (DPL=3) - for the syscall gate. */
+void idt_set_user_gate(int n, uint32_t handler);
+
+/* register a handler for faults that occur in ring 3 (so the process model can
+   kill the offending process instead of panicking). */
+void set_user_fault_hook(void (*hook)(struct registers *));
+
 void irq_install_handler(int irq, void (*handler)(struct registers *));
 void irq_uninstall_handler(int irq);
 
 #define IDT_GATE_INT32 0x8E
+#define IDT_GATE_INT32_DPL3 0xEE   /* present, DPL=3, 32-bit interrupt gate */
 
 #endif

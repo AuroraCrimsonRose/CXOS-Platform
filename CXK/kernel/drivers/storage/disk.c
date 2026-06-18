@@ -123,7 +123,7 @@ int disk_read(uint8_t id, uint64_t lba, uint32_t count, void *buf) {
         case DISK_DRV_USB:
             return ohci_storage_read(lba, count, buf);
         default:
-            return -1;   /* nvme not implemented yet */
+            return DISK_ERR_NO_DEVICE;   /* nvme not implemented yet */
     }
 }
 
@@ -138,7 +138,22 @@ int disk_write(uint8_t id, uint64_t lba, uint32_t count, const void *buf) {
         case DISK_DRV_USB:
             return ohci_storage_write(lba, count, buf);
         default:
-            return -1;
+            return DISK_ERR_NO_DEVICE;
+    }
+}
+
+/* human-readable text for a disk_err code */
+const char *disk_err_str(int err) {
+    switch (err) {
+        case DISK_OK:            return "ok";
+        case DISK_ERR_NO_DEVICE: return "no such device";
+        case DISK_ERR_TIMEOUT:   return "device timeout";
+        case DISK_ERR_NOT_READY: return "device not ready";
+        case DISK_ERR_FAULT:     return "device fault";
+        case DISK_ERR_BOUNDS:    return "out of bounds";
+        case DISK_ERR_PARAMS:    return "bad parameters";
+        case DISK_ERR_GENERIC:   return "I/O error";
+        default:                 return "unknown error";
     }
 }
 

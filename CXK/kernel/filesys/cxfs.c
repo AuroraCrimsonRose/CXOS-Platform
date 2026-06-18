@@ -106,7 +106,7 @@ int cxfs_format(void) {
     root.id        = 0;
     root.parent_id = 0;                    /* root is its own parent */
     root.type      = CXFS_TYPE_DIR;
-    strncpy(root.name, "/", CXFS_NAME_LEN);
+    strlcpy(root.name, "/", CXFS_NAME_LEN);
     /* write entry 0 into the first manifest block */
     memset(block, 0, sizeof(block));
     memcpy(block, &root, sizeof(root));
@@ -290,6 +290,10 @@ int cxfs_find_in_dir(uint32_t parent_id, const char *name) {
 
 int cxfs_normalize_name(char *name) {
     if (!name || name[0] == '\0') return -1;
+    /* must fit in the on-disk name field WITH room for a null terminator */
+    size_t len = 0;
+    while (name[len]) len++;
+    if (len >= CXFS_NAME_LEN) return -1;     /* too long - reject */
     for (char *p = name; *p; p++) {
         if (*p == ' ') *p = '_';                 /* spaces -> underscore */
         else if (*p == '/') return -1;           /* path separator illegal */
@@ -328,7 +332,7 @@ int cxfs_create_entry(uint32_t parent_id, const char *name, uint8_t type) {
     e.id        = (uint32_t)id;
     e.parent_id = parent_id;
     e.type      = type;
-    strncpy(e.name, nm, CXFS_NAME_LEN);
+    strlcpy(e.name, nm, CXFS_NAME_LEN);
     e.size      = 0;
     if (cxfs_write_entry(&e) != 0) return -1;
     return id;
@@ -395,7 +399,7 @@ void cxfs_path_of(uint32_t id, char *out, int cap) {
     while (cur != sb.root_id && depth < 16) {
         struct cxfs_entry e;
         if (cxfs_read_entry(cur, &e) != 0) break;
-        strncpy(names[depth], e.name, CXFS_NAME_LEN);
+        strlcpy(names[depth], e.name, CXFS_NAME_LEN);
         depth++;
         if (e.parent_id == cur) break;   /* safety */
         cur = e.parent_id;
@@ -528,7 +532,7 @@ int cxfs_rename(uint32_t id, const char *newname) {
     nm[i] = '\0';
     if (cxfs_normalize_name(nm) != 0) return -1;
 
-    strncpy(e.name, nm, CXFS_NAME_LEN);
+    strlcpy(e.name, nm, CXFS_NAME_LEN);
     return cxfs_write_entry(&e);
 }
 
