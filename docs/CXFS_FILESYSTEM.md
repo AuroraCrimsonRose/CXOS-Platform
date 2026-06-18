@@ -268,6 +268,53 @@ locked forever" problem — and ties directly into the scheduler's reaper.
 `NVME0`, `USB0`, `CDROM0`, …). Each device carries its **own Master Manifest**;
 the filesystem is defined by the manifest, not physical layout.
 
+### 11.6.1 Partition model — isolated boot/kernel partition
+
+The OS disk is **partitioned**, with the bootloader and kernel living on a
+**separate partition** from the main OS/data partition:
+
+```
+OS disk
+├── [Boot/Kernel partition]   bootloader stages + kernel binary (+ boot files)
+│        - NOT normally mounted or visible to users
+│        - mountable on demand (SYSTEM only) for inspection / update
+│
+└── [Main partition]          the CXFS OS volume, mounted at /
+         ├── System/          protected OS folder (see 11.2) - on the MAIN
+         │                     partition; NOT a mount point for the boot partition
+         ├── Users/
+         └── Mount/
+```
+
+**Rationale — repair without data loss.** Keeping boot/kernel on their own
+partition means the kernel install can be repaired or replaced **independently
+of the main partition**. If the kernel is corrupted or "nuked," reflashing the
+boot/kernel partition fixes the install while the main partition — all user data
+and OS files — is left completely untouched. (Same reasoning as a separate
+`/boot` or recovery partition on conventional systems.)
+
+Note that `/System` is **not** this partition — `/System` remains a protected
+*folder on the main partition* (§11.2). The boot/kernel partition is a distinct,
+normally-hidden volume.
+
+### 11.6.2 Kernel update in place (goal; mechanism TBD)
+
+A long-term goal is to **update the kernel in place**: write a new kernel to the
+boot/kernel partition so the next boot picks it up, without a full reinstall.
+The boot-bootstrap mechanism is **deliberately left open** until the boot/install
+work is tackled — two paths to weigh then:
+
+- **(a) Filesystem-aware boot:** the bootloader reads the boot partition's
+  filesystem to locate and load the kernel as a named file. Cleanest "kernel as
+  a file" model, but requires a minimal filesystem reader in boot-time code.
+- **(b) Known-offset boot:** the bootloader loads the kernel from a fixed
+  location in the boot partition; the running OS still manages/updates it as a
+  file. Simpler boot path; the file view is an OS-side convenience.
+
+Because the boot partition is isolated, a robust update scheme (e.g. fallback /
+A-B kernel slots so a half-written kernel can't brick the machine) is a natural
+later refinement.
+
 ### 11.7 Linking
 
 `/System/Shared` is the primary shared store; `/Users/<user>/Shared` is a
@@ -291,10 +338,13 @@ the filesystem is defined by the manifest, not physical layout.
 ### 11.10 Build order
 
 The foundation lands first (done): processes carry a UID, SYSTEM = User 0.
-From there the intended order is: process-leased locks → ownership + permission
-evaluation → the `/System` `/Users` `/Mount` layout and protection → mount /
-multi-disk → program loading from CXFS → the later hygiene/scaling tools. Each
-step is incremental and testable on top of the v1 manifest.
+From there the intended order is: process-leased locks -> ownership + permission
+evaluation -> the `/System` `/Users` `/Mount` layout and protection -> mount /
+multi-disk support -> disk partitioning + the isolated boot/kernel partition
+(11.6.1) -> program loading from CXFS -> kernel update in place (11.6.2) -> the
+later hygiene/scaling tools. Each step is incremental and testable on top of the
+v1 manifest. The partition / boot work depends on the mount system being in
+place first (the boot partition is "mountable on demand").
 
 ---
 

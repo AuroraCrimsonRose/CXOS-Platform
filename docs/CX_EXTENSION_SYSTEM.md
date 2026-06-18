@@ -66,8 +66,8 @@ subsystems, so the system stays learnable as it grows. Common suffixes:
 | `sl` | Static Library |
 | `dl` | Dynamic Library |
 | `hi` | Header Interface — an ABI / interface definition |
-| `sk` | Signed Key — public signing key material |
-| `pk` | Private Key — private/secret key material |
+| `pk` | Public Key — public key material (verifies signatures) |
+| `sk` | Secret/Signing Key — private key material (creates signatures) |
 | `in` | Binary Image — a raw image (boot / disk / partition) |
 | `to` | Text Object |
 | `sl` | Scripting Language (in the format family) |
@@ -91,8 +91,8 @@ subsystems, so the system stays learnable as it grows. Common suffixes:
 | `.xkco` | Kernel Configuration Object (kernel config / state) |
 | `.xklo` | Kernel Library Object (internal kernel module / library) |
 | `.xkdr` | Kernel Driver Object (kernel driver module) |
-| `.xksk` | Kernel Signed Key (public signing key material) |
-| `.xkpk` | Kernel Private Key (secure / private key material) |
+| `.xkpk` | Kernel Public Key (public; verifies signatures) |
+| `.xksk` | Kernel Secret/Signing Key (private; signs artifacts; never shipped) |
 
 ### XB — CX Boot (Boot System)
 
@@ -258,13 +258,282 @@ yet. Honest dependency ordering:
 |------------------|-------------------|
 | A loader that reads headers | Ring 3 + process model |
 | Loadable libraries (`.xcdl`, `.xklo`) | the **XFL** module system |
-| Signature verification (`.xksk` / signatures) | a crypto/verification facility |
+| Signature verification (`.xkpk` / signatures) | a crypto/verification facility |
 | Extension-based routing in the FS | CXFS support for richer metadata (v2+) |
 
 The agreed build order — networking → Ring 3 → CXFS upgrade → kernel-as-a-file →
 XFL modules → networked updates — is what makes this extension/type system
 implementable. Until those land, this document is the design target, not a
 shipped capability.
+
+---
+
+## 9. CXEX — The CXOS Executable Format
+
+> **Status:** Finalized design for the *loadable executable* format used by
+> `.xkex` (kernel) and `.xbex` (bootloader). This refines §5's proposed header
+> into a concrete, sectioned, loadable layout. It does **not** apply to `.xbin`
+> (a raw boot/disk/partition image with no loader header — an installer writes
+> it byte-for-byte).
+
+### 9.1 What CXEX is for
+
+`.xkex` and `.xbex` are **executables**: the loader (the bootloader for the
+kernel; whatever stage loads the bootloader for `.xbex`) must place them in
+memory correctly and jump to their entry point. A flat blob can't express that —
+code, read-only data, initialized data, and zero-filled `.bss` each need
+distinct placement. CXEX is a **sectioned** format: a fixed header followed by a
+section table describing where each piece loads.
+
+Userspace executables (`.xcex`) reuse this same format; the only difference is
+that they will typically be **relocatable** (see 9.5), whereas the kernel and
+bootloader are **fixed-load**.
+
+### 9.2 Layout
+
+```
++----------------------+  offset 0
+|  CXEX header         |  fixed size (§9.3)
++----------------------+
+|  section table       |  section_count entries (§9.4)
++----------------------+
+|  section data        |  the bytes for each non-BSS section,
+|  ...                 |  at the file offsets named in the table
++----------------------+
+|  relocation table    |  optional (reloc_offset; 0 = none)  (§9.5)
++----------------------+
+|  signature block     |  optional (signature_offset; 0 = unsigned)
++----------------------+
+```
+
+### 9.3 Header
+
+Extends §5. All integers little-endian.
+
+| Field | Size | Purpose |
+|-------|------|---------|
+| `magic` | 4 | `"CXEX"` — identifies a CXOS executable |
+| `type_code` | 2 | canonical type (mirrors extension: kernel-exec / boot-exec / …) |
+| `format_version` | 2 | version of this header format |
+| `arch_target` | 2 | target architecture (e.g. 1 = x86-32) |
+| `abi_version` | 2 | ABI built against |
+| `flags` | 4 | capability / load-policy bits (§9.6) |
+| `entry_point` | 4 | virtual address to jump to once loaded |
+| `load_base` | 4 | preferred base virtual address (fixed-load anchor) |
+| `image_min` | 4 | lowest virtual address used by any section |
+| `image_max` | 4 | highest virtual address used (incl. BSS) — total span to reserve |
+| `section_count` | 2 | number of entries in the section table |
+| `section_offset` | 2 | file offset of the section table |
+| `reloc_offset` | 4 | file offset of the relocation table (0 = none / fixed) |
+| `signature_offset` | 4 | file offset of the signature block (0 = unsigned) |
+| `dependency_offset` | 4 | file offset of the dependency table (0 = none) |
+| `reserved` | 8 | reserved for future fields (zeroed) |
+
+`image_min`/`image_max` let the loader reserve the whole memory span in one step
+before placing sections (important for `.bss`, which extends the span beyond the
+stored bytes).
+
+### 9.4 Section table
+
+One entry per section (`.text`, `.rodata`, `.data`, `.bss`, …):
+
+| Field | Size | Purpose |
+|-------|------|---------|
+| `name` | 8 | short section name (NUL-padded, e.g. `".text"`) |
+| `file_offset` | 4 | where the section's bytes start in the file (0 if NOBITS) |
+| `virt_addr` | 4 | virtual address to load the section at |
+| `file_size` | 4 | bytes stored in the file |
+| `mem_size` | 4 | bytes to occupy in memory |
+| `flags` | 4 | R / W / X + NOBITS (see below) |
+
+Section flags: `READ` (1), `WRITE` (2), `EXEC` (4), `NOBITS` (8).
+
+- A normal section has `file_size == mem_size`: copy `file_size` bytes from
+  `file_offset` to `virt_addr`.
+- A **`.bss`** section is `NOBITS` with `file_size == 0` and `mem_size > 0`: the
+  loader allocates `mem_size` bytes at `virt_addr` and **zero-fills** them —
+  nothing is stored in the file (this is why zeros aren't wasted on disk).
+
+### 9.5 Relocation (optional; off for kernel/boot)
+
+`.xkex` and `.xbex` are **fixed-load**: linked at `load_base`, loaded there, no
+relocation. `reloc_offset` is 0. (The kernel additionally gets virtual placement
+"for free" from the MMU once paging is up — it can map itself to any virtual
+address regardless of physical load location, so it never needs file-level
+relocation.)
+
+The format still *carries* relocation support so **userspace** executables
+(`.xcex`), which benefit from being position-independent, can use it later:
+
+- If `reloc_offset` != 0, it points at a table of relocation entries (each:
+  `offset` to patch, `type`, optional `addend`), applied by the loader after
+  sections are placed and before transferring control.
+- The `RELOCATABLE` flag (§9.6) declares the image may be loaded somewhere other
+  than `load_base`; the loader then adjusts addresses and applies the table.
+
+Designing relocation in now (even though the kernel doesn't use it) means the
+single format covers both fixed kernel/boot images and relocatable userspace
+programs without a redesign.
+
+### 9.6 Load-policy flags
+
+The header `flags` field (extends §5.1):
+
+| Bit | Name | Meaning |
+|-----|------|---------|
+| 0 | `EXECUTABLE` | the artifact may be executed |
+| 1 | `RELOCATABLE` | may load away from `load_base` (apply reloc table) |
+| 2 | `SIGNED` | a signature block is present and must verify |
+| 3 | `KERNEL_PRIV` | requests ring-0 / kernel privilege |
+| 4 | `REQUIRE_ABI_MATCH` | refuse to load on ABI mismatch |
+| 5 | `REQUIRE_ARCH_MATCH` | refuse to load on arch mismatch |
+
+The loader checks `magic`, `arch_target`, `abi_version`, and these flags
+**before** placing or running anything — the header is the authority (§1).
+
+### 9.7 Load procedure
+
+To load a CXEX image:
+
+1. Read and validate the header: `magic == "CXEX"`, `arch_target` matches,
+   `abi_version` acceptable, required policy flags satisfied. Reject on mismatch.
+2. Reserve the memory span `[image_min, image_max)` (or the relocated
+   equivalent if `RELOCATABLE` and being placed elsewhere).
+3. For each section in the table:
+   - if `NOBITS`: zero-fill `mem_size` bytes at `virt_addr`;
+   - else: copy `file_size` bytes from `file_offset` to `virt_addr` (and zero
+     any `mem_size - file_size` tail).
+4. If `reloc_offset` != 0 and relocating: apply the relocation table.
+5. If `SIGNED`: verify the signature block before trusting the image.
+6. Jump to `entry_point`.
+
+For the **kernel** (`.xkex`) this is what the bootloader does (once it can read
+the boot/kernel partition); for **`.xbex`** it is what the earliest stage does.
+Until the filesystem-aware boot path exists, the kernel may still be loaded by
+fixed offset (CXFS v2 §11.6.2 option b) with the CXEX header parsed to find
+`entry_point` and the sections.
+
+### 9.8 Relationship to ELF
+
+`i686-elf-gcc` emits ELF, which already expresses sections, entry point, and
+relocations. CXEX is intentionally a **simpler, CXOS-native** container: a flat
+fixed header + a small section table that boot-time code can parse in a few
+lines, plus the CXOS identity/policy/signature fields ELF lacks. The practical
+build path is to **link as ELF, then convert** the loadable sections into a CXEX
+image with a small build tool — keeping the toolchain standard while the on-disk
+artifact is CXOS's own format.
+
+---
+
+## 10. Code Signing (`.xkpk` / `.xksk`)
+
+> **Status:** Finalized design; phased implementation. This defines how CXOS
+> artifacts are signed and verified. **Threat model, stated honestly:** this is
+> **code safety / integrity / authenticity** — ensuring the kernel, drivers, and
+> programs are the genuine, unmodified ones produced by the project. It is **not**
+> tamper-proof secure boot: on a hobby OS booting from ordinary writable storage
+> there is no hardware root of trust (no UEFI key store / TPM / fuses), so a
+> sufficiently privileged on-disk attacker cannot be fully excluded. What this
+> design *does* deliver — corruption detection and authenticity for everything
+> the kernel loads after boot — is real and worth having.
+
+### 10.1 Keys
+
+| Extension | Role | Lives | Secrecy |
+|-----------|------|-------|---------|
+| `.xksk` | **Secret/signing key** — *creates* signatures | the build machine only | NEVER shipped |
+| `.xkpk` | **Public key** — *verifies* signatures | `/System` (+ fingerprint embedded in kernel) | public |
+
+(`pk` = public key, `sk` = secret key — the standard crypto keypair convention.)
+
+- The **private key (`.xksk`) never leaves the compiling machine.** All signing
+  happens offline at build time. The device only ever performs *verification*.
+- The **public key (`.xkpk`) is shipped** and used by the kernel to verify the
+  drivers, modules, and programs it loads.
+
+### 10.2 Algorithm
+
+**RSA-2048 signature over a SHA-256 hash** (RSA PKCS#1 v1.5).
+
+1. Sign (offline, on the build machine): compute `SHA-256(artifact)`, then
+   RSA-sign that digest with the private key. The result is the signature block.
+2. Verify (on the device): recompute `SHA-256(artifact)`, RSA-verify the
+   signature against it with the public key. Match = authentic and unmodified.
+
+Why this construction:
+
+- The **hash** provides integrity — any single changed bit changes the digest.
+- The **RSA signature over the hash** provides authenticity — only the holder of
+  the private key could produce a signature that verifies.
+- **Verification is the cheap, simple half**: RSA verify is `sig^e mod n` with
+  public exponent `e = 65537`, i.e. modular exponentiation on a 2048-bit bignum,
+  plus a SHA-256 implementation. Both are very implementable from scratch and are
+  the *only* crypto the kernel/bootloader need. Key generation and signing (the
+  hard half) happen offline with standard tools (e.g. OpenSSL).
+- **PKCS#1 v1.5** padding is specified rather than PSS: it is deterministic and
+  far simpler to verify correctly, which matters for a from-scratch
+  implementation (complexity is risk). SHA-256 is the hash, with room to upgrade
+  the digest later via `format_version`.
+
+### 10.3 Signature block
+
+Referenced by `signature_offset` in the CXEX header (§9.3); present when the
+`SIGNED` flag is set. The hash/signature cover the entire artifact **except** the
+signature block itself (the block's own bytes are treated as zero while hashing,
+so the signature can live inside the file it signs).
+
+| Field | Size | Purpose |
+|-------|------|---------|
+| `sig_magic` | 4 | `"CXSG"` — marks a signature block |
+| `sig_algo` | 2 | algorithm id (1 = RSA-2048 / SHA-256 / PKCS#1 v1.5) |
+| `hash_algo` | 2 | digest id (1 = SHA-256) |
+| `key_fingerprint` | 32 | SHA-256 of the public key this was signed against |
+| `sig_len` | 2 | signature length in bytes (256 for RSA-2048) |
+| `signature` | sig_len | the RSA signature over the digest |
+
+`key_fingerprint` lets a verifier confirm it is using the *right* public key
+before spending effort on the RSA math, and supports key rotation (multiple keys
+distinguishable by fingerprint).
+
+### 10.4 Trust anchor
+
+The point that makes verification meaningful: **what checks the checker.**
+
+- The kernel **embeds the SHA-256 fingerprint of the trusted public key** in its
+  own binary (32 bytes, like the embedded copyright string). On startup it reads
+  `/System/<key>.xkpk`, hashes it, and accepts it **only if the fingerprint
+  matches the embedded one**.
+- Consequence: although `.xkpk` sits on writable storage, swapping it for an
+  attacker's key fails — the kernel will not trust a key whose fingerprint does
+  not match the one baked into its already-running, already-trusted image. This
+  anchors the **kernel-verifies-modules** chain in the kernel itself, which is a
+  sound root of trust for everything loaded *after* boot.
+- The weaker link is **boot-verifies-kernel**: the bootloader can verify the
+  kernel's signature, but without a hardware anchor an attacker who can rewrite
+  the kernel can usually also rewrite the bootloader and disable the check. So at
+  the boot stage, signature verification is treated as **corruption/tamper
+  *detection*** (very useful with in-place kernel updates — a bad or
+  half-written kernel fails verification) rather than an unbreakable gate.
+
+### 10.5 What gets signed
+
+- `.xkex` (kernel), `.xbex` (bootloader) — verified at boot (integrity/detection).
+- `.xkdr` (drivers), `.xklo` (kernel modules), eventually `.xcex` (userspace) —
+  verified by the running kernel against the anchored `.xkpk` before load/run.
+  This is where signing has its full strength.
+
+### 10.6 Phased implementation
+
+1. **Phase 1 — integrity (hash only).** Embed/verify a SHA-256 of each artifact.
+   Catches corruption and accidental modification; implementable as soon as a
+   SHA-256 routine exists. The signature block is used with `sig_algo` = hash-only.
+2. **Phase 2 — authenticity (RSA-2048).** Add RSA-2048 verification + the
+   embedded public-key fingerprint anchor. Upgrade in place — the block format and
+   the `SIGNED` flag are designed to carry either, so no redesign is needed.
+
+Signing depends on: a SHA-256 implementation (both phases), a bignum modexp for
+RSA verify (phase 2), the loader (§9), and the `/System` protected area (CXFS v2)
+to hold `.xkpk`.
 
 ---
 

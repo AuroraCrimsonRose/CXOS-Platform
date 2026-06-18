@@ -10,9 +10,9 @@ echo =====================================
 
 cd /d %~dp0..
 
-set BOOT=dist\CXK_x86_32\cxk_x86_32.img
-set FS=dist\CXK_x86_32\cxk_filesystem.img
-set USB=dist\CXK_x86_32\cxk_usb.img
+set BOOT=dist\CXK_x86_32\images\cxk_x86_32.img
+set FS=dist\CXK_x86_32\images\cxk_filesystem.img
+set USB=dist\CXK_x86_32\images\cxk_usb.img
 
 if not exist %BOOT% (
     echo ERROR: No boot image found.

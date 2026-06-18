@@ -81,6 +81,7 @@ set(TIMER_C     ${SRC_DIR}/kernel/drivers/char/timer.c)
 set(KBD_C       ${SRC_DIR}/kernel/drivers/input/keyboard.c)
 set(CONSOLE_C   ${SRC_DIR}/kernel/drivers/char/console.c)
 set(STRING_C    ${SRC_DIR}/kernel/lib/string.c)
+set(SHA256_C    ${SRC_DIR}/kernel/lib/sha256.c)
 set(SHELL_C     ${SRC_DIR}/kernel/shell/shell.c)
 set(COMMANDS_C  ${SRC_DIR}/kernel/shell/commands.c)
 set(POWER_C     ${SRC_DIR}/kernel/drivers/power/power.c)
@@ -129,6 +130,7 @@ set(TIMER_CO    ${BUILD_DIR}/timer_c.o)
 set(KBD_CO      ${BUILD_DIR}/keyboard_c.o)
 set(CONSOLE_CO  ${BUILD_DIR}/console_c.o)
 set(STRING_CO   ${BUILD_DIR}/string_c.o)
+set(SHA256_CO   ${BUILD_DIR}/sha256_c.o)
 set(SHELL_CO    ${BUILD_DIR}/shell_c.o)
 set(COMMANDS_CO ${BUILD_DIR}/commands_c.o)
 set(POWER_CO    ${BUILD_DIR}/power_c.o)
@@ -141,12 +143,13 @@ set(KERNEL_ELF  ${BUILD_DIR}/kernel.elf)
 set(KERNEL_BIN  ${BUILD_DIR}/kernel.bin)
 
 # kernel.o MUST be first (kernel_entry at 0x10000)
-set(KERNEL_OBJS ${KERNEL_O} ${KERNEL_CO} ${INIT_CO} ${IDT_ASM_O} ${GDT_ASM_O} ${GDT_CO} ${UM_ASM_O} ${UM_CO} ${SWITCH_ASM_O} ${SCHED_CO} ${UID_CO} ${IDT_CO} ${PIC_CO} ${VGA_CO} ${TIMER_CO} ${KBD_CO} ${CONSOLE_CO} ${STRING_CO} ${SHELL_CO} ${COMMANDS_CO} ${POWER_CO} ${PMM_CO} ${HEAP_CO} ${PAGING_CO} ${ATA_CO} ${RTC_CO} ${FB_CO} ${PCI_CO} ${AHCI_CO} ${DISK_CO} ${ACPI_CO} ${OHCI_CO} ${E1000_CO} ${NETIF_CO} ${ARP_CO} ${IP_CO} ${ICMP_CO} ${FPU_CO} ${KMATH_CO} ${DEMO_CO} ${FONT_CO} ${CXFS_CO})
+set(KERNEL_OBJS ${KERNEL_O} ${KERNEL_CO} ${INIT_CO} ${IDT_ASM_O} ${GDT_ASM_O} ${GDT_CO} ${UM_ASM_O} ${UM_CO} ${SWITCH_ASM_O} ${SCHED_CO} ${UID_CO} ${IDT_CO} ${PIC_CO} ${VGA_CO} ${TIMER_CO} ${KBD_CO} ${CONSOLE_CO} ${STRING_CO} ${SHA256_CO} ${SHELL_CO} ${COMMANDS_CO} ${POWER_CO} ${PMM_CO} ${HEAP_CO} ${PAGING_CO} ${ATA_CO} ${RTC_CO} ${FB_CO} ${PCI_CO} ${AHCI_CO} ${DISK_CO} ${ACPI_CO} ${OHCI_CO} ${E1000_CO} ${NETIF_CO} ${ARP_CO} ${IP_CO} ${ICMP_CO} ${FPU_CO} ${KMATH_CO} ${DEMO_CO} ${FONT_CO} ${CXFS_CO})
 
 set(DIST_DIR    ${SRC_DIR}/dist/CXK_x86_32)
-set(DISK_IMG    ${DIST_DIR}/cxk_x86_32.img)
-set(FS_IMG      ${DIST_DIR}/cxk_filesystem.img)
-set(USB_IMG     ${DIST_DIR}/cxk_usb.img)
+set(IMAGES_DIR  ${DIST_DIR}/images)
+set(DISK_IMG    ${IMAGES_DIR}/cxk_x86_32.img)
+set(FS_IMG      ${IMAGES_DIR}/cxk_filesystem.img)
+set(USB_IMG     ${IMAGES_DIR}/cxk_usb.img)
 set(PAD_SCRIPT  ${SRC_DIR}/tools/pad_disk.ps1)
 set(MKFS_SCRIPT ${SRC_DIR}/tools/make_fs_img.ps1)
 
@@ -441,6 +444,12 @@ add_custom_command(
     DEPENDS ${STRING_C} ${SRC_DIR}/kernel/lib/string.h
 )
 
+add_custom_command(
+    OUTPUT ${SHA256_CO}
+    COMMAND ${CMAKE_C_COMPILER} ${KCFLAGS} -c ${SHA256_C} -o ${SHA256_CO}
+    DEPENDS ${SHA256_C} ${SRC_DIR}/kernel/lib/sha256.h
+)
+
 # -------------------------------------------------
 # SHELL C
 # -------------------------------------------------
@@ -524,7 +533,7 @@ add_custom_command(
 # -------------------------------------------------
 add_custom_command(
     OUTPUT ${DISK_IMG}
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${DIST_DIR}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${IMAGES_DIR}
     COMMAND ${CMAKE_COMMAND} -E echo "Building boot disk image..."
     COMMAND powershell -NoProfile -ExecutionPolicy Bypass
         -File ${PAD_SCRIPT}
@@ -540,7 +549,7 @@ add_custom_command(
 # -------------------------------------------------
 add_custom_command(
     OUTPUT ${FS_IMG}
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${DIST_DIR}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${IMAGES_DIR}
     COMMAND ${CMAKE_COMMAND} -E echo "Creating filesystem image (if missing)..."
     COMMAND powershell -NoProfile -ExecutionPolicy Bypass
         -File ${MKFS_SCRIPT}
@@ -555,7 +564,7 @@ add_custom_command(
 # -------------------------------------------------
 add_custom_command(
     OUTPUT ${USB_IMG}
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${DIST_DIR}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${IMAGES_DIR}
     COMMAND ${CMAKE_COMMAND} -E echo "Creating USB image (if missing)..."
     COMMAND powershell -NoProfile -ExecutionPolicy Bypass
         -File ${MKFS_SCRIPT}
