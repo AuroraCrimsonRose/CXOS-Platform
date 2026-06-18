@@ -1,93 +1,271 @@
-# CXK - x86_32 Kernel
+# CXK
 
-**Version 0.0.1.0**
-A hobby x86 kernel by Aurora Tejeda / CATX SYSTEMS LLC.
+**CATX Kernel**
 
-## Overview
+A capabilities and execution kernel for x86 systems.
 
-**CXK** (the CXOS Kernel) is a 32-bit x86 operating-system kernel written from
-scratch - the core of the CXOS operating system. It pairs with a custom
-bootloader and is built to learn and explore OS development on real hardware.
-It brings up the machine into a graphical framebuffer console with an
-interactive shell, and includes drivers for storage, USB, power management, and
-networking.
+CXK provides memory management, process execution, scheduling, privilege separation, storage access, networking, trust infrastructure, and executable loading services for the broader CX ecosystem.
 
-CXK is the kernel; CXOS is the broader operating system it forms the core of.
-It targets AMD AM3+ era hardware and newer, and runs on bare metal as well as in
-QEMU and Bochs.
+The project is designed around modularity, verifiable execution, and reusable system capabilities. Rather than coupling operating system functionality directly into the kernel, CXK exposes foundational services that higher-level CX operating environments can build upon.
 
-## Features
+---
 
-### Boot & Core
-- Custom 16-bit bootloader -> protected mode -> 32-bit C kernel
-- Self-sizing kernel loader (no fixed sector-count limit)
-- Interrupt Descriptor Table (IDT), PIC remapping, PIT timer (1000 Hz)
-- Physical memory manager, 2-level paging, kernel heap
-- FPU / SSE support
-- Graphics-aware kernel panic with stack trace
+## Current Status
 
-### Display
-- VBE framebuffer console (8/16/32 bpp) with VGA text-mode fallback
-- Dual fonts (8x16 / 8x8), adjustable text size
-- Batched, scroll-aware rendering for fast output
+CXK is currently under active development.
+
+The v5 architecture focuses on preserving proven subsystems from previous releases while modernizing the boot chain, executable loading infrastructure, and trust model.
+
+Current development targets include:
+
+- XKEX executable loading
+- XBEX boot-stage execution
+- CXFS integration
+- Signed executable verification
+- Ring 3 process execution
+- Capability-oriented kernel services
+
+---
+
+## Core Concepts
+
+### Capabilities
+
+CXK is designed as a capabilities and execution kernel.
+
+Core kernel services provide:
+
+- Memory management
+- Process scheduling
+- User-mode execution
+- Storage access
+- Network access
+- Power management
+- Cryptographic verification
+- Executable loading
+
+These services form the foundation for future CX operating environments.
+
+### Execution
+
+Execution is a first-class concept within CXK.
+
+The kernel currently supports:
+
+- Ring 0 execution
+- Ring 3 execution
+- Cooperative multitasking
+- Preemptive multitasking
+- Kernel threads
+- User processes
+- Context switching
+
+### Trust
+
+CXK includes cryptographic infrastructure used to support signed executable deployment.
+
+Current components include:
+
+- SHA-256 implementation
+- Public/private key tooling
+- Signature verification infrastructure
+- XKEX signing workflow
+
+---
+
+## Architecture
+
+```text
+BIOS
+ └─ boot.asm
+      ↓
+   stage2.xbex
+      ↓
+   kernel.xkex
+      ↓
+   CXK
+      ├─ Memory Management
+      ├─ Process Scheduling
+      ├─ Capability Services
+      ├─ Storage
+      ├─ Networking
+      ├─ Power Management
+      └─ Executable Loading
+```
+
+---
+
+## Major Components
+
+### CPU
+
+- GDT
+- IDT
+- PIC
+- FPU support
+- Ring 3 transitions
+- Context switching
+- User-mode execution
+
+### Memory Management
+
+- Physical memory manager
+- Paging
+- Kernel heap
+- Dynamic allocation
+
+### Process Model
+
+- Kernel threads
+- User processes
+- Cooperative scheduling
+- Preemptive scheduling
+- Privilege separation
 
 ### Storage
-- ATA PIO driver (28-bit LBA)
-- AHCI SATA driver (48-bit LBA, DMA) - validated on real drives
-- Unified disk registry (HDD/SSD/USB naming, by-id and by-name access)
+
+- ATA
+- AHCI
+- Disk abstraction layer
+
+### Filesystem
+
 - CXFS filesystem
 
-### USB
-- OHCI host controller driver
-- Device enumeration (control transfers, descriptors)
-- Mass storage class (Bulk-Only Transport + SCSI) - readable/writable USB disks
+### Networking
 
-### Power (ACPI)
-- ACPI table parsing (RSDP / FADT / DSDT scan)
-- Shutdown (S5), reboot (ACPI reset), low-power idle (C1), S1 detection
+- Intel e1000 support
+- ARP
+- IPv4 foundation
+- ICMP Echo (Ping)
 
-### Networking (in progress)
-- Intel e1000 NIC driver (PCI, DMA descriptor rings)
-- Ethernet framing + ARP
-- Static IP / mask / gateway / DNS configuration
-- (IP / ICMP / UDP and beyond: under development)
+### Power
 
-### Shell
-Interactive command shell with command history and line editing. Includes
-commands for the filesystem, disks, PCI, USB, networking, power, and more
-(type `help` for the full list).
+- ACPI support
+- Shutdown
+- Reboot
+- CPU idle support
 
-## Toolchain
+### Video
 
-- GCC i686-ELF cross compiler
-- NASM
-- CMake (NMake Makefiles generator)
+- VGA text mode
+- Framebuffer support
+- VBE initialization
+
+---
+
+## CATX Format Ecosystem
+
+CXK uses a structured CATX format naming convention.
+
+Format names follow:
+
+```text
+X + Domain + Type
+```
+
+Examples:
+
+| Format | Description |
+|----------|----------|
+| XKEX | Kernel Executable |
+| XKPK | Kernel Public Key |
+| XKSK | Kernel Secret Key |
+| XBSG | Boot Signature |
+| XPMF | Package Manifest |
+
+This naming system allows tooling and developers to identify broad file purpose directly from the extension.
+
+See:
+
+- docs/CX_EXTENSION_NAMING.md
+- docs/CX_EXTENSION_SYSTEM.md
+
+for additional details.
+
+---
+
+## v5 Goals
+
+The primary objective of v5 is to modernize executable loading and deployment while preserving proven subsystems.
+
+### New
+
+- XBEX stage-2 boot execution
+- XKEX loading infrastructure
+- CXEX runtime loader
+- Signed executable workflow
+
+### Ported From Previous Versions
+
+- Memory management
+- Scheduler
+- Ring 3 execution
+- ATA and AHCI
+- Networking
+- Power management
+- CXFS
+
+### Future
+
+- UEFI boot support
+- Expanded networking stack
+- Additional CX formats
+- Enhanced CXFS features
+- User-space executable ecosystem
+
+---
 
 ## Building
 
-From the project root:
+Requirements:
 
-```
-CXK\tools\build.bat        REM incremental build
-CXK\tools\clean.bat        REM clean rebuild
-```
+- NASM
+- CMake
+- i686-elf GCC toolchain
+- QEMU
+- Bochs (optional)
 
-Output images are written to `CXK/dist/CXK_x86_32/`.
+Build:
 
-## Running
-
-```
-CXK\tools\run_qemu.bat         REM QEMU (i440FX) - default
-CXK\tools\run_qemu_ahci.bat    REM QEMU (q35 + AHCI) - storage testing
-CXK\tools\run_bochs.bat        REM Bochs
+```bat
+tools\build.bat
 ```
 
-## Platform
+Build signed image:
 
-- x86 (32-bit / protected mode)
-- AMD AM3+ era hardware and newer
-- Runs on bare metal, QEMU, and Bochs
+```bat
+tools\build_signed.bat
+```
 
-## License / Ownership
+Run:
 
-(c) Aurora Tejeda / CATX SYSTEMS LLC.
+```bat
+tools\run_qemu.bat
+```
+
+AHCI test:
+
+```bat
+tools\run_qemu_ahci.bat
+```
+
+---
+
+## Documentation
+
+- docs/PROCESS_MODEL.md
+- docs/CXFS_FILESYSTEM.md
+- docs/CX_EXTENSION_SYSTEM.md
+- docs/CX_EXTENSION_NAMING.md
+- docs/BIOS_ERROR_CODES.md
+
+---
+
+## License
+
+See LICENSE.md.
+
+---
+
+© Aurora Tejeda / CATX SYSTEMS LLC

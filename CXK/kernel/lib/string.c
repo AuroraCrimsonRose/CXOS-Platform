@@ -85,3 +85,17 @@ int memcmp(const void *a, const void *b, size_t n) {
     }
     return 0;
 }
+
+void *memmove(void *dst, const void *src, size_t n) {
+    unsigned char *d = (unsigned char *)dst;
+    const unsigned char *s = (const unsigned char *)src;
+    if (d == s || n == 0) return dst;
+    if (d < s) {
+        /* forward copy is safe when dst is below src */
+        for (size_t i = 0; i < n; i++) d[i] = s[i];
+    } else {
+        /* dst overlaps above src: copy backward to avoid clobbering */
+        for (size_t i = n; i > 0; i--) d[i - 1] = s[i - 1];
+    }
+    return dst;
+}

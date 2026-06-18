@@ -1,49 +1,55 @@
-/* /CXLite/kernel/drivers/console.h */
-/* Aurora Tejeda */
-/* Console driver: cursor tracking, scrolling, color, line handling.
-   The front door for all text output. Renders via vga.c. */
+/* /CXK/kernel/drivers/char/console.h */
+/* Aurora Tejeda / CATX Systems LLC */
+/*
+ * Minimal text-mode console for v5. Stateful layer on top of vga.c: tracks the
+ * cursor, wraps lines, scrolls, and writes strings/numbers in color. This is
+ * the kernel's normal output path (replacing kmain's hand-placed VGA pokes).
+ *
+ * Deliberately small - no scrollback buffer, no framebuffer backend (the heavy
+ * v4 console had both; v5 doesn't need them without a shell). A framebuffer
+ * backend can be added later behind this same interface.
+ */
 
 #ifndef CONSOLE_H
 #define CONSOLE_H
 
 #include <stdint.h>
+#include "color.h"
 
-/* initialize console: clear screen, reset cursor, default colors */
+/* initialize: clear the screen, home the cursor, set the default attribute. */
 void console_init(void);
 
-/* clear the screen and home the cursor */
+/* clear the screen to the current background and home the cursor. */
 void console_clear(void);
 
-/* set the current text color (foreground, background) for future output */
-void console_set_color(uint8_t fg, uint8_t bg);
+/* set / get the active text attribute (fg/bg) for subsequent writes. */
+void console_set_color(uint8_t attr);
+uint8_t console_get_color(void);
 
-/* print one character (handles \n, \b, \t, scrolling) */
+/* write a single character, handling \n (newline) and \t (tab). */
 void console_putc(char c);
 
-/* print a null-terminated string */
-void console_print(const char *s);
+/* write a NUL-terminated string at the cursor. */
+void console_puts(const char *s);
 
-/* batch multi-line output: wrap a command's output in begin/end to render once
-   at the end (one screen redraw) instead of scrolling per line. Nestable. */
-void console_begin_batch(void);
-void console_end_batch(void);
+/* write a string in a specific color (saves/restores the current color). */
+void console_puts_color(const char *s, uint8_t attr);
 
-/* print a 32-bit value as hexadecimal (0x........) */
-void console_print_hex(uint32_t v);
+/* write a number at the cursor (decimal / hex). */
+void console_put_u32(uint32_t v);
+void console_put_i32(int32_t v);
+void console_put_hex(uint32_t v, int width);
 
-/* print a 32-bit unsigned value in decimal */
-void console_print_dec(uint32_t v);
+/* line control */
+void console_newline(void);
+void console_set_cursor(int x, int y);
+void console_get_cursor(int *x, int *y);
 
-/* scrollback controls */
-void console_scroll_up(int lines);    /* scroll view up into older history */
-void console_scroll_down(int lines);  /* scroll view back toward the present */
-void console_scroll_reset(void);      /* snap back to the live bottom */
-
-/* switch graphics-mode font: 1 = small (8x8), 0 = large (8x16).
-   no-op in VGA text mode. recomputes geometry and re-renders. */
-void console_set_font(int small);
-
-/* set the cursor to a specific column on the current line (for line editing) */
-void console_set_cursor_col(int col);
+/* tagged log lines: print "[TAG] message\n", tag colorized. */
+void console_tag(const char *tag, uint8_t tag_attr, const char *msg);
+void console_boot(const char *msg);     /* "[BOOT] msg"   (cyan)   */
+void console_kernel(const char *msg);   /* "[KERNEL] msg" (green)  */
+void console_warn(const char *msg);     /* "[WARN] msg"   (yellow) */
+void console_err(const char *msg);      /* "[ERR] msg"    (red)    */
 
 #endif

@@ -1,136 +1,176 @@
 ; ============================================================================
-;  CXK - the CXOS Kernel : Bootloader (Stage 2)
+;  CXK - the CXOS Kernel : Bootloader (Stage 2)  [v5]
 ;  Copyright (c) 2026 CATX Systems LLC.  All rights reserved.
-;  Licensed under the CXK and CXOS Project License v1.0.7. See LICENSE.
+;
+;  This file is part of the CXK / CXOS Project and is licensed under the
+;  CXK and CXOS Project License, Version 1.0.7 (Effective June 16, 2026).
 ;  Author: Aurora Tejeda / CATX Systems LLC
 ; ============================================================================
-; /CXK/boot/stage2.asm - sometimes i wonder if its better to make lots of tiny files that do specific things for readability and suffer through mapping them or if its better to just use a monolitic stage 2. edit: i think i figured it out.
-; Aurora Tejeda
-org 0x7E00
+; /CXK/boot/stage2.asm - Stage 2
+;
+; Increment 2: get the CPU into flat 32-bit protected mode.
+;   real mode -> enable A20 -> load boot GDT -> set CR0.PE -> 32-bit pmode.
+; Per design (b), stage 2 stops at "clean flat 32-bit protected mode"; the
+; kernel's own entry stub will later set up paging and map itself into the
+; higher half. Stage 2 does NOT do paging/higher-half or build the kernel's
+; real GDT/TSS (those are kernel-owned).
+
+org 0x7E00              ; stage 1 loads us here
 bits 16
 
-jmp start
-
-; constants
-MEM_REGION_SIZE     equ 24
-MEM_BASE            equ 0
-MEM_LENGTH          equ 8
-MEM_TYPE            equ 16
-MEM_FLAGS           equ 20
-
-E820_TYPE_USABLE    equ 1
-E820_MAX_ENTRIES    equ 64
-E820_BUFFER         equ 0x1000
-E820_ENTRY_COUNT    equ 0x1600
-E820_CLEAN_COUNT    equ 0x1602
-E820_CLEAN_BUFFER   equ 0x1620
-KERNEL_RAM_BASE_LO  equ 0x1C20
-KERNEL_RAM_BASE_HI  equ 0x1C24
-KERNEL_RAM_SIZE_LO  equ 0x1C28
-KERNEL_RAM_SIZE_HI  equ 0x1C2C
-boot_drive          equ 0x1C30
-disk_error_code     equ 0x1C32
-
-STACK_SEGMENT       equ 0x9000
-STACK_TOP           equ 0xFFFF
-VGA_SEGMENT         equ 0xB800
-
-BOOT_ROW            equ 7
-BOOT_COL            equ 21
-
-; includes
-%include "print.asm"
-%include "error.asm"
-%include "a20.asm"
-%include "mem.asm"
-%include "gdt.asm"
-%include "kernel_load.asm"     ; before pmode — needs real mode INT 13h
-%include "vbe.asm"             ; before pmode — needs real mode INT 0x10
-%include "pmode.asm"
-
-cursor_correction:
-    mov ah, 0x02
-    mov bh, 0x00
-    mov dh, BOOT_ROW
-    mov dl, BOOT_COL
-    int 0x10
-    ret
-
-; entry point
-start:
-    cli
-
+stage2_start:
+    mov [boot_drive_s2], dl     ; stage 1 left the boot drive in DL
     xor ax, ax
     mov ds, ax
     mov es, ax
-    mov fs, ax
-    mov gs, ax
 
-    mov ax, STACK_SEGMENT
-    mov ss, ax
-    mov sp, STACK_TOP
-    sti
-
-    call print_clr
-    call enable_a20
-
-    mov si, msg_m1
-    
+    mov si, msg_banner
     call print_string
-    call init_memory
-
-    mov si, msg_m2          
-
-    call print_string       
-    call process_e820
-    call find_largest_region
     call print_newline
 
-    mov si, msg_raw
-    
+    call enable_a20             ; a20.asm (prints its own OK/!fail)
+
+    call gather_memory_map      ; mem.asm - MUST be before pmode (needs BIOS)
+    call print_mem_count        ; show how many E820 entries we got
+
+    call load_kernel            ; read kernel image from disk to 0x100000 (BIOS)
+
+    call enter_protected_mode   ; pmode.asm - no return (ends jumping to kernel)
+
+    ; not reached
+    jmp halt
+
+; ----------------------------------------------------------------------------
+; load_kernel - read the kernel image from disk into a LOW buffer (real mode,
+; BIOS int 13h). The kernel is later copied up to physical 0x100000 by the
+; protected-mode code (32-bit addressing makes that trivial and avoids the
+; fragile real-mode >1MB segment tricks). The kernel lives on disk right after
+; stage 2: stage 1 = LBA 0, stage 2 = LBA 1..32, so the kernel starts at LBA 33.
+; We load it to 0x10000 (linear), a free low buffer.
+KERNEL_LOAD_LOW  equ 0x10000        ; temp buffer (segment 0x1000:0x0000)
+KERNEL_DEST_HIGH equ 0x100000       ; final physical location (1 MB)
+KERNEL_SECTORS   equ 64             ; 32 KB - within the BIOS single-read limit
+                                    ; (~127 sectors max) and ample for the stub
+
+load_kernel:
+    push es
+    mov ah, 0x42
+    mov dl, [boot_drive_s2]
+    mov si, dap_kernel
+    int 0x13
+    jc .kerr
+    pop es
+    ret
+.kerr:
+    mov si, msg_kerr
     call print_string
-    
-    xor eax, eax
-    mov ax, [E820_ENTRY_COUNT]
-    
-    call print_hex32
+    jmp halt
+
+dap_kernel:
+    db 0x10
+    db 0x00
+    dw KERNEL_SECTORS           ; sectors to read
+    dw 0x0000                   ; dest offset
+    dw 0x1000                   ; dest segment -> 0x10000 linear
+    dq 33                       ; LBA 33 (right after 32-sector stage 2)
+
+boot_drive_s2 db 0
+msg_kerr db '[BOOT] KERNEL READ ERROR', 0
+
+; print "[BOOT] E820 entries: N" (N as a small decimal, real mode)
+print_mem_count:
+    push ax
+    push si
+    mov si, msg_e820
+    call print_string
+    mov ax, [E820_COUNT_ADDR]
+    call print_dec_ax
     call print_newline
+    pop si
+    pop ax
+    ret
 
-    mov si, msg_clean
-    
-    call print_string
-    
-    xor eax, eax
-    mov ax, [E820_CLEAN_COUNT]
+; print AX as unsigned decimal (real-mode BIOS teletype)
+print_dec_ax:
+    push ax
+    push bx
+    push cx
+    push dx
+    mov bx, 10
+    xor cx, cx                  ; digit count
+.divloop:
+    xor dx, dx
+    div bx                      ; AX = AX/10, DX = remainder
+    push dx
+    inc cx
+    test ax, ax
+    jnz .divloop
+.printloop:
+    pop dx
+    add dl, '0'
+    mov al, dl
+    mov ah, 0x0E
+    xor bh, bh
+    int 0x10
+    loop .printloop
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
 
-    call print_hex32
-    call debug_memory
+; ----------------------------------------------------------------------------
+; real-mode helpers (used by stage2 + a20.asm)
+; ----------------------------------------------------------------------------
+; print_string: SI -> NUL-terminated string, BIOS teletype
+print_string:
+    push ax
+    push bx
+.next:
+    lodsb
+    test al, al
+    jz .done
+    mov ah, 0x0E
+    xor bh, bh
+    int 0x10
+    jmp .next
+.done:
+    pop bx
+    pop ax
+    ret
 
-    mov si, msg_drv
-    call print_string
-    mov al, [boot_drive]
+print_newline:
+    push ax
+    mov ah, 0x0E
+    mov al, 13
+    int 0x10
+    mov al, 10
+    int 0x10
+    pop ax
+    ret
 
-    call print_error_code
-    call load_kernel            ; load kernel while still in real mode
-    call cursor_correction
-    call set_video_mode         ; set VBE graphics mode (real mode only); falls
-                                ; back to text mode if no match (VBE_VALID=0)
-    call enter_protected_mode   ; no return to real mode after this
-    jmp halt                    ; never reached
-
-; halt
 halt:
+    cli
     hlt
-    jmp $
+    jmp halt
 
-; strings
-msg_base        db '[BOOT] MEM BASE: ', 0
-msg_size        db '[BOOT] MEM SIZE: ', 0
-msg_no_mem      db '[BOOT] FATAL NO MEMORY', 0
-msg_a20_ok      db '[BOOT] A20 OK', 0
-msg_a20_fail    db '[BOOT] A20 FAIL', 0
-msg_raw         db '[BOOT] RAW=', 0
-msg_clean       db '[BOOT] CLEAN=', 0
-msg_m1          db '[BOOT] TEST ', 0
-msg_m2          db 'PASS', 0
-msg_drv         db '[BOOT] DRIVE=', 0
+msg_banner db 'CXK v5 stage 2 - entering pmode', 0
+msg_e820   db '[BOOT] E820 entries: ', 0
+
+; a20 messages (referenced by a20.asm)
+msg_a20_ok   db '[BOOT] A20 OK', 0
+msg_a20_fail db '[BOOT] A20 FAIL', 0
+
+; ----------------------------------------------------------------------------
+; includes (order matters): A20 logic, memory map, the boot GDT data, pmode.
+; ----------------------------------------------------------------------------
+%include "a20.asm"
+%include "mem.asm"
+%include "gdt.asm"
+%include "pmode.asm"
+%include "cxexload.asm"
+
+; embedded copyright (binary)
+copyright_notice:
+    db 'CXK Stage2 v5 - (c) 2026 CATX Systems LLC. '
+    db 'CXK/CXOS Project License v1.0.7. All rights reserved.', 0
