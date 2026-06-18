@@ -64,7 +64,7 @@ def main():
 
     # patch header: set SIGNED flag + signature_offset, BEFORE hashing
     hdr[5] = hdr[5] | FLAG_SIGNED       # flags
-    hdr[12] = sig_offset                # signature_offset field
+    hdr[13] = sig_offset                # signature_offset field (index 13, not 12)
     struct.pack_into(HEADER_FMT, data, 0, *hdr)
 
     # hash the image as it now stands (header patched, no block yet)
