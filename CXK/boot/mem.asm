@@ -1,180 +1,66 @@
-; /CXLite/boot/mem.asm - i hate memory management maybe i should of just stuck to C++
-; Aurora Tejeda
+; /CXK/boot/mem.asm  -  E820 memory map gathering (v5 stage 2)
+; Aurora Tejeda / CATX SYSTEMS LLC
+;
+; Gathers the BIOS memory map via int 15h / EAX=0xE820 and stores the raw
+; entries at a fixed buffer the kernel can read after handoff. This MUST run in
+; real mode (BIOS is unavailable once we enter protected mode), so stage 2 calls
+; it BEFORE the pmode switch.
+;
+; We store the RAW map only. Filtering (usable vs reserved), finding the largest
+; region, etc. is policy the kernel's memory manager does later in C from this
+; raw data - stage 2's job is just to capture it before BIOS access is lost.
+;
+; Layout the kernel will read:
+;   E820_COUNT  (word) at E820_COUNT_ADDR : number of entries gathered
+;   E820_BUFFER (array) at E820_BUFFER     : that many 24-byte entries
+; Each entry: base(8) length(8) type(4) acpi_attrs(4) = 24 bytes.
 
-; stores entries at E820_BUFFER
-init_memory:
-    xor ebx, ebx                ; continuation = 0
-    xor bp, bp                  ; entry count = 0
-    xor edi, edi  
-    mov di, E820_BUFFER
+; Layout the kernel will read (in the free 0x500 conventional-memory area,
+; safely below stage 1 at 0x7C00 - NOT overlapping stage 2 at 0x7E00):
+;   E820_COUNT  (word) at 0x0500 : number of entries gathered
+;   E820_BUFFER (array) at 0x0504 : that many 24-byte entries
+; Each entry: base(8) length(8) type(4) acpi_attrs(4) = 24 bytes.
+; 64 entries * 24 = 1536 bytes -> 0x0504..0x0B04, clear of stage 1 at 0x7C00.
+
+E820_COUNT_ADDR    equ 0x0500        ; entry count (word)
+E820_BUFFER        equ 0x0504        ; raw entries
+E820_ENTRY_SIZE    equ 24
+E820_MAX_ENTRIES   equ 64
+E820_SMAP          equ 0x534D4150    ; 'SMAP'
+
+; gather_memory_map - fills E820_BUFFER, sets [E820_COUNT_ADDR]. Real mode.
+gather_memory_map:
+    push es
     xor ax, ax
     mov es, ax
+    mov di, E820_BUFFER
+    xor ebx, ebx                 ; continuation value = 0 to start
+    xor bp, bp                   ; entry counter
 
-    .next:
-        mov eax, 0xE820
-        mov edx, 0x534D4150     ; 'SMAP'
+.next:
+    mov eax, 0xE820
+    mov edx, E820_SMAP
+    mov ecx, 24
+    mov dword [es:di + 20], 1    ; ask for the ACPI 3.0 extended attr dword
+    int 0x15
+    jc .done                     ; CF set = end (or unsupported) 
+    cmp eax, E820_SMAP
+    jne .done                    ; EAX should read back 'SMAP'
 
-        mov dword [es:di + 20], 1
-        mov ecx, 24
+    cmp ecx, 20
+    jb .skip_entry               ; too-small entry, ignore but continue
 
-        push bp
-        int 0x15
-        pop bp
-        jc .no_e820
+    inc bp
+    add di, E820_ENTRY_SIZE
+    cmp bp, E820_MAX_ENTRIES
+    jae .done
 
-        cmp eax, 0x534D4150
-        jne .no_e820
-
-        cmp ecx, 20
-        jb .done
-
-        add di, MEM_REGION_SIZE ; fixed 24 byte stride
-
-        inc bp
-
-        cmp bp, E820_MAX_ENTRIES
-        jae .done
-
-        test ebx, ebx
-        jz .done
-        jmp .next
-
-    .no_e820:
-        mov word [E820_ENTRY_COUNT], 0
-        ret
-
-    .done:
-        mov word [E820_ENTRY_COUNT], bp
-        ret
-
-process_e820:
-    cld
-    xor esi, esi          ; clear upper 16 bits
-    xor edi, edi
-    mov si, E820_BUFFER
-    mov di, E820_CLEAN_BUFFER
-
-    xor cx, cx                  ; source entry index
-    xor dx, dx                  ; clean entry count
-
-    mov bx, [E820_ENTRY_COUNT]
-
-    test bx, bx
+.skip_entry:
+    test ebx, ebx                ; continuation 0 = that was the last entry
     jz .done
+    jmp .next
 
-    .loop:
-        cmp cx, bx
-        jae .done
-
-        mov eax, [si + MEM_TYPE]
-        cmp eax, E820_TYPE_USABLE
-        jne .skip
-
-        ; skip regions below 1MB
-        mov eax, [si + MEM_LENGTH + 4]  ; length hi
-        test eax, eax
-        jnz .size_ok                    ; hi nonzero = definitely >= 1MB
-        mov eax, [si + MEM_LENGTH]      ; length lo
-        cmp eax, 0x100000
-        jb .skip
-
-    .size_ok:
-        push cx
-        push si
-        xor ecx, ecx
-        mov cx, 6               ; 24 bytes / 4 = 6 dwords
-        rep movsd               ; di auto advances
-
-        pop si
-        pop cx
-
-        inc dx
-
-    .skip:
-        add si, MEM_REGION_SIZE
-        inc cx
-        jmp .loop
-
-    .done:
-        mov word [E820_CLEAN_COUNT], dx
-        ret
-
-; scans E820_CLEAN_BUFFER for largest usable region
-; stores result in KERNEL_RAM_BASE / KERNEL_RAM_SIZE
-find_largest_region:
-    xor esi, esi
-    mov si, E820_CLEAN_BUFFER
-    mov cx, [E820_CLEAN_COUNT]
-
-    test cx, cx
-    jz .no_memory
-
-    mov dword [KERNEL_RAM_BASE_LO], 0
-    mov dword [KERNEL_RAM_BASE_HI], 0
-    mov dword [KERNEL_RAM_SIZE_LO], 0
-    mov dword [KERNEL_RAM_SIZE_HI], 0
-
-    .loop:
-        test cx, cx
-        jz .done
-
-        ; compare length hi first
-        mov eax, [si + MEM_LENGTH + 4]
-        cmp eax, [KERNEL_RAM_SIZE_HI]
-        ja  .new_largest
-        jb  .next
-
-        ; hi equal, compare length lo
-        mov eax, [si + MEM_LENGTH]
-        cmp eax, [KERNEL_RAM_SIZE_LO]
-        jbe .next
-
-    .new_largest:
-        mov eax, [si + MEM_BASE]
-        mov [KERNEL_RAM_BASE_LO], eax
-
-        mov eax, [si + MEM_BASE + 4]
-        mov [KERNEL_RAM_BASE_HI], eax
-
-        mov eax, [si + MEM_LENGTH]
-        mov [KERNEL_RAM_SIZE_LO], eax
-
-        mov eax, [si + MEM_LENGTH + 4]
-        mov [KERNEL_RAM_SIZE_HI], eax
-
-    .next:
-        add si, MEM_REGION_SIZE
-        dec cx
-        jmp .loop
-
-    .done:
-        ret
-
-    .no_memory:
-        mov si, msg_no_mem
-        call panic
-
-; prints kernel RAM base and size
-debug_memory:
-    push eax
-    push ebx
-
-    call print_newline
-
-    mov si, msg_base
-    call print_string
-    mov ebx, [KERNEL_RAM_BASE_HI]
-    mov eax, [KERNEL_RAM_BASE_LO]
-    call print_hex64
-    call print_newline
-
-    mov si, msg_size
-    call print_string
-    mov ebx, [KERNEL_RAM_SIZE_HI]
-    mov eax, [KERNEL_RAM_SIZE_LO]
-    call print_hex64
-    call print_newline
-
-    pop ebx
-    pop eax
+.done:
+    mov [E820_COUNT_ADDR], bp
+    pop es
     ret

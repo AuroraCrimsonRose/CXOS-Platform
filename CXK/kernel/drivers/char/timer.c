@@ -5,16 +5,13 @@
 #include "sched.h"
 #include "timer.h"
 #include "idt.h"
+#include "io.h"
 
 #define PIT_BASE_FREQ 1193182u
 #define TIMER_HZ      1000u            /* 1000 Hz -> ~1 ms per tick */
 
 #define PIT_CHANNEL0  0x40
 #define PIT_COMMAND   0x43
-
-static inline void outb(uint16_t port, uint8_t val) {
-    __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
-}
 
 static volatile uint32_t ticks = 0;
 

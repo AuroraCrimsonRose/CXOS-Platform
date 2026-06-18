@@ -1,8 +1,19 @@
-/* /CXLite/kernel/idt.c */
-/* Aurora Tejeda */
+/* /CXK/kernel/cpu/int/idt.c */
+/* Aurora Tejeda / CATX Systems LLC */
+/*
+ * v5 IDT: exception + IRQ handling with a self-contained panic dump.
+ * Differences from the v4 port (deliberate for the current v5 stage):
+ *  - TEXT-MODE PANIC ONLY (no framebuffer backend yet). Writes to VGA via its
+ *    HIGHER-HALF address (0xC00B8000): v5 runs higher-half with the identity
+ *    map gone, so physical 0xB8000 is NOT mapped.
+ *  - NO SCHEDULER HOOK YET (sched not ported); the timer-IRQ preempt call is
+ *    omitted and clearly marked for re-adding with the process model.
+ *  - user-fault hook kept (no dependency) for the process model to register.
+ * Self-contained (no console dependency) so it works even if the console crashed.
+ */
 
 #include "idt.h"
-#include "sched.h"
+#include "format.h"
 
 void pic_remap(void);
 void pic_send_eoi(uint32_t int_no);
@@ -23,50 +34,23 @@ extern void irq12(); extern void irq13(); extern void irq14(); extern void irq15
 static struct idt_entry idt[256];
 static struct idt_ptr   idtp;
 
-/* small self contained exception handler.
-   Renders the panic either to the framebuffer (graphics mode) or straight to
-   text VGA at 0xB8000 (text mode). We must handle graphics mode, or a fault
-   while in graphics mode would write an invisible panic to 0xB8000 and just
-   appear to hang. Kept self-contained (doesn't depend on the console) so it
-   works even if the console is what crashed. */
+/* higher-half VGA text buffer (physical 0xB8000 mapped at 0xC0000000+) */
+#define VGA_PANIC ((volatile uint16_t *)(0xC0000000 + 0xB8000))
+#define PANIC_ATTR 0x4F00   /* white on red */
 
-#include "fb.h"
-
-#define PANIC_ATTR 0x4F00   /* white on red (text mode) */
-
-static int panic_col = 0;   /* framebuffer: current text column */
-static int panic_row = 0;   /* framebuffer: current text row */
-static int panic_pos = 0;   /* text mode: linear cell position */
+static int panic_pos = 0;
 
 static void panic_putc_at(char c) {
-    if (fb_active()) {
-        if (c == '\n') { panic_col = 0; panic_row++; return; }
-        uint32_t white = fb_rgb(255, 255, 255);
-        uint32_t red   = fb_rgb(170, 0, 0);
-        fb_draw_char((uint32_t)(panic_col * FB_CHAR_W),
-                     (uint32_t)(panic_row * (int)fb_font_height()),
-                     c, white, red);
-        panic_col++;
-    } else {
-        volatile uint16_t *vga = (volatile uint16_t *)0xB8000;
-        if (c == '\n') panic_pos = (panic_pos / 80 + 1) * 80;
-        else           vga[panic_pos++] = (uint16_t)c | PANIC_ATTR;
-    }
+    if (c == '\n') { panic_pos = (panic_pos / 80 + 1) * 80; return; }
+    VGA_PANIC[panic_pos++] = (uint16_t)c | PANIC_ATTR;
 }
-
-static void panic_puts(const char *s) {
-    while (*s) panic_putc_at(*s++);
-}
-
-/* print a 32-bit value as 0x whatever  */
+static void panic_puts(const char *s) { while (*s) panic_putc_at(*s++); }
 static void panic_puthex(uint32_t v) {
-    const char *digits = "0123456789ABCDEF";
+    char buf[9];
     panic_puts("0x");
-    for (int i = 28; i >= 0; i -= 4)
-        panic_putc_at(digits[(v >> i) & 0xF]);
+    fmt_hex(buf, v, 8, 1);   /* 8-digit, uppercase, zero-padded */
+    panic_puts(buf);
 }
-
-/* push a CPU error code (others push our dummy 0) */
 static int has_error_code(uint32_t n) {
     return (n == 8) || (n >= 10 && n <= 14) || (n == 17);
 }
@@ -89,8 +73,6 @@ static void idt_set_gate(int n, uint32_t handler) {
     idt[n].type_attr   = IDT_GATE_INT32;
     idt[n].offset_high = (handler >> 16) & 0xFFFF;
 }
-
-/* like idt_set_gate but DPL=3, so ring-3 code may invoke it (syscall gate). */
 void idt_set_user_gate(int n, uint32_t handler) {
     idt[n].offset_low  = handler & 0xFFFF;
     idt[n].selector    = 0x08;
@@ -99,32 +81,15 @@ void idt_set_user_gate(int n, uint32_t handler) {
     idt[n].offset_high = (handler >> 16) & 0xFFFF;
 }
 
-/* Optional hook for handling a fault that occurred in USER mode (ring 3).
-   The process model registers this so a user fault kills just the offending
-   process and reschedules, instead of panicking the whole kernel. If no hook
-   is registered (or the fault was in kernel mode), we fall through to panic.
-   The hook should NOT return if it successfully handles the fault (it switches
-   to another process); returning means "couldn't handle it, panic." */
 static void (*user_fault_hook)(struct registers *r) = 0;
-
-void set_user_fault_hook(void (*hook)(struct registers *)) {
-    user_fault_hook = hook;
-}
+void set_user_fault_hook(void (*hook)(struct registers *)) { user_fault_hook = hook; }
 
 void isr_handler(struct registers *r) {
-    /* If the fault came from ring 3 (saved CS has RPL=3) and the process model
-       has registered a handler, let it deal with the faulting process. This
-       lets a buggy user program die without taking down the kernel. */
     if ((r->cs & 3) == 3 && user_fault_hook) {
         user_fault_hook(r);
-        /* if the hook returned, it couldn't handle it - fall through to panic */
     }
 
-    panic_pos = 0;   /* text mode: top-left */
-    panic_col = 0;   /* framebuffer: top-left */
-    panic_row = 0;
-    if (fb_active()) fb_clear(fb_rgb(170, 0, 0));   /* red screen */
-
+    panic_pos = 0;
     panic_puts("*** KERNEL PANIC ***\n");
     panic_puts("Exception: ");
     panic_puthex(r->int_no);
@@ -145,15 +110,12 @@ void isr_handler(struct registers *r) {
     panic_puts(" EDX:"); panic_puthex(r->edx);
     panic_puts("\n");
 
-    /* Page fault (exception 14): decode CR2 (faulting address) and the
-       error-code bits, which say what went wrong. */
     if (r->int_no == 14) {
         uint32_t cr2;
         __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
         panic_puts("Faulting addr (CR2): ");
         panic_puthex(cr2);
         panic_puts("\n");
-
         panic_puts("Cause: ");
         panic_puts((r->err_code & 0x1) ? "protection" : "not-present");
         panic_puts((r->err_code & 0x2) ? ", write" : ", read");
@@ -161,9 +123,6 @@ void isr_handler(struct registers *r) {
         panic_puts("\n");
     }
 
-    /* Dump EBP/ESP and walk the stack frames to show the call chain - the
-       faulting EIP alone can be ambiguous, but the chain of return addresses
-       tells us who called into the fault. Each frame: [saved EBP][return EIP]. */
     panic_puts("EBP:");  panic_puthex(r->ebp);
     panic_puts(" ESP:"); panic_puthex(r->esp);
     panic_puts("\n");
@@ -171,14 +130,13 @@ void isr_handler(struct registers *r) {
     {
         uint32_t *fp = (uint32_t *)r->ebp;
         for (int i = 0; i < 6; i++) {
-            /* bail if the frame pointer looks bogus (unmapped/low/odd) */
-            if ((uint32_t)fp < 0x1000 || (uint32_t)fp > 0x08000000) break;
+            if ((uint32_t)fp < 0x1000) break;   /* higher-half frames OK */
             uint32_t ret = fp[1];
             if (ret == 0) break;
             panic_puts("  ");
             panic_puthex(ret);
             panic_puts("\n");
-            fp = (uint32_t *)fp[0];   /* previous frame */
+            fp = (uint32_t *)fp[0];
         }
     }
 
@@ -189,10 +147,9 @@ void isr_handler(struct registers *r) {
 static void (*irq_routines[16])(struct registers *) = { 0 };
 
 void irq_install_handler(int irq, void (*handler)(struct registers *)) {
-    if (irq < 0 || irq >= 16) return;       /* ignore bad IRQ numbers */
+    if (irq < 0 || irq >= 16) return;
     irq_routines[irq] = handler;
 }
-
 void irq_uninstall_handler(int irq) {
     if (irq < 0 || irq >= 16) return;
     irq_routines[irq] = 0;
@@ -200,17 +157,16 @@ void irq_uninstall_handler(int irq) {
 
 void irq_handler(struct registers *r) {
     int irq = r->int_no - 32;
-    if (irq < 0 || irq >= 16) {             /* defensive: only IRQs 0..15 */
-        pic_send_eoi(r->int_no);            /* still ack so PIC isn't wedged */
+    if (irq < 0 || irq >= 16) {
+        pic_send_eoi(r->int_no);
         return;
     }
     void (*handler)(struct registers *) = irq_routines[irq];
     if (handler) handler(r);
     pic_send_eoi(r->int_no);
 
-    /* AFTER the EOI: if the timer flagged a preemptive switch, do it now.
-       Post-EOI so the PIC keeps delivering ticks and preemption continues. */
-    if (irq == 0) sched_preempt_point();
+    /* NOTE: v4 called sched_preempt_point() here on irq 0 for preemptive
+       multitasking. Re-add when the process model is ported. */
 }
 
 void idt_init(void) {

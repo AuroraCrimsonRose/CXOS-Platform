@@ -7,7 +7,7 @@
 #include "pmm.h"
 
 /* Each block (free or allocated) is preceded by this header. The heap is a
-   doubly-ish linked list walked in address order via `next`. */
+   singly-linked list walked in address order via `next`. */
 typedef struct block {
     size_t        size;     /* usable bytes in this block (excludes header) */
     int           free;     /* 1 = free, 0 = allocated */
@@ -15,41 +15,48 @@ typedef struct block {
 } block_t;
 
 #define BLOCK_HEADER_SIZE  (sizeof(block_t))
-#define MIN_SPLIT          (BLOCK_HEADER_SIZE + 16)  /* don't split tiny remainders */
+#define MIN_SPLIT          (BLOCK_HEADER_SIZE + 16)
 #define ALIGN8(x)          (((x) + 7) & ~((size_t)7))
 
-static block_t *head = 0;          /* first block in the heap */
-static uint32_t total_bytes = 0;   /* total usable bytes across all blocks */
-static uint32_t used_bytes = 0;
+/* v5 higher-half heap: the heap lives in KERNEL-VIRTUAL space (high), not
+   identity-mapped low memory. We reserve a virtual window and grow it upward,
+   mapping fresh PMM frames into it via the (recursive) paging layer. Block
+   pointers are VIRTUAL addresses in this window. */
+#define HEAP_VIRT_BASE  0xD0000000u    /* above the kernel, below the recursive
+                                          page-table window at 0xFFC00000 */
 
-/* grow the heap by requesting pages from the PMM, appending one big free
-   block. Returns the new block, or 0 if the PMM is out of memory. */
+static block_t *head = 0;
+static uint32_t total_bytes = 0;
+static uint32_t used_bytes = 0;
+static uint32_t heap_virt_next = HEAP_VIRT_BASE;   /* next free virtual address */
+
+/* grow the heap: allocate physical frames from the PMM, map them at the next
+   kernel-virtual heap addresses, and append one big free block. Returns the new
+   block (virtual pointer), or 0 if out of memory. */
 static block_t *heap_grow(size_t need) {
-    /* round up to whole pages */
     size_t bytes = ALIGN8(need) + BLOCK_HEADER_SIZE;
     size_t pages = (bytes + PMM_PAGE_SIZE - 1) / PMM_PAGE_SIZE;
 
-    void *mem = pmm_alloc_pages(pages);
-    if (!mem) return 0;
+    /* physically-contiguous frames (so the block is contiguous once mapped) */
+    void *phys = pmm_alloc_pages(pages);
+    if (!phys) return 0;
 
-    /* The PMM can hand out physical pages above the kernel's initial identity
-       map (paging_init only maps low memory + the framebuffer). Those pages are
-       unmapped, so writing the block header below would page-fault. Map each
-       page we just got (identity: virt = phys) before touching it. */
-    uint32_t base = (uint32_t)mem;
-    for (size_t i = 0; i < pages; i++)
-        paging_map(base + i * PMM_PAGE_SIZE,
-                   base + i * PMM_PAGE_SIZE,
-                   PAGE_PRESENT | PAGE_WRITE);
+    uint32_t virt_base = heap_virt_next;
+    uint32_t pbase = (uint32_t)phys;
+    for (size_t i = 0; i < pages; i++) {
+        paging_map(virt_base + i * PMM_PAGE_SIZE,
+                   pbase     + i * PMM_PAGE_SIZE,
+                   PAGE_PRESENT | PAGE_WRITE);   /* kernel-only, writable */
+    }
+    heap_virt_next += pages * PMM_PAGE_SIZE;
 
-    block_t *b = (block_t *)mem;
+    block_t *b = (block_t *)virt_base;           /* VIRTUAL pointer */
     b->size = pages * PMM_PAGE_SIZE - BLOCK_HEADER_SIZE;
     b->free = 1;
     b->next = 0;
 
     total_bytes += b->size;
 
-    /* append to the end of the list (keep address order) */
     if (!head) {
         head = b;
     } else {

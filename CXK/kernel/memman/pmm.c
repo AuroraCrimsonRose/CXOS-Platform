@@ -1,27 +1,28 @@
-/* /CXLite/kernel/memman/pmm.c */
-/* Aurora Tejeda */
-/* Physical Memory Manager - v1 bitmap allocator. */
+/* /CXK/kernel/memman/pmm.c */
+/* Aurora Tejeda / CATX Systems LLC */
+/* Physical Memory Manager - bitmap allocator (v5, higher-half aware). */
 
 #include "pmm.h"
+#include "align.h"
+#include "bitmap.h"
 
-/* E820 map left by the bootloader (see stage2.asm). Raw buffer = all regions. */
-#define E820_BUFFER       0x1000
-#define E820_ENTRY_COUNT  0x1600
+/* --- higher-half access ---------------------------------------------------
+ * The kernel runs at 0xC0000000+. The boot page tables map the first 4 MB of
+ * physical RAM at 0xC0000000..0xC03FFFFF. To TOUCH a physical address P in that
+ * window the kernel dereferences (P + KERNEL_VBASE). pmm's data (the E820 map
+ * at 0x500 and the bitmap, placed just past the kernel near ~1 MB) live inside
+ * the window, so this reaches them. pmm_alloc returns PHYSICAL addresses.
+ */
+#define KERNEL_VBASE     0xC0000000u
+#define PHYS_TO_VIRT(p)  ((void *)((uint32_t)(p) + KERNEL_VBASE))
+
+/* E820 map from stage 2 (boot/mem.asm): count(word)@0x500, entries@0x504. */
+#define E820_COUNT_PHYS   0x0500u
+#define E820_BUFFER_PHYS  0x0504u
 #define E820_TYPE_USABLE  1
 
-/* 32-bit addressing ceiling. We can only address ~4 GB with 32-bit pointers,
-   so the PMM ignores any RAM above this (e.g. on a 16 GB machine). The future
-   x86_64 branch will use the rest. We cap a little under 4 GB to stay clear of
-   the top-of-32-bit edge and the memory-mapped device/ROM area near 4 GB.
-   Cap = 0xF0000000 (3.75 GB) of manageable physical pages. */
+/* ignore RAM above ~3.75 GB (32-bit reach + device/ROM area near 4 GB). */
 #define PMM_MAX_ADDR      0xF0000000u
-
-/* Where to place the allocation bitmap: in EXTENDED memory (above 1 MB), not
-   in the cramped <1 MB low memory (which holds the stack at 0x90000, VGA at
-   0xA0000, BIOS, etc.). A 4 GB machine needs a ~128 KB bitmap, which does NOT
-   fit in low memory but fits easily up here. Placed at 2 MB, well above the
-   kernel (loaded at 0x10000) and the 1 MB line. */
-#define PMM_BITMAP_ADDR   0x200000u    /* 2 MB */
 
 struct e820_entry {
     uint64_t base;
@@ -30,37 +31,23 @@ struct e820_entry {
     uint32_t flags;
 } __attribute__((packed));
 
-/* end of the kernel image, from the linker script */
-extern uint8_t __bss_end[];
+extern uint8_t __kernel_end[];   /* end of kernel image (VIRTUAL), from linker */
 
-/* --- bitmap state --- */
-static uint32_t *bitmap = 0;        /* one bit per page: 1 = used, 0 = free */
-static uint32_t  total_pages = 0;   /* pages of physical RAM we track */
+static uint32_t *bitmap = 0;        /* VIRTUAL pointer into the mapped window */
+static uint32_t  bitmap_phys = 0;
+static uint32_t  total_pages = 0;
 static uint32_t  used_pages = 0;
-static uint32_t  bitmap_pages = 0;  /* how many pages the bitmap itself occupies */
+static uint32_t  bitmap_pages = 0;
 
-/* --- bitmap helpers --- */
-static void bm_set(uint32_t page) {
-    bitmap[page >> 5] |= (1u << (page & 31));
-}
-static void bm_clear(uint32_t page) {
-    bitmap[page >> 5] &= ~(1u << (page & 31));
-}
-static int bm_test(uint32_t page) {
-    return (bitmap[page >> 5] >> (page & 31)) & 1u;
-}
-
-/* mark a single page used / free, updating the count */
+/* thin wrappers over the pure bitmap lib that also maintain used_pages. */
 static void mark_used(uint32_t page) {
     if (page >= total_pages) return;
-    if (!bm_test(page)) { bm_set(page); used_pages++; }
+    if (!bitmap_test(bitmap, page)) { bitmap_set(bitmap, page); used_pages++; }
 }
 static void mark_free(uint32_t page) {
     if (page >= total_pages) return;
-    if (bm_test(page)) { bm_clear(page); used_pages--; }
+    if (bitmap_test(bitmap, page)) { bitmap_clear(bitmap, page); used_pages--; }
 }
-
-/* mark a physical address range [start, end) used (rounded to pages) */
 static void mark_region_used(uint64_t start, uint64_t end) {
     uint32_t first = (uint32_t)(start / PMM_PAGE_SIZE);
     uint32_t last  = (uint32_t)((end + PMM_PAGE_SIZE - 1) / PMM_PAGE_SIZE);
@@ -68,12 +55,10 @@ static void mark_region_used(uint64_t start, uint64_t end) {
 }
 
 void pmm_init(void) {
-    uint16_t count = *(volatile uint16_t *)E820_ENTRY_COUNT;
-    struct e820_entry *e = (struct e820_entry *)E820_BUFFER;
+    uint16_t count = *(volatile uint16_t *)PHYS_TO_VIRT(E820_COUNT_PHYS);
+    struct e820_entry *e = (struct e820_entry *)PHYS_TO_VIRT(E820_BUFFER_PHYS);
 
-    /* 1. find highest usable physical address, but CAP at the 32-bit limit -
-       we can't address RAM above ~4 GB with 32-bit pointers, so we ignore it
-       (a 16 GB machine still only gets ~3.75 GB managed here). */
+    /* 1. highest usable physical address, capped at the 32-bit limit */
     uint64_t highest = 0;
     for (int i = 0; i < count; i++) {
         if (e[i].type == E820_TYPE_USABLE) {
@@ -82,28 +67,26 @@ void pmm_init(void) {
         }
     }
     if (highest > PMM_MAX_ADDR) highest = PMM_MAX_ADDR;
-
     total_pages = (uint32_t)(highest / PMM_PAGE_SIZE);
 
-    /* 2. place the bitmap in EXTENDED memory (2 MB), not low memory. A machine
-       near the 4 GB cap needs a ~128 KB bitmap, which would overflow the
-       <1 MB region (smashing the stack at 0x90000). 2 MB has room. */
-    bitmap = (uint32_t *)PMM_BITMAP_ADDR;
+    /* 2. bitmap just past the kernel image, page-aligned. Physical address =
+          __kernel_end (virtual) - KERNEL_VBASE; within the mapped 4 MB window. */
+    uint32_t kend_phys = (uint32_t)__kernel_end - KERNEL_VBASE;
+    bitmap_phys = align_up(kend_phys, PMM_PAGE_SIZE);
+    bitmap = (uint32_t *)PHYS_TO_VIRT(bitmap_phys);
 
     uint32_t bitmap_bytes = (total_pages + 7) / 8;
-    bitmap_pages = (bitmap_bytes + PMM_PAGE_SIZE - 1) / PMM_PAGE_SIZE;
+    bitmap_pages = align_up(bitmap_bytes, PMM_PAGE_SIZE) / PMM_PAGE_SIZE;
 
-    /* 3. start with EVERYTHING used, then free the usable regions.
-       (safer default: anything we don't explicitly free stays reserved) */
-    for (uint32_t i = 0; i < (total_pages + 31) / 32; i++) bitmap[i] = 0xFFFFFFFF;
+    /* 3. everything used; then free the usable regions. */
+    bitmap_fill(bitmap, total_pages, 1);
     used_pages = total_pages;
 
-    /* 4. free pages that E820 says are usable (clamped to the cap) */
     for (int i = 0; i < count; i++) {
         if (e[i].type == E820_TYPE_USABLE) {
             uint64_t base_addr = e[i].base;
             uint64_t end_addr  = e[i].base + e[i].length;
-            if (base_addr >= PMM_MAX_ADDR) continue;        /* entirely above cap */
+            if (base_addr >= PMM_MAX_ADDR) continue;
             if (end_addr > PMM_MAX_ADDR) end_addr = PMM_MAX_ADDR;
             uint32_t first = (uint32_t)(base_addr / PMM_PAGE_SIZE);
             uint32_t last  = (uint32_t)(end_addr / PMM_PAGE_SIZE);
@@ -111,24 +94,17 @@ void pmm_init(void) {
         }
     }
 
-    /* 5. re-reserve the things that must never be handed out:
-          - low memory below 1 MB (BIOS, bootloader buffers, VGA, E820 data)
-          - the kernel image itself (0x10000 .. __bss_end)
-          - the bitmap's own pages (now at 2 MB) */
-    mark_region_used(0, 0x100000);                                  /* < 1 MB */
-    mark_region_used(0x10000, (uint32_t)__bss_end);                 /* kernel */
-    mark_region_used((uint32_t)bitmap,
-                     (uint32_t)bitmap + bitmap_pages * PMM_PAGE_SIZE); /* bitmap */
+    /* 4. re-reserve: low memory (<1 MB), the kernel image, the bitmap itself. */
+    mark_region_used(0, 0x100000);
+    mark_region_used(0x100000, kend_phys);
+    mark_region_used(bitmap_phys, bitmap_phys + bitmap_pages * PMM_PAGE_SIZE);
 }
 
 void *pmm_alloc(void) {
-    for (uint32_t p = 0; p < total_pages; p++) {
-        if (!bm_test(p)) {
-            mark_used(p);
-            return (void *)(p * PMM_PAGE_SIZE);
-        }
-    }
-    return 0;   /* out of memory */
+    uint32_t p = bitmap_first_clear(bitmap, total_pages);
+    if (p == BITMAP_NONE) return 0;
+    mark_used(p);
+    return (void *)(p * PMM_PAGE_SIZE);   /* PHYSICAL address */
 }
 
 void pmm_free(void *page) {
@@ -139,22 +115,10 @@ void pmm_free(void *page) {
 void *pmm_alloc_pages(size_t count) {
     if (count == 0) return 0;
     if (count == 1) return pmm_alloc();
-
-    /* scan for `count` consecutive free pages (the buddy allocator will
-       replace this linear search with something far better). */
-    uint32_t run = 0, start = 0;
-    for (uint32_t p = 0; p < total_pages; p++) {
-        if (!bm_test(p)) {
-            if (run == 0) start = p;
-            if (++run == count) {
-                for (uint32_t q = start; q < start + count; q++) mark_used(q);
-                return (void *)(start * PMM_PAGE_SIZE);
-            }
-        } else {
-            run = 0;
-        }
-    }
-    return 0;
+    uint32_t start = bitmap_first_clear_run(bitmap, total_pages, (uint32_t)count);
+    if (start == BITMAP_NONE) return 0;
+    for (uint32_t q = start; q < start + count; q++) mark_used(q);
+    return (void *)(start * PMM_PAGE_SIZE);
 }
 
 void pmm_free_pages(void *first_page, size_t count) {
