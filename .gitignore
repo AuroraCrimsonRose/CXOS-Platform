@@ -53,3 +53,5 @@ Desktop.ini
 !CXK/kernel/
 !CXK/linker.ld
 !CXK/CMakeLists.txt
+
+*.xksk
