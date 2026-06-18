@@ -45,6 +45,19 @@ enum disk_attach {
     DISK_ATTACH_USB              /* external / USB-attached -> EXT- prefix */
 };
 
+/* disk operation result codes. 0 = success; negative = error. The drivers
+   return these so failures are diagnosable (not just a generic -1). */
+enum disk_err {
+    DISK_OK            =  0,    /* success */
+    DISK_ERR_GENERIC   = -1,    /* unspecified failure */
+    DISK_ERR_NO_DEVICE = -2,    /* no such disk / not present */
+    DISK_ERR_TIMEOUT   = -3,    /* hardware did not respond in time */
+    DISK_ERR_NOT_READY = -4,    /* device busy / not ready */
+    DISK_ERR_FAULT     = -5,    /* device reported an error (ERR/DF/TFES) */
+    DISK_ERR_BOUNDS    = -6,    /* LBA/count outside the device */
+    DISK_ERR_PARAMS    = -7     /* bad arguments (null buffer, zero count) */
+};
+
 struct disk {
     uint8_t  id;                      /* numeric id (shown as hex) */
     char     name[DISK_NAME_LEN];     /* assigned: HDD0, EXT-CDROM0, ... */
@@ -67,9 +80,13 @@ const struct disk *disk_get(unsigned i);            /* by table index */
 const struct disk *disk_find_by_id(uint8_t id);     /* by hex id */
 const struct disk *disk_find_by_name(const char *name);
 
-/* unified block I/O - dispatches to the owning driver. 0 = ok, -1 = error. */
+/* unified block I/O - dispatches to the owning driver. returns a disk_err
+   code (DISK_OK on success, negative DISK_ERR_* on failure). */
 int disk_read (uint8_t id, uint64_t lba, uint32_t count, void *buf);
 int disk_write(uint8_t id, uint64_t lba, uint32_t count, const void *buf);
+
+/* human-readable text for a disk_err code (e.g. "timeout", "not ready"). */
+const char *disk_err_str(int err);
 
 /* human-readable capacity (e.g. "16 MB", "476 GB") into buf */
 void disk_capacity_str(uint64_t sectors, char *buf, int cap);

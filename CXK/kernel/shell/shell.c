@@ -28,8 +28,7 @@ static void hist_add(const char *line) {
         int last = (hist_next - 1 + HIST_SIZE) % HIST_SIZE;
         if (strcmp(hist[last], line) == 0) return;
     }
-    strncpy(hist[hist_next], line, CMD_BUF_SIZE);
-    hist[hist_next][CMD_BUF_SIZE - 1] = '\0';
+    strlcpy(hist[hist_next], line, CMD_BUF_SIZE);
     hist_next = (hist_next + 1) % HIST_SIZE;
     if (hist_count < HIST_SIZE) hist_count++;
 }
@@ -105,7 +104,7 @@ int shell_read_line(char *buf, int cap, int use_history) {
                     while (pos < len) { console_putc(buf[pos]); pos++; }
                     erase_line(len);
                     len = 0; pos = 0;
-                    for (int i = 0; h[i] && i < cap - 1; i++) {
+                    for (int i = 0; h[i] && len < cap - 1; i++) {
                         buf[len++] = h[i]; console_putc(h[i]);
                     }
                     pos = len;
@@ -120,7 +119,7 @@ int shell_read_line(char *buf, int cap, int use_history) {
                 len = 0; pos = 0;
                 if (browse > 0) {
                     const char *h = hist_get(browse);
-                    if (h) for (int i = 0; h[i] && i < cap - 1; i++) {
+                    if (h) for (int i = 0; h[i] && len < cap - 1; i++) {
                         buf[len++] = h[i]; console_putc(h[i]);
                     }
                 }
@@ -164,7 +163,7 @@ static void shell_execute(char *line) {
     if (line[0] == '\0') return;
 
     for (unsigned i = 0; i < commands_count; i++) {
-        if (strcmp(line, commands[i].name) == 0) {
+        if (strcasecmp(line, commands[i].name) == 0) {
             /* Batch the command's output so multi-line results render in a
                single screen redraw instead of scrolling once per line. The
                matching end_batch (after the handler) is guaranteed to run, so
@@ -189,7 +188,9 @@ static void shell_execute(char *line) {
                 (strcmp(commands[i].name, "sleep") == 0)  ||  /* blocks while idling */
                 (strcmp(commands[i].name, "write") == 0)  ||  /* multi-line input prompt */
                 (strcmp(commands[i].name, "cat") == 0)    ||  /* may page / read a key */
-                (strcmp(commands[i].name, "arping") == 0);    /* blocks polling for ARP reply */
+                (strcmp(commands[i].name, "arping") == 0)    ||  /* blocks polling for ARP reply */
+                (strcmp(commands[i].name, "ping") == 0)    ||  /* blocks polling for ICMP reply */
+                (strcmp(commands[i].name, "ringtest") == 0);   /* process-model test suite (yields/preempts) */
 
             if (interactive) {
                 commands[i].handler(args);

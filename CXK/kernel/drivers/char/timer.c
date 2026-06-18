@@ -2,6 +2,7 @@
 /* Aurora Tejeda */
 
 #include <stdint.h>
+#include "sched.h"
 #include "timer.h"
 #include "idt.h"
 
@@ -20,6 +21,7 @@ static volatile uint32_t ticks = 0;
 static void timer_callback(struct registers *r) {
     (void)r;
     ticks++;
+    sched_tick();          /* preemptive scheduler (no-op unless enabled) */
 }
 
 uint32_t timer_ticks(void) {
@@ -44,6 +46,37 @@ void timer_sleep(uint32_t ms) {
     while (ticks < target) {
         __asm__ volatile ("hlt");
     }
+}
+
+/* ---- bounded-wait helpers (see timer.h) ---- */
+
+/* spin budget per millisecond when interrupts are off (rough, deliberately
+   generous so a slow device isn't cut off early on real hardware). */
+#define TIMEOUT_SPINS_PER_MS  200000u
+
+void timer_timeout_start(struct timeout *to, uint32_t ms) {
+    uint32_t flags;
+    __asm__ volatile ("pushf; pop %0" : "=r"(flags));
+    if (flags & 0x200) {                 /* IF set = interrupts on: use ticks */
+        to->use_timer  = 1;
+        to->deadline   = ticks + ms + 1; /* +1 so sub-ms budgets get a full tick */
+        to->spins_left = 0;
+    } else {                             /* interrupts off: bounded spin */
+        to->use_timer  = 0;
+        to->deadline   = 0;
+        to->spins_left = ms * TIMEOUT_SPINS_PER_MS;
+        if (to->spins_left == 0) to->spins_left = TIMEOUT_SPINS_PER_MS;
+    }
+}
+
+int timer_timeout_expired(struct timeout *to) {
+    if (to->use_timer) {
+        return (ticks >= to->deadline) ? 1 : 0;
+    }
+    /* spin mode: each call burns one unit of budget */
+    if (to->spins_left == 0) return 1;
+    to->spins_left--;
+    return 0;
 }
 
 void timer_init(void) {

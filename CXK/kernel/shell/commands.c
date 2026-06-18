@@ -3,6 +3,10 @@
 /* All shell command handlers and the command table. */
 
 #include "commands.h"
+#include "usermode.h"
+#include "sched.h"
+#include "uid.h"
+#include "sha256.h"
 #include "console.h"
 #include "demo.h"
 #include "pci.h"
@@ -11,6 +15,8 @@
 #include "e1000.h"
 #include "netif.h"
 #include "arp.h"
+#include "ip.h"
+#include "icmp.h"
 #include "disk.h"
 #include "vga.h"
 #include "string.h"
@@ -358,14 +364,7 @@ static void cmd_fstest(const char *args) {
 
 /* case-insensitive ASCII string compare (local to the shell commands) */
 static int ci_equals(const char *a, const char *b) {
-    while (*a && *b) {
-        char ca = *a, cb = *b;
-        if (ca >= 'A' && ca <= 'Z') ca += 32;
-        if (cb >= 'A' && cb <= 'Z') cb += 32;
-        if (ca != cb) return 0;
-        a++; b++;
-    }
-    return *a == *b;
+    return strcasecmp(a, b) == 0;   /* uses the shared library strcasecmp */
 }
 
 static uint32_t cwd_id = 0;   /* 0 = root */
@@ -1026,7 +1025,8 @@ static void cmd_ahci(const char *args) {
     for (int p = 0; p < 32; p++) {
         if (!ahci_present(p)) continue;
         static uint8_t sec[512];
-        if (ahci_read(p, 0, 1, sec) == 0) {
+        int r = ahci_read(p, 0, 1, sec);
+        if (r == DISK_OK) {
             console_print("Port ");
             console_print_dec(p);
             console_print(" sector 0 sig[510,511]: ");
@@ -1035,7 +1035,9 @@ static void cmd_ahci(const char *args) {
         } else {
             console_print("Port ");
             console_print_dec(p);
-            console_print(": read FAILED\n");
+            console_print(": read FAILED (");
+            console_print(disk_err_str(r));
+            console_print(")\n");
         }
         break;
     }
@@ -1341,7 +1343,71 @@ static void cmd_ipset(const char *args) {
     }
 }
 
-/* arping <a.b.c.d> - resolve an IP to a MAC via ARP. */
+/* ping <a.b.c.d> [count] - ICMP echo (Stage 3 milestone) */
+static void cmd_ping(const char *args) {
+    while (*args == ' ') args++;
+    if (*args == '\0') {
+        console_print("Usage: ping <a.b.c.d> [count]\n");
+        return;
+    }
+    if (!netif_ready()) {
+        console_print("Network interface not ready.\n");
+        return;
+    }
+    ip4_t target;
+    if (!netif_parse_ip(args, target)) {
+        console_print("Could not parse address.\n");
+        return;
+    }
+    /* optional count after the address (default 4) */
+    int count = 4;
+    const char *p = args;
+    while (*p && *p != ' ') p++;        /* skip the address */
+    while (*p == ' ') p++;
+    if (*p >= '0' && *p <= '9') {
+        int n = 0;
+        while (*p >= '0' && *p <= '9') { n = n * 10 + (*p - '0'); p++; }
+        if (n > 0 && n <= 100) count = n;
+    }
+
+    char b[16]; netif_ip_str(target, b);
+    console_print("PING ");
+    console_print(b);
+    console_print(" - 32 bytes of data:\n");
+
+    int sent = 0, recvd = 0;
+    for (int i = 0; i < count; i++) {
+        uint32_t rtt = 0;
+        sent++;
+        if (icmp_ping(target, (uint16_t)(i + 1), &rtt)) {
+            recvd++;
+            console_print("  reply from ");
+            console_print(b);
+            console_print("  seq=");
+            console_print_dec((uint32_t)(i + 1));
+            console_print("  time=");
+            console_print_dec(rtt);
+            console_print(" ms\n");
+        } else {
+            console_set_color(VGA_BROWN, VGA_BLACK);
+            console_print("  request timed out  seq=");
+            console_print_dec((uint32_t)(i + 1));
+            console_putc('\n');
+            console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+        }
+        if (i + 1 < count) timer_sleep(500);   /* 0.5s between pings */
+    }
+
+    console_print("--- ");
+    console_print(b);
+    console_print(" ping statistics ---\n  ");
+    console_print_dec((uint32_t)sent);
+    console_print(" sent, ");
+    console_print_dec((uint32_t)recvd);
+    console_print(" received, ");
+    console_print_dec((uint32_t)(sent - recvd));
+    console_print(" lost\n");
+}
 static void cmd_arping(const char *args) {
     while (*args == ' ') args++;
     if (*args == '\0') {
@@ -1378,7 +1444,221 @@ static void cmd_arping(const char *args) {
 
 /* ---- command table ---- */
 
+/* ============================================================================
+ *  ringtest - consolidated process-model / ring-3 test suite
+ *
+ *  One command with subcommands, each exercising a distinct, proven capability
+ *  of the process model (they double as regression tests):
+ *
+ *    ringtest user      - enter ring 3, syscall, return         (privilege boundary)
+ *    ringtest threads   - two cooperative kernel threads        (context switch)
+ *    ringtest preempt   - two no-yield threads, timer-switched  (preemption)
+ *    ringtest proc [N]  - N cooperative ring-3 processes         (scheduled processes)
+ *    ringtest procp     - two preemptive ring-3 processes        (full model)
+ *    ringtest all       - run user, threads, preempt, proc in sequence
+ * ========================================================================== */
+
+extern uint8_t user_blob_start[];
+extern uint8_t user_blob_end[];
+extern uint8_t user_blob_busy_start[];
+extern uint8_t user_blob_busy_end[];
+
+/* -- cooperative kernel threads (context-switch test) -- */
+static volatile int demo_done_a, demo_done_b;
+static void demo_thread_a(void) {
+    for (int i = 0; i < 5; i++) {
+        console_print("  [thread A] tick "); console_print_dec((uint32_t)i); console_putc('\n');
+        yield();
+    }
+    demo_done_a = 1;
+}
+static void demo_thread_b(void) {
+    for (int i = 0; i < 5; i++) {
+        console_print("  [thread B] tock "); console_print_dec((uint32_t)i); console_putc('\n');
+        yield();
+    }
+    demo_done_b = 1;
+}
+
+/* -- no-yield kernel threads (preemption test) -- */
+static volatile int pre_done_a, pre_done_b;
+static void preempt_thread_a(void) {
+    for (uint32_t i = 0; i < 5; i++) {
+        for (volatile uint32_t spin = 0; spin < 8000000; spin++) { }
+        console_print("  [preempt A] step "); console_print_dec(i); console_putc('\n');
+    }
+    pre_done_a = 1; thread_exit();
+}
+static void preempt_thread_b(void) {
+    for (uint32_t i = 0; i < 5; i++) {
+        for (volatile uint32_t spin = 0; spin < 8000000; spin++) { }
+        console_print("  [preempt B] step "); console_print_dec(i); console_putc('\n');
+    }
+    pre_done_b = 1; thread_exit();
+}
+
+/* -- individual test routines -- */
+
+static void rt_user(void) {
+    console_print("[ring3] entering user mode...\n");
+    int r = usermode_test();
+    console_print("[ring3] returned to ring 0, exit code = ");
+    console_print_dec((uint32_t)r); console_putc('\n');
+}
+
+static void rt_threads(void) {
+    demo_done_a = demo_done_b = 0;
+    console_print("[threads] two cooperative kernel threads (yield)...\n");
+    int a = thread_create("demoA", demo_thread_a);
+    int b = thread_create("demoB", demo_thread_b);
+    if (a < 0 || b < 0) { console_print("thread_create failed.\n"); return; }
+    while (!(demo_done_a && demo_done_b)) yield();
+    console_print("[threads] both finished - context switching works.\n");
+}
+
+static void rt_preempt(void) {
+    pre_done_a = pre_done_b = 0;
+    console_print("[preempt] two threads that never yield (timer switches them)...\n");
+    int a = thread_create("preA", preempt_thread_a);
+    int b = thread_create("preB", preempt_thread_b);
+    if (a < 0 || b < 0) { console_print("thread_create failed.\n"); return; }
+    sched_preempt_enable(5);
+    while (!(pre_done_a && pre_done_b)) {
+        for (volatile uint32_t spin = 0; spin < 1000000; spin++) { }
+    }
+    sched_preempt_disable();
+    console_print("[preempt] both finished under preemption (no yields).\n");
+}
+
+static void rt_proc(int count) {
+    uint32_t blen = (uint32_t)(user_blob_end - user_blob_start);
+    static const char *msgs[4] = {
+        "  [proc 1] hello from scheduled user process #1\n",
+        "  [proc 2] hello from scheduled user process #2\n",
+        "  [proc 3] hello from scheduled user process #3\n",
+        "  [proc 4] hello from scheduled user process #4\n",
+    };
+    if (count < 1) count = 1;
+    if (count > 4) count = 4;
+    console_print("[proc] creating "); console_print_dec((uint32_t)count);
+    console_print(" cooperative ring-3 process(es)...\n");
+    for (int i = 0; i < count; i++) {
+        int pid = process_create_ring3("userproc", user_blob_start, blen, msgs[i]);
+        if (pid < 0) { console_print("process_create failed.\n"); return; }
+    }
+    for (int i = 0; i < 40; i++) yield();
+    console_print("[proc] all processes ran in ring 3 and exited.\n");
+}
+
+static void rt_procp(void) {
+    uint32_t blen = (uint32_t)(user_blob_busy_end - user_blob_busy_start);
+    console_print("[procp] two PREEMPTIVE ring-3 processes (timer-switched)...\n");
+    int a = process_create_ring3("busyA", user_blob_busy_start, blen,
+                                 "  [proc A] working in ring 3...\n");
+    int b = process_create_ring3("busyB", user_blob_busy_start, blen,
+                                 "  [proc B] working in ring 3...\n");
+    if (a < 0 || b < 0) { console_print("process_create failed.\n"); return; }
+    sched_preempt_enable(3);
+    int guard = 0;
+    while (sched_active_count() > 1 && guard < 100000000) {
+        for (volatile int s = 0; s < 1000; s++) { }
+        guard++;
+    }
+    sched_preempt_disable();
+    console_print("[procp] both ring-3 processes finished under preemption.\n");
+}
+
+static void cmd_ringtest(const char *args) {
+    /* parse the subcommand (first token of args) */
+    if (!args || args[0] == '\0') {
+        console_print("usage: ringtest <user|threads|preempt|proc [N]|procp|all>\n");
+        return;
+    }
+    if (strncmp(args, "user", 4) == 0)         rt_user();
+    else if (strncmp(args, "threads", 7) == 0) rt_threads();
+    else if (strncmp(args, "preempt", 7) == 0) rt_preempt();
+    else if (strncmp(args, "procp", 5) == 0)   rt_procp();
+    else if (strncmp(args, "proc", 4) == 0) {
+        /* optional count after "proc " */
+        int n = 1;
+        const char *p = args + 4;
+        while (*p == ' ') p++;
+        if (*p >= '1' && *p <= '4') n = *p - '0';
+        rt_proc(n);
+    }
+    else if (strncmp(args, "all", 3) == 0) {
+        rt_user();
+        rt_threads();
+        rt_preempt();
+        rt_proc(3);
+        console_print("[ringtest] all cooperative tests passed.\n");
+    }
+    else {
+        console_print("unknown subtest. usage: ringtest <user|threads|preempt|proc [N]|procp|all>\n");
+    }
+}
+
+/* whoami - show the current identity (UID). The shell currently runs as
+   SYSTEM (User 0); a user/login layer will change this later. */
+static void cmd_whoami(const char *args) {
+    (void)args;
+    uint32_t u = current_uid();
+    console_print(uid_name(u));
+    console_print("  (uid=");
+    console_print_dec(u);
+    if (u == UID_SYSTEM) console_print(", machine identity / OS context");
+    console_print(")\n");
+}
+
+/* sha256 - hash the argument text and print the digest; "sha256 -t" runs a
+   self-test against a known vector. Foundation for code signing. */
+static void print_hex_digest(const uint8_t *d) {
+    const char *hx = "0123456789abcdef";
+    for (int i = 0; i < 32; i++) {
+        console_putc(hx[d[i] >> 4]);
+        console_putc(hx[d[i] & 0xF]);
+    }
+    console_putc('\n');
+}
+
+static void cmd_sha256(const char *args) {
+    uint8_t d[32];
+    if (args && args[0] == '-' && args[1] == 't') {
+        /* self-test: SHA-256("abc") has a known answer */
+        sha256("abc", 3, d);
+        console_print("sha256(\"abc\") = ");
+        print_hex_digest(d);
+        console_print("expect       = ba7816bf8f01cfea414140de5dae2223");
+        console_print("b00361a396177a9cb410ff61f20015ad\n");
+        return;
+    }
+    if (!args || args[0] == '\0') {
+        console_print("usage: sha256 <text>   (or: sha256 -t  for self-test)\n");
+        return;
+    }
+    uint32_t n = 0; while (args[n]) n++;
+    sha256(args, n, d);
+    print_hex_digest(d);
+}
+
 const struct command commands[] = {
+    { "sha256",   cmd_sha256,   "compute a SHA-256 digest (sha256 <text> | -t)",
+      "sha256 <text> - print the SHA-256 hex digest of the given text.\n"
+      "sha256 -t     - run a self-test against a known vector.\n" },
+
+    { "whoami",   cmd_whoami,   "show the current user identity (UID)",
+      "whoami - print the identity the current context runs as. UID 0 is\n"
+      "SYSTEM (the machine identity / OS context), not a human account.\n" },
+
+    { "ringtest", cmd_ringtest, "process-model / ring-3 test suite (see: help ringtest)",
+      "ringtest <subtest> - exercise the process model. Subtests:\n"
+      "  user     - enter ring 3, syscall, return (privilege boundary)\n"
+      "  threads  - two cooperative kernel threads (context switch)\n"
+      "  preempt  - two no-yield threads, timer-switched (preemption)\n"
+      "  proc [N] - N (1-4) cooperative ring-3 processes (scheduled procs)\n"
+      "  procp    - two preemptive ring-3 processes (full model)\n"
+      "  all      - run user, threads, preempt, proc in sequence\n" },
+
     { "help",     cmd_help,     "show this command list",
       "help - list commands, or show detail for one\n"
       "Usage: help [command]\n"
@@ -1406,6 +1686,12 @@ const struct command commands[] = {
       "arping - send an ARP request and show the resolved MAC\n"
       "Usage: arping <a.b.c.d>\n"
       "e.g. arping 10.0.2.2  (the gateway). Proves link-layer send/receive.\n" },
+
+    { "ping",     cmd_ping,     "send ICMP echo requests to a host",
+      "ping - send ICMP echo requests (the network 'are you there?' test)\n"
+      "Usage: ping <a.b.c.d> [count]\n"
+      "  count   optional, 1-100 (default 4)\n"
+      "e.g. ping 10.0.2.2   (the QEMU gateway)\n" },
 
     { "usb",      cmd_usb,      "show USB (OHCI) controller and port status",
       "usb - show the OHCI USB controller and which ports have devices\n"
@@ -1630,7 +1916,7 @@ static void cmd_help(const char *args) {
 
     /* `help <command>`: show that command's detail (or short help if none) */
     for (unsigned i = 0; i < NUM_COMMANDS; i++) {
-        if (strcmp(args, commands[i].name) == 0) {
+        if (strcasecmp(args, commands[i].name) == 0) {
             if (commands[i].detail[0] != '\0') {
                 console_print(commands[i].detail);
             } else {

@@ -1,4 +1,15 @@
-; /CXLite/boot/boot.asm - Stage 1
+; ============================================================================
+;  CXK - the CXOS Kernel : Bootloader (Stage 1)
+;  Copyright (c) 2026 CATX Systems LLC.  All rights reserved.
+;
+;  This file is part of the CXK / CXOS Project and is licensed under the
+;  CXK and CXOS Project License, Version 1.0.7 (Effective June 16, 2026).
+;  Use of this software is subject to the terms of that License. See the
+;  LICENSE file distributed with the Project for the full terms.
+;
+;  Author: Aurora Tejeda / CATX Systems LLC
+; ============================================================================
+; /CXK/boot/boot.asm - Stage 1
 ; Aurora Tejeda
 
 org 0x7C00
@@ -74,6 +85,15 @@ start:
 
 msg_disk_err    db '[BOOT] DISK ERR', 0
 msg_no_lba      db '[BOOT] NO LBA', 0
+
+; ----------------------------------------------------------------------------
+; Copyright notice embedded in the boot-sector BINARY (not just source).
+; This sits in what would otherwise be zero padding, so it costs no usable
+; space, yet `strings`/hexdump of the boot image will always show it.
+; ----------------------------------------------------------------------------
+copyright_notice:
+    db 'CXK Bootloader - (c) 2026 CATX Systems LLC. '
+    db 'CXK/CXOS Project License v1.0.7. All rights reserved.', 0
 
 times 510-($-$$) db 0
 dw 0xAA55

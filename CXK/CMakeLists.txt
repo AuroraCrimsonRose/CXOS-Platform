@@ -50,6 +50,13 @@ set(INIT_C      ${SRC_DIR}/kernel/init.c)
 
 # --- kernel subsystem sources ---
 set(IDT_ASM     ${SRC_DIR}/kernel/cpu/int/idt.asm)
+set(GDT_C       ${SRC_DIR}/kernel/cpu/gdt.c)
+set(GDT_ASM     ${SRC_DIR}/kernel/cpu/gdt_flush.asm)
+set(UM_C        ${SRC_DIR}/kernel/cpu/usermode.c)
+set(UM_ASM      ${SRC_DIR}/kernel/cpu/usermode.asm)
+set(SCHED_C     ${SRC_DIR}/kernel/cpu/sched.c)
+set(UID_C       ${SRC_DIR}/kernel/cpu/uid.c)
+set(SWITCH_ASM  ${SRC_DIR}/kernel/cpu/switch.asm)
 set(IDT_C       ${SRC_DIR}/kernel/cpu/int/idt.c)
 set(PIC_C       ${SRC_DIR}/kernel/cpu/int/pic.c)
 set(VGA_C       ${SRC_DIR}/kernel/drivers/video/vga.c)
@@ -64,6 +71,8 @@ set(OHCI_C      ${SRC_DIR}/kernel/drivers/usb/ohci.c)
 set(E1000_C     ${SRC_DIR}/kernel/drivers/net/e1000.c)
 set(NETIF_C     ${SRC_DIR}/kernel/drivers/net/netif.c)
 set(ARP_C       ${SRC_DIR}/kernel/drivers/net/arp.c)
+set(IP_C        ${SRC_DIR}/kernel/drivers/net/ip.c)
+set(ICMP_C      ${SRC_DIR}/kernel/drivers/net/icmp.c)
 set(FPU_C       ${SRC_DIR}/kernel/cpu/fpu.c)
 set(KMATH_C     ${SRC_DIR}/kernel/lib/kmath.c)
 set(DEMO_C      ${SRC_DIR}/kernel/shell/demo.c)
@@ -72,6 +81,7 @@ set(TIMER_C     ${SRC_DIR}/kernel/drivers/char/timer.c)
 set(KBD_C       ${SRC_DIR}/kernel/drivers/input/keyboard.c)
 set(CONSOLE_C   ${SRC_DIR}/kernel/drivers/char/console.c)
 set(STRING_C    ${SRC_DIR}/kernel/lib/string.c)
+set(SHA256_C    ${SRC_DIR}/kernel/lib/sha256.c)
 set(SHELL_C     ${SRC_DIR}/kernel/shell/shell.c)
 set(COMMANDS_C  ${SRC_DIR}/kernel/shell/commands.c)
 set(POWER_C     ${SRC_DIR}/kernel/drivers/power/power.c)
@@ -89,6 +99,13 @@ set(INIT_CO     ${BUILD_DIR}/init_c.o)
 
 # --- subsystem objects ---
 set(IDT_ASM_O   ${BUILD_DIR}/idt_asm.o)
+set(GDT_CO      ${BUILD_DIR}/gdt_c.o)
+set(GDT_ASM_O   ${BUILD_DIR}/gdt_asm.o)
+set(UM_CO       ${BUILD_DIR}/usermode_c.o)
+set(UM_ASM_O    ${BUILD_DIR}/usermode_asm.o)
+set(SCHED_CO    ${BUILD_DIR}/sched_c.o)
+set(UID_CO      ${BUILD_DIR}/uid_c.o)
+set(SWITCH_ASM_O ${BUILD_DIR}/switch_asm.o)
 set(IDT_CO      ${BUILD_DIR}/idt_c.o)
 set(PIC_CO      ${BUILD_DIR}/pic_c.o)
 set(VGA_CO      ${BUILD_DIR}/vga_c.o)
@@ -103,6 +120,8 @@ set(OHCI_CO     ${BUILD_DIR}/ohci_c.o)
 set(E1000_CO    ${BUILD_DIR}/e1000_c.o)
 set(NETIF_CO    ${BUILD_DIR}/netif_c.o)
 set(ARP_CO      ${BUILD_DIR}/arp_c.o)
+set(IP_CO       ${BUILD_DIR}/ip_c.o)
+set(ICMP_CO     ${BUILD_DIR}/icmp_c.o)
 set(FPU_CO      ${BUILD_DIR}/fpu_c.o)
 set(KMATH_CO    ${BUILD_DIR}/kmath_c.o)
 set(DEMO_CO     ${BUILD_DIR}/demo_c.o)
@@ -111,6 +130,7 @@ set(TIMER_CO    ${BUILD_DIR}/timer_c.o)
 set(KBD_CO      ${BUILD_DIR}/keyboard_c.o)
 set(CONSOLE_CO  ${BUILD_DIR}/console_c.o)
 set(STRING_CO   ${BUILD_DIR}/string_c.o)
+set(SHA256_CO   ${BUILD_DIR}/sha256_c.o)
 set(SHELL_CO    ${BUILD_DIR}/shell_c.o)
 set(COMMANDS_CO ${BUILD_DIR}/commands_c.o)
 set(POWER_CO    ${BUILD_DIR}/power_c.o)
@@ -123,12 +143,13 @@ set(KERNEL_ELF  ${BUILD_DIR}/kernel.elf)
 set(KERNEL_BIN  ${BUILD_DIR}/kernel.bin)
 
 # kernel.o MUST be first (kernel_entry at 0x10000)
-set(KERNEL_OBJS ${KERNEL_O} ${KERNEL_CO} ${INIT_CO} ${IDT_ASM_O} ${IDT_CO} ${PIC_CO} ${VGA_CO} ${TIMER_CO} ${KBD_CO} ${CONSOLE_CO} ${STRING_CO} ${SHELL_CO} ${COMMANDS_CO} ${POWER_CO} ${PMM_CO} ${HEAP_CO} ${PAGING_CO} ${ATA_CO} ${RTC_CO} ${FB_CO} ${PCI_CO} ${AHCI_CO} ${DISK_CO} ${ACPI_CO} ${OHCI_CO} ${E1000_CO} ${NETIF_CO} ${ARP_CO} ${FPU_CO} ${KMATH_CO} ${DEMO_CO} ${FONT_CO} ${CXFS_CO})
+set(KERNEL_OBJS ${KERNEL_O} ${KERNEL_CO} ${INIT_CO} ${IDT_ASM_O} ${GDT_ASM_O} ${GDT_CO} ${UM_ASM_O} ${UM_CO} ${SWITCH_ASM_O} ${SCHED_CO} ${UID_CO} ${IDT_CO} ${PIC_CO} ${VGA_CO} ${TIMER_CO} ${KBD_CO} ${CONSOLE_CO} ${STRING_CO} ${SHA256_CO} ${SHELL_CO} ${COMMANDS_CO} ${POWER_CO} ${PMM_CO} ${HEAP_CO} ${PAGING_CO} ${ATA_CO} ${RTC_CO} ${FB_CO} ${PCI_CO} ${AHCI_CO} ${DISK_CO} ${ACPI_CO} ${OHCI_CO} ${E1000_CO} ${NETIF_CO} ${ARP_CO} ${IP_CO} ${ICMP_CO} ${FPU_CO} ${KMATH_CO} ${DEMO_CO} ${FONT_CO} ${CXFS_CO})
 
 set(DIST_DIR    ${SRC_DIR}/dist/CXK_x86_32)
-set(DISK_IMG    ${DIST_DIR}/cxk_x86_32.img)
-set(FS_IMG      ${DIST_DIR}/cxk_filesystem.img)
-set(USB_IMG     ${DIST_DIR}/cxk_usb.img)
+set(IMAGES_DIR  ${DIST_DIR}/images)
+set(DISK_IMG    ${IMAGES_DIR}/cxk_x86_32.img)
+set(FS_IMG      ${IMAGES_DIR}/cxk_filesystem.img)
+set(USB_IMG     ${IMAGES_DIR}/cxk_usb.img)
 set(PAD_SCRIPT  ${SRC_DIR}/tools/pad_disk.ps1)
 set(MKFS_SCRIPT ${SRC_DIR}/tools/make_fs_img.ps1)
 
@@ -180,6 +201,48 @@ add_custom_command(
     OUTPUT ${IDT_ASM_O}
     COMMAND nasm -f elf32 ${IDT_ASM} -o ${IDT_ASM_O}
     DEPENDS ${IDT_ASM}
+)
+
+add_custom_command(
+    OUTPUT ${GDT_ASM_O}
+    COMMAND nasm -f elf32 ${GDT_ASM} -o ${GDT_ASM_O}
+    DEPENDS ${GDT_ASM}
+)
+
+add_custom_command(
+    OUTPUT ${GDT_CO}
+    COMMAND ${CMAKE_C_COMPILER} ${KCFLAGS} -c ${GDT_C} -o ${GDT_CO}
+    DEPENDS ${GDT_C} ${SRC_DIR}/kernel/cpu/gdt.h
+)
+
+add_custom_command(
+    OUTPUT ${UM_ASM_O}
+    COMMAND nasm -f elf32 ${UM_ASM} -o ${UM_ASM_O}
+    DEPENDS ${UM_ASM}
+)
+
+add_custom_command(
+    OUTPUT ${UM_CO}
+    COMMAND ${CMAKE_C_COMPILER} ${KCFLAGS} -c ${UM_C} -o ${UM_CO}
+    DEPENDS ${UM_C} ${SRC_DIR}/kernel/cpu/usermode.h
+)
+
+add_custom_command(
+    OUTPUT ${SWITCH_ASM_O}
+    COMMAND nasm -f elf32 ${SWITCH_ASM} -o ${SWITCH_ASM_O}
+    DEPENDS ${SWITCH_ASM}
+)
+
+add_custom_command(
+    OUTPUT ${SCHED_CO}
+    COMMAND ${CMAKE_C_COMPILER} ${KCFLAGS} -c ${SCHED_C} -o ${SCHED_CO}
+    DEPENDS ${SCHED_C} ${SRC_DIR}/kernel/cpu/sched.h
+)
+
+add_custom_command(
+    OUTPUT ${UID_CO}
+    COMMAND ${CMAKE_C_COMPILER} ${KCFLAGS} -c ${UID_C} -o ${UID_CO}
+    DEPENDS ${UID_C} ${SRC_DIR}/kernel/cpu/uid.h
 )
 
 # -------------------------------------------------
@@ -300,6 +363,18 @@ add_custom_command(
 )
 
 add_custom_command(
+    OUTPUT ${IP_CO}
+    COMMAND ${CMAKE_C_COMPILER} ${KCFLAGS} -c ${IP_C} -o ${IP_CO}
+    DEPENDS ${IP_C} ${SRC_DIR}/kernel/drivers/net/ip.h
+)
+
+add_custom_command(
+    OUTPUT ${ICMP_CO}
+    COMMAND ${CMAKE_C_COMPILER} ${KCFLAGS} -c ${ICMP_C} -o ${ICMP_CO}
+    DEPENDS ${ICMP_C} ${SRC_DIR}/kernel/drivers/net/icmp.h
+)
+
+add_custom_command(
     OUTPUT ${FPU_CO}
     COMMAND ${CMAKE_C_COMPILER} ${KCFLAGS} -c ${FPU_C} -o ${FPU_CO}
     DEPENDS ${FPU_C} ${SRC_DIR}/kernel/cpu/fpu.h
@@ -367,6 +442,12 @@ add_custom_command(
     OUTPUT ${STRING_CO}
     COMMAND ${CMAKE_C_COMPILER} ${KCFLAGS} -c ${STRING_C} -o ${STRING_CO}
     DEPENDS ${STRING_C} ${SRC_DIR}/kernel/lib/string.h
+)
+
+add_custom_command(
+    OUTPUT ${SHA256_CO}
+    COMMAND ${CMAKE_C_COMPILER} ${KCFLAGS} -c ${SHA256_C} -o ${SHA256_CO}
+    DEPENDS ${SHA256_C} ${SRC_DIR}/kernel/lib/sha256.h
 )
 
 # -------------------------------------------------
@@ -452,7 +533,7 @@ add_custom_command(
 # -------------------------------------------------
 add_custom_command(
     OUTPUT ${DISK_IMG}
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${DIST_DIR}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${IMAGES_DIR}
     COMMAND ${CMAKE_COMMAND} -E echo "Building boot disk image..."
     COMMAND powershell -NoProfile -ExecutionPolicy Bypass
         -File ${PAD_SCRIPT}
@@ -468,7 +549,7 @@ add_custom_command(
 # -------------------------------------------------
 add_custom_command(
     OUTPUT ${FS_IMG}
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${DIST_DIR}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${IMAGES_DIR}
     COMMAND ${CMAKE_COMMAND} -E echo "Creating filesystem image (if missing)..."
     COMMAND powershell -NoProfile -ExecutionPolicy Bypass
         -File ${MKFS_SCRIPT}
@@ -483,7 +564,7 @@ add_custom_command(
 # -------------------------------------------------
 add_custom_command(
     OUTPUT ${USB_IMG}
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${DIST_DIR}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${IMAGES_DIR}
     COMMAND ${CMAKE_COMMAND} -E echo "Creating USB image (if missing)..."
     COMMAND powershell -NoProfile -ExecutionPolicy Bypass
         -File ${MKFS_SCRIPT}
