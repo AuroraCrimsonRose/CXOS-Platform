@@ -6,6 +6,7 @@
 #include "usermode.h"
 #include "sched.h"
 #include "uid.h"
+#include "sha256.h"
 #include "console.h"
 #include "demo.h"
 #include "pci.h"
@@ -1609,7 +1610,42 @@ static void cmd_whoami(const char *args) {
     console_print(")\n");
 }
 
+/* sha256 - hash the argument text and print the digest; "sha256 -t" runs a
+   self-test against a known vector. Foundation for code signing. */
+static void print_hex_digest(const uint8_t *d) {
+    const char *hx = "0123456789abcdef";
+    for (int i = 0; i < 32; i++) {
+        console_putc(hx[d[i] >> 4]);
+        console_putc(hx[d[i] & 0xF]);
+    }
+    console_putc('\n');
+}
+
+static void cmd_sha256(const char *args) {
+    uint8_t d[32];
+    if (args && args[0] == '-' && args[1] == 't') {
+        /* self-test: SHA-256("abc") has a known answer */
+        sha256("abc", 3, d);
+        console_print("sha256(\"abc\") = ");
+        print_hex_digest(d);
+        console_print("expect       = ba7816bf8f01cfea414140de5dae2223");
+        console_print("b00361a396177a9cb410ff61f20015ad\n");
+        return;
+    }
+    if (!args || args[0] == '\0') {
+        console_print("usage: sha256 <text>   (or: sha256 -t  for self-test)\n");
+        return;
+    }
+    uint32_t n = 0; while (args[n]) n++;
+    sha256(args, n, d);
+    print_hex_digest(d);
+}
+
 const struct command commands[] = {
+    { "sha256",   cmd_sha256,   "compute a SHA-256 digest (sha256 <text> | -t)",
+      "sha256 <text> - print the SHA-256 hex digest of the given text.\n"
+      "sha256 -t     - run a self-test against a known vector.\n" },
+
     { "whoami",   cmd_whoami,   "show the current user identity (UID)",
       "whoami - print the identity the current context runs as. UID 0 is\n"
       "SYSTEM (the machine identity / OS context), not a human account.\n" },
