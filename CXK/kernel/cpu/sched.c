@@ -62,17 +62,20 @@ int thread_create(const char *name, void (*entry)(void)) {
     if (!stack) return -1;
 
     /* build the initial stack frame (top-down). The new stack must look exactly
-       like a thread that was switched out by context_switch:
-         [ return address = thread_launch ]   <- ret pops this
-         [ ebp ] [ edi ] [ esi ] [ ebx ] [ eflags ]  <- pops, in this order
-       so esp points at the saved ebp slot. */
+       like a thread that was switched out by context_switch. context_switch
+       saves (in this push order): pushfd, ebx, esi, edi, ebp - so from the
+       saved esp UPWARD the layout is:
+         [esp+0]=ebp [+4]=edi [+8]=esi [+12]=ebx [+16]=eflags [+20]=return addr
+       It then restores with: pop ebp; pop edi; pop esi; pop ebx; popfd; ret.
+       So we push (high->low addr): return-addr, eflags, ebx, esi, edi, ebp,
+       leaving esp pointing at the ebp slot. */
     uint32_t *sp = (uint32_t *)(stack + THREAD_STACK);
-    *(--sp) = (uint32_t)thread_launch;   /* ret target */
-    *(--sp) = 0;                         /* ebp */
-    *(--sp) = 0;                         /* edi */
-    *(--sp) = 0;                         /* esi */
-    *(--sp) = 0;                         /* ebx */
-    *(--sp) = 0x202;                     /* eflags: IF set, reserved bit 1 */
+    *(--sp) = (uint32_t)thread_launch;   /* [+20] ret target */
+    *(--sp) = 0x202;                     /* [+16] eflags: IF set, reserved bit 1 */
+    *(--sp) = 0;                         /* [+12] ebx */
+    *(--sp) = 0;                         /* [+8]  esi */
+    *(--sp) = 0;                         /* [+4]  edi */
+    *(--sp) = 0;                         /* [+0]  ebp  <- esp points here */
 
     threads[slot].esp        = (uint32_t)sp;
     threads[slot].stack_base = stack;
@@ -272,5 +275,10 @@ uint32_t thread_current_uid(void) {
 }
 
 void thread_set_uid(int id, uint32_t uid) {
-    if (id >= 0 && id < MAX_THREADS) threads[id].uid = uid;
+    if (id < 0 || id >= MAX_THREADS) return;
+    /* Invariant: a user process can never become UID 0 (SYSTEM). If this thread
+       is a user process, reject any attempt to set it to SYSTEM - users are
+       always UID >= 1. (SYSTEM kernel threads may carry UID 0 legitimately.) */
+    if (uid == UID_SYSTEM && threads[id].is_user) return;
+    threads[id].uid = uid;
 }

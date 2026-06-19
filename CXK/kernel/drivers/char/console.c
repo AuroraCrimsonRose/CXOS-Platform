@@ -104,6 +104,31 @@ void console_put_hex(uint32_t v, int width) {
     console_puts(buf);
 }
 
+/* ---- colored-number helpers (value in its own color, current restored) ---- */
+void console_put_u32_color(uint32_t v, uint8_t a) {
+    uint8_t save = attr; attr = a; console_put_u32(v); attr = save;
+}
+void console_put_i32_color(int32_t v, uint8_t a) {
+    uint8_t save = attr; attr = a; console_put_i32(v); attr = save;
+}
+void console_put_hex_color(uint32_t v, int width, uint8_t a) {
+    uint8_t save = attr; attr = a; console_put_hex(v, width); attr = save;
+}
+
+/* ---- label + value helpers (label in current color, value colored) ---- */
+void console_field_u32(const char *label, uint32_t v, uint8_t value_attr) {
+    console_puts(label);
+    console_put_u32_color(v, value_attr);
+}
+void console_field_i32(const char *label, int32_t v, uint8_t value_attr) {
+    console_puts(label);
+    console_put_i32_color(v, value_attr);
+}
+void console_field_hex(const char *label, uint32_t v, int width, uint8_t value_attr) {
+    console_puts(label);
+    console_put_hex_color(v, width, value_attr);
+}
+
 void console_set_cursor(int x, int y) {
     if (x < 0) x = 0; 
     if (x >= VGA_WIDTH)  x = VGA_WIDTH - 1;

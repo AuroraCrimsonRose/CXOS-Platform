@@ -38,6 +38,9 @@ set(KERNEL_INCLUDES
     -I${SRC_DIR}/kernel/memman
     -I${SRC_DIR}/kernel/drivers/char
     -I${SRC_DIR}/kernel/drivers/video
+    -I${SRC_DIR}/kernel/drivers/bus
+    -I${SRC_DIR}/kernel/drivers/storage/hardware
+    -I${SRC_DIR}/kernel/drivers/storage/filesys
 )
 
 # freestanding kernel C flags
@@ -47,17 +50,28 @@ set(KCFLAGS -ffreestanding -fno-pic -fno-stack-protector -m32
 # ---- KERNEL C SOURCES (append new subsystems here) ----
 set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/kmain.c
+    ${SRC_DIR}/kernel/ktest.c
     ${SRC_DIR}/kernel/cpu/gdt.c
     ${SRC_DIR}/kernel/cpu/int/idt.c
     ${SRC_DIR}/kernel/cpu/int/pic.c
     ${SRC_DIR}/kernel/memman/pmm.c
     ${SRC_DIR}/kernel/memman/paging.c
     ${SRC_DIR}/kernel/memman/heap.c
+    ${SRC_DIR}/kernel/lib/string.c
     ${SRC_DIR}/kernel/lib/bitmap.c
     ${SRC_DIR}/kernel/lib/format.c
+    ${SRC_DIR}/kernel/cpu/sched.c
+    ${SRC_DIR}/kernel/cpu/uid.c
+    ${SRC_DIR}/kernel/drivers/char/timer.c
+    ${SRC_DIR}/kernel/cpu/usermode.c
     ${SRC_DIR}/kernel/drivers/char/console.c
     ${SRC_DIR}/kernel/drivers/video/vga.c
     ${SRC_DIR}/kernel/lib/color.c
+    ${SRC_DIR}/kernel/drivers/bus/pci.c
+    ${SRC_DIR}/kernel/drivers/storage/hardware/ata.c
+    ${SRC_DIR}/kernel/drivers/storage/hardware/ahci.c
+    ${SRC_DIR}/kernel/drivers/storage/hardware/disk.c
+    ${SRC_DIR}/kernel/drivers/storage/filesys/cxfs.c
 )
 
 # ---- KERNEL ASM SOURCES (elf32 objects; append new ones here) ----
@@ -65,6 +79,8 @@ set(KERNEL_ASM_SRCS
     ${SRC_DIR}/kernel/kernel.asm
     ${SRC_DIR}/kernel/cpu/gdt_flush.asm
     ${SRC_DIR}/kernel/cpu/int/idt.asm
+    ${SRC_DIR}/kernel/cpu/switch.asm
+    ${SRC_DIR}/kernel/cpu/usermode.asm
 )
 
 # ---- linker script ----

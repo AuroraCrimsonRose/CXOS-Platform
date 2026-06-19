@@ -21,19 +21,24 @@ enter_protected_mode:
 
 bits 32
 pmode_entry:
-    ; IMMEDIATE proof we reached 32-bit mode: write a marker char to row 0,
-    ; col 79 (top-right corner) before anything else. If this single bright-
-    ; white 'P' appears, the far jump into protected mode succeeded even if
-    ; everything after it somehow fails.
-    mov dword [0xB8000 + (79 * 2)], 0x0F50   ; 'P' bright white at top-right
-
+    ; Load the flat 32-bit data segments FIRST. Until DS is reloaded with the
+    ; flat selector it still holds the real-mode value (limit 0xFFFF = 64KB), so
+    ; ANY write above 64KB - like the VGA marker at 0xB809E - faults with #GP
+    ; ("write beyond limit"). QEMU is lax about this; Bochs (correctly) faults
+    ; and triple-resets. So: set the segments, THEN touch VGA.
     mov ax, GDT_DATA             ; 0x10 - flat 32-bit data
     mov ds, ax
     mov es, ax
     mov fs, ax
     mov gs, ax
     mov ss, ax
-    mov esp, 0x90000             ; a working 32-bit stack below 1MB
+    mov esp, 0x9F000             ; 32-bit stack just below video RAM (0xA0000).
+                                 ; Kept clear of the kernel load buffer, which
+                                 ; ends at 0x50000 (256KB from 0x10000).
+
+    ; now that DS is flat (4GB limit), the VGA marker write is safe. If this
+    ; bright-white 'P' appears at the top-right, 32-bit mode is fully live.
+    mov dword [0xB8000 + (79 * 2)], 0x0F50   ; 'P' bright white at top-right
 
     call vga_print_pmode
 

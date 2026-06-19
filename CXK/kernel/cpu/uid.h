@@ -26,7 +26,15 @@
 typedef uint32_t uid_t;
 
 #define UID_SYSTEM   0u           /* the OS / machine identity (User 0) */
+#define UID_FIRST_USER 1u         /* lowest UID a human user may have */
 #define UID_INVALID  0xFFFFFFFFu  /* sentinel for "no/unknown user" */
+
+/* Invariant: a USER is always UID >= 1. UID 0 (SYSTEM) is the machine identity,
+   never a human account, and a user process can never be created as - or
+   changed to - UID 0. uid_is_user() is the one predicate that expresses this. */
+static inline int uid_is_user(uid_t uid) {
+    return uid >= UID_FIRST_USER && uid != UID_INVALID;
+}
 
 /* The UID the currently running process owns. Kernel context = UID_SYSTEM. */
 uid_t current_uid(void);

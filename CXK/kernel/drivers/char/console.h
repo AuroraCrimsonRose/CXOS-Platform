@@ -40,6 +40,18 @@ void console_put_u32(uint32_t v);
 void console_put_i32(int32_t v);
 void console_put_hex(uint32_t v, int width);
 
+/* same, but print the number in a specific color (current color restored). */
+void console_put_u32_color(uint32_t v, uint8_t attr);
+void console_put_i32_color(int32_t v, uint8_t attr);
+void console_put_hex_color(uint32_t v, int width, uint8_t attr);
+
+/* label + value in one call: print `label` in the current color, then the
+   number in `value_attr` (current color restored after). The common boot-log
+   shape, e.g. console_field_u32("free: ", n, white). */
+void console_field_u32(const char *label, uint32_t v, uint8_t value_attr);
+void console_field_i32(const char *label, int32_t v, uint8_t value_attr);
+void console_field_hex(const char *label, uint32_t v, int width, uint8_t value_attr);
+
 /* line control */
 void console_newline(void);
 void console_set_cursor(int x, int y);
