@@ -30,6 +30,8 @@ REM On this machine there is NO legacy IDE, so ATA PIO finds nothing and ALL
 REM disk access goes through the AHCI driver - a true end-to-end AHCI test.
 
 qemu-system-i386 -m 4G -machine q35 ^
+    -machine pcspk-audiodev=speaker ^
+    -audiodev dsound,id=speaker ^
     -drive id=bootdisk,format=raw,file=%BOOT%,if=none ^
     -device ide-hd,drive=bootdisk,bus=ide.0,bootindex=0 ^
     -drive id=fsdisk,format=raw,file=%FS%,if=none ^

@@ -28,6 +28,7 @@
 #include "pci.h"
 #include "ktest.h"
 #include "klogo.h"
+#include "speaker.h"
 
 #define CXLOGO_WIDTH 600
 #define CXLOGO_HEIGHT 600
@@ -145,6 +146,9 @@ void kmain(void) {
     heap_init();
     vlog("Heap online (kmalloc/kfree)");
 
+    /* initalize speakers */
+    speaker_init();
+
 #if CXK_ENABLE_FB
     if (fb_init() == 0)
     {
@@ -154,8 +158,9 @@ void kmain(void) {
             (fb_width()  - CXLOGO_WIDTH)  / 2,
             (fb_height() - CXLOGO_HEIGHT) / 2
         );
+        speaker_boot_chime();
 
-        timer_sleep(2000);
+        timer_sleep(1000);
 
         fb_boot_splash();
     }
@@ -168,6 +173,7 @@ void kmain(void) {
     timer_init();
     __asm__ __volatile__("sti");          /* enable interrupts: timer can fire */
     vlog("Timer online (PIT @ 1000 Hz), interrupts enabled");
+
 
     /* user mode: syscall gate + ring-3 fault handler. */
     usermode_init();

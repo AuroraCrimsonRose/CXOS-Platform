@@ -15,6 +15,7 @@
 #include "idt.h"
 #include "format.h"
 #include "sched.h"
+#include "speaker.h"
 
 void pic_remap(void);
 void pic_send_eoi(uint32_t int_no);
@@ -86,6 +87,7 @@ static void (*user_fault_hook)(struct registers *r) = 0;
 void set_user_fault_hook(void (*hook)(struct registers *)) { user_fault_hook = hook; }
 
 void isr_handler(struct registers *r) {
+    speaker_panic_tone();
     if ((r->cs & 3) == 3 && user_fault_hook) {
         user_fault_hook(r);
     }

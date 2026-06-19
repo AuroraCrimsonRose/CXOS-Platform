@@ -35,6 +35,8 @@ REM   pci-ohci  : OHCI USB controller for the USB stack
 REM -netdev user is built-in SLIRP (no host setup).
 
 qemu-system-i386 -m 4G ^
+    -machine pcspk-audiodev=speaker ^
+    -audiodev dsound,id=speaker ^
     -drive format=raw,file=%BOOT%,if=ide,index=0 ^
     -drive format=raw,file=%FS%,if=ide,index=1 ^
     -netdev user,id=net0 ^
