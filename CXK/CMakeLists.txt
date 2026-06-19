@@ -22,12 +22,13 @@ set(CMAKE_ASM_NASM_COMPILER nasm)
 set(CMAKE_OBJCOPY "${CROSS_PREFIX}/i686-elf-objcopy.exe")
 set(CMAKE_LD      "${CROSS_PREFIX}/i686-elf-ld.exe")
 set(KCC           "${CROSS_PREFIX}/i686-elf-gcc.exe")
+set(PACKAGES_DIR ${DIST_DIR}/packages)
 
 # ---- paths ----
 set(SRC_DIR   ${CMAKE_SOURCE_DIR})
 set(BUILD_DIR ${CMAKE_BINARY_DIR})
-set(DIST_DIR    ${SRC_DIR}/dist/CXK_x86_32)
 set(IMAGES_DIR  ${DIST_DIR}/images)
+set(DIST_DIR    ${SRC_DIR}/dist/CXK_x86_32/packages)
 
 # ---- kernel include directories (add new subsystem dirs here) ----
 set(KERNEL_INCLUDES
@@ -99,7 +100,7 @@ set(STAGE2_SRC ${SRC_DIR}/boot/stage2.asm)
 set(BOOT_BIN    ${BUILD_DIR}/boot.bin)
 set(STAGE2_BIN  ${BUILD_DIR}/stage2.bin)
 set(KERNEL_ELF  ${BUILD_DIR}/kernel.elf)
-set(KERNEL_XKEX ${BUILD_DIR}/kernel.xkex)
+set(KERNEL_XKEX ${DIST_DIR}/kernel.xkex)
 set(DISK_IMG    ${IMAGES_DIR}/cxk_x86_32.img)
 
 set(VENV_PY   ${SRC_DIR}/../.venv/Scripts/python.exe)
@@ -163,6 +164,7 @@ add_custom_command(
 # ---- kernel.elf -> kernel.xkex (CXEX) ----
 add_custom_command(
     OUTPUT ${KERNEL_XKEX}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${PACKAGES_DIR}
     COMMAND ${VENV_PY} ${MKCXES} ${KERNEL_ELF} ${KERNEL_XKEX} --type kernel
     DEPENDS ${KERNEL_ELF} ${MKCXES}
     COMMENT "Converting kernel.elf -> kernel.xkex (CXEX)"
