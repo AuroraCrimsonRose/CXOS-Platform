@@ -41,4 +41,11 @@ int process_create_ring3(const char *name,
                          const void *blob, uint32_t blob_len,
                          const char *msg);
 
+/* Launch a ring-3 process owned by a specific human user (uid >= 1). Enforces
+   the identity invariant: rejects uid == 0 (SYSTEM) - a user is never UID 0.
+   Returns the new pid, or -1. */
+int process_create_ring3_as_user(const char *name,
+                                 const void *blob, uint32_t blob_len,
+                                 const char *msg, uint32_t uid);
+
 #endif

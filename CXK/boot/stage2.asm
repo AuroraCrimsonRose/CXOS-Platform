@@ -49,16 +49,45 @@ stage2_start:
 ; We load it to 0x10000 (linear), a free low buffer.
 KERNEL_LOAD_LOW  equ 0x10000        ; temp buffer (segment 0x1000:0x0000)
 KERNEL_DEST_HIGH equ 0x100000       ; final physical location (1 MB)
-KERNEL_SECTORS   equ 64             ; 32 KB - within the BIOS single-read limit
-                                    ; (~127 sectors max) and ample for the stub
+KERNEL_SECTORS   equ 512            ; 256 KB of headroom for the kernel image.
+                                    ; Must fit in LOW memory (the 0x10000 buffer
+                                    ; lives below 1MB, with the pmode stack at
+                                    ; 0x9F000) - 256KB ends at 0x50000, leaving a
+                                    ; ~316KB gap before the stack. BIOS int13h
+                                    ; can't read this in one call (~127-sector
+                                    ; limit), so load_kernel loops in chunks.
+                                    ; cxexload copies only each section's real
+                                    ; bytes, so over-reading empty tail sectors
+                                    ; is harmless. (Kernel is ~50KB now: 5x room.)
+KERNEL_CHUNK     equ 64             ; sectors per int13h call (<=127, BIOS-safe).
+                                    ; 64*512 = 32 KB = 0x800 segment units/chunk.
+KERNEL_CHUNKS    equ (KERNEL_SECTORS / KERNEL_CHUNK)   ; 512/64 = 8
 
 load_kernel:
     push es
+    push cx
+    mov cx, KERNEL_CHUNKS           ; number of chunks to read
+.next_chunk:
+    push cx
+    mov word [dap_kernel + 2], KERNEL_CHUNK  ; re-arm count (some BIOSes write
+                                             ; back the actual-read count here)
     mov ah, 0x42
     mov dl, [boot_drive_s2]
     mov si, dap_kernel
     int 0x13
     jc .kerr
+    pop cx
+
+    ; advance the DAP for the next chunk:
+    ;   dest segment += 0x800  (64 sectors * 512 = 32 KB = 0x800 paragraphs)
+    ;   start LBA     += 64
+    add word [dap_kernel + 6], 0x800        ; dest segment field (offset 6)
+    add dword [dap_kernel + 8], KERNEL_CHUNK ; LBA low dword (offset 8)
+    adc dword [dap_kernel + 12], 0           ; carry into LBA high dword
+
+    loop .next_chunk                ; cx-- ; jump if cx != 0
+
+    pop cx
     pop es
     ret
 .kerr:
@@ -69,10 +98,10 @@ load_kernel:
 dap_kernel:
     db 0x10
     db 0x00
-    dw KERNEL_SECTORS           ; sectors to read
+    dw KERNEL_CHUNK             ; sectors per read (one chunk)
     dw 0x0000                   ; dest offset
-    dw 0x1000                   ; dest segment -> 0x10000 linear
-    dq 33                       ; LBA 33 (right after 32-sector stage 2)
+    dw 0x1000                   ; dest segment -> 0x10000 linear (advances per chunk)
+    dq 33                       ; LBA 33 (right after 32-sector stage 2); advances
 
 boot_drive_s2 db 0
 msg_kerr db '[BOOT] KERNEL READ ERROR', 0

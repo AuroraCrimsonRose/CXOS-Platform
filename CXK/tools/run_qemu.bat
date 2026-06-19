@@ -23,16 +23,20 @@ echo USB  disk: %USB%   (virtual USB mass-storage on OHCI)
 echo NIC      : e1000   USB: OHCI
 echo.
 
+REM ---- ensure the filesystem disk image exists (16 MB, blank; CXFS formats
+REM      it on first boot). make_fs_img.ps1 leaves an existing image untouched. ----
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0make_fs_img.ps1" -Out "%FS%" -SizeMB 16
+
 REM Default machine (i440FX) - the known-good boot environment.
-REM   e1000        : NIC for networking dev
-REM   pci-ohci     : OHCI USB controller (id=ohci) for the USB stack
-REM   usb-storage  : a virtual USB flash drive backed by the USB image, attached
-REM                  to the OHCI controller's bus - the device the USB driver
-REM                  will eventually enumerate and read as EXT-USB0.
+REM   boot disk : IDE index 0 (primary master) - the kernel image
+REM   fs   disk : IDE index 1 (primary slave)  - CXFS data disk (ATA unit 1)
+REM   e1000     : NIC for networking dev
+REM   pci-ohci  : OHCI USB controller for the USB stack
 REM -netdev user is built-in SLIRP (no host setup).
 
 qemu-system-i386 -m 4G ^
     -drive format=raw,file=%BOOT%,if=ide,index=0 ^
+    -drive format=raw,file=%FS%,if=ide,index=1 ^
     -netdev user,id=net0 ^
     -device e1000,netdev=net0 ^
     -device pci-ohci,id=ohci 

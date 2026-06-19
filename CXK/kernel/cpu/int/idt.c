@@ -14,6 +14,7 @@
 
 #include "idt.h"
 #include "format.h"
+#include "sched.h"
 
 void pic_remap(void);
 void pic_send_eoi(uint32_t int_no);
@@ -165,8 +166,11 @@ void irq_handler(struct registers *r) {
     if (handler) handler(r);
     pic_send_eoi(r->int_no);
 
-    /* NOTE: v4 called sched_preempt_point() here on irq 0 for preemptive
-       multitasking. Re-add when the process model is ported. */
+    /* deferred preemption: the timer's sched_tick() may have set need_resched.
+       Perform the actual context switch HERE, after the EOI, so the PIC is
+       ready to deliver the next timer IRQ to the thread we switch to (the
+       EOI-ordering fix). Safe to call always - no-op unless a switch is due. */
+    sched_preempt_point();
 }
 
 void idt_init(void) {

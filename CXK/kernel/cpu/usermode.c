@@ -1,60 +1,82 @@
 /* /CXK/kernel/cpu/usermode.c */
 /* Aurora Tejeda / CATX Systems LLC */
-/* Ring 3 entry, syscall dispatch, and the Stage-1 user-mode test. */
+/* Ring 3 entry, syscall dispatch, and the user-mode tests (Checkpoints 3a/3b). */
 
 #include "usermode.h"
 #include "idt.h"
 #include "gdt.h"
 #include "sched.h"
+#include "uid.h"
 #include "paging.h"
+#include "pmm.h"
 #include "console.h"
 #include "vga.h"
+#include "color.h"
 
-/* asm entry points */
+/* asm entry points (usermode.asm) */
 extern int  enter_usermode(uint32_t entry_eip, uint32_t user_esp, uint32_t *save_slot);
 extern void syscall_stub(void);
 extern void return_to_kernel(int retval, uint32_t *save_slot);
 
-/* dedicated user pages (separate from kernel memory, marked PAGE_USER).
-   chosen in the identity-mapped low region, clear of other DMA users. */
-#define USER_CODE_ADDR   0x00800000u    /* 8 MB: user code page */
-#define USER_STACK_ADDR  0x00801000u    /* 9th page: user stack page */
-#define USER_STACK_TOP   (USER_STACK_ADDR + 0x1000 - 16)
+/* ---- v5 user memory --------------------------------------------------------
+ * v4 mapped user pages identity (virt==phys) at low physical RAM, ASSUMING that
+ * RAM was free. In v5 the pmm owns physical memory, so user pages must be backed
+ * by frames ALLOCATED from the pmm and mapped at user-VIRTUAL addresses (low,
+ * below the kernel's 0xC0000000, so ring 3 can reach them). The kernel copies
+ * the blob in via the user-virtual address - legal because ring 0 may touch
+ * PAGE_USER pages, and the mapping is live in the current address space.
+ *
+ * user virtual layout (per process slot):
+ *   code_virt  = R3_BASE + pid * R3_SLOT_SIZE
+ *   stack_virt = code_virt + 0x1000
+ */
+#define R3_BASE       0x00800000u      /* 8 MB: base of user virtual region */
+#define R3_SLOT_SIZE  0x00010000u      /* 64 KB virtual slot per process */
+#define USER_MSG_OFF  0x800            /* message sits 2KB into the code page */
 
-/* The syscall dispatcher (called from syscall_stub).
-   num = syscall number, a1/a2 = args. Returns the syscall's result. */
-/* validate that a user-supplied buffer [ptr, ptr+len) lies within the mapped
-   user region. With a privilege boundary now in place, the kernel must not
-   blindly dereference pointers handed up from ring 3. (Stage 1: a single fixed
-   user region; per-process address-space checks come with the process model.) */
-/* forward decl: per-process user region lookup (defined with the process code) */
+/* single-test (3a) user virtual addresses (pid-independent fixed slot 0) */
+#define TEST_CODE_VIRT   R3_BASE
+#define TEST_STACK_VIRT  (R3_BASE + 0x1000)
+
+/* map one fresh pmm frame at virtual `virt` (PAGE_USER). returns the physical
+   frame (so it can be freed later), or 0 on failure. */
+static uint32_t map_user_page(uint32_t virt) {
+    uint32_t phys = (uint32_t)pmm_alloc();
+    if (!phys) return 0;
+    paging_map(virt, phys, PAGE_PRESENT | PAGE_WRITE | PAGE_USER);
+    return phys;
+}
+
+static void unmap_user_page(uint32_t virt, uint32_t phys) {
+    paging_unmap(virt);
+    if (phys) pmm_free((void *)phys);
+}
+
+/* ---- syscall pointer validation -------------------------------------------
+ * With a privilege boundary in place, the kernel must not blindly dereference
+ * pointers handed up from ring 3. Validate against the current process's user
+ * region. */
 static int current_user_region(uint32_t *lo, uint32_t *hi);
 
 static int user_ptr_ok(uint32_t ptr, uint32_t len) {
     uint32_t lo, hi;
     if (!current_user_region(&lo, &hi)) {
-        /* legacy single-region path (usermode_test) */
-        lo = USER_CODE_ADDR;
-        hi = USER_STACK_ADDR + 0x1000;
+        lo = TEST_CODE_VIRT;
+        hi = TEST_STACK_VIRT + 0x1000;
     }
     if (len > 0x2000) return 0;
     if (ptr < lo || ptr >= hi) return 0;
-    if (ptr + len < ptr) return 0;            /* overflow */
+    if (ptr + len < ptr) return 0;             /* overflow */
     if (ptr + len > hi) return 0;
     return 1;
 }
 
-/* The syscall dispatcher (called from syscall_stub).
-   num = syscall number, a1/a2 = args. Returns the syscall's result. */
+/* ---- syscall dispatch (called from syscall_stub) ---- */
 int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
     switch (num) {
         case SYS_WRITE: {
-            /* a1 = pointer to a string in user memory, a2 = length (0 = scan to
-               NUL, bounded). Validate the pointer is inside the user region
-               before touching it. */
             uint32_t len = a2;
             if (len == 0) {
-                /* bounded NUL scan within the user region */
                 const char *p = (const char *)a1;
                 while (len < 0x1000 && user_ptr_ok(a1 + len, 1) && p[len]) len++;
             }
@@ -68,94 +90,78 @@ int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
         case SYS_GETUID:
             return (int)thread_current_uid();
         case SYS_EXIT:
-            /* return to the kernel. does not return from here. */
             return_to_kernel((int)a1, thread_current_usave());
             return 0;   /* unreachable */
         default:
             return -1;
     }
-    (void)a2;
 }
 
-/* the position-independent ring-3 routine, defined in usermode.asm */
+/* the position-independent ring-3 routines (usermode.asm) */
 extern uint8_t user_blob_start[];
 extern uint8_t user_blob_end[];
 
-/* the message the user routine prints (placed in the user code page too, so
-   it's user-accessible). */
 static const char user_msg[] = "  [ring3] hello from user mode via syscall!\n";
 
 void usermode_init(void) {
-    /* install the syscall gate: int 0x80, DPL=3 so ring 3 can call it */
+    /* install the syscall gate: int 0x80, DPL=3 so ring 3 can invoke it */
     idt_set_user_gate(0x80, (uint32_t)syscall_stub);
 }
 
+/* ---- Checkpoint 3a: the minimal single-process ring-3 round-trip ---- */
 int usermode_test(void) {
-    /* map a user code page and a user stack page (PAGE_USER so ring 3 can touch
-       them). identity-mapped: virt == phys here. */
-    paging_map(USER_CODE_ADDR,  USER_CODE_ADDR,  PAGE_PRESENT | PAGE_WRITE | PAGE_USER);
-    paging_map(USER_STACK_ADDR, USER_STACK_ADDR, PAGE_PRESENT | PAGE_WRITE | PAGE_USER);
+    /* back the code + stack pages with real pmm frames, mapped user-accessible */
+    uint32_t code_phys  = map_user_page(TEST_CODE_VIRT);
+    uint32_t stack_phys = map_user_page(TEST_STACK_VIRT);
+    if (!code_phys || !stack_phys) {
+        if (code_phys)  unmap_user_page(TEST_CODE_VIRT, code_phys);
+        if (stack_phys) unmap_user_page(TEST_STACK_VIRT, stack_phys);
+        return -1;
+    }
 
-    /* copy the position-independent user routine into the user code page */
+    /* copy the position-independent user routine into the code page */
     uint32_t len = (uint32_t)(user_blob_end - user_blob_start);
-    if (len == 0 || len > 0x800) len = 0x800;
-    uint8_t *dst = (uint8_t *)USER_CODE_ADDR;
+    if (len == 0 || len > USER_MSG_OFF) len = USER_MSG_OFF;
+    uint8_t *dst = (uint8_t *)TEST_CODE_VIRT;
     for (uint32_t i = 0; i < len; i++) dst[i] = user_blob_start[i];
 
-    /* place the message string in the user code page, just after the routine,
-       so it's in user-accessible memory. */
-    char *umsg = (char *)(USER_CODE_ADDR + 0x800);
+    /* place the message just after the routine, in the user-accessible page */
+    char *umsg = (char *)(TEST_CODE_VIRT + USER_MSG_OFF);
     uint32_t i = 0;
     for (; user_msg[i] && i < 0x100; i++) umsg[i] = user_msg[i];
     umsg[i] = '\0';
 
-    /* seed the top of the user stack with the message pointer; the routine
-       reads it via `mov ebx, [esp]`. */
-    uint32_t *ustack = (uint32_t *)USER_STACK_TOP;
-    *ustack = (uint32_t)umsg;
+    /* seed the message pointer at the top of the user stack ([esp] on entry) */
+    uint32_t ustack_top = TEST_STACK_VIRT + 0x1000 - 16;
+    *(uint32_t *)ustack_top = (uint32_t)umsg;
 
-    /* NOTE: the TSS ring-0 stack (esp0) is a DEDICATED stack set up in
-       gdt_init() - deliberately NOT the main kernel stack, so a syscall from
-       ring 3 doesn't clobber the frame enter_usermode saves below. Do not
-       override it here. */
+    /* enter ring 3; returns when the routine SYS_EXITs */
+    int rc = enter_usermode(TEST_CODE_VIRT, ustack_top, thread_current_usave());
 
-    /* enter ring 3 at the copied routine; returns when the routine SYS_EXITs */
-    return enter_usermode(USER_CODE_ADDR, USER_STACK_TOP, thread_current_usave());
+    /* reclaim the user pages */
+    unmap_user_page(TEST_CODE_VIRT, code_phys);
+    unmap_user_page(TEST_STACK_VIRT, stack_phys);
+    return rc;
 }
 
-/* ---- scheduler-integrated ring-3 processes (Checkpoint 3a.2) ----
- * A ring-3 process is a scheduler thread whose entry is process_trampoline().
- * The trampoline maps this process's user pages, copies in its code+message,
- * and drops to ring 3 via enter_usermode. When the user routine SYS_EXITs,
- * enter_usermode returns and the trampoline calls thread_exit() (scheduler
- * reaps it).
- *
- * 3a.2 scope: cooperative (no preemption while in ring 3), so the dedicated
- * TSS esp0 stack set in gdt_init() suffices - only one process is ever mid-
- * syscall at a time. Per-process esp0 comes in 3a.3 (preemptible processes).
- */
-#include "sched.h"
-
+/* ---- Checkpoint 3b: scheduler-integrated ring-3 processes ---- */
 struct ring3_setup {
     const void *blob;
     uint32_t    blob_len;
     const char *msg;
-    uint32_t    code_addr;
-    uint32_t    stack_addr;
+    uint32_t    code_virt;
+    uint32_t    stack_virt;
+    uint32_t    code_phys;     /* pmm frame backing the code page (for free) */
+    uint32_t    stack_phys;    /* pmm frame backing the stack page (for free) */
 };
 static struct ring3_setup r3[MAX_THREADS];
 
-#define R3_BASE      0x00800000u
-#define R3_SLOT_SIZE 0x00010000u   /* 64 KB per process slot */
-
-/* report the [lo, hi) user-accessible region of the CURRENT process, if it is a
-   ring-3 process with a slot assigned. returns 0 if not (use legacy region). */
 static int current_user_region(uint32_t *lo, uint32_t *hi) {
     int pid = thread_current_id();
     if (pid <= 0 || pid >= MAX_THREADS) return 0;
-    if (r3[pid].code_addr == 0) return 0;
-    *lo = r3[pid].code_addr;
-    *hi = r3[pid].stack_addr + 0x1000;
+    if (r3[pid].code_virt == 0) return 0;
+    *lo = r3[pid].code_virt;
+    *hi = r3[pid].stack_virt + 0x1000;
     return 1;
 }
 
@@ -163,25 +169,36 @@ static void process_trampoline(void) {
     int pid = thread_current_id();
     struct ring3_setup *s = &r3[pid];
 
-    paging_map(s->code_addr,  s->code_addr,  PAGE_PRESENT | PAGE_WRITE | PAGE_USER);
-    paging_map(s->stack_addr, s->stack_addr, PAGE_PRESENT | PAGE_WRITE | PAGE_USER);
+    /* back this process's pages with pmm frames, mapped user-accessible */
+    s->code_phys  = map_user_page(s->code_virt);
+    s->stack_phys = map_user_page(s->stack_virt);
+    if (!s->code_phys || !s->stack_phys) {
+        if (s->code_phys)  unmap_user_page(s->code_virt, s->code_phys);
+        if (s->stack_phys) unmap_user_page(s->stack_virt, s->stack_phys);
+        console_err("ring3: out of memory for user pages");
+        thread_exit();
+    }
 
     uint32_t len = s->blob_len;
-    if (len == 0 || len > 0x800) len = 0x800;
-    uint8_t *dst = (uint8_t *)s->code_addr;
+    if (len == 0 || len > USER_MSG_OFF) len = USER_MSG_OFF;
+    uint8_t *dst = (uint8_t *)s->code_virt;
     const uint8_t *src = (const uint8_t *)s->blob;
     for (uint32_t i = 0; i < len; i++) dst[i] = src[i];
 
-    char *umsg = (char *)(s->code_addr + 0x800);
+    char *umsg = (char *)(s->code_virt + USER_MSG_OFF);
     uint32_t i = 0;
     if (s->msg) { for (; s->msg[i] && i < 0x100; i++) umsg[i] = s->msg[i]; }
     umsg[i] = '\0';
 
-    uint32_t ustack_top = s->stack_addr + 0x1000 - 16;
+    uint32_t ustack_top = s->stack_virt + 0x1000 - 16;
     *(uint32_t *)ustack_top = (uint32_t)umsg;
 
-    enter_usermode(s->code_addr, ustack_top, thread_current_usave());   /* -> ring 3; returns on SYS_EXIT */
+    enter_usermode(s->code_virt, ustack_top, thread_current_usave());
 
+    /* user routine SYS_EXITed: reclaim its pages, then leave the scheduler. */
+    unmap_user_page(s->code_virt, s->code_phys);
+    unmap_user_page(s->stack_virt, s->stack_phys);
+    s->code_virt = 0;
     thread_exit();   /* never returns */
 }
 
@@ -190,37 +207,50 @@ int process_create_ring3(const char *name,
                          const char *msg) {
     int pid = thread_create(name, process_trampoline);
     if (pid < 0) return -1;
-    /* give this process its own esp0 stack so syscalls/preemption from ring 3
-       land on it, separate from the trampoline's stack. */
-    if (thread_alloc_kstack(pid) < 0) { return -1; }
+    if (thread_alloc_kstack(pid) < 0) return -1;
     r3[pid].blob       = blob;
     r3[pid].blob_len   = blob_len;
     r3[pid].msg        = msg;
-    r3[pid].code_addr  = R3_BASE + (uint32_t)pid * R3_SLOT_SIZE;
-    r3[pid].stack_addr = R3_BASE + (uint32_t)pid * R3_SLOT_SIZE + 0x1000;
+    r3[pid].code_virt  = R3_BASE + (uint32_t)pid * R3_SLOT_SIZE;
+    r3[pid].stack_virt = r3[pid].code_virt + 0x1000;
+    r3[pid].code_phys  = 0;
+    r3[pid].stack_phys = 0;
     thread_mark_user(pid);
+    /* runs as SYSTEM: this is the kernel launching a ring-3 helper as the
+       machine identity. To launch on behalf of a human user, use
+       process_create_ring3_as_user(). */
+    return pid;
+}
+
+/* Launch a ring-3 process owned by a specific user. Enforces the core identity
+   invariant: a user is ALWAYS UID >= 1 - launching a user process as UID 0
+   (SYSTEM) is rejected. Returns the pid, or -1 (incl. if uid == SYSTEM). */
+int process_create_ring3_as_user(const char *name,
+                                 const void *blob, uint32_t blob_len,
+                                 const char *msg, uint32_t uid) {
+    if (!uid_is_user(uid)) return -1;   /* user can never be UID 0 / invalid */
+    int pid = process_create_ring3(name, blob, blob_len, msg);
+    if (pid < 0) return -1;
+    /* pid is already marked is_user by process_create_ring3, so thread_set_uid's
+       guard would block UID 0 here too - but uid is validated >= 1 above. */
+    thread_set_uid(pid, uid);
     return pid;
 }
 
 /* ---- user fault handler (registered with the IDT) ----
- * Called when a CPU exception occurs while in ring 3. Instead of panicking the
- * kernel, we kill the offending process and let the scheduler move on. This is
- * what keeps a buggy user program from taking down the whole system.
- */
+ * A CPU exception while in ring 3 kills the offending process instead of
+ * panicking the kernel - a buggy user program can't take the system down. */
 static void usermode_fault(struct registers *r) {
     int pid = thread_current_id();
-    console_set_color(VGA_BROWN, VGA_BLACK);
-    console_print("\n[kernel] user process ");
-    console_print_dec((uint32_t)pid);
-    console_print(" faulted (exc ");
-    console_print_dec(r->int_no);
-    console_print(") - terminated.\n");
-    console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+    console_set_color(VGA_ATTR(VGA_BROWN, VGA_BLACK));
+    console_puts("\n[kernel] user process ");
+    console_put_u32((uint32_t)pid);
+    console_puts(" faulted (exc ");
+    console_put_u32(r->int_no);
+    console_puts(") - terminated.\n");
+    console_set_color(VGA_ATTR(VGA_LIGHT_GREY, VGA_BLACK));
 
-    /* terminate the faulting process; thread_exit switches away and never
-       returns, so the kernel survives and other processes continue. */
-    thread_exit();
-    /* not reached */
+    thread_exit();   /* switches away, never returns; kernel survives */
 }
 
 void usermode_register_fault_handler(void) {
