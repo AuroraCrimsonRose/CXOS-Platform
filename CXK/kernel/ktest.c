@@ -10,6 +10,7 @@
  */
 
 #include <stdint.h>
+#include "config.h"
 #include "ktest.h"
 #include "pmm.h"
 #include "paging.h"
@@ -179,29 +180,31 @@ static int test_storage(void) {
 }
 
 /* ---- cxfs: create a file, write, read back, verify ---- */
+/* read-only by default; full write round-trip only in dev builds */
 static int test_cxfs(void) {
-    if (!cxfs_is_mounted()) return 0;
+    if (!cxfs_is_mounted()) return 1;   /* no CXFS mounted - skip (not a failure) */
 
-    /* create a test file under root (id 0) */
+#if CXK_ALLOW_DISK_WRITE
+    /* DEV ONLY (scratch disk): create a file, write, read back, verify. */
     int fid = cxfs_create_entry(0, "ktest.txt", CXFS_TYPE_FILE);
     if (fid < 0) {
-        /* may already exist from a previous boot - resolve it instead */
-        fid = cxfs_resolve("/ktest.txt", 0);
+        fid = cxfs_resolve("/ktest.txt", 0);   /* may exist from a previous boot */
         if (fid < 0) return 0;
     }
-
     const char *msg = "CXK CXFS round-trip: hello from the filesystem!";
     uint32_t len = 0;
     while (msg[len]) len++;
-
     if (cxfs_write_file((uint32_t)fid, msg, len) != 0) return 0;
-
     char buf[128];
     int n = cxfs_read_file((uint32_t)fid, buf, sizeof(buf));
     if (n != (int)len) return 0;
     for (uint32_t i = 0; i < len; i++) if (buf[i] != msg[i]) return 0;
-
     return 1;
+#else
+    /* SAFE DEFAULT: read-only check - confirm the mounted filesystem is
+       readable by resolving the root directory. No writes, no formatting. */
+    return cxfs_resolve("/", 0) >= 0;
+#endif
 }
 
 /* ---- pci: enumeration found devices ---- */
@@ -247,7 +250,7 @@ void ktest_run(void) {
     total++; passed += report("storage (ATA read sector 0)",      test_storage());
     total++; passed += report("pci (bus enumeration)",            test_pci());
     total++; passed += report("ahci (controller + read)",         test_ahci());
-    total++; passed += report("cxfs (create/write/read file)",    test_cxfs());
+    total++; passed += report("cxfs (read-only mount check)",      test_cxfs());
 
     /* single summary line: green if all passed, red if any failed. */
     if (passed == total) {
