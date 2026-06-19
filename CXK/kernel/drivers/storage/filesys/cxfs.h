@@ -26,11 +26,18 @@
 #include <stdint.h>
 
 #define CXFS_MAGIC        0x43584653u   /* "CXFS" */
-#define CXFS_VERSION      1
-#define CXFS_BLOCK_SIZE   512
+#define CXFS_VERSION      2
+#define CXFS_BLOCK_SIZE   4096          /* v2: 4KB page-aligned blocks */
 #define CXFS_NAME_LEN     64
-#define CXFS_MAX_EXTENTS  4
+#define CXFS_MAX_EXTENTS  8             /* v2: 8 extents */
+#define CXFS_ENTRY_SIZE   256           /* v2: 256-byte manifest entries */
 #define CXFS_DISK_DEFAULT 1            /* default ata drive (primary slave) */
+
+/* v2 feature flags (superblock feature_flags) */
+#define CXFS_FEAT_TIMESTAMPS 0x01
+#define CXFS_FEAT_PERMS      0x02
+#define CXFS_FEAT_LOCKING    0x04
+#define CXFS_FEAT_LARGE_BLK  0x08
 /* The active CXFS target drive is runtime-settable (so the same build works
    on emulators, where the fs disk is drive 1, and on real hardware where it
    may be on another channel/port, e.g. drive 3). */
@@ -43,38 +50,47 @@
 /* superblock - block 0 - the master manifest header */
 struct cxfs_superblock {
     uint32_t magic;            /* CXFS_MAGIC */
-    uint16_t version;          /* CXFS_VERSION */
-    uint16_t block_size;       /* 512 */
-    uint32_t total_blocks;     /* total blocks on the disk */
+    uint16_t version;          /* CXFS_VERSION (2) */
+    uint16_t block_size;       /* 4096 (authoritative) */
+    uint64_t base_lba;         /* partition offset in 512B sectors; 0 = whole disk */
+    uint32_t total_blocks;     /* total blocks in the volume */
     uint32_t bitmap_start;     /* first block of the allocation bitmap */
     uint32_t bitmap_blocks;    /* blocks used by the bitmap */
     uint32_t manifest_start;   /* first block of the manifest table */
     uint32_t manifest_blocks;  /* blocks used by the manifest */
     uint32_t manifest_count;   /* max entries */
     uint32_t data_start;       /* first data block */
-    uint32_t reserved_blocks;  /* system-reserved data blocks (full-disk safety) */
-    uint32_t root_id;          /* manifest id of the root directory */
-    uint8_t  pad[512 - 44];    /* fill the block */
+    uint32_t reserved_blocks;  /* system-reserved data blocks */
+    uint32_t root_id;          /* manifest id of the root directory (0) */
+    uint32_t feature_flags;    /* CXFS_FEAT_* active features */
+    uint64_t created;          /* volume creation timestamp */
+    uint64_t modified;         /* superblock last-write timestamp */
+    uint32_t entry_size;       /* bytes per manifest entry (256) */
+    uint8_t  pad[CXFS_BLOCK_SIZE - 76];  /* fill the 4KB block */
 } __attribute__((packed));
 
-/* one manifest entry - a file or directory. 128 bytes. */
+/* one manifest entry - a file or directory. 256 bytes (v2). */
 struct cxfs_entry {
     uint32_t id;                          /* this entry's id (table index) */
-    uint32_t parent_id;                   /* containing dir's id (move = change this) */
+    uint32_t parent_id;                   /* containing dir's id */
     uint8_t  type;                        /* CXFS_TYPE_* */
-    uint8_t  flags;                       /* reserved misc flags */
-    uint8_t  pad0[2];
+    uint8_t  flags;                       /* misc flags */
+    uint8_t  name_len;                    /* length of name */
+    uint8_t  reserved0;                   /* align */
     char     name[CXFS_NAME_LEN];         /* 64, case-preserved */
-    uint32_t size;                        /* file size in bytes */
-    uint32_t extent_start[CXFS_MAX_EXTENTS]; /* extent start blocks */
-    uint32_t extent_len[CXFS_MAX_EXTENTS];   /* extent lengths (blocks) */
-    /* --- RESERVED for v2 (need user/process model) --- */
-    uint32_t owner_uid;                   /* 0 = SYSTEM for now */
-    uint32_t group_id;
-    uint16_t permissions;
-    uint8_t  lock_state;                  /* 0 = unlocked */
-    uint8_t  reserved_pad;
-    uint8_t  pad1[128 - 124];             /* pad to 128 bytes */
+    uint64_t size;                        /* file size in bytes (64-bit) */
+    uint32_t extent_start[CXFS_MAX_EXTENTS]; /* 8 extent start blocks */
+    uint32_t extent_len[CXFS_MAX_EXTENTS];   /* 8 extent lengths (blocks) */
+    uint32_t owner_uid;                   /* 0 = SYSTEM */
+    uint32_t group_id;                    /* 0 = system group */
+    uint16_t permissions;                 /* rwx owner/group/other */
+    uint8_t  lock_state;                  /* 0 unlocked, 1 advisory write-lock */
+    uint8_t  lock_pad;
+    uint32_t lock_owner_pid;              /* process holding the lock (0 = none) */
+    uint64_t created;                     /* timestamps (epoch seconds) */
+    uint64_t modified;
+    uint64_t accessed;
+    uint8_t  pad1[CXFS_ENTRY_SIZE - 188]; /* pad to 256 bytes */
 } __attribute__((packed));
 
 /* initialize a blank CXFS on the filesystem disk. returns 0 on success. */

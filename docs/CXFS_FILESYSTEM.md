@@ -1,352 +1,242 @@
-# CXFS — The CXOS Filesystem (v1 Standard)
-### CXK Reference — Aurora Tejeda / CATX SYSTEMS LLC
+# CXFS — CX File System (v2 Specification)
 
-This document specifies the on-disk format of **CXFS version 1**, the native
-filesystem of CXK. It is intended as a reference for anyone reading or writing
-CXFS volumes.
+**CATX Systems LLC — Aurora Tejeda**
+On-disk format specification for CXFS version 2.
 
-> **Status:** v1 is implemented and in use. Several entry fields (ownership,
-> group, permissions, locks) are **reserved** in v1 — they exist on disk but
-> are zeroed and not enforced until v2, once CXK has a user/process model.
-
----
-
-## 1. Design Overview
-
-CXFS is a **manifest-based** filesystem. The core idea:
-
-- The on-disk **manifest** — a flat table of fixed-size entries — is the single
-  source of truth for everything on the volume.
-- The directory tree is **derived**, not stored as nested structures: each entry
-  records its `parent_id`, and the hierarchy is reconstructed from those links.
-- **Moving** a file or directory changes only its `parent_id`. The file's data
-  blocks never move.
-
-File contents are stored using **extents** (contiguous runs of blocks) rather
-than per-block linked lists, which keeps small files fast and simple.
-
-Names are **case-preserving but case-insensitive**: `Readme.txt` and
-`readme.txt` are the same name, but the original casing is retained.
+CXFS is the native filesystem of CXOS. This document defines the **v2** on-disk
+layout: the byte-exact structures a conforming reader/writer must produce and
+interpret. v2 is a clean break from v1 (no migration path is provided or
+required); existing v1 volumes must be reformatted.
 
 ---
 
-## 2. Volume Layout
+## 1. Design goals (v2)
 
-A CXFS volume is divided into 512-byte blocks, laid out in this order:
+- **4 KB block size**, page-aligned, so a filesystem block equals one CPU page
+  (clean for future memory-mapped files). The block size is **stored in the
+  superblock**, not hardcoded — a future large-volume profile (**CXFSX**) is the
+  same format with a larger block-size value, not a new filesystem.
+- **Partition-aware.** All block I/O goes through a **base LBA offset** so a
+  CXFS volume may live inside a partition (GPT now, others later) rather than
+  owning the whole disk. `base_lba = 0` means whole-disk.
+- **64-bit disk addressing** for placement (a volume can sit anywhere on a large
+  disk), with **32-bit internal block numbers** — a practical ceiling of
+  **16 TB** per volume at 4 KB blocks, keeping on-disk structures compact.
+- **Ownership, permissions, timestamps, and advisory locking** as first-class
+  per-entry metadata (the fields v1 reserved are now defined and used).
+- **No backward compatibility with v1.** The version field gates this.
+
+---
+
+## 2. Units and conventions
+
+- All multi-byte integers are **little-endian**.
+- **Sector** = 512 bytes (the disk's native unit, via the block device layer).
+- **Block** = the CXFS allocation unit = `block_size` bytes (4096 in the
+  standard profile). One 4 KB block = 8 sectors.
+- **Block numbers** are 32-bit, relative to the start of the volume (block 0 is
+  the superblock). To reach the disk, a reader computes:
+
+  ```
+  disk_lba = base_lba + (block_number * (block_size / 512))
+  ```
+
+  where `base_lba` is the volume's partition offset (superblock field).
+- **Entry id** = an index into the manifest table. Id 0 is the root directory.
+- Structures are `__attribute__((packed))`; no implicit padding beyond the
+  explicit pad fields shown.
+
+---
+
+## 3. Volume layout
+
+A CXFS volume is a contiguous run of blocks, in this order:
 
 ```
-+-----------+  block 0
-| Superblock|              master header (one block)
-+-----------+  bitmap_start
-| Bitmap    |              allocation bitmap (bitmap_blocks blocks)
-+-----------+  manifest_start
-| Manifest  |              entry table (manifest_blocks blocks)
-+-----------+  data_start
-| Data      |              file content blocks (extents allocate from here)
-|   ...     |
-+-----------+
+ block 0            : Superblock
+ bitmap_start ..    : Allocation bitmap (1 bit per block; 1 = used)
+ manifest_start ..  : Manifest table (fixed array of 256-byte entries)
+ data_start ..      : File/directory data blocks
 ```
 
-The superblock records the start block and size of each region, so a reader
-locates everything from block 0.
-
-| Constant | Value | Meaning |
-|----------|-------|---------|
-| Magic | `0x43584653` (`"CXFS"`) | identifies a CXFS volume |
-| Version | `1` | this specification |
-| Block size | `512` bytes | fixed in v1 |
-| Name length | `64` bytes | max filename, NUL-padded |
-| Max extents | `4` | per file in v1 |
+All four regions are located by superblock fields, so the exact block numbers
+are not fixed by this spec — only their order and the superblock that describes
+them. Block 0 is always the superblock.
 
 ---
 
-## 3. Superblock (block 0)
+## 4. Superblock
 
-The superblock is exactly one 512-byte block. All multi-byte integers are
-little-endian (native x86).
+Located at volume block 0 (disk LBA `base_lba`). One block in size; the defined
+fields occupy the first portion and the remainder is reserved (zero-filled).
 
-| Offset | Size | Field | Description |
-|--------|------|-------|-------------|
-| 0  | 4 | `magic` | `0x43584653` (`"CXFS"`) |
-| 4  | 2 | `version` | format version (`1`) |
-| 6  | 2 | `block_size` | bytes per block (`512`) |
-| 8  | 4 | `total_blocks` | total blocks on the volume |
-| 12 | 4 | `bitmap_start` | first block of the allocation bitmap |
-| 16 | 4 | `bitmap_blocks` | blocks occupied by the bitmap |
-| 20 | 4 | `manifest_start` | first block of the manifest table |
-| 24 | 4 | `manifest_blocks` | blocks occupied by the manifest |
-| 28 | 4 | `manifest_count` | maximum number of manifest entries |
-| 32 | 4 | `data_start` | first data block |
-| 36 | 4 | `reserved_blocks` | system-reserved data blocks (full-disk safety) |
-| 40 | 4 | `root_id` | manifest id of the root directory |
-| 44 | 468 | `pad` | zero padding to fill the block |
+| Offset | Size | Field             | Notes                                            |
+|-------:|-----:|-------------------|--------------------------------------------------|
+| 0x00   | 4    | `magic`           | `0x43584653` (`"CXFS"`)                          |
+| 0x04   | 2    | `version`         | `2` for this spec                                |
+| 0x06   | 2    | `block_size`      | bytes per block; **4096** standard (authoritative) |
+| 0x08   | 8    | `base_lba`        | partition offset in 512-byte sectors; 0 = whole disk |
+| 0x10   | 4    | `total_blocks`    | total blocks in the volume                       |
+| 0x14   | 4    | `bitmap_start`    | first block of the allocation bitmap             |
+| 0x18   | 4    | `bitmap_blocks`   | blocks occupied by the bitmap                    |
+| 0x1C   | 4    | `manifest_start`  | first block of the manifest table                |
+| 0x20   | 4    | `manifest_blocks` | blocks occupied by the manifest                  |
+| 0x24   | 4    | `manifest_count`  | number of entry slots in the manifest            |
+| 0x28   | 4    | `data_start`      | first data block                                 |
+| 0x2C   | 4    | `reserved_blocks` | data blocks held in reserve (full-disk safety)   |
+| 0x30   | 4    | `root_id`         | manifest id of the root directory (always 0)     |
+| 0x34   | 4    | `feature_flags`   | bitfield of active v2 features (see §7)          |
+| 0x38   | 8    | `created`         | volume creation timestamp                        |
+| 0x40   | 8    | `modified`        | last-modified (superblock write) timestamp       |
+| 0x48   | 4    | `entry_size`      | bytes per manifest entry; **256** standard       |
+| 0x4C   | …    | reserved          | zero-filled to the end of the block              |
 
-To **mount** a volume: read block 0, verify `magic` and `version`.
-
----
-
-## 4. Allocation Bitmap
-
-A bitmap of data-block usage, starting at `bitmap_start`. Each bit represents one
-data block: `1` = allocated, `0` = free. Block `0` (the superblock) is never a
-valid data block, so a returned data-block number of `0` always means
-"allocation failed."
-
-`reserved_blocks` data blocks are held back as a safety margin so the volume
-cannot be filled completely.
+Notes:
+- `block_size` and `entry_size` are stored so future profiles (CXFSX, or larger
+  entries) are described by the volume itself, never assumed by the reader.
+- A reader **must** reject a volume whose `version` it does not implement, and
+  **must not** write to a volume it cannot fully interpret.
 
 ---
 
-## 5. Manifest Entries
+## 5. Allocation bitmap
 
-The manifest is an array of fixed **128-byte** entries beginning at
-`manifest_start`. An entry's `id` is its index in this array. Entry types:
-
-| Type | Value | Meaning |
-|------|-------|---------|
-| `CXFS_TYPE_FREE` | 0 | unused slot |
-| `CXFS_TYPE_FILE` | 1 | regular file |
-| `CXFS_TYPE_DIR`  | 2 | directory |
-
-### Entry structure (128 bytes)
-
-| Offset | Size | Field | Description |
-|--------|------|-------|-------------|
-| 0   | 4  | `id` | this entry's id (its index in the table) |
-| 4   | 4  | `parent_id` | id of the containing directory (move = change this) |
-| 8   | 1  | `type` | `CXFS_TYPE_*` |
-| 9   | 1  | `flags` | reserved misc flags |
-| 10  | 2  | `pad0` | padding |
-| 12  | 64 | `name` | filename, case-preserved, NUL-padded |
-| 76  | 4  | `size` | file size in bytes |
-| 80  | 16 | `extent_start[4]` | start block of each of up to 4 extents |
-| 96  | 16 | `extent_len[4]` | length (in blocks) of each extent |
-| 112 | 4  | `owner_uid` | **reserved (v2)** — 0 = SYSTEM for now |
-| 116 | 4  | `group_id` | **reserved (v2)** |
-| 120 | 2  | `permissions` | **reserved (v2)** |
-| 122 | 1  | `lock_state` | **reserved (v2)** — 0 = unlocked |
-| 123 | 1  | `reserved_pad` | reserved |
-| 124 | 4  | `pad1` | padding to 128 bytes |
-
-The **root directory** is the entry whose id equals the superblock's `root_id`;
-its `parent_id` refers to itself (it has no parent).
+- One bit per block in the volume, LSB-first within each byte.
+- Bit value `1` = block in use, `0` = free.
+- Blocks for the superblock, bitmap, and manifest are marked used at format
+  time. Data allocation never returns block 0.
+- Size: `ceil(total_blocks / 8)` bytes, rounded up to whole blocks
+  (`bitmap_blocks`).
 
 ---
 
-## 6. File Content (Extents)
+## 6. Manifest entry (256 bytes)
 
-A file's data is stored as up to **4 extents**, each a contiguous run of data
-blocks described by an `(extent_start, extent_len)` pair. To read a file, walk
-its extents in order until `size` bytes have been consumed. Unused extents have
-`extent_len = 0`.
+The manifest is a fixed array of `manifest_count` entries, each `entry_size`
+(256) bytes. Entry id = array index. A `type` of `CXFS_TYPE_FREE` (0) marks an
+unused slot. Root is id 0 (a directory whose `parent_id` is itself).
 
-Because v1 caps a file at 4 extents, a file that cannot be represented in 4
-contiguous runs (severe fragmentation, or simply too large) will fail to write.
-This is a known v1 limitation; later versions may add indirect extents or a
-larger extent count.
+| Offset | Size | Field            | Notes                                              |
+|-------:|-----:|------------------|----------------------------------------------------|
+| 0x00   | 4    | `id`             | this entry's id (== its index)                     |
+| 0x04   | 4    | `parent_id`      | containing directory's id (move = change this)     |
+| 0x08   | 1    | `type`           | 0 free, 1 file, 2 directory                        |
+| 0x09   | 1    | `flags`          | misc flags (reserved)                              |
+| 0x0A   | 1    | `name_len`       | length of `name` in bytes (0..63)                  |
+| 0x0B   | 1    | `reserved0`      | alignment                                          |
+| 0x0C   | 64   | `name`           | case-preserved filename, not NUL-required          |
+| 0x4C   | 8    | `size`           | file size in bytes (64-bit; dirs use 0)            |
+| 0x54   | 32   | `extent_start[8]`| 8 × uint32 extent start block numbers              |
+| 0x74   | 32   | `extent_len[8]`  | 8 × uint32 extent lengths (in blocks)              |
+| 0x94   | 4    | `owner_uid`      | owning user (0 = SYSTEM; users ≥ 1)                |
+| 0x98   | 4    | `group_id`       | owning group (0 = system group)                    |
+| 0x9C   | 2    | `permissions`    | permission bits (see §6.2)                         |
+| 0x9E   | 1    | `lock_state`     | 0 unlocked, 1 advisory write-lock (see §6.3)       |
+| 0x9F   | 1    | `lock_pad`       | alignment                                          |
+| 0xA0   | 4    | `lock_owner_pid` | process holding the advisory lock (0 = none)       |
+| 0xA4   | 8    | `created`        | creation timestamp                                 |
+| 0xAC   | 8    | `modified`       | last-modified timestamp                            |
+| 0xB4   | 8    | `accessed`       | last-accessed timestamp                            |
+| 0xBC   | 68   | reserved         | zero-filled to 256 bytes (future metadata)         |
 
----
+With 256-byte entries, **16 entries fit per 4 KB block**.
 
-## 7. Names
+### 6.1 Extents
 
-- Maximum 64 bytes, NUL-padded.
-- Case-insensitive for lookups, but the original casing is preserved on disk.
-- Spaces are normalized to underscores (`_`) on creation.
-- `/` and control characters are illegal; an empty name is invalid.
+File content is stored as up to **8 extents**, each a `(start_block, length)`
+run of contiguous blocks. Total capacity per file in v2 is therefore bounded by
+8 contiguous runs; larger/fragmented files are a future extension (an indirect
+extent block) and are out of scope for v2's first implementation. Directories
+store no data via extents in v2 — directory membership is derived by scanning
+the manifest for entries whose `parent_id` matches.
 
----
+### 6.2 Permissions
 
-## 8. Path Resolution
-
-Paths may be **absolute** (`/a/b/c`) or **relative** to a current directory.
-`.` (current) and `..` (parent) are supported. Resolution walks the manifest by
-matching each path component against the children of the current directory
-(entries whose `parent_id` equals the current directory's id).
-
----
-
-## 9. Reserved for v2
-
-These exist on disk now (zeroed) and will be enforced once CXK has a
-user/process model:
-
-- `owner_uid`, `group_id` — ownership
-- `permissions` — access control
-- `lock_state` — file locking
-
-Until then, all entries are owned by SYSTEM (uid 0), unlocked, and unrestricted.
-
----
-
-## 10. Implementation Notes
-
-- CXFS operates on a block device through the unified **disk registry**, so a
-  CXFS volume can live on any registered disk (ATA, AHCI, or USB), selected by
-  disk id at runtime.
-- The default target is ATA drive 1 (the filesystem disk) in emulators; on real
-  hardware the volume may be on another channel and is selected at runtime.
-- All integers are little-endian.
-
----
-
-## 11. CXFS v2 — Goal & Direction
-
-> **Status:** Design goal / north-star. v1 is the implemented base; v2 is the
-> target the design evolves toward now that CXK has a user/process model (see
-> `PROCESS_MODEL.md`). This section records the intended end-state. It is an
-> **evolution of the v1 manifest**, not a new on-disk format — most of v2 is
-> activating reserved fields and layering policy on top of the existing
-> manifest.
-
-**The v2 goal in one sentence:** a manifest-based filesystem where the manifest
-is the source of truth; the OS is **User 0 / SYSTEM** (a machine identity, not
-an account); human users have UIDs with **owner / group / system** permission
-evaluation; `/System` is protected; files carry ownership, permissions, and
-**process-leased locks**; storage uses extents with real free-space management;
-and `/Mount` exposes each physical disk (each with its own Master Manifest) as a
-named device.
-
-### 11.1 Identity model
-
-- **User 0 is SYSTEM** — the machine identity / OS execution context, *not* a
-  human account. Kernel threads and the boot context run as SYSTEM. SYSTEM may
-  override protections (write OS-critical files, override locks).
-- **Human users** have UIDs ≥ 1, living under `/Users`.
-- Privilege is determined by **role / permission level**, not by the numeric UID
-  — UID 0 being SYSTEM is a convention, not a magic privilege number.
-- *(Foundation in place: processes now carry an owning UID; `current_uid()` /
-  `SYS_GETUID` report it. The account layer that assigns human UIDs comes later.)*
-
-### 11.2 Standard directory layout (convention over the manifest)
+`permissions` is a 16-bit field. The low 9 bits follow the familiar
+owner/group/other × read/write/execute model:
 
 ```
-/                      (root of the OS disk)
-├── System             OS-owned; protected
-│   ├── Shared         readable by all users
-│   ├── Drivers        SYSTEM write only
-│   ├── x86            SYSTEM write only
-│   ├── Temp
-│   ├── Config
-│   └── Security       SYSTEM write only
-├── Users
-│   └── <user>
-│       ├── Home
-│       ├── Media
-│       ├── Temp
-│       └── Shared     link to /System/Shared
-└── Mount              storage device mount points
+ bit  8 7 6   5 4 3   2 1 0
+      r w x   r w x   r w x
+      owner   group   other
 ```
 
-### 11.3 Permissions
+Upper bits (9..15) are reserved. **Enforcement** of permissions is a kernel
+behavior layered on top of this format; the on-disk bits are defined here, the
+checking logic is implemented in the driver. Until the OS has a full
+user/session model, SYSTEM (uid 0) bypasses checks.
 
-Access is evaluated in order: **(1) system context (User 0)** → **(2) owner** →
-**(3) group** → **(4) other**. `/System` enforces protected rules: OS-critical
-folders (`Drivers`, `x86`, `Security`) are SYSTEM-write-only; `Shared` is
-readable by all.
+### 6.3 Advisory locking
 
-### 11.4 Locks (process-leased)
-
-Each entry has a `lock_state` (LOCKED / UNLOCKED). A write to a LOCKED file is
-denied; SYSTEM can override. **Locks are leased to the holding process**: the
-lock records the owning PID, and when that process exits or is reaped, its locks
-are released automatically. This prevents the "a crashed program leaves a file
-locked forever" problem — and ties directly into the scheduler's reaper.
-
-### 11.5 Storage & free space
-
-- Variable-sized **extent** allocation (v1 already stores extents).
-- Real **free-space management** and allocation tracking in the manifest.
-- **Fragmentation avoidance** in the allocator (esp. for HDD/ATA), with a
-  **defrag tool** planned later.
-- A **reserved system region** on the OS's main disk, so the system keeps
-  functioning even when the disk is otherwise full (shown in the tree as a
-  reserved/system area).
-
-### 11.6 Mount system
-
-`/Mount` exposes each storage device under a raw system name (`SSD0`, `HDD0`,
-`NVME0`, `USB0`, `CDROM0`, …). Each device carries its **own Master Manifest**;
-the filesystem is defined by the manifest, not physical layout.
-
-### 11.6.1 Partition model — isolated boot/kernel partition
-
-The OS disk is **partitioned**, with the bootloader and kernel living on a
-**separate partition** from the main OS/data partition:
-
-```
-OS disk
-├── [Boot/Kernel partition]   bootloader stages + kernel binary (+ boot files)
-│        - NOT normally mounted or visible to users
-│        - mountable on demand (SYSTEM only) for inspection / update
-│
-└── [Main partition]          the CXFS OS volume, mounted at /
-         ├── System/          protected OS folder (see 11.2) - on the MAIN
-         │                     partition; NOT a mount point for the boot partition
-         ├── Users/
-         └── Mount/
-```
-
-**Rationale — repair without data loss.** Keeping boot/kernel on their own
-partition means the kernel install can be repaired or replaced **independently
-of the main partition**. If the kernel is corrupted or "nuked," reflashing the
-boot/kernel partition fixes the install while the main partition — all user data
-and OS files — is left completely untouched. (Same reasoning as a separate
-`/boot` or recovery partition on conventional systems.)
-
-Note that `/System` is **not** this partition — `/System` remains a protected
-*folder on the main partition* (§11.2). The boot/kernel partition is a distinct,
-normally-hidden volume.
-
-### 11.6.2 Kernel update in place (goal; mechanism TBD)
-
-A long-term goal is to **update the kernel in place**: write a new kernel to the
-boot/kernel partition so the next boot picks it up, without a full reinstall.
-The boot-bootstrap mechanism is **deliberately left open** until the boot/install
-work is tackled — two paths to weigh then:
-
-- **(a) Filesystem-aware boot:** the bootloader reads the boot partition's
-  filesystem to locate and load the kernel as a named file. Cleanest "kernel as
-  a file" model, but requires a minimal filesystem reader in boot-time code.
-- **(b) Known-offset boot:** the bootloader loads the kernel from a fixed
-  location in the boot partition; the running OS still manages/updates it as a
-  file. Simpler boot path; the file view is an OS-side convenience.
-
-Because the boot partition is isolated, a robust update scheme (e.g. fallback /
-A-B kernel slots so a half-written kernel can't brick the machine) is a natural
-later refinement.
-
-### 11.7 Linking
-
-`/System/Shared` is the primary shared store; `/Users/<user>/Shared` is a
-**manifest link** to it — no data duplication, only a reference entry.
-
-### 11.8 Data hygiene (later)
-
-- Tool to **zero out free blocks** (data not referenced by the manifest).
-- **Deletion** = remove the entry from the manifest; the freed blocks are simply
-  available to be overwritten.
-- **Optional secure-delete** config: when enabled, deletion also clears the
-  on-disk data, not just the manifest entry.
-
-### 11.9 Scaling (later)
-
-- **Sub-manifests** linked to the Master Manifest, so reads on a full/large disk
-  aren't bottlenecked by one huge manifest.
-- The system reports occupied-but-inaccessible space (the manifests themselves)
-  as **system space** so accounting stays honest.
-
-### 11.10 Build order
-
-The foundation lands first (done): processes carry a UID, SYSTEM = User 0.
-From there the intended order is: process-leased locks -> ownership + permission
-evaluation -> the `/System` `/Users` `/Mount` layout and protection -> mount /
-multi-disk support -> disk partitioning + the isolated boot/kernel partition
-(11.6.1) -> program loading from CXFS -> kernel update in place (11.6.2) -> the
-later hygiene/scaling tools. Each step is incremental and testable on top of the
-v1 manifest. The partition / boot work depends on the mount system being in
-place first (the boot partition is "mountable on demand").
+`lock_state = 1` marks an **advisory** write lock: a cooperating writer sets it
+(recording its pid in `lock_owner_pid`) to signal "in use — don't edit," and
+other cooperating writers honor it. It is **advisory**, not enforced by the
+hardware or paging — a non-cooperating writer is not prevented from writing. A
+reader must treat a lock whose `lock_owner_pid` no longer corresponds to a live
+process as stale (the driver clears stale locks). Range locks and richer lock
+modes are reserved for a future revision (the field has headroom).
 
 ---
 
-*CXFS v1 is the implemented base; v2 (this section) is the design goal it
-evolves toward, layered on the same manifest.*
+## 7. Feature flags
+
+`feature_flags` in the superblock records which optional v2 behaviors a volume
+was written with, so a reader can refuse a volume using features it lacks:
+
+| Bit | Name              | Meaning                                       |
+|----:|-------------------|-----------------------------------------------|
+| 0   | `FEAT_TIMESTAMPS` | entry timestamps are maintained               |
+| 1   | `FEAT_PERMS`      | ownership/permission bits are meaningful      |
+| 2   | `FEAT_LOCKING`    | advisory locking is in use                    |
+| 3   | `FEAT_LARGE_BLK`  | block_size > 4096 (CXFSX profile)             |
+| 4.. | reserved          | must be 0                                     |
+
+---
+
+## 8. Timestamps
+
+Timestamps are 64-bit counts of seconds since the CXOS epoch
+(**1970-01-01T00:00:00Z**, matching Unix, sourced from the RTC). `created`,
+`modified`, and `accessed` are maintained per entry when `FEAT_TIMESTAMPS` is
+set. A value of 0 means "unknown / not set."
+
+---
+
+## 9. Capacity summary
+
+| Quantity              | v2 limit                                  |
+|-----------------------|-------------------------------------------|
+| Block size            | 4 KB standard (field-defined; larger via CXFSX) |
+| Internal block number | 32-bit                                    |
+| Max volume size       | 2³² × 4 KB = **16 TB** (4 KB profile)     |
+| Volume placement      | anywhere in a 64-bit LBA address space    |
+| Max file name         | 63 bytes                                  |
+| Extents per file      | 8                                         |
+| Manifest entry size   | 256 bytes (16 per block)                  |
+
+---
+
+## 10. Differences from v1 (summary)
+
+- Block size 512 → **4096**, and now a superblock field (`block_size`).
+- Added `base_lba` (partition offset) and 64-bit volume placement.
+- Manifest entry 128 → **256 bytes**; `entry_size` recorded in the superblock.
+- File `size` 32-bit → **64-bit**; extents 4 → **8**.
+- Activated the v1-reserved metadata: `owner_uid`, `group_id`, `permissions`,
+  `lock_state`, plus new `lock_owner_pid` and `created`/`modified`/`accessed`
+  timestamps.
+- Added `feature_flags` and `entry_size` to the superblock.
+- **No migration from v1** — reformat required.
+
+---
+
+## 11. Implementation notes (non-normative)
+
+- The **pure format logic** (struct layouts, offset math, validation, name
+  normalization) lives in `kernel/lib/format/kcxfs.{c,h}`. The **driver**
+  (mount state, block I/O via the disk layer, allocation, directory ops) lives
+  in `kernel/drivers/storage/filesys/`.
+- All driver block I/O must apply `base_lba` so a volume works identically
+  whole-disk or within a partition.
+- Disk writes are gated by the kernel's `CXK_ALLOW_DISK_WRITE` build switch;
+  formatting is never automatic on a non-CXFS disk.

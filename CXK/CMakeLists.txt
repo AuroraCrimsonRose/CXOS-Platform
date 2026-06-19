@@ -32,7 +32,12 @@ set(IMAGES_DIR  ${DIST_DIR}/images)
 # ---- kernel include directories (add new subsystem dirs here) ----
 set(KERNEL_INCLUDES
     -I${SRC_DIR}/kernel
-    -I${SRC_DIR}/kernel/lib
+    -I${SRC_DIR}/kernel/lib/string
+    -I${SRC_DIR}/kernel/lib/math
+    -I${SRC_DIR}/kernel/lib/crypto
+    -I${SRC_DIR}/kernel/lib/mem
+    -I${SRC_DIR}/kernel/lib/gfx
+    -I${SRC_DIR}/kernel/lib/format
     -I${SRC_DIR}/kernel/cpu
     -I${SRC_DIR}/kernel/cpu/int
     -I${SRC_DIR}/kernel/memman
@@ -57,16 +62,16 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/memman/pmm.c
     ${SRC_DIR}/kernel/memman/paging.c
     ${SRC_DIR}/kernel/memman/heap.c
-    ${SRC_DIR}/kernel/lib/string.c
-    ${SRC_DIR}/kernel/lib/bitmap.c
-    ${SRC_DIR}/kernel/lib/format.c
+    ${SRC_DIR}/kernel/lib/string/string.c
+    ${SRC_DIR}/kernel/lib/mem/bitmap.c
+    ${SRC_DIR}/kernel/lib/string/format.c
     ${SRC_DIR}/kernel/cpu/sched.c
     ${SRC_DIR}/kernel/cpu/uid.c
     ${SRC_DIR}/kernel/drivers/char/timer.c
     ${SRC_DIR}/kernel/cpu/usermode.c
     ${SRC_DIR}/kernel/drivers/char/console.c
     ${SRC_DIR}/kernel/drivers/video/vga.c
-    ${SRC_DIR}/kernel/lib/color.c
+    ${SRC_DIR}/kernel/lib/gfx/color.c
     ${SRC_DIR}/kernel/drivers/bus/pci.c
     ${SRC_DIR}/kernel/drivers/storage/hardware/ata.c
     ${SRC_DIR}/kernel/drivers/storage/hardware/ahci.c

@@ -7,6 +7,7 @@
  */
 
 #include <stdint.h>
+#include "config.h"
 #include "gdt.h"
 #include "idt.h"
 #include "pmm.h"
@@ -79,15 +80,14 @@ void kmain(void) {
                       (uint32_t)disk_count(), VGA_ATTR(VGA_WHITE, VGA_BLACK));
     console_newline();
 
-    /* filesystem: mount CXFS on the ATA data disk (primary slave, unit 1).
-       Find it in the registry by driver+unit rather than assuming an id. */
+    /* filesystem: mount CXFS on the data disk (first non-boot disk). By default
+       (CXK_ALLOW_DISK_WRITE == 0) this is strictly READ-ONLY: we mount an
+       existing CXFS filesystem if one is present, and NEVER format - so running
+       this kernel on real hardware can't wipe a disk that isn't already CXFS.
+       Auto-format only exists in an explicit dev build against a scratch disk. */
     {
-        /* Pick the data disk for CXFS. The boot disk is always registered
-           first (disk index 0) - whatever driver it's on (ATA on IDE machines,
-           AHCI on q35). CXFS lives on the NEXT disk (index 1+), so it works
-           regardless of the underlying driver - the whole point of the disk
-           abstraction. We never use index 0 (the boot disk), so cxfs_format()
-           can't destroy the kernel image. */
+        /* The boot disk is always registered first (disk index 0). CXFS lives on
+           the next disk (index 1+). We never touch index 0 (the boot disk). */
         const struct disk *fsdisk = 0;
         if (disk_count() >= 2) fsdisk = disk_get(1);   /* first non-boot disk */
 
@@ -96,11 +96,17 @@ void kmain(void) {
             if (cxfs_mount() == 0) {
                 console_boot("CXFS mounted (existing filesystem)");
             } else {
-                console_warn("CXFS: no filesystem found - formatting");
+#if CXK_ALLOW_DISK_WRITE
+                /* DEV ONLY: scratch disk, format if no filesystem present. */
+                console_warn("CXFS: no filesystem found - formatting (dev build)");
                 if (cxfs_format() == 0 && cxfs_mount() == 0)
                     console_boot("CXFS formatted + mounted");
                 else
                     console_err("CXFS: format/mount FAILED");
+#else
+                /* SAFE DEFAULT: never format. Leave the disk untouched. */
+                console_boot("CXFS: no CXFS filesystem present (read-only, left untouched)");
+#endif
             }
             if (cxfs_is_mounted()) {
                 console_field_u32("       free blocks: ", cxfs_free_blocks(),
@@ -108,7 +114,7 @@ void kmain(void) {
                 console_newline();
             }
         } else {
-            console_warn("CXFS: no disk available to mount");
+            console_boot("CXFS: no data disk present");
         }
     }
 

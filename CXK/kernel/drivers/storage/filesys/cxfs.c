@@ -30,12 +30,20 @@ static int mounted = 0;
 
 static void bitmap_load(void);             /* fwd decl (defined in allocator section) */
 
-/* read/write one 512-byte block of the filesystem disk via the registry. */
-static int read_block(uint32_t lba, void *buf) {
-    return disk_read(cxfs_id, lba, 1, buf);
+/* read/write one CXFS block via the registry. A CXFS block is
+   (block_size/512) sectors, placed at base_lba + block*sectors_per_block, so a
+   volume works identically whole-disk or inside a partition. These are set at
+   mount/format from the superblock; defaults keep v1 behavior (512B, base 0). */
+static uint32_t fs_sectors_per_block = 1;   /* CXFS_BLOCK_SIZE / 512 */
+static uint64_t fs_base_lba          = 0;   /* partition offset, sectors */
+
+static int read_block(uint32_t block, void *buf) {
+    uint64_t lba = fs_base_lba + (uint64_t)block * fs_sectors_per_block;
+    return disk_read(cxfs_id, lba, (uint8_t)fs_sectors_per_block, buf);
 }
-static int write_block(uint32_t lba, const void *buf) {
-    return disk_write(cxfs_id, lba, 1, buf);
+static int write_block(uint32_t block, const void *buf) {
+    uint64_t lba = fs_base_lba + (uint64_t)block * fs_sectors_per_block;
+    return disk_write(cxfs_id, lba, (uint8_t)fs_sectors_per_block, buf);
 }
 
 int cxfs_format(void) {
@@ -59,11 +67,17 @@ int cxfs_format(void) {
     uint32_t data_start = manifest_start + manifest_blocks;
     uint32_t reserved_blocks = (CXFS_RESERVED_KB * 1024) / CXFS_BLOCK_SIZE;
 
+    /* v2: this volume's block geometry + placement. base_lba 0 = whole disk
+       (dev). Set the I/O globals so read_block/write_block translate correctly. */
+    fs_sectors_per_block = CXFS_BLOCK_SIZE / 512;   /* 8 */
+    fs_base_lba          = 0;
+
     /* --- build and write the superblock --- */
     memset(&sb, 0, sizeof(sb));
     sb.magic           = CXFS_MAGIC;
     sb.version         = CXFS_VERSION;
     sb.block_size      = CXFS_BLOCK_SIZE;
+    sb.base_lba        = fs_base_lba;
     sb.total_blocks    = total_blocks;
     sb.bitmap_start    = bitmap_start;
     sb.bitmap_blocks   = bitmap_blocks;
@@ -73,6 +87,10 @@ int cxfs_format(void) {
     sb.data_start      = data_start;
     sb.reserved_blocks = reserved_blocks;
     sb.root_id         = 0;                /* entry 0 = root directory */
+    sb.feature_flags   = CXFS_FEAT_TIMESTAMPS | CXFS_FEAT_PERMS | CXFS_FEAT_LOCKING;
+    sb.entry_size      = CXFS_ENTRY_SIZE;
+    sb.created         = 0;                /* timestamp wired in a later step */
+    sb.modified        = 0;
 
     if (write_block(0, &sb) != 0) return -1;
 
@@ -107,6 +125,7 @@ int cxfs_format(void) {
     root.parent_id = 0;                    /* root is its own parent */
     root.type      = CXFS_TYPE_DIR;
     strlcpy(root.name, "/", CXFS_NAME_LEN);
+    root.name_len  = 1;
     /* write entry 0 into the first manifest block */
     memset(block, 0, sizeof(block));
     memcpy(block, &root, sizeof(root));
@@ -119,8 +138,24 @@ int cxfs_format(void) {
 
 int cxfs_mount(void) {
     if (!disk_present()) return -1;
-    if (read_block(0, &sb) != 0) return -1;
-    if (sb.magic != CXFS_MAGIC) { mounted = 0; return -1; }
+
+    /* The superblock is at the volume's block 0. Until we've read it we don't
+       know the block geometry, but block 0 lives at base_lba sector 0; for a
+       whole-disk volume that's sector 0. Read the first sector directly to get
+       the superblock header, then adopt its geometry. (Partition mounts will
+       pass base_lba in; for now whole-disk = 0.) */
+    uint8_t first[512];
+    if (disk_read(cxfs_id, fs_base_lba, 1, first) != 0) return -1;
+    struct cxfs_superblock *probe = (struct cxfs_superblock *)first;
+    if (probe->magic != CXFS_MAGIC)   { mounted = 0; return -1; }
+    if (probe->version != CXFS_VERSION){ mounted = 0; return -1; }  /* v2 only */
+
+    /* adopt this volume's geometry, then read the full superblock as a block. */
+    fs_sectors_per_block = probe->block_size / 512;
+    fs_base_lba          = probe->base_lba;
+    if (read_block(0, &sb) != 0) { mounted = 0; return -1; }
+    if (sb.magic != CXFS_MAGIC)  { mounted = 0; return -1; }
+
     mounted = 1;
     bitmap_load();
     return 0;
