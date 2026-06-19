@@ -2,7 +2,7 @@
 
 **CATX Kernel**
 
-A capabilities and execution kernel for x86 systems.
+The (C)apabilities and e(X)ecution (K)ernel for x86 systems.
 
 CXK provides memory management, process execution, scheduling, privilege separation, storage access, networking, trust infrastructure, and executable loading services for the broader CX ecosystem.
 
