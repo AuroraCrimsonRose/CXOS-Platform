@@ -258,7 +258,6 @@ tools\run_qemu_ahci.bat
 - docs/CXFS_FILESYSTEM.md
 - docs/CX_EXTENSION_SYSTEM.md
 - docs/CX_EXTENSION_NAMING.md
-- docs/BIOS_ERROR_CODES.md
 
 ---
 
