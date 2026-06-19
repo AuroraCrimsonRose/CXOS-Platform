@@ -1,63 +1,84 @@
-/* /CXLite/kernel/drivers/fb.c */
-/* Aurora Tejeda */
-/* Linear framebuffer driver - 32bpp and 16bpp direct-color VBE modes. */
+/* /CXK/kernel/drivers/video/fb.c */
+/* Aurora Tejeda / CATX Systems LLC */
+/* Linear framebuffer driver - 16bpp (5-6-5) and 32bpp direct-color VBE modes. */
 
 #include "fb.h"
-#include "default.h"
+#include "font.h"
+#include "paging.h"
 
-/* fixed addresses where vbe.asm stashed the mode info (must match vbe.asm) */
-#define VBE_VALID   0x1C40
-#define VBE_WIDTH   0x1C42
-#define VBE_HEIGHT  0x1C44
-#define VBE_BPP     0x1C46
-#define VBE_PITCH   0x1C48
-#define VBE_FB      0x1C4A
+/* The kernel runs at 0xC0000000+; the boot page tables map the first 4 MB of
+   physical RAM at 0xC0000000..0xC03FFFFF. The bootloader wrote the VBE info
+   struct at PHYSICAL 0x1C40, so we reach it at 0x1C40 + KERNEL_VBASE. (The
+   low identity map is dropped after boot, so the raw physical address is
+   unmapped - this matches how pmm.c reaches the E820 map at 0x500.) */
+#define KERNEL_VBASE    0xC0000000u
+#define PHYS_TO_VIRT(p) ((volatile void *)((uint32_t)(p) + KERNEL_VBASE))
+
+/* fixed PHYSICAL addresses where vbe.asm stashed the mode info */
+#define VBE_VALID_PHYS   0x1C40
+#define VBE_WIDTH_PHYS   0x1C42
+#define VBE_HEIGHT_PHYS  0x1C44
+#define VBE_BPP_PHYS     0x1C46
+#define VBE_PITCH_PHYS   0x1C48
+#define VBE_FB_PHYS      0x1C4A
+
+/* Kernel-virtual window the LFB is mapped into. Sits above the heap
+   (0xD0000000, grows up) and well below the recursive page-dir area
+   (0xFFC00000), with 256 MB of clearance for the heap - more than the kernel
+   uses - and room for any mode's framebuffer here. */
+#define FB_VIRT_BASE     0xE0000000u
 
 static int       active = 0;
-static uint8_t  *fb = 0;        /* framebuffer base (linear) */
+static uint8_t  *fb = 0;        /* framebuffer base (VIRTUAL, mapped) */
+static uint32_t  fb_phys = 0;   /* physical base (informational) */
 static uint32_t  width = 0;
 static uint32_t  height = 0;
 static uint32_t  bpp = 0;       /* 16 or 32 */
 static uint32_t  pitch = 0;     /* bytes per scanline */
-static enum fb_font cur_font = FB_FONT_8X16;  /* active text font */
 
 int fb_init(void) {
-    uint8_t valid = *(volatile uint8_t *)VBE_VALID;
+    uint8_t valid = *(volatile uint8_t *)PHYS_TO_VIRT(VBE_VALID_PHYS);
     if (!valid) { active = 0; return -1; }
 
-    width  = *(volatile uint16_t *)VBE_WIDTH;
-    height = *(volatile uint16_t *)VBE_HEIGHT;
-    bpp    = *(volatile uint8_t  *)VBE_BPP;
-    pitch  = *(volatile uint16_t *)VBE_PITCH;
-    fb     = (uint8_t *)(*(volatile uint32_t *)VBE_FB);
+    width   = *(volatile uint16_t *)PHYS_TO_VIRT(VBE_WIDTH_PHYS);
+    height  = *(volatile uint16_t *)PHYS_TO_VIRT(VBE_HEIGHT_PHYS);
+    bpp     = *(volatile uint8_t  *)PHYS_TO_VIRT(VBE_BPP_PHYS);
+    pitch   = *(volatile uint16_t *)PHYS_TO_VIRT(VBE_PITCH_PHYS);
+    fb_phys = *(volatile uint32_t *)PHYS_TO_VIRT(VBE_FB_PHYS);
 
-    /* we only handle 16 and 32 bpp here; anything else -> fall back */
-    if ((bpp != 16 && bpp != 32) || fb == 0 || width == 0 || height == 0) {
+    /* we only handle 16 and 32 bpp; anything else -> fall back to text mode */
+    if ((bpp != 16 && bpp != 32) || fb_phys == 0 || width == 0 || height == 0) {
         active = 0;
         return -1;
     }
 
-    /* NOTE: the framebuffer's physical address is often high (e.g. 0xFD000000)
-       and outside the kernel's low identity map. We do NOT map it here -
-       paging_init() maps it (via fb_get_region) into the page tables it builds,
-       so the mapping survives once paging is enabled. (Mapping it here would be
-       wiped out when paging_init loads its own CR3.) */
-
-    /* Auto-pick a default font by resolution: the 8x8 font is hard to read on
-       a high-res screen (each glyph is physically tiny), so use the taller
-       8x16 at >=1024 wide, and the compact 8x8 at lower resolutions where it
-       stays legible and fits more text. (Still overridable via fb_set_font.) */
-    cur_font = (width >= 1024) ? FB_FONT_8X16 : FB_FONT_8X8;
+    /* Map the LFB into our kernel-virtual window. The framebuffer's physical
+       base is often high (e.g. 0xFD000000) and outside the low 4 MB the boot
+       tables cover, so it must be mapped explicitly. The driver owns this
+       mapping (like heap.c owns its window) rather than leaning on paging_init,
+       which in v5 only adopts the boot PD + installs recursion.
+       Mapped supervisor + writable; plain WB caching for now (write-combining
+       via PAT/MTRR is a later performance pass). */
+    uint32_t map_phys = fb_phys & ~0xFFFu;            /* page-align (LFB BARs already are) */
+    uint32_t off      = fb_phys - map_phys;           /* normally 0 */
+    uint32_t bytes    = pitch * height + off;
+    uint32_t pages    = (bytes + 0xFFFu) >> 12;
+    for (uint32_t i = 0; i < pages; i++) {
+        paging_map(FB_VIRT_BASE + (i << 12),
+                   map_phys     + (i << 12),
+                   PAGE_WRITE);
+    }
+    fb = (uint8_t *)(FB_VIRT_BASE + off);
 
     active = 1;
     return 0;
 }
 
-int fb_active(void)      { return active; }
+int fb_active(void) { return active; }
 
 int fb_get_region(uint32_t *phys, uint32_t *size) {
     if (!active) { if (phys) *phys = 0; if (size) *size = 0; return 0; }
-    if (phys) *phys = (uint32_t)fb;
+    if (phys) *phys = fb_phys;
     if (size) *size = pitch * height;
     return 1;
 }
@@ -79,11 +100,8 @@ uint32_t fb_rgb(uint8_t r, uint8_t g, uint8_t b) {
 void fb_put_pixel(uint32_t x, uint32_t y, uint32_t color) {
     if (!active || x >= width || y >= height) return;
     uint8_t *p = fb + y * pitch + x * (bpp / 8);
-    if (bpp == 32) {
-        *(uint32_t *)p = color;
-    } else { /* 16 */
-        *(uint16_t *)p = (uint16_t)color;
-    }
+    if (bpp == 32) *(uint32_t *)p = color;
+    else           *(uint16_t *)p = (uint16_t)color;
 }
 
 void fb_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color) {
@@ -103,12 +121,9 @@ void fb_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color
     }
 }
 
-void fb_clear(uint32_t color) {
-    fb_fill_rect(0, 0, width, height, color);
-}
+void fb_clear(uint32_t color) { fb_fill_rect(0, 0, width, height, color); }
 
-/* Bresenham line between (x0,y0) and (x1,y1). Integer-only, clips via
-   fb_put_pixel's bounds check. */
+/* Bresenham line; clips via fb_put_pixel's bounds check. */
 void fb_draw_line(int x0, int y0, int x1, int y1, uint32_t color) {
     if (!active) return;
     int dx = x1 - x0; if (dx < 0) dx = -dx;
@@ -125,55 +140,38 @@ void fb_draw_line(int x0, int y0, int x1, int y1, uint32_t color) {
     }
 }
 
-/* scroll the whole framebuffer up by `pixels` rows (fast bulk copy), filling
-   the newly-exposed bottom strip with `bg`. Far cheaper than re-rendering every
-   glyph: a console scroll becomes one big copy + one new line of text. */
+/* Scroll the whole framebuffer up by `pixels` rows (fast bulk copy in dwords),
+   filling the newly-exposed bottom strip with `bg`. The surviving region is
+   contiguous, so it copies as one block - far cheaper than re-rendering, which
+   matters since framebuffer memory is slow. */
 void fb_scroll_up(uint32_t pixels, uint32_t bg) {
     if (!active || pixels == 0 || pixels >= height) { fb_clear(bg); return; }
 
     uint32_t moved_rows = height - pixels;
-
-    /* The surviving region is contiguous (whole-width scanlines back-to-back),
-       so copy it as ONE block rather than per-scanline. Copy in 32-bit dwords
-       (4 bytes/op) instead of byte-by-byte - far fewer memory operations, which
-       matters a lot since the framebuffer is slow (often uncached MMIO).
-       This is what makes scrolling fast. */
     uint8_t *dst = fb;
     uint8_t *src = fb + (uint32_t)pixels * pitch;
-    uint32_t total = moved_rows * pitch;          /* bytes to move */
-
-    uint32_t dwords = total >> 2;                 /* total / 4 */
-    uint32_t tail   = total & 3;                  /* leftover bytes */
+    uint32_t total  = moved_rows * pitch;     /* bytes to move */
+    uint32_t dwords = total >> 2;
+    uint32_t tail   = total & 3;
 
     uint32_t *d32 = (uint32_t *)dst;
     uint32_t *s32 = (uint32_t *)src;
     for (uint32_t i = 0; i < dwords; i++) d32[i] = s32[i];
-
-    /* copy any trailing bytes (pitch is normally a multiple of 4, so usually none) */
     if (tail) {
         uint8_t *db = dst + (dwords << 2);
         uint8_t *sb = src + (dwords << 2);
         for (uint32_t i = 0; i < tail; i++) db[i] = sb[i];
     }
-
-    /* clear the exposed bottom strip */
     fb_fill_rect(0, moved_rows, width, pixels, bg);
 }
 
-/* active font (default 8x16; fb_init may change it based on resolution) */
-void fb_set_font(enum fb_font f) { cur_font = f; }
-uint32_t fb_font_height(void) { return (cur_font == FB_FONT_8X8) ? 8 : 16; }
+uint32_t fb_font_height(void) { return FB_CHAR_H; }
 
-/* draw one glyph using the active font. each font byte is a row;
-   bit 0x80 = leftmost pixel. */
+/* Draw one 8x16 glyph. Each font byte is a row; bit 0x80 = leftmost pixel. */
 void fb_draw_char(uint32_t x, uint32_t y, char c, uint32_t fg, uint32_t bg) {
     if (!active) return;
-    const uint8_t *glyph;
-    uint32_t h;
-    if (cur_font == FB_FONT_8X8) { glyph = font_glyph_8x8(c);  h = 8;  }
-    else                         { glyph = font_glyph_8x16(c); h = 16; }
-
-    for (uint32_t row = 0; row < h; row++) {
+    const uint8_t *glyph = font_glyph_8x16(c);
+    for (uint32_t row = 0; row < FB_CHAR_H; row++) {
         uint8_t bits = glyph[row];
         for (int col = 0; col < FB_CHAR_W; col++) {
             uint32_t color = (bits & (0x80 >> col)) ? fg : bg;

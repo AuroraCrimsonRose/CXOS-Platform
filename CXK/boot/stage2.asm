@@ -35,6 +35,14 @@ stage2_start:
 
     call load_kernel            ; read kernel image from disk to 0x100000 (BIOS)
 
+    ; LAST real-mode step: set a VBE linear-framebuffer graphics mode (needs BIOS
+    ; int 10h, gone after the pmode switch). Self-gates on CXK_ENABLE_FB: when 0
+    ; it just clears VBE_VALID and leaves the display in text mode. On success it
+    ; prints the chosen mode BEFORE switching (text is invisible once graphics is
+    ; live), then the kernel reads the info struct via fb_init. Comes after all
+    ; other logging so the boot text above stays visible.
+    call set_vbe_mode
+
     call enter_protected_mode   ; pmode.asm - no return (ends jumping to kernel)
 
     ; not reached
@@ -198,6 +206,7 @@ msg_a20_fail db '[BOOT] A20 FAIL', 0
 %include "gdt.asm"
 %include "pmode.asm"
 %include "cxexload.asm"
+%include "vbe.asm"
 
 ; embedded copyright (binary)
 copyright_notice:
