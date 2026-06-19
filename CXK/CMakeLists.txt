@@ -16,6 +16,16 @@ cmake_minimum_required(VERSION 3.15)
 project(CXK_v5 ASM_NASM)
 enable_language(ASM_NASM)
 
+# ---- build-time flags (edit cmake/cxk_flags.cmake, NOT this file) ----
+# One source of truth for toggles like CXK_ENABLE_FB. Each NAME=VALUE becomes
+# -DNAME=VALUE and is fed to BOTH gcc (kernel C) and nasm (boot + kernel asm),
+# so the kernel and bootloader can't disagree.
+include(${CMAKE_SOURCE_DIR}/cxk_flags.cmake)
+set(CXK_DEFS "")
+foreach(f ${CXK_FLAGS})
+    list(APPEND CXK_DEFS -D${f})
+endforeach()
+
 # ---- toolchain ----
 set(CROSS_PREFIX "C:/cross/i686-elf/bin")
 set(CMAKE_ASM_NASM_COMPILER nasm)
@@ -52,7 +62,7 @@ set(KERNEL_INCLUDES
 
 # freestanding kernel C flags
 set(KCFLAGS -ffreestanding -fno-pic -fno-stack-protector -m32
-            -Wall -Wextra ${KERNEL_INCLUDES} -c)
+            -Wall -Wextra ${CXK_DEFS} ${KERNEL_INCLUDES} -c)
 
 # ---- KERNEL C SOURCES (append new subsystems here) ----
 set(KERNEL_C_SRCS
@@ -75,7 +85,11 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/cpu/usermode.c
     ${SRC_DIR}/kernel/drivers/char/console.c
     ${SRC_DIR}/kernel/drivers/video/vga.c
+    ${SRC_DIR}/kernel/drivers/video/fb.c
     ${SRC_DIR}/kernel/lib/gfx/color.c
+    ${SRC_DIR}/kernel/lib/gfx/resolution.c
+    ${SRC_DIR}/kernel/lib/gfx/font.c
+    ${SRC_DIR}/kernel/lib/gfx/klogo.c
     ${SRC_DIR}/kernel/drivers/bus/pci.c
     ${SRC_DIR}/kernel/drivers/storage/hardware/ata.c
     ${SRC_DIR}/kernel/drivers/storage/hardware/ahci.c
@@ -148,11 +162,11 @@ add_custom_command(
 # ---- stage 2 (flat binary; -I boot for %includes) ----
 add_custom_command(
     OUTPUT ${STAGE2_BIN}
-    COMMAND ${CMAKE_ASM_NASM_COMPILER} -I${SRC_DIR}/boot -f bin ${STAGE2_SRC} -o ${STAGE2_BIN}
+    COMMAND ${CMAKE_ASM_NASM_COMPILER} ${CXK_DEFS} -I${SRC_DIR}/boot -f bin ${STAGE2_SRC} -o ${STAGE2_BIN}
     DEPENDS ${STAGE2_SRC}
         ${SRC_DIR}/boot/a20.asm ${SRC_DIR}/boot/mem.asm
         ${SRC_DIR}/boot/gdt.asm ${SRC_DIR}/boot/pmode.asm
-        ${SRC_DIR}/boot/cxexload.asm
+        ${SRC_DIR}/boot/cxexload.asm ${SRC_DIR}/boot/vbe.asm
     COMMENT "Assembling stage 2 (stage2.asm + includes)"
 )
 

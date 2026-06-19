@@ -26,4 +26,30 @@
 #define CXK_ALLOW_DISK_WRITE 1      /* 0 = read-only/safe (default), 1 = dev only */
 #endif
 
+/*
+ * CXK_VERBOSE_BOOT controls the per-subsystem boot progress log (GDT installed,
+ * PMM online, etc.). Default 0 = quiet boot: only the banner, the self-test
+ * summary, and any failures print. Set to 1 for the detailed boot log, useful
+ * when a boot hangs and you need to see how far it got.
+ */
+#ifndef CXK_VERBOSE_BOOT
+#define CXK_VERBOSE_BOOT 0          /* 0 = quiet boot (default), 1 = verbose log */
+#endif
+
+/*
+ * CXK_ENABLE_FB controls the VBE linear-framebuffer path. When 1, the
+ * bootloader sets a graphics mode and the kernel runs its console on the
+ * framebuffer; when 0, the bootloader never touches the video hardware and the
+ * kernel stays in VGA text mode end-to-end (use 0 to keep early-boot output
+ * visible when debugging a fault, since text output is invisible once a
+ * graphics mode is live).
+ *
+ * NOTE: this flag must agree with the bootloader. The real source of truth for
+ * a CMake build is cmake/cxk_flags.cmake, which passes -D to BOTH gcc and nasm;
+ * the #define here is only the fallback when no -D is supplied.
+ */
+#ifndef CXK_ENABLE_FB
+#define CXK_ENABLE_FB 1             /* 1 = framebuffer console (default), 0 = force text mode */
+#endif
+
 #endif

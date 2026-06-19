@@ -117,18 +117,18 @@ static int test_ring3_processes(void) {
     /* 3b: cooperative ring-3 processes */
     uint32_t blen = (uint32_t)(user_blob_end - user_blob_start);
     process_create_ring3("user1", user_blob_start, blen,
-                         "  [user1] ring-3 via syscall\n");
+                         "");
     process_create_ring3("user2", user_blob_start, blen,
-                         "  [user2] ring-3 via syscall\n");
+                         "");
     for (int i = 0; i < 12 && sched_active_count() > 1; i++) yield();
     int coop_ok = (sched_active_count() == 1);
 
     /* 3c: preemptible ring-3 processes */
     uint32_t blen2 = (uint32_t)(user_blob_busy_end - user_blob_busy_start);
     process_create_ring3("busy1", user_blob_busy_start, blen2,
-                         "  [busy1] ring-3 tick\n");
+                         "");
     process_create_ring3("busy2", user_blob_busy_start, blen2,
-                         "  [busy2] ring-3 tick\n");
+                         "");
     sched_preempt_enable(5);
     while (sched_active_count() > 1) { __asm__ __volatile__("pause"); }
     sched_preempt_disable();
@@ -148,7 +148,7 @@ static int test_identity(void) {
 
     /* 2. launching as a real user (UID >= 1) must succeed */
     int uid7 = process_create_ring3_as_user("user7", user_blob_start, blen,
-                                            "  [user7] running as uid 7\n", 7);
+                                            "", 7);
     if (uid7 < 0) return 0;
 
     /* drive it to completion so it reaps cleanly */
@@ -250,7 +250,7 @@ void ktest_run(void) {
     total++; passed += report("storage (ATA read sector 0)",      test_storage());
     total++; passed += report("pci (bus enumeration)",            test_pci());
     total++; passed += report("ahci (controller + read)",         test_ahci());
-    total++; passed += report("cxfs (read-only mount check)",      test_cxfs());
+    total++; passed += report("cxfs (read-only mount check)",     test_cxfs());
 
     /* single summary line: green if all passed, red if any failed. */
     if (passed == total) {
