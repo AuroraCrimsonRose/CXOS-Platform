@@ -44,6 +44,7 @@ set(DIST_DIR    "C:/Users/Aurora/Documents/VS Code/CXK/CXK/dist/CXK_x86_32/packa
 set(KERNEL_INCLUDES
     -I${SRC_DIR}/kernel
     -I${SRC_DIR}/kernel/lib/time
+    -I${SRC_DIR}/kernel/lib/audio
     -I${SRC_DIR}/kernel/lib/string
     -I${SRC_DIR}/kernel/lib/math
     -I${SRC_DIR}/kernel/lib/crypto
@@ -86,6 +87,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/drivers/char/console.c
     ${SRC_DIR}/kernel/drivers/video/vga.c
     ${SRC_DIR}/kernel/drivers/video/fb.c
+    ${SRC_DIR}/kernel/lib/audio/speaker.c
     ${SRC_DIR}/kernel/lib/gfx/color.c
     ${SRC_DIR}/kernel/lib/gfx/resolution.c
     ${SRC_DIR}/kernel/lib/gfx/font.c
