@@ -239,6 +239,14 @@ void sched_preempt_point(void) {
 
 int thread_current_id(void) { return current; }
 
+/* is thread `id` a live (non-exited, allocated) thread? Used for stale-lock
+   detection: an advisory lock owned by a dead pid is ignorable. */
+int thread_is_alive(int id) {
+    if (id < 0 || id >= MAX_THREADS) return 0;
+    enum thread_state st = threads[id].state;
+    return (st == THREAD_READY || st == THREAD_RUNNING);
+}
+
 void thread_mark_user(int id) {
     if (id >= 0 && id < MAX_THREADS) threads[id].is_user = 1;
 }

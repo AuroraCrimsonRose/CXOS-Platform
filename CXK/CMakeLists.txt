@@ -27,12 +27,13 @@ set(PACKAGES_DIR ${DIST_DIR}/packages)
 # ---- paths ----
 set(SRC_DIR   ${CMAKE_SOURCE_DIR})
 set(BUILD_DIR ${CMAKE_BINARY_DIR})
-set(IMAGES_DIR  ${DIST_DIR}/images)
-set(DIST_DIR    ${SRC_DIR}/dist/CXK_x86_32/packages)
+set(IMAGES_DIR  "C:/Users/Aurora/Documents/VS Code/CXK/CXK/dist/CXK_x86_32/images")
+set(DIST_DIR    "C:/Users/Aurora/Documents/VS Code/CXK/CXK/dist/CXK_x86_32/packages")
 
 # ---- kernel include directories (add new subsystem dirs here) ----
 set(KERNEL_INCLUDES
     -I${SRC_DIR}/kernel
+    -I${SRC_DIR}/kernel/lib/time
     -I${SRC_DIR}/kernel/lib/string
     -I${SRC_DIR}/kernel/lib/math
     -I${SRC_DIR}/kernel/lib/crypto
@@ -63,12 +64,14 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/memman/pmm.c
     ${SRC_DIR}/kernel/memman/paging.c
     ${SRC_DIR}/kernel/memman/heap.c
+    ${SRC_DIR}/kernel/lib/time/datetime.c
     ${SRC_DIR}/kernel/lib/string/string.c
     ${SRC_DIR}/kernel/lib/mem/bitmap.c
     ${SRC_DIR}/kernel/lib/string/format.c
     ${SRC_DIR}/kernel/cpu/sched.c
     ${SRC_DIR}/kernel/cpu/uid.c
     ${SRC_DIR}/kernel/drivers/char/timer.c
+    ${SRC_DIR}/kernel/drivers/char/rtc.c
     ${SRC_DIR}/kernel/cpu/usermode.c
     ${SRC_DIR}/kernel/drivers/char/console.c
     ${SRC_DIR}/kernel/drivers/video/vga.c

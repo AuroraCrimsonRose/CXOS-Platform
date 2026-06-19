@@ -5,6 +5,56 @@
 #include "cxfs.h"
 #include "disk.h"
 #include "string.h"
+#include "datetime.h"
+#include "rtc.h"
+#include "uid.h"
+#include "sched.h"
+
+/* current wall-clock time as epoch seconds, from the RTC. 0 if unavailable. */
+static uint64_t cxfs_now(void) {
+    struct rtc_time t;
+    rtc_read(&t);
+    struct datetime dt = { t.year, t.month, t.day, t.hour, t.minute, t.second };
+    return datetime_to_epoch(&dt);
+}
+
+/* Permission check for `access` (CXFS_ACC_*) by the current process.
+   SYSTEM (uid 0) always passes. The owner is checked against the owner bits,
+   everyone else against the "other" bits (no group membership model yet).
+   Returns 1 if allowed, 0 if denied. */
+static int cxfs_check_perm(const struct cxfs_entry *e, int access) {
+    uid_t uid = current_uid();
+    if (uid == UID_SYSTEM) return 1;            /* SYSTEM bypasses checks */
+
+    uint16_t p = e->permissions;
+    uint16_t need;
+    if (uid == e->owner_uid) {
+        need = (access == CXFS_ACC_WRITE) ? CXFS_PERM_OW
+             : (access == CXFS_ACC_EXEC)  ? CXFS_PERM_OX : CXFS_PERM_OR;
+    } else {
+        need = (access == CXFS_ACC_WRITE) ? CXFS_PERM_TW
+             : (access == CXFS_ACC_EXEC)  ? CXFS_PERM_TX : CXFS_PERM_TR;
+    }
+    return (p & need) ? 1 : 0;
+}
+
+/* --- v2 advisory locking ("in use, don't edit") ---
+   A cooperating writer locks a file (recording its pid); other cooperating
+   writers honor it. Advisory only: not enforced against non-cooperating code.
+   A lock whose owner pid is no longer a live thread is STALE and ignored. */
+
+/* is `e` effectively locked by someone OTHER than the current process?
+   Clears the stale flag in *e (caller may persist it) if the owner is dead. */
+static int cxfs_lock_blocks(struct cxfs_entry *e) {
+    if (!e->lock_state) return 0;                       /* not locked */
+    if (!thread_is_alive((int)e->lock_owner_pid)) {     /* stale -> clear */
+        e->lock_state = 0;
+        e->lock_owner_pid = 0;
+        return 0;
+    }
+    if ((uint32_t)thread_current_id() == e->lock_owner_pid) return 0; /* ours */
+    return 1;                                           /* held by another live proc */
+}
 
 /* CXFS operates on one registered disk, selected by its registry ID.
    default = id 0 (first registered disk). dskset changes it. */
@@ -368,7 +418,13 @@ int cxfs_create_entry(uint32_t parent_id, const char *name, uint8_t type) {
     e.parent_id = parent_id;
     e.type      = type;
     strlcpy(e.name, nm, CXFS_NAME_LEN);
+    e.name_len  = (uint8_t)i;
     e.size      = 0;
+    e.created = e.modified = e.accessed = cxfs_now();   /* v2 timestamps */
+    e.owner_uid = current_uid();                        /* v2: creator owns it */
+    e.group_id  = 0;
+    e.permissions = (type == CXFS_TYPE_DIR) ? CXFS_PERM_DIR_DEFAULT
+                                            : CXFS_PERM_FILE_DEFAULT;
     if (cxfs_write_entry(&e) != 0) return -1;
     return id;
 }
@@ -470,6 +526,9 @@ int cxfs_write_file(uint32_t id, const void *data, uint32_t len) {
     if (cxfs_read_entry(id, &e) != 0) return -1;
     if (e.type != CXFS_TYPE_FILE) return -1;
 
+    if (!cxfs_check_perm(&e, CXFS_ACC_WRITE)) return -1;   /* v2: permission */
+    if (cxfs_lock_blocks(&e)) return -1;                   /* v2: in use by another */
+
     /* release any previous content first */
     cxfs_free_file_data(&e);
 
@@ -522,6 +581,7 @@ int cxfs_write_file(uint32_t id, const void *data, uint32_t len) {
     }
 
     e.size = len;
+    e.modified = e.accessed = cxfs_now();   /* v2: content changed */
     return cxfs_write_entry(&e);
 }
 
@@ -531,6 +591,8 @@ int cxfs_read_file(uint32_t id, void *buf, uint32_t cap) {
     struct cxfs_entry e;
     if (cxfs_read_entry(id, &e) != 0) return -1;
     if (e.type != CXFS_TYPE_FILE) return -1;
+
+    if (!cxfs_check_perm(&e, CXFS_ACC_READ)) return -1;    /* v2: permission */
 
     uint32_t want = e.size;
     if (want > cap) want = cap;
@@ -632,4 +694,37 @@ int cxfs_delete_entry(uint32_t id) {
     e.id   = id;
     e.type = CXFS_TYPE_FREE;
     return cxfs_write_entry(&e);
+}
+
+/* set an advisory lock on entry `id` for the current process. Returns 0 on
+   success, -1 if it doesn't exist or is already locked by another live proc. */
+int cxfs_lock(uint32_t id) {
+    if (!mounted) return -1;
+    struct cxfs_entry e;
+    if (cxfs_read_entry(id, &e) != 0) return -1;
+    if (cxfs_lock_blocks(&e)) return -1;                /* someone else holds it */
+    e.lock_state     = 1;
+    e.lock_owner_pid = (uint32_t)thread_current_id();
+    return cxfs_write_entry(&e);
+}
+
+/* release an advisory lock. Only the lock owner or SYSTEM may unlock. */
+int cxfs_unlock(uint32_t id) {
+    if (!mounted) return -1;
+    struct cxfs_entry e;
+    if (cxfs_read_entry(id, &e) != 0) return -1;
+    if (!e.lock_state) return 0;                        /* already unlocked */
+    if (current_uid() != UID_SYSTEM &&
+        (uint32_t)thread_current_id() != e.lock_owner_pid) return -1;
+    e.lock_state = 0;
+    e.lock_owner_pid = 0;
+    return cxfs_write_entry(&e);
+}
+
+/* 1 if locked by another live process, else 0. */
+int cxfs_is_locked(uint32_t id) {
+    if (!mounted) return 0;
+    struct cxfs_entry e;
+    if (cxfs_read_entry(id, &e) != 0) return 0;
+    return cxfs_lock_blocks(&e);
 }

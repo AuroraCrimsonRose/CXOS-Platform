@@ -80,6 +80,7 @@ void sched_preempt_point(void);
 
 /* the id (pid) of the currently running thread/process. */
 int thread_current_id(void);
+int thread_is_alive(int id);
 
 /* mark a thread as a user (ring-3) process. */
 void thread_mark_user(int id);

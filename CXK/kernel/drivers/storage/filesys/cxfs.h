@@ -38,6 +38,24 @@
 #define CXFS_FEAT_PERMS      0x02
 #define CXFS_FEAT_LOCKING    0x04
 #define CXFS_FEAT_LARGE_BLK  0x08
+
+/* permission bits (low 9 of `permissions`): rwx for owner/group/other */
+#define CXFS_PERM_OR  0x100   /* owner read  */
+#define CXFS_PERM_OW  0x080   /* owner write */
+#define CXFS_PERM_OX  0x040   /* owner exec  */
+#define CXFS_PERM_GR  0x020
+#define CXFS_PERM_GW  0x010
+#define CXFS_PERM_GX  0x008
+#define CXFS_PERM_TR  0x004
+#define CXFS_PERM_TW  0x002
+#define CXFS_PERM_TX  0x001
+#define CXFS_PERM_FILE_DEFAULT 0x1A4   /* 0644 rw-r--r-- */
+#define CXFS_PERM_DIR_DEFAULT  0x1ED   /* 0755 rwxr-xr-x */
+
+/* access kinds for permission checks */
+#define CXFS_ACC_READ  0
+#define CXFS_ACC_WRITE 1
+#define CXFS_ACC_EXEC  2
 /* The active CXFS target drive is runtime-settable (so the same build works
    on emulators, where the fs disk is drive 1, and on real hardware where it
    may be on another channel/port, e.g. drive 3). */
@@ -188,5 +206,11 @@ int cxfs_count_children(uint32_t dir_id);
 /* delete a single entry: free its data + mark its manifest slot free.
    does NOT recurse (caller handles recursion). returns 0 on success. */
 int cxfs_delete_entry(uint32_t id);
+
+
+/* v2 advisory locking */
+int cxfs_lock(uint32_t id);
+int cxfs_unlock(uint32_t id);
+int cxfs_is_locked(uint32_t id);
 
 #endif
