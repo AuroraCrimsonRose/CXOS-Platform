@@ -79,6 +79,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/lib/string/string.c
     ${SRC_DIR}/kernel/lib/mem/bitmap.c
     ${SRC_DIR}/kernel/lib/string/format.c
+    ${SRC_DIR}/kernel/lib/string/logging.c
     ${SRC_DIR}/kernel/cpu/sched.c
     ${SRC_DIR}/kernel/cpu/uid.c
     ${SRC_DIR}/kernel/drivers/char/timer.c
@@ -97,6 +98,12 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/drivers/storage/hardware/ahci.c
     ${SRC_DIR}/kernel/drivers/storage/hardware/disk.c
     ${SRC_DIR}/kernel/drivers/storage/filesys/cxfs.c
+    ${SRC_DIR}/kernel/lib/crypto/sha256.c
+    ${SRC_DIR}/kernel/lib/crypto/bignum.c
+    ${SRC_DIR}/kernel/lib/crypto/rsa.c
+    ${SRC_DIR}/kernel/lib/format/cxex.c
+    ${SRC_DIR}/kernel/lib/format/cxex_verify.c
+    ${SRC_DIR}/kernel/lib/format/trusted_key.c
 )
 
 # ---- KERNEL ASM SOURCES (elf32 objects; append new ones here) ----

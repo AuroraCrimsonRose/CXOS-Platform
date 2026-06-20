@@ -13,6 +13,7 @@ CXK/iso/
 *.elf
 *.bin
 *.img
+trusted_key.c
 
 # -------------------------
 # OSDev tool junk

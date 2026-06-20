@@ -19,7 +19,6 @@ set(CXK_FLAGS
     CXK_ENABLE_FB=1         # 1 = bootloader sets a VBE LFB mode + kernel uses the framebuffer console
                             #     0 = force VGA text mode end-to-end (bootloader never touches video;
                             #         use this to keep early-boot output visible when debugging a fault)
-    CXK_ALLOW_DISK_WRITE=1  # 1 = DEV build: may format / write a scratch disk. DANGER on bare metal.
+    CXK_ALLOW_DISK_WRITE=0  # 1 = DEV build: may format / write a scratch disk. DANGER on bare metal.
                             #     0 = read-only/never-format (safe default for sharing)
-    CXK_VERBOSE_BOOT=1      # 1 = full per-subsystem boot log    0 = quiet boot (banner + failures only)
 )

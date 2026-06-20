@@ -728,3 +728,5 @@ int cxfs_is_locked(uint32_t id) {
     if (cxfs_read_entry(id, &e) != 0) return 0;
     return cxfs_lock_blocks(&e);
 }
+
+

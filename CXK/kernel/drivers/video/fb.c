@@ -22,11 +22,16 @@
 #define VBE_PITCH_PHYS   0x1C48
 #define VBE_FB_PHYS      0x1C4A
 
-/* Kernel-virtual window the LFB is mapped into. Sits above the heap
-   (0xD0000000, grows up) and well below the recursive page-dir area
-   (0xFFC00000), with 256 MB of clearance for the heap - more than the kernel
-   uses - and room for any mode's framebuffer here. */
-#define FB_VIRT_BASE     0xE0000000u
+/* Kernel-virtual window the LFB is mapped into. The high kernel address space
+   is already carved up: heap at 0xD0000000 (grows up), the AHCI DMA window at
+   0xE0000000 (ahci.c), and the recursive page-directory area at 0xFFC00000.
+   So the framebuffer lives at 0xF0000000 - clear of all of them, with ~252 MB
+   (0xF0000000..0xFFC00000) for any mode's LFB.
+   IMPORTANT: must NOT overlap AHCI_DMA_VIRT. An earlier revision put both at
+   0xE0000000; ahci_init() then remapped the top of the LFB onto DMA pages and
+   corrupted the upper scanlines once storage came online (text drawn there lost
+   its top rows). */
+#define FB_VIRT_BASE     0xF0000000u
 
 static int       active = 0;
 static uint8_t  *fb = 0;        /* framebuffer base (VIRTUAL, mapped) */
@@ -163,6 +168,34 @@ void fb_scroll_up(uint32_t pixels, uint32_t bg) {
         for (uint32_t i = 0; i < tail; i++) db[i] = sb[i];
     }
     fb_fill_rect(0, moved_rows, width, pixels, bg);
+}
+
+/* Scroll only a sub-rectangle up by `dy` pixels, filling the exposed bottom
+   `dy` rows with `bg`. Unlike fb_scroll_up the surviving region isn't contiguous
+   in memory (each text row is a slice of a wider scanline), so we copy row by
+   row. Used by the framebuffer console to scroll its viewport without disturbing
+   anything beside it (e.g. the boot logo in the other half of the screen). */
+void fb_scroll_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                    uint32_t dy, uint32_t bg) {
+    if (!active || w == 0 || h == 0 || dy == 0) return;
+    if (dy >= h) { fb_fill_rect(x, y, w, h, bg); return; }
+
+    uint32_t bb        = bpp / 8;
+    uint32_t row_bytes = w * bb;
+    uint32_t move_rows = h - dy;
+    for (uint32_t r = 0; r < move_rows; r++) {
+        uint8_t *dst = fb + (y + r)      * pitch + x * bb;
+        uint8_t *src = fb + (y + r + dy) * pitch + x * bb;   /* lower row, no overlap */
+        uint32_t dwords = row_bytes >> 2;
+        uint32_t tail   = row_bytes & 3;
+        uint32_t *d = (uint32_t *)dst, *s = (uint32_t *)src;
+        for (uint32_t i = 0; i < dwords; i++) d[i] = s[i];
+        if (tail) {
+            uint8_t *db = dst + (dwords << 2), *sb = src + (dwords << 2);
+            for (uint32_t i = 0; i < tail; i++) db[i] = sb[i];
+        }
+    }
+    fb_fill_rect(x, y + move_rows, w, dy, bg);
 }
 
 uint32_t fb_font_height(void) { return FB_CHAR_H; }
