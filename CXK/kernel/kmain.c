@@ -29,23 +29,7 @@
 #include "ktest.h"
 #include "klogo.h"
 #include "speaker.h"
-
-#define CXLOGO_WIDTH 600
-#define CXLOGO_HEIGHT 600
-
-/* Verbose-only boot logging. When CXK_VERBOSE_BOOT is 0 (default) these are
-   no-ops, so a normal boot is quiet; set the flag for a full progress log. */
-#if CXK_VERBOSE_BOOT
-static void vlog(const char *msg) { console_boot(msg); }
-static void vlog_u32(const char *label, uint32_t v, uint8_t attr) {
-    console_field_u32(label, v, attr); console_newline();
-}
-#else
-static void vlog(const char *msg) { (void)msg; }
-static void vlog_u32(const char *label, uint32_t v, uint8_t attr) {
-    (void)label; (void)v; (void)attr;
-}
-#endif
+#include "logging.h"
 
 /* Mount CXFS on the data disk (first non-boot disk). Read-only by default:
    mounts an existing filesystem if present and NEVER formats, so this can't
@@ -55,143 +39,140 @@ static void vlog_u32(const char *label, uint32_t v, uint8_t attr) {
 static void mount_cxfs(void) {
     const struct disk *fsdisk = 0;
     if (disk_count() >= 2) fsdisk = disk_get(1);   /* first non-boot disk */
-    if (!fsdisk) { vlog("CXFS: no data disk present"); return; }
+    if (!fsdisk) { klog_u32("FILESYS", SEV_WARN, "DATA DISKS PRESENT: ", (uint32_t)disk_count(), LOG_COLOR_VALUE, ""); return; }
 
     cxfs_set_id(fsdisk->id);
     if (cxfs_mount() == 0) {
-        vlog("CXFS mounted (existing filesystem)");
+        klog("FILESYS", SEV_OK, "MOUNTED - EXISTING FILESYSTEM");
     } else {
 #if CXK_ALLOW_DISK_WRITE
-        vlog("CXFS: no filesystem - formatting (dev build)");
+        klog("FILESYS", SEV_WARN, "NO FILESYSTEM - FORMATING TO CXFS");
         if (cxfs_format() == 0 && cxfs_mount() == 0)
-            vlog("CXFS formatted + mounted");
+            klog("FILESYS", SEV_OK, "CXFS FILESYSTEM MOUNTED");
         else
-            console_err("CXFS: format/mount FAILED");   /* failures always show */
+            klog("FILESYS", SEV_FAIL, "CXFS FILESYSTEM FORMAT AND MOUNT FAILED");
 #else
-        vlog("CXFS: no filesystem present (read-only, untouched)");
+        klog("FILESYS", SEV_WARN, "NO FILESYSTEM - FILESYS OPS DISABLED");
 #endif
     }
     if (cxfs_is_mounted())
-        vlog_u32("       CXFS free blocks: ", cxfs_free_blocks(),
-                 VGA_ATTR(VGA_LIGHT_GREEN, VGA_BLACK));
+        klog_u32("FILESYS", SEV_OK, "CXFS FREE BLOCKS: ", (uint32_t)cxfs_free_blocks(), LOG_COLOR_VALUE, "");
 }
 
-#if CXK_ENABLE_FB
-/* Framebuffer boot splash - drawn once after fb_init succeeds, to PROVE the LFB
-   maps and renders: the color bars exercise rgb packing + rect fill, the frame
-   checks the edge margins, and the text exercises 8x16 glyph rendering. The
-   text console still targets VGA text here (invisible in graphics mode), so
-   this splash is the only thing on screen until CP3 routes the console onto the
-   framebuffer. */
-static void fb_boot_splash(void) {
-    uint32_t w = fb_width(), h = fb_height();
-    uint32_t bg = fb_rgb(0x10, 0x10, 0x18);
-    fb_clear(bg);
 
-    static const uint8_t bar[8][3] = {
-        {255,0,0}, {0,255,0}, {0,0,255}, {255,255,0},
-        {0,255,255}, {255,0,255}, {255,255,255}, {120,120,120}
-    };
-    uint32_t bw = w / 8, barh = h / 6;
-    for (uint32_t i = 0; i < 8; i++)
-        fb_fill_rect(i * bw, 0, bw, barh, fb_rgb(bar[i][0], bar[i][1], bar[i][2]));
+/* VGA text-mode boot logo: the CX wordmark in ASCII, shown briefly when no
+   framebuffer is available (graphics mode uses the vector logo instead). */
+static const char *cx_logo_art[] = {
+    "________/\\\\\\\\\\\\\\\\\\___/\\\\\\_______/\\\\\\_",
+    " _____/\\\\\\////////___\\///\\\\\\___/\\\\\\/__",
+    "  ___/\\\\\\/______________\\///\\\\\\\\\\\\/____",
+    "   __/\\\\\\__________________\\//\\\\\\\\______",
+    "    _\\/\\\\\\___________________\\/\\\\\\\\______",
+    "     _\\//\\\\\\__________________/\\\\\\\\\\\\_____",
+    "      __\\///\\\\\\______________/\\\\\\////\\\\\\___",
+    "       ____\\////\\\\\\\\\\\\\\\\\\___/\\\\\\/___\\///\\\\\\_",
+    "        _______\\/////////___\\///_______\\///__",
+};
+#define CX_LOGO_ROWS 9
 
-    /* white frame: confirms we reach every edge with no off-by-one clipping */
-    uint32_t white = fb_rgb(255, 255, 255);
-    fb_draw_line(0, 0, (int)w - 1, 0, white);
-    fb_draw_line(0, (int)h - 1, (int)w - 1, (int)h - 1, white);
-    fb_draw_line(0, 0, 0, (int)h - 1, white);
-    fb_draw_line((int)w - 1, 0, (int)w - 1, (int)h - 1, white);
+static void cx_text_logo(void) {
+    /* per-character coloring: stroke glyphs '/' and '\\' are yellow, the
+       fill/underscore glyphs are white. */
+    const uint8_t stroke = VGA_ATTR(VGA_YELLOW, VGA_BLACK);
+    const uint8_t fill   = VGA_ATTR(VGA_WHITE,  VGA_BLACK);
 
-    uint32_t fg = fb_rgb(0xE0, 0xE0, 0xE0);
-    uint32_t y = barh + 12;
-    fb_draw_string(16, y, "CXK v5 - framebuffer online", fg, bg);
-    y += fb_font_height() + 4;
-
-    /* "WxH BPPbpp (NAME)" via the formatter + resolution catalog */
-    char line[64];
-    size_t n = 0;
-    n += fmt_u32(line + n, w);        line[n++] = 'x';
-    n += fmt_u32(line + n, h);        line[n++] = ' ';
-    n += fmt_u32(line + n, fb_bpp()); line[n++] = 'b'; line[n++] = 'p'; line[n++] = 'p';
-    line[n++] = ' '; line[n++] = '(';
-    const char *nm = res_name(w, h);
-    while (*nm) line[n++] = *nm++;
-    line[n++] = ')';
-    line[n] = 0;
-    fb_draw_string(16, y, line, fg, bg);
+    console_clear();
+    console_putc('\n'); console_putc('\n');
+    for (int i = 0; i < CX_LOGO_ROWS; i++) {
+        console_puts("   ");          /* small left pad */
+        for (const char *c = cx_logo_art[i]; *c; c++) {
+            console_set_color((*c == '/' || *c == '\\') ? stroke : fill);
+            console_putc(*c);
+        }
+        console_putc('\n');
+    }
+    console_set_color(VGA_ATTR(VGA_DARK_GREY, VGA_BLACK));
+    console_puts("\n          CATX SYSTEMS  -  CXK v5\n");
+    console_set_color(VGA_ATTR(VGA_LIGHT_GREY, VGA_BLACK));
+    timer_sleep(1000);   /* ~1s pause (busy-delay: timer not running yet) */
+    console_clear();
 }
-#endif
 
 void kmain(void) {
     /* console first, so everything after it logs cleanly. */
     console_init();
-    console_kernel("CXK v5 - higher-half kernel online");
 
     /* CPU core: segments + interrupts. */
     gdt_init();
-    vlog("GDT + TSS installed");
+    klog("GDT", SEV_OK, "GDT + TSS installed");
     idt_init();
-    vlog("IDT installed");
+    klog("IDT", SEV_OK, "installed");
 
     /* memory: physical frames -> virtual mappings -> heap. */
     pmm_init();
-    vlog("PMM online");
-    vlog_u32("       total pages: ", pmm_total_pages(), VGA_ATTR(VGA_WHITE, VGA_BLACK));
-    vlog_u32("       free pages:  ", pmm_free_count(),  VGA_ATTR(VGA_LIGHT_GREEN, VGA_BLACK));
+    klog("PMM", SEV_OK, "online");
+    klog_child_u32("total pages: ", pmm_total_pages(), LOG_COLOR_VALUE, "");
+    klog_child_u32("free pages: ", pmm_free_count(), VGA_ATTR(VGA_LIGHT_GREEN, VGA_BLACK), "");
 
     paging_init();
-    vlog("Paging online (recursive page directory)");
+    klog("PAGING", SEV_OK, "online (recursive page directory)");
 
     heap_init();
-    vlog("Heap online (kmalloc/kfree)");
+    klog("HEAP", SEV_OK, "online (kmalloc/kfree)");
 
     /* initalize speakers */
     speaker_init();
 
+    int fb_up = 0;
 #if CXK_ENABLE_FB
-    if (fb_init() == 0)
-    {
-        fb_clear(fb_rgb(0,0,0));
+    /* Split boot layout: the CX logo sits in the right third while the boot log
+       renders in the left region. The console is rebound onto that left viewport
+       for the rest of boot; a panic repaints the whole screen red (idt.c). The
+       few early lines above (quiet by default) predate fb and stay on VGA. */
+    if (fb_init() == 0) {
+        fb_up = 1;
+        uint32_t W = fb_width(), H = fb_height();
+        fb_clear(fb_rgb(0, 0, 0));
 
-        klogo_draw(
-            (fb_width()  - CXLOGO_WIDTH)  / 2,
-            (fb_height() - CXLOGO_HEIGHT) / 2
-        );
-        speaker_boot_chime();
+        uint32_t logo_area = W / 3;                       /* right third */
+        uint32_t text_w    = W - logo_area;
+        uint32_t lsz       = ((logo_area < H ? logo_area : H) * 4) / 5;
+        klogo_draw(text_w + (logo_area - lsz) / 2, (H - lsz) / 2, lsz);
 
-        timer_sleep(1000);
-
-        fb_boot_splash();
+        console_use_fb(8, 8, text_w - 16, H - 16);        /* boot log -> left */
     }
 #endif
 
+    /* no framebuffer (disabled or unavailable): show the ASCII logo briefly. */
+    if (!fb_up) cx_text_logo();
+
+    /* first VISIBLE log line - framebuffer left region if one came up, else VGA */
+    klog("KERNEL", SEV_OK, "CXK v5 - higher-half kernel online");
+
     /* scheduler + timer (preemption available, enabled on demand). */
     sched_init();
-    vlog("Scheduler online");
+    klog("SCHED", SEV_OK, "online");
 
     timer_init();
     __asm__ __volatile__("sti");          /* enable interrupts: timer can fire */
-    vlog("Timer online (PIT @ 1000 Hz), interrupts enabled");
+    klog("TIMER", SEV_OK, "online (PIT @ 1000 Hz), interrupts enabled");
 
 
     /* user mode: syscall gate + ring-3 fault handler. */
     usermode_init();
     usermode_register_fault_handler();
-    vlog("Usermode online (syscall gate int 0x80)");
+    klog("USERMODE", SEV_OK, "online (syscall gate int 0x80)");
 
     /* PCI bus: enumerate devices so storage/USB/NIC drivers can find their
        controllers. Must come before AHCI (which is discovered via PCI). */
     pci_init();
-    vlog_u32("PCI enumerated: devices: ", (uint32_t)pci_device_count(),
-             VGA_ATTR(VGA_WHITE, VGA_BLACK));
+    klog_u32("PCI", SEV_OK, "enumerated, devices: ", (uint32_t)pci_device_count(), LOG_COLOR_VALUE, "");
 
     /* storage: probe ATA + AHCI drives into the disk registry. AHCI is found via
        PCI; on a machine without one, ahci_init returns 0 harmlessly. */
     ata_init();
     ahci_init();
-    vlog_u32("Storage online: disks: ", (uint32_t)disk_count(),
-             VGA_ATTR(VGA_WHITE, VGA_BLACK));
+    klog_u32("STORAGE", SEV_OK, "online, disks: ", (uint32_t)disk_count(), LOG_COLOR_VALUE, "");
 
     /* filesystem: mount CXFS on the data disk (read-only unless a dev build). */
     mount_cxfs();
@@ -199,7 +180,7 @@ void kmain(void) {
     /* run the kernel self-tests (ktest.c). */
     ktest_run();
 
-    console_kernel("boot complete - idle");
+    klog("KERNEL", SEV_OK, "boot complete - idle");
     for (;;) {
         __asm__ __volatile__("hlt");
     }

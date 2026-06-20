@@ -16,6 +16,7 @@
 #include "paging.h"
 #include "heap.h"
 #include "console.h"
+#include "logging.h"
 #include "color.h"
 #include "sched.h"
 #include "usermode.h"
@@ -29,12 +30,10 @@
    so a clean boot is quiet and any problem stands out. Returns 1 if passed,
    0 if failed, so ktest_run can tally a summary. */
 static int report(const char *name, int ok) {
-    if (!ok) {
-        console_puts_color("  [FAIL] ", VGA_ATTR(VGA_LIGHT_RED, VGA_BLACK));
-        console_puts(name);
-        console_newline();
-    }
-    return ok ? 1 : 0;
+    if (!ok)
+        klog("KTEST", SEV_FAIL, name);
+
+    return ok;
 }
 
 /* ---- paging: map a scratch frame, write+read it back ---- */
@@ -116,19 +115,15 @@ extern uint8_t user_blob_busy_end[];
 static int test_ring3_processes(void) {
     /* 3b: cooperative ring-3 processes */
     uint32_t blen = (uint32_t)(user_blob_end - user_blob_start);
-    process_create_ring3("user1", user_blob_start, blen,
-                         "");
-    process_create_ring3("user2", user_blob_start, blen,
-                         "");
+    process_create_ring3("user1", user_blob_start, blen, "");
+    process_create_ring3("user2", user_blob_start, blen, "");
     for (int i = 0; i < 12 && sched_active_count() > 1; i++) yield();
     int coop_ok = (sched_active_count() == 1);
 
     /* 3c: preemptible ring-3 processes */
     uint32_t blen2 = (uint32_t)(user_blob_busy_end - user_blob_busy_start);
-    process_create_ring3("busy1", user_blob_busy_start, blen2,
-                         "");
-    process_create_ring3("busy2", user_blob_busy_start, blen2,
-                         "");
+    process_create_ring3("busy1", user_blob_busy_start, blen2, "");
+    process_create_ring3("busy2", user_blob_busy_start, blen2, "");
     sched_preempt_enable(5);
     while (sched_active_count() > 1) { __asm__ __volatile__("pause"); }
     sched_preempt_disable();
@@ -142,13 +137,11 @@ static int test_identity(void) {
     uint32_t blen = (uint32_t)(user_blob_end - user_blob_start);
 
     /* 1. launching a user process as UID 0 must be REJECTED */
-    int bad = process_create_ring3_as_user("baduser", user_blob_start, blen,
-                                            0, UID_SYSTEM);
+    int bad = process_create_ring3_as_user("baduser", user_blob_start, blen, 0, UID_SYSTEM);
     if (bad != -1) return 0;   /* should have been refused */
 
     /* 2. launching as a real user (UID >= 1) must succeed */
-    int uid7 = process_create_ring3_as_user("user7", user_blob_start, blen,
-                                            "", 7);
+    int uid7 = process_create_ring3_as_user("user7", user_blob_start, blen,"", 7);
     if (uid7 < 0) return 0;
 
     /* drive it to completion so it reaps cleanly */
@@ -254,17 +247,20 @@ void ktest_run(void) {
 
     /* single summary line: green if all passed, red if any failed. */
     if (passed == total) {
-        console_puts_color("[KERNEL] ", VGA_ATTR(VGA_LIGHT_CYAN, VGA_BLACK));
-        console_puts("self-tests: all ");
-        console_put_u32((uint32_t)total);
-        console_puts(" passed");
-        console_newline();
+        klog_u32("KTEST", SEV_OK, "self-tests: all ",
+                        (uint32_t)total,
+                        LOG_COLOR_VALUE, " passed");
     } else {
-        console_puts_color("[KERNEL] ", VGA_ATTR(VGA_LIGHT_CYAN, VGA_BLACK));
-        console_put_u32((uint32_t)(total - passed));
-        console_puts_color(" of ", VGA_ATTR(VGA_LIGHT_GREY, VGA_BLACK));
-        console_put_u32((uint32_t)total);
-        console_puts_color(" self-tests FAILED (see above)", VGA_ATTR(VGA_LIGHT_RED, VGA_BLACK));
-        console_newline();
+        klog_u32("KTEST", SEV_FAIL, "self-tests failed: ",
+                        (uint32_t)(total - passed),
+                        LOG_COLOR_VALUE, " failure(s)");
+
+        klog_child_u32("tests run: ",
+                        (uint32_t)total,
+                        LOG_COLOR_VALUE, "");
+
+        klog_child_u32("tests passed: ",
+                        (uint32_t)passed,
+                        VGA_ATTR(VGA_LIGHT_GREEN, VGA_BLACK), "");
     }
 }

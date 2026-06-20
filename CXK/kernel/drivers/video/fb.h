@@ -56,6 +56,12 @@ void fb_draw_line(int x0, int y0, int x1, int y1, uint32_t color);
    Used by the console for fast scrolling instead of a full re-render. */
 void fb_scroll_up(uint32_t pixels, uint32_t bg);
 
+/* Scroll a sub-rectangle up by `dy` pixels, filling the bottom with `bg`.
+   Lets the console scroll its own region without touching the rest of the
+   screen (e.g. a logo drawn alongside the boot log). */
+void fb_scroll_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                    uint32_t dy, uint32_t bg);
+
 /* Text rendering using the built-in 8x16 font. Width is always FB_CHAR_W. */
 #define FB_CHAR_W   8
 #define FB_CHAR_H   16

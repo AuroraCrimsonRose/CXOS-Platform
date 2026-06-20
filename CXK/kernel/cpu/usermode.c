@@ -10,6 +10,7 @@
 #include "paging.h"
 #include "pmm.h"
 #include "console.h"
+#include "logging.h"
 #include "vga.h"
 #include "color.h"
 
@@ -101,7 +102,12 @@ int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
 extern uint8_t user_blob_start[];
 extern uint8_t user_blob_end[];
 
-static const char user_msg[] = "  [ring3] hello from user mode via syscall!\n";
+/* Ring-3 SYS_WRITE test payload. This is raw USER output (printed byte-for-byte
+   by SYS_WRITE in the current console color - a ring-3 program can't set the
+   tag/severity colors klog uses), so it's shaped to match a klog_child detail
+   line: 19 leading spaces (LOG_PREFIX_W - 3) + "-> " aligns it under the
+   message column of the surrounding log. */
+static const char user_msg[] = "                   -> ring 3 SYS_WRITE ok\n";
 
 void usermode_init(void) {
     /* install the syscall gate: int 0x80, DPL=3 so ring 3 can invoke it */
@@ -175,7 +181,7 @@ static void process_trampoline(void) {
     if (!s->code_phys || !s->stack_phys) {
         if (s->code_phys)  unmap_user_page(s->code_virt, s->code_phys);
         if (s->stack_phys) unmap_user_page(s->stack_virt, s->stack_phys);
-        console_err("ring3: out of memory for user pages");
+        klog_u32("USERMODE", SEV_ERR, "PROCESS ", (uint32_t)pid, LOG_COLOR_VALUE, " OUT OF MEM");
         thread_exit();
     }
 
@@ -216,6 +222,7 @@ int process_create_ring3(const char *name,
     r3[pid].code_phys  = 0;
     r3[pid].stack_phys = 0;
     thread_mark_user(pid);
+    klog_u32("RING3", SEV_INFO, "SYSMODE CALL - pid ", (uint32_t)pid, LOG_COLOR_VALUE, "");
     /* runs as SYSTEM: this is the kernel launching a ring-3 helper as the
        machine identity. To launch on behalf of a human user, use
        process_create_ring3_as_user(). */
@@ -225,15 +232,14 @@ int process_create_ring3(const char *name,
 /* Launch a ring-3 process owned by a specific user. Enforces the core identity
    invariant: a user is ALWAYS UID >= 1 - launching a user process as UID 0
    (SYSTEM) is rejected. Returns the pid, or -1 (incl. if uid == SYSTEM). */
-int process_create_ring3_as_user(const char *name,
-                                 const void *blob, uint32_t blob_len,
-                                 const char *msg, uint32_t uid) {
+int process_create_ring3_as_user(const char *name, const void *blob, uint32_t blob_len, const char *msg, uint32_t uid) {
     if (!uid_is_user(uid)) return -1;   /* user can never be UID 0 / invalid */
     int pid = process_create_ring3(name, blob, blob_len, msg);
     if (pid < 0) return -1;
     /* pid is already marked is_user by process_create_ring3, so thread_set_uid's
        guard would block UID 0 here too - but uid is validated >= 1 above. */
     thread_set_uid(pid, uid);
+    klog_u32("RING3", SEV_INFO, "USERMODE CALL - uid ", uid, LOG_COLOR_VALUE, "");
     return pid;
 }
 
@@ -242,15 +248,11 @@ int process_create_ring3_as_user(const char *name,
  * panicking the kernel - a buggy user program can't take the system down. */
 static void usermode_fault(struct registers *r) {
     int pid = thread_current_id();
-    console_set_color(VGA_ATTR(VGA_BROWN, VGA_BLACK));
-    console_puts("\n[kernel] user process ");
-    console_put_u32((uint32_t)pid);
-    console_puts(" faulted (exc ");
-    console_put_u32(r->int_no);
-    console_puts(") - terminated.\n");
-    console_set_color(VGA_ATTR(VGA_LIGHT_GREY, VGA_BLACK));
 
-    thread_exit();   /* switches away, never returns; kernel survives */
+    klog_u32("USERMODE", SEV_ERR, "user process ", (uint32_t)pid, LOG_COLOR_VALUE, " faulted");
+    klog_child_u32("exception: ", r->int_no, LOG_COLOR_VALUE, "");
+    klog_child("process terminated");
+    thread_exit();   /* never returns */
 }
 
 void usermode_register_fault_handler(void) {

@@ -3,8 +3,9 @@
 /*
  * v5 IDT: exception + IRQ handling with a self-contained panic dump.
  * Differences from the v4 port (deliberate for the current v5 stage):
- *  - TEXT-MODE PANIC ONLY (no framebuffer backend yet). Writes to VGA via its
- *    HIGHER-HALF address (0xC00B8000): v5 runs higher-half with the identity
+ *  - PANIC renders to whichever display is live: the framebuffer (red screen,
+ *    white 8x16 text) when a graphics mode is active, else VGA text via its
+ *    HIGHER-HALF address (0xC00B8000) - v5 runs higher-half with the identity
  *    map gone, so physical 0xB8000 is NOT mapped.
  *  - NO SCHEDULER HOOK YET (sched not ported); the timer-IRQ preempt call is
  *    omitted and clearly marked for re-adding with the process model.
@@ -16,6 +17,7 @@
 #include "format.h"
 #include "sched.h"
 #include "speaker.h"
+#include "fb.h"
 
 void pic_remap(void);
 void pic_send_eoi(uint32_t int_no);
@@ -42,7 +44,22 @@ static struct idt_ptr   idtp;
 
 static int panic_pos = 0;
 
+/* Write one panic character to whichever display is live. On the framebuffer we
+   render white-on-red 8x16 glyphs (the screen is cleared to red when the panic
+   begins, in isr_handler); otherwise we poke white-on-red VGA cells. panic_pos
+   is a linear cell index in both cases, wrapped at the live width. */
 static void panic_putc_at(char c) {
+    if (fb_active()) {
+        uint32_t cols = fb_width() / 8;
+        if (cols == 0) cols = 1;
+        if (c == '\n') { panic_pos = ((panic_pos / (int)cols) + 1) * (int)cols; return; }
+        uint32_t col = (uint32_t)panic_pos % cols;
+        uint32_t row = (uint32_t)panic_pos / cols;
+        if ((row + 1) * 16 <= fb_height())
+            fb_draw_char(col * 8, row * 16, c, fb_rgb(255, 255, 255), fb_rgb(0xAA, 0, 0));
+        panic_pos++;
+        return;
+    }
     if (c == '\n') { panic_pos = (panic_pos / 80 + 1) * 80; return; }
     VGA_PANIC[panic_pos++] = (uint16_t)c | PANIC_ATTR;
 }
@@ -93,6 +110,7 @@ void isr_handler(struct registers *r) {
     }
 
     panic_pos = 0;
+    if (fb_active()) fb_clear(fb_rgb(0xAA, 0, 0));   /* red screen for the panic */
     panic_puts("*** KERNEL PANIC ***\n");
     panic_puts("Exception: ");
     panic_puthex(r->int_no);

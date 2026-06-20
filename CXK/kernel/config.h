@@ -27,16 +27,6 @@
 #endif
 
 /*
- * CXK_VERBOSE_BOOT controls the per-subsystem boot progress log (GDT installed,
- * PMM online, etc.). Default 0 = quiet boot: only the banner, the self-test
- * summary, and any failures print. Set to 1 for the detailed boot log, useful
- * when a boot hangs and you need to see how far it got.
- */
-#ifndef CXK_VERBOSE_BOOT
-#define CXK_VERBOSE_BOOT 0          /* 0 = quiet boot (default), 1 = verbose log */
-#endif
-
-/*
  * CXK_ENABLE_FB controls the VBE linear-framebuffer path. When 1, the
  * bootloader sets a graphics mode and the kernel runs its console on the
  * framebuffer; when 0, the bootloader never touches the video hardware and the

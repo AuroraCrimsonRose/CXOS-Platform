@@ -1,13 +1,14 @@
 /* /CXK/kernel/drivers/char/console.h */
 /* Aurora Tejeda / CATX Systems LLC */
 /*
- * Minimal text-mode console for v5. Stateful layer on top of vga.c: tracks the
- * cursor, wraps lines, scrolls, and writes strings/numbers in color. This is
- * the kernel's normal output path (replacing kmain's hand-placed VGA pokes).
+ * Text console for v5: the kernel's low-level output primitives. Tracks the
+ * cursor, wraps lines, scrolls, and writes strings/numbers in color, with two
+ * interchangeable backends behind one interface - VGA text (default) and the
+ * framebuffer (after console_use_fb). No scrollback (v5 is a boot log, not a
+ * shell).
  *
- * Deliberately small - no scrollback buffer, no framebuffer backend (the heavy
- * v4 console had both; v5 doesn't need them without a shell). A framebuffer
- * backend can be added later behind this same interface.
+ * Higher-level severity/tag logging ("[INFO] ...", "[ERR] ...", child lines)
+ * lives in lib/string/logging.h, which builds on these primitives.
  */
 
 #ifndef CONSOLE_H
@@ -19,6 +20,12 @@
 /* initialize: clear the screen, home the cursor, set the default attribute. */
 void console_init(void);
 
+/* Switch the console onto the framebuffer, rendering text into the pixel
+   rectangle (x0,y0,w,h) with the 8x16 font. No-op unless fb_init() succeeded.
+   Lets the boot log occupy part of the screen (e.g. the left side) while the
+   rest holds other graphics (e.g. the boot logo). */
+void console_use_fb(uint32_t x0, uint32_t y0, uint32_t w, uint32_t h);
+
 /* clear the screen to the current background and home the cursor. */
 void console_clear(void);
 
@@ -26,7 +33,7 @@ void console_clear(void);
 void console_set_color(uint8_t attr);
 uint8_t console_get_color(void);
 
-/* write a single character, handling \n (newline) and \t (tab). */
+/* write a single character, handling \n (newline), \r and \t (tab). */
 void console_putc(char c);
 
 /* write a NUL-terminated string at the cursor. */
@@ -46,22 +53,14 @@ void console_put_i32_color(int32_t v, uint8_t attr);
 void console_put_hex_color(uint32_t v, int width, uint8_t attr);
 
 /* label + value in one call: print `label` in the current color, then the
-   number in `value_attr` (current color restored after). The common boot-log
-   shape, e.g. console_field_u32("free: ", n, white). */
+   number in `value_attr` (current color restored after). */
 void console_field_u32(const char *label, uint32_t v, uint8_t value_attr);
 void console_field_i32(const char *label, int32_t v, uint8_t value_attr);
 void console_field_hex(const char *label, uint32_t v, int width, uint8_t value_attr);
 
-/* line control */
+/* line / cursor control */
 void console_newline(void);
 void console_set_cursor(int x, int y);
 void console_get_cursor(int *x, int *y);
-
-/* tagged log lines: print "[TAG] message\n", tag colorized. */
-void console_tag(const char *tag, uint8_t tag_attr, const char *msg);
-void console_boot(const char *msg);     /* "[BOOT] msg"   (cyan)   */
-void console_kernel(const char *msg);   /* "[KERNEL] msg" (green)  */
-void console_warn(const char *msg);     /* "[WARN] msg"   (yellow) */
-void console_err(const char *msg);      /* "[ERR] msg"    (red)    */
 
 #endif
