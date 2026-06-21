@@ -96,13 +96,10 @@ static int write_block(uint32_t block, const void *buf) {
     return disk_write(cxfs_id, lba, (uint8_t)fs_sectors_per_block, buf);
 }
 
-int cxfs_format(void) {
+int cxfs_format_at(uint64_t base_lba, uint32_t total_blocks) {
     if (!disk_present()) return -1;
 
-    /* --- figure out the layout --- */
-    /* the filesystem disk size: we know our image is 16 MB = 32768 blocks,
-       but query conservatively by using a fixed total for v1. */
-    uint32_t total_blocks = (16u * 1024 * 1024) / CXFS_BLOCK_SIZE;  /* 32768 */
+    /* --- figure out the layout (total_blocks = this volume's size in blocks) --- */
 
     uint32_t manifest_entries = CXFS_MAX_ENTRIES;
     uint32_t entries_per_block = CXFS_BLOCK_SIZE / sizeof(struct cxfs_entry); /* 4 */
@@ -120,7 +117,7 @@ int cxfs_format(void) {
     /* v2: this volume's block geometry + placement. base_lba 0 = whole disk
        (dev). Set the I/O globals so read_block/write_block translate correctly. */
     fs_sectors_per_block = CXFS_BLOCK_SIZE / 512;   /* 8 */
-    fs_base_lba          = 0;
+    fs_base_lba          = base_lba;
 
     /* --- build and write the superblock --- */
     memset(&sb, 0, sizeof(sb));
@@ -186,14 +183,19 @@ int cxfs_format(void) {
     return 0;
 }
 
-int cxfs_mount(void) {
+int cxfs_format(void) {
+    /* whole-disk dev default: base 0, fixed 16 MB volume */
+    return cxfs_format_at(0, (16u * 1024 * 1024) / CXFS_BLOCK_SIZE);
+}
+
+int cxfs_mount_at(uint64_t base_lba) {
     if (!disk_present()) return -1;
 
-    /* The superblock is at the volume's block 0. Until we've read it we don't
-       know the block geometry, but block 0 lives at base_lba sector 0; for a
-       whole-disk volume that's sector 0. Read the first sector directly to get
-       the superblock header, then adopt its geometry. (Partition mounts will
-       pass base_lba in; for now whole-disk = 0.) */
+    /* This volume starts at base_lba (a partition offset, or 0 for whole-disk).
+       The superblock is the volume's block 0 = sector base_lba. Read that sector
+       for the geometry, then the full superblock. The location we were given is
+       authoritative; sb.base_lba is advisory. */
+    fs_base_lba = base_lba;
     uint8_t first[512];
     if (disk_read(cxfs_id, fs_base_lba, 1, first) != 0) return -1;
     struct cxfs_superblock *probe = (struct cxfs_superblock *)first;
@@ -202,7 +204,7 @@ int cxfs_mount(void) {
 
     /* adopt this volume's geometry, then read the full superblock as a block. */
     fs_sectors_per_block = probe->block_size / 512;
-    fs_base_lba          = probe->base_lba;
+    /* keep fs_base_lba = base_lba (where we actually found the volume) */
     if (read_block(0, &sb) != 0) { mounted = 0; return -1; }
     if (sb.magic != CXFS_MAGIC)  { mounted = 0; return -1; }
 
@@ -210,6 +212,8 @@ int cxfs_mount(void) {
     bitmap_load();
     return 0;
 }
+
+int cxfs_mount(void) { return cxfs_mount_at(0); }
 
 int cxfs_is_mounted(void) { return mounted; }
 
@@ -613,6 +617,24 @@ int cxfs_read_file(uint32_t id, void *buf, uint32_t cap) {
     return (int)got;
 }
 
+/* Path-based convenience for loaders: resolve an absolute path from root, then
+   stat / read it. cxfs_stat_path fills *out (use .size to size a buffer, .type
+   to check it's a file); cxfs_read_path reads up to `cap` bytes and returns the
+   bytes read (the file's size), or negative on error. */
+int cxfs_stat_path(const char *path, struct cxfs_entry *out) {
+    if (!mounted) return -1;
+    int id = cxfs_resolve(path, 0);          /* 0 = root; absolute paths */
+    if (id < 0) return -1;
+    return cxfs_read_entry((uint32_t)id, out);
+}
+
+int cxfs_read_path(const char *path, void *buf, uint32_t cap) {
+    if (!mounted) return -1;
+    int id = cxfs_resolve(path, 0);
+    if (id < 0) return -1;
+    return cxfs_read_file((uint32_t)id, buf, cap);
+}
+
 /* ====================================================================
  * Rename / move / delete
  * ==================================================================== */
@@ -728,5 +750,3 @@ int cxfs_is_locked(uint32_t id) {
     if (cxfs_read_entry(id, &e) != 0) return 0;
     return cxfs_lock_blocks(&e);
 }
-
-

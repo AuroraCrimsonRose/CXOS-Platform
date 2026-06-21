@@ -51,6 +51,7 @@ set(KERNEL_INCLUDES
     -I${SRC_DIR}/kernel/lib/mem
     -I${SRC_DIR}/kernel/lib/gfx
     -I${SRC_DIR}/kernel/lib/format
+    -I${SRC_DIR}/kernel/drivers/storage/partition
     -I${SRC_DIR}/kernel/cpu
     -I${SRC_DIR}/kernel/cpu/int
     -I${SRC_DIR}/kernel/memman
@@ -98,6 +99,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/drivers/storage/hardware/ahci.c
     ${SRC_DIR}/kernel/drivers/storage/hardware/disk.c
     ${SRC_DIR}/kernel/drivers/storage/filesys/cxfs.c
+    ${SRC_DIR}/kernel/drivers/storage/partition/partition.c
     ${SRC_DIR}/kernel/lib/crypto/sha256.c
     ${SRC_DIR}/kernel/lib/crypto/bignum.c
     ${SRC_DIR}/kernel/lib/crypto/rsa.c
