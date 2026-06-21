@@ -3,22 +3,7 @@
         {
             "name": "CXK",
             "includePath": [
-                "${workspaceFolder}/CXK/kernel",
-                "${workspaceFolder}/CXK/kernel/cpu",
-                "${workspaceFolder}/CXK/kernel/cpu/int",
-                "${workspaceFolder}/CXK/kernel/drivers/bus",
-                "${workspaceFolder}/CXK/kernel/drivers/storage",
-                "${workspaceFolder}/CXK/kernel/drivers/usb",
-                "${workspaceFolder}/CXK/kernel/drivers/net",
-                "${workspaceFolder}/CXK/kernel/drivers/video",
-                "${workspaceFolder}/CXK/kernel/drivers/input",
-                "${workspaceFolder}/CXK/kernel/drivers/char",
-                "${workspaceFolder}/CXK/kernel/drivers/power",
-                "${workspaceFolder}/CXK/kernel/lib",
-                "${workspaceFolder}/CXK/kernel/shell",
-                "${workspaceFolder}/CXK/kernel/memman",
-                "${workspaceFolder}/CXK/kernel/filesys",
-                "${workspaceFolder}/CXK/kernel/data/fonts"
+                "${workspaceFolder}/CXK/kernel/**"
             ],
             "compilerPath": "C:/cross/i686-elf/bin/i686-elf-gcc.exe",
             "cStandard": "c11",

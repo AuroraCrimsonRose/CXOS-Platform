@@ -113,10 +113,15 @@ struct cxfs_entry {
 
 /* initialize a blank CXFS on the filesystem disk. returns 0 on success. */
 int cxfs_format(void);
+/* format a CXFS volume at sector base_lba spanning total_blocks blocks
+   (for a partition); cxfs_format() = whole-disk dev default. */
+int cxfs_format_at(uint64_t base_lba, uint32_t total_blocks);
 
 /* mount: read the superblock, verify magic. returns 0 on success, -1 if no
    valid CXFS found (e.g. unformatted disk). */
 int cxfs_mount(void);
+/* mount a CXFS volume located at sector base_lba (a partition offset). */
+int cxfs_mount_at(uint64_t base_lba);
 
 /* select / query which ATA drive CXFS operates on (0-3). */
 void    cxfs_set_disk(uint8_t drive);
@@ -182,6 +187,10 @@ int cxfs_write_file(uint32_t id, const void *data, uint32_t len);
 /* read up to `cap` bytes of file `id` into `buf`. returns bytes read,
    or -1 on error. */
 int cxfs_read_file(uint32_t id, void *buf, uint32_t cap);
+
+/* path-based reads from root, for loaders. stat to size a buffer, then read. */
+int cxfs_stat_path(const char *path, struct cxfs_entry *out);
+int cxfs_read_path(const char *path, void *buf, uint32_t cap);
 
 /* free all data blocks of an entry and clear its extents (size -> 0). */
 void cxfs_free_file_data(struct cxfs_entry *e);
