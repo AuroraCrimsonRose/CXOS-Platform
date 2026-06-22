@@ -37,6 +37,7 @@ struct thread {
     int       is_user;         /* 1 = runs in ring 3 (a user process) */
     int       exit_code;       /* set on exit */
     uint32_t  uid;             /* owning user id; 0 = SYSTEM (machine identity) */
+    uint32_t  caps;            /* ABI v1 capability bitmask (ring-3 authority) */
     uint32_t  user_stack_base; /* allocated ring-3 stack (user processes) */
     /* per-process ring-3 return state: enter_usermode saves the kernel esp +
        eflags here so SYS_EXIT (return_to_kernel) can come back, even if another
@@ -103,5 +104,9 @@ int thread_alloc_kstack(int id);
 uint32_t thread_current_uid(void);
 /* set a thread's owning UID (used when launching a process as a given user). */
 void     thread_set_uid(int id, uint32_t uid);
+
+/* ABI v1 capabilities (cpu/caps.h) */
+uint32_t thread_current_caps(void);
+void     thread_set_caps(int id, uint32_t caps);
 
 #endif

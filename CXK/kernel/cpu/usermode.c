@@ -13,6 +13,7 @@
 #include "logging.h"
 #include "vga.h"
 #include "color.h"
+#include "caps.h"
 
 /* asm entry points (usermode.asm) */
 extern int  enter_usermode(uint32_t entry_eip, uint32_t user_esp, uint32_t *save_slot);
@@ -76,6 +77,7 @@ static int user_ptr_ok(uint32_t ptr, uint32_t len) {
 int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
     switch (num) {
         case SYS_WRITE: {
+            if (!(thread_current_caps() & CAP_CONSOLE)) return E_PERM;
             uint32_t len = a2;
             if (len == 0) {
                 const char *p = (const char *)a1;
@@ -94,7 +96,7 @@ int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
             return_to_kernel((int)a1, thread_current_usave());
             return 0;   /* unreachable */
         default:
-            return -1;
+            return E_NOSYS;
     }
 }
 
@@ -141,8 +143,14 @@ int usermode_test(void) {
     uint32_t ustack_top = TEST_STACK_VIRT + 0x1000 - 16;
     *(uint32_t *)ustack_top = (uint32_t)umsg;
 
+    /* dev test runs as a SYSTEM ring-3 helper: grant it console so the gated
+       SYS_WRITE works (restored after). */
+    int      tme  = thread_current_id();
+    uint32_t tsav = thread_current_caps();
+    thread_set_caps(tme, CAP_CONSOLE);
     /* enter ring 3; returns when the routine SYS_EXITs */
     int rc = enter_usermode(TEST_CODE_VIRT, ustack_top, thread_current_usave());
+    thread_set_caps(tme, tsav);
 
     /* reclaim the user pages */
     unmap_user_page(TEST_CODE_VIRT, code_phys);
@@ -222,6 +230,7 @@ int process_create_ring3(const char *name,
     r3[pid].code_phys  = 0;
     r3[pid].stack_phys = 0;
     thread_mark_user(pid);
+    thread_set_caps(pid, CAP_CONSOLE);   /* SYSTEM ring-3 helper: may write console */
     klog_u32("RING3", SEV_INFO, "SYSMODE CALL - pid ", (uint32_t)pid, LOG_COLOR_VALUE, "");
     /* runs as SYSTEM: this is the kernel launching a ring-3 helper as the
        machine identity. To launch on behalf of a human user, use

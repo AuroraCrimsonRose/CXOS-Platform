@@ -142,6 +142,34 @@ set(VENV_PY   ${SRC_DIR}/../.venv/Scripts/python.exe)
 set(MKCXES    ${SRC_DIR}/tools/CXEX_Compiler/mkcxes.py)
 set(PAD_BOOT  ${SRC_DIR}/tools/pad_boot.ps1)
 
+# ---- code-signing + executive + unified-disk pipeline ----
+option(SIGN "sign CXEX artifacts (.xkex/.xoex) with the kernel key" OFF)
+set(SIGNCXEX  ${SRC_DIR}/tools/CXEX_Compiler/signcxex.py)
+set(MKDISK    ${SRC_DIR}/tools/mkdisk.py)
+set(SIGN_SK   ${SRC_DIR}/tools/CXEX_Compiler/kernel.xksk)
+set(SIGN_PK   ${SRC_DIR}/tools/CXEX_Compiler/kernel.xkpk)
+
+# the system executive (.xoex): os/executive/executive.c -> ELF -> CXEX (type os)
+set(EXEC_C    ${SRC_DIR}/os/executive/executive.c)
+set(EXEC_LD   ${SRC_DIR}/os/executive/executive.ld)
+set(EXEC_ELF  ${BUILD_DIR}/executive.elf)
+set(EXEC_XOEX ${PACKAGES_DIR}/executive.xoex)
+
+# the unified XBPT disk (boot + stage + system on one disk)
+set(CXK_DISK  ${IMAGES_DIR}/cxk_disk.img)
+
+# per-artifact sign step: real signcxex when -DSIGN=ON, else a harmless notice.
+if(SIGN)
+    if(NOT EXISTS ${SIGN_SK})
+        message(FATAL_ERROR "SIGN=ON but signing key missing: ${SIGN_SK}\n  run: python tools/CXEX_Compiler/makekeys.py kernel")
+    endif()
+    set(KSIGN COMMAND ${VENV_PY} ${SIGNCXEX} ${KERNEL_XKEX} ${SIGN_SK} ${SIGN_PK})
+    set(XSIGN COMMAND ${VENV_PY} ${SIGNCXEX} ${EXEC_XOEX}   ${SIGN_SK} ${SIGN_PK})
+else()
+    set(KSIGN COMMAND ${CMAKE_COMMAND} -E echo "  kernel.xkex UNSIGNED (configure -DSIGN=ON to sign)")
+    set(XSIGN COMMAND ${CMAKE_COMMAND} -E echo "  executive.xoex UNSIGNED (configure -DSIGN=ON to sign)")
+endif()
+
 # ---- generate compile rules for each kernel C source ----
 set(KERNEL_OBJS "")
 foreach(src ${KERNEL_C_SRCS})
@@ -196,14 +224,44 @@ add_custom_command(
     COMMENT "Linking kernel (higher-half)"
 )
 
-# ---- kernel.elf -> kernel.xkex (CXEX) ----
+# ---- kernel.elf -> kernel.xkex (CXEX), signed when -DSIGN=ON ----
 add_custom_command(
     OUTPUT ${KERNEL_XKEX}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${PACKAGES_DIR}
     COMMAND ${VENV_PY} ${MKCXES} ${KERNEL_ELF} ${KERNEL_XKEX} --type kernel
+    ${KSIGN}
     DEPENDS ${KERNEL_ELF} ${MKCXES}
     COMMENT "Converting kernel.elf -> kernel.xkex (CXEX)"
 )
+
+# ---- executive.c -> executive.elf (user-half) -> executive.xoex (signed) ----
+add_custom_command(
+    OUTPUT ${EXEC_ELF}
+    COMMAND ${KCC} -ffreestanding -fno-pic -no-pie -fno-stack-protector -nostdlib
+            -Wl,-T,${EXEC_LD} -o ${EXEC_ELF} ${EXEC_C}
+    DEPENDS ${EXEC_C} ${EXEC_LD}
+    COMMENT "CC+LD executive.c -> executive.elf (user-half .xoex bootstrap)"
+)
+add_custom_command(
+    OUTPUT ${EXEC_XOEX}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${PACKAGES_DIR}
+    COMMAND ${VENV_PY} ${MKCXES} ${EXEC_ELF} ${EXEC_XOEX} --type os
+    ${XSIGN}
+    DEPENDS ${EXEC_ELF} ${MKCXES}
+    COMMENT "Converting executive.elf -> executive.xoex (CXEX, type os)"
+)
+
+# ---- unified disk: stage1 + XBPT + stage2 + BOOT/STAGE/SYSTEM partitions ----
+add_custom_command(
+    OUTPUT ${CXK_DISK}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${IMAGES_DIR}
+    COMMAND ${VENV_PY} ${MKDISK} --out ${CXK_DISK} --size-mb 64 --boot-mb 8
+            --stage1 ${BOOT_BIN} --stage2 ${STAGE2_BIN} --kernel ${KERNEL_XKEX}
+            --stage Boot.xoex=${EXEC_XOEX}
+    DEPENDS ${BOOT_BIN} ${STAGE2_BIN} ${KERNEL_XKEX} ${EXEC_XOEX} ${MKDISK}
+    COMMENT "Building unified CXK disk (XBPT: boot + stage + system)"
+)
+add_custom_target(cxk_disk ALL DEPENDS ${CXK_DISK})
 
 # ---- image: boot + stage2 + kernel ----
 add_custom_command(
