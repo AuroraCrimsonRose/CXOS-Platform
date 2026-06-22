@@ -9,6 +9,8 @@
 #include "addr_space.h"
 #include "pmm.h"
 #include "paging.h"
+#include "sched.h"
+#include "caps.h"
 
 /* ring-3 entry trampoline (cpu/usermode.asm) and the per-thread save slot it
    uses to return here on SYS_EXIT. */
@@ -18,6 +20,15 @@ extern uint32_t *thread_current_usave(void);
 /* user stack: a few pages at the top of the user half (below the kernel base) */
 #define USER_STACK_TOP    0xBFFFF000u
 #define USER_STACK_PAGES  4u
+
+/* policy layer: identity (CXEX type) + trust -> capability set. Consulted
+   once here at the handoff; a valid signature does not itself grant authority. */
+uint32_t caps_for(uint16_t type_code, int trusted) {
+    if (!trusted) return 0;
+    if (type_code == CXEX_TYPE_OS)   return CAP_OS_BASELINE;  /* broker executive */
+    if (type_code == CXEX_TYPE_USER) return 0;                /* apps: capability-less */
+    return 0;
+}
 
 int cxex_exec(const uint8_t *file, size_t len) {
     /* 1. IDENTITY + INTEGRITY: only run images signed by the trusted key. */
@@ -64,7 +75,15 @@ int cxex_exec(const uint8_t *file, size_t len) {
        (TSS esp0 - the ring-0 stack the CPU uses for the syscall/fault back into
        the kernel - is established by the boot/scheduler setup, same as the
        existing ring-3 path.) */
+    /* grant this image its capability tier for the duration of its ring-3 run
+       (cxex_exec runs on the current kernel thread; restore caps on return). */
+    int      me         = thread_current_id();
+    uint32_t saved_caps = thread_current_caps();
+    thread_set_caps(me, caps_for(h.type_code, 1 /* verified above */));
+
     int rc = enter_usermode(entry, ustack_top, thread_current_usave());
+
+    thread_set_caps(me, saved_caps);
 
     /* 7. back in the kernel: restore the kernel space. (Freeing the image's
        frames + page tables is addr_space teardown - not yet implemented; this

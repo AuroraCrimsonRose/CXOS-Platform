@@ -72,6 +72,9 @@ KERNEL_CHUNK     equ 64             ; sectors per int13h call (<=127, BIOS-safe)
 KERNEL_CHUNKS    equ (KERNEL_SECTORS / KERNEL_CHUNK)   ; 512/64 = 8
 
 load_kernel:
+    call find_boot_partition        ; read XBPT, point dap_kernel at the BOOT
+                                    ; partition's start LBA (overrides the
+                                    ; default below)
     push es
     push cx
     mov cx, KERNEL_CHUNKS           ; number of chunks to read
@@ -109,10 +112,84 @@ dap_kernel:
     dw KERNEL_CHUNK             ; sectors per read (one chunk)
     dw 0x0000                   ; dest offset
     dw 0x1000                   ; dest segment -> 0x10000 linear (advances per chunk)
-    dq 33                       ; LBA 33 (right after 32-sector stage 2); advances
+    dq 33                       ; start LBA - DEFAULT only; find_boot_partition
+                                ; overwrites this with the BOOT partition's
+                                ; start_lba read from the XBPT at LBA 1.
 
 boot_drive_s2 db 0
 msg_kerr db '[BOOT] KERNEL READ ERROR', 0
+
+; ----------------------------------------------------------------------------
+; find_boot_partition - read the XBPT table (LBA 1) and point dap_kernel at the
+; CXBOOT partition's start LBA. Real mode (BIOS int 13h still available). Halts
+; with a message on read error / bad magic / no boot partition.
+;
+; XBPT on-disk layout (little-endian, must match drivers/storage/partition +
+; tools/mkdisk.py):
+;   header (32B): "XBPT"(4) version(2) entry_count(2 @6) entry_size(2 @8)
+;                 flags(2) disk_sectors(8) pad(12)
+;   entry  (32B): start_lba(8 @0) sectors(8 @8) type(1 @16) flags(1 @17)
+;                 reserved(2) name(12)
+; ----------------------------------------------------------------------------
+PART_TYPE_CXBOOT equ 0xCB
+XBPT_MAGIC_DWORD equ 0x54504258         ; 'X','B','P','T' as a LE dword
+
+find_boot_partition:
+    pusha
+    ; read 1 sector at LBA 1 -> xbpt_buf
+    mov ah, 0x42
+    mov dl, [boot_drive_s2]
+    mov si, dap_xbpt
+    int 0x13
+    jc .read_err
+
+    mov si, xbpt_buf
+    cmp dword [si], XBPT_MAGIC_DWORD
+    jne .bad_magic
+
+    mov cx, [si + 6]                    ; entry_count
+    test cx, cx
+    jz .no_boot
+    lea bx, [si + 32]                   ; bx -> first entry
+.scan:
+    cmp byte [bx + 16], PART_TYPE_CXBOOT
+    je .found
+    add bx, 32
+    loop .scan
+    jmp .no_boot
+.found:
+    ; copy the 64-bit start_lba into the kernel DAP (offsets 8 = low, 12 = high)
+    mov eax, [bx + 0]
+    mov [dap_kernel + 8], eax
+    mov eax, [bx + 4]
+    mov [dap_kernel + 12], eax
+    popa
+    ret
+.read_err:
+    mov si, msg_xbpt_rerr
+    call print_string
+    jmp halt
+.bad_magic:
+    mov si, msg_xbpt_bad
+    call print_string
+    jmp halt
+.no_boot:
+    mov si, msg_xbpt_none
+    call print_string
+    jmp halt
+
+dap_xbpt:
+    db 0x10
+    db 0x00
+    dw 1                                ; one sector
+    dw xbpt_buf                         ; dest offset (segment 0, DS=0)
+    dw 0x0000                           ; dest segment
+    dq 1                                ; LBA 1 (XBPT)
+
+msg_xbpt_rerr db '[BOOT] XBPT READ ERROR', 0
+msg_xbpt_bad  db '[BOOT] XBPT BAD MAGIC', 0
+msg_xbpt_none db '[BOOT] NO BOOT PARTITION', 0
+xbpt_buf:     times 512 db 0
 
 ; print "[BOOT] E820 entries: N" (N as a small decimal, real mode)
 print_mem_count:

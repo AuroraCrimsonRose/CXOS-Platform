@@ -22,7 +22,7 @@ bits 16
 
 STAGE2_SEGMENT  equ 0x0000
 STAGE2_OFFSET   equ 0x7E00      ; load stage 2 right after the boot sector
-STAGE2_LBA      equ 1           ; stage 2 starts at LBA 1 (sector after boot)
+STAGE2_LBA      equ 2           ; stage 2 starts at LBA 2 (LBA 1 holds the XBPT)
 STAGE2_SECTORS  equ 32          ; 16 KB of headroom for stage 2
 STACK_SEGMENT   equ 0x9000
 STACK_TOP       equ 0xFFFF

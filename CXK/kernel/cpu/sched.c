@@ -84,6 +84,7 @@ int thread_create(const char *name, void (*entry)(void)) {
     threads[slot].is_user    = 0;
     threads[slot].exit_code  = 0;
     threads[slot].uid        = threads[current].uid;   /* inherit creator UID */
+    threads[slot].caps       = 0;                      /* no authority by default (apps) */
     threads[slot].user_stack_base = 0;
     threads[slot].u_saved_esp   = 0;
     threads[slot].u_saved_flags = 0;
@@ -280,6 +281,15 @@ int thread_alloc_kstack(int id) {
 uint32_t thread_current_uid(void) {
     if (!initialized) return UID_SYSTEM;   /* bare kernel boot context = SYSTEM */
     return threads[current].uid;
+}
+
+uint32_t thread_current_caps(void) {
+    if (!initialized) return 0;            /* bare kernel boot context: ring 0, caps N/A */
+    return threads[current].caps;
+}
+
+void thread_set_caps(int id, uint32_t caps) {
+    if (id >= 0 && id < MAX_THREADS) threads[id].caps = caps;
 }
 
 void thread_set_uid(int id, uint32_t uid) {
