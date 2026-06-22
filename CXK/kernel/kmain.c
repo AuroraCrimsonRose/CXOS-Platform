@@ -12,6 +12,7 @@
 #include "idt.h"
 #include "pmm.h"
 #include "paging.h"
+#include "addr_space.h"
 #include "heap.h"
 #include "console.h"
 #include "color.h"
@@ -23,6 +24,8 @@
 #include "usermode.h"
 #include "ata.h"
 #include "ahci.h"
+#include "install.h"
+#include "launch.h"
 #include "disk.h"
 #include "cxfs.h"
 #include "pci.h"
@@ -117,6 +120,9 @@ void kmain(void) {
     paging_init();
     klog("PAGING", SEV_OK, "online (recursive page directory)");
 
+    addr_space_init();
+    klog("VMSPACE", SEV_OK, "address-space layer ready");
+
     heap_init();
     klog("HEAP", SEV_OK, "online (kmalloc/kfree)");
 
@@ -176,6 +182,27 @@ void kmain(void) {
 
     /* filesystem: mount CXFS on the data disk (read-only unless a dev build). */
     mount_cxfs();
+
+    /* partitioned (XBPT) disk: ensure the SYSTEM partition is a mounted CXFS
+       volume - formatting it and populating /System from the STAGE payload on
+       first boot. No-ops if no XBPT disk is present. */
+    {
+        int ir = cxk_install_boot_disk();
+        if      (ir == CXK_INSTALL_DONE)      klog("INSTALL", SEV_OK,   "first boot: /System created from staged payload");
+        else if (ir == CXK_INSTALL_MOUNTED)   klog("INSTALL", SEV_OK,   "SYSTEM partition mounted");
+        else if (ir == CXK_INSTALL_NO_SYSTEM) klog("INSTALL", SEV_INFO, "no XBPT system disk (skipped)");
+        else klog_u32("INSTALL", SEV_WARN, "first-boot install issue: ", (uint32_t)ir, LOG_COLOR_VALUE, "");
+
+        /* capstone: if /System is up, hand the machine to the signed executive.
+           cxex_exec verifies it against the embedded key, gives it its own
+           address space, loads it, and drops to ring 3 at its entry. */
+        if (ir == CXK_INSTALL_DONE || ir == CXK_INSTALL_MOUNTED) {
+            klog("EXEC", SEV_INFO, "launching /System/Boot.xoex");
+            int xc = cxk_launch_executive("/System/Boot.xoex");
+            if (xc >= 0) klog_u32("EXEC", SEV_OK,  "executive exited, code ", (uint32_t)xc, LOG_COLOR_VALUE, "");
+            else         klog_u32("EXEC", SEV_ERR, "executive launch failed: ", (uint32_t)xc, LOG_COLOR_VALUE, "");
+        }
+    }
 
     /* run the kernel self-tests (ktest.c). */
     ktest_run();

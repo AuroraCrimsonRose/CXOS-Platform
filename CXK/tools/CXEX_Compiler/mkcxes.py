@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # /CXK/tools/CXEX_Compiler/mkcxex.py
 # Aurora Tejeda / CATX SYSTEMS LLC
 #
@@ -10,7 +9,7 @@
 # ELF (standard), then this repacks the loadable sections into CXOS's own format.
 #
 # Usage:
-#   python CXEX_Compiler/mkcxex.py build/kernel.elf CXEX_Compiler/build/kernel.xkex [--type kernel|boot|user]
+#   python CXEX_Compiler/mkcxex.py build/kernel.elf CXEX_Compiler/build/kernel.xkex [--type kernel|boot|os|user]
 #
 # It is intentionally simple and fixed-load: it does NOT emit relocations (the
 # kernel/boot images are loaded at their link address). The relocatable path for
@@ -29,8 +28,9 @@ ARCH_X86_32 = 1
 TYPE_KERNEL = 0x4B45   # 'KE' kernel executive
 TYPE_BOOT   = 0x4245   # 'BE' boot executive
 TYPE_USER   = 0x4345   # 'CE' compiled executive
+TYPE_OS     = 0x4F45   # 'OE' OS executive (.xoex)
 
-TYPE_MAP = {"kernel": TYPE_KERNEL, "boot": TYPE_BOOT, "user": TYPE_USER}
+TYPE_MAP = {"kernel": TYPE_KERNEL, "boot": TYPE_BOOT, "os": TYPE_OS, "user": TYPE_USER}
 
 # header flags (CX_EXTENSION_SYSTEM.md 9.6)
 FLAG_EXECUTABLE        = 1 << 0
@@ -177,7 +177,7 @@ def main():
         if args[i] == "--type":
             t = args[i + 1]
             if t not in TYPE_MAP:
-                raise SystemExit("error: --type must be kernel|boot|user")
+                raise SystemExit("error: --type must be kernel|boot|os|user")
             type_code = TYPE_MAP[t]
             i += 2
         else:
@@ -186,7 +186,7 @@ def main():
 
     if len(out_args) != 2:
         print("usage: python mkcxex.py <input.elf> <output.xkex> "
-              "[--type kernel|boot|user]")
+              "[--type kernel|boot|os|user]")
         raise SystemExit(2)
 
     inp, outp = out_args

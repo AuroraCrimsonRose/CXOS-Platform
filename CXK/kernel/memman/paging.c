@@ -22,6 +22,20 @@
 #define KERNEL_VBASE   0xC0000000u
 #define RECURSIVE_SLOT 1023
 
+/* A reserved higher-half scratch page for temporarily mapping an arbitrary
+   physical frame so the kernel can read/write it (e.g. a not-yet-current page
+   directory). Its PDE is reserved at init so temp-mapping only ever touches a
+   PTE - never creates a new PDE - which keeps it reentrancy-safe. PDE index
+   1022, inside the shared kernel half, just below the recursive window. */
+#define TEMP_MAP_VADDR 0xFF800000u
+
+/* Optional hook invoked when paging_map creates a NEW kernel-half PDE, so live
+   address spaces can be kept in sync. Registered by the address-space layer. */
+static void (*g_kernel_pde_hook)(uint32_t index, uint32_t value) = 0;
+void paging_set_pde_hook(void (*fn)(uint32_t index, uint32_t value)) {
+    g_kernel_pde_hook = fn;
+}
+
 /* the boot page directory built by kernel.asm (a kernel symbol => virtual addr).
    Its PHYSICAL address is (virtual - KERNEL_VBASE). */
 extern uint32_t boot_page_dir[];
@@ -51,6 +65,14 @@ void paging_init(void) {
 
     /* reload CR3 to flush the TLB so the recursive mapping takes effect. */
     __asm__ volatile ("mov %0, %%cr3" : : "r"(pd_phys) : "memory");
+
+    /* Reserve the temp-map region's PDE now, while we're in the kernel space and
+       before any other address space exists, so the PDE is part of the shared
+       kernel half (copied into every space) and temp-mapping later only writes a
+       PTE - never creates a PDE (which keeps the PDE-creation hook from
+       recursing). Map then unmap one page to force the PDE+PT into existence. */
+    paging_map(TEMP_MAP_VADDR, 0, PAGE_PRESENT | PAGE_WRITE);
+    paging_unmap(TEMP_MAP_VADDR);
 }
 
 void paging_map(uint32_t virt, uint32_t phys, uint32_t flags) {
@@ -68,6 +90,13 @@ void paging_map(uint32_t virt, uint32_t phys, uint32_t flags) {
         invlpg((uint32_t)pt_virt(virt));
         volatile uint32_t *t = pt_virt(virt);
         for (int i = 0; i < PAGE_ENTRIES; i++) t[i] = 0;
+
+        /* If we just created a PDE in the shared kernel half, let live address
+           spaces pick it up. (Excludes the recursive slot 1023; the temp-map
+           PDE is reserved before any space exists, so it never lands here at
+           runtime - which also means this never recurses through temp-map.) */
+        if (g_kernel_pde_hook && pdi >= 768 && pdi <= 1022)
+            g_kernel_pde_hook(pdi, PD_VIRT[pdi]);
     }
 
     /* write the PTE through the recursive page-table window */
@@ -98,4 +127,17 @@ uint32_t paging_get_phys(uint32_t virt) {
     uint32_t entry = table[PT_INDEX(virt)];
     if (!(entry & PAGE_PRESENT)) return 0;
     return (entry & ~0xFFFu) | (virt & 0xFFFu);
+}
+/* ---- temporary single-page mapping of an arbitrary physical frame ----------
+   Map `phys` into the reserved scratch slot and return a pointer to it; the
+   caller reads/writes, then calls paging_temp_unmap. Lets the kernel touch a
+   frame that isn't otherwise mapped (e.g. a freshly allocated page directory of
+   a not-yet-active address space). Not reentrant: one frame at a time. */
+void *paging_temp_map(uint32_t phys) {
+    paging_map(TEMP_MAP_VADDR, phys & ~0xFFFu, PAGE_PRESENT | PAGE_WRITE);
+    return (void *)TEMP_MAP_VADDR;
+}
+
+void paging_temp_unmap(void) {
+    paging_unmap(TEMP_MAP_VADDR);
 }
