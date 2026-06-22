@@ -51,6 +51,7 @@ set(KERNEL_INCLUDES
     -I${SRC_DIR}/kernel/lib/mem
     -I${SRC_DIR}/kernel/lib/gfx
     -I${SRC_DIR}/kernel/lib/format
+    -I${SRC_DIR}/kernel/drivers/storage
     -I${SRC_DIR}/kernel/drivers/storage/partition
     -I${SRC_DIR}/kernel/cpu
     -I${SRC_DIR}/kernel/cpu/int
@@ -75,6 +76,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/cpu/int/pic.c
     ${SRC_DIR}/kernel/memman/pmm.c
     ${SRC_DIR}/kernel/memman/paging.c
+    ${SRC_DIR}/kernel/memman/addr_space.c
     ${SRC_DIR}/kernel/memman/heap.c
     ${SRC_DIR}/kernel/lib/time/datetime.c
     ${SRC_DIR}/kernel/lib/string/string.c
@@ -86,6 +88,8 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/drivers/char/timer.c
     ${SRC_DIR}/kernel/drivers/char/rtc.c
     ${SRC_DIR}/kernel/cpu/usermode.c
+    ${SRC_DIR}/kernel/cpu/exec.c
+    ${SRC_DIR}/kernel/cpu/launch.c
     ${SRC_DIR}/kernel/drivers/char/console.c
     ${SRC_DIR}/kernel/drivers/video/vga.c
     ${SRC_DIR}/kernel/drivers/video/fb.c
@@ -100,12 +104,15 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/drivers/storage/hardware/disk.c
     ${SRC_DIR}/kernel/drivers/storage/filesys/cxfs.c
     ${SRC_DIR}/kernel/drivers/storage/partition/partition.c
+    ${SRC_DIR}/kernel/drivers/storage/install.c
     ${SRC_DIR}/kernel/lib/crypto/sha256.c
     ${SRC_DIR}/kernel/lib/crypto/bignum.c
     ${SRC_DIR}/kernel/lib/crypto/rsa.c
     ${SRC_DIR}/kernel/lib/format/cxex.c
     ${SRC_DIR}/kernel/lib/format/cxex_verify.c
     ${SRC_DIR}/kernel/lib/format/trusted_key.c
+    ${SRC_DIR}/kernel/lib/format/cxex_load.c
+    ${SRC_DIR}/kernel/lib/format/cxex_loadk.c
 )
 
 # ---- KERNEL ASM SOURCES (elf32 objects; append new ones here) ----
