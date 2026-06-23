@@ -17,6 +17,7 @@
 #define SCHED_H
 
 #include <stdint.h>
+#include "handle.h"
 
 #define MAX_THREADS   8
 #define THREAD_STACK  8192      /* per-thread kernel stack size */
@@ -38,6 +39,8 @@ struct thread {
     int       exit_code;       /* set on exit */
     uint32_t  uid;             /* owning user id; 0 = SYSTEM (machine identity) */
     uint32_t  caps;            /* ABI v1 capability bitmask (ring-3 authority) */
+    struct cap_handle handles[CXK_MAX_HANDLES];  /* ABI v1 per-process handle table */
+    uint32_t  pd_phys;         /* address-space page-dir phys; 0 = shared kernel space */
     uint32_t  user_stack_base; /* allocated ring-3 stack (user processes) */
     /* per-process ring-3 return state: enter_usermode saves the kernel esp +
        eflags here so SYS_EXIT (return_to_kernel) can come back, even if another
@@ -107,6 +110,12 @@ void     thread_set_uid(int id, uint32_t uid);
 
 /* ABI v1 capabilities (cpu/caps.h) */
 uint32_t thread_current_caps(void);
+
+/* ABI v1 handle table (cpu/handle.h), wrapped per-thread */
+int  thread_handle_install(int id, uint8_t type, uint8_t rights, void *object);
+struct cap_handle *thread_handle_get(int id, int idx);
+int  thread_handle_close(int id, int idx);
 void     thread_set_caps(int id, uint32_t caps);
+void     thread_set_space(int id, uint32_t pd_phys);   /* CR3 to load when this thread runs */
 
 #endif

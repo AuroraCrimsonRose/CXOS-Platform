@@ -120,6 +120,20 @@ void paging_unmap(uint32_t virt) {
     invlpg(virt);
 }
 
+/* True iff `virt` is mapped present AND ring-3 accessible in the ACTIVE address
+   space. Lets user_ptr_ok validate ring-3 pointers per-process: a process's CR3
+   is live during its own syscalls, so this reads that process's tables. */
+int paging_is_user(uint32_t virt) {
+    uint32_t pdi = PD_INDEX(virt);
+    if (!(PD_VIRT[pdi] & PAGE_PRESENT)) return 0;
+    if (!(PD_VIRT[pdi] & PAGE_USER))    return 0;   /* PDE must allow ring 3 */
+    volatile uint32_t *table = pt_virt(virt);
+    uint32_t entry = table[PT_INDEX(virt)];
+    if (!(entry & PAGE_PRESENT)) return 0;
+    if (!(entry & PAGE_USER))    return 0;
+    return 1;
+}
+
 uint32_t paging_get_phys(uint32_t virt) {
     uint32_t pdi = PD_INDEX(virt);
     if (!(PD_VIRT[pdi] & PAGE_PRESENT)) return 0;

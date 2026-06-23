@@ -114,7 +114,7 @@ global user_blob_end
 user_blob_start:
     mov ebx, [esp]      ; arg1: msg pointer (seeded by kernel at top of user stack)
     xor ecx, ecx        ; arg2: length 0 = bounded NUL-scan
-    mov eax, 1          ; SYS_WRITE
+    mov eax, 0x30       ; SYS_CONSOLE_WRITE
     int 0x80
     mov eax, 0          ; SYS_EXIT
     xor ebx, ebx
@@ -138,7 +138,7 @@ user_blob_busy_start:
 .loop:
     mov ebx, esi        ; arg1: msg
     xor ecx, ecx        ; arg2: NUL-scan
-    mov eax, 1          ; SYS_WRITE
+    mov eax, 0x30       ; SYS_CONSOLE_WRITE
     int 0x80
     ; busy work in RING 3 (preemptible): a big spin
     mov ecx, 0x02000000

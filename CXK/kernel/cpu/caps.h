@@ -18,6 +18,7 @@
 #define CAPS_H
 
 #include <stdint.h>
+#include "cxk_abi.h"   /* E_* codes + the public ABI contract */
 
 /* capability bits (per-process bitmask) */
 #define CAP_CONSOLE   0x0001u   /* console_write */
@@ -33,18 +34,6 @@
 #define CAP_OS_BASELINE \
     (CAP_CONSOLE | CAP_MEM | CAP_DISK | CAP_SPAWN | CAP_POWER | CAP_ENDPOINT)
 
-/* ABI error codes (negative; returned in eax). Note E_PERM == -1 so it is
-   compatible with existing call sites that test for a negative result. */
-#define E_OK      0
-#define E_PERM   (-1)    /* capability denied */
-#define E_INVAL  (-2)    /* bad argument */
-#define E_FAULT  (-3)    /* bad/unmapped user pointer */
-#define E_NOENT  (-4)    /* no such object */
-#define E_NOMEM  (-5)    /* out of memory */
-#define E_BADF   (-6)    /* bad handle */
-#define E_AGAIN  (-7)    /* would block / no message ready */
-#define E_RANGE  (-8)    /* message too large / buffer too small */
-#define E_NOSYS  (-9)    /* unknown syscall number */
 
 /* policy layer: map a verified image's identity (CXEX type code + trust) to its
    capability set. Consulted once, at the ring-3 handoff. A valid signature does

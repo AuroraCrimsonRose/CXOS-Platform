@@ -13,15 +13,13 @@
 #define USERMODE_H
 
 #include <stdint.h>
+#include "cxk_abi.h"
 
 /* syscall numbers */
-#define SYS_EXIT    0
-#define SYS_WRITE   1
-#define SYS_GETPID  2    /* returns the calling process's pid */
-#define SYS_GETUID  3    /* returns the calling process's owning UID (0=SYSTEM) */
 
 /* install the syscall IDT gate (int 0x80, DPL=3). call once at boot. */
 void usermode_init(void);
+int  user_ptr_ok(uint32_t ptr, uint32_t len);   /* validate a ring-3 buffer (present+user) */
 
 /* register the ring-3 fault handler so user faults kill the process, not the
    kernel. call once at boot after the scheduler is up. */
