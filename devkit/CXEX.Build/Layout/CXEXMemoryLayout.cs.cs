@@ -1,15 +1,21 @@
-﻿namespace CXEX.Build.Layout;
+﻿using System;
+using System.Collections.Generic;
 
-// Represents the calculated footprint of a CXEX executable
+namespace CXEX.Build.Layout;
+
 public class CxexMemoryLayout
 {
-    public uint EntryPoint { get; set; }
-    public uint PhysBase { get; set; } // Lowest LMA
-    public uint ImageMin { get; set; } // Lowest VMA
-    public uint ImageMax { get; set; } // Highest VMA + MemSize
+    public ushort TypeCode { get; set; }
+    public ushort FormatVersion { get; set; } = 1;
+    public ushort ArchTarget { get; set; } = 1;
+    public ushort AbiVersion { get; set; } = 1;
+    public uint Flags { get; set; }
 
-    // Calculates where the section table ends and raw data begins
-    public uint DataStartOffset => 56 + (uint)(Sections.Count * 28);
+    public uint EntryPoint { get; set; }
+    public uint LoadBase { get; set; }
+    public uint PhysBase { get; set; }
+    public uint ImageMin { get; set; }
+    public uint ImageMax { get; set; }
 
     public List<SectionLayout> Sections { get; set; } = new();
 }
@@ -22,7 +28,5 @@ public class SectionLayout
     public uint FileSize { get; set; }
     public uint MemSize { get; set; }
     public uint Flags { get; set; }
-
-    // The raw extracted bytes from the ELF, held in memory until emission
     public byte[] Payload { get; set; } = Array.Empty<byte>();
 }

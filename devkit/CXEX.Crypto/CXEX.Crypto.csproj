@@ -11,8 +11,4 @@
     <Content Include="XFILE.ico" />
   </ItemGroup>
 
-  <ItemGroup>
-    <ProjectReference Include="..\CXEX.Core\CXEX.Core.csproj" />
-  </ItemGroup>
-
 </Project>
