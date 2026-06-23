@@ -1,10 +1,10 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Text;
+﻿using System.Threading;
+using Spectre.Console.Cli;
 
-namespace CXEX.CLI.Commands
+namespace CXEX.CLI.Commands;
+
+public class InspectCommand : Command<InspectCommand.Settings>
 {
-    internal class InspectCommand
-    {
-    }
+    public class Settings : CommandSettings { }
+    protected override int Execute(CommandContext context, Settings settings, CancellationToken cancellationToken) => 0;
 }

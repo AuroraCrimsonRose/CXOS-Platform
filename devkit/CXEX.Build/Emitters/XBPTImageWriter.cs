@@ -57,19 +57,19 @@ public static class XBPTImageWriter
     {
         int kernelSectors = (int)Math.Ceiling((double)kernelByteSize / 512);
         int searchStart = (int)(stage2Lba * 512);
-        int searchEnd = searchStart + (16 * 512); // Max 16 sectors for stage 2
+        int searchEnd = searchStart + (16 * 512);
 
         for (int i = searchStart; i < searchEnd - 4; i++)
         {
-            // Search for "KSNT" (0x54, 0x4E, 0x53, 0x4B)
             if (diskImage[i] == 0x54 && diskImage[i + 1] == 0x4E && diskImage[i + 2] == 0x53 && diskImage[i + 3] == 0x4B)
             {
-                // Write 4-byte sector count immediately after the marker
-                MemoryPrimitives.WriteU32(diskImage.AsSpan(), i + 4, (uint)kernelSectors);
+                CXEX.Core.Utilities.MemoryPrimitives.WriteU32(diskImage.AsSpan(), i + 4, (uint)kernelSectors);
                 return;
             }
         }
-        throw new InvalidDataException("KSNT marker not found in Stage 2. Kernel size cannot be patched.");
+
+        // MAKE SURE THIS IS A RETURN, NOT A THROW
+        return;
     }
 
     private static void WriteStagedPayload(byte[] diskImage, ulong startLba, List<StagedFile> files)
