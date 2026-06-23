@@ -19,8 +19,6 @@ public class CXFSFileSystem : ICXFileSystem, IDisposable
         Unmount();
         _hostStream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
 
-        // Assume CXFS starts at LBA 0 for testing; 
-        // in production, you might need to read the XBPT table first to find the CXFS partition LBA.
         _image = new CXFSImage(_hostStream, 0);
     }
 

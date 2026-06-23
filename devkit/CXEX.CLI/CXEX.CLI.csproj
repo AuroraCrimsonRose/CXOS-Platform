@@ -28,6 +28,7 @@
     <ProjectReference Include="..\CXEX.Crypto\CXEX.Crypto.csproj" />
     <ProjectReference Include="..\CXEX.FileSystem\CXEX.FileSystem.csproj" />
     <ProjectReference Include="..\CXEX.FileType\CXEX.FileType.csproj" />
+    <ProjectReference Include="..\CXEX.Lang\CXEX.Lang.csproj" />
   </ItemGroup>
 
 </Project>
