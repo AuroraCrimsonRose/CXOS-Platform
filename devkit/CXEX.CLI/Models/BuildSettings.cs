@@ -2,9 +2,9 @@
 using System.Collections.Generic;
 using System.Text;
 
-namespace CXEX.FileType.Structures
+namespace CXEX.CLI.Models
 {
-    internal class CXPKHeader
+    internal class BuildSettings
     {
     }
 }

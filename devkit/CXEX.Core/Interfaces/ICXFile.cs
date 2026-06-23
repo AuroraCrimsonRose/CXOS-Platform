@@ -1,10 +1,7 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Text;
+﻿namespace CXEX.Core.Interfaces;
 
-namespace CXEX.Core.Interfaces
+public interface ICXFile
 {
-    internal interface ICXFile
-    {
-    }
+    string GetDisplayName();
+    void Load(byte[] data);
 }
