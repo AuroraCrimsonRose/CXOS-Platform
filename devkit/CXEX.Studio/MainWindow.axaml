@@ -1,0 +1,136 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:CXEX.Studio.ViewModels"
+        xmlns:idc="using:Dock.Avalonia.Controls"
+        xmlns:materialIcons="clr-namespace:Material.Icons.Avalonia;assembly=Material.Icons.Avalonia"
+        x:Class="CXEX.Studio.Views.MainWindow"
+        x:DataType="vm:MainWindowViewModel"
+        Title=""
+        Background="#1E1E1E"
+        Foreground="#D4D4D4"
+        Width="1200" Height="750"
+        WindowStartupLocation="CenterScreen"
+        
+        ExtendClientAreaToDecorationsHint="True"
+        ExtendClientAreaTitleBarHeightHint="30"
+        WindowDecorations="Full">
+  <Window.Resources>
+    <Color x:Key="SystemAccentColor">#007ACC</Color>
+    <Color x:Key="SystemAccentColorDark1">#007ACC</Color>
+    <Color x:Key="SystemAccentColorDark2">#007ACC</Color>
+    <Color x:Key="SystemAccentColorDark3">#007ACC</Color>
+    <Color x:Key="SystemAccentColorLight1">#007ACC</Color>
+    <Color x:Key="SystemAccentColorLight2">#007ACC</Color>
+    <Color x:Key="SystemAccentColorLight3">#007ACC</Color>
+    <SolidColorBrush x:Key="SystemControlHighlightAccentBrush" Color="{StaticResource SystemAccentColor}" />
+  </Window.Resources>
+
+  <Window.Styles>
+    <Style Selector="Button.ActivityButton">
+      <Setter Property="Background" Value="Transparent"/>
+      <Setter Property="BorderThickness" Value="0"/>
+      <Setter Property="Width" Value="48"/>
+      <Setter Property="Height" Value="48"/>
+      <Setter Property="HorizontalContentAlignment" Value="Center"/>
+      <Setter Property="VerticalContentAlignment" Value="Center"/>
+      <Setter Property="Padding" Value="0"/>
+      <Setter Property="Transitions">
+        <Transitions>
+          <BrushTransition Property="Background" Duration="0:0:0.12"/>
+        </Transitions>
+      </Setter>
+    </Style>
+
+    <Style Selector="Button.ActivityButton:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="#2A2A2A"/>
+    </Style>
+
+    <Style Selector="Button.ActivityButton materialIcons|MaterialIcon">
+      <Setter Property="Foreground" Value="#858585"/>
+    </Style>
+    <Style Selector="Button.ActivityButton:pointerover materialIcons|MaterialIcon">
+      <Setter Property="Foreground" Value="#FFFFFF"/>
+    </Style>
+
+    <Style Selector="Menu">
+      <Setter Property="Background" Value="Transparent"/>
+      <Setter Property="BorderBrush" Value="#2D2D2D"/>
+      <Setter Property="BorderThickness" Value="0,0,0,1"/>
+    </Style>
+  </Window.Styles>
+
+  <Grid RowDefinitions="30, *, Auto">
+
+    <Grid Grid.Row="0" Background="#181818" WindowDecorationProperties.ElementRole="TitleBar">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="Auto"/>
+        <ColumnDefinition Width="*"/>
+      </Grid.ColumnDefinitions>
+
+      <Menu Grid.Column="0" HorizontalAlignment="Left">
+        <MenuItem Header="_File">
+          <MenuItem Header="_Open Project..." />
+          <Separator/>
+          <MenuItem Header="_Exit" />
+        </MenuItem>
+        <MenuItem Header="_Edit" />
+        <MenuItem Header="_View" />
+        <MenuItem Header="_Tools">
+          <MenuItem Header="Hex Viewer Options" />
+          <MenuItem Header="Kernel Debugger" />
+        </MenuItem>
+        <MenuItem Header="_Help" />
+      </Menu>
+
+      <TextBlock Grid.Column="1" Text="CXEX.Studio - Kernel Developer Suite"
+                 HorizontalAlignment="Center" VerticalAlignment="Center"
+                 Foreground="#858585" FontSize="12" Margin="0,0,140,0"
+                 IsHitTestVisible="False"/>
+    </Grid>
+
+    <Grid Grid.Row="1" ColumnDefinitions="Auto, *">
+      <Border Grid.Column="0" Width="48" Background="#181818"
+              BorderBrush="#2D2D2D" BorderThickness="0,0,1,0">
+        <DockPanel VerticalAlignment="Stretch">
+          <StackPanel DockPanel.Dock="Top" Spacing="2" Margin="0,4,0,0">
+            <Button Classes="ActivityButton" ToolTip.Tip="Explorer (Project Tree)">
+              <materialIcons:MaterialIcon Kind="FolderOutline" Width="22" Height="22"/>
+            </Button>
+            <Button Classes="ActivityButton" ToolTip.Tip="Search Codebase">
+              <materialIcons:MaterialIcon Kind="Magnify" Width="22" Height="22"/>
+            </Button>
+            <Button Classes="ActivityButton" ToolTip.Tip="Kernel Debugger">
+              <materialIcons:MaterialIcon Kind="BugOutline" Width="22" Height="22"/>
+            </Button>
+          </StackPanel>
+
+          <StackPanel DockPanel.Dock="Bottom" Margin="0,0,0,4">
+            <Button Classes="ActivityButton" ToolTip.Tip="Settings">
+              <materialIcons:MaterialIcon Kind="CogOutline" Width="22" Height="22"/>
+            </Button>
+          </StackPanel>
+        </DockPanel>
+      </Border>
+
+      <Border Grid.Column="1" Background="#1E1E1E" Padding="2">
+        <idc:DockControl Layout="{Binding Layout}" />
+      </Border>
+    </Grid>
+
+    <Border Grid.Row="2" Height="22" Background="#007ACC">
+      <Grid ColumnDefinitions="Auto, *, Auto" Margin="10,0">
+        <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Spacing="10">
+          <TextBlock Text="Ready" FontSize="11" Foreground="White" FontWeight="SemiBold"/>
+          <TextBlock Text="|" FontSize="11" Foreground="#52B2FF"/>
+          <TextBlock Text="CXEX Environment: Active" FontSize="11" Foreground="White"/>
+        </StackPanel>
+
+        <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Spacing="15">
+          <TextBlock Text="Ln 1, Col 1" FontSize="11" Foreground="White"/>
+          <TextBlock Text="UTF-8" FontSize="11" Foreground="White"/>
+          <TextBlock Text="CRLF" FontSize="11" Foreground="White"/>
+        </StackPanel>
+      </Grid>
+    </Border>
+  </Grid>
+</Window>

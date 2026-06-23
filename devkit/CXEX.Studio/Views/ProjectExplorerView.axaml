@@ -1,0 +1,13 @@
+<UserControl
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    x:Class="CXEX.Studio.Views.ProjectExplorerView">
+
+  <Grid>
+    <TextBlock
+        HorizontalAlignment="Center"
+        VerticalAlignment="Center"
+        Text="Project Explorer View" />
+  </Grid>
+
+</UserControl>
