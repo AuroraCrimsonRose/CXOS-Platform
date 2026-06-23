@@ -1,0 +1,72 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+    <StartupObject></StartupObject>
+    <ApplicationIcon>XFILE.ico</ApplicationIcon>
+    <AnalysisLevel>latest</AnalysisLevel>
+  </PropertyGroup>
+  <ItemGroup>
+    <Content Include="XFILE.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="12.0.4" />
+    <PackageReference Include="Avalonia.AvaloniaEdit" Version="12.0.0" />
+    <PackageReference Include="Avalonia.Controls.ColorPicker" Version="12.0.4" />
+    <PackageReference Include="Avalonia.Controls.DataGrid" Version="12.0.0" />
+    <PackageReference Include="Avalonia.Desktop" Version="12.0.4" />
+    <PackageReference Include="Avalonia.Skia" Version="12.0.4" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.0.4" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="12.0.4" />
+    <PackageReference Include="Avalonia.Themes.Simple" Version="12.0.4" />
+    <PackageReference Include="AvaloniaUI.DiagnosticsSupport" Version="2.2.3">
+      <IncludeAssets Condition="'$(Configuration)' != 'Debug'">None</IncludeAssets>
+      <PrivateAssets Condition="'$(Configuration)' != 'Debug'">All</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+    <PackageReference Include="Dock.Avalonia" Version="12.0.0.2" />
+    <PackageReference Include="Dock.Avalonia.Diagnostics" Version="12.0.0.2" />
+    <PackageReference Include="Dock.Avalonia.Themes.Browser" Version="12.0.0.2" />
+    <PackageReference Include="Dock.Avalonia.Themes.Fluent" Version="12.0.0.2" />
+    <PackageReference Include="Dock.Avalonia.Themes.Simple" Version="12.0.0.2" />
+    <PackageReference Include="Dock.Controls.DeferredContentControl" Version="12.0.0.2" />
+    <PackageReference Include="Dock.Controls.ProportionalStackPanel" Version="12.0.0.2" />
+    <PackageReference Include="Dock.Controls.Recycling" Version="12.0.0.2" />
+    <PackageReference Include="Dock.Controls.Recycling.Model" Version="12.0.0.2" />
+    <PackageReference Include="Dock.MarkupExtension" Version="12.0.0.2" />
+    <PackageReference Include="Dock.Model" Version="12.0.0.2" />
+    <PackageReference Include="Dock.Model.Avalonia" Version="12.0.0.2" />
+    <PackageReference Include="Dock.Model.CaliburMicro" Version="12.0.0.2" />
+    <PackageReference Include="Dock.Model.Inpc" Version="12.0.0.2" />
+    <PackageReference Include="Dock.Model.Mvvm" Version="12.0.0.2" />
+    <PackageReference Include="Dock.Model.ReactiveProperty" Version="12.0.0.2" />
+    <PackageReference Include="Dock.Serializer.Newtonsoft" Version="12.0.0.2" />
+    <PackageReference Include="Dock.Serializer.Protobuf" Version="12.0.0.2" />
+    <PackageReference Include="Dock.Serializer.SystemTextJson" Version="12.0.0.2" />
+    <PackageReference Include="Dock.Serializer.Xml" Version="12.0.0.2" />
+    <PackageReference Include="Dock.Serializer.Yaml" Version="12.0.0.2" />
+    <PackageReference Include="Dock.Settings" Version="12.0.0.2" />
+    <PackageReference Include="Material.Icons.Avalonia" Version="3.0.2" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Folder Include="Assets\Icons\" />
+    <Folder Include="Assets\Images\" />
+    <Folder Include="Assets\Templates\" />
+    <Folder Include="Assets\Themes\" />
+    <Folder Include="Controls\HexViewer\" />
+    <Folder Include="Controls\LogViewer\" />
+    <Folder Include="Controls\FileTree\" />
+    <Folder Include="Controls\MemoryMapViewer\" />
+    <Folder Include="Controls\PartitionViewer\" />
+    <Folder Include="Extensions\" />
+    <Folder Include="Workspace\Documents\" />
+    <Folder Include="Workspace\Editors\" />
+    <Folder Include="Workspace\Tabs\" />
+  </ItemGroup>
+</Project>
