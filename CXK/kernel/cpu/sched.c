@@ -135,6 +135,21 @@ void thread_set_space(int id, uint32_t pd_phys) {
     if (id >= 0 && id < MAX_THREADS) threads[id].pd_phys = pd_phys;
 }
 
+/* Block the current thread (e.g. waiting on an IPC reply) and switch away.
+   Returns once thread_unblock() has made it runnable and it is scheduled
+   again. Callers must ensure another thread is runnable (the IPC rendezvous
+   always unblocks its counterpart before blocking). */
+void thread_block(void) {
+    if (!initialized) return;
+    threads[current].state = THREAD_BLOCKED;
+    yield();   /* yield leaves a BLOCKED thread alone; picks another */
+}
+
+void thread_unblock(int id) {
+    if (id >= 0 && id < MAX_THREADS && threads[id].state == THREAD_BLOCKED)
+        threads[id].state = THREAD_READY;
+}
+
 void yield(void) {
     if (!initialized) return;
     int prev = current;
@@ -292,7 +307,10 @@ uint32_t thread_current_kstack_top(void) {
    interrupt frame never collides with the trampoline's saved frame on the main
    kernel stack. Returns 0 on success, -1 on alloc failure. */
 int thread_alloc_kstack(int id) {
-    if (id <= 0 || id >= MAX_THREADS) return -1;
+    if (id < 0 || id >= MAX_THREADS) return -1;   /* thread 0 (the executive via
+                                                     cxex_exec) DOES need an esp0:
+                                                     it runs ring-3 code + makes
+                                                     syscalls while apps coexist. */
     uint32_t k = (uint32_t)kmalloc(THREAD_STACK);
     if (!k) return -1;
     threads[id].kstack_base = k;

@@ -64,4 +64,8 @@ void addr_space_switch(const struct addr_space *s);
 /* Unregister a space (does not yet free its page tables/PD). */
 void addr_space_destroy(const struct addr_space *s);
 
+/* free the user half (frames + page tables) of the ACTIVE space; call before
+   switching away + addr_space_destroy() to fully reclaim an exited process. */
+void addr_space_reclaim_user(void);
+
 #endif

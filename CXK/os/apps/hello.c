@@ -1,29 +1,36 @@
 /* /CXK/os/apps/hello/hello.c */
 /* Aurora Tejeda / CATX SYSTEMS LLC */
 /*
- * Tiny CXK USER app (.xcex). Capability-less: when the kernel runs it, caps=0.
- * It tries to write to the console directly - which the kernel DENIES (E_PERM),
- * because only the broker executive holds CAP_CONSOLE. That denial is the whole
- * point: an app cannot reach a privileged primitive; it must go through its
- * executive (IPC, CP3). The app then exits.
+ * Tiny CXK USER app (.xcex), capability-less. It cannot touch the console
+ * directly (no CAP_CONSOLE - that was CP2's E_PERM proof). Instead it asks its
+ * broker executive to print a message on its behalf, over IPC: it ipc_calls
+ * its broker endpoint (handle 0) with the text as the request, blocks until the
+ * executive replies, then exits. The text reaching the screen - printed BY the
+ * executive - is the positive half of the brokered model.
  */
 
 #include "cxk_abi.h"
 
-static inline long sys_console_write(const char *s) {
+static inline long ipc_call(struct ipc_call_args *a) {
     long r;
-    __asm__ volatile ("int $0x80" : "=a"(r) : "a"(SYS_CONSOLE_WRITE), "b"(s), "c"(0) : "memory");
-    return r;   /* expected: E_PERM (-1) - the app has no CAP_CONSOLE */
+    __asm__ volatile ("int $0x80" : "=a"(r) : "a"(SYS_IPC_CALL), "b"(a) : "memory");
+    return r;
 }
 static inline void sys_exit(int code) {
     __asm__ volatile ("int $0x80" : : "a"(SYS_EXIT), "b"(code) : "memory");
     for (;;) { }
 }
+static unsigned slen(const char *s) { unsigned n = 0; while (s[n]) n++; return n; }
 
 void _start(void) {
-    /* this should NOT appear on screen: the kernel denies it (E_PERM). */
-    long rc = sys_console_write("hi from the app (you should NOT see this)\n");
-    /* exit code carries the result so the story is legible even though the app
-       cannot print: 0 = denied as expected, 1 = it somehow wrote. */
-    sys_exit(rc == E_PERM ? 0 : 1);
+    const char *msg = "    hello from the app, printed for it by the broker\n";
+    char reply[8];
+    struct ipc_call_args a;
+    a.ep_handle = 0;                 /* the broker channel (installed by spawn) */
+    a.req       = msg;
+    a.req_len   = slen(msg);
+    a.reply     = reply;
+    a.reply_cap = sizeof reply;
+    long rc = ipc_call(&a);          /* blocks; executive prints msg + replies */
+    sys_exit(rc >= 0 ? 0 : 1);
 }

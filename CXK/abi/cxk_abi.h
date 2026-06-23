@@ -25,6 +25,9 @@
 #define SYS_GETPID        0x02   /* -> caller pid */
 #define SYS_GETUID        0x03   /* -> caller owning uid (0 = SYSTEM) */
 /* IPC + handles 0x10-0x1F */
+#define SYS_IPC_CALL      0x10   /* ebx = *ipc_call_args -> reply length (blocks) */
+#define SYS_IPC_RECV      0x11   /* ebx = *ipc_recv_args -> request length (blocks) */
+#define SYS_IPC_REPLY     0x12   /* ebx = *ipc_reply_args -> 0 */
 #define SYS_EP_CREATE     0x13   /* create an endpoint -> RECV handle (CAP_ENDPOINT) */
 #define SYS_HANDLE_CLOSE  0x16   /* release a handle */
 /* console 0x30-0x3F (privileged: CAP_CONSOLE) */
@@ -50,6 +53,28 @@ struct spawn_args {
     uint32_t    image_len;
     const char *name;             /* optional; not dereferenced in v1 */
     int         broker_endpoint;  /* a RECV endpoint handle the caller owns */
+};
+
+/* IPC is synchronous: ipc_call blocks the caller until the owner ipc_replies.
+   Messages are bounded (<= one page) and copied through the kernel. The message
+   schema is defined by the executive; the kernel just moves bytes. */
+struct ipc_call_args {
+    int         ep_handle;   /* a SEND endpoint handle (the broker channel) */
+    const void *req;         /* request bytes */
+    uint32_t    req_len;
+    void       *reply;       /* buffer the reply is copied into */
+    uint32_t    reply_cap;
+};
+struct ipc_recv_args {
+    int       ep_handle;     /* a RECV endpoint handle (owner side) */
+    void     *buf;           /* request copied here */
+    uint32_t  cap;
+    int      *sender;        /* set to the caller's pid (may be 0) */
+};
+struct ipc_reply_args {
+    int         ep_handle;   /* the RECV endpoint just received on */
+    const void *data;        /* reply bytes */
+    uint32_t    len;
 };
 
 #endif

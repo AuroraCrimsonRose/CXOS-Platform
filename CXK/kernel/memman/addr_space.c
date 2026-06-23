@@ -77,9 +77,38 @@ int addr_space_create(struct addr_space *out) {
     return 0;
 }
 
+/* Reclaim the user half of the CURRENTLY ACTIVE address space: free every user
+   frame and page-table frame mapped below the kernel base (PDE 0..767), via the
+   recursive page-directory mapping. The kernel half (PDE 768+) is shared across
+   all spaces and is left untouched. Call this while the space is active and the
+   process has exited (its user pages are no longer in use); the kernel code +
+   stacks doing the reclaim live in the shared higher half, so freeing user
+   frames underneath is safe. After this, switch to the kernel space and call
+   addr_space_destroy() to free the page directory itself. */
+#define AS_RECURSIVE_PD     ((volatile uint32_t *)0xFFFFF000u)
+#define AS_RECURSIVE_PT(i)  ((volatile uint32_t *)(0xFFC00000u + ((uint32_t)(i) << 12)))
+
+void addr_space_reclaim_user(void) {
+    for (uint32_t i = 0; i < ADDR_SPACE_KERNEL_PDE_LO; i++) {   /* user half: 0..767 */
+        uint32_t pde = AS_RECURSIVE_PD[i];
+        if (!(pde & PAGE_PRESENT)) continue;
+
+        volatile uint32_t *pt = AS_RECURSIVE_PT(i);
+        for (uint32_t j = 0; j < 1024; j++) {
+            uint32_t pte = pt[j];
+            if (pte & PAGE_PRESENT) pmm_free((void *)(pte & ~0xFFFu));  /* user frame */
+        }
+        AS_RECURSIVE_PD[i] = 0;                  /* unmap the PT (recursive view gone) */
+        pmm_free((void *)(pde & ~0xFFFu));       /* then free the page-table frame */
+    }
+}
+
 void addr_space_destroy(const struct addr_space *s) {
-    if (s) registry_remove(s->pd_phys);
-    /* NOTE: does not yet free the user page tables/frames or the PD itself. */
+    if (!s) return;
+    registry_remove(s->pd_phys);
+    pmm_free((void *)s->pd_phys);   /* free the page-directory frame itself.
+                                       MUST NOT be the active space - switch away
+                                       (e.g. to the kernel space) before calling. */
 }
 
 void addr_space_kernel(struct addr_space *out) {
