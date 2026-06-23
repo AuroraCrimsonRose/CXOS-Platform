@@ -81,7 +81,21 @@ int cxex_exec(const uint8_t *file, size_t len) {
     uint32_t saved_caps = thread_current_caps();
     thread_set_caps(me, caps_for(h.type_code, 1 /* verified above */));
 
+    /* The executive runs on this (thread 0) kernel thread, but it now coexists
+       with spawned app threads that have their own address spaces + esp0. Register
+       thread 0 as a proper ring-3 process so the scheduler restores OUR space and
+       kernel stack when it switches back to us (e.g. after a spawned app exits):
+        - pd_phys: without this, switch-back loads the kernel space and the
+          executive faults on its own (now-unmapped) code/stack.
+        - kstack: without this, switch-back leaves TSS esp0 pointing at the app's
+          (reaped) kernel stack, corrupting our next syscall. */
+    uint32_t saved_space = 0;   /* thread 0 default is the shared kernel space (0) */
+    thread_set_space(me, space.pd_phys);
+    thread_alloc_kstack(me);
+
     int rc = enter_usermode(entry, ustack_top, thread_current_usave());
+
+    thread_set_space(me, saved_space);   /* back to the kernel space default */
 
     thread_set_caps(me, saved_caps);
 

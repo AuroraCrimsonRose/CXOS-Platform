@@ -37,6 +37,9 @@ if exist build rmdir /s /q build
 mkdir build
 cd build
 
+echo [pre-flight] Verifying source list ...
+python "%ROOT%\tools\check_sources.py"
+if errorlevel 1 ( echo [ERROR] Source pre-flight failed. & exit /b 1 )
 echo [2/3] Configuring CMake %SIGNFLAG% ...
 cmake .. -G "NMake Makefiles" %SIGNFLAG%
 if errorlevel 1 ( echo [ERROR] CMake configure failed. & exit /b 1 )

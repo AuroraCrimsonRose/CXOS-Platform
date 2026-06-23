@@ -42,6 +42,7 @@ set(DIST_DIR    "C:/Users/Aurora/Documents/VS Code/CXK/CXK/dist/CXK_x86_32/packa
 
 # ---- kernel include directories (add new subsystem dirs here) ----
 set(KERNEL_INCLUDES
+    -I${SRC_DIR}/abi
     -I${SRC_DIR}/kernel
     -I${SRC_DIR}/kernel/lib/time
     -I${SRC_DIR}/kernel/lib/audio
@@ -88,6 +89,9 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/drivers/char/timer.c
     ${SRC_DIR}/kernel/drivers/char/rtc.c
     ${SRC_DIR}/kernel/cpu/usermode.c
+    ${SRC_DIR}/kernel/cpu/ipc.c
+    ${SRC_DIR}/kernel/cpu/spawn.c
+    ${SRC_DIR}/kernel/cpu/handle.c
     ${SRC_DIR}/kernel/cpu/exec.c
     ${SRC_DIR}/kernel/cpu/launch.c
     ${SRC_DIR}/kernel/drivers/char/console.c
@@ -238,8 +242,9 @@ add_custom_command(
 add_custom_command(
     OUTPUT ${EXEC_ELF}
     COMMAND ${KCC} -ffreestanding -fno-pic -no-pie -fno-stack-protector -nostdlib
+            -I${SRC_DIR}/abi
             -Wl,-T,${EXEC_LD} -o ${EXEC_ELF} ${EXEC_C}
-    DEPENDS ${EXEC_C} ${EXEC_LD}
+    DEPENDS ${EXEC_C} ${EXEC_LD} ${SRC_DIR}/os/executive/app_image.h
     COMMENT "CC+LD executive.c -> executive.elf (user-half .xoex bootstrap)"
 )
 add_custom_command(

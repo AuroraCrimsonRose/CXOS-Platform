@@ -3,6 +3,7 @@
 /* Cooperative kernel-thread scheduler (Checkpoint 1). */
 
 #include "sched.h"
+#include "handle.h"
 #include "heap.h"
 #include "gdt.h"
 #include "uid.h"
@@ -10,6 +11,7 @@
 extern void context_switch(uint32_t *old_esp, uint32_t new_esp);
 
 static void sched_reap(void);   /* forward decl: used by yield, defined below */
+static uint32_t kernel_pd_phys = 0;   /* CR3 of the shared kernel space (captured at init) */
 
 static struct thread threads[MAX_THREADS];
 static int current = 0;       /* index of the running thread */
@@ -43,6 +45,8 @@ void sched_init(void) {
     threads[0].stack_base = 0;   /* uses the existing kernel stack */
     threads[0].uid   = UID_SYSTEM;   /* the boot/kernel context is the machine (User 0) */
     current = 0;
+    /* capture the kernel space CR3 (active at boot); kernel threads run in it. */
+    __asm__ volatile ("mov %%cr3, %0" : "=r"(kernel_pd_phys));
     initialized = 1;
 }
 
@@ -85,6 +89,7 @@ int thread_create(const char *name, void (*entry)(void)) {
     threads[slot].exit_code  = 0;
     threads[slot].uid        = threads[current].uid;   /* inherit creator UID */
     threads[slot].caps       = 0;                      /* no authority by default (apps) */
+    for (int hi = 0; hi < CXK_MAX_HANDLES; hi++) threads[slot].handles[hi].type = HANDLE_NONE;
     threads[slot].user_stack_base = 0;
     threads[slot].u_saved_esp   = 0;
     threads[slot].u_saved_flags = 0;
@@ -92,6 +97,7 @@ int thread_create(const char *name, void (*entry)(void)) {
        TSS stack (set in gdt_init), which is correct when only one process is in
        ring 3 at a time. Per-process esp0 is wired in step 2b (ring-3 preemption). */
     threads[slot].kstack_top  = 0;
+    threads[slot].pd_phys     = 0;     /* kernel space until assigned (spawn) */
     threads[slot].kstack_base = 0;
     thread_entry[slot]       = entry;
     return slot;
@@ -116,6 +122,19 @@ static void update_tss_esp0(void) {
     if (top) tss_set_kernel_stack(top);
 }
 
+/* Load the current thread's address space into CR3. Threads with pd_phys 0
+   (kernel threads) run in the shared kernel space. Called on every switch,
+   right after update_tss_esp0(). The kernel half is mapped in every space,
+   so this is safe for kernel threads regardless of which space is loaded. */
+static void update_address_space(void) {
+    uint32_t pd = threads[current].pd_phys ? threads[current].pd_phys : kernel_pd_phys;
+    if (pd) __asm__ volatile ("mov %0, %%cr3" : : "r"(pd) : "memory");
+}
+
+void thread_set_space(int id, uint32_t pd_phys) {
+    if (id >= 0 && id < MAX_THREADS) threads[id].pd_phys = pd_phys;
+}
+
 void yield(void) {
     if (!initialized) return;
     int prev = current;
@@ -126,6 +145,7 @@ void yield(void) {
     threads[next].state = THREAD_RUNNING;
     current = next;
     update_tss_esp0();
+    update_address_space();
 
     context_switch(&threads[prev].esp, threads[next].esp);
     /* when we resume here later, we're `prev` again, now running */
@@ -172,6 +192,7 @@ void thread_exit(void) {
     threads[next].state = THREAD_RUNNING;
     current = next;
     update_tss_esp0();
+    update_address_space();
     uint32_t dummy;
     context_switch(&dummy, threads[next].esp);   /* save into dummy (discarded) */
     /* never reached */
@@ -232,6 +253,7 @@ void sched_preempt_point(void) {
     threads[next].state = THREAD_RUNNING;
     current = next;
     update_tss_esp0();
+    update_address_space();
     in_switch = 0;
     context_switch(&threads[prev].esp, threads[next].esp);
     /* resumed as `prev` later */
@@ -290,6 +312,21 @@ uint32_t thread_current_caps(void) {
 
 void thread_set_caps(int id, uint32_t caps) {
     if (id >= 0 && id < MAX_THREADS) threads[id].caps = caps;
+}
+
+int thread_handle_install(int id, uint8_t type, uint8_t rights, void *object) {
+    if (id < 0 || id >= MAX_THREADS) return -1;
+    return handle_install(threads[id].handles, CXK_MAX_HANDLES, type, rights, object);
+}
+
+struct cap_handle *thread_handle_get(int id, int idx) {
+    if (id < 0 || id >= MAX_THREADS) return 0;
+    return handle_get(threads[id].handles, CXK_MAX_HANDLES, idx);
+}
+
+int thread_handle_close(int id, int idx) {
+    if (id < 0 || id >= MAX_THREADS) return -1;
+    return handle_close(threads[id].handles, CXK_MAX_HANDLES, idx);
 }
 
 void thread_set_uid(int id, uint32_t uid) {

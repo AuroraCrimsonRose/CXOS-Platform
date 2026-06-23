@@ -14,6 +14,11 @@
 #include "vga.h"
 #include "color.h"
 #include "caps.h"
+#include "handle.h"
+#include "spawn.h"
+
+#define KERNEL_VBASE 0xC0000000u   /* user half is everything below the higher-half kernel */
+#include "ipc.h"
 
 /* asm entry points (usermode.asm) */
 extern int  enter_usermode(uint32_t entry_eip, uint32_t user_esp, uint32_t *save_slot);
@@ -58,26 +63,27 @@ static void unmap_user_page(uint32_t virt, uint32_t phys) {
  * With a privilege boundary in place, the kernel must not blindly dereference
  * pointers handed up from ring 3. Validate against the current process's user
  * region. */
-static int current_user_region(uint32_t *lo, uint32_t *hi);
 
-static int user_ptr_ok(uint32_t ptr, uint32_t len) {
-    uint32_t lo, hi;
-    if (!current_user_region(&lo, &hi)) {
-        lo = TEST_CODE_VIRT;
-        hi = TEST_STACK_VIRT + 0x1000;
+int user_ptr_ok(uint32_t ptr, uint32_t len) {
+    if (len == 0) len = 1;
+    if (ptr + len < ptr)            return 0;   /* wrap/overflow */
+    if (ptr + len > KERNEL_VBASE)   return 0;   /* must lie entirely in the user half */
+    /* every page the buffer spans must be present + ring-3 accessible in the
+       caller's active address space (its CR3 is live during this syscall). */
+    for (uint32_t p = ptr & ~0xFFFu; p < ptr + len; p += 0x1000) {
+        if (!paging_is_user(p)) return 0;
     }
-    if (len > 0x2000) return 0;
-    if (ptr < lo || ptr >= hi) return 0;
-    if (ptr + len < ptr) return 0;             /* overflow */
-    if (ptr + len > hi) return 0;
     return 1;
 }
 
 /* ---- syscall dispatch (called from syscall_stub) ---- */
 int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
     switch (num) {
-        case SYS_WRITE: {
-            if (!(thread_current_caps() & CAP_CONSOLE)) return E_PERM;
+        case SYS_CONSOLE_WRITE: {
+            if (!(thread_current_caps() & CAP_CONSOLE)) {
+                klog_u32("CAP", SEV_WARN, "console_write DENIED for pid ", (uint32_t)thread_current_id(), LOG_COLOR_VALUE, " (no CAP_CONSOLE)");
+                return E_PERM;
+            }
             uint32_t len = a2;
             if (len == 0) {
                 const char *p = (const char *)a1;
@@ -95,6 +101,21 @@ int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
         case SYS_EXIT:
             return_to_kernel((int)a1, thread_current_usave());
             return 0;   /* unreachable */
+        case SYS_YIELD:
+            yield();
+            return 0;
+
+        case SYS_SPAWN:
+            if (!(thread_current_caps() & CAP_SPAWN)) return E_PERM;
+            return sys_spawn((const struct spawn_args *)a1);
+
+        case SYS_EP_CREATE:
+            if (!(thread_current_caps() & CAP_ENDPOINT)) return E_PERM;
+            return ep_create();
+
+        case SYS_HANDLE_CLOSE:
+            return thread_handle_close(thread_current_id(), (int)a1);
+
         default:
             return E_NOSYS;
     }
@@ -169,15 +190,6 @@ struct ring3_setup {
     uint32_t    stack_phys;    /* pmm frame backing the stack page (for free) */
 };
 static struct ring3_setup r3[MAX_THREADS];
-
-static int current_user_region(uint32_t *lo, uint32_t *hi) {
-    int pid = thread_current_id();
-    if (pid <= 0 || pid >= MAX_THREADS) return 0;
-    if (r3[pid].code_virt == 0) return 0;
-    *lo = r3[pid].code_virt;
-    *hi = r3[pid].stack_virt + 0x1000;
-    return 1;
-}
 
 static void process_trampoline(void) {
     int pid = thread_current_id();
