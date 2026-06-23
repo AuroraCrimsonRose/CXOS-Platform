@@ -2,9 +2,9 @@
 using System.Collections.Generic;
 using System.Text;
 
-namespace CXEX.FileType.Parsers
+namespace CXEX.CLI.Infrastructure
 {
-    internal class CXBinaryWriter
+    internal class CommandRegistrar
     {
     }
 }

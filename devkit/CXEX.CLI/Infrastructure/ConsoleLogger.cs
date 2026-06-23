@@ -2,9 +2,9 @@
 using System.Collections.Generic;
 using System.Text;
 
-namespace CXEX.FileType.Structures
+namespace CXEX.CLI.Infrastructure
 {
-    internal class CXEXHeader
+    internal class ConsoleLogger
     {
     }
 }

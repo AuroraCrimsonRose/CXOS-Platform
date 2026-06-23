@@ -2,9 +2,9 @@
 using System.Collections.Generic;
 using System.Text;
 
-namespace CXEX.FileType.Parsers
+namespace CXEX.CLI.Commands
 {
-    internal class CXFileParser
+    internal class BuildCommand
     {
     }
 }
