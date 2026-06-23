@@ -2,9 +2,9 @@
 using System.Collections.Generic;
 using System.Text;
 
-namespace CXEX.CLI.Commands
+namespace CXEX.FileType.Structures
 {
-    internal class VerifyCommand
+    internal class CXEXHeader
     {
     }
 }

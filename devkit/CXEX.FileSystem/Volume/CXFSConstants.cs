@@ -2,9 +2,9 @@
 using System.Collections.Generic;
 using System.Text;
 
-namespace CXEX.CLI.Commands
+namespace CXEX.FileSystem.Volume
 {
-    internal class KeyCommand
+    internal class CXFSConstants
     {
     }
 }

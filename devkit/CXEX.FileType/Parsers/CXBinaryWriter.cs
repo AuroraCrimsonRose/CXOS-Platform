@@ -2,9 +2,9 @@
 using System.Collections.Generic;
 using System.Text;
 
-namespace CXEX.CLI.Commands
+namespace CXEX.FileType.Parsers
 {
-    internal class SignCommand
+    internal class CXBinaryWriter
     {
     }
 }

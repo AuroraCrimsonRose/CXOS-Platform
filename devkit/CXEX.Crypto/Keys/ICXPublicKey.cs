@@ -2,9 +2,9 @@
 using System.Collections.Generic;
 using System.Text;
 
-namespace CXEX.CLI.Commands
+namespace CXEX.Crypto.Keys
 {
-    internal class RunCommand
+    internal interface ICXPublicKey
     {
     }
 }

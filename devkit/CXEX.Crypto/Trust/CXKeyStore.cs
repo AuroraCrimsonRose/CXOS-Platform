@@ -2,9 +2,9 @@
 using System.Collections.Generic;
 using System.Text;
 
-namespace CXEX.CLI.Output
+namespace CXEX.Crypto.Trust
 {
-    internal class ProgressBar
+    internal class CXKeyStore
     {
     }
 }
