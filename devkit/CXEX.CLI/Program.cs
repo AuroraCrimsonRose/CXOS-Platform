@@ -15,13 +15,20 @@ app.Configure(config =>
     config.AddCommand<BuildCommand>("build")
         .WithDescription("Compiles an ELF binary into a CXEX executable (.xkex, .xoex, .xcex).");
 
-    // 2. The Cryptographer (Replaces signcxex.py) - We will build this next!
-    // config.AddCommand<SignCommand>("sign")
-    //     .WithDescription("Appends a CXSG cryptographic signature block to a CXEX image.");
+    config.AddCommand<SignCommand>("sign")
+        .WithDescription("Appends a CXSG cryptographic signature block to a CXEX image.");
 
-    // 3. The Disk Stager (Replaces mkdisk.py & pad_disk.ps1) - We will build this next!
-    // config.AddCommand<ImageCommand>("image")
-    //     .WithDescription("Compiles stage1, stage2, the kernel, and the CXFS payload into a bootable XBPT disk image.");
+    config.AddCommand<ImageCommand>("image")
+        .WithDescription("Compiles stage1, stage2, the kernel, and the CXFS payload into a bootable XBPT disk image.");
+
+    config.AddCommand<EmbedCommand>("embed")
+        .WithDescription("Converts a binary file into a C header byte array.");
+
+    config.AddCommand<CheckCommand>("check")
+        .WithDescription("Validates that all source files listed in CMakeLists.txt exist.");
+
+    config.AddCommand<RawImageCommand>("raw-image")
+        .WithDescription("Creates a flat, padded raw binary disk (replaces pad_boot.ps1).");
 });
 
 // Run the application

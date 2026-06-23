@@ -1,5 +1,6 @@
 ﻿using System.ComponentModel;
 using System.IO;
+using System.Threading; // ADD THIS
 using Spectre.Console;
 using Spectre.Console.Cli;
 using CXEX.Build.Parsers;
@@ -9,7 +10,6 @@ using CXEX.Core.Constants;
 
 namespace CXEX.CLI.Commands;
 
-// FIX: Inherit from Command<BuildCommand.Settings>
 public class BuildCommand : Command<BuildCommand.Settings>
 {
     public class Settings : CommandSettings
@@ -28,8 +28,8 @@ public class BuildCommand : Command<BuildCommand.Settings>
         public string Type { get; set; } = "kernel";
     }
 
-    // FIX: Override Execute
-    public override int Execute(CommandContext context, Settings settings)
+    // ADD CancellationToken to the signature here:
+    protected override int Execute(CommandContext context, Settings settings, CancellationToken cancellationToken)
     {
         if (!File.Exists(settings.InputPath))
         {
@@ -37,8 +37,31 @@ public class BuildCommand : Command<BuildCommand.Settings>
             return 1;
         }
 
-        // Logic goes here...
-        AnsiConsole.MarkupLine($"[green]Building {settings.OutputPath}...[/]");
+        ushort typeCode = settings.Type.ToLower() switch
+        {
+            "kernel" => CXFlags.TYPE_KERNEL,
+            "boot" => CXFlags.TYPE_BOOT,
+            "os" => CXFlags.TYPE_OS,
+            "user" => CXFlags.TYPE_USER,
+            _ => 0
+        };
+
+        if (typeCode == 0)
+        {
+            AnsiConsole.MarkupLine("[red]Error:[/] Invalid type. Must be 'kernel', 'boot', 'os', or 'user'.");
+            return 1;
+        }
+
+        AnsiConsole.Status()
+            .Start($"Compiling {settings.OutputPath}...", ctx =>
+            {
+                byte[] elfData = File.ReadAllBytes(settings.InputPath);
+                var (entryPoint, segments) = ElfParser.Parse(elfData);
+                var layout = CXEXLayoutEngine.CreateLayout(entryPoint, segments, typeCode);
+                CXEXWriter.WriteExecutable(settings.OutputPath, layout);
+            });
+
+        AnsiConsole.MarkupLine($"[green]SUCCESS:[/] Compiled [cyan]{settings.OutputPath}[/]");
         return 0;
     }
 }
