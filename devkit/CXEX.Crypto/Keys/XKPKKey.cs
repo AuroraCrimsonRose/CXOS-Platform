@@ -2,9 +2,9 @@
 using System.Collections.Generic;
 using System.Text;
 
-namespace CXEX.CLI.Parsing
+namespace CXEX.Crypto.Keys
 {
-    internal class CommandContext
+    internal class XKPKKey
     {
     }
 }

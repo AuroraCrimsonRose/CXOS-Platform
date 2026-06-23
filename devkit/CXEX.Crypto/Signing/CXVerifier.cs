@@ -2,9 +2,9 @@
 using System.Collections.Generic;
 using System.Text;
 
-namespace CXEX.CLI.Helpers
+namespace CXEX.Crypto.Signing
 {
-    internal class ProcessHelpers
+    internal class CXVerifier
     {
     }
 }

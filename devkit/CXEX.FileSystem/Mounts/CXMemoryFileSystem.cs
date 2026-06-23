@@ -2,9 +2,9 @@
 using System.Collections.Generic;
 using System.Text;
 
-namespace CXEX.CLI.Profiles
+namespace CXEX.FileSystem.Mounts
 {
-    internal class DefaultProfiles
+    internal class CXMemoryFileSystem
     {
     }
 }

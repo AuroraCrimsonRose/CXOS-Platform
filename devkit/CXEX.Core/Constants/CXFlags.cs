@@ -2,9 +2,9 @@
 using System.Collections.Generic;
 using System.Text;
 
-namespace CXEX.CLI.Profiles
+namespace CXEX.Core.Constants
 {
-    internal class BuildProfiles
+    internal class CXFlags
     {
     }
 }

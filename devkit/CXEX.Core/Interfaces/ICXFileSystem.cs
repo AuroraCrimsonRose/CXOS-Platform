@@ -2,9 +2,9 @@
 using System.Collections.Generic;
 using System.Text;
 
-namespace CXEX.CLI.Output
+namespace CXEX.Core.Interfaces
 {
-    internal class ConsoleColors
+    internal interface ICXFileSystem
     {
     }
 }
