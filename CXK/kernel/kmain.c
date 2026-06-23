@@ -186,6 +186,7 @@ void kmain(void) {
     /* partitioned (XBPT) disk: ensure the SYSTEM partition is a mounted CXFS
        volume - formatting it and populating /System from the STAGE payload on
        first boot. No-ops if no XBPT disk is present. */
+    int launch_exec = 0;
     {
         int ir = cxk_install_boot_disk();
         if      (ir == CXK_INSTALL_DONE)      klog("INSTALL", SEV_OK,   "first boot: /System created from staged payload");
@@ -193,22 +194,25 @@ void kmain(void) {
         else if (ir == CXK_INSTALL_NO_SYSTEM) klog("INSTALL", SEV_INFO, "no XBPT system disk (skipped)");
         else klog_u32("INSTALL", SEV_WARN, "first-boot install issue: ", (uint32_t)ir, LOG_COLOR_VALUE, "");
 
-        /* capstone: if /System is up, hand the machine to the signed executive.
-           cxex_exec verifies it against the embedded key, gives it its own
-           address space, loads it, and drops to ring 3 at its entry. */
-        if (ir == CXK_INSTALL_DONE || ir == CXK_INSTALL_MOUNTED) {
-            klog("EXEC", SEV_INFO, "launching /System/Boot.xoex");
-            int xc = cxk_launch_executive("/System/Boot.xoex");
-            if (xc >= 0) klog_u32("EXEC", SEV_OK,  "executive exited, code ", (uint32_t)xc, LOG_COLOR_VALUE, "");
-            else         klog_u32("EXEC", SEV_ERR, "executive launch failed: ", (uint32_t)xc, LOG_COLOR_VALUE, "");
-        }
+        launch_exec = (ir == CXK_INSTALL_DONE || ir == CXK_INSTALL_MOUNTED);
     }
 
-    /* run the kernel self-tests (ktest.c). */
+    /* run the kernel self-tests (ktest.c) first - they create + reap their own
+       ring-3 threads, so let them finish before starting the executive. */
     ktest_run();
+
+    /* capstone: start the signed executive as the root ring-3 process (its own
+       address space + scheduler thread). It runs once we idle + yield below. */
+    if (launch_exec) {
+        klog("EXEC", SEV_INFO, "launching /System/Boot.xoex");
+        int xc = cxk_launch_executive("/System/Boot.xoex");
+        if (xc >= 0) klog_u32("EXEC", SEV_OK,  "executive started, pid ", (uint32_t)xc, LOG_COLOR_VALUE, "");
+        else         klog_u32("EXEC", SEV_ERR, "executive launch failed: ", (uint32_t)xc, LOG_COLOR_VALUE, "");
+    }
 
     klog("KERNEL", SEV_OK, "boot complete - idle");
     for (;;) {
+        yield();                       /* let the executive + its apps run */
         __asm__ __volatile__("hlt");
     }
 }

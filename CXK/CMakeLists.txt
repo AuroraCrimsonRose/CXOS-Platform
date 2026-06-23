@@ -32,13 +32,13 @@ set(CMAKE_ASM_NASM_COMPILER nasm)
 set(CMAKE_OBJCOPY "${CROSS_PREFIX}/i686-elf-objcopy.exe")
 set(CMAKE_LD      "${CROSS_PREFIX}/i686-elf-ld.exe")
 set(KCC           "${CROSS_PREFIX}/i686-elf-gcc.exe")
-set(PACKAGES_DIR ${DIST_DIR}/packages)
 
 # ---- paths ----
 set(SRC_DIR   ${CMAKE_SOURCE_DIR})
 set(BUILD_DIR ${CMAKE_BINARY_DIR})
 set(IMAGES_DIR  "C:/Users/Aurora/Documents/VS Code/CXK/CXK/dist/CXK_x86_32/images")
 set(DIST_DIR    "C:/Users/Aurora/Documents/VS Code/CXK/CXK/dist/CXK_x86_32/packages")
+set(PACKAGES_DIR ${DIST_DIR})
 
 # ---- kernel include directories (add new subsystem dirs here) ----
 set(KERNEL_INCLUDES

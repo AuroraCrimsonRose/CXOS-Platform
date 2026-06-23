@@ -1,21 +1,23 @@
 /* /CXK/kernel/cpu/spawn.h */
 /* Aurora Tejeda / CATX SYSTEMS LLC */
-/*
- * ABI v1 - spawn (see docs/CXK_ABI_v1 sec 7, syscall 0x70). The kernel copies
- * the app image out of the executive's space, creates a fresh address space,
- * creates a scheduler thread whose trampoline cxex_loads + drops to ring 3,
- * forces the child's caps to 0, and installs a SEND handle to the executive's
- * endpoint as the child's handle 0. struct spawn_args lives in the shared
- * public ABI header. Returns the new pid, or a negative ABI error.
- */
+/* ABI v1 process launch. proc_start is the one path that turns a CXEX image into
+   a ring-3 scheduler thread (own space + esp0 + caps). cxex_exec and sys_spawn
+   both use it. struct spawn_args lives in the shared public ABI header. */
 
 #ifndef SPAWN_H
 #define SPAWN_H
 
-#include "cxk_abi.h"   /* struct spawn_args + the public ABI contract */
+#include "cxk_abi.h"
+#include <stdint.h>
 
-/* syscall handler (called from the dispatcher after the CAP_SPAWN check).
-   `ua` is a user pointer to a struct spawn_args in the caller's space. */
+struct endpoint;   /* cpu/ipc.h */
+
+/* create a ring-3 thread from a CXEX image readable in the current space.
+   caps = its capabilities; broker = SEND handle to install as handle 0 (or NULL
+   for a root executive). Returns pid, or a negative ABI error. */
+int proc_start(const void *image, uint32_t image_len, uint32_t caps, struct endpoint *broker);
+
+/* SYS_SPAWN handler (called after the CAP_SPAWN check). */
 int sys_spawn(const struct spawn_args *ua);
 
 #endif

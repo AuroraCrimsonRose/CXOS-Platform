@@ -109,6 +109,15 @@ int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
             if (!(thread_current_caps() & CAP_SPAWN)) return E_PERM;
             return sys_spawn((const struct spawn_args *)a1);
 
+        case SYS_IPC_CALL:
+            return ipc_call((const struct ipc_call_args *)a1);
+
+        case SYS_IPC_RECV:
+            return ipc_recv((const struct ipc_recv_args *)a1);
+
+        case SYS_IPC_REPLY:
+            return ipc_reply((const struct ipc_reply_args *)a1);
+
         case SYS_EP_CREATE:
             if (!(thread_current_caps() & CAP_ENDPOINT)) return E_PERM;
             return ep_create();

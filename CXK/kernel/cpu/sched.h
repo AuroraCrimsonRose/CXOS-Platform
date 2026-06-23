@@ -26,6 +26,7 @@ enum thread_state {
     THREAD_UNUSED = 0,
     THREAD_READY,
     THREAD_RUNNING,
+    THREAD_BLOCKED,    /* waiting on IPC; not runnable until unblocked */
     THREAD_EXITED
 };
 
@@ -117,5 +118,7 @@ struct cap_handle *thread_handle_get(int id, int idx);
 int  thread_handle_close(int id, int idx);
 void     thread_set_caps(int id, uint32_t caps);
 void     thread_set_space(int id, uint32_t pd_phys);   /* CR3 to load when this thread runs */
+void     thread_block(void);            /* block the current thread (IPC wait) + yield */
+void     thread_unblock(int id);        /* make a blocked thread runnable again */
 
 #endif
