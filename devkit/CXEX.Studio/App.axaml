@@ -2,17 +2,42 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="using:CXEX.Studio"
              xmlns:materialIcons="clr-namespace:Material.Icons.Avalonia;assembly=Material.Icons.Avalonia"
-             x:Class="CXEX.Studio.App">
+             x:Class="CXEX.Studio.App"
+             RequestedThemeVariant="Dark">
 
   <Application.DataTemplates>
     <local:ViewLocator />
   </Application.DataTemplates>
 
   <Application.Styles>
-    <FluentTheme />
+    <!-- Fluent recolored to CX brand: cyan accent on deep-navy surfaces -->
+    <FluentTheme>
+      <FluentTheme.Palettes>
+        <ColorPaletteResources x:Key="Dark"
+            Accent="#5BC0F8"
+            RegionColor="#111827"
+            AltHigh="#0B0F19" AltLow="#0B0F19" AltMedium="#0B0F19"
+            AltMediumHigh="#111827" AltMediumLow="#0B0F19"
+            BaseHigh="#EAF4FF" BaseLow="#2A3650" BaseMedium="#9FB4D0"
+            BaseMediumHigh="#C3D5EC" BaseMediumLow="#6E84A3"
+            ChromeHigh="#2A3650" ChromeLow="#111827" ChromeMedium="#1B2433"
+            ChromeMediumLow="#1B2433" ChromeAltLow="#2A3650"
+            ChromeDisabledHigh="#1B2433" ChromeDisabledLow="#6E84A3"
+            ChromeGray="#9FB4D0" ChromeWhite="#EAF4FF"
+            ChromeBlackHigh="#0B0F19" ChromeBlackLow="#0B0F19"
+            ChromeBlackMedium="#0B0F19" ChromeBlackMediumLow="#0B0F19"
+            ListLow="#1B2433" ListMedium="#2A3650"
+            ErrorText="#F48FB1" />
+      </FluentTheme.Palettes>
+    </FluentTheme>
+
     <DockFluentTheme />
     <materialIcons:MaterialIconStyles />
-    <!-- AvaloniaEdit control theme: without this the TextEditor renders blank -->
+
+    <!-- AvaloniaEdit control theme -->
     <StyleInclude Source="avares://AvaloniaEdit/Themes/Fluent/AvaloniaEdit.xaml" />
+
+    <!-- CX brand theme (shared with the SDK) -->
+    <StyleInclude Source="avares://CXEX.UI/Themes/CXDark.axaml" />
   </Application.Styles>
 </Application>

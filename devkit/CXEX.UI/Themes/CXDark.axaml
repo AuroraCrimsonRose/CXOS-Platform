@@ -1,0 +1,78 @@
+<Styles xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+  <!-- ============================================================
+       CX Dark - shared brand theme (CATX Systems LLC)
+       Surface #111827 · Accent cyan #5BC0F8 · Accent2 pink #F48FB1
+       Text #EAF4FF.  Used by CXEX.Studio and CXEX.SDK.
+       ============================================================ -->
+  <Styles.Resources>
+    <ResourceDictionary>
+      <!-- surface ramp -->
+      <Color x:Key="CxSurface0">#0B0F19</Color>
+      <Color x:Key="CxSurface1">#111827</Color>
+      <Color x:Key="CxSurface2">#1B2433</Color>
+      <Color x:Key="CxSurface3">#2A3650</Color>
+      <!-- brand -->
+      <Color x:Key="CxAccent">#5BC0F8</Color>
+      <Color x:Key="CxAccent2">#F48FB1</Color>
+      <Color x:Key="CxText">#EAF4FF</Color>
+      <Color x:Key="CxTextDim">#9FB4D0</Color>
+      <Color x:Key="CxBorder">#2A3650</Color>
+
+      <SolidColorBrush x:Key="CxSurface0Brush" Color="{StaticResource CxSurface0}"/>
+      <SolidColorBrush x:Key="CxSurface1Brush" Color="{StaticResource CxSurface1}"/>
+      <SolidColorBrush x:Key="CxSurface2Brush" Color="{StaticResource CxSurface2}"/>
+      <SolidColorBrush x:Key="CxSurface3Brush" Color="{StaticResource CxSurface3}"/>
+      <SolidColorBrush x:Key="CxAccentBrush"   Color="{StaticResource CxAccent}"/>
+      <SolidColorBrush x:Key="CxAccent2Brush"  Color="{StaticResource CxAccent2}"/>
+      <SolidColorBrush x:Key="CxTextBrush"     Color="{StaticResource CxText}"/>
+      <SolidColorBrush x:Key="CxTextDimBrush"  Color="{StaticResource CxTextDim}"/>
+      <SolidColorBrush x:Key="CxBorderBrush"   Color="{StaticResource CxBorder}"/>
+    </ResourceDictionary>
+  </Styles.Resources>
+
+  <!-- window surface -->
+  <Style Selector="Window">
+    <Setter Property="Background" Value="{StaticResource CxSurface1Brush}"/>
+    <Setter Property="Foreground" Value="{StaticResource CxTextBrush}"/>
+  </Style>
+
+  <!-- menu bar: flat, on-surface -->
+  <Style Selector="Menu">
+    <Setter Property="Background" Value="{StaticResource CxSurface0Brush}"/>
+  </Style>
+
+  <!-- document/tool tabs: flat with a cyan active underline (de-VS-Code) -->
+  <Style Selector="TabItem">
+    <Setter Property="Foreground" Value="{StaticResource CxTextDimBrush}"/>
+    <Setter Property="FontSize" Value="12"/>
+    <Setter Property="Padding" Value="12,6"/>
+  </Style>
+  <Style Selector="TabItem:selected">
+    <Setter Property="Foreground" Value="{StaticResource CxTextBrush}"/>
+  </Style>
+  <Style Selector="TabItem:selected /template/ Border#PART_SelectedPipe">
+    <Setter Property="Background" Value="{StaticResource CxAccentBrush}"/>
+  </Style>
+
+  <!-- buttons: subtle surface, cyan on hover -->
+  <Style Selector="Button">
+    <Setter Property="Background" Value="{StaticResource CxSurface2Brush}"/>
+    <Setter Property="Foreground" Value="{StaticResource CxTextBrush}"/>
+    <Setter Property="BorderBrush" Value="{StaticResource CxBorderBrush}"/>
+    <Setter Property="CornerRadius" Value="4"/>
+  </Style>
+  <Style Selector="Button:pointerover /template/ ContentPresenter">
+    <Setter Property="Background" Value="{StaticResource CxSurface3Brush}"/>
+    <Setter Property="BorderBrush" Value="{StaticResource CxAccentBrush}"/>
+  </Style>
+
+  <!-- text inputs -->
+  <Style Selector="TextBox">
+    <Setter Property="Background" Value="{StaticResource CxSurface0Brush}"/>
+    <Setter Property="Foreground" Value="{StaticResource CxTextBrush}"/>
+    <Setter Property="CornerRadius" Value="4"/>
+  </Style>
+
+</Styles>

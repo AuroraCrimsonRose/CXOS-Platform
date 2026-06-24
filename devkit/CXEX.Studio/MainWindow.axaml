@@ -6,8 +6,8 @@
         x:Class="CXEX.Studio.Views.MainWindow"
         x:DataType="vm:MainWindowViewModel"
         Title=""
-        Background="#1E1E1E"
-        Foreground="#D4D4D4"
+        Background="{DynamicResource CxSurface1Brush}"
+        Foreground="{DynamicResource CxTextBrush}"
         Width="1200" Height="750"
         WindowStartupLocation="CenterScreen"
         ExtendClientAreaToDecorationsHint="True"
@@ -15,13 +15,13 @@
         WindowDecorations="Full">
 
   <Window.Resources>
-    <Color x:Key="SystemAccentColor">#007ACC</Color>
-    <Color x:Key="SystemAccentColorDark1">#007ACC</Color>
-    <Color x:Key="SystemAccentColorDark2">#007ACC</Color>
-    <Color x:Key="SystemAccentColorDark3">#007ACC</Color>
-    <Color x:Key="SystemAccentColorLight1">#007ACC</Color>
-    <Color x:Key="SystemAccentColorLight2">#007ACC</Color>
-    <Color x:Key="SystemAccentColorLight3">#007ACC</Color>
+    <Color x:Key="SystemAccentColor">#5BC0F8</Color>
+    <Color x:Key="SystemAccentColorDark1">#5BC0F8</Color>
+    <Color x:Key="SystemAccentColorDark2">#5BC0F8</Color>
+    <Color x:Key="SystemAccentColorDark3">#5BC0F8</Color>
+    <Color x:Key="SystemAccentColorLight1">#5BC0F8</Color>
+    <Color x:Key="SystemAccentColorLight2">#5BC0F8</Color>
+    <Color x:Key="SystemAccentColorLight3">#5BC0F8</Color>
     <SolidColorBrush x:Key="SystemControlHighlightAccentBrush" Color="{StaticResource SystemAccentColor}" />
   </Window.Resources>
 
@@ -42,11 +42,11 @@
     </Style>
 
     <Style Selector="Button.ActivityButton:pointerover /template/ ContentPresenter">
-      <Setter Property="Background" Value="#2A2A2A"/>
+      <Setter Property="Background" Value="{DynamicResource CxSurface2Brush}"/>
     </Style>
 
     <Style Selector="Button.ActivityButton materialIcons|MaterialIcon">
-      <Setter Property="Foreground" Value="#858585"/>
+      <Setter Property="Foreground" Value="{DynamicResource CxTextDimBrush}"/>
     </Style>
     <Style Selector="Button.ActivityButton:pointerover materialIcons|MaterialIcon">
       <Setter Property="Foreground" Value="#FFFFFF"/>
@@ -54,14 +54,14 @@
 
     <Style Selector="Menu">
       <Setter Property="Background" Value="Transparent"/>
-      <Setter Property="BorderBrush" Value="#2D2D2D"/>
+      <Setter Property="BorderBrush" Value="{DynamicResource CxBorderBrush}"/>
       <Setter Property="BorderThickness" Value="0,0,0,1"/>
     </Style>
   </Window.Styles>
 
   <Grid RowDefinitions="30, *, Auto">
 
-    <Grid Grid.Row="0" Background="#181818">
+    <Grid Grid.Row="0" Background="{DynamicResource CxSurface0Brush}">
       <Grid.ColumnDefinitions>
         <ColumnDefinition Width="Auto"/>
         <ColumnDefinition Width="*"/>
@@ -93,15 +93,15 @@
       <Border Grid.Column="1" Background="Transparent" WindowDecorationProperties.ElementRole="TitleBar">
         <TextBlock Text="CXEX.Studio - Kernel Developer Suite"
                    HorizontalAlignment="Center" VerticalAlignment="Center"
-                   Foreground="#858585" FontSize="12" Margin="0,0,140,0"
+                   Foreground="{DynamicResource CxTextDimBrush}" FontSize="12" Margin="0,0,140,0"
                    IsHitTestVisible="False"/>
       </Border>
     </Grid>
 
     <Grid Grid.Row="1" ColumnDefinitions="Auto, *">
 
-      <Border Grid.Column="0" Width="48" Background="#181818"
-              BorderBrush="#2D2D2D" BorderThickness="0,0,1,0">
+      <Border Grid.Column="0" Width="48" Background="{DynamicResource CxSurface0Brush}"
+              BorderBrush="{DynamicResource CxBorderBrush}" BorderThickness="0,0,1,0">
         <DockPanel VerticalAlignment="Stretch">
           <StackPanel DockPanel.Dock="Top" Spacing="2" Margin="0,4,0,0">
             <Button Classes="ActivityButton" ToolTip.Tip="Explorer (Project Tree)" Command="{Binding ShowExplorerCommand}">
@@ -127,23 +127,23 @@
 
       <Grid Grid.Column="1" RowDefinitions="*, Auto, Auto">
 
-        <Border Grid.Row="0" Background="#1E1E1E" Padding="2">
+        <Border Grid.Row="0" Background="{DynamicResource CxSurface1Brush}" Padding="2">
           <idc:DockControl Layout="{Binding Layout}" />
         </Border>
 
         <GridSplitter Grid.Row="1" Height="4" ResizeDirection="Rows"
-                      HorizontalAlignment="Stretch" Background="#2D2D2D"
+                      HorizontalAlignment="Stretch" Background="{DynamicResource CxBorderBrush}"
                       IsVisible="{Binding IsBottomPanelVisible}"/>
 
-        <Border Grid.Row="2" Height="200" Background="#181818"
-                BorderBrush="#2D2D2D" BorderThickness="0,1,0,0"
+        <Border Grid.Row="2" Height="200" Background="{DynamicResource CxSurface0Brush}"
+                BorderBrush="{DynamicResource CxBorderBrush}" BorderThickness="0,1,0,0"
                 IsVisible="{Binding IsBottomPanelVisible}">
           <Grid RowDefinitions="Auto, *">
 
             <!-- panel header: title, input, build/cancel, status -->
-            <Grid Grid.Row="0" Background="#1E1E1E" MinHeight="36" ColumnDefinitions="Auto,*,Auto,Auto,Auto,Auto">
+            <Grid Grid.Row="0" Background="{DynamicResource CxSurface1Brush}" MinHeight="36" ColumnDefinitions="Auto,*,Auto,Auto,Auto,Auto">
               <TextBlock Grid.Column="0" Text="BUILD OUTPUT" VerticalAlignment="Center"
-                         Margin="10,0" FontSize="11" FontWeight="SemiBold" Foreground="#858585"/>
+                         Margin="10,0" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource CxTextDimBrush}"/>
               <TextBox Grid.Column="1" Watermark="input .elf path" VerticalAlignment="Center"
                        Margin="6,5" Height="26" FontSize="11"
                        Text="{Binding Build.ProjectPath, Mode=TwoWay}"/>
@@ -163,12 +163,12 @@
             </Grid>
 
             <!-- log body -->
-            <ScrollViewer Grid.Row="1" Padding="10,4" Background="#181818">
+            <ScrollViewer Grid.Row="1" Padding="10,4" Background="{DynamicResource CxSurface0Brush}">
               <ItemsControl ItemsSource="{Binding Build.Log}">
                 <ItemsControl.ItemTemplate>
                   <DataTemplate>
                     <TextBlock Text="{Binding}" FontFamily="Cascadia Code,Consolas,monospace"
-                               FontSize="12" Foreground="#CCCCCC" TextWrapping="NoWrap"/>
+                               FontSize="12" Foreground="{DynamicResource CxTextBrush}" TextWrapping="NoWrap"/>
                   </DataTemplate>
                 </ItemsControl.ItemTemplate>
               </ItemsControl>
@@ -181,11 +181,11 @@
 
     </Grid>
 
-    <Border Grid.Row="2" Height="22" Background="#007ACC">
+    <Border Grid.Row="2" Height="22" Background="{DynamicResource CxSurface0Brush}">
       <Grid ColumnDefinitions="Auto, *, Auto" Margin="10,0">
         <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Spacing="10">
           <TextBlock Text="Ready" FontSize="11" Foreground="White" FontWeight="SemiBold"/>
-          <TextBlock Text="|" FontSize="11" Foreground="#52B2FF"/>
+          <TextBlock Text="|" FontSize="11" Foreground="{DynamicResource CxAccentBrush}"/>
           <TextBlock Text="CXEX Environment: Active" FontSize="11" Foreground="White"/>
         </StackPanel>
         <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Spacing="15">
@@ -198,7 +198,7 @@
 
     <Grid Grid.Row="0" Grid.RowSpan="3" Background="#A0000000" IsVisible="{Binding IsBusy}" ZIndex="999">
       <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="15">
-        <ProgressBar IsIndeterminate="True" Width="150" Height="4" Foreground="#007ACC" Background="#333333"/>
+        <ProgressBar IsIndeterminate="True" Width="150" Height="4" Foreground="{DynamicResource CxAccentBrush}" Background="{DynamicResource CxSurface2Brush}"/>
         <TextBlock Text="{Binding BusyText}" Foreground="White" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Center"/>
       </StackPanel>
     </Grid>
