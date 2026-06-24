@@ -8,7 +8,9 @@
   <Project Path="CXEX.FileType/CXEX.FileType.csproj" Id="f7d250b1-1a90-475a-b6e0-8ca54230cd12" />
   <Project Path="CXEX.Font/CXEX.Font.csproj" Id="5ba18e15-21b3-4fd7-a6a2-12e920c3f1da" />
   <Project Path="CXEX.Lang/CXEX.Lang.csproj" Id="63810b49-407d-440f-8919-5fa3ca74bbc2" />
+  <Project Path="CXEX.SDK/CXEX.SDK.csproj" Id="c324e7a1-fd6d-426c-be65-e623fa34b05c" />
   <Project Path="CXEX.Studio/CXEX.Studio.csproj" />
   <Project Path="CXEX.Text/CXEX.Text.csproj" Id="9a5e5f88-5698-479a-a023-0535228d3612" />
+  <Project Path="CXEX.Tools/CXEX.Tools.csproj" Id="10fd83c0-7d3c-4d35-9f63-fe7209bc2c33" />
   <Project Path="CXEX.UI/CXEX.UI.csproj" Id="8949bb8a-3845-4a8a-8df4-d1a992f5f0f5" />
 </Solution>

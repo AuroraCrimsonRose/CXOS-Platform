@@ -1,56 +1,70 @@
 # CX DevKit — Architecture, Vision & Roadmap
 
 **Owner:** Aurora Tejeda · **Company:** CATX Systems LLC · **Products:** CX, CXK, CXOS
-**Doc status:** v0.1 working draft — captures the full vision dump, locks the decisions that block everything else, and lists the open questions I need answered.
+**Doc status:** **v0.2** — decisions from the Q&A pass are now **locked** (marked **[LOCKED]**); a handful of genuinely-open items remain in §13.
 
-This is a planning document, not a spec freeze. Where I've made a recommendation I've marked it **[REC]**; where I need your call I've marked it **[Q#]** and collected all questions at the end.
+Logic lives in libraries; CLI and Studio are thin front-ends over the same code. The look is IDE-like but distinctly CX. Build in small verifiable checkpoints.
 
 ---
 
 ## 1. Vision
 
-The CX DevKit is the **single, ergonomic platform** for building the CX ecosystem: the CXK kernel, the CXOS operating system, bootloaders, and X-language user/OS executables — across multiple target architectures — replacing the current Python / batch / PowerShell toolchain.
+The CX DevKit is the single ergonomic platform for building the CX ecosystem — the CXK kernel, CXOS, bootloaders, and X-language executables — across multiple target architectures, replacing the Python/batch/PowerShell toolchain.
 
-Two faces of the same core:
+Two faces of one core:
+- **CX DevKit (Studio)** — full IDE for first-party kernel/OS/boot/app development, packaging, signing, imaging, debugging.
+- **CX SDK** — a future, slimmer, **separate** Avalonia app for third-party developers building X apps for CXOS. Shares the `CXEX.UI` control/theme library so the two read as one product. **[LOCKED]**
 
-- **CX DevKit (Studio)** — the full IDE for *us* (kernel/OS/boot/app development, packaging, signing, imaging, debugging).
-- **CX SDK (CXEX.UI-based)** — a future, slimmer, user-facing app for *third parties* building X apps for CXOS. Shares a common Avalonia control/theme library (`CXEX.UI`) with Studio so they look and feel like one product.
-
-Design principles: build in small verifiable checkpoints; logic lives in libraries (CLI and Studio are thin front-ends over the same code); the look is **IDE-like but distinctly CX**, not a VS Code clone.
+**Licensing context:** apps built with the DevKit (and anything built to run on CXOS) are MIT to their authors; the kernel/OS themselves are proprietary CATX. This shapes the key-authority model (§4) and the SDK (§12).
 
 ---
 
-## 2. Visual Identity
+## 2. Visual Identity **[LOCKED]**
 
-Moving away from the VS Code aesthetic while keeping a familiar IDE *layout*. The restyle is primarily theme/chrome, not a layout teardown.
+IDE-like layout, distinctly-CX chrome. Concrete direction from your references:
+
+- **Navigability like VS Code** — discoverable menus and toolbars. **Do not** hide actions behind a command-palette-only model (the "weird Shift+P" problem). Everything reachable by eye.
+- **Flat & simple like Zed**, but with a touch more substance/contrast — not as ultra-smooth/minimal as Zed.
+- **High-contrast, bright syntax highlighting** — readability first.
+- **Spyder-style icon button bar** — a clean, obvious icon toolbar where "I need to press X" is instant.
 
 **Brand palette**
 
-| Hex | Role **[REC]** | Notes |
+| Hex | Role | Notes |
 |---|---|---|
-| `#111827` | Primary surface (deep navy-black) | Main background, darkest layer |
-| `#5BC0F8` | Primary accent (CX cyan) | Active states, selection, primary buttons, focus |
-| `#F48FB1` | Secondary accent (CX pink) | Highlights, warnings-as-attention, secondary emphasis, magic-byte highlight |
+| `#111827` | Primary surface (deep navy-black) | Darkest layer; main background |
+| `#5BC0F8` | Primary accent (CX cyan) | Interaction: active states, selection, focus, primary buttons |
+| `#F48FB1` | Semantic highlight (CX pink) | "Look here": magic bytes, entry/exit points, attention |
 | `#EAF4FF` | Foreground (near-white blue) | Primary text/icons on dark surfaces |
 
-I'd derive a small ramp from `#111827` (e.g. `#0B0F19` / `#111827` / `#1B2433` / `#2A3650`) for layered surfaces, panel borders, and dividers, so it reads as a designed dark theme rather than flat gray. Accent cyan for interaction, pink reserved for "look here" semantic highlights (magic bytes, entry points). **[Q1]**
-
-**Distinct-from-VS-Code moves [REC]:** replace the left activity bar + thin status bar paradigm with a CX-branded top bar (wordmark + global actions), softer rounded panel chrome, accent-tinted active tabs, and a custom title/menu treatment. Layout stays a docked IDE; the *chrome* is what changes. Needs a reference direction from you — see **[Q2]**.
+Derived surface ramp from `#111827` for layered panels/borders (e.g. `#0B0F19 / #111827 / #1B2433 / #2A3650`). You'll annotate as you see it live.
 
 ---
 
-## 3. Artifact & File-Type Taxonomy *(foundational — blocks tooling, must lock first)*
+## 3. Artifact & File-Type Taxonomy **[LOCKED]**
 
-Everything downstream (packaging, project layout, explorer icons, "open with", build targets) depends on a frozen taxonomy. Here's my current understanding; **please correct/confirm — this is the highest-priority decision [Q3]**.
+Pattern: **`XF**` = Format (source)**, **`XC**` = Compiled**, executables are CXEX-wrapped `X_EX`.
+
+**X language source & compiled**
+
+| Ext | Name | Meaning |
+|---|---|---|
+| `.XFXN` | cX Format, X Native | X Native (systems core) source |
+| `.XFXR` | cX Format, X Runtime | X Runtime dialect source |
+| `.XFXH` | cX Format, X Hybrid | X Hybrid dialect source |
+| `.XCXN` | cX Compiled, X Native | Compiled X Native object |
+| `.XCXR` / `.XCXH` | (compiled runtime / hybrid) | Same pattern, as those dialects come online |
+
+**Compile/link chain [LOCKED, my call per Q3a]:** `*.XFXN` (source) → **`*.XCXN`** (compiled linkable object) → **packaged executable** (`XCEX` / `XOEX` / `XKEX` depending on target). `XCXN` is the intermediate; the `X_EX` family is the final CXEX-headered, signable artifact.
 
 **Executables / packages (CXEX-wrapped)**
 
 | Ext | Name | Meaning |
 |---|---|---|
-| `.XKEX` | X Kernel Executable | The kernel image |
-| `.XOEX` | X OS Executable | OS/system executable (executive, init, installer) |
-| `.XBEX` | X Boot Executable | Bootloader artifact *(new — confirm boot becomes CXEX-family)* |
-| `.XCEX` | X Common Executable | User-space application |
+| `.XKEX` | X Kernel Executable | Kernel image (System authority) |
+| `.XOEX` | X OS Executable | OS/system executable: executive, init, **installer** (System authority) |
+| `.XCEX` | X Common Executable | User-space application (Developer authority) |
+| `.XBEX` | X Boot Executable | **Special-purpose**: rewriting boot areas during updates / critical boot fixes only — *not* a routine build output. System authority. |
 
 **Libraries**
 
@@ -59,239 +73,192 @@ Everything downstream (packaging, project layout, explorer icons, "open with", b
 | `.XCDL` | X Common Dynamic Library | Shared/dynamic lib |
 | `.XCSL` | X Common Static Library | Static lib |
 
-**Source & compiled X**
+**Data / system formats**
 
 | Ext | Name | Meaning |
 |---|---|---|
-| `.X` | X (Native) source | Systems core dialect |
-| `.XR` | X Runtime source | Runtime dialect (lowers to X core) |
-| `.XC` | Compiled X | Object/container after compile — **relationship to XCEX needs definition [Q3a]** |
-
-**Data formats**
-
-| Ext | Name | Meaning |
-|---|---|---|
-| `.XKPK` | X Key, Public | Public signing key *(private = `.XKSK`? [Q4])* |
-| `.XFNT` | X Font ("cX File foNT") | Custom font format |
-| `.XFSI` | X icon format | Replacement for Windows `.ICO` (lib stub now) |
+| `.XKPK` | X Key, Public | Public key — **carries an Authority header** (§4) |
+| `.XKSK` | X Key, Secret | Private key — Authority header; **DevKit key store only**, never in repo |
+| `.XFNT` | X Font | Font container (vector or bitmap) — §5.1 |
+| `.XCFM` | cX Compiled Font Mask | Editable bitmap-font source drawn in Studio → compiles to `XFNT` — §5.1 |
+| `.XFSI` | X icon format | ICO replacement (lib stub now) |
 | `.XBPT` | X Boot Partition Table | CX partition scheme |
-
-**Open structural questions:** Is `XC` the raw compiled object and `XCEX` the *packaged+CXEX-headered* executable (i.e. `X → XC → XCEX`)? Does the boot path now produce `XBEX`, or do stage1/stage2 stay raw inside the XBPT image? **[Q3a, Q3b]**
 
 ---
 
-## 4. Project Model
+## 4. Key Authority & Signing **[LOCKED — new]**
 
-DevKit-created projects assume an OS build and use this layout (from your spec):
+Keys are not flat: every `XKPK`/`XKSK` carries a **header declaring its Authority domain**, so the system can enforce *who may sign what*. This lets third-party devs sign their own apps while you retain a high-authority root key for System files.
 
-```
-$root$
-├── Kernel/        (*.asm *.c *.h …)
-├── Boot/          (*.asm *.c *.h …)
-├── Executable/    (*.asm *.c *.h *.x *.xr …)
-├── Config/        (bochsrc.txt, CMakeLists.txt, settings.json, linker configs …)
-├── Bin/<Arch>/<Debug|Release>/
-│     └── Release/ → Images/  Packages/{Executables,Apps,Libraries}/  Keys/
-└── Temp/Artifacts/   (disposable: cmake files, .o, generated, clean-buildable)
-```
+**Authority tiers**
 
-**Per-project `Config/settings.json` [REC]** — the project's single source of truth. Proposed schema (draft):
+| Tier | May sign | Who holds it |
+|---|---|---|
+| `ROOT` / `SYSTEM` | `XKEX`, `XOEX`, `XBEX` (and anything below) | CATX (you) — high-security, kept offline |
+| `DEVELOPER` | `XCEX`, `XCDL`, `XCSL` | Third-party app developers (via the SDK) |
 
-```jsonc
-{
-  "name": "CXOS",
-  "company": "CATX Systems LLC",
-  "formatVersion": 1,
-  "targets": {
-    "kernel": { "arch": "i686", "sources": "Kernel/", "linker": "Config/kernel.ld", "type": "XKEX" },
-    "boot":   { "arch": "i686", "sources": "Boot/",   "type": "XBEX" },
-    "os":     { "sources": "Executable/", "type": "XOEX" },
-    "apps":   { "sources": "Executable/", "type": "XCEX" }
-  },
-  "toolchain": { "gcc": "i686-elf-gcc", "nasm": "nasm", "qemu": "qemu-system-i386", "bochs": "bochs" },
-  "mountedDisk": { "image": "Bin/i686/Release/Images/cxk_disk.img", "autoMount": true },
-  "keys": { "public": "Bin/i686/Release/Keys/Public.XKPK", "private": "..." },
-  "build": { "config": "Debug", "flags": { "quietBoot": true, "serialDebug": true } },
-  "locks": ["Kernel/cxfs.h", "Config/"],   // anti-accidental-edit protection
-  "ui": { "layout": "Kernel Dev", "theme": "CX Dark" }
-}
-```
+*(Room to add an intermediate "trusted vendor" tier later — the header field is an enum/flags, not a bool.)*
 
-**Mounted disk [REC]:** the project pins one (or more) disk images in `settings.json`/UI so the Hex viewer, CXFS browser, and partition viewer can reference it directly without re-navigating the explorer each time. A "Mounted Disk" selector lives in the top bar.
+**Key header (draft fields):** `magic`, `formatVersion`, `authority` (tier enum/flags), `keyId`, `ownerName`, `algorithm`, key material, optional `signedBy` (chain to a higher authority).
+
+**Enforcement [REC, see Q-A]:** CXK verifies an artifact's signature **and** that the signing key's authority tier is permitted for that artifact type (System files require `ROOT`; apps accept `DEVELOPER`). A `DEVELOPER` key signing an `XOEX` is rejected.
+
+**Storage:** private keys (`XKSK`) live in the **DevKit key store** under app data (e.g. `%AppData%/CATX/CXDevKit/keystore/` on Windows; XDG/macOS equivalents). Public keys (`XKPK`) are exported into a project's `…/Keys/`. The SDK ships only `DEVELOPER`-tier keygen/sign.
 
 ---
 
 ## 5. Solution / Library Architecture
 
-**Existing (keep, all the real logic):** `CXEX.Build` (ELF→CXEX, disk imaging), `CXEX.Crypto`, `CXEX.Core`, `CXEX.FileSystem`, `CXEX.FileType`, `CXEX.Lang` (X compiler), `CXEX.CLI`, `CXEX.Studio`.
+**Existing:** `CXEX.Build`, `CXEX.Crypto`, `CXEX.Core`, `CXEX.FileSystem`, `CXEX.FileType`, `CXEX.Lang`, `CXEX.CLI`, `CXEX.Studio`.
 
-**New libraries proposed**
+**Added by you:** `CXEX.Disk`, `CXEX.UI`, `CXEX.Text`, `CXEX.Font`.
+
+**Proposed new:** **`CXEX.Tools` [REC — strong]** — move the process-tool wrappers (`GccTool`, `NasmTool`, `QemuTool`, `BochsTool`, `CMakeTool`, `ProcessRunner`) out of `CXEX.CLI` into a shared lib so **both CLI and Studio** drive the toolchain from one place without coupling to each other.
 
 | Library | Purpose |
 |---|---|
-| `CXEX.Disk` **[REC]** | MBR, GPT, XBPT (read/write + viewer model); ISO 9660 + UDF later for ISO images |
-| `CXEX.UI` **[REC]** | Shared Avalonia theme + controls (hex view, tree, console, dock chrome) for Studio **and** the future SDK |
-| `CXEX.Text` **[REC]** | UTF-8 / ASCII encoding helpers. **Note:** the kernel is freestanding C and cannot consume a .NET lib — if CXK needs UTF-8 that's separate C. This lib is for the *tools*. **[Q5]** |
-| `CXEX.Font` (or in CLI) | XFNT generation/parsing |
+| `CXEX.Disk` | MBR, GPT, XBPT (read/write + viewer models); ISO 9660 + UDF when ISO distribution lands |
+| `CXEX.UI` | Shared Avalonia theme + controls (hex view, tree, console, dock chrome) for Studio **and** SDK |
+| `CXEX.Text` | UTF-8 / ASCII encoding helpers — for tooling/**interop reading** (other platforms reading our formats). Kernel-side C UTF-8 is a separate question (Q5). |
+| `CXEX.Font` | `XFNT` / `XCFM` parsing + generation |
+| `CXEX.Tools` | Shared process-tool wrappers + runner (toolchain + emulator launch) |
 
-**CLI additions**
+### 5.1 Font formats **[LOCKED]**
 
-- `cxk font` — TTF/OTF/BDF/bitmap-PNG → `.XFNT` (header: magic, name, scalable flag, bitmap flag, size list, glyph data). **Scalable semantics need definition [Q6].**
-- `cxk disk` — inspect/build MBR/GPT/XBPT (wraps `CXEX.Disk`).
-- Multi-arch target flags (see §8).
+- **`XFNT`** — the deliverable **font container**: `magic` + header describing whether contents are **scalable vector** or **bitmap**, plus name; if bitmap, the **supported sizes** and glyph metrics; then glyph data.
+- **`XCFM`** — editable **source** mask: glyphs **drawn on a character map in Studio's font editor**, exported/compiled to a bitmap `XFNT`. (Mirrors the `XF*`→`XC*` source→compiled idea.)
+- **`cxk font` (CLI) ingests:** TTF/OTF → vector `XFNT`; BDF (a bitmap-font container — confirmed) and PNG/BMP glyph sheets → bitmap `XFNT`; `XCFM` → bitmap `XFNT`.
+- **PNG/BMP glyph-sheet convention:** white = background, black = glyph; each character cell padded 1px on all sides (a clean pixel array).
 
 ---
 
 ## 6. The Studio Application
 
-### 6.1 Docking model
+### 6.1 Docking model **[LOCKED]**
 
-- **Docked layout, locked by default [REC].** Users can't drag/rearrange panels unless they enter **Window Editor Mode** (a toggle). Prevents accidental layout destruction — a real pain point in Dock-based IDEs.
-- **Preset layouts shipped built-in [REC]:** e.g. *Kernel Dev*, *Disk & Image*, *Debug*, *Minimal*. Plus **user-saved custom layouts**, persisted (global and/or per-project — **[Q7]**).
-- **Project Explorer is pinned** to its location (left), non-closable, resize-only; other Tools *may* be tabbed alongside it. **[Q8]**
-- **Minimum width/height** enforced on all panels (`MinWidth`/`MinHeight`), so nothing collapses to an unusable sliver.
+- **Locked by default;** drag/rearrange only in **Window Editor Mode** (toggle). Prevents accidental layout destruction.
+- **Preset layouts shipped** (*Kernel Dev*, *Disk & Image*, *Debug*, *Minimal*) **+ user-saved** layouts, settable as **either global or per-project** (both supported).
+- **Project Explorer is non-closable**, resize-only; **other Tools may share its pane** (tab alongside it) — its placement (left pane vs. tabbed elsewhere) is a user choice.
+- **Min width/height** enforced on all panels.
 
-### 6.2 Window / panel inventory
+### 6.2 Window inventory & file associations
 
-| Window | Kind | Purpose |
-|---|---|---|
-| Project Explorer | Tool (pinned, left) | File tree, context menu, locks |
-| Build Configuration | Document (center) | Set flags/config per target, then trigger build → logs to bottom |
-| Text Editor | Document | Code editing w/ syntax highlighting incl. X Native |
-| Hex Viewer | Document | Magic ID, metadata, asm region highlight, search |
-| Image Viewer/Editor | Document | PNG/BMP/ICO + XFSI |
-| CXFS Browser | Document/Tool | Browse CXFS inside a mounted disk |
-| Partition Viewer | Document | XBPT/MBR/GPT layout |
-| Key Manager | Document | Keygen/sign via `CXEX.Crypto` |
-| Settings | Document/Dialog | Global prefs (theme, highlighting) |
-| Bottom Console Host | Tool (bottom) | Multi-tab consoles (see 6.3) |
+Windows: Project Explorer (pinned), Build Configuration, Text Editor, Hex Viewer, Image Viewer/Editor, CXFS Browser, Partition Viewer, Key Manager, Settings, Bottom Console Host.
 
-**"Open with" / file associations [REC]:** a registry mapping extension → default window, with a right-click **Open With** override. Right-click context menu also provides **Rename, Delete, Copy, Paste, New File/Folder**, and **Lock/Unlock**. Locked files/dirs are read-only in the DevKit (blocks edit + delete) — cheap accidental-damage protection, tracked in `settings.json.locks`.
+**"Open with" / associations:** extension → default window, with right-click **Open With** override. Context menu also: **Rename, Delete, Copy, Paste, New File/Folder, Lock/Unlock**. Locked files/dirs are read-only in the DevKit (blocks edit+delete), tracked in `settings.json.locks`.
 
-### 6.3 Bottom panel = multi-use console host *(redesign)*
+### 6.3 Bottom = multi-use Console Host **[LOCKED]** *(building moves out — it's a logger here)*
 
-Today it's a single build panel that doubles as the builder. New model **[REC]**: the bottom is a **tabbed console host**, and building moves to the Build Configuration window.
+A tabbed/selectable console host with a **stream selector** and **context-aware auto-switch**:
 
-| Tab | Content |
+| Stream | Content |
 |---|---|
-| **Build Log** | Logger only — streamed output from the build pipeline (read-only) |
-| **Output** | Generic tool stdout/stderr (gcc/nasm/cmake) |
-| **Serial Debug** | QEMU/Bochs guest serial (COM1) — for kernel debug **[Q9: confirm COM1/serial]** |
-| **Terminal** | A real interactive shell (pwsh/bash). **True PTY is a real component — MVP or later? [Q10]** |
+| **Build Log / Output** | Build pipeline output — logger, read-only |
+| **Emulator Output** | QEMU/Bochs guest **serial (COM1)** — kernel debug |
+| **Terminal** | A **real interactive shell**: bash on Linux, pwsh on Windows, the mac equivalent on mac |
 
-### 6.4 Hex Viewer (high-value, detailed)
+Auto-switch on context: starting a build surfaces Build; launching the emulator surfaces Emulator. (Real shell = a PTY-backed terminal control; flagged as a real component to source.)
 
-- **Magic detection + highlight** via `CXEX.FileType`; the detected magic bytes get an accent (pink) highlight + a label.
-- **Format metadata panel:** for CXEX family show header fields; for disk images show XBPT/partition info; for CXFS show superblock/entries.
-- **ASM region highlighting from the build:** using the linked ELF/map, highlight entry point, exit/return points, stack setup, section boundaries — correlate file offsets to symbols.
-- **Search:** by hex pattern **or** ASCII. In raw-disk/CXFS mode, also **search by address**.
-- Encoding via `CXEX.Text` (UTF-8/ASCII rendering of the byte pane).
+### 6.4 Hex Viewer
 
-### 6.5 Text Editor
+- **Magic detection + highlight** (`CXEX.FileType`) — magic bytes get the pink semantic highlight + label.
+- **Metadata panel:** CXEX header fields; disk-image XBPT/partition info; **CXFS** superblock/entries.
+- **ASM region highlighting from the build:** using the linked ELF/map, highlight **entry point, exit/return points, stack setup, section boundaries**.
+- **Search:** by hex **or** ASCII; in raw-disk/CXFS mode also **by address**. Encoding via `CXEX.Text`.
 
-- Syntax highlighting; **custom "X Native" highlighting** for `.X`/`.XR` (keywords, types, `__syscall`, etc.). Avalonia options: AvaloniaEdit (TextMate grammars) is the pragmatic path — write an X TextMate grammar. **[Q11]**
-- Fixes the current exception (see §10).
+### 6.5 Text Editor — **[REC: AvaloniaEdit + TextMate]**
+
+My recommendation: standardize on **AvaloniaEdit** (mature, the de-facto Avalonia code editor) with **TextMate grammars**. Why: we get solid C/ASM highlighting for free, a clean path to a **custom X Native grammar** (`.XFXN/.XFXR/.XFXH`), and full control over a **high-contrast bright theme** matching your §2 preference. Rolling our own editor is a large detour for no near-term gain. Fixes the current LoadFile exception (§11) by binding content properly.
 
 ### 6.6 Image Editor
 
-- Display PNG / BMP / ICO (and others). **XFSI** added as a lib stub now (`XFSIFile.cs`), format defined later.
+Display PNG / BMP / ICO (+ more). `XFSIFile.cs` lib stub now; format later.
 
 ### 6.7 Settings
 
-- Global settings store (theme selection, syntax highlighting prefs, toolchain paths, default layout). Likely `%AppData%/CATX/CXDevKit/settings.json` + per-project overrides.
-- **Custom themes [REC]:** theme = a named palette (the 4 brand colors + derived ramp) loaded at runtime; ships with "CX Dark", user can add.
+- Global store (theme, syntax-highlight prefs, toolchain paths, default layout) in app data; **per-project overrides** in `Config/settings.json`.
+- **Custom themes:** a theme = named palette (4 brand colors + derived ramp) loaded at runtime; ships "CX Dark".
 
 ---
 
-## 7. Emulation & Debug
+## 7. Emulation & Debug **[LOCKED]**
 
-**Near term [REC]:** launch QEMU/Bochs as a process, capture **serial → Serial Debug console** (already have `EmulatorService`). True in-window graphical embedding isn't portable — skip.
-
-**Later — custom X emulator [REC]:** a host-side **X VM** that emulates the CXK syscall ABI (`cxk_abi.h`) so `.X`/`.XC` programs run/preview *without booting CXK*. Interpret the typed AST (or the emitted asm) and stub syscalls to host console/files. Great for fast app iteration. **Confirm scope: user-space X preview, not full-system emulation [Q12].**
+- **Near term:** launch QEMU/Bochs as a process, capture **serial (COM1) → Emulator Output**. CXK currently does **not** mirror klog to serial — add a small serial-mirror in the kernel (it already collects the log for disk, so wiring a COM1 echo is cheap). No in-window graphical embedding.
+- **Custom X emulator (later):** a **host-side X VM** that runs `.XFXN`/`.XCXN` against a **stubbed `cxk_abi.h`** (syscalls → host console/files) so apps preview without booting CXK. User-space preview, not full-system emulation.
 
 ---
 
-## 8. Multi-Architecture
+## 8. Multi-Architecture **[LOCKED]**
 
-Stubs now, real codegen later. **[REC]:**
-
-- Project `Bin/<Arch>/` already encodes this; add an **arch/toolchain selector** in Build Config.
-- Architecture registry with stubs: `x86_amd64`, `i386`/`i686` (real today), `arm`, `riscv`, `8086`, `8080`, …
-- X backend is x86-32 only today. **Which arch is the real near-term second target vs. pure placeholder? [Q13]** (e.g. is "x86_amd64" a real 64-bit goal soon, or is i686 the only live target for now?)
+**i686 / 32-bit is the live target** (groundwork for the rest). Everything else is a stub: arch registry + `Bin/<Arch>/` dirs + toolchain selection in Build Config, with placeholders for `x86_amd64`, `arm`, `riscv`, `8086`, `8080`, …
 
 ---
 
 ## 9. Disk, Partitions & Installer
 
-- **`CXEX.Disk`:** MBR + GPT + XBPT models, read/write, plus a **partition-table viewer** window. ISO 9660 + UDF added when you move to ISO distribution.
-- **Installer-on-USB concept [REC — elegant, endorse]:** build produces (a) an **installer XOEX** (+ a disk-setup **XCEX**) that runs from the USB, and (b) the **on-disk OS XOEX**. The installer sets up the target disk (partition via XBPT, write boot, copy OS), then the machine reboots into the installed OS. This makes the installer a first-class **CXK build target the Studio manages**. **Confirm it's a managed build target [Q14].**
+- **`CXEX.Disk`:** MBR + GPT + XBPT models + a **partition-table viewer** window; ISO 9660/UDF later.
+- **Installer-as-XOEX [REC — endorse, my idea per Q14]:** the build produces (a) an **installer `XOEX`** (System authority; granted `DISK`/`MEM`/`POWER` caps via the broker) and (b) the **on-disk OS `XOEX`**. Flow: **boot CXK from USB → installer XOEX runs → it partitions the target disk (XBPT) and writes stage1/stage2 + `XKEX` + OS `XOEX` → reboot into the installed OS.** This is the natural fit precisely because an installer needs direct kernel/disk access, which a privileged XOEX on the exokernel already brokers — no special host tooling, the installer *is* a CX program. Disk-setup can be its own `XCEX` invoked by the installer or folded into the XOEX. **Make it a managed build target.**
 
 ---
 
-## 10. Current Bugs — Triage *(accurate diagnoses from the uploaded build)*
+## 10. *(reserved)*
+
+---
+
+## 11. Current Bugs — Triage *(next work item)*
 
 | # | Symptom | Cause | Fix |
 |---|---|---|---|
-| 1 | **Project Explorer shows empty folders** | `TreeViewItem` style never binds `IsExpanded`, so the lazy-loader (fires on `FileTreeNode.IsExpanded`) never runs — dirs keep only the placeholder | Add `<Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/>` to the `TreeViewItem` style in `ProjectExplorerView.axaml` |
-| 2 | **TextEditor throws** | `LoadFile` does `DataTemplates.First(...).Build(this)` on a *throwaway* view; `.First` throws when no match, and even when not, it loads into a view that's never shown | Make `TextEditorViewModel` hold `FilePath`/`Content` observable props; bind the real `TextEditorView` to them; delete the reflection hack. Same bug in `ImageEditorViewModel.LoadImage` |
-| 3 | **Bottom panel controls overflow** | Header row is `28px`; TextBox/ComboBox/Button implicit heights exceed it | Header row → `Auto` (or ~36px) with explicit control `Height`s |
-| 4 | **Image Explorer shares Project Explorer's pane** | Both are `Tool`s in the same left `ToolDock` → tabbed together ("same square") | Give Image Explorer its own dock region, or make it a Document — ties to docking redesign **[Q8]** |
-| 5 | **Can't open other tooling** | Only Dashboard/Emulator/Hex have open commands; CXFS/Partition/KeyManager/etc. have no open path | Add an **openers registry** + menu/explorer entries (part of §6.2) |
+| 1 | Project Explorer shows empty folders | `TreeViewItem` style never binds `IsExpanded`, so the lazy-loader never fires | Add `<Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/>` to the `TreeViewItem` style in `ProjectExplorerView.axaml` |
+| 2 | TextEditor throws | `LoadFile` builds a throwaway view via `DataTemplates.First(...).Build(this)` (throws on no match; loads into an unshown view) | VM holds `FilePath`/`Content` observable props; real view binds them; delete the reflection hack. Same in `ImageEditorViewModel.LoadImage` |
+| 3 | Bottom panel controls overflow | 28px header row < control heights | Header row → `Auto`/~36px; explicit control heights |
+| 4 | Image Explorer shares Project Explorer's pane | Both are `Tool`s in one `ToolDock` | Separate dock region / own pane (ties to §6.1) |
+| 5 | Can't open other tooling | Only Dashboard/Emulator/Hex wired to open | Openers registry + menu/explorer entries (§6.2) |
 
-I can fix 1–3 immediately on the next pass (they're small and unblock daily use); 4–5 fold into the docking/window-inventory work.
-
----
-
-## 11. Proposed Roadmap *(you set the order — this is my [REC])*
-
-**Phase 0 — Unblock daily use (small):** bug fixes 1–3; reopenable bottom panel (done); wire openers for all windows (#5).
-
-**Phase 1 — Identity & shell:** `CXEX.UI` skeleton + CX Dark theme (the 4 colors), de-VS-Code chrome, min sizes, locked docking + Window Editor Mode + preset layouts.
-
-**Phase 2 — Build Config window:** move building out of the bottom panel; flags/config UI → pipeline → Build Log. Define `settings.json` schema. Begins replacing batch/ps1 fully.
-
-**Phase 3 — Hex Viewer:** magic ID + highlight, format metadata, asm region highlighting, hex/ascii/address search; `CXEX.Text`.
-
-**Phase 4 — Explorer power:** context menu (CRUD), open-with/override, file/dir locks, mounted-disk UI.
-
-**Phase 5 — Editor:** AvaloniaEdit + X Native grammar.
-
-**Phase 6 — Disk & installer:** `CXEX.Disk` (MBR/GPT/XBPT + viewer), installer-as-XOEX target.
-
-**Phase 7 — CLI tooling:** XFNT font tool, multi-arch stubs, key store.
-
-**Phase 8 — X emulator** (host-side preview VM) and image editor / XFSI.
+Bugs 1–3 are small and unblock daily use — first to fix.
 
 ---
 
-## 12. Open Questions *(what I need from you)*
+## 12. SDK (CX SDK) **[LOCKED]**
 
-**Blocking everything:**
-- **[Q3]** Confirm the full file-type taxonomy in §3. **[Q3a]** Is the chain `X → XC (compiled) → XCEX (packaged)`? **[Q3b]** Does boot produce `XBEX`, or stay raw inside XBPT?
-- **[Q4]** Private key extension — `.XKSK`? Where do private keys live (never in repo)?
-
-**Identity:**
-- **[Q1]** Confirm the color→role mapping in §2. Any logo/wordmark asset? Preferred UI font (vs. mono)?
-- **[Q2]** A reference direction for "not VS Code" — Rider / Zed / Godot / Blender / fully bespoke? Even one screenshot or "I like X about Y" helps enormously.
-
-**Architecture & scope:**
-- **[Q5]** `CXEX.Text` — for tools only, or does the kernel need a parallel C UTF-8 impl?
-- **[Q6]** XFNT "scalable" semantics: vector outlines retained, or bitmap resampling? What source formats must it ingest (TTF/OTF/BDF/PNG)?
-- **[Q13]** Which architecture is the real near-term 2nd target vs. pure stub? Is "x86_amd64" a soon goal?
-
-**Studio behavior:**
-- **[Q7]** Preset/custom layouts: global, per-project, or both?
-- **[Q8]** Project Explorer: strictly pinned/non-closable, or may other tabs share its pane? Should Image Explorer be separate?
-- **[Q9]** Serial debug: confirm QEMU/Bochs guest output is COM1 serial; does CXK currently mirror klog to serial, or should I add that to the kernel?
-- **[Q10]** Bottom "Terminal" tab: real interactive PTY shell (MVP), or just output streams for now?
-- **[Q11]** Editor: OK to standardize on AvaloniaEdit + a TextMate grammar for X Native?
-
-**Bigger bets:**
-- **[Q12]** Custom X emulator = host-side user-space preview (run `.X`/`.XC` against a stubbed ABI), correct?
-- **[Q14]** Installer-as-XOEX: make it a managed CXK build target?
-- **[Q15]** `CXEX.UI` + separate SDK: is the SDK a distinct app sharing controls, or Studio in a "simplified mode"? Who's the SDK audience (third-party X-app devs)?
-- **[Q16]** Priority: accept the Phase order in §11, or reorder? What's the **one** thing you want working next?
+Separate Avalonia app (not yet built), aimed at third-party developers compiling X programs for CXOS. Shares `CXEX.UI` so it visually matches Studio; effectively a **cut-down Studio** for end users. Includes **`DEVELOPER`-tier key signing** (devs sign their own `XCEX`). Aligns with the license: MIT for what they build, proprietary kernel/OS.
 
 ---
 
-*End of draft. Answer whichever questions you have opinions on and I'll lock the relevant sections and start the corresponding phase — Phase 0 bug fixes are ready to go the moment you say so.*
+## 13. Remaining Open Questions
+
+- **[Q5 — still open]** `CXEX.Text` is confirmed for tooling/interop reading. Do we *also* need a parallel **C UTF-8 implementation in the kernel**, or does CXK stay ASCII for now? (Leaning: defer; add C side only when CXOS needs it.)
+- **[Q-A]** Confirm authority enforcement: should CXK **reject at load** any artifact whose signing key tier is below what its type requires (System ⇒ ROOT)? (I've assumed yes.)
+- **[Q-B]** Authority tiers: `ROOT` + `DEVELOPER` enough to start, or add an intermediate "trusted vendor" tier now?
+- **[Q-C]** `XCFM` font editor: confirm the in-Studio "draw glyphs on a character map → export/compile to XFNT" workflow is what you want for the bitmap path.
+- **[Q-D]** `CXEX.Tools`: OK to create it and relocate the tool wrappers + `ProcessRunner` there (shared by CLI + Studio)?
+
+---
+
+## 14. Roadmap *(your §11 order, adjusted for the new decisions)*
+
+**Phase 0 — Unblock daily use:** bug fixes 1–3; openers for all windows (#5). *(reopenable bottom panel already done.)*
+
+**Phase 1 — Identity & shell:** `CXEX.UI` skeleton + **CX Dark** theme; de-VS-Code chrome (Spyder-style icon bar, flat-with-contrast, no palette-only); min sizes; locked docking + Window Editor Mode + preset/custom layouts (global & per-project).
+
+**Phase 2 — Build Config window + `CXEX.Tools`:** relocate tool wrappers to `CXEX.Tools`; move building out of the bottom panel into a flags/config window → pipeline → Build Log; define `Config/settings.json` schema + mounted-disk UI. (Replaces batch/ps1 in earnest.)
+
+**Phase 3 — Console Host:** multi-stream consoles (Build / Emulator-serial / real Terminal) with selector + context auto-switch; add CXK klog→COM1 serial mirror.
+
+**Phase 4 — Hex Viewer:** magic ID + highlight, metadata (CXEX/CXFS/partition), asm region highlighting, hex/ascii/address search; `CXEX.Text`.
+
+**Phase 5 — Explorer power:** context-menu CRUD, open-with/override, file/dir locks.
+
+**Phase 6 — Editor:** AvaloniaEdit + X Native TextMate grammar + high-contrast theme.
+
+**Phase 7 — Keys & signing:** key store (appdata), `XKPK`/`XKSK` authority headers, sign/verify with tier enforcement; Key Manager window.
+
+**Phase 8 — Disk & installer:** `CXEX.Disk` (MBR/GPT/XBPT + viewer); installer-as-XOEX build target.
+
+**Phase 9 — CLI tooling:** `cxk font` (XFNT/XCFM, TTF/OTF/BDF/PNG-BMP) + `CXEX.Font`; multi-arch stubs.
+
+**Phase 10 — Bigger bets:** host-side X emulator (XFXN/XCXN preview); image editor + XFSI; **CX SDK** app on `CXEX.UI`.
+
+---
+
+*End v0.2. Decisions are locked except §13. Say the word and I'll start Phase 0 (bug fixes 1–3) immediately.*
