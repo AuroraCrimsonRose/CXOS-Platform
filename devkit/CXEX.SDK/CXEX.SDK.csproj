@@ -14,6 +14,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Folder Include="Models\" />
+    <AvaloniaResource Include="Assets\**" />
+  </ItemGroup>
+
+
+  <ItemGroup>
     <PackageReference Include="Avalonia" Version="12.0.4" />
     <PackageReference Include="Avalonia.AvaloniaEdit" Version="12.0.0" />
     <PackageReference Include="Avalonia.Controls.ColorPicker" Version="12.0.4" />
@@ -55,27 +61,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Folder Include="Assets\Icons\" />
-    <Folder Include="Assets\Images\" />
-    <Folder Include="Assets\AvaloniaEdit\" />
-    <Folder Include="Assets\Templates\" />
-    <Folder Include="Assets\Themes\" />
-    <Folder Include="Controls\HexViewer\" />
-    <Folder Include="Controls\LogViewer\" />
-    <Folder Include="Controls\FileTree\" />
-    <Folder Include="Controls\MemoryMapViewer\" />
-    <Folder Include="Controls\PartitionViewer\" />
-    <Folder Include="Extensions\" />
-    <Folder Include="Workspace\Documents\" />
-    <Folder Include="Workspace\Editors\" />
-    <Folder Include="Workspace\Tabs\" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <None Include="Views\ImageViewerView.axaml.cs" />
-  </ItemGroup>
-
-  <ItemGroup>
     <ProjectReference Include="..\CXEX.Build\CXEX.Build.csproj" />
     <ProjectReference Include="..\CXEX.CLI\CXEX.CLI.csproj" />
     <ProjectReference Include="..\CXEX.Core\CXEX.Core.csproj" />
@@ -85,6 +70,7 @@
     <ProjectReference Include="..\CXEX.FileType\CXEX.FileType.csproj" />
     <ProjectReference Include="..\CXEX.Font\CXEX.Font.csproj" />
     <ProjectReference Include="..\CXEX.Lang\CXEX.Lang.csproj" />
+    <ProjectReference Include="..\CXEX.Studio\CXEX.Studio.csproj" />
     <ProjectReference Include="..\CXEX.Text\CXEX.Text.csproj" />
     <ProjectReference Include="..\CXEX.Tools\CXEX.Tools.csproj" />
     <ProjectReference Include="..\CXEX.UI\CXEX.UI.csproj" />
