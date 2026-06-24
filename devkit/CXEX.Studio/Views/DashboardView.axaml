@@ -1,13 +1,21 @@
-<UserControl
-    xmlns="https://github.com/avaloniaui"
-    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    x:Class="CXEX.Studio.Views.DashboardView">
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:CXEX.Studio.ViewModels"
+             xmlns:materialIcons="clr-namespace:Material.Icons.Avalonia;assembly=Material.Icons.Avalonia"
+             x:Class="CXEX.Studio.Views.DashboardView"
+             x:DataType="vm:DashboardViewModel">
 
-  <Grid>
-    <TextBlock
-        HorizontalAlignment="Center"
-        VerticalAlignment="Center"
-        Text="Dashboard View" />
+  <Grid Background="#1E1E1E">
+    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="20">
+      <materialIcons:MaterialIcon Kind="RocketLaunch" Width="72" Height="72" Foreground="#007ACC" HorizontalAlignment="Center"/>
+
+      <TextBlock Text="Welcome to CXEX Studio" FontSize="28" FontWeight="Light" Foreground="White" HorizontalAlignment="Center"/>
+      <TextBlock Text="The native IDE for CXK Operating System Development" FontSize="14" Foreground="#858585" HorizontalAlignment="Center"/>
+
+      <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Spacing="15" Margin="0,20,0,0">
+        <Button Content="Configure Flags" Background="#007ACC" Foreground="White" Width="150" HorizontalContentAlignment="Center"/>
+        <Button Content="Launch Emulator" Background="#333333" Foreground="White" Width="150" HorizontalContentAlignment="Center"/>
+      </StackPanel>
+    </StackPanel>
   </Grid>
-
 </UserControl>

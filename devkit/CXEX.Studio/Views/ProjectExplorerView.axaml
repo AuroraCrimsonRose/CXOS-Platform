@@ -1,13 +1,44 @@
-<UserControl
-    xmlns="https://github.com/avaloniaui"
-    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    x:Class="CXEX.Studio.Views.ProjectExplorerView">
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:CXEX.Studio.ViewModels"
+             xmlns:models="using:CXEX.Studio.Models"
+             xmlns:materialIcons="clr-namespace:Material.Icons.Avalonia;assembly=Material.Icons.Avalonia"
+             x:Class="CXEX.Studio.Views.ProjectExplorerView"
+             x:DataType="vm:ProjectExplorerViewModel">
 
-  <Grid>
-    <TextBlock
-        HorizontalAlignment="Center"
-        VerticalAlignment="Center"
-        Text="Project Explorer View" />
+  <Grid RowDefinitions="Auto, *" Background="#1E1E1E">
+
+    <Border Grid.Row="0" Background="#252526" BorderBrush="#3E3E42" BorderThickness="0,0,0,1" Padding="10,5">
+      <TextBlock Text="PROJECT" FontWeight="Bold" FontSize="11" Foreground="#858585" LetterSpacing="1"/>
+    </Border>
+
+    <TreeView Grid.Row="1" ItemsSource="{Binding RootNodes}" Background="Transparent" Padding="0,5">
+
+      <TreeView.Styles>
+        <Style Selector="TreeViewItem">
+          <Setter Property="MinHeight" Value="24"/>
+          <Setter Property="Padding" Value="2,0"/>
+        </Style>
+      </TreeView.Styles>
+
+      <TreeView.ItemTemplate>
+        <TreeDataTemplate DataType="models:FileTreeNode" ItemsSource="{Binding Children}">
+
+          <StackPanel Orientation="Horizontal" Spacing="6" Background="Transparent"
+                      ToolTip.Tip="{Binding FullPath}"
+                      DoubleTapped="OnItemDoubleTapped">
+
+            <materialIcons:MaterialIcon Kind="{Binding Icon}" Width="16" Height="16"
+                                        Foreground="{Binding IconColor}" />
+
+            <TextBlock Text="{Binding Name}" VerticalAlignment="Center" FontSize="13"
+                       Foreground="{Binding TextColor}" />
+
+          </StackPanel>
+
+        </TreeDataTemplate>
+      </TreeView.ItemTemplate>
+    </TreeView>
+
   </Grid>
-
 </UserControl>

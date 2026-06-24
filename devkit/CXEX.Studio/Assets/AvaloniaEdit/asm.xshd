@@ -1,0 +1,7 @@
+using System.Xml;
+// Inside LoadFile method:
+if (ext == ".asm") 
+{
+    using var reader = new XmlTextReader(File.OpenRead("Assets/AvaloniaEdit/asm.xshd"));
+    Editor.SyntaxHighlighting = HighlightingLoader.Load(reader, HighlightingManager.Instance);
+}

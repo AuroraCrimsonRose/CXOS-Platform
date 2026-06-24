@@ -57,6 +57,7 @@
   <ItemGroup>
     <Folder Include="Assets\Icons\" />
     <Folder Include="Assets\Images\" />
+    <Folder Include="Assets\AvaloniaEdit\" />
     <Folder Include="Assets\Templates\" />
     <Folder Include="Assets\Themes\" />
     <Folder Include="Controls\HexViewer\" />
@@ -68,5 +69,19 @@
     <Folder Include="Workspace\Documents\" />
     <Folder Include="Workspace\Editors\" />
     <Folder Include="Workspace\Tabs\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="Views\ImageViewerView.axaml.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CXEX.Build\CXEX.Build.csproj" />
+    <ProjectReference Include="..\CXEX.CLI\CXEX.CLI.csproj" />
+    <ProjectReference Include="..\CXEX.Core\CXEX.Core.csproj" />
+    <ProjectReference Include="..\CXEX.Crypto\CXEX.Crypto.csproj" />
+    <ProjectReference Include="..\CXEX.FileSystem\CXEX.FileSystem.csproj" />
+    <ProjectReference Include="..\CXEX.FileType\CXEX.FileType.csproj" />
+    <ProjectReference Include="..\CXEX.Lang\CXEX.Lang.csproj" />
   </ItemGroup>
 </Project>

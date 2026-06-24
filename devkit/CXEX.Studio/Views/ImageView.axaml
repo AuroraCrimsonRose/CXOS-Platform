@@ -1,13 +1,37 @@
-<UserControl
-    xmlns="https://github.com/avaloniaui"
-    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    x:Class="CXEX.Studio.Views.ImageView">
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:CXEX.Studio.ViewModels"
+             xmlns:materialIcons="clr-namespace:Material.Icons.Avalonia;assembly=Material.Icons.Avalonia"
+             x:Class="CXEX.Studio.Views.ImageView"
+             x:DataType="vm:ImageViewModel">
 
-  <Grid>
-    <TextBlock
-        HorizontalAlignment="Center"
-        VerticalAlignment="Center"
-        Text="Image View" />
+  <Grid RowDefinitions="Auto, *" Background="#1E1E1E">
+
+    <Border Grid.Row="0" Background="#252526" BorderBrush="#3E3E42" BorderThickness="0,0,0,1" Padding="10,5">
+      <TextBlock Text="DISK NAVIGATOR" FontWeight="Bold" FontSize="11" Foreground="#858585" LetterSpacing="1" VerticalAlignment="Center"/>
+    </Border>
+
+    <TreeView Grid.Row="1" ItemsSource="{Binding DiskNodes}" Background="Transparent" Padding="0,5">
+
+      <TreeView.Styles>
+        <Style Selector="TreeViewItem">
+          <Setter Property="MinHeight" Value="24"/>
+          <Setter Property="Padding" Value="2,0"/>
+        </Style>
+      </TreeView.Styles>
+
+      <TreeView.ItemTemplate>
+        <TreeDataTemplate ItemsSource="{Binding Children}">
+          <StackPanel Orientation="Horizontal" Spacing="6" Background="Transparent"
+                      Margin="0,4" DoubleTapped="OnDiskItemDoubleTapped">
+
+            <materialIcons:MaterialIcon Kind="{Binding Icon}" Width="16" Height="16" Foreground="#007ACC"/>
+            <TextBlock Text="{Binding Name}" VerticalAlignment="Center" FontSize="13" Foreground="#CCCCCC"/>
+
+          </StackPanel>
+        </TreeDataTemplate>
+      </TreeView.ItemTemplate>
+
+    </TreeView>
   </Grid>
-
 </UserControl>
