@@ -1,8 +1,9 @@
-﻿using System.ComponentModel;
-using System.Diagnostics;
-using System.Threading;
+﻿using CXEX.CLI.Wrappers;
 using Spectre.Console;
 using Spectre.Console.Cli;
+using System.ComponentModel;
+using System.Diagnostics;
+using System.Threading;
 
 namespace CXEX.CLI.Commands;
 
@@ -22,6 +23,32 @@ public class RunCommand : Command<RunCommand.Settings>
 
     protected override int Execute(CommandContext context, Settings settings, CancellationToken cancellationToken)
     {
+
+        if (settings.Emulator.ToLower() == "qemu")
+        {
+            var qemuConfig = new QemuConfig
+            {
+                BootDisk = settings.ImagePath, // e.g., cxk_disk.img
+                MachineType = "q35",           // Map this to a CLI flag if you want!
+                MemoryMb = 4096
+            };
+            QemuTool.Run(qemuConfig);
+            return 0;
+        }
+        else if (settings.Emulator.ToLower() == "bochs")
+        {
+            var bochsConfig = new BochsConfig
+            {
+                BootDisk = settings.ImagePath,
+                MemoryMb = 2048
+            };
+
+            // We pass the directory so the bochsrc.txt is generated right next to the image
+            string imgDir = System.IO.Path.GetDirectoryName(settings.ImagePath) ?? Environment.CurrentDirectory;
+            BochsTool.Run(bochsConfig, imgDir);
+            return 0;
+        }
+
         if (!System.IO.File.Exists(settings.ImagePath))
         {
             AnsiConsole.MarkupLine($"[red]Error:[/] Disk image not found at '{settings.ImagePath}'");

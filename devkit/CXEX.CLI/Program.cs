@@ -11,6 +11,10 @@ app.Configure(config =>
     config.SetApplicationName("cxk");
     config.SetApplicationVersion("5.0.0");
 
+    // X language compiler (CXEX.Lang): .x source -> ELF
+    config.AddCommand<CompileCommand>("compile")
+        .WithDescription("Compiles an X source file (.x) into an ELF, ready for `build` to package as CXEX.");
+
     // 1. The Compiler (Replaces mkcxes.py)
     config.AddCommand<BuildCommand>("build")
         .WithDescription("Compiles an ELF binary into a CXEX executable (.xkex, .xoex, .xcex).");

@@ -1,13 +1,66 @@
-<UserControl
-    xmlns="https://github.com/avaloniaui"
-    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    x:Class="CXEX.Studio.Views.EmulatorView">
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:CXEX.Studio.ViewModels"
+             xmlns:materialIcons="clr-namespace:Material.Icons.Avalonia;assembly=Material.Icons.Avalonia"
+             x:Class="CXEX.Studio.Views.EmulatorView"
+             x:DataType="vm:EmulatorViewModel">
 
-  <Grid>
-    <TextBlock
-        HorizontalAlignment="Center"
-        VerticalAlignment="Center"
-        Text="Emulator View" />
-  </Grid>
+  <ScrollViewer>
+    <StackPanel Margin="30" Spacing="25" MaxWidth="600" HorizontalAlignment="Left">
 
+      <StackPanel Spacing="5">
+        <TextBlock Text="Emulator Configuration" FontSize="24" FontWeight="SemiBold" Foreground="White"/>
+        <TextBlock Text="Configure and launch your local testing environments." Foreground="#858585"/>
+      </StackPanel>
+
+      <Border Background="#252526" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="4" Padding="20">
+        <StackPanel Spacing="20">
+
+          <StackPanel Spacing="10">
+            <TextBlock Text="Target Emulator" FontWeight="SemiBold" Foreground="#D4D4D4"/>
+            <ComboBox SelectedIndex="{Binding EmulatorType}" HorizontalAlignment="Stretch">
+              <ComboBoxItem>QEMU (Quick Emulator)</ComboBoxItem>
+              <ComboBoxItem>Bochs (x86 Emulator)</ComboBoxItem>
+            </ComboBox>
+          </StackPanel>
+
+          <StackPanel Spacing="10">
+            <Grid ColumnDefinitions="*, Auto">
+              <TextBlock Grid.Column="0" Text="Memory (RAM)" FontWeight="SemiBold" Foreground="#D4D4D4"/>
+              <TextBlock Grid.Column="1" Text="{Binding MemoryMb, StringFormat='{}{0} MB'}" Foreground="#007ACC" FontWeight="Bold"/>
+            </Grid>
+            <Slider Minimum="256" Maximum="8192" Value="{Binding MemoryMb}" TickFrequency="256" IsSnapToTickEnabled="True"/>
+          </StackPanel>
+
+          <StackPanel Spacing="15" IsVisible="{Binding EmulatorType, Converter={x:Static ObjectConverters.Equal}, ConverterParameter=0}">
+
+            <StackPanel Spacing="10">
+              <TextBlock Text="Machine Type" FontWeight="SemiBold" Foreground="#D4D4D4"/>
+              <ComboBox SelectedItem="{Binding MachineType}" HorizontalAlignment="Stretch">
+                <ComboBoxItem>q35</ComboBoxItem>
+                <ComboBoxItem>pc</ComboBoxItem>
+              </ComboBox>
+              <TextBlock Text="Use 'q35' for AHCI/Unified Disk, 'pc' for legacy IDE." FontSize="12" Foreground="#858585"/>
+            </StackPanel>
+
+            <CheckBox IsChecked="{Binding EnableAudio}" Content="Enable PC Speaker / Audio" Foreground="#D4D4D4"/>
+            <CheckBox IsChecked="{Binding EnableNetworking}" Content="Enable e1000 Network Adapter (SLIRP)" Foreground="#D4D4D4"/>
+
+          </StackPanel>
+
+        </StackPanel>
+      </Border>
+
+      <Button Command="{Binding LaunchEmulatorCommand}"
+              Background="#007ACC" Foreground="White"
+              Padding="15,10" HorizontalAlignment="Right"
+              CornerRadius="4">
+        <StackPanel Orientation="Horizontal" Spacing="8">
+          <materialIcons:MaterialIcon Kind="Play" Width="18" Height="18"/>
+          <TextBlock Text="Launch Machine" VerticalAlignment="Center" FontWeight="SemiBold"/>
+        </StackPanel>
+      </Button>
+
+    </StackPanel>
+  </ScrollViewer>
 </UserControl>

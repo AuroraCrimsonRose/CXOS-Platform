@@ -1,39 +1,45 @@
-﻿using Avalonia.Controls;
-using CommunityToolkit.Mvvm.ComponentModel;
+﻿using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
+using CommunityToolkit.Mvvm.Messaging;
 using CXEX.Studio.Docking;
+using CXEX.Studio.Messages;
 using Dock.Model.Controls;
-using Dock.Model.Core;
 
 namespace CXEX.Studio.ViewModels;
 
 public partial class MainWindowViewModel : ObservableObject
 {
-    private readonly IFactory _factory;
+    private readonly StudioDockFactory _factory;
 
-    [ObservableProperty]
-    private IRootDock? _layout;
+    [ObservableProperty] private IRootDock? _layout;
+    [ObservableProperty] private bool _isBusy;
+    [ObservableProperty] private string _busyText = "Working...";
+    [ObservableProperty] private bool _isBottomPanelVisible = true;
+
+    /// <summary>The Build output console hosted in the bottom panel.</summary>
+    public BuildViewModel Build { get; } = new();
 
     public MainWindowViewModel()
     {
         _factory = new StudioDockFactory();
-
-        // Generate the layout from our factory definition
         Layout = _factory.CreateLayout();
+        if (Layout is { }) _factory.InitLayout(Layout);
 
-        if (Layout is { })
+        WeakReferenceMessenger.Default.Register<GlobalBusyMessage>(this, (r, m) =>
         {
-            _factory.InitLayout(Layout);
-        }
+            IsBusy = m.Value.IsBusy;
+            BusyText = m.Value.StatusText;
+        });
     }
 
-    // Optional: Clean up dock factory on close
+    [RelayCommand] private void ShowExplorer() => _factory.FocusExplorer();
+    [RelayCommand] private void OpenDashboard() => _factory.OpenDashboard();
+    [RelayCommand] private void OpenEmulator() => _factory.OpenEmulator();
+    [RelayCommand] private void OpenHexInspector() => _factory.OpenHexInspector();
+    [RelayCommand] private void ToggleBottomPanel() => IsBottomPanelVisible = !IsBottomPanelVisible;
 
     public void CloseLayout()
     {
-        if (Layout is { })
-        {
-            // Simply detach the layout on shutdown 
-            Layout = null;
-        }
+        if (Layout is { }) Layout = null;
     }
 }

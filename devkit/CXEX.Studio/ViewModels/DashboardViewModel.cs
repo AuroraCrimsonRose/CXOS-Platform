@@ -1,10 +1,9 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Text;
+﻿using Dock.Model.Mvvm.Controls;
 
-namespace CXEX.Studio.ViewModels
+namespace CXEX.Studio.ViewModels;
+
+// Inherit from Document to tell the Dock this belongs in the center pane
+public class DashboardViewModel : Document
 {
-    internal class DashboardViewModel
-    {
-    }
+    // We will add commands here later to hook into your CLI wrappers!
 }
