@@ -1,0 +1,59 @@
+<?xml version="1.0"?>
+<!-- CX high-contrast C/C++ highlighting for dark backgrounds.
+     Brand-aligned: cyan (#5BC0F8) keywords, pink (#F48FB1) types. -->
+<SyntaxDefinition name="CX-C" extensions=".c;.h;.cpp;.hpp"
+                  xmlns="http://icsharpcode.net/sharpdevelop/syntaxdefinition/2008">
+
+  <Color name="Comment"      foreground="#7EE787" fontStyle="italic"/>
+  <Color name="String"       foreground="#F1FA8C"/>
+  <Color name="Char"         foreground="#FFD479"/>
+  <Color name="Preprocessor" foreground="#FF79C6"/>
+  <Color name="Keyword"      foreground="#5BC0F8" fontWeight="bold"/>
+  <Color name="Type"         foreground="#F48FB1"/>
+  <Color name="Number"       foreground="#BD93F9"/>
+
+  <RuleSet ignoreCase="false">
+
+    <Span color="Comment" begin="//"/>
+    <Span color="Comment" multiline="true" begin="/\*" end="\*/"/>
+
+    <!-- preprocessor: whole directive line -->
+    <Span color="Preprocessor" begin="\#" end="$"/>
+
+    <Span color="String" begin="&quot;" end="&quot;">
+      <RuleSet>
+        <Span begin="\\" end="."/>
+      </RuleSet>
+    </Span>
+
+    <Span color="Char" begin="'" end="'">
+      <RuleSet>
+        <Span begin="\\" end="."/>
+      </RuleSet>
+    </Span>
+
+    <Keywords color="Keyword">
+      <Word>if</Word><Word>else</Word><Word>for</Word><Word>while</Word><Word>do</Word>
+      <Word>switch</Word><Word>case</Word><Word>default</Word><Word>break</Word><Word>continue</Word>
+      <Word>return</Word><Word>goto</Word><Word>sizeof</Word><Word>typedef</Word>
+      <Word>struct</Word><Word>union</Word><Word>enum</Word>
+      <Word>extern</Word><Word>static</Word><Word>const</Word><Word>volatile</Word>
+      <Word>register</Word><Word>inline</Word><Word>restrict</Word><Word>asm</Word>
+      <Word>__asm__</Word><Word>__attribute__</Word><Word>__volatile__</Word>
+    </Keywords>
+
+    <Keywords color="Type">
+      <Word>void</Word><Word>char</Word><Word>short</Word><Word>int</Word><Word>long</Word>
+      <Word>float</Word><Word>double</Word><Word>signed</Word><Word>unsigned</Word>
+      <Word>bool</Word><Word>size_t</Word><Word>ssize_t</Word><Word>ptrdiff_t</Word>
+      <Word>uint8_t</Word><Word>uint16_t</Word><Word>uint32_t</Word><Word>uint64_t</Word>
+      <Word>int8_t</Word><Word>int16_t</Word><Word>int32_t</Word><Word>int64_t</Word>
+      <Word>uintptr_t</Word><Word>intptr_t</Word>
+    </Keywords>
+
+    <Rule color="Number">
+      \b0[xX][0-9a-fA-F]+[uUlL]*|\b\d+(\.\d+)?([eE][+-]?\d+)?[uUlLfF]*
+    </Rule>
+
+  </RuleSet>
+</SyntaxDefinition>
