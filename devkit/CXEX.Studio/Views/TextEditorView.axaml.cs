@@ -1,33 +1,49 @@
-﻿using Avalonia.Controls;
-using AvaloniaEdit; // This is the correct namespace for the TextEditor control
-using AvaloniaEdit.Highlighting; // This is the correct namespace for HighlightingManager
+﻿using System;
+using System.ComponentModel;
 using System.IO;
+using Avalonia;
+using Avalonia.Controls;
+using AvaloniaEdit.Highlighting;
+using CXEX.Studio.ViewModels;
 
 namespace CXEX.Studio.Views;
 
 public partial class TextEditorView : UserControl
 {
-    public TextEditorView()
+    private TextEditorViewModel? _vm;
+    private string? _loadedPath;
+
+    public TextEditorView() => InitializeComponent();
+
+    protected override void OnDataContextChanged(EventArgs e)
     {
-        InitializeComponent();
+        base.OnDataContextChanged(e);
+        if (_vm is not null) _vm.PropertyChanged -= OnVmPropertyChanged;
+        _vm = DataContext as TextEditorViewModel;
+        if (_vm is not null) _vm.PropertyChanged += OnVmPropertyChanged;
+        TryLoad();
     }
 
-    public void LoadFile(string path)
+    protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
     {
-        if (!File.Exists(path)) return;
+        base.OnAttachedToVisualTree(e);
+        TryLoad();
+    }
 
-        // Use the Load method for better performance with larger OS source files
-        Editor.Load(path);
+    private void OnVmPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(TextEditorViewModel.FilePath)) TryLoad();
+    }
 
-        // Map extensions to their syntax definitions
-        string ext = Path.GetExtension(path).ToLower();
+    private void TryLoad()
+    {
+        var path = _vm?.FilePath;
+        if (string.IsNullOrEmpty(path) || path == _loadedPath || !File.Exists(path)) return;
 
-        Editor.SyntaxHighlighting = ext switch
-        {
-            ".c" or ".h" or ".cpp" => HighlightingManager.Instance.GetDefinition("C++"),
-            ".asm" or ".nasm" => HighlightingManager.Instance.GetDefinition("Assembly"), // Ensure you have an assembly definition loaded
-            ".xml" => HighlightingManager.Instance.GetDefinition("XML"),
-            _ => null
-        };
+        Editor.Text = File.ReadAllText(path);   // direct + reliable
+        _loadedPath = path;
+
+        string ext = Path.GetExtension(path);
+        Editor.SyntaxHighlighting = CXEX.Studio.Services.HighlightingProvider.ForExtension(ext);
     }
 }

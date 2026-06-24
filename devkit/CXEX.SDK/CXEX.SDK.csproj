@@ -9,9 +9,6 @@
     <ApplicationIcon>XFILE.ico</ApplicationIcon>
     <AnalysisLevel>latest</AnalysisLevel>
   </PropertyGroup>
-  <ItemGroup>
-    <Content Include="XFILE.ico" />
-  </ItemGroup>
 
   <ItemGroup>
     <Folder Include="Models\" />
@@ -70,9 +67,16 @@
     <ProjectReference Include="..\CXEX.FileType\CXEX.FileType.csproj" />
     <ProjectReference Include="..\CXEX.Font\CXEX.Font.csproj" />
     <ProjectReference Include="..\CXEX.Lang\CXEX.Lang.csproj" />
-    <ProjectReference Include="..\CXEX.Studio\CXEX.Studio.csproj" />
     <ProjectReference Include="..\CXEX.Text\CXEX.Text.csproj" />
     <ProjectReference Include="..\CXEX.Tools\CXEX.Tools.csproj" />
     <ProjectReference Include="..\CXEX.UI\CXEX.UI.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AvaloniaResource Remove="XFILE.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="XFILE.ico" />
   </ItemGroup>
 </Project>

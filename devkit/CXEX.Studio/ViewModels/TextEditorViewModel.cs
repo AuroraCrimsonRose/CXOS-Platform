@@ -1,12 +1,16 @@
-﻿using CXEX.Studio.Views;
+﻿using CommunityToolkit.Mvvm.ComponentModel;
 using Dock.Model.Mvvm.Controls;
-using System.Linq;
-using Avalonia.Controls;
-using Avalonia.Markup.Xaml.Templates;
 
 namespace CXEX.Studio.ViewModels;
 
-public class TextEditorViewModel : Document
+/// <summary>
+/// Holds the file path only. The TextEditorView (built by the docking ViewLocator)
+/// observes FilePath and loads the file into the editor that is actually shown -
+/// no throwaway view, no DataTemplates reflection.
+/// </summary>
+public partial class TextEditorViewModel : Document
 {
-    public void LoadFile(string path) => ((TextEditorView)Avalonia.Application.Current.DataTemplates.First(x => x is DataTemplate && ((DataTemplate)x).DataType == typeof(TextEditorViewModel)).Build(this)).LoadFile(path);
+    [ObservableProperty] private string? _filePath;
+
+    public void LoadFile(string path) => FilePath = path;
 }

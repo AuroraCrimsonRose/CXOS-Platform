@@ -68,15 +68,16 @@ public partial class ProjectExplorerViewModel : Tool
         tab.Id = node.FullPath;
         tab.Title = node.Name;
 
-        docDock.VisibleDockables.Add(tab);
-        docDock.ActiveDockable = tab;
-
+        // Set the source path BEFORE the view is built so it loads on first show.
         switch (tab)
         {
             case TextEditorViewModel te: te.LoadFile(node.FullPath); break;
             case FileTypeInspectorViewModel hex: hex.LoadFile(node.FullPath); break;
             case ImageEditorViewModel img: img.LoadImage(node.FullPath); break;
         }
+
+        docDock.VisibleDockables.Add(tab);
+        docDock.ActiveDockable = tab;
     }
 
     private static DocumentDock? FindDocumentDock(IDockable? node)

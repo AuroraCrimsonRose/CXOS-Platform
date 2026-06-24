@@ -12,5 +12,7 @@
     <FluentTheme />
     <DockFluentTheme />
     <materialIcons:MaterialIconStyles />
+    <!-- AvaloniaEdit control theme: without this the TextEditor renders blank -->
+    <StyleInclude Source="avares://AvaloniaEdit/Themes/Fluent/AvaloniaEdit.xaml" />
   </Application.Styles>
 </Application>

@@ -12,12 +12,17 @@
       <TextBlock Text="PROJECT" FontWeight="Bold" FontSize="11" Foreground="#858585" LetterSpacing="1"/>
     </Border>
 
-    <TreeView Grid.Row="1" ItemsSource="{Binding RootNodes}" Background="Transparent" Padding="0,5">
+    <!-- x:CompileBindings=False: the TreeViewItem/item bindings target FileTreeNode
+         (the item DataContext), not the UserControl's x:DataType. Resolve at runtime. -->
+    <TreeView Grid.Row="1" ItemsSource="{Binding RootNodes}" Background="Transparent" Padding="0,5"
+              x:CompileBindings="False">
 
       <TreeView.Styles>
         <Style Selector="TreeViewItem">
           <Setter Property="MinHeight" Value="24"/>
           <Setter Property="Padding" Value="2,0"/>
+          <!-- BUG FIX: bind UI expansion back to the node so lazy-load fires -->
+          <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/>
         </Style>
       </TreeView.Styles>
 
