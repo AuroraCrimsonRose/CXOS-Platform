@@ -3,8 +3,12 @@
   <Project Path="CXEX.CLI/CXEX.CLI.csproj" />
   <Project Path="CXEX.Core/CXEX.Core.csproj" Id="d38d4422-b07e-4b4e-9ecd-c388aa3bc422" />
   <Project Path="CXEX.Crypto/CXEX.Crypto.csproj" Id="94d4c3b0-b0c2-4a4d-ad37-86bbf797178c" />
+  <Project Path="CXEX.Disk/CXEX.Disk.csproj" Id="5ca63d9c-42ff-4dae-b08c-0a193d5b0635" />
   <Project Path="CXEX.FileSystem/CXEX.FileSystem.csproj" Id="5f7bfc56-58fc-4198-8d5a-049cfe610c8d" />
   <Project Path="CXEX.FileType/CXEX.FileType.csproj" Id="f7d250b1-1a90-475a-b6e0-8ca54230cd12" />
+  <Project Path="CXEX.Font/CXEX.Font.csproj" Id="5ba18e15-21b3-4fd7-a6a2-12e920c3f1da" />
   <Project Path="CXEX.Lang/CXEX.Lang.csproj" Id="63810b49-407d-440f-8919-5fa3ca74bbc2" />
   <Project Path="CXEX.Studio/CXEX.Studio.csproj" />
+  <Project Path="CXEX.Text/CXEX.Text.csproj" Id="9a5e5f88-5698-479a-a023-0535228d3612" />
+  <Project Path="CXEX.UI/CXEX.UI.csproj" Id="8949bb8a-3845-4a8a-8df4-d1a992f5f0f5" />
 </Solution>
