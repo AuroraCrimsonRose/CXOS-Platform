@@ -20,8 +20,9 @@ public static class HighlightingProvider
     public static IHighlightingDefinition? ForExtension(string ext) => ext.ToLowerInvariant() switch
     {
         ".c" or ".h" or ".cpp" or ".hpp" => LoadXshd("CX-C", "C++"),
-        ".asm" or ".nasm" => HighlightingManager.Instance.GetDefinition("Assembly"),
-        // ".xfxn" or ".xfxr" or ".xfxh" => LoadXshd("CX-X", null),   // Phase 6
+        ".asm" or ".nasm" or ".s" or ".inc" => LoadXshd("CX-ASM", "Assembly"),
+        ".ld" or ".lds" => LoadXshd("CX-LD", null),
+        ".xfxn" or ".xfxr" or ".xfxh" => LoadXshd("CX-X", null),
         _ => null
     };
 

@@ -4,46 +4,32 @@
              xmlns:models="using:CXEX.Studio.Models"
              xmlns:materialIcons="clr-namespace:Material.Icons.Avalonia;assembly=Material.Icons.Avalonia"
              x:Class="CXEX.Studio.Views.ProjectExplorerView"
-             x:DataType="vm:ProjectExplorerViewModel">
+             x:DataType="vm:ProjectExplorerViewModel"
+             MinWidth="200">
 
-  <Grid RowDefinitions="Auto, *" Background="#1E1E1E">
+  <!-- No internal title band: the dock tab already shows "Explorer". -->
+  <TreeView ItemsSource="{Binding RootNodes}" Background="{DynamicResource CxSurface1Brush}"
+            Padding="0,5" x:CompileBindings="False">
 
-    <Border Grid.Row="0" Background="#252526" BorderBrush="#3E3E42" BorderThickness="0,0,0,1" Padding="10,5">
-      <TextBlock Text="PROJECT" FontWeight="Bold" FontSize="11" Foreground="#858585" LetterSpacing="1"/>
-    </Border>
+    <TreeView.Styles>
+      <Style Selector="TreeViewItem">
+        <Setter Property="MinHeight" Value="24"/>
+        <Setter Property="Padding" Value="2,0"/>
+        <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/>
+      </Style>
+    </TreeView.Styles>
 
-    <!-- x:CompileBindings=False: the TreeViewItem/item bindings target FileTreeNode
-         (the item DataContext), not the UserControl's x:DataType. Resolve at runtime. -->
-    <TreeView Grid.Row="1" ItemsSource="{Binding RootNodes}" Background="Transparent" Padding="0,5"
-              x:CompileBindings="False">
-
-      <TreeView.Styles>
-        <Style Selector="TreeViewItem">
-          <Setter Property="MinHeight" Value="24"/>
-          <Setter Property="Padding" Value="2,0"/>
-          <!-- BUG FIX: bind UI expansion back to the node so lazy-load fires -->
-          <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/>
-        </Style>
-      </TreeView.Styles>
-
-      <TreeView.ItemTemplate>
-        <TreeDataTemplate DataType="models:FileTreeNode" ItemsSource="{Binding Children}">
-
-          <StackPanel Orientation="Horizontal" Spacing="6" Background="Transparent"
-                      ToolTip.Tip="{Binding FullPath}"
-                      DoubleTapped="OnItemDoubleTapped">
-
-            <materialIcons:MaterialIcon Kind="{Binding Icon}" Width="16" Height="16"
-                                        Foreground="{Binding IconColor}" />
-
-            <TextBlock Text="{Binding Name}" VerticalAlignment="Center" FontSize="13"
-                       Foreground="{Binding TextColor}" />
-
-          </StackPanel>
-
-        </TreeDataTemplate>
-      </TreeView.ItemTemplate>
-    </TreeView>
-
-  </Grid>
+    <TreeView.ItemTemplate>
+      <TreeDataTemplate DataType="models:FileTreeNode" ItemsSource="{Binding Children}">
+        <StackPanel Orientation="Horizontal" Spacing="6" Background="Transparent"
+                    ToolTip.Tip="{Binding FullPath}"
+                    DoubleTapped="OnItemDoubleTapped">
+          <materialIcons:MaterialIcon Kind="{Binding Icon}" Width="16" Height="16"
+                                      Foreground="{Binding IconColor}" />
+          <TextBlock Text="{Binding Name}" VerticalAlignment="Center" FontSize="13"
+                     Foreground="{Binding TextColor}" />
+        </StackPanel>
+      </TreeDataTemplate>
+    </TreeView.ItemTemplate>
+  </TreeView>
 </UserControl>

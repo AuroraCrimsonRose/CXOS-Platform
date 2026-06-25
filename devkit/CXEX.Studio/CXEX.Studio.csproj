@@ -60,11 +60,6 @@
     <Folder Include="Assets\AvaloniaEdit\" />
     <Folder Include="Assets\Templates\" />
     <Folder Include="Assets\Themes\" />
-    <Folder Include="Controls\HexViewer\" />
-    <Folder Include="Controls\LogViewer\" />
-    <Folder Include="Controls\FileTree\" />
-    <Folder Include="Controls\MemoryMapViewer\" />
-    <Folder Include="Controls\PartitionViewer\" />
     <Folder Include="Extensions\" />
     <Folder Include="Workspace\Documents\" />
     <Folder Include="Workspace\Editors\" />

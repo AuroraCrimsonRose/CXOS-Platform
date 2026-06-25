@@ -75,4 +75,12 @@
     <Setter Property="CornerRadius" Value="4"/>
   </Style>
 
+  <!-- selected items sit on the cyan accent: switch text to dark navy for contrast -->
+  <Style Selector="ListBoxItem:selected">
+    <Setter Property="Foreground" Value="{StaticResource CxSurface1Brush}"/>
+  </Style>
+  <Style Selector="ComboBoxItem:selected">
+    <Setter Property="Foreground" Value="{StaticResource CxSurface1Brush}"/>
+  </Style>
+
 </Styles>
