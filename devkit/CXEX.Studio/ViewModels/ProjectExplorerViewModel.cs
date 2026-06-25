@@ -59,14 +59,21 @@ public partial class ProjectExplorerViewModel : Tool
         var existing = docDock.VisibleDockables.FirstOrDefault(d => d.Id == node.FullPath);
         if (existing != null) { docDock.ActiveDockable = existing; return; }
 
-        Document tab = Path.GetExtension(node.FullPath).ToLower() switch
+        string ext = Path.GetExtension(node.FullPath).ToLowerInvariant();
+        bool isDisk = ext is ".img" or ".iso" or ".bin" or ".vhd" or ".disk" or ".dd";
+
+        Document tab = ext switch
         {
-            ".c" or ".h" or ".ld" or ".asm" or ".x" or ".txt" or ".cmake" => new TextEditorViewModel(),
-            ".png" or ".ico" or ".bmp" or ".jpg" => new ImageEditorViewModel(),
+            ".c" or ".h" or ".hpp" or ".cpp" or ".ld" or ".lds" or ".asm" or ".nasm" or ".s" or ".inc"
+                or ".xfxn" or ".xfxr" or ".xfxh" or ".txt" or ".cmake" or ".json" or ".md"
+                => new TextEditorViewModel(),
+            ".png" or ".ico" or ".bmp" or ".jpg" or ".jpeg" or ".gif"
+                => new ImageEditorViewModel(),
+            // disk images + anything else -> the disk-paged hex inspector
             _ => new FileTypeInspectorViewModel()
         };
         tab.Id = node.FullPath;
-        tab.Title = node.Name;
+        tab.Title = (isDisk ? "Disk: " : "") + node.Name;
 
         // Set the source path BEFORE the view is built so it loads on first show.
         switch (tab)

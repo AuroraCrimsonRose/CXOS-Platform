@@ -3,6 +3,7 @@
         xmlns:vm="using:CXEX.Studio.ViewModels"
         xmlns:idc="using:Dock.Avalonia.Controls"
         xmlns:materialIcons="clr-namespace:Material.Icons.Avalonia;assembly=Material.Icons.Avalonia"
+        xmlns:conv="using:CXEX.Studio.Converters"
         x:Class="CXEX.Studio.Views.MainWindow"
         x:DataType="vm:MainWindowViewModel"
         Title=""
@@ -23,6 +24,8 @@
     <Color x:Key="SystemAccentColorLight2">#5BC0F8</Color>
     <Color x:Key="SystemAccentColorLight3">#5BC0F8</Color>
     <SolidColorBrush x:Key="SystemControlHighlightAccentBrush" Color="{StaticResource SystemAccentColor}" />
+    <conv:BoolToGridLengthConverter x:Key="BoolToGridLength"/>
+    <conv:BoolToOpacityConverter x:Key="BoolToOpacity"/>
   </Window.Resources>
 
   <Window.Styles>
@@ -82,6 +85,8 @@
           <MenuItem Header="_Explorer" Command="{Binding ShowExplorerCommand}" />
           <Separator/>
           <MenuItem Header="Build _Output" Command="{Binding ToggleBottomPanelCommand}" />
+          <Separator/>
+          <MenuItem Header="_Reset Layout" Command="{Binding ResetLayoutCommand}" />
         </MenuItem>
         <MenuItem Header="_Tools">
           <MenuItem Header="Hex Inspector" Command="{Binding OpenHexInspectorCommand}" />
@@ -115,8 +120,9 @@
             </Button>
           </StackPanel>
           <StackPanel DockPanel.Dock="Bottom" Margin="0,0,0,4">
-            <Button Classes="ActivityButton" ToolTip.Tip="Toggle Build Output" Command="{Binding ToggleBottomPanelCommand}">
-              <materialIcons:MaterialIcon Kind="ViewSplitHorizontal" Width="22" Height="22"/>
+            <Button Classes="ActivityButton" ToolTip.Tip="Toggle Build Output" Command="{Binding ToggleBottomPanelCommand}"
+                    Opacity="{Binding IsBottomPanelVisible, Converter={StaticResource BoolToOpacity}}">
+              <materialIcons:MaterialIcon Kind="DockBottom" Width="22" Height="22"/>
             </Button>
             <Button Classes="ActivityButton" ToolTip.Tip="Settings">
               <materialIcons:MaterialIcon Kind="CogOutline" Width="22" Height="22"/>
@@ -125,7 +131,12 @@
         </DockPanel>
       </Border>
 
-      <Grid Grid.Column="1" RowDefinitions="*, Auto, Auto">
+      <Grid Grid.Column="1">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="*"/>
+          <RowDefinition Height="{Binding IsBottomPanelVisible, Converter={StaticResource BoolToGridLength}, ConverterParameter=5}"/>
+          <RowDefinition Height="{Binding IsBottomPanelVisible, Converter={StaticResource BoolToGridLength}, ConverterParameter=220}"/>
+        </Grid.RowDefinitions>
 
         <Border Grid.Row="0" Background="{DynamicResource CxSurface1Brush}" Padding="2">
           <idc:DockControl Layout="{Binding Layout}" />
@@ -135,13 +146,13 @@
                       HorizontalAlignment="Stretch" Background="{DynamicResource CxBorderBrush}"
                       IsVisible="{Binding IsBottomPanelVisible}"/>
 
-        <Border Grid.Row="2" Height="200" Background="{DynamicResource CxSurface0Brush}"
+        <Border Grid.Row="2" MinHeight="80" Background="{DynamicResource CxSurface0Brush}"
                 BorderBrush="{DynamicResource CxBorderBrush}" BorderThickness="0,1,0,0"
                 IsVisible="{Binding IsBottomPanelVisible}">
           <Grid RowDefinitions="Auto, *">
 
             <!-- panel header: title, input, build/cancel, status -->
-            <Grid Grid.Row="0" Background="{DynamicResource CxSurface1Brush}" MinHeight="36" ColumnDefinitions="Auto,*,Auto,Auto,Auto,Auto">
+            <Grid Grid.Row="0" Background="{DynamicResource CxSurface1Brush}" MinHeight="36" ColumnDefinitions="Auto,*,Auto,Auto,Auto">
               <TextBlock Grid.Column="0" Text="BUILD OUTPUT" VerticalAlignment="Center"
                          Margin="10,0" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource CxTextDimBrush}"/>
               <TextBox Grid.Column="1" Watermark="input .elf path" VerticalAlignment="Center"
@@ -154,12 +165,10 @@
                 <ComboBoxItem Content="boot"/>
                 <ComboBoxItem Content="kernel"/>
               </ComboBox>
-              <Button Grid.Column="3" Content="Build" Margin="2,5" Height="26" Padding="10,0" FontSize="11"
+              <Button Grid.Column="3" Content="Build" Margin="2,5" Height="26" Padding="12,0" FontSize="11" HorizontalContentAlignment="Center" VerticalContentAlignment="Center"
                       Command="{Binding Build.BuildCommand}"/>
-              <Button Grid.Column="4" Content="Cancel" Margin="2,5" Height="26" Padding="8,0" FontSize="11"
+              <Button Grid.Column="4" Content="Cancel" Margin="2,5,8,5" Height="26" Padding="12,0" FontSize="11" HorizontalContentAlignment="Center" VerticalContentAlignment="Center"
                       Command="{Binding Build.CancelCommand}"/>
-              <Button Grid.Column="5" Content="_" Margin="2,5,8,5" Height="26" Padding="8,0" FontSize="11"
-                      ToolTip.Tip="Hide panel" Command="{Binding ToggleBottomPanelCommand}"/>
             </Grid>
 
             <!-- log body -->
@@ -181,7 +190,8 @@
 
     </Grid>
 
-    <Border Grid.Row="2" Height="22" Background="{DynamicResource CxSurface0Brush}">
+    <Border Grid.Row="2" Height="24" Background="{DynamicResource CxSurface0Brush}"
+            BorderBrush="{DynamicResource CxBorderBrush}" BorderThickness="0,1,0,0">
       <Grid ColumnDefinitions="Auto, *, Auto" Margin="10,0">
         <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Spacing="10">
           <TextBlock Text="Ready" FontSize="11" Foreground="White" FontWeight="SemiBold"/>

@@ -55,7 +55,8 @@ public class StudioDockFactory : Factory
             Proportion = 0.22,
             Alignment = Alignment.Left,
             ActiveDockable = _projectExplorer,
-            VisibleDockables = CreateList<IDockable>(_projectExplorer, imageExplorer)
+            // Image Explorer is no longer stacked here; .img files open as documents.
+            VisibleDockables = CreateList<IDockable>(_projectExplorer)
         };
 
         var mainLayout = new ProportionalDock

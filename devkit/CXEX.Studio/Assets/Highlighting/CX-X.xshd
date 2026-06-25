@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<SyntaxDefinition name="CX-X" extensions=".xfxn;.xfxr;.xfxh"
+                  xmlns="http://icsharpcode.net/sharpdevelop/syntaxdefinition/2008">
+  <Color name="Comment"  foreground="#7EE787" fontStyle="italic"/>
+  <Color name="String"   foreground="#F1FA8C"/>
+  <Color name="Keyword"  foreground="#5BC0F8" fontWeight="bold"/>
+  <Color name="Type"     foreground="#F48FB1"/>
+  <Color name="Intrinsic" foreground="#FF79C6" fontWeight="bold"/>
+  <Color name="Number"   foreground="#BD93F9"/>
+
+  <RuleSet ignoreCase="false">
+    <Span color="Comment" begin="//"/>
+    <Span color="Comment" multiline="true" begin="/\*" end="\*/"/>
+    <Span color="String" begin="&quot;" end="&quot;">
+      <RuleSet><Span begin="\\" end="."/></RuleSet>
+    </Span>
+
+    <Keywords color="Keyword">
+      <Word>fn</Word><Word>let</Word><Word>const</Word><Word>global</Word>
+      <Word>struct</Word><Word>extern</Word><Word>if</Word><Word>else</Word>
+      <Word>while</Word><Word>return</Word><Word>as</Word><Word>true</Word><Word>false</Word>
+    </Keywords>
+    <Keywords color="Type">
+      <Word>i8</Word><Word>i16</Word><Word>i32</Word><Word>u8</Word><Word>u16</Word><Word>u32</Word>
+      <Word>bool</Word><Word>void</Word>
+    </Keywords>
+    <Keywords color="Intrinsic">
+      <Word>__syscall</Word>
+    </Keywords>
+    <Rule color="Number">\b0[xX][0-9a-fA-F]+\b|\b\d+\b</Rule>
+  </RuleSet>
+</SyntaxDefinition>

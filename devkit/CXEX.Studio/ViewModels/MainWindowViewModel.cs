@@ -38,6 +38,13 @@ public partial class MainWindowViewModel : ObservableObject
     [RelayCommand] private void OpenHexInspector() => _factory.OpenHexInspector();
     [RelayCommand] private void ToggleBottomPanel() => IsBottomPanelVisible = !IsBottomPanelVisible;
 
+    [RelayCommand]
+    private void ResetLayout()
+    {
+        Layout = _factory.CreateLayout();
+        if (Layout is { }) _factory.InitLayout(Layout);
+    }
+
     public void CloseLayout()
     {
         if (Layout is { }) Layout = null;
