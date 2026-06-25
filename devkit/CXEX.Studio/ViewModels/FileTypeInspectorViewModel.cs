@@ -1,6 +1,9 @@
 ﻿using System;
 using System.IO;
 using System.Text;
+using System.Collections.ObjectModel;
+using CXEX.Disk;
+using CXEX.Disk.Models;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Dock.Model.Mvvm.Controls;
@@ -32,6 +35,10 @@ public partial class FileTypeInspectorViewModel : Document
     [ObservableProperty] private long _highlightStart = -1;   // global magic offset
     [ObservableProperty] private int _highlightLength;
 
+    // disk partitions (when the file is a disk image)
+    [ObservableProperty] private string _tableType = "";
+    public ObservableCollection<PartitionEntry> Partitions { get; } = new();
+
     // search
     public string[] SearchModes { get; } = { "Hex", "ASCII", "Address" };
     [ObservableProperty] private string _searchMode = "Hex"; // Address | Hex | ASCII
@@ -50,6 +57,7 @@ public partial class FileTypeInspectorViewModel : Document
                    FileLength < M2 ? $"{FileLength / 1024.0:F1} KB" : $"{FileLength / 1048576.0:F2} MB";
         Title = $"Hex: {FileName}";
         DetectMagic();
+        AnalyzeDisk();
         GoToOffset(0);
     }
 
@@ -127,6 +135,29 @@ public partial class FileTypeInspectorViewModel : Document
         {
             FormatName = "MBR / boot sector"; HighlightStart = 510; HighlightLength = 2; MagicHex = "55 AA @ 0x1FE"; return;
         }
+    }
+
+    private void AnalyzeDisk()
+    {
+        Partitions.Clear(); TableType = "";
+        if (_path is null) return;
+        try
+        {
+            var layout = DiskAnalyzer.Analyze(_path);
+            if (layout.TableType == PartitionTableType.Unknown) return;
+            TableType = layout.TableType.ToString();
+            foreach (var p in layout.Partitions) Partitions.Add(p);
+        }
+        catch { /* not a disk / unreadable - leave empty */ }
+    }
+
+    [RelayCommand]
+    private void SelectPartition(PartitionEntry? p)
+    {
+        if (p is null) return;
+        MatchStart = p.StartOffset; MatchLength = 16;
+        GoToOffset(p.StartOffset);
+        SearchStatus = $"{p.Name} @ 0x{p.StartOffset:X}";
     }
 
     private static bool StartsWith(byte[] data, byte[] sig)

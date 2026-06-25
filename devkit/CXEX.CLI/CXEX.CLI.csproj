@@ -26,9 +26,13 @@
     <ProjectReference Include="..\CXEX.Core\CXEX.Core.csproj" />
     <ProjectReference Include="..\CXEX.Build\CXEX.Build.csproj" />
     <ProjectReference Include="..\CXEX.Crypto\CXEX.Crypto.csproj" />
+    <ProjectReference Include="..\CXEX.Disk\CXEX.Disk.csproj" />
     <ProjectReference Include="..\CXEX.FileSystem\CXEX.FileSystem.csproj" />
     <ProjectReference Include="..\CXEX.FileType\CXEX.FileType.csproj" />
+    <ProjectReference Include="..\CXEX.Font\CXEX.Font.csproj" />
     <ProjectReference Include="..\CXEX.Lang\CXEX.Lang.csproj" />
+    <ProjectReference Include="..\CXEX.Text\CXEX.Text.csproj" />
+    <ProjectReference Include="..\CXEX.Tools\CXEX.Tools.csproj" />
   </ItemGroup>
 
 </Project>

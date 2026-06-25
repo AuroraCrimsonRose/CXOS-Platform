@@ -6,4 +6,8 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\CXEX.FileSystem\CXEX.FileSystem.csproj" />
+  </ItemGroup>
+
 </Project>
