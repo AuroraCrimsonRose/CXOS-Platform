@@ -42,6 +42,8 @@ compile_commands.json
 vcpkg_installed/
 
 *.dwo
+*.bat
+*.ps1
 
 # =====================================================
 # .NET
@@ -80,5 +82,30 @@ packages/
 # Optional generated artifacts
 # =====================================================
 
+/Build/
+/Build/**
 artifacts/
 publish/
+/CXEX.Studio/obj/Debug/net10.0/Avalonia/references
+/CXEX.Studio/obj/Debug/net10.0/Avalonia/resources
+/CXEX.Studio/obj/Debug/net10.0/Avalonia/Resources.Inputs.cache
+/CXEX.Studio/obj/Debug/net10.0/CXEX.Studio.AssemblyInfo.cs
+/CXEX.Studio/obj/Debug/net10.0/CXEX.Studio.AssemblyInfoInputs.cache
+/CXEX.Studio/obj/Debug/net10.0/CXEX.Studio.assets.cache
+/CXEX.Studio/obj/Debug/net10.0/CXEX.Studio.csproj.AssemblyReference.cache
+/CXEX.Studio/obj/Debug/net10.0/CXEX.Studio.csproj.CoreCompileInputs.cache
+/CXEX.Studio/obj/Debug/net10.0/CXEX.Studio.csproj.FileListAbsolute.txt
+/CXEX.Studio/obj/CXEX.Studio.csproj.nuget.dgspec.json
+/CXEX.Studio/obj/CXEX.Studio.csproj.nuget.g.props
+/CXEX.Studio/obj/CXEX.Studio.csproj.nuget.g.targets
+/CXEX.Studio/obj/project.assets.json
+/CXEX.Studio/obj/project.nuget.cache
+/CXEX.Studio/bin/Debug/net10.0/CXEX.Studio.deps.json
+/CXEX.Studio/obj/Debug/net10.0/Avalonia/references
+/CXEX.Studio/obj/Debug/net10.0/Avalonia/resources
+/CXEX.Studio/obj/Debug/net10.0/Avalonia/Resources.Inputs.cache
+/CXEX.Studio/obj/CXEX.Studio.csproj.nuget.dgspec.json
+/CXEX.Studio/obj/CXEX.Studio.csproj.nuget.g.props
+/CXEX.Studio/obj/CXEX.Studio.csproj.nuget.g.targets
+/CXEX.Studio/obj/project.assets.json
+/CXEX.Studio/obj/project.nuget.cache

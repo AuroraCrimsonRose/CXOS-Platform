@@ -1,4 +1,8 @@
 <Solution>
+  <Folder Name="/Solution Items/">
+    <File Path="build.bat" />
+    <File Path="BUILD.ps1" />
+  </Folder>
   <Project Path="CXEX.Build/CXEX.Build.csproj" Id="67b1a560-c355-4858-a3a7-3f4124b44c17" />
   <Project Path="CXEX.CLI/CXEX.CLI.csproj" />
   <Project Path="CXEX.Core/CXEX.Core.csproj" Id="d38d4422-b07e-4b4e-9ecd-c388aa3bc422" />

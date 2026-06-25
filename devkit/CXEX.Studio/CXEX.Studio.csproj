@@ -71,6 +71,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\CXEX.Disk\CXEX.Disk.csproj" />
+    <ProjectReference Include="..\CXEX.Font\CXEX.Font.csproj" />
+    <ProjectReference Include="..\CXEX.Text\CXEX.Text.csproj" />
+    <ProjectReference Include="..\CXEX.Tools\CXEX.Tools.csproj" />
     <ProjectReference Include="..\CXEX.UI\CXEX.UI.csproj" />
     <ProjectReference Include="..\CXEX.Build\CXEX.Build.csproj" />
     <ProjectReference Include="..\CXEX.CLI\CXEX.CLI.csproj" />
