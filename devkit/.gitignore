@@ -82,6 +82,10 @@ packages/
 # Optional generated artifacts
 # =====================================================
 
+**/bin/
+**/obj/
+/Bin/
+/Bin/**
 /Build/
 /Build/**
 artifacts/
