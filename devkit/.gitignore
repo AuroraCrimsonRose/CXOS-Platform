@@ -113,3 +113,13 @@ publish/
 /CXEX.Studio/obj/CXEX.Studio.csproj.nuget.g.targets
 /CXEX.Studio/obj/project.assets.json
 /CXEX.Studio/obj/project.nuget.cache
+/.config
+/CXEX.Build/Properties/PublishProfiles
+/CXEX.Build/CXEX.Build.csproj
+/CXEX.Core/obj/Debug/net10.0/CXEX.Core.csproj.FileListAbsolute.txt
+/CXEX.FileType/obj/Debug/net10.0/CXEX.FileType.csproj.FileListAbsolute.txt
+/CXEX.Studio/obj/Debug/net10.0/CXEX.Stu.7ABAB106.Up2Date
+/CXEX.Studio/obj/Debug/net10.0/CXEX.Studio.GeneratedMSBuildEditorConfig.editorconfig
+/CXEX.Studio/obj/Debug/net10.0/CXEX.Studio.genruntimeconfig.cache
+/_docs_setup
+/Directory.Build.props

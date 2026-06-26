@@ -3,7 +3,7 @@ using Dock.Model.Mvvm.Controls;
 
 namespace CXEX.Studio.ViewModels;
 
-public partial class ImageEditorViewModel : Document
+public partial class ImageViewerViewModel : Document
 {
     [ObservableProperty] private string? _imagePath;
 

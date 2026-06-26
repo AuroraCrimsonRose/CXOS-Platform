@@ -2,6 +2,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:CXEX.Studio.ViewModels"
              xmlns:ctrl="using:CXEX.Studio.Controls"
+             xmlns:materialIcons="clr-namespace:Material.Icons.Avalonia;assembly=Material.Icons.Avalonia"
              x:Class="CXEX.Studio.Views.FileTypeInspectorView"
              x:DataType="vm:FileTypeInspectorViewModel">
 
@@ -46,9 +47,7 @@
                    FontWeight="SemiBold" VerticalAlignment="Center"/>
         <ItemsControl ItemsSource="{Binding Partitions}">
           <ItemsControl.ItemsPanel>
-            <ItemsPanelTemplate>
-              <StackPanel Orientation="Horizontal" Spacing="6"/>
-            </ItemsPanelTemplate>
+            <ItemsPanelTemplate><StackPanel Orientation="Horizontal" Spacing="6"/></ItemsPanelTemplate>
           </ItemsControl.ItemsPanel>
           <ItemsControl.ItemTemplate>
             <DataTemplate>
@@ -66,16 +65,42 @@
       </StackPanel>
     </Border>
 
-    <!-- hex dump -->
-    <ScrollViewer Grid.Row="3" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
-                  Background="{DynamicResource CxSurface0Brush}" Padding="8,4">
-      <ctrl:HexView Data="{Binding PageData}"
-                    BaseOffset="{Binding PageOffset}"
-                    HighlightStart="{Binding HighlightStart}"
-                    HighlightLength="{Binding HighlightLength}"
-                    MatchStart="{Binding MatchStart}"
-                    MatchLength="{Binding MatchLength}"/>
-    </ScrollViewer>
+    <!-- CXFS file tree (left) + hex dump (right) -->
+    <Grid Grid.Row="3" ColumnDefinitions="Auto, *">
+      <Border Grid.Column="0" Width="240" IsVisible="{Binding CxfsTree.Count}"
+              Background="{DynamicResource CxSurface1Brush}"
+              BorderBrush="{DynamicResource CxBorderBrush}" BorderThickness="0,0,1,0">
+        <DockPanel>
+          <TextBlock DockPanel.Dock="Top" Text="{Binding CxfsStatus}" Margin="8,6"
+                     FontWeight="SemiBold" Foreground="{DynamicResource CxAccentBrush}"/>
+          <TreeView x:Name="CxfsTreeView" ItemsSource="{Binding CxfsTree}" Background="Transparent"
+                    DoubleTapped="OnCxfsDoubleTapped" x:CompileBindings="False">
+            <TreeView.ItemTemplate>
+              <TreeDataTemplate ItemsSource="{Binding Children}">
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                  <materialIcons:MaterialIcon Kind="{Binding Icon}" Width="15" Height="15"
+                                              Foreground="{DynamicResource CxAccentBrush}"/>
+                  <TextBlock Text="{Binding Name}" VerticalAlignment="Center"
+                             Foreground="{DynamicResource CxTextBrush}"/>
+                  <TextBlock Text="{Binding SizeDisplay}" VerticalAlignment="Center" FontSize="11"
+                             Foreground="{DynamicResource CxTextDimBrush}"/>
+                </StackPanel>
+              </TreeDataTemplate>
+            </TreeView.ItemTemplate>
+          </TreeView>
+        </DockPanel>
+      </Border>
+
+      <ScrollViewer Grid.Column="1" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
+                    Background="{DynamicResource CxSurface0Brush}" Padding="8,4">
+        <ctrl:HexView Data="{Binding PageData}"
+                      BaseOffset="{Binding PageOffset}"
+                      HighlightStart="{Binding HighlightStart}"
+                      HighlightLength="{Binding HighlightLength}"
+                      MatchStart="{Binding MatchStart}"
+                      MatchLength="{Binding MatchLength}"/>
+      </ScrollViewer>
+    </Grid>
 
     <!-- compact paging -->
     <Border Grid.Row="4" Background="{DynamicResource CxSurface2Brush}"

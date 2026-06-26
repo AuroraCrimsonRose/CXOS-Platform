@@ -56,7 +56,7 @@ public sealed class ProjectService
             {
                 var info = new DirectoryInfo(dir);
                 if (info.Attributes.HasFlag(FileAttributes.Hidden)) continue;
-                var child = new FileTreeNode(Path.GetFileName(dir), dir, true) { LazyLoad = LoadChildren };
+                var child = new FileTreeNode(Path.GetFileName(dir), dir, true) { LazyLoad = LoadChildren, Parent = node };
                 child.Children.Add(FileTreeNode.Placeholder());   // expander shows before real load
                 node.Children.Add(child);
             }
@@ -64,11 +64,25 @@ public sealed class ProjectService
             {
                 var fi = new FileInfo(file);
                 if (fi.Attributes.HasFlag(FileAttributes.Hidden)) continue;
-                node.Children.Add(new FileTreeNode(Path.GetFileName(file), file, false));
+                node.Children.Add(new FileTreeNode(Path.GetFileName(file), file, false) { Parent = node });
             }
         }
         catch (UnauthorizedAccessException) { }
         catch (DirectoryNotFoundException) { }
         node.ChildrenLoaded = true;
+    }
+
+    /// <summary>Reload one directory level from disk (after create/rename/delete/paste).</summary>
+    public void RefreshNode(FileTreeNode node)
+    {
+        if (!node.IsDirectory)
+        {
+            if (node.Parent != null) RefreshNode(node.Parent);
+            return;
+        }
+        node.ChildrenLoaded = false;
+        node.Children.Clear();
+        LoadChildren(node);
+        node.IsExpanded = true;
     }
 }
