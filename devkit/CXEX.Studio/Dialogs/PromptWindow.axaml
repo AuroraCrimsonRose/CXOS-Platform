@@ -1,0 +1,17 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="CXEX.Studio.Dialogs.PromptWindow"
+        Width="380" SizeToContent="Height" CanResize="False"
+        WindowStartupLocation="CenterOwner" Title="CX DevKit"
+        Background="{DynamicResource CxSurface1Brush}">
+  <StackPanel Margin="18" Spacing="14">
+    <TextBlock x:Name="MessageText" TextWrapping="Wrap" Foreground="{DynamicResource CxTextBrush}"/>
+    <TextBox x:Name="Input" Foreground="{DynamicResource CxTextBrush}"/>
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+      <Button x:Name="OkBtn" Content="OK" Width="84" Click="OnOk"
+              HorizontalContentAlignment="Center"/>
+      <Button x:Name="CancelBtn" Content="Cancel" Width="84" Click="OnCancel"
+              HorizontalContentAlignment="Center"/>
+    </StackPanel>
+  </StackPanel>
+</Window>

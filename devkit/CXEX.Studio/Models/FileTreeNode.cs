@@ -22,6 +22,9 @@ public partial class FileTreeNode : ObservableObject
 
     public ObservableCollection<FileTreeNode> Children { get; } = new();
 
+    /// <summary>Parent directory node (null for the root). Set by ProjectService.</summary>
+    public FileTreeNode? Parent { get; set; }
+
     public FileTreeNode(string name, string fullPath, bool isDirectory)
     {
         Name = name;

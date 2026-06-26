@@ -10,7 +10,7 @@ namespace CXEX.Studio.Views;
 
 public partial class ImageViewerView : UserControl
 {
-    private ImageEditorViewModel? _vm;
+    private ImageViewerViewModel? _vm;
     private string? _loadedPath;
 
     public ImageViewerView() => InitializeComponent();
@@ -19,7 +19,7 @@ public partial class ImageViewerView : UserControl
     {
         base.OnDataContextChanged(e);
         if (_vm is not null) _vm.PropertyChanged -= OnVmPropertyChanged;
-        _vm = DataContext as ImageEditorViewModel;
+        _vm = DataContext as ImageViewerViewModel;
         if (_vm is not null) _vm.PropertyChanged += OnVmPropertyChanged;
         TryLoad();
     }
@@ -32,7 +32,7 @@ public partial class ImageViewerView : UserControl
 
     private void OnVmPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName == nameof(ImageEditorViewModel.ImagePath)) TryLoad();
+        if (e.PropertyName == nameof(ImageViewerViewModel.ImagePath)) TryLoad();
     }
 
     private void TryLoad()

@@ -4,6 +4,10 @@ using System.Text;
 using System.Collections.ObjectModel;
 using CXEX.Disk;
 using CXEX.Disk.Models;
+using CXEX.FileSystem.Mounts;
+using CXEX.FileSystem.Volume;
+using CXEX.Studio.Models;
+using System.Collections.Generic;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Dock.Model.Mvvm.Controls;
@@ -38,6 +42,10 @@ public partial class FileTypeInspectorViewModel : Document
     // disk partitions (when the file is a disk image)
     [ObservableProperty] private string _tableType = "";
     public ObservableCollection<PartitionEntry> Partitions { get; } = new();
+
+    // CXFS file tree (when a SYSTEM/CXFS partition is present)
+    [ObservableProperty] private string _cxfsStatus = "";
+    public ObservableCollection<CxfsNode> CxfsTree { get; } = new();
 
     // search
     public string[] SearchModes { get; } = { "Hex", "ASCII", "Address" };
@@ -147,8 +155,58 @@ public partial class FileTypeInspectorViewModel : Document
             if (layout.TableType == PartitionTableType.Unknown) return;
             TableType = layout.TableType.ToString();
             foreach (var p in layout.Partitions) Partitions.Add(p);
+
+            // if there's a CXFS volume (SYSTEM partition), mount + browse it
+            foreach (var p in layout.Partitions)
+            {
+                if (p.Name.Equals("SYSTEM", System.StringComparison.OrdinalIgnoreCase) ||
+                    p.TypeName.Contains("CXFS", System.StringComparison.OrdinalIgnoreCase))
+                { MountCxfs(p.StartLba); break; }
+            }
         }
         catch { /* not a disk / unreadable - leave empty */ }
+    }
+
+    private void MountCxfs(long baseLbaSectors)
+    {
+        CxfsTree.Clear(); CxfsStatus = "";
+        if (_path is null) return;
+        try
+        {
+            using var fs = new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            using var img = new CXFSImage(fs, (ulong)baseLbaSectors);
+            uint blockSize = img.Superblock.BlockSize == 0 ? 4096u : img.Superblock.BlockSize;
+            uint rootId = img.Superblock.RootId;
+
+            var byId = new Dictionary<uint, CxfsNode>();
+            foreach (var e in img.Manifest.Values) byId[e.Id] = new CxfsNode(e, blockSize);
+
+            // link children to parents
+            foreach (var n in byId.Values)
+            {
+                uint pid = n.Entry.ParentId;
+                if (pid != n.Entry.Id && byId.TryGetValue(pid, out var parent) && parent != n)
+                    parent.Children.Add(n);
+            }
+            // top level = contents of root (or anything whose parent isn't in the manifest)
+            if (byId.TryGetValue(rootId, out var root))
+                foreach (var c in root.Children) CxfsTree.Add(c);
+            else
+                foreach (var n in byId.Values)
+                    if (!byId.ContainsKey(n.Entry.ParentId)) CxfsTree.Add(n);
+
+            CxfsStatus = $"CXFS v{img.Superblock.Version}: {img.Manifest.Count} entries";
+        }
+        catch (System.Exception ex) { CxfsStatus = "CXFS: " + ex.Message; }
+    }
+
+    [RelayCommand]
+    private void SelectCxfsNode(CxfsNode? n)
+    {
+        if (n is null || n.IsDirectory) return;
+        MatchStart = n.FirstExtentOffset; MatchLength = 16;
+        GoToOffset(n.FirstExtentOffset);
+        SearchStatus = $"{n.Name} @ 0x{n.FirstExtentOffset:X}";
     }
 
     [RelayCommand]
