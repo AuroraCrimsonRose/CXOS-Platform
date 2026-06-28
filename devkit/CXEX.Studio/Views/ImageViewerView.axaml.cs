@@ -39,7 +39,15 @@ public partial class ImageViewerView : UserControl
     {
         var path = _vm?.ImagePath;
         if (string.IsNullOrEmpty(path) || path == _loadedPath || !File.Exists(path)) return;
-        PreviewImage.Source = new Bitmap(path);
-        _loadedPath = path;
+        try
+        {
+            PreviewImage.Source = new Bitmap(path);
+        }
+        catch (Exception)
+        {
+            // not a decodable raster image (e.g. .ico, a disk image, or a non-image file)
+            PreviewImage.Source = null;
+        }
+        _loadedPath = path;   // record either way so we never retry the same bad path
     }
 }

@@ -8,15 +8,17 @@ namespace CXEX.FileSystem.Mounts;
 public class CXFSImage : IDisposable
 {
     private readonly Stream _diskStream;
+    private readonly long _volumeBase;   // byte offset of this CXFS volume within the image
     public CXFSSuperblock Superblock { get; private set; }
     public Dictionary<uint, CXFSEntry> Manifest { get; private set; } = new();
 
     public CXFSImage(Stream diskStream, ulong partitionBaseLba = 0)
     {
         _diskStream = diskStream;
+        _volumeBase = (long)partitionBaseLba * 512;
 
         // Read Superblock (Sector 0 of the partition)
-        _diskStream.Position = (long)partitionBaseLba * 512;
+        _diskStream.Position = _volumeBase;
         byte[] block0 = new byte[4096];
         _diskStream.ReadExactly(block0, 0, 4096);
 
@@ -28,7 +30,7 @@ public class CXFSImage : IDisposable
     private void HydrateManifest()
     {
         byte[] manifestBuffer = new byte[Superblock.ManifestBlocks * Superblock.BlockSize];
-        _diskStream.Position = (long)Superblock.ManifestStart * Superblock.BlockSize;
+        _diskStream.Position = _volumeBase + (long)Superblock.ManifestStart * Superblock.BlockSize;
         _diskStream.ReadExactly(manifestBuffer, 0, manifestBuffer.Length);
 
         ReadOnlySpan<byte> span = manifestBuffer;
@@ -59,7 +61,7 @@ public class CXFSImage : IDisposable
             uint extLen = fileEntry.ExtentLen[i];
             if (extLen == 0) continue;
 
-            _diskStream.Position = (long)extStart * Superblock.BlockSize;
+            _diskStream.Position = _volumeBase + (long)extStart * Superblock.BlockSize;
 
             uint chunkToRead = Math.Min((uint)(extLen * Superblock.BlockSize), (uint)fileEntry.Size - bytesRead);
             _diskStream.ReadExactly(output, (int)bytesRead, (int)chunkToRead);

@@ -67,7 +67,7 @@ public partial class ProjectExplorerViewModel : Tool
             ".c" or ".h" or ".hpp" or ".cpp" or ".ld" or ".lds" or ".asm" or ".nasm" or ".s" or ".inc"
                 or ".xfxn" or ".xfxr" or ".xfxh" or ".txt" or ".cmake" or ".json" or ".md"
                 => new TextEditorViewModel(),
-            ".png" or ".ico" or ".bmp" or ".jpg" or ".jpeg" or ".gif"
+            ".png" or ".bmp" or ".jpg" or ".jpeg" or ".gif"
                 => new ImageViewerViewModel(),
             // disk images + anything else -> the disk-paged hex inspector
             _ => new FileTypeInspectorViewModel()

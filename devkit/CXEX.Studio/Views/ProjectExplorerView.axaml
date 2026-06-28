@@ -39,7 +39,8 @@
                 <MenuItem Header="Open With">
                   <MenuItem Header="Text Editor" Click="OnOpenAsText"/>
                   <MenuItem Header="Hex Viewer"  Click="OnOpenAsHex"/>
-                  <MenuItem Header="Image Viewer" Click="OnOpenAsImage"/>
+                  <MenuItem Header="Picture Viewer" Click="OnOpenAsImage"/>
+                  <!-- was Header="Image Viewer" -->
                 </MenuItem>
                 <Separator/>
                 <MenuItem Header="New File"   Click="OnNewFile"/>
