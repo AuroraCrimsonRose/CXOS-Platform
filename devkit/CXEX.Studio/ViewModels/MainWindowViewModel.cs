@@ -3,6 +3,7 @@ using CommunityToolkit.Mvvm.Input;
 using CommunityToolkit.Mvvm.Messaging;
 using CXEX.Studio.Docking;
 using CXEX.Studio.Messages;
+using CXEX.Studio.Models.Project;
 using Dock.Model.Controls;
 
 namespace CXEX.Studio.ViewModels;
@@ -15,6 +16,7 @@ public partial class MainWindowViewModel : ObservableObject
     [ObservableProperty] private bool _isBusy;
     [ObservableProperty] private string _busyText = "Working...";
     [ObservableProperty] private bool _isBottomPanelVisible = true;
+    [ObservableProperty] private CxProject? _currentProject;
 
     /// <summary>The Build output console hosted in the bottom panel.</summary>
     public BuildViewModel Build { get; } = new();
