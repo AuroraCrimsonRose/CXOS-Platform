@@ -117,15 +117,25 @@ public class CompileCommand : Command<CompileCommand.Settings>
 
     private static string WriteDefaultScript(string output)
     {
+        // PHDRS keeps code and data in separate LOAD segments with distinct
+        // permissions: text = R+X (FLAGS 5), data = R+W (FLAGS 6). Without this,
+        // ld folds everything into one RWX segment (writable code pages) and warns
+        // "LOAD segment with RWX permissions". rodata rides with text (read-only,
+        // no write needed); .data/.bss ride with the writable segment.
         string ld = Path.ChangeExtension(output, ".ld");
         File.WriteAllText(ld,
             "ENTRY(_start)\n" +
+            "PHDRS {\n" +
+            "    text PT_LOAD FLAGS(5);   /* R + X */\n" +
+            "    data PT_LOAD FLAGS(6);   /* R + W */\n" +
+            "}\n" +
             "SECTIONS {\n" +
             "    . = 0x00400000;\n" +
-            "    .text   : { *(.text*) }\n" +
-            "    .rodata : { *(.rodata*) }\n" +
-            "    .data   : { *(.data*) }\n" +
-            "    .bss    : { *(.bss*) *(COMMON) }\n" +
+            "    .text   : { *(.text*) }         :text\n" +
+            "    .rodata : { *(.rodata*) }       :text\n" +
+            "    . = ALIGN(0x1000);\n" +
+            "    .data   : { *(.data*) }         :data\n" +
+            "    .bss    : { *(.bss*) *(COMMON) } :data\n" +
             "}\n");
         return ld;
     }

@@ -47,7 +47,9 @@
                    FontWeight="SemiBold" VerticalAlignment="Center"/>
         <ItemsControl ItemsSource="{Binding Partitions}">
           <ItemsControl.ItemsPanel>
-            <ItemsPanelTemplate><StackPanel Orientation="Horizontal" Spacing="6"/></ItemsPanelTemplate>
+            <ItemsPanelTemplate>
+              <StackPanel Orientation="Horizontal" Spacing="6"/>
+            </ItemsPanelTemplate>
           </ItemsControl.ItemsPanel>
           <ItemsControl.ItemTemplate>
             <DataTemplate>
@@ -78,6 +80,15 @@
             <TreeView.ItemTemplate>
               <TreeDataTemplate ItemsSource="{Binding Children}">
                 <StackPanel Orientation="Horizontal" Spacing="6">
+                  <StackPanel.ContextMenu>
+                    <ContextMenu>
+                      <MenuItem Header="Save to Host…" Click="OnCxfsSave"/>
+                      <Separator/>
+                      <MenuItem Header="New Folder" Click="OnCxfsNewFolder"/>
+                      <MenuItem Header="Rename" Click="OnCxfsRename"/>
+                      <MenuItem Header="Delete" Click="OnCxfsDelete"/>
+                    </ContextMenu>
+                  </StackPanel.ContextMenu>
                   <materialIcons:MaterialIcon Kind="{Binding Icon}" Width="15" Height="15"
                                               Foreground="{DynamicResource CxAccentBrush}"/>
                   <TextBlock Text="{Binding Name}" VerticalAlignment="Center"

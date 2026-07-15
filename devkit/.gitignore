@@ -123,3 +123,5 @@ publish/
 /CXEX.Studio/obj/Debug/net10.0/CXEX.Studio.genruntimeconfig.cache
 /_docs_setup
 /Directory.Build.props
+/CXEX.CLI/Properties/PublishProfiles
+/dist/cli

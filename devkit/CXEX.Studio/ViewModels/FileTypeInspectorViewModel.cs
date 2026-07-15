@@ -46,6 +46,8 @@ public partial class FileTypeInspectorViewModel : Document
     // CXFS file tree (when a SYSTEM/CXFS partition is present)
     [ObservableProperty] private string _cxfsStatus = "";
     public ObservableCollection<CxfsNode> CxfsTree { get; } = new();
+    private long _cxfsBaseLba = -1;             // SYSTEM partition base (sectors)
+    private CXFSSuperblock? _cxfsSuperblock;    // mounted superblock (for writes)
 
     // search
     public string[] SearchModes { get; } = { "Hex", "ASCII", "Address" };
@@ -175,6 +177,7 @@ public partial class FileTypeInspectorViewModel : Document
         {
             using var fs = new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.Read);
             using var img = new CXFSImage(fs, (ulong)baseLbaSectors);
+            _cxfsBaseLba = baseLbaSectors; _cxfsSuperblock = img.Superblock;
             uint blockSize = img.Superblock.BlockSize == 0 ? 4096u : img.Superblock.BlockSize;
             uint rootId = img.Superblock.RootId;
 
@@ -207,6 +210,45 @@ public partial class FileTypeInspectorViewModel : Document
         MatchStart = n.FirstExtentOffset; MatchLength = 16;
         GoToOffset(n.FirstExtentOffset);
         SearchStatus = $"{n.Name} @ 0x{n.FirstExtentOffset:X}";
+    }
+
+    // ---- CXFS host-side operations (download / rename / mkdir / delete) ----
+
+    /// <summary>Read a file's bytes out of the volume (for "Save to Host").</summary>
+    public byte[]? CxfsReadFile(CxfsNode? n)
+    {
+        if (n is null || !n.Entry.IsFile || _path is null || _cxfsBaseLba < 0) return null;
+        try
+        {
+            using var fs = new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            using var img = new CXFSImage(fs, (ulong)_cxfsBaseLba);
+            return img.ReadFileBytes(n.Entry);
+        }
+        catch { return null; }
+    }
+
+    public void CxfsRename(CxfsNode? n, string newName) { if (n != null) CxfsWrite(w => w.Rename(n.Entry.Id, newName)); }
+    public void CxfsDelete(CxfsNode? n) { if (n != null) CxfsWrite(w => w.Delete(n.Entry.Id)); }
+
+    public void CxfsNewFolder(CxfsNode? n, string name)
+    {
+        uint parent = n is null ? (_cxfsSuperblock?.RootId ?? 0u)
+                    : n.IsDirectory ? n.Entry.Id : n.Entry.ParentId;
+        CxfsWrite(w => w.CreateDirectory(parent, name));
+    }
+
+    private void CxfsWrite(Action<CXFSWriter> op)
+    {
+        if (_path is null || _cxfsSuperblock is null || _cxfsBaseLba < 0) return;
+        try
+        {
+            using (var fs = new FileStream(_path, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            using (var w = new CXFSWriter(fs, _cxfsSuperblock, (ulong)_cxfsBaseLba))
+                op(w);
+        }
+        catch (Exception ex) { CxfsStatus = "CXFS write: " + ex.Message; }
+        MountCxfs(_cxfsBaseLba);
+        ReadPage();
     }
 
     [RelayCommand]

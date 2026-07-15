@@ -34,16 +34,22 @@ public static class CXEXWriter
         MemoryPrimitives.WriteU32(span, 40, 0); // SignatureOffset
         MemoryPrimitives.WriteU32(span, 44, 0); // DependencyOffset
 
-        // As defined in cxex.h, phys_base is mapped into the first 4 bytes of reserved[8]
+        // phys_base at offset 48. boot/cxexload.asm (CXH_PHYS_BASE equ 48) uses this to
+        // compute the virt->phys delta when placing a higher-half kernel with paging off.
         MemoryPrimitives.WriteU32(span, 48, layout.PhysBase);
 
         // 3. Write Section Table and Segment Data
         int secOffset = 56;
         foreach (var sec in layout.Sections)
         {
-            // Write 8-byte NUL-padded name
+            // Write 8-byte NUL-padded name. Names longer than 8 bytes are truncated,
+            // matching mkcxes.py's "8s" pack. (The previous form threw on any name
+            // over 8 chars: CopyTo requires the destination to be at least as long
+            // as the source, and the destination was clamped to 8.)
             byte[] nameBytes = Encoding.ASCII.GetBytes(sec.Name);
-            nameBytes.CopyTo(span.Slice(secOffset, Math.Min(nameBytes.Length, 8)));
+            int nameLen = Math.Min(nameBytes.Length, 8);
+            nameBytes.AsSpan(0, nameLen).CopyTo(span.Slice(secOffset, nameLen));
+            // remaining bytes are already zero (fileData is zero-initialised)
 
             // Write 20 bytes of properties
             MemoryPrimitives.WriteU32(span, secOffset + 8, sec.FileOffset);

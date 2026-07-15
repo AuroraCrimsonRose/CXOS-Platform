@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using Spectre.Console;
 using Spectre.Console.Cli;
 using CXEX.CLI.Commands;
@@ -11,28 +11,41 @@ app.Configure(config =>
     config.SetApplicationName("cxk");
     config.SetApplicationVersion("5.0.0");
 
-    // X language compiler (CXEX.Lang): .x source -> ELF
-    config.AddCommand<CompileCommand>("compile")
-        .WithDescription("Compiles an X source file (.x) into an ELF, ready for `build` to package as CXEX.");
+    // ---- key management (replaces makekeys.py / embedkey.py) ----
+    config.AddCommand<KeygenCommand>("keygen")
+        .WithDescription("Generates an RSA signing keypair (.xksk private + .xkpk public).");
 
-    // 1. The Compiler (Replaces mkcxes.py)
+    config.AddCommand<EmbedCommand>("embed")
+        .WithDescription("Converts a binary file into a C header byte array (e.g. trusted_key.c, app_image.h).");
+
+    // ---- X toolchain (CXEX.Lang) ----
+    config.AddCommand<CompileCommand>("compile")
+        .WithDescription("Compiles an X source file (.xfxn) into an ELF, ready for `build` to package as CXEX.");
+
+    // ---- packaging (replaces mkcxes.py) ----
     config.AddCommand<BuildCommand>("build")
         .WithDescription("Compiles an ELF binary into a CXEX executable (.xkex, .xoex, .xcex).");
 
     config.AddCommand<SignCommand>("sign")
         .WithDescription("Appends a CXSG cryptographic signature block to a CXEX image.");
 
+    // ---- imaging (replaces mkdisk.py / pad_*.ps1) ----
     config.AddCommand<ImageCommand>("image")
         .WithDescription("Compiles stage1, stage2, the kernel, and the CXFS payload into a bootable XBPT disk image.");
 
-    config.AddCommand<EmbedCommand>("embed")
-        .WithDescription("Converts a binary file into a C header byte array.");
-
-    config.AddCommand<CheckCommand>("check")
-        .WithDescription("Validates that all source files listed in CMakeLists.txt exist.");
-
     config.AddCommand<RawImageCommand>("raw-image")
         .WithDescription("Creates a flat, padded raw binary disk (replaces pad_boot.ps1).");
+
+    // ---- run + inspect ----
+    config.AddCommand<RunCommand>("run")
+        .WithDescription("Boots a CXK disk image in QEMU or Bochs (replaces run_qemu.bat / run_bochs.bat).");
+
+    config.AddCommand<InspectCommand>("inspect")
+        .WithDescription("Dumps a CXEX image's header, sections, and signature (replaces cxkdump.py).");
+
+    // ---- validation ----
+    config.AddCommand<CheckCommand>("check")
+        .WithDescription("Validates that all source files listed in CMakeLists.txt exist.");
 });
 
 // Run the application

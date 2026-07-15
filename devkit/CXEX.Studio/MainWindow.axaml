@@ -72,6 +72,7 @@
 
       <Menu Grid.Column="0" HorizontalAlignment="Left">
         <MenuItem Header="_File">
+          <MenuItem Header="_New Project..." Click="OnNewProjectClicked" />
           <MenuItem Header="_Open Project..." Click="OnOpenProjectClicked" />
           <Separator/>
           <MenuItem Header="_Exit" />

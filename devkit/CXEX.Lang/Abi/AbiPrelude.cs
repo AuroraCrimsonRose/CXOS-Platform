@@ -9,10 +9,10 @@
 /// </summary>
 public static class AbiPrelude
 {
-    public const string FileName = "abi.x";
+    public const string FileName = "abi.xfxn";
 
     public static string Generate() => """
-// abi.x - GENERATED from cxk_abi.h (CXK ABI v1). Do not edit by hand.
+// abi.xfxn - GENERATED from cxk_abi.h (CXK ABI v1). Do not edit by hand.
 // The only effect in X is __syscall; these wrappers name the kernel's calls.
 
 // ---- syscall numbers ----
