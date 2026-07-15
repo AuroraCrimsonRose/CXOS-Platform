@@ -54,8 +54,6 @@
 /* ---- sizes of the on-disk structures (explicit, not sizeof a struct) ---- */
 #define CXEX_HEADER_SIZE   56      /* section 9.3 */
 #define CXEX_SECTION_SIZE  28      /* section 9.4: 8+4+4+4+4+4 */
-#define CXEX_SIG_FIXED     40      /* CXSG fixed part: 4+2+2+32 (+2 sig_len) -> see below */
-
 /* signature block (10.3): magic(4) sig_algo(2) hash_algo(2) fingerprint(32)
    sig_len(2) signature(sig_len). Fixed part before the signature = 42 bytes. */
 #define CXEX_SIG_HDR_SIZE  42
@@ -82,6 +80,10 @@ struct cxex_header {
     uint32_t reloc_offset;
     uint32_t signature_offset;
     uint32_t dependency_offset;
+    uint32_t phys_base;         /* physical load base (ELF LMA). boot/cxexload.asm
+                                   reads this at offset 48 to compute the
+                                   virt->phys delta for the higher-half kernel.
+                                   NOT reserved - do not zero it. */
 };
 
 struct cxex_section {

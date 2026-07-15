@@ -14,6 +14,7 @@
  */
 
 #include "idt.h"
+#include "syslog.h"
 #include "format.h"
 #include "sched.h"
 #include "speaker.h"
@@ -160,6 +161,25 @@ void isr_handler(struct registers *r) {
             fp = (uint32_t *)fp[0];
         }
     }
+
+    /* recent system-log entries (last 8) - what was happening before the fault */
+    {
+        uint32_t n = slog_count();
+        uint32_t start = (n > 8u) ? (n - 8u) : 0u;
+        panic_puts("Recent log:\n");
+        for (uint32_t i = start; i < n; i++) {
+            const struct slog_entry *e = slog_get(i);
+            if (!e) break;
+            panic_puts("  ");
+            panic_puts(e->system);
+            if (e->subsystem[0]) { panic_puts("/"); panic_puts(e->subsystem); }
+            panic_puts(": ");
+            panic_puts(e->event);
+            panic_puts("\n");
+        }
+    }
+
+    if (slog_flush_crash() == 0) panic_puts("Log saved to /System/crash.log\n");
 
     panic_puts("System halted.");
     for (;;) { __asm__ volatile ("cli; hlt"); }

@@ -1,0 +1,49 @@
+// hello.xfxn - the first native X (.xfxn) app for CXOS.
+// Aurora Tejeda / CATX SYSTEMS LLC
+//
+// A capability-less USER app (.xcex). It cannot touch the console directly
+// (no CAP_CONSOLE); instead it asks its broker executive to print for it over
+// IPC - the X port of os/apps/hello.c, the positive half of the brokered model.
+//
+// v0.1 X notes that shape this port:
+//   - no string literals yet, so the message is built byte-by-byte (ASCII codes)
+//   - `let` requires an initializer whose type matches, and a struct local can't
+//     be initialized from a scalar - so the args struct is a zero-filled global
+//     (EmitGlobal zeroes struct space) whose fields we set explicitly.
+//
+// The abi.xfxn prelude (prepended by `cxk compile`) supplies:
+//   struct ipc_call_args { ep_handle: i32, req: *u8, req_len: u32, reply: *u8, reply_cap: u32 }
+//   fn ipc_call(a: *ipc_call_args) -> i32
+//   fn exit(code: i32) -> void
+
+global msg:   [16]u8;    // "hi from X\n" + NUL + slack
+global reply: [8]u8;     // the broker's "ok"
+global a:     ipc_call_args;
+
+fn _start() -> void {
+    // build "hi from X\n" one byte at a time (no string literals in v0.1)
+    msg[0]  = 104;   // h
+    msg[1]  = 105;   // i
+    msg[2]  = 32;    // space
+    msg[3]  = 102;   // f
+    msg[4]  = 114;   // r
+    msg[5]  = 111;   // o
+    msg[6]  = 109;   // m
+    msg[7]  = 32;    // space
+    msg[8]  = 88;    // X
+    msg[9]  = 10;    // newline
+    msg[10] = 0;     // NUL
+
+    a.ep_handle = 0;          // the broker channel (installed by spawn)
+    a.req       = &msg[0];
+    a.req_len   = 10;
+    a.reply     = &reply[0];
+    a.reply_cap = 8;
+
+    let rc: i32 = ipc_call(&a);   // blocks; executive prints msg, replies "ok"
+
+    if (rc < 0) {
+        exit(1);
+    }
+    exit(0);
+}
