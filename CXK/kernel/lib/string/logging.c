@@ -3,6 +3,7 @@
 /* Column-aligned severity logging on top of the console. See logging.h. */
 
 #include "logging.h"
+#include "syslog.h"
 #include "console.h"
 #include "color.h"
 
@@ -49,6 +50,7 @@ void klog(const char *tag, log_sev_t sev, const char *msg) {
     prefix(tag, sev);
     if (msg) console_puts_color(msg, LOG_MSG_COL);
     console_newline();
+    if (!slog_in_progress) slog_record(tag, "", sev, msg);
 }
 
 void klog_u32(const char *tag, log_sev_t sev,
@@ -59,6 +61,7 @@ void klog_u32(const char *tag, log_sev_t sev,
     console_put_u32_color(value, value_attr);
     if (suffix) console_puts_color(suffix, LOG_MSG_COL);
     console_newline();
+    if (!slog_in_progress) slog_record(tag, "", sev, label ? label : "");
 }
 
 /* indent + arrow so child content aligns under the message column */

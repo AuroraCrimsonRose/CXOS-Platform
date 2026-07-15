@@ -17,7 +17,11 @@ static uint32_t rd32(const uint8_t *p) {
 /* HEADER field offsets (section 9.3), from mkcxes.py "<4sHHHHIIIIIHHIII8s":
    0 magic | 4 type | 6 fmt_ver | 8 arch | 10 abi | 12 flags | 16 entry |
    20 load_base | 24 image_min | 28 image_max | 32 sec_count | 34 sec_off |
-   36 reloc_off | 40 sig_off | 44 dep_off | 48 reserved(8) = 56 total */
+   36 reloc_off | 40 sig_off | 44 dep_off | 48 phys_base | 52 reserved(4) = 56
+
+   NOTE: offset 48 is phys_base, NOT reserved. boot/cxexload.asm depends on it
+   (CXH_PHYS_BASE equ 48) to place a higher-half kernel while paging is off.
+   Both mkcxes.py and CXEXWriter emit it. Zeroing it breaks the boot chain. */
 int cxex_parse_header(const uint8_t *file, size_t len, struct cxex_header *out) {
     if (len < CXEX_HEADER_SIZE) return -1;
     if (!(file[0]==CXEX_MAGIC0 && file[1]==CXEX_MAGIC1 &&
@@ -37,6 +41,7 @@ int cxex_parse_header(const uint8_t *file, size_t len, struct cxex_header *out) 
     out->reloc_offset     = rd32(file + 36);
     out->signature_offset = rd32(file + 40);
     out->dependency_offset= rd32(file + 44);
+    out->phys_base        = rd32(file + 48);
     return 0;
 }
 

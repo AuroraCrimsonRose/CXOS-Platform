@@ -29,6 +29,7 @@ tmp/
 logs/
 cache/
 config/
+tools/cxk.exe
 
 # -------------------------
 # Editor / workspace files
@@ -56,3 +57,26 @@ Desktop.ini
 !CXK/CMakeLists.txt
 
 *.xksk
+CXK/src/tested/build.bat
+CXK/src/tested/check_sources.py
+CXK/src/tested/cxk.exe
+CXK/src/tested/hello.ld
+CXK/src/tested/hello.xcex
+CXK/src/tested/make_app_image.py
+CXK/src/tested/make_fs_img.ps1
+CXK/src/tested/mkdisk.py
+CXK/src/tested/pad_boot.ps1
+CXK/src/tested/pad_disk.ps1
+CXK/src/tested/run_bochs.bat
+CXK/src/tested/run_qemu_ahci.bat
+CXK/src/tested/run_qemu.bat
+CXK/src/tested/CXEX_Compiler/cxkdump.py
+CXK/src/tested/CXEX_Compiler/cxkparse.py
+CXK/src/tested/CXEX_Compiler/embedkey.py
+CXK/src/tested/CXEX_Compiler/kernel.xkpk
+CXK/src/tested/CXEX_Compiler/makekeydev.py
+CXK/src/tested/CXEX_Compiler/makekeys.py
+CXK/src/tested/CXEX_Compiler/mkcxes.py
+CXK/src/tested/CXEX_Compiler/signcxex.py
+CXK/src/tested/CXEX_Compiler/svg2cxlogo.py
+CXK/src/tested/CXEX_Compiler/__pycache__/cxkparse.cpython-314.pyc

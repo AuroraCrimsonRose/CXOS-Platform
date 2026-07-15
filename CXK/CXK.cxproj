@@ -1,0 +1,32 @@
+{
+  "formatVersion": 1,
+  "name": "CXK",
+  "version": "0.1.0",
+  "type": "Kernel",
+  "targetArch": "i686",
+  "toolchain": {
+    "gcc": "i686-elf-gcc",
+    "ld": "i686-elf-ld",
+    "nasm": "nasm",
+    "cMake": "cmake",
+    "qemu": "qemu-system-i386",
+    "bochs": "bochs"
+  },
+  "build": {
+    "sourceDir": "src",
+    "outputDir": "build",
+    "entryPoint": "_start",
+    "linkBase": "0x100000",
+    "extraFlags": []
+  },
+  "disk": {
+    "diskSizeMb": 64,
+    "bootSizeMb": 8
+  },
+  "emulator": {
+    "engine": "qemu",
+    "memoryMb": 128,
+    "serialToConsole": true,
+    "extraArgs": []
+  }
+}

@@ -16,11 +16,17 @@ cmake_minimum_required(VERSION 3.15)
 project(CXK_v5 ASM_NASM)
 enable_language(ASM_NASM)
 
+# ---- repo root ----
+# This file lives at <root>/tools/cmake/CMakeLists.txt. Derive the project root
+# from its own location so the build works regardless of the working directory
+# cmake is invoked from. Everything below uses CXK_ROOT, not CMAKE_SOURCE_DIR.
+get_filename_component(CXK_ROOT "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
+
 # ---- build-time flags (edit cmake/cxk_flags.cmake, NOT this file) ----
 # One source of truth for toggles like CXK_ENABLE_FB. Each NAME=VALUE becomes
 # -DNAME=VALUE and is fed to BOTH gcc (kernel C) and nasm (boot + kernel asm),
 # so the kernel and bootloader can't disagree.
-include(${CMAKE_SOURCE_DIR}/cxk_flags.cmake)
+include(${CXK_ROOT}/tools/cmake/cxk_flags.cmake)
 set(CXK_DEFS "")
 foreach(f ${CXK_FLAGS})
     list(APPEND CXK_DEFS -D${f})
@@ -34,10 +40,10 @@ set(CMAKE_LD      "${CROSS_PREFIX}/i686-elf-ld.exe")
 set(KCC           "${CROSS_PREFIX}/i686-elf-gcc.exe")
 
 # ---- paths ----
-set(SRC_DIR   ${CMAKE_SOURCE_DIR})
+set(SRC_DIR   ${CXK_ROOT})
 set(BUILD_DIR ${CMAKE_BINARY_DIR})
-set(IMAGES_DIR  "C:/Users/Aurora/Documents/VS Code/CXK/CXK/dist/CXK_x86_32/images")
-set(DIST_DIR    "C:/Users/Aurora/Documents/VS Code/CXK/CXK/dist/CXK_x86_32/packages")
+set(IMAGES_DIR  ${CXK_ROOT}/dist/CXK_x86_32/images)
+set(DIST_DIR    ${CXK_ROOT}/dist/CXK_x86_32/packages)
 set(PACKAGES_DIR ${DIST_DIR})
 
 # ---- kernel include directories (add new subsystem dirs here) ----
@@ -84,6 +90,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/lib/mem/bitmap.c
     ${SRC_DIR}/kernel/lib/string/format.c
     ${SRC_DIR}/kernel/lib/string/logging.c
+    ${SRC_DIR}/kernel/lib/string/syslog.c
     ${SRC_DIR}/kernel/cpu/sched.c
     ${SRC_DIR}/kernel/cpu/uid.c
     ${SRC_DIR}/kernel/drivers/char/timer.c
@@ -142,37 +149,16 @@ set(KERNEL_ELF  ${BUILD_DIR}/kernel.elf)
 set(KERNEL_XKEX ${DIST_DIR}/kernel.xkex)
 set(DISK_IMG    ${IMAGES_DIR}/cxk_x86_32.img)
 
-set(VENV_PY   ${SRC_DIR}/../.venv/Scripts/python.exe)
-set(MKCXES    ${SRC_DIR}/tools/CXEX_Compiler/mkcxes.py)
-set(PAD_BOOT  ${SRC_DIR}/tools/pad_boot.ps1)
-
-# ---- code-signing + executive + unified-disk pipeline ----
-option(SIGN "sign CXEX artifacts (.xkex/.xoex) with the kernel key" OFF)
-set(SIGNCXEX  ${SRC_DIR}/tools/CXEX_Compiler/signcxex.py)
-set(MKDISK    ${SRC_DIR}/tools/mkdisk.py)
-set(SIGN_SK   ${SRC_DIR}/tools/CXEX_Compiler/kernel.xksk)
-set(SIGN_PK   ${SRC_DIR}/tools/CXEX_Compiler/kernel.xkpk)
-
 # the system executive (.xoex): os/executive/executive.c -> ELF -> CXEX (type os)
 set(EXEC_C    ${SRC_DIR}/os/executive/executive.c)
 set(EXEC_LD   ${SRC_DIR}/os/executive/executive.ld)
 set(EXEC_ELF  ${BUILD_DIR}/executive.elf)
 set(EXEC_XOEX ${PACKAGES_DIR}/executive.xoex)
 
+include(${CXK_ROOT}/tools/cmake/cxk_toolchain.cmake)
+
 # the unified XBPT disk (boot + stage + system on one disk)
 set(CXK_DISK  ${IMAGES_DIR}/cxk_disk.img)
-
-# per-artifact sign step: real signcxex when -DSIGN=ON, else a harmless notice.
-if(SIGN)
-    if(NOT EXISTS ${SIGN_SK})
-        message(FATAL_ERROR "SIGN=ON but signing key missing: ${SIGN_SK}\n  run: python tools/CXEX_Compiler/makekeys.py kernel")
-    endif()
-    set(KSIGN COMMAND ${VENV_PY} ${SIGNCXEX} ${KERNEL_XKEX} ${SIGN_SK} ${SIGN_PK})
-    set(XSIGN COMMAND ${VENV_PY} ${SIGNCXEX} ${EXEC_XOEX}   ${SIGN_SK} ${SIGN_PK})
-else()
-    set(KSIGN COMMAND ${CMAKE_COMMAND} -E echo "  kernel.xkex UNSIGNED (configure -DSIGN=ON to sign)")
-    set(XSIGN COMMAND ${CMAKE_COMMAND} -E echo "  executive.xoex UNSIGNED (configure -DSIGN=ON to sign)")
-endif()
 
 # ---- generate compile rules for each kernel C source ----
 set(KERNEL_OBJS "")
@@ -232,9 +218,9 @@ add_custom_command(
 add_custom_command(
     OUTPUT ${KERNEL_XKEX}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${PACKAGES_DIR}
-    COMMAND ${VENV_PY} ${MKCXES} ${KERNEL_ELF} ${KERNEL_XKEX} --type kernel
+    COMMAND ${CXK} build ${KERNEL_ELF} ${KERNEL_XKEX} --type kernel
     ${KSIGN}
-    DEPENDS ${KERNEL_ELF} ${MKCXES}
+    DEPENDS ${KERNEL_ELF} ${CXK}
     COMMENT "Converting kernel.elf -> kernel.xkex (CXEX)"
 )
 
@@ -250,9 +236,9 @@ add_custom_command(
 add_custom_command(
     OUTPUT ${EXEC_XOEX}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${PACKAGES_DIR}
-    COMMAND ${VENV_PY} ${MKCXES} ${EXEC_ELF} ${EXEC_XOEX} --type os
+    COMMAND ${CXK} build ${EXEC_ELF} ${EXEC_XOEX} --type os
     ${XSIGN}
-    DEPENDS ${EXEC_ELF} ${MKCXES}
+    DEPENDS ${EXEC_ELF} ${CXK}
     COMMENT "Converting executive.elf -> executive.xoex (CXEX, type os)"
 )
 
@@ -260,10 +246,10 @@ add_custom_command(
 add_custom_command(
     OUTPUT ${CXK_DISK}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${IMAGES_DIR}
-    COMMAND ${VENV_PY} ${MKDISK} --out ${CXK_DISK} --size-mb 64 --boot-mb 8
+    COMMAND ${CXK} image --out ${CXK_DISK} --size-mb 64 --boot-mb 8
             --stage1 ${BOOT_BIN} --stage2 ${STAGE2_BIN} --kernel ${KERNEL_XKEX}
             --stage Boot.xoex=${EXEC_XOEX}
-    DEPENDS ${BOOT_BIN} ${STAGE2_BIN} ${KERNEL_XKEX} ${EXEC_XOEX} ${MKDISK}
+    DEPENDS ${BOOT_BIN} ${STAGE2_BIN} ${KERNEL_XKEX} ${EXEC_XOEX} ${CXK}
     COMMENT "Building unified CXK disk (XBPT: boot + stage + system)"
 )
 add_custom_target(cxk_disk ALL DEPENDS ${CXK_DISK})
@@ -273,13 +259,10 @@ add_custom_command(
     OUTPUT ${DISK_IMG}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${IMAGES_DIR}
     COMMAND ${CMAKE_COMMAND} -E echo "Building v5 boot image..."
-    COMMAND powershell -NoProfile -ExecutionPolicy Bypass
-        -File ${PAD_BOOT}
-        -Boot ${BOOT_BIN}
-        -Stage2 ${STAGE2_BIN}
-        -Kernel ${KERNEL_XKEX}
-        -Out ${DISK_IMG}
-    DEPENDS ${BOOT_BIN} ${STAGE2_BIN} ${KERNEL_XKEX}
+    COMMAND ${CXK} raw-image --out ${DISK_IMG}
+        --boot ${BOOT_BIN} --stage2 ${STAGE2_BIN} --kernel ${KERNEL_XKEX}
+        --kernel-lba 33
+    DEPENDS ${BOOT_BIN} ${STAGE2_BIN} ${KERNEL_XKEX} ${CXK}
     COMMENT "Imaging boot + stage 2 + kernel"
 )
 
