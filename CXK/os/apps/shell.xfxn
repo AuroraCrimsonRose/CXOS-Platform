@@ -1,0 +1,85 @@
+// shell.xfxn - the CXK console shell (explorer.exe equivalent).
+// Aurora Tejeda / CATX SYSTEMS LLC
+//
+// A privileged OS-level executable: the executive spawns it with CAP_OS_BASELINE
+// so it can read input, write the console, and reboot directly. The base
+// environment the user lives in.
+//
+// Commands: help, echo <text>, reboot, gui
+//
+// v0.1 X constraint hit while writing this: locals must have an initializer and
+// aggregates can't be initialized from a scalar, so there are no local arrays.
+// Workaround: `one` is a global scratch buffer. See SHELL_NOTES for the language
+// features this surfaced.
+
+global line: [128]u8;    // current input line
+global one:  [2]u8;      // scratch for echoing one char (would be a local)
+global prompt: *u8;
+
+fn puts(s: *u8) -> void { console_write(s, 0); }
+
+// compare two NUL-terminated strings; 1 if equal, 0 if not
+fn streq(a: *u8, b: *u8) -> i32 {
+    let i: u32 = 0;
+    while (a[i] != 0) {
+        if (a[i] != b[i]) { return 0; }
+        i = i + 1;
+    }
+    if (b[i] != 0) { return 0; }
+    return 1;
+}
+
+// read one line into `line` until Enter; returns length
+fn read_line() -> u32 {
+    let n: u32 = 0;
+    while (n < 127) {
+        let c: i32 = input_read();       // blocks for a key
+        if (c == 10) {                   // Enter
+            line[n] = 0;
+            console_write("\n", 0);
+            return n;
+        }
+        if (c == 8) {                    // Backspace
+            if (n > 0) {
+                n = n - 1;
+                console_write("\b \b", 0);
+            }
+        }
+        if (c != 8 && c != 10) {
+            line[n] = c as u8;
+            n = n + 1;
+            one[0] = c as u8;
+            one[1] = 0;
+            console_write(&one[0], 1);   // echo the char
+        }
+    }
+    line[n] = 0;
+    return n;
+}
+
+fn _start() -> void {
+    console_write("SHELL ACTIVE\n", 0);
+    prompt = "cxk> ";
+    puts("CXK shell - type 'help'\n");
+
+    while (1 == 1) {
+        puts(prompt);
+        read_line();
+
+        if (streq(&line[0], "help") == 1) {
+            puts("commands: help  echo <text>  reboot  gui\n");
+        }
+        if (streq(&line[0], "reboot") == 1) {
+            puts("rebooting...\n");
+            reboot();
+        }
+        if (streq(&line[0], "gui") == 1) {
+            puts("gui mode not yet implemented\n");
+        }
+        // echo: "echo " prefix (e,c,h,o,space) then print the rest
+        if (line[0] == 101 && line[1] == 99 && line[2] == 104 && line[3] == 111 && line[4] == 32) {
+            puts(&line[5]);
+            puts("\n");
+        }
+    }
+}

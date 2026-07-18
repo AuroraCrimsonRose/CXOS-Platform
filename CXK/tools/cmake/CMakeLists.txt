@@ -4,29 +4,27 @@
 #  Author: Aurora Tejeda / CATX Systems LLC
 # ============================================================================
 #
-# v5 build - boot chain + higher-half kernel.
+# v5 build - boot chain + higher-half kernel + X apps.
 #   stage 1 (boot.asm) -> stage 2 (a20/mem/gdt/pmode + CXEX load) ->
-#   kernel (higher-half at 0xC0100000).
+#   kernel (higher-half at 0xC0100000) -> executive (.xoex) -> shell (.xcex)
 #
 # Kernel sources are LISTS (KERNEL_C_SRCS / KERNEL_ASM_SRCS): to add a
 # subsystem, append its .c/.asm here - the compile+link rules are generated
 # automatically. Include dirs are in KERNEL_INCLUDES.
+#
+# X apps build automatically: edit os/apps/shell.xfxn and a plain build
+# recompiles it, repackages the .xcex, regenerates app_image.h, relinks the
+# executive, and reimages the disk.
 
 cmake_minimum_required(VERSION 3.15)
 project(CXK_v5 ASM_NASM)
 enable_language(ASM_NASM)
 
-# ---- repo root ----
-# This file lives at <root>/tools/cmake/CMakeLists.txt. Derive the project root
-# from its own location so the build works regardless of the working directory
-# cmake is invoked from. Everything below uses CXK_ROOT, not CMAKE_SOURCE_DIR.
-get_filename_component(CXK_ROOT "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
-
 # ---- build-time flags (edit cmake/cxk_flags.cmake, NOT this file) ----
 # One source of truth for toggles like CXK_ENABLE_FB. Each NAME=VALUE becomes
 # -DNAME=VALUE and is fed to BOTH gcc (kernel C) and nasm (boot + kernel asm),
 # so the kernel and bootloader can't disagree.
-include(${CXK_ROOT}/tools/cmake/cxk_flags.cmake)
+include(${CMAKE_SOURCE_DIR}/cxk_flags.cmake)
 set(CXK_DEFS "")
 foreach(f ${CXK_FLAGS})
     list(APPEND CXK_DEFS -D${f})
@@ -40,10 +38,11 @@ set(CMAKE_LD      "${CROSS_PREFIX}/i686-elf-ld.exe")
 set(KCC           "${CROSS_PREFIX}/i686-elf-gcc.exe")
 
 # ---- paths ----
-set(SRC_DIR   ${CXK_ROOT})
+# Step out of tools/cmake to point to the actual CXK root directory
+get_filename_component(SRC_DIR "${CMAKE_SOURCE_DIR}/../.." ABSOLUTE)
 set(BUILD_DIR ${CMAKE_BINARY_DIR})
-set(IMAGES_DIR  ${CXK_ROOT}/dist/CXK_x86_32/images)
-set(DIST_DIR    ${CXK_ROOT}/dist/CXK_x86_32/packages)
+set(IMAGES_DIR   ${SRC_DIR}/dist/CXK_x86_32/images)
+set(DIST_DIR     ${SRC_DIR}/dist/CXK_x86_32/packages)
 set(PACKAGES_DIR ${DIST_DIR})
 
 # ---- kernel include directories (add new subsystem dirs here) ----
@@ -65,6 +64,8 @@ set(KERNEL_INCLUDES
     -I${SRC_DIR}/kernel/memman
     -I${SRC_DIR}/kernel/drivers/char
     -I${SRC_DIR}/kernel/drivers/video
+    -I${SRC_DIR}/kernel/drivers/input
+    -I${SRC_DIR}/kernel/drivers/power
     -I${SRC_DIR}/kernel/drivers/bus
     -I${SRC_DIR}/kernel/drivers/storage/hardware
     -I${SRC_DIR}/kernel/drivers/storage/filesys
@@ -104,6 +105,8 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/drivers/char/console.c
     ${SRC_DIR}/kernel/drivers/video/vga.c
     ${SRC_DIR}/kernel/drivers/video/fb.c
+    ${SRC_DIR}/kernel/drivers/input/keyboard.c
+    ${SRC_DIR}/kernel/drivers/power/power.c
     ${SRC_DIR}/kernel/lib/audio/speaker.c
     ${SRC_DIR}/kernel/lib/gfx/color.c
     ${SRC_DIR}/kernel/lib/gfx/resolution.c
@@ -149,13 +152,23 @@ set(KERNEL_ELF  ${BUILD_DIR}/kernel.elf)
 set(KERNEL_XKEX ${DIST_DIR}/kernel.xkex)
 set(DISK_IMG    ${IMAGES_DIR}/cxk_x86_32.img)
 
+# ---- X apps: .xfxn -> .elf -> .xcex -> embedded C header ----
+# APP_BOOT is the startup app: embedded into the executive and spawned at boot.
+# To swap shells, point APP_BOOT/APP_BOOT_NAME at a different .xfxn.
+set(APP_BOOT      ${SRC_DIR}/os/apps/shell.xfxn)
+set(APP_BOOT_NAME shell)
+
+set(APP_ELF   ${BUILD_DIR}/${APP_BOOT_NAME}.elf)
+set(APP_XCEX  ${BUILD_DIR}/${APP_BOOT_NAME}.xcex)
+set(APP_IMAGE ${SRC_DIR}/os/executive/app_image.h)
+
 # the system executive (.xoex): os/executive/executive.c -> ELF -> CXEX (type os)
 set(EXEC_C    ${SRC_DIR}/os/executive/executive.c)
 set(EXEC_LD   ${SRC_DIR}/os/executive/executive.ld)
 set(EXEC_ELF  ${BUILD_DIR}/executive.elf)
 set(EXEC_XOEX ${PACKAGES_DIR}/executive.xoex)
 
-include(${CXK_ROOT}/tools/cmake/cxk_toolchain.cmake)
+include(${CMAKE_SOURCE_DIR}/cxk_toolchain.cmake)
 
 # the unified XBPT disk (boot + stage + system on one disk)
 set(CXK_DISK  ${IMAGES_DIR}/cxk_disk.img)
@@ -224,15 +237,40 @@ add_custom_command(
     COMMENT "Converting kernel.elf -> kernel.xkex (CXEX)"
 )
 
+# ---- X app: shell.xfxn -> shell.elf ----
+add_custom_command(
+    OUTPUT ${APP_ELF}
+    COMMAND ${CXK} compile ${APP_BOOT} ${APP_ELF}
+    DEPENDS ${APP_BOOT} ${CXK}
+    COMMENT "X   ${APP_BOOT_NAME}.xfxn -> ELF"
+)
+
+# ---- shell.elf -> shell.xcex (CXEX, type user) ----
+add_custom_command(
+    OUTPUT ${APP_XCEX}
+    COMMAND ${CXK} build ${APP_ELF} ${APP_XCEX} --type user
+    DEPENDS ${APP_ELF} ${CXK}
+    COMMENT "Packaging ${APP_BOOT_NAME}.xcex (CXEX, type user)"
+)
+
+# ---- shell.xcex -> app_image.h (byte array the executive embeds) ----
+add_custom_command(
+    OUTPUT ${APP_IMAGE}
+    COMMAND ${CXK} embed ${APP_XCEX} ${APP_IMAGE} ${APP_BOOT_NAME}_xcex
+    DEPENDS ${APP_XCEX} ${CXK}
+    COMMENT "Embedding ${APP_BOOT_NAME}.xcex -> app_image.h"
+)
+
 # ---- executive.c -> executive.elf (user-half) -> executive.xoex (signed) ----
 add_custom_command(
     OUTPUT ${EXEC_ELF}
     COMMAND ${KCC} -ffreestanding -fno-pic -no-pie -fno-stack-protector -nostdlib
             -I${SRC_DIR}/abi
             -Wl,-T,${EXEC_LD} -o ${EXEC_ELF} ${EXEC_C}
-    DEPENDS ${EXEC_C} ${EXEC_LD} ${SRC_DIR}/os/executive/app_image.h
+    DEPENDS ${EXEC_C} ${EXEC_LD} ${APP_IMAGE}
     COMMENT "CC+LD executive.c -> executive.elf (user-half .xoex bootstrap)"
 )
+
 add_custom_command(
     OUTPUT ${EXEC_XOEX}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${PACKAGES_DIR}
@@ -259,11 +297,15 @@ add_custom_command(
     OUTPUT ${DISK_IMG}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${IMAGES_DIR}
     COMMAND ${CMAKE_COMMAND} -E echo "Building v5 boot image..."
-    COMMAND ${CXK} raw-image --out ${DISK_IMG}
-        --boot ${BOOT_BIN} --stage2 ${STAGE2_BIN} --kernel ${KERNEL_XKEX}
-        --kernel-lba 33
+    COMMAND ${CXK} raw-image
+        --boot ${BOOT_BIN}
+        --stage2 ${STAGE2_BIN}
+        --kernel ${KERNEL_XKEX}
+        --out ${DISK_IMG}
     DEPENDS ${BOOT_BIN} ${STAGE2_BIN} ${KERNEL_XKEX} ${CXK}
     COMMENT "Imaging boot + stage 2 + kernel"
 )
-
 add_custom_target(disk_image ALL DEPENDS ${DISK_IMG})
+
+# ---- convenience: build just the X app chain ----
+add_custom_target(apps DEPENDS ${APP_IMAGE})

@@ -40,6 +40,7 @@ int fb_get_region(uint32_t *phys, uint32_t *size);
 uint32_t fb_width(void);
 uint32_t fb_height(void);
 uint32_t fb_bpp(void);
+uint32_t fb_pitch(void);   /* bytes per scanline */
 
 /* Pack an 8-bit-per-channel RGB into the active mode's pixel format. */
 uint32_t fb_rgb(uint8_t r, uint8_t g, uint8_t b);
@@ -72,5 +73,8 @@ uint32_t fb_font_height(void);
 
 void fb_draw_char(uint32_t x, uint32_t y, char c, uint32_t fg, uint32_t bg);
 void fb_draw_string(uint32_t x, uint32_t y, const char *s, uint32_t fg, uint32_t bg);
+
+struct fb_op_args;
+int sys_fb_op(const struct fb_op_args *ua);
 
 #endif
