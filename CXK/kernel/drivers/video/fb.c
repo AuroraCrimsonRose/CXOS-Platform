@@ -90,6 +90,7 @@ int fb_get_region(uint32_t *phys, uint32_t *size) {
 uint32_t fb_width(void)  { return width; }
 uint32_t fb_height(void) { return height; }
 uint32_t fb_bpp(void)    { return bpp; }
+uint32_t fb_pitch(void)  { return pitch; }
 
 uint32_t fb_rgb(uint8_t r, uint8_t g, uint8_t b) {
     if (bpp == 32) {
@@ -219,5 +220,46 @@ void fb_draw_string(uint32_t x, uint32_t y, const char *s, uint32_t fg, uint32_t
         fb_draw_char(x, y, *s, fg, bg);
         x += FB_CHAR_W;
         s++;
+    }
+}
+
+
+/* ---- SYS_FB_OP handler ----
+ * Draw on behalf of a CAP_FRAMEBUFFER holder. Colors cross the ABI as canonical
+ * 0x00RRGGBB and are converted here via fb_rgb to the active mode. */
+#include "../../cpu/usermode.h"   /* user_ptr_ok */
+#include "../../../abi/cxk_abi.h" /* fb_op_args, FB_OP_*, E_* */
+
+static uint32_t fb_pack(uint32_t rgb) {
+    return fb_rgb((uint8_t)(rgb >> 16), (uint8_t)(rgb >> 8), (uint8_t)rgb);
+}
+
+int sys_fb_op(const struct fb_op_args *ua) {
+    if (!user_ptr_ok((uint32_t)ua, sizeof *ua)) return E_FAULT;
+    struct fb_op_args a = *ua;
+    if (!fb_active()) return E_NOENT;
+
+    switch (a.op) {
+        case FB_OP_INFO: {
+            if (!user_ptr_ok((uint32_t)a.out, 4 * sizeof(uint32_t))) return E_FAULT;
+            a.out[0] = fb_width();
+            a.out[1] = fb_height();
+            a.out[2] = fb_bpp();
+            a.out[3] = fb_pitch();
+            return 0;
+        }
+        case FB_OP_CLEAR:     fb_clear(fb_pack(a.color)); return 0;
+        case FB_OP_FILL_RECT: fb_fill_rect(a.x, a.y, a.w, a.h, fb_pack(a.color)); return 0;
+        case FB_OP_PUT_PIXEL: fb_put_pixel(a.x, a.y, fb_pack(a.color)); return 0;
+        case FB_OP_DRAW_LINE: fb_draw_line((int)a.x, (int)a.y, (int)a.w, (int)a.h, fb_pack(a.color)); return 0;
+        case FB_OP_DRAW_TEXT: {
+            uint32_t n = 0;
+            const char *p = a.text;
+            while (n < 0x1000 && user_ptr_ok((uint32_t)a.text + n, 1) && p[n]) n++;
+            if (n == 0 && !user_ptr_ok((uint32_t)a.text, 1)) return E_FAULT;
+            fb_draw_string(a.x, a.y, a.text, fb_pack(a.color), fb_pack(a.color2));
+            return (int)n;
+        }
+        default: return E_INVAL;
     }
 }

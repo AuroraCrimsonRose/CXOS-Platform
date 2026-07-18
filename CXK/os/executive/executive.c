@@ -9,7 +9,7 @@
  */
 
 #include "cxk_abi.h"
-#include "app_image.h"   /* hello_xcex[], hello_xcex_len */
+#include "app_image.h"   /* shell_xcex[], shell_xcex_len */
 
 static inline void sys_write(const char *s) {
     __asm__ volatile ("int $0x80" : : "a"(SYS_CONSOLE_WRITE), "b"(s), "c"(0) : "memory");
@@ -33,6 +33,9 @@ static inline int sys_ipc_reply(struct ipc_reply_args *a) {
 static inline void sys_yield(void) {
     __asm__ volatile ("int $0x80" : : "a"(SYS_YIELD) : "memory");
 }
+static inline int sys_fb_op(struct fb_op_args *a) {
+    int r; __asm__ volatile ("int $0x80" : "=a"(r) : "a"(SYS_FB_OP), "b"(a) : "memory"); return r;
+}
 
 void _start(void) {
     sys_write("CXK executive online (.xoex) - brokering\n");
@@ -41,8 +44,9 @@ void _start(void) {
     if (ep < 0) { sys_write("executive: ep_create failed\n"); sys_exit(1); }
 
     struct spawn_args sa;
-    sa.image = hello_xcex; sa.image_len = hello_xcex_len;
-    sa.name = "hello";     sa.broker_endpoint = ep;
+    sa.image = shell_xcex; sa.image_len = shell_xcex_len;
+    sa.name = "shell";     sa.broker_endpoint = ep;
+    sa.caps = CAP_OS_BASELINE;   /* privileged shell (attenuated to executive's caps) */
     int pid = sys_spawn(&sa);
     if (pid < 0) { sys_write("executive: spawn failed\n"); sys_exit(1); }
 

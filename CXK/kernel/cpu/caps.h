@@ -29,10 +29,12 @@
 #define CAP_POWER     0x0020u   /* power (reboot/shutdown) */
 #define CAP_ENDPOINT  0x0040u   /* ep_create (may own an IPC endpoint -> broker) */
 #define CAP_IOPORT    0x0080u   /* (reserved v1) raw port I/O / driver tier */
+#define CAP_FRAMEBUFFER 0x0100u /* SYS_FB_OP: draw to the framebuffer (in baseline
+                                   for now; split to a display-server tier later) */
 
 /* a broker executive's baseline authority */
 #define CAP_OS_BASELINE \
-    (CAP_CONSOLE | CAP_MEM | CAP_DISK | CAP_SPAWN | CAP_POWER | CAP_ENDPOINT)
+    (CAP_CONSOLE | CAP_MEM | CAP_DISK | CAP_SPAWN | CAP_POWER | CAP_ENDPOINT | CAP_FRAMEBUFFER)
 
 
 /* policy layer: map a verified image's identity (CXEX type code + trust) to its

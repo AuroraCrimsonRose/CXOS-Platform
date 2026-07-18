@@ -124,8 +124,13 @@ int sys_spawn(const struct spawn_args *ua) {
     struct endpoint *bep = ep_from_handle(a.broker_endpoint, HRIGHT_RECV);
     if (!bep) return E_BADF;
 
-    int pid = proc_start(a.image, a.image_len, 0 /* capability-less */, bep);
+    /* Attenuation: child gets requested caps masked by the spawner's own caps.
+       Pass a subset of your authority, never amplify. App-spawner (caps=0) -> 0. */
+    uint32_t granted = a.caps & thread_current_caps();
+
+    int pid = proc_start(a.image, a.image_len, granted, bep);
     if (pid >= 0)
-        klog_u32("SPAWN", SEV_OK, "app pid ", (uint32_t)pid, LOG_COLOR_VALUE, " (caps=0, ring 3)");
+        klog_u32("SPAWN", SEV_OK, "pid ", (uint32_t)pid, LOG_COLOR_VALUE,
+                 granted ? " (privileged, ring 3)" : " (caps=0, ring 3)");
     return pid;
 }

@@ -21,6 +21,8 @@
 #include "format.h"
 #include "sched.h"
 #include "timer.h"
+#include "keyboard.h"
+#include "power.h"
 #include "usermode.h"
 #include "ata.h"
 #include "ahci.h"
@@ -162,6 +164,9 @@ void kmain(void) {
     timer_init();
     __asm__ __volatile__("sti");          /* enable interrupts: timer can fire */
     klog("TIMER", SEV_OK, "online (PIT @ 1000 Hz), interrupts enabled");
+
+    keyboard_init();
+    klog("INPUT", SEV_OK, "PS/2 keyboard online (IRQ1)");
 
 
     /* user mode: syscall gate + ring-3 fault handler. */

@@ -13,12 +13,15 @@
 #include "logging.h"
 #include "vga.h"
 #include "color.h"
+#include "fb.h"
 #include "caps.h"
 #include "handle.h"
 #include "spawn.h"
 
 #define KERNEL_VBASE 0xC0000000u   /* user half is everything below the higher-half kernel */
 #include "ipc.h"
+#include "keyboard.h"
+#include "power.h"
 
 /* asm entry points (usermode.asm) */
 extern int  enter_usermode(uint32_t entry_eip, uint32_t user_esp, uint32_t *save_slot);
@@ -108,6 +111,27 @@ int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
         case SYS_SPAWN:
             if (!(thread_current_caps() & CAP_SPAWN)) return E_PERM;
             return sys_spawn((const struct spawn_args *)a1);
+
+        case SYS_FB_OP:
+            if (!(thread_current_caps() & CAP_FRAMEBUFFER)) {
+                klog_u32("CAP", SEV_WARN, "fb_op DENIED for pid ", (uint32_t)thread_current_id(), LOG_COLOR_VALUE, " (no CAP_FRAMEBUFFER)");
+                return E_PERM;
+            }
+            return sys_fb_op((const struct fb_op_args *)a1);
+
+        case SYS_INPUT_READ:
+            /* unprivileged: reading your own keyboard input.
+               a1==0 -> block until a key; a1==1 -> return now (0 if none). */
+            if (a1 == 1) return (int)(unsigned char)keyboard_getchar();
+            return (int)(unsigned char)keyboard_getchar_blocking();
+
+        case SYS_POWER:
+            if (!(thread_current_caps() & CAP_POWER)) {
+                klog_u32("CAP", SEV_WARN, "power DENIED for pid ", (uint32_t)thread_current_id(), LOG_COLOR_VALUE, " (no CAP_POWER)");
+                return E_PERM;
+            }
+            if (a1 == POWER_REBOOT) power_reboot();   /* does not return */
+            return E_INVAL;
 
         case SYS_IPC_CALL:
             return ipc_call((const struct ipc_call_args *)a1);
