@@ -1,0 +1,80 @@
+// std/fmt.xfxn - number formatting for CXK X.
+// Aurora Tejeda / CATX SYSTEMS LLC
+//
+//   import "fmt.xfxn";
+//
+// Converts numbers to text in caller-provided buffers - no allocation, so this
+// works anywhere (kernel-adjacent code, apps, the shell).
+
+import "string.xfxn";
+
+// write `v` as decimal into buf (needs 11 bytes for a full u32); returns length
+fn u32_to_dec(buf: *u8, cap: u32, v: u32) -> u32 {
+    let tmp: [12]u8;
+    let n: u32 = 0;
+    let x: u32 = v;
+
+    if (x == 0) {
+        tmp[0] = 48;            // '0'
+        n = 1;
+    }
+    while (x > 0) {
+        let d: u32 = x % 10;
+        tmp[n] = (d + 48) as u8;
+        n = n + 1;
+        x = x / 10;
+    }
+
+    // tmp holds the digits reversed - copy them back out in order
+    let i: u32 = 0;
+    while (i < n) {
+        if (i + 1 >= cap) { break; }
+        buf[i] = tmp[n - 1 - i];
+        i = i + 1;
+    }
+    buf[i] = 0;
+    return i;
+}
+
+// write `v` as lowercase hex WITHOUT a 0x prefix; returns length
+fn u32_to_hex(buf: *u8, cap: u32, v: u32) -> u32 {
+    let tmp: [9]u8;
+    let n: u32 = 0;
+    let x: u32 = v;
+
+    if (x == 0) {
+        tmp[0] = 48;            // '0'
+        n = 1;
+    }
+    while (x > 0) {
+        let d: u32 = x % 16;
+        if (d < 10) { tmp[n] = (d + 48) as u8; }        // '0'..'9'
+        else { tmp[n] = (d - 10 + 97) as u8; }          // 'a'..'f'
+        n = n + 1;
+        x = x / 16;
+    }
+
+    let i: u32 = 0;
+    while (i < n) {
+        if (i + 1 >= cap) { break; }
+        buf[i] = tmp[n - 1 - i];
+        i = i + 1;
+    }
+    buf[i] = 0;
+    return i;
+}
+
+// print a decimal number to the console
+fn print_u32(v: u32) -> void {
+    let b: [12]u8;
+    u32_to_dec(&b[0], sizeof b, v);
+    puts(&b[0]);
+}
+
+// print a hex number with a 0x prefix
+fn print_hex(v: u32) -> void {
+    let b: [12]u8;
+    u32_to_hex(&b[0], sizeof b, v);
+    puts("0x");
+    puts(&b[0]);
+}

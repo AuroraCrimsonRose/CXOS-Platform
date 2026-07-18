@@ -1,0 +1,59 @@
+// std/string.xfxn - CXK X standard library: strings and console output.
+// Aurora Tejeda / CATX SYSTEMS LLC
+//
+// import "string.xfxn";
+//
+// Resolved from the importing file's directory, the main source's directory,
+// or the `std` folder beside cxk.exe.
+
+// write a NUL-terminated string to the console
+fn puts(s: *u8) -> void { console_write(s, 0); }
+
+// length of a NUL-terminated string, excluding the terminator
+fn strlen(s: *u8) -> u32 {
+    let n: u32 = 0;
+    while (s[n] != 0) { n = n + 1; }
+    return n;
+}
+
+// 1 if the two NUL-terminated strings are equal, else 0
+fn streq(a: *u8, b: *u8) -> i32 {
+    let i: u32 = 0;
+    while (a[i] != 0) {
+        if (a[i] != b[i]) { return 0; }
+        i = i + 1;
+    }
+    if (b[i] != 0) { return 0; }
+    return 1;
+}
+
+// 1 if `s` begins with `pre`
+fn starts_with(s: *u8, pre: *u8) -> i32 {
+    let i: u32 = 0;
+    while (pre[i] != 0) {
+        if (s[i] != pre[i]) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+// copy a NUL-terminated string into dst (at most cap-1 bytes); returns length
+fn strcopy(dst: *u8, src: *u8, cap: u32) -> u32 {
+    let n: u32 = 0;
+    while (src[n] != 0) {
+        if (n + 1 >= cap) { break; }
+        dst[n] = src[n];
+        n = n + 1;
+    }
+    dst[n] = 0;
+    return n;
+}
+
+// fill `n` bytes of `dst` with `value`
+fn memset(dst: *u8, value: u8, n: u32) -> void {
+    let i: u32 = 0;
+    while (i < n) {
+        dst[i] = value;
+        i = i + 1;
+    }
+}
