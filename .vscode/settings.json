@@ -31,6 +31,6 @@
 
     // Optional: reduce distractions
     "editor.parameterHints.enabled": false,
-    "cmake.sourceDirectory": "C:/Users/Aurora/Documents/VS Code/CXK/CXK",
+    "cmake.sourceDirectory": "C:/Users/Aurora/Documents/VS Code/CXK/CXK/tools/cmake",
     "C_Cpp.errorSquiggles": "disabled"
 }
