@@ -1,0 +1,128 @@
+// std/fixed.xfxn - Q16.16 fixed-point arithmetic for CXK X.
+// Aurora Tejeda / CATX SYSTEMS LLC
+//
+//   import "fixed.xfxn";
+//
+// A `fx` value is a plain i32 holding a number scaled by 65536: the high 16 bits
+// are the integer part, the low 16 the fraction. Range roughly -32768..32767
+// with a resolution of 1/65536 (~0.0000153).
+//
+// Why fixed-point rather than float: it uses the integer unit only, so it needs
+// no FPU state save/restore across context switches (the kernel does not do that
+// yet), it is exact and deterministic, and it is what UI geometry, scaling and
+// percentages actually want.
+
+import "string.xfxn";
+import "fmt.xfxn";
+
+const FX_SHIFT: i32 = 16;
+const FX_ONE:   i32 = 65536;        // 1.0
+const FX_HALF:  i32 = 32768;        // 0.5
+const FX_MASK:  i32 = 65535;        // fractional bits
+
+// ---- construction ----
+
+// whole number -> fx
+fn fx(n: i32) -> i32 { return n << FX_SHIFT; }
+
+// ratio num/den -> fx  (e.g. fx_ratio(1, 3) is one third)
+fn fx_ratio(num: i32, den: i32) -> i32 {
+    if (den == 0) { return 0; }
+    return (num << FX_SHIFT) / den;
+}
+
+// ---- conversion back ----
+
+// truncate toward zero -> whole number
+fn fx_int(a: i32) -> i32 { return a >> FX_SHIFT; }
+
+// round to nearest whole number
+fn fx_round(a: i32) -> i32 { return (a + FX_HALF) >> FX_SHIFT; }
+
+// the fractional part, still as fx (always 0..FX_ONE-1 for positives)
+fn fx_frac(a: i32) -> i32 { return a & FX_MASK; }
+
+// ---- arithmetic ----
+// add/sub are just integer add/sub - the scale cancels.
+
+fn fx_add(a: i32, b: i32) -> i32 { return a + b; }
+fn fx_sub(a: i32, b: i32) -> i32 { return a - b; }
+
+// multiply: (a*b) needs a 64-bit intermediate, which X does not have, so each
+// operand is pre-shifted down 8 bits. That costs 8 bits of fractional precision
+// (result is accurate to ~1/256) but cannot overflow for sane magnitudes.
+fn fx_mul(a: i32, b: i32) -> i32 { return (a >> 8) * (b >> 8); }
+
+// divide: (a << 16) / b would overflow, so shift the numerator up 8 and the
+// denominator down 8 - the scales still work out to Q16.16.
+fn fx_div(a: i32, b: i32) -> i32 {
+    let d: i32 = b >> 8;
+    if (d == 0) { return 0; }        // |b| too small to divide by safely
+    return (a << 8) / d;
+}
+
+fn fx_neg(a: i32) -> i32 { return 0 - a; }
+fn fx_abs(a: i32) -> i32 { if (a < 0) { return 0 - a; } return a; }
+
+fn fx_min(a: i32, b: i32) -> i32 { if (a < b) { return a; } return b; }
+fn fx_max(a: i32, b: i32) -> i32 { if (a > b) { return a; } return b; }
+
+// clamp a into [lo, hi]
+fn fx_clamp(a: i32, lo: i32, hi: i32) -> i32 {
+    if (a < lo) { return lo; }
+    if (a > hi) { return hi; }
+    return a;
+}
+
+// linear interpolation: a at t=0, b at t=FX_ONE
+fn fx_lerp(a: i32, b: i32, t: i32) -> i32 {
+    return a + fx_mul(b - a, t);
+}
+
+// percentage of a whole: fx_pct(fx(200), fx(15)) is 15% of 200
+fn fx_pct(value: i32, percent: i32) -> i32 {
+    return fx_mul(value, fx_div(percent, fx(100)));
+}
+
+// ---- printing ----
+
+// write `a` as text with `places` fractional digits (max 4); returns length
+fn fx_to_str(buf: *u8, cap: u32, a: i32, places: u32) -> u32 {
+    let n: u32 = 0;
+    let v: i32 = a;
+
+    if (v < 0) {
+        buf[0] = 45;                 // '-'
+        n = 1;
+        v = 0 - v;
+    }
+
+    n = n + u32_to_dec(&buf[n], cap - n, (v >> FX_SHIFT) as u32);
+    if (places == 0) { return n; }
+
+    if (n + 1 < cap) {
+        buf[n] = 46;                 // '.'
+        n = n + 1;
+    }
+
+    // emit digits by repeatedly multiplying the fraction by 10
+    let frac: i32 = v & FX_MASK;
+    let i: u32 = 0;
+    while (i < places) {
+        if (n + 1 >= cap) { break; }
+        frac = frac * 10;
+        buf[n] = ((frac >> FX_SHIFT) + 48) as u8;
+        frac = frac & FX_MASK;
+        n = n + 1;
+        i = i + 1;
+    }
+    buf[n] = 0;
+    return n;
+}
+
+// print a fixed-point value with `places` decimals
+fn print_fx(a: i32, places: u32) -> void {
+    let b: [24]u8;
+    fx_to_str(&b[0], sizeof b, a, places);
+    puts(&b[0]);
+}

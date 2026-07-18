@@ -240,8 +240,8 @@ add_custom_command(
 # ---- X app: shell.xfxn -> shell.elf ----
 add_custom_command(
     OUTPUT ${APP_ELF}
-    COMMAND ${CXK} compile ${APP_BOOT} ${APP_ELF}
-    DEPENDS ${APP_BOOT} ${CXK}
+    COMMAND ${CXK} compile ${APP_BOOT} ${APP_ELF} -I ${SRC_DIR}/os/std
+    DEPENDS ${APP_BOOT} ${CXK} ${STD_SRCS}
     COMMENT "X   ${APP_BOOT_NAME}.xfxn -> ELF"
 )
 
