@@ -1,0 +1,108 @@
+// std/gfx.xfxn - framebuffer drawing for CXK X.
+// Aurora Tejeda / CATX SYSTEMS LLC
+//
+//   import "gfx.xfxn";
+//
+// A thin, typed wrapper over SYS_FB_OP. Every call needs CAP_FRAMEBUFFER, which
+// is part of CAP_OS_BASELINE - so the executive and the shell can draw, but a
+// capability-less app cannot (it gets E_PERM and must go through a broker).
+//
+// Colours are canonical 0x00RRGGBB; the kernel converts to the active mode, so
+// nothing here needs to know whether the display is 16bpp or 32bpp.
+
+type color = u32;               // 0x00RRGGBB
+
+// ---- common colours ----
+const BLACK:   color = 0;
+const WHITE:   color = 16777215;      // 0xFFFFFF
+const RED:     color = 16711680;      // 0xFF0000
+const GREEN:   color = 65280;         // 0x00FF00
+const BLUE:    color = 255;           // 0x0000FF
+const YELLOW:  color = 16776960;      // 0xFFFF00
+const CYAN:    color = 65535;         // 0x00FFFF
+const MAGENTA: color = 16711935;      // 0xFF00FF
+const GREY:    color = 8421504;       // 0x808080
+
+// build a colour from components
+fn rgb(r: u32, g: u32, b: u32) -> color {
+    return ((r & 255) << 16) | ((g & 255) << 8) | (b & 255);
+}
+
+// ---- one shared args block per call site ----
+// (a local keeps this reentrant; the kernel copies the struct out immediately)
+
+fn gfx_clear(c: color) -> i32 {
+    let a: fb_op_args;
+    a.op = FB_OP_CLEAR;  a.color = c;
+    a.x = 0; a.y = 0; a.w = 0; a.h = 0; a.color2 = 0;
+    return fb_op(&a);
+}
+
+fn gfx_fill_rect(x: u32, y: u32, w: u32, h: u32, c: color) -> i32 {
+    let a: fb_op_args;
+    a.op = FB_OP_FILL_RECT;
+    a.x = x; a.y = y; a.w = w; a.h = h; a.color = c; a.color2 = 0;
+    return fb_op(&a);
+}
+
+fn gfx_pixel(x: u32, y: u32, c: color) -> i32 {
+    let a: fb_op_args;
+    a.op = FB_OP_PUT_PIXEL;
+    a.x = x; a.y = y; a.w = 0; a.h = 0; a.color = c; a.color2 = 0;
+    return fb_op(&a);
+}
+
+// note: w,h carry the END point for a line (x,y)-(w,h)
+fn gfx_line(x0: u32, y0: u32, x1: u32, y1: u32, c: color) -> i32 {
+    let a: fb_op_args;
+    a.op = FB_OP_DRAW_LINE;
+    a.x = x0; a.y = y0; a.w = x1; a.h = y1; a.color = c; a.color2 = 0;
+    return fb_op(&a);
+}
+
+fn gfx_text(x: u32, y: u32, s: *u8, fg: color, bg: color) -> i32 {
+    let a: fb_op_args;
+    a.op = FB_OP_DRAW_TEXT;
+    a.x = x; a.y = y; a.w = 0; a.h = 0;
+    a.color = fg; a.color2 = bg; a.text = s;
+    return fb_op(&a);
+}
+
+// ---- geometry ----
+// fills out[0..3] with width, height, bpp, pitch; returns 0 on success
+fn gfx_info(out: *u32) -> i32 {
+    let a: fb_op_args;
+    a.op = FB_OP_INFO;
+    a.x = 0; a.y = 0; a.w = 0; a.h = 0; a.color = 0; a.color2 = 0;
+    a.out = out;
+    return fb_op(&a);
+}
+
+fn gfx_width() -> u32 {
+    let info: [4]u32;
+    if (gfx_info(&info[0]) != 0) { return 0; }
+    return info[0];
+}
+
+fn gfx_height() -> u32 {
+    let info: [4]u32;
+    if (gfx_info(&info[0]) != 0) { return 0; }
+    return info[1];
+}
+
+// ---- a couple of conveniences ----
+
+// outline rectangle (four filled 1px edges)
+fn gfx_rect(x: u32, y: u32, w: u32, h: u32, c: color) -> void {
+    gfx_fill_rect(x, y, w, 1, c);
+    gfx_fill_rect(x, y + h - 1, w, 1, c);
+    gfx_fill_rect(x, y, 1, h, c);
+    gfx_fill_rect(x + w - 1, y, 1, h, c);
+}
+
+// fill the whole screen with a colour, then draw a centred title bar
+fn gfx_panel(title: *u8, bg: color, bar: color, fg: color) -> void {
+    gfx_clear(bg);
+    gfx_fill_rect(0, 0, gfx_width(), 20, bar);
+    gfx_text(8, 4, title, fg, bar);
+}

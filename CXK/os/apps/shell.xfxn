@@ -7,40 +7,11 @@
 // String handling now comes from the standard library rather than being
 // re-implemented here - the first X program built from more than one file.
 
+import "io.xfxn";
 import "string.xfxn";
 import "fmt.xfxn";
 import "fixed.xfxn";
-
-// read a line into caller storage; returns the length
-fn read_line(buf: *u8, cap: u32) -> u32 {
-    let n: u32 = 0;
-    let one: [2]u8;
-    one[1] = 0;
-
-    while (1 == 1) {
-        if (n + 1 >= cap) { break; }
-
-        let c: i32 = input_read();          // blocks until a key
-        if (c == 10) { break; }             // Enter
-
-        if (c == 8) {                       // Backspace
-            if (n > 0) {
-                n = n - 1;
-                puts("\b \b");
-            }
-            continue;
-        }
-
-        buf[n] = c as u8;
-        n = n + 1;
-        one[0] = c as u8;
-        console_write(&one[0], 1);          // echo
-    }
-
-    buf[n] = 0;
-    puts("\n");
-    return n;
-}
+import "gfx.xfxn";
 
 fn _start() -> void {
     let line: [128]u8;
@@ -75,7 +46,17 @@ fn _start() -> void {
             continue;
         }
         if (streq(&line[0], "gui") == 1) {
-            puts("gui mode not yet implemented\n");
+            // draw a panel, some swatches and a diagonal, then wait for a key
+            gfx_panel("CXK", rgb(16, 20, 32), rgb(32, 48, 96), WHITE);
+            gfx_fill_rect(40, 60, 120, 80, RED);
+            gfx_fill_rect(180, 60, 120, 80, GREEN);
+            gfx_fill_rect(320, 60, 120, 80, BLUE);
+            gfx_rect(38, 58, 404, 84, WHITE);
+            gfx_line(40, 170, 440, 230, YELLOW);
+            gfx_text(40, 250, "press any key to return", GREY, rgb(16, 20, 32));
+            input_read();
+            gfx_clear(BLACK);
+            puts("\n");
             continue;
         }
         if (starts_with(&line[0], "echo ") == 1) {

@@ -1,0 +1,97 @@
+// std/io.xfxn - console input and output for CXK X.
+// Aurora Tejeda / CATX SYSTEMS LLC
+//
+//   import "io.xfxn";
+//
+// Wraps SYS_CONSOLE_WRITE and SYS_INPUT_READ. Console output needs CAP_CONSOLE;
+// input is unprivileged (a process reading its own keystrokes).
+//
+// Key codes worth naming: Enter is 10, Backspace 8, Ctrl+C 3.
+
+const KEY_ENTER:     i32 = 10;
+const KEY_BACKSPACE: i32 = 8;
+const KEY_CTRL_C:    i32 = 3;
+const KEY_TAB:       i32 = 9;
+const KEY_ESC:       i32 = 27;
+
+// ---- output ----
+
+// write a NUL-terminated string (len 0 makes the kernel scan for the NUL)
+fn puts(s: *u8) -> void { console_write(s, 0); }
+
+// write exactly n bytes, NULs included
+fn write(s: *u8, n: u32) -> void { console_write(s, n); }
+
+// write a single character
+fn putc(c: u8) -> void {
+    let b: [2]u8;
+    b[0] = c;
+    b[1] = 0;
+    console_write(&b[0], 1);
+}
+
+fn newline() -> void { puts("\n"); }
+
+// ---- input ----
+
+// block until a key is pressed; returns its code
+fn getkey() -> i32 { return input_read(); }
+
+// return a key if one is waiting, else 0 - never blocks
+fn poll_key() -> i32 { return input_poll(); }
+
+// ---- line editing ----
+
+// Read a line into caller storage, echoing as it goes. Handles Backspace.
+// Stops at Enter or when the buffer is full. Returns the length (excluding the
+// NUL terminator, which is always written).
+fn read_line(buf: *u8, cap: u32) -> u32 {
+    let n: u32 = 0;
+
+    while (1 == 1) {
+        if (n + 1 >= cap) { break; }
+
+        let c: i32 = getkey();
+        if (c == KEY_ENTER) { break; }
+
+        if (c == KEY_BACKSPACE) {
+            if (n > 0) {
+                n = n - 1;
+                puts("\b \b");        // erase the character on screen
+            }
+            continue;
+        }
+
+        buf[n] = c as u8;
+        n = n + 1;
+        putc(c as u8);                // echo
+    }
+
+    buf[n] = 0;
+    newline();
+    return n;
+}
+
+// Read a line with no echo (for passwords and the like).
+fn read_line_quiet(buf: *u8, cap: u32) -> u32 {
+    let n: u32 = 0;
+    while (1 == 1) {
+        if (n + 1 >= cap) { break; }
+        let c: i32 = getkey();
+        if (c == KEY_ENTER) { break; }
+        if (c == KEY_BACKSPACE) {
+            if (n > 0) { n = n - 1; }
+            continue;
+        }
+        buf[n] = c as u8;
+        n = n + 1;
+    }
+    buf[n] = 0;
+    return n;
+}
+
+// print a prompt, then read a line
+fn prompt(text: *u8, buf: *u8, cap: u32) -> u32 {
+    puts(text);
+    return read_line(buf, cap);
+}

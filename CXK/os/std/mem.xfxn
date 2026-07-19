@@ -1,0 +1,70 @@
+// std/mem.xfxn - raw memory operations for CXK X.
+// Aurora Tejeda / CATX SYSTEMS LLC
+//
+//   import "mem.xfxn";
+//
+// Byte-oriented, no allocation, no dependencies. Everything takes explicit
+// lengths - there is no hidden NUL scanning here (that's string.xfxn).
+
+// fill n bytes of dst with value
+fn memset(dst: *u8, value: u8, n: u32) -> void {
+    let i: u32 = 0;
+    while (i < n) {
+        dst[i] = value;
+        i = i + 1;
+    }
+}
+
+// zero n bytes
+fn memzero(dst: *u8, n: u32) -> void { memset(dst, 0, n); }
+
+// copy n bytes; regions must NOT overlap (use memmove if they might)
+fn memcpy(dst: *u8, src: *u8, n: u32) -> void {
+    let i: u32 = 0;
+    while (i < n) {
+        dst[i] = src[i];
+        i = i + 1;
+    }
+}
+
+// copy n bytes, correct even when the regions overlap
+fn memmove(dst: *u8, src: *u8, n: u32) -> void {
+    if ((dst as u32) == (src as u32)) { return; }
+
+    // dst above src: copy backwards so we read each byte before overwriting it
+    if ((dst as u32) > (src as u32)) {
+        let i: u32 = n;
+        while (i > 0) {
+            i = i - 1;
+            dst[i] = src[i];
+        }
+        return;
+    }
+    memcpy(dst, src, n);
+}
+
+// compare n bytes: 0 if equal, <0 if a<b, >0 if a>b (first differing byte)
+fn memcmp(a: *u8, b: *u8, n: u32) -> i32 {
+    let i: u32 = 0;
+    while (i < n) {
+        if (a[i] != b[i]) { return (a[i] as i32) - (b[i] as i32); }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// 1 if the first n bytes are equal
+fn memeq(a: *u8, b: *u8, n: u32) -> i32 {
+    if (memcmp(a, b, n) == 0) { return 1; }
+    return 0;
+}
+
+// index of the first byte equal to c within n bytes, or -1
+fn memchr(s: *u8, c: u8, n: u32) -> i32 {
+    let i: u32 = 0;
+    while (i < n) {
+        if (s[i] == c) { return i as i32; }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
