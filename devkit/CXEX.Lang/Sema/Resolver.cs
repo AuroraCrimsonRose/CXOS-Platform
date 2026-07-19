@@ -41,6 +41,21 @@ public sealed class SemaContext
     public readonly Dictionary<string, StructDecl> Structs = new();
     public readonly Dictionary<Expr, Symbol> Resolved = new();   // NameExpr -> Symbol
     public readonly Dictionary<Expr, TypeRef> Types = new();     // filled by TypeChecker
+    public readonly Dictionary<string, TypeRef> Aliases = new(); // type fx = i32;
+
+    /// <summary>
+    /// Expand a type alias to its target. Aliases are TRANSPARENT: `type fx = i32;`
+    /// makes fx and i32 the same type, so fx values interoperate with integers.
+    /// (Making them distinct would catch fx_mul(count, 5) but needs conversion
+    /// rules; transparent is the v1 choice.) Depth-guarded against cycles.
+    /// </summary>
+    public TypeRef Expand(TypeRef t)
+    {
+        int guard = 0;
+        while (t is NamedType n && Aliases.TryGetValue(n.Name, out var target) && guard++ < 16)
+            t = target;
+        return t;
+    }
 }
 
 /// <summary>
@@ -63,6 +78,30 @@ public sealed class Resolver
 
     private void DeclareTop(Decl d)
     {
+        // imports are resolved by the driver before sema; they declare nothing
+        if (d is ImportDecl) return;
+
+        // type aliases go in their own table, not the value scope
+        if (d is TypeAliasDecl ta)
+        {
+            if (!_ctx.Aliases.TryAdd(ta.Name, ta.Target))
+                _diag.Error($"duplicate type alias '{ta.Name}'", d.Span);
+            return;
+        }
+
+        // a function's symbol type is its full signature, so a bare function name
+        // used as a value (a function pointer) types correctly
+        if (d is FnDecl fd)
+        {
+            var ps = new List<TypeRef>();
+            foreach (var pm in fd.Params) ps.Add(pm.Type);
+            var fsym = new Symbol { Name = fd.Name, Kind = SymKind.Function,
+                                    Type = new FuncType(ps, fd.Return), Decl = fd };
+            if (!_ctx.Globals.Declare(fsym))
+                _diag.Error($"duplicate top-level declaration '{fd.Name}'", d.Span);
+            return;
+        }
+
         Symbol sym = d switch
         {
             FnDecl f => new Symbol { Name = f.Name, Kind = SymKind.Function, Type = f.Return, Decl = f },
@@ -104,7 +143,7 @@ public sealed class Resolver
         {
             case Block b: ResolveBlock(b, scope); break;
             case LetStmt l:
-                ResolveExpr(l.Init, scope);
+                if (l.Init != null) ResolveExpr(l.Init, scope);   // `let x: T;` has no init
                 if (!scope.Declare(new Symbol { Name = l.Name, Kind = SymKind.Local, Type = l.Type ?? new PrimType(PrimKind.Void) }))
                     _diag.Error($"duplicate local '{l.Name}'", l.Span);
                 break;
@@ -133,6 +172,7 @@ public sealed class Resolver
             case MemberExpr m: ResolveExpr(m.Target, scope); break;
             case IndexExpr ix: ResolveExpr(ix.Target, scope); ResolveExpr(ix.Index, scope); break;
             case UnaryExpr u: ResolveExpr(u.Operand, scope); break;
+            case SizeofExpr sz: ResolveExpr(sz.Operand, scope); break;
             case BinaryExpr b: ResolveExpr(b.Left, scope); ResolveExpr(b.Right, scope); break;
             case CastExpr ca: ResolveExpr(ca.Operand, scope); break;
         }

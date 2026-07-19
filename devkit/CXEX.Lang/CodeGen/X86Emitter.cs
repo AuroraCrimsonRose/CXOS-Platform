@@ -29,6 +29,30 @@ public sealed class X86Emitter
     { _ctx = ctx; _localTypes = localTypes; _diag = diag; }
 
     private string NL() => $".L{_label++}";
+
+    // string literal pool: identical strings share one label; bytes go to .data,
+    // NUL-terminated, so a string is usable both as a counted buffer and a C-style
+    // NUL-terminated string (which is what SYS_CONSOLE_WRITE with len=0 expects).
+    private readonly Dictionary<string, string> _strings = new();
+    private string InternString(string value)
+    {
+        if (_strings.TryGetValue(value, out var lbl)) return lbl;
+        lbl = $".Lstr{_strings.Count}";
+        _strings[value] = lbl;
+        _data.AppendLine($"{lbl}:");
+        _data.AppendLine($"    .byte {BytesOf(value)}");
+        return lbl;
+    }
+
+    // emit the string as a comma-separated byte list + trailing 0. ASCII/UTF-8.
+    private static string BytesOf(string s)
+    {
+        var bytes = System.Text.Encoding.UTF8.GetBytes(s);
+        var sb = new StringBuilder();
+        foreach (var b in bytes) { sb.Append(b); sb.Append(", "); }
+        sb.Append('0');   // NUL terminator
+        return sb.ToString();
+    }
     private void T(string s) => _text.AppendLine("    " + s);
     private void Lbl(string l) => _text.AppendLine(l + ":");
 
@@ -46,7 +70,37 @@ public sealed class X86Emitter
     }
 
     // ---- type sizes / struct layout (v0.1: every field 4-aligned, matches ABI structs) ----
-    private int SizeOf(TypeRef t) => t switch
+    /* ---- sized memory access ----
+       Emitting a 32-bit access for every load/store corrupts u8/u16 data:
+       reading buf[i] from a [N]u8 pulled 4 bytes, writing it clobbered 3
+       neighbours. These use the operand's real width. */
+    private bool IsSigned(TypeRef t) =>
+        t is PrimType p && (p.Kind == PrimKind.I8 || p.Kind == PrimKind.I16 || p.Kind == PrimKind.I32);
+
+    private void LoadFrom(TypeRef t)
+    {
+        switch (SizeOf(t))
+        {
+            case 1: T(IsSigned(t) ? "movsbl (%eax), %eax" : "movzbl (%eax), %eax"); break;
+            case 2: T(IsSigned(t) ? "movswl (%eax), %eax" : "movzwl (%eax), %eax"); break;
+            default: T("mov (%eax), %eax"); break;
+        }
+    }
+
+    private void StoreTo(TypeRef t)
+    {
+        switch (SizeOf(t))
+        {
+            case 1: T("mov %cl, (%eax)"); break;
+            case 2: T("mov %cx, (%eax)"); break;
+            default: T("mov %ecx, (%eax)"); break;
+        }
+    }
+
+    private TypeRef TypeOf(Expr e) =>
+        _ctx.Types.TryGetValue(e, out var t) ? t : new PrimType(PrimKind.I32);
+
+    private int SizeOf(TypeRef t0) => _ctx.Expand(t0) switch
     {
         PrimType p => p.Kind switch
         {
@@ -55,7 +109,8 @@ public sealed class X86Emitter
             _ => 4
         },
         PointerType => 4,
-        ArrayType a => Align4(SizeOf(a.Element)) * a.Length,
+        FuncType => 4,                    // a function pointer is an address
+        ArrayType a => SizeOf(a.Element) * a.Length,   /* NOT Align4: [N]u8 = N contiguous bytes */
         NamedType n when _ctx.Structs.TryGetValue(n.Name, out var s) => StructSize(s),
         _ => 4
     };
@@ -63,7 +118,7 @@ public sealed class X86Emitter
     private int StructSize(StructDecl s) { int o = 0; foreach (var f in s.Fields) o += Align4(SizeOf(f.Type)); return o; }
     private int FieldOffset(StructDecl s, string field)
     { int o = 0; foreach (var f in s.Fields) { if (f.Name == field) return o; o += Align4(SizeOf(f.Type)); } return 0; }
-    private StructDecl? StructOf(TypeRef t) => t is NamedType n && _ctx.Structs.TryGetValue(n.Name, out var s) ? s : null;
+    private StructDecl? StructOf(TypeRef t0) { var t = _ctx.Expand(t0); return t is NamedType n && _ctx.Structs.TryGetValue(n.Name, out var s) ? s : null; }
 
     // ---- functions ----
     private void EmitFn(FnDecl f)
@@ -129,7 +184,10 @@ public sealed class X86Emitter
         switch (s)
         {
             case Block b: EmitBlock(b); break;
-            case LetStmt l: EmitExpr(l.Init); StoreToVar(l.Name); break;   // init -> eax -> slot
+            case LetStmt l:
+                // no initializer -> frame slot already reserved; emit nothing
+                if (l.Init != null) { EmitExpr(l.Init); StoreToVar(l.Name); }
+                break;
             case AssignStmt a: EmitAssign(a); break;
             case ExprStmt e: EmitExpr(e.Expr); break;
             case ReturnStmt r:
@@ -148,13 +206,29 @@ public sealed class X86Emitter
                 {
                     string top = NL(), end = NL();
                     Lbl(top); EmitExpr(w.Cond); T("test %eax, %eax"); T($"jz {end}");
-                    EmitBlock(w.Body); T($"jmp {top}"); Lbl(end); break;
+                    _loops.Push((top, end));
+                    EmitBlock(w.Body);
+                    _loops.Pop();
+                    T($"jmp {top}"); Lbl(end); break;
                 }
+
+            case BreakStmt:
+                if (_loops.Count > 0) T($"jmp {_loops.Peek().end}");
+                break;
+
+            case ContinueStmt:
+                // jump to the loop top: re-tests the condition, as in C
+                if (_loops.Count > 0) T($"jmp {_loops.Peek().top}");
+                break;
         }
     }
 
     private string CurFnRet => _curFn + "$ret";
     private string _curFn = "";
+
+    // enclosing loops: (continue target, break target). WhileStmt pushes before
+    // emitting its body so break/continue inside know where to jump.
+    private readonly Stack<(string top, string end)> _loops = new();
 
     private void StoreToVar(string name)
     {
@@ -168,7 +242,7 @@ public sealed class X86Emitter
         T("push %eax");
         EmitAddr(a.Target);      // address -> eax
         T("pop %ecx");           // value -> ecx
-        T("mov %ecx, (%eax)");
+        StoreTo(TypeOf(a.Target));   // sized store
     }
 
     // ---- expressions: result in eax ----
@@ -177,13 +251,15 @@ public sealed class X86Emitter
         switch (e)
         {
             case IntLit i: T($"mov ${i.Value}, %eax"); break;
+            case StrLit s: T($"mov ${InternString(s.Value)}, %eax"); break;   // address of pooled bytes
+            case SizeofExpr sz: T($"mov ${SizeOf(TypeOf(sz.Operand))}, %eax"); break;   // compile-time; operand not evaluated
             case BoolLit b: T($"mov ${(b.Value ? 1 : 0)}, %eax"); break;
             case NameExpr n: EmitName(n); break;
             case BinaryExpr b: EmitBinary(b); break;
             case UnaryExpr u: EmitUnary(u); break;
             case CallExpr c: EmitCall(c); break;
             case CastExpr c: EmitExpr(c.Operand); break;          // v0.1: reinterpret, no convert
-            case MemberExpr or IndexExpr: EmitAddr(e); T("mov (%eax), %eax"); break; // load value at field/elem
+            case MemberExpr or IndexExpr: EmitAddr(e); LoadFrom(TypeOf(e)); break; // load value at field/elem (sized)
             default: T("xor %eax, %eax"); break;
         }
     }
@@ -193,11 +269,13 @@ public sealed class X86Emitter
         if (!_ctx.Resolved.TryGetValue(n, out var sym)) { T("xor %eax, %eax"); return; }
         if (sym.Kind == SymKind.Const && sym.Decl is ConstDecl cd && new ConstFold(_ctx, _diag).TryEval(cd.Value, out var v))
         { T($"mov ${v}, %eax"); return; }
+        // a function used as a value yields its address (function pointer)
+        if (sym.Kind == SymKind.Function) { T($"mov ${n.Name}, %eax"); return; }
         if (sym.Kind == SymKind.Global) { T($"mov {n.Name}, %eax"); return; }
         if (_frame.TryGetValue(n.Name, out var slot))
         {
             // struct/array names yield their address (decay); scalars load value
-            if (slot.ty is NamedType or ArrayType) T($"lea {slot.off}(%ebp), %eax");
+            if (_ctx.Expand(slot.ty) is NamedType or ArrayType) T($"lea {slot.off}(%ebp), %eax");
             else T($"mov {slot.off}(%ebp), %eax");
         }
         else T("xor %eax, %eax");
@@ -226,7 +304,7 @@ public sealed class X86Emitter
             case IndexExpr ix:
                 {
                     var tt = _ctx.Types.TryGetValue(ix.Target, out var t) ? t : new PrimType(PrimKind.Void);
-                    int es = tt switch { PointerType p => SizeOf(p.Pointee), ArrayType a => Align4(SizeOf(a.Element)), _ => 4 };
+                    int es = _ctx.Expand(tt) switch { PointerType p => SizeOf(p.Pointee), ArrayType a => SizeOf(a.Element), _ => 4 };
                     if (tt is ArrayType) EmitAddr(ix.Target); else EmitExpr(ix.Target);
                     T("push %eax"); EmitExpr(ix.Index);
                     if (es != 1) T($"imul ${es}, %eax"); T("pop %ecx"); T("add %ecx, %eax");
@@ -242,7 +320,8 @@ public sealed class X86Emitter
         {
             case UnOp.Neg: EmitExpr(u.Operand); T("neg %eax"); break;
             case UnOp.Not: EmitExpr(u.Operand); T("test %eax, %eax"); T("sete %al"); T("movzbl %al, %eax"); break;
-            case UnOp.Deref: EmitExpr(u.Operand); T("mov (%eax), %eax"); break;
+            case UnOp.BitNot: EmitExpr(u.Operand); T("not %eax"); break;
+            case UnOp.Deref: EmitExpr(u.Operand); LoadFrom(TypeOf(u)); break;   // sized
             case UnOp.AddrOf: EmitAddr(u.Operand); break;
         }
     }
@@ -257,8 +336,24 @@ public sealed class X86Emitter
             case BinOp.Add: T("add %ecx, %eax"); break;
             case BinOp.Sub: T("sub %ecx, %eax"); break;
             case BinOp.Mul: T("imul %ecx, %eax"); break;
-            case BinOp.Div: T("cdq"); T("idiv %ecx"); break;
-            case BinOp.Mod: T("cdq"); T("idiv %ecx"); T("mov %edx, %eax"); break;
+            // signed operands use cdq+idiv; unsigned zero-extend into edx and use div.
+            // Using idiv on u32 silently produces garbage above 2^31.
+            case BinOp.Div:
+                if (IsSigned(TypeOf(b.Left))) { T("cdq"); T("idiv %ecx"); }
+                else { T("xor %edx, %edx"); T("div %ecx"); }
+                break;
+            case BinOp.Mod:
+                if (IsSigned(TypeOf(b.Left))) { T("cdq"); T("idiv %ecx"); }
+                else { T("xor %edx, %edx"); T("div %ecx"); }
+                T("mov %edx, %eax");
+                break;
+            case BinOp.BitAnd: T("and %ecx, %eax"); break;
+            case BinOp.BitOr:  T("or %ecx, %eax"); break;
+            case BinOp.BitXor: T("xor %ecx, %eax"); break;
+            // x86 shifts take the count in %cl; the right operand is already in %ecx.
+            // >> is arithmetic (sar) for signed operands, logical (shr) for unsigned.
+            case BinOp.Shl: T("shl %cl, %eax"); break;
+            case BinOp.Shr: T(IsSigned(TypeOf(b.Left)) ? "sar %cl, %eax" : "shr %cl, %eax"); break;
             case BinOp.Eq: Cmp("sete"); break;
             case BinOp.Ne: Cmp("setne"); break;
             case BinOp.Lt: Cmp("setl"); break;

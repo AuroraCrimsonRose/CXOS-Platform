@@ -39,19 +39,39 @@ public sealed class TypeChecker
     }
 
     // ---- helpers ----
-    private static bool IsInt(TypeRef t) => t is PrimType p && p.Kind is
-        PrimKind.I8 or PrimKind.I16 or PrimKind.I32 or PrimKind.U8 or PrimKind.U16 or PrimKind.U32;
-    private static bool IsBool(TypeRef t) => t is PrimType { Kind: PrimKind.Bool };
-    private static bool IsPtr(TypeRef t) => t is PointerType;
-
-    private static bool Same(TypeRef a, TypeRef b) => (a, b) switch
+    // all three expand type aliases first, so `type fx = i32;` behaves as i32
+    private bool IsInt(TypeRef t0)
     {
-        (PrimType x, PrimType y) => x.Kind == y.Kind,
-        (PointerType x, PointerType y) => Same(x.Pointee, y.Pointee),
-        (NamedType x, NamedType y) => x.Name == y.Name,
-        (ArrayType x, ArrayType y) => x.Length == y.Length && Same(x.Element, y.Element),
-        _ => false
-    };
+        var t = _ctx.Expand(t0);
+        return t is PrimType p && p.Kind is
+            PrimKind.I8 or PrimKind.I16 or PrimKind.I32 or PrimKind.U8 or PrimKind.U16 or PrimKind.U32;
+    }
+    private bool IsBool(TypeRef t0) => _ctx.Expand(t0) is PrimType { Kind: PrimKind.Bool };
+    private bool IsPtr(TypeRef t0) => _ctx.Expand(t0) is PointerType;
+
+    private bool SameFunc(FuncType x, FuncType y)
+    {
+        if (x.Params.Count != y.Params.Count) return false;
+        if (!Same(x.Return, y.Return)) return false;
+        for (int i = 0; i < x.Params.Count; i++)
+            if (!Same(x.Params[i], y.Params[i])) return false;
+        return true;
+    }
+
+    // aliases expand first, so `type fx = i32;` compares equal to i32
+    private bool Same(TypeRef a0, TypeRef b0)
+    {
+        var a = _ctx.Expand(a0); var b = _ctx.Expand(b0);
+        return (a, b) switch
+        {
+            (PrimType x, PrimType y) => x.Kind == y.Kind,
+            (PointerType x, PointerType y) => Same(x.Pointee, y.Pointee),
+            (NamedType x, NamedType y) => x.Name == y.Name,
+            (ArrayType x, ArrayType y) => x.Length == y.Length && Same(x.Element, y.Element),
+            (FuncType x, FuncType y) => SameFunc(x, y),
+            _ => false
+        };
+    }
 
     // assignable: ints interchange (v0.1); else exact; ptr<-ptr exact pointee
     private bool Assignable(TypeRef to, TypeRef from)
@@ -59,13 +79,18 @@ public sealed class TypeChecker
 
     private TypeRef Set(Expr e, TypeRef t) { _ctx.Types[e] = t; return t; }
 
-    private StructDecl? StructOf(TypeRef t)
-        => t is NamedType n && _ctx.Structs.TryGetValue(n.Name, out var s) ? s : null;
+    private StructDecl? StructOf(TypeRef t0)
+    {
+        var t = _ctx.Expand(t0);
+        return t is NamedType n && _ctx.Structs.TryGetValue(n.Name, out var s) ? s : null;
+    }
 
     private static bool IsLValue(Expr e) => e is NameExpr or UnaryExpr { Op: UnOp.Deref } or IndexExpr or MemberExpr;
 
     // ---- statements ----
     private void CheckBlock(Block b) { foreach (var s in b.Stmts) CheckStmt(s); }
+
+    private int _loopDepth;   // break/continue must appear inside a loop
 
     private void CheckStmt(Stmt s)
     {
@@ -75,7 +100,13 @@ public sealed class TypeChecker
 
             case LetStmt l:
                 {
-                    var it = CheckExpr(l.Init);
+                    if (l.Init == null)
+                    {
+                        // `let x: T;` - declared, uninitialized; type required.
+                        if (l.Type != null) BindLocalType(l, l.Type);
+                        break;
+                    }
+                    var it = CheckExpr(l.Init!);
                     if (l.Type != null)
                     {
                         if (!Assignable(l.Type, it))
@@ -85,6 +116,12 @@ public sealed class TypeChecker
                     else BindLocalType(l, it == Void ? I32 : it);
                     break;
                 }
+            case BreakStmt:
+                if (_loopDepth == 0) _diag.Error("'break' outside a loop", s.Span);
+                break;
+            case ContinueStmt:
+                if (_loopDepth == 0) _diag.Error("'continue' outside a loop", s.Span);
+                break;
             case AssignStmt a:
                 {
                     var tt = CheckExpr(a.Target);
@@ -98,7 +135,7 @@ public sealed class TypeChecker
                 CheckBlock(i.Then); if (i.Else != null) CheckBlock(i.Else); break;
             case WhileStmt w:
                 Expect(CheckExpr(w.Cond), Bool, w.Cond.Span, "while condition");
-                CheckBlock(w.Body); break;
+                _loopDepth++; CheckBlock(w.Body); _loopDepth--; break;
             case ReturnStmt r:
                 if (r.Value == null) { if (!IsBool(_curReturn) && _curReturn is not PrimType { Kind: PrimKind.Void }) _diag.Error("return requires a value", r.Span); }
                 else { var rt = CheckExpr(r.Value); if (!Assignable(_curReturn, rt)) _diag.Error($"return type {Show(rt)} does not match {Show(_curReturn)}", r.Span); }
@@ -120,6 +157,8 @@ public sealed class TypeChecker
         switch (e)
         {
             case IntLit: return Set(e, I32);
+            case StrLit: return Set(e, new PointerType(new PrimType(PrimKind.U8)));
+            case SizeofExpr sz: CheckExpr(sz.Operand); return Set(e, U32);   // compile-time size  // "..." : *u8
             case BoolLit: return Set(e, Bool);
 
             case NameExpr n:
@@ -149,7 +188,8 @@ public sealed class TypeChecker
                     var ot = CheckExpr(u.Operand);
                     switch (u.Op)
                     {
-                        case UnOp.Neg: if (!IsInt(ot)) _diag.Error("unary '-' needs an integer", u.Span); return Set(e, ot);
+            case UnOp.BitNot:
+            case UnOp.Neg: if (!IsInt(ot)) _diag.Error("unary '-' / '~' needs an integer", u.Span); return Set(e, ot);
                         case UnOp.Not: if (!IsBool(ot)) _diag.Error("unary '!' needs a bool", u.Span); return Set(e, Bool);
                         case UnOp.Deref: if (ot is PointerType p) return Set(e, p.Pointee); _diag.Error("cannot dereference non-pointer", u.Span); return Set(e, Void);
                         case UnOp.AddrOf: return Set(e, new PointerType(ot));
@@ -173,6 +213,11 @@ public sealed class TypeChecker
             case BinOp.Mul:
             case BinOp.Div:
             case BinOp.Mod:
+            case BinOp.BitAnd:
+            case BinOp.BitOr:
+            case BinOp.BitXor:
+            case BinOp.Shl:
+            case BinOp.Shr:
                 if (!IsInt(l) || !IsInt(r)) _diag.Error($"arithmetic on {Show(l)} and {Show(r)}", b.Span);
                 return IsInt(l) ? l : I32;
             case BinOp.Eq:
@@ -217,6 +262,20 @@ public sealed class TypeChecker
             }
             return fn.Return;
         }
+        // calling through a function pointer: `let f: fn(i32)->i32 = ...; f(3)`
+        if (_ctx.Expand(ct) is FuncType ft)
+        {
+            if (c.Args.Count != ft.Params.Count)
+                _diag.Error($"call expects {ft.Params.Count} args, got {c.Args.Count}", c.Span);
+            for (int i = 0; i < c.Args.Count && i < ft.Params.Count; i++)
+            {
+                var at = CheckExpr(c.Args[i]);
+                if (!Assignable(ft.Params[i], at))
+                    _diag.Error($"arg {i + 1}: {Show(at)} not assignable to {Show(ft.Params[i])}", c.Args[i].Span);
+            }
+            return ft.Return;
+        }
+
         foreach (var a in c.Args) CheckExpr(a);
         _diag.Error("call target is not a function", c.Span);
         return Void;

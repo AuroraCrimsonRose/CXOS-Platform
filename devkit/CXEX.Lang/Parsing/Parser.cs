@@ -58,7 +58,7 @@ public sealed class Parser
 
     private static bool IsDeclStart(TokenKind k) =>
         k is TokenKind.Fn or TokenKind.Struct or TokenKind.Global
-          or TokenKind.Const or TokenKind.Extern;
+          or TokenKind.Const or TokenKind.Extern or TokenKind.Type;
 
     // ---- declarations ----
     private Decl? ParseDecl()
@@ -68,6 +68,22 @@ public sealed class Parser
         {
             case TokenKind.Fn: return ParseFn(start, isExtern: false);
             case TokenKind.Extern: Advance(); return ParseFn(start, isExtern: true);  // ParseFn consumes 'fn'
+            case TokenKind.Import:
+                {
+                    Advance();
+                    var path = Expect(TokenKind.StringLiteral, "an import path string").Text;
+                    Expect(TokenKind.Semicolon, "';'");
+                    return new ImportDecl(path) { Span = To(start) };
+                }
+            case TokenKind.Type:
+                {
+                    Advance();
+                    var an = Expect(TokenKind.Identifier, "alias name").Text;
+                    Expect(TokenKind.Assign, "'='");
+                    var at = ParseType();
+                    Expect(TokenKind.Semicolon, "';'");
+                    return new TypeAliasDecl(an, at) { Span = To(start) };
+                }
             case TokenKind.Struct: return ParseStruct(start);
             case TokenKind.Global: return ParseGlobal(start);
             case TokenKind.Const: return ParseConst(start);
@@ -156,6 +172,18 @@ public sealed class Parser
             Expect(TokenKind.RBracket, "']'");
             return new ArrayType(ParseType(), (int)n);
         }
+        // function pointer type:  fn(T, U) -> R
+        if (Match(TokenKind.Fn))
+        {
+            Expect(TokenKind.LParen, "'('");
+            var ps = new List<TypeRef>();
+            if (!At(TokenKind.RParen))
+                do { ps.Add(ParseType()); } while (Match(TokenKind.Comma));
+            Expect(TokenKind.RParen, "')'");
+            TypeRef ret = new PrimType(PrimKind.Void);
+            if (Match(TokenKind.Arrow)) ret = ParseType();
+            return new FuncType(ps, ret);
+        }
         if (At(TokenKind.Identifier))
         {
             var t = Advance().Text;
@@ -209,6 +237,12 @@ public sealed class Parser
             case TokenKind.If: return ParseIf(start);
             case TokenKind.While: return ParseWhile(start);
             case TokenKind.Return: return ParseReturn(start);
+            case TokenKind.Break:
+                Advance(); Expect(TokenKind.Semicolon, "';'");
+                return new BreakStmt() { Span = To(start) };
+            case TokenKind.Continue:
+                Advance(); Expect(TokenKind.Semicolon, "';'");
+                return new ContinueStmt() { Span = To(start) };
             default:
                 {
                     // assignment or expression statement
@@ -231,8 +265,16 @@ public sealed class Parser
         var name = Expect(TokenKind.Identifier, "variable name").Text;
         TypeRef? ty = null;
         if (Match(TokenKind.Colon)) ty = ParseType();
-        Expect(TokenKind.Assign, "'='");
-        var init = ParseExpr();
+
+        // `let x: T = expr;`  or  `let x: T;` (declared, uninitialized).
+        // Without an initializer the type is REQUIRED - nothing to infer from.
+        // Uninitialized locals are NOT zeroed (C semantics). This is what makes
+        // local buffers/structs possible: `let buf: [64]u8;`
+        Expr? init = null;
+        if (Match(TokenKind.Assign)) init = ParseExpr();
+        else if (ty == null)
+            _diag.Error($"'{name}' needs either a type or an initializer", Cur.Span);
+
         Expect(TokenKind.Semicolon, "';'");
         return new LetStmt(name, ty, init) { Span = To(start) };
     }
@@ -280,13 +322,35 @@ public sealed class Parser
     }
     private Expr ParseAnd()
     {
-        var e = ParseCmp();
-        while (At(TokenKind.AndAnd)) { var s = e.Span; Advance(); e = new BinaryExpr(BinOp.And, e, ParseCmp()) { Span = To(s) }; }
+        var e = ParseBitOr();
+        while (At(TokenKind.AndAnd)) { var s = e.Span; Advance(); e = new BinaryExpr(BinOp.And, e, ParseBitOr()) { Span = To(s) }; }
         return e;
     }
+    // C-style precedence:  |  ^  &  ==/!=  </<=/>/>=  <<//>>  +/-  */ /%
+    private Expr ParseBitOr()
+    {
+        var e = ParseBitXor();
+        while (At(TokenKind.Pipe)) { var s = e.Span; Advance(); e = new BinaryExpr(BinOp.BitOr, e, ParseBitXor()) { Span = To(s) }; }
+        return e;
+    }
+
+    private Expr ParseBitXor()
+    {
+        var e = ParseBitAnd();
+        while (At(TokenKind.Caret)) { var s = e.Span; Advance(); e = new BinaryExpr(BinOp.BitXor, e, ParseBitAnd()) { Span = To(s) }; }
+        return e;
+    }
+
+    private Expr ParseBitAnd()
+    {
+        var e = ParseCmp();
+        while (At(TokenKind.Amp)) { var s = e.Span; Advance(); e = new BinaryExpr(BinOp.BitAnd, e, ParseCmp()) { Span = To(s) }; }
+        return e;
+    }
+
     private Expr ParseCmp()
     {
-        var e = ParseAdd();
+        var e = ParseShift();
         while (true)
         {
             BinOp op;
@@ -300,9 +364,22 @@ public sealed class Parser
                 case TokenKind.Ge: op = BinOp.Ge; break;
                 default: return e;
             }
-            var s = e.Span; Advance(); e = new BinaryExpr(op, e, ParseAdd()) { Span = To(s) };
+            var s = e.Span; Advance(); e = new BinaryExpr(op, e, ParseShift()) { Span = To(s) };
         }
     }
+    private Expr ParseShift()
+    {
+        var e = ParseAdd();
+        while (At(TokenKind.Shl) || At(TokenKind.Shr))
+        {
+            var s = e.Span;
+            var op = Cur.Kind == TokenKind.Shl ? BinOp.Shl : BinOp.Shr;
+            Advance();
+            e = new BinaryExpr(op, e, ParseAdd()) { Span = To(s) };
+        }
+        return e;
+    }
+
     private Expr ParseAdd()
     {
         var e = ParseMul();
@@ -328,8 +405,10 @@ public sealed class Parser
         var start = Cur.Span;
         switch (Cur.Kind)
         {
+            case TokenKind.Sizeof: Advance(); return new SizeofExpr(ParseUnary()) { Span = To(start) };
             case TokenKind.Minus: Advance(); return new UnaryExpr(UnOp.Neg, ParseUnary()) { Span = To(start) };
             case TokenKind.Not: Advance(); return new UnaryExpr(UnOp.Not, ParseUnary()) { Span = To(start) };
+            case TokenKind.Tilde: Advance(); return new UnaryExpr(UnOp.BitNot, ParseUnary()) { Span = To(start) };
             case TokenKind.Star: Advance(); return new UnaryExpr(UnOp.Deref, ParseUnary()) { Span = To(start) };
             case TokenKind.Amp: Advance(); return new UnaryExpr(UnOp.AddrOf, ParseUnary()) { Span = To(start) };
             default: return ParsePostfix();
@@ -373,6 +452,7 @@ public sealed class Parser
         switch (Cur.Kind)
         {
             case TokenKind.IntLiteral: { var v = Advance().Value; return new IntLit(v) { Span = To(start) }; }
+            case TokenKind.StringLiteral: { var sv = Advance().Text; return new StrLit(sv) { Span = To(start) }; }
             case TokenKind.True: Advance(); return new BoolLit(true) { Span = To(start) };
             case TokenKind.False: Advance(); return new BoolLit(false) { Span = To(start) };
             case TokenKind.Identifier: { var n = Advance().Text; return new NameExpr(n) { Span = To(start) }; }
