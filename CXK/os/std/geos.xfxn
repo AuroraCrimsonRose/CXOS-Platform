@@ -1,0 +1,158 @@
+// std/geos.xfxn - Classic UI widget toolkit for CXK X.
+// Aurora Tejeda / CATX SYSTEMS LLC
+//
+//   import "geos.xfxn";
+//
+// Provides high-level drawing primitives for a GEOS/System 6 style environment.
+// Relies on gfx.xfxn for framebuffer operations and string.xfxn for centering.
+
+import "gfx.xfxn";
+import "string.xfxn";
+
+// Classic high-contrast theme
+const GEOS_DESKTOP: color = CYAN;
+const GEOS_BORDER:  color = BLACK;
+const GEOS_FILL:    color = WHITE;
+
+const KEY_UP:    i32 = 119;  // 'w' (Replace with actual OS up arrow code if different)
+const KEY_DOWN:  i32 = 115;  // 's'
+const KEY_LEFT:  i32 = 97;   // 'a'
+const KEY_RIGHT: i32 = 100;  // 'd'
+
+// Draw the desktop background and top menu bar
+fn geos_desktop(menu_text: *u8) -> void {
+    let sw: u32 = gfx_width();
+    gfx_clear(GEOS_DESKTOP);
+    gfx_fill_rect(0, 0, sw, 20, GEOS_FILL);
+    gfx_line(0, 20, sw, 20, GEOS_BORDER);
+    
+    // Draw the menu text (e.g., "cxk   File   Edit   View")
+    gfx_text(16, 4, menu_text, GEOS_BORDER, GEOS_FILL);
+}
+
+// Draw a classic window with a drop shadow, striped title bar, and close box
+fn geos_window(x: u32, y: u32, w: u32, h: u32, title: *u8) -> void {
+    // 1. Drop shadow (6px offset)
+    gfx_fill_rect(x + 6, y + 6, w, h, GEOS_BORDER);
+
+    // 2. Window body and border
+    gfx_fill_rect(x, y, w, h, GEOS_FILL);
+    gfx_rect(x, y, w, h, GEOS_BORDER);
+
+    // 3. Title bar stripes
+    let i: u32 = 2;
+    while (i < 18) {
+        if (i % 2 == 0) {
+            gfx_line(x + 2, y + i, (x + w) - 3, y + i, GEOS_BORDER);
+        }
+        i = i + 1;
+    }
+
+    // 4. Centered Title Text (Assuming an 8px wide font)
+    let tw: u32 = strlen(title) * 8;
+    let tx: u32 = x + (w / 2) - (tw / 2);
+    
+    // Blank out the stripes behind the text for readability
+    gfx_fill_rect(tx - 8, y + 1, tw + 16, 18, GEOS_FILL);
+    gfx_text(tx, y + 4, title, GEOS_BORDER, GEOS_FILL);
+
+    // 5. Close Box (Top left)
+    gfx_fill_rect(x + 6, y + 4, 12, 12, GEOS_FILL);
+    gfx_rect(x + 6, y + 4, 12, 12, GEOS_BORDER);
+}
+
+// Draw a button that automatically centers its text and handles its focus state
+fn geos_button(x: u32, y: u32, w: u32, h: u32, label: *u8, is_active: i32) -> void {
+    // Drop shadow
+    gfx_fill_rect(x + 2, y + 2, w, h, GEOS_BORDER);
+    
+    // Calculate centered text coordinates (assuming 8x16 font)
+    let tw: u32 = strlen(label) * 8;
+    let tx: u32 = x + (w / 2) - (tw / 2);
+    let ty: u32 = y + (h / 2) - 8;
+    
+    if (is_active == 1) {
+        // Focused state (Inverted)
+        gfx_fill_rect(x, y, w, h, GEOS_BORDER);
+        gfx_rect(x, y, w, h, GEOS_FILL);
+        gfx_text(tx, ty, label, GEOS_FILL, GEOS_BORDER);
+    } else {
+        // Normal state
+        gfx_fill_rect(x, y, w, h, GEOS_FILL);
+        gfx_rect(x, y, w, h, GEOS_BORDER);
+        gfx_text(tx, ty, label, GEOS_BORDER, GEOS_FILL);
+    }
+}
+
+// Draw the inverted (active) state for the close box
+fn geos_close_box_active(x: u32, y: u32) -> void {
+    gfx_fill_rect(x + 6, y + 4, 12, 12, GEOS_BORDER);
+    gfx_rect(x + 6, y + 4, 12, 12, GEOS_FILL);
+}
+
+// Returns 1 if the point (px, py) is inside the rectangle, else 0
+fn geos_hit_test(px: u32, py: u32, x: u32, y: u32, w: u32, h: u32) -> i32 {
+    if (px >= x && px <= x + w) {
+        if (py >= y && py <= y + h) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// Draws a classic high-contrast crosshair pointer
+fn geos_cursor(mx: u32, my: u32) -> void {
+    // Black outline cross
+    gfx_line(mx - 5, my, mx + 5, my, GEOS_BORDER);
+    gfx_line(mx, my - 5, mx, my + 5, GEOS_BORDER);
+    
+    // White center to ensure it's visible on dark backgrounds
+    gfx_pixel(mx, my, GEOS_FILL);
+    gfx_pixel(mx - 1, my, GEOS_FILL);
+    gfx_pixel(mx + 1, my, GEOS_FILL);
+    gfx_pixel(mx, my - 1, GEOS_FILL);
+    gfx_pixel(mx, my + 1, GEOS_FILL);
+}
+
+// ---- GUI State & Layer Callbacks ----
+global gui_focus:  i32;
+global gui_status: *u8;
+global gui_mx:     u32;
+global gui_my:     u32;
+
+// Desktop Callback (Z=0)
+fn draw_desktop(id: u32, rx: u32, ry: u32, rw: u32, rh: u32) -> void {
+    // MAGIC: We ONLY fill the damaged rectangle, not the whole screen!
+    gfx_fill_rect(rx, ry, rw, rh, CYAN);
+    
+    if (ry < 20) {
+        gfx_fill_rect(0, 0, gfx_width(), 20, WHITE);
+        gfx_line(0, 20, gfx_width(), 20, BLACK);
+        gfx_text(16, 4, "cxk   File   Edit   View   Options", BLACK, WHITE);
+    }
+}
+
+// Window Callback (Z=10)
+fn draw_window(id: u32, rx: u32, ry: u32, rw: u32, rh: u32) -> void {
+    let x: u32 = layer_get_x(id);
+    let y: u32 = layer_get_y(id);
+    
+    geos_window(x, y, 400, 240, "Control Panel");
+
+    if (gui_focus == 0) { geos_close_box_active(x, y); }
+    
+    let ok_active: i32 = 0; if (gui_focus == 1) { ok_active = 1; }
+    geos_button(x + 80, y + 180, 100, 30, "OK", ok_active);
+    
+    let cancel_active: i32 = 0; if (gui_focus == 2) { cancel_active = 1; }
+    geos_button(x + 220, y + 180, 100, 30, "Cancel", cancel_active);
+
+    gfx_text(x + 24, y + 48, "System Status:", BLACK, WHITE);
+    gfx_text(x + 24, y + 68, "Memory: 640K OK", BLACK, WHITE);
+    gfx_text(x + 24, y + 118, gui_status, BLACK, WHITE);
+}
+
+// Cursor Callback (Z=100)
+fn draw_cursor(id: u32, rx: u32, ry: u32, rw: u32, rh: u32) -> void {
+    geos_cursor(gui_mx, gui_my);
+}
