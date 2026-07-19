@@ -14,7 +14,8 @@ const GEOS_DESKTOP: color = CYAN;
 const GEOS_BORDER:  color = BLACK;
 const GEOS_FILL:    color = WHITE;
 
-const KEY_UP:    i32 = 119;  // 'w' (Replace with actual OS up arrow code if different)
+// Keyboard navigation constants (Assumes WASD layout)
+const KEY_UP:    i32 = 119;  // 'w'
 const KEY_DOWN:  i32 = 115;  // 's'
 const KEY_LEFT:  i32 = 97;   // 'a'
 const KEY_RIGHT: i32 = 100;  // 'd'
@@ -114,17 +115,80 @@ fn geos_cursor(mx: u32, my: u32) -> void {
     gfx_pixel(mx, my + 1, GEOS_FILL);
 }
 
-// ---- GUI State & Layer Callbacks ----
+// ---- Calculator GUI State & Callbacks ----
 global gui_focus:  i32;
-global gui_status: *u8;
 global gui_mx:     u32;
 global gui_my:     u32;
 
-// Desktop Callback (Z=0)
+global calc_v:        i32;
+global calc_acc:      i32;
+global calc_op:       u32; 
+global calc_disp:     [16]u8;
+global calc_new_num:  i32;
+
+// Helper: Convert signed integer to string for the display
+fn i32_to_str(buf: *u8, cap: u32, val: i32) -> void {
+    let v: u32 = val as u32;
+    let n: u32 = 0;
+    if (val < 0) {
+        buf[0] = 45; // '-'
+        n = 1;
+        v = (0 - val) as u32;
+    }
+    u32_to_dec(&buf[n], cap - n, v);
+}
+
+fn calc_update_display() -> void {
+    i32_to_str(&calc_disp[0], 16, calc_v);
+}
+
+fn calc_push_digit(d: i32) -> void {
+    if (calc_new_num == 1) {
+        calc_v = d;
+        calc_new_num = 0;
+    } else {
+        if (calc_v > 0 - 9999999 && calc_v < 9999999) {
+            if (calc_v >= 0) { calc_v = (calc_v * 10) + d; }
+            if (calc_v < 0)  { calc_v = (calc_v * 10) - d; }
+        }
+    }
+    calc_update_display();
+}
+
+fn calc_do_op(op: u32) -> void {
+    if (calc_op == 1) { calc_acc = calc_acc + calc_v; } // Add
+    if (calc_op == 2) { calc_acc = calc_acc - calc_v; } // Subtract
+    if (calc_op == 0) { calc_acc = calc_v; }
+
+    calc_v = calc_acc;
+    calc_op = op;
+    calc_new_num = 1;
+    calc_update_display();
+}
+
+fn calc_clear() -> void {
+    calc_v = 0; calc_acc = 0; calc_op = 0; calc_new_num = 1;
+    calc_update_display();
+}
+
+// Helper to draw grid buttons
+fn draw_calc_btn(wx: u32, wy: u32, col: u32, row: u32, id: i32, label: *u8) -> void {
+    let bx: u32 = wx + 16 + (col * 32);
+    let by: u32 = wy + 60 + (row * 32);
+    let active: i32 = 0;
+    if (gui_focus == id) { active = 1; }
+    geos_button(bx, by, 28, 28, label, active);
+}
+
+fn hit_calc_btn(mx: u32, my: u32, wx: u32, wy: u32, col: u32, row: u32) -> i32 {
+    let bx: u32 = wx + 16 + (col * 32);
+    let by: u32 = wy + 60 + (row * 32);
+    return geos_hit_test(mx, my, bx, by, 28, 28);
+}
+
+// ---- Desktop Layer (Z=0) ----
 fn draw_desktop(id: u32, rx: u32, ry: u32, rw: u32, rh: u32) -> void {
-    // MAGIC: We ONLY fill the damaged rectangle, not the whole screen!
     gfx_fill_rect(rx, ry, rw, rh, CYAN);
-    
     if (ry < 20) {
         gfx_fill_rect(0, 0, gfx_width(), 20, WHITE);
         gfx_line(0, 20, gfx_width(), 20, BLACK);
@@ -132,27 +196,44 @@ fn draw_desktop(id: u32, rx: u32, ry: u32, rw: u32, rh: u32) -> void {
     }
 }
 
-// Window Callback (Z=10)
+// ---- Calculator Window Layer (Z=10) ----
 fn draw_window(id: u32, rx: u32, ry: u32, rw: u32, rh: u32) -> void {
     let x: u32 = layer_get_x(id);
     let y: u32 = layer_get_y(id);
     
-    geos_window(x, y, 400, 240, "Control Panel");
+    geos_window(x, y, 156, 210, "Calculator");
 
-    if (gui_focus == 0) { geos_close_box_active(x, y); }
+    if (gui_focus == 0 - 2) { geos_close_box_active(x, y); }
     
-    let ok_active: i32 = 0; if (gui_focus == 1) { ok_active = 1; }
-    geos_button(x + 80, y + 180, 100, 30, "OK", ok_active);
-    
-    let cancel_active: i32 = 0; if (gui_focus == 2) { cancel_active = 1; }
-    geos_button(x + 220, y + 180, 100, 30, "Cancel", cancel_active);
+    // LCD Display background
+    gfx_fill_rect(x + 16, y + 24, 124, 24, WHITE);
+    gfx_rect(x + 16, y + 24, 124, 24, BLACK);
+    gfx_text(x + 20, y + 30, &calc_disp[0], BLACK, WHITE);
 
-    gfx_text(x + 24, y + 48, "System Status:", BLACK, WHITE);
-    gfx_text(x + 24, y + 68, "Memory: 640K OK", BLACK, WHITE);
-    gfx_text(x + 24, y + 118, gui_status, BLACK, WHITE);
+    // Buttons (Row 0)
+    draw_calc_btn(x, y, 0, 0, 7, "7");
+    draw_calc_btn(x, y, 1, 0, 8, "8");
+    draw_calc_btn(x, y, 2, 0, 9, "9");
+    draw_calc_btn(x, y, 3, 0, 10, "+");
+
+    // Buttons (Row 1)
+    draw_calc_btn(x, y, 0, 1, 4, "4");
+    draw_calc_btn(x, y, 1, 1, 5, "5");
+    draw_calc_btn(x, y, 2, 1, 6, "6");
+    draw_calc_btn(x, y, 3, 1, 11, "-");
+
+    // Buttons (Row 2)
+    draw_calc_btn(x, y, 0, 2, 1, "1");
+    draw_calc_btn(x, y, 1, 2, 2, "2");
+    draw_calc_btn(x, y, 2, 2, 3, "3");
+    draw_calc_btn(x, y, 3, 2, 12, "=");
+
+    // Buttons (Row 3)
+    draw_calc_btn(x, y, 0, 3, 13, "C");
+    draw_calc_btn(x, y, 1, 3, 0, "0");
 }
 
-// Cursor Callback (Z=100)
+// ---- Cursor Layer (Z=100) ----
 fn draw_cursor(id: u32, rx: u32, ry: u32, rw: u32, rh: u32) -> void {
     geos_cursor(gui_mx, gui_my);
 }
