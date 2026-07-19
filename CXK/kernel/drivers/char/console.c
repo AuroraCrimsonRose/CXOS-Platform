@@ -137,6 +137,16 @@ void console_newline(void) {
 void console_putc(char c) {
     if (c == '\n') { console_newline(); return; }
     if (c == '\r') { cx = 0; be_set_cursor(cx, cy); return; }
+    if (c == '\b') {
+        /* Move the cursor back one cell, wrapping to the end of the previous
+           line. Does NOT erase - callers that want to erase send "\b \b"
+           (back, overwrite with a space, back again), which is what the shell's
+           read_line does. Without this case the 0x08 byte was drawn as a glyph. */
+        if (cx > 0)      { cx--; }
+        else if (cy > 0) { cy--; cx = cols - 1; }
+        be_set_cursor(cx, cy);
+        return;
+    }
     if (c == '\t') {
         int next = (cx / TAB_WIDTH + 1) * TAB_WIDTH;
         while (cx < next && cx < cols) { be_put_cell(cx, cy, ' ', attr); cx++; }

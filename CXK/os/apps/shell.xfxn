@@ -1,20 +1,238 @@
 // shell.xfxn - the CXK console shell.
 // Aurora Tejeda / CATX SYSTEMS LLC
 //
-// Privileged OS-level executable (CAP_OS_BASELINE): reads input, writes the
-// console, reboots. Commands: help, echo <text>, reboot, gui
+// A privileged OS-level executable (CAP_OS_BASELINE): reads input, writes the
+// console, draws, and reboots directly.
 //
-// String handling now comes from the standard library rather than being
-// re-implemented here - the first X program built from more than one file.
+// Commands are a DISPATCH TABLE of function pointers rather than an if/else
+// chain - adding one is a single register() call. Each command also demonstrates
+// one of the standard libraries.
 
 import "io.xfxn";
 import "string.xfxn";
+import "mem.xfxn";
 import "fmt.xfxn";
 import "fixed.xfxn";
 import "gfx.xfxn";
+import "net.xfxn";
+
+type cmd_fn = fn(*u8) -> void;      // a command receives its argument text
+
+const MAX_CMDS: u32 = 16;
+
+global cmd_names: [16]*u8;
+global cmd_fns:   [16]cmd_fn;
+global cmd_desc:  [16]*u8;
+global cmd_n:     u32;
+
+fn register(name: *u8, f: cmd_fn, desc: *u8) -> void {
+    if (cmd_n >= MAX_CMDS) { return; }
+    cmd_names[cmd_n] = name;
+    cmd_fns[cmd_n]   = f;
+    cmd_desc[cmd_n]  = desc;
+    cmd_n = cmd_n + 1;
+}
+
+// ---- commands ----
+
+fn cmd_help(arg: *u8) -> void {
+    let i: u32 = 0;
+    while (i < cmd_n) {
+        puts("  ");
+        puts(cmd_names[i]);
+        // pad to a column so the descriptions line up
+        let pad: u32 = strlen(cmd_names[i]);
+        while (pad < 10) { putc(32); pad = pad + 1; }
+        puts(cmd_desc[i]);
+        newline();
+        i = i + 1;
+    }
+}
+
+fn cmd_echo(arg: *u8) -> void { puts(arg); newline(); }
+
+fn cmd_pid(arg: *u8) -> void {
+    puts("pid ");
+    print_u32(getpid() as u32);
+    puts("  uid ");
+    print_u32(getuid() as u32);
+    newline();
+}
+
+// string.xfxn
+fn cmd_str(arg: *u8) -> void {
+    puts("length   "); print_u32(strlen(arg)); newline();
+    let at: i32 = strchr(arg, 101);          // 'e'
+    puts("first e  ");
+    if (at < 0) { puts("not found"); } else { print_u32(at as u32); }
+    newline();
+    puts("is echo? ");
+    print_u32(starts_with(arg, "echo") as u32);
+    newline();
+}
+
+// mem.xfxn
+fn cmd_mem(arg: *u8) -> void {
+    let a: [16]u8;
+    let b: [16]u8;
+    memzero(&a[0], sizeof a);
+    memzero(&b[0], sizeof b);
+
+    strcopy(&a[0], "hello", sizeof a);
+    memcpy(&b[0], &a[0], 6);
+    puts("memcpy   "); puts(&b[0]); newline();
+
+    puts("memcmp   ");
+    print_u32(memeq(&a[0], &b[0], 6) as u32);
+    puts(" (1 = equal)"); newline();
+
+    memmove(&a[2], &a[0], 5);                // deliberately overlapping
+    puts("memmove  "); puts(&a[0]);
+    puts("  (overlap-safe)"); newline();
+}
+
+// fixed.xfxn
+fn cmd_math(arg: *u8) -> void {
+    puts("2/3        "); print_fx(fx_ratio(2, 3), 4); newline();
+    puts("15% of 200 "); print_fx(fx_pct(fx(200), fx(15)), 2); newline();
+    puts("lerp 0..10 "); print_fx(fx_lerp(fx(0), fx(10), fx_ratio(1, 4)), 2);
+    puts(" (quarter)"); newline();
+}
+
+// gfx.xfxn
+fn cmd_gui(arg: *u8) -> void {
+    gfx_panel("CXK", rgb(16, 20, 32), rgb(32, 48, 96), WHITE);
+    gfx_fill_rect(40, 60, 120, 80, RED);
+    gfx_fill_rect(180, 60, 120, 80, GREEN);
+    gfx_fill_rect(320, 60, 120, 80, BLUE);
+    gfx_rect(38, 58, 404, 84, WHITE);
+    gfx_line(40, 170, 440, 230, YELLOW);
+    gfx_text(40, 250, "press any key", GREY, rgb(16, 20, 32));
+    getkey();
+    gfx_clear(BLACK);
+}
+
+fn cmd_ver(arg: *u8) -> void {
+    puts("CXK v5 - shell in X native, ");
+    print_u32(cmd_n);
+    puts(" commands\n");
+}
+
+fn cmd_reboot(arg: *u8) -> void { puts("rebooting...\n"); reboot(); }
+
+// parse "a.b.c.d" into a packed address; returns 0 if it doesn't look like one
+fn parse_ip(s: *u8) -> ipv4 {
+    let parts: [4]u32;
+    let p: u32 = 0;
+    let acc: u32 = 0;
+    let digits: u32 = 0;
+    let i: u32 = 0;
+
+    while (1 == 1) {
+        let c: u8 = s[i];
+        if (c >= 48 && c <= 57) {
+            acc = acc * 10 + ((c - 48) as u32);
+            digits = digits + 1;
+        }
+        if (c == 46 || c == 0) {          // '.' or end
+            if (digits == 0) { return 0; }
+            if (p > 3) { return 0; }
+            parts[p] = acc;
+            p = p + 1;
+            acc = 0;
+            digits = 0;
+            if (c == 0) { break; }
+        }
+        i = i + 1;
+    }
+    if (p != 4) { return 0; }
+    return ip4(parts[0], parts[1], parts[2], parts[3]);
+}
+
+fn cmd_ifconfig(arg: *u8) -> void {
+    if (net_up() != 1) {
+        puts("net: interface down (no e1000 found)\n");
+        return;
+    }
+    let mac: [8]u8;
+    net_mac(&mac[0]);
+    puts("  mac      "); print_mac(&mac[0]); newline();
+
+    let cfg: [4]u32;
+    net_config(&cfg[0]);
+    puts("  ip       "); print_ip(cfg[0]); newline();
+    puts("  mask     "); print_ip(cfg[1]); newline();
+    puts("  gateway  "); print_ip(cfg[2]); newline();
+    puts("  dns      "); print_ip(cfg[3]); newline();
+}
+
+fn cmd_setip(arg: *u8) -> void {
+    let addr: ipv4 = parse_ip(arg);
+    if (addr == 0) { puts("usage: setip a.b.c.d\n"); return; }
+    net_set_ip(addr);
+    puts("ip set to "); print_ip(addr); newline();
+}
+
+fn cmd_ping(arg: *u8) -> void {
+    let dst: ipv4 = parse_ip(arg);
+    if (dst == 0) { puts("usage: ping a.b.c.d\n"); return; }
+    if (net_up() != 1) { puts("net: interface down\n"); return; }
+
+    let seq: u32 = 0;
+    while (seq < 4) {
+        let rtt: [1]u32;
+        rtt[0] = 0;
+        let r: i32 = net_ping(dst, seq, &rtt[0]);
+        puts("  seq "); print_u32(seq);
+        if (r == 0) {
+            puts("  reply from "); print_ip(dst);
+            puts("  "); print_u32(rtt[0]); puts(" ms");
+        } else {
+            puts("  no reply");
+        }
+        newline();
+        seq = seq + 1;
+    }
+}
+
+fn cmd_shutdown(arg: *u8) -> void {
+    puts("shutting down...\n");
+    shutdown();
+    puts("shutdown unavailable (no ACPI S5) - use reboot\n");
+}
+
+// ---- line handling ----
+
+// split at the first space: terminates the command word in place and returns
+// a pointer to the argument text (empty string if there is none)
+fn split_arg(line: *u8) -> *u8 {
+    let i: u32 = 0;
+    while (line[i] != 0) {
+        if (line[i] == 32) {
+            line[i] = 0;
+            return &line[i + 1];
+        }
+        i = i + 1;
+    }
+    return &line[i];                // points at the NUL: an empty argument
+}
 
 fn _start() -> void {
     let line: [128]u8;
+
+    register("help",   cmd_help,   "list commands");
+    register("echo",   cmd_echo,   "print the rest of the line");
+    register("pid",    cmd_pid,    "process and user id");
+    register("str",    cmd_str,    "string library demo");
+    register("mem",    cmd_mem,    "memory library demo");
+    register("math",   cmd_math,   "fixed-point demo");
+    register("gui",    cmd_gui,    "draw to the framebuffer");
+    register("ver",    cmd_ver,    "version");
+    register("ifconfig", cmd_ifconfig, "network interface status");
+    register("setip",  cmd_setip,  "set the local IP address");
+    register("ping",   cmd_ping,   "ICMP echo a host");
+    register("reboot", cmd_reboot, "restart the machine");
+    register("shutdown", cmd_shutdown, "ACPI soft off");
 
     puts("CXK shell - type 'help'\n");
 
@@ -22,52 +240,25 @@ fn _start() -> void {
         puts("cxk> ");
         read_line(&line[0], sizeof line);
 
-        if (streq(&line[0], "help") == 1) {
-            puts("commands: help  echo <text>  pid  math  reboot  gui\n");
-            continue;
+        let arg: *u8 = split_arg(&line[0]);
+        if (line[0] == 0) { continue; }          // blank line
+
+        // dispatch through the table
+        let i: u32 = 0;
+        let found: i32 = 0;
+        while (i < cmd_n) {
+            if (streq(&line[0], cmd_names[i]) == 1) {
+                cmd_fns[i](arg);                 // call through a function pointer
+                found = 1;
+                break;
+            }
+            i = i + 1;
         }
-        if (streq(&line[0], "reboot") == 1) {
-            puts("rebooting...\n");
-            reboot();
-        }
-        if (streq(&line[0], "pid") == 1) {
-            puts("shell pid: ");
-            print_u32(getpid() as u32);
-            puts("\n");
-            continue;
-        }
-        if (streq(&line[0], "math") == 1) {
-            // fixed-point demo: 2/3, then 15% of 200
-            puts("2/3      = ");
-            print_fx(fx_ratio(2, 3), 4);
-            puts("\n15% of 200 = ");
-            print_fx(fx_pct(fx(200), fx(15)), 2);
-            puts("\n");
-            continue;
-        }
-        if (streq(&line[0], "gui") == 1) {
-            // draw a panel, some swatches and a diagonal, then wait for a key
-            gfx_panel("CXK", rgb(16, 20, 32), rgb(32, 48, 96), WHITE);
-            gfx_fill_rect(40, 60, 120, 80, RED);
-            gfx_fill_rect(180, 60, 120, 80, GREEN);
-            gfx_fill_rect(320, 60, 120, 80, BLUE);
-            gfx_rect(38, 58, 404, 84, WHITE);
-            gfx_line(40, 170, 440, 230, YELLOW);
-            gfx_text(40, 250, "press any key to return", GREY, rgb(16, 20, 32));
-            input_read();
-            gfx_clear(BLACK);
-            puts("\n");
-            continue;
-        }
-        if (starts_with(&line[0], "echo ") == 1) {
-            puts(&line[5]);
-            puts("\n");
-            continue;
-        }
-        if (line[0] != 0) {
+
+        if (found == 0) {
             puts("unknown command: ");
             puts(&line[0]);
-            puts("\n");
+            puts("  (try 'help')\n");
         }
     }
 }

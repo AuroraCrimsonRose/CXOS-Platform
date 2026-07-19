@@ -23,6 +23,8 @@
 #include "timer.h"
 #include "keyboard.h"
 #include "power.h"
+#include "netif.h"
+#include "acpi.h"
 #include "usermode.h"
 #include "ata.h"
 #include "ahci.h"
@@ -178,6 +180,24 @@ void kmain(void) {
        controllers. Must come before AHCI (which is discovered via PCI). */
     pci_init();
     klog_u32("PCI", SEV_OK, "enumerated, devices: ", (uint32_t)pci_device_count(), LOG_COLOR_VALUE, "");
+    /* list what was found - class 0x02 subclass 0x00 with vendor 0x8086 is the
+       e1000 the network stack looks for. Prints vendor:device and class:subclass
+       so a missing or differently-classed NIC is obvious from the boot log. */
+    for (unsigned i = 0; i < pci_device_count(); i++) {
+        const struct pci_device *d = pci_get(i);
+        if (!d) continue;
+        klog_child_u32("vendor ", (uint32_t)d->vendor_id, LOG_COLOR_VALUE, "");
+        klog_child_u32("  device ", (uint32_t)d->device_id, LOG_COLOR_VALUE, "");
+        klog_child_u32("  class ", (uint32_t)d->class_code, LOG_COLOR_VALUE, "");
+        klog_child_u32("  sub ", (uint32_t)d->subclass, LOG_COLOR_VALUE, "");
+    }
+
+    /* network: e1000 over PCI (polled). netif_init() returns 0 if no NIC. */
+    if (netif_init()) klog("NET", SEV_OK, "e1000 online");
+    else              klog("NET", SEV_WARN, "no NIC found - networking offline");
+
+    /* ACPI: enables the real shutdown (S5) and sleep paths */
+    acpi_init();
 
     /* storage: probe ATA + AHCI drives into the disk registry. AHCI is found via
        PCI; on a machine without one, ahci_init returns 0 harmlessly. */

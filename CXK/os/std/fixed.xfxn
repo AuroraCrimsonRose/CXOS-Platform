@@ -48,10 +48,19 @@ fn fx_frac(a: i32) -> i32 { return a & FX_MASK; }
 fn fx_add(a: i32, b: i32) -> i32 { return a + b; }
 fn fx_sub(a: i32, b: i32) -> i32 { return a - b; }
 
-// multiply: (a*b) needs a 64-bit intermediate, which X does not have, so each
-// operand is pre-shifted down 8 bits. That costs 8 bits of fractional precision
-// (result is accurate to ~1/256) but cannot overflow for sane magnitudes.
-fn fx_mul(a: i32, b: i32) -> i32 { return (a >> 8) * (b >> 8); }
+// Multiply. X has no 64-bit intermediate, so a*b>>16 is computed by splitting
+// `a` into its integer and fractional halves:
+//     a*b/2^16  =  (a>>16)*b  +  ((a&0xFFFF)*b)>>16
+// The first term is exact; only the (small) fractional term loses precision.
+//
+// The obvious (a>>8)*(b>>8) is much worse: it discards 8 bits of BOTH operands,
+// so a value like 0.15 (9830) collapses to 38 - five bits - and 15% of 200 came
+// out as 29.69. Arithmetic shift means this is also correct for negatives.
+fn fx_mul(a: i32, b: i32) -> i32 {
+    let ai: i32 = a >> 16;            // integer part of a (sign-extending)
+    let af: i32 = a & 65535;          // fractional part of a
+    return (ai * b) + ((af >> 8) * (b >> 8));
+}
 
 // divide: (a << 16) / b would overflow, so shift the numerator up 8 and the
 // denominator down 8 - the scales still work out to Q16.16.
@@ -79,9 +88,11 @@ fn fx_lerp(a: i32, b: i32, t: i32) -> i32 {
     return a + fx_mul(b - a, t);
 }
 
-// percentage of a whole: fx_pct(fx(200), fx(15)) is 15% of 200
+// Percentage of a whole: fx_pct(fx(200), fx(15)) is 15% of 200.
+// Multiply FIRST, then divide by a plain integer - dividing by fx(100) up front
+// would round 15/100 to 0.149994 and carry that error into the product.
 fn fx_pct(value: i32, percent: i32) -> i32 {
-    return fx_mul(value, fx_div(percent, fx(100)));
+    return fx_mul(value, percent) / 100;
 }
 
 // ---- printing ----
@@ -95,6 +106,16 @@ fn fx_to_str(buf: *u8, cap: u32, a: i32, places: u32) -> u32 {
         buf[0] = 45;                 // '-'
         n = 1;
         v = 0 - v;
+    }
+
+    // round at the last digit we are going to show, so 29.9999 prints as 30.00
+    // rather than 29.99. Adding before the split lets the carry into the integer
+    // part happen naturally.
+    if (places > 0) {
+        let half: i32 = FX_ONE;
+        let k: u32 = 0;
+        while (k < places) { half = half / 10; k = k + 1; }
+        v = v + (half / 2);
     }
 
     n = n + u32_to_dec(&buf[n], cap - n, (v >> FX_SHIFT) as u32);

@@ -22,6 +22,7 @@
 #include "ipc.h"
 #include "keyboard.h"
 #include "power.h"
+#include "netif.h"
 
 /* asm entry points (usermode.asm) */
 extern int  enter_usermode(uint32_t entry_eip, uint32_t user_esp, uint32_t *save_slot);
@@ -125,12 +126,21 @@ int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
             if (a1 == 1) return (int)(unsigned char)keyboard_getchar();
             return (int)(unsigned char)keyboard_getchar_blocking();
 
+        case SYS_NET_OP:
+            if (!(thread_current_caps() & CAP_NET)) {
+                klog_u32("CAP", SEV_WARN, "net DENIED for pid ", (uint32_t)thread_current_id(), LOG_COLOR_VALUE, " (no CAP_NET)");
+                return E_PERM;
+            }
+            return sys_net_op((const struct net_op_args *)a1);
+
         case SYS_POWER:
             if (!(thread_current_caps() & CAP_POWER)) {
                 klog_u32("CAP", SEV_WARN, "power DENIED for pid ", (uint32_t)thread_current_id(), LOG_COLOR_VALUE, " (no CAP_POWER)");
                 return E_PERM;
             }
-            if (a1 == POWER_REBOOT) power_reboot();   /* does not return */
+            if (a1 == POWER_REBOOT)   power_reboot();     /* does not return */
+            if (a1 == POWER_SHUTDOWN) power_shutdown();   /* does not return if ACPI S5 works */
+            if (a1 == POWER_SLEEP)  { power_sleep(a2); return 0; }
             return E_INVAL;
 
         case SYS_IPC_CALL:
