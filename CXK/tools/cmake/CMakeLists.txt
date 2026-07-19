@@ -69,6 +69,7 @@ set(KERNEL_INCLUDES
     -I${SRC_DIR}/kernel/drivers/bus
     -I${SRC_DIR}/kernel/drivers/storage/hardware
     -I${SRC_DIR}/kernel/drivers/storage/filesys
+    -I${SRC_DIR}/kernel/drivers/net
 )
 
 # freestanding kernel C flags
@@ -107,6 +108,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/drivers/video/fb.c
     ${SRC_DIR}/kernel/drivers/input/keyboard.c
     ${SRC_DIR}/kernel/drivers/power/power.c
+    ${SRC_DIR}/kernel/drivers/power/acpi.c
     ${SRC_DIR}/kernel/lib/audio/speaker.c
     ${SRC_DIR}/kernel/lib/gfx/color.c
     ${SRC_DIR}/kernel/lib/gfx/resolution.c
@@ -127,6 +129,12 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/lib/format/trusted_key.c
     ${SRC_DIR}/kernel/lib/format/cxex_load.c
     ${SRC_DIR}/kernel/lib/format/cxex_loadk.c
+    ${SRC_DIR}/kernel/drivers/net/arp.c
+    ${SRC_DIR}/kernel/drivers/net/e1000.c
+    ${SRC_DIR}/kernel/drivers/net/icmp.c
+    ${SRC_DIR}/kernel/drivers/net/ip.c
+    ${SRC_DIR}/kernel/drivers/net/net_syscall.c
+    ${SRC_DIR}/kernel/drivers/net/netif.c
 )
 
 # ---- KERNEL ASM SOURCES (elf32 objects; append new ones here) ----

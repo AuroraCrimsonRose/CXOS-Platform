@@ -34,13 +34,16 @@
 #define SYS_INPUT_READ    0x20   /* ebx = flags (0=block, 1=nonblocking) -> char, 0 if none */
 /* console 0x30-0x3F (privileged: CAP_CONSOLE) */
 #define SYS_CONSOLE_WRITE 0x30   /* ebx = buf, ecx = len (0 = bounded NUL-scan) */
+/* network 0x50-0x5F (privileged: CAP_NET) */
+#define SYS_NET_OP        0x50   /* ebx = *net_op_args (CAP_NET) -> op-specific */
 /* framebuffer 0x40-0x4F (privileged: CAP_FRAMEBUFFER) */
 #define SYS_FB_OP         0x40   /* ebx = *fb_op_args (CAP_FRAMEBUFFER) -> op-specific */
 /* process 0x70-0x7F (privileged) */
 #define SYS_SPAWN         0x70   /* ebx = *spawn_args (CAP_SPAWN) -> pid */
 #define SYS_POWER         0x71   /* ebx = POWER_* op (CAP_POWER); reboot does not return */
 #define POWER_REBOOT      0
-#define POWER_SHUTDOWN    1      /* reserved until ACPI is ported */
+#define POWER_SHUTDOWN    1      /* ACPI S5 soft-off */
+#define POWER_SLEEP       2      /* ecx = ms; 0 = S1/C1 until a keypress */
 
 /* ---- error codes (negative; returned in eax) ---- */
 #define E_OK       0
@@ -121,7 +124,28 @@ struct fb_op_args {
 #define CAP_FRAMEBUFFER 0x0100u
 #endif
 #ifndef CAP_OS_BASELINE
-#define CAP_OS_BASELINE (CAP_CONSOLE | CAP_MEM | CAP_DISK | CAP_SPAWN | CAP_POWER | CAP_ENDPOINT | CAP_FRAMEBUFFER)
+#define CAP_OS_BASELINE (CAP_CONSOLE | CAP_MEM | CAP_DISK | CAP_SPAWN | CAP_POWER | CAP_ENDPOINT | CAP_FRAMEBUFFER | CAP_NET)
 #endif
+
+
+/* ---- network (SYS_NET_OP; CAP_NET) ----
+   IPv4 addresses cross the ABI as a packed u32 in NETWORK byte order
+   (a.b.c.d -> (a<<24)|(b<<16)|(c<<8)|d) so userspace needs no array type. */
+enum {
+    NET_OP_STATUS  = 0,   /* -> 1 if the interface is up, 0 if not */
+    NET_OP_MAC     = 1,   /* data = 6-byte buffer for the MAC */
+    NET_OP_GET_IP  = 2,   /* -> out[0..3] = ip, mask, gateway, dns1 */
+    NET_OP_SET_IP  = 3,   /* ip = address, len selects which field (0=ip 1=mask 2=gw 3=dns) */
+    NET_OP_PING    = 4,   /* ip = destination, len = sequence -> out[0] = rtt ms */
+    NET_OP_SEND    = 5,   /* data/len = a raw Ethernet frame */
+    NET_OP_RECV    = 6,   /* data/len = buffer -> bytes received, 0 if none */
+};
+struct net_op_args {
+    uint32_t  op;
+    uint32_t  ip;        /* packed IPv4, network order */
+    void     *data;      /* frame or MAC buffer */
+    uint32_t  len;       /* buffer length, or a small selector/sequence */
+    uint32_t *out;       /* results (>= 4 u32 for GET_IP) */
+};
 
 #endif

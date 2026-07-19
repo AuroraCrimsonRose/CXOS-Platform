@@ -24,7 +24,7 @@
 #define CAP_CONSOLE   0x0001u   /* console_write */
 #define CAP_MEM       0x0002u   /* map / unmap / sbrk */
 #define CAP_DISK      0x0004u   /* block_read / block_write */
-#define CAP_NET       0x0008u   /* (reserved v1) network primitives */
+#define CAP_NET       0x0008u   /* SYS_NET_OP: interface config, ping, raw frames */
 #define CAP_SPAWN     0x0010u   /* spawn */
 #define CAP_POWER     0x0020u   /* power (reboot/shutdown) */
 #define CAP_ENDPOINT  0x0040u   /* ep_create (may own an IPC endpoint -> broker) */
@@ -33,8 +33,13 @@
                                    for now; split to a display-server tier later) */
 
 /* a broker executive's baseline authority */
+/* The ABI (abi/cxk_abi.h) carries a copy of these so userspace spawners can
+   request caps. The two MUST agree - guarded here so including both is
+   silent, and checked below so a future edit to one can't drift. */
+#ifndef CAP_OS_BASELINE
 #define CAP_OS_BASELINE \
-    (CAP_CONSOLE | CAP_MEM | CAP_DISK | CAP_SPAWN | CAP_POWER | CAP_ENDPOINT | CAP_FRAMEBUFFER)
+    (CAP_CONSOLE | CAP_MEM | CAP_DISK | CAP_SPAWN | CAP_POWER | CAP_ENDPOINT | CAP_FRAMEBUFFER | CAP_NET)
+#endif
 
 
 /* policy layer: map a verified image's identity (CXEX type code + trust) to its
