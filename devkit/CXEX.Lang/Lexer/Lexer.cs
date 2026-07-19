@@ -30,6 +30,11 @@ public sealed class Lexer
         ["while"] = TokenKind.While,
         ["return"] = TokenKind.Return,
         ["as"] = TokenKind.As,
+        ["import"] = TokenKind.Import,
+        ["type"] = TokenKind.Type,
+        ["sizeof"] = TokenKind.Sizeof,
+        ["break"] = TokenKind.Break,
+        ["continue"] = TokenKind.Continue,
         ["true"] = TokenKind.True,
         ["false"] = TokenKind.False,
     };
@@ -95,6 +100,42 @@ public sealed class Lexer
                 : Make(TokenKind.Identifier, start, line, col);
         }
 
+        // string literal "..." with escapes; Text holds the DECODED bytes
+        if (c == '"')
+        {
+            Advance(); // opening quote
+            var sb = new System.Text.StringBuilder();
+            while (!Eof && Cur != '"')
+            {
+                if (Cur == '\\')
+                {
+                    Advance();
+                    char e = Cur;
+                    Advance();
+                    sb.Append(e switch
+                    {
+                        'n'  => '\n',
+                        't'  => '\t',
+                        'r'  => '\r',
+                        '0'  => '\0',
+                        'b'  => '\b',   // backspace (0x08) - the shell's "\b \b" erase
+                        'f'  => '\f',   // form feed  (0x0C)
+                        'v'  => '\v',   // vertical tab (0x0B)
+                        'a'  => '\a',   // bell (0x07)
+                        'e'  => '\u001b', // escape (0x1B) - handy for ANSI later
+                        '\\' => '\\',
+                        '"'  => '"',
+                        '\'' => '\'',
+                        _ => e   // unknown escape: keep the char literally
+                    });
+                }
+                else { sb.Append(Cur); Advance(); }
+            }
+            if (Eof) { _diag.Error("unterminated string literal", SpanFrom(start, line, col)); return Make(TokenKind.Error, start, line, col); }
+            Advance(); // closing quote
+            return new Token(TokenKind.StringLiteral, sb.ToString(), SpanFrom(start, line, col));
+        }
+
         // integer literal (decimal or 0x hex)
         if (char.IsDigit(c))
         {
@@ -134,13 +175,12 @@ public sealed class Lexer
             case '-': Advance(); if (Cur == '>') { Advance(); k = TokenKind.Arrow; } else k = TokenKind.Minus; break;
             case '=': Advance(); if (Cur == '=') { Advance(); k = TokenKind.Eq; } else k = TokenKind.Assign; break;
             case '!': Advance(); if (Cur == '=') { Advance(); k = TokenKind.Ne; } else k = TokenKind.Not; break;
-            case '<': Advance(); if (Cur == '=') { Advance(); k = TokenKind.Le; } else k = TokenKind.Lt; break;
-            case '>': Advance(); if (Cur == '=') { Advance(); k = TokenKind.Ge; } else k = TokenKind.Gt; break;
+            case '<': Advance(); if (Cur == '=') { Advance(); k = TokenKind.Le; } else if (Cur == '<') { Advance(); k = TokenKind.Shl; } else k = TokenKind.Lt; break;
+            case '|': Advance(); if (Cur == '|') { Advance(); k = TokenKind.OrOr; } else k = TokenKind.Pipe; break;
+            case '^': Advance(); k = TokenKind.Caret; break;
+            case '~': Advance(); k = TokenKind.Tilde; break;
+            case '>': Advance(); if (Cur == '=') { Advance(); k = TokenKind.Ge; } else if (Cur == '>') { Advance(); k = TokenKind.Shr; } else k = TokenKind.Gt; break;
             case '&': Advance(); if (Cur == '&') { Advance(); k = TokenKind.AndAnd; } else k = TokenKind.Amp; break;
-            case '|':
-                Advance(); if (Cur == '|') { Advance(); k = TokenKind.OrOr; }
-                else { _diag.Error("unexpected '|' (did you mean '||'?)", SpanFrom(start, line, col)); k = TokenKind.Error; }
-                break;
             default:
                 Advance();
                 _diag.Error($"unexpected character '{c}'", SpanFrom(start, line, col));

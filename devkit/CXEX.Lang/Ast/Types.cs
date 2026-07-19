@@ -1,4 +1,5 @@
-﻿namespace CXEX.Lang.Ast;
+using System.Collections.Generic;
+namespace CXEX.Lang.Ast;
 
 /// <summary>Static type references as written in source (resolved/checked in Sema).</summary>
 public abstract record TypeRef;
@@ -9,3 +10,4 @@ public sealed record PrimType(PrimKind Kind) : TypeRef;
 public sealed record PointerType(TypeRef Pointee) : TypeRef;        // *T
 public sealed record ArrayType(TypeRef Element, int Length) : TypeRef; // [N]T
 public sealed record NamedType(string Name) : TypeRef;             // struct name / alias
+public sealed record FuncType(List<TypeRef> Params, TypeRef Return) : TypeRef;  // fn(T,U) -> R             // struct name / alias
