@@ -1,0 +1,90 @@
+// std/layer.xfxn - Render Layer Manager for CXK X.
+import "gfx.xfxn";
+import "mem.xfxn";
+
+// draw_fn receives: (layer_id, dirty_x, dirty_y, dirty_w, dirty_h)
+type layer_draw_fn = fn(u32, u32, u32, u32, u32) -> void;
+
+struct layer_t {
+    z: u32,
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+    visible: i32,
+    draw: layer_draw_fn
+}
+
+const MAX_LAYERS: u32 = 16;
+global layers: [16]layer_t;
+global layer_count: u32;
+global draw_order: [16]u32;
+
+fn layer_init() -> void { layer_count = 0; }
+
+fn layer_add(z: u32, x: u32, y: u32, w: u32, h: u32, draw: layer_draw_fn) -> u32 {
+    if (layer_count >= MAX_LAYERS) { return 0 - 1; }
+    let id: u32 = layer_count;
+    layers[id].z = z;  layers[id].x = x; layers[id].y = y;
+    layers[id].w = w;  layers[id].h = h;
+    layers[id].visible = 1;
+    layers[id].draw = draw;
+    layer_count = layer_count + 1;
+    return id;
+}
+
+// Move a layer's bounding box
+fn layer_set_pos(id: u32, x: u32, y: u32) -> void {
+    layers[id].x = x;  layers[id].y = y;
+}
+
+fn layer_get_x(id: u32) -> u32 { return layers[id].x; }
+fn layer_get_y(id: u32) -> u32 { return layers[id].y; }
+
+// AABB Collision Detection
+fn rect_intersect(x1: u32, y1: u32, w1: u32, h1: u32, x2: u32, y2: u32, w2: u32, h2: u32) -> i32 {
+    if (x1 + w1 <= x2) { return 0; }
+    if (x2 + w2 <= x1) { return 0; }
+    if (y1 + h1 <= y2) { return 0; }
+    if (y2 + h2 <= y1) { return 0; }
+    return 1;
+}
+
+// Painter's Algorithm: Sort layers back-to-front
+fn layer_sort() -> void {
+    let i: u32 = 0;
+    while (i < layer_count) { draw_order[i] = i; i = i + 1; }
+
+    let swapped: i32 = 1;
+    while (swapped == 1) {
+        swapped = 0;
+        let j: u32 = 0;
+        while (j + 1 < layer_count) {
+            let id1: u32 = draw_order[j];
+            let id2: u32 = draw_order[j+1];
+            if (layers[id1].z > layers[id2].z) {
+                draw_order[j] = id2;
+                draw_order[j+1] = id1;
+                swapped = 1;
+            }
+            j = j + 1;
+        }
+    }
+}
+
+// Redraws a specific "damaged" area of the screen
+fn layer_render_rect(rx: u32, ry: u32, rw: u32, rh: u32) -> void {
+    layer_sort();
+    let k: u32 = 0;
+    while (k < layer_count) {
+        let id: u32 = draw_order[k];
+        if (layers[id].visible == 1) {
+            if (rect_intersect(rx, ry, rw, rh, layers[id].x, layers[id].y, layers[id].w, layers[id].h) == 1) {
+                layers[id].draw(id, rx, ry, rw, rh);
+            }
+        }
+        k = k + 1;
+    }
+}
+
+fn layer_render_all() -> void { layer_render_rect(0, 0, gfx_width(), gfx_height()); }
