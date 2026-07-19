@@ -1,0 +1,30 @@
+// fptest.xfxn - exercises type aliases and function pointers.
+import "string.xfxn";
+import "fmt.xfxn";
+
+type binop = fn(i32, i32) -> i32;   // alias for a function-pointer type
+
+fn add(a: i32, b: i32) -> i32 { return a + b; }
+fn sub(a: i32, b: i32) -> i32 { return a - b; }
+fn mul(a: i32, b: i32) -> i32 { return a * b; }
+
+// takes a function pointer as a parameter
+fn apply(f: binop, a: i32, b: i32) -> i32 { return f(a, b); }
+
+fn _start() -> void {
+    let ops:   [3]binop;            // a dispatch table
+    let names: [3]*u8;
+    ops[0] = add;   names[0] = "add";
+    ops[1] = sub;   names[1] = "sub";
+    ops[2] = mul;   names[2] = "mul";
+
+    let i: u32 = 0;
+    while (i < 3) {
+        puts(names[i]);
+        puts("(7,3) = ");
+        print_u32(apply(ops[i], 7, 3) as u32);
+        puts("\n");
+        i = i + 1;
+    }
+    exit(0);
+}

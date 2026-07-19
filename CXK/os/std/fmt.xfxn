@@ -6,7 +6,7 @@
 // Converts numbers to text in caller-provided buffers - no allocation, so this
 // works anywhere (kernel-adjacent code, apps, the shell).
 
-import "string.xfxn";
+import "io.xfxn";
 
 // write `v` as decimal into buf (needs 11 bytes for a full u32); returns length
 fn u32_to_dec(buf: *u8, cap: u32, v: u32) -> u32 {

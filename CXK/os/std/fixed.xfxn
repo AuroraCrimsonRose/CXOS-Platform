@@ -12,7 +12,7 @@
 // yet), it is exact and deterministic, and it is what UI geometry, scaling and
 // percentages actually want.
 
-import "string.xfxn";
+import "io.xfxn";
 import "fmt.xfxn";
 
 const FX_SHIFT: i32 = 16;
