@@ -85,3 +85,45 @@ void timer_init(void) {
 
     irq_install_handler(0, timer_callback);
 }
+
+/* ---- TSC: sub-millisecond timing ----
+ * The PIT runs at 1000 Hz, so timer_ticks() cannot express anything shorter
+ * than a millisecond - which is why every ping measured 0 ms even when it was
+ * genuinely working. The TSC counts CPU cycles and gives us microseconds.
+ *
+ * Everything here is deliberately 32-bit: a freestanding kernel has no libgcc,
+ * so 64-bit division would fail to link (__udivdi3). The low 32 bits of the TSC
+ * wrap about every 1.4 s at 3 GHz, which is comfortably longer than any interval
+ * we measure, and unsigned subtraction wraps correctly.
+ */
+static uint32_t tsc_per_us = 0;      /* cycles per microsecond; 0 = not calibrated */
+
+static inline uint32_t rdtsc32(void) {
+    uint32_t lo;
+    __asm__ volatile ("rdtsc" : "=a"(lo) : : "edx");
+    return lo;
+}
+
+uint32_t timer_tsc32(void) { return rdtsc32(); }
+
+/* Calibrate against the PIT. Called once, after the timer is running. */
+void timer_calibrate_tsc(void) {
+    uint32_t t0 = timer_ticks();
+    while (timer_ticks() == t0) { }          /* align to a tick edge */
+
+    uint32_t c0    = rdtsc32();
+    uint32_t start = timer_ticks();
+    while ((timer_ticks() - start) < 50) { } /* 50 ms window */
+    uint32_t cycles = rdtsc32() - c0;
+
+    tsc_per_us = cycles / 50000u;            /* 50 ms = 50000 us */
+    if (tsc_per_us == 0) tsc_per_us = 1;     /* never divide by zero */
+}
+
+/* Microseconds elapsed since a timer_tsc32() sample. */
+uint32_t timer_us_since(uint32_t start) {
+    if (!tsc_per_us) return 0;
+    return (rdtsc32() - start) / tsc_per_us;
+}
+
+uint32_t timer_tsc_mhz(void) { return tsc_per_us; }

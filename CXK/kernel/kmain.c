@@ -167,6 +167,11 @@ void kmain(void) {
     __asm__ __volatile__("sti");          /* enable interrupts: timer can fire */
     klog("TIMER", SEV_OK, "online (PIT @ 1000 Hz), interrupts enabled");
 
+    /* calibrate the cycle counter against the PIT so RTTs can be reported in
+       microseconds rather than whole 1 ms ticks */
+    timer_calibrate_tsc();
+    klog_u32("TIMER", SEV_OK, "TSC calibrated, MHz: ", timer_tsc_mhz(), LOG_COLOR_VALUE, "");
+
     keyboard_init();
     klog("INPUT", SEV_OK, "PS/2 keyboard online (IRQ1)");
 

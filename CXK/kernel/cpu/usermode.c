@@ -21,6 +21,7 @@
 #define KERNEL_VBASE 0xC0000000u   /* user half is everything below the higher-half kernel */
 #include "ipc.h"
 #include "keyboard.h"
+#include "mouse.h"
 #include "power.h"
 #include "netif.h"
 
@@ -132,6 +133,18 @@ int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
                 return E_PERM;
             }
             return sys_net_op((const struct net_op_args *)a1);
+
+        case SYS_MOUSE_READ: {
+            /* unprivileged, same reasoning as keyboard input: a process reading
+               the pointer it is already being shown */
+            struct mouse_state *ms = (struct mouse_state *)a1;
+            if (!user_ptr_ok((uint32_t)ms, sizeof *ms)) return E_FAULT;
+            ms->x       = mouse_x();
+            ms->y       = mouse_y();
+            ms->buttons = mouse_buttons();
+            ms->seq     = mouse_seq();
+            return mouse_present() ? 1 : 0;
+        }
 
         case SYS_POWER:
             if (!(thread_current_caps() & CAP_POWER)) {

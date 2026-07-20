@@ -1,0 +1,109 @@
+// os/apps/cxos.xfxn - the CXOS graphical shell.
+// Aurora Tejeda / CATX SYSTEMS LLC
+//
+// The GUI counterpart to the text shell: a desktop with a menu bar, a window,
+// and a mouse cursor. Entered from the text shell with `gui`, left with Esc or
+// by clicking the close box.
+//
+// This is a MODULE, not a separate process - the text shell imports it and
+// calls cxos_run(). That reuses X's module system rather than needing a second
+// embedded image and a spawn protocol. If CXOS later becomes its own .xcex,
+// only the entry point changes: cxos_run() becomes _start().
+
+import "gui.xfxn";
+import "io.xfxn";
+import "string.xfxn";
+import "fmt.xfxn";
+
+// The close box geos_window draws sits at (x+6, y+4) and is 12x12 - these must
+// match geos_window's drawing or the click target drifts from the graphic.
+const CLOSE_DX: u32 = 6;
+const CLOSE_DY: u32 = 4;
+const CLOSE_W:  u32 = 12;
+const CLOSE_H:  u32 = 12;
+
+// window geometry (one window for now; the compositor supports more)
+global win_x: u32;
+global win_y: u32;
+global win_w: u32;
+global win_h: u32;
+
+global cur_drawn: i32;
+
+fn cxos_menu() -> *u8 { return "cxk    File    View    Help"; }
+
+fn cxos_draw_window_body() -> void {
+    geos_window(win_x, win_y, win_w, win_h, "Welcome");
+
+    let tx: u32 = win_x + 16;
+    let ty: u32 = win_y + 32;
+    gfx_text(tx, ty,      "CXOS graphical shell", GEOS_BORDER, GEOS_FILL);
+    gfx_text(tx, ty + 16, "X native + framebuffer + PS/2 mouse", GEOS_BORDER, GEOS_FILL);
+    gfx_text(tx, ty + 40, "click the close box or press Esc", GEOS_BORDER, GEOS_FILL);
+
+    // geos_button(x, y, w, h, label, is_active)
+    geos_button(tx, ty + 64, 96, 24, "OK", 0);
+}
+
+// full repaint: desktop then window. The cursor is drawn on top separately.
+fn cxos_repaint() -> void {
+    geos_desktop(cxos_menu());
+    cxos_draw_window_body();
+    cur_drawn = 0;
+}
+
+// is (mx,my) inside the window's close box?
+fn cxos_hit_close(mx: u32, my: u32) -> i32 {
+    return geos_hit_test(mx, my,
+                         win_x + CLOSE_DX, win_y + CLOSE_DY,
+                         CLOSE_W, CLOSE_H);
+}
+
+fn cxos_run() -> void {
+    let sw: u32 = gfx_width();
+    let sh: u32 = gfx_height();
+    if (sw == 0) { puts("gui: no framebuffer\n"); return; }
+
+    win_w = 420;
+    win_h = 200;
+    win_x = (sw / 2) - (win_w / 2);
+    win_y = (sh / 2) - (win_h / 2);
+
+    layer_init();
+    cxos_repaint();
+
+    if (gui_poll_mouse() != 1) {
+        gfx_text(16, sh - 20, "no mouse - press Esc to exit", GEOS_BORDER, GEOS_DESKTOP);
+    }
+
+    let last_seq: u32 = gui_mouse_seq();
+    let running:  i32 = 1;
+
+    while (running == 1) {
+        // non-blocking so the pointer stays live while no key is pressed
+        let k: i32 = poll_key();
+        if (k == KEY_ESC) { running = 0; }
+
+        gui_poll_mouse();
+
+        if (gui_mouse_changed(last_seq) == 1) {
+            let mx: u32 = gui_mouse_x();
+            let my: u32 = gui_mouse_y();
+
+            // erase the old cursor by repainting, then draw it at the new spot
+            cxos_repaint();
+            geos_cursor(mx, my);
+            cur_drawn = 1;
+            last_seq  = gui_mouse_seq();
+
+            if (gui_mouse_left() == 1) {
+                if (cxos_hit_close(mx, my) == 1) {
+                    geos_close_box_active(win_x, win_y);   // show it pressed
+                    running = 0;
+                }
+            }
+        }
+    }
+
+    gfx_clear(BLACK);
+}

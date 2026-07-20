@@ -33,4 +33,7 @@ int e1000_send(const void *frame, uint16_t len);
    into buf and returns the frame length; returns 0 if nothing received. */
 int e1000_receive(void *buf, uint16_t max_len);
 
+/* diagnostics: frames transmitted OK, TX failures, frames received */
+void e1000_stats(uint32_t *tx_ok, uint32_t *tx_fail, uint32_t *rx_ok);
+
 #endif
