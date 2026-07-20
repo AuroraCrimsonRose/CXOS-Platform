@@ -32,6 +32,7 @@
 #define SYS_HANDLE_CLOSE  0x16   /* release a handle */
 /* input 0x20-0x2F (unprivileged: reading your own keystrokes) */
 #define SYS_INPUT_READ    0x20   /* ebx = flags (0=block, 1=nonblocking) -> char, 0 if none */
+#define SYS_MOUSE_READ    0x21   /* ebx = *mouse_state -> 1 if a mouse is present */
 /* console 0x30-0x3F (privileged: CAP_CONSOLE) */
 #define SYS_CONSOLE_WRITE 0x30   /* ebx = buf, ecx = len (0 = bounded NUL-scan) */
 /* network 0x50-0x5F (privileged: CAP_NET) */
@@ -146,6 +147,18 @@ struct net_op_args {
     void     *data;      /* frame or MAC buffer */
     uint32_t  len;       /* buffer length, or a small selector/sequence */
     uint32_t *out;       /* results (>= 4 u32 for GET_IP) */
+};
+
+
+/* ---- pointer input (SYS_MOUSE_READ) ----
+   Absolute cursor position maintained by the kernel driver, already clamped to
+   the screen, so userspace never sees raw relative deltas. `seq` increments on
+   every state change - compare it against the previous read to detect movement
+   without diffing coordinates. Unprivileged, like keyboard input. */
+struct mouse_state {
+    int32_t  x, y;
+    uint32_t buttons;   /* bit 0 left, bit 1 right, bit 2 middle */
+    uint32_t seq;
 };
 
 #endif

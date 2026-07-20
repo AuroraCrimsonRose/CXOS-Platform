@@ -5,6 +5,7 @@
 #include "e1000.h"
 #include "pci.h"
 #include "paging.h"
+#include "logging.h"
 
 /* ---- e1000 register offsets (from the MMIO base, BAR0) ---- */
 #define E1000_CTRL     0x0000   /* device control */
@@ -66,7 +67,28 @@
 #define TX_BUF_SIZE    2048
 
 /* fixed DMA region for the NIC (clear of AHCI 0x500000, OHCI 0x600000) */
-#define E1000_DMA_BASE 0x700000u
+/* ---- DMA region: physical vs virtual ----
+ * The NIC is a bus master: descriptor and buffer addresses written into its
+ * registers must be PHYSICAL. The CPU also has to touch those same structures,
+ * and that access must work from ANY address space - including a ring-3
+ * process's, because a shell `ping` reaches this code through SYS_NET_OP while
+ * CR3 points at the shell's page directory.
+ *
+ * addr_space_init_pd() zeroes the whole user half for each new process, so an
+ * identity mapping at 0x700000 exists only in the kernel's own directory. That
+ * is why writing TX_BUF_ADDR faulted (CR2 = 0x712000) the moment ping ran from
+ * the shell rather than from boot context.
+ *
+ * Fix: map the region into the KERNEL half, which addr_space_init_pd copies
+ * into every process directory and paging's PDE hook propagates to live ones.
+ * The CPU uses the 0xC07..... alias; the NIC still gets 0x007.....
+ */
+#define E1000_DMA_BASE 0x700000u                 /* PHYSICAL - programmed into the NIC */
+#define E1000_DMA_VBASE 0xE1000000u              /* kernel-half alias - used by the CPU.
+                                                   Sits beside AHCI's window (0xE0000000)
+                                                   and clear of the kernel image/heap at
+                                                   0xC01xxxxx. Region is 0x22000 (136 KB). */
+#define DMA_V(phys) ((phys) - E1000_DMA_BASE + E1000_DMA_VBASE)
 /* layout: RX descriptors, TX descriptors, then RX buffers, then TX buffers */
 #define RX_DESC_ADDR   (E1000_DMA_BASE + 0x0000)
 #define TX_DESC_ADDR   (E1000_DMA_BASE + 0x1000)
@@ -98,6 +120,10 @@ struct e1000_tx_desc {
 static volatile uint8_t *regs = 0;
 static int present = 0;
 static uint8_t mac[6];
+
+/* diagnostics: visible from the shell via ifconfig, so a silent TX or RX
+   failure shows up as a number instead of needing a packet capture */
+static uint32_t stat_tx_ok, stat_tx_fail, stat_rx_ok;
 static int use_eeprom = 1;
 
 static int rx_cur = 0;
@@ -144,7 +170,7 @@ static void read_mac(void) {
 }
 
 static void init_rx(void) {
-    struct e1000_rx_desc *rxd = (struct e1000_rx_desc *)RX_DESC_ADDR;
+    struct e1000_rx_desc *rxd = (struct e1000_rx_desc *)DMA_V(RX_DESC_ADDR);
     for (int i = 0; i < NUM_RX_DESC; i++) {
         rxd[i].addr = (uint64_t)(RX_BUF_ADDR + (uint32_t)i * RX_BUF_SIZE);
         rxd[i].status = 0;
@@ -159,7 +185,7 @@ static void init_rx(void) {
 }
 
 static void init_tx(void) {
-    struct e1000_tx_desc *txd = (struct e1000_tx_desc *)TX_DESC_ADDR;
+    struct e1000_tx_desc *txd = (struct e1000_tx_desc *)DMA_V(TX_DESC_ADDR);
     for (int i = 0; i < NUM_TX_DESC; i++) {
         txd[i].addr = (uint64_t)(TX_BUF_ADDR + (uint32_t)i * TX_BUF_SIZE);
         txd[i].status = TXD_STAT_DD;   /* mark free */
@@ -196,14 +222,25 @@ int e1000_init(void) {
     cmd |= (1 << 1) | (1 << 2);
     pci_config_write32(dev->bus, dev->slot, dev->func, 0x04, cmd);
 
-    /* map the register region (128KB for e1000) */
+    /* Map the register region (128KB for e1000). This is identity-mapped, which
+       is only safe because PCI MMIO BARs land high - above 0xC0000000, i.e. in
+       the shared kernel half, so the mapping is visible from every address
+       space. If a BAR ever came back low it would be in the per-process user
+       half and would fault exactly like the DMA region did. Refuse rather than
+       fault mysteriously later. */
+    if (base < 0xC0000000u) {
+        klog_u32("E1000", SEV_WARN, "BAR0 below the kernel half: ", base, LOG_COLOR_VALUE,
+                 " - would not be visible from a process address space");
+        return 0;
+    }
     for (uint32_t off = 0; off < 0x20000; off += 0x1000)
         paging_map(base + off, base + off, PAGE_PRESENT | PAGE_WRITE);
     regs = (volatile uint8_t *)base;
 
     /* map the NIC DMA region */
+    /* map the DMA region into the KERNEL half so every address space sees it */
     for (uint32_t a = E1000_DMA_BASE; a < E1000_DMA_END; a += 0x1000)
-        paging_map(a, a, PAGE_PRESENT | PAGE_WRITE);
+        paging_map(DMA_V(a), a, PAGE_PRESENT | PAGE_WRITE);
 
     /* mask off all interrupts (we poll in stage 1) */
     mmio_wr(E1000_IMC, 0xFFFFFFFF);
@@ -228,6 +265,11 @@ int e1000_init(void) {
 }
 
 int e1000_present(void) { return present; }
+void e1000_stats(uint32_t *tx_ok, uint32_t *tx_fail, uint32_t *rx_ok) {
+    if (tx_ok)   *tx_ok   = stat_tx_ok;
+    if (tx_fail) *tx_fail = stat_tx_fail;
+    if (rx_ok)   *rx_ok   = stat_rx_ok;
+}
 const uint8_t *e1000_mac(void) { return mac; }
 
 int e1000_link_up(void) {
@@ -239,15 +281,20 @@ int e1000_send(const void *frame, uint16_t len) {
     if (!present) return -1;
     if (len > TX_BUF_SIZE) len = TX_BUF_SIZE;
 
-    struct e1000_tx_desc *txd = (struct e1000_tx_desc *)TX_DESC_ADDR;
+    struct e1000_tx_desc *txd = (struct e1000_tx_desc *)DMA_V(TX_DESC_ADDR);
     int idx = tx_cur;
 
-    /* copy the frame into this descriptor's buffer */
-    uint8_t *buf = (uint8_t *)(TX_BUF_ADDR + (uint32_t)idx * TX_BUF_SIZE);
+    /* The buffer has TWO addresses and they are not interchangeable:
+         buf_phys - what the NIC bus-masters from (no MMU involved)
+         buf      - the kernel-half alias the CPU writes through
+       Handing the virtual one to the descriptor makes the NIC read nonexistent
+       physical memory and silently transmit nothing. */
+    uint32_t buf_phys = TX_BUF_ADDR + (uint32_t)idx * TX_BUF_SIZE;
+    uint8_t *buf = (uint8_t *)DMA_V(buf_phys);
     const uint8_t *src = (const uint8_t *)frame;
     for (uint16_t i = 0; i < len; i++) buf[i] = src[i];
 
-    txd[idx].addr = (uint64_t)(uint32_t)buf;
+    txd[idx].addr = (uint64_t)buf_phys;      /* PHYSICAL - the NIC reads this */
     txd[idx].length = len;
     txd[idx].cmd = TXD_CMD_EOP | TXD_CMD_IFCS | TXD_CMD_RS;
     txd[idx].status = 0;
@@ -258,19 +305,21 @@ int e1000_send(const void *frame, uint16_t len) {
     /* wait (bounded) for the descriptor to be marked done */
     uint32_t spin = 2000000;
     while (!(txd[idx].status & TXD_STAT_DD) && spin--) busy_delay(10);
-    return (txd[idx].status & TXD_STAT_DD) ? 0 : -1;
+    if (txd[idx].status & TXD_STAT_DD) { stat_tx_ok++; return 0; }
+    stat_tx_fail++;
+    return -1;
 }
 
 int e1000_receive(void *buf, uint16_t max_len) {
     if (!present) return 0;
-    struct e1000_rx_desc *rxd = (struct e1000_rx_desc *)RX_DESC_ADDR;
+    struct e1000_rx_desc *rxd = (struct e1000_rx_desc *)DMA_V(RX_DESC_ADDR);
     int idx = rx_cur;
 
     if (!(rxd[idx].status & RXD_STAT_DD)) return 0;   /* nothing received */
 
     uint16_t len = rxd[idx].length;
     if (len > max_len) len = max_len;
-    uint8_t *src = (uint8_t *)(RX_BUF_ADDR + (uint32_t)idx * RX_BUF_SIZE);
+    uint8_t *src = (uint8_t *)DMA_V(RX_BUF_ADDR + (uint32_t)idx * RX_BUF_SIZE);
     uint8_t *dst = (uint8_t *)buf;
     for (uint16_t i = 0; i < len; i++) dst[i] = src[i];
 
@@ -278,5 +327,6 @@ int e1000_receive(void *buf, uint16_t max_len) {
     rxd[idx].status = 0;
     mmio_wr(E1000_RDT, idx);
     rx_cur = (rx_cur + 1) % NUM_RX_DESC;
+    stat_rx_ok++;
     return len;
 }

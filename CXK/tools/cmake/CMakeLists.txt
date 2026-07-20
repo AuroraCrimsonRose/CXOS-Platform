@@ -107,6 +107,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/drivers/video/vga.c
     ${SRC_DIR}/kernel/drivers/video/fb.c
     ${SRC_DIR}/kernel/drivers/input/keyboard.c
+    ${SRC_DIR}/kernel/drivers/input/mouse.c
     ${SRC_DIR}/kernel/drivers/power/power.c
     ${SRC_DIR}/kernel/drivers/power/acpi.c
     ${SRC_DIR}/kernel/lib/audio/speaker.c

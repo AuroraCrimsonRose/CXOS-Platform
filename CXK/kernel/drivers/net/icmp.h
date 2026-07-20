@@ -20,7 +20,7 @@
 /* send one ICMP echo request to `dst` and wait for the reply.
    returns 1 on reply (and sets *rtt_ms to an approximate round-trip in ms),
    0 on timeout. seq is the echo sequence number to use. */
-int icmp_ping(const ip4_t dst, uint16_t seq, uint32_t *rtt_ms);
+int icmp_ping(const ip4_t dst, uint16_t seq, uint32_t *rtt_us);
 
 /* feed a received frame to ICMP: if it's an echo request for us, reply; if it's
    an echo reply we're waiting for, record it. returns 1 if consumed. */

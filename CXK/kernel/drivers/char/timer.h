@@ -40,4 +40,11 @@ void timer_timeout_start(struct timeout *to, uint32_t ms);
 /* returns 1 if the timeout has expired. call this in the wait loop. */
 int  timer_timeout_expired(struct timeout *to);
 
+/* ---- sub-millisecond timing (TSC) ----
+   timer_ticks() has 1 ms granularity; these give microseconds. */
+void     timer_calibrate_tsc(void);   /* call once after timer_init */
+uint32_t timer_tsc32(void);           /* raw cycle counter (low 32 bits) */
+uint32_t timer_us_since(uint32_t start_tsc);
+uint32_t timer_tsc_mhz(void);         /* cycles per microsecond, 0 if uncalibrated */
+
 #endif

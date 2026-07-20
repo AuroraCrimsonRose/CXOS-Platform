@@ -7,6 +7,7 @@
 #include "arp.h"
 #include "netif.h"
 #include "timer.h"
+#include "sched.h"   /* yield() */
 
 /* state for an in-flight ping (single outstanding request at a time) */
 static volatile int   waiting = 0;
@@ -64,7 +65,7 @@ int icmp_input(const uint8_t *frame, uint16_t len) {
     return 1;
 }
 
-int icmp_ping(const ip4_t dst, uint16_t seq, uint32_t *rtt_ms) {
+int icmp_ping(const ip4_t dst, uint16_t seq, uint32_t *rtt_us) {
     if (!netif_ready()) return 0;
 
     /* 32 bytes of simple payload */
@@ -76,11 +77,15 @@ int icmp_ping(const ip4_t dst, uint16_t seq, uint32_t *rtt_ms) {
 
     waiting = 1; got_reply = 0; wait_id = our_ident; wait_seq = seq;
 
-    uint32_t start = timer_ticks();
+    uint32_t start_tick = timer_ticks();
+    uint32_t start_tsc  = timer_tsc32();      /* microsecond-resolution start */
     if (ip_send(dst, IP_PROTO_ICMP, pkt, plen) < 0) { waiting = 0; return 0; }
 
-    /* poll for the reply, bounded (~1s at 1000 Hz) */
-    while ((timer_ticks() - start) < 1000) {
+    /* Poll for the reply, bounded (~1 s at 1000 Hz). yield() on each pass so a
+       timeout does not lock the machine: this runs inside a syscall on the
+       caller's thread, and without yielding nothing else gets scheduled for the
+       whole second (four of those looked like a freeze). */
+    while ((timer_ticks() - start_tick) < 1000) {
         uint8_t buf[1600];
         int n = netif_receive(buf, sizeof(buf));
         if (n > 0) {
@@ -89,12 +94,12 @@ int icmp_ping(const ip4_t dst, uint16_t seq, uint32_t *rtt_ms) {
             icmp_input(buf, (uint16_t)n);
         }
         if (got_reply) {
-            if (rtt_ms) {
-                uint32_t now = timer_ticks();
-                *rtt_ms = (now >= start) ? (now - start) : 0;
-            }
+            /* microseconds, not milliseconds: a SLIRP reply arrives in far less
+               than one PIT tick, which is why this always read 0 ms before */
+            if (rtt_us) *rtt_us = timer_us_since(start_tsc);
             return 1;
         }
+        yield();
     }
     waiting = 0;
     return 0;

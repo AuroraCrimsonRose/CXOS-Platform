@@ -82,13 +82,35 @@ int sys_net_op(const struct net_op_args *ua) {
             if (!netif_ready()) return E_NOENT;
             ip4_t dst;
             unpack_ip(a.ip, dst);
+
+            /* Reject addresses that can never answer an echo, rather than
+               burning a full one-second timeout each on four of them (which
+               looked like a lockup). Covers 0.0.0.0, the all-ones broadcast,
+               and - for the configured mask - the network and broadcast
+               addresses of the local subnet. */
+            const struct net_config *nc = netif_cfg();
+            if (nc) {
+                int all_zero = 1, all_ones = 1, host_zero = 1, host_ones = 1;
+                for (int i = 0; i < 4; i++) {
+                    if (dst[i] != 0)    all_zero = 0;
+                    if (dst[i] != 255)  all_ones = 0;
+                    uint8_t host = (uint8_t)(dst[i] & (uint8_t)~nc->mask[i]);
+                    if (host != 0)                          host_zero = 0;
+                    if (host != (uint8_t)~nc->mask[i])      host_ones = 0;
+                }
+                if (all_zero || all_ones || host_zero || host_ones) return E_INVAL;
+            }
             uint32_t rtt = 0;
-            int r = icmp_ping(dst, (uint16_t)a.len, &rtt);
+            /* icmp_ping returns 1 when a reply arrived, 0 on timeout. Pass that
+               through unchanged - 1 = reply, 0 = no reply, negative = error.
+               (An earlier comment here claimed 0 meant success, and the shell
+               believed it, so every timeout was reported as a 0 ms reply.) */
+            int r = icmp_ping(dst, (uint16_t)a.len, &rtt);   /* rtt in microseconds */
             if (a.out) {
                 if (!user_ptr_ok((uint32_t)a.out, sizeof(uint32_t))) return E_FAULT;
-                a.out[0] = rtt;
+                a.out[0] = r ? rtt : 0;            /* rtt is only valid on success */
             }
-            return r;                              /* 0 = reply received */
+            return r;                              /* 1 = reply, 0 = timeout */
         }
 
         case NET_OP_SEND: {

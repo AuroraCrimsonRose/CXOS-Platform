@@ -4,6 +4,7 @@
 
 #include "arp.h"
 #include "netif.h"
+#include "sched.h"   /* yield() */
 
 static const uint8_t bcast_mac[6] = { 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF };
 
@@ -129,6 +130,7 @@ int arp_resolve(const ip4_t ip, uint8_t *out_mac) {
             int n = netif_receive(buf, sizeof(buf));
             if (n > 0) arp_input(buf, (uint16_t)n);
             if (arp_cache_lookup(ip, out_mac)) return 1;
+            if ((i & 0xFF) == 0) yield();   /* keep the machine responsive */
         }
     }
     return 0;
