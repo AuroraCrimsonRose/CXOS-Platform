@@ -55,6 +55,7 @@
     <ProjectReference Include="..\CXEX.Lang\CXEX.Lang.csproj" />
     <ProjectReference Include="..\CXEX.Text\CXEX.Text.csproj" />
     <ProjectReference Include="..\CXEX.Tools\CXEX.Tools.csproj" />
+    <ProjectReference Include="..\CXEX.Uefi\CXEX.Uefi.csproj" />
   </ItemGroup>
 
 </Project>
