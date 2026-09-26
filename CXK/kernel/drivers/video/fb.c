@@ -223,6 +223,18 @@ void fb_draw_string(uint32_t x, uint32_t y, const char *s, uint32_t fg, uint32_t
     }
 }
 
+/* Length-bounded form, for strings whose terminator we do not trust: stops at
+   the NUL or at `n` characters, whichever comes first. Use this for anything
+   that came from ring 3 - see the note on FB_OP_DRAW_TEXT in sys_fb_op. */
+void fb_draw_string_n(uint32_t x, uint32_t y, const char *s, uint32_t n,
+                      uint32_t fg, uint32_t bg) {
+    if (!active) return;
+    for (uint32_t i = 0; i < n && s[i]; i++) {
+        fb_draw_char(x, y, s[i], fg, bg);
+        x += FB_CHAR_W;
+    }
+}
+
 
 /* ---- SYS_FB_OP handler ----
  * Draw on behalf of a CAP_FRAMEBUFFER holder. Colors cross the ABI as canonical
@@ -253,11 +265,19 @@ int sys_fb_op(const struct fb_op_args *ua) {
         case FB_OP_PUT_PIXEL: fb_put_pixel(a.x, a.y, fb_pack(a.color)); return 0;
         case FB_OP_DRAW_LINE: fb_draw_line((int)a.x, (int)a.y, (int)a.w, (int)a.h, fb_pack(a.color)); return 0;
         case FB_OP_DRAW_TEXT: {
+            /* Scan for a length we have actually validated, then draw AT MOST that
+               many characters. Passing the bare pointer to fb_draw_string was a
+               kernel-mode out-of-bounds read: the scan stops when user_ptr_ok fails
+               at a page boundary, but fb_draw_string walks to its own NUL, so a
+               string filling a mapped page with no terminator - or any string of
+               0x1000 characters - ran straight off the end of the mapping. Since
+               n != 0 in that case, the E_FAULT check below does not catch it.
+               SYS_CONSOLE_WRITE has always done this correctly; this now matches it. */
             uint32_t n = 0;
             const char *p = a.text;
             while (n < 0x1000 && user_ptr_ok((uint32_t)a.text + n, 1) && p[n]) n++;
             if (n == 0 && !user_ptr_ok((uint32_t)a.text, 1)) return E_FAULT;
-            fb_draw_string(a.x, a.y, a.text, fb_pack(a.color), fb_pack(a.color2));
+            fb_draw_string_n(a.x, a.y, a.text, n, fb_pack(a.color), fb_pack(a.color2));
             return (int)n;
         }
         default: return E_INVAL;

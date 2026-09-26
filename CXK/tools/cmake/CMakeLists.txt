@@ -188,6 +188,24 @@ set(APP_ELF   ${BUILD_DIR}/${APP_BOOT_NAME}.elf)
 set(APP_XCEX  ${BUILD_DIR}/${APP_BOOT_NAME}.xcex)
 set(APP_IMAGE ${SRC_DIR}/os/executive/app_image.h)
 
+# Everything APP_BOOT can pull in with `import`, so editing any of it actually
+# rebuilds. This variable was referenced by the compile rule below but never
+# defined anywhere, and CMake expands an undefined variable to nothing - so the
+# rule effectively had no source dependencies beyond shell.xfxn itself. Editing
+# gui.xfxn, gfx.xfxn or cxos.xfxn produced a silently stale shell.elf, with the
+# old code still embedded in app_image.h and booted.
+#
+# The glob is deliberately coarse: it covers both import roots (os/std for the
+# -I path, os/apps because shell.xfxn imports cxos.xfxn from its own directory),
+# so any app rebuilds when any library changes. Correct dependencies beat
+# minimal ones here - the alternative is testing a binary you did not build.
+# CONFIGURE_DEPENDS makes CMake re-glob, so a NEW .xfxn is noticed without a
+# manual re-configure. If this ever gets slow, the real fix is a depfile emitted
+# by `cxk compile` listing the imports it actually resolved.
+file(GLOB STD_SRCS CONFIGURE_DEPENDS
+     ${SRC_DIR}/os/std/*.xfxn
+     ${SRC_DIR}/os/apps/*.xfxn)
+
 # the system executive (.xoex): os/executive/executive.c -> ELF -> CXEX (type os)
 set(EXEC_C    ${SRC_DIR}/os/executive/executive.c)
 set(EXEC_LD   ${SRC_DIR}/os/executive/executive.ld)
