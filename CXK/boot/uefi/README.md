@@ -64,7 +64,7 @@ other platforms:
     cxk secureboot verify out.efi
     cxk secureboot test BOOTX64.EFI
 
-`test` runs two boots, and both matter:
+`test` runs three boots, and none of them is redundant:
 
     signed stub - expect it to run and report Secure Boot on
       Secure Boot : ON
@@ -73,15 +73,37 @@ other platforms:
     unsigned stub - expect firmware to refuse it
       BdsDxe: failed to load Boot0001 ...: Access Denied
 
+    stub signed by an unenrolled key - expect firmware to refuse it
+      BdsDxe: failed to load Boot0001 ...: Access Denied
+
       PASS the signed stub was loaded
       PASS the unsigned stub was refused, so enforcement is real
+      PASS an unenrolled signer was refused, so db is really consulted
 
-The first shows the detection works. The second is the one that makes it mean
-anything - without it, a run with SMM misconfigured looks identical, because
-OVMF without SMM boots unsigned binaries while still reporting whatever the
-`SecureBoot` variable happens to say. That is why `test` passes `smm=on`
-together with `secure=on` on the flash device, and why it fails the run if the
-unsigned stub is *not* refused.
+There is no Secure Boot "screen" to get past - verification is silent, and the
+only visible difference is `starting Boot0001` instead of `failed to load ...
+Access Denied`. `starting` means DxeImageVerificationLib hashed the image,
+parsed the Authenticode signature, matched the signer against db, and let
+`LoadImage` succeed. (A prompt only appears when chaining shim, which CXK does
+not - it *is* the bootloader.)
+
+Each run answers a different question, and only the third answers the one that
+matters:
+
+- The first shows the detection works.
+- The second shows firmware would have stopped an unsigned binary. Without it a
+  run with SMM misconfigured looks identical, because OVMF without SMM boots
+  unsigned binaries while still reporting whatever the `SecureBoot` variable
+  happens to say. That is why `test` passes `smm=on` together with `secure=on`
+  on the flash device.
+- The third is signed with a key generated on the spot and thrown away, so it
+  cannot be in db by accident. It is a perfectly valid signature from an
+  authority the platform does not trust. The first two together only show that
+  firmware tells signed from unsigned; this one shows it checks *who signed* -
+  the difference between a platform that verifies and one that merely notices a
+  signature is present.
+
+The run fails unless all three hold.
 
 `sbkeys/` is gitignored, along with `*.pfx`, `*.pem`, `*.cer` and `*_VARS.fd`. A
 committed PK lets anyone sign a bootloader that an enrolled machine trusts
