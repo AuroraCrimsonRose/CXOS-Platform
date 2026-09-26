@@ -17,6 +17,7 @@
 #include "caps.h"
 #include "handle.h"
 #include "spawn.h"
+#include "sysfile.h"
 
 #define KERNEL_VBASE 0xC0000000u   /* user half is everything below the higher-half kernel */
 #include "ipc.h"
@@ -114,6 +115,13 @@ int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
             if (!(thread_current_caps() & CAP_SPAWN)) return E_PERM;
             return sys_spawn((const struct spawn_args *)a1);
 
+        case SYS_FILE_OP:
+            if (!(thread_current_caps() & CAP_DISK)) {
+                klog_u32("CAP", SEV_WARN, "file_op DENIED for pid ", (uint32_t)thread_current_id(), LOG_COLOR_VALUE, " (no CAP_DISK)");
+                return E_PERM;
+            }
+            return sys_file_op((const struct file_op_args *)a1);
+
         case SYS_FB_OP:
             if (!(thread_current_caps() & CAP_FRAMEBUFFER)) {
                 klog_u32("CAP", SEV_WARN, "fb_op DENIED for pid ", (uint32_t)thread_current_id(), LOG_COLOR_VALUE, " (no CAP_FRAMEBUFFER)");
@@ -191,6 +199,7 @@ static const char user_msg[] = "                   -> ring 3 SYS_WRITE ok\n";
 void usermode_init(void) {
     /* install the syscall gate: int 0x80, DPL=3 so ring 3 can invoke it */
     idt_set_user_gate(0x80, (uint32_t)syscall_stub);
+    sysfile_init();   /* registers the HANDLE_FILE releaser */
 }
 
 /* ---- Checkpoint 3a: the minimal single-process ring-3 round-trip ---- */

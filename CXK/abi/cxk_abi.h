@@ -40,6 +40,9 @@
 /* framebuffer 0x40-0x4F (privileged: CAP_FRAMEBUFFER) */
 #define SYS_FB_OP         0x40   /* ebx = *fb_op_args (CAP_FRAMEBUFFER) -> op-specific */
 /* process 0x70-0x7F (privileged) */
+/* files 0x60-0x6F (privileged: CAP_DISK) */
+#define SYS_FILE_OP       0x60   /* ebx = *file_op_args (CAP_DISK) -> op-specific */
+
 #define SYS_SPAWN         0x70   /* ebx = *spawn_args (CAP_SPAWN) -> pid */
 #define SYS_POWER         0x71   /* ebx = POWER_* op (CAP_POWER); reboot does not return */
 #define POWER_REBOOT      0
@@ -57,6 +60,10 @@
 #define E_AGAIN  (-7)    /* would block / no message ready */
 #define E_RANGE  (-8)    /* message too large / buffer too small */
 #define E_NOSYS  (-9)    /* unknown syscall number */
+#define E_IO     (-10)   /* disk or filesystem I/O failure */
+#define E_EXIST  (-11)   /* the name is already taken */
+#define E_ISDIR  (-12)   /* expected a file, got a directory */
+#define E_NOTDIR (-13)   /* expected a directory, got a file */
 
 /* ---- shared call structures ---- */
 struct spawn_args {
@@ -147,6 +154,86 @@ struct net_op_args {
     void     *data;      /* frame or MAC buffer */
     uint32_t  len;       /* buffer length, or a small selector/sequence */
     uint32_t *out;       /* results (>= 4 u32 for GET_IP) */
+};
+
+
+/* ---- files (SYS_FILE_OP; CAP_DISK) ----
+ *
+ * The filesystem as userspace sees it. CXFS itself is 64-bit throughout, but
+ * X Native has no 64-bit integer type, so every offset and size crossing this
+ * boundary is 32 bits and SIGNED: read/write return a byte count, seek returns
+ * the new offset, and a negative return is an E_* code. That caps a file a
+ * user process can address at INT32_MAX (2 GB). Raising it means either a
+ * 64-bit type in the language or an offset-hi field, and the cap is documented
+ * here rather than silently truncating.
+ *
+ * A handle from FILE_OP_OPEN is an ordinary entry in the process's handle table
+ * (abi sec 6), so SYS_HANDLE_CLOSE releases it as well as FILE_OP_CLOSE does,
+ * and it is dropped with the rest of the table when the process exits.
+ *
+ * Paths are resolved against the process's cwd unless they start with '/'.
+ */
+enum {
+    FILE_OP_OPEN    = 0,   /* path, flags=FOPEN_* -> handle */
+    FILE_OP_CLOSE   = 1,   /* handle */
+    FILE_OP_READ    = 2,   /* handle, data, len -> bytes read (0 at EOF) */
+    FILE_OP_WRITE   = 3,   /* handle, data, len -> bytes written */
+    FILE_OP_SEEK    = 4,   /* handle, off, flags=FSEEK_* -> the new offset */
+    FILE_OP_TELL    = 5,   /* handle -> the current offset */
+    FILE_OP_TRUNC   = 6,   /* handle, off = the new size */
+    FILE_OP_STAT    = 7,   /* path, data = *file_stat */
+    FILE_OP_FSTAT   = 8,   /* handle, data = *file_stat */
+    FILE_OP_READDIR = 9,   /* path = dir, len = index, data = *file_stat
+                              -> 1 on a hit, 0 once the index is past the end */
+    FILE_OP_MKDIR   = 10,  /* path */
+    FILE_OP_UNLINK  = 11,  /* path (a directory must be empty) */
+    FILE_OP_RENAME  = 12,  /* path = existing, path2 = the new name */
+    FILE_OP_CHDIR   = 13,  /* path */
+    FILE_OP_GETCWD  = 14,  /* data = buffer, len = capacity -> length written */
+};
+
+/* FILE_OP_OPEN flags. One of FOPEN_READ / FOPEN_WRITE is required. */
+#define FOPEN_READ    0x01
+#define FOPEN_WRITE   0x02
+#define FOPEN_CREATE  0x04   /* create the file when it does not exist */
+#define FOPEN_TRUNC   0x08   /* cut an existing file to zero length on open */
+#define FOPEN_APPEND  0x10   /* every write goes to the current end of file */
+
+/* FILE_OP_SEEK origin */
+#define FSEEK_SET 0
+#define FSEEK_CUR 1
+#define FSEEK_END 2
+
+/* entry kinds reported by file_stat.type */
+#define FTYPE_FILE 1
+#define FTYPE_DIR  2
+
+#define FILE_NAME_MAX 64     /* must equal CXFS_NAME_LEN */
+#define FILE_PATH_MAX 256    /* longest path a syscall will copy in */
+
+struct file_op_args {
+    uint32_t    op;
+    int32_t     handle;
+    const char *path;
+    const char *path2;       /* RENAME: the new name */
+    void       *data;        /* READ/WRITE buffer, or *file_stat */
+    uint32_t    len;         /* buffer length, or READDIR index */
+    int32_t     off;         /* SEEK offset (signed), TRUNC size */
+    uint32_t    flags;       /* FOPEN_* or FSEEK_* */
+};
+
+/* Timestamps are unsigned epoch seconds truncated to 32 bits, which runs out in
+   2106; CXFS keeps the full 64 bits on disk. */
+struct file_stat {
+    uint32_t id;
+    uint32_t type;           /* FTYPE_* */
+    uint32_t size;
+    uint32_t permissions;
+    uint32_t owner_uid;
+    uint32_t created;
+    uint32_t modified;
+    uint32_t accessed;
+    char     name[FILE_NAME_MAX];
 };
 
 
