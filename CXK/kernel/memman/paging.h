@@ -21,6 +21,35 @@
 #define PAGE_PRESENT     0x001
 #define PAGE_WRITE       0x002
 #define PAGE_USER        0x004         /* 1 = accessible from ring 3 */
+#define PAGE_WRITE_THRU  0x008         /* PWT: write-through instead of write-back */
+#define PAGE_NO_CACHE    0x010         /* PCD: do not cache this page at all */
+
+/* ---- when PAGE_NO_CACHE is and is not wanted ------------------------------
+ * It belongs on DEVICE REGISTER windows and essentially nowhere else.
+ *
+ *   YES - MMIO register BARs (an e1000's BAR0, an AHCI HBA's ABAR). These are
+ *         not memory: reads have side effects, writes must reach the device in
+ *         program order, and a status bit the device changes underneath us must
+ *         not be served from a cache line. Emulators keep no stale copy so this
+ *         costs nothing there, which is exactly why leaving it out survives
+ *         testing and then misbehaves on real silicon - as a timeout or a hang,
+ *         never as anything that points at caching.
+ *
+ *   NO  - DMA buffers. x86 keeps DMA coherent with the caches by snooping, so
+ *         write-back is correct and far faster. Marking the NIC's ring buffers
+ *         uncached would be a large, pointless slowdown.
+ *
+ *   NO  - the linear framebuffer. Uncached writes to a framebuffer are brutal;
+ *         every pixel becomes a bus transaction. Write-back is wrong in theory
+ *         and much better in practice. What it actually wants is
+ *         write-combining, which needs PAT or an MTRR - see the note in fb.c.
+ *
+ *   NO  - ACPI tables and other firmware structures. They are ordinary RAM that
+ *         happens to be reserved.
+ *
+ * Note this bit only has to be set in the PTE: for a 4 KB page the PDE's PCD
+ * governs caching of the page TABLE, not of the page it maps.
+ */
 
 /* set up identity mapping and enable paging. Call after pmm_init. */
 void paging_init(void);
