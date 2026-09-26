@@ -80,3 +80,19 @@ CXK/src/tested/CXEX_Compiler/mkcxes.py
 CXK/src/tested/CXEX_Compiler/signcxex.py
 CXK/src/tested/CXEX_Compiler/svg2cxlogo.py
 CXK/src/tested/CXEX_Compiler/__pycache__/cxkparse.cpython-314.pyc
+
+# -------------------------
+# Secure Boot test keys (secureboot.sh). Private keys and the OVMF
+# variable stores built from them NEVER go in the repo - a committed PK
+# key lets anyone sign a binary that a machine enrolled with it trusts.
+# -------------------------
+CXK/boot/uefi/sbkeys/
+CXK/boot/uefi/BOOTX64.EFI
+CXK/boot/uefi/*.obj
+*.key
+*.crt
+*.cer
+*.esl
+*.auth
+*_VARS.fd
+*.signed.efi
