@@ -20,8 +20,9 @@ The two things most people come looking for:
 | Project | Lines | Purpose |
 |---|---:|---|
 | `CXEX.Studio` | 2,417 | Avalonia IDE — project explorer, hex viewer, editors, emulator host |
+| `CXEX.CLI` | 2,198 | The `cxk` command-line toolchain |
 | `CXEX.Lang` | 1,820 | **The X Native compiler** (see below) |
-| `CXEX.CLI` | 1,447 | The `cxk` command-line toolchain |
+| `CXEX.Uefi` | 1,019 | UEFI Secure Boot — EFI variable stores, Authenticode PE signing |
 | `CXEX.FileSystem` | 582 | CXFS, host side (format, read, write, browse) |
 | `CXEX.Build` | 477 | CXEX packaging — ELF parsing, layout, writing |
 | `CXEX.FileType` | 364 | Format/magic registry and identification |
@@ -47,7 +48,41 @@ cxk raw-image   build a raw disk image
 cxk run         launch an emulator against an image
 cxk inspect     dump CXEX / disk / CXFS structure
 cxk check       validation pass
+cxk check-abi   verify the X ABI prelude still matches cxk_abi.h
+
+cxk secureboot keygen     generate a Secure Boot PK/KEK/db set
+cxk secureboot varstore   enroll it into an OVMF EFI variable store
+cxk secureboot sign       Authenticode-sign a PE so firmware will load it
+cxk secureboot verify     would firmware holding this cert accept this image
+cxk secureboot test       boot a stub under enforced Secure Boot, signed and unsigned
 ```
+
+### `cxk secureboot`, and why it is in here
+
+CXK's UEFI stub reads the firmware's `SecureBoot` variable. Testing that it does
+so correctly means owning a platform: enrolling your own PK/KEK/db and signing
+the stub with the db key, because firmware will not launch an unsigned binary and
+Secure Boot switched off reports off no matter what the code does.
+
+On Linux that is `openssl` + `virt-fw-vars` + `sbsign`. None of those exist on
+Windows, and `virt-fw-vars` is Python. So the capability lives here instead, and
+`CXEX.Uefi` depends on nothing outside the shared framework — no NuGet package,
+no OpenSSL, no Windows SDK, no `signtool`.
+
+Two things in there are worth knowing about, because both are invisible when
+wrong:
+
+- **Authenticode is not quite CMS.** `SignedCms` encodes `eContent` as an OCTET
+  STRING as RFC 5652 requires; Authenticode puts the `SpcIndirectDataContent`
+  SEQUENCE in raw, and the `messageDigest` attribute covers that SEQUENCE's
+  *value octets*, not its full DER. Get either wrong and you produce a
+  structurally valid signature that every verifier rejects. Written against
+  `System.Formats.Asn1` for exactly that reason.
+- **The EFI variable header's `TimeStamp` is at offset 0x10.** A reader and
+  writer that agree on the wrong offset round-trip perfectly and firmware does
+  not validate it, so the only symptom is another implementation reading a year
+  of 65535 out of the 0xFF fill. The offsets are written out in
+  `EfiVarStore`'s remarks.
 
 ### The compile pipeline, as it actually runs
 
