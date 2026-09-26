@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include "sched.h"
 #include "timer.h"
+#include "keyboard.h"
 #include "idt.h"
 #include "io.h"
 
@@ -19,6 +20,7 @@ static void timer_callback(struct registers *r) {
     (void)r;
     ticks++;
     sched_tick();          /* preemptive scheduler (no-op unless enabled) */
+    keyboard_tick();       /* wake a USB-HID reader; raises no bus traffic here */
 }
 
 uint32_t timer_ticks(void) {
