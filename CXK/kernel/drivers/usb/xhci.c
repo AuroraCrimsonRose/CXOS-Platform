@@ -8,6 +8,8 @@
 #include "pci.h"
 #include "paging.h"
 #include "logging.h"
+#include "idt.h"
+#include "apic.h"
 #include "timer.h"
 
 /* ---- capability registers (at BAR0) ------------------------------------- */
@@ -82,6 +84,7 @@ _Static_assert(sizeof(struct xhci_trb) == 16, "a TRB is 16 bytes");
 #define TRB_DATA_STAGE    3
 #define TRB_STATUS_STAGE  4
 #define TRB_LINK          6
+#define TRB_CMD_NOOP         23
 #define TRB_CMD_ENABLE_SLOT   9
 #define TRB_CMD_ADDRESS_DEV  11
 #define TRB_CMD_CONFIG_EP    12
@@ -748,6 +751,58 @@ static void enumerate_port(unsigned port1) {
     usb_enumerate(dev);
 }
 
+/* ---- MSI delivery self-test ---------------------------------------------
+ * Configuring MSI proves nothing - an interrupt arriving does. xHCI is the
+ * right device to prove it on: it has a real MSI-X capability, and a No-Op
+ * command gives a way to make it raise an interrupt on demand.
+ *
+ * The whole path gets exercised: the controller writes a dword to 0xFEE.....,
+ * the local APIC turns that into a vector, the IDT dispatches it, and the
+ * handler runs. The driver goes straight back to polling afterwards, so a
+ * failure here costs nothing. */
+static volatile uint32_t msi_hits = 0;
+
+static void xhci_msi_handler(struct registers *r) {
+    (void)r;
+    msi_hits++;
+    /* Acknowledge at the device as well as the APIC: the interrupter's pending
+       bit is write-1-to-clear and a set one suppresses the next interrupt. */
+    rt_wr(0x20 + 0x00, rt_rd(0x20 + 0x00) | 1u);
+}
+
+static void msi_self_test(const struct pci_device *dev) {
+    if (!lapic_active()) return;
+
+    int vector = irq_alloc_msi_vector(xhci_msi_handler);
+    if (vector < 0) return;
+
+    if (!pci_msi_setup(dev, (uint8_t)vector)) {
+        irq_free_msi_vector(vector);
+        klog("xHCI", SEV_INFO, "no MSI or MSI-X capability on this controller");
+        return;
+    }
+
+    msi_hits = 0;
+    rt_wr(0x20 + 0x00, 0x3);                     /* interrupter 0: pending clear + enable */
+    op_wr(XOP_USBCMD, op_rd(XOP_USBCMD) | (1u << 2));   /* INTE */
+
+    struct xhci_trb ev;
+    run_command(0, 0, TRB_TYPE(TRB_CMD_NOOP) | TRB_IOC, &ev);
+
+    for (int i = 0; i < 200000 && msi_hits == 0; i++) { }
+
+    uint32_t hits = msi_hits;
+    op_wr(XOP_USBCMD, op_rd(XOP_USBCMD) & ~(1u << 2));  /* back to polling */
+    rt_wr(0x20 + 0x00, 0x1);
+    pci_msi_disable(dev);
+    irq_free_msi_vector(vector);
+
+    if (hits) klog_u32("xHCI", SEV_OK, "MSI delivered on vector ",
+                       (uint32_t)vector, LOG_COLOR_VALUE, "");
+    else      klog_u32("xHCI", SEV_WARN, "MSI configured but never delivered, vector ",
+                       (uint32_t)vector, LOG_COLOR_VALUE, "");
+}
+
 int xhci_init(void) {
     present = 0;
 
@@ -862,6 +917,8 @@ int xhci_init(void) {
 
     present = 1;
     klog_u32("xHCI", SEV_OK, "controller online, root ports: ", nports, LOG_COLOR_VALUE, "");
+
+    msi_self_test(dev);
 
     /* Power every port, then let devices settle before looking. */
     for (unsigned p = 1; p <= nports; p++)
