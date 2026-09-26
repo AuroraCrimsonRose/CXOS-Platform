@@ -397,8 +397,14 @@ int ahci_init(void) {
        ABAR is a hardware MMIO physical address (not RAM the PMM manages), so
        identity-mapping it (virt == phys) is correct - hba is then a usable
        kernel pointer. */
+    /* PAGE_NO_CACHE: the ABAR is a register window. Port status, the command
+       issue/completion bits and the interrupt status are all changed by the HBA
+       behind the CPU's back, so caching them means polling a stale copy - which
+       on real hardware shows up as a command that never appears to complete.
+       The DMA structures allocated in ahci_dma_init stay cacheable; x86 keeps
+       those coherent by snooping. */
     for (uint32_t off = 0; off < 0x2000; off += 0x1000)
-        paging_map(abar + off, abar + off, PAGE_PRESENT | PAGE_WRITE);
+        paging_map(abar + off, abar + off, PAGE_PRESENT | PAGE_WRITE | PAGE_NO_CACHE);
     hba = (volatile struct hba_mem *)abar;
 
     /* allocate + map the DMA structures region and bounce buffer from the PMM
