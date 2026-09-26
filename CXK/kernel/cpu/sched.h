@@ -125,6 +125,9 @@ uint32_t thread_current_caps(void);
 int  thread_handle_install(int id, uint8_t type, uint8_t rights, void *object);
 struct cap_handle *thread_handle_get(int id, int idx);
 int  thread_handle_close(int id, int idx);
+/* the raw table, for handle_release_all (process teardown, and the test that
+   proves teardown actually releases). */
+struct cap_handle *thread_handle_table(int id);
 void     thread_set_caps(int id, uint32_t caps);
 void     thread_set_space(int id, uint32_t pd_phys);   /* CR3 to load when this thread runs */
 void     thread_block(void);            /* block the current thread (IPC wait) + yield */

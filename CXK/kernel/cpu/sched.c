@@ -357,6 +357,11 @@ struct cap_handle *thread_handle_get(int id, int idx) {
     return handle_get(threads[id].handles, CXK_MAX_HANDLES, idx);
 }
 
+struct cap_handle *thread_handle_table(int id) {
+    if (id < 0 || id >= MAX_THREADS) return 0;
+    return threads[id].handles;
+}
+
 int thread_handle_close(int id, int idx) {
     if (id < 0 || id >= MAX_THREADS) return -1;
     return handle_close(threads[id].handles, CXK_MAX_HANDLES, idx);
