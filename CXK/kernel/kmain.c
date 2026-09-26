@@ -25,6 +25,7 @@
 #include "keyboard.h"
 #include "power.h"
 #include "netif.h"
+#include "ehci.h"
 #include "acpi.h"
 #include "usermode.h"
 #include "ata.h"
@@ -207,12 +208,20 @@ void kmain(void) {
         klog_child_u32("  sub ", (uint32_t)d->subclass, LOG_COLOR_VALUE, "");
     }
 
-    /* network: e1000 over PCI (polled). netif_init() returns 0 if no NIC. */
-    if (netif_init()) klog("NET", SEV_OK, "e1000 online");
+    /* network: whichever NIC is on the bus (polled). netif_init() returns 0 if
+       none is. It logs which driver bound, so this line no longer names one -
+       it used to say "e1000 online" unconditionally, which became a lie the
+       moment a second NIC driver existed. */
+    if (netif_init()) klog("NET", SEV_OK, "online");
     else              klog("NET", SEV_WARN, "no NIC found - networking offline");
 
     /* ACPI: enables the real shutdown (S5) and sleep paths */
     acpi_init();
+
+    /* USB: EHCI enumerates high-speed devices and hands full/low-speed ports
+       back to the companion controller. Before storage, so that USB mass
+       storage can register disks here once stage 2 lands. */
+    ehci_init();
 
     /* storage: probe ATA + AHCI drives into the disk registry. AHCI is found via
        PCI; on a machine without one, ahci_init returns 0 harmlessly. */
