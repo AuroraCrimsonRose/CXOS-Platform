@@ -170,17 +170,37 @@ set_vbe_mode:
     and ax, ATTR_NEED
     cmp ax, ATTR_NEED
     jne .mode_next
-    ; require: 16 bpp, direct-color (model 6), 5-6-5 masks
-    cmp byte [es:VBE_MODE_BUF + MIB_BPP], 16
-    jne .mode_next
+    ; require: direct-color (model 6) in a layout the kernel can actually draw.
+    ; The kernel (fb.c: fb_rgb / fb_put_pixel / fb_fill_rect) handles exactly
+    ; two: 16bpp 5-6-5 and 32bpp 8-8-8. Accepting only 16bpp was needlessly
+    ; narrow - plenty of firmware, especially UEFI CSM, offers no 16bpp LFB mode
+    ; at all, and there the search found nothing and fell back to text mode, so
+    ; the machine simply had no framebuffer and no GUI.
     cmp byte [es:VBE_MODE_BUF + MIB_MEMMODEL], 6
     jne .mode_next
+    mov al, [es:VBE_MODE_BUF + MIB_BPP]
+    cmp al, 16
+    je .bpp16
+    cmp al, 32
+    je .bpp32
+    jmp .mode_next               ; 8/15/24bpp: kernel cannot draw it
+.bpp16:
     cmp byte [es:VBE_MODE_BUF + MIB_RED_MASK], 5
     jne .mode_next               ; reject 5-5-5 (15bpp masquerading as 16)
     cmp byte [es:VBE_MODE_BUF + MIB_GREEN_MASK], 6
     jne .mode_next
     cmp byte [es:VBE_MODE_BUF + MIB_BLUE_MASK], 5
     jne .mode_next
+    jmp .bpp_ok
+.bpp32:
+    ; 8-8-8; the 4th byte is unused padding, which is what fb.c writes to.
+    cmp byte [es:VBE_MODE_BUF + MIB_RED_MASK], 8
+    jne .mode_next
+    cmp byte [es:VBE_MODE_BUF + MIB_GREEN_MASK], 8
+    jne .mode_next
+    cmp byte [es:VBE_MODE_BUF + MIB_BLUE_MASK], 8
+    jne .mode_next
+.bpp_ok:
     ; require: resolution matches the current preferred (want_w/want_h)
     mov ax, [es:VBE_MODE_BUF + MIB_WIDTH]
     cmp ax, [vbe_want_w]
@@ -202,7 +222,12 @@ set_vbe_mode:
     call print_string
     mov ax, [es:VBE_MODE_BUF + MIB_HEIGHT]
     call print_dec_ax
-    mov si, msg_vbe_16
+    mov si, msg_vbe_x
+    call print_string
+    xor ax, ax                   ; report the bpp actually chosen, not a guess
+    mov al, [es:VBE_MODE_BUF + MIB_BPP]
+    call print_dec_ax
+    mov si, msg_vbe_bpp
     call print_string
     call print_newline
 
@@ -299,7 +324,7 @@ vbe_list_off    dw 0
 ; status strings
 msg_vbe_ok    db '[BOOT] VBE LFB ', 0
 msg_vbe_x     db 'x', 0
-msg_vbe_16    db ' 16bpp', 0
+msg_vbe_bpp   db 'bpp', 0
 msg_vbe_none  db '[BOOT] VBE: no matching mode - text mode', 0
 msg_vbe_fail  db '[BOOT] VBE: unavailable - text mode', 0
 msg_vbe_off   db '[BOOT] VBE disabled (CXK_ENABLE_FB=0)', 0
