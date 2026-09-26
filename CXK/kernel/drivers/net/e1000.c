@@ -214,25 +214,11 @@ int e1000_init(void) {
     }
     if (!dev) return 0;
 
-    uint32_t base = dev->bar[0] & 0xFFFFFFF0u;
+    pci_enable_bus_master(dev);
+
+    uint32_t base = pci_bar_mmio32(dev, 0, "E1000");
     if (base == 0) return 0;
 
-    /* enable memory space + bus master */
-    uint32_t cmd = pci_config_read32(dev->bus, dev->slot, dev->func, 0x04);
-    cmd |= (1 << 1) | (1 << 2);
-    pci_config_write32(dev->bus, dev->slot, dev->func, 0x04, cmd);
-
-    /* Map the register region (128KB for e1000). This is identity-mapped, which
-       is only safe because PCI MMIO BARs land high - above 0xC0000000, i.e. in
-       the shared kernel half, so the mapping is visible from every address
-       space. If a BAR ever came back low it would be in the per-process user
-       half and would fault exactly like the DMA region did. Refuse rather than
-       fault mysteriously later. */
-    if (base < 0xC0000000u) {
-        klog_u32("E1000", SEV_WARN, "BAR0 below the kernel half: ", base, LOG_COLOR_VALUE,
-                 " - would not be visible from a process address space");
-        return 0;
-    }
     /* PAGE_NO_CACHE: these are device registers, not memory. Reads have side
        effects and the device changes status bits under us, so a cached line
        would serve stale values. The DMA region mapped below is deliberately
