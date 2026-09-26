@@ -19,6 +19,7 @@
 #include "mouse.h"
 #include "../../cpu/io.h"
 #include "../../cpu/int/idt.h"
+#include "../../cpu/int/pic.h"
 
 #define PS2_DATA    0x60
 #define PS2_STATUS  0x64
@@ -137,6 +138,12 @@ int mouse_init(int screen_w, int screen_h) {
 
     packet_idx = 0;
     irq_install_handler(12, mouse_callback);
+    /* Unmask AFTER the handler is recorded, never before: an IRQ arriving in the
+       gap would find irq_routines[12] still null and the packet would be lost,
+       leaving the byte stream out of sync. The BIOS has no reason to enable
+       IRQ12 - nothing had claimed the auxiliary port until now - so without this
+       the handler is installed and simply never called. */
+    pic_unmask(12);
     present = 1;
     return 1;
 }
