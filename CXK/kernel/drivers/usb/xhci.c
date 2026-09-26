@@ -91,6 +91,9 @@ _Static_assert(sizeof(struct xhci_trb) == 16, "a TRB is 16 bytes");
 #define TRB_EV_PORT_STATUS   34
 
 #define TRB_CC(status)   (((status) >> 24) & 0xFF)
+/* A Transfer Event names where it came from: slot in the top byte of control,
+   endpoint DCI in bits 16-20. */
+#define TRB_EV_SLOT(ctrl) (((ctrl) >> 24) & 0xFF)
 #define TRB_CC_SUCCESS   1
 #define TRB_CC_SHORT_PKT 13
 
@@ -118,7 +121,14 @@ _Static_assert(sizeof(struct xhci_trb) == 16, "a TRB is 16 bytes");
 #define SPAD_ARRAY_ADDR (XDMA_BASE + 0xF000)
 #define SPAD_PAGES_ADDR (XDMA_BASE + 0x10000)  /* up to 16 scratchpad pages  */
 #define BULKRING_ADDR   (XDMA_BASE + 0x20000)  /* 256 bytes per slot per dir */
-#define XDMA_END        (XDMA_BASE + 0x21000)
+/* Its own ring rather than sharing the bulk IN one: a composite device with
+   both a bulk and an interrupt IN endpoint would otherwise have them collide. */
+#define INTRING_ADDR    (XDMA_BASE + 0x21000)
+/* Per-slot interrupt buffer. Sharing the general transfer buffer would have a
+   keyboard and a mouse - and any control transfer between their polls - all
+   writing into the same bytes. */
+#define INTBUF_ADDR     (XDMA_BASE + 0x22000)
+#define XDMA_END        (XDMA_BASE + 0x23000)
 
 #define MAX_SLOTS_USED  8
 #define CMD_RING_TRBS   16
@@ -151,6 +161,19 @@ static unsigned ep0_cycle[MAX_SLOTS_USED + 1];
 static unsigned bulk_enq[MAX_SLOTS_USED + 1][2];
 static unsigned bulk_cycle[MAX_SLOTS_USED + 1][2];
 static uint8_t  bulk_configured[MAX_SLOTS_USED + 1][2];
+
+static unsigned int_enq[MAX_SLOTS_USED + 1];
+static unsigned int_cycle[MAX_SLOTS_USED + 1];
+static uint8_t  int_configured[MAX_SLOTS_USED + 1];
+static uint8_t  int_pending[MAX_SLOTS_USED + 1];
+static uint32_t int_len[MAX_SLOTS_USED + 1];
+/* Completion landing pad, per slot. The event ring is SHARED across every
+   device on the controller, so a poll that simply took the next event would
+   consume another device's completion and report it as its own - which is
+   exactly what made a keyboard and a mouse work only one at a time. Events are
+   drained and filed by the slot id the TRB carries. */
+static uint8_t  int_done[MAX_SLOTS_USED + 1];
+static uint32_t int_done_status[MAX_SLOTS_USED + 1];
 
 static inline uint32_t cap_rd(uint32_t o) { return *(volatile uint32_t *)(cap_regs + o); }
 static inline uint32_t op_rd(uint32_t o)  { return *(volatile uint32_t *)(op_regs + o); }
@@ -208,6 +231,27 @@ static int wait_event(uint8_t want_type, struct xhci_trb *out, int timeout_ms) {
         timer_sleep(1);
     }
     return 0;
+}
+
+/* Check the event ring once, without sleeping. Same consumer-cycle logic as
+   wait_event, but returns immediately if nothing new has landed - which is what
+   an interrupt-endpoint poll needs. */
+static int poll_event(uint8_t want_type, struct xhci_trb *out) {
+    struct xhci_trb *e = &evt_ring[evt_deq];
+    uint32_t ctrl = e->control;
+    if ((ctrl & TRB_CYCLE) != evt_cycle) return 0;
+
+    struct xhci_trb copy;
+    copy.parameter = e->parameter;
+    copy.status = e->status;
+    copy.control = ctrl;
+
+    if (++evt_deq == EVT_RING_TRBS) { evt_deq = 0; evt_cycle ^= 1; }
+    rt_wr64(0x20 + 0x18, (EVTRING_ADDR + evt_deq * sizeof(struct xhci_trb)) | (1u << 3));
+
+    if ((uint8_t)TRB_GET_TYPE(copy.control) != want_type) return 0;
+    if (out) *out = copy;
+    return 1;
 }
 
 /* Post a command and wait for its completion event. Returns the completion
@@ -411,6 +455,9 @@ static int xhci_attach(struct usb_device *dev) {
     ep0_enq[slot] = 0;
     ep0_cycle[slot] = 1;
     bulk_configured[slot][0] = bulk_configured[slot][1] = 0;
+    int_configured[slot] = 0;
+    int_pending[slot] = 0;
+    int_done[slot] = 0;
 
     uint32_t mps0 = speed_to_mps0(dev->speed);
     build_input_context(dev, mps0, 0);
@@ -467,15 +514,13 @@ static uint32_t bulkring_addr(unsigned slot, int in) {
 
 #define BULK_RING_TRBS 16
 
-static int configure_bulk_ep(struct usb_device *dev, uint8_t ep, uint16_t mps) {
+/* ep_type is the xHCI endpoint type: 2 = Bulk OUT, 6 = Bulk IN, 3 = Interrupt
+   OUT, 7 = Interrupt IN. `interval` is the encoded polling interval, ignored
+   for bulk. */
+static int configure_ep(struct usb_device *dev, uint8_t ep, uint16_t mps,
+                        uint32_t ring, unsigned ep_type, uint32_t interval) {
     unsigned slot = dev->slot;
-    int in = (ep & 0x80) != 0;
     unsigned dci = dci_for(ep);
-
-    struct xhci_trb *ring = (struct xhci_trb *)XDMA_V(bulkring_addr(slot, in));
-    for (unsigned i = 0; i < BULK_RING_TRBS; i++) trb_clear(&ring[i]);
-    bulk_enq[slot][in] = 0;
-    bulk_cycle[slot][in] = 1;
 
     /* Input context: the control context names what is being added, then the
        slot context (whose "context entries" must reach the new DCI) and the
@@ -491,10 +536,9 @@ static int configure_bulk_ep(struct usb_device *dev, uint8_t ep, uint16_t mps) {
     sc[0] = (xspeed_to_id(dev->speed) << 20) | ((uint32_t)dci << 27);
     sc[1] = ((uint32_t)dev->port << 16);
 
-    /* EP type 2 = Bulk OUT, 6 = Bulk IN. */
-    epc[1] = ((in ? 6u : 2u) << 3) | (3u << 1) | ((uint32_t)mps << 16);
-    uint32_t r = bulkring_addr(slot, in);
-    epc[2] = r | 1u;                        /* dequeue pointer | DCS */
+    epc[0] = interval << 16;
+    epc[1] = ((uint32_t)ep_type << 3) | (3u << 1) | ((uint32_t)mps << 16);
+    epc[2] = ring | 1u;                     /* dequeue pointer | DCS */
     epc[3] = 0;
     epc[4] = mps;                           /* average TRB length */
 
@@ -506,7 +550,6 @@ static int configure_bulk_ep(struct usb_device *dev, uint8_t ep, uint16_t mps) {
                  LOG_COLOR_VALUE, "");
         return 0;
     }
-    bulk_configured[slot][in] = 1;
     return 1;
 }
 
@@ -519,7 +562,15 @@ static int xhci_bulk(struct usb_device *dev, uint8_t ep, void *data, uint32_t le
     uint16_t mps = in ? dev->ep_in_mps : dev->ep_out_mps;
     if (mps == 0) mps = 512;
 
-    if (!bulk_configured[slot][in] && !configure_bulk_ep(dev, ep, mps)) return -1;
+    if (!bulk_configured[slot][in]) {
+        struct xhci_trb *r = (struct xhci_trb *)XDMA_V(bulkring_addr(slot, in));
+        for (unsigned i = 0; i < BULK_RING_TRBS; i++) trb_clear(&r[i]);
+        bulk_enq[slot][in] = 0;
+        bulk_cycle[slot][in] = 1;
+        if (!configure_ep(dev, ep, mps, bulkring_addr(slot, in), in ? 6u : 2u, 0))
+            return -1;
+        bulk_configured[slot][in] = 1;
+    }
 
     if (!in) for (uint32_t i = 0; i < len; i++) xfer_buf[i] = ((const uint8_t *)data)[i];
 
@@ -561,11 +612,87 @@ static int xhci_bulk(struct usb_device *dev, uint8_t ep, void *data, uint32_t le
     return transferred;
 }
 
+static uint32_t intring_addr(unsigned slot) { return INTRING_ADDR + (slot - 1) * 256; }
+static uint32_t intbuf_addr(unsigned slot)  { return INTBUF_ADDR  + (slot - 1) * 256; }
+
+static int xhci_interrupt_poll(struct usb_device *dev, uint8_t ep,
+                               void *data, uint32_t len) {
+    if (!present || !dev || dev->slot == 0 || !data) return -1;
+    if (len == 0 || len > 64) return -1;
+
+    unsigned slot = dev->slot;
+    uint16_t mps = dev->ep_int_mps ? dev->ep_int_mps : 8;
+
+    if (!int_configured[slot]) {
+        struct xhci_trb *r = (struct xhci_trb *)XDMA_V(intring_addr(slot));
+        for (unsigned i = 0; i < BULK_RING_TRBS; i++) trb_clear(&r[i]);
+        int_enq[slot] = 0;
+        int_cycle[slot] = 1;
+        /* bInterval for a high-speed interrupt endpoint is already the
+           2^(n-1) microframe exponent xHCI wants; a full-speed one counts
+           frames, and 3 (8 microframes = 1 ms) is the usual mapping. */
+        uint32_t interval = dev->speed == USB_SPEED_HIGH
+                          ? (dev->ep_int_interval ? dev->ep_int_interval - 1 : 3) : 3;
+        if (!configure_ep(dev, ep, mps, intring_addr(slot), 7u, interval)) return -1;
+        int_configured[slot] = 1;
+        int_pending[slot] = 0;
+    }
+
+    if (!int_pending[slot]) {
+        struct xhci_trb *ring = (struct xhci_trb *)XDMA_V(intring_addr(slot));
+        unsigned i = int_enq[slot], cyc = int_cycle[slot];
+        struct xhci_trb *t = &ring[i];
+        t->parameter = intbuf_addr(slot);
+        t->status = len;
+        t->control = TRB_TYPE(TRB_NORMAL) | TRB_IOC | TRB_ISP | (cyc ? TRB_CYCLE : 0);
+        if (++i == BULK_RING_TRBS - 1) {
+            struct xhci_trb *link = &ring[BULK_RING_TRBS - 1];
+            link->parameter = intring_addr(slot);
+            link->status = 0;
+            link->control = TRB_TYPE(TRB_LINK) | TRB_ENT | (cyc ? TRB_CYCLE : 0);
+            i = 0; cyc ^= 1;
+        }
+        int_enq[slot] = i;
+        int_cycle[slot] = cyc;
+        int_len[slot] = len;
+        doorbell(slot, dci_for(ep));
+        int_pending[slot] = 1;
+        return 0;
+    }
+
+    /* Drain whatever has landed and file each completion under its own slot,
+       then look only at ours. */
+    struct xhci_trb ev;
+    while (poll_event(TRB_EV_TRANSFER, &ev)) {
+        unsigned es = TRB_EV_SLOT(ev.control);
+        if (es >= 1 && es <= MAX_SLOTS_USED) {
+            int_done[es] = 1;
+            int_done_status[es] = ev.status;
+        }
+    }
+    if (!int_done[slot]) return 0;                      /* nothing for us yet */
+    int_done[slot] = 0;
+    int_pending[slot] = 0;
+
+    uint32_t status = int_done_status[slot];
+    uint8_t cc = (uint8_t)TRB_CC(status);
+    if (cc != TRB_CC_SUCCESS && cc != TRB_CC_SHORT_PKT) return -1;
+
+    int residual = (int)(status & 0x00FFFFFF);
+    int got = (int)int_len[slot] - residual;
+    if (got < 0) got = 0;
+    if (got > (int)len) got = (int)len;
+    const uint8_t *src = (const uint8_t *)XDMA_V(intbuf_addr(slot));
+    for (int b = 0; b < got; b++) ((uint8_t *)data)[b] = src[b];
+    return got;
+}
+
 static const struct usb_hc_ops xhci_ops = {
     .name    = "xHCI",
     .attach  = xhci_attach,
     .control = xhci_control,
     .bulk    = xhci_bulk,
+    .interrupt_poll = xhci_interrupt_poll,
     /* No reset_toggle: xHCI keeps the data toggle in the endpoint context and
        a Reset Endpoint command restores it, so there is no software copy that
        could drift out of step. */
