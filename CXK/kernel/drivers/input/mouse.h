@@ -23,4 +23,9 @@ uint32_t mouse_seq(void);
 /* Re-clamp when the display mode changes. */
 void mouse_set_bounds(int w, int h);
 
+/* Apply a movement from outside the IRQ12 path, in SCREEN direction - dy
+   positive means downward. USB HID uses this; the PS/2 handler negates its own
+   dy on the way in, because PS/2 reports Y positive-up and USB does not. */
+void mouse_inject(int32_t dx, int32_t dy, uint32_t btns);
+
 #endif

@@ -7,6 +7,7 @@
 #include "ohci.h"
 #include "xhci.h"
 #include "usb_storage.h"
+#include "usb_hid.h"
 #include "logging.h"
 #include "timer.h"
 
@@ -100,7 +101,8 @@ static void read_configuration(struct usb_device *dev) {
         } else if (type == USB_DESC_ENDPOINT && in_first_interface) {
             const struct usb_endpoint_descriptor *ed =
                 (const struct usb_endpoint_descriptor *)&cfg[off];
-            if ((ed->bm_attributes & 0x03) == 0x02) {       /* bulk */
+            uint8_t type = ed->bm_attributes & 0x03;
+            if (type == 0x02) {                            /* bulk */
                 if (ed->b_endpoint_address & 0x80) {
                     dev->ep_in = ed->b_endpoint_address;
                     dev->ep_in_mps = ed->w_max_packet_size;
@@ -108,6 +110,11 @@ static void read_configuration(struct usb_device *dev) {
                     dev->ep_out = ed->b_endpoint_address;
                     dev->ep_out_mps = ed->w_max_packet_size;
                 }
+            } else if (type == 0x03 && (ed->b_endpoint_address & 0x80)) {
+                /* interrupt IN - how a HID device reports keys and movement */
+                dev->ep_int_in = ed->b_endpoint_address;
+                dev->ep_int_mps = ed->w_max_packet_size;
+                dev->ep_int_interval = ed->b_interval;
             }
         }
         off += len;
@@ -163,11 +170,13 @@ int usb_enumerate(struct usb_device *dev) {
         klog_child_u32("  bulk in ", dev->ep_in, LOG_COLOR_VALUE, "");
         klog_child_u32("  bulk out", dev->ep_out, LOG_COLOR_VALUE, "");
     }
+    if (dev->ep_int_in)
+        klog_child_u32("  int in  ", dev->ep_int_in, LOG_COLOR_VALUE, "");
 
     /* Offer it to the class drivers. Mass storage is the only one so far; HID
        would hook in here the same way. A device nobody claims is still
        enumerated and listed, just not driven. */
-    usb_storage_attach(dev);
+    if (!usb_storage_attach(dev)) usb_hid_attach(dev);
     return 1;
 }
 

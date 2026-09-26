@@ -62,6 +62,16 @@ struct usb_hc_ops {
        already encodes direction. May be null until a controller implements it. */
     int (*bulk)(struct usb_device *dev, uint8_t ep, void *data, uint32_t len);
 
+    /* Poll an interrupt IN endpoint. NON-BLOCKING by contract, and that is the
+       whole point: an idle HID endpoint NAKs rather than answering, so a
+       blocking wait would stall for its full timeout on every check for a
+       keypress. The first call arms a transfer, later calls test whether it
+       completed and re-arm it.
+
+       Returns bytes received this call, 0 if nothing has arrived yet, -1 on a
+       hard error. */
+    int (*interrupt_poll)(struct usb_device *dev, uint8_t ep, void *data, uint32_t len);
+
     /* Forget the software data toggle for an endpoint. Needed after a stall is
        cleared: CLEAR_FEATURE(ENDPOINT_HALT) resets the toggle on the device
        side, and host and device must agree or every later packet is dropped.
@@ -96,6 +106,14 @@ struct usb_device {
     uint8_t  ep_out;          /* bulk OUT endpoint address, 0 if none         */
     uint16_t ep_in_mps;
     uint16_t ep_out_mps;
+
+    /* Interrupt IN endpoint - what every HID device delivers its reports on.
+       Bulk and interrupt are recorded separately because a device can have
+       both, and lumping them together silently points the wrong transfer type
+       at the wrong endpoint. */
+    uint8_t  ep_int_in;
+    uint16_t ep_int_mps;
+    uint8_t  ep_int_interval;  /* bInterval, in frames or 2^(n-1) microframes */
 
     uint8_t  in_use;
 };
