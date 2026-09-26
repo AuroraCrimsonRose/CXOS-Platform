@@ -39,6 +39,7 @@ struct thread {
     int       is_user;         /* 1 = runs in ring 3 (a user process) */
     int       exit_code;       /* set on exit */
     uint32_t  uid;             /* owning user id; 0 = SYSTEM (machine identity) */
+    uint32_t  cwd;             /* CXFS entry id of the working directory (0 = root) */
     uint32_t  caps;            /* ABI v1 capability bitmask (ring-3 authority) */
     struct cap_handle handles[CXK_MAX_HANDLES];  /* ABI v1 per-process handle table */
     uint32_t  pd_phys;         /* address-space page-dir phys; 0 = shared kernel space */
@@ -108,6 +109,14 @@ int thread_alloc_kstack(int id);
 uint32_t thread_current_uid(void);
 /* set a thread's owning UID (used when launching a process as a given user). */
 void     thread_set_uid(int id, uint32_t uid);
+
+/* ---- working directory ----
+ * A CXFS entry id, so resolving a relative path is cxfs_resolve(path, cwd) with
+ * no string handling at all. 0 is the root directory, which is also the value a
+ * fresh thread starts with, so "no cwd set" and "cwd is /" are the same state
+ * and there is nothing to initialise wrongly. Inherited from the creator. */
+uint32_t thread_current_cwd(void);
+void     thread_set_cwd(int id, uint32_t entry_id);
 
 /* ABI v1 capabilities (cpu/caps.h) */
 uint32_t thread_current_caps(void);
