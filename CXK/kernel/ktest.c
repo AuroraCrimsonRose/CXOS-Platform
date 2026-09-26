@@ -372,6 +372,7 @@ void ktest_run(void) {
     total++; passed += report("ahci (controller + read)",         test_ahci());
     total++; passed += report("cxfs (read-only mount check)",     test_cxfs());
     total++; passed += report("cxfs offset I/O + compaction",      test_cxfs_offset());
+    total++; passed += report("file syscalls (SYS_FILE_OP)",       usermode_file_test());
 
     /* single summary line: green if all passed, red if any failed. */
     if (passed == total) {

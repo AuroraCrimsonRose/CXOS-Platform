@@ -226,7 +226,8 @@ struct file_op_args {
    2106; CXFS keeps the full 64 bits on disk. */
 struct file_stat {
     uint32_t id;
-    uint32_t type;           /* FTYPE_* */
+    uint32_t kind;           /* FTYPE_* ("type" is a reserved word in X, so the
+                                ABI side cannot call it that) */
     uint32_t size;
     uint32_t permissions;
     uint32_t owner_uid;
