@@ -43,7 +43,28 @@
 ;     machine without it says so instead of failing in a way that looks
 ;     identical to the two cases above.
 ;
-; A fourth requirement lives outside this file: a real MBR partition table,
+;  4. Stage 1 says where it got to. It used to print only on the error paths,
+;     which meant a silent hang was indistinguishable from the BIOS never
+;     running this sector at all - and those need completely different fixes.
+;     The markers cost about 70 bytes of a sector that had 196 to spare, and
+;     they turn "black screen" into a position:
+;
+;         (nothing)          the BIOS never ran this sector, or video is dead.
+;                            Not our bug yet - check how the medium was written
+;                            and that the BIOS is in legacy/CSM mode.
+;         CXK1 d=xx          stage 1 is running. xx is the drive BIOS handed us
+;                            in DL: 80 is the first hard disk, 00 a floppy, and
+;                            anything unexpected is itself the finding.
+;         ... LBA            extended reads are supported on that drive.
+;         ... RD             stage 2 was read off the disk without error, and
+;                            stage 1 is about to jump to it.
+;         then stage 2's banner - at which point stage 1 did its job and
+;         anything still wrong is stage 2's or later.
+;
+;     Stopping one marker short is the useful case: it names the BIOS call that
+;     hung rather than returned an error, which the error paths cannot catch.
+;
+; A further requirement lives outside this file: a real MBR partition table,
 ; with one entry marked active, is written at offset 446 by the image writer
 ; (CXEX.Build/Emitters/XBPTImageWriter.cs). BIOSes booting USB media in
 ; USB-HDD mode look for it, and an all-zero table makes them fall back to
@@ -70,6 +91,18 @@ start:
 
     mov [boot_drive], dl        ; BIOS leaves the boot drive in DL
 
+    ; ---- progress markers (note 4) ----
+    ; A healthy boot prints:  CXK1 d=80 LBA RD   then stage 2's own banner.
+    ; How far it gets localises a failure that would otherwise be a black
+    ; screen: nothing at all means the BIOS never ran this sector, "CXK1 d=xx"
+    ; alone means the INT 13h extension check hung, "... LBA" means the read
+    ; hung without returning an error, and "... RD" with no stage 2 banner
+    ; means the jump happened but stage 2 did not come up.
+    mov si, msg_hello
+    call puts
+    mov al, [boot_drive]
+    call puthex8
+
     ; ---- check INT 13h extensions are present on THIS drive (note 3) ----
     mov ah, 0x41
     mov bx, 0x55AA
@@ -79,6 +112,9 @@ start:
     cmp bx, 0xAA55              ; BX flipped => extensions present
     jne .no_lba
 
+    mov si, msg_lba
+    call puts
+
     ; ---- read stage 2 ----
     mov ah, 0x42
     mov dl, [boot_drive]
@@ -86,25 +122,54 @@ start:
     int 0x13
     jc .disk_error
 
+    mov si, msg_rd
+    call puts
+
     jmp STAGE2_SEGMENT:STAGE2_OFFSET
 
 .no_lba:
     mov si, msg_nolba
-    jmp .print
+    jmp .die
 .disk_error:
     mov si, msg_err
-.print:
-    lodsb
-    test al, al
-    jz .hang
-    mov ah, 0x0E
-    xor bh, bh
-    int 0x10
-    jmp .print
+.die:
+    call puts
 .hang:
     cli
     hlt
     jmp .hang
+
+; ---- the smallest possible console -----------------------------------------
+; INT 10h AH=0Eh is teletype output: it scrolls and advances the cursor on its
+; own, which is all that is wanted here. BH must be the page number, and some
+; BIOSes do care, so it is zeroed rather than assumed.
+puts:                           ; SI = NUL-terminated string
+    lodsb
+    test al, al
+    jz .done
+    call putc
+    jmp puts
+.done:
+    ret
+
+putc:                           ; AL = character
+    mov ah, 0x0E
+    xor bh, bh
+    int 0x10
+    ret
+
+puthex8:                        ; AL = byte, printed as two hex digits
+    push ax
+    shr al, 4
+    call .nibble
+    pop ax
+    and al, 0x0F
+.nibble:
+    add al, '0'
+    cmp al, '9'
+    jbe putc
+    add al, 'A' - '0' - 10
+    jmp putc
 
 ; Disk Address Packet for INT 13h / AH=42h (extended read). Kept after the
 ; code so the sector does not open with the FAT signature (note 1).
@@ -117,6 +182,9 @@ dap:
     dq STAGE2_LBA               ; starting LBA
 
 boot_drive  db 0
+msg_hello   db 'CXK1 d=', 0
+msg_lba     db ' LBA', 0
+msg_rd      db ' RD ', 0
 msg_err     db '[BOOT] STAGE2 READ ERROR', 0
 msg_nolba   db '[BOOT] NO INT13H LBA SUPPORT', 0
 
