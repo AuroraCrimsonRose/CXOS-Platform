@@ -14,16 +14,24 @@ The project is designed around modularity, verifiable execution, and reusable sy
 
 CXK is currently under active development.
 
-The v5 architecture focuses on preserving proven subsystems from previous releases while modernizing the boot chain, executable loading infrastructure, and trust model.
+The v5 architecture focuses on preserving proven subsystems from previous releases while modernizing the boot chain, executable loading infrastructure, and trust model. **The v5 port is complete** — see `docs/V5_PORTING_MANIFEST.md`, retained as the historical plan.
 
-Current development targets include:
+Delivered:
 
 - XKEX executable loading
 - XBEX boot-stage execution
 - CXFS integration
-- Signed executable verification
-- Ring 3 process execution
-- Capability-oriented kernel services
+- Signed executable verification (RSA-2048 over SHA-256, enforced at the `cxex_exec` handoff)
+- Ring 3 process execution, with per-process address spaces
+- Capability-oriented kernel services, with attenuation at `spawn`
+- X Native userland: shell, eight-library `std/`, and a windowed GUI
+
+Current development targets:
+
+- **Filesystem access from ring 3** — CXFS is complete in-kernel and unreachable from userspace; this is the largest gap (`docs/CX_ABI.md` §7.10)
+- **Loading applications from disk** rather than embedding them in the kernel image, so the shell and the GUI can launch separate `.xcex` application files
+- Display/console arbitration, then enabling system-wide preemption
+- Transport-layer networking (UDP, then TCP)
 
 ---
 
@@ -209,10 +217,14 @@ The primary objective of v5 is to modernize executable loading and deployment wh
 ### Future
 
 - UEFI boot support
-- Expanded networking stack
+- Expanded networking stack (UDP, DNS, TCP)
 - Additional CX formats
 - Enhanced CXFS features
 - User-space executable ecosystem
+
+### Long-term goal: building CXK from CXK
+
+The objective is a **self-sufficient system** — one that compiles its own software, on itself, with no external host. The X toolchain currently runs on .NET, so CXK can execute X programs but cannot yet produce them. Closing that gap is the long-term direction, and it drives the language roadmap: see `docs/CX_X_CORE_LANG.md` §0 and §10 for what self-hosting requires and the staged route to it.
 
 ---
 
@@ -220,11 +232,19 @@ The primary objective of v5 is to modernize executable loading and deployment wh
 
 Requirements:
 
-- NASM
+- **MSVC Developer Command Prompt** — `build.bat` configures CMake with `-G "NMake Makefiles"`, so `nmake` must be on PATH. Run the build from a Developer Command Prompt (or after `vcvarsall.bat`), not a plain shell.
+- **i686-elf GCC cross toolchain** — compiles and links everything in `kernel/`. Paths come from `tools/cmake/cxk_toolchain.cmake`.
+- NASM — the boot chain and the kernel's assembly
 - CMake
-- i686-elf GCC toolchain
 - QEMU
 - Bochs (optional)
+
+**No .NET SDK is required to build CXK.** `tools/cxk.exe` is a prebuilt, self-contained
+binary of the CX DevKit toolchain, committed deliberately so the kernel can be built without
+installing .NET or checking out the DevKit. CMake drives it for packaging, signing, imaging
+and X compilation. It only needs replacing when the DevKit gains something CXK's build uses —
+republish it from CX_DEVKIT (`dotnet publish CXEX.CLI -c Release`, or Publish in Visual
+Studio) and copy the result over `tools/cxk.exe`.
 
 Build:
 
@@ -254,10 +274,28 @@ tools\run_qemu_ahci.bat
 
 ## Documentation
 
-- docs/PROCESS_MODEL.md
-- docs/CXFS_FILESYSTEM.md
-- docs/CX_EXTENSION_SYSTEM.md
-- docs/CX_EXTENSION_NAMING.md
+| Document | Covers |
+|---|---|
+| `docs/CX_ABI.md` | Syscall & capability contract (v2) — numbers, caps, IPC, handles |
+| `docs/PROCESS_MODEL.md` | Ring 3, scheduling, preemption, per-process address spaces |
+| `docs/CX_X_CORE_LANG.md` | X core language spec (v0.2) and the route to self-hosting |
+| `docs/CXFS_FILESYSTEM.md` | The CXFS filesystem |
+| `docs/CX_EXTENSION_SYSTEM.md` | CXEX format, file-type system, code signing |
+| `docs/CX_EXTENSION_NAMING.md` | The `X + Domain + Type` naming formula |
+| `docs/CX_FILE_STRUCTURE.md` | On-disk and in-repo layout |
+| `docs/V5_PORTING_MANIFEST.md` | The v5 port plan (complete — historical) |
+
+### Toolchain
+
+The compiler, CLI, packaging, signing tools and IDE live in the companion repository
+[CX_DEVKIT](https://github.com/AuroraCrimsonRose/CX_DEVKIT). Its `docs/CX_DEVKIT_DESIGN.md`
+is the host-side design document.
+
+> **Note for anyone changing `abi/cxk_abi.h`:** the X compiler carries a hand-maintained copy
+> of this ABI as an X prelude (`CXEX.Lang/Abi/AbiPrelude.cs` in CX_DEVKIT). Nothing generates
+> it and no test checks it, so **a syscall or ABI struct added here must be added there in the
+> same pass** or the toolchain will not be able to compile the userland. See CX_DEVKIT design
+> doc §5.2.
 
 ---
 

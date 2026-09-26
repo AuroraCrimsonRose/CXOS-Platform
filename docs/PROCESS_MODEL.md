@@ -9,11 +9,17 @@ rediscover.
 
 > **Status:** Implemented and validated on hardware/emulator. What exists today:
 > ring 0/3 privilege separation, a syscall gate, cooperative and preemptive
-> context switching, process lifecycle (create/exit/reap), and multiple
-> preemptible ring-3 processes sharing one address space. **Not yet done:**
-> per-process address spaces (separate page directories / CR3 switching) — that
-> is a future checkpoint (3b). All processes currently share the kernel's single
-> address space, isolated only by per-process user-page regions.
+> context switching, process lifecycle (create/exit/reap), multiple preemptible
+> ring-3 processes, and — **as of checkpoint 3b, now complete** — true
+> per-process address spaces: a page directory per process, CR3 switched on
+> every context switch, the kernel half mapped into every space. A process
+> cannot address another's memory at all.
+>
+> **What remains** (see §12): preemption is implemented but **not enabled in the
+> boot path** (`sched_preempt_enable()` is called only from `ktest.c`), because
+> system-wide preemption additionally needs console/framebuffer arbitration and
+> preemption-safe drivers. And programs are still compiled into the kernel image
+> rather than loaded from disk.
 
 ---
 
@@ -72,13 +78,15 @@ fault. It requests services through a software-interrupt gate:
 - Convention: syscall number in `eax`, args in `ebx`/`ecx`, return value in
   `eax`.
 
-Implemented syscalls (`cpu/usermode.c`, `syscall_dispatch`):
+There are **16 implemented syscalls** (`cpu/usermode.c`, `syscall_dispatch`), spanning
+lifecycle, IPC, handles, input, console, framebuffer, network, spawn and power.
 
-| # | Name        | Args                | Behavior                                   |
-|---|-------------|---------------------|--------------------------------------------|
-| 0 | `SYS_EXIT`  | `ebx` = exit code   | returns control to the kernel              |
-| 1 | `SYS_WRITE` | `ebx` = ptr, `ecx`=len | writes a string (len 0 = bounded NUL-scan) |
-| 2 | `SYS_GETPID`| —                   | returns current pid                        |
+**They are not listed here.** `abi/cxk_abi.h` is the source of truth and `docs/CX_ABI.md`
+is the reference; duplicating the table in this document is how it went stale — it sat at
+three entries long after the real count reached sixteen, and misdescribed `SYS_WRITE` as
+number 1 when `SYS_CONSOLE_WRITE` is `0x30`. See **`docs/CX_ABI.md` §7**.
+
+The part that belongs *here* is the boundary rule, not the call list:
 
 **Pointer validation:** because there is now a privilege boundary, the kernel
 must never blindly dereference a pointer handed up from ring 3. `user_ptr_ok`
@@ -133,18 +141,41 @@ user/kernel flag).
 
 ---
 
-## 6. Per-Process User Memory
+## 6. Per-Process Address Spaces (checkpoint 3b — complete)
 
-Each ring-3 process is assigned a 64 KB user-page slot (base `0x800000`, indexed
-by pid). The trampoline maps a user code page and a user stack page with
-`PAGE_USER` set. Two paging subtleties apply:
+Each ring-3 process gets its **own page directory**. `proc_start` calls
+`addr_space_create`, records the directory's physical address on the thread
+(`thread_set_space(pid, space.pd_phys)`), and the scheduler loads it into CR3 on
+every switch (`update_address_space`). Isolation is now structural: a process
+cannot *name* another process's memory, let alone read it.
 
-- The user/supervisor bit is enforced at **both** paging levels. `paging_map`
-  must OR `PAGE_USER` into the **page-directory entry** as well as the page-table
-  entry, or a ring-3 access faults even though the PTE allows it.
-- Processes share the kernel's single page directory; isolation is by *region*
-  (each process only maps its own slot user-accessible). True per-process
-  address spaces are a future checkpoint.
+The kernel half (`0xC0000000`+) is mapped into every space, so kernel code and
+data are reachable no matter which directory is live. `addr_space_init_pd` zeroes
+the whole user half for a new process, and a PDE hook propagates newly created
+shared-kernel-half PDEs into already-live spaces so a late kernel mapping is
+visible everywhere.
+
+Three paging subtleties apply, each of which has cost real debugging time:
+
+- The user/supervisor **and write** bits are ANDed across **both** paging levels.
+  `paging_map` must OR `PAGE_USER` into the **page-directory entry** as well as
+  the page-table entry, or a ring-3 access faults even though the PTE allows it.
+- **Anything the kernel must reach from inside a process's address space has to
+  live in the kernel half.** An identity mapping made at boot exists only in the
+  kernel's own directory, so it vanishes the moment a syscall runs with a
+  process's CR3 loaded. This is exactly how the e1000 DMA region faulted
+  (`CR2 = 0x712000`) once `ping` was issued from the shell rather than from boot
+  context: the fix was to alias the region into the kernel half and keep handing
+  the NIC the physical address.
+- A device's MMIO window must likewise be kernel-half or it is invisible from a
+  process. PCI BARs normally land high, which is why identity-mapping them
+  happens to work; `e1000_init` now refuses a BAR below `0xC0000000` rather than
+  faulting mysteriously later.
+
+Teardown is symmetrical and leak-free: on exit the trampoline reclaims the user
+frames and page tables *while still in that space*, switches to the kernel space,
+then destroys the directory (`addr_space_reclaim_user` → `addr_space_switch` →
+`addr_space_destroy`).
 
 ---
 
@@ -215,17 +246,30 @@ interrupt layer does not hard-depend on the process model.
 
 ## 10. Testing
 
-The `ringtest` shell command exercises the model (each subtest is also a
-regression test):
+The old `ringtest` shell command is gone — the shell was rewritten in X and did
+not carry it over. The tests moved somewhere better: **`kernel/ktest.c`, run
+automatically from `kmain` on every boot** (`ktest_run()`), before the executive
+is launched. A regression cannot be forgotten because nobody typed the command.
 
-| Subtest            | Exercises                                       |
-|--------------------|-------------------------------------------------|
-| `ringtest user`    | ring-3 entry, syscall, clean return             |
-| `ringtest threads` | cooperative kernel-thread context switching     |
-| `ringtest preempt` | timer-driven preemption of kernel threads       |
-| `ringtest proc [N]`| N cooperative ring-3 processes, lifecycle/reap  |
-| `ringtest procp`   | two preemptive ring-3 processes (full model)    |
-| `ringtest all`     | runs the cooperative suite in sequence          |
+| Self-test | Exercises |
+|-----------|-----------|
+| `test_paging` | map/unmap, recursive directory |
+| `test_heap` | kmalloc/kfree |
+| `test_sched_coop` | cooperative kernel-thread context switching |
+| `test_sched_preempt` | timer-driven preemption of kernel threads |
+| `test_ring3_single` | ring-3 entry, syscall, clean return (3a) |
+| `test_ring3_processes` | cooperative *and* preemptible ring-3 processes (3b/3c) |
+| `test_identity` | a user process can never be UID 0 |
+| `test_storage` | disk read/write |
+| `test_cxfs` | filesystem format/mount/create/read |
+| `test_pci` | bus enumeration |
+| `test_ahci` | AHCI bring-up |
+
+`test_sched_preempt` and `test_ring3_processes` each call `sched_preempt_enable(5)`
+and then `sched_preempt_disable()`. So **preemption is proven on every boot and
+then deliberately switched back off** — the model is validated, and normal
+operation is cooperative by choice, not because preemption is unfinished. §12
+records what turning it on permanently still needs.
 
 ---
 
@@ -246,12 +290,34 @@ regression test):
 
 ## 12. Roadmap
 
-- **3b — Per-process address spaces:** a page directory per process, CR3
-  switching on context switch, the kernel mapped into every address space. This
-  brings true memory isolation (a process cannot read another's memory at all,
-  not merely "is not mapped it"). It is the largest remaining piece and is
-  intentionally deferred.
-- **Program loading:** running user code loaded from disk (CXFS) rather than
-  copied from a built-in blob.
-- **System-wide preemption:** making the shell itself a scheduled thread, which
-  additionally requires console locking and preemption-safe drivers.
+- ~~**3b — Per-process address spaces.**~~ **Done.** See §6. A page directory per
+  process, CR3 switched on every context switch, the kernel half mapped into every
+  space, leak-free teardown. This was the largest remaining piece.
+
+Remaining, in the order they unblock each other:
+
+1. **Program loading from disk.** Running user code read from CXFS rather than
+   copied from a blob compiled into the kernel image. Today the entire userland
+   is one embedded array (`os/executive/app_image.h`) holding a single image, and
+   `spawn` takes an in-memory image rather than a path — so the shell and the GUI
+   are statically linked into *one* binary and cannot launch separate application
+   files. The kernel side already exists: `cxk_launch_executive(path)` reads a
+   CXEX from CXFS and hands it to `cxex_exec`, which verifies its signature. What
+   is missing is the syscall exposing it (`docs/CX_ABI.md` §7.10) and filesystem
+   access from ring 3. **This is the top priority**: it is what makes an
+   application ecosystem possible at all, and because it routes through
+   `cxex_exec`, loading apps from disk inherits signature verification for free.
+
+2. **Display and console arbitration.** Preemption is already proven (§10); what
+   it lacks is drivers that tolerate it. With two ring-3 processes runnable, both
+   can be mid-`console_write` or mid-`fb_op`, and the framebuffer has no notion of
+   ownership or clipping per process. Needs either a lock per device or — better,
+   and the direction the GUI is already heading — a display server holding
+   `CAP_FRAMEBUFFER` that clients draw through by IPC.
+
+3. **System-wide preemption:** enable it in the boot path once (2) holds, making
+   the shell an ordinary scheduled thread alongside everything else.
+
+4. **CP4 hardening** (`docs/CX_ABI.md` §11): IPC lifecycle edge cases — a caller
+   dying mid-call, an executive dying with a caller blocked — handle cleanup on
+   exit, and message-bound fuzzing.

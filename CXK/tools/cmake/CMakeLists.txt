@@ -31,11 +31,28 @@ foreach(f ${CXK_FLAGS})
 endforeach()
 
 # ---- toolchain ----
-set(CROSS_PREFIX "C:/cross/i686-elf/bin")
-set(CMAKE_ASM_NASM_COMPILER nasm)
-set(CMAKE_OBJCOPY "${CROSS_PREFIX}/i686-elf-objcopy.exe")
-set(CMAKE_LD      "${CROSS_PREFIX}/i686-elf-ld.exe")
-set(KCC           "${CROSS_PREFIX}/i686-elf-gcc.exe")
+# Defaults are the Windows cross-toolchain layout build.bat expects. Each is
+# overridable with -D so the kernel can also be built where the toolchain lives
+# elsewhere or has no .exe suffix (a Linux/macOS host, CI, a different install
+# path). Overriding nothing reproduces the previous behaviour exactly.
+if(NOT DEFINED CROSS_PREFIX)
+    set(CROSS_PREFIX "C:/cross/i686-elf/bin")
+endif()
+if(NOT DEFINED CROSS_SUFFIX)
+    set(CROSS_SUFFIX ".exe")
+endif()
+if(NOT DEFINED CMAKE_ASM_NASM_COMPILER)
+    set(CMAKE_ASM_NASM_COMPILER nasm)
+endif()
+if(NOT DEFINED CMAKE_OBJCOPY)
+    set(CMAKE_OBJCOPY "${CROSS_PREFIX}/i686-elf-objcopy${CROSS_SUFFIX}")
+endif()
+if(NOT DEFINED CMAKE_LD)
+    set(CMAKE_LD      "${CROSS_PREFIX}/i686-elf-ld${CROSS_SUFFIX}")
+endif()
+if(NOT DEFINED KCC)
+    set(KCC           "${CROSS_PREFIX}/i686-elf-gcc${CROSS_SUFFIX}")
+endif()
 
 # ---- paths ----
 # Step out of tools/cmake to point to the actual CXK root directory

@@ -1,6 +1,23 @@
 # CXK v5 — Port Manifest & Build Plan
 ### CATX SYSTEMS LLC — planning doc for the v5 rebuild
 
+> **Status: COMPLETE — historical.** Every step of the §5 port order has landed:
+> the new boot chain, core bring-up, the process model (now with per-process
+> address spaces), storage + CXFS, the CXEX loader with signature verification,
+> and the remaining drivers. This document is kept as the record of *how* v5 was
+> sequenced and *why* each piece was ported rather than rewritten. It is not a
+> current task list — for that see `README.md` and `docs/PROCESS_MODEL.md` §12.
+>
+> Two items named here did **not** land as described, deliberately or otherwise:
+> - **`usb/ohci.c`** was never ported. `disk.c` still has a `DISK_DRV_USB` case
+>   that returns `DISK_ERR_NO_DEVICE`.
+> - **The shell was rewritten in X rather than ported from v4 C.** §4's plan to
+>   "port but trim" `shell.c`/`commands.c` was superseded, and the commands it
+>   names (`ringtest`, `whoami`, `sha256`, `rsaverify`) do not exist in the X
+>   shell. The kernel self-tests that `ringtest` used to drive now live in
+>   `kernel/ktest.c` and run automatically at boot; the crypto commands have no
+>   replacement and signature verification is exercised only via `cxex_exec`.
+
 v5 keeps v4's proven, hardware-validated subsystems and rebuilds only what genuinely
 needs it: the **boot chain** (`boot.asm` stage 1 → `.xbex` stage 2) and **CXEX-format
 loading**. v4 is preserved in a `v4/` folder as a working reference to port from and

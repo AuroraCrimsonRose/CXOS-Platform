@@ -48,6 +48,25 @@ echo [pre-flight] Verifying source list ...
 "%CXK%" check "%CMAKEDIR%\CMakeLists.txt"
 if errorlevel 1 ( echo [ERROR] Source pre-flight failed. & exit /b 1 )
 
+REM The X compiler carries a hand-maintained copy of abi\cxk_abi.h as its prelude,
+REM in the DevKit repo. If they drift, the userland fails to compile with confusing
+REM "undefined name" errors a long way from the cause - so catch it here instead.
+REM
+REM Probed rather than called outright: a cxk.exe published before check-abi existed
+REM would fail on an unknown command and abort a build that is otherwise fine. So an
+REM older toolchain warns and skips, and the check switches itself on once cxk.exe is
+REM republished from the DevKit. Real drift is still a hard failure.
+echo [pre-flight] Verifying X ABI prelude matches cxk_abi.h ...
+"%CXK%" check-abi --help >nul 2>&1
+if errorlevel 1 goto :abi_skip
+"%CXK%" check-abi "%ROOT%\abi\cxk_abi.h"
+if errorlevel 1 ( echo [ERROR] ABI pre-flight failed. & exit /b 1 )
+goto :abi_done
+:abi_skip
+echo   [warn] this cxk.exe predates check-abi - skipping the ABI check.
+echo          Republish cxk.exe from the DevKit to enable it.
+:abi_done
+
 echo [2/3] Configuring CMake %SIGNFLAG% ...
 cmake -S "%CMAKEDIR%" -B build -G "NMake Makefiles" %SIGNFLAG%
 if errorlevel 1 ( echo [ERROR] CMake configure failed. & exit /b 1 )

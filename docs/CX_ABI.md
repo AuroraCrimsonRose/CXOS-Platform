@@ -1,10 +1,28 @@
-# CXK ABI v1 — Frozen Syscall & Capability Contract
+# CXK ABI v2 — Syscall & Capability Contract
 
-**Status:** FROZEN CONTRACT (v1). The numbers, register convention, capability bits,
-handle/IPC semantics, and error codes below are stable. Both the `.xoex` executive and the
-X/XR/XH toolchain compile against this. Additions go in reserved ranges; nothing in v1 is
-renumbered or repurposed. Source basis: legacy v4 `cpu/usermode.{c,asm}` + `idt`, v6
-`cpu/exec.c` / `lib/format/cxex_verify`.
+**Status:** LIVE CONTRACT (v2). The register convention, capability model, handle/IPC
+semantics, and error codes are stable and shipped. Both the `.xoex` executive and the
+X/XR/XH toolchain compile against this. Source of truth is **`abi/cxk_abi.h`**; this
+document explains it. If the two disagree, the header wins and this document is the bug.
+
+**What changed from v1, and why this is v2.** The v1 document declared the whole number
+space frozen, including ranges for calls that were only ever *specified* — `map`/`unmap`/
+`sbrk` at `0x20–0x22` and `block_read`/`block_write` at `0x40–0x41`. Those calls were never
+implemented, and input (`0x20–0x21`) and the framebuffer (`0x40`) were subsequently
+allocated over them. Networking, listed in v1 as reserved and unimplemented, also shipped
+at `0x50`.
+
+v2 resolves that honestly rather than pretending it did not happen:
+
+- **Every number that has ever shipped keeps its value.** That was the promise worth
+  keeping, and it is intact — no implemented call has been renumbered.
+- **Paper allocations for unimplemented calls were not load-bearing** and have been moved
+  (§7.8, §7.9) to ranges that are actually free.
+- The rule going forward is narrower and therefore keepable: **a number is frozen once it
+  ships**, not when it is written down. Unimplemented reservations are advisory.
+
+Source basis: `abi/cxk_abi.h`, `cpu/usermode.c`, `cpu/caps.h`, `cpu/exec.c`,
+`lib/format/cxex_verify.c`.
 
 ---
 
@@ -28,13 +46,18 @@ Windows-subsystem `.xoex` — each holding its **own** capability set and owning
 endpoint, brokering its **own** apps. Because endpoints are objects and caps are
 per-executive, "launch a second executive" is configuration, not redesign.
 
-### What v1 deliberately defers (all purely additive)
-- **Shared-memory grants.** v1 moves bulk data as bounded, ≤1-page, **kernel-copied** reply
+### What this ABI still defers (all purely additive)
+- **Shared-memory grants.** Bulk data moves as bounded, ≤1-page, **kernel-copied** reply
   payloads. Shared memory is a v-next primitive; the `ipc_call` shape already leaves room.
-- **Multiple concurrent executives** (v1 launches one).
-- **Concurrent in-flight IPC** (v1 endpoint serves one call at a time).
-- **App self-service** (v1 apps are maximally thin — everything privileged goes through the
-  broker).
+- **Multiple concurrent executives** (one is launched today).
+- **Concurrent in-flight IPC** (an endpoint serves one call at a time).
+- **Filesystem access from ring 3** — the largest gap. See §7.10.
+
+No longer deferred: **app self-service** is now a spectrum rather than a rule. v1 said apps
+are maximally thin and everything privileged goes through the broker; capability attenuation
+at `spawn` (§5) means an executive can instead hand a child exactly the authority it needs.
+The brokered path remains the default and the thin-app model still works unchanged — a child
+given `caps=0` behaves exactly as v1 described.
 
 ---
 
@@ -70,6 +93,19 @@ per-executive, "launch a second executive" is configuration, not redesign.
   generalization of the legacy single-region `user_ptr_ok`.)
 - Maximum single user transfer is bounded (one page, `0x1000`, for messages; primitives
   state their own caps).
+- **Gap: `user_ptr_ok` does not check writability.** It validates present + ring-3-accessible
+  (`paging_is_user`) across every page the buffer spans, but never `PAGE_RW`. Calls that write
+  *into* a user buffer (`mouse_read`, `fb_op`'s `INFO`, `net_op`'s `out`) will therefore happily
+  write into a process's read-only text or rodata if handed such a pointer. It is currently
+  harmless only because `CR0.WP` is clear, so ring-0 writes bypass the read-only bit — which
+  also means the day `WP` is enabled this becomes a kernel-mode page fault reachable from ring
+  3. The fix is a `user_ptr_w_ok` used by every write-out path, then enabling `WP` so
+  violations fault loudly instead of silently corrupting.
+- **Gap: a bounded scan is not a bounded read.** `FB_OP_DRAW_TEXT` computes a validated string
+  length and then passes the raw pointer to a function that walks to its own NUL, so a string
+  filling a mapped page with no terminator reads past the mapping. `SYS_CONSOLE_WRITE` gets
+  this right — it scans for a length, then reads exactly that many bytes. Any future call
+  taking a user string must follow the console's pattern.
 - A CPU fault taken while in ring 3 routes to the user-fault hook, which **terminates the
   faulting process** and returns to the scheduler. A buggy app/executive never takes down
   the kernel.
@@ -98,18 +134,28 @@ per-executive, "launch a second executive" is configuration, not redesign.
 Capabilities live in the kernel's process record — **never in user memory**, so ring 3
 cannot forge them. The dispatcher gate is one line: `if (!(cur->caps & CAP_X)) return E_PERM;`
 
-| Bit | Name | Gates |
-|----:|------|-------|
-| 0x0001 | `CAP_CONSOLE`  | `console_write` |
-| 0x0002 | `CAP_MEM`      | `map`, `unmap`, `sbrk` |
-| 0x0004 | `CAP_DISK`     | `block_read`, `block_write` |
-| 0x0008 | `CAP_NET`      | (reserved v1) network primitives |
-| 0x0010 | `CAP_SPAWN`    | `spawn` |
-| 0x0020 | `CAP_POWER`    | `power` |
-| 0x0040 | `CAP_ENDPOINT` | `ep_create` (may own an IPC endpoint, i.e. may be a broker) |
-| 0x0080 | `CAP_IOPORT`   | (reserved v1) raw port I/O / driver tier |
+| Bit | Name | Gates | State |
+|----:|------|-------|-------|
+| 0x0001 | `CAP_CONSOLE`     | `console_write` | live |
+| 0x0002 | `CAP_MEM`         | `map`, `unmap`, `sbrk` | **gates nothing yet** — those calls are unimplemented (§7.8) |
+| 0x0004 | `CAP_DISK`        | `block_read`, `block_write` | **gates nothing yet** — those calls are unimplemented (§7.9) |
+| 0x0008 | `CAP_NET`         | `net_op` | live |
+| 0x0010 | `CAP_SPAWN`       | `spawn` | live |
+| 0x0020 | `CAP_POWER`       | `power` | live |
+| 0x0040 | `CAP_ENDPOINT`    | `ep_create` (may own an IPC endpoint, i.e. may be a broker) | live |
+| 0x0080 | `CAP_IOPORT`      | raw port I/O / driver tier | reserved, unimplemented |
+| 0x0100 | `CAP_FRAMEBUFFER` | `fb_op` | live |
 
-Always-available calls (lifecycle + `ipc_call` + `handle_close`) require **no** capability.
+Always-available calls (lifecycle, `input_read`, `mouse_read`, `ipc_call`, `handle_close`)
+require **no** capability. Input is deliberately unprivileged: a process reading the keyboard
+or the pointer it is already being shown is not an escalation.
+
+> **Honest note on `CAP_MEM` and `CAP_DISK`.** Both bits are defined and both are included in
+> `CAP_OS_BASELINE`, so the executive is granted them — but no syscall consults them, because
+> `map`/`unmap`/`sbrk`/`block_read`/`block_write` do not exist. They are granted authority over
+> nothing. This is harmless but it is not nothing: a reader of `caps.h` reasonably concludes
+> the executive can touch raw disk, and it cannot. Keep the bits (they are the right
+> allocation) and treat §7.8/§7.9 as the work that makes them real.
 
 ### `caps_for(type, trusted)` — the policy layer
 ```
@@ -119,11 +165,28 @@ caps_for(type, trusted):
     if (type == CXEX_TYPE_USER)   return 0;                 // apps are capability-less
     return 0;
 
-CAP_OS_BASELINE = CAP_CONSOLE | CAP_MEM | CAP_DISK | CAP_SPAWN | CAP_POWER | CAP_ENDPOINT
+CAP_OS_BASELINE = CAP_CONSOLE | CAP_MEM | CAP_DISK | CAP_NET
+                | CAP_SPAWN | CAP_POWER | CAP_ENDPOINT | CAP_FRAMEBUFFER    /* = 0x017F */
 ```
 - `CXEX_TYPE_OS` = `0x4F45`, `CXEX_TYPE_USER` = `0x4345` (from the CXEX type-code family).
-- Apps are created via `spawn` (§7) by the executive; in v1 the kernel forces a spawned
-  app's caps to **0**. (A later version may let `spawn` request a subset; v1 does not.)
+- `CAP_FRAMEBUFFER` is in the baseline **for now**. When a display-server tier exists, the
+  compositor should hold it and ordinary apps should draw through that server, not directly.
+- `caps.h` and `abi/cxk_abi.h` each carry a copy of `CAP_OS_BASELINE` (userspace spawners need
+  it to request caps). The header guards and static-checks them against each other so the two
+  cannot silently drift.
+
+### Capability attenuation at `spawn` (implemented — was deferred in v1)
+v1 specified that the kernel forces a spawned app's caps to `0`. That has been superseded:
+`spawn_args` now carries a `caps` field and the kernel **attenuates** it against the
+spawner's own set:
+
+```c
+uint32_t granted = a.caps & thread_current_caps();   /* cpu/spawn.c */
+```
+
+You may pass a subset of your own authority and never amplify. An app-spawner holding `caps=0`
+therefore still produces children with `caps=0`, which preserves v1's behaviour as the
+degenerate case while allowing an executive to hand a child exactly the authority it needs.
 
 ---
 
@@ -177,13 +240,20 @@ Number space is partitioned so additions slot in cleanly. Reserved ranges are no
 |---|------|------|------|---------|
 | 0x16 | `handle_close` | a1=handle | none | 0 |
 
-### Memory — `0x20–0x2F` (privileged)
+### Input — `0x20–0x2F` (unprivileged)
 
 | # | Name | Args | Caps | Returns |
 |---|------|------|------|---------|
-| 0x20 | `map`   | a1=virt, a2=phys, a3=flags | `CAP_MEM` | 0 |
-| 0x21 | `unmap` | a1=virt | `CAP_MEM` | 0 |
-| 0x22 | `sbrk`  | a1=delta (signed) | `CAP_MEM` | new break, or `-E_*` |
+| 0x20 | `input_read` | a1=flags (0 = block, 1 = non-blocking) | none | char, 0 if none |
+| 0x21 | `mouse_read` | a1=`*mouse_state` | none | 1 if a mouse is present, 0 if not |
+
+```c
+struct mouse_state { int32_t x, y; uint32_t buttons; uint32_t seq; };
+/* Absolute position, already clamped to the screen by the kernel driver, so userspace
+   never sees relative deltas. `buttons`: bit 0 left, 1 right, 2 middle. `seq` increments
+   on every state change — compare against the previous read to detect movement without
+   diffing coordinates. */
+```
 
 ### Console — `0x30–0x3F` (privileged)
 
@@ -191,33 +261,120 @@ Number space is partitioned so additions slot in cleanly. Reserved ranges are no
 |---|------|------|------|---------|
 | 0x30 | `console_write` | a1=buf ptr, a2=len (0 = bounded NUL-scan) | `CAP_CONSOLE` | bytes written |
 
-### Storage — `0x40–0x4F` (privileged; 64-bit LBA via arg struct)
+### Framebuffer — `0x40–0x4F` (privileged)
 
 | # | Name | Args | Caps | Returns |
 |---|------|------|------|---------|
-| 0x40 | `block_read`  | a1=`*block_args` | `CAP_DISK` | bytes read |
-| 0x41 | `block_write` | a1=`*block_args` | `CAP_DISK` | bytes written |
+| 0x40 | `fb_op` | a1=`*fb_op_args` | `CAP_FRAMEBUFFER` | op-specific |
 
 ```c
-struct block_args { uint8_t disk_id; uint64_t lba; uint32_t count; void *buf; };
+struct fb_op_args { uint32_t op, x, y, w, h, color, color2; const char *text; uint32_t *out; };
+/* op: 0 INFO (out[0..3] = width,height,bpp,pitch), 1 CLEAR, 2 FILL_RECT, 3 PUT_PIXEL,
+   4 DRAW_LINE (w,h carry the END point), 5 DRAW_TEXT.
+   Colors cross the ABI as canonical 0x00RRGGBB and are converted to the active mode. */
 ```
+
+One call per primitive is the current shape and it is the GUI's main cost: a window is
+roughly ten syscalls and a cursor seven. A batching op (an op list, or a `BLIT` taking a
+user-space pixel buffer) is the intended evolution and needs no ABI break — it is another
+`op` value.
+
+### Network — `0x50–0x5F` (privileged)
+
+| # | Name | Args | Caps | Returns |
+|---|------|------|------|---------|
+| 0x50 | `net_op` | a1=`*net_op_args` | `CAP_NET` | op-specific |
+
+```c
+struct net_op_args { uint32_t op; uint32_t ip; const void *data; uint32_t len; uint32_t *out; };
+/* op: 0 STATUS, 1 MAC (data = 6-byte buffer), 2 GET_IP (out[0..3] = ip,mask,gw,dns1),
+   3 SET_IP (ip = value, len selects field: 0 ip, 1 mask, 2 gw, 3 dns),
+   4 PING (ip = destination, len = sequence -> out[0] = rtt), 5 SEND (raw frame),
+   6 RECV (raw frame into data/len -> bytes, 0 if none). */
+```
+
+Transport is **not** in the kernel: there is ARP, ICMP and IPv4 addressing, and no TCP or
+UDP. `SEND`/`RECV` move raw Ethernet frames, so a userspace stack is possible today; an
+in-kernel UDP/TCP tier would add ops here or take its own range.
 
 ### Process — `0x70–0x7F` (privileged)
 
 | # | Name | Args | Caps | Returns |
 |---|------|------|------|---------|
 | 0x70 | `spawn` | a1=`*spawn_args` | `CAP_SPAWN` | new pid, or `-E_*` |
-| 0x71 | `power` | a1=action (0 reboot, 1 shutdown) | `CAP_POWER` | does not return on success |
+| 0x71 | `power` | a1=action, a2=ms (SLEEP only) | `CAP_POWER` | does not return on reboot/shutdown |
+
+`power` actions: `0` `POWER_REBOOT`, `1` `POWER_SHUTDOWN` (ACPI S5 soft-off), `2` `POWER_SLEEP`
+(`a2` = ms; 0 = S1/C1 until a keypress). `SLEEP` **does** return; the other two do not.
 
 ```c
 struct spawn_args {
-    const void *image;   uint32_t image_len;   /* the app's CXEX bytes */
+    const void *image;   uint32_t image_len;   /* the app's CXEX bytes, in the caller's space */
     const char *name;
     int         broker_endpoint;               /* RECV handle the executive owns; the kernel
                                                   installs a SEND handle to it as the child's
                                                   handle 0. */
+    uint32_t    caps;                          /* requested; attenuated by the spawner's own
+                                                  set (§5). Pass 0 for a capability-less app. */
 };
 ```
+
+> **Signature gap.** `spawn` takes an image **already in the caller's memory** and does
+> **not** verify it — only `cxex_exec` (the disk/boot path) calls `cxex_verify_trusted`. So
+> today: kernel-loaded executables are verified, ring-3-spawned ones are not. §7.10's
+> `exec_path` closes this by construction, which is the better fix than bolting verification
+> onto `spawn`: make the verified path the *only* way to introduce new code.
+
+### 7.8 Memory — `0x80–0x8F` (specified, unimplemented)
+
+Relocated from v1's `0x20–0x22`, which input now occupies. Gated on `CAP_MEM`.
+
+| # | Name | Args | Returns |
+|---|------|------|---------|
+| 0x80 | `map`   | a1=virt, a2=phys, a3=flags | 0 |
+| 0x81 | `unmap` | a1=virt | 0 |
+| 0x82 | `sbrk`  | a1=delta (signed) | new break, or `-E_*` |
+
+### 7.9 Storage — `0x90–0x9F` (specified, unimplemented)
+
+Relocated from v1's `0x40–0x41`, which the framebuffer now occupies. Gated on `CAP_DISK`.
+64-bit LBAs travel inside the arg struct, never split across registers (§2).
+
+| # | Name | Args | Returns |
+|---|------|------|---------|
+| 0x90 | `block_read`  | a1=`*block_args` | bytes read |
+| 0x91 | `block_write` | a1=`*block_args` | bytes written |
+
+```c
+struct block_args { uint8_t disk_id; uint64_t lba; uint32_t count; void *buf; };
+```
+
+### 7.10 Filesystem & path execution — `0xA0–0xAF` (proposed)
+
+**Not implemented. This range is allocated here because it is the next work item and the
+largest current gap in the ABI:** the kernel has a complete filesystem (CXFS — format,
+mount, create, resolve, read, write, stat, rename, move, list) and ring 3 has **no way to
+reach any of it**. Nothing in userspace can open a file, list a directory, or load a program
+from disk. Everything that runs is compiled into one image.
+
+Two calls unblock the whole userspace application model:
+
+| # | Name | Args | Caps | Returns |
+|---|------|------|------|---------|
+| 0xA0 | `fs_op`     | a1=`*fs_op_args` | `CAP_FS` (new bit `0x0200`) | op-specific |
+| 0xA1 | `exec_path` | a1=path ptr, a2=`*spawn_args` (image fields ignored) | `CAP_SPAWN` | new pid |
+
+- **`fs_op`** follows the established selector shape (`fb_op`, `net_op`) rather than adding
+  a dozen numbers: ops for `STAT`, `OPEN`, `READ`, `WRITE`, `CLOSE`, `READDIR`, `MKDIR`,
+  `UNLINK`, `RENAME`. Open files become a second handle type (`HANDLE_FILE`), which is what
+  the handle table in §6 was built to absorb.
+- **`exec_path`** is the higher-leverage of the two and is *mostly already written*:
+  `cxk_launch_executive(path)` already does path → CXFS → `cxex_exec`, and `cxex_exec`
+  already verifies signatures. Exposing it means loading apps from disk **inherits signature
+  verification for free** and closes the `spawn` gap noted above.
+
+Sequence that matters: `exec_path` first (it is small, and it is what makes the shell and the
+GUI able to launch separate `.xcex` application files), then `fs_op`.
 
 ---
 
@@ -247,13 +404,36 @@ The channel is the security boundary in model B, so its semantics are exact:
 
 ---
 
-## 9. Reserved for v-next (do not allocate in v1)
+## 9. Allocation map & what remains reserved
 
-- `CAP_NET` (0x0008), `CAP_IOPORT` (0x0080) — bits reserved, primitives unimplemented.
-- Syscalls `0x14–0x15` (IPC async/notify), `0x17–0x1F` (handle dup/transfer), `0x50–0x5F`
-  (net), `0x60–0x6F` (shared-memory grant: `shm_create`, `shm_grant`, `shm_map`).
-- `spawn` requesting a non-zero capability subset for the child.
-- Additional handle object types (`HANDLE_FILE`, `HANDLE_SHM`, more endpoints).
+Current state of the whole number space, so the next allocation is an informed one:
+
+| Range | Owner | State |
+|-------|-------|-------|
+| `0x00–0x0F` | lifecycle | live (`0x00–0x03`) |
+| `0x10–0x1F` | IPC + handles | live (`0x10–0x13`, `0x16`) |
+| `0x20–0x2F` | input | live (`0x20–0x21`) |
+| `0x30–0x3F` | console | live (`0x30`) |
+| `0x40–0x4F` | framebuffer | live (`0x40`) |
+| `0x50–0x5F` | network | live (`0x50`) |
+| `0x60–0x6F` | shared-memory grant | reserved, unimplemented |
+| `0x70–0x7F` | process | live (`0x70–0x71`) |
+| `0x80–0x8F` | memory | specified, unimplemented (§7.8) |
+| `0x90–0x9F` | storage | specified, unimplemented (§7.9) |
+| `0xA0–0xAF` | filesystem + path exec | proposed (§7.10) |
+| `0xB0+` | — | free |
+
+Still genuinely reserved and unimplemented:
+
+- `CAP_IOPORT` (0x0080) — bit reserved, no primitive.
+- Syscalls `0x14–0x15` (IPC async/notify), `0x17–0x1F` (handle dup/transfer), `0x60–0x6F`
+  (shared-memory grant: `shm_create`, `shm_grant`, `shm_map`).
+- Additional handle object types (`HANDLE_SHM`, more endpoints). `HANDLE_FILE` arrives with
+  §7.10.
+
+Delivered since v1 and therefore no longer deferred: `CAP_NET` + the network primitive,
+`CAP_FRAMEBUFFER` + the framebuffer primitive, unprivileged input, and `spawn` requesting an
+attenuated capability subset for the child.
 
 ---
 
@@ -277,6 +457,11 @@ synchronous rendezvous together.
 ---
 
 ## 11. Implementation checkpoints (build order, each host-verifiable)
+
+> **Status: CP1, CP2 and CP3 are implemented.** The capability gate, the handle table with
+> endpoints, and synchronous IPC with scheduler block/wake all exist and the §10 demo flow
+> runs. **CP4 (hardening) is the open one** — lifecycle edge cases and message-bound fuzzing
+> have not been done systematically. The next ABI work is not a checkpoint below but §7.10.
 
 - **CP1 — caps + gate.** Per-process `caps` bitmask, `caps_for` at the `cxex_exec` handoff,
   the privileged primitives (`console_write`, `map/unmap/sbrk`, `block_read/write`, `power`)
@@ -306,9 +491,18 @@ Then v-next: shared-memory grants (bulk transfer), concurrent IPC, a second exec
 | Broker handle | `0` (app's SEND handle to its executive's endpoint) |
 | Executive type | `CXEX_TYPE_OS` = `0x4F45` |
 | App type | `CXEX_TYPE_USER` = `0x4345` |
-| `CAP_OS_BASELINE` | `CONSOLE|MEM|DISK|SPAWN|POWER|ENDPOINT` = `0x0077` |
+| `CAP_OS_BASELINE` | `CONSOLE|MEM|DISK|NET|SPAWN|POWER|ENDPOINT|FRAMEBUFFER` = `0x017F` |
+| Syscalls implemented | 16 |
 
 ---
 
-*This is the v1 contract. When the kernel revs the ABI, bump a version constant the executive
-can query, keep these numbers stable, and add new calls only in the reserved ranges above.*
+*This is the v2 contract. The rule is: **a number is frozen once it ships.** Add new calls in
+the free ranges in §9, keep every shipped number stable, and when the ABI revs, bump a version
+constant the executive can query. Unimplemented reservations are advisory — if a range is
+needed and its occupant was never built, move the occupant and say so here, as v2 did for
+§7.8 and §7.9.*
+
+*`abi/cxk_abi.h` is the source of truth. A consistency check between the header and this
+document — asserting every `SYS_*` and every ABI struct appears in both — is worth having in
+CI; the same one-source-of-truth argument the X language spec makes for the generated prelude
+applies to the prose.*

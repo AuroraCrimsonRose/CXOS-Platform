@@ -35,6 +35,9 @@ if(SIGN)
     set(KSIGN COMMAND ${CXK} sign ${KERNEL_XKEX} ${SIGN_SK} ${SIGN_PK})
     set(XSIGN COMMAND ${CXK} sign ${EXEC_XOEX}   ${SIGN_SK} ${SIGN_PK})
 else()
-    set(KSIGN COMMAND ${CMAKE_COMMAND} -E echo "  kernel.xkex UNSIGNED (configure -DSIGN=ON to sign)")
-    set(XSIGN COMMAND ${CMAKE_COMMAND} -E echo "  executive.xoex UNSIGNED (configure -DSIGN=ON to sign)")
+    # No parentheses in these messages: ${KSIGN}/${XSIGN} expand into a custom-command
+    # line, and under /bin/sh unquoted parens are a syntax error, which fails the build
+    # on a non-Windows host. Harmless under cmd.exe, so this costs nothing on Windows.
+    set(KSIGN COMMAND ${CMAKE_COMMAND} -E echo "  kernel.xkex UNSIGNED - configure -DSIGN=ON to sign")
+    set(XSIGN COMMAND ${CMAKE_COMMAND} -E echo "  executive.xoex UNSIGNED - configure -DSIGN=ON to sign")
 endif()
