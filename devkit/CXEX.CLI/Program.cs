@@ -46,6 +46,9 @@ app.Configure(config =>
     // ---- validation ----
     config.AddCommand<CheckCommand>("check")
         .WithDescription("Validates that all source files listed in CMakeLists.txt exist.");
+
+    config.AddCommand<CheckAbiCommand>("check-abi")
+        .WithDescription("Validates that the X ABI prelude still matches the kernel's cxk_abi.h.");
 });
 
 // Run the application

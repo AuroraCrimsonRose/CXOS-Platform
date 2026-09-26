@@ -175,12 +175,22 @@ The kernel's syscall ABI is defined in `CXK/abi/cxk_abi.h`. The compiler needs i
 
 This is not hypothetical. The kernel gained `SYS_MOUSE_READ` and `struct mouse_state`; the prelude did not; `gui.xfxn` referenced both; and the committed compiler could not compile the committed OS. The drift was exactly one syscall and one struct — small enough to be invisible, fatal enough to break the build.
 
-The fix, cheapest first:
+### Mitigation, as built
 
-1. **Assert it.** A test parsing `cxk_abi.h` for `SYS_*` and ABI structs, failing if any is absent from the prelude. ~30 lines. **There is no test project in this repository at all**, so this means creating the first one — which is worth doing on its own merits.
-2. **Generate it.** A build step emitting `abi.x` from the header, making the banner true. Better, but requires both repos visible at build time.
+`CXEX.Lang/Abi/AbiSync.cs` compares the two and `cxk check-abi` runs it. CXK's `tools/build.bat` invokes it as a pre-flight next to the existing `cxk check`, so drift fails the build early and legibly. The prelude's banner no longer claims to be generated; it says it is hand-maintained and points at the check.
 
-Until then `AbiPrelude.cs` is a **manual sync point**, and that should be written on it rather than contradicted by it. Whoever changes `cxk_abi.h` must change the prelude in the same pass.
+**The family rule** is what makes this usable. The prelude mirrors only part of the header — `SYS_*`, `E_*`, `POWER_*`, `FB_OP_*` — and not `CAP_*` or `NET_OP_*`. Demanding total parity would report sixteen false positives on the first run and promptly be ignored, which is worse than no check at all. So: *a family with at least one member in the prelude must be complete; a family with none is reported as information.* Add one `NET_OP_` constant and the other six become required.
+
+It checks three things, in ascending order of nastiness: a constant present in the header and missing from a mirrored family; a constant whose **value** differs; and a struct whose **field order** differs. The last is the worst failure available here — a reordered struct compiles on both sides and silently corrupts every call that uses it.
+
+Still outstanding:
+
+1. **A test project.** The comparison is in a library so `dotnet test` can call it, and there is still **no test project in this repository at all**. Until there is, the check depends on someone running the build script.
+2. **Generate it.** A build step emitting `abi.x` from the header, making the old banner true. Requires both repos visible at build time, which is why the check came first.
+
+`AbiPrelude.cs` therefore remains a **manual sync point** — but now a declared and verified one. Whoever changes `cxk_abi.h` changes the prelude in the same pass, and `cxk check-abi` says so if they forget.
+
+**The drift surface is wider than this one file.** `os/std/net.xfxn` redeclares all seven `NET_OP_*` constants locally, because the prelude does not carry them — a third copy of the ABI, in a third repository location, with no link back to the header. `cxk check-abi` reports unmirrored families partly to make that visible. The same applies to the `CAP_*` bits, the CXEX header offsets in `CXEX.Build`, and the CXFS layout in `CXEX.FileSystem`.
 
 The same hazard applies to anything else duplicated across the two repos: `CAP_*` bits (already double-declared in `caps.h` and `cxk_abi.h`, but at least those two are static-checked against each other on the kernel side), CXEX header field offsets in `CXEX.Build`, and the CXFS on-disk layout in `CXEX.FileSystem`. Each is a copy of a kernel-side truth with no mechanical link back to it.
 
@@ -295,7 +305,9 @@ Separate Avalonia app (not yet built), aimed at third-party developers compiling
 
 **Phase 0 — Unblock daily use:** ~~bug fixes 1–3~~ **done**; openers for all windows (#5) and the dock split (#4) remain. *(reopenable bottom panel already done.)*
 
-**Phase 0.5 — Close the ABI sync hole (§5.2) [new, do this early].** Add the repository's first test project and assert that every `SYS_*` and ABI struct in `CXK/abi/cxk_abi.h` appears in `AbiPrelude.cs`. This is ahead of most of what follows because it is ~30 lines and it prevents a class of build break that has already happened once. Everything else on this roadmap is easier with a test project in place.
+**Phase 0.5 — Close the ABI sync hole (§5.2). Done, with one piece outstanding.** `CXEX.Lang/Abi/AbiSync.cs` compares the header against the prelude and `cxk check-abi` exposes it; CXK's `tools/build.bat` runs it as a pre-flight beside the existing source check, so a drifted prelude now stops the build with a clear message instead of producing confusing "undefined name" errors in `gui.xfxn`. The misleading "GENERATED … Do not edit by hand" banner is gone — the prelude now says it is hand-maintained and names the check.
+
+*Outstanding:* the comparison lives in a library precisely so a test project can call it, and **that test project still does not exist.** `dotnet test` is the natural CI gate; the CLI command is the developer-facing half. Creating it remains the cheapest way to make this automatic rather than build-script-dependent.
 
 **Phase 1 — Identity & shell:** `CXEX.UI` skeleton + **CX Dark** theme; de-VS-Code chrome (Spyder-style icon bar, flat-with-contrast, no palette-only); min sizes; locked docking + Window Editor Mode + preset/custom layouts (global & per-project).
 

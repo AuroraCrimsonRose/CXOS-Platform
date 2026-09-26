@@ -80,12 +80,23 @@ CXEX.Lang/Abi/AbiPrelude.cs
 
 This has already cost a real bug: the kernel gained `SYS_MOUSE_READ` and `struct mouse_state`, the prelude did not, and the committed compiler could not compile the committed OS — `gui.xfxn` referenced two names that did not exist. The drift was exactly one syscall and one struct, and it was invisible until something failed to build.
 
-Two ways to fix it, in increasing order of effort:
+### What guards it now
 
-1. **Assert it.** A test that parses `cxk_abi.h` for `SYS_*` defines and ABI structs and fails if any is absent from the prelude. Roughly thirty lines, no build-system change, and it turns this class of bug into a red test. There is no test project in this repo yet, so this means adding one.
-2. **Generate it.** A build step that emits `abi.x` from `cxk_abi.h`, making the banner true. Better, but it needs the two repositories visible to each other at build time, which is the awkward part.
+```
+cxk check-abi [path/to/cxk_abi.h]
+```
 
-Until one of those exists, **treat `AbiPrelude.cs` as requiring a manual update whenever `cxk_abi.h` changes.** The relevant CXK-side reference is `docs/CX_ABI.md`.
+Compares the header against the prelude and fails on real drift. It finds the header itself if you don't pass one (via `CXK_ROOT`, or a sibling CXK checkout). CXK's `tools/build.bat` runs it as a pre-flight beside the existing source check, so drift stops the build with a clear message rather than surfacing as "undefined name" errors inside `gui.xfxn`.
+
+It reports three kinds of problem: a constant missing from a family the prelude mirrors, a constant whose **value** disagrees, and a struct whose **field order** disagrees — that last being the nastiest, since a reordered struct compiles fine on both sides and silently corrupts every call using it.
+
+The prelude only mirrors part of the header (`SYS_*`, `E_*`, `POWER_*`, `FB_OP_*`, and the structs — not `CAP_*` or `NET_OP_*`), so the rule is *if a family is mirrored at all, it must be mirrored completely.* Unmirrored families are reported as notes, not failures. Add one `NET_OP_` constant and the rest become required.
+
+The comparison lives in `CXEX.Lang/Abi/AbiSync.cs` rather than in the command, so a test project can call it — and **there is still no test project in this repository**, which is the remaining gap. `dotnet test` is the natural CI gate; today the check depends on running the build script.
+
+**Treat `AbiPrelude.cs` as requiring a manual update whenever `cxk_abi.h` changes**, and run `cxk check-abi` after. The CXK-side reference is `docs/CX_ABI.md`.
+
+Note the drift surface is wider than this one file: `os/std/net.xfxn` redeclares all seven `NET_OP_*` constants locally because the prelude doesn't carry them — a third copy of the ABI with no link back to the header.
 
 ---
 
