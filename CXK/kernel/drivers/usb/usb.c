@@ -4,6 +4,7 @@
 
 #include "usb.h"
 #include "ehci.h"
+#include "ohci.h"
 #include "xhci.h"
 #include "logging.h"
 #include "timer.h"
@@ -187,6 +188,7 @@ void usb_init(void) {
     int any = 0;
     any |= xhci_init();
     any |= ehci_init();
+    any |= ohci_init();
 
     if (!any) return;      /* no controllers: say nothing, this is the norm */
 
