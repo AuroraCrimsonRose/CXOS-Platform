@@ -25,6 +25,7 @@ public static class XBPTImageWriter
         // 1. Stage 1 (LBA 0)
         byte[] s1 = new byte[512];
         if (stage1 != null && stage1.Length > 0) Array.Copy(stage1, s1, Math.Min(stage1.Length, 510));
+        WriteProtectiveMbr(s1, map);
         s1[510] = 0x55; s1[511] = 0xAA;
         Put(map.Stage1Lba, s1);
 
@@ -51,6 +52,61 @@ public static class XBPTImageWriter
         Put(map.XbptTableLba, SerializeXbpt(map));
 
         File.WriteAllBytes(outPath, diskImage);
+    }
+
+    /// <summary>
+    /// Writes a <b>protective</b> MBR partition table into sector 0, at the classic
+    /// offset 446. This does not replace or compete with XBPT, which remains the
+    /// real partition table and stays exactly where it is, at LBA 1 - a different
+    /// sector entirely. The two never touch.
+    ///
+    /// <para>It exists only to satisfy firmware. A BIOS booting USB media decides
+    /// between USB-HDD and USB-FDD emulation partly by looking for a partition table
+    /// here; finding 64 zero bytes, many pick floppy emulation, and then reject the
+    /// disk for not having a valid FAT BPB. The symptom is a black screen with a
+    /// blinking cursor and no output, because stage 1 never runs at all. This is the
+    /// same trick GPT plays with its own protective MBR, and for the same reason:
+    /// occupy the legacy structure so legacy firmware sees a disk that is spoken for
+    /// rather than one that appears blank.</para>
+    ///
+    /// <para>One entry, marked active, covering the disk from LBA 1 onward. Type
+    /// 0xDA is "non-FS data" - it is honest about the disk not holding a filesystem
+    /// any OS knows, and it stops Windows and Linux offering to mount or format it.
+    /// If some particular firmware turns out to want a different type byte, this is
+    /// the one value to change.</para>
+    /// </summary>
+    private const byte ProtectiveMbrType = 0xDA;   // non-FS data
+
+    private static void WriteProtectiveMbr(byte[] sector0, DiskGeometryMap map)
+    {
+        const int PartitionTableOffset = 446;
+
+        // Never clobber boot code. Stage 1 is padded to leave 446..509 free, and
+        // if some future stage 1 grows past that, corrupting it silently would be
+        // far worse than shipping without the protective entry.
+        for (int i = PartitionTableOffset; i < 510; i++)
+        {
+            if (sector0[i] != 0x00) return;
+        }
+
+        ulong start = 1;                                   // LBA 0 is this sector
+        ulong count = map.TotalSectors > start ? map.TotalSectors - start : 0;
+        if (count == 0) return;
+        if (count > uint.MaxValue) count = uint.MaxValue;  // MBR fields are 32-bit
+
+        int p = PartitionTableOffset;
+        sector0[p + 0] = 0x80;                 // active / bootable
+        sector0[p + 1] = 0x00;                 // start CHS: head 0
+        sector0[p + 2] = 0x02;                 //            sector 2, cylinder 0
+        sector0[p + 3] = 0x00;
+        sector0[p + 4] = ProtectiveMbrType;
+        sector0[p + 5] = 0xFF;                 // end CHS: beyond CHS range, as
+        sector0[p + 6] = 0xFF;                 // GPT's protective MBR also does
+        sector0[p + 7] = 0xFF;
+        MemoryPrimitives.WriteU32(sector0.AsSpan(), p + 8, (uint)start);
+        MemoryPrimitives.WriteU32(sector0.AsSpan(), p + 12, (uint)count);
+
+        // Entries 1-3 stay zero: one entry is all firmware needs to see.
     }
 
     private static void PatchStage2KernelSectors(byte[] diskImage, ulong stage2Lba, int kernelByteSize)

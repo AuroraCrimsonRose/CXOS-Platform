@@ -6,12 +6,28 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <ApplicationIcon>XFILE.ico</ApplicationIcon>
-    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
-    <SelfContained>true</SelfContained>
-    <PublishSingleFile>true</PublishSingleFile>
-    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
-    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
     <AssemblyName>cxk</AssemblyName>
+
+    <!--
+      Publish settings (RuntimeIdentifier / SelfContained / PublishSingleFile /
+      IncludeNativeLibrariesForSelfExtract / EnableCompressionInSingleFile) are
+      deliberately NOT here. As build properties they made every build of this
+      project a self-contained win-x64 executable, and a non-self-contained
+      project cannot reference one - so CXEX.Studio and CXEX.SDK both failed with
+      NETSDK1151 and the solution could not build as a unit.
+
+      They belong to publishing, so pass them there. To produce tools/cxk.exe for
+      the CXK repo:
+
+        dotnet publish CXEX.CLI -c Release -r win-x64
+          -p:SelfContained=true
+          -p:PublishSingleFile=true
+          -p:EnableCompressionInSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+
+      or keep them in a publish profile under Properties/PublishProfiles, which
+      is where Visual Studio's Publish dialog writes them.
+    -->
   </PropertyGroup>
 
   <ItemGroup>
