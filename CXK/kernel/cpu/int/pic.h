@@ -18,5 +18,12 @@ void pic_send_eoi(uint32_t int_no);
    firmware left masked stays silent no matter what handler is installed. Any
    driver claiming an IRQ the BIOS had no reason to enable must call this. */
 void pic_unmask(int irq);
+void pic_mask(int irq);
+
+/* Mask both chips entirely - see the note in pic.c. */
+void pic_mask_all(void);
+
+/* Both chips' masks as one word, bit n set = IRQ n masked. */
+uint16_t pic_get_masks(void);
 
 #endif

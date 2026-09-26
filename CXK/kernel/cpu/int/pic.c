@@ -51,3 +51,29 @@ void pic_unmask(int irq) {
         outb(PIC1_DATA, (uint8_t)(inb(PIC1_DATA) & ~(1u << 2)));   /* cascade */
     }
 }
+
+void pic_mask(int irq) {
+    if (irq < 0 || irq >= 16) return;
+
+    if (irq < 8) {
+        outb(PIC1_DATA, (uint8_t)(inb(PIC1_DATA) | (1u << irq)));
+    } else {
+        outb(PIC2_DATA, (uint8_t)(inb(PIC2_DATA) | (1u << (irq - 8))));
+    }
+}
+
+/* Mask every line on both chips. Used when the I/O APIC takes over: the two
+   controllers are wired to the same interrupt lines, so leaving the 8259 live
+   means each interrupt is delivered twice - once acknowledged through the local
+   APIC and once left pending on the PIC, which then wedges that line. */
+void pic_mask_all(void) {
+    outb(PIC1_DATA, 0xFF);
+    outb(PIC2_DATA, 0xFF);
+}
+
+/* Current mask state of both chips as one 16-bit word, bit n set = IRQ n
+   masked. Read before handing over to the I/O APIC so the same lines stay
+   enabled and no others. */
+uint16_t pic_get_masks(void) {
+    return (uint16_t)(inb(PIC1_DATA) | ((uint16_t)inb(PIC2_DATA) << 8));
+}

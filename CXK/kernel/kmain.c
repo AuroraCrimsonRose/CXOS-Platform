@@ -26,6 +26,7 @@
 #include "power.h"
 #include "netif.h"
 #include "usb.h"
+#include "apic.h"
 #include "acpi.h"
 #include "usermode.h"
 #include "ata.h"
@@ -217,6 +218,12 @@ void kmain(void) {
 
     /* ACPI: enables the real shutdown (S5) and sleep paths */
     acpi_init();
+
+    /* Interrupt controllers. Must follow acpi_init(): the MADT is the only
+       description of where the APICs are and how the legacy IRQs reach them.
+       Declines to a working 8259 if anything is missing, so this cannot stop a
+       machine booting. */
+    apic_init();
 
     /* storage: probe ATA + AHCI drives into the disk registry. AHCI is found via
        PCI; on a machine without one, ahci_init returns 0 harmlessly. */
