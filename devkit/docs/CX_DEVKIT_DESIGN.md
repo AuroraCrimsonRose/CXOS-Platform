@@ -1,7 +1,18 @@
 # CX DevKit — Architecture, Vision & Roadmap
 
 **Owner:** Aurora Tejeda · **Company:** CATX Systems LLC · **Products:** CX, CXK, CXOS
-**Doc status:** **v0.2** — decisions from the Q&A pass are now **locked** (marked **[LOCKED]**); a handful of genuinely-open items remain in §13.
+**Doc status:** **v0.3** — the v0.2 Q&A decisions remain **locked** (marked **[LOCKED]**); genuinely-open items are in §13. This revision reconciles the document with what has actually shipped and moves it out of `CXEX.Studio/` (it describes the whole DevKit, not just Studio).
+
+> **Implementation status at a glance.** What exists today: the X Native compiler
+> (`CXEX.Lang` — lexer, parser, resolver, type checker, x86-32 emitter), the ten-command
+> `cxk` CLI, CXEX packaging, host-side CXFS, disk/partition models, RSA+SHA-256 keygen and
+> signing, and a working Studio shell. §11's bugs 1 and 2 are **fixed**. Five projects named
+> in §5 are **scaffolded but empty** (`CXEX.Font`, `CXEX.ICO`, `CXEX.Text`, `CXEX.Tools`,
+> `CXEX.UI`). Phases 1 onward in §14 are open.
+>
+> **Where this document is aspirational, it says so.** Sections describing Studio windows,
+> font formats, the authority-tier key header, the installer target and the SDK are design,
+> not description — none of that is built yet.
 
 Logic lives in libraries; CLI and Studio are thin front-ends over the same code. The look is IDE-like but distinctly CX. Build in small verifiable checkpoints.
 
@@ -57,6 +68,28 @@ Pattern: **`XF**` = Format (source)**, **`XC**` = Compiled**, executables are CX
 
 **Compile/link chain [LOCKED, my call per Q3a]:** `*.XFXN` (source) → **`*.XCXN`** (compiled linkable object) → **packaged executable** (`XCEX` / `XOEX` / `XKEX` depending on target). `XCXN` is the intermediate; the `X_EX` family is the final CXEX-headered, signable artifact.
 
+> **As-built deviation — `.XCXN` does not exist.** The word appears nowhere in the codebase.
+> The pipeline that actually runs is:
+>
+> ```
+> foo.xfxn -> foo.s (GAS text) -> foo.o -> foo (ELF) -> foo.xcex
+>             X86Emitter          i686-elf-gcc          cxk build
+> ```
+>
+> The cross toolchain's **ELF** occupies the intermediate slot `XCXN` was specified for. That
+> is a reasonable place to be — it reuses the whole existing `ElfParser` → `CXEXWriter`
+> packaging path — but the taxonomy and the toolchain disagree, and one of them should move.
+> Either introduce `XCXN` as a real CX-native object format (a genuine project, and only
+> worth it if there is a reason to stop using ELF as the linkable form), or amend the locked
+> chain to name ELF as the intermediate. **Recommendation: amend the chain.** ELF is doing
+> the job, the cross toolchain is not going away before self-hosting, and a format invented
+> to fill a naming slot is not worth its weight.
+>
+> **Also inconsistent:** the generated ABI prelude is named `abi.x`, and `.x` is not in this
+> taxonomy at all. It is X Native source, so it should be `abi.xfxn`. `CompileCommand`'s doc
+> comment likewise says it compiles `.x` files. Small, but this taxonomy only earns its keep
+> if the tooling follows it.
+
 **Executables / packages (CXEX-wrapped)**
 
 | Ext | Name | Meaning |
@@ -109,11 +142,13 @@ Keys are not flat: every `XKPK`/`XKSK` carries a **header declaring its Authorit
 
 ## 5. Solution / Library Architecture
 
-**Existing:** `CXEX.Build`, `CXEX.Crypto`, `CXEX.Core`, `CXEX.FileSystem`, `CXEX.FileType`, `CXEX.Lang`, `CXEX.CLI`, `CXEX.Studio`.
+**Implemented:** `CXEX.Studio` (2,417 lines), `CXEX.Lang` (1,820), `CXEX.CLI` (1,447), `CXEX.FileSystem` (582), `CXEX.Build` (477), `CXEX.FileType` (364), `CXEX.Disk` (301), `CXEX.Crypto` (279), `CXEX.SDK` (120), `CXEX.Core` (95).
 
-**Added by you:** `CXEX.Disk`, `CXEX.UI`, `CXEX.Text`, `CXEX.Font`.
+**Scaffolded but empty — project file, zero source:** `CXEX.Font`, `CXEX.ICO`, `CXEX.Text`, `CXEX.Tools`, `CXEX.UI`. Nothing is missing; these are placeholders awaiting the phases in §14. Worth stating plainly because opening the solution gives no hint which libraries are real.
 
-**Proposed new:** **`CXEX.Tools` [REC — strong]** — move the process-tool wrappers (`GccTool`, `NasmTool`, `QemuTool`, `BochsTool`, `CMakeTool`, `ProcessRunner`) out of `CXEX.CLI` into a shared lib so **both CLI and Studio** drive the toolchain from one place without coupling to each other.
+**`CXEX.Tools` [Q-D answered — created, not yet populated]:** the project exists and is empty. The process-tool wrappers (`GccTool`, `NasmTool`, `QemuTool`, `BochsTool`, `CMakeTool`, `ProcessRunner`) still live in `CXEX.CLI/Wrappers`, so Studio cannot drive the toolchain without depending on the CLI. Relocating them is Phase 2 and remains the right call — the compile pipeline already calls `GccTool` from inside `CompileCommand`, which is exactly the coupling this fixes.
+
+**`CXEX.Lang` is the component this section under-describes.** It is the second-largest project and the one everything downstream depends on, yet the table below never mentions it. Its internal pipeline (Lexer → Parser → Sema → CodeGen) is documented on the kernel side in `CXK/docs/CX_X_CORE_LANG.md` §7, because the language spec and the ABI it compiles against live there. That split is deliberate but it has a cost — see §5.2.
 
 | Library | Purpose |
 |---|---|
@@ -129,6 +164,25 @@ Keys are not flat: every `XKPK`/`XKSK` carries a **header declaring its Authorit
 - **`XCFM`** — editable **source** mask: glyphs **drawn on a character map in Studio's font editor**, exported/compiled to a bitmap `XFNT`. (Mirrors the `XF*`→`XC*` source→compiled idea.)
 - **`cxk font` (CLI) ingests:** TTF/OTF → vector `XFNT`; BDF (a bitmap-font container — confirmed) and PNG/BMP glyph sheets → bitmap `XFNT`; `XCFM` → bitmap `XFNT`.
 - **PNG/BMP glyph-sheet convention:** white = background, black = glyph; each character cell padded 1px on all sides (a clean pixel array).
+
+---
+
+### 5.2 The cross-repo ABI coupling **[known hazard]**
+
+The kernel's syscall ABI is defined in `CXK/abi/cxk_abi.h`. The compiler needs it as X source, and carries it as `CXEX.Lang/Abi/AbiPrelude.cs`, prepended to every compilation.
+
+**That file emits a header reading `GENERATED from cxk_abi.h — Do not edit by hand`, and nothing generates it.** It is a hand-written C# string literal, in a different repository from the header it claims to track, with no build step or test between them.
+
+This is not hypothetical. The kernel gained `SYS_MOUSE_READ` and `struct mouse_state`; the prelude did not; `gui.xfxn` referenced both; and the committed compiler could not compile the committed OS. The drift was exactly one syscall and one struct — small enough to be invisible, fatal enough to break the build.
+
+The fix, cheapest first:
+
+1. **Assert it.** A test parsing `cxk_abi.h` for `SYS_*` and ABI structs, failing if any is absent from the prelude. ~30 lines. **There is no test project in this repository at all**, so this means creating the first one — which is worth doing on its own merits.
+2. **Generate it.** A build step emitting `abi.x` from the header, making the banner true. Better, but requires both repos visible at build time.
+
+Until then `AbiPrelude.cs` is a **manual sync point**, and that should be written on it rather than contradicted by it. Whoever changes `cxk_abi.h` must change the prelude in the same pass.
+
+The same hazard applies to anything else duplicated across the two repos: `CAP_*` bits (already double-declared in `caps.h` and `cxk_abi.h`, but at least those two are static-checked against each other on the kernel side), CXEX header field offsets in `CXEX.Build`, and the CXFS on-disk layout in `CXEX.FileSystem`. Each is a copy of a kernel-side truth with no mechanical link back to it.
 
 ---
 
@@ -205,17 +259,17 @@ Display PNG / BMP / ICO (+ more). `XFSIFile.cs` lib stub now; format later.
 
 ---
 
-## 11. Current Bugs — Triage *(next work item)*
+## 11. Current Bugs — Triage
 
-| # | Symptom | Cause | Fix |
-|---|---|---|---|
-| 1 | Project Explorer shows empty folders | `TreeViewItem` style never binds `IsExpanded`, so the lazy-loader never fires | Add `<Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/>` to the `TreeViewItem` style in `ProjectExplorerView.axaml` |
-| 2 | TextEditor throws | `LoadFile` builds a throwaway view via `DataTemplates.First(...).Build(this)` (throws on no match; loads into an unshown view) | VM holds `FilePath`/`Content` observable props; real view binds them; delete the reflection hack. Same in `ImageEditorViewModel.LoadImage` |
-| 3 | Bottom panel controls overflow | 28px header row < control heights | Header row → `Auto`/~36px; explicit control heights |
-| 4 | Image Explorer shares Project Explorer's pane | Both are `Tool`s in one `ToolDock` | Separate dock region / own pane (ties to §6.1) |
-| 5 | Can't open other tooling | Only Dashboard/Emulator/Hex wired to open | Openers registry + menu/explorer entries (§6.2) |
+| # | Symptom | Cause | Fix | Status |
+|---|---|---|---|---|
+| 1 | Project Explorer shows empty folders | `TreeViewItem` style never binds `IsExpanded`, so the lazy-loader never fires | Add `<Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/>` to the `TreeViewItem` style in `ProjectExplorerView.axaml` | **FIXED** — the setter is present |
+| 2 | TextEditor throws | `LoadFile` builds a throwaway view via `DataTemplates.First(...).Build(this)` (throws on no match; loads into an unshown view) | VM holds `FilePath`/`Content` observable props; real view binds them; delete the reflection hack. Same in `ImageEditorViewModel.LoadImage` | **FIXED** — no reflection hack remains in source |
+| 3 | Bottom panel controls overflow | 28px header row < control heights | Header row → `Auto`/~36px; explicit control heights | likely fixed — no 28px row height remains; confirm visually |
+| 4 | Image Explorer shares Project Explorer's pane | Both are `Tool`s in one `ToolDock` | Separate dock region / own pane (ties to §6.1) | **OPEN** |
+| 5 | Can't open other tooling | Only Dashboard/Emulator/Hex wired to open | Openers registry + menu/explorer entries (§6.2) | **OPEN** — `MainWindowViewModel` still exposes only `OpenDashboard`, `OpenEmulator`, `OpenHexInspector` |
 
-Bugs 1–3 are small and unblock daily use — first to fix.
+Phase 0 is therefore **mostly done**: bugs 1–3 are closed and only the openers (#5) and the dock split (#4) remain before daily use is unblocked.
 
 ---
 
@@ -231,13 +285,17 @@ Separate Avalonia app (not yet built), aimed at third-party developers compiling
 - **[Q-A]** Confirm authority enforcement: should CXK **reject at load** any artifact whose signing key tier is below what its type requires (System ⇒ ROOT)? (I've assumed yes.)
 - **[Q-B]** Authority tiers: `ROOT` + `DEVELOPER` enough to start, or add an intermediate "trusted vendor" tier now?
 - **[Q-C]** `XCFM` font editor: confirm the in-Studio "draw glyphs on a character map → export/compile to XFNT" workflow is what you want for the bitmap path.
-- **[Q-D]** `CXEX.Tools`: OK to create it and relocate the tool wrappers + `ProcessRunner` there (shared by CLI + Studio)?
+- **[Q-D — half answered]** `CXEX.Tools` was created but left empty; the wrappers still live in `CXEX.CLI/Wrappers`. The relocation itself is still pending (Phase 2).
+- **[Q-E — new]** The `.XCXN` intermediate in §3 does not exist and ELF fills its role. Amend the locked chain to name ELF, or build `XCXN` for real? (Recommendation: amend.)
+- **[Q-F — new]** The ABI prelude is a manual cross-repo sync point that has already broken a build (§5.2). Add a test project asserting prelude/header agreement, or a generator? (Recommendation: the test, now; the generator later.)
 
 ---
 
 ## 14. Roadmap *(your §11 order, adjusted for the new decisions)*
 
-**Phase 0 — Unblock daily use:** bug fixes 1–3; openers for all windows (#5). *(reopenable bottom panel already done.)*
+**Phase 0 — Unblock daily use:** ~~bug fixes 1–3~~ **done**; openers for all windows (#5) and the dock split (#4) remain. *(reopenable bottom panel already done.)*
+
+**Phase 0.5 — Close the ABI sync hole (§5.2) [new, do this early].** Add the repository's first test project and assert that every `SYS_*` and ABI struct in `CXK/abi/cxk_abi.h` appears in `AbiPrelude.cs`. This is ahead of most of what follows because it is ~30 lines and it prevents a class of build break that has already happened once. Everything else on this roadmap is easier with a test project in place.
 
 **Phase 1 — Identity & shell:** `CXEX.UI` skeleton + **CX Dark** theme; de-VS-Code chrome (Spyder-style icon bar, flat-with-contrast, no palette-only); min sizes; locked docking + Window Editor Mode + preset/custom layouts (global & per-project).
 
