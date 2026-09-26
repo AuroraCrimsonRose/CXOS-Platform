@@ -21,6 +21,11 @@
    ACPI RSDP/FADT was found, 0 otherwise. */
 int acpi_init(void);
 
+/* Find an ACPI table by 4-character signature, fully mapped, or 0. Used by the
+   APIC code to reach the MADT, which is the only description of where the
+   local and I/O APICs live and how the legacy IRQs are wired to them. */
+void *acpi_find_table(const char *sig);
+
 /* capability queries (valid after acpi_init) */
 int acpi_can_shutdown(void);   /* S5 SLP_TYP found in DSDT */
 int acpi_can_s1(void);         /* S1 SLP_TYP found in DSDT */

@@ -209,8 +209,28 @@ static int dsdt_find_sx(const uint8_t *dsdt, uint32_t len, char digit,
     return 0;
 }
 
+/* Kept after init so acpi_find_table() can walk it later. The MADT is only
+   wanted once the interrupt controllers come up, which is after ACPI. */
+static struct acpi_sdt_header *saved_rsdt = 0;
+
+void *acpi_find_table(const char *sig) {
+    if (!saved_rsdt) return 0;
+    uint32_t entries = (saved_rsdt->length - sizeof(struct acpi_sdt_header)) / 4;
+    uint32_t *ptrs = (uint32_t *)((uint8_t *)saved_rsdt + sizeof(struct acpi_sdt_header));
+    for (uint32_t i = 0; i < entries; i++) {
+        struct acpi_sdt_header *h =
+            (struct acpi_sdt_header *)map_table(ptrs[i], sizeof(struct acpi_sdt_header));
+        if (sig_eq(h->signature, sig, 4)) {
+            map_table(ptrs[i], h->length);      /* map the whole table */
+            return h;
+        }
+    }
+    return 0;
+}
+
 int acpi_init(void) {
     have_acpi = 0;
+    saved_rsdt = 0;
     s5_ok = s1_ok = reset_ok = 0;
 
     struct acpi_rsdp *rsdp = find_rsdp();
@@ -221,6 +241,7 @@ int acpi_init(void) {
         (struct acpi_sdt_header *)map_table(rsdp->rsdt_address, sizeof(struct acpi_sdt_header));
     map_table(rsdp->rsdt_address, rsdt->length);
     if (!sig_eq(rsdt->signature, "RSDT", 4)) return 0;
+    saved_rsdt = rsdt;
 
     /* RSDT is followed by an array of 32-bit table pointers */
     uint32_t entries = (rsdt->length - sizeof(struct acpi_sdt_header)) / 4;
