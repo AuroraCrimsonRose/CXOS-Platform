@@ -1,12 +1,51 @@
 /* /CXLite/kernel/drivers/netif.c */
 /* Aurora Tejeda */
-/* Network interface abstraction + static config. Bound to the e1000 today. */
+/* Network interface abstraction + static config.
+ *
+ * Binds to whichever NIC is actually on the bus. Two exist: the Intel e1000,
+ * which is what QEMU emulates, and the Realtek RTL8111/8168, which is what a
+ * real desktop board is likely to carry. A machine has one or the other, not
+ * both, and hardcoding either means networking silently does nothing on the
+ * other - which is precisely what used to happen on real hardware.
+ *
+ * The driver is chosen once at init and reached through a small vtable, so the
+ * stack above (ARP/IP/ICMP) never learns which card it is talking to. Adding a
+ * third NIC is a new ops struct and one line in the probe order. */
 
 #include "netif.h"
 #include "e1000.h"
+#include "rtl8169.h"
+#include "logging.h"
+
+/* The operations a NIC must provide to be usable as the bound interface. */
+struct netif_ops {
+    const char    *name;
+    int          (*init)(void);
+    int          (*present)(void);
+    const uint8_t *(*mac)(void);
+    int          (*send)(const void *frame, uint16_t len);
+    int          (*receive)(void *buf, uint16_t max_len);
+};
+
+static const struct netif_ops nic_e1000 = {
+    "e1000",  e1000_init,  e1000_present,  e1000_mac,  e1000_send,  e1000_receive,
+};
+static const struct netif_ops nic_rtl8169 = {
+    "rtl8111", rtl8169_init, rtl8169_present, rtl8169_mac, rtl8169_send, rtl8169_receive,
+};
+
+/* Probe order. e1000 first only because it is the tested one; they are mutually
+   exclusive in practice, so the order is not load-bearing. */
+static const struct netif_ops *const probe_order[] = { &nic_e1000, &nic_rtl8169 };
+
+static const struct netif_ops *nic = 0;
 
 static struct net_config cfg;
 static int ready = 0;
+
+/* MAC reported when nothing is bound. Returning a real driver's buffer here
+   would mean reading a NIC that was never initialised. */
+static const uint8_t mac_none[6] = { 0, 0, 0, 0, 0, 0 };
 
 static void set4(ip4_t dst, uint8_t a, uint8_t b, uint8_t c, uint8_t d) {
     dst[0] = a; dst[1] = b; dst[2] = c; dst[3] = d;
@@ -24,18 +63,29 @@ int netif_init(void) {
     set4(cfg.dns1,    1, 1, 1, 1);     /* Cloudflare primary */
     set4(cfg.dns2,    1, 0, 0, 1);     /* Cloudflare secondary */
 
-    /* Bring the NIC up. This was the missing link: netif_init only ever asked
+    /* Bring a NIC up. This was the missing link: netif_init only ever asked
        e1000_present(), which reports a flag that e1000_init() sets at its very
        end - and nothing called e1000_init(), so the interface could never come
-       up even with the card sitting on the bus. */
-    if (!e1000_present()) e1000_init();
+       up even with the card sitting on the bus.
 
-    ready = e1000_present();
+       Each driver's init() returns 0 when its chip is simply not on the bus,
+       which is the normal case for whichever one is not installed - not an
+       error, and not worth logging. */
+    nic = 0;
+    for (unsigned i = 0; i < sizeof(probe_order) / sizeof(probe_order[0]); i++) {
+        const struct netif_ops *cand = probe_order[i];
+        if (cand->present() || cand->init()) { nic = cand; break; }
+    }
+
+    if (nic) klog("NETIF", SEV_OK, nic->name);
+    else     klog("NETIF", SEV_WARN, "no supported NIC found (e1000 or RTL8111/8168)");
+
+    ready = nic != 0;
     return ready;
 }
 
-int netif_ready(void) { return ready && e1000_present(); }
-const uint8_t *netif_mac(void) { return e1000_mac(); }
+int netif_ready(void) { return ready && nic && nic->present(); }
+const uint8_t *netif_mac(void) { return nic ? nic->mac() : mac_none; }
 const struct net_config *netif_cfg(void) { return &cfg; }
 
 void netif_set_ip(const ip4_t ip)        { cp4(cfg.ip, ip); }
@@ -45,8 +95,12 @@ void netif_set_dns(const ip4_t dns1, const ip4_t dns2) {
     cp4(cfg.dns1, dns1); cp4(cfg.dns2, dns2);
 }
 
-int netif_send(const void *frame, uint16_t len)   { return e1000_send(frame, len); }
-int netif_receive(void *buf, uint16_t max_len)     { return e1000_receive(buf, max_len); }
+int netif_send(const void *frame, uint16_t len) {
+    return nic ? nic->send(frame, len) : -1;
+}
+int netif_receive(void *buf, uint16_t max_len) {
+    return nic ? nic->receive(buf, max_len) : 0;
+}
 
 /* parse "a.b.c.d" -> out[4]. needs 4 dot-separated numeric fields; we take the
    low byte of each (no range validation per design - user's responsibility). */
