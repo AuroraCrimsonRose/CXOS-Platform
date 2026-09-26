@@ -1,18 +1,29 @@
 ﻿namespace CXEX.Lang.Abi;
 
 /// <summary>
-/// Generates the X prelude (abi.x) from the frozen CXK ABI (abi/cxk_abi.h): the
-/// SYS_* numbers, E_* error codes, the shared arg structs, and typed __syscall
-/// wrappers. Compiling against this keeps X programs in lockstep with the kernel -
-/// one source of truth across kernel, C, .NET, and X. v0.1 emits the frozen v1
-/// values directly; a later version can parse cxk_abi.h to stay automatic.
+/// The X prelude (abi.x) mirroring the CXK ABI (abi/cxk_abi.h): the SYS_* numbers,
+/// E_* error codes, the shared arg structs, and typed __syscall wrappers. Prepended
+/// to every compilation so X programs stay in lockstep with the kernel.
+///
+/// <para><b>This is hand-maintained, not generated.</b> It is a copy of a header that
+/// lives in a different repository, so it drifts silently unless someone updates both.
+/// It has already drifted once: the kernel gained SYS_MOUSE_READ and struct mouse_state,
+/// this file did not, and gui.xfxn referenced both - so the compiler could not build the
+/// userland. <b>If you change cxk_abi.h, change this in the same pass.</b></para>
+///
+/// <para>Run <c>cxk check-abi</c> to verify the two agree; see
+/// <see cref="AbiSync"/> for what it compares and the family rule it applies.
+/// Generating this file from the header is the eventual fix, and needs the two
+/// repositories visible to each other at build time.</para>
 /// </summary>
 public static class AbiPrelude
 {
     public const string FileName = "abi.x";
 
     public static string Generate() => """
-// abi.x - GENERATED from cxk_abi.h (CXK ABI v1). Do not edit by hand.
+// abi.x - mirrors cxk_abi.h (CXK ABI v2). HAND-MAINTAINED: nothing generates this.
+// If you add a syscall or ABI struct to cxk_abi.h, add it here too, then run
+// `cxk check-abi` to confirm the two still agree.
 // The only effect in X is __syscall; these wrappers name the kernel's calls.
 
 // ---- syscall numbers ----
