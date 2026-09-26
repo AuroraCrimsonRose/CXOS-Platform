@@ -16,5 +16,6 @@
   <Project Path="CXEX.Studio/CXEX.Studio.csproj" />
   <Project Path="CXEX.Text/CXEX.Text.csproj" Id="9a5e5f88-5698-479a-a023-0535228d3612" />
   <Project Path="CXEX.Tools/CXEX.Tools.csproj" Id="10fd83c0-7d3c-4d35-9f63-fe7209bc2c33" />
+  <Project Path="CXEX.Uefi/CXEX.Uefi.csproj" />
   <Project Path="CXEX.UI/CXEX.UI.csproj" Id="8949bb8a-3845-4a8a-8df4-d1a992f5f0f5" />
 </Solution>
