@@ -4,6 +4,7 @@
    keyboard is deliberately not this driver's job. */
 
 #include "ehci.h"
+#include "usb.h"
 #include "pci.h"
 #include "paging.h"
 #include "logging.h"
@@ -142,8 +143,6 @@ static int present = 0;
 static unsigned nports = 0;
 static int port_power_control = 0;
 
-static struct usb_device devices[USB_MAX_DEVICES];
-static unsigned ndevices = 0;
 static uint8_t next_address = 1;
 
 static inline uint32_t cap_rd32(uint32_t o) { return *(volatile uint32_t *)(cap_regs + o); }
@@ -162,15 +161,6 @@ static inline void portsc_wr(unsigned p, uint32_t v) {
 static struct ehci_qh  *qh  = 0;
 static struct ehci_qtd *qtd = 0;
 static uint8_t *xfer_buf = 0;
-
-/* USB SETUP packet - 8 bytes on the wire, and the layout is fixed by the spec. */
-struct usb_setup {
-    uint8_t  bm_request_type;
-    uint8_t  b_request;
-    uint16_t w_value;
-    uint16_t w_index;
-    uint16_t w_length;
-} __attribute__((packed));
 
 /* ---- BIOS handoff -------------------------------------------------------
  * The EECP field points at a PCI capability (id 1, USB Legacy Support) holding
@@ -247,13 +237,15 @@ static void qtd_buffers(struct ehci_qtd *t, uint32_t phys, uint16_t len) {
     t->buffer[1] = (phys & ~0xFFFu) + 0x1000;
 }
 
-int ehci_control(uint8_t addr, uint8_t max_packet,
-                 uint8_t bm_request_type, uint8_t b_request,
-                 uint16_t w_value, uint16_t w_index,
-                 void *data, uint16_t w_length) {
-    if (!present) return -1;
+#define EHCI_XFER_MAX 4096
+
+static int ehci_control(struct usb_device *dev, uint8_t bm_request_type,
+                        uint8_t b_request, uint16_t w_value, uint16_t w_index,
+                        void *data, uint16_t w_length) {
+    if (!present || !dev) return -1;
     if (w_length > EHCI_XFER_MAX) return -1;
-    if (max_packet == 0) max_packet = 64;
+    uint8_t addr = dev->address;
+    uint8_t max_packet = dev->max_packet0 ? dev->max_packet0 : 64;
 
     int dev_to_host = (bm_request_type & 0x80) != 0;
 
@@ -338,123 +330,37 @@ done:
     return transferred;
 }
 
-/* ---- enumeration -------------------------------------------------------- */
-static int get_descriptor(uint8_t addr, uint8_t max_packet, uint8_t type,
-                          uint8_t index, void *out, uint16_t len) {
-    return ehci_control(addr, max_packet, 0x80, 0x06,
-                        (uint16_t)((uint16_t)type << 8 | index), 0, out, len);
+/* ---- addressing ---------------------------------------------------------
+ * On EHCI the driver issues SET_ADDRESS itself, which means talking to the
+ * device on address 0 first. Every device answers there with at least 8 bytes
+ * of its device descriptor, and byte 7 is bMaxPacketSize0 - which has to be
+ * known before asking for anything longer, because a wrong packet size makes
+ * the transfer fail rather than merely run slowly.
+ *
+ * xHCI inverts all of this; see the note in usb.h. */
+static int ehci_attach(struct usb_device *dev) {
+    struct usb_device_descriptor dd;
+    for (unsigned i = 0; i < sizeof(dd); i++) ((uint8_t *)&dd)[i] = 0;
+
+    dev->address = 0;
+    dev->max_packet0 = 64;          /* the safe guess for the first 8 bytes */
+    if (usb_get_descriptor(dev, USB_DESC_DEVICE, 0, &dd, 8) < 8) return 0;
+
+    dev->max_packet0 = dd.b_max_packet_size0 ? dd.b_max_packet_size0 : 64;
+
+    uint8_t addr = next_address++;
+    if (ehci_control(dev, 0x00, USB_REQ_SET_ADDRESS, addr, 0, 0, 0) < 0) return 0;
+    dev->address = addr;
+    timer_sleep(2);                 /* the spec's 2 ms address-recovery delay */
+    return 1;
 }
 
-struct usb_device_descriptor {
-    uint8_t  b_length;
-    uint8_t  b_descriptor_type;
-    uint16_t bcd_usb;
-    uint8_t  b_device_class;
-    uint8_t  b_device_subclass;
-    uint8_t  b_device_protocol;
-    uint8_t  b_max_packet_size0;
-    uint16_t id_vendor;
-    uint16_t id_product;
-    uint16_t bcd_device;
-    uint8_t  i_manufacturer;
-    uint8_t  i_product;
-    uint8_t  i_serial;
-    uint8_t  b_num_configurations;
-} __attribute__((packed));
-
-/* Configuration descriptor and the descriptors that follow it. They arrive as
-   one contiguous blob whose total length is in wTotalLength, and are walked by
-   stepping bLength at a time - the types are interleaved and NOT in a fixed
-   order, so indexing into them is wrong even when it appears to work. */
-struct usb_config_descriptor {
-    uint8_t  b_length;
-    uint8_t  b_descriptor_type;      /* 0x02 */
-    uint16_t w_total_length;
-    uint8_t  b_num_interfaces;
-    uint8_t  b_configuration_value;
-    uint8_t  i_configuration;
-    uint8_t  bm_attributes;
-    uint8_t  b_max_power;
-} __attribute__((packed));
-
-struct usb_interface_descriptor {
-    uint8_t b_length;
-    uint8_t b_descriptor_type;       /* 0x04 */
-    uint8_t b_interface_number;
-    uint8_t b_alternate_setting;
-    uint8_t b_num_endpoints;
-    uint8_t b_interface_class;
-    uint8_t b_interface_subclass;
-    uint8_t b_interface_protocol;
-    uint8_t i_interface;
-} __attribute__((packed));
-
-struct usb_endpoint_descriptor {
-    uint8_t  b_length;
-    uint8_t  b_descriptor_type;      /* 0x05 */
-    uint8_t  b_endpoint_address;     /* bit 7: 1 = IN                         */
-    uint8_t  bm_attributes;          /* bits 1:0: 2 = bulk                    */
-    uint16_t w_max_packet_size;
-    uint8_t  b_interval;
-} __attribute__((packed));
-
-/* Read the configuration, record the first interface and its bulk endpoints,
-   and select the configuration. A device is not usable until SET_CONFIGURATION
-   has been issued - before that it answers control transfers and nothing else. */
-static void read_configuration(struct usb_device *d) {
-    static uint8_t cfg[512];
-
-    struct usb_config_descriptor head;
-    for (unsigned i = 0; i < sizeof(head); i++) ((uint8_t *)&head)[i] = 0;
-    if (get_descriptor(d->address, d->max_packet0, 0x02, 0, &head, sizeof(head))
-            < (int)sizeof(head))
-        return;
-
-    uint16_t total = head.w_total_length;
-    if (total > sizeof(cfg)) total = sizeof(cfg);
-    if (get_descriptor(d->address, d->max_packet0, 0x02, 0, cfg, total) < (int)total)
-        return;
-
-    d->configuration = head.b_configuration_value;
-
-    unsigned off = 0;
-    int in_first_interface = 0;
-    while (off + 2 <= total) {
-        uint8_t len = cfg[off];
-        uint8_t type = cfg[off + 1];
-        if (len == 0 || off + len > total) break;   /* malformed: stop rather than spin */
-
-        if (type == 0x04) {                          /* interface */
-            const struct usb_interface_descriptor *id =
-                (const struct usb_interface_descriptor *)&cfg[off];
-            if (!d->if_class && !in_first_interface) {
-                d->if_class = id->b_interface_class;
-                d->if_subclass = id->b_interface_subclass;
-                d->if_protocol = id->b_interface_protocol;
-                in_first_interface = 1;
-            } else {
-                in_first_interface = 0;              /* only the first one's endpoints */
-            }
-        } else if (type == 0x05 && in_first_interface) {   /* endpoint */
-            const struct usb_endpoint_descriptor *ed =
-                (const struct usb_endpoint_descriptor *)&cfg[off];
-            if ((ed->bm_attributes & 0x03) == 0x02) {      /* bulk */
-                if (ed->b_endpoint_address & 0x80) {
-                    d->ep_in = ed->b_endpoint_address;
-                    d->ep_in_mps = ed->w_max_packet_size;
-                } else {
-                    d->ep_out = ed->b_endpoint_address;
-                    d->ep_out_mps = ed->w_max_packet_size;
-                }
-            }
-        }
-        off += len;
-    }
-
-    /* SET_CONFIGURATION */
-    if (d->configuration)
-        ehci_control(d->address, d->max_packet0, 0x00, 0x09, d->configuration, 0, 0, 0);
-}
+static const struct usb_hc_ops ehci_ops = {
+    .name    = "EHCI",
+    .attach  = ehci_attach,
+    .control = ehci_control,
+    .bulk    = 0,                   /* stage 2 */
+};
 
 static void enumerate_port(unsigned p) {
     uint32_t sc = portsc_rd(p);
@@ -499,66 +405,17 @@ static void enumerate_port(unsigned p) {
         return;
     }
 
-    if (ndevices >= USB_MAX_DEVICES) return;
-
-    /* Address 0, 8 bytes: every device answers on address 0 with at least 8
-       bytes, and byte 7 is bMaxPacketSize0 - which we need before we dare ask
-       for anything longer. */
-    struct usb_device_descriptor dd;
-    for (unsigned i = 0; i < sizeof(dd); i++) ((uint8_t *)&dd)[i] = 0;
-
-    if (get_descriptor(0, 8, 0x01, 0, &dd, 8) < 8) {
-        klog_u32("EHCI", SEV_WARN, "port ", p, LOG_COLOR_VALUE,
-                 ": device did not answer the first descriptor request");
+    /* High speed confirmed. Everything from here is the core's job. */
+    struct usb_device *dev = usb_alloc_device(&ehci_ops, 0, (uint8_t)p, USB_SPEED_HIGH);
+    if (!dev) {
+        klog("EHCI", SEV_WARN, "device table full");
         return;
     }
-    uint8_t mps0 = dd.b_max_packet_size0 ? dd.b_max_packet_size0 : 64;
-
-    uint8_t addr = next_address++;
-    if (ehci_control(0, mps0, 0x00, 0x05, addr, 0, 0, 0) < 0) {
-        klog_u32("EHCI", SEV_WARN, "port ", p, LOG_COLOR_VALUE, ": SET_ADDRESS failed");
-        return;
-    }
-    timer_sleep(2);          /* the spec's 2 ms recovery before using the new address */
-
-    if (get_descriptor(addr, mps0, 0x01, 0, &dd, sizeof(dd)) < (int)sizeof(dd)) {
-        klog_u32("EHCI", SEV_WARN, "port ", p, LOG_COLOR_VALUE,
-                 ": full device descriptor read failed");
-        return;
-    }
-
-    struct usb_device *d = &devices[ndevices++];
-    d->address = addr;
-    d->port = (uint8_t)p;
-    d->max_packet0 = mps0;
-    d->dev_class = dd.b_device_class;
-    d->dev_subclass = dd.b_device_subclass;
-    d->dev_protocol = dd.b_device_protocol;
-    d->vendor_id = dd.id_vendor;
-    d->product_id = dd.id_product;
-    d->speed = USB_SPEED_HIGH;
-
-    read_configuration(d);
-
-    klog_u32("EHCI", SEV_OK, "port ", p, LOG_COLOR_VALUE, ": high-speed device");
-    klog_child_u32("  vendor  ", d->vendor_id, LOG_COLOR_VALUE, "");
-    klog_child_u32("  product ", d->product_id, LOG_COLOR_VALUE, "");
-    /* Report the INTERFACE class: a mass-storage device sets bDeviceClass to 0
-       and declares 0x08 here, so reporting the device class would call every
-       flash drive "class 0". */
-    klog_child_u32("  class   ", d->if_class, LOG_COLOR_VALUE,
-                   (d->if_class == 0x08 && d->if_protocol == 0x50)
-                       ? " (mass storage, bulk-only)"
-                       : (d->if_class == 0x03 ? " (HID)" : ""));
-    if (d->ep_in || d->ep_out) {
-        klog_child_u32("  bulk in ", d->ep_in, LOG_COLOR_VALUE, "");
-        klog_child_u32("  bulk out", d->ep_out, LOG_COLOR_VALUE, "");
-    }
+    usb_enumerate(dev);
 }
 
 int ehci_init(void) {
     present = 0;
-    ndevices = 0;
     next_address = 1;
 
     /* class 0x0C serial bus, subclass 0x03 USB, prog-if 0x20 = EHCI */
@@ -663,13 +520,5 @@ int ehci_init(void) {
 
     for (unsigned p = 0; p < nports; p++) enumerate_port(p);
 
-    if (ndevices == 0) klog("EHCI", SEV_INFO, "no high-speed devices attached");
     return 1;
-}
-
-int ehci_present(void) { return present; }
-unsigned ehci_device_count(void) { return ndevices; }
-
-const struct usb_device *ehci_get(unsigned index) {
-    return index < ndevices ? &devices[index] : 0;
 }
