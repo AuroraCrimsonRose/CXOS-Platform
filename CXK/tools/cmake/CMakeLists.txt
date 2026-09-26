@@ -360,5 +360,20 @@ add_custom_command(
 )
 add_custom_target(disk_image ALL DEPENDS ${DISK_IMG})
 
+# cxk_disk and disk_image are both ALL targets and both consume the same
+# intermediates - every kernel object, the boot binaries, kernel.xkex. With the
+# Makefile generator CMake copies the rule for a shared custom-command output
+# into EVERY target that consumes it, so under -j the two targets run the same
+# compile concurrently and one links an object the other is still writing.
+#
+# That presents as a link failure against a symbol that is plainly in the source
+# - or, worse, as a kernel built from a half-written object that links fine.
+# A serial build always worked, which is what made it look like a code bug.
+#
+# Ordering the two targets means the second finds every intermediate already up
+# to date and skips it, so nothing is ever written twice at once. The file-level
+# DEPENDS above are all kept, so a changed source still forces a rebuild.
+add_dependencies(disk_image cxk_disk)
+
 # ---- convenience: build just the X app chain ----
 add_custom_target(apps DEPENDS ${APP_IMAGE})

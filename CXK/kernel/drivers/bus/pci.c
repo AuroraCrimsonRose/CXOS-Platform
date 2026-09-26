@@ -4,6 +4,7 @@
 
 #include "pci.h"
 #include "io.h"
+#include "logging.h"
 
 #define PCI_CONFIG_ADDR 0xCF8
 #define PCI_CONFIG_DATA 0xCFC
@@ -48,8 +49,19 @@ static uint16_t read_vendor(uint8_t bus, uint8_t slot, uint8_t func) {
 }
 
 /* read one function's identity + BARs into the table (caller checked it exists). */
+static int table_full_reported = 0;
+
 static void add_function(uint8_t bus, uint8_t slot, uint8_t func) {
-    if (ndevices >= PCI_MAX_DEVICES) return;
+    if (ndevices >= PCI_MAX_DEVICES) {
+        /* Say so once. Silently dropping devices here is indistinguishable
+           from a driver failing to find its hardware. */
+        if (!table_full_reported) {
+            table_full_reported = 1;
+            klog_u32("PCI", SEV_WARN, "device table full at ", PCI_MAX_DEVICES,
+                     LOG_COLOR_VALUE, " - later devices are NOT enumerated");
+        }
+        return;
+    }
     struct pci_device *d = &devices[ndevices];
 
     d->bus  = bus;
@@ -93,6 +105,7 @@ static void scan_slot(uint8_t bus, uint8_t slot) {
 
 void pci_init(void) {
     ndevices = 0;
+    table_full_reported = 0;
     /* brute-force scan: all 256 buses x 32 slots. Simple and reliable; the
        recursive bus-discovery optimization isn't worth it for our scale. */
     for (unsigned bus = 0; bus < 256; bus++)
@@ -116,6 +129,101 @@ const struct pci_device *pci_find(uint8_t class_code, uint8_t subclass,
             if (match == index) return d;
             match++;
         }
+    }
+    return 0;
+}
+
+/* ---- command register ---------------------------------------------------- */
+void pci_enable_bus_master(const struct pci_device *d) {
+    if (!d) return;
+    uint32_t cmd = pci_config_read32(d->bus, d->slot, d->func, 0x04);
+    cmd |= (1u << 1) | (1u << 2);          /* memory space | bus master */
+    pci_config_write32(d->bus, d->slot, d->func, 0x04, cmd);
+}
+
+/* ---- BARs ---------------------------------------------------------------- */
+int pci_bar_get(const struct pci_device *d, int index, struct pci_bar *out) {
+    if (!d || !out || index < 0 || index > 5) return 0;
+    for (unsigned i = 0; i < sizeof(*out); i++) ((uint8_t *)out)[i] = 0;
+
+    uint8_t off = (uint8_t)(0x10 + index * 4);
+    uint32_t raw = pci_config_read32(d->bus, d->slot, d->func, off);
+    if (raw == 0) return 0;                /* unimplemented */
+
+    out->is_io = (uint8_t)(raw & 1u);
+    if (out->is_io) {
+        out->base = raw & 0xFFFFFFFCu;
+    } else {
+        out->prefetch = (uint8_t)((raw >> 3) & 1u);
+        /* type in bits 2:1 - 0b10 means this BAR and the NEXT one together
+           form a single 64-bit address. */
+        out->is_64 = (uint8_t)(((raw >> 1) & 3u) == 2u);
+        out->base = raw & 0xFFFFFFF0u;
+        if (out->is_64 && index < 5) {
+            uint32_t hi = pci_config_read32(d->bus, d->slot, d->func, (uint8_t)(off + 4));
+            out->base |= (uint64_t)hi << 32;
+        }
+    }
+
+    /* Size probe: write all ones, read back the mask the device leaves, then
+       restore. The device must not be decoding while its BAR holds a bogus
+       address, so turn memory and I/O decode off across the probe. */
+    uint32_t cmd = pci_config_read32(d->bus, d->slot, d->func, 0x04);
+    pci_config_write32(d->bus, d->slot, d->func, 0x04, cmd & ~0x3u);
+
+    pci_config_write32(d->bus, d->slot, d->func, off, 0xFFFFFFFFu);
+    uint32_t mask = pci_config_read32(d->bus, d->slot, d->func, off);
+    pci_config_write32(d->bus, d->slot, d->func, off, raw);
+
+    pci_config_write32(d->bus, d->slot, d->func, 0x04, cmd);
+
+    mask &= out->is_io ? 0xFFFFFFFCu : 0xFFFFFFF0u;
+    out->size = mask ? (~mask + 1u) : 0u;
+
+    out->valid = 1;
+    return 1;
+}
+
+uint32_t pci_bar_mmio32(const struct pci_device *d, int index, const char *tag) {
+    struct pci_bar b;
+    if (!pci_bar_get(d, index, &b)) return 0;
+
+    if (b.is_io) {
+        klog_u32(tag, SEV_WARN, "BAR ", (uint32_t)index, LOG_COLOR_VALUE,
+                 " is I/O space, not memory");
+        return 0;
+    }
+    if (b.base >> 32) {
+        klog_u32(tag, SEV_WARN, "BAR ", (uint32_t)index, LOG_COLOR_VALUE,
+                 " is above 4 GB and unreachable from a 32-bit kernel");
+        return 0;
+    }
+    uint32_t base = (uint32_t)b.base;
+    if (base == 0) return 0;
+    if (base < 0xC0000000u) {
+        klog_u32(tag, SEV_WARN, "register BAR below the kernel half: ", base,
+                 LOG_COLOR_VALUE, " - not visible from a process address space");
+        return 0;
+    }
+    return base;
+}
+
+/* ---- capabilities -------------------------------------------------------- */
+uint8_t pci_find_capability(const struct pci_device *d, uint8_t cap_id) {
+    if (!d) return 0;
+
+    uint16_t status = pci_config_read16(d->bus, d->slot, d->func, 0x06);
+    if (!(status & (1u << 4))) return 0;      /* no capability list */
+
+    uint8_t off = pci_config_read8(d->bus, d->slot, d->func, 0x34) & 0xFC;
+    /* Bounded: a malformed or circular list would otherwise spin forever, and
+       the list cannot legally exceed 48 entries in 256 bytes of config space. */
+    for (int guard = 0; guard < 48 && off >= 0x40; guard++) {
+        uint8_t id   = pci_config_read8(d->bus, d->slot, d->func, off);
+        uint8_t next = pci_config_read8(d->bus, d->slot, d->func, (uint8_t)(off + 1));
+        if (id == cap_id) return off;
+        if (next == 0) break;
+        off = next & 0xFC;
     }
     return 0;
 }
