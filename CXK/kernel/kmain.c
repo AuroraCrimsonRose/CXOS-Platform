@@ -17,6 +17,7 @@
 #include "console.h"
 #include "color.h"
 #include "fb.h"
+#include "mouse.h"
 #include "resolution.h"
 #include "format.h"
 #include "sched.h"
@@ -174,6 +175,15 @@ void kmain(void) {
 
     keyboard_init();
     klog("INPUT", SEV_OK, "PS/2 keyboard online (IRQ1)");
+
+    /* PS/2 mouse. Clamped to the display so userspace gets an absolute position
+       it can use directly; fb_width/fb_height return 0 in text mode, and
+       mouse_init keeps its 640x480 default for a zero, so this is safe whether
+       or not the framebuffer came up. */
+    if (mouse_init((int)fb_width(), (int)fb_height()))
+        klog("INPUT", SEV_OK, "PS/2 mouse online (IRQ12)");
+    else
+        klog("INPUT", SEV_WARN, "no PS/2 mouse detected");
 
 
     /* user mode: syscall gate + ring-3 fault handler. */

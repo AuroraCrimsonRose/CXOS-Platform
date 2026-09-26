@@ -37,3 +37,17 @@ void pic_send_eoi(uint32_t int_no) {
     if (int_no >= 40) outb(PIC2_CMD, PIC_EOI);
     outb(PIC1_CMD, PIC_EOI);
 }
+
+/* Clear one line's mask bit. For a slave line (8..15) the master's cascade
+   input, IRQ2, must be unmasked too: the slave reaches the CPU only through it,
+   so leaving the cascade masked silently swallows every slave interrupt. */
+void pic_unmask(int irq) {
+    if (irq < 0 || irq >= 16) return;
+
+    if (irq < 8) {
+        outb(PIC1_DATA, (uint8_t)(inb(PIC1_DATA) & ~(1u << irq)));
+    } else {
+        outb(PIC2_DATA, (uint8_t)(inb(PIC2_DATA) & ~(1u << (irq - 8))));
+        outb(PIC1_DATA, (uint8_t)(inb(PIC1_DATA) & ~(1u << 2)));   /* cascade */
+    }
+}
