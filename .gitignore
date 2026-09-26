@@ -89,9 +89,11 @@ CXK/src/tested/CXEX_Compiler/__pycache__/cxkparse.cpython-314.pyc
 CXK/boot/uefi/sbkeys/
 CXK/boot/uefi/BOOTX64.EFI
 CXK/boot/uefi/*.obj
+*.pfx
+*.pem
+*.cer
 *.key
 *.crt
-*.cer
 *.esl
 *.auth
 *_VARS.fd
