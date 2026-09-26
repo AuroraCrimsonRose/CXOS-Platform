@@ -27,6 +27,7 @@ const SYS_EP_CREATE:     u32 = 0x13;
 const SYS_HANDLE_CLOSE:  u32 = 0x16;
 const SYS_CONSOLE_WRITE: u32 = 0x30;
 const SYS_INPUT_READ:    u32 = 0x20;
+const SYS_MOUSE_READ:    u32 = 0x21;
 const SYS_FB_OP:         u32 = 0x40;
 const SYS_NET_OP:        u32 = 0x50;
 const SYS_SPAWN:         u32 = 0x70;
@@ -63,6 +64,13 @@ struct fb_op_args { op: u32, x: u32, y: u32, w: u32, h: u32, color: u32, color2:
 // ---- network (SYS_NET_OP; CAP_NET) ----
 struct net_op_args { op: u32, ip: u32, data: *u8, len: u32, out: *u32 }
 
+// ---- pointer input (SYS_MOUSE_READ) ----
+// Absolute position, already clamped to the screen by the kernel driver, so
+// userspace never sees relative deltas. `seq` increments on every state change:
+// compare it with the previous read to detect movement without diffing x/y.
+// Unprivileged, like keyboard input.
+struct mouse_state { x: i32, y: i32, buttons: u32, seq: u32 }
+
 // ---- typed syscall wrappers ----
 fn exit(code: i32) -> void { __syscall(SYS_EXIT, code as u32, 0, 0, 0, 0); }
 fn yield_() -> void        { __syscall(SYS_YIELD, 0, 0, 0, 0, 0); }
@@ -72,11 +80,12 @@ fn getuid() -> i32         { return __syscall(SYS_GETUID, 0, 0, 0, 0, 0); }
 fn console_write(buf: *u8, len: u32) -> i32 { return __syscall(SYS_CONSOLE_WRITE, buf as u32, len, 0, 0, 0); }
 fn input_read() -> i32                       { return __syscall(SYS_INPUT_READ, 0, 0, 0, 0, 0); }        // block for a key
 fn input_poll() -> i32                       { return __syscall(SYS_INPUT_READ, 1, 0, 0, 0, 0); }        // 0 if none
+fn mouse_read(m: *mouse_state) -> i32        { return __syscall(SYS_MOUSE_READ, m as u32, 0, 0, 0, 0); } // 1 if a mouse is present
 fn fb_op(a: *fb_op_args) -> i32         { return __syscall(SYS_FB_OP, a as u32, 0, 0, 0, 0); }
 fn net_op(a: *net_op_args) -> i32       { return __syscall(SYS_NET_OP, a as u32, 0, 0, 0, 0); }
-fn reboot() -> void                          { __syscall(SYS_POWER, POWER_REBOOT, 0, 0, 0, 0); }
-fn shutdown() -> void                        { __syscall(SYS_POWER, POWER_SHUTDOWN, 0, 0, 0, 0); }
-fn sleep(ms: u32) -> i32                     { return __syscall(SYS_POWER, POWER_SLEEP, ms, 0, 0, 0); }         // does not return
+fn reboot() -> void                          { __syscall(SYS_POWER, POWER_REBOOT, 0, 0, 0, 0); }              // does not return
+fn shutdown() -> void                        { __syscall(SYS_POWER, POWER_SHUTDOWN, 0, 0, 0, 0); }            // does not return
+fn sleep(ms: u32) -> i32                     { return __syscall(SYS_POWER, POWER_SLEEP, ms, 0, 0, 0); }
 fn ep_create() -> i32                        { return __syscall(SYS_EP_CREATE, 0, 0, 0, 0, 0); }
 fn handle_close(h: i32) -> i32               { return __syscall(SYS_HANDLE_CLOSE, h as u32, 0, 0, 0, 0); }
 
