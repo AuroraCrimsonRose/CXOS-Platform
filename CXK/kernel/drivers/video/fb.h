@@ -74,6 +74,12 @@ uint32_t fb_font_height(void);
 void fb_draw_char(uint32_t x, uint32_t y, char c, uint32_t fg, uint32_t bg);
 void fb_draw_string(uint32_t x, uint32_t y, const char *s, uint32_t fg, uint32_t bg);
 
+/* Length-bounded: stops at the NUL or at `n` characters, whichever is first.
+   Required for any string originating in ring 3, where the terminator cannot be
+   trusted to lie inside memory we validated. */
+void fb_draw_string_n(uint32_t x, uint32_t y, const char *s, uint32_t n,
+                      uint32_t fg, uint32_t bg);
+
 struct fb_op_args;
 int sys_fb_op(const struct fb_op_args *ua);
 
