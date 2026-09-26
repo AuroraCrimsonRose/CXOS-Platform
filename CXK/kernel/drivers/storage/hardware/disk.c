@@ -5,17 +5,19 @@
 #include "disk.h"
 #include "ata.h"
 /* Driver availability gates: each storage backend is compiled in only once it's
-   been ported/brought up for v5. ATA PIO is up; AHCI (needs PCI + DMA rework)
-   and OHCI/USB come later. Flip these to 1 as each lands and add its source to
-   the build. */
+   been ported/brought up for v5. ATA PIO, AHCI and USB mass storage are all up.
+   Flip these to 1 as each lands and add its source to the build. */
 #define CXK_HAVE_AHCI 1
-#define CXK_HAVE_USB  0
+#define CXK_HAVE_USB  1
 
 #if CXK_HAVE_AHCI
 #include "ahci.h"
 #endif
 #if CXK_HAVE_USB
-#include "ohci.h"
+/* Mass storage is controller-independent - it rides usb_hc_ops.bulk and works
+   the same on EHCI, OHCI or xHCI - so this is the class driver, not a
+   controller header as the OHCI-era stub assumed. */
+#include "usb_storage.h"
 #endif
 #include "string.h"
 
@@ -135,7 +137,7 @@ int disk_read(uint8_t id, uint64_t lba, uint32_t count, void *buf) {
 #endif
 #if CXK_HAVE_USB
         case DISK_DRV_USB:
-            return ohci_storage_read(lba, count, buf);
+            return usb_storage_read(d->unit, lba, count, buf);
 #endif
         default:
             return DISK_ERR_NO_DEVICE;   /* driver not built yet / nvme TODO */
@@ -154,7 +156,7 @@ int disk_write(uint8_t id, uint64_t lba, uint32_t count, const void *buf) {
 #endif
 #if CXK_HAVE_USB
         case DISK_DRV_USB:
-            return ohci_storage_write(lba, count, buf);
+            return usb_storage_write(d->unit, lba, count, buf);
 #endif
         default:
             return DISK_ERR_NO_DEVICE;

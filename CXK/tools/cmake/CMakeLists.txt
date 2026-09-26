@@ -80,6 +80,7 @@ set(KERNEL_INCLUDES
     -I${SRC_DIR}/kernel/cpu/int
     -I${SRC_DIR}/kernel/memman
     -I${SRC_DIR}/kernel/drivers/char
+    -I${SRC_DIR}/kernel/drivers/usb
     -I${SRC_DIR}/kernel/drivers/video
     -I${SRC_DIR}/kernel/drivers/input
     -I${SRC_DIR}/kernel/drivers/power
@@ -153,6 +154,12 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/drivers/net/ip.c
     ${SRC_DIR}/kernel/drivers/net/net_syscall.c
     ${SRC_DIR}/kernel/drivers/net/netif.c
+    ${SRC_DIR}/kernel/drivers/net/rtl8169.c
+    ${SRC_DIR}/kernel/drivers/usb/usb.c
+    ${SRC_DIR}/kernel/drivers/usb/ehci.c
+    ${SRC_DIR}/kernel/drivers/usb/xhci.c
+    ${SRC_DIR}/kernel/drivers/usb/ohci.c
+    ${SRC_DIR}/kernel/drivers/usb/usb_storage.c
 )
 
 # ---- KERNEL ASM SOURCES (elf32 objects; append new ones here) ----
