@@ -25,7 +25,7 @@
 #include "keyboard.h"
 #include "power.h"
 #include "netif.h"
-#include "ehci.h"
+#include "usb.h"
 #include "acpi.h"
 #include "usermode.h"
 #include "ata.h"
@@ -218,10 +218,9 @@ void kmain(void) {
     /* ACPI: enables the real shutdown (S5) and sleep paths */
     acpi_init();
 
-    /* USB: EHCI enumerates high-speed devices and hands full/low-speed ports
-       back to the companion controller. Before storage, so that USB mass
-       storage can register disks here once stage 2 lands. */
-    ehci_init();
+    /* USB: brings up every host controller present. Before storage, so that USB
+       mass storage can register disks here once stage 2 lands. */
+    usb_init();
 
     /* storage: probe ATA + AHCI drives into the disk registry. AHCI is found via
        PCI; on a machine without one, ahci_init returns 0 harmlessly. */
