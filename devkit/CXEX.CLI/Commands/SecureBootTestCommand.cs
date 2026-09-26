@@ -12,13 +12,18 @@ namespace CXEX.CLI.Commands;
 /// <c>cxk secureboot test</c> - boots a stub under enforced Secure Boot, twice.
 /// </summary>
 /// <remarks>
-/// <para>
-/// The two runs are not redundant. The signed run shows the stub loads and reports
-/// Secure Boot on. The unsigned run shows firmware would have refused it - and
-/// without that, a misconfigured setup looks exactly like a pass, because OVMF
-/// built without SMM support boots unsigned binaries while still reporting
-/// whatever the SecureBoot variable says.
-/// </para>
+/// <para>Three runs, none of them redundant:</para>
+/// <list type="number">
+/// <item>Signed by the enrolled db key - the stub should load and report Secure Boot on.</item>
+/// <item>Unsigned - firmware should refuse it. Without this, a misconfigured setup
+/// looks exactly like a pass, because OVMF built without SMM support boots
+/// unsigned binaries while still reporting whatever the SecureBoot variable says.</item>
+/// <item>Validly signed by a key that is NOT enrolled - firmware should refuse this
+/// too. Cases 1 and 2 together only show that firmware tells signed from unsigned;
+/// they do not show it checks the signer against db. This one does, and it is the
+/// difference between a platform that verifies and one that merely notices a
+/// signature is present.</item>
+/// </list>
 /// <para>
 /// Hence <c>smm=on</c> together with <c>secure=on</c> on the flash device. Neither
 /// alone enforces anything: without SMM the variable store is writable from
@@ -129,9 +134,22 @@ public class SecureBootTestCommand : Command<SecureBootTestCommand.Settings>
             string unsignedLog = RunOne(qemu, code, vars, settings.Stub, work, "unsigned", settings.Timeout);
             Print(unsignedLog);
 
+            // Signed by a key generated here and thrown away, so it cannot be in db
+            // by accident. The result is a perfectly valid Authenticode signature
+            // from an authority the platform does not trust.
+            string rogueStub = Path.Combine(work, "BOOTX64.rogue.efi");
+            using (var rogue = SecureBootKeys.Create(SecureBootKeys.Role.Db, "Untrusted Test Authority"))
+                File.WriteAllBytes(rogueStub, AuthenticodeSigner.Sign(PeImage.Load(settings.Stub), rogue));
+
+            AnsiConsole.MarkupLine("");
+            AnsiConsole.MarkupLine("[bold]stub signed by an unenrolled key[/] - expect firmware to refuse it");
+            string rogueLog = RunOne(qemu, code, vars, rogueStub, work, "rogue", settings.Timeout);
+            Print(rogueLog);
+
             bool ranSigned = signedLog.Contains("Secure Boot", StringComparison.OrdinalIgnoreCase)
                              && !signedLog.Contains("Access Denied", StringComparison.OrdinalIgnoreCase);
             bool refusedUnsigned = unsignedLog.Contains("Access Denied", StringComparison.OrdinalIgnoreCase);
+            bool refusedRogue = rogueLog.Contains("Access Denied", StringComparison.OrdinalIgnoreCase);
 
             AnsiConsole.MarkupLine("");
             AnsiConsole.MarkupLine(ranSigned
@@ -140,6 +158,17 @@ public class SecureBootTestCommand : Command<SecureBootTestCommand.Settings>
             AnsiConsole.MarkupLine(refusedUnsigned
                 ? "  [green]PASS[/] the unsigned stub was refused, so enforcement is real"
                 : "  [red]FAIL[/] the unsigned stub was NOT refused");
+            AnsiConsole.MarkupLine(refusedRogue
+                ? "  [green]PASS[/] an unenrolled signer was refused, so db is really consulted"
+                : "  [red]FAIL[/] a stub signed by an unenrolled key was accepted");
+
+            if (refusedUnsigned && !refusedRogue)
+            {
+                AnsiConsole.MarkupLine("");
+                AnsiConsole.MarkupLine("[yellow]Firmware refused an unsigned binary but accepted one signed by a key[/]");
+                AnsiConsole.MarkupLine("[yellow]that is not in db, so it is checking that a signature exists rather than[/]");
+                AnsiConsole.MarkupLine("[yellow]who made it. Check that db holds the expected certificate.[/]");
+            }
 
             if (!refusedUnsigned)
             {
@@ -150,7 +179,7 @@ public class SecureBootTestCommand : Command<SecureBootTestCommand.Settings>
                 AnsiConsole.MarkupLine("  - this QEMU does not support SMM, so the variable store is not authoritative");
             }
 
-            return ranSigned && refusedUnsigned ? 0 : 1;
+            return ranSigned && refusedUnsigned && refusedRogue ? 0 : 1;
         }
         catch (Exception ex)
         {
