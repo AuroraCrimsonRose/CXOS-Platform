@@ -12,7 +12,7 @@ call `ExitBootServices`, or leave long mode.
 | `efi.h` | the minimal UEFI subset the stub uses; service tables in spec order with `void*` placeholders for the entries we never call |
 | `cxboot.c` | the stub |
 | `build.bat` | MSVC build, matching the rest of the CXK Windows workflow |
-| `secureboot.sh` | generate keys, enroll them in an OVMF variable store, sign the stub, boot it |
+| `secureboot.bat` | generate keys, enroll them in an OVMF variable store, sign the stub, boot it |
 
 ## Building
 
@@ -47,46 +47,63 @@ launch the unsigned stub at all, so the code never runs.
 The way through is to become the platform owner - enroll our own PK/KEK/db and
 sign the stub with our db key:
 
-    apt-get install openssl sbsigntool python3-virt-firmware qemu-system-x86 ovmf
-    ./secureboot.sh
+    secureboot.bat
 
-The script runs two cases, and both matter:
+Everything it needs is in `tools\cxk.exe`: key generation, the EFI variable
+store, and Authenticode signing. **No OpenSSL, no Python, no Windows SDK, no
+`signtool`.** The only external requirement is QEMU, whose installer also
+supplies the OVMF firmware under its `share\` directory. Pass
+`--firmware-dir` if yours lives somewhere unusual.
 
-    === signed stub (expect: it runs, Secure Boot ON) ===========
+The same commands work anywhere `cxk` runs, so there is no separate script for
+other platforms:
+
+    cxk secureboot keygen        # PK/KEK/db -> sbkeys\ (.pfx private, .cer/.pem public)
+    cxk secureboot varstore      # enroll them into an OVMF vars image, Secure Boot on
+    cxk secureboot sign in.efi out.efi
+    cxk secureboot verify out.efi
+    cxk secureboot test BOOTX64.EFI
+
+`test` runs two boots, and both matter:
+
+    signed stub - expect it to run and report Secure Boot on
       Secure Boot : ON
       flags       : 0x0000000000000001
 
-    === unsigned stub (expect: Access Denied) ===================
-    BdsDxe: failed to load Boot0001 ...: Access Denied
+    unsigned stub - expect firmware to refuse it
+      BdsDxe: failed to load Boot0001 ...: Access Denied
+
+      PASS the signed stub was loaded
+      PASS the unsigned stub was refused, so enforcement is real
 
 The first shows the detection works. The second is the one that makes it mean
 anything - without it, a run with SMM misconfigured looks identical, because
 OVMF without SMM boots unsigned binaries while still reporting whatever the
-`SecureBoot` variable happens to say.
+`SecureBoot` variable happens to say. That is why `test` passes `smm=on`
+together with `secure=on` on the flash device, and why it fails the run if the
+unsigned stub is *not* refused.
 
-`sbkeys/` is gitignored, along with `*.key`, `*.crt` and `*_VARS.fd`. A
+`sbkeys/` is gitignored, along with `*.pfx`, `*.pem`, `*.cer` and `*_VARS.fd`. A
 committed PK lets anyone sign a bootloader that an enrolled machine trusts
-forever, so these never go in the repo - and the ones the script makes are
-throwaway 2048-bit keys with no passphrase. For real hardware, generate a
-4096-bit key with a passphrase somewhere you trust and keep `PK.key` offline.
+forever, so these never go in the repo - and the ones `keygen` makes are
+throwaway 2048-bit keys. For real hardware, use `--bits 4096` and generate them
+somewhere you trust, keeping `PK.pfx` offline.
 
 ## Running CXK on your own Secure Boot machine
 
 Same mechanism, no firmware disabling required:
 
-1. Generate keys as above (or reuse `sbkeys/`).
-2. Convert to DER, which is what firmware setup menus accept:
-   `openssl x509 -in db.crt -outform DER -out db.cer`
-3. Enroll from the firmware's own key-management screen - usually under
-   Security, after clearing the factory PK to enter Setup Mode. Keep a record
-   of how to restore the factory keys first; some firmware makes this
+1. Generate keys as above (or reuse `sbkeys\`).
+2. Enroll `PK.cer`, `KEK.cer` and `db.cer` from the firmware's own key
+   management screen - usually under Security, after clearing the factory PK to
+   enter Setup Mode. These are already DER, which is the format those menus
+   accept. Note how to restore the factory keys first; some firmware makes that
    awkward and a few make it one-way.
-4. Sign every build:
-   `sbsign --key db.key --cert db.crt --output BOOTX64.EFI BOOTX64.unsigned.efi`
+3. Sign every build: `tools\cxk.exe secureboot sign BOOTX64.EFI`
 
-Clearing the factory PK also drops the Microsoft keys, so anything else on
-that machine that relied on them - most other operating systems' bootloaders -
-stops booting until you add those keys back alongside ours.
+Clearing the factory PK also drops the Microsoft keys, so anything else on that
+machine that relied on them - most other operating systems' bootloaders - stops
+booting until you add those keys back alongside ours.
 
 ## Why this is worth more than a passing test
 
