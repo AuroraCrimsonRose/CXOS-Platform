@@ -158,6 +158,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/drivers/usb/usb.c
     ${SRC_DIR}/kernel/drivers/usb/ehci.c
     ${SRC_DIR}/kernel/drivers/usb/xhci.c
+    ${SRC_DIR}/kernel/drivers/usb/ohci.c
 )
 
 # ---- KERNEL ASM SOURCES (elf32 objects; append new ones here) ----
