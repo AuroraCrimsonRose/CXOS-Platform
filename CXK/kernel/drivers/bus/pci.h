@@ -89,6 +89,26 @@ void pci_enable_bus_master(const struct pci_device *d);
  * Returns the config-space offset of the first capability with this id, or 0. */
 uint8_t pci_find_capability(const struct pci_device *d, uint8_t cap_id);
 
+/* ---- MSI / MSI-X --------------------------------------------------------
+ * A device signals an MSI by WRITING A DWORD TO MEMORY at the address the host
+ * gives it - 0xFEE..... , the local APIC. There is no interrupt line involved,
+ * which is why this needs no I/O APIC routing and no free IRQ pin, and why it
+ * cannot work at all on a machine whose local APIC is not enabled.
+ *
+ * MSI-X is the same idea with the vectors in a table in device memory instead
+ * of in config space, so a device can have many of them independently masked.
+ *
+ * `vector` is an IDT vector, not an IRQ number. Returns 1 on success. */
+int pci_msi_enable(const struct pci_device *d, uint8_t vector);
+int pci_msix_enable(const struct pci_device *d, uint8_t vector);
+
+/* Enable whichever the device supports, preferring MSI-X. Returns 1 if either
+   was configured, 0 if the device has neither or the local APIC is off. */
+int pci_msi_setup(const struct pci_device *d, uint8_t vector);
+
+/* Turn MSI/MSI-X back off, so the device falls back to its pin. */
+void pci_msi_disable(const struct pci_device *d);
+
 #define PCI_CAP_ID_MSI   0x05
 #define PCI_CAP_ID_VNDR  0x09
 #define PCI_CAP_ID_MSIX  0x11

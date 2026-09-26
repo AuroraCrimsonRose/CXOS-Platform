@@ -202,6 +202,24 @@ static void init_tx(void) {
     mmio_wr(E1000_TIPG, 0x0060200A);   /* recommended IPG */
 }
 
+/* The 8254x parts this driver actually implements. The e1000e (82574) and igb
+   families share the class code and nothing else that matters, so matching on
+   vendor alone would claim them and drive a completely different register
+   layout while reporting success. */
+static int is_e1000_device(uint16_t id) {
+    switch (id) {
+        case 0x100E:  /* 82540EM - what QEMU emulates */
+        case 0x100F:  /* 82545EM                      */
+        case 0x1010:  /* 82546EB                      */
+        case 0x1026:  /* 82545GM                      */
+        case 0x1004:  /* 82543GC                      */
+        case 0x1028:  /* 82546GB                      */
+            return 1;
+        default:
+            return 0;
+    }
+}
+
 int e1000_init(void) {
     present = 0;
 
@@ -210,7 +228,7 @@ int e1000_init(void) {
     for (unsigned i = 0; ; i++) {
         const struct pci_device *d = pci_find(0x02, 0x00, -1, i);
         if (!d) break;
-        if (d->vendor_id == 0x8086) { dev = d; break; }
+        if (d->vendor_id == 0x8086 && is_e1000_device(d->device_id)) { dev = d; break; }
     }
     if (!dev) return 0;
 

@@ -5,6 +5,8 @@
 #include "pci.h"
 #include "io.h"
 #include "logging.h"
+#include "apic.h"
+#include "paging.h"
 
 #define PCI_CONFIG_ADDR 0xCF8
 #define PCI_CONFIG_DATA 0xCFC
@@ -133,6 +135,17 @@ const struct pci_device *pci_find(uint8_t class_code, uint8_t subclass,
     return 0;
 }
 
+/* Config space is written a DWORD at a time by the hardware interface, so a
+   16-bit field has to be merged into its containing dword. Writing the dword
+   with the other half zeroed would clear a neighbouring register. */
+static void pci_config_write16_rmw(const struct pci_device *d, uint8_t off, uint16_t v) {
+    uint32_t dw = pci_config_read32(d->bus, d->slot, d->func, (uint8_t)(off & 0xFC));
+    unsigned shift = (off & 2) * 8;
+    dw &= ~(0xFFFFu << shift);
+    dw |= ((uint32_t)v << shift);
+    pci_config_write32(d->bus, d->slot, d->func, (uint8_t)(off & 0xFC), dw);
+}
+
 /* ---- command register ---------------------------------------------------- */
 void pci_enable_bus_master(const struct pci_device *d) {
     if (!d) return;
@@ -226,4 +239,109 @@ uint8_t pci_find_capability(const struct pci_device *d, uint8_t cap_id) {
         off = next & 0xFC;
     }
     return 0;
+}
+
+/* ---- MSI ----------------------------------------------------------------
+ * The capability holds a message control word, an address, and a data value.
+ * The device writes `data` to `address` when it wants attention; the local APIC
+ * turns that write into the vector encoded in the data. Both values are
+ * architectural on x86 rather than device-specific, which is why they come from
+ * the APIC code rather than from here. */
+#define MSI_CTRL_ENABLE      (1u << 0)
+#define MSI_CTRL_64BIT       (1u << 7)
+#define MSI_CTRL_MULTI_MASK  (7u << 4)
+
+int pci_msi_enable(const struct pci_device *d, uint8_t vector) {
+    if (!d || !lapic_active()) return 0;
+    uint8_t cap = pci_find_capability(d, PCI_CAP_ID_MSI);
+    if (!cap) return 0;
+
+    uint16_t ctrl = pci_config_read16(d->bus, d->slot, d->func, (uint8_t)(cap + 2));
+
+    pci_config_write32(d->bus, d->slot, d->func, (uint8_t)(cap + 4),
+                       msi_message_address());
+
+    /* Where the data word sits depends on whether the device is 64-bit capable:
+       a 64-bit device has an upper-address dword in between. Writing data to
+       the 32-bit offset on a 64-bit device puts it in the upper address
+       instead, and the interrupt is then delivered nowhere. */
+    if (ctrl & MSI_CTRL_64BIT) {
+        pci_config_write32(d->bus, d->slot, d->func, (uint8_t)(cap + 8), 0);
+        pci_config_write32(d->bus, d->slot, d->func, (uint8_t)(cap + 12),
+                           msi_message_data(vector));
+    } else {
+        pci_config_write32(d->bus, d->slot, d->func, (uint8_t)(cap + 8),
+                           msi_message_data(vector));
+    }
+
+    /* Request exactly one vector. The multiple-message field is a LOG2 count,
+       so leaving whatever the device advertised would have it use several
+       consecutive vectors we have not set up handlers for. */
+    ctrl &= (uint16_t)~MSI_CTRL_MULTI_MASK;
+    ctrl |= MSI_CTRL_ENABLE;
+    pci_config_write16_rmw(d, (uint8_t)(cap + 2), ctrl);
+    return 1;
+}
+
+/* ---- MSI-X --------------------------------------------------------------
+ * The vectors live in a table in one of the device's BARs, not in config
+ * space. The capability says which BAR and at what offset. */
+#define MSIX_CTRL_ENABLE     (1u << 15)
+#define MSIX_CTRL_FUNC_MASK  (1u << 14)
+#define MSIX_CTRL_SIZE_MASK  0x7FF
+#define MSIX_ENTRY_SIZE      16
+#define MSIX_VEC_CTRL_MASK   1u
+
+int pci_msix_enable(const struct pci_device *d, uint8_t vector) {
+    if (!d || !lapic_active()) return 0;
+    uint8_t cap = pci_find_capability(d, PCI_CAP_ID_MSIX);
+    if (!cap) return 0;
+
+    uint16_t ctrl = pci_config_read16(d->bus, d->slot, d->func, (uint8_t)(cap + 2));
+    uint32_t tbl  = pci_config_read32(d->bus, d->slot, d->func, (uint8_t)(cap + 4));
+
+    /* Low three bits are the BAR index, the rest a byte offset into it. */
+    int bir = (int)(tbl & 0x7);
+    uint32_t offset = tbl & ~0x7u;
+
+    uint32_t base = pci_bar_mmio32(d, bir, "MSI-X");
+    if (!base) return 0;
+
+    uint32_t entry = base + offset;   /* entry 0 - one vector is all we want */
+    paging_map(entry & ~0xFFFu, entry & ~0xFFFu,
+               PAGE_PRESENT | PAGE_WRITE | PAGE_NO_CACHE);
+
+    volatile uint32_t *e = (volatile uint32_t *)entry;
+    e[0] = msi_message_address();     /* address low  */
+    e[1] = 0;                         /* address high */
+    e[2] = msi_message_data(vector);
+    e[3] = 0;                         /* vector control: bit 0 clear = unmasked */
+
+    /* Function mask must be cleared as well as the per-vector mask above - it
+       gates the whole table and a device powers up with it set. */
+    ctrl &= (uint16_t)~MSIX_CTRL_FUNC_MASK;
+    ctrl |= MSIX_CTRL_ENABLE;
+    pci_config_write16_rmw(d, (uint8_t)(cap + 2), ctrl);
+    return 1;
+}
+
+int pci_msi_setup(const struct pci_device *d, uint8_t vector) {
+    if (pci_msix_enable(d, vector)) return 1;
+    return pci_msi_enable(d, vector);
+}
+
+void pci_msi_disable(const struct pci_device *d) {
+    if (!d) return;
+    uint8_t cap = pci_find_capability(d, PCI_CAP_ID_MSI);
+    if (cap) {
+        uint16_t ctrl = pci_config_read16(d->bus, d->slot, d->func, (uint8_t)(cap + 2));
+        pci_config_write16_rmw(d, (uint8_t)(cap + 2),
+                               (uint16_t)(ctrl & ~MSI_CTRL_ENABLE));
+    }
+    cap = pci_find_capability(d, PCI_CAP_ID_MSIX);
+    if (cap) {
+        uint16_t ctrl = pci_config_read16(d->bus, d->slot, d->func, (uint8_t)(cap + 2));
+        pci_config_write16_rmw(d, (uint8_t)(cap + 2),
+                               (uint16_t)(ctrl & ~MSIX_CTRL_ENABLE));
+    }
 }
