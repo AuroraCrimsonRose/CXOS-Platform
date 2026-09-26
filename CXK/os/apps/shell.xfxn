@@ -16,13 +16,14 @@ import "fixed.xfxn";
 import "gfx.xfxn";
 import "cxos.xfxn";
 import "net.xfxn";
+import "file.xfxn";
 type cmd_fn = fn(*u8) -> void;      // a command receives its argument text
 
-const MAX_CMDS: u32 = 16;
+const MAX_CMDS: u32 = 32;
 
-global cmd_names: [16]*u8;
-global cmd_fns:   [16]cmd_fn;
-global cmd_desc:  [16]*u8;
+global cmd_names: [32]*u8;
+global cmd_fns:   [32]cmd_fn;
+global cmd_desc:  [32]*u8;
 global cmd_n:     u32;
 
 fn register(name: *u8, f: cmd_fn, desc: *u8) -> void {
@@ -203,6 +204,161 @@ fn cmd_shutdown(arg: *u8) -> void {
     puts("shutdown unavailable (no ACPI S5) - use reboot\n");
 }
 
+
+// ---- file.xfxn: the filesystem ----
+// These are the first commands that touch the disk. Everything before them
+// worked inside the process; these go out through SYS_FILE_OP to CXFS, which
+// needs CAP_DISK - part of CAP_OS_BASELINE, so the shell has it.
+
+// report a failed call and return 1, or return 0 when rc is fine
+fn file_err(what: *u8, rc: i32) -> i32 {
+    if (rc >= 0) { return 0; }
+    puts(what);
+    puts(": ");
+    puts(file_strerror(rc));
+    newline();
+    return 1;
+}
+
+fn cmd_pwd(arg: *u8) -> void {
+    let buf: [256]u8;
+    if (file_err("pwd", getcwd(&buf[0], sizeof buf)) == 1) { return; }
+    puts(&buf[0]);
+    newline();
+}
+
+fn cmd_cd(arg: *u8) -> void {
+    if (arg[0] == 0) { arg = "/"; }       // bare `cd` goes home, which is root
+    file_err(arg, chdir(arg));
+}
+
+fn cmd_ls(arg: *u8) -> void {
+    if (arg[0] == 0) { arg = "."; }       // default to the working directory
+    let st: file_stat;
+    let i: u32 = 0;
+    let files: u32 = 0;
+    let bytes: u32 = 0;
+
+    while (1 == 1) {
+        let rc: i32 = dir_entry(arg, i, &st);
+        if (rc < 0) { file_err(arg, rc); return; }
+        if (rc == 0) { break; }           // index ran past the end
+
+        if (st.kind == FTYPE_DIR) { puts("  <dir>  "); }
+        else {
+            puts("  ");
+            let n: u32 = print_pad(st.size, 6);
+            puts("  ");
+            bytes = bytes + st.size;
+        }
+        puts(&st.name[0]);
+        newline();
+        files = files + 1;
+        i = i + 1;
+    }
+
+    puts("  ");
+    print_u32(files);
+    puts(" entries, ");
+    print_u32(bytes);
+    puts(" bytes\n");
+}
+
+// print v right-aligned in a field of `w`
+fn print_pad(v: u32, w: u32) -> u32 {
+    let tmp: [16]u8;
+    let n: u32 = u32_to_dec(&tmp[0], sizeof tmp, v);
+    let pad: u32 = 0;
+    while (pad + n < w) { putc(32); pad = pad + 1; }
+    puts(&tmp[0]);
+    return n;
+}
+
+fn cmd_cat(arg: *u8) -> void {
+    if (arg[0] == 0) { puts("usage: cat <path>\n"); return; }
+
+    let h: i32 = file_open_read(arg);
+    if (file_err(arg, h) == 1) { return; }
+
+    // Stream it a chunk at a time rather than sizing a buffer to the file:
+    // the shell has a 4KB stack and the file can be any size.
+    let buf: [256]u8;
+    while (1 == 1) {
+        let n: i32 = file_read(h, &buf[0], sizeof buf);
+        if (n <= 0) { break; }
+        write(&buf[0], n as u32);
+    }
+    file_close(h);
+    newline();
+}
+
+fn cmd_write(arg: *u8) -> void {
+    // "write <path> <text...>"
+    let text: *u8 = split_arg(arg);
+    if (arg[0] == 0) { puts("usage: write <path> <text>\n"); return; }
+
+    let h: i32 = file_create(arg);
+    if (file_err(arg, h) == 1) { return; }
+    let n: i32 = file_puts(h, text);
+    file_close(h);
+    if (file_err(arg, n) == 1) { return; }
+
+    print_u32(n as u32);
+    puts(" bytes -> ");
+    puts(arg);
+    newline();
+}
+
+// append instead of replacing, so the offset layer gets exercised for what it
+// was built for: adding to a file without rewriting it
+fn cmd_append(arg: *u8) -> void {
+    let text: *u8 = split_arg(arg);
+    if (arg[0] == 0) { puts("usage: append <path> <text>\n"); return; }
+
+    let h: i32 = file_append(arg);
+    if (file_err(arg, h) == 1) { return; }
+    let at: i32 = file_tell(h);
+    let n: i32 = file_puts(h, text);
+    file_close(h);
+    if (file_err(arg, n) == 1) { return; }
+
+    print_u32(n as u32);
+    puts(" bytes at offset ");
+    print_u32(at as u32);
+    newline();
+}
+
+fn cmd_mkdir(arg: *u8) -> void {
+    if (arg[0] == 0) { puts("usage: mkdir <path>\n"); return; }
+    file_err(arg, mkdir(arg));
+}
+
+fn cmd_rm(arg: *u8) -> void {
+    if (arg[0] == 0) { puts("usage: rm <path>\n"); return; }
+    file_err(arg, unlink(arg));
+}
+
+fn cmd_mv(arg: *u8) -> void {
+    let newname: *u8 = split_arg(arg);
+    if (arg[0] == 0 || newname[0] == 0) { puts("usage: mv <path> <newname>\n"); return; }
+    file_err(arg, rename(arg, newname));
+}
+
+fn cmd_stat(arg: *u8) -> void {
+    if (arg[0] == 0) { puts("usage: stat <path>\n"); return; }
+    let st: file_stat;
+    if (file_err(arg, stat(arg, &st)) == 1) { return; }
+
+    puts("name  "); puts(&st.name[0]); newline();
+    puts("kind  ");
+    if (st.kind == FTYPE_DIR) { puts("directory"); } else { puts("file"); }
+    newline();
+    puts("size  "); print_u32(st.size); puts(" bytes\n");
+    puts("owner "); print_u32(st.owner_uid); newline();
+    puts("perms "); print_hex(st.permissions); newline();
+    puts("id    "); print_u32(st.id); newline();
+}
+
 // ---- line handling ----
 
 // split at the first space: terminates the command word in place and returns
@@ -230,6 +386,16 @@ fn _start() -> void {
     register("math",   cmd_math,   "fixed-point demo");
     register("gui",    cmd_gui,    "enter the CXOS graphical shell");
     register("ver",    cmd_ver,    "version");
+    register("ls",     cmd_ls,     "list a directory");
+    register("cat",    cmd_cat,    "print a file");
+    register("write",  cmd_write,  "write text to a file (replaces)");
+    register("append", cmd_append, "add text to the end of a file");
+    register("stat",   cmd_stat,   "show an entry's metadata");
+    register("mkdir",  cmd_mkdir,  "create a directory");
+    register("rm",     cmd_rm,     "delete a file or empty directory");
+    register("mv",     cmd_mv,     "rename an entry");
+    register("cd",     cmd_cd,     "change the working directory");
+    register("pwd",    cmd_pwd,    "print the working directory");
     register("ifconfig", cmd_ifconfig, "network interface status");
     register("setip",  cmd_setip,  "set the local IP address");
     register("ping",   cmd_ping,   "ICMP echo a host");
