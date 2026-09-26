@@ -80,6 +80,29 @@ static int mounted = 0;
 
 static void bitmap_load(void);             /* fwd decl (defined in allocator section) */
 
+/* ---- block staging buffers ------------------------------------------------
+ * Every CXFS block operation needs a CXFS_BLOCK_SIZE (4KB) staging buffer.
+ * These used to be locals, which made the frames enormous: cxfs_write_file's
+ * frame measured 4432 bytes and it calls cxfs_write_entry (4160) - 8592 bytes
+ * of stack against the 8192-byte THREAD_STACK that thread_alloc_kstack hands a
+ * ring-3 process for its syscall (esp0) stack. The file paths only ever ran on
+ * kmain's larger .bss stack, so the overrun stayed invisible until file
+ * syscalls put them on a thread stack. Statics keep them out of frames.
+ *
+ * One buffer per ROLE, so a function that stages a block and then calls
+ * another that does the same cannot clobber it. The nesting that actually
+ * happens: file data -> entry -> bitmap, and dir iteration -> entry.
+ *
+ * Safe because CXFS is entered serially: preemption is enabled only around
+ * ktest's contained cases (see sched.h), never system-wide, so two threads are
+ * never inside CXFS at once. If preemption ever goes system-wide these need a
+ * lock, and this comment is the place that says so.
+ */
+static uint8_t bmp_blk[CXFS_BLOCK_SIZE];   /* allocation bitmap */
+static uint8_t ent_blk[CXFS_BLOCK_SIZE];   /* manifest entry read/modify/write */
+static uint8_t dir_blk[CXFS_BLOCK_SIZE];   /* directory iteration (callbacks may stat) */
+static uint8_t dat_blk[CXFS_BLOCK_SIZE];   /* file contents */
+
 /* read/write one CXFS block via the registry. A CXFS block is
    (block_size/512) sectors, placed at base_lba + block*sectors_per_block, so a
    volume works identically whole-disk or inside a partition. These are set at
@@ -142,15 +165,15 @@ int cxfs_format_at(uint64_t base_lba, uint32_t total_blocks) {
     if (write_block(0, &sb) != 0) return -1;
 
     /* --- zero the bitmap, then mark metadata blocks used --- */
-    uint8_t block[CXFS_BLOCK_SIZE];
-    memset(block, 0, sizeof(block));
+    uint8_t *block = dat_blk;              /* staging; see block staging buffers */
+    memset(block, 0, CXFS_BLOCK_SIZE);
     for (uint32_t i = 0; i < bitmap_blocks; i++)
         if (write_block(bitmap_start + i, block) != 0) return -1;
 
     /* mark blocks 0 .. data_start-1 as used (superblock+bitmap+manifest).
        we set bits in the first bitmap block(s). */
     uint32_t used_through = data_start;    /* all metadata blocks */
-    memset(block, 0, sizeof(block));
+    memset(block, 0, CXFS_BLOCK_SIZE);
     for (uint32_t b = 0; b < used_through; b++) {
         uint32_t byte = b / 8;
         uint32_t bit  = b % 8;
@@ -161,7 +184,7 @@ int cxfs_format_at(uint64_t base_lba, uint32_t total_blocks) {
     if (write_block(bitmap_start, block) != 0) return -1;
 
     /* --- zero the manifest table --- */
-    memset(block, 0, sizeof(block));
+    memset(block, 0, CXFS_BLOCK_SIZE);
     for (uint32_t i = 0; i < manifest_blocks; i++)
         if (write_block(manifest_start + i, block) != 0) return -1;
 
@@ -174,7 +197,7 @@ int cxfs_format_at(uint64_t base_lba, uint32_t total_blocks) {
     strlcpy(root.name, "/", CXFS_NAME_LEN);
     root.name_len  = 1;
     /* write entry 0 into the first manifest block */
-    memset(block, 0, sizeof(block));
+    memset(block, 0, CXFS_BLOCK_SIZE);
     memcpy(block, &root, sizeof(root));
     if (write_block(manifest_start, block) != 0) return -1;
 
@@ -198,12 +221,23 @@ int cxfs_mount_at(uint64_t base_lba) {
     fs_base_lba = base_lba;
     uint8_t first[512];
     if (disk_read(cxfs_id, fs_base_lba, 1, first) != 0) return -1;
-    struct cxfs_superblock *probe = (struct cxfs_superblock *)first;
-    if (probe->magic != CXFS_MAGIC)   { mounted = 0; return -1; }
-    if (probe->version != CXFS_VERSION){ mounted = 0; return -1; }  /* v2 only */
+
+    /* Pull the three fields out by offset rather than casting `first` to a
+       struct cxfs_superblock *: the struct is a whole 4KB block and this buffer
+       is one 512-byte sector, so the cast points past the end of the object.
+       Only the leading fields are ever touched, but the compiler is right that
+       the cast is a lie, and it would become a real one the day a field moves. */
+    uint32_t probe_magic;
+    uint16_t probe_version, probe_block_size;
+    memcpy(&probe_magic,      first + 0, sizeof probe_magic);
+    memcpy(&probe_version,    first + 4, sizeof probe_version);
+    memcpy(&probe_block_size, first + 6, sizeof probe_block_size);
+    if (probe_magic   != CXFS_MAGIC)   { mounted = 0; return -1; }
+    if (probe_version != CXFS_VERSION) { mounted = 0; return -1; }  /* v2 only */
+    if (probe_block_size < 512)        { mounted = 0; return -1; }
 
     /* adopt this volume's geometry, then read the full superblock as a block. */
-    fs_sectors_per_block = probe->block_size / 512;
+    fs_sectors_per_block = probe_block_size / 512;
     /* keep fs_base_lba = base_lba (where we actually found the volume) */
     if (read_block(0, &sb) != 0) { mounted = 0; return -1; }
     if (sb.magic != CXFS_MAGIC)  { mounted = 0; return -1; }
@@ -242,7 +276,7 @@ static void bitmap_load(void) {
     if (bitmap_bytes_used > CXFS_MAX_BITMAP_BYTES)
         bitmap_bytes_used = CXFS_MAX_BITMAP_BYTES;
     for (uint32_t i = 0; i < sb.bitmap_blocks; i++) {
-        uint8_t buf[CXFS_BLOCK_SIZE];
+        uint8_t *buf = bmp_blk;
         if (read_block(sb.bitmap_start + i, buf) != 0) break;
         uint32_t off = i * CXFS_BLOCK_SIZE;
         for (uint32_t j = 0; j < CXFS_BLOCK_SIZE && off + j < bitmap_bytes_used; j++)
@@ -255,7 +289,7 @@ static void bitmap_load(void) {
 static void bitmap_flush_for(uint32_t block) {
     uint32_t byte = block / 8;
     uint32_t which = byte / CXFS_BLOCK_SIZE;   /* which bitmap block */
-    uint8_t buf[CXFS_BLOCK_SIZE];
+    uint8_t *buf = bmp_blk;
     uint32_t off = which * CXFS_BLOCK_SIZE;
     for (uint32_t j = 0; j < CXFS_BLOCK_SIZE; j++)
         buf[j] = (off + j < bitmap_bytes_used) ? bitmap_cache[off + j] : 0;
@@ -294,6 +328,57 @@ void cxfs_free_block(uint32_t block) {
     bitmap_set(block, 0);
 }
 
+/* --- batched allocation ----------------------------------------------------
+ * bitmap_set flushes the bitmap block it touched on every single call, so
+ * allocating N blocks through cxfs_alloc_block costs N 4KB disk writes just to
+ * record the allocation. Growing a file by a megabyte would be 256 of them.
+ * These mark bits in RAM and flush each affected bitmap block once.
+ */
+static void bitmap_mark(uint32_t block, int used) {
+    uint32_t byte = block / 8, bit = block % 8;
+    if (byte >= bitmap_bytes_used) return;
+    if (used) bitmap_cache[byte] |=  (1u << bit);
+    else      bitmap_cache[byte] &= ~(1u << bit);
+}
+
+/* flush every bitmap block holding a bit for blocks [first, last]. */
+static void bitmap_flush_span(uint32_t first, uint32_t last) {
+    uint32_t w0 = (first / 8) / CXFS_BLOCK_SIZE;
+    uint32_t w1 = (last  / 8) / CXFS_BLOCK_SIZE;
+    /* w * CXFS_BLOCK_SIZE * 8 is the first block whose bit lives in bitmap
+       block w, which is all bitmap_flush_for needs to find that block. */
+    for (uint32_t w = w0; w <= w1; w++)
+        bitmap_flush_for(w * CXFS_BLOCK_SIZE * 8);
+}
+
+uint32_t cxfs_alloc_run(uint32_t n) {
+    if (!mounted || n == 0) return 0;
+    uint32_t first = sb.data_start + sb.reserved_blocks;
+
+    /* first-fit over the RAM bitmap: walk looking for n free in a row. On a
+       used block, restart the candidate run after it. */
+    uint32_t start = first, have = 0;
+    for (uint32_t b = first; b < sb.total_blocks; b++) {
+        if (bitmap_test(b)) { start = b + 1; have = 0; continue; }
+        if (have == 0) start = b;
+        if (++have == n) {
+            for (uint32_t i = 0; i < n; i++) bitmap_mark(start + i, 1);
+            bitmap_flush_span(start, start + n - 1);
+            return start;
+        }
+    }
+    return 0;   /* no run that long is free */
+}
+
+/* release `n` consecutive blocks starting at `first`, one flush per bitmap
+   block rather than per released block. */
+static void cxfs_free_run(uint32_t first, uint32_t n) {
+    if (!mounted || n == 0) return;
+    if (first < sb.data_start) return;
+    for (uint32_t i = 0; i < n; i++) bitmap_mark(first + i, 0);
+    bitmap_flush_span(first, first + n - 1);
+}
+
 uint32_t cxfs_free_blocks(void) {
     if (!mounted) return 0;
     uint32_t count = 0;
@@ -313,7 +398,7 @@ int cxfs_read_entry(uint32_t id, struct cxfs_entry *out) {
     uint32_t blk = sb.manifest_start + (id / ENTRIES_PER_BLOCK);
     uint32_t idx = id % ENTRIES_PER_BLOCK;
 
-    uint8_t buf[CXFS_BLOCK_SIZE];
+    uint8_t *buf = ent_blk;
     if (read_block(blk, buf) != 0) return -1;
     memcpy(out, buf + idx * sizeof(struct cxfs_entry), sizeof(struct cxfs_entry));
     return 0;
@@ -324,7 +409,7 @@ int cxfs_write_entry(const struct cxfs_entry *entry) {
     uint32_t blk = sb.manifest_start + (entry->id / ENTRIES_PER_BLOCK);
     uint32_t idx = entry->id % ENTRIES_PER_BLOCK;
 
-    uint8_t buf[CXFS_BLOCK_SIZE];
+    uint8_t *buf = ent_blk;
     if (read_block(blk, buf) != 0) return -1;     /* read-modify-write the block */
     memcpy(buf + idx * sizeof(struct cxfs_entry), entry, sizeof(struct cxfs_entry));
     return write_block(blk, buf);
@@ -333,7 +418,7 @@ int cxfs_write_entry(const struct cxfs_entry *entry) {
 int cxfs_alloc_entry(void) {
     if (!mounted) return -1;
     /* scan the manifest a whole block (4 entries) at a time to cut disk reads */
-    uint8_t buf[CXFS_BLOCK_SIZE];
+    uint8_t *buf = ent_blk;
     for (uint32_t blk = 0; blk < sb.manifest_blocks; blk++) {
         if (read_block(sb.manifest_start + blk, buf) != 0) return -1;
         for (uint32_t i = 0; i < ENTRIES_PER_BLOCK; i++) {
@@ -361,7 +446,7 @@ static int name_equals(const char *a, const char *b) {
 
 int cxfs_find_in_dir(uint32_t parent_id, const char *name) {
     if (!mounted) return -1;
-    uint8_t buf[CXFS_BLOCK_SIZE];
+    uint8_t *buf = ent_blk;
     for (uint32_t blk = 0; blk < sb.manifest_blocks; blk++) {
         if (read_block(sb.manifest_start + blk, buf) != 0) continue;
         for (uint32_t i = 0; i < ENTRIES_PER_BLOCK; i++) {
@@ -467,7 +552,7 @@ int cxfs_resolve(const char *path, uint32_t cwd) {
 
 void cxfs_list_dir(uint32_t parent_id, void (*cb)(const struct cxfs_entry *)) {
     if (!mounted || !cb) return;
-    uint8_t buf[CXFS_BLOCK_SIZE];
+    uint8_t *buf = dir_blk;   /* not ent_blk: cb() may read entries of its own */
     for (uint32_t blk = 0; blk < sb.manifest_blocks; blk++) {
         if (read_block(sb.manifest_start + blk, buf) != 0) continue;
         for (uint32_t i = 0; i < ENTRIES_PER_BLOCK; i++) {
@@ -512,81 +597,42 @@ void cxfs_path_of(uint32_t id, char *out, int cap) {
  * File content - extent-based storage
  * ==================================================================== */
 
-/* free every data block referenced by an entry's extents, clear them. */
-void cxfs_free_file_data(struct cxfs_entry *e) {
+/* free every block an entry's extents reference and clear the extents. Leaves
+   e->size alone - the callers that want it zeroed do that themselves. */
+static void free_extents(struct cxfs_entry *e) {
     for (int i = 0; i < CXFS_MAX_EXTENTS; i++) {
-        for (uint32_t b = 0; b < e->extent_len[i]; b++)
-            cxfs_free_block(e->extent_start[i] + b);
+        /* a run at a time: cxfs_free_block would flush the bitmap block once
+           per released block, which for a large file is hundreds of 4KB writes */
+        if (e->extent_len[i]) cxfs_free_run(e->extent_start[i], e->extent_len[i]);
         e->extent_start[i] = 0;
         e->extent_len[i]   = 0;
     }
+}
+
+/* free every data block referenced by an entry's extents, clear them. */
+void cxfs_free_file_data(struct cxfs_entry *e) {
+    free_extents(e);
     e->size = 0;
 }
 
+/* Whole-file write: cut the file to nothing, then lay `len` bytes down at 0.
+ *
+ * Expressed on top of the offset layer so there is exactly ONE place that grows
+ * extents and one allocator path to get wrong. It also means a whole-file write
+ * now compacts a file that has run out of extents instead of failing it, which
+ * is what the old open-coded loop did ("too fragmented / too big for v1").
+ *
+ * Keeps its original contract: 0 on success, negative on failure - callers
+ * (install.c, syslog.c, ktest.c) test `!= 0`, not a byte count.
+ */
 int cxfs_write_file(uint32_t id, const void *data, uint32_t len) {
-    if (!mounted) return -1;
+    int rc = cxfs_truncate(id, 0);
+    if (rc != CXFS_E_OK) return rc;
+    if (len == 0) return 0;
 
-    struct cxfs_entry e;
-    if (cxfs_read_entry(id, &e) != 0) return -1;
-    if (e.type != CXFS_TYPE_FILE) return -1;
-
-    if (!cxfs_check_perm(&e, CXFS_ACC_WRITE)) return -1;   /* v2: permission */
-    if (cxfs_lock_blocks(&e)) return -1;                   /* v2: in use by another */
-
-    /* release any previous content first */
-    cxfs_free_file_data(&e);
-
-    uint32_t blocks_needed = (len + CXFS_BLOCK_SIZE - 1) / CXFS_BLOCK_SIZE;
-    if (len == 0) {                 /* empty file: no blocks, size 0 */
-        e.size = 0;
-        return cxfs_write_entry(&e);
-    }
-
-    /* allocate blocks and record them as extents. We coalesce consecutive
-       block numbers into a single extent (start,len) to use few extents. */
-    const uint8_t *src = (const uint8_t *)data;
-    uint32_t written = 0;
-    int ext = -1;                   /* current extent index */
-    uint32_t prev_block = 0;
-
-    for (uint32_t i = 0; i < blocks_needed; i++) {
-        uint32_t blk = cxfs_alloc_block();
-        if (blk == 0) {             /* out of space: roll back */
-            cxfs_free_file_data(&e);
-            return -1;
-        }
-
-        /* extend the current extent if contiguous, else open a new one */
-        if (ext >= 0 && blk == prev_block + 1) {
-            e.extent_len[ext]++;
-        } else {
-            ext++;
-            if (ext >= CXFS_MAX_EXTENTS) {  /* too fragmented / too big for v1 */
-                cxfs_free_block(blk);
-                cxfs_free_file_data(&e);
-                return -1;
-            }
-            e.extent_start[ext] = blk;
-            e.extent_len[ext]   = 1;
-        }
-        prev_block = blk;
-
-        /* write this block (zero-pad the last partial block) */
-        uint8_t buf[CXFS_BLOCK_SIZE];
-        uint32_t chunk = len - written;
-        if (chunk > CXFS_BLOCK_SIZE) chunk = CXFS_BLOCK_SIZE;
-        for (uint32_t j = 0; j < CXFS_BLOCK_SIZE; j++)
-            buf[j] = (j < chunk) ? src[written + j] : 0;
-        if (write_block(blk, buf) != 0) {
-            cxfs_free_file_data(&e);
-            return -1;
-        }
-        written += chunk;
-    }
-
-    e.size = len;
-    e.modified = e.accessed = cxfs_now();   /* v2: content changed */
-    return cxfs_write_entry(&e);
+    rc = cxfs_write_at(id, 0, data, len);
+    if (rc < 0) return rc;
+    return ((uint32_t)rc == len) ? 0 : CXFS_E_FAIL;   /* a short write is a failure here */
 }
 
 int cxfs_read_file(uint32_t id, void *buf, uint32_t cap) {
@@ -606,7 +652,7 @@ int cxfs_read_file(uint32_t id, void *buf, uint32_t cap) {
 
     for (int i = 0; i < CXFS_MAX_EXTENTS && got < want; i++) {
         for (uint32_t b = 0; b < e.extent_len[i] && got < want; b++) {
-            uint8_t block[CXFS_BLOCK_SIZE];
+            uint8_t *block = dat_blk;
             if (read_block(e.extent_start[i] + b, block) != 0) return -1;
             uint32_t chunk = want - got;
             if (chunk > CXFS_BLOCK_SIZE) chunk = CXFS_BLOCK_SIZE;
@@ -633,6 +679,316 @@ int cxfs_read_path(const char *path, void *buf, uint32_t cap) {
     int id = cxfs_resolve(path, 0);
     if (id < 0) return -1;
     return cxfs_read_file((uint32_t)id, buf, cap);
+}
+
+
+/* ====================================================================
+ * Offset-based file I/O (v3) - see the header for why this exists.
+ * ==================================================================== */
+
+/* how many blocks an entry's extents currently cover */
+static uint32_t extent_blocks(const struct cxfs_entry *e) {
+    uint32_t n = 0;
+    for (int i = 0; i < CXFS_MAX_EXTENTS; i++) n += e->extent_len[i];
+    return n;
+}
+
+/* index of the last extent in use, or -1 when the file owns nothing yet */
+static int last_extent(const struct cxfs_entry *e) {
+    int li = -1;
+    for (int i = 0; i < CXFS_MAX_EXTENTS; i++) if (e->extent_len[i]) li = i;
+    return li;
+}
+
+/* absolute block holding block index `bi` of the file, or 0 if `bi` is past
+   what the extents cover. (0 is never a data block - it's the superblock - so
+   it doubles as the failure value.) */
+static uint32_t block_at(const struct cxfs_entry *e, uint32_t bi) {
+    uint32_t seen = 0;
+    for (int i = 0; i < CXFS_MAX_EXTENTS; i++) {
+        if (bi < seen + e->extent_len[i]) return e->extent_start[i] + (bi - seen);
+        seen += e->extent_len[i];
+    }
+    return 0;
+}
+
+/* write `n` zeroed blocks starting at `first`.
+ *
+ * Freshly allocated blocks hold whatever the previous owner left there, so
+ * every block handed to a file gets zeroed before the file can read it. Two
+ * reasons, and the second is the important one: a hole (a write past EOF) must
+ * read back as zeros, and without this a process could allocate a block and
+ * read another user's deleted file out of it. That is a capability leak, so
+ * this is not an optimization to skip.
+ *
+ * It does cost a write per block that a full-block overwrite then repeats. The
+ * seam to close that is to have the caller tell reserve_blocks which of the new
+ * blocks it is about to overwrite whole; not worth the bookkeeping yet.
+ */
+static int zero_blocks(uint32_t first, uint32_t n) {
+    memset(dat_blk, 0, CXFS_BLOCK_SIZE);
+    for (uint32_t i = 0; i < n; i++)
+        if (write_block(first + i, dat_blk) != 0) return CXFS_E_FAIL;
+    return CXFS_E_OK;
+}
+
+/* Collapse a file into ONE extent of `total` blocks.
+ *
+ * This is the escape hatch for extent exhaustion. CXFS_MAX_EXTENTS is 8, and
+ * the old write path simply failed the whole write when a file needed a ninth
+ * ("too fragmented / too big for v1"). Instead: find one contiguous run big
+ * enough for the whole file, copy the data across, release the old blocks, and
+ * the file is back to a single extent with room to grow again.
+ *
+ * Copy first, free second: a failure part-way leaves the original blocks still
+ * owned by the file, so the file is intact and only the new run leaks (and that
+ * is released on the error path).
+ */
+static int compact_into_run(struct cxfs_entry *e, uint32_t total) {
+    uint32_t have = extent_blocks(e);
+    if (total < have) return CXFS_E_INVAL;
+
+    uint32_t run = cxfs_alloc_run(total);
+    if (!run) return CXFS_E_FRAGMENT;
+
+    uint32_t dst = 0;
+    for (int i = 0; i < CXFS_MAX_EXTENTS; i++) {
+        for (uint32_t b = 0; b < e->extent_len[i]; b++) {
+            if (read_block(e->extent_start[i] + b, dat_blk) != 0 ||
+                write_block(run + dst, dat_blk) != 0) {
+                cxfs_free_run(run, total);
+                return CXFS_E_FAIL;
+            }
+            dst++;
+        }
+    }
+    if (zero_blocks(run + have, total - have) != CXFS_E_OK) {
+        cxfs_free_run(run, total);
+        return CXFS_E_FAIL;
+    }
+
+    free_extents(e);                  /* the old blocks are now redundant */
+    e->extent_start[0] = run;
+    e->extent_len[0]   = total;
+    return CXFS_E_OK;
+}
+
+/* Make sure the entry's extents cover at least `need` blocks. New blocks are
+   zeroed. Does not touch e->size and does not write the entry back. */
+static int reserve_blocks(struct cxfs_entry *e, uint32_t need) {
+    uint32_t have = extent_blocks(e);
+    if (have >= need) return CXFS_E_OK;
+    uint32_t want = need - have;
+
+    /* Preferred: one contiguous run for the whole shortfall. An append-heavy
+       file stays at one or two extents this way, which is what keeps it from
+       ever reaching the compaction path above. */
+    uint32_t run = cxfs_alloc_run(want);
+    if (run) {
+        int li = last_extent(e);
+        if (li >= 0 && e->extent_start[li] + e->extent_len[li] == run) {
+            /* the run happens to abut the last extent: just extend it */
+            if (zero_blocks(run, want) != CXFS_E_OK) { cxfs_free_run(run, want); return CXFS_E_FAIL; }
+            e->extent_len[li] += want;
+            return CXFS_E_OK;
+        }
+        if (li + 1 < CXFS_MAX_EXTENTS) {
+            if (zero_blocks(run, want) != CXFS_E_OK) { cxfs_free_run(run, want); return CXFS_E_FAIL; }
+            e->extent_start[li + 1] = run;
+            e->extent_len[li + 1]   = want;
+            return CXFS_E_OK;
+        }
+        /* no extent slot left to describe it - hand it back and compact */
+        cxfs_free_run(run, want);
+        return compact_into_run(e, need);
+    }
+
+    /* No run that long is free. Take what is there block by block, coalescing
+       neighbours, and fall back to compaction if the extents run out. */
+    while (have < need) {
+        uint32_t blk = cxfs_alloc_block();
+        if (!blk) return CXFS_E_NOSPACE;
+        if (zero_blocks(blk, 1) != CXFS_E_OK) { cxfs_free_block(blk); return CXFS_E_FAIL; }
+
+        int li = last_extent(e);
+        if (li >= 0 && e->extent_start[li] + e->extent_len[li] == blk) {
+            e->extent_len[li]++;
+        } else if (li + 1 < CXFS_MAX_EXTENTS) {
+            e->extent_start[li + 1] = blk;
+            e->extent_len[li + 1]   = 1;
+        } else {
+            /* extents exhausted mid-grow: give this block back so the run
+               compaction is looking for is not fragmented by it. */
+            cxfs_free_block(blk);
+            return compact_into_run(e, need);
+        }
+        have++;
+    }
+    return CXFS_E_OK;
+}
+
+/* Release whole blocks past block index `keep`, trimming the extents. */
+static void trim_to_blocks(struct cxfs_entry *e, uint32_t keep) {
+    uint32_t seen = 0;
+    for (int i = 0; i < CXFS_MAX_EXTENTS; i++) {
+        uint32_t len = e->extent_len[i];
+        if (!len) continue;
+        if (seen >= keep) {                       /* entirely past the cut */
+            cxfs_free_run(e->extent_start[i], len);
+            e->extent_start[i] = 0;
+            e->extent_len[i]   = 0;
+        } else if (seen + len > keep) {           /* straddles the cut */
+            uint32_t k = keep - seen;
+            cxfs_free_run(e->extent_start[i] + k, len - k);
+            e->extent_len[i] = k;
+        }
+        seen += len;
+    }
+}
+
+/* shared preamble: fetch the entry, confirm it is a writable file nobody else
+   has locked. Returns 0, or a CXFS_E_* code. */
+static int open_for_write(uint32_t id, struct cxfs_entry *e) {
+    if (!mounted) return CXFS_E_FAIL;
+    if (cxfs_read_entry(id, e) != 0)        return CXFS_E_NOTFOUND;
+    if (e->type == CXFS_TYPE_DIR)           return CXFS_E_ISDIR;
+    if (e->type != CXFS_TYPE_FILE)          return CXFS_E_INVAL;
+    if (!cxfs_check_perm(e, CXFS_ACC_WRITE)) return CXFS_E_PERM;
+    if (cxfs_lock_blocks(e))                return CXFS_E_LOCKED;
+    return CXFS_E_OK;
+}
+
+int cxfs_read_at(uint32_t id, uint64_t off, void *buf, uint32_t len) {
+    if (!mounted) return CXFS_E_FAIL;
+    if (!buf)     return CXFS_E_INVAL;
+
+    struct cxfs_entry e;
+    if (cxfs_read_entry(id, &e) != 0)      return CXFS_E_NOTFOUND;
+    if (e.type == CXFS_TYPE_DIR)           return CXFS_E_ISDIR;
+    if (e.type != CXFS_TYPE_FILE)          return CXFS_E_INVAL;
+    if (!cxfs_check_perm(&e, CXFS_ACC_READ)) return CXFS_E_PERM;
+
+    if (off >= e.size) return 0;                      /* at or past EOF */
+    uint64_t avail = e.size - off;
+    if (len > avail) len = (uint32_t)avail;           /* short read at EOF */
+
+    uint8_t *dst = (uint8_t *)buf;
+    uint32_t done = 0;
+    while (done < len) {
+        uint32_t bi    = (uint32_t)((off + done) / CXFS_BLOCK_SIZE);
+        uint32_t boff  = (uint32_t)((off + done) % CXFS_BLOCK_SIZE);
+        uint32_t chunk = CXFS_BLOCK_SIZE - boff;
+        if (chunk > len - done) chunk = len - done;
+
+        uint32_t abs = block_at(&e, bi);
+        if (!abs) return CXFS_E_FAIL;    /* size claims data the extents lack */
+
+        if (chunk == CXFS_BLOCK_SIZE) {
+            /* whole block: land it straight in the caller's buffer, no staging */
+            if (read_block(abs, dst + done) != 0) return CXFS_E_FAIL;
+        } else {
+            if (read_block(abs, dat_blk) != 0) return CXFS_E_FAIL;
+            memcpy(dst + done, dat_blk + boff, chunk);
+        }
+        done += chunk;
+    }
+    return (int)done;
+}
+
+int cxfs_write_at(uint32_t id, uint64_t off, const void *data, uint32_t len) {
+    if (!mounted) return CXFS_E_FAIL;
+    if (!data)    return CXFS_E_INVAL;
+    if (len == 0) return 0;
+
+    struct cxfs_entry e;
+    int rc = open_for_write(id, &e);
+    if (rc != CXFS_E_OK) return rc;
+
+    uint64_t end = off + len;
+    if (end < off) return CXFS_E_INVAL;                       /* 64-bit wrap */
+    uint64_t need64 = (end + CXFS_BLOCK_SIZE - 1) / CXFS_BLOCK_SIZE;
+    if (need64 > 0xFFFFFFFFull) return CXFS_E_INVAL;
+
+    /* Allocate everything up front, before any data is staged: reserve_blocks
+       uses dat_blk for zeroing, so it must be done with it before the copy
+       loop below starts using it. */
+    rc = reserve_blocks(&e, (uint32_t)need64);
+    if (rc != CXFS_E_OK) return rc;
+
+    const uint8_t *src = (const uint8_t *)data;
+    uint32_t done = 0;
+    while (done < len) {
+        uint32_t bi    = (uint32_t)((off + done) / CXFS_BLOCK_SIZE);
+        uint32_t boff  = (uint32_t)((off + done) % CXFS_BLOCK_SIZE);
+        uint32_t chunk = CXFS_BLOCK_SIZE - boff;
+        if (chunk > len - done) chunk = len - done;
+
+        uint32_t abs = block_at(&e, bi);
+        if (!abs) return CXFS_E_FAIL;
+
+        if (chunk == CXFS_BLOCK_SIZE) {
+            /* whole block: straight from the caller's buffer */
+            if (write_block(abs, src + done) != 0) return CXFS_E_FAIL;
+        } else {
+            /* partial block: read-modify-write, so the bytes either side of
+               the written span survive */
+            if (read_block(abs, dat_blk) != 0) return CXFS_E_FAIL;
+            memcpy(dat_blk + boff, src + done, chunk);
+            if (write_block(abs, dat_blk) != 0) return CXFS_E_FAIL;
+        }
+        done += chunk;
+    }
+
+    if (end > e.size) e.size = end;
+    e.modified = e.accessed = cxfs_now();
+    if (cxfs_write_entry(&e) != 0) return CXFS_E_FAIL;
+    return (int)done;
+}
+
+int cxfs_truncate(uint32_t id, uint64_t new_size) {
+    struct cxfs_entry e;
+    int rc = open_for_write(id, &e);
+    if (rc != CXFS_E_OK) return rc;
+    if (new_size == e.size) return CXFS_E_OK;
+
+    uint64_t need64 = (new_size + CXFS_BLOCK_SIZE - 1) / CXFS_BLOCK_SIZE;
+    if (need64 > 0xFFFFFFFFull) return CXFS_E_INVAL;
+    uint32_t keep = (uint32_t)need64;
+
+    if (new_size < e.size) {
+        /* Clear from the new end to the end of its block BEFORE releasing
+           anything, so growing the file again later reads zeros there rather
+           than the bytes that used to follow. */
+        uint32_t tail = (uint32_t)(new_size % CXFS_BLOCK_SIZE);
+        if (tail) {
+            uint32_t abs = block_at(&e, keep - 1);
+            if (abs) {
+                if (read_block(abs, dat_blk) != 0) return CXFS_E_FAIL;
+                memset(dat_blk + tail, 0, CXFS_BLOCK_SIZE - tail);
+                if (write_block(abs, dat_blk) != 0) return CXFS_E_FAIL;
+            }
+        }
+        trim_to_blocks(&e, keep);
+    } else {
+        /* Growing. The bytes between the old size and the end of its block are
+           stale and now inside the file, so zero them; reserve_blocks zeroes
+           whole new blocks for us. */
+        uint32_t tail = (uint32_t)(e.size % CXFS_BLOCK_SIZE);
+        if (tail) {
+            uint32_t abs = block_at(&e, (uint32_t)(e.size / CXFS_BLOCK_SIZE));
+            if (abs) {
+                if (read_block(abs, dat_blk) != 0) return CXFS_E_FAIL;
+                memset(dat_blk + tail, 0, CXFS_BLOCK_SIZE - tail);
+                if (write_block(abs, dat_blk) != 0) return CXFS_E_FAIL;
+            }
+        }
+        rc = reserve_blocks(&e, keep);
+        if (rc != CXFS_E_OK) return rc;
+    }
+
+    e.size     = new_size;
+    e.modified = e.accessed = cxfs_now();
+    return (cxfs_write_entry(&e) == 0) ? CXFS_E_OK : CXFS_E_FAIL;
 }
 
 /* ====================================================================
@@ -688,7 +1044,7 @@ int cxfs_move(uint32_t id, uint32_t new_parent) {
 int cxfs_count_children(uint32_t dir_id) {
     if (!mounted) return 0;
     int count = 0;
-    uint8_t buf[CXFS_BLOCK_SIZE];
+    uint8_t *buf = dir_blk;
     for (uint32_t blk = 0; blk < sb.manifest_blocks; blk++) {
         if (read_block(sb.manifest_start + blk, buf) != 0) continue;
         for (uint32_t i = 0; i < ENTRIES_PER_BLOCK; i++) {
