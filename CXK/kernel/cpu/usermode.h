@@ -21,6 +21,10 @@
 void usermode_init(void);
 int  user_ptr_ok(uint32_t ptr, uint32_t len);   /* validate a ring-3 buffer (present+user) */
 
+/* SYS_FILE_OP exercised over a real PAGE_USER mapping (see usermode.c).
+   1 = pass, 0 = fail. Lives here because it needs map_user_page. */
+int  usermode_file_test(void);
+
 /* register the ring-3 fault handler so user faults kill the process, not the
    kernel. call once at boot after the scheduler is up. */
 void usermode_register_fault_handler(void);

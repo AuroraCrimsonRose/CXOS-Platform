@@ -144,12 +144,27 @@ static int resolve_parent(const char *path, uint32_t cwd,
     return 0;
 }
 
+/* Does the path's LAST component be "." or ".."? Those resolve to a directory
+   rather than to something inside it, so an operation that means "this named
+   thing here" has to refuse them: rename(".", x) would otherwise rename the
+   directory the caller is standing in, which is never what was meant. */
+static int names_self(const char *path) {
+    uint32_t len = 0;
+    while (path[len]) len++;
+    while (len > 1 && path[len - 1] == '/') len--;      /* ignore trailing slashes */
+    if (len == 1 && path[0] == '.') return 1;
+    if (len == 2 && path[0] == '.' && path[1] == '.') return 1;
+    if (len >= 2 && path[len - 1] == '.' && path[len - 2] == '/') return 1;
+    if (len >= 3 && path[len - 1] == '.' && path[len - 2] == '.' && path[len - 3] == '/') return 1;
+    return 0;
+}
+
 /* Fill a user-facing file_stat from a CXFS entry. 64-bit fields are truncated
    to 32 on the way out - see the ABI note on the offset cap. */
 static void fill_stat(const struct cxfs_entry *e, struct file_stat *st) {
     memset(st, 0, sizeof *st);
     st->id          = e->id;
-    st->type        = (e->type == CXFS_TYPE_DIR) ? FTYPE_DIR : FTYPE_FILE;
+    st->kind        = (e->type == CXFS_TYPE_DIR) ? FTYPE_DIR : FTYPE_FILE;
     st->size        = (e->size > 0x7FFFFFFFull) ? 0x7FFFFFFFu : (uint32_t)e->size;
     st->permissions = e->permissions;
     st->owner_uid   = e->owner_uid;
@@ -399,6 +414,8 @@ int sys_file_op(const struct file_op_args *ua) {
             char newname[FILE_NAME_MAX];
             if ((rc = copy_path_in(a.path2, newname, sizeof newname)) < 0) return rc;
 
+            if (names_self(path)) return E_INVAL;   /* "." / ".." name a directory,
+                                                       not an entry within it */
             int r = cxfs_resolve(path, cwd);
             if (r < 0) return E_NOENT;
             if (r == 0) return E_INVAL;

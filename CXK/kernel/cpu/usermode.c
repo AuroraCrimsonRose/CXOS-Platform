@@ -18,6 +18,7 @@
 #include "handle.h"
 #include "spawn.h"
 #include "sysfile.h"
+#include "cxfs.h"
 
 #define KERNEL_VBASE 0xC0000000u   /* user half is everything below the higher-half kernel */
 #include "ipc.h"
@@ -242,6 +243,231 @@ int usermode_test(void) {
     unmap_user_page(TEST_CODE_VIRT, code_phys);
     unmap_user_page(TEST_STACK_VIRT, stack_phys);
     return rc;
+}
+
+
+/* ---- file syscall test -----------------------------------------------------
+ * Drives SYS_FILE_OP the way ring 3 does, short of the int 0x80 gate itself
+ * (which the other syscalls already prove). The point of doing it from here
+ * rather than from ktest.c is map_user_page: the args and buffers have to live
+ * in a PAGE_USER mapping or user_ptr_ok rejects them, which is exactly the
+ * check that would otherwise go untested until a real program tripped it.
+ *
+ * Goes through syscall_dispatch rather than calling sys_file_op directly, so
+ * the CAP_DISK gate is on the path too.
+ */
+#define FT_ARGS  (TEST_CODE_VIRT + 0x000)
+#define FT_PATH  (TEST_CODE_VIRT + 0x100)
+#define FT_PATH2 (TEST_CODE_VIRT + 0x180)
+#define FT_DATA  (TEST_CODE_VIRT + 0x200)
+#define FT_STAT  (TEST_CODE_VIRT + 0x400)
+
+static void ft_str(uint32_t at, const char *s) {
+    char *d = (char *)at;
+    int i = 0;
+    while (s[i] && i < 0x7F) { d[i] = s[i]; i++; }
+    d[i] = '\0';
+}
+
+static int ft_call(uint32_t op, int handle, uint32_t path, uint32_t data,
+                   uint32_t len, int32_t off, uint32_t flags) {
+    struct file_op_args *a = (struct file_op_args *)FT_ARGS;
+    a->op     = op;
+    a->handle = handle;
+    a->path   = (const char *)path;
+    a->path2  = (const char *)FT_PATH2;
+    a->data   = (void *)data;
+    a->len    = len;
+    a->off    = off;
+    a->flags  = flags;
+    return syscall_dispatch(SYS_FILE_OP, FT_ARGS, 0);
+}
+
+int usermode_file_test(void) {
+    if (!cxfs_is_mounted()) return 1;         /* nothing mounted - skip */
+
+    uint32_t phys = map_user_page(TEST_CODE_VIRT);
+    if (!phys) return 0;
+
+    int      me   = thread_current_id();
+    uint32_t save = thread_current_caps();
+    thread_set_caps(me, CAP_DISK);
+
+    int ok = 0;       /* set to 1 only at the very end */
+    /* Which check failed, counted in execution order. One pass/fail for forty
+       assertions is not enough to act on - this is what turned "the file
+       syscall test failed" into "rename(\".\") renamed the working directory",
+       which is a real bug and not a bad assertion. */
+    int step = 0;
+    int base = sysfile_open_count();
+    char *data = (char *)FT_DATA;
+
+    /* --- create, write, read back through one handle --- */
+    ft_str(FT_PATH, "/kt_sys.txt");
+    int h = ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0,
+                    FOPEN_READ | FOPEN_WRITE | FOPEN_CREATE | FOPEN_TRUNC);
+    step++;
+    if (h < 0) goto done;
+    step++;
+    if (sysfile_open_count() != base + 1) goto done;
+
+    ft_str(FT_DATA, "hello world");
+    step++;
+    if (ft_call(FILE_OP_WRITE, h, 0, FT_DATA, 11, 0, 0) != 11) goto done;
+    step++;
+    if (ft_call(FILE_OP_TELL,  h, 0, 0, 0, 0, 0) != 11) goto done;
+
+    step++;
+    if (ft_call(FILE_OP_SEEK, h, 0, 0, 0, 0, FSEEK_SET) != 0) goto done;
+    for (int i = 0; i < 16; i++) data[i] = '?';
+    step++;
+    if (ft_call(FILE_OP_READ, h, 0, FT_DATA, 11, 0, 0) != 11) goto done;
+    step++;
+    if (data[0] != 'h' || data[4] != 'o' || data[6] != 'w' || data[10] != 'd') goto done;
+
+    /* seek from the end, and read the tail */
+    step++;
+    if (ft_call(FILE_OP_SEEK, h, 0, 0, 0, -5, FSEEK_END) != 6) goto done;
+    step++;
+    if (ft_call(FILE_OP_READ, h, 0, FT_DATA, 5, 0, 0) != 5) goto done;
+    step++;
+    if (data[0] != 'w' || data[4] != 'd') goto done;
+    /* and the read past the end that follows it comes back empty, not short */
+    step++;
+    if (ft_call(FILE_OP_READ, h, 0, FT_DATA, 5, 0, 0) != 0) goto done;
+
+    /* fstat agrees about the size */
+    step++;
+    if (ft_call(FILE_OP_FSTAT, h, 0, FT_STAT, 0, 0, 0) != E_OK) goto done;
+    struct file_stat *st = (struct file_stat *)FT_STAT;
+    step++;
+    if (st->size != 11 || st->kind != FTYPE_FILE) goto done;
+
+    step++;
+    if (ft_call(FILE_OP_CLOSE, h, 0, 0, 0, 0, 0) != E_OK) goto done;
+    step++;
+    if (sysfile_open_count() != base) goto done;      /* the slot came back */
+    step++;
+    if (ft_call(FILE_OP_READ, h, 0, FT_DATA, 4, 0, 0) != E_BADF) goto done;
+
+    /* --- append opens at the end, and does not clobber --- */
+    h = ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_WRITE | FOPEN_APPEND);
+    step++;
+    if (h < 0) goto done;
+    ft_str(FT_DATA, "!!");
+    step++;
+    if (ft_call(FILE_OP_WRITE, h, 0, FT_DATA, 2, 0, 0) != 2) goto done;
+    step++;
+    if (ft_call(FILE_OP_CLOSE, h, 0, 0, 0, 0, 0) != E_OK) goto done;
+
+    h = ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_READ);
+    step++;
+    if (h < 0) goto done;
+    step++;
+    if (ft_call(FILE_OP_READ, h, 0, FT_DATA, 32, 0, 0) != 13) goto done;
+    step++;
+    if (data[10] != 'd' || data[11] != '!' || data[12] != '!') goto done;
+    /* a read-only handle must refuse a write */
+    step++;
+    if (ft_call(FILE_OP_WRITE, h, 0, FT_DATA, 2, 0, 0) != E_PERM) goto done;
+    step++;
+    if (ft_call(FILE_OP_CLOSE, h, 0, 0, 0, 0, 0) != E_OK) goto done;
+
+    /* --- a missing file is E_NOENT without FOPEN_CREATE --- */
+    ft_str(FT_PATH, "/kt_absent.txt");
+    step++;
+    if (ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_READ) != E_NOENT) goto done;
+
+    /* --- a bad user pointer is caught, not dereferenced --- */
+    ft_str(FT_PATH, "/kt_sys.txt");
+    step++;
+    if (ft_call(FILE_OP_STAT, 0, FT_PATH, 0xC0001000u, 0, 0, 0) != E_FAULT) goto done;
+    step++;
+    if (ft_call(FILE_OP_OPEN, 0, 0xC0001000u, 0, 0, 0, FOPEN_READ) != E_FAULT) goto done;
+
+    /* --- directories, cwd, and relative paths --- */
+    ft_str(FT_PATH, "/kt_dir");
+    step++;
+    if (ft_call(FILE_OP_MKDIR, 0, FT_PATH, 0, 0, 0, 0) != E_OK) goto done;
+    step++;
+    if (ft_call(FILE_OP_MKDIR, 0, FT_PATH, 0, 0, 0, 0) != E_EXIST) goto done;
+    step++;
+    if (ft_call(FILE_OP_CHDIR, 0, FT_PATH, 0, 0, 0, 0) != E_OK) goto done;
+    step++;
+    if (ft_call(FILE_OP_GETCWD, 0, 0, FT_DATA, 64, 0, 0) != 7) goto done;
+    step++;
+    if (data[0] != '/' || data[1] != 'k' || data[6] != 'r') goto done;
+
+    /* a bare name now resolves inside the new cwd, not at the root */
+    ft_str(FT_PATH, "inner.txt");
+    h = ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0,
+                FOPEN_WRITE | FOPEN_CREATE | FOPEN_TRUNC);
+    step++;
+    if (h < 0) goto done;
+    step++;
+    if (ft_call(FILE_OP_CLOSE, h, 0, 0, 0, 0, 0) != E_OK) goto done;
+    step++;
+    if (cxfs_resolve("/kt_dir/inner.txt", 0) < 0) goto done;   /* it really landed there */
+
+    /* readdir finds it, and stops rather than repeating past the end */
+    ft_str(FT_PATH, ".");
+    step++;
+    if (ft_call(FILE_OP_READDIR, 0, FT_PATH, FT_STAT, 0, 0, 0) != 1) goto done;
+    step++;
+    if (st->name[0] != 'i' || st->kind != FTYPE_FILE) goto done;
+    step++;
+    if (ft_call(FILE_OP_READDIR, 0, FT_PATH, FT_STAT, 1, 0, 0) != 0) goto done;
+
+    /* rename, then a non-empty directory refuses to be removed */
+    ft_str(FT_PATH2, "renamed.txt");
+    step++;
+    if (ft_call(FILE_OP_RENAME, 0, FT_PATH, 0, 0, 0, 0) == E_OK) goto done;  /* "." is not renameable */
+    ft_str(FT_PATH, "inner.txt");
+    step++;
+    if (ft_call(FILE_OP_RENAME, 0, FT_PATH, 0, 0, 0, 0) != E_OK) goto done;
+    step++;
+    if (cxfs_resolve("/kt_dir/renamed.txt", 0) < 0) goto done;
+
+    ft_str(FT_PATH, "/");
+    step++;
+    if (ft_call(FILE_OP_CHDIR, 0, FT_PATH, 0, 0, 0, 0) != E_OK) goto done;
+    ft_str(FT_PATH, "/kt_dir");
+    step++;
+    if (ft_call(FILE_OP_UNLINK, 0, FT_PATH, 0, 0, 0, 0) != E_INVAL) goto done;  /* not empty */
+
+    /* --- CAP_DISK really is the gate --- */
+    thread_set_caps(me, 0);
+    ft_str(FT_PATH, "/kt_sys.txt");
+    step++;
+    if (ft_call(FILE_OP_STAT, 0, FT_PATH, FT_STAT, 0, 0, 0) != E_PERM) goto done;
+    thread_set_caps(me, CAP_DISK);
+
+    /* --- the reaper releases handles a process never closed --- */
+    h = ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_READ);
+    step++;
+    if (h < 0) goto done;
+    step++;
+    if (sysfile_open_count() != base + 1) goto done;
+    handle_release_all(thread_handle_table(me), CXK_MAX_HANDLES);
+    step++;
+    if (sysfile_open_count() != base) goto done;
+
+    ok = 1;
+
+done:
+    if (!ok) klog_u32("KTEST", SEV_ERR, "file syscall test failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    /* tidy up whatever got made, so a re-run starts from the same state */
+    thread_set_caps(me, CAP_DISK);
+    handle_release_all(thread_handle_table(me), CXK_MAX_HANDLES);
+    int id;
+    if ((id = cxfs_resolve("/kt_dir/renamed.txt", 0)) >= 0) cxfs_delete_entry((uint32_t)id);
+    if ((id = cxfs_resolve("/kt_dir/inner.txt", 0))   >= 0) cxfs_delete_entry((uint32_t)id);
+    if ((id = cxfs_resolve("/kt_dir", 0))             >= 0) cxfs_delete_entry((uint32_t)id);
+    if ((id = cxfs_resolve("/kt_sys.txt", 0))         >= 0) cxfs_delete_entry((uint32_t)id);
+    thread_set_cwd(me, 0);
+    thread_set_caps(me, save);
+    unmap_user_page(TEST_CODE_VIRT, phys);
+    return ok;
 }
 
 /* ---- Checkpoint 3b: scheduler-integrated ring-3 processes ---- */
