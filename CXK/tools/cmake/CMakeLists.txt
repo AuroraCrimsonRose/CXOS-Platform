@@ -153,6 +153,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/drivers/net/ip.c
     ${SRC_DIR}/kernel/drivers/net/net_syscall.c
     ${SRC_DIR}/kernel/drivers/net/netif.c
+    ${SRC_DIR}/kernel/drivers/net/rtl8169.c
 )
 
 # ---- KERNEL ASM SOURCES (elf32 objects; append new ones here) ----
