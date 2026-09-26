@@ -427,8 +427,22 @@ artifact is CXOS's own format.
 
 ## 10. Code Signing (`.xkpk` / `.xksk`)
 
-> **Status:** Finalized design; phased implementation. This defines how CXOS
-> artifacts are signed and verified. **Threat model, stated honestly:** this is
+> **Status:** Designed and **implemented**. `lib/crypto/{sha256,bignum,rsa}.c` and
+> `lib/format/cxex_verify.c` implement the scheme below in full: the CXSG
+> fingerprint identity check (`sha256` of the signer's `.xkpk` compared against the
+> one embedded in the kernel) followed by RSA-verify of the signature over
+> `[0, signature_offset)`. It is **enforced**, not merely available — `cxex_exec`
+> (`cpu/exec.c`) refuses to run any image that does not return `CXEX_VERIFY_OK`,
+> and the separate `caps_for(type, trusted)` policy layer means a valid signature
+> establishes identity without itself granting authority.
+>
+> **Known gap:** `sys_spawn` takes an image already resident in the caller's memory
+> and does **not** verify it. Kernel/disk-loaded executables are verified;
+> ring-3-spawned ones are not. The intended fix is not to add verification to
+> `spawn` but to make the verified path the only way new code enters the system —
+> see `docs/CX_ABI.md` §7.10 (`exec_path`).
+>
+> This defines how CXOS artifacts are signed and verified. **Threat model, stated honestly:** this is
 > **code safety / integrity / authenticity** — ensuring the kernel, drivers, and
 > programs are the genuine, unmodified ones produced by the project. It is **not**
 > tamper-proof secure boot: on a hobby OS booting from ordinary writable storage
