@@ -193,6 +193,24 @@ public class CompileCommand : Command<CompileCommand.Settings>
             "    . = ALIGN(0x1000);\n" +
             "    .data   : { *(.data*) }         :data\n" +
             "    .bss    : { *(.bss*) *(COMMON) } :data\n" +
+            "\n" +
+            "    /* Orphan sections MUST be discarded, not left to ld's placement\n" +
+            "       heuristics. A toolchain that emits anything this script does not\n" +
+            "       name - a build-id note is the common one, since gcc configured\n" +
+            "       with --enable-linker-build-id adds .note.gnu.build-id by default -\n" +
+            "       gets it placed at 0x00400000 ahead of .text. That displaces the\n" +
+            "       entry point, and because the orphan is also folded into a segment,\n" +
+            "       both LOAD headers end up with vaddr 0x00400000 overlapping each\n" +
+            "       other. The CXEX loader then maps the image wrong and the process\n" +
+            "       dies with a page fault the moment it runs. Nothing warns.\n" +
+            "       None of these sections mean anything to a freestanding CXEX image. */\n" +
+            "    /DISCARD/ : {\n" +
+            "        *(.note*)\n" +
+            "        *(.comment)\n" +
+            "        *(.eh_frame*)\n" +
+            "        *(.gnu.build-id)\n" +
+            "        *(.gnu_debuglink)\n" +
+            "    }\n" +
             "}\n");
         return ld;
     }
