@@ -494,7 +494,6 @@ static int ehci_interrupt_poll(struct usb_device *dev, uint8_t ep,
     int i = int_slot_for(dev->address, ep);
     if (i < 0) return -1;
 
-    struct ehci_qh  *iqh = (struct ehci_qh  *)DMA_V(INT_QH_ADDR(i));
     struct ehci_qtd *itd = (struct ehci_qtd *)DMA_V(INT_QTD_ADDR(i));
 
     if (!int_list_live) {
@@ -632,20 +631,10 @@ int ehci_init(void) {
     const struct pci_device *dev = pci_find(0x0C, 0x03, 0x20, 0);
     if (!dev) return 0;
 
-    uint32_t base = dev->bar[0] & 0xFFFFFFF0u;
+    pci_enable_bus_master(dev);
+
+    uint32_t base = pci_bar_mmio32(dev, 0, "EHCI");
     if (base == 0) return 0;
-
-    uint32_t cmd = pci_config_read32(dev->bus, dev->slot, dev->func, 0x04);
-    cmd |= (1 << 1) | (1 << 2);          /* memory space + bus master */
-    pci_config_write32(dev->bus, dev->slot, dev->func, 0x04, cmd);
-
-    /* Identity-mapped registers, same rule as the NIC drivers: only safe
-       because PCI MMIO lands in the shared kernel half. */
-    if (base < 0xC0000000u) {
-        klog_u32("EHCI", SEV_WARN, "register BAR below the kernel half: ", base,
-                 LOG_COLOR_VALUE, " - not visible from a process address space");
-        return 0;
-    }
     for (uint32_t off = 0; off < 0x1000; off += 0x1000)
         paging_map(base + off, base + off, PAGE_PRESENT | PAGE_WRITE | PAGE_NO_CACHE);
     cap_regs = (volatile uint8_t *)base;
