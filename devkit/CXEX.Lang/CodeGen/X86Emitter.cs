@@ -74,8 +74,11 @@ public sealed class X86Emitter
        Emitting a 32-bit access for every load/store corrupts u8/u16 data:
        reading buf[i] from a [N]u8 pulled 4 bytes, writing it clobbered 3
        neighbours. These use the operand's real width. */
-    private bool IsSigned(TypeRef t) =>
-        t is PrimType p && (p.Kind == PrimKind.I8 || p.Kind == PrimKind.I16 || p.Kind == PrimKind.I32);
+    /* Expands aliases first, like SizeOf and StructOf: without it `type fx = i32;`
+       reads as unsigned, so division emits div instead of idiv, >> emits shr
+       instead of sar, and a 1-byte load zero-extends where it should sign-extend. */
+    private bool IsSigned(TypeRef t0) =>
+        _ctx.Expand(t0) is PrimType p && (p.Kind == PrimKind.I8 || p.Kind == PrimKind.I16 || p.Kind == PrimKind.I32);
 
     private void LoadFrom(TypeRef t)
     {
@@ -304,8 +307,11 @@ public sealed class X86Emitter
             case IndexExpr ix:
                 {
                     var tt = _ctx.Types.TryGetValue(ix.Target, out var t) ? t : new PrimType(PrimKind.Void);
-                    int es = _ctx.Expand(tt) switch { PointerType p => SizeOf(p.Pointee), ArrayType a => SizeOf(a.Element), _ => 4 };
-                    if (tt is ArrayType) EmitAddr(ix.Target); else EmitExpr(ix.Target);
+                    /* one expansion for both decisions: an aliased array (`type row_t = [64]u8;`)
+                       must decay to its address like a bare array, not be loaded as a pointer. */
+                    var te = _ctx.Expand(tt);
+                    int es = te switch { PointerType p => SizeOf(p.Pointee), ArrayType a => SizeOf(a.Element), _ => 4 };
+                    if (te is ArrayType) EmitAddr(ix.Target); else EmitExpr(ix.Target);
                     T("push %eax"); EmitExpr(ix.Index);
                     if (es != 1) T($"imul ${es}, %eax"); T("pop %ecx"); T("add %ecx, %eax");
                     break;
@@ -380,7 +386,12 @@ public sealed class X86Emitter
         if (c.Callee is NameExpr { Name: "__syscall" }) { EmitSyscall(c); return; }
         // cdecl: push args right-to-left
         for (int i = c.Args.Count - 1; i >= 0; i--) { EmitExpr(c.Args[i]); T("push %eax"); }
-        if (c.Callee is NameExpr nm) T($"call {nm.Name}");
+        /* Only a name that resolves to a FUNCTION is a direct call. A local or global
+           holding a function pointer is also a NameExpr, and emitting `call <name>`
+           for it calls a symbol that does not exist - it has to go through the value. */
+        if (c.Callee is NameExpr nm
+            && _ctx.Resolved.TryGetValue(nm, out var csym)
+            && csym.Kind == SymKind.Function) T($"call {nm.Name}");
         else { EmitExpr(c.Callee); T("call *%eax"); }
         if (c.Args.Count > 0) T($"add ${c.Args.Count * 4}, %esp");
     }
