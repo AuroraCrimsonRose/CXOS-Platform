@@ -330,6 +330,102 @@ done:
     return transferred;
 }
 
+/* ---- bulk transfers -----------------------------------------------------
+ * Same queue head and qTDs as a control transfer, with two differences that
+ * matter.
+ *
+ * First, there is no SETUP or STATUS stage - a bulk transfer is just data.
+ *
+ * Second, and much easier to get wrong: the data toggle PERSISTS across
+ * transfers on a bulk endpoint. Control transfers reset it every time (SETUP is
+ * always DATA0), but bulk carries on from wherever the last transfer left off,
+ * and a device that receives the wrong toggle silently discards the packet and
+ * retries forever. So bulk runs with DTC clear, which tells the controller to
+ * keep the toggle in the queue head and advance it itself, and the value is
+ * saved and restored around each transfer because this driver reuses one queue
+ * head for every endpoint.
+ *
+ * `ep` is the endpoint ADDRESS from the descriptor: bit 7 is the direction. */
+#define MAX_TOGGLES 16
+static struct { uint8_t addr, ep, toggle; } toggles[MAX_TOGGLES];
+
+static uint8_t *toggle_slot(uint8_t addr, uint8_t ep) {
+    for (int i = 0; i < MAX_TOGGLES; i++)
+        if (toggles[i].addr == addr && toggles[i].ep == ep) return &toggles[i].toggle;
+    for (int i = 0; i < MAX_TOGGLES; i++)
+        if (toggles[i].addr == 0) {
+            toggles[i].addr = addr; toggles[i].ep = ep; toggles[i].toggle = 0;
+            return &toggles[i].toggle;
+        }
+    return 0;
+}
+
+static int ehci_bulk(struct usb_device *dev, uint8_t ep, void *data, uint32_t len) {
+    if (!present || !dev || !data) return -1;
+    if (len == 0 || len > EHCI_XFER_MAX) return -1;
+
+    int in = (ep & 0x80) != 0;
+    uint16_t mps = in ? dev->ep_in_mps : dev->ep_out_mps;
+    if (mps == 0) mps = 512;
+
+    uint8_t *tg = toggle_slot(dev->address, ep);
+    if (!tg) return -1;
+
+    if (!in) for (uint32_t i = 0; i < len; i++) xfer_buf[i] = ((const uint8_t *)data)[i];
+
+    for (int i = 0; i < NUM_QTD; i++) qtd_clear(&qtd[i]);
+    struct ehci_qtd *t = &qtd[0];
+    t->token = QTD_STS_ACTIVE | QTD_CERR_3 | QTD_LEN(len) | QTD_IOC
+             | (in ? QTD_PID_IN : QTD_PID_OUT);
+    qtd_buffers(t, XFER_BUF_ADDR, (uint16_t)len);
+    t->next = QTD_T;
+
+    /* DTC clear: the queue head owns the toggle. Restore ours into the overlay
+       before handing the work over. */
+    qh->chars = QH_CHARS_ADDR(dev->address) | QH_CHARS_EP(ep & 0x0F)
+              | QH_CHARS_EPS_HIGH | QH_CHARS_HEAD | QH_CHARS_MPL(mps);
+    qh->caps = QH_CAPS_MULT1;
+    qh->current = 0;
+    qh->alt_next = QTD_T;
+    qh->token = *tg ? QTD_TOGGLE : 0;
+    for (int i = 0; i < 5; i++) qh->buffer[i] = 0;
+    qh->next = qtd_phys(0);
+
+    int err = 0;
+    for (int ms = 0; ms < 2000; ms++) {
+        uint32_t tok = t->token;
+        if (!(tok & QTD_STS_ACTIVE)) { if (tok & QTD_STS_ERRMASK) err = 1; goto done;
+        }
+        if (qh->token & QTD_STS_HALTED) { err = 1; goto done; }
+        timer_sleep(1);
+    }
+    err = 1;
+
+done:
+    /* Save the toggle the controller advanced to, whatever happened - a partial
+       transfer still moved it, and resetting it here would desynchronise the
+       endpoint for every transfer after. */
+    *tg = (qh->token & QTD_TOGGLE) ? 1 : 0;
+    qh->next = QTD_T;
+    if (err) return -1;
+
+    uint32_t remaining = (t->token >> 16) & 0x7FFF;
+    int transferred = (int)len - (int)remaining;
+    if (transferred < 0) transferred = 0;
+
+    if (in && transferred > 0)
+        for (int i = 0; i < transferred; i++) ((uint8_t *)data)[i] = xfer_buf[i];
+    return transferred;
+}
+
+/* Reset the software toggle for an endpoint. The mass-storage layer calls this
+   after clearing a stall, because CLEAR_FEATURE(ENDPOINT_HALT) resets the
+   toggle on the DEVICE side and the two must agree. */
+static void ehci_reset_toggle(struct usb_device *dev, uint8_t ep) {
+    uint8_t *tg = toggle_slot(dev->address, ep);
+    if (tg) *tg = 0;
+}
+
 /* ---- addressing ---------------------------------------------------------
  * On EHCI the driver issues SET_ADDRESS itself, which means talking to the
  * device on address 0 first. Every device answers there with at least 8 bytes
@@ -359,7 +455,8 @@ static const struct usb_hc_ops ehci_ops = {
     .name    = "EHCI",
     .attach  = ehci_attach,
     .control = ehci_control,
-    .bulk    = 0,                   /* stage 2 */
+    .bulk    = ehci_bulk,
+    .reset_toggle = ehci_reset_toggle,
 };
 
 static void enumerate_port(unsigned p) {

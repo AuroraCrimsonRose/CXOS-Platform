@@ -6,6 +6,7 @@
 #include "ehci.h"
 #include "ohci.h"
 #include "xhci.h"
+#include "usb_storage.h"
 #include "logging.h"
 #include "timer.h"
 
@@ -162,6 +163,11 @@ int usb_enumerate(struct usb_device *dev) {
         klog_child_u32("  bulk in ", dev->ep_in, LOG_COLOR_VALUE, "");
         klog_child_u32("  bulk out", dev->ep_out, LOG_COLOR_VALUE, "");
     }
+
+    /* Offer it to the class drivers. Mass storage is the only one so far; HID
+       would hook in here the same way. A device nobody claims is still
+       enumerated and listed, just not driven. */
+    usb_storage_attach(dev);
     return 1;
 }
 

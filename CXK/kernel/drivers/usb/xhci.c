@@ -84,6 +84,7 @@ _Static_assert(sizeof(struct xhci_trb) == 16, "a TRB is 16 bytes");
 #define TRB_LINK          6
 #define TRB_CMD_ENABLE_SLOT   9
 #define TRB_CMD_ADDRESS_DEV  11
+#define TRB_CMD_CONFIG_EP    12
 #define TRB_CMD_EVAL_CTX     13
 #define TRB_EV_TRANSFER      32
 #define TRB_EV_CMD_COMPLETE  33
@@ -116,7 +117,8 @@ _Static_assert(sizeof(struct xhci_trb) == 16, "a TRB is 16 bytes");
 #define XFERBUF_ADDR    (XDMA_BASE + 0xE000)
 #define SPAD_ARRAY_ADDR (XDMA_BASE + 0xF000)
 #define SPAD_PAGES_ADDR (XDMA_BASE + 0x10000)  /* up to 16 scratchpad pages  */
-#define XDMA_END        (XDMA_BASE + 0x20000)
+#define BULKRING_ADDR   (XDMA_BASE + 0x20000)  /* 256 bytes per slot per dir */
+#define XDMA_END        (XDMA_BASE + 0x21000)
 
 #define MAX_SLOTS_USED  8
 #define CMD_RING_TRBS   16
@@ -142,6 +144,13 @@ static unsigned evt_cycle = 1;    /* consumer cycle state                    */
 /* per-slot EP0 ring bookkeeping */
 static unsigned ep0_enq[MAX_SLOTS_USED + 1];
 static unsigned ep0_cycle[MAX_SLOTS_USED + 1];
+
+/* per-slot bulk rings, one each way. Indexed [slot][0]=OUT, [slot][1]=IN.
+   `configured` records whether Configure Endpoint has run for that direction -
+   xHCI will not accept a transfer on an endpoint the slot does not know about. */
+static unsigned bulk_enq[MAX_SLOTS_USED + 1][2];
+static unsigned bulk_cycle[MAX_SLOTS_USED + 1][2];
+static uint8_t  bulk_configured[MAX_SLOTS_USED + 1][2];
 
 static inline uint32_t cap_rd(uint32_t o) { return *(volatile uint32_t *)(cap_regs + o); }
 static inline uint32_t op_rd(uint32_t o)  { return *(volatile uint32_t *)(op_regs + o); }
@@ -401,6 +410,7 @@ static int xhci_attach(struct usb_device *dev) {
     for (unsigned i = 0; i < EP0_RING_TRBS; i++) trb_clear(&ring[i]);
     ep0_enq[slot] = 0;
     ep0_cycle[slot] = 1;
+    bulk_configured[slot][0] = bulk_configured[slot][1] = 0;
 
     uint32_t mps0 = speed_to_mps0(dev->speed);
     build_input_context(dev, mps0, 0);
@@ -435,11 +445,131 @@ static int xhci_attach(struct usb_device *dev) {
     return 1;
 }
 
+/* ---- bulk transfers -----------------------------------------------------
+ * An endpoint has to exist in the slot's device context before the controller
+ * will carry anything on it, which is what Configure Endpoint does. That is a
+ * command, not a register write, so it happens lazily on first use rather than
+ * during enumeration - the core has issued SET_CONFIGURATION by then and the
+ * endpoint descriptors are known.
+ *
+ * The Device Context Index is the endpoint's slot in the context array:
+ * endpoint N maps to 2N for OUT and 2N+1 for IN, with DCI 1 reserved for the
+ * bidirectional EP0. Getting this mapping wrong addresses somebody else's
+ * endpoint. */
+static unsigned dci_for(uint8_t ep) {
+    unsigned n = ep & 0x0F;
+    return n * 2 + ((ep & 0x80) ? 1 : 0);
+}
+
+static uint32_t bulkring_addr(unsigned slot, int in) {
+    return BULKRING_ADDR + ((slot - 1) * 2 + (in ? 1 : 0)) * 256;
+}
+
+#define BULK_RING_TRBS 16
+
+static int configure_bulk_ep(struct usb_device *dev, uint8_t ep, uint16_t mps) {
+    unsigned slot = dev->slot;
+    int in = (ep & 0x80) != 0;
+    unsigned dci = dci_for(ep);
+
+    struct xhci_trb *ring = (struct xhci_trb *)XDMA_V(bulkring_addr(slot, in));
+    for (unsigned i = 0; i < BULK_RING_TRBS; i++) trb_clear(&ring[i]);
+    bulk_enq[slot][in] = 0;
+    bulk_cycle[slot][in] = 1;
+
+    /* Input context: the control context names what is being added, then the
+       slot context (whose "context entries" must reach the new DCI) and the
+       endpoint context itself. */
+    volatile uint8_t *raw = (volatile uint8_t *)XDMA_V(INPUTCTX_ADDR);
+    for (unsigned i = 0; i < ctx_size * 32; i++) raw[i] = 0;
+
+    volatile uint32_t *icc = ctx_at(INPUTCTX_ADDR, 0);
+    volatile uint32_t *sc  = ctx_at(INPUTCTX_ADDR, 1);
+    volatile uint32_t *epc = ctx_at(INPUTCTX_ADDR, dci + 1);
+
+    icc[1] = (1u << 0) | (1u << dci);       /* add: slot + this endpoint */
+    sc[0] = (xspeed_to_id(dev->speed) << 20) | ((uint32_t)dci << 27);
+    sc[1] = ((uint32_t)dev->port << 16);
+
+    /* EP type 2 = Bulk OUT, 6 = Bulk IN. */
+    epc[1] = ((in ? 6u : 2u) << 3) | (3u << 1) | ((uint32_t)mps << 16);
+    uint32_t r = bulkring_addr(slot, in);
+    epc[2] = r | 1u;                        /* dequeue pointer | DCS */
+    epc[3] = 0;
+    epc[4] = mps;                           /* average TRB length */
+
+    struct xhci_trb ev;
+    uint8_t cc = run_command(INPUTCTX_ADDR, 0,
+                             TRB_TYPE(TRB_CMD_CONFIG_EP) | ((uint32_t)slot << 24), &ev);
+    if (cc != TRB_CC_SUCCESS) {
+        klog_u32("xHCI", SEV_WARN, "Configure Endpoint failed, completion code ", cc,
+                 LOG_COLOR_VALUE, "");
+        return 0;
+    }
+    bulk_configured[slot][in] = 1;
+    return 1;
+}
+
+static int xhci_bulk(struct usb_device *dev, uint8_t ep, void *data, uint32_t len) {
+    if (!present || !dev || dev->slot == 0 || !data) return -1;
+    if (len == 0 || len > XFER_MAX) return -1;
+
+    unsigned slot = dev->slot;
+    int in = (ep & 0x80) != 0;
+    uint16_t mps = in ? dev->ep_in_mps : dev->ep_out_mps;
+    if (mps == 0) mps = 512;
+
+    if (!bulk_configured[slot][in] && !configure_bulk_ep(dev, ep, mps)) return -1;
+
+    if (!in) for (uint32_t i = 0; i < len; i++) xfer_buf[i] = ((const uint8_t *)data)[i];
+
+    struct xhci_trb *ring = (struct xhci_trb *)XDMA_V(bulkring_addr(slot, in));
+    unsigned i = bulk_enq[slot][in];
+    unsigned cyc = bulk_cycle[slot][in];
+
+    struct xhci_trb *t = &ring[i];
+    t->parameter = XFERBUF_ADDR;
+    t->status = len;
+    /* ISP so a short packet completes rather than being an error - a CSW read
+       is routinely shorter than the buffer offered for it. */
+    t->control = TRB_TYPE(TRB_NORMAL) | TRB_IOC | TRB_ISP | (cyc ? TRB_CYCLE : 0);
+
+    if (++i == BULK_RING_TRBS - 1) {
+        struct xhci_trb *link = &ring[BULK_RING_TRBS - 1];
+        link->parameter = bulkring_addr(slot, in);
+        link->status = 0;
+        link->control = TRB_TYPE(TRB_LINK) | TRB_ENT | (cyc ? TRB_CYCLE : 0);
+        i = 0; cyc ^= 1;
+    }
+    bulk_enq[slot][in] = i;
+    bulk_cycle[slot][in] = cyc;
+
+    doorbell(slot, dci_for(ep));
+
+    struct xhci_trb ev;
+    if (!wait_event(TRB_EV_TRANSFER, &ev, 2000)) return -1;
+    uint8_t cc = (uint8_t)TRB_CC(ev.status);
+    if (cc != TRB_CC_SUCCESS && cc != TRB_CC_SHORT_PKT) return -1;
+
+    int residual = (int)(ev.status & 0x00FFFFFF);
+    int transferred = (int)len - residual;
+    if (transferred < 0) transferred = 0;
+    if (transferred > (int)len) transferred = (int)len;
+
+    if (in && transferred > 0)
+        for (int b = 0; b < transferred; b++) ((uint8_t *)data)[b] = xfer_buf[b];
+    return transferred;
+}
+
 static const struct usb_hc_ops xhci_ops = {
     .name    = "xHCI",
     .attach  = xhci_attach,
     .control = xhci_control,
-    .bulk    = 0,
+    .bulk    = xhci_bulk,
+    /* No reset_toggle: xHCI keeps the data toggle in the endpoint context and
+       a Reset Endpoint command restores it, so there is no software copy that
+       could drift out of step. */
+    .reset_toggle = 0,
 };
 
 /* ---- ports -------------------------------------------------------------- */

@@ -218,14 +218,19 @@ void kmain(void) {
     /* ACPI: enables the real shutdown (S5) and sleep paths */
     acpi_init();
 
-    /* USB: brings up every host controller present. Before storage, so that USB
-       mass storage can register disks here once stage 2 lands. */
-    usb_init();
-
     /* storage: probe ATA + AHCI drives into the disk registry. AHCI is found via
        PCI; on a machine without one, ahci_init returns 0 harmlessly. */
     ata_init();
     ahci_init();
+
+    /* USB AFTER the internal drives, and the order is load-bearing rather than
+       stylistic. mount_cxfs() treats disk index 0 as the boot disk and never
+       touches it, formatting index 1 as the data disk. Bringing USB up first
+       gave a plugged-in flash drive index 0 and pushed the real boot disk to
+       index 1 - so booting with a USB stick attached reformatted the disk the
+       machine had just booted from. Internal storage must claim the low indices
+       before anything removable can. */
+    usb_init();
     klog_u32("STORAGE", SEV_OK, "online, disks: ", (uint32_t)disk_count(), LOG_COLOR_VALUE, "");
 
     /* filesystem: mount CXFS on the data disk (read-only unless a dev build). */
