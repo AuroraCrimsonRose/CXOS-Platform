@@ -19,4 +19,10 @@ enum cxk_launch_result {
 
 int cxk_launch_executive(const char *path);
 
+/* Human-readable reason for a cxk_launch_executive() failure. Spans BOTH error
+   spaces - launch.h's own codes and the cxex_exec codes in exec.h - because
+   cxk_launch_executive returns either and the caller cannot tell them apart
+   from the number alone. */
+const char *cxk_launch_strerror(int rc);
+
 #endif

@@ -25,6 +25,7 @@
 #include "keyboard.h"
 #include "power.h"
 #include "netif.h"
+#include "usb.h"
 #include "acpi.h"
 #include "usermode.h"
 #include "ata.h"
@@ -207,8 +208,11 @@ void kmain(void) {
         klog_child_u32("  sub ", (uint32_t)d->subclass, LOG_COLOR_VALUE, "");
     }
 
-    /* network: e1000 over PCI (polled). netif_init() returns 0 if no NIC. */
-    if (netif_init()) klog("NET", SEV_OK, "e1000 online");
+    /* network: whichever NIC is on the bus (polled). netif_init() returns 0 if
+       none is. It logs which driver bound, so this line no longer names one -
+       it used to say "e1000 online" unconditionally, which became a lie the
+       moment a second NIC driver existed. */
+    if (netif_init()) klog("NET", SEV_OK, "online");
     else              klog("NET", SEV_WARN, "no NIC found - networking offline");
 
     /* ACPI: enables the real shutdown (S5) and sleep paths */
@@ -218,6 +222,15 @@ void kmain(void) {
        PCI; on a machine without one, ahci_init returns 0 harmlessly. */
     ata_init();
     ahci_init();
+
+    /* USB AFTER the internal drives, and the order is load-bearing rather than
+       stylistic. mount_cxfs() treats disk index 0 as the boot disk and never
+       touches it, formatting index 1 as the data disk. Bringing USB up first
+       gave a plugged-in flash drive index 0 and pushed the real boot disk to
+       index 1 - so booting with a USB stick attached reformatted the disk the
+       machine had just booted from. Internal storage must claim the low indices
+       before anything removable can. */
+    usb_init();
     klog_u32("STORAGE", SEV_OK, "online, disks: ", (uint32_t)disk_count(), LOG_COLOR_VALUE, "");
 
     /* filesystem: mount CXFS on the data disk (read-only unless a dev build). */
@@ -247,7 +260,14 @@ void kmain(void) {
         klog("EXEC", SEV_INFO, "launching /System/Boot.xoex");
         int xc = cxk_launch_executive("/System/Boot.xoex");
         if (xc >= 0) klog_u32("EXEC", SEV_OK,  "executive started, pid ", (uint32_t)xc, LOG_COLOR_VALUE, "");
-        else         klog_u32("EXEC", SEV_ERR, "executive launch failed: ", (uint32_t)xc, LOG_COLOR_VALUE, "");
+        else {
+            /* klog_u32 prints unsigned, so a bare -1 came out as 4294967295 -
+               which reads like corruption rather than a negative error code.
+               Negate for display and name the cause. */
+            klog_u32("EXEC", SEV_ERR, "executive launch failed, code -",
+                     (uint32_t)(-xc), LOG_COLOR_VALUE, "");
+            klog_child(cxk_launch_strerror(xc));
+        }
     }
 
     klog("KERNEL", SEV_OK, "boot complete - idle");
