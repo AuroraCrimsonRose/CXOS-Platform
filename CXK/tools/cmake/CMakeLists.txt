@@ -81,6 +81,7 @@ set(KERNEL_INCLUDES
     -I${SRC_DIR}/kernel/memman
     -I${SRC_DIR}/kernel/drivers/char
     -I${SRC_DIR}/kernel/drivers/usb
+    -I${SRC_DIR}/kernel/drivers/power
     -I${SRC_DIR}/kernel/drivers/input
     -I${SRC_DIR}/kernel/drivers/video
     -I${SRC_DIR}/kernel/drivers/input
@@ -102,6 +103,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/cpu/gdt.c
     ${SRC_DIR}/kernel/cpu/int/idt.c
     ${SRC_DIR}/kernel/cpu/int/pic.c
+    ${SRC_DIR}/kernel/cpu/int/apic.c
     ${SRC_DIR}/kernel/memman/pmm.c
     ${SRC_DIR}/kernel/memman/paging.c
     ${SRC_DIR}/kernel/memman/addr_space.c

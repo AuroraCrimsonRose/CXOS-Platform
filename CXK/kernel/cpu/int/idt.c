@@ -14,6 +14,7 @@
  */
 
 #include "idt.h"
+#include "apic.h"
 #include "syslog.h"
 #include "format.h"
 #include "sched.h"
@@ -196,15 +197,24 @@ void irq_uninstall_handler(int irq) {
     irq_routines[irq] = 0;
 }
 
+/* Acknowledge at whichever controller actually delivered this. Sending an EOI
+   to the 8259 while the I/O APIC is in charge leaves the local APIC's
+   in-service bit set, and nothing of equal or lower priority is ever delivered
+   again - the machine goes quiet rather than crashing. */
+static inline void irq_eoi(uint32_t int_no) {
+    if (apic_active()) lapic_eoi();
+    else               pic_send_eoi(int_no);
+}
+
 void irq_handler(struct registers *r) {
     int irq = r->int_no - 32;
     if (irq < 0 || irq >= 16) {
-        pic_send_eoi(r->int_no);
+        irq_eoi(r->int_no);
         return;
     }
     void (*handler)(struct registers *) = irq_routines[irq];
     if (handler) handler(r);
-    pic_send_eoi(r->int_no);
+    irq_eoi(r->int_no);
 
     /* deferred preemption: the timer's sched_tick() may have set need_resched.
        Perform the actual context switch HERE, after the EOI, so the PIC is
