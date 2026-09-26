@@ -233,8 +233,13 @@ int e1000_init(void) {
                  " - would not be visible from a process address space");
         return 0;
     }
+    /* PAGE_NO_CACHE: these are device registers, not memory. Reads have side
+       effects and the device changes status bits under us, so a cached line
+       would serve stale values. The DMA region mapped below is deliberately
+       left cacheable - x86 snoops DMA, so write-back is both correct and
+       faster there. */
     for (uint32_t off = 0; off < 0x20000; off += 0x1000)
-        paging_map(base + off, base + off, PAGE_PRESENT | PAGE_WRITE);
+        paging_map(base + off, base + off, PAGE_PRESENT | PAGE_WRITE | PAGE_NO_CACHE);
     regs = (volatile uint8_t *)base;
 
     /* map the NIC DMA region */
