@@ -133,6 +133,15 @@ _Static_assert(sizeof(struct ehci_qh) % 32 == 0, "QH stride must stay 32-byte al
 #define QH_ADDR         (EHCI_DMA_BASE + 0x1000)
 #define QTD_ADDR        (EHCI_DMA_BASE + 0x2000)
 #define XFER_BUF_ADDR   (EHCI_DMA_BASE + 0x3000)   /* EHCI_XFER_MAX, page aligned */
+/* One queue head, qTD and buffer PER interrupt endpoint - not one shared set.
+   They are separate from the control/bulk queue head so a transfer between two
+   polls cannot overwrite a report in flight, and separate from each other
+   because a keyboard and a mouse are both interrupt endpoints and a single
+   shared set makes them clobber one another. */
+#define MAX_INT_EPS     4
+#define INT_QH_ADDR(i)  (EHCI_DMA_BASE + 0x5000 + (uint32_t)(i) * 0x80)
+#define INT_QTD_ADDR(i) (EHCI_DMA_BASE + 0x6000 + (uint32_t)(i) * 0x40)
+#define INT_BUF_ADDR(i) (EHCI_DMA_BASE + 0x7000 + (uint32_t)(i) * 0x100)
 #define EHCI_DMA_END    (EHCI_DMA_BASE + 0x8000)
 
 #define NUM_QTD 4
@@ -426,6 +435,107 @@ static void ehci_reset_toggle(struct usb_device *dev, uint8_t ep) {
     if (tg) *tg = 0;
 }
 
+/* ---- interrupt transfers ------------------------------------------------
+ * These live on the PERIODIC schedule, not the async ring: the controller walks
+ * the 1024-entry frame list once per millisecond. Pointing every entry at one
+ * queue head polls it every frame, which is the simplest correct arrangement.
+ *
+ * The transfer is armed once and left running, and each poll only asks whether
+ * it finished. An idle keyboard NAKs rather than answering, so a poll that
+ * waited would stall for its whole timeout on every check for a keypress. */
+static struct {
+    uint8_t addr, ep, armed;
+    uint16_t len;
+} int_eps[MAX_INT_EPS];
+static int int_list_live = 0;
+
+static int int_slot_for(uint8_t addr, uint8_t ep) {
+    for (int i = 0; i < MAX_INT_EPS; i++)
+        if (int_eps[i].armed && int_eps[i].addr == addr && int_eps[i].ep == ep) return i;
+    for (int i = 0; i < MAX_INT_EPS; i++)
+        if (!int_eps[i].armed) { int_eps[i].addr = addr; int_eps[i].ep = ep; return i; }
+    return -1;
+}
+
+static void arm_int(struct usb_device *dev, int i, uint8_t ep, uint16_t len) {
+    struct ehci_qh  *iqh = (struct ehci_qh  *)DMA_V(INT_QH_ADDR(i));
+    struct ehci_qtd *itd = (struct ehci_qtd *)DMA_V(INT_QTD_ADDR(i));
+
+    itd->next = QTD_T;
+    itd->alt_next = QTD_T;
+    itd->token = QTD_STS_ACTIVE | QTD_CERR_3 | QTD_LEN(len) | QTD_PID_IN;
+    for (int b = 0; b < 5; b++) itd->buffer[b] = 0;
+    itd->buffer[0] = INT_BUF_ADDR(i);
+    itd->buffer[1] = (INT_BUF_ADDR(i) & ~0xFFFu) + 0x1000;
+
+    uint16_t mps = dev->ep_int_mps ? dev->ep_int_mps : 8;
+    uint32_t toggle = iqh->token & QTD_TOGGLE;     /* the controller owns it */
+    iqh->chars = QH_CHARS_ADDR(dev->address) | QH_CHARS_EP(ep & 0x0F)
+               | QH_CHARS_EPS_HIGH | QH_CHARS_MPL(mps);
+    /* S-mask in the low byte: which microframes this endpoint may run in.
+       0x01 is microframe 0, once per frame. Leaving it ZERO schedules the
+       endpoint in no microframe at all and it silently never runs. */
+    iqh->caps = QH_CAPS_MULT1 | 0x01;
+    iqh->current = 0;
+    iqh->alt_next = QTD_T;
+    iqh->token = toggle;
+    for (int b = 0; b < 5; b++) iqh->buffer[b] = 0;
+    iqh->next = INT_QTD_ADDR(i);
+
+    int_eps[i].len = len;
+    int_eps[i].armed = 1;
+}
+
+static int ehci_interrupt_poll(struct usb_device *dev, uint8_t ep,
+                               void *data, uint32_t len) {
+    if (!present || !dev || !data) return -1;
+    if (len == 0 || len > 64) return -1;
+
+    int i = int_slot_for(dev->address, ep);
+    if (i < 0) return -1;
+
+    struct ehci_qh  *iqh = (struct ehci_qh  *)DMA_V(INT_QH_ADDR(i));
+    struct ehci_qtd *itd = (struct ehci_qtd *)DMA_V(INT_QTD_ADDR(i));
+
+    if (!int_list_live) {
+        /* Chain the interrupt queue heads together and point every frame-list
+           entry at the head. Until PSE is set the controller never reads the
+           frame list at all. */
+        for (int k = 0; k < MAX_INT_EPS; k++) {
+            struct ehci_qh *q = (struct ehci_qh *)DMA_V(INT_QH_ADDR(k));
+            q->chars = 0;
+            q->caps = QH_CAPS_MULT1 | 0x01;
+            q->current = 0;
+            q->next = QTD_T;
+            q->alt_next = QTD_T;
+            q->token = 0;
+            q->horizontal = (k + 1 < MAX_INT_EPS)
+                          ? (INT_QH_ADDR(k + 1) | LINK_TYP_QH) : QTD_T;
+        }
+        volatile uint32_t *pflist = (volatile uint32_t *)DMA_V(PFLIST_ADDR);
+        for (int k = 0; k < 1024; k++) pflist[k] = INT_QH_ADDR(0) | LINK_TYP_QH;
+        op_wr(OP_USBCMD, op_rd(OP_USBCMD) | CMD_PSE);
+        int_list_live = 1;
+    }
+
+    if (!int_eps[i].armed) { arm_int(dev, i, ep, (uint16_t)len); return 0; }
+
+    uint32_t tok = itd->token;
+    if (tok & QTD_STS_ACTIVE) return 0;             /* still waiting */
+    if (tok & QTD_STS_ERRMASK) { arm_int(dev, i, ep, (uint16_t)len); return -1; }
+
+    uint32_t remaining = (tok >> 16) & 0x7FFF;
+    int got = (int)int_eps[i].len - (int)remaining;
+    if (got < 0) got = 0;
+    if (got > (int)len) got = (int)len;
+
+    const uint8_t *src = (const uint8_t *)DMA_V(INT_BUF_ADDR(i));
+    for (int b = 0; b < got; b++) ((uint8_t *)data)[b] = src[b];
+
+    arm_int(dev, i, ep, (uint16_t)len);
+    return got;
+}
+
 /* ---- addressing ---------------------------------------------------------
  * On EHCI the driver issues SET_ADDRESS itself, which means talking to the
  * device on address 0 first. Every device answers there with at least 8 bytes
@@ -456,6 +566,7 @@ static const struct usb_hc_ops ehci_ops = {
     .attach  = ehci_attach,
     .control = ehci_control,
     .bulk    = ehci_bulk,
+    .interrupt_poll = ehci_interrupt_poll,
     .reset_toggle = ehci_reset_toggle,
 };
 
@@ -514,6 +625,8 @@ static void enumerate_port(unsigned p) {
 int ehci_init(void) {
     present = 0;
     next_address = 1;
+    int_list_live = 0;
+    for (int i = 0; i < MAX_INT_EPS; i++) int_eps[i].armed = 0;
 
     /* class 0x0C serial bus, subclass 0x03 USB, prog-if 0x20 = EHCI */
     const struct pci_device *dev = pci_find(0x0C, 0x03, 0x20, 0);

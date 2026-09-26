@@ -132,6 +132,14 @@ _Static_assert(sizeof(struct ohci_td) == 16, "a TD is 16 bytes");
    separate toggles, hence two. */
 #define ED_BULK_IN      (ODMA_BASE + 0x1040)
 #define ED_BULK_OUT     (ODMA_BASE + 0x1080)
+/* One interrupt ED per HID endpoint, chained together on the HCCA periodic
+   list. A single shared ED looked fine with one device and silently broke the
+   moment a keyboard and a mouse were both attached - they overwrote each
+   other's in-flight transfer. */
+#define MAX_INT_EPS     4
+#define ED_INT(i)       (ODMA_BASE + 0x1100 + (uint32_t)(i) * 0x40)
+#define INT_TD(i)       (ODMA_BASE + 0x2400 + (uint32_t)(i) * 0x80)
+#define INT_BUF(i)      (ODMA_BASE + 0x4000 + (uint32_t)(i) * 0x100)
 #define TD_ADDR         (ODMA_BASE + 0x2000)
 #define OXFER_ADDR      (ODMA_BASE + 0x3000)
 #define ODMA_END        (ODMA_BASE + 0x8000)
@@ -363,11 +371,16 @@ static int ohci_attach(struct usb_device *dev) {
     return 1;
 }
 
+/* Defined below, after the periodic-schedule helpers it needs. */
+static int ohci_interrupt_poll(struct usb_device *dev, uint8_t ep,
+                               void *data, uint32_t len);
+
 static const struct usb_hc_ops ohci_ops = {
     .name    = "OHCI",
     .attach  = ohci_attach,
     .control = ohci_control,
     .bulk    = ohci_bulk,
+    .interrupt_poll = ohci_interrupt_poll,
     .reset_toggle = ohci_reset_toggle,
 };
 
@@ -402,6 +415,112 @@ static void enumerate_port(unsigned p) {
     struct usb_device *dev = usb_alloc_device(&ohci_ops, 0, (uint8_t)p, sp);
     if (!dev) { klog("OHCI", SEV_WARN, "device table full"); return; }
     usb_enumerate(dev);
+}
+
+/* ---- interrupt transfers ------------------------------------------------
+ * These run on the PERIODIC schedule rather than the control or bulk lists: the
+ * HCCA holds 32 interrupt list heads, one per frame, and the controller walks
+ * the one matching the current frame every millisecond. Pointing all 32 at the
+ * same ED polls it every frame, which is the simplest correct arrangement and
+ * fast enough for a keyboard.
+ *
+ * The transfer is armed once and left running. That is the whole point of the
+ * non-blocking contract: an idle keyboard NAKs, the TD simply stays active, and
+ * a poll that waited for it would block for its timeout on every keystroke
+ * check. Instead each poll asks "has it completed yet", and re-arms if so.
+ *
+ * Its own TDs and buffer, because a control or bulk transfer running between
+ * two polls would otherwise overwrite the report in flight. */
+static struct {
+    uint8_t addr, ep, armed, len;
+} int_eps[MAX_INT_EPS];
+static int int_list_live = 0;
+
+/* One slot per (device address, endpoint). Claimed on first poll. */
+static int int_slot_for(uint8_t addr, uint8_t ep) {
+    for (int i = 0; i < MAX_INT_EPS; i++)
+        if (int_eps[i].armed && int_eps[i].addr == addr && int_eps[i].ep == ep) return i;
+    for (int i = 0; i < MAX_INT_EPS; i++)
+        if (!int_eps[i].armed) { int_eps[i].addr = addr; int_eps[i].ep = ep; return i; }
+    return -1;
+}
+
+static void arm_interrupt(struct usb_device *dev, int i, uint8_t ep, uint32_t len) {
+    struct ohci_ed *ied = (struct ohci_ed *)ODMA_V(ED_INT(i));
+    struct ohci_td *t = (struct ohci_td *)ODMA_V(INT_TD(i));
+    struct ohci_td *tail = t + 1;
+
+    t->control = TD_DP_IN | TD_DI_NONE | TD_ROUNDING;   /* toggle from the ED */
+    t->current_buf = INT_BUF(i);
+    t->buf_end = INT_BUF(i) + len - 1;                  /* LAST byte */
+    t->next_td = INT_TD(i) + sizeof(struct ohci_td);
+
+    tail->control = 0; tail->current_buf = 0; tail->next_td = 0; tail->buf_end = 0;
+
+    uint16_t mps = dev->ep_int_mps ? dev->ep_int_mps : 8;
+    uint32_t carry = ied->head_td & 2u;
+    /* next_ed is preserved: it is what keeps this ED in the periodic chain. */
+    ied->control = ED_FA(dev->address) | ED_EN(ep & 0x0F) | ED_DIR_TD | ED_MPS(mps)
+                 | (dev->speed == USB_SPEED_LOW ? ED_SPEED_LOW : 0);
+    ied->tail_td = INT_TD(i) + sizeof(struct ohci_td);
+    ied->head_td = INT_TD(i) | carry;
+
+    int_eps[i].len = (uint8_t)len;
+    int_eps[i].armed = 1;
+}
+
+static int ohci_interrupt_poll(struct usb_device *dev, uint8_t ep,
+                               void *data, uint32_t len) {
+    if (!present || !dev || !data) return -1;
+    if (len == 0 || len > 64) return -1;
+
+    int i = int_slot_for(dev->address, ep);
+    if (i < 0) return -1;
+
+    struct ohci_ed *ied = (struct ohci_ed *)ODMA_V(ED_INT(i));
+    struct ohci_td *t = (struct ohci_td *)ODMA_V(INT_TD(i));
+
+    if (!int_list_live) {
+        /* Chain every interrupt ED together, skipped until armed, and publish
+           the head into all 32 HCCA interrupt entries. Until PLE is set the
+           controller never looks at the periodic schedule at all. */
+        for (int k = 0; k < MAX_INT_EPS; k++) {
+            struct ohci_ed *e = (struct ohci_ed *)ODMA_V(ED_INT(k));
+            e->control = ED_SKIP;
+            e->head_td = 0;
+            e->tail_td = 0;
+            e->next_ed = (k + 1 < MAX_INT_EPS) ? ED_INT(k + 1) : 0;
+        }
+        volatile uint32_t *hcca = (volatile uint32_t *)ODMA_V(HCCA_ADDR);
+        for (int k = 0; k < 32; k++) hcca[k] = ED_INT(0);
+        wr(OHCI_CONTROL, rd(OHCI_CONTROL) | CTRL_PLE);
+        int_list_live = 1;
+    }
+
+    if (!int_eps[i].armed) { arm_interrupt(dev, i, ep, len); return 0; }
+
+    uint32_t head = ied->head_td;
+    if (head & 1u) {                       /* halted - clear and re-arm */
+        ied->head_td = 0;
+        arm_interrupt(dev, i, ep, len);
+        return -1;
+    }
+    if ((head & ~0x0Fu) != (ied->tail_td & ~0x0Fu)) return 0;   /* still running */
+
+    int got = (int)int_eps[i].len;
+    uint32_t cur = t->current_buf;
+    if (cur) {                             /* short report */
+        got = (int)(cur - INT_BUF(i));
+        if (got < 0) got = 0;
+    }
+    if (TD_CC(t->control) != TD_CC_NOERROR) got = 0;
+
+    if (got > (int)len) got = (int)len;
+    const uint8_t *src = (const uint8_t *)ODMA_V(INT_BUF(i));
+    for (int b = 0; b < got; b++) ((uint8_t *)data)[b] = src[b];
+
+    arm_interrupt(dev, i, ep, len);        /* keep it running */
+    return got;
 }
 
 /* ---- SMM handoff --------------------------------------------------------
@@ -442,6 +561,8 @@ static void ohci_takeover(void) {
 int ohci_init(void) {
     present = 0;
     next_address = 1;
+    int_list_live = 0;
+    for (int i = 0; i < MAX_INT_EPS; i++) int_eps[i].armed = 0;
 
     /* class 0x0C serial bus, subclass 0x03 USB, prog-if 0x10 = OHCI */
     const struct pci_device *dev = pci_find(0x0C, 0x03, 0x10, 0);

@@ -4,6 +4,7 @@
 
 #include <stdint.h>
 #include "keyboard.h"
+#include "usb_hid.h"
 #include "../../cpu/int/idt.h"
 #include "../../cpu/sched.h"   /* thread_block / thread_unblock */
 
@@ -76,7 +77,32 @@ static void kbuf_push(unsigned char c) {
     }
 }
 
+void keyboard_inject(unsigned char c) { kbuf_push(c); }
+
+/* How often to wake a blocked reader to re-poll USB, in timer ticks. The PIT
+   runs at 1000 Hz, so 10 is 100 Hz - far more than a keyboard needs and cheap
+   enough to be invisible. */
+#define KBD_USB_POLL_TICKS 10
+static unsigned usb_poll_div = 0;
+
+void keyboard_tick(void) {
+    /* Nothing to do without a USB HID device: the PS/2 path wakes its own
+       waiter from IRQ1 and needs none of this. */
+    if (!usb_hid_present()) return;
+    if (kwaiter < 0) return;
+    if (++usb_poll_div < KBD_USB_POLL_TICKS) return;
+    usb_poll_div = 0;
+    /* ONLY a wake. The USB transfer runs in the woken thread's own context -
+       doing it here would put bus traffic inside an interrupt handler. */
+    thread_unblock(kwaiter);
+}
+
 char keyboard_getchar(void) {
+    /* Service USB HID here rather than from a timer: these transfers sleep, so
+       they cannot run in interrupt context, and this is the point where somebody
+       is asking for input anyway. Costs nothing when no HID device is attached. */
+    usb_hid_poll();
+
     if (ktail == khead) return 0;          /* empty */
     char c = (char)kbuf[ktail];
     ktail = (ktail + 1) % KBD_BUF_SIZE;
