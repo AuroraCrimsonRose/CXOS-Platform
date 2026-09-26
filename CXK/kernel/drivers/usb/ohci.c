@@ -124,6 +124,14 @@ _Static_assert(sizeof(struct ohci_td) == 16, "a TD is 16 bytes");
 
 #define HCCA_ADDR       (ODMA_BASE + 0x0000)   /* 256 bytes, 256-byte aligned */
 #define ED_ADDR         (ODMA_BASE + 0x1000)
+/* One bulk ED per DIRECTION, kept alive between transfers. OHCI carries the
+   data toggle in the ED (headTD bit 1, "toggleCarry") and advances it itself,
+   which is exactly what a bulk endpoint needs - but only while the ED survives.
+   The control ED has its head rewritten every transfer, which would reset the
+   carry, so bulk cannot share it. IN and OUT are separate endpoints with
+   separate toggles, hence two. */
+#define ED_BULK_IN      (ODMA_BASE + 0x1040)
+#define ED_BULK_OUT     (ODMA_BASE + 0x1080)
 #define TD_ADDR         (ODMA_BASE + 0x2000)
 #define OXFER_ADDR      (ODMA_BASE + 0x3000)
 #define ODMA_END        (ODMA_BASE + 0x8000)
@@ -260,6 +268,83 @@ static int ohci_control(struct usb_device *dev, uint8_t bm_request_type,
     return transferred;
 }
 
+/* ---- bulk transfers -----------------------------------------------------
+ * The same TD machinery as a control transfer, on the bulk list instead of the
+ * control list, and with the toggle left to the ED. A TD whose toggle field has
+ * bit 25 clear means "use the ED's toggleCarry", which the controller then
+ * advances - so the persistence a bulk endpoint requires is free here, unlike
+ * on EHCI where it has to be saved and restored by hand. */
+static int ohci_bulk(struct usb_device *dev, uint8_t ep, void *data, uint32_t len) {
+    if (!present || !dev || !data) return -1;
+    if (len == 0 || len > OXFER_MAX) return -1;
+
+    int in = (ep & 0x80) != 0;
+    uint16_t mps = in ? dev->ep_in_mps : dev->ep_out_mps;
+    if (mps == 0) mps = 64;
+
+    struct ohci_ed *bed = (struct ohci_ed *)ODMA_V(in ? ED_BULK_IN : ED_BULK_OUT);
+
+    if (!in) for (uint32_t i = 0; i < len; i++) xfer_buf[i] = ((const uint8_t *)data)[i];
+
+    for (int i = 0; i < NUM_TD; i++) {
+        td[i].control = 0; td[i].current_buf = 0; td[i].next_td = 0; td[i].buf_end = 0;
+    }
+
+    struct ohci_td *t = &td[0];
+    t->control = (in ? TD_DP_IN : TD_DP_OUT) | TD_DI_NONE | TD_ROUNDING;  /* toggle from the ED */
+    t->current_buf = OXFER_ADDR;
+    t->buf_end = OXFER_ADDR + len - 1;          /* LAST byte */
+    t->next_td = td_phys(1);
+
+    struct ohci_td *t_tail = &td[1];
+    t_tail->control = 0; t_tail->current_buf = 0; t_tail->next_td = 0; t_tail->buf_end = 0;
+
+    /* Preserve the toggle carry the controller left in headTD bit 1. */
+    uint32_t carry = bed->head_td & 2u;
+    bed->control = ED_FA(dev->address) | ED_EN(ep & 0x0F) | ED_DIR_TD | ED_MPS(mps)
+                 | (dev->speed == USB_SPEED_LOW ? ED_SPEED_LOW : 0);
+    bed->tail_td = td_phys(1);
+    bed->next_ed = 0;
+    bed->head_td = td_phys(0) | carry;
+
+    wr(OHCI_BULKHEADED, in ? ED_BULK_IN : ED_BULK_OUT);
+    wr(OHCI_CMDSTATUS, CMD_BLF);
+    wr(OHCI_CONTROL, rd(OHCI_CONTROL) | CTRL_BLE);
+
+    int err = 0, done = 0;
+    for (int ms = 0; ms < 2000; ms++) {
+        uint32_t head = bed->head_td;
+        if (head & 1u) { err = 1; break; }       /* halted */
+        if ((head & ~0x0Fu) == (bed->tail_td & ~0x0Fu)) { done = 1; break; }
+        timer_sleep(1);
+    }
+    if (!done) err = 1;
+
+    wr(OHCI_CONTROL, rd(OHCI_CONTROL) & ~CTRL_BLE);
+    wr(OHCI_BULKHEADED, 0);
+
+    if (!err && TD_CC(t->control) != TD_CC_NOERROR) err = 1;
+    if (err) return -1;
+
+    int transferred = (int)len;
+    uint32_t cur = t->current_buf;
+    if (cur) {
+        transferred = (int)(cur - OXFER_ADDR);
+        if (transferred < 0) transferred = 0;
+        if (transferred > (int)len) transferred = (int)len;
+    }
+    if (in && transferred > 0)
+        for (int i = 0; i < transferred; i++) ((uint8_t *)data)[i] = xfer_buf[i];
+    return transferred;
+}
+
+/* Clearing a stall resets the device's toggle, so drop the ED's carry to match. */
+static void ohci_reset_toggle(struct usb_device *dev, uint8_t ep) {
+    (void)dev;
+    struct ohci_ed *bed = (struct ohci_ed *)ODMA_V((ep & 0x80) ? ED_BULK_IN : ED_BULK_OUT);
+    bed->head_td = 0;
+}
+
 static int ohci_attach(struct usb_device *dev) {
     struct usb_device_descriptor dd;
     for (unsigned i = 0; i < sizeof(dd); i++) ((uint8_t *)&dd)[i] = 0;
@@ -282,7 +367,8 @@ static const struct usb_hc_ops ohci_ops = {
     .name    = "OHCI",
     .attach  = ohci_attach,
     .control = ohci_control,
-    .bulk    = 0,
+    .bulk    = ohci_bulk,
+    .reset_toggle = ohci_reset_toggle,
 };
 
 static void enumerate_port(unsigned p) {
@@ -400,6 +486,10 @@ int ohci_init(void) {
     e->control = ED_SKIP;
     e->tail_td = 0; e->head_td = 0; e->next_ed = 0;
     ed = e;
+    for (uint32_t a = ED_BULK_IN; a <= ED_BULK_OUT; a += 0x40) {
+        struct ohci_ed *b = (struct ohci_ed *)ODMA_V(a);
+        b->control = ED_SKIP; b->tail_td = 0; b->head_td = 0; b->next_ed = 0;
+    }
     td = (struct ohci_td *)ODMA_V(TD_ADDR);
     xfer_buf = (uint8_t *)ODMA_V(OXFER_ADDR);
 

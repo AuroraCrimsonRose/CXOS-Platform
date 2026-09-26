@@ -61,6 +61,12 @@ struct usb_hc_ops {
     /* Bulk transfer. `ep` is the endpoint ADDRESS from the descriptor, so bit 7
        already encodes direction. May be null until a controller implements it. */
     int (*bulk)(struct usb_device *dev, uint8_t ep, void *data, uint32_t len);
+
+    /* Forget the software data toggle for an endpoint. Needed after a stall is
+       cleared: CLEAR_FEATURE(ENDPOINT_HALT) resets the toggle on the device
+       side, and host and device must agree or every later packet is dropped.
+       May be null on controllers that track the toggle in hardware. */
+    void (*reset_toggle)(struct usb_device *dev, uint8_t ep);
 };
 
 struct usb_device {
