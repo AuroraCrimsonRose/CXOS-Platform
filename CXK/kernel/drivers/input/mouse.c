@@ -99,16 +99,27 @@ static void mouse_callback(struct registers *r) {
     if (flags & 0x10) dx |= (int32_t)0xFFFFFF00;   /* sign-extend from 9 bits */
     if (flags & 0x20) dy |= (int32_t)0xFFFFFF00;
 
+    /* PS/2 reports Y positive-UP; screens are positive-down, so negate here and
+       let the shared path below work in screen direction only. USB HID already
+       reports positive-down and needs no such correction. */
+    mouse_inject(dx, -dy, (uint32_t)(flags & 0x07));
+}
+
+void mouse_inject(int32_t dx, int32_t dy, uint32_t btns) {
     mx += dx;
-    my -= dy;                            /* PS/2 Y is positive-up; screens are positive-down */
+    my += dy;
 
     if (mx < 0) mx = 0;
     if (my < 0) my = 0;
     if (mx > clamp_w - 1) mx = clamp_w - 1;
     if (my > clamp_h - 1) my = clamp_h - 1;
 
-    buttons = (uint32_t)(flags & 0x07);
+    buttons = btns;
     moved++;
+    /* A device that is sending movement demonstrably exists, even if the PS/2
+       probe found nothing - otherwise a USB-only mouse reports as absent and
+       the GUI ignores it. */
+    present = 1;
 }
 
 /* ---- public ---- */

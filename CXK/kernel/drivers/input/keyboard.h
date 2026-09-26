@@ -12,6 +12,16 @@ void keyboard_init(void);
 /* return the next character typed, or 0 if none available */
 char keyboard_getchar(void);
 
+/* Push a character into the input buffer from outside the IRQ1 path. USB HID
+   uses this so a USB keyboard's keys arrive exactly like PS/2 ones and nothing
+   above here can tell the difference. */
+void keyboard_inject(unsigned char c);
+
+/* Called from the timer IRQ. A USB keyboard raises no IRQ1, so a thread parked
+   in keyboard_getchar_blocking() would wait for an interrupt that never comes.
+   This wakes it periodically so it re-polls the HID endpoint instead. */
+void keyboard_tick(void);
+
 /* block until a character is available, then return it */
 char keyboard_getchar_blocking(void);
 
