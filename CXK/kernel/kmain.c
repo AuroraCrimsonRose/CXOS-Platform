@@ -255,7 +255,14 @@ void kmain(void) {
         klog("EXEC", SEV_INFO, "launching /System/Boot.xoex");
         int xc = cxk_launch_executive("/System/Boot.xoex");
         if (xc >= 0) klog_u32("EXEC", SEV_OK,  "executive started, pid ", (uint32_t)xc, LOG_COLOR_VALUE, "");
-        else         klog_u32("EXEC", SEV_ERR, "executive launch failed: ", (uint32_t)xc, LOG_COLOR_VALUE, "");
+        else {
+            /* klog_u32 prints unsigned, so a bare -1 came out as 4294967295 -
+               which reads like corruption rather than a negative error code.
+               Negate for display and name the cause. */
+            klog_u32("EXEC", SEV_ERR, "executive launch failed, code -",
+                     (uint32_t)(-xc), LOG_COLOR_VALUE, "");
+            klog_child(cxk_launch_strerror(xc));
+        }
     }
 
     klog("KERNEL", SEV_OK, "boot complete - idle");
