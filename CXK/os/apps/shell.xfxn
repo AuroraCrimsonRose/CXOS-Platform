@@ -27,6 +27,11 @@ global cmd_fns:   [32]cmd_fn;
 global cmd_desc:  [32]*u8;
 global cmd_n:     u32;
 
+// Search path for `run <name>`, and the buffer the candidate is built in.
+// Filled in by main, because X has no initialized-array syntax.
+global run_dirs: [2]*u8;
+global run_buf:  [160]u8;
+
 fn register(name: *u8, f: cmd_fn, desc: *u8) -> void {
     if (cmd_n >= MAX_CMDS) { return; }
     cmd_names[cmd_n] = name;
@@ -350,6 +355,33 @@ fn cmd_mv(arg: *u8) -> void {
 // that lets a program say anything. broker_endpoint is -1: the shell owns a
 // SEND handle to its own executive, not a RECV endpoint of its own, so it has
 // no broker to give. The child gets authority directly instead.
+// Build "<dir>/<name>" - or "<dir>/<name>.xcex" when ext is non-zero - into
+// run_buf, and hand back a pointer to it. One shared buffer: cmd_run uses the
+// result before building the next candidate.
+fn run_candidate(dir: *u8, name: *u8, ext: i32) -> *u8 {
+    let n: u32 = strcopy(&run_buf[0], dir, 160);
+    if (n + 1 < 160) { run_buf[n] = 47; n = n + 1; }         // '/'
+    n = n + strcopy(&run_buf[n], name, 160 - n);
+    if (ext != 0) { n = n + strcopy(&run_buf[n], ".xcex", 160 - n); }
+    return &run_buf[0];
+}
+
+// Run a program that lives on the disk. The shell holds CAP_OS_BASELINE, so it
+// can hand a child any subset of that - here CAP_CONSOLE, which is the least
+// that lets a program say anything. broker_endpoint is -1: the shell owns a
+// SEND handle to its own executive, not a RECV endpoint of its own, so it has
+// no broker to give. The child gets authority directly instead.
+//
+// A bare name is looked up on a search path rather than in the working
+// directory, so `run hi` works from anywhere. /System/Programs is searched
+// before /Shared/Programs: /Shared is writable by any user, and a program
+// dropped there must not be able to shadow one the system ships. The .xcex
+// suffix is optional, so `run hi` and `run hi.xcex` both find the same file.
+//
+// Anything with a '/' in it is taken as a path and used verbatim - that is the
+// escape hatch for running something the search path does not cover, and it
+// keeps `run ./x` meaning the x in the working directory rather than whichever
+// x the search path happens to find first.
 fn cmd_run(arg: *u8) -> void {
     if (arg[0] == 0) { puts("usage: run <path>\n"); return; }
 
@@ -359,7 +391,29 @@ fn cmd_run(arg: *u8) -> void {
     a.broker_endpoint = 0 - 1;
     a.caps            = CAP_CONSOLE;
 
-    let pid: i32 = exec_path(arg, &a);
+    let pid: i32 = E_NOENT;
+    if (strchr(arg, 47) >= 0) {                              // '/' - a path
+        pid = exec_path(arg, &a);
+    } else {
+        let d: u32 = 0;
+        while (d < 2) {
+            let ext: i32 = 0;
+            while (ext < 2) {
+                let p: *u8 = run_candidate(run_dirs[d], arg, ext);
+                a.name = p;
+                pid = exec_path(p, &a);
+                // Only E_NOENT means "not here, keep looking". A file that
+                // exists but will not run - unsigned, a directory, not a CXEX
+                // - is the answer, and reporting it beats walking past it and
+                // saying the program does not exist.
+                if (pid != E_NOENT) { ext = 2; d = 2; }
+                else { ext = ext + 1; }
+            }
+            d = d + 1;
+        }
+        a.name = arg;
+    }
+
     if (pid < 0) {
         puts(arg);
         puts(": ");
@@ -420,6 +474,9 @@ fn split_arg(line: *u8) -> *u8 {
 fn _start() -> void {
     let line: [128]u8;
 
+    run_dirs[0] = "/System/Programs";
+    run_dirs[1] = "/Shared/Programs";
+
     register("help",   cmd_help,   "list commands");
     register("echo",   cmd_echo,   "print the rest of the line");
     register("pid",    cmd_pid,    "process and user id");
@@ -434,7 +491,7 @@ fn _start() -> void {
     register("append", cmd_append, "add text to the end of a file");
     register("stat",   cmd_stat,   "show an entry's metadata");
     register("edit",   cmd_edit,   "full-screen text editor");
-    register("run",    cmd_run,    "run a signed program from disk");
+    register("run",    cmd_run,    "run a signed program (searches /System and /Shared)");
     register("mkdir",  cmd_mkdir,  "create a directory");
     register("rm",     cmd_rm,     "delete a file or empty directory");
     register("mv",     cmd_mv,     "rename an entry");
