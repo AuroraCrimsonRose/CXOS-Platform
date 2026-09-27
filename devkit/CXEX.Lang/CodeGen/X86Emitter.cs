@@ -20,6 +20,7 @@ public sealed class X86Emitter
     private readonly DiagnosticBag _diag;
     private readonly StringBuilder _text = new();
     private readonly StringBuilder _data = new();
+    private readonly StringBuilder _bss  = new();
     private int _label;
 
     // current function frame: name -> (ebp offset, type)
@@ -61,12 +62,13 @@ public sealed class X86Emitter
         _text.AppendLine(".text");
         _text.AppendLine(".globl _start");
         _data.AppendLine(".data");
+        _bss.AppendLine(".bss");
         foreach (var d in unit.Decls)
         {
             if (d is FnDecl f && f.Body != null) EmitFn(f);
             else if (d is GlobalDecl g) EmitGlobal(g);
         }
-        return _text + "\n" + _data;
+        return _text + "\n" + _data + "\n" + _bss;
     }
 
     // ---- type sizes / struct layout (v0.1: every field 4-aligned, matches ABI structs) ----
@@ -169,14 +171,36 @@ public sealed class X86Emitter
         }
     }
 
+    /* A global with no initializer, or one that folds to zero, goes to .bss.
+     *
+     * Every global used to be emitted as explicit .long words in .data, so a
+     * zero-filled array was carried byte for byte: the linker put it in the
+     * file, the CXEX image carried it, and app_image.h embedded it in the
+     * executive. A 32KB buffer cost 32KB in every one of those places to say
+     * nothing at all. The CXEX loader already hands out zeroed pages
+     * (cxex_load.c: "page arrives zeroed (BSS-ready)"), so .bss costs nothing
+     * on disk and arrives zeroed anyway - which is what the language promises
+     * an uninitialized global.
+     *
+     * Only genuinely non-zero initializers still take space in .data.
+     */
     private void EmitGlobal(GlobalDecl g)
     {
         int size = Align4(SizeOf(g.Type));
         ulong init = 0;
         if (g.Init != null) new ConstFold(_ctx, _diag).TryEval(g.Init, out init);
+
+        if (init == 0)
+        {
+            _bss.AppendLine("    .align 4");
+            _bss.AppendLine($"{g.Name}:");
+            _bss.AppendLine($"    .zero {size}");
+            return;
+        }
+
         _data.AppendLine($"{g.Name}:");
-        if (size == 4) _data.AppendLine($"    .long {init}");
-        else { _data.AppendLine($"    .long {init}"); for (int i = 4; i < size; i += 4) _data.AppendLine("    .long 0"); }
+        _data.AppendLine($"    .long {init}");
+        for (int i = 4; i < size; i += 4) _data.AppendLine("    .long 0");
     }
 
     // ---- statements ----
