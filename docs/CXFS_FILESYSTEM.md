@@ -232,10 +232,13 @@ set. A value of 0 means "unknown / not set."
 
 ## 11. Implementation notes (non-normative)
 
-- The **pure format logic** (struct layouts, offset math, validation, name
-  normalization) lives in `kernel/lib/format/kcxfs.{c,h}`. The **driver**
-  (mount state, block I/O via the disk layer, allocation, directory ops) lives
-  in `kernel/drivers/storage/filesys/`.
+- The whole implementation - format logic (struct layouts, offset math,
+  validation, name normalization) and driver (mount state, block I/O via the
+  disk layer, allocation, directory ops) - lives in
+  `kernel/drivers/storage/filesys/cxfs.{c,h}`. An earlier revision of this
+  document split the format logic into `kernel/lib/format/kcxfs.{c,h}`; that
+  file was never written, and `kernel/lib/format/` holds the CXEX container
+  code instead.
 - All driver block I/O must apply `base_lba` so a volume works identically
   whole-disk or within a partition.
 - Disk writes are gated by the kernel's `CXK_ALLOW_DISK_WRITE` build switch;
