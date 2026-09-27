@@ -253,6 +253,13 @@ int apic_init(void) {
        nobody, acknowledges, and is immediately re-entered. That storm starves
        everything else, and it presents as an intermittent hang partway through
        boot rather than as an interrupt problem. */
+    /* Mask interrupts for the whole handover. The timer is firing at 1000 Hz
+       while this runs (kmain enables interrupts long before apic_init), so
+       every step below is racing it. See the apic_up note further down for
+       what that race actually cost. */
+    uint32_t saved_flags;
+    __asm__ volatile ("pushfl; popl %0; cli" : "=r"(saved_flags) :: "memory");
+
     uint16_t masks = pic_get_masks();
 
     /* Mask the 8259 completely BEFORE routing anything through the I/O APIC.
@@ -282,6 +289,28 @@ int apic_init(void) {
         if (iso_gsi[irq] != (uint32_t)irq && iso_gsi[irq] < 64)
             gsi_claimed[iso_gsi[irq]] = (uint8_t)(irq + 1);
 
+    /* Declare the I/O APIC in charge BEFORE routing anything onto it.
+     *
+     * irq_eoi() picks its controller with apic_active(), which reads this flag.
+     * Setting it after the routing loop left a window that the timer walked
+     * into on roughly one boot in three: route_irq(0, ...) puts IRQ 0 live on
+     * the I/O APIC on the FIRST iteration, but until the loop finished and the
+     * flag went up, irq_eoi still sent the acknowledgement to the 8259. So an
+     * interrupt delivered by the I/O APIC was acknowledged at the PIC, the
+     * local APIC's in-service bit for vector 32 was never cleared, and nothing
+     * of equal or lower priority was ever delivered again.
+     *
+     * The timer stopped, permanently and silently. The boot carried on until
+     * something actually needed preemption - the scheduler self-test - and
+     * then waited forever for threads that could never be scheduled. The
+     * comment on irq_eoi() in idt.c describes this exact failure; the window
+     * here is how it happened.
+     *
+     * Safe to set early: the 8259 is already fully masked, and interrupts are
+     * off for the duration, so nothing can be delivered by either controller
+     * until the restore below. */
+    apic_up = 1;
+
     for (int irq = 0; irq < 16; irq++) {
         if (irq == 2) continue;                      /* cascade - not a real line */
         uint32_t gsi = iso_gsi[irq];
@@ -291,7 +320,8 @@ int apic_init(void) {
         route_irq(irq, (uint8_t)(32 + irq), (masks >> irq) & 1);
     }
 
-    apic_up = 1;
+    if (saved_flags & 0x200u) __asm__ volatile ("sti" ::: "memory");
+
     klog_u32("APIC", SEV_OK, "I/O APIC online, redirection entries: ",
              ioapic_entries, LOG_COLOR_VALUE, "");
     return 1;
