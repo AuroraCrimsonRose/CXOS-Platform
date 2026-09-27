@@ -42,6 +42,7 @@ const SYS_MOUSE_READ:    u32 = 0x21;
 const SYS_FB_OP:         u32 = 0x40;
 const SYS_NET_OP:        u32 = 0x50;
 const SYS_FILE_OP:       u32 = 0x60;
+const SYS_EXEC_PATH:     u32 = 0x72;
 const SYS_SPAWN:         u32 = 0x70;
 const SYS_POWER:         u32 = 0x71;
 const POWER_REBOOT:      u32 = 0;
@@ -68,7 +69,31 @@ const E_NOTDIR: i32 = -13;
 struct ipc_call_args  { ep_handle: i32, req: *u8, req_len: u32, reply: *u8, reply_cap: u32 }
 struct ipc_recv_args  { ep_handle: i32, buf: *u8, cap: u32, sender: *i32 }
 struct ipc_reply_args { ep_handle: i32, data: *u8, len: u32 }
-struct spawn_args     { image: *u8, image_len: u32, name: *u8, broker_endpoint: i32, caps: u32 }
+struct spawn_args     { image: *u8, image_len: u32, name: *u8, broker_endpoint: i32, caps: u32, args: *u8, args_len: u32 }
+
+// ---- program arguments ----
+// The launcher hands the kernel a flat blob - the argument strings, one after
+// another, each NUL-terminated - and the kernel lays it out as a single page
+// at USER_ARGS_BASE in the child: argc, then one offset per argument, then the
+// strings. arg_count() and arg_at() below read that page. The page is always
+// mapped, so a program with no arguments reads 0 rather than faulting.
+const USER_ARGS_BASE: u32 = 0xBFFFF000;
+const USER_ARGS_MAX:  u32 = 4096;
+const USER_ARGS_MAXC: u32 = 64;
+
+// how many arguments this program was started with
+fn arg_count() -> u32 {
+    let head: *u32 = USER_ARGS_BASE as *u32;
+    return head[0];
+}
+
+// argument i, or an empty string when i is out of range - so a caller may read
+// an argument it was not given without checking arg_count() first
+fn arg_at(i: u32) -> *u8 {
+    let head: *u32 = USER_ARGS_BASE as *u32;
+    if (i >= head[0]) { return (USER_ARGS_BASE + USER_ARGS_MAX - 1) as *u8; }
+    return (USER_ARGS_BASE + head[1 + i]) as *u8;
+}
 const FB_OP_INFO: u32 = 0;
 const FB_OP_CLEAR: u32 = 1;
 const FB_OP_FILL_RECT: u32 = 2;
@@ -79,6 +104,22 @@ struct fb_op_args { op: u32, x: u32, y: u32, w: u32, h: u32, color: u32, color2:
 
 // ---- network (SYS_NET_OP; CAP_NET) ----
 struct net_op_args { op: u32, ip: u32, data: *u8, len: u32, out: *u32 }
+
+// ---- capabilities ----
+// A process's authority, as a bitmask. Mirrored here so a userspace spawner can
+// name what it is handing a child: spawn and exec_path attenuate the requested
+// set against the caller's own, so you pass a subset of your authority and can
+// never amplify. Previously userspace had to redeclare these locally, which
+// cxk check-abi reports as a third copy of the ABI with no link to the header.
+const CAP_CONSOLE:     u32 = 0x0001;
+const CAP_MEM:         u32 = 0x0002;
+const CAP_DISK:        u32 = 0x0004;
+const CAP_NET:         u32 = 0x0008;
+const CAP_SPAWN:       u32 = 0x0010;
+const CAP_POWER:       u32 = 0x0020;
+const CAP_ENDPOINT:    u32 = 0x0040;
+const CAP_IOPORT:      u32 = 0x0080;
+const CAP_FRAMEBUFFER: u32 = 0x0100;
 
 // ---- files (SYS_FILE_OP; CAP_DISK) ----
 // CXFS is 64-bit throughout; X has no 64-bit integer, so every offset and size
@@ -151,5 +192,9 @@ fn ipc_call(a: *ipc_call_args) -> i32   { return __syscall(SYS_IPC_CALL, a as u3
 fn ipc_recv(a: *ipc_recv_args) -> i32   { return __syscall(SYS_IPC_RECV, a as u32, 0, 0, 0, 0); }
 fn ipc_reply(a: *ipc_reply_args) -> i32 { return __syscall(SYS_IPC_REPLY, a as u32, 0, 0, 0, 0); }
 fn spawn(a: *spawn_args) -> i32         { return __syscall(SYS_SPAWN, a as u32, 0, 0, 0, 0); }
+// Run the CXEX at `path`. The kernel reads and verifies the file itself, so the
+// image/image_len fields of `a` are ignored. A negative broker_endpoint means
+// the child gets no broker handle.
+fn exec_path(path: *u8, a: *spawn_args) -> i32 { return __syscall(SYS_EXEC_PATH, path as u32, a as u32, 0, 0, 0); }
 """;
 }
