@@ -26,6 +26,7 @@
 #include "power.h"
 #include "netif.h"
 #include "usb.h"
+#include "apic.h"
 #include "acpi.h"
 #include "usermode.h"
 #include "ata.h"
@@ -208,15 +209,24 @@ void kmain(void) {
         klog_child_u32("  sub ", (uint32_t)d->subclass, LOG_COLOR_VALUE, "");
     }
 
+    /* ACPI: enables the real shutdown (S5) and sleep paths */
+    acpi_init();
+
+    /* Interrupt controllers, BEFORE any device driver. Two orderings matter:
+       after acpi_init(), because the MADT is the only description of where the
+       APICs are and how legacy IRQs reach them; and before the drivers, because
+       a device cannot be given an MSI vector until the local APIC that would
+       receive it is running.
+       Declines to a working 8259 if anything is missing, so this cannot stop a
+       machine booting. */
+    apic_init();
+
     /* network: whichever NIC is on the bus (polled). netif_init() returns 0 if
        none is. It logs which driver bound, so this line no longer names one -
        it used to say "e1000 online" unconditionally, which became a lie the
        moment a second NIC driver existed. */
     if (netif_init()) klog("NET", SEV_OK, "online");
     else              klog("NET", SEV_WARN, "no NIC found - networking offline");
-
-    /* ACPI: enables the real shutdown (S5) and sleep paths */
-    acpi_init();
 
     /* storage: probe ATA + AHCI drives into the disk registry. AHCI is found via
        PCI; on a machine without one, ahci_init returns 0 harmlessly. */

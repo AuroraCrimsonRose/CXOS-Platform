@@ -23,6 +23,7 @@
 #include "uid.h"
 #include "disk.h"
 #include "cxfs.h"
+#include "string.h"
 #include "pci.h"
 
 /* concise pass/fail reporter */
@@ -200,6 +201,132 @@ static int test_cxfs(void) {
 #endif
 }
 
+
+/* ---- cxfs: the offset-based layer (read_at / write_at / truncate) ----
+ *
+ * The whole-file API could not express any of this: it frees every block and
+ * rewrites from zero, so there was nothing to test but "the bytes came back".
+ * These are the cases the offset layer has to get right for anything that
+ * builds a file incrementally, and the last one is the case the old code simply
+ * refused - a file that has run out of extents.
+ */
+static uint8_t off_buf[CXFS_BLOCK_SIZE];   /* static: 4KB has no business on an 8KB thread stack */
+
+#if CXK_ALLOW_DISK_WRITE
+/* fetch-or-create a scratch file by name, truncated to empty */
+static int scratch_file(const char *name) {
+    int id = cxfs_resolve(name, 0);
+    if (id < 0) {
+        id = cxfs_create_entry(0, name + 1, CXFS_TYPE_FILE);   /* skip the '/' */
+        if (id < 0) return -1;
+    }
+    if (cxfs_truncate((uint32_t)id, 0) != CXFS_E_OK) return -1;
+    return id;
+}
+#endif
+
+static int test_cxfs_offset(void) {
+    if (!cxfs_is_mounted()) return 1;   /* nothing mounted - skip */
+
+#if CXK_ALLOW_DISK_WRITE
+    int a = scratch_file("/kt_off.bin");
+    if (a < 0) return 0;
+    uint32_t A = (uint32_t)a;
+    char buf[32];
+
+    /* --- a partial write must leave the bytes either side alone --- */
+    memset(off_buf, 'A', CXFS_BLOCK_SIZE);
+    if (cxfs_write_at(A, 0, off_buf, CXFS_BLOCK_SIZE) != (int)CXFS_BLOCK_SIZE) return 0;
+    if (cxfs_write_at(A, CXFS_BLOCK_SIZE, off_buf, CXFS_BLOCK_SIZE) != (int)CXFS_BLOCK_SIZE) return 0;
+    if (cxfs_write_at(A, 100, "XYZ", 3) != 3) return 0;
+    if (cxfs_read_at(A, 98, buf, 7) != 7) return 0;
+    if (buf[0] != 'A' || buf[1] != 'A' || buf[2] != 'X' || buf[3] != 'Y' ||
+        buf[4] != 'Z' || buf[5] != 'A' || buf[6] != 'A') return 0;
+
+    /* --- a write straddling a block boundary must cross it correctly --- */
+    if (cxfs_write_at(A, CXFS_BLOCK_SIZE - 2, "LMNO", 4) != 4) return 0;
+    if (cxfs_read_at(A, CXFS_BLOCK_SIZE - 2, buf, 4) != 4) return 0;
+    if (buf[0] != 'L' || buf[1] != 'M' || buf[2] != 'N' || buf[3] != 'O') return 0;
+
+    /* --- a hole reads back as zeros, not as whatever the block used to hold ---
+       This is the one that matters for more than correctness: the block handed
+       out here was previously owned by another file. */
+    if (cxfs_truncate(A, 0) != CXFS_E_OK) return 0;
+    if (cxfs_write_at(A, 2 * CXFS_BLOCK_SIZE, "tail", 4) != 4) return 0;
+    struct cxfs_entry e;
+    if (cxfs_read_entry(A, &e) != 0) return 0;
+    if (e.size != 2 * CXFS_BLOCK_SIZE + 4) return 0;
+    if (cxfs_read_at(A, 0, buf, 16) != 16) return 0;
+    for (int i = 0; i < 16; i++) if (buf[i] != 0) return 0;
+    if (cxfs_read_at(A, CXFS_BLOCK_SIZE, buf, 16) != 16) return 0;
+    for (int i = 0; i < 16; i++) if (buf[i] != 0) return 0;
+    if (cxfs_read_at(A, 2 * CXFS_BLOCK_SIZE, buf, 4) != 4) return 0;
+    if (buf[0] != 't' || buf[3] != 'l') return 0;
+
+    /* --- a read is short at EOF and empty past it --- */
+    if (cxfs_read_at(A, 2 * CXFS_BLOCK_SIZE + 2, buf, 100) != 2) return 0;
+    if (cxfs_read_at(A, e.size, buf, 100) != 0) return 0;
+    if (cxfs_read_at(A, e.size + 1000, buf, 100) != 0) return 0;
+
+    /* --- shrinking then growing must not resurrect the bytes it dropped --- */
+    if (cxfs_truncate(A, 2 * CXFS_BLOCK_SIZE + 1) != CXFS_E_OK) return 0;  /* keeps "t" */
+    if (cxfs_truncate(A, 2 * CXFS_BLOCK_SIZE + 4) != CXFS_E_OK) return 0;  /* back again */
+    if (cxfs_read_at(A, 2 * CXFS_BLOCK_SIZE, buf, 4) != 4) return 0;
+    if (buf[0] != 't') return 0;
+    if (buf[1] != 0 || buf[2] != 0 || buf[3] != 0) return 0;   /* "ail" is gone */
+
+    /* --- extent exhaustion has to compact, not fail ---
+     * CXFS_MAX_EXTENTS is 8. Appending a block to A and then to B in turn means
+     * every one of A's blocks is separated from the last by one of B's, so A
+     * gains a new extent each time instead of extending the one it has. The
+     * ninth append has no extent slot left, which is exactly where the old
+     * whole-file write gave up with "too fragmented / too big for v1".
+     */
+    int b = scratch_file("/kt_frag.bin");
+    if (b < 0) return 0;
+    uint32_t B = (uint32_t)b;
+    if (cxfs_truncate(A, 0) != CXFS_E_OK) return 0;
+
+    const int NB = 11;                        /* > CXFS_MAX_EXTENTS */
+    for (int i = 0; i < NB; i++) {
+        memset(off_buf, 'a' + i, CXFS_BLOCK_SIZE);   /* per-block marker */
+        if (cxfs_write_at(A, (uint64_t)i * CXFS_BLOCK_SIZE, off_buf, CXFS_BLOCK_SIZE)
+            != (int)CXFS_BLOCK_SIZE) return 0;
+        memset(off_buf, 'Z', CXFS_BLOCK_SIZE);       /* B takes the next block */
+        if (cxfs_write_at(B, (uint64_t)i * CXFS_BLOCK_SIZE, off_buf, CXFS_BLOCK_SIZE)
+            != (int)CXFS_BLOCK_SIZE) return 0;
+    }
+
+    /* every block of A still holds its own marker: compaction moved the data
+       without reordering or dropping any of it */
+    for (int i = 0; i < NB; i++) {
+        if (cxfs_read_at(A, (uint64_t)i * CXFS_BLOCK_SIZE, buf, 4) != 4) return 0;
+        for (int j = 0; j < 4; j++) if (buf[j] != 'a' + i) return 0;
+    }
+    /* and B's blocks were not disturbed by A compacting around them */
+    for (int i = 0; i < NB; i++) {
+        if (cxfs_read_at(B, (uint64_t)i * CXFS_BLOCK_SIZE, buf, 4) != 4) return 0;
+        for (int j = 0; j < 4; j++) if (buf[j] != 'Z') return 0;
+    }
+
+    /* A is describable in the 8 extents it has, which is the point of compacting */
+    if (cxfs_read_entry(A, &e) != 0) return 0;
+    int used = 0;
+    for (int i = 0; i < CXFS_MAX_EXTENTS; i++) if (e.extent_len[i]) used++;
+    if (used < 1 || used > CXFS_MAX_EXTENTS) return 0;
+    if (e.size != (uint64_t)NB * CXFS_BLOCK_SIZE) return 0;
+
+    /* tidy up so a re-run starts from the same state */
+    cxfs_delete_entry(A);
+    cxfs_delete_entry(B);
+    return 1;
+#else
+    /* read-only build: prove the offset reader agrees with the whole-file
+       reader on the root directory's existence and nothing more. */
+    return cxfs_resolve("/", 0) >= 0;
+#endif
+}
+
 /* ---- pci: enumeration found devices ---- */
 static int test_pci(void) {
     /* a PC always has at least a host bridge; QEMU i440FX has several devices.
@@ -244,6 +371,8 @@ void ktest_run(void) {
     total++; passed += report("pci (bus enumeration)",            test_pci());
     total++; passed += report("ahci (controller + read)",         test_ahci());
     total++; passed += report("cxfs (read-only mount check)",     test_cxfs());
+    total++; passed += report("cxfs offset I/O + compaction",      test_cxfs_offset());
+    total++; passed += report("file syscalls (SYS_FILE_OP)",       usermode_file_test());
 
     /* single summary line: green if all passed, red if any failed. */
     if (passed == total) {

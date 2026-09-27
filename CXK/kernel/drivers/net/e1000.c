@@ -202,6 +202,24 @@ static void init_tx(void) {
     mmio_wr(E1000_TIPG, 0x0060200A);   /* recommended IPG */
 }
 
+/* The 8254x parts this driver actually implements. The e1000e (82574) and igb
+   families share the class code and nothing else that matters, so matching on
+   vendor alone would claim them and drive a completely different register
+   layout while reporting success. */
+static int is_e1000_device(uint16_t id) {
+    switch (id) {
+        case 0x100E:  /* 82540EM - what QEMU emulates */
+        case 0x100F:  /* 82545EM                      */
+        case 0x1010:  /* 82546EB                      */
+        case 0x1026:  /* 82545GM                      */
+        case 0x1004:  /* 82543GC                      */
+        case 0x1028:  /* 82546GB                      */
+            return 1;
+        default:
+            return 0;
+    }
+}
+
 int e1000_init(void) {
     present = 0;
 
@@ -210,29 +228,15 @@ int e1000_init(void) {
     for (unsigned i = 0; ; i++) {
         const struct pci_device *d = pci_find(0x02, 0x00, -1, i);
         if (!d) break;
-        if (d->vendor_id == 0x8086) { dev = d; break; }
+        if (d->vendor_id == 0x8086 && is_e1000_device(d->device_id)) { dev = d; break; }
     }
     if (!dev) return 0;
 
-    uint32_t base = dev->bar[0] & 0xFFFFFFF0u;
+    pci_enable_bus_master(dev);
+
+    uint32_t base = pci_bar_mmio32(dev, 0, "E1000");
     if (base == 0) return 0;
 
-    /* enable memory space + bus master */
-    uint32_t cmd = pci_config_read32(dev->bus, dev->slot, dev->func, 0x04);
-    cmd |= (1 << 1) | (1 << 2);
-    pci_config_write32(dev->bus, dev->slot, dev->func, 0x04, cmd);
-
-    /* Map the register region (128KB for e1000). This is identity-mapped, which
-       is only safe because PCI MMIO BARs land high - above 0xC0000000, i.e. in
-       the shared kernel half, so the mapping is visible from every address
-       space. If a BAR ever came back low it would be in the per-process user
-       half and would fault exactly like the DMA region did. Refuse rather than
-       fault mysteriously later. */
-    if (base < 0xC0000000u) {
-        klog_u32("E1000", SEV_WARN, "BAR0 below the kernel half: ", base, LOG_COLOR_VALUE,
-                 " - would not be visible from a process address space");
-        return 0;
-    }
     /* PAGE_NO_CACHE: these are device registers, not memory. Reads have side
        effects and the device changes status bits under us, so a cached line
        would serve stale values. The DMA region mapped below is deliberately

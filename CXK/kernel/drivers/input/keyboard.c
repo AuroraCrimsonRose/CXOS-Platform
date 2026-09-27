@@ -186,8 +186,15 @@ static void keyboard_callback(struct registers *r) {
     int upper = shift_down;
     char c = upper ? map_upper[sc] : map_lower[sc];
 
-    /* Ctrl+C -> abort code (before normal char handling) */
-    if (ctrl_down && (c == 'c' || c == 'C')) { kbuf_push(KEY_CTRL_C); return; }
+    /* Ctrl+letter -> the control code, 1-26 (Ctrl+A = 1 ... Ctrl+Z = 26).
+       This used to special-case Ctrl+C alone, which left the PS/2 path
+       disagreeing with the USB HID path - usb_hid.c has always done the
+       general mapping, so Ctrl+S was 19 from a USB keyboard and a plain 's'
+       from a PS/2 one. The USB driver exists on the promise that nothing above
+       it can tell the two apart, so the general rule belongs here too. Ctrl+C
+       still comes out as 3, which is what KEY_CTRL_C is. */
+    if (ctrl_down && c >= 'a' && c <= 'z') { kbuf_push((unsigned char)(c - 'a' + 1)); return; }
+    if (ctrl_down && c >= 'A' && c <= 'Z') { kbuf_push((unsigned char)(c - 'A' + 1)); return; }
 
     /* caps lock affects letters only */
     if (caps_on && c >= 'a' && c <= 'z') c = c - 'a' + 'A';

@@ -37,6 +37,18 @@ void idt_set_user_gate(int n, uint32_t handler);
 void set_user_fault_hook(void (*hook)(struct registers *));
 
 void irq_install_handler(int irq, void (*handler)(struct registers *));
+
+/* ---- MSI vectors --------------------------------------------------------
+ * An MSI has no IRQ number - the device writes a vector straight to the local
+ * APIC - so these are allocated from a pool above the legacy IRQ range rather
+ * than installed against a line. */
+#define MSI_VECTOR_BASE  48
+#define MSI_VECTOR_COUNT 8
+
+/* Claim a vector and attach a handler. Returns the vector to program into the
+   device's MSI capability, or -1 if none are free. */
+int  irq_alloc_msi_vector(void (*handler)(struct registers *));
+void irq_free_msi_vector(int vector);
 void irq_uninstall_handler(int irq);
 
 #define IDT_GATE_INT32 0x8E

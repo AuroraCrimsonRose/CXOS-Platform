@@ -14,6 +14,7 @@
  */
 
 #include "idt.h"
+#include "apic.h"
 #include "syslog.h"
 #include "format.h"
 #include "sched.h"
@@ -35,6 +36,8 @@ extern void irq0();  extern void irq1();  extern void irq2();  extern void irq3(
 extern void irq4();  extern void irq5();  extern void irq6();  extern void irq7();
 extern void irq8();  extern void irq9();  extern void irq10(); extern void irq11();
 extern void irq12(); extern void irq13(); extern void irq14(); extern void irq15();
+extern void irq16(); extern void irq17(); extern void irq18(); extern void irq19();
+extern void irq20(); extern void irq21(); extern void irq22(); extern void irq23();
 
 static struct idt_entry idt[256];
 static struct idt_ptr   idtp;
@@ -196,15 +199,54 @@ void irq_uninstall_handler(int irq) {
     irq_routines[irq] = 0;
 }
 
+/* Acknowledge at whichever controller actually delivered this. Sending an EOI
+   to the 8259 while the I/O APIC is in charge leaves the local APIC's
+   in-service bit set, and nothing of equal or lower priority is ever delivered
+   again - the machine goes quiet rather than crashing. */
+static inline void irq_eoi(uint32_t int_no) {
+    if (apic_active()) lapic_eoi();
+    else               pic_send_eoi(int_no);
+}
+
+/* MSI handlers, indexed by vector - MSI_VECTOR_BASE. Separate from
+   irq_routines because an MSI has no IRQ number: it is a bare vector. */
+static void (*msi_routines[MSI_VECTOR_COUNT])(struct registers *) = { 0 };
+
+int irq_alloc_msi_vector(void (*handler)(struct registers *)) {
+    for (int i = 0; i < MSI_VECTOR_COUNT; i++) {
+        if (!msi_routines[i]) {
+            msi_routines[i] = handler;
+            return MSI_VECTOR_BASE + i;
+        }
+    }
+    return -1;
+}
+
+void irq_free_msi_vector(int vector) {
+    int i = vector - MSI_VECTOR_BASE;
+    if (i >= 0 && i < MSI_VECTOR_COUNT) msi_routines[i] = 0;
+}
+
 void irq_handler(struct registers *r) {
     int irq = r->int_no - 32;
+
+    /* An MSI arrives as a vector with no line behind it. It still needs an EOI
+       to the local APIC - that is what delivered it. */
+    if (r->int_no >= MSI_VECTOR_BASE &&
+        r->int_no < MSI_VECTOR_BASE + MSI_VECTOR_COUNT) {
+        void (*h)(struct registers *) = msi_routines[r->int_no - MSI_VECTOR_BASE];
+        if (h) h(r);
+        irq_eoi(r->int_no);
+        return;
+    }
+
     if (irq < 0 || irq >= 16) {
-        pic_send_eoi(r->int_no);
+        irq_eoi(r->int_no);
         return;
     }
     void (*handler)(struct registers *) = irq_routines[irq];
     if (handler) handler(r);
-    pic_send_eoi(r->int_no);
+    irq_eoi(r->int_no);
 
     /* deferred preemption: the timer's sched_tick() may have set need_resched.
        Perform the actual context switch HERE, after the EOI, so the PIC is
@@ -249,6 +291,12 @@ void idt_init(void) {
     idt_set_gate(42,(uint32_t)irq10); idt_set_gate(43,(uint32_t)irq11);
     idt_set_gate(44,(uint32_t)irq12); idt_set_gate(45,(uint32_t)irq13);
     idt_set_gate(46,(uint32_t)irq14); idt_set_gate(47,(uint32_t)irq15);
+
+    /* MSI vectors. Above the legacy IRQ range so nothing collides with a pin. */
+    idt_set_gate(48,(uint32_t)irq16); idt_set_gate(49,(uint32_t)irq17);
+    idt_set_gate(50,(uint32_t)irq18); idt_set_gate(51,(uint32_t)irq19);
+    idt_set_gate(52,(uint32_t)irq20); idt_set_gate(53,(uint32_t)irq21);
+    idt_set_gate(54,(uint32_t)irq22); idt_set_gate(55,(uint32_t)irq23);
 
     __asm__ volatile ("lidt %0" : : "m"(idtp));
 }

@@ -86,6 +86,19 @@ IRQ 45, 13
 IRQ 46, 14
 IRQ 47, 15
 
+; ---- MSI vectors ----
+; MSI is delivered as a plain interrupt vector with no IRQ line behind it, so
+; these need gates of their own. They reuse the IRQ stub because the entry and
+; exit sequence is identical - only the dispatch in irq_handler differs.
+IRQ 48, 16
+IRQ 49, 17
+IRQ 50, 18
+IRQ 51, 19
+IRQ 52, 20
+IRQ 53, 21
+IRQ 54, 22
+IRQ 55, 23
+
 isr_common:
     pushad                  ; eax,ecx,edx,ebx,esp,ebp,esi,edi
     mov ax, ds
