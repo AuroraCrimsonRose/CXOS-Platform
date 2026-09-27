@@ -17,6 +17,7 @@ import "gfx.xfxn";
 import "cxos.xfxn";
 import "net.xfxn";
 import "file.xfxn";
+import "edit.xfxn";
 type cmd_fn = fn(*u8) -> void;      // a command receives its argument text
 
 const MAX_CMDS: u32 = 32;
@@ -344,6 +345,17 @@ fn cmd_mv(arg: *u8) -> void {
     file_err(arg, rename(arg, newname));
 }
 
+fn cmd_edit(arg: *u8) -> void {
+    if (arg[0] == 0) { puts("usage: edit <path>\n"); return; }
+    // The editor draws itself with gfx_text, so it needs the framebuffer. In
+    // VGA text mode gfx_width() is 0 and it declines - say so rather than
+    // reporting "invalid argument" about the file, which is not the problem.
+    if (gfx_width() < 320) { puts("edit needs the framebuffer - build with CXK_ENABLE_FB=1\n"); return; }
+    let rc: i32 = edit_run(arg);
+    if (rc < 0) { file_err(arg, rc); return; }
+    puts("left the editor\n");
+}
+
 fn cmd_stat(arg: *u8) -> void {
     if (arg[0] == 0) { puts("usage: stat <path>\n"); return; }
     let st: file_stat;
@@ -391,6 +403,7 @@ fn _start() -> void {
     register("write",  cmd_write,  "write text to a file (replaces)");
     register("append", cmd_append, "add text to the end of a file");
     register("stat",   cmd_stat,   "show an entry's metadata");
+    register("edit",   cmd_edit,   "full-screen text editor");
     register("mkdir",  cmd_mkdir,  "create a directory");
     register("rm",     cmd_rm,     "delete a file or empty directory");
     register("mv",     cmd_mv,     "rename an entry");
