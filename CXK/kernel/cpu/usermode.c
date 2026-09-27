@@ -308,7 +308,7 @@ int usermode_file_test(void) {
     char *data = (char *)FT_DATA;
 
     /* --- create, write, read back through one handle --- */
-    ft_str(FT_PATH, "/Temp/kt_sys.txt");
+    ft_str(FT_PATH, "/kt_sys.txt");
     int h = ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0,
                     FOPEN_READ | FOPEN_WRITE | FOPEN_CREATE | FOPEN_TRUNC);
     step++;
@@ -379,19 +379,19 @@ int usermode_file_test(void) {
     if (ft_call(FILE_OP_CLOSE, h, 0, 0, 0, 0, 0) != E_OK) goto done;
 
     /* --- a missing file is E_NOENT without FOPEN_CREATE --- */
-    ft_str(FT_PATH, "/Temp/kt_absent.txt");
+    ft_str(FT_PATH, "/kt_absent.txt");
     step++;
     if (ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_READ) != E_NOENT) goto done;
 
     /* --- a bad user pointer is caught, not dereferenced --- */
-    ft_str(FT_PATH, "/Temp/kt_sys.txt");
+    ft_str(FT_PATH, "/kt_sys.txt");
     step++;
     if (ft_call(FILE_OP_STAT, 0, FT_PATH, 0xC0001000u, 0, 0, 0) != E_FAULT) goto done;
     step++;
     if (ft_call(FILE_OP_OPEN, 0, 0xC0001000u, 0, 0, 0, FOPEN_READ) != E_FAULT) goto done;
 
     /* --- directories, cwd, and relative paths --- */
-    ft_str(FT_PATH, "/Temp/kt_dir");
+    ft_str(FT_PATH, "/kt_dir");
     step++;
     if (ft_call(FILE_OP_MKDIR, 0, FT_PATH, 0, 0, 0, 0) != E_OK) goto done;
     step++;
@@ -412,7 +412,7 @@ int usermode_file_test(void) {
     step++;
     if (ft_call(FILE_OP_CLOSE, h, 0, 0, 0, 0, 0) != E_OK) goto done;
     step++;
-    if (cxfs_resolve("/Temp/kt_dir/inner.txt", 0) < 0) goto done;   /* it really landed there */
+    if (cxfs_resolve("/kt_dir/inner.txt", 0) < 0) goto done;   /* it really landed there */
 
     /* readdir finds it, and stops rather than repeating past the end */
     ft_str(FT_PATH, ".");
@@ -431,18 +431,18 @@ int usermode_file_test(void) {
     step++;
     if (ft_call(FILE_OP_RENAME, 0, FT_PATH, 0, 0, 0, 0) != E_OK) goto done;
     step++;
-    if (cxfs_resolve("/Temp/kt_dir/renamed.txt", 0) < 0) goto done;
+    if (cxfs_resolve("/kt_dir/renamed.txt", 0) < 0) goto done;
 
     ft_str(FT_PATH, "/");
     step++;
     if (ft_call(FILE_OP_CHDIR, 0, FT_PATH, 0, 0, 0, 0) != E_OK) goto done;
-    ft_str(FT_PATH, "/Temp/kt_dir");
+    ft_str(FT_PATH, "/kt_dir");
     step++;
     if (ft_call(FILE_OP_UNLINK, 0, FT_PATH, 0, 0, 0, 0) != E_INVAL) goto done;  /* not empty */
 
     /* --- CAP_DISK really is the gate --- */
     thread_set_caps(me, 0);
-    ft_str(FT_PATH, "/Temp/kt_sys.txt");
+    ft_str(FT_PATH, "/kt_sys.txt");
     step++;
     if (ft_call(FILE_OP_STAT, 0, FT_PATH, FT_STAT, 0, 0, 0) != E_PERM) goto done;
     thread_set_caps(me, CAP_DISK);
@@ -457,17 +457,17 @@ int usermode_file_test(void) {
     sa->image = 0; sa->image_len = 0; sa->name = (const char *)FT_PATH;
     sa->broker_endpoint = -1; sa->caps = 0;
 
-    ft_str(FT_PATH, "/Temp/kt_absent.xcex");
+    ft_str(FT_PATH, "/kt_absent.xcex");
     step++;
     if (sys_exec_path((const char *)FT_PATH, sa) != E_NOENT) goto done;
 
-    ft_str(FT_PATH, "/Temp/kt_dir");
+    ft_str(FT_PATH, "/kt_dir");
     step++;
     if (sys_exec_path((const char *)FT_PATH, sa) != E_ISDIR) goto done;
 
     /* a real file whose contents are not a CXEX at all: the signature check
        must refuse it rather than the loader trying to run the bytes */
-    ft_str(FT_PATH, "/Temp/kt_sys.txt");
+    ft_str(FT_PATH, "/kt_sys.txt");
     step++;
     if (sys_exec_path((const char *)FT_PATH, sa) != E_PERM) goto done;
 
@@ -501,10 +501,10 @@ done:
     thread_set_caps(me, CAP_DISK);
     handle_release_all(thread_handle_table(me), CXK_MAX_HANDLES);
     int id;
-    if ((id = cxfs_resolve("/Temp/kt_dir/renamed.txt", 0)) >= 0) cxfs_delete_entry((uint32_t)id);
-    if ((id = cxfs_resolve("/Temp/kt_dir/inner.txt", 0))   >= 0) cxfs_delete_entry((uint32_t)id);
-    if ((id = cxfs_resolve("/Temp/kt_dir", 0))             >= 0) cxfs_delete_entry((uint32_t)id);
-    if ((id = cxfs_resolve("/Temp/kt_sys.txt", 0))         >= 0) cxfs_delete_entry((uint32_t)id);
+    if ((id = cxfs_resolve("/kt_dir/renamed.txt", 0)) >= 0) cxfs_delete_entry((uint32_t)id);
+    if ((id = cxfs_resolve("/kt_dir/inner.txt", 0))   >= 0) cxfs_delete_entry((uint32_t)id);
+    if ((id = cxfs_resolve("/kt_dir", 0))             >= 0) cxfs_delete_entry((uint32_t)id);
+    if ((id = cxfs_resolve("/kt_sys.txt", 0))         >= 0) cxfs_delete_entry((uint32_t)id);
     thread_set_cwd(me, 0);
     thread_set_caps(me, save);
     unmap_user_page(TEST_CODE_VIRT, phys);
