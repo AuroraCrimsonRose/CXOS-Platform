@@ -180,15 +180,11 @@ static int test_cxfs(void) {
 
 #if CXK_ALLOW_DISK_WRITE
     /* DEV ONLY (scratch disk): create a file, write, read back, verify. */
-    /* Scratch goes in /Temp, not the root. The root is a documented namespace
-       now (docs/CX_FILESYSTEM_LAYOUT.md) and a test file sitting in it is
-       litter that every `ls /` shows forever. Falls back to the root on a
-       volume old enough to have no /Temp. */
-    int dir = cxfs_resolve("/Temp", 0);
-    if (dir < 0) dir = 0;
-    int fid = cxfs_find_in_dir((uint32_t)dir, "ktest.txt");
-    if (fid < 0) fid = cxfs_create_entry((uint32_t)dir, "ktest.txt", CXFS_TYPE_FILE);
-    if (fid < 0) return 0;
+    int fid = cxfs_create_entry(0, "ktest.txt", CXFS_TYPE_FILE);
+    if (fid < 0) {
+        fid = cxfs_resolve("/ktest.txt", 0);   /* may exist from a previous boot */
+        if (fid < 0) return 0;
+    }
     const char *msg = "CXK CXFS round-trip: hello from the filesystem!";
     uint32_t len = 0;
     while (msg[len]) len++;
@@ -217,23 +213,11 @@ static int test_cxfs(void) {
 static uint8_t off_buf[CXFS_BLOCK_SIZE];   /* static: 4KB has no business on an 8KB thread stack */
 
 #if CXK_ALLOW_DISK_WRITE
-/* Fetch-or-create a scratch file at an absolute path, truncated to empty.
-   Splits at the last '/' so the file lands in /Temp rather than the root. */
-static int scratch_file(const char *path) {
-    int id = cxfs_resolve(path, 0);
+/* fetch-or-create a scratch file by name, truncated to empty */
+static int scratch_file(const char *name) {
+    int id = cxfs_resolve(name, 0);
     if (id < 0) {
-        int slash = -1;
-        for (int i = 0; path[i]; i++) if (path[i] == '/') slash = i;
-        if (slash < 0) return -1;
-
-        char dir[128];
-        int n = 0;
-        for (; n < slash && n < (int)sizeof dir - 1; n++) dir[n] = path[n];
-        dir[n] = '\0';
-        int parent = (slash == 0) ? 0 : cxfs_resolve(dir, 0);
-        if (parent < 0) parent = 0;            /* no /Temp: fall back to the root */
-
-        id = cxfs_create_entry((uint32_t)parent, path + slash + 1, CXFS_TYPE_FILE);
+        id = cxfs_create_entry(0, name + 1, CXFS_TYPE_FILE);   /* skip the '/' */
         if (id < 0) return -1;
     }
     if (cxfs_truncate((uint32_t)id, 0) != CXFS_E_OK) return -1;
@@ -245,7 +229,7 @@ static int test_cxfs_offset(void) {
     if (!cxfs_is_mounted()) return 1;   /* nothing mounted - skip */
 
 #if CXK_ALLOW_DISK_WRITE
-    int a = scratch_file("/Temp/kt_off.bin");
+    int a = scratch_file("/kt_off.bin");
     if (a < 0) return 0;
     uint32_t A = (uint32_t)a;
     char buf[32];
@@ -298,7 +282,7 @@ static int test_cxfs_offset(void) {
      * ninth append has no extent slot left, which is exactly where the old
      * whole-file write gave up with "too fragmented / too big for v1".
      */
-    int b = scratch_file("/Temp/kt_frag.bin");
+    int b = scratch_file("/kt_frag.bin");
     if (b < 0) return 0;
     uint32_t B = (uint32_t)b;
     if (cxfs_truncate(A, 0) != CXFS_E_OK) return 0;
