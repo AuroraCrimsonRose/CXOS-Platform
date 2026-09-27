@@ -7,172 +7,184 @@ Where things live on a mounted CXFS volume. `CXFS_FILESYSTEM.md` defines the
 on-disk *format*; this defines the *tree* built on top of it. Until now the
 only documented path was `/System`, named in `CX_EXTENSION_SYSTEM.md` §10 as
 the protected area holding `.xkpk`, and the install path created it and put
-`Boot.xoex` in it. Everything else was unwritten, so it got invented per
-caller — which is exactly how two callers end up disagreeing.
+`Boot.xoex` in it. Everything else got invented per caller, which is how two
+callers end up disagreeing.
 
 ---
 
-## 1. What CXFS makes cheap, and what it makes expensive
-
-The layout is shaped by four properties of the filesystem underneath it. They
-are not incidental; a layout that ignores them is wrong here even if it looks
-familiar from elsewhere.
-
-- **Directory membership is derived, not stored.** A directory has no data
-  blocks; `cxfs_list_dir` and `cxfs_find_in_dir` scan the *whole manifest* for
-  entries whose `parent_id` matches. So the cost of a lookup is the size of the
-  volume, not the size of the directory. **Depth is what costs**, because
-  resolving an N-component path is N manifest scans. Shallow beats tidy.
-- **The manifest is a fixed 1024 entries** (`CXFS_MAX_ENTRIES`). Every
-  directory permanently spends one of them. A deep FHS-style tree would burn a
-  noticeable fraction of the volume's total file count on empty structure.
-- **Depth is capped at 16** by `cxfs_path_of`, which walks up to the root
-  through a 16-level name buffer. A path deeper than that cannot be printed.
-- **There are no symlinks and no hard links.** A file is in exactly one place.
-  Aliases like `/bin -> /usr/bin` cannot be expressed, so the layout must be
-  right the first time rather than papered over later.
-
-One more, from the trust model rather than the filesystem: **everything
-runnable is signed by the same key.** There is no third-party or
-locally-compiled tier that is trusted less than the shipped one — `exec_path`
-refuses anything the kernel's embedded key did not sign, wherever it sits. So
-no directory in this layout may be read as conferring trust; where a program
-sits says who may replace it, never whether it may run. See §2 `/Shared`.
-
----
-
-## 2. The tree
+## 1. The tree
 
 ```
 /
-├── System/      SYSTEM, 0755 — the OS and system programs
-├── Shared/      SYSTEM, 0775 — shared between users; programs, common files
-├── User/        SYSTEM, 0755 — one directory per human user
-├── Temp/        SYSTEM, 0777 — scratch
-└── Volumes/     SYSTEM, 0755 — where other disks attach (see section 3)
+├── System/                 SYSTEM, 0755 — the OS. Only SYSTEM writes here.
+│   ├── Programs/           system programs (.xcex)
+│   ├── Kernel/             kernel images — see §4
+│   ├── Boot/               boot chain    — see §4
+│   ├── Drivers/            .xkdr / .xklo, when module loading lands
+│   └── Temp/               scratch belonging to the OS
+│
+├── Shared/                 SYSTEM, 0775 — shared between users, user-writable
+│   ├── Programs/           programs anyone may install
+│   ├── Documents/
+│   ├── Pictures/
+│   ├── Audio/
+│   └── Videos/
+│
+├── User/                   SYSTEM, 0755
+│   └── <username>/         owned by that UID, 0700
+│       ├── Documents/
+│       └── …               the user's own; nothing imposed beyond the first
+│
+├── Temp/                   SYSTEM, 0777 — user-facing scratch
+│
+└── Volumes/                SYSTEM, 0755 — other disks attach here (§3)
 ```
 
 Capitalised to match `/System`, which already exists on disk. CXFS names are
-case-insensitive and case-preserving, so `cd /system` finds it either way; the
-capitalisation only decides what `ls` prints.
+case-insensitive and case-preserving, so `cd /system/programs` finds it either
+way; capitalisation only decides what `ls` prints.
 
-### `/System`
+**`/System` vs `/Shared` is a split by protection, not by trust.** Every
+runnable image is signed by the same key — `exec_path` refuses anything else
+wherever it sits — so no directory here confers the right to run. What differs
+is *who may write*: `/System` is the OS and only SYSTEM changes it, `/Shared`
+is where users put things for each other, and CXFS models that directly with
+`owner_uid` and the permission bits. Signing governs what may **run**;
+permissions govern what may be **placed**.
 
-The OS and the programs that are part of it. SYSTEM-owned, not user-writable,
-and the unit an update replaces wholesale.
+**Program search order is `/System/Programs`, then `/Shared/Programs`** — never
+the reverse. Both are signed, so neither is untrusted, but a user-writable
+directory searched first could shadow a system program invisibly, and "signed"
+does not mean "the one the user meant".
 
-| Path | Holds |
-|------|-------|
-| `/System/Boot.xoex` | the executive the kernel launches (`cxk_launch_executive`) |
-| `/System/*.xcex` | system programs |
-| `/System/Drivers/` | `.xkdr` / `.xklo`, when module loading lands |
+`/System/Temp` and `/Temp` are deliberately separate: the OS should not have to
+compete for space, or contend for names, with whatever a user program is doing.
 
-`Drivers/` is listed but **not created until there is a driver to put in it.**
-An empty directory costs a manifest entry and tells a reader something exists
-that does not.
+---
 
-### `/Shared`
+## 2. What this costs, measured
 
-Files shared between users, including programs, with none of `/System`'s
-protection. Group-writable rather than SYSTEM-only, so a user can install
-something here without being SYSTEM.
+Two things about CXFS shape the layout. The first turns out not to matter at
+this scale; the second matters more than expected, and is the reason for §2.1.
 
-This is a split by **protection**, not by trust, and that distinction is what
-makes it correct here. An earlier draft of this document argued for a single
-program directory on the grounds that every runnable image is signed by the
-same key, so a `/bin` versus `/usr/local/bin` provenance tier would be
-meaningless. That argument holds — and misses the point. The real difference
-between these two directories is *who may write to them*, which CXFS models
-directly with `owner_uid` and the permission bits. `/System` is the OS and only
-SYSTEM changes it; `/Shared` is where users put things for each other. Signing
-still governs what may *run*; permissions govern what may be *placed*.
+**Manifest entries are finite but not scarce here.** The manifest is a fixed
+1024 entries (`CXFS_MAX_ENTRIES`) and every directory permanently spends one.
+The tree above is about 15 directories — **1.5% of the volume's total entry
+count**. An earlier draft of this document argued against structure on the
+grounds that "speculative directories are not free"; at fifteen of them that
+was simply wrong, and the structure costs nothing worth counting.
 
-**Search order is `/System` first, then `/Shared`.** A user-writable directory
-must not be able to shadow a system program: if `/Shared` were searched first,
-dropping `/Shared/edit.xcex` would silently replace the system `edit` for
-everyone. Both are signed, so neither is untrusted — but "signed" does not mean
-"the one the user meant", and the shadowing would be invisible.
+**Depth is expensive, and more than it looks.** A directory has no data blocks:
+`cxfs_find_in_dir` derives membership by scanning the *whole manifest* for
+entries with a matching `parent_id`. The manifest is 64 blocks (1024 × 256 B =
+256 KB), so **one path component costs up to 64 block reads**, and
+`cxfs_resolve` does that per component:
 
-### `/User`
+| Path | Components | Worst-case reads |
+|------|-----------:|-----------------:|
+| `/System/Boot.xoex` | 2 | 128 blocks — **512 KB** |
+| `/Shared/Documents/notes.txt` | 3 | 192 blocks — **768 KB** |
+| `/User/aurora/Documents/notes.txt` | 4 | 256 blocks — **1 MB** |
 
-One directory per human user, named by account name, owned by that UID, mode
-`0700`. `uid.h` establishes UID 0 as SYSTEM and humans as UID >= 1, and notes
-the account layer does not exist yet — so there are no entries here until it
-does, and the directory is the placeholder for the convention.
+That is disk I/O to resolve a single name, and it is **already happening**: the
+two-component paths in use today cost half a megabyte each. The deeper tree
+makes an existing problem more visible; it does not create it.
 
-A user's files live directly in their directory. No `Documents/`, `Desktop/`
-and so on imposed from above: those are the user's to create, and pre-creating
-them spends manifest entries on someone else's taste.
+`cxfs_path_of` also caps depth at 16 levels, which this layout is nowhere near.
 
-### `/Temp`
+### 2.1 The fix is a manifest cache, not a flatter tree
 
-Scratch, world-writable. Not preserved across boots by policy, though nothing
-currently clears it — noted so the first thing that relies on it knows the
-guarantee is aspirational.
+The driver already solves exactly this problem for the allocation bitmap:
+`bitmap_cache` is loaded into RAM once at mount, every test and set happens in
+memory, and only changed blocks are written back. The comment on it says the
+per-bit disk reads "was making allocation and free-counting take seconds".
+
+The manifest has the same access pattern and none of the cache. 256 KB is an
+affordable resident cost — the bitmap cache is already 8 KB, and the target
+machine has gigabytes — and it would turn every lookup above into a RAM scan,
+making depth nearly free and this layout cheap to use.
+
+**So the sequencing is: cache the manifest first, then adopt this tree.** Not
+because the tree is wrong, but because adopting it without the cache would
+quadruple an I/O cost that is already too high, and it would look like the
+layout's fault.
 
 ---
 
 ## 3. Other disks
 
-**Extra volumes attach at `/Volumes/<label>`**, where the label is the
-partition name (12 characters, `struct partition.name`) or, failing that, the
-disk's assigned name (`HDD0`, `EXT-CDROM0`, `struct disk.name`).
+**Extra volumes attach at `/Volumes/<label>`**, labelled from the partition
+name (12 characters, `struct partition.name`) or the disk's assigned name
+(`HDD0`, `EXT-CDROM0`, `struct disk.name`).
 
-Why a directory in the tree rather than a second syntax like `HDD1:/path`: one
-mount point costs one extra path component, which is one extra manifest scan,
-and nothing else in the system has to learn a new way to spell a path. Every
-existing caller, `cxfs_resolve` included, keeps working unchanged. A volume's
-own contents are its business — this layout describes the boot volume and
-imposes nothing on a data disk.
+A directory in the tree rather than a second syntax like `HDD1:/path`: one
+mount costs one extra path component and nothing in the system has to learn a
+new way to spell a path. A volume's own contents are its business — this
+document describes the boot volume and imposes nothing on a data disk.
 
 ### 3.1 What this needs first, honestly
 
 **CXFS cannot currently mount two volumes at once.** Every piece of mount state
 in `cxfs.c` is a single static: one `sb`, one `mounted`, one `cxfs_id`, one
 `bitmap_cache`, one `fs_base_lba`, one `fs_sectors_per_block`. `cxfs_mount_at`
-replaces them, so mounting a second volume unmounts the first. `/Volumes` is
-therefore a destination, not a description of anything that works today.
+replaces them, so mounting a second volume unmounts the first. `/Volumes` is a
+destination, not a description of anything that works today.
 
-Three things stand between here and there, in increasing order of how invasive
-they are:
+Three things stand in the way, in increasing order of reach:
 
-1. **Per-volume state.** The six statics become a table of mounted volumes.
-   Mechanical.
-2. **Crossing a mount point.** `cxfs_resolve` has to notice that an entry is a
-   mount root and continue the walk in another volume. Contained, since
-   resolution is already one function.
-3. **An entry id must become `(volume, id)`.** This is the one with reach.
-   Today `cxfs_resolve` returns a bare `int`, `struct thread.cwd` is a bare
-   `uint32_t`, `file_stat.id` is a `uint32_t`, and the open-file table holds a
-   bare entry id. Every one of those silently means "id on *the* volume". They
-   all have to carry which volume, and `file_stat.id` is ABI, so userspace sees
-   the change too.
+1. **Per-volume state.** The six statics become a table. Mechanical. (A manifest
+   cache per §2.1 joins them — worth doing in the same pass.)
+2. **Crossing a mount point.** `cxfs_resolve` notices an entry is a mount root
+   and continues the walk in another volume. Contained; resolution is already
+   one function.
+3. **An entry id must become `(volume, id)`.** The one with reach.
+   `cxfs_resolve` returns a bare `int`, `struct thread.cwd` is a bare
+   `uint32_t`, the open-file table holds a bare entry id, and `file_stat.id` is
+   a `uint32_t` **and ABI**, so userspace sees the change. Every one of them
+   silently means "id on *the* volume".
 
-Until that work is done there is a cheaper thing that already works:
-`cxfs_set_id()` switches which volume is the active one, wholesale. A `mount`
-command built on it would behave like a DOS drive letter — one volume visible
-at a time, switched explicitly — which is honest about the limitation and
-commits to no path syntax that step 3 would have to undo.
+Until then, `cxfs_set_id()` already switches the active volume wholesale. A
+`mount` command on it behaves like a DOS drive letter — one volume visible at a
+time, switched explicitly — which is honest about the limitation and commits to
+no path syntax that step 3 would have to undo.
 
 ---
 
-## 4. Rules
+## 4. Open question: `/System/Kernel` and `/System/Boot`
+
+**The kernel and the boot chain are not files in CXFS today.** They live in a
+raw partition: `PART_TYPE_CXBOOT` (0xCB) is documented in `partition.h` as
+"raw boot area: stage2 + kernel.xkex", written by `cxk image` at build time.
+Stage 2 finds the kernel by LBA, not by path — it has no CXFS reader.
+
+So these two directories cannot hold the *running* kernel without stage 2
+learning to read CXFS, which is a substantial change to the earliest and most
+constrained part of the boot path. What they can hold, cheaply, is the
+**update-staging** copy: a new `kernel.xkex` written to `/System/Kernel/` by an
+updater and copied into the boot partition on the next boot.
+`CX_EXTENSION_SYSTEM.md` §10.4 gestures at this — it notes signature checking
+is "very useful with in-place kernel updates" — so the intent seems to exist.
+
+Which of the two is meant changes what gets built, so it is left open rather
+than guessed.
+
+---
+
+## 5. Rules
 
 1. **A program is only runnable if signed.** Location grants nothing:
-   `/System/x.xcex` and `/Temp/x.xcex` are equally subject to verification.
-   The layout is organisation, never authority.
-2. **Depth ≤ 4 from the root**, well inside the 16-level cap, so paths stay
-   printable and resolution stays cheap.
-3. **Create on need, not on principle.** A directory in this document is not
-   created until something is put in it.
-4. **`/System` is SYSTEM's.** A user process writing there requires UID 0,
+   `/System/Programs/x.xcex` and `/Temp/x.xcex` are equally subject to
+   verification. The layout is organisation, never authority.
+2. **Create on need, not on principle.** A directory listed here is not created
+   until something goes in it. `Drivers/` waits for a driver.
+3. **`/System` is SYSTEM's.** A user process writing there requires UID 0,
    which the CXFS permission check already enforces.
-5. **Program search order is `/System`, then `/Shared`** — never the reverse,
-   so a user-writable directory cannot shadow a system program.
+4. **Search `/System/Programs` before `/Shared/Programs`**, never the reverse.
+5. **Depth stays ≤ 4 from the root**, well inside `cxfs_path_of`'s 16-level cap.
 
 ---
 
-## 5. Known divergence: the trust anchor
+## 6. Known divergence: the trust anchor
 
 `CX_EXTENSION_SYSTEM.md` §10.4 describes the kernel embedding the *SHA-256
 fingerprint* of the trusted public key and reading `/System/<key>.xkpk` at
@@ -181,11 +193,9 @@ protected area to hold `.xkpk`" as a dependency of signing.
 
 **That is not what the code does.** `trusted_key.c` embeds the entire 272-byte
 public key into the kernel image, and nothing ever reads a `.xkpk` from disk;
-`cxex_verify.c` hashes the *embedded* key and compares that against the
+`cxex_verify.c` hashes the *embedded* key and compares it against the
 signature's fingerprint. The effect is stronger than documented — there is no
-key on writable storage to swap in the first place — but it means `/System`
-holds no key today, and the dependency §10.6 lists was never needed.
+key on writable storage to swap — but it means `/System` holds no key today.
 
-Recorded here rather than silently designed around: either the doc should be
-corrected to match the implementation, or the on-disk key should be added if
-it was wanted for key rotation. This layout assumes the former.
+Either the doc should be corrected to match the implementation, or the on-disk
+key added if it was wanted for key rotation. This layout assumes the former.
