@@ -72,6 +72,23 @@ app.Configure(config =>
     });
 });
 
+// Spectre wraps every line it writes to the profile width, and under a
+// redirected stdout with TERM=linux - the default on a Linux virtual console
+// and in most CI containers - System.Console.WindowWidth reports -1 rather
+// than 0. Spectre guards against 0 but not against a negative, so the width
+// stays -1 and every line wraps to nothing: the tool produces NO output at
+// all, on either stream, while still exiting with the right code.
+//
+// That turns a compile error into a bare "Error 1" from the build system with
+// nothing to act on, which is worse than useless - it looks like the toolchain
+// is broken rather than the source. Clamp the width to something sane whenever
+// detection fails, before any command runs.
+if (AnsiConsole.Profile.Width <= 0)
+{
+    AnsiConsole.Profile.Width = 100;
+    AnsiConsole.Profile.Height = 40;
+}
+
 // Run the application
 try
 {
