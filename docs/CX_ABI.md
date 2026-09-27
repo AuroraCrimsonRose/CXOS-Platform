@@ -319,11 +319,17 @@ struct spawn_args {
 };
 ```
 
-> **Signature gap.** `spawn` takes an image **already in the caller's memory** and does
-> **not** verify it — only `cxex_exec` (the disk/boot path) calls `cxex_verify_trusted`. So
-> today: kernel-loaded executables are verified, ring-3-spawned ones are not. §7.10's
-> `exec_path` closes this by construction, which is the better fix than bolting verification
-> onto `spawn`: make the verified path the *only* way to introduce new code.
+> **Signature gap — closed by `exec_path` (§7.10, now implemented).** `spawn` takes an image
+> **already in the caller's memory** and does **not** verify it; only the kernel's own load
+> path calls `cxex_verify_trusted`. That was harmless while ring 3 had no filesystem, because
+> the only images able to reach `spawn` arrived through a trusted build. `SYS_FILE_OP` ended
+> that: a process can now read arbitrary bytes off a disk.
+>
+> `SYS_EXEC_PATH` (0x72) is the answer, and it closes the gap *by construction* rather than
+> by bolting a check onto `spawn`: the kernel reads the file itself, so the bytes verified are
+> exactly the bytes loaded and the caller never holds them. `spawn` keeps its meaning — run an
+> image you already have and already trust — and remains how the executive starts its embedded
+> shell.
 
 ### 7.8 Memory — `0x80–0x8F` (specified, unimplemented)
 
@@ -349,32 +355,47 @@ Relocated from v1's `0x40–0x41`, which the framebuffer now occupies. Gated on 
 struct block_args { uint8_t disk_id; uint64_t lba; uint32_t count; void *buf; };
 ```
 
-### 7.10 Filesystem & path execution — `0xA0–0xAF` (proposed)
+### 7.10 Filesystem & path execution — **implemented**
 
-**Not implemented. This range is allocated here because it is the next work item and the
-largest current gap in the ABI:** the kernel has a complete filesystem (CXFS — format,
-mount, create, resolve, read, write, stat, rename, move, list) and ring 3 has **no way to
-reach any of it**. Nothing in userspace can open a file, list a directory, or load a program
-from disk. Everything that runs is compiled into one image.
-
-Two calls unblock the whole userspace application model:
+Both calls described here as proposals now exist. They landed at different numbers than
+proposed, in the families they actually belong to rather than a new range:
 
 | # | Name | Args | Caps | Returns |
 |---|------|------|------|---------|
-| 0xA0 | `fs_op`     | a1=`*fs_op_args` | `CAP_FS` (new bit `0x0200`) | op-specific |
-| 0xA1 | `exec_path` | a1=path ptr, a2=`*spawn_args` (image fields ignored) | `CAP_SPAWN` | new pid |
+| 0x60 | `file_op`   | a1=`*file_op_args` | `CAP_DISK` | op-specific |
+| 0x72 | `exec_path` | a1=path ptr, a2=`*spawn_args` (image fields ignored) | `CAP_SPAWN` | new pid |
+
+Two deviations from the proposal, both deliberate:
+
+- **`file_op` is `0x60`, not `0xA0`, and is gated on `CAP_DISK` rather than a new `CAP_FS`
+  bit.** `CAP_DISK` was already defined and referenced by no syscall at all — it was reserved
+  for exactly this and adding `CAP_FS` beside it would have left two bits meaning the same
+  authority.
+- **`exec_path` is `0x72`, in the process family beside `spawn` (0x70) and `power` (0x71).**
+  It is a process-launch call, not a filesystem call; grouping it with `fs_op` would have
+  split the launch family across two ranges.
+
+Offsets and sizes cross this boundary as **32-bit signed** values, because X Native has no
+64-bit integer type. The kernel refuses anything past `INT32_MAX` rather than truncating, so
+a user-addressable file tops out at 2 GB. CXFS remains 64-bit underneath.
 
 - **`fs_op`** follows the established selector shape (`fb_op`, `net_op`) rather than adding
   a dozen numbers: ops for `STAT`, `OPEN`, `READ`, `WRITE`, `CLOSE`, `READDIR`, `MKDIR`,
   `UNLINK`, `RENAME`. Open files become a second handle type (`HANDLE_FILE`), which is what
   the handle table in §6 was built to absorb.
-- **`exec_path`** is the higher-leverage of the two and is *mostly already written*:
-  `cxk_launch_executive(path)` already does path → CXFS → `cxex_exec`, and `cxex_exec`
-  already verifies signatures. Exposing it means loading apps from disk **inherits signature
-  verification for free** and closes the `spawn` gap noted above.
-
-Sequence that matters: `exec_path` first (it is small, and it is what makes the shell and the
-GUI able to launch separate `.xcex` application files), then `fs_op`.
+- **`exec_path`** loads apps from disk with signature verification inherited from the
+  kernel's own load path, closing the `spawn` gap noted above. It shares `cxex_exec`'s verify
+  and type checks through `cxex_exec_as()`; the two differ only in where authority comes
+  from. `cxex_exec` is the kernel starting something by itself, with nobody to attenuate
+  from, so `caps_for()` reads the image's tier — an `.xoex` gets `CAP_OS_BASELINE`, an
+  `.xcex` gets nothing. `exec_path` is a ring-3 process asking for a launch, so §5 attenuation
+  applies instead. Running `caps_for()` there would make every program loaded from disk
+  capability-less and unable to so much as print.
+- **A negative `broker_endpoint` means no broker**, and the child gets no handle 0. `spawn`
+  requires one because it was written for the brokered model; §1 records that this is now a
+  spectrum. A shell holds a *SEND* handle to its own executive, not a *RECV* endpoint it
+  owns, so requiring a broker would mean no shell could launch anything without first
+  becoming a broker and serving the child's IPC itself.
 
 ---
 

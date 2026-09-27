@@ -20,6 +20,9 @@
 #include "pmm.h"
 #include "heap.h"
 #include "cxex_load.h"
+#include "exec.h"
+#include "launch.h"
+#include "cxfs.h"
 #include "logging.h"
 #include <stddef.h>
 
@@ -133,4 +136,104 @@ int sys_spawn(const struct spawn_args *ua) {
         klog_u32("SPAWN", SEV_OK, "pid ", (uint32_t)pid, LOG_COLOR_VALUE,
                  granted ? " (privileged, ring 3)" : " (caps=0, ring 3)");
     return pid;
+}
+/* ---- SYS_EXEC_PATH ---------------------------------------------------------
+ * Run a program straight off the disk.
+ *
+ * The reason this is a syscall of its own, and not a shell that reads a file
+ * and calls SYS_SPAWN with the bytes: SYS_SPAWN takes an image ALREADY in the
+ * caller's memory and does not verify it - only the kernel's own load path
+ * calls cxex_verify_trusted. That was harmless while ring 3 had no filesystem,
+ * because the only images that could reach SYS_SPAWN came in through a trusted
+ * build. SYS_FILE_OP ended that: a process can now read arbitrary bytes off a
+ * disk. Handing those to SYS_SPAWN would be a way to run code the trusted key
+ * never signed.
+ *
+ * So the kernel reads the file itself. The bytes that are verified are exactly
+ * the bytes that are loaded - there is no window in which the caller could
+ * swap them, because the caller never holds them. CX_ABI.md section 7.10 calls
+ * this closing the gap "by construction", which is the better fix than adding
+ * a verify to SYS_SPAWN and hoping every future caller goes through it.
+ */
+int sys_exec_path(const char *upath, const struct spawn_args *ua) {
+    if (!user_ptr_ok((uint32_t)ua, sizeof *ua)) return E_FAULT;
+    struct spawn_args a = *ua;
+
+    /* copy the path in a page at a time; user_ptr_ok walks page tables, so
+       per-byte would be a page-table walk per character */
+    char path[FILE_PATH_MAX];
+    uint32_t addr = (uint32_t)upath;
+    if (!addr) return E_FAULT;
+    uint32_t n = 0;
+    for (;;) {
+        if (n >= sizeof path) return E_RANGE;
+        if (n == 0 || (((addr + n) & 0xFFFu) == 0)) {
+            if (!user_ptr_ok(addr + n, 1)) return E_FAULT;
+        }
+        path[n] = ((const char *)addr)[n];
+        if (!path[n]) break;
+        n++;
+    }
+
+    if (!cxfs_is_mounted()) return E_IO;
+
+    /* Resolve against the caller's working directory, so `exec doc.xcex`
+       means what it says from wherever the process happens to be. */
+    int id = cxfs_resolve(path, thread_current_cwd());
+    if (id < 0) return E_NOENT;
+
+    struct cxfs_entry e;
+    if (cxfs_read_entry((uint32_t)id, &e) != 0) return E_IO;
+    if (e.type == CXFS_TYPE_DIR)                return E_ISDIR;
+    if (e.type != CXFS_TYPE_FILE || e.size == 0) return E_INVAL;
+    if (e.size > PROC_MAX_IMAGE)                return E_RANGE;
+
+    /* The broker handle is checked BEFORE the image is read: a bad handle is
+       the cheap failure and there is no reason to pull a megabyte off the disk
+       to discover it.
+     *
+     * A NEGATIVE handle means "no broker", and the child simply gets no handle
+     * 0. SYS_SPAWN requires one because it was written for the brokered model,
+     * where an app holds no capabilities and reaches privilege only by calling
+     * its executive. CX_ABI.md section 1 records that this is now a spectrum
+     * rather than a rule: attenuation lets a launcher hand a child exactly the
+     * authority it needs instead. A shell holds a SEND handle to its own
+     * executive, not a RECV endpoint it owns, so requiring a broker here would
+     * mean no shell could ever launch anything - it would first have to become
+     * a broker and serve the child's IPC itself. */
+    struct endpoint *bep = NULL;
+    if (a.broker_endpoint >= 0) {
+        bep = ep_from_handle(a.broker_endpoint, HRIGHT_RECV);
+        if (!bep) return E_BADF;
+    }
+
+    uint8_t *buf = (uint8_t *)kmalloc((size_t)e.size);
+    if (!buf) return E_NOMEM;
+    if (cxfs_read_file((uint32_t)id, buf, (uint32_t)e.size) != (int)e.size) {
+        kfree(buf);
+        return E_IO;
+    }
+
+    /* Attenuation, exactly as SYS_SPAWN does it: a subset of your own set. */
+    uint32_t granted = a.caps & thread_current_caps();
+
+    int rc = cxex_exec_as(buf, (size_t)e.size, granted, bep);
+    kfree(buf);   /* proc_start took its own copy for the new address space */
+
+    if (rc < 0) {
+        /* cxex_exec_* has its own small error space; the one a caller most
+           needs to tell apart is "this image is not signed by a key this
+           kernel trusts", which is policy working rather than a broken file. */
+        /* Name the path. Without it a refusal in the boot log is anonymous,
+           and the self-tests deliberately trigger one - a reader who cannot
+           tell the test's refusal from a real one learns to skip warnings. */
+        klog("EXEC", SEV_WARN, "exec_path refused the image");
+        klog_child(path);
+        klog_child(cxk_launch_strerror(rc));
+        return (rc == CXEX_EXEC_VERIFY_FAILED) ? E_PERM : E_INVAL;
+    }
+
+    klog_u32("EXEC", SEV_OK, "pid ", (uint32_t)rc, LOG_COLOR_VALUE,
+             granted ? " from disk (privileged, ring 3)" : " from disk (caps=0, ring 3)");
+    return rc;
 }
