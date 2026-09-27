@@ -112,10 +112,22 @@ subsystems, so the system stays learnable as it grows. Common suffixes:
 | `.xcdl` | Compiled Dynamic Library |
 | `.xchi` | Compiled Header Interface (ABI / interface definition) |
 
+### XO — CX Operating System
+
+| Extension | Meaning |
+|-----------|---------|
+| `.xoex` | OS Executive (the broker executive; CXEX `type_code` 0x4F45 `'OE'`) |
+
+The tier between XK and XC: XK is the kernel, XO is the executive that brokers
+for userspace, XC is an application. The three are the same CXEX container
+distinguished by `type_code`, and `caps_for()` reads that code to decide
+authority - `.xoex` gets `CAP_OS_BASELINE`, `.xcex` gets nothing by default.
+
 ### XF — CX Format (Data & Serialization)
 
 | Extension | Meaning |
 |-----------|---------|
+| `.xfxn` | Format X Native (X Native source; compiled to `.xcex`) |
 | `.xfto` | Format Text Object |
 | `.xfsl` | Format Scripting Language |
 | `.xfon` | Format Object Notation |
