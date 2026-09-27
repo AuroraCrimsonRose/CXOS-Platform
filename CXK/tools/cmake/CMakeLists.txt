@@ -81,6 +81,7 @@ set(KERNEL_INCLUDES
     -I${SRC_DIR}/kernel/memman
     -I${SRC_DIR}/kernel/drivers/char
     -I${SRC_DIR}/kernel/drivers/usb
+    -I${SRC_DIR}/kernel/drivers/power
     -I${SRC_DIR}/kernel/drivers/input
     -I${SRC_DIR}/kernel/drivers/video
     -I${SRC_DIR}/kernel/drivers/input
@@ -102,6 +103,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/cpu/gdt.c
     ${SRC_DIR}/kernel/cpu/int/idt.c
     ${SRC_DIR}/kernel/cpu/int/pic.c
+    ${SRC_DIR}/kernel/cpu/int/apic.c
     ${SRC_DIR}/kernel/memman/pmm.c
     ${SRC_DIR}/kernel/memman/paging.c
     ${SRC_DIR}/kernel/memman/addr_space.c
@@ -119,6 +121,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/cpu/usermode.c
     ${SRC_DIR}/kernel/cpu/ipc.c
     ${SRC_DIR}/kernel/cpu/spawn.c
+    ${SRC_DIR}/kernel/cpu/sysfile.c
     ${SRC_DIR}/kernel/cpu/handle.c
     ${SRC_DIR}/kernel/cpu/exec.c
     ${SRC_DIR}/kernel/cpu/launch.c
@@ -359,6 +362,21 @@ add_custom_command(
     COMMENT "Imaging boot + stage 2 + kernel"
 )
 add_custom_target(disk_image ALL DEPENDS ${DISK_IMG})
+
+# cxk_disk and disk_image are both ALL targets and both consume the same
+# intermediates - every kernel object, the boot binaries, kernel.xkex. With the
+# Makefile generator CMake copies the rule for a shared custom-command output
+# into EVERY target that consumes it, so under -j the two targets run the same
+# compile concurrently and one links an object the other is still writing.
+#
+# That presents as a link failure against a symbol that is plainly in the source
+# - or, worse, as a kernel built from a half-written object that links fine.
+# A serial build always worked, which is what made it look like a code bug.
+#
+# Ordering the two targets means the second finds every intermediate already up
+# to date and skips it, so nothing is ever written twice at once. The file-level
+# DEPENDS above are all kept, so a changed source still forces a rebuild.
+add_dependencies(disk_image cxk_disk)
 
 # ---- convenience: build just the X app chain ----
 add_custom_target(apps DEPENDS ${APP_IMAGE})
