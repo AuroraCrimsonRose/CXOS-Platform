@@ -18,7 +18,8 @@ uint32_t caps_for(uint16_t type_code, int trusted) {
     return 0;
 }
 
-int cxex_exec_as(const uint8_t *file, size_t len, uint32_t caps, struct endpoint *broker) {
+int cxex_exec_as(const uint8_t *file, size_t len, uint32_t caps, struct endpoint *broker,
+                 const char *args, uint32_t args_len) {
     /* IDENTITY + INTEGRITY: only run images signed by the trusted key. */
     if (cxex_verify_trusted(file, len) != CXEX_VERIFY_OK)
         return CXEX_EXEC_VERIFY_FAILED;
@@ -32,7 +33,7 @@ int cxex_exec_as(const uint8_t *file, size_t len, uint32_t caps, struct endpoint
     /* Start it as a normal ring-3 thread: its own address space, kernel stack,
        and capability tier. The scheduler handles its CR3/esp0 like any process -
        no special-casing. */
-    int pid = proc_start(file, len, caps, broker);
+    int pid = proc_start(file, len, caps, broker, args, args_len);
     return pid;   /* >= 0 pid, or a negative error */
 }
 
@@ -45,5 +46,5 @@ int cxex_exec(const uint8_t *file, size_t len) {
        verify-and-check sequence to save it. */
     struct cxex_header h;
     if (cxex_parse_header(file, len, &h) != 0) return CXEX_EXEC_LOAD_FAILED;
-    return cxex_exec_as(file, len, caps_for(h.type_code, 1 /* verified */), NULL);
+    return cxex_exec_as(file, len, caps_for(h.type_code, 1 /* verified */), NULL, NULL, 0);
 }

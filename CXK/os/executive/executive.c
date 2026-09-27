@@ -47,6 +47,11 @@ void _start(void) {
     sa.image = shell_xcex; sa.image_len = shell_xcex_len;
     sa.name = "shell";     sa.broker_endpoint = ep;
     sa.caps = CAP_OS_BASELINE;   /* privileged shell (attenuated to executive's caps) */
+    /* No arguments for the shell - but say so rather than leaving the fields
+       as whatever was on the stack. The kernel validates args against
+       args_len, so a stale pointer here is a spawn that fails with E_FAULT
+       and a machine that boots to nothing. */
+    sa.args = 0; sa.args_len = 0;
     int pid = sys_spawn(&sa);
     if (pid < 0) { sys_write("executive: spawn failed\n"); sys_exit(1); }
 

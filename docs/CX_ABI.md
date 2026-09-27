@@ -316,8 +316,37 @@ struct spawn_args {
                                                   handle 0. */
     uint32_t    caps;                          /* requested; attenuated by the spawner's own
                                                   set (§5). Pass 0 for a capability-less app. */
+    const char *args;    uint32_t args_len;    /* the argument blob (§7.7.1), or NULL/0 */
 };
 ```
+
+#### 7.7.1 Program arguments
+
+A launcher hands over a **flat blob**: the argument strings, one after another, each
+NUL-terminated. `args_len` is the whole thing, terminators included. Both `spawn` and
+`exec_path` take it, and both refuse a blob that is larger than `USER_ARGS_MAX`, that the
+caller cannot read, or whose **last byte is not a terminator** — the kernel counts arguments
+by counting terminators, so an unterminated blob would run the final string off the end of
+what it copied.
+
+The kernel copies it into the child's address space as one page at `USER_ARGS_BASE`:
+
+| offset | | |
+|---|---|---|
+| `0x000` | `u32` | `argc` |
+| `0x004` | `u32 × argc` | byte offset of each argument, from the base of the page |
+| then | | the strings, each NUL-terminated |
+
+Offsets rather than pointers, because the blob is built in one address space and read in
+another — a launcher can never hand a child a pointer into its own memory. The page is
+**always mapped**, so a program with no arguments reads `argc == 0` instead of faulting on
+its first look, and it is **writable**, so a program may chew on its own argument strings in
+place. `USER_ARGS_BASE` is `0xBFFFF000`, the page directly above the user stack;
+`USER_ARGS_MAX` is 4096 and `USER_ARGS_MAXC` is 64.
+
+There is no `argc`/`argv` in the entry signature. X programs read the page through
+`arg_count()` and `arg_at(i)` in the prelude, so `_start` keeps taking no parameters and no
+program needs a runtime to unpack anything before `_start` runs.
 
 > **Signature gap — closed by `exec_path` (§7.10, now implemented).** `spawn` takes an image
 > **already in the caller's memory** and does **not** verify it; only the kernel's own load
@@ -513,6 +542,9 @@ Then v-next: shared-memory grants (bulk transfer), concurrent IPC, a second exec
 | Executive type | `CXEX_TYPE_OS` = `0x4F45` |
 | App type | `CXEX_TYPE_USER` = `0x4345` |
 | `CAP_OS_BASELINE` | `CONSOLE|MEM|DISK|NET|SPAWN|POWER|ENDPOINT|FRAMEBUFFER` = `0x017F` |
+| Argument page | `USER_ARGS_BASE` = `0xBFFFF000`, one page, always mapped |
+| Max argument bytes | `USER_ARGS_MAX` = `4096` (header included) |
+| Max arguments | `USER_ARGS_MAXC` = `64` |
 | Syscalls implemented | 16 |
 
 ---

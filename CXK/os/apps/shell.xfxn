@@ -32,6 +32,12 @@ global cmd_n:     u32;
 global run_dirs: [2]*u8;
 global run_buf:  [160]u8;
 
+// The packed argument blob handed to the kernel: the argument strings back to
+// back, each NUL-terminated. 512 bytes is far more than the 128-byte command
+// line can produce and well inside the one page the kernel gives a child.
+const RUN_ARGC:  u32 = 512;
+global run_argbuf: [512]u8;
+
 fn register(name: *u8, f: cmd_fn, desc: *u8) -> void {
     if (cmd_n >= MAX_CMDS) { return; }
     cmd_names[cmd_n] = name;
@@ -355,6 +361,34 @@ fn cmd_mv(arg: *u8) -> void {
 // that lets a program say anything. broker_endpoint is -1: the shell owns a
 // SEND handle to its own executive, not a RECV endpoint of its own, so it has
 // no broker to give. The child gets authority directly instead.
+// Split a command tail into arguments and pack them the way the kernel wants
+// them: the strings one after another, each NUL-terminated, argv[0] first.
+// Runs of spaces separate arguments and leading spaces are skipped, so
+// `run  hi   a  b` gives the same three arguments as `run hi a b`.
+//
+// There is deliberately no quoting. A shell that half-implements it - honouring
+// a quote in one place and not the next - is worse than one that plainly has
+// none, and nothing on the disk needs an argument with a space in it yet.
+//
+// Returns the total byte count, or 0 for an empty line or one too long to pack.
+fn run_pack_args(s: *u8) -> u32 {
+    let n: u32 = 0;
+    let i: u32 = 0;
+    while (s[i] != 0) {
+        while (s[i] == 32) { i = i + 1; }
+        if (s[i] == 0) { break; }
+        while (s[i] != 0 && s[i] != 32) {
+            if (n + 2 >= RUN_ARGC) { return 0; }
+            run_argbuf[n] = s[i];
+            n = n + 1;
+            i = i + 1;
+        }
+        run_argbuf[n] = 0;
+        n = n + 1;
+    }
+    return n;
+}
+
 // Build "<dir>/<name>" - or "<dir>/<name>.xcex" when ext is non-zero - into
 // run_buf, and hand back a pointer to it. One shared buffer: cmd_run uses the
 // result before building the next candidate.
@@ -383,23 +417,32 @@ fn run_candidate(dir: *u8, name: *u8, ext: i32) -> *u8 {
 // keeps `run ./x` meaning the x in the working directory rather than whichever
 // x the search path happens to find first.
 fn cmd_run(arg: *u8) -> void {
-    if (arg[0] == 0) { puts("usage: run <path>\n"); return; }
+    if (arg[0] == 0) { puts("usage: run <path> [args...]\n"); return; }
+
+    // The whole tail is packed at once, so the program's own name becomes
+    // argv[0] exactly as the user typed it and the rest follow it. The packed
+    // first string is then the name to look up - no second pass to find it.
+    let blob: u32 = run_pack_args(arg);
+    if (blob == 0) { puts("run: command line too long\n"); return; }
+    let name: *u8 = &run_argbuf[0];
 
     let a: spawn_args;
-    memzero((&a) as *u8, 20);
-    a.name            = arg;
+    memzero((&a) as *u8, 28);
+    a.name            = name;
     a.broker_endpoint = 0 - 1;
     a.caps            = CAP_CONSOLE;
+    a.args            = &run_argbuf[0];
+    a.args_len        = blob;
 
     let pid: i32 = E_NOENT;
-    if (strchr(arg, 47) >= 0) {                              // '/' - a path
-        pid = exec_path(arg, &a);
+    if (strchr(name, 47) >= 0) {                             // '/' - a path
+        pid = exec_path(name, &a);
     } else {
         let d: u32 = 0;
         while (d < 2) {
             let ext: i32 = 0;
             while (ext < 2) {
-                let p: *u8 = run_candidate(run_dirs[d], arg, ext);
+                let p: *u8 = run_candidate(run_dirs[d], name, ext);
                 a.name = p;
                 pid = exec_path(p, &a);
                 // Only E_NOENT means "not here, keep looking". A file that
@@ -411,11 +454,11 @@ fn cmd_run(arg: *u8) -> void {
             }
             d = d + 1;
         }
-        a.name = arg;
+        a.name = name;
     }
 
     if (pid < 0) {
-        puts(arg);
+        puts(name);
         puts(": ");
         // E_PERM here means the signature check refused it, not a file
         // permission problem - worth saying plainly, since an unsigned build
