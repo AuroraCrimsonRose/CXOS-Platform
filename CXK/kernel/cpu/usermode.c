@@ -19,6 +19,7 @@
 #include "spawn.h"
 #include "sysfile.h"
 #include "cxfs.h"
+#include "spawn.h"
 
 #define KERNEL_VBASE 0xC0000000u   /* user half is everything below the higher-half kernel */
 #include "ipc.h"
@@ -115,6 +116,10 @@ int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
         case SYS_SPAWN:
             if (!(thread_current_caps() & CAP_SPAWN)) return E_PERM;
             return sys_spawn((const struct spawn_args *)a1);
+
+        case SYS_EXEC_PATH:
+            if (!(thread_current_caps() & CAP_SPAWN)) return E_PERM;
+            return sys_exec_path((const char *)a1, (const struct spawn_args *)a2);
 
         case SYS_FILE_OP:
             if (!(thread_current_caps() & CAP_DISK)) {
@@ -440,6 +445,42 @@ int usermode_file_test(void) {
     ft_str(FT_PATH, "/kt_sys.txt");
     step++;
     if (ft_call(FILE_OP_STAT, 0, FT_PATH, FT_STAT, 0, 0, 0) != E_PERM) goto done;
+    thread_set_caps(me, CAP_DISK);
+
+    /* --- exec_path refuses everything it should ---
+     * The accept path needs a genuinely signed CXEX, which only exists in a
+     * SIGN=ON build, so what is checked here is every way it must say no. That
+     * is the half that matters: a verifier that never refuses is not one.
+     */
+    thread_set_caps(me, CAP_DISK | CAP_SPAWN);
+    struct spawn_args *sa = (struct spawn_args *)FT_STAT;   /* reuse the page */
+    sa->image = 0; sa->image_len = 0; sa->name = (const char *)FT_PATH;
+    sa->broker_endpoint = -1; sa->caps = 0;
+
+    ft_str(FT_PATH, "/kt_absent.xcex");
+    step++;
+    if (sys_exec_path((const char *)FT_PATH, sa) != E_NOENT) goto done;
+
+    ft_str(FT_PATH, "/kt_dir");
+    step++;
+    if (sys_exec_path((const char *)FT_PATH, sa) != E_ISDIR) goto done;
+
+    /* a real file whose contents are not a CXEX at all: the signature check
+       must refuse it rather than the loader trying to run the bytes */
+    ft_str(FT_PATH, "/kt_sys.txt");
+    step++;
+    if (sys_exec_path((const char *)FT_PATH, sa) != E_PERM) goto done;
+
+    /* a bad path pointer is caught, not dereferenced */
+    step++;
+    if (sys_exec_path((const char *)0xC0001000u, sa) != E_FAULT) goto done;
+    step++;
+    if (sys_exec_path((const char *)FT_PATH, (const struct spawn_args *)0xC0001000u) != E_FAULT) goto done;
+
+    /* and CAP_SPAWN is the gate: the dispatcher checks it, so go through it */
+    thread_set_caps(me, CAP_DISK);
+    step++;
+    if (syscall_dispatch(SYS_EXEC_PATH, FT_PATH, (uint32_t)sa) != E_PERM) goto done;
     thread_set_caps(me, CAP_DISK);
 
     /* --- the reaper releases handles a process never closed --- */

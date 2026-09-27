@@ -20,4 +20,9 @@ int proc_start(const void *image, uint32_t image_len, uint32_t caps, struct endp
 /* SYS_SPAWN handler (called after the CAP_SPAWN check). */
 int sys_spawn(const struct spawn_args *ua);
 
+/* SYS_EXEC_PATH handler (called after the CAP_SPAWN check). Reads the CXEX at
+   `upath` from CXFS inside the kernel and runs it verified; the image fields of
+   *ua are ignored. Returns the new pid, or a negative ABI error. */
+int sys_exec_path(const char *upath, const struct spawn_args *ua);
+
 #endif
