@@ -568,18 +568,11 @@ int ohci_init(void) {
     const struct pci_device *dev = pci_find(0x0C, 0x03, 0x10, 0);
     if (!dev) return 0;
 
-    uint32_t base = dev->bar[0] & 0xFFFFFFF0u;
+    pci_enable_bus_master(dev);
+
+    uint32_t base = pci_bar_mmio32(dev, 0, "OHCI");
     if (base == 0) return 0;
 
-    uint32_t cmd = pci_config_read32(dev->bus, dev->slot, dev->func, 0x04);
-    cmd |= (1 << 1) | (1 << 2);
-    pci_config_write32(dev->bus, dev->slot, dev->func, 0x04, cmd);
-
-    if (base < 0xC0000000u) {
-        klog_u32("OHCI", SEV_WARN, "register BAR below the kernel half: ", base,
-                 LOG_COLOR_VALUE, " - not visible from a process address space");
-        return 0;
-    }
     paging_map(base, base, PAGE_PRESENT | PAGE_WRITE | PAGE_NO_CACHE);
     regs = (volatile uint8_t *)base;
 

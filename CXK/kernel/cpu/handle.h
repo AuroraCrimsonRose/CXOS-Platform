@@ -20,7 +20,8 @@
 
 enum handle_type {
     HANDLE_NONE     = 0,    /* empty slot */
-    HANDLE_ENDPOINT = 1     /* IPC endpoint (v1) */
+    HANDLE_ENDPOINT = 1,    /* IPC endpoint (v1) */
+    HANDLE_FILE     = 2     /* open file (v3) - see cpu/sysfile.c */
 };
 
 /* handle rights (per slot) */
@@ -45,7 +46,20 @@ int handle_install(struct cap_handle *tbl, int max,
 struct cap_handle *handle_get(struct cap_handle *tbl, int max, int idx);
 
 /* Release a handle slot. Returns 0 on success, -1 if idx is invalid/empty.
-   (Does not free the underlying object - object lifetime is the kernel's.) */
+   Calls the type's release function, if one is registered, before blanking the
+   slot. Types without one (HANDLE_ENDPOINT) keep v1 behaviour exactly: the slot
+   is blanked and the object is left alone, because the kernel owns it. */
 int handle_close(struct cap_handle *tbl, int max, int idx);
+
+/* Called when a handle of this type is closed, so the owning subsystem can
+   release whatever the slot's object refers to. */
+typedef void (*handle_release_fn)(struct cap_handle *h);
+
+/* Register the release function for `type`. Registering twice replaces it. */
+void handle_set_release(uint8_t type, handle_release_fn fn);
+
+/* Close every handle in the table, releasing what each one owns. Used when a
+   process is reaped, so a process that exits mid-write leaks nothing. */
+void handle_release_all(struct cap_handle *tbl, int max);
 
 #endif

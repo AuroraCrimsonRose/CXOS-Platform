@@ -195,6 +195,53 @@ int cxfs_read_path(const char *path, void *buf, uint32_t cap);
 /* free all data blocks of an entry and clear its extents (size -> 0). */
 void cxfs_free_file_data(struct cxfs_entry *e);
 
+/* ====================================================================
+ * Offset-based file I/O (v3)
+ *
+ * cxfs_write_file/cxfs_read_file are whole-file: a write frees every block the
+ * file owns and lays it down again from zero. That is fine for a loader
+ * dropping an image on disk and useless for anything that builds a file up as
+ * it goes - a compiler emitting an object would rewrite the whole thing per
+ * call. These work at an offset instead, so a file can be appended to, patched
+ * in place, and cut back.
+ *
+ * Errors are CXFS_E_* rather than a bare -1, because a caller (and the syscall
+ * layer above it) needs to tell "no space" from "no permission" from "this
+ * file is too fragmented to grow".
+ * ==================================================================== */
+
+#define CXFS_E_OK        0
+#define CXFS_E_FAIL     -1    /* generic / not mounted / disk error */
+#define CXFS_E_PERM     -2    /* permission bits say no */
+#define CXFS_E_LOCKED   -3    /* advisory lock held by another live process */
+#define CXFS_E_NOSPACE  -4    /* volume full */
+#define CXFS_E_FRAGMENT -5    /* out of extents, and no contiguous run to compact into */
+#define CXFS_E_INVAL    -6    /* bad argument (offset overflow, not a file, ...) */
+#define CXFS_E_NOTFOUND -7
+#define CXFS_E_ISDIR    -8
+#define CXFS_E_NOTDIR   -9
+#define CXFS_E_EXISTS   -10
+
+/* Read up to `len` bytes from `off`. Returns bytes read - 0 at or past EOF, and
+   a short count when the file ends inside the request - or a CXFS_E_* code.
+   Does NOT update the accessed timestamp: that would turn every read into a
+   manifest write, a bad trade on a 4KB-block filesystem. */
+int cxfs_read_at(uint32_t id, uint64_t off, void *buf, uint32_t len);
+
+/* Write `len` bytes at `off`, growing the file and its allocation as needed.
+   Writing past the end leaves a hole, which reads back as zeros. Returns bytes
+   written, or a CXFS_E_* code. */
+int cxfs_write_at(uint32_t id, uint64_t off, const void *data, uint32_t len);
+
+/* Set the file's size exactly: releases whole blocks past the new end when
+   shrinking, allocates and zeroes when growing. Returns 0 or a CXFS_E_* code. */
+int cxfs_truncate(uint32_t id, uint64_t new_size);
+
+/* Allocate `n` CONSECUTIVE data blocks, returning the first block number, or 0
+   if no run that long is free. Flushes the bitmap once for the whole run
+   instead of once per block, which is what cxfs_alloc_block in a loop costs. */
+uint32_t cxfs_alloc_run(uint32_t n);
+
 /* --- rename / move / delete --- */
 
 /* rename entry `id` to `newname` (in place; parent unchanged).

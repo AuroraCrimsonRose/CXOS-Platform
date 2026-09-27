@@ -1,0 +1,262 @@
+// std/file.xfxn - files and directories for CXK X.
+// Aurora Tejeda / CATX SYSTEMS LLC
+//
+//   import "file.xfxn";
+//
+// Wraps SYS_FILE_OP over CXFS. Needs CAP_DISK, which is part of
+// CAP_OS_BASELINE - the shell can use it, a capability-less app cannot.
+//
+// A handle is a small non-negative integer; anything negative is an E_* code.
+// Offsets and sizes are 32-bit signed, so a file a program can address here
+// tops out at 2 GB - X has no 64-bit integer type and the kernel refuses
+// rather than wrapping. CXFS itself is 64-bit underneath.
+//
+// Paths are relative to the process's working directory unless they start
+// with '/'. Every process starts in the root.
+
+import "io.xfxn";
+import "mem.xfxn";
+import "string.xfxn";
+
+// ---- open / close ----
+
+// Open `path`. `flags` is a combination of FOPEN_*; one of FOPEN_READ or
+// FOPEN_WRITE is required. Returns a handle, or a negative E_* code.
+fn file_open(path: *u8, flags: u32) -> i32 {
+    let a: file_op_args;
+    memzero((&a) as *u8, 32);
+    a.op = FILE_OP_OPEN;
+    a.path = path;
+    a.flags = flags;
+    return file_op(&a);
+}
+
+// open for reading; negative if it does not exist
+fn file_open_read(path: *u8) -> i32 { return file_open(path, FOPEN_READ); }
+
+// create (or empty an existing file) and open it for writing
+fn file_create(path: *u8) -> i32 {
+    return file_open(path, FOPEN_WRITE | FOPEN_CREATE | FOPEN_TRUNC);
+}
+
+// open for writing at the end, creating the file if it is not there
+fn file_append(path: *u8) -> i32 {
+    return file_open(path, FOPEN_WRITE | FOPEN_CREATE | FOPEN_APPEND);
+}
+
+fn file_close(h: i32) -> i32 {
+    let a: file_op_args;
+    memzero((&a) as *u8, 32);
+    a.op = FILE_OP_CLOSE;
+    a.handle = h;
+    return file_op(&a);
+}
+
+// ---- read / write ----
+
+// Read up to `n` bytes. Returns the count, 0 at end of file, or a negative
+// E_* code. A short count is normal at the end of a file, so a reader loops
+// until it gets 0 rather than assuming it got everything it asked for.
+fn file_read(h: i32, buf: *u8, n: u32) -> i32 {
+    let a: file_op_args;
+    memzero((&a) as *u8, 32);
+    a.op = FILE_OP_READ;
+    a.handle = h;
+    a.data = buf;
+    a.len = n;
+    return file_op(&a);
+}
+
+fn file_write(h: i32, buf: *u8, n: u32) -> i32 {
+    let a: file_op_args;
+    memzero((&a) as *u8, 32);
+    a.op = FILE_OP_WRITE;
+    a.handle = h;
+    a.data = buf;
+    a.len = n;
+    return file_op(&a);
+}
+
+// write a NUL-terminated string (without the terminator)
+fn file_puts(h: i32, s: *u8) -> i32 { return file_write(h, s, strlen(s)); }
+
+// ---- position ----
+
+// `origin` is FSEEK_SET, FSEEK_CUR or FSEEK_END. Returns the new offset.
+// Seeking past the end is allowed and allocates nothing: the gap only becomes
+// part of the file when a write reaches it, and reads back as zeros.
+fn file_seek(h: i32, off: i32, origin: u32) -> i32 {
+    let a: file_op_args;
+    memzero((&a) as *u8, 32);
+    a.op = FILE_OP_SEEK;
+    a.handle = h;
+    a.off = off;
+    a.flags = origin;
+    return file_op(&a);
+}
+
+fn file_tell(h: i32) -> i32 {
+    let a: file_op_args;
+    memzero((&a) as *u8, 32);
+    a.op = FILE_OP_TELL;
+    a.handle = h;
+    return file_op(&a);
+}
+
+// cut (or extend) the file to exactly `size` bytes
+fn file_truncate(h: i32, size: i32) -> i32 {
+    let a: file_op_args;
+    memzero((&a) as *u8, 32);
+    a.op = FILE_OP_TRUNC;
+    a.handle = h;
+    a.off = size;
+    return file_op(&a);
+}
+
+// ---- metadata ----
+
+fn stat(path: *u8, st: *file_stat) -> i32 {
+    let a: file_op_args;
+    memzero((&a) as *u8, 32);
+    a.op = FILE_OP_STAT;
+    a.path = path;
+    a.data = st as *u8;
+    return file_op(&a);
+}
+
+fn fstat(h: i32, st: *file_stat) -> i32 {
+    let a: file_op_args;
+    memzero((&a) as *u8, 32);
+    a.op = FILE_OP_FSTAT;
+    a.handle = h;
+    a.data = st as *u8;
+    return file_op(&a);
+}
+
+// 1 if the path resolves to anything at all
+fn file_exists(path: *u8) -> i32 {
+    let st: file_stat;
+    if (stat(path, &st) == 0) { return 1; }
+    return 0;
+}
+
+// size in bytes, or a negative E_* code
+fn file_size(path: *u8) -> i32 {
+    let st: file_stat;
+    let rc: i32 = stat(path, &st);
+    if (rc != 0) { return rc; }
+    return st.size as i32;
+}
+
+// ---- directories ----
+
+// Fill `st` with entry number `index` of the directory at `path`.
+// Returns 1 on a hit and 0 once the index runs past the end, so a listing is
+// a loop that stops on 0.
+fn dir_entry(path: *u8, index: u32, st: *file_stat) -> i32 {
+    let a: file_op_args;
+    memzero((&a) as *u8, 32);
+    a.op = FILE_OP_READDIR;
+    a.path = path;
+    a.len = index;
+    a.data = st as *u8;
+    return file_op(&a);
+}
+
+fn mkdir(path: *u8) -> i32 {
+    let a: file_op_args;
+    memzero((&a) as *u8, 32);
+    a.op = FILE_OP_MKDIR;
+    a.path = path;
+    return file_op(&a);
+}
+
+// remove a file, or an EMPTY directory
+fn unlink(path: *u8) -> i32 {
+    let a: file_op_args;
+    memzero((&a) as *u8, 32);
+    a.op = FILE_OP_UNLINK;
+    a.path = path;
+    return file_op(&a);
+}
+
+// rename in place - `newname` is a bare name, not a path
+fn rename(path: *u8, newname: *u8) -> i32 {
+    let a: file_op_args;
+    memzero((&a) as *u8, 32);
+    a.op = FILE_OP_RENAME;
+    a.path = path;
+    a.path2 = newname;
+    return file_op(&a);
+}
+
+fn chdir(path: *u8) -> i32 {
+    let a: file_op_args;
+    memzero((&a) as *u8, 32);
+    a.op = FILE_OP_CHDIR;
+    a.path = path;
+    return file_op(&a);
+}
+
+// write the working directory into `buf`; returns its length
+fn getcwd(buf: *u8, cap: u32) -> i32 {
+    let a: file_op_args;
+    memzero((&a) as *u8, 32);
+    a.op = FILE_OP_GETCWD;
+    a.data = buf;
+    a.len = cap;
+    return file_op(&a);
+}
+
+// ---- whole-file convenience ----
+
+// Read a whole file into `buf`. Returns the byte count, or a negative E_*.
+// Loops because a read is allowed to come back short.
+fn file_slurp(path: *u8, buf: *u8, cap: u32) -> i32 {
+    let h: i32 = file_open_read(path);
+    if (h < 0) { return h; }
+
+    let total: u32 = 0;
+    while (total < cap) {
+        let n: i32 = file_read(h, &buf[total], cap - total);
+        if (n < 0) { file_close(h); return n; }
+        if (n == 0) { break; }
+        total = total + (n as u32);
+    }
+    file_close(h);
+    return total as i32;
+}
+
+// Create `path` and write `n` bytes to it, replacing anything already there.
+fn file_dump(path: *u8, buf: *u8, n: u32) -> i32 {
+    let h: i32 = file_create(path);
+    if (h < 0) { return h; }
+
+    let total: u32 = 0;
+    while (total < n) {
+        let w: i32 = file_write(h, &buf[total], n - total);
+        if (w <= 0) { file_close(h); return w; }
+        total = total + (w as u32);
+    }
+    file_close(h);
+    return total as i32;
+}
+
+// ---- errors ----
+
+// a short name for a negative return, for error messages
+fn file_strerror(rc: i32) -> *u8 {
+    if (rc == E_PERM)   { return "permission denied"; }
+    if (rc == E_INVAL)  { return "invalid argument"; }
+    if (rc == E_FAULT)  { return "bad pointer"; }
+    if (rc == E_NOENT)  { return "no such file or directory"; }
+    if (rc == E_NOMEM)  { return "out of space"; }
+    if (rc == E_BADF)   { return "bad file handle"; }
+    if (rc == E_AGAIN)  { return "file is in use"; }
+    if (rc == E_RANGE)  { return "out of range"; }
+    if (rc == E_IO)     { return "disk error"; }
+    if (rc == E_EXIST)  { return "already exists"; }
+    if (rc == E_ISDIR)  { return "is a directory"; }
+    if (rc == E_NOTDIR) { return "not a directory"; }
+    return "error";
+}

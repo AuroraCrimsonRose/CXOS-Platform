@@ -88,6 +88,7 @@ int thread_create(const char *name, void (*entry)(void)) {
     threads[slot].is_user    = 0;
     threads[slot].exit_code  = 0;
     threads[slot].uid        = threads[current].uid;   /* inherit creator UID */
+    threads[slot].cwd        = threads[current].cwd;   /* inherit creator cwd */
     threads[slot].caps       = 0;                      /* no authority by default (apps) */
     for (int hi = 0; hi < CXK_MAX_HANDLES; hi++) threads[slot].handles[hi].type = HANDLE_NONE;
     threads[slot].user_stack_base = 0;
@@ -186,6 +187,10 @@ static void sched_reap(void) {
                 kfree((void *)threads[i].kstack_base);
                 threads[i].kstack_base = 0;
             }
+            /* release whatever the handle table still owns - an open file
+               belongs to its handle, so a process that exits mid-write must not
+               leave the slot held. Endpoints are unaffected (no releaser). */
+            handle_release_all(threads[i].handles, CXK_MAX_HANDLES);
             threads[i].state = THREAD_UNUSED;   /* slot reusable */
         }
     }
@@ -318,6 +323,16 @@ int thread_alloc_kstack(int id) {
     return 0;
 }
 
+uint32_t thread_current_cwd(void) {
+    if (!initialized) return 0;            /* bare kernel boot context = root */
+    return threads[current].cwd;
+}
+
+void thread_set_cwd(int id, uint32_t entry_id) {
+    if (id < 0 || id >= MAX_THREADS) return;
+    threads[id].cwd = entry_id;
+}
+
 uint32_t thread_current_uid(void) {
     if (!initialized) return UID_SYSTEM;   /* bare kernel boot context = SYSTEM */
     return threads[current].uid;
@@ -340,6 +355,11 @@ int thread_handle_install(int id, uint8_t type, uint8_t rights, void *object) {
 struct cap_handle *thread_handle_get(int id, int idx) {
     if (id < 0 || id >= MAX_THREADS) return 0;
     return handle_get(threads[id].handles, CXK_MAX_HANDLES, idx);
+}
+
+struct cap_handle *thread_handle_table(int id) {
+    if (id < 0 || id >= MAX_THREADS) return 0;
+    return threads[id].handles;
 }
 
 int thread_handle_close(int id, int idx) {

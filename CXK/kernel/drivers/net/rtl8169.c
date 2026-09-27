@@ -156,27 +156,15 @@ static int is_realtek_nic(uint16_t device_id) {
 /* Pick the register BAR. The PCIe parts (8168/8111/8136) put MMIO at BAR2 and
  * leave BAR0 as an I/O port window; the older PCI parts (8169/8167) use BAR1.
  * Rather than branch on the device ID - the mapping is not perfectly consistent
- * across revisions - take the first MEMORY BAR among 2 then 1 then 0.
+ * across revisions - take the first usable MEMORY BAR among 2 then 1 then 0.
  *
- * Returns 0 if none is usable, and says why. */
+ * pci_bar_mmio32 does the decoding, including the 64-bit BAR pairing that used
+ * to be open-coded here, and reports why a BAR is unusable. */
 static uint32_t pick_mmio_bar(const struct pci_device *dev) {
-    const int order[3] = { 2, 1, 0 };
+    static const int order[3] = { 2, 1, 0 };
     for (int i = 0; i < 3; i++) {
-        int b = order[i];
-        uint32_t raw = dev->bar[b];
-        if (raw == 0) continue;
-        if (raw & 1) continue;                      /* bit 0 set = I/O space, not memory */
-
-        /* bits [2:1] == 0b10 marks a 64-bit BAR, whose high dword lives in the
-           next BAR. A 32-bit kernel cannot reach anything above 4 GB, so a
-           non-zero high half is a hard refusal rather than a truncation. */
-        if (((raw >> 1) & 3) == 2) {
-            if (b >= 5 || dev->bar[b + 1] != 0) {
-                klog("RTL8169", SEV_WARN, "register BAR is 64-bit and above 4 GB - unreachable");
-                return 0;
-            }
-        }
-        return raw & 0xFFFFFFF0u;
+        uint32_t base = pci_bar_mmio32(dev, order[i], "RTL8169");
+        if (base) return base;
     }
     return 0;
 }
@@ -242,20 +230,8 @@ int rtl8169_init(void) {
         return 0;
     }
 
-    /* enable memory space + bus master; without bus master the rings are never read */
-    uint32_t cmd = pci_config_read32(dev->bus, dev->slot, dev->func, 0x04);
-    cmd |= (1 << 1) | (1 << 2);
-    pci_config_write32(dev->bus, dev->slot, dev->func, 0x04, cmd);
-
-    /* Identity-mapped registers, which is only safe because PCI MMIO lands in
-       the shared kernel half. A low BAR would sit in the per-process user half
-       and fault exactly the way the DMA region did before it was moved. Refuse
-       rather than fault mysteriously later - same rule as e1000. */
-    if (base < 0xC0000000u) {
-        klog_u32("RTL8169", SEV_WARN, "register BAR below the kernel half: ", base,
-                 LOG_COLOR_VALUE, " - would not be visible from a process address space");
-        return 0;
-    }
+    /* Without bus master the rings are never read, which looks like dead silicon. */
+    pci_enable_bus_master(dev);
     /* PAGE_NO_CACHE: device registers, not memory. The chip changes status bits
        under us and reads have side effects, so a cached line would serve stale
        values. 64 KB covers the whole register file on every family member. */
