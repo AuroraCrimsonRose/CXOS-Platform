@@ -69,7 +69,31 @@ const E_NOTDIR: i32 = -13;
 struct ipc_call_args  { ep_handle: i32, req: *u8, req_len: u32, reply: *u8, reply_cap: u32 }
 struct ipc_recv_args  { ep_handle: i32, buf: *u8, cap: u32, sender: *i32 }
 struct ipc_reply_args { ep_handle: i32, data: *u8, len: u32 }
-struct spawn_args     { image: *u8, image_len: u32, name: *u8, broker_endpoint: i32, caps: u32 }
+struct spawn_args     { image: *u8, image_len: u32, name: *u8, broker_endpoint: i32, caps: u32, args: *u8, args_len: u32 }
+
+// ---- program arguments ----
+// The launcher hands the kernel a flat blob - the argument strings, one after
+// another, each NUL-terminated - and the kernel lays it out as a single page
+// at USER_ARGS_BASE in the child: argc, then one offset per argument, then the
+// strings. arg_count() and arg_at() below read that page. The page is always
+// mapped, so a program with no arguments reads 0 rather than faulting.
+const USER_ARGS_BASE: u32 = 0xBFFFF000;
+const USER_ARGS_MAX:  u32 = 4096;
+const USER_ARGS_MAXC: u32 = 64;
+
+// how many arguments this program was started with
+fn arg_count() -> u32 {
+    let head: *u32 = USER_ARGS_BASE as *u32;
+    return head[0];
+}
+
+// argument i, or an empty string when i is out of range - so a caller may read
+// an argument it was not given without checking arg_count() first
+fn arg_at(i: u32) -> *u8 {
+    let head: *u32 = USER_ARGS_BASE as *u32;
+    if (i >= head[0]) { return (USER_ARGS_BASE + USER_ARGS_MAX - 1) as *u8; }
+    return (USER_ARGS_BASE + head[1 + i]) as *u8;
+}
 const FB_OP_INFO: u32 = 0;
 const FB_OP_CLEAR: u32 = 1;
 const FB_OP_FILL_RECT: u32 = 2;
