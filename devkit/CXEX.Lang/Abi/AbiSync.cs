@@ -35,7 +35,8 @@ public static class AbiSync
     /// <c>NET_OP_</c> is not mistaken for a member of some shorter family.</summary>
     private static readonly string[] Families =
     {
-        "NET_OP_", "FB_OP_", "POWER_", "SYS_", "CAP_", "E_"
+        "FILE_OP_", "NET_OP_", "FOPEN_", "FSEEK_", "FTYPE_",
+        "FB_OP_", "POWER_", "SYS_", "CAP_", "E_"
     };
 
     /// <summary>Header names that are not ABI surface and must not be reported.</summary>
