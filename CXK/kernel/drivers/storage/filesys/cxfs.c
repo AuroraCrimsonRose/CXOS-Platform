@@ -126,7 +126,7 @@ int cxfs_format_at(uint64_t base_lba, uint32_t total_blocks) {
     /* --- figure out the layout (total_blocks = this volume's size in blocks) --- */
 
     uint32_t manifest_entries = CXFS_MAX_ENTRIES;
-    uint32_t entries_per_block = CXFS_BLOCK_SIZE / sizeof(struct cxfs_entry); /* 4 */
+    uint32_t entries_per_block = CXFS_BLOCK_SIZE / sizeof(struct cxfs_entry); /* 16 */
     uint32_t manifest_blocks = (manifest_entries + entries_per_block - 1) / entries_per_block;
 
     uint32_t bitmap_start = 1;             /* right after superblock */
@@ -464,7 +464,7 @@ uint32_t cxfs_free_blocks(void) {
  * Manifest / entry operations
  * ==================================================================== */
 
-#define ENTRIES_PER_BLOCK (CXFS_BLOCK_SIZE / sizeof(struct cxfs_entry))  /* 4 */
+#define ENTRIES_PER_BLOCK (CXFS_BLOCK_SIZE / sizeof(struct cxfs_entry))  /* 16 */
 
 int cxfs_read_entry(uint32_t id, struct cxfs_entry *out) {
     if (!mounted || id >= sb.manifest_count) return -1;
