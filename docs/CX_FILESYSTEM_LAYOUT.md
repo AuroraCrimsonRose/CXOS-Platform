@@ -35,9 +35,9 @@ familiar from elsewhere.
 One more, from the trust model rather than the filesystem: **everything
 runnable is signed by the same key.** There is no third-party or
 locally-compiled tier that is trusted less than the shipped one — `exec_path`
-refuses anything the kernel's embedded key did not sign, wherever it sits. The
-Unix split between `/bin` and `/usr/local/bin` encodes a trust and provenance
-distinction that does not exist here, so reproducing it would be cargo cult.
+refuses anything the kernel's embedded key did not sign, wherever it sits. So
+no directory in this layout may be read as conferring trust; where a program
+sits says who may replace it, never whether it may run. See §2 `/Shared`.
 
 ---
 
@@ -45,64 +45,121 @@ distinction that does not exist here, so reproducing it would be cargo cult.
 
 ```
 /
-├── System/      SYSTEM, 0755 — the OS itself
-├── Programs/    SYSTEM, 0755 — every runnable program
-├── Users/       SYSTEM, 0755 — one directory per human user
-└── Temp/        SYSTEM, 0777 — scratch
+├── System/      SYSTEM, 0755 — the OS and system programs
+├── Shared/      SYSTEM, 0775 — shared between users; programs, common files
+├── User/        SYSTEM, 0755 — one directory per human user
+├── Temp/        SYSTEM, 0777 — scratch
+└── Volumes/     SYSTEM, 0755 — where other disks attach (see section 3)
 ```
 
-Four top-level directories, each one manifest entry. Capitalised to match
-`/System`, which already exists.
+Capitalised to match `/System`, which already exists on disk. CXFS names are
+case-insensitive and case-preserving, so `cd /system` finds it either way; the
+capitalisation only decides what `ls` prints.
 
 ### `/System`
 
-The OS. Owned by SYSTEM, not writable by a user, and the unit an update
-replaces wholesale.
+The OS and the programs that are part of it. SYSTEM-owned, not user-writable,
+and the unit an update replaces wholesale.
 
 | Path | Holds |
 |------|-------|
 | `/System/Boot.xoex` | the executive the kernel launches (`cxk_launch_executive`) |
-| `/System/*.xkpk` | the trusted public key, *if* §10.4's on-disk anchor is ever implemented — see §4 |
+| `/System/*.xcex` | system programs |
 | `/System/Drivers/` | `.xkdr` / `.xklo`, when module loading lands |
 
 `Drivers/` is listed but **not created until there is a driver to put in it.**
 An empty directory costs a manifest entry and tells a reader something exists
 that does not.
 
-### `/Programs`
+### `/Shared`
 
-Every runnable `.xcex`. This is the search path: a bare `run foo` resolves
-`/Programs/foo.xcex`.
+Files shared between users, including programs, with none of `/System`'s
+protection. Group-writable rather than SYSTEM-only, so a user can install
+something here without being SYSTEM.
 
-One directory rather than a system/installed split, because the signing model
-gives no meaning to the distinction — see §1. If a provenance tier ever does
-appear (a second trusted key, or user-signed builds), *that* is when a split
-earns its place, and it should be a sibling (`/Programs.local`) rather than a
-nested one, to keep resolution one scan deep.
+This is a split by **protection**, not by trust, and that distinction is what
+makes it correct here. An earlier draft of this document argued for a single
+program directory on the grounds that every runnable image is signed by the
+same key, so a `/bin` versus `/usr/local/bin` provenance tier would be
+meaningless. That argument holds — and misses the point. The real difference
+between these two directories is *who may write to them*, which CXFS models
+directly with `owner_uid` and the permission bits. `/System` is the OS and only
+SYSTEM changes it; `/Shared` is where users put things for each other. Signing
+still governs what may *run*; permissions govern what may be *placed*.
 
-### `/Users`
+**Search order is `/System` first, then `/Shared`.** A user-writable directory
+must not be able to shadow a system program: if `/Shared` were searched first,
+dropping `/Shared/edit.xcex` would silently replace the system `edit` for
+everyone. Both are signed, so neither is untrusted — but "signed" does not mean
+"the one the user meant", and the shadowing would be invisible.
+
+### `/User`
 
 One directory per human user, named by account name, owned by that UID, mode
-`0700`. `uid.h` establishes that UID 0 is SYSTEM and humans are UID ≥ 1, and
-notes the account layer does not exist yet — so until it does, there are no
-entries here and the directory itself is the placeholder for the convention.
+`0700`. `uid.h` establishes UID 0 as SYSTEM and humans as UID >= 1, and notes
+the account layer does not exist yet — so there are no entries here until it
+does, and the directory is the placeholder for the convention.
 
-A user's own files live directly in their directory. No `Documents/`,
-`Desktop/` and so on imposed from above: those are the user's to create, and
-pre-creating them would spend manifest entries on someone else's taste.
+A user's files live directly in their directory. No `Documents/`, `Desktop/`
+and so on imposed from above: those are the user's to create, and pre-creating
+them spends manifest entries on someone else's taste.
 
 ### `/Temp`
 
 Scratch, world-writable. Not preserved across boots by policy, though nothing
-currently clears it — noted so the first thing that depends on it knows the
+currently clears it — noted so the first thing that relies on it knows the
 guarantee is aspirational.
 
 ---
 
-## 3. Rules
+## 3. Other disks
+
+**Extra volumes attach at `/Volumes/<label>`**, where the label is the
+partition name (12 characters, `struct partition.name`) or, failing that, the
+disk's assigned name (`HDD0`, `EXT-CDROM0`, `struct disk.name`).
+
+Why a directory in the tree rather than a second syntax like `HDD1:/path`: one
+mount point costs one extra path component, which is one extra manifest scan,
+and nothing else in the system has to learn a new way to spell a path. Every
+existing caller, `cxfs_resolve` included, keeps working unchanged. A volume's
+own contents are its business — this layout describes the boot volume and
+imposes nothing on a data disk.
+
+### 3.1 What this needs first, honestly
+
+**CXFS cannot currently mount two volumes at once.** Every piece of mount state
+in `cxfs.c` is a single static: one `sb`, one `mounted`, one `cxfs_id`, one
+`bitmap_cache`, one `fs_base_lba`, one `fs_sectors_per_block`. `cxfs_mount_at`
+replaces them, so mounting a second volume unmounts the first. `/Volumes` is
+therefore a destination, not a description of anything that works today.
+
+Three things stand between here and there, in increasing order of how invasive
+they are:
+
+1. **Per-volume state.** The six statics become a table of mounted volumes.
+   Mechanical.
+2. **Crossing a mount point.** `cxfs_resolve` has to notice that an entry is a
+   mount root and continue the walk in another volume. Contained, since
+   resolution is already one function.
+3. **An entry id must become `(volume, id)`.** This is the one with reach.
+   Today `cxfs_resolve` returns a bare `int`, `struct thread.cwd` is a bare
+   `uint32_t`, `file_stat.id` is a `uint32_t`, and the open-file table holds a
+   bare entry id. Every one of those silently means "id on *the* volume". They
+   all have to carry which volume, and `file_stat.id` is ABI, so userspace sees
+   the change too.
+
+Until that work is done there is a cheaper thing that already works:
+`cxfs_set_id()` switches which volume is the active one, wholesale. A `mount`
+command built on it would behave like a DOS drive letter — one volume visible
+at a time, switched explicitly — which is honest about the limitation and
+commits to no path syntax that step 3 would have to undo.
+
+---
+
+## 4. Rules
 
 1. **A program is only runnable if signed.** Location grants nothing:
-   `/Programs/x.xcex` and `/Temp/x.xcex` are equally subject to verification.
+   `/System/x.xcex` and `/Temp/x.xcex` are equally subject to verification.
    The layout is organisation, never authority.
 2. **Depth ≤ 4 from the root**, well inside the 16-level cap, so paths stay
    printable and resolution stays cheap.
@@ -110,10 +167,12 @@ guarantee is aspirational.
    created until something is put in it.
 4. **`/System` is SYSTEM's.** A user process writing there requires UID 0,
    which the CXFS permission check already enforces.
+5. **Program search order is `/System`, then `/Shared`** — never the reverse,
+   so a user-writable directory cannot shadow a system program.
 
 ---
 
-## 4. Known divergence: the trust anchor
+## 5. Known divergence: the trust anchor
 
 `CX_EXTENSION_SYSTEM.md` §10.4 describes the kernel embedding the *SHA-256
 fingerprint* of the trusted public key and reading `/System/<key>.xkpk` at
