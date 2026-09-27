@@ -38,7 +38,8 @@ int cxex_exec(const uint8_t *file, size_t len);
  *
  * The verification is identical either way: the signature is what says the
  * image may run at all, never what it may do. */
-int cxex_exec_as(const uint8_t *file, size_t len, uint32_t caps, struct endpoint *broker);
+int cxex_exec_as(const uint8_t *file, size_t len, uint32_t caps, struct endpoint *broker,
+                 const char *args, uint32_t args_len);
 
 enum cxex_exec_result {
     CXEX_EXEC_VERIFY_FAILED = -1,   /* signature/identity check failed */

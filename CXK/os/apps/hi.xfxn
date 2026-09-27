@@ -13,9 +13,27 @@
 // spectrum, and it is the end that needs no endpoint to exist first.
 
 import "io.xfxn";
+import "fmt.xfxn";
 
 fn _start() -> void {
-    puts("hi - loaded from /System/Programs/hi.xcex, verified, run in ring 3\n");
+    puts("hi - loaded from disk, verified, run in ring 3\n");
     puts("    nothing about this program is compiled into the OS\n");
+
+    // The kernel hands a program its arguments on a page of its own; arg_at(0)
+    // is the name its launcher used. Printing them is the only way to see from
+    // the outside that they crossed the address-space boundary intact.
+    let n: u32 = arg_count();
+    puts("    argc ");
+    print_u32(n);
+    newline();
+    let i: u32 = 0;
+    while (i < n) {
+        puts("    argv[");
+        print_u32(i);
+        puts("] = ");
+        puts(arg_at(i));
+        newline();
+        i = i + 1;
+    }
     exit(0);
 }

@@ -67,6 +67,24 @@
 #define E_ISDIR  (-12)   /* expected a file, got a directory */
 #define E_NOTDIR (-13)   /* expected a directory, got a file */
 
+/* ---- program arguments ----
+   A launcher hands over a flat blob: the argument strings, NUL-terminated, one
+   after another. The kernel copies it into the new address space as a single
+   page at USER_ARGS_BASE, laid out as
+
+       u32  argc
+       u32  off[argc]        byte offsets from the base of the page
+       ...  the strings, NUL-terminated
+
+   The page is always mapped, so a program with no arguments reads argc == 0
+   rather than faulting, and it is writable, so a program may chew on its own
+   argument strings in place. Offsets rather than pointers because the blob is
+   built in one address space and read in another; a launcher never hands a
+   child a pointer into its own memory. */
+#define USER_ARGS_BASE   0xBFFFF000u  /* the page just above the user stack */
+#define USER_ARGS_MAX    4096u        /* one page, header included */
+#define USER_ARGS_MAXC   64u          /* most arguments one program can be given */
+
 /* ---- shared call structures ---- */
 struct spawn_args {
     const void *image;            /* the app's CXEX bytes (in the caller's space) */
@@ -76,6 +94,8 @@ struct spawn_args {
     uint32_t    caps;             /* requested caps for the child; kernel masks against
                                      the spawner's own caps (attenuation, never amplify).
                                      0 = capability-less app. */
+    const char *args;             /* argc NUL-terminated strings back to back, or NULL */
+    uint32_t    args_len;         /* total bytes of that blob, terminators included */
 };
 
 /* IPC is synchronous: ipc_call blocks the caller until the owner ipc_replies.

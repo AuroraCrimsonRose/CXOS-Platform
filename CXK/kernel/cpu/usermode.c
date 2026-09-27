@@ -490,6 +490,7 @@ int usermode_file_test(void) {
     struct spawn_args *sa = (struct spawn_args *)FT_STAT;   /* reuse the page */
     sa->image = 0; sa->image_len = 0; sa->name = (const char *)FT_PATH;
     sa->broker_endpoint = -1; sa->caps = 0;
+    sa->args = 0; sa->args_len = 0;
 
     ft_strp(FT_PATH, scratch, "/kt_absent.xcex");
     step++;
@@ -510,6 +511,33 @@ int usermode_file_test(void) {
     if (sys_exec_path((const char *)0xC0001000u, sa) != E_FAULT) goto done;
     step++;
     if (sys_exec_path((const char *)FT_PATH, (const struct spawn_args *)0xC0001000u) != E_FAULT) goto done;
+
+    /* --- argument blobs the kernel must refuse ---
+     * check_args runs before anything touches the disk, so the path here is
+     * irrelevant - each of these must fail on the blob alone.
+     *
+     * The unterminated case is the one worth having: build_args_page counts
+     * arguments by counting terminators, so a blob whose last byte is not one
+     * would leave the final string running off the end of what was copied.
+     * The check that stops it is one line, and nothing else would catch it. */
+    sa->args = (const char *)0xC0001000u; sa->args_len = 8;
+    step++;
+    if (sys_exec_path((const char *)FT_PATH, sa) != E_FAULT) goto done;
+
+    ft_str(FT_DATA, "noterm");
+    sa->args = (const char *)FT_DATA; sa->args_len = 6;   /* stops before the NUL */
+    step++;
+    if (sys_exec_path((const char *)FT_PATH, sa) != E_INVAL) goto done;
+
+    sa->args_len = USER_ARGS_MAX + 1;                     /* wider than the page */
+    step++;
+    if (sys_exec_path((const char *)FT_PATH, sa) != E_RANGE) goto done;
+
+    sa->args = 0; sa->args_len = 4;                       /* a length with no blob */
+    step++;
+    if (sys_exec_path((const char *)FT_PATH, sa) != E_INVAL) goto done;
+
+    sa->args = 0; sa->args_len = 0;
 
     /* and CAP_SPAWN is the gate: the dispatcher checks it, so go through it */
     thread_set_caps(me, CAP_DISK);
