@@ -96,10 +96,16 @@ typedef struct
 # Type Codes
 
 ```c
-#define TYPE_BOOT     0x4245   // "BE"
-#define TYPE_USER     0x4345   // "CE"
-#define TYPE_KERNEL   0x4B45   // "KE"
+#define TYPE_BOOT     0x4245   // "BE"  boot domain       (.xbex)
+#define TYPE_USER     0x4345   // "CE"  compiled/userspace (.xcex)
+#define TYPE_OS       0x4F45   // "OE"  operating system  (.xoex)
+#define TYPE_KERNEL   0x4B45   // "KE"  kernel            (.xkex)
 ```
+
+Each code is the domain letter followed by 'E' for executable, matching the
+extension: X + domain + type. See `docs/CX_EXTENSION_SYSTEM.md` for the full
+taxonomy. The kernel's copies are `CXEX_TYPE_*` in
+`CXK/kernel/lib/format/cxex.h`.
 
 ---
 

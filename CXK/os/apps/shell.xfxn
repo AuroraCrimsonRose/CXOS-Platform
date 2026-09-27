@@ -27,6 +27,17 @@ global cmd_fns:   [32]cmd_fn;
 global cmd_desc:  [32]*u8;
 global cmd_n:     u32;
 
+// Search path for `run <name>`, and the buffer the candidate is built in.
+// Filled in by main, because X has no initialized-array syntax.
+global run_dirs: [2]*u8;
+global run_buf:  [160]u8;
+
+// The packed argument blob handed to the kernel: the argument strings back to
+// back, each NUL-terminated. 512 bytes is far more than the 128-byte command
+// line can produce and well inside the one page the kernel gives a child.
+const RUN_ARGC:  u32 = 512;
+global run_argbuf: [512]u8;
+
 fn register(name: *u8, f: cmd_fn, desc: *u8) -> void {
     if (cmd_n >= MAX_CMDS) { return; }
     cmd_names[cmd_n] = name;
@@ -345,6 +356,122 @@ fn cmd_mv(arg: *u8) -> void {
     file_err(arg, rename(arg, newname));
 }
 
+// Run a program that lives on the disk. The shell holds CAP_OS_BASELINE, so it
+// can hand a child any subset of that - here CAP_CONSOLE, which is the least
+// that lets a program say anything. broker_endpoint is -1: the shell owns a
+// SEND handle to its own executive, not a RECV endpoint of its own, so it has
+// no broker to give. The child gets authority directly instead.
+// Split a command tail into arguments and pack them the way the kernel wants
+// them: the strings one after another, each NUL-terminated, argv[0] first.
+// Runs of spaces separate arguments and leading spaces are skipped, so
+// `run  hi   a  b` gives the same three arguments as `run hi a b`.
+//
+// There is deliberately no quoting. A shell that half-implements it - honouring
+// a quote in one place and not the next - is worse than one that plainly has
+// none, and nothing on the disk needs an argument with a space in it yet.
+//
+// Returns the total byte count, or 0 for an empty line or one too long to pack.
+fn run_pack_args(s: *u8) -> u32 {
+    let n: u32 = 0;
+    let i: u32 = 0;
+    while (s[i] != 0) {
+        while (s[i] == 32) { i = i + 1; }
+        if (s[i] == 0) { break; }
+        while (s[i] != 0 && s[i] != 32) {
+            if (n + 2 >= RUN_ARGC) { return 0; }
+            run_argbuf[n] = s[i];
+            n = n + 1;
+            i = i + 1;
+        }
+        run_argbuf[n] = 0;
+        n = n + 1;
+    }
+    return n;
+}
+
+// Build "<dir>/<name>" - or "<dir>/<name>.xcex" when ext is non-zero - into
+// run_buf, and hand back a pointer to it. One shared buffer: cmd_run uses the
+// result before building the next candidate.
+fn run_candidate(dir: *u8, name: *u8, ext: i32) -> *u8 {
+    let n: u32 = strcopy(&run_buf[0], dir, 160);
+    if (n + 1 < 160) { run_buf[n] = 47; n = n + 1; }         // '/'
+    n = n + strcopy(&run_buf[n], name, 160 - n);
+    if (ext != 0) { n = n + strcopy(&run_buf[n], ".xcex", 160 - n); }
+    return &run_buf[0];
+}
+
+// Run a program that lives on the disk. The shell holds CAP_OS_BASELINE, so it
+// can hand a child any subset of that - here CAP_CONSOLE, which is the least
+// that lets a program say anything. broker_endpoint is -1: the shell owns a
+// SEND handle to its own executive, not a RECV endpoint of its own, so it has
+// no broker to give. The child gets authority directly instead.
+//
+// A bare name is looked up on a search path rather than in the working
+// directory, so `run hi` works from anywhere. /System/Programs is searched
+// before /Shared/Programs: /Shared is writable by any user, and a program
+// dropped there must not be able to shadow one the system ships. The .xcex
+// suffix is optional, so `run hi` and `run hi.xcex` both find the same file.
+//
+// Anything with a '/' in it is taken as a path and used verbatim - that is the
+// escape hatch for running something the search path does not cover, and it
+// keeps `run ./x` meaning the x in the working directory rather than whichever
+// x the search path happens to find first.
+fn cmd_run(arg: *u8) -> void {
+    if (arg[0] == 0) { puts("usage: run <path> [args...]\n"); return; }
+
+    // The whole tail is packed at once, so the program's own name becomes
+    // argv[0] exactly as the user typed it and the rest follow it. The packed
+    // first string is then the name to look up - no second pass to find it.
+    let blob: u32 = run_pack_args(arg);
+    if (blob == 0) { puts("run: command line too long\n"); return; }
+    let name: *u8 = &run_argbuf[0];
+
+    let a: spawn_args;
+    memzero((&a) as *u8, 28);
+    a.name            = name;
+    a.broker_endpoint = 0 - 1;
+    a.caps            = CAP_CONSOLE;
+    a.args            = &run_argbuf[0];
+    a.args_len        = blob;
+
+    let pid: i32 = E_NOENT;
+    if (strchr(name, 47) >= 0) {                             // '/' - a path
+        pid = exec_path(name, &a);
+    } else {
+        let d: u32 = 0;
+        while (d < 2) {
+            let ext: i32 = 0;
+            while (ext < 2) {
+                let p: *u8 = run_candidate(run_dirs[d], name, ext);
+                a.name = p;
+                pid = exec_path(p, &a);
+                // Only E_NOENT means "not here, keep looking". A file that
+                // exists but will not run - unsigned, a directory, not a CXEX
+                // - is the answer, and reporting it beats walking past it and
+                // saying the program does not exist.
+                if (pid != E_NOENT) { ext = 2; d = 2; }
+                else { ext = ext + 1; }
+            }
+            d = d + 1;
+        }
+        a.name = name;
+    }
+
+    if (pid < 0) {
+        puts(name);
+        puts(": ");
+        // E_PERM here means the signature check refused it, not a file
+        // permission problem - worth saying plainly, since an unsigned build
+        // is by far the most likely cause.
+        if (pid == E_PERM) { puts("not signed by a key this kernel trusts\n"); }
+        else { puts(file_strerror(pid)); newline(); }
+        return;
+    }
+    puts("started pid ");
+    print_u32(pid as u32);
+    newline();
+}
+
 fn cmd_edit(arg: *u8) -> void {
     if (arg[0] == 0) { puts("usage: edit <path>\n"); return; }
     // The editor draws itself with gfx_text, so it needs the framebuffer. In
@@ -390,6 +517,9 @@ fn split_arg(line: *u8) -> *u8 {
 fn _start() -> void {
     let line: [128]u8;
 
+    run_dirs[0] = "/System/Programs";
+    run_dirs[1] = "/Shared/Programs";
+
     register("help",   cmd_help,   "list commands");
     register("echo",   cmd_echo,   "print the rest of the line");
     register("pid",    cmd_pid,    "process and user id");
@@ -404,6 +534,7 @@ fn _start() -> void {
     register("append", cmd_append, "add text to the end of a file");
     register("stat",   cmd_stat,   "show an entry's metadata");
     register("edit",   cmd_edit,   "full-screen text editor");
+    register("run",    cmd_run,    "run a signed program (searches /System and /Shared)");
     register("mkdir",  cmd_mkdir,  "create a directory");
     register("rm",     cmd_rm,     "delete a file or empty directory");
     register("mv",     cmd_mv,     "rename an entry");

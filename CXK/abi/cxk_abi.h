@@ -44,6 +44,8 @@
 #define SYS_FILE_OP       0x60   /* ebx = *file_op_args (CAP_DISK) -> op-specific */
 
 #define SYS_SPAWN         0x70   /* ebx = *spawn_args (CAP_SPAWN) -> pid */
+#define SYS_EXEC_PATH     0x72   /* ebx = path, ecx = *spawn_args (CAP_SPAWN) -> pid
+                                    (image/image_len in the struct are ignored) */
 #define SYS_POWER         0x71   /* ebx = POWER_* op (CAP_POWER); reboot does not return */
 #define POWER_REBOOT      0
 #define POWER_SHUTDOWN    1      /* ACPI S5 soft-off */
@@ -65,6 +67,24 @@
 #define E_ISDIR  (-12)   /* expected a file, got a directory */
 #define E_NOTDIR (-13)   /* expected a directory, got a file */
 
+/* ---- program arguments ----
+   A launcher hands over a flat blob: the argument strings, NUL-terminated, one
+   after another. The kernel copies it into the new address space as a single
+   page at USER_ARGS_BASE, laid out as
+
+       u32  argc
+       u32  off[argc]        byte offsets from the base of the page
+       ...  the strings, NUL-terminated
+
+   The page is always mapped, so a program with no arguments reads argc == 0
+   rather than faulting, and it is writable, so a program may chew on its own
+   argument strings in place. Offsets rather than pointers because the blob is
+   built in one address space and read in another; a launcher never hands a
+   child a pointer into its own memory. */
+#define USER_ARGS_BASE   0xBFFFF000u  /* the page just above the user stack */
+#define USER_ARGS_MAX    4096u        /* one page, header included */
+#define USER_ARGS_MAXC   64u          /* most arguments one program can be given */
+
 /* ---- shared call structures ---- */
 struct spawn_args {
     const void *image;            /* the app's CXEX bytes (in the caller's space) */
@@ -74,6 +94,8 @@ struct spawn_args {
     uint32_t    caps;             /* requested caps for the child; kernel masks against
                                      the spawner's own caps (attenuation, never amplify).
                                      0 = capability-less app. */
+    const char *args;             /* argc NUL-terminated strings back to back, or NULL */
+    uint32_t    args_len;         /* total bytes of that blob, terminators included */
 };
 
 /* IPC is synchronous: ipc_call blocks the caller until the owner ipc_replies.
@@ -156,6 +178,24 @@ struct net_op_args {
     uint32_t *out;       /* results (>= 4 u32 for GET_IP) */
 };
 
+
+/* ---- path execution (SYS_EXEC_PATH; CAP_SPAWN) ----
+ *
+ * Run the CXEX image at `path`. Takes the same spawn_args as SYS_SPAWN for the
+ * name, broker endpoint and requested caps, and IGNORES its image/image_len -
+ * the kernel reads the file itself.
+ *
+ * That is the whole point of having a second call rather than letting a
+ * process read a file and hand the bytes to SYS_SPAWN. SYS_SPAWN takes an
+ * image already in the caller's memory and does not verify it; only the
+ * kernel's own load path checks signatures. Reading the image inside the
+ * kernel means the bytes that are verified are exactly the bytes that are
+ * loaded, with no window in which the caller could swap them, and no way for
+ * ring 3 to introduce code that was never signed.
+ *
+ * Caps are attenuated against the caller's own set, as with SYS_SPAWN: you may
+ * pass a subset of your authority and never amplify.
+ */
 
 /* ---- files (SYS_FILE_OP; CAP_DISK) ----
  *

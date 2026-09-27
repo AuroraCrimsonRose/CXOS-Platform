@@ -19,6 +19,7 @@
 #include "spawn.h"
 #include "sysfile.h"
 #include "cxfs.h"
+#include "spawn.h"
 
 #define KERNEL_VBASE 0xC0000000u   /* user half is everything below the higher-half kernel */
 #include "ipc.h"
@@ -115,6 +116,10 @@ int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
         case SYS_SPAWN:
             if (!(thread_current_caps() & CAP_SPAWN)) return E_PERM;
             return sys_spawn((const struct spawn_args *)a1);
+
+        case SYS_EXEC_PATH:
+            if (!(thread_current_caps() & CAP_SPAWN)) return E_PERM;
+            return sys_exec_path((const char *)a1, (const struct spawn_args *)a2);
 
         case SYS_FILE_OP:
             if (!(thread_current_caps() & CAP_DISK)) {
@@ -269,6 +274,31 @@ static void ft_str(uint32_t at, const char *s) {
     d[i] = '\0';
 }
 
+/* Scratch-relative paths. The tests write under /Temp rather than littering
+   the root, but a volume formatted before the system tree existed has no
+   /Temp, so the prefix is chosen at run time and is "" on such a volume. A
+   test that only passes on a freshly built image is not much of a test.
+
+   Both helpers build "<prefix><leaf>": ft_strp into the user page for the
+   syscall path, ft_join into a kernel buffer for the cxfs_* checks. ft_join
+   returns its one static buffer, so use it once per statement. */
+static void ft_strp(uint32_t at, const char *pre, const char *leaf) {
+    char *d = (char *)at;
+    int i = 0;
+    while (*pre  && i < 0x7F) d[i++] = *pre++;
+    while (*leaf && i < 0x7F) d[i++] = *leaf++;
+    d[i] = '\0';
+}
+
+static char ft_abs[128];
+static const char *ft_join(const char *pre, const char *leaf) {
+    int i = 0;
+    while (*pre  && i < (int)sizeof ft_abs - 1) ft_abs[i++] = *pre++;
+    while (*leaf && i < (int)sizeof ft_abs - 1) ft_abs[i++] = *leaf++;
+    ft_abs[i] = '\0';
+    return ft_abs;
+}
+
 static int ft_call(uint32_t op, int handle, uint32_t path, uint32_t data,
                    uint32_t len, int32_t off, uint32_t flags) {
     struct file_op_args *a = (struct file_op_args *)FT_ARGS;
@@ -302,8 +332,11 @@ int usermode_file_test(void) {
     int base = sysfile_open_count();
     char *data = (char *)FT_DATA;
 
+    /* /Temp when the system tree is present, the root when it is not. */
+    const char *scratch = (cxfs_resolve("/Temp", 0) >= 0) ? "/Temp" : "";
+
     /* --- create, write, read back through one handle --- */
-    ft_str(FT_PATH, "/kt_sys.txt");
+    ft_strp(FT_PATH, scratch, "/kt_sys.txt");
     int h = ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0,
                     FOPEN_READ | FOPEN_WRITE | FOPEN_CREATE | FOPEN_TRUNC);
     step++;
@@ -374,29 +407,35 @@ int usermode_file_test(void) {
     if (ft_call(FILE_OP_CLOSE, h, 0, 0, 0, 0, 0) != E_OK) goto done;
 
     /* --- a missing file is E_NOENT without FOPEN_CREATE --- */
-    ft_str(FT_PATH, "/kt_absent.txt");
+    ft_strp(FT_PATH, scratch, "/kt_absent.txt");
     step++;
     if (ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_READ) != E_NOENT) goto done;
 
     /* --- a bad user pointer is caught, not dereferenced --- */
-    ft_str(FT_PATH, "/kt_sys.txt");
+    ft_strp(FT_PATH, scratch, "/kt_sys.txt");
     step++;
     if (ft_call(FILE_OP_STAT, 0, FT_PATH, 0xC0001000u, 0, 0, 0) != E_FAULT) goto done;
     step++;
     if (ft_call(FILE_OP_OPEN, 0, 0xC0001000u, 0, 0, 0, FOPEN_READ) != E_FAULT) goto done;
 
     /* --- directories, cwd, and relative paths --- */
-    ft_str(FT_PATH, "/kt_dir");
+    ft_strp(FT_PATH, scratch, "/kt_dir");
     step++;
     if (ft_call(FILE_OP_MKDIR, 0, FT_PATH, 0, 0, 0, 0) != E_OK) goto done;
     step++;
     if (ft_call(FILE_OP_MKDIR, 0, FT_PATH, 0, 0, 0, 0) != E_EXIST) goto done;
     step++;
     if (ft_call(FILE_OP_CHDIR, 0, FT_PATH, 0, 0, 0, 0) != E_OK) goto done;
+    /* Compare the whole path against what we chdir'd to, terminator included,
+       rather than spot-checking a few indices: the index checks silently
+       stopped meaning anything the moment the scratch directory moved. */
+    const char *want = ft_join(scratch, "/kt_dir");
+    int wantlen = 0;
+    while (want[wantlen]) wantlen++;
     step++;
-    if (ft_call(FILE_OP_GETCWD, 0, 0, FT_DATA, 64, 0, 0) != 7) goto done;
+    if (ft_call(FILE_OP_GETCWD, 0, 0, FT_DATA, 64, 0, 0) != wantlen) goto done;
     step++;
-    if (data[0] != '/' || data[1] != 'k' || data[6] != 'r') goto done;
+    for (int i = 0; i <= wantlen; i++) if (data[i] != want[i]) goto done;
 
     /* a bare name now resolves inside the new cwd, not at the root */
     ft_str(FT_PATH, "inner.txt");
@@ -407,7 +446,7 @@ int usermode_file_test(void) {
     step++;
     if (ft_call(FILE_OP_CLOSE, h, 0, 0, 0, 0, 0) != E_OK) goto done;
     step++;
-    if (cxfs_resolve("/kt_dir/inner.txt", 0) < 0) goto done;   /* it really landed there */
+    if (cxfs_resolve(ft_join(scratch, "/kt_dir/inner.txt"), 0) < 0) goto done;   /* it really landed there */
 
     /* readdir finds it, and stops rather than repeating past the end */
     ft_str(FT_PATH, ".");
@@ -426,20 +465,84 @@ int usermode_file_test(void) {
     step++;
     if (ft_call(FILE_OP_RENAME, 0, FT_PATH, 0, 0, 0, 0) != E_OK) goto done;
     step++;
-    if (cxfs_resolve("/kt_dir/renamed.txt", 0) < 0) goto done;
+    if (cxfs_resolve(ft_join(scratch, "/kt_dir/renamed.txt"), 0) < 0) goto done;
 
     ft_str(FT_PATH, "/");
     step++;
     if (ft_call(FILE_OP_CHDIR, 0, FT_PATH, 0, 0, 0, 0) != E_OK) goto done;
-    ft_str(FT_PATH, "/kt_dir");
+    ft_strp(FT_PATH, scratch, "/kt_dir");
     step++;
     if (ft_call(FILE_OP_UNLINK, 0, FT_PATH, 0, 0, 0, 0) != E_INVAL) goto done;  /* not empty */
 
     /* --- CAP_DISK really is the gate --- */
     thread_set_caps(me, 0);
-    ft_str(FT_PATH, "/kt_sys.txt");
+    ft_strp(FT_PATH, scratch, "/kt_sys.txt");
     step++;
     if (ft_call(FILE_OP_STAT, 0, FT_PATH, FT_STAT, 0, 0, 0) != E_PERM) goto done;
+    thread_set_caps(me, CAP_DISK);
+
+    /* --- exec_path refuses everything it should ---
+     * The accept path needs a genuinely signed CXEX, which only exists in a
+     * SIGN=ON build, so what is checked here is every way it must say no. That
+     * is the half that matters: a verifier that never refuses is not one.
+     */
+    thread_set_caps(me, CAP_DISK | CAP_SPAWN);
+    struct spawn_args *sa = (struct spawn_args *)FT_STAT;   /* reuse the page */
+    sa->image = 0; sa->image_len = 0; sa->name = (const char *)FT_PATH;
+    sa->broker_endpoint = -1; sa->caps = 0;
+    sa->args = 0; sa->args_len = 0;
+
+    ft_strp(FT_PATH, scratch, "/kt_absent.xcex");
+    step++;
+    if (sys_exec_path((const char *)FT_PATH, sa) != E_NOENT) goto done;
+
+    ft_strp(FT_PATH, scratch, "/kt_dir");
+    step++;
+    if (sys_exec_path((const char *)FT_PATH, sa) != E_ISDIR) goto done;
+
+    /* a real file whose contents are not a CXEX at all: the signature check
+       must refuse it rather than the loader trying to run the bytes */
+    ft_strp(FT_PATH, scratch, "/kt_sys.txt");
+    step++;
+    if (sys_exec_path((const char *)FT_PATH, sa) != E_PERM) goto done;
+
+    /* a bad path pointer is caught, not dereferenced */
+    step++;
+    if (sys_exec_path((const char *)0xC0001000u, sa) != E_FAULT) goto done;
+    step++;
+    if (sys_exec_path((const char *)FT_PATH, (const struct spawn_args *)0xC0001000u) != E_FAULT) goto done;
+
+    /* --- argument blobs the kernel must refuse ---
+     * check_args runs before anything touches the disk, so the path here is
+     * irrelevant - each of these must fail on the blob alone.
+     *
+     * The unterminated case is the one worth having: build_args_page counts
+     * arguments by counting terminators, so a blob whose last byte is not one
+     * would leave the final string running off the end of what was copied.
+     * The check that stops it is one line, and nothing else would catch it. */
+    sa->args = (const char *)0xC0001000u; sa->args_len = 8;
+    step++;
+    if (sys_exec_path((const char *)FT_PATH, sa) != E_FAULT) goto done;
+
+    ft_str(FT_DATA, "noterm");
+    sa->args = (const char *)FT_DATA; sa->args_len = 6;   /* stops before the NUL */
+    step++;
+    if (sys_exec_path((const char *)FT_PATH, sa) != E_INVAL) goto done;
+
+    sa->args_len = USER_ARGS_MAX + 1;                     /* wider than the page */
+    step++;
+    if (sys_exec_path((const char *)FT_PATH, sa) != E_RANGE) goto done;
+
+    sa->args = 0; sa->args_len = 4;                       /* a length with no blob */
+    step++;
+    if (sys_exec_path((const char *)FT_PATH, sa) != E_INVAL) goto done;
+
+    sa->args = 0; sa->args_len = 0;
+
+    /* and CAP_SPAWN is the gate: the dispatcher checks it, so go through it */
+    thread_set_caps(me, CAP_DISK);
+    step++;
+    if (syscall_dispatch(SYS_EXEC_PATH, FT_PATH, (uint32_t)sa) != E_PERM) goto done;
     thread_set_caps(me, CAP_DISK);
 
     /* --- the reaper releases handles a process never closed --- */
@@ -460,10 +563,10 @@ done:
     thread_set_caps(me, CAP_DISK);
     handle_release_all(thread_handle_table(me), CXK_MAX_HANDLES);
     int id;
-    if ((id = cxfs_resolve("/kt_dir/renamed.txt", 0)) >= 0) cxfs_delete_entry((uint32_t)id);
-    if ((id = cxfs_resolve("/kt_dir/inner.txt", 0))   >= 0) cxfs_delete_entry((uint32_t)id);
-    if ((id = cxfs_resolve("/kt_dir", 0))             >= 0) cxfs_delete_entry((uint32_t)id);
-    if ((id = cxfs_resolve("/kt_sys.txt", 0))         >= 0) cxfs_delete_entry((uint32_t)id);
+    if ((id = cxfs_resolve(ft_join(scratch, "/kt_dir/renamed.txt"), 0)) >= 0) cxfs_delete_entry((uint32_t)id);
+    if ((id = cxfs_resolve(ft_join(scratch, "/kt_dir/inner.txt"), 0))   >= 0) cxfs_delete_entry((uint32_t)id);
+    if ((id = cxfs_resolve(ft_join(scratch, "/kt_dir"), 0))             >= 0) cxfs_delete_entry((uint32_t)id);
+    if ((id = cxfs_resolve(ft_join(scratch, "/kt_sys.txt"), 0))         >= 0) cxfs_delete_entry((uint32_t)id);
     thread_set_cwd(me, 0);
     thread_set_caps(me, save);
     unmap_user_page(TEST_CODE_VIRT, phys);
