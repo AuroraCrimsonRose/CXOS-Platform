@@ -21,6 +21,7 @@ Where:
 | Code | Domain |
 |--------|--------|
 | K | Kernel |
+| O | Operating System |
 | C | Compiled |
 | B | Boot |
 | F | File Format |
