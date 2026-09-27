@@ -109,6 +109,16 @@ because the tree is wrong, but because adopting it without the cache would
 quadruple an I/O cost that is already too high, and it would look like the
 layout's fault.
 
+**Measured, over the self-test suite** (create, resolve, readdir, read, write,
+truncate, rename, delete), on the same build with one line changed:
+
+| | Block reads |
+|---|---:|
+| Manifest uncached | 1728 |
+| Manifest cached | **193** |
+
+**9.0x fewer.** The cache landed first, so the tree above is now affordable.
+
 ---
 
 ## 3. Other disks
