@@ -345,6 +345,36 @@ fn cmd_mv(arg: *u8) -> void {
     file_err(arg, rename(arg, newname));
 }
 
+// Run a program that lives on the disk. The shell holds CAP_OS_BASELINE, so it
+// can hand a child any subset of that - here CAP_CONSOLE, which is the least
+// that lets a program say anything. broker_endpoint is -1: the shell owns a
+// SEND handle to its own executive, not a RECV endpoint of its own, so it has
+// no broker to give. The child gets authority directly instead.
+fn cmd_run(arg: *u8) -> void {
+    if (arg[0] == 0) { puts("usage: run <path>\n"); return; }
+
+    let a: spawn_args;
+    memzero((&a) as *u8, 20);
+    a.name            = arg;
+    a.broker_endpoint = 0 - 1;
+    a.caps            = CAP_CONSOLE;
+
+    let pid: i32 = exec_path(arg, &a);
+    if (pid < 0) {
+        puts(arg);
+        puts(": ");
+        // E_PERM here means the signature check refused it, not a file
+        // permission problem - worth saying plainly, since an unsigned build
+        // is by far the most likely cause.
+        if (pid == E_PERM) { puts("not signed by a key this kernel trusts\n"); }
+        else { puts(file_strerror(pid)); newline(); }
+        return;
+    }
+    puts("started pid ");
+    print_u32(pid as u32);
+    newline();
+}
+
 fn cmd_edit(arg: *u8) -> void {
     if (arg[0] == 0) { puts("usage: edit <path>\n"); return; }
     // The editor draws itself with gfx_text, so it needs the framebuffer. In
@@ -404,6 +434,7 @@ fn _start() -> void {
     register("append", cmd_append, "add text to the end of a file");
     register("stat",   cmd_stat,   "show an entry's metadata");
     register("edit",   cmd_edit,   "full-screen text editor");
+    register("run",    cmd_run,    "run a signed program from disk");
     register("mkdir",  cmd_mkdir,  "create a directory");
     register("rm",     cmd_rm,     "delete a file or empty directory");
     register("mv",     cmd_mv,     "rename an entry");
