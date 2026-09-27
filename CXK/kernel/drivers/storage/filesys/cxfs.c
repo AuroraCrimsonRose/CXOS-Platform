@@ -79,6 +79,7 @@ static struct cxfs_superblock sb;          /* the mounted superblock */
 static int mounted = 0;
 
 static void bitmap_load(void);             /* fwd decl (defined in allocator section) */
+static void manifest_load(void);            /* fwd decl (defined in allocator section) */
 
 /* ---- block staging buffers ------------------------------------------------
  * Every CXFS block operation needs a CXFS_BLOCK_SIZE (4KB) staging buffer.
@@ -203,6 +204,7 @@ int cxfs_format_at(uint64_t base_lba, uint32_t total_blocks) {
 
     mounted = 1;
     bitmap_load();
+    manifest_load();
     return 0;
 }
 
@@ -244,6 +246,7 @@ int cxfs_mount_at(uint64_t base_lba) {
 
     mounted = 1;
     bitmap_load();
+    manifest_load();
     return 0;
 }
 
@@ -308,6 +311,76 @@ static void bitmap_set(uint32_t block, int used) {
     if (used) bitmap_cache[byte] |=  (1u << bit);
     else      bitmap_cache[byte] &= ~(1u << bit);
     bitmap_flush_for(block);   /* persist just the changed block */
+}
+
+/* ====================================================================
+ * Manifest cache - the same trick as the bitmap, for the same reason
+ *
+ * A directory stores no data blocks: membership is derived by scanning the
+ * WHOLE manifest for entries whose parent_id matches. The manifest is 64
+ * blocks (1024 entries x 256B = 256KB), so one path component costs up to 64
+ * block reads and cxfs_resolve does that per component - half a megabyte of
+ * disk I/O to resolve "/System/Boot.xoex", a megabyte for a four-deep path.
+ *
+ * The allocation bitmap had exactly this shape and the comment above it
+ * records what it cost: per-bit disk reads "was making allocation and
+ * free-counting take seconds". Same fix here - hold the manifest in RAM, scan
+ * memory, and write through to disk on every entry write so the volume is
+ * never stale and there is nothing to flush at unmount.
+ *
+ * The cache is an ACCELERATOR, not a requirement. A volume whose manifest is
+ * larger than the buffer (manifest_count is a superblock field, so a future
+ * profile may exceed the standard 1024) simply stays uncached and every reader
+ * falls back to the disk path it used before. manifest_block() returning NULL
+ * is that fallback, and it is the only thing a caller has to handle.
+ * ==================================================================== */
+
+#define CXFS_MAX_MANIFEST_BYTES (CXFS_MAX_ENTRIES * CXFS_ENTRY_SIZE)   /* 256KB */
+
+static uint8_t  manifest_cache[CXFS_MAX_MANIFEST_BYTES];
+static uint32_t manifest_cached_blocks = 0;    /* 0 = uncached, use the disk */
+
+/* Load the whole manifest into RAM. Called at mount and after format. Leaves
+   manifest_cached_blocks at 0 on any failure, which is not an error - it means
+   the readers take the disk path. */
+static void manifest_load(void) {
+    manifest_cached_blocks = 0;
+    if (!sb.manifest_blocks) return;
+    if ((uint64_t)sb.manifest_blocks * CXFS_BLOCK_SIZE > sizeof manifest_cache) return;
+
+    for (uint32_t i = 0; i < sb.manifest_blocks; i++) {
+        if (read_block(sb.manifest_start + i,
+                       manifest_cache + (size_t)i * CXFS_BLOCK_SIZE) != 0)
+            return;                      /* partial load is no load */
+    }
+    manifest_cached_blocks = sb.manifest_blocks;
+}
+
+/* Cached manifest block `rel` (relative to manifest_start), or NULL if this
+   volume is not cached. */
+static uint8_t *manifest_block(uint32_t rel) {
+    if (rel >= manifest_cached_blocks) return NULL;
+    return manifest_cache + (size_t)rel * CXFS_BLOCK_SIZE;
+}
+
+/* Fetch manifest block `rel` for reading: the cache when there is one, else
+   staged through `stage` from disk. Returns NULL only on a disk error.
+ *
+ * The caller picks the staging buffer because the UNCACHED path still has the
+ * aliasing problem the per-role buffers exist to prevent: cxfs_list_dir holds
+ * a block across a callback, and if that callback reads an entry of its own
+ * through the same buffer it rewrites the block being iterated. Cached, every
+ * caller gets a distinct pointer into the cache and the question does not
+ * arise - but the fallback has to stay correct on its own terms. */
+static const uint8_t *manifest_fetch_into(uint32_t rel, uint8_t *stage) {
+    const uint8_t *m = manifest_block(rel);
+    if (m) return m;
+    if (read_block(sb.manifest_start + rel, stage) != 0) return NULL;
+    return stage;
+}
+
+static const uint8_t *manifest_fetch(uint32_t rel) {
+    return manifest_fetch_into(rel, ent_blk);
 }
 
 uint32_t cxfs_alloc_block(void) {
@@ -395,32 +468,38 @@ uint32_t cxfs_free_blocks(void) {
 
 int cxfs_read_entry(uint32_t id, struct cxfs_entry *out) {
     if (!mounted || id >= sb.manifest_count) return -1;
-    uint32_t blk = sb.manifest_start + (id / ENTRIES_PER_BLOCK);
+    uint32_t rel = id / ENTRIES_PER_BLOCK;
     uint32_t idx = id % ENTRIES_PER_BLOCK;
 
-    uint8_t *buf = ent_blk;
-    if (read_block(blk, buf) != 0) return -1;
+    const uint8_t *buf = manifest_fetch(rel);
+    if (!buf) return -1;
     memcpy(out, buf + idx * sizeof(struct cxfs_entry), sizeof(struct cxfs_entry));
     return 0;
 }
 
 int cxfs_write_entry(const struct cxfs_entry *entry) {
     if (!mounted || entry->id >= sb.manifest_count) return -1;
-    uint32_t blk = sb.manifest_start + (entry->id / ENTRIES_PER_BLOCK);
+    uint32_t rel = entry->id / ENTRIES_PER_BLOCK;
     uint32_t idx = entry->id % ENTRIES_PER_BLOCK;
 
-    uint8_t *buf = ent_blk;
-    if (read_block(blk, buf) != 0) return -1;     /* read-modify-write the block */
+    /* Write THROUGH: update the cache and the disk together, so a reader never
+       sees one without the other and there is nothing to flush at unmount. */
+    uint8_t *buf = manifest_block(rel);
+    if (!buf) {
+        buf = ent_blk;                            /* uncached: read-modify-write */
+        if (read_block(sb.manifest_start + rel, buf) != 0) return -1;
+    }
     memcpy(buf + idx * sizeof(struct cxfs_entry), entry, sizeof(struct cxfs_entry));
-    return write_block(blk, buf);
+    return write_block(sb.manifest_start + rel, buf);
 }
 
 int cxfs_alloc_entry(void) {
     if (!mounted) return -1;
-    /* scan the manifest a whole block (4 entries) at a time to cut disk reads */
-    uint8_t *buf = ent_blk;
+    /* Scan a whole block of entries at a time. With the manifest cached this is
+       a RAM scan; uncached it is one disk read per block, as it always was. */
     for (uint32_t blk = 0; blk < sb.manifest_blocks; blk++) {
-        if (read_block(sb.manifest_start + blk, buf) != 0) return -1;
+        const uint8_t *buf = manifest_fetch(blk);
+        if (!buf) return -1;
         for (uint32_t i = 0; i < ENTRIES_PER_BLOCK; i++) {
             uint32_t id = blk * ENTRIES_PER_BLOCK + i;
             if (id == 0) continue;                 /* root */
@@ -446,9 +525,9 @@ static int name_equals(const char *a, const char *b) {
 
 int cxfs_find_in_dir(uint32_t parent_id, const char *name) {
     if (!mounted) return -1;
-    uint8_t *buf = ent_blk;
     for (uint32_t blk = 0; blk < sb.manifest_blocks; blk++) {
-        if (read_block(sb.manifest_start + blk, buf) != 0) continue;
+        const uint8_t *buf = manifest_fetch(blk);
+        if (!buf) continue;
         for (uint32_t i = 0; i < ENTRIES_PER_BLOCK; i++) {
             uint32_t id = blk * ENTRIES_PER_BLOCK + i;
             if (id >= sb.manifest_count) return -1;
@@ -552,9 +631,9 @@ int cxfs_resolve(const char *path, uint32_t cwd) {
 
 void cxfs_list_dir(uint32_t parent_id, void (*cb)(const struct cxfs_entry *)) {
     if (!mounted || !cb) return;
-    uint8_t *buf = dir_blk;   /* not ent_blk: cb() may read entries of its own */
     for (uint32_t blk = 0; blk < sb.manifest_blocks; blk++) {
-        if (read_block(sb.manifest_start + blk, buf) != 0) continue;
+        const uint8_t *buf = manifest_fetch_into(blk, dir_blk);
+        if (!buf) continue;
         for (uint32_t i = 0; i < ENTRIES_PER_BLOCK; i++) {
             uint32_t id = blk * ENTRIES_PER_BLOCK + i;
             if (id >= sb.manifest_count) return;
@@ -1044,9 +1123,9 @@ int cxfs_move(uint32_t id, uint32_t new_parent) {
 int cxfs_count_children(uint32_t dir_id) {
     if (!mounted) return 0;
     int count = 0;
-    uint8_t *buf = dir_blk;
     for (uint32_t blk = 0; blk < sb.manifest_blocks; blk++) {
-        if (read_block(sb.manifest_start + blk, buf) != 0) continue;
+        const uint8_t *buf = manifest_fetch_into(blk, dir_blk);
+        if (!buf) continue;
         for (uint32_t i = 0; i < ENTRIES_PER_BLOCK; i++) {
             uint32_t cid = blk * ENTRIES_PER_BLOCK + i;
             if (cid >= sb.manifest_count) return count;
