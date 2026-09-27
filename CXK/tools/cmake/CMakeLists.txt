@@ -367,8 +367,8 @@ add_custom_command(
     COMMAND ${CMAKE_COMMAND} -E make_directory ${IMAGES_DIR}
     COMMAND ${CXK} image --out ${CXK_DISK} --size-mb 64 --boot-mb 8
             --stage1 ${BOOT_BIN} --stage2 ${STAGE2_BIN} --kernel ${KERNEL_XKEX}
-            --stage Boot.xoex=${EXEC_XOEX}
-            --stage ${DISK_APP_NAME}.xcex=${DISK_APP_XCEX}
+            --stage System/Boot.xoex=${EXEC_XOEX}
+            --stage System/Programs/${DISK_APP_NAME}.xcex=${DISK_APP_XCEX}
     DEPENDS ${BOOT_BIN} ${STAGE2_BIN} ${KERNEL_XKEX} ${EXEC_XOEX} ${DISK_APP_XCEX} ${CXK}
     COMMENT "Building unified CXK disk (XBPT: boot + stage + system)"
 )

@@ -14,9 +14,99 @@
 static uint16_t rd16(const uint8_t *p){ return (uint16_t)(p[0] | (p[1] << 8)); }
 static uint32_t rd32(const uint8_t *p){ return (uint32_t)(p[0] | (p[1]<<8) | (p[2]<<16) | ((uint32_t)p[3]<<24)); }
 
-/* Copy the staged files from the STAGE partition into /System. Returns 0 on
-   success (or if there is simply nothing to stage), negative on a real error. */
-static int populate_from_stage(uint8_t disk_id, uint32_t system_dir) {
+/* ---- the system tree -------------------------------------------------------
+ * The directory layout a fresh volume gets, per docs/CX_FILESYSTEM_LAYOUT.md.
+ *
+ * /System is the OS and only SYSTEM writes it. /Shared is group-writable, so a
+ * user can put something there for other users without being SYSTEM - that is
+ * a split by PROTECTION, not by trust: signing governs what may run, these
+ * bits govern what may be placed. /Temp is world-writable scratch, and
+ * /System/Temp is separate from it so the OS never contends with a user
+ * program for space or for names.
+ *
+ * /System/Drivers is NOT here. A directory costs a manifest entry permanently
+ * and tells a reader something exists; it gets created when there is a driver
+ * to put in it. Same reasoning for the per-user directories under /User, which
+ * belong to the account layer that does not exist yet.
+ */
+struct tree_dir {
+    const char *path;
+    uint16_t    mode;
+};
+
+static const struct tree_dir system_tree[] = {
+    { "/System",           CXFS_PERM_DIR_DEFAULT },              /* 0755 */
+    { "/System/Programs",  CXFS_PERM_DIR_DEFAULT },
+    { "/System/Kernel",    CXFS_PERM_DIR_DEFAULT },              /* update staging */
+    { "/System/Boot",      CXFS_PERM_DIR_DEFAULT },              /* update staging */
+    { "/System/Temp",      CXFS_PERM_DIR_DEFAULT },
+    { "/Shared",           CXFS_PERM_DIR_DEFAULT | CXFS_PERM_GW },  /* 0775 */
+    { "/Shared/Programs",  CXFS_PERM_DIR_DEFAULT | CXFS_PERM_GW },
+    { "/Shared/Documents", CXFS_PERM_DIR_DEFAULT | CXFS_PERM_GW },
+    { "/Shared/Pictures",  CXFS_PERM_DIR_DEFAULT | CXFS_PERM_GW },
+    { "/Shared/Audio",     CXFS_PERM_DIR_DEFAULT | CXFS_PERM_GW },
+    { "/Shared/Videos",    CXFS_PERM_DIR_DEFAULT | CXFS_PERM_GW },
+    { "/User",             CXFS_PERM_DIR_DEFAULT },
+    { "/Temp",             CXFS_PERM_DIR_DEFAULT | CXFS_PERM_GW | CXFS_PERM_TW }, /* 0777 */
+    { "/Volumes",          CXFS_PERM_DIR_DEFAULT },
+};
+
+/* Resolve `path` as a directory, creating any component that is missing.
+   Idempotent - an existing directory is returned, not recreated. Returns the
+   entry id, or negative. */
+static int ensure_dir(const char *path) {
+    uint32_t cur = 0;                      /* root */
+    const char *p = path;
+
+    while (*p) {
+        while (*p == '/') p++;
+        if (!*p) break;
+
+        char comp[CXFS_NAME_LEN];
+        uint32_t n = 0;
+        while (*p && *p != '/' && n < CXFS_NAME_LEN - 1) comp[n++] = *p++;
+        comp[n] = '\0';
+        while (*p && *p != '/') p++;       /* a name too long to hold is an error */
+        if (*p == '/') p++;
+
+        int found = cxfs_find_in_dir(cur, comp);
+        if (found < 0) {
+            found = cxfs_create_entry(cur, comp, CXFS_TYPE_DIR);
+            if (found < 0) return -1;
+        } else {
+            struct cxfs_entry e;
+            if (cxfs_read_entry((uint32_t)found, &e) != 0) return -1;
+            if (e.type != CXFS_TYPE_DIR) return -1;   /* a file is in the way */
+        }
+        cur = (uint32_t)found;
+    }
+    return (int)cur;
+}
+
+/* Build the directory tree on a freshly formatted volume. */
+static int create_system_tree(void) {
+    for (unsigned i = 0; i < sizeof system_tree / sizeof system_tree[0]; i++) {
+        int id = ensure_dir(system_tree[i].path);
+        if (id < 0) return -1;
+
+        struct cxfs_entry e;
+        if (cxfs_read_entry((uint32_t)id, &e) != 0) return -1;
+        if (e.permissions != system_tree[i].mode) {
+            e.permissions = system_tree[i].mode;
+            if (cxfs_write_entry(&e) != 0) return -1;
+        }
+    }
+    return 0;
+}
+
+/* Copy the staged files from the STAGE partition into the tree. A staged name
+   is a PATH relative to the root ("System/Programs/hi.xcex"), not a bare leaf
+   name, so the build says where each file goes instead of install.c guessing
+   from the extension. Any missing parent is created.
+
+   Returns 0 on success (or if there is simply nothing to stage), negative on a
+   real error. */
+static int populate_from_stage(uint8_t disk_id) {
     struct partition stage;
     if (part_find_type(disk_id, PART_TYPE_CXSTAGE, &stage) != 0)
         return 0;                               /* no staging area: empty /System is fine */
@@ -47,8 +137,23 @@ static int populate_from_stage(uint8_t disk_id, uint32_t system_dir) {
             return -1;
         }
 
-        /* create the file under /System and write the blob */
-        int fid = cxfs_create_entry(system_dir, name, CXFS_TYPE_FILE);
+        /* split "System/Programs/hi.xcex" into its directory and its leaf */
+        int slash = -1;
+        for (int k = 0; name[k]; k++) if (name[k] == '/') slash = k;
+
+        uint32_t dir = 0;                       /* no slash: straight in the root */
+        if (slash >= 0) {
+            char dirpath[XSTG_NAME_LEN + 1];
+            for (int k = 0; k < slash; k++) dirpath[k] = name[k];
+            dirpath[slash] = '\0';
+            int d = ensure_dir(dirpath);
+            if (d < 0) { kfree(buf); return -1; }
+            dir = (uint32_t)d;
+        }
+        const char *leaf = name + slash + 1;
+        if (!*leaf) { kfree(buf); return -1; }
+
+        int fid = cxfs_create_entry(dir, leaf, CXFS_TYPE_FILE);
         if (fid < 0 || cxfs_write_file((uint32_t)fid, buf, size) != 0) {
             kfree(buf);
             return -1;
@@ -72,10 +177,9 @@ int cxk_install_first_boot(uint8_t disk_id) {
     if (cxfs_format_at(sysp.start_lba, total_blocks) != 0) return CXK_INSTALL_FORMAT_ERR;
     if (cxfs_mount_at(sysp.start_lba) != 0)                return CXK_INSTALL_FORMAT_ERR;
 
-    int sysdir = cxfs_create_entry(0 /* root */, "System", CXFS_TYPE_DIR);
-    if (sysdir < 0) return CXK_INSTALL_FORMAT_ERR;
+    if (create_system_tree() != 0) return CXK_INSTALL_FORMAT_ERR;
 
-    if (populate_from_stage(disk_id, (uint32_t)sysdir) != 0)
+    if (populate_from_stage(disk_id) != 0)
         return CXK_INSTALL_STAGE_ERR;   /* formatted, but payload was missing/bad */
 
     return CXK_INSTALL_DONE;
