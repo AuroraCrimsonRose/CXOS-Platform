@@ -1,0 +1,397 @@
+// std/edit.xfxn - a full-screen text editor for CXK X.
+// Aurora Tejeda / CATX SYSTEMS LLC
+//
+//   import "edit.xfxn";  then  edit_run("notes.txt");
+//
+// The first program on CXK that can write a file a person typed. It draws
+// itself with gfx_text rather than the console, because SYS_CONSOLE_WRITE only
+// appends bytes and a full-screen editor needs to put a character at a chosen
+// position. Same approach as cxos_run(): take the screen, give it back on exit.
+//
+// The buffer is one flat array and an insert memmoves the tail. That is O(n)
+// per keystroke, and at 32KB it is a few microseconds - a gap buffer buys
+// nothing a typist could measure, and this way the buffer is exactly the bytes
+// of the file, so save is one write with no reassembly.
+//
+// Keys: arrows, Home, End, PgUp, PgDn to move. Enter, Backspace, Delete to
+// edit. Ctrl+S saves, Ctrl+Q or Esc leaves (Ctrl+Q twice if unsaved).
+
+import "io.xfxn";
+import "mem.xfxn";
+import "string.xfxn";
+import "fmt.xfxn";
+import "gfx.xfxn";
+import "file.xfxn";
+
+const ED_CAP:   u32 = 32768;        // largest file the editor will open
+const ED_PATHC: u32 = 256;
+
+const ED_CW: u32 = 8;               // the console font is 8x16
+const ED_CH: u32 = 16;
+
+const ED_BG:     color = 2105376;   // 0x202020
+const ED_FG:     color = 14737632;  // 0xE0E0E0
+const ED_BAR_BG: color = 4210752;   // 0x404040
+const ED_BAR_FG: color = 16777215;
+const ED_CUR_BG: color = 16746496;  // 0xFF8000 - the cursor cell
+const ED_NUM_FG: color = 8421504;   // line numbers, dimmed
+
+const K_ENTER: i32 = 10;
+const K_BACK:  i32 = 8;
+const K_ESC:   i32 = 27;
+const K_CTRL_S: i32 = 19;
+const K_CTRL_Q: i32 = 17;
+const K_UP:    i32 = 128;           // KEY_UP .. KEY_END, see keyboard.h
+const K_DOWN:  i32 = 129;
+const K_LEFT:  i32 = 130;
+const K_RIGHT: i32 = 131;
+const K_PGUP:  i32 = 132;
+const K_PGDN:  i32 = 133;
+const K_HOME:  i32 = 136;
+const K_END:   i32 = 137;
+const K_DEL:   i32 = 138;           // not produced yet; harmless to accept
+
+global ed_buf:  [32768]u8;
+global ed_path: [256]u8;
+global ed_msg:  [96]u8;
+global ed_len:   u32;               // bytes in the buffer
+global ed_cur:   u32;               // cursor, as a byte offset
+global ed_top:   u32;               // first visible line
+global ed_goal:  u32;               // column to aim for on up/down
+global ed_dirty: i32;
+global ed_rows:  u32;
+global ed_cols:  u32;
+
+// Columns available for text, after the 7-column line-number gutter.
+// Guarded rather than written inline: ed_cols is unsigned, so a narrow mode
+// would make ed_cols - 8 an enormous number instead of a small one.
+fn ed_text_cols() -> u32 {
+    if (ed_cols < 9) { return 1; }
+    return ed_cols - 8;
+}
+
+// ---- buffer queries ----
+
+// offset just past the end of the line containing `off`
+fn ed_eol(off: u32) -> u32 {
+    let i: u32 = off;
+    while (i < ed_len) {
+        if (ed_buf[i] == 10) { return i; }
+        i = i + 1;
+    }
+    return ed_len;
+}
+
+// offset of the first byte of the line containing `off`
+fn ed_bol(off: u32) -> u32 {
+    let i: u32 = off;
+    while (i > 0) {
+        if (ed_buf[i - 1] == 10) { return i; }
+        i = i - 1;
+    }
+    return 0;
+}
+
+// which line `off` is on, counting from 0
+fn ed_line_of(off: u32) -> u32 {
+    let n: u32 = 0;
+    let i: u32 = 0;
+    while (i < off) {
+        if (ed_buf[i] == 10) { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
+}
+
+// first byte of line `want`; the end of the buffer if there is no such line
+fn ed_line_start(want: u32) -> u32 {
+    if (want == 0) { return 0; }
+    let n: u32 = 0;
+    let i: u32 = 0;
+    while (i < ed_len) {
+        if (ed_buf[i] == 10) {
+            n = n + 1;
+            if (n == want) { return i + 1; }
+        }
+        i = i + 1;
+    }
+    return ed_len;
+}
+
+fn ed_line_count() -> u32 {
+    let n: u32 = 1;
+    let i: u32 = 0;
+    while (i < ed_len) {
+        if (ed_buf[i] == 10) { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
+}
+
+// ---- editing ----
+
+fn ed_insert(c: u8) -> void {
+    if (ed_len + 1 >= ED_CAP) {
+        strcopy(&ed_msg[0], "buffer full", 96);
+        return;
+    }
+    // shift the tail right by one, back to front so the copy does not eat itself
+    let i: u32 = ed_len;
+    while (i > ed_cur) {
+        ed_buf[i] = ed_buf[i - 1];
+        i = i - 1;
+    }
+    ed_buf[ed_cur] = c;
+    ed_len = ed_len + 1;
+    ed_cur = ed_cur + 1;
+    ed_dirty = 1;
+}
+
+fn ed_delete_at(off: u32) -> void {
+    if (off >= ed_len) { return; }
+    let i: u32 = off;
+    while (i + 1 < ed_len) {
+        ed_buf[i] = ed_buf[i + 1];
+        i = i + 1;
+    }
+    ed_len = ed_len - 1;
+    ed_dirty = 1;
+}
+
+fn ed_backspace() -> void {
+    if (ed_cur == 0) { return; }
+    ed_cur = ed_cur - 1;
+    ed_delete_at(ed_cur);
+}
+
+// ---- movement ----
+
+fn ed_col() -> u32 { return ed_cur - ed_bol(ed_cur); }
+
+// put the cursor at column `col` of line `line`, clamped to what exists
+fn ed_goto(line: u32, col: u32) -> void {
+    let start: u32 = ed_line_start(line);
+    let end: u32 = ed_eol(start);
+    let want: u32 = start + col;
+    if (want > end) { want = end; }
+    ed_cur = want;
+}
+
+fn ed_move_up(n: u32) -> void {
+    let line: u32 = ed_line_of(ed_cur);
+    if (line == 0) { ed_cur = 0; return; }
+    if (n > line) { n = line; }
+    ed_goto(line - n, ed_goal);
+}
+
+fn ed_move_down(n: u32) -> void {
+    let line: u32 = ed_line_of(ed_cur);
+    let last: u32 = ed_line_count() - 1;
+    if (line >= last) { ed_cur = ed_len; return; }
+    if (line + n > last) { n = last - line; }
+    ed_goto(line + n, ed_goal);
+}
+
+// keep the cursor's line on screen
+fn ed_scroll() -> void {
+    let line: u32 = ed_line_of(ed_cur);
+    if (line < ed_top) { ed_top = line; }
+    if (line >= ed_top + ed_rows) { ed_top = line - ed_rows + 1; }
+}
+
+// ---- drawing ----
+
+fn ed_bar(y: u32, text: *u8, bg: color) -> void {
+    gfx_fill_rect(0, y, ed_cols * ED_CW, ED_CH, bg);
+    gfx_text(0, y, text, ED_BAR_FG, bg);
+}
+
+fn ed_draw() -> void {
+    gfx_clear(ED_BG);
+
+    // title bar: the path, and whether it has unsaved changes
+    let title: [160]u8;
+    let n: u32 = strcopy(&title[0], "  CXK edit  -  ", 160);
+    n = n + strcopy(&title[n], &ed_path[0], 160 - n);
+    if (ed_dirty == 1) { n = n + strcopy(&title[n], "  [modified]", 160 - n); }
+    ed_bar(0, &title[0], ED_BAR_BG);
+
+    // Text area, one line per row, with line numbers.
+    //
+    // The line count and the first visible offset are computed ONCE and the
+    // loop then walks forward. Deriving each row from the top of the buffer
+    // instead would rescan the whole thing per row - 46 passes over 32KB on
+    // every keystroke, which is what a redraw costs here.
+    let line: u32 = ed_top;
+    let row: u32 = 0;
+    let cur_line: u32 = ed_line_of(ed_cur);
+    let cur_col: u32 = ed_col();
+    let total: u32 = ed_line_count();
+    let start: u32 = ed_line_start(ed_top);
+
+    while (row < ed_rows) {
+        let y: u32 = (row + 1) * ED_CH;
+
+        if (line < total) {
+            let num: [8]u8;
+            let d: u32 = u32_to_dec(&num[0], 8, line + 1);
+            // right-align in the 6-column gutter. d can only exceed 6 for a
+            // file with a million lines, which will not fit in ED_CAP - but
+            // 6 - d is unsigned, so an underflow here would be a wild x.
+            let nx: u32 = 0;
+            if (d < 6) { nx = (6 - d) * ED_CW; }
+            gfx_text(nx, y, &num[0], ED_NUM_FG, ED_BG);
+
+            // copy the line out so it can be NUL-terminated for gfx_text
+            let end: u32 = ed_eol(start);
+            let seg: [136]u8;
+            let k: u32 = 0;
+            while (start + k < end && k + 1 < 136 && k < ed_text_cols()) {
+                seg[k] = ed_buf[start + k];
+                k = k + 1;
+            }
+            seg[k] = 0;
+            gfx_text(7 * ED_CW, y, &seg[0], ED_FG, ED_BG);
+
+            // the cursor is drawn as a filled cell with its character on top,
+            // because there is no hardware text cursor on the framebuffer
+            if (line == cur_line && cur_col <= ed_text_cols()) {
+                // Clamped because there is no horizontal scrolling yet: a line
+                // longer than the window is truncated on screen, and a cursor
+                // past the edge would be drawn outside it. The framebuffer
+                // clips, so this is about not lying, not about safety.
+                let cx: u32 = (7 + cur_col) * ED_CW;
+                gfx_fill_rect(cx, y, ED_CW, ED_CH, ED_CUR_BG);
+                if (cur_col < k) {
+                    let one: [2]u8;
+                    one[0] = seg[cur_col];
+                    one[1] = 0;
+                    gfx_text(cx, y, &one[0], ED_BG, ED_CUR_BG);
+                }
+            }
+            start = end + 1;            // next line begins after the newline
+        }
+        line = line + 1;
+        row = row + 1;
+    }
+
+    // status bar: position, size, and whatever the last action had to say
+    let st: [160]u8;
+    let p: u32 = strcopy(&st[0], "  line ", 160);
+    p = p + u32_to_dec(&st[p], 160 - p, cur_line + 1);
+    p = p + strcopy(&st[p], "/", 160 - p);
+    p = p + u32_to_dec(&st[p], 160 - p, ed_line_count());
+    p = p + strcopy(&st[p], "  col ", 160 - p);
+    p = p + u32_to_dec(&st[p], 160 - p, cur_col + 1);
+    p = p + strcopy(&st[p], "  ", 160 - p);
+    p = p + u32_to_dec(&st[p], 160 - p, ed_len);
+    p = p + strcopy(&st[p], " bytes   ^S save  ^Q quit   ", 160 - p);
+    p = p + strcopy(&st[p], &ed_msg[0], 160 - p);
+    ed_bar((ed_rows + 1) * ED_CH, &st[0], ED_BAR_BG);
+}
+
+// ---- load / save ----
+
+fn ed_save() -> i32 {
+    let rc: i32 = file_dump(&ed_path[0], &ed_buf[0], ed_len);
+    if (rc < 0) {
+        strcopy(&ed_msg[0], file_strerror(rc), 96);
+        return rc;
+    }
+    ed_dirty = 0;
+    strcopy(&ed_msg[0], "saved", 96);
+    return rc;
+}
+
+// ---- the editor ----
+
+// Open `path` and edit it until the user leaves. A path that does not exist
+// starts an empty buffer, so `edit newfile.txt` is how you make one.
+// Returns 0 normally, or a negative E_* if the file could not be read.
+fn edit_run(path: *u8) -> i32 {
+    ed_cols = gfx_width() / ED_CW;
+    ed_rows = gfx_height() / ED_CH;
+    if (ed_rows < 3) { return E_INVAL; }
+    ed_rows = ed_rows - 2;              // title bar + status bar
+
+    strcopy(&ed_path[0], path, ED_PATHC);
+    ed_len = 0;
+    ed_cur = 0;
+    ed_top = 0;
+    ed_goal = 0;
+    ed_dirty = 0;
+    ed_msg[0] = 0;
+
+    if (file_exists(path) == 1) {
+        let n: i32 = file_slurp(path, &ed_buf[0], ED_CAP);
+        if (n < 0) { return n; }
+        ed_len = n as u32;
+        if (ed_len + 1 >= ED_CAP) { strcopy(&ed_msg[0], "file truncated to fit", 96); }
+    } else {
+        strcopy(&ed_msg[0], "new file", 96);
+    }
+
+    let quit_armed: i32 = 0;
+
+    while (1 == 1) {
+        ed_scroll();
+        ed_draw();
+
+        let c: i32 = getkey();
+
+        // any key other than a second ^Q disarms the unsaved-changes prompt
+        if (c != K_CTRL_Q) { quit_armed = 0; }
+
+        if (c == K_CTRL_Q || c == K_ESC) {
+            if (ed_dirty == 0 || quit_armed == 1) { break; }
+            quit_armed = 1;
+            strcopy(&ed_msg[0], "unsaved changes - ^Q again to discard", 96);
+            continue;
+        }
+
+        if (c == K_CTRL_S) { ed_save(); continue; }
+
+        ed_msg[0] = 0;
+
+        if (c == K_LEFT) {
+            if (ed_cur > 0) { ed_cur = ed_cur - 1; }
+            ed_goal = ed_col();
+            continue;
+        }
+        if (c == K_RIGHT) {
+            if (ed_cur < ed_len) { ed_cur = ed_cur + 1; }
+            ed_goal = ed_col();
+            continue;
+        }
+        if (c == K_UP)   { ed_move_up(1);   continue; }
+        if (c == K_DOWN) { ed_move_down(1); continue; }
+        if (c == K_PGUP) { ed_move_up(ed_rows);   continue; }
+        if (c == K_PGDN) { ed_move_down(ed_rows); continue; }
+        if (c == K_HOME) { ed_cur = ed_bol(ed_cur); ed_goal = 0; continue; }
+        if (c == K_END)  { ed_cur = ed_eol(ed_cur); ed_goal = ed_col(); continue; }
+
+        if (c == K_BACK) { ed_backspace(); ed_goal = ed_col(); continue; }
+        if (c == K_DEL)  { ed_delete_at(ed_cur); continue; }
+
+        if (c == K_ENTER) { ed_insert(10); ed_goal = 0; continue; }
+
+        // Tab inserts spaces to the next multiple of 4 rather than a tab byte.
+        // The console font has no glyph below 32 and renders one out of range
+        // as a space, so a literal tab would occupy one cell while meaning
+        // something else - every column count on screen would be a lie.
+        if (c == 9) {
+            let pad: u32 = 4 - (ed_col() % 4);
+            while (pad > 0) { ed_insert(32); pad = pad - 1; }
+            ed_goal = ed_col();
+            continue;
+        }
+
+        if (c >= 32 && c < 127) {
+            ed_insert(c as u8);
+            ed_goal = ed_col();
+        }
+    }
+
+    gfx_clear(BLACK);
+    return 0;
+}
