@@ -200,6 +200,15 @@ set(APP_ELF   ${BUILD_DIR}/${APP_BOOT_NAME}.elf)
 set(APP_XCEX  ${BUILD_DIR}/${APP_BOOT_NAME}.xcex)
 set(APP_IMAGE ${SRC_DIR}/os/executive/app_image.h)
 
+# DISK_APP is the opposite of APP_BOOT: not embedded in the executive, but
+# staged onto the disk as a file and started with SYS_EXEC_PATH. It has to be
+# SIGNED, because the kernel verifies what it loads from disk - an unsigned
+# .xcex sitting in /System is refused, which is the property worth having.
+set(DISK_APP      ${SRC_DIR}/os/apps/hi.xfxn)
+set(DISK_APP_NAME hi)
+set(DISK_APP_ELF  ${BUILD_DIR}/${DISK_APP_NAME}.elf)
+set(DISK_APP_XCEX ${PACKAGES_DIR}/${DISK_APP_NAME}.xcex)
+
 # Everything APP_BOOT can pull in with `import`, so editing any of it actually
 # rebuilds. This variable was referenced by the compile rule below but never
 # defined anywhere, and CMake expands an undefined variable to nothing - so the
@@ -317,6 +326,22 @@ add_custom_command(
     COMMENT "Embedding ${APP_BOOT_NAME}.xcex -> app_image.h"
 )
 
+# ---- disk app: hi.xfxn -> ELF -> signed .xcex (staged, not embedded) ----
+add_custom_command(
+    OUTPUT ${DISK_APP_ELF}
+    COMMAND ${CXK} compile ${DISK_APP} ${DISK_APP_ELF} -I ${SRC_DIR}/os/std
+    DEPENDS ${DISK_APP} ${CXK} ${STD_SRCS}
+    COMMENT "X   ${DISK_APP_NAME}.xfxn -> ELF"
+)
+add_custom_command(
+    OUTPUT ${DISK_APP_XCEX}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${PACKAGES_DIR}
+    COMMAND ${CXK} build ${DISK_APP_ELF} ${DISK_APP_XCEX} --type user
+    ${ASIGN}
+    DEPENDS ${DISK_APP_ELF} ${CXK}
+    COMMENT "Packaging ${DISK_APP_NAME}.xcex (CXEX, type user, staged to disk)"
+)
+
 # ---- executive.c -> executive.elf (user-half) -> executive.xoex (signed) ----
 add_custom_command(
     OUTPUT ${EXEC_ELF}
@@ -342,8 +367,9 @@ add_custom_command(
     COMMAND ${CMAKE_COMMAND} -E make_directory ${IMAGES_DIR}
     COMMAND ${CXK} image --out ${CXK_DISK} --size-mb 64 --boot-mb 8
             --stage1 ${BOOT_BIN} --stage2 ${STAGE2_BIN} --kernel ${KERNEL_XKEX}
-            --stage Boot.xoex=${EXEC_XOEX}
-    DEPENDS ${BOOT_BIN} ${STAGE2_BIN} ${KERNEL_XKEX} ${EXEC_XOEX} ${CXK}
+            --stage System/Boot.xoex=${EXEC_XOEX}
+            --stage System/Programs/${DISK_APP_NAME}.xcex=${DISK_APP_XCEX}
+    DEPENDS ${BOOT_BIN} ${STAGE2_BIN} ${KERNEL_XKEX} ${EXEC_XOEX} ${DISK_APP_XCEX} ${CXK}
     COMMENT "Building unified CXK disk (XBPT: boot + stage + system)"
 )
 add_custom_target(cxk_disk ALL DEPENDS ${CXK_DISK})
