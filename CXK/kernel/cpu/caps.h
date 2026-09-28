@@ -49,6 +49,15 @@
     (GRANT_CONSOLE | GRANT_MEM | GRANT_DISK | GRANT_SPAWN | GRANT_POWER | GRANT_ENDPOINT | GRANT_FRAMEBUFFER | GRANT_NET)
 #endif
 
+/* A system program's baseline: what an .xsex gets when the KERNEL starts it.
+   Narrower than the executive's on purpose - a system program is OS-owned but
+   is not the OS, so it gets enough to say something and to read its own files,
+   and asks for anything more by being started with it. Anything launched from
+   ring 3 is attenuated against its launcher as usual and never sees this. */
+#ifndef GRANT_SYSTEM_BASELINE
+#define GRANT_SYSTEM_BASELINE  (GRANT_CONSOLE | GRANT_DISK)
+#endif
+
 
 /* policy layer: map a verified image's identity (CXEX type code + trust) to its
    capability set. Consulted once, at the ring-3 handoff. A valid signature does

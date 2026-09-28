@@ -90,12 +90,20 @@ int cxex_get_sig(const uint8_t *file, size_t len,
     if (!(p[0]==CXSG_MAGIC0 && p[1]==CXSG_MAGIC1 &&
           p[2]==CXSG_MAGIC2 && p[3]==CXSG_MAGIC3)) return -3;
 
-    out->sig_algo  = rd16(p + 4);
-    out->hash_algo = rd16(p + 6);
+    out->sig_algo   = rd16(p + 4);
+    out->hash_algo  = rd16(p + 6);
     for (int k = 0; k < 32; k++) out->fingerprint[k] = p[8 + k];
-    out->sig_len   = rd16(p + 40);
-    out->sig_file_offset = (uint32_t)(so + CXEX_SIG_HDR_SIZE);
+    out->pubkey_len = rd16(p + 40);
+    out->sig_len    = rd16(p + 42);
 
+    /* The key comes first, then the signature. Both are bounds-checked against
+       the real file length before anyone reads a byte of either - these are
+       lengths out of an untrusted image, and the whole point of this block is
+       that it may have come from someone we have no reason to believe. */
+    out->pubkey_file_offset = (uint32_t)(so + CXEX_SIG_HDR_SIZE);
+    if ((size_t)out->pubkey_file_offset + out->pubkey_len > len) return -2;
+
+    out->sig_file_offset = out->pubkey_file_offset + out->pubkey_len;
     if ((size_t)out->sig_file_offset + out->sig_len > len) return -2;
     return 0;
 }

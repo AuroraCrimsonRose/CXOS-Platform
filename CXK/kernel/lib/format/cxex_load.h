@@ -4,7 +4,7 @@
  * CXEX runtime loader: place a parsed CXEX image's sections into an address
  * space and return its entry point. The C analogue of boot/cxexload.asm (which
  * places the kernel at boot); this one runs in the kernel to load executives
- * and apps (.xoex / .xcex) at runtime.
+ * and apps (.xoex / .xuex) at runtime.
  *
  * It is TYPE-AGNOSTIC: it just lays out sections. Verifying the signature
  * (cxex_verify) and deciding what the image is ALLOWED to do (policy: ring,

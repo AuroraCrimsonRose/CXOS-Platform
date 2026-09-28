@@ -134,6 +134,18 @@ int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
             return E_OK;
         }
 
+        case SYS_ARGS: {
+            /* Unprivileged: a program asking where its own arguments are.
+               This exists so USER_ARGS_BASE does not have to be compiled into
+               every program - the address is a 32-bit x86 fact, and a userland
+               that knew it would have to be ported alongside the kernel. */
+            if (!user_ptr_ok(a1, sizeof(struct args_info))) return E_FAULT;
+            struct args_info *ai = (struct args_info *)a1;
+            ai->base  = USER_ARGS_BASE;
+            ai->count = *(const uint32_t *)USER_ARGS_BASE;
+            return E_OK;
+        }
+
         case SYS_SLEEP:
             /* Also unprivileged: waiting is the opposite of a privilege. Note
                this is NOT POWER_SLEEP, which puts the machine into an ACPI
@@ -525,7 +537,7 @@ int usermode_file_test(void) {
     sa->broker_endpoint = -1; sa->caps = 0;
     sa->args = 0; sa->args_len = 0;
 
-    ft_strp(FT_PATH, scratch, "/kt_absent.xcex");
+    ft_strp(FT_PATH, scratch, "/kt_absent.xuex");
     step++;
     if (sys_exec_path((const char *)FT_PATH, sa) != E_NOENT) goto done;
 

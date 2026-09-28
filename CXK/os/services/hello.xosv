@@ -4,7 +4,7 @@
 # typing anything. The arguments are here to show they survive the trip from
 # this file, through the supervisor, through the kernel's argument page, into argv.
 
-exec=/System/Programs/hi.xcex
+exec=/Shared/Programs/hi.xuex
 args=started by the supervisor
 start=boot
 grants=console

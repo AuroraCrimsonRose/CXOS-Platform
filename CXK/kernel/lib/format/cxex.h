@@ -4,7 +4,7 @@
  * CXEX executable format definitions (CX_EXTENSION_SYSTEM.md section 9).
  *
  * This is the single source of truth in kernel code for what a CXEX file
- * (.xkex / .xbex / .xcex) looks like. It provides the structs callers use plus
+ * (.xkex / .xbex / .xuex) looks like. It provides the structs callers use plus
  * pure parse/validate/accessor helpers. It owns the on-disk byte layout via
  * EXPLICIT-OFFSET parsing (not packed structs / casts), so it is immune to
  * compiler padding/alignment surprises and matches the bytes mkcxes.py writes
@@ -29,10 +29,19 @@
 #define CXEX_MAGIC3 'X'
 
 /* ---- type codes (mirror the extension family) ---- */
-#define CXEX_TYPE_KERNEL 0x4B45u   /* 'KE' kernel executive  (.xkex) */
-#define CXEX_TYPE_BOOT   0x4245u   /* 'BE' boot executive    (.xbex) */
-#define CXEX_TYPE_USER   0x4345u   /* 'CE' compiled/user exe (.xcex) */
-#define CXEX_TYPE_OS     0x4F45u   /* 'OE' OS executive      (.xoex) */
+/* Each code is the extension's domain letter followed by 'E' for executive,
+   and the domain says WHOSE the program is - which is what caps_for() reads to
+   decide the authority it starts with.
+
+   0x4345 'CE' (.xuex) is deliberately absent. It named an executable for how
+   it was built, and every executable here is compiled, so it distinguished
+   nothing - a kernel image is as compiled as an application. Programs are
+   named by owner instead. See docs/CX_EXTENSION_SYSTEM.md. */
+#define CXEX_TYPE_KERNEL 0x4B45u   /* 'KE' the kernel          (.xkex) */
+#define CXEX_TYPE_BOOT   0x4245u   /* 'BE' the boot chain      (.xbex) */
+#define CXEX_TYPE_OS     0x4F45u   /* 'OE' the OS proper       (.xoex) */
+#define CXEX_TYPE_SYSTEM 0x5345u   /* 'SE' OS-owned, not the OS(.xsex) */
+#define CXEX_TYPE_USER   0x5545u   /* 'UE' a user's            (.xuex) */
 
 /* ---- arch ---- */
 #define CXEX_ARCH_X86_32 1u
@@ -56,7 +65,16 @@
 #define CXEX_SECTION_SIZE  28      /* section 9.4: 8+4+4+4+4+4 */
 /* signature block (10.3): magic(4) sig_algo(2) hash_algo(2) fingerprint(32)
    sig_len(2) signature(sig_len). Fixed part before the signature = 42 bytes. */
-#define CXEX_SIG_HDR_SIZE  42
+/* CXSG block header, up to the two variable-length parts that follow it:
+     0  "CXSG"        4
+     4  sig_algo      2
+     6  hash_algo     2
+     8  fingerprint  32   sha256 of the .xkpk bytes below
+    40  pubkey_len    2
+    42  sig_len       2
+    44  pubkey     pubkey_len   the signer's .xkpk file, verbatim
+        signature  sig_len                                              */
+#define CXEX_SIG_HDR_SIZE  44
 
 #define CXSG_MAGIC0 'C'
 #define CXSG_MAGIC1 'X'
@@ -98,9 +116,11 @@ struct cxex_section {
 struct cxex_sig {
     uint16_t sig_algo;
     uint16_t hash_algo;
-    uint8_t  fingerprint[32];
+    uint8_t  fingerprint[32];   /* sha256 of the .xkpk at pubkey_file_offset */
+    uint16_t pubkey_len;
     uint16_t sig_len;
-    uint32_t sig_file_offset;   /* where the signature bytes start in the file */
+    uint32_t pubkey_file_offset; /* the signer's .xkpk, carried with the image */
+    uint32_t sig_file_offset;    /* where the signature bytes start in the file */
 };
 
 /* ---- parse / validate / accessors (own the byte layout) ---- */

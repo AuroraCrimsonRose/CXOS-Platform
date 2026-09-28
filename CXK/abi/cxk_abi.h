@@ -2,7 +2,7 @@
 /* Aurora Tejeda / CATX SYSTEMS LLC */
 /*
  * CXK ABI v1 - the PUBLIC contract shared by the kernel, the .xoex executive,
- * and .xcex apps (and, later, the X toolchain). This is the single source of
+ * and .xuex apps (and, later, the X toolchain). This is the single source of
  * truth for syscall numbers, error codes, and shared call structures: kernel
  * and user code compile against the SAME definitions, so they can never drift.
  *
@@ -26,6 +26,7 @@
 #define SYS_GETUID        0x03   /* -> caller owning uid (0 = SYSTEM) */
 #define SYS_CLOCK         0x04   /* ebx = *clock_info -> 0, or -E_* */
 #define SYS_SLEEP         0x05   /* ebx = ms; blocks this thread, then returns 0 */
+#define SYS_ARGS          0x06   /* ebx = *args_info -> 0, or -E_* */
 /* IPC + handles 0x10-0x1F */
 #define SYS_IPC_CALL      0x10   /* ebx = *ipc_call_args -> reply length (blocks) */
 #define SYS_IPC_RECV      0x11   /* ebx = *ipc_recv_args -> request length (blocks) */
@@ -83,9 +84,28 @@
    argument strings in place. Offsets rather than pointers because the blob is
    built in one address space and read in another; a launcher never hands a
    child a pointer into its own memory. */
-#define USER_ARGS_BASE   0xBFFFF000u  /* the page just above the user stack */
+/* WHERE the page is is the KERNEL's business, and a program must ask.
+ *
+ * This address is a 32-bit x86 one. On another architecture the user address
+ * space is laid out differently and this number means nothing - so a program
+ * that hardcoded it would fault on the first argument it read, and the port
+ * would be a userland port rather than a kernel port. SYS_ARGS exists so that
+ * the one arch-specific fact here stays on the kernel's side of the line.
+ *
+ * USER_ARGS_BASE is still in this header because the kernel needs it and
+ * because a reader deserves to know where the page actually goes. It is not
+ * for userspace to use. */
+#define USER_ARGS_BASE   0xBFFFF000u  /* x86-32: the page just above the user stack */
 #define USER_ARGS_MAX    4096u        /* one page, header included */
 #define USER_ARGS_MAXC   64u          /* most arguments one program can be given */
+
+/* What SYS_ARGS hands back: where this program's arguments are, and how many.
+   `base` points at the argument page described above - the kernel's choice,
+   not a constant the program is expected to know. */
+struct args_info {
+    uint32_t count;   /* argc */
+    uint32_t base;    /* address of the argument page in THIS process */
+};
 
 /* ---- shared call structures ---- */
 struct spawn_args {

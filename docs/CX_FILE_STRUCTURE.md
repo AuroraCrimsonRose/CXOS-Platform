@@ -21,7 +21,7 @@ The same container is used for:
 | ----------------- | --------- | ------------------------------ |
 | Boot Executable   | `.xbex`   | Bootloader executable          |
 | Kernel Executable | `.xkex`   | Kernel executable              |
-| User Executable   | `.xcex`   | User-space compiled executable |
+| User Executable   | `.xuex`   | User-space compiled executable |
 
 All files begin with the magic value:
 
@@ -96,11 +96,16 @@ typedef struct
 # Type Codes
 
 ```c
-#define TYPE_BOOT     0x4245   // "BE"  boot domain       (.xbex)
-#define TYPE_USER     0x4345   // "CE"  compiled/userspace (.xcex)
-#define TYPE_OS       0x4F45   // "OE"  operating system  (.xoex)
-#define TYPE_KERNEL   0x4B45   // "KE"  kernel            (.xkex)
+#define TYPE_BOOT     0x4245   // "BE"  boot chain          (.xbex)
+#define TYPE_OS       0x4F45   // "OE"  the OS proper       (.xoex)
+#define TYPE_SYSTEM   0x5345   // "SE"  OS-owned, not the OS (.xsex)
+#define TYPE_USER     0x5545   // "UE"  a user's            (.xuex)
+#define TYPE_KERNEL   0x4B45   // "KE"  kernel              (.xkex)
 ```
+
+`0x4345 "CE"` (`.xcex`) is **retired and not reissued**. It named an executable
+for how it was built, and every executable is compiled, so it distinguished
+nothing.
 
 Each code is the domain letter followed by 'E' for executable, matching the
 extension: X + domain + type. See `docs/CX_EXTENSION_SYSTEM.md` for the full
@@ -389,7 +394,7 @@ typedef struct
 | --------- | -------------------- |
 | .xbex     | Boot Executable      |
 | .xkex     | Kernel Executable    |
-| .xcex     | User Executable      |
+| .xuex     | User Executable      |
 | .xbpt     | Boot Partition Table |
 | .xkpk     | Kernel Public Key    |
 | .xksk     | Kernel Private Key   |

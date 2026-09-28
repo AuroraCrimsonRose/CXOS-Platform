@@ -8,27 +8,71 @@
 #include "cxex_verify.h"
 #include "caps.h"
 #include "spawn.h"
+#include "keyvault.h"
+#include "logging.h"
 
 /* policy layer: identity (CXEX type) + trust -> capability set. Consulted once
    here at the handoff; a valid signature does not itself grant authority. */
 uint32_t caps_for(uint16_t type_code, int trusted) {
     if (!trusted) return 0;
-    if (type_code == CXEX_TYPE_OS)   return GRANT_OS_BASELINE;  /* broker executive */
-    if (type_code == CXEX_TYPE_USER) return 0;                /* apps: capability-less */
+    if (type_code == CXEX_TYPE_OS)     return GRANT_OS_BASELINE;      /* the broker */
+    if (type_code == CXEX_TYPE_SYSTEM) return GRANT_SYSTEM_BASELINE;  /* OS-owned */
+    if (type_code == CXEX_TYPE_USER)   return 0;                      /* an app */
     return 0;
+}
+
+/* The minimum trust a given tier may be launched at.
+ *
+ * Anything the operating system is MADE OF - the kernel, the boot chain, the
+ * executive, a system program - is platform-signed or it does not run. There
+ * is no publisher good enough to ship a replacement executive: a machine that
+ * accepted one would be a machine whose owner could be changed by adding a
+ * file to a directory.
+ *
+ * A user's program is the one place a second signer is allowed, and even there
+ * the key has to be in the vault. What is refused today is everything below
+ * that - unsigned, and signed by someone this machine has never been told to
+ * believe.
+ *
+ * THE ADMIN OVERRIDE GOES HERE, and cannot be built yet. The intent is that a
+ * user holding administrative permission may choose to run an unverified or
+ * unsigned .xuex anyway, and that choice is theirs to make. There is no
+ * account model to hang it on - uid.h has SYSTEM and users, nothing creates a
+ * user, and nothing logs in - so the policy refuses for now rather than
+ * pretending a permission exists. When accounts arrive, this is the one
+ * function that changes. */
+static int min_trust_for(uint16_t type_code) {
+    if (type_code == CXEX_TYPE_USER) return CX_TRUST_PUBLISHER;
+    return CX_TRUST_PLATFORM;
 }
 
 int cxex_exec_as(const uint8_t *file, size_t len, uint32_t caps, struct endpoint *broker,
                  const char *args, uint32_t args_len) {
-    /* IDENTITY + INTEGRITY: only run images signed by the trusted key. */
-    if (cxex_verify_trusted(file, len) != CXEX_VERIFY_OK)
-        return CXEX_EXEC_VERIFY_FAILED;
+    /* INTEGRITY FIRST, before this code forms any opinion about the image.
+       keyvault_trust_of establishes that the bytes are what the signer signed,
+       and only then says who that was - so a negative here means unsigned,
+       tampered, or not a CXEX at all, and all three are one answer: the
+       signature check refused it. Parsing the header first instead would make
+       a text file report "malformed" rather than "refused", which is the
+       loader volunteering its opinion of bytes nobody has vouched for. */
+    int trust = keyvault_trust_of(file, len);
+    if (trust < 0) return CXEX_EXEC_VERIFY_FAILED;
 
-    /* POLICY: only OS/USER executables run in ring 3. */
+    /* POLICY: only OS/SYSTEM/USER executables run in ring 3, and the tier
+       decides how much signature the image needed. The header is parsed here
+       rather than above because by now it is known to be signed bytes. */
     struct cxex_header h;
     if (cxex_parse_header(file, len, &h) != 0) return CXEX_EXEC_LOAD_FAILED;
-    if (h.type_code != CXEX_TYPE_OS && h.type_code != CXEX_TYPE_USER)
+    if (h.type_code != CXEX_TYPE_OS &&
+        h.type_code != CXEX_TYPE_SYSTEM &&
+        h.type_code != CXEX_TYPE_USER)
         return CXEX_EXEC_BAD_TYPE;
+
+    if (trust < min_trust_for(h.type_code)) {
+        klog("EXEC", SEV_WARN, "refused: signer not trusted for this tier");
+        klog_child(keyvault_trust_name(trust));
+        return CXEX_EXEC_VERIFY_FAILED;
+    }
 
     /* Start it as a normal ring-3 thread: its own address space, kernel stack,
        and capability tier. The scheduler handles its CR3/esp0 like any process -

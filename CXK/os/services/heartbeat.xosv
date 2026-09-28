@@ -7,7 +7,7 @@
 # 300 seconds because this is an example, not something anyone needs every few
 # seconds. The point it proves is that the supervisor comes back.
 
-exec=/System/Programs/hi.xcex
+exec=/Shared/Programs/hi.xuex
 args=heartbeat
 start=boot
 every=300

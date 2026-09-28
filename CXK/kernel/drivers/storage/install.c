@@ -39,6 +39,7 @@ static const struct tree_dir system_tree[] = {
     { "/System/Programs",  CXFS_PERM_DIR_DEFAULT },
     { "/System/Kernel",    CXFS_PERM_DIR_DEFAULT },              /* update staging */
     { "/System/Boot",      CXFS_PERM_DIR_DEFAULT },              /* update staging */
+    { "/System/KeyVault",  CXFS_PERM_DIR_DEFAULT },              /* .xupk publisher keys */
     { "/System/Services",  CXFS_PERM_DIR_DEFAULT },              /* .xosv descriptors */
     { "/System/Temp",      CXFS_PERM_DIR_DEFAULT },
     { "/Shared",           CXFS_PERM_DIR_DEFAULT | CXFS_PERM_GW },  /* 0775 */
@@ -116,7 +117,7 @@ static int create_system_tree(void) {
 }
 
 /* Copy the staged files from the STAGE partition into the tree. A staged name
-   is a PATH relative to the root ("System/Programs/hi.xcex"), not a bare leaf
+   is a PATH relative to the root ("Shared/Programs/hi.xuex"), not a bare leaf
    name, so the build says where each file goes instead of install.c guessing
    from the extension. Any missing parent is created.
 
@@ -153,7 +154,7 @@ static int populate_from_stage(uint8_t disk_id) {
             return -1;
         }
 
-        /* split "System/Programs/hi.xcex" into its directory and its leaf */
+        /* split "Shared/Programs/hi.xuex" into its directory and its leaf */
         int slash = -1;
         for (int k = 0; name[k]; k++) if (name[k] == '/') slash = k;
 

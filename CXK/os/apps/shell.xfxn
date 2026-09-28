@@ -29,7 +29,15 @@ global cmd_n:     u32;
 
 // Search path for `run <name>`, and the buffer the candidate is built in.
 // Filled in by main, because X has no initialized-array syntax.
+//
+// Two extensions, tried in this order after the bare name: a system program
+// before a user one, for the same reason /System is searched before /Shared -
+// something dropped in a writable place must not shadow what the system ships.
+// There is no .xcex any more; an executable is named for whose it is.
+const RUN_DIRS: u32 = 2;
+const RUN_EXTS: u32 = 2;
 global run_dirs: [2]*u8;
+global run_exts: [2]*u8;
 global run_buf:  [160]u8;
 
 // The packed argument blob handed to the kernel: the argument strings back to
@@ -389,14 +397,15 @@ fn run_pack_args(s: *u8) -> u32 {
     return n;
 }
 
-// Build "<dir>/<name>" - or "<dir>/<name>.xcex" when ext is non-zero - into
+// Build "<dir>/<name>", or "<dir>/<name>" plus one of run_exts when ext is
+// non-zero, into
 // run_buf, and hand back a pointer to it. One shared buffer: cmd_run uses the
 // result before building the next candidate.
-fn run_candidate(dir: *u8, name: *u8, ext: i32) -> *u8 {
+fn run_candidate(dir: *u8, name: *u8, ext: u32) -> *u8 {
     let n: u32 = strcopy(&run_buf[0], dir, 160);
     if (n + 1 < 160) { run_buf[n] = 47; n = n + 1; }         // '/'
     n = n + strcopy(&run_buf[n], name, 160 - n);
-    if (ext != 0) { n = n + strcopy(&run_buf[n], ".xcex", 160 - n); }
+    if (ext > 0) { n = n + strcopy(&run_buf[n], run_exts[ext - 1], 160 - n); }
     return &run_buf[0];
 }
 
@@ -409,8 +418,9 @@ fn run_candidate(dir: *u8, name: *u8, ext: i32) -> *u8 {
 // A bare name is looked up on a search path rather than in the working
 // directory, so `run hi` works from anywhere. /System/Programs is searched
 // before /Shared/Programs: /Shared is writable by any user, and a program
-// dropped there must not be able to shadow one the system ships. The .xcex
-// suffix is optional, so `run hi` and `run hi.xcex` both find the same file.
+// dropped there must not be able to shadow one the system ships. The suffix
+// is optional and both are tried, so `run hi`, `run hi.xsex` and `run hi.xuex`
+// all find the same file.
 //
 // Anything with a '/' in it is taken as a path and used verbatim - that is the
 // escape hatch for running something the search path does not cover, and it
@@ -427,7 +437,7 @@ fn cmd_run(arg: *u8) -> void {
     let name: *u8 = &run_argbuf[0];
 
     let a: spawn_args;
-    memzero((&a) as *u8, 28);
+    memzero((&a) as *u8, sizeof a);
     a.name            = name;
     a.broker_endpoint = 0 - 1;
     a.caps            = GRANT_CONSOLE;
@@ -439,9 +449,9 @@ fn cmd_run(arg: *u8) -> void {
         pid = exec_path(name, &a);
     } else {
         let d: u32 = 0;
-        while (d < 2) {
-            let ext: i32 = 0;
-            while (ext < 2) {
+        while (d < RUN_DIRS) {
+            let ext: u32 = 0;
+            while (ext <= RUN_EXTS) {
                 let p: *u8 = run_candidate(run_dirs[d], name, ext);
                 a.name = p;
                 pid = exec_path(p, &a);
@@ -449,7 +459,7 @@ fn cmd_run(arg: *u8) -> void {
                 // exists but will not run - unsigned, a directory, not a CXEX
                 // - is the answer, and reporting it beats walking past it and
                 // saying the program does not exist.
-                if (pid != E_NOENT) { ext = 2; d = 2; }
+                if (pid != E_NOENT) { ext = RUN_EXTS + 1; d = RUN_DIRS; }
                 else { ext = ext + 1; }
             }
             d = d + 1;
@@ -519,6 +529,8 @@ fn _start() -> void {
 
     run_dirs[0] = "/System/Programs";
     run_dirs[1] = "/Shared/Programs";
+    run_exts[0] = ".xsex";
+    run_exts[1] = ".xuex";
 
     register("help",   cmd_help,   "list commands");
     register("echo",   cmd_echo,   "print the rest of the line");
