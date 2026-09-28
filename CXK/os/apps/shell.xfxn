@@ -18,6 +18,7 @@ import "cxos.xfxn";
 import "net.xfxn";
 import "file.xfxn";
 import "edit.xfxn";
+import "heap.xfxn";
 type cmd_fn = fn(*u8) -> void;      // a command receives its argument text
 
 const MAX_CMDS: u32 = 32;
@@ -110,6 +111,49 @@ fn cmd_mem(arg: *u8) -> void {
     memmove(&a[2], &a[0], 5);                // deliberately overlapping
     puts("memmove  "); puts(&a[0]);
     puts("  (overlap-safe)"); newline();
+}
+
+// heap.xfxn - what this process may hold, what it holds, and a round trip
+// through the allocator to show the numbers move.
+fn cmd_heap(arg: *u8) -> void {
+    puts("quota      "); print_u32(heap_quota() / 1024); puts(" KiB"); newline();
+    puts("mapped     "); print_u32(heap_used() / 1024);  puts(" KiB"); newline();
+
+    let before: u32 = heap_used();
+    let a: u32 = alloc(1000);
+    if (a == 0) { puts("alloc      FAILED\n"); return; }
+
+    // Prove the memory is really there and really writable, at both ends -
+    // a mapping that is short by a byte fails here rather than at some later
+    // point in an unrelated program.
+    memset(a as *u8, 0x5A, 1000);
+    let p: *u8 = a as *u8;
+    if (p[0] != 0x5A) { puts("alloc      BAD FIRST BYTE\n"); return; }
+    if (p[999] != 0x5A) { puts("alloc      BAD LAST BYTE\n"); return; }
+
+    puts("alloc      1000 bytes at "); print_hex(a); newline();
+    puts("reserved   "); print_u32(alloc_size(a)); puts(" bytes (rounded)"); newline();
+    puts("mapped now "); print_u32(heap_used() / 1024); puts(" KiB (was ");
+    print_u32(before / 1024); puts(" KiB)"); newline();
+
+    // Grow past the block in place, so realloc has to move it and copy.
+    let b: u32 = realloc(a, 40000);
+    if (b == 0) { puts("realloc    FAILED\n"); return; }
+    let q: *u8 = b as *u8;
+    if (q[0] != 0x5A) { puts("realloc    LOST THE CONTENTS\n"); return; }
+    if (q[999] != 0x5A) { puts("realloc    LOST THE CONTENTS\n"); return; }
+    puts("realloc    40000 bytes, contents intact"); newline();
+
+    free(b);
+
+    // Everything freed, so the next request must be servable from the arena
+    // that was just released rather than needing a new one from the kernel.
+    let after: u32 = heap_used();
+    let c: u32 = alloc(1000);
+    if (c == 0) { puts("reuse      FAILED\n"); return; }
+    free(c);
+    if (heap_used() != after) { puts("reuse      GREW INSTEAD OF REUSING\n"); return; }
+    puts("reuse      freed space served the next request"); newline();
 }
 
 // fixed.xfxn
@@ -537,6 +581,7 @@ fn _start() -> void {
     register("pid",    cmd_pid,    "process and user id");
     register("str",    cmd_str,    "string library demo");
     register("mem",    cmd_mem,    "memory library demo");
+    register("heap",   cmd_heap,   "allocation: quota, use, and a round trip");
     register("math",   cmd_math,   "fixed-point demo");
     register("gui",    cmd_gui,    "enter the CXOS graphical shell");
     register("ver",    cmd_ver,    "version");

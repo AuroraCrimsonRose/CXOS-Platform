@@ -1,0 +1,206 @@
+// std/heap.xfxn - dynamic allocation for CXK X.
+// Aurora Tejeda / CATX SYSTEMS LLC
+//
+//   import "heap.xfxn";
+//
+// alloc / free / realloc, built on SYS_MEM_OP. Before this existed a program
+// had its image and its stack and nothing else, so every buffer in the system
+// was a fixed-size global sized for the worst case someone imagined.
+//
+// THE ALLOCATOR LIVES HERE, NOT IN THE KERNEL, and that is deliberate. The
+// kernel hands out pages, which is the part that needs privilege; how those
+// pages are carved into objects is policy, and policy that a program could
+// reasonably want to replace. Keeping it on this side also means the kernel
+// ports to another architecture without an allocator coming along for the ride.
+//
+// SHAPE. Memory arrives from mem_map in ARENAS. Each arena is a run of blocks
+// laid end to end, every block preceded by an 8-byte header:
+//
+//     [arena: next, size][hdr: size, free][payload...][hdr][payload...]
+//
+// Adjacent-in-memory IS adjacent-in-list, which is what makes coalescing
+// possible at all: two neighbouring free blocks can be merged because walking
+// forward from one reaches the other. A free list of pointers alone could not
+// tell you whether two free blocks touch.
+//
+// WHAT IT IS NOT. First fit, no size classes, no per-size caches, and a free()
+// that walks its arena to coalesce. That is O(blocks) on free and will not
+// survive a workload that allocates in earnest. It is written to be obviously
+// correct rather than fast, because the thing being unblocked is everything
+// above it - and a wrong allocator is discovered much later than a slow one.
+
+import "mem.xfxn";
+
+// Every payload starts 8-byte aligned, so a header is 8 bytes and an arena
+// begins on a page. Nothing here assumes a page is 4096: mem_map reports what
+// it granted and this only ever uses that number.
+const HEAP_HDR:       u32 = 8;
+const HEAP_ALIGN:     u32 = 8;
+const HEAP_ARENA_MIN: u32 = 65536;
+
+global heap_arenas: u32;    // first arena, 0 until the first alloc
+
+fn heap_ld(p: u32) -> u32        { let q: *u32 = p as *u32; return q[0]; }
+fn heap_st(p: u32, v: u32) -> void { let q: *u32 = p as *u32; q[0] = v; }
+
+fn heap_round(n: u32) -> u32 {
+    return (n + HEAP_ALIGN - 1) & (0 - HEAP_ALIGN);
+}
+
+// Ask the kernel for another arena, at least `need` payload bytes' worth.
+// Returns its base, or 0. mem_map reports what it actually granted, which may
+// be more than was asked for, and the extra is taken into the arena rather
+// than wasted - it is already mapped and already charged to the quota.
+fn heap_grow(need: u32) -> u32 {
+    let want: u32 = need + HEAP_HDR + HEAP_HDR;
+    if (want < HEAP_ARENA_MIN) { want = HEAP_ARENA_MIN; }
+
+    let a: mem_op_args;
+    memzero((&a) as *u8, sizeof a);
+    a.op = MEM_OP_MAP;
+    a.object = MOBJ_ANON;
+    a.length = want;
+    a.prot = MPROT_READ | MPROT_WRITE;
+    if (mem_op(&a) != E_OK) { return 0; }
+
+    let base: u32 = a.addr;
+    let total: u32 = a.granted;
+
+    heap_st(base, heap_arenas);          // arena.next
+    heap_st(base + 4, total);            // arena.size
+    heap_arenas = base;
+
+    // one free block covering everything after the two headers
+    let first: u32 = base + HEAP_HDR;
+    heap_st(first, total - HEAP_HDR - HEAP_HDR);
+    heap_st(first + 4, 1);
+    return base;
+}
+
+// Merge every run of adjacent free blocks in one arena into a single block.
+// Done on free rather than on alloc so that a program which frees everything
+// really does get its arena back as one block - otherwise a long alloc/free
+// cycle would shred it into unusable fragments that are individually free.
+fn heap_coalesce(arena: u32) -> void {
+    let end: u32 = arena + heap_ld(arena + 4);
+    let b: u32 = arena + HEAP_HDR;
+    while (b < end) {
+        let size: u32 = heap_ld(b);
+        if (heap_ld(b + 4) == 1) {
+            let n: u32 = b + HEAP_HDR + size;
+            while (n < end) {
+                if (heap_ld(n + 4) != 1) { break; }
+                size = size + HEAP_HDR + heap_ld(n);
+                heap_st(b, size);
+                n = b + HEAP_HDR + size;
+            }
+        }
+        b = b + HEAP_HDR + heap_ld(b);
+    }
+}
+
+// Allocate `n` bytes. Returns 0 if the quota is spent or the kernel is out of
+// memory - a caller must check, because there is no other way to be told.
+// The bytes are NOT zeroed: a fresh arena is (the kernel clears what it maps),
+// but a reused block holds whatever the last owner left. Use heap_zalloc when
+// that matters rather than assuming.
+fn alloc(n: u32) -> u32 {
+    if (n == 0) { return 0; }
+    let want: u32 = heap_round(n);
+
+    let pass: u32 = 0;
+    while (pass < 2) {
+        let arena: u32 = heap_arenas;
+        while (arena != 0) {
+            let end: u32 = arena + heap_ld(arena + 4);
+            let b: u32 = arena + HEAP_HDR;
+            while (b < end) {
+                let size: u32 = heap_ld(b);
+                if (heap_ld(b + 4) == 1) {
+                    if (size >= want) {
+                        // Split only when the tail can hold a header AND a
+                        // payload worth having. A split that leaves 0 usable
+                        // bytes creates a block that can never be allocated
+                        // and can only be recovered by coalescing.
+                        if (size >= want + HEAP_HDR + HEAP_ALIGN) {
+                            let tail: u32 = b + HEAP_HDR + want;
+                            heap_st(tail, size - want - HEAP_HDR);
+                            heap_st(tail + 4, 1);
+                            heap_st(b, want);
+                        }
+                        heap_st(b + 4, 0);
+                        return b + HEAP_HDR;
+                    }
+                }
+                b = b + HEAP_HDR + heap_ld(b);
+            }
+            arena = heap_ld(arena);
+        }
+        // Nothing fitted. Grow once, then look again - and only once, so a
+        // kernel that cannot satisfy the request ends the loop instead of
+        // spinning on it.
+        if (heap_grow(want) == 0) { return 0; }
+        pass = pass + 1;
+    }
+    return 0;
+}
+
+// alloc + zero.
+fn zalloc(n: u32) -> u32 {
+    let p: u32 = alloc(n);
+    if (p != 0) { memzero(p as *u8, heap_round(n)); }
+    return p;
+}
+
+// Payload size of a live block - what alloc actually reserved, which may be
+// more than was asked for because of rounding.
+fn alloc_size(p: u32) -> u32 {
+    if (p == 0) { return 0; }
+    return heap_ld(p - HEAP_HDR);
+}
+
+// Release a block. free(0) is a no-op, as everywhere else, so callers do not
+// have to guard. Freeing a pointer that did not come from alloc, or freeing
+// one twice, corrupts the heap and is not detected - this is a raw allocator.
+fn free(p: u32) -> void {
+    if (p == 0) { return; }
+    let b: u32 = p - HEAP_HDR;
+    heap_st(b + 4, 1);
+
+    // Find the arena this block belongs to, so the coalesce stays inside it.
+    // Merging across an arena boundary would join two regions that are
+    // separate mappings and need not be adjacent at all.
+    let arena: u32 = heap_arenas;
+    while (arena != 0) {
+        let end: u32 = arena + heap_ld(arena + 4);
+        if (b > arena) {
+            if (b < end) { heap_coalesce(arena); return; }
+        }
+        arena = heap_ld(arena);
+    }
+}
+
+// Resize a block, preserving its contents up to the smaller of the two sizes.
+// realloc(0, n) allocates; realloc(p, 0) frees and returns 0.
+fn realloc(p: u32, n: u32) -> u32 {
+    if (p == 0) { return alloc(n); }
+    if (n == 0) { free(p); return 0; }
+
+    let have: u32 = alloc_size(p);
+    if (have >= heap_round(n)) { return p; }
+
+    let q: u32 = alloc(n);
+    if (q == 0) { return 0; }        // the original is still valid and still owned
+    memcpy(q as *u8, p as *u8, have);
+    free(p);
+    return q;
+}
+
+// Bytes this process may hold mapped at once, and how many it holds now.
+// Both come from the kernel rather than from this allocator's own accounting -
+// but they count only what SYS_MEM_OP handed out. The image and the stack were
+// placed by the kernel when the process was built and are NOT included, which
+// is why a program that has allocated nothing reports 0 rather than the size
+// of itself. The quota bounds what a process ASKS FOR, not what it occupies.
+fn heap_quota() -> u32 { return mem_quota(); }
+fn heap_used() -> u32  { return mem_used(); }
