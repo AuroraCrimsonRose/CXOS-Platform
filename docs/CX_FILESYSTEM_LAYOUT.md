@@ -37,7 +37,7 @@ callers end up disagreeing.
 │
 ├── Temp/                   SYSTEM, 0777 — user-facing scratch
 │
-└── Volumes/                SYSTEM, 0755 — other disks attach here (§3)
+└── Drives/                 SYSTEM, 0755 — other drives attach here (§3)
 ```
 
 Capitalised to match `/System`, which already exists on disk. CXFS names are
@@ -121,42 +121,77 @@ truncate, rename, delete), on the same build with one line changed:
 
 ---
 
-## 3. Other disks
+## 3. Other drives
 
-**Extra volumes attach at `/Volumes/<label>`**, labelled from the partition
-name (12 characters, `struct partition.name`) or the disk's assigned name
-(`HDD0`, `EXT-CDROM0`, `struct disk.name`).
+A **drive** is hardware — a disk the machine has. A **volume** is a filesystem
+*on* a drive, either filling it or sitting in one of its partitions. The tree
+says so:
 
-A directory in the tree rather than a second syntax like `HDD1:/path`: one
-mount costs one extra path component and nothing in the system has to learn a
-new way to spell a path. A volume's own contents are its business — this
-document describes the boot volume and imposes nothing on a data disk.
+```
+/Drives/
+├── HDD1/                   one directory per drive, named by the disk registry
+│   ├── Data/               a volume on that drive, named by its own label
+│   └── Scratch/            a second volume on the same drive
+└── EXT-CDROM0/             a drive with no CXFS volume on it: present, empty
+```
 
-### 3.1 What this needs first, honestly
+So a file reads `/Drives/HDD1/Data/notes.txt` — drive, then volume, then path.
 
-**CXFS cannot currently mount two volumes at once.** Every piece of mount state
-in `cxfs.c` is a single static: one `sb`, one `mounted`, one `cxfs_id`, one
-`bitmap_cache`, one `fs_base_lba`, one `fs_sectors_per_block`. `cxfs_mount_at`
-replaces them, so mounting a second volume unmounts the first. `/Volumes` is a
-destination, not a description of anything that works today.
+**Why two levels and not one.** Hanging every volume directly off a single
+directory is one component shorter and breaks the first time two drives each
+hold a volume called `Data`: the second has nowhere to go. Naming the drive
+first also means an unmountable drive still appears — an empty `/Drives/HDD1`
+says "this drive is here and has no CXFS volume on it", which is more use to
+someone looking than no entry at all.
 
-Three things stand in the way, in increasing order of reach:
+A directory in the tree rather than a second syntax like `HDD1:/path`: a mount
+costs path components and nothing in the system has to learn a new way to spell
+a path. A volume's own contents are its business — this document describes the
+boot volume and imposes nothing on a data drive.
 
-1. **Per-volume state.** The six statics become a table. Mechanical. (A manifest
-   cache per §2.1 joins them — worth doing in the same pass.)
-2. **Crossing a mount point.** `cxfs_resolve` notices an entry is a mount root
-   and continues the walk in another volume. Contained; resolution is already
-   one function.
-3. **An entry id must become `(volume, id)`.** The one with reach.
-   `cxfs_resolve` returns a bare `int`, `struct thread.cwd` is a bare
-   `uint32_t`, the open-file table holds a bare entry id, and `file_stat.id` is
-   a `uint32_t` **and ABI**, so userspace sees the change. Every one of them
-   silently means "id on *the* volume".
+**The volume's name comes from the volume**, out of a `label` field in its
+superblock, falling back to a generated `VolumeN` for a volume formatted before
+that field existed. The label was carved out of the superblock's padding, which
+was already zeroed, so an older volume reads an empty label rather than
+garbage.
 
-Until then, `cxfs_set_id()` already switches the active volume wholesale. A
-`mount` command on it behaves like a DOS drive letter — one volume visible at a
-time, switched explicitly — which is honest about the limitation and commits to
-no path syntax that step 3 would have to undo.
+### 3.1 How it works
+
+Three pieces, and none of them is special-cased to `/Drives`:
+
+1. **Per-volume state.** Everything describing one mounted filesystem — disk
+   id, base LBA, geometry, superblock, caches — is a `cxfs_volume`, and a
+   `vol` pointer selects the one being operated on. Volume 0 is the root
+   volume, the one the system booted from, the one `/` means. It is the only
+   one given the 256KB manifest cache; the others fall back to reading the
+   manifest off the disk, which the cache was always written to allow.
+
+2. **Crossing a mount point.** Any directory can have a volume mounted on it.
+   `cross_mount` turns that directory's id into the mounted volume's root
+   during a path walk, and `uncross_mount` does the reverse so `..` and
+   `cxfs_path_of` can step back out. `/Drives` is where the system happens to
+   put them and nothing more.
+
+3. **An entry id carries its volume**: `(volume << 24) | index`. The index is
+   a manifest slot, bounded by `manifest_count` — 1024 today — so 24 bits is
+   far more room than the format can use.
+
+   This was expected to be an ABI break and is not. The root volume is 0, so
+   every root id is numerically identical to the untagged id it was before:
+   `file_stat.id` keeps its width and meaning, `0` still means the root, and
+   nothing already written down changes value.
+
+   On disk, `id` and `parent_id` inside a `cxfs_entry` stay volume-**local**. A
+   disk must not record where it happens to be mounted, or moving it to another
+   slot would point every reference on it at the wrong volume. The tag goes on
+   in `cxfs_read_entry` and comes off in `cxfs_write_entry`, so that pair is the
+   whole boundary.
+
+Cross-volume operations are refused rather than approximated: `cxfs_move` and
+`cxfs_write_entry` both reject a parent on another volume, because a parent
+pointer is a manifest index and one volume's index 2 has nothing to do with
+another's. Moving a file between volumes means copying its blocks and deleting
+the original — a caller's job, not the driver's.
 
 ---
 

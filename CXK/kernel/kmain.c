@@ -57,7 +57,11 @@ static void mount_cxfs(void) {
     } else {
 #if CXK_ALLOW_DISK_WRITE
         klog("FILESYS", SEV_WARN, "NO FILESYSTEM - FORMATING TO CXFS");
-        if (cxfs_format() == 0 && cxfs_mount() == 0)
+        /* Stamp a label while we are formatting it. Without one the volume
+           mounts under a generated "VolumeN", which tells a reader nothing and
+           changes if the disks are enumerated in a different order. */
+        if (cxfs_format_labeled(0, (16u * 1024 * 1024) / 4096u, "Data") == 0 &&
+            cxfs_mount() == 0)
             klog("FILESYS", SEV_OK, "CXFS FILESYSTEM MOUNTED");
         else
             klog("FILESYS", SEV_FAIL, "CXFS FILESYSTEM FORMAT AND MOUNT FAILED");
@@ -258,6 +262,16 @@ void kmain(void) {
         else klog_u32("INSTALL", SEV_WARN, "first-boot install issue: ", (uint32_t)ir, LOG_COLOR_VALUE, "");
 
         launch_exec = (ir == CXK_INSTALL_DONE || ir == CXK_INSTALL_MOUNTED);
+
+        /* With / up, offer every other drive to /Drives. After the install
+           so the tree exists, and before the self-tests so they see the same
+           filesystem the shell will. */
+        if (launch_exec) {
+            int extra = cxk_mount_extra_volumes(cxfs_get_id());
+            if (extra > 0)
+                klog_u32("VOLUMES", SEV_OK, "extra volumes mounted: ",
+                         (uint32_t)extra, LOG_COLOR_VALUE, "");
+        }
     }
 
     /* run the kernel self-tests (ktest.c) first - they create + reap their own

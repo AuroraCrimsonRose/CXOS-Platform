@@ -48,8 +48,23 @@ static const struct tree_dir system_tree[] = {
     { "/Shared/Videos",    CXFS_PERM_DIR_DEFAULT | CXFS_PERM_GW },
     { "/User",             CXFS_PERM_DIR_DEFAULT },
     { "/Temp",             CXFS_PERM_DIR_DEFAULT | CXFS_PERM_GW | CXFS_PERM_TW }, /* 0777 */
-    { "/Volumes",          CXFS_PERM_DIR_DEFAULT },
+    { "/Drives",           CXFS_PERM_DIR_DEFAULT },
 };
+
+/* Find or create one directory named `name` inside `parent`. The single-
+   component sibling of ensure_dir, for a name that comes from data rather
+   than from a path literal - a drive's registry name, say. Returns the entry
+   id, or negative if it could not be made or something that is not a
+   directory is already sitting there. */
+static int ensure_dir_in(uint32_t parent, const char *name) {
+    int found = cxfs_find_in_dir(parent, name);
+    if (found < 0) return cxfs_create_entry(parent, name, CXFS_TYPE_DIR);
+
+    struct cxfs_entry e;
+    if (cxfs_read_entry((uint32_t)found, &e) != 0) return -1;
+    if (e.type != CXFS_TYPE_DIR) return -1;   /* a file is in the way */
+    return found;
+}
 
 /* Resolve `path` as a directory, creating any component that is missing.
    Idempotent - an existing directory is returned, not recreated. Returns the
@@ -183,6 +198,61 @@ int cxk_install_first_boot(uint8_t disk_id) {
         return CXK_INSTALL_STAGE_ERR;   /* formatted, but payload was missing/bad */
 
     return CXK_INSTALL_DONE;
+}
+
+/* ---- drives and their volumes ----------------------------------------------
+ * A DRIVE is the hardware - a disk the machine has. A VOLUME is a filesystem
+ * ON a drive, either filling it or sitting in one of its partitions. The tree
+ * says so: /Drives holds one directory per drive, named as the disk registry
+ * names it (HDD0, HDD1, ...), and a drive's volumes are the directories inside
+ * it, named by their own labels.
+ *
+ * So a file reads /Drives/HDD1/Data/notes.txt - drive, then volume, then path.
+ * That is one component longer than hanging every volume off a single
+ * directory, and it is worth it: two drives may each hold a volume called
+ * Data, and with a flat namespace the second one has nowhere to go.
+ *
+ * The scan is deliberately dumb. Try the whole drive as one volume first; if
+ * that is not CXFS, try each partition an XBPT table declares. A drive holding
+ * neither is not mounted and that is not an error - a disk with a filesystem
+ * this kernel does not know is simply not ours to mount.
+ *
+ * Each volume's own mount point is created by cxfs_mount_volume rather than
+ * here, because its name is the volume's label and that is not known until the
+ * superblock has been read.
+ */
+int cxk_mount_extra_volumes(uint8_t boot_disk_id) {
+    int mounted = 0;
+
+    int drives_dir = cxfs_resolve("/Drives", 0);
+    if (drives_dir < 0) return 0;        /* no /Drives: nothing to mount into */
+
+    unsigned n = disk_count();
+    for (unsigned i = 0; i < n; i++) {
+        const struct disk *d = disk_get(i);
+        if (!d || d->id == boot_disk_id) continue;
+
+        /* The drive's own directory. Made before probing, and left behind if
+           the drive turns out to hold nothing we can mount: an empty
+           /Drives/HDD1 says "this drive is here and has no CXFS volume on it",
+           which is more use to someone looking than no entry at all. */
+        int dd = ensure_dir_in(drives_dir, d->name);
+        if (dd < 0) continue;
+
+        if (cxfs_mount_volume(d->id, 0, (uint32_t)dd, 0) >= 0) {
+            mounted++;
+            continue;                    /* whole-drive volume: done with it */
+        }
+
+        struct partition parts[XBPT_MAX_ENTRIES];
+        int cnt = 0;
+        if (part_scan(d->id, parts, XBPT_MAX_ENTRIES, &cnt) != 0) continue;
+        for (int p = 0; p < cnt; p++)
+            if (cxfs_mount_volume(d->id, parts[p].start_lba,
+                                  (uint32_t)dd, 0) >= 0)
+                mounted++;
+    }
+    return mounted;
 }
 
 int cxk_install_boot_disk(void) {
