@@ -6,14 +6,14 @@
 #
 # v5 build - boot chain + higher-half kernel + X apps.
 #   stage 1 (boot.asm) -> stage 2 (a20/mem/gdt/pmode + CXEX load) ->
-#   kernel (higher-half at 0xC0100000) -> executive (.xoex) -> shell (.xcex)
+#   kernel (higher-half at 0xC0100000) -> executive (.xoex) -> shell (.xsex)
 #
 # Kernel sources are LISTS (KERNEL_C_SRCS / KERNEL_ASM_SRCS): to add a
 # subsystem, append its .c/.asm here - the compile+link rules are generated
 # automatically. Include dirs are in KERNEL_INCLUDES.
 #
 # X apps build automatically: edit os/apps/shell.xfxn and a plain build
-# recompiles it, repackages the .xcex, regenerates app_image.h, relinks the
+# recompiles it, repackages the .xsex, regenerates app_image.h, relinks the
 # executive, and reimages the disk.
 
 cmake_minimum_required(VERSION 3.15)
@@ -190,24 +190,24 @@ set(KERNEL_ELF  ${BUILD_DIR}/kernel.elf)
 set(KERNEL_XKEX ${DIST_DIR}/kernel.xkex)
 set(DISK_IMG    ${IMAGES_DIR}/cxk_x86_32.img)
 
-# ---- X apps: .xfxn -> .elf -> .xcex -> embedded C header ----
+# ---- X apps: .xfxn -> .elf -> .xsex -> embedded C header ----
 # APP_BOOT is the startup app: embedded into the executive and spawned at boot.
 # To swap shells, point APP_BOOT/APP_BOOT_NAME at a different .xfxn.
 set(APP_BOOT      ${SRC_DIR}/os/apps/shell.xfxn)
 set(APP_BOOT_NAME shell)
 
 set(APP_ELF   ${BUILD_DIR}/${APP_BOOT_NAME}.elf)
-set(APP_XCEX  ${BUILD_DIR}/${APP_BOOT_NAME}.xcex)
+set(APP_XCEX  ${BUILD_DIR}/${APP_BOOT_NAME}.xsex)
 set(APP_IMAGE ${SRC_DIR}/os/executive/app_image.h)
 
 # DISK_APP is the opposite of APP_BOOT: not embedded in the executive, but
 # staged onto the disk as a file and started with SYS_EXEC_PATH. It has to be
 # SIGNED, because the kernel verifies what it loads from disk - an unsigned
-# .xcex sitting in /System is refused, which is the property worth having.
+# .xuex sitting on disk is refused, which is the property worth having.
 set(DISK_APP      ${SRC_DIR}/os/apps/hi.xfxn)
 set(DISK_APP_NAME hi)
 set(DISK_APP_ELF  ${BUILD_DIR}/${DISK_APP_NAME}.elf)
-set(DISK_APP_XCEX ${PACKAGES_DIR}/${DISK_APP_NAME}.xcex)
+set(DISK_APP_XCEX ${PACKAGES_DIR}/${DISK_APP_NAME}.xuex)
 
 # supervisor, the service supervisor. Staged and signed exactly like DISK_APP - the
 # executive starts it with SYS_EXEC_PATH, so the kernel verifies it on the way
@@ -215,7 +215,7 @@ set(DISK_APP_XCEX ${PACKAGES_DIR}/${DISK_APP_NAME}.xcex)
 # process that decides what else gets to run.
 set(SUPERVISOR_SRC  ${SRC_DIR}/os/apps/supervisor.xfxn)
 set(SUPERVISOR_ELF  ${BUILD_DIR}/supervisor.elf)
-set(SUPERVISOR_XCEX ${PACKAGES_DIR}/supervisor.xcex)
+set(SUPERVISOR_XCEX ${PACKAGES_DIR}/supervisor.xsex)
 
 # Everything APP_BOOT can pull in with `import`, so editing any of it actually
 # rebuilds. This variable was referenced by the compile rule below but never
@@ -318,23 +318,23 @@ add_custom_command(
     COMMENT "X   ${APP_BOOT_NAME}.xfxn -> ELF"
 )
 
-# ---- shell.elf -> shell.xcex (CXEX, type user) ----
+# ---- shell.elf -> shell.xsex (CXEX, type system) ----
 add_custom_command(
     OUTPUT ${APP_XCEX}
-    COMMAND ${CXK} build ${APP_ELF} ${APP_XCEX} --type user
+    COMMAND ${CXK} build ${APP_ELF} ${APP_XCEX} --type system
     DEPENDS ${APP_ELF} ${CXK}
-    COMMENT "Packaging ${APP_BOOT_NAME}.xcex (CXEX, type user)"
+    COMMENT "Packaging ${APP_BOOT_NAME}.xsex (CXEX, type system)"
 )
 
-# ---- shell.xcex -> app_image.h (byte array the executive embeds) ----
+# ---- shell.xsex -> app_image.h (byte array the executive embeds) ----
 add_custom_command(
     OUTPUT ${APP_IMAGE}
-    COMMAND ${CXK} embed ${APP_XCEX} ${APP_IMAGE} ${APP_BOOT_NAME}_xcex
+    COMMAND ${CXK} embed ${APP_XCEX} ${APP_IMAGE} ${APP_BOOT_NAME}_xsex
     DEPENDS ${APP_XCEX} ${CXK}
-    COMMENT "Embedding ${APP_BOOT_NAME}.xcex -> app_image.h"
+    COMMENT "Embedding ${APP_BOOT_NAME}.xsex -> app_image.h"
 )
 
-# ---- disk app: hi.xfxn -> ELF -> signed .xcex (staged, not embedded) ----
+# ---- disk app: hi.xfxn -> ELF -> signed .xuex (staged, not embedded) ----
 add_custom_command(
     OUTPUT ${DISK_APP_ELF}
     COMMAND ${CXK} compile ${DISK_APP} ${DISK_APP_ELF} -I ${SRC_DIR}/os/std
@@ -347,7 +347,7 @@ add_custom_command(
     COMMAND ${CXK} build ${DISK_APP_ELF} ${DISK_APP_XCEX} --type user
     ${ASIGN}
     DEPENDS ${DISK_APP_ELF} ${CXK}
-    COMMENT "Packaging ${DISK_APP_NAME}.xcex (CXEX, type user, staged to disk)"
+    COMMENT "Packaging ${DISK_APP_NAME}.xuex (CXEX, type user, staged to disk)"
 )
 
 # ---- supervisor: the service supervisor (staged + signed, like the disk app) ----
@@ -360,10 +360,10 @@ add_custom_command(
 add_custom_command(
     OUTPUT ${SUPERVISOR_XCEX}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${PACKAGES_DIR}
-    COMMAND ${CXK} build ${SUPERVISOR_ELF} ${SUPERVISOR_XCEX} --type user
+    COMMAND ${CXK} build ${SUPERVISOR_ELF} ${SUPERVISOR_XCEX} --type system
     ${VSIGN}
     DEPENDS ${SUPERVISOR_ELF} ${CXK}
-    COMMENT "Packaging supervisor.xcex (CXEX, type user, staged to disk)"
+    COMMENT "Packaging supervisor.xsex (CXEX, type system, staged to disk)"
 )
 
 # ---- executive.c -> executive.elf (user-half) -> executive.xoex (signed) ----
@@ -392,8 +392,8 @@ add_custom_command(
     COMMAND ${CXK} image --out ${CXK_DISK} --size-mb 64 --boot-mb 8
             --stage1 ${BOOT_BIN} --stage2 ${STAGE2_BIN} --kernel ${KERNEL_XKEX}
             --stage System/Boot.xoex=${EXEC_XOEX}
-            --stage System/Programs/${DISK_APP_NAME}.xcex=${DISK_APP_XCEX}
-            --stage System/Programs/supervisor.xcex=${SUPERVISOR_XCEX}
+            --stage Shared/Programs/${DISK_APP_NAME}.xuex=${DISK_APP_XCEX}
+            --stage System/Programs/supervisor.xsex=${SUPERVISOR_XCEX}
             --stage System/Services/hello.xosv=${SRC_DIR}/os/services/hello.xosv
             --stage System/Services/disabled.xosv=${SRC_DIR}/os/services/disabled.xosv
             --stage System/Services/heartbeat.xosv=${SRC_DIR}/os/services/heartbeat.xosv

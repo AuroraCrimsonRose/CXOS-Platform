@@ -33,7 +33,7 @@ enum cxex_verify_result {
     CXEX_VERIFY_BAD_SIGNATURE = -8    /* RSA verify failed: tampered or forged */
 };
 
-/* Verify `file` (a complete .xkex/.xcex image incl. the appended CXSG block)
+/* Verify `file` (a complete .xkex/.xuex image incl. the appended CXSG block)
    against the trusted public key `trusted_xkpk` (CXPK format, as makekeys.py
    writes). Returns CXEX_VERIFY_OK (0) or a negative cxex_verify_result. */
 int cxex_verify(const uint8_t *file, size_t len,

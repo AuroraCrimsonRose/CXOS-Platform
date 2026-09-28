@@ -2,7 +2,7 @@
 /* Aurora Tejeda / CATX SYSTEMS LLC */
 /*
  * CXK ABI v1 - the PUBLIC contract shared by the kernel, the .xoex executive,
- * and .xcex apps (and, later, the X toolchain). This is the single source of
+ * and .xuex apps (and, later, the X toolchain). This is the single source of
  * truth for syscall numbers, error codes, and shared call structures: kernel
  * and user code compile against the SAME definitions, so they can never drift.
  *

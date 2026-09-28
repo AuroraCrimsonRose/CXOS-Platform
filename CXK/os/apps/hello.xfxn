@@ -1,7 +1,7 @@
 // hello.xfxn - the first native X (.xfxn) app for CXOS.
 // Aurora Tejeda / CATX SYSTEMS LLC
 //
-// A capability-less USER app (.xcex). It cannot touch the console directly
+// A capability-less USER app (.xuex). It cannot touch the console directly
 // (no GRANT_CONSOLE); instead it asks its broker executive to print for it over
 // IPC - the X port of os/apps/hello.c, the positive half of the brokered model.
 //

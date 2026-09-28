@@ -33,7 +33,7 @@ if(SIGN)
         message(FATAL_ERROR "SIGN=ON but signing key missing: ${SIGN_SK}\n  run: tools/cxk.exe keygen tools/kernel")
     endif()
     # One variable per ARTIFACT, not per kind: each expands to a command naming
-    # the exact file it signs. Reusing ASIGN for a second .xcex signs hi.xcex
+    # the exact file it signs. Reusing ASIGN for a second program signs hi.xuex
     # twice and leaves the other one unsigned, which shows up as a signature
     # refusal at boot rather than as a build error.
     set(KSIGN COMMAND ${CXK} sign ${KERNEL_XKEX} ${SIGN_SK} ${SIGN_PK})
@@ -47,6 +47,6 @@ else()
     # harmless under cmd.exe, so the restriction costs nothing on Windows.
     set(KSIGN COMMAND ${CMAKE_COMMAND} -E echo "  kernel.xkex UNSIGNED - configure -DSIGN=ON to sign")
     set(XSIGN COMMAND ${CMAKE_COMMAND} -E echo "  executive.xoex UNSIGNED - the kernel WILL REFUSE to launch it - configure -DSIGN=ON")
-    set(ASIGN COMMAND ${CMAKE_COMMAND} -E echo "  hi.xcex UNSIGNED - exec_path WILL REFUSE it - configure -DSIGN=ON")
-    set(VSIGN COMMAND ${CMAKE_COMMAND} -E echo "  supervisor.xcex UNSIGNED - the executive WILL REFUSE it - configure -DSIGN=ON")
+    set(ASIGN COMMAND ${CMAKE_COMMAND} -E echo "  hi.xuex UNSIGNED - exec_path WILL REFUSE it - configure -DSIGN=ON")
+    set(VSIGN COMMAND ${CMAKE_COMMAND} -E echo "  supervisor.xsex UNSIGNED - the executive WILL REFUSE it - configure -DSIGN=ON")
 endif()

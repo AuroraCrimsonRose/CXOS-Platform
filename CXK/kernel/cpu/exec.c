@@ -13,8 +13,9 @@
    here at the handoff; a valid signature does not itself grant authority. */
 uint32_t caps_for(uint16_t type_code, int trusted) {
     if (!trusted) return 0;
-    if (type_code == CXEX_TYPE_OS)   return GRANT_OS_BASELINE;  /* broker executive */
-    if (type_code == CXEX_TYPE_USER) return 0;                /* apps: capability-less */
+    if (type_code == CXEX_TYPE_OS)     return GRANT_OS_BASELINE;      /* the broker */
+    if (type_code == CXEX_TYPE_SYSTEM) return GRANT_SYSTEM_BASELINE;  /* OS-owned */
+    if (type_code == CXEX_TYPE_USER)   return 0;                      /* an app */
     return 0;
 }
 
@@ -27,7 +28,9 @@ int cxex_exec_as(const uint8_t *file, size_t len, uint32_t caps, struct endpoint
     /* POLICY: only OS/USER executables run in ring 3. */
     struct cxex_header h;
     if (cxex_parse_header(file, len, &h) != 0) return CXEX_EXEC_LOAD_FAILED;
-    if (h.type_code != CXEX_TYPE_OS && h.type_code != CXEX_TYPE_USER)
+    if (h.type_code != CXEX_TYPE_OS &&
+        h.type_code != CXEX_TYPE_SYSTEM &&
+        h.type_code != CXEX_TYPE_USER)
         return CXEX_EXEC_BAD_TYPE;
 
     /* Start it as a normal ring-3 thread: its own address space, kernel stack,
