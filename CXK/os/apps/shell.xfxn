@@ -437,7 +437,7 @@ fn cmd_run(arg: *u8) -> void {
     let name: *u8 = &run_argbuf[0];
 
     let a: spawn_args;
-    memzero((&a) as *u8, 28);
+    memzero((&a) as *u8, sizeof a);
     a.name            = name;
     a.broker_endpoint = 0 - 1;
     a.caps            = GRANT_CONSOLE;

@@ -24,7 +24,7 @@ import "string.xfxn";
 // FOPEN_WRITE is required. Returns a handle, or a negative E_* code.
 fn file_open(path: *u8, flags: u32) -> i32 {
     let a: file_op_args;
-    memzero((&a) as *u8, 32);
+    memzero((&a) as *u8, sizeof a);
     a.op = FILE_OP_OPEN;
     a.path = path;
     a.flags = flags;
@@ -46,7 +46,7 @@ fn file_append(path: *u8) -> i32 {
 
 fn file_close(h: i32) -> i32 {
     let a: file_op_args;
-    memzero((&a) as *u8, 32);
+    memzero((&a) as *u8, sizeof a);
     a.op = FILE_OP_CLOSE;
     a.handle = h;
     return file_op(&a);
@@ -59,7 +59,7 @@ fn file_close(h: i32) -> i32 {
 // until it gets 0 rather than assuming it got everything it asked for.
 fn file_read(h: i32, buf: *u8, n: u32) -> i32 {
     let a: file_op_args;
-    memzero((&a) as *u8, 32);
+    memzero((&a) as *u8, sizeof a);
     a.op = FILE_OP_READ;
     a.handle = h;
     a.data = buf;
@@ -69,7 +69,7 @@ fn file_read(h: i32, buf: *u8, n: u32) -> i32 {
 
 fn file_write(h: i32, buf: *u8, n: u32) -> i32 {
     let a: file_op_args;
-    memzero((&a) as *u8, 32);
+    memzero((&a) as *u8, sizeof a);
     a.op = FILE_OP_WRITE;
     a.handle = h;
     a.data = buf;
@@ -87,7 +87,7 @@ fn file_puts(h: i32, s: *u8) -> i32 { return file_write(h, s, strlen(s)); }
 // part of the file when a write reaches it, and reads back as zeros.
 fn file_seek(h: i32, off: i32, origin: u32) -> i32 {
     let a: file_op_args;
-    memzero((&a) as *u8, 32);
+    memzero((&a) as *u8, sizeof a);
     a.op = FILE_OP_SEEK;
     a.handle = h;
     a.off = off;
@@ -97,7 +97,7 @@ fn file_seek(h: i32, off: i32, origin: u32) -> i32 {
 
 fn file_tell(h: i32) -> i32 {
     let a: file_op_args;
-    memzero((&a) as *u8, 32);
+    memzero((&a) as *u8, sizeof a);
     a.op = FILE_OP_TELL;
     a.handle = h;
     return file_op(&a);
@@ -106,7 +106,7 @@ fn file_tell(h: i32) -> i32 {
 // cut (or extend) the file to exactly `size` bytes
 fn file_truncate(h: i32, size: i32) -> i32 {
     let a: file_op_args;
-    memzero((&a) as *u8, 32);
+    memzero((&a) as *u8, sizeof a);
     a.op = FILE_OP_TRUNC;
     a.handle = h;
     a.off = size;
@@ -117,7 +117,7 @@ fn file_truncate(h: i32, size: i32) -> i32 {
 
 fn stat(path: *u8, st: *file_stat) -> i32 {
     let a: file_op_args;
-    memzero((&a) as *u8, 32);
+    memzero((&a) as *u8, sizeof a);
     a.op = FILE_OP_STAT;
     a.path = path;
     a.data = st as *u8;
@@ -126,7 +126,7 @@ fn stat(path: *u8, st: *file_stat) -> i32 {
 
 fn fstat(h: i32, st: *file_stat) -> i32 {
     let a: file_op_args;
-    memzero((&a) as *u8, 32);
+    memzero((&a) as *u8, sizeof a);
     a.op = FILE_OP_FSTAT;
     a.handle = h;
     a.data = st as *u8;
@@ -155,7 +155,7 @@ fn file_size(path: *u8) -> i32 {
 // a loop that stops on 0.
 fn dir_entry(path: *u8, index: u32, st: *file_stat) -> i32 {
     let a: file_op_args;
-    memzero((&a) as *u8, 32);
+    memzero((&a) as *u8, sizeof a);
     a.op = FILE_OP_READDIR;
     a.path = path;
     a.len = index;
@@ -165,7 +165,7 @@ fn dir_entry(path: *u8, index: u32, st: *file_stat) -> i32 {
 
 fn mkdir(path: *u8) -> i32 {
     let a: file_op_args;
-    memzero((&a) as *u8, 32);
+    memzero((&a) as *u8, sizeof a);
     a.op = FILE_OP_MKDIR;
     a.path = path;
     return file_op(&a);
@@ -174,7 +174,7 @@ fn mkdir(path: *u8) -> i32 {
 // remove a file, or an EMPTY directory
 fn unlink(path: *u8) -> i32 {
     let a: file_op_args;
-    memzero((&a) as *u8, 32);
+    memzero((&a) as *u8, sizeof a);
     a.op = FILE_OP_UNLINK;
     a.path = path;
     return file_op(&a);
@@ -183,7 +183,7 @@ fn unlink(path: *u8) -> i32 {
 // rename in place - `newname` is a bare name, not a path
 fn rename(path: *u8, newname: *u8) -> i32 {
     let a: file_op_args;
-    memzero((&a) as *u8, 32);
+    memzero((&a) as *u8, sizeof a);
     a.op = FILE_OP_RENAME;
     a.path = path;
     a.path2 = newname;
@@ -192,7 +192,7 @@ fn rename(path: *u8, newname: *u8) -> i32 {
 
 fn chdir(path: *u8) -> i32 {
     let a: file_op_args;
-    memzero((&a) as *u8, 32);
+    memzero((&a) as *u8, sizeof a);
     a.op = FILE_OP_CHDIR;
     a.path = path;
     return file_op(&a);
@@ -201,7 +201,7 @@ fn chdir(path: *u8) -> i32 {
 // write the working directory into `buf`; returns its length
 fn getcwd(buf: *u8, cap: u32) -> i32 {
     let a: file_op_args;
-    memzero((&a) as *u8, 32);
+    memzero((&a) as *u8, sizeof a);
     a.op = FILE_OP_GETCWD;
     a.data = buf;
     a.len = cap;
