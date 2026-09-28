@@ -66,11 +66,17 @@ Pattern: **`XF**` = Format (source)**, **`XC**` = Compiled**, executables are CX
 | `.XCXN` | cX Compiled, X Native | Compiled X Native object |
 
 **There is no `.XCXR` or `.XCXH`, and there should not be.** The dialect is a
-property of the SOURCE, not of what comes out. XR and XH desugar to X core and
-share one backend (`CX_X_CORE_LANG.md` §0), so a compiled XH program is
-byte-for-byte the same kind of artifact as a compiled XN one — and under the
-domain rule an executable is named for **whose** it is, not for what produced
-it. An XH program written for a user is a `.xuex`, exactly like an XN one.
+property of the SOURCE, not of what comes out. X Runtime and X Hybrid desugar to
+X core and share one backend (`CX_X_CORE_LANG.md` §0), so a compiled X Hybrid
+program is byte-for-byte the same kind of artifact as a compiled X Native one —
+and under the domain rule an executable is named for **whose** it is, not for
+what produced it. An X Hybrid program written for a user is a `.xuex`, exactly
+like an X Native one.
+
+> **Languages are named in full, never by initials.** The only domain is the
+> letter directly after `x` in an extension. "XN" would read as the reserved
+> Network domain and "XR" as the reserved Runtime domain, so neither is used as
+> a language name. See `CX_ROADMAP.md` §2.
 
 Carrying the dialect into the binary would also undo the thing the split buys:
 a loader that had to know which front end emitted an image is a loader that can
