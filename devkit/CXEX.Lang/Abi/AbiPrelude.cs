@@ -33,6 +33,7 @@ const SYS_GETPID:        u32 = 0x02;
 const SYS_GETUID:        u32 = 0x03;
 const SYS_CLOCK:         u32 = 0x04;
 const SYS_SLEEP:         u32 = 0x05;
+const SYS_ARGS:          u32 = 0x06;
 const SYS_IPC_CALL:      u32 = 0x10;
 const SYS_IPC_RECV:      u32 = 0x11;
 const SYS_IPC_REPLY:     u32 = 0x12;
@@ -84,25 +85,35 @@ struct spawn_args     { image: *u8, image_len: u32, name: *u8, broker_endpoint: 
 // ---- program arguments ----
 // The launcher hands the kernel a flat blob - the argument strings, one after
 // another, each NUL-terminated - and the kernel lays it out as a single page
-// at USER_ARGS_BASE in the child: argc, then one offset per argument, then the
-// strings. arg_count() and arg_at() below read that page. The page is always
-// mapped, so a program with no arguments reads 0 rather than faulting.
-const USER_ARGS_BASE: u32 = 0xBFFFF000;
-const USER_ARGS_MAX:  u32 = 4096;
-const USER_ARGS_MAXC: u32 = 64;
+// in the child: argc, then one offset per argument, then the strings.
+//
+// WHERE that page is, this code does not know and must not. The address is an
+// architecture fact - it is one number on 32-bit x86 and a different one
+// anywhere else - so a program that compiled it in would need porting
+// alongside the kernel. SYS_ARGS asks, which keeps that fact on the kernel's
+// side of the line and this file the same on every machine.
+//
+// The page is always mapped, so a program with no arguments reads 0 rather
+// than faulting.
+struct args_info { count: u32, base: u32 }
+
+fn args_read(a: *args_info) -> i32 { return __syscall(SYS_ARGS, a as u32, 0, 0, 0, 0); }
 
 // how many arguments this program was started with
 fn arg_count() -> u32 {
-    let head: *u32 = USER_ARGS_BASE as *u32;
-    return head[0];
+    let ai: args_info;
+    if (args_read(&ai) != E_OK) { return 0; }
+    return ai.count;
 }
 
 // argument i, or an empty string when i is out of range - so a caller may read
 // an argument it was not given without checking arg_count() first
 fn arg_at(i: u32) -> *u8 {
-    let head: *u32 = USER_ARGS_BASE as *u32;
-    if (i >= head[0]) { return (USER_ARGS_BASE + USER_ARGS_MAX - 1) as *u8; }
-    return (USER_ARGS_BASE + head[1 + i]) as *u8;
+    let ai: args_info;
+    if (args_read(&ai) != E_OK) { return ""; }
+    if (i >= ai.count)          { return ""; }
+    let head: *u32 = ai.base as *u32;
+    return (ai.base + head[1 + i]) as *u8;
 }
 const FB_OP_INFO: u32 = 0;
 const FB_OP_CLEAR: u32 = 1;

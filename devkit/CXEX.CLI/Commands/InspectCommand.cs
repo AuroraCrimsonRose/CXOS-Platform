@@ -19,7 +19,7 @@ public class InspectCommand : Command<InspectCommand.Settings>
     public class Settings : CommandSettings
     {
         [CommandArgument(0, "<IMAGE>")]
-        [Description("CXEX image to inspect (.xkex / .xoex / .xcex)")]
+        [Description("CXEX image to inspect (.xkex / .xoex / .xsex / .xuex)")]
         public string Path { get; set; } = string.Empty;
     }
 

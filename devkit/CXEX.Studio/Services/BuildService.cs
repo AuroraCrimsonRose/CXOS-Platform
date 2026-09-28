@@ -26,6 +26,7 @@ public sealed class BuildService
         "kernel" => CXFlags.TYPE_KERNEL,
         "boot" => CXFlags.TYPE_BOOT,
         "os" => CXFlags.TYPE_OS,
+        "system" => CXFlags.TYPE_SYSTEM,
         "user" => CXFlags.TYPE_USER,
         _ => 0
     };
