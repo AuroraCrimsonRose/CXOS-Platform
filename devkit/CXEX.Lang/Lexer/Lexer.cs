@@ -79,7 +79,7 @@ public sealed class Lexer
 
     private SourceSpan SpanFrom(int start, int line, int col) => new(_file, start, _pos, line, col);
 
-    private Token Make(TokenKind k, int start, int line, int col, ulong val = 0)
+    private Token Make(TokenKind k, int start, int line, int col, UInt128 val = default)
         => new(k, _src.Substring(start, _pos - start), SpanFrom(start, line, col), val);
 
     private Token Next()
@@ -144,9 +144,14 @@ public sealed class Lexer
             else { while (!Eof && char.IsDigit(Cur)) Advance(); }
             string text = _src.Substring(start, _pos - start);
             string digits = hex ? text.Substring(2) : text;
+            /* Parsed at 128 bits, not 64, because u128 is a type in this
+               language and a constant of it has to be writable. A literal
+               wider than this is rejected rather than wrapped - there is no
+               type that could hold it, so silently keeping the low bits would
+               be a wrong answer with no way to notice. */
             if (digits.Length == 0 ||
-                !ulong.TryParse(digits, hex ? NumberStyles.HexNumber : NumberStyles.None,
-                                CultureInfo.InvariantCulture, out ulong v))
+                !UInt128.TryParse(digits, hex ? NumberStyles.HexNumber : NumberStyles.None,
+                                  CultureInfo.InvariantCulture, out UInt128 v))
             {
                 _diag.Error($"invalid integer literal '{text}'", SpanFrom(start, line, col));
                 return Make(TokenKind.Error, start, line, col);
