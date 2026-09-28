@@ -589,7 +589,8 @@ public sealed class X86Emitter
         /* Wide operands take a different path entirely: the values are at
            addresses, not in registers. A comparison is decided by its OPERAND
            type - it yields a narrow bool - so both are checked. */
-        if (IsWide(TypeOf(b)) || (IsCompare(b.Op) && IsWide(TypeOf(b.Left))))
+        if (IsWide(TypeOf(b)) ||
+            (IsCompare(b.Op) && (IsWide(TypeOf(b.Left)) || IsWide(TypeOf(b.Right)))))
         { EmitWideBinary(b); return; }
 
         EmitExpr(b.Right); T("push %eax");
@@ -639,7 +640,13 @@ public sealed class X86Emitter
      */
     private void EmitWideBinary(BinaryExpr b)
     {
+        /* The WIDER operand sets the width, so `0 - a` widens the literal to
+           match `a` rather than narrowing `a` to match the literal. A shift is
+           the exception - its right operand counts places, so it does not
+           widen the left. */
         var lt = TypeOf(b.Left);
+        if (b.Op is not (BinOp.Shl or BinOp.Shr) && SizeOf(TypeOf(b.Right)) > SizeOf(lt))
+            lt = TypeOf(b.Right);
         int n = SizeOf(lt);                     // 8 or 16
         int words = n / 4;
         bool signed = IsSigned(lt);
@@ -674,11 +681,9 @@ public sealed class X86Emitter
             case BinOp.Mul: EmitWideMul(words); break;
             case BinOp.Shl: EmitWideShift(b, words, left: true, signed); break;
             case BinOp.Shr: EmitWideShift(b, words, left: false, signed); break;
+            case BinOp.Div: EmitWideDivMod(words, signed, wantRemainder: false); break;
+            case BinOp.Mod: EmitWideDivMod(words, signed, wantRemainder: true); break;
             default:
-                /* Divide and modulo are not emitted yet. A diagnostic rather
-                   than a wrong answer: silently returning the low word of a
-                   quotient is exactly the bug wide types were added to
-                   prevent. */
                 _diag.Error($"'{b.Op}' is not implemented for {n * 8}-bit operands yet", b.Span);
                 break;
         }
@@ -865,6 +870,202 @@ public sealed class X86Emitter
      * which turns the whole thing into an unsigned comparison: the lower words
      * were always unsigned, and the top word's order under that flip is the
      * signed order. That avoids a separate signed path per width. */
+
+    /* Divide and modulo, by restoring shift-subtract long division.
+     *
+     * One routine produces both: a division computes the quotient and the
+     * remainder together, and throwing one away would mean running the whole
+     * thing twice to get `a / b` and `a % b`. `wantRemainder` only chooses
+     * which of the two is copied out at the end.
+     *
+     * WHY THIS ALGORITHM. It is the one that is obviously correct. Knuth's
+     * algorithm D is several times faster and is the right answer eventually,
+     * but it is fiddly in exactly the places that produce answers that are
+     * almost right - and an almost-right divide is far worse than a slow one,
+     * because wide types exist here to stop silent numeric errors. The loop
+     * runs once per bit: 64 or 128 iterations of a dozen instructions. That is
+     * slow, and it is written down as slow rather than hidden.
+     *
+     * THE LOOP. Quotient and dividend share one buffer, which is the trick
+     * that makes this compact: each iteration shifts the whole buffer left by
+     * one, the bit falling off the top is caught by the carry flag and shifted
+     * into the bottom of the remainder by the very next rcl, and the quotient
+     * bit for this step is then deposited in the low bit the shift just
+     * vacated. One continuous carry chain does the work of two shifts.
+     *
+     * Then a trial subtraction: subtract the divisor from the remainder and
+     * look at the borrow. No borrow means it fitted, so the quotient bit is
+     * set and the subtraction stands. A borrow means it did not, so the
+     * divisor is added straight back - hence "restoring".
+     *
+     * SIGNS are handled outside the loop, which only ever sees magnitudes.
+     * The quotient is negative when the operands disagree in sign; the
+     * remainder takes the sign of the DIVIDEND, which is what truncation
+     * toward zero means and what every other C-family language does, so
+     * -7 % 2 is -1 and not 1.
+     *
+     * DIVISION BY ZERO raises #DE, by deliberately executing a 32-bit div by
+     * zero. That is not a placeholder: it makes wide division behave exactly
+     * as 32-bit division already does on this target, and CXK's ring-3 fault
+     * handler terminates the offending process rather than the machine. A
+     * software check that returned 0 instead would have invented a second,
+     * quieter rule for the same mistake.
+     *
+     * TIMING. The trip count is fixed at the operand width, so it does not
+     * leak the magnitude of either operand - but the two arms of the trial
+     * subtraction are not the same length, so this is not constant time and
+     * must not be used on secret values. Same caveat as the wide compare.
+     *
+     * Registers on entry: esi = &dividend, edi = &divisor, edx = &result.
+     * edx must survive - the caller turns it into the result address - so the
+     * scratch area is reached through ebx, and nothing here touches edx except
+     * the divide-by-zero path, which never returns.
+     */
+    private void EmitWideDivMod(int words, bool signed, bool wantRemainder)
+    {
+        int n = words * 4;
+        int bits = words * 32;
+
+        // scratch, all reached through ebx: quotient, remainder, |divisor|,
+        // and two sign flags kept out of registers because every register is
+        // already spoken for.
+        int quo = 0, rem = n, dvs = 2 * n, qneg = 3 * n, rneg = 3 * n + 4;
+        int scratch = 3 * n + 8;
+
+        T("push %ebx");
+        T($"sub ${scratch}, %esp");
+        T("mov %esp, %ebx");
+
+        T($"movl $0, {qneg}(%ebx)");
+        T($"movl $0, {rneg}(%ebx)");
+
+        // quotient buffer starts as |dividend|, remainder starts at zero
+        if (signed) EmitWideAbsTo(quo, "esi", words, qneg, alsoSet: rneg);
+        else        for (int i = 0; i < words; i++)
+                    { T($"mov {i * 4}(%esi), %eax"); T($"mov %eax, {quo + i * 4}(%ebx)"); }
+
+        for (int i = 0; i < words; i++) T($"movl $0, {rem + i * 4}(%ebx)");
+
+        // |divisor|; dividing by it flips the quotient's sign, so the flag is
+        // XORed rather than assigned - it may already be set from the dividend
+        if (signed) EmitWideAbsTo(dvs, "edi", words, qneg, alsoSet: -1, xorFlag: true);
+        else        for (int i = 0; i < words; i++)
+                    { T($"mov {i * 4}(%edi), %eax"); T($"mov %eax, {dvs + i * 4}(%ebx)"); }
+
+        // divisor == 0 -> #DE, exactly as a 32-bit divide by zero would
+        string nonzero = NL();
+        T("xor %eax, %eax");
+        for (int i = 0; i < words; i++) T($"or {dvs + i * 4}(%ebx), %eax");
+        T("test %eax, %eax");
+        T($"jnz {nonzero}");
+        T("xor %edx, %edx");
+        T("xor %ecx, %ecx");
+        T("mov $1, %eax");
+        T("div %ecx");                       // faults; does not return
+        Lbl(nonzero);
+
+        string top = NL(), restore = NL(), next = NL();
+        T($"mov ${bits}, %ecx");
+        Lbl(top);
+
+        // one carry chain: shift the quotient left, and the bit that leaves it
+        // arrives at the bottom of the remainder
+        T($"shll $1, {quo}(%ebx)");
+        for (int i = 1; i < words; i++) T($"rcll $1, {quo + i * 4}(%ebx)");
+        for (int i = 0; i < words; i++) T($"rcll $1, {rem + i * 4}(%ebx)");
+
+        // trial subtract: remainder -= divisor, then look at the borrow
+        for (int i = 0; i < words; i++)
+        {
+            T($"mov {dvs + i * 4}(%ebx), %eax");
+            T($"{(i == 0 ? "sub" : "sbb")} %eax, {rem + i * 4}(%ebx)");
+        }
+        T($"jc {restore}");
+        T($"orl $1, {quo}(%ebx)");           // it fitted: record the bit
+        T($"jmp {next}");
+
+        Lbl(restore);                         // it did not: put the divisor back
+        for (int i = 0; i < words; i++)
+        {
+            T($"mov {dvs + i * 4}(%ebx), %eax");
+            T($"{(i == 0 ? "add" : "adc")} %eax, {rem + i * 4}(%ebx)");
+        }
+
+        Lbl(next);
+        T("dec %ecx");
+        T($"jnz {top}");
+
+        // copy out the half that was asked for, restoring its sign
+        int src  = wantRemainder ? rem  : quo;
+        int flag = wantRemainder ? rneg : qneg;
+
+        string done = NL();
+        for (int i = 0; i < words; i++)
+        {
+            T($"mov {src + i * 4}(%ebx), %eax");
+            T($"mov %eax, {i * 4}(%edx)");
+        }
+        if (signed)
+        {
+            T($"cmpl $0, {flag}(%ebx)");
+            T($"je {done}");
+            for (int i = 0; i < words; i++)
+            {
+                /* mov leaves the flags alone, which is what keeps the borrow
+                   chain intact across the load. An xor here would clear the
+                   carry and quietly corrupt every limb above the first. */
+                T("mov $0, %eax");
+                T($"{(i == 0 ? "sub" : "sbb")} {i * 4}(%edx), %eax");
+                T($"mov %eax, {i * 4}(%edx)");
+            }
+            Lbl(done);
+        }
+
+        T($"add ${scratch}, %esp");
+        T("pop %ebx");
+    }
+
+    /* Copy the wide value at [base] into scratch slot `dst` as a magnitude,
+     * recording in `flag` (and optionally `alsoSet`) that it was negative.
+     *
+     * `xorFlag` is for the divisor: two negative operands make a positive
+     * quotient, so the sign accumulates rather than overwrites.
+     */
+    private void EmitWideAbsTo(int dst, string baseReg, int words, int flag,
+                               int alsoSet, bool xorFlag = false)
+    {
+        string neg = NL(), joined = NL();
+        int top = (words - 1) * 4;
+
+        T($"cmpl $0, {top}(%{baseReg})");
+        T($"jl {neg}");
+        for (int i = 0; i < words; i++)
+        {
+            T($"mov {i * 4}(%{baseReg}), %eax");
+            T($"mov %eax, {dst + i * 4}(%ebx)");
+        }
+        T($"jmp {joined}");
+
+        Lbl(neg);
+        for (int i = 0; i < words; i++)
+        {
+            T("mov $0, %eax");
+            T($"{(i == 0 ? "sub" : "sbb")} {i * 4}(%{baseReg}), %eax");
+            T($"mov %eax, {dst + i * 4}(%ebx)");
+        }
+        if (xorFlag)
+        {
+            T($"movl $1, %eax");
+            T($"xor %eax, {flag}(%ebx)");
+        }
+        else
+        {
+            T($"movl $1, {flag}(%ebx)");
+            if (alsoSet >= 0) T($"movl $1, {alsoSet}(%ebx)");
+        }
+        Lbl(joined);
+    }
+
     private void EmitWideCompare(BinOp op, int words, bool signed)
     {
         if (op is BinOp.Eq or BinOp.Ne)
