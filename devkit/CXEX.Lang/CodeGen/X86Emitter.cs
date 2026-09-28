@@ -267,7 +267,21 @@ public sealed class X86Emitter
             case AssignStmt a: EmitAssign(a); break;
             case ExprStmt e: EmitExpr(e.Expr); break;
             case ReturnStmt r:
-                if (r.Value != null) EmitExpr(r.Value);
+                if (r.Value != null)
+                {
+                    /* A wide value IS an address, and returning one means
+                       returning the address of a temporary or a local in a
+                       frame that is about to be torn down. The caller would
+                       read whatever the next call puts there.
+                       Proper support needs a caller-provided slot, the way a
+                       struct return works. Until then this is a diagnostic:
+                       a dangling pointer that usually happens to work is far
+                       worse than a compile error. */
+                    if (IsWide(TypeOf(r.Value)))
+                        _diag.Error("returning a wide value is not supported yet; " +
+                                    "pass a pointer to the destination instead", r.Span);
+                    EmitExpr(r.Value);
+                }
                 T($"jmp {CurFnRet}");
                 break;
             case IfStmt i:
@@ -385,7 +399,7 @@ public sealed class X86Emitter
             case BinaryExpr b: EmitBinary(b); break;
             case UnaryExpr u: EmitUnary(u); break;
             case CallExpr c: EmitCall(c); break;
-            case CastExpr c: EmitExpr(c.Operand); break;          // v0.1: reinterpret, no convert
+            case CastExpr c: EmitCast(c); break;
             case MemberExpr or IndexExpr: EmitAddr(e); LoadFrom(TypeOf(e)); break; // load value at field/elem (sized)
             default: T("xor %eax, %eax"); break;
         }
@@ -453,8 +467,51 @@ public sealed class X86Emitter
         }
     }
 
+    /* A cast between widths has to MOVE bytes, not reinterpret a register.
+     *
+     * Narrow -> wide widens into a temp, sign- or zero-filling the rest.
+     * Wide -> narrow takes the low word. Wide -> wide of a different size
+     * copies what fits.
+     *
+     * Before this, `x as u128` left a 32-bit VALUE in eax and everything
+     * downstream treated it as an address - a cast that silently produced a
+     * wild pointer. */
+    private void EmitCast(CastExpr c)
+    {
+        var to = TypeOf(c);
+        var from = TypeOf(c.Operand);
+
+        if (IsWide(to))
+        {
+            if (!IsWide(from)) { EmitWideOperand(c.Operand, to); return; }
+            if (SizeOf(from) >= SizeOf(to)) { EmitExpr(c.Operand); return; }  // truncate: same address
+            // widening one wide type into a larger one
+            int saved = _wideDepth;
+            EmitExpr(c.Operand);                 // source address -> eax
+            int slot = TakeWideSlot();
+            if (slot == int.MinValue) { _diag.Error("wide expression nested too deeply", c.Span); return; }
+            SaveIdx();
+            T("mov %eax, %esi");
+            T($"lea {slot}(%ebp), %edi");
+            CopyBytes(SizeOf(from));
+            T(IsSigned(from) ? $"mov {SizeOf(from) - 4}(%esi), %eax" : "xor %eax, %eax");
+            if (IsSigned(from)) T("sar $31, %eax");
+            for (int o = SizeOf(from); o < SizeOf(to); o += 4) T($"mov %eax, {o}(%edi)");
+            RestoreIdx();
+            T($"lea {slot}(%ebp), %eax");
+            _wideDepth = saved + 1;
+            return;
+        }
+
+        if (IsWide(from)) { EmitExpr(c.Operand); T("mov (%eax), %eax"); return; }  // low word
+        EmitExpr(c.Operand);                      // narrow -> narrow: reinterpret
+    }
+
     private void EmitUnary(UnaryExpr u)
     {
+        var ut = TypeOf(u);
+        if (IsWide(ut) && u.Op is UnOp.Neg or UnOp.BitNot) { EmitWideUnary(u, ut); return; }
+
         switch (u.Op)
         {
             case UnOp.Neg: EmitExpr(u.Operand); T("neg %eax"); break;
@@ -463,6 +520,51 @@ public sealed class X86Emitter
             case UnOp.Deref: EmitExpr(u.Operand); LoadFrom(TypeOf(u)); break;   // sized
             case UnOp.AddrOf: EmitAddr(u.Operand); break;
         }
+    }
+
+    /* ~x is a per-word not. -x is 0 - x, so it reuses the borrow chain rather
+       than needing its own: negating word-by-word with `neg` would lose the
+       borrow between words. */
+    private void EmitWideUnary(UnaryExpr u, TypeRef wt)
+    {
+        int words = SizeOf(wt) / 4;
+        int saved = _wideDepth;
+        EmitWideOperand(u.Operand, wt);         // &operand -> eax
+        int slot = TakeWideSlot();
+        if (slot == int.MinValue) { _diag.Error("wide expression nested too deeply", u.Span); return; }
+
+        SaveIdx();
+        T("mov %eax, %esi");
+        T($"lea {slot}(%ebp), %edx");
+
+        if (u.Op == UnOp.BitNot)
+        {
+            for (int i = 0; i < words; i++)
+            {
+                int o = i * 4;
+                T($"mov {o}(%esi), %eax");
+                T("not %eax");
+                T($"mov %eax, {o}(%edx)");
+            }
+        }
+        else
+        {
+            for (int i = 0; i < words; i++)
+            {
+                int o = i * 4;
+                /* `mov $0` and not `xor`: xor CLEARS the carry flag, which
+                   would break the borrow chain between words and make every
+                   word above the first wrong by one. mov leaves flags alone. */
+                T("mov $0, %eax");
+                if (i == 0) T($"sub {o}(%esi), %eax");
+                else        T($"sbb {o}(%esi), %eax");
+                T($"mov %eax, {o}(%edx)");
+            }
+        }
+
+        T("mov %edx, %eax");
+        RestoreIdx();
+        _wideDepth = saved + 1;
     }
 
     /* Does this function mention a wide type anywhere - a local, a parameter,
@@ -569,11 +671,14 @@ public sealed class X86Emitter
             case BinOp.BitAnd: EmitWideBitwise("and", words); break;
             case BinOp.BitOr:  EmitWideBitwise("or",  words); break;
             case BinOp.BitXor: EmitWideBitwise("xor", words); break;
+            case BinOp.Mul: EmitWideMul(words); break;
+            case BinOp.Shl: EmitWideShift(b, words, left: true, signed); break;
+            case BinOp.Shr: EmitWideShift(b, words, left: false, signed); break;
             default:
-                /* Multiply, divide, modulo and the shifts are not emitted yet.
-                   A diagnostic rather than a wrong answer: silently producing
-                   the low word of a 128-bit product is exactly the bug wide
-                   types were added to prevent. */
+                /* Divide and modulo are not emitted yet. A diagnostic rather
+                   than a wrong answer: silently returning the low word of a
+                   quotient is exactly the bug wide types were added to
+                   prevent. */
                 _diag.Error($"'{b.Op}' is not implemented for {n * 8}-bit operands yet", b.Span);
                 break;
         }
@@ -637,6 +742,107 @@ public sealed class X86Emitter
             T($"mov {o}(%esi), %eax");
             T($"{(i == 0 ? first : rest)} {o}(%edi), %eax");
             T($"mov %eax, {o}(%edx)");
+        }
+    }
+
+    /* Schoolbook multiply, truncated to the operand width - what `imul` does
+     * for 32 bits, one limb at a time.
+     *
+     * For each pair of limbs whose product lands inside the result, `mul`
+     * gives a 64-bit product in edx:eax which is added in at position i+j and
+     * carried upward. Pairs already past the top are skipped rather than
+     * computed and thrown away.
+     *
+     * The destination pointer moves to ebx because `mul` clobbers edx. ebx is
+     * callee-saved, so it is pushed and popped around the sequence.
+     */
+    private void EmitWideMul(int words)
+    {
+        T("push %ebx");
+        T("mov %edx, %ebx");                       // ebx = &dst, edx now free
+
+        for (int i = 0; i < words; i++) T($"movl $0, {i * 4}(%ebx)");
+
+        for (int i = 0; i < words; i++)
+        {
+            for (int j = 0; i + j < words; j++)
+            {
+                T($"mov {i * 4}(%esi), %eax");
+                T($"mull {j * 4}(%edi)");          // edx:eax = lhs[i] * rhs[j]
+                T($"add %eax, {(i + j) * 4}(%ebx)");
+                for (int k = i + j + 1; k < words; k++)
+                    T(k == i + j + 1 ? $"adc %edx, {k * 4}(%ebx)"
+                                     : $"adcl $0, {k * 4}(%ebx)");
+            }
+        }
+
+        T("mov %ebx, %edx");                       // hand the pointer back
+        T("pop %ebx");
+    }
+
+    /* Shift by a constant. shld/shrd do the across-limb part in one
+     * instruction each: shld pulls in the top bits of the neighbour below,
+     * shrd the bottom bits of the neighbour above.
+     *
+     * A VARIABLE shift is deliberately not emitted. It needs a loop, and a
+     * loop whose trip count depends on the operand is a timing signal - the
+     * same reason the comparison here would be unsafe on secret data. Anything
+     * that wants one can shift in a loop it wrote itself and can see.
+     */
+    private void EmitWideShift(BinaryExpr b, int words, bool left, bool signed)
+    {
+        if (!new ConstFold(_ctx, _diag).TryEval(b.Right, out var amt))
+        {
+            _diag.Error("a wide shift needs a constant amount", b.Span);
+            return;
+        }
+
+        int bits = (int)amt;
+        int total = words * 32;
+        if (bits < 0 || bits >= total)
+        {
+            _diag.Error($"shift of {bits} is outside 0..{total - 1} for this width", b.Span);
+            return;
+        }
+
+        int wordShift = bits / 32, bitShift = bits % 32;
+
+        if (left)
+        {
+            for (int k = words - 1; k >= 0; k--)
+            {
+                int src = k - wordShift;
+                if (src < 0) { T($"movl $0, {k * 4}(%edx)"); continue; }
+                T($"mov {src * 4}(%esi), %eax");
+                if (bitShift != 0)
+                {
+                    if (src - 1 >= 0) { T($"mov {(src - 1) * 4}(%esi), %ecx"); T($"shld ${bitShift}, %ecx, %eax"); }
+                    else T($"shl ${bitShift}, %eax");
+                }
+                T($"mov %eax, {k * 4}(%edx)");
+            }
+        }
+        else
+        {
+            for (int k = 0; k < words; k++)
+            {
+                int src = k + wordShift;
+                if (src >= words)
+                {
+                    /* Past the top: zero for a logical shift, the sign bit
+                       repeated for an arithmetic one. */
+                    if (signed) { T($"mov {(words - 1) * 4}(%esi), %eax"); T("sar $31, %eax"); T($"mov %eax, {k * 4}(%edx)"); }
+                    else T($"movl $0, {k * 4}(%edx)");
+                    continue;
+                }
+                T($"mov {src * 4}(%esi), %eax");
+                if (bitShift != 0)
+                {
+                    if (src + 1 < words) { T($"mov {(src + 1) * 4}(%esi), %ecx"); T($"shrd ${bitShift}, %ecx, %eax"); }
+                    else T(signed ? $"sar ${bitShift}, %eax" : $"shr ${bitShift}, %eax");
+                }
+                T($"mov %eax, {k * 4}(%edx)");
+            }
         }
     }
 
