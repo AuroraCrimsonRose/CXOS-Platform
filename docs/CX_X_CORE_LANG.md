@@ -174,6 +174,58 @@ fixed native width cannot express.
 > oracle on secret data. Any dialect exposing these types to cryptographic code
 > needs a constant-time comparison primitive, not this one.
 
+### 2.2 Address spaces
+
+A pointer is a number, and every pointer is the same width. Without a way to
+say *which memory* the number names, a physical address, a device address, an
+address a ring-3 caller passed in, and an ordinary pointer are all one type —
+and the two classic kernel catastrophes, **reading through an unvalidated user
+pointer** and **handing a device a virtual address**, become things the compiler
+cannot see.
+
+| Type | Names | Dereference |
+|---|---|---|
+| `*T` | memory in the address space this code runs in | yes |
+| `*user T` | an address a less-trusted caller chose | **no** — validate, then convert |
+| `*phys T` | a physical address | **no** — translate to virtual first |
+| `*dma T` | the address a device sees | **no** — never the CPU's to use |
+
+Plain `*T` is the kernel's own pointer in kernel code and the program's own in
+userland; there is no `*kernel`, because it would mean the same thing.
+
+**The rules:**
+
+- Different address spaces are **different types**. Assigning, passing,
+  returning or comparing across them is an error.
+- `*p`, `p[i]` and `p.field` are all refused on a qualified pointer — one check
+  shared by all three, so none of them is the way around the others.
+- A pointer **cannot be cast straight to a pointer in another space.**
+  `p as *u8` on a `*phys` is not a conversion; the number is unchanged and it
+  names different memory. Every real crossing is *arithmetic* — phys to virt
+  adds an offset, validating a user pointer checks a range — so the route is
+  through an integer, which is where that arithmetic goes:
+
+  ```x
+  fn phys_to_virt(p: *phys u8) -> *u8 { return ((p as u32) + KERNEL_VBASE) as *u8; }
+  ```
+
+  An untranslated crossing (`p as u32 as *u8`) is still possible, but it is
+  visibly deliberate rather than hidden in a cast.
+- Pointer↔integer casts stay free in every space: that is how an address arrives
+  from a device register or a syscall argument in the first place.
+
+`user`, `phys` and `dma` are **contextual**, not reserved: they are qualifiers
+only directly after `*` and before another type. A variable or struct named
+`user` still works, and `*user` alone is a pointer to that struct.
+
+**No code generation changes.** This is a type-checker property only; the same
+program with and without qualifiers emits byte-identical assembly.
+
+It has no users in the OS yet — nothing in userland holds a physical or device
+address. It is here now because it is cheap to add before code exists and
+expensive to retrofit after, and because it is the foundation for drivers
+written in X (see `CX_ROADMAP.md` §5).
+
 ---
 
 ## 3. Declarations
