@@ -57,7 +57,7 @@ public partial class FileTreeNode : ObservableObject
             ".txt" or ".cmake" or "cmakelists.txt" => "TextBoxOutline",
             ".sh" or ".bat" or ".ps1" => "ConsoleLine",
             ".img" or ".bin" => "Harddisk",
-            ".xkex" or ".xoex" or ".xcex" => "ApplicationCog",
+            ".xkex" or ".xoex" or ".xsex" or ".xuex" or ".xbex" => "ApplicationCog",
             _ => "FileOutline"
         };
     }

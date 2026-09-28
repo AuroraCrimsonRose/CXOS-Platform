@@ -42,13 +42,14 @@ public class BuildCommand : Command<BuildCommand.Settings>
             "kernel" => CXFlags.TYPE_KERNEL,
             "boot" => CXFlags.TYPE_BOOT,
             "os" => CXFlags.TYPE_OS,
+            "system" => CXFlags.TYPE_SYSTEM,
             "user" => CXFlags.TYPE_USER,
             _ => 0
         };
 
         if (typeCode == 0)
         {
-            AnsiConsole.MarkupLine("[red]Error:[/] Invalid type. Must be 'kernel', 'boot', 'os', or 'user'.");
+            AnsiConsole.MarkupLine("[red]Error:[/] Invalid type. Must be 'kernel', 'boot', 'os', 'system', or 'user'.");
             return 1;
         }
 

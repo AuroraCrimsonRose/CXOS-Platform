@@ -43,8 +43,11 @@ public sealed class TypeChecker
     private bool IsInt(TypeRef t0)
     {
         var t = _ctx.Expand(t0);
-        return t is PrimType p && p.Kind is
-            PrimKind.I8 or PrimKind.I16 or PrimKind.I32 or PrimKind.U8 or PrimKind.U16 or PrimKind.U32;
+        /* Every integer width, narrow or wide. Listing them by name here was
+           what made u64 and u128 invisible to arithmetic even after the parser
+           and emitter knew about them - a new width is now one row in
+           PrimWidth and nothing else. */
+        return t is PrimType p && p.Kind is not (PrimKind.Bool or PrimKind.Void);
     }
     private bool IsBool(TypeRef t0) => _ctx.Expand(t0) is PrimType { Kind: PrimKind.Bool };
     private bool IsPtr(TypeRef t0) => _ctx.Expand(t0) is PointerType;
