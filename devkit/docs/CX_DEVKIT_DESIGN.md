@@ -64,15 +64,34 @@ Pattern: **`XF**` = Format (source)**, **`XC**` = Compiled**, executables are CX
 | `.XFXR` | cX Format, X Runtime | X Runtime dialect source |
 | `.XFXH` | cX Format, X Hybrid | X Hybrid dialect source |
 | `.XCXN` | cX Compiled, X Native | Compiled X Native object |
-| `.XCXR` / `.XCXH` | (compiled runtime / hybrid) | Same pattern, as those dialects come online |
 
-**Compile/link chain [LOCKED, my call per Q3a]:** `*.XFXN` (source) → **`*.XCXN`** (compiled linkable object) → **packaged executable** (`XCEX` / `XOEX` / `XKEX` depending on target). `XCXN` is the intermediate; the `X_EX` family is the final CXEX-headered, signable artifact.
+**There is no `.XCXR` or `.XCXH`, and there should not be.** The dialect is a
+property of the SOURCE, not of what comes out. XR and XH desugar to X core and
+share one backend (`CX_X_CORE_LANG.md` §0), so a compiled XH program is
+byte-for-byte the same kind of artifact as a compiled XN one — and under the
+domain rule an executable is named for **whose** it is, not for what produced
+it. An XH program written for a user is a `.xuex`, exactly like an XN one.
+
+Carrying the dialect into the binary would also undo the thing the split buys:
+a loader that had to know which front end emitted an image is a loader that can
+be wrong about it.
+
+**Compile/link chain:** `*.XFXN` / `*.XFXR` / `*.XFXH` (source) → **`*.XCXN`**
+(compiled linkable object — one form, whichever dialect it came from) →
+**packaged executable** (`.xkex` / `.xbex` / `.xoex` / `.xsex` / `.xuex`
+depending on **whose** it is). `XCXN` is the intermediate; the `X_EX` family is
+the final CXEX-headered, signable artifact.
+
+> **Stale as of the domain restructure.** This table said `XCEX` above. `.xcex`
+> is retired: it named an executable for how it was BUILT, and every executable
+> is compiled, so the letter distinguished nothing. See
+> `CXK/docs/CX_EXTENSION_SYSTEM.md` §2.
 
 > **As-built deviation — `.XCXN` does not exist.** The word appears nowhere in the codebase.
 > The pipeline that actually runs is:
 >
 > ```
-> foo.xfxn -> foo.s (GAS text) -> foo.o -> foo (ELF) -> foo.xcex
+> foo.xfxn -> foo.s (GAS text) -> foo.o -> foo (ELF) -> foo.xuex
 >             X86Emitter          i686-elf-gcc          cxk build
 > ```
 >
@@ -96,7 +115,8 @@ Pattern: **`XF**` = Format (source)**, **`XC**` = Compiled**, executables are CX
 |---|---|---|
 | `.XKEX` | X Kernel Executable | Kernel image (System authority) |
 | `.XOEX` | X OS Executable | OS/system executable: executive, init, **installer** (System authority) |
-| `.XCEX` | X Common Executable | User-space application (Developer authority) |
+| `.XSEX` | X System Executable | System program: owned by the OS but not part of it (shell, supervisor, tools). Platform authority. |
+| `.XUEX` | X User Executable | User-space application. Publisher authority, or unsigned by administrator consent. |
 | `.XBEX` | X Boot Executable | **Special-purpose**: rewriting boot areas during updates / critical boot fixes only — *not* a routine build output. System authority. |
 
 **Libraries**
@@ -128,15 +148,26 @@ Keys are not flat: every `XKPK`/`XKSK` carries a **header declaring its Authorit
 | Tier | May sign | Who holds it |
 |---|---|---|
 | `ROOT` / `SYSTEM` | `XKEX`, `XOEX`, `XBEX` (and anything below) | CATX (you) — high-security, kept offline |
-| `DEVELOPER` | `XCEX`, `XCDL`, `XCSL` | Third-party app developers (via the SDK) |
+| `PUBLISHER` | `XUEX`, `XCDL`, `XCSL` | Third-party app developers (via the SDK) |
 
 *(Room to add an intermediate "trusted vendor" tier later — the header field is an enum/flags, not a bool.)*
 
 **Key header (draft fields):** `magic`, `formatVersion`, `authority` (tier enum/flags), `keyId`, `ownerName`, `algorithm`, key material, optional `signedBy` (chain to a higher authority).
 
-**Enforcement [REC, see Q-A]:** CXK verifies an artifact's signature **and** that the signing key's authority tier is permitted for that artifact type (System files require `ROOT`; apps accept `DEVELOPER`). A `DEVELOPER` key signing an `XOEX` is rejected.
+**Enforcement [REC, see Q-A]:** CXK verifies an artifact's signature **and** that the signing key's authority tier is permitted for that artifact type (System files require `ROOT`; apps accept `PUBLISHER`). A `PUBLISHER` key signing an `XOEX` is rejected.
 
-**Storage:** private keys (`XKSK`) live in the **DevKit key store** under app data (e.g. `%AppData%/CATX/CXDevKit/keystore/` on Windows; XDG/macOS equivalents). Public keys (`XKPK`) are exported into a project's `…/Keys/`. The SDK ships only `DEVELOPER`-tier keygen/sign.
+> **As-built — the tier is the extension, not a header field.** CXK ships this, and it
+> arrived simpler than the draft. A key's authority is stated by its filename: `.xkpk`
+> is the platform root compiled into the kernel (`trusted_key.c`) and is the only key
+> that may sign a `.xkex`, `.xbex`, `.xoex` or `.xsex`; `.xupk` is a publisher's, lives
+> in `/System/KeyVault` on disk, and may sign a `.xuex` and nothing else. So a key's
+> ceiling is visible without opening it, and a stolen publisher key cannot be promoted
+> by editing a field inside itself. `keyvault.c` answers with `CX_TRUST_PLATFORM`,
+> `CX_TRUST_PUBLISHER` or `CX_TRUST_UNVERIFIED`, and `exec.c` compares that against the
+> minimum its type demands. The intermediate "trusted vendor" tier of [Q-B] is what a
+> vault entry already is: believing a publisher is the act of putting their key there.
+
+**Storage:** private keys (`XKSK`) live in the **DevKit key store** under app data (e.g. `%AppData%/CATX/CXDevKit/keystore/` on Windows; XDG/macOS equivalents). Public keys (`XKPK`) are exported into a project's `…/Keys/`. The SDK ships only `PUBLISHER`-tier keygen/sign (`.xupk` / `.xusk`).
 
 ---
 
@@ -261,7 +292,7 @@ Display PNG / BMP / ICO (+ more). `XFSIFile.cs` lib stub now; format later.
 ## 9. Disk, Partitions & Installer
 
 - **`CXEX.Disk`:** MBR + GPT + XBPT models + a **partition-table viewer** window; ISO 9660/UDF later.
-- **Installer-as-XOEX [REC — endorse, my idea per Q14]:** the build produces (a) an **installer `XOEX`** (System authority; granted `DISK`/`MEM`/`POWER` caps via the broker) and (b) the **on-disk OS `XOEX`**. Flow: **boot CXK from USB → installer XOEX runs → it partitions the target disk (XBPT) and writes stage1/stage2 + `XKEX` + OS `XOEX` → reboot into the installed OS.** This is the natural fit precisely because an installer needs direct kernel/disk access, which a privileged XOEX on the exokernel already brokers — no special host tooling, the installer *is* a CX program. Disk-setup can be its own `XCEX` invoked by the installer or folded into the XOEX. **Make it a managed build target.**
+- **Installer-as-XOEX [REC — endorse, my idea per Q14]:** the build produces (a) an **installer `XOEX`** (System authority; granted `DISK`/`MEM`/`POWER` caps via the broker) and (b) the **on-disk OS `XOEX`**. Flow: **boot CXK from USB → installer XOEX runs → it partitions the target disk (XBPT) and writes stage1/stage2 + `XKEX` + OS `XOEX` → reboot into the installed OS.** This is the natural fit precisely because an installer needs direct kernel/disk access, which a privileged XOEX on the exokernel already brokers — no special host tooling, the installer *is* a CX program. Disk-setup can be its own `XSEX` invoked by the installer or folded into the XOEX. **Make it a managed build target.**
 
 ---
 
@@ -285,7 +316,7 @@ Phase 0 is therefore **mostly done**: bugs 1–3 are closed and only the openers
 
 ## 12. SDK (CX SDK) **[LOCKED]**
 
-Separate Avalonia app (not yet built), aimed at third-party developers compiling X programs for CXOS. Shares `CXEX.UI` so it visually matches Studio; effectively a **cut-down Studio** for end users. Includes **`DEVELOPER`-tier key signing** (devs sign their own `XCEX`). Aligns with the license: MIT for what they build, proprietary kernel/OS.
+Separate Avalonia app (not yet built), aimed at third-party developers compiling X programs for CXOS. Shares `CXEX.UI` so it visually matches Studio; effectively a **cut-down Studio** for end users. Includes **`PUBLISHER`-tier key signing** (devs sign their own `XUEX`). Aligns with the license: MIT for what they build, proprietary kernel/OS.
 
 ---
 
@@ -293,7 +324,7 @@ Separate Avalonia app (not yet built), aimed at third-party developers compiling
 
 - **[Q5 — still open]** `CXEX.Text` is confirmed for tooling/interop reading. Do we *also* need a parallel **C UTF-8 implementation in the kernel**, or does CXK stay ASCII for now? (Leaning: defer; add C side only when CXOS needs it.)
 - **[Q-A]** Confirm authority enforcement: should CXK **reject at load** any artifact whose signing key tier is below what its type requires (System ⇒ ROOT)? (I've assumed yes.)
-- **[Q-B]** Authority tiers: `ROOT` + `DEVELOPER` enough to start, or add an intermediate "trusted vendor" tier now?
+- **[Q-B]** ~~Authority tiers: `ROOT` + `DEVELOPER` enough to start, or add an intermediate "trusted vendor" tier now?~~ **Settled.** Two tiers, named `PLATFORM` and `PUBLISHER`, carried by the key's extension. A vendor is trusted by being in the vault, so the third tier is a directory entry rather than a format change.
 - **[Q-C]** `XCFM` font editor: confirm the in-Studio "draw glyphs on a character map → export/compile to XFNT" workflow is what you want for the bitmap path.
 - **[Q-D — half answered]** `CXEX.Tools` was created but left empty; the wrappers still live in `CXEX.CLI/Wrappers`. The relocation itself is still pending (Phase 2).
 - **[Q-E — new]** The `.XCXN` intermediate in §3 does not exist and ELF fills its role. Amend the locked chain to name ELF, or build `XCXN` for real? (Recommendation: amend.)
