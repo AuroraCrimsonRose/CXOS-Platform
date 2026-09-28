@@ -1,0 +1,452 @@
+# CXOS Roadmap
+### CX Design Spec — Aurora Tejeda / CATX SYSTEMS LLC
+
+> **Status: DIRECTION, not schedule.** This records where CXOS is going, the
+> order it should get there, and the reasoning behind each call, so decisions
+> survive longer than the conversation they were made in. Nothing here has a
+> date. Items move between phases when the reasoning changes, and the reasoning
+> is written next to each item so that when it does change, it is obvious which
+> calls it affects.
+
+---
+
+## 0. The rule that sorts everything else
+
+The list of things CXOS will eventually need is roughly thirty major
+subsystems, several of them individually larger than everything CXOS is today.
+That is not a reason to shrink it. It is a reason to have a rule for sorting it,
+because the failure mode for a project this size is not a lack of ambition — it
+is spending a year on something that should have been borrowed and losing the
+thread on the thing that only this project can build.
+
+| | Meaning | Examples |
+|---|---|---|
+| **Build** | It *is* the project | kernel, X and its dialects, CXFS, the capability model, GUI toolkit, package manager, task manager |
+| **Port** | Needed, but not ours to invent | zlib, FAT32, codecs, SSH, an HTTP server, a SQL server |
+| **Embed** | Someone else's engine inside our shell | a web browser — **never write a browser engine** |
+| **Skip until forced** | Real, but not yet worth its cost | NTFS, CUDA, antivirus definitions, a native NVIDIA driver |
+
+A second rule applies across all four: **do the cheap things that are painful
+to retrofit; defer the expensive things that are not.** This is why the 64-bit
+offset went into `SYS_MEM_OP` before anything could use it, and it is the test
+that decides several items below.
+
+---
+
+## 1. Phases
+
+### A — Self-hosting *(now)*
+
+**X compiles X.** Every other language on this page is a C# project maintained
+forever until this is true, and an OS that cannot build its own compiler is
+borrowing its toolchain. This is the single highest-leverage item on the page.
+
+It is also the gate for writing kernel code in X (§5): a compiler exercises far
+more of the language than a kernel does — recursion, data structures, strings,
+dynamic allocation, error paths — so if X cannot build its own compiler it has
+no business building page tables.
+
+Open gaps, from `CX_X_CORE_LANG.md` §1–§2.1: variable shifts, returning a wide
+value, and constant expressions evaluated at a width their operands lack (no
+literal suffixes). Dynamic allocation, wide division and 128-bit literals are
+closed.
+
+Alongside, the language features that are cheap now and expensive later:
+
+- **Distinct address types** — `*user`, `*phys`, `*dma`, `*kernel`, with no
+  implicit conversion. The highest-value language item: it is the only one that
+  prevents a class of *security* bug (dereferencing an unvalidated user pointer,
+  handing a virtual address to DMA). No codegen change — all pointers stay the
+  same width — so it is type-checker work only. Every conversion must be a
+  named, greppable operation.
+- **`defer`** — scope-exit cleanup, Zig-style (lexical, no closure, no heap).
+- **Attribute syntax** — X has none. It is the prerequisite for ISR contexts
+  and declarative driver tables (§5), so add the syntax early even if the
+  attributes come later.
+
+### B — Minimum viable OS
+
+The "GEOS-style" bar: the smallest system that genuinely meets spec and that
+someone could use. Made explicit so it cannot quietly grow.
+
+- **XD** (§2) — first, because six things already need it
+- **FAT32** read/write — interop with every other machine is non-negotiable
+- **Software rasterizer + compositor** — the unblocked path to a real GUI
+- **XSH** (§2) and a terminal
+- **Task manager** (§4)
+- **Basic apps** — clock, calendar, text editor, file browser
+- **Networking completion** — DNS, NTP, UDP then TCP
+
+### C — ARM
+
+Next architecture after x86-32 is ARM, targeting the Raspberry Pi 3B+, then
+x86-64. This is where the portability discipline pays off — see
+`CX_ABI.md` and the rule that the OS must not hold architecture facts.
+
+**Bring up QEMU `virt` first, then the Pi.** The 3B+ boot path is unusual — the
+VideoCore GPU starts first, firmware blobs, a mailbox interface — and it is
+ARMv8 commonly run in 32-bit mode. QEMU `virt` is a clean, documented ARM
+machine. Porting the architecture there and then moving to the Pi costs the
+same total effort and far less time debugging the wrong layer.
+
+### D — Ecosystem
+
+- **Package manager** with signed, layered updates (§3)
+- **Package repository** on CATX infrastructure
+- **Key distribution service** — globally recognised developer keys, OS update
+  keys, revocation
+- In-place updates
+
+### After D
+
+Everything else: GPU acceleration, a SQL server, a web server, the browser,
+remote desktop, antivirus, AI integration, identity, Bluetooth, Wi-Fi, audio,
+codecs, compatibility layers. Slotting any of these earlier is how a five-year
+project becomes a twenty-year one.
+
+---
+
+## 2. The languages
+
+One semantic core, several surfaces — see `CX_X_CORE_LANG.md`. Names follow the
+extension rule `x + <subsystem> + <object-type>`.
+
+| Language | Name | Extension | Status |
+|---|---|---|---|
+| X Native | X | `.xfxn` | working |
+| X Runtime | XR | — | planned (dialect) |
+| X Hybrid | XH | — | planned (dialect) |
+| X Data | **XD** | `.xfxd` | **next** |
+| X Visual | **XV** | `.xfxv` | after the layout engine |
+| X Shell | **XSH** | `.xssh` / `.xush` | phase B |
+| X Graphics | **XGL** | — | after the software rasterizer |
+
+### Naming decisions
+
+**Serialization is XD, not XS.** `S` is already the *System* ownership tier —
+`.xsex` is an X System Executable. A language called XS would put two meanings
+of `S` into a taxonomy whose entire point is that the domain letter says whose
+a file is. That is the mistake that retired `.xcex`.
+
+**The shell is XSH, and signing is a property of the file, not the language.**
+One language; the tier letter says whose script it is (`.xssh` system-owned,
+`.xush` user-owned). A signed fix shipped by CATX is a system-tier script, not a
+different language.
+
+**Graphics is XGL, not XFGL.** `F` is the format subsystem, and a shader
+language is not a format. ("eXperimental Graphics Language" is a fine working
+name.)
+
+### XD — X Data *(do first)*
+
+A serialization format in the spirit of RON or TOML: typed, commentable, and
+pleasant to write by hand. It is the sleeper item on this page — small, and
+already needed by:
+
+- `.xosv` service descriptors (hand-parsed `key=value` today)
+- package manifests
+- system / user / workspace configuration (§3)
+- secrets-vault metadata
+- declarative driver tables (§5)
+
+Two properties that must be designed in, not added:
+
+- **Schema-checkable.** This is what delivers "strict types like Postgres."
+- **Round-trip preserving.** A tool that rewrites a config file must keep its
+  comments and its ordering. This is the single reason people hate JSON for
+  configuration, it is cheap on day one, and it is impossible to retrofit.
+
+Writing its parser in X is also exactly the self-hosting practice phase A needs.
+
+### XV — X Visual *(after the layout engine)*
+
+One language for structure, style and behaviour — drawing on HTML, CSS, XAML,
+SCSS, TypeScript and React — indentation-based, compiling straight to the
+native layout engine with no XML tag bloat. **Single-file components** — no
+forced split between markup, style and logic — are the real differentiator,
+and that is a design decision that costs nothing to honour.
+
+**Build the layout engine first, as a library with an API.** The syntax is a
+week; the layout engine is a year. HTML and XAML are not verbose because nobody
+thought of indentation — they are complex because of the cascade, the box
+model, flex and grid solving, text shaping and reactive invalidation. Write
+screens against the engine in raw X, find what hurts, then design XV to remove
+exactly that. Designing the language against an engine that does not exist gets
+the abstractions wrong.
+
+Indentation-based syntax reads better and is worse for generated content and
+for diffs of deeply nested trees. Accepted knowingly.
+
+When separate data is wanted, it goes in XD.
+
+### XSH — X Shell
+
+The diagnosis is right for bash: everything is a string. **PowerShell is not a
+counter-example** — it pipes .NET objects. Its real problems are verbosity,
+startup cost, and an object model that is .NET's rather than the OS's.
+
+XSH pipes **X values**, typed and checked by X's type checker. PowerShell had to
+borrow .NET's type system; XSH pipes the OS's own native types. That is a real
+advantage and most of it already exists.
+
+Target uses: interactive shell, automation, deployment.
+
+### XGL — X Graphics
+
+See §6. In short: a shader language compiling to **SPIR-V**, which is bounded,
+well specified, and can be validated with `spirv-val` without any GPU at all.
+
+---
+
+## 3. Data: one store, not three
+
+Configuration, the secrets vault and the package database are one system.
+
+**Do not write SQL.** A SQL engine — parser, planner, optimiser, executor — is
+a decade of work, and the goal is explicitly to escape SQL's quirks. What CXOS
+needs is a **typed embedded store**: a B-tree, a schema, transactions, crash
+recovery, and a **native X API** in place of a query language. Strict types get
+*easier* without SQL, not harder.
+
+Working name: **XFDB** (`.xfdb`, X Format Database).
+
+| Use | What it is |
+|---|---|
+| Configuration | typed records, scoped system / user / workspace |
+| Secrets vault | the same store, encrypted values, capability-gated reads |
+| Package database | installed set, versions, file ownership |
+| Key Vault | already exists as `/System/KeyVault`; becomes a table |
+
+### Configuration is not a registry
+
+The lesson from the Windows registry is **no single point of failure**. The
+design that delivers it:
+
+- a **separate file per scope** (system, user, workspace)
+- **schema-validated** on read
+- a **defined merge order**, workspace over user over system
+- a **corrupted scope degrades to defaults** instead of breaking boot
+
+That last rule is an architectural property. Write it down now; it cannot be
+bolted on.
+
+### The hard part
+
+**Durability** — fsync semantics, write-ahead logging, crash consistency. That
+is where SQLite's twenty years went. Test it by killing the VM mid-write, and do
+not believe it works until that has been done a few hundred times.
+
+Full SQL servers (a PostgreSQL or MariaDB equivalent) are **port, not build**,
+and much later than it seems.
+
+---
+
+## 4. System components
+
+### Updates as signed layers *(design early)*
+
+Each update is a **layer**; the running system is a stack of them; an update is
+*verify and stack*, a rollback is *unstack*. This gives a structurally immutable,
+restorable system in the manner of OSTree or A/B partitioning.
+
+It is cheap when designed into the package manager from the start and brutal to
+retrofit — and it fits what already exists: every layer is a signed artifact,
+so the trust model in `CX_EXTENSION_SYSTEM.md` does the hard half.
+
+### Task manager
+
+Windows-task-manager style: tabbed, optionally always on top.
+
+1. **Processes** — running processes, their grants and memory
+2. **Performance** — CPU, memory, temperatures, clock speeds, fan speeds
+3. **Services** — the supervisor's view of `.xosv` services
+4. **System** — components and speeds; thorough, but not so dense it is hard to read
+
+### Filesystems
+
+**FAT32 read/write first, then stop for a long while.** Universal, simple, and
+how files move in and out. EXT4's journaling is substantially harder; NTFS is
+realistically read-only. CXFS stays native.
+
+### Security engine
+
+Sandboxing, isolation, quarantine, built on standard malicious-software
+definitions. The sandbox half largely exists already — capabilities, attenuation,
+per-process quotas, signed execution. Definitions need a *pipeline*, not just
+code, which is why they are "skip until forced."
+
+### Remote access
+
+**Implement real SSH.** The value is connecting *from* machines that already
+exist, so compatibility is the entire feature; a new protocol that nothing else
+speaks is one only CXOS can use. Remote *display* is separate and later,
+possibly over the same transport.
+
+### Compatibility (XINX / XNT)
+
+Linux/Unix and NT compatibility. **Prefer compiling their source to `.xuex`
+over emulating their ABI.** An ABI layer chases syscall semantics forever;
+compiling from source is tractable and fits the signing model. Pick one, much
+later.
+
+### Audio and video
+
+An audio subsystem (Realtek codecs on AMD boards, plus whatever QEMU exposes),
+an audio control engine, codecs, a media player. **Node graphs** as the internal
+model for both audio and video are a good fit and worth designing toward.
+Codecs are a patent minefield as well as large — port.
+
+### Identity
+
+YubiKey and hardware tokens, credential stores. Depends on an account model
+that does not exist yet, deliberately — see "accounts" below.
+
+### Accounts
+
+Deferred on purpose. An account model needs foresight that should come from
+having an OS worth protecting. Until then, an unsigned or unknown-signer
+`.xuex` is refused outright — safe, correct, and strict.
+
+---
+
+## 5. The kernel and X
+
+**The kernel is 71 C files and 0 X files.** Moving it to X is a *direction,
+not a project*: never schedule the rewrite.
+
+C does not limit a kernel — it is the most permissive systems language there
+is. What X would add is **limits**, deliberately chosen, in the places C cannot
+provide them: deterministic bitfield layout, address types instead of `void*`,
+an effect system, no strict-aliasing traps, and real metaprogramming instead of
+macros.
+
+The cost: **the compiler becomes the most safety-critical thing CXOS owns.** A
+codegen bug in userland is a wrong number; in `paging_map` it is a corrupted
+address space, and it is ambiguous whether the compiler or the kernel is at
+fault. This is not hypothetical — see the mixed-width bug in `CX_X_CORE_LANG.md`
+§2.1, which silently did 32-bit arithmetic on a 64-bit value's *address*.
+
+**Order by crash containment, not by importance:**
+
+1. userland — done
+2. OS services
+3. **drivers** — the proving ground; isolated, numerous, and exactly where
+   MMIO layouts and address types pay off
+4. the core kernel — last, and parts of it stay assembly regardless
+
+**No rewrite.** X writes new kernel code; C keeps what works. Both produce ELF
+objects and link together. The C kernel staying buildable is also a known-good
+reference to bisect against when X-compiled code misbehaves.
+
+### Kernel-language features, assessed
+
+| Feature | Verdict |
+|---|---|
+| User / kernel / phys / virt / DMA pointer types | **yes, phase A** — one feature, the best one |
+| `defer` | **yes, phase A** |
+| Deterministic bitfields and MMIO layouts | **yes** — genuinely better than C, whose bitfield layout is implementation-defined |
+| Declarative hardware matching → ELF section | **yes**, cheap; pays off once drivers are in X |
+| Compiler-enforced ISR contexts | **yes, generalised** — an effect system (`@isr`, `@nosleep`, `@noalloc`) beats a one-off |
+| *Automatic* memory barriers | **no** — barrier placement is architecture-specific and a design decision; automatic insertion puts in the wrong ones. Take the other half instead: MMIO access the compiler never reorders, coalesces or elides, plus explicit barrier intrinsics |
+| Built-in polling with timeouts | **no** — a library function |
+| Native spinlocks and mutexes | **no as language features.** On a uniprocessor kernel a spinlock deadlocks against itself; interrupt masking is what protects a critical section. What a language *must* supply is **atomics**; the lock is a library type on top. Binding data to its lock (Rust's model) is worth wanting and is hard — later |
+| Syscall table instead of interrupts | **already exists** — `syscall_dispatch` is the table. `int 0x80` is the *transition*; the alternative is `sysenter`/`syscall`, a performance change, x86-only, behind the kernel boundary |
+| Fastcall for hardware registers | **general codegen work, low priority** — a register calling convention speeds up everything, and is an ABI break for hand-written assembly |
+
+---
+
+## 6. Graphics and GPU
+
+The most ambitious area, and the one where the bottleneck is most often
+misplaced.
+
+**The hard part is not the shader compiler. It is the kernel side**: PCIe BAR
+mapping, GPU memory management, command submission rings, interrupts, firmware
+loading, and an IOMMU. None of that comes free from borrowing a driver's
+compiler.
+
+### Order
+
+1. **XGL → SPIR-V.** Bounded, specified, verifiable without hardware.
+2. **Software rasterizer.** Every GUI item — compositor, windows, task manager,
+   apps — works on it, today, with no vendor cooperation.
+3. **virtio-gpu (Virgl / Venus) under QEMU.** Real 3D acceleration without
+   writing a hardware driver.
+4. **Native NVIDIA** — someday, not a phase.
+
+### On the NVK / NAK / NVPTX route
+
+The sketch — NVPTX through LLVM, then SASS through NAK, with a thin driver as a
+front end and memory manager — is a real plan, not a fantasy. Things to know
+before starting it:
+
+- **NVK exists because NVIDIA changed.** It is built on the GSP firmware and
+  open kernel modules NVIDIA began shipping around 2022, by full-time Mesa
+  developers. It is not clean-room reverse engineering that can be shortcut.
+- **The Rust dependency is circular.** NVK and NAK are Rust. Teaching Rust to
+  target CXOS and writing a `core`/`std` for it is a larger project than the
+  driver front end it would save — for an OS that cannot yet compile its own
+  compiler.
+- **Licensing.** Mesa (NVK, NAK) is MIT and LLVM is Apache 2.0 with the LLVM
+  exception — both compatible with a proprietary kernel. **The kernel-side
+  `drm/nouveau` is GPL**, which is a real constraint under CXOS's licensing
+  model. Know it before reading that code.
+- **Requires first:** SMP, PAE or 64-bit, an IOMMU, and PCIe BAR management.
+
+### On gaming
+
+Wanting GPU access for the GUI and for compute is entirely legitimate. Gamers,
+though, need *games* — Win32, DirectX, anti-cheat — which is a vastly larger
+lift than a GPU driver, and the thing Proton needed a decade and Valve's
+funding to approach. Treating CUDA as the gate for gamers sets a target that
+makes every other decision feel late.
+
+---
+
+## 7. AI integration
+
+**Opt-in**, installed online, never on by default.
+
+**Not at the low level.** A local inference runtime is a library plus a compute
+driver, not a kernel feature, and placing it low would grant exactly the
+unbounded access that should be avoided. Its home is a **service with
+capability grants** — which CXOS already expresses precisely: an agent holds
+`GRANT_DISK` or it does not, `GRANT_NET` or it does not, and anyone can see which.
+Whether the agent arrives over MCP or runs locally, the grant model is the same.
+That is a better AI permission story than any mainstream OS has, and it is
+already built.
+
+---
+
+## 8. Telemetry
+
+Anonymous: machine specifications, what gets used and how much, what crashes,
+and what the security engine flags — for trends, never for tracking.
+
+**Opt-in, with a clear first-run explanation.** Opt-out telemetry is a
+reputational landmine for an independent OS, it is the thing people will write
+about, and once an EU user installs it there are GDPR obligations. Opt-in with
+an honest explanation gets more trustworthy data than opt-out gets goodwill.
+
+---
+
+## 9. Hardware and drivers — outstanding
+
+- **IOMMU** — required before any serious DMA device, and before GPU work
+- **NX bit** — requires PAE on x86-32; PAE is also three of the four levels of
+  x86-64 paging, so it is not throwaway work. Take NX, defer >4 GB physical.
+  See `CX_ABI.md` for why `W|X` is refused today even though it cannot be enforced.
+- **SMP** — CXK is uniprocessor today
+- **Bluetooth, Wi-Fi** — after D
+- **Audio** — Realtek HDA codecs, QEMU's audio devices
+
+---
+
+## 10. Open questions
+
+- Literal suffixes vs. bidirectional type inference, to let `1 << 100` be
+  written at 128 bits
+- Whether XD's schema language is XD itself or a separate form
+- A memory budget charged to a whole process *subtree*, rather than the current
+  per-process quota — today a process that spawns without end still exhausts RAM
+- Whether XFDB's API is a library only, or eventually grows a query surface
