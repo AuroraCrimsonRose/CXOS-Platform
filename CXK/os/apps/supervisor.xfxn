@@ -166,7 +166,7 @@ fn svc_pack(path: *u8, args: *u8) -> u32 {
 // Returns the pid, or a negative error.
 fn svc_run(path: *u8, blob: *u8, blen: u32, grants: u32) -> i32 {
     let a: spawn_args;
-    memzero((&a) as *u8, 28);
+    memzero((&a) as *u8, sizeof a);
     a.name            = path;
     a.broker_endpoint = 0 - 1;
     a.caps            = grants;
