@@ -124,6 +124,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/cpu/sysfile.c
     ${SRC_DIR}/kernel/cpu/handle.c
     ${SRC_DIR}/kernel/cpu/exec.c
+    ${SRC_DIR}/kernel/cpu/keyvault.c
     ${SRC_DIR}/kernel/cpu/launch.c
     ${SRC_DIR}/kernel/drivers/char/console.c
     ${SRC_DIR}/kernel/drivers/video/vga.c
