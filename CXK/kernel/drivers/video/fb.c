@@ -237,7 +237,7 @@ void fb_draw_string_n(uint32_t x, uint32_t y, const char *s, uint32_t n,
 
 
 /* ---- SYS_FB_OP handler ----
- * Draw on behalf of a CAP_FRAMEBUFFER holder. Colors cross the ABI as canonical
+ * Draw on behalf of a GRANT_FRAMEBUFFER holder. Colors cross the ABI as canonical
  * 0x00RRGGBB and are converted here via fb_rgb to the active mode. */
 #include "../../cpu/usermode.h"   /* user_ptr_ok */
 #include "../../../abi/cxk_abi.h" /* fb_op_args, FB_OP_*, E_* */

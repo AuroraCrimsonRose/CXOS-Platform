@@ -3,8 +3,8 @@
 //
 //   import "gfx.xfxn";
 //
-// A thin, typed wrapper over SYS_FB_OP. Every call needs CAP_FRAMEBUFFER, which
-// is part of CAP_OS_BASELINE - so the executive and the shell can draw, but a
+// A thin, typed wrapper over SYS_FB_OP. Every call needs GRANT_FRAMEBUFFER, which
+// is part of GRANT_OS_BASELINE - so the executive and the shell can draw, but a
 // capability-less app cannot (it gets E_PERM and must go through a broker).
 //
 // Colours are canonical 0x00RRGGBB; the kernel converts to the active mode, so

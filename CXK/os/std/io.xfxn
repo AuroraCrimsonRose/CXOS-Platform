@@ -3,7 +3,7 @@
 //
 //   import "io.xfxn";
 //
-// Wraps SYS_CONSOLE_WRITE and SYS_INPUT_READ. Console output needs CAP_CONSOLE;
+// Wraps SYS_CONSOLE_WRITE and SYS_INPUT_READ. Console output needs GRANT_CONSOLE;
 // input is unprivileged (a process reading its own keystrokes).
 //
 // Key codes worth naming: Enter is 10, Backspace 8, Ctrl+C 3.

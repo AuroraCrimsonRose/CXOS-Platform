@@ -3,8 +3,8 @@
 //
 //   import "file.xfxn";
 //
-// Wraps SYS_FILE_OP over CXFS. Needs CAP_DISK, which is part of
-// CAP_OS_BASELINE - the shell can use it, a capability-less app cannot.
+// Wraps SYS_FILE_OP over CXFS. Needs GRANT_DISK, which is part of
+// GRANT_OS_BASELINE - the shell can use it, a capability-less app cannot.
 //
 // A handle is a small non-negative integer; anything negative is an E_* code.
 // Offsets and sizes are 32-bit signed, so a file a program can address here
@@ -209,6 +209,17 @@ fn getcwd(buf: *u8, cap: u32) -> i32 {
 }
 
 // ---- whole-file convenience ----
+//
+// file_slurp and file_dump are the pair: one reads an entire file by path in a
+// single call, the other writes an entire buffer to one. Everything above them
+// works through a handle and a byte count; these do not need a handle at all.
+//
+// "Slurp" is the term Perl, Ruby and Clojure all use for reading a whole file
+// at once, which is why it is here - someone arriving from any of those reads
+// it without being told. It is jargon, and worth knowing that the name is
+// borrowed rather than descriptive: nothing about the word says "file", and
+// nothing about "dump" says it is the opposite of it. If you have not met the
+// term before, read them as file_read_all and file_write_all.
 
 // Read a whole file into `buf`. Returns the byte count, or a negative E_*.
 // Loops because a read is allowed to come back short.
@@ -228,6 +239,8 @@ fn file_slurp(path: *u8, buf: *u8, cap: u32) -> i32 {
 }
 
 // Create `path` and write `n` bytes to it, replacing anything already there.
+// The counterpart to file_slurp above - "dump" as in write it all out, not as
+// in discard it.
 fn file_dump(path: *u8, buf: *u8, n: u32) -> i32 {
     let h: i32 = file_create(path);
     if (h < 0) { return h; }

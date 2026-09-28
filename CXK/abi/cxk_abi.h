@@ -24,29 +24,31 @@
 #define SYS_YIELD         0x01   /* cooperatively yield the CPU */
 #define SYS_GETPID        0x02   /* -> caller pid */
 #define SYS_GETUID        0x03   /* -> caller owning uid (0 = SYSTEM) */
+#define SYS_CLOCK         0x04   /* ebx = *clock_info -> 0, or -E_* */
+#define SYS_SLEEP         0x05   /* ebx = ms; blocks this thread, then returns 0 */
 /* IPC + handles 0x10-0x1F */
 #define SYS_IPC_CALL      0x10   /* ebx = *ipc_call_args -> reply length (blocks) */
 #define SYS_IPC_RECV      0x11   /* ebx = *ipc_recv_args -> request length (blocks) */
 #define SYS_IPC_REPLY     0x12   /* ebx = *ipc_reply_args -> 0 */
-#define SYS_EP_CREATE     0x13   /* create an endpoint -> RECV handle (CAP_ENDPOINT) */
+#define SYS_EP_CREATE     0x13   /* create an endpoint -> RECV handle (GRANT_ENDPOINT) */
 #define SYS_HANDLE_CLOSE  0x16   /* release a handle */
 /* input 0x20-0x2F (unprivileged: reading your own keystrokes) */
 #define SYS_INPUT_READ    0x20   /* ebx = flags (0=block, 1=nonblocking) -> char, 0 if none */
 #define SYS_MOUSE_READ    0x21   /* ebx = *mouse_state -> 1 if a mouse is present */
-/* console 0x30-0x3F (privileged: CAP_CONSOLE) */
+/* console 0x30-0x3F (privileged: GRANT_CONSOLE) */
 #define SYS_CONSOLE_WRITE 0x30   /* ebx = buf, ecx = len (0 = bounded NUL-scan) */
-/* network 0x50-0x5F (privileged: CAP_NET) */
-#define SYS_NET_OP        0x50   /* ebx = *net_op_args (CAP_NET) -> op-specific */
-/* framebuffer 0x40-0x4F (privileged: CAP_FRAMEBUFFER) */
-#define SYS_FB_OP         0x40   /* ebx = *fb_op_args (CAP_FRAMEBUFFER) -> op-specific */
+/* network 0x50-0x5F (privileged: GRANT_NET) */
+#define SYS_NET_OP        0x50   /* ebx = *net_op_args (GRANT_NET) -> op-specific */
+/* framebuffer 0x40-0x4F (privileged: GRANT_FRAMEBUFFER) */
+#define SYS_FB_OP         0x40   /* ebx = *fb_op_args (GRANT_FRAMEBUFFER) -> op-specific */
 /* process 0x70-0x7F (privileged) */
-/* files 0x60-0x6F (privileged: CAP_DISK) */
-#define SYS_FILE_OP       0x60   /* ebx = *file_op_args (CAP_DISK) -> op-specific */
+/* files 0x60-0x6F (privileged: GRANT_DISK) */
+#define SYS_FILE_OP       0x60   /* ebx = *file_op_args (GRANT_DISK) -> op-specific */
 
-#define SYS_SPAWN         0x70   /* ebx = *spawn_args (CAP_SPAWN) -> pid */
-#define SYS_EXEC_PATH     0x72   /* ebx = path, ecx = *spawn_args (CAP_SPAWN) -> pid
+#define SYS_SPAWN         0x70   /* ebx = *spawn_args (GRANT_SPAWN) -> pid */
+#define SYS_EXEC_PATH     0x72   /* ebx = path, ecx = *spawn_args (GRANT_SPAWN) -> pid
                                     (image/image_len in the struct are ignored) */
-#define SYS_POWER         0x71   /* ebx = POWER_* op (CAP_POWER); reboot does not return */
+#define SYS_POWER         0x71   /* ebx = POWER_* op (GRANT_POWER); reboot does not return */
 #define POWER_REBOOT      0
 #define POWER_SHUTDOWN    1      /* ACPI S5 soft-off */
 #define POWER_SLEEP       2      /* ecx = ms; 0 = S1/C1 until a keypress */
@@ -98,6 +100,37 @@ struct spawn_args {
     uint32_t    args_len;         /* total bytes of that blob, terminators included */
 };
 
+/* ---- clock and sleep (SYS_CLOCK, SYS_SLEEP; unprivileged) ----
+ *
+ * Neither needs a capability. Reading the clock discloses nothing a process
+ * could not time for itself, and waiting is the opposite of a privilege - a
+ * sleeping process is one not using the machine. The existing POWER_SLEEP is a
+ * different thing entirely: it puts the MACHINE into an ACPI sleep state and
+ * is rightly behind GRANT_POWER. SYS_SLEEP blocks one thread and leaves the
+ * rest of the system running.
+ *
+ * Two clocks, because they answer different questions:
+ *
+ *   ticks    milliseconds since boot, from the 1000 Hz timer. Monotonic. Use
+ *            it to measure an interval - it cannot jump, and it does not care
+ *            whether the machine knows what year it is.
+ *   epoch    seconds since 1970, from the RTC. Use it to stamp a file or to
+ *            decide that it is 3am. 0 means the RTC could not be read, so a
+ *            caller that needs a real date must check rather than assume.
+ *
+ * A scheduler wants both: `ticks` to decide that 30 seconds have passed, and
+ * `epoch` to record when something ran.
+ */
+struct clock_info {
+    uint32_t ticks;      /* ms since boot, monotonic; wraps after ~49 days */
+    uint32_t epoch;      /* seconds since 1970 from the RTC, or 0 if unavailable */
+};
+
+/* SYS_SLEEP bounds. A sleep is a promise to come back, so it is capped: an
+   unbounded one is indistinguishable from a hang, and nothing in the system
+   needs to wait longer than an hour in a single call. */
+#define SLEEP_MAX_MS  3600000u   /* one hour */
+
 /* IPC is synchronous: ipc_call blocks the caller until the owner ipc_replies.
    Messages are bounded (<= one page) and copied through the kernel. The message
    schema is defined by the executive; the kernel just moves bytes. */
@@ -121,7 +154,7 @@ struct ipc_reply_args {
 };
 
 
-/* ---- framebuffer ops (SYS_FB_OP; CAP_FRAMEBUFFER) ---- */
+/* ---- framebuffer ops (SYS_FB_OP; GRANT_FRAMEBUFFER) ---- */
 enum {
     FB_OP_INFO      = 0,   /* -> out[0..3] = width,height,bpp,pitch */
     FB_OP_CLEAR     = 1,   /* color */
@@ -141,24 +174,28 @@ struct fb_op_args {
 };
 
 /* ---- capabilities (for spawn_args.caps) ----
+   A process's authority, as a bitmask: what it is ALLOWED TO DO. One bit per
+   class of privileged primitive, checked by the syscall dispatcher before the
+   call runs. GRANT_ because each bit is a grant - handed over when the process
+   was started, and never wider than what the thing that started it held.
    Values MUST match kernel/cpu/caps.h. Guarded so including both is harmless. */
-#ifndef CAP_CONSOLE
-#define CAP_CONSOLE     0x0001u
-#define CAP_MEM         0x0002u
-#define CAP_DISK        0x0004u
-#define CAP_NET         0x0008u
-#define CAP_SPAWN       0x0010u
-#define CAP_POWER       0x0020u
-#define CAP_ENDPOINT    0x0040u
-#define CAP_IOPORT      0x0080u
-#define CAP_FRAMEBUFFER 0x0100u
+#ifndef GRANT_CONSOLE
+#define GRANT_CONSOLE     0x0001u
+#define GRANT_MEM         0x0002u
+#define GRANT_DISK        0x0004u
+#define GRANT_NET         0x0008u
+#define GRANT_SPAWN       0x0010u
+#define GRANT_POWER       0x0020u
+#define GRANT_ENDPOINT    0x0040u
+#define GRANT_IOPORT      0x0080u
+#define GRANT_FRAMEBUFFER 0x0100u
 #endif
-#ifndef CAP_OS_BASELINE
-#define CAP_OS_BASELINE (CAP_CONSOLE | CAP_MEM | CAP_DISK | CAP_SPAWN | CAP_POWER | CAP_ENDPOINT | CAP_FRAMEBUFFER | CAP_NET)
+#ifndef GRANT_OS_BASELINE
+#define GRANT_OS_BASELINE (GRANT_CONSOLE | GRANT_MEM | GRANT_DISK | GRANT_SPAWN | GRANT_POWER | GRANT_ENDPOINT | GRANT_FRAMEBUFFER | GRANT_NET)
 #endif
 
 
-/* ---- network (SYS_NET_OP; CAP_NET) ----
+/* ---- network (SYS_NET_OP; GRANT_NET) ----
    IPv4 addresses cross the ABI as a packed u32 in NETWORK byte order
    (a.b.c.d -> (a<<24)|(b<<16)|(c<<8)|d) so userspace needs no array type. */
 enum {
@@ -179,7 +216,7 @@ struct net_op_args {
 };
 
 
-/* ---- path execution (SYS_EXEC_PATH; CAP_SPAWN) ----
+/* ---- path execution (SYS_EXEC_PATH; GRANT_SPAWN) ----
  *
  * Run the CXEX image at `path`. Takes the same spawn_args as SYS_SPAWN for the
  * name, broker endpoint and requested caps, and IGNORES its image/image_len -
@@ -197,7 +234,7 @@ struct net_op_args {
  * pass a subset of your authority and never amplify.
  */
 
-/* ---- files (SYS_FILE_OP; CAP_DISK) ----
+/* ---- files (SYS_FILE_OP; GRANT_DISK) ----
  *
  * The filesystem as userspace sees it. CXFS itself is 64-bit throughout, but
  * X Native has no 64-bit integer type, so every offset and size crossing this

@@ -132,26 +132,26 @@ given `caps=0` behaves exactly as v1 described.
 ## 5. Capability model (per-process bitmask)
 
 Capabilities live in the kernel's process record — **never in user memory**, so ring 3
-cannot forge them. The dispatcher gate is one line: `if (!(cur->caps & CAP_X)) return E_PERM;`
+cannot forge them. The dispatcher gate is one line: `if (!(cur->caps & GRANT_X)) return E_PERM;`
 
 | Bit | Name | Gates | State |
 |----:|------|-------|-------|
-| 0x0001 | `CAP_CONSOLE`     | `console_write` | live |
-| 0x0002 | `CAP_MEM`         | `map`, `unmap`, `sbrk` | **gates nothing yet** — those calls are unimplemented (§7.8) |
-| 0x0004 | `CAP_DISK`        | `block_read`, `block_write` | **gates nothing yet** — those calls are unimplemented (§7.9) |
-| 0x0008 | `CAP_NET`         | `net_op` | live |
-| 0x0010 | `CAP_SPAWN`       | `spawn` | live |
-| 0x0020 | `CAP_POWER`       | `power` | live |
-| 0x0040 | `CAP_ENDPOINT`    | `ep_create` (may own an IPC endpoint, i.e. may be a broker) | live |
-| 0x0080 | `CAP_IOPORT`      | raw port I/O / driver tier | reserved, unimplemented |
-| 0x0100 | `CAP_FRAMEBUFFER` | `fb_op` | live |
+| 0x0001 | `GRANT_CONSOLE`     | `console_write` | live |
+| 0x0002 | `GRANT_MEM`         | `map`, `unmap`, `sbrk` | **gates nothing yet** — those calls are unimplemented (§7.8) |
+| 0x0004 | `GRANT_DISK`        | `block_read`, `block_write` | **gates nothing yet** — those calls are unimplemented (§7.9) |
+| 0x0008 | `GRANT_NET`         | `net_op` | live |
+| 0x0010 | `GRANT_SPAWN`       | `spawn` | live |
+| 0x0020 | `GRANT_POWER`       | `power` | live |
+| 0x0040 | `GRANT_ENDPOINT`    | `ep_create` (may own an IPC endpoint, i.e. may be a broker) | live |
+| 0x0080 | `GRANT_IOPORT`      | raw port I/O / driver tier | reserved, unimplemented |
+| 0x0100 | `GRANT_FRAMEBUFFER` | `fb_op` | live |
 
 Always-available calls (lifecycle, `input_read`, `mouse_read`, `ipc_call`, `handle_close`)
 require **no** capability. Input is deliberately unprivileged: a process reading the keyboard
 or the pointer it is already being shown is not an escalation.
 
-> **Honest note on `CAP_MEM` and `CAP_DISK`.** Both bits are defined and both are included in
-> `CAP_OS_BASELINE`, so the executive is granted them — but no syscall consults them, because
+> **Honest note on `GRANT_MEM` and `GRANT_DISK`.** Both bits are defined and both are included in
+> `GRANT_OS_BASELINE`, so the executive is granted them — but no syscall consults them, because
 > `map`/`unmap`/`sbrk`/`block_read`/`block_write` do not exist. They are granted authority over
 > nothing. This is harmless but it is not nothing: a reader of `caps.h` reasonably concludes
 > the executive can touch raw disk, and it cannot. Keep the bits (they are the right
@@ -161,17 +161,17 @@ or the pointer it is already being shown is not an escalation.
 ```
 caps_for(type, trusted):
     if (!trusted)                 return 0;                 // verified but untrusted: nothing
-    if (type == CXEX_TYPE_OS)     return CAP_OS_BASELINE;   // a broker executive
+    if (type == CXEX_TYPE_OS)     return GRANT_OS_BASELINE;   // a broker executive
     if (type == CXEX_TYPE_USER)   return 0;                 // apps are capability-less
     return 0;
 
-CAP_OS_BASELINE = CAP_CONSOLE | CAP_MEM | CAP_DISK | CAP_NET
-                | CAP_SPAWN | CAP_POWER | CAP_ENDPOINT | CAP_FRAMEBUFFER    /* = 0x017F */
+GRANT_OS_BASELINE = GRANT_CONSOLE | GRANT_MEM | GRANT_DISK | GRANT_NET
+                | GRANT_SPAWN | GRANT_POWER | GRANT_ENDPOINT | GRANT_FRAMEBUFFER    /* = 0x017F */
 ```
 - `CXEX_TYPE_OS` = `0x4F45`, `CXEX_TYPE_USER` = `0x4345` (from the CXEX type-code family).
-- `CAP_FRAMEBUFFER` is in the baseline **for now**. When a display-server tier exists, the
+- `GRANT_FRAMEBUFFER` is in the baseline **for now**. When a display-server tier exists, the
   compositor should hold it and ordinary apps should draw through that server, not directly.
-- `caps.h` and `abi/cxk_abi.h` each carry a copy of `CAP_OS_BASELINE` (userspace spawners need
+- `caps.h` and `abi/cxk_abi.h` each carry a copy of `GRANT_OS_BASELINE` (userspace spawners need
   it to request caps). The header guards and static-checks them against each other so the two
   cannot silently drift.
 
@@ -232,7 +232,7 @@ Number space is partitioned so additions slot in cleanly. Reserved ranges are no
 | 0x10 | `ipc_call`     | a1=endpoint handle, a2=req ptr, a3=req len, a4=reply ptr, a5=reply cap | none | reply length, or `-E_*` |
 | 0x11 | `ipc_recv`     | a1=msg buf ptr, a2=buf cap, a3=sender-out ptr | owns a `HRIGHT_RECV` endpoint | request length |
 | 0x12 | `ipc_reply`    | a1=data ptr, a2=len | (mid-recv) | 0 |
-| 0x13 | `ep_create`    | — | `CAP_ENDPOINT` | new endpoint handle (`HRIGHT_RECV`) |
+| 0x13 | `ep_create`    | — | `GRANT_ENDPOINT` | new endpoint handle (`HRIGHT_RECV`) |
 
 ### Handles — `0x16–0x1F`
 
@@ -259,13 +259,13 @@ struct mouse_state { int32_t x, y; uint32_t buttons; uint32_t seq; };
 
 | # | Name | Args | Caps | Returns |
 |---|------|------|------|---------|
-| 0x30 | `console_write` | a1=buf ptr, a2=len (0 = bounded NUL-scan) | `CAP_CONSOLE` | bytes written |
+| 0x30 | `console_write` | a1=buf ptr, a2=len (0 = bounded NUL-scan) | `GRANT_CONSOLE` | bytes written |
 
 ### Framebuffer — `0x40–0x4F` (privileged)
 
 | # | Name | Args | Caps | Returns |
 |---|------|------|------|---------|
-| 0x40 | `fb_op` | a1=`*fb_op_args` | `CAP_FRAMEBUFFER` | op-specific |
+| 0x40 | `fb_op` | a1=`*fb_op_args` | `GRANT_FRAMEBUFFER` | op-specific |
 
 ```c
 struct fb_op_args { uint32_t op, x, y, w, h, color, color2; const char *text; uint32_t *out; };
@@ -283,7 +283,7 @@ user-space pixel buffer) is the intended evolution and needs no ABI break — it
 
 | # | Name | Args | Caps | Returns |
 |---|------|------|------|---------|
-| 0x50 | `net_op` | a1=`*net_op_args` | `CAP_NET` | op-specific |
+| 0x50 | `net_op` | a1=`*net_op_args` | `GRANT_NET` | op-specific |
 
 ```c
 struct net_op_args { uint32_t op; uint32_t ip; const void *data; uint32_t len; uint32_t *out; };
@@ -301,8 +301,8 @@ in-kernel UDP/TCP tier would add ops here or take its own range.
 
 | # | Name | Args | Caps | Returns |
 |---|------|------|------|---------|
-| 0x70 | `spawn` | a1=`*spawn_args` | `CAP_SPAWN` | new pid, or `-E_*` |
-| 0x71 | `power` | a1=action, a2=ms (SLEEP only) | `CAP_POWER` | does not return on reboot/shutdown |
+| 0x70 | `spawn` | a1=`*spawn_args` | `GRANT_SPAWN` | new pid, or `-E_*` |
+| 0x71 | `power` | a1=action, a2=ms (SLEEP only) | `GRANT_POWER` | does not return on reboot/shutdown |
 
 `power` actions: `0` `POWER_REBOOT`, `1` `POWER_SHUTDOWN` (ACPI S5 soft-off), `2` `POWER_SLEEP`
 (`a2` = ms; 0 = S1/C1 until a keypress). `SLEEP` **does** return; the other two do not.
@@ -362,7 +362,7 @@ program needs a runtime to unpack anything before `_start` runs.
 
 ### 7.8 Memory — `0x80–0x8F` (specified, unimplemented)
 
-Relocated from v1's `0x20–0x22`, which input now occupies. Gated on `CAP_MEM`.
+Relocated from v1's `0x20–0x22`, which input now occupies. Gated on `GRANT_MEM`.
 
 | # | Name | Args | Returns |
 |---|------|------|---------|
@@ -372,7 +372,7 @@ Relocated from v1's `0x20–0x22`, which input now occupies. Gated on `CAP_MEM`.
 
 ### 7.9 Storage — `0x90–0x9F` (specified, unimplemented)
 
-Relocated from v1's `0x40–0x41`, which the framebuffer now occupies. Gated on `CAP_DISK`.
+Relocated from v1's `0x40–0x41`, which the framebuffer now occupies. Gated on `GRANT_DISK`.
 64-bit LBAs travel inside the arg struct, never split across registers (§2).
 
 | # | Name | Args | Returns |
@@ -391,14 +391,14 @@ proposed, in the families they actually belong to rather than a new range:
 
 | # | Name | Args | Caps | Returns |
 |---|------|------|------|---------|
-| 0x60 | `file_op`   | a1=`*file_op_args` | `CAP_DISK` | op-specific |
-| 0x72 | `exec_path` | a1=path ptr, a2=`*spawn_args` (image fields ignored) | `CAP_SPAWN` | new pid |
+| 0x60 | `file_op`   | a1=`*file_op_args` | `GRANT_DISK` | op-specific |
+| 0x72 | `exec_path` | a1=path ptr, a2=`*spawn_args` (image fields ignored) | `GRANT_SPAWN` | new pid |
 
 Two deviations from the proposal, both deliberate:
 
-- **`file_op` is `0x60`, not `0xA0`, and is gated on `CAP_DISK` rather than a new `CAP_FS`
-  bit.** `CAP_DISK` was already defined and referenced by no syscall at all — it was reserved
-  for exactly this and adding `CAP_FS` beside it would have left two bits meaning the same
+- **`file_op` is `0x60`, not `0xA0`, and is gated on `GRANT_DISK` rather than a new `GRANT_FS`
+  bit.** `GRANT_DISK` was already defined and referenced by no syscall at all — it was reserved
+  for exactly this and adding `GRANT_FS` beside it would have left two bits meaning the same
   authority.
 - **`exec_path` is `0x72`, in the process family beside `spawn` (0x70) and `power` (0x71).**
   It is a process-launch call, not a filesystem call; grouping it with `fs_op` would have
@@ -416,7 +416,7 @@ a user-addressable file tops out at 2 GB. CXFS remains 64-bit underneath.
   kernel's own load path, closing the `spawn` gap noted above. It shares `cxex_exec`'s verify
   and type checks through `cxex_exec_as()`; the two differ only in where authority comes
   from. `cxex_exec` is the kernel starting something by itself, with nobody to attenuate
-  from, so `caps_for()` reads the image's tier — an `.xoex` gets `CAP_OS_BASELINE`, an
+  from, so `caps_for()` reads the image's tier — an `.xoex` gets `GRANT_OS_BASELINE`, an
   `.xcex` gets nothing. `exec_path` is a ring-3 process asking for a launch, so §5 attenuation
   applies instead. Running `caps_for()` there would make every program loaded from disk
   capability-less and unable to so much as print.
@@ -475,14 +475,14 @@ Current state of the whole number space, so the next allocation is an informed o
 
 Still genuinely reserved and unimplemented:
 
-- `CAP_IOPORT` (0x0080) — bit reserved, no primitive.
+- `GRANT_IOPORT` (0x0080) — bit reserved, no primitive.
 - Syscalls `0x14–0x15` (IPC async/notify), `0x17–0x1F` (handle dup/transfer), `0x60–0x6F`
   (shared-memory grant: `shm_create`, `shm_grant`, `shm_map`).
 - Additional handle object types (`HANDLE_SHM`, more endpoints). `HANDLE_FILE` arrives with
   §7.10.
 
-Delivered since v1 and therefore no longer deferred: `CAP_NET` + the network primitive,
-`CAP_FRAMEBUFFER` + the framebuffer primitive, unprivileged input, and `spawn` requesting an
+Delivered since v1 and therefore no longer deferred: `GRANT_NET` + the network primitive,
+`GRANT_FRAMEBUFFER` + the framebuffer primitive, unprivileged input, and `spawn` requesting an
 attenuated capability subset for the child.
 
 ---
@@ -491,12 +491,12 @@ attenuated capability subset for the child.
 
 A capability-less ring-3 app asks its executive to print a string:
 
-1. Executive (`CAP_OS_BASELINE`) calls `ep_create` → endpoint handle `E`.
+1. Executive (`GRANT_OS_BASELINE`) calls `ep_create` → endpoint handle `E`.
 2. Executive `spawn`s the app with `broker_endpoint = E`; the kernel gives the app a SEND
    handle to `E` as its handle `0`, and `caps = 0`.
 3. App calls `ipc_call(0, "hello\n", 6, reply, sizeof reply)` and blocks.
 4. Executive `ipc_recv`s the request, calls `console_write("hello\n", 6)` (allowed —
-   it holds `CAP_CONSOLE`), then `ipc_reply` with a status.
+   it holds `GRANT_CONSOLE`), then `ipc_reply` with a status.
 5. App wakes with the reply.
 6. **Negative check:** if the app calls `console_write` directly, it gets `E_PERM` — proving
    apps cannot reach privileged primitives, only the broker can.
@@ -541,7 +541,7 @@ Then v-next: shared-memory grants (bulk transfer), concurrent IPC, a second exec
 | Broker handle | `0` (app's SEND handle to its executive's endpoint) |
 | Executive type | `CXEX_TYPE_OS` = `0x4F45` |
 | App type | `CXEX_TYPE_USER` = `0x4345` |
-| `CAP_OS_BASELINE` | `CONSOLE|MEM|DISK|NET|SPAWN|POWER|ENDPOINT|FRAMEBUFFER` = `0x017F` |
+| `GRANT_OS_BASELINE` | `CONSOLE|MEM|DISK|NET|SPAWN|POWER|ENDPOINT|FRAMEBUFFER` = `0x017F` |
 | Argument page | `USER_ARGS_BASE` = `0xBFFFF000`, one page, always mapped |
 | Max argument bytes | `USER_ARGS_MAX` = `4096` (header included) |
 | Max arguments | `USER_ARGS_MAXC` = `64` |

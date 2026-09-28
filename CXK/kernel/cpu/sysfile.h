@@ -6,7 +6,7 @@
  * Until now CXFS was a complete filesystem no program could reach: the kernel
  * had create, read, write, delete, rename, directories, permissions and
  * advisory locking, and the syscall table had console, input, framebuffer,
- * network, spawn and IPC but nothing for files. CAP_DISK was defined in
+ * network, spawn and IPC but nothing for files. GRANT_DISK was defined in
  * cxk_abi.h and referenced by no syscall at all. This fills that slot.
  *
  * Everything here is one syscall taking a *file_op_args, matching the shape
@@ -23,7 +23,7 @@
 #include "cxk_abi.h"
 #include <stdint.h>
 
-/* SYS_FILE_OP handler (called after the CAP_DISK check). */
+/* SYS_FILE_OP handler (called after the GRANT_DISK check). */
 int sys_file_op(const struct file_op_args *ua);
 
 /* register the HANDLE_FILE releaser; call once during init. */

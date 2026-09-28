@@ -20,6 +20,7 @@ static void timer_callback(struct registers *r) {
     (void)r;
     ticks++;
     sched_tick();          /* preemptive scheduler (no-op unless enabled) */
+    sched_wake_sleepers(); /* SYS_SLEEP: put expired sleepers back on the queue */
     keyboard_tick();       /* wake a USB-HID reader; raises no bus traffic here */
 }
 

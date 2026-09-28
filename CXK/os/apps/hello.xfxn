@@ -2,7 +2,7 @@
 // Aurora Tejeda / CATX SYSTEMS LLC
 //
 // A capability-less USER app (.xcex). It cannot touch the console directly
-// (no CAP_CONSOLE); instead it asks its broker executive to print for it over
+// (no GRANT_CONSOLE); instead it asks its broker executive to print for it over
 // IPC - the X port of os/apps/hello.c, the positive half of the brokered model.
 //
 // v0.1 X notes that shape this port:
