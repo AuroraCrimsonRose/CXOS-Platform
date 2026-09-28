@@ -34,7 +34,7 @@ public sealed record ExprStmt(Expr Expr) : Stmt;
 
 // ---- expressions ----
 public abstract record Expr : Node;
-public sealed record IntLit(ulong Value) : Expr;
+public sealed record IntLit(UInt128 Value) : Expr;
 public sealed record StrLit(string Value) : Expr;
 public sealed record SizeofExpr(Expr Operand) : Expr;   // sizeof x -> u32, compile-time   // "..." -> *u8 into .rodata/.data
 public sealed record BoolLit(bool Value) : Expr;

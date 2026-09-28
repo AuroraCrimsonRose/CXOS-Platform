@@ -165,7 +165,23 @@ public sealed class TypeChecker
     {
         switch (e)
         {
-            case IntLit: return Set(e, I32);
+            /* A literal is typed by the narrowest type that HOLDS it.
+             *
+             * Anything fitting in 32 bits is still i32, so nothing that
+             * compiled before changes shape. What this fixes is the case above
+             * that: every literal used to type as i32 however large it was
+             * written, so `200000000000000000000 % 7` took the narrow path,
+             * truncated the literal into eax and did a 32-bit divide - a wrong
+             * answer from a constant expression, with nothing to warn on. A
+             * literal too wide for a register now types wide and is emitted
+             * through the wide path that can actually carry it.
+             *
+             * Unsigned, because a literal is a magnitude; unary minus is a
+             * separate node applied to it. */
+            case IntLit il:
+                return Set(e, il.Value <= uint.MaxValue ? I32
+                            : il.Value <= ulong.MaxValue ? new PrimType(PrimKind.U64)
+                            : new PrimType(PrimKind.U128));
             case StrLit: return Set(e, new PointerType(new PrimType(PrimKind.U8)));
             case SizeofExpr sz: CheckExpr(sz.Operand); return Set(e, U32);   // compile-time size  // "..." : *u8
             case BoolLit: return Set(e, Bool);

@@ -166,9 +166,18 @@ public sealed class Parser
         if (Match(TokenKind.Star)) return new PointerType(ParseType());
         if (Match(TokenKind.LBracket))
         {
-            ulong n = 0;
+            UInt128 n = UInt128.Zero;
             if (At(TokenKind.IntLiteral)) n = Advance().Value;
             else _diag.Error("expected array length", Cur.Span);
+            /* A literal is lexed at 128 bits now, so an array length has to be
+               CHECKED rather than cast. Without this, [4294967296]u8 would
+               truncate to 0 and silently produce a zero-length array instead
+               of saying the length is impossible. */
+            if (n > (UInt128)int.MaxValue)
+            {
+                _diag.Error("array length is too large", Cur.Span);
+                n = UInt128.Zero;
+            }
             Expect(TokenKind.RBracket, "']'");
             return new ArrayType(ParseType(), (int)n);
         }
