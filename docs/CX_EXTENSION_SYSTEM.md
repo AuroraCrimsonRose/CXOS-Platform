@@ -314,10 +314,25 @@ object-type vocabulary.
 |------|--------|
 | `XM` | Media (audio, video, images, fonts) |
 | `XN` | Network (protocols, packets, configs) |
-| `XS` | Security (keys, certs, auth, policies) |
 | `XR` | Runtime (VM, JIT, execution metadata) |
 | `XP` | Package (packages, installs, dependencies) |
 | `XT` | Temporary (cache, staging, temp files) |
+
+**`XS` is no longer reserved for Security.** It was listed here before the
+domain restructure made `S` the **System** ownership tier (`.xsex`). A letter
+cannot mean both. Keys already moved to where their authority lives — the
+platform root is `.xkpk`, a publisher key `.xupk` — and certificates, auth and
+policy files will need a letter of their own when they exist. That is an open
+choice, not a reservation.
+
+### Codes here are domains; language names are not
+
+`XM`, `XN`, `XR` and the rest above are **domain codes**: `x` plus the letter
+that appears directly after it in an extension. The X languages are never
+abbreviated to two letters for exactly this reason — "XN" for X Native would
+read as the Network domain, "XR" for X Runtime as the Runtime domain. Languages
+are named in full, and their source lives in the **F** domain: `.xfxn`,
+`.xfxr`, `.xfxh`, `.xfxd`, `.xfxv`, `.xfgl`. See `CX_ROADMAP.md` §2.
 
 ---
 

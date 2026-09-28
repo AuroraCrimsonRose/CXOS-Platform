@@ -2,7 +2,7 @@
 
 **Status:** LIVE CONTRACT (v2). The register convention, capability model, handle/IPC
 semantics, and error codes are stable and shipped. Both the `.xoex` executive and the
-X/XR/XH toolchain compile against this. Source of truth is **`abi/cxk_abi.h`**; this
+X Native / X Runtime / X Hybrid toolchain compile against this. Source of truth is **`abi/cxk_abi.h`**; this
 document explains it. If the two disagree, the header wins and this document is the bug.
 
 **What changed from v1, and why this is v2.** The v1 document declared the whole number
