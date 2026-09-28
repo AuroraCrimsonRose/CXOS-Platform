@@ -49,6 +49,12 @@ public sealed class TypeChecker
            PrimWidth and nothing else. */
         return t is PrimType p && p.Kind is not (PrimKind.Bool or PrimKind.Void);
     }
+    /* Width in bytes of an integer type, for deciding which operand of a
+       binary expression is the wider. 0 for anything that is not a primitive,
+       which cannot win the comparison and so keeps the left type. */
+    private int IntWidth(TypeRef t0) =>
+        _ctx.Expand(t0) is PrimType p ? PrimWidth.Bytes(p.Kind) : 0;
+
     private bool IsBool(TypeRef t0) => _ctx.Expand(t0) is PrimType { Kind: PrimKind.Bool };
     private bool IsPtr(TypeRef t0) => _ctx.Expand(t0) is PointerType;
 
@@ -222,7 +228,22 @@ public sealed class TypeChecker
             case BinOp.Shl:
             case BinOp.Shr:
                 if (!IsInt(l) || !IsInt(r)) _diag.Error($"arithmetic on {Show(l)} and {Show(r)}", b.Span);
-                return IsInt(l) ? l : I32;
+                if (!IsInt(l)) return IsInt(r) ? r : I32;
+                if (!IsInt(r)) return l;
+                /* The WIDER operand decides, not the left one.
+                 *
+                 * This used to return the left type unconditionally, which
+                 * made `0 - a` on a 64-bit `a` type as i32 - and a wide value
+                 * lives at an address, so the emitter then did 32-bit
+                 * arithmetic on that ADDRESS and sign-extended the result.
+                 * `a - 0` was correct and `0 - a` was garbage, silently. That
+                 * is precisely the class of error wide types exist to prevent,
+                 * so the rule is the wider operand wins.
+                 *
+                 * A shift is the exception: its right operand is a COUNT, not
+                 * a term, so `x << n` is as wide as x however n is written. */
+                if (b.Op is BinOp.Shl or BinOp.Shr) return l;
+                return IntWidth(r) > IntWidth(l) ? r : l;
             case BinOp.Eq:
             case BinOp.Ne:
                 if (!(Assignable(l, r) || Assignable(r, l))) _diag.Error($"cannot compare {Show(l)} and {Show(r)}", b.Span);
