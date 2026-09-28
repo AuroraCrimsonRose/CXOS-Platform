@@ -53,12 +53,32 @@ public static class CXSigner
         // Write the existing patched file
         bw.Write(binary);
 
-        // Write the CXSG block
+        // Write the CXSG block.
+        //
+        // The signer's PUBLIC KEY travels with the image - the .xkpk file
+        // verbatim, which is exactly the bytes the fingerprint above is taken
+        // over. Without it a verifier that does not already hold the key can
+        // check nothing at all, not even that the image is intact, so
+        // "signed by someone we do not know" and "tampered with" would look
+        // identical. With it, integrity is always checkable and the only open
+        // question is whose key it is.
+        //
+        // Layout (little-endian), header 44 bytes then the two variable parts:
+        //   0  "CXSG"        4
+        //   4  sig_algo      2
+        //   6  hash_algo     2
+        //   8  fingerprint  32   sha256 of the .xkpk bytes below
+        //  40  pubkey_len    2
+        //  42  sig_len       2
+        //  44  pubkey     pubkey_len   the .xkpk file, verbatim
+        //      signature  sig_len
         bw.Write(0x47535843u); // "CXSG" Little-Endian
         bw.Write(SIG_ALGO_RSA2048_SHA256);
         bw.Write(HASH_ALGO_SHA256);
         bw.Write(fingerprint); // 32 bytes
+        bw.Write((ushort)pkBytes.Length);
         bw.Write((ushort)signatureBytes.Length);
+        bw.Write(pkBytes);
         bw.Write(signatureBytes);
 
         File.WriteAllBytes(targetPath, ms.ToArray());
