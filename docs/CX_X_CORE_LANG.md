@@ -265,7 +265,57 @@ statements. A function that does not use `defer` compiles to byte-identical
 output.
 
 A `defer` does not run if the process ends some other way — `exit()`, a fault,
-or being killed. It is here now because it is cheap to add before code exists and
+or being killed.
+
+### 2.4 Attributes
+
+`@name` or `@name(args)` before a declaration. An argument is positional or
+named (`@device(vendor = 0x8086)`). Several may be stacked.
+
+**An attribute the compiler does not know is an error**, naming the ones it
+does. Silently ignoring an unknown name would let a typo — `@sectoin` — compile
+into a program that quietly lacks whatever the attribute was for. Each attribute
+is defined in exactly one table in the type checker, together with what it
+applies to and what arguments it takes; adding one means adding it there and
+teaching the emitter what it does.
+
+Named arguments are parsed today although no attribute takes one yet. The
+syntax is the part that is expensive to change later, and hardware match tables
+will want it.
+
+| Attribute | Applies to | Effect |
+|---|---|---|
+| `@section(".name")` | a function with a body, or a global | places it in the named object-file section |
+
+**`@section`** is the mechanism declarative tables are built on: many
+declarations, in many files, landing in one section that is then read as an
+array — how driver match tables will work, without a hand-maintained
+registration list that drifts from the drivers.
+
+```x
+@section(".cx_tbl") global e0: u32 = 11;
+@section(".cx_tbl") global e1: u32 = 0;
+@section(".cx_tbl") global e2: u32 = 33;
+// &e0 now points at a three-entry table, in declaration order
+```
+
+- A function's section is allocated and executable (`AX`); a global's is
+  allocated and writable (`WA`).
+- A zero-valued global in a named section **stays in that section** rather than
+  moving to `.bss` — a section read as a table must contain every entry.
+- The section name must start with `.` and contain only letters, digits, `_` and
+  `.`. The default names (`.text`, `.data`, `.rodata`, `.bss`) are refused:
+  naming one is redundant or, for a function in `.data`, contradictory, and the
+  assembler would quietly merge section flags rather than say so.
+- Refused on structs, constants, type aliases, imports, and extern functions —
+  none of them occupies space to place.
+
+A linker script that does not mention a custom section places it by the
+linker's orphan rules. A table meant to be collected across files needs a
+`KEEP(*(.name))` entry, and start/end symbols, in the script; that belongs with
+the first real table.
+
+Code without attributes compiles to byte-identical output. It is here now because it is cheap to add before code exists and
 expensive to retrofit after, and because it is the foundation for drivers
 written in X (see `CX_ROADMAP.md` §5).
 
