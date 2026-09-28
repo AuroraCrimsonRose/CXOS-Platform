@@ -58,7 +58,7 @@ a compiler is a specific kind of program:
 | Multi-file source | works (`import`) |
 | Function pointers for dispatch tables | works |
 | File I/O | works (`SYS_FILE_OP`, `std/file.xfxn`) |
-| 64/128-bit integers | works, except variable shifts and literals above 64 bits (§2.1) |
+| 64/128-bit integers | works, except variable shifts (§2.1) |
 | Floats | missing; not required for a compiler |
 | Dynamic allocation | **missing** — no `SYS_MAP`/`SBRK`, no allocator |
 
@@ -142,7 +142,7 @@ so each of these is a compile error rather than silently truncated code:
 |---|---|
 | variable shifts | needs a loop, and a loop whose trip count depends on the operand is a timing signal |
 | returning a wide value | the value is an address, and it would be the address of a frame about to be torn down. Pass a pointer to the destination instead |
-| literals above 64 bits | the lexer parses an integer literal as at most 64 bits, so a `u128` constant larger than `u64` cannot be written directly. Build it from limbs (`x = hi; x = x * 4294967296; x = x + lo;`) until the lexer is widened |
+| a constant expression at a width its operands do not have | `let g: u128 = 1 << 100;` is a **32-bit** shift, because both operands are small literals and the declared type does not reach into the initializer. C has the same rule and answers it with a suffix (`1ULL`); X has no suffix, so the width has to come from a variable that already carries it: `let g: u128 = 1; g = g << 100;` |
 
 **Mixed-width arithmetic takes the WIDER operand's type.** `0 - a` on a 64-bit
 `a` is a 64-bit subtraction, not a 32-bit one. This is worth stating because it
@@ -151,6 +151,14 @@ made `a - 0` correct and `0 - a` silently wrong — a wide value lives at an
 address, so the narrow path did 32-bit arithmetic on that address and
 sign-extended the result. A shift is the exception, since its right operand
 counts places rather than being a term: `x << n` is as wide as `x`.
+
+**A literal is typed by the narrowest type that holds it** — `i32` up to 32
+bits, then `u64`, then `u128`. Anything that fitted before still types `i32`,
+so nothing changed shape; what this buys is that a literal too wide for a
+register stops pretending to be one. Every literal used to type `i32` however
+large it was written, so `200000000000000000000 % 7` truncated the constant
+into `eax` and did a 32-bit divide — a wrong answer from an expression the
+compiler could have evaluated exactly.
 
 **Why the ceiling is 128.** Up to 128 bits a value is *one thing* — an offset, a
 timestamp, a GUID, a Q64.64 coordinate, the product of two 64-bit numbers — that
