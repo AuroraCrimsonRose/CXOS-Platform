@@ -241,7 +241,7 @@ x86-32, then hands off to the emitters already in place:
   -> Sema             (type-check, resolve, const-fold; rejects ambient effects)
   -> CodeGen          (X-core AST -> x86-32)
   -> [ ELF ]          (so ElfParser -> CXEXLayoutEngine -> CXEXWriter package it)
-  -> .xcex / .xkex / .xoex
+  -> .xuex / .xkex / .xoex
 ```
 
 CodeGen v0.1 emits x86-32 **assembly text**, assembled+linked to ELF via the
@@ -265,7 +265,7 @@ New namespace, e.g. `CXEX.Build.X` (or `CXEX.Lang`): `Lexer`, `Parser`, `Ast`,
 > original milestone is kept below as the record of what "proven end to end" meant.
 
 
-Reimplement the current `hello.xcex` app in X: a `_start` that builds an
+Reimplement the current `hello.xuex` app in X: a `_start` that builds an
 `ipc_call_args`, calls its broker endpoint (handle 0), and `exit`s. Compile it
 with the .NET X front-end, package via the existing emitter, run it on CXK. When
 the brokered message prints — produced by an X-compiled binary instead of C — the
@@ -316,7 +316,7 @@ purely in service of the compiler.
 
 **Stage 1 — make the OS able to hold source at all.** Filesystem access from ring
 3 (`docs/CX_ABI.md` §7.10) and `exec_path`. Without file I/O there is no reading a
-`.xfxn` and no writing a `.xcex`, so this gates everything. Useful on its own: it
+`.xfxn` and no writing a `.xuex`, so this gates everything. Useful on its own: it
 is what lets the shell and GUI launch application files.
 
 **Stage 2 — memory.** `sbrk` or `map` (ABI §7.8) plus an allocator written in X.

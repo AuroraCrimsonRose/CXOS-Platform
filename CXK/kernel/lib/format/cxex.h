@@ -4,7 +4,7 @@
  * CXEX executable format definitions (CX_EXTENSION_SYSTEM.md section 9).
  *
  * This is the single source of truth in kernel code for what a CXEX file
- * (.xkex / .xbex / .xcex) looks like. It provides the structs callers use plus
+ * (.xkex / .xbex / .xuex) looks like. It provides the structs callers use plus
  * pure parse/validate/accessor helpers. It owns the on-disk byte layout via
  * EXPLICIT-OFFSET parsing (not packed structs / casts), so it is immune to
  * compiler padding/alignment surprises and matches the bytes mkcxes.py writes
@@ -29,10 +29,19 @@
 #define CXEX_MAGIC3 'X'
 
 /* ---- type codes (mirror the extension family) ---- */
-#define CXEX_TYPE_KERNEL 0x4B45u   /* 'KE' kernel executive  (.xkex) */
-#define CXEX_TYPE_BOOT   0x4245u   /* 'BE' boot executive    (.xbex) */
-#define CXEX_TYPE_USER   0x4345u   /* 'CE' compiled/user exe (.xcex) */
-#define CXEX_TYPE_OS     0x4F45u   /* 'OE' OS executive      (.xoex) */
+/* Each code is the extension's domain letter followed by 'E' for executive,
+   and the domain says WHOSE the program is - which is what caps_for() reads to
+   decide the authority it starts with.
+
+   0x4345 'CE' (.xuex) is deliberately absent. It named an executable for how
+   it was built, and every executable here is compiled, so it distinguished
+   nothing - a kernel image is as compiled as an application. Programs are
+   named by owner instead. See docs/CX_EXTENSION_SYSTEM.md. */
+#define CXEX_TYPE_KERNEL 0x4B45u   /* 'KE' the kernel          (.xkex) */
+#define CXEX_TYPE_BOOT   0x4245u   /* 'BE' the boot chain      (.xbex) */
+#define CXEX_TYPE_OS     0x4F45u   /* 'OE' the OS proper       (.xoex) */
+#define CXEX_TYPE_SYSTEM 0x5345u   /* 'SE' OS-owned, not the OS(.xsex) */
+#define CXEX_TYPE_USER   0x5545u   /* 'UE' a user's            (.xuex) */
 
 /* ---- arch ---- */
 #define CXEX_ARCH_X86_32 1u

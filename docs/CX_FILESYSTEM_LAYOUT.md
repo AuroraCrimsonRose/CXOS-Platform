@@ -17,7 +17,7 @@ callers end up disagreeing.
 ```
 /
 ├── System/                 SYSTEM, 0755 — the OS. Only SYSTEM writes here.
-│   ├── Programs/           system programs (.xcex)
+│   ├── Programs/           system programs (.xuex)
 │   ├── Kernel/             kernel images — see §4
 │   ├── Boot/               boot chain    — see §4
 │   ├── Drivers/            .xkdr / .xklo, when module loading lands
@@ -218,7 +218,7 @@ than guessed.
 ## 5. Rules
 
 1. **A program is only runnable if signed.** Location grants nothing:
-   `/System/Programs/x.xcex` and `/Temp/x.xcex` are equally subject to
+   `/System/Programs/x.xuex` and `/Temp/x.xuex` are equally subject to
    verification. The layout is organisation, never authority.
 2. **Create on need, not on principle.** A directory listed here is not created
    until something goes in it. `Drivers/` waits for a driver.

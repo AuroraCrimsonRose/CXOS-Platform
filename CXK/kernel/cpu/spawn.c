@@ -273,7 +273,7 @@ int sys_exec_path(const char *upath, const struct spawn_args *ua) {
 
     if (!cxfs_is_mounted()) return E_IO;
 
-    /* Resolve against the caller's working directory, so `exec doc.xcex`
+    /* Resolve against the caller's working directory, so `exec doc.xuex`
        means what it says from wherever the process happens to be. */
     int id = cxfs_resolve(path, thread_current_cwd());
     if (id < 0) return E_NOENT;

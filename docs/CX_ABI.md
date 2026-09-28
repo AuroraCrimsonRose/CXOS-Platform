@@ -160,15 +160,24 @@ or the pointer it is already being shown is not an escalation.
 ### `caps_for(type, trusted)` — the policy layer
 ```
 caps_for(type, trusted):
-    if (!trusted)                 return 0;                 // verified but untrusted: nothing
-    if (type == CXEX_TYPE_OS)     return GRANT_OS_BASELINE;   // a broker executive
-    if (type == CXEX_TYPE_USER)   return 0;                 // apps are capability-less
+    if (!trusted)                   return 0;                     // verified but untrusted: nothing
+    if (type == CXEX_TYPE_OS)       return GRANT_OS_BASELINE;     // the broker executive
+    if (type == CXEX_TYPE_SYSTEM)   return GRANT_SYSTEM_BASELINE; // OS-owned, not the OS
+    if (type == CXEX_TYPE_USER)     return 0;                     // apps are capability-less
     return 0;
 
-GRANT_OS_BASELINE = GRANT_CONSOLE | GRANT_MEM | GRANT_DISK | GRANT_NET
-                | GRANT_SPAWN | GRANT_POWER | GRANT_ENDPOINT | GRANT_FRAMEBUFFER    /* = 0x017F */
+GRANT_OS_BASELINE     = GRANT_CONSOLE | GRANT_MEM | GRANT_DISK | GRANT_NET
+                      | GRANT_SPAWN | GRANT_POWER | GRANT_ENDPOINT
+                      | GRANT_FRAMEBUFFER                          /* = 0x017F */
+GRANT_SYSTEM_BASELINE = GRANT_CONSOLE | GRANT_DISK                 /* = 0x0005 */
 ```
-- `CXEX_TYPE_OS` = `0x4F45`, `CXEX_TYPE_USER` = `0x4345` (from the CXEX type-code family).
+- `CXEX_TYPE_OS` = `0x4F45` `'OE'`, `CXEX_TYPE_SYSTEM` = `0x5345` `'SE'`,
+  `CXEX_TYPE_USER` = `0x5545` `'UE'` (from the CXEX type-code family). The old
+  `0x4345 'CE'` (`.xcex`) is retired: it named an executable for how it was
+  built, and every executable is compiled.
+- **The system tier is narrower than the executive's on purpose.** A `.xsex` is
+  OS-owned but is not the OS, so it starts with enough to say something and to
+  read its own files, and asks for anything more by being started with it.
 - `GRANT_FRAMEBUFFER` is in the baseline **for now**. When a display-server tier exists, the
   compositor should hold it and ordinary apps should draw through that server, not directly.
 - `caps.h` and `abi/cxk_abi.h` each carry a copy of `GRANT_OS_BASELINE` (userspace spawners need
@@ -417,7 +426,7 @@ a user-addressable file tops out at 2 GB. CXFS remains 64-bit underneath.
   and type checks through `cxex_exec_as()`; the two differ only in where authority comes
   from. `cxex_exec` is the kernel starting something by itself, with nobody to attenuate
   from, so `caps_for()` reads the image's tier — an `.xoex` gets `GRANT_OS_BASELINE`, an
-  `.xcex` gets nothing. `exec_path` is a ring-3 process asking for a launch, so §5 attenuation
+  `.xuex` gets nothing. `exec_path` is a ring-3 process asking for a launch, so §5 attenuation
   applies instead. Running `caps_for()` there would make every program loaded from disk
   capability-less and unable to so much as print.
 - **A negative `broker_endpoint` means no broker**, and the child gets no handle 0. `spawn`

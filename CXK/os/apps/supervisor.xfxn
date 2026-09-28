@@ -14,7 +14,7 @@
 // A descriptor is key=value lines. Blank lines and # comments are ignored:
 //
 //     # /System/Services/hello.xosv
-//     exec=/System/Programs/hi.xcex
+//     exec=/Shared/Programs/hi.xuex
 //     args=hello world
 //     start=boot
 //     grants=console,disk

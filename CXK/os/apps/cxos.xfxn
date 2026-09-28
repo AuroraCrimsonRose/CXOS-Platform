@@ -7,7 +7,7 @@
 //
 // This is a MODULE, not a separate process - the text shell imports it and
 // calls cxos_run(). That reuses X's module system rather than needing a second
-// embedded image and a spawn protocol. If CXOS later becomes its own .xcex,
+// embedded image and a spawn protocol. If CXOS later becomes its own .xuex,
 // only the entry point changes: cxos_run() becomes _start().
 
 import "gui.xfxn";

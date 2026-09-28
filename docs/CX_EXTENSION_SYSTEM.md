@@ -115,15 +115,28 @@ subsystems, so the system stays learnable as it grows. Common suffixes:
 | `.xbco` | Boot Configuration Object (boot parameters / config) |
 | `.xbin` | Boot Binary Image (boot / disk / partition image) |
 
-### XC — CX Compiled (Userspace)
+### XC — CX Compiled (build products)
 
 | Extension | Meaning |
 |-----------|---------|
-| `.xcex` | Compiled Executive (userspace executable / application) |
 | `.xcob` | Compiled Object (intermediate object file) |
 | `.xcsl` | Compiled Static Library |
 | `.xcdl` | Compiled Dynamic Library |
 | `.xchi` | Compiled Header Interface (ABI / interface definition) |
+
+A **category** domain, like XF and XA — these belong to no tier. They are what
+a compiler emits or consumes without being runnable on their own, which is the
+fact `c` is naming.
+
+**`.xcex` is retired.** It named an executable for *how it was built*, and
+every executable in this system is compiled — a kernel image is as compiled as
+an application — so the letter distinguished nothing. An executable is named
+for **whose** it is instead: `.xkex`, `.xbex`, `.xoex`, `.xsex`, `.xuex`. The
+type code `0x4345 'CE'` is retired with it and is not reissued.
+
+> If dynamic libraries ever become runtime-loadable and signed, *whose* a
+> library is starts to matter, and they would want `.xsdl` / `.xudl` under the
+> ownership tiers rather than staying here.
 
 ### XO — CX Operating System
 
@@ -136,10 +149,10 @@ subsystems, so the system stays learnable as it grows. Common suffixes:
 `key=value` lines, read by the service supervisor. It names a program; it is
 not one. That is why it is XO rather than XC: the thing it describes is part of
 the operating system's startup, even when the program it points at is an
-ordinary `.xcex`.
+ordinary `.xuex`.
 
 ```
-exec=/System/Programs/hi.xcex    the program to run (required)
+exec=/Shared/Programs/hi.xuex    the program to run (required)
 args=hello world                 passed as argv, after the program's own path
 start=boot                       `boot` to start it; absent means leave it off
 grants=console,disk              authority to hand it; default is console only
@@ -149,16 +162,56 @@ Descriptors live in `/System/Services/`. Authority defaults to the minimum on
 purpose: a service that needs the disk has to say so in the file, where someone
 reading the system can see what it was given.
 
-The tier between XK and XC: XK is the kernel, XO is the executive that brokers
-for userspace, XC is an application. The three are the same CXEX container
-distinguished by `type_code`, and `caps_for()` reads that code to decide
-authority - `.xoex` gets `GRANT_OS_BASELINE`, `.xcex` gets nothing by default.
+### XS — CX System
+
+| Extension | Meaning |
+|-----------|---------|
+| `.xsex` | System Executive (OS-owned, but not the OS itself; `type_code` 0x5345 `'SE'`) |
+
+Things the operating system owns and ships without being the OS proper: the
+shell, the service supervisor, system utilities. `caps_for()` starts one with
+`GRANT_SYSTEM_BASELINE` — console and disk — which is narrower than the
+executive's on purpose. A system program is OS-owned but is not the OS, so it
+gets enough to say something and read its own files, and asks for anything more
+by being started with it.
+
+### XU — CX User
+
+| Extension | Meaning |
+|-----------|---------|
+| `.xuex` | User Executive (a user's application; `type_code` 0x5545 `'UE'`) |
+
+A user's own program. `caps_for()` gives it **nothing**: an application holds
+no authority except what whatever started it chose to pass down. That is the
+capability model's default, and it is the default precisely because it is the
+one that is safe to get wrong.
+
+### The ownership ladder
+
+All five are the same CXEX container, distinguished only by `type_code`, and
+`caps_for()` reads that code to decide what a program starts with when the
+**kernel** launches it:
+
+| | | `caps_for()` |
+|---|---|---|
+| `.xkex` | the kernel | ring 0 — not subject to this |
+| `.xbex` | the boot chain | runs before any of it exists |
+| `.xoex` | the OS proper, the broker | `GRANT_OS_BASELINE` |
+| `.xsex` | OS-owned, not the OS | `GRANT_SYSTEM_BASELINE` (console + disk) |
+| `.xuex` | a user's | nothing |
+
+A signature says **who** an image is, never what it may do. The table above is
+the only place identity becomes authority, and it applies to the kernel-launched
+path alone. Anything started from ring 3 is **attenuated** against its launcher
+instead — a subset of what that launcher already held, never more — so a
+`.xsex` started by the executive gets what the executive chose to pass it, not
+the baseline above.
 
 ### XF — CX Format (Data & Serialization)
 
 | Extension | Meaning |
 |-----------|---------|
-| `.xfxn` | Format X Native (X Native source; compiled to `.xcex`) |
+| `.xfxn` | Format X Native (X Native source; compiled to an executive) |
 | `.xfto` | Format Text Object |
 | `.xfsl` | Format Scripting Language |
 | `.xfon` | Format Object Notation |
@@ -277,7 +330,7 @@ The system is designed to:
 2. **Separate intent from truth** — extension = expected behavior; header =
    permitted behavior.
 3. **Support a multi-stage pipeline** — artifacts move through compilation
-   (`.xcob`) → linking (`.xcsl` / `.xcdl`) → execution (`.xcex`).
+   (`.xcob`) → linking (`.xcsl` / `.xcdl`) → execution (`.xuex`).
 4. **Enable future enforcement** — headers grow to define ABI compatibility,
    architecture targeting, security capabilities, dependency graphs, and
    execution permissions.
@@ -328,7 +381,7 @@ code, read-only data, initialized data, and zero-filled `.bss` each need
 distinct placement. CXEX is a **sectioned** format: a fixed header followed by a
 section table describing where each piece loads.
 
-Userspace executables (`.xcex`) reuse this same format; the only difference is
+Userspace executables (`.xuex`) reuse this same format; the only difference is
 that they will typically be **relocatable** (see 9.5), whereas the kernel and
 bootloader are **fixed-load**.
 
@@ -406,7 +459,7 @@ address regardless of physical load location, so it never needs file-level
 relocation.)
 
 The format still *carries* relocation support so **userspace** executables
-(`.xcex`), which benefit from being position-independent, can use it later:
+(`.xuex`), which benefit from being position-independent, can use it later:
 
 - If `reloc_offset` != 0, it points at a table of relocation entries (each:
   `offset` to patch, `type`, optional `addend`), applied by the loader after
@@ -575,7 +628,7 @@ The point that makes verification meaningful: **what checks the checker.**
 ### 10.5 What gets signed
 
 - `.xkex` (kernel), `.xbex` (bootloader) — verified at boot (integrity/detection).
-- `.xkdr` (drivers), `.xklo` (kernel modules), eventually `.xcex` (userspace) —
+- `.xkdr` (drivers), `.xklo` (kernel modules), eventually `.xuex` (userspace) —
   verified by the running kernel against the anchored `.xkpk` before load/run.
   This is where signing has its full strength.
 
