@@ -222,7 +222,50 @@ only directly after `*` and before another type. A variable or struct named
 program with and without qualifiers emits byte-identical assembly.
 
 It has no users in the OS yet — nothing in userland holds a physical or device
-address. It is here now because it is cheap to add before code exists and
+address.
+
+### 2.3 `defer`
+
+`defer stmt;` or `defer { ... }` schedules a statement to run when the enclosing
+**block** is left — by falling off its end, by `return`, or by `break` /
+`continue` out of it. Cleanup is written next to the acquisition it undoes:
+
+```x
+let h: i32 = file_open(path, FOPEN_READ);
+if (h < 0) { return h; }
+defer file_close(h);            // runs on every way out of this block
+let buf: u32 = alloc(4096);
+if (buf == 0) { return E_NOMEM; }
+defer free(buf);                // runs first: last deferred, first run
+```
+
+**The rules:**
+
+- **Block-scoped, lexical** (as in Zig, not Go's function-scoped `defer`). A
+  defer inside a loop body runs at the end of *every* iteration, a `continue`
+  included.
+- **Reverse order.** Innermost block first; within a block, last deferred first.
+- **Only defers already reached run.** One written after a `return` in the same
+  block was never registered, so it does not run — correct, because whatever it
+  would release was never acquired.
+- **`return x` takes `x` before the defers run**, so a defer that changes `x`
+  does not change what is returned.
+- **A defer body may not leave early.** `return`, `break` or `continue` out of a
+  defer is an error: the body runs *during* an exit, and escaping it would
+  abandon that exit and every cleanup after it. Loops wholly inside the body are
+  fine.
+- **Names resolve at the `defer`**, not where it runs: the body sees what was
+  declared before it and nothing after.
+- `defer let` is refused — it declares a variable nothing could use.
+
+Each exit emits its own copy of the pending cleanup at the point of exit rather
+than sharing one path. That needs no runtime state and no hidden record of which
+exit was taken; the cost is code size, proportional to exits × deferred
+statements. A function that does not use `defer` compiles to byte-identical
+output.
+
+A `defer` does not run if the process ends some other way — `exit()`, a fault,
+or being killed. It is here now because it is cheap to add before code exists and
 expensive to retrofit after, and because it is the foundation for drivers
 written in X (see `CX_ROADMAP.md` §5).
 
