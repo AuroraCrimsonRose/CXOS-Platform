@@ -63,6 +63,45 @@ public sealed class Parser
     // ---- declarations ----
     private Decl? ParseDecl()
     {
+        var attrs = ParseAttrs();
+        var d = ParseDeclBody();
+        if (d == null || attrs.Count == 0) return d;
+        return d with { Attrs = attrs };
+    }
+
+    // @name  |  @name(arg, name = arg, ...)   - zero or more, before a declaration
+    private List<Attr> ParseAttrs()
+    {
+        var list = new List<Attr>();
+        while (At(TokenKind.At))
+        {
+            var start = Cur.Span;
+            Advance();
+            var name = Expect(TokenKind.Identifier, "an attribute name").Text;
+            var args = new List<AttrArg>();
+            if (Match(TokenKind.LParen))
+            {
+                if (!At(TokenKind.RParen))
+                    do
+                    {
+                        var astart = Cur.Span;
+                        string? argName = null;
+                        if (At(TokenKind.Identifier) && Peek().Kind == TokenKind.Assign)
+                        {
+                            argName = Advance().Text;
+                            Advance();   // '='
+                        }
+                        args.Add(new AttrArg(argName, ParseExpr()) { Span = To(astart) });
+                    } while (Match(TokenKind.Comma));
+                Expect(TokenKind.RParen, "')'");
+            }
+            list.Add(new Attr(name, args) { Span = To(start) });
+        }
+        return list;
+    }
+
+    private Decl? ParseDeclBody()
+    {
         var start = Cur.Span;
         switch (Cur.Kind)
         {
