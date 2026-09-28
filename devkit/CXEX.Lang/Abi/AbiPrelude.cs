@@ -48,6 +48,7 @@ const SYS_FILE_OP:       u32 = 0x60;
 const SYS_EXEC_PATH:     u32 = 0x72;
 const SYS_SPAWN:         u32 = 0x70;
 const SYS_POWER:         u32 = 0x71;
+const SYS_MEM_OP:        u32 = 0x80;
 const POWER_REBOOT:      u32 = 0;
 const POWER_SHUTDOWN:    u32 = 1;
 const POWER_SLEEP:       u32 = 2;
@@ -145,8 +146,10 @@ const GRANT_IOPORT:      u32 = 0x0080;
 const GRANT_FRAMEBUFFER: u32 = 0x0100;
 
 // ---- files (SYS_FILE_OP; GRANT_DISK) ----
-// CXFS is 64-bit throughout; X has no 64-bit integer, so every offset and size
-// here is 32-bit signed. read/write return a byte count, seek returns the new
+// CXFS is 64-bit throughout; every offset and size here is 32-bit signed, which
+// caps what a user process can address at 2 GB. X DOES now have i64 and u64 -
+// that was the blocker and it is gone - so widening this is a deliberate ABI
+// change rather than a language limit, and has not been made yet. read/write return a byte count, seek returns the new
 // offset, negative is an E_* code. A user process can therefore address a file
 // up to 2 GB. An open handle lives in the process handle table, so
 // handle_close() releases one just as file_close() does.
@@ -185,6 +188,46 @@ const FILE_PATH_MAX: u32 = 256;
 struct file_op_args { op: u32, handle: i32, path: *u8, path2: *u8, data: *u8, len: u32, off: i32, flags: u32 }
 struct file_stat { id: u32, kind: u32, size: u32, permissions: u32, owner_uid: u32, created: u32, modified: u32, accessed: u32, name: [64]u8 }
 
+
+// ---- memory (SYS_MEM_OP; unprivileged, bounded by a per-process quota) ----
+// The only way to get memory beyond your image and stack. Not behind a grant:
+// a capability every program must hold is noise, and a process that cannot
+// allocate is broken rather than contained. A per-process byte quota bounds it
+// instead, attenuated on spawn the way grants are.
+//
+// A request names an object, a 64-bit offset into it and a length. Only
+// MOBJ_ANON exists today and its offset must be 0 - but the offset is 64-bit
+// from the start because that is what lets an object LARGER than the address
+// space be read through a moving window later. A pointer here is 32 bits and
+// always will be; an object does not have to be.
+//
+// `addr` and `granted` come back because both are the kernel's to decide:
+// memory is mapped in pages, and the page size is an architecture fact this
+// side of the boundary should never have to know. `granted` is `length`
+// rounded up to whatever a page is.
+//
+// prot is explicit and MPROT_WRITE|MPROT_EXEC together is refused. Read-only
+// is genuinely enforced. Execute is NOT - a 32-bit non-PAE page table entry
+// has no no-execute bit, so every mapped page is executable whatever is asked.
+// The refusal is discipline now so that nothing breaks when PAE or 64-bit
+// makes it real.
+const MEM_OP_MAP:   u32 = 0;
+const MEM_OP_UNMAP: u32 = 1;
+const MEM_OP_INFO:  u32 = 2;
+
+const MPROT_NONE:  u32 = 0x00;
+const MPROT_READ:  u32 = 0x01;
+const MPROT_WRITE: u32 = 0x02;
+const MPROT_EXEC:  u32 = 0x04;
+
+const MMAP_HINT: u32 = 0x01;
+const MOBJ_ANON: u32 = 0;
+
+const MMAP_MAX_BYTES:   u32 = 67108864;
+const MMAP_MAX_REGIONS: u32 = 32;
+
+struct mem_op_args { op: u32, object: u32, offset_lo: u32, offset_hi: u32, length: u32, addr: u32, granted: u32, prot: u32, flags: u32, quota: u32, mapped: u32 }
+
 // ---- pointer input (SYS_MOUSE_READ) ----
 // Absolute position, already clamped to the screen by the kernel driver, so
 // userspace never sees relative deltas. `seq` increments on every state change:
@@ -205,6 +248,43 @@ fn mouse_read(m: *mouse_state) -> i32        { return __syscall(SYS_MOUSE_READ, 
 fn fb_op(a: *fb_op_args) -> i32         { return __syscall(SYS_FB_OP, a as u32, 0, 0, 0, 0); }
 fn net_op(a: *net_op_args) -> i32       { return __syscall(SYS_NET_OP, a as u32, 0, 0, 0, 0); }
 fn file_op(a: *file_op_args) -> i32     { return __syscall(SYS_FILE_OP, a as u32, 0, 0, 0, 0); }
+fn mem_op(a: *mem_op_args) -> i32       { return __syscall(SYS_MEM_OP, a as u32, 0, 0, 0, 0); }
+
+// Map `len` bytes of anonymous read/write memory. Returns the address, or 0.
+// The mapping is zero-filled - a frame off the free list may hold another
+// process's memory, so the kernel clears it before you ever see it.
+fn mem_map(len: u32) -> u32 {
+    let a: mem_op_args;
+    a.op = MEM_OP_MAP; a.object = MOBJ_ANON;
+    a.offset_lo = 0; a.offset_hi = 0;
+    a.length = len; a.addr = 0; a.granted = 0;
+    a.prot = MPROT_READ | MPROT_WRITE; a.flags = 0;
+    if (mem_op(&a) != E_OK) { return 0; }
+    return a.addr;
+}
+
+// Release a whole mapping, by the address mem_map returned. Whole or not at
+// all: a partial release would have to split the region in two, which could
+// fail for want of a slot while trying to give memory BACK.
+fn mem_unmap(addr: u32, len: u32) -> i32 {
+    let a: mem_op_args;
+    a.op = MEM_OP_UNMAP; a.addr = addr; a.length = len;
+    return mem_op(&a);
+}
+
+// How many bytes this process may hold at once, and how many it holds now.
+fn mem_quota() -> u32 {
+    let a: mem_op_args;
+    a.op = MEM_OP_INFO;
+    if (mem_op(&a) != E_OK) { return 0; }
+    return a.quota;
+}
+fn mem_used() -> u32 {
+    let a: mem_op_args;
+    a.op = MEM_OP_INFO;
+    if (mem_op(&a) != E_OK) { return 0; }
+    return a.mapped;
+}
 fn reboot() -> void                          { __syscall(SYS_POWER, POWER_REBOOT, 0, 0, 0, 0); }              // does not return
 fn shutdown() -> void                        { __syscall(SYS_POWER, POWER_SHUTDOWN, 0, 0, 0, 0); }            // does not return
 fn sleep(ms: u32) -> i32                     { return __syscall(SYS_POWER, POWER_SLEEP, ms, 0, 0, 0); }
