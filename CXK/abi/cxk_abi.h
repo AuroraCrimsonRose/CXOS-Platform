@@ -50,6 +50,8 @@
 #define SYS_EXEC_PATH     0x72   /* ebx = path, ecx = *spawn_args (GRANT_SPAWN) -> pid
                                     (image/image_len in the struct are ignored) */
 #define SYS_POWER         0x71   /* ebx = POWER_* op (GRANT_POWER); reboot does not return */
+
+#define SYS_MEM_OP        0x80   /* ebx = *mem_op_args; unprivileged, quota-bounded */
 #define POWER_REBOOT      0
 #define POWER_SHUTDOWN    1      /* ACPI S5 soft-off */
 #define POWER_SLEEP       2      /* ecx = ms; 0 = S1/C1 until a keypress */
@@ -253,6 +255,109 @@ struct net_op_args {
  * Caps are attenuated against the caller's own set, as with SYS_SPAWN: you may
  * pass a subset of your authority and never amplify.
  */
+
+/* ---- memory (SYS_MEM_OP; unprivileged, bounded by a per-process quota) ----
+ *
+ * Ask for memory, give it back. This is the only way a ring-3 process obtains
+ * storage beyond its image and its stack.
+ *
+ * It is UNPRIVILEGED and deliberately not behind a grant. A capability every
+ * program must hold is not a capability, it is noise - and denying a process
+ * the ability to allocate does not make it safe, it makes it broken. The
+ * containment is a per-process QUOTA instead: a byte ceiling on how much may
+ * be mapped at once, attenuated on spawn exactly as grants are, so a child can
+ * never be given a larger ceiling than its parent holds.
+ *
+ * WHAT A MAPPING IS ADDRESSED BY. A request names an OBJECT, a 64-bit OFFSET
+ * into it, and a LENGTH. Today the only object is MOBJ_ANON - anonymous
+ * zero-filled memory - and the offset must be 0, so the shape looks like
+ * overkill. It is not, and the reason is the one thing a 32-bit pointer can
+ * never do:
+ *
+ *   A pointer here is 32 bits and the kernel occupies 0xC0000000 upward, so a
+ *   process sees under 3 GB of flat address space. No single pointer will ever
+ *   reach past that; that is the hardware, not a policy. But an OBJECT larger
+ *   than 4 GB is perfectly reachable, by mapping a WINDOW of it at a time and
+ *   moving the window - the object is addressed by a 64-bit offset, and only
+ *   the window is addressed by a pointer. A file, a device aperture, or shared
+ *   memory can all be larger than the space that views them.
+ *
+ * That only works if the offset is 64 bits from the first day. It is one field
+ * now and an ABI break later, so it is here now, before anything is written
+ * against it. It is carried as two 32-bit halves rather than a uint64_t so the
+ * struct's layout is beyond question on either side of the boundary.
+ *
+ * WHAT COMES BACK. `addr` is where the mapping landed and `granted` is how
+ * many bytes it actually covers. Both are outputs, because both are the
+ * kernel's to decide: hardware maps in PAGES, and a page is 4 KB here, 16 KB
+ * or 64 KB elsewhere. A caller asking in bytes and being TOLD what it got
+ * never has to know the page size, which is the whole reason this is a
+ * syscall and not a constant.
+ *
+ * `addr` is also an INPUT when MMAP_HINT is set - a suggested address the
+ * kernel may decline. That is what makes a moving window cheap: unmap and
+ * remap at the same address and the pointers inside stay valid. It is a hint
+ * and not a demand because a process that could dictate its own layout could
+ * ask to land on top of something it does not own.
+ *
+ * PROTECTION, AND AN HONEST LIMIT. `prot` is explicit, and MPROT_WRITE with
+ * MPROT_EXEC together is REFUSED. Read-only is genuinely enforced: a page
+ * mapped without MPROT_WRITE faults on a store.
+ *
+ *   Execute is NOT enforced, and cannot be here. A 32-bit non-PAE page table
+ *   entry has no no-execute bit - there is nowhere to put "not executable" -
+ *   so every readable page is also executable whatever this field says. The
+ *   refusal of WRITE|EXEC is therefore a DISCIPLINE today and becomes a
+ *   hardware guarantee when this kernel gains PAE or moves to 64-bit, where
+ *   the bit exists. It is enforced now so that nothing is ever written that
+ *   would break when it starts being real.
+ */
+enum {
+    MEM_OP_MAP   = 0,   /* -> 0, with addr and granted filled in */
+    MEM_OP_UNMAP = 1,   /* addr, length -> 0 */
+    MEM_OP_INFO  = 2,   /* -> 0, with quota and mapped filled in */
+};
+
+/* mem_op_args.prot - what the mapping may be used for. */
+#define MPROT_NONE   0x00
+#define MPROT_READ   0x01
+#define MPROT_WRITE  0x02
+#define MPROT_EXEC   0x04   /* accepted and recorded; see the honest limit above */
+
+/* mem_op_args.flags */
+#define MMAP_HINT    0x01   /* try `addr` first; the kernel may place elsewhere */
+
+/* mem_op_args.object - what the mapping is a view OF. */
+#define MOBJ_ANON    0      /* anonymous zero-filled memory; offset must be 0 */
+
+/* The largest single mapping a process may ask for. A bound rather than a
+   limit of the design: it keeps one bad length from walking the region list
+   off the end of the user half, and it is far above anything that has a
+   reason to exist yet. */
+/* 64 MiB, written as a literal because the ABI checker compares literals and
+   silently cannot see a constant it has to evaluate - which would leave this
+   one free to drift from the prelude with the check still passing. */
+#define MMAP_MAX_BYTES  0x04000000u
+
+/* How many separate mappings one process may hold at once. */
+#define MMAP_MAX_REGIONS 32
+
+struct mem_op_args {
+    uint32_t op;           /* MEM_OP_* */
+    uint32_t object;       /* MOBJ_* (MOBJ_ANON today) */
+    uint32_t offset_lo;    /* 64-bit offset into the object, low half */
+    uint32_t offset_hi;    /* ... and high half; both 0 for MOBJ_ANON */
+    uint32_t length;       /* MAP: bytes wanted. UNMAP: bytes to release */
+    uint32_t addr;         /* MAP in: hint if MMAP_HINT. MAP out: where it is.
+                              UNMAP in: the address to release */
+    uint32_t granted;      /* MAP out: bytes actually mapped (length, rounded
+                              up to a page) */
+    uint32_t prot;         /* MPROT_* */
+    uint32_t flags;        /* MMAP_* */
+    uint32_t quota;        /* INFO out: this process's ceiling, in bytes */
+    uint32_t mapped;       /* INFO out: how much of it is currently in use */
+};
+
 
 /* ---- files (SYS_FILE_OP; GRANT_DISK) ----
  *
