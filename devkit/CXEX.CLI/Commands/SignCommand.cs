@@ -14,7 +14,7 @@ public class SignCommand : Command<SignCommand.Settings>
     public class Settings : CommandSettings
     {
         [CommandArgument(0, "<TARGET_FILE>")]
-        [Description("CXEX image to sign in place (.xkex / .xoex / .xcex)")]
+        [Description("CXEX image to sign in place (.xkex / .xoex / .xsex / .xuex)")]
         public string TargetPath { get; set; } = string.Empty;
 
         [CommandArgument(1, "<PRIVATE_KEY>")]

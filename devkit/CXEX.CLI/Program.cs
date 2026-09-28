@@ -24,7 +24,7 @@ app.Configure(config =>
 
     // ---- packaging (replaces mkcxes.py) ----
     config.AddCommand<BuildCommand>("build")
-        .WithDescription("Compiles an ELF binary into a CXEX executable (.xkex, .xoex, .xcex).");
+        .WithDescription("Compiles an ELF binary into a CXEX executable (.xkex, .xbex, .xoex, .xsex, .xuex).");
 
     config.AddCommand<SignCommand>("sign")
         .WithDescription("Appends a CXSG cryptographic signature block to a CXEX image.");
