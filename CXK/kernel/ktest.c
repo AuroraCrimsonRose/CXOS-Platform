@@ -28,6 +28,7 @@
 #include "timer.h"
 #include "cxex_verify.h"
 #include "cxex.h"
+#include "keyvault.h"
 
 /* concise pass/fail reporter */
 /* Report a test result. Stays SILENT on success - only failures are printed,
@@ -416,9 +417,12 @@ static int test_cxex_signature(void) {
     /* An unsigned build stages an unsigned image; that is not a failure. */
     if (cxex_verify_self(img, (size_t)e.size) == CXEX_VERIFY_UNSIGNED) { ok = 1; goto done; }
 
-    /* The real thing verifies, and it is the platform key that signed it. */
-    if (cxex_verify_self(img, (size_t)e.size) != CXEX_VERIFY_OK)    goto done;
-    if (cxex_verify_trusted(img, (size_t)e.size) != CXEX_VERIFY_OK) goto done;
+    /* The real thing verifies against its own carried key, and the vault has
+       an opinion about the signer. Deliberately NOT asserting that opinion is
+       "platform": this image is a .xuex, and a .xuex signed by a publisher is
+       a legitimate thing that must still pass every integrity check here. */
+    if (cxex_verify_self(img, (size_t)e.size) != CXEX_VERIFY_OK) goto done;
+    if (keyvault_trust_of(img, (size_t)e.size) < 0)              goto done;
 
     uint16_t pklen = 0;
     const uint8_t *pk = cxex_signer_key(img, (size_t)e.size, &pklen);
