@@ -1,0 +1,233 @@
+// svcd.xfxn - the CXK service supervisor.
+// Aurora Tejeda / CATX SYSTEMS LLC
+//
+// Reads service descriptors from /System/Services and starts the ones marked
+// to run at boot. The executive spawns it with GRANT_OS_BASELINE and then gets
+// out of the way; svcd is what actually decides that a program should be
+// running, and with what authority.
+//
+// It lives in ring 3 like everything else. Nothing here needs to be in the
+// kernel: starting a program is exec_path, reading a descriptor is the file
+// API, and both are already gated by capabilities the executive had to hand
+// over deliberately.
+//
+// A descriptor is key=value lines. Blank lines and # comments are ignored:
+//
+//     # /System/Services/hello.xosv
+//     exec=/System/Programs/hi.xcex
+//     args=hello world
+//     start=boot
+//     grants=console,disk
+//
+// exec   the program to run. Required; a descriptor without one is skipped.
+// args   passed through as argv, with the program's own path as argv[0].
+// start  `boot` to start it now. Anything else, or absent, means "not yet" -
+//        so a descriptor can sit there disabled without being deleted.
+// grants what authority to hand it, comma separated. Default is console only.
+//        Least privilege is the default on purpose: a service that turns out
+//        to need the disk should have to say so in its descriptor, where
+//        someone reading the system can see it.
+
+import "io.xfxn";
+import "file.xfxn";
+import "string.xfxn";
+import "fmt.xfxn";
+
+const SVC_TEXT_CAP: u32 = 1024;      // one descriptor file
+const SVC_PATH_CAP: u32 =  192;
+const SVC_ARGS_CAP: u32 =  256;
+
+global svc_text: [1024]u8;           // the descriptor as read
+global svc_path: [192]u8;            // /System/Services/<name>
+global svc_exec: [192]u8;            // the exec= value
+global svc_val:  [256]u8;            // scratch for one field value
+global svc_blob: [256]u8;            // packed argv for the child
+global svc_started: u32;
+
+// ---- descriptor parsing ----------------------------------------------------
+
+// Copy the value of `key` out of `text` into `out`, NUL-terminated.
+// Returns 1 if the key was present, 0 if not.
+//
+// Walks whole lines rather than searching for the key anywhere in the text: a
+// value that happens to contain "exec=" must not be mistaken for the field.
+fn svc_field(text: *u8, key: *u8, out: *u8, cap: u32) -> i32 {
+    out[0] = 0;
+    let i: u32 = 0;
+    while (text[i] != 0) {
+        // start of a line: skip indentation
+        while (text[i] == 32 || text[i] == 9) { i = i + 1; }
+
+        // a comment or a blank line - step to the next newline
+        if (text[i] == 35 || text[i] == 10 || text[i] == 13) {
+            while (text[i] != 0 && text[i] != 10) { i = i + 1; }
+            if (text[i] == 10) { i = i + 1; }
+            continue;
+        }
+
+        // does this line start with key, followed by '='?
+        let k: u32 = 0;
+        while (key[k] != 0 && text[i + k] == key[k]) { k = k + 1; }
+        if (key[k] == 0 && text[i + k] == 61) {
+            let src: u32 = i + k + 1;
+            while (text[src] == 32) { src = src + 1; }     // value may be indented
+            let n: u32 = 0;
+            while (text[src] != 0 && text[src] != 10 && text[src] != 13) {
+                if (n + 1 >= cap) { break; }
+                out[n] = text[src];
+                n = n + 1;
+                src = src + 1;
+            }
+            // trailing spaces are almost always a typo, never intent
+            while (n > 0 && out[n - 1] == 32) { n = n - 1; }
+            out[n] = 0;
+            return 1;
+        }
+
+        while (text[i] != 0 && text[i] != 10) { i = i + 1; }
+        if (text[i] == 10) { i = i + 1; }
+    }
+    return 0;
+}
+
+// Turn a `grants=` value into a capability mask. Unknown names are ignored
+// rather than failing the service: a descriptor written for a later kernel
+// that names a capability this one has never heard of should still start with
+// the authority this kernel can give it.
+fn svc_grants(spec: *u8) -> u32 {
+    if (spec[0] == 0) { return GRANT_CONSOLE; }          // the default
+
+    let g: u32 = 0;
+    let i: u32 = 0;
+    let word: [16]u8;
+    while (spec[i] != 0) {
+        let n: u32 = 0;
+        while (spec[i] != 0 && spec[i] != 44) {          // ',' separates
+            if (n + 1 < 16) { word[n] = spec[i]; n = n + 1; }
+            i = i + 1;
+        }
+        word[n] = 0;
+        if (spec[i] == 44) { i = i + 1; }
+
+        if (streq(&word[0], "console")     == 1) { g = g | GRANT_CONSOLE; }
+        if (streq(&word[0], "disk")        == 1) { g = g | GRANT_DISK; }
+        if (streq(&word[0], "net")         == 1) { g = g | GRANT_NET; }
+        if (streq(&word[0], "mem")         == 1) { g = g | GRANT_MEM; }
+        if (streq(&word[0], "framebuffer") == 1) { g = g | GRANT_FRAMEBUFFER; }
+        if (streq(&word[0], "spawn")       == 1) { g = g | GRANT_SPAWN; }
+    }
+    return g;
+}
+
+// Pack argv the way the kernel wants it: the strings back to back, each
+// NUL-terminated, with the program's own path first.
+fn svc_pack(path: *u8, args: *u8) -> u32 {
+    let n: u32 = strcopy(&svc_blob[0], path, SVC_ARGS_CAP) + 1;   // keep the NUL
+    let i: u32 = 0;
+    while (args[i] != 0) {
+        while (args[i] == 32) { i = i + 1; }
+        if (args[i] == 0) { break; }
+        while (args[i] != 0 && args[i] != 32) {
+            if (n + 2 >= SVC_ARGS_CAP) { return n; }
+            svc_blob[n] = args[i];
+            n = n + 1;
+            i = i + 1;
+        }
+        svc_blob[n] = 0;
+        n = n + 1;
+    }
+    return n;
+}
+
+// ---- starting one service --------------------------------------------------
+
+fn svc_start(name: *u8) -> void {
+    let n: u32 = strcopy(&svc_path[0], "/System/Services/", SVC_PATH_CAP);
+    strcopy(&svc_path[n], name, SVC_PATH_CAP - n);
+
+    let len: i32 = file_slurp(&svc_path[0], &svc_text[0], SVC_TEXT_CAP - 1);
+    if (len < 0) {
+        puts("svcd: ");
+        puts(name);
+        puts(": ");
+        puts(file_strerror(len));
+        newline();
+        return;
+    }
+    svc_text[len as u32] = 0;
+
+    if (svc_field(&svc_text[0], "exec", &svc_exec[0], SVC_PATH_CAP) == 0) {
+        // A descriptor with no program is a typo, not a disabled service -
+        // say so rather than skipping it silently.
+        puts("svcd: ");
+        puts(name);
+        puts(": no exec= line\n");
+        return;
+    }
+
+    // Absent or anything but `boot` means leave it alone. That is what lets a
+    // descriptor sit on disk disabled instead of having to be deleted.
+    if (svc_field(&svc_text[0], "start", &svc_val[0], SVC_ARGS_CAP) == 0) { return; }
+    if (streq(&svc_val[0], "boot") == 0) { return; }
+
+    let grants: u32 = 0;
+    if (svc_field(&svc_text[0], "grants", &svc_val[0], SVC_ARGS_CAP) == 1) {
+        grants = svc_grants(&svc_val[0]);
+    } else {
+        grants = GRANT_CONSOLE;
+    }
+
+    svc_val[0] = 0;
+    svc_field(&svc_text[0], "args", &svc_val[0], SVC_ARGS_CAP);
+    let blob: u32 = svc_pack(&svc_exec[0], &svc_val[0]);
+
+    let a: spawn_args;
+    memzero((&a) as *u8, 28);
+    a.name            = &svc_exec[0];
+    a.broker_endpoint = 0 - 1;
+    a.caps            = grants;
+    a.args            = &svc_blob[0];
+    a.args_len        = blob;
+
+    let pid: i32 = exec_path(&svc_exec[0], &a);
+    if (pid < 0) {
+        puts("svcd: ");
+        puts(name);
+        puts(": ");
+        if (pid == E_PERM) { puts("not signed by a key this kernel trusts\n"); }
+        else { puts(file_strerror(pid)); newline(); }
+        return;
+    }
+
+    puts("svcd: started ");
+    puts(name);
+    puts(" pid ");
+    print_u32(pid as u32);
+    newline();
+    svc_started = svc_started + 1;
+}
+
+// ---- main ------------------------------------------------------------------
+
+fn _start() -> void {
+    svc_started = 0;
+
+    // Walk the directory by index. dir_entry returns 1 for a hit and 0 once
+    // the index runs past the end - it never returns a negative for "no more",
+    // so the loop stops on anything that is not 1. Testing for a negative
+    // instead runs to the bound with `st` still holding the LAST entry that
+    // was found, and starts that service over and over.
+    let i: u32 = 0;
+    while (i < 64) {
+        let st: file_stat;
+        if (dir_entry("/System/Services", i, &st) != 1) { break; }
+        i = i + 1;
+        if (st.kind != FTYPE_FILE) { continue; }
+        svc_start(&st.name[0]);
+    }
+
+    puts("svcd: ");
+    print_u32(svc_started);
+    puts(" service(s) started\n");
+    exit(0);
+}

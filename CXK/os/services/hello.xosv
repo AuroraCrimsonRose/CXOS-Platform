@@ -1,0 +1,10 @@
+# hello.xosv - a service descriptor, and the one that proves the mechanism.
+#
+# Starts the same program `run hi` starts, but at boot and without anyone
+# typing anything. The arguments are here to show they survive the trip from
+# this file, through svcd, through the kernel's argument page, into argv.
+
+exec=/System/Programs/hi.xcex
+args=started by svcd
+start=boot
+grants=console
