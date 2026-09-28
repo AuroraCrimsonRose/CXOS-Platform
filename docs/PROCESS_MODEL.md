@@ -313,7 +313,7 @@ Remaining, in the order they unblock each other:
    can be mid-`console_write` or mid-`fb_op`, and the framebuffer has no notion of
    ownership or clipping per process. Needs either a lock per device or — better,
    and the direction the GUI is already heading — a display server holding
-   `CAP_FRAMEBUFFER` that clients draw through by IPC.
+   `GRANT_FRAMEBUFFER` that clients draw through by IPC.
 
 3. **System-wide preemption:** enable it in the boot path once (2) holds, making
    the shell an ordinary scheduled thread alongside everything else.

@@ -13,7 +13,7 @@
    here at the handoff; a valid signature does not itself grant authority. */
 uint32_t caps_for(uint16_t type_code, int trusted) {
     if (!trusted) return 0;
-    if (type_code == CXEX_TYPE_OS)   return CAP_OS_BASELINE;  /* broker executive */
+    if (type_code == CXEX_TYPE_OS)   return GRANT_OS_BASELINE;  /* broker executive */
     if (type_code == CXEX_TYPE_USER) return 0;                /* apps: capability-less */
     return 0;
 }
