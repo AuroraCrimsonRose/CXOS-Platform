@@ -396,9 +396,11 @@ add_custom_command(
             --stage System/Programs/svcd.xcex=${SVCD_XCEX}
             --stage System/Services/hello.xosv=${SRC_DIR}/os/services/hello.xosv
             --stage System/Services/disabled.xosv=${SRC_DIR}/os/services/disabled.xosv
+            --stage System/Services/heartbeat.xosv=${SRC_DIR}/os/services/heartbeat.xosv
     DEPENDS ${BOOT_BIN} ${STAGE2_BIN} ${KERNEL_XKEX} ${EXEC_XOEX} ${DISK_APP_XCEX}
             ${SVCD_XCEX} ${SRC_DIR}/os/services/hello.xosv
-            ${SRC_DIR}/os/services/disabled.xosv ${CXK}
+            ${SRC_DIR}/os/services/disabled.xosv
+            ${SRC_DIR}/os/services/heartbeat.xosv ${CXK}
     COMMENT "Building unified CXK disk (XBPT: boot + stage + system)"
 )
 add_custom_target(cxk_disk ALL DEPENDS ${CXK_DISK})
