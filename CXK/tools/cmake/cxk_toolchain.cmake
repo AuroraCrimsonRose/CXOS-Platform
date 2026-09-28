@@ -32,9 +32,14 @@ if(SIGN)
     if(NOT EXISTS ${SIGN_SK})
         message(FATAL_ERROR "SIGN=ON but signing key missing: ${SIGN_SK}\n  run: tools/cxk.exe keygen tools/kernel")
     endif()
+    # One variable per ARTIFACT, not per kind: each expands to a command naming
+    # the exact file it signs. Reusing ASIGN for a second .xcex signs hi.xcex
+    # twice and leaves the other one unsigned, which shows up as a signature
+    # refusal at boot rather than as a build error.
     set(KSIGN COMMAND ${CXK} sign ${KERNEL_XKEX} ${SIGN_SK} ${SIGN_PK})
     set(XSIGN COMMAND ${CXK} sign ${EXEC_XOEX}   ${SIGN_SK} ${SIGN_PK})
     set(ASIGN COMMAND ${CXK} sign ${DISK_APP_XCEX} ${SIGN_SK} ${SIGN_PK})
+    set(VSIGN COMMAND ${CXK} sign ${SVCD_XCEX} ${SIGN_SK} ${SIGN_PK})
 else()
     # No parentheses OR semicolons in these messages: ${KSIGN}/${XSIGN} expand into a
     # custom-command line, and under /bin/sh unquoted parens are a syntax error while a
@@ -43,4 +48,5 @@ else()
     set(KSIGN COMMAND ${CMAKE_COMMAND} -E echo "  kernel.xkex UNSIGNED - configure -DSIGN=ON to sign")
     set(XSIGN COMMAND ${CMAKE_COMMAND} -E echo "  executive.xoex UNSIGNED - the kernel WILL REFUSE to launch it - configure -DSIGN=ON")
     set(ASIGN COMMAND ${CMAKE_COMMAND} -E echo "  hi.xcex UNSIGNED - exec_path WILL REFUSE it - configure -DSIGN=ON")
+    set(VSIGN COMMAND ${CMAKE_COMMAND} -E echo "  svcd.xcex UNSIGNED - the executive WILL REFUSE it - configure -DSIGN=ON")
 endif()
