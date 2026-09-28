@@ -124,7 +124,7 @@ as though they were a code — because a two-letter nickname reads exactly like
 |---|---|---|
 | "XS" | x · **S** | `S` is the System tier (`.xsex`) |
 | "XR" | x · **R** | `R` is reserved for the Runtime domain (`CX_EXTENSION_SYSTEM.md` §6) |
-| "XN" | x · **N** | `N` is reserved for the Network domain |
+| "XN" | x · **N** | was the reserved Network domain; network files are now `.xsnt` / `.xunt`, but the nickname would still read as a code |
 | "XD", "XV", "XH" | x · **D**, **V**, **H** | none of these is a domain, and writing them as codes suggests they are |
 | "XGL" | x · **G** | graphics source lives in **F**, not a G domain |
 
@@ -318,9 +318,11 @@ exist, so compatibility is the entire feature; a new protocol that nothing else
 speaks is one only CXOS can use. Remote *display* is separate and later,
 possibly over the same transport.
 
-### Compatibility (XINX / XNT)
+### Compatibility with Linux/Unix and NT
 
-Linux/Unix and NT compatibility. **Prefer compiling their source to `.xuex`
+The working names were "XINX" and "XNT". They are written out here, because
+"XNT" in particular now reads as `nt`, the network object type. Linux/Unix and
+NT compatibility. **Prefer compiling their source to `.xuex`
 over emulating their ABI.** An ABI layer chases syscall semantics forever;
 compiling from source is tractable and fits the signing model. Pick one, much
 later.
