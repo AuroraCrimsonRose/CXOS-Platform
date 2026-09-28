@@ -1,4 +1,4 @@
-/* /CXK/os/apps/hello/hello.ld - link a .xcex in the user half (its own space) */
+/* /CXK/os/apps/hello/hello.ld - link a .xuex in the user half (its own space) */
 ENTRY(_start)
 SECTIONS {
     . = 0x00400000;

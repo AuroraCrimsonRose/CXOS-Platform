@@ -24,14 +24,16 @@ Delivered:
 - Signed executable verification (RSA-2048 over SHA-256, enforced at the `cxex_exec` handoff)
 - Ring 3 process execution, with per-process address spaces
 - Capability-oriented kernel services, with attenuation at `spawn`
-- X Native userland: shell, eight-library `std/`, and a windowed GUI
+- X Native userland: shell, `std/` library, and a windowed GUI
+- Filesystem access from ring 3, with per-process working directories
+- Applications loaded and signature-verified from disk
+- Multiple volumes, mounted under `/Drives/<drive>/<volume>`
+- Services and scheduled tasks, run by a supervisor from `.xosv` descriptors
+- A Key Vault deciding how far each signer is trusted
+- Dynamic memory for ring 3 (`SYS_MEM_OP`), bounded by a per-process quota, and an allocator in X
+- 64 and 128-bit integers in X, including divide and modulo
 
-Current development targets:
-
-- **Filesystem access from ring 3** — CXFS is complete in-kernel and unreachable from userspace; this is the largest gap (`docs/CX_ABI.md` §7.10)
-- **Loading applications from disk** rather than embedding them in the kernel image, so the shell and the GUI can launch separate `.xuex` application files
-- Display/console arbitration, then enabling system-wide preemption
-- Transport-layer networking (UDP, then TCP)
+**Where it is going, and in what order, is in [`docs/CX_ROADMAP.md`](docs/CX_ROADMAP.md).** The next phase is self-hosting — X compiling X — which gates nearly everything else.
 
 ---
 
