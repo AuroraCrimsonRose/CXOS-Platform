@@ -6,7 +6,7 @@ public enum TokenKind
     Identifier, IntLiteral, StringLiteral, True, False,
     // keywords
     Fn, Struct, Global, Const, Extern, Let, If, Else, While, Return, As,
-    Sizeof, Break, Continue, Import, Type,
+    Sizeof, Break, Continue, Import, Type, Defer,
     // punctuation
     LParen, RParen, LBrace, RBrace, LBracket, RBracket,
     Comma, Semicolon, Colon, Arrow,          // -> 

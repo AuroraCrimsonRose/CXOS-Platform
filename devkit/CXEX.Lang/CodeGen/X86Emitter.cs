@@ -212,6 +212,9 @@ public sealed class X86Emitter
                 foreach (var x in CollectLocals(i.Then)) yield return x;
                 if (i.Else != null) foreach (var x in CollectLocals(i.Else)) yield return x; break;
             case WhileStmt w: foreach (var x in CollectLocals(w.Body)) yield return x; break;
+            // a `let` inside a deferred block still needs a frame slot, and the
+            // frame is sized before any statement is emitted
+            case DeferStmt d: foreach (var x in LocalsIn(d.Body)) yield return x; break;
         }
     }
 
@@ -260,7 +263,48 @@ public sealed class X86Emitter
     }
 
     // ---- statements ----
-    private void EmitBlock(Block b) { foreach (var s in b.Stmts) EmitStmt(s); }
+    /* ---- defer ----
+     *
+     * One list of deferred statements per open block, innermost last. A
+     * `defer` emits nothing where it is written; it appends its body to the
+     * current block's list. Every route out of a block then emits the lists it
+     * is leaving, innermost block first and, within a block, last-deferred
+     * first - so cleanups run in the reverse order of the acquisitions they
+     * undo, which is the whole reason to write them next to each other.
+     *
+     * The routes: falling off the end of a block (EmitBlock), `return` (all
+     * lists, out to the function), and `break` / `continue` (only the lists
+     * opened inside the loop - the loop's own enclosing blocks are not being
+     * left). Each route emits its own copy of the cleanup code at the point
+     * of exit. That duplicates code rather than sharing one cleanup path, and
+     * is chosen deliberately: it needs no runtime state, no hidden variable
+     * recording which exit was taken, and it is the shape a reader of the
+     * assembly can follow.
+     *
+     * Only defers ALREADY REACHED run. One written after a `return` in the
+     * same block has not been registered when the return is emitted, so it
+     * does not run - which is correct, since whatever it would have cleaned
+     * up was never acquired. */
+    private readonly List<List<Stmt>> _defers = new();
+
+    private void EmitDefers(int downTo)
+    {
+        for (int i = _defers.Count - 1; i >= downTo; i--)
+        {
+            var pending = _defers[i].ToArray();   // a copy: the bodies open blocks of their own
+            for (int j = pending.Length - 1; j >= 0; j--) EmitStmt(pending[j]);
+        }
+    }
+
+    private bool AnyDefers() => _defers.Exists(l => l.Count > 0);
+
+    private void EmitBlock(Block b)
+    {
+        _defers.Add(new List<Stmt>());
+        foreach (var s in b.Stmts) EmitStmt(s);
+        EmitDefers(_defers.Count - 1);            // the fall-through exit
+        _defers.RemoveAt(_defers.Count - 1);
+    }
 
     private void EmitStmt(Stmt s)
     {
@@ -294,7 +338,20 @@ public sealed class X86Emitter
                                     "pass a pointer to the destination instead", r.Span);
                     EmitExpr(r.Value);
                 }
+                /* The value is computed BEFORE the defers run - `return x`
+                   returns x as it was at the return, even if a defer then
+                   changes x - and eax is saved around them because running
+                   any code at all will clobber it. */
+                if (AnyDefers())
+                {
+                    T("push %eax");
+                    EmitDefers(0);
+                    T("pop %eax");
+                }
                 T($"jmp {CurFnRet}");
+                break;
+            case DeferStmt d:
+                if (_defers.Count > 0) _defers[^1].Add(d.Body);
                 break;
             case IfStmt i:
                 {
@@ -308,19 +365,21 @@ public sealed class X86Emitter
                 {
                     string top = NL(), end = NL();
                     Lbl(top); EmitExpr(w.Cond); T("test %eax, %eax"); T($"jz {end}");
-                    _loops.Push((top, end));
+                    _loops.Push((top, end, _defers.Count));
                     EmitBlock(w.Body);
                     _loops.Pop();
                     T($"jmp {top}"); Lbl(end); break;
                 }
 
             case BreakStmt:
-                if (_loops.Count > 0) T($"jmp {_loops.Peek().end}");
+                if (_loops.Count > 0) { EmitDefers(_loops.Peek().depth); T($"jmp {_loops.Peek().end}"); }
                 break;
 
             case ContinueStmt:
-                // jump to the loop top: re-tests the condition, as in C
-                if (_loops.Count > 0) T($"jmp {_loops.Peek().top}");
+                // jump to the loop top: re-tests the condition, as in C. The
+                // body's defers run first - each iteration is a fresh entry
+                // into the body block, so it must be left properly each time.
+                if (_loops.Count > 0) { EmitDefers(_loops.Peek().depth); T($"jmp {_loops.Peek().top}"); }
                 break;
         }
     }
@@ -330,7 +389,9 @@ public sealed class X86Emitter
 
     // enclosing loops: (continue target, break target). WhileStmt pushes before
     // emitting its body so break/continue inside know where to jump.
-    private readonly Stack<(string top, string end)> _loops = new();
+    // `depth` is how many defer lists were open when the loop began: a
+    // break or continue leaves every block opened since, and no others.
+    private readonly Stack<(string top, string end, int depth)> _loops = new();
 
     private void StoreToVar(string name)
     {

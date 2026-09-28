@@ -35,6 +35,7 @@ public sealed class Lexer
         ["sizeof"] = TokenKind.Sizeof,
         ["break"] = TokenKind.Break,
         ["continue"] = TokenKind.Continue,
+        ["defer"] = TokenKind.Defer,
         ["true"] = TokenKind.True,
         ["false"] = TokenKind.False,
     };
