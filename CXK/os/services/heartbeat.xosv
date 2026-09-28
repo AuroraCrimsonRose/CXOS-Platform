@@ -1,0 +1,14 @@
+# heartbeat.xosv - a task on a timer.
+#
+# `every` makes svcd stay alive and re-run this on an interval. `start=boot`
+# is separate and means "also run it once now" - without it the first run
+# would be one full interval away.
+#
+# 300 seconds because this is an example, not something anyone needs every few
+# seconds. The point it proves is that the supervisor comes back.
+
+exec=/System/Programs/hi.xcex
+args=heartbeat
+start=boot
+every=300
+grants=console
