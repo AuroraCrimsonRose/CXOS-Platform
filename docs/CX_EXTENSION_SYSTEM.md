@@ -117,6 +117,24 @@ subsystems, so the system stays learnable as it grows. Common suffixes:
 | Extension | Meaning |
 |-----------|---------|
 | `.xoex` | OS Executive (the broker executive; CXEX `type_code` 0x4F45 `'OE'`) |
+| `.xosv` | OS Service descriptor (what to run at boot, and with what authority) |
+
+`.xosv` is **not** a CXEX container and has no `type_code` — it is a text file,
+`key=value` lines, read by the service supervisor. It names a program; it is
+not one. That is why it is XO rather than XC: the thing it describes is part of
+the operating system's startup, even when the program it points at is an
+ordinary `.xcex`.
+
+```
+exec=/System/Programs/hi.xcex    the program to run (required)
+args=hello world                 passed as argv, after the program's own path
+start=boot                       `boot` to start it; absent means leave it off
+grants=console,disk              authority to hand it; default is console only
+```
+
+Descriptors live in `/System/Services/`. Authority defaults to the minimum on
+purpose: a service that needs the disk has to say so in the file, where someone
+reading the system can see what it was given.
 
 The tier between XK and XC: XK is the kernel, XO is the executive that brokers
 for userspace, XC is an application. The three are the same CXEX container
