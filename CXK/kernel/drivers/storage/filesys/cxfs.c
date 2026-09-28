@@ -100,7 +100,16 @@ struct cxfs_volume {
     uint8_t *manifest;                /* the cache, or NULL for an uncached volume */
     uint32_t manifest_blocks_cached;  /* 0 = uncached, use the disk */
 
-    char     label[CXFS_NAME_LEN];    /* the name it answers to under /Volumes */
+    char     label[CXFS_LABEL_LEN];   /* the name it answers to */
+    uint32_t mount_point;             /* tagged id of the DIRECTORY it is
+                                         mounted on, on an already mounted
+                                         volume. Unused for the root volume,
+                                         which is not mounted on anything. */
+    int      placed;                  /* 1 once mount_point is real. Without
+                                         this, a volume mid-mount has
+                                         mount_point 0 - which is the ROOT
+                                         volume's root - and cross_mount would
+                                         send every absolute path to it. */
 };
 
 static struct cxfs_volume  volumes[CXFS_MAX_VOLUMES] = {
@@ -148,6 +157,30 @@ static struct cxfs_volume *vol = &volumes[0];   /* the one being operated on */
  * allocators are current-volume on purpose: they run underneath a write, and
  * that write has already selected the volume it is writing to.
  */
+/* If `id` is a directory that something is mounted on, answer with that
+ * volume's root instead. This one function is what makes a mount point behave
+ * like the thing mounted on it: every path walk goes through it, so nothing
+ * else in the resolver has to know that volumes exist - and nothing is special
+ * about /Drives, it is just where the system happens to put them.
+ */
+static uint32_t cross_mount(uint32_t id) {
+    for (uint32_t v = 1; v < CXFS_MAX_VOLUMES; v++)
+        if (volumes[v].mounted && volumes[v].placed && volumes[v].mount_point == id)
+            return TAG_ID(v, volumes[v].sb.root_id);
+    return id;
+}
+
+/* The reverse: if `id` is the root of a mounted volume, answer with the
+ * directory it is mounted on. Walking up out of a volume needs this, because
+ * a volume root's parent is itself and would otherwise be a dead end. */
+static uint32_t uncross_mount(uint32_t id) {
+    uint32_t v = VOL_OF(id);
+    if (v == 0 || v >= CXFS_MAX_VOLUMES) return id;
+    if (!volumes[v].mounted || !volumes[v].placed) return id;
+    if (id != TAG_ID(v, volumes[v].sb.root_id)) return id;
+    return volumes[v].mount_point;
+}
+
 static int vol_select(uint32_t id) {
     uint32_t v = VOL_OF(id);
     if (v >= CXFS_MAX_VOLUMES || !volumes[v].mounted) return 0;
@@ -211,6 +244,13 @@ static int write_block(uint32_t block, const void *buf) {
     return disk_write(vol->disk_id, lba, (uint8_t)vol->sectors_per_block, buf);
 }
 
+/* The label for the NEXT format, set by cxfs_format_labeled. A parameter would
+   be better, but cxfs_format_at is called from several places that have no
+   label to give and the signature is in the header; this keeps those callers
+   unchanged and is cleared on use so a label can never leak into a later
+   format. */
+static char format_label[CXFS_LABEL_LEN];
+
 int cxfs_format_at(uint64_t base_lba, uint32_t total_blocks) {
     if (!disk_present()) return -1;
 
@@ -251,6 +291,8 @@ int cxfs_format_at(uint64_t base_lba, uint32_t total_blocks) {
     vol->sb.root_id         = 0;                /* entry 0 = root directory */
     vol->sb.feature_flags   = CXFS_FEAT_TIMESTAMPS | CXFS_FEAT_PERMS | CXFS_FEAT_LOCKING;
     vol->sb.entry_size      = CXFS_ENTRY_SIZE;
+    if (format_label[0]) strlcpy(vol->sb.label, format_label, CXFS_LABEL_LEN);
+    format_label[0] = '\0';     /* one format, one label - never a leftover */
     vol->sb.created         = 0;                /* timestamp wired in a later step */
     vol->sb.modified        = 0;
 
@@ -341,7 +383,107 @@ int cxfs_mount_at(uint64_t base_lba) {
     return 0;
 }
 
+int cxfs_format_labeled(uint64_t base_lba, uint32_t total_blocks, const char *label) {
+    if (label && label[0]) strlcpy(format_label, label, CXFS_LABEL_LEN);
+    else                   format_label[0] = '\0';
+    return cxfs_format_at(base_lba, total_blocks);
+}
+
 int cxfs_mount(void) { return cxfs_mount_at(0); }
+
+/* ---- additional volumes ---- */
+
+static void label_default(char *dst, uint32_t v) {
+    /* A volume whose superblock predates the label field, or was formatted
+       without one, still needs a name to answer to. "Volume1", "Volume2", ... */
+    const char *p = "Volume";
+    int i = 0;
+    while (*p) dst[i++] = *p++;
+    dst[i++] = (char)('0' + (v % 10));
+    dst[i]   = '\0';
+}
+
+int cxfs_mount_volume(uint8_t disk_id, uint64_t base_lba,
+                      uint32_t parent_dir, const char *label) {
+    if (!volumes[0].mounted) return -1;          /* nothing to mount onto yet */
+
+    /* The parent must be a directory that exists, on a volume already mounted.
+       Checking it BEFORE taking a slot means a bad one costs nothing. */
+    struct cxfs_entry pd;
+    if (cxfs_read_entry(parent_dir, &pd) != 0) return -1;
+    if (pd.type != CXFS_TYPE_DIR) return -1;
+
+    uint32_t slot = 0;
+    for (uint32_t v = 1; v < CXFS_MAX_VOLUMES; v++)
+        if (!volumes[v].mounted) { slot = v; break; }
+    if (!slot) return -1;                        /* no free slot */
+
+    struct cxfs_volume *prev = vol;
+    vol = &volumes[slot];
+    vol->disk_id  = disk_id;
+    vol->manifest = NULL;                        /* only the root gets the cache */
+    vol->manifest_blocks_cached = 0;
+    vol->placed   = 0;
+    int rc = cxfs_mount_at(base_lba);            /* fills sb, loads the bitmap */
+    vol = prev;
+    if (rc != 0) { volumes[slot].mounted = 0; return -1; }
+
+    /* The label decides the mount point's name, and it is only knowable once
+       the superblock is in - which is why the caller passes the PARENT and the
+       directory is made here rather than by the caller beforehand. */
+    if (label && label[0])                 strlcpy(volumes[slot].label, label, CXFS_LABEL_LEN);
+    else if (volumes[slot].sb.label[0])    strlcpy(volumes[slot].label, volumes[slot].sb.label, CXFS_LABEL_LEN);
+    else                                   label_default(volumes[slot].label, slot);
+
+    /* Reuse the directory if it is already there - a volume unmounted and
+       remounted should land back on the same path, not on "Data_1". */
+    int mp = cxfs_find_in_dir(parent_dir, volumes[slot].label);
+    if (mp < 0) mp = cxfs_create_entry(parent_dir, volumes[slot].label, CXFS_TYPE_DIR);
+    if (mp < 0) { volumes[slot].mounted = 0; return -1; }
+
+    /* Nothing else may already be mounted there. */
+    for (uint32_t v = 1; v < CXFS_MAX_VOLUMES; v++)
+        if (v != slot && volumes[v].mounted && volumes[v].placed &&
+            volumes[v].mount_point == (uint32_t)mp) {
+            volumes[slot].mounted = 0;
+            return -1;
+        }
+
+    volumes[slot].mount_point = (uint32_t)mp;
+    volumes[slot].placed      = 1;               /* reachable from here on */
+    return (int)slot;
+}
+
+int cxfs_unmount_volume(uint32_t v) {
+    if (v == 0 || v >= CXFS_MAX_VOLUMES) return -1;   /* never the root */
+    if (!volumes[v].mounted) return -1;
+
+    /* Every write goes straight through to the disk - the manifest cache is
+       write-through and the bitmap is flushed per changed block - so there is
+       nothing buffered to lose and unmounting is just forgetting. */
+    volumes[v].mounted = 0;
+    volumes[v].placed  = 0;
+    volumes[v].manifest_blocks_cached = 0;
+    volumes[v].bitmap_loaded = 0;
+    volumes[v].label[0] = '\0';
+    if (vol == &volumes[v]) vol = &volumes[0];
+    return 0;
+}
+
+uint32_t cxfs_volume_slots(void) { return CXFS_MAX_VOLUMES; }
+
+int cxfs_volume_mounted(uint32_t v) {
+    return (v < CXFS_MAX_VOLUMES) ? volumes[v].mounted : 0;
+}
+
+const char *cxfs_volume_label(uint32_t v) {
+    if (v >= CXFS_MAX_VOLUMES || !volumes[v].mounted) return 0;
+    return volumes[v].label;
+}
+
+uint32_t cxfs_volume_mount_point(uint32_t v) {
+    return (v < CXFS_MAX_VOLUMES && volumes[v].mounted) ? volumes[v].mount_point : 0;
+}
 
 /* "Is the filesystem up" is a question about the root volume. Answering it
    from `vol` would make it depend on which volume was touched last. */
@@ -725,7 +867,7 @@ int cxfs_resolve(const char *path, uint32_t cwd) {
     uint32_t current;
     if (path[0] == '/') {
         if (!volumes[0].mounted) return -1;
-        current = TAG_ID(0, volumes[0].sb.root_id);
+        current = cross_mount(TAG_ID(0, volumes[0].sb.root_id));
     } else {
         if (!vol_select(cwd)) return -1;
         current = cwd;
@@ -745,6 +887,10 @@ int cxfs_resolve(const char *path, uint32_t cwd) {
         if (n == 0) continue;
         if (comp[0] == '.' && comp[1] == '\0') continue;          /* "." */
         if (comp[0] == '.' && comp[1] == '.' && comp[2] == '\0') {/* ".." */
+            /* Step out of a mounted volume first: its root's parent is itself,
+               so ".." would otherwise stop dead at the mount point instead of
+               going back to the directory above it. */
+            current = uncross_mount(current);
             struct cxfs_entry e;
             if (cxfs_read_entry(current, &e) != 0) return -1;
             current = e.parent_id;        /* root's parent is itself */
@@ -753,7 +899,9 @@ int cxfs_resolve(const char *path, uint32_t cwd) {
 
         int found = cxfs_find_in_dir(current, comp);
         if (found < 0) return -1;         /* component doesn't exist */
-        current = (uint32_t)found;
+        /* If that directory is a mount point, the path continues on the volume
+           mounted there rather than inside the (empty) directory itself. */
+        current = cross_mount((uint32_t)found);
     }
     return (int)current;
 }
@@ -787,19 +935,26 @@ void cxfs_path_of(uint32_t id, char *out, int cap) {
     if (cap <= 0) return;
     if (!vol_select(id)) { out[0] = '\0'; return; }
 
-    /* The walk stops at the root OF THIS VOLUME, which is that volume's
-       root_id wearing its tag - comparing against a bare root_id would stop at
-       whichever entry happens to share the index on volume 0. */
-    uint32_t root = TAG_ID(VOL_OF(id), vol->sb.root_id);
+    /* The one path that is just "/" is the ROOT volume's root. The root of a
+       mounted volume has a real path - the mount point's - and the walk below
+       produces it. */
+    if (id == TAG_ID(0, volumes[0].sb.root_id)) {
+        if (cap > 1) { out[0] = '/'; out[1] = '\0'; } else out[0] = '\0';
+        return;
+    }
 
-    /* root is just "/" */
-    if (id == root) { if (cap > 1) { out[0] = '/'; out[1] = '\0'; } else out[0] = '\0'; return; }
-
-    /* collect names from `id` up to root, then emit reversed */
+    /* collect names from `id` up to the root volume's root, then emit reversed */
     char names[16][CXFS_NAME_LEN];   /* up to 16 levels deep */
     int depth = 0;
     uint32_t cur = id;
-    while (cur != root && depth < 16) {
+    while (depth < 16) {
+        /* At the root of a mounted volume, carry on from the directory it is
+           mounted on - that directory's NAME is the next component, so the
+           path reads as one path across the boundary. */
+        uint32_t out_of = uncross_mount(cur);
+        if (out_of != cur) { cur = out_of; continue; }
+        if (cur == TAG_ID(0, volumes[0].sb.root_id)) break;
+
         struct cxfs_entry e;
         if (cxfs_read_entry(cur, &e) != 0) break;
         strlcpy(names[depth], e.name, CXFS_NAME_LEN);
