@@ -56,27 +56,73 @@ static int cxfs_lock_blocks(struct cxfs_entry *e) {
     return 1;                                           /* held by another live proc */
 }
 
-/* CXFS operates on one registered disk, selected by its registry ID.
-   default = id 0 (first registered disk). dskset changes it. */
-static uint8_t cxfs_id = 0;
+/* ====================================================================
+ * Mounted volumes
+ *
+ * Everything that describes ONE mounted filesystem lives in a cxfs_volume:
+ * which disk it is on, where on that disk, its superblock, and its caches.
+ * These were all file-scope globals, which is the same thing written so that
+ * only one can exist. Collecting them is what makes a second mount possible;
+ * `vol` points at the one being operated on and every reference below goes
+ * through it.
+ *
+ * Volume 0 is the ROOT volume - the one the system booted from, the one "/"
+ * means. It is the only volume that gets the 256KB manifest cache, because
+ * that is where essentially all the traffic is and four of them would be a
+ * megabyte of permanently resident RAM. A volume without the cache is not
+ * broken, just slower: manifest_fetch() already falls back to reading the
+ * manifest off the disk, and that fallback is now load-bearing rather than
+ * theoretical. The bitmap is 8KB and every volume gets its own, because
+ * bitmap_test() has no disk fallback - an unloaded bitmap reads as all-zero,
+ * every block looks free, and the volume is destroyed on the first write.
+ * ==================================================================== */
 
-void    cxfs_set_id(uint8_t id) { cxfs_id = id; }
-uint8_t cxfs_get_id(void)       { return cxfs_id; }
+#define CXFS_MAX_VOLUMES      4
+#define CXFS_MAX_BITMAP_BYTES 8192   /* 32768 blocks / 8 = 4096; headroom */
+#define CXFS_MAX_ENTRIES      1024   /* manifest capacity */
+#define CXFS_MAX_MANIFEST_BYTES (CXFS_MAX_ENTRIES * CXFS_ENTRY_SIZE)   /* 256KB */
+
+/* One manifest cache, handed to the root volume below. See the comment above
+   for why the other volumes do without one rather than getting one each. */
+static uint8_t root_manifest_cache[CXFS_MAX_MANIFEST_BYTES];
+
+struct cxfs_volume {
+    int      mounted;
+    uint8_t  disk_id;                 /* registry ID of the disk it lives on */
+    uint64_t base_lba;                /* partition offset, sectors */
+    uint32_t sectors_per_block;       /* CXFS_BLOCK_SIZE / 512 */
+    struct cxfs_superblock sb;
+
+    uint8_t  bitmap[CXFS_MAX_BITMAP_BYTES];
+    uint32_t bitmap_bytes;
+    int      bitmap_loaded;
+
+    uint8_t *manifest;                /* the cache, or NULL for an uncached volume */
+    uint32_t manifest_blocks_cached;  /* 0 = uncached, use the disk */
+
+    char     label[CXFS_NAME_LEN];    /* the name it answers to under /Volumes */
+};
+
+static struct cxfs_volume  volumes[CXFS_MAX_VOLUMES] = {
+    [0] = { .manifest = root_manifest_cache },   /* the root volume, and only it */
+};
+static struct cxfs_volume *vol = &volumes[0];   /* the one being operated on */
+
+void    cxfs_set_id(uint8_t id) { vol->disk_id = id; }
+uint8_t cxfs_get_id(void)       { return vol->disk_id; }
 
 /* backwards-compatible shims (some callers still use these names) */
-void cxfs_set_disk(uint8_t drive) { cxfs_id = drive; }
-uint8_t cxfs_get_disk(void) { return cxfs_id; }
+void cxfs_set_disk(uint8_t drive) { vol->disk_id = drive; }
+uint8_t cxfs_get_disk(void) { return vol->disk_id; }
 
 static int disk_present(void) {
-    return disk_find_by_id(cxfs_id) != 0;
+    return disk_find_by_id(vol->disk_id) != 0;
 }
 
-/* layout planning constants for a format */
-#define CXFS_MAX_ENTRIES   1024            /* manifest capacity */
+/* layout planning constants for a format (CXFS_MAX_ENTRIES is up with the
+   volume record, which sizes its manifest cache from it) */
 #define CXFS_RESERVED_KB   256             /* system-reserved data region */
 
-static struct cxfs_superblock sb;          /* the mounted superblock */
-static int mounted = 0;
 
 static void bitmap_load(void);             /* fwd decl (defined in allocator section) */
 static void manifest_load(void);            /* fwd decl (defined in allocator section) */
@@ -108,16 +154,14 @@ static uint8_t dat_blk[CXFS_BLOCK_SIZE];   /* file contents */
    (block_size/512) sectors, placed at base_lba + block*sectors_per_block, so a
    volume works identically whole-disk or inside a partition. These are set at
    mount/format from the superblock; defaults keep v1 behavior (512B, base 0). */
-static uint32_t fs_sectors_per_block = 1;   /* CXFS_BLOCK_SIZE / 512 */
-static uint64_t fs_base_lba          = 0;   /* partition offset, sectors */
 
 static int read_block(uint32_t block, void *buf) {
-    uint64_t lba = fs_base_lba + (uint64_t)block * fs_sectors_per_block;
-    return disk_read(cxfs_id, lba, (uint8_t)fs_sectors_per_block, buf);
+    uint64_t lba = vol->base_lba + (uint64_t)block * vol->sectors_per_block;
+    return disk_read(vol->disk_id, lba, (uint8_t)vol->sectors_per_block, buf);
 }
 static int write_block(uint32_t block, const void *buf) {
-    uint64_t lba = fs_base_lba + (uint64_t)block * fs_sectors_per_block;
-    return disk_write(cxfs_id, lba, (uint8_t)fs_sectors_per_block, buf);
+    uint64_t lba = vol->base_lba + (uint64_t)block * vol->sectors_per_block;
+    return disk_write(vol->disk_id, lba, (uint8_t)vol->sectors_per_block, buf);
 }
 
 int cxfs_format_at(uint64_t base_lba, uint32_t total_blocks) {
@@ -140,30 +184,30 @@ int cxfs_format_at(uint64_t base_lba, uint32_t total_blocks) {
 
     /* v2: this volume's block geometry + placement. base_lba 0 = whole disk
        (dev). Set the I/O globals so read_block/write_block translate correctly. */
-    fs_sectors_per_block = CXFS_BLOCK_SIZE / 512;   /* 8 */
-    fs_base_lba          = base_lba;
+    vol->sectors_per_block = CXFS_BLOCK_SIZE / 512;   /* 8 */
+    vol->base_lba          = base_lba;
 
     /* --- build and write the superblock --- */
-    memset(&sb, 0, sizeof(sb));
-    sb.magic           = CXFS_MAGIC;
-    sb.version         = CXFS_VERSION;
-    sb.block_size      = CXFS_BLOCK_SIZE;
-    sb.base_lba        = fs_base_lba;
-    sb.total_blocks    = total_blocks;
-    sb.bitmap_start    = bitmap_start;
-    sb.bitmap_blocks   = bitmap_blocks;
-    sb.manifest_start  = manifest_start;
-    sb.manifest_blocks = manifest_blocks;
-    sb.manifest_count  = manifest_entries;
-    sb.data_start      = data_start;
-    sb.reserved_blocks = reserved_blocks;
-    sb.root_id         = 0;                /* entry 0 = root directory */
-    sb.feature_flags   = CXFS_FEAT_TIMESTAMPS | CXFS_FEAT_PERMS | CXFS_FEAT_LOCKING;
-    sb.entry_size      = CXFS_ENTRY_SIZE;
-    sb.created         = 0;                /* timestamp wired in a later step */
-    sb.modified        = 0;
+    memset(&vol->sb, 0, sizeof vol->sb);
+    vol->sb.magic           = CXFS_MAGIC;
+    vol->sb.version         = CXFS_VERSION;
+    vol->sb.block_size      = CXFS_BLOCK_SIZE;
+    vol->sb.base_lba        = vol->base_lba;
+    vol->sb.total_blocks    = total_blocks;
+    vol->sb.bitmap_start    = bitmap_start;
+    vol->sb.bitmap_blocks   = bitmap_blocks;
+    vol->sb.manifest_start  = manifest_start;
+    vol->sb.manifest_blocks = manifest_blocks;
+    vol->sb.manifest_count  = manifest_entries;
+    vol->sb.data_start      = data_start;
+    vol->sb.reserved_blocks = reserved_blocks;
+    vol->sb.root_id         = 0;                /* entry 0 = root directory */
+    vol->sb.feature_flags   = CXFS_FEAT_TIMESTAMPS | CXFS_FEAT_PERMS | CXFS_FEAT_LOCKING;
+    vol->sb.entry_size      = CXFS_ENTRY_SIZE;
+    vol->sb.created         = 0;                /* timestamp wired in a later step */
+    vol->sb.modified        = 0;
 
-    if (write_block(0, &sb) != 0) return -1;
+    if (write_block(0, &vol->sb) != 0) return -1;
 
     /* --- zero the bitmap, then mark metadata blocks used --- */
     uint8_t *block = dat_blk;              /* staging; see block staging buffers */
@@ -202,7 +246,7 @@ int cxfs_format_at(uint64_t base_lba, uint32_t total_blocks) {
     memcpy(block, &root, sizeof(root));
     if (write_block(manifest_start, block) != 0) return -1;
 
-    mounted = 1;
+    vol->mounted = 1;
     bitmap_load();
     manifest_load();
     return 0;
@@ -219,10 +263,10 @@ int cxfs_mount_at(uint64_t base_lba) {
     /* This volume starts at base_lba (a partition offset, or 0 for whole-disk).
        The superblock is the volume's block 0 = sector base_lba. Read that sector
        for the geometry, then the full superblock. The location we were given is
-       authoritative; sb.base_lba is advisory. */
-    fs_base_lba = base_lba;
+       authoritative; vol->sb.base_lba is advisory. */
+    vol->base_lba = base_lba;
     uint8_t first[512];
-    if (disk_read(cxfs_id, fs_base_lba, 1, first) != 0) return -1;
+    if (disk_read(vol->disk_id, vol->base_lba, 1, first) != 0) return -1;
 
     /* Pull the three fields out by offset rather than casting `first` to a
        struct cxfs_superblock *: the struct is a whole 4KB block and this buffer
@@ -234,17 +278,17 @@ int cxfs_mount_at(uint64_t base_lba) {
     memcpy(&probe_magic,      first + 0, sizeof probe_magic);
     memcpy(&probe_version,    first + 4, sizeof probe_version);
     memcpy(&probe_block_size, first + 6, sizeof probe_block_size);
-    if (probe_magic   != CXFS_MAGIC)   { mounted = 0; return -1; }
-    if (probe_version != CXFS_VERSION) { mounted = 0; return -1; }  /* v2 only */
-    if (probe_block_size < 512)        { mounted = 0; return -1; }
+    if (probe_magic   != CXFS_MAGIC)   { vol->mounted = 0; return -1; }
+    if (probe_version != CXFS_VERSION) { vol->mounted = 0; return -1; }  /* v2 only */
+    if (probe_block_size < 512)        { vol->mounted = 0; return -1; }
 
     /* adopt this volume's geometry, then read the full superblock as a block. */
-    fs_sectors_per_block = probe_block_size / 512;
-    /* keep fs_base_lba = base_lba (where we actually found the volume) */
-    if (read_block(0, &sb) != 0) { mounted = 0; return -1; }
-    if (sb.magic != CXFS_MAGIC)  { mounted = 0; return -1; }
+    vol->sectors_per_block = probe_block_size / 512;
+    /* keep vol->base_lba = base_lba (where we actually found the volume) */
+    if (read_block(0, &vol->sb) != 0) { vol->mounted = 0; return -1; }
+    if (vol->sb.magic != CXFS_MAGIC)  { vol->mounted = 0; return -1; }
 
-    mounted = 1;
+    vol->mounted = 1;
     bitmap_load();
     manifest_load();
     return 0;
@@ -252,10 +296,10 @@ int cxfs_mount_at(uint64_t base_lba) {
 
 int cxfs_mount(void) { return cxfs_mount_at(0); }
 
-int cxfs_is_mounted(void) { return mounted; }
+int cxfs_is_mounted(void) { return vol->mounted; }
 
 const struct cxfs_superblock *cxfs_get_superblock(void) {
-    return mounted ? &sb : 0;
+    return vol->mounted ? &vol->sb : 0;
 }
 
 /* ====================================================================
@@ -267,25 +311,20 @@ const struct cxfs_superblock *cxfs_get_superblock(void) {
  * was making allocation and free-counting take seconds.
  * ==================================================================== */
 
-#define CXFS_MAX_BITMAP_BYTES 8192   /* 32768 blocks / 8 = 4096; headroom */
-
-static uint8_t bitmap_cache[CXFS_MAX_BITMAP_BYTES];
-static uint32_t bitmap_bytes_used = 0;
-static int      bitmap_loaded = 0;
 
 /* load the whole bitmap from disk into RAM */
 static void bitmap_load(void) {
-    bitmap_bytes_used = (sb.total_blocks + 7) / 8;
-    if (bitmap_bytes_used > CXFS_MAX_BITMAP_BYTES)
-        bitmap_bytes_used = CXFS_MAX_BITMAP_BYTES;
-    for (uint32_t i = 0; i < sb.bitmap_blocks; i++) {
+    vol->bitmap_bytes = (vol->sb.total_blocks + 7) / 8;
+    if (vol->bitmap_bytes > CXFS_MAX_BITMAP_BYTES)
+        vol->bitmap_bytes = CXFS_MAX_BITMAP_BYTES;
+    for (uint32_t i = 0; i < vol->sb.bitmap_blocks; i++) {
         uint8_t *buf = bmp_blk;
-        if (read_block(sb.bitmap_start + i, buf) != 0) break;
+        if (read_block(vol->sb.bitmap_start + i, buf) != 0) break;
         uint32_t off = i * CXFS_BLOCK_SIZE;
-        for (uint32_t j = 0; j < CXFS_BLOCK_SIZE && off + j < bitmap_bytes_used; j++)
-            bitmap_cache[off + j] = buf[j];
+        for (uint32_t j = 0; j < CXFS_BLOCK_SIZE && off + j < vol->bitmap_bytes; j++)
+            vol->bitmap[off + j] = buf[j];
     }
-    bitmap_loaded = 1;
+    vol->bitmap_loaded = 1;
 }
 
 /* write the bitmap block containing `block`'s bit back to disk */
@@ -295,21 +334,21 @@ static void bitmap_flush_for(uint32_t block) {
     uint8_t *buf = bmp_blk;
     uint32_t off = which * CXFS_BLOCK_SIZE;
     for (uint32_t j = 0; j < CXFS_BLOCK_SIZE; j++)
-        buf[j] = (off + j < bitmap_bytes_used) ? bitmap_cache[off + j] : 0;
-    write_block(sb.bitmap_start + which, buf);
+        buf[j] = (off + j < vol->bitmap_bytes) ? vol->bitmap[off + j] : 0;
+    write_block(vol->sb.bitmap_start + which, buf);
 }
 
 static int bitmap_test(uint32_t block) {
     uint32_t byte = block / 8, bit = block % 8;
-    if (byte >= bitmap_bytes_used) return 1;
-    return (bitmap_cache[byte] >> bit) & 1;
+    if (byte >= vol->bitmap_bytes) return 1;
+    return (vol->bitmap[byte] >> bit) & 1;
 }
 
 static void bitmap_set(uint32_t block, int used) {
     uint32_t byte = block / 8, bit = block % 8;
-    if (byte >= bitmap_bytes_used) return;
-    if (used) bitmap_cache[byte] |=  (1u << bit);
-    else      bitmap_cache[byte] &= ~(1u << bit);
+    if (byte >= vol->bitmap_bytes) return;
+    if (used) vol->bitmap[byte] |=  (1u << bit);
+    else      vol->bitmap[byte] &= ~(1u << bit);
     bitmap_flush_for(block);   /* persist just the changed block */
 }
 
@@ -335,32 +374,29 @@ static void bitmap_set(uint32_t block, int used) {
  * is that fallback, and it is the only thing a caller has to handle.
  * ==================================================================== */
 
-#define CXFS_MAX_MANIFEST_BYTES (CXFS_MAX_ENTRIES * CXFS_ENTRY_SIZE)   /* 256KB */
-
-static uint8_t  manifest_cache[CXFS_MAX_MANIFEST_BYTES];
-static uint32_t manifest_cached_blocks = 0;    /* 0 = uncached, use the disk */
 
 /* Load the whole manifest into RAM. Called at mount and after format. Leaves
-   manifest_cached_blocks at 0 on any failure, which is not an error - it means
+   vol->manifest_blocks_cached at 0 on any failure, which is not an error - it means
    the readers take the disk path. */
 static void manifest_load(void) {
-    manifest_cached_blocks = 0;
-    if (!sb.manifest_blocks) return;
-    if ((uint64_t)sb.manifest_blocks * CXFS_BLOCK_SIZE > sizeof manifest_cache) return;
+    vol->manifest_blocks_cached = 0;
+    if (!vol->manifest) return;                  /* this volume has no cache */
+    if (!vol->sb.manifest_blocks) return;
+    if ((uint64_t)vol->sb.manifest_blocks * CXFS_BLOCK_SIZE > CXFS_MAX_MANIFEST_BYTES) return;
 
-    for (uint32_t i = 0; i < sb.manifest_blocks; i++) {
-        if (read_block(sb.manifest_start + i,
-                       manifest_cache + (size_t)i * CXFS_BLOCK_SIZE) != 0)
+    for (uint32_t i = 0; i < vol->sb.manifest_blocks; i++) {
+        if (read_block(vol->sb.manifest_start + i,
+                       vol->manifest + (size_t)i * CXFS_BLOCK_SIZE) != 0)
             return;                      /* partial load is no load */
     }
-    manifest_cached_blocks = sb.manifest_blocks;
+    vol->manifest_blocks_cached = vol->sb.manifest_blocks;
 }
 
 /* Cached manifest block `rel` (relative to manifest_start), or NULL if this
    volume is not cached. */
 static uint8_t *manifest_block(uint32_t rel) {
-    if (rel >= manifest_cached_blocks) return NULL;
-    return manifest_cache + (size_t)rel * CXFS_BLOCK_SIZE;
+    if (!vol->manifest || rel >= vol->manifest_blocks_cached) return NULL;
+    return vol->manifest + (size_t)rel * CXFS_BLOCK_SIZE;
 }
 
 /* Fetch manifest block `rel` for reading: the cache when there is one, else
@@ -375,7 +411,7 @@ static uint8_t *manifest_block(uint32_t rel) {
 static const uint8_t *manifest_fetch_into(uint32_t rel, uint8_t *stage) {
     const uint8_t *m = manifest_block(rel);
     if (m) return m;
-    if (read_block(sb.manifest_start + rel, stage) != 0) return NULL;
+    if (read_block(vol->sb.manifest_start + rel, stage) != 0) return NULL;
     return stage;
 }
 
@@ -384,9 +420,9 @@ static const uint8_t *manifest_fetch(uint32_t rel) {
 }
 
 uint32_t cxfs_alloc_block(void) {
-    if (!mounted) return 0;
-    uint32_t first = sb.data_start + sb.reserved_blocks;
-    for (uint32_t b = first; b < sb.total_blocks; b++) {
+    if (!vol->mounted) return 0;
+    uint32_t first = vol->sb.data_start + vol->sb.reserved_blocks;
+    for (uint32_t b = first; b < vol->sb.total_blocks; b++) {
         if (!bitmap_test(b)) {       /* RAM check - instant */
             bitmap_set(b, 1);        /* one disk write */
             return b;
@@ -396,8 +432,8 @@ uint32_t cxfs_alloc_block(void) {
 }
 
 void cxfs_free_block(uint32_t block) {
-    if (!mounted) return;
-    if (block < sb.data_start) return;
+    if (!vol->mounted) return;
+    if (block < vol->sb.data_start) return;
     bitmap_set(block, 0);
 }
 
@@ -409,9 +445,9 @@ void cxfs_free_block(uint32_t block) {
  */
 static void bitmap_mark(uint32_t block, int used) {
     uint32_t byte = block / 8, bit = block % 8;
-    if (byte >= bitmap_bytes_used) return;
-    if (used) bitmap_cache[byte] |=  (1u << bit);
-    else      bitmap_cache[byte] &= ~(1u << bit);
+    if (byte >= vol->bitmap_bytes) return;
+    if (used) vol->bitmap[byte] |=  (1u << bit);
+    else      vol->bitmap[byte] &= ~(1u << bit);
 }
 
 /* flush every bitmap block holding a bit for blocks [first, last]. */
@@ -425,13 +461,13 @@ static void bitmap_flush_span(uint32_t first, uint32_t last) {
 }
 
 uint32_t cxfs_alloc_run(uint32_t n) {
-    if (!mounted || n == 0) return 0;
-    uint32_t first = sb.data_start + sb.reserved_blocks;
+    if (!vol->mounted || n == 0) return 0;
+    uint32_t first = vol->sb.data_start + vol->sb.reserved_blocks;
 
     /* first-fit over the RAM bitmap: walk looking for n free in a row. On a
        used block, restart the candidate run after it. */
     uint32_t start = first, have = 0;
-    for (uint32_t b = first; b < sb.total_blocks; b++) {
+    for (uint32_t b = first; b < vol->sb.total_blocks; b++) {
         if (bitmap_test(b)) { start = b + 1; have = 0; continue; }
         if (have == 0) start = b;
         if (++have == n) {
@@ -446,16 +482,16 @@ uint32_t cxfs_alloc_run(uint32_t n) {
 /* release `n` consecutive blocks starting at `first`, one flush per bitmap
    block rather than per released block. */
 static void cxfs_free_run(uint32_t first, uint32_t n) {
-    if (!mounted || n == 0) return;
-    if (first < sb.data_start) return;
+    if (!vol->mounted || n == 0) return;
+    if (first < vol->sb.data_start) return;
     for (uint32_t i = 0; i < n; i++) bitmap_mark(first + i, 0);
     bitmap_flush_span(first, first + n - 1);
 }
 
 uint32_t cxfs_free_blocks(void) {
-    if (!mounted) return 0;
+    if (!vol->mounted) return 0;
     uint32_t count = 0;
-    for (uint32_t b = sb.data_start; b < sb.total_blocks; b++)
+    for (uint32_t b = vol->sb.data_start; b < vol->sb.total_blocks; b++)
         if (!bitmap_test(b)) count++;   /* RAM scan - fast */
     return count;
 }
@@ -467,7 +503,7 @@ uint32_t cxfs_free_blocks(void) {
 #define ENTRIES_PER_BLOCK (CXFS_BLOCK_SIZE / sizeof(struct cxfs_entry))  /* 16 */
 
 int cxfs_read_entry(uint32_t id, struct cxfs_entry *out) {
-    if (!mounted || id >= sb.manifest_count) return -1;
+    if (!vol->mounted || id >= vol->sb.manifest_count) return -1;
     uint32_t rel = id / ENTRIES_PER_BLOCK;
     uint32_t idx = id % ENTRIES_PER_BLOCK;
 
@@ -478,7 +514,7 @@ int cxfs_read_entry(uint32_t id, struct cxfs_entry *out) {
 }
 
 int cxfs_write_entry(const struct cxfs_entry *entry) {
-    if (!mounted || entry->id >= sb.manifest_count) return -1;
+    if (!vol->mounted || entry->id >= vol->sb.manifest_count) return -1;
     uint32_t rel = entry->id / ENTRIES_PER_BLOCK;
     uint32_t idx = entry->id % ENTRIES_PER_BLOCK;
 
@@ -487,23 +523,23 @@ int cxfs_write_entry(const struct cxfs_entry *entry) {
     uint8_t *buf = manifest_block(rel);
     if (!buf) {
         buf = ent_blk;                            /* uncached: read-modify-write */
-        if (read_block(sb.manifest_start + rel, buf) != 0) return -1;
+        if (read_block(vol->sb.manifest_start + rel, buf) != 0) return -1;
     }
     memcpy(buf + idx * sizeof(struct cxfs_entry), entry, sizeof(struct cxfs_entry));
-    return write_block(sb.manifest_start + rel, buf);
+    return write_block(vol->sb.manifest_start + rel, buf);
 }
 
 int cxfs_alloc_entry(void) {
-    if (!mounted) return -1;
+    if (!vol->mounted) return -1;
     /* Scan a whole block of entries at a time. With the manifest cached this is
        a RAM scan; uncached it is one disk read per block, as it always was. */
-    for (uint32_t blk = 0; blk < sb.manifest_blocks; blk++) {
+    for (uint32_t blk = 0; blk < vol->sb.manifest_blocks; blk++) {
         const uint8_t *buf = manifest_fetch(blk);
         if (!buf) return -1;
         for (uint32_t i = 0; i < ENTRIES_PER_BLOCK; i++) {
             uint32_t id = blk * ENTRIES_PER_BLOCK + i;
             if (id == 0) continue;                 /* root */
-            if (id >= sb.manifest_count) return -1;
+            if (id >= vol->sb.manifest_count) return -1;
             struct cxfs_entry *e = (struct cxfs_entry *)(buf + i * sizeof(struct cxfs_entry));
             if (e->type == CXFS_TYPE_FREE) return (int)id;
         }
@@ -524,13 +560,13 @@ static int name_equals(const char *a, const char *b) {
 }
 
 int cxfs_find_in_dir(uint32_t parent_id, const char *name) {
-    if (!mounted) return -1;
-    for (uint32_t blk = 0; blk < sb.manifest_blocks; blk++) {
+    if (!vol->mounted) return -1;
+    for (uint32_t blk = 0; blk < vol->sb.manifest_blocks; blk++) {
         const uint8_t *buf = manifest_fetch(blk);
         if (!buf) continue;
         for (uint32_t i = 0; i < ENTRIES_PER_BLOCK; i++) {
             uint32_t id = blk * ENTRIES_PER_BLOCK + i;
-            if (id >= sb.manifest_count) return -1;
+            if (id >= vol->sb.manifest_count) return -1;
             struct cxfs_entry *e = (struct cxfs_entry *)(buf + i * sizeof(struct cxfs_entry));
             if (e->type == CXFS_TYPE_FREE) continue;
             if (e->parent_id == parent_id && id != parent_id &&
@@ -560,7 +596,7 @@ int cxfs_normalize_name(char *name) {
  * ==================================================================== */
 
 int cxfs_create_entry(uint32_t parent_id, const char *name, uint8_t type) {
-    if (!mounted) return -1;
+    if (!vol->mounted) return -1;
 
     /* copy + normalize the name */
     char nm[CXFS_NAME_LEN];
@@ -598,9 +634,9 @@ int cxfs_create_entry(uint32_t parent_id, const char *name, uint8_t type) {
 }
 
 int cxfs_resolve(const char *path, uint32_t cwd) {
-    if (!mounted || !path) return -1;
+    if (!vol->mounted || !path) return -1;
 
-    uint32_t current = (path[0] == '/') ? sb.root_id : cwd;
+    uint32_t current = (path[0] == '/') ? vol->sb.root_id : cwd;
 
     /* walk components separated by '/' */
     const char *p = path;
@@ -630,13 +666,13 @@ int cxfs_resolve(const char *path, uint32_t cwd) {
 }
 
 void cxfs_list_dir(uint32_t parent_id, void (*cb)(const struct cxfs_entry *)) {
-    if (!mounted || !cb) return;
-    for (uint32_t blk = 0; blk < sb.manifest_blocks; blk++) {
+    if (!vol->mounted || !cb) return;
+    for (uint32_t blk = 0; blk < vol->sb.manifest_blocks; blk++) {
         const uint8_t *buf = manifest_fetch_into(blk, dir_blk);
         if (!buf) continue;
         for (uint32_t i = 0; i < ENTRIES_PER_BLOCK; i++) {
             uint32_t id = blk * ENTRIES_PER_BLOCK + i;
-            if (id >= sb.manifest_count) return;
+            if (id >= vol->sb.manifest_count) return;
             if (id == 0) continue;        /* skip root itself */
             struct cxfs_entry *e = (struct cxfs_entry *)(buf + i * sizeof(struct cxfs_entry));
             if (e->type == CXFS_TYPE_FREE) continue;
@@ -649,13 +685,13 @@ void cxfs_path_of(uint32_t id, char *out, int cap) {
     if (cap <= 0) return;
 
     /* root is just "/" */
-    if (id == sb.root_id) { if (cap > 1) { out[0] = '/'; out[1] = '\0'; } else out[0] = '\0'; return; }
+    if (id == vol->sb.root_id) { if (cap > 1) { out[0] = '/'; out[1] = '\0'; } else out[0] = '\0'; return; }
 
     /* collect names from `id` up to root, then emit reversed */
     char names[16][CXFS_NAME_LEN];   /* up to 16 levels deep */
     int depth = 0;
     uint32_t cur = id;
-    while (cur != sb.root_id && depth < 16) {
+    while (cur != vol->sb.root_id && depth < 16) {
         struct cxfs_entry e;
         if (cxfs_read_entry(cur, &e) != 0) break;
         strlcpy(names[depth], e.name, CXFS_NAME_LEN);
@@ -715,7 +751,7 @@ int cxfs_write_file(uint32_t id, const void *data, uint32_t len) {
 }
 
 int cxfs_read_file(uint32_t id, void *buf, uint32_t cap) {
-    if (!mounted) return -1;
+    if (!vol->mounted) return -1;
 
     struct cxfs_entry e;
     if (cxfs_read_entry(id, &e) != 0) return -1;
@@ -747,14 +783,14 @@ int cxfs_read_file(uint32_t id, void *buf, uint32_t cap) {
    to check it's a file); cxfs_read_path reads up to `cap` bytes and returns the
    bytes read (the file's size), or negative on error. */
 int cxfs_stat_path(const char *path, struct cxfs_entry *out) {
-    if (!mounted) return -1;
+    if (!vol->mounted) return -1;
     int id = cxfs_resolve(path, 0);          /* 0 = root; absolute paths */
     if (id < 0) return -1;
     return cxfs_read_entry((uint32_t)id, out);
 }
 
 int cxfs_read_path(const char *path, void *buf, uint32_t cap) {
-    if (!mounted) return -1;
+    if (!vol->mounted) return -1;
     int id = cxfs_resolve(path, 0);
     if (id < 0) return -1;
     return cxfs_read_file((uint32_t)id, buf, cap);
@@ -928,7 +964,7 @@ static void trim_to_blocks(struct cxfs_entry *e, uint32_t keep) {
 /* shared preamble: fetch the entry, confirm it is a writable file nobody else
    has locked. Returns 0, or a CXFS_E_* code. */
 static int open_for_write(uint32_t id, struct cxfs_entry *e) {
-    if (!mounted) return CXFS_E_FAIL;
+    if (!vol->mounted) return CXFS_E_FAIL;
     if (cxfs_read_entry(id, e) != 0)        return CXFS_E_NOTFOUND;
     if (e->type == CXFS_TYPE_DIR)           return CXFS_E_ISDIR;
     if (e->type != CXFS_TYPE_FILE)          return CXFS_E_INVAL;
@@ -938,7 +974,7 @@ static int open_for_write(uint32_t id, struct cxfs_entry *e) {
 }
 
 int cxfs_read_at(uint32_t id, uint64_t off, void *buf, uint32_t len) {
-    if (!mounted) return CXFS_E_FAIL;
+    if (!vol->mounted) return CXFS_E_FAIL;
     if (!buf)     return CXFS_E_INVAL;
 
     struct cxfs_entry e;
@@ -975,7 +1011,7 @@ int cxfs_read_at(uint32_t id, uint64_t off, void *buf, uint32_t len) {
 }
 
 int cxfs_write_at(uint32_t id, uint64_t off, const void *data, uint32_t len) {
-    if (!mounted) return CXFS_E_FAIL;
+    if (!vol->mounted) return CXFS_E_FAIL;
     if (!data)    return CXFS_E_INVAL;
     if (len == 0) return 0;
 
@@ -1075,10 +1111,10 @@ int cxfs_truncate(uint32_t id, uint64_t new_size) {
  * ==================================================================== */
 
 int cxfs_rename(uint32_t id, const char *newname) {
-    if (!mounted) return -1;
+    if (!vol->mounted) return -1;
     struct cxfs_entry e;
     if (cxfs_read_entry(id, &e) != 0) return -1;
-    if (id == sb.root_id) return -1;        /* don't rename root */
+    if (id == vol->sb.root_id) return -1;        /* don't rename root */
 
     char nm[CXFS_NAME_LEN];
     int i = 0;
@@ -1095,7 +1131,7 @@ int cxfs_is_ancestor(uint32_t ancestor, uint32_t id) {
     uint32_t cur = id;
     for (int guard = 0; guard < 1024; guard++) {
         if (cur == ancestor) return 1;
-        if (cur == sb.root_id) return 0;
+        if (cur == vol->sb.root_id) return 0;
         struct cxfs_entry e;
         if (cxfs_read_entry(cur, &e) != 0) return 0;
         if (e.parent_id == cur) return 0;   /* root safety */
@@ -1105,8 +1141,8 @@ int cxfs_is_ancestor(uint32_t ancestor, uint32_t id) {
 }
 
 int cxfs_move(uint32_t id, uint32_t new_parent) {
-    if (!mounted) return -1;
-    if (id == sb.root_id) return -1;        /* can't move root */
+    if (!vol->mounted) return -1;
+    if (id == vol->sb.root_id) return -1;        /* can't move root */
 
     struct cxfs_entry e, p;
     if (cxfs_read_entry(id, &e) != 0) return -1;
@@ -1121,14 +1157,14 @@ int cxfs_move(uint32_t id, uint32_t new_parent) {
 }
 
 int cxfs_count_children(uint32_t dir_id) {
-    if (!mounted) return 0;
+    if (!vol->mounted) return 0;
     int count = 0;
-    for (uint32_t blk = 0; blk < sb.manifest_blocks; blk++) {
+    for (uint32_t blk = 0; blk < vol->sb.manifest_blocks; blk++) {
         const uint8_t *buf = manifest_fetch_into(blk, dir_blk);
         if (!buf) continue;
         for (uint32_t i = 0; i < ENTRIES_PER_BLOCK; i++) {
             uint32_t cid = blk * ENTRIES_PER_BLOCK + i;
-            if (cid >= sb.manifest_count) return count;
+            if (cid >= vol->sb.manifest_count) return count;
             if (cid == 0) continue;
             struct cxfs_entry *e = (struct cxfs_entry *)(buf + i * sizeof(struct cxfs_entry));
             if (e->type == CXFS_TYPE_FREE) continue;
@@ -1139,7 +1175,7 @@ int cxfs_count_children(uint32_t dir_id) {
 }
 
 int cxfs_delete_entry(uint32_t id) {
-    if (!mounted || id == sb.root_id) return -1;
+    if (!vol->mounted || id == vol->sb.root_id) return -1;
     struct cxfs_entry e;
     if (cxfs_read_entry(id, &e) != 0) return -1;
     if (e.type == CXFS_TYPE_FREE) return -1;
@@ -1156,7 +1192,7 @@ int cxfs_delete_entry(uint32_t id) {
 /* set an advisory lock on entry `id` for the current process. Returns 0 on
    success, -1 if it doesn't exist or is already locked by another live proc. */
 int cxfs_lock(uint32_t id) {
-    if (!mounted) return -1;
+    if (!vol->mounted) return -1;
     struct cxfs_entry e;
     if (cxfs_read_entry(id, &e) != 0) return -1;
     if (cxfs_lock_blocks(&e)) return -1;                /* someone else holds it */
@@ -1167,7 +1203,7 @@ int cxfs_lock(uint32_t id) {
 
 /* release an advisory lock. Only the lock owner or SYSTEM may unlock. */
 int cxfs_unlock(uint32_t id) {
-    if (!mounted) return -1;
+    if (!vol->mounted) return -1;
     struct cxfs_entry e;
     if (cxfs_read_entry(id, &e) != 0) return -1;
     if (!e.lock_state) return 0;                        /* already unlocked */
@@ -1180,7 +1216,7 @@ int cxfs_unlock(uint32_t id) {
 
 /* 1 if locked by another live process, else 0. */
 int cxfs_is_locked(uint32_t id) {
-    if (!mounted) return 0;
+    if (!vol->mounted) return 0;
     struct cxfs_entry e;
     if (cxfs_read_entry(id, &e) != 0) return 0;
     return cxfs_lock_blocks(&e);
