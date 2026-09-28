@@ -1,6 +1,6 @@
-# X — Core Language v0.2
+# X — Core Language v0.3
 
-**Status:** LIVE SPEC (core v0.2). X is the systems core of the X family. XR
+**Status:** LIVE SPEC (core v0.3). X is the systems core of the X family. XR
 (runtime) and XH (hybrid) are **front-end dialects that desugar to X core** —
 they are *not* separate compilers and have no independent backend. There is one
 semantic core and one CXEX backend, so the dialects cannot drift.
@@ -12,7 +12,16 @@ if/when optimization needs it.
 
 ---
 
-## 0. Why this is v0.2
+## 0. Why this is v0.3
+
+v0.2 recorded the language as built and dropped the word "frozen" for a rule:
+*additions are documented here when they land.* v0.3 is that rule being kept.
+64 and 128-bit integers shipped, file I/O shipped, and the type table still
+described neither — which is precisely the failure v0.2 was written to end,
+recurring in a single afternoon rather than over a version. §2.1 is new, and the
+self-hosting table in §1 now reflects what actually works.
+
+## 0.1 Why there was a v0.2
 
 v0.1 was written as a FROZEN CONTRACT, and then the implementation outgrew it —
 correctly, because the language was being used to write a real shell and a real
@@ -48,12 +57,18 @@ a compiler is a specific kind of program:
 | Recursion over a tree | works (plain recursion) |
 | Multi-file source | works (`import`) |
 | Function pointers for dispatch tables | works |
-| File I/O | **missing** — no FS syscalls yet (ABI §7.10) |
-| 64-bit integers | missing; probably not required |
+| File I/O | works (`SYS_FILE_OP`, `std/file.xfxn`) |
+| 64/128-bit integers | works, except `/` `%` and variable shifts (§2.1) |
 | Floats | missing; not required for a compiler |
+| Dynamic allocation | **missing** — no `SYS_MAP`/`SBRK`, no allocator |
 
 The honest read: **the blockers are allocation, strings, and sum types** — not
 syntax sugar. A staged route is in §10.
+
+Allocation is now the single largest one, and it blocks more than self-hosting:
+XR's collector and XH's managed references both need a heap, and there is none.
+`GRANT_MEM` exists and nothing honours it — ABI §7.8 is still *specified,
+unimplemented*.
 
 ---
 
@@ -73,22 +88,55 @@ syntax sugar. A staged route is in §10.
 
 ---
 
-## 2. Types (v0.1)
+## 2. Types
 
 | Category | Types |
 |----------|-------|
-| Signed   | `i8 i16 i32` |
-| Unsigned | `u8 u16 u32` |
+| Signed   | `i8 i16 i32 i64 i128` |
+| Unsigned | `u8 u16 u32 u64 u128` |
 | Boolean  | `bool` (1 byte; `true`/`false`) |
 | Pointer  | `*T` (32-bit) |
 | Void     | `void` (return type only) |
 | Aggregate| `struct` (named, by-value or via pointer) |
 | Array    | `[N]T` (fixed size) |
 
-No `i64`/`u64` arithmetic in v0.1 (mirrors the kernel's no-64-bit-divide rule);
-64-bit values are passed as structs/pointers, as in the ABI. No floats in v0.1.
-Pointer arithmetic is explicit and scaled by `sizeof(T)`. No implicit conversions
-except literal→sized-int where it fits; everything else needs a cast `as`.
+No floats. Pointer arithmetic is explicit and scaled by `sizeof(T)`. No implicit
+conversions except literal→sized-int where it fits; everything else needs a cast
+`as`.
+
+### 2.1 Wide integers (64 and 128-bit)
+
+A value wider than a register is represented by its **address**, exactly as a
+`struct` or array already is. There is no second value model, which is why the
+type list can grow without the backend changing: a width is a row in
+`PrimWidth.Bytes`.
+
+**Implemented:** `+ - * & | ^`, all six comparisons, casts between widths
+(sign- or zero-filling as the source type requires), and unary `-` and `~`.
+Shifts take a **constant** amount.
+
+**Diagnosed, not emitted** — a wrong answer here is worse than a build failure,
+so each of these is a compile error rather than silently truncated code:
+
+| | why |
+|---|---|
+| `/` and `%` | multi-limb division is not written yet |
+| variable shifts | needs a loop, and a loop whose trip count depends on the operand is a timing signal |
+| returning a wide value | the value is an address, and it would be the address of a frame about to be torn down. Pass a pointer to the destination instead |
+
+**Why the ceiling is 128.** Up to 128 bits a value is *one thing* — an offset, a
+timestamp, a GUID, a Q64.64 coordinate, the product of two 64-bit numbers — that
+you compare, add, and pass by value. Past 128 it is a buffer with operations:
+nobody adds two RSA moduli or orders two SHA digests by magnitude, they feed them
+to an algorithm. That is a library. `kernel/lib/crypto/bignum.c` already is one,
+and a future `bignum.xfxn` is the right shape for the same work in X — limbs in
+an array, with the constant-time control and per-algorithm limb counts that a
+fixed native width cannot express.
+
+> **Caution for XR and XH.** The comparison emitted for wide values walks limbs
+> from the top down and **branches on the first difference**. That is a timing
+> oracle on secret data. Any dialect exposing these types to cryptographic code
+> needs a constant-time comparison primitive, not this one.
 
 ---
 
@@ -241,7 +289,7 @@ x86-32, then hands off to the emitters already in place:
   -> Sema             (type-check, resolve, const-fold; rejects ambient effects)
   -> CodeGen          (X-core AST -> x86-32)
   -> [ ELF ]          (so ElfParser -> CXEXLayoutEngine -> CXEXWriter package it)
-  -> .xcex / .xkex / .xoex
+  -> .xuex / .xkex / .xoex
 ```
 
 CodeGen v0.1 emits x86-32 **assembly text**, assembled+linked to ELF via the
@@ -265,7 +313,7 @@ New namespace, e.g. `CXEX.Build.X` (or `CXEX.Lang`): `Lexer`, `Parser`, `Ast`,
 > original milestone is kept below as the record of what "proven end to end" meant.
 
 
-Reimplement the current `hello.xcex` app in X: a `_start` that builds an
+Reimplement the current `hello.xuex` app in X: a `_start` that builds an
 `ipc_call_args`, calls its broker endpoint (handle 0), and `exit`s. Compile it
 with the .NET X front-end, package via the existing emitter, run it on CXK. When
 the brokered message prints — produced by an X-compiled binary instead of C — the
@@ -290,8 +338,10 @@ uninitialized `let`.
   no `pub`, no module-qualified names, and name collisions across libraries are a
   hard error.
 - `for`, `switch`, enums, unions.
-- 64-bit arithmetic, floats, SIMD. (Fixed-point lives in `std/fixed.xfxn`; the
-  kernel initialises the FPU but no userspace code uses it.)
+- Floats and SIMD. (Fixed-point lives in `std/fixed.xfxn`; the kernel
+  initialises the FPU but no userspace code uses it. 64 and 128-bit integers
+  landed — see §2.1 — but `/`, `%` and variable shifts are still diagnosed
+  rather than emitted.)
 - Dynamic allocation of any kind.
 - An explicit IR (only if optimization needs it).
 - **XR**: runtime-as-executive-service (GC, dynamic dispatch via IPC) — a dialect
@@ -316,7 +366,7 @@ purely in service of the compiler.
 
 **Stage 1 — make the OS able to hold source at all.** Filesystem access from ring
 3 (`docs/CX_ABI.md` §7.10) and `exec_path`. Without file I/O there is no reading a
-`.xfxn` and no writing a `.xcex`, so this gates everything. Useful on its own: it
+`.xfxn` and no writing a `.xuex`, so this gates everything. Useful on its own: it
 is what lets the shell and GUI launch application files.
 
 **Stage 2 — memory.** `sbrk` or `map` (ABI §7.8) plus an allocator written in X.

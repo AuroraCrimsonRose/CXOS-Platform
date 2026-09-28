@@ -56,7 +56,11 @@ Desktop.ini
 !CXK/linker.ld
 !CXK/CMakeLists.txt
 
+# Private signing keys - NEVER commit one. .xksk is the platform root: a leaked
+# one lets anyone sign a kernel this machine will load. .xusk is a publisher's
+# or a user's, and leaking one lets anyone sign in their name.
 *.xksk
+*.xusk
 CXK/src/tested/build.bat
 CXK/src/tested/check_sources.py
 CXK/src/tested/cxk.exe

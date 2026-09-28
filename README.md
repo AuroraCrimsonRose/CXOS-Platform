@@ -29,7 +29,7 @@ Delivered:
 Current development targets:
 
 - **Filesystem access from ring 3** — CXFS is complete in-kernel and unreachable from userspace; this is the largest gap (`docs/CX_ABI.md` §7.10)
-- **Loading applications from disk** rather than embedding them in the kernel image, so the shell and the GUI can launch separate `.xcex` application files
+- **Loading applications from disk** rather than embedding them in the kernel image, so the shell and the GUI can launch separate `.xuex` application files
 - Display/console arbitration, then enabling system-wide preemption
 - Transport-layer networking (UDP, then TCP)
 

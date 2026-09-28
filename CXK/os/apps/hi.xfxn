@@ -1,7 +1,8 @@
 // hi.xfxn - a program that lives on the disk rather than inside the OS.
 // Aurora Tejeda / CATX SYSTEMS LLC
 //
-// Built to a signed .xcex, staged into /System/Programs, and started with
+// Built to a signed .xuex - a USER program, which is what .xuex means -
+// staged into /Shared/Programs, and started with
 // SYS_EXEC_PATH.
 // Nothing about it is embedded in the executive: the kernel reads it off CXFS,
 // checks the signature, and runs it. Change this file and only this file, and
