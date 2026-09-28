@@ -29,6 +29,7 @@
 #include "cxex_verify.h"
 #include "cxex.h"
 #include "keyvault.h"
+#include "vmregion.h"
 
 /* concise pass/fail reporter */
 /* Report a test result. Stays SILENT on success - only failures are printed,
@@ -547,6 +548,161 @@ static int test_cxfs_volumes(void) {
     return 1;
 }
 
+
+/* ---- memory mappings (SYS_MEM_OP) ----
+ * Runs on a SCRATCH pid rather than a live one. ktest_run() is called after
+ * the ring-3 test threads have exited and before the executive starts, so no
+ * process is being tracked and slot MAX_THREADS-1 belongs to nobody; it is
+ * reset again at the end either way.
+ *
+ * The frame count is taken before and restored-to after, because the failure
+ * this most needs to catch is not a wrong answer but a leak: a map/unmap pair
+ * that returns the right numbers while quietly keeping the frames would pass
+ * every assertion about addresses and sizes.
+ */
+static int vm_cycle(int pid) {
+    int ok = 0;
+
+    vm_proc_init(pid, VM_DEFAULT_QUOTA, -1);
+
+    struct mem_op_args a;
+    #define RESET_ARGS() do {                                        \
+        for (uint32_t _i = 0; _i < sizeof a / 4u; _i++)              \
+            ((uint32_t *)&a)[_i] = 0;                                \
+        a.op = MEM_OP_MAP; a.object = MOBJ_ANON;                     \
+        a.length = 4096; a.prot = MPROT_READ | MPROT_WRITE;          \
+    } while (0)
+
+    /* A one-byte request must come back as a whole page: the caller asks in
+       bytes and is TOLD the granularity rather than having to know it. */
+    RESET_ARGS(); a.length = 1;
+    if (vm_map(pid, &a) != E_OK)       goto done;
+    if (a.granted != PAGE_SIZE)        goto done;
+    if (a.addr < VM_MMAP_BASE)         goto done;
+    if (a.addr & (PAGE_SIZE - 1u))     goto done;
+    uint32_t first = a.addr;
+
+    /* Readable, writable, and zero - a frame off the free list may hold
+       another process's memory, so anything non-zero here is a disclosure. */
+    volatile uint8_t *m = (volatile uint8_t *)first;
+    for (uint32_t i = 0; i < PAGE_SIZE; i++) if (m[i] != 0) goto done;
+    m[0] = 0xA5; m[PAGE_SIZE - 1] = 0x5A;
+    if (m[0] != 0xA5 || m[PAGE_SIZE - 1] != 0x5A) goto done;
+
+    /* A second mapping must not land on the first. */
+    RESET_ARGS(); a.length = 8192;
+    if (vm_map(pid, &a) != E_OK)                       goto done;
+    if (a.granted != 8192)                             goto done;
+    if (a.addr < first + PAGE_SIZE && a.addr + 8192 > first) goto done;
+    uint32_t second = a.addr;
+
+    /* INFO must account for exactly what was handed out. */
+    RESET_ARGS(); a.op = MEM_OP_INFO;
+    if (vm_info(pid, &a) != E_OK)                   goto done;
+    if (a.mapped != PAGE_SIZE + 8192)               goto done;
+    if (a.quota != VM_DEFAULT_QUOTA)                goto done;
+
+    /* Write|Execute is refused. It cannot be ENFORCED on 32-bit non-PAE - there
+       is no no-execute bit - so the refusal is the only thing standing between
+       today and code written to rely on a combination that will stop being
+       allowed. Asserting it here is what keeps it from being quietly relaxed. */
+    RESET_ARGS(); a.prot = MPROT_WRITE | MPROT_EXEC;
+    if (vm_map(pid, &a) != E_INVAL)                 goto done;
+
+    /* Anonymous memory has no interior, so a non-zero offset is a caller error
+       rather than something to ignore. Both halves of the 64-bit field. */
+    RESET_ARGS(); a.offset_lo = 4096;
+    if (vm_map(pid, &a) != E_INVAL)                 goto done;
+    RESET_ARGS(); a.offset_hi = 1;
+    if (vm_map(pid, &a) != E_INVAL)                 goto done;
+
+    /* An object that does not exist yet is refused rather than treated as
+       anonymous, so adding one later cannot silently change what old code did. */
+    RESET_ARGS(); a.object = 99;
+    if (vm_map(pid, &a) != E_INVAL)                 goto done;
+
+    RESET_ARGS(); a.length = 0;
+    if (vm_map(pid, &a) != E_INVAL)                 goto done;
+    RESET_ARGS(); a.length = MMAP_MAX_BYTES + 1u;
+    if (vm_map(pid, &a) != E_RANGE)                 goto done;
+    RESET_ARGS(); a.prot = MPROT_NONE;
+    if (vm_map(pid, &a) != E_INVAL)                 goto done;
+
+    /* The quota is a real ceiling, not a number in a struct: a request that
+       would cross it fails, and fails without having taken any frames. */
+    uint32_t before_quota_try = pmm_free_count();
+    RESET_ARGS(); a.length = VM_DEFAULT_QUOTA;
+    if (vm_map(pid, &a) != E_NOMEM)                 goto done;
+    if (pmm_free_count() != before_quota_try)       goto done;
+
+    /* A hint that is free is honoured, which is what makes a moving window
+       cheap: unmap and remap at the same address and interior pointers hold. */
+    RESET_ARGS(); a.flags = MMAP_HINT; a.addr = VM_MMAP_BASE + 0x01000000u;
+    if (vm_map(pid, &a) != E_OK)                            goto done;
+    if (a.addr != VM_MMAP_BASE + 0x01000000u)               goto done;
+    uint32_t hinted = a.addr;
+
+    /* An occupied hint is declined, not honoured and not failed: the caller
+       still gets memory, and `addr` tells it the truth about where. */
+    RESET_ARGS(); a.flags = MMAP_HINT; a.addr = hinted;
+    if (vm_map(pid, &a) != E_OK)                    goto done;
+    if (a.addr == hinted)                           goto done;
+    uint32_t declined = a.addr;
+
+    /* Unmapping something never mapped is an error, not a silent success. */
+    if (vm_unmap(pid, VM_MMAP_BASE - PAGE_SIZE, PAGE_SIZE) != E_NOENT) goto done;
+    /* A length that disagrees with the region is refused rather than releasing
+       a different amount than the caller believes it is releasing. */
+    if (vm_unmap(pid, second, 4096) != E_INVAL)     goto done;
+
+    if (vm_unmap(pid, first, 0) != E_OK)            goto done;   /* 0 = whole */
+    if (vm_unmap(pid, second, 8192) != E_OK)        goto done;
+    if (vm_unmap(pid, hinted, 4096) != E_OK)        goto done;
+    if (vm_unmap(pid, declined, 4096) != E_OK)      goto done;
+
+    RESET_ARGS(); a.op = MEM_OP_INFO;
+    if (vm_info(pid, &a) != E_OK)                   goto done;
+    if (a.mapped != 0)                              goto done;
+
+    /* Quota attenuation: a child may never be given a wider ceiling than its
+       parent holds, which is the same rule grants follow. */
+    vm_proc_init(pid, VM_DEFAULT_QUOTA / 4u, -1);
+    if (vm_quota_of(pid) != VM_DEFAULT_QUOTA / 4u)  goto done;
+
+    ok = 1;
+done:
+    #undef RESET_ARGS
+    return ok;
+}
+
+/* Run the whole cycle twice and hold the SECOND pass to "every frame came
+   back".
+ *
+ * Not the first, because the first legitimately consumes frames that never
+ * return: paging_map allocates a PAGE TABLE the first time a 4 MB region is
+ * touched, and paging_unmap frees the page but deliberately not the table -
+ * for a process that is the right call, since addr_space_reclaim_user() frees
+ * the whole user half at exit and a table freed and re-allocated per mapping
+ * would be pure churn. Asserting no-leak on a cold pass therefore fails
+ * against correct behaviour, which is exactly what it did when this test was
+ * first written.
+ *
+ * The warm pass also proves something worth having on its own: after every
+ * mapping is released, placement produces the same addresses again, so a full
+ * unmap really does return the space rather than merely forgetting it. */
+static int test_vmregion(void) {
+    const int pid = MAX_THREADS - 1;
+
+    if (!vm_cycle(pid)) { vm_proc_reset(pid); return 0; }
+    vm_proc_reset(pid);
+
+    uint32_t free0 = pmm_free_count();
+    int ok = vm_cycle(pid);
+    vm_proc_reset(pid);
+    if (pmm_free_count() != free0) return 0;
+    return ok;
+}
+
 void ktest_run(void) {
     int passed = 0, total = 0;
 
@@ -566,6 +722,7 @@ void ktest_run(void) {
     total++; passed += report("cxfs offset I/O + compaction",      test_cxfs_offset());
     total++; passed += report("cxfs volume tags",                  test_cxfs_volumes());
     total++; passed += report("clock + timed sleep",               test_clock_sleep());
+    total++; passed += report("memory mappings (SYS_MEM_OP)",     test_vmregion());
     total++; passed += report("cxex signature + tamper",           test_cxex_signature());
     total++; passed += report("file syscalls (SYS_FILE_OP)",       usermode_file_test());
 
