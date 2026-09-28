@@ -72,11 +72,11 @@ void _start(void) {
      * machine with no services - so this is a note, not a failure. */
     struct spawn_args svc;
     svc.image = 0; svc.image_len = 0;
-    svc.name = "svcd"; svc.broker_endpoint = -1;
+    svc.name = "supervisor"; svc.broker_endpoint = -1;
     svc.caps = GRANT_OS_BASELINE;
     svc.args = 0; svc.args_len = 0;
-    if (sys_exec_path("/System/Programs/svcd.xcex", &svc) < 0)
-        sys_write("executive: no service supervisor (/System/Programs/svcd.xcex)\n");
+    if (sys_exec_path("/System/Programs/supervisor.xcex", &svc) < 0)
+        sys_write("executive: no service supervisor (/System/Programs/supervisor.xcex)\n");
 
     /* serve one request from the app */
     char buf[256]; int sender = 0;

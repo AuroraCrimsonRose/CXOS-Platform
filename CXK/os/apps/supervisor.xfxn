@@ -1,9 +1,9 @@
-// svcd.xfxn - the CXK service supervisor.
+// supervisor.xfxn - the CXK service supervisor.
 // Aurora Tejeda / CATX SYSTEMS LLC
 //
 // Reads service descriptors from /System/Services and starts the ones marked
 // to run at boot. The executive spawns it with GRANT_OS_BASELINE and then gets
-// out of the way; svcd is what actually decides that a program should be
+// out of the way; the supervisor is what actually decides that a program should be
 // running, and with what authority.
 //
 // It lives in ring 3 like everything else. Nothing here needs to be in the
@@ -23,7 +23,7 @@
 // args   passed through as argv, with the program's own path as argv[0].
 // start  `boot` to start it now. Anything else, or absent, means "not yet" -
 //        so a descriptor can sit there disabled without being deleted.
-// every  seconds between runs. With it, svcd stays alive and re-runs the
+// every  seconds between runs. With it, the supervisor stays alive and re-runs the
 //        program on that interval. `start` and `every` are independent:
 //        `start=boot` alone runs it once, `every=60` alone first runs it a
 //        minute from now, and both together run it at boot and every minute
@@ -176,7 +176,7 @@ fn svc_run(path: *u8, blob: *u8, blen: u32, grants: u32) -> i32 {
 }
 
 fn svc_fail(name: *u8, rc: i32) -> void {
-    puts("svcd: ");
+    puts("supervisor: ");
     puts(name);
     puts(": ");
     if (rc == E_PERM) { puts("not signed by a key this kernel trusts\n"); }
@@ -191,7 +191,7 @@ fn svc_start(name: *u8) -> void {
 
     let len: i32 = file_slurp(&svc_path[0], &svc_text[0], SVC_TEXT_CAP - 1);
     if (len < 0) {
-        puts("svcd: ");
+        puts("supervisor: ");
         puts(name);
         puts(": ");
         puts(file_strerror(len));
@@ -203,7 +203,7 @@ fn svc_start(name: *u8) -> void {
     if (svc_field(&svc_text[0], "exec", &svc_exec[0], SVC_PATH_CAP) == 0) {
         // A descriptor with no program is a typo, not a disabled service -
         // say so rather than skipping it silently.
-        puts("svcd: ");
+        puts("supervisor: ");
         puts(name);
         puts(": no exec= line\n");
         return;
@@ -238,7 +238,7 @@ fn svc_start(name: *u8) -> void {
         if (pid < 0) {
             svc_fail(name, pid);
         } else {
-            puts("svcd: started ");
+            puts("supervisor: started ");
             puts(name);
             puts(" pid ");
             print_u32(pid as u32);
@@ -250,7 +250,7 @@ fn svc_start(name: *u8) -> void {
     if (every == 0) { return; }
 
     if (sch_n >= SCH_MAX) {
-        puts("svcd: ");
+        puts("supervisor: ");
         puts(name);
         puts(": no room in the schedule\n");
         return;
@@ -269,7 +269,7 @@ fn svc_start(name: *u8) -> void {
     sch_next[sch_n]   = ticks_ms() + every * 1000;
     sch_n = sch_n + 1;
 
-    puts("svcd: scheduled ");
+    puts("supervisor: scheduled ");
     puts(name);
     puts(" every ");
     print_u32(every);
@@ -279,9 +279,9 @@ fn svc_start(name: *u8) -> void {
 // ---- the schedule loop -----------------------------------------------------
 //
 // Wake when the soonest task is due, run everything that has come due, work
-// out the next wake, sleep again. Between wakes svcd is blocked in the kernel
-// and off the run queue entirely - a scheduled task costs nothing until it
-// runs.
+// out the next wake, sleep again. Between wakes the supervisor is blocked in
+// the kernel and off the run queue entirely - a scheduled task costs nothing
+// until it runs.
 //
 // All the time arithmetic is signed differences rather than direct
 // comparisons, because ticks_ms is milliseconds since boot in a u32 and wraps
@@ -311,7 +311,7 @@ fn svc_loop() -> void {
                     // For a scheduled task "when did this last happen" is the
                     // question, and the answer has to come from the clock
                     // rather than from what was intended.
-                    puts("svcd: ran ");
+                    puts("supervisor: ran ");
                     puts(&sch_exec[i * SCH_ESTRIDE]);
                     puts(" at ");
                     print_u32(ticks_ms());
@@ -363,7 +363,7 @@ fn _start() -> void {
         svc_start(&st.name[0]);
     }
 
-    puts("svcd: ");
+    puts("supervisor: ");
     print_u32(svc_started);
     puts(" started, ");
     print_u32(sch_n);
