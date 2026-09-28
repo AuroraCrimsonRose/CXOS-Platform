@@ -19,7 +19,7 @@ namespace CXEX.Lang.Abi;
 ///
 /// <para><b>The family rule.</b> The prelude deliberately mirrors only part of the header:
 /// it carries <c>SYS_*</c>, <c>E_*</c>, <c>POWER_*</c> and <c>FB_OP_*</c>, but not
-/// <c>CAP_*</c> or <c>NET_OP_*</c>. Demanding total parity would therefore report dozens of
+/// <c>GRANT_*</c> or <c>NET_OP_*</c>. Demanding total parity would therefore report dozens of
 /// false positives on day one and get ignored, which is worse than no check. So the rule is
 /// <i>if you mirror a family, mirror all of it</i>: a family with at least one member in the
 /// prelude must be complete, and a family with none is reported as information, not failure.
@@ -36,7 +36,7 @@ public static class AbiSync
     private static readonly string[] Families =
     {
         "FILE_OP_", "NET_OP_", "FOPEN_", "FSEEK_", "FTYPE_",
-        "FB_OP_", "POWER_", "SYS_", "CAP_", "E_"
+        "FB_OP_", "POWER_", "SYS_", "GRANT_", "E_"
     };
 
     /// <summary>Header names that are not ABI surface and must not be reported.</summary>
@@ -244,7 +244,7 @@ public static class AbiSync
     /// <summary>
     /// Parses a C integer literal: decimal or hex, optional <c>u</c>/<c>l</c> suffixes,
     /// optional surrounding parentheses (the header writes negatives as <c>(-1)</c>).
-    /// Expression-valued defines such as <c>CAP_OS_BASELINE</c> fail here and are skipped,
+    /// Expression-valued defines such as <c>GRANT_OS_BASELINE</c> fail here and are skipped,
     /// which is intended - this checker compares values, not macro algebra.
     /// </summary>
     internal static bool TryParseNumber(string raw, out long value)
