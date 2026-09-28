@@ -9,7 +9,7 @@
  */
 
 #include "cxk_abi.h"
-#include "app_image.h"   /* shell_xcex[], shell_xcex_len */
+#include "app_image.h"   /* shell_xsex[], shell_xsex_len */
 
 static inline void sys_write(const char *s) {
     __asm__ volatile ("int $0x80" : : "a"(SYS_CONSOLE_WRITE), "b"(s), "c"(0) : "memory");
@@ -47,7 +47,7 @@ void _start(void) {
     if (ep < 0) { sys_write("executive: ep_create failed\n"); sys_exit(1); }
 
     struct spawn_args sa;
-    sa.image = shell_xcex; sa.image_len = shell_xcex_len;
+    sa.image = shell_xsex; sa.image_len = shell_xsex_len;
     sa.name = "shell";     sa.broker_endpoint = ep;
     sa.caps = GRANT_OS_BASELINE;   /* privileged shell (attenuated to executive's caps) */
     /* No arguments for the shell - but say so rather than leaving the fields
@@ -75,8 +75,8 @@ void _start(void) {
     svc.name = "supervisor"; svc.broker_endpoint = -1;
     svc.caps = GRANT_OS_BASELINE;
     svc.args = 0; svc.args_len = 0;
-    if (sys_exec_path("/System/Programs/supervisor.xcex", &svc) < 0)
-        sys_write("executive: no service supervisor (/System/Programs/supervisor.xcex)\n");
+    if (sys_exec_path("/System/Programs/supervisor.xsex", &svc) < 0)
+        sys_write("executive: no service supervisor (/System/Programs/supervisor.xsex)\n");
 
     /* serve one request from the app */
     char buf[256]; int sender = 0;

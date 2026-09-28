@@ -1,7 +1,7 @@
 /* /CXK/os/apps/hello/hello.c */
 /* Aurora Tejeda / CATX SYSTEMS LLC */
 /*
- * Tiny CXK USER app (.xcex), capability-less. It cannot touch the console
+ * Tiny CXK USER app (.xuex), capability-less. It cannot touch the console
  * directly (no GRANT_CONSOLE - that was CP2's E_PERM proof). Instead it asks its
  * broker executive to print a message on its behalf, over IPC: it ipc_calls
  * its broker endpoint (handle 0) with the text as the request, blocks until the

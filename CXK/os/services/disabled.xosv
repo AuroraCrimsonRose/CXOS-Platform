@@ -8,6 +8,6 @@
 # It also proves the walk finds more than one descriptor, which the single
 # staged service could not.
 
-exec=/System/Programs/hi.xcex
+exec=/Shared/Programs/hi.xuex
 args=this should never print
 grants=console

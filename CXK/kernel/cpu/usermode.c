@@ -525,7 +525,7 @@ int usermode_file_test(void) {
     sa->broker_endpoint = -1; sa->caps = 0;
     sa->args = 0; sa->args_len = 0;
 
-    ft_strp(FT_PATH, scratch, "/kt_absent.xcex");
+    ft_strp(FT_PATH, scratch, "/kt_absent.xuex");
     step++;
     if (sys_exec_path((const char *)FT_PATH, sa) != E_NOENT) goto done;
 
