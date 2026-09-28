@@ -74,7 +74,11 @@ public sealed class TypeChecker
         return (a, b) switch
         {
             (PrimType x, PrimType y) => x.Kind == y.Kind,
-            (PointerType x, PointerType y) => Same(x.Pointee, y.Pointee),
+            // Different address spaces are different types. This one line is
+            // what makes assignment, argument passing, returning and `==`
+            // between a *phys and a *u8 a compile error, since all of them
+            // go through Same().
+            (PointerType x, PointerType y) => x.Space == y.Space && Same(x.Pointee, y.Pointee),
             (NamedType x, NamedType y) => x.Name == y.Name,
             (ArrayType x, ArrayType y) => x.Length == y.Length && Same(x.Element, y.Element),
             (FuncType x, FuncType y) => SameFunc(x, y),
@@ -195,6 +199,7 @@ public sealed class TypeChecker
             case MemberExpr m:
                 {
                     var tt = CheckExpr(m.Target);
+                    if (!CheckDeref(tt, m.Span)) return Set(e, Void);
                     var sd = StructOf(tt is PointerType p ? p.Pointee : tt); // allow s.f and ps.f
                     if (sd == null) { _diag.Error($"'.{m.Field}' on non-struct {Show(tt)}", m.Span); return Set(e, Void); }
                     foreach (var f in sd.Fields) if (f.Name == m.Field) return Set(e, f.Type);
@@ -204,6 +209,7 @@ public sealed class TypeChecker
                 {
                     var tt = CheckExpr(ix.Target);
                     Expect(CheckExpr(ix.Index), I32, ix.Index.Span, "index");
+                    if (!CheckDeref(tt, ix.Span)) return Set(e, Void);
                     TypeRef elem = tt switch { PointerType p => p.Pointee, ArrayType a => a.Element, _ => null! };
                     if (elem == null) { _diag.Error($"cannot index {Show(tt)}", ix.Span); return Set(e, Void); }
                     return Set(e, elem);
@@ -216,13 +222,44 @@ public sealed class TypeChecker
             case UnOp.BitNot:
             case UnOp.Neg: if (!IsInt(ot)) _diag.Error("unary '-' / '~' needs an integer", u.Span); return Set(e, ot);
                         case UnOp.Not: if (!IsBool(ot)) _diag.Error("unary '!' needs a bool", u.Span); return Set(e, Bool);
-                        case UnOp.Deref: if (ot is PointerType p) return Set(e, p.Pointee); _diag.Error("cannot dereference non-pointer", u.Span); return Set(e, Void);
+                        case UnOp.Deref:
+                            if (ot is PointerType p) return CheckDeref(ot, u.Span) ? Set(e, p.Pointee) : Set(e, Void);
+                            _diag.Error("cannot dereference non-pointer", u.Span); return Set(e, Void);
                         case UnOp.AddrOf: return Set(e, new PointerType(ot));
                     }
                     return Set(e, Void);
                 }
             case BinaryExpr b: return Set(e, CheckBinary(b));
-            case CastExpr c: { CheckExpr(c.Operand); return Set(e, c.Target); } // v0.1: permissive
+            case CastExpr c:
+                {
+                    var from = CheckExpr(c.Operand);
+                    /* Casts are otherwise permissive (v0.1), with ONE exception:
+                       a pointer may not be cast straight to a pointer in a
+                       different address space.
+
+                       `p as *u8` on a *phys is not a conversion, it is a lie -
+                       the number is unchanged, and it names different memory
+                       than a virtual pointer with that number would. What
+                       every real crossing actually does is arithmetic: phys to
+                       virt adds an offset, validating a user pointer checks a
+                       range. So the route is through an integer -
+                       `(p as u32 + OFFSET) as *u8` - which is exactly where
+                       that arithmetic goes, and which makes an untranslated
+                       crossing (`p as u32 as *u8`) something a reader can see
+                       was deliberate rather than something a cast hid.
+
+                       Pointer to integer and integer to pointer stay free, in
+                       any space: that is how an address arrives from a device
+                       register or a syscall argument in the first place. */
+                    if (_ctx.Expand(from) is PointerType pf && _ctx.Expand(c.Target) is PointerType pt &&
+                        pf.Space != pt.Space)
+                    {
+                        _diag.Error($"cannot cast {Show(from)} to {Show(c.Target)}: a pointer does not " +
+                                    "change address space by being relabelled. Convert through an integer, " +
+                                    "where the translation belongs", c.Span);
+                    }
+                    return Set(e, c.Target);
+                }
 
             default: return Set(e, Void);
         }
@@ -326,10 +363,44 @@ public sealed class TypeChecker
         if (!Assignable(want, got)) _diag.Error($"{what} must be {Show(want)}, got {Show(got)}", span);
     }
 
+    private static string SpaceWord(AddrSpace s) => s switch
+    {
+        AddrSpace.User => "user ",
+        AddrSpace.Phys => "phys ",
+        AddrSpace.Dma  => "dma ",
+        _              => "",
+    };
+
+    /* Refuse to read or write THROUGH a pointer that is not valid in this
+     * address space. Called by all three forms of dereference - `*p`, `p[i]`
+     * and `p.field` - so none of them can become the way around the others.
+     *
+     * Each message says why, because "cannot dereference" alone would read as
+     * an arbitrary rule. The point is that the number in a *phys or *dma
+     * pointer names a DIFFERENT memory than the CPU would reach by using it,
+     * and the number in a *user pointer is one a less-trusted caller chose. */
+    private bool CheckDeref(TypeRef t, SourceSpan span)
+    {
+        if (_ctx.Expand(t) is not PointerType { Space: not AddrSpace.Normal } p) return true;
+        _diag.Error(p.Space switch
+        {
+            AddrSpace.User =>
+                "cannot dereference a *user pointer: the address came from a less-trusted " +
+                "caller and has not been validated. Check it, then convert through an integer",
+            AddrSpace.Phys =>
+                "cannot dereference a *phys pointer: a physical address is not mapped at that " +
+                "number. Translate it to a virtual address first",
+            _ =>
+                "cannot dereference a *dma pointer: it is the address a device sees, not the " +
+                "one the CPU does",
+        }, span);
+        return false;
+    }
+
     private string Show(TypeRef t) => t switch
     {
         PrimType p => p.Kind.ToString().ToLowerInvariant(),
-        PointerType p => "*" + Show(p.Pointee),
+        PointerType p => "*" + SpaceWord(p.Space) + Show(p.Pointee),
         ArrayType a => $"[{a.Length}]" + Show(a.Element),
         NamedType n => n.Name,
         _ => "?"
