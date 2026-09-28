@@ -1,13 +1,13 @@
 # X — Core Language v0.3
 
-**Status:** LIVE SPEC (core v0.3). X is the systems core of the X family. XR
-(runtime) and XH (hybrid) are **front-end dialects that desugar to X core** —
+**Status:** LIVE SPEC (core v0.3). X is the systems core of the X family. X Runtime
+(runtime) and X Hybrid (hybrid) are **front-end dialects that desugar to X core** —
 they are *not* separate compilers and have no independent backend. There is one
 semantic core and one CXEX backend, so the dialects cannot drift.
 
 Design rule, same as the ABI: keep the smallest useful core; add features on
 demand. No separate IR yet — **X core's typed AST is the lowering target** that
-XR/XH reduce to and that the backend consumes. An explicit IR is added only
+X Runtime and X Hybrid reduce to and that the backend consumes. An explicit IR is added only
 if/when optimization needs it.
 
 ---
@@ -30,7 +30,7 @@ modules, `break`/`continue`, `sizeof`, string literals, the bitwise and shift
 operators, and type aliases. The frozen grammar described a language that no
 longer existed.
 
-That matters more than tidiness, because **XR and XH are specified by lowering to
+That matters more than tidiness, because **X Runtime and X Hybrid are specified by lowering to
 this document.** A dialect written against a stale core is specified against a
 fiction. So v0.2 records the language as built, and drops the word "frozen" for
 an honest rule: *the core is stable, not frozen — additions are documented here
@@ -66,7 +66,7 @@ The honest read: **the blockers are allocation, strings, and sum types** — not
 syntax sugar. A staged route is in §10.
 
 Allocation is now the single largest one, and it blocks more than self-hosting:
-XR's collector and XH's managed references both need a heap, and there is none.
+X Runtime's collector and X Hybrid's managed references both need a heap, and there is none.
 `GRANT_MEM` exists and nothing honours it — ABI §7.8 is still *specified,
 unimplemented*.
 
@@ -80,7 +80,7 @@ unimplemented*.
   I/O*. The only way to affect the world is `__syscall`, which lowers to `int 0x80`
   against the frozen ABI (`abi/cxk_abi.h`). So an X program is bounded by exactly
   the capability surface the kernel grants it — sandboxing falls out of the
-  language, not a checker bolted on. XR's "runtime" is just X code that calls
+  language, not a checker bolted on. X Runtime's "runtime" is just X code that calls
   executive services through these same intrinsics.
 - **Predictable lowering.** Every construct has an obvious, fixed mapping to
   x86-32. No surprises, no implicit allocation, no implicit copies beyond what's
@@ -169,7 +169,7 @@ and a future `bignum.xfxn` is the right shape for the same work in X — limbs i
 an array, with the constant-time control and per-algorithm limb counts that a
 fixed native width cannot express.
 
-> **Caution for XR and XH.** The comparison emitted for wide values walks limbs
+> **Caution for X Runtime and X Hybrid.** The comparison emitted for wide values walks limbs
 > from the top down and **branches on the first difference**. That is a timing
 > oracle on secret data. Any dialect exposing these types to cryptographic code
 > needs a constant-time comparison primitive, not this one.
@@ -475,9 +475,9 @@ uninitialized `let`.
   rather than emitted.)
 - Dynamic allocation of any kind.
 - An explicit IR (only if optimization needs it).
-- **XR**: runtime-as-executive-service (GC, dynamic dispatch via IPC) — a dialect
+- **X Runtime**: runtime-as-executive-service (GC, dynamic dispatch via IPC) — a dialect
   lowering to X core + executive calls.
-- **XH**: C++-like hybrid (methods, generics) — a dialect desugaring to X core.
+- **X Hybrid**: C++-like hybrid (methods, generics) — a dialect desugaring to X core.
 
 ### Known rough edges (not features — defects to fix)
 - `as` reinterprets rather than converts; narrowing does not mask.
@@ -524,6 +524,6 @@ list because it needs nothing beyond Stage 1.
 
 ---
 
-*This is the v0.2 core spec. XR and XH compile by lowering to these constructs;
+*This is the v0.2 core spec. X Runtime and X Hybrid compile by lowering to these constructs;
 the backend consumes only X core. The core is stable, not frozen: when a feature
 lands, it is documented here in the same change.*

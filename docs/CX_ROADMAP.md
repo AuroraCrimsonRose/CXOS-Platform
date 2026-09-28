@@ -71,10 +71,10 @@ Alongside, the language features that are cheap now and expensive later:
 The "GEOS-style" bar: the smallest system that genuinely meets spec and that
 someone could use. Made explicit so it cannot quietly grow.
 
-- **XD** (§2) — first, because six things already need it
+- **X Data** (§2) — first, because six things already need it
 - **FAT32** read/write — interop with every other machine is non-negotiable
 - **Software rasterizer + compositor** — the unblocked path to a real GUI
-- **XSH** (§2) and a terminal
+- **X Shell** (§2) and a terminal
 - **Task manager** (§4)
 - **Basic apps** — clock, calendar, text editor, file browser
 - **Networking completion** — DNS, NTP, UDP then TCP
@@ -110,36 +110,69 @@ project becomes a twenty-year one.
 
 ## 2. The languages
 
-One semantic core, several surfaces — see `CX_X_CORE_LANG.md`. Names follow the
-extension rule `x + <subsystem> + <object-type>`.
+One semantic core, several surfaces — see `CX_X_CORE_LANG.md`.
 
-| Language | Name | Extension | Status |
-|---|---|---|---|
-| X Native | X | `.xfxn` | working |
-| X Runtime | XR | — | planned (dialect) |
-| X Hybrid | XH | — | planned (dialect) |
-| X Data | **XD** | `.xfxd` | **next** |
-| X Visual | **XV** | `.xfxv` | after the layout engine |
-| X Shell | **XSH** | `.xssh` / `.xush` | phase B |
-| X Graphics | **XGL** | — | after the software rasterizer |
+### A language's name is not a domain
 
-### Naming decisions
+**The only domain is the letter directly after `x` in a file extension.** A
+language is always called by its full name, and its initials are never written
+as though they were a code — because a two-letter nickname reads exactly like
+`x` + a domain letter, and several of them would collide with real ones:
 
-**Serialization is XD, not XS.** `S` is already the *System* ownership tier —
-`.xsex` is an X System Executable. A language called XS would put two meanings
-of `S` into a taxonomy whose entire point is that the domain letter says whose
-a file is. That is the mistake that retired `.xcex`.
+| Nickname | Would read as | Why that is wrong |
+|---|---|---|
+| "XS" | x · **S** | `S` is the System tier (`.xsex`) |
+| "XR" | x · **R** | `R` is reserved for the Runtime domain (`CX_EXTENSION_SYSTEM.md` §6) |
+| "XN" | x · **N** | `N` is reserved for the Network domain |
+| "XD", "XV", "XH" | x · **D**, **V**, **H** | none of these is a domain, and writing them as codes suggests they are |
+| "XGL" | x · **G** | graphics source lives in **F**, not a G domain |
 
-**The shell is XSH, and signing is a property of the file, not the language.**
-One language; the tier letter says whose script it is (`.xssh` system-owned,
-`.xush` user-owned). A signed fix shipped by CATX is a system-tier script, not a
-different language.
+So the name is written in full — **X Data**, not "XD" — and the two letters at
+the end of an extension (`.xf`**`xd`**) are an **object-type** code inside the
+domain, which is a different thing from a domain.
 
-**Graphics is XGL, not XFGL.** `F` is the format subsystem, and a shader
-language is not a format. ("eXperimental Graphics Language" is a fine working
-name.)
+### Every language's source is in `F`
 
-### XD — X Data *(do first)*
+`.xfxn` has always been X Native *source*, in the **F** (format) domain. Every X
+language's source follows it — the domain is F, and the last two letters name
+the object type:
+
+| Language | Source | Status |
+|---|---|---|
+| X Native | `.xfxn` | working |
+| X Runtime | `.xfxr` | planned (dialect of X Native) |
+| X Hybrid | `.xfxh` | planned (dialect of X Native) |
+| X Data | `.xfxd` | **next** |
+| X Visual | `.xfxv` | after the layout engine |
+| X Graphics Language | `.xfgl` | after the software rasterizer |
+| X Shell | `.xssh` / `.xush` | phase B — see below |
+
+The dialects are distinguished by their **source** extension only. Compiled, they
+are the same kind of artifact as X Native — there is no compiled-X-Runtime or
+compiled-X-Hybrid extension, because an executable is named for whose it is,
+not for what produced it (`CX_DEVKIT_DESIGN.md`).
+
+> **Correction.** An earlier draft of this page said graphics should not be
+> `XFGL` because "a shader language is not a format." That was wrong: `F` is
+> where every X language's source already lives, `.xfxn` included. X Graphics
+> Language source is `.xfgl`.
+
+### The one exception: shell scripts take a tier
+
+**X Shell** scripts are the exception to "source is in F", deliberately. A script
+is run, and it runs with authority — exactly the property the ownership tiers
+exist to express for executables. So a script's domain says *whose* it is, as
+an executable's does: `.xssh` is a System-owned script, `.xush` a User-owned
+one. It is still one language; a signed fix shipped by CATX is a System-tier
+script, not a different language.
+
+### Serialization is not called "XS"
+
+`S` is the System ownership tier, and a language nicknamed "XS" would put two
+meanings of `S` into a taxonomy whose whole point is that the letter says whose
+a file is — the mistake that retired `.xcex`. It is **X Data**, source `.xfxd`.
+
+### X Data *(do first)*
 
 A serialization format in the spirit of RON or TOML: typed, commentable, and
 pleasant to write by hand. It is the sleeper item on this page — small, and
@@ -160,7 +193,7 @@ Two properties that must be designed in, not added:
 
 Writing its parser in X is also exactly the self-hosting practice phase A needs.
 
-### XV — X Visual *(after the layout engine)*
+### X Visual *(after the layout engine)*
 
 One language for structure, style and behaviour — drawing on HTML, CSS, XAML,
 SCSS, TypeScript and React — indentation-based, compiling straight to the
@@ -172,30 +205,30 @@ and that is a design decision that costs nothing to honour.
 week; the layout engine is a year. HTML and XAML are not verbose because nobody
 thought of indentation — they are complex because of the cascade, the box
 model, flex and grid solving, text shaping and reactive invalidation. Write
-screens against the engine in raw X, find what hurts, then design XV to remove
-exactly that. Designing the language against an engine that does not exist gets
+screens against the engine in raw X Native, find what hurts, then design X Visual
+to remove exactly that. Designing the language against an engine that does not exist gets
 the abstractions wrong.
 
 Indentation-based syntax reads better and is worse for generated content and
 for diffs of deeply nested trees. Accepted knowingly.
 
-When separate data is wanted, it goes in XD.
+When separate data is wanted, it goes in X Data.
 
-### XSH — X Shell
+### X Shell
 
 The diagnosis is right for bash: everything is a string. **PowerShell is not a
 counter-example** — it pipes .NET objects. Its real problems are verbosity,
 startup cost, and an object model that is .NET's rather than the OS's.
 
-XSH pipes **X values**, typed and checked by X's type checker. PowerShell had to
-borrow .NET's type system; XSH pipes the OS's own native types. That is a real
+X Shell pipes **X values**, typed and checked by X's type checker. PowerShell
+had to borrow .NET's type system; X Shell pipes the OS's own native types. That is a real
 advantage and most of it already exists.
 
 Target uses: interactive shell, automation, deployment.
 
-### XGL — X Graphics
+### X Graphics Language
 
-See §6. In short: a shader language compiling to **SPIR-V**, which is bounded,
+Source `.xfgl`. See §6. In short: a shader language compiling to **SPIR-V**, which is bounded,
 well specified, and can be validated with `spirv-val` without any GPU at all.
 
 ---
@@ -369,7 +402,7 @@ compiler.
 
 ### Order
 
-1. **XGL → SPIR-V.** Bounded, specified, verifiable without hardware.
+1. **X Graphics Language → SPIR-V.** Bounded, specified, verifiable without hardware.
 2. **Software rasterizer.** Every GUI item — compositor, windows, task manager,
    apps — works on it, today, with no vendor cooperation.
 3. **virtio-gpu (Virgl / Venus) under QEMU.** Real 3D acceleration without
@@ -448,7 +481,7 @@ an honest explanation gets more trustworthy data than opt-out gets goodwill.
 
 - Literal suffixes vs. bidirectional type inference, to let `1 << 100` be
   written at 128 bits
-- Whether XD's schema language is XD itself or a separate form
+- Whether X Data's schema language is X Data itself or a separate form
 - A memory budget charged to a whole process *subtree*, rather than the current
   per-process quota — today a process that spawns without end still exhausts RAM
 - Whether XFDB's API is a library only, or eventually grows a query surface
