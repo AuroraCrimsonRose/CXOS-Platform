@@ -163,7 +163,29 @@ public sealed class Parser
     private TypeRef ParseType()
     {
         var start = Cur.Span;
-        if (Match(TokenKind.Star)) return new PointerType(ParseType());
+        if (Match(TokenKind.Star))
+        {
+            /* `user`, `phys` and `dma` are CONTEXTUAL: a qualifier only when
+               they sit straight after `*` and another type follows. They are
+               not reserved words, so a variable or a struct called `user` -
+               which ordinary code has every reason to contain - still parses.
+               `*user` on its own is a pointer to a struct named user; `*user
+               u8` is a user-space pointer to u8. */
+            var space = AddrSpace.Normal;
+            if (At(TokenKind.Identifier) && Peek().Kind is TokenKind.Identifier or TokenKind.Star
+                                                         or TokenKind.LBracket or TokenKind.Fn)
+            {
+                space = Cur.Text switch
+                {
+                    "user" => AddrSpace.User,
+                    "phys" => AddrSpace.Phys,
+                    "dma"  => AddrSpace.Dma,
+                    _      => AddrSpace.Normal,
+                };
+                if (space != AddrSpace.Normal) Advance();
+            }
+            return new PointerType(ParseType(), space);
+        }
         if (Match(TokenKind.LBracket))
         {
             UInt128 n = UInt128.Zero;
