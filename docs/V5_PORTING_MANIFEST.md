@@ -36,7 +36,7 @@ solved problems.
   where in-place updates happen (verify-before-deploy; see CXFS doc 11.6.2).
 - **CXEX loader:** kernel/boot code that consumes the format lib (`lib/cxex`) to
   place sections in memory and transfer control. First target: load a userspace
-  `.xcex` as a ring-3 process (testable on the ported process model); boot-time
+  `.xuex` as a ring-3 process (testable on the ported process model); boot-time
   kernel loading comes later.
 - **New CMake build flow:** the v4 flow flattens `kernel.elf → kernel.bin` and patches
   it into the image at a fixed offset. v5 produces `.xkex`/`.xbex` (CXEX) and the new
@@ -91,7 +91,7 @@ needing it, so each addition is testable.
 3. **Process model:** port sched/switch/usermode/uid + `lib` crypto/format libs.
    Re-validate `ringtest`, `whoami`, `sha256`, `rsaverify` on v5.
 4. **Storage + CXFS:** pci, ata/ahci/disk, cxfs. Re-validate disk read/write.
-5. **CXEX loader:** the new piece — load a userspace `.xcex` as a ring-3 process,
+5. **CXEX loader:** the new piece — load a userspace `.xuex` as a ring-3 process,
    verifying its signature via the ported `rsa`/`cxex`/`sha256`. The v5 payoff.
 6. **Remaining drivers** (net, usb, video extras) as needed.
 7. **Stage 2 `.xbex` + boot-time kernel loading** — the larger boot/partition effort,

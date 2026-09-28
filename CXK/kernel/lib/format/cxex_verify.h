@@ -33,7 +33,7 @@ enum cxex_verify_result {
     CXEX_VERIFY_BAD_SIGNATURE = -8    /* RSA verify failed: tampered or forged */
 };
 
-/* Verify `file` (a complete .xkex/.xcex image incl. the appended CXSG block)
+/* Verify `file` (a complete .xkex/.xuex image incl. the appended CXSG block)
    against the trusted public key `trusted_xkpk` (CXPK format, as makekeys.py
    writes). Returns CXEX_VERIFY_OK (0) or a negative cxex_verify_result. */
 int cxex_verify(const uint8_t *file, size_t len,
@@ -43,6 +43,21 @@ int cxex_verify(const uint8_t *file, size_t len,
    from the system .xkpk by embedkey.py). This is the call the loader uses; the
    trusted key is NOT read from disk. Same return values as cxex_verify. */
 int cxex_verify_trusted(const uint8_t *file, size_t len);
+
+/* INTEGRITY ONLY, against the key the image itself carries.
+ *
+ * Answers "are these bytes exactly what whoever signed them signed" and
+ * nothing about who that was. An image from a signer nobody here has heard of
+ * still passes this, which is the point: without it, "unknown publisher" and
+ * "tampered with" would be the same answer, and a trust decision made on that
+ * basis would be made blind. Returns CXEX_VERIFY_OK or a negative result. */
+int cxex_verify_self(const uint8_t *file, size_t len);
+
+/* The signer's .xkpk, carried inside the image, or NULL if the image does not
+   verify against it. The bytes live in `file` and are valid as long as it is.
+   Use it to ask WHO signed something once cxex_verify_self has established
+   that the signature holds. */
+const uint8_t *cxex_signer_key(const uint8_t *file, size_t len, uint16_t *out_len);
 
 /* Human-readable message for a cxex_verify result (for logging). */
 const char *cxex_verify_strerror(int result);

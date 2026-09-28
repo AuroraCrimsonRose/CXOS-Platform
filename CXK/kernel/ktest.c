@@ -26,6 +26,9 @@
 #include "string.h"
 #include "pci.h"
 #include "timer.h"
+#include "cxex_verify.h"
+#include "cxex.h"
+#include "keyvault.h"
 
 /* concise pass/fail reporter */
 /* Report a test result. Stays SILENT on success - only failures are printed,
@@ -372,6 +375,90 @@ static int test_ahci(void) {
     return disk_read(ad->id, 0, 1, sector) == DISK_OK;
 }
 
+/* ---- signature verification ----
+ *
+ * The CXSG block now carries the signer's public key, and the verifier checks
+ * integrity against THAT key rather than against one we already hold. That is
+ * what lets an unknown publisher's image be shown intact - and it is also the
+ * thing that would be catastrophic to get subtly wrong, because every failure
+ * mode here looks like success.
+ *
+ * So this tampers on purpose. A real signed image off the disk is verified,
+ * then three single-byte edits are made to a copy and each must be caught:
+ *
+ *   a byte of the payload     - the signature no longer covers these bytes
+ *   a byte of the fingerprint - the block now names a key it does not carry
+ *   a byte of the key itself  - the signature no longer matches the modulus
+ *
+ * The fingerprint case is the interesting one. Nothing is DECIDED by the
+ * fingerprint - trust is settled by comparing key bytes - so a lax verifier
+ * would pass it. It still has to be rejected, because that field is what ends
+ * up in a log line naming who signed something, and a block allowed to name a
+ * publisher it cannot produce is a block that can lie about its author.
+ *
+ * Skipped on an unsigned build: there is nothing to tamper with.
+ */
+static int test_cxex_signature(void) {
+    if (!cxfs_is_mounted()) return 1;
+
+    int id = cxfs_resolve("/Shared/Programs/hi.xuex", 0);
+    if (id < 0) return 1;                        /* nothing staged - skip */
+
+    struct cxfs_entry e;
+    if (cxfs_read_entry((uint32_t)id, &e) != 0) return 0;
+    if (e.size == 0 || e.size > (1u << 20))     return 0;
+
+    uint8_t *img = (uint8_t *)kmalloc((size_t)e.size);
+    if (!img) return 0;
+    int ok = 0;
+
+    if (cxfs_read_file((uint32_t)id, img, (uint32_t)e.size) != (int)e.size) goto done;
+
+    /* An unsigned build stages an unsigned image; that is not a failure. */
+    if (cxex_verify_self(img, (size_t)e.size) == CXEX_VERIFY_UNSIGNED) { ok = 1; goto done; }
+
+    /* The real thing verifies against its own carried key, and the vault has
+       an opinion about the signer. Deliberately NOT asserting that opinion is
+       "platform": this image is a .xuex, and a .xuex signed by a publisher is
+       a legitimate thing that must still pass every integrity check here. */
+    if (cxex_verify_self(img, (size_t)e.size) != CXEX_VERIFY_OK) goto done;
+    if (keyvault_trust_of(img, (size_t)e.size) < 0)              goto done;
+
+    uint16_t pklen = 0;
+    const uint8_t *pk = cxex_signer_key(img, (size_t)e.size, &pklen);
+    if (!pk || pklen == 0) goto done;
+
+    struct cxex_header h;
+    struct cxex_sig sig;
+    if (cxex_parse_header(img, (size_t)e.size, &h) != 0) goto done;
+    if (cxex_get_sig(img, (size_t)e.size, &h, &sig) != 0) goto done;
+
+    /* 1. a byte of the signed payload */
+    img[16] ^= 0xFF;
+    if (cxex_verify_self(img, (size_t)e.size) != CXEX_VERIFY_BAD_SIGNATURE) goto done;
+    img[16] ^= 0xFF;
+
+    /* 2. a byte of the fingerprint - the block must describe what it carries */
+    uint32_t fp_off = h.signature_offset + 8;
+    img[fp_off] ^= 0xFF;
+    if (cxex_verify_self(img, (size_t)e.size) != CXEX_VERIFY_BAD_KEY) goto done;
+    img[fp_off] ^= 0xFF;
+
+    /* 3. a byte of the carried key itself */
+    img[sig.pubkey_file_offset + pklen - 1] ^= 0xFF;
+    if (cxex_verify_self(img, (size_t)e.size) == CXEX_VERIFY_OK) goto done;
+    img[sig.pubkey_file_offset + pklen - 1] ^= 0xFF;
+
+    /* and it still verifies once every edit is undone, which is what says the
+       failures above were the edits and not something left broken */
+    if (cxex_verify_self(img, (size_t)e.size) != CXEX_VERIFY_OK) goto done;
+
+    ok = 1;
+done:
+    kfree(img);
+    return ok;
+}
+
 /* ---- clock and timed sleep ----
  *
  * The failure worth catching is a sleep that returns immediately, and that is
@@ -479,6 +566,7 @@ void ktest_run(void) {
     total++; passed += report("cxfs offset I/O + compaction",      test_cxfs_offset());
     total++; passed += report("cxfs volume tags",                  test_cxfs_volumes());
     total++; passed += report("clock + timed sleep",               test_clock_sleep());
+    total++; passed += report("cxex signature + tamper",           test_cxex_signature());
     total++; passed += report("file syscalls (SYS_FILE_OP)",       usermode_file_test());
 
     /* single summary line: green if all passed, red if any failed. */

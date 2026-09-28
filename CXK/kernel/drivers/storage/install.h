@@ -17,7 +17,7 @@
  *     8   8   reserved
  *     16  ..  entries (file_count), 48 bytes each:
  *         0   32  name           target PATH relative to the root, NUL-padded
- *                                (e.g. "System/Programs/hi.xcex"). Missing
+ *                                (e.g. "Shared/Programs/hi.xuex"). Missing
  *                                parent directories are created. A name with
  *                                no '/' lands in the root.
  *         32  4   start_sector   blob location, sectors from the partition start
