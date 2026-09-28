@@ -120,6 +120,23 @@ public class CompileCommand : Command<CompileCommand.Settings>
 
         // 3. codegen -> asm
         string asm = new X86Emitter(ctx, tc!.LocalTypes, diag).Emit(unit);
+
+        /* Codegen reports too, and its diagnostics were being thrown away: the
+           only HasErrors check was above, before the emitter had run. Anything
+           the emitter refused to emit - an unsupported operation, a construct
+           it cannot express safely - produced a clean "done" and an object
+           file with the offending expression quietly missing. */
+        if (diag.HasErrors)
+        {
+            foreach (var d in diag.Items)
+            {
+                if (d.Severity != Severity.Error) continue;
+                AnsiConsole.MarkupLine($"[grey]{Markup.Escape(d.Span.ToString())}:[/] [red]error:[/] {Markup.Escape(d.Message)}");
+            }
+            AnsiConsole.MarkupLine($"[red]compilation failed[/] ({CountErrors(diag)} error(s))");
+            return 1;
+        }
+
         string asmPath = Path.ChangeExtension(s.Output, ".s");
         File.WriteAllText(asmPath, asm);
         AnsiConsole.MarkupLine($"[cyan]X:[/] emitted {Path.GetFileName(asmPath)}");
@@ -142,7 +159,7 @@ public class CompileCommand : Command<CompileCommand.Settings>
         if (!s.EmitAsm) { TryDelete(asmPath); }
         TryDelete(objPath);
         AnsiConsole.MarkupLine($"[green]done:[/] {s.Output}");
-        AnsiConsole.MarkupLine($"[grey]next:[/] cxk build \"{s.Output}\" out.xcex --type user");
+        AnsiConsole.MarkupLine($"[grey]next:[/] cxk build \"{s.Output}\" out.xuex --type user");
         return 0;
     }
 

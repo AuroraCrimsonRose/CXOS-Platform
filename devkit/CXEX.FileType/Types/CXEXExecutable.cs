@@ -21,8 +21,13 @@ public class CXEXExecutable : ICXFile
         {
             0x4B45 => "CXK Protected Kernel Executable (.xkex)",
             0x4245 => "CXK Boot Executive (.xbex)",
-            0x4F45 => "CXOS System Executive (.xoex)",
-            0x4345 => "CXOS User Application (.xcex)",
+            0x4F45 => "CXOS Executive (.xoex)",
+            0x5345 => "CXOS System Program (.xsex)",
+            0x5545 => "CXOS User Application (.xuex)",
+            // Retired: .xcex named an executable for how it was built, and
+            // every executable is compiled. Still recognised so an image from
+            // before the split reports something useful rather than "unknown".
+            0x4345 => "CXOS User Application (.xcex, retired - rebuild as .xuex)",
             _ => "Unknown CXEX Object"
         };
     }
