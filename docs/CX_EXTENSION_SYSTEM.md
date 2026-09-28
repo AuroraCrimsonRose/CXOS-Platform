@@ -313,10 +313,17 @@ object-type vocabulary.
 | Code | Family |
 |------|--------|
 | `XM` | Media (audio, video, images, fonts) |
-| `XN` | Network (protocols, packets, configs) |
 | `XR` | Runtime (VM, JIT, execution metadata) |
 | `XP` | Package (packages, installs, dependencies) |
 | `XT` | Temporary (cache, staging, temp files) |
+
+**Network is not a domain.** It was reserved here as `XN`, and it has been
+withdrawn for the same reason keys moved: a network configuration is somebody's,
+and the domain letter exists to say whose. Network files take the owner's tier
+and `nt` as their object type — **`.xsnt`** for a System-owned network file
+(interfaces, routes, the resolver configuration), **`.xunt`** for a User-owned
+one. That also frees `N`, and removes the last reason anyone might read "XN" as
+a code.
 
 **`XS` is no longer reserved for Security.** It was listed here before the
 domain restructure made `S` the **System** ownership tier (`.xsex`). A letter
@@ -327,11 +334,12 @@ choice, not a reservation.
 
 ### Codes here are domains; language names are not
 
-`XM`, `XN`, `XR` and the rest above are **domain codes**: `x` plus the letter
-that appears directly after it in an extension. The X languages are never
-abbreviated to two letters for exactly this reason — "XN" for X Native would
-read as the Network domain, "XR" for X Runtime as the Runtime domain. Languages
-are named in full, and their source lives in the **F** domain: `.xfxn`,
+`XM`, `XR` and the rest above are **domain codes**: `x` plus the letter that
+appears directly after it in an extension. Outside an extension, the X languages
+are always written as **full words** — X Native, X Runtime, X Hybrid, X Data,
+X Visual, X Shell, X Graphics Language — never as two letters, because two
+letters read as a domain code: "XR" for X Runtime would read as the Runtime
+domain. Their source lives in the **F** domain: `.xfxn`,
 `.xfxr`, `.xfxh`, `.xfxd`, `.xfxv`, `.xfgl`. See `CX_ROADMAP.md` §2.
 
 ---
