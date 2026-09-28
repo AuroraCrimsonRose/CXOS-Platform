@@ -62,7 +62,8 @@ Alongside, the language features that are cheap now and expensive later:
   named, greppable operation.
 - **`defer`** — *done*, see `CX_X_CORE_LANG.md` §2.3. Scope-exit cleanup,
   Zig-style (lexical, no closure, no heap).
-- **Attribute syntax** — X has none. It is the prerequisite for ISR contexts
+- **Attribute syntax** — *done*, see `CX_X_CORE_LANG.md` §2.4, with
+  `@section` as the first attribute. X had none. It is the prerequisite for ISR contexts
   and declarative driver tables (§5), so add the syntax early even if the
   attributes come later.
 
