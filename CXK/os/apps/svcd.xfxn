@@ -23,6 +23,11 @@
 // args   passed through as argv, with the program's own path as argv[0].
 // start  `boot` to start it now. Anything else, or absent, means "not yet" -
 //        so a descriptor can sit there disabled without being deleted.
+// every  seconds between runs. With it, svcd stays alive and re-runs the
+//        program on that interval. `start` and `every` are independent:
+//        `start=boot` alone runs it once, `every=60` alone first runs it a
+//        minute from now, and both together run it at boot and every minute
+//        after.
 // grants what authority to hand it, comma separated. Default is console only.
 //        Least privilege is the default on purpose: a service that turns out
 //        to need the disk should have to say so in its descriptor, where
@@ -43,6 +48,22 @@ global svc_exec: [192]u8;            // the exec= value
 global svc_val:  [256]u8;            // scratch for one field value
 global svc_blob: [256]u8;            // packed argv for the child
 global svc_started: u32;
+
+// ---- the schedule ----------------------------------------------------------
+// Flat arrays with a manual stride rather than an array of structs: X has no
+// array-of-struct indexing, and one allocation per column is easier to read
+// than a hand-packed record.
+const SCH_MAX:     u32 = 8;
+const SCH_ESTRIDE: u32 = 192;        // bytes reserved per exec path
+const SCH_BSTRIDE: u32 = 256;        // bytes reserved per packed argv blob
+
+global sch_n:      u32;
+global sch_exec:   [1536]u8;         // SCH_MAX * SCH_ESTRIDE
+global sch_blob:   [2048]u8;         // SCH_MAX * SCH_BSTRIDE
+global sch_blen:   [8]u32;           // packed argv length, per entry
+global sch_grants: [8]u32;
+global sch_every:  [8]u32;           // seconds between runs
+global sch_next:   [8]u32;           // tick (ms since boot) this is next due
 
 // ---- descriptor parsing ----------------------------------------------------
 
@@ -139,6 +160,29 @@ fn svc_pack(path: *u8, args: *u8) -> u32 {
     return n;
 }
 
+// ---- running one program ---------------------------------------------------
+
+// Start `path` with an already-packed argv blob and the given authority.
+// Returns the pid, or a negative error.
+fn svc_run(path: *u8, blob: *u8, blen: u32, grants: u32) -> i32 {
+    let a: spawn_args;
+    memzero((&a) as *u8, 28);
+    a.name            = path;
+    a.broker_endpoint = 0 - 1;
+    a.caps            = grants;
+    a.args            = blob;
+    a.args_len        = blen;
+    return exec_path(path, &a);
+}
+
+fn svc_fail(name: *u8, rc: i32) -> void {
+    puts("svcd: ");
+    puts(name);
+    puts(": ");
+    if (rc == E_PERM) { puts("not signed by a key this kernel trusts\n"); }
+    else { puts(file_strerror(rc)); newline(); }
+}
+
 // ---- starting one service --------------------------------------------------
 
 fn svc_start(name: *u8) -> void {
@@ -165,46 +209,139 @@ fn svc_start(name: *u8) -> void {
         return;
     }
 
-    // Absent or anything but `boot` means leave it alone. That is what lets a
-    // descriptor sit on disk disabled instead of having to be deleted.
-    if (svc_field(&svc_text[0], "start", &svc_val[0], SVC_ARGS_CAP) == 0) { return; }
-    if (streq(&svc_val[0], "boot") == 0) { return; }
+    // `start=boot` runs it now. `every=` repeats it. They are independent, and
+    // a descriptor with neither is simply off - which is what lets one sit on
+    // disk disabled instead of having to be deleted.
+    let at_boot: i32 = 0;
+    if (svc_field(&svc_text[0], "start", &svc_val[0], SVC_ARGS_CAP) == 1) {
+        if (streq(&svc_val[0], "boot") == 1) { at_boot = 1; }
+    }
 
-    let grants: u32 = 0;
+    let every: u32 = 0;
+    if (svc_field(&svc_text[0], "every", &svc_val[0], SVC_ARGS_CAP) == 1) {
+        every = dec_u32(&svc_val[0]);
+    }
+
+    if (at_boot == 0 && every == 0) { return; }        // present but off
+
+    let grants: u32 = GRANT_CONSOLE;
     if (svc_field(&svc_text[0], "grants", &svc_val[0], SVC_ARGS_CAP) == 1) {
         grants = svc_grants(&svc_val[0]);
-    } else {
-        grants = GRANT_CONSOLE;
     }
 
     svc_val[0] = 0;
     svc_field(&svc_text[0], "args", &svc_val[0], SVC_ARGS_CAP);
     let blob: u32 = svc_pack(&svc_exec[0], &svc_val[0]);
 
-    let a: spawn_args;
-    memzero((&a) as *u8, 28);
-    a.name            = &svc_exec[0];
-    a.broker_endpoint = 0 - 1;
-    a.caps            = grants;
-    a.args            = &svc_blob[0];
-    a.args_len        = blob;
+    if (at_boot == 1) {
+        let pid: i32 = svc_run(&svc_exec[0], &svc_blob[0], blob, grants);
+        if (pid < 0) {
+            svc_fail(name, pid);
+        } else {
+            puts("svcd: started ");
+            puts(name);
+            puts(" pid ");
+            print_u32(pid as u32);
+            newline();
+            svc_started = svc_started + 1;
+        }
+    }
 
-    let pid: i32 = exec_path(&svc_exec[0], &a);
-    if (pid < 0) {
+    if (every == 0) { return; }
+
+    if (sch_n >= SCH_MAX) {
         puts("svcd: ");
         puts(name);
-        puts(": ");
-        if (pid == E_PERM) { puts("not signed by a key this kernel trusts\n"); }
-        else { puts(file_strerror(pid)); newline(); }
+        puts(": no room in the schedule\n");
         return;
     }
 
-    puts("svcd: started ");
+    // Copy the exec path and the packed argv into the schedule: svc_exec and
+    // svc_blob are scratch and the next descriptor read overwrites both.
+    let e: u32 = sch_n * SCH_ESTRIDE;
+    let b: u32 = sch_n * SCH_BSTRIDE;
+    strcopy(&sch_exec[e], &svc_exec[0], SCH_ESTRIDE);
+    let k: u32 = 0;
+    while (k < blob && k < SCH_BSTRIDE) { sch_blob[b + k] = svc_blob[k]; k = k + 1; }
+    sch_blen[sch_n]   = k;
+    sch_grants[sch_n] = grants;
+    sch_every[sch_n]  = every;
+    sch_next[sch_n]   = ticks_ms() + every * 1000;
+    sch_n = sch_n + 1;
+
+    puts("svcd: scheduled ");
     puts(name);
-    puts(" pid ");
-    print_u32(pid as u32);
-    newline();
-    svc_started = svc_started + 1;
+    puts(" every ");
+    print_u32(every);
+    puts("s\n");
+}
+
+// ---- the schedule loop -----------------------------------------------------
+//
+// Wake when the soonest task is due, run everything that has come due, work
+// out the next wake, sleep again. Between wakes svcd is blocked in the kernel
+// and off the run queue entirely - a scheduled task costs nothing until it
+// runs.
+//
+// All the time arithmetic is signed differences rather than direct
+// comparisons, because ticks_ms is milliseconds since boot in a u32 and wraps
+// after about 49 days. `now >= due` starts answering no for the next 49 days
+// the first time that happens; `(due - now) as i32 <= 0` does not care.
+//
+// What this does NOT do is notice that the previous run of a task is still
+// going. There is no way to ask - a pid is returned but nothing reports
+// whether it is still alive - so a task that runs longer than its interval
+// will be started again on top of itself. For the intervals worth setting by
+// hand that is not a real risk, and the honest fix is a "is this pid alive"
+// call rather than a guess here.
+fn svc_loop() -> void {
+    while (1 == 1) {
+        let now: u32 = ticks_ms();
+
+        // run everything due
+        let i: u32 = 0;
+        while (i < sch_n) {
+            if (((sch_next[i] - now) as i32) <= 0) {
+                let rc: i32 = svc_run(&sch_exec[i * SCH_ESTRIDE],
+                                      &sch_blob[i * SCH_BSTRIDE],
+                                      sch_blen[i], sch_grants[i]);
+                if (rc < 0) { svc_fail(&sch_exec[i * SCH_ESTRIDE], rc); }
+                else {
+                    // The tick it actually ran at, not the tick it was due.
+                    // For a scheduled task "when did this last happen" is the
+                    // question, and the answer has to come from the clock
+                    // rather than from what was intended.
+                    puts("svcd: ran ");
+                    puts(&sch_exec[i * SCH_ESTRIDE]);
+                    puts(" at ");
+                    print_u32(ticks_ms());
+                    puts("ms\n");
+                }
+
+                // Next due from NOW, not from when it was due. A task whose
+                // run was late should not immediately be late again, and a
+                // task that could not start at all should not spin.
+                sch_next[i] = ticks_ms() + sch_every[i] * 1000;
+            }
+            i = i + 1;
+        }
+
+        // the soonest wake
+        now = ticks_ms();
+        let wait: u32 = SLEEP_MAX_MS;
+        i = 0;
+        while (i < sch_n) {
+            let d: i32 = (sch_next[i] - now) as i32;
+            if (d < 0) { d = 0; }
+            if ((d as u32) < wait) { wait = d as u32; }
+            i = i + 1;
+        }
+
+        // Never sleep zero in this loop: a task with a zero interval would
+        // spin the supervisor and starve everything else.
+        if (wait < 100) { wait = 100; }
+        sleep_ms(wait);
+    }
 }
 
 // ---- main ------------------------------------------------------------------
@@ -228,6 +365,14 @@ fn _start() -> void {
 
     puts("svcd: ");
     print_u32(svc_started);
-    puts(" service(s) started\n");
+    puts(" started, ");
+    print_u32(sch_n);
+    puts(" scheduled\n");
+
+    // Nothing to come back for: exit and free the thread slot rather than
+    // sleeping forever on the off chance.
+    if (sch_n == 0) { exit(0); }
+
+    svc_loop();
     exit(0);
 }
