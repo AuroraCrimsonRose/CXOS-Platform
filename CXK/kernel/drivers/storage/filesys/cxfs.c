@@ -108,6 +108,53 @@ static struct cxfs_volume  volumes[CXFS_MAX_VOLUMES] = {
 };
 static struct cxfs_volume *vol = &volumes[0];   /* the one being operated on */
 
+/* ---- volume-tagged entry ids ----
+ *
+ * An id handed out by this driver carries the volume it belongs to:
+ *
+ *     id = (volume << 24) | index
+ *
+ * The index is a manifest slot, bounded by sb.manifest_count - 1024 today -
+ * so 24 bits is far more room than the format can use. The root volume is 0,
+ * which makes every root id identical to the untagged id it was before: no
+ * stored id changes value, file_stat.id keeps its meaning and its width, and
+ * nothing already written to a disk has to be migrated.
+ *
+ * ON DISK, the id and parent_id inside a cxfs_entry stay volume-LOCAL. A disk
+ * must not record where it happens to be mounted - move it to another slot, or
+ * mount it somewhere else, and every reference on it would point at a volume
+ * that is not this one. The tag goes on when an entry is read and comes off
+ * when one is written, so the whole boundary is cxfs_read_entry and
+ * cxfs_write_entry and nothing else has to think about it.
+ */
+#define VOL_SHIFT       24
+#define VOL_OF(id)      ((uint32_t)(id) >> VOL_SHIFT)
+#define IDX_OF(id)      ((uint32_t)(id) & ((1u << VOL_SHIFT) - 1))
+#define TAG_ID(v, idx)  (((uint32_t)(v) << VOL_SHIFT) | (uint32_t)(idx))
+
+/* Point `vol` at the volume `id` names. Returns 0 if that volume is not
+ * mounted, in which case `vol` is left alone.
+ *
+ * There is no matching "restore". These functions call each other - resolve
+ * into read_entry, truncate into write_entry - but every id in one of those
+ * call trees comes from the same volume, so the nested select is a no-op. The
+ * two places where ids from different volumes could meet are cxfs_move and
+ * cxfs_is_ancestor, and both reject the cross-volume case outright: a parent
+ * pointer cannot move a file between filesystems, that needs a copy.
+ *
+ * The functions that take no id are what this leaves. cxfs_is_mounted and
+ * cxfs_free_blocks answer for the ROOT volume explicitly, because "is the
+ * filesystem up" must not depend on which volume was touched last. The
+ * allocators are current-volume on purpose: they run underneath a write, and
+ * that write has already selected the volume it is writing to.
+ */
+static int vol_select(uint32_t id) {
+    uint32_t v = VOL_OF(id);
+    if (v >= CXFS_MAX_VOLUMES || !volumes[v].mounted) return 0;
+    vol = &volumes[v];
+    return 1;
+}
+
 void    cxfs_set_id(uint8_t id) { vol->disk_id = id; }
 uint8_t cxfs_get_id(void)       { return vol->disk_id; }
 
@@ -296,7 +343,9 @@ int cxfs_mount_at(uint64_t base_lba) {
 
 int cxfs_mount(void) { return cxfs_mount_at(0); }
 
-int cxfs_is_mounted(void) { return vol->mounted; }
+/* "Is the filesystem up" is a question about the root volume. Answering it
+   from `vol` would make it depend on which volume was touched last. */
+int cxfs_is_mounted(void) { return volumes[0].mounted; }
 
 const struct cxfs_superblock *cxfs_get_superblock(void) {
     return vol->mounted ? &vol->sb : 0;
@@ -489,10 +538,15 @@ static void cxfs_free_run(uint32_t first, uint32_t n) {
 }
 
 uint32_t cxfs_free_blocks(void) {
-    if (!vol->mounted) return 0;
+    /* The root volume's free space, for the same reason cxfs_is_mounted
+       answers for the root: its one caller is the boot log, which means "/". */
+    struct cxfs_volume *prev = vol;
+    vol = &volumes[0];
     uint32_t count = 0;
-    for (uint32_t b = vol->sb.data_start; b < vol->sb.total_blocks; b++)
-        if (!bitmap_test(b)) count++;   /* RAM scan - fast */
+    if (vol->mounted)
+        for (uint32_t b = vol->sb.data_start; b < vol->sb.total_blocks; b++)
+            if (!bitmap_test(b)) count++;   /* RAM scan - fast */
+    vol = prev;
     return count;
 }
 
@@ -503,20 +557,42 @@ uint32_t cxfs_free_blocks(void) {
 #define ENTRIES_PER_BLOCK (CXFS_BLOCK_SIZE / sizeof(struct cxfs_entry))  /* 16 */
 
 int cxfs_read_entry(uint32_t id, struct cxfs_entry *out) {
-    if (!vol->mounted || id >= vol->sb.manifest_count) return -1;
-    uint32_t rel = id / ENTRIES_PER_BLOCK;
-    uint32_t idx = id % ENTRIES_PER_BLOCK;
+    if (!vol_select(id)) return -1;
+    uint32_t local = IDX_OF(id);
+    if (local >= vol->sb.manifest_count) return -1;
+    uint32_t rel = local / ENTRIES_PER_BLOCK;
+    uint32_t idx = local % ENTRIES_PER_BLOCK;
 
     const uint8_t *buf = manifest_fetch(rel);
     if (!buf) return -1;
     memcpy(out, buf + idx * sizeof(struct cxfs_entry), sizeof(struct cxfs_entry));
+
+    /* On the way out, the two id fields become the caller's kind of id. Doing
+       it here means every caller that hands e.id or e.parent_id straight back
+       to this driver keeps working without knowing volumes exist. */
+    uint32_t v = VOL_OF(id);
+    out->id        = TAG_ID(v, out->id);
+    out->parent_id = TAG_ID(v, out->parent_id);
     return 0;
 }
 
 int cxfs_write_entry(const struct cxfs_entry *entry) {
-    if (!vol->mounted || entry->id >= vol->sb.manifest_count) return -1;
-    uint32_t rel = entry->id / ENTRIES_PER_BLOCK;
-    uint32_t idx = entry->id % ENTRIES_PER_BLOCK;
+    if (!vol_select(entry->id)) return -1;
+    uint32_t local = IDX_OF(entry->id);
+    if (local >= vol->sb.manifest_count) return -1;
+    uint32_t rel = local / ENTRIES_PER_BLOCK;
+    uint32_t idx = local % ENTRIES_PER_BLOCK;
+
+    /* The mirror of the tagging in cxfs_read_entry: what goes on the disk is
+       volume-local, so both id fields lose their tag on the way down. The
+       parent must be on this volume too - a parent pointer cannot reach across
+       a filesystem boundary, and silently truncating one would graft the entry
+       onto whatever slot that index happens to hold here. */
+    if (VOL_OF(entry->parent_id) != VOL_OF(entry->id)) return -1;
+
+    struct cxfs_entry on_disk = *entry;
+    on_disk.id        = local;
+    on_disk.parent_id = IDX_OF(entry->parent_id);
 
     /* Write THROUGH: update the cache and the disk together, so a reader never
        sees one without the other and there is nothing to flush at unmount. */
@@ -525,7 +601,7 @@ int cxfs_write_entry(const struct cxfs_entry *entry) {
         buf = ent_blk;                            /* uncached: read-modify-write */
         if (read_block(vol->sb.manifest_start + rel, buf) != 0) return -1;
     }
-    memcpy(buf + idx * sizeof(struct cxfs_entry), entry, sizeof(struct cxfs_entry));
+    memcpy(buf + idx * sizeof(struct cxfs_entry), &on_disk, sizeof(struct cxfs_entry));
     return write_block(vol->sb.manifest_start + rel, buf);
 }
 
@@ -541,7 +617,8 @@ int cxfs_alloc_entry(void) {
             if (id == 0) continue;                 /* root */
             if (id >= vol->sb.manifest_count) return -1;
             struct cxfs_entry *e = (struct cxfs_entry *)(buf + i * sizeof(struct cxfs_entry));
-            if (e->type == CXFS_TYPE_FREE) return (int)id;
+            if (e->type == CXFS_TYPE_FREE)
+                return (int)TAG_ID(vol - volumes, id);
         }
     }
     return -1;
@@ -560,7 +637,11 @@ static int name_equals(const char *a, const char *b) {
 }
 
 int cxfs_find_in_dir(uint32_t parent_id, const char *name) {
-    if (!vol->mounted) return -1;
+    if (!vol_select(parent_id)) return -1;
+    /* The manifest holds volume-local indices, so the comparison is against
+       the untagged parent and the answer is tagged on the way out. */
+    uint32_t v      = VOL_OF(parent_id);
+    uint32_t parent = IDX_OF(parent_id);
     for (uint32_t blk = 0; blk < vol->sb.manifest_blocks; blk++) {
         const uint8_t *buf = manifest_fetch(blk);
         if (!buf) continue;
@@ -569,9 +650,9 @@ int cxfs_find_in_dir(uint32_t parent_id, const char *name) {
             if (id >= vol->sb.manifest_count) return -1;
             struct cxfs_entry *e = (struct cxfs_entry *)(buf + i * sizeof(struct cxfs_entry));
             if (e->type == CXFS_TYPE_FREE) continue;
-            if (e->parent_id == parent_id && id != parent_id &&
+            if (e->parent_id == parent && id != parent &&
                 name_equals(e->name, name))
-                return (int)id;
+                return (int)TAG_ID(v, id);
         }
     }
     return -1;
@@ -596,7 +677,9 @@ int cxfs_normalize_name(char *name) {
  * ==================================================================== */
 
 int cxfs_create_entry(uint32_t parent_id, const char *name, uint8_t type) {
-    if (!vol->mounted) return -1;
+    /* The new entry is allocated on the PARENT's volume - selecting it here is
+       what makes the cxfs_alloc_entry below take a slot from the right one. */
+    if (!vol_select(parent_id)) return -1;
 
     /* copy + normalize the name */
     char nm[CXFS_NAME_LEN];
@@ -634,9 +717,19 @@ int cxfs_create_entry(uint32_t parent_id, const char *name, uint8_t type) {
 }
 
 int cxfs_resolve(const char *path, uint32_t cwd) {
-    if (!vol->mounted || !path) return -1;
+    if (!path) return -1;
 
-    uint32_t current = (path[0] == '/') ? vol->sb.root_id : cwd;
+    /* An absolute path always starts at the ROOT volume, never at whichever
+       volume happened to be selected last. A relative one starts at the
+       working directory, and the tag on that id says which volume that is. */
+    uint32_t current;
+    if (path[0] == '/') {
+        if (!volumes[0].mounted) return -1;
+        current = TAG_ID(0, volumes[0].sb.root_id);
+    } else {
+        if (!vol_select(cwd)) return -1;
+        current = cwd;
+    }
 
     /* walk components separated by '/' */
     const char *p = path;
@@ -666,7 +759,9 @@ int cxfs_resolve(const char *path, uint32_t cwd) {
 }
 
 void cxfs_list_dir(uint32_t parent_id, void (*cb)(const struct cxfs_entry *)) {
-    if (!vol->mounted || !cb) return;
+    if (!cb || !vol_select(parent_id)) return;
+    uint32_t v      = VOL_OF(parent_id);
+    uint32_t parent = IDX_OF(parent_id);
     for (uint32_t blk = 0; blk < vol->sb.manifest_blocks; blk++) {
         const uint8_t *buf = manifest_fetch_into(blk, dir_blk);
         if (!buf) continue;
@@ -676,22 +771,35 @@ void cxfs_list_dir(uint32_t parent_id, void (*cb)(const struct cxfs_entry *)) {
             if (id == 0) continue;        /* skip root itself */
             struct cxfs_entry *e = (struct cxfs_entry *)(buf + i * sizeof(struct cxfs_entry));
             if (e->type == CXFS_TYPE_FREE) continue;
-            if (e->parent_id == parent_id) cb(e);
+            if (e->parent_id != parent) continue;
+            /* The callback gets a tagged COPY. Tagging `e` in place would be
+               writing into the manifest cache, which is the volume's real
+               contents, not a scratch buffer. */
+            struct cxfs_entry out = *e;
+            out.id        = TAG_ID(v, out.id);
+            out.parent_id = TAG_ID(v, out.parent_id);
+            cb(&out);
         }
     }
 }
 
 void cxfs_path_of(uint32_t id, char *out, int cap) {
     if (cap <= 0) return;
+    if (!vol_select(id)) { out[0] = '\0'; return; }
+
+    /* The walk stops at the root OF THIS VOLUME, which is that volume's
+       root_id wearing its tag - comparing against a bare root_id would stop at
+       whichever entry happens to share the index on volume 0. */
+    uint32_t root = TAG_ID(VOL_OF(id), vol->sb.root_id);
 
     /* root is just "/" */
-    if (id == vol->sb.root_id) { if (cap > 1) { out[0] = '/'; out[1] = '\0'; } else out[0] = '\0'; return; }
+    if (id == root) { if (cap > 1) { out[0] = '/'; out[1] = '\0'; } else out[0] = '\0'; return; }
 
     /* collect names from `id` up to root, then emit reversed */
     char names[16][CXFS_NAME_LEN];   /* up to 16 levels deep */
     int depth = 0;
     uint32_t cur = id;
-    while (cur != vol->sb.root_id && depth < 16) {
+    while (cur != root && depth < 16) {
         struct cxfs_entry e;
         if (cxfs_read_entry(cur, &e) != 0) break;
         strlcpy(names[depth], e.name, CXFS_NAME_LEN);
@@ -751,7 +859,7 @@ int cxfs_write_file(uint32_t id, const void *data, uint32_t len) {
 }
 
 int cxfs_read_file(uint32_t id, void *buf, uint32_t cap) {
-    if (!vol->mounted) return -1;
+    if (!vol_select(id)) return -1;
 
     struct cxfs_entry e;
     if (cxfs_read_entry(id, &e) != 0) return -1;
@@ -783,14 +891,12 @@ int cxfs_read_file(uint32_t id, void *buf, uint32_t cap) {
    to check it's a file); cxfs_read_path reads up to `cap` bytes and returns the
    bytes read (the file's size), or negative on error. */
 int cxfs_stat_path(const char *path, struct cxfs_entry *out) {
-    if (!vol->mounted) return -1;
     int id = cxfs_resolve(path, 0);          /* 0 = root; absolute paths */
     if (id < 0) return -1;
     return cxfs_read_entry((uint32_t)id, out);
 }
 
 int cxfs_read_path(const char *path, void *buf, uint32_t cap) {
-    if (!vol->mounted) return -1;
     int id = cxfs_resolve(path, 0);
     if (id < 0) return -1;
     return cxfs_read_file((uint32_t)id, buf, cap);
@@ -964,7 +1070,7 @@ static void trim_to_blocks(struct cxfs_entry *e, uint32_t keep) {
 /* shared preamble: fetch the entry, confirm it is a writable file nobody else
    has locked. Returns 0, or a CXFS_E_* code. */
 static int open_for_write(uint32_t id, struct cxfs_entry *e) {
-    if (!vol->mounted) return CXFS_E_FAIL;
+    if (!vol_select(id)) return CXFS_E_FAIL;
     if (cxfs_read_entry(id, e) != 0)        return CXFS_E_NOTFOUND;
     if (e->type == CXFS_TYPE_DIR)           return CXFS_E_ISDIR;
     if (e->type != CXFS_TYPE_FILE)          return CXFS_E_INVAL;
@@ -974,7 +1080,7 @@ static int open_for_write(uint32_t id, struct cxfs_entry *e) {
 }
 
 int cxfs_read_at(uint32_t id, uint64_t off, void *buf, uint32_t len) {
-    if (!vol->mounted) return CXFS_E_FAIL;
+    if (!vol_select(id)) return CXFS_E_FAIL;
     if (!buf)     return CXFS_E_INVAL;
 
     struct cxfs_entry e;
@@ -1011,7 +1117,7 @@ int cxfs_read_at(uint32_t id, uint64_t off, void *buf, uint32_t len) {
 }
 
 int cxfs_write_at(uint32_t id, uint64_t off, const void *data, uint32_t len) {
-    if (!vol->mounted) return CXFS_E_FAIL;
+    if (!vol_select(id)) return CXFS_E_FAIL;
     if (!data)    return CXFS_E_INVAL;
     if (len == 0) return 0;
 
@@ -1111,10 +1217,10 @@ int cxfs_truncate(uint32_t id, uint64_t new_size) {
  * ==================================================================== */
 
 int cxfs_rename(uint32_t id, const char *newname) {
-    if (!vol->mounted) return -1;
+    if (!vol_select(id)) return -1;
     struct cxfs_entry e;
     if (cxfs_read_entry(id, &e) != 0) return -1;
-    if (id == vol->sb.root_id) return -1;        /* don't rename root */
+    if (id == TAG_ID(VOL_OF(id), vol->sb.root_id)) return -1;   /* don't rename root */
 
     char nm[CXFS_NAME_LEN];
     int i = 0;
@@ -1127,11 +1233,18 @@ int cxfs_rename(uint32_t id, const char *newname) {
 }
 
 int cxfs_is_ancestor(uint32_t ancestor, uint32_t id) {
+    /* Nothing on one volume is an ancestor of anything on another: the walk
+       below stops at a volume root, so it could never reach across anyway, and
+       saying so here is clearer than letting it fall out. */
+    if (VOL_OF(ancestor) != VOL_OF(id)) return 0;
+    if (!vol_select(id)) return 0;
+    uint32_t root = TAG_ID(VOL_OF(id), vol->sb.root_id);
+
     /* walk up from id to root; if we meet `ancestor`, it's an ancestor. */
     uint32_t cur = id;
     for (int guard = 0; guard < 1024; guard++) {
         if (cur == ancestor) return 1;
-        if (cur == vol->sb.root_id) return 0;
+        if (cur == root) return 0;
         struct cxfs_entry e;
         if (cxfs_read_entry(cur, &e) != 0) return 0;
         if (e.parent_id == cur) return 0;   /* root safety */
@@ -1141,8 +1254,13 @@ int cxfs_is_ancestor(uint32_t ancestor, uint32_t id) {
 }
 
 int cxfs_move(uint32_t id, uint32_t new_parent) {
-    if (!vol->mounted) return -1;
-    if (id == vol->sb.root_id) return -1;        /* can't move root */
+    if (!vol_select(id)) return -1;
+    if (id == TAG_ID(VOL_OF(id), vol->sb.root_id)) return -1;   /* can't move root */
+
+    /* A move is one field change, and a parent pointer cannot span volumes.
+       Moving a file to another filesystem means copying its blocks there and
+       deleting the original, which is a caller's job, not this one's. */
+    if (VOL_OF(new_parent) != VOL_OF(id)) return -1;
 
     struct cxfs_entry e, p;
     if (cxfs_read_entry(id, &e) != 0) return -1;
@@ -1157,7 +1275,8 @@ int cxfs_move(uint32_t id, uint32_t new_parent) {
 }
 
 int cxfs_count_children(uint32_t dir_id) {
-    if (!vol->mounted) return 0;
+    if (!vol_select(dir_id)) return 0;
+    uint32_t dir = IDX_OF(dir_id);
     int count = 0;
     for (uint32_t blk = 0; blk < vol->sb.manifest_blocks; blk++) {
         const uint8_t *buf = manifest_fetch_into(blk, dir_blk);
@@ -1168,14 +1287,15 @@ int cxfs_count_children(uint32_t dir_id) {
             if (cid == 0) continue;
             struct cxfs_entry *e = (struct cxfs_entry *)(buf + i * sizeof(struct cxfs_entry));
             if (e->type == CXFS_TYPE_FREE) continue;
-            if (e->parent_id == dir_id && cid != dir_id) count++;
+            if (e->parent_id == dir && cid != dir) count++;
         }
     }
     return count;
 }
 
 int cxfs_delete_entry(uint32_t id) {
-    if (!vol->mounted || id == vol->sb.root_id) return -1;
+    if (!vol_select(id)) return -1;
+    if (id == TAG_ID(VOL_OF(id), vol->sb.root_id)) return -1;   /* not the root */
     struct cxfs_entry e;
     if (cxfs_read_entry(id, &e) != 0) return -1;
     if (e.type == CXFS_TYPE_FREE) return -1;
@@ -1192,7 +1312,7 @@ int cxfs_delete_entry(uint32_t id) {
 /* set an advisory lock on entry `id` for the current process. Returns 0 on
    success, -1 if it doesn't exist or is already locked by another live proc. */
 int cxfs_lock(uint32_t id) {
-    if (!vol->mounted) return -1;
+    if (!vol_select(id)) return -1;
     struct cxfs_entry e;
     if (cxfs_read_entry(id, &e) != 0) return -1;
     if (cxfs_lock_blocks(&e)) return -1;                /* someone else holds it */
@@ -1203,7 +1323,7 @@ int cxfs_lock(uint32_t id) {
 
 /* release an advisory lock. Only the lock owner or SYSTEM may unlock. */
 int cxfs_unlock(uint32_t id) {
-    if (!vol->mounted) return -1;
+    if (!vol_select(id)) return -1;
     struct cxfs_entry e;
     if (cxfs_read_entry(id, &e) != 0) return -1;
     if (!e.lock_state) return 0;                        /* already unlocked */
@@ -1216,7 +1336,7 @@ int cxfs_unlock(uint32_t id) {
 
 /* 1 if locked by another live process, else 0. */
 int cxfs_is_locked(uint32_t id) {
-    if (!vol->mounted) return 0;
+    if (!vol_select(id)) return 0;
     struct cxfs_entry e;
     if (cxfs_read_entry(id, &e) != 0) return 0;
     return cxfs_lock_blocks(&e);
