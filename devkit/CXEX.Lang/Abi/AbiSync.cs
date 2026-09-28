@@ -35,8 +35,8 @@ public static class AbiSync
     /// <c>NET_OP_</c> is not mistaken for a member of some shorter family.</summary>
     private static readonly string[] Families =
     {
-        "FILE_OP_", "NET_OP_", "FOPEN_", "FSEEK_", "FTYPE_",
-        "FB_OP_", "POWER_", "SYS_", "GRANT_", "E_"
+        "FILE_OP_", "MEM_OP_", "NET_OP_", "FOPEN_", "FSEEK_", "FTYPE_",
+        "FB_OP_", "POWER_", "MPROT_", "MMAP_", "MOBJ_", "SYS_", "GRANT_", "E_"
     };
 
     /// <summary>Header names that are not ABI surface and must not be reported.</summary>
@@ -83,7 +83,19 @@ public static class AbiSync
             string fam = FamilyOf(kv.Key);
             if (fam.Length == 0)
             {
-                if (!pConst.ContainsKey(kv.Key)) unfamilied.Add(kv.Key);
+                // A constant in no family is not REQUIRED to be mirrored - but if
+                // the prelude carries one anyway, its value is still ABI surface and
+                // must agree. This branch used to `continue` outright, which meant a
+                // familyless constant present on both sides was compared by nobody
+                // and warned about by nobody: it matched neither the "missing from
+                // the prelude" note below nor any value check. That is a worse
+                // failure than an unmirrored family, because it is invisible in a
+                // passing report rather than merely absent from it.
+                if (!pConst.TryGetValue(kv.Key, out long upv)) { unfamilied.Add(kv.Key); continue; }
+                if (upv != kv.Value)
+                    report.Add(AbiFindingKind.Error,
+                        $"{kv.Key} value mismatch: header {Hex(kv.Value)}, prelude {Hex(upv)} " +
+                        $"(no family, but mirrored - so it still has to agree)");
                 continue;
             }
 
