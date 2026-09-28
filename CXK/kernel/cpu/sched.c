@@ -7,6 +7,7 @@
 #include "heap.h"
 #include "gdt.h"
 #include "uid.h"
+#include "timer.h"   /* timer_ticks for the sleep queue */
 
 extern void context_switch(uint32_t *old_esp, uint32_t new_esp);
 
@@ -149,6 +150,50 @@ void thread_block(void) {
 void thread_unblock(int id) {
     if (id >= 0 && id < MAX_THREADS && threads[id].state == THREAD_BLOCKED)
         threads[id].state = THREAD_READY;
+}
+
+/* ---- timed sleep ----
+ *
+ * A sleeping thread leaves the run queue the same way an IPC waiter does, so
+ * it costs nothing but its memory. The timer interrupt puts it back.
+ */
+uint32_t thread_sleep_ms(uint32_t ms) {
+    if (!initialized || ms == 0) { yield(); return timer_ticks(); }
+
+    threads[current].wake_tick = timer_ticks() + ms;
+    threads[current].sleeping  = 1;
+    threads[current].state     = THREAD_BLOCKED;
+
+    for (;;) {
+        yield();
+        if (!threads[current].sleeping) break;                /* the timer woke us */
+        if (threads[current].state != THREAD_BLOCKED) break;  /* something else did */
+
+        /* Still blocked and still here, which means yield found nothing else
+           to run and declined to switch. We are the only thread awake, so wait
+           for the interrupt that will advance the clock instead of spinning on
+           it - the timer is at most one tick away. Halting rather than
+           spinning is the difference between an idle machine and a hot one. */
+        __asm__ volatile ("sti; hlt");
+    }
+
+    threads[current].sleeping = 0;
+    threads[current].state    = THREAD_RUNNING;
+    return timer_ticks();
+}
+
+void sched_wake_sleepers(void) {
+    if (!initialized) return;
+    uint32_t now = timer_ticks();
+    for (int i = 0; i < MAX_THREADS; i++) {
+        if (!threads[i].sleeping) continue;
+        /* Signed difference, so this still works the tick the counter wraps.
+           A plain `now >= wake_tick` would stop waking anything for 49 days
+           the first time it happened. */
+        if ((int32_t)(now - threads[i].wake_tick) < 0) continue;
+        threads[i].sleeping = 0;
+        if (threads[i].state == THREAD_BLOCKED) threads[i].state = THREAD_READY;
+    }
 }
 
 void yield(void) {

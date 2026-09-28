@@ -27,6 +27,9 @@
 #include "mouse.h"
 #include "power.h"
 #include "netif.h"
+#include "timer.h"
+#include "rtc.h"
+#include "datetime.h"
 
 /* asm entry points (usermode.asm) */
 extern int  enter_usermode(uint32_t entry_eip, uint32_t user_esp, uint32_t *save_slot);
@@ -112,6 +115,36 @@ int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
         case SYS_YIELD:
             yield();
             return 0;
+
+        case SYS_CLOCK: {
+            /* Unprivileged: the time of day is not authority. A process that
+               could not read it would simply count its own loop iterations. */
+            if (!user_ptr_ok(a1, sizeof(struct clock_info))) return E_FAULT;
+            struct clock_info *ci = (struct clock_info *)a1;
+            ci->ticks = timer_ticks();
+
+            /* epoch 0 means "no usable RTC", which the ABI documents, so a
+               caller that needs a real date can tell. Deriving it here rather
+               than handing over the raw RTC fields keeps the BCD/century mess
+               on this side of the boundary. */
+            struct rtc_time t;
+            rtc_read(&t);
+            struct datetime dt = { t.year, t.month, t.day, t.hour, t.minute, t.second };
+            ci->epoch = (uint32_t)datetime_to_epoch(&dt);
+            return E_OK;
+        }
+
+        case SYS_SLEEP:
+            /* Also unprivileged: waiting is the opposite of a privilege. Note
+               this is NOT POWER_SLEEP, which puts the machine into an ACPI
+               sleep state and is rightly gated - this blocks one thread and
+               leaves everything else running.
+
+               Capped rather than unbounded: a sleep is a promise to come back,
+               and one that never does is indistinguishable from a hang. */
+            if (a1 > SLEEP_MAX_MS) return E_RANGE;
+            thread_sleep_ms(a1);
+            return E_OK;
 
         case SYS_SPAWN:
             if (!(thread_current_caps() & GRANT_SPAWN)) return E_PERM;
@@ -511,6 +544,28 @@ int usermode_file_test(void) {
     if (sys_exec_path((const char *)0xC0001000u, sa) != E_FAULT) goto done;
     step++;
     if (sys_exec_path((const char *)FT_PATH, (const struct spawn_args *)0xC0001000u) != E_FAULT) goto done;
+
+    /* --- clock and sleep, through the real dispatcher ---
+     * Both are unprivileged, so they must work with caps stripped to nothing -
+     * that is the assertion, not an afterthought. A future edit that gates
+     * either one behind a capability breaks here rather than in whatever
+     * service was relying on being able to wait. */
+    thread_set_caps(me, 0);
+    step++;
+    if (syscall_dispatch(SYS_CLOCK, FT_DATA, 0) != E_OK) goto done;
+    step++;
+    if (((uint32_t *)FT_DATA)[0] == 0) goto done;     /* ticks must have advanced */
+    step++;
+    if (syscall_dispatch(SYS_SLEEP, 1, 0) != E_OK) goto done;
+    thread_set_caps(me, GRANT_DISK | GRANT_SPAWN);
+
+    /* a bad clock pointer is caught, not written through */
+    step++;
+    if (syscall_dispatch(SYS_CLOCK, 0xC0001000u, 0) != E_FAULT) goto done;
+    /* and a sleep longer than the cap is refused rather than silently clamped:
+       a caller that asked for a day and got an hour would never know */
+    step++;
+    if (syscall_dispatch(SYS_SLEEP, SLEEP_MAX_MS + 1, 0) != E_RANGE) goto done;
 
     /* --- argument blobs the kernel must refuse ---
      * check_args runs before anything touches the disk, so the path here is

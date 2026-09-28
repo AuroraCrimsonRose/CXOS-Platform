@@ -24,6 +24,8 @@
 #define SYS_YIELD         0x01   /* cooperatively yield the CPU */
 #define SYS_GETPID        0x02   /* -> caller pid */
 #define SYS_GETUID        0x03   /* -> caller owning uid (0 = SYSTEM) */
+#define SYS_CLOCK         0x04   /* ebx = *clock_info -> 0, or -E_* */
+#define SYS_SLEEP         0x05   /* ebx = ms; blocks this thread, then returns 0 */
 /* IPC + handles 0x10-0x1F */
 #define SYS_IPC_CALL      0x10   /* ebx = *ipc_call_args -> reply length (blocks) */
 #define SYS_IPC_RECV      0x11   /* ebx = *ipc_recv_args -> request length (blocks) */
@@ -97,6 +99,37 @@ struct spawn_args {
     const char *args;             /* argc NUL-terminated strings back to back, or NULL */
     uint32_t    args_len;         /* total bytes of that blob, terminators included */
 };
+
+/* ---- clock and sleep (SYS_CLOCK, SYS_SLEEP; unprivileged) ----
+ *
+ * Neither needs a capability. Reading the clock discloses nothing a process
+ * could not time for itself, and waiting is the opposite of a privilege - a
+ * sleeping process is one not using the machine. The existing POWER_SLEEP is a
+ * different thing entirely: it puts the MACHINE into an ACPI sleep state and
+ * is rightly behind GRANT_POWER. SYS_SLEEP blocks one thread and leaves the
+ * rest of the system running.
+ *
+ * Two clocks, because they answer different questions:
+ *
+ *   ticks    milliseconds since boot, from the 1000 Hz timer. Monotonic. Use
+ *            it to measure an interval - it cannot jump, and it does not care
+ *            whether the machine knows what year it is.
+ *   epoch    seconds since 1970, from the RTC. Use it to stamp a file or to
+ *            decide that it is 3am. 0 means the RTC could not be read, so a
+ *            caller that needs a real date must check rather than assume.
+ *
+ * A scheduler wants both: `ticks` to decide that 30 seconds have passed, and
+ * `epoch` to record when something ran.
+ */
+struct clock_info {
+    uint32_t ticks;      /* ms since boot, monotonic; wraps after ~49 days */
+    uint32_t epoch;      /* seconds since 1970 from the RTC, or 0 if unavailable */
+};
+
+/* SYS_SLEEP bounds. A sleep is a promise to come back, so it is capped: an
+   unbounded one is indistinguishable from a hang, and nothing in the system
+   needs to wait longer than an hour in a single call. */
+#define SLEEP_MAX_MS  3600000u   /* one hour */
 
 /* IPC is synchronous: ipc_call blocks the caller until the owner ipc_replies.
    Messages are bounded (<= one page) and copied through the kernel. The message
