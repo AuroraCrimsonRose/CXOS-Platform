@@ -65,7 +65,16 @@
 #define CXEX_SECTION_SIZE  28      /* section 9.4: 8+4+4+4+4+4 */
 /* signature block (10.3): magic(4) sig_algo(2) hash_algo(2) fingerprint(32)
    sig_len(2) signature(sig_len). Fixed part before the signature = 42 bytes. */
-#define CXEX_SIG_HDR_SIZE  42
+/* CXSG block header, up to the two variable-length parts that follow it:
+     0  "CXSG"        4
+     4  sig_algo      2
+     6  hash_algo     2
+     8  fingerprint  32   sha256 of the .xkpk bytes below
+    40  pubkey_len    2
+    42  sig_len       2
+    44  pubkey     pubkey_len   the signer's .xkpk file, verbatim
+        signature  sig_len                                              */
+#define CXEX_SIG_HDR_SIZE  44
 
 #define CXSG_MAGIC0 'C'
 #define CXSG_MAGIC1 'X'
@@ -107,9 +116,11 @@ struct cxex_section {
 struct cxex_sig {
     uint16_t sig_algo;
     uint16_t hash_algo;
-    uint8_t  fingerprint[32];
+    uint8_t  fingerprint[32];   /* sha256 of the .xkpk at pubkey_file_offset */
+    uint16_t pubkey_len;
     uint16_t sig_len;
-    uint32_t sig_file_offset;   /* where the signature bytes start in the file */
+    uint32_t pubkey_file_offset; /* the signer's .xkpk, carried with the image */
+    uint32_t sig_file_offset;    /* where the signature bytes start in the file */
 };
 
 /* ---- parse / validate / accessors (own the byte layout) ---- */
