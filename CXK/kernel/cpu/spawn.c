@@ -18,6 +18,7 @@
 #include "addr_space.h"
 #include "paging.h"
 #include "pmm.h"
+#include "vmregion.h"
 #include "heap.h"
 #include "cxex_load.h"
 #include "exec.h"
@@ -127,6 +128,9 @@ static void proc_trampoline(void) {
        then free the page directory. */
     struct addr_space self = r->space;
     addr_space_reclaim_user();
+    /* After the reclaim, never before: that walk is what frees the frames
+       behind this process's mappings, and this only drops the bookkeeping. */
+    vm_proc_reset(pid);
     struct addr_space kspace;
     addr_space_kernel(&kspace);
     addr_space_switch(&kspace);
@@ -178,6 +182,12 @@ int proc_start(const void *image, uint32_t image_len, uint32_t caps,
     thread_mark_user(pid);
     thread_set_space(pid, space.pd_phys);   /* scheduler loads this CR3 for it */
     thread_set_caps(pid, caps);
+
+    /* Memory authority attenuates down the spawn chain the same way grants do.
+       The parent is whoever is running this call: the kernel for the executive
+       (not tracked, so nothing narrows the default) or a ring-3 process for
+       everything it launches. */
+    vm_proc_init(pid, VM_DEFAULT_QUOTA, thread_current_id());
 
     if (broker) {
         int bh = thread_handle_install(pid, HANDLE_ENDPOINT, HRIGHT_SEND, broker);

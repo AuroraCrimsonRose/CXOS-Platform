@@ -9,6 +9,7 @@
 #include "uid.h"
 #include "paging.h"
 #include "pmm.h"
+#include "vmregion.h"
 #include "console.h"
 #include "logging.h"
 #include "vga.h"
@@ -214,6 +215,22 @@ int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
             if (a1 == POWER_SHUTDOWN) power_shutdown();   /* does not return if ACPI S5 works */
             if (a1 == POWER_SLEEP)  { power_sleep(a2); return 0; }
             return E_INVAL;
+
+        case SYS_MEM_OP: {
+            /* Unprivileged, like the clock and the sleep: a program that could
+               not obtain memory would not be contained, it would be unable to
+               run. What bounds it is the per-process quota inside vm_map, not
+               a grant bit every program would have to hold. */
+            if (!user_ptr_ok(a1, sizeof(struct mem_op_args))) return E_FAULT;
+            struct mem_op_args *m = (struct mem_op_args *)a1;
+            int pid = thread_current_id();
+            switch (m->op) {
+                case MEM_OP_MAP:   return vm_map(pid, m);
+                case MEM_OP_UNMAP: return vm_unmap(pid, m->addr, m->length);
+                case MEM_OP_INFO:  return vm_info(pid, m);
+                default:           return E_INVAL;
+            }
+        }
 
         case SYS_IPC_CALL:
             return ipc_call((const struct ipc_call_args *)a1);
