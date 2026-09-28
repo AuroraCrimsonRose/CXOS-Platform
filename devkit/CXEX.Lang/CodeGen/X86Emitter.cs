@@ -231,10 +231,10 @@ public sealed class X86Emitter
     private void EmitGlobal(GlobalDecl g)
     {
         int size = Align4(SizeOf(g.Type));
-        ulong init = 0;
+        UInt128 init = UInt128.Zero;
         if (g.Init != null) new ConstFold(_ctx, _diag).TryEval(g.Init, out init);
 
-        if (init == 0)
+        if (init == UInt128.Zero)
         {
             _bss.AppendLine("    .align 4");
             _bss.AppendLine($"{g.Name}:");
@@ -242,9 +242,21 @@ public sealed class X86Emitter
             return;
         }
 
+        /* Every word of the value, not just the low one.
+         *
+         * This used to emit `.long {init}` and then zeros, which was fine while
+         * an initializer could not exceed 32 bits and quietly wrong the moment
+         * one could: `global x: u64 = 18446744073709551615;` handed the
+         * assembler a 64-bit number in a .long directive. The words come out
+         * low-first because the target is little-endian, and a value narrower
+         * than the global is zero-extended by the shift falling off the end. */
+        _data.AppendLine("    .align 4");
         _data.AppendLine($"{g.Name}:");
-        _data.AppendLine($"    .long {init}");
-        for (int i = 4; i < size; i += 4) _data.AppendLine("    .long 0");
+        for (int i = 0; i < size; i += 4)
+        {
+            uint w = i < 16 ? (uint)(init >> (i * 8)) : 0u;
+            _data.AppendLine($"    .long {w}");
+        }
     }
 
     // ---- statements ----
@@ -391,7 +403,18 @@ public sealed class X86Emitter
     {
         switch (e)
         {
-            case IntLit i: T($"mov ${i.Value}, %eax"); break;
+            /* A literal too wide for a register cannot be carried in eax, so
+               it is materialised into a slot and its ADDRESS returned - the
+               same representation every other wide value uses. Reaching the
+               truncating line below with a wide literal would put a value
+               where the caller expects an address, which is a segfault rather
+               than a wrong number.
+
+               Anything that fits is moved as an immediate, and the cast to
+               uint is what keeps the assembler from being handed a number it
+               cannot encode. */
+            case IntLit i when IsWide(TypeOf(i)): EmitWideOperand(i, TypeOf(i)); break;
+            case IntLit i: T($"mov ${(uint)i.Value}, %eax"); break;
             case StrLit s: T($"mov ${InternString(s.Value)}, %eax"); break;   // address of pooled bytes
             case SizeofExpr sz: T($"mov ${SizeOf(TypeOf(sz.Operand))}, %eax"); break;   // compile-time; operand not evaluated
             case BoolLit b: T($"mov ${(b.Value ? 1 : 0)}, %eax"); break;
@@ -409,7 +432,7 @@ public sealed class X86Emitter
     {
         if (!_ctx.Resolved.TryGetValue(n, out var sym)) { T("xor %eax, %eax"); return; }
         if (sym.Kind == SymKind.Const && sym.Decl is ConstDecl cd && new ConstFold(_ctx, _diag).TryEval(cd.Value, out var v))
-        { T($"mov ${v}, %eax"); return; }
+        { T($"mov ${(uint)v}, %eax"); return; }   // narrow path; see IntLit above
         // a function used as a value yields its address (function pointer)
         if (sym.Kind == SymKind.Function) { T($"mov ${n.Name}, %eax"); return; }
         if (sym.Kind == SymKind.Global)
@@ -704,7 +727,14 @@ public sealed class X86Emitter
      * and left the other holding whatever was on the stack. */
     private void EmitWideOperand(Expr src, TypeRef wt)
     {
-        if (IsWide(TypeOf(src))) { EmitExpr(src); return; }
+        /* A literal is materialised HERE whatever its own inferred type, and
+           the check comes before the wide test on purpose. A literal too big
+           for a register types wide, and sending it to EmitExpr would take the
+           narrow IntLit path and hand back a VALUE in eax where the caller is
+           about to dereference an ADDRESS. Widening it at `wt` is also more
+           correct than widening it at its own type: the literal takes the
+           width of the expression it appears in. */
+        if (src is not IntLit && IsWide(TypeOf(src))) { EmitExpr(src); return; }
 
         int n = SizeOf(wt);
         int slot = TakeWideSlot();
@@ -714,7 +744,12 @@ public sealed class X86Emitter
         {
             for (int o = 0; o < n; o += 4)
             {
-                uint w = o < 8 ? (uint)((il.Value >> (o * 8)) & 0xFFFFFFFFul) : 0u;
+                /* `o < 16`, not `o < 8`. This is where a literal stopped being
+                   allowed to exceed 64 bits: the words above the eighth byte
+                   were filled with zero regardless of the value, so even once
+                   the lexer could read a 128-bit constant, the top half was
+                   dropped on the way into the slot. */
+                uint w = o < 16 ? (uint)(il.Value >> (o * 8)) : 0u;
                 T($"movl ${w}, {slot + o}(%ebp)");
             }
         }
@@ -799,6 +834,13 @@ public sealed class X86Emitter
         if (!new ConstFold(_ctx, _diag).TryEval(b.Right, out var amt))
         {
             _diag.Error("a wide shift needs a constant amount", b.Span);
+            return;
+        }
+        /* Range-checked before narrowing, because the fold is 128 bits wide and
+           a cast to int would wrap a huge amount into a small, plausible one. */
+        if (amt > (UInt128)(words * 32))
+        {
+            _diag.Error($"shift of {amt} is wider than the {words * 32}-bit operand", b.Span);
             return;
         }
 
