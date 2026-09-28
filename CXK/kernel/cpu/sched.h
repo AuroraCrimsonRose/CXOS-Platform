@@ -51,6 +51,12 @@ struct thread {
     uint32_t  u_saved_flags;
     uint32_t  kstack_top;      /* top of this process's esp0 stack -> TSS esp0 */
     uint32_t  kstack_base;     /* allocated esp0 stack (for free on exit) */
+    /* Timed sleep. `wake_tick` is the timer tick this thread becomes runnable
+       again; `sleeping` says the field means anything, because tick 0 is a
+       real tick and a wrapped counter makes "0 = not sleeping" a lie roughly
+       every 49 days. */
+    uint32_t  wake_tick;
+    int       sleeping;
 };
 
 /* initialize the scheduler (registers the currently-running code as thread 0). */
@@ -132,5 +138,20 @@ void     thread_set_caps(int id, uint32_t caps);
 void     thread_set_space(int id, uint32_t pd_phys);   /* CR3 to load when this thread runs */
 void     thread_block(void);            /* block the current thread (IPC wait) + yield */
 void     thread_unblock(int id);        /* make a blocked thread runnable again */
+
+/* Block the current thread for `ms` milliseconds, then return. Built on
+   thread_block: the thread leaves the run queue entirely, so a sleeping
+   process costs nothing but its memory - this is not a spin.
+
+   `ms` of 0 is a yield. The caller may wake EARLY if something else unblocks
+   it (an IPC reply, a keystroke), which is why this returns the tick it
+   actually woke at rather than nothing: a caller that must not be cut short
+   can check and sleep again. */
+uint32_t thread_sleep_ms(uint32_t ms);
+
+/* Called from the timer interrupt once per tick: wake any thread whose sleep
+   has expired. Only flips state to READY, never switches, so it is safe in an
+   interrupt handler - the same contract thread_unblock keeps. */
+void     sched_wake_sleepers(void);
 
 #endif

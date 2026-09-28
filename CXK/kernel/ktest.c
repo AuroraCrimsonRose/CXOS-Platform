@@ -25,6 +25,7 @@
 #include "cxfs.h"
 #include "string.h"
 #include "pci.h"
+#include "timer.h"
 
 /* concise pass/fail reporter */
 /* Report a test result. Stays SILENT on success - only failures are printed,
@@ -371,6 +372,39 @@ static int test_ahci(void) {
     return disk_read(ad->id, 0, 1, sector) == DISK_OK;
 }
 
+/* ---- clock and timed sleep ----
+ *
+ * The failure worth catching is a sleep that returns immediately, and that is
+ * exactly the one a "did it come back?" test cannot see. So this measures.
+ *
+ * The lower bound is the assertion: a sleep must not finish early, because
+ * everything built on it - a scheduler waiting for the next due task, a
+ * retry backing off - is wrong if it can. The upper bound is deliberately
+ * loose. Scheduling here is cooperative and whatever else ktest has left
+ * runnable gets to finish first, so "it took longer than asked" is normal and
+ * only a wildly wrong figure means anything.
+ */
+static int test_clock_sleep(void) {
+    uint32_t t0 = timer_ticks();
+    thread_sleep_ms(50);
+    uint32_t dt = timer_ticks() - t0;
+    if (dt < 50)  return 0;        /* woke early - the bug that matters */
+    if (dt > 500) return 0;        /* wildly over: something is wrong */
+
+    /* 0 ms is documented as a yield, not a wait. */
+    t0 = timer_ticks();
+    thread_sleep_ms(0);
+    if ((timer_ticks() - t0) > 50) return 0;
+
+    /* The clock must advance, and must do so monotonically. */
+    uint32_t a = timer_ticks();
+    thread_sleep_ms(10);
+    uint32_t b = timer_ticks();
+    if ((int32_t)(b - a) < 10) return 0;
+
+    return 1;
+}
+
 /* ---- volumes ----
  * The part of the volume layer worth asserting is what happens to an id whose
  * volume tag is wrong. Every public entry point runs it through vol_select,
@@ -444,6 +478,7 @@ void ktest_run(void) {
     total++; passed += report("cxfs (read-only mount check)",     test_cxfs());
     total++; passed += report("cxfs offset I/O + compaction",      test_cxfs_offset());
     total++; passed += report("cxfs volume tags",                  test_cxfs_volumes());
+    total++; passed += report("clock + timed sleep",               test_clock_sleep());
     total++; passed += report("file syscalls (SYS_FILE_OP)",       usermode_file_test());
 
     /* single summary line: green if all passed, red if any failed. */
