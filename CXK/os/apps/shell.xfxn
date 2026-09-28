@@ -1,7 +1,7 @@
 // shell.xfxn - the CXK console shell.
 // Aurora Tejeda / CATX SYSTEMS LLC
 //
-// A privileged OS-level executable (CAP_OS_BASELINE): reads input, writes the
+// A privileged OS-level executable (GRANT_OS_BASELINE): reads input, writes the
 // console, draws, and reboots directly.
 //
 // Commands are a DISPATCH TABLE of function pointers rather than an if/else
@@ -220,7 +220,7 @@ fn cmd_shutdown(arg: *u8) -> void {
 // ---- file.xfxn: the filesystem ----
 // These are the first commands that touch the disk. Everything before them
 // worked inside the process; these go out through SYS_FILE_OP to CXFS, which
-// needs CAP_DISK - part of CAP_OS_BASELINE, so the shell has it.
+// needs GRANT_DISK - part of GRANT_OS_BASELINE, so the shell has it.
 
 // report a failed call and return 1, or return 0 when rc is fine
 fn file_err(what: *u8, rc: i32) -> i32 {
@@ -356,8 +356,8 @@ fn cmd_mv(arg: *u8) -> void {
     file_err(arg, rename(arg, newname));
 }
 
-// Run a program that lives on the disk. The shell holds CAP_OS_BASELINE, so it
-// can hand a child any subset of that - here CAP_CONSOLE, which is the least
+// Run a program that lives on the disk. The shell holds GRANT_OS_BASELINE, so it
+// can hand a child any subset of that - here GRANT_CONSOLE, which is the least
 // that lets a program say anything. broker_endpoint is -1: the shell owns a
 // SEND handle to its own executive, not a RECV endpoint of its own, so it has
 // no broker to give. The child gets authority directly instead.
@@ -400,8 +400,8 @@ fn run_candidate(dir: *u8, name: *u8, ext: i32) -> *u8 {
     return &run_buf[0];
 }
 
-// Run a program that lives on the disk. The shell holds CAP_OS_BASELINE, so it
-// can hand a child any subset of that - here CAP_CONSOLE, which is the least
+// Run a program that lives on the disk. The shell holds GRANT_OS_BASELINE, so it
+// can hand a child any subset of that - here GRANT_CONSOLE, which is the least
 // that lets a program say anything. broker_endpoint is -1: the shell owns a
 // SEND handle to its own executive, not a RECV endpoint of its own, so it has
 // no broker to give. The child gets authority directly instead.
@@ -430,7 +430,7 @@ fn cmd_run(arg: *u8) -> void {
     memzero((&a) as *u8, 28);
     a.name            = name;
     a.broker_endpoint = 0 - 1;
-    a.caps            = CAP_CONSOLE;
+    a.caps            = GRANT_CONSOLE;
     a.args            = &run_argbuf[0];
     a.args_len        = blob;
 

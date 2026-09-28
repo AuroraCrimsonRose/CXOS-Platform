@@ -1,0 +1,13 @@
+# disabled.xosv - a service that is present but not started.
+#
+# `start` is absent, so the supervisor reads this, finds no instruction to run it, and
+# moves on. That is the point: a service can sit on disk turned off without
+# being deleted, and turning it on is adding one line rather than remembering
+# what the file used to contain.
+#
+# It also proves the walk finds more than one descriptor, which the single
+# staged service could not.
+
+exec=/System/Programs/hi.xcex
+args=this should never print
+grants=console

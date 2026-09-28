@@ -27,7 +27,7 @@ struct endpoint {
 };
 
 /* ep_create: allocate an endpoint owned by the caller + install a RECV handle.
-   Returns the handle index, or a negative ABI error. (CAP_ENDPOINT, checked by
+   Returns the handle index, or a negative ABI error. (GRANT_ENDPOINT, checked by
    the dispatcher.) */
 int ep_create(void);
 

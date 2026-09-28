@@ -51,6 +51,19 @@ x + <subsystem> + <object-type>
 So `.xkdr` parses as **x**(CX) · **k**(kernel) · **dr**(driver) = "CX kernel
 driver."
 
+**The domain letter is why this is a pattern and not a set of mnemonics.** A
+service descriptor could read `.xsvc` — shorter, and "svc" is more obviously
+"service" than "sv" is. But it spells the *kind* of thing at the cost of saying
+nothing about *whose* it is, and the kind is the part you can guess from
+context. Whether a file belongs to the kernel, the boot chain, the operating
+system or a user is the part you cannot, and it is the part that decides who
+may write it and what is allowed to load it. `.xosv` keeps that: **x** · **o**
+(OS) · **sv** (service). The same service concept in another domain would be
+`.xcsv` or `.xksv`, and all three sort together and read the same way.
+
+A name that fits the pattern is always preferable to a name that reads slightly
+better on its own.
+
 ### 2.1 Object-Type Vocabulary
 
 The two-letter object-type suffix is meant to be **reused consistently** across
@@ -117,11 +130,29 @@ subsystems, so the system stays learnable as it grows. Common suffixes:
 | Extension | Meaning |
 |-----------|---------|
 | `.xoex` | OS Executive (the broker executive; CXEX `type_code` 0x4F45 `'OE'`) |
+| `.xosv` | OS Service descriptor (what to run at boot, and with what authority) |
+
+`.xosv` is **not** a CXEX container and has no `type_code` — it is a text file,
+`key=value` lines, read by the service supervisor. It names a program; it is
+not one. That is why it is XO rather than XC: the thing it describes is part of
+the operating system's startup, even when the program it points at is an
+ordinary `.xcex`.
+
+```
+exec=/System/Programs/hi.xcex    the program to run (required)
+args=hello world                 passed as argv, after the program's own path
+start=boot                       `boot` to start it; absent means leave it off
+grants=console,disk              authority to hand it; default is console only
+```
+
+Descriptors live in `/System/Services/`. Authority defaults to the minimum on
+purpose: a service that needs the disk has to say so in the file, where someone
+reading the system can see what it was given.
 
 The tier between XK and XC: XK is the kernel, XO is the executive that brokers
 for userspace, XC is an application. The three are the same CXEX container
 distinguished by `type_code`, and `caps_for()` reads that code to decide
-authority - `.xoex` gets `CAP_OS_BASELINE`, `.xcex` gets nothing by default.
+authority - `.xoex` gets `GRANT_OS_BASELINE`, `.xcex` gets nothing by default.
 
 ### XF — CX Format (Data & Serialization)
 
