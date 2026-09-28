@@ -60,7 +60,8 @@ Alongside, the language features that are cheap now and expensive later:
   handing a virtual address to DMA). No codegen change — all pointers stay the
   same width — so it is type-checker work only. Every conversion must be a
   named, greppable operation.
-- **`defer`** — scope-exit cleanup, Zig-style (lexical, no closure, no heap).
+- **`defer`** — *done*, see `CX_X_CORE_LANG.md` §2.3. Scope-exit cleanup,
+  Zig-style (lexical, no closure, no heap).
 - **Attribute syntax** — X has none. It is the prerequisite for ISR contexts
   and declarative driver tables (§5), so add the syntax early even if the
   attributes come later.
