@@ -164,6 +164,7 @@ public sealed class Lexer
         TokenKind k;
         switch (c)
         {
+            case '@': Advance(); k = TokenKind.At; break;
             case '(': Advance(); k = TokenKind.LParen; break;
             case ')': Advance(); k = TokenKind.RParen; break;
             case '{': Advance(); k = TokenKind.LBrace; break;

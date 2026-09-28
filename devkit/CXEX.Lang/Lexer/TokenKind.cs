@@ -15,7 +15,7 @@ public enum TokenKind
     Pipe, Caret, Tilde, Shl, Shr,            // | ^ ~ << >>
     Eq, Ne, Lt, Le, Gt, Ge,                  // == != < <= > >=
     AndAnd, OrOr, Not,                       // && || !
-    Dot,
+    Dot, At,                                 // . @
     // control
     Eof, Error
 }

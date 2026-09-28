@@ -28,6 +28,7 @@ public sealed class TypeChecker
 
     public void Check(CompilationUnit unit)
     {
+        foreach (var d in unit.Decls) CheckAttrs(d);
         foreach (var d in unit.Decls)
             switch (d)
             {
@@ -37,6 +38,87 @@ public sealed class TypeChecker
                 case GlobalDecl g when g.Init != null: _fold.TryEval(g.Init, out _); break;
             }
     }
+
+    // ---- attributes ----
+    /* The one place an attribute gets its meaning. An attribute not handled
+       here is an ERROR: silently ignoring an unknown name would let a typo
+       compile into a program that quietly lacks whatever the attribute was
+       for, and nothing would ever say so. Adding an attribute means adding a
+       case here and teaching the emitter what it does - both, or neither. */
+    private static readonly string[] KnownAttrs = { "section" };
+
+    private void CheckAttrs(Decl d)
+    {
+        var seen = new HashSet<string>();
+        foreach (var a in d.Attrs)
+        {
+            if (!seen.Add(a.Name))
+            {
+                _diag.Error($"'@{a.Name}' given more than once", a.Span);
+                continue;
+            }
+            switch (a.Name)
+            {
+                case "section": CheckSection(d, a); break;
+                default:
+                    _diag.Error($"unknown attribute '@{a.Name}'; known: " +
+                                string.Join(", ", KnownAttrs.Select(k => "@" + k)), a.Span);
+                    break;
+            }
+        }
+    }
+
+    /* @section(".name") - put a function or global in a named object-file
+       section instead of the default one.
+
+       It is the mechanism that declarative tables are built on: many
+       declarations, in many files, all landing in one section that something
+       reads as an array. That is how driver match tables will work, without a
+       hand-maintained registration list that drifts from the drivers.
+
+       The default names are refused. `.text`, `.data`, `.rodata` and `.bss`
+       already mean where a declaration goes by default, so naming one is either
+       redundant or - a function in `.data` - contradictory, and the assembler
+       would quietly merge section attributes rather than say so. */
+    private static readonly HashSet<string> DefaultSections = new() { ".text", ".data", ".rodata", ".bss" };
+
+    private void CheckSection(Decl d, Attr a)
+    {
+        switch (d)
+        {
+            case FnDecl { Body: null }:
+                _diag.Error("'@section' on an extern function: it has no body to place", a.Span); return;
+            case FnDecl: case GlobalDecl: break;
+            default:
+                _diag.Error($"'@section' does not apply to {DeclWord(d)}: only a function or a global " +
+                            "occupies space in a section", a.Span);
+                return;
+        }
+        if (a.Args.Count != 1 || a.Args[0].Name != null || a.Args[0].Value is not StrLit s)
+        {
+            _diag.Error("'@section' takes one argument, the section name as a string: @section(\".name\")", a.Span);
+            return;
+        }
+        var name = s.Value;
+        if (name.Length < 2 || name[0] != '.' ||
+            !name.Skip(1).All(ch => char.IsAsciiLetterOrDigit(ch) || ch == '_' || ch == '.'))
+        {
+            _diag.Error($"section name '{name}' must start with '.' and contain only letters, digits, " +
+                        "'_' and '.'", a.Span);
+            return;
+        }
+        if (DefaultSections.Contains(name))
+            _diag.Error($"'{name}' is where a declaration goes by default; '@section' is for a section of its own", a.Span);
+    }
+
+    private static string DeclWord(Decl d) => d switch
+    {
+        StructDecl => "a struct",
+        ConstDecl => "a constant",
+        TypeAliasDecl => "a type alias",
+        ImportDecl => "an import",
+        _ => "this declaration",
+    };
 
     // ---- helpers ----
     // all three expand type aliases first, so `type fx = i32;` behaves as i32
