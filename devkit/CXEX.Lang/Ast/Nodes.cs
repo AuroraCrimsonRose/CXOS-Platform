@@ -9,7 +9,25 @@ public abstract record Node { public SourceSpan Span { get; init; } }
 public sealed record CompilationUnit(List<Decl> Decls) : Node;
 
 // ---- declarations ----
-public abstract record Decl : Node;
+/* Attributes: `@name` or `@name(args)` written before a declaration.
+ *
+ * Carried on the Decl base as an init-only list, so every declaration can have
+ * them and no declaration's constructor had to change. What an attribute MEANS
+ * is decided in one table in the type checker; an attribute that table does not
+ * know is an error, never silently ignored - a typo like `@sectoin` that
+ * compiled and quietly did nothing would be worse than having no attributes.
+ *
+ * An argument is positional (`@section(".x")`) or named (`@device(vendor =
+ * 0x8086)`). Named arguments are parsed now even though no attribute takes
+ * them yet: the syntax is the expensive part to change later, and hardware
+ * matching tables will want them. */
+public sealed record AttrArg(string? Name, Expr Value) : Node;
+public sealed record Attr(string Name, List<AttrArg> Args) : Node;
+
+public abstract record Decl : Node
+{
+    public List<Attr> Attrs { get; init; } = new();
+}
 public sealed record Param(string Name, TypeRef Type) : Node;
 
 public sealed record FnDecl(string Name, List<Param> Params, TypeRef Return, Block? Body) : Decl;

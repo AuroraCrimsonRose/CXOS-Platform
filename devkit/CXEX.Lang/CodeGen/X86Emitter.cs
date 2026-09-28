@@ -186,6 +186,8 @@ public sealed class X86Emitter
             _wideTempBase = -locals;
         }
 
+        var section = SectionOf(f);
+        if (section != null) _text.AppendLine($".section {section},\"ax\",@progbits");   // allocated + executable
         Lbl(f.Name);
         T("push %ebp");
         T("mov %esp, %ebp");
@@ -195,6 +197,16 @@ public sealed class X86Emitter
         T("mov %ebp, %esp");
         T("pop %ebp");
         T("ret");
+        if (section != null) _text.AppendLine(".text");   // the next function goes back where it belongs
+    }
+
+    /* The section a declaration asked for with @section, or null for the
+       default. The type checker has already validated it, so this only reads. */
+    private static string? SectionOf(Decl d)
+    {
+        foreach (var a in d.Attrs)
+            if (a.Name == "section" && a.Args.Count == 1 && a.Args[0].Value is StrLit s) return s.Value;
+        return null;
     }
 
     private IEnumerable<LetStmt> CollectLocals(Block b)
@@ -236,6 +248,22 @@ public sealed class X86Emitter
         int size = Align4(SizeOf(g.Type));
         UInt128 init = UInt128.Zero;
         if (g.Init != null) new ConstFold(_ctx, _diag).TryEval(g.Init, out init);
+
+        /* A global in a named section is emitted there in full, even when it
+           is zero. Sending it to .bss would put it somewhere other than where
+           it was asked to be - and a section read as a table must contain
+           every entry, zero-valued ones included. */
+        var section = SectionOf(g);
+        if (section != null)
+        {
+            _data.AppendLine($".section {section},\"aw\",@progbits");   // allocated + writable
+            _data.AppendLine("    .align 4");
+            _data.AppendLine($"{g.Name}:");
+            for (int i = 0; i < size; i += 4)
+                _data.AppendLine($"    .long {(i < 16 ? (uint)(init >> (i * 8)) : 0u)}");
+            _data.AppendLine(".data");
+            return;
+        }
 
         if (init == UInt128.Zero)
         {
