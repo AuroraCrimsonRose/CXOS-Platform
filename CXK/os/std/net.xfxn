@@ -4,7 +4,7 @@
 //   import "net.xfxn";
 //
 // Wraps SYS_NET_OP over the ported v4 stack (e1000 -> netif -> arp/ip/icmp).
-// Needs CAP_NET, which is part of CAP_OS_BASELINE - the shell can use it, a
+// Needs GRANT_NET, which is part of GRANT_OS_BASELINE - the shell can use it, a
 // capability-less app cannot.
 //
 // IPv4 addresses are a packed u32 in network order: 192.168.1.10 is

@@ -121,7 +121,7 @@ subsystems, so the system stays learnable as it grows. Common suffixes:
 The tier between XK and XC: XK is the kernel, XO is the executive that brokers
 for userspace, XC is an application. The three are the same CXEX container
 distinguished by `type_code`, and `caps_for()` reads that code to decide
-authority - `.xoex` gets `CAP_OS_BASELINE`, `.xcex` gets nothing by default.
+authority - `.xoex` gets `GRANT_OS_BASELINE`, `.xcex` gets nothing by default.
 
 ### XF — CX Format (Data & Serialization)
 

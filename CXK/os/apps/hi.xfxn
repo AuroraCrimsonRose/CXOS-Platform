@@ -8,7 +8,7 @@
 // the running system changes - which is the whole point of the exercise.
 //
 // It writes to the console directly rather than asking a broker to, because
-// its launcher hands it CAP_CONSOLE by attenuation (CX_ABI.md section 5). The
+// its launcher hands it GRANT_CONSOLE by attenuation (CX_ABI.md section 5). The
 // brokered model still works unchanged; this is the other end of that
 // spectrum, and it is the end that needs no endpoint to exist first.
 

@@ -88,8 +88,8 @@ int user_ptr_ok(uint32_t ptr, uint32_t len) {
 int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
     switch (num) {
         case SYS_CONSOLE_WRITE: {
-            if (!(thread_current_caps() & CAP_CONSOLE)) {
-                klog_u32("CAP", SEV_WARN, "console_write DENIED for pid ", (uint32_t)thread_current_id(), LOG_COLOR_VALUE, " (no CAP_CONSOLE)");
+            if (!(thread_current_caps() & GRANT_CONSOLE)) {
+                klog_u32("GRANT", SEV_WARN, "console_write DENIED for pid ", (uint32_t)thread_current_id(), LOG_COLOR_VALUE, " (no GRANT_CONSOLE)");
                 return E_PERM;
             }
             uint32_t len = a2;
@@ -114,23 +114,23 @@ int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
             return 0;
 
         case SYS_SPAWN:
-            if (!(thread_current_caps() & CAP_SPAWN)) return E_PERM;
+            if (!(thread_current_caps() & GRANT_SPAWN)) return E_PERM;
             return sys_spawn((const struct spawn_args *)a1);
 
         case SYS_EXEC_PATH:
-            if (!(thread_current_caps() & CAP_SPAWN)) return E_PERM;
+            if (!(thread_current_caps() & GRANT_SPAWN)) return E_PERM;
             return sys_exec_path((const char *)a1, (const struct spawn_args *)a2);
 
         case SYS_FILE_OP:
-            if (!(thread_current_caps() & CAP_DISK)) {
-                klog_u32("CAP", SEV_WARN, "file_op DENIED for pid ", (uint32_t)thread_current_id(), LOG_COLOR_VALUE, " (no CAP_DISK)");
+            if (!(thread_current_caps() & GRANT_DISK)) {
+                klog_u32("GRANT", SEV_WARN, "file_op DENIED for pid ", (uint32_t)thread_current_id(), LOG_COLOR_VALUE, " (no GRANT_DISK)");
                 return E_PERM;
             }
             return sys_file_op((const struct file_op_args *)a1);
 
         case SYS_FB_OP:
-            if (!(thread_current_caps() & CAP_FRAMEBUFFER)) {
-                klog_u32("CAP", SEV_WARN, "fb_op DENIED for pid ", (uint32_t)thread_current_id(), LOG_COLOR_VALUE, " (no CAP_FRAMEBUFFER)");
+            if (!(thread_current_caps() & GRANT_FRAMEBUFFER)) {
+                klog_u32("GRANT", SEV_WARN, "fb_op DENIED for pid ", (uint32_t)thread_current_id(), LOG_COLOR_VALUE, " (no GRANT_FRAMEBUFFER)");
                 return E_PERM;
             }
             return sys_fb_op((const struct fb_op_args *)a1);
@@ -142,8 +142,8 @@ int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
             return (int)(unsigned char)keyboard_getchar_blocking();
 
         case SYS_NET_OP:
-            if (!(thread_current_caps() & CAP_NET)) {
-                klog_u32("CAP", SEV_WARN, "net DENIED for pid ", (uint32_t)thread_current_id(), LOG_COLOR_VALUE, " (no CAP_NET)");
+            if (!(thread_current_caps() & GRANT_NET)) {
+                klog_u32("GRANT", SEV_WARN, "net DENIED for pid ", (uint32_t)thread_current_id(), LOG_COLOR_VALUE, " (no GRANT_NET)");
                 return E_PERM;
             }
             return sys_net_op((const struct net_op_args *)a1);
@@ -161,8 +161,8 @@ int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
         }
 
         case SYS_POWER:
-            if (!(thread_current_caps() & CAP_POWER)) {
-                klog_u32("CAP", SEV_WARN, "power DENIED for pid ", (uint32_t)thread_current_id(), LOG_COLOR_VALUE, " (no CAP_POWER)");
+            if (!(thread_current_caps() & GRANT_POWER)) {
+                klog_u32("GRANT", SEV_WARN, "power DENIED for pid ", (uint32_t)thread_current_id(), LOG_COLOR_VALUE, " (no GRANT_POWER)");
                 return E_PERM;
             }
             if (a1 == POWER_REBOOT)   power_reboot();     /* does not return */
@@ -180,7 +180,7 @@ int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
             return ipc_reply((const struct ipc_reply_args *)a1);
 
         case SYS_EP_CREATE:
-            if (!(thread_current_caps() & CAP_ENDPOINT)) return E_PERM;
+            if (!(thread_current_caps() & GRANT_ENDPOINT)) return E_PERM;
             return ep_create();
 
         case SYS_HANDLE_CLOSE:
@@ -239,7 +239,7 @@ int usermode_test(void) {
        SYS_WRITE works (restored after). */
     int      tme  = thread_current_id();
     uint32_t tsav = thread_current_caps();
-    thread_set_caps(tme, CAP_CONSOLE);
+    thread_set_caps(tme, GRANT_CONSOLE);
     /* enter ring 3; returns when the routine SYS_EXITs */
     int rc = enter_usermode(TEST_CODE_VIRT, ustack_top, thread_current_usave());
     thread_set_caps(tme, tsav);
@@ -259,7 +259,7 @@ int usermode_test(void) {
  * check that would otherwise go untested until a real program tripped it.
  *
  * Goes through syscall_dispatch rather than calling sys_file_op directly, so
- * the CAP_DISK gate is on the path too.
+ * the GRANT_DISK gate is on the path too.
  */
 #define FT_ARGS  (TEST_CODE_VIRT + 0x000)
 #define FT_PATH  (TEST_CODE_VIRT + 0x100)
@@ -321,7 +321,7 @@ int usermode_file_test(void) {
 
     int      me   = thread_current_id();
     uint32_t save = thread_current_caps();
-    thread_set_caps(me, CAP_DISK);
+    thread_set_caps(me, GRANT_DISK);
 
     int ok = 0;       /* set to 1 only at the very end */
     /* Which check failed, counted in execution order. One pass/fail for forty
@@ -474,19 +474,19 @@ int usermode_file_test(void) {
     step++;
     if (ft_call(FILE_OP_UNLINK, 0, FT_PATH, 0, 0, 0, 0) != E_INVAL) goto done;  /* not empty */
 
-    /* --- CAP_DISK really is the gate --- */
+    /* --- GRANT_DISK really is the gate --- */
     thread_set_caps(me, 0);
     ft_strp(FT_PATH, scratch, "/kt_sys.txt");
     step++;
     if (ft_call(FILE_OP_STAT, 0, FT_PATH, FT_STAT, 0, 0, 0) != E_PERM) goto done;
-    thread_set_caps(me, CAP_DISK);
+    thread_set_caps(me, GRANT_DISK);
 
     /* --- exec_path refuses everything it should ---
      * The accept path needs a genuinely signed CXEX, which only exists in a
      * SIGN=ON build, so what is checked here is every way it must say no. That
      * is the half that matters: a verifier that never refuses is not one.
      */
-    thread_set_caps(me, CAP_DISK | CAP_SPAWN);
+    thread_set_caps(me, GRANT_DISK | GRANT_SPAWN);
     struct spawn_args *sa = (struct spawn_args *)FT_STAT;   /* reuse the page */
     sa->image = 0; sa->image_len = 0; sa->name = (const char *)FT_PATH;
     sa->broker_endpoint = -1; sa->caps = 0;
@@ -539,11 +539,11 @@ int usermode_file_test(void) {
 
     sa->args = 0; sa->args_len = 0;
 
-    /* and CAP_SPAWN is the gate: the dispatcher checks it, so go through it */
-    thread_set_caps(me, CAP_DISK);
+    /* and GRANT_SPAWN is the gate: the dispatcher checks it, so go through it */
+    thread_set_caps(me, GRANT_DISK);
     step++;
     if (syscall_dispatch(SYS_EXEC_PATH, FT_PATH, (uint32_t)sa) != E_PERM) goto done;
-    thread_set_caps(me, CAP_DISK);
+    thread_set_caps(me, GRANT_DISK);
 
     /* --- the reaper releases handles a process never closed --- */
     h = ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_READ);
@@ -560,7 +560,7 @@ int usermode_file_test(void) {
 done:
     if (!ok) klog_u32("KTEST", SEV_ERR, "file syscall test failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
     /* tidy up whatever got made, so a re-run starts from the same state */
-    thread_set_caps(me, CAP_DISK);
+    thread_set_caps(me, GRANT_DISK);
     handle_release_all(thread_handle_table(me), CXK_MAX_HANDLES);
     int id;
     if ((id = cxfs_resolve(ft_join(scratch, "/kt_dir/renamed.txt"), 0)) >= 0) cxfs_delete_entry((uint32_t)id);
@@ -636,7 +636,7 @@ int process_create_ring3(const char *name,
     r3[pid].code_phys  = 0;
     r3[pid].stack_phys = 0;
     thread_mark_user(pid);
-    thread_set_caps(pid, CAP_CONSOLE);   /* SYSTEM ring-3 helper: may write console */
+    thread_set_caps(pid, GRANT_CONSOLE);   /* SYSTEM ring-3 helper: may write console */
     klog_u32("RING3", SEV_INFO, "SYSMODE CALL - pid ", (uint32_t)pid, LOG_COLOR_VALUE, "");
     /* runs as SYSTEM: this is the kernel launching a ring-3 helper as the
        machine identity. To launch on behalf of a human user, use

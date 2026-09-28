@@ -46,7 +46,7 @@ void _start(void) {
     struct spawn_args sa;
     sa.image = shell_xcex; sa.image_len = shell_xcex_len;
     sa.name = "shell";     sa.broker_endpoint = ep;
-    sa.caps = CAP_OS_BASELINE;   /* privileged shell (attenuated to executive's caps) */
+    sa.caps = GRANT_OS_BASELINE;   /* privileged shell (attenuated to executive's caps) */
     /* No arguments for the shell - but say so rather than leaving the fields
        as whatever was on the stack. The kernel validates args against
        args_len, so a stale pointer here is a spawn that fails with E_FAULT

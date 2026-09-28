@@ -3,8 +3,8 @@
 //
 //   import "file.xfxn";
 //
-// Wraps SYS_FILE_OP over CXFS. Needs CAP_DISK, which is part of
-// CAP_OS_BASELINE - the shell can use it, a capability-less app cannot.
+// Wraps SYS_FILE_OP over CXFS. Needs GRANT_DISK, which is part of
+// GRANT_OS_BASELINE - the shell can use it, a capability-less app cannot.
 //
 // A handle is a small non-negative integer; anything negative is an E_* code.
 // Offsets and sizes are 32-bit signed, so a file a program can address here
