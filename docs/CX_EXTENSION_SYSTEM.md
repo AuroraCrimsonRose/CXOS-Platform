@@ -51,6 +51,19 @@ x + <subsystem> + <object-type>
 So `.xkdr` parses as **x**(CX) · **k**(kernel) · **dr**(driver) = "CX kernel
 driver."
 
+**The domain letter is why this is a pattern and not a set of mnemonics.** A
+service descriptor could read `.xsvc` — shorter, and "svc" is more obviously
+"service" than "sv" is. But it spells the *kind* of thing at the cost of saying
+nothing about *whose* it is, and the kind is the part you can guess from
+context. Whether a file belongs to the kernel, the boot chain, the operating
+system or a user is the part you cannot, and it is the part that decides who
+may write it and what is allowed to load it. `.xosv` keeps that: **x** · **o**
+(OS) · **sv** (service). The same service concept in another domain would be
+`.xcsv` or `.xksv`, and all three sort together and read the same way.
+
+A name that fits the pattern is always preferable to a name that reads slightly
+better on its own.
+
 ### 2.1 Object-Type Vocabulary
 
 The two-letter object-type suffix is meant to be **reused consistently** across
