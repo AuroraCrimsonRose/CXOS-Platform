@@ -142,7 +142,7 @@ public class CompileCommand : Command<CompileCommand.Settings>
         if (!s.EmitAsm) { TryDelete(asmPath); }
         TryDelete(objPath);
         AnsiConsole.MarkupLine($"[green]done:[/] {s.Output}");
-        AnsiConsole.MarkupLine($"[grey]next:[/] cxk build \"{s.Output}\" out.xcex --type user");
+        AnsiConsole.MarkupLine($"[grey]next:[/] cxk build \"{s.Output}\" out.xuex --type user");
         return 0;
     }
 
