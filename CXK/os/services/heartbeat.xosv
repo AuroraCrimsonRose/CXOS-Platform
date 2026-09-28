@@ -1,6 +1,6 @@
 # heartbeat.xosv - a task on a timer.
 #
-# `every` makes svcd stay alive and re-run this on an interval. `start=boot`
+# `every` makes the supervisor stay alive and re-run this on an interval. `start=boot`
 # is separate and means "also run it once now" - without it the first run
 # would be one full interval away.
 #

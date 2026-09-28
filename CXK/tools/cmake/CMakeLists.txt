@@ -209,13 +209,13 @@ set(DISK_APP_NAME hi)
 set(DISK_APP_ELF  ${BUILD_DIR}/${DISK_APP_NAME}.elf)
 set(DISK_APP_XCEX ${PACKAGES_DIR}/${DISK_APP_NAME}.xcex)
 
-# svcd, the service supervisor. Staged and signed exactly like DISK_APP - the
+# supervisor, the service supervisor. Staged and signed exactly like DISK_APP - the
 # executive starts it with SYS_EXEC_PATH, so the kernel verifies it on the way
 # in and an unsigned one is refused. That is the property worth having for the
 # process that decides what else gets to run.
-set(SVCD_SRC  ${SRC_DIR}/os/apps/svcd.xfxn)
-set(SVCD_ELF  ${BUILD_DIR}/svcd.elf)
-set(SVCD_XCEX ${PACKAGES_DIR}/svcd.xcex)
+set(SUPERVISOR_SRC  ${SRC_DIR}/os/apps/supervisor.xfxn)
+set(SUPERVISOR_ELF  ${BUILD_DIR}/supervisor.elf)
+set(SUPERVISOR_XCEX ${PACKAGES_DIR}/supervisor.xcex)
 
 # Everything APP_BOOT can pull in with `import`, so editing any of it actually
 # rebuilds. This variable was referenced by the compile rule below but never
@@ -350,20 +350,20 @@ add_custom_command(
     COMMENT "Packaging ${DISK_APP_NAME}.xcex (CXEX, type user, staged to disk)"
 )
 
-# ---- svcd: the service supervisor (staged + signed, like the disk app) ----
+# ---- supervisor: the service supervisor (staged + signed, like the disk app) ----
 add_custom_command(
-    OUTPUT ${SVCD_ELF}
-    COMMAND ${CXK} compile ${SVCD_SRC} ${SVCD_ELF} -I ${SRC_DIR}/os/std
-    DEPENDS ${SVCD_SRC} ${CXK} ${STD_SRCS}
-    COMMENT "X   svcd.xfxn -> ELF"
+    OUTPUT ${SUPERVISOR_ELF}
+    COMMAND ${CXK} compile ${SUPERVISOR_SRC} ${SUPERVISOR_ELF} -I ${SRC_DIR}/os/std
+    DEPENDS ${SUPERVISOR_SRC} ${CXK} ${STD_SRCS}
+    COMMENT "X   supervisor.xfxn -> ELF"
 )
 add_custom_command(
-    OUTPUT ${SVCD_XCEX}
+    OUTPUT ${SUPERVISOR_XCEX}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${PACKAGES_DIR}
-    COMMAND ${CXK} build ${SVCD_ELF} ${SVCD_XCEX} --type user
+    COMMAND ${CXK} build ${SUPERVISOR_ELF} ${SUPERVISOR_XCEX} --type user
     ${VSIGN}
-    DEPENDS ${SVCD_ELF} ${CXK}
-    COMMENT "Packaging svcd.xcex (CXEX, type user, staged to disk)"
+    DEPENDS ${SUPERVISOR_ELF} ${CXK}
+    COMMENT "Packaging supervisor.xcex (CXEX, type user, staged to disk)"
 )
 
 # ---- executive.c -> executive.elf (user-half) -> executive.xoex (signed) ----
@@ -393,12 +393,12 @@ add_custom_command(
             --stage1 ${BOOT_BIN} --stage2 ${STAGE2_BIN} --kernel ${KERNEL_XKEX}
             --stage System/Boot.xoex=${EXEC_XOEX}
             --stage System/Programs/${DISK_APP_NAME}.xcex=${DISK_APP_XCEX}
-            --stage System/Programs/svcd.xcex=${SVCD_XCEX}
+            --stage System/Programs/supervisor.xcex=${SUPERVISOR_XCEX}
             --stage System/Services/hello.xosv=${SRC_DIR}/os/services/hello.xosv
             --stage System/Services/disabled.xosv=${SRC_DIR}/os/services/disabled.xosv
             --stage System/Services/heartbeat.xosv=${SRC_DIR}/os/services/heartbeat.xosv
     DEPENDS ${BOOT_BIN} ${STAGE2_BIN} ${KERNEL_XKEX} ${EXEC_XOEX} ${DISK_APP_XCEX}
-            ${SVCD_XCEX} ${SRC_DIR}/os/services/hello.xosv
+            ${SUPERVISOR_XCEX} ${SRC_DIR}/os/services/hello.xosv
             ${SRC_DIR}/os/services/disabled.xosv
             ${SRC_DIR}/os/services/heartbeat.xosv ${CXK}
     COMMENT "Building unified CXK disk (XBPT: boot + stage + system)"
