@@ -50,9 +50,10 @@ public partial class BuildViewModel : ObservableObject
                 var outPath = Path.ChangeExtension(ProjectPath, OutputType switch
                 {
                     "kernel" => ".xkex",
-                    "boot" => ".xoex",
+                    "boot" => ".xbex",
                     "os" => ".xoex",
-                    _ => ".xcex"
+                    "system" => ".xsex",
+                    _ => ".xuex"
                 });
                 _build.PackageCxex(ProjectPath, outPath, OutputType, Append);
                 Append($"OK: {Path.GetFileName(outPath)}");
