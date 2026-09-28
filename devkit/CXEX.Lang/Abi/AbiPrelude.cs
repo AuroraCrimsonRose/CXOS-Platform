@@ -31,6 +31,8 @@ const SYS_EXIT:          u32 = 0x00;
 const SYS_YIELD:         u32 = 0x01;
 const SYS_GETPID:        u32 = 0x02;
 const SYS_GETUID:        u32 = 0x03;
+const SYS_CLOCK:         u32 = 0x04;
+const SYS_SLEEP:         u32 = 0x05;
 const SYS_IPC_CALL:      u32 = 0x10;
 const SYS_IPC_RECV:      u32 = 0x11;
 const SYS_IPC_REPLY:     u32 = 0x12;
@@ -66,6 +68,14 @@ const E_ISDIR: i32 = -12;
 const E_NOTDIR: i32 = -13;
 
 // ---- shared call structures (layout matches the kernel) ----
+// ---- clock and sleep (SYS_CLOCK, SYS_SLEEP; unprivileged) ----
+// ticks is milliseconds since boot and monotonic - use it to measure an
+// interval. epoch is seconds since 1970 from the RTC, or 0 when the RTC could
+// not be read - use it to stamp something, and check it before trusting it.
+// sleep_ms blocks THIS process only; it is not the ACPI machine sleep.
+struct clock_info     { ticks: u32, epoch: u32 }
+const SLEEP_MAX_MS: u32 = 3600000;
+
 struct ipc_call_args  { ep_handle: i32, req: *u8, req_len: u32, reply: *u8, reply_cap: u32 }
 struct ipc_recv_args  { ep_handle: i32, buf: *u8, cap: u32, sender: *i32 }
 struct ipc_reply_args { ep_handle: i32, data: *u8, len: u32 }
@@ -193,6 +203,16 @@ fn handle_close(h: i32) -> i32               { return __syscall(SYS_HANDLE_CLOSE
 fn ipc_call(a: *ipc_call_args) -> i32   { return __syscall(SYS_IPC_CALL, a as u32, 0, 0, 0, 0); }
 fn ipc_recv(a: *ipc_recv_args) -> i32   { return __syscall(SYS_IPC_RECV, a as u32, 0, 0, 0, 0); }
 fn ipc_reply(a: *ipc_reply_args) -> i32 { return __syscall(SYS_IPC_REPLY, a as u32, 0, 0, 0, 0); }
+fn clock_read(c: *clock_info) -> i32    { return __syscall(SYS_CLOCK, c as u32, 0, 0, 0, 0); }
+fn sleep_ms(ms: u32) -> i32             { return __syscall(SYS_SLEEP, ms, 0, 0, 0, 0); }
+
+// milliseconds since boot, for code that only wants to measure an interval
+fn ticks_ms() -> u32 {
+    let c: clock_info;
+    if (clock_read(&c) != E_OK) { return 0; }
+    return c.ticks;
+}
+
 fn spawn(a: *spawn_args) -> i32         { return __syscall(SYS_SPAWN, a as u32, 0, 0, 0, 0); }
 // Run the CXEX at `path`. The kernel reads and verifies the file itself, so the
 // image/image_len fields of `a` are ignored. A negative broker_endpoint means
