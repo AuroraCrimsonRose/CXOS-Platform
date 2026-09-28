@@ -53,8 +53,9 @@ closed.
 
 Alongside, the language features that are cheap now and expensive later:
 
-- **Distinct address types** — `*user`, `*phys`, `*dma`, `*kernel`, with no
-  implicit conversion. The highest-value language item: it is the only one that
+- **Distinct address types** — *done*, see `CX_X_CORE_LANG.md` §2.2.
+  `*user`, `*phys`, `*dma`, with no implicit conversion (plain `*T` covers
+  what `*kernel` would have meant). The highest-value language item: it is the only one that
   prevents a class of *security* bug (dereferencing an unvalidated user pointer,
   handing a virtual address to DMA). No codegen change — all pointers stay the
   same width — so it is type-checker work only. Every conversion must be a
