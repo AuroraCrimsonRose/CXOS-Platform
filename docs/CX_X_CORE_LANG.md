@@ -58,7 +58,7 @@ a compiler is a specific kind of program:
 | Multi-file source | works (`import`) |
 | Function pointers for dispatch tables | works |
 | File I/O | works (`SYS_FILE_OP`, `std/file.xfxn`) |
-| 64/128-bit integers | works, except `/` `%` and variable shifts (§2.1) |
+| 64/128-bit integers | works, except variable shifts and literals above 64 bits (§2.1) |
 | Floats | missing; not required for a compiler |
 | Dynamic allocation | **missing** — no `SYS_MAP`/`SBRK`, no allocator |
 
@@ -111,18 +111,46 @@ A value wider than a register is represented by its **address**, exactly as a
 type list can grow without the backend changing: a width is a row in
 `PrimWidth.Bytes`.
 
-**Implemented:** `+ - * & | ^`, all six comparisons, casts between widths
+**Implemented:** `+ - * / % & | ^`, all six comparisons, casts between widths
 (sign- or zero-filling as the source type requires), and unary `-` and `~`.
 Shifts take a **constant** amount.
+
+`/` and `%` are one routine: a division produces the quotient and the remainder
+together, and computing `a / b` and `a % b` separately would run the whole thing
+twice. It is **restoring shift-subtract long division** — one iteration per bit,
+so 64 or 128 of them. That is slow, deliberately: Knuth's algorithm D is several
+times faster and is the right answer eventually, but it is fiddly in exactly the
+places that produce answers which are *almost* right, and wide types exist here
+to stop silent numeric errors. Signs are handled outside the loop, which only
+sees magnitudes; the remainder takes the sign of the **dividend**, so `-7 % 2` is
+`-1`.
+
+Division by zero raises `#DE`, by deliberately executing a 32-bit divide by zero.
+That makes wide division behave exactly as 32-bit division already does, and
+CXK's ring-3 fault handler ends the offending process rather than the machine. A
+software check returning 0 would have invented a second, quieter rule for the
+same mistake.
+
+> **Not constant time.** The trip count is fixed at the operand width, so it does
+> not leak the size of either operand — but the two arms of the trial subtraction
+> differ in length. Do not divide secret values. Same caveat as the wide compare.
 
 **Diagnosed, not emitted** — a wrong answer here is worse than a build failure,
 so each of these is a compile error rather than silently truncated code:
 
 | | why |
 |---|---|
-| `/` and `%` | multi-limb division is not written yet |
 | variable shifts | needs a loop, and a loop whose trip count depends on the operand is a timing signal |
 | returning a wide value | the value is an address, and it would be the address of a frame about to be torn down. Pass a pointer to the destination instead |
+| literals above 64 bits | the lexer parses an integer literal as at most 64 bits, so a `u128` constant larger than `u64` cannot be written directly. Build it from limbs (`x = hi; x = x * 4294967296; x = x + lo;`) until the lexer is widened |
+
+**Mixed-width arithmetic takes the WIDER operand's type.** `0 - a` on a 64-bit
+`a` is a 64-bit subtraction, not a 32-bit one. This is worth stating because it
+was not always true: the result type used to be the **left** operand's, which
+made `a - 0` correct and `0 - a` silently wrong — a wide value lives at an
+address, so the narrow path did 32-bit arithmetic on that address and
+sign-extended the result. A shift is the exception, since its right operand
+counts places rather than being a term: `x << n` is as wide as `x`.
 
 **Why the ceiling is 128.** Up to 128 bits a value is *one thing* — an offset, a
 timestamp, a GUID, a Q64.64 coordinate, the product of two 64-bit numbers — that
