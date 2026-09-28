@@ -31,6 +31,7 @@ public sealed record ReturnStmt(Expr? Value) : Stmt;
 public sealed record BreakStmt() : Stmt;
 public sealed record ContinueStmt() : Stmt;
 public sealed record ExprStmt(Expr Expr) : Stmt;
+public sealed record DeferStmt(Stmt Body) : Stmt;   // run Body when the enclosing block is left, by any route
 
 // ---- expressions ----
 public abstract record Expr : Node;

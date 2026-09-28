@@ -104,6 +104,7 @@ public sealed class TypeChecker
     private void CheckBlock(Block b) { foreach (var s in b.Stmts) CheckStmt(s); }
 
     private int _loopDepth;   // break/continue must appear inside a loop
+    private int _deferDepth;  // and nothing may leave a defer body early
 
     private void CheckStmt(Stmt s)
     {
@@ -130,11 +131,34 @@ public sealed class TypeChecker
                     break;
                 }
             case BreakStmt:
-                if (_loopDepth == 0) _diag.Error("'break' outside a loop", s.Span);
+                if (_loopDepth == 0)
+                    _diag.Error(_deferDepth > 0 ? "cannot 'break' out of a defer" : "'break' outside a loop", s.Span);
                 break;
             case ContinueStmt:
-                if (_loopDepth == 0) _diag.Error("'continue' outside a loop", s.Span);
+                if (_loopDepth == 0)
+                    _diag.Error(_deferDepth > 0 ? "cannot 'continue' out of a defer" : "'continue' outside a loop", s.Span);
                 break;
+            case DeferStmt d:
+                {
+                    /* A defer body runs while the block is ALREADY being left -
+                       on the way out of a return, a break, or the end of the
+                       block. So it may not itself leave by one of those
+                       routes: a `return` inside a defer would abandon the
+                       return that is running it, and the cleanup after it
+                       would silently not happen. Loops and blocks wholly
+                       inside the body are fine; it is only escaping the
+                       defer that is refused, which is why the loop depth is
+                       zeroed here rather than just a flag set. */
+                    if (d.Body is LetStmt)
+                        _diag.Error("'defer let' declares a variable nothing can use; defer a statement or a block", d.Span);
+                    int savedLoops = _loopDepth;
+                    _loopDepth = 0;
+                    _deferDepth++;
+                    CheckStmt(d.Body);
+                    _deferDepth--;
+                    _loopDepth = savedLoops;
+                    break;
+                }
             case AssignStmt a:
                 {
                     var tt = CheckExpr(a.Target);
@@ -150,6 +174,7 @@ public sealed class TypeChecker
                 Expect(CheckExpr(w.Cond), Bool, w.Cond.Span, "while condition");
                 _loopDepth++; CheckBlock(w.Body); _loopDepth--; break;
             case ReturnStmt r:
+                if (_deferDepth > 0) _diag.Error("cannot 'return' from inside a defer", r.Span);
                 if (r.Value == null) { if (!IsBool(_curReturn) && _curReturn is not PrimType { Kind: PrimKind.Void }) _diag.Error("return requires a value", r.Span); }
                 else { var rt = CheckExpr(r.Value); if (!Assignable(_curReturn, rt)) _diag.Error($"return type {Show(rt)} does not match {Show(_curReturn)}", r.Span); }
                 break;

@@ -278,6 +278,14 @@ public sealed class Parser
             case TokenKind.Continue:
                 Advance(); Expect(TokenKind.Semicolon, "';'");
                 return new ContinueStmt() { Span = To(start) };
+            case TokenKind.Defer:
+                {
+                    // `defer stmt;` or `defer { ... }` - the body is any single
+                    // statement, a block included
+                    Advance();
+                    var body = ParseStmt() ?? new Block(new List<Stmt>());
+                    return new DeferStmt(body) { Span = To(start) };
+                }
             default:
                 {
                     // assignment or expression statement
