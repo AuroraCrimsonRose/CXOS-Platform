@@ -102,26 +102,28 @@ const FB_OP_DRAW_LINE: u32 = 4;
 const FB_OP_DRAW_TEXT: u32 = 5;
 struct fb_op_args { op: u32, x: u32, y: u32, w: u32, h: u32, color: u32, color2: u32, text: *u8, out: *u32 }
 
-// ---- network (SYS_NET_OP; CAP_NET) ----
+// ---- network (SYS_NET_OP; GRANT_NET) ----
 struct net_op_args { op: u32, ip: u32, data: *u8, len: u32, out: *u32 }
 
 // ---- capabilities ----
-// A process's authority, as a bitmask. Mirrored here so a userspace spawner can
-// name what it is handing a child: spawn and exec_path attenuate the requested
+// A process's authority, as a bitmask: what it is ALLOWED TO DO. GRANT_ because
+// each bit is a grant, handed over when the process was started and never wider
+// than what the thing that started it held. Mirrored here so a userspace
+// spawner can name what it is handing a child: spawn and exec_path attenuate the requested
 // set against the caller's own, so you pass a subset of your authority and can
 // never amplify. Previously userspace had to redeclare these locally, which
 // cxk check-abi reports as a third copy of the ABI with no link to the header.
-const CAP_CONSOLE:     u32 = 0x0001;
-const CAP_MEM:         u32 = 0x0002;
-const CAP_DISK:        u32 = 0x0004;
-const CAP_NET:         u32 = 0x0008;
-const CAP_SPAWN:       u32 = 0x0010;
-const CAP_POWER:       u32 = 0x0020;
-const CAP_ENDPOINT:    u32 = 0x0040;
-const CAP_IOPORT:      u32 = 0x0080;
-const CAP_FRAMEBUFFER: u32 = 0x0100;
+const GRANT_CONSOLE:     u32 = 0x0001;
+const GRANT_MEM:         u32 = 0x0002;
+const GRANT_DISK:        u32 = 0x0004;
+const GRANT_NET:         u32 = 0x0008;
+const GRANT_SPAWN:       u32 = 0x0010;
+const GRANT_POWER:       u32 = 0x0020;
+const GRANT_ENDPOINT:    u32 = 0x0040;
+const GRANT_IOPORT:      u32 = 0x0080;
+const GRANT_FRAMEBUFFER: u32 = 0x0100;
 
-// ---- files (SYS_FILE_OP; CAP_DISK) ----
+// ---- files (SYS_FILE_OP; GRANT_DISK) ----
 // CXFS is 64-bit throughout; X has no 64-bit integer, so every offset and size
 // here is 32-bit signed. read/write return a byte count, seek returns the new
 // offset, negative is an E_* code. A user process can therefore address a file
