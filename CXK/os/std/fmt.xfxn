@@ -65,6 +65,28 @@ fn u32_to_hex(buf: *u8, cap: u32, v: u32) -> u32 {
 }
 
 // print a decimal number to the console
+// Parse leading decimal digits into a u32, stopping at the first character
+// that is not one - so "30s" gives 30 and "30 " gives 30.
+//
+// A string with no digits at all gives 0, which is the same answer a literal
+// "0" gives. A caller that has to tell those apart should look at the first
+// character itself; every caller so far treats 0 as "not set", which is the
+// same thing either way.
+//
+// Saturates rather than wrapping. A value that overflowed silently would be a
+// number the caller never wrote down anywhere, and for an interval that means
+// a task firing at a time nobody chose.
+fn dec_u32(s: *u8) -> u32 {
+    let v: u32 = 0;
+    let i: u32 = 0;
+    while (s[i] >= 48 && s[i] <= 57) {
+        if (v > 429496729) { return 4294967295; }
+        v = v * 10 + ((s[i] - 48) as u32);
+        i = i + 1;
+    }
+    return v;
+}
+
 fn print_u32(v: u32) -> void {
     let b: [12]u8;
     u32_to_dec(&b[0], sizeof b, v);

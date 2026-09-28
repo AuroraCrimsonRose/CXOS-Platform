@@ -30,7 +30,7 @@ int cxex_exec(const uint8_t *file, size_t len);
  * The two differ because the launcher differs, not because the image does.
  * cxex_exec is the kernel starting something by itself, with nobody to
  * attenuate from, so policy comes from the image's own tier: caps_for() gives
- * an .xoex CAP_OS_BASELINE and an .xcex nothing. cxex_exec_as is a ring-3
+ * an .xoex GRANT_OS_BASELINE and an .xcex nothing. cxex_exec_as is a ring-3
  * process asking for a launch, where the ABI's rule (CX_ABI.md section 5) is
  * attenuation - a spawner passes a subset of its own set and can never
  * amplify. Running caps_for() here instead would make every program loaded

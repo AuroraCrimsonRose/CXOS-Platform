@@ -25,6 +25,7 @@
 #include "cxfs.h"
 #include "string.h"
 #include "pci.h"
+#include "timer.h"
 
 /* concise pass/fail reporter */
 /* Report a test result. Stays SILENT on success - only failures are printed,
@@ -371,6 +372,94 @@ static int test_ahci(void) {
     return disk_read(ad->id, 0, 1, sector) == DISK_OK;
 }
 
+/* ---- clock and timed sleep ----
+ *
+ * The failure worth catching is a sleep that returns immediately, and that is
+ * exactly the one a "did it come back?" test cannot see. So this measures.
+ *
+ * The lower bound is the assertion: a sleep must not finish early, because
+ * everything built on it - a scheduler waiting for the next due task, a
+ * retry backing off - is wrong if it can. The upper bound is deliberately
+ * loose. Scheduling here is cooperative and whatever else ktest has left
+ * runnable gets to finish first, so "it took longer than asked" is normal and
+ * only a wildly wrong figure means anything.
+ */
+static int test_clock_sleep(void) {
+    uint32_t t0 = timer_ticks();
+    thread_sleep_ms(50);
+    uint32_t dt = timer_ticks() - t0;
+    if (dt < 50)  return 0;        /* woke early - the bug that matters */
+    if (dt > 500) return 0;        /* wildly over: something is wrong */
+
+    /* 0 ms is documented as a yield, not a wait. */
+    t0 = timer_ticks();
+    thread_sleep_ms(0);
+    if ((timer_ticks() - t0) > 50) return 0;
+
+    /* The clock must advance, and must do so monotonically. */
+    uint32_t a = timer_ticks();
+    thread_sleep_ms(10);
+    uint32_t b = timer_ticks();
+    if ((int32_t)(b - a) < 10) return 0;
+
+    return 1;
+}
+
+/* ---- volumes ----
+ * The part of the volume layer worth asserting is what happens to an id whose
+ * volume tag is wrong. Every public entry point runs it through vol_select,
+ * and if that check were missing the tag would be masked off and the call
+ * would quietly operate on the ROOT volume instead - reading, or worse
+ * writing, whatever entry happens to share that index. So: a tag naming a
+ * volume that is not mounted, and a tag past the end of the table, must both
+ * be refused.
+ *
+ * This runs the same on a machine with one disk and a machine with four,
+ * because it asserts about tags nothing is mounted under.
+ */
+static int test_cxfs_volumes(void) {
+    if (!cxfs_is_mounted()) return 1;   /* nothing mounted - skip */
+
+    /* The root of the root volume is id 0, and always has been. If this ever
+       stops holding, every "0 = root" in the file syscalls is wrong. */
+    struct cxfs_entry root;
+    if (cxfs_read_entry(0, &root) != 0) return 0;
+    if (root.type != CXFS_TYPE_DIR)     return 0;
+    if (root.parent_id != 0)            return 0;   /* root's parent is itself */
+
+    /* A tag naming an unmounted slot, and one past the end of the table. Slot
+       CXFS_MAX_VOLUMES-1 is left alone by the boot-time scan on any machine
+       with fewer disks than slots; if something is mounted there, skip rather
+       than assert about a volume that really exists. */
+    uint32_t unmounted = (3u << 24) | 0u;   /* last slot, root index */
+    uint32_t beyond    = (9u << 24) | 0u;   /* no such slot at all */
+    if (cxfs_volume_mounted(3)) unmounted = beyond;
+
+    struct cxfs_entry e;
+    if (cxfs_read_entry(unmounted, &e) == 0) return 0;
+    if (cxfs_read_entry(beyond, &e)    == 0) return 0;
+    if (cxfs_find_in_dir(beyond, "System") >= 0) return 0;
+    if (cxfs_count_children(beyond) != 0)        return 0;
+    if (cxfs_is_locked(beyond)      != 0)        return 0;
+
+    /* cxfs_path_of must say "nothing", not walk off into the root volume. */
+    char p[64];
+    p[0] = 'x';
+    cxfs_path_of(beyond, p, (int)sizeof p);
+    if (p[0] != '\0') return 0;
+
+    /* Nothing on one volume may become the child of something on another: a
+       parent pointer is a manifest index, and one volume's index 2 has nothing
+       to do with another's. */
+    if (cxfs_is_ancestor(0, beyond) != 0) return 0;
+    if (cxfs_move(beyond, 0)        == 0) return 0;
+
+    /* And the root volume still resolves, which is the proof that none of the
+       above left `vol` pointing somewhere it should not. */
+    if (cxfs_resolve("/", 0) != 0) return 0;
+    return 1;
+}
+
 void ktest_run(void) {
     int passed = 0, total = 0;
 
@@ -388,6 +477,8 @@ void ktest_run(void) {
     total++; passed += report("ahci (controller + read)",         test_ahci());
     total++; passed += report("cxfs (read-only mount check)",     test_cxfs());
     total++; passed += report("cxfs offset I/O + compaction",      test_cxfs_offset());
+    total++; passed += report("cxfs volume tags",                  test_cxfs_volumes());
+    total++; passed += report("clock + timed sleep",               test_clock_sleep());
     total++; passed += report("file syscalls (SYS_FILE_OP)",       usermode_file_test());
 
     /* single summary line: green if all passed, red if any failed. */

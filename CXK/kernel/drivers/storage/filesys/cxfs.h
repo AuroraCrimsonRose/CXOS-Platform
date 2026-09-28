@@ -31,6 +31,7 @@
 #define CXFS_NAME_LEN     64
 #define CXFS_MAX_EXTENTS  8             /* v2: 8 extents */
 #define CXFS_ENTRY_SIZE   256           /* v2: 256-byte manifest entries */
+#define CXFS_LABEL_LEN    32            /* volume label, including terminator */
 #define CXFS_DISK_DEFAULT 1            /* default ata drive (primary slave) */
 
 /* v2 feature flags (superblock feature_flags) */
@@ -84,7 +85,12 @@ struct cxfs_superblock {
     uint64_t created;          /* volume creation timestamp */
     uint64_t modified;         /* superblock last-write timestamp */
     uint32_t entry_size;       /* bytes per manifest entry (256) */
-    uint8_t  pad[CXFS_BLOCK_SIZE - 76];  /* fill the 4KB block */
+    char     label[CXFS_LABEL_LEN];  /* volume name, the one it answers to under
+                                        its drive. Carved out of the pad, which
+                                        was already zeroed, so a volume written
+                                        before this field existed reads an empty
+                                        label and gets a generated one. */
+    uint8_t  pad[CXFS_BLOCK_SIZE - 108];  /* fill the 4KB block */
 } __attribute__((packed));
 
 /* one manifest entry - a file or directory. 256 bytes (v2). */
@@ -116,12 +122,50 @@ int cxfs_format(void);
 /* format a CXFS volume at sector base_lba spanning total_blocks blocks
    (for a partition); cxfs_format() = whole-disk dev default. */
 int cxfs_format_at(uint64_t base_lba, uint32_t total_blocks);
+/* As cxfs_format_at, but stamps the volume with a label so it mounts under
+   that name rather than a generated one. */
+int cxfs_format_labeled(uint64_t base_lba, uint32_t total_blocks, const char *label);
 
 /* mount: read the superblock, verify magic. returns 0 on success, -1 if no
    valid CXFS found (e.g. unformatted disk). */
 int cxfs_mount(void);
 /* mount a CXFS volume located at sector base_lba (a partition offset). */
 int cxfs_mount_at(uint64_t base_lba);
+
+/* --- additional volumes ---------------------------------------------------
+ * The root volume is the one the system booted from and is always volume 0.
+ * cxfs_mount_volume attaches another CXFS volume to a DIRECTORY on an already
+ * mounted volume, the way a mount point works anywhere else: resolving a path
+ * through that directory steps onto the mounted volume's root, and cxfs_path_of
+ * steps back out through it, so a path like /Drives/HDD1/Data/notes.txt reads
+ * and prints as one path even though it spans two filesystems.
+ *
+ * `parent_dir` is the directory the mount point goes IN - the volume's own
+ * drive under /Drives, normally.
+ * The mount point itself is created here, named after the volume, because the
+ * label is only knowable once the superblock has been read. An existing
+ * directory of that name is reused, so unmounting and remounting a volume puts
+ * it back on the same path.
+ *
+ * `label` names the volume; pass NULL to use the one in its superblock. Returns
+ * the volume index (>= 1) or a negative error. */
+int cxfs_mount_volume(uint8_t disk_id, uint64_t base_lba,
+                      uint32_t parent_dir, const char *label);
+
+/* Unmount volume `v`. The root volume cannot be unmounted. */
+int cxfs_unmount_volume(uint32_t v);
+
+/* How many volume slots exist, whether or not they hold anything. */
+uint32_t cxfs_volume_slots(void);
+
+/* 1 if slot `v` holds a mounted volume. */
+int cxfs_volume_mounted(uint32_t v);
+
+/* Slot `v`'s label, or NULL if nothing is mounted there. */
+const char *cxfs_volume_label(uint32_t v);
+
+/* The directory slot `v` is mounted on, or 0 for the root volume. */
+uint32_t cxfs_volume_mount_point(uint32_t v);
 
 /* select / query which ATA drive CXFS operates on (0-3). */
 void    cxfs_set_disk(uint8_t drive);

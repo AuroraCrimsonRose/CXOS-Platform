@@ -4,7 +4,7 @@
  * ABI v1 process launch. Every ring-3 process - the executive AND its apps -
  * is a normal scheduler thread with its own address space, kernel stack (esp0),
  * and capabilities. proc_start() is the one path that creates them; cxex_exec()
- * (the executive, kernel-launched, trusted, CAP_OS_BASELINE, no broker) and
+ * (the executive, kernel-launched, trusted, GRANT_OS_BASELINE, no broker) and
  * sys_spawn() (apps, executive-launched, caps=0, broker handle 0) both call it.
  * There is no special "thread 0 runs the executive" case anymore.
  */
@@ -205,7 +205,7 @@ static int check_args(const struct spawn_args *a) {
     return E_OK;
 }
 
-/* SYS_SPAWN: an executive (CAP_SPAWN) launches a capability-less app, brokered
+/* SYS_SPAWN: an executive (GRANT_SPAWN) launches a capability-less app, brokered
    through one of its endpoints. */
 int sys_spawn(const struct spawn_args *ua) {
     if (!user_ptr_ok((uint32_t)ua, sizeof *ua)) return E_FAULT;

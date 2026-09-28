@@ -53,4 +53,11 @@ int cxk_install_first_boot(uint8_t disk_id);
    first-boot install on it. Returns a cxk_install_result. */
 int cxk_install_boot_disk(void);
 
+/* Put every drive that is not the boot drive under /Drives, and mount each
+   CXFS volume it holds inside its drive's directory, named by the volume's own
+   label: /Drives/HDD1/Data. Returns how many volumes were mounted. Safe to
+   call with no extra drives; a drive whose filesystem this kernel does not
+   recognise gets its directory and no volumes, which is not an error. */
+int cxk_mount_extra_volumes(uint8_t boot_disk_id);
+
 #endif
