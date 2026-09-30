@@ -105,6 +105,8 @@ fn svc_bad(name: *u8, key: *u8, want: *u8) -> void {
 // Refuse a descriptor with a key this supervisor does not know. A misspelt
 // `evry = 60` would otherwise be ignored and the service would quietly never
 // repeat - the kind of mistake symbols and a whole-file check exist to catch.
+// The build checks the same list (SERVICE_XOSV in tools/cmake/CMakeLists.txt):
+// a key added here must be added there too.
 fn svc_keys_known(name: *u8, src: *u8, root: *xd_val) -> i32 {
     let k: xd_val;
     let v: xd_val;
