@@ -405,9 +405,35 @@ add_custom_command(
     COMMENT "Converting executive.elf -> executive.xoex (CXEX, type os)"
 )
 
+# ---- service descriptors: checked before they go on the disk ----
+# The supervisor reads these at boot and reports a bad one as a line in its log.
+# Checking them here turns that into a build error naming file:line:col. The
+# DevKit's reader is a port of os/std/xdata.xfxn, held to the same results by
+# its differential test, so what passes here the supervisor accepts. The key
+# list is the supervisor's own - keep it in step with svc_keys_known().
+#
+# Probed rather than called outright, as build.bat does for check-abi: a cxk
+# published before check-xdata existed would fail on an unknown command and
+# break a build that is otherwise fine. So it warns and skips until cxk is
+# republished from the DevKit; a bad descriptor is a hard failure after that.
+set(SERVICE_XOSV
+    ${SRC_DIR}/os/services/hello.xosv
+    ${SRC_DIR}/os/services/disabled.xosv
+    ${SRC_DIR}/os/services/heartbeat.xosv)
+execute_process(COMMAND ${CXK} check-xdata --help
+                RESULT_VARIABLE CXK_HAS_XDATA OUTPUT_QUIET ERROR_QUIET)
+if(CXK_HAS_XDATA EQUAL 0)
+    set(XDCHECK COMMAND ${CXK} check-xdata --quiet --keys exec,args,start,every,grants ${SERVICE_XOSV})
+else()
+    message(WARNING "this cxk predates check-xdata - service descriptors will not be checked "
+                    "at build time. Republish cxk from the DevKit to enable it.")
+    set(XDCHECK COMMAND ${CMAKE_COMMAND} -E echo "  service descriptors NOT checked - cxk predates check-xdata")
+endif()
+
 # ---- unified disk: stage1 + XBPT + stage2 + BOOT/STAGE/SYSTEM partitions ----
 add_custom_command(
     OUTPUT ${CXK_DISK}
+    ${XDCHECK}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${IMAGES_DIR}
     COMMAND ${CXK} image --out ${CXK_DISK} --size-mb 64 --boot-mb 8
             --stage1 ${BOOT_BIN} --stage2 ${STAGE2_BIN} --kernel ${KERNEL_XKEX}
@@ -418,9 +444,7 @@ add_custom_command(
             --stage System/Services/disabled.xosv=${SRC_DIR}/os/services/disabled.xosv
             --stage System/Services/heartbeat.xosv=${SRC_DIR}/os/services/heartbeat.xosv
     DEPENDS ${BOOT_BIN} ${STAGE2_BIN} ${KERNEL_XKEX} ${EXEC_XOEX} ${DISK_APP_XCEX}
-            ${SUPERVISOR_XCEX} ${SRC_DIR}/os/services/hello.xosv
-            ${SRC_DIR}/os/services/disabled.xosv
-            ${SRC_DIR}/os/services/heartbeat.xosv ${CXK}
+            ${SUPERVISOR_XCEX} ${SERVICE_XOSV} ${CXK}
     COMMENT "Building unified CXK disk (XBPT: boot + stage + system)"
 )
 add_custom_target(cxk_disk ALL DEPENDS ${CXK_DISK})
