@@ -28,7 +28,11 @@ set CMAKEDIR=%ROOT%\tools\cmake
 
 if not exist "%CXK%" (
     echo [ERROR] Toolchain missing: %CXK%
-    echo         Publish cxk.exe from the DevKit and copy it into tools\.
+    echo         cxk.exe is not committed. Publish it from CX_DEVKIT:
+    echo           dotnet publish CXEX.CLI -c Release -r win-x64 -p:SelfContained=true
+    echo             -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true
+    echo             -p:IncludeNativeLibrariesForSelfExtract=true
+    echo         and copy cxk.exe into tools\. See README.md, Building.
     exit /b 1
 )
 
