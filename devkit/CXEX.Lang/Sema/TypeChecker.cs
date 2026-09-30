@@ -289,8 +289,14 @@ public sealed class TypeChecker
              *
              * Unsigned, because a literal is a magnitude; unary minus is a
              * separate node applied to it. */
+            /* `int.MaxValue`, not `uint.MaxValue`: 0x80000000 through
+               0xFFFFFFFF do not fit in an i32, and typing them as one made
+               `y < 0x80000000` on an i32 compare against -2147483648. They are
+               u32, the narrowest type that actually holds them - which is also
+               what C does with an unsuffixed hex constant that large. */
             case IntLit il:
-                return Set(e, il.Value <= uint.MaxValue ? I32
+                return Set(e, il.Value <= int.MaxValue ? I32
+                            : il.Value <= uint.MaxValue ? U32
                             : il.Value <= ulong.MaxValue ? new PrimType(PrimKind.U64)
                             : new PrimType(PrimKind.U128));
             case StrLit: return Set(e, new PointerType(new PrimType(PrimKind.U8)));

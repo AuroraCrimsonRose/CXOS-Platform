@@ -732,11 +732,29 @@ public sealed class X86Emitter
             case BinOp.Shr: T(IsSigned(TypeOf(b.Left)) ? "sar %cl, %eax" : "shr %cl, %eax"); break;
             case BinOp.Eq: Cmp("sete"); break;
             case BinOp.Ne: Cmp("setne"); break;
-            case BinOp.Lt: Cmp("setl"); break;
-            case BinOp.Le: Cmp("setle"); break;
-            case BinOp.Gt: Cmp("setg"); break;
-            case BinOp.Ge: Cmp("setge"); break;
+            /* Ordering needs to know the signedness, and it used to assume
+               signed for everything: setl/setg on a u32 treats every value
+               from 2^31 up as negative, so `x > 429496729` was FALSE for
+               x = 3000000000. Division and >> above already took the operand
+               type into account; comparison was the one left behind.
+
+               The rule is C's: the comparison is unsigned if either operand is
+               an unsigned 32-bit value or a pointer. A u8 or u16 widens to a
+               signed int without losing any value, so it does not force it. */
+            case BinOp.Lt: Cmp(UnsignedCompare(b) ? "setb"  : "setl");  break;
+            case BinOp.Le: Cmp(UnsignedCompare(b) ? "setbe" : "setle"); break;
+            case BinOp.Gt: Cmp(UnsignedCompare(b) ? "seta"  : "setg");  break;
+            case BinOp.Ge: Cmp(UnsignedCompare(b) ? "setae" : "setge"); break;
         }
+    }
+
+    private bool UnsignedCompare(BinaryExpr b) => IsUnsignedWord(TypeOf(b.Left)) || IsUnsignedWord(TypeOf(b.Right));
+
+    private bool IsUnsignedWord(TypeRef t0)
+    {
+        var t = _ctx.Expand(t0);
+        if (t is PointerType or FuncType) return true;          // an address has no sign
+        return t is PrimType p && !PrimWidth.IsSigned(p.Kind) && PrimWidth.Bytes(p.Kind) == 4;
     }
     private void Cmp(string setcc) { T("cmp %ecx, %eax"); T($"{setcc} %al"); T("movzbl %al, %eax"); }
 
