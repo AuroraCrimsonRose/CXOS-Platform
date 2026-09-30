@@ -30,6 +30,24 @@ foreach(f ${CXK_FLAGS})
     list(APPEND CXK_DEFS -D${f})
 endforeach()
 
+# ---- development kernels ----
+# -DDEV_UNSIGNED=ON builds a kernel that runs images carrying NO signature at
+# all, so testing a change does not need a signing key generated, embedded and
+# destroyed every time. It is a BUILD option rather than a runtime or boot
+# setting on purpose: a switch a running system could flip is exactly what an
+# attacker wants, while a release kernel built without this simply contains no
+# code that can run an unsigned image.
+#
+# It lives here on the command line, not in cxk_flags.cmake, so it can never be
+# committed switched on. And it admits only UNSIGNED - a tampered image, a
+# forged signature or a file that is not a program is refused as always.
+option(DEV_UNSIGNED "development kernel: run unsigned images - never ship one" OFF)
+if(DEV_UNSIGNED)
+    list(APPEND CXK_DEFS -DCXK_DEV_UNSIGNED=1)
+    message(WARNING "DEV_UNSIGNED=ON: this kernel runs UNSIGNED images. "
+                    "It is for testing only and must never be shipped.")
+endif()
+
 # ---- toolchain ----
 # Defaults are the Windows cross-toolchain layout build.bat expects. Each is
 # overridable with -D so the kernel can also be built where the toolchain lives

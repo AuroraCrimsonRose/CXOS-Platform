@@ -41,6 +41,11 @@ int cxex_exec(const uint8_t *file, size_t len);
 int cxex_exec_as(const uint8_t *file, size_t len, uint32_t caps, struct endpoint *broker,
                  const char *args, uint32_t args_len);
 
+/* Turn a keyvault_trust_of result into the trust an image is admitted at, or a
+   negative refusal. Identity on a release kernel; a DEV_UNSIGNED build also
+   admits an unsigned image (and nothing else extra). See exec.c. */
+int exec_admit(int verified);
+
 enum cxex_exec_result {
     CXEX_EXEC_VERIFY_FAILED = -1,   /* signature/identity check failed */
     CXEX_EXEC_BAD_TYPE      = -2,   /* not an OS/USER executable */
