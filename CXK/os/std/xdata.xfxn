@@ -360,6 +360,34 @@ fn xd_check(s: *u8, len: u32) -> i32 {
     return XD_OK;
 }
 
+// ---- public: reporting ----
+
+// A short description of an XD_E_* code, for a person reading a log.
+fn xd_strerror(code: i32) -> *u8 {
+    if (code == XD_OK)       { return "ok"; }
+    if (code == XD_E_SYNTAX) { return "unexpected character"; }
+    if (code == XD_E_STRING) { return "unterminated string, line break inside a string, or unknown escape"; }
+    if (code == XD_E_DEPTH)  { return "nested too deeply"; }
+    if (code == XD_E_DUPKEY) { return "key given more than once"; }
+    if (code == XD_E_SEP)    { return "two entries on one line with no comma"; }
+    if (code == XD_E_RANGE)  { return "number out of range"; }
+    if (code == XD_E_TYPE)   { return "wrong kind of value"; }
+    if (code == XD_E_SPACE)  { return "value too long"; }
+    return "unknown error";
+}
+
+// The 1-based line that byte offset `at` falls on - xd_err_at turned into
+// something a person can find in an editor.
+fn xd_line(s: *u8, at: u32) -> u32 {
+    let line: u32 = 1;
+    let i: u32 = 0;
+    while (i < at) {
+        if (s[i] == XC_LF) { line = line + 1; }
+        i = i + 1;
+    }
+    return line;
+}
+
 // ---- public: navigating ----
 
 // Describe the value spanning [at, end) into out.
@@ -408,6 +436,29 @@ fn xd_get(s: *u8, rec: *xd_val, key: *u8, out: *xd_val) -> i32 {
             xd_describe(s, xd_v_at, xd_v_end, out);
             return 1;
         }
+        p = n;
+    }
+    return 0;
+}
+
+// 1 and the index'th entry of a record - its key as an XD_SYM span in `key`,
+// its value in `val` - else 0 past the end. For a reader that has to see
+// every key, which is how an unknown one (a misspelt `evry = 60`) is caught
+// instead of silently ignored.
+fn xd_entry_at(s: *u8, rec: *xd_val, index: u32, key: *xd_val, val: *xd_val) -> i32 {
+    if (rec.kind != XD_REC) { return 0; }
+    let end: u32 = rec.at + rec.len;
+    let p: u32 = rec.at;
+    let i: u32 = 0;
+    while (p < end) {
+        let n: u32 = xd_entry(s, p, end);
+        if (n == XD_BAD) { return 0; }
+        if (i == index) {
+            key.kind = XD_SYM; key.at = xd_k_at; key.len = xd_k_len; key.tag_at = 0; key.tag_len = 0;
+            xd_describe(s, xd_v_at, xd_v_end, val);
+            return 1;
+        }
+        i = i + 1;
         p = n;
     }
     return 0;
