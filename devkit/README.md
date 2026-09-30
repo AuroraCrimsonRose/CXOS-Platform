@@ -49,6 +49,7 @@ cxk run         launch an emulator against an image
 cxk inspect     dump CXEX / disk / CXFS structure
 cxk check       validation pass
 cxk check-abi   verify the X ABI prelude still matches cxk_abi.h
+cxk check-xdata validate X Data documents (service descriptors)
 
 cxk secureboot keygen     generate a Secure Boot PK/KEK/db set
 cxk secureboot varstore   enroll it into an OVMF EFI variable store
@@ -132,6 +133,18 @@ The comparison lives in `CXEX.Lang/Abi/AbiSync.cs` rather than in the command, s
 **Treat `AbiPrelude.cs` as requiring a manual update whenever `cxk_abi.h` changes**, and run `cxk check-abi` after. The CXK-side reference is `docs/CX_ABI.md`.
 
 Note the drift surface is wider than this one file: `os/std/net.xfxn` redeclares all seven `NET_OP_*` constants locally because the prelude doesn't carry them — a third copy of the ABI with no link back to the header.
+
+### X Data: the second shared format
+
+Service descriptors (`.xosv`) are X Data, specified in `CXK/docs/CX_X_DATA.md`. The supervisor reads them on the device with `os/std/xdata.xfxn`; the build checks them first with `CXEX.Lang/Data/XData.cs`, a line-for-line port of that reader:
+
+```
+cxk check-xdata <files...> [--keys exec,args,start,every,grants] [--porcelain]
+```
+
+A typo is then a build error naming `file:line:col`, not a line in a boot log. `--keys` refuses any top-level key outside the list, so a misspelt key cannot be silently ignored.
+
+Two readers of one format are worth having only if they agree, so they are held to it: `tests/xdata/difftest.py` generates thousands of documents - valid, mutated, and nested past the depth limit - runs each through both readers (the X one compiled and run natively), and fails if any error code or byte offset differs. `SABOTAGE=1` skews one expectation, to show the test can fail.
 
 ---
 
