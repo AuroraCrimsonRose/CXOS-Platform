@@ -484,6 +484,54 @@ an honest explanation gets more trustworthy data than opt-out gets goodwill.
 
 ---
 
+## 9a. Kernel stacks, and boot configuration
+
+Prompted by two Linux proposals — dynamic kernel stacks that grow on demand, and
+a boot-time parameter for the stack size so Android can use smaller stacks.
+Neither pays off for CXK yet, but both rest on something CXK is missing, and the
+order in which to add things matters more than either proposal.
+
+**Where CXK stands.** Kernel stacks are `kmalloc(THREAD_STACK)` (`sched.c`) —
+8 KB of ordinary heap with **no guard page below it**, and the double-fault
+handler runs on the same stack as everything else. So a kernel stack overflow
+does not fault at all: it silently overwrites whatever heap object sits below
+the stack. That is the worst class of bug there is — the damage appears later,
+somewhere unrelated, with nothing pointing back at the cause.
+
+In order:
+
+1. **Guard pages and a double-fault task gate — near term.** Allocate each
+   kernel stack from pages with an unmapped page beneath it, so an overflow
+   becomes a page fault instead of corruption. Give the double fault its own
+   stack through a task gate and a second TSS (the 32-bit equivalent of
+   x86-64's IST): the page fault from an overflow cannot run on the stack that
+   just ran out, and without a stack of its own the double fault escalates to a
+   triple fault and a silent reset. With one, it is a panic naming the thread.
+   Worth doing on its own merits, and it maps directly onto IST at x86-64.
+
+2. **Boot configuration, in X Data.** CXK has no boot-time configuration channel
+   today. When it gets one it is an X Data document, not a Linux-style flat
+   string: typed values, range-checked integers, and whole-file validation before
+   anything is applied, so a typo is refused rather than half-applied. The X Data
+   reader allocates nothing, which is exactly what code running before the heap
+   exists needs.
+
+3. **Then the limits become configuration.** Kernel stack size, the thread limit
+   (`MAX_THREADS`, 8 today, and the tighter constraint of the two) and the
+   default memory quota are policy, and belong in that file rather than compiled
+   in. **Tunable stack size must not come before step 1**: Linux can shrink
+   stacks safely because its stacks already have guard pages; on a kernel with
+   none, a smaller stack turns "almost never overflows" into "occasionally
+   corrupts memory with no trace."
+
+4. **Dynamic stack growth — after SMP and real threading.** Mapping stack pages
+   on demand saves memory in proportion to the number of threads. At eight
+   threads of 8 KB that is nothing; it becomes worth its considerable complexity
+   (the fault is taken on the exhausted stack itself, and the handler cannot
+   sleep) only when thread counts reach the hundreds.
+
+---
+
 ## 10. Open questions
 
 - Literal suffixes vs. bidirectional type inference, to let `1 << 100` be
