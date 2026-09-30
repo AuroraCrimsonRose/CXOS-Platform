@@ -1,13 +1,13 @@
 # X — Core Language v0.3
 
-**Status:** LIVE SPEC (core v0.3). X is the systems core of the X family. XR
-(runtime) and XH (hybrid) are **front-end dialects that desugar to X core** —
+**Status:** LIVE SPEC (core v0.3). X is the systems core of the X family. X Runtime
+(runtime) and X Hybrid (hybrid) are **front-end dialects that desugar to X core** —
 they are *not* separate compilers and have no independent backend. There is one
 semantic core and one CXEX backend, so the dialects cannot drift.
 
 Design rule, same as the ABI: keep the smallest useful core; add features on
 demand. No separate IR yet — **X core's typed AST is the lowering target** that
-XR/XH reduce to and that the backend consumes. An explicit IR is added only
+X Runtime and X Hybrid reduce to and that the backend consumes. An explicit IR is added only
 if/when optimization needs it.
 
 ---
@@ -30,7 +30,7 @@ modules, `break`/`continue`, `sizeof`, string literals, the bitwise and shift
 operators, and type aliases. The frozen grammar described a language that no
 longer existed.
 
-That matters more than tidiness, because **XR and XH are specified by lowering to
+That matters more than tidiness, because **X Runtime and X Hybrid are specified by lowering to
 this document.** A dialect written against a stale core is specified against a
 fiction. So v0.2 records the language as built, and drops the word "frozen" for
 an honest rule: *the core is stable, not frozen — additions are documented here
@@ -66,7 +66,7 @@ The honest read: **the blockers are allocation, strings, and sum types** — not
 syntax sugar. A staged route is in §10.
 
 Allocation is now the single largest one, and it blocks more than self-hosting:
-XR's collector and XH's managed references both need a heap, and there is none.
+X Runtime's collector and X Hybrid's managed references both need a heap, and there is none.
 `GRANT_MEM` exists and nothing honours it — ABI §7.8 is still *specified,
 unimplemented*.
 
@@ -80,7 +80,7 @@ unimplemented*.
   I/O*. The only way to affect the world is `__syscall`, which lowers to `int 0x80`
   against the frozen ABI (`abi/cxk_abi.h`). So an X program is bounded by exactly
   the capability surface the kernel grants it — sandboxing falls out of the
-  language, not a checker bolted on. XR's "runtime" is just X code that calls
+  language, not a checker bolted on. X Runtime's "runtime" is just X code that calls
   executive services through these same intrinsics.
 - **Predictable lowering.** Every construct has an obvious, fixed mapping to
   x86-32. No surprises, no implicit allocation, no implicit copies beyond what's
@@ -152,13 +152,25 @@ address, so the narrow path did 32-bit arithmetic on that address and
 sign-extended the result. A shift is the exception, since its right operand
 counts places rather than being a term: `x << n` is as wide as `x`.
 
-**A literal is typed by the narrowest type that holds it** — `i32` up to 32
-bits, then `u64`, then `u128`. Anything that fitted before still types `i32`,
-so nothing changed shape; what this buys is that a literal too wide for a
-register stops pretending to be one. Every literal used to type `i32` however
-large it was written, so `200000000000000000000 % 7` truncated the constant
-into `eax` and did a 32-bit divide — a wrong answer from an expression the
-compiler could have evaluated exactly.
+**A literal is typed by the narrowest type that holds it** — `i32` up to
+2147483647, then `u32` up to 4294967295, then `u64`, then `u128`. What this buys
+is that a literal stops pretending to be a type it does not fit. Every literal
+used to type `i32` however large it was written, so `200000000000000000000 % 7`
+truncated the constant into `eax` and did a 32-bit divide — a wrong answer from
+an expression the compiler could have evaluated exactly. The `u32` band was
+added later, after `0x80000000` typed as `i32` turned out to compare as
+-2147483648; that is also what C does with an unsuffixed hex constant that
+large.
+
+**Ordering comparisons (`<` `<=` `>` `>=`) are unsigned if either operand is
+an unsigned 32-bit value or a pointer**, and signed otherwise — C's rule. A
+`u8` or `u16` widens to a signed int without losing any value, so it does not
+force an unsigned comparison. This, too, was not always true: ordering used to
+be signed for every operand, so a `u32` at or above 2³¹ compared as though it
+were negative — `3000000000 > 5` was false. Division and `>>` already honoured
+the operand type; comparison was the one left behind. The consequence of the
+rule to know: `x > -1` on a `u32` is always false, because `-1` becomes
+4294967295, exactly as in C.
 
 **Why the ceiling is 128.** Up to 128 bits a value is *one thing* — an offset, a
 timestamp, a GUID, a Q64.64 coordinate, the product of two 64-bit numbers — that
@@ -169,10 +181,155 @@ and a future `bignum.xfxn` is the right shape for the same work in X — limbs i
 an array, with the constant-time control and per-algorithm limb counts that a
 fixed native width cannot express.
 
-> **Caution for XR and XH.** The comparison emitted for wide values walks limbs
+> **Caution for X Runtime and X Hybrid.** The comparison emitted for wide values walks limbs
 > from the top down and **branches on the first difference**. That is a timing
 > oracle on secret data. Any dialect exposing these types to cryptographic code
 > needs a constant-time comparison primitive, not this one.
+
+### 2.2 Address spaces
+
+A pointer is a number, and every pointer is the same width. Without a way to
+say *which memory* the number names, a physical address, a device address, an
+address a ring-3 caller passed in, and an ordinary pointer are all one type —
+and the two classic kernel catastrophes, **reading through an unvalidated user
+pointer** and **handing a device a virtual address**, become things the compiler
+cannot see.
+
+| Type | Names | Dereference |
+|---|---|---|
+| `*T` | memory in the address space this code runs in | yes |
+| `*user T` | an address a less-trusted caller chose | **no** — validate, then convert |
+| `*phys T` | a physical address | **no** — translate to virtual first |
+| `*dma T` | the address a device sees | **no** — never the CPU's to use |
+
+Plain `*T` is the kernel's own pointer in kernel code and the program's own in
+userland; there is no `*kernel`, because it would mean the same thing.
+
+**The rules:**
+
+- Different address spaces are **different types**. Assigning, passing,
+  returning or comparing across them is an error.
+- `*p`, `p[i]` and `p.field` are all refused on a qualified pointer — one check
+  shared by all three, so none of them is the way around the others.
+- A pointer **cannot be cast straight to a pointer in another space.**
+  `p as *u8` on a `*phys` is not a conversion; the number is unchanged and it
+  names different memory. Every real crossing is *arithmetic* — phys to virt
+  adds an offset, validating a user pointer checks a range — so the route is
+  through an integer, which is where that arithmetic goes:
+
+  ```x
+  fn phys_to_virt(p: *phys u8) -> *u8 { return ((p as u32) + KERNEL_VBASE) as *u8; }
+  ```
+
+  An untranslated crossing (`p as u32 as *u8`) is still possible, but it is
+  visibly deliberate rather than hidden in a cast.
+- Pointer↔integer casts stay free in every space: that is how an address arrives
+  from a device register or a syscall argument in the first place.
+
+`user`, `phys` and `dma` are **contextual**, not reserved: they are qualifiers
+only directly after `*` and before another type. A variable or struct named
+`user` still works, and `*user` alone is a pointer to that struct.
+
+**No code generation changes.** This is a type-checker property only; the same
+program with and without qualifiers emits byte-identical assembly.
+
+It has no users in the OS yet — nothing in userland holds a physical or device
+address.
+
+### 2.3 `defer`
+
+`defer stmt;` or `defer { ... }` schedules a statement to run when the enclosing
+**block** is left — by falling off its end, by `return`, or by `break` /
+`continue` out of it. Cleanup is written next to the acquisition it undoes:
+
+```x
+let h: i32 = file_open(path, FOPEN_READ);
+if (h < 0) { return h; }
+defer file_close(h);            // runs on every way out of this block
+let buf: u32 = alloc(4096);
+if (buf == 0) { return E_NOMEM; }
+defer free(buf);                // runs first: last deferred, first run
+```
+
+**The rules:**
+
+- **Block-scoped, lexical** (as in Zig, not Go's function-scoped `defer`). A
+  defer inside a loop body runs at the end of *every* iteration, a `continue`
+  included.
+- **Reverse order.** Innermost block first; within a block, last deferred first.
+- **Only defers already reached run.** One written after a `return` in the same
+  block was never registered, so it does not run — correct, because whatever it
+  would release was never acquired.
+- **`return x` takes `x` before the defers run**, so a defer that changes `x`
+  does not change what is returned.
+- **A defer body may not leave early.** `return`, `break` or `continue` out of a
+  defer is an error: the body runs *during* an exit, and escaping it would
+  abandon that exit and every cleanup after it. Loops wholly inside the body are
+  fine.
+- **Names resolve at the `defer`**, not where it runs: the body sees what was
+  declared before it and nothing after.
+- `defer let` is refused — it declares a variable nothing could use.
+
+Each exit emits its own copy of the pending cleanup at the point of exit rather
+than sharing one path. That needs no runtime state and no hidden record of which
+exit was taken; the cost is code size, proportional to exits × deferred
+statements. A function that does not use `defer` compiles to byte-identical
+output.
+
+A `defer` does not run if the process ends some other way — `exit()`, a fault,
+or being killed.
+
+### 2.4 Attributes
+
+`@name` or `@name(args)` before a declaration. An argument is positional or
+named (`@device(vendor = 0x8086)`). Several may be stacked.
+
+**An attribute the compiler does not know is an error**, naming the ones it
+does. Silently ignoring an unknown name would let a typo — `@sectoin` — compile
+into a program that quietly lacks whatever the attribute was for. Each attribute
+is defined in exactly one table in the type checker, together with what it
+applies to and what arguments it takes; adding one means adding it there and
+teaching the emitter what it does.
+
+Named arguments are parsed today although no attribute takes one yet. The
+syntax is the part that is expensive to change later, and hardware match tables
+will want it.
+
+| Attribute | Applies to | Effect |
+|---|---|---|
+| `@section(".name")` | a function with a body, or a global | places it in the named object-file section |
+
+**`@section`** is the mechanism declarative tables are built on: many
+declarations, in many files, landing in one section that is then read as an
+array — how driver match tables will work, without a hand-maintained
+registration list that drifts from the drivers.
+
+```x
+@section(".cx_tbl") global e0: u32 = 11;
+@section(".cx_tbl") global e1: u32 = 0;
+@section(".cx_tbl") global e2: u32 = 33;
+// &e0 now points at a three-entry table, in declaration order
+```
+
+- A function's section is allocated and executable (`AX`); a global's is
+  allocated and writable (`WA`).
+- A zero-valued global in a named section **stays in that section** rather than
+  moving to `.bss` — a section read as a table must contain every entry.
+- The section name must start with `.` and contain only letters, digits, `_` and
+  `.`. The default names (`.text`, `.data`, `.rodata`, `.bss`) are refused:
+  naming one is redundant or, for a function in `.data`, contradictory, and the
+  assembler would quietly merge section flags rather than say so.
+- Refused on structs, constants, type aliases, imports, and extern functions —
+  none of them occupies space to place.
+
+A linker script that does not mention a custom section places it by the
+linker's orphan rules. A table meant to be collected across files needs a
+`KEEP(*(.name))` entry, and start/end symbols, in the script; that belongs with
+the first real table.
+
+Code without attributes compiles to byte-identical output. It is here now because it is cheap to add before code exists and
+expensive to retrofit after, and because it is the foundation for drivers
+written in X (see `CX_ROADMAP.md` §5).
 
 ---
 
@@ -380,9 +537,9 @@ uninitialized `let`.
   rather than emitted.)
 - Dynamic allocation of any kind.
 - An explicit IR (only if optimization needs it).
-- **XR**: runtime-as-executive-service (GC, dynamic dispatch via IPC) — a dialect
+- **X Runtime**: runtime-as-executive-service (GC, dynamic dispatch via IPC) — a dialect
   lowering to X core + executive calls.
-- **XH**: C++-like hybrid (methods, generics) — a dialect desugaring to X core.
+- **X Hybrid**: C++-like hybrid (methods, generics) — a dialect desugaring to X core.
 
 ### Known rough edges (not features — defects to fix)
 - `as` reinterprets rather than converts; narrowing does not mask.
@@ -429,6 +586,6 @@ list because it needs nothing beyond Stage 1.
 
 ---
 
-*This is the v0.2 core spec. XR and XH compile by lowering to these constructs;
+*This is the v0.2 core spec. X Runtime and X Hybrid compile by lowering to these constructs;
 the backend consumes only X core. The core is stable, not frozen: when a feature
 lands, it is documented here in the same change.*
