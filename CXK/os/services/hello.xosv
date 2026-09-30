@@ -1,10 +1,13 @@
-# hello.xosv - a service descriptor, and the one that proves the mechanism.
-#
-# Starts the same program `run hi` starts, but at boot and without anyone
-# typing anything. The arguments are here to show they survive the trip from
-# this file, through the supervisor, through the kernel's argument page, into argv.
+// hello.xosv - a service descriptor, and the one that proves the mechanism.
+//
+// Starts the same program `run hi` starts, but at boot and without anyone
+// typing anything. The arguments are here to show they survive the trip from
+// this file, through the supervisor, through the kernel's argument page, into
+// argv - and each one arrives WHOLE. "started by" is one argument with a space
+// in it, which the key=value format this replaced could not express: it split
+// on spaces, so this line used to arrive as four arguments.
 
-exec=/Shared/Programs/hi.xuex
-args=started by the supervisor
-start=boot
-grants=console
+exec   = "/Shared/Programs/hi.xuex"
+args   = ["started by", "the supervisor"]
+start  = boot
+grants = [console]

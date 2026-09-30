@@ -15,6 +15,14 @@ endif()
 # ---- code-signing + executive + unified-disk pipeline ----
 option(SIGN "sign CXEX artifacts (.xkex/.xoex) with the kernel key" OFF)
 
+# A signed kernel that runs unsigned code is the one artifact this must never
+# produce: it looks official, and it trusts nothing. Refuse the combination at
+# configure time rather than hope nobody builds it.
+if(SIGN AND DEV_UNSIGNED)
+    message(FATAL_ERROR "SIGN and DEV_UNSIGNED are mutually exclusive: together they would "
+                        "produce a signed kernel that runs unsigned code. Pick one.")
+endif()
+
 # 3. Set keys relative to the tools directory (CXK/tools/...)
 set(SIGN_SK   "${CXK_TOOLS_DIR}/kernel.xksk")
 set(SIGN_PK   "${CXK_TOOLS_DIR}/kernel.xkpk")
@@ -40,6 +48,15 @@ if(SIGN)
     set(XSIGN COMMAND ${CXK} sign ${EXEC_XOEX}   ${SIGN_SK} ${SIGN_PK})
     set(ASIGN COMMAND ${CXK} sign ${DISK_APP_XCEX} ${SIGN_SK} ${SIGN_PK})
     set(VSIGN COMMAND ${CXK} sign ${SUPERVISOR_XCEX} ${SIGN_SK} ${SIGN_PK})
+elseif(DEV_UNSIGNED)
+    # A development kernel runs these unsigned, so the release build's "WILL
+    # REFUSE" warnings below would be false here - and a false warning sends
+    # someone chasing a problem that does not exist. Same rule on the text:
+    # no parentheses, no semicolons.
+    set(KSIGN COMMAND ${CMAKE_COMMAND} -E echo "  kernel.xkex UNSIGNED - development kernel, never ship")
+    set(XSIGN COMMAND ${CMAKE_COMMAND} -E echo "  executive.xoex UNSIGNED - runs on this development kernel only")
+    set(ASIGN COMMAND ${CMAKE_COMMAND} -E echo "  hi.xuex UNSIGNED - runs on this development kernel only")
+    set(VSIGN COMMAND ${CMAKE_COMMAND} -E echo "  supervisor.xsex UNSIGNED - runs on this development kernel only")
 else()
     # No parentheses OR semicolons in these messages: ${KSIGN}/${XSIGN} expand into a
     # custom-command line, and under /bin/sh unquoted parens are a syntax error while a

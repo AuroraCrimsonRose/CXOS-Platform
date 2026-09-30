@@ -254,11 +254,25 @@ Build:
 tools\build.bat
 ```
 
-Build signed image:
+The build **signs automatically when a signing key is present** (`tools\kernel.xksk`,
+created once with `tools\cxk.exe keygen tools\kernel`). Without one it builds
+unsigned — and a release kernel refuses to launch unsigned programs, so an unsigned
+release build boots to the kernel and stops.
+
+Build a **development kernel**, which runs unsigned programs, so testing needs no
+signing key at all:
 
 ```bat
-tools\build_signed.bat
+tools\build.bat dev
 ```
+
+A development kernel says so at every boot and logs each unsigned program it
+admits. It admits only programs with *no* signature: a tampered image, a forged
+signature, or a file that is not a program is refused exactly as in a release
+kernel. It is a build option (`-DDEV_UNSIGNED=ON`), never a runtime setting, so a
+release kernel contains no code that can run an unsigned image — and CMake refuses
+to build one that is both signed and development. **Never ship a development
+kernel.**
 
 Run:
 
