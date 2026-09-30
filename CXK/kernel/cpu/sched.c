@@ -5,6 +5,7 @@
 #include "sched.h"
 #include "handle.h"
 #include "heap.h"
+#include "kstack.h"
 #include "gdt.h"
 #include "uid.h"
 #include "timer.h"   /* timer_ticks for the sleep queue */
@@ -63,8 +64,11 @@ int thread_create(const char *name, void (*entry)(void)) {
     }
     if (slot < 0) return -1;
 
-    uint32_t stack = (uint32_t)kmalloc(THREAD_STACK);
-    if (!stack) return -1;
+    /* A guarded stack (memman/kstack.h): running off the bottom faults rather
+       than overwriting the heap, which is what a kmalloc'd stack did. */
+    uint32_t stack;
+    uint32_t stack_top = kstack_alloc(THREAD_STACK, slot, &stack);
+    if (!stack_top) return -1;
 
     /* build the initial stack frame (top-down). The new stack must look exactly
        like a thread that was switched out by context_switch. context_switch
@@ -74,7 +78,7 @@ int thread_create(const char *name, void (*entry)(void)) {
        It then restores with: pop ebp; pop edi; pop esi; pop ebx; popfd; ret.
        So we push (high->low addr): return-addr, eflags, ebx, esi, edi, ebp,
        leaving esp pointing at the ebp slot. */
-    uint32_t *sp = (uint32_t *)(stack + THREAD_STACK);
+    uint32_t *sp = (uint32_t *)stack_top;
     *(--sp) = (uint32_t)thread_launch;   /* [+20] ret target */
     *(--sp) = 0x202;                     /* [+16] eflags: IF set, reserved bit 1 */
     *(--sp) = 0;                         /* [+12] ebx */
@@ -221,7 +225,7 @@ static void sched_reap(void) {
     for (int i = 1; i < MAX_THREADS; i++) {
         if (threads[i].state == THREAD_EXITED && i != current) {
             if (threads[i].stack_base) {
-                kfree((void *)threads[i].stack_base);
+                kstack_free(threads[i].stack_base);
                 threads[i].stack_base = 0;
             }
             if (threads[i].user_stack_base) {
@@ -229,7 +233,7 @@ static void sched_reap(void) {
                 threads[i].user_stack_base = 0;
             }
             if (threads[i].kstack_base) {
-                kfree((void *)threads[i].kstack_base);
+                kstack_free(threads[i].kstack_base);
                 threads[i].kstack_base = 0;
             }
             /* release whatever the handle table still owns - an open file
@@ -327,6 +331,11 @@ void sched_preempt_point(void) {
 
 int thread_current_id(void) { return current; }
 
+const char *thread_name(int id) {
+    if (id < 0 || id >= MAX_THREADS || threads[id].state == THREAD_UNUSED) return 0;
+    return threads[id].name;
+}
+
 /* is thread `id` a live (non-exited, allocated) thread? Used for stale-lock
    detection: an advisory lock owned by a dead pid is ignorable. */
 int thread_is_alive(int id) {
@@ -361,10 +370,11 @@ int thread_alloc_kstack(int id) {
                                                      cxex_exec) DOES need an esp0:
                                                      it runs ring-3 code + makes
                                                      syscalls while apps coexist. */
-    uint32_t k = (uint32_t)kmalloc(THREAD_STACK);
-    if (!k) return -1;
+    uint32_t k;
+    uint32_t top = kstack_alloc(THREAD_STACK, id, &k);
+    if (!top) return -1;
     threads[id].kstack_base = k;
-    threads[id].kstack_top  = k + THREAD_STACK - 16;   /* 16-byte slack at top */
+    threads[id].kstack_top  = top - 16;   /* 16-byte slack at top */
     return 0;
 }
 
