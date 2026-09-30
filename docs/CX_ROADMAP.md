@@ -491,23 +491,33 @@ a boot-time parameter for the stack size so Android can use smaller stacks.
 Neither pays off for CXK yet, but both rest on something CXK is missing, and the
 order in which to add things matters more than either proposal.
 
-**Where CXK stands.** Kernel stacks are `kmalloc(THREAD_STACK)` (`sched.c`) —
-8 KB of ordinary heap with **no guard page below it**, and the double-fault
-handler runs on the same stack as everything else. So a kernel stack overflow
-does not fault at all: it silently overwrites whatever heap object sits below
+**Where CXK stood.** Kernel stacks were `kmalloc(THREAD_STACK)` (`sched.c`) —
+8 KB of ordinary heap with no guard page below it, and the double-fault
+handler ran on the same stack as everything else. So a kernel stack overflow
+did not fault at all: it silently overwrote whatever heap object sat below
 the stack. That is the worst class of bug there is — the damage appears later,
-somewhere unrelated, with nothing pointing back at the cause.
+somewhere unrelated, with nothing pointing back at the cause. It had already
+happened once: CXFS's 4 KB staging buffers were locals, and a file syscall ran
+8.6 KB deep on an 8 KB stack (see the note in `cxfs.c`).
 
 In order:
 
-1. **Guard pages and a double-fault task gate — near term.** Allocate each
-   kernel stack from pages with an unmapped page beneath it, so an overflow
-   becomes a page fault instead of corruption. Give the double fault its own
-   stack through a task gate and a second TSS (the 32-bit equivalent of
-   x86-64's IST): the page fault from an overflow cannot run on the stack that
-   just ran out, and without a stack of its own the double fault escalates to a
-   triple fault and a silent reset. With one, it is a panic naming the thread.
-   Worth doing on its own merits, and it maps directly onto IST at x86-64.
+1. **Guard pages and a double-fault task gate — done.** Every kernel stack
+   (`memman/kstack.c`) sits at the top of its own 64 KB slot in a reserved
+   region at `0xCF000000`; the 56 KB below it is never mapped, so an overflow
+   is a page fault instead of corruption, and a single large frame cannot jump
+   the gap the way it can jump a one-page guard. The double fault goes through
+   a task gate to a second TSS with its own stack (`gdt.c`, `idt.c`) — the
+   32-bit equivalent of x86-64's IST, which it maps onto directly. The page
+   fault from an overflow cannot be delivered on the stack that just ran out,
+   so it escalates to a double fault; with a stack of its own that is a panic
+   naming the thread, where before it was a triple fault and a silent reset.
+   Both halves are proven, not assumed: `CXK_KTEST_STACK_OVERFLOW=1`
+   (`tools/cmake/cxk_flags.cmake`) overflows a stack on purpose and the boot
+   ends in "Kernel stack overflow: thread 1 (overflow)"; the same build with
+   vector 8 put back on an interrupt gate triple-faults. Thread 0 still runs
+   on the boot stack in `.bss`, unguarded — it moves when the boot path is
+   next reworked.
 
 2. **Boot configuration, in X Data.** CXK has no boot-time configuration channel
    today. When it gets one it is an X Data document, not a Linux-style flat

@@ -31,6 +31,9 @@
 #include "keyvault.h"
 #include "vmregion.h"
 #include "exec.h"
+#include "kstack.h"
+#include "gdt.h"
+#include "idt.h"
 
 /* concise pass/fail reporter */
 /* Report a test result. Stays SILENT on success - only failures are printed,
@@ -45,7 +48,7 @@ static int report(const char *name, int ok) {
 
 /* ---- paging: map a scratch frame, write+read it back ---- */
 static int test_paging(void) {
-    uint32_t test_virt = 0xCF000000;
+    uint32_t test_virt = 0xCE000000;   /* clear of the kernel-stack region above */
     uint32_t frame = (uint32_t)pmm_alloc();
     if (!frame) return 0;
     paging_map(test_virt, frame, PAGE_WRITE);
@@ -729,6 +732,66 @@ static int test_exec_admit(void) {
     return 1;
 }
 
+/* ---- guarded kernel stacks ----
+ * The layout is what matters: the stack mapped at the top of its slot, the
+ * page below it NOT mapped (that is the guard), and everything handed back on
+ * free - frames and slot both. */
+static int test_kstack(void) {
+    uint32_t free0 = pmm_free_count();
+    uint32_t live0 = kstack_live();
+    uint32_t base, base2;
+
+    uint32_t top = kstack_alloc(THREAD_STACK, 7, &base);
+    if (!top) return 0;
+    uint32_t top2 = kstack_alloc(THREAD_STACK, 6, &base2);
+    int ok = top2 != 0 && top2 != top;
+
+    ok = ok && (top - base == THREAD_STACK) && (top % KSTACK_SLOT_SIZE == 0);
+    ok = ok && paging_get_phys(base) && paging_get_phys(top - 4);          /* stack mapped */
+    ok = ok && !paging_get_phys(base - PAGE_SIZE);                         /* guard is not */
+    ok = ok && !paging_get_phys(top - KSTACK_SLOT_SIZE);                   /* nor the slot's floor */
+    if (ok) {
+        volatile uint32_t *lo = (volatile uint32_t *)base;
+        volatile uint32_t *hi = (volatile uint32_t *)(top - 4);
+        *lo = 0x57AC4B07u; *hi = 0x0DDBA11u;
+        ok = (*lo == 0x57AC4B07u) && (*hi == 0x0DDBA11u);
+    }
+    ok = ok && kstack_guard_owner(base - 4) == 7 && kstack_guard_owner(base2 - 4) == 6;
+    ok = ok && kstack_guard_owner(base) == -1 && kstack_guard_owner(top - 16) == -1;
+    ok = ok && kstack_alloc(KSTACK_SLOT_SIZE, 5, 0) == 0;                  /* no room for a guard */
+
+    kstack_free(base2);
+    kstack_free(base);
+    ok = ok && kstack_guard_owner(base - 4) == -1 && !paging_get_phys(base);
+    ok = ok && kstack_live() == live0 && pmm_free_count() == free0;
+    return ok;
+}
+
+/* ---- the double fault has a stack of its own ----
+ * Checks the wiring rather than taking a double fault, which cannot be
+ * recovered from: vector 8 is a task gate, and it names an available 32-bit
+ * TSS. (CXK_KTEST_STACK_OVERFLOW takes the real one.) */
+static int test_double_fault_gate(void) {
+    struct { uint16_t limit; uint32_t base; } __attribute__((packed)) idtr, gdtr;
+    __asm__ volatile ("sidt %0" : "=m"(idtr));
+    __asm__ volatile ("sgdt %0" : "=m"(gdtr));
+    const struct idt_entry *e = (const struct idt_entry *)idtr.base + 8;
+    if (e->type_attr != IDT_GATE_TASK || e->selector != DF_TSS_SEL) return 0;
+    const uint8_t *d = (const uint8_t *)gdtr.base + DF_TSS_SEL;
+    return d[5] == 0x89;   /* present, DPL 0, 32-bit TSS, not busy */
+}
+
+#if CXK_KTEST_STACK_OVERFLOW
+/* Recurse until the stack runs out. The volatile buffer keeps each frame real
+   and the addition after the call keeps it from becoming a loop. */
+static __attribute__((noinline)) uint32_t overflow_down(uint32_t n) {
+    volatile uint8_t pad[256];
+    pad[0] = (uint8_t)n;
+    return overflow_down(n + 1) + pad[0];
+}
+static void overflow_thread(void) { overflow_down(0); }
+#endif
+
 void ktest_run(void) {
     int passed = 0, total = 0;
 
@@ -749,6 +812,8 @@ void ktest_run(void) {
     total++; passed += report("cxfs volume tags",                  test_cxfs_volumes());
     total++; passed += report("clock + timed sleep",               test_clock_sleep());
     total++; passed += report("memory mappings (SYS_MEM_OP)",     test_vmregion());
+    total++; passed += report("guarded kernel stacks",             test_kstack());
+    total++; passed += report("double fault on its own stack",     test_double_fault_gate());
     total++; passed += report("cxex signature + tamper",           test_cxex_signature());
     total++; passed += report("exec admission (dev / release)",   test_exec_admit());
     total++; passed += report("file syscalls (SYS_FILE_OP)",       usermode_file_test());
@@ -771,4 +836,12 @@ void ktest_run(void) {
                         (uint32_t)passed,
                         VGA_ATTR(VGA_LIGHT_GREEN, VGA_BLACK), "");
     }
+
+#if CXK_KTEST_STACK_OVERFLOW
+    /* Last, because nothing comes back from it: the next thing on screen must
+       be a double-fault panic naming "overflow". */
+    klog("KTEST", SEV_WARN, "overflowing a kernel stack on purpose (CXK_KTEST_STACK_OVERFLOW)");
+    thread_create("overflow", overflow_thread);
+    for (;;) yield();
+#endif
 }

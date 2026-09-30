@@ -20,7 +20,7 @@
 #include "handle.h"
 
 #define MAX_THREADS   8
-#define THREAD_STACK  8192      /* per-thread kernel stack size */
+#define THREAD_STACK  8192      /* per-thread kernel stack size; guarded (memman/kstack.h) */
 
 enum thread_state {
     THREAD_UNUSED = 0,
@@ -32,7 +32,7 @@ enum thread_state {
 
 struct thread {
     uint32_t esp;              /* saved kernel stack pointer (THE context) */
-    uint32_t stack_base;       /* allocated kernel stack (for free on exit) */
+    uint32_t stack_base;       /* guarded kernel stack base, from kstack_alloc (freed on exit) */
     enum thread_state state;
     int       id;              /* PID */
     const char *name;
@@ -50,7 +50,7 @@ struct thread {
     uint32_t  u_saved_esp;
     uint32_t  u_saved_flags;
     uint32_t  kstack_top;      /* top of this process's esp0 stack -> TSS esp0 */
-    uint32_t  kstack_base;     /* allocated esp0 stack (for free on exit) */
+    uint32_t  kstack_base;     /* guarded esp0 stack base, from kstack_alloc (freed on exit) */
     /* Timed sleep. `wake_tick` is the timer tick this thread becomes runnable
        again; `sleeping` says the field means anything, because tick 0 is a
        real tick and a wrapped counter makes "0 = not sleeping" a lie roughly
@@ -92,6 +92,8 @@ void sched_preempt_point(void);
 
 /* the id (pid) of the currently running thread/process. */
 int thread_current_id(void);
+/* a live thread's name, or 0 (for panic reports) */
+const char *thread_name(int id);
 int thread_is_alive(int id);
 
 /* mark a thread as a user (ring-3) process. */

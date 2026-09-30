@@ -14,6 +14,7 @@
 #include "paging.h"
 #include "addr_space.h"
 #include "heap.h"
+#include "kstack.h"
 #include "console.h"
 #include "color.h"
 #include "fb.h"
@@ -136,6 +137,10 @@ void kmain(void) {
 
     heap_init();
     klog("HEAP", SEV_OK, "online (kmalloc/kfree)");
+
+    /* before any address space but the kernel's exists: see kstack_init */
+    kstack_init();
+    klog("KSTACK", SEV_OK, "guarded kernel stacks ready");
 
     /* initalize speakers */
     speaker_init();
