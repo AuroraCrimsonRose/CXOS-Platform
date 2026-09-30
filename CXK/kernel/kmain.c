@@ -278,6 +278,13 @@ void kmain(void) {
        ring-3 threads, so let them finish before starting the executive. */
     ktest_run();
 
+#ifdef CXK_DEV_UNSIGNED
+    /* Said at every boot, in the log, just before anything unsigned could run:
+       a development kernel must never be mistakable for a release one. */
+    klog("KERNEL", SEV_WARN, "DEVELOPMENT KERNEL - unsigned programs will run");
+    klog_child("built with DEV_UNSIGNED=ON; never ship this image");
+#endif
+
     /* capstone: start the signed executive as the root ring-3 process (its own
        address space + scheduler thread). It runs once we idle + yield below. */
     if (launch_exec) {
