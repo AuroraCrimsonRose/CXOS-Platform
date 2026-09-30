@@ -186,6 +186,8 @@ public sealed class X86Emitter
             _wideTempBase = -locals;
         }
 
+        var section = SectionOf(f);
+        if (section != null) _text.AppendLine($".section {section},\"ax\",@progbits");   // allocated + executable
         Lbl(f.Name);
         T("push %ebp");
         T("mov %esp, %ebp");
@@ -195,6 +197,16 @@ public sealed class X86Emitter
         T("mov %ebp, %esp");
         T("pop %ebp");
         T("ret");
+        if (section != null) _text.AppendLine(".text");   // the next function goes back where it belongs
+    }
+
+    /* The section a declaration asked for with @section, or null for the
+       default. The type checker has already validated it, so this only reads. */
+    private static string? SectionOf(Decl d)
+    {
+        foreach (var a in d.Attrs)
+            if (a.Name == "section" && a.Args.Count == 1 && a.Args[0].Value is StrLit s) return s.Value;
+        return null;
     }
 
     private IEnumerable<LetStmt> CollectLocals(Block b)
@@ -212,6 +224,9 @@ public sealed class X86Emitter
                 foreach (var x in CollectLocals(i.Then)) yield return x;
                 if (i.Else != null) foreach (var x in CollectLocals(i.Else)) yield return x; break;
             case WhileStmt w: foreach (var x in CollectLocals(w.Body)) yield return x; break;
+            // a `let` inside a deferred block still needs a frame slot, and the
+            // frame is sized before any statement is emitted
+            case DeferStmt d: foreach (var x in LocalsIn(d.Body)) yield return x; break;
         }
     }
 
@@ -233,6 +248,22 @@ public sealed class X86Emitter
         int size = Align4(SizeOf(g.Type));
         UInt128 init = UInt128.Zero;
         if (g.Init != null) new ConstFold(_ctx, _diag).TryEval(g.Init, out init);
+
+        /* A global in a named section is emitted there in full, even when it
+           is zero. Sending it to .bss would put it somewhere other than where
+           it was asked to be - and a section read as a table must contain
+           every entry, zero-valued ones included. */
+        var section = SectionOf(g);
+        if (section != null)
+        {
+            _data.AppendLine($".section {section},\"aw\",@progbits");   // allocated + writable
+            _data.AppendLine("    .align 4");
+            _data.AppendLine($"{g.Name}:");
+            for (int i = 0; i < size; i += 4)
+                _data.AppendLine($"    .long {(i < 16 ? (uint)(init >> (i * 8)) : 0u)}");
+            _data.AppendLine(".data");
+            return;
+        }
 
         if (init == UInt128.Zero)
         {
@@ -260,7 +291,48 @@ public sealed class X86Emitter
     }
 
     // ---- statements ----
-    private void EmitBlock(Block b) { foreach (var s in b.Stmts) EmitStmt(s); }
+    /* ---- defer ----
+     *
+     * One list of deferred statements per open block, innermost last. A
+     * `defer` emits nothing where it is written; it appends its body to the
+     * current block's list. Every route out of a block then emits the lists it
+     * is leaving, innermost block first and, within a block, last-deferred
+     * first - so cleanups run in the reverse order of the acquisitions they
+     * undo, which is the whole reason to write them next to each other.
+     *
+     * The routes: falling off the end of a block (EmitBlock), `return` (all
+     * lists, out to the function), and `break` / `continue` (only the lists
+     * opened inside the loop - the loop's own enclosing blocks are not being
+     * left). Each route emits its own copy of the cleanup code at the point
+     * of exit. That duplicates code rather than sharing one cleanup path, and
+     * is chosen deliberately: it needs no runtime state, no hidden variable
+     * recording which exit was taken, and it is the shape a reader of the
+     * assembly can follow.
+     *
+     * Only defers ALREADY REACHED run. One written after a `return` in the
+     * same block has not been registered when the return is emitted, so it
+     * does not run - which is correct, since whatever it would have cleaned
+     * up was never acquired. */
+    private readonly List<List<Stmt>> _defers = new();
+
+    private void EmitDefers(int downTo)
+    {
+        for (int i = _defers.Count - 1; i >= downTo; i--)
+        {
+            var pending = _defers[i].ToArray();   // a copy: the bodies open blocks of their own
+            for (int j = pending.Length - 1; j >= 0; j--) EmitStmt(pending[j]);
+        }
+    }
+
+    private bool AnyDefers() => _defers.Exists(l => l.Count > 0);
+
+    private void EmitBlock(Block b)
+    {
+        _defers.Add(new List<Stmt>());
+        foreach (var s in b.Stmts) EmitStmt(s);
+        EmitDefers(_defers.Count - 1);            // the fall-through exit
+        _defers.RemoveAt(_defers.Count - 1);
+    }
 
     private void EmitStmt(Stmt s)
     {
@@ -294,7 +366,20 @@ public sealed class X86Emitter
                                     "pass a pointer to the destination instead", r.Span);
                     EmitExpr(r.Value);
                 }
+                /* The value is computed BEFORE the defers run - `return x`
+                   returns x as it was at the return, even if a defer then
+                   changes x - and eax is saved around them because running
+                   any code at all will clobber it. */
+                if (AnyDefers())
+                {
+                    T("push %eax");
+                    EmitDefers(0);
+                    T("pop %eax");
+                }
                 T($"jmp {CurFnRet}");
+                break;
+            case DeferStmt d:
+                if (_defers.Count > 0) _defers[^1].Add(d.Body);
                 break;
             case IfStmt i:
                 {
@@ -308,19 +393,21 @@ public sealed class X86Emitter
                 {
                     string top = NL(), end = NL();
                     Lbl(top); EmitExpr(w.Cond); T("test %eax, %eax"); T($"jz {end}");
-                    _loops.Push((top, end));
+                    _loops.Push((top, end, _defers.Count));
                     EmitBlock(w.Body);
                     _loops.Pop();
                     T($"jmp {top}"); Lbl(end); break;
                 }
 
             case BreakStmt:
-                if (_loops.Count > 0) T($"jmp {_loops.Peek().end}");
+                if (_loops.Count > 0) { EmitDefers(_loops.Peek().depth); T($"jmp {_loops.Peek().end}"); }
                 break;
 
             case ContinueStmt:
-                // jump to the loop top: re-tests the condition, as in C
-                if (_loops.Count > 0) T($"jmp {_loops.Peek().top}");
+                // jump to the loop top: re-tests the condition, as in C. The
+                // body's defers run first - each iteration is a fresh entry
+                // into the body block, so it must be left properly each time.
+                if (_loops.Count > 0) { EmitDefers(_loops.Peek().depth); T($"jmp {_loops.Peek().top}"); }
                 break;
         }
     }
@@ -330,7 +417,9 @@ public sealed class X86Emitter
 
     // enclosing loops: (continue target, break target). WhileStmt pushes before
     // emitting its body so break/continue inside know where to jump.
-    private readonly Stack<(string top, string end)> _loops = new();
+    // `depth` is how many defer lists were open when the loop began: a
+    // break or continue leaves every block opened since, and no others.
+    private readonly Stack<(string top, string end, int depth)> _loops = new();
 
     private void StoreToVar(string name)
     {
@@ -643,11 +732,29 @@ public sealed class X86Emitter
             case BinOp.Shr: T(IsSigned(TypeOf(b.Left)) ? "sar %cl, %eax" : "shr %cl, %eax"); break;
             case BinOp.Eq: Cmp("sete"); break;
             case BinOp.Ne: Cmp("setne"); break;
-            case BinOp.Lt: Cmp("setl"); break;
-            case BinOp.Le: Cmp("setle"); break;
-            case BinOp.Gt: Cmp("setg"); break;
-            case BinOp.Ge: Cmp("setge"); break;
+            /* Ordering needs to know the signedness, and it used to assume
+               signed for everything: setl/setg on a u32 treats every value
+               from 2^31 up as negative, so `x > 429496729` was FALSE for
+               x = 3000000000. Division and >> above already took the operand
+               type into account; comparison was the one left behind.
+
+               The rule is C's: the comparison is unsigned if either operand is
+               an unsigned 32-bit value or a pointer. A u8 or u16 widens to a
+               signed int without losing any value, so it does not force it. */
+            case BinOp.Lt: Cmp(UnsignedCompare(b) ? "setb"  : "setl");  break;
+            case BinOp.Le: Cmp(UnsignedCompare(b) ? "setbe" : "setle"); break;
+            case BinOp.Gt: Cmp(UnsignedCompare(b) ? "seta"  : "setg");  break;
+            case BinOp.Ge: Cmp(UnsignedCompare(b) ? "setae" : "setge"); break;
         }
+    }
+
+    private bool UnsignedCompare(BinaryExpr b) => IsUnsignedWord(TypeOf(b.Left)) || IsUnsignedWord(TypeOf(b.Right));
+
+    private bool IsUnsignedWord(TypeRef t0)
+    {
+        var t = _ctx.Expand(t0);
+        if (t is PointerType or FuncType) return true;          // an address has no sign
+        return t is PrimType p && !PrimWidth.IsSigned(p.Kind) && PrimWidth.Bytes(p.Kind) == 4;
     }
     private void Cmp(string setcc) { T("cmp %ecx, %eax"); T($"{setcc} %al"); T("movzbl %al, %eax"); }
 
