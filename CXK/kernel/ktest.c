@@ -30,6 +30,7 @@
 #include "cxex.h"
 #include "keyvault.h"
 #include "vmregion.h"
+#include "exec.h"
 
 /* concise pass/fail reporter */
 /* Report a test result. Stays SILENT on success - only failures are printed,
@@ -703,6 +704,31 @@ static int test_vmregion(void) {
     return ok;
 }
 
+/* ---- admission: what a verification result lets run ----
+ * Held to the rule of whichever build this is. Both kinds refuse a tampered
+ * image, a forged or wrong-key signature and a file that is not a CXEX, and
+ * pass a real trust level through untouched. They differ on exactly one case:
+ * an image with no signature at all is refused by a release kernel and
+ * admitted, at platform trust, by a DEV_UNSIGNED one.
+ *
+ * The refusals are the half that matters most. A dev flag that let a TAMPERED
+ * image through would turn "skip signing while testing" into "ignore
+ * corruption", and this is what makes sure it never can. */
+static int test_exec_admit(void) {
+    if (exec_admit(CXEX_VERIFY_BAD_SIGNATURE) >= 0) return 0;
+    if (exec_admit(CXEX_VERIFY_BAD_FORMAT)    >= 0) return 0;
+    if (exec_admit(CXEX_VERIFY_WRONG_KEY)     >= 0) return 0;
+    if (exec_admit(CXEX_VERIFY_BAD_SIG_BLOCK) >= 0) return 0;
+    if (exec_admit(CX_TRUST_PUBLISHER)  != CX_TRUST_PUBLISHER)  return 0;
+    if (exec_admit(CX_TRUST_UNVERIFIED) != CX_TRUST_UNVERIFIED) return 0;
+#ifdef CXK_DEV_UNSIGNED
+    if (exec_admit(CXEX_VERIFY_UNSIGNED) != CX_TRUST_PLATFORM) return 0;
+#else
+    if (exec_admit(CXEX_VERIFY_UNSIGNED) >= 0) return 0;
+#endif
+    return 1;
+}
+
 void ktest_run(void) {
     int passed = 0, total = 0;
 
@@ -724,6 +750,7 @@ void ktest_run(void) {
     total++; passed += report("clock + timed sleep",               test_clock_sleep());
     total++; passed += report("memory mappings (SYS_MEM_OP)",     test_vmregion());
     total++; passed += report("cxex signature + tamper",           test_cxex_signature());
+    total++; passed += report("exec admission (dev / release)",   test_exec_admit());
     total++; passed += report("file syscalls (SYS_FILE_OP)",       usermode_file_test());
 
     /* single summary line: green if all passed, red if any failed. */

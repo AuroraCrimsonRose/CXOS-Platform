@@ -41,6 +41,29 @@ uint32_t caps_for(uint16_t type_code, int trusted) {
  * user, and nothing logs in - so the policy refuses for now rather than
  * pretending a permission exists. When accounts arrive, this is the one
  * function that changes. */
+/* What a verification result admits as. Normally that is the result itself:
+ * a trust level, or a negative error that refuses the image.
+ *
+ * A DEVELOPMENT kernel (built with -DDEV_UNSIGNED=ON) differs in exactly one
+ * case: an image carrying no signature at all is admitted, at platform trust,
+ * so an unsigned test build can boot its own executive and supervisor. Only
+ * CXEX_VERIFY_UNSIGNED - never a tampered image, a forged or wrong signature,
+ * or a file that is not a CXEX. The flag skips signing; it does not ignore
+ * corruption. Every such admission is logged, so a dev kernel can never quietly
+ * look like a release one.
+ *
+ * Kept a separate, pure function so the self-tests can hold both kinds of
+ * build to their rule. */
+int exec_admit(int verified) {
+#ifdef CXK_DEV_UNSIGNED
+    if (verified == CXEX_VERIFY_UNSIGNED) {
+        klog("EXEC", SEV_WARN, "dev kernel: admitting an UNSIGNED image");
+        return CX_TRUST_PLATFORM;
+    }
+#endif
+    return verified;
+}
+
 static int min_trust_for(uint16_t type_code) {
     if (type_code == CXEX_TYPE_USER) return CX_TRUST_PUBLISHER;
     return CX_TRUST_PLATFORM;
@@ -55,7 +78,7 @@ int cxex_exec_as(const uint8_t *file, size_t len, uint32_t caps, struct endpoint
        signature check refused it. Parsing the header first instead would make
        a text file report "malformed" rather than "refused", which is the
        loader volunteering its opinion of bytes nobody has vouched for. */
-    int trust = keyvault_trust_of(file, len);
+    int trust = exec_admit(keyvault_trust_of(file, len));
     if (trust < 0) return CXEX_EXEC_VERIFY_FAILED;
 
     /* POLICY: only OS/SYSTEM/USER executables run in ring 3, and the tier

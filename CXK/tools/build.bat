@@ -40,6 +40,16 @@ if exist "%SK%" (
     echo   no signing key - building UNSIGNED ^(run: tools\cxk.exe keygen tools\kernel^)
 )
 
+REM `build.bat dev` builds a DEVELOPMENT kernel that runs unsigned images, so a
+REM test boot needs no signing key at all. Signing is switched off for it even when
+REM a key is present: CMake refuses a signed kernel that runs unsigned code.
+set DEVFLAG=
+if /i "%~1"=="dev" (
+    set DEVFLAG=-DDEV_UNSIGNED=ON
+    set SIGNFLAG=-DSIGN=OFF
+    echo   DEVELOPMENT build - unsigned images will run, signing skipped. Never ship this image.
+)
+
 echo [1/3] Cleaning build\ ...
 if exist build rmdir /s /q build
 mkdir build
@@ -67,8 +77,8 @@ echo   [warn] this cxk.exe predates check-abi - skipping the ABI check.
 echo          Republish cxk.exe from the DevKit to enable it.
 :abi_done
 
-echo [2/3] Configuring CMake %SIGNFLAG% ...
-cmake -S "%CMAKEDIR%" -B build -G "NMake Makefiles" %SIGNFLAG%
+echo [2/3] Configuring CMake %SIGNFLAG% %DEVFLAG% ...
+cmake -S "%CMAKEDIR%" -B build -G "NMake Makefiles" %SIGNFLAG% %DEVFLAG%
 if errorlevel 1 ( echo [ERROR] CMake configure failed. & exit /b 1 )
 
 echo [3/3] Building ...
