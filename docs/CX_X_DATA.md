@@ -1,9 +1,9 @@
 # X Data
 ### CX Design Spec — Aurora Tejeda / CATX SYSTEMS LLC
 
-> **Status: v0, reader implemented** (`os/std/xdata.xfxn`). Writing and
-> editing, schemas, and the DevKit-side reader are specified as intent in §7 and
-> are not built yet.
+> **Status: v0, reader implemented** (`os/std/xdata.xfxn`), with **service
+> descriptors (`.xosv`) as the first consumer**. Writing and editing, schemas,
+> and the DevKit-side reader are specified as intent in §7 and are not built yet.
 
 X Data is CXOS's format for configuration and structured data: service
 descriptors, package manifests, system / user / workspace settings, and anything
@@ -147,6 +147,29 @@ if (xd_get(src, &root, "every", &v) == 1) { xd_u32(src, &v, &every); }
 | `xd_bool(src, v, out)` | the bool |
 | `xd_sym_is(src, v, name)` | 1 if `v` is the symbol `name` |
 | `xd_tag_is(src, rec, name)` | 1 if the record carries the tag `name` |
+| `xd_entry_at(src, rec, i, key, val)` | 1 and the `i`th entry's key and value, else 0 — for a reader that must see every key |
+| `xd_strerror(code)` | a short description of an `XD_E_*` code |
+| `xd_line(src, at)` | the 1-based line a byte offset falls on — `xd_err_at` made findable |
+
+**A reader should refuse keys it does not know.** `xd_get` only finds what it
+is asked for, so a misspelt key is otherwise silently ignored. Walking the keys
+with `xd_entry_at` and refusing any that are not expected is what turns
+`evry = 60` from a service that quietly never repeats into an error on line 3.
+Until schemas exist (§7), that check belongs to each reader.
+
+### First consumer: service descriptors
+
+`/System/Services/*.xosv` are X Data. The supervisor reads each one whole,
+refuses unknown keys and wrong-kind values with the line they are on, and starts
+nothing from a descriptor it could not read completely:
+
+```x
+exec   = "/Shared/Programs/hi.xuex"
+args   = ["started by", "the supervisor"]   // argv[1] is "started by", one argument
+start  = boot
+every  = 300
+grants = [console, disk]
+```
 
 `xd_check` must succeed before any other call is made on a document. The other
 functions assume a well-formed document and do not re-report its errors.
