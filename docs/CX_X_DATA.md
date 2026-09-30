@@ -2,8 +2,9 @@
 ### CX Design Spec — Aurora Tejeda / CATX SYSTEMS LLC
 
 > **Status: v0, reader implemented** (`os/std/xdata.xfxn`), with **service
-> descriptors (`.xosv`) as the first consumer**. Writing and editing, schemas,
-> and the DevKit-side reader are specified as intent in §7 and are not built yet.
+> descriptors (`.xosv`) as the first consumer**, checked at build time by the
+> DevKit's port of the same reader (§6a). Writing and editing, and schemas, are
+> specified as intent in §7 and are not built yet.
 
 X Data is CXOS's format for configuration and structured data: service
 descriptors, package manifests, system / user / workspace settings, and anything
@@ -184,6 +185,34 @@ need revisiting with threads.
 
 ---
 
+## 6a. The DevKit reader, and the build check
+
+`CXEX.Lang/Data/XData.cs` in CX_DEVKIT is a **line-for-line port** of
+`os/std/xdata.xfxn`, not a second implementation. A build-time check is only
+worth having if it accepts exactly what the supervisor accepts; a document that
+passed the build and failed at boot would be worse than no check. Keeping the
+two walks identical is what makes that agreement cheap to keep, and it is
+enforced rather than hoped for: `tests/xdata/difftest.py` in the DevKit runs
+generated documents — valid, mutated, and nested past the depth limit —
+through both readers, the X one compiled and run natively, and fails on any
+difference in **error code or byte offset**. The error numbers are the same
+`XD_E_*` values on both sides.
+
+`cxk check-xdata <files> [--keys a,b,c]` exposes it. The CXK build runs it over
+every `.xosv` before staging them, with `--keys` set to the keys the supervisor
+knows, so a misspelt key or a missing comma stops the build with
+`file:line:col` instead of appearing as a line in the boot log. The key list
+lives in two places — `svc_keys_known()` in the supervisor and `SERVICE_XOSV`'s
+check in `tools/cmake/CMakeLists.txt` — and each points at the other. A cxk
+published before `check-xdata` existed is detected at configure time: the
+build warns and skips the check rather than failing.
+
+The build checks syntax and keys, not kinds: `start = 5` passes the build and is
+refused by the supervisor at boot. Kinds belong to schemas (§7), which would
+let both sides check them from one declaration.
+
+---
+
 ## 7. Intent — not built yet
 
 - **Round-trip editing.** Every value the reader returns is a span of the
@@ -195,7 +224,5 @@ need revisiting with threads.
 - **Schemas**, checking a document's keys, kinds and ranges against a
   declaration, so "strict types like Postgres" is a property of the file and not
   of each reader's diligence. Whether a schema is itself X Data is open.
-- **A DevKit-side reader**, so the build can reject a malformed descriptor
-  before it is ever staged onto a disk.
 - **Quoted keys**, wide integers, and nested block comments, when something
   needs them.
