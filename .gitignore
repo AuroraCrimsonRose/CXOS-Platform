@@ -29,7 +29,12 @@ tmp/
 logs/
 cache/
 config/
+
+# The DevKit toolchain is not committed: build it from CX_DEVKIT (or take a
+# release build) and put it in CXK/tools/. A 40 MB binary in every clone, stale
+# the moment the compiler changes, is worse than one step to fetch it.
 tools/cxk.exe
+CXK/tools/cxk.exe
 
 # -------------------------
 # Editor / workspace files
