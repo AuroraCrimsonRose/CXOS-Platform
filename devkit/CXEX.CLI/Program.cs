@@ -50,6 +50,9 @@ app.Configure(config =>
     config.AddCommand<CheckAbiCommand>("check-abi")
         .WithDescription("Validates that the X ABI prelude still matches the kernel's cxk_abi.h.");
 
+    config.AddCommand<CheckXDataCommand>("check-xdata")
+        .WithDescription("Validates X Data documents (service descriptors), with the same rules as the X reader.");
+
     // ---- UEFI Secure Boot (replaces openssl + virt-fw-vars + sbsign + sbverify) ----
     config.AddBranch("secureboot", sb =>
     {
