@@ -43,7 +43,27 @@ public static class PrimWidth
 }
 
 public sealed record PrimType(PrimKind Kind) : TypeRef;
-public sealed record PointerType(TypeRef Pointee) : TypeRef;        // *T
+/* Which address space a pointer's number belongs to.
+ *
+ * A pointer is a number, and on this target every pointer is the same width -
+ * so without this, a physical address, a device (DMA) address, an address a
+ * ring-3 caller handed the kernel, and an ordinary pointer are the same type,
+ * and the compiler cannot tell you that you just dereferenced the wrong one.
+ * Those are the two classic kernel catastrophes: reading through a user
+ * pointer that was never validated, and giving a device a virtual address.
+ *
+ * NORMAL is a pointer valid in the address space the code is running in - the
+ * kernel's own in kernel code, the program's own in userland. It is the only
+ * kind that can be dereferenced. The others must be converted first, and a
+ * conversion is always a numeric step through an integer (see the cast rule in
+ * the type checker) because that is where the real translation happens: phys
+ * to virt is an addition, validating a user pointer is a range check.
+ *
+ * Purely a type-checker property. Every pointer is still one register wide, so
+ * nothing in code generation changes. */
+public enum AddrSpace { Normal, User, Phys, Dma }
+
+public sealed record PointerType(TypeRef Pointee, AddrSpace Space = AddrSpace.Normal) : TypeRef;   // *T, *user T, *phys T, *dma T
 public sealed record ArrayType(TypeRef Element, int Length) : TypeRef; // [N]T
 public sealed record NamedType(string Name) : TypeRef;             // struct name / alias
 public sealed record FuncType(List<TypeRef> Params, TypeRef Return) : TypeRef;  // fn(T,U) -> R             // struct name / alias

@@ -155,6 +155,11 @@ public sealed class Resolver
             case WhileStmt w: ResolveExpr(w.Cond, scope); ResolveBlock(w.Body, scope); break;
             case ReturnStmt r: if (r.Value != null) ResolveExpr(r.Value, scope); break;
             case ExprStmt e: ResolveExpr(e.Expr, scope); break;
+            /* Resolved in the scope at the point of the `defer`, not at the
+               end of the block where it runs. So a deferred body sees what was
+               declared before it and nothing declared after - the same rule as
+               every other statement, even though the code runs later. */
+            case DeferStmt d: ResolveStmt(d.Body, scope); break;
         }
     }
 

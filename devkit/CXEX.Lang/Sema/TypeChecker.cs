@@ -28,6 +28,7 @@ public sealed class TypeChecker
 
     public void Check(CompilationUnit unit)
     {
+        foreach (var d in unit.Decls) CheckAttrs(d);
         foreach (var d in unit.Decls)
             switch (d)
             {
@@ -37,6 +38,87 @@ public sealed class TypeChecker
                 case GlobalDecl g when g.Init != null: _fold.TryEval(g.Init, out _); break;
             }
     }
+
+    // ---- attributes ----
+    /* The one place an attribute gets its meaning. An attribute not handled
+       here is an ERROR: silently ignoring an unknown name would let a typo
+       compile into a program that quietly lacks whatever the attribute was
+       for, and nothing would ever say so. Adding an attribute means adding a
+       case here and teaching the emitter what it does - both, or neither. */
+    private static readonly string[] KnownAttrs = { "section" };
+
+    private void CheckAttrs(Decl d)
+    {
+        var seen = new HashSet<string>();
+        foreach (var a in d.Attrs)
+        {
+            if (!seen.Add(a.Name))
+            {
+                _diag.Error($"'@{a.Name}' given more than once", a.Span);
+                continue;
+            }
+            switch (a.Name)
+            {
+                case "section": CheckSection(d, a); break;
+                default:
+                    _diag.Error($"unknown attribute '@{a.Name}'; known: " +
+                                string.Join(", ", KnownAttrs.Select(k => "@" + k)), a.Span);
+                    break;
+            }
+        }
+    }
+
+    /* @section(".name") - put a function or global in a named object-file
+       section instead of the default one.
+
+       It is the mechanism that declarative tables are built on: many
+       declarations, in many files, all landing in one section that something
+       reads as an array. That is how driver match tables will work, without a
+       hand-maintained registration list that drifts from the drivers.
+
+       The default names are refused. `.text`, `.data`, `.rodata` and `.bss`
+       already mean where a declaration goes by default, so naming one is either
+       redundant or - a function in `.data` - contradictory, and the assembler
+       would quietly merge section attributes rather than say so. */
+    private static readonly HashSet<string> DefaultSections = new() { ".text", ".data", ".rodata", ".bss" };
+
+    private void CheckSection(Decl d, Attr a)
+    {
+        switch (d)
+        {
+            case FnDecl { Body: null }:
+                _diag.Error("'@section' on an extern function: it has no body to place", a.Span); return;
+            case FnDecl: case GlobalDecl: break;
+            default:
+                _diag.Error($"'@section' does not apply to {DeclWord(d)}: only a function or a global " +
+                            "occupies space in a section", a.Span);
+                return;
+        }
+        if (a.Args.Count != 1 || a.Args[0].Name != null || a.Args[0].Value is not StrLit s)
+        {
+            _diag.Error("'@section' takes one argument, the section name as a string: @section(\".name\")", a.Span);
+            return;
+        }
+        var name = s.Value;
+        if (name.Length < 2 || name[0] != '.' ||
+            !name.Skip(1).All(ch => char.IsAsciiLetterOrDigit(ch) || ch == '_' || ch == '.'))
+        {
+            _diag.Error($"section name '{name}' must start with '.' and contain only letters, digits, " +
+                        "'_' and '.'", a.Span);
+            return;
+        }
+        if (DefaultSections.Contains(name))
+            _diag.Error($"'{name}' is where a declaration goes by default; '@section' is for a section of its own", a.Span);
+    }
+
+    private static string DeclWord(Decl d) => d switch
+    {
+        StructDecl => "a struct",
+        ConstDecl => "a constant",
+        TypeAliasDecl => "a type alias",
+        ImportDecl => "an import",
+        _ => "this declaration",
+    };
 
     // ---- helpers ----
     // all three expand type aliases first, so `type fx = i32;` behaves as i32
@@ -74,7 +156,11 @@ public sealed class TypeChecker
         return (a, b) switch
         {
             (PrimType x, PrimType y) => x.Kind == y.Kind,
-            (PointerType x, PointerType y) => Same(x.Pointee, y.Pointee),
+            // Different address spaces are different types. This one line is
+            // what makes assignment, argument passing, returning and `==`
+            // between a *phys and a *u8 a compile error, since all of them
+            // go through Same().
+            (PointerType x, PointerType y) => x.Space == y.Space && Same(x.Pointee, y.Pointee),
             (NamedType x, NamedType y) => x.Name == y.Name,
             (ArrayType x, ArrayType y) => x.Length == y.Length && Same(x.Element, y.Element),
             (FuncType x, FuncType y) => SameFunc(x, y),
@@ -100,6 +186,7 @@ public sealed class TypeChecker
     private void CheckBlock(Block b) { foreach (var s in b.Stmts) CheckStmt(s); }
 
     private int _loopDepth;   // break/continue must appear inside a loop
+    private int _deferDepth;  // and nothing may leave a defer body early
 
     private void CheckStmt(Stmt s)
     {
@@ -126,11 +213,34 @@ public sealed class TypeChecker
                     break;
                 }
             case BreakStmt:
-                if (_loopDepth == 0) _diag.Error("'break' outside a loop", s.Span);
+                if (_loopDepth == 0)
+                    _diag.Error(_deferDepth > 0 ? "cannot 'break' out of a defer" : "'break' outside a loop", s.Span);
                 break;
             case ContinueStmt:
-                if (_loopDepth == 0) _diag.Error("'continue' outside a loop", s.Span);
+                if (_loopDepth == 0)
+                    _diag.Error(_deferDepth > 0 ? "cannot 'continue' out of a defer" : "'continue' outside a loop", s.Span);
                 break;
+            case DeferStmt d:
+                {
+                    /* A defer body runs while the block is ALREADY being left -
+                       on the way out of a return, a break, or the end of the
+                       block. So it may not itself leave by one of those
+                       routes: a `return` inside a defer would abandon the
+                       return that is running it, and the cleanup after it
+                       would silently not happen. Loops and blocks wholly
+                       inside the body are fine; it is only escaping the
+                       defer that is refused, which is why the loop depth is
+                       zeroed here rather than just a flag set. */
+                    if (d.Body is LetStmt)
+                        _diag.Error("'defer let' declares a variable nothing can use; defer a statement or a block", d.Span);
+                    int savedLoops = _loopDepth;
+                    _loopDepth = 0;
+                    _deferDepth++;
+                    CheckStmt(d.Body);
+                    _deferDepth--;
+                    _loopDepth = savedLoops;
+                    break;
+                }
             case AssignStmt a:
                 {
                     var tt = CheckExpr(a.Target);
@@ -146,6 +256,7 @@ public sealed class TypeChecker
                 Expect(CheckExpr(w.Cond), Bool, w.Cond.Span, "while condition");
                 _loopDepth++; CheckBlock(w.Body); _loopDepth--; break;
             case ReturnStmt r:
+                if (_deferDepth > 0) _diag.Error("cannot 'return' from inside a defer", r.Span);
                 if (r.Value == null) { if (!IsBool(_curReturn) && _curReturn is not PrimType { Kind: PrimKind.Void }) _diag.Error("return requires a value", r.Span); }
                 else { var rt = CheckExpr(r.Value); if (!Assignable(_curReturn, rt)) _diag.Error($"return type {Show(rt)} does not match {Show(_curReturn)}", r.Span); }
                 break;
@@ -178,8 +289,14 @@ public sealed class TypeChecker
              *
              * Unsigned, because a literal is a magnitude; unary minus is a
              * separate node applied to it. */
+            /* `int.MaxValue`, not `uint.MaxValue`: 0x80000000 through
+               0xFFFFFFFF do not fit in an i32, and typing them as one made
+               `y < 0x80000000` on an i32 compare against -2147483648. They are
+               u32, the narrowest type that actually holds them - which is also
+               what C does with an unsuffixed hex constant that large. */
             case IntLit il:
-                return Set(e, il.Value <= uint.MaxValue ? I32
+                return Set(e, il.Value <= int.MaxValue ? I32
+                            : il.Value <= uint.MaxValue ? U32
                             : il.Value <= ulong.MaxValue ? new PrimType(PrimKind.U64)
                             : new PrimType(PrimKind.U128));
             case StrLit: return Set(e, new PointerType(new PrimType(PrimKind.U8)));
@@ -195,6 +312,7 @@ public sealed class TypeChecker
             case MemberExpr m:
                 {
                     var tt = CheckExpr(m.Target);
+                    if (!CheckDeref(tt, m.Span)) return Set(e, Void);
                     var sd = StructOf(tt is PointerType p ? p.Pointee : tt); // allow s.f and ps.f
                     if (sd == null) { _diag.Error($"'.{m.Field}' on non-struct {Show(tt)}", m.Span); return Set(e, Void); }
                     foreach (var f in sd.Fields) if (f.Name == m.Field) return Set(e, f.Type);
@@ -204,6 +322,7 @@ public sealed class TypeChecker
                 {
                     var tt = CheckExpr(ix.Target);
                     Expect(CheckExpr(ix.Index), I32, ix.Index.Span, "index");
+                    if (!CheckDeref(tt, ix.Span)) return Set(e, Void);
                     TypeRef elem = tt switch { PointerType p => p.Pointee, ArrayType a => a.Element, _ => null! };
                     if (elem == null) { _diag.Error($"cannot index {Show(tt)}", ix.Span); return Set(e, Void); }
                     return Set(e, elem);
@@ -216,13 +335,44 @@ public sealed class TypeChecker
             case UnOp.BitNot:
             case UnOp.Neg: if (!IsInt(ot)) _diag.Error("unary '-' / '~' needs an integer", u.Span); return Set(e, ot);
                         case UnOp.Not: if (!IsBool(ot)) _diag.Error("unary '!' needs a bool", u.Span); return Set(e, Bool);
-                        case UnOp.Deref: if (ot is PointerType p) return Set(e, p.Pointee); _diag.Error("cannot dereference non-pointer", u.Span); return Set(e, Void);
+                        case UnOp.Deref:
+                            if (ot is PointerType p) return CheckDeref(ot, u.Span) ? Set(e, p.Pointee) : Set(e, Void);
+                            _diag.Error("cannot dereference non-pointer", u.Span); return Set(e, Void);
                         case UnOp.AddrOf: return Set(e, new PointerType(ot));
                     }
                     return Set(e, Void);
                 }
             case BinaryExpr b: return Set(e, CheckBinary(b));
-            case CastExpr c: { CheckExpr(c.Operand); return Set(e, c.Target); } // v0.1: permissive
+            case CastExpr c:
+                {
+                    var from = CheckExpr(c.Operand);
+                    /* Casts are otherwise permissive (v0.1), with ONE exception:
+                       a pointer may not be cast straight to a pointer in a
+                       different address space.
+
+                       `p as *u8` on a *phys is not a conversion, it is a lie -
+                       the number is unchanged, and it names different memory
+                       than a virtual pointer with that number would. What
+                       every real crossing actually does is arithmetic: phys to
+                       virt adds an offset, validating a user pointer checks a
+                       range. So the route is through an integer -
+                       `(p as u32 + OFFSET) as *u8` - which is exactly where
+                       that arithmetic goes, and which makes an untranslated
+                       crossing (`p as u32 as *u8`) something a reader can see
+                       was deliberate rather than something a cast hid.
+
+                       Pointer to integer and integer to pointer stay free, in
+                       any space: that is how an address arrives from a device
+                       register or a syscall argument in the first place. */
+                    if (_ctx.Expand(from) is PointerType pf && _ctx.Expand(c.Target) is PointerType pt &&
+                        pf.Space != pt.Space)
+                    {
+                        _diag.Error($"cannot cast {Show(from)} to {Show(c.Target)}: a pointer does not " +
+                                    "change address space by being relabelled. Convert through an integer, " +
+                                    "where the translation belongs", c.Span);
+                    }
+                    return Set(e, c.Target);
+                }
 
             default: return Set(e, Void);
         }
@@ -326,10 +476,44 @@ public sealed class TypeChecker
         if (!Assignable(want, got)) _diag.Error($"{what} must be {Show(want)}, got {Show(got)}", span);
     }
 
+    private static string SpaceWord(AddrSpace s) => s switch
+    {
+        AddrSpace.User => "user ",
+        AddrSpace.Phys => "phys ",
+        AddrSpace.Dma  => "dma ",
+        _              => "",
+    };
+
+    /* Refuse to read or write THROUGH a pointer that is not valid in this
+     * address space. Called by all three forms of dereference - `*p`, `p[i]`
+     * and `p.field` - so none of them can become the way around the others.
+     *
+     * Each message says why, because "cannot dereference" alone would read as
+     * an arbitrary rule. The point is that the number in a *phys or *dma
+     * pointer names a DIFFERENT memory than the CPU would reach by using it,
+     * and the number in a *user pointer is one a less-trusted caller chose. */
+    private bool CheckDeref(TypeRef t, SourceSpan span)
+    {
+        if (_ctx.Expand(t) is not PointerType { Space: not AddrSpace.Normal } p) return true;
+        _diag.Error(p.Space switch
+        {
+            AddrSpace.User =>
+                "cannot dereference a *user pointer: the address came from a less-trusted " +
+                "caller and has not been validated. Check it, then convert through an integer",
+            AddrSpace.Phys =>
+                "cannot dereference a *phys pointer: a physical address is not mapped at that " +
+                "number. Translate it to a virtual address first",
+            _ =>
+                "cannot dereference a *dma pointer: it is the address a device sees, not the " +
+                "one the CPU does",
+        }, span);
+        return false;
+    }
+
     private string Show(TypeRef t) => t switch
     {
         PrimType p => p.Kind.ToString().ToLowerInvariant(),
-        PointerType p => "*" + Show(p.Pointee),
+        PointerType p => "*" + SpaceWord(p.Space) + Show(p.Pointee),
         ArrayType a => $"[{a.Length}]" + Show(a.Element),
         NamedType n => n.Name,
         _ => "?"
