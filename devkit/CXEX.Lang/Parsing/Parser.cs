@@ -63,6 +63,45 @@ public sealed class Parser
     // ---- declarations ----
     private Decl? ParseDecl()
     {
+        var attrs = ParseAttrs();
+        var d = ParseDeclBody();
+        if (d == null || attrs.Count == 0) return d;
+        return d with { Attrs = attrs };
+    }
+
+    // @name  |  @name(arg, name = arg, ...)   - zero or more, before a declaration
+    private List<Attr> ParseAttrs()
+    {
+        var list = new List<Attr>();
+        while (At(TokenKind.At))
+        {
+            var start = Cur.Span;
+            Advance();
+            var name = Expect(TokenKind.Identifier, "an attribute name").Text;
+            var args = new List<AttrArg>();
+            if (Match(TokenKind.LParen))
+            {
+                if (!At(TokenKind.RParen))
+                    do
+                    {
+                        var astart = Cur.Span;
+                        string? argName = null;
+                        if (At(TokenKind.Identifier) && Peek().Kind == TokenKind.Assign)
+                        {
+                            argName = Advance().Text;
+                            Advance();   // '='
+                        }
+                        args.Add(new AttrArg(argName, ParseExpr()) { Span = To(astart) });
+                    } while (Match(TokenKind.Comma));
+                Expect(TokenKind.RParen, "')'");
+            }
+            list.Add(new Attr(name, args) { Span = To(start) });
+        }
+        return list;
+    }
+
+    private Decl? ParseDeclBody()
+    {
         var start = Cur.Span;
         switch (Cur.Kind)
         {
@@ -163,7 +202,29 @@ public sealed class Parser
     private TypeRef ParseType()
     {
         var start = Cur.Span;
-        if (Match(TokenKind.Star)) return new PointerType(ParseType());
+        if (Match(TokenKind.Star))
+        {
+            /* `user`, `phys` and `dma` are CONTEXTUAL: a qualifier only when
+               they sit straight after `*` and another type follows. They are
+               not reserved words, so a variable or a struct called `user` -
+               which ordinary code has every reason to contain - still parses.
+               `*user` on its own is a pointer to a struct named user; `*user
+               u8` is a user-space pointer to u8. */
+            var space = AddrSpace.Normal;
+            if (At(TokenKind.Identifier) && Peek().Kind is TokenKind.Identifier or TokenKind.Star
+                                                         or TokenKind.LBracket or TokenKind.Fn)
+            {
+                space = Cur.Text switch
+                {
+                    "user" => AddrSpace.User,
+                    "phys" => AddrSpace.Phys,
+                    "dma"  => AddrSpace.Dma,
+                    _      => AddrSpace.Normal,
+                };
+                if (space != AddrSpace.Normal) Advance();
+            }
+            return new PointerType(ParseType(), space);
+        }
         if (Match(TokenKind.LBracket))
         {
             UInt128 n = UInt128.Zero;
@@ -256,6 +317,14 @@ public sealed class Parser
             case TokenKind.Continue:
                 Advance(); Expect(TokenKind.Semicolon, "';'");
                 return new ContinueStmt() { Span = To(start) };
+            case TokenKind.Defer:
+                {
+                    // `defer stmt;` or `defer { ... }` - the body is any single
+                    // statement, a block included
+                    Advance();
+                    var body = ParseStmt() ?? new Block(new List<Stmt>());
+                    return new DeferStmt(body) { Span = To(start) };
+                }
             default:
                 {
                     // assignment or expression statement
