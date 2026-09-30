@@ -32,6 +32,8 @@ Delivered:
 - A Key Vault deciding how far each signer is trusted
 - Dynamic memory for ring 3 (`SYS_MEM_OP`), bounded by a per-process quota, and an allocator in X
 - 64 and 128-bit integers in X, including divide and modulo
+- Service descriptors in X Data, checked at build time as well as at boot
+- Guarded kernel stacks: an overflow is a panic naming the thread, handled on a double-fault stack of its own
 
 **Where it is going, and in what order, is in [`docs/CX_ROADMAP.md`](docs/CX_ROADMAP.md).** The next phase is self-hosting — X compiling X — which gates nearly everything else.
 

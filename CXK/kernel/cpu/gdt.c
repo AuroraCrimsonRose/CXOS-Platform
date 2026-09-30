@@ -35,10 +35,20 @@ struct tss_entry {
     uint16_t iomap_base;
 } __attribute__((packed));
 
-#define GDT_COUNT 6
+#define GDT_COUNT 7
 static struct gdt_entry gdt[GDT_COUNT];
 static struct gdt_ptr   gdtr;
 static struct tss_entry tss;
+
+/* The double-fault task. A double fault is delivered through a task gate to
+   this TSS, so the CPU loads a complete fresh context from it - above all its
+   own stack - instead of pushing onto whatever stack faulted. On 32-bit x86
+   that is the only way to guarantee a stack for the handler; x86-64 replaced
+   it with the IST. See double_fault_task in idt.c. */
+#define DF_STACK_SIZE 8192
+static struct tss_entry df_tss;
+static uint8_t df_stack[DF_STACK_SIZE] __attribute__((aligned(16)));
+extern void double_fault_task(void);
 
 /* defined in gdt_flush.asm: load gdtr, reload segment regs, far-jump CS */
 extern void gdt_flush(uint32_t gdtr_addr);
@@ -67,6 +77,33 @@ void tss_set_kernel_stack(uint32_t esp0) {
     tss.esp0 = esp0;
 }
 
+void tss_faulted_state(struct tss_fault *out) {
+    out->eip    = tss.eip;
+    out->esp    = tss.esp;
+    out->ebp    = tss.ebp;
+    out->cs     = tss.cs;
+    out->eflags = tss.eflags;
+}
+
+static void df_tss_init(void) {
+    for (unsigned i = 0; i < sizeof(df_tss); i++) ((uint8_t *)&df_tss)[i] = 0;
+    uint32_t cr3;
+    __asm__ volatile ("mov %%cr3, %0" : "=r"(cr3));
+    /* The kernel's own page directory. Every address space shares the kernel
+       half, so the handler, its stack and the display are mapped in it
+       whichever space was live when the fault happened. */
+    df_tss.cr3    = cr3;
+    df_tss.eip    = (uint32_t)double_fault_task;
+    df_tss.eflags = 0x2;                 /* reserved bit only: interrupts OFF */
+    df_tss.esp    = (uint32_t)(df_stack + DF_STACK_SIZE);
+    df_tss.ebp    = 0;                   /* ends the handler's own stack trace */
+    df_tss.cs     = KERNEL_CODE_SEL;
+    df_tss.ss     = df_tss.ds = df_tss.es = df_tss.fs = df_tss.gs = KERNEL_DATA_SEL;
+    df_tss.ss0    = KERNEL_DATA_SEL;
+    df_tss.esp0   = df_tss.esp;
+    df_tss.iomap_base = sizeof(struct tss_entry);
+}
+
 void gdt_init(void) {
     /* 0: null */
     set_gate(0, 0, 0, 0, 0);
@@ -84,6 +121,11 @@ void gdt_init(void) {
     uint32_t tss_base  = (uint32_t)&tss;
     uint32_t tss_limit = sizeof(struct tss_entry) - 1;
     set_gate(5, tss_base, tss_limit, 0x89, 0x00);
+
+    /* 6: the double-fault task's TSS (0x30), same shape. Never loaded into TR:
+       only the task gate at IDT vector 8 switches to it. */
+    df_tss_init();
+    set_gate(6, (uint32_t)&df_tss, tss_limit, 0x89, 0x00);
 
     /* initialize the TSS: ring-0 stack = kernel data segment + the kernel stack.
        iomap_base past the limit = no I/O bitmap. */

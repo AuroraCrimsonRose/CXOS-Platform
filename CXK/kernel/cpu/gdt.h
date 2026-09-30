@@ -22,6 +22,7 @@
 #define USER_CODE_SEL    0x1B      /* ring 3: index 3 (0x18) | RPL 3 */
 #define USER_DATA_SEL    0x23      /* ring 3: index 4 (0x20) | RPL 3 */
 #define TSS_SEL          0x28      /* index 5 */
+#define DF_TSS_SEL       0x30      /* index 6: the double-fault task (idt.c) */
 
 /* build + load the kernel GDT and TSS, reload segment registers, ltr the TSS. */
 void gdt_init(void);
@@ -29,5 +30,13 @@ void gdt_init(void);
 /* set the kernel stack the CPU switches to on a ring3->ring0 transition.
    (updates tss.esp0; call before entering user mode or per context switch.) */
 void tss_set_kernel_stack(uint32_t esp0);
+
+/* Where the code that double faulted was. The task switch into the
+   double-fault task saves the outgoing registers into the main TSS; this reads
+   them back. Meaningful only inside double_fault_task. */
+struct tss_fault {
+    uint32_t eip, esp, ebp, cs, eflags;
+};
+void tss_faulted_state(struct tss_fault *out);
 
 #endif
