@@ -67,16 +67,32 @@ public sealed class X86Emitter
     private void T(string s) => _text.AppendLine("    " + s);
     private void Lbl(string l) => _text.AppendLine(l + ":");
 
+    /* Emit a linkable object rather than a program: every function with a body
+       and every global is exported, and there is no entry point. This is how
+       X code is linked into something that is not an X program - the kernel
+       calls std/xdata.xfxn this way. The calling convention is already cdecl
+       (arguments pushed right to left, caller pops, result in eax, ebx/esi/edi
+       preserved), so C can call it with an ordinary prototype. */
+    public bool Library { get; init; }
+
     public string Emit(CompilationUnit unit)
     {
         _text.AppendLine(".text");
-        _text.AppendLine(".globl _start");
+        if (!Library) _text.AppendLine(".globl _start");
         _data.AppendLine(".data");
         _bss.AppendLine(".bss");
         foreach (var d in unit.Decls)
         {
-            if (d is FnDecl f && f.Body != null) EmitFn(f);
-            else if (d is GlobalDecl g) EmitGlobal(g);
+            if (d is FnDecl f && f.Body != null)
+            {
+                if (Library) _text.AppendLine($".globl {f.Name}");
+                EmitFn(f);
+            }
+            else if (d is GlobalDecl g)
+            {
+                if (Library) _text.AppendLine($".globl {g.Name}");
+                EmitGlobal(g);
+            }
         }
         return _text + "\n" + _data + "\n" + _bss;
     }

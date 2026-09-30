@@ -39,7 +39,7 @@ The two things most people come looking for:
 
 ```
 cxk keygen      generate an RSA keypair (.xkpk / .xksk)
-cxk compile     X source -> ELF
+cxk compile     X source -> ELF, or a linkable object (--object)
 cxk build       ELF -> CXEX (.xcex / .xoex / .xkex)
 cxk sign        attach a signature block to a CXEX artifact
 cxk embed       CXEX -> C byte array header (for kernel-embedded images)
