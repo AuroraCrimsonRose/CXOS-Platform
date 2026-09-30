@@ -1,0 +1,178 @@
+# X Data
+### CX Design Spec — Aurora Tejeda / CATX SYSTEMS LLC
+
+> **Status: v0, reader implemented** (`os/std/xdata.xfxn`). Writing and
+> editing, schemas, and the DevKit-side reader are specified as intent in §7 and
+> are not built yet.
+
+X Data is CXOS's format for configuration and structured data: service
+descriptors, package manifests, system / user / workspace settings, and anything
+else that a person writes by hand and a program reads. Its source extension is
+**`.xfxd`** — domain **F**, object type **`xd`** — and other extensions may carry
+X Data content where the file's *purpose* deserves its own name, as `.xosv`
+service descriptors do.
+
+It is written in full as **X Data**, never abbreviated; see `CX_ROADMAP.md` §2.
+
+---
+
+## 1. Why not JSON, TOML or RON
+
+| | Problem it has | X Data |
+|---|---|---|
+| JSON | no comments; every key quoted; trailing commas are errors; no symbols | comments, bare keys, trailing commas, symbols |
+| TOML | tables-of-tables syntax gets awkward for nesting; dates and floats CXOS does not need yet | nested records are just `{ }` |
+| RON | `:` for fields reads like a type annotation; parentheses for structs | `=` for fields, `{ }` for records |
+| the old `.xosv` | untyped text; `args=` split on spaces so an argument containing a space could not be written | typed values; lists are lists |
+
+---
+
+## 2. A document
+
+```x
+// A document is a record whose braces are implied.
+name    = "hello"
+exec    = "/Shared/Programs/hi.xuex"
+args    = ["started by", "the supervisor"]
+start   = boot                  // a symbol: a name, not a string
+every   = 300                   // an integer
+enabled = true
+limits  = {                     // a nested record
+    memory = 0x0100_0000
+    files  = 16,                // commas are optional at a line end
+}
+owner   = Service { id = 7 }    // a record with a type tag
+```
+
+---
+
+## 3. Values
+
+| Kind | Written | Notes |
+|---|---|---|
+| **string** | `"text"` | escapes `\n \t \r \0 \\ \"`; a raw newline inside is an error |
+| **integer** | `300`, `-12`, `0x1F`, `1_000_000` | `_` may separate digits; the range is checked when it is *read*, against the type asked for |
+| **bool** | `true`, `false` | |
+| **symbol** | `boot`, `console` | a bare name: a value drawn from a known set, not free text |
+| **list** | `[a, b, c]` | any values, not necessarily of one kind |
+| **record** | `{ key = value }` | keys unique within one record |
+| **tagged record** | `Name { ... }` | the tag names what the record *is*; `{` must be on the same line as the tag |
+
+There are **no floating-point numbers** — X has none, and nothing that reads X
+Data needs them yet — and **no null**: a key that has no value is absent.
+
+**Symbols exist because most configuration values are not text.** `start = boot`
+names one of a known set of moments; `"boot"` would be a string that merely
+happens to be spelled like one. A reader that asks for a symbol and finds a
+string is told so, which is how a typo like `start = "boto"` gets caught.
+
+### Names
+
+Keys, symbols and tags are **identifiers**: a letter or `_`, then letters,
+digits, `_` or `-`. `true` and `false` are bools, not symbols.
+
+Quoted keys are not in v0. Every key needed so far is an identifier, and adding
+quoted keys later breaks nothing.
+
+---
+
+## 4. Layout
+
+- **Comments**: `// to the end of the line` and `/* block */`. Block comments do
+  not nest. X Data uses X's comment syntax, not `#`, so one family has one
+  comment style.
+- **Separators**: between two entries, or two list items, there must be a comma
+  **or** a line break. `a = 1 b = 2` on one line is an error, not two entries —
+  every value is self-delimiting, so it *could* be accepted, but a missing comma
+  on one line is far more often a mistake than a style.
+- **Trailing commas** are always allowed.
+- **Whitespace** is spaces, tabs, carriage returns and line breaks.
+- The text is UTF-8. Identifiers are ASCII; strings may hold any UTF-8.
+
+---
+
+## 5. Strictness
+
+A document is **checked whole before anything reads it.** Either all of it is
+well-formed or none of it is used — a reader never acts on the first half of a
+file and then discovers the second half is broken.
+
+Refused, each with its own error and the byte offset where it happened:
+
+| Error | Meaning |
+|---|---|
+| `XD_E_SYNTAX` | a character that cannot start or continue what is expected here |
+| `XD_E_STRING` | an unterminated string, a raw newline inside one, or an unknown escape |
+| `XD_E_DEPTH` | nested more than 32 levels deep |
+| `XD_E_DUPKEY` | a key repeated within one record — the second would silently win in most formats; here it is an error |
+| `XD_E_SEP` | two entries or items on one line with no comma between |
+
+And, when a value is read:
+
+| Error | Meaning |
+|---|---|
+| `XD_E_TYPE` | the value is not the kind asked for — a string where a symbol was expected |
+| `XD_E_RANGE` | an integer does not fit the type asked for |
+| `XD_E_SPACE` | the caller's buffer is too small for the string |
+
+The depth limit exists so a hostile file cannot exhaust the reader's stack.
+
+---
+
+## 6. The reader (`os/std/xdata.xfxn`)
+
+**Allocates nothing and depends on nothing** — not the allocator, not the
+prelude, not a syscall. That keeps it usable anywhere, including before the
+heap exists and eventually in the kernel, and it is why its tests run natively.
+
+A value is described by an `xd_val`: its kind and where it sits in the source.
+Nothing is copied until the caller asks for it.
+
+```x
+let v: xd_val;
+if (xd_check(src, len) != XD_OK) { /* xd_err_at says where */ }
+xd_root(src, len, &root);
+if (xd_get(src, &root, "every", &v) == 1) { xd_u32(src, &v, &every); }
+```
+
+| Function | Does |
+|---|---|
+| `xd_check(src, len)` | validates the whole document; `XD_OK` or an error, with `xd_err_at` set |
+| `xd_root(src, len, out)` | the document's implied top-level record |
+| `xd_get(src, rec, key, out)` | 1 and the value if `key` is in the record, else 0 |
+| `xd_item(src, list, i, out)` | 1 and the `i`th item, else 0 past the end |
+| `xd_count(src, v)` | items in a list, or entries in a record |
+| `xd_str(src, v, buf, cap)` | the string, unescaped and NUL-terminated; its length or an error |
+| `xd_u32` / `xd_i32(src, v, out)` | the integer, range-checked for that type |
+| `xd_bool(src, v, out)` | the bool |
+| `xd_sym_is(src, v, name)` | 1 if `v` is the symbol `name` |
+| `xd_tag_is(src, rec, name)` | 1 if the record carries the tag `name` |
+
+`xd_check` must succeed before any other call is made on a document. The other
+functions assume a well-formed document and do not re-report its errors.
+
+Integers are read as `u32` or `i32` for now. X can hold 64 and 128-bit values,
+but it cannot yet *return* one from a function (`CX_X_CORE_LANG.md` §2.1), and
+the wide readers wait on that rather than working around it.
+
+The reader keeps its error state in two globals, `xd_err` and `xd_err_at`. That
+is fine for a single-threaded process, which is every process today; it will
+need revisiting with threads.
+
+---
+
+## 7. Intent — not built yet
+
+- **Round-trip editing.** Every value the reader returns is a span of the
+  original text. An editor changes a value by replacing its span and leaving
+  everything else — comments, ordering, spacing — byte-for-byte as it was. That
+  property is the single biggest reason people dislike JSON for configuration,
+  it costs nothing to keep when every value is already a span, and it is
+  impossible to add to a reader that builds a tree and throws the text away.
+- **Schemas**, checking a document's keys, kinds and ranges against a
+  declaration, so "strict types like Postgres" is a property of the file and not
+  of each reader's diligence. Whether a schema is itself X Data is open.
+- **A DevKit-side reader**, so the build can reject a malformed descriptor
+  before it is ever staged onto a disk.
+- **Quoted keys**, wide integers, and nested block comments, when something
+  needs them.
