@@ -152,13 +152,25 @@ address, so the narrow path did 32-bit arithmetic on that address and
 sign-extended the result. A shift is the exception, since its right operand
 counts places rather than being a term: `x << n` is as wide as `x`.
 
-**A literal is typed by the narrowest type that holds it** — `i32` up to 32
-bits, then `u64`, then `u128`. Anything that fitted before still types `i32`,
-so nothing changed shape; what this buys is that a literal too wide for a
-register stops pretending to be one. Every literal used to type `i32` however
-large it was written, so `200000000000000000000 % 7` truncated the constant
-into `eax` and did a 32-bit divide — a wrong answer from an expression the
-compiler could have evaluated exactly.
+**A literal is typed by the narrowest type that holds it** — `i32` up to
+2147483647, then `u32` up to 4294967295, then `u64`, then `u128`. What this buys
+is that a literal stops pretending to be a type it does not fit. Every literal
+used to type `i32` however large it was written, so `200000000000000000000 % 7`
+truncated the constant into `eax` and did a 32-bit divide — a wrong answer from
+an expression the compiler could have evaluated exactly. The `u32` band was
+added later, after `0x80000000` typed as `i32` turned out to compare as
+-2147483648; that is also what C does with an unsuffixed hex constant that
+large.
+
+**Ordering comparisons (`<` `<=` `>` `>=`) are unsigned if either operand is
+an unsigned 32-bit value or a pointer**, and signed otherwise — C's rule. A
+`u8` or `u16` widens to a signed int without losing any value, so it does not
+force an unsigned comparison. This, too, was not always true: ordering used to
+be signed for every operand, so a `u32` at or above 2³¹ compared as though it
+were negative — `3000000000 > 5` was false. Division and `>>` already honoured
+the operand type; comparison was the one left behind. The consequence of the
+rule to know: `x > -1` on a `u32` is always false, because `-1` becomes
+4294967295, exactly as in C.
 
 **Why the ceiling is 128.** Up to 128 bits a value is *one thing* — an offset, a
 timestamp, a GUID, a Q64.64 coordinate, the product of two 64-bit numbers — that
