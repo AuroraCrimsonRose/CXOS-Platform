@@ -80,8 +80,14 @@ fn dec_u32(s: *u8) -> u32 {
     let v: u32 = 0;
     let i: u32 = 0;
     while (s[i] >= 48 && s[i] <= 57) {
+        let d: u32 = (s[i] - 48) as u32;
+        // 4294967295 is 429496729 * 10 + 5: at exactly 429496729 a digit above
+        // 5 still overflows, so both halves of the check are needed. This used
+        // to test only the first half, and even that never fired once v passed
+        // 2^31, because u32 comparisons compiled as signed.
         if (v > 429496729) { return 4294967295; }
-        v = v * 10 + ((s[i] - 48) as u32);
+        if (v == 429496729 && d > 5) { return 4294967295; }
+        v = v * 10 + d;
         i = i + 1;
     }
     return v;

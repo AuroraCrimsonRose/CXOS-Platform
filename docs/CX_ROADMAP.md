@@ -173,7 +173,11 @@ script, not a different language.
 meanings of `S` into a taxonomy whose whole point is that the letter says whose
 a file is — the mistake that retired `.xcex`. It is **X Data**, source `.xfxd`.
 
-### X Data *(do first)*
+### X Data *(started — reader built, see `CX_X_DATA.md`)*
+
+The v0 reader is `os/std/xdata.xfxn`. The first consumer should be the `.xosv`
+service descriptors, whose hand-parsed `key=value` format cannot express an
+argument containing a space.
 
 A serialization format in the spirit of RON or TOML: typed, commentable, and
 pleasant to write by hand. It is the sleeper item on this page — small, and
