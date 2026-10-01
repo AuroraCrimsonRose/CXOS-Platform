@@ -1,0 +1,103 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "X Native",
+  "scopeName": "source.xfxn",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#chars" },
+    { "include": "#attributes" },
+    { "include": "#declarations" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#functions" },
+    { "include": "#numbers" },
+    { "include": "#operators" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        { "name": "comment.line.double-slash.xfxn", "match": "//.*$" },
+        { "name": "comment.block.xfxn", "begin": "/\\*", "end": "\\*/" }
+      ]
+    },
+    "strings": {
+      "name": "string.quoted.double.xfxn",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        { "name": "constant.character.escape.xfxn", "match": "\\\\." }
+      ]
+    },
+    "chars": {
+      "name": "string.quoted.single.xfxn",
+      "match": "'(\\\\.|[^'\\\\\\n])'",
+      "captures": { "0": { "patterns": [ { "name": "constant.character.escape.xfxn", "match": "\\\\." } ] } }
+    },
+    "attributes": {
+      "comment": "@section(...) and later attributes (CX_X_CORE_LANG §2.4)",
+      "name": "storage.modifier.attribute.xfxn",
+      "match": "@[A-Za-z_][A-Za-z0-9_]*"
+    },
+    "declarations": {
+      "patterns": [
+        {
+          "comment": "fn name, struct name, enum name, type name",
+          "match": "\\b(fn|struct|enum|type)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.type.xfxn" },
+            "2": { "name": "entity.name.type.xfxn" }
+          }
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        { "name": "keyword.control.xfxn", "match": "\\b(if|else|while|switch|case|return|break|continue|defer|import)\\b" },
+        { "name": "storage.type.xfxn", "match": "\\b(fn|struct|enum|global|const|extern|let|type)\\b" },
+        { "name": "keyword.operator.word.xfxn", "match": "\\b(as|sizeof)\\b" },
+        { "name": "constant.language.boolean.xfxn", "match": "\\b(true|false)\\b" }
+      ]
+    },
+    "types": {
+      "patterns": [
+        { "name": "entity.name.type.primitive.xfxn", "match": "\\b(i8|i16|i32|i64|i128|u8|u16|u32|u64|u128|bool|void)\\b" },
+        {
+          "comment": "address-space pointers: *user T, *phys T, *dma T (CX_X_CORE_LANG §2.2)",
+          "match": "(\\*)\\s*(user|phys|dma)\\b",
+          "captures": {
+            "1": { "name": "keyword.operator.pointer.xfxn" },
+            "2": { "name": "storage.modifier.address-space.xfxn" }
+          }
+        }
+      ]
+    },
+    "functions": {
+      "patterns": [
+        {
+          "name": "meta.function-call.xfxn",
+          "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)\\s*(?=\\()",
+          "captures": { "1": { "name": "entity.name.function.xfxn" } }
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        { "name": "constant.numeric.hex.xfxn", "match": "\\b0x[0-9a-fA-F]+(?:[iu](?:8|16|32|64|128))?\\b" },
+        { "name": "constant.numeric.decimal.xfxn", "match": "\\b[0-9]+(?:[iu](?:8|16|32|64|128))?\\b" }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        { "name": "keyword.operator.arrow.xfxn", "match": "->" },
+        { "name": "keyword.operator.assignment.compound.xfxn", "match": "\\+=|-=|\\*=|/=|%=|&=|\\|=|\\^=|<<=|>>=" },
+        { "name": "keyword.operator.logical.xfxn", "match": "&&|\\|\\||!(?!=)" },
+        { "name": "keyword.operator.comparison.xfxn", "match": "==|!=|<=|>=|<|>" },
+        { "name": "keyword.operator.bitwise.xfxn", "match": "<<|>>|\\||\\^|~" },
+        { "name": "keyword.operator.arithmetic.xfxn", "match": "\\+|-|\\*|/|%" },
+        { "name": "keyword.operator.assignment.xfxn", "match": "=" },
+        { "name": "keyword.operator.address.xfxn", "match": "&" }
+      ]
+    }
+  }
+}

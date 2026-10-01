@@ -1,0 +1,23 @@
+// kernel.xkco - the kernel's own limits, read once at boot.
+//
+// X Data (docs/language/CX_X_DATA.md). Every key is optional: one left out keeps the
+// built-in value, which is what each is set to here. The whole file is checked
+// before any of it is used - a typo, an unknown key or a value out of range
+// refuses the ENTIRE file, the boot log says which line, and the kernel runs on
+// its built-in values. It is never half-applied.
+//
+// The build checks this file too (cxk check-xdata), so most mistakes stop the
+// build before they reach a disk.
+
+// Each kernel stack, in KiB: 8 to 32, a multiple of 4. Stacks are guarded, so
+// one that is too small stops the machine with a panic naming the thread - it
+// does not corrupt memory. Larger costs memory for every thread.
+kernel_stack_kib = 8
+
+// How many threads may be alive at once: 4 to 32. The executive, shell,
+// supervisor and each running service or program is one.
+max_threads = 8
+
+// The memory a process may map with SYS_MEM_OP unless its parent gives it
+// less, in MiB: 1 to 64. A process can never be given more than its parent.
+memory_quota_mib = 16

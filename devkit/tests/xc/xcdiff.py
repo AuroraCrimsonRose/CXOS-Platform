@@ -6,7 +6,7 @@
 #
 # prog is the X program (tokdump, astdump), verb the `cxk` command printing
 # the same format (tokens, ast). Needs: a Release build of CXEX.CLI, a CXK
-# checkout (CXK_ROOT, or ../CXK beside this repo) and a host gcc that can link
+# checkout (the platform root this devkit/ sits in, or CXK_ROOT) and a host gcc that can link
 # -m32. The program is run natively - no CXK boot involved.
 # Arguments: [mutants] [seed]. Exit 0 = every file agreed. SABOTAGE=1 corrupts
 # one line of the X side's output, to show the test can fail.
@@ -15,7 +15,7 @@ import os, random, subprocess, sys, tempfile, shutil, glob
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.normpath(os.path.join(HERE, "..", ".."))
 CXK = os.path.join(REPO, "CXEX.CLI", "bin", "Release", "net10.0", "cxk")
-ROOT = os.environ.get("CXK_ROOT") or os.path.join(REPO, "..", "CXK")
+ROOT = os.environ.get("CXK_ROOT") or os.path.normpath(os.path.join(REPO, ".."))
 
 def find_os(prog):
     return next((d for d in (os.path.join(ROOT, "CXK", "os"), os.path.join(ROOT, "os"))

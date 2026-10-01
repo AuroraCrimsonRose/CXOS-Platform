@@ -2,9 +2,9 @@
 
 **Toolchain and development environment for the CX ecosystem** — the CXK kernel, CXOS, the boot chain, and the X language.
 
-This repository holds the **host side** of CX development: the X Native compiler, the `cxk` command-line toolchain, the CXEX format libraries, the signing tools, and CXEX Studio (the IDE). It is the counterpart to the [CXK](https://github.com/AuroraCrimsonRose/CXK) repository, which holds the kernel and the OS itself.
+`devkit/` holds the **host side** of CX development: the X Native compiler, the `cxk` command-line toolchain, the CXEX format libraries, the signing tools, and CXEX Studio (the IDE). The kernel and the OS it builds are the rest of this repository, [CXOS Platform](../README.md).
 
-> Internal development tooling, tightly coupled to ongoing CX ecosystem work. Interfaces change without notice. See `LICENSE.md` (Catalyst Labs SDK License).
+> Internal development tooling, tightly coupled to ongoing CX ecosystem work. Interfaces change without notice. See the repository's `LICENSE.md`.
 
 ---
 
@@ -32,7 +32,7 @@ The two things most people come looking for:
 | `CXEX.Core` | 102 | Shared primitives |
 | `CXEX.Tests` | — | **Planned:** the xUnit test project (see [Tests](#tests)) |
 
-**Scaffolded but empty** — these have project files and no source yet: `CXEX.Font`, `CXEX.ICO`, `CXEX.Text`, `CXEX.Tools`, `CXEX.UI`. They are placeholders for planned work (see the design doc §5), not missing code. `CXEX.Tools` in particular is where the process-tool wrappers are *intended* to move so the CLI and Studio share one toolchain driver; today those wrappers still live in `CXEX.CLI/Wrappers`.
+**Scaffolded but empty** — these have project files and no source yet: `CXEX.Font`, `CXEX.Text`, `CXEX.Tools`, `CXEX.UI`. (The file-type icons that used to sit in `CXEX.ICO` are in `assets/icons/filetypes/`.) They are placeholders for planned work (see the design doc §5), not missing code. `CXEX.Tools` in particular is where the process-tool wrappers are *intended* to move so the CLI and Studio share one toolchain driver; today those wrappers still live in `CXEX.CLI/Wrappers`.
 
 ---
 
@@ -65,7 +65,7 @@ cxk secureboot verify     would firmware holding this cert accept this image
 cxk secureboot test       boot a stub under enforced Secure Boot, signed and unsigned
 ```
 
-**Planned** (decision D2 in [`docs/HARDENING_PLAN.md`](docs/HARDENING_PLAN.md)): the
+**Planned** (decision D2 in [`docs/planning/HARDENING_PLAN.md`](../docs/planning/HARDENING_PLAN.md)): the
 commands that replace CXK's `.bat` and `.sh` scripts, so building and running CXK is
 the same on every host.
 
@@ -115,7 +115,7 @@ foo.xfxn                          X Native source
   -> cxk sign                     foo.xuex   signature block attached
 ```
 
-The X front-end emits **assembly text**, not machine code, and leans on an external assembler and linker: `i686-elf-gcc` today, **clang and ld.lld once the LLVM move lands** (`docs/HARDENING_PLAN.md`, D5). Clang's assembler already produces byte-identical code for the compiler's output. Dropping the external assembler by emitting CXEX sections directly is a possible later change — a back-end decision, not a language change.
+The X front-end emits **assembly text**, not machine code, and leans on an external assembler and linker: `i686-elf-gcc` today, **clang and ld.lld once the LLVM move lands** (`docs/planning/HARDENING_PLAN.md`, D5). Clang's assembler already produces byte-identical code for the compiler's output. Dropping the external assembler by emitting CXEX sections directly is a possible later change — a back-end decision, not a language change.
 
 Note two naming inconsistencies to be aware of when reading the code: X sources use `.xfxn`, but `CompileCommand`'s doc comment says `.x`, and the generated ABI prelude is named `abi.x`. The design doc's taxonomy (§3) says X Native source is `.XFXN`, so `abi.xfxn` would be the consistent name. The taxonomy used to specify an `.XCXN` compiled-object stage; it was never built, and **ELF is now the decided linkable object format** (design doc §3, Q-E).
 
@@ -123,7 +123,7 @@ Note two naming inconsistencies to be aware of when reading the code: X sources 
 
 ## Relationship to CXK, and the one coupling that matters
 
-The kernel's syscall ABI is defined in **`CXK/abi/cxk_abi.h`**. The X compiler carries a copy of it as an X-language prelude, prepended to every compilation, in:
+The kernel's syscall ABI is defined in **`abi/cxk_abi.h`**. The X compiler carries a copy of it as an X-language prelude, prepended to every compilation, in:
 
 ```
 CXEX.Lang/Abi/AbiPrelude.cs
@@ -139,7 +139,7 @@ This has already cost a real bug: the kernel gained `SYS_MOUSE_READ` and `struct
 cxk check-abi [path/to/cxk_abi.h]
 ```
 
-Compares the header against the prelude and fails on real drift. It finds the header itself if you don't pass one (via `CXK_ROOT`, or a sibling CXK checkout). CXK's `tools/build.bat` (and, once it replaces that script, `cxk os build`) runs it as a pre-flight beside the existing source check, so drift stops the build with a clear message rather than surfacing as "undefined name" errors inside `gui.xfxn`.
+Compares the header against the prelude and fails on real drift. It finds the header itself if you don't pass one, walking up from the working directory to the repository's `abi/` (or `CXK_ROOT`, if set). CXK's `tools/build.bat` (and, once it replaces that script, `cxk os build`) runs it as a pre-flight beside the existing source check, so drift stops the build with a clear message rather than surfacing as "undefined name" errors inside `gui.xfxn`.
 
 It reports three kinds of problem: a constant missing from a family the prelude mirrors, a constant whose **value** disagrees, and a struct whose **field order** disagrees — that last being the nastiest, since a reordered struct compiles fine on both sides and silently corrupts every call using it.
 
@@ -147,13 +147,13 @@ The prelude only mirrors part of the header (`SYS_*`, `E_*`, `POWER_*`, `FB_OP_*
 
 The comparison lives in `CXEX.Lang/Abi/AbiSync.cs` rather than in the command, so a test project can call it. **That project is decided: `CXEX.Tests` (xUnit),** and a unit test running `AbiSync` against the real header is in its first batch, making `dotnet test` the gate. Until it lands, the check depends on running the CXK build.
 
-**Treat `AbiPrelude.cs` as requiring a manual update whenever `cxk_abi.h` changes**, and run `cxk check-abi` after. The CXK-side reference is `docs/CX_ABI.md`.
+**Treat `AbiPrelude.cs` as requiring a manual update whenever `cxk_abi.h` changes**, and run `cxk check-abi` after. The CXK-side reference is `docs/kernel/CX_ABI.md`.
 
 Note the drift surface is wider than this one file: `os/std/net.xfxn` redeclares all seven `NET_OP_*` constants locally because the prelude doesn't carry them — a third copy of the ABI with no link back to the header.
 
 ### X Data: the second shared format
 
-Service descriptors (`.xosv`) are X Data, specified in `CXK/docs/CX_X_DATA.md`. The supervisor reads them on the device with `os/std/xdata.xfxn`; the build checks them first with `CXEX.Lang/Data/XData.cs`, a line-for-line port of that reader:
+Service descriptors (`.xosv`) are X Data, specified in `docs/language/CX_X_DATA.md`. The supervisor reads them on the device with `os/std/xdata.xfxn`; the build checks them first with `CXEX.Lang/Data/XData.cs`, a line-for-line port of that reader:
 
 ```
 cxk check-xdata <files...> [--keys exec,args,start,every,grants] [--porcelain]
@@ -167,16 +167,16 @@ Two readers of one format are worth having only if they agree, so they are held 
 
 ## Documentation
 
-- **`docs/CX_DEVKIT_DESIGN.md`** — architecture, visual identity, artifact taxonomy, key authority and signing, Studio design, and the phased roadmap. The main design document for this repository.
-- **`docs/SECURITY_REVIEW.md`**, **`docs/ENGINEERING_REVIEW.md`** — the 2026-10-01 reviews of this repository, kept as written.
-- **`docs/HARDENING_PLAN.md`** — the response to both: decisions (xUnit, `cxk` commands in place of scripts, no tracked build output), the status of every finding checked against the code, and a phased checklist. Its kernel-side companion is `CXK/docs/HARDENING_PLAN.md`.
-- **`docs/index.md`** — entry point for the generated API reference (DocFX). `///` comments in source appear there on the next build.
+- **`docs/devkit/CX_DEVKIT_DESIGN.md`** — architecture, visual identity, artifact taxonomy, key authority and signing, Studio design, and the phased roadmap. The main design document for this repository.
+- **`docs/reviews/2026-10-01/DEVKIT_SECURITY_REVIEW.md`**, **`docs/reviews/2026-10-01/DEVKIT_ENGINEERING_REVIEW.md`** — the 2026-10-01 reviews of this repository, kept as written.
+- **`docs/planning/HARDENING_PLAN.md`** — the response to both: decisions (xUnit, `cxk` commands in place of scripts, no tracked build output), the status of every finding checked against the code, and a phased checklist. Its kernel-side companion is `docs/planning/HARDENING_PLAN.md`.
+- **`docs/devkit/index.md`** — entry point for the generated API reference (DocFX). `///` comments in source appear there on the next build.
 
 The X *language* is specified on the kernel side, since the kernel owns the ABI it compiles against:
 
-- `CXK/docs/CX_X_CORE_LANG.md` — the X core language spec (v0.2), including the route to self-hosting
-- `CXK/docs/CX_ABI.md` — the syscall and capability contract
-- `CXK/docs/CX_EXTENSION_SYSTEM.md` — the CXEX format and the signing scheme
+- `docs/language/CX_X_CORE_LANG.md` — the X core language spec (v0.2), including the route to self-hosting
+- `docs/kernel/CX_ABI.md` — the syscall and capability contract
+- `docs/formats/CX_EXTENSION_SYSTEM.md` — the CXEX format and the signing scheme
 
 ---
 
@@ -185,21 +185,21 @@ The X *language* is specified on the kernel side, since the kernel owns the ABI 
 Requirements: .NET (see the `.csproj` files for the target framework), and for producing CXK artifacts an `i686-elf` GCC cross toolchain plus NASM. QEMU or Bochs to run an image.
 
 ```
-dotnet build CXEX.Studio.slnx
+dotnet build devkit/CXEX.Studio.slnx
 ```
 
-API reference (DocFX), in place of `build-docs.cmd`, which is being retired:
+Prebuilt `cxk` and CXEX Studio, per platform, are on the repository's
+[releases](https://github.com/AuroraCrimsonRose/CXOS-Platform/releases) page.
+
+API reference (DocFX), from the repository root:
 
 ```
 dotnet tool restore
-dotnet docfx docs/docfx.json --serve
+dotnet docfx docs/devkit/docfx.json --serve
 ```
 
-This needs a `.config/dotnet-tools.json` that pins docfx, and the repository
-does not have one yet; it arrives in hardening Phase 0. Until then, install
-docfx with `dotnet tool install -g docfx` and run `docfx docs/docfx.json --serve`.
-The output (`docs/_site/`, `docs/api/`) is generated. It is still committed
-today, and is being untracked (`docs/HARDENING_PLAN.md`, D3).
+The tool manifest (`.config/dotnet-tools.json`) pins docfx. The output
+(`docs/devkit/_site/`, `docs/devkit/api/`) is generated and ignored.
 
 ### Tests
 
@@ -211,18 +211,18 @@ dotnet test
 
 No Python interpreter will be needed. Tests are grouped by trait. `Unit` and
 `Adversarial` need only .NET. `Toolchain` needs clang and ld.lld, on Linux or WSL.
-`Differential` also needs a CXK checkout (`CXK_ROOT`, or `../CXK`). A test
+`Differential` compares against the OS sources in this repository. A test
 whose requirement is missing reports **skipped**, with the reason; it never
 silently passes. Mutant counts and seeds come from `CXEX_TEST_MUTANTS` and
 `CXEX_TEST_SEED`. Each script below is deleted in the change that ports it; the
-plan is in [`docs/HARDENING_PLAN.md`](docs/HARDENING_PLAN.md), D1.
+plan is in [`docs/planning/HARDENING_PLAN.md`](../docs/planning/HARDENING_PLAN.md), D1.
 
 Until then, the suites are Python:
 
 ```
 python3 tests/lang/run.py        # the X language: programs that must run, programs that must be refused, C <-> X interop, std/buf
-python3 tests/xdata/difftest.py  # the DevKit's X Data reader against CXK's, document by document
-python3 tests/xc/lexdiff.py      # the lexer written in X (CXK os/xc) against this one, token by token
+python3 tests/xdata/difftest.py  # the DevKit's X Data reader against the OS's, document by document
+python3 tests/xc/lexdiff.py      # the lexer written in X (os/xc) against this one, token by token
 python3 tests/xc/parsediff.py    # the parser written in X against this one, node by node, error by error
 python3 tests/xc/semadiff.py     # the type checker written in X against this one, on whole programs
 python3 tests/xc/asmdiff.py      # the code generator written in X against this one, the assembly exactly
@@ -238,7 +238,7 @@ They run X natively on the host (a 32-bit `gcc` links the output), so no VM is i
 - Not a general-purpose IDE; built specifically for CX ecosystem development
 - i686 / 32-bit is the live target; other architectures are registry stubs
 - Contains experimental and unstable tooling
-- Long-term goal: X hosted on CXK, so the system can build its own software without a .NET host. See `CXK/docs/CX_X_CORE_LANG.md` §10.
+- Long-term goal: X hosted on CXK, so the system can build its own software without a .NET host. See `docs/language/CX_X_CORE_LANG.md` §10.
 
 ---
 

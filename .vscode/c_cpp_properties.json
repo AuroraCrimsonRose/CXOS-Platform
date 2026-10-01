@@ -3,7 +3,7 @@
         {
             "name": "CXK",
             "includePath": [
-                "${workspaceFolder}/CXK/kernel/**"
+                "${workspaceFolder}/kernel/**"
             ],
             "compilerPath": "C:/cross/i686-elf/bin/i686-elf-gcc.exe",
             "cStandard": "c11",

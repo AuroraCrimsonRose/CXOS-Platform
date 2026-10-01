@@ -28,7 +28,7 @@ public readonly record struct XDataValue(XDataKind Kind, int At, int Len, int Ta
 
 /// <summary>
 /// The DevKit's X Data reader - a deliberate, line-for-line port of CXK's
-/// <c>os/std/xdata.xfxn</c>, specified in <c>CXK/docs/CX_X_DATA.md</c>.
+/// <c>os/std/xdata.xfxn</c>, specified in <c>docs/language/CX_X_DATA.md</c>.
 ///
 /// <para><b>Why a port and not a fresh implementation.</b> Two readers of one format are only
 /// useful if they agree on what is valid, and agreement is far easier to keep - and to prove -

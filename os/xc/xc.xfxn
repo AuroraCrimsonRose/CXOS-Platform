@@ -1,0 +1,92 @@
+// xc/xc.xfxn - the X compiler, written in X.
+// Aurora Tejeda / CATX SYSTEMS LLC
+//
+//   xc [--prelude FILE | --no-prelude] [-I DIR]... [--std DIR] [--object] SOURCE [-o OUT]
+//
+// Compiles an X program - SOURCE, the prelude in front of it, everything it
+// imports - to x86-32 assembly, written to OUT (SOURCE with .s for .xfxn if
+// none is given). What it writes is exactly what `cxk compile` writes for the
+// same program: the four stages in os/xc are each held to their C#
+// counterpart by a differential test in devkit/tests/xc. Assembling and
+// linking are still the cross toolchain's - stage 5 of the route to
+// self-hosting (docs/language/CX_X_CORE_LANG.md section 10).
+//
+// Diagnostics are printed as `cxk compile` prints them - file:line:col:
+// error: message - and the exit code is 0 for success, 1 for errors in the
+// program, 2 for a file that could not be read or written.
+
+import "xc_sys.xfxn";
+import "emit.xfxn";
+import "dumputil.xfxn";
+
+fn print_diags(f: *front) -> void {
+    let line: buf = buf_new();
+    let i: u32 = 0;
+    while (i < dg_count(&f.dg)) {
+        let g: *diag = dg_at(&f.dg, i);
+        if (g.file != 0xFFFFFFFF) {
+            let sf: *srcfile = file_at(f, g.file);
+            buf_append(&line, &f.strs.data[sf.name], sf.nlen);
+        }
+        buf_push(&line, ':');
+        buf_u32(&line, g.line);
+        buf_push(&line, ':');
+        buf_u32(&line, g.col);
+        buf_str(&line, ": error: ");
+        buf_append(&line, &f.dg.msgs.data[g.at], g.len);
+        buf_push(&line, '\n');
+        out_buf(&line);
+        buf_clear(&line);
+        i += 1;
+    }
+    buf_str(&line, "compilation failed (");
+    buf_u32(&line, dg_count(&f.dg));
+    buf_str(&line, " error(s))\n");
+    out_buf(&line);
+    buf_free(&line);
+}
+
+fn xc_main() -> i32 {
+    let o: opts;
+    if (!parse_opts(&o)) { return 2; }
+    if (o.first == 0) {
+        err_str("usage: xc [--prelude FILE | --no-prelude] [-I DIR]... [--std DIR] [--object] SOURCE [-o OUT]\n");
+        return 2;
+    }
+    let source: *u8 = xc_arg(o.first);
+    let out: buf = buf_new();
+    if (o.first + 2 < xc_argc() && is_arg(xc_arg(o.first + 1), "-o")) {
+        buf_str(&out, xc_arg(o.first + 2));
+    } else {
+        // SOURCE with its .xfxn replaced by .s
+        let n: u32 = cstr_len(source);
+        if (n > 5 && is_arg(&source[n - 5], ".xfxn")) { buf_append(&out, source, n - 5); } else { buf_append(&out, source, n); }
+        buf_str(&out, ".s");
+    }
+    buf_push(&out, 0);
+
+    let f: front;
+    if (!analyze_with(&o, &f, source)) { err_str("xc: out of memory, or a file could not be read\n"); return 2; }
+    if (!f.checked || dg_count(&f.dg) != 0) { print_diags(&f); return 1; }
+    // written as it is generated; removed again if the program turns out to have errors
+    let h: i32 = xc_create(out.data);
+    if (h < 0) { err_str("xc: cannot write "); err_str(out.data); err_str("\n"); return 2; }
+    let asm: buf = buf_new();
+    let e: emitter;
+    emit_init(&e, &f.s, o.object);
+    emit_to(&e, h);
+    emit_program(&e, &f.decls, &asm);
+    xc_close(h);
+    if (dg_count(&f.dg) != 0) { xc_remove(out.data); print_diags(&f); return 1; }
+    if (!e.sink_ok) { err_str("xc: cannot write "); err_str(out.data); err_str("\n"); return 2; }
+    let msg: buf = buf_new();
+    buf_str(&msg, "xc: ");
+    buf_str(&msg, out.data);
+    buf_str(&msg, " (");
+    buf_u32(&msg, e.written);
+    buf_str(&msg, " bytes, fnv1a ");
+    buf_hex32(&msg, e.hash);
+    buf_str(&msg, ")\n");
+    out_buf(&msg);
+    return 0;
+}

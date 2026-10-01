@@ -5,7 +5,7 @@ using System.Text.RegularExpressions;
 namespace CXEX.Lang.Abi;
 
 /// <summary>
-/// Compares the kernel's ABI header (<c>CXK/abi/cxk_abi.h</c>) against the X prelude
+/// Compares the kernel's ABI header (<c>abi/cxk_abi.h</c>) against the X prelude
 /// <see cref="AbiPrelude"/> generates, and reports anything that has drifted.
 ///
 /// <para><b>Why this exists.</b> The prelude emits a banner reading "GENERATED from

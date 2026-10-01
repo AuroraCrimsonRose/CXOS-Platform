@@ -1,0 +1,120 @@
+// xc/dumputil.xfxn - what the X compiler's dump programs share.
+// Aurora Tejeda / CATX SYSTEMS LLC
+//
+// Escaping text the way the DevKit dump commands do, numbers, the FNV-1a
+// hash their -s summaries print, and recognising an argument.
+
+import "front.xfxn";
+
+global hexdig: *u8 = "0123456789abcdef";
+
+fn put_escaped(b: *buf, s: *u8, n: u32, quote: bool) -> void {
+    if (quote) { buf_push(b, '"'); }
+    let i: u32 = 0;
+    while (i < n) {
+        let c: u8 = s[i];
+        if (c < 0x20 || c == 0x7F || c == '\\' || (quote && c == '"')) {
+            buf_str(b, "\\x");
+            buf_push(b, hexdig[(c >> 4) as u32]);
+            buf_push(b, hexdig[(c & 15) as u32]);
+        } else {
+            buf_push(b, c);
+        }
+        i += 1;
+    }
+    if (quote) { buf_push(b, '"'); }
+}
+
+fn buf_u128(b: *buf, v: u128) -> bool {
+    let digits: [40]u8;
+    let n: u32 = 0;
+    let x: u128 = v;
+    while (true) {
+        digits[n] = '0' + (x % 10) as u8;
+        n += 1;
+        x /= 10;
+        if (x == 0) { break; }
+    }
+    if (!buf_reserve(b, n)) { return false; }
+    while (n > 0) { n -= 1; b.data[b.len] = digits[n]; b.len += 1; }
+    return true;
+}
+
+fn fnv1a(p: *u8, n: u32) -> u32 {
+    let h: u32 = 0x811C9DC5;
+    let i: u32 = 0;
+    while (i < n) { h ^= p[i] as u32; h *= 0x01000193; i += 1; }
+    return h;
+}
+
+fn buf_hex32(b: *buf, v: u32) -> void {
+    let s: i32 = 28;
+    while (s >= 0) { buf_push(b, hexdig[(v >> s as u32) & 15]); s -= 4; }
+}
+
+fn is_arg(a: *u8, s: *u8) -> bool {
+    let i: u32 = 0;
+    while (s[i] != 0) { if (a[i] != s[i]) { return false; } i += 1; }
+    return a[i] == 0;
+}
+
+// The diagnostics of a front end, one `error file:line:col message` line each.
+fn dump_diags(f: *front, out: *buf) -> void {
+    let i: u32 = 0;
+    while (i < dg_count(&f.dg)) {
+        let g: *diag = dg_at(&f.dg, i);
+        buf_str(out, "error ");
+        if (g.file != 0xFFFFFFFF) {
+            let sf: *srcfile = file_at(f, g.file);
+            buf_append(out, &f.strs.data[sf.name], sf.nlen);
+        }
+        buf_push(out, ':');
+        buf_u32(out, g.line);
+        buf_push(out, ':');
+        buf_u32(out, g.col);
+        buf_push(out, ' ');
+        put_escaped(out, &f.dg.msgs.data[g.at], g.len, false);
+        buf_push(out, '\n');
+        i += 1;
+    }
+}
+
+// The options every dump program takes before its files, into a front end.
+struct opts { sum: bool, object: bool, prelude: buf, have_prelude: bool, incs: list, std: u32, first: u32 }
+
+fn parse_opts(o: *opts) -> bool {
+    o.sum = false;
+    o.object = false;
+    o.prelude = buf_new();
+    o.have_prelude = false;
+    o.incs = list_new();
+    o.std = 0;
+    o.first = 0;
+    let i: u32 = 1;
+    while (i < xc_argc()) {
+        let a: *u8 = xc_arg(i);
+        if (is_arg(a, "-s")) { o.sum = true; }
+        else if (is_arg(a, "--no-prelude")) { }
+        else if (is_arg(a, "--object")) { o.object = true; }
+        else if (is_arg(a, "--prelude") && i + 1 < xc_argc()) {
+            i += 1;
+            if (!read_file(xc_arg(i), &o.prelude)) { err_str("cannot read the prelude\n"); return false; }
+            o.have_prelude = true;
+        }
+        else if (is_arg(a, "-I") && i + 1 < xc_argc()) { i += 1; list_push(&o.incs, i); }
+        else if (is_arg(a, "--std") && i + 1 < xc_argc()) { i += 1; o.std = i; }
+        else { o.first = i; return true; }
+        i += 1;
+    }
+    return true;
+}
+
+// A front end set up from the options, and run on one program.
+fn analyze_with(o: *opts, f: *front, path: *u8) -> bool {
+    front_init(f);
+    let j: u32 = 0;
+    while (j < o.incs.len) { front_include(f, xc_arg(o.incs.items[j])); j += 1; }
+    if (o.std != 0) { front_std(f, xc_arg(o.std)); }
+    if (o.have_prelude) { front_prelude(f, o.prelude.data, o.prelude.len); }
+    return front_analyze(f, path);
+}
