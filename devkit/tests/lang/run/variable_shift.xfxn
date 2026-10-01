@@ -1,0 +1,66 @@
+// Every amount, every wide type, both directions: the variable shift must equal
+// the same shift done one constant place at a time.
+fn chk_u128(x: u128) -> u32 {
+    let n: u32 = 0;
+    let l: u128 = x; let r: u128 = x;
+    while (n < 128) {
+        if ((x << n) != l) { return 1; }
+        if ((x >> n) != r) { return 2; }
+        if ((x << (n + 128)) != l) { return 3; }      // modulo the width
+        l = l << 1; r = r >> 1;
+        n = n + 1;
+    }
+    return 0;
+}
+fn chk_i128(x: i128) -> u32 {
+    let n: u32 = 0;
+    let l: i128 = x; let r: i128 = x;
+    while (n < 128) {
+        if ((x << n) != l) { return 11; }
+        if ((x >> n) != r) { return 12; }             // arithmetic: sign fills
+        l = l << 1; r = r >> 1;
+        n = n + 1;
+    }
+    return 0;
+}
+fn chk_u64(x: u64) -> u32 {
+    let n: u32 = 0;
+    let l: u64 = x; let r: u64 = x;
+    while (n < 64) {
+        if ((x << n) != l) { return 21; }
+        if ((x >> n) != r) { return 22; }
+        if ((x >> (n + 64)) != r) { return 23; }
+        l = l << 1; r = r >> 1;
+        n = n + 1;
+    }
+    return 0;
+}
+fn chk_i64(x: i64) -> u32 {
+    let n: u32 = 0;
+    let l: i64 = x; let r: i64 = x;
+    while (n < 64) {
+        if ((x << n) != l) { return 31; }
+        if ((x >> n) != r) { return 32; }
+        l = l << 1; r = r >> 1;
+        n = n + 1;
+    }
+    return 0;
+}
+fn main() -> i32 {
+    let e: u32 = chk_u128(0xF00DFACE0123456789ABCDEFDEADBEEF);   if (e != 0) { return e as i32; }
+    e = chk_u128(1);                                              if (e != 0) { return e as i32; }
+    let ni: i128 = 0 - 0x123456789ABCDEF0FEDCBA9876543210;
+    e = chk_i128(ni);                                             if (e != 0) { return e as i32; }
+    e = chk_i128(0x7123456789ABCDEF0FEDCBA987654321);             if (e != 0) { return e as i32; }
+    e = chk_u64(0xDEADBEEFCAFEF00D);                              if (e != 0) { return e as i32; }
+    let nl: i64 = 0 - 0x0123456789ABCDEF;
+    e = chk_i64(nl);                                              if (e != 0) { return e as i32; }
+    // a known value, not just self-consistency
+    let s: u32 = 100;
+    let one: u128 = 1;
+    if ((one << s) != 0x10000000000000000000000000) { return 40; }
+    let w: u64 = 0x8000000000000000;
+    let k: i32 = 63;
+    if ((w >> k) != 1) { return 41; }
+    return 0;
+}

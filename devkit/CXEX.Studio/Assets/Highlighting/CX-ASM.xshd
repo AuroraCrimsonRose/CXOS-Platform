@@ -1,0 +1,59 @@
+<?xml version="1.0"?>
+<SyntaxDefinition name="CX-ASM" extensions=".asm;.nasm;.s;.inc"
+                  xmlns="http://icsharpcode.net/sharpdevelop/syntaxdefinition/2008">
+  <Color name="Comment"   foreground="#7EE787" fontStyle="italic"/>
+  <Color name="String"    foreground="#F1FA8C"/>
+  <Color name="Register"  foreground="#F48FB1" fontWeight="bold"/>
+  <Color name="Directive" foreground="#FF79C6"/>
+  <Color name="Instr"     foreground="#5BC0F8" fontWeight="bold"/>
+  <Color name="Number"    foreground="#BD93F9"/>
+  <Color name="Label"     foreground="#FFD479"/>
+
+  <RuleSet ignoreCase="true">
+    <Span color="Comment" begin=";"/>
+    <Span color="Comment" begin="\#"/>
+    <Span color="Comment" multiline="true" begin="/\*" end="\*/"/>
+    <Span color="String" begin="&quot;" end="&quot;"/>
+    <Span color="String" begin="'" end="'"/>
+
+    <!-- labels:  name:  -->
+    <Rule color="Label">^\s*[A-Za-z_\.][A-Za-z0-9_\.$]*\s*:</Rule>
+
+    <Keywords color="Register">
+      <Word>eax</Word><Word>ebx</Word><Word>ecx</Word><Word>edx</Word>
+      <Word>esi</Word><Word>edi</Word><Word>ebp</Word><Word>esp</Word>
+      <Word>ax</Word><Word>bx</Word><Word>cx</Word><Word>dx</Word>
+      <Word>al</Word><Word>bl</Word><Word>cl</Word><Word>dl</Word>
+      <Word>ah</Word><Word>bh</Word><Word>ch</Word><Word>dh</Word>
+      <Word>cs</Word><Word>ds</Word><Word>es</Word><Word>fs</Word><Word>gs</Word><Word>ss</Word>
+      <Word>cr0</Word><Word>cr2</Word><Word>cr3</Word><Word>cr4</Word>
+      <Word>eip</Word><Word>eflags</Word>
+    </Keywords>
+
+    <Keywords color="Directive">
+      <Word>section</Word><Word>global</Word><Word>extern</Word><Word>bits</Word>
+      <Word>org</Word><Word>db</Word><Word>dw</Word><Word>dd</Word><Word>dq</Word>
+      <Word>resb</Word><Word>resw</Word><Word>resd</Word><Word>resq</Word>
+      <Word>times</Word><Word>equ</Word><Word>align</Word><Word>byte</Word>
+      <Word>word</Word><Word>dword</Word><Word>qword</Word><Word>ptr</Word>
+      <Word>.text</Word><Word>.data</Word><Word>.bss</Word><Word>.rodata</Word>
+    </Keywords>
+
+    <Keywords color="Instr">
+      <Word>mov</Word><Word>movzx</Word><Word>movsx</Word><Word>lea</Word>
+      <Word>push</Word><Word>pop</Word><Word>pushad</Word><Word>popad</Word>
+      <Word>add</Word><Word>sub</Word><Word>mul</Word><Word>imul</Word><Word>div</Word><Word>idiv</Word>
+      <Word>inc</Word><Word>dec</Word><Word>neg</Word><Word>cmp</Word><Word>test</Word>
+      <Word>and</Word><Word>or</Word><Word>xor</Word><Word>not</Word><Word>shl</Word><Word>shr</Word><Word>sar</Word>
+      <Word>jmp</Word><Word>je</Word><Word>jne</Word><Word>jz</Word><Word>jnz</Word>
+      <Word>jg</Word><Word>jge</Word><Word>jl</Word><Word>jle</Word><Word>ja</Word><Word>jb</Word>
+      <Word>call</Word><Word>ret</Word><Word>iret</Word><Word>iretd</Word>
+      <Word>int</Word><Word>cli</Word><Word>sti</Word><Word>hlt</Word><Word>nop</Word>
+      <Word>in</Word><Word>out</Word><Word>cdq</Word><Word>cld</Word><Word>std</Word>
+      <Word>rep</Word><Word>movsb</Word><Word>movsd</Word><Word>stosb</Word><Word>stosd</Word>
+      <Word>lgdt</Word><Word>lidt</Word><Word>ltr</Word>
+    </Keywords>
+
+    <Rule color="Number">\b0[xX][0-9a-fA-F]+\b|\b[0-9a-fA-F]+[hH]\b|\b\d+\b</Rule>
+  </RuleSet>
+</SyntaxDefinition>

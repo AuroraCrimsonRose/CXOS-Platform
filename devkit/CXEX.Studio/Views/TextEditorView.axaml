@@ -1,0 +1,11 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ae="clr-namespace:AvaloniaEdit;assembly=AvaloniaEdit"
+             x:Class="CXEX.Studio.Views.TextEditorView">
+  <ae:TextEditor Name="Editor"
+                 FontFamily="Consolas,Monospace"
+                 FontSize="13"
+                 ShowLineNumbers="True"
+                 Background="#1E1E1E"
+                 Foreground="#D4D4D4"/>
+</UserControl>

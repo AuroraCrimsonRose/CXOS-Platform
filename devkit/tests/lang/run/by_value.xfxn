@@ -1,0 +1,60 @@
+struct pt  { x: u32, y: u32 }
+struct big { a: u32, b: u32, c: u32, d: u32, e: u32, f: u32 }
+
+fn add64(a: u64, b: u64) -> u64 { return a + b; }
+fn neg64(a: i64) -> i64 { return 0 - a; }
+fn mul128(a: u128, b: u128) -> u128 { return a * b; }
+fn five() -> u64 { return 5; }                        // a narrow literal returned wide
+fn mixed(a: u32, b: u128, c: u32) -> u128 { return b + (a as u128) * 1000 + (c as u128); }
+fn fact(n: u32) -> u128 { if (n <= 1) { return 1; } let r: u128 = fact(n - 1); return r * (n as u128); }
+fn fib(n: u32) -> u64 { if (n < 2) { return n as u64; } return fib(n - 1) + fib(n - 2); }
+fn clobber(a: u64) -> u64 { a = 77; return a; }        // a copy: the caller's value must survive
+fn deferred() -> u64 { let x: u64 = 1; defer { x = 99; } return x; }
+fn hi32(a: u64) -> u32 { return (a >> 32) as u32; }
+
+fn mk(a: u32) -> pt { let p: pt; p.x = a; p.y = a + 1; return p; }
+fn sum(p: pt) -> u32 { return p.x + p.y; }
+fn swap(p: pt) -> pt { let q: pt; q.x = p.y; q.y = p.x; return q; }
+fn mkbig(s: u32) -> big { let g: big; g.a = s; g.b = s + 1; g.c = s + 2; g.d = s + 3; g.e = s + 4; g.f = s + 5; return g; }
+fn bigsum(g: big, k: u32) -> u32 { return g.a + g.b + g.c + g.d + g.e + g.f + k; }
+fn poke(p: pt) -> u32 { p.x = 1000; return p.x; }
+
+fn main() -> i32 {
+    let a: u64 = 0x0000000700000005;
+    let b: u64 = 0x00000001FFFFFFFF;
+    let s: u64 = add64(a, b);
+    if (s != 0x0000000900000004) { return 1; }
+    if (hi32(a) != 7) { return 2; }
+    let n: i64 = neg64(12);
+    if (n != 0 - 12) { return 3; }
+    let m: u128 = mul128(0x100000000, 0x100000000);
+    if (m != 0x10000000000000000) { return 4; }
+    if (five() != 5) { return 5; }
+    if (mixed(7, 0x1000000000000000000, 3) != 0x1000000000000001B5B) { return 6; }   // + 7003
+    let f30: u128 = fact(30);
+    if (f30 != 265252859812191058636308480000000) { return 7; }
+    if (fib(30) != 832040) { return 8; }
+    let keep: u64 = 5;
+    if (clobber(keep) != 77 || keep != 5) { return 9; }
+    if (deferred() != 1) { return 10; }
+    if (add64(add64(1, 2), add64(3, 4)) != 10) { return 11; }               // nested: two result slots
+    let fp: fn(u64, u64) -> u64 = add64;
+    if (fp(40, 2) != 42) { return 12; }
+    let i: u32 = 0; let acc: u64 = 0;
+    while (i < 10) { acc = add64(acc, 0x100000000); i = i + 1; }              // one call site, reused
+    if (acc != 0xA00000000) { return 13; }
+
+    let p: pt = mk(4);
+    let q: pt = mk(40);
+    if (p.y != 5 || q.y != 41) { return 20; }
+    if (sum(p) != 9) { return 21; }
+    if (sum(mk(10)) != 21) { return 22; }                                     // a result passed straight on
+    let r: pt = swap(p);
+    if (r.x != 5 || r.y != 4) { return 23; }
+    let g: big = mkbig(10);
+    if (g.f != 15) { return 24; }
+    if (bigsum(g, 1000) != 1075) { return 25; }
+    if (poke(p) != 1000 || p.x != 4) { return 26; }                           // by value: p unchanged
+    if (bigsum(mkbig(1), 0) != 21) { return 27; }
+    return 0;
+}

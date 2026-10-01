@@ -1,0 +1,61 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <ApplicationIcon>XFILE.ico</ApplicationIcon>
+    <AssemblyName>cxk</AssemblyName>
+
+    <!--
+      Publish settings (RuntimeIdentifier / SelfContained / PublishSingleFile /
+      IncludeNativeLibrariesForSelfExtract / EnableCompressionInSingleFile) are
+      deliberately NOT here. As build properties they made every build of this
+      project a self-contained win-x64 executable, and a non-self-contained
+      project cannot reference one - so CXEX.Studio and CXEX.SDK both failed with
+      NETSDK1151 and the solution could not build as a unit.
+
+      They belong to publishing, so pass them there. To produce tools/cxk.exe for
+      the CXK repo:
+
+        dotnet publish CXEX.CLI -c Release -r win-x64
+          -p:SelfContained=true
+          -p:PublishSingleFile=true
+          -p:EnableCompressionInSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+
+      or keep them in a publish profile under Properties/PublishProfiles, which
+      is where Visual Studio's Publish dialog writes them.
+    -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Content Include="XFILE.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Spectre.Console" Version="0.57.0" />
+    <PackageReference Include="Spectre.Console.Analyzer" Version="1.0.0">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="Spectre.Console.Cli" Version="0.55.0" />
+    <PackageReference Include="Spectre.Console.Testing" Version="0.57.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CXEX.Core\CXEX.Core.csproj" />
+    <ProjectReference Include="..\CXEX.Build\CXEX.Build.csproj" />
+    <ProjectReference Include="..\CXEX.Crypto\CXEX.Crypto.csproj" />
+    <ProjectReference Include="..\CXEX.Disk\CXEX.Disk.csproj" />
+    <ProjectReference Include="..\CXEX.FileSystem\CXEX.FileSystem.csproj" />
+    <ProjectReference Include="..\CXEX.FileType\CXEX.FileType.csproj" />
+    <ProjectReference Include="..\CXEX.Font\CXEX.Font.csproj" />
+    <ProjectReference Include="..\CXEX.Lang\CXEX.Lang.csproj" />
+    <ProjectReference Include="..\CXEX.Text\CXEX.Text.csproj" />
+    <ProjectReference Include="..\CXEX.Tools\CXEX.Tools.csproj" />
+    <ProjectReference Include="..\CXEX.Uefi\CXEX.Uefi.csproj" />
+  </ItemGroup>
+
+</Project>

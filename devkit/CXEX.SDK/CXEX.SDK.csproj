@@ -1,0 +1,85 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+    <StartupObject></StartupObject>
+    <ApplicationIcon>XFILE.ico</ApplicationIcon>
+    <AnalysisLevel>latest</AnalysisLevel>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Folder Include="Models\" />
+    <AvaloniaResource Include="Assets\**" />
+  </ItemGroup>
+
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="12.0.4" />
+    <PackageReference Include="Avalonia.AvaloniaEdit" Version="12.0.0" />
+    <PackageReference Include="Avalonia.Controls.ColorPicker" Version="12.0.4" />
+    <PackageReference Include="Avalonia.Controls.DataGrid" Version="12.0.0" />
+    <PackageReference Include="Avalonia.Desktop" Version="12.0.4" />
+    <PackageReference Include="Avalonia.Skia" Version="12.0.4" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.0.4" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="12.0.4" />
+    <PackageReference Include="Avalonia.Themes.Simple" Version="12.0.4" />
+    <PackageReference Include="AvaloniaUI.DiagnosticsSupport" Version="2.2.3">
+      <IncludeAssets Condition="'$(Configuration)' != 'Debug'">None</IncludeAssets>
+      <PrivateAssets Condition="'$(Configuration)' != 'Debug'">All</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+    <PackageReference Include="Dock.Avalonia" Version="12.0.0.2" />
+    <PackageReference Include="Dock.Avalonia.Diagnostics" Version="12.0.0.2" />
+    <PackageReference Include="Dock.Avalonia.Themes.Browser" Version="12.0.0.2" />
+    <PackageReference Include="Dock.Avalonia.Themes.Fluent" Version="12.0.0.2" />
+    <PackageReference Include="Dock.Avalonia.Themes.Simple" Version="12.0.0.2" />
+    <PackageReference Include="Dock.Controls.DeferredContentControl" Version="12.0.0.2" />
+    <PackageReference Include="Dock.Controls.ProportionalStackPanel" Version="12.0.0.2" />
+    <PackageReference Include="Dock.Controls.Recycling" Version="12.0.0.2" />
+    <PackageReference Include="Dock.Controls.Recycling.Model" Version="12.0.0.2" />
+    <PackageReference Include="Dock.MarkupExtension" Version="12.0.0.2" />
+    <PackageReference Include="Dock.Model" Version="12.0.0.2" />
+    <PackageReference Include="Dock.Model.Avalonia" Version="12.0.0.2" />
+    <PackageReference Include="Dock.Model.CaliburMicro" Version="12.0.0.2" />
+    <PackageReference Include="Dock.Model.Inpc" Version="12.0.0.2" />
+    <PackageReference Include="Dock.Model.Mvvm" Version="12.0.0.2" />
+    <PackageReference Include="Dock.Model.ReactiveProperty" Version="12.0.0.2" />
+    <PackageReference Include="Dock.Serializer.Newtonsoft" Version="12.0.0.2" />
+    <PackageReference Include="Dock.Serializer.Protobuf" Version="12.0.0.2" />
+    <PackageReference Include="Dock.Serializer.SystemTextJson" Version="12.0.0.2" />
+    <PackageReference Include="Dock.Serializer.Xml" Version="12.0.0.2" />
+    <PackageReference Include="Dock.Serializer.Yaml" Version="12.0.0.2" />
+    <PackageReference Include="Dock.Settings" Version="12.0.0.2" />
+    <PackageReference Include="Material.Icons.Avalonia" Version="3.0.2" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CXEX.Build\CXEX.Build.csproj" />
+    <!-- No reference to CXEX.CLI: nothing in this project uses it, and referencing
+         an executable project from another executable buys nothing. The SDK is
+         meant to be a slimmer, separate app (design doc 12), so depending on the
+         developer CLI would be the wrong direction even if it were used. -->
+    <ProjectReference Include="..\CXEX.Core\CXEX.Core.csproj" />
+    <ProjectReference Include="..\CXEX.Crypto\CXEX.Crypto.csproj" />
+    <ProjectReference Include="..\CXEX.Disk\CXEX.Disk.csproj" />
+    <ProjectReference Include="..\CXEX.FileSystem\CXEX.FileSystem.csproj" />
+    <ProjectReference Include="..\CXEX.FileType\CXEX.FileType.csproj" />
+    <ProjectReference Include="..\CXEX.Font\CXEX.Font.csproj" />
+    <ProjectReference Include="..\CXEX.Lang\CXEX.Lang.csproj" />
+    <ProjectReference Include="..\CXEX.Text\CXEX.Text.csproj" />
+    <ProjectReference Include="..\CXEX.Tools\CXEX.Tools.csproj" />
+    <ProjectReference Include="..\CXEX.UI\CXEX.UI.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AvaloniaResource Remove="XFILE.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="XFILE.ico" />
+  </ItemGroup>
+</Project>
