@@ -1,0 +1,403 @@
+// xc/lex.xfxn - the X lexer, written in X.
+// Aurora Tejeda / CATX SYSTEMS LLC
+//
+//   import "lex.xfxn";
+//
+//   let lx: lexer;
+//   lex_init(&lx, src, len);
+//   if (!lex_all(&lx)) { ...out of memory... }
+//   let t: *token = lex_tok(&lx, 0);
+//
+// Stage 4 of the route to self-hosting (docs/CX_X_CORE_LANG.md section 10)
+// starts here: the X compiler, written in X, one stage at a time. This is a
+// line-for-line port of the C# lexer in CX_DEVKIT (CXEX.Lang/Lexer/Lexer.cs),
+// and it is held to it - the same tokens, the same values, the same line and
+// column for each, the same error tokens in the same places - by a
+// differential test that runs both over every X source there is and over
+// thousands of mutated ones. Two front ends that disagree about where a token
+// starts would produce two languages.
+//
+// It works on bytes, not characters. Where that could differ from C#'s UTF-16
+// view it is made not to: a column counts characters (a UTF-8 continuation
+// byte does not move it), and a stray non-ASCII character is skipped whole.
+//
+// Tokens are kept in one growable array, and the decoded bytes of every string
+// literal in another; a token refers into the source by offset and length, so
+// nothing is copied that does not have to be.
+
+import "buf.xfxn";
+
+// The order matches CXEX.Lang's TokenKind exactly, and tk_names spells the
+// same names - which is what lets the two lexers be compared line for line.
+enum tk {
+    identifier, int_literal, string_literal, kw_true, kw_false,
+    kw_fn, kw_struct, kw_global, kw_const, kw_extern, kw_let, kw_if, kw_else, kw_while, kw_return, kw_as,
+    kw_sizeof, kw_break, kw_continue, kw_import, kw_type, kw_defer, kw_enum, kw_switch, kw_case,
+    lparen, rparen, lbrace, rbrace, lbracket, rbracket,
+    comma, semicolon, colon, arrow,
+    assign,
+    plus_assign, minus_assign, star_assign, slash_assign, percent_assign,
+    amp_assign, pipe_assign, caret_assign, shl_assign, shr_assign,
+    plus, minus, star, slash, percent, amp,
+    pipe, caret, tilde, shl, shr,
+    eq, ne, lt, le, gt, ge,
+    and_and, or_or, not,
+    dot, at,
+    eof, error,
+}
+
+global tk_names: [70]*u8 = [
+    "Identifier", "IntLiteral", "StringLiteral", "True", "False",
+    "Fn", "Struct", "Global", "Const", "Extern", "Let", "If", "Else", "While", "Return", "As",
+    "Sizeof", "Break", "Continue", "Import", "Type", "Defer", "Enum", "Switch", "Case",
+    "LParen", "RParen", "LBrace", "RBrace", "LBracket", "RBracket",
+    "Comma", "Semicolon", "Colon", "Arrow",
+    "Assign",
+    "PlusAssign", "MinusAssign", "StarAssign", "SlashAssign", "PercentAssign",
+    "AmpAssign", "PipeAssign", "CaretAssign", "ShlAssign", "ShrAssign",
+    "Plus", "Minus", "Star", "Slash", "Percent", "Amp",
+    "Pipe", "Caret", "Tilde", "Shl", "Shr",
+    "Eq", "Ne", "Lt", "Le", "Gt", "Ge",
+    "AndAnd", "OrOr", "Not",
+    "Dot", "At",
+    "Eof", "Error",
+];
+
+struct keyword { word: *u8, kind: tk }
+global keywords: [22]keyword = [
+    keyword { word: "fn", kind: tk.kw_fn },           keyword { word: "enum", kind: tk.kw_enum },
+    keyword { word: "switch", kind: tk.kw_switch },   keyword { word: "case", kind: tk.kw_case },
+    keyword { word: "struct", kind: tk.kw_struct },   keyword { word: "global", kind: tk.kw_global },
+    keyword { word: "const", kind: tk.kw_const },     keyword { word: "extern", kind: tk.kw_extern },
+    keyword { word: "let", kind: tk.kw_let },         keyword { word: "if", kind: tk.kw_if },
+    keyword { word: "else", kind: tk.kw_else },       keyword { word: "while", kind: tk.kw_while },
+    keyword { word: "return", kind: tk.kw_return },   keyword { word: "as", kind: tk.kw_as },
+    keyword { word: "import", kind: tk.kw_import },   keyword { word: "type", kind: tk.kw_type },
+    keyword { word: "sizeof", kind: tk.kw_sizeof },   keyword { word: "break", kind: tk.kw_break },
+    keyword { word: "continue", kind: tk.kw_continue }, keyword { word: "defer", kind: tk.kw_defer },
+    keyword { word: "true", kind: tk.kw_true },       keyword { word: "false", kind: tk.kw_false },
+];
+
+// A literal's suffix: 0 for none, then these in order, then SFX_CHAR for a
+// character literal (typed u8, but converting like an unsuffixed constant).
+global suffixes: [10]*u8 = ["u8", "u16", "u32", "u64", "u128", "i8", "i16", "i32", "i64", "i128"];
+const SFX_CHAR: u32 = 11;
+
+struct token {
+    kind: tk,
+    at: u32,          // the token's text: src[at .. at+len]
+    len: u32,
+    line: u32,
+    col: u32,
+    value: u128,      // an int_literal's value
+    suffix: u32,      // an int_literal's suffix, as above
+    str_at: u32,      // a string_literal's DECODED bytes: strs[str_at .. str_at+str_len]
+    str_len: u32,
+}
+
+struct lexer {
+    src: *u8,
+    len: u32,
+    pos: u32,
+    line: u32,
+    col: u32,
+    toks: buf,        // token, token, ... ending with eof
+    strs: buf,        // decoded string literals, end to end
+    errors: u32,      // how many error tokens
+}
+
+fn token_size() -> u32 { let t: token; return sizeof t; }
+
+fn lex_init(lx: *lexer, src: *u8, len: u32) -> void {
+    lx.src = src;
+    lx.len = len;
+    lx.pos = 0;
+    lx.line = 1;
+    lx.col = 1;
+    lx.toks = buf_new();
+    lx.strs = buf_new();
+    lx.errors = 0;
+    // A UTF-8 byte-order mark is not part of the text; a C# reader drops it too.
+    if (len >= 3 && src[0] == 0xEF && src[1] == 0xBB && src[2] == 0xBF) { lx.pos = 3; }
+}
+
+fn lex_count(lx: *lexer) -> u32 { return lx.toks.len / token_size(); }
+fn lex_tok(lx: *lexer, i: u32) -> *token { return ((lx.toks.data as u32) + i * token_size()) as *token; }
+
+fn lex_free(lx: *lexer) -> void { buf_free(&lx.toks); buf_free(&lx.strs); }
+
+// ---- characters ----
+
+fn lx_eof(lx: *lexer) -> bool { return lx.pos >= lx.len; }
+fn lx_cur(lx: *lexer) -> u8 { if (lx.pos >= lx.len) { return 0; } return lx.src[lx.pos]; }
+fn lx_peek(lx: *lexer, n: u32) -> u8 { if (lx.pos + n >= lx.len) { return 0; } return lx.src[lx.pos + n]; }
+
+// One byte forward. A newline starts a line; a UTF-8 continuation byte is
+// part of the character before it and does not move the column.
+fn lx_advance(lx: *lexer) -> void {
+    if (lx.pos >= lx.len) { return; }
+    let c: u8 = lx.src[lx.pos];
+    if (c == '\n') { lx.line += 1; lx.col = 1; }
+    else if ((c & 0xC0) != 0x80) { lx.col += 1; }
+    lx.pos += 1;
+}
+
+// One whole character: its lead byte and any continuation bytes.
+fn lx_advance_char(lx: *lexer) -> void {
+    lx_advance(lx);
+    while (!lx_eof(lx) && (lx_cur(lx) & 0xC0) == 0x80) { lx_advance(lx); }
+}
+
+fn is_digit(c: u8) -> bool { return c >= '0' && c <= '9'; }
+fn is_hex(c: u8) -> bool { return is_digit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); }
+fn is_alpha(c: u8) -> bool { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
+fn is_ident(c: u8) -> bool { return is_alpha(c) || is_digit(c) || c == '_'; }
+fn hex_val(c: u8) -> u32 {
+    if (is_digit(c)) { return (c - '0') as u32; }
+    if (c >= 'a' && c <= 'f') { return (c - 'a') as u32 + 10; }
+    return (c - 'A') as u32 + 10;
+}
+
+fn lx_skip_trivia(lx: *lexer) -> void {
+    while (!lx_eof(lx)) {
+        let c: u8 = lx_cur(lx);
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n') { lx_advance(lx); }
+        else if (c == '/' && lx_peek(lx, 1) == '/') { while (!lx_eof(lx) && lx_cur(lx) != '\n') { lx_advance(lx); } }
+        else if (c == '/' && lx_peek(lx, 1) == '*') {
+            lx_advance(lx); lx_advance(lx);
+            while (!lx_eof(lx) && !(lx_cur(lx) == '*' && lx_peek(lx, 1) == '/')) { lx_advance(lx); }
+            if (!lx_eof(lx)) { lx_advance(lx); lx_advance(lx); }   // an unclosed comment runs to the end
+        }
+        else { return; }
+    }
+}
+
+// ---- making tokens ----
+
+fn lx_push(lx: *lexer, t: token) -> bool {
+    if (t.kind == tk.error) { lx.errors += 1; }
+    return buf_append(&lx.toks, (&t) as *u8, token_size());
+}
+
+fn lx_token(lx: *lexer, kind: tk, start: u32, line: u32, col: u32) -> token {
+    return token { kind: kind, at: start, len: lx.pos - start, line: line, col: col,
+                   value: 0, suffix: 0, str_at: 0, str_len: 0 };
+}
+
+fn lx_spells(lx: *lexer, at: u32, len: u32, word: *u8) -> bool {
+    let i: u32 = 0;
+    while (i < len) {
+        if (word[i] != lx.src[at + i]) { return false; }   // also stops at word's NUL
+        i += 1;
+    }
+    return word[len] == 0;
+}
+
+// `op=` if an `=` follows the operator just consumed, else the operator.
+fn lx_eq2(lx: *lexer, with_eq: tk, plain: tk) -> tk {
+    if (!lx_eof(lx) && lx_cur(lx) == '=') { lx_advance(lx); return with_eq; }
+    return plain;
+}
+
+// The escapes a string and a character share; -1 for an unknown one.
+fn lx_escape(e: u8) -> i32 {
+    switch (e) {
+        case 'n' { return 10; }   case 't' { return 9; }    case 'r' { return 13; }
+        case '0' { return 0; }    case 'b' { return 8; }    case 'f' { return 12; }
+        case 'v' { return 11; }   case 'a' { return 7; }    case 'e' { return 27; }
+        case '\\' { return 92; }  case '"' { return 34; }   case '\'' { return 39; }
+        else { return -1; }
+    }
+    return -1;
+}
+
+// ---- one token ----
+
+fn lx_ident(lx: *lexer, start: u32, line: u32, col: u32) -> bool {
+    while (!lx_eof(lx) && is_ident(lx_cur(lx))) { lx_advance(lx); }
+    let kind: tk = tk.identifier;
+    let i: u32 = 0;
+    while (i < 22) {
+        if (lx_spells(lx, start, lx.pos - start, keywords[i].word)) { kind = keywords[i].kind; break; }
+        i += 1;
+    }
+    return lx_push(lx, lx_token(lx, kind, start, line, col));
+}
+
+// "..." with escapes. The decoded bytes go to lx.strs; an unknown escape keeps
+// the character after the backslash, as the C# lexer does.
+fn lx_string(lx: *lexer, start: u32, line: u32, col: u32) -> bool {
+    lx_advance(lx);   // opening quote
+    let s0: u32 = lx.strs.len;
+    while (!lx_eof(lx) && lx_cur(lx) != '"') {
+        if (lx_cur(lx) == '\\') {
+            lx_advance(lx);
+            let e: u8 = lx_cur(lx);
+            lx_advance(lx);
+            let m: i32 = lx_escape(e);
+            if (m >= 0) { if (!buf_push(&lx.strs, m as u8)) { return false; } }
+            else { if (!buf_push(&lx.strs, e)) { return false; } }
+        } else {
+            if (!buf_push(&lx.strs, lx_cur(lx))) { return false; }
+            lx_advance(lx);
+        }
+    }
+    if (lx_eof(lx)) { return lx_push(lx, lx_token(lx, tk.error, start, line, col)); }   // unterminated
+    lx_advance(lx);   // closing quote
+    let t: token = lx_token(lx, tk.string_literal, start, line, col);
+    t.str_at = s0;
+    t.str_len = lx.strs.len - s0;
+    return lx_push(lx, t);
+}
+
+// 'a', '\n', '\x7F' - one ASCII character or escape, which is a number.
+fn lx_char(lx: *lexer, start: u32, line: u32, col: u32) -> bool {
+    lx_advance(lx);
+    let value: i32 = -1;
+    if (!lx_eof(lx) && lx_cur(lx) == '\\') {
+        lx_advance(lx);
+        let e: u8 = lx_cur(lx);
+        if (!lx_eof(lx)) { lx_advance(lx); }
+        if (e == 'x' || e == 'X') {
+            let h0: u32 = lx.pos;
+            while (!lx_eof(lx) && lx.pos - h0 < 2 && is_hex(lx_cur(lx))) { lx_advance(lx); }
+            if (lx.pos - h0 == 2) { value = (hex_val(lx.src[h0]) * 16 + hex_val(lx.src[h0 + 1])) as i32; }
+        } else {
+            value = lx_escape(e);
+        }
+    } else if (!lx_eof(lx) && lx_cur(lx) != '\'' && lx_cur(lx) != '\n') {
+        if (lx_cur(lx) < 0x80) { value = lx_cur(lx) as i32; }
+        lx_advance_char(lx);
+    }
+    if (lx_eof(lx) || lx_cur(lx) != '\'' || value < 0) {
+        while (!lx_eof(lx) && lx_cur(lx) != '\'' && lx_cur(lx) != '\n') { lx_advance(lx); }
+        if (!lx_eof(lx) && lx_cur(lx) == '\'') { lx_advance(lx); }
+        return lx_push(lx, lx_token(lx, tk.error, start, line, col));
+    }
+    lx_advance(lx);   // closing quote
+    let t: token = lx_token(lx, tk.int_literal, start, line, col);
+    t.value = value as u128;
+    t.suffix = SFX_CHAR;
+    return lx_push(lx, t);
+}
+
+// Decimal or 0x hex, `_` between digits, an optional type suffix. Parsed at
+// 128 bits; a literal too large for that is an error, never wrapped.
+fn lx_number(lx: *lexer, start: u32, line: u32, col: u32) -> bool {
+    let hex: bool = lx_cur(lx) == '0' && (lx_peek(lx, 1) == 'x' || lx_peek(lx, 1) == 'X');
+    let d0: u32 = start;
+    if (hex) {
+        lx_advance(lx); lx_advance(lx);
+        d0 = lx.pos;
+        while (!lx_eof(lx) && (is_hex(lx_cur(lx)) || lx_cur(lx) == '_')) { lx_advance(lx); }
+    } else {
+        while (!lx_eof(lx) && (is_digit(lx_cur(lx)) || lx_cur(lx) == '_')) { lx_advance(lx); }
+    }
+    let d1: u32 = lx.pos;
+
+    let sfx: u32 = 0;
+    if (!lx_eof(lx) && (is_alpha(lx_cur(lx)) || lx_cur(lx) == '_')) {
+        let s0: u32 = lx.pos;
+        while (!lx_eof(lx) && is_ident(lx_cur(lx))) { lx_advance(lx); }
+        let i: u32 = 0;
+        while (i < 10) {
+            if (lx_spells(lx, s0, lx.pos - s0, suffixes[i])) { sfx = i + 1; break; }
+            i += 1;
+        }
+        if (sfx == 0) { return lx_push(lx, lx_token(lx, tk.error, start, line, col)); }
+    }
+
+    let v: u128 = 0;
+    let digits: u32 = 0;
+    let i: u32 = d0;
+    while (i < d1) {
+        let c: u8 = lx.src[i];
+        i += 1;
+        if (c == '_') { continue; }
+        digits += 1;
+        if (hex) {
+            if ((v >> 124) != 0) { return lx_push(lx, lx_token(lx, tk.error, start, line, col)); }
+            v = (v << 4) | (hex_val(c) as u128);
+        } else {
+            let d: u128 = (c - '0') as u128;
+            // v * 10 + d must stay inside 128 bits
+            if (v > 0x19999999999999999999999999999999u128) { return lx_push(lx, lx_token(lx, tk.error, start, line, col)); }
+            let t: u128 = v * 10;
+            if (t > 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFu128 - d) { return lx_push(lx, lx_token(lx, tk.error, start, line, col)); }
+            v = t + d;
+        }
+    }
+    if (digits == 0) { return lx_push(lx, lx_token(lx, tk.error, start, line, col)); }
+    let t: token = lx_token(lx, tk.int_literal, start, line, col);
+    t.value = v;
+    t.suffix = sfx;
+    return lx_push(lx, t);
+}
+
+fn lx_op(lx: *lexer, start: u32, line: u32, col: u32) -> bool {
+    let c: u8 = lx_cur(lx);
+    let k: tk = tk.error;
+    switch (c) {
+        case '@' { lx_advance(lx); k = tk.at; }
+        case '(' { lx_advance(lx); k = tk.lparen; }
+        case ')' { lx_advance(lx); k = tk.rparen; }
+        case '{' { lx_advance(lx); k = tk.lbrace; }
+        case '}' { lx_advance(lx); k = tk.rbrace; }
+        case '[' { lx_advance(lx); k = tk.lbracket; }
+        case ']' { lx_advance(lx); k = tk.rbracket; }
+        case ',' { lx_advance(lx); k = tk.comma; }
+        case ';' { lx_advance(lx); k = tk.semicolon; }
+        case ':' { lx_advance(lx); k = tk.colon; }
+        case '.' { lx_advance(lx); k = tk.dot; }
+        case '~' { lx_advance(lx); k = tk.tilde; }
+        case '+' { lx_advance(lx); k = lx_eq2(lx, tk.plus_assign, tk.plus); }
+        case '*' { lx_advance(lx); k = lx_eq2(lx, tk.star_assign, tk.star); }
+        case '/' { lx_advance(lx); k = lx_eq2(lx, tk.slash_assign, tk.slash); }
+        case '%' { lx_advance(lx); k = lx_eq2(lx, tk.percent_assign, tk.percent); }
+        case '^' { lx_advance(lx); k = lx_eq2(lx, tk.caret_assign, tk.caret); }
+        case '-' {
+            lx_advance(lx);
+            if (lx_cur(lx) == '>') { lx_advance(lx); k = tk.arrow; } else { k = lx_eq2(lx, tk.minus_assign, tk.minus); }
+        }
+        case '=' { lx_advance(lx); if (lx_cur(lx) == '=') { lx_advance(lx); k = tk.eq; } else { k = tk.assign; } }
+        case '!' { lx_advance(lx); if (lx_cur(lx) == '=') { lx_advance(lx); k = tk.ne; } else { k = tk.not; } }
+        case '<' {
+            lx_advance(lx);
+            if (lx_cur(lx) == '=') { lx_advance(lx); k = tk.le; }
+            else if (lx_cur(lx) == '<') { lx_advance(lx); k = lx_eq2(lx, tk.shl_assign, tk.shl); }
+            else { k = tk.lt; }
+        }
+        case '>' {
+            lx_advance(lx);
+            if (lx_cur(lx) == '=') { lx_advance(lx); k = tk.ge; }
+            else if (lx_cur(lx) == '>') { lx_advance(lx); k = lx_eq2(lx, tk.shr_assign, tk.shr); }
+            else { k = tk.gt; }
+        }
+        case '|' { lx_advance(lx); if (lx_cur(lx) == '|') { lx_advance(lx); k = tk.or_or; } else { k = lx_eq2(lx, tk.pipe_assign, tk.pipe); } }
+        case '&' { lx_advance(lx); if (lx_cur(lx) == '&') { lx_advance(lx); k = tk.and_and; } else { k = lx_eq2(lx, tk.amp_assign, tk.amp); } }
+        else { lx_advance_char(lx); k = tk.error; }   // unexpected: skip the whole character
+    }
+    return lx_push(lx, lx_token(lx, k, start, line, col));
+}
+
+// The whole source, into lx.toks, ending with an eof token. False only if
+// memory ran out; a lexical error is an error token, counted in lx.errors,
+// and lexing goes on so the parser can report more than the first mistake.
+fn lex_all(lx: *lexer) -> bool {
+    while (true) {
+        lx_skip_trivia(lx);
+        let start: u32 = lx.pos;
+        let line: u32 = lx.line;
+        let col: u32 = lx.col;
+        if (lx_eof(lx)) { return lx_push(lx, lx_token(lx, tk.eof, start, line, col)); }
+        let c: u8 = lx_cur(lx);
+        let ok: bool = true;
+        if (is_alpha(c) || c == '_') { ok = lx_ident(lx, start, line, col); }
+        else if (c == '"') { ok = lx_string(lx, start, line, col); }
+        else if (c == '\'') { ok = lx_char(lx, start, line, col); }
+        else if (is_digit(c)) { ok = lx_number(lx, start, line, col); }
+        else { ok = lx_op(lx, start, line, col); }
+        if (!ok) { return false; }
+    }
+    return true;
+}

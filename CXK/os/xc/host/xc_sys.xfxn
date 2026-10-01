@@ -1,0 +1,108 @@
+// xc/host/xc_sys.xfxn - the X compiler's platform, on a Linux host.
+// Aurora Tejeda / CATX SYSTEMS LLC
+//
+// The X compiler written in X runs in two places: on CXK, which is the point,
+// and on the Linux host it is developed on, which is how it is tested - every
+// piece is compared against the C# compiler on the same input, thousands of
+// files at a time, without booting anything. This file is the host half. A
+// build picks it with `-I os/xc/host` and `--no-prelude`; the CXK half sits in
+// os/xc/cxk and uses the ordinary prelude and std/file.xfxn.
+//
+// What it provides is small on purpose - read a file, write to stdout and
+// stderr, exit - plus the one thing std/heap.xfxn needs from below: mem_op,
+// with the prelude's argument struct and constants, so the REAL allocator and
+// std/buf.xfxn run here unchanged. Memory comes from brk, and like a CXK
+// mapping it arrives zeroed.
+//
+// These are Linux's i386 system calls through int 0x80 - the same instruction
+// CXK uses, with Linux's numbers. A static 32-bit binary runs them directly.
+
+import "buf.xfxn";
+
+const LINUX_EXIT:  u32 = 1;
+const LINUX_READ:  u32 = 3;
+const LINUX_WRITE: u32 = 4;
+const LINUX_OPEN:  u32 = 5;
+const LINUX_CLOSE: u32 = 6;
+const LINUX_BRK:   u32 = 45;
+
+// ---- what std/heap.xfxn expects of the prelude ----
+const E_OK:    i32 = 0;
+const E_INVAL: i32 = -2;
+const E_NOMEM: i32 = -5;
+const MEM_OP_MAP:   u32 = 0;
+const MEM_OP_UNMAP: u32 = 1;
+const MEM_OP_INFO:  u32 = 2;
+const MPROT_READ:  u32 = 0x01;
+const MPROT_WRITE: u32 = 0x02;
+const MOBJ_ANON: u32 = 0;
+struct mem_op_args { op: u32, object: u32, offset_lo: u32, offset_hi: u32, length: u32, addr: u32, granted: u32, prot: u32, flags: u32, quota: u32, mapped: u32 }
+
+global host_mapped: u32 = 0;
+
+// Only MAP and INFO: the heap never unmaps. Pages come off the end of the data
+// segment, so every grant follows the one before.
+fn mem_op(a: *mem_op_args) -> i32 {
+    if (a.op == MEM_OP_INFO) { a.quota = 0x40000000; a.mapped = host_mapped; return E_OK; }
+    if (a.op != MEM_OP_MAP) { return E_INVAL; }
+    let len: u32 = (a.length + 4095) & 0xFFFFF000;
+    let cur: u32 = __syscall(LINUX_BRK, 0, 0, 0, 0, 0) as u32;
+    let want: u32 = cur + len;
+    let got: u32 = __syscall(LINUX_BRK, want, 0, 0, 0, 0) as u32;
+    if (got < want) { return E_NOMEM; }
+    a.addr = cur;
+    a.granted = len;
+    host_mapped += len;
+    return E_OK;
+}
+fn mem_quota() -> u32 { return 0x40000000; }
+fn mem_used() -> u32 { return host_mapped; }
+
+// ---- the compiler's platform interface ----
+//
+// Both platform files provide the same functions: the program starts in
+// xc_main() and reads its arguments with xc_argc()/xc_arg(), whatever starts it.
+
+global host_argc: u32;
+global host_argv: **u8;
+
+// The host start stub passes Linux's argc and argv.
+fn main(argc: u32, argv: **u8) -> i32 {
+    host_argc = argc;
+    host_argv = argv;
+    return xc_main();
+}
+fn xc_argc() -> u32 { return host_argc; }
+fn xc_arg(i: u32) -> *u8 { return host_argv[i]; }
+
+fn sys_exit(code: i32) -> void { __syscall(LINUX_EXIT, code as u32, 0, 0, 0, 0); }
+
+fn sys_write(fd: u32, p: *u8, n: u32) -> void {
+    let done: u32 = 0;
+    while (done < n) {
+        let w: i32 = __syscall(LINUX_WRITE, fd, (p as u32) + done, n - done, 0, 0);
+        if (w <= 0) { return; }
+        done += w as u32;
+    }
+}
+
+fn out_bytes(p: *u8, n: u32) -> void { sys_write(1, p, n); }
+fn out_buf(b: *buf) -> void { sys_write(1, b.data, b.len); }
+fn err_str(s: *u8) -> void { let n: u32 = 0; while (s[n] != 0) { n += 1; } sys_write(2, s, n); }
+
+// The whole of a file, appended to `out`. False if it cannot be opened or
+// read, or memory runs out.
+fn read_file(path: *u8, out: *buf) -> bool {
+    let fd: i32 = __syscall(LINUX_OPEN, path as u32, 0, 0, 0, 0);   // O_RDONLY
+    if (fd < 0) { return false; }
+    let ok: bool = true;
+    while (true) {
+        if (!buf_reserve(out, 65536)) { ok = false; break; }
+        let r: i32 = __syscall(LINUX_READ, fd as u32, (out.data as u32) + out.len, 65536, 0, 0);
+        if (r < 0) { ok = false; break; }
+        if (r == 0) { break; }
+        out.len += r as u32;
+    }
+    __syscall(LINUX_CLOSE, fd as u32, 0, 0, 0, 0);
+    return ok;
+}
