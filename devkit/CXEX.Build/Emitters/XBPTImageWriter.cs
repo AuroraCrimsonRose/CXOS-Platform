@@ -128,11 +128,9 @@ public static class XBPTImageWriter
         return;
     }
 
-    /* The XSTG manifest: a 16-byte header, then 48 bytes per file. Version 1
-       is one sector, so at most 10 files; version 2 runs the entries on over
-       as many sectors as they need (CXK install.h allows up to 16), and says
-       how many at offset 8. Version 1 is written whenever it is enough, so an
-       image that fits it reads on a kernel that predates version 2. */
+    /* The XSTG manifest (version 2, CXK install.h): a 16-byte header, then 48
+       bytes per file, running on over as many sectors as they need - up to
+       16 - with the count of sectors at offset 8. */
     public const int XstgEntrySize = 48;
     public const int XstgNameLen = 32;
     public const int XstgMaxSectors = 16;
@@ -147,9 +145,9 @@ public static class XBPTImageWriter
 
         Span<byte> manifest = diskImage.AsSpan((int)(startLba * 512), msecs * 512);
         MemoryPrimitives.WriteU32(manifest, 0, 0x47545358); // "XSTG"
-        MemoryPrimitives.WriteU16(manifest, 4, (ushort)(msecs == 1 ? 1 : 2));
+        MemoryPrimitives.WriteU16(manifest, 4, 2);
         MemoryPrimitives.WriteU16(manifest, 6, (ushort)files.Count);
-        if (msecs > 1) MemoryPrimitives.WriteU16(manifest, 8, (ushort)msecs);
+        MemoryPrimitives.WriteU16(manifest, 8, (ushort)msecs);
 
         int manifestOffset = 16;
         uint currentSectorOffset = (uint)msecs; // data blobs follow the manifest
