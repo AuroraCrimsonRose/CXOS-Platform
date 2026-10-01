@@ -53,7 +53,7 @@ public sealed record DeferStmt(Stmt Body) : Stmt;   // run Body when the enclosi
 
 // ---- expressions ----
 public abstract record Expr : Node;
-public sealed record IntLit(UInt128 Value) : Expr;
+public sealed record IntLit(UInt128 Value) : Expr { public PrimKind? Suffix { get; init; } }   // 1u64: Suffix = U64
 public sealed record StrLit(string Value) : Expr;
 public sealed record SizeofExpr(Expr Operand) : Expr;   // sizeof x -> u32, compile-time   // "..." -> *u8 into .rodata/.data
 public sealed record BoolLit(bool Value) : Expr;

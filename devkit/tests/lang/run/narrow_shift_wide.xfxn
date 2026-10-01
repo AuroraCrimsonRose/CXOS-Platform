@@ -1,0 +1,8 @@
+fn main() -> i32 {
+    let x: u32 = 1;
+    let n: u64 = 4;
+    if ((x << n) != 16) { return 1; }
+    let big: u128 = 3;
+    if ((x << big) != 8) { return 2; }
+    return 0;
+}

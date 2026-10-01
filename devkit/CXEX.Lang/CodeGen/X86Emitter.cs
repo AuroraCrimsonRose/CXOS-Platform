@@ -36,6 +36,30 @@ public sealed class X86Emitter
     private int _wideTempBase = 0;    // frame offset of slot 0
     private int _wideDepth    = 0;    // slots currently in use
 
+    /* ---- values that do not fit in eax, passed and returned BY VALUE ----
+     * The convention is the i386 System V one - what GCC does for C - so X
+     * stays callable from C and C from X:
+     *   - an argument is COPIED onto the stack, its size rounded up to 4;
+     *   - a 64-bit result comes back in edx:eax;
+     *   - a 128-bit or struct result is written through a hidden pointer the
+     *     caller pushes as the FIRST argument; the callee returns that pointer
+     *     in eax and pops it itself (`ret $4`).
+     * Before this, a wide or struct argument pushed its ADDRESS and the callee
+     * read the address's bytes as the value, and a wide or struct result
+     * returned the address of a local in a frame already gone. Both compiled
+     * cleanly and gave wrong answers.
+     *
+     * Each call site whose result is one of these gets its own slot in the
+     * caller's frame to receive it - sized for that type, so a struct of any
+     * size fits - allocated when the frame is laid out. */
+    private Dictionary<CallExpr, int> _callSlots = new();
+    private TypeRef _curReturn = new PrimType(PrimKind.Void);
+    private bool _curSret;
+
+    private bool IsAggregate(TypeRef t) => IsWide(t) || StructOf(t) != null;
+    private bool ReturnsInRegs64(TypeRef t) => IsWide(t) && SizeOf(t) == 8;
+    private bool ReturnsViaPointer(TypeRef t) => StructOf(t) != null || (IsWide(t) && SizeOf(t) > 8);
+
     public X86Emitter(SemaContext ctx, IReadOnlyDictionary<LetStmt, TypeRef> localTypes, DiagnosticBag diag)
     { _ctx = ctx; _localTypes = localTypes; _diag = diag; }
 
@@ -180,9 +204,17 @@ public sealed class X86Emitter
     {
         _frame = new();
         _curFn = f.Name;
-        // params: [ebp+8], [ebp+12], ... (cdecl, all 4-byte slots in v0.1)
-        int poff = 8;
-        foreach (var p in f.Params) { _frame[p.Name] = (poff, p.Type); poff += 4; }
+        _curReturn = f.Return;
+        _curSret = ReturnsViaPointer(f.Return);
+        /* params: [ebp+8] upward, cdecl. A wide or struct parameter occupies
+           its whole size, copied there by the caller; a hidden result pointer,
+           when there is one, comes first. */
+        int poff = _curSret ? 12 : 8;
+        foreach (var p in f.Params)
+        {
+            _frame[p.Name] = (poff, p.Type);
+            poff += IsAggregate(p.Type) ? Align4(SizeOf(p.Type)) : 4;
+        }
         // locals: assign descending offsets; size from sema
         int locals = 0;
         foreach (var l in CollectLocals(f.Body!))
@@ -190,6 +222,15 @@ public sealed class X86Emitter
             var ty = _localTypes.TryGetValue(l, out var t) ? t : new PrimType(PrimKind.I32);
             locals += Align4(SizeOf(ty));
             _frame[l.Name] = (-locals, ty);
+        }
+
+        _callSlots = new();
+        foreach (var c in CallsIn(f.Body!))
+        {
+            var rt = TypeOf(c);
+            if (!IsAggregate(rt) || _callSlots.ContainsKey(c)) continue;
+            locals += Align4(SizeOf(rt));
+            _callSlots[c] = -locals;
         }
 
         /* Reserve the wide-temp pool only for functions that actually use a
@@ -212,7 +253,7 @@ public sealed class X86Emitter
         Lbl(f.Name + "$ret");
         T("mov %ebp, %esp");
         T("pop %ebp");
-        T("ret");
+        T(_curSret ? "ret $4" : "ret");   /* the callee pops the hidden pointer - i386 SysV */
         if (section != null) _text.AppendLine(".text");   // the next function goes back where it belongs
     }
 
@@ -360,28 +401,48 @@ public sealed class X86Emitter
                 if (l.Init != null)
                 {
                     var lty = _localTypes.TryGetValue(l, out var lt0) ? lt0 : new PrimType(PrimKind.I32);
-                    if (IsWide(lty)) EmitWideInit(l.Name, l.Init, lty);
+                    if (IsAggregate(lty)) EmitWideInit(l.Name, l.Init, lty);
                     else { EmitExpr(l.Init); StoreToVar(l.Name); }
                 }
                 break;
             case AssignStmt a: EmitAssign(a); break;
             case ExprStmt e: EmitExpr(e.Expr); break;
             case ReturnStmt r:
-                if (r.Value != null)
+                /* A wide or struct value is at an address, and that address is
+                   usually in this frame - so it is never what gets returned.
+                   The value is moved out NOW, before the defers run (they
+                   might change it, and `return x` returns x as it was) and
+                   before the frame goes: into the caller's slot through the
+                   hidden pointer, or into edx:eax for 64 bits. */
+                if (r.Value != null && ReturnsViaPointer(_curReturn))
                 {
-                    /* A wide value IS an address, and returning one means
-                       returning the address of a temporary or a local in a
-                       frame that is about to be torn down. The caller would
-                       read whatever the next call puts there.
-                       Proper support needs a caller-provided slot, the way a
-                       struct return works. Until then this is a diagnostic:
-                       a dangling pointer that usually happens to work is far
-                       worse than a compile error. */
-                    if (IsWide(TypeOf(r.Value)))
-                        _diag.Error("returning a wide value is not supported yet; " +
-                                    "pass a pointer to the destination instead", r.Span);
-                    EmitExpr(r.Value);
+                    int saved = _wideDepth;
+                    if (IsWide(_curReturn)) EmitWideOperand(r.Value, _curReturn); else EmitExpr(r.Value);
+                    SaveIdx();
+                    T("mov %eax, %esi");
+                    T("mov 8(%ebp), %edi");          // the hidden pointer
+                    CopyBytes(Align4(SizeOf(_curReturn)));
+                    RestoreIdx();
+                    _wideDepth = saved;
+                    if (AnyDefers()) EmitDefers(0);
+                    T("mov 8(%ebp), %eax");          // returned, as C expects
+                    T($"jmp {CurFnRet}");
+                    break;
                 }
+                if (r.Value != null && ReturnsInRegs64(_curReturn))
+                {
+                    int saved = _wideDepth;
+                    EmitWideOperand(r.Value, _curReturn);
+                    T("pushl 4(%eax)");
+                    T("pushl (%eax)");
+                    _wideDepth = saved;
+                    if (AnyDefers()) EmitDefers(0);
+                    T("pop %eax");
+                    T("pop %edx");
+                    T($"jmp {CurFnRet}");
+                    break;
+                }
+                if (r.Value != null) EmitExpr(r.Value);
                 /* The value is computed BEFORE the defers run - `return x`
                    returns x as it was at the return, even if a defer then
                    changes x - and eax is saved around them because running
@@ -450,7 +511,9 @@ public sealed class X86Emitter
     private void EmitWideInit(string name, Expr init, TypeRef wt)
     {
         int saved = _wideDepth;
-        EmitWideOperand(init, wt);          // source address -> eax
+        /* A struct is at an address too, and was stored as one: `let q: pt =
+           make();` put the ADDRESS of the result in q's first word. Same copy. */
+        if (IsWide(wt)) EmitWideOperand(init, wt); else EmitExpr(init);   // source address -> eax
         SaveIdx();
         T("mov %eax, %esi");
         T($"lea {_frame[name].off}(%ebp), %edi");
@@ -721,7 +784,12 @@ public sealed class X86Emitter
             (IsCompare(b.Op) && (IsWide(TypeOf(b.Left)) || IsWide(TypeOf(b.Right)))))
         { EmitWideBinary(b); return; }
 
-        EmitExpr(b.Right); T("push %eax");
+        EmitExpr(b.Right);
+        /* A shift is the one narrow operation whose right operand may be wide
+           (its result takes the LEFT width). A wide value is its address, so
+           without this the address's low bits became the count. */
+        if (b.Op is BinOp.Shl or BinOp.Shr && IsWide(TypeOf(b.Right))) T("mov (%eax), %eax");
+        T("push %eax");
         EmitExpr(b.Left); T("pop %ecx");   // left in eax, right in ecx
         switch (b.Op)
         {
@@ -880,8 +948,12 @@ public sealed class X86Emitter
         {
             EmitExpr(src);                       // narrow value -> eax
             T($"mov %eax, {slot}(%ebp)");
-            if (IsSigned(wt)) T("sar $31, %eax");   // replicate the sign bit
-            else              T("xor %eax, %eax");
+            /* Extended by the SOURCE's signedness, as C does and as `as`
+               already did. Using the destination's made `let w: i64 = u` with
+               u = 0xFFFFFFFF come out -1, and an i32 -1 widened into a u64
+               came out 0x00000000FFFFFFFF. */
+            if (IsSigned(TypeOf(src))) T("sar $31, %eax");   // replicate the sign bit
+            else                       T("xor %eax, %eax");
             for (int o = 4; o < n; o += 4) T($"mov %eax, {slot + o}(%ebp)");
         }
         T($"lea {slot}(%ebp), %eax");
@@ -943,20 +1015,27 @@ public sealed class X86Emitter
         T("pop %ebx");
     }
 
-    /* Shift by a constant. shld/shrd do the across-limb part in one
-     * instruction each: shld pulls in the top bits of the neighbour below,
-     * shrd the bottom bits of the neighbour above.
+    /* Shift by a constant amount, or by a variable one.
      *
-     * A VARIABLE shift is deliberately not emitted. It needs a loop, and a
-     * loop whose trip count depends on the operand is a timing signal - the
-     * same reason the comparison here would be unsafe on secret data. Anything
-     * that wants one can shift in a loop it wrote itself and can see.
+     * A constant amount is range-checked at compile time - shifting a u64 by
+     * 64 written as a literal is a mistake worth stopping. A VARIABLE amount
+     * is taken modulo the width, which is what x86 already does for X's 32-bit
+     * shifts: one rule for every width.
+     *
+     * The variable shift is a barrel shifter with no branches and no loop on
+     * the amount: one stage per bit of it (6 for 64-bit, 7 for 128-bit), each
+     * a constant shift by 2^k followed by a masked select that keeps or
+     * discards it. The same instructions run whatever the amount is, so
+     * shifting a secret by a secret does not show up in the timing - the
+     * reason this used to be refused rather than written as a loop.
      */
     private void EmitWideShift(BinaryExpr b, int words, bool left, bool signed)
     {
-        if (!new ConstFold(_ctx, _diag).TryEval(b.Right, out var amt))
+        /* A probe, so its own diagnostics go nowhere: "not a constant" is the
+           answer being asked for here, not an error. */
+        if (!new ConstFold(_ctx, new DiagnosticBag()).TryEval(b.Right, out var amt))
         {
-            _diag.Error("a wide shift needs a constant amount", b.Span);
+            EmitWideVarShift(b, words, left, signed);
             return;
         }
         /* Range-checked before narrowing, because the fold is 128 bits wide and
@@ -974,46 +1053,97 @@ public sealed class X86Emitter
             _diag.Error($"shift of {bits} is outside 0..{total - 1} for this width", b.Span);
             return;
         }
+        EmitConstShift("%esi", "%edx", words, bits, left, signed);
+    }
 
+    /* `dst` = `src` shifted by a constant `bits`. shld/shrd do the across-limb
+       part in one instruction each: shld pulls in the top bits of the
+       neighbour below, shrd the bottom bits of the neighbour above. eax and
+       ecx are the only scratch registers, so `src` and `dst` may be any of the
+       others. */
+    private void EmitConstShift(string src, string dst, int words, int bits, bool left, bool signed)
+    {
         int wordShift = bits / 32, bitShift = bits % 32;
 
         if (left)
         {
             for (int k = words - 1; k >= 0; k--)
             {
-                int src = k - wordShift;
-                if (src < 0) { T($"movl $0, {k * 4}(%edx)"); continue; }
-                T($"mov {src * 4}(%esi), %eax");
+                int from = k - wordShift;
+                if (from < 0) { T($"movl $0, {k * 4}({dst})"); continue; }
+                T($"mov {from * 4}({src}), %eax");
                 if (bitShift != 0)
                 {
-                    if (src - 1 >= 0) { T($"mov {(src - 1) * 4}(%esi), %ecx"); T($"shld ${bitShift}, %ecx, %eax"); }
+                    if (from - 1 >= 0) { T($"mov {(from - 1) * 4}({src}), %ecx"); T($"shld ${bitShift}, %ecx, %eax"); }
                     else T($"shl ${bitShift}, %eax");
                 }
-                T($"mov %eax, {k * 4}(%edx)");
+                T($"mov %eax, {k * 4}({dst})");
             }
         }
         else
         {
             for (int k = 0; k < words; k++)
             {
-                int src = k + wordShift;
-                if (src >= words)
+                int from = k + wordShift;
+                if (from >= words)
                 {
                     /* Past the top: zero for a logical shift, the sign bit
                        repeated for an arithmetic one. */
-                    if (signed) { T($"mov {(words - 1) * 4}(%esi), %eax"); T("sar $31, %eax"); T($"mov %eax, {k * 4}(%edx)"); }
-                    else T($"movl $0, {k * 4}(%edx)");
+                    if (signed) { T($"mov {(words - 1) * 4}({src}), %eax"); T("sar $31, %eax"); T($"mov %eax, {k * 4}({dst})"); }
+                    else T($"movl $0, {k * 4}({dst})");
                     continue;
                 }
-                T($"mov {src * 4}(%esi), %eax");
+                T($"mov {from * 4}({src}), %eax");
                 if (bitShift != 0)
                 {
-                    if (src + 1 < words) { T($"mov {(src + 1) * 4}(%esi), %ecx"); T($"shrd ${bitShift}, %ecx, %eax"); }
+                    if (from + 1 < words) { T($"mov {(from + 1) * 4}({src}), %ecx"); T($"shrd ${bitShift}, %ecx, %eax"); }
                     else T(signed ? $"sar ${bitShift}, %eax" : $"shr ${bitShift}, %eax");
                 }
-                T($"mov %eax, {k * 4}(%edx)");
+                T($"mov %eax, {k * 4}({dst})");
             }
         }
+    }
+
+    /* On entry, as for every wide binary operation: esi = &value, edi = &amount
+       (widened like any operand; only its low word matters), edx = &result.
+       The result slot is worked on in place, with one more slot holding each
+       stage's shifted candidate. */
+    private void EmitWideVarShift(BinaryExpr b, int words, bool left, bool signed)
+    {
+        int tmp = TakeWideSlot();
+        if (tmp == int.MinValue) { _diag.Error("wide expression nested too deeply; split it into steps", b.Span); return; }
+        int width = words * 32;
+
+        T("push %ebx");
+        T("mov (%edi), %ebx");
+        T($"and ${width - 1}, %ebx");              // amount mod width
+        for (int i = 0; i < words; i++) { T($"mov {i * 4}(%esi), %eax"); T($"mov %eax, {i * 4}(%edx)"); }
+        T("mov %edx, %esi");                       // esi = &result, shifted in place
+        T($"lea {tmp}(%ebp), %edi");               // edi = &candidate
+
+        for (int k = 0; (1 << k) < width; k++)
+        {
+            EmitConstShift("%esi", "%edi", words, 1 << k, left, signed);
+            /* mask = all ones if bit k of the amount is set, else zero - and
+               result ^= (result ^ candidate) & mask keeps one or the other
+               without a branch. */
+            T("mov %ebx, %edx");
+            if (k > 0) T($"shr ${k}, %edx");
+            T("and $1, %edx");
+            T("neg %edx");
+            for (int i = 0; i < words; i++)
+            {
+                T($"mov {i * 4}(%esi), %eax");
+                T($"mov {i * 4}(%edi), %ecx");
+                T("xor %eax, %ecx");
+                T("and %edx, %ecx");
+                T("xor %ecx, %eax");
+                T($"mov %eax, {i * 4}(%esi)");
+            }
+        }
+
+        T("mov %esi, %edx");                       // the caller expects &result in edx
+        T("pop %ebx");
     }
 
     private void EmitWideBitwise(string op, int words)
@@ -1301,8 +1431,26 @@ public sealed class X86Emitter
     private void EmitCall(CallExpr c)
     {
         if (c.Callee is NameExpr { Name: "__syscall" }) { EmitSyscall(c); return; }
+        var ptypes = ParamTypesOf(c);
+        var rt = TypeOf(c);
         // cdecl: push args right-to-left
-        for (int i = c.Args.Count - 1; i >= 0; i--) { EmitExpr(c.Args[i]); T("push %eax"); }
+        int argBytes = 0;
+        for (int i = c.Args.Count - 1; i >= 0; i--)
+        {
+            var pt = i < ptypes.Count ? ptypes[i] : TypeOf(c.Args[i]);
+            if (!IsAggregate(pt)) { EmitExpr(c.Args[i]); T("push %eax"); argBytes += 4; continue; }
+
+            /* Copied onto the stack, top word first, so the value lands in
+               ascending order - exactly what a C caller would have pushed. */
+            int saved = _wideDepth;
+            if (IsWide(pt)) EmitWideOperand(c.Args[i], pt); else EmitExpr(c.Args[i]);
+            int size = Align4(SizeOf(pt));
+            for (int o = size - 4; o >= 0; o -= 4) T($"pushl {o}(%eax)");
+            argBytes += size;
+            _wideDepth = saved;
+        }
+        bool sret = ReturnsViaPointer(rt) && _callSlots.ContainsKey(c);
+        if (sret) { T($"lea {_callSlots[c]}(%ebp), %eax"); T("push %eax"); }
         /* Only a name that resolves to a FUNCTION is a direct call. A local or global
            holding a function pointer is also a NameExpr, and emitting `call <name>`
            for it calls a symbol that does not exist - it has to go through the value. */
@@ -1310,7 +1458,70 @@ public sealed class X86Emitter
             && _ctx.Resolved.TryGetValue(nm, out var csym)
             && csym.Kind == SymKind.Function) T($"call {nm.Name}");
         else { EmitExpr(c.Callee); T("call *%eax"); }
-        if (c.Args.Count > 0) T($"add ${c.Args.Count * 4}, %esp");
+        if (argBytes > 0) T($"add ${argBytes}, %esp");   // not the hidden pointer: the callee popped it
+
+        if (sret) T($"lea {_callSlots[c]}(%ebp), %eax");
+        else if (ReturnsInRegs64(rt) && _callSlots.TryGetValue(c, out var slot))
+        {
+            T($"mov %eax, {slot}(%ebp)");
+            T($"mov %edx, {slot + 4}(%ebp)");
+            T($"lea {slot}(%ebp), %eax");    // a wide value is its address, here as everywhere
+        }
+    }
+
+    /* The declared parameter types of whatever is being called, so an
+       argument is passed at the parameter's width - a literal handed to a u64
+       parameter is pushed as 64 bits, not 32. */
+    private List<TypeRef> ParamTypesOf(CallExpr c)
+    {
+        if (c.Callee is NameExpr nm && _ctx.Resolved.TryGetValue(nm, out var sym) && sym.Decl is FnDecl fn)
+            return fn.Params.Select(p => p.Type).ToList();
+        if (_ctx.Expand(TypeOf(c.Callee)) is FuncType ft) return ft.Params;
+        return new List<TypeRef>();
+    }
+
+    /* Every call in a function body, for laying out result slots. Mirrors the
+       statement walkers above; an expression that is never evaluated (the
+       operand of sizeof) contributes nothing. */
+    private IEnumerable<CallExpr> CallsIn(Stmt s)
+    {
+        switch (s)
+        {
+            case Block b: foreach (var x in b.Stmts) foreach (var c in CallsIn(x)) yield return c; break;
+            case LetStmt l when l.Init != null: foreach (var c in CallsIn(l.Init)) yield return c; break;
+            case AssignStmt a:
+                foreach (var c in CallsIn(a.Target)) yield return c;
+                foreach (var c in CallsIn(a.Value)) yield return c; break;
+            case IfStmt i:
+                foreach (var c in CallsIn(i.Cond)) yield return c;
+                foreach (var c in CallsIn(i.Then)) yield return c;
+                if (i.Else != null) foreach (var c in CallsIn(i.Else)) yield return c; break;
+            case WhileStmt w:
+                foreach (var c in CallsIn(w.Cond)) yield return c;
+                foreach (var c in CallsIn(w.Body)) yield return c; break;
+            case ReturnStmt r when r.Value != null: foreach (var c in CallsIn(r.Value)) yield return c; break;
+            case ExprStmt e: foreach (var c in CallsIn(e.Expr)) yield return c; break;
+            case DeferStmt d: foreach (var c in CallsIn(d.Body)) yield return c; break;
+        }
+    }
+    private IEnumerable<CallExpr> CallsIn(Expr e)
+    {
+        switch (e)
+        {
+            case CallExpr c:
+                yield return c;
+                foreach (var x in CallsIn(c.Callee)) yield return x;
+                foreach (var a in c.Args) foreach (var x in CallsIn(a)) yield return x; break;
+            case BinaryExpr b:
+                foreach (var x in CallsIn(b.Left)) yield return x;
+                foreach (var x in CallsIn(b.Right)) yield return x; break;
+            case UnaryExpr u: foreach (var x in CallsIn(u.Operand)) yield return x; break;
+            case MemberExpr m: foreach (var x in CallsIn(m.Target)) yield return x; break;
+            case IndexExpr ix:
+                foreach (var x in CallsIn(ix.Target)) yield return x;
+                foreach (var x in CallsIn(ix.Index)) yield return x; break;
+            case CastExpr ce: foreach (var x in CallsIn(ce.Operand)) yield return x; break;
+        }
     }
 
     // __syscall(n, a1..a5) -> eax=n, ebx,ecx,edx,esi,edi = a1..a5 ; int $0x80

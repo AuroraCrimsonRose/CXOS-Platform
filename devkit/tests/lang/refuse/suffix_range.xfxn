@@ -1,0 +1,9 @@
+fn main() -> i32 {
+    let a: u8 = 256u8;
+    let b: i8 = 128i8;
+    let c: i8 = -129i8;
+    let e: u32 = 5u64;
+    let f: u128 = 1 << 100;
+    let ok: i8 = -128i8;
+    return 0;
+}
