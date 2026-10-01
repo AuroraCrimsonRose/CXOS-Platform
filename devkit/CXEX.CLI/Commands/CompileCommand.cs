@@ -112,11 +112,12 @@ public class CompileCommand : Command<CompileCommand.Settings>
 
         if (diag.HasErrors)
         {
+            /* Plain lines, not Spectre markup: Spectre wraps at the console
+               width, which is 80 when the output is a build log, and split an
+               error message across lines where neither an editor nor a log
+               search could find it whole. */
             foreach (var d in diag.Items)
-            {
-                var color = d.Severity == Severity.Error ? "red" : "yellow";
-                AnsiConsole.MarkupLine($"[grey]{Markup.Escape(d.Span.ToString())}:[/] [{color}]{d.Severity.ToString().ToLowerInvariant()}:[/] {Markup.Escape(d.Message)}");
-            }
+                Console.WriteLine($"{d.Span}: {d.Severity.ToString().ToLowerInvariant()}: {d.Message}");
             AnsiConsole.MarkupLine($"[red]compilation failed[/] ({CountErrors(diag)} error(s))");
             return 1;
         }
@@ -133,10 +134,7 @@ public class CompileCommand : Command<CompileCommand.Settings>
         if (diag.HasErrors)
         {
             foreach (var d in diag.Items)
-            {
-                if (d.Severity != Severity.Error) continue;
-                AnsiConsole.MarkupLine($"[grey]{Markup.Escape(d.Span.ToString())}:[/] [red]error:[/] {Markup.Escape(d.Message)}");
-            }
+                if (d.Severity == Severity.Error) Console.WriteLine($"{d.Span}: error: {d.Message}");
             AnsiConsole.MarkupLine($"[red]compilation failed[/] ({CountErrors(diag)} error(s))");
             return 1;
         }

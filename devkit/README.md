@@ -172,7 +172,7 @@ dotnet build CXEX.Studio.slnx
 ### Tests
 
 ```
-python3 tests/lang/run.py        # the X language: programs that must run, programs that must be refused, C <-> X interop
+python3 tests/lang/run.py        # the X language: programs that must run, programs that must be refused, C <-> X interop, std/buf
 python3 tests/xdata/difftest.py  # the DevKit's X Data reader against CXK's, document by document
 ```
 

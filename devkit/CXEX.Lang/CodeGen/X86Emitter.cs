@@ -21,6 +21,9 @@ public sealed class X86Emitter
     private readonly StringBuilder _text = new();
     private readonly StringBuilder _data = new();
     private readonly StringBuilder _bss  = new();
+    /* String bytes have their own section of output: a string interned while a
+       global table is being laid out would otherwise land in the middle of it. */
+    private readonly StringBuilder _strs = new();
     private int _label;
 
     // current function frame: name -> (ebp offset, type)
@@ -52,7 +55,8 @@ public sealed class X86Emitter
      * Each call site whose result is one of these gets its own slot in the
      * caller's frame to receive it - sized for that type, so a struct of any
      * size fits - allocated when the frame is laid out. */
-    private Dictionary<CallExpr, int> _callSlots = new();
+    private Dictionary<Expr, int> _callSlots = new();
+    private Dictionary<SwitchStmt, int> _switchSlots = new();   // call results AND record/array literals
     private TypeRef _curReturn = new PrimType(PrimKind.Void);
     private bool _curSret;
 
@@ -61,7 +65,7 @@ public sealed class X86Emitter
     private bool ReturnsViaPointer(TypeRef t) => StructOf(t) != null || (IsWide(t) && SizeOf(t) > 8);
 
     public X86Emitter(SemaContext ctx, IReadOnlyDictionary<LetStmt, TypeRef> localTypes, DiagnosticBag diag)
-    { _ctx = ctx; _localTypes = localTypes; _diag = diag; }
+    { _ctx = ctx; _localTypes = localTypes; _diag = diag; _ctx.ExpandEnums = true; }   // see SemaContext.ExpandEnums
 
     private string NL() => $".L{_label++}";
 
@@ -74,8 +78,8 @@ public sealed class X86Emitter
         if (_strings.TryGetValue(value, out var lbl)) return lbl;
         lbl = $".Lstr{_strings.Count}";
         _strings[value] = lbl;
-        _data.AppendLine($"{lbl}:");
-        _data.AppendLine($"    .byte {BytesOf(value)}");
+        _strs.AppendLine($"{lbl}:");
+        _strs.AppendLine($"    .byte {BytesOf(value)}");
         return lbl;
     }
 
@@ -118,7 +122,7 @@ public sealed class X86Emitter
                 EmitGlobal(g);
             }
         }
-        return _text + "\n" + _data + "\n" + _bss;
+        return _text + "\n" + _data + "\n.data\n" + _strs + "\n" + _bss;
     }
 
     // ---- type sizes / struct layout (v0.1: every field 4-aligned, matches ABI structs) ----
@@ -142,8 +146,10 @@ public sealed class X86Emitter
     private void LoadFrom(TypeRef t)
     {
         /* A wide value is not loaded - eax already holds its address and that
-           IS the value's representation, exactly as it is for a struct. */
-        if (IsWide(t)) return;
+           IS the value's representation. The same goes for a struct or an
+           array, which this used to load the first WORD of: `f(r.p)` with p a
+           struct field passed four bytes of p as if they were its address. */
+        if (IsWide(t) || StructOf(t) != null || _ctx.Expand(t) is ArrayType) return;
         switch (SizeOf(t))
         {
             case 1: T(IsSigned(t) ? "movsbl (%eax), %eax" : "movzbl (%eax), %eax"); break;
@@ -224,11 +230,20 @@ public sealed class X86Emitter
             _frame[l.Name] = (-locals, ty);
         }
 
+        /* One word per switch, holding its subject - the value, or for a sum
+           type its address - so the subject is evaluated exactly once. */
+        _switchSlots = new();
+        foreach (var sw in SwitchesIn(f.Body!)) { locals += 4; _switchSlots[sw] = -locals; }
+
+        /* A frame slot for each expression that produces a value at an address
+           and has nowhere else to put it: a call returning a wide value or a
+           struct, and a record or array literal. One per site, sized to it. */
         _callSlots = new();
         foreach (var c in CallsIn(f.Body!))
         {
             var rt = TypeOf(c);
-            if (!IsAggregate(rt) || _callSlots.ContainsKey(c)) continue;
+            bool needs = c is StructLit || c is ArrayLit || c is MemberExpr || IsAggregate(rt);
+            if (!needs || _callSlots.ContainsKey(c)) continue;
             locals += Align4(SizeOf(rt));
             _callSlots[c] = -locals;
         }
@@ -284,6 +299,13 @@ public sealed class X86Emitter
             // a `let` inside a deferred block still needs a frame slot, and the
             // frame is sized before any statement is emitted
             case DeferStmt d: foreach (var x in LocalsIn(d.Body)) yield return x; break;
+            case SwitchStmt sw:
+                foreach (var c in sw.Cases)
+                {
+                    if (c.BindLet != null) yield return c.BindLet;
+                    foreach (var x in CollectLocals(c.Body)) yield return x;
+                }
+                if (sw.Else != null) foreach (var x in CollectLocals(sw.Else)) yield return x; break;
         }
     }
 
@@ -303,6 +325,20 @@ public sealed class X86Emitter
     private void EmitGlobal(GlobalDecl g)
     {
         int size = Align4(SizeOf(g.Type));
+
+        /* A literal, a string or a function name is laid out as data, piece by
+           piece: what a keyword table or a dispatch table is made of. */
+        if (g.Init is StructLit or ArrayLit or StrLit || IsFunctionName(g.Init))
+        {
+            var sec = SectionOf(g);
+            if (sec != null) _data.AppendLine($".section {sec},\"aw\",@progbits");
+            _data.AppendLine("    .align 4");
+            _data.AppendLine($"{g.Name}:");
+            EmitData(g.Type, g.Init!);
+            if (size > SizeOf(g.Type)) _data.AppendLine($"    .zero {size - SizeOf(g.Type)}");
+            if (sec != null) _data.AppendLine(".data");
+            return;
+        }
         UInt128 init = UInt128.Zero;
         if (g.Init != null) new ConstFold(_ctx, _diag).TryEval(g.Init, out init);
 
@@ -401,7 +437,7 @@ public sealed class X86Emitter
                 if (l.Init != null)
                 {
                     var lty = _localTypes.TryGetValue(l, out var lt0) ? lt0 : new PrimType(PrimKind.I32);
-                    if (IsAggregate(lty)) EmitWideInit(l.Name, l.Init, lty);
+                    if (IsCopied(lty)) EmitWideInit(l.Name, l.Init, lty);
                     else { EmitExpr(l.Init); StoreToVar(l.Name); }
                 }
                 break;
@@ -458,6 +494,7 @@ public sealed class X86Emitter
             case DeferStmt d:
                 if (_defers.Count > 0) _defers[^1].Add(d.Body);
                 break;
+            case SwitchStmt sw: EmitSwitch(sw); break;
             case IfStmt i:
                 {
                     string els = NL(), end = NL();
@@ -517,9 +554,191 @@ public sealed class X86Emitter
         SaveIdx();
         T("mov %eax, %esi");
         T($"lea {_frame[name].off}(%ebp), %edi");
-        CopyBytes(SizeOf(wt));
+        CopyBytesExact(SizeOf(wt));
         RestoreIdx();
         _wideDepth = saved;
+    }
+
+    /* ---- record and array literals ----
+     * Built in the literal's own frame slot, field by field, and the slot's
+     * address is the value - the same as any struct. The places that take a
+     * struct (a let, an assignment, an argument, a return) then copy it. */
+    private void EmitStructLit(StructLit sl)
+    {
+        int slot = _callSlots[sl];
+        /* Enum.variant { ... }: the tag, then the fields at their offsets in
+           the variant's payload, which starts after the 4-byte tag. */
+        if (sl.TypeName is MemberExpr vm && _ctx.EnumRefs.TryGetValue(vm, out var er))
+        {
+            var en = er.Enum;
+            int size = SizeOf(new NamedType(en.Name));
+            T($"movl ${er.Index}, {slot}(%ebp)");
+            for (int o = 4; o < size; o += 4) T($"movl $0, {slot + o}(%ebp)");
+            if (_ctx.Structs.TryGetValue(SemaContext.PayloadName(en.Name, en.Variants[er.Index].Name), out var pd))
+                foreach (var fi in sl.Fields)
+                {
+                    var decl = pd.Fields.Find(f => f.Name == fi.Name);
+                    if (decl != null) EmitStoreAt(slot + 4 + FieldOffset(pd, fi.Name), decl.Type, fi.Value);
+                }
+            T($"lea {slot}(%ebp), %eax");
+            return;
+        }
+        var sd = StructOf(TypeOf(sl));
+        if (sd != null)
+            foreach (var fi in sl.Fields)
+            {
+                var decl = sd.Fields.Find(f => f.Name == fi.Name);
+                if (decl != null) EmitStoreAt(slot + FieldOffset(sd, fi.Name), decl.Type, fi.Value);
+            }
+        T($"lea {slot}(%ebp), %eax");
+    }
+
+    private void EmitArrayLit(ArrayLit al)
+    {
+        int slot = _callSlots[al];
+        if (_ctx.Expand(TypeOf(al)) is ArrayType at)
+        {
+            int es = SizeOf(at.Element);
+            for (int i = 0; i < al.Items.Count; i++) EmitStoreAt(slot + i * es, at.Element, al.Items[i]);
+        }
+        T($"lea {slot}(%ebp), %eax");
+    }
+
+    /* `color.red` is its value. A sum type's field-less variant is a whole sum
+       value - the tag, and a zeroed payload so copies are deterministic - built
+       in its own slot like any literal. */
+    private void EmitVariant(MemberExpr m, EnumDecl ed, int index)
+    {
+        new ConstFold(_ctx, _diag).TryEnumValue(ed, index, out var v);
+        if (!ed.IsSum) { T($"mov ${(uint)v}, %eax"); return; }
+        int slot = _callSlots[m];
+        int size = SizeOf(new NamedType(ed.Name));
+        T($"movl ${index}, {slot}(%ebp)");
+        for (int o = 4; o < size; o += 4) T($"movl $0, {slot + o}(%ebp)");
+        T($"lea {slot}(%ebp), %eax");
+    }
+
+    /* Store `v` as a `t` at frame offset `off`. */
+    private void EmitStoreAt(int off, TypeRef t, Expr v)
+    {
+        int saved = _wideDepth;
+        if (IsWide(t)) { EmitWideOperand(v, t); CopyToFrame(off, SizeOf(t)); }
+        else if (IsCopied(t)) { EmitExpr(v); CopyToFrame(off, SizeOf(t)); }
+        else { EmitExpr(v); T("mov %eax, %ecx"); T($"lea {off}(%ebp), %eax"); StoreTo(t); }
+        _wideDepth = saved;
+    }
+
+    private void CopyToFrame(int off, int bytes)
+    {
+        SaveIdx();
+        T("mov %eax, %esi");
+        T($"lea {off}(%ebp), %edi");
+        CopyBytesExact(bytes);
+        RestoreIdx();
+    }
+
+    /* A value that is its address and is copied by bytes: wide, struct, array. */
+    private bool IsCopied(TypeRef t) => IsAggregate(t) || _ctx.Expand(t) is ArrayType;
+
+    /* Like CopyBytes, but exact for any length: a [3]u8 is three bytes, and
+       copying a fourth would overwrite whatever follows it. */
+    private void CopyBytesExact(int bytes)
+    {
+        int o = 0;
+        for (; o + 4 <= bytes; o += 4) { T($"mov {o}(%esi), %eax"); T($"mov %eax, {o}(%edi)"); }
+        for (; o < bytes; o++) { T($"movb {o}(%esi), %al"); T($"movb %al, {o}(%edi)"); }
+    }
+
+    private bool IsFunctionName(Expr? e) =>
+        e is NameExpr n && _ctx.Resolved.TryGetValue(n, out var s) && s.Kind == SymKind.Function;
+
+    /* Exactly SizeOf(t) bytes of static data for `e`. */
+    private void EmitData(TypeRef t, Expr e)
+    {
+        var x = _ctx.Expand(t);
+        if (e is StructLit sl && StructOf(x) is StructDecl sd)
+        {
+            int pos = 0;
+            foreach (var f in sd.Fields)
+            {
+                int off = FieldOffset(sd, f.Name);
+                if (off > pos) _data.AppendLine($"    .zero {off - pos}");
+                var fi = sl.Fields.Find(v => v.Name == f.Name);
+                if (fi != null) EmitData(f.Type, fi.Value); else _data.AppendLine($"    .zero {SizeOf(f.Type)}");
+                pos = off + SizeOf(f.Type);
+            }
+            if (StructSize(sd) > pos) _data.AppendLine($"    .zero {StructSize(sd) - pos}");
+            return;
+        }
+        if (e is ArrayLit al && x is ArrayType at)
+        {
+            foreach (var i in al.Items) EmitData(at.Element, i);
+            int missing = at.Length - al.Items.Count;
+            if (missing > 0) _data.AppendLine($"    .zero {missing * SizeOf(at.Element)}");
+            return;
+        }
+        if (e is StrLit s) { _data.AppendLine($"    .long {InternString(s.Value)}"); return; }
+        if (IsFunctionName(e)) { _data.AppendLine($"    .long {((NameExpr)e).Name}"); return; }
+
+        new ConstFold(_ctx, _diag).TryEval(e, out var v);
+        int n = SizeOf(x);
+        var bytes = new List<string>();
+        for (int i = 0; i < n; i++) bytes.Add((i < 16 ? (byte)(v >> (i * 8)) : (byte)0).ToString());
+        _data.AppendLine($"    .byte {string.Join(", ", bytes)}");
+    }
+
+    /* A compare-and-jump chain on the saved subject, then the bodies. No
+       fallthrough: every body ends by jumping past the rest. For a sum type
+       the subject is an address and the comparison is on the tag at it; a
+       binding gets the address of the payload, 4 bytes in. */
+    private void EmitSwitch(SwitchStmt sw)
+    {
+        int slot = _switchSlots[sw];
+        var st = TypeOf(sw.Subject);
+        bool sum = _ctx.Expand(st) is NamedType sn && _ctx.Enums.TryGetValue(sn.Name, out var se) && se.IsSum;
+
+        int saved = _wideDepth;
+        EmitExpr(sw.Subject);
+        _wideDepth = saved;
+        T($"mov %eax, {slot}(%ebp)");
+
+        string end = NL(), els = sw.Else != null ? NL() : end;
+        var bodies = new List<string>();
+        var fold = new ConstFold(_ctx, _diag);
+        foreach (var c in sw.Cases)
+        {
+            string lbl = NL();
+            bodies.Add(lbl);
+            foreach (var l in c.Labels)
+            {
+                UInt128 v;
+                if (l is MemberExpr lm && _ctx.EnumRefs.TryGetValue(lm, out var er))
+                {
+                    if (sum) v = (UInt128)er.Index; else fold.TryEnumValue(er.Enum, er.Index, out v);
+                }
+                else if (!fold.TryEval(l, out v)) continue;
+                if (sum) { T($"mov {slot}(%ebp), %eax"); T($"cmpl ${(uint)v}, (%eax)"); }
+                else T($"cmpl ${(uint)v}, {slot}(%ebp)");
+                T($"je {lbl}");
+            }
+        }
+        T($"jmp {els}");
+
+        for (int i = 0; i < sw.Cases.Count; i++)
+        {
+            var c = sw.Cases[i];
+            Lbl(bodies[i]);
+            if (c.BindLet != null && _frame.TryGetValue(c.BindLet.Name, out var b))
+            {
+                T($"mov {slot}(%ebp), %eax");
+                T("add $4, %eax");
+                T($"mov %eax, {b.off}(%ebp)");
+            }
+            EmitBlock(c.Body);
+            T($"jmp {end}");
+        }
+        if (sw.Else != null) { Lbl(els); EmitBlock(sw.Else); }
+        Lbl(end);
     }
 
     private void EmitAssign(AssignStmt a)
@@ -543,9 +762,10 @@ public sealed class X86Emitter
             return;
         }
 
-        /* A wide value - or a struct - is at an address, so assigning it is a
-           copy of its bytes rather than a register store. */
-        if (IsWide(tt) || StructOf(tt) != null)
+        /* A wide value, a struct or an array is at an address, so assigning it
+           is a copy of its bytes rather than a register store. (An array used
+           to take the register path and store its ADDRESS into the target.) */
+        if (IsWide(tt) || StructOf(tt) != null || _ctx.Expand(tt) is ArrayType)
         {
             EmitExpr(a.Value);       // source ADDRESS -> eax
             T("push %eax");
@@ -553,7 +773,7 @@ public sealed class X86Emitter
             SaveIdx();
             T("mov %eax, %edi");
             T("mov 8(%esp), %esi");  // the pushed source, now under two saves
-            CopyBytes(SizeOf(tt));
+            CopyBytesExact(SizeOf(tt));
             RestoreIdx();
             T("add $4, %esp");       // drop the pushed source
             return;
@@ -591,6 +811,9 @@ public sealed class X86Emitter
             case UnaryExpr u: EmitUnary(u); break;
             case CallExpr c: EmitCall(c); break;
             case CastExpr c: EmitCast(c); break;
+            case StructLit sl: EmitStructLit(sl); break;
+            case ArrayLit al: EmitArrayLit(al); break;
+            case MemberExpr em when _ctx.EnumRefs.TryGetValue(em, out var er): EmitVariant(em, er.Enum, er.Index); break;
             case MemberExpr or IndexExpr: EmitAddr(e); LoadFrom(TypeOf(e)); break; // load value at field/elem (sized)
             default: T("xor %eax, %eax"); break;
         }
@@ -654,7 +877,16 @@ public sealed class X86Emitter
                     if (es != 1) T($"imul ${es}, %eax"); T("pop %ecx"); T("add %ecx, %eax");
                     break;
                 }
-            default: T("xor %eax, %eax"); break;
+            /* A value that IS an address - a call returning a struct or a wide
+               value, a literal - is its own address, so `make().y` reads the
+               field from the call's result slot. This used to produce a NULL
+               address with no diagnostic; anything else still has no address
+               and now says so. */
+            default:
+                if (IsCopied(TypeOf(e))) { EmitExpr(e); break; }
+                _diag.Error("this expression has no address", e.Span);
+                T("xor %eax, %eax");
+                break;
         }
     }
 
@@ -694,8 +926,24 @@ public sealed class X86Emitter
             return;
         }
 
-        if (IsWide(from)) { EmitExpr(c.Operand); T("mov (%eax), %eax"); return; }  // low word
-        EmitExpr(c.Operand);                      // narrow -> narrow: reinterpret
+        if (IsWide(from)) { EmitExpr(c.Operand); T("mov (%eax), %eax"); WrapTo(to); return; }  // low word
+        EmitExpr(c.Operand);
+        WrapTo(to);   // narrow -> narrower: the value is cut down HERE, not only when stored
+    }
+
+    /* Wrap the value in eax to an 8 or 16-bit type, zero- or sign-extending it
+       back to 32 bits. A register holds 32, so without this `(x as u8) == 44`
+       compared 300 with 44, and `b + 1` on a u8 of 255 was 256 until the next
+       store - although the spec says arithmetic wraps. The store truncated, so
+       it looked right whenever the value went straight into a variable. */
+    private void WrapTo(TypeRef t)
+    {
+        if (_ctx.Expand(t) is not PrimType p || p.Kind == PrimKind.Bool) return;
+        switch (PrimWidth.Bytes(p.Kind))
+        {
+            case 1: T(PrimWidth.IsSigned(p.Kind) ? "movsbl %al, %eax" : "movzbl %al, %eax"); break;
+            case 2: T(PrimWidth.IsSigned(p.Kind) ? "movswl %ax, %eax" : "movzwl %ax, %eax"); break;
+        }
     }
 
     private void EmitUnary(UnaryExpr u)
@@ -705,9 +953,9 @@ public sealed class X86Emitter
 
         switch (u.Op)
         {
-            case UnOp.Neg: EmitExpr(u.Operand); T("neg %eax"); break;
+            case UnOp.Neg: EmitExpr(u.Operand); T("neg %eax"); WrapTo(ut); break;
             case UnOp.Not: EmitExpr(u.Operand); T("test %eax, %eax"); T("sete %al"); T("movzbl %al, %eax"); break;
-            case UnOp.BitNot: EmitExpr(u.Operand); T("not %eax"); break;
+            case UnOp.BitNot: EmitExpr(u.Operand); T("not %eax"); WrapTo(ut); break;
             case UnOp.Deref: EmitExpr(u.Operand); LoadFrom(TypeOf(u)); break;   // sized
             case UnOp.AddrOf: EmitAddr(u.Operand); break;
         }
@@ -830,6 +1078,7 @@ public sealed class X86Emitter
             case BinOp.Gt: Cmp(UnsignedCompare(b) ? "seta"  : "setg");  break;
             case BinOp.Ge: Cmp(UnsignedCompare(b) ? "setae" : "setge"); break;
         }
+        if (!IsCompare(b.Op)) WrapTo(TypeOf(b));   // u8/u16/i8/i16 arithmetic wraps at its width
     }
 
     private bool UnsignedCompare(BinaryExpr b) => IsUnsignedWord(TypeOf(b.Left)) || IsUnsignedWord(TypeOf(b.Right));
@@ -1483,7 +1732,24 @@ public sealed class X86Emitter
     /* Every call in a function body, for laying out result slots. Mirrors the
        statement walkers above; an expression that is never evaluated (the
        operand of sizeof) contributes nothing. */
-    private IEnumerable<CallExpr> CallsIn(Stmt s)
+    private IEnumerable<SwitchStmt> SwitchesIn(Stmt s)
+    {
+        switch (s)
+        {
+            case Block b: foreach (var x in b.Stmts) foreach (var w in SwitchesIn(x)) yield return w; break;
+            case IfStmt i:
+                foreach (var w in SwitchesIn(i.Then)) yield return w;
+                if (i.Else != null) foreach (var w in SwitchesIn(i.Else)) yield return w; break;
+            case WhileStmt wh: foreach (var w in SwitchesIn(wh.Body)) yield return w; break;
+            case DeferStmt d: foreach (var w in SwitchesIn(d.Body)) yield return w; break;
+            case SwitchStmt sw:
+                yield return sw;
+                foreach (var c in sw.Cases) foreach (var w in SwitchesIn(c.Body)) yield return w;
+                if (sw.Else != null) foreach (var w in SwitchesIn(sw.Else)) yield return w; break;
+        }
+    }
+
+    private IEnumerable<Expr> CallsIn(Stmt s)
     {
         switch (s)
         {
@@ -1502,12 +1768,22 @@ public sealed class X86Emitter
             case ReturnStmt r when r.Value != null: foreach (var c in CallsIn(r.Value)) yield return c; break;
             case ExprStmt e: foreach (var c in CallsIn(e.Expr)) yield return c; break;
             case DeferStmt d: foreach (var c in CallsIn(d.Body)) yield return c; break;
+            case SwitchStmt sw:
+                foreach (var c in CallsIn(sw.Subject)) yield return c;
+                foreach (var cs in sw.Cases) foreach (var c in CallsIn(cs.Body)) yield return c;   // not the labels: they are not evaluated
+                if (sw.Else != null) foreach (var c in CallsIn(sw.Else)) yield return c; break;
         }
     }
-    private IEnumerable<CallExpr> CallsIn(Expr e)
+    private IEnumerable<Expr> CallsIn(Expr e)
     {
         switch (e)
         {
+            case StructLit sl:
+                yield return sl;
+                foreach (var f in sl.Fields) foreach (var x in CallsIn(f.Value)) yield return x; break;
+            case ArrayLit al:
+                yield return al;
+                foreach (var i in al.Items) foreach (var x in CallsIn(i)) yield return x; break;
             case CallExpr c:
                 yield return c;
                 foreach (var x in CallsIn(c.Callee)) yield return x;
@@ -1516,6 +1792,9 @@ public sealed class X86Emitter
                 foreach (var x in CallsIn(b.Left)) yield return x;
                 foreach (var x in CallsIn(b.Right)) yield return x; break;
             case UnaryExpr u: foreach (var x in CallsIn(u.Operand)) yield return x; break;
+            case MemberExpr m when _ctx.EnumRefs.TryGetValue(m, out var er):
+                if (er.Enum.IsSum) yield return m;   // a whole sum value, built in a slot
+                break;
             case MemberExpr m: foreach (var x in CallsIn(m.Target)) yield return x; break;
             case IndexExpr ix:
                 foreach (var x in CallsIn(ix.Target)) yield return x;
