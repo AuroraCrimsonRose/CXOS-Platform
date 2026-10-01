@@ -4,14 +4,14 @@
         {
             "label": "Build CXOS",
             "type": "shell",
-            "command": "${workspaceFolder}/tools/build.bat",
+            "command": "${workspaceFolder}/tools/cxk.exe os build",
             "group": { "kind": "build", "isDefault": true },
             "problemMatcher": []
         },
         {
             "label": "Build CXOS (development: runs unsigned programs)",
             "type": "shell",
-            "command": "${workspaceFolder}/tools/build.bat dev",
+            "command": "${workspaceFolder}/tools/cxk.exe os build --dev",
             "group": "build",
             "problemMatcher": []
         },

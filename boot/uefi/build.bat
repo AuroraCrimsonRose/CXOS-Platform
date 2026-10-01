@@ -4,14 +4,16 @@ REM /boot/uefi/build.bat
 REM Aurora Tejeda / CATX SYSTEMS LLC
 REM
 REM Builds the UEFI boot stub with MSVC. Run from an x64 Native Tools / Developer
-REM Command Prompt - the same shell tools\build.bat already needs for nmake.
+REM Command Prompt. This is now the ONLY part of the repository that needs MSVC:
+REM the OS build moved to clang + ld.lld + Ninja (HARDENING_PLAN D5) and runs in
+REM a plain shell. This stub follows with `cxk uefi build` (clang + lld-link).
 REM
 REM No new toolchain: link.exe produces UEFI applications natively via
 REM /SUBSYSTEM:EFI_APPLICATION. This is how EDK2 builds on Windows.
 REM
-REM The i686-elf cross compiler CANNOT build this and is not supposed to: the
-REM kernel is 32-bit ELF, a UEFI application is 64-bit PE32+. Different targets,
-REM separate artifacts.
+REM The kernel's cross target (clang --target=i686-elf) CANNOT build this, and is
+REM not supposed to: the kernel is 32-bit ELF, a UEFI application is 64-bit PE32+.
+REM Different targets, separate artifacts.
 REM
 REM   /GS-       no stack cookies (there is no CRT to provide them)
 REM   /Gs32768   effectively disables stack probes; firmware interrupts share

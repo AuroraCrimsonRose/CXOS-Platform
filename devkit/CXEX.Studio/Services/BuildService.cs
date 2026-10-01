@@ -14,7 +14,7 @@ namespace CXEX.Studio.Services;
 /// The Studio's build orchestrator. Packaging/layout run IN-PROCESS through the
 /// CXEX.Build library (ElfParser -> CXEXLayoutEngine -> CXEXWriter, and the disk
 /// writer) - no subprocess, no reimplementation. Toolchain + emulator steps
-/// (gcc/nasm/cmake/qemu) run through RunAsync, which streams every output line to
+/// (clang/nasm/cmake/qemu) run through RunAsync, which streams every output line to
 /// a log callback so the GUI shows live output. This is the front-end over the
 /// libraries that replaces the batch/ps1 scripts.
 /// </summary>
@@ -65,7 +65,7 @@ public sealed class BuildService
     }
 
     /// <summary>
-    /// Run an external tool (gcc/nasm/cmake/qemu), streaming stdout+stderr lines to
+    /// Run an external tool (clang/nasm/cmake/qemu), streaming stdout+stderr lines to
     /// `log` as they arrive. Returns the exit code; -1 if the process failed to start.
     /// Cancelable: cancellation kills the process.
     /// </summary>

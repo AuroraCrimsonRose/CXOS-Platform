@@ -18,7 +18,7 @@ namespace CXEX.CLI.Commands;
 /// <summary>
 /// Compiles an X source file (.x) to an ELF, ready for `cxk build` to package as
 /// CXEX. Pipeline: [abi.x prelude] + source -> Lexer -> Parser -> Resolver ->
-/// TypeChecker -> X86Emitter (-> .s) -> i686-elf-gcc assemble -> link @0x400000.
+/// TypeChecker -> X86Emitter (-> .s) -> clang assemble -> ld.lld link @0x400000.
 /// </summary>
 public class CompileCommand : Command<CompileCommand.Settings>
 {
@@ -105,7 +105,7 @@ public class CompileCommand : Command<CompileCommand.Settings>
         // 4a. an object stops at assembly: whatever links it supplies the rest
         if (s.Object)
         {
-            if (!Wrappers.GccTool.Compile(asmPath, s.Output))
+            if (!Wrappers.ClangTool.Compile(asmPath, s.Output))
             {
                 AnsiConsole.MarkupLine("[red]error:[/] assembling the emitted .s failed");
                 return 1;
@@ -117,14 +117,14 @@ public class CompileCommand : Command<CompileCommand.Settings>
 
         // 4. assemble + link via the cross toolchain
         string objPath = Path.ChangeExtension(s.Output, ".o");
-        if (!Wrappers.GccTool.Compile(asmPath, objPath))
+        if (!Wrappers.ClangTool.Compile(asmPath, objPath))
         {
             AnsiConsole.MarkupLine("[red]error:[/] assembling the emitted .s failed");
             return 1;
         }
 
         string ld = s.LinkerScript ?? WriteDefaultScript(s.Output);
-        if (!Wrappers.GccTool.Link(new[] { objPath }, s.Output, ld))
+        if (!Wrappers.ClangTool.Link(new[] { objPath }, s.Output, ld))
         {
             AnsiConsole.MarkupLine("[red]error:[/] linking failed");
             return 1;
@@ -166,7 +166,7 @@ public class CompileCommand : Command<CompileCommand.Settings>
             "\n" +
             "    /* Orphan sections MUST be discarded, not left to ld's placement\n" +
             "       heuristics. A toolchain that emits anything this script does not\n" +
-            "       name - a build-id note is the common one, since gcc configured\n" +
+            "       name - a build-id note is the common one, since a linker configured\n" +
             "       with --enable-linker-build-id adds .note.gnu.build-id by default -\n" +
             "       gets it placed at 0x00400000 ahead of .text. That displaces the\n" +
             "       entry point, and because the orphan is also folded into a segment,\n" +

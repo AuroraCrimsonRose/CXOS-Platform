@@ -5,8 +5,8 @@
   "type": "Kernel",
   "targetArch": "i686",
   "toolchain": {
-    "gcc": "i686-elf-gcc",
-    "ld": "i686-elf-ld",
+    "clang": "clang",
+    "ld": "ld.lld",
     "nasm": "nasm",
     "cMake": "cmake",
     "qemu": "qemu-system-i386",

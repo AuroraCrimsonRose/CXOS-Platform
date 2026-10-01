@@ -107,7 +107,7 @@ for b in range(0, N, 200):
     base = xf[:-5]
     if os.path.exists(base + ".s"): os.remove(base + ".s")
     r = subprocess.run([CXK, "compile", xf, base + ".elf", "--no-prelude", "--emit-asm", "-I", STD], capture_output=True, text=True, cwd=REPO)
-    # compile exits nonzero when i686-elf-gcc is absent and it cannot assemble; only the
+    # compile exits nonzero when clang is absent and it cannot assemble; only the
     # emitted .s matters here, which is linked natively below
     if "emitted" not in r.stdout: sys.exit("X compile failed: " + r.stdout + r.stderr)
     s = open(base + ".s").read().replace(".globl _start", ".globl main", 1)

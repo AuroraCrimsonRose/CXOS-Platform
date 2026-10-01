@@ -35,7 +35,7 @@
  * graphics mode is live).
  *
  * NOTE: this flag must agree with the bootloader. The real source of truth for
- * a CMake build is cmake/cxk_flags.cmake, which passes -D to BOTH gcc and nasm;
+ * a CMake build is cmake/cxk_flags.cmake, which passes -D to BOTH clang and nasm;
  * the #define here is only the fallback when no -D is supplied.
  */
 #ifndef CXK_ENABLE_FB
