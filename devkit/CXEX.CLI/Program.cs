@@ -53,6 +53,9 @@ app.Configure(config =>
     config.AddCommand<TokensCommand>("tokens")
         .WithDescription("Prints the tokens of X source files (compared against the lexer written in X).");
 
+    config.AddCommand<AstCommand>("ast")
+        .WithDescription("Prints the syntax trees of X source files (compared against the parser written in X).");
+
     config.AddCommand<CheckXDataCommand>("check-xdata")
         .WithDescription("Validates X Data documents (service descriptors), with the same rules as the X reader.");
 
