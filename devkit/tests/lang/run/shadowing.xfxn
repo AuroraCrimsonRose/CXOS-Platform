@@ -1,0 +1,44 @@
+// A name declared again in an inner block is a different variable. The
+// emitter kept one frame slot per NAME, so every use of `x` reached the last
+// `let x` declared anywhere in the function - and two locals of one name but
+// different sizes read each other's bytes.
+
+fn shadow() -> u32 {
+    let x: u32 = 1;
+    { let x: u32 = 2; }
+    return x;
+}
+
+fn sizes(k: u32) -> u32 {
+    if (k == 0) {
+        let v: u128 = 5;
+        if (v <= 7) { return 1; }
+        return 2;
+    }
+    let v: u32 = 9;
+    return v;
+}
+
+fn param_shadow(n: u32) -> u32 {
+    { let n: u64 = 70000000000; if (n != 70000000000) { return 0; } }
+    return n;
+}
+
+fn in_switch(k: u32) -> u32 {
+    let r: u32 = 0;
+    switch (k) {
+        case 1 { let r: u64 = 5; if (r != 5) { return 99; } }
+        else { r = 7; }
+    }
+    return r;
+}
+
+fn main() -> i32 {
+    if (shadow() != 1) { return 1; }
+    if (sizes(0) != 1) { return 2; }
+    if (sizes(1) != 9) { return 3; }
+    if (param_shadow(4) != 4) { return 4; }
+    if (in_switch(1) != 0) { return 5; }
+    if (in_switch(2) != 7) { return 6; }
+    return 0;
+}
