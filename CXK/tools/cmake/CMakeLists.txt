@@ -246,6 +246,25 @@ set(SUPERVISOR_XCEX ${PACKAGES_DIR}/supervisor.xsex)
 set(TOKDUMP_SRC  ${SRC_DIR}/os/xc/tokdump.xfxn)
 set(TOKDUMP_ELF  ${BUILD_DIR}/tokdump.elf)
 set(TOKDUMP_XUEX ${PACKAGES_DIR}/tokdump.xuex)
+# astdump, the same for its parser: `run +disk astdump -s /Shared/Source/parse.xfxn`.
+set(ASTDUMP_SRC  ${SRC_DIR}/os/xc/astdump.xfxn)
+set(ASTDUMP_ELF  ${BUILD_DIR}/astdump.elf)
+set(ASTDUMP_XUEX ${PACKAGES_DIR}/astdump.xuex)
+# semadump, the same for its type checker: staged with the compiler's own
+# sources and the prelude, so
+# `run +disk semadump -s --prelude /Shared/Source/prelude.xfxn /Shared/Source/sema.xfxn`
+# type checks the type checker on CXK.
+set(SEMADUMP_SRC  ${SRC_DIR}/os/xc/semadump.xfxn)
+set(SEMADUMP_ELF  ${BUILD_DIR}/semadump.elf)
+set(SEMADUMP_XUEX ${PACKAGES_DIR}/semadump.xuex)
+set(PRELUDE_XFXN  ${BUILD_DIR}/prelude.xfxn)   # what `cxk compile` puts in front of a program
+# xc, the X compiler written in X: X source to assembly. Staged with all of
+# its own source - the CXK platform file as xc_sys.xfxn - so that, in
+# /Shared/Source, `run +disk xc --prelude prelude.xfxn xc.xfxn` compiles the
+# compiler on CXK: the same assembly, byte for byte, as on the build machine.
+set(XC_SRC  ${SRC_DIR}/os/xc/xc.xfxn)
+set(XC_ELF  ${BUILD_DIR}/xc.elf)
+set(XC_XUEX ${PACKAGES_DIR}/xc.xuex)
 
 # Everything APP_BOOT can pull in with `import`, so editing any of it actually
 # rebuilds. This variable was referenced by the compile rule below but never
@@ -426,7 +445,7 @@ add_custom_command(
     COMMENT "Packaging supervisor.xsex (CXEX, type system, staged to disk)"
 )
 
-# ---- tokdump: the X compiler's lexer, on CXK (staged + signed, like the disk app) ----
+# ---- tokdump, astdump, semadump: the X compiler's front end, on CXK (staged + signed, like the disk app) ----
 file(GLOB XC_SRCS CONFIGURE_DEPENDS ${SRC_DIR}/os/xc/*.xfxn ${SRC_DIR}/os/xc/cxk/*.xfxn)
 add_custom_command(
     OUTPUT ${TOKDUMP_ELF}
@@ -442,6 +461,57 @@ add_custom_command(
     ${TSIGN}
     DEPENDS ${TOKDUMP_ELF} ${CXK}
     COMMENT "Packaging tokdump.xuex (CXEX, type user, staged to disk)"
+)
+add_custom_command(
+    OUTPUT ${ASTDUMP_ELF}
+    COMMAND ${CXK} compile ${ASTDUMP_SRC} ${ASTDUMP_ELF}
+            -I ${SRC_DIR}/os/xc/cxk -I ${SRC_DIR}/os/xc -I ${SRC_DIR}/os/std
+    DEPENDS ${XC_SRCS} ${CXK} ${STD_SRCS}
+    COMMENT "X   astdump.xfxn -> ELF"
+)
+add_custom_command(
+    OUTPUT ${ASTDUMP_XUEX}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${PACKAGES_DIR}
+    COMMAND ${CXK} build ${ASTDUMP_ELF} ${ASTDUMP_XUEX} --type user
+    ${PSIGN}
+    DEPENDS ${ASTDUMP_ELF} ${CXK}
+    COMMENT "Packaging astdump.xuex (CXEX, type user, staged to disk)"
+)
+add_custom_command(
+    OUTPUT ${XC_ELF}
+    COMMAND ${CXK} compile ${XC_SRC} ${XC_ELF}
+            -I ${SRC_DIR}/os/xc/cxk -I ${SRC_DIR}/os/xc -I ${SRC_DIR}/os/std
+    DEPENDS ${XC_SRCS} ${CXK} ${STD_SRCS}
+    COMMENT "X   xc.xfxn -> ELF"
+)
+add_custom_command(
+    OUTPUT ${XC_XUEX}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${PACKAGES_DIR}
+    COMMAND ${CXK} build ${XC_ELF} ${XC_XUEX} --type user
+    ${CSIGN}
+    DEPENDS ${XC_ELF} ${CXK}
+    COMMENT "Packaging xc.xuex (CXEX, type user, staged to disk)"
+)
+add_custom_command(
+    OUTPUT ${PRELUDE_XFXN}
+    COMMAND ${CXK} prelude ${PRELUDE_XFXN}
+    DEPENDS ${CXK}
+    COMMENT "X   prelude -> prelude.xfxn"
+)
+add_custom_command(
+    OUTPUT ${SEMADUMP_ELF}
+    COMMAND ${CXK} compile ${SEMADUMP_SRC} ${SEMADUMP_ELF}
+            -I ${SRC_DIR}/os/xc/cxk -I ${SRC_DIR}/os/xc -I ${SRC_DIR}/os/std
+    DEPENDS ${XC_SRCS} ${CXK} ${STD_SRCS}
+    COMMENT "X   semadump.xfxn -> ELF"
+)
+add_custom_command(
+    OUTPUT ${SEMADUMP_XUEX}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${PACKAGES_DIR}
+    COMMAND ${CXK} build ${SEMADUMP_ELF} ${SEMADUMP_XUEX} --type user
+    ${MSIGN}
+    DEPENDS ${SEMADUMP_ELF} ${CXK}
+    COMMENT "Packaging semadump.xuex (CXEX, type user, staged to disk)"
 )
 
 # ---- executive.c -> executive.elf (user-half) -> executive.xoex (signed) ----
@@ -503,13 +573,34 @@ add_custom_command(
             --stage Shared/Programs/${DISK_APP_NAME}.xuex=${DISK_APP_XCEX}
             --stage System/Programs/supervisor.xsex=${SUPERVISOR_XCEX}
             --stage Shared/Programs/tokdump.xuex=${TOKDUMP_XUEX}
+            --stage Shared/Programs/astdump.xuex=${ASTDUMP_XUEX}
+            --stage Shared/Programs/semadump.xuex=${SEMADUMP_XUEX}
+            --stage Shared/Programs/xc.xuex=${XC_XUEX}
+            --stage Shared/Source/xc.xfxn=${SRC_DIR}/os/xc/xc.xfxn
+            --stage Shared/Source/front.xfxn=${SRC_DIR}/os/xc/front.xfxn
+            --stage Shared/Source/emit.xfxn=${SRC_DIR}/os/xc/emit.xfxn
+            --stage Shared/Source/dumputil.xfxn=${SRC_DIR}/os/xc/dumputil.xfxn
+            --stage Shared/Source/xc_sys.xfxn=${SRC_DIR}/os/xc/cxk/xc_sys.xfxn
+            --stage Shared/Source/io.xfxn=${SRC_DIR}/os/std/io.xfxn
+            --stage Shared/Source/file.xfxn=${SRC_DIR}/os/std/file.xfxn
+            --stage Shared/Source/string.xfxn=${SRC_DIR}/os/std/string.xfxn
             --stage Shared/Source/lex.xfxn=${SRC_DIR}/os/xc/lex.xfxn
+            --stage Shared/Source/parse.xfxn=${SRC_DIR}/os/xc/parse.xfxn
+            --stage Shared/Source/diag.xfxn=${SRC_DIR}/os/xc/diag.xfxn
+            --stage Shared/Source/map.xfxn=${SRC_DIR}/os/xc/map.xfxn
+            --stage Shared/Source/sema.xfxn=${SRC_DIR}/os/xc/sema.xfxn
+            --stage Shared/Source/buf.xfxn=${SRC_DIR}/os/std/buf.xfxn
+            --stage Shared/Source/heap.xfxn=${SRC_DIR}/os/std/heap.xfxn
+            --stage Shared/Source/mem.xfxn=${SRC_DIR}/os/std/mem.xfxn
+            --stage Shared/Source/prelude.xfxn=${PRELUDE_XFXN}
             --stage System/Services/hello.xosv=${SRC_DIR}/os/services/hello.xosv
             --stage System/Services/disabled.xosv=${SRC_DIR}/os/services/disabled.xosv
             --stage System/Services/heartbeat.xosv=${SRC_DIR}/os/services/heartbeat.xosv
             --stage System/Config/kernel.xkco=${KERNEL_XKCO}
     DEPENDS ${BOOT_BIN} ${STAGE2_BIN} ${KERNEL_XKEX} ${EXEC_XOEX} ${DISK_APP_XCEX}
-            ${SUPERVISOR_XCEX} ${TOKDUMP_XUEX} ${SRC_DIR}/os/xc/lex.xfxn
+            ${SUPERVISOR_XCEX} ${TOKDUMP_XUEX} ${ASTDUMP_XUEX} ${SEMADUMP_XUEX} ${XC_XUEX}
+            ${XC_SRCS} ${SRC_DIR}/os/std/buf.xfxn ${SRC_DIR}/os/std/heap.xfxn
+            ${SRC_DIR}/os/std/mem.xfxn ${PRELUDE_XFXN} ${STD_SRCS}
             ${SERVICE_XOSV} ${KERNEL_XKCO} ${CXK}
     COMMENT "Building unified CXK disk (XBPT: boot + stage + system)"
 )

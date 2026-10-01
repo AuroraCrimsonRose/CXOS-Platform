@@ -36,3 +36,35 @@ fn read_file(path: *u8, out: *buf) -> bool {
     file_close(h);
     return ok;
 }
+
+// Is there a FILE at this path? A directory is not one, as for C#'s File.Exists.
+fn xc_exists(path: *u8) -> bool {
+    let st: file_stat;
+    return stat(path, &st) == 0 && st.kind == FTYPE_FILE;
+}
+
+// The working directory, appended to `out`.
+fn xc_cwd(out: *buf) -> bool {
+    if (!buf_reserve(out, 256)) { return false; }
+    let n: i32 = getcwd(&out.data[out.len], 256);
+    if (n < 0) { return false; }
+    out.len += n as u32;
+    return true;
+}
+
+// A whole file written from p[0..n], replacing any it had. False on failure.
+fn write_file(path: *u8, p: *u8, n: u32) -> bool { return file_dump(path, p, n) == n as i32; }
+
+// A file written in pieces: created (replacing any), written to, closed.
+fn xc_create(path: *u8) -> i32 { return file_create(path); }
+fn xc_write(h: i32, p: *u8, n: u32) -> bool {
+    let done: u32 = 0;
+    while (done < n) {
+        let w: i32 = file_write(h, &p[done], n - done);
+        if (w <= 0) { return false; }
+        done += w as u32;
+    }
+    return true;
+}
+fn xc_close(h: i32) -> void { file_close(h); }
+fn xc_remove(path: *u8) -> void { unlink(path); }

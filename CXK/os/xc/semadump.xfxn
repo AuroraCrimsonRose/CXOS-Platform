@@ -1,0 +1,218 @@
+// xc/semadump.xfxn - print what the X front end concludes about programs.
+// Aurora Tejeda / CATX SYSTEMS LLC
+//
+//   semadump [-s] [--prelude FILE | --no-prelude] [-I DIR]... [--std DIR] PROGRAM...
+//
+// The same format as `cxk sema` in CX_DEVKIT, so the type checker written in
+// X can be compared with the C# one. Each PROGRAM is analysed on its own, with
+// everything it imports. Per program:
+//
+//   == path
+//   error file:line:col message        every diagnostic, in the order reported
+//   checked yes|no                     whether type checking ran
+//   Kind file:line:col type            every expression, in tree order, with its type
+//   Let file:line:col "name" type      every local, with the type it was given
+//
+// A type is written out in full - fn(*u8, u32) -> bool - and `-` is none.
+// -s prints a line per program instead: the error count and an FNV-1a hash
+// of everything after the `==` line.
+//
+// The prelude is the file `cxk prelude` prints; without one (and without
+// --no-prelude) programs are analysed with none, which `cxk sema --no-prelude`
+// matches.
+
+import "xc_sys.xfxn";
+import "front.xfxn";
+import "dumputil.xfxn";
+
+struct dumper { f: *front, out: *buf }
+
+fn fnode(d: *dumper, n: u32) -> *node { return node_at(&d.f.p, n); }
+
+// A type, written out in full.
+fn show(d: *dumper, t: u32) -> void {
+    let x: *node = fnode(d, t);
+    switch (x.kind) {
+        case nk.t_prim { buf_str(d.out, prim_names[x.op]); }
+        case nk.t_ptr { buf_push(d.out, '*'); buf_str(d.out, space_words[x.op]); show(d, x.a); }
+        case nk.t_array { buf_push(d.out, '['); buf_u128(d.out, x.value); buf_push(d.out, ']'); show(d, x.a); }
+        case nk.t_named { buf_append(d.out, &d.f.p.text.data[x.text], x.tlen); }
+        case nk.t_fn {
+            buf_str(d.out, "fn(");
+            let i: u32 = 0;
+            while (i < fnode(d, t).count) {
+                if (i > 0) { buf_str(d.out, ", "); }
+                show(d, list_at(&d.f.p, fnode(d, t).list, i));
+                i += 1;
+            }
+            buf_str(d.out, ") -> ");
+            show(d, fnode(d, t).a);
+        }
+        else { buf_push(d.out, '?'); }
+    }
+}
+
+fn at(d: *dumper, kind: *u8, n: u32) -> void {
+    let x: *node = fnode(d, n);
+    buf_str(d.out, kind);
+    buf_push(d.out, ' ');
+    let sf: *srcfile = file_at(d.f, x.file);
+    buf_append(d.out, &d.f.strs.data[sf.name], sf.nlen);
+    buf_push(d.out, ':');
+    buf_u32(d.out, x.line);
+    buf_push(d.out, ':');
+    buf_u32(d.out, x.col);
+}
+
+fn typ(d: *dumper, t: u32) -> void {
+    buf_push(d.out, ' ');
+    if (t == 0) { buf_push(d.out, '-'); } else { show(d, t); }
+    buf_push(d.out, '\n');
+}
+
+fn local(d: *dumper, l: u32) -> void {
+    at(d, "Let", l);
+    buf_push(d.out, ' ');
+    let x: *node = fnode(d, l);
+    put_escaped(d.out, &d.f.p.text.data[x.text], x.tlen, true);
+    typ(d, st_get(&d.f.s.localty, l));
+}
+
+
+fn expr_name(k: nk) -> *u8 {
+    switch (k) {
+        case nk.e_int { return "IntLit"; }          case nk.e_str { return "StrLit"; }
+        case nk.e_sizeof { return "SizeofExpr"; }   case nk.e_bool { return "BoolLit"; }
+        case nk.e_name { return "NameExpr"; }       case nk.e_call { return "CallExpr"; }
+        case nk.e_member { return "MemberExpr"; }   case nk.e_index { return "IndexExpr"; }
+        case nk.e_unary { return "UnaryExpr"; }     case nk.e_binary { return "BinaryExpr"; }
+        case nk.e_cast { return "CastExpr"; }       case nk.e_struct_lit { return "StructLit"; }
+        case nk.e_array_lit { return "ArrayLit"; }
+        else { return "?"; }
+    }
+    return "?";
+}
+
+fn kids(d: *dumper, n: u32) -> void {
+    let i: u32 = 0;
+    while (i < fnode(d, n).count) { expr(d, list_at(&d.f.p, fnode(d, n).list, i)); i += 1; }
+}
+
+fn expr(d: *dumper, e: u32) -> void {
+    let k: nk = fnode(d, e).kind;
+    at(d, expr_name(k), e);
+    typ(d, st_get(&d.f.s.types, e));
+    let x: *node = fnode(d, e);
+    switch (k) {
+        case nk.e_call { expr(d, x.a); kids(d, e); }
+        case nk.e_member, nk.e_unary, nk.e_cast, nk.e_sizeof { expr(d, x.a); }
+        case nk.e_index, nk.e_binary { expr(d, x.a); expr(d, fnode(d, e).b); }
+        case nk.e_struct_lit {
+            expr(d, x.a);
+            let i: u32 = 0;
+            while (i < fnode(d, e).count) { expr(d, fnode(d, list_at(&d.f.p, fnode(d, e).list, i)).a); i += 1; }
+        }
+        case nk.e_array_lit { kids(d, e); }
+        else { }
+    }
+}
+
+fn stmt(d: *dumper, s: u32) -> void {
+    let x: *node = fnode(d, s);
+    switch (x.kind) {
+        case nk.s_block {
+            let i: u32 = 0;
+            while (i < fnode(d, s).count) { stmt(d, list_at(&d.f.p, fnode(d, s).list, i)); i += 1; }
+        }
+        case nk.s_let { if (x.b != 0) { expr(d, x.b); } local(d, s); }
+        case nk.s_assign { expr(d, x.a); expr(d, fnode(d, s).b); }
+        case nk.s_if { expr(d, x.a); stmt(d, fnode(d, s).b); if (fnode(d, s).c != 0) { stmt(d, fnode(d, s).c); } }
+        case nk.s_while { expr(d, x.a); stmt(d, fnode(d, s).b); }
+        case nk.s_return { if (x.a != 0) { expr(d, x.a); } }
+        case nk.s_expr { expr(d, x.a); }
+        case nk.s_defer { stmt(d, x.a); }
+        case nk.s_switch {
+            expr(d, x.a);
+            let i: u32 = 0;
+            while (i < fnode(d, s).count) {
+                let c: u32 = list_at(&d.f.p, fnode(d, s).list, i);
+                let j: u32 = 0;
+                while (j < fnode(d, c).count) { expr(d, list_at(&d.f.p, fnode(d, c).list, j)); j += 1; }
+                if (fnode(d, c).op == 1) { local(d, c); }
+                stmt(d, fnode(d, c).a);
+                i += 1;
+            }
+            if (fnode(d, s).b != 0) { stmt(d, fnode(d, s).b); }
+        }
+        else { }
+    }
+}
+
+fn decl(d: *dumper, n: u32) -> void {
+    let i: u32 = 0;
+    while (i < fnode(d, n).nattrs) {
+        let a: u32 = list_at(&d.f.p, fnode(d, n).attrs, i);
+        let j: u32 = 0;
+        while (j < fnode(d, a).count) { expr(d, fnode(d, list_at(&d.f.p, fnode(d, a).list, j)).a); j += 1; }
+        i += 1;
+    }
+    let x: *node = fnode(d, n);
+    switch (x.kind) {
+        case nk.d_fn { if (x.b != 0) { stmt(d, x.b); } }
+        case nk.d_global { if (x.b != 0) { expr(d, x.b); } }
+        case nk.d_const { expr(d, x.b); }
+        case nk.d_enum {
+            let v: u32 = 0;
+            while (v < fnode(d, n).count) {
+                let vn: u32 = list_at(&d.f.p, fnode(d, n).list, v);
+                if (fnode(d, vn).a != 0) { expr(d, fnode(d, vn).a); }
+                v += 1;
+            }
+        }
+        else { }
+    }
+}
+
+fn dump(f: *front, out: *buf) -> void {
+    dump_diags(f, out);
+    if (f.checked) { buf_str(out, "checked yes\n"); } else { buf_str(out, "checked no\n"); }
+    if (!f.checked) { return; }
+    let dm: dumper = dumper { f: f, out: out };
+    let i: u32 = 0;
+    while (i < f.decls.len) { decl(&dm, f.decls.items[i]); i += 1; }
+}
+
+fn xc_main() -> i32 {
+    let o: opts;
+    if (!parse_opts(&o)) { return 1; }
+    if (o.first == 0) { return 0; }
+    let out: buf = buf_new();
+    let i: u32 = o.first;
+    while (i < xc_argc()) {
+        let path: *u8 = xc_arg(i);
+        let f: front;
+        if (!analyze_with(&o, &f, path)) { err_str("semadump: out of memory, or a file could not be read\n"); return 2; }
+        let d: buf = buf_new();
+        dump(&f, &d);
+        if (o.sum) {
+            buf_str(&out, path);
+            buf_str(&out, ": ");
+            buf_u32(&out, dg_count(&f.dg));
+            buf_str(&out, " errors, ");
+            buf_u32(&out, f.decls.len);
+            buf_str(&out, " decls, fnv1a ");
+            buf_hex32(&out, fnv1a(d.data, d.len));
+            buf_push(&out, '\n');
+        } else {
+            buf_str(&out, "== ");
+            buf_str(&out, path);
+            buf_push(&out, '\n');
+            buf_append(&out, d.data, d.len);
+        }
+        buf_free(&d);
+        out_buf(&out);
+        buf_clear(&out);
+        i += 1;
+    }
+    return 0;
+}

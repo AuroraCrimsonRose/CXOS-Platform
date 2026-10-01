@@ -1,0 +1,1113 @@
+// xc/parse.xfxn - the X parser, written in X.
+// Aurora Tejeda / CATX SYSTEMS LLC
+//
+//   import "parse.xfxn";
+//
+//   let dg: diags = diags_new();
+//   let p: parser;
+//   parse_init(&p, &dg);
+//   let u: u32 = parse_file(&p, &lx, file);   // 0: out of memory
+//
+// One parser can take many files - a program and everything it imports - into
+// one tree, each node remembering which file it came from.
+//
+// Step two of stage 4 (docs/CX_X_CORE_LANG.md section 10): a line-for-line
+// port of the C# parser in CX_DEVKIT (CXEX.Lang/Parsing/Parser.cs) - the same
+// grammar, the same precedence, the same recovery after an error and the same
+// messages, at the same line and column. It is held to that one the way the
+// lexer is held to its: both print every tree they build (`cxk ast` and
+// astdump), over every X source there is and thousands of mutated ones, and
+// the outputs must be identical.
+//
+// ---- the tree ----
+//
+// Every node is one `node`, kept in one growable array and named by its index
+// there; index 0 is no node. What a node's fields mean depends on its kind:
+//
+//   unit           list: declarations
+//   d_import       text: the path
+//   d_fn           text: name; list: params; a: return type; b: body (0 = extern)
+//   d_struct       text: name; list: fields (params)
+//   d_alias        text: name; a: type
+//   d_global       text: name; a: type; b: initializer (0 = none)
+//   d_const        text: name; a: type; b: value
+//   d_enum         text: name; a: backing type (0 = none); list: variants
+//   variant        text: name; op: 1 if it has a field list; list: fields; a: value
+//   attr           text: name; list: args
+//   attr_arg       op: 1 if named, text: the name; a: value
+//   param          text: name; a: type
+//   s_block        list: statements
+//   s_let          text: name; a: type; b: initializer (either may be 0)
+//   s_assign       op: 1 if compound (`x += v` is x = x + v); a: target; b: value
+//   s_if           a: condition; b: then; c: else (0 = none)
+//   s_while        a: condition; b: body
+//   s_return       a: value (0 = none)
+//   s_expr         a: the expression
+//   s_defer        a: the statement
+//   s_switch       a: subject; list: cases; b: else (0 = none)
+//   s_case         op: 1 if it binds, text: the name; list: labels; a: body
+//   e_int          value; op: suffix, as the lexer's (0 none, SFX_CHAR 'c')
+//   e_str          text: the decoded bytes
+//   e_bool         op: 1 for true
+//   e_name         text
+//   e_call         a: callee; list: arguments
+//   e_member       a: target; text: field
+//   e_index        a: target; b: index
+//   e_unary        op: UN_*; a: operand
+//   e_binary       op: BIN_*; a, b: operands
+//   e_cast         a: operand; b: type
+//   e_sizeof       a: operand
+//   e_struct_lit   a: type name; list: field inits
+//   e_field        text: name; a: value
+//   e_array_lit    list: items
+//   t_prim         op: PRIM_*
+//   t_ptr          op: SPACE_*; a: pointee
+//   t_array        value: length; a: element
+//   t_named        text
+//   t_fn           list: parameter types; a: return type
+//
+// A declaration's attributes are attrs/nattrs. A list is count indices in
+// p.lists from `list`. Text is tlen bytes of p.text from `text`. Types have
+// no position (line 0).
+//
+// An index stays valid as the tree grows; a *node does not - the array it
+// points into moves when it grows - so a pointer from node_at() is used and
+// dropped before anything else is parsed.
+
+import "lex.xfxn";
+import "diag.xfxn";
+
+enum nk {
+    none, unit,
+    d_import, d_fn, d_struct, d_alias, d_global, d_const, d_enum,
+    variant, attr, attr_arg, param,
+    s_block, s_let, s_assign, s_if, s_while, s_return, s_break, s_continue, s_expr, s_defer, s_switch, s_case,
+    e_int, e_str, e_bool, e_name, e_call, e_member, e_index, e_unary, e_binary, e_cast, e_sizeof,
+    e_struct_lit, e_field, e_array_lit,
+    t_prim, t_ptr, t_array, t_named, t_fn,
+}
+
+// In the order of CXEX.Lang's UnOp, BinOp, PrimKind and AddrSpace.
+const UN_NEG: u32 = 0;  const UN_NOT: u32 = 1;  const UN_DEREF: u32 = 2;  const UN_ADDR: u32 = 3;  const UN_BITNOT: u32 = 4;
+
+const BIN_ADD: u32 = 0;     const BIN_SUB: u32 = 1;     const BIN_MUL: u32 = 2;     const BIN_DIV: u32 = 3;
+const BIN_MOD: u32 = 4;     const BIN_EQ: u32 = 5;      const BIN_NE: u32 = 6;      const BIN_LT: u32 = 7;
+const BIN_LE: u32 = 8;      const BIN_GT: u32 = 9;      const BIN_GE: u32 = 10;     const BIN_AND: u32 = 11;
+const BIN_OR: u32 = 12;     const BIN_BITAND: u32 = 13; const BIN_BITOR: u32 = 14;  const BIN_BITXOR: u32 = 15;
+const BIN_SHL: u32 = 16;    const BIN_SHR: u32 = 17;
+
+const PRIM_VOID: u32 = 11;
+global prim_names: [12]*u8 = ["i8", "i16", "i32", "i64", "i128", "u8", "u16", "u32", "u64", "u128", "bool", "void"];
+
+const SPACE_NORMAL: u32 = 0;  const SPACE_USER: u32 = 1;  const SPACE_PHYS: u32 = 2;  const SPACE_DMA: u32 = 3;
+
+struct node {
+    kind: nk,
+    file: u32,
+    line: u32,
+    col: u32,
+    op: u32,
+    a: u32,
+    b: u32,
+    c: u32,
+    list: u32,
+    count: u32,
+    attrs: u32,
+    nattrs: u32,
+    text: u32,
+    tlen: u32,
+    value: u128,
+}
+
+struct parser {
+    lx: *lexer,
+    i: u32,             // the current token
+    ntok: u32,
+    nodes: list,        // the addresses of the node chunks; node 0 is no node
+    nnodes: u32,
+    lists: list,        // every node's children, list after list
+    stk: list,          // the children of lists still being parsed
+    text: buf,          // names and strings
+    dg: *diags,         // where syntax errors go
+    file: u32,          // the file being parsed, given to each node
+    no_record_lit: bool,
+    oom: bool,
+}
+
+fn node_size() -> u32 { let n: node; return sizeof n; }
+
+/* Nodes live in chunks of NODE_CHUNK that never move. One growing array, as
+   they were, doubled its way up and left every smaller copy behind in a heap
+   that does not give memory back - 8 MB to hold 3 MB of nodes, which is the
+   difference between the compiler fitting in a CXK process or not. */
+const NODE_CHUNK_SHIFT: u32 = 12;
+const NODE_CHUNK: u32 = 4096;
+
+fn node_at(p: *parser, i: u32) -> *node {
+    return (p.nodes.items[i >> NODE_CHUNK_SHIFT] + (i & (NODE_CHUNK - 1)) * node_size()) as *node;
+}
+fn list_at(p: *parser, start: u32, i: u32) -> u32 { return p.lists.items[start + i]; }
+fn node_count(p: *parser) -> u32 { return p.nnodes; }
+
+fn parse_free(p: *parser) -> void {
+    let i: u32 = 0;
+    while (i < p.nodes.len) { free(p.nodes.items[i]); i += 1; }
+    list_free(&p.nodes); list_free(&p.lists); list_free(&p.stk); buf_free(&p.text);
+}
+
+// ---- building the tree ----
+
+fn ps_node(p: *parser, kind: nk, line: u32, col: u32) -> u32 {
+    let n: node = node { kind: kind, file: p.file, line: line, col: col, op: 0, a: 0, b: 0, c: 0, list: 0, count: 0,
+                         attrs: 0, nattrs: 0, text: 0, tlen: 0, value: 0 };
+    // Out of memory: the caller writes into node 0, which is harmless, and
+    // parse_file reports it at the end.
+    if (!ps_add_node(p, &n)) { p.oom = true; return 0; }
+    return p.nnodes - 1;
+}
+
+fn ps_push(p: *parser, n: u32) -> void { if (!list_push(&p.stk, n)) { p.oom = true; } }
+
+// The children pushed since `mark`, moved into p.lists as one list; returns
+// where it starts. The count is p.stk.len - mark, taken before.
+fn ps_close(p: *parser, mark: u32) -> u32 {
+    let start: u32 = p.lists.len;
+    let i: u32 = mark;
+    while (i < p.stk.len) {
+        if (!list_push(&p.lists, p.stk.items[i])) { p.oom = true; }
+        i += 1;
+    }
+    p.stk.len = mark;
+    return start;
+}
+
+fn ps_set_list(p: *parser, n: u32, mark: u32) -> void {
+    let count: u32 = p.stk.len - mark;
+    let start: u32 = ps_close(p, mark);
+    let x: *node = node_at(p, n);
+    x.list = start;
+    x.count = count;
+}
+
+// A token's text, as the C# Token.Text: a string's decoded bytes, otherwise
+// the source it was read from (nothing, for the end of the file).
+fn ps_tok_text(p: *parser, b: *buf, ti: u32) -> void {
+    let t: *token = lex_tok(p.lx, ti);
+    let ok: bool = true;
+    if (t.kind == tk.string_literal) { ok = buf_append(b, &p.lx.strs.data[t.str_at], t.str_len); }
+    else { ok = buf_append(b, &p.lx.src[t.at], t.len); }
+    if (!ok) { p.oom = true; }
+}
+
+fn ps_set_text(p: *parser, n: u32, ti: u32) -> void {
+    let at: u32 = p.text.len;
+    ps_tok_text(p, &p.text, ti);
+    let x: *node = node_at(p, n);
+    x.text = at;
+    x.tlen = p.text.len - at;
+}
+
+// ---- tokens ----
+
+fn ps_cur(p: *parser) -> *token { return lex_tok(p.lx, p.i); }
+fn ps_kind(p: *parser) -> tk { return lex_tok(p.lx, p.i).kind; }
+fn ps_peek(p: *parser, n: u32) -> tk {
+    let j: u32 = p.i + n;
+    if (j > p.ntok - 1) { j = p.ntok - 1; }
+    return lex_tok(p.lx, j).kind;
+}
+fn ps_at(p: *parser, k: tk) -> bool { return ps_kind(p) == k; }
+fn ps_line(p: *parser) -> u32 { return ps_cur(p).line; }
+fn ps_col(p: *parser) -> u32 { return ps_cur(p).col; }
+
+// Moves on, except past the end; returns the token it was on.
+fn ps_advance(p: *parser) -> u32 {
+    let j: u32 = p.i;
+    if (p.i < p.ntok - 1) { p.i += 1; }
+    return j;
+}
+
+fn ps_match(p: *parser, k: tk) -> bool {
+    if (ps_at(p, k)) { ps_advance(p); return true; }
+    return false;
+}
+
+// ---- errors ----
+
+fn ps_msg(p: *parser, s: *u8) -> void { dg_str(p.dg, s); }
+
+fn ps_report(p: *parser, line: u32, col: u32) -> void { dg_end(p.dg, p.file, line, col); }
+
+// `<before>'<the current token>'<after>`, at the current token.
+fn ps_err_found(p: *parser, before: *u8, after: *u8) -> void {
+    dg_begin(p.dg);
+    ps_msg(p, before);
+    ps_msg(p, "'");
+    ps_tok_text(p, &p.dg.msgs, p.i);
+    ps_msg(p, "'");
+    ps_msg(p, after);
+    ps_report(p, ps_line(p), ps_col(p));
+}
+
+fn ps_err(p: *parser, msg: *u8, line: u32, col: u32) -> void {
+    dg_begin(p.dg);
+    ps_msg(p, msg);
+    ps_report(p, line, col);
+}
+
+// The token of kind k, consumed; or an error, and the current token - not
+// consumed, so the caller's recovery decides what to skip.
+fn ps_expect(p: *parser, k: tk, what: *u8) -> u32 {
+    if (ps_at(p, k)) { return ps_advance(p); }
+    dg_begin(p.dg);
+    ps_msg(p, "expected ");
+    ps_msg(p, what);
+    ps_msg(p, ", found '");
+    ps_tok_text(p, &p.dg.msgs, p.i);
+    ps_msg(p, "'");
+    ps_report(p, ps_line(p), ps_col(p));
+    return p.i;
+}
+
+// ---- program ----
+
+fn parse_init(p: *parser, dg: *diags) -> void {
+    p.nodes = list_new();
+    p.nnodes = 0;
+    p.lists = list_new();
+    p.stk = list_new();
+    p.text = buf_new();
+    p.dg = dg;
+    p.file = 0;
+    p.no_record_lit = false;
+    p.oom = false;
+    let none: node = node { kind: nk.none, file: 0, line: 0, col: 0, op: 0, a: 0, b: 0, c: 0, list: 0, count: 0,
+                            attrs: 0, nattrs: 0, text: 0, tlen: 0, value: 0 };
+    if (!ps_add_node(p, &none)) { p.oom = true; }
+}
+
+fn ps_add_node(p: *parser, n: *node) -> bool {
+    if ((p.nnodes & (NODE_CHUNK - 1)) == 0) {
+        let c: u32 = alloc(NODE_CHUNK * node_size());
+        if (c == 0 || !list_push(&p.nodes, c)) { return false; }
+    }
+    memcpy(node_at(p, p.nnodes) as *u8, n as *u8, node_size());
+    p.nnodes += 1;
+    return true;
+}
+
+// One file's tokens into the tree, as file `file`; returns its unit node, or
+// 0 if memory ran out. Syntax errors go to p.dg, and the tree is built
+// regardless.
+fn parse_file(p: *parser, lx: *lexer, file: u32) -> u32 {
+    if (p.oom) { return 0; }
+    p.lx = lx;
+    p.i = 0;
+    p.ntok = lex_count(lx);
+    p.file = file;
+    p.no_record_lit = false;
+    let u: u32 = ps_node(p, nk.unit, ps_line(p), ps_col(p));
+    let mark: u32 = p.stk.len;
+    while (!ps_at(p, tk.eof)) {
+        let before: u32 = p.i;
+        let d: u32 = ps_decl(p);
+        if (d != 0) { ps_push(p, d); }
+        if (p.i == before) { ps_sync_top(p); }   // no progress: skip ahead
+        if (p.oom) { return 0; }
+    }
+    ps_set_list(p, u, mark);
+    if (p.oom) { return 0; }
+    return u;
+}
+
+fn ps_is_decl_start(k: tk) -> bool {
+    return k == tk.kw_fn || k == tk.kw_struct || k == tk.kw_global || k == tk.kw_const
+        || k == tk.kw_extern || k == tk.kw_type || k == tk.kw_enum;
+}
+
+fn ps_sync_top(p: *parser) -> void {
+    while (!ps_at(p, tk.eof) && !ps_is_decl_start(ps_kind(p))) { ps_advance(p); }
+}
+
+// ---- declarations ----
+
+fn ps_decl(p: *parser) -> u32 {
+    let mark: u32 = p.stk.len;
+    ps_attrs(p);
+    let nattrs: u32 = p.stk.len - mark;
+    let attrs: u32 = ps_close(p, mark);
+    let d: u32 = ps_decl_body(p);
+    if (d != 0 && nattrs != 0) {
+        let x: *node = node_at(p, d);
+        x.attrs = attrs;
+        x.nattrs = nattrs;
+    }
+    return d;
+}
+
+// @name  |  @name(arg, name = arg, ...)   - zero or more, pushed on p.stk
+fn ps_attrs(p: *parser) -> void {
+    while (ps_at(p, tk.at)) {
+        let a: u32 = ps_node(p, nk.attr, ps_line(p), ps_col(p));
+        ps_advance(p);
+        ps_set_text(p, a, ps_expect(p, tk.identifier, "an attribute name"));
+        let mark: u32 = p.stk.len;
+        if (ps_match(p, tk.lparen)) {
+            if (!ps_at(p, tk.rparen)) {
+                while (true) {
+                    let g: u32 = ps_node(p, nk.attr_arg, ps_line(p), ps_col(p));
+                    if (ps_at(p, tk.identifier) && ps_peek(p, 1) == tk.assign) {
+                        ps_set_text(p, g, ps_advance(p));
+                        node_at(p, g).op = 1;
+                        ps_advance(p);   // '='
+                    }
+                    let v: u32 = ps_expr(p);
+                    node_at(p, g).a = v;
+                    ps_push(p, g);
+                    if (!ps_match(p, tk.comma)) { break; }
+                }
+            }
+            ps_expect(p, tk.rparen, "')'");
+        }
+        ps_set_list(p, a, mark);
+        ps_push(p, a);
+    }
+}
+
+fn ps_decl_body(p: *parser) -> u32 {
+    let line: u32 = ps_line(p);
+    let col: u32 = ps_col(p);
+    switch (ps_kind(p)) {
+        case tk.kw_fn { return ps_fn(p, line, col, false); }
+        case tk.kw_extern { ps_advance(p); return ps_fn(p, line, col, true); }   // ps_fn consumes 'fn'
+        case tk.kw_import {
+            ps_advance(p);
+            let d: u32 = ps_node(p, nk.d_import, line, col);
+            ps_set_text(p, d, ps_expect(p, tk.string_literal, "an import path string"));
+            ps_expect(p, tk.semicolon, "';'");
+            return d;
+        }
+        case tk.kw_type {
+            ps_advance(p);
+            let d: u32 = ps_node(p, nk.d_alias, line, col);
+            ps_set_text(p, d, ps_expect(p, tk.identifier, "alias name"));
+            ps_expect(p, tk.assign, "'='");
+            let t: u32 = ps_type(p);
+            node_at(p, d).a = t;
+            ps_expect(p, tk.semicolon, "';'");
+            return d;
+        }
+        case tk.kw_struct { return ps_struct(p, line, col); }
+        case tk.kw_enum { return ps_enum(p, line, col); }
+        case tk.kw_global { return ps_global(p, line, col); }
+        case tk.kw_const { return ps_const(p, line, col); }
+        else {
+            ps_err_found(p, "expected a declaration, found ", "");
+            return 0;
+        }
+    }
+    return 0;
+}
+
+fn ps_fn(p: *parser, line: u32, col: u32, is_extern: bool) -> u32 {
+    ps_advance(p);   // 'fn' (reached after 'fn' or after 'extern')
+    let d: u32 = ps_node(p, nk.d_fn, line, col);
+    ps_set_text(p, d, ps_expect(p, tk.identifier, "function name"));
+    ps_expect(p, tk.lparen, "'('");
+    let mark: u32 = p.stk.len;
+    if (!ps_at(p, tk.rparen)) {
+        while (true) {
+            ps_push(p, ps_param(p));
+            if (!ps_match(p, tk.comma)) { break; }
+        }
+    }
+    ps_expect(p, tk.rparen, "')'");
+    ps_set_list(p, d, mark);
+    let ret: u32 = 0;
+    if (ps_match(p, tk.arrow)) { ret = ps_type(p); } else { ret = ps_prim(p, PRIM_VOID); }
+    node_at(p, d).a = ret;
+    if (is_extern) { ps_expect(p, tk.semicolon, "';'"); }
+    else {
+        let body: u32 = ps_block(p);
+        node_at(p, d).b = body;
+    }
+    return d;
+}
+
+fn ps_param(p: *parser) -> u32 {
+    let n: u32 = ps_node(p, nk.param, ps_line(p), ps_col(p));
+    ps_set_text(p, n, ps_expect(p, tk.identifier, "parameter name"));
+    ps_expect(p, tk.colon, "':'");
+    let t: u32 = ps_type(p);
+    node_at(p, n).a = t;
+    return n;
+}
+
+fn ps_struct(p: *parser, line: u32, col: u32) -> u32 {
+    ps_advance(p);   // 'struct'
+    let d: u32 = ps_node(p, nk.d_struct, line, col);
+    ps_set_text(p, d, ps_expect(p, tk.identifier, "struct name"));
+    ps_expect(p, tk.lbrace, "'{'");
+    let mark: u32 = p.stk.len;
+    if (!ps_at(p, tk.rbrace)) {
+        while (true) {
+            if (ps_at(p, tk.rbrace)) { break; }
+            ps_push(p, ps_param(p));
+            if (!ps_match(p, tk.comma)) { break; }
+        }
+    }
+    ps_expect(p, tk.rbrace, "'}'");
+    ps_set_list(p, d, mark);
+    return d;
+}
+
+// enum name [: type] { a, b = 5, c { field: T, ... }, }
+fn ps_enum(p: *parser, line: u32, col: u32) -> u32 {
+    ps_advance(p);   // 'enum'
+    let d: u32 = ps_node(p, nk.d_enum, line, col);
+    ps_set_text(p, d, ps_expect(p, tk.identifier, "enum name"));
+    if (ps_match(p, tk.colon)) {
+        let t: u32 = ps_type(p);
+        node_at(p, d).a = t;
+    }
+    ps_expect(p, tk.lbrace, "'{'");
+    let mark: u32 = p.stk.len;
+    while (!ps_at(p, tk.rbrace) && !ps_at(p, tk.eof)) {
+        let v: u32 = ps_node(p, nk.variant, ps_line(p), ps_col(p));
+        ps_set_text(p, v, ps_expect(p, tk.identifier, "a variant name"));
+        if (ps_match(p, tk.lbrace)) {
+            node_at(p, v).op = 1;
+            let fmark: u32 = p.stk.len;
+            while (!ps_at(p, tk.rbrace) && !ps_at(p, tk.eof)) {
+                ps_push(p, ps_param(p));
+                if (!ps_match(p, tk.comma)) { break; }
+            }
+            ps_expect(p, tk.rbrace, "'}'");
+            ps_set_list(p, v, fmark);
+        } else if (ps_match(p, tk.assign)) {
+            let e: u32 = ps_expr(p);
+            node_at(p, v).a = e;
+        }
+        ps_push(p, v);
+        if (!ps_match(p, tk.comma)) { break; }
+    }
+    ps_expect(p, tk.rbrace, "'}'");
+    ps_set_list(p, d, mark);
+    return d;
+}
+
+fn ps_global(p: *parser, line: u32, col: u32) -> u32 {
+    ps_advance(p);   // 'global'
+    let d: u32 = ps_node(p, nk.d_global, line, col);
+    ps_set_text(p, d, ps_expect(p, tk.identifier, "global name"));
+    ps_expect(p, tk.colon, "':'");
+    let t: u32 = ps_type(p);
+    node_at(p, d).a = t;
+    if (ps_match(p, tk.assign)) {
+        let e: u32 = ps_expr(p);
+        node_at(p, d).b = e;
+    }
+    ps_expect(p, tk.semicolon, "';'");
+    return d;
+}
+
+fn ps_const(p: *parser, line: u32, col: u32) -> u32 {
+    ps_advance(p);   // 'const'
+    let d: u32 = ps_node(p, nk.d_const, line, col);
+    ps_set_text(p, d, ps_expect(p, tk.identifier, "const name"));
+    ps_expect(p, tk.colon, "':'");
+    let t: u32 = ps_type(p);
+    node_at(p, d).a = t;
+    ps_expect(p, tk.assign, "'='");
+    let e: u32 = ps_expr(p);
+    node_at(p, d).b = e;
+    ps_expect(p, tk.semicolon, "';'");
+    return d;
+}
+
+// ---- types ----
+
+fn ps_prim(p: *parser, kind: u32) -> u32 {
+    let t: u32 = ps_node(p, nk.t_prim, 0, 0);
+    node_at(p, t).op = kind;
+    return t;
+}
+
+fn ps_tok_is(p: *parser, ti: u32, word: *u8) -> bool {
+    let t: *token = lex_tok(p.lx, ti);
+    return lx_spells(p.lx, t.at, t.len, word);
+}
+
+fn ps_type(p: *parser) -> u32 {
+    if (ps_match(p, tk.star)) {
+        /* `user`, `phys` and `dma` are contextual: a qualifier only straight
+           after `*` with another type following, so `*user` alone is still a
+           pointer to a struct named user. */
+        let space: u32 = SPACE_NORMAL;
+        let nx: tk = ps_peek(p, 1);
+        if (ps_at(p, tk.identifier) && (nx == tk.identifier || nx == tk.star || nx == tk.lbracket || nx == tk.kw_fn)) {
+            if (ps_tok_is(p, p.i, "user")) { space = SPACE_USER; }
+            else if (ps_tok_is(p, p.i, "phys")) { space = SPACE_PHYS; }
+            else if (ps_tok_is(p, p.i, "dma")) { space = SPACE_DMA; }
+            if (space != SPACE_NORMAL) { ps_advance(p); }
+        }
+        let inner: u32 = ps_type(p);
+        let t: u32 = ps_node(p, nk.t_ptr, 0, 0);
+        let x: *node = node_at(p, t);
+        x.op = space;
+        x.a = inner;
+        return t;
+    }
+    if (ps_match(p, tk.lbracket)) {
+        let n: u128 = 0;
+        if (ps_at(p, tk.int_literal)) { n = lex_tok(p.lx, ps_advance(p)).value; }
+        else { ps_err(p, "expected array length", ps_line(p), ps_col(p)); }
+        // checked, not cast: [4294967296]u8 must not become a zero-length array
+        if (n > 0x7FFFFFFF) {
+            ps_err(p, "array length is too large", ps_line(p), ps_col(p));
+            n = 0;
+        }
+        ps_expect(p, tk.rbracket, "']'");
+        let elem: u32 = ps_type(p);
+        let t: u32 = ps_node(p, nk.t_array, 0, 0);
+        let x: *node = node_at(p, t);
+        x.value = n;
+        x.a = elem;
+        return t;
+    }
+    // function pointer type:  fn(T, U) -> R
+    if (ps_match(p, tk.kw_fn)) {
+        ps_expect(p, tk.lparen, "'('");
+        let mark: u32 = p.stk.len;
+        if (!ps_at(p, tk.rparen)) {
+            while (true) {
+                ps_push(p, ps_type(p));
+                if (!ps_match(p, tk.comma)) { break; }
+            }
+        }
+        ps_expect(p, tk.rparen, "')'");
+        let ret: u32 = 0;
+        if (ps_match(p, tk.arrow)) { ret = ps_type(p); } else { ret = ps_prim(p, PRIM_VOID); }
+        let t: u32 = ps_node(p, nk.t_fn, 0, 0);
+        ps_set_list(p, t, mark);
+        node_at(p, t).a = ret;
+        return t;
+    }
+    if (ps_at(p, tk.identifier)) {
+        let ti: u32 = ps_advance(p);
+        let k: u32 = 0;
+        while (k < 12) {
+            if (ps_tok_is(p, ti, prim_names[k])) { return ps_prim(p, k); }
+            k += 1;
+        }
+        let t: u32 = ps_node(p, nk.t_named, 0, 0);
+        ps_set_text(p, t, ti);
+        return t;
+    }
+    ps_err_found(p, "expected a type, found ", "");
+    return ps_prim(p, PRIM_VOID);
+}
+
+// ---- statements ----
+
+fn ps_block(p: *parser) -> u32 {
+    let b: u32 = ps_node(p, nk.s_block, ps_line(p), ps_col(p));
+    ps_expect(p, tk.lbrace, "'{'");
+    let mark: u32 = p.stk.len;
+    while (!ps_at(p, tk.rbrace) && !ps_at(p, tk.eof)) {
+        let before: u32 = p.i;
+        ps_push(p, ps_stmt(p));
+        if (p.i == before) { ps_sync_stmt(p); }
+        if (p.oom) { break; }
+    }
+    ps_expect(p, tk.rbrace, "'}'");
+    ps_set_list(p, b, mark);
+    return b;
+}
+
+fn ps_sync_stmt(p: *parser) -> void {
+    while (!ps_at(p, tk.eof) && !ps_at(p, tk.semicolon) && !ps_at(p, tk.rbrace)) { ps_advance(p); }
+    ps_match(p, tk.semicolon);
+}
+
+// A compound assignment's operator, or -1.
+fn ps_compound_op(k: tk) -> i32 {
+    switch (k) {
+        case tk.plus_assign { return BIN_ADD as i32; }      case tk.minus_assign { return BIN_SUB as i32; }
+        case tk.star_assign { return BIN_MUL as i32; }      case tk.slash_assign { return BIN_DIV as i32; }
+        case tk.percent_assign { return BIN_MOD as i32; }   case tk.amp_assign { return BIN_BITAND as i32; }
+        case tk.pipe_assign { return BIN_BITOR as i32; }    case tk.caret_assign { return BIN_BITXOR as i32; }
+        case tk.shl_assign { return BIN_SHL as i32; }       case tk.shr_assign { return BIN_SHR as i32; }
+        else { return -1; }
+    }
+    return -1;
+}
+
+fn ps_stmt(p: *parser) -> u32 {
+    let line: u32 = ps_line(p);
+    let col: u32 = ps_col(p);
+    switch (ps_kind(p)) {
+        case tk.lbrace { return ps_block(p); }
+        case tk.kw_let { return ps_let(p, line, col); }
+        case tk.kw_if { return ps_if(p, line, col); }
+        case tk.kw_while { return ps_while(p, line, col); }
+        case tk.kw_switch { return ps_switch(p, line, col); }
+        case tk.kw_return { return ps_return(p, line, col); }
+        case tk.kw_break {
+            ps_advance(p);
+            ps_expect(p, tk.semicolon, "';'");
+            return ps_node(p, nk.s_break, line, col);
+        }
+        case tk.kw_continue {
+            ps_advance(p);
+            ps_expect(p, tk.semicolon, "';'");
+            return ps_node(p, nk.s_continue, line, col);
+        }
+        case tk.kw_defer {
+            // `defer stmt;` or `defer { ... }` - any single statement
+            ps_advance(p);
+            let body: u32 = ps_stmt(p);
+            let s: u32 = ps_node(p, nk.s_defer, line, col);
+            node_at(p, s).a = body;
+            return s;
+        }
+        else {
+            // an assignment, or an expression statement
+            let e: u32 = ps_expr(p);
+            if (ps_match(p, tk.assign)) {
+                let rhs: u32 = ps_expr(p);
+                ps_expect(p, tk.semicolon, "';'");
+                let s: u32 = ps_node(p, nk.s_assign, line, col);
+                let x: *node = node_at(p, s);
+                x.a = e;
+                x.b = rhs;
+                return s;
+            }
+            let cop: i32 = ps_compound_op(ps_kind(p));
+            if (cop >= 0) {
+                ps_advance(p);
+                let rhs: u32 = ps_expr(p);
+                ps_expect(p, tk.semicolon, "';'");
+                // x op= v is x = x op v
+                let v: u32 = ps_node(p, nk.e_binary, line, col);
+                let y: *node = node_at(p, v);
+                y.op = cop as u32;
+                y.a = e;
+                y.b = rhs;
+                let s: u32 = ps_node(p, nk.s_assign, line, col);
+                let x: *node = node_at(p, s);
+                x.op = 1;
+                x.a = e;
+                x.b = v;
+                return s;
+            }
+            ps_expect(p, tk.semicolon, "';'");
+            let s: u32 = ps_node(p, nk.s_expr, line, col);
+            node_at(p, s).a = e;
+            return s;
+        }
+    }
+    return 0;
+}
+
+fn ps_let(p: *parser, line: u32, col: u32) -> u32 {
+    ps_advance(p);
+    let s: u32 = ps_node(p, nk.s_let, line, col);
+    let name: u32 = ps_expect(p, tk.identifier, "variable name");
+    ps_set_text(p, s, name);
+    if (ps_match(p, tk.colon)) {
+        let t: u32 = ps_type(p);
+        node_at(p, s).a = t;
+    }
+    // `let x: T = e;` or `let x: T;` - without an initializer the type is required
+    if (ps_match(p, tk.assign)) {
+        let e: u32 = ps_expr(p);
+        node_at(p, s).b = e;
+    } else if (node_at(p, s).a == 0) {
+        dg_begin(p.dg);
+        ps_msg(p, "'");
+        ps_tok_text(p, &p.dg.msgs, name);
+        ps_msg(p, "' needs either a type or an initializer");
+        ps_report(p, ps_line(p), ps_col(p));
+    }
+    ps_expect(p, tk.semicolon, "';'");
+    return s;
+}
+
+fn ps_if(p: *parser, line: u32, col: u32) -> u32 {
+    ps_advance(p);
+    ps_expect(p, tk.lparen, "'('");
+    let cond: u32 = ps_expr(p);
+    ps_expect(p, tk.rparen, "')'");
+    let then: u32 = ps_block(p);
+    let els: u32 = 0;
+    if (ps_match(p, tk.kw_else)) {
+        if (ps_at(p, tk.kw_if)) {
+            // else if: the if, wrapped in a block of its own, where it starts
+            let il: u32 = ps_line(p);
+            let ic: u32 = ps_col(p);
+            let inner: u32 = ps_if(p, il, ic);
+            els = ps_node(p, nk.s_block, il, ic);
+            let m: u32 = p.stk.len;
+            ps_push(p, inner);
+            ps_set_list(p, els, m);
+        } else {
+            els = ps_block(p);
+        }
+    }
+    let s: u32 = ps_node(p, nk.s_if, line, col);
+    let x: *node = node_at(p, s);
+    x.a = cond;
+    x.b = then;
+    x.c = els;
+    return s;
+}
+
+fn ps_while(p: *parser, line: u32, col: u32) -> u32 {
+    ps_advance(p);
+    ps_expect(p, tk.lparen, "'('");
+    let cond: u32 = ps_expr(p);
+    ps_expect(p, tk.rparen, "')'");
+    let body: u32 = ps_block(p);
+    let s: u32 = ps_node(p, nk.s_while, line, col);
+    let x: *node = node_at(p, s);
+    x.a = cond;
+    x.b = body;
+    return s;
+}
+
+/* switch (subject) { case L1, L2 { } case Enum.v(name) { } else { } }
+   Labels are parsed with record literals off, so `case color.red { }` is a
+   label and a body. `Enum.v(name)` - a call of a member with one name for an
+   argument - is the variant, binding name. */
+fn ps_switch(p: *parser, line: u32, col: u32) -> u32 {
+    ps_advance(p);
+    ps_expect(p, tk.lparen, "'('");
+    let subject: u32 = ps_expr(p);
+    ps_expect(p, tk.rparen, "')'");
+    ps_expect(p, tk.lbrace, "'{'");
+    let mark: u32 = p.stk.len;
+    let els: u32 = 0;
+    while (!ps_at(p, tk.rbrace) && !ps_at(p, tk.eof)) {
+        let cl: u32 = ps_line(p);
+        let cc: u32 = ps_col(p);
+        if (ps_match(p, tk.kw_else)) {
+            if (els != 0) { ps_err(p, "a switch has one 'else'", cl, cc); }
+            els = ps_block(p);
+            continue;
+        }
+        if (!ps_match(p, tk.kw_case)) {
+            ps_err_found(p, "expected 'case' or 'else', found ", "");
+            ps_advance(p);
+            continue;
+        }
+        let c: u32 = ps_node(p, nk.s_case, cl, cc);
+        let lmark: u32 = p.stk.len;
+        p.no_record_lit = true;
+        while (true) {
+            let l: u32 = ps_expr(p);
+            let x: *node = node_at(p, l);
+            if (x.kind == nk.e_call && x.count == 1 && node_at(p, x.a).kind == nk.e_member) {
+                let arg: *node = node_at(p, list_at(p, x.list, 0));
+                if (arg.kind == nk.e_name) {
+                    let y: *node = node_at(p, c);
+                    y.op = 1;
+                    y.text = arg.text;
+                    y.tlen = arg.tlen;
+                    l = x.a;
+                }
+            }
+            ps_push(p, l);
+            if (!ps_match(p, tk.comma)) { break; }
+        }
+        p.no_record_lit = false;
+        ps_set_list(p, c, lmark);
+        let body: u32 = ps_block(p);
+        node_at(p, c).a = body;
+        ps_push(p, c);
+        if (p.oom) { break; }
+    }
+    ps_expect(p, tk.rbrace, "'}'");
+    let s: u32 = ps_node(p, nk.s_switch, line, col);
+    ps_set_list(p, s, mark);
+    let x: *node = node_at(p, s);
+    x.a = subject;
+    x.b = els;
+    return s;
+}
+
+fn ps_return(p: *parser, line: u32, col: u32) -> u32 {
+    ps_advance(p);
+    let v: u32 = 0;
+    if (!ps_at(p, tk.semicolon)) { v = ps_expr(p); }
+    ps_expect(p, tk.semicolon, "';'");
+    let s: u32 = ps_node(p, nk.s_return, line, col);
+    node_at(p, s).a = v;
+    return s;
+}
+
+// ---- expressions ----
+//
+// Lowest to highest: || && | ^ & (== != < <= > >=) (<< >>) (+ -) (* / %),
+// then unary, postfix and primary. A binary node starts where its left
+// operand does.
+
+fn ps_binary(p: *parser, op: u32, left: u32, right: u32) -> u32 {
+    let l: *node = node_at(p, left);
+    let line: u32 = l.line;
+    let col: u32 = l.col;
+    let e: u32 = ps_node(p, nk.e_binary, line, col);
+    let x: *node = node_at(p, e);
+    x.op = op;
+    x.a = left;
+    x.b = right;
+    return e;
+}
+
+fn ps_expr(p: *parser) -> u32 { return ps_or(p); }
+
+fn ps_or(p: *parser) -> u32 {
+    let e: u32 = ps_and(p);
+    while (ps_at(p, tk.or_or)) { ps_advance(p); let r: u32 = ps_and(p); e = ps_binary(p, BIN_OR, e, r); }
+    return e;
+}
+
+fn ps_and(p: *parser) -> u32 {
+    let e: u32 = ps_bitor(p);
+    while (ps_at(p, tk.and_and)) { ps_advance(p); let r: u32 = ps_bitor(p); e = ps_binary(p, BIN_AND, e, r); }
+    return e;
+}
+
+fn ps_bitor(p: *parser) -> u32 {
+    let e: u32 = ps_bitxor(p);
+    while (ps_at(p, tk.pipe)) { ps_advance(p); let r: u32 = ps_bitxor(p); e = ps_binary(p, BIN_BITOR, e, r); }
+    return e;
+}
+
+fn ps_bitxor(p: *parser) -> u32 {
+    let e: u32 = ps_bitand(p);
+    while (ps_at(p, tk.caret)) { ps_advance(p); let r: u32 = ps_bitand(p); e = ps_binary(p, BIN_BITXOR, e, r); }
+    return e;
+}
+
+fn ps_bitand(p: *parser) -> u32 {
+    let e: u32 = ps_cmp(p);
+    while (ps_at(p, tk.amp)) { ps_advance(p); let r: u32 = ps_cmp(p); e = ps_binary(p, BIN_BITAND, e, r); }
+    return e;
+}
+
+fn ps_cmp(p: *parser) -> u32 {
+    let e: u32 = ps_shift(p);
+    while (true) {
+        let op: u32 = 0;
+        switch (ps_kind(p)) {
+            case tk.eq { op = BIN_EQ; }   case tk.ne { op = BIN_NE; }
+            case tk.lt { op = BIN_LT; }   case tk.le { op = BIN_LE; }
+            case tk.gt { op = BIN_GT; }   case tk.ge { op = BIN_GE; }
+            else { return e; }
+        }
+        ps_advance(p);
+        let r: u32 = ps_shift(p);
+        e = ps_binary(p, op, e, r);
+    }
+    return e;
+}
+
+fn ps_shift(p: *parser) -> u32 {
+    let e: u32 = ps_add(p);
+    while (ps_at(p, tk.shl) || ps_at(p, tk.shr)) {
+        let op: u32 = BIN_SHR;
+        if (ps_at(p, tk.shl)) { op = BIN_SHL; }
+        ps_advance(p);
+        let r: u32 = ps_add(p);
+        e = ps_binary(p, op, e, r);
+    }
+    return e;
+}
+
+fn ps_add(p: *parser) -> u32 {
+    let e: u32 = ps_mul(p);
+    while (ps_at(p, tk.plus) || ps_at(p, tk.minus)) {
+        let op: u32 = BIN_SUB;
+        if (ps_at(p, tk.plus)) { op = BIN_ADD; }
+        ps_advance(p);
+        let r: u32 = ps_mul(p);
+        e = ps_binary(p, op, e, r);
+    }
+    return e;
+}
+
+fn ps_mul(p: *parser) -> u32 {
+    let e: u32 = ps_unary(p);
+    while (ps_at(p, tk.star) || ps_at(p, tk.slash) || ps_at(p, tk.percent)) {
+        let op: u32 = BIN_MOD;
+        if (ps_at(p, tk.star)) { op = BIN_MUL; } else if (ps_at(p, tk.slash)) { op = BIN_DIV; }
+        ps_advance(p);
+        let r: u32 = ps_unary(p);
+        e = ps_binary(p, op, e, r);
+    }
+    return e;
+}
+
+fn ps_unary_node(p: *parser, kind: nk, op: u32, line: u32, col: u32) -> u32 {
+    ps_advance(p);
+    let operand: u32 = ps_unary(p);
+    let e: u32 = ps_node(p, kind, line, col);
+    let x: *node = node_at(p, e);
+    x.op = op;
+    x.a = operand;
+    return e;
+}
+
+fn ps_unary(p: *parser) -> u32 {
+    let line: u32 = ps_line(p);
+    let col: u32 = ps_col(p);
+    switch (ps_kind(p)) {
+        case tk.kw_sizeof { return ps_unary_node(p, nk.e_sizeof, 0, line, col); }
+        case tk.minus { return ps_unary_node(p, nk.e_unary, UN_NEG, line, col); }
+        case tk.not { return ps_unary_node(p, nk.e_unary, UN_NOT, line, col); }
+        case tk.tilde { return ps_unary_node(p, nk.e_unary, UN_BITNOT, line, col); }
+        case tk.star { return ps_unary_node(p, nk.e_unary, UN_DEREF, line, col); }
+        case tk.amp { return ps_unary_node(p, nk.e_unary, UN_ADDR, line, col); }
+        else { return ps_postfix(p); }
+    }
+    return 0;
+}
+
+/* `Name {` starts a record literal only when `}` or `field:` follows - a block
+   never starts that way, so `while (x) { ... }` is untouched. */
+fn ps_at_record_lit(p: *parser) -> bool {
+    if (p.no_record_lit || !ps_at(p, tk.lbrace)) { return false; }
+    let k1: tk = ps_peek(p, 1);
+    return k1 == tk.rbrace || (k1 == tk.identifier && ps_peek(p, 2) == tk.colon);
+}
+
+fn ps_record_lit(p: *parser, type_name: u32) -> u32 {
+    let t: *node = node_at(p, type_name);
+    let line: u32 = t.line;
+    let col: u32 = t.col;
+    ps_expect(p, tk.lbrace, "'{'");
+    let mark: u32 = p.stk.len;
+    while (!ps_at(p, tk.rbrace) && !ps_at(p, tk.eof)) {
+        let f: u32 = ps_node(p, nk.e_field, ps_line(p), ps_col(p));
+        ps_set_text(p, f, ps_expect(p, tk.identifier, "a field name"));
+        ps_expect(p, tk.colon, "':'");
+        let v: u32 = ps_expr(p);
+        node_at(p, f).a = v;
+        ps_push(p, f);
+        if (!ps_match(p, tk.comma)) { break; }
+    }
+    ps_expect(p, tk.rbrace, "'}'");
+    let e: u32 = ps_node(p, nk.e_struct_lit, line, col);
+    ps_set_list(p, e, mark);
+    node_at(p, e).a = type_name;
+    return e;
+}
+
+fn ps_postfix(p: *parser) -> u32 {
+    let e: u32 = ps_primary(p);
+    if (node_at(p, e).kind == nk.e_name && ps_at_record_lit(p)) { e = ps_record_lit(p, e); }
+    while (true) {
+        let s: *node = node_at(p, e);
+        let line: u32 = s.line;
+        let col: u32 = s.col;
+        if (ps_match(p, tk.lparen)) {
+            let mark: u32 = p.stk.len;
+            if (!ps_at(p, tk.rparen)) {
+                while (true) {
+                    ps_push(p, ps_expr(p));
+                    if (!ps_match(p, tk.comma)) { break; }
+                }
+            }
+            ps_expect(p, tk.rparen, "')'");
+            let c: u32 = ps_node(p, nk.e_call, line, col);
+            ps_set_list(p, c, mark);
+            node_at(p, c).a = e;
+            e = c;
+        } else if (ps_match(p, tk.dot)) {
+            let m: u32 = ps_node(p, nk.e_member, line, col);
+            ps_set_text(p, m, ps_expect(p, tk.identifier, "field name"));
+            let target_is_name: bool = node_at(p, e).kind == nk.e_name;
+            node_at(p, m).a = e;
+            e = m;
+            if (target_is_name && ps_at_record_lit(p)) { e = ps_record_lit(p, e); }   // Enum.variant { ... }
+        } else if (ps_match(p, tk.lbracket)) {
+            let idx: u32 = ps_expr(p);
+            ps_expect(p, tk.rbracket, "']'");
+            let x: u32 = ps_node(p, nk.e_index, line, col);
+            let y: *node = node_at(p, x);
+            y.a = e;
+            y.b = idx;
+            e = x;
+        } else if (ps_match(p, tk.kw_as)) {
+            let t: u32 = ps_type(p);
+            let x: u32 = ps_node(p, nk.e_cast, line, col);
+            let y: *node = node_at(p, x);
+            y.a = e;
+            y.b = t;
+            e = x;
+        } else {
+            break;
+        }
+        if (p.oom) { break; }
+    }
+    return e;
+}
+
+fn ps_primary(p: *parser) -> u32 {
+    let line: u32 = ps_line(p);
+    let col: u32 = ps_col(p);
+    switch (ps_kind(p)) {
+        case tk.int_literal {
+            let t: *token = lex_tok(p.lx, ps_advance(p));
+            let v: u128 = t.value;
+            let sfx: u32 = t.suffix;
+            let e: u32 = ps_node(p, nk.e_int, line, col);
+            let x: *node = node_at(p, e);
+            x.value = v;
+            x.op = sfx;
+            return e;
+        }
+        case tk.string_literal {
+            let e: u32 = ps_node(p, nk.e_str, line, col);
+            ps_set_text(p, e, ps_advance(p));
+            return e;
+        }
+        case tk.kw_true {
+            ps_advance(p);
+            let e: u32 = ps_node(p, nk.e_bool, line, col);
+            node_at(p, e).op = 1;
+            return e;
+        }
+        case tk.kw_false { ps_advance(p); return ps_node(p, nk.e_bool, line, col); }
+        case tk.identifier {
+            let e: u32 = ps_node(p, nk.e_name, line, col);
+            ps_set_text(p, e, ps_advance(p));
+            return e;
+        }
+        case tk.lparen {
+            ps_advance(p);
+            let e: u32 = ps_expr(p);
+            ps_expect(p, tk.rparen, "')'");
+            return e;
+        }
+        case tk.lbracket {
+            ps_advance(p);
+            let mark: u32 = p.stk.len;
+            while (!ps_at(p, tk.rbracket) && !ps_at(p, tk.eof)) {
+                ps_push(p, ps_expr(p));
+                if (!ps_match(p, tk.comma)) { break; }
+            }
+            ps_expect(p, tk.rbracket, "']'");
+            let e: u32 = ps_node(p, nk.e_array_lit, line, col);
+            ps_set_list(p, e, mark);
+            return e;
+        }
+        else {
+            ps_err_found(p, "expected an expression, found ", "");
+            if (!ps_at(p, tk.eof)) { ps_advance(p); }   // always make progress
+            return ps_node(p, nk.e_int, line, col);
+        }
+    }
+    return 0;
+}
