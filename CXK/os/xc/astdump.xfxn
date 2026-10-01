@@ -216,18 +216,18 @@ fn decl(d: *dumper, depth: u32, n: u32) -> void {
     }
 }
 
-fn dump(p: *parser, out: *buf) -> bool {
+fn dump(p: *parser, unit: u32, out: *buf) -> bool {
     let d: dumper = dumper { p: p, out: out };
-    walk(&d, 0, p.unit);
+    walk(&d, 0, unit);
     let i: u32 = 0;
-    while (i < diag_count(p)) {
-        let g: *diag = diag_at(p, i);
+    while (i < dg_count(p.dg)) {
+        let g: *diag = dg_at(p.dg, i);
         buf_str(out, "error ");
         buf_u32(out, g.line);
         buf_push(out, ':');
         buf_u32(out, g.col);
         buf_push(out, ' ');
-        put_escaped(out, &p.msgs.data[g.at], g.len, false);
+        put_escaped(out, &p.dg.msgs.data[g.at], g.len, false);
         if (!buf_push(out, '\n')) { return false; }
         i += 1;
     }
@@ -260,14 +260,18 @@ fn xc_main() -> i32 {
         if (!sum) { buf_str(&d, "== "); buf_str(&d, path); buf_push(&d, '\n'); }   // the hash leaves the path out
         let lx: lexer;
         lex_init(&lx, src.data, src.len);
+        let dg: diags = diags_new();   // the parser's alone, as `cxk ast` prints
         let p: parser;
-        if (!lex_all(&lx) || !parse_all(&p, &lx) || !dump(&p, &d)) { err_str("astdump: out of memory\n"); return 2; }
+        parse_init(&p, &dg);
+        if (!lex_all(&lx)) { err_str("astdump: out of memory\n"); return 2; }
+        let unit: u32 = parse_file(&p, &lx, 0);
+        if (unit == 0 || !dump(&p, unit, &d)) { err_str("astdump: out of memory\n"); return 2; }
         if (sum) {
             buf_str(&out, path);
             buf_str(&out, ": ");
             buf_u32(&out, p.nodes.len / node_size() - 1);
             buf_str(&out, " nodes, ");
-            buf_u32(&out, diag_count(&p));
+            buf_u32(&out, dg_count(&dg));
             buf_str(&out, " errors, fnv1a ");
             buf_hex32(&out, fnv1a(d.data, d.len));
             buf_push(&out, '\n');
@@ -275,6 +279,7 @@ fn xc_main() -> i32 {
             buf_append(&out, d.data, d.len);
         }
         parse_free(&p);
+        diags_free(&dg);
         lex_free(&lx);
         buf_free(&src);
         buf_free(&d);

@@ -3,9 +3,13 @@
 //
 //   import "parse.xfxn";
 //
+//   let dg: diags = diags_new();
 //   let p: parser;
-//   if (!parse_all(&p, &lx)) { ...out of memory... }
-//   let u: *node = node_at(&p, p.unit);
+//   parse_init(&p, &dg);
+//   let u: u32 = parse_file(&p, &lx, file);   // 0: out of memory
+//
+// One parser can take many files - a program and everything it imports - into
+// one tree, each node remembering which file it came from.
 //
 // Step two of stage 4 (docs/CX_X_CORE_LANG.md section 10): a line-for-line
 // port of the C# parser in CX_DEVKIT (CXEX.Lang/Parsing/Parser.cs) - the same
@@ -71,6 +75,7 @@
 // dropped before anything else is parsed.
 
 import "lex.xfxn";
+import "diag.xfxn";
 
 enum nk {
     none, unit,
@@ -98,6 +103,7 @@ const SPACE_NORMAL: u32 = 0;  const SPACE_USER: u32 = 1;  const SPACE_PHYS: u32 
 
 struct node {
     kind: nk,
+    file: u32,
     line: u32,
     col: u32,
     op: u32,
@@ -113,9 +119,6 @@ struct node {
     value: u128,
 }
 
-// One error: where, and its message in p.msgs.
-struct diag { line: u32, col: u32, at: u32, len: u32 }
-
 struct parser {
     lx: *lexer,
     i: u32,             // the current token
@@ -124,34 +127,30 @@ struct parser {
     lists: list,        // every node's children, list after list
     stk: list,          // the children of lists still being parsed
     text: buf,          // names and strings
-    diags: buf,         // diag, diag, ...
-    msgs: buf,
-    unit: u32,          // the root
+    dg: *diags,         // where syntax errors go
+    file: u32,          // the file being parsed, given to each node
     no_record_lit: bool,
     oom: bool,
 }
 
 fn node_size() -> u32 { let n: node; return sizeof n; }
-fn diag_size() -> u32 { let d: diag; return sizeof d; }
 
 fn node_at(p: *parser, i: u32) -> *node { return ((p.nodes.data as u32) + i * node_size()) as *node; }
 fn list_at(p: *parser, start: u32, i: u32) -> u32 { return p.lists.items[start + i]; }
-fn diag_count(p: *parser) -> u32 { return p.diags.len / diag_size(); }
-fn diag_at(p: *parser, i: u32) -> *diag { return ((p.diags.data as u32) + i * diag_size()) as *diag; }
+fn node_count(p: *parser) -> u32 { return p.nodes.len / node_size(); }
 
 fn parse_free(p: *parser) -> void {
-    buf_free(&p.nodes); list_free(&p.lists); list_free(&p.stk);
-    buf_free(&p.text); buf_free(&p.diags); buf_free(&p.msgs);
+    buf_free(&p.nodes); list_free(&p.lists); list_free(&p.stk); buf_free(&p.text);
 }
 
 // ---- building the tree ----
 
 fn ps_node(p: *parser, kind: nk, line: u32, col: u32) -> u32 {
-    let n: node = node { kind: kind, line: line, col: col, op: 0, a: 0, b: 0, c: 0, list: 0, count: 0,
+    let n: node = node { kind: kind, file: p.file, line: line, col: col, op: 0, a: 0, b: 0, c: 0, list: 0, count: 0,
                          attrs: 0, nattrs: 0, text: 0, tlen: 0, value: 0 };
     let idx: u32 = p.nodes.len / node_size();
     // Out of memory: the caller writes into node 0, which is harmless, and
-    // parse_all reports it at the end.
+    // parse_file reports it at the end.
     if (!buf_append(&p.nodes, (&n) as *u8, node_size())) { p.oom = true; return 0; }
     return idx;
 }
@@ -224,64 +223,67 @@ fn ps_match(p: *parser, k: tk) -> bool {
 
 // ---- errors ----
 
-fn ps_msg(p: *parser, s: *u8) -> void { if (!buf_str(&p.msgs, s)) { p.oom = true; } }
+fn ps_msg(p: *parser, s: *u8) -> void { dg_str(p.dg, s); }
 
-fn ps_report(p: *parser, at: u32, line: u32, col: u32) -> void {
-    let d: diag = diag { line: line, col: col, at: at, len: p.msgs.len - at };
-    if (!buf_append(&p.diags, (&d) as *u8, diag_size())) { p.oom = true; }
-}
+fn ps_report(p: *parser, line: u32, col: u32) -> void { dg_end(p.dg, p.file, line, col); }
 
 // `<before>'<the current token>'<after>`, at the current token.
 fn ps_err_found(p: *parser, before: *u8, after: *u8) -> void {
-    let at: u32 = p.msgs.len;
+    dg_begin(p.dg);
     ps_msg(p, before);
     ps_msg(p, "'");
-    ps_tok_text(p, &p.msgs, p.i);
+    ps_tok_text(p, &p.dg.msgs, p.i);
     ps_msg(p, "'");
     ps_msg(p, after);
-    ps_report(p, at, ps_line(p), ps_col(p));
+    ps_report(p, ps_line(p), ps_col(p));
 }
 
 fn ps_err(p: *parser, msg: *u8, line: u32, col: u32) -> void {
-    let at: u32 = p.msgs.len;
+    dg_begin(p.dg);
     ps_msg(p, msg);
-    ps_report(p, at, line, col);
+    ps_report(p, line, col);
 }
 
 // The token of kind k, consumed; or an error, and the current token - not
 // consumed, so the caller's recovery decides what to skip.
 fn ps_expect(p: *parser, k: tk, what: *u8) -> u32 {
     if (ps_at(p, k)) { return ps_advance(p); }
-    let at: u32 = p.msgs.len;
+    dg_begin(p.dg);
     ps_msg(p, "expected ");
     ps_msg(p, what);
     ps_msg(p, ", found '");
-    ps_tok_text(p, &p.msgs, p.i);
+    ps_tok_text(p, &p.dg.msgs, p.i);
     ps_msg(p, "'");
-    ps_report(p, at, ps_line(p), ps_col(p));
+    ps_report(p, ps_line(p), ps_col(p));
     return p.i;
 }
 
 // ---- program ----
 
-// The whole token list into a tree, rooted at p.unit. False only if memory ran
-// out; syntax errors are in p.diags, and the tree is built regardless.
-fn parse_all(p: *parser, lx: *lexer) -> bool {
-    p.lx = lx;
-    p.i = 0;
-    p.ntok = lex_count(lx);
+fn parse_init(p: *parser, dg: *diags) -> void {
     p.nodes = buf_new();
     p.lists = list_new();
     p.stk = list_new();
     p.text = buf_new();
-    p.diags = buf_new();
-    p.msgs = buf_new();
+    p.dg = dg;
+    p.file = 0;
     p.no_record_lit = false;
     p.oom = false;
-    let none: node = node { kind: nk.none, line: 0, col: 0, op: 0, a: 0, b: 0, c: 0, list: 0, count: 0,
+    let none: node = node { kind: nk.none, file: 0, line: 0, col: 0, op: 0, a: 0, b: 0, c: 0, list: 0, count: 0,
                             attrs: 0, nattrs: 0, text: 0, tlen: 0, value: 0 };
-    if (!buf_append(&p.nodes, (&none) as *u8, node_size())) { return false; }
+    if (!buf_append(&p.nodes, (&none) as *u8, node_size())) { p.oom = true; }
+}
 
+// One file's tokens into the tree, as file `file`; returns its unit node, or
+// 0 if memory ran out. Syntax errors go to p.dg, and the tree is built
+// regardless.
+fn parse_file(p: *parser, lx: *lexer, file: u32) -> u32 {
+    if (p.oom) { return 0; }
+    p.lx = lx;
+    p.i = 0;
+    p.ntok = lex_count(lx);
+    p.file = file;
+    p.no_record_lit = false;
     let u: u32 = ps_node(p, nk.unit, ps_line(p), ps_col(p));
     let mark: u32 = p.stk.len;
     while (!ps_at(p, tk.eof)) {
@@ -289,11 +291,11 @@ fn parse_all(p: *parser, lx: *lexer) -> bool {
         let d: u32 = ps_decl(p);
         if (d != 0) { ps_push(p, d); }
         if (p.i == before) { ps_sync_top(p); }   // no progress: skip ahead
-        if (p.oom) { return false; }
+        if (p.oom) { return 0; }
     }
     ps_set_list(p, u, mark);
-    p.unit = u;
-    return !p.oom;
+    if (p.oom) { return 0; }
+    return u;
 }
 
 fn ps_is_decl_start(k: tk) -> bool {
@@ -700,11 +702,11 @@ fn ps_let(p: *parser, line: u32, col: u32) -> u32 {
         let e: u32 = ps_expr(p);
         node_at(p, s).b = e;
     } else if (node_at(p, s).a == 0) {
-        let at: u32 = p.msgs.len;
+        dg_begin(p.dg);
         ps_msg(p, "'");
-        ps_tok_text(p, &p.msgs, name);
+        ps_tok_text(p, &p.dg.msgs, name);
         ps_msg(p, "' needs either a type or an initializer");
-        ps_report(p, at, ps_line(p), ps_col(p));
+        ps_report(p, ps_line(p), ps_col(p));
     }
     ps_expect(p, tk.semicolon, "';'");
     return s;

@@ -250,6 +250,14 @@ set(TOKDUMP_XUEX ${PACKAGES_DIR}/tokdump.xuex)
 set(ASTDUMP_SRC  ${SRC_DIR}/os/xc/astdump.xfxn)
 set(ASTDUMP_ELF  ${BUILD_DIR}/astdump.elf)
 set(ASTDUMP_XUEX ${PACKAGES_DIR}/astdump.xuex)
+# semadump, the same for its type checker: staged with the compiler's own
+# sources and the prelude, so
+# `run +disk semadump -s --prelude /Shared/Source/prelude.xfxn /Shared/Source/sema.xfxn`
+# type checks the type checker on CXK.
+set(SEMADUMP_SRC  ${SRC_DIR}/os/xc/semadump.xfxn)
+set(SEMADUMP_ELF  ${BUILD_DIR}/semadump.elf)
+set(SEMADUMP_XUEX ${PACKAGES_DIR}/semadump.xuex)
+set(PRELUDE_XFXN  ${BUILD_DIR}/prelude.xfxn)   # what `cxk compile` puts in front of a program
 
 # Everything APP_BOOT can pull in with `import`, so editing any of it actually
 # rebuilds. This variable was referenced by the compile rule below but never
@@ -430,7 +438,7 @@ add_custom_command(
     COMMENT "Packaging supervisor.xsex (CXEX, type system, staged to disk)"
 )
 
-# ---- tokdump and astdump: the X compiler's lexer and parser, on CXK (staged + signed, like the disk app) ----
+# ---- tokdump, astdump, semadump: the X compiler's front end, on CXK (staged + signed, like the disk app) ----
 file(GLOB XC_SRCS CONFIGURE_DEPENDS ${SRC_DIR}/os/xc/*.xfxn ${SRC_DIR}/os/xc/cxk/*.xfxn)
 add_custom_command(
     OUTPUT ${TOKDUMP_ELF}
@@ -461,6 +469,27 @@ add_custom_command(
     ${PSIGN}
     DEPENDS ${ASTDUMP_ELF} ${CXK}
     COMMENT "Packaging astdump.xuex (CXEX, type user, staged to disk)"
+)
+add_custom_command(
+    OUTPUT ${PRELUDE_XFXN}
+    COMMAND ${CXK} prelude ${PRELUDE_XFXN}
+    DEPENDS ${CXK}
+    COMMENT "X   prelude -> prelude.xfxn"
+)
+add_custom_command(
+    OUTPUT ${SEMADUMP_ELF}
+    COMMAND ${CXK} compile ${SEMADUMP_SRC} ${SEMADUMP_ELF}
+            -I ${SRC_DIR}/os/xc/cxk -I ${SRC_DIR}/os/xc -I ${SRC_DIR}/os/std
+    DEPENDS ${XC_SRCS} ${CXK} ${STD_SRCS}
+    COMMENT "X   semadump.xfxn -> ELF"
+)
+add_custom_command(
+    OUTPUT ${SEMADUMP_XUEX}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${PACKAGES_DIR}
+    COMMAND ${CXK} build ${SEMADUMP_ELF} ${SEMADUMP_XUEX} --type user
+    ${MSIGN}
+    DEPENDS ${SEMADUMP_ELF} ${CXK}
+    COMMENT "Packaging semadump.xuex (CXEX, type user, staged to disk)"
 )
 
 # ---- executive.c -> executive.elf (user-half) -> executive.xoex (signed) ----
@@ -523,15 +552,24 @@ add_custom_command(
             --stage System/Programs/supervisor.xsex=${SUPERVISOR_XCEX}
             --stage Shared/Programs/tokdump.xuex=${TOKDUMP_XUEX}
             --stage Shared/Programs/astdump.xuex=${ASTDUMP_XUEX}
+            --stage Shared/Programs/semadump.xuex=${SEMADUMP_XUEX}
             --stage Shared/Source/lex.xfxn=${SRC_DIR}/os/xc/lex.xfxn
             --stage Shared/Source/parse.xfxn=${SRC_DIR}/os/xc/parse.xfxn
+            --stage Shared/Source/diag.xfxn=${SRC_DIR}/os/xc/diag.xfxn
+            --stage Shared/Source/map.xfxn=${SRC_DIR}/os/xc/map.xfxn
+            --stage Shared/Source/sema.xfxn=${SRC_DIR}/os/xc/sema.xfxn
+            --stage Shared/Source/buf.xfxn=${SRC_DIR}/os/std/buf.xfxn
+            --stage Shared/Source/heap.xfxn=${SRC_DIR}/os/std/heap.xfxn
+            --stage Shared/Source/mem.xfxn=${SRC_DIR}/os/std/mem.xfxn
+            --stage Shared/Source/prelude.xfxn=${PRELUDE_XFXN}
             --stage System/Services/hello.xosv=${SRC_DIR}/os/services/hello.xosv
             --stage System/Services/disabled.xosv=${SRC_DIR}/os/services/disabled.xosv
             --stage System/Services/heartbeat.xosv=${SRC_DIR}/os/services/heartbeat.xosv
             --stage System/Config/kernel.xkco=${KERNEL_XKCO}
     DEPENDS ${BOOT_BIN} ${STAGE2_BIN} ${KERNEL_XKEX} ${EXEC_XOEX} ${DISK_APP_XCEX}
-            ${SUPERVISOR_XCEX} ${TOKDUMP_XUEX} ${ASTDUMP_XUEX}
-            ${SRC_DIR}/os/xc/lex.xfxn ${SRC_DIR}/os/xc/parse.xfxn
+            ${SUPERVISOR_XCEX} ${TOKDUMP_XUEX} ${ASTDUMP_XUEX} ${SEMADUMP_XUEX}
+            ${XC_SRCS} ${SRC_DIR}/os/std/buf.xfxn ${SRC_DIR}/os/std/heap.xfxn
+            ${SRC_DIR}/os/std/mem.xfxn ${PRELUDE_XFXN}
             ${SERVICE_XOSV} ${KERNEL_XKCO} ${CXK}
     COMMENT "Building unified CXK disk (XBPT: boot + stage + system)"
 )

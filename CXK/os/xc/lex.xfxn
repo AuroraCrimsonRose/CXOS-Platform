@@ -26,6 +26,7 @@
 // nothing is copied that does not have to be.
 
 import "buf.xfxn";
+import "diag.xfxn";
 
 // The order matches CXEX.Lang's TokenKind exactly, and tk_names spells the
 // same names - which is what lets the two lexers be compared line for line.
@@ -104,6 +105,8 @@ struct lexer {
     toks: buf,        // token, token, ... ending with eof
     strs: buf,        // decoded string literals, end to end
     errors: u32,      // how many error tokens
+    dg: *diags,       // where an error token's message goes, if anywhere
+    file: u32,        // the file index reported with it
 }
 
 fn token_size() -> u32 { let t: token; return sizeof t; }
@@ -117,6 +120,8 @@ fn lex_init(lx: *lexer, src: *u8, len: u32) -> void {
     lx.toks = buf_new();
     lx.strs = buf_new();
     lx.errors = 0;
+    lx.dg = 0 as *diags;
+    lx.file = 0;
     // A UTF-8 byte-order mark is not part of the text; a C# reader drops it too.
     if (len >= 3 && src[0] == 0xEF && src[1] == 0xBB && src[2] == 0xBF) { lx.pos = 3; }
 }
@@ -125,6 +130,17 @@ fn lex_count(lx: *lexer) -> u32 { return lx.toks.len / token_size(); }
 fn lex_tok(lx: *lexer, i: u32) -> *token { return ((lx.toks.data as u32) + i * token_size()) as *token; }
 
 fn lex_free(lx: *lexer) -> void { buf_free(&lx.toks); buf_free(&lx.strs); }
+
+// Report error tokens' messages into `dg`, as from file `file` - the C#
+// lexer's words, at the token's start. Without this they are only counted.
+fn lex_report_to(lx: *lexer, dg: *diags, file: u32) -> void { lx.dg = dg; lx.file = file; }
+
+fn lx_reporting(lx: *lexer) -> bool { return (lx.dg as u32) != 0; }
+
+fn lx_err(lx: *lexer, msg: *u8, line: u32, col: u32) -> void {
+    if (!lx_reporting(lx)) { return; }
+    dg_error(lx.dg, msg, lx.file, line, col);
+}
 
 // ---- characters ----
 
@@ -242,7 +258,10 @@ fn lx_string(lx: *lexer, start: u32, line: u32, col: u32) -> bool {
             lx_advance(lx);
         }
     }
-    if (lx_eof(lx)) { return lx_push(lx, lx_token(lx, tk.error, start, line, col)); }   // unterminated
+    if (lx_eof(lx)) {   // unterminated
+        lx_err(lx, "unterminated string literal", line, col);
+        return lx_push(lx, lx_token(lx, tk.error, start, line, col));
+    }
     lx_advance(lx);   // closing quote
     let t: token = lx_token(lx, tk.string_literal, start, line, col);
     t.str_at = s0;
@@ -272,6 +291,7 @@ fn lx_char(lx: *lexer, start: u32, line: u32, col: u32) -> bool {
     if (lx_eof(lx) || lx_cur(lx) != '\'' || value < 0) {
         while (!lx_eof(lx) && lx_cur(lx) != '\'' && lx_cur(lx) != '\n') { lx_advance(lx); }
         if (!lx_eof(lx) && lx_cur(lx) == '\'') { lx_advance(lx); }
+        lx_err(lx, "a character literal is one ASCII character or escape, in single quotes: 'a', '\\n', '\\x7F'", line, col);
         return lx_push(lx, lx_token(lx, tk.error, start, line, col));
     }
     lx_advance(lx);   // closing quote
@@ -279,6 +299,18 @@ fn lx_char(lx: *lexer, start: u32, line: u32, col: u32) -> bool {
     t.value = value as u128;
     t.suffix = SFX_CHAR;
     return lx_push(lx, t);
+}
+
+// Too large for 128 bits, or no digits at all: the token is an error.
+fn lx_bad_int(lx: *lexer, start: u32, line: u32, col: u32) -> bool {
+    if (lx_reporting(lx)) {
+        dg_begin(lx.dg);
+        dg_str(lx.dg, "invalid integer literal '");
+        dg_bytes(lx.dg, &lx.src[start], lx.pos - start);
+        dg_str(lx.dg, "'");
+        dg_end(lx.dg, lx.file, line, col);
+    }
+    return lx_push(lx, lx_token(lx, tk.error, start, line, col));
 }
 
 // Decimal or 0x hex, `_` between digits, an optional type suffix. Parsed at
@@ -304,7 +336,16 @@ fn lx_number(lx: *lexer, start: u32, line: u32, col: u32) -> bool {
             if (lx_spells(lx, s0, lx.pos - s0, suffixes[i])) { sfx = i + 1; break; }
             i += 1;
         }
-        if (sfx == 0) { return lx_push(lx, lx_token(lx, tk.error, start, line, col)); }
+        if (sfx == 0) {
+            if (lx_reporting(lx)) {
+                dg_begin(lx.dg);
+                dg_str(lx.dg, "'");
+                dg_bytes(lx.dg, &lx.src[s0], lx.pos - s0);
+                dg_str(lx.dg, "' is not an integer type; a literal suffix is one of u8, u16, u32, u64, u128, i8, i16, i32, i64, i128");
+                dg_end(lx.dg, lx.file, line, col);
+            }
+            return lx_push(lx, lx_token(lx, tk.error, start, line, col));
+        }
     }
 
     let v: u128 = 0;
@@ -316,18 +357,18 @@ fn lx_number(lx: *lexer, start: u32, line: u32, col: u32) -> bool {
         if (c == '_') { continue; }
         digits += 1;
         if (hex) {
-            if ((v >> 124) != 0) { return lx_push(lx, lx_token(lx, tk.error, start, line, col)); }
+            if ((v >> 124) != 0) { return lx_bad_int(lx, start, line, col); }
             v = (v << 4) | (hex_val(c) as u128);
         } else {
             let d: u128 = (c - '0') as u128;
             // v * 10 + d must stay inside 128 bits
-            if (v > 0x19999999999999999999999999999999u128) { return lx_push(lx, lx_token(lx, tk.error, start, line, col)); }
+            if (v > 0x19999999999999999999999999999999u128) { return lx_bad_int(lx, start, line, col); }
             let t: u128 = v * 10;
-            if (t > 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFu128 - d) { return lx_push(lx, lx_token(lx, tk.error, start, line, col)); }
+            if (t > 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFu128 - d) { return lx_bad_int(lx, start, line, col); }
             v = t + d;
         }
     }
-    if (digits == 0) { return lx_push(lx, lx_token(lx, tk.error, start, line, col)); }
+    if (digits == 0) { return lx_bad_int(lx, start, line, col); }
     let t: token = lx_token(lx, tk.int_literal, start, line, col);
     t.value = v;
     t.suffix = sfx;
@@ -376,6 +417,16 @@ fn lx_op(lx: *lexer, start: u32, line: u32, col: u32) -> bool {
         case '|' { lx_advance(lx); if (lx_cur(lx) == '|') { lx_advance(lx); k = tk.or_or; } else { k = lx_eq2(lx, tk.pipe_assign, tk.pipe); } }
         case '&' { lx_advance(lx); if (lx_cur(lx) == '&') { lx_advance(lx); k = tk.and_and; } else { k = lx_eq2(lx, tk.amp_assign, tk.amp); } }
         else { lx_advance_char(lx); k = tk.error; }   // unexpected: skip the whole character
+    }
+    if (k == tk.error && lx_reporting(lx)) {
+        /* C# names the first UTF-16 unit of the character: for one outside
+           the BMP that is half a surrogate pair, which prints as U+FFFD. */
+        dg_begin(lx.dg);
+        dg_str(lx.dg, "unexpected character '");
+        if (c >= 0xF0) { let rep: [3]u8 = [0xEF, 0xBF, 0xBD]; dg_bytes(lx.dg, &rep[0], 3); }   // X strings have no \x
+        else { dg_bytes(lx.dg, &lx.src[start], lx.pos - start); }
+        dg_str(lx.dg, "'");
+        dg_end(lx.dg, lx.file, line, col);
     }
     return lx_push(lx, lx_token(lx, k, start, line, col));
 }

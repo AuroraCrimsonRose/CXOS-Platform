@@ -1,0 +1,274 @@
+// xc/front.xfxn - the X compiler's front end: a program, from files to types.
+// Aurora Tejeda / CATX SYSTEMS LLC
+//
+//   let f: front;
+//   front_init(&f);
+//   front_include(&f, "os/std");                 // -I, any number
+//   front_prelude(&f, prelude_bytes, n);         // or none
+//   if (!front_analyze(&f, "app.xfxn")) { ...out of memory... }
+//   f.dg - every diagnostic; f.checked - whether type checking ran
+//
+// What `cxk compile` does before it emits anything (CX_DEVKIT Frontend.cs):
+// the prelude goes in front of the main file, every file it imports is read
+// once - breadth first, in the order the imports are met - and their
+// declarations merged into one list, which is resolved, and type checked
+// if nothing has failed by then. Every diagnostic is reported in that order.
+//
+// An import is looked for beside the file importing it, then beside the main
+// file, then in each -I directory, then in the std directory (C#: beside the
+// cxk binary). Paths are made absolute and normalised as .NET's GetFullPath
+// does, and two that differ only in case are the same file, as there.
+
+import "sema.xfxn";
+
+struct srcfile { path: u32, plen: u32, name: u32, nlen: u32 }
+
+struct front {
+    dg: diags,
+    p: parser,
+    s: sema,
+    files: buf,       // srcfile, by file index
+    strs: buf,        // their paths and names; the -I directories
+    incs: list,       // -I directories: offset, length pairs in strs
+    std_at: u32,
+    std_len: u32,
+    prelude: buf,
+    use_prelude: bool,
+    decls: list,      // the merged declarations
+    checked: bool,
+    oom: bool,
+}
+
+fn srcfile_size() -> u32 { let x: srcfile; return sizeof x; }
+fn file_at(f: *front, i: u32) -> *srcfile { return ((f.files.data as u32) + i * srcfile_size()) as *srcfile; }
+fn file_count(f: *front) -> u32 { return f.files.len / srcfile_size(); }
+
+fn front_init(f: *front) -> void {
+    f.dg = diags_new();
+    parse_init(&f.p, &f.dg);
+    f.files = buf_new();
+    f.strs = buf_new();
+    f.incs = list_new();
+    f.std_at = 0;
+    f.std_len = 0;
+    f.prelude = buf_new();
+    f.use_prelude = false;
+    f.decls = list_new();
+    f.checked = false;
+    f.oom = false;
+}
+
+fn cstr_len(s: *u8) -> u32 { let n: u32 = 0; while (s[n] != 0) { n += 1; } return n; }
+
+fn front_include(f: *front, dir: *u8) -> void {
+    list_push(&f.incs, f.strs.len);
+    list_push(&f.incs, cstr_len(dir));
+    buf_str(&f.strs, dir);
+}
+
+fn front_std(f: *front, dir: *u8) -> void {
+    f.std_at = f.strs.len;
+    f.std_len = cstr_len(dir);
+    buf_str(&f.strs, dir);
+}
+
+fn front_prelude(f: *front, p: *u8, n: u32) -> void {
+    buf_append(&f.prelude, p, n);
+    f.use_prelude = true;
+}
+
+// ---- paths ----
+
+// p[0..n] made absolute and normalised - `.`, `..` and repeated slashes gone,
+// as GetFullPath does - and appended to `out`, NUL-terminated.
+fn path_full(p: *u8, n: u32, out: *buf) -> bool {
+    let raw: buf = buf_new();
+    if (n == 0 || p[0] != '/') {
+        if (!xc_cwd(&raw)) { buf_free(&raw); return false; }
+        buf_push(&raw, '/');
+    }
+    buf_append(&raw, p, n);
+    let start: u32 = out.len;
+    let i: u32 = 0;
+    let trailing: bool = raw.len > 1 && raw.data[raw.len - 1] == '/';
+    while (i < raw.len) {
+        while (i < raw.len && raw.data[i] == '/') { i += 1; }
+        let s0: u32 = i;
+        while (i < raw.len && raw.data[i] != '/') { i += 1; }
+        let len: u32 = i - s0;
+        if (len == 0 || (len == 1 && raw.data[s0] == '.')) { continue; }
+        if (len == 2 && raw.data[s0] == '.' && raw.data[s0 + 1] == '.') {
+            while (out.len > start && out.data[out.len - 1] != '/') { out.len -= 1; }
+            if (out.len > start) { out.len -= 1; }   // the slash before it
+            continue;
+        }
+        buf_push(out, '/');
+        buf_append(out, &raw.data[s0], len);
+    }
+    if (out.len == start || trailing) { buf_push(out, '/'); }
+    buf_free(&raw);
+    buf_push(out, 0);
+    out.len -= 1;
+    return true;
+}
+
+// Where the last '/' is in p[0..n], or n if there is none.
+fn last_slash(p: *u8, n: u32) -> u32 {
+    let i: u32 = n;
+    while (i > 0) { i -= 1; if (p[i] == '/') { return i; } }
+    return n;
+}
+
+// Path.Combine(dir, spec), appended to `out`.
+fn path_join(dir: *u8, dlen: u32, spec: *u8, slen: u32, out: *buf) -> void {
+    if (slen > 0 && spec[0] == '/') { buf_append(out, spec, slen); return; }
+    if (dlen > 0) {
+        buf_append(out, dir, dlen);
+        if (dir[dlen - 1] != '/') { buf_push(out, '/'); }
+    }
+    buf_append(out, spec, slen);
+}
+
+fn lower(c: u8) -> u8 { if (c >= 'A' && c <= 'Z') { return c + 32; } return c; }
+
+fn path_seen(f: *front, p: *u8, n: u32) -> bool {
+    let i: u32 = 0;
+    while (i < file_count(f)) {
+        let x: *srcfile = file_at(f, i);
+        if (x.plen == n) {
+            let j: u32 = 0;
+            while (j < n && lower(f.strs.data[x.path + j]) == lower(p[j])) { j += 1; }
+            if (j == n) { return true; }
+        }
+        i += 1;
+    }
+    return false;
+}
+
+// A file to read: its full path, and the name its diagnostics carry.
+fn add_file(f: *front, full: *u8, flen: u32, name: *u8, nlen: u32) -> u32 {
+    let x: srcfile = srcfile { path: 0, plen: flen, name: 0, nlen: nlen };
+    // copy first: either may point into strs
+    let tmp: buf = buf_new();
+    buf_append(&tmp, full, flen);
+    buf_append(&tmp, name, nlen);
+    x.path = f.strs.len;
+    buf_append(&f.strs, tmp.data, flen);
+    buf_push(&f.strs, 0);
+    x.name = f.strs.len;
+    buf_append(&f.strs, &tmp.data[flen], nlen);
+    buf_free(&tmp);
+    let i: u32 = file_count(f);
+    if (!buf_append(&f.files, (&x) as *u8, srcfile_size())) { f.oom = true; }
+    return i;
+}
+
+// Try one place for an import: dir + spec, made full. True, with the path in
+// `out`, if a file is there.
+fn try_root(dir: *u8, dlen: u32, spec: *u8, slen: u32, out: *buf) -> bool {
+    let j: buf = buf_new();
+    path_join(dir, dlen, spec, slen, &j);
+    out.len = 0;
+    let ok: bool = path_full(j.data, j.len, out);
+    buf_free(&j);
+    return ok && xc_exists(out.data);
+}
+
+// GetDirectoryName: up to the last slash, the root kept as "/".
+fn dir_len(p: *u8, n: u32) -> u32 {
+    let k: u32 = last_slash(p, n);
+    if (k == n) { return 0; }
+    if (k == 0) { return 1; }
+    return k;
+}
+
+fn resolve_import(f: *front, spec: *u8, slen: u32, importer: u32, out: *buf) -> bool {
+    let imp: *srcfile = file_at(f, importer);
+    let ip: u32 = imp.path;
+    if (try_root(&f.strs.data[ip], dir_len(&f.strs.data[ip], file_at(f, importer).plen), spec, slen, out)) { return true; }
+    let main: *srcfile = file_at(f, 0);
+    let mp: u32 = main.path;
+    if (try_root(&f.strs.data[mp], dir_len(&f.strs.data[mp], file_at(f, 0).plen), spec, slen, out)) { return true; }
+    let i: u32 = 0;
+    while (i < f.incs.len) {
+        if (try_root(&f.strs.data[f.incs.items[i]], f.incs.items[i + 1], spec, slen, out)) { return true; }
+        i += 2;
+    }
+    if (f.std_len > 0 && try_root(&f.strs.data[f.std_at], f.std_len, spec, slen, out)) { return true; }
+    return false;
+}
+
+// ---- the program ----
+
+fn front_analyze(f: *front, source: *u8) -> bool {
+    let slen: u32 = cstr_len(source);
+    let full: buf = buf_new();
+    if (!path_full(source, slen, &full)) { buf_free(&full); return false; }
+    let ls: u32 = last_slash(source, slen);
+    let name_at: u32 = 0;
+    if (ls < slen) { name_at = ls + 1; }
+    add_file(f, full.data, full.len, &source[name_at], slen - name_at);
+    buf_free(&full);
+
+    let next: u32 = 0;
+    while (next < file_count(f)) {
+        let fi: u32 = next;
+        next += 1;
+        // the text: a file as read, a BOM dropped; the main one after the prelude
+        let raw: buf = buf_new();
+        let text: buf = buf_new();
+        let pathp: buf = buf_new();
+        buf_append(&pathp, &f.strs.data[file_at(f, fi).path], file_at(f, fi).plen);
+        buf_push(&pathp, 0);
+        if (!read_file(pathp.data, &raw)) {
+            err_str("xc: cannot read "); err_str(pathp.data); err_str("\n");
+            return false;
+        }
+        buf_free(&pathp);
+        let skip: u32 = 0;
+        if (raw.len >= 3 && raw.data[0] == 0xEF && raw.data[1] == 0xBB && raw.data[2] == 0xBF) { skip = 3; }
+        if (fi == 0 && f.use_prelude) { buf_append(&text, f.prelude.data, f.prelude.len); buf_push(&text, '\n'); }
+        buf_append(&text, &raw.data[skip], raw.len - skip);
+        buf_free(&raw);
+
+        let lx: lexer;
+        lex_init(&lx, text.data, text.len);
+        lex_report_to(&lx, &f.dg, fi);
+        if (!lex_all(&lx)) { return false; }
+        let unit: u32 = parse_file(&f.p, &lx, fi);
+        lex_free(&lx);
+        buf_free(&text);
+        if (unit == 0) { return false; }
+
+        let i: u32 = 0;
+        while (i < node_at(&f.p, unit).count) {
+            let d: u32 = list_at(&f.p, node_at(&f.p, unit).list, i);
+            i += 1;
+            if (node_at(&f.p, d).kind != nk.d_import) { list_push(&f.decls, d); continue; }
+            let spec: buf = buf_new();
+            buf_append(&spec, &f.p.text.data[node_at(&f.p, d).text], node_at(&f.p, d).tlen);
+            let found: buf = buf_new();
+            if (!resolve_import(f, spec.data, spec.len, fi, &found)) {
+                dg_begin(&f.dg);
+                dg_str(&f.dg, "cannot find import \"");
+                dg_bytes(&f.dg, spec.data, spec.len);
+                dg_str(&f.dg, "\"");
+                let dx: *node = node_at(&f.p, d);
+                dg_end(&f.dg, dx.file, dx.line, dx.col);
+            } else if (!path_seen(f, found.data, found.len)) {
+                let k: u32 = last_slash(found.data, found.len);
+                add_file(f, found.data, found.len, &found.data[k + 1], found.len - k - 1);
+            }
+            buf_free(&spec);
+            buf_free(&found);
+        }
+    }
+
+    sema_init(&f.s, &f.p, &f.dg);
+    sema_resolve(&f.s, &f.decls);
+    if (dg_count(&f.dg) == 0) {
+        sema_check(&f.s, &f.decls);
+        f.checked = true;
+    }
+    return !f.p.oom && !f.dg.oom && !f.oom;
+}
