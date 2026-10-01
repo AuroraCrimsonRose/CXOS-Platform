@@ -123,21 +123,38 @@ static int create_system_tree(void) {
 
    Returns 0 on success (or if there is simply nothing to stage), negative on a
    real error. */
+static int populate_entries(uint8_t disk_id, const struct partition *stage, const uint8_t *hdr, uint32_t count);
+
 static int populate_from_stage(uint8_t disk_id) {
     struct partition stage;
     if (part_find_type(disk_id, PART_TYPE_CXSTAGE, &stage) != 0)
         return 0;                               /* no staging area: empty /System is fine */
 
-    uint8_t hdr[SECTOR];
-    if (disk_read(disk_id, stage.start_lba, 1, hdr) != 0) return -1;
-    if (hdr[0]!='X'||hdr[1]!='S'||hdr[2]!='T'||hdr[3]!='G') return -1;
-    if (rd16(hdr + 4) != XSTG_VERSION) return -1;
+    uint8_t first[SECTOR];
+    if (disk_read(disk_id, stage.start_lba, 1, first) != 0) return -1;
+    if (first[0]!='X'||first[1]!='S'||first[2]!='T'||first[3]!='G') return -1;
 
-    uint16_t count = rd16(hdr + 6);
-    if (count > XSTG_MAX_FILES) count = XSTG_MAX_FILES;
+    if (rd16(first + 4) != XSTG_VERSION) return -1;
+    uint32_t msecs = rd16(first + 8);
+    if (msecs == 0 || msecs > XSTG_MAX_SECTORS) return -1;
 
-    for (uint16_t i = 0; i < count; i++) {
-        const uint8_t *e = hdr + 16 + (uint32_t)i * XSTG_ENTRY_SIZE;
+    /* A manifest that claims more entries than it has room for is corrupt:
+       refused whole, rather than read past its end or quietly cut short. */
+    uint32_t count = rd16(first + 6);
+    if (16 + count * XSTG_ENTRY_SIZE > msecs * SECTOR) return -1;
+
+    uint8_t *hdr = (uint8_t *)kmalloc(msecs * SECTOR);
+    if (!hdr) return -1;
+    if (disk_read(disk_id, stage.start_lba, msecs, hdr) != 0) { kfree(hdr); return -1; }
+    int rc = populate_entries(disk_id, &stage, hdr, count);
+    kfree(hdr);
+    return rc;
+}
+
+/* The files a manifest lists, copied in one by one. */
+static int populate_entries(uint8_t disk_id, const struct partition *stage, const uint8_t *hdr, uint32_t count) {
+    for (uint32_t i = 0; i < count; i++) {
+        const uint8_t *e = hdr + 16 + i * XSTG_ENTRY_SIZE;
         char name[XSTG_NAME_LEN + 1];
         for (uint32_t k = 0; k < XSTG_NAME_LEN; k++) name[k] = (char)e[k];
         name[XSTG_NAME_LEN] = '\0';
@@ -149,7 +166,7 @@ static int populate_from_stage(uint8_t disk_id) {
         uint32_t sectors = (size + SECTOR - 1) / SECTOR;
         uint8_t *buf = (uint8_t *)kmalloc(sectors * SECTOR);
         if (!buf) return -1;
-        if (disk_read(disk_id, stage.start_lba + start_sector, sectors, buf) != 0) {
+        if (disk_read(disk_id, stage->start_lba + start_sector, sectors, buf) != 0) {
             kfree(buf);
             return -1;
         }

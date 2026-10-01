@@ -28,7 +28,12 @@
 #include <stddef.h>
 
 #define USER_STACK_TOP    0xBFFFF000u
-#define USER_STACK_PAGES  4u
+/* 256 KB. It was 16 KB, which an ordinary program fits in and a recursive
+   one does not: the X compiler's type checker, run on its own source, needs
+   more than 32 KB. The pages are allocated up front; the page below the stack
+   is never mapped, so running past it is a fault that ends the process, not a
+   write into whatever lies beneath. */
+#define USER_STACK_PAGES  64u
 #define PROC_MAX_IMAGE    (1u << 20)   /* 1 MiB cap on an image */
 
 /* per-pid record handed from proc_start to the trampoline (which runs later, on

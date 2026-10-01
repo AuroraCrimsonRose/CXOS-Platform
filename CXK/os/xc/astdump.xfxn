@@ -1,0 +1,291 @@
+// xc/astdump.xfxn - print the syntax trees of X source files.
+// Aurora Tejeda / CATX SYSTEMS LLC
+//
+//   astdump a.xfxn b.xfxn ...
+//   astdump -s a.xfxn ...      one summary line per file instead
+//
+// The same format as `cxk ast` in CX_DEVKIT, so the X parser and the C# one
+// can be compared with a diff. Per file, a line `== path`; then every node as
+//
+//   Kind line:col payload
+//
+// with its children below it, indented two spaces more (a type has no
+// position, so no line:col); then every error as `error line:col message`.
+// Text is printed in double quotes, with `"`, `\` and control bytes as \xHH;
+// a message escapes only the last two.
+//
+// -s prints, per file, the node and error counts and an FNV-1a hash of the
+// dump without its `==` line, as tokdump -s does for tokens.
+
+import "xc_sys.xfxn";
+import "parse.xfxn";
+
+global hexdig: *u8 = "0123456789abcdef";
+
+global binop_names: [18]*u8 = ["add", "sub", "mul", "div", "mod", "eq", "ne", "lt", "le", "gt", "ge",
+                               "and", "or", "bitand", "bitor", "bitxor", "shl", "shr"];
+global unop_names: [5]*u8 = ["neg", "not", "deref", "addr", "bitnot"];
+global space_names: [4]*u8 = ["normal", "user", "phys", "dma"];
+
+fn buf_u128(b: *buf, v: u128) -> bool {
+    let digits: [40]u8;
+    let n: u32 = 0;
+    let x: u128 = v;
+    while (true) {
+        digits[n] = '0' + (x % 10) as u8;
+        n += 1;
+        x /= 10;
+        if (x == 0) { break; }
+    }
+    if (!buf_reserve(b, n)) { return false; }
+    while (n > 0) { n -= 1; b.data[b.len] = digits[n]; b.len += 1; }
+    return true;
+}
+
+fn put_escaped(b: *buf, s: *u8, n: u32, quote: bool) -> void {
+    if (quote) { buf_push(b, '"'); }
+    let i: u32 = 0;
+    while (i < n) {
+        let c: u8 = s[i];
+        if (c < 0x20 || c == 0x7F || c == '\\' || (quote && c == '"')) {
+            buf_str(b, "\\x");
+            buf_push(b, hexdig[(c >> 4) as u32]);
+            buf_push(b, hexdig[(c & 15) as u32]);
+        } else {
+            buf_push(b, c);
+        }
+        i += 1;
+    }
+    if (quote) { buf_push(b, '"'); }
+}
+
+// ---- the dump ----
+
+struct dumper { p: *parser, out: *buf }
+
+// The start of a node's line: indent, kind and, for anything but a type, where.
+fn line(d: *dumper, depth: u32, kind: *u8, n: u32) -> void {
+    let i: u32 = 0;
+    while (i < depth) { buf_str(d.out, "  "); i += 1; }
+    buf_str(d.out, kind);
+    let x: *node = node_at(d.p, n);
+    if (x.line != 0) {
+        buf_push(d.out, ' ');
+        buf_u32(d.out, x.line);
+        buf_push(d.out, ':');
+        buf_u32(d.out, x.col);
+    }
+}
+
+fn text(d: *dumper, n: u32) -> void {
+    let x: *node = node_at(d.p, n);
+    buf_push(d.out, ' ');
+    put_escaped(d.out, &d.p.text.data[x.text], x.tlen, true);
+}
+
+fn word(d: *dumper, w: *u8) -> void { buf_push(d.out, ' '); buf_str(d.out, w); }
+fn eol(d: *dumper) -> void { buf_push(d.out, '\n'); }
+
+fn kids(d: *dumper, depth: u32, n: u32) -> void {
+    let x: *node = node_at(d.p, n);
+    let i: u32 = 0;
+    while (i < x.count) { walk(d, depth, list_at(d.p, x.list, i)); i += 1; }
+}
+
+fn walk(d: *dumper, depth: u32, n: u32) -> void {
+    if (n == 0) { return; }
+    let x: *node = node_at(d.p, n);
+    let k: nk = x.kind;
+    let in: u32 = depth + 1;
+    switch (k) {
+        case nk.unit { line(d, depth, "Unit", n); eol(d); kids(d, in, n); }
+        case nk.d_import, nk.d_fn, nk.d_struct, nk.d_alias, nk.d_global, nk.d_const, nk.d_enum { decl(d, depth, n); }
+        case nk.variant {
+            line(d, depth, "Variant", n); text(d, n);
+            if (x.op == 1) { word(d, "sum"); }
+            eol(d);
+            kids(d, in, n);
+            walk(d, in, x.a);
+        }
+        case nk.attr { line(d, depth, "Attr", n); text(d, n); eol(d); kids(d, in, n); }
+        case nk.attr_arg {
+            line(d, depth, "Arg", n);
+            if (x.op == 1) { text(d, n); }
+            eol(d);
+            walk(d, in, x.a);
+        }
+        case nk.param { line(d, depth, "Param", n); text(d, n); eol(d); walk(d, in, x.a); }
+
+        case nk.s_block { line(d, depth, "Block", n); eol(d); kids(d, in, n); }
+        case nk.s_let { line(d, depth, "Let", n); text(d, n); eol(d); walk(d, in, x.a); walk(d, in, x.b); }
+        case nk.s_assign {
+            line(d, depth, "Assign", n);
+            if (x.op == 1) { word(d, "compound"); }
+            eol(d);
+            walk(d, in, x.a); walk(d, in, x.b);
+        }
+        case nk.s_if { line(d, depth, "If", n); eol(d); walk(d, in, x.a); walk(d, in, x.b); walk(d, in, x.c); }
+        case nk.s_while { line(d, depth, "While", n); eol(d); walk(d, in, x.a); walk(d, in, x.b); }
+        case nk.s_return { line(d, depth, "Return", n); eol(d); walk(d, in, x.a); }
+        case nk.s_break { line(d, depth, "Break", n); eol(d); }
+        case nk.s_continue { line(d, depth, "Continue", n); eol(d); }
+        case nk.s_expr { line(d, depth, "ExprStmt", n); eol(d); walk(d, in, x.a); }
+        case nk.s_defer { line(d, depth, "Defer", n); eol(d); walk(d, in, x.a); }
+        case nk.s_switch { line(d, depth, "Switch", n); eol(d); walk(d, in, x.a); kids(d, in, n); walk(d, in, x.b); }
+        case nk.s_case {
+            line(d, depth, "Case", n);
+            if (x.op == 1) { text(d, n); }
+            eol(d);
+            kids(d, in, n);
+            walk(d, in, x.a);
+        }
+
+        case nk.e_int {
+            line(d, depth, "Int", n);
+            buf_push(d.out, ' ');
+            buf_u128(d.out, x.value);
+            if (x.op == SFX_CHAR) { word(d, "char"); }
+            else if (x.op != 0) { word(d, suffixes[x.op - 1]); }
+            eol(d);
+        }
+        case nk.e_str { line(d, depth, "Str", n); text(d, n); eol(d); }
+        case nk.e_bool {
+            line(d, depth, "Bool", n);
+            if (x.op == 1) { word(d, "true"); } else { word(d, "false"); }
+            eol(d);
+        }
+        case nk.e_name { line(d, depth, "Name", n); text(d, n); eol(d); }
+        case nk.e_call { line(d, depth, "Call", n); eol(d); walk(d, in, x.a); kids(d, in, n); }
+        case nk.e_member { line(d, depth, "Member", n); text(d, n); eol(d); walk(d, in, x.a); }
+        case nk.e_index { line(d, depth, "Index", n); eol(d); walk(d, in, x.a); walk(d, in, x.b); }
+        case nk.e_unary { line(d, depth, "Unary", n); word(d, unop_names[x.op]); eol(d); walk(d, in, x.a); }
+        case nk.e_binary {
+            line(d, depth, "Binary", n); word(d, binop_names[x.op]); eol(d);
+            walk(d, in, x.a); walk(d, in, x.b);
+        }
+        case nk.e_cast { line(d, depth, "Cast", n); eol(d); walk(d, in, x.a); walk(d, in, x.b); }
+        case nk.e_sizeof { line(d, depth, "Sizeof", n); eol(d); walk(d, in, x.a); }
+        case nk.e_struct_lit { line(d, depth, "StructLit", n); eol(d); walk(d, in, x.a); kids(d, in, n); }
+        case nk.e_field { line(d, depth, "Field", n); text(d, n); eol(d); walk(d, in, x.a); }
+        case nk.e_array_lit { line(d, depth, "ArrayLit", n); eol(d); kids(d, in, n); }
+
+        case nk.t_prim { line(d, depth, "Prim", n); word(d, prim_names[x.op]); eol(d); }
+        case nk.t_ptr {
+            line(d, depth, "Ptr", n);
+            if (x.op != SPACE_NORMAL) { word(d, space_names[x.op]); }
+            eol(d);
+            walk(d, in, x.a);
+        }
+        case nk.t_array {
+            line(d, depth, "Array", n); buf_push(d.out, ' '); buf_u128(d.out, x.value); eol(d);
+            walk(d, in, x.a);
+        }
+        case nk.t_named { line(d, depth, "Named", n); text(d, n); eol(d); }
+        case nk.t_fn {
+            line(d, depth, "FnType", n); buf_push(d.out, ' '); buf_u32(d.out, x.count); eol(d);
+            kids(d, in, n);
+            walk(d, in, x.a);
+        }
+        else { }
+    }
+}
+
+fn decl(d: *dumper, depth: u32, n: u32) -> void {
+    let x: *node = node_at(d.p, n);
+    let in: u32 = depth + 1;
+    switch (x.kind) {
+        case nk.d_import { line(d, depth, "Import", n); }
+        case nk.d_fn { line(d, depth, "Fn", n); }
+        case nk.d_struct { line(d, depth, "Struct", n); }
+        case nk.d_alias { line(d, depth, "Alias", n); }
+        case nk.d_global { line(d, depth, "Global", n); }
+        case nk.d_const { line(d, depth, "Const", n); }
+        else { line(d, depth, "Enum", n); }
+    }
+    text(d, n);
+    if (x.kind == nk.d_fn && x.b == 0) { word(d, "extern"); }
+    eol(d);
+    let i: u32 = 0;
+    while (i < x.nattrs) { walk(d, in, list_at(d.p, x.attrs, i)); i += 1; }
+    switch (x.kind) {
+        case nk.d_fn { kids(d, in, n); walk(d, in, x.a); walk(d, in, x.b); }
+        case nk.d_struct { kids(d, in, n); }
+        case nk.d_enum { walk(d, in, x.a); kids(d, in, n); }
+        case nk.d_import { }
+        else { walk(d, in, x.a); walk(d, in, x.b); }   // alias, global, const
+    }
+}
+
+fn dump(p: *parser, unit: u32, out: *buf) -> bool {
+    let d: dumper = dumper { p: p, out: out };
+    walk(&d, 0, unit);
+    let i: u32 = 0;
+    while (i < dg_count(p.dg)) {
+        let g: *diag = dg_at(p.dg, i);
+        buf_str(out, "error ");
+        buf_u32(out, g.line);
+        buf_push(out, ':');
+        buf_u32(out, g.col);
+        buf_push(out, ' ');
+        put_escaped(out, &p.dg.msgs.data[g.at], g.len, false);
+        if (!buf_push(out, '\n')) { return false; }
+        i += 1;
+    }
+    return true;
+}
+
+fn fnv1a(p: *u8, n: u32) -> u32 {
+    let h: u32 = 0x811C9DC5;
+    let i: u32 = 0;
+    while (i < n) { h ^= p[i] as u32; h *= 0x01000193; i += 1; }
+    return h;
+}
+
+fn buf_hex32(b: *buf, v: u32) -> bool {
+    let s: i32 = 28;
+    while (s >= 0) { buf_push(b, hexdig[(v >> s as u32) & 15]); s -= 4; }
+    return true;
+}
+
+fn xc_main() -> i32 {
+    let out: buf = buf_new();
+    let sum: bool = false;
+    let i: u32 = 1;
+    if (xc_argc() > 1 && xc_arg(1)[0] == '-' && xc_arg(1)[1] == 's' && xc_arg(1)[2] == 0) { sum = true; i = 2; }
+    while (i < xc_argc()) {
+        let path: *u8 = xc_arg(i);
+        let src: buf = buf_new();
+        if (!read_file(path, &src)) { err_str("astdump: cannot read "); err_str(path); err_str("\n"); return 1; }
+        let d: buf = buf_new();
+        if (!sum) { buf_str(&d, "== "); buf_str(&d, path); buf_push(&d, '\n'); }   // the hash leaves the path out
+        let lx: lexer;
+        lex_init(&lx, src.data, src.len);
+        let dg: diags = diags_new();   // the parser's alone, as `cxk ast` prints
+        let p: parser;
+        parse_init(&p, &dg);
+        if (!lex_all(&lx)) { err_str("astdump: out of memory\n"); return 2; }
+        let unit: u32 = parse_file(&p, &lx, 0);
+        if (unit == 0 || !dump(&p, unit, &d)) { err_str("astdump: out of memory\n"); return 2; }
+        if (sum) {
+            buf_str(&out, path);
+            buf_str(&out, ": ");
+            buf_u32(&out, node_count(&p) - 1);
+            buf_str(&out, " nodes, ");
+            buf_u32(&out, dg_count(&dg));
+            buf_str(&out, " errors, fnv1a ");
+            buf_hex32(&out, fnv1a(d.data, d.len));
+            buf_push(&out, '\n');
+        } else {
+            buf_append(&out, d.data, d.len);
+        }
+        parse_free(&p);
+        diags_free(&dg);
+        lex_free(&lx);
+        buf_free(&src);
+        buf_free(&d);
+        out_buf(&out);
+        buf_clear(&out);
+        i += 1;
+    }
+    return 0;
+}
