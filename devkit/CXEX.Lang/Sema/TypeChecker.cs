@@ -31,7 +31,10 @@ public sealed class TypeChecker
         foreach (var d in unit.Decls) CheckAttrs(d);
         foreach (var d in unit.Decls)
             if (d is FnDecl fd) CheckSignature(fd);
-            else if (d is EnumDecl ed) CheckEnum(ed);
+            else if (d is EnumDecl ed) { CheckEnum(ed); if (ed.IsSum) CheckSize(new NamedType(ed.Name), ed.Span); }
+            else if (d is StructDecl sd) CheckSize(new NamedType(sd.Name), sd.Span);
+            else if (d is GlobalDecl gd) CheckSize(gd.Type, gd.Span);
+            else if (d is ConstDecl cd) CheckSize(cd.Type, cd.Span);
         foreach (var d in unit.Decls)
             switch (d)
             {
@@ -57,10 +60,35 @@ public sealed class TypeChecker
     private void CheckSignature(FnDecl f)
     {
         foreach (var p in f.Params)
+        {
             if (_ctx.Expand(p.Type) is ArrayType)
                 _diag.Error($"parameter '{p.Name}' is an array; pass a pointer to it (*T) instead", p.Span);
+            CheckSize(p.Type, p.Span);
+        }
         if (_ctx.Expand(f.Return) is ArrayType)
             _diag.Error($"'{f.Name}' returns an array; return it through a pointer parameter instead", f.Span);
+        CheckSize(f.Return, f.Span);
+    }
+
+    /* Every type written where it takes up room - a declaration, a local, a
+       parameter, a cast - must have a size, and a sane one.
+     *
+     * A struct holding itself by value, directly or through others, has none:
+     * sizing it recursed until the compiler crashed. And a type larger than
+     * 1 GB cannot exist on this target: `let a: [0x7FFFFFFF]u32;` is 8 GB, and
+     * the frame size it was added into wrapped negative, so the function
+     * reserved no stack at all and wrote below it. 1 GB rather than 2 keeps
+     * every sum of a few of them - a frame, a struct - clear of overflow. */
+    private const int MaxObject = 1 << 30;
+
+    private void CheckSize(TypeRef t, SourceSpan span)
+    {
+        _ctx.SizeCycle = null;
+        int size = _ctx.SizeOf(t);
+        if (_ctx.SizeCycle != null)
+            _diag.Error($"'{_ctx.SizeCycle}' contains itself by value, so it has no size; use a pointer (*{_ctx.SizeCycle})", span);
+        else if (size > MaxObject)
+            _diag.Error($"{Show(t)} is larger than 1 GB, more than this 32-bit target can hold", span);
     }
 
     private bool IsSum(TypeRef t) =>
@@ -515,9 +543,10 @@ public sealed class TypeChecker
                     if (l.Init == null)
                     {
                         // `let x: T;` - declared, uninitialized; type required.
-                        if (l.Type != null) BindLocalType(l, l.Type);
+                        if (l.Type != null) { CheckSize(l.Type, l.Span); BindLocalType(l, l.Type); }
                         break;
                     }
+                    if (l.Type != null) CheckSize(l.Type, l.Span);
                     var it = l.Type != null ? CheckInit(l.Init!, l.Type) : CheckExpr(l.Init!);
                     if (l.Type != null)
                     {
@@ -722,6 +751,7 @@ public sealed class TypeChecker
             case CastExpr c:
                 {
                     var from = CheckExpr(c.Operand);
+                    CheckSize(c.Target, c.Span);
                     /* Casts are otherwise permissive (v0.1), with ONE exception:
                        a pointer may not be cast straight to a pointer in a
                        different address space.
