@@ -253,8 +253,10 @@ The objective is a **self-sufficient system** — one that compiles its own soft
 > | `boot\uefi\build.bat` | `cxk uefi build` (planned) |
 > | `boot\uefi\secureboot.bat` | `cxk secureboot keygen` / `varstore` / `sign` / `test` (work now) |
 >
-> When `cxk os build` lands, the MSVC Developer Command Prompt stops being a
-> requirement. Tests run in the DevKit with `dotnet test`; no Python is needed.
+> **The toolchain is moving to LLVM on every host** (decision D5): clang
+> replaces the i686-elf GCC cross toolchain, ld.lld links, and Ninja
+> replaces NMake. When that lands, the MSVC Developer Command Prompt and the
+> GCC cross toolchain stop being requirements; NASM stays. Tests run in the DevKit with `dotnet test`; no Python is needed.
 
 Requirements:
 
