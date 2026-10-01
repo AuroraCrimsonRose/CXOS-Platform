@@ -41,12 +41,12 @@ dead. Each script is removed in the same change that lands its replacement.
 
 | Script | Today | Replacement |
 |---|---|---|
-| `tools/build.bat [dev]` | Checks the toolchain, runs the `cxk check-abi` pre-flight, signs if `tools/kernel.xksk` exists, configures CMake for NMake, builds. Windows and MSVC prompt only. | **`cxk os build [--dev]`**: the same steps, including the ABI pre-flight, with a CMake generator that suits the host (§5). |
+| `tools/build.bat [dev]` | Checks the toolchain, runs the `cxk check-abi` pre-flight, signs if `tools/kernel.xksk` exists, configures CMake for NMake, builds. Windows and MSVC prompt only. | **`cxk os build [--dev]`**: the same steps, including the ABI pre-flight, configuring CMake with Ninja and clang (D5). |
 | `tools/run_qemu.bat` | **Dead.** It passes `-M pc --fs cxk_filesystem.img` to `cxk run`, which has neither option, and the build no longer produces a separate filesystem image. | **`cxk run dist/CXK_x86_32/images/cxk_disk.img`**, which works today. Delete the script. |
 | `tools/run_qemu_ahci.bat` | Raw QEMU line: q35, AHCI, e1000, packet capture, 4 GB, PC speaker. | **`cxk run` machine options** (`--machine q35`, `--net e1000`, `--pcap FILE`, `--mem`, `--speaker`). |
 | `tools/run_bochs.bat` | Already only calls `cxk run -e bochs`. | **`cxk run -e bochs`**. Delete the script. |
 | `os/executive/build.sh` | **Dead.** It calls `tools/CXEX_Compiler/mkcxes.py` and `signcxex.py`, which no longer exist; CMake builds the executive. | None needed. Delete. |
-| `boot/uefi/build.bat` | Builds the UEFI stub with MSVC `cl` and `link`. | **`cxk uefi build`**. The toolchain is an open decision (§5). |
+| `boot/uefi/build.bat` | Builds the UEFI stub with MSVC `cl` and `link`. | **`cxk uefi build`**, using clang and lld-link (D5). |
 | `boot/uefi/secureboot.bat` | Generates a Secure Boot key set, enrolls it into an OVMF variable store, signs the stub, and boots it signed and unsigned. Every step already calls `cxk`. | **`cxk secureboot keygen`, `varstore`, `sign` and `test`**, which already exist. Delete the script once `boot/uefi/README.md` gives the sequence. |
 
 `tools/cmake/` stays: CMake remains the build engine, and `cxk os build` drives
@@ -68,6 +68,29 @@ Phase 0 (tooling, both repos) first, so the fixes after it are tested the new
 way. Then Phase 1 (the executable boundary). Then 2 and 3. Stage 5 of the
 roadmap (assembler and linker in X) starts after Phase 1, and runs alongside
 Phases 2 and 3; it does not wait for them.
+
+### D5. One toolchain on every host: LLVM, with Ninja
+
+Building CXK and its UEFI stub uses the same tools on Windows, Linux and macOS.
+
+- **`clang --target=i686-elf`** compiles the kernel's C. It replaces the
+  i686-elf GCC cross toolchain. Checked 2026-10-01: all 71 kernel C files
+  compile with the build's existing flags, with no errors and no warnings.
+- **clang's integrated assembler** assembles the X compiler's output. Checked:
+  for `xc`'s own 70,000-line assembly, its `.text` is **byte-identical** to
+  GNU `as`'s.
+- **`ld.lld`** links the kernel, executive and programs from the existing
+  linker scripts. This has not been tried yet; it is the first thing the
+  migration checks.
+- **`clang` + `lld-link`** builds the UEFI stub. `boot/uefi/README.md` already
+  documents this route.
+- **Ninja** is the CMake generator everywhere. The MSVC Developer Command
+  Prompt and NMake stop being requirements.
+- **NASM stays** for the boot sector and stage 2, which are NASM syntax and
+  build the same on every host.
+
+Stage 5 of the roadmap later replaces the assembler and linker with X's own;
+this decision covers the time until then.
 
 ---
 
@@ -115,7 +138,8 @@ Phases 2 and 3; it does not wait for them.
 ### Phase 0 — tooling
 
 - [ ] DevKit: `CXEX.Tests`, with every Python suite ported and deleted (DevKit plan, Phase 0).
-- [ ] DevKit: `cxk os build [--dev]`, the `cxk run` machine options, and `cxk uefi build`.
+- [ ] Toolchain to LLVM (D5): `cxk_toolchain.cmake` and the kernel CMake use clang, ld.lld and Ninja. Prove the link with ld.lld, then boot and pass `ktest.c` on the result before removing the GCC path.
+- [ ] DevKit: `cxk os build [--dev]`, the `cxk run` machine options, and `cxk uefi build`. `cxk compile` assembles and links with clang/ld.lld.
 - [ ] Delete `tools/build.bat`, `tools/run_qemu.bat`, `tools/run_qemu_ahci.bat`, `tools/run_bochs.bat`, `os/executive/build.sh`, `boot/uefi/build.bat` and `boot/uefi/secureboot.bat`, each when its replacement lands.
 - [ ] Untrack and gitignore `os/executive/app_image.h`.
 - [ ] README, `boot/uefi/README.md` and the docs: commands only, no scripts.
@@ -150,7 +174,9 @@ Phases 2 and 3; it does not wait for them.
 
 ---
 
-## 5. Open decisions
+## 5. Decided since
 
-- **`cxk uefi build`:** the stub is built with MSVC today. A cross-platform command needs a toolchain choice: wrap MSVC where it is present, or use clang with lld-link everywhere.
-- **`cxk os build` generator:** Ninja everywhere (one more dependency), or NMake on Windows and Unix Makefiles elsewhere (nothing new to install).
+- **`cxk uefi build` toolchain:** clang with lld-link, everywhere (D5).
+- **`cxk os build` generator:** Ninja, everywhere (D5).
+- **`.XCXN`:** not built. ELF is the linkable object format, and the taxonomy is amended to say so (DevKit design doc §3, Q-E).
+- **Repository layout:** merging CXK and CX_DEVKIT into one repository is proposed, not decided.

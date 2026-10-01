@@ -18,18 +18,18 @@ call `ExitBootServices`, or leave long mode.
 > `cxk` commands, so building and testing work the same way on every host
 > (`docs/HARDENING_PLAN.md`, decision D2). `secureboot.bat` goes once this page
 > gives its `cxk` sequence, which it does below. `build.bat` goes when
-> `cxk uefi build` lands. Which toolchain that command uses, MSVC where present
-> or clang with lld-link everywhere, is still open.
+> `cxk uefi build` lands. That command uses clang and lld-link on every host,
+> the route given below (decision D5).
 
 ## Building
 
 **Planned:** `cxk uefi build`, on every host.
 
-**MSVC** (Developer Command Prompt for x64), until then:
+**MSVC** (Developer Command Prompt for x64), until then (being retired):
 
     build.bat
 
-**clang / lld** (what CI and the Linux dev box use):
+**clang / lld**, the supported route, and what `cxk uefi build` will run:
 
     clang -target x86_64-unknown-windows -ffreestanding -fshort-wchar \
           -mno-red-zone -Wall -Wextra -I../../abi -c cxboot.c
