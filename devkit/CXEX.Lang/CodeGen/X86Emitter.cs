@@ -27,14 +27,24 @@ public sealed class X86Emitter
     private int _label;
 
     // current function frame: name -> (ebp offset, type)
-    private Dictionary<string, (int off, TypeRef ty)> _frame = new();
+    /* A parameter's or local's slot, by its SYMBOL - one per declaration. Keyed
+       by name, as it was, every use of `x` reached the last `let x` in the
+       function: an outer x shadowed in an inner block read the inner one, and
+       two locals of one name but different sizes read each other's bytes. */
+    private Dictionary<Symbol, (int off, TypeRef ty)> _frame = new();
+
+    private bool SlotOf(NameExpr n, out (int off, TypeRef ty) slot)
+    {
+        slot = default;
+        return _ctx.Resolved.TryGetValue(n, out var sym) && _frame.TryGetValue(sym, out slot);
+    }
 
     /* Wide values live at an address, so a wide expression needs somewhere to
        put its result. A stack-machine emitter nests expressions to a bounded
        depth, so a small pool of 16-byte slots in the frame is enough: entering
        a wide operation takes the next slot, leaving it gives the slot back.
        Exceeding the pool is a diagnostic, never silent reuse. */
-    private const int WideTempSlots = 8;
+    private const int WideTempSlots = 16;   // a result holds its slot while its operands use the ones above
     private const int WideTempSize  = 16;
     private int _wideTempBase = 0;    // frame offset of slot 0
     private int _wideDepth    = 0;    // slots currently in use
@@ -218,7 +228,7 @@ public sealed class X86Emitter
         int poff = _curSret ? 12 : 8;
         foreach (var p in f.Params)
         {
-            _frame[p.Name] = (poff, p.Type);
+            if (_ctx.ParamSymbols.TryGetValue(p, out var ps)) _frame[ps] = (poff, p.Type);
             poff += IsAggregate(p.Type) ? Align4(SizeOf(p.Type)) : 4;
         }
         // locals: assign descending offsets; size from sema
@@ -227,7 +237,7 @@ public sealed class X86Emitter
         {
             var ty = _localTypes.TryGetValue(l, out var t) ? t : new PrimType(PrimKind.I32);
             locals += Align4(SizeOf(ty));
-            _frame[l.Name] = (-locals, ty);
+            if (_ctx.LetSymbols.TryGetValue(l, out var ls)) _frame[ls] = (-locals, ty);
         }
 
         /* One word per switch, holding its subject - the value, or for a sum
@@ -437,8 +447,8 @@ public sealed class X86Emitter
                 if (l.Init != null)
                 {
                     var lty = _localTypes.TryGetValue(l, out var lt0) ? lt0 : new PrimType(PrimKind.I32);
-                    if (IsCopied(lty)) EmitWideInit(l.Name, l.Init, lty);
-                    else { EmitExpr(l.Init); StoreToVar(l.Name); }
+                    if (IsCopied(lty)) EmitWideInit(l, l.Init, lty);
+                    else { EmitExpr(l.Init); StoreToVar(l); }
                 }
                 break;
             case AssignStmt a: EmitAssign(a); break;
@@ -535,9 +545,9 @@ public sealed class X86Emitter
     // break or continue leaves every block opened since, and no others.
     private readonly Stack<(string top, string end, int depth)> _loops = new();
 
-    private void StoreToVar(string name)
+    private void StoreToVar(LetStmt l)
     {
-        var (off, _) = _frame[name];
+        var (off, _) = _frame[_ctx.LetSymbols[l]];
         T($"mov %eax, {off}(%ebp)");
     }
 
@@ -545,7 +555,7 @@ public sealed class X86Emitter
        eax holds would store the address of a temporary - which is exactly what
        the first version did, leaving `c` holding a pointer to the sum rather
        than the sum. */
-    private void EmitWideInit(string name, Expr init, TypeRef wt)
+    private void EmitWideInit(LetStmt l, Expr init, TypeRef wt)
     {
         int saved = _wideDepth;
         /* A struct is at an address too, and was stored as one: `let q: pt =
@@ -553,7 +563,7 @@ public sealed class X86Emitter
         if (IsWide(wt)) EmitWideOperand(init, wt); else EmitExpr(init);   // source address -> eax
         SaveIdx();
         T("mov %eax, %esi");
-        T($"lea {_frame[name].off}(%ebp), %edi");
+        T($"lea {_frame[_ctx.LetSymbols[l]].off}(%ebp), %edi");
         CopyBytesExact(SizeOf(wt));
         RestoreIdx();
         _wideDepth = saved;
@@ -728,7 +738,7 @@ public sealed class X86Emitter
         {
             var c = sw.Cases[i];
             Lbl(bodies[i]);
-            if (c.BindLet != null && _frame.TryGetValue(c.BindLet.Name, out var b))
+            if (c.BindLet != null && _ctx.LetSymbols.TryGetValue(c.BindLet, out var bs) && _frame.TryGetValue(bs, out var b))
             {
                 T($"mov {slot}(%ebp), %eax");
                 T("add $4, %eax");
@@ -823,7 +833,23 @@ public sealed class X86Emitter
     {
         if (!_ctx.Resolved.TryGetValue(n, out var sym)) { T("xor %eax, %eax"); return; }
         if (sym.Kind == SymKind.Const && sym.Decl is ConstDecl cd && new ConstFold(_ctx, _diag).TryEval(cd.Value, out var v))
-        { T($"mov ${(uint)v}, %eax"); return; }   // narrow path; see IntLit above
+        {
+            /* A wide constant is a wide value, so it is represented as one: in
+               a slot, by its address - as a wide literal is. Handing back the
+               low word as a value made every 64 or 128-bit constant a
+               segfault the moment anything read it. */
+            if (IsWide(cd.Type))
+            {
+                int cslot = TakeWideSlot();
+                if (cslot == int.MinValue) { T("xor %eax, %eax"); return; }
+                StoreWideConst(v, cslot, SizeOf(cd.Type));
+                T($"lea {cslot}(%ebp), %eax");
+                return;
+            }
+            // narrow path; see IntLit above. Cut to the constant's own type, as a
+            // narrow cast would: a u8 constant of ~0xF0 is 0x0F, not 0xFFFFFF0F.
+            T($"mov ${(uint)v}, %eax"); WrapTo(cd.Type); return;
+        }
         // a function used as a value yields its address (function pointer)
         if (sym.Kind == SymKind.Function) { T($"mov ${n.Name}, %eax"); return; }
         if (sym.Kind == SymKind.Global)
@@ -835,7 +861,7 @@ public sealed class X86Emitter
             else T($"mov {n.Name}, %eax");
             return;
         }
-        if (_frame.TryGetValue(n.Name, out var slot))
+        if (_frame.TryGetValue(sym, out var slot))
         {
             // struct/array/wide names yield their address (decay); scalars load value
             if (_ctx.Expand(slot.ty) is NamedType or ArrayType || IsWide(slot.ty))
@@ -851,7 +877,7 @@ public sealed class X86Emitter
         switch (e)
         {
             case NameExpr n:
-                if (_frame.TryGetValue(n.Name, out var slot)) T($"lea {slot.off}(%ebp), %eax");
+                if (SlotOf(n, out var slot)) T($"lea {slot.off}(%ebp), %eax");
                 else if (_ctx.Resolved.TryGetValue(n, out var sym) && sym.Kind == SymKind.Global) T($"lea {n.Name}, %eax");
                 else T("xor %eax, %eax");
                 break;
@@ -910,9 +936,9 @@ public sealed class X86Emitter
             if (SizeOf(from) >= SizeOf(to)) { EmitExpr(c.Operand); return; }  // truncate: same address
             // widening one wide type into a larger one
             int saved = _wideDepth;
-            EmitExpr(c.Operand);                 // source address -> eax
-            int slot = TakeWideSlot();
+            int slot = TakeWideSlot();           // first: see EmitWideBinary
             if (slot == int.MinValue) { _diag.Error("wide expression nested too deeply", c.Span); return; }
+            EmitExpr(c.Operand);                 // source address -> eax
             SaveIdx();
             T("mov %eax, %esi");
             T($"lea {slot}(%ebp), %edi");
@@ -968,9 +994,9 @@ public sealed class X86Emitter
     {
         int words = SizeOf(wt) / 4;
         int saved = _wideDepth;
-        EmitWideOperand(u.Operand, wt);         // &operand -> eax
-        int slot = TakeWideSlot();
+        int slot = TakeWideSlot();              // first: see EmitWideBinary
         if (slot == int.MinValue) { _diag.Error("wide expression nested too deeply", u.Span); return; }
+        EmitWideOperand(u.Operand, wt);         // &operand -> eax
 
         SaveIdx();
         T("mov %eax, %esi");
@@ -1009,13 +1035,96 @@ public sealed class X86Emitter
     /* Does this function mention a wide type anywhere - a local, a parameter,
        or the type of any expression sema resolved? Decides whether to reserve
        the temp pool, so narrow functions pay nothing. */
+    /* Per function. It used to ask whether any expression in the whole
+       PROGRAM was wide, so one u64 anywhere gave every function 256 bytes of
+       slots it never touched - enough to overflow a 16 KB user stack in a
+       program as recursive as a compiler. A wide value can also be made
+       where no expression is wide: a narrow argument to a wide parameter, a
+       narrow value returned as a wide one, a literal filling a wide field. */
     private bool UsesWide(FnDecl f)
     {
+        if (IsWide(f.Return)) return true;
         foreach (var p in f.Params) if (IsWide(p.Type)) return true;
         foreach (var l in CollectLocals(f.Body!))
             if (_localTypes.TryGetValue(l, out var t) && IsWide(t)) return true;
-        foreach (var kv in _ctx.Types) if (IsWide(kv.Value)) return true;
+        foreach (var e in ExprsIn(f.Body!))
+        {
+            if (_ctx.Types.TryGetValue(e, out var et) && ContainsWide(et)) return true;
+            if (e is CallExpr c && CalleeTakesWide(c)) return true;
+        }
         return false;
+    }
+
+    private bool ContainsWide(TypeRef t0, int depth = 0)
+    {
+        var t = _ctx.Expand(t0);
+        if (IsWide(t)) return true;
+        if (depth > 16) return false;
+        if (t is ArrayType a) return ContainsWide(a.Element, depth + 1);
+        if (StructOf(t) is StructDecl sd) foreach (var fd in sd.Fields) if (ContainsWide(fd.Type, depth + 1)) return true;
+        return false;
+    }
+
+    private bool CalleeTakesWide(CallExpr c)
+    {
+        if (c.Callee is NameExpr n && _ctx.Resolved.TryGetValue(n, out var sym) && sym.Decl is FnDecl fd)
+        { foreach (var p in fd.Params) if (ContainsWide(p.Type)) return true; return false; }
+        if (_ctx.Types.TryGetValue(c.Callee, out var ct) && _ctx.Expand(ct) is FuncType ft)
+            foreach (var p in ft.Params) if (ContainsWide(p)) return true;
+        return false;
+    }
+
+    /* Every expression in a body, each node once. */
+    private IEnumerable<Expr> ExprsIn(Stmt s)
+    {
+        switch (s)
+        {
+            case Block b: foreach (var x in b.Stmts) foreach (var e in ExprsIn(x)) yield return e; break;
+            case LetStmt l when l.Init != null: foreach (var e in ExprsIn(l.Init)) yield return e; break;
+            case AssignStmt a:
+                foreach (var e in ExprsIn(a.Target)) yield return e;
+                foreach (var e in ExprsIn(a.Value)) yield return e; break;
+            case IfStmt i:
+                foreach (var e in ExprsIn(i.Cond)) yield return e;
+                foreach (var e in ExprsIn(i.Then)) yield return e;
+                if (i.Else != null) foreach (var e in ExprsIn(i.Else)) yield return e; break;
+            case WhileStmt w:
+                foreach (var e in ExprsIn(w.Cond)) yield return e;
+                foreach (var e in ExprsIn(w.Body)) yield return e; break;
+            case ReturnStmt r when r.Value != null: foreach (var e in ExprsIn(r.Value)) yield return e; break;
+            case ExprStmt x: foreach (var e in ExprsIn(x.Expr)) yield return e; break;
+            case DeferStmt d: foreach (var e in ExprsIn(d.Body)) yield return e; break;
+            case SwitchStmt sw:
+                foreach (var e in ExprsIn(sw.Subject)) yield return e;
+                foreach (var c in sw.Cases)
+                {
+                    foreach (var l in c.Labels) foreach (var e in ExprsIn(l)) yield return e;
+                    foreach (var e in ExprsIn(c.Body)) yield return e;
+                }
+                if (sw.Else != null) foreach (var e in ExprsIn(sw.Else)) yield return e; break;
+        }
+    }
+    private IEnumerable<Expr> ExprsIn(Expr e)
+    {
+        yield return e;
+        switch (e)
+        {
+            case CallExpr c:
+                foreach (var x in ExprsIn(c.Callee)) yield return x;
+                foreach (var a in c.Args) foreach (var x in ExprsIn(a)) yield return x; break;
+            case BinaryExpr b:
+                foreach (var x in ExprsIn(b.Left)) yield return x;
+                foreach (var x in ExprsIn(b.Right)) yield return x; break;
+            case UnaryExpr u: foreach (var x in ExprsIn(u.Operand)) yield return x; break;
+            case MemberExpr m: foreach (var x in ExprsIn(m.Target)) yield return x; break;
+            case IndexExpr ix:
+                foreach (var x in ExprsIn(ix.Target)) yield return x;
+                foreach (var x in ExprsIn(ix.Index)) yield return x; break;
+            case CastExpr ce: foreach (var x in ExprsIn(ce.Operand)) yield return x; break;
+            case SizeofExpr sz: foreach (var x in ExprsIn(sz.Operand)) yield return x; break;
+            case StructLit sl: foreach (var f in sl.Fields) foreach (var x in ExprsIn(f.Value)) yield return x; break;
+            case ArrayLit al: foreach (var i in al.Items) foreach (var x in ExprsIn(i)) yield return x; break;
+        }
     }
 
     private static bool IsCompare(BinOp op) =>
@@ -1116,6 +1225,22 @@ public sealed class X86Emitter
 
         int savedDepth = _wideDepth;
 
+        /* The result's slot is taken FIRST, so it is the one at savedDepth -
+           the one left marked in use at the end. Taken after the operands, it
+           sat above their slots while the depth was set as if it did not: the
+           next wide operand at this level reused it, and `a | b | c` lost the
+           value of `a | b` before or-ing in c. */
+        int slot = 0;
+        if (!IsCompare(b.Op))
+        {
+            slot = TakeWideSlot();
+            if (slot == int.MinValue)
+            {
+                _diag.Error("wide expression nested too deeply; split it into steps", b.Span);
+                _wideDepth = savedDepth; T("xor %eax, %eax"); return;
+            }
+        }
+
         EmitWideOperand(b.Right, lt); T("push %eax");   // &right
         EmitWideOperand(b.Left,  lt); T("pop %ecx");    // eax = &left, ecx = &right
 
@@ -1126,12 +1251,6 @@ public sealed class X86Emitter
         if (IsCompare(b.Op))
         { EmitWideCompare(b.Op, words, signed); RestoreIdx(); _wideDepth = savedDepth; return; }
 
-        int slot = TakeWideSlot();
-        if (slot == int.MinValue)
-        {
-            _diag.Error("wide expression nested too deeply; split it into steps", b.Span);
-            RestoreIdx(); _wideDepth = savedDepth; T("xor %eax, %eax"); return;
-        }
         T($"lea {slot}(%ebp), %edx");
 
         switch (b.Op)
@@ -1180,19 +1299,7 @@ public sealed class X86Emitter
         int slot = TakeWideSlot();
         if (slot == int.MinValue) { T("xor %eax, %eax"); return; }
 
-        if (src is IntLit il)
-        {
-            for (int o = 0; o < n; o += 4)
-            {
-                /* `o < 16`, not `o < 8`. This is where a literal stopped being
-                   allowed to exceed 64 bits: the words above the eighth byte
-                   were filled with zero regardless of the value, so even once
-                   the lexer could read a 128-bit constant, the top half was
-                   dropped on the way into the slot. */
-                uint w = o < 16 ? (uint)(il.Value >> (o * 8)) : 0u;
-                T($"movl ${w}, {slot + o}(%ebp)");
-            }
-        }
+        if (src is IntLit il) StoreWideConst(il.Value, slot, n);
         else
         {
             EmitExpr(src);                       // narrow value -> eax
@@ -1208,12 +1315,35 @@ public sealed class X86Emitter
         T($"lea {slot}(%ebp), %eax");
     }
 
+    private void StoreWideConst(UInt128 v, int slot, int n)
+    {
+        for (int o = 0; o < n; o += 4)
+        {
+            /* `o < 16`, not `o < 8`. This is where a literal stopped being
+               allowed to exceed 64 bits: the words above the eighth byte
+               were filled with zero regardless of the value, so even once
+               the lexer could read a 128-bit constant, the top half was
+               dropped on the way into the slot. */
+            uint w = o < 16 ? (uint)(v >> (o * 8)) : 0u;
+            T($"movl ${w}, {slot + o}(%ebp)");
+        }
+    }
+
     /* Slots are taken in a stack discipline: the caller saves _wideDepth,
        takes what it needs, and restores. Freeing per-operand instead would
        hand the same slot to both sides of a binary operation and the second
        would overwrite the first. */
     private int TakeWideSlot()
     {
+        /* No pool means UsesWide said this function needs none. A slot taken
+           anyway would be 0(%ebp) - the saved frame pointer - so it is an
+           error in the compiler, said out loud, never a quiet overwrite. */
+        if (_wideTempBase == 0)
+        {
+            _diag.Error($"internal: '{_curFn}' needs a wide temporary but reserved none (UsesWide is incomplete)",
+                        default);
+            return int.MinValue;
+        }
         if (_wideDepth >= WideTempSlots) return int.MinValue;
         return _wideTempBase + _wideDepth++ * WideTempSize;
     }
