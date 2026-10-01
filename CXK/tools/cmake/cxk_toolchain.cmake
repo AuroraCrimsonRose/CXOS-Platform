@@ -51,6 +51,7 @@ if(SIGN)
     set(TSIGN COMMAND ${CXK} sign ${TOKDUMP_XUEX} ${SIGN_SK} ${SIGN_PK})
     set(PSIGN COMMAND ${CXK} sign ${ASTDUMP_XUEX} ${SIGN_SK} ${SIGN_PK})
     set(MSIGN COMMAND ${CXK} sign ${SEMADUMP_XUEX} ${SIGN_SK} ${SIGN_PK})
+    set(CSIGN COMMAND ${CXK} sign ${XC_XUEX} ${SIGN_SK} ${SIGN_PK})
 elseif(DEV_UNSIGNED)
     # A development kernel runs these unsigned, so the release build's "WILL
     # REFUSE" warnings below would be false here - and a false warning sends
@@ -63,6 +64,7 @@ elseif(DEV_UNSIGNED)
     set(TSIGN COMMAND ${CMAKE_COMMAND} -E echo "  tokdump.xuex UNSIGNED - runs on this development kernel only")
     set(PSIGN COMMAND ${CMAKE_COMMAND} -E echo "  astdump.xuex UNSIGNED - runs on this development kernel only")
     set(MSIGN COMMAND ${CMAKE_COMMAND} -E echo "  semadump.xuex UNSIGNED - runs on this development kernel only")
+    set(CSIGN COMMAND ${CMAKE_COMMAND} -E echo "  xc.xuex UNSIGNED - runs on this development kernel only")
 else()
     # No parentheses OR semicolons in these messages: ${KSIGN}/${XSIGN} expand into a
     # custom-command line, and under /bin/sh unquoted parens are a syntax error while a
@@ -75,4 +77,5 @@ else()
     set(TSIGN COMMAND ${CMAKE_COMMAND} -E echo "  tokdump.xuex UNSIGNED - exec_path WILL REFUSE it - configure -DSIGN=ON")
     set(PSIGN COMMAND ${CMAKE_COMMAND} -E echo "  astdump.xuex UNSIGNED - exec_path WILL REFUSE it - configure -DSIGN=ON")
     set(MSIGN COMMAND ${CMAKE_COMMAND} -E echo "  semadump.xuex UNSIGNED - exec_path WILL REFUSE it - configure -DSIGN=ON")
+    set(CSIGN COMMAND ${CMAKE_COMMAND} -E echo "  xc.xuex UNSIGNED - exec_path WILL REFUSE it - configure -DSIGN=ON")
 endif()
