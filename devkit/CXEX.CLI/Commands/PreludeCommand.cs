@@ -1,4 +1,6 @@
 using System;
+using System.ComponentModel;
+using System.IO;
 using System.Text;
 using System.Threading;
 using CXEX.Lang.Abi;
@@ -13,12 +15,18 @@ namespace CXEX.CLI.Commands;
 /// </summary>
 public class PreludeCommand : Command<PreludeCommand.Settings>
 {
-    public class Settings : CommandSettings { }
+    public class Settings : CommandSettings
+    {
+        [CommandArgument(0, "[OUT]")]
+        [Description("write it to this file instead of stdout")]
+        public string? Out { get; set; }
+    }
 
     protected override int Execute(CommandContext context, Settings settings, CancellationToken cancellationToken)
     {
-        using var stdout = Console.OpenStandardOutput();
         var bytes = Encoding.UTF8.GetBytes(AbiPrelude.Generate());
+        if (settings.Out != null) { File.WriteAllBytes(settings.Out, bytes); return 0; }
+        using var stdout = Console.OpenStandardOutput();
         stdout.Write(bytes, 0, bytes.Length);
         return 0;
     }
