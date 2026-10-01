@@ -35,6 +35,7 @@ Delivered:
 - Service descriptors in X Data, checked at build time as well as at boot
 - Guarded kernel stacks: an overflow is a panic naming the thread, handled on a double-fault stack of its own
 - Kernel configuration in X Data (`/System/Config/kernel.xkco`): stack size, thread limit and memory quota, read by X code linked into the kernel
+- X: enums and sum types with exhaustive `switch`, struct and array initializers, character literals, compound assignment, values passed by value (C-compatible), and growable buffers in `std/buf.xfxn`
 
 **Where it is going, and in what order, is in [`docs/CX_ROADMAP.md`](docs/CX_ROADMAP.md).** The next phase is self-hosting — X compiling X — which gates nearly everything else.
 
