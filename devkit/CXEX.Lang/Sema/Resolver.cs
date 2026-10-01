@@ -47,6 +47,10 @@ public sealed class SemaContext
        it infers. Without this a local declared as `let x = 5;` kept the
        placeholder type void, and every use of x was an error. */
     public readonly Dictionary<LetStmt, Symbol> LetSymbols = new();
+    /* And each parameter's. With these two, a local's frame slot belongs to
+       its DECLARATION: a name declared again in an inner block is a
+       different variable, and the emitter can tell them apart. */
+    public readonly Dictionary<Param, Symbol> ParamSymbols = new();
     /* `color.red` - a member expression naming a variant, resolved to its enum
        and index. Labels, values and constructors all go through this. */
     public readonly Dictionary<MemberExpr, (EnumDecl Enum, int Index)> EnumRefs = new();
@@ -225,8 +229,12 @@ public sealed class Resolver
             case FnDecl f when f.Body != null:
                 var fnScope = new Scope(_ctx.Globals);
                 foreach (var p in f.Params)
-                    if (!fnScope.Declare(new Symbol { Name = p.Name, Kind = SymKind.Param, Type = p.Type }))
+                {
+                    var ps = new Symbol { Name = p.Name, Kind = SymKind.Param, Type = p.Type };
+                    _ctx.ParamSymbols[p] = ps;
+                    if (!fnScope.Declare(ps))
                         _diag.Error($"duplicate parameter '{p.Name}'", p.Span);
+                }
                 ResolveBlock(f.Body, fnScope);
                 break;
             case GlobalDecl g when g.Init != null: ResolveExpr(g.Init, _ctx.Globals); break;
