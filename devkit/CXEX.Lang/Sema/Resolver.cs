@@ -47,6 +47,10 @@ public sealed class SemaContext
        it infers. Without this a local declared as `let x = 5;` kept the
        placeholder type void, and every use of x was an error. */
     public readonly Dictionary<LetStmt, Symbol> LetSymbols = new();
+    /* And each parameter's. With these two, a local's frame slot belongs to
+       its DECLARATION: a name declared again in an inner block is a
+       different variable, and the emitter can tell them apart. */
+    public readonly Dictionary<Param, Symbol> ParamSymbols = new();
     /* `color.red` - a member expression naming a variant, resolved to its enum
        and index. Labels, values and constructors all go through this. */
     public readonly Dictionary<MemberExpr, (EnumDecl Enum, int Index)> EnumRefs = new();
@@ -75,28 +79,49 @@ public sealed class SemaContext
     }
 
     /* Size in bytes, the same rule as the emitter's - needed here only to lay
-       out sum types, whose size is the tag plus the largest payload. */
+       out sum types, whose size is the tag plus the largest payload.
+
+       A type that contains itself by value - directly, or through other
+       types - has no size. Sizing it recursed until the compiler died of a
+       stack overflow, so the error meant for it could never be reported. A
+       type met again while it is being sized now counts 0 and is remembered
+       in SizeCycle, for the caller to report. */
+    private readonly HashSet<string> _sizing = new();
+    public string? SizeCycle;
+
+    /* Saturating: a size too large to count in an int comes back as
+       int.MaxValue rather than wrapping to something small or negative, so the
+       type checker can refuse it (see CheckSize) before the emitter lays out a
+       frame with it. `[0x7FFFFFFF]u32` used to come out at -4 bytes. */
     public int SizeOf(TypeRef t0)
     {
         var t = Expand(t0);
         switch (t)
         {
             case PrimType p: return PrimWidth.Bytes(p.Kind);
-            case ArrayType a: return SizeOf(a.Element) * a.Length;
-            case NamedType n when Structs.TryGetValue(n.Name, out var s):
-                { int o = 0; foreach (var f in s.Fields) o += (SizeOf(f.Type) + 3) & ~3; return o; }
-            case NamedType n when Enums.TryGetValue(n.Name, out var e):
-                if (!e.IsSum) return e.Backing != null ? SizeOf(e.Backing) : 4;
-                int max = 0;
-                foreach (var v in e.Variants)
-                    if (v.Fields != null)
-                    {
-                        int o = 0; foreach (var f in v.Fields) o += (SizeOf(f.Type) + 3) & ~3;
-                        if (o > max) max = o;
-                    }
-                return 4 + max;
+            case ArrayType a: return (int)Math.Min((long)SizeOf(a.Element) * a.Length, int.MaxValue);
+            case NamedType n when Structs.ContainsKey(n.Name) || Enums.ContainsKey(n.Name):
+                if (!_sizing.Add(n.Name)) { SizeCycle ??= n.Name; return 0; }
+                try { return SizeOfNamed(n.Name); }
+                finally { _sizing.Remove(n.Name); }
             default: return 4;
         }
+    }
+
+    private int SizeOfNamed(string name)
+    {
+        if (Structs.TryGetValue(name, out var s))
+        { long o = 0; foreach (var f in s.Fields) o += ((long)SizeOf(f.Type) + 3) & ~3L; return (int)Math.Min(o, int.MaxValue); }
+        var e = Enums[name];
+        if (!e.IsSum) return e.Backing != null ? SizeOf(e.Backing) : 4;
+        int max = 0;
+        foreach (var v in e.Variants)
+            if (v.Fields != null)
+            {
+                long o = 0; foreach (var f in v.Fields) o += ((long)SizeOf(f.Type) + 3) & ~3L;
+                if (o > max) max = (int)Math.Min(o, int.MaxValue - 4);
+            }
+        return 4 + max;
     }
 }
 
@@ -186,7 +211,13 @@ public sealed class Resolver
         foreach (var ed in _ctx.Enums.Values)
         {
             if (!ed.IsSum) continue;
+            _ctx.SizeCycle = null;
             int body = _ctx.SizeOf(new NamedType(ed.Name)) - 4;
+            if (_ctx.SizeCycle != null)
+            {
+                _diag.Error($"'{ed.Name}' contains '{_ctx.SizeCycle}' by value inside itself, so it has no size; use a pointer (*{_ctx.SizeCycle})", ed.Span);
+                body = 0;
+            }
             _ctx.Structs[ed.Name] = new StructDecl(ed.Name, new List<Param>
             {
                 new("$tag", new PrimType(PrimKind.U32)),
@@ -202,8 +233,12 @@ public sealed class Resolver
             case FnDecl f when f.Body != null:
                 var fnScope = new Scope(_ctx.Globals);
                 foreach (var p in f.Params)
-                    if (!fnScope.Declare(new Symbol { Name = p.Name, Kind = SymKind.Param, Type = p.Type }))
+                {
+                    var ps = new Symbol { Name = p.Name, Kind = SymKind.Param, Type = p.Type };
+                    _ctx.ParamSymbols[p] = ps;
+                    if (!fnScope.Declare(ps))
                         _diag.Error($"duplicate parameter '{p.Name}'", p.Span);
+                }
                 ResolveBlock(f.Body, fnScope);
                 break;
             case GlobalDecl g when g.Init != null: ResolveExpr(g.Init, _ctx.Globals); break;

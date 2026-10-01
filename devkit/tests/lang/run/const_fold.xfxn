@@ -1,0 +1,26 @@
+// Constant folding: what a constant, a global's initializer and a case label
+// are worth before the program runs.
+
+const ALL: u32 = ~0;            // ~ folded to its operand: this was 0
+const LOW: u8 = ~0xF0;
+const MIX: u32 = ~(1 << 4) & 0xFF;
+const NEG: i8 = -2;
+const WIDE: u64 = 0x100000005;
+global g: u32 = ~1u32;      // unsuffixed, ~1 is -2, which no u32 holds
+
+fn main() -> i32 {
+    if (ALL != 0xFFFFFFFF) { return 1; }
+    if (LOW != 0x0F) { return 2; }
+    if (MIX != 0xEF) { return 3; }
+    if (g != 0xFFFFFFFE) { return 4; }
+    let n: i32 = NEG;               // an i8 constant widens with its sign
+    if (n != -2) { return 6; }
+    let w: u64 = WIDE;
+    if (w != 0x100000005) { return 7; }
+    let x: u32 = 0xEF;
+    switch (x) {
+        case MIX { }
+        else { return 5; }
+    }
+    return 0;
+}

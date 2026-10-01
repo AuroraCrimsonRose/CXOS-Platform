@@ -61,54 +61,13 @@ public class CompileCommand : Command<CompileCommand.Settings>
             return 1;
         }
 
-        // 1. assemble the compilation unit (prelude + user source)
-        string userSrc = File.ReadAllText(s.Source);
-        string prelude = s.NoPrelude ? "" : AbiPrelude.Generate() + "\n";
-        string full = prelude + userSrc;
-        string fileName = Path.GetFileName(s.Source);
-
-        // 2. front-end + analysis (whole-program: main file + transitive imports)
-        var diag = new DiagnosticBag();
-        var merged = new List<Decl>();
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var work = new Queue<(string path, string text, string name)>();
-
-        // the main file carries the prepended ABI prelude; imported files do NOT
-        // (those decls are already in the merged unit; re-adding collides)
-        seen.Add(Path.GetFullPath(s.Source));
-        work.Enqueue((Path.GetFullPath(s.Source), full, fileName));
-
-        while (work.Count > 0)
-        {
-            var (path, text, name) = work.Dequeue();
-            var toks = new Lexer(text, name, diag).Tokenize();
-            var u = new Parser(toks, diag).Parse();
-
-            foreach (var d in u.Decls)
-            {
-                if (d is ImportDecl imp)
-                {
-                    string? resolved = ResolveImport(imp.Path, path, s.Source, s.IncludeDirs);
-                    if (resolved == null)
-                    {
-                        diag.Error($"cannot find import \"{imp.Path}\"", d.Span);
-                        continue;
-                    }
-                    if (!seen.Add(resolved)) continue;   // already pulled in / cyclic
-                    work.Enqueue((resolved, File.ReadAllText(resolved), Path.GetFileName(resolved)));
-                }
-                else merged.Add(d);
-            }
-        }
-
-        var unit = new CompilationUnit(merged);
-        var ctx = new Resolver(diag).Resolve(unit);
-        TypeChecker? tc = null;
-        if (!diag.HasErrors)
-        {
-            tc = new TypeChecker(ctx, diag);
-            tc.Check(unit);
-        }
+        // 1-2. the front end: prelude + source + imports, resolved and checked
+        var fe = Frontend.Analyze(s.Source, s.NoPrelude, s.IncludeDirs);
+        var diag = fe.Diag;
+        var unit = fe.Unit;
+        var ctx = fe.Ctx;
+        var tc = fe.Checker;
+        string fileName = fe.FileName;
 
         if (diag.HasErrors)
         {
@@ -181,27 +140,6 @@ public class CompileCommand : Command<CompileCommand.Settings>
     private static int CountErrors(DiagnosticBag d)
     {
         int n = 0; foreach (var i in d.Items) if (i.Severity == Severity.Error) n++; return n;
-    }
-
-    /// <summary>
-    /// Resolve an import path: the importing file's dir, then the main source's
-    /// dir, then `std/` beside cxk.exe. Returns full path or null.
-    /// </summary>
-    private static string? ResolveImport(string spec, string importerPath, string mainSource, string[] includeDirs)
-    {
-        var roots = new List<string>
-        {
-            Path.GetDirectoryName(importerPath) ?? ".",
-            Path.GetDirectoryName(Path.GetFullPath(mainSource)) ?? ".",
-        };
-        roots.AddRange(includeDirs);                                  // -I dirs
-        roots.Add(Path.Combine(AppContext.BaseDirectory, "std"));     // stdlib beside cxk.exe
-        foreach (var r in roots)
-        {
-            string cand = Path.GetFullPath(Path.Combine(r, spec));
-            if (File.Exists(cand)) return cand;
-        }
-        return null;
     }
 
     private static string WriteDefaultScript(string output)
