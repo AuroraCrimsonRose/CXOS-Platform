@@ -177,6 +177,8 @@ python3 tests/xdata/difftest.py  # the DevKit's X Data reader against CXK's, doc
 python3 tests/xc/lexdiff.py      # the lexer written in X (CXK os/xc) against this one, token by token
 python3 tests/xc/parsediff.py    # the parser written in X against this one, node by node, error by error
 python3 tests/xc/semadiff.py     # the type checker written in X against this one, on whole programs
+python3 tests/xc/asmdiff.py      # the code generator written in X against this one, the assembly exactly
+python3 tests/xc/selfhost.py     # xc compiles itself, twice: three identical assemblies, and working programs
 ```
 
 Both run X natively on the host (a 32-bit `gcc` links the output), so no VM is involved. `tests/lang/refuse` holds programs the compiler must reject, each with the error it must give: every one of them used to compile and produce a wrong answer.
