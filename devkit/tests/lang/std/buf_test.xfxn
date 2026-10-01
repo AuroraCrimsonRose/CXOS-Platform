@@ -1,0 +1,62 @@
+import "buf.xfxn";
+
+fn main() -> i32 {
+    let b: buf = buf_new();
+    if (b.len != 0 || b.cap != 0) { return 1; }
+    if (!buf_str(&b, "x = ")) { return 2; }
+    if (!buf_u32(&b, 42)) { return 3; }
+    if (!buf_push(&b, ';')) { return 4; }
+    if (!buf_eq_str(&b, "x = 42;")) { return 5; }
+    if (b.len != 7) { return 6; }
+    let s: *u8 = buf_cstr(&b);
+    if (s[7] != 0 || s[0] != 'x') { return 7; }
+
+    // grow well past the first allocation, keeping every byte
+    let i: u32 = 0;
+    while (i < 5000) { if (!buf_push(&b, ('a' + (i % 26) as u8))) { return 8; } i += 1; }
+    if (b.len != 5007 || b.data[7] != 'a' || b.data[7 + 25] != 'z' || b.data[5006] != 'a' + (4999 % 26) as u8) { return 9; }
+    if (b.cap < b.len + 1) { return 10; }
+
+    // zero and the extremes of buf_u32
+    buf_clear(&b);
+    buf_u32(&b, 0); buf_push(&b, ' '); buf_u32(&b, 4294967295);
+    if (!buf_eq_str(&b, "0 4294967295")) { return 11; }
+    if (buf_eq_str(&b, "0 429496729") || buf_eq_str(&b, "0 42949672950")) { return 12; }
+
+    // refused growth leaves the buffer as it was
+    let c: buf = buf_new();
+    buf_str(&c, "abc");
+    let cap0: u32 = c.cap;
+    test_refuse = 1;
+    i = 0;
+    let ok: bool = true;
+    while (i < cap0) { ok = buf_push(&c, '!'); if (!ok) { break; } i += 1; }
+    if (ok) { return 13; }                                  // something had to be refused
+    if (c.cap != cap0 || c.len != cap0 - 1) { return 14; }  // full, but not grown or half-grown
+    if (c.data[0] != 'a' || c.data[2] != 'c') { return 15; }
+    if (!buf_push(&c, '?')) { return 16; }                  // and it grows once allowed again
+    if (c.data[c.len - 1] != '?') { return 17; }
+
+    // a reservation that would wrap is refused outright
+    if (buf_reserve(&c, 0xFFFFFFFF)) { return 18; }
+
+    // list: push, get, set, pop, growth
+    let l: list = list_new();
+    i = 0;
+    while (i < 1000) { if (!list_push(&l, i * 3)) { return 20; } i += 1; }
+    if (l.len != 1000 || list_get(&l, 999) != 2997 || list_get(&l, 0) != 0) { return 21; }
+    if (list_get(&l, 1000) != 0) { return 22; }             // out of range
+    if (!list_set(&l, 5, 77) || list_get(&l, 5) != 77) { return 23; }
+    if (list_set(&l, 1000, 1)) { return 24; }
+    if (list_pop(&l) != 2997 || l.len != 999) { return 25; }
+    // pointers round-trip through a list
+    let p: *u8 = "pointer";
+    list_push(&l, p as u32);
+    let q: *u8 = list_pop(&l) as *u8;
+    if (q[3] != 'n') { return 26; }
+    list_free(&l);
+    if (l.len != 0 || l.cap != 0) { return 27; }
+    buf_free(&b);
+    buf_free(&c);
+    return 0;
+}

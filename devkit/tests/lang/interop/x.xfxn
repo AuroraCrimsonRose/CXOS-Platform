@@ -1,0 +1,15 @@
+struct pt { x: u32, y: u32 }
+extern fn c_mul(a: u64, b: u32) -> u64;        // implemented in C
+extern fn c_mk(a: u32) -> pt;                  // implemented in C
+extern fn c_sum(p: pt, k: u64) -> u64;         // implemented in C
+
+fn x_add(a: u64, b: u64) -> u64 { return a + b; }
+fn x_mk(a: u32) -> pt { let p: pt; p.x = a; p.y = a * 2; return p; }
+fn x_sum(p: pt, k: u64) -> u64 { return (p.x as u64) + (p.y as u64) + k; }
+fn x_calls_c() -> u32 {
+    if (c_mul(0x100000000, 3) != 0x300000000) { return 1; }
+    let p: pt = c_mk(6);
+    if (p.x != 6 || p.y != 60) { return 2; }
+    if (c_sum(p, 0x100000000) != 0x100000042) { return 3; }
+    return 0;
+}

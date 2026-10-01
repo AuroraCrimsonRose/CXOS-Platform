@@ -1,0 +1,67 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:CXEX.Studio.ViewModels"
+             xmlns:models="using:CXEX.Studio.Models"
+             xmlns:materialIcons="clr-namespace:Material.Icons.Avalonia;assembly=Material.Icons.Avalonia"
+             x:Class="CXEX.Studio.Views.ProjectExplorerView"
+             x:DataType="vm:ProjectExplorerViewModel"
+             MinWidth="200">
+
+  <!-- empty-area context menu lives on this Border (DataContext = the VM) -->
+  <Border Background="{DynamicResource CxSurface1Brush}">
+    <Border.ContextMenu>
+      <ContextMenu>
+        <MenuItem Header="New File"   Click="OnNewFile"/>
+        <MenuItem Header="New Folder" Click="OnNewFolder"/>
+        <Separator/>
+        <MenuItem Header="Paste" Click="OnPaste"/>
+      </ContextMenu>
+    </Border.ContextMenu>
+
+    <TreeView ItemsSource="{Binding RootNodes}" Background="Transparent"
+              Padding="0,5" x:CompileBindings="False">
+      <TreeView.Styles>
+        <Style Selector="TreeViewItem">
+          <Setter Property="MinHeight" Value="24"/>
+          <Setter Property="Padding" Value="2,0"/>
+          <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/>
+        </Style>
+      </TreeView.Styles>
+
+      <TreeView.ItemTemplate>
+        <TreeDataTemplate DataType="models:FileTreeNode" ItemsSource="{Binding Children}">
+          <!-- per-item context menu (DataContext = this FileTreeNode) -->
+          <StackPanel Orientation="Horizontal" Spacing="6" Background="Transparent"
+                      ToolTip.Tip="{Binding FullPath}" DoubleTapped="OnItemDoubleTapped">
+            <StackPanel.ContextMenu>
+              <ContextMenu>
+                <MenuItem Header="Open" Click="OnOpen"/>
+                <MenuItem Header="Open With">
+                  <MenuItem Header="Text Editor" Click="OnOpenAsText"/>
+                  <MenuItem Header="Hex Viewer"  Click="OnOpenAsHex"/>
+                  <MenuItem Header="Picture Viewer" Click="OnOpenAsImage"/>
+                  <!-- was Header="Image Viewer" -->
+                </MenuItem>
+                <Separator/>
+                <MenuItem Header="New File"   Click="OnNewFile"/>
+                <MenuItem Header="New Folder" Click="OnNewFolder"/>
+                <Separator/>
+                <MenuItem Header="Rename" Click="OnRename"/>
+                <MenuItem Header="Delete" Click="OnDelete"/>
+                <Separator/>
+                <MenuItem Header="Cut"   Click="OnCut"/>
+                <MenuItem Header="Copy"  Click="OnCopy"/>
+                <MenuItem Header="Paste" Click="OnPaste"/>
+              </ContextMenu>
+            </StackPanel.ContextMenu>
+
+            <materialIcons:MaterialIcon Kind="{Binding Icon}" Width="16" Height="16"
+                                        Foreground="{Binding IconColor}"/>
+            <TextBlock Text="{Binding Name}" VerticalAlignment="Center" FontSize="13"
+                       Foreground="{Binding TextColor}"/>
+          </StackPanel>
+        </TreeDataTemplate>
+      </TreeView.ItemTemplate>
+    </TreeView>
+  </Border>
+</UserControl>

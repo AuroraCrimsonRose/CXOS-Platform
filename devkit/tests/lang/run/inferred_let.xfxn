@@ -1,0 +1,5 @@
+fn main() -> i32 {
+    let x = 5;              // no type written: inferred, and usable
+    let y = x + 2;
+    return y - 7;
+}

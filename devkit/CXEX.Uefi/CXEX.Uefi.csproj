@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <!--
+    No PackageReference, deliberately.
+
+    Everything here is built on System.Formats.Asn1, System.Security.Cryptography
+    and X509Certificates, all of which are in the shared framework. The obvious
+    alternative for the Authenticode work was System.Security.Cryptography.Pkcs
+    (SignedCms), which is a NuGet package AND encodes eContent as an OCTET STRING
+    per RFC 5652 - which Authenticode forbids. Writing the SignedData with
+    AsnWriter avoids the dependency and the wrapper in one move.
+
+    No ProjectReference either: this project knows about UEFI and PE files, not
+    about CXEX. Keeping it standalone means the CXK repo can consume it without
+    dragging the rest of the toolchain along.
+  -->
+
+</Project>

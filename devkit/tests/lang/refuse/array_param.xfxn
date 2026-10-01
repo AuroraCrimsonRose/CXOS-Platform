@@ -1,0 +1,2 @@
+fn sum(a: [4]u32) -> u32 { return a[0]; }
+fn main() -> i32 { return 0; }

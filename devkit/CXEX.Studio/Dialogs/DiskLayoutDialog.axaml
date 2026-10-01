@@ -1,0 +1,13 @@
+﻿<UserControl
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    x:Class="CXEX.Studio.Dialogs.DiskLayoutDialog">
+
+  <Grid>
+    <TextBlock
+        HorizontalAlignment="Center"
+        VerticalAlignment="Center"
+        Text="Disk Layout View" />
+  </Grid>
+
+</UserControl>

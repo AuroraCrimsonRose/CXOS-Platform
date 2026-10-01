@@ -1,0 +1,129 @@
+# =====================================================
+# C / C++
+# =====================================================
+
+*.d
+*.slo
+*.lo
+*.o
+*.obj
+*.gch
+*.pch
+
+*.ilk
+*.pdb
+
+*.so
+*.so.*
+*.dylib
+*.dll
+
+*.lai
+*.la
+*.a
+*.lib
+
+*.exe
+*.out
+*.app
+*.xksk
+
+build/
+Build/
+build-*/
+
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+install_manifest.txt
+compile_commands.json
+
+vcpkg_installed/
+
+*.dwo
+*.bat
+*.ps1
+
+# =====================================================
+# .NET
+# =====================================================
+
+**/bin/
+**/obj/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.userosscache
+
+# Rider
+.idea/
+
+# Test results
+TestResults/
+
+# NuGet packages
+packages/
+
+# =====================================================
+# Temporary files
+# =====================================================
+
+*.tmp
+*.log
+*.bak
+*.swp
+
+.cache/
+
+# =====================================================
+# Optional generated artifacts
+# =====================================================
+
+**/bin/
+**/obj/
+/Bin/
+/Bin/**
+/Build/
+/Build/**
+artifacts/
+publish/
+/CXEX.Studio/obj/Debug/net10.0/Avalonia/references
+/CXEX.Studio/obj/Debug/net10.0/Avalonia/resources
+/CXEX.Studio/obj/Debug/net10.0/Avalonia/Resources.Inputs.cache
+/CXEX.Studio/obj/Debug/net10.0/CXEX.Studio.AssemblyInfo.cs
+/CXEX.Studio/obj/Debug/net10.0/CXEX.Studio.AssemblyInfoInputs.cache
+/CXEX.Studio/obj/Debug/net10.0/CXEX.Studio.assets.cache
+/CXEX.Studio/obj/Debug/net10.0/CXEX.Studio.csproj.AssemblyReference.cache
+/CXEX.Studio/obj/Debug/net10.0/CXEX.Studio.csproj.CoreCompileInputs.cache
+/CXEX.Studio/obj/Debug/net10.0/CXEX.Studio.csproj.FileListAbsolute.txt
+/CXEX.Studio/obj/CXEX.Studio.csproj.nuget.dgspec.json
+/CXEX.Studio/obj/CXEX.Studio.csproj.nuget.g.props
+/CXEX.Studio/obj/CXEX.Studio.csproj.nuget.g.targets
+/CXEX.Studio/obj/project.assets.json
+/CXEX.Studio/obj/project.nuget.cache
+/CXEX.Studio/bin/Debug/net10.0/CXEX.Studio.deps.json
+/CXEX.Studio/obj/Debug/net10.0/Avalonia/references
+/CXEX.Studio/obj/Debug/net10.0/Avalonia/resources
+/CXEX.Studio/obj/Debug/net10.0/Avalonia/Resources.Inputs.cache
+/CXEX.Studio/obj/CXEX.Studio.csproj.nuget.dgspec.json
+/CXEX.Studio/obj/CXEX.Studio.csproj.nuget.g.props
+/CXEX.Studio/obj/CXEX.Studio.csproj.nuget.g.targets
+/CXEX.Studio/obj/project.assets.json
+/CXEX.Studio/obj/project.nuget.cache
+/.config
+/CXEX.Build/Properties/PublishProfiles
+/CXEX.Core/obj/Debug/net10.0/CXEX.Core.csproj.FileListAbsolute.txt
+/CXEX.FileType/obj/Debug/net10.0/CXEX.FileType.csproj.FileListAbsolute.txt
+/CXEX.Studio/obj/Debug/net10.0/CXEX.Stu.7ABAB106.Up2Date
+/CXEX.Studio/obj/Debug/net10.0/CXEX.Studio.GeneratedMSBuildEditorConfig.editorconfig
+/CXEX.Studio/obj/Debug/net10.0/CXEX.Studio.genruntimeconfig.cache
+/_docs_setup
+/Directory.Build.props
+/CXEX.CLI/Properties/PublishProfiles
+/dist/cli
+
+# Python bytecode from the test scripts
+__pycache__/
