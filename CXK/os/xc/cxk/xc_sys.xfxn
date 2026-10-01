@@ -1,0 +1,38 @@
+// xc/cxk/xc_sys.xfxn - the X compiler's platform, on CXK.
+// Aurora Tejeda / CATX SYSTEMS LLC
+//
+// The CXK half of the platform interface; os/xc/host/xc_sys.xfxn is the Linux
+// half, and has the same functions. Built with the ordinary prelude and
+// `-I os/xc/cxk`, the compiler's sources run here unchanged.
+
+import "io.xfxn";
+import "file.xfxn";
+import "buf.xfxn";
+
+fn _start() -> void { exit(xc_main()); }
+
+fn xc_argc() -> u32 { return arg_count(); }
+fn xc_arg(i: u32) -> *u8 { return arg_at(i); }
+
+fn sys_exit(code: i32) -> void { exit(code); }
+
+fn out_bytes(p: *u8, n: u32) -> void { if (n > 0) { console_write(p, n); } }
+fn out_buf(b: *buf) -> void { out_bytes(b.data, b.len); }
+fn err_str(s: *u8) -> void { puts(s); }
+
+// The whole of a file, appended to `out`. False if it cannot be opened or
+// read, or memory runs out.
+fn read_file(path: *u8, out: *buf) -> bool {
+    let h: i32 = file_open_read(path);
+    if (h < 0) { return false; }
+    let ok: bool = true;
+    while (true) {
+        if (!buf_reserve(out, 4096)) { ok = false; break; }
+        let r: i32 = file_read(h, &out.data[out.len], 4096);
+        if (r < 0) { ok = false; break; }
+        if (r == 0) { break; }
+        out.len += r as u32;
+    }
+    file_close(h);
+    return ok;
+}

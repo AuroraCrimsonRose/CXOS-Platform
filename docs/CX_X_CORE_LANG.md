@@ -734,6 +734,37 @@ manual tags is the point where hand-written X stops scaling.
 front-end. The result runs on CXK. From then on the C# implementation is a
 bootstrap artifact, kept only to rebuild from scratch.
 
+*In progress, in `os/xc`.* Built one stage at a time, each held to the C#
+compiler by a differential test before the next begins:
+
+| | X | held to C# by | status |
+|---|---|---|---|
+| lexer | `xc/lex.xfxn` | `tests/xc/lexdiff.py` in CX_DEVKIT: every X source, plus thousands of mutated ones, token for token | **done** |
+| parser | | the syntax tree, node for node | next |
+| type checker | | the diagnostics, and each expression's type | |
+| code generator | | the assembly, line for line | |
+
+**Two platforms, one compiler.** The same sources run on CXK and on the Linux
+host it is developed on. A platform file supplies what differs - the entry
+(`xc_main`), arguments, reading a file, writing output - and is chosen by the
+build's `-I`: `xc/cxk/xc_sys.xfxn` uses the prelude and `std/file.xfxn`;
+`xc/host/xc_sys.xfxn` uses Linux's i386 system calls through the same
+`int 0x80`, and backs `mem_op` with `brk` so the real `std/heap.xfxn` and
+`std/buf.xfxn` run unchanged. That is what makes the differential tests cheap:
+thousands of files per minute, natively, with no machine to boot.
+
+**The lexer on CXK.** `tokdump` (built into the image, `/Shared/Programs`)
+prints tokens in the format of `cxk tokens`; `-s` prints a count and a hash
+instead. `run +disk tokdump -s /Shared/Source/lex.xfxn` on CXK gives the same
+4207 tokens and hash as the host - the lexer, written in X, reading its own
+source on the system it is for. (`+disk` because `run` grants only the console
+unless asked.)
+
+Comparing the two lexers fixed the C# one twice: a string ending in a
+backslash at the end of a file crashed it, and identifiers accepted any Unicode
+letter, which made the language depend on the host's Unicode tables. Both are
+ASCII-only now, and both count a column per character.
+
 **Stage 5 — the rest of the toolchain.** Assembler and linker, or a backend that
 emits CXEX sections directly and drops the external assembler (v0.1 §7 already
 names this as a backend choice, not a language change). Until this lands,
