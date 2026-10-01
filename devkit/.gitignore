@@ -124,3 +124,6 @@ publish/
 /Directory.Build.props
 /CXEX.CLI/Properties/PublishProfiles
 /dist/cli
+
+# Python bytecode from the test scripts
+__pycache__/
