@@ -32,6 +32,9 @@ Delivered:
 - A Key Vault deciding how far each signer is trusted
 - Dynamic memory for ring 3 (`SYS_MEM_OP`), bounded by a per-process quota, and an allocator in X
 - 64 and 128-bit integers in X, including divide and modulo
+- Service descriptors in X Data, checked at build time as well as at boot
+- Guarded kernel stacks: an overflow is a panic naming the thread, handled on a double-fault stack of its own
+- Kernel configuration in X Data (`/System/Config/kernel.xkco`): stack size, thread limit and memory quota, read by X code linked into the kernel
 
 **Where it is going, and in what order, is in [`docs/CX_ROADMAP.md`](docs/CX_ROADMAP.md).** The next phase is self-hosting — X compiling X — which gates nearly everything else.
 
@@ -240,13 +243,20 @@ Requirements:
 - CMake
 - QEMU
 - Bochs (optional)
+- **`tools/cxk.exe`** — the CX DevKit toolchain. CMake drives it for packaging, signing,
+  imaging and X compilation. **It is not committed**: publish it from
+  [CX_DEVKIT](https://github.com/AuroraCrimsonRose/CX_DEVKIT) as a single file and copy it
+  to `tools/cxk.exe`:
 
-**No .NET SDK is required to build CXK.** `tools/cxk.exe` is a prebuilt, self-contained
-binary of the CX DevKit toolchain, committed deliberately so the kernel can be built without
-installing .NET or checking out the DevKit. CMake drives it for packaging, signing, imaging
-and X compilation. It only needs replacing when the DevKit gains something CXK's build uses —
-republish it from CX_DEVKIT (`dotnet publish CXEX.CLI -c Release`, or Publish in Visual
-Studio) and copy the result over `tools/cxk.exe`.
+  ```bat
+  dotnet publish CXEX.CLI -c Release -r win-x64 -p:SelfContained=true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+  ```
+
+  Building CXK therefore needs the .NET SDK once, to publish it, until CX_DEVKIT ships
+  release builds. Republish whenever the DevKit changes something the build uses. The
+  checks the build runs through it (`check-abi`, `check-xdata`) warn and skip on an older
+  one; the kernel itself needs `cxk compile --object` (it links X code), and CMake stops
+  at configure time with this instruction if the `cxk` it finds is too old.
 
 Build:
 

@@ -31,6 +31,10 @@
 #include "keyvault.h"
 #include "vmregion.h"
 #include "exec.h"
+#include "kstack.h"
+#include "kconfig.h"
+#include "gdt.h"
+#include "idt.h"
 
 /* concise pass/fail reporter */
 /* Report a test result. Stays SILENT on success - only failures are printed,
@@ -45,7 +49,7 @@ static int report(const char *name, int ok) {
 
 /* ---- paging: map a scratch frame, write+read it back ---- */
 static int test_paging(void) {
-    uint32_t test_virt = 0xCF000000;
+    uint32_t test_virt = 0xCE000000;   /* clear of the kernel-stack region above */
     uint32_t frame = (uint32_t)pmm_alloc();
     if (!frame) return 0;
     paging_map(test_virt, frame, PAGE_WRITE);
@@ -564,7 +568,7 @@ static int test_cxfs_volumes(void) {
 static int vm_cycle(int pid) {
     int ok = 0;
 
-    vm_proc_init(pid, VM_DEFAULT_QUOTA, -1);
+    vm_proc_init(pid, vm_default_quota(), -1);
 
     struct mem_op_args a;
     #define RESET_ARGS() do {                                        \
@@ -601,7 +605,7 @@ static int vm_cycle(int pid) {
     RESET_ARGS(); a.op = MEM_OP_INFO;
     if (vm_info(pid, &a) != E_OK)                   goto done;
     if (a.mapped != PAGE_SIZE + 8192)               goto done;
-    if (a.quota != VM_DEFAULT_QUOTA)                goto done;
+    if (a.quota != vm_default_quota())                goto done;
 
     /* Write|Execute is refused. It cannot be ENFORCED on 32-bit non-PAE - there
        is no no-execute bit - so the refusal is the only thing standing between
@@ -632,7 +636,7 @@ static int vm_cycle(int pid) {
     /* The quota is a real ceiling, not a number in a struct: a request that
        would cross it fails, and fails without having taken any frames. */
     uint32_t before_quota_try = pmm_free_count();
-    RESET_ARGS(); a.length = VM_DEFAULT_QUOTA;
+    RESET_ARGS(); a.length = vm_default_quota();
     if (vm_map(pid, &a) != E_NOMEM)                 goto done;
     if (pmm_free_count() != before_quota_try)       goto done;
 
@@ -667,8 +671,8 @@ static int vm_cycle(int pid) {
 
     /* Quota attenuation: a child may never be given a wider ceiling than its
        parent holds, which is the same rule grants follow. */
-    vm_proc_init(pid, VM_DEFAULT_QUOTA / 4u, -1);
-    if (vm_quota_of(pid) != VM_DEFAULT_QUOTA / 4u)  goto done;
+    vm_proc_init(pid, vm_default_quota() / 4u, -1);
+    if (vm_quota_of(pid) != vm_default_quota() / 4u)  goto done;
 
     ok = 1;
 done:
@@ -729,6 +733,172 @@ static int test_exec_admit(void) {
     return 1;
 }
 
+/* ---- guarded kernel stacks ----
+ * The layout is what matters: the stack mapped at the top of its slot, the
+ * page below it NOT mapped (that is the guard), and everything handed back on
+ * free - frames and slot both. */
+static int test_kstack(void) {
+    uint32_t free0 = pmm_free_count();
+    uint32_t live0 = kstack_live();
+    uint32_t base, base2;
+
+    uint32_t top = kstack_alloc(THREAD_STACK_DEFAULT, 7, &base);
+    if (!top) return 0;
+    uint32_t top2 = kstack_alloc(THREAD_STACK_DEFAULT, 6, &base2);
+    int ok = top2 != 0 && top2 != top;
+
+    ok = ok && (top - base == THREAD_STACK_DEFAULT) && (top % KSTACK_SLOT_SIZE == 0);
+    ok = ok && paging_get_phys(base) && paging_get_phys(top - 4);          /* stack mapped */
+    ok = ok && !paging_get_phys(base - PAGE_SIZE);                         /* guard is not */
+    ok = ok && !paging_get_phys(top - KSTACK_SLOT_SIZE);                   /* nor the slot's floor */
+    if (ok) {
+        volatile uint32_t *lo = (volatile uint32_t *)base;
+        volatile uint32_t *hi = (volatile uint32_t *)(top - 4);
+        *lo = 0x57AC4B07u; *hi = 0x0DDBA11u;
+        ok = (*lo == 0x57AC4B07u) && (*hi == 0x0DDBA11u);
+    }
+    ok = ok && kstack_guard_owner(base - 4) == 7 && kstack_guard_owner(base2 - 4) == 6;
+    ok = ok && kstack_guard_owner(base) == -1 && kstack_guard_owner(top - 16) == -1;
+    ok = ok && kstack_alloc(KSTACK_SLOT_SIZE, 5, 0) == 0;                  /* no room for a guard */
+
+    kstack_free(base2);
+    kstack_free(base);
+    ok = ok && kstack_guard_owner(base - 4) == -1 && !paging_get_phys(base);
+    ok = ok && kstack_live() == live0 && pmm_free_count() == free0;
+    return ok;
+}
+
+/* ---- thread 0 runs on a guarded stack too ----
+ * The self-tests run on thread 0, so a local here is on its stack: that stack
+ * must be in the guarded region with an unmapped page below it, and thread 0
+ * must have an esp0 stack of its own for its trips to ring 3. */
+static int test_main_stack(void) {
+    volatile uint32_t here = 0;
+    uint32_t a = (uint32_t)&here;
+    if (thread_current_id() != 0) return 0;
+    if (a < KSTACK_REGION_BASE || a >= KSTACK_REGION_BASE + KSTACK_REGION_SIZE) return 0;
+    uint32_t top  = (a & ~(KSTACK_SLOT_SIZE - 1)) + KSTACK_SLOT_SIZE;
+    uint32_t base = top - KSTACK_MAIN_SIZE;
+    return paging_get_phys(base) && !paging_get_phys(base - PAGE_SIZE)
+        && kstack_guard_owner(base - 4) == 0
+        && thread_current_kstack_top() != 0;
+}
+
+/* ---- the double fault has a stack of its own ----
+ * Checks the wiring rather than taking a double fault, which cannot be
+ * recovered from: vector 8 is a task gate, and it names an available 32-bit
+ * TSS. (CXK_KTEST_STACK_OVERFLOW takes the real one.) */
+static int test_double_fault_gate(void) {
+    struct { uint16_t limit; uint32_t base; } __attribute__((packed)) idtr, gdtr;
+    __asm__ volatile ("sidt %0" : "=m"(idtr));
+    __asm__ volatile ("sgdt %0" : "=m"(gdtr));
+    const struct idt_entry *e = (const struct idt_entry *)idtr.base + 8;
+    if (e->type_attr != IDT_GATE_TASK || e->selector != DF_TSS_SEL) return 0;
+    const uint8_t *d = (const uint8_t *)gdtr.base + DF_TSS_SEL;
+    return d[5] == 0x89;   /* present, DPL 0, 32-bit TSS, not busy */
+}
+
+/* ---- kernel configuration (kernel.xkco) ----
+ * Parsed with the X Data reader linked in from os/std/xdata.xfxn, so this is
+ * also the test that X code runs correctly inside the kernel. Every refusal is
+ * checked for WHERE it points, not just that it happened - a wrong line number
+ * sends someone to the wrong place - and for leaving the caller's values alone,
+ * which is the "never half-applied" rule. */
+static uint32_t kc_len(const char *s) { uint32_t n = 0; while (s[n]) n++; return n; }
+
+static int kc_refused(const char *doc, uint32_t want_at) {
+    struct kconfig c;
+    kconfig_defaults(&c);
+    c.max_threads = 999;                       /* sentinel: must survive */
+    uint32_t at = 0xFFFFFFFFu;
+    const char *why = 0;
+    if (kconfig_parse(doc, kc_len(doc), &c, &at, &why) == 0) return 0;
+    return c.max_threads == 999 && at == want_at && why && why[0];
+}
+
+static int test_kconfig(void) {
+    struct kconfig c;
+    uint32_t at;
+    const char *why;
+    const char *good = "// the kernel's limits\nkernel_stack_kib = 16\n"
+                       "max_threads = 12, memory_quota_mib = 0x8   /* hex is fine */\n";
+    if (kconfig_parse(good, kc_len(good), &c, &at, &why) != 0) return 0;
+    if (c.kernel_stack != 16384 || c.max_threads != 12 || c.memory_quota != 8u * 1024u * 1024u) return 0;
+
+    /* absent keys keep their defaults; an empty file is all defaults */
+    struct kconfig d;
+    kconfig_defaults(&d);
+    if (kconfig_parse("max_threads = 6\n", 16, &c, &at, &why) != 0) return 0;
+    if (c.max_threads != 6 || c.kernel_stack != d.kernel_stack || c.memory_quota != d.memory_quota) return 0;
+    if (kconfig_parse("", 0, &c, &at, &why) != 0 || c.max_threads != d.max_threads) return 0;
+
+    return kc_refused("kernel_stack = 8\n", 0)                             /* unknown key */
+        && kc_refused("max_threads = 12\nmax_thread = 12\n", 17)          /* misspelt */
+        && kc_refused("max_threads = 99\n", 14)                            /* out of range */
+        && kc_refused("max_threads = 3\n", 14)
+        && kc_refused("kernel_stack_kib = 10\n", 19)                       /* not a multiple of 4 */
+        && kc_refused("kernel_stack_kib = 64\n", 19)
+        && kc_refused("memory_quota_mib = \"16\"\n", 19)                   /* a string */
+        && kc_refused("memory_quota_mib = -1\n", 19)
+        && kc_refused("max_threads = 8 kernel_stack_kib = 8\n", 16)        /* no separator */
+        && kc_refused("max_threads = 8\nmax_threads = 9\n", 16)            /* given twice */
+        && kc_refused("max_threads = 12\nkernel_stack_kib = 12\nbogus = 1\n", 39);  /* valid, then not */
+}
+
+/* ---- the thread limit, and the stack size, are live settings ---- */
+static void kc_exit_thread(void) { }
+
+static volatile int kc_stack_ok = 0;
+static void kc_stack_thread(void) {
+    /* Find our own stack from a local: it sits at the top of its 64 KB slot.
+       The configured size must be mapped, and the page just under it must not. */
+    volatile uint32_t here = 0;
+    uint32_t top  = ((uint32_t)&here & ~(KSTACK_SLOT_SIZE - 1)) + KSTACK_SLOT_SIZE;
+    uint32_t base = top - 16384u;
+    kc_stack_ok = paging_get_phys(base) != 0 && paging_get_phys(base - PAGE_SIZE) == 0;
+}
+
+static int test_thread_limit(void) {
+    uint32_t L = sched_thread_limit(), S = sched_stack_bytes();
+    int ok = sched_configure(THREAD_LIMIT_MIN - 1, S) != 0 && sched_configure(THREAD_LIMIT_MAX + 1, S) != 0
+          && sched_configure(L, 4096) != 0 && sched_configure(L, 12288 + 1) != 0;
+
+    /* room for exactly `room` more threads, and not one more */
+    uint32_t n    = sched_thread_count();
+    uint32_t lim  = (n + 2 < THREAD_LIMIT_MIN) ? THREAD_LIMIT_MIN : n + 2;
+    uint32_t room = lim - n;
+    if (sched_configure(lim, S) != 0) ok = 0;
+    uint32_t made = 0;
+    while (made < 40 && thread_create("limit", kc_exit_thread) >= 0) made++;
+    ok = ok && made == room;
+    for (int i = 0; i < 32 && sched_thread_count() > n; i++) yield();
+    ok = ok && sched_thread_count() == n;
+
+    /* a limit below what is already running is refused */
+    if (n > THREAD_LIMIT_MIN) ok = ok && sched_configure(n - 1, S) != 0;
+
+    /* a new stack size applies to the next thread made */
+    kc_stack_ok = 0;
+    if (sched_configure(L, 16384) != 0) ok = 0;
+    if (thread_create("stack16", kc_stack_thread) < 0) ok = 0;
+    for (int i = 0; i < 32 && sched_thread_count() > n; i++) yield();
+    ok = ok && kc_stack_ok;
+
+    sched_configure(L, S);
+    return ok && sched_thread_limit() == L && sched_stack_bytes() == S;
+}
+
+#if CXK_KTEST_STACK_OVERFLOW
+/* Recurse until the stack runs out. The volatile buffer keeps each frame real
+   and the addition after the call keeps it from becoming a loop. */
+static __attribute__((noinline)) uint32_t overflow_down(uint32_t n) {
+    volatile uint8_t pad[256];
+    pad[0] = (uint8_t)n;
+    return overflow_down(n + 1) + pad[0];
+}
+static void overflow_thread(void) { overflow_down(0); }
+#endif
+
 void ktest_run(void) {
     int passed = 0, total = 0;
 
@@ -749,6 +919,11 @@ void ktest_run(void) {
     total++; passed += report("cxfs volume tags",                  test_cxfs_volumes());
     total++; passed += report("clock + timed sleep",               test_clock_sleep());
     total++; passed += report("memory mappings (SYS_MEM_OP)",     test_vmregion());
+    total++; passed += report("guarded kernel stacks",             test_kstack());
+    total++; passed += report("double fault on its own stack",     test_double_fault_gate());
+    total++; passed += report("thread 0 on a guarded stack",       test_main_stack());
+    total++; passed += report("kernel config (X Data, linked X)",  test_kconfig());
+    total++; passed += report("thread limit + stack size",         test_thread_limit());
     total++; passed += report("cxex signature + tamper",           test_cxex_signature());
     total++; passed += report("exec admission (dev / release)",   test_exec_admit());
     total++; passed += report("file syscalls (SYS_FILE_OP)",       usermode_file_test());
@@ -771,4 +946,16 @@ void ktest_run(void) {
                         (uint32_t)passed,
                         VGA_ATTR(VGA_LIGHT_GREEN, VGA_BLACK), "");
     }
+
+#if CXK_KTEST_STACK_OVERFLOW
+    /* Last, because nothing comes back from it: the next thing on screen must
+       be a double-fault panic naming "overflow". */
+    klog("KTEST", SEV_WARN, "overflowing a kernel stack on purpose (CXK_KTEST_STACK_OVERFLOW)");
+#if CXK_KTEST_STACK_OVERFLOW == 2
+    overflow_down(0);                    /* thread 0's own stack: "main" */
+#else
+    thread_create("overflow", overflow_thread);
+    for (;;) yield();
+#endif
+#endif
 }

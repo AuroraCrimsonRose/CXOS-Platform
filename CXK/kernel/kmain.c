@@ -14,6 +14,7 @@
 #include "paging.h"
 #include "addr_space.h"
 #include "heap.h"
+#include "kstack.h"
 #include "console.h"
 #include "color.h"
 #include "fb.h"
@@ -37,6 +38,7 @@
 #include "cxfs.h"
 #include "pci.h"
 #include "ktest.h"
+#include "kconfig.h"
 #include "klogo.h"
 #include "speaker.h"
 #include "logging.h"
@@ -112,6 +114,8 @@ static void cx_text_logo(void) {
     console_clear();
 }
 
+void kmain_late(void) __attribute__((noreturn, used));
+
 void kmain(void) {
     /* console first, so everything after it logs cleanly. */
     console_init();
@@ -136,6 +140,31 @@ void kmain(void) {
 
     heap_init();
     klog("HEAP", SEV_OK, "online (kmalloc/kfree)");
+
+    /* before any address space but the kernel's exists: see kstack_init */
+    kstack_init();
+    klog("KSTACK", SEV_OK, "guarded kernel stacks ready");
+
+    /* Leave the boot stack. kernel.asm could only give kmain a stack in .bss,
+       with nothing below it, and kmain goes on to become thread 0 - the thread
+       the self-tests and every file path run on. From here it runs on a guarded
+       stack like every other thread, so an overflow is a panic naming "main"
+       rather than corruption of whatever .bss sits underneath. Nothing on the
+       old stack is needed again: the rest of boot is kmain_late, entered fresh. */
+    uint32_t main_top = kstack_alloc(KSTACK_MAIN_SIZE, 0, 0);
+    if (!main_top) {
+        klog("KSTACK", SEV_WARN, "no guarded stack for thread 0 - staying on the boot stack");
+        kmain_late();
+    }
+    __asm__ volatile ("mov %0, %%esp\n\t"
+                      "xor %%ebp, %%ebp\n\t"      /* ends a panic's stack trace here */
+                      "call kmain_late"
+                      : : "r"(main_top) : "memory");
+    __builtin_unreachable();
+}
+
+/* Everything after the move to a guarded stack. Never returns. */
+void kmain_late(void) {
 
     /* initalize speakers */
     speaker_init();
@@ -168,6 +197,12 @@ void kmain(void) {
 
     /* scheduler + timer (preemption available, enabled on demand). */
     sched_init();
+    /* Thread 0 enters ring 3 too (the self-tests do), so it needs an esp0 stack
+       of its own like any process. Without one, the TSS kept whichever esp0 the
+       previous thread left, and thread 0's interrupts from ring 3 landed on
+       another thread's kernel stack. */
+    if (thread_alloc_kstack(0) != 0)
+        klog("SCHED", SEV_WARN, "no esp0 stack for thread 0");
     klog("SCHED", SEV_OK, "online");
 
     timer_init();
@@ -273,6 +308,11 @@ void kmain(void) {
                          (uint32_t)extra, LOG_COLOR_VALUE, "");
         }
     }
+
+    /* The kernel's own limits, from /System/Config/kernel.xkco. As soon as the
+       system volume can be read, and before the self-tests or the executive
+       create a thread, so every thread is made under the configured limits. */
+    if (launch_exec) kconfig_load();
 
     /* run the kernel self-tests (ktest.c) first - they create + reap their own
        ring-3 threads, so let them finish before starting the executive. */

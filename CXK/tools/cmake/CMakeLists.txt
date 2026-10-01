@@ -118,6 +118,7 @@ set(KCFLAGS -ffreestanding -fno-pic -fno-stack-protector -m32
 set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/kmain.c
     ${SRC_DIR}/kernel/ktest.c
+    ${SRC_DIR}/kernel/kconfig.c
     ${SRC_DIR}/kernel/cpu/gdt.c
     ${SRC_DIR}/kernel/cpu/int/idt.c
     ${SRC_DIR}/kernel/cpu/int/pic.c
@@ -127,6 +128,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/memman/addr_space.c
     ${SRC_DIR}/kernel/memman/heap.c
     ${SRC_DIR}/kernel/memman/vmregion.c
+    ${SRC_DIR}/kernel/memman/kstack.c
     ${SRC_DIR}/kernel/lib/time/datetime.c
     ${SRC_DIR}/kernel/lib/string/string.c
     ${SRC_DIR}/kernel/lib/mem/bitmap.c
@@ -293,6 +295,36 @@ foreach(src ${KERNEL_ASM_SRCS})
     list(APPEND KERNEL_OBJS ${obj})
 endforeach()
 
+# ---- X linked into the kernel ----
+# X compiled to plain objects with `cxk compile --object` and linked like any
+# other kernel object; C calls it through a header (see kernel/lib/format/xdata.h).
+# The X Data reader is the first: the kernel reads its configuration with the
+# same code the supervisor uses, rather than a third implementation of it.
+#
+# Unlike the pre-flight checks this cannot be skipped on an older cxk - the
+# kernel will not link without it - so an older cxk is stopped here, at
+# configure time, with the fix, rather than at link time with a missing symbol.
+execute_process(COMMAND ${CXK} compile --help
+                OUTPUT_VARIABLE CXK_COMPILE_HELP ERROR_QUIET RESULT_VARIABLE CXK_COMPILE_RC)
+if(NOT CXK_COMPILE_HELP MATCHES "--object")
+    message(FATAL_ERROR "this cxk (${CXK}) cannot compile X to an object (no --object), "
+                        "which the kernel now needs. Republish cxk from CX_DEVKIT - see README.md, Building.")
+endif()
+set(KERNEL_X_SRCS
+    ${SRC_DIR}/os/std/xdata.xfxn
+)
+foreach(src ${KERNEL_X_SRCS})
+    get_filename_component(name ${src} NAME_WE)
+    set(obj ${BUILD_DIR}/kx_${name}.o)
+    add_custom_command(
+        OUTPUT ${obj}
+        COMMAND ${CXK} compile ${src} ${obj} --no-prelude --object
+        DEPENDS ${src} ${CXK}
+        COMMENT "X   ${name}.xfxn (linked into the kernel)"
+    )
+    list(APPEND KERNEL_OBJS ${obj})
+endforeach()
+
 # ---- stage 1 (flat binary) ----
 add_custom_command(
     OUTPUT ${BOOT_BIN}
@@ -420,14 +452,18 @@ set(SERVICE_XOSV
     ${SRC_DIR}/os/services/hello.xosv
     ${SRC_DIR}/os/services/disabled.xosv
     ${SRC_DIR}/os/services/heartbeat.xosv)
+# The kernel's configuration, checked the same way. Its keys are kconfig.c's:
+# keep them in step with kconfig_parse().
+set(KERNEL_XKCO ${SRC_DIR}/os/config/kernel.xkco)
 execute_process(COMMAND ${CXK} check-xdata --help
                 RESULT_VARIABLE CXK_HAS_XDATA OUTPUT_QUIET ERROR_QUIET)
 if(CXK_HAS_XDATA EQUAL 0)
-    set(XDCHECK COMMAND ${CXK} check-xdata --quiet --keys exec,args,start,every,grants ${SERVICE_XOSV})
+    set(XDCHECK COMMAND ${CXK} check-xdata --quiet --keys exec,args,start,every,grants ${SERVICE_XOSV}
+                COMMAND ${CXK} check-xdata --quiet --keys kernel_stack_kib,max_threads,memory_quota_mib ${KERNEL_XKCO})
 else()
     message(WARNING "this cxk predates check-xdata - service descriptors will not be checked "
                     "at build time. Republish cxk from the DevKit to enable it.")
-    set(XDCHECK COMMAND ${CMAKE_COMMAND} -E echo "  service descriptors NOT checked - cxk predates check-xdata")
+    set(XDCHECK COMMAND ${CMAKE_COMMAND} -E echo "  service descriptors and kernel.xkco NOT checked - cxk predates check-xdata")
 endif()
 
 # ---- unified disk: stage1 + XBPT + stage2 + BOOT/STAGE/SYSTEM partitions ----
@@ -443,8 +479,9 @@ add_custom_command(
             --stage System/Services/hello.xosv=${SRC_DIR}/os/services/hello.xosv
             --stage System/Services/disabled.xosv=${SRC_DIR}/os/services/disabled.xosv
             --stage System/Services/heartbeat.xosv=${SRC_DIR}/os/services/heartbeat.xosv
+            --stage System/Config/kernel.xkco=${KERNEL_XKCO}
     DEPENDS ${BOOT_BIN} ${STAGE2_BIN} ${KERNEL_XKEX} ${EXEC_XOEX} ${DISK_APP_XCEX}
-            ${SUPERVISOR_XCEX} ${SERVICE_XOSV} ${CXK}
+            ${SUPERVISOR_XCEX} ${SERVICE_XOSV} ${KERNEL_XKCO} ${CXK}
     COMMENT "Building unified CXK disk (XBPT: boot + stage + system)"
 )
 add_custom_target(cxk_disk ALL DEPENDS ${CXK_DISK})
