@@ -10,6 +10,11 @@ format and signing libraries, and CXEX Studio.
   known cross-repo ABI hazard (§5.2).
 - **[README](../README.md)** — project layout, the `cxk` command set, and the compile
   pipeline as it actually runs.
+- **[Review Response & Hardening Plan](HARDENING_PLAN.md)** — what the 2026-10-01 reviews
+  found, checked against the code, and the phased plan answering them. Tests are moving to
+  xUnit (`CXEX.Tests`), and platform scripts to `cxk` commands.
+- **[Security Review](SECURITY_REVIEW.md)** and **[Engineering Review](ENGINEERING_REVIEW.md)**
+  — the reviews themselves, kept as written.
 
 ## API reference
 

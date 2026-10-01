@@ -4,11 +4,17 @@
 **Doc status:** **v0.3** — the v0.2 Q&A decisions remain **locked** (marked **[LOCKED]**); genuinely-open items are in §13. This revision reconciles the document with what has actually shipped and moves it out of `CXEX.Studio/` (it describes the whole DevKit, not just Studio).
 
 > **Implementation status at a glance.** What exists today: the X Native compiler
-> (`CXEX.Lang` — lexer, parser, resolver, type checker, x86-32 emitter), the ten-command
-> `cxk` CLI, CXEX packaging, host-side CXFS, disk/partition models, RSA+SHA-256 keygen and
+> (`CXEX.Lang` — lexer, parser, resolver, type checker, x86-32 emitter), the `cxk` CLI, CXEX packaging, host-side CXFS, disk/partition models, RSA+SHA-256 keygen and
 > signing, and a working Studio shell. §11's bugs 1 and 2 are **fixed**. Five projects named
 > in §5 are **scaffolded but empty** (`CXEX.Font`, `CXEX.ICO`, `CXEX.Text`, `CXEX.Tools`,
 > `CXEX.UI`). Phases 1 onward in §14 are open.
+>
+> **Review response (2026-10-01).** `docs/SECURITY_REVIEW.md` and
+> `docs/ENGINEERING_REVIEW.md` are answered in `docs/HARDENING_PLAN.md`, which
+> records four decisions this document now follows. Tests move to an xUnit
+> project, `CXEX.Tests`, and Python is retired. Platform scripts are replaced by
+> `cxk` commands. No generated output is tracked. Hardening Phases 0–1 come
+> before the Studio phases in §14.
 >
 > **Where this document is aspirational, it says so.** Sections describing Studio windows,
 > font formats, the authority-tier key header, the installer target and the SDK are design,
@@ -179,7 +185,9 @@ Keys are not flat: every `XKPK`/`XKSK` carries a **header declaring its Authorit
 
 ## 5. Solution / Library Architecture
 
-**Implemented:** `CXEX.Studio` (2,417 lines), `CXEX.Lang` (1,820), `CXEX.CLI` (1,447), `CXEX.FileSystem` (582), `CXEX.Build` (477), `CXEX.FileType` (364), `CXEX.Disk` (301), `CXEX.Crypto` (279), `CXEX.SDK` (120), `CXEX.Core` (95).
+**Implemented:** `CXEX.Lang` (5,726 lines), `CXEX.CLI` (3,149), `CXEX.Studio` (2,420), `CXEX.Uefi` (1,019), `CXEX.FileSystem` (582), `CXEX.Build` (551), `CXEX.FileType` (369), `CXEX.Disk` (301), `CXEX.Crypto` (299), `CXEX.SDK` (120), `CXEX.Core` (102).
+
+**Decided, not yet created:** `CXEX.Tests`, the xUnit test project for the whole solution (`docs/HARDENING_PLAN.md`, D1). It replaces every Python script under `tests/`.
 
 **Scaffolded but empty — project file, zero source:** `CXEX.Font`, `CXEX.ICO`, `CXEX.Text`, `CXEX.Tools`, `CXEX.UI`. Nothing is missing; these are placeholders awaiting the phases in §14. Worth stating plainly because opening the solution gives no hint which libraries are real.
 
@@ -214,7 +222,7 @@ This is not hypothetical. The kernel gained `SYS_MOUSE_READ` and `struct mouse_s
 
 ### Mitigation, as built
 
-`CXEX.Lang/Abi/AbiSync.cs` compares the two and `cxk check-abi` runs it. CXK's `tools/build.bat` invokes it as a pre-flight next to the existing `cxk check`, so drift fails the build early and legibly. The prelude's banner no longer claims to be generated; it says it is hand-maintained and points at the check.
+`CXEX.Lang/Abi/AbiSync.cs` compares the two and `cxk check-abi` runs it. CXK's `tools/build.bat` invokes it as a pre-flight next to the existing `cxk check` (`cxk os build` takes this over when it replaces the script), so drift fails the build early and legibly. The prelude's banner no longer claims to be generated; it says it is hand-maintained and points at the check.
 
 **The family rule** is what makes this usable. The prelude mirrors only part of the header — `SYS_*`, `E_*`, `POWER_*`, `FB_OP_*` — and not `CAP_*` or `NET_OP_*`. Demanding total parity would report sixteen false positives on the first run and promptly be ignored, which is worse than no check at all. So: *a family with at least one member in the prelude must be complete; a family with none is reported as information.* Add one `NET_OP_` constant and the other six become required.
 
@@ -222,7 +230,7 @@ It checks three things, in ascending order of nastiness: a constant present in t
 
 Still outstanding:
 
-1. **A test project.** The comparison is in a library so `dotnet test` can call it, and there is still **no test project in this repository at all**. Until there is, the check depends on someone running the build script.
+1. **A test project.** *Decided:* `CXEX.Tests` (xUnit). Its first batch includes a unit test running `AbiSync` against the real header, so `dotnet test` becomes the gate (Q-F; `docs/HARDENING_PLAN.md`, Phase 0). Until it lands, the check depends on someone running the CXK build.
 2. **Generate it.** A build step emitting `abi.x` from the header, making the old banner true. Requires both repos visible at build time, which is why the check came first.
 
 `AbiPrelude.cs` therefore remains a **manual sync point** — but now a declared and verified one. Whoever changes `cxk_abi.h` changes the prelude in the same pass, and `cxk check-abi` says so if they forget.
@@ -333,22 +341,29 @@ Separate Avalonia app (not yet built), aimed at third-party developers compiling
 - **[Q-B]** ~~Authority tiers: `ROOT` + `DEVELOPER` enough to start, or add an intermediate "trusted vendor" tier now?~~ **Settled.** Two tiers, named `PLATFORM` and `PUBLISHER`, carried by the key's extension. A vendor is trusted by being in the vault, so the third tier is a directory entry rather than a format change.
 - **[Q-C]** `XCFM` font editor: confirm the in-Studio "draw glyphs on a character map → export/compile to XFNT" workflow is what you want for the bitmap path.
 - **[Q-D — half answered]** `CXEX.Tools` was created but left empty; the wrappers still live in `CXEX.CLI/Wrappers`. The relocation itself is still pending (Phase 2).
-- **[Q-E — new]** The `.XCXN` intermediate in §3 does not exist and ELF fills its role. Amend the locked chain to name ELF, or build `XCXN` for real? (Recommendation: amend.)
-- **[Q-F — new]** The ABI prelude is a manual cross-repo sync point that has already broken a build (§5.2). Add a test project asserting prelude/header agreement, or a generator? (Recommendation: the test, now; the generator later.)
+- **[Q-E — still open]** The `.XCXN` intermediate in §3 does not exist and ELF fills its role. Amend the locked chain to name ELF, or build `XCXN` for real? (Recommendation: amend.) The engineering review (§5) raises the same question.
+- **[Q-F]** ~~Test project or generator for the ABI prelude?~~ **Answered:** the test now, in `CXEX.Tests` (xUnit); the generator later (§5.2 item 2).
+- **[Q-G — new]** `cxk uefi build`: wrap MSVC where present, or use clang + lld-link everywhere? (`docs/HARDENING_PLAN.md` §5.)
 
 ---
 
 ## 14. Roadmap *(your §11 order, adjusted for the new decisions)*
 
+**Hardening comes first.** `docs/HARDENING_PLAN.md` carries its own Phases 0–3, which
+answer the 2026-10-01 reviews. Its Phase 0 is tooling: `CXEX.Tests`, and `cxk` commands
+in place of scripts. Its Phase 1 is the executable boundary: a validated ELF model,
+checked CXEX layout, a signature that covers all section data, and W^X. Both come before
+the Studio phases below. Its Phases 2–3 interleave with them.
+
 **Phase 0 — Unblock daily use:** ~~bug fixes 1–3~~ **done**; openers for all windows (#5) and the dock split (#4) remain. *(reopenable bottom panel already done.)*
 
 **Phase 0.5 — Close the ABI sync hole (§5.2). Done, with one piece outstanding.** `CXEX.Lang/Abi/AbiSync.cs` compares the header against the prelude and `cxk check-abi` exposes it; CXK's `tools/build.bat` runs it as a pre-flight beside the existing source check, so a drifted prelude now stops the build with a clear message instead of producing confusing "undefined name" errors in `gui.xfxn`. The misleading "GENERATED … Do not edit by hand" banner is gone — the prelude now says it is hand-maintained and names the check.
 
-*Outstanding:* the comparison lives in a library precisely so a test project can call it, and **that test project still does not exist.** `dotnet test` is the natural CI gate; the CLI command is the developer-facing half. Creating it remains the cheapest way to make this automatic rather than build-script-dependent.
+*Outstanding, now decided:* the comparison lives in a library precisely so a test project can call it. That project is **`CXEX.Tests` (xUnit)**, and the `AbiSync` unit test is in hardening Phase 0. `dotnet test` becomes the gate; the CLI command stays the developer-facing half.
 
 **Phase 1 — Identity & shell:** `CXEX.UI` skeleton + **CX Dark** theme; de-VS-Code chrome (Spyder-style icon bar, flat-with-contrast, no palette-only); min sizes; locked docking + Window Editor Mode + preset/custom layouts (global & per-project).
 
-**Phase 2 — Build Config window + `CXEX.Tools`:** relocate tool wrappers to `CXEX.Tools`; move building out of the bottom panel into a flags/config window → pipeline → Build Log; define `Config/settings.json` schema + mounted-disk UI. (Replaces batch/ps1 in earnest.)
+**Phase 2 — Build Config window + `CXEX.Tools`:** relocate tool wrappers to `CXEX.Tools`; move building out of the bottom panel into a flags/config window → pipeline → Build Log; define `Config/settings.json` schema + mounted-disk UI. (Script replacement no longer waits for this phase: `cxk os build`, the `cxk run` machine options and `cxk uefi build` are hardening Phase 0. This phase makes Studio drive the same pipeline.)
 
 **Phase 3 — Console Host:** multi-stream consoles (Build / Emulator-serial / real Terminal) with selector + context auto-switch; add CXK klog→COM1 serial mirror.
 

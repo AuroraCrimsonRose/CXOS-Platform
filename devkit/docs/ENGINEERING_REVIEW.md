@@ -5,6 +5,10 @@
 **Excluded:** security findings covered by `docs/SECURITY_REVIEW.md`  
 **Review date:** 2026-10-01
 
+> **Response & status:** every finding below has been checked against the code
+> and planned in [`HARDENING_PLAN.md`](HARDENING_PLAN.md), which tracks each to
+> done. This review is kept as written.
+
 ## Executive summary
 
 CX DevKit is moving from a collection of command-line/build utilities toward a reusable toolchain and IDE-facing platform. The main engineering concern is therefore not that the architecture is fundamentally wrong; it is that several subsystem contracts are becoming important enough to formalize before more consumers depend on them.

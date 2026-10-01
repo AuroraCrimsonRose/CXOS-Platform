@@ -19,17 +19,18 @@ The two things most people come looking for:
 
 | Project | Lines | Purpose |
 |---|---:|---|
-| `CXEX.Studio` | 2,417 | Avalonia IDE — project explorer, hex viewer, editors, emulator host |
-| `CXEX.CLI` | 2,198 | The `cxk` command-line toolchain |
-| `CXEX.Lang` | 1,820 | **The X Native compiler** (see below) |
+| `CXEX.Lang` | 5,726 | **The X Native compiler** (see below) |
+| `CXEX.CLI` | 3,149 | The `cxk` command-line toolchain |
+| `CXEX.Studio` | 2,420 | Avalonia IDE — project explorer, hex viewer, editors, emulator host |
 | `CXEX.Uefi` | 1,019 | UEFI Secure Boot — EFI variable stores, Authenticode PE signing |
 | `CXEX.FileSystem` | 582 | CXFS, host side (format, read, write, browse) |
-| `CXEX.Build` | 477 | CXEX packaging — ELF parsing, layout, writing |
-| `CXEX.FileType` | 364 | Format/magic registry and identification |
+| `CXEX.Build` | 551 | CXEX packaging — ELF parsing, layout, writing |
+| `CXEX.FileType` | 369 | Format/magic registry and identification |
 | `CXEX.Disk` | 301 | Disk images, MBR / GPT / XBPT |
-| `CXEX.Crypto` | 279 | RSA + SHA-256 keygen and signing |
+| `CXEX.Crypto` | 299 | RSA + SHA-256 keygen and signing |
 | `CXEX.SDK` | 120 | SDK surface (early) |
-| `CXEX.Core` | 95 | Shared primitives |
+| `CXEX.Core` | 102 | Shared primitives |
+| `CXEX.Tests` | — | **Planned:** the xUnit test project (see [Tests](#tests)) |
 
 **Scaffolded but empty** — these have project files and no source yet: `CXEX.Font`, `CXEX.ICO`, `CXEX.Text`, `CXEX.Tools`, `CXEX.UI`. They are placeholders for planned work (see the design doc §5), not missing code. `CXEX.Tools` in particular is where the process-tool wrappers are *intended* to move so the CLI and Studio share one toolchain driver; today those wrappers still live in `CXEX.CLI/Wrappers`.
 
@@ -40,7 +41,7 @@ The two things most people come looking for:
 ```
 cxk keygen      generate an RSA keypair (.xkpk / .xksk)
 cxk compile     X source -> ELF, or a linkable object (--object)
-cxk build       ELF -> CXEX (.xcex / .xoex / .xkex)
+cxk build       ELF -> CXEX (.xuex / .xoex / .xsex / .xkex / .xbex)
 cxk sign        attach a signature block to a CXEX artifact
 cxk embed       CXEX -> C byte array header (for kernel-embedded images)
 cxk image       build a bootable disk image
@@ -51,11 +52,27 @@ cxk check       validation pass
 cxk check-abi   verify the X ABI prelude still matches cxk_abi.h
 cxk check-xdata validate X Data documents (service descriptors)
 
+cxk tokens      print the tokens of X sources         \
+cxk ast         print their syntax trees               |  what the compiler sees at each stage,
+cxk sema        print each expression's type           |  compared against the compiler written
+cxk asm         print the assembly compile generates   |  in X (CXK os/xc)
+cxk prelude     print the ABI prelude                 /
+
 cxk secureboot keygen     generate a Secure Boot PK/KEK/db set
 cxk secureboot varstore   enroll it into an OVMF EFI variable store
 cxk secureboot sign       Authenticode-sign a PE so firmware will load it
 cxk secureboot verify     would firmware holding this cert accept this image
 cxk secureboot test       boot a stub under enforced Secure Boot, signed and unsigned
+```
+
+**Planned** (decision D2 in [`docs/HARDENING_PLAN.md`](docs/HARDENING_PLAN.md)): the
+commands that replace CXK's `.bat` and `.sh` scripts, so building and running CXK is
+the same on every host.
+
+```
+cxk os build [--dev]      configure and build CXK through CMake, signing when a key is present (replaces tools/build.bat)
+cxk run  --machine ...    q35 / AHCI / e1000 / packet capture options (replaces tools/run_qemu_ahci.bat)
+cxk uefi build            build the UEFI stub (replaces boot/uefi/build.bat)
 ```
 
 ### `cxk secureboot`, and why it is in here
@@ -94,8 +111,8 @@ foo.xfxn                          X Native source
   -> X86Emitter                   foo.s      GAS (AT&T) assembly text
   -> GccTool.Compile              foo.o      via the i686-elf cross toolchain
   -> GccTool.Link                 foo        ELF, against a generated linker script
-  -> cxk build                    foo.xcex   CXEX-wrapped, signable
-  -> cxk sign                     foo.xcex   signature block attached
+  -> cxk build                    foo.xuex   CXEX-wrapped, signable
+  -> cxk sign                     foo.xuex   signature block attached
 ```
 
 The X front-end emits **assembly text**, not machine code, and leans on `i686-elf-gcc` to assemble and link. Dropping the external assembler by emitting CXEX sections directly is a possible later change — a back-end decision, not a language change.
@@ -112,7 +129,7 @@ The kernel's syscall ABI is defined in **`CXK/abi/cxk_abi.h`**. The X compiler c
 CXEX.Lang/Abi/AbiPrelude.cs
 ```
 
-**That file emits a banner reading `GENERATED from cxk_abi.h — Do not edit by hand`, and nothing generates it.** It is a hand-maintained C# string literal, living in a different repository from the header it claims to track. There is no build step and no test connecting the two.
+**That file emits a banner reading `GENERATED from cxk_abi.h — Do not edit by hand`, and nothing generates it.** It is a hand-maintained C# string literal, living in a different repository from the header it claims to track. Nothing generates it; a check (below) is what connects the two.
 
 This has already cost a real bug: the kernel gained `SYS_MOUSE_READ` and `struct mouse_state`, the prelude did not, and the committed compiler could not compile the committed OS — `gui.xfxn` referenced two names that did not exist. The drift was exactly one syscall and one struct, and it was invisible until something failed to build.
 
@@ -122,13 +139,13 @@ This has already cost a real bug: the kernel gained `SYS_MOUSE_READ` and `struct
 cxk check-abi [path/to/cxk_abi.h]
 ```
 
-Compares the header against the prelude and fails on real drift. It finds the header itself if you don't pass one (via `CXK_ROOT`, or a sibling CXK checkout). CXK's `tools/build.bat` runs it as a pre-flight beside the existing source check, so drift stops the build with a clear message rather than surfacing as "undefined name" errors inside `gui.xfxn`.
+Compares the header against the prelude and fails on real drift. It finds the header itself if you don't pass one (via `CXK_ROOT`, or a sibling CXK checkout). CXK's `tools/build.bat` (and, once it replaces that script, `cxk os build`) runs it as a pre-flight beside the existing source check, so drift stops the build with a clear message rather than surfacing as "undefined name" errors inside `gui.xfxn`.
 
 It reports three kinds of problem: a constant missing from a family the prelude mirrors, a constant whose **value** disagrees, and a struct whose **field order** disagrees — that last being the nastiest, since a reordered struct compiles fine on both sides and silently corrupts every call using it.
 
 The prelude only mirrors part of the header (`SYS_*`, `E_*`, `POWER_*`, `FB_OP_*`, and the structs — not `CAP_*` or `NET_OP_*`), so the rule is *if a family is mirrored at all, it must be mirrored completely.* Unmirrored families are reported as notes, not failures. Add one `NET_OP_` constant and the rest become required.
 
-The comparison lives in `CXEX.Lang/Abi/AbiSync.cs` rather than in the command, so a test project can call it — and **there is still no test project in this repository**, which is the remaining gap. `dotnet test` is the natural CI gate; today the check depends on running the build script.
+The comparison lives in `CXEX.Lang/Abi/AbiSync.cs` rather than in the command, so a test project can call it. **That project is decided: `CXEX.Tests` (xUnit),** and a unit test running `AbiSync` against the real header is in its first batch, making `dotnet test` the gate. Until it lands, the check depends on running the CXK build.
 
 **Treat `AbiPrelude.cs` as requiring a manual update whenever `cxk_abi.h` changes**, and run `cxk check-abi` after. The CXK-side reference is `docs/CX_ABI.md`.
 
@@ -144,13 +161,15 @@ cxk check-xdata <files...> [--keys exec,args,start,every,grants] [--porcelain]
 
 A typo is then a build error naming `file:line:col`, not a line in a boot log. `--keys` refuses any top-level key outside the list, so a misspelt key cannot be silently ignored.
 
-Two readers of one format are worth having only if they agree, so they are held to it: `tests/xdata/difftest.py` generates thousands of documents - valid, mutated, and nested past the depth limit - runs each through both readers (the X one compiled and run natively), and fails if any error code or byte offset differs. `SABOTAGE=1` skews one expectation, to show the test can fail.
+Two readers of one format are worth having only if they agree, so they are held to it: the differential test (`tests/xdata/difftest.py` today, `CXEX.Tests/XData` once ported) generates thousands of documents - valid, mutated, and nested past the depth limit - runs each through both readers (the X one compiled and run natively), and fails if any error code or byte offset differs. `SABOTAGE=1` skews one expectation, to show the test can fail; under xUnit that becomes a unit test of its own.
 
 ---
 
 ## Documentation
 
 - **`docs/CX_DEVKIT_DESIGN.md`** — architecture, visual identity, artifact taxonomy, key authority and signing, Studio design, and the phased roadmap. The main design document for this repository.
+- **`docs/SECURITY_REVIEW.md`**, **`docs/ENGINEERING_REVIEW.md`** — the 2026-10-01 reviews of this repository, kept as written.
+- **`docs/HARDENING_PLAN.md`** — the response to both: decisions (xUnit, `cxk` commands in place of scripts, no tracked build output), the status of every finding checked against the code, and a phased checklist. Its kernel-side companion is `CXK/docs/HARDENING_PLAN.md`.
 - **`docs/index.md`** — entry point for the generated API reference (DocFX). `///` comments in source appear there on the next build.
 
 The X *language* is specified on the kernel side, since the kernel owns the ABI it compiles against:
@@ -169,7 +188,36 @@ Requirements: .NET (see the `.csproj` files for the target framework), and for p
 dotnet build CXEX.Studio.slnx
 ```
 
+API reference (DocFX), in place of `build-docs.cmd`, which is being retired:
+
+```
+dotnet tool restore
+dotnet docfx docs/docfx.json --serve
+```
+
+This needs a `.config/dotnet-tools.json` that pins docfx, and the repository
+does not have one yet; it arrives in hardening Phase 0. Until then, install
+docfx with `dotnet tool install -g docfx` and run `docfx docs/docfx.json --serve`.
+The output (`docs/_site/`, `docs/api/`) is generated. It is still committed
+today, and is being untracked (`docs/HARDENING_PLAN.md`, D3).
+
 ### Tests
+
+**Decided: every suite moves to xUnit,** in a `CXEX.Tests` project in `CXEX.Studio.slnx`, run with:
+
+```
+dotnet test
+```
+
+No Python interpreter will be needed. Tests are grouped by trait. `Unit` and
+`Adversarial` need only .NET. `Toolchain` needs `gcc -m32` and `i686-elf-gcc`.
+`Differential` also needs a CXK checkout (`CXK_ROOT`, or `../CXK`). A test
+whose requirement is missing reports **skipped**, with the reason; it never
+silently passes. Mutant counts and seeds come from `CXEX_TEST_MUTANTS` and
+`CXEX_TEST_SEED`. Each script below is deleted in the change that ports it; the
+plan is in [`docs/HARDENING_PLAN.md`](docs/HARDENING_PLAN.md), D1.
+
+Until then, the suites are Python:
 
 ```
 python3 tests/lang/run.py        # the X language: programs that must run, programs that must be refused, C <-> X interop, std/buf
@@ -181,7 +229,7 @@ python3 tests/xc/asmdiff.py      # the code generator written in X against this 
 python3 tests/xc/selfhost.py     # xc compiles itself, twice: three identical assemblies, and working programs
 ```
 
-Both run X natively on the host (a 32-bit `gcc` links the output), so no VM is involved. `tests/lang/refuse` holds programs the compiler must reject, each with the error it must give: every one of them used to compile and produce a wrong answer.
+They run X natively on the host (a 32-bit `gcc` links the output), so no VM is involved. `tests/lang/refuse` holds programs the compiler must reject, each with the error it must give: every one of them used to compile and produce a wrong answer.
 
 ---
 
