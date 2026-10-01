@@ -2,37 +2,44 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "Build CXK",
+            "label": "Build CXOS",
             "type": "shell",
-            "command": "C:/Users/Aurora/Documents/VS Code/CXK/CXK/tools/build.bat",
+            "command": "${workspaceFolder}/tools/build.bat",
             "group": { "kind": "build", "isDefault": true },
             "problemMatcher": []
         },
         {
-            "label": "Clean Build CXK",
+            "label": "Build CXOS (development: runs unsigned programs)",
             "type": "shell",
-            "command": "C:/Users/Aurora/Documents/VS Code/CXK/CXK/tools/clean.bat",
+            "command": "${workspaceFolder}/tools/build.bat dev",
             "group": "build",
             "problemMatcher": []
         },
         {
+            "label": "Build DevKit",
+            "type": "shell",
+            "command": "dotnet build ${workspaceFolder}/devkit/CXEX.Studio.slnx",
+            "group": "build",
+            "problemMatcher": "$msCompile"
+        },
+        {
             "label": "Run QEMU",
             "type": "shell",
-            "command": "C:/Users/Aurora/Documents/VS Code/CXK/CXK/tools/run_qemu.bat",
+            "command": "${workspaceFolder}/tools/cxk.exe run ${workspaceFolder}/dist/CXK_x86_32/images/cxk_disk.img",
             "group": { "kind": "test", "isDefault": true },
             "problemMatcher": []
         },
         {
-            "label": "Run QEMU (AHCI / q35)",
+            "label": "Run QEMU (q35 / AHCI / e1000)",
             "type": "shell",
-            "command": "C:/Users/Aurora/Documents/VS Code/CXK/CXK/tools/run_qemu_ahci.bat",
+            "command": "${workspaceFolder}/tools/run_qemu_ahci.bat",
             "group": "test",
             "problemMatcher": []
         },
         {
             "label": "Run Bochs",
             "type": "shell",
-            "command": "C:/Users/Aurora/Documents/VS Code/CXK/CXK/tools/run_bochs.bat",
+            "command": "${workspaceFolder}/tools/run_bochs.bat",
             "group": "test",
             "problemMatcher": []
         }

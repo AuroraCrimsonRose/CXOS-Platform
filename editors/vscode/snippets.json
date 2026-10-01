@@ -1,0 +1,150 @@
+{
+  "Function Declaration": {
+    "prefix": "fn",
+    "body": [
+      "fn ${1:name}(${2:args}) -> ${3:void} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Declare a new X Native function"
+  },
+  "While Loop": {
+    "prefix": "while",
+    "body": [
+      "while (${1:1 == 1}) {",
+      "\t$0",
+      "}"
+    ],
+    "description": "While loop"
+  },
+  "If Statement": {
+    "prefix": "if",
+    "body": [
+      "if (${1:condition}) {",
+      "\t$0",
+      "}"
+    ],
+    "description": "If statement"
+  },
+  "Struct": {
+    "prefix": "struct",
+    "body": [
+      "struct ${1:name} {",
+      "\t${2:field}: ${3:u32},",
+      "}"
+    ],
+    "description": "Declare a struct"
+  },
+  "Enum": {
+    "prefix": "enum",
+    "body": [
+      "enum ${1:name} {",
+      "\t${2:first},",
+      "\t${3:second},",
+      "}"
+    ],
+    "description": "Declare an enum"
+  },
+  "Switch": {
+    "prefix": "switch",
+    "body": [
+      "switch (${1:value}) {",
+      "\tcase ${2:kind.first} { $0 }",
+      "\telse { }",
+      "}"
+    ],
+    "description": "switch over an enum or sum type (exhaustive unless it has an else)"
+  },
+  "Defer": {
+    "prefix": "defer",
+    "body": [
+      "defer ${1:cleanup}();$0"
+    ],
+    "description": "Run at scope exit"
+  },
+  "String Copy": {
+    "prefix": "strcopy",
+    "body": [
+      "strcopy(&${1:dst}[0], \"${2:text}\", sizeof ${1:dst});$0"
+    ],
+    "description": "Copy a NUL-terminated string"
+  },
+  "Memory Zero": {
+    "prefix": "memzero",
+    "body": [
+      "memzero(&${1:dst}[0], sizeof ${1:dst});$0"
+    ],
+    "description": "Zero out a memory buffer"
+  },
+  "Print String": {
+    "prefix": "puts",
+    "body": [
+      "puts(\"${1:text}\");$0"
+    ],
+    "description": "Write a string to the console"
+  },
+  "Print Integer": {
+    "prefix": "print_u32",
+    "body": [
+      "print_u32(${1:val});$0"
+    ],
+    "description": "Print a 32-bit integer"
+  },
+  "Get Key": {
+    "prefix": "getkey",
+    "body": [
+      "let ${1:key}: i32 = getkey();$0"
+    ],
+    "description": "Block and wait for a keystroke"
+  },
+  "GUI: Add Layer": {
+    "prefix": "layer_add",
+    "body": [
+      "let ${1:id}: u32 = layer_add(${2:z_index}, ${3:x}, ${4:y}, ${5:w}, ${6:h}, ${7:draw_callback});$0"
+    ],
+    "description": "Register a new render layer in the compositor"
+  },
+  "GUI: Render Rect": {
+    "prefix": "layer_render_rect",
+    "body": [
+      "layer_render_rect(${1:x}, ${2:y}, ${3:w}, ${4:h});$0"
+    ],
+    "description": "Redraw a specific damaged area of the screen"
+  },
+  "GUI: Window": {
+    "prefix": "geos_window",
+    "body": [
+      "geos_window(${1:x}, ${2:y}, ${3:w}, ${4:h}, \"${5:Title}\");$0"
+    ],
+    "description": "Draw a classic OS window with a drop shadow"
+  },
+  "GUI: Button": {
+    "prefix": "geos_button",
+    "body": [
+      "geos_button(${1:x}, ${2:y}, ${3:w}, ${4:h}, \"${5:Label}\", ${6:is_active});$0"
+    ],
+    "description": "Draw a clickable GEOS button"
+  },
+  "GUI: Hit Test": {
+    "prefix": "geos_hit_test",
+    "body": [
+      "geos_hit_test(${1:mx}, ${2:my}, ${3:bx}, ${4:by}, ${5:bw}, ${6:bh}) == 1$0"
+    ],
+    "description": "Check if a point intersects a bounding box"
+  },
+  "Net: IPv4 Address": {
+    "prefix": "ip4",
+    "body": [
+      "ip4(${1:192}, ${2:168}, ${3:1}, ${4:1})$0"
+    ],
+    "description": "Pack an IPv4 address into a u32"
+  },
+  "Net: Ping": {
+    "prefix": "net_ping",
+    "body": [
+      "let ${1:rtt}: [1]u32; ${1:rtt}[0] = 0;",
+      "let ${2:r}: i32 = net_ping(${3:dst_ip}, ${4:seq}, &${1:rtt}[0]);$0"
+    ],
+    "description": "Send an ICMP echo request"
+  }
+}

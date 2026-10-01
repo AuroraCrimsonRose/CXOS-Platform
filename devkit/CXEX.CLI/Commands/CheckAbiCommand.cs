@@ -12,7 +12,7 @@ namespace CXEX.CLI.Commands;
 /// Pre-flight: confirm the X ABI prelude still matches the kernel's ABI header.
 ///
 /// <para>The prelude (<c>CXEX.Lang/Abi/AbiPrelude.cs</c>) is a hand-maintained copy of
-/// <c>CXK/abi/cxk_abi.h</c> that claims in its own banner to be generated. Nothing generates
+/// <c>abi/cxk_abi.h</c> that claims in its own banner to be generated. Nothing generates
 /// it and the two live in different repositories, so it drifts silently - and when it drifts,
 /// the toolchain cannot compile the userland. That has already happened: the kernel gained
 /// <c>SYS_MOUSE_READ</c> and <c>struct mouse_state</c>, the prelude did not, and
@@ -48,7 +48,7 @@ public class CheckAbiCommand : Command<CheckAbiCommand.Settings>
         if (headerPath is null)
         {
             AnsiConsole.MarkupLine("[red]Error:[/] could not find cxk_abi.h.");
-            AnsiConsole.MarkupLine("[grey]  Pass it explicitly:  cxk check-abi path/to/CXK/abi/cxk_abi.h[/]");
+            AnsiConsole.MarkupLine("[grey]  Pass it explicitly:  cxk check-abi path/to/abi/cxk_abi.h[/]");
             AnsiConsole.MarkupLine("[grey]  or set CXK_ROOT to the CXK repository root.[/]");
             return 1;
         }
@@ -115,7 +115,7 @@ public class CheckAbiCommand : Command<CheckAbiCommand.Settings>
     /// <summary>
     /// Finds cxk_abi.h without being told. In order: <c>CXK_ROOT</c>, then a sibling CXK
     /// checkout walking up from the working directory. The header sits at
-    /// <c>&lt;repo&gt;/CXK/abi/cxk_abi.h</c> - the repository root contains a nested CXK
+    /// <c>&lt;repo&gt;/abi/cxk_abi.h</c> - the repository root contains a nested CXK
     /// directory - so both layouts are tried at each level.
     /// </summary>
     private static string? LocateHeader()

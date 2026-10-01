@@ -1,0 +1,48 @@
+{
+  "name": "x-native-lang",
+  "publisher": "CATXSystemsLLC",
+  "displayName": "X Native Language Support",
+  "version": "0.5.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AuroraCrimsonRose/CXOS-Platform.git",
+    "directory": "editors/vscode"
+  },
+  "icon": "icons/extension-logo.png",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "contributes": {
+    "languages": [
+      {
+        "id": "xfxn",
+        "aliases": [
+          "X Native",
+          "xfxn"
+        ],
+        "extensions": [
+          ".xfxn"
+        ],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "icons/xfxn.png",
+          "dark": "icons/xfxn.png"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "xfxn",
+        "scopeName": "source.xfxn",
+        "path": "./xfxn.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "xfxn",
+        "path": "./snippets.json"
+      }
+    ]
+  }
+}

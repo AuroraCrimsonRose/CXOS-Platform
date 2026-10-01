@@ -1,3 +1,31 @@
+# CXOS Platform
+
+Everything that makes CXOS, in one repository: **CXK**, the kernel; the **X
+userland**, including the X compiler written in X; the boot chain; and the **CX
+DevKit**, the host toolchain (the `cxk` CLI, the C# X compiler, signing,
+imaging) and CXEX Studio.
+
+| Directory | What it holds |
+|---|---|
+| `abi/` | The syscall and boot ABI: the one source of truth both sides compile against |
+| `boot/` | BIOS boot chain; `uefi/` stub |
+| `kernel/` | CXK |
+| `os/` | X userland: `apps/`, `std/`, `xc/` (the compiler in X), `executive/`, `config/`, `services/` |
+| `tools/` | CMake build (`cmake/`), the platform public key, remaining scripts |
+| `devkit/` | The C# toolchain and Studio, and their tests: see [`devkit/README.md`](devkit/README.md) |
+| `editors/` | X language support for editors (VS Code) |
+| `assets/` | Branding, UI icons, file-type icons |
+| `docs/` | All documentation: start at [`docs/README.md`](docs/README.md) |
+
+**Binaries are not in the repository.** `cxk`, CXEX Studio and the OS disk
+image ship as [releases](https://github.com/AuroraCrimsonRose/CXOS-Platform/releases)
+(`docs/planning/HARDENING_PLAN.md`, D7).
+
+This repository joins the former CXK and CX_DEVKIT repositories, with both
+histories kept (D6).
+
+---
+
 # CXK
 
 **CATX Kernel**
@@ -14,7 +42,7 @@ The project is designed around modularity, verifiable execution, and reusable sy
 
 CXK is currently under active development.
 
-The v5 architecture focuses on preserving proven subsystems from previous releases while modernizing the boot chain, executable loading infrastructure, and trust model. **The v5 port is complete** — see `docs/V5_PORTING_MANIFEST.md`, retained as the historical plan.
+The v5 architecture focuses on preserving proven subsystems from previous releases while modernizing the boot chain, executable loading infrastructure, and trust model. **The v5 port is complete** — see `docs/planning/history/V5_PORTING_MANIFEST.md`, retained as the historical plan.
 
 Delivered:
 
@@ -38,9 +66,9 @@ Delivered:
 - X: enums and sum types with exhaustive `switch`, struct and array initializers, character literals, compound assignment, values passed by value (C-compatible), and growable buffers in `std/buf.xfxn`
 - The X compiler written in X (`os/xc`): `xc` produces exactly what the C# compiler does, compiles itself to a fixed point, and compiles itself on CXK
 
-**Where it is going, and in what order, is in [`docs/CX_ROADMAP.md`](docs/CX_ROADMAP.md).** The current phase is self-hosting, X compiling X, which gates nearly everything else. Its stage 4 is done; stage 5 (an assembler and linker in X) follows hardening Phase 1.
+**Where it is going, and in what order, is in [`docs/planning/CX_ROADMAP.md`](docs/planning/CX_ROADMAP.md).** The current phase is self-hosting, X compiling X, which gates nearly everything else. Its stage 4 is done; stage 5 (an assembler and linker in X) follows hardening Phase 1.
 
-**Security: under active hardening, not yet hardened.** The 2026-10-01 reviews ([`docs/SECURITY_REVIEW.md`](docs/SECURITY_REVIEW.md), [`docs/ENGINEERING_REVIEW.md`](docs/ENGINEERING_REVIEW.md)) found that the CXEX loader still trusts parts of a signed image's layout. Most seriously, it does not stop an image from mapping kernel addresses. Every finding has been checked against the code and planned in [`docs/HARDENING_PLAN.md`](docs/HARDENING_PLAN.md); closing the executable boundary is its Phase 1. Until then, do not treat signature verification as a complete defence against a malicious program.
+**Security: under active hardening, not yet hardened.** The 2026-10-01 reviews ([`docs/reviews/2026-10-01/KERNEL_SECURITY_REVIEW.md`](docs/reviews/2026-10-01/KERNEL_SECURITY_REVIEW.md), [`docs/reviews/2026-10-01/KERNEL_ENGINEERING_REVIEW.md`](docs/reviews/2026-10-01/KERNEL_ENGINEERING_REVIEW.md)) found that the CXEX loader still trusts parts of a signed image's layout. Most seriously, it does not stop an image from mapping kernel addresses. Every finding has been checked against the code and planned in [`docs/planning/HARDENING_PLAN.md`](docs/planning/HARDENING_PLAN.md); closing the executable boundary is its Phase 1. Until then, do not treat signature verification as a complete defence against a malicious program.
 
 ---
 
@@ -195,8 +223,8 @@ This naming system allows tooling and developers to identify broad file purpose 
 
 See:
 
-- docs/CX_EXTENSION_NAMING.md
-- docs/CX_EXTENSION_SYSTEM.md
+- docs/formats/CX_EXTENSION_NAMING.md
+- docs/formats/CX_EXTENSION_SYSTEM.md
 
 for additional details.
 
@@ -233,7 +261,7 @@ The primary objective of v5 is to modernize executable loading and deployment wh
 
 ### Long-term goal: building CXK from CXK
 
-The objective is a **self-sufficient system** — one that compiles its own software, on itself, with no external host. The X toolchain currently runs on .NET, so CXK can execute X programs but cannot yet produce them. Closing that gap is the long-term direction, and it drives the language roadmap: see `docs/CX_X_CORE_LANG.md` §0 and §10 for what self-hosting requires and the staged route to it.
+The objective is a **self-sufficient system** — one that compiles its own software, on itself, with no external host. The X toolchain currently runs on .NET, so CXK can execute X programs but cannot yet produce them. Closing that gap is the long-term direction, and it drives the language roadmap: see `docs/language/CX_X_CORE_LANG.md` §0 and §10 for what self-hosting requires and the staged route to it.
 
 ---
 
@@ -241,13 +269,12 @@ The objective is a **self-sufficient system** — one that compiles its own soft
 
 > **Moving to `cxk` commands.** The `.bat` scripts below are being replaced by
 > cross-platform `cxk` commands (decision D2 in
-> [`docs/HARDENING_PLAN.md`](docs/HARDENING_PLAN.md)). Each script is removed
+> [`docs/planning/HARDENING_PLAN.md`](docs/planning/HARDENING_PLAN.md)). Each script is removed
 > when its replacement lands:
 >
 > | Today | Replacement |
 > |---|---|
 > | `tools\build.bat [dev]` | `cxk os build [--dev]` (planned) |
-> | `tools\run_qemu.bat` | `cxk run dist/CXK_x86_32/images/cxk_disk.img` (works now; the script is out of date) |
 > | `tools\run_qemu_ahci.bat` | `cxk run` with machine options: q35, AHCI, e1000, packet capture (planned) |
 > | `tools\run_bochs.bat` | `cxk run -e bochs` (works now) |
 > | `boot\uefi\build.bat` | `cxk uefi build` (planned) |
@@ -266,17 +293,18 @@ Requirements:
 - CMake
 - QEMU
 - Bochs (optional)
-- **`tools/cxk.exe`** — the CX DevKit toolchain. CMake drives it for packaging, signing,
-  imaging and X compilation. **It is not committed**: publish it from
-  [CX_DEVKIT](https://github.com/AuroraCrimsonRose/CX_DEVKIT) as a single file and copy it
-  to `tools/cxk.exe`:
+- **`tools/cxk.exe`** — the DevKit's CLI. CMake drives it for packaging, signing,
+  imaging and X compilation. **It is not committed.** Take it from the latest
+  [release](https://github.com/AuroraCrimsonRose/CXOS-Platform/releases)
+  (`cxk-win-x64.exe`, saved as `tools/cxk.exe`; `cxk-linux-x64` and
+  `cxk-osx-arm64` for other hosts), or publish it from `devkit/` as a single
+  file and copy it to `tools/cxk.exe`:
 
   ```bat
-  dotnet publish CXEX.CLI -c Release -r win-x64 -p:SelfContained=true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+  dotnet publish devkit\CXEX.CLI -c Release -r win-x64 -p:SelfContained=true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
   ```
 
-  Building CXK therefore needs the .NET SDK once, to publish it, until CX_DEVKIT ships
-  release builds. Republish whenever the DevKit changes something the build uses. The
+  Republish whenever the DevKit changes something the build uses. The
   checks the build runs through it (`check-abi`, `check-xdata`) warn and skip on an older
   one; the kernel itself needs `cxk compile --object` (it links X code), and CMake stops
   at configure time with this instruction if the `cxk` it finds is too old.
@@ -313,8 +341,6 @@ Run:
 tools\cxk.exe run dist\CXK_x86_32\images\cxk_disk.img
 ```
 
-(`tools\run_qemu.bat` still passes options for the old two-image layout that `cxk run` no longer accepts, so it does not work.)
-
 AHCI + e1000 test, until `cxk run` has the machine options:
 
 ```bat
@@ -325,32 +351,24 @@ tools\run_qemu_ahci.bat
 
 ## Documentation
 
-| Document | Covers |
+Everything is under [`docs/`](docs/README.md), by topic:
+
+| Folder | Covers |
 |---|---|
-| `docs/CX_ABI.md` | Syscall & capability contract (v2) — numbers, caps, IPC, handles |
-| `docs/PROCESS_MODEL.md` | Ring 3, scheduling, preemption, per-process address spaces |
-| `docs/CX_X_CORE_LANG.md` | X core language spec (v0.2) and the route to self-hosting |
-| `docs/CXFS_FILESYSTEM.md` | The CXFS filesystem |
-| `docs/CX_EXTENSION_SYSTEM.md` | CXEX format, file-type system, code signing |
-| `docs/CX_EXTENSION_NAMING.md` | The `X + Domain + Type` naming formula |
-| `docs/CX_FILE_STRUCTURE.md` | On-disk and in-repo layout |
-| `docs/V5_PORTING_MANIFEST.md` | The v5 port plan (complete — historical) |
-| `docs/SECURITY_REVIEW.md` | Security review, 2026-10-01 |
-| `docs/ENGINEERING_REVIEW.md` | Engineering review, 2026-10-01 |
-| `docs/HARDENING_PLAN.md` | The response to both reviews: decisions, status of each finding, phased checklist |
-
-### Toolchain
-
-The compiler, CLI, packaging, signing tools and IDE live in the companion repository
-[CX_DEVKIT](https://github.com/AuroraCrimsonRose/CX_DEVKIT). Its `docs/CX_DEVKIT_DESIGN.md`
-is the host-side design document.
+| `docs/kernel/` | The syscall and capability ABI; the process model |
+| `docs/system/` | CXFS; the OS filesystem layout |
+| `docs/formats/` | CXEX, the extension system and naming, file structure |
+| `docs/language/` | The X language and X Data |
+| `docs/devkit/` | The DevKit design document and its API reference (DocFX) |
+| `docs/planning/` | The roadmap; the hardening plan; history |
+| `docs/reviews/` | External reviews, kept as written |
 
 > **Note for anyone changing `abi/cxk_abi.h`:** the X compiler carries a hand-maintained copy
-> of this ABI as an X prelude (`CXEX.Lang/Abi/AbiPrelude.cs` in CX_DEVKIT). Nothing generates
-> it, so **a syscall or ABI struct added here must be added there in the same pass** or the
-> toolchain will not be able to compile the userland. `tools\build.bat` runs `cxk check-abi`
-> before building (and `cxk os build` will), which reports drift; a `CXEX.Tests` unit test is planned to check it on every DevKit test run too.
-> See CX_DEVKIT design doc §5.2.
+> of this ABI as an X prelude (`devkit/CXEX.Lang/Abi/AbiPrelude.cs`). Nothing generates it
+> yet, so **a syscall or ABI struct added here must be added there in the same change** or the
+> toolchain will not compile the userland. `tools\build.bat` runs `cxk check-abi` before
+> building, which reports drift; a `CXEX.Tests` unit test is planned to check it on every
+> test run. See `docs/devkit/CX_DEVKIT_DESIGN.md` §5.2.
 
 ---
 

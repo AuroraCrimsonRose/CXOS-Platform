@@ -12,7 +12,7 @@
 #             X calls C, with 64-bit values and structs by value.
 #   std/      CXK's std/buf.xfxn, run against heap.xfxn here - an allocator
 #             that needs no kernel and can be told to refuse. Needs a CXK
-#             checkout (CXK_ROOT, or ../CXK beside this repo); skipped without.
+#             checkout (the platform root this devkit/ sits in, or CXK_ROOT); skipped without.
 #
 # Needs: a Release build of CXEX.CLI, i686-elf-gcc on PATH (the compiler
 # assembles with it) and a host gcc that can link -m32. Exit 0 = all passed.
@@ -88,7 +88,7 @@ else:
     print(f"{'ok  ' if rc == 0 else 'FAIL'} interop (C <-> X)" + ("" if rc == 0 else f": check {rc} failed"))
     fails += rc != 0
 
-root = os.environ.get("CXK_ROOT") or os.path.join(REPO, "..", "CXK")
+root = os.environ.get("CXK_ROOT") or os.path.normpath(os.path.join(REPO, ".."))
 std = next((d for d in (os.path.join(root, "CXK", "os", "std"), os.path.join(root, "os", "std"))
             if os.path.exists(os.path.join(d, "buf.xfxn"))), None)
 if std is None:
