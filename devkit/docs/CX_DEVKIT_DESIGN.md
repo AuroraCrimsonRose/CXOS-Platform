@@ -69,7 +69,7 @@ Pattern: **`XF**` = Format (source)**, **`XC**` = Compiled**, executables are CX
 | `.XFXN` | cX Format, X Native | X Native (systems core) source |
 | `.XFXR` | cX Format, X Runtime | X Runtime dialect source |
 | `.XFXH` | cX Format, X Hybrid | X Hybrid dialect source |
-| `.XCXN` | cX Compiled, X Native | Compiled X Native object |
+| ~~`.XCXN`~~ | ~~cX Compiled, X Native~~ | **Dropped (Q-E):** the linkable object is ELF (`.o`) |
 
 **There is no `.XCXR` or `.XCXH`, and there should not be.** The dialect is a
 property of the SOURCE, not of what comes out. X Runtime and X Hybrid desugar to
@@ -88,10 +88,10 @@ Carrying the dialect into the binary would also undo the thing the split buys:
 a loader that had to know which front end emitted an image is a loader that can
 be wrong about it.
 
-**Compile/link chain:** `*.XFXN` / `*.XFXR` / `*.XFXH` (source) → **`*.XCXN`**
+**Compile/link chain:** `*.XFXN` / `*.XFXR` / `*.XFXH` (source) → **ELF object, `.o`**
 (compiled linkable object — one form, whichever dialect it came from) →
 **packaged executable** (`.xkex` / `.xbex` / `.xoex` / `.xsex` / `.xuex`
-depending on **whose** it is). `XCXN` is the intermediate; the `X_EX` family is
+depending on **whose** it is). ELF is the intermediate; the `X_EX` family is
 the final CXEX-headered, signable artifact.
 
 > **Stale as of the domain restructure.** This table said `XCEX` above. `.xcex`
@@ -99,6 +99,10 @@ the final CXEX-headered, signable artifact.
 > is compiled, so the letter distinguished nothing. See
 > `CXK/docs/CX_EXTENSION_SYSTEM.md` §2.
 
+> **Resolved 2026-10-01 (Q-E): ELF, not `.XCXN`.** The chain above now names ELF; the note below is kept for its
+> reasoning. ELF is also what lets X objects link into the C kernel (`cxk compile --object`), and what clang, ld.lld and
+> a future X assembler all share, so a private object format would need a converter at every boundary.
+>
 > **As-built deviation — `.XCXN` does not exist.** The word appears nowhere in the codebase.
 > The pipeline that actually runs is:
 >
@@ -293,7 +297,7 @@ Display PNG / BMP / ICO (+ more). `XFSIFile.cs` lib stub now; format later.
 ## 7. Emulation & Debug **[LOCKED]**
 
 - **Near term:** launch QEMU/Bochs as a process, capture **serial (COM1) → Emulator Output**. CXK currently does **not** mirror klog to serial — add a small serial-mirror in the kernel (it already collects the log for disk, so wiring a COM1 echo is cheap). No in-window graphical embedding.
-- **Custom X emulator (later):** a **host-side X VM** that runs `.XFXN`/`.XCXN` against a **stubbed `cxk_abi.h`** (syscalls → host console/files) so apps preview without booting CXK. User-space preview, not full-system emulation.
+- **Custom X emulator (later):** a **host-side X VM** that runs `.XFXN`/ELF objects against a **stubbed `cxk_abi.h`** (syscalls → host console/files) so apps preview without booting CXK. User-space preview, not full-system emulation.
 
 ---
 
@@ -341,9 +345,9 @@ Separate Avalonia app (not yet built), aimed at third-party developers compiling
 - **[Q-B]** ~~Authority tiers: `ROOT` + `DEVELOPER` enough to start, or add an intermediate "trusted vendor" tier now?~~ **Settled.** Two tiers, named `PLATFORM` and `PUBLISHER`, carried by the key's extension. A vendor is trusted by being in the vault, so the third tier is a directory entry rather than a format change.
 - **[Q-C]** `XCFM` font editor: confirm the in-Studio "draw glyphs on a character map → export/compile to XFNT" workflow is what you want for the bitmap path.
 - **[Q-D — half answered]** `CXEX.Tools` was created but left empty; the wrappers still live in `CXEX.CLI/Wrappers`. The relocation itself is still pending (Phase 2).
-- **[Q-E — still open]** The `.XCXN` intermediate in §3 does not exist and ELF fills its role. Amend the locked chain to name ELF, or build `XCXN` for real? (Recommendation: amend.) The engineering review (§5) raises the same question.
+- **[Q-E]** ~~Amend the chain to name ELF, or build `.XCXN`?~~ **Answered: ELF.** The §3 chain is amended.
 - **[Q-F]** ~~Test project or generator for the ABI prelude?~~ **Answered:** the test now, in `CXEX.Tests` (xUnit); the generator later (§5.2 item 2).
-- **[Q-G — new]** `cxk uefi build`: wrap MSVC where present, or use clang + lld-link everywhere? (`docs/HARDENING_PLAN.md` §5.)
+- **[Q-G]** ~~`cxk uefi build`: MSVC or clang + lld-link?~~ **Answered: clang + lld-link, with clang, ld.lld and Ninja for the whole CXK build too** (`docs/HARDENING_PLAN.md`, D5).
 
 ---
 
@@ -379,7 +383,7 @@ the Studio phases below. Its Phases 2–3 interleave with them.
 
 **Phase 9 — CLI tooling:** `cxk font` (XFNT/XCFM, TTF/OTF/BDF/PNG-BMP) + `CXEX.Font`; multi-arch stubs.
 
-**Phase 10 — Bigger bets:** host-side X emulator (XFXN/XCXN preview); image editor + XFSI; **CX SDK** app on `CXEX.UI`.
+**Phase 10 — Bigger bets:** host-side X emulator (XFXN/ELF preview); image editor + XFSI; **CX SDK** app on `CXEX.UI`.
 
 ---
 

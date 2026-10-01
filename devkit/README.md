@@ -115,9 +115,9 @@ foo.xfxn                          X Native source
   -> cxk sign                     foo.xuex   signature block attached
 ```
 
-The X front-end emits **assembly text**, not machine code, and leans on `i686-elf-gcc` to assemble and link. Dropping the external assembler by emitting CXEX sections directly is a possible later change — a back-end decision, not a language change.
+The X front-end emits **assembly text**, not machine code, and leans on an external assembler and linker: `i686-elf-gcc` today, **clang and ld.lld once the LLVM move lands** (`docs/HARDENING_PLAN.md`, D5). Clang's assembler already produces byte-identical code for the compiler's output. Dropping the external assembler by emitting CXEX sections directly is a possible later change — a back-end decision, not a language change.
 
-Note two naming inconsistencies to be aware of when reading the code: X sources use `.xfxn`, but `CompileCommand`'s doc comment says `.x`, and the generated ABI prelude is named `abi.x`. The design doc's taxonomy (§3) says X Native source is `.XFXN`, so `abi.xfxn` would be the consistent name. Also, the taxonomy specifies an `.XCXN` compiled-object stage that **does not exist** — the cross toolchain's ELF plays that role today.
+Note two naming inconsistencies to be aware of when reading the code: X sources use `.xfxn`, but `CompileCommand`'s doc comment says `.x`, and the generated ABI prelude is named `abi.x`. The design doc's taxonomy (§3) says X Native source is `.XFXN`, so `abi.xfxn` would be the consistent name. The taxonomy used to specify an `.XCXN` compiled-object stage; it was never built, and **ELF is now the decided linkable object format** (design doc §3, Q-E).
 
 ---
 
@@ -210,7 +210,7 @@ dotnet test
 ```
 
 No Python interpreter will be needed. Tests are grouped by trait. `Unit` and
-`Adversarial` need only .NET. `Toolchain` needs `gcc -m32` and `i686-elf-gcc`.
+`Adversarial` need only .NET. `Toolchain` needs clang and ld.lld, on Linux or WSL.
 `Differential` also needs a CXK checkout (`CXK_ROOT`, or `../CXK`). A test
 whose requirement is missing reports **skipped**, with the reason; it never
 silently passes. Mutant counts and seeds come from `CXEX_TEST_MUTANTS` and
