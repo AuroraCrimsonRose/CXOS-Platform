@@ -53,5 +53,9 @@ void irq_uninstall_handler(int irq);
 
 #define IDT_GATE_INT32 0x8E
 #define IDT_GATE_INT32_DPL3 0xEE   /* present, DPL=3, 32-bit interrupt gate */
+#define IDT_GATE_TASK       0x85   /* present, DPL=0, task gate */
+
+/* the double-fault handler: entered as its own task through a task gate */
+void double_fault_task(void);
 
 #endif

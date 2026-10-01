@@ -2,8 +2,10 @@
 ### CX Design Spec — Aurora Tejeda / CATX SYSTEMS LLC
 
 > **Status: v0, reader implemented** (`os/std/xdata.xfxn`), with **service
-> descriptors (`.xosv`) as the first consumer**, checked at build time by the
-> DevKit's port of the same reader (§6a). Writing and editing, and schemas, are
+> descriptors (`.xosv`)** and **the kernel's own configuration
+> (`/System/Config/kernel.xkco`)** as consumers, both checked at build time by
+> the DevKit's port of the same reader (§6a). The kernel links the X reader
+> itself (§6b). Writing and editing, and schemas, are
 > specified as intent in §7 and are not built yet.
 
 X Data is CXOS's format for configuration and structured data: service
@@ -210,6 +212,26 @@ build warns and skips the check rather than failing.
 The build checks syntax and keys, not kinds: `start = 5` passes the build and is
 refused by the supervisor at boot. Kinds belong to schemas (§7), which would
 let both sides check them from one declaration.
+
+---
+
+## 6b. The kernel reads X Data with the X reader
+
+The kernel does not have a C reader. It links `os/std/xdata.xfxn` directly:
+the build compiles it with `cxk compile --object` (every function and global
+exported, no entry point) and links the object with the kernel's C objects.
+C calls it through `kernel/lib/format/xdata.h`, whose prototypes and
+`struct xd_val` must match the X declarations by hand.
+
+That works because X's calling convention is cdecl — arguments pushed right to
+left, the caller pops, the result in `eax`, `ebx`/`esi`/`edi` preserved — and
+because the reader imports nothing and allocates nothing. Its error position
+lives in globals, so it is not reentrant; the kernel reads X Data once, at
+boot, before anything else could call it.
+
+The kernel's first document is `kernel.xkco` (`kernel/kconfig.c`), and the
+self-tests check that it parses, and that every refusal points at the right
+byte.
 
 ---
 

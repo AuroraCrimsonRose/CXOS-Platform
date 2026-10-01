@@ -29,7 +29,14 @@ tmp/
 logs/
 cache/
 config/
+# ...but not the OS's own configuration sources, which ship on every disk.
+!/CXK/os/config/
+
+# The DevKit toolchain is not committed: build it from CX_DEVKIT (or take a
+# release build) and put it in CXK/tools/. A 40 MB binary in every clone, stale
+# the moment the compiler changes, is worse than one step to fetch it.
 tools/cxk.exe
+CXK/tools/cxk.exe
 
 # -------------------------
 # Editor / workspace files

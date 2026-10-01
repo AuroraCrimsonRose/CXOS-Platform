@@ -47,7 +47,7 @@ if "%STUB%"=="" set STUB=BOOTX64.EFI
 
 if not exist "%CXK%" (
     echo [ERROR] Toolchain missing: %CXK%
-    echo         Publish cxk.exe from the DevKit and copy it into tools\.
+    echo         cxk.exe is not committed. Publish it from CX_DEVKIT and copy it into tools\.
     exit /b 1
 )
 
