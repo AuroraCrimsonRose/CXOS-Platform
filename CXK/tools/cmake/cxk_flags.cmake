@@ -21,4 +21,9 @@ set(CXK_FLAGS
                             #         use this to keep early-boot output visible when debugging a fault)
     CXK_ALLOW_DISK_WRITE=1  # 1 = DEV build: may format / write a scratch disk. DANGER on bare metal.
                             #     0 = read-only/never-format (safe default for sharing)
+    CXK_KTEST_STACK_OVERFLOW=0  # 1 = after the self-tests, run a thread that recurses until it
+                            #     overflows its kernel stack. The boot MUST end in a red panic naming
+                            #     that thread - which proves the guard page and the double-fault task
+                            #     work. A reset or a hang instead means they do not. Test builds only.
+                            # 2 = the same on thread 0's own stack; the panic must name "main".
 )

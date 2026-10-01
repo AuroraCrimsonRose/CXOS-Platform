@@ -42,4 +42,15 @@
 #define CXK_ENABLE_FB 1             /* 1 = framebuffer console (default), 0 = force text mode */
 #endif
 
+/*
+ * CXK_KTEST_STACK_OVERFLOW, when 1, ends the self-tests by overflowing a kernel
+ * stack on purpose (2: thread 0's own). The boot must then stop at a red panic
+ * naming the thread: proof that the guard page faulted and the double-fault
+ * task caught it. See tools/cmake/cxk_flags.cmake. Never on in a build anyone
+ * boots for real.
+ */
+#ifndef CXK_KTEST_STACK_OVERFLOW
+#define CXK_KTEST_STACK_OVERFLOW 0
+#endif
+
 #endif

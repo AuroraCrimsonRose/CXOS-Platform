@@ -211,7 +211,7 @@ static void manifest_load(void);            /* fwd decl (defined in allocator se
  * Every CXFS block operation needs a CXFS_BLOCK_SIZE (4KB) staging buffer.
  * These used to be locals, which made the frames enormous: cxfs_write_file's
  * frame measured 4432 bytes and it calls cxfs_write_entry (4160) - 8592 bytes
- * of stack against the 8192-byte THREAD_STACK that thread_alloc_kstack hands a
+ * of stack against the 8192-byte default stack that thread_alloc_kstack hands a
  * ring-3 process for its syscall (esp0) stack. The file paths only ever ran on
  * kmain's larger .bss stack, so the overrun stayed invisible until file
  * syscalls put them on a thread stack. Statics keep them out of frames.

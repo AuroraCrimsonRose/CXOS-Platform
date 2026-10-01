@@ -706,12 +706,13 @@ static void process_trampoline(void) {
     thread_exit();   /* never returns */
 }
 
-int process_create_ring3(const char *name,
-                         const void *blob, uint32_t blob_len,
-                         const char *msg) {
-    int pid = thread_create(name, process_trampoline);
+/* Everything but starting it, so a caller can finish configuring the process
+   (its uid, say) before it can run. See thread_create_process. */
+static int process_prepare_ring3(const char *name,
+                                 const void *blob, uint32_t blob_len,
+                                 const char *msg) {
+    int pid = thread_create_process(name, process_trampoline);
     if (pid < 0) return -1;
-    if (thread_alloc_kstack(pid) < 0) return -1;
     r3[pid].blob       = blob;
     r3[pid].blob_len   = blob_len;
     r3[pid].msg        = msg;
@@ -722,9 +723,18 @@ int process_create_ring3(const char *name,
     thread_mark_user(pid);
     thread_set_caps(pid, GRANT_CONSOLE);   /* SYSTEM ring-3 helper: may write console */
     klog_u32("RING3", SEV_INFO, "SYSMODE CALL - pid ", (uint32_t)pid, LOG_COLOR_VALUE, "");
+    return pid;
+}
+
+int process_create_ring3(const char *name,
+                         const void *blob, uint32_t blob_len,
+                         const char *msg) {
+    int pid = process_prepare_ring3(name, blob, blob_len, msg);
+    if (pid < 0) return -1;
     /* runs as SYSTEM: this is the kernel launching a ring-3 helper as the
        machine identity. To launch on behalf of a human user, use
        process_create_ring3_as_user(). */
+    thread_start(pid);
     return pid;
 }
 
@@ -733,11 +743,14 @@ int process_create_ring3(const char *name,
    (SYSTEM) is rejected. Returns the pid, or -1 (incl. if uid == SYSTEM). */
 int process_create_ring3_as_user(const char *name, const void *blob, uint32_t blob_len, const char *msg, uint32_t uid) {
     if (!uid_is_user(uid)) return -1;   /* user can never be UID 0 / invalid */
-    int pid = process_create_ring3(name, blob, blob_len, msg);
+    int pid = process_prepare_ring3(name, blob, blob_len, msg);
     if (pid < 0) return -1;
-    /* pid is already marked is_user by process_create_ring3, so thread_set_uid's
-       guard would block UID 0 here too - but uid is validated >= 1 above. */
+    /* pid is already marked is_user by process_prepare_ring3, so thread_set_uid's
+       guard would block UID 0 here too - but uid is validated >= 1 above. Set
+       while the thread is still held: started first, it could run as SYSTEM
+       before this line did. */
     thread_set_uid(pid, uid);
+    thread_start(pid);
     klog_u32("RING3", SEV_INFO, "USERMODE CALL - uid ", uid, LOG_COLOR_VALUE, "");
     return pid;
 }

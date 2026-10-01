@@ -20,6 +20,9 @@
 #include "sched.h"
 #include "speaker.h"
 #include "fb.h"
+#include "gdt.h"
+#include "kstack.h"
+#include "paging.h"
 
 void pic_remap(void);
 void pic_send_eoi(uint32_t int_no);
@@ -96,12 +99,38 @@ static void idt_set_gate(int n, uint32_t handler) {
     idt[n].type_attr   = IDT_GATE_INT32;
     idt[n].offset_high = (handler >> 16) & 0xFFFF;
 }
+/* A task gate: the CPU switches to the task in TSS `tss_sel`, with that task's
+   own stack and registers. Only the double fault uses one (see below). */
+static void idt_set_task_gate(int n, uint16_t tss_sel) {
+    idt[n].offset_low  = 0;
+    idt[n].selector    = tss_sel;
+    idt[n].zero        = 0;
+    idt[n].type_attr   = IDT_GATE_TASK;
+    idt[n].offset_high = 0;
+}
 void idt_set_user_gate(int n, uint32_t handler) {
     idt[n].offset_low  = handler & 0xFFFF;
     idt[n].selector    = 0x08;
     idt[n].zero        = 0;
     idt[n].type_attr   = IDT_GATE_INT32_DPL3;
     idt[n].offset_high = (handler >> 16) & 0xFFFF;
+}
+
+static void panic_tail(uint32_t ebp);
+
+/* If `addr` is in the guard below a live kernel stack, say whose. A large
+   frame can jump into the guard while the exception frame itself still fits,
+   so an overflow arrives as a plain page fault as often as a double fault. */
+static void panic_name_overflow(uint32_t addr) {
+    int owner = kstack_guard_owner(addr);
+    if (owner < 0) return;
+    char num[12];
+    fmt_u32(num, (uint32_t)owner);
+    panic_puts("Kernel stack overflow: thread ");
+    panic_puts(num);
+    const char *name = thread_name(owner);
+    if (name) { panic_puts(" ("); panic_puts(name); panic_puts(")"); }
+    panic_puts("\n");
 }
 
 static void (*user_fault_hook)(struct registers *r) = 0;
@@ -146,16 +175,27 @@ void isr_handler(struct registers *r) {
         panic_puts((r->err_code & 0x2) ? ", write" : ", read");
         panic_puts((r->err_code & 0x4) ? ", user" : ", kernel");
         panic_puts("\n");
+        panic_name_overflow(cr2);
     }
 
     panic_puts("EBP:");  panic_puthex(r->ebp);
     panic_puts(" ESP:"); panic_puthex(r->esp);
     panic_puts("\n");
+    panic_tail(r->ebp);
+}
+
+/* The common end of every panic: a stack trace from `ebp`, the recent log,
+   the crash log to disk, and a halt. */
+static void panic_tail(uint32_t ebp) {
     panic_puts("Stack trace (return EIPs):\n");
     {
-        uint32_t *fp = (uint32_t *)r->ebp;
+        uint32_t *fp = (uint32_t *)ebp;
         for (int i = 0; i < 6; i++) {
             if ((uint32_t)fp < 0x1000) break;   /* higher-half frames OK */
+            /* A frame pointer from a thread that ran off its stack can point
+               into the guard. Reading it would fault again, inside the panic;
+               stop the trace instead. */
+            if (!paging_get_phys((uint32_t)fp) || !paging_get_phys((uint32_t)fp + 4)) break;
             uint32_t ret = fp[1];
             if (ret == 0) break;
             panic_puts("  ");
@@ -186,6 +226,41 @@ void isr_handler(struct registers *r) {
 
     panic_puts("System halted.");
     for (;;) { __asm__ volatile ("cli; hlt"); }
+}
+
+/* ---- double fault ---------------------------------------------------------
+ * Reached through a TASK GATE (gdt.c), not an interrupt gate, so it runs on a
+ * stack of its own. That is the whole point: the usual way to double fault is
+ * a kernel stack overflow - the page fault on the guard cannot push its frame
+ * onto the stack that just ran out, so the CPU escalates. Delivered on that
+ * same stack, the double fault would fail too, and a third fault resets the
+ * machine with nothing on screen. As a task it gets a fresh stack, and the
+ * state of the code that faulted is saved in the main TSS for us to report.
+ *
+ * Never returns: the faulting context is unrecoverable by definition. */
+void double_fault_task(void) {
+    struct tss_fault f;
+    tss_faulted_state(&f);
+    uint32_t cr2;
+    __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
+
+    speaker_panic_tone();
+    panic_pos = 0;
+    if (fb_active()) fb_clear(fb_rgb(0xAA, 0, 0));
+    panic_puts("*** KERNEL PANIC ***\n");
+    panic_puts("Exception: 0x00000008  Double Fault (on its own stack)\n");
+
+    /* The overflow case, named: the page-fault address, or failing that the
+       stack pointer, in the guard below a live kernel stack. */
+    panic_name_overflow(kstack_guard_owner(cr2) >= 0 ? cr2 : f.esp);
+
+    panic_puts("EIP: ");  panic_puthex(f.eip);
+    panic_puts("   CR2: "); panic_puthex(cr2);
+    panic_puts("\n");
+    panic_puts("EBP:");  panic_puthex(f.ebp);
+    panic_puts(" ESP:"); panic_puthex(f.esp);
+    panic_puts("\n");
+    panic_tail(f.ebp);
 }
 
 static void (*irq_routines[16])(struct registers *) = { 0 };
@@ -270,7 +345,7 @@ void idt_init(void) {
     idt_set_gate(2,(uint32_t)isr2);   idt_set_gate(3,(uint32_t)isr3);
     idt_set_gate(4,(uint32_t)isr4);   idt_set_gate(5,(uint32_t)isr5);
     idt_set_gate(6,(uint32_t)isr6);   idt_set_gate(7,(uint32_t)isr7);
-    idt_set_gate(8,(uint32_t)isr8);   idt_set_gate(9,(uint32_t)isr9);
+    idt_set_task_gate(8, DF_TSS_SEL); idt_set_gate(9,(uint32_t)isr9);
     idt_set_gate(10,(uint32_t)isr10); idt_set_gate(11,(uint32_t)isr11);
     idt_set_gate(12,(uint32_t)isr12); idt_set_gate(13,(uint32_t)isr13);
     idt_set_gate(14,(uint32_t)isr14); idt_set_gate(15,(uint32_t)isr15);

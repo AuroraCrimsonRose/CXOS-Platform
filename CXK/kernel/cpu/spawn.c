@@ -169,9 +169,9 @@ int proc_start(const void *image, uint32_t image_len, uint32_t caps,
     struct addr_space space;
     if (addr_space_create(&space) != 0) { kfree(kimg); kfree(kargs); return E_NOMEM; }
 
-    int pid = thread_create("proc", proc_trampoline);
-    if (pid < 0)                      { kfree(kimg); kfree(kargs); addr_space_destroy(&space); return E_NOMEM; }
-    if (thread_alloc_kstack(pid) < 0) { kfree(kimg); kfree(kargs); addr_space_destroy(&space); return E_NOMEM; }
+    /* Held until every record below is filled in: see thread_create_process. */
+    int pid = thread_create_process("proc", proc_trampoline);
+    if (pid < 0) { kfree(kimg); kfree(kargs); addr_space_destroy(&space); return E_NOMEM; }
 
     proc_recs[pid].image     = kimg;
     proc_recs[pid].image_len = image_len;
@@ -187,12 +187,13 @@ int proc_start(const void *image, uint32_t image_len, uint32_t caps,
        The parent is whoever is running this call: the kernel for the executive
        (not tracked, so nothing narrows the default) or a ring-3 process for
        everything it launches. */
-    vm_proc_init(pid, VM_DEFAULT_QUOTA, thread_current_id());
+    vm_proc_init(pid, vm_default_quota(), thread_current_id());
 
     if (broker) {
         int bh = thread_handle_install(pid, HANDLE_ENDPOINT, HRIGHT_SEND, broker);
         if (bh != 0) klog_u32("PROC", SEV_WARN, "broker handle not 0: ", (uint32_t)bh, LOG_COLOR_VALUE, "");
     }
+    thread_start(pid);
     return pid;
 }
 

@@ -40,7 +40,12 @@
 
 /* The ceiling a process is given when nothing narrows it. A bound on one
    process, NOT a budget shared with its children - see vm_proc_init. */
-#define VM_DEFAULT_QUOTA (16u * 1024u * 1024u)
+#define VM_DEFAULT_QUOTA (16u * 1024u * 1024u)   /* built in; kernel.xkco may change it */
+
+/* The quota a process gets when its parent asks for none, and the most any
+   process may be given. Starts at VM_DEFAULT_QUOTA. */
+uint32_t vm_default_quota(void);
+void     vm_set_default_quota(uint32_t bytes);
 
 /* Begin tracking `pid`, with a ceiling of min(quota, the parent's ceiling) so
    authority over memory attenuates down a spawn chain the way grants do.
