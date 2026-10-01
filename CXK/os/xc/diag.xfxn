@@ -1,0 +1,65 @@
+// xc/diag.xfxn - the X compiler's diagnostics.
+// Aurora Tejeda / CATX SYSTEMS LLC
+//
+// Every stage reports into one `diags`, in the order it finds things - which
+// is the order the C# compiler reports them in, and the order they are
+// printed. A message is built a piece at a time and then placed:
+//
+//   dg_begin(d); dg_str(d, "expected "); dg_str(d, what); dg_end(d, file, line, col);
+//
+// file is an index the caller gives meaning to (the front end's file table).
+
+import "buf.xfxn";
+
+struct diag { file: u32, line: u32, col: u32, at: u32, len: u32 }
+
+struct diags {
+    recs: buf,        // diag, diag, ...
+    msgs: buf,        // their messages, end to end
+    start: u32,       // where the message being built begins
+    oom: bool,
+}
+
+fn diag_size() -> u32 { let d: diag; return sizeof d; }
+
+fn diags_new() -> diags { return diags { recs: buf_new(), msgs: buf_new(), start: 0, oom: false }; }
+fn diags_free(d: *diags) -> void { buf_free(&d.recs); buf_free(&d.msgs); }
+
+fn dg_count(d: *diags) -> u32 { return d.recs.len / diag_size(); }
+fn dg_at(d: *diags, i: u32) -> *diag { return ((d.recs.data as u32) + i * diag_size()) as *diag; }
+
+fn dg_begin(d: *diags) -> void { d.start = d.msgs.len; }
+fn dg_str(d: *diags, s: *u8) -> void { if (!buf_str(&d.msgs, s)) { d.oom = true; } }
+fn dg_bytes(d: *diags, p: *u8, n: u32) -> void { if (!buf_append(&d.msgs, p, n)) { d.oom = true; } }
+fn dg_u32(d: *diags, v: u32) -> void { if (!buf_u32(&d.msgs, v)) { d.oom = true; } }
+
+fn dg_u128(d: *diags, v: u128) -> void {
+    let digits: [40]u8;
+    let n: u32 = 0;
+    let x: u128 = v;
+    while (true) {
+        digits[n] = '0' + (x % 10) as u8;
+        n += 1;
+        x /= 10;
+        if (x == 0) { break; }
+    }
+    while (n > 0) { n -= 1; dg_bytes(d, &digits[n], 1); }
+}
+
+// A 128-bit pattern read as signed, as C#'s (Int128) prints it.
+fn dg_i128(d: *diags, v: u128) -> void {
+    if ((v >> 127) != 0) { dg_str(d, "-"); dg_u128(d, 0 - v); return; }
+    dg_u128(d, v);
+}
+
+fn dg_end(d: *diags, file: u32, line: u32, col: u32) -> void {
+    let r: diag = diag { file: file, line: line, col: col, at: d.start, len: d.msgs.len - d.start };
+    if (!buf_append(&d.recs, (&r) as *u8, diag_size())) { d.oom = true; }
+}
+
+// A whole message at once.
+fn dg_error(d: *diags, msg: *u8, file: u32, line: u32, col: u32) -> void {
+    dg_begin(d);
+    dg_str(d, msg);
+    dg_end(d, file, line, col);
+}
