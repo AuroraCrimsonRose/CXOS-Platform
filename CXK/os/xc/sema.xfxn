@@ -1,0 +1,1660 @@
+// xc/sema.xfxn - the X compiler's name resolution and type checking, in X.
+// Aurora Tejeda / CATX SYSTEMS LLC
+//
+//   let s: sema;
+//   sema_init(&s, &p, &dg);
+//   sema_resolve(&s, &decls);                   // always
+//   if (dg_count(&dg) == 0) { sema_check(&s, &decls); }
+//   st_get(&s.types, expr)                      // an expression's type node
+//
+// Step three of stage 4 (docs/CX_X_CORE_LANG.md section 10): a port of the C#
+// Resolver, ConstFold and TypeChecker in CX_DEVKIT (CXEX.Lang/Sema), held to
+// them by `cxk sema` - the same diagnostics in the same order, the same type
+// for every expression. Where the C# looks at a type as written rather than
+// through its aliases, so does this; where it builds a new type, this builds a
+// new type node; the difference shows in what gets printed, and the test
+// prints it.
+//
+// Types are parser nodes (t_prim, t_ptr, ...), the ones the source wrote and
+// new ones made here. Everything the passes learn about a node is kept in a
+// side table indexed by the node: its symbol, its type, the variant it names.
+
+import "parse.xfxn";
+import "map.xfxn";
+
+const PRIM_I8: u32 = 0;   const PRIM_I16: u32 = 1;  const PRIM_I32: u32 = 2;  const PRIM_I64: u32 = 3;
+const PRIM_I128: u32 = 4; const PRIM_U8: u32 = 5;   const PRIM_U16: u32 = 6;  const PRIM_U32: u32 = 7;
+const PRIM_U64: u32 = 8;  const PRIM_U128: u32 = 9; const PRIM_BOOL: u32 = 10;
+
+// What a name stands for, in the order of the C# SymKind.
+const SK_FUNCTION: u32 = 0; const SK_STRUCT: u32 = 1; const SK_GLOBAL: u32 = 2; const SK_CONST: u32 = 3;
+const SK_PARAM: u32 = 4;    const SK_LOCAL: u32 = 5;  const SK_ENUM: u32 = 6;
+
+struct sym { name: u32, nlen: u32, kind: u32, ty: u32, decl: u32 }
+
+struct sema {
+    p: *parser,
+    dg: *diags,
+    scratch: diags,     // where a quiet fold's errors go, to be thrown away
+    syms: buf,          // sym, sym, ...
+    globals: smap,      // name -> symbol
+    structs: smap,      // name -> struct decl node (declared, a variant's fields, a sum's layout)
+    aliases: smap,      // name -> type node
+    enums: smap,        // name -> enum decl node
+    locals: list,       // symbols of the open scopes, innermost last
+    marks: list,        // where each open scope begins in locals
+    resolved: list,     // per name node: symbol + 1
+    types: list,        // per expression node: its type
+    eref_enum: list,    // per member node naming a variant: the enum decl
+    eref_idx: list,     // ... and the variant's index + 1
+    letsym: list,       // per let (or binding case) node: its symbol + 1
+    localty: list,      // per let (or binding case) node: the type it was given
+    evaluating: list,   // per const decl: 1 while it is being folded
+    sizing: list,       // names being sized, as text offset/length pairs
+    cycle: bool,        // a type was met inside itself while sizing
+    cycle_at: u32,
+    cycle_len: u32,
+    cur_return: u32,
+    loop_depth: u32,
+    defer_depth: u32,
+    neg_lit: u32,       // the literal straight under a unary '-' being checked
+    t_i32: u32,
+    t_u32: u32,
+    t_bool: u32,
+    t_void: u32,
+    expand_enums: bool, // set by the emitter: a plain enum is its backing integer
+}
+
+fn sym_size() -> u32 { let x: sym; return sizeof x; }
+fn sym_at(s: *sema, i: u32) -> *sym { return ((s.syms.data as u32) + i * sym_size()) as *sym; }
+fn nd(s: *sema, n: u32) -> *node { return node_at(s.p, n); }
+fn txt(s: *sema, at: u32) -> *u8 { return &s.p.text.data[at]; }
+
+// ---- side tables ----
+
+fn st_get(l: *list, i: u32) -> u32 { if (i >= l.len) { return 0; } return l.items[i]; }
+fn st_set(l: *list, i: u32, v: u32) -> void {
+    while (l.len <= i) { if (!list_push(l, 0)) { return; } }
+    l.items[i] = v;
+}
+
+// ---- types ----
+
+fn mk_type(s: *sema, kind: nk, op: u32, a: u32) -> u32 {
+    let t: u32 = ps_node(s.p, kind, 0, 0);
+    let x: *node = nd(s, t);
+    x.line = 0;
+    x.op = op;
+    x.a = a;
+    return t;
+}
+fn mk_prim(s: *sema, k: u32) -> u32 { return mk_type(s, nk.t_prim, k, 0); }
+fn mk_ptr(s: *sema, pointee: u32) -> u32 { return mk_type(s, nk.t_ptr, SPACE_NORMAL, pointee); }
+fn mk_named(s: *sema, at: u32, len: u32) -> u32 {
+    let t: u32 = mk_type(s, nk.t_named, 0, 0);
+    let x: *node = nd(s, t);
+    x.text = at;
+    x.tlen = len;
+    return t;
+}
+fn mk_named_of(s: *sema, decl: u32) -> u32 { let d: *node = nd(s, decl); return mk_named(s, d.text, d.tlen); }
+
+fn prim_bytes(k: u32) -> u32 {
+    if (k == PRIM_I8 || k == PRIM_U8 || k == PRIM_BOOL) { return 1; }
+    if (k == PRIM_I16 || k == PRIM_U16) { return 2; }
+    if (k == PRIM_I64 || k == PRIM_U64) { return 8; }
+    if (k == PRIM_I128 || k == PRIM_U128) { return 16; }
+    if (k == PRIM_VOID) { return 0; }
+    return 4;
+}
+fn prim_signed(k: u32) -> bool { return k <= PRIM_I128; }
+
+fn is_kind(s: *sema, t: u32, k: nk) -> bool { return nd(s, t).kind == k; }
+fn is_void_raw(s: *sema, t: u32) -> bool { let x: *node = nd(s, t); return x.kind == nk.t_prim && x.op == PRIM_VOID; }
+
+fn name_eq(s: *sema, a: u32, alen: u32, b: u32, blen: u32) -> bool {
+    if (alen != blen) { return false; }
+    let i: u32 = 0;
+    while (i < alen) { if (s.p.text.data[a + i] != s.p.text.data[b + i]) { return false; } i += 1; }
+    return true;
+}
+fn node_name_eq(s: *sema, a: u32, b: u32) -> bool {
+    let x: *node = nd(s, a);
+    let y: *node = nd(s, b);
+    return name_eq(s, x.text, x.tlen, y.text, y.tlen);
+}
+fn node_name_is(s: *sema, n: u32, word: *u8) -> bool {
+    let x: *node = nd(s, n);
+    let i: u32 = 0;
+    while (i < x.tlen) { if (word[i] != s.p.text.data[x.text + i]) { return false; } i += 1; }
+    return word[x.tlen] == 0;
+}
+
+fn map_get_node(s: *sema, m: *smap, n: u32) -> u32 { let x: *node = nd(s, n); return smap_get(m, txt(s, x.text), x.tlen); }
+
+// An alias followed to what it names - transparent, as in C#. Guarded
+// against a cycle of aliases.
+fn expand(s: *sema, t0: u32) -> u32 {
+    let t: u32 = t0;
+    let guard: u32 = 0;
+    while (true) {
+        if (nd(s, t).kind != nk.t_named) { break; }
+        let a: u32 = map_get_node(s, &s.aliases, t);
+        if (a == SMAP_NONE || guard >= 16) { break; }
+        guard += 1;
+        t = a;
+    }
+    // to the emitter, a plain enum is what it is at run time: its backing integer
+    if (s.expand_enums && nd(s, t).kind == nk.t_named) {
+        let ed: u32 = map_get_node(s, &s.enums, t);
+        if (ed != SMAP_NONE && !enum_is_sum(s, ed)) {
+            if (nd(s, ed).a != 0) { return expand(s, nd(s, ed).a); }
+            return s.t_u32;
+        }
+    }
+    return t;
+}
+
+fn is_int(s: *sema, t: u32) -> bool {
+    let x: *node = nd(s, expand(s, t));
+    return x.kind == nk.t_prim && x.op != PRIM_BOOL && x.op != PRIM_VOID;
+}
+fn int_width(s: *sema, t: u32) -> u32 {
+    let x: *node = nd(s, expand(s, t));
+    if (x.kind != nk.t_prim) { return 0; }
+    return prim_bytes(x.op);
+}
+fn is_bool(s: *sema, t: u32) -> bool { let x: *node = nd(s, expand(s, t)); return x.kind == nk.t_prim && x.op == PRIM_BOOL; }
+fn is_ptr(s: *sema, t: u32) -> bool { return nd(s, expand(s, t)).kind == nk.t_ptr; }
+
+fn same(s: *sema, a0: u32, b0: u32) -> bool {
+    let a: u32 = expand(s, a0);
+    let b: u32 = expand(s, b0);
+    let x: *node = nd(s, a);
+    let y: *node = nd(s, b);
+    if (x.kind != y.kind) { return false; }
+    switch (x.kind) {
+        case nk.t_prim { return x.op == y.op; }
+        case nk.t_ptr { return x.op == y.op && same(s, x.a, y.a); }
+        case nk.t_named { return name_eq(s, x.text, x.tlen, y.text, y.tlen); }
+        case nk.t_array { return x.value == y.value && same(s, x.a, y.a); }
+        case nk.t_fn {
+            if (x.count != y.count) { return false; }
+            if (!same(s, x.a, y.a)) { return false; }
+            let i: u32 = 0;
+            while (i < x.count) {
+                if (!same(s, list_at(s.p, nd(s, a).list, i), list_at(s.p, nd(s, b).list, i))) { return false; }
+                i += 1;
+            }
+            return true;
+        }
+        else { return false; }
+    }
+    return false;
+}
+
+fn wide_narrowing(s: *sema, to: u32, from: u32) -> bool {
+    return int_width(s, from) > 4 && int_width(s, from) > int_width(s, to);
+}
+
+fn assignable(s: *sema, to: u32, from: u32) -> bool {
+    return (is_int(s, to) && is_int(s, from) && !wide_narrowing(s, to, from)) || same(s, to, from);
+}
+
+fn value_preserving(s: *sema, to: u32, from: u32) -> bool {
+    if (same(s, to, from)) { return true; }
+    let tp: *node = nd(s, expand(s, to));
+    let fp: *node = nd(s, expand(s, from));
+    if (tp.kind != nk.t_prim || fp.kind != nk.t_prim) { return false; }
+    let wt: u32 = prim_bytes(tp.op);
+    let wf: u32 = prim_bytes(fp.op);
+    let st: bool = prim_signed(tp.op);
+    let sf: bool = prim_signed(fp.op);
+    if (!sf) { if (st) { return wt > wf; } return wt >= wf; }
+    return st && wt >= wf;
+}
+
+// Does a folded constant fit t? Read as signed, except into a 128-bit type.
+fn fits(s: *sema, v: u128, t: u32) -> bool {
+    let x: *node = nd(s, expand(s, t));
+    if (x.kind != nk.t_prim) { return false; }
+    let bits: u32 = prim_bytes(x.op) * 8;
+    if (bits == 128) { return true; }
+    let sv: i128 = v as i128;
+    if (prim_signed(x.op)) {
+        let lim: i128 = (1 as i128) << (bits - 1);
+        return sv >= 0 - lim && sv <= lim - 1;
+    }
+    return sv >= 0 && sv <= ((1 as i128) << bits) - 1;
+}
+
+fn has_suffix(s: *sema, e: u32) -> bool {
+    let x: *node = nd(s, e);
+    switch (x.kind) {
+        case nk.e_int { return x.op != 0 && x.op != SFX_CHAR; }
+        case nk.e_unary { return has_suffix(s, x.a); }
+        case nk.e_binary { return has_suffix(s, x.a) || has_suffix(s, x.b); }
+        case nk.e_cast { return true; }
+        else { return false; }
+    }
+    return false;
+}
+
+// A constant whose type no suffix fixes: its value is what counts.
+fn free_const(s: *sema, e: u32, v: *u128) -> bool {
+    v[0] = 0;
+    if (has_suffix(s, e)) { return false; }
+    return fold_quiet(s, e, v);
+}
+
+fn convertible(s: *sema, to: u32, e: u32, from: u32) -> bool {
+    if (!is_int(s, to) || !is_int(s, from)) { return assignable(s, to, from); }
+    let v: u128 = 0;
+    if (free_const(s, e, &v)) { return fits(s, v, to); }
+    return value_preserving(s, to, from);
+}
+
+fn struct_of(s: *sema, t: u32) -> u32 {
+    let x: u32 = expand(s, t);
+    if (nd(s, x).kind != nk.t_named) { return 0; }
+    let d: u32 = map_get_node(s, &s.structs, x);
+    if (d == SMAP_NONE) { return 0; }
+    return d;
+}
+
+fn enum_is_sum(s: *sema, ed: u32) -> bool {
+    let x: *node = nd(s, ed);
+    let i: u32 = 0;
+    while (i < x.count) { if (nd(s, list_at(s.p, x.list, i)).op == 1) { return true; } i += 1; }
+    return false;
+}
+
+fn enum_of(s: *sema, t: u32) -> u32 {
+    let x: u32 = expand(s, t);
+    if (nd(s, x).kind != nk.t_named) { return 0; }
+    let d: u32 = map_get_node(s, &s.enums, x);
+    if (d == SMAP_NONE) { return 0; }
+    return d;
+}
+fn is_sum(s: *sema, t: u32) -> bool { let e: u32 = enum_of(s, t); return e != 0 && enum_is_sum(s, e); }
+
+fn variant_at(s: *sema, ed: u32, i: u32) -> u32 { return list_at(s.p, nd(s, ed).list, i); }
+
+// ---- messages ----
+
+fn eb(s: *sema) -> void { dg_begin(s.dg); }
+fn es(s: *sema, str: *u8) -> void { dg_str(s.dg, str); }
+fn en(s: *sema, n: u32) -> void { let x: *node = nd(s, n); dg_bytes(s.dg, txt(s, x.text), x.tlen); }
+fn eu(s: *sema, v: u32) -> void { dg_u32(s.dg, v); }
+fn ee(s: *sema, n: u32) -> void { let x: *node = nd(s, n); dg_end(s.dg, x.file, x.line, x.col); }
+fn err(s: *sema, msg: *u8, n: u32) -> void { eb(s); es(s, msg); ee(s, n); }
+
+global space_words: [4]*u8 = ["", "user ", "phys ", "dma "];
+
+// A type as the C# checker's Show writes it: as written, aliases unexpanded.
+fn et(s: *sema, t: u32) -> void {
+    let x: *node = nd(s, t);
+    switch (x.kind) {
+        case nk.t_prim { es(s, prim_names[x.op]); }
+        case nk.t_ptr { es(s, "*"); es(s, space_words[x.op]); et(s, x.a); }
+        case nk.t_array { es(s, "["); dg_u128(s.dg, x.value); es(s, "]"); et(s, x.a); }
+        case nk.t_named { en(s, t); }
+        else { es(s, "?"); }
+    }
+}
+
+fn narrow_hint_of(s: *sema, to: u32, from: u32) -> void {
+    if (!is_int(s, to) || !is_int(s, from)) { return; }
+    if (wide_narrowing(s, to, from)) { es(s, "; narrowing needs a cast: `as "); et(s, to); es(s, "`"); return; }
+    es(s, "; "); et(s, from); es(s, " to "); et(s, to); es(s, " can change the value, so it needs a cast: `as "); et(s, to); es(s, "`");
+}
+
+// The hint is decided before the message is begun: a quiet fold in between
+// would otherwise land in the middle of it.
+fn narrow_hint(s: *sema, to: u32, from: u32, e: u32, v: *u128) -> bool {
+    return e != 0 && is_int(s, to) && free_const(s, e, v);
+}
+fn put_narrow_hint(s: *sema, to: u32, from: u32, have: bool, v: u128) -> void {
+    if (have) { es(s, "; "); dg_i128(s.dg, v); es(s, " does not fit in "); et(s, to); return; }
+    narrow_hint_of(s, to, from);
+}
+
+// ---- setup ----
+
+fn sema_init(s: *sema, p: *parser, dg: *diags) -> void {
+    s.p = p;
+    s.dg = dg;
+    s.scratch = diags_new();
+    s.syms = buf_new();
+    s.globals = smap_new();
+    s.structs = smap_new();
+    s.aliases = smap_new();
+    s.enums = smap_new();
+    s.locals = list_new();
+    s.marks = list_new();
+    s.resolved = list_new();
+    s.types = list_new();
+    s.eref_enum = list_new();
+    s.eref_idx = list_new();
+    s.letsym = list_new();
+    s.localty = list_new();
+    s.evaluating = list_new();
+    s.sizing = list_new();
+    s.cycle = false;
+    s.cur_return = 0;
+    s.loop_depth = 0;
+    s.defer_depth = 0;
+    s.neg_lit = 0;
+    s.t_i32 = mk_prim(s, PRIM_I32);
+    s.t_u32 = mk_prim(s, PRIM_U32);
+    s.t_bool = mk_prim(s, PRIM_BOOL);
+    s.t_void = mk_prim(s, PRIM_VOID);
+    s.cur_return = s.t_void;
+    s.expand_enums = false;
+}
+
+fn new_sym(s: *sema, name: u32, nlen: u32, kind: u32, ty: u32, decl: u32) -> u32 {
+    let x: sym = sym { name: name, nlen: nlen, kind: kind, ty: ty, decl: decl };
+    let i: u32 = s.syms.len / sym_size();
+    if (!buf_append(&s.syms, (&x) as *u8, sym_size())) { return 0; }
+    return i;
+}
+
+// ---- scopes ----
+
+fn push_scope(s: *sema) -> void { list_push(&s.marks, s.locals.len); }
+fn pop_scope(s: *sema) -> void { s.locals.len = list_pop(&s.marks); }
+
+// False if the innermost scope already has the name.
+fn declare_local(s: *sema, sy: u32) -> bool {
+    let m: u32 = s.marks.items[s.marks.len - 1];
+    let y: *sym = sym_at(s, sy);
+    let i: u32 = m;
+    while (i < s.locals.len) {
+        let o: *sym = sym_at(s, s.locals.items[i]);
+        if (name_eq(s, o.name, o.nlen, y.name, y.nlen)) { return false; }
+        i += 1;
+    }
+    list_push(&s.locals, sy);
+    return true;
+}
+
+// The symbol a name means here, + 1; 0 if none.
+fn lookup(s: *sema, at: u32, len: u32) -> u32 {
+    let i: u32 = s.locals.len;
+    while (i > 0) {
+        i -= 1;
+        let o: *sym = sym_at(s, s.locals.items[i]);
+        if (name_eq(s, o.name, o.nlen, at, len)) { return s.locals.items[i] + 1; }
+    }
+    let g: u32 = smap_get(&s.globals, txt(s, at), len);
+    if (g == SMAP_NONE) { return 0; }
+    return g + 1;
+}
+
+fn declare_global(s: *sema, sy: u32) -> bool {
+    let y: *sym = sym_at(s, sy);
+    return smap_add(&s.globals, txt(s, y.name), y.nlen, sy);
+}
+
+// ---- resolving ----
+
+// "a.b" in the parser's text, for a variant's payload struct.
+fn text_join(s: *sema, a: u32, alen: u32, b: u32, blen: u32) -> u32 {
+    let p: *parser = s.p;
+    if (!buf_reserve(&p.text, alen + 1 + blen)) { return 0; }
+    let at: u32 = p.text.len;
+    let i: u32 = 0;
+    while (i < alen) { p.text.data[at + i] = p.text.data[a + i]; i += 1; }
+    p.text.data[at + alen] = '.';
+    i = 0;
+    while (i < blen) { p.text.data[at + alen + 1 + i] = p.text.data[b + i]; i += 1; }
+    p.text.len = at + alen + 1 + blen;
+    return at;
+}
+
+fn text_add(s: *sema, str: *u8) -> u32 {
+    let at: u32 = s.p.text.len;
+    buf_str(&s.p.text, str);
+    return at;
+}
+
+// A struct decl made here, where `at` is: a variant's fields, or a sum's layout.
+fn mk_struct(s: *sema, at: u32, name: u32, nlen: u32, list: u32, count: u32) -> u32 {
+    let w: *node = nd(s, at);
+    let file: u32 = w.file;
+    let line: u32 = w.line;
+    let col: u32 = w.col;
+    let d: u32 = ps_node(s.p, nk.d_struct, line, col);
+    let x: *node = nd(s, d);
+    x.file = file;
+    x.text = name;
+    x.tlen = nlen;
+    x.list = list;
+    x.count = count;
+    return d;
+}
+
+fn dup_top(s: *sema, d: u32) -> void { eb(s); es(s, "duplicate top-level declaration '"); en(s, d); es(s, "'"); ee(s, d); }
+
+fn declare_top(s: *sema, d: u32) -> void {
+    let x: *node = nd(s, d);
+    let k: nk = x.kind;
+    if (k == nk.d_import) { return; }
+    if (k == nk.d_enum) {
+        smap_put(&s.enums, txt(s, x.text), x.tlen, d);
+        let sy: u32 = new_sym(s, x.text, x.tlen, SK_ENUM, mk_named_of(s, d), d);
+        if (!declare_global(s, sy)) { dup_top(s, d); }
+        let n: u32 = nd(s, d).count;
+        let i: u32 = 0;
+        while (i < n) {
+            let v: u32 = variant_at(s, d, i);
+            let j: u32 = 0;
+            while (j < i) {
+                if (node_name_eq(s, variant_at(s, d, j), v)) {
+                    eb(s); es(s, "'"); en(s, d); es(s, "' has two variants named '"); en(s, v); es(s, "'"); ee(s, v);
+                    break;
+                }
+                j += 1;
+            }
+            let vx: *node = nd(s, v);
+            if (vx.op == 1) {
+                let dn: *node = nd(s, d);
+                let nm: u32 = text_join(s, dn.text, dn.tlen, vx.text, vx.tlen);
+                let nlen: u32 = nd(s, d).tlen + 1 + nd(s, v).tlen;
+                let st: u32 = mk_struct(s, v, nm, nlen, nd(s, v).list, nd(s, v).count);
+                smap_put(&s.structs, txt(s, nm), nlen, st);
+            }
+            i += 1;
+        }
+        return;
+    }
+    if (k == nk.d_alias) {
+        if (!smap_add(&s.aliases, txt(s, x.text), x.tlen, x.a)) {
+            eb(s); es(s, "duplicate type alias '"); en(s, d); es(s, "'"); ee(s, d);
+        }
+        return;
+    }
+    if (k == nk.d_fn) {
+        // the symbol's type is the whole signature, so the name is a function pointer
+        let mark: u32 = s.p.stk.len;
+        let i: u32 = 0;
+        while (i < nd(s, d).count) { ps_push(s.p, nd(s, list_at(s.p, nd(s, d).list, i)).a); i += 1; }
+        let ft: u32 = mk_type(s, nk.t_fn, 0, nd(s, d).a);
+        ps_set_list(s.p, ft, mark);
+        let sy: u32 = new_sym(s, nd(s, d).text, nd(s, d).tlen, SK_FUNCTION, ft, d);
+        if (!declare_global(s, sy)) { dup_top(s, d); }
+        return;
+    }
+    let sy: u32 = 0;
+    if (k == nk.d_struct) {
+        sy = new_sym(s, x.text, x.tlen, SK_STRUCT, mk_named_of(s, d), d);
+        smap_put(&s.structs, txt(s, nd(s, d).text), nd(s, d).tlen, d);
+    } else if (k == nk.d_global) {
+        sy = new_sym(s, x.text, x.tlen, SK_GLOBAL, x.a, d);
+    } else {
+        sy = new_sym(s, x.text, x.tlen, SK_CONST, x.a, d);
+    }
+    if (!declare_global(s, sy)) { dup_top(s, d); }
+}
+
+// ---- sizes (only to lay out sum types) ----
+
+fn round4(n: u32) -> u32 { return (n + 3) & 0xFFFFFFFC; }
+
+// Sizes saturate at 0x7FFFFFFF rather than wrap, as the C# does; check_size
+// refuses anything that large.
+const SIZE_MAX: u32 = 0x7FFFFFFF;
+
+fn fields_size(s: *sema, list: u32, count: u32) -> u32 {
+    let o: u64 = 0;
+    let i: u32 = 0;
+    while (i < count) { o += ((size_of(s, nd(s, list_at(s.p, list, i)).a) as u64) + 3) & 0xFFFFFFFFFFFFFFFC; i += 1; }
+    if (o > (SIZE_MAX as u64)) { return SIZE_MAX; }
+    return o as u32;
+}
+
+fn size_of_named(s: *sema, t: u32) -> u32 {
+    let sd: u32 = map_get_node(s, &s.structs, t);
+    if (sd != SMAP_NONE) { return fields_size(s, nd(s, sd).list, nd(s, sd).count); }
+    let ed: u32 = map_get_node(s, &s.enums, t);
+    if (!enum_is_sum(s, ed)) {
+        if (nd(s, ed).a != 0) { return size_of(s, nd(s, ed).a); }
+        return 4;
+    }
+    let max: u32 = 0;
+    let i: u32 = 0;
+    while (i < nd(s, ed).count) {
+        let v: u32 = variant_at(s, ed, i);
+        if (nd(s, v).op == 1) {
+            let o: u32 = fields_size(s, nd(s, v).list, nd(s, v).count);
+            if (o > max) { max = o; if (max > SIZE_MAX - 4) { max = SIZE_MAX - 4; } }
+        }
+        i += 1;
+    }
+    return 4 + max;
+}
+
+fn size_of(s: *sema, t0: u32) -> u32 {
+    let t: u32 = expand(s, t0);
+    let x: *node = nd(s, t);
+    if (x.kind == nk.t_prim) { return prim_bytes(x.op); }
+    if (x.kind == nk.t_array) {
+        let r: u64 = (size_of(s, x.a) as u64) * ((nd(s, t).value as u32) as u64);
+        if (r > (SIZE_MAX as u64)) { return SIZE_MAX; }
+        return r as u32;
+    }
+    if (x.kind == nk.t_named && (map_get_node(s, &s.structs, t) != SMAP_NONE || map_get_node(s, &s.enums, t) != SMAP_NONE)) {
+        // met again while being sized: it holds itself, and has no size
+        let i: u32 = 0;
+        while (i < s.sizing.len) {
+            if (name_eq(s, s.sizing.items[i], s.sizing.items[i + 1], x.text, x.tlen)) {
+                if (!s.cycle) { s.cycle = true; s.cycle_at = x.text; s.cycle_len = x.tlen; }
+                return 0;
+            }
+            i += 2;
+        }
+        list_push(&s.sizing, x.text);
+        list_push(&s.sizing, x.tlen);
+        let r: u32 = size_of_named(s, t);
+        s.sizing.len -= 2;
+        return r;
+    }
+    return 4;
+}
+
+// A sum type is a struct no program can name the fields of: a u32 tag and
+// room for the largest payload.
+fn lay_out_sums(s: *sema) -> void {
+    let e: u32 = 0;
+    while (e < s.enums.count) {
+        let ed: u32 = smap_val(&s.enums, e);
+        e += 1;
+        if (!enum_is_sum(s, ed)) { continue; }
+        s.cycle = false;
+        let body: u32 = size_of(s, mk_named_of(s, ed)) - 4;
+        if (s.cycle) {
+            eb(s); es(s, "'"); en(s, ed); es(s, "' contains '"); dg_bytes(s.dg, txt(s, s.cycle_at), s.cycle_len);
+            es(s, "' by value inside itself, so it has no size; use a pointer (*"); dg_bytes(s.dg, txt(s, s.cycle_at), s.cycle_len);
+            es(s, ")"); ee(s, ed);
+            body = 0;
+        }
+        let pt: u32 = ps_node(s.p, nk.param, 0, 0);
+        let pb: u32 = ps_node(s.p, nk.param, 0, 0);
+        let tag_name: u32 = text_add(s, "$tag");
+        let body_name: u32 = text_add(s, "$body");
+        let tu: u32 = mk_prim(s, PRIM_U32);
+        let tb: u32 = mk_type(s, nk.t_array, 0, mk_prim(s, PRIM_U8));
+        nd(s, tb).value = body as u128;
+        let y: *node = nd(s, pt); y.text = tag_name; y.tlen = 4; y.a = tu;
+        let z: *node = nd(s, pb); z.text = body_name; z.tlen = 5; z.a = tb;
+        let mark: u32 = s.p.stk.len;
+        ps_push(s.p, pt);
+        ps_push(s.p, pb);
+        let st: u32 = mk_struct(s, ed, nd(s, ed).text, nd(s, ed).tlen, 0, 0);
+        ps_set_list(s.p, st, mark);
+        smap_put(&s.structs, txt(s, nd(s, ed).text), nd(s, ed).tlen, st);
+    }
+}
+
+fn resolve_block(s: *sema, b: u32) -> void {
+    push_scope(s);
+    let i: u32 = 0;
+    while (i < nd(s, b).count) { resolve_stmt(s, list_at(s.p, nd(s, b).list, i)); i += 1; }
+    pop_scope(s);
+}
+
+fn resolve_stmt(s: *sema, st: u32) -> void {
+    let x: *node = nd(s, st);
+    switch (x.kind) {
+        case nk.s_block { resolve_block(s, st); }
+        case nk.s_let {
+            if (x.b != 0) { resolve_expr(s, x.b); }   // `let x: T;` has none
+            let ty: u32 = nd(s, st).a;
+            if (ty == 0) { ty = mk_prim(s, PRIM_VOID); }
+            let sy: u32 = new_sym(s, nd(s, st).text, nd(s, st).tlen, SK_LOCAL, ty, 0);
+            st_set(&s.letsym, st, sy + 1);
+            if (!declare_local(s, sy)) { eb(s); es(s, "duplicate local '"); en(s, st); es(s, "'"); ee(s, st); }
+        }
+        case nk.s_assign { resolve_expr(s, x.a); resolve_expr(s, nd(s, st).b); }
+        case nk.s_if {
+            resolve_expr(s, x.a);
+            resolve_block(s, nd(s, st).b);
+            if (nd(s, st).c != 0) { resolve_block(s, nd(s, st).c); }
+        }
+        case nk.s_while { resolve_expr(s, x.a); resolve_block(s, nd(s, st).b); }
+        case nk.s_return { if (x.a != 0) { resolve_expr(s, x.a); } }
+        case nk.s_expr { resolve_expr(s, x.a); }
+        // in the scope where the defer is, not where it runs
+        case nk.s_defer { resolve_stmt(s, x.a); }
+        case nk.s_switch {
+            resolve_expr(s, x.a);
+            let i: u32 = 0;
+            while (i < nd(s, st).count) {
+                let c: u32 = list_at(s.p, nd(s, st).list, i);
+                let j: u32 = 0;
+                while (j < nd(s, c).count) { resolve_expr(s, list_at(s.p, nd(s, c).list, j)); j += 1; }
+                push_scope(s);
+                if (nd(s, c).op == 1) {
+                    let bs: u32 = new_sym(s, nd(s, c).text, nd(s, c).tlen, SK_LOCAL, mk_prim(s, PRIM_VOID), 0);
+                    st_set(&s.letsym, c, bs + 1);
+                    declare_local(s, bs);
+                }
+                resolve_block(s, nd(s, c).a);
+                pop_scope(s);
+                i += 1;
+            }
+            if (nd(s, st).b != 0) { resolve_block(s, nd(s, st).b); }
+        }
+        else { }
+    }
+}
+
+fn resolve_expr(s: *sema, e: u32) -> void {
+    let x: *node = nd(s, e);
+    switch (x.kind) {
+        case nk.e_name {
+            if (node_name_is(s, e, "__syscall")) { return; }   // the intrinsic; see check_call
+            let sy: u32 = lookup(s, x.text, x.tlen);
+            if (sy == 0) { eb(s); es(s, "undefined name '"); en(s, e); es(s, "'"); ee(s, e); }
+            else { st_set(&s.resolved, e, sy); }
+        }
+        case nk.e_call {
+            resolve_expr(s, x.a);
+            let i: u32 = 0;
+            while (i < nd(s, e).count) { resolve_expr(s, list_at(s.p, nd(s, e).list, i)); i += 1; }
+        }
+        case nk.e_member {
+            // `Enum.variant` is not a field access: record which variant
+            let t: u32 = x.a;
+            if (nd(s, t).kind == nk.e_name) {
+                let sy: u32 = lookup(s, nd(s, t).text, nd(s, t).tlen);
+                if (sy != 0 && sym_at(s, sy - 1).kind == SK_ENUM && nd(s, sym_at(s, sy - 1).decl).kind == nk.d_enum) {
+                    st_set(&s.resolved, t, sy);
+                    let ed: u32 = sym_at(s, sy - 1).decl;
+                    let idx: u32 = 0;
+                    let found: bool = false;
+                    while (idx < nd(s, ed).count) {
+                        if (node_name_eq(s, variant_at(s, ed, idx), e)) { found = true; break; }
+                        idx += 1;
+                    }
+                    if (!found) { eb(s); es(s, "'"); en(s, ed); es(s, "' has no variant '"); en(s, e); es(s, "'"); ee(s, e); }
+                    else { st_set(&s.eref_enum, e, ed); st_set(&s.eref_idx, e, idx + 1); }
+                    return;
+                }
+            }
+            resolve_expr(s, t);
+        }
+        case nk.e_index { resolve_expr(s, x.a); resolve_expr(s, nd(s, e).b); }
+        case nk.e_unary, nk.e_sizeof, nk.e_cast { resolve_expr(s, x.a); }
+        case nk.e_binary { resolve_expr(s, x.a); resolve_expr(s, nd(s, e).b); }
+        case nk.e_struct_lit {
+            resolve_expr(s, x.a);
+            let i: u32 = 0;
+            while (i < nd(s, e).count) { resolve_expr(s, nd(s, list_at(s.p, nd(s, e).list, i)).a); i += 1; }
+        }
+        case nk.e_array_lit {
+            let i: u32 = 0;
+            while (i < x.count) { resolve_expr(s, list_at(s.p, nd(s, e).list, i)); i += 1; }
+        }
+        else { }
+    }
+}
+
+fn resolve_decl(s: *sema, d: u32) -> void {
+    let x: *node = nd(s, d);
+    switch (x.kind) {
+        case nk.d_fn {
+            if (x.b == 0) { return; }
+            push_scope(s);
+            let i: u32 = 0;
+            while (i < nd(s, d).count) {
+                let pm: u32 = list_at(s.p, nd(s, d).list, i);
+                let sy: u32 = new_sym(s, nd(s, pm).text, nd(s, pm).tlen, SK_PARAM, nd(s, pm).a, 0);
+                st_set(&s.letsym, pm, sy + 1);   // a parameter's symbol, for its frame slot
+                if (!declare_local(s, sy)) { eb(s); es(s, "duplicate parameter '"); en(s, pm); es(s, "'"); ee(s, pm); }
+                i += 1;
+            }
+            resolve_block(s, nd(s, d).b);
+            pop_scope(s);
+        }
+        case nk.d_global { if (x.b != 0) { resolve_expr(s, x.b); } }
+        case nk.d_const { resolve_expr(s, x.b); }
+        else { }
+    }
+}
+
+// Every top-level name first, so they are visible before they are declared;
+// then sum types laid out; then every body.
+fn sema_resolve(s: *sema, decls: *list) -> void {
+    let i: u32 = 0;
+    while (i < decls.len) { declare_top(s, decls.items[i]); i += 1; }
+    lay_out_sums(s);
+    i = 0;
+    while (i < decls.len) { resolve_decl(s, decls.items[i]); i += 1; }
+}
+
+// ---- constant folding ----
+
+// A variant's value: its own `= expr`, else one more than the one before,
+// from 0. A sum type's tag is its index.
+fn enum_value(s: *sema, ed: u32, index: u32, out: *u128) -> bool {
+    out[0] = 0;
+    if (enum_is_sum(s, ed)) { out[0] = index as u128; return true; }
+    let i: u32 = 0;
+    while (i <= index) {
+        let v: u32 = variant_at(s, ed, i);
+        if (nd(s, v).a != 0) { if (!fold(s, nd(s, v).a, out)) { return false; } }
+        else if (i > 0) { out[0] = out[0] + 1; }
+        i += 1;
+    }
+    return true;
+}
+
+fn fold_quiet(s: *sema, e: u32, out: *u128) -> bool {
+    let saved: *diags = s.dg;
+    s.dg = &s.scratch;
+    let r: bool = fold(s, e, out);
+    s.dg = saved;
+    s.scratch.recs.len = 0;
+    s.scratch.msgs.len = 0;
+    return r;
+}
+
+fn fold_bool(b: bool) -> u128 { if (b) { return 1; } return 0; }
+
+// As the C# TryEval: a case whose operands do not fold falls through to
+// "expected a constant expression", after their own errors.
+fn fold(s: *sema, e: u32, out: *u128) -> bool {
+    out[0] = 0;
+    let x: *node = nd(s, e);
+    let k: nk = x.kind;
+    if (k == nk.e_int) { out[0] = x.value; return true; }
+    if (k == nk.e_bool) { out[0] = x.op as u128; return true; }
+    if (k == nk.e_name) {
+        let sy: u32 = st_get(&s.resolved, e);
+        if (sy != 0 && sym_at(s, sy - 1).kind == SK_CONST && nd(s, sym_at(s, sy - 1).decl).kind == nk.d_const) {
+            let cd: u32 = sym_at(s, sy - 1).decl;
+            if (st_get(&s.evaluating, cd) != 0) {
+                eb(s); es(s, "'"); en(s, e); es(s, "' is defined in terms of itself"); ee(s, e);
+                return false;
+            }
+            st_set(&s.evaluating, cd, 1);
+            let r: bool = fold(s, nd(s, cd).b, out);
+            st_set(&s.evaluating, cd, 0);
+            return r;
+        }
+        eb(s); es(s, "'"); en(s, e); es(s, "' is not a constant"); ee(s, e);
+        return false;
+    }
+    if (k == nk.e_cast) { return fold(s, x.a, out); }
+    if (k == nk.e_member && st_get(&s.eref_idx, e) != 0) {
+        return enum_value(s, st_get(&s.eref_enum, e), st_get(&s.eref_idx, e) - 1, out);
+    }
+    if (k == nk.e_unary) {
+        let v: u128 = 0;
+        let op: u32 = x.op;
+        if (fold(s, nd(s, e).a, &v)) {
+            if (op == UN_NEG) { out[0] = 0 - v; }
+            else if (op == UN_NOT) { out[0] = fold_bool(v == 0); }
+            else if (op == UN_BITNOT) { out[0] = ~v; }
+            else { out[0] = v; }
+            if (op == UN_DEREF || op == UN_ADDR) { err(s, "non-constant expression", e); return false; }
+            return true;
+        }
+    }
+    if (k == nk.e_binary) {
+        let l: u128 = 0;
+        let r: u128 = 0;
+        let lok: bool = fold(s, nd(s, e).a, &l);
+        let rok: bool = fold(s, nd(s, e).b, &r);
+        if (lok && rok) {
+            let op: u32 = nd(s, e).op;
+            if (op == BIN_ADD) { out[0] = l + r; return true; }
+            if (op == BIN_SUB) { out[0] = l - r; return true; }
+            if (op == BIN_MUL) { out[0] = l * r; return true; }
+            if (op == BIN_DIV) { if (r == 0) { err(s, "constant divide by zero", e); return false; } out[0] = l / r; return true; }
+            if (op == BIN_MOD) { if (r == 0) { err(s, "constant modulo by zero", e); return false; } out[0] = l % r; return true; }
+            if (op == BIN_EQ) { out[0] = fold_bool(l == r); return true; }
+            if (op == BIN_NE) { out[0] = fold_bool(l != r); return true; }
+            if (op == BIN_LT) { out[0] = fold_bool(l < r); return true; }
+            if (op == BIN_LE) { out[0] = fold_bool(l <= r); return true; }
+            if (op == BIN_GT) { out[0] = fold_bool(l > r); return true; }
+            if (op == BIN_GE) { out[0] = fold_bool(l >= r); return true; }
+            if (op == BIN_AND) { out[0] = fold_bool(l != 0 && r != 0); return true; }
+            if (op == BIN_OR) { out[0] = fold_bool(l != 0 || r != 0); return true; }
+            if (op == BIN_BITAND) { out[0] = l & r; return true; }
+            if (op == BIN_BITOR) { out[0] = l | r; return true; }
+            if (op == BIN_BITXOR) { out[0] = l ^ r; return true; }
+            if (op == BIN_SHL || op == BIN_SHR) {
+                if (r >= 128) { err(s, "constant shift of 128 or more", e); return false; }
+                if (op == BIN_SHL) { out[0] = l << (r as u32); } else { out[0] = l >> (r as u32); }
+                return true;
+            }
+            return false;
+        }
+    }
+    err(s, "expected a constant expression", e);
+    return false;
+}
+
+// ---- checking: declarations ----
+
+fn set_ty(s: *sema, e: u32, t: u32) -> u32 { st_set(&s.types, e, t); return t; }
+
+fn bind_local_type(s: *sema, l: u32, t: u32) -> void {
+    st_set(&s.localty, l, t);
+    let sy: u32 = st_get(&s.letsym, l);
+    if (sy != 0) { sym_at(s, sy - 1).ty = t; }
+}
+
+fn check_signature(s: *sema, f: u32) -> void {
+    let i: u32 = 0;
+    while (i < nd(s, f).count) {
+        let pm: u32 = list_at(s.p, nd(s, f).list, i);
+        if (nd(s, expand(s, nd(s, pm).a)).kind == nk.t_array) {
+            eb(s); es(s, "parameter '"); en(s, pm); es(s, "' is an array; pass a pointer to it (*T) instead"); ee(s, pm);
+        }
+        check_size(s, nd(s, pm).a, pm);
+        i += 1;
+    }
+    if (nd(s, expand(s, nd(s, f).a)).kind == nk.t_array) {
+        eb(s); es(s, "'"); en(s, f); es(s, "' returns an array; return it through a pointer parameter instead"); ee(s, f);
+    }
+    check_size(s, nd(s, f).a, f);
+}
+
+/* A type written where it takes up room must have a size, and a sane one: a
+   struct holding itself by value has none, and nothing over 1 GB fits this
+   target - a frame summing a few of them would wrap. As CheckSize in C#. */
+const MAX_OBJECT: u32 = 0x40000000;
+
+fn check_size(s: *sema, t: u32, at: u32) -> void {
+    s.cycle = false;
+    let size: u32 = size_of(s, t);
+    if (s.cycle) {
+        eb(s); es(s, "'"); dg_bytes(s.dg, txt(s, s.cycle_at), s.cycle_len);
+        es(s, "' contains itself by value, so it has no size; use a pointer (*"); dg_bytes(s.dg, txt(s, s.cycle_at), s.cycle_len);
+        es(s, ")"); ee(s, at);
+    } else if (size > MAX_OBJECT) {
+        eb(s); et(s, t); es(s, " is larger than 1 GB, more than this 32-bit target can hold"); ee(s, at);
+    }
+}
+
+// A plain enum is an integer of its backing type whose variants are distinct
+// constants that fit it. A sum type's tag is the variant's index.
+fn check_enum(s: *sema, ed: u32) -> void {
+    let n: u32 = nd(s, ed).count;
+    if (n == 0) { eb(s); es(s, "'"); en(s, ed); es(s, "' has no variants"); ee(s, ed); }
+    if (enum_is_sum(s, ed)) {
+        if (nd(s, ed).a != 0) { eb(s); es(s, "'"); en(s, ed); es(s, "' is a sum type; its tag has no backing type to choose"); ee(s, ed); }
+        let i: u32 = 0;
+        while (i < n) {
+            let v: u32 = variant_at(s, ed, i);
+            if (nd(s, v).a != 0) { eb(s); es(s, "a sum type's variants take no '= value' ('"); en(s, v); es(s, "')"); ee(s, v); }
+            if (nd(s, v).op == 1) {
+                let j: u32 = 0;
+                while (j < nd(s, v).count) {
+                    let f: u32 = list_at(s.p, nd(s, v).list, j);
+                    let ft: u32 = expand(s, nd(s, f).a);
+                    if (nd(s, ft).kind == nk.t_named && node_name_eq(s, ft, ed)) {
+                        eb(s); es(s, "'"); en(s, ed); es(s, "."); en(s, v); es(s, "' contains '"); en(s, ed);
+                        es(s, "' by value, which has no size; use a pointer (*"); en(s, ed); es(s, ")"); ee(s, f);
+                    }
+                    j += 1;
+                }
+            }
+            i += 1;
+        }
+        return;
+    }
+    let backing: u32 = nd(s, ed).a;
+    if (backing == 0) { backing = s.t_u32; }
+    let bp: *node = nd(s, expand(s, backing));
+    if (bp.kind != nk.t_prim || !is_int(s, backing) || prim_bytes(nd(s, expand(s, backing)).op) > 4) {
+        eb(s); es(s, "an enum's backing type is an integer of at most 32 bits, not "); et(s, backing); ee(s, ed);
+        return;
+    }
+    let bk: u32 = nd(s, expand(s, backing)).op;
+    let bits: u32 = prim_bytes(bk) * 8;
+    let sgn: bool = prim_signed(bk);
+    let seen: list = list_new();     // value words and variant index, four entries a variant
+    let i: u32 = 0;
+    while (i < n) {
+        let v: u128 = 0;
+        if (!enum_value(s, ed, i, &v)) { i += 1; continue; }
+        let vn: u32 = variant_at(s, ed, i);
+        let sv: i128 = v as i128;
+        let lo: i128 = 0;
+        let hi: i128 = ((1 as i128) << bits) - 1;
+        if (sgn) { lo = 0 - ((1 as i128) << (bits - 1)); hi = ((1 as i128) << (bits - 1)) - 1; }
+        if (sv < lo || sv > hi) {
+            eb(s); es(s, "'"); en(s, ed); es(s, "."); en(s, vn); es(s, "' = "); dg_i128(s.dg, v); es(s, " does not fit in "); et(s, backing); ee(s, vn);
+        }
+        let j: u32 = 0;
+        let other: u32 = 0;
+        while (j < seen.len) {
+            let w: u128 = (seen.items[j] as u128) | ((seen.items[j + 1] as u128) << 32) | ((seen.items[j + 2] as u128) << 64) | ((seen.items[j + 3] as u128) << 96);
+            if (w == v) { other = seen.items[j + 4] + 1; break; }
+            j += 5;
+        }
+        if (other != 0) {
+            eb(s); es(s, "'"); en(s, ed); es(s, "."); en(s, vn); es(s, "' has the same value as '"); en(s, variant_at(s, ed, other - 1)); es(s, "'"); ee(s, vn);
+        } else {
+            list_push(&seen, v as u32); list_push(&seen, (v >> 32) as u32); list_push(&seen, (v >> 64) as u32); list_push(&seen, (v >> 96) as u32);
+            list_push(&seen, i);
+        }
+        i += 1;
+    }
+    list_free(&seen);
+}
+
+fn check_section(s: *sema, d: u32, a: u32) -> void {
+    let k: nk = nd(s, d).kind;
+    if (k == nk.d_fn && nd(s, d).b == 0) { err(s, "'@section' on an extern function: it has no body to place", a); return; }
+    if (k != nk.d_fn && k != nk.d_global) {
+        eb(s); es(s, "'@section' does not apply to ");
+        if (k == nk.d_struct) { es(s, "a struct"); }
+        else if (k == nk.d_const) { es(s, "a constant"); }
+        else if (k == nk.d_alias) { es(s, "a type alias"); }
+        else if (k == nk.d_import) { es(s, "an import"); }
+        else { es(s, "this declaration"); }
+        es(s, ": only a function or a global occupies space in a section"); ee(s, a);
+        return;
+    }
+    let ok: bool = nd(s, a).count == 1;
+    let arg: u32 = 0;
+    if (ok) { arg = list_at(s.p, nd(s, a).list, 0); ok = nd(s, arg).op == 0 && nd(s, nd(s, arg).a).kind == nk.e_str; }
+    if (!ok) { err(s, "'@section' takes one argument, the section name as a string: @section(\".name\")", a); return; }
+    let str: u32 = nd(s, arg).a;
+    let at: u32 = nd(s, str).text;
+    let len: u32 = nd(s, str).tlen;
+    let good: bool = len >= 2 && s.p.text.data[at] == '.';
+    let i: u32 = 1;
+    while (good && i < len) {
+        let c: u8 = s.p.text.data[at + i];
+        if (!(is_alpha(c) || is_digit(c) || c == '_' || c == '.')) { good = false; }
+        i += 1;
+    }
+    if (!good) {
+        eb(s); es(s, "section name '"); en(s, str); es(s, "' must start with '.' and contain only letters, digits, '_' and '.'"); ee(s, a);
+        return;
+    }
+    if (node_name_is(s, str, ".text") || node_name_is(s, str, ".data") || node_name_is(s, str, ".rodata") || node_name_is(s, str, ".bss")) {
+        eb(s); es(s, "'"); en(s, str); es(s, "' is where a declaration goes by default; '@section' is for a section of its own"); ee(s, a);
+    }
+}
+
+fn check_attrs(s: *sema, d: u32) -> void {
+    let n: u32 = nd(s, d).nattrs;
+    let i: u32 = 0;
+    while (i < n) {
+        let a: u32 = list_at(s.p, nd(s, d).attrs, i);
+        let dup: bool = false;
+        let j: u32 = 0;
+        while (j < i) { if (node_name_eq(s, list_at(s.p, nd(s, d).attrs, j), a)) { dup = true; break; } j += 1; }
+        // a repeat is reported against the first, and the first only counts once
+        if (dup) { eb(s); es(s, "'@"); en(s, a); es(s, "' given more than once"); ee(s, a); i += 1; continue; }
+        if (node_name_is(s, a, "section")) { check_section(s, d, a); }
+        else { eb(s); es(s, "unknown attribute '@"); en(s, a); es(s, "'; known: @section"); ee(s, a); }
+        i += 1;
+    }
+}
+
+// A global's initializer is bytes in the image: constants, strings, function
+// names, and literals of those.
+fn check_static_init(s: *sema, e: u32, t: u32) -> void {
+    let x: *node = nd(s, e);
+    switch (x.kind) {
+        case nk.e_struct_lit {
+            let sd: u32 = struct_of(s, t);
+            if (sd == 0) { return; }
+            let i: u32 = 0;
+            while (i < nd(s, e).count) {
+                let fi: u32 = list_at(s.p, nd(s, e).list, i);
+                let f: u32 = field_named(s, sd, fi);
+                if (f != 0) { check_static_init(s, nd(s, fi).a, nd(s, f).a); }
+                i += 1;
+            }
+        }
+        case nk.e_array_lit {
+            let at: u32 = expand(s, t);
+            if (nd(s, at).kind != nk.t_array) { return; }
+            let i: u32 = 0;
+            while (i < nd(s, e).count) { check_static_init(s, list_at(s.p, nd(s, e).list, i), nd(s, at).a); i += 1; }
+        }
+        case nk.e_str { }
+        else {
+            if (x.kind == nk.e_name) {
+                let sy: u32 = st_get(&s.resolved, e);
+                if (sy != 0 && sym_at(s, sy - 1).kind == SK_FUNCTION) { return; }
+            }
+            let v: u128 = 0;
+            fold(s, e, &v);
+        }
+    }
+}
+
+fn sema_check(s: *sema, decls: *list) -> void {
+    let i: u32 = 0;
+    while (i < decls.len) { check_attrs(s, decls.items[i]); i += 1; }
+    i = 0;
+    while (i < decls.len) {
+        let d: u32 = decls.items[i];
+        let k: nk = nd(s, d).kind;
+        if (k == nk.d_fn) { check_signature(s, d); }
+        else if (k == nk.d_enum) { check_enum(s, d); if (enum_is_sum(s, d)) { check_size(s, mk_named_of(s, d), d); } }
+        else if (k == nk.d_struct) { check_size(s, mk_named_of(s, d), d); }
+        else if (k == nk.d_global || k == nk.d_const) { check_size(s, nd(s, d).a, d); }
+        i += 1;
+    }
+    i = 0;
+    while (i < decls.len) {
+        let d: u32 = decls.items[i];
+        let k: nk = nd(s, d).kind;
+        if (k == nk.d_fn && nd(s, d).b != 0) {
+            s.cur_return = nd(s, d).a;
+            check_block(s, nd(s, d).b);
+        } else if (k == nk.d_const) {
+            let v: u128 = 0;
+            fold(s, nd(s, d).b, &v);
+        } else if (k == nk.d_global && nd(s, d).b != 0) {
+            let g: u32 = d;
+            let it: u32 = check_init(s, nd(s, g).b, nd(s, g).a);
+            if (!convertible(s, nd(s, g).a, nd(s, g).b, it)) {
+                eb(s); es(s, "cannot initialize global '"); en(s, g); es(s, "' of type "); et(s, nd(s, g).a); es(s, " from "); et(s, it); ee(s, g);
+            }
+            check_static_init(s, nd(s, g).b, nd(s, g).a);
+        }
+        i += 1;
+    }
+}
+
+// ---- checking: statements ----
+
+fn check_block(s: *sema, b: u32) -> void {
+    let i: u32 = 0;
+    while (i < nd(s, b).count) { check_stmt(s, list_at(s.p, nd(s, b).list, i)); i += 1; }
+}
+
+fn contains_call(s: *sema, e: u32) -> bool {
+    let x: *node = nd(s, e);
+    switch (x.kind) {
+        case nk.e_call { return true; }
+        case nk.e_member, nk.e_unary, nk.e_cast { return contains_call(s, x.a); }
+        case nk.e_index, nk.e_binary { return contains_call(s, x.a) || contains_call(s, nd(s, e).b); }
+        else { return false; }
+    }
+    return false;
+}
+
+fn is_lvalue(s: *sema, e: u32) -> bool {
+    let x: *node = nd(s, e);
+    return x.kind == nk.e_name || (x.kind == nk.e_unary && x.op == UN_DEREF) || x.kind == nk.e_index || x.kind == nk.e_member;
+}
+
+fn expect_ty(s: *sema, got: u32, want: u32, at: u32, what: *u8) -> void {
+    if (!assignable(s, want, got)) { eb(s); es(s, what); es(s, " must be "); et(s, want); es(s, ", got "); et(s, got); ee(s, at); }
+}
+
+fn check_stmt(s: *sema, st: u32) -> void {
+    let x: *node = nd(s, st);
+    switch (x.kind) {
+        case nk.s_block { check_block(s, st); }
+        case nk.s_let {
+            let ty: u32 = x.a;
+            let init: u32 = x.b;
+            if (init == 0) {
+                // `let x: T;` - declared, uninitialized
+                if (ty != 0) { check_size(s, ty, st); bind_local_type(s, st, ty); }
+                return;
+            }
+            if (ty != 0) { check_size(s, ty, st); }
+            let it: u32 = 0;
+            if (ty != 0) { it = check_init(s, init, ty); } else { it = check_expr(s, init); }
+            if (ty != 0) {
+                if (!convertible(s, ty, init, it)) {
+                    let hv: u128 = 0;
+                    let have: bool = narrow_hint(s, ty, it, init, &hv);
+                    eb(s); es(s, "cannot initialize '"); en(s, st); es(s, "' of type "); et(s, ty); es(s, " from "); et(s, it);
+                    put_narrow_hint(s, ty, it, have, hv); ee(s, st);
+                }
+                bind_local_type(s, st, ty);
+            } else {
+                if (is_void_raw(s, it)) { bind_local_type(s, st, s.t_i32); } else { bind_local_type(s, st, it); }
+            }
+        }
+        case nk.s_break {
+            if (s.loop_depth == 0) {
+                if (s.defer_depth > 0) { err(s, "cannot 'break' out of a defer", st); } else { err(s, "'break' outside a loop", st); }
+            }
+        }
+        case nk.s_continue {
+            if (s.loop_depth == 0) {
+                if (s.defer_depth > 0) { err(s, "cannot 'continue' out of a defer", st); } else { err(s, "'continue' outside a loop", st); }
+            }
+        }
+        case nk.s_defer {
+            // a defer body runs while the block is already being left, so it may not leave itself
+            if (nd(s, x.a).kind == nk.s_let) { err(s, "'defer let' declares a variable nothing can use; defer a statement or a block", st); }
+            let saved: u32 = s.loop_depth;
+            s.loop_depth = 0;
+            s.defer_depth += 1;
+            check_stmt(s, nd(s, st).a);
+            s.defer_depth -= 1;
+            s.loop_depth = saved;
+        }
+        case nk.s_assign {
+            let target: u32 = x.a;
+            let value: u32 = x.b;
+            let compound: bool = x.op == 1;
+            let tt: u32 = check_expr(s, target);
+            let vt: u32 = check_init(s, value, tt);
+            if (!is_lvalue(s, target)) { err(s, "assignment target is not assignable", target); return; }
+            if (compound) {
+                if (contains_call(s, target)) {
+                    err(s, "the target of a compound assignment contains a call, which would run twice; store the address in a local first", target);
+                }
+                // the result narrows back into the target, as in C - but not from a wide one
+                if (!(is_int(s, tt) && is_int(s, vt) && !wide_narrowing(s, tt, vt)) && !assignable(s, tt, vt)) {
+                    eb(s); es(s, "cannot assign "); et(s, vt); es(s, " to "); et(s, tt); narrow_hint_of(s, tt, vt); ee(s, st);
+                }
+                return;
+            }
+            if (!convertible(s, tt, value, vt)) {
+                let hv: u128 = 0;
+                let have: bool = narrow_hint(s, tt, vt, value, &hv);
+                eb(s); es(s, "cannot assign "); et(s, vt); es(s, " to "); et(s, tt); put_narrow_hint(s, tt, vt, have, hv); ee(s, st);
+            }
+        }
+        case nk.s_if {
+            expect_ty(s, check_expr(s, x.a), s.t_bool, nd(s, st).a, "if condition");
+            check_block(s, nd(s, st).b);
+            if (nd(s, st).c != 0) { check_block(s, nd(s, st).c); }
+        }
+        case nk.s_while {
+            expect_ty(s, check_expr(s, x.a), s.t_bool, nd(s, st).a, "while condition");
+            s.loop_depth += 1;
+            check_block(s, nd(s, st).b);
+            s.loop_depth -= 1;
+        }
+        case nk.s_return {
+            if (s.defer_depth > 0) { err(s, "cannot 'return' from inside a defer", st); }
+            let v: u32 = nd(s, st).a;
+            if (v == 0) {
+                if (!is_bool(s, s.cur_return) && !is_void_raw(s, s.cur_return)) { err(s, "return requires a value", st); }
+            } else {
+                let rt: u32 = check_init(s, v, s.cur_return);
+                if (!convertible(s, s.cur_return, v, rt)) {
+                    let hv: u128 = 0;
+                    let have: bool = narrow_hint(s, s.cur_return, rt, v, &hv);
+                    eb(s); es(s, "return type "); et(s, rt); es(s, " does not match "); et(s, s.cur_return);
+                    put_narrow_hint(s, s.cur_return, rt, have, hv); ee(s, st);
+                }
+            }
+        }
+        case nk.s_expr { check_expr(s, x.a); }
+        case nk.s_switch { check_switch(s, st); }
+        else { }
+    }
+}
+
+// switch on an integer of up to 32 bits, a plain enum or a sum type; without
+// an else, an enum's every variant must be handled.
+fn check_switch(s: *sema, sw: u32) -> void {
+    let st: u32 = check_expr(s, nd(s, sw).a);
+    let en_: u32 = enum_of(s, st);
+    let is_i: bool = is_int(s, st);
+    if (is_i && int_width(s, st) > 4) {
+        err(s, "switch on a 64 or 128-bit value is not supported; compare with if", nd(s, sw).a);
+        is_i = false;
+    }
+    if (!is_i && en_ == 0) { eb(s); es(s, "cannot switch on "); et(s, st); ee(s, nd(s, sw).a); }
+
+    let seen_ints: list = list_new();      // four words a value
+    let seen_vars: list = list_new();
+    let ci: u32 = 0;
+    while (ci < nd(s, sw).count) {
+        let c: u32 = list_at(s.p, nd(s, sw).list, ci);
+        let binds: bool = nd(s, c).op == 1;
+        if (binds && nd(s, c).count != 1) { err(s, "a case that binds a variant's fields has exactly one label", c); }
+        let li: u32 = 0;
+        while (li < nd(s, c).count) {
+            let l: u32 = list_at(s.p, nd(s, c).list, li);
+            li += 1;
+            if (en_ != 0) {
+                let idx: u32 = 0;
+                let ok: bool = nd(s, l).kind == nk.e_member && st_get(&s.eref_idx, l) != 0;
+                if (ok) { ok = st_get(&s.eref_enum, l) == en_; idx = st_get(&s.eref_idx, l) - 1; }
+                if (!ok) { eb(s); es(s, "a case label here is a variant of '"); en(s, en_); es(s, "'"); ee(s, l); continue; }
+                set_ty(s, l, mk_named_of(s, en_));
+                let dupv: bool = false;
+                let j: u32 = 0;
+                while (j < seen_vars.len) { if (seen_vars.items[j] == idx) { dupv = true; break; } j += 1; }
+                if (dupv) {
+                    eb(s); es(s, "'"); en(s, en_); es(s, "."); en(s, variant_at(s, en_, idx)); es(s, "' appears in two cases"); ee(s, l);
+                } else { list_push(&seen_vars, idx); }
+                if (binds) {
+                    let v: u32 = variant_at(s, en_, idx);
+                    if (!enum_is_sum(s, en_) || nd(s, v).op != 1 || nd(s, v).count == 0) {
+                        eb(s); es(s, "'"); en(s, en_); es(s, "."); en(s, v); es(s, "' carries no fields to bind"); ee(s, l);
+                    } else {
+                        let pn: u32 = text_join(s, nd(s, en_).text, nd(s, en_).tlen, nd(s, v).text, nd(s, v).tlen);
+                        let pt: u32 = mk_named(s, pn, nd(s, en_).tlen + 1 + nd(s, v).tlen);
+                        bind_local_type(s, c, mk_ptr(s, pt));
+                    }
+                }
+            } else if (is_i) {
+                if (binds) { err(s, "only a sum type's variant can bind fields", l); }
+                let lt: u32 = check_expr(s, l);
+                let lv: u128 = 0;
+                if (!fold(s, l, &lv)) { continue; }
+                if (!is_int(s, lt)) { eb(s); es(s, "case label "); et(s, lt); es(s, " is not an integer"); ee(s, l); }
+                let dup: bool = false;
+                let j: u32 = 0;
+                while (j < seen_ints.len) {
+                    let w: u128 = (seen_ints.items[j] as u128) | ((seen_ints.items[j + 1] as u128) << 32) | ((seen_ints.items[j + 2] as u128) << 64) | ((seen_ints.items[j + 3] as u128) << 96);
+                    if (w == lv) { dup = true; break; }
+                    j += 4;
+                }
+                if (dup) { err(s, "this value appears in two cases", l); }
+                else { list_push(&seen_ints, lv as u32); list_push(&seen_ints, (lv >> 32) as u32); list_push(&seen_ints, (lv >> 64) as u32); list_push(&seen_ints, (lv >> 96) as u32); }
+            }
+        }
+        if (binds && st_get(&s.localty, c) == 0) { bind_local_type(s, c, s.t_void); }
+        check_block(s, nd(s, c).a);
+        ci += 1;
+    }
+    if (nd(s, sw).b != 0) { check_block(s, nd(s, sw).b); }
+    else if (en_ != 0) {
+        let any: bool = false;
+        let i: u32 = 0;
+        while (i < nd(s, en_).count) {
+            let found: bool = false;
+            let j: u32 = 0;
+            while (j < seen_vars.len) { if (seen_vars.items[j] == i) { found = true; break; } j += 1; }
+            if (!found) {
+                if (!any) { eb(s); es(s, "switch does not handle "); any = true; } else { es(s, ", "); }
+                en(s, en_); es(s, "."); en(s, variant_at(s, en_, i));
+            }
+            i += 1;
+        }
+        if (any) { es(s, "; add the case(s), or an else"); ee(s, sw); }
+    }
+    list_free(&seen_ints);
+    list_free(&seen_vars);
+}
+
+// ---- checking: expressions ----
+
+fn field_named(s: *sema, sd: u32, fi: u32) -> u32 {
+    let i: u32 = 0;
+    while (i < nd(s, sd).count) {
+        let f: u32 = list_at(s.p, nd(s, sd).list, i);
+        if (node_name_eq(s, f, fi)) { return f; }
+        i += 1;
+    }
+    return 0;
+}
+
+// An expression checked against the type it goes into: only an array literal
+// needs it, but every place a value meets a declared type comes here.
+fn check_init(s: *sema, e: u32, want: u32) -> u32 {
+    if (nd(s, e).kind != nk.e_array_lit) { return check_expr(s, e); }
+    let at: u32 = expand(s, want);
+    if (nd(s, at).kind != nk.t_array) {
+        eb(s); es(s, "an array literal cannot initialize "); et(s, want); ee(s, e);
+        let i: u32 = 0;
+        while (i < nd(s, e).count) { check_expr(s, list_at(s.p, nd(s, e).list, i)); i += 1; }
+        return set_ty(s, e, s.t_void);
+    }
+    if ((nd(s, e).count as u128) != nd(s, at).value) {
+        eb(s); et(s, want); es(s, " needs "); dg_u128(s.dg, nd(s, at).value); es(s, " item(s), given "); eu(s, nd(s, e).count); ee(s, e);
+    }
+    let i: u32 = 0;
+    while (i < nd(s, e).count) {
+        let item: u32 = list_at(s.p, nd(s, e).list, i);
+        let elem: u32 = nd(s, at).a;
+        let it: u32 = check_init(s, item, elem);
+        if (!convertible(s, elem, item, it)) {
+            let hv: u128 = 0;
+            let have: bool = narrow_hint(s, elem, it, item, &hv);
+            eb(s); es(s, "array item: "); et(s, it); es(s, " not assignable to "); et(s, elem); put_narrow_hint(s, elem, it, have, hv); ee(s, item);
+        }
+        i += 1;
+    }
+    return set_ty(s, e, want);
+}
+
+// Every field, once, and nothing else.
+fn check_fields(s: *sema, sd: u32, sl: u32) -> bool {
+    let ok: bool = true;
+    let n: u32 = nd(s, sl).count;
+    let i: u32 = 0;
+    while (i < n) {
+        let fi: u32 = list_at(s.p, nd(s, sl).list, i);
+        i += 1;
+        let decl: u32 = field_named(s, sd, fi);
+        if (decl == 0) {
+            eb(s); es(s, "'"); en(s, sd); es(s, "' has no field '"); en(s, fi); es(s, "'"); ee(s, fi);
+            check_expr(s, nd(s, fi).a);
+            ok = false;
+            continue;
+        }
+        // given before? only fields that exist count as given
+        let j: u32 = 0;
+        let dup: bool = false;
+        while (j < i - 1) {
+            let g: u32 = list_at(s.p, nd(s, sl).list, j);
+            if (node_name_eq(s, g, fi) && field_named(s, sd, g) != 0) { dup = true; break; }
+            j += 1;
+        }
+        if (dup) { eb(s); es(s, "field '"); en(s, fi); es(s, "' given twice"); ee(s, fi); ok = false; }
+        let ft: u32 = nd(s, decl).a;
+        let vt: u32 = check_init(s, nd(s, fi).a, ft);
+        if (!convertible(s, ft, nd(s, fi).a, vt)) {
+            let hv: u128 = 0;
+            let have: bool = narrow_hint(s, ft, vt, nd(s, fi).a, &hv);
+            eb(s); es(s, "field '"); en(s, fi); es(s, "': "); et(s, vt); es(s, " not assignable to "); et(s, ft); put_narrow_hint(s, ft, vt, have, hv); ee(s, fi);
+            ok = false;
+        }
+    }
+    i = 0;
+    while (i < nd(s, sd).count) {
+        let f: u32 = list_at(s.p, nd(s, sd).list, i);
+        let given: bool = false;
+        let j: u32 = 0;
+        while (j < n) {
+            let g: u32 = list_at(s.p, nd(s, sl).list, j);
+            if (node_name_eq(s, g, f) && field_named(s, sd, g) != 0) { given = true; break; }
+            j += 1;
+        }
+        if (!given) { eb(s); es(s, "field '"); en(s, f); es(s, "' of '"); en(s, sd); es(s, "' is not given"); ee(s, sl); ok = false; }
+        i += 1;
+    }
+    return ok;
+}
+
+fn check_struct_lit(s: *sema, sl: u32) -> u32 {
+    let tn: u32 = nd(s, sl).a;
+    // Enum.variant { ... } builds a sum value of that variant
+    if (nd(s, tn).kind == nk.e_member && st_get(&s.eref_idx, tn) != 0) {
+        let ed: u32 = st_get(&s.eref_enum, tn);
+        let v: u32 = variant_at(s, ed, st_get(&s.eref_idx, tn) - 1);
+        let pd: u32 = SMAP_NONE;
+        if (nd(s, v).op == 1) {
+            let pn: u32 = text_join(s, nd(s, ed).text, nd(s, ed).tlen, nd(s, v).text, nd(s, v).tlen);
+            pd = smap_get(&s.structs, txt(s, pn), nd(s, ed).tlen + 1 + nd(s, v).tlen);
+        }
+        if (pd == SMAP_NONE) {
+            eb(s); es(s, "'"); en(s, ed); es(s, "."); en(s, v); es(s, "' carries no fields; write it without braces"); ee(s, sl);
+            let i: u32 = 0;
+            while (i < nd(s, sl).count) { check_expr(s, nd(s, list_at(s.p, nd(s, sl).list, i)).a); i += 1; }
+            return mk_named_of(s, ed);
+        }
+        check_fields(s, pd, sl);
+        return mk_named_of(s, ed);
+    }
+    let sd: u32 = 0;
+    if (nd(s, tn).kind == nk.e_name) { sd = struct_of(s, mk_named(s, nd(s, tn).text, nd(s, tn).tlen)); }
+    if (sd == 0) {
+        err(s, "a record literal needs a struct name", tn);
+        let i: u32 = 0;
+        while (i < nd(s, sl).count) { check_expr(s, nd(s, list_at(s.p, nd(s, sl).list, i)).a); i += 1; }
+        return s.t_void;
+    }
+    check_fields(s, sd, sl);
+    return mk_named_of(s, sd);
+}
+
+// Reading or writing through a pointer that is not valid in this address space.
+fn check_deref(s: *sema, t: u32, at: u32) -> bool {
+    let x: *node = nd(s, expand(s, t));
+    if (x.kind != nk.t_ptr || x.op == SPACE_NORMAL) { return true; }
+    if (x.op == SPACE_USER) {
+        err(s, "cannot dereference a *user pointer: the address came from a less-trusted caller and has not been validated. Check it, then convert through an integer", at);
+    } else if (x.op == SPACE_PHYS) {
+        err(s, "cannot dereference a *phys pointer: a physical address is not mapped at that number. Translate it to a virtual address first", at);
+    } else {
+        err(s, "cannot dereference a *dma pointer: it is the address a device sees, not the one the CPU does", at);
+    }
+    return false;
+}
+
+// The PrimKind a literal suffix names; a character literal is a u8.
+fn suffix_prim(sfx: u32) -> u32 {
+    if (sfx == SFX_CHAR) { return PRIM_U8; }
+    if (sfx <= 5) { return PRIM_U8 + sfx - 1; }
+    return PRIM_I8 + sfx - 6;
+}
+
+fn check_expr(s: *sema, e: u32) -> u32 {
+    let x: *node = nd(s, e);
+    switch (x.kind) {
+        case nk.e_int {
+            if (x.op != 0) {
+                // a suffix names the type, and the value must fit it
+                let sk: u32 = suffix_prim(x.op);
+                let bits: u32 = prim_bytes(sk) * 8;
+                let sg: bool = prim_signed(sk);
+                let max: u128 = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFu128;
+                if (sg) { max = ((1 as u128) << (bits - 1)) - 1; }
+                else if (bits != 128) { max = ((1 as u128) << bits) - 1; }
+                if (sg && e == s.neg_lit) { max += 1; }
+                if (nd(s, e).value > max) {
+                    eb(s); dg_u128(s.dg, nd(s, e).value); es(s, " does not fit in "); es(s, prim_names[sk]); ee(s, e);
+                }
+                return set_ty(s, e, mk_prim(s, sk));
+            }
+            let v: u128 = x.value;
+            if (v <= 0x7FFFFFFF) { return set_ty(s, e, s.t_i32); }
+            if (v <= 0xFFFFFFFF) { return set_ty(s, e, s.t_u32); }
+            if (v <= 0xFFFFFFFFFFFFFFFFu128) { return set_ty(s, e, mk_prim(s, PRIM_U64)); }
+            return set_ty(s, e, mk_prim(s, PRIM_U128));
+        }
+        case nk.e_str { return set_ty(s, e, mk_ptr(s, mk_prim(s, PRIM_U8))); }
+        case nk.e_struct_lit { return set_ty(s, e, check_struct_lit(s, e)); }
+        case nk.e_array_lit {
+            err(s, "an array literal needs a declared array type to fill: `let a: [3]u32 = [1, 2, 3];`", e);
+            let i: u32 = 0;
+            while (i < nd(s, e).count) { check_expr(s, list_at(s.p, nd(s, e).list, i)); i += 1; }
+            return set_ty(s, e, s.t_void);
+        }
+        case nk.e_sizeof { check_expr(s, x.a); return set_ty(s, e, s.t_u32); }
+        case nk.e_bool { return set_ty(s, e, s.t_bool); }
+        case nk.e_name {
+            if (node_name_is(s, e, "__syscall")) { return set_ty(s, e, s.t_i32); }
+            let sy: u32 = st_get(&s.resolved, e);
+            if (sy == 0) { return set_ty(s, e, s.t_void); }
+            return set_ty(s, e, sym_at(s, sy - 1).ty);
+        }
+        case nk.e_call { return set_ty(s, e, check_call(s, e)); }
+        case nk.e_member {
+            if (st_get(&s.eref_idx, e) != 0) {
+                // `color.red` is a value of type color; a variant with fields must be given them
+                let ed: u32 = st_get(&s.eref_enum, e);
+                let v: u32 = variant_at(s, ed, st_get(&s.eref_idx, e) - 1);
+                if (enum_is_sum(s, ed) && nd(s, v).op == 1 && nd(s, v).count > 0) {
+                    eb(s); es(s, "'"); en(s, ed); es(s, "."); en(s, v); es(s, "' carries fields; give them: ");
+                    en(s, ed); es(s, "."); en(s, v); es(s, " { ... }"); ee(s, e);
+                }
+                return set_ty(s, e, mk_named_of(s, ed));
+            }
+            let tt: u32 = check_expr(s, x.a);
+            let base: u32 = tt;
+            if (nd(s, tt).kind == nk.t_ptr) { base = nd(s, tt).a; }
+            if (is_sum(s, base)) {
+                err(s, "a sum type's fields are reached through a switch: case Type.variant(v) { v.field }", e);
+                return set_ty(s, e, s.t_void);
+            }
+            if (!check_deref(s, tt, e)) { return set_ty(s, e, s.t_void); }
+            let sd: u32 = struct_of(s, base);
+            if (sd == 0) { eb(s); es(s, "'."); en(s, e); es(s, "' on non-struct "); et(s, tt); ee(s, e); return set_ty(s, e, s.t_void); }
+            let f: u32 = field_named(s, sd, e);
+            if (f != 0) { return set_ty(s, e, nd(s, f).a); }
+            eb(s); es(s, "struct '"); en(s, sd); es(s, "' has no field '"); en(s, e); es(s, "'"); ee(s, e);
+            return set_ty(s, e, s.t_void);
+        }
+        case nk.e_index {
+            let tt: u32 = check_expr(s, x.a);
+            expect_ty(s, check_expr(s, nd(s, e).b), s.t_i32, nd(s, e).b, "index");
+            if (!check_deref(s, tt, e)) { return set_ty(s, e, s.t_void); }
+            let k: nk = nd(s, tt).kind;
+            if (k == nk.t_ptr || k == nk.t_array) { return set_ty(s, e, nd(s, tt).a); }
+            eb(s); es(s, "cannot index "); et(s, tt); ee(s, e);
+            return set_ty(s, e, s.t_void);
+        }
+        case nk.e_unary {
+            let op: u32 = x.op;
+            if (op == UN_NEG && nd(s, x.a).kind == nk.e_int) { s.neg_lit = x.a; }
+            let ot: u32 = check_expr(s, nd(s, e).a);
+            s.neg_lit = 0;
+            if (op == UN_BITNOT || op == UN_NEG) {
+                if (!is_int(s, ot)) { err(s, "unary '-' / '~' needs an integer", e); }
+                return set_ty(s, e, ot);
+            }
+            if (op == UN_NOT) {
+                if (!is_bool(s, ot)) { err(s, "unary '!' needs a bool", e); }
+                return set_ty(s, e, s.t_bool);
+            }
+            if (op == UN_DEREF) {
+                if (nd(s, ot).kind == nk.t_ptr) {
+                    if (check_deref(s, ot, e)) { return set_ty(s, e, nd(s, ot).a); }
+                    return set_ty(s, e, s.t_void);
+                }
+                err(s, "cannot dereference non-pointer", e);
+                return set_ty(s, e, s.t_void);
+            }
+            return set_ty(s, e, mk_ptr(s, ot));
+        }
+        case nk.e_binary { return set_ty(s, e, check_binary(s, e)); }
+        case nk.e_cast {
+            let from: u32 = check_expr(s, x.a);
+            let target: u32 = nd(s, e).b;
+            check_size(s, target, e);
+            let pf: *node = nd(s, expand(s, from));
+            let pt: *node = nd(s, expand(s, target));
+            if (pf.kind == nk.t_ptr && pt.kind == nk.t_ptr && pf.op != pt.op) {
+                eb(s); es(s, "cannot cast "); et(s, from); es(s, " to "); et(s, target);
+                es(s, ": a pointer does not change address space by being relabelled. Convert through an integer, where the translation belongs");
+                ee(s, e);
+            }
+            return set_ty(s, e, target);
+        }
+        else { return set_ty(s, e, s.t_void); }
+    }
+    return 0;
+}
+
+// A constant shift amount must be inside the width the shift is done at.
+fn check_shift_amount(s: *sema, b: u32, l: u32) -> void {
+    let amt: u128 = 0;
+    if (!fold_quiet(s, nd(s, b).b, &amt)) { return; }
+    let width: u32 = int_width(s, l) * 8;
+    if (width < 32) { width = 32; }
+    if (amt < (width as u128)) { return; }
+    let left: u32 = nd(s, b).a;
+    eb(s); es(s, "shift of "); dg_u128(s.dg, amt); es(s, " is outside 0.."); eu(s, width - 1); es(s, " for "); et(s, l);
+    if (nd(s, left).kind == nk.e_int && nd(s, left).op == 0 && amt < 128) {
+        es(s, "; to shift at a wider type, give the literal a suffix: "); dg_u128(s.dg, nd(s, left).value);
+        if (amt < 64) { es(s, "u64 "); } else { es(s, "u128 "); }
+        if (nd(s, b).op == BIN_SHL) { es(s, "<< "); } else { es(s, ">> "); }
+        dg_u128(s.dg, amt);
+    }
+    ee(s, b);
+}
+
+fn check_binary(s: *sema, b: u32) -> u32 {
+    let l: u32 = check_expr(s, nd(s, b).a);
+    let r: u32 = check_expr(s, nd(s, b).b);
+    let op: u32 = nd(s, b).op;
+    if (op <= BIN_MOD || op >= BIN_BITAND) {
+        if (!is_int(s, l) || !is_int(s, r)) { eb(s); es(s, "arithmetic on "); et(s, l); es(s, " and "); et(s, r); ee(s, b); }
+        if (!is_int(s, l)) { if (is_int(s, r)) { return r; } return s.t_i32; }
+        if (!is_int(s, r)) { return l; }
+        // a shift is as wide as what is shifted; otherwise the wider operand wins
+        if (op == BIN_SHL || op == BIN_SHR) { check_shift_amount(s, b, l); return l; }
+        // a constant takes the other operand's type when it fits it
+        let lv: u128 = 0;
+        let rv: u128 = 0;
+        let lc: bool = free_const(s, nd(s, b).a, &lv);
+        let rc: bool = free_const(s, nd(s, b).b, &rv);
+        if (lc && !rc && fits(s, lv, r)) { return r; }
+        if (rc && !lc && fits(s, rv, l)) { return l; }
+        if (int_width(s, r) > int_width(s, l)) { return r; }
+        return l;
+    }
+    if (op == BIN_EQ || op == BIN_NE) {
+        if (!(is_int(s, l) && is_int(s, r)) && !(assignable(s, l, r) || assignable(s, r, l))) {
+            eb(s); es(s, "cannot compare "); et(s, l); es(s, " and "); et(s, r); ee(s, b);
+        } else if (struct_of(s, l) != 0 || nd(s, expand(s, l)).kind == nk.t_array) {
+            // a struct is its address: == would compare where, not what
+            eb(s); et(s, l); es(s, " cannot be compared with == or !=; compare the fields, or switch on a sum type"); ee(s, b);
+        }
+        return s.t_bool;
+    }
+    if (op >= BIN_LT && op <= BIN_GE) {
+        if (!is_int(s, l) || !is_int(s, r)) { eb(s); es(s, "ordering on "); et(s, l); es(s, " and "); et(s, r); ee(s, b); }
+        return s.t_bool;
+    }
+    if (!is_bool(s, l) || !is_bool(s, r)) { err(s, "logical operator needs bools", b); }
+    return s.t_bool;
+}
+
+fn check_args(s: *sema, c: u32, params: u32, nparams: u32, fn_decl: u32) -> void {
+    let i: u32 = 0;
+    while (i < nd(s, c).count && i < nparams) {
+        let a: u32 = list_at(s.p, nd(s, c).list, i);
+        let pt: u32 = list_at(s.p, params, i);
+        if (fn_decl != 0) { pt = nd(s, pt).a; }   // a declaration lists params; a fn type lists types
+        let at: u32 = check_init(s, a, pt);
+        if (!convertible(s, pt, a, at)) {
+            let hv: u128 = 0;
+            let have: bool = narrow_hint(s, pt, at, a, &hv);
+            eb(s); es(s, "arg "); eu(s, i + 1);
+            if (fn_decl != 0) { es(s, " to '"); en(s, fn_decl); es(s, "'"); }
+            es(s, ": "); et(s, at); es(s, " not assignable to "); et(s, pt); put_narrow_hint(s, pt, at, have, hv); ee(s, a);
+        }
+        i += 1;
+    }
+}
+
+fn check_call(s: *sema, c: u32) -> u32 {
+    let callee: u32 = nd(s, c).a;
+    let n: u32 = nd(s, c).count;
+    // __syscall(n, a1..a5) -> i32, the one effect primitive
+    if (nd(s, callee).kind == nk.e_name && node_name_is(s, callee, "__syscall")) {
+        if (n < 1 || n > 6) { err(s, "__syscall takes the number plus up to 5 args", c); }
+        let i: u32 = 0;
+        while (i < n) {
+            let a: u32 = list_at(s.p, nd(s, c).list, i);
+            let at: u32 = check_expr(s, a);
+            if (!is_int(s, at) && !is_ptr(s, at)) { err(s, "__syscall args must be integer/pointer", a); }
+            i += 1;
+        }
+        return s.t_i32;
+    }
+    let ct: u32 = check_expr(s, callee);
+    if (nd(s, callee).kind == nk.e_name) {
+        let sy: u32 = st_get(&s.resolved, callee);
+        if (sy != 0 && sym_at(s, sy - 1).decl != 0 && nd(s, sym_at(s, sy - 1).decl).kind == nk.d_fn) {
+            let f: u32 = sym_at(s, sy - 1).decl;
+            if (n != nd(s, f).count) {
+                eb(s); es(s, "'"); en(s, f); es(s, "' expects "); eu(s, nd(s, f).count); es(s, " args, got "); eu(s, n); ee(s, c);
+            }
+            check_args(s, c, nd(s, f).list, nd(s, f).count, f);
+            return nd(s, f).a;
+        }
+    }
+    // through a function pointer
+    let ft: u32 = expand(s, ct);
+    if (nd(s, ft).kind == nk.t_fn) {
+        if (n != nd(s, ft).count) { eb(s); es(s, "call expects "); eu(s, nd(s, ft).count); es(s, " args, got "); eu(s, n); ee(s, c); }
+        check_args(s, c, nd(s, ft).list, nd(s, ft).count, 0);
+        return nd(s, ft).a;
+    }
+    let i: u32 = 0;
+    while (i < n) { check_expr(s, list_at(s.p, nd(s, c).list, i)); i += 1; }
+    err(s, "call target is not a function", c);
+    return s.t_void;
+}
