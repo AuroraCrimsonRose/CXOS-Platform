@@ -1,0 +1,26 @@
+fn main() -> i32 {
+    let x: u32 = 300;
+    if ((x as u8) != 44) { return 1; }
+    let y: u32 = 0x18000;
+    if ((y as i16) != (0 - 32768)) { return 2; }
+    let z: i32 = 0 - 1;
+    if ((z as u8) != 255) { return 3; }
+    let w: u32 = 200;
+    if ((w as i8) >= 0) { return 4; }
+    return wraps();
+}
+fn wraps() -> i32 {
+    let a: u8 = 255;
+    if (a + 1 != 0) { return 10; }               // u8 arithmetic wraps at 8 bits
+    let b: i8 = 127;
+    if (b + 1 != (0 - 128)) { return 11; }
+    let c: u8 = 0x0F;
+    if (~c != 0xF0) { return 12; }
+    let d: u16 = 0;
+    if (d - 1 != 0xFFFF) { return 13; }
+    let e: u8 = 3;
+    if (0 - e != 253) { return 14; }             // the constant takes e's type
+    let f: u8 = 200;
+    if (f * 2 != 144) { return 15; }
+    return 0;
+}

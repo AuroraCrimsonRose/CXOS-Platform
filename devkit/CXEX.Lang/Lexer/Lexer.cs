@@ -20,6 +20,9 @@ public sealed class Lexer
     private static readonly Dictionary<string, TokenKind> Keywords = new()
     {
         ["fn"] = TokenKind.Fn,
+        ["enum"] = TokenKind.Enum,
+        ["switch"] = TokenKind.Switch,
+        ["case"] = TokenKind.Case,
         ["struct"] = TokenKind.Struct,
         ["global"] = TokenKind.Global,
         ["const"] = TokenKind.Const,
@@ -83,6 +86,13 @@ public sealed class Lexer
     private Token Make(TokenKind k, int start, int line, int col, UInt128 val = default, string? suffix = null)
         => new(k, _src.Substring(start, _pos - start), SpanFrom(start, line, col), val, suffix);
 
+    /* `op=` if an `=` follows the operator just consumed, else the operator. */
+    private TokenKind Eq2(TokenKind withEq, TokenKind plain)
+    {
+        if (!Eof && Cur == '=') { Advance(); return withEq; }
+        return plain;
+    }
+
     /* The integer types a literal can be written as. */
     private static readonly string[] IntSuffixes =
         { "u8", "u16", "u32", "u64", "u128", "i8", "i16", "i32", "i64", "i128" };
@@ -139,6 +149,51 @@ public sealed class Lexer
             if (Eof) { _diag.Error("unterminated string literal", SpanFrom(start, line, col)); return Make(TokenKind.Error, start, line, col); }
             Advance(); // closing quote
             return new Token(TokenKind.StringLiteral, sb.ToString(), SpanFrom(start, line, col));
+        }
+
+        /* A character literal is an integer literal: 'a' is the byte 97, typed
+           u8. A lexer written in X is mostly comparisons against characters,
+           and without this they were all magic numbers - `c == 34` where the
+           meaning is '"'. Same escapes as a string, plus \xNN for any byte.
+           One byte only: a character outside ASCII is several bytes in UTF-8,
+           so it is a string's job, and refusing it beats picking one byte. */
+        if (c == '\'')
+        {
+            Advance();
+            int value = -1;
+            if (!Eof && Cur == '\\')
+            {
+                Advance();
+                char e = Eof ? '\0' : Cur;
+                if (!Eof) Advance();
+                if (e is 'x' or 'X')
+                {
+                    int hstart = _pos;
+                    while (!Eof && _pos - hstart < 2 && Uri.IsHexDigit(Cur)) Advance();
+                    if (_pos - hstart == 2) value = Convert.ToInt32(_src.Substring(hstart, 2), 16);
+                }
+                else value = e switch
+                {
+                    'n' => '\n', 't' => '\t', 'r' => '\r', '0' => 0, 'b' => '\b', 'f' => '\f', 'v' => '\v',
+                    'a' => '\a', 'e' => 0x1B, '\\' => '\\', '\'' => '\'', '"' => '"',
+                    _ => -1,
+                };
+            }
+            else if (!Eof && Cur != '\'' && Cur != '\n')
+            {
+                if (Cur < 0x80) value = Cur;
+                Advance();
+            }
+            if (Eof || Cur != '\'' || value < 0)
+            {
+                while (!Eof && Cur != '\'' && Cur != '\n') Advance();
+                if (!Eof && Cur == '\'') Advance();
+                _diag.Error("a character literal is one ASCII character or escape, in single quotes: 'a', '\\n', '\\x7F'",
+                            SpanFrom(start, line, col));
+                return Make(TokenKind.Error, start, line, col);
+            }
+            Advance();   // closing quote
+            return Make(TokenKind.IntLiteral, start, line, col, (UInt128)value, "char");   // typed u8; see IntLit.IsChar
         }
 
         // integer literal (decimal or 0x hex)
@@ -199,19 +254,19 @@ public sealed class Lexer
             case ';': Advance(); k = TokenKind.Semicolon; break;
             case ':': Advance(); k = TokenKind.Colon; break;
             case '.': Advance(); k = TokenKind.Dot; break;
-            case '+': Advance(); k = TokenKind.Plus; break;
-            case '*': Advance(); k = TokenKind.Star; break;
-            case '/': Advance(); k = TokenKind.Slash; break;
-            case '%': Advance(); k = TokenKind.Percent; break;
-            case '-': Advance(); if (Cur == '>') { Advance(); k = TokenKind.Arrow; } else k = TokenKind.Minus; break;
+            case '+': Advance(); k = Eq2(TokenKind.PlusAssign, TokenKind.Plus); break;
+            case '*': Advance(); k = Eq2(TokenKind.StarAssign, TokenKind.Star); break;
+            case '/': Advance(); k = Eq2(TokenKind.SlashAssign, TokenKind.Slash); break;
+            case '%': Advance(); k = Eq2(TokenKind.PercentAssign, TokenKind.Percent); break;
+            case '-': Advance(); if (Cur == '>') { Advance(); k = TokenKind.Arrow; } else k = Eq2(TokenKind.MinusAssign, TokenKind.Minus); break;
             case '=': Advance(); if (Cur == '=') { Advance(); k = TokenKind.Eq; } else k = TokenKind.Assign; break;
             case '!': Advance(); if (Cur == '=') { Advance(); k = TokenKind.Ne; } else k = TokenKind.Not; break;
-            case '<': Advance(); if (Cur == '=') { Advance(); k = TokenKind.Le; } else if (Cur == '<') { Advance(); k = TokenKind.Shl; } else k = TokenKind.Lt; break;
-            case '|': Advance(); if (Cur == '|') { Advance(); k = TokenKind.OrOr; } else k = TokenKind.Pipe; break;
-            case '^': Advance(); k = TokenKind.Caret; break;
+            case '<': Advance(); if (Cur == '=') { Advance(); k = TokenKind.Le; } else if (Cur == '<') { Advance(); k = Eq2(TokenKind.ShlAssign, TokenKind.Shl); } else k = TokenKind.Lt; break;
+            case '|': Advance(); if (Cur == '|') { Advance(); k = TokenKind.OrOr; } else k = Eq2(TokenKind.PipeAssign, TokenKind.Pipe); break;
+            case '^': Advance(); k = Eq2(TokenKind.CaretAssign, TokenKind.Caret); break;
             case '~': Advance(); k = TokenKind.Tilde; break;
-            case '>': Advance(); if (Cur == '=') { Advance(); k = TokenKind.Ge; } else if (Cur == '>') { Advance(); k = TokenKind.Shr; } else k = TokenKind.Gt; break;
-            case '&': Advance(); if (Cur == '&') { Advance(); k = TokenKind.AndAnd; } else k = TokenKind.Amp; break;
+            case '>': Advance(); if (Cur == '=') { Advance(); k = TokenKind.Ge; } else if (Cur == '>') { Advance(); k = Eq2(TokenKind.ShrAssign, TokenKind.Shr); } else k = TokenKind.Gt; break;
+            case '&': Advance(); if (Cur == '&') { Advance(); k = TokenKind.AndAnd; } else k = Eq2(TokenKind.AmpAssign, TokenKind.Amp); break;
             default:
                 Advance();
                 _diag.Error($"unexpected character '{c}'", SpanFrom(start, line, col));
