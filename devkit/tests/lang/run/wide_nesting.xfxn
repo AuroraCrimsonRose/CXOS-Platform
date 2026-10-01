@@ -1,0 +1,26 @@
+// Wide expressions nested inside wide expressions. Each result lives in a
+// scratch slot until whatever contains it is done with it; the result's slot
+// used to be taken after its operands', above them, while the bookkeeping
+// said otherwise - so the next operand at that level overwrote it.
+
+fn main() -> i32 {
+    let x: u32 = 0xAABBCCDD;
+    let e: u128 = (x as u128) | ((x as u128) << 32) | ((x as u128) << 64);
+    if (e != 0xAABBCCDDAABBCCDDAABBCCDDu128) { return 1; }
+
+    let v: u128 = 0x1122334455667788AABBCCDD99887766u128;
+    let w: u128 = ((v as u32) as u128) | (((v >> 32) as u32) as u128) << 32
+                | (((v >> 64) as u32) as u128) << 64 | (((v >> 96) as u32) as u128) << 96;
+    if (w != v) { return 2; }
+
+    let a: u64 = 3;
+    let b: u64 = 5;
+    let c: u64 = 7;
+    if ((a + b) * (c - a) + ~(a ^ b) != 32 + ~(6u64)) { return 3; }
+    if (-(a + b) + (c + c) != 6) { return 4; }
+
+    let i: i64 = -2;
+    let j: i128 = (i as i128) * (i as i128) + ((a as i128) << 70);
+    if (j != 4 + (3i128 << 70)) { return 5; }
+    return 0;
+}
