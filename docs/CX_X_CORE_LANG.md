@@ -50,25 +50,21 @@ a compiler is a specific kind of program:
 
 | A self-hosting compiler needs | v0.2 status |
 |-------------------------------|-------------|
-| Dynamic allocation | **missing** — no allocator; needs `sbrk`/`map` (ABI §7.8) or an arena in X |
-| Growable strings & buffers | **missing** — fixed arrays only |
+| Dynamic allocation | works — `SYS_MEM_OP` and `std/heap.xfxn` |
+| Growable strings & buffers | **missing** — fixed arrays only (route stage 3) |
 | Tagged unions / sum types for AST nodes | **missing** — would be structs + a manual tag today |
 | `switch` on a tag | **missing** — `if`/`else` chains work but scale badly |
 | Recursion over a tree | works (plain recursion) |
 | Multi-file source | works (`import`) |
 | Function pointers for dispatch tables | works |
 | File I/O | works (`SYS_FILE_OP`, `std/file.xfxn`) |
-| 64/128-bit integers | works, except variable shifts (§2.1) |
+| 64/128-bit integers | works, including variable shifts, and passed and returned by value (§2.1, §2.5) |
+| Structs by value | works — passed and returned by value, C-compatible (§2.5) |
 | Floats | missing; not required for a compiler |
-| Dynamic allocation | **missing** — no `SYS_MAP`/`SBRK`, no allocator |
 
-The honest read: **the blockers are allocation, strings, and sum types** — not
-syntax sugar. A staged route is in §10.
-
-Allocation is now the single largest one, and it blocks more than self-hosting:
-X Runtime's collector and X Hybrid's managed references both need a heap, and there is none.
-`GRANT_MEM` exists and nothing honours it — ABI §7.8 is still *specified,
-unimplemented*.
+The honest read: **the blockers are growable strings and buffers, and sum types
+with `switch`** — not syntax sugar. Allocation, the largest one, is closed. A
+staged route is in §10.
 
 ---
 
@@ -111,9 +107,18 @@ A value wider than a register is represented by its **address**, exactly as a
 type list can grow without the backend changing: a width is a row in
 `PrimWidth.Bytes`.
 
-**Implemented:** `+ - * / % & | ^`, all six comparisons, casts between widths
-(sign- or zero-filling as the source type requires), and unary `-` and `~`.
-Shifts take a **constant** amount.
+**Implemented:** `+ - * / % & | ^ << >>`, all six comparisons, casts between
+widths (sign- or zero-filling as the source type requires), unary `-` and `~`,
+and passing and returning wide values by value (§2.5).
+
+**Shifts.** A constant amount must be inside the width — `x << 64` on a `u64`
+is a compile error. A variable amount is taken **modulo the width**, which is
+what x86 already does for 32-bit shifts, so the rule is the same at every width.
+The variable shift is a branch-free barrel shifter: one stage per bit of the
+amount (six for 64 bits, seven for 128), each a constant shift and a masked
+select, so it runs the same instructions whatever the amount is and does not
+leak it through timing. A narrow value may be shifted by a wide amount; only
+the amount's low word counts.
 
 `/` and `%` are one routine: a division produces the quotient and the remainder
 together, and computing `a / b` and `a % b` separately would run the whole thing
@@ -136,13 +141,17 @@ same mistake.
 > differ in length. Do not divide secret values. Same caveat as the wide compare.
 
 **Diagnosed, not emitted** — a wrong answer here is worse than a build failure,
-so each of these is a compile error rather than silently truncated code:
+so each of these is a compile error rather than silently wrong code:
 
 | | why |
 |---|---|
-| variable shifts | needs a loop, and a loop whose trip count depends on the operand is a timing signal |
-| returning a wide value | the value is an address, and it would be the address of a frame about to be torn down. Pass a pointer to the destination instead |
-| a constant expression at a width its operands do not have | `let g: u128 = 1 << 100;` is a **32-bit** shift, because both operands are small literals and the declared type does not reach into the initializer. C has the same rule and answers it with a suffix (`1ULL`); X has no suffix, so the width has to come from a variable that already carries it: `let g: u128 = 1; g = g << 100;` |
+| narrowing a wide value without `as` | `let a: u32 = w;` with `w: u64` used to store `w`'s ADDRESS — in a `let`, an assignment, an argument and a return alike. Write `w as u32` to truncate on purpose |
+| a constant shift outside its width | `let g: u128 = 1 << 100;` is a **32-bit** shift — both operands are small literals, and the declared type does not reach into the initializer — and the CPU would have reduced it to `1 << 4`. Give the literal the width: `1u128 << 100` (§2.6) |
+
+**Widening is by the source's sign.** `let w: i64 = u;` with `u: u32 =
+0xFFFFFFFF` is 4294967295, and an `i32` −1 widened into a `u64` is all ones —
+C's rule, and what `as` always did. The implicit path used the *destination's*
+sign, and gave −1 and 0x00000000FFFFFFFF.
 
 **Mixed-width arithmetic takes the WIDER operand's type.** `0 - a` on a 64-bit
 `a` is a 64-bit subtraction, not a 32-bit one. This is worth stating because it
@@ -331,6 +340,43 @@ Code without attributes compiles to byte-identical output. It is here now becaus
 expensive to retrofit after, and because it is the foundation for drivers
 written in X (see `CX_ROADMAP.md` §5).
 
+### 2.5 Wide values and structs by value
+
+A 64 or 128-bit integer or a `struct` is passed and returned **by value**, with
+the i386 System V convention — what GCC does for C — so X calls C and C calls X
+with ordinary prototypes:
+
+| | how |
+|---|---|
+| argument | copied onto the stack, its size rounded up to 4 bytes |
+| 64-bit result | in `edx:eax` |
+| 128-bit or struct result | the caller passes a hidden pointer as the **first** argument; the callee writes the value through it, returns the pointer in `eax`, and pops it itself (`ret $4`) |
+
+The callee works on its own copy: changing a parameter never changes the
+caller's variable. A result is moved out before `defer`s run and before the
+frame is torn down, so `return x` returns `x` as it was. Each call site that
+receives one of these has its own slot in the caller's frame, sized to the
+type.
+
+Before this, all of it compiled and was wrong: a wide or struct argument pushed
+its **address** and the callee read the address's bytes as the value, and a
+struct result returned the address of a local in a frame that no longer existed.
+
+An **array** cannot be passed or returned by value — C cannot either, and
+copying a buffer at every call is not something to do by accident. It is a
+compile error that says to pass a pointer.
+
+### 2.6 Literals: suffixes and separators
+
+A suffix names a literal's type outright: `1u128`, `0xFFu8`, `5i64`, any of
+`u8 u16 u32 u64 u128 i8 i16 i32 i64 i128`. The value must fit — `256u8` is an
+error — except that a signed literal may reach one past its maximum when it is
+negated directly, so `-128i8` and the most negative `i128` can be written. An
+unsuffixed literal is typed as before, by the narrowest type that holds it.
+
+`_` separates digit groups anywhere after the first digit, as in X Data:
+`1_000_000`, `0xFFFF_0000`, `0x1_0000_0000u64`.
+
 ---
 
 ## 3. Declarations
@@ -376,8 +422,10 @@ type layer_draw_fn = fn(u32, u32, u32, u32, u32) -> void;   // function pointer 
   its address, a `fn(...) -> R` type holds one, and calling through a variable,
   parameter or struct field emits an indirect call. This is what the GUI's layer
   compositor dispatches through.
-- Functions use cdecl-compatible calling convention (args on stack or the agreed
-  register set), so X, asm, and the C bootstrap interoperate during the transition.
+- Functions use the i386 System V (cdecl) calling convention, including how
+  wide values and structs are passed and returned (§2.5), so X, assembly and C
+  call one another directly. `cxk compile --object` makes X linkable into a C
+  program; the kernel links its X Data reader that way.
 
 ---
 
@@ -532,16 +580,17 @@ uninitialized `let`.
   hard error.
 - `for`, `switch`, enums, unions.
 - Floats and SIMD. (Fixed-point lives in `std/fixed.xfxn`; the kernel
-  initialises the FPU but no userspace code uses it. 64 and 128-bit integers
-  landed — see §2.1 — but `/`, `%` and variable shifts are still diagnosed
-  rather than emitted.)
-- Dynamic allocation of any kind.
+  initialises the FPU but no userspace code uses it.)
 - An explicit IR (only if optimization needs it).
 - **X Runtime**: runtime-as-executive-service (GC, dynamic dispatch via IPC) — a dialect
   lowering to X core + executive calls.
 - **X Hybrid**: C++-like hybrid (methods, generics) — a dialect desugaring to X core.
 
 ### Known rough edges (not features — defects to fix)
+- **Narrow integers still convert implicitly.** A `u32` assigns to a `u8`
+  without `as` and is truncated by the store. Narrowing a *wide* value is now
+  an error (§2.1); the narrow cases are next, and need the OS sources audited
+  first.
 - `as` reinterprets rather than converts; narrowing does not mask.
 - `sizeof` accepts only expressions, not type names, and silently yields `4` when
   an operand's type is unknown rather than erroring.
