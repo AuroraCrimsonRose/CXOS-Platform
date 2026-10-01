@@ -1,0 +1,10 @@
+// Types with no size, or more than a 32-bit target can hold.
+struct loop { next: loop }                      // itself, by value
+struct a { b: b }
+struct b { a: a }                               // itself, through another
+struct huge { x: [0x7FFFFFFF]u32 }              // 8 GB
+fn main() -> i32 {
+    let cfg: [0x7FFFFFFF]u32;                   // its frame size wrapped to -4
+    let n: u32 = sizeof (0 as [0x40000001]u8);
+    return 0;
+}

@@ -89,13 +89,17 @@ public sealed class SemaContext
     private readonly HashSet<string> _sizing = new();
     public string? SizeCycle;
 
+    /* Saturating: a size too large to count in an int comes back as
+       int.MaxValue rather than wrapping to something small or negative, so the
+       type checker can refuse it (see CheckSize) before the emitter lays out a
+       frame with it. `[0x7FFFFFFF]u32` used to come out at -4 bytes. */
     public int SizeOf(TypeRef t0)
     {
         var t = Expand(t0);
         switch (t)
         {
             case PrimType p: return PrimWidth.Bytes(p.Kind);
-            case ArrayType a: return SizeOf(a.Element) * a.Length;
+            case ArrayType a: return (int)Math.Min((long)SizeOf(a.Element) * a.Length, int.MaxValue);
             case NamedType n when Structs.ContainsKey(n.Name) || Enums.ContainsKey(n.Name):
                 if (!_sizing.Add(n.Name)) { SizeCycle ??= n.Name; return 0; }
                 try { return SizeOfNamed(n.Name); }
@@ -107,15 +111,15 @@ public sealed class SemaContext
     private int SizeOfNamed(string name)
     {
         if (Structs.TryGetValue(name, out var s))
-        { int o = 0; foreach (var f in s.Fields) o += (SizeOf(f.Type) + 3) & ~3; return o; }
+        { long o = 0; foreach (var f in s.Fields) o += ((long)SizeOf(f.Type) + 3) & ~3L; return (int)Math.Min(o, int.MaxValue); }
         var e = Enums[name];
         if (!e.IsSum) return e.Backing != null ? SizeOf(e.Backing) : 4;
         int max = 0;
         foreach (var v in e.Variants)
             if (v.Fields != null)
             {
-                int o = 0; foreach (var f in v.Fields) o += (SizeOf(f.Type) + 3) & ~3;
-                if (o > max) max = o;
+                long o = 0; foreach (var f in v.Fields) o += ((long)SizeOf(f.Type) + 3) & ~3L;
+                if (o > max) max = (int)Math.Min(o, int.MaxValue - 4);
             }
         return 4 + max;
     }
