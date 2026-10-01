@@ -59,6 +59,9 @@ app.Configure(config =>
     config.AddCommand<SemaCommand>("sema")
         .WithDescription("Prints each expression's type and every diagnostic for X programs (compared against the type checker written in X).");
 
+    config.AddCommand<AsmCommand>("asm")
+        .WithDescription("Prints the assembly `compile` generates for X programs (compared against the code generator written in X).");
+
     config.AddCommand<PreludeCommand>("prelude")
         .WithDescription("Prints the ABI prelude that `compile` puts in front of every program.");
 
