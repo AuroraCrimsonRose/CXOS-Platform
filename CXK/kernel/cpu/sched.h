@@ -19,14 +19,29 @@
 #include <stdint.h>
 #include "handle.h"
 
-#define MAX_THREADS   8
-#define THREAD_STACK  8192      /* per-thread kernel stack size; guarded (memman/kstack.h) */
+/* MAX_THREADS is CAPACITY: the size of every per-thread table, and the bound
+   on a pid. How many threads may actually be alive is a runtime LIMIT below it,
+   set from /System/Config/kernel.xkco (kconfig.h) - policy, not a constant.
+   The limit stays below capacity so a pid at the top of the tables is always
+   free, which the self-tests use as a scratch process. */
+#define MAX_THREADS           64
+#define THREAD_LIMIT_DEFAULT  8
+#define THREAD_LIMIT_MIN      4
+#define THREAD_LIMIT_MAX      32
+
+/* Kernel stack size, per thread. Guarded (memman/kstack.h), so a stack that is
+   too small is a panic naming the thread rather than silent corruption - which
+   is what makes it safe to let configuration choose it. */
+#define THREAD_STACK_DEFAULT  8192
+#define THREAD_STACK_MIN      8192
+#define THREAD_STACK_MAX      32768
 
 enum thread_state {
     THREAD_UNUSED = 0,
     THREAD_READY,
     THREAD_RUNNING,
     THREAD_BLOCKED,    /* waiting on IPC; not runnable until unblocked */
+    THREAD_HELD,       /* created but not yet started (thread_create_process) */
     THREAD_EXITED
 };
 
@@ -64,6 +79,27 @@ void sched_init(void);
 
 /* create a new kernel thread that starts at entry(). returns its id, or -1. */
 int thread_create(const char *name, void (*entry)(void));
+
+/* Create a PROCESS thread, HELD: its kernel stack and its esp0 (ring-0 entry)
+   stack both exist, but it will not run until thread_start(). The caller fills
+   in everything the thread reads when it starts - image, arguments, address
+   space, uid, caps - and only then lets it go.
+
+   thread_create's READY-at-once is wrong for a process. With preemption on,
+   the new thread could be scheduled before its creator had given it an esp0
+   stack or its records: it entered ring 3 with the TSS still naming another
+   thread's stack, and when that thread exited and its stack was freed, this
+   one was left with saved state on freed memory. Returns the id, or -1. */
+int  thread_create_process(const char *name, void (*entry)(void));
+void thread_start(int id);     /* a held thread becomes runnable */
+void thread_discard(int id);   /* a held thread that will never start is freed now */
+
+/* Set the thread limit and the size of stacks made from now on. Refused (-1)
+   if out of range, or if more threads are already alive than the new limit. */
+int      sched_configure(uint32_t max_threads, uint32_t stack_bytes);
+uint32_t sched_thread_limit(void);
+uint32_t sched_thread_count(void);   /* slots in use, exited-but-unreaped included */
+uint32_t sched_stack_bytes(void);
 
 /* voluntarily give up the CPU to the next ready thread (cooperative). */
 void yield(void);

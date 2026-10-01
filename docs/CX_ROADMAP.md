@@ -515,24 +515,44 @@ In order:
    Both halves are proven, not assumed: `CXK_KTEST_STACK_OVERFLOW=1`
    (`tools/cmake/cxk_flags.cmake`) overflows a stack on purpose and the boot
    ends in "Kernel stack overflow: thread 1 (overflow)"; the same build with
-   vector 8 put back on an interrupt gate triple-faults. Thread 0 still runs
-   on the boot stack in `.bss`, unguarded — it moves when the boot path is
-   next reworked.
+   vector 8 put back on an interrupt gate triple-faults. Thread 0 is guarded
+   too: kmain leaves the `.bss` boot stack for a guarded one right after
+   `kstack_init`, and thread 0 now has an esp0 stack of its own (before, its
+   trips to ring 3 used whichever esp0 the previous thread had left in the
+   TSS). `CXK_KTEST_STACK_OVERFLOW=2` overflows thread 0 and the panic names
+   "main".
 
-2. **Boot configuration, in X Data.** CXK has no boot-time configuration channel
-   today. When it gets one it is an X Data document, not a Linux-style flat
-   string: typed values, range-checked integers, and whole-file validation before
-   anything is applied, so a typo is refused rather than half-applied. The X Data
-   reader allocates nothing, which is exactly what code running before the heap
-   exists needs.
+   Guarding the stacks immediately exposed a scheduler race that had been
+   there all along: `yield()` and `thread_exit()` switched with interrupts on,
+   and a timer tick between `current = next` and the switch saved the exiting
+   thread's stack pointer as the next thread's context. The exiting stack was
+   then freed under it. On heap stacks that read back correctly by luck; on
+   guarded stacks it faults. Both now switch with interrupts off, and process
+   threads are created held (`thread_create_process`) until their records,
+   esp0 stack and uid are in place. With the race window artificially widened,
+   the old code panicked on 6 of 6 boots and the fixed code on none.
 
-3. **Then the limits become configuration.** Kernel stack size, the thread limit
-   (`MAX_THREADS`, 8 today, and the tighter constraint of the two) and the
-   default memory quota are policy, and belong in that file rather than compiled
-   in. **Tunable stack size must not come before step 1**: Linux can shrink
-   stacks safely because its stacks already have guard pages; on a kernel with
-   none, a smaller stack turns "almost never overflows" into "occasionally
-   corrupts memory with no trace."
+2. **Boot configuration, in X Data — done.** `/System/Config/kernel.xkco`
+   (`os/config/kernel.xkco`, `kernel/kconfig.c`), read as soon as the system
+   volume is mounted and before anything creates a thread. Typed values,
+   range-checked, and the whole file is checked before any of it is applied: a
+   typo, an unknown key or a value out of range refuses the entire file, the
+   log names the line, and the kernel boots on built-in values. The build runs
+   `cxk check-xdata` on it first, so most mistakes never reach a disk.
+
+   The kernel reads it with **the same X Data reader the supervisor uses** —
+   `os/std/xdata.xfxn`, compiled with `cxk compile --object` and linked into
+   the kernel like any C object (`kernel/lib/format/xdata.h`). That is the
+   kernel's first code written in X, and it works because X's calling
+   convention is already cdecl. It also means there is no third reader to keep
+   in agreement with the other two.
+
+3. **The limits are configuration — done.** `kernel_stack_kib` (8–32),
+   `max_threads` (4–32) and `memory_quota_mib` (1–64). `MAX_THREADS` is now
+   the tables' capacity (64); the limit in force is a runtime value beneath it.
+   Tunable stack size came after step 1 on purpose: a stack set too small now
+   stops the machine with a panic naming the thread, instead of corrupting
+   memory with no trace.
 
 4. **Dynamic stack growth — after SMP and real threading.** Mapping stack pages
    on demand saves memory in proportion to the number of threads. At eight

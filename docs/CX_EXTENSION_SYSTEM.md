@@ -145,18 +145,23 @@ type code `0x4345 'CE'` is retired with it and is not reissued.
 | `.xoex` | OS Executive (the broker executive; CXEX `type_code` 0x4F45 `'OE'`) |
 | `.xosv` | OS Service descriptor (what to run at boot, and with what authority) |
 
-`.xosv` is **not** a CXEX container and has no `type_code` — it is a text file,
-`key=value` lines, read by the service supervisor. It names a program; it is
-not one. That is why it is XO rather than XC: the thing it describes is part of
-the operating system's startup, even when the program it points at is an
-ordinary `.xuex`.
+`.xosv` is **not** a CXEX container and has no `type_code` — it is an X Data
+document (`docs/CX_X_DATA.md`), read by the service supervisor. It names a
+program; it is not one. That is why it is XO rather than XC: the thing it
+describes is part of the operating system's startup, even when the program it
+points at is an ordinary `.xuex`.
 
 ```
-exec=/Shared/Programs/hi.xuex    the program to run (required)
-args=hello world                 passed as argv, after the program's own path
-start=boot                       `boot` to start it; absent means leave it off
-grants=console,disk              authority to hand it; default is console only
+exec   = "/Shared/Programs/hi.xuex"   // the program to run (required)
+args   = ["hello", "world"]           // passed as argv, after the program's own path
+start  = boot                         // `boot` to start it; absent means leave it off
+every  = 300                          // re-run every N seconds (optional)
+grants = [console, disk]              // authority to hand it; [] for none
 ```
+
+`.xkco` is used the same way for the kernel's own configuration:
+`/System/Config/kernel.xkco`, an X Data document the kernel reads once at boot
+(`kernel/kconfig.h`).
 
 Descriptors live in `/System/Services/`. Authority defaults to the minimum on
 purpose: a service that needs the disk has to say so in the file, where someone
