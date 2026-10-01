@@ -1,0 +1,40 @@
+struct acc { n: u32, w: u64 }
+global arr: [4]u32;
+fn idx() -> u32 { return 2; }
+fn main() -> i32 {
+    if ('a' != 97) { return 1; }
+    if ('\n' != 10 || '\t' != 9 || '\0' != 0 || '\\' != 92 || '\'' != 39 || '"' != 34) { return 2; }
+    if ('\x7F' != 127 || '\xff' != 255 || '\e' != 27) { return 3; }
+    let s: *u8 = "x\"y";
+    if (s[1] != '"') { return 4; }
+    let c: u8 = 'z';
+    if (c - 'a' != 25) { return 5; }
+    let n: u32 = 10;
+    n += 5;  if (n != 15) { return 10; }
+    n -= 3;  if (n != 12) { return 11; }
+    n *= 4;  if (n != 48) { return 12; }
+    n /= 5;  if (n != 9) { return 13; }
+    n %= 4;  if (n != 1) { return 14; }
+    n <<= 4; if (n != 16) { return 15; }
+    n >>= 2; if (n != 4) { return 16; }
+    n |= 3;  if (n != 7) { return 17; }
+    n &= 5;  if (n != 5) { return 18; }
+    n ^= 1;  if (n != 4) { return 19; }
+    let b: u8 = 250;
+    b += 10;                                   // narrows back, as in C
+    if (b != 4) { return 20; }
+    let a: acc;
+    a.n = 1; a.w = 0x100000000;
+    a.n += 2; a.w += 0x100000000;              // a field, and a wide one
+    if (a.n != 3 || a.w != 0x200000000) { return 21; }
+    let i: u32 = 1;
+    arr[i] = 7; arr[i] += 3;
+    if (arr[1] != 10) { return 22; }
+    let p: *u32 = &arr[0];
+    p[3] = 1; p[3] <<= 3;
+    if (arr[3] != 8) { return 23; }
+    let k: u32 = idx();
+    arr[k] += 1;
+    if (arr[2] != 1) { return 24; }
+    return 0;
+}

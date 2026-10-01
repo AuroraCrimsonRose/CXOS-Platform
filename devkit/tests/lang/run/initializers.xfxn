@@ -1,0 +1,53 @@
+struct pt { x: u32, y: u32 }
+struct rec { tag: u8, p: pt, big: u64, name: *u8, digits: [3]u8 }
+struct kw { word: *u8, id: u32 }
+fn twice(n: u32) -> u32 { return n * 2; }
+fn thrice(n: u32) -> u32 { return n * 3; }
+
+global origin: pt = pt { x: 0, y: 0 };
+global corner: pt = pt { y: 7, x: 3 };                       // any order
+global primes: [5]u32 = [2, 3, 5, 7, 11];
+global words: [3]kw = [kw { word: "if", id: 1 }, kw { word: "else", id: 2 }, kw { word: "while", id: 3 }];
+global ops: [2]fn(u32) -> u32 = [twice, thrice];
+global greeting: *u8 = "hello";
+global bytes: [3]u8 = ['a', 'b', 'c'];
+global wide: [2]u64 = [0x100000000, 5];
+
+fn mk(a: u32) -> pt { return pt { x: a, y: a + 1 }; }
+fn sum(p: pt) -> u32 { return p.x + p.y; }
+fn slen(s: *u8) -> u32 { let n: u32 = 0; while (s[n] != 0) { n += 1; } return n; }
+
+fn main() -> i32 {
+    if (corner.x != 3 || corner.y != 7 || origin.y != 0) { return 1; }
+    if (primes[4] != 11 || primes[0] != 2) { return 2; }
+    if (words[1].id != 2 || slen(words[2].word) != 5 || words[0].word[1] != 'f') { return 3; }
+    if (ops[1](5) != 15 || ops[0](5) != 10) { return 4; }
+    if (greeting[4] != 'o') { return 5; }
+    if (bytes[2] != 'c') { return 6; }
+    if (wide[0] != 0x100000000 || wide[1] != 5) { return 7; }
+
+    let p: pt = pt { x: 4, y: 9 };
+    if (p.x != 4 || p.y != 9) { return 10; }
+    if (sum(pt { x: 1, y: 2 }) != 3) { return 11; }                  // literal as an argument
+    if (mk(5).y != 6) { return 12; }
+    let r: rec = rec { tag: 7, p: pt { x: 1, y: 2 }, big: 0x500000000, name: "rec", digits: ['1', '2', '3'] };
+    if (r.tag != 7 || r.p.y != 2 || r.big != 0x500000000 || r.name[2] != 'c' || r.digits[2] != '3') { return 13; }
+    let a: [4]u32 = [10, 20, 30, 40];
+    if (a[3] != 40) { return 14; }
+    let b: [4]u32 = [0, 0, 0, 0];
+    b = a;                                                            // array assignment copies
+    a[0] = 99;
+    if (b[0] != 10 || b[3] != 40) { return 15; }
+    let three: [3]u8 = ['x', 'y', 'z'];
+    let guard: u32 = 0xA5A5A5A5;
+    let three2: [3]u8 = ['p', 'q', 'r'];
+    three2 = three;                                                   // exactly three bytes
+    if (three2[2] != 'z' || guard != 0xA5A5A5A5) { return 16; }
+    let q: pt = pt { x: 1, y: 1 };
+    let i: u32 = 0;
+    while (i < 3) { q = pt { x: q.x * 2, y: q.y + i }; i += 1; }     // one site, reused
+    if (q.x != 8 || q.y != 4) { return 17; }
+    let grid: [2][2]u32 = [[1, 2], [3, 4]];                          // nested
+    if (grid[1][0] != 3) { return 18; }
+    return 0;
+}
