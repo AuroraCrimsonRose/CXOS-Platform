@@ -10,7 +10,8 @@ public static class DiskGeometryEngine
     private const int SECTOR_SIZE = 512;
     private const int ALIGN_SECTORS = 2048; // 1 MiB alignment
 
-    public static DiskGeometryMap CalculateLayout(int diskSizeMb, int bootSizeMb, int stage2Bytes, int stagedFilesBytes)
+    public static DiskGeometryMap CalculateLayout(int diskSizeMb, int bootSizeMb, int stage2Bytes, int stagedFilesBytes,
+                                                 int manifestSectors = 1)
     {
         var map = new DiskGeometryMap
         {
@@ -35,9 +36,9 @@ public static class DiskGeometryEngine
         // 2. STAGE Partition (Only if we have files to stage)
         if (stagedFilesBytes > 0)
         {
-            // Calculate sectors: 1 manifest sector + data sectors
+            // Calculate sectors: the manifest's, then the data's
             ulong stageDataSectors = (ulong)(stagedFilesBytes + SECTOR_SIZE - 1) / SECTOR_SIZE;
-            ulong stageTotalSectors = AlignUp(1 + stageDataSectors, ALIGN_SECTORS);
+            ulong stageTotalSectors = AlignUp((ulong)manifestSectors + stageDataSectors, ALIGN_SECTORS);
 
             map.Partitions.Add(new PartitionLayout
             {

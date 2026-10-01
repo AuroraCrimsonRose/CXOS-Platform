@@ -53,14 +53,15 @@ public sealed class BuildService
     {
         log?.Invoke($"disk: laying out {diskMb} MB image");
         var map = DiskGeometryEngine.CalculateLayout(diskMb, bootMb, stage2.Length,
-                                                     SumStaged(staged));
+                                                     SumStaged(staged), XBPTImageWriter.ManifestSectors(staged.Count));
         XBPTImageWriter.WriteImage(outPath, map, stage1, stage2, kernel, staged);
         log?.Invoke($"disk: wrote {outPath}");
     }
 
     private static int SumStaged(System.Collections.Generic.List<StagedFile> staged)
     {
-        int n = 0; foreach (var s in staged) n += s.Data?.Length ?? 0; return n;
+        // each file starts on a sector of its own
+        int n = 0; foreach (var s in staged) n += ((s.Data?.Length ?? 0) + 511) / 512 * 512; return n;
     }
 
     /// <summary>
