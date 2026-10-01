@@ -5,6 +5,10 @@
 **Excluded:** general engineering observations covered by `docs/ENGINEERING_REVIEW.md`  
 **Review date:** 2026-10-01
 
+> **Response & status:** every finding below has been checked against the code
+> and planned in [`HARDENING_PLAN.md`](HARDENING_PLAN.md), which tracks each to
+> done. This review is kept as written.
+
 ## Executive summary
 
 CX DevKit sits on an unusually important security boundary: it transforms compiler output and other build inputs into CXEX artifacts that CXK can execute and potentially trust.
