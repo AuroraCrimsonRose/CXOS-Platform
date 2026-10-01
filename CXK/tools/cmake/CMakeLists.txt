@@ -246,6 +246,10 @@ set(SUPERVISOR_XCEX ${PACKAGES_DIR}/supervisor.xsex)
 set(TOKDUMP_SRC  ${SRC_DIR}/os/xc/tokdump.xfxn)
 set(TOKDUMP_ELF  ${BUILD_DIR}/tokdump.elf)
 set(TOKDUMP_XUEX ${PACKAGES_DIR}/tokdump.xuex)
+# astdump, the same for its parser: `run +disk astdump -s /Shared/Source/parse.xfxn`.
+set(ASTDUMP_SRC  ${SRC_DIR}/os/xc/astdump.xfxn)
+set(ASTDUMP_ELF  ${BUILD_DIR}/astdump.elf)
+set(ASTDUMP_XUEX ${PACKAGES_DIR}/astdump.xuex)
 
 # Everything APP_BOOT can pull in with `import`, so editing any of it actually
 # rebuilds. This variable was referenced by the compile rule below but never
@@ -426,7 +430,7 @@ add_custom_command(
     COMMENT "Packaging supervisor.xsex (CXEX, type system, staged to disk)"
 )
 
-# ---- tokdump: the X compiler's lexer, on CXK (staged + signed, like the disk app) ----
+# ---- tokdump and astdump: the X compiler's lexer and parser, on CXK (staged + signed, like the disk app) ----
 file(GLOB XC_SRCS CONFIGURE_DEPENDS ${SRC_DIR}/os/xc/*.xfxn ${SRC_DIR}/os/xc/cxk/*.xfxn)
 add_custom_command(
     OUTPUT ${TOKDUMP_ELF}
@@ -442,6 +446,21 @@ add_custom_command(
     ${TSIGN}
     DEPENDS ${TOKDUMP_ELF} ${CXK}
     COMMENT "Packaging tokdump.xuex (CXEX, type user, staged to disk)"
+)
+add_custom_command(
+    OUTPUT ${ASTDUMP_ELF}
+    COMMAND ${CXK} compile ${ASTDUMP_SRC} ${ASTDUMP_ELF}
+            -I ${SRC_DIR}/os/xc/cxk -I ${SRC_DIR}/os/xc -I ${SRC_DIR}/os/std
+    DEPENDS ${XC_SRCS} ${CXK} ${STD_SRCS}
+    COMMENT "X   astdump.xfxn -> ELF"
+)
+add_custom_command(
+    OUTPUT ${ASTDUMP_XUEX}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${PACKAGES_DIR}
+    COMMAND ${CXK} build ${ASTDUMP_ELF} ${ASTDUMP_XUEX} --type user
+    ${PSIGN}
+    DEPENDS ${ASTDUMP_ELF} ${CXK}
+    COMMENT "Packaging astdump.xuex (CXEX, type user, staged to disk)"
 )
 
 # ---- executive.c -> executive.elf (user-half) -> executive.xoex (signed) ----
@@ -503,13 +522,16 @@ add_custom_command(
             --stage Shared/Programs/${DISK_APP_NAME}.xuex=${DISK_APP_XCEX}
             --stage System/Programs/supervisor.xsex=${SUPERVISOR_XCEX}
             --stage Shared/Programs/tokdump.xuex=${TOKDUMP_XUEX}
+            --stage Shared/Programs/astdump.xuex=${ASTDUMP_XUEX}
             --stage Shared/Source/lex.xfxn=${SRC_DIR}/os/xc/lex.xfxn
+            --stage Shared/Source/parse.xfxn=${SRC_DIR}/os/xc/parse.xfxn
             --stage System/Services/hello.xosv=${SRC_DIR}/os/services/hello.xosv
             --stage System/Services/disabled.xosv=${SRC_DIR}/os/services/disabled.xosv
             --stage System/Services/heartbeat.xosv=${SRC_DIR}/os/services/heartbeat.xosv
             --stage System/Config/kernel.xkco=${KERNEL_XKCO}
     DEPENDS ${BOOT_BIN} ${STAGE2_BIN} ${KERNEL_XKEX} ${EXEC_XOEX} ${DISK_APP_XCEX}
-            ${SUPERVISOR_XCEX} ${TOKDUMP_XUEX} ${SRC_DIR}/os/xc/lex.xfxn
+            ${SUPERVISOR_XCEX} ${TOKDUMP_XUEX} ${ASTDUMP_XUEX}
+            ${SRC_DIR}/os/xc/lex.xfxn ${SRC_DIR}/os/xc/parse.xfxn
             ${SERVICE_XOSV} ${KERNEL_XKCO} ${CXK}
     COMMENT "Building unified CXK disk (XBPT: boot + stage + system)"
 )
