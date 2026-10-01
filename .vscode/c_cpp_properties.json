@@ -3,11 +3,18 @@
         {
             "name": "CXK",
             "includePath": [
+                "${workspaceFolder}/abi",
                 "${workspaceFolder}/kernel/**"
             ],
-            "compilerPath": "C:/cross/i686-elf/bin/i686-elf-gcc.exe",
-            "cStandard": "c11",
-            "intelliSenseMode": "gcc-x86",
+            "compilerPath": "C:/Program Files/LLVM/bin/clang.exe",
+            "compilerArgs": [
+                "--target=i686-elf",
+                "-ffreestanding",
+                "-fno-pic",
+                "-m32"
+            ],
+            "cStandard": "gnu17",
+            "intelliSenseMode": "clang-x86",
             "defines": []
         }
     ],
