@@ -51,8 +51,9 @@ growable buffers (`std/buf.xfxn`), sum types and `switch`, along with
 character literals, compound assignment, struct and array initializers, and
 integer conversions that need `as` wherever a value could change. The integer
 gaps are closed too: wide division, 128-bit literals, variable shifts, wide
-and struct values by value (C-compatible), literal suffixes. **Next is stage 4:
-the X compiler, written in X.**
+and struct values by value (C-compatible), literal suffixes. **Stage 4 — the X
+compiler written in X — is under way in `os/xc`:** the lexer is done, matches
+the C# one token for token, and runs on CXK. The parser is next.
 
 Alongside, the language features that are cheap now and expensive later:
 
