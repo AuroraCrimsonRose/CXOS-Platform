@@ -125,9 +125,7 @@ const struct disk *disk_find_by_name(const char *name) {
     return 0;
 }
 
-int disk_read(uint8_t id, uint64_t lba, uint32_t count, void *buf) {
-    const struct disk *d = disk_find_by_id(id);
-    if (!d) return -1;
+static int disk_read_once(const struct disk *d, uint64_t lba, uint32_t count, void *buf) {
     switch (d->driver) {
         case DISK_DRV_ATA:
             return ata_read(d->unit, (uint32_t)lba, (uint8_t)count, buf);
@@ -144,9 +142,7 @@ int disk_read(uint8_t id, uint64_t lba, uint32_t count, void *buf) {
     }
 }
 
-int disk_write(uint8_t id, uint64_t lba, uint32_t count, const void *buf) {
-    const struct disk *d = disk_find_by_id(id);
-    if (!d) return -1;
+static int disk_write_once(const struct disk *d, uint64_t lba, uint32_t count, const void *buf) {
     switch (d->driver) {
         case DISK_DRV_ATA:
             return ata_write(d->unit, (uint32_t)lba, (uint8_t)count, buf);
@@ -161,6 +157,39 @@ int disk_write(uint8_t id, uint64_t lba, uint32_t count, const void *buf) {
         default:
             return DISK_ERR_NO_DEVICE;
     }
+}
+
+/* The most sectors one driver call moves. AHCI transfers through a 64 KB
+   bounce buffer and refuses more; ATA's sector count is 8 bits, and a larger
+   count was silently cut to its low byte. A caller asks for whatever it
+   needs - the first-boot install reads each staged file in one call - and is
+   served in pieces of this size, so neither limit leaks out of the drivers. */
+#define DISK_XFER_MAX 128u
+
+int disk_read(uint8_t id, uint64_t lba, uint32_t count, void *buf) {
+    const struct disk *d = disk_find_by_id(id);
+    if (!d) return -1;
+    uint8_t *p = (uint8_t *)buf;
+    while (count > 0) {
+        uint32_t n = count < DISK_XFER_MAX ? count : DISK_XFER_MAX;
+        int rc = disk_read_once(d, lba, n, p);
+        if (rc != 0) return rc;
+        lba += n; p += n * 512u; count -= n;
+    }
+    return 0;
+}
+
+int disk_write(uint8_t id, uint64_t lba, uint32_t count, const void *buf) {
+    const struct disk *d = disk_find_by_id(id);
+    if (!d) return -1;
+    const uint8_t *p = (const uint8_t *)buf;
+    while (count > 0) {
+        uint32_t n = count < DISK_XFER_MAX ? count : DISK_XFER_MAX;
+        int rc = disk_write_once(d, lba, n, p);
+        if (rc != 0) return rc;
+        lba += n; p += n * 512u; count -= n;
+    }
+    return 0;
 }
 
 /* human-readable text for a disk_err code */
