@@ -10,12 +10,14 @@
  * install is skipped.
  *
  * ---- staging payload format (XSTG, little-endian) in the STAGE partition ----
- *   sector 0 (header + manifest):
- *     0   4   magic        "XSTG"
- *     4   2   version      (1)
+ *   sectors 0 .. manifest_sectors-1 (header + manifest):
+ *     0   4   magic            "XSTG"
+ *     4   2   version          1 or 2
  *     6   2   file_count
- *     8   8   reserved
- *     16  ..  entries (file_count), 48 bytes each:
+ *     8   2   manifest_sectors version 2 only; version 1 is always one sector
+ *     10  6   reserved
+ *     16  ..  entries (file_count), 48 bytes each, running on across the
+ *             manifest's sectors:
  *         0   32  name           target PATH relative to the root, NUL-padded
  *                                (e.g. "Shared/Programs/hi.xuex"). Missing
  *                                parent directories are created. A name with
@@ -23,7 +25,12 @@
  *         32  4   start_sector   blob location, sectors from the partition start
  *         44  4   size_bytes     blob length in bytes
  *   sector start_sector.. : each file's raw bytes (sector-aligned).
- *  (16 + 10*48 = 496 <= 512, so up to 10 staged files in the one header sector.)
+ *
+ * Version 1 is one sector: 16 + 10*48 = 496 <= 512, so at most 10 files. The
+ * disk outgrew that - the X compiler's programs and sources made 11 - so
+ * version 2 lets the manifest run over several sectors, up to
+ * XSTG_MAX_SECTORS. An image builder writes version 1 whenever the files fit,
+ * so images that did not need the change do not have it.
  */
 
 #ifndef INSTALL_H
@@ -31,8 +38,9 @@
 
 #include <stdint.h>
 
-#define XSTG_VERSION      1u
-#define XSTG_MAX_FILES    10u
+#define XSTG_VERSION_1    1u
+#define XSTG_VERSION_2    2u
+#define XSTG_MAX_SECTORS  16u     /* a version-2 manifest: (16*512 - 16) / 48 = 170 files */
 #define XSTG_NAME_LEN     32u
 #define XSTG_ENTRY_SIZE   48u
 
