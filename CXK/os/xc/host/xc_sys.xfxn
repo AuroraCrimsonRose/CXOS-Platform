@@ -24,6 +24,7 @@ const LINUX_READ:  u32 = 3;
 const LINUX_WRITE: u32 = 4;
 const LINUX_OPEN:  u32 = 5;
 const LINUX_CLOSE: u32 = 6;
+const LINUX_UNLINK: u32 = 10;
 const LINUX_BRK:   u32 = 45;
 const LINUX_GETCWD: u32 = 183;
 const LINUX_EISDIR: i32 = -21;
@@ -128,3 +129,31 @@ fn xc_cwd(out: *buf) -> bool {
     out.len += (n - 1) as u32;   // Linux counts the NUL
     return true;
 }
+
+// A whole file written from p[0..n], replacing any it had. False on failure.
+fn write_file(path: *u8, p: *u8, n: u32) -> bool {
+    let fd: i32 = __syscall(LINUX_OPEN, path as u32, 0x241, 420, 0, 0);   // O_WRONLY|O_CREAT|O_TRUNC, 0644
+    if (fd < 0) { return false; }
+    let done: u32 = 0;
+    while (done < n) {
+        let w: i32 = __syscall(LINUX_WRITE, fd as u32, (p as u32) + done, n - done, 0, 0);
+        if (w <= 0) { break; }
+        done += w as u32;
+    }
+    __syscall(LINUX_CLOSE, fd as u32, 0, 0, 0, 0);
+    return done == n;
+}
+
+// A file written in pieces: created (replacing any), written to, closed.
+fn xc_create(path: *u8) -> i32 { return __syscall(LINUX_OPEN, path as u32, 0x241, 420, 0, 0); }
+fn xc_write(h: i32, p: *u8, n: u32) -> bool {
+    let done: u32 = 0;
+    while (done < n) {
+        let w: i32 = __syscall(LINUX_WRITE, h as u32, (p as u32) + done, n - done, 0, 0);
+        if (w <= 0) { return false; }
+        done += w as u32;
+    }
+    return true;
+}
+fn xc_close(h: i32) -> void { __syscall(LINUX_CLOSE, h as u32, 0, 0, 0, 0); }
+fn xc_remove(path: *u8) -> void { __syscall(LINUX_UNLINK, path as u32, 0, 0, 0, 0); }

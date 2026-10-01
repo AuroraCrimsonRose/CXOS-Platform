@@ -51,3 +51,20 @@ fn xc_cwd(out: *buf) -> bool {
     out.len += n as u32;
     return true;
 }
+
+// A whole file written from p[0..n], replacing any it had. False on failure.
+fn write_file(path: *u8, p: *u8, n: u32) -> bool { return file_dump(path, p, n) == n as i32; }
+
+// A file written in pieces: created (replacing any), written to, closed.
+fn xc_create(path: *u8) -> i32 { return file_create(path); }
+fn xc_write(h: i32, p: *u8, n: u32) -> bool {
+    let done: u32 = 0;
+    while (done < n) {
+        let w: i32 = file_write(h, &p[done], n - done);
+        if (w <= 0) { return false; }
+        done += w as u32;
+    }
+    return true;
+}
+fn xc_close(h: i32) -> void { file_close(h); }
+fn xc_remove(path: *u8) -> void { unlink(path); }

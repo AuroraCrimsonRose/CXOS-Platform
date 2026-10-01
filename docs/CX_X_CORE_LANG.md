@@ -734,15 +734,35 @@ manual tags is the point where hand-written X stops scaling.
 front-end. The result runs on CXK. From then on the C# implementation is a
 bootstrap artifact, kept only to rebuild from scratch.
 
-*In progress, in `os/xc`.* Built one stage at a time, each held to the C#
-compiler by a differential test before the next begins:
+*Done, in `os/xc`.* Built one stage at a time, each held to the C# compiler by
+a differential test before the next began:
 
 | | X | held to C# by | status |
 |---|---|---|---|
 | lexer | `xc/lex.xfxn` | `tests/xc/lexdiff.py` in CX_DEVKIT: every X source, plus thousands of mutated ones, token for token | **done** |
 | parser | `xc/parse.xfxn` | `tests/xc/parsediff.py`: every X source, plus thousands of broken ones, node for node and error for error | **done** |
 | type checker | `xc/sema.xfxn`, `xc/front.xfxn` | `tests/xc/semadiff.py`: whole programs - prelude, imports and all - every diagnostic in order and every expression's type | **done** |
-| code generator | | the assembly, line for line | next |
+| code generator | `xc/emit.xfxn`, `xc/xc.xfxn` | `tests/xc/asmdiff.py`: whole programs, the assembly character for character - and `tests/xc/selfhost.py` | **done** |
+
+**The compiler compiles itself.** `xc` takes an X program to the assembly
+`cxk compile` writes for it, exactly. `tests/xc/selfhost.py` is the classic
+bootstrap check: the C# compiler builds xc; that xc builds xc; that xc builds
+xc again - and all three assemblies are identical, 67,000 lines of them. The
+compiler that X built then compiles every program in `tests/lang/run`, and
+each runs correctly. On CXK, in `/Shared/Source` - where the build stages xc's
+whole source, the CXK platform file as `xc_sys.xfxn` -
+
+    run +disk xc --prelude prelude.xfxn xc.xfxn
+
+writes `xc.s`, 1,258,932 bytes with the same hash as on the build machine: the
+X compiler, compiled on the system it is written for, by itself. Assembling and
+linking are still the cross toolchain's; that is stage 5.
+
+Fitting in a CXK process took work. Its nodes now live in chunks that never
+move - one doubling array left every smaller copy behind in a heap that does
+not give memory back - and xc writes its assembly as it goes rather than
+holding it, which together took a self-compile from 15 MB of heap to under 8,
+inside the 16 MB a process gets.
 
 **Two platforms, one compiler.** The same sources run on CXK and on the Linux
 host it is developed on. A platform file supplies what differs - the entry
@@ -780,7 +800,11 @@ sema.xfxn` in `/Shared/Source` type checks the type checker - 471
 declarations, no errors, the same hash as the host.
 
 Porting it meant reading the C# compiler more closely than anything had, and
-that found real bugs, all fixed in both: `~` was not folded (`const M: u32 =
+that found real bugs, all fixed in both. The code generator added two more: a
+type too large to count - `let a: [0x7FFFFFFF]u32;` - wrapped the frame size
+negative, so the function reserved no stack at all; and a struct holding itself
+by value crashed the compiler sizing it. Both are now type errors (nothing over
+1 GB; nothing with no size). Before those, the type checker's: `~` was not folded (`const M: u32 =
 ~0;` was 0); a constant's value was not cut to its type when loaded; a 64 or
 128-bit constant crashed any program that read it; a constant defined through
 itself and a sum type containing itself crashed the compiler; locals were kept

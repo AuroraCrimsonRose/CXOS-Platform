@@ -23,40 +23,7 @@
 
 import "xc_sys.xfxn";
 import "front.xfxn";
-
-global hexdig: *u8 = "0123456789abcdef";
-
-fn put_escaped(b: *buf, s: *u8, n: u32, quote: bool) -> void {
-    if (quote) { buf_push(b, '"'); }
-    let i: u32 = 0;
-    while (i < n) {
-        let c: u8 = s[i];
-        if (c < 0x20 || c == 0x7F || c == '\\' || (quote && c == '"')) {
-            buf_str(b, "\\x");
-            buf_push(b, hexdig[(c >> 4) as u32]);
-            buf_push(b, hexdig[(c & 15) as u32]);
-        } else {
-            buf_push(b, c);
-        }
-        i += 1;
-    }
-    if (quote) { buf_push(b, '"'); }
-}
-
-fn buf_u128(b: *buf, v: u128) -> bool {
-    let digits: [40]u8;
-    let n: u32 = 0;
-    let x: u128 = v;
-    while (true) {
-        digits[n] = '0' + (x % 10) as u8;
-        n += 1;
-        x /= 10;
-        if (x == 0) { break; }
-    }
-    if (!buf_reserve(b, n)) { return false; }
-    while (n > 0) { n -= 1; b.data[b.len] = digits[n]; b.len += 1; }
-    return true;
-}
+import "dumputil.xfxn";
 
 struct dumper { f: *front, out: *buf }
 
@@ -207,84 +174,27 @@ fn decl(d: *dumper, n: u32) -> void {
 }
 
 fn dump(f: *front, out: *buf) -> void {
-    let i: u32 = 0;
-    while (i < dg_count(&f.dg)) {
-        let g: *diag = dg_at(&f.dg, i);
-        buf_str(out, "error ");
-        let sf: *srcfile = file_at(f, g.file);
-        buf_append(out, &f.strs.data[sf.name], sf.nlen);
-        buf_push(out, ':');
-        buf_u32(out, g.line);
-        buf_push(out, ':');
-        buf_u32(out, g.col);
-        buf_push(out, ' ');
-        put_escaped(out, &f.dg.msgs.data[g.at], g.len, false);
-        buf_push(out, '\n');
-        i += 1;
-    }
+    dump_diags(f, out);
     if (f.checked) { buf_str(out, "checked yes\n"); } else { buf_str(out, "checked no\n"); }
     if (!f.checked) { return; }
     let dm: dumper = dumper { f: f, out: out };
-    i = 0;
+    let i: u32 = 0;
     while (i < f.decls.len) { decl(&dm, f.decls.items[i]); i += 1; }
 }
 
-fn fnv1a(p: *u8, n: u32) -> u32 {
-    let h: u32 = 0x811C9DC5;
-    let i: u32 = 0;
-    while (i < n) { h ^= p[i] as u32; h *= 0x01000193; i += 1; }
-    return h;
-}
-
-fn buf_hex32(b: *buf, v: u32) -> void {
-    let s: i32 = 28;
-    while (s >= 0) { buf_push(b, hexdig[(v >> s as u32) & 15]); s -= 4; }
-}
-
-fn is_arg(a: *u8, s: *u8) -> bool {
-    let i: u32 = 0;
-    while (s[i] != 0) { if (a[i] != s[i]) { return false; } i += 1; }
-    return a[i] == 0;
-}
-
 fn xc_main() -> i32 {
-    let sum: bool = false;
-    let prelude: buf = buf_new();
-    let have_prelude: bool = false;
-    let incs: list = list_new();      // argument indices
-    let std: u32 = 0;
-    let first: u32 = 0;
-    let i: u32 = 1;
-    while (i < xc_argc()) {
-        let a: *u8 = xc_arg(i);
-        if (is_arg(a, "-s")) { sum = true; }
-        else if (is_arg(a, "--no-prelude")) { }
-        else if (is_arg(a, "--prelude") && i + 1 < xc_argc()) {
-            i += 1;
-            if (!read_file(xc_arg(i), &prelude)) { err_str("semadump: cannot read the prelude\n"); return 1; }
-            have_prelude = true;
-        }
-        else if (is_arg(a, "-I") && i + 1 < xc_argc()) { i += 1; list_push(&incs, i); }
-        else if (is_arg(a, "--std") && i + 1 < xc_argc()) { i += 1; std = i; }
-        else { first = i; break; }
-        i += 1;
-    }
-    if (first == 0) { return 0; }
-
+    let o: opts;
+    if (!parse_opts(&o)) { return 1; }
+    if (o.first == 0) { return 0; }
     let out: buf = buf_new();
-    i = first;
+    let i: u32 = o.first;
     while (i < xc_argc()) {
         let path: *u8 = xc_arg(i);
         let f: front;
-        front_init(&f);
-        let j: u32 = 0;
-        while (j < incs.len) { front_include(&f, xc_arg(incs.items[j])); j += 1; }
-        if (std != 0) { front_std(&f, xc_arg(std)); }
-        if (have_prelude) { front_prelude(&f, prelude.data, prelude.len); }
-        if (!front_analyze(&f, path)) { err_str("semadump: out of memory, or a file could not be read\n"); return 2; }
+        if (!analyze_with(&o, &f, path)) { err_str("semadump: out of memory, or a file could not be read\n"); return 2; }
         let d: buf = buf_new();
         dump(&f, &d);
-        if (sum) {
+        if (o.sum) {
             buf_str(&out, path);
             buf_str(&out, ": ");
             buf_u32(&out, dg_count(&f.dg));
