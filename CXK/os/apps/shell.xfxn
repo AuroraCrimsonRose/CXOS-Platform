@@ -19,6 +19,7 @@ import "net.xfxn";
 import "file.xfxn";
 import "edit.xfxn";
 import "heap.xfxn";
+import "buf.xfxn";
 type cmd_fn = fn(*u8) -> void;      // a command receives its argument text
 
 const MAX_CMDS: u32 = 32;
@@ -154,6 +155,21 @@ fn cmd_heap(arg: *u8) -> void {
     free(c);
     if (heap_used() != after) { puts("reuse      GREW INSTEAD OF REUSING\n"); return; }
     puts("reuse      freed space served the next request"); newline();
+
+    // A growable buffer on top of it: "1 2 3 ... 2000" is about 9 KB, built a
+    // byte at a time from a 16-byte start, so it reallocates repeatedly.
+    let s: buf = buf_new();
+    let n: u32 = 1;
+    while (n <= 2000) {
+        if (!buf_u32(&s, n) || !buf_push(&s, ' ')) { puts("buf        GROWTH REFUSED\n"); buf_free(&s); return; }
+        n += 1;
+    }
+    let t: *u8 = buf_cstr(&s);
+    if (s.len != 8893 || t[0] != '1' || t[s.len - 2] != '0' || t[s.len] != 0) {
+        puts("buf        WRONG CONTENTS\n"); buf_free(&s); return;
+    }
+    puts("buf        "); print_u32(s.len); puts(" bytes built by growing, contents checked"); newline();
+    buf_free(&s);
 }
 
 // fixed.xfxn

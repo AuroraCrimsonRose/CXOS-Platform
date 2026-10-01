@@ -1,0 +1,194 @@
+// std/buf.xfxn - growable byte buffers, and growable lists of 32-bit items.
+// Aurora Tejeda / CATX SYSTEMS LLC
+//
+//   import "buf.xfxn";
+//
+//   let b: buf = buf_new();
+//   buf_str(&b, "x = ");
+//   buf_u32(&b, 42);
+//   buf_push(&b, '\n');
+//   console_write(buf_cstr(&b));
+//   buf_free(&b);
+//
+// What a compiler is made of, besides its types: a token stream, an output
+// buffer, a list of nodes. Before this, every such thing in X was a fixed array
+// sized for the worst case anyone imagined - which is how a program ends up
+// truncating its input without saying so, or reserving a megabyte for a
+// five-line file.
+//
+// A `buf` holds bytes; a `list` holds u32s, which is also how it holds
+// pointers (`p as u32`, and `list_get(...) as *T` to read one back). Both grow
+// by doubling, so pushing n items costs O(n) in total.
+//
+// EVERY OPERATION THAT CAN GROW RETURNS bool. False means the allocator said
+// no - the process is at its memory quota, or the machine is out - and the
+// buffer is unchanged: nothing was half-appended. A caller that ignores the
+// result gets a buffer that silently stopped growing, so don't.
+//
+// The struct is the handle; pass it by pointer. Copying a buf copies the
+// handle, not the bytes - two copies then share one allocation, and freeing
+// either frees it for both.
+
+import "heap.xfxn";
+import "mem.xfxn";
+
+const BUF_FIRST: u32 = 16;          // the first allocation, in items
+
+struct buf  { data: *u8,  len: u32, cap: u32 }
+struct list { items: *u32, len: u32, cap: u32 }
+
+// ---- shared growth rule ----
+
+// The capacity to grow to so that `need` fits: double until it does, starting
+// from BUF_FIRST. 0 if `need` cannot be represented - doubling past 2^31
+// would wrap, and a wrapped capacity is a buffer smaller than it claims.
+fn buf_grow_to(cap: u32, need: u32) -> u32 {
+    let c: u32 = cap;
+    if (c < BUF_FIRST) { c = BUF_FIRST; }
+    while (c < need) {
+        if (c >= 0x80000000) { return 0; }
+        c *= 2;
+    }
+    return c;
+}
+
+// ---- buf: bytes ----
+
+fn buf_new() -> buf { return buf { data: 0 as *u8, len: 0, cap: 0 }; }
+
+// Room for `extra` more bytes, plus one for the terminator buf_cstr writes,
+// so taking a C string never has to grow - and so never fails - after a
+// successful append.
+fn buf_reserve(b: *buf, extra: u32) -> bool {
+    if (extra > 0xFFFFFFFE - b.len) { return false; }   // len + extra + 1 would wrap
+    let need: u32 = b.len + extra + 1;
+    if (need <= b.cap) { return true; }
+    let c: u32 = buf_grow_to(b.cap, need);
+    if (c == 0) { return false; }
+    let p: u32 = realloc(b.data as u32, c);
+    if (p == 0) { return false; }                        // b.data is still valid
+    b.data = p as *u8;
+    b.cap = c;
+    return true;
+}
+
+fn buf_push(b: *buf, c: u8) -> bool {
+    if (!buf_reserve(b, 1)) { return false; }
+    b.data[b.len] = c;
+    b.len += 1;
+    return true;
+}
+
+fn buf_append(b: *buf, src: *u8, n: u32) -> bool {
+    if (n == 0) { return true; }
+    if (!buf_reserve(b, n)) { return false; }
+    memcpy(&b.data[b.len], src, n);
+    b.len += n;
+    return true;
+}
+
+// Append a NUL-terminated string, without its terminator.
+fn buf_str(b: *buf, s: *u8) -> bool {
+    let n: u32 = 0;
+    while (s[n] != 0) { n += 1; }
+    return buf_append(b, s, n);
+}
+
+// Append `v` in decimal.
+fn buf_u32(b: *buf, v: u32) -> bool {
+    let digits: [10]u8;
+    let n: u32 = 0;
+    let x: u32 = v;
+    while (true) {
+        digits[n] = '0' + (x % 10) as u8;
+        n += 1;
+        x /= 10;
+        if (x == 0) { break; }
+    }
+    if (!buf_reserve(b, n)) { return false; }
+    while (n > 0) { n -= 1; b.data[b.len] = digits[n]; b.len += 1; }
+    return true;
+}
+
+// The contents as a C string. The terminator sits after `len` and is not
+// counted, so appending afterwards overwrites it. Never fails after a
+// successful append (buf_reserve kept a byte for it); on an empty, never-grown
+// buffer it allocates, and returns "" if even that is refused.
+fn buf_cstr(b: *buf) -> *u8 {
+    if (b.cap == 0) {
+        if (!buf_reserve(b, 0)) { return ""; }
+    }
+    b.data[b.len] = 0;
+    return b.data;
+}
+
+fn buf_eq_str(b: *buf, s: *u8) -> bool {
+    let i: u32 = 0;
+    while (i < b.len) {
+        if (s[i] != b.data[i]) { return false; }   // also stops at s's NUL
+        i += 1;
+    }
+    return s[i] == 0;
+}
+
+// Empty it but keep the memory, for reuse.
+fn buf_clear(b: *buf) -> void { b.len = 0; }
+
+fn buf_free(b: *buf) -> void {
+    free(b.data as u32);
+    b.data = 0 as *u8;
+    b.len = 0;
+    b.cap = 0;
+}
+
+// ---- list: u32 items ----
+
+fn list_new() -> list { return list { items: 0 as *u32, len: 0, cap: 0 }; }
+
+fn list_reserve(l: *list, extra: u32) -> bool {
+    if (extra > 0x3FFFFFFF - l.len) { return false; }   // the byte count must fit too
+    let need: u32 = l.len + extra;
+    if (need <= l.cap) { return true; }
+    let c: u32 = buf_grow_to(l.cap, need);
+    if (c == 0 || c > 0x3FFFFFFF) { return false; }
+    let p: u32 = realloc(l.items as u32, c * 4);
+    if (p == 0) { return false; }
+    l.items = p as *u32;
+    l.cap = c;
+    return true;
+}
+
+fn list_push(l: *list, v: u32) -> bool {
+    if (!list_reserve(l, 1)) { return false; }
+    l.items[l.len] = v;
+    l.len += 1;
+    return true;
+}
+
+// Item `i`. Out of range is 0 - check `l.len` first when 0 is a real value.
+fn list_get(l: *list, i: u32) -> u32 {
+    if (i >= l.len) { return 0; }
+    return l.items[i];
+}
+
+fn list_set(l: *list, i: u32, v: u32) -> bool {
+    if (i >= l.len) { return false; }
+    l.items[i] = v;
+    return true;
+}
+
+// Remove and return the last item; 0 when empty.
+fn list_pop(l: *list) -> u32 {
+    if (l.len == 0) { return 0; }
+    l.len -= 1;
+    return l.items[l.len];
+}
+
+fn list_clear(l: *list) -> void { l.len = 0; }
+
+fn list_free(l: *list) -> void {
+    free(l.items as u32);
+    l.items = 0 as *u32;
+    l.len = 0;
+    l.cap = 0;
+}

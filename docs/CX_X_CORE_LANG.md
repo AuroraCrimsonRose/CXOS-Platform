@@ -50,25 +50,21 @@ a compiler is a specific kind of program:
 
 | A self-hosting compiler needs | v0.2 status |
 |-------------------------------|-------------|
-| Dynamic allocation | **missing** — no allocator; needs `sbrk`/`map` (ABI §7.8) or an arena in X |
-| Growable strings & buffers | **missing** — fixed arrays only |
-| Tagged unions / sum types for AST nodes | **missing** — would be structs + a manual tag today |
-| `switch` on a tag | **missing** — `if`/`else` chains work but scale badly |
+| Dynamic allocation | works — `SYS_MEM_OP` and `std/heap.xfxn` |
+| Growable strings & buffers | works — `std/buf.xfxn` (`buf` of bytes, `list` of u32s) |
+| Tagged unions / sum types for AST nodes | works — sum types (§2.8) |
+| `switch` on a tag | works — exhaustive on enums and sum types (§2.8) |
+| Character literals, compound assignment, initializers | works (§2.6, §2.7, §4) |
 | Recursion over a tree | works (plain recursion) |
 | Multi-file source | works (`import`) |
 | Function pointers for dispatch tables | works |
 | File I/O | works (`SYS_FILE_OP`, `std/file.xfxn`) |
-| 64/128-bit integers | works, except variable shifts (§2.1) |
+| 64/128-bit integers | works, including variable shifts, and passed and returned by value (§2.1, §2.5) |
+| Structs by value | works — passed and returned by value, C-compatible (§2.5) |
 | Floats | missing; not required for a compiler |
-| Dynamic allocation | **missing** — no `SYS_MAP`/`SBRK`, no allocator |
 
-The honest read: **the blockers are allocation, strings, and sum types** — not
-syntax sugar. A staged route is in §10.
-
-Allocation is now the single largest one, and it blocks more than self-hosting:
-X Runtime's collector and X Hybrid's managed references both need a heap, and there is none.
-`GRANT_MEM` exists and nothing honours it — ABI §7.8 is still *specified,
-unimplemented*.
+The honest read: **stages 1–3 of the route in §10 are done.** What remains is
+stage 4 — writing the compiler in X — and stage 5, the assembler and linker.
 
 ---
 
@@ -99,10 +95,11 @@ unimplemented*.
 | Void     | `void` (return type only) |
 | Aggregate| `struct` (named, by-value or via pointer) |
 | Array    | `[N]T` (fixed size) |
+| Enum     | `enum` — its own integer type, or a **sum type** whose variants carry fields (§2.8) |
 
-No floats. Pointer arithmetic is explicit and scaled by `sizeof(T)`. No implicit
-conversions except literal→sized-int where it fits; everything else needs a cast
-`as`.
+No floats. Pointer arithmetic is explicit and scaled by `sizeof(T)`. Integer
+conversions follow §2.9: a constant goes wherever its value fits, any other
+value only where no value can change, and everything else needs `as`.
 
 ### 2.1 Wide integers (64 and 128-bit)
 
@@ -111,9 +108,18 @@ A value wider than a register is represented by its **address**, exactly as a
 type list can grow without the backend changing: a width is a row in
 `PrimWidth.Bytes`.
 
-**Implemented:** `+ - * / % & | ^`, all six comparisons, casts between widths
-(sign- or zero-filling as the source type requires), and unary `-` and `~`.
-Shifts take a **constant** amount.
+**Implemented:** `+ - * / % & | ^ << >>`, all six comparisons, casts between
+widths (sign- or zero-filling as the source type requires), unary `-` and `~`,
+and passing and returning wide values by value (§2.5).
+
+**Shifts.** A constant amount must be inside the width — `x << 64` on a `u64`
+is a compile error. A variable amount is taken **modulo the width**, which is
+what x86 already does for 32-bit shifts, so the rule is the same at every width.
+The variable shift is a branch-free barrel shifter: one stage per bit of the
+amount (six for 64 bits, seven for 128), each a constant shift and a masked
+select, so it runs the same instructions whatever the amount is and does not
+leak it through timing. A narrow value may be shifted by a wide amount; only
+the amount's low word counts.
 
 `/` and `%` are one routine: a division produces the quotient and the remainder
 together, and computing `a / b` and `a % b` separately would run the whole thing
@@ -136,13 +142,17 @@ same mistake.
 > differ in length. Do not divide secret values. Same caveat as the wide compare.
 
 **Diagnosed, not emitted** — a wrong answer here is worse than a build failure,
-so each of these is a compile error rather than silently truncated code:
+so each of these is a compile error rather than silently wrong code:
 
 | | why |
 |---|---|
-| variable shifts | needs a loop, and a loop whose trip count depends on the operand is a timing signal |
-| returning a wide value | the value is an address, and it would be the address of a frame about to be torn down. Pass a pointer to the destination instead |
-| a constant expression at a width its operands do not have | `let g: u128 = 1 << 100;` is a **32-bit** shift, because both operands are small literals and the declared type does not reach into the initializer. C has the same rule and answers it with a suffix (`1ULL`); X has no suffix, so the width has to come from a variable that already carries it: `let g: u128 = 1; g = g << 100;` |
+| narrowing a wide value without `as` | `let a: u32 = w;` with `w: u64` used to store `w`'s ADDRESS — in a `let`, an assignment, an argument and a return alike. Write `w as u32` to truncate on purpose |
+| a constant shift outside its width | `let g: u128 = 1 << 100;` is a **32-bit** shift — both operands are small literals, and the declared type does not reach into the initializer — and the CPU would have reduced it to `1 << 4`. Give the literal the width: `1u128 << 100` (§2.6) |
+
+**Widening is by the source's sign.** `let w: i64 = u;` with `u: u32 =
+0xFFFFFFFF` is 4294967295, and an `i32` −1 widened into a `u64` is all ones —
+C's rule, and what `as` always did. The implicit path used the *destination's*
+sign, and gave −1 and 0x00000000FFFFFFFF.
 
 **Mixed-width arithmetic takes the WIDER operand's type.** `0 - a` on a 64-bit
 `a` is a 64-bit subtraction, not a 32-bit one. This is worth stating because it
@@ -331,6 +341,138 @@ Code without attributes compiles to byte-identical output. It is here now becaus
 expensive to retrofit after, and because it is the foundation for drivers
 written in X (see `CX_ROADMAP.md` §5).
 
+### 2.5 Wide values and structs by value
+
+A 64 or 128-bit integer or a `struct` is passed and returned **by value**, with
+the i386 System V convention — what GCC does for C — so X calls C and C calls X
+with ordinary prototypes:
+
+| | how |
+|---|---|
+| argument | copied onto the stack, its size rounded up to 4 bytes |
+| 64-bit result | in `edx:eax` |
+| 128-bit or struct result | the caller passes a hidden pointer as the **first** argument; the callee writes the value through it, returns the pointer in `eax`, and pops it itself (`ret $4`) |
+
+The callee works on its own copy: changing a parameter never changes the
+caller's variable. A result is moved out before `defer`s run and before the
+frame is torn down, so `return x` returns `x` as it was. Each call site that
+receives one of these has its own slot in the caller's frame, sized to the
+type.
+
+Before this, all of it compiled and was wrong: a wide or struct argument pushed
+its **address** and the callee read the address's bytes as the value, and a
+struct result returned the address of a local in a frame that no longer existed.
+
+An **array** cannot be passed or returned by value — C cannot either, and
+copying a buffer at every call is not something to do by accident. It is a
+compile error that says to pass a pointer.
+
+### 2.6 Literals: suffixes and separators
+
+A suffix names a literal's type outright: `1u128`, `0xFFu8`, `5i64`, any of
+`u8 u16 u32 u64 u128 i8 i16 i32 i64 i128`. The value must fit — `256u8` is an
+error — except that a signed literal may reach one past its maximum when it is
+negated directly, so `-128i8` and the most negative `i128` can be written. An
+unsuffixed literal is typed as before, by the narrowest type that holds it.
+
+`_` separates digit groups anywhere after the first digit, as in X Data:
+`1_000_000`, `0xFFFF_0000`, `0x1_0000_0000u64`.
+
+A **character literal** is a number: `'a'` is 97. It takes the escapes a string
+does, plus `\xNN` for any byte, and must be one ASCII character — anything else
+is several bytes of UTF-8 and belongs in a string. It is typed `u8` but behaves
+as an unsuffixed constant, so it goes into any integer type it fits (§2.9). A
+lexer written in X is mostly comparisons against characters, and before this
+every one was a magic number.
+
+### 2.7 Initializers
+
+```
+let p: pt = pt { x: 1, y: 2 };                  // every field, any order
+let a: [4]u32 = [10, 20, 30, 40];               // exactly as many items as the type has
+global words: [2]kw = [kw { word: "if", id: 1 }, kw { word: "else", id: 2 }];
+global ops: [2]fn(u32) -> u32 = [twice, thrice];
+```
+
+A struct literal names **every** field — one left out is an error, not a silent
+zero, so the reader sees every value the struct starts with. An array literal is
+typed by what it initializes (a `let`, an assignment, a field, an argument, a
+return, a global), which fixes its element type and length. Literals nest.
+
+In a function a literal is built in a frame slot of its own and copied like any
+struct. In a **global** it is laid out as data at build time, so everything in
+it must be known then: constants, string literals and function names (their
+addresses) — which is exactly what keyword and dispatch tables are made of.
+
+Arrays now copy on assignment (`b = a;` copies the bytes, exactly — a `[3]u8` is
+three bytes). Before, an array assignment stored the source's **address** into
+the destination.
+
+### 2.8 Enums and sum types
+
+```
+enum color { red, green, blue }                // 0, 1, 2 - backed by u32
+enum op: u8 { add = 1, sub, mul = 10, neg }    // a backing type, and values
+enum node {                                    // a SUM type: variants carry fields
+    num { value: i64 },
+    bin { kind: op, left: *node, right: *node },
+    eof,
+}
+```
+
+A plain enum is **its own type**: `color.red` is a `color`, not an integer, and
+crossing between them takes `as` in either direction. Variants must fit the
+backing type (at most 32 bits) and must differ.
+
+A sum type is a 4-byte tag and room for its largest variant. A value is built
+with the variant's fields — `node.num { value: 5 }` — or by name when it has
+none — `node.eof` — and can be copied, passed and returned like any struct. Its
+fields are reached **only** through a `switch`, so they are never read under the
+wrong tag:
+
+```
+switch (*n) {
+    case node.num(x) { return x.value; }       // x points at the variant's fields
+    case node.bin(b) { return eval(b.left) + eval(b.right); }
+    case node.eof    { return 0; }
+}
+```
+
+`switch` works on an integer of up to 32 bits, a plain enum or a sum type:
+
+- labels are constants, or variants of the subject's enum; several per case
+  (`case 'a', 'e' { }`); each value at most once;
+- **no fallthrough**, and no `break` to leave a case — `break` and `continue`
+  belong to the enclosing loop, as in Rust;
+- the subject is evaluated **once**;
+- with no `else`, a switch on an enum or sum type must name **every** variant,
+  so adding a variant finds every switch that forgot it;
+- `case T.v(name)` binds `name` to a pointer to the variant's fields, inside the
+  subject itself — writes through it are seen.
+
+`==` on a struct or array is refused: a struct is its address, so it would have
+compared where two values are, not what they hold.
+
+### 2.9 Integer conversions
+
+The rule the spec always stated and the checker did not enforce — any integer
+went into any other and was cut down by the store, so `let a: u8 = n;` with
+`n = 300` kept 44:
+
+- a **constant** (a literal, a character, a constant expression) goes wherever
+  its value fits: `let c: u8 = 255;`, `let d: i8 = -128;` — unless it was
+  written with a suffix, which fixes its type;
+- any other value goes only where **no value can change**: an unsigned value
+  into a wider type, a signed one into a wider signed type;
+- everything else is an explicit `as`, which the error message names.
+
+In arithmetic a constant takes the other operand's type when it fits it, as in
+Rust: `x + 1` on a `u8` is a `u8`. Compound assignment narrows back, as in C:
+`b += 1` on a `u8` is fine. Any two integers may be compared.
+
+Auditing all of CXK's X code against this found one site: `return 0 - 1;` from
+a `u32` function — a sentinel, now written `0xFFFFFFFF`.
+
 ---
 
 ## 3. Declarations
@@ -376,8 +518,10 @@ type layer_draw_fn = fn(u32, u32, u32, u32, u32) -> void;   // function pointer 
   its address, a `fn(...) -> R` type holds one, and calling through a variable,
   parameter or struct field emits an indirect call. This is what the GUI's layer
   compositor dispatches through.
-- Functions use cdecl-compatible calling convention (args on stack or the agreed
-  register set), so X, asm, and the C bootstrap interoperate during the transition.
+- Functions use the i386 System V (cdecl) calling convention, including how
+  wide values and structs are passed and returned (§2.5), so X, assembly and C
+  call one another directly. `cxk compile --object` makes X linkable into a C
+  program; the kernel links its X Data reader that way.
 
 ---
 
@@ -387,8 +531,10 @@ type layer_draw_fn = fn(u32, u32, u32, u32, u32) -> void;   // function pointer 
 let x: i32 = expr;        // local; type optional if inferable from initializer
 let buf: [64]u8;          // declared, UNINITIALIZED (type required; not zeroed)
 x = expr;                 // assignment
+x += expr;                // and -= *= /= %= &= |= ^= <<= >>=
 if (cond) { } else { }
 while (cond) { }
+switch (x) { case 1, 2 { } else { } }   // §2.8
 break;  continue;         // innermost loop only; checked at type-check time
 return expr;              // or bare `return;`
 expr;                     // expression statement (e.g. a call)
@@ -399,7 +545,13 @@ expr;                     // expression statement (e.g. a call)
 every field you care about must be assigned before use. The type is required —
 there is nothing to infer from.
 
-Expressions: integer/bool/**string** literals, identifiers, calls `f(a, b)`,
+`x op= v` is `x = x op v` with `x` written once. The target is evaluated twice,
+so one containing a call is refused — the call would run twice. A local declared
+without a type (`let x = 5;`) takes its initializer's; until now such a local
+read as `void` wherever it was used.
+
+Expressions: integer/bool/**character**/**string** literals, struct and array
+literals (§2.7), identifiers, calls `f(a, b)`,
 member `s.field`, deref `*p`, address-of `&x`, index `a[i]`, `sizeof expr`, the
 arithmetic/comparison/logical operators, the **bitwise** operators `& | ^ ~` and
 **shifts** `<< >>`, and `expr as T` casts.
@@ -409,13 +561,16 @@ arithmetic/comparison/logical operators, the **bitwise** operators `& | ^ ~` and
 - `>>` is arithmetic on signed operands and logical on unsigned; `/` and `%` use
   signed or unsigned division according to the left operand's type. Type aliases
   are expanded before that decision.
-- Overflow is **defined** — wraps, two's complement. No UB; X is meant to be
-  predictable.
+- Overflow is **defined** — wraps, two's complement, **at the type's width**.
+  No UB; X is meant to be predictable. An 8 or 16-bit result is wrapped as it is
+  computed: `b + 1` on a `u8` of 255 is 0, and `(x as u8) == 44` for x = 300.
+  Before, both kept the full 32-bit register value until a store happened to
+  truncate it, so they were right in a variable and wrong in an expression.
 - A string literal has type `*u8` and points at pooled, NUL-terminated bytes, so
   it works both as a counted buffer and as a C-style string. Identical literals
   share storage. Escapes: `\n \t \r \0 \b \f \v \a \e \\ \" \'`.
-- `as` currently **reinterprets** and does not convert: narrowing casts do not
-  mask. This is a known rough edge, not a design position.
+- `as` is the one way to change an integer's type where the value might not
+  survive; it truncates or extends, as C does.
 
 ---
 
@@ -530,18 +685,19 @@ uninitialized `let`.
 - **Namespaces / visibility.** `import` merges into one flat namespace; there is
   no `pub`, no module-qualified names, and name collisions across libraries are a
   hard error.
-- `for`, `switch`, enums, unions.
+- `for` (a `while` does the job), untagged unions (a sum type is the safe one),
+  `is` to test a variant without a switch.
 - Floats and SIMD. (Fixed-point lives in `std/fixed.xfxn`; the kernel
-  initialises the FPU but no userspace code uses it. 64 and 128-bit integers
-  landed — see §2.1 — but `/`, `%` and variable shifts are still diagnosed
-  rather than emitted.)
-- Dynamic allocation of any kind.
+  initialises the FPU but no userspace code uses it.)
 - An explicit IR (only if optimization needs it).
 - **X Runtime**: runtime-as-executive-service (GC, dynamic dispatch via IPC) — a dialect
   lowering to X core + executive calls.
 - **X Hybrid**: C++-like hybrid (methods, generics) — a dialect desugaring to X core.
 
 ### Known rough edges (not features — defects to fix)
+- `as` between integers of different widths **truncates or extends** as C does;
+  nothing reports a value that does not survive. That is what `as` is for, but a
+  checked conversion (`try_as`, returning whether it fit) would be worth having.
 - `as` reinterprets rather than converts; narrowing does not mask.
 - `sizeof` accepts only expressions, not type names, and silently yields `4` when
   an operand's type is unknown rather than erroring.
@@ -565,6 +721,9 @@ is what lets the shell and GUI launch application files.
 **Stage 2 — memory.** `sbrk` or `map` (ABI §7.8) plus an allocator written in X.
 A compiler cannot work in fixed arrays. Useful on its own: every non-trivial app
 needs it.
+
+*Stages 1–3 are done* — file I/O and `exec_path`; `SYS_MEM_OP` and
+`std/heap.xfxn`; `std/buf.xfxn`, sum types and `switch`. Stage 4 is next.
 
 **Stage 3 — the data types a compiler is made of.** Growable byte buffers and
 strings in `std/`, then sum types with `switch` in the language. An AST is a tagged
