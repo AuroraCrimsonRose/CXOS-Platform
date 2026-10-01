@@ -123,7 +123,8 @@ struct parser {
     lx: *lexer,
     i: u32,             // the current token
     ntok: u32,
-    nodes: buf,         // node, node, ...; node 0 is no node
+    nodes: list,        // the addresses of the node chunks; node 0 is no node
+    nnodes: u32,
     lists: list,        // every node's children, list after list
     stk: list,          // the children of lists still being parsed
     text: buf,          // names and strings
@@ -135,12 +136,23 @@ struct parser {
 
 fn node_size() -> u32 { let n: node; return sizeof n; }
 
-fn node_at(p: *parser, i: u32) -> *node { return ((p.nodes.data as u32) + i * node_size()) as *node; }
+/* Nodes live in chunks of NODE_CHUNK that never move. One growing array, as
+   they were, doubled its way up and left every smaller copy behind in a heap
+   that does not give memory back - 8 MB to hold 3 MB of nodes, which is the
+   difference between the compiler fitting in a CXK process or not. */
+const NODE_CHUNK_SHIFT: u32 = 12;
+const NODE_CHUNK: u32 = 4096;
+
+fn node_at(p: *parser, i: u32) -> *node {
+    return (p.nodes.items[i >> NODE_CHUNK_SHIFT] + (i & (NODE_CHUNK - 1)) * node_size()) as *node;
+}
 fn list_at(p: *parser, start: u32, i: u32) -> u32 { return p.lists.items[start + i]; }
-fn node_count(p: *parser) -> u32 { return p.nodes.len / node_size(); }
+fn node_count(p: *parser) -> u32 { return p.nnodes; }
 
 fn parse_free(p: *parser) -> void {
-    buf_free(&p.nodes); list_free(&p.lists); list_free(&p.stk); buf_free(&p.text);
+    let i: u32 = 0;
+    while (i < p.nodes.len) { free(p.nodes.items[i]); i += 1; }
+    list_free(&p.nodes); list_free(&p.lists); list_free(&p.stk); buf_free(&p.text);
 }
 
 // ---- building the tree ----
@@ -148,11 +160,10 @@ fn parse_free(p: *parser) -> void {
 fn ps_node(p: *parser, kind: nk, line: u32, col: u32) -> u32 {
     let n: node = node { kind: kind, file: p.file, line: line, col: col, op: 0, a: 0, b: 0, c: 0, list: 0, count: 0,
                          attrs: 0, nattrs: 0, text: 0, tlen: 0, value: 0 };
-    let idx: u32 = p.nodes.len / node_size();
     // Out of memory: the caller writes into node 0, which is harmless, and
     // parse_file reports it at the end.
-    if (!buf_append(&p.nodes, (&n) as *u8, node_size())) { p.oom = true; return 0; }
-    return idx;
+    if (!ps_add_node(p, &n)) { p.oom = true; return 0; }
+    return p.nnodes - 1;
 }
 
 fn ps_push(p: *parser, n: u32) -> void { if (!list_push(&p.stk, n)) { p.oom = true; } }
@@ -261,7 +272,8 @@ fn ps_expect(p: *parser, k: tk, what: *u8) -> u32 {
 // ---- program ----
 
 fn parse_init(p: *parser, dg: *diags) -> void {
-    p.nodes = buf_new();
+    p.nodes = list_new();
+    p.nnodes = 0;
     p.lists = list_new();
     p.stk = list_new();
     p.text = buf_new();
@@ -271,7 +283,17 @@ fn parse_init(p: *parser, dg: *diags) -> void {
     p.oom = false;
     let none: node = node { kind: nk.none, file: 0, line: 0, col: 0, op: 0, a: 0, b: 0, c: 0, list: 0, count: 0,
                             attrs: 0, nattrs: 0, text: 0, tlen: 0, value: 0 };
-    if (!buf_append(&p.nodes, (&none) as *u8, node_size())) { p.oom = true; }
+    if (!ps_add_node(p, &none)) { p.oom = true; }
+}
+
+fn ps_add_node(p: *parser, n: *node) -> bool {
+    if ((p.nnodes & (NODE_CHUNK - 1)) == 0) {
+        let c: u32 = alloc(NODE_CHUNK * node_size());
+        if (c == 0 || !list_push(&p.nodes, c)) { return false; }
+    }
+    memcpy(node_at(p, p.nnodes) as *u8, n as *u8, node_size());
+    p.nnodes += 1;
+    return true;
 }
 
 // One file's tokens into the tree, as file `file`; returns its unit node, or

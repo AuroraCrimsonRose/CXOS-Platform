@@ -62,6 +62,7 @@ struct sema {
     t_u32: u32,
     t_bool: u32,
     t_void: u32,
+    expand_enums: bool, // set by the emitter: a plain enum is its backing integer
 }
 
 fn sym_size() -> u32 { let x: sym; return sizeof x; }
@@ -142,6 +143,14 @@ fn expand(s: *sema, t0: u32) -> u32 {
         if (a == SMAP_NONE || guard >= 16) { break; }
         guard += 1;
         t = a;
+    }
+    // to the emitter, a plain enum is what it is at run time: its backing integer
+    if (s.expand_enums && nd(s, t).kind == nk.t_named) {
+        let ed: u32 = map_get_node(s, &s.enums, t);
+        if (ed != SMAP_NONE && !enum_is_sum(s, ed)) {
+            if (nd(s, ed).a != 0) { return expand(s, nd(s, ed).a); }
+            return s.t_u32;
+        }
     }
     return t;
 }
@@ -341,6 +350,7 @@ fn sema_init(s: *sema, p: *parser, dg: *diags) -> void {
     s.t_bool = mk_prim(s, PRIM_BOOL);
     s.t_void = mk_prim(s, PRIM_VOID);
     s.cur_return = s.t_void;
+    s.expand_enums = false;
 }
 
 fn new_sym(s: *sema, name: u32, nlen: u32, kind: u32, ty: u32, decl: u32) -> u32 {
@@ -492,11 +502,16 @@ fn declare_top(s: *sema, d: u32) -> void {
 
 fn round4(n: u32) -> u32 { return (n + 3) & 0xFFFFFFFC; }
 
+// Sizes saturate at 0x7FFFFFFF rather than wrap, as the C# does; check_size
+// refuses anything that large.
+const SIZE_MAX: u32 = 0x7FFFFFFF;
+
 fn fields_size(s: *sema, list: u32, count: u32) -> u32 {
-    let o: u32 = 0;
+    let o: u64 = 0;
     let i: u32 = 0;
-    while (i < count) { o += round4(size_of(s, nd(s, list_at(s.p, list, i)).a)); i += 1; }
-    return o;
+    while (i < count) { o += ((size_of(s, nd(s, list_at(s.p, list, i)).a) as u64) + 3) & 0xFFFFFFFFFFFFFFFC; i += 1; }
+    if (o > (SIZE_MAX as u64)) { return SIZE_MAX; }
+    return o as u32;
 }
 
 fn size_of_named(s: *sema, t: u32) -> u32 {
@@ -513,7 +528,7 @@ fn size_of_named(s: *sema, t: u32) -> u32 {
         let v: u32 = variant_at(s, ed, i);
         if (nd(s, v).op == 1) {
             let o: u32 = fields_size(s, nd(s, v).list, nd(s, v).count);
-            if (o > max) { max = o; }
+            if (o > max) { max = o; if (max > SIZE_MAX - 4) { max = SIZE_MAX - 4; } }
         }
         i += 1;
     }
@@ -524,7 +539,11 @@ fn size_of(s: *sema, t0: u32) -> u32 {
     let t: u32 = expand(s, t0);
     let x: *node = nd(s, t);
     if (x.kind == nk.t_prim) { return prim_bytes(x.op); }
-    if (x.kind == nk.t_array) { return size_of(s, x.a) * (nd(s, t).value as u32); }
+    if (x.kind == nk.t_array) {
+        let r: u64 = (size_of(s, x.a) as u64) * ((nd(s, t).value as u32) as u64);
+        if (r > (SIZE_MAX as u64)) { return SIZE_MAX; }
+        return r as u32;
+    }
     if (x.kind == nk.t_named && (map_get_node(s, &s.structs, t) != SMAP_NONE || map_get_node(s, &s.enums, t) != SMAP_NONE)) {
         // met again while being sized: it holds itself, and has no size
         let i: u32 = 0;
@@ -692,6 +711,7 @@ fn resolve_decl(s: *sema, d: u32) -> void {
             while (i < nd(s, d).count) {
                 let pm: u32 = list_at(s.p, nd(s, d).list, i);
                 let sy: u32 = new_sym(s, nd(s, pm).text, nd(s, pm).tlen, SK_PARAM, nd(s, pm).a, 0);
+                st_set(&s.letsym, pm, sy + 1);   // a parameter's symbol, for its frame slot
                 if (!declare_local(s, sy)) { eb(s); es(s, "duplicate parameter '"); en(s, pm); es(s, "'"); ee(s, pm); }
                 i += 1;
             }
@@ -835,10 +855,29 @@ fn check_signature(s: *sema, f: u32) -> void {
         if (nd(s, expand(s, nd(s, pm).a)).kind == nk.t_array) {
             eb(s); es(s, "parameter '"); en(s, pm); es(s, "' is an array; pass a pointer to it (*T) instead"); ee(s, pm);
         }
+        check_size(s, nd(s, pm).a, pm);
         i += 1;
     }
     if (nd(s, expand(s, nd(s, f).a)).kind == nk.t_array) {
         eb(s); es(s, "'"); en(s, f); es(s, "' returns an array; return it through a pointer parameter instead"); ee(s, f);
+    }
+    check_size(s, nd(s, f).a, f);
+}
+
+/* A type written where it takes up room must have a size, and a sane one: a
+   struct holding itself by value has none, and nothing over 1 GB fits this
+   target - a frame summing a few of them would wrap. As CheckSize in C#. */
+const MAX_OBJECT: u32 = 0x40000000;
+
+fn check_size(s: *sema, t: u32, at: u32) -> void {
+    s.cycle = false;
+    let size: u32 = size_of(s, t);
+    if (s.cycle) {
+        eb(s); es(s, "'"); dg_bytes(s.dg, txt(s, s.cycle_at), s.cycle_len);
+        es(s, "' contains itself by value, so it has no size; use a pointer (*"); dg_bytes(s.dg, txt(s, s.cycle_at), s.cycle_len);
+        es(s, ")"); ee(s, at);
+    } else if (size > MAX_OBJECT) {
+        eb(s); et(s, t); es(s, " is larger than 1 GB, more than this 32-bit target can hold"); ee(s, at);
     }
 }
 
@@ -1002,8 +1041,11 @@ fn sema_check(s: *sema, decls: *list) -> void {
     i = 0;
     while (i < decls.len) {
         let d: u32 = decls.items[i];
-        if (nd(s, d).kind == nk.d_fn) { check_signature(s, d); }
-        else if (nd(s, d).kind == nk.d_enum) { check_enum(s, d); }
+        let k: nk = nd(s, d).kind;
+        if (k == nk.d_fn) { check_signature(s, d); }
+        else if (k == nk.d_enum) { check_enum(s, d); if (enum_is_sum(s, d)) { check_size(s, mk_named_of(s, d), d); } }
+        else if (k == nk.d_struct) { check_size(s, mk_named_of(s, d), d); }
+        else if (k == nk.d_global || k == nk.d_const) { check_size(s, nd(s, d).a, d); }
         i += 1;
     }
     i = 0;
@@ -1064,9 +1106,10 @@ fn check_stmt(s: *sema, st: u32) -> void {
             let init: u32 = x.b;
             if (init == 0) {
                 // `let x: T;` - declared, uninitialized
-                if (ty != 0) { bind_local_type(s, st, ty); }
+                if (ty != 0) { check_size(s, ty, st); bind_local_type(s, st, ty); }
                 return;
             }
+            if (ty != 0) { check_size(s, ty, st); }
             let it: u32 = 0;
             if (ty != 0) { it = check_init(s, init, ty); } else { it = check_expr(s, init); }
             if (ty != 0) {
@@ -1488,6 +1531,7 @@ fn check_expr(s: *sema, e: u32) -> u32 {
         case nk.e_cast {
             let from: u32 = check_expr(s, x.a);
             let target: u32 = nd(s, e).b;
+            check_size(s, target, e);
             let pf: *node = nd(s, expand(s, from));
             let pt: *node = nd(s, expand(s, target));
             if (pf.kind == nk.t_ptr && pt.kind == nk.t_ptr && pf.op != pt.op) {

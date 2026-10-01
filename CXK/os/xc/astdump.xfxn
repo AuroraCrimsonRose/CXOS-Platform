@@ -269,7 +269,7 @@ fn xc_main() -> i32 {
         if (sum) {
             buf_str(&out, path);
             buf_str(&out, ": ");
-            buf_u32(&out, p.nodes.len / node_size() - 1);
+            buf_u32(&out, node_count(&p) - 1);
             buf_str(&out, " nodes, ");
             buf_u32(&out, dg_count(&dg));
             buf_str(&out, " errors, fnv1a ");
