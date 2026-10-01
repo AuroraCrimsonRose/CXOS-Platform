@@ -486,8 +486,28 @@ fn run_candidate(dir: *u8, name: *u8, ext: u32) -> *u8 {
 // escape hatch for running something the search path does not cover, and it
 // keeps `run ./x` meaning the x in the working directory rather than whichever
 // x the search path happens to find first.
+// `+disk` and the like, before the program's name: authority to hand it on
+// top of the console. Granted only on request, never by default - the
+// capability model's whole point - and the kernel still refuses anything the
+// shell does not hold itself, since a spawn can only attenuate.
+fn run_grant(word: *u8, n: u32) -> u32 {
+    if (n == 4 && strneq(word, "disk", 4) != 0) { return GRANT_DISK; }
+    if (n == 3 && strneq(word, "net", 3) != 0) { return GRANT_NET; }
+    return 0;
+}
+
 fn cmd_run(arg: *u8) -> void {
-    if (arg[0] == 0) { puts("usage: run <path> [args...]\n"); return; }
+    let caps: u32 = GRANT_CONSOLE;
+    while (arg[0] == '+') {
+        let n: u32 = 0;
+        while (arg[1 + n] != 0 && arg[1 + n] != ' ') { n += 1; }
+        let g: u32 = run_grant(&arg[1], n);
+        if (g == 0) { puts("run: unknown grant (one of +disk, +net)\n"); return; }
+        caps |= g;
+        arg = &arg[1 + n];
+        while (arg[0] == ' ') { arg = &arg[1]; }
+    }
+    if (arg[0] == 0) { puts("usage: run [+disk] [+net] <path> [args...]\n"); return; }
 
     // The whole tail is packed at once, so the program's own name becomes
     // argv[0] exactly as the user typed it and the rest follow it. The packed
@@ -500,7 +520,7 @@ fn cmd_run(arg: *u8) -> void {
     memzero((&a) as *u8, sizeof a);
     a.name            = name;
     a.broker_endpoint = 0 - 1;
-    a.caps            = GRANT_CONSOLE;
+    a.caps            = caps;
     a.args            = &run_argbuf[0];
     a.args_len        = blob;
 
@@ -607,7 +627,7 @@ fn _start() -> void {
     register("append", cmd_append, "add text to the end of a file");
     register("stat",   cmd_stat,   "show an entry's metadata");
     register("edit",   cmd_edit,   "full-screen text editor");
-    register("run",    cmd_run,    "run a signed program (searches /System and /Shared)");
+    register("run",    cmd_run,    "run a signed program (searches /System and /Shared); +disk +net grant more");
     register("mkdir",  cmd_mkdir,  "create a directory");
     register("rm",     cmd_rm,     "delete a file or empty directory");
     register("mv",     cmd_mv,     "rename an entry");
