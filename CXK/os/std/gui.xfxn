@@ -175,7 +175,7 @@ global draw_order: [16]u32;
 fn layer_init() -> void { layer_count = 0; }
 
 fn layer_add(z: u32, x: u32, y: u32, w: u32, h: u32, draw: layer_draw_fn) -> u32 {
-    if (layer_count >= MAX_LAYERS) { return 0 - 1; }
+    if (layer_count >= MAX_LAYERS) { return 0xFFFFFFFF; }   // no room: an id no layer has
     let id: u32 = layer_count;
     layers[id].z = z;  layers[id].x = x; layers[id].y = y;
     layers[id].w = w;  layers[id].h = h;
