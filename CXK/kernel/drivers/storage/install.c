@@ -134,12 +134,8 @@ static int populate_from_stage(uint8_t disk_id) {
     if (disk_read(disk_id, stage.start_lba, 1, first) != 0) return -1;
     if (first[0]!='X'||first[1]!='S'||first[2]!='T'||first[3]!='G') return -1;
 
-    /* Version 1 is the one sector; version 2 says how many the manifest takes. */
-    uint32_t msecs;
-    uint16_t version = rd16(first + 4);
-    if (version == XSTG_VERSION_1) msecs = 1;
-    else if (version == XSTG_VERSION_2) msecs = rd16(first + 8);
-    else return -1;
+    if (rd16(first + 4) != XSTG_VERSION) return -1;
+    uint32_t msecs = rd16(first + 8);
     if (msecs == 0 || msecs > XSTG_MAX_SECTORS) return -1;
 
     /* A manifest that claims more entries than it has room for is corrupt:
