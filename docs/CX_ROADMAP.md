@@ -46,10 +46,13 @@ more of the language than a kernel does — recursion, data structures, strings,
 dynamic allocation, error paths — so if X cannot build its own compiler it has
 no business building page tables.
 
-Open gaps, from `CX_X_CORE_LANG.md` §1–§2.1: variable shifts, returning a wide
-value, and constant expressions evaluated at a width their operands lack (no
-literal suffixes). Dynamic allocation, wide division and 128-bit literals are
-closed.
+Route stages 1–3 in `CX_X_CORE_LANG.md` §10 are done: file I/O, memory,
+growable buffers (`std/buf.xfxn`), sum types and `switch`, along with
+character literals, compound assignment, struct and array initializers, and
+integer conversions that need `as` wherever a value could change. The integer
+gaps are closed too: wide division, 128-bit literals, variable shifts, wide
+and struct values by value (C-compatible), literal suffixes. **Next is stage 4:
+the X compiler, written in X.**
 
 Alongside, the language features that are cheap now and expensive later:
 
