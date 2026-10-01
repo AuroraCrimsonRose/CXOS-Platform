@@ -19,6 +19,55 @@ static struct thread threads[MAX_THREADS];
 static int current = 0;       /* index of the running thread */
 static int initialized = 0;
 
+/* Interrupts off across a switch. yield() and thread_exit() used to run with
+   them on, and a timer tick landing after `current = next` but before
+   context_switch ran the preemption path with `current` already naming the NEW
+   thread while the CPU was still on the OLD thread's stack: it saved the old
+   stack pointer as the new thread's context. The old thread was often exiting,
+   so its stack was freed next, and the new thread later resumed on freed
+   memory. With heap stacks that read back the right bytes by luck and quietly
+   corrupted whatever reused them; with guarded stacks the pages are unmapped,
+   and it faults - which is how it was found. The preemption path already runs
+   with interrupts off (it is inside the IRQ handler); now the other two do.
+
+   Saved and restored rather than cli/sti: the flags context_switch pushes are
+   the ones a thread resumes with, and a caller that already had interrupts
+   off must get them back off. */
+static inline uint32_t irq_save(void) {
+    uint32_t f;
+    __asm__ volatile ("pushf; pop %0; cli" : "=r"(f) : : "memory");
+    return f;
+}
+static inline void irq_restore(uint32_t f) {
+    if (f & 0x200) __asm__ volatile ("sti" : : : "memory");
+}
+
+static uint32_t thread_limit = THREAD_LIMIT_DEFAULT;
+static uint32_t stack_bytes  = THREAD_STACK_DEFAULT;
+
+/* Slots in use, EXITED ones included: an exited thread still holds its stacks
+   until the reaper runs. Counting them keeps the limit honest, and because a
+   new thread takes the lowest free slot, it also keeps every pid below the
+   limit. */
+static uint32_t threads_allocated(void) {
+    uint32_t n = 0;
+    for (int i = 0; i < MAX_THREADS; i++) if (threads[i].state != THREAD_UNUSED) n++;
+    return n;
+}
+
+int sched_configure(uint32_t max_threads, uint32_t bytes) {
+    if (max_threads < THREAD_LIMIT_MIN || max_threads > THREAD_LIMIT_MAX) return -1;
+    if (bytes < THREAD_STACK_MIN || bytes > THREAD_STACK_MAX || bytes % 4096u) return -1;
+    if (initialized && threads_allocated() > max_threads) return -1;
+    thread_limit = max_threads;
+    stack_bytes  = bytes;
+    return 0;
+}
+
+uint32_t sched_thread_limit(void) { return thread_limit; }
+uint32_t sched_thread_count(void) { return threads_allocated(); }
+uint32_t sched_stack_bytes(void)  { return stack_bytes; }
+
 /* a freshly-created thread's stack is hand-crafted so the first switch INTO it
    lands at thread_launch, which calls the entry function. The layout must match
    what context_switch's restore sequence pops: [ebp][edi][esi][ebx][eflags]
@@ -52,8 +101,38 @@ void sched_init(void) {
     initialized = 1;
 }
 
+static int thread_create_in(const char *name, void (*entry)(void), int held);
+
 int thread_create(const char *name, void (*entry)(void)) {
+    return thread_create_in(name, entry, 0);
+}
+
+int thread_create_process(const char *name, void (*entry)(void)) {
+    int id = thread_create_in(name, entry, 1);
+    if (id < 0) return -1;
+    if (thread_alloc_kstack(id) != 0) { thread_discard(id); return -1; }
+    return id;
+}
+
+void thread_start(int id) {
+    if (id > 0 && id < MAX_THREADS && threads[id].state == THREAD_HELD)
+        threads[id].state = THREAD_READY;
+}
+
+/* Never ran, so nothing is standing on its stacks: free them here rather than
+   leave it to the reaper, which only collects EXITED threads. */
+void thread_discard(int id) {
+    if (id <= 0 || id >= MAX_THREADS || threads[id].state != THREAD_HELD) return;
+    if (threads[id].stack_base)  { kstack_free(threads[id].stack_base);  threads[id].stack_base = 0; }
+    if (threads[id].kstack_base) { kstack_free(threads[id].kstack_base); threads[id].kstack_base = 0; }
+    threads[id].kstack_top = 0;
+    handle_release_all(threads[id].handles, CXK_MAX_HANDLES);
+    threads[id].state = THREAD_UNUSED;
+}
+
+static int thread_create_in(const char *name, void (*entry)(void), int held) {
     if (!initialized) return -1;
+    if (threads_allocated() >= thread_limit) return -1;
     int slot = -1;
     for (int i = 1; i < MAX_THREADS; i++) {
         /* only reuse fully-reaped slots; an EXITED slot still has a stack
@@ -67,7 +146,7 @@ int thread_create(const char *name, void (*entry)(void)) {
     /* A guarded stack (memman/kstack.h): running off the bottom faults rather
        than overwriting the heap, which is what a kmalloc'd stack did. */
     uint32_t stack;
-    uint32_t stack_top = kstack_alloc(THREAD_STACK, slot, &stack);
+    uint32_t stack_top = kstack_alloc(stack_bytes, slot, &stack);
     if (!stack_top) return -1;
 
     /* build the initial stack frame (top-down). The new stack must look exactly
@@ -88,7 +167,7 @@ int thread_create(const char *name, void (*entry)(void)) {
 
     threads[slot].esp        = (uint32_t)sp;
     threads[slot].stack_base = stack;
-    threads[slot].state      = THREAD_READY;
+    threads[slot].state      = held ? THREAD_HELD : THREAD_READY;
     threads[slot].name       = name;
     threads[slot].is_user    = 0;
     threads[slot].exit_code  = 0;
@@ -202,9 +281,10 @@ void sched_wake_sleepers(void) {
 
 void yield(void) {
     if (!initialized) return;
+    uint32_t flags = irq_save();
     int prev = current;
     int next = next_runnable();
-    if (next == prev) return;     /* only one runnable thread */
+    if (next == prev) { irq_restore(flags); return; }   /* only one runnable thread */
 
     if (threads[prev].state == THREAD_RUNNING) threads[prev].state = THREAD_READY;
     threads[next].state = THREAD_RUNNING;
@@ -214,7 +294,9 @@ void yield(void) {
 
     context_switch(&threads[prev].esp, threads[next].esp);
     /* when we resume here later, we're `prev` again, now running */
-    sched_reap();   /* reclaim any threads that exited while we were away */
+    sched_reap();   /* reclaim any threads that exited while we were away -
+                       still with interrupts off, so two reapers never race */
+    irq_restore(flags);
 }
 
 /* ---- reaper: reclaim the stacks of exited threads ----
@@ -246,6 +328,7 @@ static void sched_reap(void) {
 }
 
 void thread_exit(void) {
+    irq_save();   /* never restored here: the next thread resumes with its own flags */
     threads[current].state = THREAD_EXITED;
     /* stack is freed later by sched_reap, running in another thread's context
        (we can't free the stack we're still standing on). */
@@ -371,7 +454,7 @@ int thread_alloc_kstack(int id) {
                                                      it runs ring-3 code + makes
                                                      syscalls while apps coexist. */
     uint32_t k;
-    uint32_t top = kstack_alloc(THREAD_STACK, id, &k);
+    uint32_t top = kstack_alloc(stack_bytes, id, &k);
     if (!top) return -1;
     threads[id].kstack_base = k;
     threads[id].kstack_top  = top - 16;   /* 16-byte slack at top */

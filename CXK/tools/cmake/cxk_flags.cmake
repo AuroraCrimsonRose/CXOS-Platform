@@ -25,4 +25,5 @@ set(CXK_FLAGS
                             #     overflows its kernel stack. The boot MUST end in a red panic naming
                             #     that thread - which proves the guard page and the double-fault task
                             #     work. A reset or a hang instead means they do not. Test builds only.
+                            # 2 = the same on thread 0's own stack; the panic must name "main".
 )

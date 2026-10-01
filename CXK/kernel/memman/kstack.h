@@ -30,6 +30,10 @@
 #define KSTACK_SLOT_SIZE    0x00010000u   /* 64 KB: stack at the top, guard below */
 #define KSTACK_SLOTS        (KSTACK_REGION_SIZE / KSTACK_SLOT_SIZE)   /* 256 */
 
+/* Thread 0 (kmain, then the self-tests and the idle loop): the size the boot
+   stack in kernel.asm always was, which kmain moves off early in boot. */
+#define KSTACK_MAIN_SIZE    16384u
+
 /* Reserve the region's page tables. Call once after paging_init and before any
    address space other than the kernel's exists, so the page directory entries
    are part of the shared kernel half from the start. */

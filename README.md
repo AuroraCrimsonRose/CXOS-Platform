@@ -34,6 +34,7 @@ Delivered:
 - 64 and 128-bit integers in X, including divide and modulo
 - Service descriptors in X Data, checked at build time as well as at boot
 - Guarded kernel stacks: an overflow is a panic naming the thread, handled on a double-fault stack of its own
+- Kernel configuration in X Data (`/System/Config/kernel.xkco`): stack size, thread limit and memory quota, read by X code linked into the kernel
 
 **Where it is going, and in what order, is in [`docs/CX_ROADMAP.md`](docs/CX_ROADMAP.md).** The next phase is self-hosting — X compiling X — which gates nearly everything else.
 
@@ -252,9 +253,10 @@ Requirements:
   ```
 
   Building CXK therefore needs the .NET SDK once, to publish it, until CX_DEVKIT ships
-  release builds. Republish whenever the DevKit changes something the build uses; the
+  release builds. Republish whenever the DevKit changes something the build uses. The
   checks the build runs through it (`check-abi`, `check-xdata`) warn and skip on an older
-  one rather than fail.
+  one; the kernel itself needs `cxk compile --object` (it links X code), and CMake stops
+  at configure time with this instruction if the `cxk` it finds is too old.
 
 Build:
 

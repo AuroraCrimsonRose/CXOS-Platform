@@ -27,6 +27,10 @@ static struct vm_proc procs[MAX_THREADS];
 
 static uint32_t page_up(uint32_t n) { return (n + PAGE_SIZE - 1u) & ~(PAGE_SIZE - 1u); }
 
+static uint32_t default_quota = VM_DEFAULT_QUOTA;
+uint32_t vm_default_quota(void) { return default_quota; }
+void     vm_set_default_quota(uint32_t bytes) { if (bytes) default_quota = bytes; }
+
 static int pid_ok(int pid) { return pid >= 0 && pid < MAX_THREADS; }
 
 /* Do [a, a+alen) and [b, b+blen) share a byte? Written with the ends compared
@@ -91,7 +95,7 @@ void vm_proc_init(int pid, uint32_t quota, int parent) {
     p->mapped = 0;
     p->live   = 1;
 
-    if (quota == 0 || quota > VM_DEFAULT_QUOTA) quota = VM_DEFAULT_QUOTA;
+    if (quota == 0 || quota > default_quota) quota = default_quota;
     if (pid_ok(parent) && procs[parent].live && quota > procs[parent].quota)
         quota = procs[parent].quota;
     p->quota = quota;
