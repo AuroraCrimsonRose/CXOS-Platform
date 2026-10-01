@@ -13,6 +13,13 @@ namespace CXEX.Lang.Parsing;
 /// </summary>
 public sealed class Parser
 {
+    private static PrimKind? SuffixKind(string? s) => s switch
+    {
+        "u8" => PrimKind.U8, "u16" => PrimKind.U16, "u32" => PrimKind.U32, "u64" => PrimKind.U64, "u128" => PrimKind.U128,
+        "i8" => PrimKind.I8, "i16" => PrimKind.I16, "i32" => PrimKind.I32, "i64" => PrimKind.I64, "i128" => PrimKind.I128,
+        _ => null,
+    };
+
     private readonly List<Token> _toks;
     private readonly DiagnosticBag _diag;
     private int _i;
@@ -533,7 +540,11 @@ public sealed class Parser
         var start = Cur.Span;
         switch (Cur.Kind)
         {
-            case TokenKind.IntLiteral: { var v = Advance().Value; return new IntLit(v) { Span = To(start) }; }
+            case TokenKind.IntLiteral:
+                {
+                    var tok = Advance();
+                    return new IntLit(tok.Value) { Suffix = SuffixKind(tok.Suffix), Span = To(start) };
+                }
             case TokenKind.StringLiteral: { var sv = Advance().Text; return new StrLit(sv) { Span = To(start) }; }
             case TokenKind.True: Advance(); return new BoolLit(true) { Span = To(start) };
             case TokenKind.False: Advance(); return new BoolLit(false) { Span = To(start) };
