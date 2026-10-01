@@ -1,11 +1,13 @@
 fn main() -> i32 {
     let u: u32 = 0xFFFFFFFF;
-    let w: i64 = u;                 // 4294967295, not -1
+    let w: i64 = u;                 // implicit: unsigned into a wider signed type keeps the value
     if (w != 4294967295) { return 1; }
     let s: i32 = 0 - 1;
-    let v: u64 = s;                 // C: 0xFFFFFFFFFFFFFFFF
+    let v: u64 = 0u64 + s;          // mixed arithmetic widens s by ITS sign, as C does
     if (v != 0xFFFFFFFFFFFFFFFF) { return 2; }
     let c: i64 = u as i64;          // the explicit cast, for comparison
     if (c != 4294967295) { return 3; }
+    let t: u64 = s as u64;          // signed into unsigned is a cast now, never implicit
+    if (t != 0xFFFFFFFFFFFFFFFF) { return 4; }
     return 0;
 }

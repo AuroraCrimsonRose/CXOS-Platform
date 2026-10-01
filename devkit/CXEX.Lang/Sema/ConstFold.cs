@@ -15,6 +15,21 @@ public sealed class ConstFold
     private readonly DiagnosticBag _diag;
     public ConstFold(SemaContext ctx, DiagnosticBag diag) { _ctx = ctx; _diag = diag; }
 
+    /* A variant's value: its own `= expr`, else one more than the variant
+       before it, starting from 0. A sum type's tag is simply its index. */
+    public bool TryEnumValue(EnumDecl ed, int index, out UInt128 value)
+    {
+        value = UInt128.Zero;
+        if (ed.IsSum) { value = (UInt128)index; return true; }
+        for (int i = 0; i <= index; i++)
+        {
+            var v = ed.Variants[i];
+            if (v.Value != null) { if (!TryEval(v.Value, out value)) return false; }
+            else if (i > 0) value += 1;
+        }
+        return true;
+    }
+
     public bool TryEval(Expr e, out UInt128 value)
     {
         value = UInt128.Zero;
@@ -31,6 +46,9 @@ public sealed class ConstFold
                 return false;
 
             case CastExpr c: return TryEval(c.Operand, out value); // v0.1: value-preserving
+
+            case MemberExpr m when _ctx.EnumRefs.TryGetValue(m, out var er):
+                return TryEnumValue(er.Enum, er.Index, out value);
 
             case UnaryExpr u when TryEval(u.Operand, out var v):
                 value = u.Op switch { UnOp.Neg => UInt128.Zero - v, UnOp.Not => v == 0 ? UInt128.One : UInt128.Zero, _ => v };

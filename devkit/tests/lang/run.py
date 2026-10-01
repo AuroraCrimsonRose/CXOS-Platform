@@ -10,6 +10,9 @@
 #             the compiler has stopped catching.
 #   interop/  x.xfxn compiled with --object and linked with c.c: C calls X and
 #             X calls C, with 64-bit values and structs by value.
+#   std/      CXK's std/buf.xfxn, run against heap.xfxn here - an allocator
+#             that needs no kernel and can be told to refuse. Needs a CXK
+#             checkout (CXK_ROOT, or ../CXK beside this repo); skipped without.
 #
 # Needs: a Release build of CXEX.CLI, i686-elf-gcc on PATH (the compiler
 # assembles with it) and a host gcc that can link -m32. Exit 0 = all passed.
@@ -27,6 +30,18 @@ EXPECT = {
     "shift_width.xfxn":  ["shift of 100 is outside 0..31", "shift of 40 is outside 0..31"],
     "suffix_range.xfxn": ["256 does not fit in u8", "128 does not fit in i8", "129 does not fit in i8"],
     "array_param.xfxn":  ["is an array; pass a pointer"],
+    "char_literal.xfxn": ["a character literal is one ASCII character or escape"],
+    "compound_call.xfxn": ["contains a call, which would run twice"],
+    "initializers.xfxn": ["expected a constant expression", "field 'y' of 'pt' is not given", "'pt' has no field 'z'",
+                          "field 'x' given twice", "[3]u32 needs 3 item(s), given 2", "an array literal needs a declared array type"],
+    "enums_switch.xfxn": ["'tiny.b' = 256 does not fit in u8", "'dup.y' has the same value as 'x'",
+                          "cannot initialize 'c' of type color from i32", "cannot initialize 'n' of type u32 from color",
+                          "switch does not handle color.blue", "'color.red' appears in two cases",
+                          "'node.num' carries fields", "'node.eof' carries no fields; write it without braces",
+                          "'node.eof' carries no fields to bind", "a sum type's fields are reached through a switch",
+                          "pt cannot be compared with ==", "this value appears in two cases"],
+    "conversions.xfxn":  ["u32 to u8 can change the value", "300 does not fit in u8",
+                          "u32 to i32 can change the value", "i8 to u32 can change the value", "compilation failed (4 error(s))"],
 }
 
 def compile_x(src, out, *extra):
@@ -68,6 +83,28 @@ else:
     rc = subprocess.run([exe]).returncode
     print(f"{'ok  ' if rc == 0 else 'FAIL'} interop (C <-> X)" + ("" if rc == 0 else f": check {rc} failed"))
     fails += rc != 0
+
+root = os.environ.get("CXK_ROOT") or os.path.join(REPO, "..", "CXK")
+std = next((d for d in (os.path.join(root, "CXK", "os", "std"), os.path.join(root, "os", "std"))
+            if os.path.exists(os.path.join(d, "buf.xfxn"))), None)
+if std is None:
+    print("skip std/: no CXK checkout with os/std/buf.xfxn (set CXK_ROOT)")
+else:
+    sd = os.path.join(W, "std"); os.makedirs(sd)
+    for f in ("buf.xfxn", "mem.xfxn"): shutil.copy(os.path.join(std, f), sd)
+    for f in ("heap.xfxn", "buf_test.xfxn"): shutil.copy(os.path.join(HERE, "std", f), sd)
+    base = os.path.join(sd, "buf_test")
+    r = compile_x(base + ".xfxn", base + ".elf", "--emit-asm")
+    if not os.path.exists(base + ".s"):
+        print(f"FAIL std/buf: did not compile\n{r.stdout}{r.stderr}"); fails += 1
+    else:
+        s = open(base + ".s").read().replace(".globl _start", ".globl main", 1)
+        open(base + ".s", "w").write(s)
+        subprocess.run(["gcc", "-m32", "-nostdlib", "-static", "-o", base + ".bin", base + ".s", STUB],
+                       check=True, capture_output=True)
+        rc = subprocess.run([base + ".bin"]).returncode
+        print(f"{'ok  ' if rc == 0 else 'FAIL'} std/buf.xfxn" + ("" if rc == 0 else f": check {rc} failed"))
+        fails += rc != 0
 
 shutil.rmtree(W, ignore_errors=True)
 print("all passed" if fails == 0 else f"{fails} failed")
