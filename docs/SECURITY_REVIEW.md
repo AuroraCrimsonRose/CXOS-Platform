@@ -5,6 +5,10 @@
 **Excluded:** development tooling, compiler/editor tooling, and other non-runtime components unless required to understand a security boundary  
 **Review date:** 2026-10-01
 
+> **Response & status:** every finding below has been checked against the code
+> and planned in [`HARDENING_PLAN.md`](HARDENING_PLAN.md), which tracks each to
+> done. This review is kept as written.
+
 ## Executive summary
 
 CXK has a substantial security architecture already in place: per-process address spaces, capability attenuation, guarded kernel stacks, signed executable verification, user-pointer validation, process teardown, and ring-3-oriented self-tests. These are good foundations for a capability-oriented protected kernel.

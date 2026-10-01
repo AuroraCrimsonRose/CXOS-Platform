@@ -744,8 +744,26 @@ a differential test before the next began:
 | type checker | `xc/sema.xfxn`, `xc/front.xfxn` | `tests/xc/semadiff.py`: whole programs - prelude, imports and all - every diagnostic in order and every expression's type | **done** |
 | code generator | `xc/emit.xfxn`, `xc/xc.xfxn` | `tests/xc/asmdiff.py`: whole programs, the assembly character for character - and `tests/xc/selfhost.py` | **done** |
 
+> **These suites are moving to xUnit.** Each Python script named here is being
+> ported to `CXEX.Tests/XC`, the DevKit's xUnit project, and deleted as it is
+> ported (`docs/HARDENING_PLAN.md`, decision D1). The checks themselves are
+> unchanged; `dotnet test` runs them, and no Python is needed.
+
+**Which compiler defines X.** Two implementations of one language raise the
+question of which is right when they disagree. The rule:
+
+- **While `xc` matches the C# compiler, the C# compiler is the oracle.** A
+  difference is a bug in `xc` unless it is shown to be a bug in C#, and then
+  both are fixed.
+- **An intentional change to X** updates this document, both compilers and the
+  differential corpus together. A behaviour nobody wrote down is not a language
+  rule, even if the C# compiler happens to have it.
+- **Once `xc` is authoritative** (stage 5 onward, when CXK builds itself), this
+  document and `xc`'s test corpus become normative, and the C# compiler is kept
+  in step with them only for as long as it is used to bootstrap.
+
 **The compiler compiles itself.** `xc` takes an X program to the assembly
-`cxk compile` writes for it, exactly. `tests/xc/selfhost.py` is the classic
+`cxk compile` writes for it, exactly. The self-hosting test (`tests/xc/selfhost.py`, moving to `CXEX.Tests/XC`) is the classic
 bootstrap check: the C# compiler builds xc; that xc builds xc; that xc builds
 xc again - and all three assemblies are identical, 67,000 lines of them. The
 compiler that X built then compiles every program in `tests/lang/run`, and
