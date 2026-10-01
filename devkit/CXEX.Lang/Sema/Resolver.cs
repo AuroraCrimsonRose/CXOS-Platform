@@ -75,7 +75,16 @@ public sealed class SemaContext
     }
 
     /* Size in bytes, the same rule as the emitter's - needed here only to lay
-       out sum types, whose size is the tag plus the largest payload. */
+       out sum types, whose size is the tag plus the largest payload.
+
+       A type that contains itself by value - directly, or through other
+       types - has no size. Sizing it recursed until the compiler died of a
+       stack overflow, so the error meant for it could never be reported. A
+       type met again while it is being sized now counts 0 and is remembered
+       in SizeCycle, for the caller to report. */
+    private readonly HashSet<string> _sizing = new();
+    public string? SizeCycle;
+
     public int SizeOf(TypeRef t0)
     {
         var t = Expand(t0);
@@ -83,20 +92,28 @@ public sealed class SemaContext
         {
             case PrimType p: return PrimWidth.Bytes(p.Kind);
             case ArrayType a: return SizeOf(a.Element) * a.Length;
-            case NamedType n when Structs.TryGetValue(n.Name, out var s):
-                { int o = 0; foreach (var f in s.Fields) o += (SizeOf(f.Type) + 3) & ~3; return o; }
-            case NamedType n when Enums.TryGetValue(n.Name, out var e):
-                if (!e.IsSum) return e.Backing != null ? SizeOf(e.Backing) : 4;
-                int max = 0;
-                foreach (var v in e.Variants)
-                    if (v.Fields != null)
-                    {
-                        int o = 0; foreach (var f in v.Fields) o += (SizeOf(f.Type) + 3) & ~3;
-                        if (o > max) max = o;
-                    }
-                return 4 + max;
+            case NamedType n when Structs.ContainsKey(n.Name) || Enums.ContainsKey(n.Name):
+                if (!_sizing.Add(n.Name)) { SizeCycle ??= n.Name; return 0; }
+                try { return SizeOfNamed(n.Name); }
+                finally { _sizing.Remove(n.Name); }
             default: return 4;
         }
+    }
+
+    private int SizeOfNamed(string name)
+    {
+        if (Structs.TryGetValue(name, out var s))
+        { int o = 0; foreach (var f in s.Fields) o += (SizeOf(f.Type) + 3) & ~3; return o; }
+        var e = Enums[name];
+        if (!e.IsSum) return e.Backing != null ? SizeOf(e.Backing) : 4;
+        int max = 0;
+        foreach (var v in e.Variants)
+            if (v.Fields != null)
+            {
+                int o = 0; foreach (var f in v.Fields) o += (SizeOf(f.Type) + 3) & ~3;
+                if (o > max) max = o;
+            }
+        return 4 + max;
     }
 }
 
@@ -186,7 +203,13 @@ public sealed class Resolver
         foreach (var ed in _ctx.Enums.Values)
         {
             if (!ed.IsSum) continue;
+            _ctx.SizeCycle = null;
             int body = _ctx.SizeOf(new NamedType(ed.Name)) - 4;
+            if (_ctx.SizeCycle != null)
+            {
+                _diag.Error($"'{ed.Name}' contains '{_ctx.SizeCycle}' by value inside itself, so it has no size; use a pointer (*{_ctx.SizeCycle})", ed.Span);
+                body = 0;
+            }
             _ctx.Structs[ed.Name] = new StructDecl(ed.Name, new List<Param>
             {
                 new("$tag", new PrimType(PrimKind.U32)),

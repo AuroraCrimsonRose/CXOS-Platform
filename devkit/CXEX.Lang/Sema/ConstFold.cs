@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 ﻿using CXEX.Lang.Ast;
 using CXEX.Lang.Diagnostics;
 
@@ -13,6 +14,7 @@ public sealed class ConstFold
 {
     private readonly SemaContext _ctx;
     private readonly DiagnosticBag _diag;
+    private readonly HashSet<ConstDecl> _evaluating = new();
     public ConstFold(SemaContext ctx, DiagnosticBag diag) { _ctx = ctx; _diag = diag; }
 
     /* A variant's value: its own `= expr`, else one more than the variant
@@ -41,7 +43,13 @@ public sealed class ConstFold
             case NameExpr n:
                 if (_ctx.Resolved.TryGetValue(n, out var sym) && sym.Kind == SymKind.Const &&
                     sym.Decl is ConstDecl cd)
-                    return TryEval(cd.Value, out value);
+                {
+                    /* `const a: u32 = b; const b: u32 = a;` has no value - and
+                       following it recursed until the compiler crashed. */
+                    if (!_evaluating.Add(cd)) { _diag.Error($"'{n.Name}' is defined in terms of itself", e.Span); return false; }
+                    try { return TryEval(cd.Value, out value); }
+                    finally { _evaluating.Remove(cd); }
+                }
                 _diag.Error($"'{(e as NameExpr)?.Name}' is not a constant", e.Span);
                 return false;
 
@@ -51,7 +59,10 @@ public sealed class ConstFold
                 return TryEnumValue(er.Enum, er.Index, out value);
 
             case UnaryExpr u when TryEval(u.Operand, out var v):
-                value = u.Op switch { UnOp.Neg => UInt128.Zero - v, UnOp.Not => v == 0 ? UInt128.One : UInt128.Zero, _ => v };
+                /* ~ was missing, and fell into the default that returns the
+                   operand: `const M: u32 = ~0;` folded to 0, not 0xFFFFFFFF. */
+                value = u.Op switch { UnOp.Neg => UInt128.Zero - v, UnOp.Not => v == 0 ? UInt128.One : UInt128.Zero,
+                                      UnOp.BitNot => ~v, _ => v };
                 if (u.Op is UnOp.Deref or UnOp.AddrOf) { _diag.Error("non-constant expression", e.Span); return false; }
                 return true;
 

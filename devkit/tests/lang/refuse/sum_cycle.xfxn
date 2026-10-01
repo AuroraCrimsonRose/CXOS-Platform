@@ -1,0 +1,4 @@
+// A sum type that holds itself by value, through another, has no size.
+enum tree { leaf, node { left: pair } }
+struct pair { a: tree, b: tree }
+fn main() -> i32 { return 0; }
