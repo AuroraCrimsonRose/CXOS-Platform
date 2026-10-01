@@ -72,14 +72,15 @@ public class ImageCommand : Command<ImageCommand.Settings>
 
                         var fileData = File.ReadAllBytes(parts[1]);
                         stagedFiles.Add(new StagedFile { Name = parts[0], Data = fileData });
-                        stagedBytes += fileData.Length;
+                        stagedBytes += (fileData.Length + 511) / 512 * 512;   // each file starts on a sector
                     }
                 }
 
                 int stage2Bytes = stage2?.Length ?? 0;
 
                 // 3. Math Out The Geometry (aligning partitions to 1MB)
-                var map = DiskGeometryEngine.CalculateLayout(settings.SizeMb, settings.BootMb, stage2Bytes, stagedBytes);
+                var map = DiskGeometryEngine.CalculateLayout(settings.SizeMb, settings.BootMb, stage2Bytes, stagedBytes,
+                                                             XBPTImageWriter.ManifestSectors(stagedFiles.Count));
 
                 // 4. Emit The Final Image
                 XBPTImageWriter.WriteImage(settings.OutputPath, map, stage1, stage2, kernel, stagedFiles);
