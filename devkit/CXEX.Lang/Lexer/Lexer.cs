@@ -58,11 +58,25 @@ public sealed class Lexer
     private char Cur => Eof ? '\0' : _src[_pos];
     private char Peek(int n = 1) => _pos + n < _src.Length ? _src[_pos + n] : '\0';
 
+    /* Never past the end: a string ending in a backslash at the end of the
+       file used to step beyond it, and the Substring that made its token threw.
+       Found by comparing this lexer with the one written in X. */
     private void Advance()
     {
-        if (Cur == '\n') { _line++; _col = 1; } else { _col++; }
+        if (Eof) return;
+        /* A column counts characters: the second half of a UTF-16 surrogate
+           pair is not one, so a character outside the BMP is one column, as it
+           is to a reader - and to the X lexer, which counts UTF-8 sequences. */
+        if (Cur == '\n') { _line++; _col = 1; } else if (!char.IsLowSurrogate(Cur)) { _col++; }
         _pos++;
     }
+
+    /* Identifiers, digits and suffixes are ASCII. char.IsLetter accepted any
+       Unicode letter, so the language depended on the host's Unicode tables -
+       and the lexer written in X, which reads bytes, could never agree with it. */
+    private static bool IsAsciiLetter(char c) => (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+    private static bool IsAsciiDigit(char c) => c >= '0' && c <= '9';
+    private static bool IsIdentChar(char c) => IsAsciiLetter(c) || IsAsciiDigit(c) || c == '_';
 
     private void SkipTrivia()
     {
@@ -106,9 +120,9 @@ public sealed class Lexer
         char c = Cur;
 
         // identifier / keyword
-        if (char.IsLetter(c) || c == '_')
+        if (IsAsciiLetter(c) || c == '_')
         {
-            while (!Eof && (char.IsLetterOrDigit(Cur) || Cur == '_')) Advance();
+            while (!Eof && IsIdentChar(Cur)) Advance();
             string text = _src.Substring(start, _pos - start);
             return Keywords.TryGetValue(text, out var kw)
                 ? Make(kw, start, line, col)
@@ -197,7 +211,7 @@ public sealed class Lexer
         }
 
         // integer literal (decimal or 0x hex)
-        if (char.IsDigit(c))
+        if (IsAsciiDigit(c))
         {
             /* `_` separates digit groups, as in X Data: 1_000_000, 0xFFFF_0000.
                A suffix names the literal's type outright - 1u128, 0xFFu8, 5i64 -
@@ -206,13 +220,13 @@ public sealed class Lexer
                one (and refused). */
             bool hex = c == '0' && (Peek() is 'x' or 'X');
             if (hex) { Advance(); Advance(); while (!Eof && (Uri.IsHexDigit(Cur) || Cur == '_')) Advance(); }
-            else { while (!Eof && (char.IsDigit(Cur) || Cur == '_')) Advance(); }
+            else { while (!Eof && (IsAsciiDigit(Cur) || Cur == '_')) Advance(); }
             int digitsEnd = _pos;
             string? suffix = null;
-            if (!Eof && (char.IsLetter(Cur) || Cur == '_'))
+            if (!Eof && (IsAsciiLetter(Cur) || Cur == '_'))
             {
                 int s0 = _pos;
-                while (!Eof && (char.IsLetterOrDigit(Cur) || Cur == '_')) Advance();
+                while (!Eof && IsIdentChar(Cur)) Advance();
                 suffix = _src.Substring(s0, _pos - s0);
                 if (Array.IndexOf(IntSuffixes, suffix) < 0)
                 {
@@ -269,6 +283,7 @@ public sealed class Lexer
             case '&': Advance(); if (Cur == '&') { Advance(); k = TokenKind.AndAnd; } else k = Eq2(TokenKind.AmpAssign, TokenKind.Amp); break;
             default:
                 Advance();
+                if (char.IsHighSurrogate(c) && !Eof && char.IsLowSurrogate(Cur)) Advance();   // the whole character
                 _diag.Error($"unexpected character '{c}'", SpanFrom(start, line, col));
                 k = TokenKind.Error; break;
         }
