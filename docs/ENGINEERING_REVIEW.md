@@ -5,6 +5,10 @@
 **Excluded:** security findings covered by `docs/SECURITY_REVIEW.md`  
 **Review date:** 2026-10-01
 
+> **Response & status:** every finding below has been checked against the code
+> and planned in [`HARDENING_PLAN.md`](HARDENING_PLAN.md), which tracks each to
+> done. This review is kept as written.
+
 ## Executive summary
 
 The current CXK codebase is moving beyond the "kernel experiment" stage into a system where subsystem contracts matter as much as individual implementations. Most of the observations below are not urgent defects; they are places where an explicit contract now will prevent future complexity as CXK gains more concurrency, storage, filesystem, compiler, and user-space functionality.

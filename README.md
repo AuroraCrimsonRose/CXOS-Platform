@@ -38,7 +38,9 @@ Delivered:
 - X: enums and sum types with exhaustive `switch`, struct and array initializers, character literals, compound assignment, values passed by value (C-compatible), and growable buffers in `std/buf.xfxn`
 - The X compiler written in X (`os/xc`): `xc` produces exactly what the C# compiler does, compiles itself to a fixed point, and compiles itself on CXK
 
-**Where it is going, and in what order, is in [`docs/CX_ROADMAP.md`](docs/CX_ROADMAP.md).** The next phase is self-hosting — X compiling X — which gates nearly everything else.
+**Where it is going, and in what order, is in [`docs/CX_ROADMAP.md`](docs/CX_ROADMAP.md).** The current phase is self-hosting, X compiling X, which gates nearly everything else. Its stage 4 is done; stage 5 (an assembler and linker in X) follows hardening Phase 1.
+
+**Security: under active hardening, not yet hardened.** The 2026-10-01 reviews ([`docs/SECURITY_REVIEW.md`](docs/SECURITY_REVIEW.md), [`docs/ENGINEERING_REVIEW.md`](docs/ENGINEERING_REVIEW.md)) found that the CXEX loader still trusts parts of a signed image's layout. Most seriously, it does not stop an image from mapping kernel addresses. Every finding has been checked against the code and planned in [`docs/HARDENING_PLAN.md`](docs/HARDENING_PLAN.md); closing the executable boundary is its Phase 1. Until then, do not treat signature verification as a complete defence against a malicious program.
 
 ---
 
@@ -237,6 +239,23 @@ The objective is a **self-sufficient system** — one that compiles its own soft
 
 ## Building
 
+> **Moving to `cxk` commands.** The `.bat` scripts below are being replaced by
+> cross-platform `cxk` commands (decision D2 in
+> [`docs/HARDENING_PLAN.md`](docs/HARDENING_PLAN.md)). Each script is removed
+> when its replacement lands:
+>
+> | Today | Replacement |
+> |---|---|
+> | `tools\build.bat [dev]` | `cxk os build [--dev]` (planned) |
+> | `tools\run_qemu.bat` | `cxk run dist/CXK_x86_32/images/cxk_disk.img` (works now; the script is out of date) |
+> | `tools\run_qemu_ahci.bat` | `cxk run` with machine options: q35, AHCI, e1000, packet capture (planned) |
+> | `tools\run_bochs.bat` | `cxk run -e bochs` (works now) |
+> | `boot\uefi\build.bat` | `cxk uefi build` (planned) |
+> | `boot\uefi\secureboot.bat` | `cxk secureboot keygen` / `varstore` / `sign` / `test` (work now) |
+>
+> When `cxk os build` lands, the MSVC Developer Command Prompt stops being a
+> requirement. Tests run in the DevKit with `dotnet test`; no Python is needed.
+
 Requirements:
 
 - **MSVC Developer Command Prompt** — `build.bat` configures CMake with `-G "NMake Makefiles"`, so `nmake` must be on PATH. Run the build from a Developer Command Prompt (or after `vcvarsall.bat`), not a plain shell.
@@ -289,10 +308,12 @@ kernel.**
 Run:
 
 ```bat
-tools\run_qemu.bat
+tools\cxk.exe run dist\CXK_x86_32\images\cxk_disk.img
 ```
 
-AHCI test:
+(`tools\run_qemu.bat` still passes options for the old two-image layout that `cxk run` no longer accepts, so it does not work.)
+
+AHCI + e1000 test, until `cxk run` has the machine options:
 
 ```bat
 tools\run_qemu_ahci.bat
@@ -312,6 +333,9 @@ tools\run_qemu_ahci.bat
 | `docs/CX_EXTENSION_NAMING.md` | The `X + Domain + Type` naming formula |
 | `docs/CX_FILE_STRUCTURE.md` | On-disk and in-repo layout |
 | `docs/V5_PORTING_MANIFEST.md` | The v5 port plan (complete — historical) |
+| `docs/SECURITY_REVIEW.md` | Security review, 2026-10-01 |
+| `docs/ENGINEERING_REVIEW.md` | Engineering review, 2026-10-01 |
+| `docs/HARDENING_PLAN.md` | The response to both reviews: decisions, status of each finding, phased checklist |
 
 ### Toolchain
 
@@ -321,9 +345,10 @@ is the host-side design document.
 
 > **Note for anyone changing `abi/cxk_abi.h`:** the X compiler carries a hand-maintained copy
 > of this ABI as an X prelude (`CXEX.Lang/Abi/AbiPrelude.cs` in CX_DEVKIT). Nothing generates
-> it and no test checks it, so **a syscall or ABI struct added here must be added there in the
-> same pass** or the toolchain will not be able to compile the userland. See CX_DEVKIT design
-> doc §5.2.
+> it, so **a syscall or ABI struct added here must be added there in the same pass** or the
+> toolchain will not be able to compile the userland. `tools\build.bat` runs `cxk check-abi`
+> before building (and `cxk os build` will), which reports drift; a `CXEX.Tests` unit test is planned to check it on every DevKit test run too.
+> See CX_DEVKIT design doc §5.2.
 
 ---
 
