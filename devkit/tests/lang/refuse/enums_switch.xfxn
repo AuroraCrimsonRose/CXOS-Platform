@@ -1,0 +1,20 @@
+enum color { red, green, blue }
+enum tiny: u8 { a = 255, b }
+enum dup { x = 1, y = 1 }
+enum node { num { value: u32 }, eof }
+struct pt { x: u32, y: u32 }
+fn main() -> i32 {
+    let c: color = 1;
+    let n: u32 = color.red;
+    switch (c) { case color.red { } case color.green { } }
+    switch (c) { case color.red, color.red { } else { } }
+    let k: node = node.num;
+    let e: node = node.eof { };
+    switch (k) { case node.eof(z) { } else { } }
+    let v: u32 = k.value;
+    let p: pt = pt { x: 1, y: 2 };
+    let q: pt = pt { x: 1, y: 2 };
+    if (p == q) { return 1; }
+    switch (n) { case 1 { } case 1 { } }
+    return 0;
+}

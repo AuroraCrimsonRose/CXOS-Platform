@@ -30,13 +30,143 @@ public sealed class TypeChecker
     {
         foreach (var d in unit.Decls) CheckAttrs(d);
         foreach (var d in unit.Decls)
+            if (d is FnDecl fd) CheckSignature(fd);
+            else if (d is EnumDecl ed) CheckEnum(ed);
+        foreach (var d in unit.Decls)
             switch (d)
             {
                 case FnDecl f when f.Body != null:
                     _curReturn = f.Return; CheckBlock(f.Body); break;
                 case ConstDecl c: _fold.TryEval(c.Value, out _); break;
-                case GlobalDecl g when g.Init != null: _fold.TryEval(g.Init, out _); break;
+                case GlobalDecl g when g.Init != null:
+                    {
+                        var it = CheckInit(g.Init, g.Type);
+                        if (!Convertible(g.Type, g.Init, it))
+                            _diag.Error($"cannot initialize global '{g.Name}' of type {Show(g.Type)} from {Show(it)}", g.Span);
+                        CheckStaticInit(g.Init, g.Type);
+                        break;
+                    }
             }
+    }
+
+    /* Wide values and structs pass and return BY VALUE, as in C. An array
+       does not: C cannot pass one either (a parameter declared as an array
+       is really a pointer), and copying a buffer of any size onto the stack
+       at every call is not something to do by accident. Say so, rather than
+       quietly picking one of the two meanings. */
+    private void CheckSignature(FnDecl f)
+    {
+        foreach (var p in f.Params)
+            if (_ctx.Expand(p.Type) is ArrayType)
+                _diag.Error($"parameter '{p.Name}' is an array; pass a pointer to it (*T) instead", p.Span);
+        if (_ctx.Expand(f.Return) is ArrayType)
+            _diag.Error($"'{f.Name}' returns an array; return it through a pointer parameter instead", f.Span);
+    }
+
+    private bool IsSum(TypeRef t) =>
+        _ctx.Expand(t) is NamedType n && _ctx.Enums.TryGetValue(n.Name, out var e) && e.IsSum;
+    private EnumDecl? EnumOf(TypeRef t) =>
+        _ctx.Expand(t) is NamedType n && _ctx.Enums.TryGetValue(n.Name, out var e) ? e : null;
+
+    /* A plain enum is an integer of its backing type (u32 unless given) whose
+       variants are constants that fit it and differ from one another. A sum
+       type's tag is the variant's index, so it takes neither. */
+    private void CheckEnum(EnumDecl ed)
+    {
+        if (ed.Variants.Count == 0) _diag.Error($"'{ed.Name}' has no variants", ed.Span);
+        if (ed.IsSum)
+        {
+            if (ed.Backing != null) _diag.Error($"'{ed.Name}' is a sum type; its tag has no backing type to choose", ed.Span);
+            foreach (var v in ed.Variants)
+            {
+                if (v.Value != null) _diag.Error($"a sum type's variants take no '= value' ('{v.Name}')", v.Span);
+                if (v.Fields != null)
+                    foreach (var f in v.Fields)
+                        if (_ctx.Expand(f.Type) is NamedType fn && fn.Name == ed.Name)
+                            _diag.Error($"'{ed.Name}.{v.Name}' contains '{ed.Name}' by value, which has no size; use a pointer (*{ed.Name})", f.Span);
+            }
+            return;
+        }
+        var backing = ed.Backing ?? U32;
+        if (_ctx.Expand(backing) is not PrimType bp || !IsInt(backing) || PrimWidth.Bytes(bp.Kind) > 4)
+        { _diag.Error($"an enum's backing type is an integer of at most 32 bits, not {Show(backing)}", ed.Span); return; }
+        int bits = PrimWidth.Bytes(bp.Kind) * 8;
+        bool sgn = PrimWidth.IsSigned(bp.Kind);
+        var seen = new Dictionary<UInt128, string>();
+        for (int i = 0; i < ed.Variants.Count; i++)
+        {
+            if (!_fold.TryEnumValue(ed, i, out var v)) continue;
+            var name = ed.Variants[i].Name;
+            /* in range for the backing type, reading the 128-bit fold as signed */
+            Int128 sv = (Int128)v;
+            Int128 lo = sgn ? -((Int128)1 << (bits - 1)) : 0;
+            Int128 hi = sgn ? ((Int128)1 << (bits - 1)) - 1 : ((Int128)1 << bits) - 1;
+            if (sv < lo || sv > hi) _diag.Error($"'{ed.Name}.{name}' = {sv} does not fit in {Show(backing)}", ed.Variants[i].Span);
+            if (seen.TryGetValue(v, out var other))
+                _diag.Error($"'{ed.Name}.{name}' has the same value as '{other}'", ed.Variants[i].Span);
+            else seen[v] = name;
+        }
+    }
+
+    /* switch: on an integer (up to 32 bits), a plain enum or a sum type.
+       Labels are constants or variants of the subject's enum, each at most
+       once. With no `else`, a switch on an enum or sum type must name every
+       variant - adding a variant then finds every switch that forgot it. */
+    private void CheckSwitch(SwitchStmt sw)
+    {
+        var st = CheckExpr(sw.Subject);
+        var en = EnumOf(st);
+        bool isInt = IsInt(st);
+        if (isInt && IntWidth(st) > 4)
+        { _diag.Error("switch on a 64 or 128-bit value is not supported; compare with if", sw.Subject.Span); isInt = false; }
+        if (!isInt && en == null)
+            _diag.Error($"cannot switch on {Show(st)}", sw.Subject.Span);
+
+        var seenInts = new HashSet<UInt128>();
+        var seenVariants = new HashSet<int>();
+        foreach (var c in sw.Cases)
+        {
+            if (c.Bind != null && c.Labels.Count != 1)
+                _diag.Error("a case that binds a variant's fields has exactly one label", c.Span);
+            foreach (var l in c.Labels)
+            {
+                if (en != null)
+                {
+                    if (l is not MemberExpr lm || !_ctx.EnumRefs.TryGetValue(lm, out var er) || er.Enum != en)
+                    { _diag.Error($"a case label here is a variant of '{en.Name}'", l.Span); continue; }
+                    Set(l, new NamedType(en.Name));
+                    if (!seenVariants.Add(er.Index))
+                        _diag.Error($"'{en.Name}.{en.Variants[er.Index].Name}' appears in two cases", l.Span);
+                    if (c.Bind != null)
+                    {
+                        var v = en.Variants[er.Index];
+                        if (!en.IsSum || v.Fields is not { Count: > 0 })
+                            _diag.Error($"'{en.Name}.{v.Name}' carries no fields to bind", l.Span);
+                        else if (c.BindLet != null)
+                            BindLocalType(c.BindLet, new PointerType(new NamedType(SemaContext.PayloadName(en.Name, v.Name))));
+                    }
+                }
+                else if (isInt)
+                {
+                    if (c.Bind != null) _diag.Error("only a sum type's variant can bind fields", l.Span);
+                    var lt = CheckExpr(l);
+                    if (!new ConstFold(_ctx, _diag).TryEval(l, out var lv)) continue;
+                    if (!IsInt(lt)) _diag.Error($"case label {Show(lt)} is not an integer", l.Span);
+                    if (!seenInts.Add(lv)) _diag.Error("this value appears in two cases", l.Span);
+                }
+            }
+            if (c.BindLet != null && !_localTypes.ContainsKey(c.BindLet)) BindLocalType(c.BindLet, Void);
+            CheckBlock(c.Body);
+        }
+        if (sw.Else != null) CheckBlock(sw.Else);
+        else if (en != null)
+        {
+            var missing = new List<string>();
+            for (int i = 0; i < en.Variants.Count; i++)
+                if (!seenVariants.Contains(i)) missing.Add($"{en.Name}.{en.Variants[i].Name}");
+            if (missing.Count > 0)
+                _diag.Error($"switch does not handle {string.Join(", ", missing)}; add the case(s), or an else", sw.Span);
+        }
     }
 
     // ---- attributes ----
@@ -170,7 +300,85 @@ public sealed class TypeChecker
 
     // assignable: ints interchange (v0.1); else exact; ptr<-ptr exact pointee
     private bool Assignable(TypeRef to, TypeRef from)
-        => (IsInt(to) && IsInt(from)) || Same(to, from);
+        => (IsInt(to) && IsInt(from) && !WideNarrowing(to, from)) || Same(to, from);
+
+    /* A 64 or 128-bit value going somewhere narrower, with no `as`. It used to
+       be allowed, and a wide value is its ADDRESS, so `let a: u32 = w;` stored
+       the address - in a let, an assignment, an argument and a return alike.
+       The spec has always said narrowing needs a cast; for these widths it now
+       does, because dropping the top of a 64-bit file offset without a word is
+       exactly the bug the wide types exist to prevent. */
+    private bool WideNarrowing(TypeRef to, TypeRef from) =>
+        IntWidth(from) > 4 && IntWidth(from) > IntWidth(to);
+
+    private string NarrowHint(TypeRef to, TypeRef from, Expr? e = null)
+    {
+        if (e != null && IsInt(to) && FreeConst(e, out var v)) return $"; {(Int128)v} does not fit in {Show(to)}";
+        return NarrowHintOf(to, from);
+    }
+    private string NarrowHintOf(TypeRef to, TypeRef from) =>
+        !IsInt(to) || !IsInt(from) ? ""
+        : WideNarrowing(to, from) ? $"; narrowing needs a cast: `as {Show(to)}`"
+        : $"; {Show(from)} to {Show(to)} can change the value, so it needs a cast: `as {Show(to)}`";
+
+    /* Can the value of `e` (of type `from`) go into a `to` without a cast?
+     *
+     * Between integers the spec's rule, which the checker did not enforce
+     * until now - any integer went into any other and was cut down by the
+     * store, so `let a: u8 = n;` with n = 300 quietly kept 44:
+     *   - a CONSTANT goes anywhere its value fits (5 into a u8, -1 into an
+     *     i8), unless it was written with a suffix, which fixes its type;
+     *   - anything else only where no value can change: an unsigned value
+     *     into a wider type, a signed one into a wider signed one.
+     * Everything else is a cast the reader can see. */
+    private bool Convertible(TypeRef to, Expr e, TypeRef from)
+    {
+        if (!IsInt(to) || !IsInt(from)) return Assignable(to, from);
+        if (FreeConst(e, out var v)) return Fits(v, to);
+        return ValuePreserving(to, from);
+    }
+
+    private bool ValuePreserving(TypeRef to, TypeRef from)
+    {
+        if (Same(to, from)) return true;
+        if (_ctx.Expand(to) is not PrimType tp || _ctx.Expand(from) is not PrimType fp) return false;
+        int wt = PrimWidth.Bytes(tp.Kind), wf = PrimWidth.Bytes(fp.Kind);
+        bool st = PrimWidth.IsSigned(tp.Kind), sf = PrimWidth.IsSigned(fp.Kind);
+        if (!sf) return st ? wt > wf : wt >= wf;
+        return st && wt >= wf;
+    }
+
+    /* A constant whose type is not fixed by a suffix: the value is what
+       matters, not the type its digits happened to get. A character literal
+       counts - 'a' is a number, not a declaration that it is a u8. */
+    private bool FreeConst(Expr e, out UInt128 value)
+    {
+        value = UInt128.Zero;
+        if (HasSuffix(e)) return false;
+        return new ConstFold(_ctx, new DiagnosticBag()).TryEval(e, out value);
+    }
+
+    private static bool HasSuffix(Expr e) => e switch
+    {
+        IntLit il => il.Suffix != null && !il.IsChar,
+        UnaryExpr u => HasSuffix(u.Operand),
+        BinaryExpr b => HasSuffix(b.Left) || HasSuffix(b.Right),
+        CastExpr => true,          // an explicit type: keep it
+        _ => false,
+    };
+
+    /* Does a folded constant fit `t`? The fold is 128-bit two's complement, so
+       read it as signed - except into a u128, where every pattern is a value. */
+    private bool Fits(UInt128 v, TypeRef t)
+    {
+        if (_ctx.Expand(t) is not PrimType p) return false;
+        int bits = PrimWidth.Bytes(p.Kind) * 8;
+        if (bits == 128) return true;
+        Int128 sv = (Int128)v;
+        if (PrimWidth.IsSigned(p.Kind))
+            return sv >= -((Int128)1 << (bits - 1)) && sv <= ((Int128)1 << (bits - 1)) - 1;
+        return sv >= 0 && sv <= ((Int128)1 << bits) - 1;
+    }
 
     private TypeRef Set(Expr e, TypeRef t) { _ctx.Types[e] = t; return t; }
 
@@ -180,12 +388,120 @@ public sealed class TypeChecker
         return t is NamedType n && _ctx.Structs.TryGetValue(n.Name, out var s) ? s : null;
     }
 
+    /* An expression checked against the type it is going into. Only an array
+       literal needs this - `[1, 2, 3]` says nothing about its element type or
+       length - but every place a value meets a declared type comes through
+       here, so a literal can appear in any of them, nested ones included. */
+    private TypeRef CheckInit(Expr e, TypeRef want)
+    {
+        if (e is ArrayLit al)
+        {
+            if (_ctx.Expand(want) is not ArrayType at)
+            {
+                _diag.Error($"an array literal cannot initialize {Show(want)}", al.Span);
+                foreach (var i in al.Items) CheckExpr(i);
+                return Set(e, Void);
+            }
+            if (al.Items.Count != at.Length)
+                _diag.Error($"{Show(want)} needs {at.Length} item(s), given {al.Items.Count}", al.Span);
+            foreach (var item in al.Items)
+            {
+                var it = CheckInit(item, at.Element);
+                if (!Convertible(at.Element, item, it))
+                    _diag.Error($"array item: {Show(it)} not assignable to {Show(at.Element)}{NarrowHint(at.Element, it, item)}", item.Span);
+            }
+            return Set(e, want);
+        }
+        return CheckExpr(e);
+    }
+
+    /* Every field, once, and nothing else. A field left out is an error rather
+       than a silent zero: the point of naming them is that the reader sees
+       every value the struct starts with. */
+    private TypeRef CheckStructLit(StructLit sl)
+    {
+        /* Enum.variant { ... } builds a sum value of that variant. */
+        if (sl.TypeName is MemberExpr vm && _ctx.EnumRefs.TryGetValue(vm, out var er))
+        {
+            var v = er.Enum.Variants[er.Index];
+            if (v.Fields == null || !_ctx.Structs.TryGetValue(SemaContext.PayloadName(er.Enum.Name, v.Name), out var pd))
+            {
+                _diag.Error($"'{er.Enum.Name}.{v.Name}' carries no fields; write it without braces", sl.Span);
+                foreach (var f in sl.Fields) CheckExpr(f.Value);
+                return new NamedType(er.Enum.Name);
+            }
+            CheckFields(pd, sl.Fields, sl.Span);
+            return new NamedType(er.Enum.Name);
+        }
+        if (sl.TypeName is not NameExpr tn || StructOf(new NamedType(tn.Name)) is not StructDecl sd)
+        {
+            _diag.Error("a record literal needs a struct name", sl.TypeName.Span);
+            foreach (var f in sl.Fields) CheckExpr(f.Value);
+            return Void;
+        }
+        return CheckFields(sd, sl.Fields, sl.Span) ? new NamedType(sd.Name) : new NamedType(sd.Name);
+    }
+
+    private bool CheckFields(StructDecl sd, List<FieldInit> given, SourceSpan span)
+    {
+        bool ok = true;
+        var seen = new HashSet<string>();
+        foreach (var fi in given)
+        {
+            var decl = sd.Fields.Find(f => f.Name == fi.Name);
+            if (decl == null) { _diag.Error($"'{sd.Name}' has no field '{fi.Name}'", fi.Span); CheckExpr(fi.Value); ok = false; continue; }
+            if (!seen.Add(fi.Name)) { _diag.Error($"field '{fi.Name}' given twice", fi.Span); ok = false; }
+            var vt = CheckInit(fi.Value, decl.Type);
+            if (!Convertible(decl.Type, fi.Value, vt))
+            { _diag.Error($"field '{fi.Name}': {Show(vt)} not assignable to {Show(decl.Type)}{NarrowHint(decl.Type, vt, fi.Value)}", fi.Span); ok = false; }
+        }
+        foreach (var f in sd.Fields)
+            if (!seen.Contains(f.Name)) { _diag.Error($"field '{f.Name}' of '{sd.Name}' is not given", span); ok = false; }
+        return ok;
+    }
+
+    /* A global's initializer becomes bytes in the image, so everything in it
+       must be known before the program runs: constants, strings (their
+       address), function names (their address), and literals of those. */
+    private void CheckStaticInit(Expr e, TypeRef t)
+    {
+        switch (e)
+        {
+            case StructLit sl:
+                if (StructOf(t) is StructDecl sd)
+                    foreach (var fi in sl.Fields)
+                    {
+                        var decl = sd.Fields.Find(f => f.Name == fi.Name);
+                        if (decl != null) CheckStaticInit(fi.Value, decl.Type);
+                    }
+                break;
+            case ArrayLit al:
+                if (_ctx.Expand(t) is ArrayType at) foreach (var i in al.Items) CheckStaticInit(i, at.Element);
+                break;
+            case StrLit: break;
+            case NameExpr n when _ctx.Resolved.TryGetValue(n, out var s) && s.Kind == SymKind.Function: break;
+            default: _fold.TryEval(e, out _); break;
+        }
+    }
+
+    private static bool ContainsCall(Expr e) => e switch
+    {
+        CallExpr => true,
+        MemberExpr m => ContainsCall(m.Target),
+        IndexExpr ix => ContainsCall(ix.Target) || ContainsCall(ix.Index),
+        UnaryExpr u => ContainsCall(u.Operand),
+        BinaryExpr b => ContainsCall(b.Left) || ContainsCall(b.Right),
+        CastExpr c => ContainsCall(c.Operand),
+        _ => false,
+    };
+
     private static bool IsLValue(Expr e) => e is NameExpr or UnaryExpr { Op: UnOp.Deref } or IndexExpr or MemberExpr;
 
     // ---- statements ----
     private void CheckBlock(Block b) { foreach (var s in b.Stmts) CheckStmt(s); }
 
     private int _loopDepth;   // break/continue must appear inside a loop
+    private IntLit? _negatedLiteral;   // the literal directly under a unary '-', if checking one
     private int _deferDepth;  // and nothing may leave a defer body early
 
     private void CheckStmt(Stmt s)
@@ -202,11 +518,11 @@ public sealed class TypeChecker
                         if (l.Type != null) BindLocalType(l, l.Type);
                         break;
                     }
-                    var it = CheckExpr(l.Init!);
+                    var it = l.Type != null ? CheckInit(l.Init!, l.Type) : CheckExpr(l.Init!);
                     if (l.Type != null)
                     {
-                        if (!Assignable(l.Type, it))
-                            _diag.Error($"cannot initialize '{l.Name}' of type {Show(l.Type)} from {Show(it)}", l.Span);
+                        if (!Convertible(l.Type, l.Init!, it))
+                            _diag.Error($"cannot initialize '{l.Name}' of type {Show(l.Type)} from {Show(it)}{NarrowHint(l.Type, it, l.Init)}", l.Span);
                         BindLocalType(l, l.Type);
                     }
                     else BindLocalType(l, it == Void ? I32 : it);
@@ -244,9 +560,25 @@ public sealed class TypeChecker
             case AssignStmt a:
                 {
                     var tt = CheckExpr(a.Target);
-                    var vt = CheckExpr(a.Value);
-                    if (!IsLValue(a.Target)) _diag.Error("assignment target is not assignable", a.Target.Span);
-                    else if (!Assignable(tt, vt)) _diag.Error($"cannot assign {Show(vt)} to {Show(tt)}", a.Span);
+                    var vt = CheckInit(a.Value, tt);
+                    if (!IsLValue(a.Target)) { _diag.Error("assignment target is not assignable", a.Target.Span); break; }
+                    if (a.Compound)
+                    {
+                        /* `x op= v` reads the target and writes it back, so it
+                           is evaluated twice. That is harmless for a name, a
+                           field or an index - and wrong for a call, which would
+                           run twice. Refused rather than quietly done twice. */
+                        if (ContainsCall(a.Target))
+                            _diag.Error("the target of a compound assignment contains a call, which would run twice; " +
+                                        "store the address in a local first", a.Target.Span);
+                        /* The result narrows back into the target, as in C:
+                           `b += 1` on a u8 is i32 arithmetic stored as a u8.
+                           A WIDE result still needs `as` - see Assignable. */
+                        if (!(IsInt(tt) && IsInt(vt) && !WideNarrowing(tt, vt)) && !Assignable(tt, vt))
+                            _diag.Error($"cannot assign {Show(vt)} to {Show(tt)}{NarrowHint(tt, vt)}", a.Span);
+                        break;
+                    }
+                    if (!Convertible(tt, a.Value, vt)) _diag.Error($"cannot assign {Show(vt)} to {Show(tt)}{NarrowHint(tt, vt, a.Value)}", a.Span);
                     break;
                 }
             case IfStmt i:
@@ -258,9 +590,10 @@ public sealed class TypeChecker
             case ReturnStmt r:
                 if (_deferDepth > 0) _diag.Error("cannot 'return' from inside a defer", r.Span);
                 if (r.Value == null) { if (!IsBool(_curReturn) && _curReturn is not PrimType { Kind: PrimKind.Void }) _diag.Error("return requires a value", r.Span); }
-                else { var rt = CheckExpr(r.Value); if (!Assignable(_curReturn, rt)) _diag.Error($"return type {Show(rt)} does not match {Show(_curReturn)}", r.Span); }
+                else { var rt = CheckInit(r.Value, _curReturn); if (!Convertible(_curReturn, r.Value, rt)) _diag.Error($"return type {Show(rt)} does not match {Show(_curReturn)}{NarrowHint(_curReturn, rt, r.Value)}", r.Span); }
                 break;
             case ExprStmt e: CheckExpr(e.Expr); break;
+            case SwitchStmt sw: CheckSwitch(sw); break;
         }
     }
 
@@ -268,7 +601,11 @@ public sealed class TypeChecker
     // resolver's symbol by name lookup is unnecessary because CodeGen reads ctx.Types
     // for the init and the annotated/inferred type is recorded against the LetStmt's init.
     private readonly Dictionary<LetStmt, TypeRef> _localTypes = new();
-    private void BindLocalType(LetStmt l, TypeRef t) => _localTypes[l] = t;
+    private void BindLocalType(LetStmt l, TypeRef t)
+    {
+        _localTypes[l] = t;
+        if (_ctx.LetSymbols.TryGetValue(l, out var sym)) sym.Type = t;
+    }
     public IReadOnlyDictionary<LetStmt, TypeRef> LocalTypes => _localTypes;
 
     // ---- expressions ----
@@ -294,12 +631,34 @@ public sealed class TypeChecker
                `y < 0x80000000` on an i32 compare against -2147483648. They are
                u32, the narrowest type that actually holds them - which is also
                what C does with an unsuffixed hex constant that large. */
+            /* A suffix names the type outright, and the value must fit it: a
+               literal that silently wrapped into its own declared type would
+               be the one kind of constant that cannot be trusted to be what
+               it says. A signed literal may reach one past its maximum when
+               it is negated directly, so -128i8 and the most negative i128
+               can be written at all. */
+            case IntLit { Suffix: PrimKind sk } sl:
+                {
+                    int bits = PrimWidth.Bytes(sk) * 8;
+                    bool signedK = PrimWidth.IsSigned(sk);
+                    UInt128 max = signedK ? (UInt128.One << (bits - 1)) - 1
+                                : bits == 128 ? UInt128.MaxValue : (UInt128.One << bits) - 1;
+                    if (signedK && ReferenceEquals(sl, _negatedLiteral)) max += 1;
+                    if (sl.Value > max)
+                        _diag.Error($"{sl.Value} does not fit in {sk.ToString().ToLowerInvariant()}", sl.Span);
+                    return Set(e, new PrimType(sk));
+                }
             case IntLit il:
                 return Set(e, il.Value <= int.MaxValue ? I32
                             : il.Value <= uint.MaxValue ? U32
                             : il.Value <= ulong.MaxValue ? new PrimType(PrimKind.U64)
                             : new PrimType(PrimKind.U128));
             case StrLit: return Set(e, new PointerType(new PrimType(PrimKind.U8)));
+            case StructLit sl: return Set(e, CheckStructLit(sl));
+            case ArrayLit al:
+                _diag.Error("an array literal needs a declared array type to fill: `let a: [3]u32 = [1, 2, 3];`", al.Span);
+                foreach (var i in al.Items) CheckExpr(i);
+                return Set(e, Void);
             case SizeofExpr sz: CheckExpr(sz.Operand); return Set(e, U32);   // compile-time size  // "..." : *u8
             case BoolLit: return Set(e, Bool);
 
@@ -309,9 +668,24 @@ public sealed class TypeChecker
 
             case CallExpr c: return Set(e, CheckCall(c));
 
+            case MemberExpr em when _ctx.EnumRefs.TryGetValue(em, out var er):
+                {
+                    /* `color.red` is a value of type color. A sum type's variant
+                       is a value too when it carries nothing; one with fields
+                       has to be given them. */
+                    var v = er.Enum.Variants[er.Index];
+                    if (er.Enum.IsSum && v.Fields is { Count: > 0 })
+                        _diag.Error($"'{er.Enum.Name}.{v.Name}' carries fields; give them: {er.Enum.Name}.{v.Name} {{ ... }}", em.Span);
+                    return Set(e, new NamedType(er.Enum.Name));
+                }
             case MemberExpr m:
                 {
                     var tt = CheckExpr(m.Target);
+                    if (IsSum(tt is PointerType sp ? sp.Pointee : tt))
+                    {
+                        _diag.Error("a sum type's fields are reached through a switch: case Type.variant(v) { v.field }", m.Span);
+                        return Set(e, Void);
+                    }
                     if (!CheckDeref(tt, m.Span)) return Set(e, Void);
                     var sd = StructOf(tt is PointerType p ? p.Pointee : tt); // allow s.f and ps.f
                     if (sd == null) { _diag.Error($"'.{m.Field}' on non-struct {Show(tt)}", m.Span); return Set(e, Void); }
@@ -329,7 +703,9 @@ public sealed class TypeChecker
                 }
             case UnaryExpr u:
                 {
+                    if (u.Op == UnOp.Neg && u.Operand is IntLit nl) _negatedLiteral = nl;
                     var ot = CheckExpr(u.Operand);
+                    _negatedLiteral = null;
                     switch (u.Op)
                     {
             case UnOp.BitNot:
@@ -408,11 +784,21 @@ public sealed class TypeChecker
                  *
                  * A shift is the exception: its right operand is a COUNT, not
                  * a term, so `x << n` is as wide as x however n is written. */
-                if (b.Op is BinOp.Shl or BinOp.Shr) return l;
+                if (b.Op is BinOp.Shl or BinOp.Shr) { CheckShiftAmount(b, l); return l; }
+                /* A constant takes the type of the other operand when it fits
+                   it, as in Rust: `x + 1` on a u8 is a u8, not an i32 that then
+                   needs a cast to go back into x. */
+                bool lc = FreeConst(b.Left, out var lv), rc = FreeConst(b.Right, out var rv);
+                if (lc && !rc && Fits(lv, r)) return r;
+                if (rc && !lc && Fits(rv, l)) return l;
                 return IntWidth(r) > IntWidth(l) ? r : l;
             case BinOp.Eq:
             case BinOp.Ne:
-                if (!(Assignable(l, r) || Assignable(r, l))) _diag.Error($"cannot compare {Show(l)} and {Show(r)}", b.Span);
+                if (!(IsInt(l) && IsInt(r)) && !(Assignable(l, r) || Assignable(r, l))) _diag.Error($"cannot compare {Show(l)} and {Show(r)}", b.Span);
+                /* A struct is its address, so == would compare WHERE two values
+                   are, not what they hold. Refused, not quietly wrong. */
+                else if (StructOf(l) != null || _ctx.Expand(l) is ArrayType)
+                    _diag.Error($"{Show(l)} cannot be compared with == or !=; compare the fields, or switch on a sum type", b.Span);
                 return Bool;
             case BinOp.Lt:
             case BinOp.Le:
@@ -426,6 +812,23 @@ public sealed class TypeChecker
                 return Bool;
         }
         return I32;
+    }
+
+    /* A CONSTANT shift amount must be inside the width the shift is done at:
+       32 bits for anything up to an int (it happens in a register), the type's
+       own width above that. Past it, the CPU quietly reduces the amount modulo
+       32, so `1 << 100` became 1 << 4 = 16 - with the spec claiming it was
+       refused. A variable amount is reduced modulo the width on purpose; a
+       constant one that large is a mistake. */
+    private void CheckShiftAmount(BinaryExpr b, TypeRef l)
+    {
+        if (!new ConstFold(_ctx, new DiagnosticBag()).TryEval(b.Right, out var amt)) return;
+        int width = Math.Max(32, IntWidth(l) * 8);
+        if (amt < (UInt128)width) return;
+        string hint = b.Left is IntLit { Suffix: null } && amt < 128
+            ? $"; to shift at a wider type, give the literal a suffix: {((IntLit)b.Left).Value}u{(amt < 64 ? 64 : 128)} {(b.Op == BinOp.Shl ? "<<" : ">>")} {amt}"
+            : "";
+        _diag.Error($"shift of {amt} is outside 0..{width - 1} for {Show(l)}{hint}", b.Span);
     }
 
     private TypeRef CheckCall(CallExpr c)
@@ -446,9 +849,9 @@ public sealed class TypeChecker
                 _diag.Error($"'{fn.Name}' expects {fn.Params.Count} args, got {c.Args.Count}", c.Span);
             for (int i = 0; i < c.Args.Count && i < fn.Params.Count; i++)
             {
-                var at = CheckExpr(c.Args[i]);
-                if (!Assignable(fn.Params[i].Type, at))
-                    _diag.Error($"arg {i + 1} to '{fn.Name}': {Show(at)} not assignable to {Show(fn.Params[i].Type)}", c.Args[i].Span);
+                var at = CheckInit(c.Args[i], fn.Params[i].Type);
+                if (!Convertible(fn.Params[i].Type, c.Args[i], at))
+                    _diag.Error($"arg {i + 1} to '{fn.Name}': {Show(at)} not assignable to {Show(fn.Params[i].Type)}{NarrowHint(fn.Params[i].Type, at, c.Args[i])}", c.Args[i].Span);
             }
             return fn.Return;
         }
@@ -459,9 +862,9 @@ public sealed class TypeChecker
                 _diag.Error($"call expects {ft.Params.Count} args, got {c.Args.Count}", c.Span);
             for (int i = 0; i < c.Args.Count && i < ft.Params.Count; i++)
             {
-                var at = CheckExpr(c.Args[i]);
-                if (!Assignable(ft.Params[i], at))
-                    _diag.Error($"arg {i + 1}: {Show(at)} not assignable to {Show(ft.Params[i])}", c.Args[i].Span);
+                var at = CheckInit(c.Args[i], ft.Params[i]);
+                if (!Convertible(ft.Params[i], c.Args[i], at))
+                    _diag.Error($"arg {i + 1}: {Show(at)} not assignable to {Show(ft.Params[i])}{NarrowHint(ft.Params[i], at, c.Args[i])}", c.Args[i].Span);
             }
             return ft.Return;
         }

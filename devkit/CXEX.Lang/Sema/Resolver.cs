@@ -4,7 +4,7 @@ using CXEX.Lang.Diagnostics;
 
 namespace CXEX.Lang.Sema;
 
-public enum SymKind { Function, Struct, Global, Const, Param, Local }
+public enum SymKind { Function, Struct, Global, Const, Param, Local, Enum }
 
 public sealed class Symbol
 {
@@ -42,6 +42,21 @@ public sealed class SemaContext
     public readonly Dictionary<Expr, Symbol> Resolved = new();   // NameExpr -> Symbol
     public readonly Dictionary<Expr, TypeRef> Types = new();     // filled by TypeChecker
     public readonly Dictionary<string, TypeRef> Aliases = new(); // type fx = i32;
+    public readonly Dictionary<string, EnumDecl> Enums = new();
+    /* The symbol each `let` declared, so the type checker can give it the type
+       it infers. Without this a local declared as `let x = 5;` kept the
+       placeholder type void, and every use of x was an error. */
+    public readonly Dictionary<LetStmt, Symbol> LetSymbols = new();
+    /* `color.red` - a member expression naming a variant, resolved to its enum
+       and index. Labels, values and constructors all go through this. */
+    public readonly Dictionary<MemberExpr, (EnumDecl Enum, int Index)> EnumRefs = new();
+
+    /* After type checking, the emitter sees a plain enum as its backing
+       integer - which is all it is at run time. The checker must not: there an
+       enum is its own type, and mixing it with integers needs `as`. */
+    public bool ExpandEnums;
+
+    public static string PayloadName(string en, string variant) => en + "." + variant;
 
     /// <summary>
     /// Expand a type alias to its target. Aliases are TRANSPARENT: `type fx = i32;`
@@ -54,7 +69,34 @@ public sealed class SemaContext
         int guard = 0;
         while (t is NamedType n && Aliases.TryGetValue(n.Name, out var target) && guard++ < 16)
             t = target;
+        if (ExpandEnums && t is NamedType en && Enums.TryGetValue(en.Name, out var ed) && !ed.IsSum)
+            return ed.Backing != null ? Expand(ed.Backing) : new PrimType(PrimKind.U32);
         return t;
+    }
+
+    /* Size in bytes, the same rule as the emitter's - needed here only to lay
+       out sum types, whose size is the tag plus the largest payload. */
+    public int SizeOf(TypeRef t0)
+    {
+        var t = Expand(t0);
+        switch (t)
+        {
+            case PrimType p: return PrimWidth.Bytes(p.Kind);
+            case ArrayType a: return SizeOf(a.Element) * a.Length;
+            case NamedType n when Structs.TryGetValue(n.Name, out var s):
+                { int o = 0; foreach (var f in s.Fields) o += (SizeOf(f.Type) + 3) & ~3; return o; }
+            case NamedType n when Enums.TryGetValue(n.Name, out var e):
+                if (!e.IsSum) return e.Backing != null ? SizeOf(e.Backing) : 4;
+                int max = 0;
+                foreach (var v in e.Variants)
+                    if (v.Fields != null)
+                    {
+                        int o = 0; foreach (var f in v.Fields) o += (SizeOf(f.Type) + 3) & ~3;
+                        if (o > max) max = o;
+                    }
+                return 4 + max;
+            default: return 4;
+        }
     }
 }
 
@@ -72,6 +114,7 @@ public sealed class Resolver
     public SemaContext Resolve(CompilationUnit unit)
     {
         foreach (var d in unit.Decls) DeclareTop(d);   // 1a: forward-visible top-level symbols
+        LayOutSums();
         foreach (var d in unit.Decls) ResolveDecl(d);  // 1b: bodies
         return _ctx;
     }
@@ -80,6 +123,25 @@ public sealed class Resolver
     {
         // imports are resolved by the driver before sema; they declare nothing
         if (d is ImportDecl) return;
+
+        /* An enum's name is a symbol so `color.red` resolves through it. A sum
+           type also gets one struct per variant - its fields, reached through a
+           switch binding - and is itself laid out as a struct (below). */
+        if (d is EnumDecl ed)
+        {
+            _ctx.Enums[ed.Name] = ed;
+            if (!_ctx.Globals.Declare(new Symbol { Name = ed.Name, Kind = SymKind.Enum, Type = new NamedType(ed.Name), Decl = ed }))
+                _diag.Error($"duplicate top-level declaration '{ed.Name}'", d.Span);
+            var names = new HashSet<string>();
+            foreach (var v in ed.Variants)
+            {
+                if (!names.Add(v.Name)) _diag.Error($"'{ed.Name}' has two variants named '{v.Name}'", v.Span);
+                if (v.Fields != null)
+                    _ctx.Structs[SemaContext.PayloadName(ed.Name, v.Name)] =
+                        new StructDecl(SemaContext.PayloadName(ed.Name, v.Name), v.Fields) { Span = v.Span };
+            }
+            return;
+        }
 
         // type aliases go in their own table, not the value scope
         if (d is TypeAliasDecl ta)
@@ -115,6 +177,24 @@ public sealed class Resolver
             _diag.Error($"duplicate top-level declaration '{sym.Name}'", d.Span);
     }
 
+    /* A sum type is a struct the program cannot name the fields of: a u32 tag
+       and room for the largest payload. `$` cannot appear in an identifier, so
+       the only way in is a switch - and a sum value can be copied, passed and
+       returned exactly like any other struct. */
+    private void LayOutSums()
+    {
+        foreach (var ed in _ctx.Enums.Values)
+        {
+            if (!ed.IsSum) continue;
+            int body = _ctx.SizeOf(new NamedType(ed.Name)) - 4;
+            _ctx.Structs[ed.Name] = new StructDecl(ed.Name, new List<Param>
+            {
+                new("$tag", new PrimType(PrimKind.U32)),
+                new("$body", new ArrayType(new PrimType(PrimKind.U8), body)),
+            }) { Span = ed.Span };
+        }
+    }
+
     private void ResolveDecl(Decl d)
     {
         switch (d)
@@ -143,10 +223,13 @@ public sealed class Resolver
         {
             case Block b: ResolveBlock(b, scope); break;
             case LetStmt l:
-                if (l.Init != null) ResolveExpr(l.Init, scope);   // `let x: T;` has no init
-                if (!scope.Declare(new Symbol { Name = l.Name, Kind = SymKind.Local, Type = l.Type ?? new PrimType(PrimKind.Void) }))
-                    _diag.Error($"duplicate local '{l.Name}'", l.Span);
-                break;
+                {
+                    if (l.Init != null) ResolveExpr(l.Init, scope);   // `let x: T;` has no init
+                    var ls = new Symbol { Name = l.Name, Kind = SymKind.Local, Type = l.Type ?? new PrimType(PrimKind.Void) };
+                    _ctx.LetSymbols[l] = ls;
+                    if (!scope.Declare(ls)) _diag.Error($"duplicate local '{l.Name}'", l.Span);
+                    break;
+                }
             case AssignStmt a: ResolveExpr(a.Target, scope); ResolveExpr(a.Value, scope); break;
             case IfStmt i:
                 ResolveExpr(i.Cond, scope); ResolveBlock(i.Then, scope);
@@ -160,6 +243,22 @@ public sealed class Resolver
                declared before it and nothing declared after - the same rule as
                every other statement, even though the code runs later. */
             case DeferStmt d: ResolveStmt(d.Body, scope); break;
+            case SwitchStmt sw:
+                ResolveExpr(sw.Subject, scope);
+                foreach (var c in sw.Cases)
+                {
+                    foreach (var l in c.Labels) ResolveExpr(l, scope);
+                    var cs = new Scope(scope);
+                    if (c.BindLet != null)
+                    {
+                        var bs = new Symbol { Name = c.BindLet.Name, Kind = SymKind.Local };
+                        _ctx.LetSymbols[c.BindLet] = bs;
+                        cs.Declare(bs);
+                    }
+                    ResolveBlock(c.Body, cs);
+                }
+                if (sw.Else != null) ResolveBlock(sw.Else, scope);
+                break;
         }
     }
 
@@ -174,12 +273,28 @@ public sealed class Resolver
                 else _ctx.Resolved[n] = sym;
                 break;
             case CallExpr c: ResolveExpr(c.Callee, scope); foreach (var a in c.Args) ResolveExpr(a, scope); break;
-            case MemberExpr m: ResolveExpr(m.Target, scope); break;
+            case MemberExpr m:
+                /* `Enum.variant` is not a field access: record which variant. */
+                if (m.Target is NameExpr en && scope.Lookup(en.Name) is { Kind: SymKind.Enum, Decl: EnumDecl ed })
+                {
+                    _ctx.Resolved[en] = scope.Lookup(en.Name)!;
+                    int i = ed.IndexOf(m.Field);
+                    if (i < 0) _diag.Error($"'{ed.Name}' has no variant '{m.Field}'", m.Span);
+                    else _ctx.EnumRefs[m] = (ed, i);
+                    break;
+                }
+                ResolveExpr(m.Target, scope);
+                break;
             case IndexExpr ix: ResolveExpr(ix.Target, scope); ResolveExpr(ix.Index, scope); break;
             case UnaryExpr u: ResolveExpr(u.Operand, scope); break;
             case SizeofExpr sz: ResolveExpr(sz.Operand, scope); break;
             case BinaryExpr b: ResolveExpr(b.Left, scope); ResolveExpr(b.Right, scope); break;
             case CastExpr ca: ResolveExpr(ca.Operand, scope); break;
+            case StructLit sl:
+                ResolveExpr(sl.TypeName, scope);
+                foreach (var f in sl.Fields) ResolveExpr(f.Value, scope);
+                break;
+            case ArrayLit al: foreach (var i in al.Items) ResolveExpr(i, scope); break;
         }
     }
 }
