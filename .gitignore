@@ -79,3 +79,6 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 memory_store.json
+repomix-output.xml
+repomix.config.json
+.gitignore
