@@ -52,8 +52,9 @@ character literals, compound assignment, struct and array initializers, and
 integer conversions that need `as` wherever a value could change. The integer
 gaps are closed too: wide division, 128-bit literals, variable shifts, wide
 and struct values by value (C-compatible), literal suffixes. **Stage 4 — the X
-compiler written in X — is under way in `os/xc`:** the lexer is done, matches
-the C# one token for token, and runs on CXK. The parser is next.
+compiler written in X — is under way in `os/xc`:** the lexer and the parser
+are done, match the C# ones token for token and node for node, and run on CXK.
+The type checker is next.
 
 Alongside, the language features that are cheap now and expensive later:
 
