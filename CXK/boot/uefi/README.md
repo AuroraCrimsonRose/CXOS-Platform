@@ -11,12 +11,21 @@ call `ExitBootServices`, or leave long mode.
 |---|---|
 | `efi.h` | the minimal UEFI subset the stub uses; service tables in spec order with `void*` placeholders for the entries we never call |
 | `cxboot.c` | the stub |
-| `build.bat` | MSVC build, matching the rest of the CXK Windows workflow |
-| `secureboot.bat` | generate keys, enroll them in an OVMF variable store, sign the stub, boot it |
+| `build.bat` | MSVC build. **Being replaced by `cxk uefi build`**; see below |
+| `secureboot.bat` | generate keys, enroll them in an OVMF variable store, sign the stub, boot it. **Being replaced by the `cxk secureboot` commands it already calls** |
+
+> **Scripts are being retired.** CXK is moving from `.bat`/`.sh` scripts to
+> `cxk` commands, so building and testing work the same way on every host
+> (`docs/HARDENING_PLAN.md`, decision D2). `secureboot.bat` goes once this page
+> gives its `cxk` sequence, which it does below. `build.bat` goes when
+> `cxk uefi build` lands. Which toolchain that command uses, MSVC where present
+> or clang with lld-link everywhere, is still open.
 
 ## Building
 
-**MSVC** (Developer Command Prompt for x64):
+**Planned:** `cxk uefi build`, on every host.
+
+**MSVC** (Developer Command Prompt for x64), until then:
 
     build.bat
 
@@ -45,9 +54,8 @@ proves nothing, and an OVMF build carrying the Microsoft keys refuses to
 launch the unsigned stub at all, so the code never runs.
 
 The way through is to become the platform owner - enroll our own PK/KEK/db and
-sign the stub with our db key:
-
-    secureboot.bat
+sign the stub with our db key. Until it is deleted, `secureboot.bat` runs the
+whole sequence below in one go.
 
 Everything it needs is in `tools\cxk.exe`: key generation, the EFI variable
 store, and Authenticode signing. **No OpenSSL, no Python, no Windows SDK, no
@@ -55,8 +63,8 @@ store, and Authenticode signing. **No OpenSSL, no Python, no Windows SDK, no
 supplies the OVMF firmware under its `share\` directory. Pass
 `--firmware-dir` if yours lives somewhere unusual.
 
-The same commands work anywhere `cxk` runs, so there is no separate script for
-other platforms:
+The same commands work anywhere `cxk` runs, and they are the supported way to
+do this:
 
     cxk secureboot keygen        # PK/KEK/db -> sbkeys\ (.pfx private, .cer/.pem public)
     cxk secureboot varstore      # enroll them into an OVMF vars image, Secure Boot on

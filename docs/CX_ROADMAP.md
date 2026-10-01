@@ -57,6 +57,21 @@ code generator, each held to the C# compiler by a differential test; `xc`
 compiles itself to a fixed point, and compiles itself on CXK, byte for byte.
 Stage 5 - an assembler and linker, so CXK needs no cross toolchain - is next.
 
+**Hardening runs alongside, and its Phase 1 comes first.** The 2026-10-01
+security and engineering reviews are answered in `HARDENING_PLAN.md`:
+
+- **Phase 0, tooling.** Tests move to the DevKit's xUnit project
+  `CXEX.Tests`. Platform scripts give way to `cxk` commands: `cxk os build`,
+  `cxk run`, `cxk uefi build`.
+- **Phase 1, the executable boundary.** The CXEX loader validates the whole
+  image before mapping anything, and never maps outside user space. Its
+  arithmetic is overflow-safe, the signature covers every byte it reads, and
+  W^X is enforced.
+
+Both come before stage 5. A self-hosting system that loads untrusted images
+unsafely has gained a compiler and kept the hole. Phases 2 and 3 (IPC
+resources, subsystem contracts) interleave with stage 5 and phase B.
+
 Alongside, the language features that are cheap now and expensive later:
 
 - **Distinct address types** — *done*, see `CX_X_CORE_LANG.md` §2.2.
@@ -318,7 +333,8 @@ realistically read-only. CXFS stays native.
 
 Sandboxing, isolation, quarantine, built on standard malicious-software
 definitions. The sandbox half largely exists already — capabilities, attenuation,
-per-process quotas, signed execution. Definitions need a *pipeline*, not just
+per-process quotas, signed execution, with the loader hardening of
+`HARDENING_PLAN.md` closing the gaps the 2026-10-01 review found. Definitions need a *pipeline*, not just
 code, which is why they are "skip until forced."
 
 ### Remote access

@@ -194,7 +194,8 @@ need revisiting with threads.
 worth having if it accepts exactly what the supervisor accepts; a document that
 passed the build and failed at boot would be worse than no check. Keeping the
 two walks identical is what makes that agreement cheap to keep, and it is
-enforced rather than hoped for: `tests/xdata/difftest.py` in the DevKit runs
+enforced rather than hoped for: the DevKit's differential test (`tests/xdata/difftest.py`,
+being ported to `CXEX.Tests/XData` under xUnit) runs
 generated documents — valid, mutated, and nested past the depth limit —
 through both readers, the X one compiled and run natively, and fails on any
 difference in **error code or byte offset**. The error numbers are the same
