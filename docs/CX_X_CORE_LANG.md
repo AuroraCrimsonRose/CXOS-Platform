@@ -740,8 +740,8 @@ compiler by a differential test before the next begins:
 | | X | held to C# by | status |
 |---|---|---|---|
 | lexer | `xc/lex.xfxn` | `tests/xc/lexdiff.py` in CX_DEVKIT: every X source, plus thousands of mutated ones, token for token | **done** |
-| parser | | the syntax tree, node for node | next |
-| type checker | | the diagnostics, and each expression's type | |
+| parser | `xc/parse.xfxn` | `tests/xc/parsediff.py`: every X source, plus thousands of broken ones, node for node and error for error | **done** |
+| type checker | | the diagnostics, and each expression's type | next |
 | code generator | | the assembly, line for line | |
 
 **Two platforms, one compiler.** The same sources run on CXK and on the Linux
@@ -759,6 +759,15 @@ instead. `run +disk tokdump -s /Shared/Source/lex.xfxn` on CXK gives the same
 4207 tokens and hash as the host - the lexer, written in X, reading its own
 source on the system it is for. (`+disk` because `run` grants only the console
 unless asked.)
+
+**The parser.** A line-for-line port of the C# one: the same grammar and
+precedence, and - what the mutants test hardest - the same recovery after a
+mistake and the same messages, at the same line and column. Its tree is one
+array of uniform nodes named by index (`node` in `parse.xfxn` documents what
+each kind's fields hold), so it grows with one reallocation and no pointer
+into it is kept across parsing. `astdump` prints it in the format of
+`cxk ast`; on CXK, `run +disk astdump -s /Shared/Source/parse.xfxn` gives the
+same 5404 nodes and hash as the host - the parser reading its own source.
 
 Comparing the two lexers fixed the C# one twice: a string ending in a
 backslash at the end of a file crashed it, and identifiers accepted any Unicode
