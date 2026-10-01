@@ -36,3 +36,18 @@ fn read_file(path: *u8, out: *buf) -> bool {
     file_close(h);
     return ok;
 }
+
+// Is there a FILE at this path? A directory is not one, as for C#'s File.Exists.
+fn xc_exists(path: *u8) -> bool {
+    let st: file_stat;
+    return stat(path, &st) == 0 && st.kind == FTYPE_FILE;
+}
+
+// The working directory, appended to `out`.
+fn xc_cwd(out: *buf) -> bool {
+    if (!buf_reserve(out, 256)) { return false; }
+    let n: i32 = getcwd(&out.data[out.len], 256);
+    if (n < 0) { return false; }
+    out.len += n as u32;
+    return true;
+}

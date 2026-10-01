@@ -1,0 +1,118 @@
+// xc/map.xfxn - a map from names to numbers, for the X compiler's tables.
+// Aurora Tejeda / CATX SYSTEMS LLC
+//
+//   let m: smap = smap_new();
+//   smap_put(&m, name, len, value);          // set, replacing any value
+//   if (!smap_add(&m, name, len, value)) {}  // set only if absent
+//   let e: u32 = smap_find(&m, name, len);   // entry, or SMAP_NONE
+//   smap_val(&m, e)
+//
+// Keys are copied in, so they may come from a buffer that later moves.
+// Entries keep the order they were first added in, and replacing a value
+// keeps its place - as a C# Dictionary does, whose order the C# compiler's
+// passes inherit, and so this one's must too.
+
+import "buf.xfxn";
+
+const SMAP_NONE: u32 = 0xFFFFFFFF;
+
+struct smap_ent { at: u32, len: u32, hash: u32, val: u32 }
+
+struct smap {
+    keys: buf,        // the key bytes, end to end
+    ents: buf,        // smap_ent, in insertion order
+    slots: list,      // open addressing: entry index + 1, or 0 for empty
+    count: u32,
+    oom: bool,
+}
+
+fn smap_ent_size() -> u32 { let e: smap_ent; return sizeof e; }
+
+fn smap_new() -> smap { return smap { keys: buf_new(), ents: buf_new(), slots: list_new(), count: 0, oom: false }; }
+
+fn smap_free(m: *smap) -> void { buf_free(&m.keys); buf_free(&m.ents); list_free(&m.slots); }
+
+fn smap_ent_at(m: *smap, e: u32) -> *smap_ent { return ((m.ents.data as u32) + e * smap_ent_size()) as *smap_ent; }
+fn smap_val(m: *smap, e: u32) -> u32 { return smap_ent_at(m, e).val; }
+fn smap_key(m: *smap, e: u32) -> *u8 { return &m.keys.data[smap_ent_at(m, e).at]; }
+fn smap_key_len(m: *smap, e: u32) -> u32 { return smap_ent_at(m, e).len; }
+
+fn smap_hash(p: *u8, n: u32) -> u32 {
+    let h: u32 = 0x811C9DC5;
+    let i: u32 = 0;
+    while (i < n) { h ^= p[i] as u32; h *= 0x01000193; i += 1; }
+    return h;
+}
+
+fn smap_same(m: *smap, e: u32, p: *u8, n: u32) -> bool {
+    let x: *smap_ent = smap_ent_at(m, e);
+    if (x.len != n) { return false; }
+    let i: u32 = 0;
+    while (i < n) { if (m.keys.data[x.at + i] != p[i]) { return false; } i += 1; }
+    return true;
+}
+
+fn smap_find(m: *smap, p: *u8, n: u32) -> u32 {
+    let cap: u32 = m.slots.len;
+    if (cap == 0) { return SMAP_NONE; }
+    let h: u32 = smap_hash(p, n);
+    let i: u32 = h & (cap - 1);
+    while (true) {
+        let s: u32 = m.slots.items[i];
+        if (s == 0) { return SMAP_NONE; }
+        let x: *smap_ent = smap_ent_at(m, s - 1);
+        if (x.hash == h && smap_same(m, s - 1, p, n)) { return s - 1; }
+        i = (i + 1) & (cap - 1);
+    }
+    return SMAP_NONE;
+}
+
+// Twice the slots, every entry placed again. Kept at most half full.
+fn smap_grow(m: *smap) -> bool {
+    let cap: u32 = m.slots.len * 2;
+    if (cap < 16) { cap = 16; }
+    list_free(&m.slots);
+    m.slots = list_new();
+    if (!list_reserve(&m.slots, cap)) { return false; }
+    let i: u32 = 0;
+    while (i < cap) { m.slots.items[i] = 0; i += 1; }
+    m.slots.len = cap;
+    let e: u32 = 0;
+    while (e < m.count) {
+        let j: u32 = smap_ent_at(m, e).hash & (cap - 1);
+        while (m.slots.items[j] != 0) { j = (j + 1) & (cap - 1); }
+        m.slots.items[j] = e + 1;
+        e += 1;
+    }
+    return true;
+}
+
+fn smap_insert(m: *smap, p: *u8, n: u32, val: u32) -> void {
+    if ((m.count + 1) * 2 > m.slots.len) { if (!smap_grow(m)) { m.oom = true; return; } }
+    let x: smap_ent = smap_ent { at: m.keys.len, len: n, hash: smap_hash(p, n), val: val };
+    if (!buf_append(&m.keys, p, n) || !buf_append(&m.ents, (&x) as *u8, smap_ent_size())) { m.oom = true; return; }
+    let cap: u32 = m.slots.len;
+    let j: u32 = x.hash & (cap - 1);
+    while (m.slots.items[j] != 0) { j = (j + 1) & (cap - 1); }
+    m.slots.items[j] = m.count + 1;
+    m.count += 1;
+}
+
+fn smap_put(m: *smap, p: *u8, n: u32, val: u32) -> void {
+    let e: u32 = smap_find(m, p, n);
+    if (e != SMAP_NONE) { smap_ent_at(m, e).val = val; return; }
+    smap_insert(m, p, n, val);
+}
+
+fn smap_add(m: *smap, p: *u8, n: u32, val: u32) -> bool {
+    if (smap_find(m, p, n) != SMAP_NONE) { return false; }
+    smap_insert(m, p, n, val);
+    return true;
+}
+
+// The value for a key, or SMAP_NONE.
+fn smap_get(m: *smap, p: *u8, n: u32) -> u32 {
+    let e: u32 = smap_find(m, p, n);
+    if (e == SMAP_NONE) { return SMAP_NONE; }
+    return smap_val(m, e);
+}

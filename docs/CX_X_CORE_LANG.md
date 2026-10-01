@@ -741,8 +741,8 @@ compiler by a differential test before the next begins:
 |---|---|---|---|
 | lexer | `xc/lex.xfxn` | `tests/xc/lexdiff.py` in CX_DEVKIT: every X source, plus thousands of mutated ones, token for token | **done** |
 | parser | `xc/parse.xfxn` | `tests/xc/parsediff.py`: every X source, plus thousands of broken ones, node for node and error for error | **done** |
-| type checker | | the diagnostics, and each expression's type | next |
-| code generator | | the assembly, line for line | |
+| type checker | `xc/sema.xfxn`, `xc/front.xfxn` | `tests/xc/semadiff.py`: whole programs - prelude, imports and all - every diagnostic in order and every expression's type | **done** |
+| code generator | | the assembly, line for line | next |
 
 **Two platforms, one compiler.** The same sources run on CXK and on the Linux
 host it is developed on. A platform file supplies what differs - the entry
@@ -768,6 +768,28 @@ each kind's fields hold), so it grows with one reallocation and no pointer
 into it is kept across parsing. `astdump` prints it in the format of
 `cxk ast`; on CXK, `run +disk astdump -s /Shared/Source/parse.xfxn` gives the
 same 5404 nodes and hash as the host - the parser reading its own source.
+
+**The type checker.** Resolution, constant folding and checking, ported from
+the C# `Resolver`, `ConstFold` and `TypeChecker`, behind a front end that
+builds a program the way `cxk compile` does: the prelude (from a file - `cxk
+prelude` writes it) in front of the main file, every import read once,
+breadth first, and one diagnostic stream in the C# order. The lexer gained
+the C# lexer's error messages for it. `semadump` prints what it concludes in
+the format of `cxk sema`; on CXK, `run +disk semadump -s --prelude prelude.xfxn
+sema.xfxn` in `/Shared/Source` type checks the type checker - 471
+declarations, no errors, the same hash as the host.
+
+Porting it meant reading the C# compiler more closely than anything had, and
+that found real bugs, all fixed in both: `~` was not folded (`const M: u32 =
+~0;` was 0); a constant's value was not cut to its type when loaded; a 64 or
+128-bit constant crashed any program that read it; a constant defined through
+itself and a sum type containing itself crashed the compiler; locals were kept
+by NAME, so an inner `let x` replaced an outer one for the whole function; a
+nested wide expression lost its left half (`a | b | c`); and every function in
+a program got the wide-temporary pool if any did, which is what pushed the type
+checker past CXK's 16 KB user stack (now 256 KB). The disk layer also learned
+to split transfers, since AHCI moves at most 128 sectors at a time and the
+installer read each staged file whole.
 
 Comparing the two lexers fixed the C# one twice: a string ending in a
 backslash at the end of a file crashed it, and identifiers accepted any Unicode
