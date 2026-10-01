@@ -50,6 +50,9 @@ app.Configure(config =>
     config.AddCommand<CheckAbiCommand>("check-abi")
         .WithDescription("Validates that the X ABI prelude still matches the kernel's cxk_abi.h.");
 
+    config.AddCommand<TokensCommand>("tokens")
+        .WithDescription("Prints the tokens of X source files (compared against the lexer written in X).");
+
     config.AddCommand<CheckXDataCommand>("check-xdata")
         .WithDescription("Validates X Data documents (service descriptors), with the same rules as the X reader.");
 
