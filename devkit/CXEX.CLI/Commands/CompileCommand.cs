@@ -47,6 +47,10 @@ public class CompileCommand : Command<CompileCommand.Settings>
         [CommandOption("--emit-asm")]
         [Description("also keep the intermediate .s next to the output")]
         public bool EmitAsm { get; set; }
+
+        [CommandOption("--object")]
+        [Description("write a linkable object instead of a program: every function and global exported, no entry point, no link step. OUTPUT is the .o")]
+        public bool Object { get; set; }
     }
 
     protected override int Execute(CommandContext context, Settings s, CancellationToken ct)
@@ -119,7 +123,7 @@ public class CompileCommand : Command<CompileCommand.Settings>
         AnsiConsole.MarkupLine($"[green]X:[/] analyzed {fileName} ({unit.Decls.Count} decls)");
 
         // 3. codegen -> asm
-        string asm = new X86Emitter(ctx, tc!.LocalTypes, diag).Emit(unit);
+        string asm = new X86Emitter(ctx, tc!.LocalTypes, diag) { Library = s.Object }.Emit(unit);
 
         /* Codegen reports too, and its diagnostics were being thrown away: the
            only HasErrors check was above, before the emitter had run. Anything
@@ -140,6 +144,19 @@ public class CompileCommand : Command<CompileCommand.Settings>
         string asmPath = Path.ChangeExtension(s.Output, ".s");
         File.WriteAllText(asmPath, asm);
         AnsiConsole.MarkupLine($"[cyan]X:[/] emitted {Path.GetFileName(asmPath)}");
+
+        // 4a. an object stops at assembly: whatever links it supplies the rest
+        if (s.Object)
+        {
+            if (!Wrappers.GccTool.Compile(asmPath, s.Output))
+            {
+                AnsiConsole.MarkupLine("[red]error:[/] assembling the emitted .s failed");
+                return 1;
+            }
+            if (!s.EmitAsm) { TryDelete(asmPath); }
+            AnsiConsole.MarkupLine($"[green]done:[/] {s.Output}");
+            return 0;
+        }
 
         // 4. assemble + link via the cross toolchain
         string objPath = Path.ChangeExtension(s.Output, ".o");
