@@ -1,0 +1,30 @@
+{
+  "metadata": [
+    {
+      "src": [
+        {
+          "files": [ "CXEX.*/**/*.csproj" ],
+          "exclude": [ "**/CXEX.Studio.csproj", "**/CXEX.UI.csproj", "**/CXEX.SDK.csproj" ],
+          "src": ".."
+        }
+      ],
+      "dest": "api",
+      "outputFormat": "mref",
+      "properties": { "TargetFramework": "net10.0" },
+      "disableGitFeatures": false
+    }
+  ],
+  "build": {
+    "content": [
+      { "files": [ "api/**.{md,yml}" ] },
+      { "files": [ "*.md", "toc.yml" ] }
+    ],
+    "output": "_site",
+    "template": [ "default", "modern" ],
+    "globalMetadata": {
+      "_appName": "CX DevKit",
+      "_appTitle": "CX DevKit API",
+      "_enableSearch": true
+    }
+  }
+}

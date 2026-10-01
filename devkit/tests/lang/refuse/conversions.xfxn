@@ -1,0 +1,17 @@
+fn main() -> i32 {
+    let n: u32 = 300;
+    let a: u8 = n;          // refused: u32 into u8
+    let b: u8 = 300;        // refused: the constant does not fit
+    let c: u8 = 255;        // fine
+    let d: i8 = -128;       // fine
+    let e: i32 = n;         // refused: u32 into i32 can change the value
+    let f: u32 = d;         // refused: i8 into u32
+    let g: i64 = n;         // fine: unsigned into wider signed
+    let h: u8 = 'a';        // fine
+    let i: i8 = 'a';        // fine: a character is a number that fits
+    let x: u8 = 0;
+    x = x + 1;              // fine: the literal takes x's type
+    x += n;                 // fine: compound assignment narrows back, as in C
+    let y: u8 = a as u8;    // fine: an explicit cast
+    return 0;
+}

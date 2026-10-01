@@ -1,0 +1,132 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:CXEX.Studio.ViewModels"
+             xmlns:ctrl="using:CXEX.Studio.Controls"
+             xmlns:materialIcons="clr-namespace:Material.Icons.Avalonia;assembly=Material.Icons.Avalonia"
+             x:Class="CXEX.Studio.Views.FileTypeInspectorView"
+             x:DataType="vm:FileTypeInspectorViewModel">
+
+  <Grid RowDefinitions="Auto, Auto, Auto, *, Auto" Background="{DynamicResource CxSurface1Brush}">
+
+    <!-- metadata -->
+    <Border Grid.Row="0" Background="{DynamicResource CxSurface2Brush}"
+            BorderBrush="{DynamicResource CxBorderBrush}" BorderThickness="0,0,0,1" Padding="10,6">
+      <StackPanel Orientation="Horizontal" Spacing="16">
+        <TextBlock Text="{Binding FileName}" FontWeight="Bold" Foreground="{DynamicResource CxTextBrush}" VerticalAlignment="Center"/>
+        <TextBlock Text="{Binding FileSize}" Foreground="{DynamicResource CxTextDimBrush}" VerticalAlignment="Center"/>
+        <TextBlock Text="{Binding FormatName}" Foreground="{DynamicResource CxAccentBrush}" FontWeight="SemiBold" VerticalAlignment="Center"/>
+        <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+          <TextBlock Text="magic:" Foreground="{DynamicResource CxTextDimBrush}"/>
+          <TextBlock Text="{Binding MagicHex}" FontFamily="Cascadia Code,Consolas,monospace"
+                     Foreground="{DynamicResource CxAccent2Brush}"/>
+        </StackPanel>
+      </StackPanel>
+    </Border>
+
+    <!-- search -->
+    <Border Grid.Row="1" Background="{DynamicResource CxSurface1Brush}"
+            BorderBrush="{DynamicResource CxBorderBrush}" BorderThickness="0,0,0,1" Padding="10,5">
+      <StackPanel Orientation="Horizontal" Spacing="6">
+        <ComboBox ItemsSource="{Binding SearchModes}" SelectedItem="{Binding SearchMode, Mode=TwoWay}"
+                  Width="100" Height="26"/>
+        <TextBox Text="{Binding SearchText, Mode=TwoWay}" Width="260" Height="26"
+                 Watermark="hex bytes / text / 0xADDR" FontFamily="Cascadia Code,Consolas,monospace"/>
+        <Button Content="Find" Command="{Binding FindCommand}" Height="26" Padding="14,0"
+                HorizontalContentAlignment="Center" VerticalContentAlignment="Center"/>
+        <TextBlock Text="{Binding SearchStatus}" Foreground="{DynamicResource CxTextDimBrush}" VerticalAlignment="Center"/>
+      </StackPanel>
+    </Border>
+
+
+    <!-- partitions (disk images) -->
+    <Border Grid.Row="2" Background="{DynamicResource CxSurface0Brush}"
+            BorderBrush="{DynamicResource CxBorderBrush}" BorderThickness="0,0,0,1" Padding="10,5"
+            IsVisible="{Binding Partitions.Count}">
+      <StackPanel Orientation="Horizontal" Spacing="8">
+        <TextBlock Text="{Binding TableType}" Foreground="{DynamicResource CxAccentBrush}"
+                   FontWeight="SemiBold" VerticalAlignment="Center"/>
+        <ItemsControl ItemsSource="{Binding Partitions}">
+          <ItemsControl.ItemsPanel>
+            <ItemsPanelTemplate>
+              <StackPanel Orientation="Horizontal" Spacing="6"/>
+            </ItemsPanelTemplate>
+          </ItemsControl.ItemsPanel>
+          <ItemsControl.ItemTemplate>
+            <DataTemplate>
+              <Button Command="{Binding $parent[ItemsControl].((vm:FileTypeInspectorViewModel)DataContext).SelectPartitionCommand}"
+                      CommandParameter="{Binding}" Height="26" Padding="10,0"
+                      ToolTip.Tip="{Binding TypeName}">
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                  <TextBlock Text="{Binding Name}" Foreground="{DynamicResource CxTextBrush}" FontWeight="SemiBold"/>
+                  <TextBlock Text="{Binding SizeDisplay}" Foreground="{DynamicResource CxTextDimBrush}"/>
+                </StackPanel>
+              </Button>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </StackPanel>
+    </Border>
+
+    <!-- CXFS file tree (left) + hex dump (right) -->
+    <Grid Grid.Row="3" ColumnDefinitions="Auto, *">
+      <Border Grid.Column="0" Width="240" IsVisible="{Binding CxfsTree.Count}"
+              Background="{DynamicResource CxSurface1Brush}"
+              BorderBrush="{DynamicResource CxBorderBrush}" BorderThickness="0,0,1,0">
+        <DockPanel>
+          <TextBlock DockPanel.Dock="Top" Text="{Binding CxfsStatus}" Margin="8,6"
+                     FontWeight="SemiBold" Foreground="{DynamicResource CxAccentBrush}"/>
+          <TreeView x:Name="CxfsTreeView" ItemsSource="{Binding CxfsTree}" Background="Transparent"
+                    DoubleTapped="OnCxfsDoubleTapped" x:CompileBindings="False">
+            <TreeView.ItemTemplate>
+              <TreeDataTemplate ItemsSource="{Binding Children}">
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                  <StackPanel.ContextMenu>
+                    <ContextMenu>
+                      <MenuItem Header="Save to Host…" Click="OnCxfsSave"/>
+                      <Separator/>
+                      <MenuItem Header="New Folder" Click="OnCxfsNewFolder"/>
+                      <MenuItem Header="Rename" Click="OnCxfsRename"/>
+                      <MenuItem Header="Delete" Click="OnCxfsDelete"/>
+                    </ContextMenu>
+                  </StackPanel.ContextMenu>
+                  <materialIcons:MaterialIcon Kind="{Binding Icon}" Width="15" Height="15"
+                                              Foreground="{DynamicResource CxAccentBrush}"/>
+                  <TextBlock Text="{Binding Name}" VerticalAlignment="Center"
+                             Foreground="{DynamicResource CxTextBrush}"/>
+                  <TextBlock Text="{Binding SizeDisplay}" VerticalAlignment="Center" FontSize="11"
+                             Foreground="{DynamicResource CxTextDimBrush}"/>
+                </StackPanel>
+              </TreeDataTemplate>
+            </TreeView.ItemTemplate>
+          </TreeView>
+        </DockPanel>
+      </Border>
+
+      <ScrollViewer Grid.Column="1" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
+                    Background="{DynamicResource CxSurface0Brush}" Padding="8,4">
+        <ctrl:HexView Data="{Binding PageData}"
+                      BaseOffset="{Binding PageOffset}"
+                      HighlightStart="{Binding HighlightStart}"
+                      HighlightLength="{Binding HighlightLength}"
+                      MatchStart="{Binding MatchStart}"
+                      MatchLength="{Binding MatchLength}"/>
+      </ScrollViewer>
+    </Grid>
+
+    <!-- compact paging -->
+    <Border Grid.Row="4" Background="{DynamicResource CxSurface2Brush}"
+            BorderBrush="{DynamicResource CxBorderBrush}" BorderThickness="0,1,0,0" Padding="8,5">
+      <StackPanel Orientation="Horizontal" Spacing="4" HorizontalAlignment="Center">
+        <Button Content="&lt; 4MB" Command="{Binding Back4MCommand}" Height="24" Padding="8,0" FontSize="11"/>
+        <Button Content="&lt; 2MB" Command="{Binding Back2MCommand}" Height="24" Padding="8,0" FontSize="11"/>
+        <Button Content="&lt; 4KB" Command="{Binding Back4KCommand}" Height="24" Padding="8,0" FontSize="11"/>
+        <TextBlock Text="{Binding PageLabel}" VerticalAlignment="Center" Margin="12,0"
+                   FontFamily="Cascadia Code,Consolas,monospace" Foreground="{DynamicResource CxTextBrush}"/>
+        <Button Content="4KB &gt;" Command="{Binding Fwd4KCommand}" Height="24" Padding="8,0" FontSize="11"/>
+        <Button Content="2MB &gt;" Command="{Binding Fwd2MCommand}" Height="24" Padding="8,0" FontSize="11"/>
+        <Button Content="4MB &gt;" Command="{Binding Fwd4MCommand}" Height="24" Padding="8,0" FontSize="11"/>
+      </StackPanel>
+    </Border>
+
+  </Grid>
+</UserControl>

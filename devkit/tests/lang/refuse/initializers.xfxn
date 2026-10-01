@@ -1,0 +1,11 @@
+struct pt { x: u32, y: u32 }
+fn f() -> u32 { return 1; }
+global g: pt = pt { x: f(), y: 0 };
+fn main() -> i32 {
+    let a: pt = pt { x: 1 };
+    let b: pt = pt { x: 1, y: 2, z: 3 };
+    let c: pt = pt { x: 1, x: 2, y: 3 };
+    let d: [3]u32 = [1, 2];
+    let e = [1, 2, 3];
+    return 0;
+}
