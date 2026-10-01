@@ -13,6 +13,14 @@ namespace CXEX.Lang.Parsing;
 /// </summary>
 public sealed class Parser
 {
+    private static PrimKind? SuffixKind(string? s) => s switch
+    {
+        "u8" => PrimKind.U8, "u16" => PrimKind.U16, "u32" => PrimKind.U32, "u64" => PrimKind.U64, "u128" => PrimKind.U128,
+        "i8" => PrimKind.I8, "i16" => PrimKind.I16, "i32" => PrimKind.I32, "i64" => PrimKind.I64, "i128" => PrimKind.I128,
+        "char" => PrimKind.U8,
+        _ => null,
+    };
+
     private readonly List<Token> _toks;
     private readonly DiagnosticBag _diag;
     private int _i;
@@ -58,7 +66,7 @@ public sealed class Parser
 
     private static bool IsDeclStart(TokenKind k) =>
         k is TokenKind.Fn or TokenKind.Struct or TokenKind.Global
-          or TokenKind.Const or TokenKind.Extern or TokenKind.Type;
+          or TokenKind.Const or TokenKind.Extern or TokenKind.Type or TokenKind.Enum;
 
     // ---- declarations ----
     private Decl? ParseDecl()
@@ -124,6 +132,7 @@ public sealed class Parser
                     return new TypeAliasDecl(an, at) { Span = To(start) };
                 }
             case TokenKind.Struct: return ParseStruct(start);
+            case TokenKind.Enum: return ParseEnum(start);
             case TokenKind.Global: return ParseGlobal(start);
             case TokenKind.Const: return ParseConst(start);
             default:
@@ -172,6 +181,39 @@ public sealed class Parser
         }
         Expect(TokenKind.RBrace, "'}'");
         return new StructDecl(name, fields) { Span = To(start) };
+    }
+
+    // enum name [: type] { a, b = 5, c { field: T, ... }, }
+    private EnumDecl ParseEnum(SourceSpan start)
+    {
+        Advance(); // 'enum'
+        var name = Expect(TokenKind.Identifier, "enum name").Text;
+        TypeRef? backing = null;
+        if (Match(TokenKind.Colon)) backing = ParseType();
+        Expect(TokenKind.LBrace, "'{'");
+        var vs = new List<EnumVariant>();
+        while (!At(TokenKind.RBrace) && !At(TokenKind.Eof))
+        {
+            var vstart = Cur.Span;
+            var vn = Expect(TokenKind.Identifier, "a variant name").Text;
+            List<Param>? fields = null;
+            Expr? value = null;
+            if (Match(TokenKind.LBrace))
+            {
+                fields = new List<Param>();
+                while (!At(TokenKind.RBrace) && !At(TokenKind.Eof))
+                {
+                    fields.Add(ParseParam());
+                    if (!Match(TokenKind.Comma)) break;
+                }
+                Expect(TokenKind.RBrace, "'}'");
+            }
+            else if (Match(TokenKind.Assign)) value = ParseExpr();
+            vs.Add(new EnumVariant(vn, fields, value) { Span = To(vstart) });
+            if (!Match(TokenKind.Comma)) break;
+        }
+        Expect(TokenKind.RBrace, "'}'");
+        return new EnumDecl(name, backing, vs) { Span = To(start) };
     }
 
     private GlobalDecl ParseGlobal(SourceSpan start)
@@ -310,6 +352,7 @@ public sealed class Parser
             case TokenKind.Let: return ParseLet(start);
             case TokenKind.If: return ParseIf(start);
             case TokenKind.While: return ParseWhile(start);
+            case TokenKind.Switch: return ParseSwitch(start);
             case TokenKind.Return: return ParseReturn(start);
             case TokenKind.Break:
                 Advance(); Expect(TokenKind.Semicolon, "';'");
@@ -335,11 +378,29 @@ public sealed class Parser
                         Expect(TokenKind.Semicolon, "';'");
                         return new AssignStmt(e, rhs) { Span = To(start) };
                     }
+                    if (CompoundOp(Cur.Kind) is BinOp cop)
+                    {
+                        Advance();
+                        var rhs = ParseExpr();
+                        Expect(TokenKind.Semicolon, "';'");
+                        return new AssignStmt(e, new BinaryExpr(cop, e, rhs) { Span = To(start) })
+                               { Compound = true, Span = To(start) };
+                    }
                     Expect(TokenKind.Semicolon, "';'");
                     return new ExprStmt(e) { Span = To(start) };
                 }
         }
     }
+
+    private static BinOp? CompoundOp(TokenKind k) => k switch
+    {
+        TokenKind.PlusAssign => BinOp.Add, TokenKind.MinusAssign => BinOp.Sub,
+        TokenKind.StarAssign => BinOp.Mul, TokenKind.SlashAssign => BinOp.Div,
+        TokenKind.PercentAssign => BinOp.Mod, TokenKind.AmpAssign => BinOp.BitAnd,
+        TokenKind.PipeAssign => BinOp.BitOr, TokenKind.CaretAssign => BinOp.BitXor,
+        TokenKind.ShlAssign => BinOp.Shl, TokenKind.ShrAssign => BinOp.Shr,
+        _ => null,
+    };
 
     private Stmt ParseLet(SourceSpan start)
     {
@@ -381,6 +442,47 @@ public sealed class Parser
         Expect(TokenKind.RParen, "')'");
         var body = ParseBlock();
         return new WhileStmt(cond, body) { Span = To(start) };
+    }
+
+    /* switch (subject) { case L1, L2 { } case Enum.v(name) { } else { } }
+       A label is a constant, or a variant; `Enum.v(name)` binds `name` to the
+       variant's fields. Labels are parsed with record literals switched off,
+       so `case color.red { }` is a label and a body, not a literal. */
+    private Stmt ParseSwitch(SourceSpan start)
+    {
+        Advance(); Expect(TokenKind.LParen, "'('");
+        var subject = ParseExpr();
+        Expect(TokenKind.RParen, "')'");
+        Expect(TokenKind.LBrace, "'{'");
+        var cases = new List<SwitchCase>();
+        Block? els = null;
+        while (!At(TokenKind.RBrace) && !At(TokenKind.Eof))
+        {
+            var cs = Cur.Span;
+            if (Match(TokenKind.Else))
+            {
+                if (els != null) _diag.Error("a switch has one 'else'", cs);
+                els = ParseBlock();
+                continue;
+            }
+            if (!Match(TokenKind.Case)) { _diag.Error($"expected 'case' or 'else', found '{Cur.Text}'", Cur.Span); Advance(); continue; }
+            var labels = new List<Expr>();
+            string? bind = null;
+            _noRecordLit = true;
+            do
+            {
+                var l = ParseExpr();
+                if (l is CallExpr { Callee: MemberExpr mv, Args: [NameExpr bn] }) { bind = bn.Name; l = mv; }
+                labels.Add(l);
+            } while (Match(TokenKind.Comma));
+            _noRecordLit = false;
+            var body = ParseBlock();
+            var c = new SwitchCase(labels, bind, body) { Span = To(cs) };
+            if (bind != null) c = c with { BindLet = new LetStmt(bind, null, null) { Span = c.Span } };
+            cases.Add(c);
+        }
+        Expect(TokenKind.RBrace, "'}'");
+        return new SwitchStmt(subject, cases, els) { Span = To(start) };
     }
 
     private Stmt ParseReturn(SourceSpan start)
@@ -496,9 +598,39 @@ public sealed class Parser
             default: return ParsePostfix();
         }
     }
+    /* Inside a `case` label a name followed by `{` is the label and its body,
+       not a record literal; this switches the literal off while one is parsed. */
+    private bool _noRecordLit;
+
+    /* `Name {` starts a record literal only when what follows is `}` or
+       `field:` - a block never starts that way, so `while (x) { ... }` and the
+       like are untouched. */
+    private bool AtRecordLit() =>
+        !_noRecordLit && At(TokenKind.LBrace) &&
+        (Peek().Kind == TokenKind.RBrace ||
+         (Peek().Kind == TokenKind.Identifier && Peek(2).Kind == TokenKind.Colon));
+
+    private Expr ParseRecordLit(Expr typeName)
+    {
+        var s = typeName.Span;
+        Expect(TokenKind.LBrace, "'{'");
+        var fields = new List<FieldInit>();
+        while (!At(TokenKind.RBrace) && !At(TokenKind.Eof))
+        {
+            var fs = Cur.Span;
+            var name = Expect(TokenKind.Identifier, "a field name").Text;
+            Expect(TokenKind.Colon, "':'");
+            fields.Add(new FieldInit(name, ParseExpr()) { Span = To(fs) });
+            if (!Match(TokenKind.Comma)) break;
+        }
+        Expect(TokenKind.RBrace, "'}'");
+        return new StructLit(typeName, fields) { Span = To(s) };
+    }
+
     private Expr ParsePostfix()
     {
         var e = ParsePrimary();
+        if (e is NameExpr && AtRecordLit()) e = ParseRecordLit(e);
         while (true)
         {
             var s = e.Span;
@@ -513,6 +645,7 @@ public sealed class Parser
             {
                 var field = Expect(TokenKind.Identifier, "field name").Text;
                 e = new MemberExpr(e, field) { Span = To(s) };
+                if (e is MemberExpr { Target: NameExpr } && AtRecordLit()) e = ParseRecordLit(e);   // Enum.variant { ... }
             }
             else if (Match(TokenKind.LBracket))
             {
@@ -533,12 +666,28 @@ public sealed class Parser
         var start = Cur.Span;
         switch (Cur.Kind)
         {
-            case TokenKind.IntLiteral: { var v = Advance().Value; return new IntLit(v) { Span = To(start) }; }
+            case TokenKind.IntLiteral:
+                {
+                    var tok = Advance();
+                    return new IntLit(tok.Value) { Suffix = SuffixKind(tok.Suffix), IsChar = tok.Suffix == "char", Span = To(start) };
+                }
             case TokenKind.StringLiteral: { var sv = Advance().Text; return new StrLit(sv) { Span = To(start) }; }
             case TokenKind.True: Advance(); return new BoolLit(true) { Span = To(start) };
             case TokenKind.False: Advance(); return new BoolLit(false) { Span = To(start) };
             case TokenKind.Identifier: { var n = Advance().Text; return new NameExpr(n) { Span = To(start) }; }
             case TokenKind.LParen: { Advance(); var e = ParseExpr(); Expect(TokenKind.RParen, "')'"); return e; }
+            case TokenKind.LBracket:
+                {
+                    Advance();
+                    var items = new List<Expr>();
+                    while (!At(TokenKind.RBracket) && !At(TokenKind.Eof))
+                    {
+                        items.Add(ParseExpr());
+                        if (!Match(TokenKind.Comma)) break;
+                    }
+                    Expect(TokenKind.RBracket, "']'");
+                    return new ArrayLit(items) { Span = To(start) };
+                }
             default:
                 _diag.Error($"expected an expression, found '{Cur.Text}'", Cur.Span);
                 if (!At(TokenKind.Eof)) Advance(); // ensure progress

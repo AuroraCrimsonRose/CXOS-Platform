@@ -1,0 +1,6 @@
+fn idx() -> u32 { return 0; }
+global arr: [4]u32;
+fn main() -> i32 {
+    let c: u8 = 'ab';
+    return 0;
+}

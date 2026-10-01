@@ -1,0 +1,5 @@
+fn main() -> i32 {
+    let f: u128 = 1 << 100;
+    let n: u32 = 1 << 40;
+    return 0;
+}
