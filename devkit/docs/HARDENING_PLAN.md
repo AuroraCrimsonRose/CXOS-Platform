@@ -35,7 +35,9 @@ CXEX.Tests/
 Rules:
 
 - **Categories, by trait.** `Unit` and `Adversarial` need nothing but .NET.
-  `Toolchain` needs `gcc -m32` and `i686-elf-gcc` (it runs compiled X).
+  `Toolchain` needs clang and ld.lld (D5), and a Linux host or WSL, because it
+  runs compiled X natively and X's host platform makes Linux system calls. On
+  other hosts those tests report skipped.
   `Differential` also needs a CXK checkout (`CXK_ROOT`, or `../CXK`). A test
   whose requirement is missing reports **skipped, with the reason**. It never
   silently passes.
@@ -92,6 +94,14 @@ From here on, any generated file belongs in `.gitignore`, not in a commit.
 Phase 0 (tooling) first, so everything after it is tested the new way. Then
 Phase 1 (the executable boundary, both repos), then 2, then 3.
 
+### D5. One toolchain: LLVM, with Ninja
+
+`cxk compile` assembles and links with clang and ld.lld instead of the i686-elf
+GCC cross toolchain. CXK builds with clang, ld.lld and Ninja on every host, and
+the UEFI stub with clang and lld-link. The evidence and the kernel side are in
+`CXK/docs/HARDENING_PLAN.md`, D5. `GccTool` in `CXEX.CLI/Wrappers` becomes an
+LLVM wrapper when the wrappers move to `CXEX.Tools`.
+
 ---
 
 ## 2. Security review — status
@@ -121,7 +131,7 @@ Phase 1 (the executable boundary, both repos), then 2, then 3.
 | 2 | CXEX layout as an intermediate model | Same work as security §2, §3 | 1 |
 | 3 | parse → validate → transform → emit | Adopted as the pipeline rule | 1 |
 | 4 | A .NET test project | **Decided: `CXEX.Tests` (D1)** | 0 |
-| 5 | Artifact taxonomy (`.XCXN`) | **Open:** design doc Q-E recommends amending the taxonomy to name ELF. Needs your call. | 3 |
+| 5 | Artifact taxonomy (`.XCXN`) | **Decided:** ELF is the linkable object; `.XCXN` is dropped from the taxonomy (design doc §3, Q-E). | done |
 | 6 | Shared tool execution in `CXEX.Tools` | Already planned (design doc Phase 2, Q-D) | 2 |
 | 7 | Canonical ABI source | `cxk check-abi` mitigates now; a generator is planned (design doc §5.2 item 2). | 3 |
 | 8 | Library → CLI/Studio layering | Adopted as a rule. Studio must not reference `CXEX.CLI`. | 2 |
@@ -146,6 +156,7 @@ Phase 1 (the executable boundary, both repos), then 2, then 3.
 - [ ] Add `.config/dotnet-tools.json` pinning docfx; replace `build-docs.cmd` with the documented `dotnet docfx` commands; drop the stale `.slnx` entries.
 - [ ] Untrack and gitignore `docs/_site/` and `docs/api/` (D3).
 - [ ] Implement the `cxk` commands the CXK plan's D2 needs: `cxk os build`, the `cxk run` machine options, and `cxk uefi build`.
+- [ ] `cxk compile` assembles and links with clang and ld.lld (D5); the `Toolchain` tests run on the result.
 
 ### Phase 1 — the executable boundary (critical / high)
 
@@ -167,12 +178,13 @@ Phase 1 (the executable boundary, both repos), then 2, then 3.
 
 - [ ] Deterministic CXEX output, tested (security §12, engineering §11).
 - [ ] Toolchain identity recorded; pinned versions (security §13, engineering §9).
-- [ ] ABI generator (engineering §7); taxonomy decision (engineering §5).
+- [ ] ABI generator (engineering §7).
 - [ ] Transitional-code sweep (engineering §14).
 
 ---
 
-## 5. Open decisions
+## 5. Decided since
 
-- **`.XCXN`:** amend the locked taxonomy to name ELF, or build `.XCXN`? (Design doc Q-E; the recommendation is to amend.)
-- **`cxk uefi build`:** the stub is built with MSVC (`cl`/`link`) today. A cross-platform command needs a toolchain choice: wrap MSVC where present, or clang + lld-link everywhere.
+- **`.XCXN`:** not built. ELF is the linkable object format; the design doc's taxonomy (§3) is amended (Q-E).
+- **`cxk uefi build`:** clang + lld-link everywhere (D5, Q-G).
+- **Repository layout:** merging CXK and CX_DEVKIT into one repository is proposed, not decided.
