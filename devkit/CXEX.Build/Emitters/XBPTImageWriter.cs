@@ -128,30 +128,49 @@ public static class XBPTImageWriter
         return;
     }
 
+    /* The XSTG manifest: a 16-byte header, then 48 bytes per file. Version 1
+       is one sector, so at most 10 files; version 2 runs the entries on over
+       as many sectors as they need (CXK install.h allows up to 16), and says
+       how many at offset 8. Version 1 is written whenever it is enough, so an
+       image that fits it reads on a kernel that predates version 2. */
+    public const int XstgEntrySize = 48;
+    public const int XstgNameLen = 32;
+    public const int XstgMaxSectors = 16;
+
+    public static int ManifestSectors(int files) => (16 + files * XstgEntrySize + 511) / 512;
+
     private static void WriteStagedPayload(byte[] diskImage, ulong startLba, List<StagedFile> files)
     {
-        Span<byte> manifestSector = diskImage.AsSpan((int)(startLba * 512), 512);
-        MemoryPrimitives.WriteU32(manifestSector, 0, 0x47545358); // "XSTG"
-        MemoryPrimitives.WriteU16(manifestSector, 4, 1);
-        MemoryPrimitives.WriteU16(manifestSector, 6, (ushort)files.Count);
+        int msecs = ManifestSectors(files.Count);
+        if (msecs > XstgMaxSectors)
+            throw new InvalidOperationException($"{files.Count} staged files: a manifest holds at most {(XstgMaxSectors * 512 - 16) / XstgEntrySize}");
+
+        Span<byte> manifest = diskImage.AsSpan((int)(startLba * 512), msecs * 512);
+        MemoryPrimitives.WriteU32(manifest, 0, 0x47545358); // "XSTG"
+        MemoryPrimitives.WriteU16(manifest, 4, (ushort)(msecs == 1 ? 1 : 2));
+        MemoryPrimitives.WriteU16(manifest, 6, (ushort)files.Count);
+        if (msecs > 1) MemoryPrimitives.WriteU16(manifest, 8, (ushort)msecs);
 
         int manifestOffset = 16;
-        uint currentSectorOffset = 1; // Data blobs start at sector offset 1
+        uint currentSectorOffset = (uint)msecs; // data blobs follow the manifest
 
         foreach (var file in files)
         {
-            // CRITICAL FIX: Exactly 48 bytes per entry as required by install.h
+            // A name is a path, NUL-padded to 32 bytes - cut short, it would
+            // install the file somewhere else without a word.
             byte[] nameBytes = Encoding.ASCII.GetBytes(file.Name);
-            nameBytes.CopyTo(manifestSector.Slice(manifestOffset, Math.Min(nameBytes.Length, 32)));
+            if (nameBytes.Length > XstgNameLen)
+                throw new InvalidOperationException($"staged name '{file.Name}' is longer than {XstgNameLen} bytes");
+            nameBytes.CopyTo(manifest.Slice(manifestOffset, nameBytes.Length));
 
-            MemoryPrimitives.WriteU32(manifestSector, manifestOffset + 32, currentSectorOffset);
-            MemoryPrimitives.WriteU32(manifestSector, manifestOffset + 44, (uint)file.Data.Length);
+            MemoryPrimitives.WriteU32(manifest, manifestOffset + 32, currentSectorOffset);
+            MemoryPrimitives.WriteU32(manifest, manifestOffset + 44, (uint)file.Data.Length);
 
             // Write the actual file data into the disk image
             Array.Copy(file.Data, 0, diskImage, (long)(startLba + currentSectorOffset) * 512, file.Data.Length);
 
             currentSectorOffset += (uint)((file.Data.Length + 511) / 512);
-            manifestOffset += 48;
+            manifestOffset += XstgEntrySize;
         }
     }
 
