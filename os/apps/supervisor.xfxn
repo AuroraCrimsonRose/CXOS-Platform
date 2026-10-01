@@ -1,0 +1,415 @@
+// supervisor.xfxn - the CXK service supervisor.
+// Aurora Tejeda / CATX SYSTEMS LLC
+//
+// Reads service descriptors from /System/Services and starts the ones marked
+// to run at boot. The executive spawns it with GRANT_OS_BASELINE and then gets
+// out of the way; the supervisor is what actually decides that a program should be
+// running, and with what authority.
+//
+// It lives in ring 3 like everything else. Nothing here needs to be in the
+// kernel: starting a program is exec_path, reading a descriptor is the file
+// API, and both are already gated by capabilities the executive had to hand
+// over deliberately.
+//
+// A descriptor is an X Data document (docs/language/CX_X_DATA.md):
+//
+//     // /System/Services/hello.xosv
+//     exec   = "/Shared/Programs/hi.xuex"
+//     args   = ["hello world", "second"]
+//     start  = boot
+//     grants = [console, disk]
+//
+// exec   string. The program to run. Required.
+// args   list of strings, passed as argv after the program's own path. Each
+//        string is ONE argument, spaces and all. The key=value format this
+//        replaced split on spaces, so an argument containing one could not be
+//        written at all.
+// start  the symbol `boot`, to start it now. Absent means "not yet", which is
+//        how a descriptor sits on disk disabled without being deleted. Any
+//        other value is refused rather than read as "not yet" - that used to
+//        let `start=boto` quietly switch a service off.
+// every  whole seconds between runs. With it, the supervisor stays alive and
+//        re-runs the program on that interval. `start` and `every` are
+//        independent: `start = boot` alone runs it once, `every = 60` alone
+//        first runs it a minute from now, both run it at boot and every
+//        minute after.
+// grants list of grant names. Absent means console only - least privilege is
+//        the default on purpose, so a service that needs the disk has to say
+//        so where someone reading the system can see it. `[]` means nothing
+//        at all. An unknown name is warned about and ignored: a descriptor
+//        written for a later kernel should still start with the authority
+//        this one can give, and ignoring one can only ever give LESS.
+//
+// A descriptor is read whole or not at all. One that is not valid X Data, has
+// a key this supervisor does not know, or has a value of the wrong kind is
+// refused with the line it failed on, and nothing is started from it. A
+// service starting with guessed authority or half its arguments is worse than
+// one that does not start.
+
+import "io.xfxn";
+import "file.xfxn";
+import "string.xfxn";
+import "fmt.xfxn";
+import "xdata.xfxn";
+
+// Room for a descriptor's comments as well as its values: X Data invites the
+// explanation to live in the file, and a cap that punished that would be
+// perverse.
+const SVC_TEXT_CAP: u32 = 4096;      // one descriptor file
+const SVC_PATH_CAP: u32 =  192;
+const SVC_ARGS_CAP: u32 =  256;
+
+global svc_text: [4096]u8;           // the descriptor as read
+global svc_path: [192]u8;            // /System/Services/<name>
+global svc_exec: [192]u8;            // the exec= value
+global svc_blob: [256]u8;            // packed argv for the child
+global svc_started: u32;
+
+// ---- the schedule ----------------------------------------------------------
+// Flat arrays with a manual stride rather than an array of structs: X has no
+// array-of-struct indexing, and one allocation per column is easier to read
+// than a hand-packed record.
+const SCH_MAX:     u32 = 8;
+const SCH_ESTRIDE: u32 = 192;        // bytes reserved per exec path
+const SCH_BSTRIDE: u32 = 256;        // bytes reserved per packed argv blob
+
+global sch_n:      u32;
+global sch_exec:   [1536]u8;         // SCH_MAX * SCH_ESTRIDE
+global sch_blob:   [2048]u8;         // SCH_MAX * SCH_BSTRIDE
+global sch_blen:   [8]u32;           // packed argv length, per entry
+global sch_grants: [8]u32;
+global sch_every:  [8]u32;           // seconds between runs
+global sch_next:   [8]u32;           // tick (ms since boot) this is next due
+
+// ---- descriptor parsing ----------------------------------------------------
+
+// "supervisor: <name>: " - every complaint about a descriptor starts the same
+// way, so a log can be searched by the file it is about.
+fn svc_warn(name: *u8) -> void {
+    puts("supervisor: ");
+    puts(name);
+    puts(": ");
+}
+
+// A value of the wrong kind, or out of range. Names the key and says what it
+// should have been, since "wrong kind of value" alone does not say how to fix it.
+fn svc_bad(name: *u8, key: *u8, want: *u8) -> void {
+    svc_warn(name);
+    puts("`");
+    puts(key);
+    puts("` must be ");
+    puts(want);
+    puts("; not started\n");
+}
+
+// Refuse a descriptor with a key this supervisor does not know. A misspelt
+// `evry = 60` would otherwise be ignored and the service would quietly never
+// repeat - the kind of mistake symbols and a whole-file check exist to catch.
+// The build checks the same list (SERVICE_XOSV in tools/cmake/CMakeLists.txt):
+// a key added here must be added there too.
+fn svc_keys_known(name: *u8, src: *u8, root: *xd_val) -> i32 {
+    let k: xd_val;
+    let v: xd_val;
+    let i: u32 = 0;
+    while (xd_entry_at(src, root, i, &k, &v) == 1) {
+        if (xd_sym_is(src, &k, "exec") == 0 && xd_sym_is(src, &k, "args") == 0 &&
+            xd_sym_is(src, &k, "start") == 0 && xd_sym_is(src, &k, "every") == 0 &&
+            xd_sym_is(src, &k, "grants") == 0) {
+            svc_warn(name);
+            puts("line ");
+            print_u32(xd_line(src, k.at));
+            puts(": unknown key; not started\n");
+            return 0;
+        }
+        i = i + 1;
+    }
+    return 1;
+}
+
+// Turn a `grants` list into a capability mask in *out. 1 on success, 0 if an
+// item is not a name. An unknown name is WARNED about and skipped: ignoring one
+// can only ever hand over less authority, never more, and a descriptor written
+// for a later kernel should still start with what this one can give.
+fn svc_grants(name: *u8, src: *u8, list: *xd_val, out: *u32) -> i32 {
+    let g: u32 = 0;
+    let it: xd_val;
+    let i: u32 = 0;
+    while (xd_item(src, list, i, &it) == 1) {
+        if (it.kind != XD_SYM) { return 0; }
+        let known: u32 = 1;
+        if (xd_sym_is(src, &it, "console") == 1)          { g = g | GRANT_CONSOLE; }
+        else { if (xd_sym_is(src, &it, "disk") == 1)       { g = g | GRANT_DISK; }
+        else { if (xd_sym_is(src, &it, "net") == 1)        { g = g | GRANT_NET; }
+        else { if (xd_sym_is(src, &it, "mem") == 1)        { g = g | GRANT_MEM; }
+        else { if (xd_sym_is(src, &it, "framebuffer") == 1) { g = g | GRANT_FRAMEBUFFER; }
+        else { if (xd_sym_is(src, &it, "spawn") == 1)      { g = g | GRANT_SPAWN; }
+        else { known = 0; } } } } } }
+        if (known == 0) {
+            svc_warn(name);
+            puts("line ");
+            print_u32(xd_line(src, it.at));
+            puts(": unknown grant, ignored\n");
+        }
+        i = i + 1;
+    }
+    out[0] = g;
+    return 1;
+}
+
+// Pack argv the way the kernel wants it: the program's own path, then each
+// string of the `args` list, each NUL-terminated, back to back. xd_str
+// NUL-terminates what it writes, which is exactly this format - so an argument
+// goes in whole, spaces included. Returns the packed length, or a negative
+// XD_E_* if an item is not a string or the whole does not fit.
+fn svc_pack(src: *u8, args: *xd_val) -> i32 {
+    let n: u32 = strcopy(&svc_blob[0], &svc_exec[0], SVC_ARGS_CAP) + 1;   // keep the NUL
+    if (args.kind == XD_NONE) { return n as i32; }
+    if (args.kind != XD_LIST) { return XD_E_TYPE; }
+    let it: xd_val;
+    let i: u32 = 0;
+    while (xd_item(src, args, i, &it) == 1) {
+        let w: i32 = xd_str(src, &it, &svc_blob[n], SVC_ARGS_CAP - n);
+        if (w < 0) { return w; }
+        n = n + (w as u32) + 1;
+        i = i + 1;
+    }
+    return n as i32;
+}
+
+// ---- running one program ---------------------------------------------------
+
+// Start `path` with an already-packed argv blob and the given authority.
+// Returns the pid, or a negative error.
+fn svc_run(path: *u8, blob: *u8, blen: u32, grants: u32) -> i32 {
+    let a: spawn_args;
+    memzero((&a) as *u8, sizeof a);
+    a.name            = path;
+    a.broker_endpoint = 0 - 1;
+    a.caps            = grants;
+    a.args            = blob;
+    a.args_len        = blen;
+    return exec_path(path, &a);
+}
+
+fn svc_fail(name: *u8, rc: i32) -> void {
+    puts("supervisor: ");
+    puts(name);
+    puts(": ");
+    if (rc == E_PERM) { puts("not signed by a key this kernel trusts\n"); }
+    else { puts(file_strerror(rc)); newline(); }
+}
+
+// ---- starting one service --------------------------------------------------
+
+fn svc_start(name: *u8) -> void {
+    let n: u32 = strcopy(&svc_path[0], "/System/Services/", SVC_PATH_CAP);
+    strcopy(&svc_path[n], name, SVC_PATH_CAP - n);
+
+    let len: i32 = file_slurp(&svc_path[0], &svc_text[0], SVC_TEXT_CAP - 1);
+    if (len < 0) {
+        puts("supervisor: ");
+        puts(name);
+        puts(": ");
+        puts(file_strerror(len));
+        newline();
+        return;
+    }
+    let src: *u8 = &svc_text[0];
+    let slen: u32 = len as u32;
+
+    // Whole or nothing: check the entire document before acting on any of it.
+    let rc: i32 = xd_check(src, slen);
+    if (rc != XD_OK) {
+        svc_warn(name);
+        puts("line ");
+        print_u32(xd_line(src, xd_err_at));
+        puts(": ");
+        puts(xd_strerror(rc));
+        puts("; not started\n");
+        return;
+    }
+    let root: xd_val;
+    let v: xd_val;
+    xd_root(src, slen, &root);
+    if (svc_keys_known(name, src, &root) == 0) { return; }
+
+    if (xd_get(src, &root, "exec", &v) == 0) {
+        // A descriptor with no program is a typo, not a disabled service -
+        // say so rather than skipping it silently.
+        svc_warn(name);
+        puts("no `exec`; not started\n");
+        return;
+    }
+    if (xd_str(src, &v, &svc_exec[0], SVC_PATH_CAP) < 0) { svc_bad(name, "exec", "a path, as a string"); return; }
+
+    // `start = boot` runs it now. `every` repeats it. They are independent, and
+    // a descriptor with neither is simply off - which is what lets one sit on
+    // disk disabled instead of having to be deleted.
+    let at_boot: i32 = 0;
+    if (xd_get(src, &root, "start", &v) == 1) {
+        if (xd_sym_is(src, &v, "boot") == 0) { svc_bad(name, "start", "the symbol boot, or absent"); return; }
+        at_boot = 1;
+    }
+
+    let every: u32 = 0;
+    if (xd_get(src, &root, "every", &v) == 1) {
+        if (xd_u32(src, &v, &every) != XD_OK) { svc_bad(name, "every", "a whole number of seconds"); return; }
+    }
+
+    if (at_boot == 0 && every == 0) { return; }        // present but off
+
+    let grants: u32 = GRANT_CONSOLE;
+    if (xd_get(src, &root, "grants", &v) == 1) {
+        if (v.kind != XD_LIST) { svc_bad(name, "grants", "a list of grant names"); return; }
+        if (svc_grants(name, src, &v, &grants) == 0) { svc_bad(name, "grants", "a list of grant names"); return; }
+    }
+
+    v.kind = XD_NONE;
+    xd_get(src, &root, "args", &v);
+    let packed: i32 = svc_pack(src, &v);
+    if (packed < 0) { svc_bad(name, "args", "a list of strings that fits the argument page"); return; }
+    let blob: u32 = packed as u32;
+
+    if (at_boot == 1) {
+        let pid: i32 = svc_run(&svc_exec[0], &svc_blob[0], blob, grants);
+        if (pid < 0) {
+            svc_fail(name, pid);
+        } else {
+            puts("supervisor: started ");
+            puts(name);
+            puts(" pid ");
+            print_u32(pid as u32);
+            newline();
+            svc_started = svc_started + 1;
+        }
+    }
+
+    if (every == 0) { return; }
+
+    if (sch_n >= SCH_MAX) {
+        puts("supervisor: ");
+        puts(name);
+        puts(": no room in the schedule\n");
+        return;
+    }
+
+    // Copy the exec path and the packed argv into the schedule: svc_exec and
+    // svc_blob are scratch and the next descriptor read overwrites both.
+    let e: u32 = sch_n * SCH_ESTRIDE;
+    let b: u32 = sch_n * SCH_BSTRIDE;
+    strcopy(&sch_exec[e], &svc_exec[0], SCH_ESTRIDE);
+    let k: u32 = 0;
+    while (k < blob && k < SCH_BSTRIDE) { sch_blob[b + k] = svc_blob[k]; k = k + 1; }
+    sch_blen[sch_n]   = k;
+    sch_grants[sch_n] = grants;
+    sch_every[sch_n]  = every;
+    sch_next[sch_n]   = ticks_ms() + every * 1000;
+    sch_n = sch_n + 1;
+
+    puts("supervisor: scheduled ");
+    puts(name);
+    puts(" every ");
+    print_u32(every);
+    puts("s\n");
+}
+
+// ---- the schedule loop -----------------------------------------------------
+//
+// Wake when the soonest task is due, run everything that has come due, work
+// out the next wake, sleep again. Between wakes the supervisor is blocked in
+// the kernel and off the run queue entirely - a scheduled task costs nothing
+// until it runs.
+//
+// All the time arithmetic is signed differences rather than direct
+// comparisons, because ticks_ms is milliseconds since boot in a u32 and wraps
+// after about 49 days. `now >= due` starts answering no for the next 49 days
+// the first time that happens; `(due - now) as i32 <= 0` does not care.
+//
+// What this does NOT do is notice that the previous run of a task is still
+// going. There is no way to ask - a pid is returned but nothing reports
+// whether it is still alive - so a task that runs longer than its interval
+// will be started again on top of itself. For the intervals worth setting by
+// hand that is not a real risk, and the honest fix is a "is this pid alive"
+// call rather than a guess here.
+fn svc_loop() -> void {
+    while (1 == 1) {
+        let now: u32 = ticks_ms();
+
+        // run everything due
+        let i: u32 = 0;
+        while (i < sch_n) {
+            if (((sch_next[i] - now) as i32) <= 0) {
+                let rc: i32 = svc_run(&sch_exec[i * SCH_ESTRIDE],
+                                      &sch_blob[i * SCH_BSTRIDE],
+                                      sch_blen[i], sch_grants[i]);
+                if (rc < 0) { svc_fail(&sch_exec[i * SCH_ESTRIDE], rc); }
+                else {
+                    // The tick it actually ran at, not the tick it was due.
+                    // For a scheduled task "when did this last happen" is the
+                    // question, and the answer has to come from the clock
+                    // rather than from what was intended.
+                    puts("supervisor: ran ");
+                    puts(&sch_exec[i * SCH_ESTRIDE]);
+                    puts(" at ");
+                    print_u32(ticks_ms());
+                    puts("ms\n");
+                }
+
+                // Next due from NOW, not from when it was due. A task whose
+                // run was late should not immediately be late again, and a
+                // task that could not start at all should not spin.
+                sch_next[i] = ticks_ms() + sch_every[i] * 1000;
+            }
+            i = i + 1;
+        }
+
+        // the soonest wake
+        now = ticks_ms();
+        let wait: u32 = SLEEP_MAX_MS;
+        i = 0;
+        while (i < sch_n) {
+            let d: i32 = (sch_next[i] - now) as i32;
+            if (d < 0) { d = 0; }
+            if ((d as u32) < wait) { wait = d as u32; }
+            i = i + 1;
+        }
+
+        // Never sleep zero in this loop: a task with a zero interval would
+        // spin the supervisor and starve everything else.
+        if (wait < 100) { wait = 100; }
+        sleep_ms(wait);
+    }
+}
+
+// ---- main ------------------------------------------------------------------
+
+fn _start() -> void {
+    svc_started = 0;
+
+    // Walk the directory by index. dir_entry returns 1 for a hit and 0 once
+    // the index runs past the end - it never returns a negative for "no more",
+    // so the loop stops on anything that is not 1. Testing for a negative
+    // instead runs to the bound with `st` still holding the LAST entry that
+    // was found, and starts that service over and over.
+    let i: u32 = 0;
+    while (i < 64) {
+        let st: file_stat;
+        if (dir_entry("/System/Services", i, &st) != 1) { break; }
+        i = i + 1;
+        if (st.kind != FTYPE_FILE) { continue; }
+        svc_start(&st.name[0]);
+    }
+
+    puts("supervisor: ");
+    print_u32(svc_started);
+    puts(" started, ");
+    print_u32(sch_n);
+    puts(" scheduled\n");
+
+    // Nothing to come back for: exit and free the thread slot rather than
+    // sleeping forever on the off chance.
+    if (sch_n == 0) { exit(0); }
+
+    svc_loop();
+    exit(0);
+}

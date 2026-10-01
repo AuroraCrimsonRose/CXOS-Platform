@@ -5,14 +5,14 @@
 #
 #   python3 tests/xdata/difftest.py [count] [seed]
 #
-# Needs: a Release build of CXEX.CLI, a CXK checkout (CXK_ROOT, or ../CXK beside this repo),
+# Needs: a Release build of CXEX.CLI, a CXK checkout (the platform root this devkit/ sits in, or CXK_ROOT),
 # and a host gcc that can link -m32 - the X side runs natively, not under QEMU.
 # Exit 0 = every document agreed. Set SABOTAGE=1 to skew one expectation and watch it fail.
 import os, random, subprocess, sys, collections, tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.normpath(os.path.join(HERE, "..", ".."))
 CXK = os.path.join(REPO, "CXEX.CLI", "bin", "Release", "net10.0", "cxk")
-ROOT = os.environ.get("CXK_ROOT") or os.path.join(REPO, "..", "CXK")
+ROOT = os.environ.get("CXK_ROOT") or os.path.normpath(os.path.join(REPO, ".."))
 STD = next((p for p in (os.path.join(ROOT, "CXK", "os", "std"), os.path.join(ROOT, "os", "std"))
             if os.path.exists(os.path.join(p, "xdata.xfxn"))), None)
 if not os.path.exists(CXK): sys.exit(f"build the CLI first: dotnet build CXEX.CLI -c Release  ({CXK})")

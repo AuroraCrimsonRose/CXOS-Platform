@@ -1,0 +1,1764 @@
+// xc/emit.xfxn - the X compiler's code generator, in X.
+// Aurora Tejeda / CATX SYSTEMS LLC
+//
+//   let e: emitter;
+//   emit_init(&e, &s, library);
+//   emit_program(&e, &decls, &out);   // the assembly text, into out
+//
+// Step four of stage 4 (docs/language/CX_X_CORE_LANG.md section 10): a line-for-line
+// port of the C# X86Emitter in devkit/CXEX.Lang/CodeGen, held to it by
+// `cxk asm` - the same assembly, character for character. It lowers the typed
+// tree to x86-32 GAS (AT&T) text for the cross toolchain to assemble:
+// a stack machine, cdecl, the result in eax, a value wider than a register (a
+// 64 or 128-bit integer, a struct, an array) represented by its address.
+//
+// The C# keeps its tables in dictionaries keyed by node; here they are side
+// tables indexed by node or symbol, each entry stamped with the function it
+// belongs to, so a new function starts with an empty frame without clearing.
+
+import "sema.xfxn";
+
+const WIDE_SLOTS: u32 = 16;      // a result holds its slot while its operands use the ones above
+const WIDE_SIZE: u32 = 16;
+const NO_SLOT: i32 = -2147483647;
+
+struct emitter {
+    s: *sema,
+    p: *parser,
+    text: buf,
+    data: buf,
+    bss: buf,
+    strs: buf,
+    label: u32,
+    strings: smap,          // a string's bytes -> its number in .Lstr<n>
+    library: bool,
+    gen: u32,               // which function a stamp belongs to
+    frame_gen: list,        // per symbol: stamp, offset from ebp, type
+    frame_off: list,
+    frame_ty: list,
+    slot_gen: list,         // per node: stamp and offset of its frame slot - a call's
+    slot_off: list,         // result, a literal, a switch's subject
+    wide_base: i32,         // the wide pool: offset of slot 0, or 0 if none
+    wide_depth: u32,
+    cur_fn: u32,
+    cur_return: u32,
+    cur_sret: bool,
+    defer_items: list,      // deferred statements, block after block
+    defer_marks: list,      // where each open block's begin in defer_items
+    loop_top: list,         // enclosing loops: continue and break labels, and
+    loop_end: list,         // how many defer lists were open when each began
+    loop_depth: list,
+    sink: i32,              // a file the text is written to as it goes, or -1
+    sink_ok: bool,
+    written: u32,           // bytes written to it
+    hash: u32,              // and their FNV-1a hash
+}
+
+fn en_(e: *emitter, n: u32) -> *node { return node_at(e.p, n); }
+fn lst(e: *emitter, n: u32, i: u32) -> u32 { return list_at(e.p, en_(e, n).list, i); }
+
+fn emit_init(e: *emitter, s: *sema, library: bool) -> void {
+    e.s = s;
+    e.p = s.p;
+    e.text = buf_new();
+    e.data = buf_new();
+    e.bss = buf_new();
+    e.strs = buf_new();
+    e.label = 0;
+    e.strings = smap_new();
+    e.library = library;
+    e.gen = 0;
+    e.frame_gen = list_new(); e.frame_off = list_new(); e.frame_ty = list_new();
+    e.slot_gen = list_new(); e.slot_off = list_new();
+    e.wide_base = 0;
+    e.wide_depth = 0;
+    e.cur_fn = 0;
+    e.cur_return = 0;
+    e.cur_sret = false;
+    e.defer_items = list_new(); e.defer_marks = list_new();
+    e.loop_top = list_new(); e.loop_end = list_new(); e.loop_depth = list_new();
+    e.sink = -1;
+    e.sink_ok = true;
+    e.written = 0;
+    e.hash = 0x811C9DC5;
+    s.expand_enums = true;   // see SemaContext.ExpandEnums
+}
+
+// ---- output ----
+
+/* With a sink, the text goes to the file as it is made, a function at a time,
+   rather than all of it being held: the assembly of the compiler itself is
+   over a megabyte, and a CXK process has 16 MB for everything. */
+fn emit_to(e: *emitter, h: i32) -> void { e.sink = h; }
+
+fn emit_flush(e: *emitter, all: bool) -> void {
+    if (e.sink < 0 || (!all && e.text.len < 65536)) { return; }
+    if (!xc_write(e.sink, e.text.data, e.text.len)) { e.sink_ok = false; }
+    let i: u32 = 0;
+    while (i < e.text.len) { e.hash ^= e.text.data[i] as u32; e.hash *= 0x01000193; i += 1; }
+    e.written += e.text.len;
+    e.text.len = 0;
+}
+
+fn buf_i32(b: *buf, v: i32) -> void {
+    if (v < 0) { buf_push(b, '-'); buf_u32(b, (0 - v) as u32); return; }
+    buf_u32(b, v as u32);
+}
+
+// One instruction line: "    " and the text.
+fn t(e: *emitter, s: *u8) -> void { buf_str(&e.text, "    "); buf_str(&e.text, s); buf_push(&e.text, '\n'); }
+// ... or built a piece at a time: tb, then pieces, then te.
+fn tb(e: *emitter) -> void { buf_str(&e.text, "    "); }
+fn ts(e: *emitter, s: *u8) -> void { buf_str(&e.text, s); }
+fn tu(e: *emitter, v: u32) -> void { buf_u32(&e.text, v); }
+fn tn(e: *emitter, v: i32) -> void { buf_i32(&e.text, v); }
+fn tl(e: *emitter, l: u32) -> void { buf_str(&e.text, ".L"); buf_u32(&e.text, l); }
+fn tname(e: *emitter, n: u32) -> void { let x: *node = en_(e, n); buf_append(&e.text, &e.p.text.data[x.text], x.tlen); }
+fn te(e: *emitter) -> void { buf_push(&e.text, '\n'); }
+
+// "op off(%ebp), reg" and the like, which are most of what is written.
+fn t_off(e: *emitter, before: *u8, off: i32, after: *u8) -> void { tb(e); ts(e, before); tn(e, off); ts(e, after); te(e); }
+fn t_imm(e: *emitter, before: *u8, v: u32, after: *u8) -> void { tb(e); ts(e, before); tu(e, v); ts(e, after); te(e); }
+
+fn lbl(e: *emitter, l: u32) -> void { tl(e, l); buf_str(&e.text, ":\n"); }
+fn nl(e: *emitter) -> u32 { let l: u32 = e.label; e.label += 1; return l; }
+
+fn d_str(e: *emitter, s: *u8) -> void { buf_str(&e.data, s); }
+fn d_u32(e: *emitter, v: u32) -> void { buf_u32(&e.data, v); }
+fn d_name(e: *emitter, n: u32) -> void { let x: *node = en_(e, n); buf_append(&e.data, &e.p.text.data[x.text], x.tlen); }
+
+// ---- types, as the emitter sees them ----
+
+fn ty_of(e: *emitter, x: u32) -> u32 {
+    let t0: u32 = st_get(&e.s.types, x);
+    if (t0 == 0) { return e.s.t_i32; }
+    return t0;
+}
+
+fn ex(e: *emitter, t0: u32) -> u32 { return expand(e.s, t0); }
+fn ekind(e: *emitter, t0: u32) -> nk { return en_(e, ex(e, t0)).kind; }
+
+fn is_signed(e: *emitter, t0: u32) -> bool { let x: *node = en_(e, ex(e, t0)); return x.kind == nk.t_prim && prim_signed(x.op); }
+fn is_wide(e: *emitter, t0: u32) -> bool { let x: *node = en_(e, ex(e, t0)); return x.kind == nk.t_prim && prim_bytes(x.op) > 4; }
+
+fn align4(n: u32) -> u32 { return (n + 3) & 0xFFFFFFFC; }
+
+fn esize(e: *emitter, t0: u32) -> u32 {
+    let t: u32 = ex(e, t0);
+    let x: *node = en_(e, t);
+    switch (x.kind) {
+        case nk.t_prim { return prim_bytes(x.op); }
+        case nk.t_ptr, nk.t_fn { return 4; }
+        case nk.t_array { return esize(e, x.a) * (en_(e, t).value as u32); }
+        case nk.t_named {
+            let sd: u32 = map_get_node(e.s, &e.s.structs, t);
+            if (sd != SMAP_NONE) { return struct_size(e, sd); }
+            return 4;
+        }
+        else { return 4; }
+    }
+    return 4;
+}
+
+fn struct_size(e: *emitter, sd: u32) -> u32 {
+    let o: u32 = 0;
+    let i: u32 = 0;
+    while (i < en_(e, sd).count) { o += align4(esize(e, en_(e, lst(e, sd, i)).a)); i += 1; }
+    return o;
+}
+
+// A field's offset; `name` is any node whose text is the field's name.
+fn field_offset(e: *emitter, sd: u32, name: u32) -> u32 {
+    let o: u32 = 0;
+    let i: u32 = 0;
+    while (i < en_(e, sd).count) {
+        let f: u32 = lst(e, sd, i);
+        if (node_name_eq(e.s, f, name)) { return o; }
+        o += align4(esize(e, en_(e, f).a));
+        i += 1;
+    }
+    return 0;
+}
+
+fn estruct_of(e: *emitter, t0: u32) -> u32 { return struct_of(e.s, t0); }
+
+fn is_aggregate(e: *emitter, t0: u32) -> bool { return is_wide(e, t0) || estruct_of(e, t0) != 0; }
+fn returns_in_regs64(e: *emitter, t0: u32) -> bool { return is_wide(e, t0) && esize(e, t0) == 8; }
+fn returns_via_pointer(e: *emitter, t0: u32) -> bool { return estruct_of(e, t0) != 0 || (is_wide(e, t0) && esize(e, t0) > 8); }
+fn is_copied(e: *emitter, t0: u32) -> bool { return is_aggregate(e, t0) || ekind(e, t0) == nk.t_array; }
+
+// ---- side tables, stamped per function ----
+
+fn frame_set(e: *emitter, sym1: u32, off: i32, ty: u32) -> void {
+    st_set(&e.frame_gen, sym1, e.gen);
+    st_set(&e.frame_off, sym1, off as u32);
+    st_set(&e.frame_ty, sym1, ty);
+}
+fn frame_has(e: *emitter, sym1: u32) -> bool { return sym1 != 0 && st_get(&e.frame_gen, sym1) == e.gen; }
+fn frame_off(e: *emitter, sym1: u32) -> i32 { return st_get(&e.frame_off, sym1) as i32; }
+
+fn slot_set(e: *emitter, n: u32, off: i32) -> void { st_set(&e.slot_gen, n, e.gen); st_set(&e.slot_off, n, off as u32); }
+fn slot_has(e: *emitter, n: u32) -> bool { return st_get(&e.slot_gen, n) == e.gen; }
+fn slot_of(e: *emitter, n: u32) -> i32 { return st_get(&e.slot_off, n) as i32; }
+
+// ---- strings ----
+
+// The label of a string's bytes, interned: one copy of each, NUL-terminated.
+fn intern(e: *emitter, sn: u32) -> u32 {
+    let x: *node = en_(e, sn);
+    let k: u32 = smap_get(&e.strings, &e.p.text.data[x.text], x.tlen);
+    if (k != SMAP_NONE) { return k; }
+    k = e.strings.count;
+    smap_put(&e.strings, &e.p.text.data[en_(e, sn).text], en_(e, sn).tlen, k);
+    buf_str(&e.strs, ".Lstr"); buf_u32(&e.strs, k); buf_str(&e.strs, ":\n    .byte ");
+    let i: u32 = 0;
+    while (i < en_(e, sn).tlen) {
+        buf_u32(&e.strs, e.p.text.data[en_(e, sn).text + i] as u32);
+        buf_str(&e.strs, ", ");
+        i += 1;
+    }
+    buf_str(&e.strs, "0\n");
+    return k;
+}
+
+// ---- small sequences ----
+
+fn save_idx(e: *emitter) -> void { t(e, "push %esi"); t(e, "push %edi"); }
+fn restore_idx(e: *emitter) -> void { t(e, "pop %edi"); t(e, "pop %esi"); }
+
+fn load_from(e: *emitter, ty: u32) -> void {
+    if (is_wide(e, ty) || estruct_of(e, ty) != 0 || ekind(e, ty) == nk.t_array) { return; }
+    let n: u32 = esize(e, ty);
+    if (n == 1) { if (is_signed(e, ty)) { t(e, "movsbl (%eax), %eax"); } else { t(e, "movzbl (%eax), %eax"); } }
+    else if (n == 2) { if (is_signed(e, ty)) { t(e, "movswl (%eax), %eax"); } else { t(e, "movzwl (%eax), %eax"); } }
+    else { t(e, "mov (%eax), %eax"); }
+}
+
+fn store_to(e: *emitter, ty: u32) -> void {
+    let n: u32 = esize(e, ty);
+    if (n == 1) { t(e, "mov %cl, (%eax)"); }
+    else if (n == 2) { t(e, "mov %cx, (%eax)"); }
+    else { t(e, "mov %ecx, (%eax)"); }
+}
+
+fn copy_bytes(e: *emitter, bytes: u32) -> void {
+    let o: u32 = 0;
+    while (o < bytes) {
+        t_imm(e, "mov ", o, "(%esi), %eax");
+        t_imm(e, "mov %eax, ", o, "(%edi)");
+        o += 4;
+    }
+}
+
+fn copy_bytes_exact(e: *emitter, bytes: u32) -> void {
+    let o: u32 = 0;
+    while (o + 4 <= bytes) { t_imm(e, "mov ", o, "(%esi), %eax"); t_imm(e, "mov %eax, ", o, "(%edi)"); o += 4; }
+    while (o < bytes) { t_imm(e, "movb ", o, "(%esi), %al"); t_imm(e, "movb %al, ", o, "(%edi)"); o += 1; }
+}
+
+fn copy_to_frame(e: *emitter, off: i32, bytes: u32) -> void {
+    save_idx(e);
+    t(e, "mov %eax, %esi");
+    t_off(e, "lea ", off, "(%ebp), %edi");
+    copy_bytes_exact(e, bytes);
+    restore_idx(e);
+}
+
+// The value in eax cut to an 8 or 16-bit type, and extended back to 32 bits.
+fn wrap_to(e: *emitter, ty: u32) -> void {
+    let x: *node = en_(e, ex(e, ty));
+    if (x.kind != nk.t_prim || x.op == PRIM_BOOL) { return; }
+    let n: u32 = prim_bytes(x.op);
+    if (n == 1) { if (prim_signed(x.op)) { t(e, "movsbl %al, %eax"); } else { t(e, "movzbl %al, %eax"); } }
+    else if (n == 2) { if (prim_signed(x.op)) { t(e, "movswl %ax, %eax"); } else { t(e, "movzwl %ax, %eax"); } }
+}
+
+// ---- the program ----
+
+fn section_of(e: *emitter, d: u32) -> u32 {
+    let i: u32 = 0;
+    while (i < en_(e, d).nattrs) {
+        let a: u32 = list_at(e.p, en_(e, d).attrs, i);
+        if (node_name_is(e.s, a, "section") && en_(e, a).count == 1) {
+            let arg: u32 = lst(e, a, 0);
+            if (en_(e, arg).op == 0 && en_(e, en_(e, arg).a).kind == nk.e_str) { return en_(e, arg).a; }
+        }
+        i += 1;
+    }
+    return 0;
+}
+
+fn emit_program(e: *emitter, decls: *list, out: *buf) -> void {
+    buf_str(&e.text, ".text\n");
+    if (!e.library) { buf_str(&e.text, ".globl _start\n"); }
+    buf_str(&e.data, ".data\n");
+    buf_str(&e.bss, ".bss\n");
+    let i: u32 = 0;
+    while (i < decls.len) {
+        let d: u32 = decls.items[i];
+        i += 1;
+        let k: nk = en_(e, d).kind;
+        if (k == nk.d_fn && en_(e, d).b != 0) {
+            if (e.library) { ts(e, ".globl "); tname(e, d); te(e); }
+            emit_fn(e, d);
+            emit_flush(e, false);
+        } else if (k == nk.d_global) {
+            if (e.library) { ts(e, ".globl "); tname(e, d); te(e); }
+            emit_global(e, d);
+        }
+    }
+    // the small sections go after the text, which is then handed over whole:
+    // copying a megabyte of assembly into another buffer would need room for both
+    buf_push(&e.text, '\n');
+    buf_append(&e.text, e.data.data, e.data.len);
+    buf_str(&e.text, "\n.data\n");
+    buf_append(&e.text, e.strs.data, e.strs.len);
+    buf_push(&e.text, '\n');
+    buf_append(&e.text, e.bss.data, e.bss.len);
+    if (e.sink >= 0) {
+        emit_flush(e, true);
+        buf_free(&e.data);
+        buf_free(&e.strs);
+        buf_free(&e.bss);
+        return;
+    }
+    buf_free(out);
+    out[0] = e.text;
+    e.text = buf_new();
+    buf_free(&e.data);
+    buf_free(&e.strs);
+    buf_free(&e.bss);
+}
+
+// ---- walkers, in the order the C# yields ----
+
+fn collect_locals(e: *emitter, b: u32, out: *list) -> void {
+    let i: u32 = 0;
+    while (i < en_(e, b).count) { locals_in(e, lst(e, b, i), out); i += 1; }
+}
+
+fn locals_in(e: *emitter, st: u32, out: *list) -> void {
+    let x: *node = en_(e, st);
+    switch (x.kind) {
+        case nk.s_let { list_push(out, st); }
+        case nk.s_block { collect_locals(e, st, out); }
+        case nk.s_if { collect_locals(e, x.b, out); if (en_(e, st).c != 0) { collect_locals(e, en_(e, st).c, out); } }
+        case nk.s_while { collect_locals(e, x.b, out); }
+        case nk.s_defer { locals_in(e, x.a, out); }
+        case nk.s_switch {
+            let i: u32 = 0;
+            while (i < en_(e, st).count) {
+                let c: u32 = lst(e, st, i);
+                if (en_(e, c).op == 1) { list_push(out, c); }
+                collect_locals(e, en_(e, c).a, out);
+                i += 1;
+            }
+            if (en_(e, st).b != 0) { collect_locals(e, en_(e, st).b, out); }
+        }
+        else { }
+    }
+}
+
+fn switches_in(e: *emitter, st: u32, out: *list) -> void {
+    let x: *node = en_(e, st);
+    switch (x.kind) {
+        case nk.s_block { let i: u32 = 0; while (i < en_(e, st).count) { switches_in(e, lst(e, st, i), out); i += 1; } }
+        case nk.s_if { switches_in(e, x.b, out); if (en_(e, st).c != 0) { switches_in(e, en_(e, st).c, out); } }
+        case nk.s_while { switches_in(e, x.b, out); }
+        case nk.s_defer { switches_in(e, x.a, out); }
+        case nk.s_switch {
+            list_push(out, st);
+            let i: u32 = 0;
+            while (i < en_(e, st).count) { switches_in(e, en_(e, lst(e, st, i)).a, out); i += 1; }
+            if (en_(e, st).b != 0) { switches_in(e, en_(e, st).b, out); }
+        }
+        else { }
+    }
+}
+
+fn calls_in(e: *emitter, st: u32, out: *list) -> void {
+    let x: *node = en_(e, st);
+    switch (x.kind) {
+        case nk.s_block { let i: u32 = 0; while (i < en_(e, st).count) { calls_in(e, lst(e, st, i), out); i += 1; } }
+        case nk.s_let { if (x.b != 0) { calls_in_expr(e, x.b, out); } }
+        case nk.s_assign { calls_in_expr(e, x.a, out); calls_in_expr(e, en_(e, st).b, out); }
+        case nk.s_if {
+            calls_in_expr(e, x.a, out);
+            calls_in(e, en_(e, st).b, out);
+            if (en_(e, st).c != 0) { calls_in(e, en_(e, st).c, out); }
+        }
+        case nk.s_while { calls_in_expr(e, x.a, out); calls_in(e, en_(e, st).b, out); }
+        case nk.s_return { if (x.a != 0) { calls_in_expr(e, x.a, out); } }
+        case nk.s_expr { calls_in_expr(e, x.a, out); }
+        case nk.s_defer { calls_in(e, x.a, out); }
+        case nk.s_switch {
+            calls_in_expr(e, x.a, out);
+            let i: u32 = 0;
+            while (i < en_(e, st).count) { calls_in(e, en_(e, lst(e, st, i)).a, out); i += 1; }   // not the labels
+            if (en_(e, st).b != 0) { calls_in(e, en_(e, st).b, out); }
+        }
+        else { }
+    }
+}
+
+fn calls_in_expr(e: *emitter, x0: u32, out: *list) -> void {
+    let x: *node = en_(e, x0);
+    switch (x.kind) {
+        case nk.e_struct_lit {
+            list_push(out, x0);
+            let i: u32 = 0;
+            while (i < en_(e, x0).count) { calls_in_expr(e, en_(e, lst(e, x0, i)).a, out); i += 1; }
+        }
+        case nk.e_array_lit {
+            list_push(out, x0);
+            let i: u32 = 0;
+            while (i < en_(e, x0).count) { calls_in_expr(e, lst(e, x0, i), out); i += 1; }
+        }
+        case nk.e_call {
+            list_push(out, x0);
+            calls_in_expr(e, x.a, out);
+            let i: u32 = 0;
+            while (i < en_(e, x0).count) { calls_in_expr(e, lst(e, x0, i), out); i += 1; }
+        }
+        case nk.e_binary { calls_in_expr(e, x.a, out); calls_in_expr(e, en_(e, x0).b, out); }
+        case nk.e_unary, nk.e_cast { calls_in_expr(e, x.a, out); }
+        case nk.e_member {
+            if (st_get(&e.s.eref_idx, x0) != 0) {
+                if (enum_is_sum(e.s, st_get(&e.s.eref_enum, x0))) { list_push(out, x0); }   // a whole sum value, built in a slot
+            } else {
+                calls_in_expr(e, x.a, out);
+            }
+        }
+        case nk.e_index { calls_in_expr(e, x.a, out); calls_in_expr(e, en_(e, x0).b, out); }
+        else { }
+    }
+}
+
+fn exprs_in(e: *emitter, st: u32, out: *list) -> void {
+    let x: *node = en_(e, st);
+    switch (x.kind) {
+        case nk.s_block { let i: u32 = 0; while (i < en_(e, st).count) { exprs_in(e, lst(e, st, i), out); i += 1; } }
+        case nk.s_let { if (x.b != 0) { exprs_in_expr(e, x.b, out); } }
+        case nk.s_assign { exprs_in_expr(e, x.a, out); exprs_in_expr(e, en_(e, st).b, out); }
+        case nk.s_if {
+            exprs_in_expr(e, x.a, out);
+            exprs_in(e, en_(e, st).b, out);
+            if (en_(e, st).c != 0) { exprs_in(e, en_(e, st).c, out); }
+        }
+        case nk.s_while { exprs_in_expr(e, x.a, out); exprs_in(e, en_(e, st).b, out); }
+        case nk.s_return { if (x.a != 0) { exprs_in_expr(e, x.a, out); } }
+        case nk.s_expr { exprs_in_expr(e, x.a, out); }
+        case nk.s_defer { exprs_in(e, x.a, out); }
+        case nk.s_switch {
+            exprs_in_expr(e, x.a, out);
+            let i: u32 = 0;
+            while (i < en_(e, st).count) {
+                let c: u32 = lst(e, st, i);
+                let j: u32 = 0;
+                while (j < en_(e, c).count) { exprs_in_expr(e, lst(e, c, j), out); j += 1; }
+                exprs_in(e, en_(e, c).a, out);
+                i += 1;
+            }
+            if (en_(e, st).b != 0) { exprs_in(e, en_(e, st).b, out); }
+        }
+        else { }
+    }
+}
+
+fn exprs_in_expr(e: *emitter, x0: u32, out: *list) -> void {
+    list_push(out, x0);
+    let x: *node = en_(e, x0);
+    switch (x.kind) {
+        case nk.e_call {
+            exprs_in_expr(e, x.a, out);
+            let i: u32 = 0;
+            while (i < en_(e, x0).count) { exprs_in_expr(e, lst(e, x0, i), out); i += 1; }
+        }
+        case nk.e_binary, nk.e_index { exprs_in_expr(e, x.a, out); exprs_in_expr(e, en_(e, x0).b, out); }
+        case nk.e_unary, nk.e_member, nk.e_cast, nk.e_sizeof { exprs_in_expr(e, x.a, out); }
+        case nk.e_struct_lit {
+            let i: u32 = 0;
+            while (i < en_(e, x0).count) { exprs_in_expr(e, en_(e, lst(e, x0, i)).a, out); i += 1; }
+        }
+        case nk.e_array_lit {
+            let i: u32 = 0;
+            while (i < en_(e, x0).count) { exprs_in_expr(e, lst(e, x0, i), out); i += 1; }
+        }
+        else { }
+    }
+}
+
+// ---- wide temporaries ----
+
+fn contains_wide(e: *emitter, t0: u32, depth: u32) -> bool {
+    let t: u32 = ex(e, t0);
+    if (is_wide(e, t)) { return true; }
+    if (depth > 16) { return false; }
+    if (en_(e, t).kind == nk.t_array) { return contains_wide(e, en_(e, t).a, depth + 1); }
+    let sd: u32 = estruct_of(e, t);
+    if (sd != 0) {
+        let i: u32 = 0;
+        while (i < en_(e, sd).count) { if (contains_wide(e, en_(e, lst(e, sd, i)).a, depth + 1)) { return true; } i += 1; }
+    }
+    return false;
+}
+
+fn callee_fn(e: *emitter, c: u32) -> u32 {
+    let callee: u32 = en_(e, c).a;
+    if (en_(e, callee).kind != nk.e_name) { return 0; }
+    let sy: u32 = st_get(&e.s.resolved, callee);
+    if (sy == 0) { return 0; }
+    let d: u32 = sym_at(e.s, sy - 1).decl;
+    if (d != 0 && en_(e, d).kind == nk.d_fn) { return d; }
+    return 0;
+}
+
+fn callee_takes_wide(e: *emitter, c: u32) -> bool {
+    let fd: u32 = callee_fn(e, c);
+    if (fd != 0) {
+        let i: u32 = 0;
+        while (i < en_(e, fd).count) { if (contains_wide(e, en_(e, lst(e, fd, i)).a, 0)) { return true; } i += 1; }
+        return false;
+    }
+    let ct: u32 = st_get(&e.s.types, en_(e, c).a);
+    if (ct != 0 && ekind(e, ct) == nk.t_fn) {
+        let ft: u32 = ex(e, ct);
+        let i: u32 = 0;
+        while (i < en_(e, ft).count) { if (contains_wide(e, lst(e, ft, i), 0)) { return true; } i += 1; }
+    }
+    return false;
+}
+
+fn uses_wide(e: *emitter, f: u32) -> bool {
+    if (is_wide(e, en_(e, f).a)) { return true; }
+    let i: u32 = 0;
+    while (i < en_(e, f).count) { if (is_wide(e, en_(e, lst(e, f, i)).a)) { return true; } i += 1; }
+    let ls: list = list_new();
+    collect_locals(e, en_(e, f).b, &ls);
+    let found: bool = false;
+    i = 0;
+    while (i < ls.len) {
+        let lt: u32 = st_get(&e.s.localty, ls.items[i]);
+        if (lt != 0 && is_wide(e, lt)) { found = true; break; }
+        i += 1;
+    }
+    list_free(&ls);
+    if (found) { return true; }
+    let xs: list = list_new();
+    exprs_in(e, en_(e, f).b, &xs);
+    i = 0;
+    while (i < xs.len) {
+        let x: u32 = xs.items[i];
+        let xt: u32 = st_get(&e.s.types, x);
+        if (xt != 0 && contains_wide(e, xt, 0)) { found = true; break; }
+        if (en_(e, x).kind == nk.e_call && callee_takes_wide(e, x)) { found = true; break; }
+        i += 1;
+    }
+    list_free(&xs);
+    return found;
+}
+
+fn take_wide_slot(e: *emitter) -> i32 {
+    if (e.wide_base == 0) {
+        // no pool: UsesWide said none was needed, so taking one is the compiler's error
+        dg_begin(e.s.dg);
+        dg_str(e.s.dg, "internal: '");
+        let x: *node = en_(e, e.cur_fn);
+        dg_bytes(e.s.dg, &e.p.text.data[x.text], x.tlen);
+        dg_str(e.s.dg, "' needs a wide temporary but reserved none (UsesWide is incomplete)");
+        dg_end(e.s.dg, 0xFFFFFFFF, 0, 0);
+        return NO_SLOT;
+    }
+    if (e.wide_depth >= WIDE_SLOTS) { return NO_SLOT; }
+    let s: i32 = e.wide_base + (e.wide_depth * WIDE_SIZE) as i32;
+    e.wide_depth += 1;
+    return s;
+}
+
+fn emit_error(e: *emitter, msg: *u8, at: u32) -> void { err(e.s, msg, at); }
+
+// ---- functions ----
+
+fn emit_fn(e: *emitter, f: u32) -> void {
+    e.gen += 1;
+    e.cur_fn = f;
+    e.cur_return = en_(e, f).a;
+    e.cur_sret = returns_via_pointer(e, e.cur_return);
+    let poff: i32 = 8;
+    if (e.cur_sret) { poff = 12; }
+    let i: u32 = 0;
+    while (i < en_(e, f).count) {
+        let pm: u32 = lst(e, f, i);
+        let pt: u32 = en_(e, pm).a;
+        let sy: u32 = st_get(&e.s.letsym, pm);
+        if (sy != 0) { frame_set(e, sy, poff, pt); }
+        if (is_aggregate(e, pt)) { poff += align4(esize(e, pt)) as i32; } else { poff += 4; }
+        i += 1;
+    }
+    let locals: u32 = 0;
+    let ls: list = list_new();
+    collect_locals(e, en_(e, f).b, &ls);
+    i = 0;
+    while (i < ls.len) {
+        let l: u32 = ls.items[i];
+        let ty: u32 = st_get(&e.s.localty, l);
+        if (ty == 0) { ty = e.s.t_i32; }
+        locals += align4(esize(e, ty));
+        let sy: u32 = st_get(&e.s.letsym, l);
+        if (sy != 0) { frame_set(e, sy, 0 - locals as i32, ty); }
+        i += 1;
+    }
+    list_free(&ls);
+
+    // a word per switch, holding its subject
+    let sws: list = list_new();
+    switches_in(e, en_(e, f).b, &sws);
+    i = 0;
+    while (i < sws.len) { locals += 4; slot_set(e, sws.items[i], 0 - locals as i32); i += 1; }
+    list_free(&sws);
+
+    // a slot per expression whose value is at an address with nowhere else to be
+    let cs: list = list_new();
+    calls_in(e, en_(e, f).b, &cs);
+    i = 0;
+    while (i < cs.len) {
+        let c: u32 = cs.items[i];
+        i += 1;
+        let rt: u32 = ty_of(e, c);
+        let k: nk = en_(e, c).kind;
+        let needs: bool = k == nk.e_struct_lit || k == nk.e_array_lit || k == nk.e_member || is_aggregate(e, rt);
+        if (!needs || slot_has(e, c)) { continue; }
+        locals += align4(esize(e, rt));
+        slot_set(e, c, 0 - locals as i32);
+    }
+    list_free(&cs);
+
+    e.wide_depth = 0;
+    e.wide_base = 0;
+    if (uses_wide(e, f)) {
+        locals += WIDE_SLOTS * WIDE_SIZE;
+        e.wide_base = 0 - locals as i32;
+    }
+
+    let sec: u32 = section_of(e, f);
+    if (sec != 0) { ts(e, ".section "); tname(e, sec); ts(e, ",\"ax\",@progbits"); te(e); }
+    tname(e, f); ts(e, ":"); te(e);
+    t(e, "push %ebp");
+    t(e, "mov %esp, %ebp");
+    if (locals > 0) { t_imm(e, "sub $", align4(locals), ", %esp"); }
+    emit_block(e, en_(e, f).b);
+    tname(e, f); ts(e, "$ret:"); te(e);
+    t(e, "mov %ebp, %esp");
+    t(e, "pop %ebp");
+    if (e.cur_sret) { t(e, "ret $4"); } else { t(e, "ret"); }
+    if (sec != 0) { ts(e, ".text"); te(e); }
+}
+
+fn is_function_name(e: *emitter, x: u32) -> bool {
+    if (x == 0 || en_(e, x).kind != nk.e_name) { return false; }
+    let sy: u32 = st_get(&e.s.resolved, x);
+    return sy != 0 && sym_at(e.s, sy - 1).kind == SK_FUNCTION;
+}
+
+fn data_long(e: *emitter, v: u32) -> void { d_str(e, "    .long "); d_u32(e, v); d_str(e, "\n"); }
+fn data_zero(e: *emitter, n: u32) -> void { d_str(e, "    .zero "); d_u32(e, n); d_str(e, "\n"); }
+
+// A global with no initializer, or one that folds to zero, goes to .bss.
+fn emit_global(e: *emitter, g: u32) -> void {
+    let gt: u32 = en_(e, g).a;
+    let init: u32 = en_(e, g).b;
+    let size: u32 = align4(esize(e, gt));
+    let ik: nk = nk.none;
+    if (init != 0) { ik = en_(e, init).kind; }
+    if (ik == nk.e_struct_lit || ik == nk.e_array_lit || ik == nk.e_str || is_function_name(e, init)) {
+        let sec: u32 = section_of(e, g);
+        if (sec != 0) { d_str(e, ".section "); d_name(e, sec); d_str(e, ",\"aw\",@progbits\n"); }
+        d_str(e, "    .align 4\n");
+        d_name(e, g); d_str(e, ":\n");
+        emit_data(e, gt, init);
+        if (size > esize(e, gt)) { data_zero(e, size - esize(e, gt)); }
+        if (sec != 0) { d_str(e, ".data\n"); }
+        return;
+    }
+    let v: u128 = 0;
+    if (init != 0) { fold(e.s, init, &v); }
+
+    // in a named section it is emitted in full, zero or not
+    let section: u32 = section_of(e, g);
+    if (section != 0) {
+        d_str(e, ".section "); d_name(e, section); d_str(e, ",\"aw\",@progbits\n");
+        d_str(e, "    .align 4\n");
+        d_name(e, g); d_str(e, ":\n");
+        let i: u32 = 0;
+        while (i < size) {
+            if (i < 16) { data_long(e, (v >> (i * 8)) as u32); } else { data_long(e, 0); }
+            i += 4;
+        }
+        d_str(e, ".data\n");
+        return;
+    }
+    if (v == 0) {
+        buf_str(&e.bss, "    .align 4\n");
+        buf_append(&e.bss, &e.p.text.data[en_(e, g).text], en_(e, g).tlen); buf_str(&e.bss, ":\n");
+        buf_str(&e.bss, "    .zero "); buf_u32(&e.bss, size); buf_str(&e.bss, "\n");
+        return;
+    }
+    // every word of the value, low first
+    d_str(e, "    .align 4\n");
+    d_name(e, g); d_str(e, ":\n");
+    let i: u32 = 0;
+    while (i < size) {
+        if (i < 16) { data_long(e, (v >> (i * 8)) as u32); } else { data_long(e, 0); }
+        i += 4;
+    }
+}
+
+// Exactly esize(t) bytes of static data for x.
+fn emit_data(e: *emitter, t0: u32, x0: u32) -> void {
+    let tx: u32 = ex(e, t0);
+    let k: nk = en_(e, x0).kind;
+    let sd: u32 = estruct_of(e, tx);
+    if (k == nk.e_struct_lit && sd != 0) {
+        let pos: u32 = 0;
+        let i: u32 = 0;
+        while (i < en_(e, sd).count) {
+            let f: u32 = lst(e, sd, i);
+            i += 1;
+            let off: u32 = field_offset(e, sd, f);
+            if (off > pos) { data_zero(e, off - pos); }
+            let fi: u32 = 0;
+            let j: u32 = 0;
+            while (j < en_(e, x0).count) { if (node_name_eq(e.s, lst(e, x0, j), f)) { fi = lst(e, x0, j); break; } j += 1; }
+            if (fi != 0) { emit_data(e, en_(e, f).a, en_(e, fi).a); } else { data_zero(e, esize(e, en_(e, f).a)); }
+            pos = off + esize(e, en_(e, f).a);
+        }
+        if (struct_size(e, sd) > pos) { data_zero(e, struct_size(e, sd) - pos); }
+        return;
+    }
+    if (k == nk.e_array_lit && en_(e, tx).kind == nk.t_array) {
+        let i: u32 = 0;
+        while (i < en_(e, x0).count) { emit_data(e, en_(e, tx).a, lst(e, x0, i)); i += 1; }
+        let missing: i32 = (en_(e, tx).value as i32) - (en_(e, x0).count as i32);
+        if (missing > 0) { data_zero(e, (missing as u32) * esize(e, en_(e, tx).a)); }
+        return;
+    }
+    if (k == nk.e_str) { d_str(e, "    .long .Lstr"); d_u32(e, intern(e, x0)); d_str(e, "\n"); return; }
+    if (is_function_name(e, x0)) { d_str(e, "    .long "); d_name(e, x0); d_str(e, "\n"); return; }
+
+    let v: u128 = 0;
+    fold(e.s, x0, &v);
+    let n: u32 = esize(e, tx);
+    d_str(e, "    .byte ");
+    let i: u32 = 0;
+    while (i < n) {
+        if (i > 0) { d_str(e, ", "); }
+        if (i < 16) { d_u32(e, ((v >> (i * 8)) as u32) & 0xFF); } else { d_str(e, "0"); }
+        i += 1;
+    }
+    d_str(e, "\n");
+}
+
+// ---- statements ----
+
+fn emit_defers(e: *emitter, down_to: u32) -> void {
+    let i: u32 = e.defer_marks.len;
+    while (i > down_to) {
+        i -= 1;
+        // a copy: the bodies open blocks of their own
+        let start: u32 = e.defer_marks.items[i];
+        let end: u32 = e.defer_items.len;
+        if (i + 1 < e.defer_marks.len) { end = e.defer_marks.items[i + 1]; }
+        let pending: list = list_new();
+        let j: u32 = start;
+        while (j < end) { list_push(&pending, e.defer_items.items[j]); j += 1; }
+        j = pending.len;
+        while (j > 0) { j -= 1; emit_stmt(e, pending.items[j]); }
+        list_free(&pending);
+    }
+}
+
+fn any_defers(e: *emitter) -> bool { return e.defer_items.len > 0; }
+
+fn emit_block(e: *emitter, b: u32) -> void {
+    list_push(&e.defer_marks, e.defer_items.len);
+    let i: u32 = 0;
+    while (i < en_(e, b).count) { emit_stmt(e, lst(e, b, i)); i += 1; }
+    emit_defers(e, e.defer_marks.len - 1);       // the fall-through exit
+    e.defer_items.len = list_pop(&e.defer_marks);
+}
+
+fn jmp_ret(e: *emitter) -> void { tb(e); ts(e, "jmp "); tname(e, e.cur_fn); ts(e, "$ret"); te(e); }
+
+fn emit_stmt(e: *emitter, st: u32) -> void {
+    let x: *node = en_(e, st);
+    switch (x.kind) {
+        case nk.s_block { emit_block(e, st); }
+        case nk.s_let {
+            if (x.b != 0) {
+                let lty: u32 = st_get(&e.s.localty, st);
+                if (lty == 0) { lty = e.s.t_i32; }
+                if (is_copied(e, lty)) { emit_wide_init(e, st, en_(e, st).b, lty); }
+                else {
+                    emit_expr(e, en_(e, st).b);
+                    t_off(e, "mov %eax, ", frame_off(e, st_get(&e.s.letsym, st)), "(%ebp)");
+                }
+            }
+        }
+        case nk.s_assign { emit_assign(e, st); }
+        case nk.s_expr { emit_expr(e, x.a); }
+        case nk.s_return { emit_return(e, st); }
+        case nk.s_defer { if (e.defer_marks.len > 0) { list_push(&e.defer_items, x.a); } }
+        case nk.s_switch { emit_switch(e, st); }
+        case nk.s_if {
+            let els: u32 = nl(e);
+            let end: u32 = nl(e);
+            emit_expr(e, x.a); t(e, "test %eax, %eax"); tb(e); ts(e, "jz "); tl(e, els); te(e);
+            emit_block(e, en_(e, st).b); tb(e); ts(e, "jmp "); tl(e, end); te(e);
+            lbl(e, els);
+            if (en_(e, st).c != 0) { emit_block(e, en_(e, st).c); }
+            lbl(e, end);
+        }
+        case nk.s_while {
+            let top: u32 = nl(e);
+            let end: u32 = nl(e);
+            lbl(e, top); emit_expr(e, x.a); t(e, "test %eax, %eax"); tb(e); ts(e, "jz "); tl(e, end); te(e);
+            list_push(&e.loop_top, top); list_push(&e.loop_end, end); list_push(&e.loop_depth, e.defer_marks.len);
+            emit_block(e, en_(e, st).b);
+            list_pop(&e.loop_top); list_pop(&e.loop_end); list_pop(&e.loop_depth);
+            tb(e); ts(e, "jmp "); tl(e, top); te(e); lbl(e, end);
+        }
+        case nk.s_break, nk.s_continue {
+            let n: u32 = e.loop_top.len;
+            if (n > 0) {
+                emit_defers(e, e.loop_depth.items[n - 1]);
+                tb(e); ts(e, "jmp ");
+                if (en_(e, st).kind == nk.s_break) { tl(e, e.loop_end.items[n - 1]); } else { tl(e, e.loop_top.items[n - 1]); }
+                te(e);
+            }
+        }
+        else { }
+    }
+}
+
+// A wide or struct value is moved out before the defers run and the frame goes.
+fn emit_return(e: *emitter, st: u32) -> void {
+    let v: u32 = en_(e, st).a;
+    if (v != 0 && returns_via_pointer(e, e.cur_return)) {
+        let saved: u32 = e.wide_depth;
+        if (is_wide(e, e.cur_return)) { emit_wide_operand(e, v, e.cur_return); } else { emit_expr(e, v); }
+        save_idx(e);
+        t(e, "mov %eax, %esi");
+        t(e, "mov 8(%ebp), %edi");          // the hidden pointer
+        copy_bytes(e, align4(esize(e, e.cur_return)));
+        restore_idx(e);
+        e.wide_depth = saved;
+        if (any_defers(e)) { emit_defers(e, 0); }
+        t(e, "mov 8(%ebp), %eax");          // returned, as C expects
+        jmp_ret(e);
+        return;
+    }
+    if (v != 0 && returns_in_regs64(e, e.cur_return)) {
+        let saved: u32 = e.wide_depth;
+        emit_wide_operand(e, v, e.cur_return);
+        t(e, "pushl 4(%eax)");
+        t(e, "pushl (%eax)");
+        e.wide_depth = saved;
+        if (any_defers(e)) { emit_defers(e, 0); }
+        t(e, "pop %eax");
+        t(e, "pop %edx");
+        jmp_ret(e);
+        return;
+    }
+    if (v != 0) { emit_expr(e, v); }
+    if (any_defers(e)) {
+        t(e, "push %eax");
+        emit_defers(e, 0);
+        t(e, "pop %eax");
+    }
+    jmp_ret(e);
+}
+
+fn emit_wide_init(e: *emitter, l: u32, init: u32, wt: u32) -> void {
+    let saved: u32 = e.wide_depth;
+    if (is_wide(e, wt)) { emit_wide_operand(e, init, wt); } else { emit_expr(e, init); }
+    save_idx(e);
+    t(e, "mov %eax, %esi");
+    t_off(e, "lea ", frame_off(e, st_get(&e.s.letsym, l)), "(%ebp), %edi");
+    copy_bytes_exact(e, esize(e, wt));
+    restore_idx(e);
+    e.wide_depth = saved;
+}
+
+// ---- literals ----
+
+fn emit_store_at(e: *emitter, off: i32, ty: u32, v: u32) -> void {
+    let saved: u32 = e.wide_depth;
+    if (is_wide(e, ty)) { emit_wide_operand(e, v, ty); copy_to_frame(e, off, esize(e, ty)); }
+    else if (is_copied(e, ty)) { emit_expr(e, v); copy_to_frame(e, off, esize(e, ty)); }
+    else { emit_expr(e, v); t(e, "mov %eax, %ecx"); t_off(e, "lea ", off, "(%ebp), %eax"); store_to(e, ty); }
+    e.wide_depth = saved;
+}
+
+fn emit_struct_lit(e: *emitter, sl: u32) -> void {
+    let slot: i32 = slot_of(e, sl);
+    let tname_: u32 = en_(e, sl).a;
+    // Enum.variant { ... }: the tag, then the fields after it
+    if (en_(e, tname_).kind == nk.e_member && st_get(&e.s.eref_idx, tname_) != 0) {
+        let ed: u32 = st_get(&e.s.eref_enum, tname_);
+        let idx: u32 = st_get(&e.s.eref_idx, tname_) - 1;
+        let size: u32 = esize(e, mk_named_of(e.s, ed));
+        tb(e); ts(e, "movl $"); tu(e, idx); ts(e, ", "); tn(e, slot); ts(e, "(%ebp)"); te(e);
+        let o: u32 = 4;
+        while (o < size) { t_off(e, "movl $0, ", slot + o as i32, "(%ebp)"); o += 4; }
+        let v: u32 = variant_at(e.s, ed, idx);
+        let pn: u32 = text_join(e.s, en_(e, ed).text, en_(e, ed).tlen, en_(e, v).text, en_(e, v).tlen);
+        let pd: u32 = smap_get(&e.s.structs, txt(e.s, pn), en_(e, ed).tlen + 1 + en_(e, v).tlen);
+        if (pd != SMAP_NONE) {
+            let i: u32 = 0;
+            while (i < en_(e, sl).count) {
+                let fi: u32 = lst(e, sl, i);
+                let decl: u32 = field_named(e.s, pd, fi);
+                if (decl != 0) { emit_store_at(e, slot + 4 + field_offset(e, pd, fi) as i32, en_(e, decl).a, en_(e, fi).a); }
+                i += 1;
+            }
+        }
+        t_off(e, "lea ", slot, "(%ebp), %eax");
+        return;
+    }
+    let sd: u32 = estruct_of(e, ty_of(e, sl));
+    if (sd != 0) {
+        let i: u32 = 0;
+        while (i < en_(e, sl).count) {
+            let fi: u32 = lst(e, sl, i);
+            let decl: u32 = field_named(e.s, sd, fi);
+            if (decl != 0) { emit_store_at(e, slot + field_offset(e, sd, fi) as i32, en_(e, decl).a, en_(e, fi).a); }
+            i += 1;
+        }
+    }
+    t_off(e, "lea ", slot, "(%ebp), %eax");
+}
+
+fn emit_array_lit(e: *emitter, al: u32) -> void {
+    let slot: i32 = slot_of(e, al);
+    let at: u32 = ex(e, ty_of(e, al));
+    if (en_(e, at).kind == nk.t_array) {
+        let es: u32 = esize(e, en_(e, at).a);
+        let i: u32 = 0;
+        while (i < en_(e, al).count) { emit_store_at(e, slot + (i * es) as i32, en_(e, at).a, lst(e, al, i)); i += 1; }
+    }
+    t_off(e, "lea ", slot, "(%ebp), %eax");
+}
+
+// `color.red` is its value; a sum's field-less variant is a whole sum value, in a slot.
+fn emit_variant(e: *emitter, m: u32, ed: u32, index: u32) -> void {
+    let v: u128 = 0;
+    enum_value(e.s, ed, index, &v);
+    if (!enum_is_sum(e.s, ed)) { t_imm(e, "mov $", v as u32, ", %eax"); return; }
+    let slot: i32 = slot_of(e, m);
+    let size: u32 = esize(e, mk_named_of(e.s, ed));
+    tb(e); ts(e, "movl $"); tu(e, index); ts(e, ", "); tn(e, slot); ts(e, "(%ebp)"); te(e);
+    let o: u32 = 4;
+    while (o < size) { t_off(e, "movl $0, ", slot + o as i32, "(%ebp)"); o += 4; }
+    t_off(e, "lea ", slot, "(%ebp), %eax");
+}
+
+// ---- switch ----
+
+fn emit_switch(e: *emitter, sw: u32) -> void {
+    let slot: i32 = slot_of(e, sw);
+    let st: u32 = ty_of(e, en_(e, sw).a);
+    let sx: u32 = ex(e, st);
+    let sum: bool = false;
+    if (en_(e, sx).kind == nk.t_named) {
+        let ed: u32 = map_get_node(e.s, &e.s.enums, sx);
+        sum = ed != SMAP_NONE && enum_is_sum(e.s, ed);
+    }
+    let saved: u32 = e.wide_depth;
+    emit_expr(e, en_(e, sw).a);
+    e.wide_depth = saved;
+    t_off(e, "mov %eax, ", slot, "(%ebp)");
+
+    let end: u32 = nl(e);
+    let els: u32 = end;
+    if (en_(e, sw).b != 0) { els = nl(e); }
+    let bodies: list = list_new();
+    let ci: u32 = 0;
+    while (ci < en_(e, sw).count) {
+        let c: u32 = lst(e, sw, ci);
+        ci += 1;
+        let lb: u32 = nl(e);
+        list_push(&bodies, lb);
+        let li: u32 = 0;
+        while (li < en_(e, c).count) {
+            let l: u32 = lst(e, c, li);
+            li += 1;
+            let v: u128 = 0;
+            if (en_(e, l).kind == nk.e_member && st_get(&e.s.eref_idx, l) != 0) {
+                let idx: u32 = st_get(&e.s.eref_idx, l) - 1;
+                if (sum) { v = idx as u128; } else { enum_value(e.s, st_get(&e.s.eref_enum, l), idx, &v); }
+            } else if (!fold(e.s, l, &v)) { continue; }
+            if (sum) { t_off(e, "mov ", slot, "(%ebp), %eax"); t_imm(e, "cmpl $", v as u32, ", (%eax)"); }
+            else { tb(e); ts(e, "cmpl $"); tu(e, v as u32); ts(e, ", "); tn(e, slot); ts(e, "(%ebp)"); te(e); }
+            tb(e); ts(e, "je "); tl(e, lb); te(e);
+        }
+    }
+    tb(e); ts(e, "jmp "); tl(e, els); te(e);
+
+    ci = 0;
+    while (ci < en_(e, sw).count) {
+        let c: u32 = lst(e, sw, ci);
+        lbl(e, bodies.items[ci]);
+        ci += 1;
+        if (en_(e, c).op == 1) {
+            let bs: u32 = st_get(&e.s.letsym, c);
+            if (frame_has(e, bs)) {
+                t_off(e, "mov ", slot, "(%ebp), %eax");
+                t(e, "add $4, %eax");
+                t_off(e, "mov %eax, ", frame_off(e, bs), "(%ebp)");
+            }
+        }
+        emit_block(e, en_(e, c).a);
+        tb(e); ts(e, "jmp "); tl(e, end); te(e);
+    }
+    if (en_(e, sw).b != 0) { lbl(e, els); emit_block(e, en_(e, sw).b); }
+    lbl(e, end);
+    list_free(&bodies);
+}
+
+// ---- assignment ----
+
+fn emit_assign(e: *emitter, a: u32) -> void {
+    let target: u32 = en_(e, a).a;
+    let value: u32 = en_(e, a).b;
+    let tt: u32 = ty_of(e, target);
+    if (is_wide(e, tt)) {
+        let saved: u32 = e.wide_depth;
+        emit_wide_operand(e, value, tt);   // source address -> eax
+        t(e, "push %eax");
+        emit_addr(e, target);              // destination address -> eax
+        save_idx(e);
+        t(e, "mov %eax, %edi");
+        t(e, "mov 8(%esp), %esi");
+        copy_bytes(e, esize(e, tt));
+        restore_idx(e);
+        t(e, "add $4, %esp");
+        e.wide_depth = saved;
+        return;
+    }
+    // a struct or an array is at an address: assigning it copies its bytes
+    if (estruct_of(e, tt) != 0 || ekind(e, tt) == nk.t_array) {
+        emit_expr(e, value);
+        t(e, "push %eax");
+        emit_addr(e, target);
+        save_idx(e);
+        t(e, "mov %eax, %edi");
+        t(e, "mov 8(%esp), %esi");
+        copy_bytes_exact(e, esize(e, tt));
+        restore_idx(e);
+        t(e, "add $4, %esp");
+        return;
+    }
+    emit_expr(e, value);
+    t(e, "push %eax");
+    emit_addr(e, target);
+    t(e, "pop %ecx");
+    store_to(e, ty_of(e, target));
+}
+
+// ---- expressions: the result in eax ----
+
+fn emit_expr(e: *emitter, x0: u32) -> void {
+    let x: *node = en_(e, x0);
+    switch (x.kind) {
+        case nk.e_int {
+            if (is_wide(e, ty_of(e, x0))) { emit_wide_operand(e, x0, ty_of(e, x0)); }
+            else { t_imm(e, "mov $", en_(e, x0).value as u32, ", %eax"); }
+        }
+        case nk.e_str { tb(e); ts(e, "mov $.Lstr"); tu(e, intern(e, x0)); ts(e, ", %eax"); te(e); }
+        case nk.e_sizeof { t_imm(e, "mov $", esize(e, ty_of(e, x.a)), ", %eax"); }
+        case nk.e_bool { if (x.op == 1) { t(e, "mov $1, %eax"); } else { t(e, "mov $0, %eax"); } }
+        case nk.e_name { emit_name(e, x0); }
+        case nk.e_binary { emit_binary(e, x0); }
+        case nk.e_unary { emit_unary(e, x0); }
+        case nk.e_call { emit_call(e, x0); }
+        case nk.e_cast { emit_cast(e, x0); }
+        case nk.e_struct_lit { emit_struct_lit(e, x0); }
+        case nk.e_array_lit { emit_array_lit(e, x0); }
+        case nk.e_member {
+            if (st_get(&e.s.eref_idx, x0) != 0) {
+                emit_variant(e, x0, st_get(&e.s.eref_enum, x0), st_get(&e.s.eref_idx, x0) - 1);
+            } else { emit_addr(e, x0); load_from(e, ty_of(e, x0)); }
+        }
+        case nk.e_index { emit_addr(e, x0); load_from(e, ty_of(e, x0)); }
+        else { t(e, "xor %eax, %eax"); }
+    }
+}
+
+fn store_wide_const(e: *emitter, v: u128, slot: i32, n: u32) -> void {
+    let o: u32 = 0;
+    while (o < n) {
+        let w: u32 = 0;
+        if (o < 16) { w = (v >> (o * 8)) as u32; }
+        tb(e); ts(e, "movl $"); tu(e, w); ts(e, ", "); tn(e, slot + o as i32); ts(e, "(%ebp)"); te(e);
+        o += 4;
+    }
+}
+
+fn emit_name(e: *emitter, n: u32) -> void {
+    let sy: u32 = st_get(&e.s.resolved, n);
+    if (sy == 0) { t(e, "xor %eax, %eax"); return; }
+    let y: *sym = sym_at(e.s, sy - 1);
+    let kind: u32 = y.kind;
+    let decl: u32 = y.decl;
+    if (kind == SK_CONST && decl != 0 && en_(e, decl).kind == nk.d_const) {
+        let v: u128 = 0;
+        if (fold(e.s, en_(e, decl).b, &v)) {
+            let ct: u32 = en_(e, decl).a;
+            // a wide constant is a wide value: in a slot, by its address
+            if (is_wide(e, ct)) {
+                let cs: i32 = take_wide_slot(e);
+                if (cs == NO_SLOT) { t(e, "xor %eax, %eax"); return; }
+                store_wide_const(e, v, cs, esize(e, ct));
+                t_off(e, "lea ", cs, "(%ebp), %eax");
+                return;
+            }
+            t_imm(e, "mov $", v as u32, ", %eax");
+            wrap_to(e, ct);
+            return;
+        }
+    }
+    // a function used as a value yields its address
+    if (kind == SK_FUNCTION) { tb(e); ts(e, "mov $"); tname(e, n); ts(e, ", %eax"); te(e); return; }
+    if (kind == SK_GLOBAL) {
+        // a wide global yields its address
+        if (decl != 0 && en_(e, decl).kind == nk.d_global && is_wide(e, en_(e, decl).a)) { tb(e); ts(e, "mov $"); tname(e, n); ts(e, ", %eax"); te(e); }
+        else { tb(e); ts(e, "mov "); tname(e, n); ts(e, ", %eax"); te(e); }
+        return;
+    }
+    if (frame_has(e, sy)) {
+        let ty: u32 = st_get(&e.frame_ty, sy);
+        let k: nk = ekind(e, ty);
+        // struct, array and wide names yield their address; scalars load
+        if (k == nk.t_named || k == nk.t_array || is_wide(e, ty)) { t_off(e, "lea ", frame_off(e, sy), "(%ebp), %eax"); }
+        else { t_off(e, "mov ", frame_off(e, sy), "(%ebp), %eax"); }
+    } else { t(e, "xor %eax, %eax"); }
+}
+
+// The address of an lvalue, in eax.
+fn emit_addr(e: *emitter, x0: u32) -> void {
+    let x: *node = en_(e, x0);
+    let k: nk = x.kind;
+    if (k == nk.e_name) {
+        let sy: u32 = st_get(&e.s.resolved, x0);
+        if (frame_has(e, sy)) { t_off(e, "lea ", frame_off(e, sy), "(%ebp), %eax"); }
+        else if (sy != 0 && sym_at(e.s, sy - 1).kind == SK_GLOBAL) { tb(e); ts(e, "lea "); tname(e, x0); ts(e, ", %eax"); te(e); }
+        else { t(e, "xor %eax, %eax"); }
+        return;
+    }
+    if (k == nk.e_unary && x.op == UN_DEREF) { emit_expr(e, x.a); return; }   // *p: its address is p's value
+    if (k == nk.e_member) {
+        let tt: u32 = st_get(&e.s.types, x.a);
+        if (tt == 0) { tt = e.s.t_void; }
+        let base: u32 = tt;
+        if (en_(e, tt).kind == nk.t_ptr) { base = en_(e, tt).a; }
+        let sd: u32 = estruct_of(e, base);
+        if (en_(e, tt).kind == nk.t_ptr) { emit_expr(e, en_(e, x0).a); } else { emit_addr(e, en_(e, x0).a); }
+        if (sd != 0) {
+            let fo: u32 = field_offset(e, sd, x0);
+            if (fo != 0) { t_imm(e, "add $", fo, ", %eax"); }
+        }
+        return;
+    }
+    if (k == nk.e_index) {
+        let tt: u32 = st_get(&e.s.types, x.a);
+        if (tt == 0) { tt = e.s.t_void; }
+        let tx: u32 = ex(e, tt);
+        let es: u32 = 4;
+        if (en_(e, tx).kind == nk.t_ptr || en_(e, tx).kind == nk.t_array) { es = esize(e, en_(e, tx).a); }
+        if (en_(e, tx).kind == nk.t_array) { emit_addr(e, en_(e, x0).a); } else { emit_expr(e, en_(e, x0).a); }
+        t(e, "push %eax"); emit_expr(e, en_(e, x0).b);
+        if (es != 1) { t_imm(e, "imul $", es, ", %eax"); }
+        t(e, "pop %ecx"); t(e, "add %ecx, %eax");
+        return;
+    }
+    // a value that is an address - a call's result, a literal - is its own address
+    if (is_copied(e, ty_of(e, x0))) { emit_expr(e, x0); return; }
+    emit_error(e, "this expression has no address", x0);
+    t(e, "xor %eax, %eax");
+}
+
+// A cast between widths moves bytes.
+fn emit_cast(e: *emitter, c: u32) -> void {
+    let to: u32 = ty_of(e, c);
+    let operand: u32 = en_(e, c).a;
+    let from: u32 = ty_of(e, operand);
+    if (is_wide(e, to)) {
+        if (!is_wide(e, from)) { emit_wide_operand(e, operand, to); return; }
+        if (esize(e, from) >= esize(e, to)) { emit_expr(e, operand); return; }   // truncate: same address
+        let saved: u32 = e.wide_depth;
+        let slot: i32 = take_wide_slot(e);
+        if (slot == NO_SLOT) { emit_error(e, "wide expression nested too deeply", c); return; }
+        emit_expr(e, operand);
+        save_idx(e);
+        t(e, "mov %eax, %esi");
+        t_off(e, "lea ", slot, "(%ebp), %edi");
+        copy_bytes(e, esize(e, from));
+        if (is_signed(e, from)) { t_imm(e, "mov ", esize(e, from) - 4, "(%esi), %eax"); } else { t(e, "xor %eax, %eax"); }
+        if (is_signed(e, from)) { t(e, "sar $31, %eax"); }
+        let o: u32 = esize(e, from);
+        while (o < esize(e, to)) { t_imm(e, "mov %eax, ", o, "(%edi)"); o += 4; }
+        restore_idx(e);
+        t_off(e, "lea ", slot, "(%ebp), %eax");
+        e.wide_depth = saved + 1;
+        return;
+    }
+    if (is_wide(e, from)) { emit_expr(e, operand); t(e, "mov (%eax), %eax"); wrap_to(e, to); return; }   // the low word
+    emit_expr(e, operand);
+    wrap_to(e, to);
+}
+
+fn emit_unary(e: *emitter, u: u32) -> void {
+    let ut: u32 = ty_of(e, u);
+    let op: u32 = en_(e, u).op;
+    let operand: u32 = en_(e, u).a;
+    if (is_wide(e, ut) && (op == UN_NEG || op == UN_BITNOT)) { emit_wide_unary(e, u, ut); return; }
+    if (op == UN_NEG) { emit_expr(e, operand); t(e, "neg %eax"); wrap_to(e, ut); }
+    else if (op == UN_NOT) { emit_expr(e, operand); t(e, "test %eax, %eax"); t(e, "sete %al"); t(e, "movzbl %al, %eax"); }
+    else if (op == UN_BITNOT) { emit_expr(e, operand); t(e, "not %eax"); wrap_to(e, ut); }
+    else if (op == UN_DEREF) { emit_expr(e, operand); load_from(e, ty_of(e, u)); }
+    else { emit_addr(e, operand); }
+}
+
+fn emit_wide_unary(e: *emitter, u: u32, wt: u32) -> void {
+    let words: u32 = esize(e, wt) / 4;
+    let saved: u32 = e.wide_depth;
+    let slot: i32 = take_wide_slot(e);
+    if (slot == NO_SLOT) { emit_error(e, "wide expression nested too deeply", u); return; }
+    emit_wide_operand(e, en_(e, u).a, wt);
+    save_idx(e);
+    t(e, "mov %eax, %esi");
+    t_off(e, "lea ", slot, "(%ebp), %edx");
+    let i: u32 = 0;
+    while (i < words) {
+        let o: u32 = i * 4;
+        if (en_(e, u).op == UN_BITNOT) {
+            t_imm(e, "mov ", o, "(%esi), %eax");
+            t(e, "not %eax");
+            t_imm(e, "mov %eax, ", o, "(%edx)");
+        } else {
+            // mov, not xor: xor would clear the carry the borrow chain needs
+            t(e, "mov $0, %eax");
+            if (i == 0) { t_imm(e, "sub ", o, "(%esi), %eax"); } else { t_imm(e, "sbb ", o, "(%esi), %eax"); }
+            t_imm(e, "mov %eax, ", o, "(%edx)");
+        }
+        i += 1;
+    }
+    t(e, "mov %edx, %eax");
+    restore_idx(e);
+    e.wide_depth = saved + 1;
+}
+
+fn is_compare(op: u32) -> bool { return op >= BIN_EQ && op <= BIN_GE; }
+
+fn is_unsigned_word(e: *emitter, t0: u32) -> bool {
+    let x: *node = en_(e, ex(e, t0));
+    if (x.kind == nk.t_ptr || x.kind == nk.t_fn) { return true; }
+    return x.kind == nk.t_prim && !prim_signed(x.op) && prim_bytes(x.op) == 4;
+}
+
+fn cmp(e: *emitter, setcc: *u8) -> void {
+    t(e, "cmp %ecx, %eax");
+    tb(e); ts(e, setcc); ts(e, " %al"); te(e);
+    t(e, "movzbl %al, %eax");
+}
+
+fn emit_binary(e: *emitter, b: u32) -> void {
+    let op: u32 = en_(e, b).op;
+    if (op == BIN_AND || op == BIN_OR) { emit_short_circuit(e, b); return; }
+    let left: u32 = en_(e, b).a;
+    let right: u32 = en_(e, b).b;
+    // wide operands are at addresses; a comparison is decided by its operands
+    if (is_wide(e, ty_of(e, b)) || (is_compare(op) && (is_wide(e, ty_of(e, left)) || is_wide(e, ty_of(e, right))))) {
+        emit_wide_binary(e, b);
+        return;
+    }
+    emit_expr(e, right);
+    // a shift's count may be wide: its address's low bits are not the count
+    if ((op == BIN_SHL || op == BIN_SHR) && is_wide(e, ty_of(e, right))) { t(e, "mov (%eax), %eax"); }
+    t(e, "push %eax");
+    emit_expr(e, left); t(e, "pop %ecx");
+    let lt: u32 = ty_of(e, left);
+    let uns: bool = is_unsigned_word(e, ty_of(e, left)) || is_unsigned_word(e, ty_of(e, right));
+    if (op == BIN_ADD) { t(e, "add %ecx, %eax"); }
+    else if (op == BIN_SUB) { t(e, "sub %ecx, %eax"); }
+    else if (op == BIN_MUL) { t(e, "imul %ecx, %eax"); }
+    else if (op == BIN_DIV || op == BIN_MOD) {
+        if (is_signed(e, lt)) { t(e, "cdq"); t(e, "idiv %ecx"); } else { t(e, "xor %edx, %edx"); t(e, "div %ecx"); }
+        if (op == BIN_MOD) { t(e, "mov %edx, %eax"); }
+    }
+    else if (op == BIN_BITAND) { t(e, "and %ecx, %eax"); }
+    else if (op == BIN_BITOR) { t(e, "or %ecx, %eax"); }
+    else if (op == BIN_BITXOR) { t(e, "xor %ecx, %eax"); }
+    else if (op == BIN_SHL) { t(e, "shl %cl, %eax"); }
+    else if (op == BIN_SHR) { if (is_signed(e, lt)) { t(e, "sar %cl, %eax"); } else { t(e, "shr %cl, %eax"); } }
+    else if (op == BIN_EQ) { cmp(e, "sete"); }
+    else if (op == BIN_NE) { cmp(e, "setne"); }
+    else if (op == BIN_LT) { if (uns) { cmp(e, "setb"); } else { cmp(e, "setl"); } }
+    else if (op == BIN_LE) { if (uns) { cmp(e, "setbe"); } else { cmp(e, "setle"); } }
+    else if (op == BIN_GT) { if (uns) { cmp(e, "seta"); } else { cmp(e, "setg"); } }
+    else if (op == BIN_GE) { if (uns) { cmp(e, "setae"); } else { cmp(e, "setge"); } }
+    if (!is_compare(op)) { wrap_to(e, ty_of(e, b)); }
+}
+
+fn emit_short_circuit(e: *emitter, b: u32) -> void {
+    let end: u32 = nl(e);
+    emit_expr(e, en_(e, b).a);
+    t(e, "test %eax, %eax");
+    tb(e); if (en_(e, b).op == BIN_AND) { ts(e, "jz "); } else { ts(e, "jnz "); } tl(e, end); te(e);
+    emit_expr(e, en_(e, b).b);
+    lbl(e, end);
+    t(e, "test %eax, %eax"); t(e, "setne %al"); t(e, "movzbl %al, %eax");
+}
+
+// ---- wide (64 and 128-bit) operations: esi = &left, edi = &right, edx = &result ----
+
+fn emit_wide_binary(e: *emitter, b: u32) -> void {
+    let op: u32 = en_(e, b).op;
+    let lt: u32 = ty_of(e, en_(e, b).a);
+    if (op != BIN_SHL && op != BIN_SHR && esize(e, ty_of(e, en_(e, b).b)) > esize(e, lt)) { lt = ty_of(e, en_(e, b).b); }
+    let n: u32 = esize(e, lt);
+    let words: u32 = n / 4;
+    let sg: bool = is_signed(e, lt);
+    let saved: u32 = e.wide_depth;
+
+    // the result's slot first, so it is the one at the saved depth
+    let slot: i32 = 0;
+    if (!is_compare(op)) {
+        slot = take_wide_slot(e);
+        if (slot == NO_SLOT) {
+            emit_error(e, "wide expression nested too deeply; split it into steps", b);
+            e.wide_depth = saved; t(e, "xor %eax, %eax"); return;
+        }
+    }
+    emit_wide_operand(e, en_(e, b).b, lt); t(e, "push %eax");
+    emit_wide_operand(e, en_(e, b).a, lt); t(e, "pop %ecx");
+    save_idx(e);
+    t(e, "mov %eax, %esi");
+    t(e, "mov %ecx, %edi");
+    if (is_compare(op)) { emit_wide_compare(e, op, words, sg); restore_idx(e); e.wide_depth = saved; return; }
+    t_off(e, "lea ", slot, "(%ebp), %edx");
+    if (op == BIN_ADD) { emit_wide_add_sub(e, "add", "adc", words); }
+    else if (op == BIN_SUB) { emit_wide_add_sub(e, "sub", "sbb", words); }
+    else if (op == BIN_BITAND) { emit_wide_bitwise(e, "and", words); }
+    else if (op == BIN_BITOR) { emit_wide_bitwise(e, "or", words); }
+    else if (op == BIN_BITXOR) { emit_wide_bitwise(e, "xor", words); }
+    else if (op == BIN_MUL) { emit_wide_mul(e, words); }
+    else if (op == BIN_SHL) { emit_wide_shift(e, b, words, true, sg); }
+    else if (op == BIN_SHR) { emit_wide_shift(e, b, words, false, sg); }
+    else if (op == BIN_DIV) { emit_wide_div_mod(e, words, sg, false); }
+    else if (op == BIN_MOD) { emit_wide_div_mod(e, words, sg, true); }
+    t(e, "mov %edx, %eax");
+    restore_idx(e);
+    e.wide_depth = saved + 1;
+}
+
+// The address of a wide value of type wt, in eax: a narrow one widened into a slot.
+fn emit_wide_operand(e: *emitter, src: u32, wt: u32) -> void {
+    if (en_(e, src).kind != nk.e_int && is_wide(e, ty_of(e, src))) { emit_expr(e, src); return; }
+    let n: u32 = esize(e, wt);
+    let slot: i32 = take_wide_slot(e);
+    if (slot == NO_SLOT) { t(e, "xor %eax, %eax"); return; }
+    if (en_(e, src).kind == nk.e_int) { store_wide_const(e, en_(e, src).value, slot, n); }
+    else {
+        emit_expr(e, src);
+        t_off(e, "mov %eax, ", slot, "(%ebp)");
+        // extended by the source's signedness
+        if (is_signed(e, ty_of(e, src))) { t(e, "sar $31, %eax"); } else { t(e, "xor %eax, %eax"); }
+        let o: u32 = 4;
+        while (o < n) { t_off(e, "mov %eax, ", slot + o as i32, "(%ebp)"); o += 4; }
+    }
+    t_off(e, "lea ", slot, "(%ebp), %eax");
+}
+
+fn emit_wide_add_sub(e: *emitter, first: *u8, rest: *u8, words: u32) -> void {
+    let i: u32 = 0;
+    while (i < words) {
+        let o: u32 = i * 4;
+        t_imm(e, "mov ", o, "(%esi), %eax");
+        tb(e); if (i == 0) { ts(e, first); } else { ts(e, rest); } ts(e, " "); tu(e, o); ts(e, "(%edi), %eax"); te(e);
+        t_imm(e, "mov %eax, ", o, "(%edx)");
+        i += 1;
+    }
+}
+
+fn emit_wide_bitwise(e: *emitter, op: *u8, words: u32) -> void {
+    let i: u32 = 0;
+    while (i < words) {
+        let o: u32 = i * 4;
+        t_imm(e, "mov ", o, "(%esi), %eax");
+        tb(e); ts(e, op); ts(e, " "); tu(e, o); ts(e, "(%edi), %eax"); te(e);
+        t_imm(e, "mov %eax, ", o, "(%edx)");
+        i += 1;
+    }
+}
+
+// Schoolbook multiply, truncated to the width; the destination moves to ebx
+// because mul clobbers edx.
+fn emit_wide_mul(e: *emitter, words: u32) -> void {
+    t(e, "push %ebx");
+    t(e, "mov %edx, %ebx");
+    let i: u32 = 0;
+    while (i < words) { t_imm(e, "movl $0, ", i * 4, "(%ebx)"); i += 1; }
+    i = 0;
+    while (i < words) {
+        let j: u32 = 0;
+        while (i + j < words) {
+            t_imm(e, "mov ", i * 4, "(%esi), %eax");
+            t_imm(e, "mull ", j * 4, "(%edi)");
+            t_imm(e, "add %eax, ", (i + j) * 4, "(%ebx)");
+            let k: u32 = i + j + 1;
+            while (k < words) {
+                if (k == i + j + 1) { t_imm(e, "adc %edx, ", k * 4, "(%ebx)"); } else { t_imm(e, "adcl $0, ", k * 4, "(%ebx)"); }
+                k += 1;
+            }
+            j += 1;
+        }
+        i += 1;
+    }
+    t(e, "mov %ebx, %edx");
+    t(e, "pop %ebx");
+}
+
+fn emit_wide_shift(e: *emitter, b: u32, words: u32, left: bool, sg: bool) -> void {
+    let amt: u128 = 0;
+    if (!fold_quiet(e.s, en_(e, b).b, &amt)) { emit_wide_var_shift(e, b, words, left, sg); return; }
+    if (amt > ((words * 32) as u128)) {
+        eb(e.s); es(e.s, "shift of "); dg_u128(e.s.dg, amt); es(e.s, " is wider than the "); eu(e.s, words * 32);
+        es(e.s, "-bit operand"); ee(e.s, b);
+        return;
+    }
+    let bits: u32 = amt as u32;
+    let total: u32 = words * 32;
+    if (bits >= total) {
+        eb(e.s); es(e.s, "shift of "); eu(e.s, bits); es(e.s, " is outside 0.."); eu(e.s, total - 1); es(e.s, " for this width"); ee(e.s, b);
+        return;
+    }
+    emit_const_shift(e, "%esi", "%edx", words, bits, left, sg);
+}
+
+// "op off(reg), reg2" with a register named at run time.
+fn t_mem(e: *emitter, before: *u8, off: u32, reg: *u8, after: *u8) -> void {
+    tb(e); ts(e, before); tu(e, off); ts(e, "("); ts(e, reg); ts(e, ")"); ts(e, after); te(e);
+}
+
+fn emit_const_shift(e: *emitter, src: *u8, dst: *u8, words: u32, bits: u32, left: bool, sg: bool) -> void {
+    let word_shift: u32 = bits / 32;
+    let bit_shift: u32 = bits % 32;
+    if (left) {
+        let k: u32 = words;
+        while (k > 0) {
+            k -= 1;
+            if (k < word_shift) { t_mem(e, "movl $0, ", k * 4, dst, ""); continue; }
+            let from: u32 = k - word_shift;
+            t_mem(e, "mov ", from * 4, src, ", %eax");
+            if (bit_shift != 0) {
+                if (from >= 1) {
+                    t_mem(e, "mov ", (from - 1) * 4, src, ", %ecx");
+                    t_imm(e, "shld $", bit_shift, ", %ecx, %eax");
+                } else { t_imm(e, "shl $", bit_shift, ", %eax"); }
+            }
+            t_mem(e, "mov %eax, ", k * 4, dst, "");
+        }
+    } else {
+        let k: u32 = 0;
+        while (k < words) {
+            let from: u32 = k + word_shift;
+            if (from >= words) {
+                // past the top: zero, or the sign repeated
+                if (sg) { t_mem(e, "mov ", (words - 1) * 4, src, ", %eax"); t(e, "sar $31, %eax"); t_mem(e, "mov %eax, ", k * 4, dst, ""); }
+                else { t_mem(e, "movl $0, ", k * 4, dst, ""); }
+                k += 1;
+                continue;
+            }
+            t_mem(e, "mov ", from * 4, src, ", %eax");
+            if (bit_shift != 0) {
+                if (from + 1 < words) {
+                    t_mem(e, "mov ", (from + 1) * 4, src, ", %ecx");
+                    t_imm(e, "shrd $", bit_shift, ", %ecx, %eax");
+                } else if (sg) { t_imm(e, "sar $", bit_shift, ", %eax"); }
+                else { t_imm(e, "shr $", bit_shift, ", %eax"); }
+            }
+            t_mem(e, "mov %eax, ", k * 4, dst, "");
+            k += 1;
+        }
+    }
+}
+
+// A barrel shifter: one constant stage per bit of the amount, kept or not by a mask.
+fn emit_wide_var_shift(e: *emitter, b: u32, words: u32, left: bool, sg: bool) -> void {
+    let tmp: i32 = take_wide_slot(e);
+    if (tmp == NO_SLOT) { emit_error(e, "wide expression nested too deeply; split it into steps", b); return; }
+    let width: u32 = words * 32;
+    t(e, "push %ebx");
+    t(e, "mov (%edi), %ebx");
+    t_imm(e, "and $", width - 1, ", %ebx");
+    let i: u32 = 0;
+    while (i < words) { t_imm(e, "mov ", i * 4, "(%esi), %eax"); t_imm(e, "mov %eax, ", i * 4, "(%edx)"); i += 1; }
+    t(e, "mov %edx, %esi");
+    t_off(e, "lea ", tmp, "(%ebp), %edi");
+    let k: u32 = 0;
+    while (((1 as u32) << k) < width) {
+        emit_const_shift(e, "%esi", "%edi", words, (1 as u32) << k, left, sg);
+        t(e, "mov %ebx, %edx");
+        if (k > 0) { t_imm(e, "shr $", k, ", %edx"); }
+        t(e, "and $1, %edx");
+        t(e, "neg %edx");
+        i = 0;
+        while (i < words) {
+            t_imm(e, "mov ", i * 4, "(%esi), %eax");
+            t_imm(e, "mov ", i * 4, "(%edi), %ecx");
+            t(e, "xor %eax, %ecx");
+            t(e, "and %edx, %ecx");
+            t(e, "xor %ecx, %eax");
+            t_imm(e, "mov %eax, ", i * 4, "(%esi)");
+            i += 1;
+        }
+        k += 1;
+    }
+    t(e, "mov %esi, %edx");
+    t(e, "pop %ebx");
+}
+
+// Restoring shift-subtract long division; esi = &dividend, edi = &divisor, edx = &result.
+fn emit_wide_div_mod(e: *emitter, words: u32, sg: bool, want_rem: bool) -> void {
+    let n: u32 = words * 4;
+    let bits: u32 = words * 32;
+    let quo: u32 = 0;
+    let rem: u32 = n;
+    let dvs: u32 = 2 * n;
+    let qneg: u32 = 3 * n;
+    let rneg: u32 = 3 * n + 4;
+    let scratch: u32 = 3 * n + 8;
+    t(e, "push %ebx");
+    t_imm(e, "sub $", scratch, ", %esp");
+    t(e, "mov %esp, %ebx");
+    t_imm(e, "movl $0, ", qneg, "(%ebx)");
+    t_imm(e, "movl $0, ", rneg, "(%ebx)");
+    let i: u32 = 0;
+    if (sg) { emit_wide_abs_to(e, quo, "esi", words, qneg, rneg as i32, false); }
+    else { while (i < words) { t_imm(e, "mov ", i * 4, "(%esi), %eax"); t_imm(e, "mov %eax, ", quo + i * 4, "(%ebx)"); i += 1; } }
+    i = 0;
+    while (i < words) { t_imm(e, "movl $0, ", rem + i * 4, "(%ebx)"); i += 1; }
+    i = 0;
+    if (sg) { emit_wide_abs_to(e, dvs, "edi", words, qneg, -1, true); }
+    else { while (i < words) { t_imm(e, "mov ", i * 4, "(%edi), %eax"); t_imm(e, "mov %eax, ", dvs + i * 4, "(%ebx)"); i += 1; } }
+
+    // divisor == 0 -> #DE, as a 32-bit divide by zero would
+    let nonzero: u32 = nl(e);
+    t(e, "xor %eax, %eax");
+    i = 0;
+    while (i < words) { t_imm(e, "or ", dvs + i * 4, "(%ebx), %eax"); i += 1; }
+    t(e, "test %eax, %eax");
+    tb(e); ts(e, "jnz "); tl(e, nonzero); te(e);
+    t(e, "xor %edx, %edx");
+    t(e, "xor %ecx, %ecx");
+    t(e, "mov $1, %eax");
+    t(e, "div %ecx");
+    lbl(e, nonzero);
+
+    let top: u32 = nl(e);
+    let restore: u32 = nl(e);
+    let next: u32 = nl(e);
+    t_imm(e, "mov $", bits, ", %ecx");
+    lbl(e, top);
+    t_imm(e, "shll $1, ", quo, "(%ebx)");
+    i = 1;
+    while (i < words) { t_imm(e, "rcll $1, ", quo + i * 4, "(%ebx)"); i += 1; }
+    i = 0;
+    while (i < words) { t_imm(e, "rcll $1, ", rem + i * 4, "(%ebx)"); i += 1; }
+    i = 0;
+    while (i < words) {
+        t_imm(e, "mov ", dvs + i * 4, "(%ebx), %eax");
+        tb(e); if (i == 0) { ts(e, "sub"); } else { ts(e, "sbb"); } ts(e, " %eax, "); tu(e, rem + i * 4); ts(e, "(%ebx)"); te(e);
+        i += 1;
+    }
+    tb(e); ts(e, "jc "); tl(e, restore); te(e);
+    t_imm(e, "orl $1, ", quo, "(%ebx)");
+    tb(e); ts(e, "jmp "); tl(e, next); te(e);
+    lbl(e, restore);
+    i = 0;
+    while (i < words) {
+        t_imm(e, "mov ", dvs + i * 4, "(%ebx), %eax");
+        tb(e); if (i == 0) { ts(e, "add"); } else { ts(e, "adc"); } ts(e, " %eax, "); tu(e, rem + i * 4); ts(e, "(%ebx)"); te(e);
+        i += 1;
+    }
+    lbl(e, next);
+    t(e, "dec %ecx");
+    tb(e); ts(e, "jnz "); tl(e, top); te(e);
+
+    let src: u32 = quo;
+    let flag: u32 = qneg;
+    if (want_rem) { src = rem; flag = rneg; }
+    let done: u32 = nl(e);
+    i = 0;
+    while (i < words) { t_imm(e, "mov ", src + i * 4, "(%ebx), %eax"); t_imm(e, "mov %eax, ", i * 4, "(%edx)"); i += 1; }
+    if (sg) {
+        t_imm(e, "cmpl $0, ", flag, "(%ebx)");
+        tb(e); ts(e, "je "); tl(e, done); te(e);
+        i = 0;
+        while (i < words) {
+            t(e, "mov $0, %eax");
+            tb(e); if (i == 0) { ts(e, "sub "); } else { ts(e, "sbb "); } tu(e, i * 4); ts(e, "(%edx), %eax"); te(e);
+            t_imm(e, "mov %eax, ", i * 4, "(%edx)");
+            i += 1;
+        }
+        lbl(e, done);
+    }
+    t_imm(e, "add $", scratch, ", %esp");
+    t(e, "pop %ebx");
+}
+
+fn emit_wide_abs_to(e: *emitter, dst: u32, base: *u8, words: u32, flag: u32, also_set: i32, xor_flag: bool) -> void {
+    let neg: u32 = nl(e);
+    let joined: u32 = nl(e);
+    let top: u32 = (words - 1) * 4;
+    tb(e); ts(e, "cmpl $0, "); tu(e, top); ts(e, "(%"); ts(e, base); ts(e, ")"); te(e);
+    tb(e); ts(e, "jl "); tl(e, neg); te(e);
+    let i: u32 = 0;
+    while (i < words) {
+        tb(e); ts(e, "mov "); tu(e, i * 4); ts(e, "(%"); ts(e, base); ts(e, "), %eax"); te(e);
+        t_imm(e, "mov %eax, ", dst + i * 4, "(%ebx)");
+        i += 1;
+    }
+    tb(e); ts(e, "jmp "); tl(e, joined); te(e);
+    lbl(e, neg);
+    i = 0;
+    while (i < words) {
+        t(e, "mov $0, %eax");
+        tb(e); if (i == 0) { ts(e, "sub "); } else { ts(e, "sbb "); } tu(e, i * 4); ts(e, "(%"); ts(e, base); ts(e, "), %eax"); te(e);
+        t_imm(e, "mov %eax, ", dst + i * 4, "(%ebx)");
+        i += 1;
+    }
+    if (xor_flag) {
+        t(e, "movl $1, %eax");
+        t_imm(e, "xor %eax, ", flag, "(%ebx)");
+    } else {
+        t_imm(e, "movl $1, ", flag, "(%ebx)");
+        if (also_set >= 0) { t_imm(e, "movl $1, ", also_set as u32, "(%ebx)"); }
+    }
+    lbl(e, joined);
+}
+
+fn emit_wide_compare(e: *emitter, op: u32, words: u32, sg: bool) -> void {
+    if (op == BIN_EQ || op == BIN_NE) {
+        t(e, "xor %ecx, %ecx");
+        let i: u32 = 0;
+        while (i < words) {
+            let o: u32 = i * 4;
+            t_imm(e, "mov ", o, "(%esi), %eax");
+            t_imm(e, "xor ", o, "(%edi), %eax");
+            t(e, "or %eax, %ecx");
+            i += 1;
+        }
+        t(e, "test %ecx, %ecx");
+        if (op == BIN_EQ) { t(e, "sete %al"); } else { t(e, "setne %al"); }
+        t(e, "movzbl %al, %eax");
+        return;
+    }
+    let decide: u32 = nl(e);
+    let top: u32 = (words - 1) * 4;
+    if (sg) {
+        t_imm(e, "mov ", top, "(%esi), %eax");
+        t(e, "xor $0x80000000, %eax");
+        t_imm(e, "mov ", top, "(%edi), %ecx");
+        t(e, "xor $0x80000000, %ecx");
+        t(e, "cmp %ecx, %eax");
+    } else {
+        t_imm(e, "mov ", top, "(%esi), %eax");
+        t_imm(e, "cmp ", top, "(%edi), %eax");
+    }
+    let i: u32 = words - 1;
+    while (i > 0) {
+        i -= 1;
+        tb(e); ts(e, "jne "); tl(e, decide); te(e);
+        t_imm(e, "mov ", i * 4, "(%esi), %eax");
+        t_imm(e, "cmp ", i * 4, "(%edi), %eax");
+    }
+    lbl(e, decide);
+    // always the unsigned codes: the bias folded the sign into the top word
+    if (op == BIN_LT) { t(e, "setb %al"); }
+    else if (op == BIN_LE) { t(e, "setbe %al"); }
+    else if (op == BIN_GT) { t(e, "seta %al"); }
+    else { t(e, "setae %al"); }
+    t(e, "movzbl %al, %eax");
+}
+
+// ---- calls ----
+
+// The parameter types of what is called: a list in p.lists and its length, and
+// whether the entries are params (a declaration) or types (a fn type).
+fn emit_call(e: *emitter, c: u32) -> void {
+    let callee: u32 = en_(e, c).a;
+    if (en_(e, callee).kind == nk.e_name && node_name_is(e.s, callee, "__syscall")) { emit_syscall(e, c); return; }
+    let fd: u32 = callee_fn(e, c);
+    let plist: u32 = 0;
+    let pcount: u32 = 0;
+    if (fd != 0) { plist = en_(e, fd).list; pcount = en_(e, fd).count; }
+    else {
+        let ft: u32 = ex(e, ty_of(e, callee));
+        if (en_(e, ft).kind == nk.t_fn) { plist = en_(e, ft).list; pcount = en_(e, ft).count; }
+    }
+    let rt: u32 = ty_of(e, c);
+    let arg_bytes: u32 = 0;
+    let i: u32 = en_(e, c).count;
+    while (i > 0) {
+        i -= 1;
+        let a: u32 = lst(e, c, i);
+        let pt: u32 = 0;
+        if (i < pcount) {
+            pt = list_at(e.p, plist, i);
+            if (fd != 0) { pt = en_(e, pt).a; }
+        } else { pt = ty_of(e, a); }
+        if (!is_aggregate(e, pt)) { emit_expr(e, a); t(e, "push %eax"); arg_bytes += 4; continue; }
+        // copied onto the stack, top word first
+        let saved: u32 = e.wide_depth;
+        if (is_wide(e, pt)) { emit_wide_operand(e, a, pt); } else { emit_expr(e, a); }
+        let size: u32 = align4(esize(e, pt));
+        let o: u32 = size;
+        while (o > 0) { o -= 4; t_imm(e, "pushl ", o, "(%eax)"); }
+        arg_bytes += size;
+        e.wide_depth = saved;
+    }
+    let sret: bool = returns_via_pointer(e, rt) && slot_has(e, c);
+    if (sret) { t_off(e, "lea ", slot_of(e, c), "(%ebp), %eax"); t(e, "push %eax"); }
+    // only a name that resolves to a function is a direct call
+    let direct: bool = false;
+    if (en_(e, callee).kind == nk.e_name) {
+        let sy: u32 = st_get(&e.s.resolved, callee);
+        direct = sy != 0 && sym_at(e.s, sy - 1).kind == SK_FUNCTION;
+    }
+    if (direct) { tb(e); ts(e, "call "); tname(e, callee); te(e); }
+    else { emit_expr(e, callee); t(e, "call *%eax"); }
+    if (arg_bytes > 0) { t_imm(e, "add $", arg_bytes, ", %esp"); }
+    if (sret) { t_off(e, "lea ", slot_of(e, c), "(%ebp), %eax"); }
+    else if (returns_in_regs64(e, rt) && slot_has(e, c)) {
+        let slot: i32 = slot_of(e, c);
+        t_off(e, "mov %eax, ", slot, "(%ebp)");
+        t_off(e, "mov %edx, ", slot + 4, "(%ebp)");
+        t_off(e, "lea ", slot, "(%ebp), %eax");
+    }
+}
+
+global syscall_regs: [6]*u8 = ["%eax", "%ebx", "%ecx", "%edx", "%esi", "%edi"];
+
+// __syscall(n, a1..a5): eax = n, ebx ecx edx esi edi = the rest; int $0x80
+fn emit_syscall(e: *emitter, c: u32) -> void {
+    let n: u32 = en_(e, c).count;
+    let i: u32 = 0;
+    while (i < n) { emit_expr(e, lst(e, c, i)); t(e, "push %eax"); i += 1; }
+    i = n;
+    while (i > 0) { i -= 1; tb(e); ts(e, "pop "); ts(e, syscall_regs[i]); te(e); }
+    i = n;
+    while (i < 6) { tb(e); ts(e, "xor "); ts(e, syscall_regs[i]); ts(e, ", "); ts(e, syscall_regs[i]); te(e); i += 1; }
+    t(e, "int $0x80");
+}
