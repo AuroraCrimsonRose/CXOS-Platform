@@ -176,6 +176,7 @@ python3 tests/lang/run.py        # the X language: programs that must run, progr
 python3 tests/xdata/difftest.py  # the DevKit's X Data reader against CXK's, document by document
 python3 tests/xc/lexdiff.py      # the lexer written in X (CXK os/xc) against this one, token by token
 python3 tests/xc/parsediff.py    # the parser written in X against this one, node by node, error by error
+python3 tests/xc/semadiff.py     # the type checker written in X against this one, on whole programs
 ```
 
 Both run X natively on the host (a 32-bit `gcc` links the output), so no VM is involved. `tests/lang/refuse` holds programs the compiler must reject, each with the error it must give: every one of them used to compile and produce a wrong answer.
