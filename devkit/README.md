@@ -174,6 +174,7 @@ dotnet build CXEX.Studio.slnx
 ```
 python3 tests/lang/run.py        # the X language: programs that must run, programs that must be refused, C <-> X interop, std/buf
 python3 tests/xdata/difftest.py  # the DevKit's X Data reader against CXK's, document by document
+python3 tests/xc/lexdiff.py      # the lexer written in X (CXK os/xc) against this one, token by token
 ```
 
 Both run X natively on the host (a 32-bit `gcc` links the output), so no VM is involved. `tests/lang/refuse` holds programs the compiler must reject, each with the error it must give: every one of them used to compile and produce a wrong answer.
