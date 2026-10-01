@@ -68,6 +68,15 @@ app.Configure(config =>
     config.AddCommand<CheckXDataCommand>("check-xdata")
         .WithDescription("Validates X Data documents (service descriptors), with the same rules as the X reader.");
 
+    // ---- the OS build (replaces tools/build.bat) ----
+    config.AddBranch("os", os =>
+    {
+        os.SetDescription("Builds the OS: boot chain, kernel, executive, X userland and the disk image.");
+
+        os.AddCommand<OsBuildCommand>("build")
+            .WithDescription("Builds CXK with clang, ld.lld and Ninja (replaces tools/build.bat).");
+    });
+
     // ---- UEFI Secure Boot (replaces openssl + virt-fw-vars + sbsign + sbverify) ----
     config.AddBranch("secureboot", sb =>
     {

@@ -539,7 +539,7 @@ fixed offset (CXFS v2 §11.6.2 option b) with the CXEX header parsed to find
 
 ### 9.8 Relationship to ELF
 
-`i686-elf-gcc` emits ELF, which already expresses sections, entry point, and
+The cross toolchain (`clang --target=i686-elf` + `ld.lld`) emits ELF, which already expresses sections, entry point, and
 relocations. CXEX is intentionally a **simpler, CXOS-native** container: a flat
 fixed header + a small section table that boot-time code can parse in a few
 lines, plus the CXOS identity/policy/signature fields ELF lacks. The practical

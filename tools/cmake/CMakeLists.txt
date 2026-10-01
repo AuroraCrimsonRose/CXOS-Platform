@@ -22,7 +22,7 @@ enable_language(ASM_NASM)
 
 # ---- build-time flags (edit cmake/cxk_flags.cmake, NOT this file) ----
 # One source of truth for toggles like CXK_ENABLE_FB. Each NAME=VALUE becomes
-# -DNAME=VALUE and is fed to BOTH gcc (kernel C) and nasm (boot + kernel asm),
+# -DNAME=VALUE and is fed to BOTH clang (kernel C) and nasm (boot + kernel asm),
 # so the kernel and bootloader can't disagree.
 include(${CMAKE_SOURCE_DIR}/cxk_flags.cmake)
 set(CXK_DEFS "")
@@ -48,28 +48,24 @@ if(DEV_UNSIGNED)
                     "It is for testing only and must never be shipped.")
 endif()
 
-# ---- toolchain ----
-# Defaults are the Windows cross-toolchain layout build.bat expects. Each is
-# overridable with -D so the kernel can also be built where the toolchain lives
-# elsewhere or has no .exe suffix (a Linux/macOS host, CI, a different install
-# path). Overriding nothing reproduces the previous behaviour exactly.
-if(NOT DEFINED CROSS_PREFIX)
-    set(CROSS_PREFIX "C:/cross/i686-elf/bin")
-endif()
-if(NOT DEFINED CROSS_SUFFIX)
-    set(CROSS_SUFFIX ".exe")
+# ---- toolchain (LLVM: clang + ld.lld, HARDENING_PLAN D5) ----
+# One toolchain on every host. clang cross-compiles by target triple, so there
+# is no i686-elf GCC to install and no per-host prefix or .exe suffix to guess:
+# the defaults below are correct on Windows, Linux and macOS alike.
+#
+# Each is still overridable with -D, for a host carrying several LLVM versions
+# or one where they are not on PATH.
+if(NOT DEFINED CXK_TARGET)
+    set(CXK_TARGET "i686-elf")
 endif()
 if(NOT DEFINED CMAKE_ASM_NASM_COMPILER)
     set(CMAKE_ASM_NASM_COMPILER nasm)
 endif()
-if(NOT DEFINED CMAKE_OBJCOPY)
-    set(CMAKE_OBJCOPY "${CROSS_PREFIX}/i686-elf-objcopy${CROSS_SUFFIX}")
+if(NOT DEFINED KCC)
+    set(KCC clang)
 endif()
 if(NOT DEFINED CMAKE_LD)
-    set(CMAKE_LD      "${CROSS_PREFIX}/i686-elf-ld${CROSS_SUFFIX}")
-endif()
-if(NOT DEFINED KCC)
-    set(KCC           "${CROSS_PREFIX}/i686-elf-gcc${CROSS_SUFFIX}")
+    set(CMAKE_LD ld.lld)
 endif()
 
 # ---- paths ----
@@ -111,7 +107,20 @@ set(KERNEL_INCLUDES
 )
 
 # freestanding kernel C flags
-set(KCFLAGS -ffreestanding -fno-pic -fno-stack-protector -m32
+#
+# -mno-sse/-sse2/-mmx/-implicit-float are NOT optional and must never be dropped.
+# clang --target=i686-elf defaults to an SSE2-capable CPU, where the i686-elf GCC
+# this replaced defaulted to plain i686. Left alone, clang uses XMM registers for
+# ordinary integer work - it emitted `movsd 0x40(%esp), %xmm0` in pmm_init purely
+# to move a 64-bit value. The kernel never sets CR4.OSFXSR, so the first such
+# instruction raises #UD, and the invalid-opcode panic then faults again inside
+# its own stack walker. The result is an early triple-fault-ish panic loop with
+# no obvious connection to the compiler.
+#
+# x87 stays ENABLED (no -mno-80387): kernel/lib/math/kmath.c genuinely uses
+# double, and cpu/fpu.c initialises the FPU for exactly that.
+set(KCFLAGS --target=${CXK_TARGET} -ffreestanding -fno-pic -fno-stack-protector
+            -mno-sse -mno-sse2 -mno-mmx -mno-implicit-float
             -Wall -Wextra ${CXK_DEFS} ${KERNEL_INCLUDES} -c)
 
 # ---- KERNEL C SOURCES (append new subsystems here) ----
@@ -374,7 +383,7 @@ add_custom_command(
 # ---- link the kernel (higher-half) ----
 add_custom_command(
     OUTPUT ${KERNEL_ELF}
-    COMMAND ${CMAKE_LD} -T ${LINKER} -o ${KERNEL_ELF} ${KERNEL_OBJS}
+    COMMAND ${CMAKE_LD} -m elf_i386 -T ${LINKER} -o ${KERNEL_ELF} ${KERNEL_OBJS}
     DEPENDS ${KERNEL_OBJS}
     COMMENT "Linking kernel (higher-half)"
 )
@@ -517,9 +526,10 @@ add_custom_command(
 # ---- executive.c -> executive.elf (user-half) -> executive.xoex (signed) ----
 add_custom_command(
     OUTPUT ${EXEC_ELF}
-    COMMAND ${KCC} -ffreestanding -fno-pic -no-pie -fno-stack-protector -nostdlib
+    COMMAND ${KCC} --target=${CXK_TARGET} -ffreestanding -fno-pic -fno-stack-protector -nostdlib
+            -mno-sse -mno-sse2 -mno-mmx -mno-implicit-float
             -I${SRC_DIR}/abi
-            -Wl,-T,${EXEC_LD} -o ${EXEC_ELF} ${EXEC_C}
+            -fuse-ld=lld -Wl,-T,${EXEC_LD} -o ${EXEC_ELF} ${EXEC_C}
     DEPENDS ${EXEC_C} ${EXEC_LD} ${APP_IMAGE}
     COMMENT "CC+LD executive.c -> executive.elf (user-half .xoex bootstrap)"
 )
@@ -540,7 +550,7 @@ add_custom_command(
 # its differential test, so what passes here the supervisor accepts. The key
 # list is the supervisor's own - keep it in step with svc_keys_known().
 #
-# Probed rather than called outright, as build.bat does for check-abi: a cxk
+# Probed rather than called outright, as `cxk os build` does for check-abi: a cxk
 # published before check-xdata existed would fail on an unknown command and
 # break a build that is otherwise fine. So it warns and skips until cxk is
 # republished from the DevKit; a bad descriptor is a hard failure after that.

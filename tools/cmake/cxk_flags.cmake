@@ -2,7 +2,7 @@
 #  CXK build-time flags  -  EDIT HERE, not CMakeLists.
 # ============================================================================
 #  Each entry below is NAME=VALUE. CMakeLists turns every one into -DNAME=VALUE
-#  and passes it to BOTH the kernel C compiler (gcc) AND the assembler (nasm),
+#  and passes it to BOTH the kernel C compiler (clang) AND the assembler (nasm),
 #  so the kernel and the bootloader can never disagree about a flag.
 #
 #  The kernel's config.h and the boot/*.asm files keep their own
