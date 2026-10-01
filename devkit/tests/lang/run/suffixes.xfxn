@@ -1,0 +1,28 @@
+global g1: u128 = 1u128 << 100;
+global g2: u64  = 0xFFFF_FFFF_FFFF_FFFFu64;
+global g3: i64  = -1i64;
+fn main() -> i32 {
+    let a: u128 = 1u128 << 100;                       // 128-bit shift, not a refused 32-bit one
+    if (a != 0x10000000000000000000000000) { return 1; }
+    if (g1 != a) { return 2; }
+    if (g2 != 18446744073709551615) { return 3; }
+    if (g3 != 0 - 1) { return 4; }
+    let m: u32 = 1_000_000;
+    if (m != 1000000) { return 5; }
+    if (0xDEAD_BEEF != 0xDEADBEEF) { return 6; }
+    let b: u8 = 0xFFu8;
+    if (b != 255) { return 7; }
+    let c: i8 = -128i8;
+    if (c != 0 - 128) { return 8; }
+    let d: i128 = -170141183460469231731687303715884105728i128;   // the most negative i128
+    let e: i128 = d + 1;
+    if (e != -170141183460469231731687303715884105727i128) { return 9; }
+    let w: u64 = 5u64 * 0x1_0000_0000;                              // wide because the suffix says so
+    if (w != 0x5_0000_0000) { return 10; }
+    let n: u32 = 7;
+    let x: u64 = 1u64 << n;                                         // suffix + variable shift
+    if (x != 128) { return 11; }
+    let big: u64 = 3_000_000_000u64 * 4;                            // would overflow 32 bits
+    if (big != 12_000_000_000) { return 12; }
+    return 0;
+}

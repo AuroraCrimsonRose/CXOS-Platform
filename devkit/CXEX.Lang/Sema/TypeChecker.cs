@@ -30,6 +30,8 @@ public sealed class TypeChecker
     {
         foreach (var d in unit.Decls) CheckAttrs(d);
         foreach (var d in unit.Decls)
+            if (d is FnDecl fd) CheckSignature(fd);
+        foreach (var d in unit.Decls)
             switch (d)
             {
                 case FnDecl f when f.Body != null:
@@ -37,6 +39,20 @@ public sealed class TypeChecker
                 case ConstDecl c: _fold.TryEval(c.Value, out _); break;
                 case GlobalDecl g when g.Init != null: _fold.TryEval(g.Init, out _); break;
             }
+    }
+
+    /* Wide values and structs pass and return BY VALUE, as in C. An array
+       does not: C cannot pass one either (a parameter declared as an array
+       is really a pointer), and copying a buffer of any size onto the stack
+       at every call is not something to do by accident. Say so, rather than
+       quietly picking one of the two meanings. */
+    private void CheckSignature(FnDecl f)
+    {
+        foreach (var p in f.Params)
+            if (_ctx.Expand(p.Type) is ArrayType)
+                _diag.Error($"parameter '{p.Name}' is an array; pass a pointer to it (*T) instead", p.Span);
+        if (_ctx.Expand(f.Return) is ArrayType)
+            _diag.Error($"'{f.Name}' returns an array; return it through a pointer parameter instead", f.Span);
     }
 
     // ---- attributes ----
@@ -170,7 +186,19 @@ public sealed class TypeChecker
 
     // assignable: ints interchange (v0.1); else exact; ptr<-ptr exact pointee
     private bool Assignable(TypeRef to, TypeRef from)
-        => (IsInt(to) && IsInt(from)) || Same(to, from);
+        => (IsInt(to) && IsInt(from) && !WideNarrowing(to, from)) || Same(to, from);
+
+    /* A 64 or 128-bit value going somewhere narrower, with no `as`. It used to
+       be allowed, and a wide value is its ADDRESS, so `let a: u32 = w;` stored
+       the address - in a let, an assignment, an argument and a return alike.
+       The spec has always said narrowing needs a cast; for these widths it now
+       does, because dropping the top of a 64-bit file offset without a word is
+       exactly the bug the wide types exist to prevent. */
+    private bool WideNarrowing(TypeRef to, TypeRef from) =>
+        IntWidth(from) > 4 && IntWidth(from) > IntWidth(to);
+
+    private string NarrowHint(TypeRef to, TypeRef from) =>
+        IsInt(to) && WideNarrowing(to, from) ? $"; narrowing needs a cast: `as {Show(to)}`" : "";
 
     private TypeRef Set(Expr e, TypeRef t) { _ctx.Types[e] = t; return t; }
 
@@ -186,6 +214,7 @@ public sealed class TypeChecker
     private void CheckBlock(Block b) { foreach (var s in b.Stmts) CheckStmt(s); }
 
     private int _loopDepth;   // break/continue must appear inside a loop
+    private IntLit? _negatedLiteral;   // the literal directly under a unary '-', if checking one
     private int _deferDepth;  // and nothing may leave a defer body early
 
     private void CheckStmt(Stmt s)
@@ -206,7 +235,7 @@ public sealed class TypeChecker
                     if (l.Type != null)
                     {
                         if (!Assignable(l.Type, it))
-                            _diag.Error($"cannot initialize '{l.Name}' of type {Show(l.Type)} from {Show(it)}", l.Span);
+                            _diag.Error($"cannot initialize '{l.Name}' of type {Show(l.Type)} from {Show(it)}{NarrowHint(l.Type, it)}", l.Span);
                         BindLocalType(l, l.Type);
                     }
                     else BindLocalType(l, it == Void ? I32 : it);
@@ -246,7 +275,7 @@ public sealed class TypeChecker
                     var tt = CheckExpr(a.Target);
                     var vt = CheckExpr(a.Value);
                     if (!IsLValue(a.Target)) _diag.Error("assignment target is not assignable", a.Target.Span);
-                    else if (!Assignable(tt, vt)) _diag.Error($"cannot assign {Show(vt)} to {Show(tt)}", a.Span);
+                    else if (!Assignable(tt, vt)) _diag.Error($"cannot assign {Show(vt)} to {Show(tt)}{NarrowHint(tt, vt)}", a.Span);
                     break;
                 }
             case IfStmt i:
@@ -258,7 +287,7 @@ public sealed class TypeChecker
             case ReturnStmt r:
                 if (_deferDepth > 0) _diag.Error("cannot 'return' from inside a defer", r.Span);
                 if (r.Value == null) { if (!IsBool(_curReturn) && _curReturn is not PrimType { Kind: PrimKind.Void }) _diag.Error("return requires a value", r.Span); }
-                else { var rt = CheckExpr(r.Value); if (!Assignable(_curReturn, rt)) _diag.Error($"return type {Show(rt)} does not match {Show(_curReturn)}", r.Span); }
+                else { var rt = CheckExpr(r.Value); if (!Assignable(_curReturn, rt)) _diag.Error($"return type {Show(rt)} does not match {Show(_curReturn)}{NarrowHint(_curReturn, rt)}", r.Span); }
                 break;
             case ExprStmt e: CheckExpr(e.Expr); break;
         }
@@ -294,6 +323,23 @@ public sealed class TypeChecker
                `y < 0x80000000` on an i32 compare against -2147483648. They are
                u32, the narrowest type that actually holds them - which is also
                what C does with an unsuffixed hex constant that large. */
+            /* A suffix names the type outright, and the value must fit it: a
+               literal that silently wrapped into its own declared type would
+               be the one kind of constant that cannot be trusted to be what
+               it says. A signed literal may reach one past its maximum when
+               it is negated directly, so -128i8 and the most negative i128
+               can be written at all. */
+            case IntLit { Suffix: PrimKind sk } sl:
+                {
+                    int bits = PrimWidth.Bytes(sk) * 8;
+                    bool signedK = PrimWidth.IsSigned(sk);
+                    UInt128 max = signedK ? (UInt128.One << (bits - 1)) - 1
+                                : bits == 128 ? UInt128.MaxValue : (UInt128.One << bits) - 1;
+                    if (signedK && ReferenceEquals(sl, _negatedLiteral)) max += 1;
+                    if (sl.Value > max)
+                        _diag.Error($"{sl.Value} does not fit in {sk.ToString().ToLowerInvariant()}", sl.Span);
+                    return Set(e, new PrimType(sk));
+                }
             case IntLit il:
                 return Set(e, il.Value <= int.MaxValue ? I32
                             : il.Value <= uint.MaxValue ? U32
@@ -329,7 +375,9 @@ public sealed class TypeChecker
                 }
             case UnaryExpr u:
                 {
+                    if (u.Op == UnOp.Neg && u.Operand is IntLit nl) _negatedLiteral = nl;
                     var ot = CheckExpr(u.Operand);
+                    _negatedLiteral = null;
                     switch (u.Op)
                     {
             case UnOp.BitNot:
@@ -408,7 +456,7 @@ public sealed class TypeChecker
                  *
                  * A shift is the exception: its right operand is a COUNT, not
                  * a term, so `x << n` is as wide as x however n is written. */
-                if (b.Op is BinOp.Shl or BinOp.Shr) return l;
+                if (b.Op is BinOp.Shl or BinOp.Shr) { CheckShiftAmount(b, l); return l; }
                 return IntWidth(r) > IntWidth(l) ? r : l;
             case BinOp.Eq:
             case BinOp.Ne:
@@ -426,6 +474,23 @@ public sealed class TypeChecker
                 return Bool;
         }
         return I32;
+    }
+
+    /* A CONSTANT shift amount must be inside the width the shift is done at:
+       32 bits for anything up to an int (it happens in a register), the type's
+       own width above that. Past it, the CPU quietly reduces the amount modulo
+       32, so `1 << 100` became 1 << 4 = 16 - with the spec claiming it was
+       refused. A variable amount is reduced modulo the width on purpose; a
+       constant one that large is a mistake. */
+    private void CheckShiftAmount(BinaryExpr b, TypeRef l)
+    {
+        if (!new ConstFold(_ctx, new DiagnosticBag()).TryEval(b.Right, out var amt)) return;
+        int width = Math.Max(32, IntWidth(l) * 8);
+        if (amt < (UInt128)width) return;
+        string hint = b.Left is IntLit { Suffix: null } && amt < 128
+            ? $"; to shift at a wider type, give the literal a suffix: {((IntLit)b.Left).Value}u{(amt < 64 ? 64 : 128)} {(b.Op == BinOp.Shl ? "<<" : ">>")} {amt}"
+            : "";
+        _diag.Error($"shift of {amt} is outside 0..{width - 1} for {Show(l)}{hint}", b.Span);
     }
 
     private TypeRef CheckCall(CallExpr c)
@@ -448,7 +513,7 @@ public sealed class TypeChecker
             {
                 var at = CheckExpr(c.Args[i]);
                 if (!Assignable(fn.Params[i].Type, at))
-                    _diag.Error($"arg {i + 1} to '{fn.Name}': {Show(at)} not assignable to {Show(fn.Params[i].Type)}", c.Args[i].Span);
+                    _diag.Error($"arg {i + 1} to '{fn.Name}': {Show(at)} not assignable to {Show(fn.Params[i].Type)}{NarrowHint(fn.Params[i].Type, at)}", c.Args[i].Span);
             }
             return fn.Return;
         }
@@ -461,7 +526,7 @@ public sealed class TypeChecker
             {
                 var at = CheckExpr(c.Args[i]);
                 if (!Assignable(ft.Params[i], at))
-                    _diag.Error($"arg {i + 1}: {Show(at)} not assignable to {Show(ft.Params[i])}", c.Args[i].Span);
+                    _diag.Error($"arg {i + 1}: {Show(at)} not assignable to {Show(ft.Params[i])}{NarrowHint(ft.Params[i], at)}", c.Args[i].Span);
             }
             return ft.Return;
         }

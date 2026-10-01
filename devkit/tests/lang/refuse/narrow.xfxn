@@ -1,0 +1,13 @@
+fn take(x: u32) -> u32 { return x; }
+fn give(w: u64) -> u32 { return w; }
+fn main() -> i32 {
+    let w: u64 = 0x0000000500000007;
+    let a: u32 = w;
+    if (a != 7) { return 1; }
+    if (take(w) != 7) { return 2; }
+    if (give(w) != 7) { return 3; }
+    let b: u32 = 0;
+    b = w;
+    if (b != 7) { return 4; }
+    return 0;
+}

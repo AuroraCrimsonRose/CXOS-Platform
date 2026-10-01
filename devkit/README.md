@@ -169,6 +169,15 @@ Requirements: .NET (see the `.csproj` files for the target framework), and for p
 dotnet build CXEX.Studio.slnx
 ```
 
+### Tests
+
+```
+python3 tests/lang/run.py        # the X language: programs that must run, programs that must be refused, C <-> X interop
+python3 tests/xdata/difftest.py  # the DevKit's X Data reader against CXK's, document by document
+```
+
+Both run X natively on the host (a 32-bit `gcc` links the output), so no VM is involved. `tests/lang/refuse` holds programs the compiler must reject, each with the error it must give: every one of them used to compile and produce a wrong answer.
+
 ---
 
 ## Notes

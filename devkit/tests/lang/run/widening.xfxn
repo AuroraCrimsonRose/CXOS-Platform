@@ -1,0 +1,11 @@
+fn main() -> i32 {
+    let u: u32 = 0xFFFFFFFF;
+    let w: i64 = u;                 // 4294967295, not -1
+    if (w != 4294967295) { return 1; }
+    let s: i32 = 0 - 1;
+    let v: u64 = s;                 // C: 0xFFFFFFFFFFFFFFFF
+    if (v != 0xFFFFFFFFFFFFFFFF) { return 2; }
+    let c: i64 = u as i64;          // the explicit cast, for comparison
+    if (c != 4294967295) { return 3; }
+    return 0;
+}
