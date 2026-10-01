@@ -64,17 +64,18 @@ tracked; generate it once:
 cxk embed tools/kernel.xkpk kernel/lib/format/trusted_key.c cxos_trusted_key --extern
 ```
 
-- **Windows today:** `tools\build.bat` (signed if `tools\kernel.xksk` exists)
-  or `tools\build.bat dev` (development kernel: runs unsigned programs, never
-  ship it). This still needs the i686-elf GCC and NMake.
-- **Linux:** `cmake tools/cmake -B build -DCROSS_PREFIX=<i686-elf bin dir>
-  -DCROSS_SUFFIX= -DCXK=<path to cxk> -DDEV_UNSIGNED=ON`, then
-  `cmake --build build`. The image is `dist/CXK_x86_32/images/cxk_disk.img`.
-- Run it with `cxk run dist/CXK_x86_32/images/cxk_disk.img` (QEMU), or
-  `-e bochs`.
-- **Moving to clang + ld.lld + Ninja on every host** (D5, next up). When it
-  lands, `cxk os build [--dev]` replaces `build.bat`, and GCC and NMake stop
-  being needed.
+- **Every host:** `cxk os build` (signed if `tools/kernel.xksk` exists) or
+  `cxk os build --dev` (development kernel: runs unsigned programs, never ship
+  it). It pre-flights the toolchain, the source list and the ABI, then
+  configures CMake with Ninja and builds. `--clean` forces a full rebuild.
+- Needs **clang**, **ld.lld**, **NASM**, **CMake** and **Ninja** on PATH. No
+  i686-elf GCC, no NMake, no MSVC Developer Command Prompt. The kernel is
+  compiled with `clang --target=i686-elf`; override with `-DKCC=`,
+  `-DCMAKE_LD=` or `-DCXK_TARGET=` if a host carries several LLVM versions.
+- The image is `dist/CXK_x86_32/images/cxk_disk.img`. Run it with
+  `cxk run dist/CXK_x86_32/images/cxk_disk.img` (QEMU), or `-e bochs`.
+- Driving CMake directly still works: `cmake -S tools/cmake -B build -G Ninja
+  -DCXK=<path to cxk> -DDEV_UNSIGNED=ON`, then `cmake --build build`.
 
 ## Test
 
@@ -82,7 +83,7 @@ cxk embed tools/kernel.xkpk kernel/lib/format/trusted_key.c cxos_trusted_key --e
   A kernel change is not done until a boot shows that.
 - **Host suites** (Python until ported to `CXEX.Tests`, D1). They need the
   Release `cxk` at `devkit/CXEX.CLI/bin/Release/net10.0/cxk`, plus `gcc -m32`
-  and `i686-elf-gcc` on PATH:
+  and `clang` on PATH (the X compiler assembles through `clang --target=i686-elf`):
 
   ```
   python3 devkit/tests/lang/run.py

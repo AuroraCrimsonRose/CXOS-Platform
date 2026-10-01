@@ -14,7 +14,7 @@ cd /d %~dp0..
 set DISK=dist\CXK_x86_32\images\cxk_disk.img
 
 if not exist %DISK% (
-    echo ERROR: %DISK% not found. Run tools\build.bat first.
+    echo ERROR: %DISK% not found. Run: tools\cxk.exe os build
     exit /b 1
 )
 

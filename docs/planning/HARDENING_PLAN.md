@@ -66,7 +66,7 @@ replacement.
 
 | Script | Today | Replacement |
 |---|---|---|
-| `tools/build.bat [dev]` | Checks the toolchain, runs the `cxk check-abi` pre-flight, signs if `tools/kernel.xksk` exists, configures CMake for NMake, builds. Windows and MSVC prompt only. | **`cxk os build [--dev]`**: the same steps, including the ABI pre-flight, configuring CMake with Ninja and clang (D5). |
+| `tools/build.bat [dev]` | Checked the toolchain, ran the `cxk check-abi` pre-flight, signed if `tools/kernel.xksk` existed, configured CMake for NMake, built. Windows and MSVC prompt only. | **`cxk os build [--dev]`** — **done; the script is deleted.** Same steps, including both pre-flights, configuring CMake with Ninja and clang (D5), and it now probes the toolchain up front so a missing tool is named rather than surfacing as a CMake error. |
 | `tools/run_qemu.bat` | **Dead.** It passes `-M pc --fs cxk_filesystem.img` to `cxk run`, which has neither option, and the build no longer produces a separate filesystem image. | **`cxk run dist/CXK_x86_32/images/cxk_disk.img`**, which works today. **Deleted** in the merge. |
 | `tools/run_qemu_ahci.bat` | Raw QEMU line: q35, AHCI, e1000, packet capture, 4 GB, PC speaker. | **`cxk run` machine options** (`--machine q35`, `--net e1000`, `--pcap FILE`, `--mem`, `--speaker`). |
 | `tools/run_bochs.bat` | Already only calls `cxk run -e bochs`. | **`cxk run -e bochs`**. Delete the script. |
@@ -112,21 +112,36 @@ Building CXK and its UEFI stub uses the same tools on Windows, Linux and macOS.
 - **clang's integrated assembler** assembles the X compiler's output. Checked:
   for `xc`'s own 70,000-line assembly, its `.text` is **byte-identical** to
   GNU `as`'s.
-- **`ld.lld`** links the kernel, executive and programs from the existing
-  linker scripts. This has not been tried yet; it is the first thing the
-  migration checks.
+- **`ld.lld`** links the kernel, executive and programs. **Done and booted.**
+  The kernel's `linker.ld` needed no change: the higher-half `AT()` split comes
+  out byte-for-byte as intended (`.text` VMA `0xC0100000` / LMA `0x00100000`,
+  `.pagetables` outside `__bss_start..__bss_end`). Two things did have to change,
+  both because GNU ld had been papering over them:
+  - **SSE.** `clang --target=i686-elf` defaults to an SSE2-capable CPU and used
+    `movsd`/`%xmm0` for ordinary 64-bit integer moves. The kernel never sets
+    `CR4.OSFXSR`, so the first one raised `#UD` inside `pmm_init`. The kernel
+    flags now carry `-mno-sse -mno-sse2 -mno-mmx -mno-implicit-float`; x87 stays
+    on, because `lib/math/kmath.c` genuinely uses `double`.
+  - **Page alignment.** `os/executive/executive.ld` and `os/apps/hello.ld` had no
+    `ALIGN` between sections and relied on GNU ld page-aligning LOAD segments by
+    itself. ld.lld packs them as written, so `.rodata` shared page `0x00400000`
+    with `.text`; the CXEX loader maps section by section, so mapping `.rodata`
+    replaced the entry point's page and the executive faulted on its first
+    instruction. Both scripts now align each section explicitly, as
+    `kernel/linker.ld` always did.
 - **`clang` + `lld-link`** builds the UEFI stub. `boot/uefi/README.md` already
   documents this route.
-- **Ninja** is the CMake generator everywhere. The MSVC Developer Command
-  Prompt and NMake stop being requirements.
+- **Ninja** is the CMake generator everywhere. **Done:** the MSVC Developer
+  Command Prompt and NMake are no longer requirements, on any host.
 - **NASM stays** for the boot sector and stage 2, which are NASM syntax and
   build the same on every host.
 
 Stage 5 of the roadmap later replaces the assembler and linker with X's own;
 this decision covers the time until then.
 
-On the DevKit side, `cxk compile` assembles and links with clang and ld.lld,
-and `GccTool` becomes an LLVM wrapper when the wrappers move to `CXEX.Tools`.
+On the DevKit side, `cxk compile` assembles and links with clang and ld.lld:
+`GccTool` is gone, replaced by `ClangTool` (`CXEX.CLI/Wrappers/ClangTool.cs`),
+which moves to `CXEX.Tools` with the other wrappers in Phase 2.
 
 ### D6. One repository: CXOS Platform
 
@@ -259,8 +274,8 @@ an open decision (§5): sign locally and upload, or keep the key as a CI secret.
 - [x] Untrack `os/executive/app_image.h`; one `.gitignore` (D3).
 - [ ] `CXEX.Tests` (xUnit), with the traits and environment variables of D1; port `lang/run.py`, `xdata/difftest.py`, `xc/*.py`, deleting each.
 - [ ] Unit test: `AbiSync` against the real header (DevKit design doc §5.2, Q-F).
-- [ ] Toolchain to LLVM (D5): clang, ld.lld and Ninja in the CMake build; prove the ld.lld link, then boot and pass `ktest.c` before removing the GCC path. `cxk compile` on clang/ld.lld.
-- [ ] `cxk os build [--dev]`, the `cxk run` machine options, `cxk uefi build`; delete each script they replace (D2).
+- [x] Toolchain to LLVM (D5): clang, ld.lld and Ninja in the CMake build; prove the ld.lld link, then boot and pass `ktest.c` before removing the GCC path. `cxk compile` on clang/ld.lld. Done 2026-10-01: ld.lld link verified against `linker.ld`, then a dev image booted in QEMU to `self-tests: all 23 passed`, shell and supervisor up, and no CPU exception taken anywhere in the boot. The GCC path is removed — `CROSS_PREFIX`/`CROSS_SUFFIX` and `GccTool` are gone.
+- [ ] `cxk os build [--dev]`, the `cxk run` machine options, `cxk uefi build`; delete each script they replace (D2). **`cxk os build [--dev]` is done** and `tools/build.bat` is deleted; it adds a toolchain pre-flight that names a missing tool instead of failing inside CMake. The `cxk run` machine options and `cxk uefi build` are still outstanding, so `tools/run_qemu_ahci.bat` and `boot/uefi/build.bat` stay for now.
 - [ ] Docs tooling: `.config/dotnet-tools.json` pinning docfx; delete `devkit/build-docs.cmd`; drop the stale `.slnx` entries.
 - [ ] Release workflow (D7): `cxk` and CXEX Studio per platform; the OS image once D5 lands.
 - [ ] File-type integration: a `cxk` command that registers the CX file types with their icons (`assets/icons/filetypes`), replacing the old Winkit `.reg` files.

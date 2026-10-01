@@ -8,7 +8,7 @@ namespace CXEX.Lang.CodeGen;
 
 /// <summary>
 /// X core v0.1 backend: lowers the typed AST to x86-32 GAS (AT&T) assembly text,
-/// which the build assembles+links (i686-elf) to an ELF, then ElfParser/CXEXWriter
+/// which the build assembles+links (clang + ld.lld, i686-elf) to an ELF, then ElfParser/CXEXWriter
 /// package into a .xuex/.xsex/.xoex. Straightforward stack-machine codegen, cdecl ABI:
 /// args pushed right-to-left, result in eax, callee saves ebp. The __syscall
 /// intrinsic lowers to the CXK ABI register layout + int $0x80.

@@ -22,7 +22,7 @@
 ; Gated by CXK_ENABLE_FB: when 0, set_vbe_mode is a no-op that just clears
 ; VBE_VALID, guaranteeing the bootloader never touches the video hardware and
 ; the text-mode fallback is real. The flag MUST match the kernel's config.h -
-; wire it from CMake as `nasm -DCXK_ENABLE_FB=<n>` AND `gcc -DCXK_ENABLE_FB=<n>`
+; wire it from CMake as `nasm -DCXK_ENABLE_FB=<n>` AND `clang -DCXK_ENABLE_FB=<n>`
 ; from one CMake variable so both sides agree.
 
 ; This file is %included into stage2 AFTER cxexload.asm, which leaves the

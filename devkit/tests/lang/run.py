@@ -14,7 +14,7 @@
 #             that needs no kernel and can be told to refuse. Needs a CXK
 #             checkout (the platform root this devkit/ sits in, or CXK_ROOT); skipped without.
 #
-# Needs: a Release build of CXEX.CLI, i686-elf-gcc on PATH (the compiler
+# Needs: a Release build of CXEX.CLI, clang on PATH (the compiler
 # assembles with it) and a host gcc that can link -m32. Exit 0 = all passed.
 import os, subprocess, sys, tempfile, shutil, glob
 HERE = os.path.dirname(os.path.abspath(__file__))
