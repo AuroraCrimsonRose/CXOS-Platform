@@ -40,6 +40,8 @@ EXPECT = {
                           "'node.num' carries fields", "'node.eof' carries no fields; write it without braces",
                           "'node.eof' carries no fields to bind", "a sum type's fields are reached through a switch",
                           "pt cannot be compared with ==", "this value appears in two cases"],
+    "const_cycle.xfxn":  ["is defined in terms of itself"],
+    "sum_cycle.xfxn":    ["'tree' contains 'tree' by value inside itself, so it has no size"],
     "conversions.xfxn":  ["u32 to u8 can change the value", "300 does not fit in u8",
                           "u32 to i32 can change the value", "i8 to u32 can change the value", "compilation failed (4 error(s))"],
 }

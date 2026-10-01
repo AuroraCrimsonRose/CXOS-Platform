@@ -1,0 +1,4 @@
+// A constant with no value: it is defined through itself.
+const a: u32 = b + 1;
+const b: u32 = a;
+fn main() -> i32 { return 0; }
