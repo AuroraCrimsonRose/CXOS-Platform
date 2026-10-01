@@ -56,6 +56,12 @@ app.Configure(config =>
     config.AddCommand<AstCommand>("ast")
         .WithDescription("Prints the syntax trees of X source files (compared against the parser written in X).");
 
+    config.AddCommand<SemaCommand>("sema")
+        .WithDescription("Prints each expression's type and every diagnostic for X programs (compared against the type checker written in X).");
+
+    config.AddCommand<PreludeCommand>("prelude")
+        .WithDescription("Prints the ABI prelude that `compile` puts in front of every program.");
+
     config.AddCommand<CheckXDataCommand>("check-xdata")
         .WithDescription("Validates X Data documents (service descriptors), with the same rules as the X reader.");
 

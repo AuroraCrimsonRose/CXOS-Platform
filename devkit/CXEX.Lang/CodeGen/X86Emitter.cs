@@ -823,7 +823,23 @@ public sealed class X86Emitter
     {
         if (!_ctx.Resolved.TryGetValue(n, out var sym)) { T("xor %eax, %eax"); return; }
         if (sym.Kind == SymKind.Const && sym.Decl is ConstDecl cd && new ConstFold(_ctx, _diag).TryEval(cd.Value, out var v))
-        { T($"mov ${(uint)v}, %eax"); return; }   // narrow path; see IntLit above
+        {
+            /* A wide constant is a wide value, so it is represented as one: in
+               a slot, by its address - as a wide literal is. Handing back the
+               low word as a value made every 64 or 128-bit constant a
+               segfault the moment anything read it. */
+            if (IsWide(cd.Type))
+            {
+                int cslot = TakeWideSlot();
+                if (cslot == int.MinValue) { T("xor %eax, %eax"); return; }
+                StoreWideConst(v, cslot, SizeOf(cd.Type));
+                T($"lea {cslot}(%ebp), %eax");
+                return;
+            }
+            // narrow path; see IntLit above. Cut to the constant's own type, as a
+            // narrow cast would: a u8 constant of ~0xF0 is 0x0F, not 0xFFFFFF0F.
+            T($"mov ${(uint)v}, %eax"); WrapTo(cd.Type); return;
+        }
         // a function used as a value yields its address (function pointer)
         if (sym.Kind == SymKind.Function) { T($"mov ${n.Name}, %eax"); return; }
         if (sym.Kind == SymKind.Global)
@@ -1180,19 +1196,7 @@ public sealed class X86Emitter
         int slot = TakeWideSlot();
         if (slot == int.MinValue) { T("xor %eax, %eax"); return; }
 
-        if (src is IntLit il)
-        {
-            for (int o = 0; o < n; o += 4)
-            {
-                /* `o < 16`, not `o < 8`. This is where a literal stopped being
-                   allowed to exceed 64 bits: the words above the eighth byte
-                   were filled with zero regardless of the value, so even once
-                   the lexer could read a 128-bit constant, the top half was
-                   dropped on the way into the slot. */
-                uint w = o < 16 ? (uint)(il.Value >> (o * 8)) : 0u;
-                T($"movl ${w}, {slot + o}(%ebp)");
-            }
-        }
+        if (src is IntLit il) StoreWideConst(il.Value, slot, n);
         else
         {
             EmitExpr(src);                       // narrow value -> eax
@@ -1206,6 +1210,20 @@ public sealed class X86Emitter
             for (int o = 4; o < n; o += 4) T($"mov %eax, {slot + o}(%ebp)");
         }
         T($"lea {slot}(%ebp), %eax");
+    }
+
+    private void StoreWideConst(UInt128 v, int slot, int n)
+    {
+        for (int o = 0; o < n; o += 4)
+        {
+            /* `o < 16`, not `o < 8`. This is where a literal stopped being
+               allowed to exceed 64 bits: the words above the eighth byte
+               were filled with zero regardless of the value, so even once
+               the lexer could read a 128-bit constant, the top half was
+               dropped on the way into the slot. */
+            uint w = o < 16 ? (uint)(v >> (o * 8)) : 0u;
+            T($"movl ${w}, {slot + o}(%ebp)");
+        }
     }
 
     /* Slots are taken in a stack discipline: the caller saves _wideDepth,
