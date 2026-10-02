@@ -7,9 +7,17 @@
 # One folder up:    tools
 get_filename_component(CXK_TOOLS_DIR "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 
-# 2. Set the CXK executable path (tools/cxk.exe)
+# 2. The cxk CLI. `cxk os build` passes -DCXK pointing at the running executable,
+# which is the right answer and the usual case. This fallback is for a bare CMake
+# invocation, and is platform-aware because the old one always ended in .exe -
+# which made a direct `cmake tools/cmake` configure fail on Linux and macOS for a
+# reason the error message did not explain.
 if(NOT DEFINED CXK)
-    set(CXK "${CXK_TOOLS_DIR}/cxk.exe")
+    if(CMAKE_HOST_WIN32)
+        set(CXK "${CXK_TOOLS_DIR}/cxk.exe")
+    else()
+        set(CXK "${CXK_TOOLS_DIR}/cxk")
+    endif()
 endif()
 
 # ---- code-signing + executive + unified-disk pipeline ----
