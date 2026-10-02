@@ -1,0 +1,170 @@
+{
+  "$schema_note": [
+    "The version registry for CXOS Platform: the one place a version is decided.",
+    "",
+    "Two kinds of thing live here and they do NOT work the same way.",
+    "",
+    "  components  - things that SHIP. Each carries its own semver and moves at its",
+    "                own pace. A release bundles particular component versions; it",
+    "                does not force them to agree.",
+    "",
+    "  formats     - on-disk and on-wire layouts. A single monotonic integer each,",
+    "                never reset, never tied to a component version. A reader can",
+    "                always be older than the file it is handed, which is the whole",
+    "                reason these exist separately from the semvers above.",
+    "",
+    "`checks` is what makes this file authoritative rather than decorative: each",
+    "entry names a file and a regex whose first capture group MUST equal `version`.",
+    "`cxk check-versions` enforces every one, and `cxk os build` runs it as a",
+    "pre-flight. Adding a new place a version is written means adding a check here,",
+    "not editing the checker.",
+    "",
+    "See docs/planning/VERSIONING_AND_RELEASE.md for what a bump means and how a",
+    "release is cut."
+  ],
+
+  "components": {
+    "cxos": {
+      "version": "1.0.0",
+      "what": "The platform release: the kernel, the X userland and the boot chain as one bootable image. Its version names the GIT TAG and the GitHub Release.",
+      "major_means": "A new generation of the platform: the image is a different thing, not an update to the previous one. Every component starts at 1.0.0 because 1.0.0 is the first release anyone outside the project can actually obtain. The kernel called itself v5 internally for four unreleased generations; shipping that as a public 5.0.0 would have claimed four releases that never existed, to an audience with no way to know what they were.",
+      "ships_as": "cxk_disk-selfsigned.img",
+      "checks": []
+    },
+    "cxk-kernel": {
+      "version": "1.0.0",
+      "what": "CXK itself.",
+      "major_means": "A re-architecture of the kernel, not merely a broken interface - in this repository interfaces may break in any release, so a major keyed to breakage would increment every time and say nothing. The internal generation counter that reached 5 is retired: it was never public, and the names that carried it (the CMake project, the boot-chain banners) have had it removed rather than renumbered, because a version repeated in five hand-written strings is five things to forget.",
+      "checks": [
+        {
+          "file": "tools/cmake/CMakeLists.txt",
+          "pattern": "CXK_KERNEL_VERSION_FALLBACK \"([0-9]+\\.[0-9]+\\.[0-9]+)\"",
+          "note": "the fallback only; CMake reads this file for the real value"
+        }
+      ]
+    },
+    "cxk-cli": {
+      "version": "1.0.0",
+      "what": "The `cxk` command line tool: the X compiler, the imager, signing, `cxk os build`, `cxk run`.",
+      "major_means": "The command surface. A removed or renamed command or option is a major; a new one is a minor.",
+      "ships_as": "cxk-win-x64.exe, cxk-linux-x64, cxk-osx-arm64",
+      "checks": [
+        {
+          "file": "devkit/Directory.Build.props",
+          "pattern": "<CxkCliVersion>([0-9]+\\.[0-9]+\\.[0-9]+)</CxkCliVersion>"
+        }
+      ]
+    },
+    "cxex-studio": {
+      "version": "1.0.0",
+      "what": "CX DevKit Studio, the GUI front end over the same libraries the CLI uses.",
+      "major_means": "The command surface it presents, on the same rule as the CLI.",
+      "ships_as": "CXEX-Studio-<platform>.zip",
+      "checks": [
+        {
+          "file": "devkit/Directory.Build.props",
+          "pattern": "<CxexStudioVersion>([0-9]+\\.[0-9]+\\.[0-9]+)</CxexStudioVersion>"
+        }
+      ]
+    },
+    "x-native-vsix": {
+      "version": "1.0.0",
+      "what": "The X language extension for VS Code.",
+      "major_means": "Its own line, deliberately. It publishes to the VS Code marketplace on its own cadence, it is useful to someone who never installs CXOS, and the marketplace will only accept a bare major.minor.patch that always increases - so it can neither carry a pre-release suffix nor ever be moved backwards. It was 0.5.0; 1.0.0 is a legal increase, which is why it could join the common baseline at all. From here it diverges from the rest under its own vsix-v tag.",
+      "tag_prefix": "vsix-v",
+      "checks": [
+        {
+          "file": "editors/vscode/package.json",
+          "pattern": "\"version\": \"([0-9]+\\.[0-9]+\\.[0-9]+)\""
+        }
+      ]
+    }
+  },
+
+  "formats": {
+    "cxex": {
+      "version": 1,
+      "what": "The CXEX executable container: the 56-byte header and the 28-byte section entries.",
+      "field": "format_version, u16 at offset 6",
+      "bump_when": "the header or the section table changes shape, in one commit on both sides",
+      "checks": [
+        {
+          "file": "devkit/CXEX.FileType/Types/CXEXExecutable.cs",
+          "pattern": "SupportedFormatVersion = ([0-9]+)"
+        },
+        {
+          "file": "kernel/lib/format/cxex.h",
+          "pattern": "#define CXEX_FORMAT_VERSION +([0-9]+)"
+        }
+      ]
+    },
+    "cxex-abi": {
+      "version": 2,
+      "what": "The syscall and capability contract in abi/cxk_abi.h, stamped into every image's abi_version so a kernel can refuse one built against a different contract.",
+      "field": "abi_version, u16 at offset 10",
+      "bump_when": "a syscall number, struct layout or capability meaning changes. Both sides in one commit - `cxk check-abi` is the gate.",
+      "known_issue": "See docs/planning/VERSIONING_AND_RELEASE.md, 'What this registry found'. Images stamped 1 while the live contract was 2, and cxex_check_compat had no caller at all.",
+      "checks": [
+        {
+          "file": "devkit/CXEX.Build/Engines/CXEXLayoutEngine.cs",
+          "pattern": "const ushort AbiVersion = ([0-9]+)"
+        },
+        {
+          "file": "abi/cxk_abi.h",
+          "pattern": "#define CXK_ABI_VERSION +([0-9]+)"
+        }
+      ]
+    },
+    "cxbi": {
+      "version": 1,
+      "what": "The boot-information block stage 2 hands the kernel.",
+      "bump_when": "a field is added or moved. The size is in the header so a kernel can refuse a loader it does not understand.",
+      "checks": [
+        { "file": "abi/cxk_boot.h", "pattern": "#define CXBI_VERSION +([0-9]+)" }
+      ]
+    },
+    "cxfs": {
+      "version": 2,
+      "what": "The CXFS filesystem on-disk layout.",
+      "bump_when": "the superblock, inode or directory layout changes",
+      "checks": [
+        { "file": "kernel/drivers/storage/filesys/cxfs.h", "pattern": "#define CXFS_VERSION +([0-9]+)" }
+      ]
+    },
+    "xbpt": {
+      "version": 1,
+      "what": "The XBPT partition table: where the boot chain, the packages and the filesystem sit on a CXOS disk.",
+      "bump_when": "the table layout or an entry's meaning changes",
+      "note": "Not the same 5 as 'Building v5 boot image' in the imager, which is the CXK generation, not this.",
+      "checks": [
+        { "file": "kernel/drivers/storage/partition/partition.h", "pattern": "#define XBPT_VERSION +([0-9]+)" }
+      ]
+    },
+    "xstg": {
+      "version": 2,
+      "what": "The XSTG install manifest: a 16-byte header then 48 bytes per file, listing what the boot stage places.",
+      "bump_when": "the header or an entry changes size or meaning",
+      "checks": [
+        { "file": "kernel/drivers/storage/install.h", "pattern": "#define XSTG_VERSION +([0-9]+)" },
+        {
+          "file": "devkit/CXEX.Build/Emitters/XBPTImageWriter.cs",
+          "pattern": "XstgVersion = ([0-9]+)"
+        }
+      ]
+    },
+    "xkpk": {
+      "version": 1,
+      "what": "The CXPK public key container: a 16-byte header then the big-endian modulus.",
+      "bump_when": "the header or key encoding changes",
+      "checks": [
+        { "file": "devkit/CXEX.Crypto/Trust/CXKeyGenerator.cs", "pattern": "XKPK_VERSION = ([0-9]+)" }
+      ]
+    },
+    "cxsg": {
+      "version": 0,
+      "what": "The CXSG signature block: 44-byte header, then the signer's .xkpk verbatim, then the signature.",
+      "note": "Carries NO version field, by design: it is described by its sig_algo and hash_algo identifiers instead, which say what to do rather than what generation it is. Recorded here with version 0 and no checks so the set of formats is complete and nobody has to wonder whether one was forgotten.",
+      "checks": []
+    }
+  }
+}

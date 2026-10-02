@@ -74,6 +74,6 @@ vga_print_pmode:
     pop eax
     ret
 
-msg_pmode db 'CXK v5 stage 2 - 32-bit protected mode OK', 0
+msg_pmode db 'CXK stage 2 - 32-bit protected mode OK', 0
 
 bits 16                          ; back to 16-bit for anything after this include

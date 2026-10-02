@@ -76,6 +76,17 @@
         signature  sig_len                                              */
 #define CXEX_SIG_HDR_SIZE  44
 
+/* The container layout this kernel understands: the header and section sizes
+   above. An image declaring anything else is refused rather than read with the
+   wrong field offsets.
+
+   The DevKit has always refused a format_version it does not know
+   (CXEXExecutable.SupportedFormatVersion) and the kernel did not check it at
+   all - so the one side that an attacker actually reaches was the permissive
+   one. Both sides validating independently is the rule this repository holds
+   itself to (security review §11). Declared in versions.json as `cxex`. */
+#define CXEX_FORMAT_VERSION 1
+
 #define CXSG_MAGIC0 'C'
 #define CXSG_MAGIC1 'X'
 #define CXSG_MAGIC2 'S'

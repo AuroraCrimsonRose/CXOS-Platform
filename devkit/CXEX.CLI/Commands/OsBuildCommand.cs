@@ -113,6 +113,13 @@ public class OsBuildCommand : Command<OsBuildCommand.Settings>
             return 1;
         }
 
+        rc = RunPreflight(new CheckVersionsCommand(), context, new CheckVersionsCommand.Settings { Root = root, Quiet = true }, ct);
+        if (rc != 0)
+        {
+            AnsiConsole.MarkupLine("[red]error:[/] version pre-flight failed.");
+            return rc;
+        }
+
         rc = RunPreflight(new CheckAbiCommand(), context, new CheckAbiCommand.Settings { HeaderPath = abiHeader, Quiet = true }, ct);
         if (rc != 0)
         {

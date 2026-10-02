@@ -153,9 +153,15 @@ public static class XBPTImageWriter
         return;
     }
 
-    /* The XSTG manifest (version 2, CXK install.h): a 16-byte header, then 48
-       bytes per file, running on over as many sectors as they need - up to
-       16 - with the count of sectors at offset 8. */
+    /* The XSTG manifest: a 16-byte header, then 48 bytes per file, running on
+       over as many sectors as they need - up to 16 - with the count of sectors at
+       offset 8.
+
+       The version was a number in this comment and nowhere else, so "the kernel's
+       install.h says 2" was a claim no build could check. It is a constant now,
+       declared in versions.json as `xstg` and checked against XSTG_VERSION in
+       kernel/drivers/storage/install.h. */
+    public const int XstgVersion = 2;
     public const int XstgEntrySize = 48;
     public const int XstgNameLen = 32;
     public const int XstgMaxSectors = 16;

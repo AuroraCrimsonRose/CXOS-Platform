@@ -9,12 +9,17 @@ same commit.
 
 ## Branches
 
-- **`x86_32_DEV`**: active development. Commit and push here directly. Do
-  **not** create per-session or feature branches unless asked.
-- **`x86_32`**: full releases only. Never push to it unless asked.
-- A `v*` tag runs `.github/workflows/release.yml`, which publishes `cxk` and
-  CXEX Studio (win-x64, linux-x64, osx-arm64) to a GitHub Release.
+- **`x86_32_DEV`**: **master** — active development, and the branch everything
+  else is measured against. Commit and push here directly. Do **not** create
+  per-session or feature branches unless asked.
+- **`x86_32_RELEASE`**: full releases only, merged from `x86_32_DEV` by PR when
+  asked. Never push to it directly.
+- A `v*` tag runs `.github/workflows/release.yml` and publishes the assets in
+  `docs/planning/VERSIONING_AND_RELEASE.md` §5. `vsix-v*` is the VS Code
+  extension's own line.
 - Open a PR only when asked.
+- Stale, do not use: `x32_86` and `x32_86_DEV` are a typo'd pair, and
+  `origin/HEAD` still points at `x32_86`.
 
 ## Layout
 
@@ -96,7 +101,26 @@ a release, or `dotnet publish devkit/CXEX.CLI -c Release -r <rid>
   ```
 
   The last one must report three identical assemblies.
-- **Checks:** `cxk check-abi` and `cxk check tools/cmake/CMakeLists.txt`.
+- **Checks:** `cxk check-abi`, `cxk check-versions` and
+  `cxk check tools/cmake/CMakeLists.txt`. `cxk os build` runs all three as
+  pre-flights.
+
+## Versions
+
+`versions.json` at the repository root **decides every version** — the five
+shipping components and the eight formats. Nothing else is authoritative: each
+entry names the files that must agree with it, and `cxk check-versions` enforces
+them. If a number disagrees with the registry, the number is wrong.
+
+- Components (CXOS, CXK, `cxk`, Studio, the VSIX) each carry **their own semver**
+  and move at their own pace. All five are at 1.0.0.
+- Formats (CXEX, ABI, CXBI, CXFS, XBPT, XSTG, XKPK) are **monotonic integers**,
+  never reset, bumped in the commit that changes the format on every side at once.
+- To add a place a version is written, add a `checks` entry — never edit the
+  checker.
+
+`docs/planning/VERSIONING_AND_RELEASE.md` has what a bump means, how a release is
+cut, what the workflow produces, and how signing keys are selected.
 
 ## Tooling, and keeping context cheap
 
