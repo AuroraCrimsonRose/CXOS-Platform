@@ -28,8 +28,17 @@
       "version": "1.0.0",
       "what": "The platform release: the kernel, the X userland and the boot chain as one bootable image. Its version names the GIT TAG and the GitHub Release.",
       "major_means": "A new generation of the platform: the image is a different thing, not an update to the previous one. Every component starts at 1.0.0 because 1.0.0 is the first release anyone outside the project can actually obtain. The kernel called itself v5 internally for four unreleased generations; shipping that as a public 5.0.0 would have claimed four releases that never existed, to an audience with no way to know what they were.",
-      "ships_as": "cxk_disk-selfsigned.img",
-      "checks": []
+      "ships_as": "cxos-<version>-<release_name>-selfsigned.img",
+      "release_name": "Hekate",
+      "release_name_note": "CXOS ONLY. The name belongs to the platform release and to nothing else - CXK, the cxk CLI, Studio and the VSIX have versions and no names. Approved by Aurora 2026-10-02 for the 1.x line: Hekate Kleidophoros, the key-bearer at the threshold, for the generation in which CXOS gained a guarded boundary and the keys to it. Minor and patch releases inherit it. A new major needs a new name, recommended and approved - see docs/planning/VERSIONING_AND_RELEASE.md.",
+      "checks": [
+        {
+          "file": "docs/planning/VERSIONING_AND_RELEASE.md",
+          "pattern": "\\| CXOS 1\\.x \\| \\*\\*([A-Za-z]+)\\*\\* \\|",
+          "against": "release_name",
+          "note": "the doc's name table must agree with the registry"
+        }
+      ]
     },
     "cxk-kernel": {
       "version": "1.0.0",

@@ -91,7 +91,25 @@ public class CheckVersionsCommand : Command<CheckVersionsCommand.Settings>
                     string? file = c.TryGetProperty("file", out var f) ? f.GetString() : null;
                     string? pat = c.TryGetProperty("pattern", out var p) ? p.GetString() : null;
                     if (file is null || pat is null) continue;
-                    checks.Add(new Check(kind, entry.Name, value, file, pat));
+
+                    // A check normally holds a site to `version`, but any field of
+                    // the entry will do - `against: "release_name"` holds the doc's
+                    // name table to the registry. Naming a field that does not
+                    // exist is a failure, not a skip: a check that quietly stops
+                    // checking is the thing this command exists to prevent.
+                    string expected = value;
+                    string label = entry.Name;
+                    if (c.TryGetProperty("against", out var a) && a.GetString() is { Length: > 0 } field)
+                    {
+                        label = $"{entry.Name}.{field}";
+                        if (!entry.Value.TryGetProperty(field, out var fv))
+                        {
+                            AnsiConsole.MarkupLine($"[red]NO SUCH FIELD[/] {kind}/{entry.Name}: check names `{field}`, which the entry does not have");
+                            return 1;
+                        }
+                        expected = fv.ValueKind == JsonValueKind.Number ? fv.GetRawText() : fv.GetString() ?? "";
+                    }
+                    checks.Add(new Check(kind, label, expected, file, pat));
                 }
             }
         }
