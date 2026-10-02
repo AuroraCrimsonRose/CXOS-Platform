@@ -70,9 +70,71 @@ jobs:
           path: assets/*
           if-no-files-found: error
 
+  # The OS disk image. This is the job D5 unblocked: the whole toolchain is now
+  # installable with apt, so a clean runner can build CXK from source.
+  #
+  # It doubles as the only continuous check that D5's claim of "one toolchain on
+  # every host" is true. Everything so far has been built on Windows; if clang,
+  # ld.lld, NASM or Ninja behave differently here, this is where it shows.
+  #
+  # The image is UNSIGNED. Signing it needs the platform private key at build
+  # time, and whether that key belongs in a CI secret is still open
+  # (HARDENING_PLAN §5). Until it is settled this ships what can honestly be
+  # built without the key, named so nobody mistakes it for a release artifact.
+  image:
+    name: OS disk image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Install the toolchain (D5)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld nasm ninja-build cmake
+          echo "--- versions ---"
+          clang --version | head -1
+          ld.lld --version
+          nasm -v
+          ninja --version
+          cmake --version | head -1
+
+      - name: Publish cxk
+        run: >
+          dotnet publish devkit/CXEX.CLI -c Release -r linux-x64
+          -p:SelfContained=true -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:DebugType=none -o out/cli
+
+      # trusted_key.c is generated, never committed (D3). The kernel will not
+      # link without it.
+      - name: Embed the platform public key
+        run: |
+          chmod +x out/cli/cxk
+          out/cli/cxk embed tools/kernel.xkpk \
+            kernel/lib/format/trusted_key.c cxos_trusted_key --extern
+
+      - name: Build the OS
+        run: out/cli/cxk os build --root .
+
+      - name: Package
+        run: |
+          mkdir -p assets
+          cp dist/CXK_x86_32/images/cxk_disk.img assets/cxk_disk-unsigned.img
+          ls -la assets
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-image
+          path: assets/*
+          if-no-files-found: error
+
   release:
     name: Release
-    needs: publish
+    needs: [ publish, image ]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
