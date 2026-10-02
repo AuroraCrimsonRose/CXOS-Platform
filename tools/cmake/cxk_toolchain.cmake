@@ -31,9 +31,39 @@ if(SIGN AND DEV_UNSIGNED)
                         "produce a signed kernel that runs unsigned code. Pick one.")
 endif()
 
-# 3. Set keys relative to the tools directory (tools/...)
-set(SIGN_SK   "${CXK_TOOLS_DIR}/kernel.xksk")
-set(SIGN_PK   "${CXK_TOOLS_DIR}/kernel.xkpk")
+# 3. The signing key pair, named by basename in the tools directory.
+#
+# One variable for both halves, because they must be halves of the SAME key:
+# CXSigner refuses to sign with a private key that does not match the public key
+# travelling with the image, and the kernel would refuse the result anyway. A
+# second key is therefore selected by name - -DCXK_KEY=test uses
+# tools/test.xksk + tools/test.xkpk - and never by pointing the two paths
+# somewhere independently.
+set(CXK_KEY "kernel" CACHE STRING "basename of the signing key pair in tools/ (kernel, test, ...)")
+set(SIGN_SK   "${CXK_TOOLS_DIR}/${CXK_KEY}.xksk")
+set(SIGN_PK   "${CXK_TOOLS_DIR}/${CXK_KEY}.xkpk")
+
+# The kernel's compiled-in root of trust, GENERATED from the public half above.
+#
+# It used to be a tracked-but-gitignored file in the source tree that you ran
+# `cxk embed` over once by hand. That made the one invariant that matters here
+# impossible to enforce: the key the kernel trusts has to be the key the build
+# signs with. Embed kernel.xkpk, sign with test.xksk, and every artifact is
+# refused at boot as BAD_SIGNATURE - which reads as tampering, not as the wrong
+# key on a command line, and sends you looking in the crypto instead of at the
+# build. Generated from ${SIGN_PK} the two cannot disagree, and the manual step
+# is gone with it.
+if(NOT EXISTS ${SIGN_PK})
+    message(FATAL_ERROR "no public key to trust: ${SIGN_PK}\n"
+                        "  run: cxk keygen ${CXK_TOOLS_DIR}/${CXK_KEY}")
+endif()
+set(TRUSTED_KEY_C ${BUILD_DIR}/trusted_key.c)
+add_custom_command(
+    OUTPUT ${TRUSTED_KEY_C}
+    COMMAND ${CXK} embed ${SIGN_PK} ${TRUSTED_KEY_C} cxos_trusted_key --extern
+    DEPENDS ${SIGN_PK} ${CXK}
+    COMMENT "Embedding ${CXK_KEY}.xkpk as the kernel's root of trust"
+)
 
 # 4. Set the OS paths using the true SRC_DIR we just fixed in CMakeLists!
 set(EXEC_C    "${SRC_DIR}/os/executive/executive.c")

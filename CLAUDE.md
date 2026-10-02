@@ -36,7 +36,7 @@ same commit.
   is the public key and is tracked; its private half `tools/kernel.xksk`
   never is.
 - **Never commit generated output:** `build/`, `dist/`,
-  `os/executive/app_image.h`, `kernel/lib/format/trusted_key.c`, `bin/`,
+  `os/executive/app_image.h`, `bin/`,
   `obj/`, `docs/devkit/_site/` and `docs/devkit/api/`. Anything a build writes
   goes in `.gitignore`.
 - **ABI changes are one commit:** a syscall or struct added to
@@ -57,17 +57,20 @@ dotnet build devkit/CXEX.Studio.slnx -c Release
 
 The OS build needs `cxk` in `tools/` (`tools/cxk.exe` on Windows). Take it from
 a release, or `dotnet publish devkit/CXEX.CLI -c Release -r <rid>
--p:SelfContained=true -p:PublishSingleFile=true`. `trusted_key.c` is not
-tracked; generate it once:
-
-```
-cxk embed tools/kernel.xkpk kernel/lib/format/trusted_key.c cxos_trusted_key --extern
-```
+-p:SelfContained=true -p:PublishSingleFile=true`.
 
 - **Every host:** `cxk os build` (signed if `tools/kernel.xksk` exists) or
   `cxk os build --dev` (development kernel: runs unsigned programs, never ship
   it). It pre-flights the toolchain, the source list and the ABI, then
   configures CMake with Ninja and builds. `--clean` forces a full rebuild.
+- **Keys:** `--key <name>` selects the pair `tools/<name>.xksk` +
+  `tools/<name>.xkpk`; the default is `kernel`. The kernel's root of trust
+  (`trusted_key.c`) is **generated into `build/` from the public half of that
+  same key** on every build, so the key the kernel trusts is always the key the
+  build signs with — embed one and sign with the other and every artifact is
+  refused at boot as `BAD_SIGNATURE`, which reads as tampering rather than as
+  the wrong key. `cxk keygen tools/test` then `cxk os build --key test` is the
+  way to exercise the **signed** path locally; the pair stays out of git.
 - Needs **clang**, **ld.lld**, **NASM**, **CMake** and **Ninja** on PATH. No
   i686-elf GCC, no NMake, no MSVC Developer Command Prompt. The kernel is
   compiled with `clang --target=i686-elf`; override with `-DKCC=`,

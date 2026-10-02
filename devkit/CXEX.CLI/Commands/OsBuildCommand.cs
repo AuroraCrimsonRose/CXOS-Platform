@@ -29,6 +29,10 @@ public class OsBuildCommand : Command<OsBuildCommand.Settings>
         [Description("Development kernel: runs UNSIGNED images, signing skipped. Never ship one.")]
         public bool Dev { get; set; }
 
+        [CommandOption("--key <NAME>")]
+        [Description("Signing key pair in tools/, by basename: --key test uses tools/test.xksk + tools/test.xkpk. Default: kernel.")]
+        public string? Key { get; set; }
+
         [CommandOption("--root <DIR>")]
         [Description("Repository root. Default: found by walking up from the working directory.")]
         public string? Root { get; set; }
@@ -62,7 +66,12 @@ public class OsBuildCommand : Command<OsBuildCommand.Settings>
         string cmakeDir = Path.Combine(root, "tools", "cmake");
         string cmakeList = Path.Combine(cmakeDir, "CMakeLists.txt");
         string abiHeader = Path.Combine(root, "abi", "cxk_abi.h");
-        string signingKey = Path.Combine(root, "tools", "kernel.xksk");
+        // The key is named, not pathed: both halves must be halves of the same
+        // pair, and the kernel's root of trust is generated from the public one,
+        // so there is nothing to be gained by letting them be chosen separately.
+        string keyName = s.Key is { Length: > 0 } k ? k : "kernel";
+        string signingKey = Path.Combine(root, "tools", keyName + ".xksk");
+        string publicKey  = Path.Combine(root, "tools", keyName + ".xkpk");
         string buildDir = s.BuildDir is { Length: > 0 } b ? Path.GetFullPath(b) : Path.Combine(root, "build");
 
         AnsiConsole.MarkupLine($"[grey]root:[/]  {root}");
@@ -120,6 +129,17 @@ public class OsBuildCommand : Command<OsBuildCommand.Settings>
         bool sign = !s.Dev && File.Exists(signingKey);
         defines.Add(sign ? "-DSIGN=ON" : "-DSIGN=OFF");
         if (s.Dev) defines.Add("-DDEV_UNSIGNED=ON");
+        defines.Add($"-DCXK_KEY={keyName}");
+
+        // The public half is needed whether or not anything is signed: it is what
+        // the kernel's root of trust is generated from. Named here rather than
+        // left to CMake so a typo'd --key says so before configuring.
+        if (!File.Exists(publicKey))
+        {
+            AnsiConsole.MarkupLine($"[red]error:[/] no public key to trust: {publicKey}");
+            AnsiConsole.MarkupLine($"[grey]  run:  cxk keygen {Path.Combine(root, "tools", keyName)}[/]");
+            return 1;
+        }
 
         // Point CMake at THIS cxk rather than letting it guess. Its fallback is a
         // path ending in .exe, which is simply wrong off Windows - so `cxk os
@@ -136,9 +156,10 @@ public class OsBuildCommand : Command<OsBuildCommand.Settings>
         if (s.Dev)
             AnsiConsole.MarkupLine("[yellow]DEVELOPMENT build[/] - unsigned images will run, signing skipped. Never ship this image.");
         else if (sign)
-            AnsiConsole.MarkupLine("[green]signing key found[/] - artifacts will be SIGNED");
+            AnsiConsole.MarkupLine($"[green]signing key found[/] - artifacts will be SIGNED with tools/{keyName}.xksk");
         else
-            AnsiConsole.MarkupLine("[yellow]no signing key[/] - building UNSIGNED (run: cxk keygen tools/kernel)");
+            AnsiConsole.MarkupLine($"[yellow]no signing key[/] - building UNSIGNED (run: cxk keygen tools/{keyName})");
+        AnsiConsole.MarkupLine($"[grey]trusted key:[/] tools/{keyName}.xkpk, compiled into the kernel");
 
         // ---- [4/5] configure ----
         if (s.Clean && Directory.Exists(buildDir))

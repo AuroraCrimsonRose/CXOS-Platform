@@ -180,7 +180,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/lib/crypto/rsa.c
     ${SRC_DIR}/kernel/lib/format/cxex.c
     ${SRC_DIR}/kernel/lib/format/cxex_verify.c
-    ${SRC_DIR}/kernel/lib/format/trusted_key.c
+    ${BUILD_DIR}/trusted_key.c       # generated from tools/${CXK_KEY}.xkpk - cxk_toolchain.cmake
     ${SRC_DIR}/kernel/lib/format/cxex_load.c
     ${SRC_DIR}/kernel/lib/format/cxex_loadk.c
     ${SRC_DIR}/kernel/drivers/net/arp.c
