@@ -289,7 +289,7 @@ halt:
     hlt
     jmp halt
 
-msg_banner db 'CXK v5 stage 2 - entering pmode', 0
+msg_banner db 'CXK stage 2 - entering pmode', 0
 msg_e820   db '[BOOT] E820 entries: ', 0
 
 ; a20 messages (referenced by a20.asm)

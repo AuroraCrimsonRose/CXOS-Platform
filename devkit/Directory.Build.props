@@ -1,0 +1,39 @@
+<Project>
+
+  <!--
+    Component versions for everything in devkit/.
+
+    versions.json at the repository root is where a version is DECIDED; this file
+    is where MSBuild can actually read one, because MSBuild has no JSON reader.
+    The two are held together by `cxk check-versions`, which `cxk os build` runs
+    as a pre-flight - so these cannot drift from the registry without the build
+    saying so.
+
+    Before this file existed nothing set <Version> in any of the 16 projects, so
+    every assembly reported 1.0.0 while the CLI printed a hardcoded "5.0.0" and
+    the VSIX said 0.5.0. Three numbers, no two of them agreeing, none of them
+    checked.
+
+    Add a component by adding a property here AND a check entry in versions.json.
+  -->
+  <PropertyGroup>
+    <CxkCliVersion>1.0.0</CxkCliVersion>
+    <CxexStudioVersion>1.0.0</CxexStudioVersion>
+  </PropertyGroup>
+
+  <!--
+    The libraries carry the CLI's version: they are not released on their own, and
+    a library version nobody ships is a number that can only ever be wrong.
+  -->
+  <PropertyGroup>
+    <Version>$(CxkCliVersion)</Version>
+    <Company>CATX SYSTEMS LLC</Company>
+    <Product>CX DevKit</Product>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(MSBuildProjectName)' == 'CXEX.Studio'">
+    <Version>$(CxexStudioVersion)</Version>
+    <Product>CX DevKit Studio</Product>
+  </PropertyGroup>
+
+</Project>

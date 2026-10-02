@@ -9,7 +9,17 @@ namespace CXEX.Build.Engines;
 
 public static class CXEXLayoutEngine
 {
-    public static CxexMemoryLayout CreateLayout(uint entryPoint, IReadOnlyList<ElfSegment> loadSegments, ushort typeCode, ushort abiVersion = 1)
+    /// <summary>
+    /// The ABI contract images are stamped with. It was 1 while the live contract
+    /// (docs/kernel/CX_ABI.md, abi/cxk_abi.h CXK_ABI_VERSION) was 2 - and every
+    /// image sets FLAG_REQUIRE_ABI_MATCH, asking to be refused on exactly that
+    /// mismatch. It survived only because the kernel's cxex_check_compat has no
+    /// caller, so nothing ever compared the two. Declared in versions.json as
+    /// `cxex-abi` and checked against both sides.
+    /// </summary>
+    public const ushort AbiVersion = 2;
+
+    public static CxexMemoryLayout CreateLayout(uint entryPoint, IReadOnlyList<ElfSegment> loadSegments, ushort typeCode, ushort abiVersion = AbiVersion)
     {
         var layout = new CxexMemoryLayout
         {
