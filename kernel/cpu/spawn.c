@@ -95,6 +95,30 @@ static int build_args_page(const char *blob, uint32_t len) {
     return 0;
 }
 
+/* Give back everything this process has taken and leave the thread in the kernel
+   address space. Shared by the exit path and every failure path above it.
+   A spawn that died before enter_usermode used to just thread_exit(), which left
+   its user frames, its page tables and its page directory behind - so an image
+   the loader REFUSES could be spawned in a loop to drain the PMM, and the
+   refusal was the thing doing the draining. The frames must go while this
+   thread still has the space loaded, so the order here is not negotiable:
+   reclaim, then drop the bookkeeping, then leave the space, then free it. */
+static void proc_teardown(int pid, struct proc_rec *r) {
+    if (r->image) { kfree((void *)r->image); r->image = NULL; }
+    if (r->args)  { kfree((void *)r->args);  r->args  = NULL; }
+
+    struct addr_space self = r->space;
+    addr_space_reclaim_user();         /* frees the user frames and page tables */
+    /* After the reclaim, never before: that walk is what frees the frames behind
+       this process's mappings, and this only drops the bookkeeping. */
+    vm_proc_reset(pid);
+    struct addr_space kspace;
+    addr_space_kernel(&kspace);
+    addr_space_switch(&kspace);
+    thread_set_space(pid, 0);          /* stop referencing the freed space */
+    addr_space_destroy(&self);         /* free the PD frame + unregister */
+}
+
 /* Runs on the new thread, in its own address space (the scheduler loaded its CR3
    before switching here). Places the image, builds a ring-3 stack, drops to user
    mode. Returns only when the process SYS_EXITs. */
@@ -103,28 +127,46 @@ static void proc_trampoline(void) {
     struct proc_rec *r = &proc_recs[pid];
 
     uint32_t entry = 0;
-    if (cxex_load(r->image, r->image_len, &cxex_kernel_load_ops, &entry) != CXEX_LOAD_OK) {
-        klog("PROC", SEV_ERR, "image load failed");
-        kfree((void *)r->image); r->image = NULL;
+    int lrc = cxex_load(r->image, r->image_len, &cxex_kernel_load_ops, &entry);
+    if (lrc != CXEX_LOAD_OK) {
+        /* The reason, not just the fact: these are the loader's refusals - a
+           W+X section, a range outside the user half, data past the signature,
+           a quota that has no room - and which one fired is the whole content of
+           the message. */
+        klog("PROC", SEV_ERR, cxex_load_strerror(lrc));
+        proc_teardown(pid, r);
+        thread_exit();
+    }
+
+    /* The stack is the process's memory as much as the image is, so it comes out
+       of the same quota. Charged before a frame is allocated, so a process whose
+       ceiling cannot cover a stack is refused having taken nothing. */
+    if (vm_charge(pid, USER_STACK_PAGES * 0x1000u) != E_OK) {
+        klog("PROC", SEV_ERR, "the memory quota has no room for a user stack");
+        proc_teardown(pid, r);
         thread_exit();
     }
     for (uint32_t i = 0; i < USER_STACK_PAGES; i++) {
         void *p = pmm_alloc();
-        if (!p) { klog("PROC", SEV_ERR, "no stack memory"); kfree((void *)r->image); thread_exit(); }
+        if (!p) { klog("PROC", SEV_ERR, "no stack memory"); proc_teardown(pid, r); thread_exit(); }
         if (paging_map_user(USER_STACK_TOP - (i + 1) * 0x1000u, (uint32_t)p,
                             PAGE_PRESENT | PAGE_WRITE) != 0) {
             klog("PROC", SEV_ERR, "user stack is not in the user half");
-            pmm_free(p); kfree((void *)r->image); thread_exit();
+            pmm_free(p); proc_teardown(pid, r); thread_exit();
         }
     }
     uint32_t ustack_top = USER_STACK_TOP - 16u;
 
     /* After the stack, so a failure here cannot leave a half-built process
        holding stack pages it will never use. */
+    if (vm_charge(pid, 0x1000u) != E_OK) {
+        klog("PROC", SEV_ERR, "the memory quota has no room for the argument page");
+        proc_teardown(pid, r);
+        thread_exit();
+    }
     if (build_args_page(r->args, r->args_len) != 0) {
         klog("PROC", SEV_ERR, "no memory for the argument page");
-        kfree((void *)r->image); r->image = NULL;
-        if (r->args) { kfree((void *)r->args); r->args = NULL; }
+        proc_teardown(pid, r);
         thread_exit();
     }
 
@@ -133,19 +175,9 @@ static void proc_trampoline(void) {
 
     enter_usermode(entry, ustack_top, thread_current_usave());
 
-    /* process exited: reclaim its address space so spawning doesn't leak. Free
-       the user frames/PTs while still in this space, switch to the kernel space,
-       then free the page directory. */
-    struct addr_space self = r->space;
-    addr_space_reclaim_user();
-    /* After the reclaim, never before: that walk is what frees the frames
-       behind this process's mappings, and this only drops the bookkeeping. */
-    vm_proc_reset(pid);
-    struct addr_space kspace;
-    addr_space_kernel(&kspace);
-    addr_space_switch(&kspace);
-    thread_set_space(pid, 0);          /* stop referencing the freed space */
-    addr_space_destroy(&self);         /* free the PD frame + unregister */
+    /* process exited: reclaim its address space so spawning doesn't leak - the
+       same teardown the failure paths above take, for the same reason. */
+    proc_teardown(pid, r);
     klog_u32("PROC", SEV_INFO, "exited + reclaimed; free frames: ", pmm_free_count(), LOG_COLOR_VALUE, "");
 
     thread_exit();   /* never returns; sched_reap frees the kernel + esp0 stacks */
