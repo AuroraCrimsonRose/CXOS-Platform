@@ -193,7 +193,7 @@ Keys are not flat: every `XKPK`/`XKSK` carries a **header declaring its Authorit
 
 **Decided, not yet created:** `CXEX.Tests`, the xUnit test project for the whole solution (`docs/planning/HARDENING_PLAN.md`, D1). It replaces every Python script under `tests/`.
 
-**Scaffolded but empty — project file, zero source:** `CXEX.Font`, `CXEX.Text`, `CXEX.Tools`, `CXEX.UI` (the `CXEX.ICO` icons moved to `assets/icons/filetypes/`). Nothing is missing; these are placeholders awaiting the phases in §14. Worth stating plainly because opening the solution gives no hint which libraries are real.
+**Scaffolded but empty — project file, zero source:** `CXEX.Font`, `CXEX.Text`, `CXEX.Tools`, `CXEX.UI` (the `CXEX.ICO` icons moved to `assets/icons/filetypes/`, deleted 2026-10-02 and to be redrawn). Nothing is missing; these are placeholders awaiting the phases in §14. Worth stating plainly because opening the solution gives no hint which libraries are real.
 
 **`CXEX.Tools` [Q-D answered — created, not yet populated]:** the project exists and is empty. The process-tool wrappers (`GccTool`, `NasmTool`, `QemuTool`, `BochsTool`, `CMakeTool`, `ProcessRunner`) still live in `CXEX.CLI/Wrappers`, so Studio cannot drive the toolchain without depending on the CLI. Relocating them is Phase 2 and remains the right call — the compile pipeline already calls `GccTool` from inside `CompileCommand`, which is exactly the coupling this fixes.
 

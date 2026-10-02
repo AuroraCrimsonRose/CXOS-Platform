@@ -6,16 +6,22 @@ arrives under. Those licences are **not** superseded by
 
 ## Current inventory
 
-| Component | Upstream | Licence | Where | Status |
-|---|---|---|---|---|
-| **1-bit Pixel Icons** by Nikoichu | [nikoichu.itch.io/1-bit-pixel-icons](https://nikoichu.itch.io/1-bit-pixel-icons) | `CC0-1.0` | `assets/icons/` (1,511 files); declared in `assets/icons/CC0.md` | Bundled unmodified. CC0 asks nothing; listed as a courtesy and so the inventory is complete. |
+**None.** No third-party source, no vendored libraries, no bundled assets.
+
+This time the claim was arrived at by looking rather than by remembering, and by
+removing what did not survive the look.
+
+| Was | Licence | What happened |
+|---|---|---|
+| **1-bit Pixel Icons** by Nikoichu, 1,495 PNGs in `assets/icons/` | `CC0-1.0` | **Removed 2026-10-02.** CC0 imposed nothing, so this was housekeeping rather than compliance — but an unused third-party set is still a thing to explain to every future reader. |
+| CX file-type icons, `assets/icons/filetypes/` and its `source/` masters | original work | **Removed 2026-10-02** at the author's direction, to be redrawn. They were not third-party; they went with the directory. |
 
 ### The fonts are not third-party components — but read this
 
 `kernel/lib/gfx/font.c` is **not** in the table above, and the reasoning is worth
 recording because it was briefly entered there in error.
 
-The glyph arrays were produced from a **bitmap PNG of a rendered font**, put
+The glyph array was produced from a **bitmap PNG of a rendered font**, put
 through a **Python converter written for the job**. No font file — no BDF, PSF or
 TTF — was copied. The converter has since been lost, so the conversion cannot be
 re-run or independently audited; only its output survives, as `font.c`. The 8×16
@@ -42,23 +48,26 @@ and expressly allows bundling inside software under any licence — which is wor
 knowing, because it means the downside of being wrong here is attribution and a
 file carve-out, not a blocked release.
 
-### Open: the 8×8 glyphs
+### Closed: the 8×8 glyphs are gone
 
-`font_default_8x8` was transcribed from a **different** font, described as
-permissive, requiring no attribution and usable commercially — but the name is no
-longer remembered, so the claim cannot be checked.
+`font_default_8x8` came from a **different** font — described as permissive,
+needing no attribution and usable commercially, but the name was no longer
+remembered, so the claim could not be checked. It was compared against the
+public-domain `font8x8_basic` by Daniel Hepper and was not that: `'B'` matched
+byte for byte after bit reversal while `'A'`, `'M'` and `'0'` did not, which is
+what two unrelated 8×8 fonts sharing obvious letterforms look like.
 
-It was compared against the public-domain `font8x8_basic` by Daniel Hepper: `'B'`
-matches byte for byte after bit reversal, while `'A'`, `'M'` and `'0'` do not,
-which is what two unrelated 8×8 fonts sharing obvious letterforms look like. Not
-that font, then, and otherwise unidentified.
+**Removed 2026-10-02**, along with its accessor. Nothing in the tree ever called
+it — only the 8×16 array is read, through `fb.c` — so it was simultaneously the
+only asset whose provenance could not be demonstrated and the only one that cost
+nothing to delete. An unidentifiable asset that is also unused is not a question
+worth keeping open.
 
-**It is also dead data.** `font_glyph_8x8` exists in `font.h` and nothing in the
-tree calls it; only the 8×16 array is ever read, through `fb.c`. So the simplest
-resolution available is deletion: it removes the one asset in the project whose
-provenance cannot be demonstrated, and costs nothing that is in use. Kept for now
-because it may be wanted for a smaller console mode — but it should not stay
-unidentified indefinitely.
+The 8×16 Terminus-derived array **stays**. It is load-bearing rather than
+decorative: Terminus distinguishes `0` from `O` and `1` from `l` from `I`, which
+a console printing hex dumps, paths and key fingerprints actually depends on. A
+hand-drawn replacement is intended in time, and would retire the provenance
+question above entirely — but only once it makes those same distinctions.
 
 ### How the earlier claim went wrong
 
