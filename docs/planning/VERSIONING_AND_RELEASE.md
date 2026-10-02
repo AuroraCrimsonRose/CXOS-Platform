@@ -65,6 +65,43 @@ Because a component version carries no compatibility promise, it is a statement
 about an **artifact**, not a migration burden. `cxk 1.2.0` tells you which `cxk`
 you have; the image it can build is whichever one shipped alongside it.
 
+### Major release names
+
+Every **major CXOS release** carries a Greek mythological name after the version:
+`CXOS 1.0.0 "<Name>"`.
+
+> **The semantic version identifies the release. The name identifies what that
+> major generation *means*.**
+
+It is not a codename and it is not decorative — it is meant to become part of
+CXOS's historical identity, which is why it is chosen from the architecture rather
+than from a list of figures that sound impressive.
+
+**A name is never assigned automatically, and is not official until Aurora has
+approved it.** For each new major:
+
+1. Analyse the defining architectural changes, goals and milestones of that
+   generation.
+2. Identify several candidates — gods, Titans, primordials or other significant
+   figures — whose symbolism meaningfully corresponds to those changes.
+3. Recommend one, stating the figure and their domain, how the symbolism maps to
+   the release's architectural identity, why it suits *this* generation
+   specifically, and the meaningful alternatives considered.
+4. Wait for approval, then use it consistently in the release and its
+   documentation.
+
+There is **no predetermined sequence** and no fixed mapping. Hephaestus (forging,
+tools), Athena (wisdom, strategy), Hermes (messages, movement), Prometheus
+(knowledge, independence), Atlas (foundations, scale) and Hestia (stability,
+centrality) are associations to reason from, not a menu to be drawn from in order.
+Judge each generation on what it actually accomplished.
+
+Minor and patch releases inherit their major's name; they do not get their own.
+
+| Major | Name |
+|---|---|
+| CXOS 1.x | *pending approval* |
+
 ## 3. The formats
 
 | Format | Version | What it describes | Declared in |
