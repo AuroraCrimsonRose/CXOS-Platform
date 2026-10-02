@@ -1,0 +1,14 @@
+# Canonical identity for the contributor graph.
+#
+# Four spellings of one person: the GitHub handle, the full name, a typo of the
+# handle, and - after the 2026-10-02 re-authoring - the commits that had been
+# recorded as authored by an assistant rather than co-authored with one. This
+# maps them to a single author without rewriting anything further; git log,
+# shortlog and GitHub's contributor view all honour it.
+#
+# Assistance is recorded where it belongs: in the Co-Authored-By trailer of the
+# commits it applies to, not in the author field.
+Aurora Tejeda <auracrimsonrose@gmail.com> <66587640+AuroraCrimsonRose@users.noreply.github.com>
+Aurora Tejeda <auracrimsonrose@gmail.com> AuroraCrimsonRose <auracrimsonrose@gmail.com>
+Aurora Tejeda <auracrimsonrose@gmail.com> AuraCrimsonRose <auracrimsonrose@gmail.com>
+Aurora Tejeda <auracrimsonrose@gmail.com> Aurora Lisanna Tejeda <auracrimsonrose@gmail.com>
