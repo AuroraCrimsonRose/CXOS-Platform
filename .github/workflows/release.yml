@@ -136,7 +136,13 @@ jobs:
       - name: Package
         run: |
           mkdir -p assets
-          cp dist/CXK_x86_32/images/cxk_disk.img assets/cxk_disk-selfsigned.img
+          # The image is the CXOS release, so it is named like one: version and
+          # the generation's name, both read from the registry rather than typed
+          # here. jq is on the runner; a missing field fails the job instead of
+          # producing an asset with a hole in its name.
+          V=$(jq -er '.components.cxos.version' versions.json)
+          N=$(jq -er '.components.cxos.release_name' versions.json | tr '[:upper:]' '[:lower:]')
+          cp dist/CXK_x86_32/images/cxk_disk.img "assets/cxos-$V-$N-selfsigned.img"
           # Belt and braces: the key must not reach an artifact. It is gitignored
           # and never copied, and this makes a mistake here fail the job instead
           # of publishing a private key.
@@ -155,6 +161,15 @@ jobs:
     needs: [ publish, image ]
     runs-on: ubuntu-latest
     steps:
+      # Checked out only for versions.json: this job otherwise handles artifacts,
+      # but the release's own title comes from the registry like everything else.
+      - uses: actions/checkout@v4
+
+      - name: Read the release name from the registry
+        id: reg
+        run: |
+          echo "name=$(jq -er '.components.cxos.release_name' versions.json)" >> "$GITHUB_OUTPUT"
+
       - uses: actions/download-artifact@v4
         with:
           pattern: release-*
@@ -167,7 +182,10 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          name: ${{ github.event.inputs.tag || github.ref_name }}
+          # The semver identifies the release; the Greek name identifies what the
+          # major generation means. It names the CXOS release only - never the
+          # kernel, the boot chain or the tooling.
+          name: ${{ github.event.inputs.tag || github.ref_name }} "${{ steps.reg.outputs.name }}"
           generate_release_notes: true
           files: assets/*
           # What each asset is, so nothing has to be guessed from its filename.
@@ -179,10 +197,10 @@ jobs:
             |---|---|
             | `cxk-win-x64.exe`, `cxk-linux-x64`, `cxk-osx-arm64` | the `cxk` CLI: the X compiler, the imager, signing, `cxk os build`, `cxk run`. Single file, no .NET install needed. |
             | `CXEX-Studio-<platform>.zip` | CXEX Studio. |
-            | `cxk_disk-selfsigned.img` | a bootable 64 MB CXK disk image, x86-32. |
+            | `cxos-1.0.0-hekate-selfsigned.img` | a bootable 64 MB CXK disk image, x86-32. |
             | `SHA256SUMS` | checksums for everything above. |
 
-            Run the image with `cxk run cxk_disk-selfsigned.img` (QEMU), or write
+            Run the image with `cxk run cxos-1.0.0-hekate-selfsigned.img` (QEMU), or write
             it to a disk. It boots the kernel, runs the boot-time self-tests,
             and comes up to a shell with the executive and the supervisor
             running.

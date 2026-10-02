@@ -29,7 +29,7 @@ they are the thing that actually needs numbering.
 
 | Component | What it is | Ships as |
 |---|---|---|
-| **CXOS** | The platform release: kernel, X userland and boot chain as one bootable image. Its version names the **git tag** and the **GitHub Release**. | `cxk_disk-selfsigned.img` |
+| **CXOS** | The platform release: kernel, X userland and boot chain as one bootable image. Its version names the **git tag** and the **GitHub Release**. | `cxos-<version>-<name>-selfsigned.img` |
 | **CXK** | The kernel. | inside the image |
 | **cxk CLI** | The X compiler, the imager, signing, `cxk os build`, `cxk run`. | `cxk-win-x64.exe`, `cxk-linux-x64`, `cxk-osx-arm64` |
 | **CX DevKit Studio** | The GUI over the same libraries the CLI uses. | `CXEX-Studio-<platform>.zip` |
@@ -68,10 +68,21 @@ you have; the image it can build is whichever one shipped alongside it.
 ### Major release names
 
 Every **major CXOS release** carries a Greek mythological name after the version:
-`CXOS 1.0.0 "<Name>"`.
+`CXOS 1.0.0 "Hekate"`.
 
 > **The semantic version identifies the release. The name identifies what that
 > major generation *means*.**
+
+**The name belongs to the CXOS release and to nothing else.** Not the kernel, not
+the boot chain, not the tooling: CXK, the BIOS/UEFI boot chain, the `cxk` CLI, CX
+DevKit Studio and the X Native VSIX all have versions and **no names**. They are
+components, and a component is a part of a generation rather than a generation in
+itself.
+
+So there is no "CXK Hekate" and no "stage 2 Hekate". The kernel shipped in
+CXOS 1.x is **CXK 1.0.0**, and that is the whole of what it is called. The name
+appears on the OS release — the tag, the GitHub Release, the disk image and the
+documentation that describes that generation.
 
 It is not a codename and it is not decorative — it is meant to become part of
 CXOS's historical identity, which is why it is chosen from the architecture rather
@@ -97,10 +108,12 @@ centrality) are associations to reason from, not a menu to be drawn from in orde
 Judge each generation on what it actually accomplished.
 
 Minor and patch releases inherit their major's name; they do not get their own.
+`versions.json` holds the approved name under `components.cxos.release_name`, and
+`cxk check-versions` holds the table below to it.
 
-| Major | Name |
-|---|---|
-| CXOS 1.x | *pending approval* |
+| Major | Name | Why |
+|---|---|---|
+| CXOS 1.x | **Hekate** | Goddess of thresholds, gateways and crossroads, whose epithet *Kleidophoros* means **key-bearer**: she is shown holding the keys to the gate she guards, belonging to neither side of the boundary but to the boundary itself. CXOS 1.x is the generation in which the platform gained a guarded boundary and the keys to it — the loader validates an image whole before any of it is mapped, a section's range must lie below `KERNEL_VBASE`, `paging_map_kernel` and `paging_map_user` are two gates deliberately shaped so neither can express the dangerous combination, W^X decides what may execute once across, and every byte must lie inside the signed range. The keys are not a metaphor: this is where the signed chain first verified end to end, with the kernel's root of trust generated from the key that signed what it loads. CXK already booted, scheduled, paged and ran programs before this; what it *gained* was the authority to refuse, and a reason to be believed when it does.<br><br>Alternatives weighed: **Themis** (divine law and right order, and keeper of the Delphic oracle before Apollo — apt, but about judgment in general, and better suited to a later generation about capability tiers and policy); **Atlas** (foundations and scale — describes the kernel's existence rather than this generation's work, and his burden is a punishment). Rejected: **Hephaestus** (the forge fits the DevKit, but tooling was the means here, not the identity — hold it for a generation whose subject *is* the toolchain, such as the assembler and linker in X); **Prometheus** (fits a first release and self-hosting, but his character is defiance of limits, the opposite of this generation); **Hestia** (first of every offering, but too quiet for work whose whole content is refusal). |
 
 ## 3. The formats
 
@@ -173,7 +186,7 @@ Each has been verified to fire.
 |---|---|
 | `cxk-win-x64.exe`, `cxk-linux-x64`, `cxk-osx-arm64` | `publish` job, single-file self-contained |
 | `CXEX-Studio-<platform>.zip` | `publish` job |
-| `cxk_disk-selfsigned.img` | `image` job, on a clean ubuntu runner with apt clang/lld/nasm/ninja/cmake |
+| `cxos-<version>-<name>-selfsigned.img` | `image` job, on a clean ubuntu runner with apt clang/lld/nasm/ninja/cmake |
 | `SHA256SUMS` | `release` job |
 
 The release body is written in the workflow and lists what each asset is. The
