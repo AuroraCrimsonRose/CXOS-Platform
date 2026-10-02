@@ -239,7 +239,7 @@ void fb_draw_string_n(uint32_t x, uint32_t y, const char *s, uint32_t n,
 /* ---- SYS_FB_OP handler ----
  * Draw on behalf of a GRANT_FRAMEBUFFER holder. Colors cross the ABI as canonical
  * 0x00RRGGBB and are converted here via fb_rgb to the active mode. */
-#include "../../cpu/usermode.h"   /* user_ptr_ok */
+#include "../../cpu/usermode.h"   /* user_ptr_readable / user_ptr_writable */
 #include "../../../abi/cxk_abi.h" /* fb_op_args, FB_OP_*, E_* */
 
 static uint32_t fb_pack(uint32_t rgb) {
@@ -247,13 +247,13 @@ static uint32_t fb_pack(uint32_t rgb) {
 }
 
 int sys_fb_op(const struct fb_op_args *ua) {
-    if (!user_ptr_ok((uint32_t)ua, sizeof *ua)) return E_FAULT;
+    if (!user_ptr_readable((uint32_t)ua, sizeof *ua)) return E_FAULT;
     struct fb_op_args a = *ua;
     if (!fb_active()) return E_NOENT;
 
     switch (a.op) {
         case FB_OP_INFO: {
-            if (!user_ptr_ok((uint32_t)a.out, 4 * sizeof(uint32_t))) return E_FAULT;
+            if (!user_ptr_writable((uint32_t)a.out, 4 * sizeof(uint32_t))) return E_FAULT;
             a.out[0] = fb_width();
             a.out[1] = fb_height();
             a.out[2] = fb_bpp();
@@ -267,7 +267,7 @@ int sys_fb_op(const struct fb_op_args *ua) {
         case FB_OP_DRAW_TEXT: {
             /* Scan for a length we have actually validated, then draw AT MOST that
                many characters. Passing the bare pointer to fb_draw_string was a
-               kernel-mode out-of-bounds read: the scan stops when user_ptr_ok fails
+               kernel-mode out-of-bounds read: the scan stops when user_ptr_readable fails
                at a page boundary, but fb_draw_string walks to its own NUL, so a
                string filling a mapped page with no terminator - or any string of
                0x1000 characters - ran straight off the end of the mapping. Since
@@ -275,8 +275,8 @@ int sys_fb_op(const struct fb_op_args *ua) {
                SYS_CONSOLE_WRITE has always done this correctly; this now matches it. */
             uint32_t n = 0;
             const char *p = a.text;
-            while (n < 0x1000 && user_ptr_ok((uint32_t)a.text + n, 1) && p[n]) n++;
-            if (n == 0 && !user_ptr_ok((uint32_t)a.text, 1)) return E_FAULT;
+            while (n < 0x1000 && user_ptr_readable((uint32_t)a.text + n, 1) && p[n]) n++;
+            if (n == 0 && !user_ptr_readable((uint32_t)a.text, 1)) return E_FAULT;
             fb_draw_string_n(a.x, a.y, a.text, n, fb_pack(a.color), fb_pack(a.color2));
             return (int)n;
         }

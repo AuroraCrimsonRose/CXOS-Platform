@@ -6,7 +6,7 @@
 #include "handle.h"
 #include "sched.h"
 #include "caps.h"
-#include "usermode.h"   /* user_ptr_ok */
+#include "usermode.h"   /* user_ptr_readable / user_ptr_writable */
 #include <stddef.h>
 
 #define MAX_ENDPOINTS 32
@@ -43,14 +43,14 @@ struct endpoint *ep_from_handle(int idx, uint8_t need_rights) {
 /* app side: stage the request, wake a waiting owner, block until replied, then
    copy the reply out. Runs in the caller's address space (its CR3 is live). */
 int ipc_call(const struct ipc_call_args *ua) {
-    if (!user_ptr_ok((uint32_t)ua, sizeof *ua)) return E_FAULT;
+    if (!user_ptr_readable((uint32_t)ua, sizeof *ua)) return E_FAULT;
     struct ipc_call_args a = *ua;
 
     struct endpoint *ep = ep_from_handle(a.ep_handle, HRIGHT_SEND);
     if (!ep) return E_BADF;
     if (a.req_len > sizeof ep->buf) return E_RANGE;
-    if (a.req_len && !user_ptr_ok((uint32_t)a.req, a.req_len))         return E_FAULT;
-    if (a.reply_cap && !user_ptr_ok((uint32_t)a.reply, a.reply_cap))   return E_FAULT;
+    if (a.req_len && !user_ptr_readable((uint32_t)a.req, a.req_len))         return E_FAULT;
+    if (a.reply_cap && !user_ptr_writable((uint32_t)a.reply, a.reply_cap))   return E_FAULT;
     if (ep->caller_pid != -1) return E_AGAIN;   /* single in-flight (v1) */
 
     for (uint32_t i = 0; i < a.req_len; i++)            /* read req in caller space */
@@ -75,12 +75,12 @@ int ipc_call(const struct ipc_call_args *ua) {
 /* owner side: wait for a caller, then copy the staged request out. Runs in the
    owner's (executive's) address space. */
 int ipc_recv(const struct ipc_recv_args *ua) {
-    if (!user_ptr_ok((uint32_t)ua, sizeof *ua)) return E_FAULT;
+    if (!user_ptr_readable((uint32_t)ua, sizeof *ua)) return E_FAULT;
     struct ipc_recv_args a = *ua;
 
     struct endpoint *ep = ep_from_handle(a.ep_handle, HRIGHT_RECV);
     if (!ep) return E_BADF;
-    if (a.cap && !user_ptr_ok((uint32_t)a.buf, a.cap)) return E_FAULT;
+    if (a.cap && !user_ptr_writable((uint32_t)a.buf, a.cap)) return E_FAULT;
 
     while (ep->caller_pid == -1) {     /* no request staged yet: wait */
         ep->recv_blocked = 1;
@@ -91,21 +91,21 @@ int ipc_recv(const struct ipc_recv_args *ua) {
     if (ml > a.cap) ml = a.cap;
     for (uint32_t i = 0; i < ml; i++)
         ((uint8_t *)a.buf)[i] = ep->buf[i];
-    if (a.sender && user_ptr_ok((uint32_t)a.sender, sizeof(int)))
+    if (a.sender && user_ptr_writable((uint32_t)a.sender, sizeof(int)))
         *a.sender = ep->caller_pid;
     return (int)ml;
 }
 
 /* owner side: stage the reply + wake the blocked caller. */
 int ipc_reply(const struct ipc_reply_args *ua) {
-    if (!user_ptr_ok((uint32_t)ua, sizeof *ua)) return E_FAULT;
+    if (!user_ptr_readable((uint32_t)ua, sizeof *ua)) return E_FAULT;
     struct ipc_reply_args a = *ua;
 
     struct endpoint *ep = ep_from_handle(a.ep_handle, HRIGHT_RECV);
     if (!ep) return E_BADF;
     if (ep->caller_pid == -1) return E_INVAL;   /* nobody waiting */
     if (a.len > sizeof ep->buf) return E_RANGE;
-    if (a.len && !user_ptr_ok((uint32_t)a.data, a.len)) return E_FAULT;
+    if (a.len && !user_ptr_readable((uint32_t)a.data, a.len)) return E_FAULT;
 
     for (uint32_t i = 0; i < a.len; i++)        /* read reply in owner space */
         ep->buf[i] = ((const uint8_t *)a.data)[i];

@@ -5,7 +5,7 @@
 #include "sysfile.h"
 #include "sched.h"
 #include "handle.h"
-#include "usermode.h"       /* user_ptr_ok */
+#include "usermode.h"       /* user_ptr_readable / user_ptr_writable */
 #include "cxfs.h"
 #include "string.h"
 #include <stddef.h>
@@ -89,7 +89,7 @@ static int abi_err(int cxfs_rc) {
 /* ---- copying from ring 3 --------------------------------------------------- */
 
 /* Copy a NUL-terminated path in from user memory, bounded by `cap`.
-   Validates one page at a time rather than one byte at a time: user_ptr_ok
+   Validates one page at a time rather than one byte at a time: user_ptr_readable
    walks page tables, so per-byte would be a page-table walk per character.
    Returns the length, or a negative E_* code. */
 static int copy_path_in(const char *upath, char *dst, uint32_t cap) {
@@ -97,7 +97,7 @@ static int copy_path_in(const char *upath, char *dst, uint32_t cap) {
     if (!addr) return E_FAULT;
     for (uint32_t i = 0; i < cap; i++) {
         if (i == 0 || (((addr + i) & 0xFFFu) == 0)) {       /* new page */
-            if (!user_ptr_ok(addr + i, 1)) return E_FAULT;
+            if (!user_ptr_readable(addr + i, 1)) return E_FAULT;
         }
         char c = ((const char *)addr)[i];
         dst[i] = c;
@@ -202,7 +202,7 @@ static void rd_cb(const struct cxfs_entry *e) {
 /* ---- the syscall ---------------------------------------------------------- */
 
 int sys_file_op(const struct file_op_args *ua) {
-    if (!user_ptr_ok((uint32_t)ua, sizeof *ua)) return E_FAULT;
+    if (!user_ptr_readable((uint32_t)ua, sizeof *ua)) return E_FAULT;
     struct file_op_args a = *ua;          /* copy in: never re-read user memory */
 
     if (!cxfs_is_mounted()) return E_IO;
@@ -266,7 +266,7 @@ int sys_file_op(const struct file_op_args *ua) {
             if (!(f->flags & FOPEN_READ)) return E_PERM;
             if (a.len == 0) return 0;
             if (a.len > 0x7FFFFFFFu) return E_RANGE;
-            if (!user_ptr_ok((uint32_t)a.data, a.len)) return E_FAULT;
+            if (!user_ptr_writable((uint32_t)a.data, a.len)) return E_FAULT;
 
             rc = cxfs_read_at(f->entry, f->off, a.data, a.len);
             if (rc < 0) return abi_err(rc);
@@ -280,7 +280,7 @@ int sys_file_op(const struct file_op_args *ua) {
             if (!(f->flags & FOPEN_WRITE)) return E_PERM;
             if (a.len == 0) return 0;
             if (a.len > 0x7FFFFFFFu) return E_RANGE;
-            if (!user_ptr_ok((uint32_t)a.data, a.len)) return E_FAULT;
+            if (!user_ptr_readable((uint32_t)a.data, a.len)) return E_FAULT;
             /* the offset cap is the ABI's, so refuse rather than wrap */
             if (f->off > 0x7FFFFFFFu - a.len) return E_RANGE;
 
@@ -349,7 +349,7 @@ int sys_file_op(const struct file_op_args *ua) {
                 if (!f) return E_BADF;
                 id = f->entry;
             }
-            if (!user_ptr_ok((uint32_t)a.data, sizeof(struct file_stat))) return E_FAULT;
+            if (!user_ptr_writable((uint32_t)a.data, sizeof(struct file_stat))) return E_FAULT;
             struct cxfs_entry e;
             if (cxfs_read_entry(id, &e) != 0) return E_IO;
             fill_stat(&e, (struct file_stat *)a.data);
@@ -358,7 +358,7 @@ int sys_file_op(const struct file_op_args *ua) {
 
         case FILE_OP_READDIR: {
             if ((rc = copy_path_in(a.path, path, sizeof path)) < 0) return rc;
-            if (!user_ptr_ok((uint32_t)a.data, sizeof(struct file_stat))) return E_FAULT;
+            if (!user_ptr_writable((uint32_t)a.data, sizeof(struct file_stat))) return E_FAULT;
 
             int r = cxfs_resolve(path, cwd);
             if (r < 0) return E_NOENT;
@@ -445,7 +445,7 @@ int sys_file_op(const struct file_op_args *ua) {
         case FILE_OP_GETCWD: {
             if (a.len == 0) return E_RANGE;
             if (a.len > FILE_PATH_MAX) a.len = FILE_PATH_MAX;
-            if (!user_ptr_ok((uint32_t)a.data, a.len)) return E_FAULT;
+            if (!user_ptr_writable((uint32_t)a.data, a.len)) return E_FAULT;
             cxfs_path_of(cwd, path, (int)a.len);
             uint32_t n = 0;
             while (n + 1 < a.len && path[n]) n++;
