@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
-﻿using System;
+using System;
 using System.IO;
 using System.Text;
 using CXEX.Core.Constants;
@@ -56,6 +56,14 @@ public static class CXOtherParsers
     /// </summary>
     private const int MaxModulusBytes = 256;   // RSA-2048
 
+    // The one profile, mirroring kernel/lib/crypto/rsa.h. Declared in both places
+    // deliberately: the kernel must not depend on the DevKit to decide what it
+    // can verify (security review §12.5), so the two agree by being checked
+    // against each other in tests rather than by sharing a definition.
+    private const ushort SupportedVersion = 1;
+    private const ushort ProfileKeyBits   = 2048;
+    private const uint   ProfileExponent  = 65537;
+
     /// <summary>
     /// Reads and validates a CXPK public-key header.
     ///
@@ -81,6 +89,24 @@ public static class CXOtherParsers
             Exponent = MemoryPrimitives.ReadU32(data, 8),
             ModulusLen = MemoryPrimitives.ReadU16(data, 12)
         };
+
+        // The ONE profile CXK implements: RSA-2048 / SHA-256 / PKCS#1 v1.5
+        // (security review §12.1). Checked here as well as in the kernel, because
+        // the DevKit should refuse to produce what the kernel will refuse to load
+        // - finding out at boot that a key is unusable is the worst time to find
+        // out. A future profile gets a new CXSG algorithm identifier, never a
+        // wider range accepted under this one.
+        if (header.Version != SupportedVersion)
+            throw new InvalidDataException(
+                $"CXPK declares format version {header.Version}; this toolchain and CXK support {SupportedVersion}.");
+
+        if (header.KeyBits != ProfileKeyBits)
+            throw new InvalidDataException(
+                $"CXPK declares a {header.KeyBits}-bit key; CXK implements RSA-{ProfileKeyBits} only.");
+
+        if (header.Exponent != ProfileExponent)
+            throw new InvalidDataException(
+                $"CXPK public exponent is {header.Exponent}; the platform profile requires {ProfileExponent}.");
 
         if (header.ModulusLen == 0)
             throw new InvalidDataException("CXPK declares a zero-length modulus.");

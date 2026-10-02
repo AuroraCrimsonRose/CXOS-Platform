@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 # The X compiler compiling itself.
 #
 #   python3 tests/xc/selfhost.py

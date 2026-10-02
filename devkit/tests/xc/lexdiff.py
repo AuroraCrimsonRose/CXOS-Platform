@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 # Differential test: the X lexer written in X (CXK os/xc/lex.xfxn) against the
 # C# one (CXEX.Lang/Lexer). Both print every token of the same files - kind,
 # line:col, and value - and the outputs must be identical, byte for byte.

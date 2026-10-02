@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 // heartbeat.xosv - a task on a timer.
 //
 // `every` makes the supervisor stay alive and re-run this on an interval.

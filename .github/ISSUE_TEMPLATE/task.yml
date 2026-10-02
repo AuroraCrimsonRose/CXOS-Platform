@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 name: Task or proposal
 description: Work to be done, or a change to how something works.
 labels: [task]

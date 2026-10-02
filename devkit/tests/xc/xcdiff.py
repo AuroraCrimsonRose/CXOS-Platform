@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 # Shared by the differential tests of the X compiler written in X (CXK os/xc)
 # against the C# one: build one of its dump programs for the Linux host, make
 # the corpus and its mutants, run both sides, and compare.

@@ -17,6 +17,20 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/* ---- the ONE cryptographic profile CXK implements (security review §12.1) ----
+ * RSA-2048, SHA-256, PKCS#1 v1.5. Not "at least" or "up to": exactly this.
+ *
+ * It is spelled out here because it was previously true only by accident. The
+ * CXSG block already carries an algorithm identifier named RSA2048_SHA256 and
+ * the kernel already refuses any other value - but nothing made that identifier
+ * MEAN 2048, because the key parser read key_bits and the exponent and discarded
+ * both. A future profile gets a NEW identifier; it must never be smuggled in
+ * under this one. */
+#define XKPK_VERSION_SUPPORTED  1u
+#define RSA_PROFILE_KEY_BITS    2048u
+#define RSA_PROFILE_MODULUS_LEN 256u      /* RSA_PROFILE_KEY_BITS / 8 */
+#define RSA_PROFILE_EXPONENT    65537u    /* F4; the platform policy exponent */
+
 /* an RSA public key: modulus (big-endian bytes) + exponent. */
 struct rsa_pubkey {
     uint8_t  modulus[256];   /* RSA-2048 modulus, big-endian */

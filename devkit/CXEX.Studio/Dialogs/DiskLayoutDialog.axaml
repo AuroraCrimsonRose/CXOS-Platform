@@ -1,4 +1,6 @@
-﻿<UserControl
+<!-- SPDX-License-Identifier: MIT -->
+<!-- SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems) -->
+<UserControl
     xmlns="https://github.com/avaloniaui"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     x:Class="CXEX.Studio.Dialogs.DiskLayoutDialog">

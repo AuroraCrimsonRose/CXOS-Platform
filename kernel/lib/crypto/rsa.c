@@ -24,9 +24,36 @@ int rsa_parse_xkpk(const uint8_t *file, size_t len, struct rsa_pubkey *out) {
     /* header is 16 bytes: magic(4) version(2) key_bits(2) exp(4) mod_len(2) resv(2) */
     if (len < 16) return -1;
     if (!(file[0]=='C' && file[1]=='X' && file[2]=='P' && file[3]=='K')) return -1;
-    /* version = rd16(file+4); key_bits = rd16(file+6); (not strictly needed) */
-    uint32_t exp = rd32(file + 8);
-    uint32_t mod_len = rd16(file + 12);
+
+    uint32_t version  = rd16(file + 4);
+    uint32_t key_bits = rd16(file + 6);
+    uint32_t exp      = rd32(file + 8);
+    uint32_t mod_len  = rd16(file + 12);
+    uint32_t reserved = rd16(file + 14);
+
+    /* Every field is checked, and none of them is "not strictly needed" - which
+       is what the two lines this replaced used to say about version and key_bits
+       before discarding them (security review §12.1).
+       The parser is the only place that can refuse a key the verifier would then
+       treat as valid, so it refuses anything outside the one profile:
+
+         - a version this kernel does not know describes a layout whose fields
+           may not be where they were just read from;
+         - key_bits and modulus_len are redundant, which is exactly why they are
+           both checked - disagreement means something built the file that does
+           not understand the format;
+         - the EXPONENT matters most. e = 1 makes verification the identity
+           function and every signature forgeable, and an even e is not an RSA
+           exponent at all. Both parsed cleanly before this. Nothing reachable
+           could exploit it, because trust is decided by comparing the whole key
+           byte for byte against the compiled-in root - but that is a property of
+           the CALLER, and a parser that hands back a forgeable key is one
+           careless caller away from mattering. */
+    if (version != XKPK_VERSION_SUPPORTED)      return -1;
+    if (key_bits != RSA_PROFILE_KEY_BITS)       return -1;
+    if (mod_len  != RSA_PROFILE_MODULUS_LEN)    return -1;
+    if (exp      != RSA_PROFILE_EXPONENT)       return -1;
+    if (reserved != 0)                          return -1;
 
     if (mod_len == 0 || mod_len > sizeof(out->modulus)) return -1;
     if (len < 16 + mod_len) return -1;

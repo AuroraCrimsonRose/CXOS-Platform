@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 # Shared by semadiff.py and asmdiff.py: whole X programs - every X file in CXK,
 # each analysed as its build compiles it, and every program in tests/lang -
 # and mutants of them, run through one of the X compiler's dump programs and

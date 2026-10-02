@@ -17,6 +17,7 @@
 #include "pmm.h"
 #include "paging.h"
 #include "heap.h"
+#include "rsa.h"
 #include "console.h"
 #include "logging.h"
 #include "color.h"
@@ -788,6 +789,82 @@ static int test_vmregion(void) {
  * The refusals are the half that matters most. A dev flag that let a TAMPERED
  * image through would turn "skip signing while testing" into "ignore
  * corruption", and this is what makes sure it never can. */
+/* ---- the key parser accepts exactly one cryptographic profile ----
+ *
+ * Security review §12.1 and §12.7. CXK is RSA-2048 / SHA-256 / PKCS#1 v1.5, and
+ * rsa_parse_xkpk used to read `version` and `key_bits` and discard them both -
+ * the comment said "(not strictly needed)" - while never looking at the exponent
+ * or the reserved field at all. It would therefore hand back a key with
+ * exponent 1, for which RSA verification is the identity function and every
+ * signature is forgeable.
+ *
+ * Nothing reachable could exploit that, because trust is decided by comparing
+ * the whole key byte for byte against the compiled-in root. But that is a
+ * property of the CALLER, and a parser that returns a forgeable key is one
+ * careless caller away from mattering. These cases exist so the checks cannot be
+ * quietly removed again: each is a single mutation of a header the parser
+ * accepts, and the accepted header is itself a case, so the suite cannot pass by
+ * refusing everything. */
+static void xkpk_hdr(uint8_t *b, uint16_t version, uint16_t key_bits,
+                     uint32_t exponent, uint16_t mod_len, uint16_t reserved) {
+    for (uint32_t i = 0; i < 16u + 256u; i++) b[i] = 0;
+    b[0]='C'; b[1]='X'; b[2]='P'; b[3]='K';
+    b[4]=(uint8_t)version;   b[5]=(uint8_t)(version >> 8);
+    b[6]=(uint8_t)key_bits;  b[7]=(uint8_t)(key_bits >> 8);
+    b[8]=(uint8_t)exponent;  b[9]=(uint8_t)(exponent >> 8);
+    b[10]=(uint8_t)(exponent >> 16); b[11]=(uint8_t)(exponent >> 24);
+    b[12]=(uint8_t)mod_len;  b[13]=(uint8_t)(mod_len >> 8);
+    b[14]=(uint8_t)reserved; b[15]=(uint8_t)(reserved >> 8);
+    b[16] = 0xC0;            /* a non-zero leading modulus byte */
+}
+
+static int test_crypto_profile(void) {
+    uint8_t *b = (uint8_t *)kmalloc(16u + 256u);
+    if (!b) return 0;
+    struct rsa_pubkey k;
+    int ok = 1;
+    const uint32_t len = 16u + 256u;
+
+    /* The control: the one profile, which must be ACCEPTED. Without it every
+       case below could pass by the parser refusing everything. */
+    xkpk_hdr(b, 1, 2048, 65537, 256, 0);
+    ok = ok && rsa_parse_xkpk(b, len, &k) == 0;
+    ok = ok && k.modulus_len == 256 && k.exponent == 65537;
+
+    /* exponent 1: verification becomes the identity function. */
+    xkpk_hdr(b, 1, 2048, 1, 256, 0);
+    ok = ok && rsa_parse_xkpk(b, len, &k) != 0;
+
+    /* an even exponent is not an RSA exponent at all. */
+    xkpk_hdr(b, 1, 2048, 4, 256, 0);
+    ok = ok && rsa_parse_xkpk(b, len, &k) != 0;
+
+    /* a key size this kernel cannot verify, declared consistently. */
+    xkpk_hdr(b, 1, 4096, 65537, 256, 0);
+    ok = ok && rsa_parse_xkpk(b, len, &k) != 0;
+
+    /* modulus_len disagreeing with key_bits: built by something that does not
+       understand the format. */
+    xkpk_hdr(b, 1, 2048, 65537, 128, 0);
+    ok = ok && rsa_parse_xkpk(b, len, &k) != 0;
+
+    /* a format version whose field offsets may not be where we just read them. */
+    xkpk_hdr(b, 2, 2048, 65537, 256, 0);
+    ok = ok && rsa_parse_xkpk(b, len, &k) != 0;
+
+    /* reserved must be zero: a non-zero value means a field we do not know. */
+    xkpk_hdr(b, 1, 2048, 65537, 256, 1);
+    ok = ok && rsa_parse_xkpk(b, len, &k) != 0;
+
+    /* and the magic still has to be right. */
+    xkpk_hdr(b, 1, 2048, 65537, 256, 0);
+    b[1] = 'Y';
+    ok = ok && rsa_parse_xkpk(b, len, &k) != 0;
+
+    kfree(b);
+    return ok;
+}
+
 static int test_exec_admit(void) {
     if (exec_admit(CXEX_VERIFY_BAD_SIGNATURE) >= 0) return 0;
     if (exec_admit(CXEX_VERIFY_BAD_FORMAT)    >= 0) return 0;
@@ -998,6 +1075,7 @@ void ktest_run(void) {
     total++; passed += report("disk: ATA LBA range refused",        test_disk_lba_range());
     total++; passed += report("cxex loader refuses bad images",    ktest_loader_adversarial());
     total++; passed += report("user pointer writability",          ktest_user_ptr_writability());
+    total++; passed += report("crypto profile: one key shape only", test_crypto_profile());
     total++; passed += report("exec admission (dev / release)",   test_exec_admit());
     total++; passed += report("file syscalls (SYS_FILE_OP)",       usermode_file_test());
 
