@@ -108,8 +108,22 @@ static int mock_map_page(void *ctx, uint32_t virt, uint32_t phys, uint32_t prot)
     return 0;
 }
 
+static uint32_t g_charged;       /* pages the loader asked to charge */
+static uint32_t g_charge_maps;   /* g_maps at the moment it asked */
+static int      g_charge_deny;   /* make the charge fail, as a full quota would */
+
+/* Stands in for the quota. What it records is the part that is easy to get wrong
+   and impossible to see from the outside: the loader must ask for the WHOLE bill
+   before it has allocated anything, so g_charge_maps has to be 0. */
+static int mock_charge(void *ctx, uint32_t pages) {
+    (void)ctx;
+    g_charged     = pages;
+    g_charge_maps = g_maps;
+    return g_charge_deny ? -1 : 0;
+}
+
 static struct cxex_load_ops mock_ops = {
-    0, KERNEL_VBASE, mock_get_page, mock_map_page
+    0, KERNEL_VBASE, mock_get_page, mock_map_page, mock_charge
 };
 
 /* Run the loader over the image as currently built and return its result,
@@ -117,6 +131,8 @@ static struct cxex_load_ops mock_ops = {
 static int run_load(void) {
     g_maps = 0;
     g_max_virt = 0;
+    g_charged = 0;
+    g_charge_maps = 0xFFFFFFFFu;         /* "never asked", distinct from "asked at 0" */
     uint32_t entry = 0;
     return cxex_load(g_img, (size_t)g_img_len, &mock_ops, &entry);
 }
@@ -145,8 +161,13 @@ int ktest_loader_adversarial(void) {
     img_valid();
     uint32_t entry = 0;
     g_maps = 0; g_max_virt = 0;
+    g_charged = 0; g_charge_maps = 0xFFFFFFFFu; g_charge_deny = 0;
     ok = ok && cxex_load(g_img, (size_t)g_img_len, &mock_ops, &entry) == CXEX_LOAD_OK;
     ok = ok && entry == 0x00400000 && g_maps == 1;
+    /* The one-page image was charged as one page, and charged while nothing had
+       been mapped yet. A charge that arrived after the pages did would be a
+       count with no power to refuse anything. */
+    ok = ok && g_charged == 1 && g_charge_maps == 0;
 
     /* A section naming a kernel address. This is the Critical finding: it used
        to be mapped, with PAGE_USER, handing ring 3 the kernel. */
@@ -194,6 +215,14 @@ int ktest_loader_adversarial(void) {
     img_valid();
     wr32(SEC0_MSIZE, 0x8000000);          /* 128 MB, past CXEX_LOAD_MAX_PAGES */
     ok = ok && refuses(CXEX_LOAD_TOO_BIG);
+
+    /* An image that fits the global page cap but not the owner's quota. The cap
+       is 64 MB and a quota is measured in a few; without this charge an image of
+       any size under the cap was placed whatever the process's ceiling said. */
+    img_valid();
+    g_charge_deny = 1;
+    ok = ok && refuses(CXEX_LOAD_QUOTA);
+    g_charge_deny = 0;
 
     /* Section bytes reaching past signature_offset: data the signature does not
        cover, which the loader would map anyway. */

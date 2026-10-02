@@ -706,6 +706,37 @@ static int vm_cycle(int pid) {
     if (vm_info(pid, &a) != E_OK)                   goto done;
     if (a.mapped != 0)                              goto done;
 
+    /* The pages that are NOT mmap regions - the image the loader places, the
+       stack and argument pages spawn builds - go through vm_charge, and the
+       ceiling has to apply to them exactly as it does to a mapping. Before it
+       did, `mapped` reported only what SYS_MEM_OP had asked for, so a process
+       could hold an image and a stack that the quota never saw. */
+    if (vm_charge(pid, PAGE_SIZE) != E_OK)           goto done;
+    RESET_ARGS(); a.op = MEM_OP_INFO;
+    if (vm_info(pid, &a) != E_OK)                    goto done;
+    if (a.mapped != PAGE_SIZE)                       goto done;
+
+    if (vm_charge(pid, 1) != E_OK)                   goto done;   /* rounds up */
+    RESET_ARGS(); a.op = MEM_OP_INFO;
+    if (vm_info(pid, &a) != E_OK)                    goto done;
+    if (a.mapped != 2u * PAGE_SIZE)                  goto done;
+
+    /* Past the ceiling, and a length whose rounding wraps to something small.
+       Both are refused, and a refusal leaves the account untouched. */
+    if (vm_charge(pid, vm_quota_of(pid)) != E_NOMEM) goto done;
+    if (vm_charge(pid, 0xFFFFFFFFu) != E_RANGE)      goto done;
+    RESET_ARGS(); a.op = MEM_OP_INFO;
+    if (vm_info(pid, &a) != E_OK)                    goto done;
+    if (a.mapped != 2u * PAGE_SIZE)                  goto done;
+
+    vm_uncharge(pid, 2u * PAGE_SIZE);
+    /* An over-refund clamps at zero instead of wrapping, which would hand the
+       process a ceiling far wider than the one it was given. */
+    vm_uncharge(pid, 16u * PAGE_SIZE);
+    RESET_ARGS(); a.op = MEM_OP_INFO;
+    if (vm_info(pid, &a) != E_OK)                    goto done;
+    if (a.mapped != 0)                               goto done;
+
     /* Quota attenuation: a child may never be given a wider ceiling than its
        parent holds, which is the same rule grants follow. */
     vm_proc_init(pid, vm_default_quota() / 4u, -1);

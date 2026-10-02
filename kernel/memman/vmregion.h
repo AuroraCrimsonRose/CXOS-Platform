@@ -64,6 +64,22 @@ void vm_proc_reset(int pid);
 /* pid's ceiling in bytes, or 0 if it is not tracked. */
 uint32_t vm_quota_of(int pid);
 
+/* Charge user pages that are NOT one of pid's mmap regions: the pages the CXEX
+   loader places an image into, and the stack and argument pages spawn builds
+   around it. They are as real as a mapping - the same frames, held for the same
+   lifetime - so leaving them out meant `mapped` under-reported what a process
+   actually held, and an image of any size the loader's own page cap allowed
+   could be placed with the quota already full (security review §3).
+
+   Charged BEFORE the frames are allocated, so a refusal costs nothing. `bytes`
+   is rounded up to a page. Returns E_OK, or E_NOMEM if it would pass the
+   ceiling (E_RANGE if the rounding or the sum would wrap). vm_uncharge gives it
+   back, for a caller that unwinds a placement it has already paid for; a
+   process that dies instead needs nothing, since vm_proc_reset drops the whole
+   account. */
+int  vm_charge(int pid, uint32_t bytes);
+void vm_uncharge(int pid, uint32_t bytes);
+
 /* The SYS_MEM_OP operations. `a` has already been validated as a readable and
    writable user pointer by the caller. Each returns E_OK or a negative E_*. */
 int vm_map(int pid, struct mem_op_args *a);
