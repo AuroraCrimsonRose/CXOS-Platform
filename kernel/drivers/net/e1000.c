@@ -243,13 +243,13 @@ int e1000_init(void) {
        left cacheable - x86 snoops DMA, so write-back is both correct and
        faster there. */
     for (uint32_t off = 0; off < 0x20000; off += 0x1000)
-        paging_map(base + off, base + off, PAGE_PRESENT | PAGE_WRITE | PAGE_NO_CACHE);
+        paging_map_kernel(base + off, base + off, PAGE_PRESENT | PAGE_WRITE | PAGE_NO_CACHE);
     regs = (volatile uint8_t *)base;
 
     /* map the NIC DMA region */
     /* map the DMA region into the KERNEL half so every address space sees it */
     for (uint32_t a = E1000_DMA_BASE; a < E1000_DMA_END; a += 0x1000)
-        paging_map(DMA_V(a), a, PAGE_PRESENT | PAGE_WRITE);
+        paging_map_kernel(DMA_V(a), a, PAGE_PRESENT | PAGE_WRITE);
 
     /* mask off all interrupts (we poll in stage 1) */
     mmio_wr(E1000_IMC, 0xFFFFFFFF);

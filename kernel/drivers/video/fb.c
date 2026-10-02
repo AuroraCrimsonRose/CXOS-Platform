@@ -69,7 +69,7 @@ int fb_init(void) {
     uint32_t bytes    = pitch * height + off;
     uint32_t pages    = (bytes + 0xFFFu) >> 12;
     for (uint32_t i = 0; i < pages; i++) {
-        paging_map(FB_VIRT_BASE + (i << 12),
+        paging_map_kernel(FB_VIRT_BASE + (i << 12),
                    map_phys     + (i << 12),
                    PAGE_WRITE);
     }

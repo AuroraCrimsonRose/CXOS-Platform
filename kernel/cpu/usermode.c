@@ -62,7 +62,7 @@ extern void return_to_kernel(int retval, uint32_t *save_slot);
 static uint32_t map_user_page(uint32_t virt) {
     uint32_t phys = (uint32_t)pmm_alloc();
     if (!phys) return 0;
-    paging_map(virt, phys, PAGE_PRESENT | PAGE_WRITE | PAGE_USER);
+    if (paging_map_user(virt, phys, PAGE_PRESENT | PAGE_WRITE) != 0) { pmm_free((void *)phys); return 0; }
     return phys;
 }
 
