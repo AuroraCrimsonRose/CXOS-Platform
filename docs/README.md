@@ -21,6 +21,7 @@
 | [CX_EXTENSION_SYSTEM.md](formats/CX_EXTENSION_SYSTEM.md) | The CXEX executable format, the file-type system, code signing |
 | [CX_EXTENSION_NAMING.md](formats/CX_EXTENSION_NAMING.md) | The `X + Domain + Type` naming formula |
 | [CX_FILE_STRUCTURE.md](formats/CX_FILE_STRUCTURE.md) | CXEX file structure, section by section |
+| [CX_KEY_FORMAT.md](formats/CX_KEY_FORMAT.md) | `.xksk` / `.xkpk` keys, the CXSG signature block, and the trust chain |
 
 ## Language — `language/`
 
