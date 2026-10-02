@@ -294,7 +294,7 @@ an open decision (§5): sign locally and upload, or keep the key as a CI secret.
 - [x] W^X: refuse a section that is both writable and executable (security §5). Done 2026-10-01 in the loader's validation pass. This matters more on x86 without PAE than it reads: there is no per-page execute bit, so a writable page **is** executable whether or not anyone intended it, and refusing the combination at load is the only place the rule can be enforced at all.
 - [ ] ATA: reject an LBA beyond 32 bits with `DISK_ERR_PARAMS` (engineering §1).
 - [ ] `os/xc` lexer: subtraction-based range checks (engineering §5).
-- [ ] Adversarial `ktest.c` cases: a kernel-range address, wrapped offsets, an oversized image, data past the signature, a W+X section, a write through a read-only user pointer.
+- [ ] **BLOCKED — see the layout bug below.** Adversarial `ktest.c` cases: a kernel-range address, wrapped offsets, an oversized image, data past the signature, a W+X section, a write through a read-only user pointer. Written 2026-10-02, in `kernel/ktest_loader.c` (kept out of `ktest.c`, which is already 960 lines, and it brings its own image builder). Eleven cases for the loader plus one for pointer writability, run at every boot. Two things make them worth more than their line count: they drive `cxex_load` through **mock ops**, so a case that should be refused cannot damage anything if it is not — the test reports the failure instead of corrupting the address space — and each refusal also asserts that **nothing was mapped**, because a loader that refuses after mapping half the image has still placed the attacker's pages. Every case is one mutation of a known-good image, and the known-good image is itself a case, so the suite cannot pass by refusing everything.
 
 **DevKit**
 
@@ -305,6 +305,42 @@ an open decision (§5): sign locally and upload, or keep the key as a CI secret.
 - [x] Writer: refuse sections that are both writable and executable (matches CXK Phase 1 W^X). Done 2026-10-01, in **both** `CXEXLayoutEngine` (from the ELF flags) and `CXEXWriter` (from the CX flags). Deliberately twice: `WriteExecutable` takes a layout from any caller and does not assume the engine ran first (security §11).
 - [x] Sign only validated, canonically serialised images; atomic output (security §8, §10). Done 2026-10-01. `CXSigner` is now parse → validate → sign: it loads the image through `CXEXExecutable.Load` and refuses to sign one that is malformed, refuses to sign an image that already carries a signature (which would hash the first signature as payload and leave two CXSG blocks), validates the `.xkpk` as a real CXPK before taking a fingerprint over it, and checks that the private key is the other half of the public key travelling with the image — signing with one and shipping the other produces an artifact the kernel reports as `BAD_SIGNATURE`, which reads as tampering rather than as the wrong file on a command line. Both `CXEXWriter` and `CXSigner` write to a temporary file and move it over, so an interrupted run cannot leave a patched header pointing at a signature block that was never written.
 - [x] `CXEX.Tests/Adversarial`: the ELF, CXEX and crypto cases of security §14. **The ELF cases are done** (2026-10-01): 18 tests in `Adversarial/ElfParserTests.cs`, one per §14 bullet, built from `Elf32Builder` so each case is a single mutation of a known-good image. They need no toolchain, no checkout and no built OS, so they run on every host. A rejection must be `InvalidDataException`/`NotSupportedException` — an `IndexOutOfRange` counts as a failure, since that is the parser falling off the end of the file rather than deciding anything. **The CXEX cases are done too** (2026-10-01): 13 tests in `Adversarial/CxexLoadTests.cs` against `CXEXExecutable.Load`, including the Critical one — a section whose bytes lie past `signature_offset`, which the signature does not cover. Both suites are paired with a test that loads **real build output** from `dist/`, because an adversarial suite proves nothing about the images that matter: a validator rejecting everything passes it completely. That test skips, with its reason, when the OS has not been built. **The crypto cases are done** (2026-10-01): 16 tests in `Adversarial/CryptoTests.cs` — malformed, truncated, oversized and zero-length public keys, `key_bits` disagreeing with `modulus_len`, degenerate exponents, signing refused for a malformed image, a malformed key, a mismatched key pair and an already-signed image, and signatures that stop verifying over a modified payload, modified metadata or a corrupted fingerprint. This closes §14.
+
+#### Found 2026-10-02: the kernel breaks when `.text` grows by a few KB
+
+Adding roughly 4 KB of **unrelated, never-called** code to the kernel makes
+`test_kconfig` — "kernel config (X Data, linked X)" — fail. Nothing else changes
+and no other test is affected.
+
+Narrowed by bisection rather than reasoning, because the first two explanations
+were both wrong:
+
+- it is **not** the content of the new code. A probe of 200 trivial arithmetic
+  functions (`return x * i + (i ^ 0x5a)`), referenced by nothing, reproduces it
+  exactly;
+- it is **not** merely adding a translation unit. A 16-byte one is fine;
+- it is **not** `.bss`. Moving 5 KB of buffers from `.bss` to the heap left
+  `__kernel_end` identical to the baseline and the failure unchanged;
+- it is **not** position in `KERNEL_C_SRCS`. First and last behave the same.
+
+What is left is the size of `.text` and what that shifts. The suspect is the
+X-compiled object `kx_xdata.o`, which is linked after the C objects and is
+exactly what the failing test exercises — `kconfig_parse` reads its configuration
+through the X Data reader. If the X code generator emits something
+position-sensitive, this is how it would present: silently, and only once the
+kernel grows past some boundary.
+
+This is **the next thing to fix in the kernel**, ahead of the remaining Phase 1
+items. It is a trap for whoever next adds kernel code, and the failure gives no
+hint of its cause. `kernel/ktest_loader.c` is written and waiting on it — it is
+in the tree but deliberately not in `KERNEL_C_SRCS`, because wiring it in today
+would commit a knowingly red suite.
+
+A good first step is to dump `kx_xdata.o`'s relocations and look for an absolute
+or self-relative assumption, and to check whether `cxk compile --object` emits
+anything the linker script does not name (the script `/DISCARD/`s only
+`.comment`, `.note*` and `.eh_frame*`, so an allocatable orphan would land past
+`__kernel_end`, where `pmm_init` puts its bitmap).
 
 ### Phase 2
 
