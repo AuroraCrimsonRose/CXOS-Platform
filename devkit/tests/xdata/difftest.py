@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 # Differential test: the DevKit's X Data reader (CXEX.Lang/Data/XData.cs) against CXK's
 # (os/std/xdata.xfxn). Every generated document goes through both; the error code AND the
 # byte offset must match, or the build-time check and the supervisor disagree about a file.

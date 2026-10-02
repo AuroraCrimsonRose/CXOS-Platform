@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 # Differential test: the X code generator written in X (CXK os/xc/emit.xfxn)
 # against the C# one (CXEX.Lang/CodeGen). Both compile the same whole programs
 # - the prelude, the file, everything it imports - and print the diagnostics

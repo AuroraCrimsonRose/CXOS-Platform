@@ -1,4 +1,6 @@
 @echo off
+rem SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+rem SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 setlocal
 REM /boot/uefi/build.bat
 REM Aurora Tejeda / CATX Systems

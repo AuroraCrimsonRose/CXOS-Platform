@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 name: Bug report
 description: Something behaves differently from how it is documented or intended.
 labels: [bug]

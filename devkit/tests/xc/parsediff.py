@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 # Differential test: the X parser written in X (CXK os/xc/parse.xfxn) against
 # the C# one (CXEX.Lang/Parsing). Both print the tree they build for the same
 # files - every node, where it starts, what it holds - and then every syntax
