@@ -21,7 +21,7 @@ because a reader can always be older than the file it is handed — which is the
 one place in this repository where two different ages do meet, since `cxk` from a
 release may be pointed at an image or a key written by a different one.
 
-Everything else in CXOS is held to one age by `cxk check-abi` and by CLAUDE.md's
+Everything else in CXOS is held to one age by `cxk check-abi` and by the project's
 "update every user in the same commit". Format versions are the exception, so
 they are the thing that actually needs numbering.
 
@@ -53,7 +53,7 @@ be about.
 
 | | |
 |---|---|
-| **MAJOR** | A new generation of that component — it is a different thing, not an update to the previous one. **Not** keyed to breaking changes: CLAUDE.md says compatibility is never a constraint and formats may change freely, so a major keyed to breakage would increment every release and carry no information at all. |
+| **MAJOR** | A new generation of that component — it is a different thing, not an update to the previous one. **Not** keyed to breaking changes: compatibility is never a constraint here and formats may change freely, so a major keyed to breakage would increment every release and carry no information at all. |
 | **MINOR** | New capability. This is where format, ABI and interface changes land, and that is expected. |
 | **PATCH** | Fixes only. No interface, format or ABI change. |
 
