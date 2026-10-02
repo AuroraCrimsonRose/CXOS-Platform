@@ -1,0 +1,25 @@
+name: Task or proposal
+description: Work to be done, or a change to how something works.
+labels: [task]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Standing plans live in `docs/planning/`. If this belongs to one, say which
+        item - a task that duplicates a plan line is harder to track than a tick.
+  - type: textarea
+    id: what
+    attributes:
+      label: What, and why now
+    validations: { required: true }
+  - type: textarea
+    id: done
+    attributes:
+      label: What "done" looks like
+      description: "How it will be verified. For kernel work that means a boot showing `self-tests: all N passed`, and a sabotage run for any new check."
+    validations: { required: true }
+  - type: input
+    id: plan
+    attributes:
+      label: Related plan item
+      description: "e.g. HARDENING_PLAN.md Phase 0, or D5. Leave blank if none."
