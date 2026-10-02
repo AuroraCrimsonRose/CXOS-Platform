@@ -5,8 +5,10 @@
 # CXEX Studio for each platform and attaches them to a GitHub Release.
 #
 # The OS disk image (and later the ISO) joins this workflow with D5: it needs
-# a toolchain the runner can install (clang, ld.lld, NASM, Ninja), and a signed
-# image needs the release-signing decision in the plan's §5.
+# a toolchain the runner can install (clang, ld.lld, NASM, Ninja). It ships
+# signed by a key generated for that one build and destroyed with the runner,
+# so it verifies itself without claiming to be signed by the platform. An image
+# signed by the PLATFORM key still waits on the plan's §5.
 name: Release
 
 on:
@@ -109,18 +111,37 @@ jobs:
           -p:IncludeNativeLibrariesForSelfExtract=true
           -p:DebugType=none -o out/cli
 
-      # trusted_key.c used to be embedded here by hand before the build. The
-      # build does it itself now, from the public half of whichever key signs,
-      # so the kernel cannot be built trusting one key and signed with another.
-      - name: Build the OS
+      # An EPHEMERAL key, generated here and destroyed with the runner.
+      #
+      # Without one this job built an image that cannot work: no signing key in
+      # the repository means SIGN=OFF, and SIGN=OFF without --dev is a RELEASE
+      # kernel - one that requires valid signatures - packaged with a userland
+      # that has none. It booted, passed its self-tests and then refused its own
+      # executive, which is what CMake's "the kernel WILL REFUSE to launch it"
+      # warning was saying all along. A download that stops after the self-tests
+      # reads as a broken release.
+      #
+      # Signing with a throwaway key fixes that without touching the §5 decision,
+      # which is about the PLATFORM key and official images. The private half
+      # never leaves the runner, so this image is a self-contained demonstration
+      # and the key behind it can sign nothing for anyone else's machine. The
+      # build generates the kernel's root of trust from the public half, so the
+      # image trusts exactly the key that signed it.
+      - name: Build the OS, signed with a per-build key
         run: |
           chmod +x out/cli/cxk
-          out/cli/cxk os build --root .
+          out/cli/cxk keygen tools/ci
+          out/cli/cxk os build --root . --key ci
 
       - name: Package
         run: |
           mkdir -p assets
-          cp dist/CXK_x86_32/images/cxk_disk.img assets/cxk_disk-unsigned.img
+          cp dist/CXK_x86_32/images/cxk_disk.img assets/cxk_disk-selfsigned.img
+          # Belt and braces: the key must not reach an artifact. It is gitignored
+          # and never copied, and this makes a mistake here fail the job instead
+          # of publishing a private key.
+          rm -f tools/ci.xksk
+          test ! -e assets/ci.xksk
           ls -la assets
 
       - uses: actions/upload-artifact@v4
@@ -149,3 +170,33 @@ jobs:
           name: ${{ github.event.inputs.tag || github.ref_name }}
           generate_release_notes: true
           files: assets/*
+          # What each asset is, so nothing has to be guessed from its filename.
+          # The generated commit notes are appended below this.
+          body: |
+            ### Assets
+
+            | | |
+            |---|---|
+            | `cxk-win-x64.exe`, `cxk-linux-x64`, `cxk-osx-arm64` | the `cxk` CLI: the X compiler, the imager, signing, `cxk os build`, `cxk run`. Single file, no .NET install needed. |
+            | `CXEX-Studio-<platform>.zip` | CXEX Studio. |
+            | `cxk_disk-selfsigned.img` | a bootable 64 MB CXK disk image, x86-32. |
+            | `SHA256SUMS` | checksums for everything above. |
+
+            Run the image with `cxk run cxk_disk-selfsigned.img` (QEMU), or write
+            it to a disk. It boots the kernel, runs the boot-time self-tests,
+            and comes up to a shell with the executive and the supervisor
+            running.
+
+            ### About the image's signatures
+
+            Every artifact in it — kernel, executive, services, programs — is
+            signed, and the kernel's root of trust is the public half of the key
+            that signed them. **That key is generated during the build and
+            destroyed with the runner.** So the image is internally consistent
+            and fully verifies itself, but it is *not* signed by the CXOS
+            platform key: it demonstrates the signed path rather than attesting
+            to anything. Treat it as a test image. Official images signed by the
+            platform key wait on the release-signing decision in
+            `docs/planning/HARDENING_PLAN.md` §5.
+
+            Not a development kernel: it does **not** run unsigned code.
