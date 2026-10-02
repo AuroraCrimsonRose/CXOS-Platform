@@ -119,6 +119,11 @@ them. If a number disagrees with the registry, the number is wrong.
 - To add a place a version is written, add a `checks` entry — never edit the
   checker.
 
+Each major **CXOS** release also carries a Greek mythological name — **1.x is
+"Hekate"**. It names the **OS release only**: never the kernel, the boot chain or
+the tooling, which have versions and no names. A new major's name is recommended
+from what that generation means and is **not official until Aurora approves it**.
+
 `docs/planning/VERSIONING_AND_RELEASE.md` has what a bump means, how a release is
 cut, what the workflow produces, and how signing keys are selected.
 
