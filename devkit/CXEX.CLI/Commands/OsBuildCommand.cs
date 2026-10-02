@@ -121,6 +121,17 @@ public class OsBuildCommand : Command<OsBuildCommand.Settings>
         defines.Add(sign ? "-DSIGN=ON" : "-DSIGN=OFF");
         if (s.Dev) defines.Add("-DDEV_UNSIGNED=ON");
 
+        // Point CMake at THIS cxk rather than letting it guess. Its fallback is a
+        // path ending in .exe, which is simply wrong off Windows - so `cxk os
+        // build` could not work on Linux or macOS, which is most of what D5's
+        // "one toolchain on every host" is supposed to mean. The running
+        // executable is also the right answer: it is the one the user invoked,
+        // so the build cannot silently package with a different, older cxk that
+        // happens to be sitting in tools/.
+        string? self = Environment.ProcessPath;
+        if (self is { Length: > 0 })
+            defines.Add($"-DCXK={self.Replace('\\', '/')}");
+
         AnsiConsole.MarkupLine("");
         if (s.Dev)
             AnsiConsole.MarkupLine("[yellow]DEVELOPMENT build[/] - unsigned images will run, signing skipped. Never ship this image.");
