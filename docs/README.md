@@ -44,6 +44,7 @@ The tool reference is [`devkit/README.md`](../devkit/README.md) at the DevKit's 
 |---|---|
 | [CX_ROADMAP.md](planning/CX_ROADMAP.md) | Where CXOS is going, and in what order |
 | [HARDENING_PLAN.md](planning/HARDENING_PLAN.md) | The response to the 2026-10-01 reviews: decisions, every finding's status, the phased checklist |
+| [VERSIONING_AND_RELEASE.md](planning/VERSIONING_AND_RELEASE.md) | `versions.json`, what every component and format version means, and how a release is cut |
 | [history/V5_PORTING_MANIFEST.md](planning/history/V5_PORTING_MANIFEST.md) | The v5 port plan (complete; historical) |
 
 ## Reviews — `reviews/`

@@ -1,5 +1,5 @@
 # ============================================================================
-#  CXK v5 - CMakeLists.txt
+#  CXK - CMakeLists.txt
 #  Copyright (c) 2026 CATX Systems LLC.  All rights reserved.
 #  Author: Aurora Tejeda / CATX Systems LLC
 # ============================================================================
@@ -16,8 +16,8 @@
 # recompiles it, repackages the .xsex, regenerates app_image.h, relinks the
 # executive, and reimages the disk.
 
-cmake_minimum_required(VERSION 3.15)
-project(CXK_v5 ASM_NASM)
+cmake_minimum_required(VERSION 3.19)   # string(JSON ...) reads versions.json
+project(CXK ASM_NASM)
 enable_language(ASM_NASM)
 
 # ---- build-time flags (edit cmake/cxk_flags.cmake, NOT this file) ----
@@ -122,6 +122,34 @@ set(KERNEL_INCLUDES
 set(KCFLAGS --target=${CXK_TARGET} -ffreestanding -fno-pic -fno-stack-protector
             -mno-sse -mno-sse2 -mno-mmx -mno-implicit-float
             -Wall -Wextra ${CXK_DEFS} ${KERNEL_INCLUDES} -c)
+
+# ---- the kernel's own version, from the one registry ----
+# Read straight out of versions.json rather than copied here, so the kernel
+# cannot print a version the registry disagrees with - the banner used to be the
+# string literal "CXK v5", which is how it stayed at v5 through every change.
+# The fallback exists for a bare host-compile with no CMake, and is itself
+# checked against the registry by `cxk check-versions`.
+set(CXK_KERNEL_VERSION_FALLBACK "1.0.0")
+set(CXK_KERNEL_VERSION "${CXK_KERNEL_VERSION_FALLBACK}")
+if(EXISTS ${SRC_DIR}/versions.json)
+    file(READ ${SRC_DIR}/versions.json CXK_VERSIONS_JSON)
+    string(JSON CXK_KERNEL_VERSION ERROR_VARIABLE CXK_JSON_ERR
+           GET "${CXK_VERSIONS_JSON}" components cxk-kernel version)
+    if(CXK_JSON_ERR OR NOT CXK_KERNEL_VERSION)
+        message(FATAL_ERROR "versions.json: could not read components.cxk-kernel.version: ${CXK_JSON_ERR}")
+    endif()
+endif()
+message(STATUS "CXK kernel version: ${CXK_KERNEL_VERSION}")
+# A generated HEADER, not -DCXK_VERSION_STR=\"...\": the quotes a C string needs
+# do not survive the trip into a custom-command argument list, so the define
+# arrived unquoted and the banner failed to compile. A header has no quoting
+# problem to get wrong. It goes in BUILD_DIR because it is generated output.
+file(WRITE ${BUILD_DIR}/cxk_version.h
+     "/* GENERATED from versions.json by tools/cmake/CMakeLists.txt - DO NOT EDIT */\n"
+     "#ifndef CXK_VERSION_H\n#define CXK_VERSION_H\n"
+     "#define CXK_VERSION_STR \"${CXK_KERNEL_VERSION}\"\n"
+     "#endif\n")
+list(APPEND KCFLAGS -I${BUILD_DIR})
 
 # ---- KERNEL C SOURCES (append new subsystems here) ----
 set(KERNEL_C_SRCS
@@ -621,7 +649,7 @@ add_custom_target(cxk_disk ALL DEPENDS ${CXK_DISK})
 add_custom_command(
     OUTPUT ${DISK_IMG}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${IMAGES_DIR}
-    COMMAND ${CMAKE_COMMAND} -E echo "Building v5 boot image..."
+    COMMAND ${CMAKE_COMMAND} -E echo "Building boot image..."
     COMMAND ${CXK} raw-image
         --boot ${BOOT_BIN}
         --stage2 ${STAGE2_BIN}

@@ -134,7 +134,7 @@ higher_half_entry:
     jmp .hang
 
 section .rodata
-msg_hh db 'CXK v5 kernel - running in the higher half (0xC0100000)', 0
+msg_hh db 'CXK kernel - running in the higher half (0xC0100000)', 0
 
 ; Page structures live in their OWN section (.pagetables), NOT .bss. This is
 ; deliberate: the BSS-zeroing loop runs AFTER paging is enabled (CR3 points at

@@ -42,6 +42,16 @@ int cxex_parse_header(const uint8_t *file, size_t len, struct cxex_header *out) 
     out->signature_offset = rd32(file + 40);
     out->dependency_offset= rd32(file + 44);
     out->phys_base        = rd32(file + 48);
+
+    /* Refuse a container layout this kernel does not know, AFTER filling the
+       struct so a caller that wants to report the offending version can.
+       Every field read above sits at an offset this version defines; a different
+       version may put something else there, so continuing would be reading one
+       layout through another's field offsets - and the loader would then act on
+       whatever that produced. The DevKit has always refused an unknown
+       format_version and the kernel did not check it at all, which left the
+       permissive side the one an untrusted image actually reaches. */
+    if (out->format_version != CXEX_FORMAT_VERSION) return -3;
     return 0;
 }
 
