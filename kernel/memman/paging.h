@@ -63,7 +63,8 @@ void paging_unmap(uint32_t virt);
 
 /* return the physical address a virtual address maps to, or 0 if unmapped. */
 uint32_t paging_get_phys(uint32_t virt);
-int      paging_is_user(uint32_t virt);   /* present + ring-3 accessible in active space */
+int      paging_is_user(uint32_t virt);           /* present + ring-3 accessible in active space */
+int      paging_is_user_writable(uint32_t virt);  /* the above, and writable by ring 3 */
 
 /* temporarily map an arbitrary physical frame into a reserved scratch page so
    the kernel can read/write it; unmap when done. One frame at a time. */
