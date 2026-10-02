@@ -1,3 +1,5 @@
+; SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+; SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 ; /boot/mem.asm  -  E820 memory map gathering (v5 stage 2)
 ; Aurora Tejeda / CATX Systems
 ;

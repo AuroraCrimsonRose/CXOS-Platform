@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/drivers/net/ip.c */
 /* Aurora Tejeda */
 /* IPv4 layer: header build/parse, checksum, routing + ARP next-hop. */

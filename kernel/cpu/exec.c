@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/cpu/exec.c */
 /* Aurora Tejeda / CATX Systems */
 /* cxex_exec: verify a signed image, decide its capabilities, and start it as a

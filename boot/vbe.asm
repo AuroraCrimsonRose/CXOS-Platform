@@ -1,3 +1,5 @@
+; SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+; SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 ; /boot/vbe.asm  -  VBE linear-framebuffer mode set (v5 stage 2)
 ; Aurora Tejeda / CATX Systems
 ;

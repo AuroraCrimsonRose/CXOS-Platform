@@ -1,38 +1,39 @@
 # Contributing to CXOS
 
-**Read this before writing any code.** CXOS is not open source, and the terms
-below are not boilerplate — they change what happens to work you submit.
+## CXOS is not accepting outside contributions
 
-## Who may contribute
+**Please do not open a pull request. It cannot be merged, however good it is.**
 
-Access to the source of the Proprietary Components (CXK, CXOS, and variants) is
-granted **only to individuals or entities authorised in writing by CATX Systems
-LLC** — an *Authorized Contributor* under [LICENSE.md](LICENSE.md) §8.
+This is a deliberate closure with a date on it, not an opinion about anyone's
+code. Contributions will open **once a legal entity exists to receive them**;
+CATX Systems is presently a sole proprietorship, so there is no company to hold
+the rights to contributed work and no counterparty to an agreement about it.
+Merging someone else's copyright into the project before that is settled creates
+a tangle that is painful to unwind and unfair to the contributor.
 
-- Possession of the source grants no right of redistribution, public display or
-  public forking (§8c).
-- Authorized Contributor status may be revoked at any time, and on revocation you
-  must destroy your copies of the proprietary source (§8d).
-- If you are not authorised, you have no rights under the licence (§8e), and an
-  unsolicited pull request cannot be accepted.
+When it opens, this file will say so and will state what is required.
 
-If you want to contribute, ask first: **aurora.tejeda@catxhosting.com**.
+**If you have found a bug**, or want to propose something, please open an
+[issue](https://github.com/AuroraCrimsonRose/CXOS-Platform/issues) instead — a
+clear report is genuinely more useful right now than a patch, because the report
+can be acted on and the patch cannot.
 
-## What submitting a contribution does
+**If you have found a vulnerability**, it goes to the private channel in
+[SECURITY.md](SECURITY.md), not to an issue or a PR.
 
-Under [LICENSE.md](LICENSE.md) §9, by submitting a contribution you grant CATX
-Systems a perpetual, worldwide, irrevocable licence to it — and **on acceptance
-into a Proprietary Component, all right, title and interest in that contribution
-is assigned to CATX Systems.** You keep no ownership of merged work.
+## What you *can* do today
 
-You must be legally entitled to grant that (§9c). If your employer owns what you
-write, you need their sign-off before submitting.
+The MIT tier — `abi/`, `os/std/`, `os/xc/`, `devkit/`, `editors/vscode/`,
+`tools/`, `docs/` — is yours under [MIT](licenses/MIT.txt). Fork it, modify it,
+build on it, ship it commercially; nothing is owed.
 
-You may apply *Basic Concepts* you learn from the source in independent projects,
-provided you take no proprietary source or trade secrets with you (§9d).
+**Applications, drivers and extensions you write for CXOS are independent
+works** and you may license and sell them however you like. See
+[LICENSE.md](LICENSE.md) for the exemption, stated in full.
 
-The **SDK** components are MIT (§10), and applications, drivers and extensions
-you build with the SDK are yours to license as you choose (§11, §12).
+The operating-system tier is
+[PolyForm Noncommercial 1.0.0](licenses/PolyForm-Noncommercial-1.0.0.txt): read
+it, audit it, build it, modify it and share it for any noncommercial purpose.
 
 ## Security issues are not pull requests
 

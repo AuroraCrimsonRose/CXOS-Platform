@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 fn main() -> i32 {
     let n: u32 = 300;
     let a: u8 = n;          // refused: u32 into u8

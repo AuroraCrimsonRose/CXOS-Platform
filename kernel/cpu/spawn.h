@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/cpu/spawn.h */
 /* Aurora Tejeda / CATX Systems */
 /* ABI v1 process launch. proc_start is the one path that turns a CXEX image into

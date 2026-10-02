@@ -1,3 +1,5 @@
+; SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+; SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 ; /boot/cxexload.asm  -  stage 2 CXEX kernel loader (32-bit protected mode)
 ; Aurora Tejeda / CATX Systems
 ;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /CXLite/kernel/drivers/vga.h */
 /* Aurora Tejeda */
 /* Text-mode VGA renderer: low-level cell drawing + hardware cursor.

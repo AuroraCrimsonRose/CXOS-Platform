@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/drivers/net/rtl8169.c */
 /* Aurora Tejeda / CATX Systems */
 /* Realtek RTL8111 / RTL8168 / RTL8169 driver. See rtl8169.h for why one driver

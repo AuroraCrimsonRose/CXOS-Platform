@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 fn main() -> i32 {
     let f: u128 = 1 << 100;
     let n: u32 = 1 << 40;

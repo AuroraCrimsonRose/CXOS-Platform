@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/lib/sha256.c */
 /* Aurora Tejeda / CATX Systems */
 /* SHA-256 per FIPS 180-4. Big-endian internally; careful byte handling. */

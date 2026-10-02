@@ -1,3 +1,5 @@
+; SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+; SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 ; ============================================================================
 ;  CXK - the CXOS Kernel : Bootloader (Stage 2)  [v5]
 ;  Copyright (c) 2026 CATX Systems.  All rights reserved.

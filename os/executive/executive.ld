@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 */
+/* SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems) */
 /* /os/executive/executive.ld - link the .xoex in the user half
  *
  * Each section is page-aligned, and that is load-bearing, not tidiness: the

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 enum color { red, green, blue }
 enum op: u8 { add = 1, sub, mul = 10, neg }
 enum sgn: i8 { minus = -1, zero, plus }

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/cpu/uid.c */
 /* Aurora Tejeda / CATX Systems */
 /* User / system identity - reports the current process's owning UID. */

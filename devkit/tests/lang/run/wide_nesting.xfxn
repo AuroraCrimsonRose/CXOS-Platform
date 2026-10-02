@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 // Wide expressions nested inside wide expressions. Each result lives in a
 // scratch slot until whatever contains it is done with it; the result's slot
 // used to be taken after its operands', above them, while the bookkeeping

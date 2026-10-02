@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /CXLite/kernel/drivers/keyboard.c */
 /* Aurora Tejeda */
 /* PS/2 keyboard driver: IRQ1 -> scancode -> ASCII -> circular buffer. */

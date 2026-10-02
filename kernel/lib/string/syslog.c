@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/lib/string/syslog.c */
 /* Aurora Tejeda / CATX Systems */
 /* Structured system logger - in-memory ring buffer recorder. See syslog.h. */
