@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 struct pt { x: u32, y: u32 }
 struct rec { tag: u8, p: pt, big: u64, name: *u8, digits: [3]u8 }
 struct kw { word: *u8, id: u32 }

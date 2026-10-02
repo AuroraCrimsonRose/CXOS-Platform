@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/memman/addr_space.c */
 /* Aurora Tejeda / CATX Systems */
 /* Per-process address spaces + shared-kernel-half sync. See addr_space.h. */

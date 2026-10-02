@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 using System.Buffers.Binary;
 using System.Formats.Asn1;
 using System.Security.Cryptography;

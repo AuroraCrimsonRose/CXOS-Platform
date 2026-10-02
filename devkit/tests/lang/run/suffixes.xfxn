@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 global g1: u128 = 1u128 << 100;
 global g2: u64  = 0xFFFF_FFFF_FFFF_FFFFu64;
 global g3: i64  = -1i64;

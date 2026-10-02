@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/cpu/usermode.c */
 /* Aurora Tejeda / CATX Systems */
 /* Ring 3 entry, syscall dispatch, and the user-mode tests (Checkpoints 3a/3b). */

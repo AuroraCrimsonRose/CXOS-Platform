@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/drivers/bus/pci.c */
 /* Aurora Tejeda / CATX Systems */
 /* PCI bus driver - legacy configuration mechanism #1 (see pci.h). */

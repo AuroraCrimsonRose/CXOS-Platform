@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /CXLite/kernel/drivers/ata.c */
 /* Aurora Tejeda */
 /* ATA PIO driver - primary + secondary channels, 28-bit LBA, 512-byte sectors.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/drivers/storage/partition/partition.c */
 /* Aurora Tejeda / CATX Systems */
 /* XBPT backend for the partition layer. See partition.h for the format. */

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 ﻿using CommunityToolkit.Mvvm.Messaging.Messages;
 
 namespace CXEX.Studio.Messages;

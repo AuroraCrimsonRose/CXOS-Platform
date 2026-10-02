@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/lib/rsa.c */
 /* Aurora Tejeda / CATX Systems */
 /* RSA-2048 PKCS#1 v1.5 / SHA-256 signature verification. */

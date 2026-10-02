@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 // xc/front.xfxn - the X compiler's front end: a program, from files to types.
 // Aurora Tejeda / CATX Systems
 //

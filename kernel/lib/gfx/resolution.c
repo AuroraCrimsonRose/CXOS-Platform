@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/lib/gfx/resolution.c */
 /* Aurora Tejeda / CATX Systems */
 /* Resolution catalog + classification. See resolution.h. Pure data + lookups. */

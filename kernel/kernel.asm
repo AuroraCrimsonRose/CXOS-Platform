@@ -1,3 +1,5 @@
+; SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+; SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 ; /kernel/kernel.asm - v5 higher-half entry stub
 ; Aurora Tejeda / CATX Systems
 ;

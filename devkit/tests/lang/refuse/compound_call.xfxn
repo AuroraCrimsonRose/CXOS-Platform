@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 fn idx() -> u32 { return 0; }
 global arr: [4]u32;
 fn main() -> i32 {

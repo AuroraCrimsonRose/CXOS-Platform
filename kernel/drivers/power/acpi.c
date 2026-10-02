@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /CXLite/kernel/drivers/acpi.c */
 /* Aurora Tejeda */
 /* Minimal ACPI: RSDP/FADT discovery + targeted DSDT scan for _S5_/_S1_. */

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 ﻿namespace CXEX.Build.Layout;
 
 // Represents the physical sector map of the target disk

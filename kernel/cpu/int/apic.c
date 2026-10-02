@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/cpu/int/apic.c */
 /* Aurora Tejeda / CATX Systems */
 /* Local APIC + I/O APIC. See apic.h for what this replaces and what it does not. */

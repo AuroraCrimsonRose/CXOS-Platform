@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 // A name declared again in an inner block is a different variable. The
 // emitter kept one frame slot per NAME, so every use of `x` reached the last
 // `let x` declared anywhere in the function - and two locals of one name but

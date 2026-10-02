@@ -1,3 +1,5 @@
+; SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+; SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 ; /boot/pmode.asm  -  enter 32-bit protected mode (v5 stage 2)
 ; Aurora Tejeda / CATX Systems
 ;

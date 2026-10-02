@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/drivers/usb/usb.c */
 /* Aurora Tejeda / CATX Systems */
 /* USB core: enumeration, descriptor parsing, the device registry. See usb.h. */

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /CXLite/kernel/lib/kmath.h */
 /* Aurora Tejeda */
 /* Tiny freestanding math: sin, cos, sqrt. No libm in the kernel, so we roll

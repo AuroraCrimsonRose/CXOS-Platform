@@ -19,9 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-This licence governs tier 2 of the CXOS project only — `abi/`, `os/std/`,
-`os/xc/`, `devkit/`, `editors/vscode/`, `tools/` and `docs/`. See
-[../LICENSE.md](../LICENSE.md) for the tier map.

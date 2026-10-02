@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 # ============================================================================
 #  CXK - CMakeLists.txt
 #  Copyright (c) 2026 CATX Systems.  All rights reserved.
