@@ -181,11 +181,19 @@ int vm_map(int pid, struct mem_op_args *a) {
            zeroing is not tidiness: a frame just off the free list may hold
            another process's memory, and handing that to a caller would leak
            whatever it was. */
-        paging_map(base + off, (uint32_t)frame, PAGE_PRESENT | PAGE_WRITE | PAGE_USER);
+        /* Unreachable unless the range check above let a kernel address through,
+           but it unwinds the same way the allocation failure does: returning
+           without undo() would leave the pages already mapped in this loop
+           stranded in the address space with nothing owning them. */
+        if (paging_map_user(base + off, (uint32_t)frame, PAGE_PRESENT | PAGE_WRITE) != 0) {
+            pmm_free(frame);
+            undo(base, off);
+            return E_INVAL;
+        }
         uint32_t *z = (uint32_t *)(base + off);
         for (uint32_t i = 0; i < PAGE_SIZE / 4u; i++) z[i] = 0;
         if (flags != (PAGE_PRESENT | PAGE_WRITE | PAGE_USER))
-            paging_map(base + off, (uint32_t)frame, flags);
+            paging_map_user(base + off, (uint32_t)frame, flags);
     }
 
     p->r[slot].base   = base;

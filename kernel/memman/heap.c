@@ -44,7 +44,7 @@ static block_t *heap_grow(size_t need) {
     uint32_t virt_base = heap_virt_next;
     uint32_t pbase = (uint32_t)phys;
     for (size_t i = 0; i < pages; i++) {
-        paging_map(virt_base + i * PMM_PAGE_SIZE,
+        paging_map_kernel(virt_base + i * PMM_PAGE_SIZE,
                    pbase     + i * PMM_PAGE_SIZE,
                    PAGE_PRESENT | PAGE_WRITE);   /* kernel-only, writable */
     }

@@ -237,7 +237,7 @@ int ktest_user_ptr_writability(void) {
     void *frame = pmm_alloc();
     if (!frame) return 0;
 
-    paging_map(va, (uint32_t)frame, PAGE_PRESENT | PAGE_USER);   /* no PAGE_WRITE */
+    if (paging_map_user(va, (uint32_t)frame, PAGE_PRESENT) != 0) { pmm_free(frame); return 0; }   /* no PAGE_WRITE */
 
     int ok = 1;
     ok = ok && user_ptr_readable(va, 64) == 1;
@@ -245,7 +245,7 @@ int ktest_user_ptr_writability(void) {
 
     /* The same page, now writable, must pass both - otherwise the check could be
        refusing everything and this test would not notice. */
-    paging_map(va, (uint32_t)frame, PAGE_PRESENT | PAGE_USER | PAGE_WRITE);
+    if (paging_map_user(va, (uint32_t)frame, PAGE_PRESENT | PAGE_WRITE) != 0) { pmm_free(frame); return 0; }
     ok = ok && user_ptr_readable(va, 64) == 1;
     ok = ok && user_ptr_writable(va, 64) == 1;
 
