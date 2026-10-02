@@ -1,5 +1,5 @@
 /* /kernel/lib/string/format.h */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * Pure number -> string formatting. No hardware, no state - it writes digits
  * into a caller-provided buffer, so it lives in lib/ and is testable in

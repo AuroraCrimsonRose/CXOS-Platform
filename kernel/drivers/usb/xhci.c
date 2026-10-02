@@ -1,5 +1,5 @@
 /* /kernel/drivers/usb/xhci.c */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /* xHCI host controller. See xhci.h for why this one is structurally different
    from EHCI and OHCI rather than merely newer. */
 

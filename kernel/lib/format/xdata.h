@@ -1,5 +1,5 @@
 /* /kernel/lib/format/xdata.h */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * The X Data reader, called from C.
  *

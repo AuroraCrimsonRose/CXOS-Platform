@@ -1,5 +1,5 @@
 /* /kernel/drivers/net/rtl8169.c */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /* Realtek RTL8111 / RTL8168 / RTL8169 driver. See rtl8169.h for why one driver
    covers all three names, and for the fact that this is unverified on silicon. */
 

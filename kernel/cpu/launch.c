@@ -1,5 +1,5 @@
 /* /kernel/cpu/launch.c */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /* Read a CXEX image from CXFS and run it via cxex_exec. See launch.h. */
 
 #include "launch.h"

@@ -1,5 +1,5 @@
 /* /kernel/lib/color.h */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * Color model. Pure - just constants and value packing, no hardware - so it
  * lives in lib/. This is the single home for "what a color is" in CXK, so the

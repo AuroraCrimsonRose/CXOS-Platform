@@ -1,5 +1,5 @@
 /* /kernel/drivers/storage/partition/partition.h */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * Partition layer: a scheme-agnostic view of a disk's partitions. The kernel
  * asks "what partitions are on this disk" and "where is the CXFS one" without

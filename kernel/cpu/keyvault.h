@@ -1,5 +1,5 @@
 /* /kernel/cpu/keyvault.h */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * The Key Vault - which signing keys this machine believes, and how much.
  *

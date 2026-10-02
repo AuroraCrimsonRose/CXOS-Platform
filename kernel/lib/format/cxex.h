@@ -1,5 +1,5 @@
 /* /kernel/lib/cxex.h */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * CXEX executable format definitions (CX_EXTENSION_SYSTEM.md section 9).
  *

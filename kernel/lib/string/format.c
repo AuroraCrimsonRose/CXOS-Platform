@@ -1,5 +1,5 @@
 /* /kernel/lib/string/format.c */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /* Pure number -> string formatting (see format.h). */
 
 #include "format.h"

@@ -1,5 +1,5 @@
 /* /boot/uefi/cxboot.c */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * CXK UEFI boot stub - part 1 of 2: gather, fill CXBI, report, halt.
  *

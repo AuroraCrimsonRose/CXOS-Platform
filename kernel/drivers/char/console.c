@@ -1,5 +1,5 @@
 /* /kernel/drivers/char/console.c */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * Text console with two interchangeable backends behind one interface:
  *   - VGA text  (vga.c, 80x25, hardware cursor) - the default at boot

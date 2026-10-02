@@ -1,6 +1,6 @@
 # CXFS — CX File System (v2 Specification)
 
-**CATX Systems LLC — Aurora Tejeda**
+**CATX Systems — Aurora Tejeda**
 On-disk format specification for CXFS version 2.
 
 CXFS is the native filesystem of CXOS. This document defines the **v2** on-disk

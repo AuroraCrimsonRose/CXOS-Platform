@@ -1,7 +1,7 @@
 @echo off
 setlocal
 REM /boot/uefi/build.bat
-REM Aurora Tejeda / CATX SYSTEMS LLC
+REM Aurora Tejeda / CATX Systems
 REM
 REM Builds the UEFI boot stub with MSVC. Run from an x64 Native Tools / Developer
 REM Command Prompt. This is now the ONLY part of the repository that needs MSVC:

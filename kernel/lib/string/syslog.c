@@ -1,5 +1,5 @@
 /* /kernel/lib/string/syslog.c */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /* Structured system logger - in-memory ring buffer recorder. See syslog.h. */
 
 #include "syslog.h"

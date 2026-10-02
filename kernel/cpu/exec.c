@@ -1,5 +1,5 @@
 /* /kernel/cpu/exec.c */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /* cxex_exec: verify a signed image, decide its capabilities, and start it as a
    ring-3 scheduler thread. Non-blocking - returns the new pid. See exec.h. */
 

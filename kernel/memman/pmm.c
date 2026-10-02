@@ -1,5 +1,5 @@
 /* /kernel/memman/pmm.c */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /* Physical Memory Manager - bitmap allocator (v5, higher-half aware). */
 
 #include "pmm.h"

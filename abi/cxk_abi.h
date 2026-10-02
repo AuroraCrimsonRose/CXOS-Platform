@@ -1,5 +1,5 @@
 /* /abi/cxk_abi.h */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * CXK ABI v1 - the PUBLIC contract shared by the kernel, the .xoex executive,
  * and .xuex apps (and, later, the X toolchain). This is the single source of

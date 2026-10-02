@@ -1,5 +1,5 @@
 # CXK v5 — Port Manifest & Build Plan
-### CATX SYSTEMS LLC — planning doc for the v5 rebuild
+### CATX Systems — planning doc for the v5 rebuild
 
 > **Status: COMPLETE — historical.** Every step of the §5 port order has landed:
 > the new boot chain, core bring-up, the process model (now with per-process

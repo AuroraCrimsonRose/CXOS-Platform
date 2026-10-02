@@ -1,5 +1,5 @@
 /* /kernel/drivers/usb/usb.h */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * USB core - everything that is true regardless of which host controller is
  * underneath.

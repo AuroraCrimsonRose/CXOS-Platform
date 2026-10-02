@@ -1,5 +1,5 @@
 /* /kernel/cpu/sched.c */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /* Cooperative kernel-thread scheduler (Checkpoint 1). */
 
 #include "sched.h"

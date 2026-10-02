@@ -1,5 +1,5 @@
 /* /kernel/lib/cxex.c */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /* CXEX format parsing - explicit-offset, padding-immune. Owns the byte layout. */
 
 #include "cxex.h"

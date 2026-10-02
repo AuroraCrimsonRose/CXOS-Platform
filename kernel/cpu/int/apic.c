@@ -1,5 +1,5 @@
 /* /kernel/cpu/int/apic.c */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /* Local APIC + I/O APIC. See apic.h for what this replaces and what it does not. */
 
 #include "apic.h"

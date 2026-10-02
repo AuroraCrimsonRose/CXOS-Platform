@@ -1,5 +1,5 @@
 /* /kernel/lib/sha256.c */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /* SHA-256 per FIPS 180-4. Big-endian internally; careful byte handling. */
 
 #include "sha256.h"

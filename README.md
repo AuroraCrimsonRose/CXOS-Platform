@@ -378,4 +378,4 @@ See LICENSE.md.
 
 ---
 
-© Aurora Tejeda / CATX SYSTEMS LLC
+© Aurora Tejeda / CATX Systems

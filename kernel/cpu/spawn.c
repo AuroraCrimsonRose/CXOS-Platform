@@ -1,5 +1,5 @@
 /* /kernel/cpu/spawn.c */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * ABI v1 process launch. Every ring-3 process - the executive AND its apps -
  * is a normal scheduler thread with its own address space, kernel stack (esp0),

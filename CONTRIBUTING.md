@@ -23,7 +23,7 @@ If you want to contribute, ask first: **aurora.tejeda@catxhosting.com**.
 Under [LICENSE.md](LICENSE.md) §9, by submitting a contribution you grant CATX
 Systems a perpetual, worldwide, irrevocable licence to it — and **on acceptance
 into a Proprietary Component, all right, title and interest in that contribution
-is assigned to CATX Systems LLC.** You keep no ownership of merged work.
+is assigned to CATX Systems.** You keep no ownership of merged work.
 
 You must be legally entitled to grant that (§9c). If your employer owns what you
 write, you need their sign-off before submitting.

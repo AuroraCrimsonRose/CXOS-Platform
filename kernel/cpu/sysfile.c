@@ -1,5 +1,5 @@
 /* /kernel/cpu/sysfile.c */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /* SYS_FILE_OP - see sysfile.h. */
 
 #include "sysfile.h"

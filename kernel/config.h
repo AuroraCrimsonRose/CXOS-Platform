@@ -1,5 +1,5 @@
 /* /kernel/config.h */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * Kernel build-time configuration / safety switches.
  *

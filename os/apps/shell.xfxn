@@ -1,5 +1,5 @@
 // shell.xfxn - the CXK console shell.
-// Aurora Tejeda / CATX SYSTEMS LLC
+// Aurora Tejeda / CATX Systems
 //
 // A privileged OS-level executable (GRANT_OS_BASELINE): reads input, writes the
 // console, draws, and reboots directly.

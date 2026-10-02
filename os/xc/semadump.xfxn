@@ -1,5 +1,5 @@
 // xc/semadump.xfxn - print what the X front end concludes about programs.
-// Aurora Tejeda / CATX SYSTEMS LLC
+// Aurora Tejeda / CATX Systems
 //
 //   semadump [-s] [--prelude FILE | --no-prelude] [-I DIR]... [--std DIR] PROGRAM...
 //

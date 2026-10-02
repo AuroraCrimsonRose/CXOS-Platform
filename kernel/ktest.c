@@ -1,5 +1,5 @@
 /* /kernel/ktest.c */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * Kernel self-tests, extracted from kmain. Each ktest_* function exercises one
  * subsystem and logs a concise pass/fail line. ktest_run() calls them in order.

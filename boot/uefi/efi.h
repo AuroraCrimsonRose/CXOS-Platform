@@ -1,5 +1,5 @@
 /* /boot/uefi/efi.h */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * The subset of the UEFI spec the CXK boot stub actually uses.
  *

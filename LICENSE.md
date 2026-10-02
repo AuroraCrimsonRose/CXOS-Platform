@@ -2,13 +2,13 @@ CXK and CXOS Project License
 Version 1.0.7
 Effective Date: June 16, 2026
 
-This license ("License") is a legal agreement between You ("You", "Your") and CATX Systems LLC ("CATX Systems", "We", "Us") for the software, documentation, and materials collectively known as the "Project".
+This license ("License") is a legal agreement between You ("You", "Your") and CATX Systems ("CATX Systems", "We", "Us") for the software, documentation, and materials collectively known as the "Project".
 
 **1. Acceptance**
 By downloading, installing, accessing, copying, or otherwise using the Project, You agree to be bound by the terms of this License. If You do not agree to the terms of this License, do not use the Project.
 
 **2. Ownership**
-The Project, including all Proprietary Components, trademarks, copyrights, trade secrets, documentation, source code, binaries, and related materials, is owned exclusively by CATX Systems LLC unless otherwise stated in writing.
+The Project, including all Proprietary Components, trademarks, copyrights, trade secrets, documentation, source code, binaries, and related materials, is owned exclusively by CATX Systems unless otherwise stated in writing.
 
 **3. Definitions**
 a. **Project**: The CXOS Project and all associated software, documentation, binaries, source code, SDKs, tools, and related materials, including but not limited to CXK, CXOS, CXOS Lite, and any future variants developed by CATX Systems.
@@ -22,13 +22,13 @@ f. **Basic Concepts**: Fundamental algorithms, data structures, architectural pa
 CATX Systems grants You a non-exclusive, non-transferable, royalty-free, revocable license to use the binary releases of the Proprietary Components solely for lawful operation of the Project and software compatible with the Project. This license does not grant You any right to redistribute, modify, reverse engineer, decompile, or create derivative works of the Proprietary Components.
 
 **5. Patent Non-Assertion**
-CATX Systems LLC hereby covenants not to assert any patent claims that it owns or controls against You for Your use, reproduction, or distribution of the Project, provided that such use is in full compliance with this License. This covenant does not apply to any forked, modified, or unauthorized version of the Project, nor to any person or entity that initiates patent litigation against CATX Systems LLC or the Project.
+CATX Systems hereby covenants not to assert any patent claims that it owns or controls against You for Your use, reproduction, or distribution of the Project, provided that such use is in full compliance with this License. This covenant does not apply to any forked, modified, or unauthorized version of the Project, nor to any person or entity that initiates patent litigation against CATX Systems or the Project.
 
 **6. Official Release Signing**
-Official releases of CXK and CXOS may be cryptographically signed by CATX Systems LLC. Only software bearing valid CATX Systems signatures may be represented as an Official Release.
+Official releases of CXK and CXOS may be cryptographically signed by CATX Systems. Only software bearing valid CATX Systems signatures may be represented as an Official Release.
 
 **7. Security Updates and Trusted Channels**
-CATX Systems LLC reserves exclusive authority over official security updates, trusted update channels, and release signing infrastructure.
+CATX Systems reserves exclusive authority over official security updates, trusted update channels, and release signing infrastructure.
 
 **8. Source Code Access (Authorized Contributor Framework)**
 a. Access to the source code of Proprietary Components is granted only to individuals or entities explicitly authorized in writing by CATX Systems ("Authorized Contributor").
@@ -39,7 +39,7 @@ e. Unauthorized possession of Proprietary Components source code grants no right
 
 **9. Contributor License Grant and Assignment**
 a. By submitting a Contribution, You grant CATX Systems a perpetual, worldwide, non-exclusive, no-charge, royalty-free, irrevocable copyright license to use, reproduce, prepare derivative works of, publicly display, publicly perform, sublicense, and distribute Your Contributions and such derivative works.
-b. You agree that upon acceptance of a Contribution by CATX Systems for inclusion in any Proprietary Component, all right, title, and interest, including all intellectual property rights, in and to that Contribution shall be, and are hereby, assigned to and become the sole property of CATX Systems LLC. You agree to execute any documents necessary to perfect this assignment.
+b. You agree that upon acceptance of a Contribution by CATX Systems for inclusion in any Proprietary Component, all right, title, and interest, including all intellectual property rights, in and to that Contribution shall be, and are hereby, assigned to and become the sole property of CATX Systems. You agree to execute any documents necessary to perfect this assignment.
 c. You represent that You are legally entitled to grant the above license and assignment.
 d. You may apply and build upon Basic Concepts learned from reviewing the source code in independent projects, provided that such work does not incorporate any proprietary source code or trade secrets from the Project.
 
@@ -62,7 +62,7 @@ You agree to indemnify and hold harmless CATX Systems, its officers, employees, 
 THE PROJECT IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT.
 
 **16. LIMITATION OF LIABILITY**
-IN NO EVENT SHALL CATX SYSTEMS LLC, ITS OFFICERS, EMPLOYEES, CONTRIBUTORS, OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE PROJECT OR THE USE OR OTHER DEALINGS IN THE PROJECT.
+IN NO EVENT SHALL CATX Systems, ITS OFFICERS, EMPLOYEES, CONTRIBUTORS, OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE PROJECT OR THE USE OR OTHER DEALINGS IN THE PROJECT.
 
 **17. Trademarks**
 This License does not grant permission to use the trade names, trademarks, service marks, or product names of CATX Systems, including "CATX Systems", "CXK", "CXOS", and "CXOS Lite", except for reasonable and customary use in describing the origin of the Project. Forked, modified, or unofficial versions may not use the names CXK, CXOS, CXOS Lite, CATX Systems, or associated logos in a manner that implies endorsement or official status.
@@ -80,10 +80,10 @@ d. Sections 2, 3, 5, 8, 10, 14, 15, 16, 17, 18, 20-25 shall survive the terminat
 You agree to comply with all applicable U.S. and international export laws and regulations. You represent and warrant that You are not located in a country that is subject to a U.S. Government embargo or that has been designated by the U.S. Government as a "terrorist supporting" country.
 
 **21. Reservation of Rights**
-All rights not expressly granted by this License are reserved by CATX Systems LLC.
+All rights not expressly granted by this License are reserved by CATX Systems.
 
 **22. Contact Information**
-CATX Systems LLC can be contacted at:
+CATX Systems can be contacted at:
 - `auracrimsonrose@gmail.com`
 - `Aurora.tejeda@catxhosting.com`
 - `www.catxhosting.com`
@@ -92,7 +92,7 @@ CATX Systems LLC can be contacted at:
 This License constitutes the entire agreement between You and CATX Systems concerning the Project and supersedes all prior or contemporaneous agreements, understandings, or communications.
 
 **24. Assumption of Risk and End User Damages**
-You expressly acknowledge that the Project is an operating system that interacts directly with hardware and software systems. You assume all risks associated with the installation, operation, and use of the Project, including but not limited to data loss, system failure, hardware damage, personal injury, and business interruption. CATX Systems LLC shall not be liable for any damages, losses, or harm suffered by You or any third party as a result of using or relying upon the Project, whether or not CATX Systems LLC has been advised of the possibility of such damages.
+You expressly acknowledge that the Project is an operating system that interacts directly with hardware and software systems. You assume all risks associated with the installation, operation, and use of the Project, including but not limited to data loss, system failure, hardware damage, personal injury, and business interruption. CATX Systems shall not be liable for any damages, losses, or harm suffered by You or any third party as a result of using or relying upon the Project, whether or not CATX Systems has been advised of the possibility of such damages.
 
 **25. Updates**
-CATX Systems LLC may provide updates, patches, bug fixes, security releases, or feature releases at its sole discretion. Nothing in this License obligates CATX Systems LLC to provide updates, maintenance, support, or future versions of the Project.
+CATX Systems may provide updates, patches, bug fixes, security releases, or feature releases at its sole discretion. Nothing in this License obligates CATX Systems to provide updates, maintenance, support, or future versions of the Project.

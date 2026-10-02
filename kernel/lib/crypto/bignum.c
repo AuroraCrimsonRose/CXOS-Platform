@@ -1,5 +1,5 @@
 /* /kernel/lib/bignum.c */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /* Fixed-size schoolbook big integers for RSA-2048 verification. */
 
 #include "bignum.h"

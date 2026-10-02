@@ -1,5 +1,5 @@
 /* /kernel/lib/format/cxex_loadk.c */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * Kernel binding for cxex_load: supply the get_page/map_page ops backed by the
  * PMM and the pager. Kept separate from cxex_load.c so the loader logic stays

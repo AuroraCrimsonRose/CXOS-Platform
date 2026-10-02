@@ -1,5 +1,5 @@
 ; /boot/cxexload.asm  -  stage 2 CXEX kernel loader (32-bit protected mode)
-; Aurora Tejeda / CATX SYSTEMS LLC
+; Aurora Tejeda / CATX Systems
 ;
 ; Replaces the old flat "copy blob + jump" with real CXEX loading: parse the
 ; .xkex header at the low load buffer, place each section at its PHYSICAL load

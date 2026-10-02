@@ -1,5 +1,5 @@
 # The CXK Process Model — Ring 3, Scheduling & Preemption
-### CXK Reference — Aurora Tejeda / CATX SYSTEMS LLC
+### CXK Reference — Aurora Tejeda / CATX Systems
 
 This document describes CXK's process model: how the kernel drops to user mode
 (ring 3), the syscall interface, the scheduler, and how preemptive multitasking

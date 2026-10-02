@@ -1,5 +1,5 @@
 // std/buf.xfxn - growable byte buffers, and growable lists of 32-bit items.
-// Aurora Tejeda / CATX SYSTEMS LLC
+// Aurora Tejeda / CATX Systems
 //
 //   import "buf.xfxn";
 //

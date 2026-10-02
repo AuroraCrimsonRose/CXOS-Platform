@@ -1,5 +1,5 @@
 /* /kernel/cpu/sysfile.h */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * SYS_FILE_OP - the filesystem as ring 3 sees it (ABI v3).
  *

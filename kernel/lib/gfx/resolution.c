@@ -1,5 +1,5 @@
 /* /kernel/lib/gfx/resolution.c */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /* Resolution catalog + classification. See resolution.h. Pure data + lookups. */
 
 #include "resolution.h"

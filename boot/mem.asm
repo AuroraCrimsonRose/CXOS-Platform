@@ -1,5 +1,5 @@
 ; /boot/mem.asm  -  E820 memory map gathering (v5 stage 2)
-; Aurora Tejeda / CATX SYSTEMS LLC
+; Aurora Tejeda / CATX Systems
 ;
 ; Gathers the BIOS memory map via int 15h / EAX=0xE820 and stores the raw
 ; entries at a fixed buffer the kernel can read after handoff. This MUST run in

@@ -1,5 +1,5 @@
 /* /kernel/drivers/bus/pci.h */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * PCI bus driver (legacy configuration mechanism #1: ports 0xCF8/0xCFC).
  *

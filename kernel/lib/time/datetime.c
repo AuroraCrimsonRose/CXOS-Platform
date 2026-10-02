@@ -1,5 +1,5 @@
 /* /kernel/lib/time/datetime.c */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /* Pure calendar <-> epoch conversion (see datetime.h). */
 
 #include "datetime.h"

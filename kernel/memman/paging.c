@@ -1,5 +1,5 @@
 /* /kernel/memman/paging.c */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * x86 32-bit paging - v5, RECURSIVE page directory.
  *

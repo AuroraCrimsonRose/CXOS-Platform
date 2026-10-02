@@ -1,5 +1,5 @@
 /* /kernel/drivers/char/console.h */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * Text console for v5: the kernel's low-level output primitives. Tracks the
  * cursor, wraps lines, scrolls, and writes strings/numbers in color, with two

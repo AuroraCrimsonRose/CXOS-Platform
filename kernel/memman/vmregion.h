@@ -1,5 +1,5 @@
 /* /kernel/memman/vmregion.h */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * Per-process memory mappings - the kernel half of SYS_MEM_OP.
  *

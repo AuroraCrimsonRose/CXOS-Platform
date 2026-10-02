@@ -1,5 +1,5 @@
 /* /kernel/kconfig.c */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /* Kernel configuration - see kconfig.h. */
 
 #include "kconfig.h"

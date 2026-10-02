@@ -1,5 +1,5 @@
 // xc/map.xfxn - a map from names to numbers, for the X compiler's tables.
-// Aurora Tejeda / CATX SYSTEMS LLC
+// Aurora Tejeda / CATX Systems
 //
 //   let m: smap = smap_new();
 //   smap_put(&m, name, len, value);          // set, replacing any value

@@ -1,5 +1,5 @@
 /* /kernel/cpu/int/idt.c */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * v5 IDT: exception + IRQ handling with a self-contained panic dump.
  * Differences from the v4 port (deliberate for the current v5 stage):

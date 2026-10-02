@@ -1,5 +1,5 @@
 /* /kernel/kmain.c - v5 kernel C entry
- * Aurora Tejeda / CATX SYSTEMS LLC
+ * Aurora Tejeda / CATX Systems
  *
  * Runs in the higher half. kernel.asm has set up paging, mapped the kernel high,
  * switched to a higher-half stack, and zeroed BSS. kmain brings up the kernel

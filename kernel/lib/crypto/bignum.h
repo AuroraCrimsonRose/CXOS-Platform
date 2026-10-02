@@ -1,5 +1,5 @@
 /* /kernel/lib/bignum.h */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * Fixed-size big integers for RSA-2048 signature VERIFICATION only
  * (CX_EXTENSION_SYSTEM.md section 10). Just the operations modular

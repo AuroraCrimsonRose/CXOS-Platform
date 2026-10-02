@@ -1,5 +1,5 @@
 // xc/tokdump.xfxn - print the tokens of X source files.
-// Aurora Tejeda / CATX SYSTEMS LLC
+// Aurora Tejeda / CATX Systems
 //
 //   tokdump a.xfxn b.xfxn ...
 //   tokdump -s a.xfxn ...      one summary line per file instead

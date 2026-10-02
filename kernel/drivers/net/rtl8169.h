@@ -1,5 +1,5 @@
 /* /kernel/drivers/net/rtl8169.h */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * Realtek RTL8111 / RTL8168 / RTL8169 Gigabit Ethernet driver.
  *

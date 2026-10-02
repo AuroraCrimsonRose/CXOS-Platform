@@ -1,5 +1,5 @@
 # CXOS File Extension & Type System
-### CX Design Spec — Aurora Tejeda / CATX SYSTEMS LLC
+### CX Design Spec — Aurora Tejeda / CATX Systems
 
 > **Status: DESIGN / PROPOSAL.** This describes the *intended* file-type system
 > for CXK and the broader CXOS ecosystem. It is a forward-looking design, not a

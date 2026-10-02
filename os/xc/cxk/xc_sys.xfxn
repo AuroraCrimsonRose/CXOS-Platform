@@ -1,5 +1,5 @@
 // xc/cxk/xc_sys.xfxn - the X compiler's platform, on CXK.
-// Aurora Tejeda / CATX SYSTEMS LLC
+// Aurora Tejeda / CATX Systems
 //
 // The CXK half of the platform interface; os/xc/host/xc_sys.xfxn is the Linux
 // half, and has the same functions. Built with the ordinary prelude and

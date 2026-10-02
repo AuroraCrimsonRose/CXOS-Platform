@@ -1,5 +1,5 @@
 // hello.xfxn - the first native X (.xfxn) app for CXOS.
-// Aurora Tejeda / CATX SYSTEMS LLC
+// Aurora Tejeda / CATX Systems
 //
 // A capability-less USER app (.xuex). It cannot touch the console directly
 // (no GRANT_CONSOLE); instead it asks its broker executive to print for it over
