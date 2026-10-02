@@ -24,7 +24,7 @@ can be acted on and the patch cannot.
 ## What you *can* do today
 
 The MIT tier — `abi/`, `os/std/`, `os/xc/`, `devkit/`, `editors/vscode/`,
-`tools/`, `docs/` — is yours under [MIT](licenses/MIT.txt). Fork it, modify it,
+`tools/`, `docs/` — is yours under [MIT](LICENSES/MIT.txt). Fork it, modify it,
 build on it, ship it commercially; nothing is owed.
 
 **Applications, drivers and extensions you write for CXOS are independent
@@ -32,7 +32,7 @@ works** and you may license and sell them however you like. See
 [LICENSE.md](LICENSE.md) for the exemption, stated in full.
 
 The operating-system tier is
-[PolyForm Noncommercial 1.0.0](licenses/PolyForm-Noncommercial-1.0.0.txt): read
+[PolyForm Noncommercial 1.0.0](LICENSES/PolyForm-Noncommercial-1.0.0.txt): read
 it, audit it, build it, modify it and share it for any noncommercial purpose.
 
 ## Security issues are not pull requests
