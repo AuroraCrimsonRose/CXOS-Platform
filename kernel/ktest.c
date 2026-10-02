@@ -53,7 +53,7 @@ static int test_paging(void) {
     uint32_t test_virt = 0xCE000000;   /* clear of the kernel-stack region above */
     uint32_t frame = (uint32_t)pmm_alloc();
     if (!frame) return 0;
-    paging_map(test_virt, frame, PAGE_WRITE);
+    paging_map_kernel(test_virt, frame, PAGE_WRITE);
     volatile uint32_t *p = (volatile uint32_t *)test_virt;
     *p = 0xCAFEBABE;
     int ok = (*p == 0xCAFEBABE) && (paging_get_phys(test_virt) == frame);

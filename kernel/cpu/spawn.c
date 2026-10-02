@@ -67,8 +67,10 @@ extern int enter_usermode(uint32_t entry_eip, uint32_t user_esp, uint32_t *save_
 static int build_args_page(const char *blob, uint32_t len) {
     void *frame = pmm_alloc();
     if (!frame) return -1;
-    paging_map(USER_ARGS_BASE, (uint32_t)frame,
-               PAGE_PRESENT | PAGE_WRITE | PAGE_USER);
+    if (paging_map_user(USER_ARGS_BASE, (uint32_t)frame, PAGE_PRESENT | PAGE_WRITE) != 0) {
+        pmm_free(frame);
+        return -1;
+    }
 
     uint8_t  *page = (uint8_t *)USER_ARGS_BASE;
     uint32_t *head = (uint32_t *)page;
@@ -109,8 +111,11 @@ static void proc_trampoline(void) {
     for (uint32_t i = 0; i < USER_STACK_PAGES; i++) {
         void *p = pmm_alloc();
         if (!p) { klog("PROC", SEV_ERR, "no stack memory"); kfree((void *)r->image); thread_exit(); }
-        paging_map(USER_STACK_TOP - (i + 1) * 0x1000u, (uint32_t)p,
-                   PAGE_PRESENT | PAGE_WRITE | PAGE_USER);
+        if (paging_map_user(USER_STACK_TOP - (i + 1) * 0x1000u, (uint32_t)p,
+                            PAGE_PRESENT | PAGE_WRITE) != 0) {
+            klog("PROC", SEV_ERR, "user stack is not in the user half");
+            pmm_free(p); kfree((void *)r->image); thread_exit();
+        }
     }
     uint32_t ustack_top = USER_STACK_TOP - 16u;
 

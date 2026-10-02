@@ -35,19 +35,15 @@ static void *k_get_page(void *ctx, uint32_t *out_phys) {
 static int k_map_page(void *ctx, uint32_t virt, uint32_t phys, uint32_t prot) {
     (void)ctx;
 
-    /* Refused here as well as in the loader's validation pass. The loader proves
-       no section reaches KERNEL_VBASE before it maps anything, so this can only
-       fire if that pass is bypassed or wrong - which is exactly when it matters.
-       Mapping a kernel address with PAGE_USER would hand ring 3 the kernel
-       (security review §1, §8); one duplicated comparison is a cheap price for
-       the mapping call being unable to express it. */
-    if (virt >= KERNEL_VBASE) return -1;
-
-    uint32_t f = PAGE_PRESENT | PAGE_USER;             /* loaded image is ring 3 */
+    /* paging_map_user refuses any address at or above KERNEL_VBASE and adds the
+       USER bit itself, so this call cannot express a kernel mapping at all -
+       which is the point of the split (security review §1, §8). The loader's
+       validation pass has already proved the same thing; this is the layer that
+       still holds if that pass is ever bypassed or wrong. */
+    uint32_t f = PAGE_PRESENT;                         /* loaded image is ring 3 */
     if (prot & CXEX_PROT_WRITE) f |= PAGE_WRITE;
     /* x86 (non-PAE) has no per-page execute bit; EXEC is implicit. */
-    paging_map(virt, phys, f);
-    return 0;
+    return paging_map_user(virt, phys, f);
 }
 
 const struct cxex_load_ops cxex_kernel_load_ops = {

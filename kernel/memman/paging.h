@@ -56,7 +56,15 @@ void paging_init(void);
 
 /* map one virtual page to one physical frame with the given flags.
    Both addresses must be page-aligned. */
-void paging_map(uint32_t virt, uint32_t phys, uint32_t flags);
+/* Two entry points, not one, so neither can express the dangerous combination
+   (security review §8):
+     - kernel: any virtual address (drivers map MMIO where the BAR put it), but
+       PAGE_USER is refused, so a kernel mapping is never reachable from ring 3;
+     - user: PAGE_USER is added for you, but an address at or above KERNEL_VBASE
+       is refused, so a ring-3 mapping can never name kernel memory.
+   paging_map_user returns 0, or -1 if the address is not in the user half. */
+void paging_map_kernel(uint32_t virt, uint32_t phys, uint32_t flags);
+int  paging_map_user  (uint32_t virt, uint32_t phys, uint32_t flags);
 
 /* remove a mapping for a virtual page. */
 void paging_unmap(uint32_t virt);
