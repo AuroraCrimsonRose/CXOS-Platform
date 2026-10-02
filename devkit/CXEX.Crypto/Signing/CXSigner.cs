@@ -3,6 +3,7 @@ using System.IO;
 using System.Security.Cryptography;
 using CXEX.FileType.Structures;
 using CXEX.FileType.Parsers;
+using CXEX.FileType.Types;
 using CXEX.Core.Utilities;
 
 namespace CXEX.Crypto.Signing;
@@ -13,12 +14,60 @@ public static class CXSigner
     private const ushort HASH_ALGO_SHA256 = 1;
     private const uint FLAG_SIGNED = 1 << 2;
 
+    /// <summary>
+    /// Signs a CXEX image in place.
+    ///
+    /// <para>The pipeline is parse, validate, then sign (security review §10). It
+    /// used to be just "sign": whatever bytes were at <paramref name="targetPath"/>
+    /// were hashed and a CXSG block appended. Signing is the one operation where
+    /// that is least acceptable, because the output is an artifact carrying a
+    /// trusted signature - a malformed image signed by the platform key is strictly
+    /// worse than a malformed image.</para>
+    /// </summary>
     public static void SignArtifact(string targetPath, string pemPrivateKeyPath, string xkpkPublicKeyPath)
     {
         byte[] binary = File.ReadAllBytes(targetPath);
 
-        // 1. Calculate the Fingerprint of the public key
+        // 0. Validate before signing anything. CXEXExecutable.Load is the validator:
+        // it refuses an image whose sections run outside the file, overlap, or fall
+        // beyond the signed range.
+        var image = new CXEXExecutable();
+        try
+        {
+            image.Load(binary);
+        }
+        catch (InvalidDataException ex)
+        {
+            throw new InvalidDataException(
+                $"refusing to sign {Path.GetFileName(targetPath)}: it is not a valid CXEX image. {ex.Message}", ex);
+        }
+
+        // Signing twice would hash the first signature as if it were payload and
+        // leave two CXSG blocks in the file, only one of which any verifier reads.
+        if (image.Header.SignatureOffset != 0)
+            throw new InvalidDataException(
+                $"refusing to sign {Path.GetFileName(targetPath)}: it already carries a signature at offset " +
+                $"{image.Header.SignatureOffset}. Re-package it before signing again.");
+
+        // 1. The public key, validated too - the fingerprint is taken over these
+        // exact bytes, so a file that is not a CXPK yields a confident-looking
+        // fingerprint for a key nobody can verify against.
         byte[] pkBytes = File.ReadAllBytes(xkpkPublicKeyPath);
+        var publicKey = new XKPKFile();
+        try
+        {
+            publicKey.Load(pkBytes);
+        }
+        catch (InvalidDataException ex)
+        {
+            throw new InvalidDataException(
+                $"refusing to sign with {Path.GetFileName(xkpkPublicKeyPath)}: it is not a valid CXPK public key. {ex.Message}", ex);
+        }
+
+        if (pkBytes.Length > ushort.MaxValue)
+            throw new InvalidDataException(
+                $"public key is {pkBytes.Length} bytes, beyond the 16-bit pubkey_len field.");
+
         byte[] fingerprint = SHA256.HashData(pkBytes);
 
         // 2. Patch the header BEFORE hashing (just like signcxex.py)
@@ -44,7 +93,26 @@ public static class CXSigner
             rsa.ImportFromPem(pem);
             // PKCS1 padding matches your OpenSSL parameters
             signatureBytes = rsa.SignHash(digest, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+
+            // The private key must be the other half of the public key travelling
+            // with the image. Signing with one and shipping the other produces an
+            // artifact that fails verification everywhere, with nothing in the
+            // output to say why - and the kernel reports it as BAD_SIGNATURE, which
+            // reads as tampering rather than as the wrong key file on a command
+            // line. Caught here instead, while both halves are in hand.
+            RSAParameters pub = rsa.ExportParameters(includePrivateParameters: false);
+            if (!pub.Modulus.AsSpan().SequenceEqual(publicKey.Modulus))
+                throw new InvalidDataException(
+                    $"{Path.GetFileName(pemPrivateKeyPath)} and {Path.GetFileName(xkpkPublicKeyPath)} are not a pair: " +
+                    "the private key's modulus differs from the public key's.");
         }
+
+        // The kernel requires sig_len == modulus_len (cxex_verify.c), so an image
+        // that does not satisfy it is one it will refuse to load.
+        if (signatureBytes.Length != publicKey.Modulus.Length)
+            throw new InvalidDataException(
+                $"signature is {signatureBytes.Length} bytes but the key's modulus is {publicKey.Modulus.Length}; " +
+                "the kernel requires them equal.");
 
         // 5. Append the CXSG Block
         using var ms = new MemoryStream();
@@ -81,6 +149,20 @@ public static class CXSigner
         bw.Write(pkBytes);
         bw.Write(signatureBytes);
 
-        File.WriteAllBytes(targetPath, ms.ToArray());
+        // Atomic, for the same reason CXEXWriter is (security §8): an interrupted
+        // signing would otherwise leave the patched header - FLAG_SIGNED set and a
+        // signature_offset pointing at a block that was never written.
+        byte[] signed = ms.ToArray();
+        string temp = targetPath + ".tmp" + Environment.ProcessId;
+        try
+        {
+            File.WriteAllBytes(temp, signed);
+            File.Move(temp, targetPath, overwrite: true);
+        }
+        catch
+        {
+            try { if (File.Exists(temp)) File.Delete(temp); } catch { /* best effort */ }
+            throw;
+        }
     }
 }
