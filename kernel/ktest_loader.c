@@ -1,17 +1,6 @@
 /* /kernel/ktest_loader.c */
 /* Aurora Tejeda / CATX SYSTEMS LLC */
 /*
- * NOT IN THE BUILD YET. It is deliberately absent from KERNEL_C_SRCS, and
- * enabling it is a one-line change there plus two report() lines in ktest.c.
- *
- * It is held back because adding it makes test_kconfig fail, and that is not
- * this file's fault: linking ANY ~4 KB of unrelated .text does the same. A probe
- * of 200 trivial arithmetic functions that nothing calls reproduces it exactly,
- * while a 16-byte translation unit does not. The kernel has a latent bug that
- * growing .text exposes, and the test it breaks is the one exercising the
- * X-compiled xdata object - see HARDENING_PLAN, Phase 1 kernel. Wiring this in
- * before that is fixed would commit a knowingly red suite.
- *
  * Adversarial cases for the CXEX runtime loader, run at every boot.
  *
  * These matter more than the usual self-test. The loader is where an untrusted
@@ -143,11 +132,10 @@ static int refuses(int want) {
 int ktest_loader_adversarial(void) {
     int ok = 1;
 
-    /* The image and the scratch page come from the heap rather than .bss.
-       Putting 5 KB of test buffers in .bss moved __kernel_end up by a page and
-       made test_kconfig fail - the kernel is sensitive to its own .bss size in a
-       way nothing here explains, and a self-test must not be the thing that
-       trips it. Worth chasing separately; see the plan. */
+    /* Heap rather than .bss, which keeps 5 KB out of the kernel image. That is
+       no longer load-bearing - stage 2's budget is 512 KB now and the build
+       refuses to exceed it - but a self-test has no business spending image
+       space it can borrow at run time instead. */
     g_img = (uint8_t *)kmalloc(IMG_CAP);
     g_scratch = (uint8_t *)kmalloc(4096);
     if (!g_img || !g_scratch) { if (g_img) kfree(g_img); if (g_scratch) kfree(g_scratch); return 0; }

@@ -29,6 +29,7 @@
 #include "cxex_verify.h"
 #include "cxex.h"
 #include "keyvault.h"
+#include "ktest_loader.h"
 #include "vmregion.h"
 #include "exec.h"
 #include "kstack.h"
@@ -925,6 +926,8 @@ void ktest_run(void) {
     total++; passed += report("kernel config (X Data, linked X)",  test_kconfig());
     total++; passed += report("thread limit + stack size",         test_thread_limit());
     total++; passed += report("cxex signature + tamper",           test_cxex_signature());
+    total++; passed += report("cxex loader refuses bad images",    ktest_loader_adversarial());
+    total++; passed += report("user pointer writability",          ktest_user_ptr_writability());
     total++; passed += report("exec admission (dev / release)",   test_exec_admit());
     total++; passed += report("file syscalls (SYS_FILE_OP)",       usermode_file_test());
 
