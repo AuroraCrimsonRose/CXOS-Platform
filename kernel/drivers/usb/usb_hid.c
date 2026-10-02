@@ -1,5 +1,5 @@
 /* /kernel/drivers/usb/usb_hid.c */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /* USB HID boot-protocol keyboard and mouse. See usb_hid.h. */
 
 #include "usb_hid.h"

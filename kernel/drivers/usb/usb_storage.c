@@ -1,5 +1,5 @@
 /* /kernel/drivers/usb/usb_storage.c */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /* USB mass storage: Bulk-Only Transport carrying SCSI. See usb_storage.h. */
 
 #include "usb_storage.h"

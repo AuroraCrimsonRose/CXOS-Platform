@@ -1,5 +1,5 @@
 /* /kernel/drivers/input/mouse.c */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * PS/2 mouse on the 8042 controller - the same chip the keyboard already uses,
  * on IRQ12 instead of IRQ1.

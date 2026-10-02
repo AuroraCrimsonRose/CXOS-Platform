@@ -1,5 +1,5 @@
 /* /kernel/drivers/usb/usb.c */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /* USB core: enumeration, descriptor parsing, the device registry. See usb.h. */
 
 #include "usb.h"

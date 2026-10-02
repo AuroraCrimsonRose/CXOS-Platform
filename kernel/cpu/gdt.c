@@ -1,5 +1,5 @@
 /* /kernel/cpu/gdt.c */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /* Kernel GDT + TSS setup for ring 0/3 + privilege transitions. */
 
 #include "gdt.h"

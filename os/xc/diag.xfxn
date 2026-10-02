@@ -1,5 +1,5 @@
 // xc/diag.xfxn - the X compiler's diagnostics.
-// Aurora Tejeda / CATX SYSTEMS LLC
+// Aurora Tejeda / CATX Systems
 //
 // Every stage reports into one `diags`, in the order it finds things - which
 // is the order the C# compiler reports them in, and the order they are

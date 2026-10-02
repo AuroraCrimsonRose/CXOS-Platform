@@ -1,5 +1,5 @@
 /* /kernel/ktest_loader.h */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * Adversarial cases for the CXEX runtime loader (kernel security review §14,
  * and the Phase 1 items in docs/planning/HARDENING_PLAN.md).

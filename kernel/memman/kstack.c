@@ -1,5 +1,5 @@
 /* /kernel/memman/kstack.c */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /* Guarded kernel stacks - see kstack.h. */
 
 #include "kstack.h"

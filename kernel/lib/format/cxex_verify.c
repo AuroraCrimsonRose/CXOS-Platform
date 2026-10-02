@@ -1,5 +1,5 @@
 /* /kernel/lib/format/cxex_verify.c */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /* CXEX signature verification. See cxex_verify.h. */
 
 #include "cxex_verify.h"

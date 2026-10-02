@@ -1,5 +1,5 @@
 /* /kernel/cpu/ipc.h */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * ABI v1 - IPC endpoints + synchronous rendezvous (docs/CXK_ABI_v1 sec 8).
  *

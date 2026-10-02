@@ -1,5 +1,5 @@
 /* /kernel/cpu/caps.h */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * CXK ABI v1 - capabilities + error codes (see docs/CXK_ABI_v1).
  *

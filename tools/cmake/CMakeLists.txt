@@ -1,7 +1,7 @@
 # ============================================================================
 #  CXK - CMakeLists.txt
-#  Copyright (c) 2026 CATX Systems LLC.  All rights reserved.
-#  Author: Aurora Tejeda / CATX Systems LLC
+#  Copyright (c) 2026 CATX Systems.  All rights reserved.
+#  Author: Aurora Tejeda / CATX Systems
 # ============================================================================
 #
 # v5 build - boot chain + higher-half kernel + X apps.

@@ -1,5 +1,5 @@
 /* /kernel/cpu/uid.c */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /* User / system identity - reports the current process's owning UID. */
 
 #include "uid.h"

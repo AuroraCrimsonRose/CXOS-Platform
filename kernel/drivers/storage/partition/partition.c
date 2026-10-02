@@ -1,5 +1,5 @@
 /* /kernel/drivers/storage/partition/partition.c */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /* XBPT backend for the partition layer. See partition.h for the format. */
 
 #include "partition.h"

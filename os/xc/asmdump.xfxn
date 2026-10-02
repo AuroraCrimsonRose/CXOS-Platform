@@ -1,5 +1,5 @@
 // xc/asmdump.xfxn - print the assembly the X compiler generates for programs.
-// Aurora Tejeda / CATX SYSTEMS LLC
+// Aurora Tejeda / CATX Systems
 //
 //   asmdump [-s] [--prelude FILE | --no-prelude] [-I DIR]... [--std DIR] [--object] PROGRAM...
 //

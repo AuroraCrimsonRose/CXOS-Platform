@@ -1,5 +1,5 @@
 /* /kernel/memman/addr_space.c */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /* Per-process address spaces + shared-kernel-half sync. See addr_space.h. */
 
 #include "addr_space.h"

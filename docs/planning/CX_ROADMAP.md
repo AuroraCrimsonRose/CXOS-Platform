@@ -1,5 +1,5 @@
 # CXOS Roadmap
-### CX Design Spec — Aurora Tejeda / CATX SYSTEMS LLC
+### CX Design Spec — Aurora Tejeda / CATX Systems
 
 > **Status: DIRECTION, not schedule.** This records where CXOS is going, the
 > order it should get there, and the reasoning behind each call, so decisions

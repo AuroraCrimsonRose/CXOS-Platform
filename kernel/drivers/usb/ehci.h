@@ -1,5 +1,5 @@
 /* /kernel/drivers/usb/ehci.h */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * EHCI - USB 2.0 host controller.
  *

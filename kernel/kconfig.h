@@ -1,5 +1,5 @@
 /* /kernel/kconfig.h */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * Kernel configuration: /System/Config/kernel.xkco, an X Data document read
  * once at boot.

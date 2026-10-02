@@ -1,5 +1,5 @@
 /* /kernel/drivers/net/net_syscall.c */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * SYS_NET_OP handler: the bridge between ring-3 and the network stack.
  *

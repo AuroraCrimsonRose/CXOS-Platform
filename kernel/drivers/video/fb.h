@@ -1,5 +1,5 @@
 /* /kernel/drivers/video/fb.h */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * Linear framebuffer driver (VBE graphics mode).
  *

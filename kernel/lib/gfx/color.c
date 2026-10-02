@@ -1,5 +1,5 @@
 /* /kernel/lib/color.c */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * Color model implementation. The 16-color VGA model in color.h is entirely
  * inline (constants + bit packing), so this file is intentionally light right

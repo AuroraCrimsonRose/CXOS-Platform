@@ -1,5 +1,5 @@
 /* /kernel/drivers/storage/install.h */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * First-boot install (hybrid model). A CXK disk ships with a SYSTEM partition
  * that is zeroed (no filesystem yet) and a STAGE partition (type 0xCA) holding

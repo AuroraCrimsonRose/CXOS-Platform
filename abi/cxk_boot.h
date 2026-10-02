@@ -1,5 +1,5 @@
 /* /abi/cxk_boot.h */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * CXBI - the boot-loader -> kernel handoff contract.
  *

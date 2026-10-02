@@ -1,5 +1,5 @@
 /* /kernel/lib/bitmap.c */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /* Pure bit-array operations (see bitmap.h). */
 
 #include "bitmap.h"

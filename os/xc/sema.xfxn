@@ -1,5 +1,5 @@
 // xc/sema.xfxn - the X compiler's name resolution and type checking, in X.
-// Aurora Tejeda / CATX SYSTEMS LLC
+// Aurora Tejeda / CATX Systems
 //
 //   let s: sema;
 //   sema_init(&s, &p, &dg);

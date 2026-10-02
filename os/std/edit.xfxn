@@ -1,5 +1,5 @@
 // std/edit.xfxn - a full-screen text editor for CXK X.
-// Aurora Tejeda / CATX SYSTEMS LLC
+// Aurora Tejeda / CATX Systems
 //
 //   import "edit.xfxn";  then  edit_run("notes.txt");
 //

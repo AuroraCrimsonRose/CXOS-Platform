@@ -1,5 +1,5 @@
 /* /kernel/lib/sha256.h */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * SHA-256 (FIPS 180-4). Pure computation - no kernel dependencies (no heap,
  * no interrupts, no allocation). Used as the integrity hash for CXOS code

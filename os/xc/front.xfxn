@@ -1,5 +1,5 @@
 // xc/front.xfxn - the X compiler's front end: a program, from files to types.
-// Aurora Tejeda / CATX SYSTEMS LLC
+// Aurora Tejeda / CATX Systems
 //
 //   let f: front;
 //   front_init(&f);

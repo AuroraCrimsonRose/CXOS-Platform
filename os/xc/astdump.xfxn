@@ -1,5 +1,5 @@
 // xc/astdump.xfxn - print the syntax trees of X source files.
-// Aurora Tejeda / CATX SYSTEMS LLC
+// Aurora Tejeda / CATX Systems
 //
 //   astdump a.xfxn b.xfxn ...
 //   astdump -s a.xfxn ...      one summary line per file instead

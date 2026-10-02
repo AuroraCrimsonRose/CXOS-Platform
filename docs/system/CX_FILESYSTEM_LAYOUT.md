@@ -1,6 +1,6 @@
 # CXOS Filesystem Layout
 
-**CATX Systems LLC — Aurora Tejeda**
+**CATX Systems — Aurora Tejeda**
 Status: **PROPOSAL — for review.** Nothing depends on this yet.
 
 Where things live on a mounted CXFS volume. `CXFS_FILESYSTEM.md` defines the

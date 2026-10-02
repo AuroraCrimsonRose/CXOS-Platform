@@ -1,5 +1,5 @@
 /* /kernel/lib/format/cxex_load.c */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /* CXEX runtime loader. See cxex_load.h. */
 
 #include "cxex_load.h"

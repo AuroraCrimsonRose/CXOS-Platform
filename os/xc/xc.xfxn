@@ -1,5 +1,5 @@
 // xc/xc.xfxn - the X compiler, written in X.
-// Aurora Tejeda / CATX SYSTEMS LLC
+// Aurora Tejeda / CATX Systems
 //
 //   xc [--prelude FILE | --no-prelude] [-I DIR]... [--std DIR] [--object] SOURCE [-o OUT]
 //

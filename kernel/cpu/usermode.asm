@@ -1,5 +1,5 @@
 ; /kernel/cpu/usermode.asm
-; Aurora Tejeda / CATX Systems LLC
+; Aurora Tejeda / CATX Systems
 ; Ring 3 entry + syscall stub + return-to-kernel path.
 
 bits 32

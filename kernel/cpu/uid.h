@@ -1,5 +1,5 @@
 /* /kernel/cpu/uid.h */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * User / system identity - the foundation for CXFS v2 permissions.
  *

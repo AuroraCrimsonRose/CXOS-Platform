@@ -1,5 +1,5 @@
 /* /kernel/cpu/gdt.h */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * Kernel-owned GDT + TSS.
  *

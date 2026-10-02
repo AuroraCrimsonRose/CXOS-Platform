@@ -1,5 +1,5 @@
 ; /boot/pmode.asm  -  enter 32-bit protected mode (v5 stage 2)
-; Aurora Tejeda / CATX SYSTEMS LLC
+; Aurora Tejeda / CATX Systems
 ;
 ; Ports v4's pmode switch. Difference for v5: there is no kernel to jump to yet,
 ; so after entering protected mode we PROVE it (write to VGA) and halt. The

@@ -242,4 +242,4 @@ They run X natively on the host (a 32-bit `gcc` links the output), so no VM is i
 
 ---
 
-© Aurora Tejeda / CATX SYSTEMS LLC
+© Aurora Tejeda / CATX Systems

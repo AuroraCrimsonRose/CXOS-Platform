@@ -1,5 +1,5 @@
 /* /kernel/cpu/int/apic.h */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * Local APIC and I/O APIC - the modern interrupt path, replacing the 8259 pair.
  *

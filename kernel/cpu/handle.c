@@ -1,5 +1,5 @@
 /* /kernel/cpu/handle.c */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /* Pure per-process handle-table ops. See handle.h. */
 
 #include "handle.h"

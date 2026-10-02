@@ -1,5 +1,5 @@
 /* /kernel/cpu/keyvault.c */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /* The Key Vault. See keyvault.h. */
 
 #include "keyvault.h"

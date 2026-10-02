@@ -1,6 +1,6 @@
 # CX DevKit — Architecture, Vision & Roadmap
 
-**Owner:** Aurora Tejeda · **Company:** CATX Systems LLC · **Products:** CX, CXK, CXOS
+**Owner:** Aurora Tejeda · **Company:** CATX Systems · **Products:** CX, CXK, CXOS
 **Doc status:** **v0.3** — the v0.2 Q&A decisions remain **locked** (marked **[LOCKED]**); genuinely-open items are in §13. This revision reconciles the document with what has actually shipped and moves it out of `CXEX.Studio/` (it describes the whole DevKit, not just Studio).
 
 > **Implementation status at a glance.** What exists today: the X Native compiler

@@ -1,5 +1,5 @@
 /* /kernel/lib/string/logging.c */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /* Column-aligned severity logging on top of the console. See logging.h. */
 
 #include "logging.h"

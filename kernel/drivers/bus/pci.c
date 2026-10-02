@@ -1,5 +1,5 @@
 /* /kernel/drivers/bus/pci.c */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /* PCI bus driver - legacy configuration mechanism #1 (see pci.h). */
 
 #include "pci.h"

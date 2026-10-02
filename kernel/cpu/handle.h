@@ -1,5 +1,5 @@
 /* /kernel/cpu/handle.h */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * ABI v1 - per-process handle table (see docs/CXK_ABI_v1 sec 6).
  *

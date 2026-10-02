@@ -1,5 +1,5 @@
 ; /kernel/kernel.asm - v5 higher-half entry stub
-; Aurora Tejeda / CATX SYSTEMS LLC
+; Aurora Tejeda / CATX Systems
 ;
 ; Stage 2 jumps here at the PHYSICAL entry (0x100000) with paging OFF, in flat
 ; 32-bit protected mode. This stub performs the higher-half bootstrap:

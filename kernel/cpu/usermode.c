@@ -1,5 +1,5 @@
 /* /kernel/cpu/usermode.c */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /* Ring 3 entry, syscall dispatch, and the user-mode tests (Checkpoints 3a/3b). */
 
 #include "usermode.h"

@@ -1,5 +1,5 @@
 /* /kernel/drivers/video/fb.c */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /* Linear framebuffer driver - 16bpp (5-6-5) and 32bpp direct-color VBE modes. */
 
 #include "fb.h"

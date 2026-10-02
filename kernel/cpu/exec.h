@@ -1,5 +1,5 @@
 /* /kernel/cpu/exec.h */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * cxex_exec: the executive launcher - the kernel-to-ring-3 handoff for a signed
  * CXEX image. Verifies the image against the embedded trusted key, creates a

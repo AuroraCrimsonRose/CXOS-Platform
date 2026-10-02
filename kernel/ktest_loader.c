@@ -1,5 +1,5 @@
 /* /kernel/ktest_loader.c */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * Adversarial cases for the CXEX runtime loader, run at every boot.
  *

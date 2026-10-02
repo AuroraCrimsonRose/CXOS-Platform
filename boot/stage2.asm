@@ -1,10 +1,10 @@
 ; ============================================================================
 ;  CXK - the CXOS Kernel : Bootloader (Stage 2)  [v5]
-;  Copyright (c) 2026 CATX Systems LLC.  All rights reserved.
+;  Copyright (c) 2026 CATX Systems.  All rights reserved.
 ;
 ;  This file is part of the CXK / CXOS Project and is licensed under the
 ;  CXK and CXOS Project License, Version 1.0.7 (Effective June 16, 2026).
-;  Author: Aurora Tejeda / CATX Systems LLC
+;  Author: Aurora Tejeda / CATX Systems
 ; ============================================================================
 ; /boot/stage2.asm - Stage 2
 ;
@@ -308,5 +308,5 @@ msg_a20_fail db '[BOOT] A20 FAIL', 0
 
 ; embedded copyright (binary)
 copyright_notice:
-    db 'CXK Stage2 v5 - (c) 2026 CATX Systems LLC. '
+    db 'CXK Stage2 - (c) 2026 CATX Systems. '
     db 'CXK/CXOS Project License v1.0.7. All rights reserved.', 0

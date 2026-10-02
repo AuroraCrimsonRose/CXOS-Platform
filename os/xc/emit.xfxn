@@ -1,5 +1,5 @@
 // xc/emit.xfxn - the X compiler's code generator, in X.
-// Aurora Tejeda / CATX SYSTEMS LLC
+// Aurora Tejeda / CATX Systems
 //
 //   let e: emitter;
 //   emit_init(&e, &s, library);

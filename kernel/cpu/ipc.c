@@ -1,5 +1,5 @@
 /* /kernel/cpu/ipc.c */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /* ABI v1 IPC: endpoints + synchronous call/recv/reply rendezvous. See ipc.h. */
 
 #include "ipc.h"

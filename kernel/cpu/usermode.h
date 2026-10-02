@@ -1,5 +1,5 @@
 /* /kernel/cpu/usermode.h */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * Ring 3 entry + syscall interface - Stage 1 (the privilege-boundary proof).
  *

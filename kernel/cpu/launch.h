@@ -1,5 +1,5 @@
 /* /kernel/cpu/launch.h */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * cxk_launch_executive: read a signed CXEX image out of the mounted CXFS and
  * hand it to cxex_exec (verify -> own address space -> load -> ring 3). This is

@@ -1,5 +1,5 @@
 /* /kernel/drivers/usb/ehci.c */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /* EHCI host controller, stage 1. See ehci.h for scope and for why a USB
    keyboard is deliberately not this driver's job. */
 

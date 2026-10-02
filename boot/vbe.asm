@@ -1,5 +1,5 @@
 ; /boot/vbe.asm  -  VBE linear-framebuffer mode set (v5 stage 2)
-; Aurora Tejeda / CATX SYSTEMS LLC
+; Aurora Tejeda / CATX Systems
 ;
 ; Sets a VESA BIOS Extensions (VBE 2.0+) linear-framebuffer graphics mode in
 ; REAL MODE (BIOS int 10h is gone once we enter protected mode), so stage 2

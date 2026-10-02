@@ -1,5 +1,5 @@
 /* /kernel/lib/rsa.h */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * RSA-2048 signature VERIFICATION (CX_EXTENSION_SYSTEM.md section 10).
  * Verifies a PKCS#1 v1.5 signature over a SHA-256 digest, using a public key.

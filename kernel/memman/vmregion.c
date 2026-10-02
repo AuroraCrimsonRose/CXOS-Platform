@@ -1,5 +1,5 @@
 /* /kernel/memman/vmregion.c */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 
 #include "vmregion.h"
 #include "paging.h"

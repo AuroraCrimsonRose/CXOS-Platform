@@ -1,5 +1,5 @@
 /* /kernel/lib/format/cxex_load.h */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * CXEX runtime loader: place a parsed CXEX image's sections into an address
  * space and return its entry point. The C analogue of boot/cxexload.asm (which

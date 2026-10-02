@@ -1,5 +1,5 @@
 /* /kernel/drivers/input/mouse.h */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /* PS/2 mouse: absolute cursor position + button state, driven by IRQ12. */
 
 #ifndef MOUSE_H

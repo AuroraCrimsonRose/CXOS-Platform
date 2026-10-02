@@ -27,7 +27,7 @@
   -->
   <PropertyGroup>
     <Version>$(CxkCliVersion)</Version>
-    <Company>CATX SYSTEMS LLC</Company>
+    <Company>CATX Systems</Company>
     <Product>CX DevKit</Product>
   </PropertyGroup>
 
