@@ -1,24 +1,35 @@
-// SPDX-License-Identifier: OFL-1.1
-// SPDX-FileCopyrightText: 2020 Dimitar Toshkov Zhekov, with Reserved Font Name "Terminus Font"
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/lib/gfx/font.c */
 /*
- * NOT original work, and NOT under the licence the rest of kernel/ carries.
+ * PROVENANCE, because it is not obvious from the bytes and the question has
+ * already been got wrong once in this repository.
  *
- * The glyph data below is derived from Terminus Font, which is licensed under
- * the SIL Open Font License 1.1 (LICENSES/OFL-1.1.txt, and the upstream copy at
- * assets/fonts/terminus/OFL.txt). Under the OFL a Modified Version of Font
- * Software stays under the OFL, so this file is OFL-1.1 and cannot be relicensed
- * as PolyForm Noncommercial along with the rest of the kernel. The OFL permits
- * it to be bundled inside software under any licence, which is why that is not
- * a conflict - but the font itself does not become ours by being compiled in.
+ * These arrays were produced from a BITMAP PNG of a rendered font, converted to
+ * C by a Python script written for the job. The script is long gone, so the
+ * conversion cannot be re-run or re-audited - only its output survives, which is
+ * this file. The 8x16 shapes are Terminus Font (assets/fonts/terminus/OFL.txt
+ * keeps its licence as a record of where they came from); the 8x8 shapes came
+ * from a different permissive font whose name is no longer remembered - see
+ * THIRD-PARTY-NOTICES.md, which records that as an open question rather than
+ * pretending to an answer.
  *
- * "Terminus Font" is a RESERVED FONT NAME. This derivative must not be presented
- * under that name, which is why the arrays are `font_default_*` and nothing user
- * facing says Terminus.
+ * Why this is marked as the kernel's own work: US copyright excludes "typeface
+ * as such" (37 CFR 202.1(e)). What can be protected is FONT SOFTWARE - the
+ * program or file - and none of that was taken. A raster of rendered glyphs is
+ * the typeface's appearance, not the file that produced it.
  *
- * The OFL also requires its text to travel with any distribution of this data.
- * The kernel binary contains these glyphs, so the licence has to ship with the
- * disk image, not only with the source - see THIRD-PARTY-NOTICES.md.
+ * State it honestly, though: this was a MECHANICAL conversion of the whole glyph
+ * set, not a few shapes redrawn by eye. That is a closer reproduction of the
+ * typeface than a selective transcription would be, and it is the fact most
+ * worth putting in front of a lawyer rather than the one most worth minimising.
+ *
+ * This is a legal judgement, not a settled fact, and it is on the list for the
+ * lawyer. If it is ever decided the other way, this file becomes OFL-1.1 with
+ * attribution to Dimitar Toshkov Zhekov, the Reserved Font Name clause applies
+ * to its naming, and the OFL text has to ship with BINARIES as well as source.
+ * It was briefly marked that way; that was over-caution, and it had the side
+ * effect of signing away authorship of work that was not taken from anyone.
  */
 
 #include <stdint.h>

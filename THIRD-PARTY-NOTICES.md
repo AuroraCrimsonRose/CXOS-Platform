@@ -6,36 +6,72 @@ arrives under. Those licences are **not** superseded by
 
 ## Current inventory
 
-| Component | Upstream | Licence | Where | Modified |
+| Component | Upstream | Licence | Where | Status |
 |---|---|---|---|---|
-| **Terminus Font** | [terminus-font.sourceforge.net](http://terminus-font.sourceforge.net/) — © 2020 Dimitar Toshkov Zhekov | `OFL-1.1` ([LICENSES/OFL-1.1.txt](LICENSES/OFL-1.1.txt)) | glyph data in `kernel/lib/gfx/font.c`; upstream licence kept at `assets/fonts/terminus/OFL.txt` | **Yes** — glyphs converted to C arrays at 8×16 and 8×8 |
-| **1-bit Pixel Icons** by Nikoichu | [nikoichu.itch.io/1-bit-pixel-icons](https://nikoichu.itch.io/1-bit-pixel-icons) | `CC0-1.0` | `assets/icons/` (1,511 files); declared in `assets/icons/CC0.md` | No |
+| **1-bit Pixel Icons** by Nikoichu | [nikoichu.itch.io/1-bit-pixel-icons](https://nikoichu.itch.io/1-bit-pixel-icons) | `CC0-1.0` | `assets/icons/` (1,511 files); declared in `assets/icons/CC0.md` | Bundled unmodified. CC0 asks nothing; listed as a courtesy and so the inventory is complete. |
 
-### Terminus Font — obligations that actually bind
+### The fonts are not third-party components — but read this
 
-This one carries conditions, so they are written out rather than left to the
-licence file:
+`kernel/lib/gfx/font.c` is **not** in the table above, and the reasoning is worth
+recording because it was briefly entered there in error.
 
-1. **`kernel/lib/gfx/font.c` is `OFL-1.1`, not the kernel's licence.** A Modified
-   Version of Font Software stays under the OFL, so this one file is carved out
-   of the PolyForm tier. The OFL explicitly permits bundling inside software
-   under any licence, so this is a carve-out and not a conflict.
-2. **"Terminus Font" is a Reserved Font Name.** This derivative must not be
-   presented under it. The arrays are `font_default_8x16` / `font_default_8x8`
-   and nothing user-facing says Terminus.
-3. **The licence must travel with distribution — including binaries.** The kernel
-   image contains these glyphs, so `OFL-1.1.txt` has to ship with the disk image,
-   not only with the source.
-4. **It may not be sold on its own.** It is not; it is bundled.
+The glyph arrays were produced from a **bitmap PNG of a rendered font**, put
+through a **Python converter written for the job**. No font file — no BDF, PSF or
+TTF — was copied. The converter has since been lost, so the conversion cannot be
+re-run or independently audited; only its output survives, as `font.c`. The 8×16
+shapes are Terminus Font, and `assets/fonts/terminus/OFL.txt` is kept as a record
+of where they came from rather than as a licence CXOS operates under.
 
-### How this was missed
+**Why that distinction matters.** US copyright excludes *"typeface as such"*
+(37 CFR § 202.1(e)). What can be protected is **font software** — the program or
+file — and none was taken. A raster of rendered glyphs is the typeface's
+appearance, not the file that produced it.
+
+**Stated without spin:** this was a *mechanical conversion of the whole glyph
+set*, not a handful of shapes redrawn by eye. That is a closer reproduction of
+the typeface than selective transcription would be. It does not change which
+thing was copied — appearance, not software — but it is the fact a lawyer should
+hear first, not the one to bury.
+
+**This is a judgement, not a settled fact.** It is on the list for the lawyer,
+and the consequences if it is decided the other way are specific: `font.c`
+becomes `OFL-1.1` attributed to Dimitar Toshkov Zhekov, the Reserved Font Name
+clause constrains how it may be named, and the OFL text must ship with
+**binaries** as well as source. None of that is onerous — the OFL is permissive
+and expressly allows bundling inside software under any licence — which is worth
+knowing, because it means the downside of being wrong here is attribution and a
+file carve-out, not a blocked release.
+
+### Open: the 8×8 glyphs
+
+`font_default_8x8` was transcribed from a **different** font, described as
+permissive, requiring no attribution and usable commercially — but the name is no
+longer remembered, so the claim cannot be checked.
+
+It was compared against the public-domain `font8x8_basic` by Daniel Hepper: `'B'`
+matches byte for byte after bit reversal, while `'A'`, `'M'` and `'0'` do not,
+which is what two unrelated 8×8 fonts sharing obvious letterforms look like. Not
+that font, then, and otherwise unidentified.
+
+**It is also dead data.** `font_glyph_8x8` exists in `font.h` and nothing in the
+tree calls it; only the 8×16 array is ever read, through `fb.c`. So the simplest
+resolution available is deletion: it removes the one asset in the project whose
+provenance cannot be demonstrated, and costs nothing that is in use. Kept for now
+because it may be wanted for a smaller console mode — but it should not stay
+unidentified indefinitely.
+
+### How the earlier claim went wrong
 
 This file previously read *"None. Every line in this repository is original
-work."* That was wrong when it was written. The OFL text and `assets/icons/CC0.md`
-were both already in the tree, and the claim was made from memory of the codebase
-rather than from looking. It surfaced during an audit of SPDX header coverage —
-`assets/fonts/terminus/OFL.txt` showed up as an unmarked file and was the thread
-worth pulling.
+work."* The icons made that false, and `assets/icons/CC0.md` was already in the
+tree — the claim was written from memory of the codebase rather than by looking
+at it. It surfaced during an audit of SPDX header coverage, where
+`assets/fonts/terminus/OFL.txt` appeared as an unmarked file and was worth
+pulling on.
+
+The correction then overshot in the other direction, marking `font.c` as
+OFL-licensed work of another author. Both errors came from the same habit:
+deciding a provenance question without asking the person who wrote the code.
 
 The roadmap will add far more: it plans to **port** zlib, FAT32, codecs, SSH, an
 HTTP server and a SQL server, and to **embed** an existing browser engine rather
