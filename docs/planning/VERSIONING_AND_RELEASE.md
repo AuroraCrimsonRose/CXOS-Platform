@@ -215,6 +215,14 @@ Name the binaries `cxk-<rid>[.exe]`, zip each Studio directory as
 `CXEX-Studio-<rid>.zip`, copy the image to
 `cxos-<version>-<name>-selfsigned.img`, and `sha256sum * > SHA256SUMS`.
 
+**Boot-test the image with `-snapshot`.** CXOS writes to its disk on first boot —
+`/System created from staged payload` — so verifying a release image in QEMU with
+a writable drive *modifies the artifact you are about to publish*. This has
+happened: an image was booted, uploaded, and then failed its own `SHA256SUMS`,
+because the checksum was recorded at build time and the file no longer matched
+it. Verify with `-snapshot`, or verify a copy; either way, check the hash against
+`SHA256SUMS` after the boot and before uploading.
+
 **Delete the private half of the signing key when the build finishes.** That is
 not tidiness — it is the property the asset's name claims: the image verifies
 itself end to end and the key behind it can sign nothing for anyone else's
