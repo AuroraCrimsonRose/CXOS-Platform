@@ -298,12 +298,12 @@ an open decision (§5): sign locally and upload, or keep the key as a CI secret.
 
 **DevKit**
 
-- [ ] `ElfParser`: full structural validation (security §1), returning a validated model.
+- [x] `ElfParser`: full structural validation (security §1), returning a validated model. Done 2026-10-01. `Parse` returns `ElfImage`, whose existence is the guarantee: header well formed (ET_EXEC, EM_386, ELFCLASS32/LSB), `e_phentsize` exactly 32, the program-header table wholly inside the file with `e_phoff + e_phnum * e_phentsize` computed in 64 bits, per segment `p_offset + p_filesz` inside the file and `p_filesz <= p_memsz` and `p_vaddr + p_memsz` inside the 32-bit space, `p_align` a power of two that `p_vaddr` and `p_offset` agree modulo, no two PT_LOADs overlapping, a cap on segment count and on aggregate memory, and an entry point that lands in an executable segment. Every rejection is an `InvalidDataException` naming the field and value.
 - [ ] CXEX layout model with checked arithmetic; reject overlaps, wrap-around and absurd counts or sizes (security §2).
 - [ ] Writer: all section data before the signature, so the signed range covers every byte the loader reads (security §3).
 - [ ] Writer: refuse sections that are both writable and executable (matches CXK Phase 1 W^X).
 - [ ] Sign only validated, canonically serialised images; atomic output (security §8, §10).
-- [ ] `CXEX.Tests/Adversarial`: the ELF, CXEX and crypto cases of security §14.
+- [ ] `CXEX.Tests/Adversarial`: the ELF, CXEX and crypto cases of security §14. **The ELF cases are done** (2026-10-01): 18 tests in `Adversarial/ElfParserTests.cs`, one per §14 bullet, built from `Elf32Builder` so each case is a single mutation of a known-good image. They need no toolchain, no checkout and no built OS, so they run on every host. A rejection must be `InvalidDataException`/`NotSupportedException` — an `IndexOutOfRange` counts as a failure, since that is the parser falling off the end of the file rather than deciding anything. The CXEX and crypto cases follow with the layout model and the writer below.
 
 ### Phase 2
 

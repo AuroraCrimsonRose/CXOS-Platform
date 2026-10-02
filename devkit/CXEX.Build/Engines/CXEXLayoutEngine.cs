@@ -8,7 +8,7 @@ namespace CXEX.Build.Engines;
 
 public static class CXEXLayoutEngine
 {
-    public static CxexMemoryLayout CreateLayout(uint entryPoint, List<ElfSegment> loadSegments, ushort typeCode, ushort abiVersion = 1)
+    public static CxexMemoryLayout CreateLayout(uint entryPoint, IReadOnlyList<ElfSegment> loadSegments, ushort typeCode, ushort abiVersion = 1)
     {
         var layout = new CxexMemoryLayout
         {

@@ -17,6 +17,8 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="../CXEX.Build/CXEX.Build.csproj" />
+    <ProjectReference Include="../CXEX.Core/CXEX.Core.csproj" />
     <ProjectReference Include="../CXEX.Lang/CXEX.Lang.csproj" />
   </ItemGroup>
 
