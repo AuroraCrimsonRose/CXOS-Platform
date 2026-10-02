@@ -18,8 +18,6 @@ same commit.
   `docs/planning/VERSIONING_AND_RELEASE.md` §5. `vsix-v*` is the VS Code
   extension's own line.
 - Open a PR only when asked.
-- Stale, do not use: `x32_86` and `x32_86_DEV` are a typo'd pair, and
-  `origin/HEAD` still points at `x32_86`.
 
 ## Layout
 
