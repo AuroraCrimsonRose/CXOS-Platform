@@ -56,7 +56,12 @@ public sealed class Lexer
 
     private bool Eof => _pos >= _src.Length;
     private char Cur => Eof ? '\0' : _src[_pos];
-    private char Peek(int n = 1) => _pos + n < _src.Length ? _src[_pos + n] : '\0';
+    /* Subtraction, not addition, to match lx_peek in os/xc/lex.xfxn: `_pos + n`
+       overflows and a wrapped sum compares small, so a position near int.MaxValue
+       would pass the bounds test and index past the source. Unreachable with a
+       real file on either side, but the two lexers are held to the same behaviour
+       by the differential tests, and "the same" should include the edges. */
+    private char Peek(int n = 1) => _pos < _src.Length && n < _src.Length - _pos ? _src[_pos + n] : '\0';
 
     /* Never past the end: a string ending in a backslash at the end of the
        file used to step beyond it, and the Substring that made its token threw.
