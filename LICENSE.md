@@ -80,7 +80,12 @@ organisations and government institutions**, regardless of how they are funded.
 > of the PolyForm-licensed components is simply not licensed, and no exception
 > can be granted informally.
 >
-> Enquiries, so you can be told when it opens: **aurora.tejeda@catxhosting.com**
+> Enquiries, so you can be told when it opens: open a
+> [discussion](https://github.com/AuroraCrimsonRose/CXOS-Platform/discussions) or
+> an [issue](https://github.com/AuroraCrimsonRose/CXOS-Platform/issues) asking
+> about commercial licensing. There is deliberately no contact address here: a
+> published address is a permanent target, and nothing about this needs one until
+> there is something to sell.
 
 ### Applications are independent works
 

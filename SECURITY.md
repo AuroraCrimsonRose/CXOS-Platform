@@ -9,21 +9,32 @@ exist yet, it says so by name.
 
 ## Reporting a vulnerability
 
-Report privately, to:
+**Use GitHub's private vulnerability reporting:**
 
-**security contact — `aurora.tejeda@catxhosting.com`**
+### → [**Report a vulnerability**](https://github.com/AuroraCrimsonRose/CXOS-Platform/security/advisories/new)
+
+**Security → Advisories → Report a vulnerability**, from any page of this
+repository.
+
+That opens a draft advisory visible only to you and the maintainer. Nothing is
+public while it is being fixed, you keep access to the thread, and a CVE can be
+requested from it if one is warranted. No email address is involved on either
+side, which is the point — a published contact address is a permanent target, and
+this channel needs none.
 
 Please do **not** open an issue or a pull request for a vulnerability, and please
 do not discuss it publicly until a fix is released.
 
-> **This repository is private**, so GitHub's in-product private vulnerability
-> reporting is unavailable — it is a public-repository feature and the API returns
-> 404 here. Email is the channel.
+> **If the link above 404s**, private vulnerability reporting has not been enabled
+> yet, or the repository is still private — it is a public-repository feature.
+> In that case start a
+> [discussion](https://github.com/AuroraCrimsonRose/CXOS-Platform/discussions)
+> titled *"security contact request"*, saying only that you have something to
+> report and nothing about what it is. You will be contacted privately.
 >
-> **Maintainers:** on going public, turn on **Settings → Advanced Security →
-> Private vulnerability reporting** and make it the primary channel in this
-> section, keeping the address above as the fallback. It creates a draft advisory
-> visible only to the maintainer, so nothing is disclosed while it is being fixed.
+> That is a deliberately poor channel, and it is meant to be temporary. If you
+> are reading this and the link still 404s, the maintainer has not finished
+> setting the repository up.
 
 Please include the CXOS version (`cxk --version`, or the kernel banner at boot),
 whether the kernel was a **development** build, and the smallest input or steps
