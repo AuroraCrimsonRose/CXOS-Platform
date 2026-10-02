@@ -109,6 +109,34 @@ public class CxsgRoundTripTests : IDisposable
             "the reader and the signer disagree about where the signature starts or how long it is");
     }
 
+    /// <summary>
+    /// Signing must produce something the validator accepts. The section-coverage
+    /// rule - every section's bytes inside [0, signature_offset) - is the one most
+    /// likely to be too strict by a byte, and a real signed image is the only thing
+    /// that settles it, since every image the repository builds is unsigned.
+    /// </summary>
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
+    public void A_signed_image_still_passes_the_validator()
+    {
+        (string image, byte[] xkpk) = SignFreshImage();
+
+        var exe = new CXEX.FileType.Types.CXEXExecutable();
+        exe.Load(File.ReadAllBytes(image));
+
+        Assert.NotNull(exe.Signature);
+        Assert.Equal(xkpk.Length, exe.Signature!.PubKeyLen);
+        Assert.NotEmpty(exe.Sections);
+
+        // Every byte the loader would map has to be inside the signed range.
+        foreach (var sec in exe.Sections)
+        {
+            if (sec.FileSize == 0) continue;
+            Assert.True((long)sec.FileOffset + sec.FileSize <= exe.Header.SignatureOffset,
+                $"section '{sec.Name}' extends past signature_offset {exe.Header.SignatureOffset}");
+        }
+    }
+
     [Fact]
     [Trait(Categories.Key, Categories.Unit)]
     public void A_signature_offset_past_the_end_is_rejected()
