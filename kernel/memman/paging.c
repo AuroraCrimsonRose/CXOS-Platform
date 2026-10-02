@@ -121,17 +121,30 @@ void paging_unmap(uint32_t virt) {
 }
 
 /* True iff `virt` is mapped present AND ring-3 accessible in the ACTIVE address
-   space. Lets user_ptr_ok validate ring-3 pointers per-process: a process's CR3
+   space. Lets user_ptr_readable and user_ptr_writable validate ring-3 pointers per-process: a process's CR3
    is live during its own syscalls, so this reads that process's tables. */
-int paging_is_user(uint32_t virt) {
+/* Both levels must carry every required bit, because the CPU ANDs the privilege
+   bits across the PDE and the PTE: a writable PTE under a read-only PDE is not
+   writable, and checking only one level would say it was. */
+static int paging_has(uint32_t virt, uint32_t need) {
     uint32_t pdi = PD_INDEX(virt);
-    if (!(PD_VIRT[pdi] & PAGE_PRESENT)) return 0;
-    if (!(PD_VIRT[pdi] & PAGE_USER))    return 0;   /* PDE must allow ring 3 */
+    if ((PD_VIRT[pdi] & need) != need) return 0;
     volatile uint32_t *table = pt_virt(virt);
-    uint32_t entry = table[PT_INDEX(virt)];
-    if (!(entry & PAGE_PRESENT)) return 0;
-    if (!(entry & PAGE_USER))    return 0;
-    return 1;
+    return (table[PT_INDEX(virt)] & need) == need;
+}
+
+int paging_is_user(uint32_t virt) {
+    return paging_has(virt, PAGE_PRESENT | PAGE_USER);
+}
+
+/* Present, ring-3 accessible AND writable.
+   paging_is_user alone answers "may ring 3 touch this", which is not the
+   question a syscall writing into a user buffer is asking: a read-only user page
+   passes it, and the kernel's write then succeeds anyway, because CR0.WP does
+   not apply to ring 0 unless it is set. The caller must ask for the access it
+   intends (security review §4). */
+int paging_is_user_writable(uint32_t virt) {
+    return paging_has(virt, PAGE_PRESENT | PAGE_USER | PAGE_WRITE);
 }
 
 uint32_t paging_get_phys(uint32_t virt) {

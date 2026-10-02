@@ -14,7 +14,7 @@
 #include "handle.h"
 #include "ipc.h"
 #include "caps.h"
-#include "usermode.h"          /* user_ptr_ok */
+#include "usermode.h"          /* user_ptr_readable / user_ptr_writable */
 #include "addr_space.h"
 #include "paging.h"
 #include "pmm.h"
@@ -216,7 +216,7 @@ int proc_start(const void *image, uint32_t image_len, uint32_t caps,
 static int check_args(const struct spawn_args *a) {
     if (!a->args) return a->args_len ? E_INVAL : E_OK;   /* length without a blob */
     if (a->args_len == 0 || a->args_len > USER_ARGS_MAX) return E_RANGE;
-    if (!user_ptr_ok((uint32_t)a->args, a->args_len))    return E_FAULT;
+    if (!user_ptr_readable((uint32_t)a->args, a->args_len))    return E_FAULT;
     if (a->args[a->args_len - 1] != '\0')                return E_INVAL;
     return E_OK;
 }
@@ -224,11 +224,11 @@ static int check_args(const struct spawn_args *a) {
 /* SYS_SPAWN: an executive (GRANT_SPAWN) launches a capability-less app, brokered
    through one of its endpoints. */
 int sys_spawn(const struct spawn_args *ua) {
-    if (!user_ptr_ok((uint32_t)ua, sizeof *ua)) return E_FAULT;
+    if (!user_ptr_readable((uint32_t)ua, sizeof *ua)) return E_FAULT;
     struct spawn_args a = *ua;
 
     if (a.image_len == 0 || a.image_len > PROC_MAX_IMAGE) return E_RANGE;
-    if (!user_ptr_ok((uint32_t)a.image, a.image_len))     return E_FAULT;
+    if (!user_ptr_readable((uint32_t)a.image, a.image_len))     return E_FAULT;
 
     int arc = check_args(&a);
     if (arc != E_OK) return arc;
@@ -265,13 +265,13 @@ int sys_spawn(const struct spawn_args *ua) {
  * a verify to SYS_SPAWN and hoping every future caller goes through it.
  */
 int sys_exec_path(const char *upath, const struct spawn_args *ua) {
-    if (!user_ptr_ok((uint32_t)ua, sizeof *ua)) return E_FAULT;
+    if (!user_ptr_readable((uint32_t)ua, sizeof *ua)) return E_FAULT;
     struct spawn_args a = *ua;
 
     int arc = check_args(&a);
     if (arc != E_OK) return arc;
 
-    /* copy the path in a page at a time; user_ptr_ok walks page tables, so
+    /* copy the path in a page at a time; user_ptr_readable walks page tables, so
        per-byte would be a page-table walk per character */
     char path[FILE_PATH_MAX];
     uint32_t addr = (uint32_t)upath;
@@ -280,7 +280,7 @@ int sys_exec_path(const char *upath, const struct spawn_args *ua) {
     for (;;) {
         if (n >= sizeof path) return E_RANGE;
         if (n == 0 || (((addr + n) & 0xFFFu) == 0)) {
-            if (!user_ptr_ok(addr + n, 1)) return E_FAULT;
+            if (!user_ptr_readable(addr + n, 1)) return E_FAULT;
         }
         path[n] = ((const char *)addr)[n];
         if (!path[n]) break;
