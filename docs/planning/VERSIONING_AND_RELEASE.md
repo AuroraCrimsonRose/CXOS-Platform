@@ -173,12 +173,56 @@ Each has been verified to fire.
 
 ## 5. Cutting a release
 
+> **GitHub Actions does not run on this repository.** Every run since the workflow
+> was added is a `startup_failure` at 0 seconds, on tags and branch pushes alike:
+> *"The job was not started because recent account payments have failed or your
+> spending limit needs to be increased."* The repository is private, so runs
+> consume paid minutes. `release.yml` itself is sound — js-yaml parses it,
+> `actionlint` reports nothing, the committed blob is valid UTF-8 — and it is kept
+> for the day Actions is enabled. **Until then releases are built locally**, and
+> the workflow's claim to be "the only continuous check that D5's one toolchain on
+> every host is true" is **not** currently true of anything.
+
 1. Decide the new version in `versions.json`. That is the only file a human edits
    for a version.
 2. `cxk check-versions` — or just `cxk os build`, which runs it.
 3. Commit, push to `x86_32_DEV`.
 4. Tag `v<CXOS version>` and push the tag. For the VSIX alone, `vsix-v<version>`.
-5. `.github/workflows/release.yml` does the rest.
+5. Build the assets and attach them (below). `release.yml` would do this step
+   if Actions were available; the artifacts and their names are identical either
+   way, deliberately, so enabling Actions later changes nothing a user sees.
+
+### Building the assets locally
+
+The same six binaries, the same image, the same checksum file. .NET
+cross-publishes all three RIDs from any host, and CXEX Studio is Avalonia rather
+than WPF, so it genuinely builds for Linux and macOS too.
+
+```
+for RID in win-x64 linux-x64 osx-arm64; do
+  dotnet publish devkit/CXEX.CLI -c Release -r $RID \
+    -p:SelfContained=true -p:PublishSingleFile=true \
+    -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=none \
+    -o build/rel/cli-$RID
+  dotnet publish devkit/CXEX.Studio -c Release -r $RID \
+    -p:SelfContained=true -p:DebugType=none -o build/rel/studio-$RID
+done
+
+cxk keygen tools/rel && cxk os build --key rel --clean && rm tools/rel.xksk
+```
+
+Name the binaries `cxk-<rid>[.exe]`, zip each Studio directory as
+`CXEX-Studio-<rid>.zip`, copy the image to
+`cxos-<version>-<name>-selfsigned.img`, and `sha256sum * > SHA256SUMS`.
+
+**Delete the private half of the signing key when the build finishes.** That is
+not tidiness — it is the property the asset's name claims: the image verifies
+itself end to end and the key behind it can sign nothing for anyone else's
+machine. In CI the runner's destruction did this; locally it has to be done on
+purpose.
+
+Attach them with `gh release create v<version> --title 'v<version> "<Name>"'`,
+or through the Releases page.
 
 ### What the workflow produces
 
