@@ -33,6 +33,14 @@ this table ever disagree, the header wins.
 | `abi/`, `os/std/`, `os/xc/`, `devkit/`, `editors/vscode/`, `tools/`, `docs/` | `MIT` |
 | listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) | upstream licence |
 
+**One carve-out inside tier 1:** `kernel/lib/gfx/font.c` is **`OFL-1.1`**, not
+PolyForm. Its glyph data is derived from Terminus Font, and under the SIL Open
+Font License a Modified Version stays under the OFL. Its SPDX header says so, and
+the OFL permits bundling inside software under any licence, so the rest of the
+kernel is unaffected. The licence text must ship with **binaries** as well as
+source, because the kernel image contains the glyphs — see
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+
 **Licensor:** Aurora Tejeda, trading as CATX Systems.
 
 ### Required notice
