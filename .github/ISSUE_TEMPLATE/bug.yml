@@ -1,0 +1,54 @@
+name: Bug report
+description: Something behaves differently from how it is documented or intended.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Not for vulnerabilities.** Anything that crosses a security boundary in
+        SECURITY.md goes to the private channel there, not here.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`cxk --version`, or the kernel banner at boot (e.g. CXK v1.0.0)."
+    validations: { required: true }
+  - type: dropdown
+    id: kernel
+    attributes:
+      label: Kernel build
+      description: A development kernel runs unsigned code on purpose, which changes what counts as a bug.
+      options:
+        - Release (cxk os build)
+        - Development (cxk os build --dev)
+        - Don't know
+    validations: { required: true }
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where
+      options: [CXK kernel, X userland, cxk CLI, CX DevKit Studio, X Native VSIX, Boot chain, Build system, Don't know]
+    validations: { required: true }
+  - type: input
+    id: host
+    attributes:
+      label: Host and machine
+      description: "Build host OS, and how it ran - QEMU (which -machine), Bochs, or real hardware."
+    validations: { required: true }
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should have happened, and what did
+    validations: { required: true }
+  - type: textarea
+    id: repro
+    attributes:
+      label: Smallest reproduction
+      description: An image, X source or command that triggers it is worth more than a description.
+    validations: { required: true }
+  - type: textarea
+    id: selftests
+    attributes:
+      label: Boot output
+      description: "The `self-tests: all N passed` line, any KTEST FAIL lines, and any panic. Attach `qemu -d int` output if a CPU exception was taken."
+      render: text
