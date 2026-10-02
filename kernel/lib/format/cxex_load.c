@@ -86,6 +86,14 @@ int cxex_load(const uint8_t *file, size_t len,
     /* The entry point has to be somewhere the image actually put code. */
     if (h.entry_point >= ops->va_limit) return CXEX_LOAD_BAD_RANGE;
 
+    /* Paid for in full here, between the two passes: pass 1 has proved what the
+       image needs and pass 2 has allocated nothing yet, so a refusal returns
+       with no frames taken and nothing mapped. A load that fails LATER keeps the
+       charge, which is correct - the pages it did take are still mapped, and the
+       caller's teardown is what gives both back. */
+    if (ops->charge_pages && ops->charge_pages(ops->ctx, total_pages) != 0)
+        return CXEX_LOAD_QUOTA;
+
     /* ---- pass 2: allocate and map ---- */
     for (uint16_t i = 0; i < h.section_count; i++) {
         struct cxex_section s;
@@ -143,6 +151,7 @@ const char *cxex_load_strerror(int r) {
         case CXEX_LOAD_WX:          return "section is both writable and executable";
         case CXEX_LOAD_UNSIGNED:    return "section data lies outside the signed range";
         case CXEX_LOAD_TOO_BIG:     return "image asks for more pages than are allowed";
+        case CXEX_LOAD_QUOTA:       return "image does not fit the process memory quota";
         default:                    return "unknown error";
     }
 }

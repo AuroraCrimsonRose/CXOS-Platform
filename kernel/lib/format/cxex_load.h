@@ -51,6 +51,15 @@ struct cxex_load_ops {
     /* Map physical page `phys` at page-aligned target virtual address `virt`
        with the given prot bits. Return 0 on success, non-zero on failure. */
     int (*map_page)(void *ctx, uint32_t virt, uint32_t phys, uint32_t prot);
+
+    /* Charge `pages` 4 KB pages to whoever owns this load. Called ONCE, with
+       the whole bill, after validation and before the first get_page - so an
+       image that cannot be afforded costs no frames at all, where charging as
+       the pages arrived would leave the refused load holding everything it got
+       before the ceiling (security review §3). Return 0 to allow, non-zero to
+       refuse. May be NULL, which is "not charged to anything": that is what the
+       host and ktest mock ops use, and what CXEX_LOAD_MAX_PAGES still bounds. */
+    int (*charge_pages)(void *ctx, uint32_t pages);
 };
 
 enum cxex_load_result {
@@ -64,12 +73,15 @@ enum cxex_load_result {
     CXEX_LOAD_BAD_RANGE   = -7,   /* a section leaves the user half, or its range wraps */
     CXEX_LOAD_WX          = -8,   /* a section is both writable and executable */
     CXEX_LOAD_UNSIGNED    = -9,   /* a section's bytes lie outside the signed range */
-    CXEX_LOAD_TOO_BIG     = -10   /* the image asks for more pages than are allowed */
+    CXEX_LOAD_TOO_BIG     = -10,  /* the image asks for more pages than are allowed */
+    CXEX_LOAD_QUOTA       = -11   /* the owner's memory quota has no room for it */
 };
 
-/* Ceiling on how many pages one image may map. A real .xoex is a handful; the
-   cap stops a header claiming gigabytes from draining the PMM one frame at a
-   time before anything notices (security review §3). */
+/* Ceiling on how many pages one image may map, whoever is loading it. A real
+   .xoex is a handful; the cap stops a header claiming gigabytes from draining
+   the PMM one frame at a time before anything notices (security review §3).
+   It is the floor of the two limits, not the only one: charge_pages puts the
+   same image against the owning process's quota, which is far smaller. */
 #define CXEX_LOAD_MAX_PAGES 16384u   /* 64 MB */
 
 /* Load `file` (a complete CXEX image; verify it first) into the space described
