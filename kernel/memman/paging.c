@@ -17,6 +17,8 @@
  */
 
 #include "paging.h"
+#include "logging.h"
+#include "color.h"
 #include "pmm.h"
 
 #define KERNEL_VBASE   0xC0000000u
@@ -71,11 +73,47 @@ void paging_init(void) {
        kernel half (copied into every space) and temp-mapping later only writes a
        PTE - never creates a PDE (which keeps the PDE-creation hook from
        recursing). Map then unmap one page to force the PDE+PT into existence. */
-    paging_map(TEMP_MAP_VADDR, 0, PAGE_PRESENT | PAGE_WRITE);
+    paging_map_kernel(TEMP_MAP_VADDR, 0, PAGE_PRESENT | PAGE_WRITE);
     paging_unmap(TEMP_MAP_VADDR);
 }
 
-void paging_map(uint32_t virt, uint32_t phys, uint32_t flags) {
+/* The shared body. Private on purpose: it is the only code that can create a
+   mapping with any combination of flags, so the two entry points below are the
+   whole public surface. */
+static void paging_map_raw(uint32_t virt, uint32_t phys, uint32_t flags);
+
+/* Map a page for the KERNEL's own use: MMIO windows, the heap, kernel stacks,
+   ACPI tables, the temp-map slot. It deliberately does NOT constrain the virtual
+   address, because drivers legitimately map device memory wherever the PCI BAR
+   put it - but it refuses PAGE_USER outright, so the only route to a ring-3
+   mapping is paging_map_user below.
+   That asymmetry is the point (security review §8): a kernel mapping may be
+   anywhere but can never be reachable from ring 3, and a user mapping may carry
+   the USER bit but can never name a kernel address. Neither call can express the
+   dangerous combination, so no caller has to remember not to. */
+void paging_map_kernel(uint32_t virt, uint32_t phys, uint32_t flags) {
+    /* Not a silent strip. A caller passing PAGE_USER here means to create a
+       ring-3 mapping and has reached for the wrong function; carrying on with
+       the bit removed would give it a mapping that silently does not work. */
+    if (flags & PAGE_USER) {
+        klog("PAGING", SEV_FAIL, "paging_map_kernel called with PAGE_USER - use paging_map_user");
+        return;
+    }
+    paging_map_raw(virt, phys, flags);
+}
+
+/* Map a page into the ring-3 half. Returns 0, or -1 if the address is not in
+   the user half - which is the whole reason this exists. The CXEX loader reaches
+   the page tables through here, and an image naming 0xC0000000 would otherwise
+   have had the kernel map its own memory with the USER bit set (security
+   review §1). */
+int paging_map_user(uint32_t virt, uint32_t phys, uint32_t flags) {
+    if (virt >= KERNEL_VBASE) return -1;
+    paging_map_raw(virt, phys, flags | PAGE_USER);
+    return 0;
+}
+
+static void paging_map_raw(uint32_t virt, uint32_t phys, uint32_t flags) {
     uint32_t pdi = PD_INDEX(virt);
 
     /* ensure a page table exists for this region. PD is at PD_VIRT via recursion. */
@@ -121,17 +159,30 @@ void paging_unmap(uint32_t virt) {
 }
 
 /* True iff `virt` is mapped present AND ring-3 accessible in the ACTIVE address
-   space. Lets user_ptr_ok validate ring-3 pointers per-process: a process's CR3
+   space. Lets user_ptr_readable and user_ptr_writable validate ring-3 pointers per-process: a process's CR3
    is live during its own syscalls, so this reads that process's tables. */
-int paging_is_user(uint32_t virt) {
+/* Both levels must carry every required bit, because the CPU ANDs the privilege
+   bits across the PDE and the PTE: a writable PTE under a read-only PDE is not
+   writable, and checking only one level would say it was. */
+static int paging_has(uint32_t virt, uint32_t need) {
     uint32_t pdi = PD_INDEX(virt);
-    if (!(PD_VIRT[pdi] & PAGE_PRESENT)) return 0;
-    if (!(PD_VIRT[pdi] & PAGE_USER))    return 0;   /* PDE must allow ring 3 */
+    if ((PD_VIRT[pdi] & need) != need) return 0;
     volatile uint32_t *table = pt_virt(virt);
-    uint32_t entry = table[PT_INDEX(virt)];
-    if (!(entry & PAGE_PRESENT)) return 0;
-    if (!(entry & PAGE_USER))    return 0;
-    return 1;
+    return (table[PT_INDEX(virt)] & need) == need;
+}
+
+int paging_is_user(uint32_t virt) {
+    return paging_has(virt, PAGE_PRESENT | PAGE_USER);
+}
+
+/* Present, ring-3 accessible AND writable.
+   paging_is_user alone answers "may ring 3 touch this", which is not the
+   question a syscall writing into a user buffer is asking: a read-only user page
+   passes it, and the kernel's write then succeeds anyway, because CR0.WP does
+   not apply to ring 0 unless it is set. The caller must ask for the access it
+   intends (security review §4). */
+int paging_is_user_writable(uint32_t virt) {
+    return paging_has(virt, PAGE_PRESENT | PAGE_USER | PAGE_WRITE);
 }
 
 uint32_t paging_get_phys(uint32_t virt) {
@@ -148,7 +199,7 @@ uint32_t paging_get_phys(uint32_t virt) {
    frame that isn't otherwise mapped (e.g. a freshly allocated page directory of
    a not-yet-active address space). Not reentrant: one frame at a time. */
 void *paging_temp_map(uint32_t phys) {
-    paging_map(TEMP_MAP_VADDR, phys & ~0xFFFu, PAGE_PRESENT | PAGE_WRITE);
+    paging_map_kernel(TEMP_MAP_VADDR, phys & ~0xFFFu, PAGE_PRESENT | PAGE_WRITE);
     return (void *)TEMP_MAP_VADDR;
 }
 

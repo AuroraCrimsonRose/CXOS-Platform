@@ -19,7 +19,11 @@
 
 /* install the syscall IDT gate (int 0x80, DPL=3). call once at boot. */
 void usermode_init(void);
-int  user_ptr_ok(uint32_t ptr, uint32_t len);   /* validate a ring-3 buffer (present+user) */
+/* Validate a ring-3 buffer. Ask for the access you intend: the writable form
+   also requires the pages to be writable by ring 3, which the single old
+   user_ptr_ok did not check (security review §4). */
+int  user_ptr_readable(uint32_t ptr, uint32_t len);
+int  user_ptr_writable(uint32_t ptr, uint32_t len);
 
 /* SYS_FILE_OP exercised over a real PAGE_USER mapping (see usermode.c).
    1 = pass, 0 = fail. Lives here because it needs map_user_page. */

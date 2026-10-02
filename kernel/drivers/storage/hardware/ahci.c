@@ -185,7 +185,7 @@ static int ahci_dma_init(void) {
     dma_phys_base = (uint32_t)sp;
     dma_virt_base = AHCI_DMA_VIRT;
     for (int i = 0; i < AHCI_MAX_PORTS; i++)
-        paging_map(dma_virt_base + i * 0x1000,
+        paging_map_kernel(dma_virt_base + i * 0x1000,
                    dma_phys_base + i * 0x1000,
                    PAGE_PRESENT | PAGE_WRITE);
 
@@ -195,7 +195,7 @@ static int ahci_dma_init(void) {
     bounce_phys = (uint32_t)bp;
     bounce_virt = (uint8_t *)(AHCI_DMA_VIRT + AHCI_MAX_PORTS * 0x1000);
     for (int i = 0; i < AHCI_BOUNCE_PAGES; i++)
-        paging_map((uint32_t)bounce_virt + i * 0x1000,
+        paging_map_kernel((uint32_t)bounce_virt + i * 0x1000,
                    bounce_phys + i * 0x1000,
                    PAGE_PRESENT | PAGE_WRITE);
     return 0;
@@ -404,7 +404,7 @@ int ahci_init(void) {
        The DMA structures allocated in ahci_dma_init stay cacheable; x86 keeps
        those coherent by snooping. */
     for (uint32_t off = 0; off < 0x2000; off += 0x1000)
-        paging_map(abar + off, abar + off, PAGE_PRESENT | PAGE_WRITE | PAGE_NO_CACHE);
+        paging_map_kernel(abar + off, abar + off, PAGE_PRESENT | PAGE_WRITE | PAGE_NO_CACHE);
     hba = (volatile struct hba_mem *)abar;
 
     /* allocate + map the DMA structures region and bounce buffer from the PMM

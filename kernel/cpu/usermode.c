@@ -62,7 +62,7 @@ extern void return_to_kernel(int retval, uint32_t *save_slot);
 static uint32_t map_user_page(uint32_t virt) {
     uint32_t phys = (uint32_t)pmm_alloc();
     if (!phys) return 0;
-    paging_map(virt, phys, PAGE_PRESENT | PAGE_WRITE | PAGE_USER);
+    if (paging_map_user(virt, phys, PAGE_PRESENT | PAGE_WRITE) != 0) { pmm_free((void *)phys); return 0; }
     return phys;
 }
 
@@ -76,17 +76,38 @@ static void unmap_user_page(uint32_t virt, uint32_t phys) {
  * pointers handed up from ring 3. Validate against the current process's user
  * region. */
 
-int user_ptr_ok(uint32_t ptr, uint32_t len) {
+/* Shared body. `need_write` decides which question is actually being asked of
+   the page tables - see user_ptr_readable / user_ptr_writable below. */
+static int user_ptr_span(uint32_t ptr, uint32_t len, int need_write) {
     if (len == 0) len = 1;
     if (ptr + len < ptr)            return 0;   /* wrap/overflow */
     if (ptr + len > KERNEL_VBASE)   return 0;   /* must lie entirely in the user half */
     /* every page the buffer spans must be present + ring-3 accessible in the
        caller's active address space (its CR3 is live during this syscall). */
     for (uint32_t p = ptr & ~0xFFFu; p < ptr + len; p += 0x1000) {
-        if (!paging_is_user(p)) return 0;
+        if (need_write ? !paging_is_user_writable(p) : !paging_is_user(p)) return 0;
     }
     return 1;
 }
+
+/* A buffer the kernel will only READ from. */
+int user_ptr_readable(uint32_t ptr, uint32_t len) { return user_ptr_span(ptr, len, 0); }
+
+/* A buffer the kernel will WRITE to.
+ *
+ * There was one check for both, and it tested presence and the user bit only
+ * (security review §4). A read-only user page passed it, and the kernel's write
+ * then went through regardless - ring 0 ignores the read-only bit unless CR0.WP
+ * is set. So a process could hand a syscall a pointer into its own text and have
+ * the kernel scribble on it, which is both a way to defeat W^X from the other
+ * side and a way to corrupt a page the process had every reason to think was
+ * immutable.
+ *
+ * The single function is deliberately gone rather than kept as an alias: every
+ * call site has to say which access it means, and a new one cannot default to
+ * the weaker check by forgetting.
+ */
+int user_ptr_writable(uint32_t ptr, uint32_t len) { return user_ptr_span(ptr, len, 1); }
 
 /* ---- syscall dispatch (called from syscall_stub) ---- */
 int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
@@ -99,9 +120,9 @@ int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
             uint32_t len = a2;
             if (len == 0) {
                 const char *p = (const char *)a1;
-                while (len < 0x1000 && user_ptr_ok(a1 + len, 1) && p[len]) len++;
+                while (len < 0x1000 && user_ptr_readable(a1 + len, 1) && p[len]) len++;
             }
-            if (!user_ptr_ok(a1, len ? len : 1)) return -1;
+            if (!user_ptr_readable(a1, len ? len : 1)) return -1;
             const char *s = (const char *)a1;
             for (uint32_t i = 0; i < len; i++) console_putc(s[i]);
             return (int)len;
@@ -120,7 +141,7 @@ int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
         case SYS_CLOCK: {
             /* Unprivileged: the time of day is not authority. A process that
                could not read it would simply count its own loop iterations. */
-            if (!user_ptr_ok(a1, sizeof(struct clock_info))) return E_FAULT;
+            if (!user_ptr_writable(a1, sizeof(struct clock_info))) return E_FAULT;
             struct clock_info *ci = (struct clock_info *)a1;
             ci->ticks = timer_ticks();
 
@@ -140,7 +161,7 @@ int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
                This exists so USER_ARGS_BASE does not have to be compiled into
                every program - the address is a 32-bit x86 fact, and a userland
                that knew it would have to be ported alongside the kernel. */
-            if (!user_ptr_ok(a1, sizeof(struct args_info))) return E_FAULT;
+            if (!user_ptr_writable(a1, sizeof(struct args_info))) return E_FAULT;
             struct args_info *ai = (struct args_info *)a1;
             ai->base  = USER_ARGS_BASE;
             ai->count = *(const uint32_t *)USER_ARGS_BASE;
@@ -198,7 +219,7 @@ int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
             /* unprivileged, same reasoning as keyboard input: a process reading
                the pointer it is already being shown */
             struct mouse_state *ms = (struct mouse_state *)a1;
-            if (!user_ptr_ok((uint32_t)ms, sizeof *ms)) return E_FAULT;
+            if (!user_ptr_writable((uint32_t)ms, sizeof *ms)) return E_FAULT;
             ms->x       = mouse_x();
             ms->y       = mouse_y();
             ms->buttons = mouse_buttons();
@@ -221,7 +242,7 @@ int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
                not obtain memory would not be contained, it would be unable to
                run. What bounds it is the per-process quota inside vm_map, not
                a grant bit every program would have to hold. */
-            if (!user_ptr_ok(a1, sizeof(struct mem_op_args))) return E_FAULT;
+            if (!user_ptr_writable(a1, sizeof(struct mem_op_args))) return E_FAULT;
             struct mem_op_args *m = (struct mem_op_args *)a1;
             int pid = thread_current_id();
             switch (m->op) {
@@ -317,7 +338,7 @@ int usermode_test(void) {
  * Drives SYS_FILE_OP the way ring 3 does, short of the int 0x80 gate itself
  * (which the other syscalls already prove). The point of doing it from here
  * rather than from ktest.c is map_user_page: the args and buffers have to live
- * in a PAGE_USER mapping or user_ptr_ok rejects them, which is exactly the
+ * in a PAGE_USER mapping or user_ptr_readable rejects them, which is exactly the
  * check that would otherwise go untested until a real program tripped it.
  *
  * Goes through syscall_dispatch rather than calling sys_file_op directly, so

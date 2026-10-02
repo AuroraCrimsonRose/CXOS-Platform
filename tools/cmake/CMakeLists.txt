@@ -1,5 +1,5 @@
 # ============================================================================
-#  CXK v5 - CMakeLists.txt
+#  CXK - CMakeLists.txt
 #  Copyright (c) 2026 CATX Systems LLC.  All rights reserved.
 #  Author: Aurora Tejeda / CATX Systems LLC
 # ============================================================================
@@ -16,13 +16,13 @@
 # recompiles it, repackages the .xsex, regenerates app_image.h, relinks the
 # executive, and reimages the disk.
 
-cmake_minimum_required(VERSION 3.15)
-project(CXK_v5 ASM_NASM)
+cmake_minimum_required(VERSION 3.19)   # string(JSON ...) reads versions.json
+project(CXK ASM_NASM)
 enable_language(ASM_NASM)
 
 # ---- build-time flags (edit cmake/cxk_flags.cmake, NOT this file) ----
 # One source of truth for toggles like CXK_ENABLE_FB. Each NAME=VALUE becomes
-# -DNAME=VALUE and is fed to BOTH gcc (kernel C) and nasm (boot + kernel asm),
+# -DNAME=VALUE and is fed to BOTH clang (kernel C) and nasm (boot + kernel asm),
 # so the kernel and bootloader can't disagree.
 include(${CMAKE_SOURCE_DIR}/cxk_flags.cmake)
 set(CXK_DEFS "")
@@ -48,28 +48,24 @@ if(DEV_UNSIGNED)
                     "It is for testing only and must never be shipped.")
 endif()
 
-# ---- toolchain ----
-# Defaults are the Windows cross-toolchain layout build.bat expects. Each is
-# overridable with -D so the kernel can also be built where the toolchain lives
-# elsewhere or has no .exe suffix (a Linux/macOS host, CI, a different install
-# path). Overriding nothing reproduces the previous behaviour exactly.
-if(NOT DEFINED CROSS_PREFIX)
-    set(CROSS_PREFIX "C:/cross/i686-elf/bin")
-endif()
-if(NOT DEFINED CROSS_SUFFIX)
-    set(CROSS_SUFFIX ".exe")
+# ---- toolchain (LLVM: clang + ld.lld, HARDENING_PLAN D5) ----
+# One toolchain on every host. clang cross-compiles by target triple, so there
+# is no i686-elf GCC to install and no per-host prefix or .exe suffix to guess:
+# the defaults below are correct on Windows, Linux and macOS alike.
+#
+# Each is still overridable with -D, for a host carrying several LLVM versions
+# or one where they are not on PATH.
+if(NOT DEFINED CXK_TARGET)
+    set(CXK_TARGET "i686-elf")
 endif()
 if(NOT DEFINED CMAKE_ASM_NASM_COMPILER)
     set(CMAKE_ASM_NASM_COMPILER nasm)
 endif()
-if(NOT DEFINED CMAKE_OBJCOPY)
-    set(CMAKE_OBJCOPY "${CROSS_PREFIX}/i686-elf-objcopy${CROSS_SUFFIX}")
+if(NOT DEFINED KCC)
+    set(KCC clang)
 endif()
 if(NOT DEFINED CMAKE_LD)
-    set(CMAKE_LD      "${CROSS_PREFIX}/i686-elf-ld${CROSS_SUFFIX}")
-endif()
-if(NOT DEFINED KCC)
-    set(KCC           "${CROSS_PREFIX}/i686-elf-gcc${CROSS_SUFFIX}")
+    set(CMAKE_LD ld.lld)
 endif()
 
 # ---- paths ----
@@ -111,8 +107,49 @@ set(KERNEL_INCLUDES
 )
 
 # freestanding kernel C flags
-set(KCFLAGS -ffreestanding -fno-pic -fno-stack-protector -m32
+#
+# -mno-sse/-sse2/-mmx/-implicit-float are NOT optional and must never be dropped.
+# clang --target=i686-elf defaults to an SSE2-capable CPU, where the i686-elf GCC
+# this replaced defaulted to plain i686. Left alone, clang uses XMM registers for
+# ordinary integer work - it emitted `movsd 0x40(%esp), %xmm0` in pmm_init purely
+# to move a 64-bit value. The kernel never sets CR4.OSFXSR, so the first such
+# instruction raises #UD, and the invalid-opcode panic then faults again inside
+# its own stack walker. The result is an early triple-fault-ish panic loop with
+# no obvious connection to the compiler.
+#
+# x87 stays ENABLED (no -mno-80387): kernel/lib/math/kmath.c genuinely uses
+# double, and cpu/fpu.c initialises the FPU for exactly that.
+set(KCFLAGS --target=${CXK_TARGET} -ffreestanding -fno-pic -fno-stack-protector
+            -mno-sse -mno-sse2 -mno-mmx -mno-implicit-float
             -Wall -Wextra ${CXK_DEFS} ${KERNEL_INCLUDES} -c)
+
+# ---- the kernel's own version, from the one registry ----
+# Read straight out of versions.json rather than copied here, so the kernel
+# cannot print a version the registry disagrees with - the banner used to be the
+# string literal "CXK v5", which is how it stayed at v5 through every change.
+# The fallback exists for a bare host-compile with no CMake, and is itself
+# checked against the registry by `cxk check-versions`.
+set(CXK_KERNEL_VERSION_FALLBACK "1.0.0")
+set(CXK_KERNEL_VERSION "${CXK_KERNEL_VERSION_FALLBACK}")
+if(EXISTS ${SRC_DIR}/versions.json)
+    file(READ ${SRC_DIR}/versions.json CXK_VERSIONS_JSON)
+    string(JSON CXK_KERNEL_VERSION ERROR_VARIABLE CXK_JSON_ERR
+           GET "${CXK_VERSIONS_JSON}" components cxk-kernel version)
+    if(CXK_JSON_ERR OR NOT CXK_KERNEL_VERSION)
+        message(FATAL_ERROR "versions.json: could not read components.cxk-kernel.version: ${CXK_JSON_ERR}")
+    endif()
+endif()
+message(STATUS "CXK kernel version: ${CXK_KERNEL_VERSION}")
+# A generated HEADER, not -DCXK_VERSION_STR=\"...\": the quotes a C string needs
+# do not survive the trip into a custom-command argument list, so the define
+# arrived unquoted and the banner failed to compile. A header has no quoting
+# problem to get wrong. It goes in BUILD_DIR because it is generated output.
+file(WRITE ${BUILD_DIR}/cxk_version.h
+     "/* GENERATED from versions.json by tools/cmake/CMakeLists.txt - DO NOT EDIT */\n"
+     "#ifndef CXK_VERSION_H\n#define CXK_VERSION_H\n"
+     "#define CXK_VERSION_STR \"${CXK_KERNEL_VERSION}\"\n"
+     "#endif\n")
+list(APPEND KCFLAGS -I${BUILD_DIR})
 
 # ---- KERNEL C SOURCES (append new subsystems here) ----
 set(KERNEL_C_SRCS
@@ -171,7 +208,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/lib/crypto/rsa.c
     ${SRC_DIR}/kernel/lib/format/cxex.c
     ${SRC_DIR}/kernel/lib/format/cxex_verify.c
-    ${SRC_DIR}/kernel/lib/format/trusted_key.c
+    ${BUILD_DIR}/trusted_key.c       # generated from tools/${CXK_KEY}.xkpk - cxk_toolchain.cmake
     ${SRC_DIR}/kernel/lib/format/cxex_load.c
     ${SRC_DIR}/kernel/lib/format/cxex_loadk.c
     ${SRC_DIR}/kernel/drivers/net/arp.c
@@ -187,6 +224,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/drivers/usb/ohci.c
     ${SRC_DIR}/kernel/drivers/usb/usb_storage.c
     ${SRC_DIR}/kernel/drivers/usb/usb_hid.c
+    ${SRC_DIR}/kernel/ktest_loader.c
 )
 
 # ---- KERNEL ASM SOURCES (elf32 objects; append new ones here) ----
@@ -374,7 +412,7 @@ add_custom_command(
 # ---- link the kernel (higher-half) ----
 add_custom_command(
     OUTPUT ${KERNEL_ELF}
-    COMMAND ${CMAKE_LD} -T ${LINKER} -o ${KERNEL_ELF} ${KERNEL_OBJS}
+    COMMAND ${CMAKE_LD} -m elf_i386 -T ${LINKER} -o ${KERNEL_ELF} ${KERNEL_OBJS}
     DEPENDS ${KERNEL_OBJS}
     COMMENT "Linking kernel (higher-half)"
 )
@@ -517,9 +555,10 @@ add_custom_command(
 # ---- executive.c -> executive.elf (user-half) -> executive.xoex (signed) ----
 add_custom_command(
     OUTPUT ${EXEC_ELF}
-    COMMAND ${KCC} -ffreestanding -fno-pic -no-pie -fno-stack-protector -nostdlib
+    COMMAND ${KCC} --target=${CXK_TARGET} -ffreestanding -fno-pic -fno-stack-protector -nostdlib
+            -mno-sse -mno-sse2 -mno-mmx -mno-implicit-float
             -I${SRC_DIR}/abi
-            -Wl,-T,${EXEC_LD} -o ${EXEC_ELF} ${EXEC_C}
+            -fuse-ld=lld -Wl,-T,${EXEC_LD} -o ${EXEC_ELF} ${EXEC_C}
     DEPENDS ${EXEC_C} ${EXEC_LD} ${APP_IMAGE}
     COMMENT "CC+LD executive.c -> executive.elf (user-half .xoex bootstrap)"
 )
@@ -540,7 +579,7 @@ add_custom_command(
 # its differential test, so what passes here the supervisor accepts. The key
 # list is the supervisor's own - keep it in step with svc_keys_known().
 #
-# Probed rather than called outright, as build.bat does for check-abi: a cxk
+# Probed rather than called outright, as `cxk os build` does for check-abi: a cxk
 # published before check-xdata existed would fail on an unknown command and
 # break a build that is otherwise fine. So it warns and skips until cxk is
 # republished from the DevKit; a bad descriptor is a hard failure after that.
@@ -610,7 +649,7 @@ add_custom_target(cxk_disk ALL DEPENDS ${CXK_DISK})
 add_custom_command(
     OUTPUT ${DISK_IMG}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${IMAGES_DIR}
-    COMMAND ${CMAKE_COMMAND} -E echo "Building v5 boot image..."
+    COMMAND ${CMAKE_COMMAND} -E echo "Building boot image..."
     COMMAND ${CXK} raw-image
         --boot ${BOOT_BIN}
         --stage2 ${STAGE2_BIN}

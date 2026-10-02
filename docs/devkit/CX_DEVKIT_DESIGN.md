@@ -108,7 +108,7 @@ the final CXEX-headered, signable artifact.
 >
 > ```
 > foo.xfxn -> foo.s (GAS text) -> foo.o -> foo (ELF) -> foo.xuex
->             X86Emitter          i686-elf-gcc          cxk build
+>             X86Emitter          clang + ld.lld          cxk build
 > ```
 >
 > The cross toolchain's **ELF** occupies the intermediate slot `XCXN` was specified for. That
@@ -226,7 +226,7 @@ This is not hypothetical. The kernel gained `SYS_MOUSE_READ` and `struct mouse_s
 
 ### Mitigation, as built
 
-`CXEX.Lang/Abi/AbiSync.cs` compares the two and `cxk check-abi` runs it. CXK's `tools/build.bat` invokes it as a pre-flight next to the existing `cxk check` (`cxk os build` takes this over when it replaces the script), so drift fails the build early and legibly. The prelude's banner no longer claims to be generated; it says it is hand-maintained and points at the check.
+`CXEX.Lang/Abi/AbiSync.cs` compares the two and `cxk check-abi` runs it. `cxk os build` invokes it as a pre-flight next to the existing `cxk check`, so drift fails the build early and legibly. The prelude's banner no longer claims to be generated; it says it is hand-maintained and points at the check.
 
 **The family rule** is what makes this usable. The prelude mirrors only part of the header — `SYS_*`, `E_*`, `POWER_*`, `FB_OP_*` — and not `CAP_*` or `NET_OP_*`. Demanding total parity would report sixteen false positives on the first run and promptly be ignored, which is worse than no check at all. So: *a family with at least one member in the prelude must be complete; a family with none is reported as information.* Add one `NET_OP_` constant and the other six become required.
 
@@ -361,7 +361,7 @@ the Studio phases below. Its Phases 2–3 interleave with them.
 
 **Phase 0 — Unblock daily use:** ~~bug fixes 1–3~~ **done**; openers for all windows (#5) and the dock split (#4) remain. *(reopenable bottom panel already done.)*
 
-**Phase 0.5 — Close the ABI sync hole (§5.2). Done, with one piece outstanding.** `CXEX.Lang/Abi/AbiSync.cs` compares the header against the prelude and `cxk check-abi` exposes it; CXK's `tools/build.bat` runs it as a pre-flight beside the existing source check, so a drifted prelude now stops the build with a clear message instead of producing confusing "undefined name" errors in `gui.xfxn`. The misleading "GENERATED … Do not edit by hand" banner is gone — the prelude now says it is hand-maintained and names the check.
+**Phase 0.5 — Close the ABI sync hole (§5.2). Done, with one piece outstanding.** `CXEX.Lang/Abi/AbiSync.cs` compares the header against the prelude and `cxk check-abi` exposes it; `cxk os build` runs it as a pre-flight beside the existing source check, so a drifted prelude now stops the build with a clear message instead of producing confusing "undefined name" errors in `gui.xfxn`. The misleading "GENERATED … Do not edit by hand" banner is gone — the prelude now says it is hand-maintained and names the check.
 
 *Outstanding, now decided:* the comparison lives in a library precisely so a test project can call it. That project is **`CXEX.Tests` (xUnit)**, and the `AbiSync` unit test is in hardening Phase 0. `dotnet test` becomes the gate; the CLI command stays the developer-facing half.
 

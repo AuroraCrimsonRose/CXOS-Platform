@@ -38,8 +38,22 @@ public class CXEXSignatureBlock
     public uint Magic { get; set; }
     public ushort SigAlgo { get; set; }
     public ushort HashAlgo { get; set; }
+    /// <summary>sha256 of the .xkpk bytes carried at <see cref="PubKeyFileOffset"/>.</summary>
     public byte[] Fingerprint { get; set; } = new byte[32];
+
+    /// <summary>Length of the signer's .xkpk, which travels with the image.</summary>
+    public ushort PubKeyLen { get; set; }
+
     public ushort SigLen { get; set; }
+
+    /// <summary>Where the signer's .xkpk starts: the signature block's own offset + 44.</summary>
+    public uint PubKeyFileOffset { get; set; }
+
+    /// <summary>Where the signature starts: <see cref="PubKeyFileOffset"/> + <see cref="PubKeyLen"/>.</summary>
     public uint SigFileOffset { get; set; }
+
+    /// <summary>The signer's public key, verbatim, as the fingerprint is taken over it.</summary>
+    public byte[] PubKey { get; set; } = Array.Empty<byte>();
+
     public byte[] Signature { get; set; } = Array.Empty<byte>();
 }

@@ -14,7 +14,7 @@
 #include "handle.h"
 #include "ipc.h"
 #include "caps.h"
-#include "usermode.h"          /* user_ptr_ok */
+#include "usermode.h"          /* user_ptr_readable / user_ptr_writable */
 #include "addr_space.h"
 #include "paging.h"
 #include "pmm.h"
@@ -67,8 +67,10 @@ extern int enter_usermode(uint32_t entry_eip, uint32_t user_esp, uint32_t *save_
 static int build_args_page(const char *blob, uint32_t len) {
     void *frame = pmm_alloc();
     if (!frame) return -1;
-    paging_map(USER_ARGS_BASE, (uint32_t)frame,
-               PAGE_PRESENT | PAGE_WRITE | PAGE_USER);
+    if (paging_map_user(USER_ARGS_BASE, (uint32_t)frame, PAGE_PRESENT | PAGE_WRITE) != 0) {
+        pmm_free(frame);
+        return -1;
+    }
 
     uint8_t  *page = (uint8_t *)USER_ARGS_BASE;
     uint32_t *head = (uint32_t *)page;
@@ -93,6 +95,30 @@ static int build_args_page(const char *blob, uint32_t len) {
     return 0;
 }
 
+/* Give back everything this process has taken and leave the thread in the kernel
+   address space. Shared by the exit path and every failure path above it.
+   A spawn that died before enter_usermode used to just thread_exit(), which left
+   its user frames, its page tables and its page directory behind - so an image
+   the loader REFUSES could be spawned in a loop to drain the PMM, and the
+   refusal was the thing doing the draining. The frames must go while this
+   thread still has the space loaded, so the order here is not negotiable:
+   reclaim, then drop the bookkeeping, then leave the space, then free it. */
+static void proc_teardown(int pid, struct proc_rec *r) {
+    if (r->image) { kfree((void *)r->image); r->image = NULL; }
+    if (r->args)  { kfree((void *)r->args);  r->args  = NULL; }
+
+    struct addr_space self = r->space;
+    addr_space_reclaim_user();         /* frees the user frames and page tables */
+    /* After the reclaim, never before: that walk is what frees the frames behind
+       this process's mappings, and this only drops the bookkeeping. */
+    vm_proc_reset(pid);
+    struct addr_space kspace;
+    addr_space_kernel(&kspace);
+    addr_space_switch(&kspace);
+    thread_set_space(pid, 0);          /* stop referencing the freed space */
+    addr_space_destroy(&self);         /* free the PD frame + unregister */
+}
+
 /* Runs on the new thread, in its own address space (the scheduler loaded its CR3
    before switching here). Places the image, builds a ring-3 stack, drops to user
    mode. Returns only when the process SYS_EXITs. */
@@ -101,25 +127,46 @@ static void proc_trampoline(void) {
     struct proc_rec *r = &proc_recs[pid];
 
     uint32_t entry = 0;
-    if (cxex_load(r->image, r->image_len, &cxex_kernel_load_ops, &entry) != CXEX_LOAD_OK) {
-        klog("PROC", SEV_ERR, "image load failed");
-        kfree((void *)r->image); r->image = NULL;
+    int lrc = cxex_load(r->image, r->image_len, &cxex_kernel_load_ops, &entry);
+    if (lrc != CXEX_LOAD_OK) {
+        /* The reason, not just the fact: these are the loader's refusals - a
+           W+X section, a range outside the user half, data past the signature,
+           a quota that has no room - and which one fired is the whole content of
+           the message. */
+        klog("PROC", SEV_ERR, cxex_load_strerror(lrc));
+        proc_teardown(pid, r);
+        thread_exit();
+    }
+
+    /* The stack is the process's memory as much as the image is, so it comes out
+       of the same quota. Charged before a frame is allocated, so a process whose
+       ceiling cannot cover a stack is refused having taken nothing. */
+    if (vm_charge(pid, USER_STACK_PAGES * 0x1000u) != E_OK) {
+        klog("PROC", SEV_ERR, "the memory quota has no room for a user stack");
+        proc_teardown(pid, r);
         thread_exit();
     }
     for (uint32_t i = 0; i < USER_STACK_PAGES; i++) {
         void *p = pmm_alloc();
-        if (!p) { klog("PROC", SEV_ERR, "no stack memory"); kfree((void *)r->image); thread_exit(); }
-        paging_map(USER_STACK_TOP - (i + 1) * 0x1000u, (uint32_t)p,
-                   PAGE_PRESENT | PAGE_WRITE | PAGE_USER);
+        if (!p) { klog("PROC", SEV_ERR, "no stack memory"); proc_teardown(pid, r); thread_exit(); }
+        if (paging_map_user(USER_STACK_TOP - (i + 1) * 0x1000u, (uint32_t)p,
+                            PAGE_PRESENT | PAGE_WRITE) != 0) {
+            klog("PROC", SEV_ERR, "user stack is not in the user half");
+            pmm_free(p); proc_teardown(pid, r); thread_exit();
+        }
     }
     uint32_t ustack_top = USER_STACK_TOP - 16u;
 
     /* After the stack, so a failure here cannot leave a half-built process
        holding stack pages it will never use. */
+    if (vm_charge(pid, 0x1000u) != E_OK) {
+        klog("PROC", SEV_ERR, "the memory quota has no room for the argument page");
+        proc_teardown(pid, r);
+        thread_exit();
+    }
     if (build_args_page(r->args, r->args_len) != 0) {
         klog("PROC", SEV_ERR, "no memory for the argument page");
-        kfree((void *)r->image); r->image = NULL;
-        if (r->args) { kfree((void *)r->args); r->args = NULL; }
+        proc_teardown(pid, r);
         thread_exit();
     }
 
@@ -128,19 +175,9 @@ static void proc_trampoline(void) {
 
     enter_usermode(entry, ustack_top, thread_current_usave());
 
-    /* process exited: reclaim its address space so spawning doesn't leak. Free
-       the user frames/PTs while still in this space, switch to the kernel space,
-       then free the page directory. */
-    struct addr_space self = r->space;
-    addr_space_reclaim_user();
-    /* After the reclaim, never before: that walk is what frees the frames
-       behind this process's mappings, and this only drops the bookkeeping. */
-    vm_proc_reset(pid);
-    struct addr_space kspace;
-    addr_space_kernel(&kspace);
-    addr_space_switch(&kspace);
-    thread_set_space(pid, 0);          /* stop referencing the freed space */
-    addr_space_destroy(&self);         /* free the PD frame + unregister */
+    /* process exited: reclaim its address space so spawning doesn't leak - the
+       same teardown the failure paths above take, for the same reason. */
+    proc_teardown(pid, r);
     klog_u32("PROC", SEV_INFO, "exited + reclaimed; free frames: ", pmm_free_count(), LOG_COLOR_VALUE, "");
 
     thread_exit();   /* never returns; sched_reap frees the kernel + esp0 stacks */
@@ -216,7 +253,7 @@ int proc_start(const void *image, uint32_t image_len, uint32_t caps,
 static int check_args(const struct spawn_args *a) {
     if (!a->args) return a->args_len ? E_INVAL : E_OK;   /* length without a blob */
     if (a->args_len == 0 || a->args_len > USER_ARGS_MAX) return E_RANGE;
-    if (!user_ptr_ok((uint32_t)a->args, a->args_len))    return E_FAULT;
+    if (!user_ptr_readable((uint32_t)a->args, a->args_len))    return E_FAULT;
     if (a->args[a->args_len - 1] != '\0')                return E_INVAL;
     return E_OK;
 }
@@ -224,11 +261,11 @@ static int check_args(const struct spawn_args *a) {
 /* SYS_SPAWN: an executive (GRANT_SPAWN) launches a capability-less app, brokered
    through one of its endpoints. */
 int sys_spawn(const struct spawn_args *ua) {
-    if (!user_ptr_ok((uint32_t)ua, sizeof *ua)) return E_FAULT;
+    if (!user_ptr_readable((uint32_t)ua, sizeof *ua)) return E_FAULT;
     struct spawn_args a = *ua;
 
     if (a.image_len == 0 || a.image_len > PROC_MAX_IMAGE) return E_RANGE;
-    if (!user_ptr_ok((uint32_t)a.image, a.image_len))     return E_FAULT;
+    if (!user_ptr_readable((uint32_t)a.image, a.image_len))     return E_FAULT;
 
     int arc = check_args(&a);
     if (arc != E_OK) return arc;
@@ -265,13 +302,13 @@ int sys_spawn(const struct spawn_args *ua) {
  * a verify to SYS_SPAWN and hoping every future caller goes through it.
  */
 int sys_exec_path(const char *upath, const struct spawn_args *ua) {
-    if (!user_ptr_ok((uint32_t)ua, sizeof *ua)) return E_FAULT;
+    if (!user_ptr_readable((uint32_t)ua, sizeof *ua)) return E_FAULT;
     struct spawn_args a = *ua;
 
     int arc = check_args(&a);
     if (arc != E_OK) return arc;
 
-    /* copy the path in a page at a time; user_ptr_ok walks page tables, so
+    /* copy the path in a page at a time; user_ptr_readable walks page tables, so
        per-byte would be a page-table walk per character */
     char path[FILE_PATH_MAX];
     uint32_t addr = (uint32_t)upath;
@@ -280,7 +317,7 @@ int sys_exec_path(const char *upath, const struct spawn_args *ua) {
     for (;;) {
         if (n >= sizeof path) return E_RANGE;
         if (n == 0 || (((addr + n) & 0xFFFu) == 0)) {
-            if (!user_ptr_ok(addr + n, 1)) return E_FAULT;
+            if (!user_ptr_readable(addr + n, 1)) return E_FAULT;
         }
         path[n] = ((const char *)addr)[n];
         if (!path[n]) break;

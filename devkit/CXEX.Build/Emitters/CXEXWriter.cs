@@ -2,6 +2,7 @@
 using System.IO;
 using System.Text;
 using CXEX.Build.Layout;
+using CXEX.Core.Constants;
 using CXEX.Core.Utilities;
 
 namespace CXEX.Build.Emitters;
@@ -10,9 +11,52 @@ public static class CXEXWriter
 {
     public static void WriteExecutable(string outPath, CxexMemoryLayout layout)
     {
-        // 1. Calculate final file size: Header(56) + Sections(28 * count) + raw segment data
-        uint totalSize = 56 + (uint)layout.Sections.Count * 28;
-        foreach (var sec in layout.Sections) totalSize += sec.FileSize;
+        if (layout.Sections.Count == 0)
+            throw new InvalidDataException("no sections: there is nothing to write.");
+
+        if (layout.Sections.Count > ushort.MaxValue)
+            throw new InvalidDataException(
+                $"{layout.Sections.Count} sections exceeds the 16-bit section_count field.");
+
+        // 1. Final file size: Header(56) + Sections(28 * count) + raw segment data.
+        // Summed in 64 bits. As uint this wrapped, and a wrapped total allocates a
+        // buffer smaller than the data about to be written into it - so the first
+        // section with a real offset either throws from inside Span.Slice or lands
+        // somewhere it does not belong.
+        long totalSize = 56 + (long)layout.Sections.Count * 28;
+        foreach (var sec in layout.Sections)
+        {
+            if (sec.FileSize > 0 && sec.Payload.Length != sec.FileSize)
+                throw new InvalidDataException(
+                    $"section '{sec.Name}' declares file_size {sec.FileSize} but carries {sec.Payload.Length} bytes.");
+
+            // W^X. The loader refuses such a section and CXEXLayoutEngine refuses to
+            // build one, but WriteExecutable takes a layout from any caller, so it
+            // does not assume either ran first (security review §11).
+            if ((sec.Flags & CXFlags.SEC_WRITE) != 0 && (sec.Flags & CXFlags.SEC_EXEC) != 0)
+                throw new InvalidDataException(
+                    $"section '{sec.Name}' is both writable and executable; W^X forbids it.");
+
+            totalSize += sec.FileSize;
+        }
+
+        if (totalSize > int.MaxValue)
+            throw new InvalidDataException($"the image would be {totalSize} bytes, which cannot be written as one array.");
+
+        // Every section's bytes must lie in the image and after the section table.
+        // This is also what keeps the signed range honest: the signature is appended
+        // at the end, so data placed before it is data the signature covers.
+        long tableEnd = 56 + (long)layout.Sections.Count * 28;
+        foreach (var sec in layout.Sections)
+        {
+            if (sec.FileSize == 0) continue;
+
+            long end = (long)sec.FileOffset + sec.FileSize;
+            if (sec.FileOffset < tableEnd || end > totalSize)
+                throw new InvalidDataException(
+                    $"section '{sec.Name}': bytes [{sec.FileOffset},{end}) fall outside the image body " +
+                    $"[{tableEnd},{totalSize}).");
+        }
 
         byte[] fileData = new byte[totalSize];
         Span<byte> span = fileData;
@@ -67,10 +111,27 @@ public static class CXEXWriter
             secOffset += 28;
         }
 
-        // 4. Output to disk
+        // 4. Output to disk, atomically (security review §8).
+        //
+        // Written to a temporary file beside the target and then moved over it, so
+        // the output is never observed half-written. The failure this prevents is
+        // specific: a build interrupted during WriteAllBytes leaves a truncated
+        // .xkex that still has a valid header and a plausible section table, and
+        // the next step signs it. A move either happens or does not.
         string? dir = Path.GetDirectoryName(outPath);
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
 
-        File.WriteAllBytes(outPath, fileData);
+        string temp = outPath + ".tmp" + Environment.ProcessId;
+        try
+        {
+            File.WriteAllBytes(temp, fileData);
+            File.Move(temp, outPath, overwrite: true);
+        }
+        catch
+        {
+            // Do not leave the scratch file behind for the next run to trip over.
+            try { if (File.Exists(temp)) File.Delete(temp); } catch { /* best effort */ }
+            throw;
+        }
     }
 }

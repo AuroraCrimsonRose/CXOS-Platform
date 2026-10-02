@@ -34,8 +34,8 @@ public sealed class CxProject
 /// <summary>External tool locations. Empty = "find on PATH".</summary>
 public sealed class CxToolchain
 {
-    public string Gcc { get; set; } = "i686-elf-gcc";
-    public string Ld { get; set; } = "i686-elf-ld";
+    public string Clang { get; set; } = "clang";
+    public string Ld { get; set; } = "ld.lld";
     public string Nasm { get; set; } = "nasm";
     public string CMake { get; set; } = "cmake";
     public string Qemu { get; set; } = "qemu-system-i386";

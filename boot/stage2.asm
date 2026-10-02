@@ -57,19 +57,40 @@ stage2_start:
 ; We load it to 0x10000 (linear), a free low buffer.
 KERNEL_LOAD_LOW  equ 0x10000        ; temp buffer (segment 0x1000:0x0000)
 KERNEL_DEST_HIGH equ 0x100000       ; final physical location (1 MB)
-KERNEL_SECTORS   equ 512            ; 256 KB of headroom for the kernel image.
-                                    ; Must fit in LOW memory (the 0x10000 buffer
-                                    ; lives below 1MB, with the pmode stack at
-                                    ; 0x9F000) - 256KB ends at 0x50000, leaving a
-                                    ; ~316KB gap before the stack. BIOS int13h
-                                    ; can't read this in one call (~127-sector
-                                    ; limit), so load_kernel loops in chunks.
-                                    ; cxexload copies only each section's real
-                                    ; bytes, so over-reading empty tail sectors
-                                    ; is harmless. (Kernel is ~50KB now: 5x room.)
+KERNEL_SECTORS   equ 1024           ; 512 KB of headroom for the kernel image.
+                                    ;
+                                    ; THIS IS A HARD CAP, NOT A HINT. The loop
+                                    ; below reads exactly this many sectors; a
+                                    ; kernel larger than it is silently truncated
+                                    ; and the tail of .text is never loaded. There
+                                    ; is no check at run time - the machine simply
+                                    ; executes whatever was left there.
+                                    ;
+                                    ; It was 512 sectors (256 KB) with a comment
+                                    ; saying "Kernel is ~50KB now: 5x room." That
+                                    ; stopped being true: the kernel reached
+                                    ; 260533 bytes, 99.4% of the budget, and the
+                                    ; next few KB of code anyone added pushed it
+                                    ; over. The symptom was one self-test failing
+                                    ; - kconfig, because the X Data object is
+                                    ; linked last and so is the first thing off
+                                    ; the end - which points nowhere near here.
+                                    ; cxk now refuses to build an image that
+                                    ; exceeds this, so it cannot happen quietly
+                                    ; again; keep the two in step.
+                                    ;
+                                    ; Must fit in LOW memory: the 0x10000 buffer
+                                    ; lives below 1MB with the pmode stack at
+                                    ; 0x9F000, so 512 KB ends at 0x90000 and
+                                    ; leaves a 60 KB gap before the stack. BIOS
+                                    ; int13h can't read this in one call (~127
+                                    ; sector limit), so load_kernel loops in
+                                    ; chunks. cxexload copies only each section's
+                                    ; real bytes, so over-reading empty tail
+                                    ; sectors is harmless.
 KERNEL_CHUNK     equ 64             ; sectors per int13h call (<=127, BIOS-safe).
                                     ; 64*512 = 32 KB = 0x800 segment units/chunk.
-KERNEL_CHUNKS    equ (KERNEL_SECTORS / KERNEL_CHUNK)   ; 512/64 = 8
+KERNEL_CHUNKS    equ (KERNEL_SECTORS / KERNEL_CHUNK)   ; 1024/64 = 16
 
 load_kernel:
     call find_boot_partition        ; read XBPT, point dap_kernel at the BOOT
@@ -268,7 +289,7 @@ halt:
     hlt
     jmp halt
 
-msg_banner db 'CXK v5 stage 2 - entering pmode', 0
+msg_banner db 'CXK stage 2 - entering pmode', 0
 msg_e820   db '[BOOT] E820 entries: ', 0
 
 ; a20 messages (referenced by a20.asm)

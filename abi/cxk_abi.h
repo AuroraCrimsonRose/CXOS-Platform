@@ -18,6 +18,18 @@
 
 #include <stdint.h>
 
+/* The version of THIS contract: the syscall numbers, struct layouts and
+   capability meanings below. It is stamped into every CXEX image's abi_version
+   so a kernel can refuse one built against a different contract.
+
+   It is 2 because docs/kernel/CX_ABI.md has declared the live contract v2 since
+   it was written - what was missing was anywhere in the CODE that said so, which
+   is how every image came to be stamped 1 while asking to be refused on a
+   mismatch. Declared in versions.json as `cxex-abi` and checked against this
+   line; bump both, and the DevKit's stamp, in the one commit that changes the
+   contract. */
+#define CXK_ABI_VERSION   2
+
 /* ---- syscall numbers ---- */
 /* lifecycle 0x00-0x0F (no capability required) */
 #define SYS_EXIT          0x00   /* ebx = exit code; does not return */

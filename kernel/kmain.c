@@ -8,6 +8,21 @@
 
 #include <stdint.h>
 #include "config.h"
+
+/* Generated into the build directory from versions.json
+   (tools/cmake/CMakeLists.txt), so the banner cannot disagree with the registry.
+   The fallback is for a bare host compile with no CMake, and it SAYS it is a
+   fallback rather than quietly printing a number that might be wrong - the
+   banner was the literal "CXK v5" before, which is exactly how it stayed at v5
+   through every change the kernel ever had. */
+#if defined(__has_include)
+#  if __has_include("cxk_version.h")
+#    include "cxk_version.h"
+#  endif
+#endif
+#ifndef CXK_VERSION_STR
+#define CXK_VERSION_STR "0.0.0-nocmake"
+#endif
 #include "gdt.h"
 #include "idt.h"
 #include "pmm.h"
@@ -108,7 +123,7 @@ static void cx_text_logo(void) {
         console_putc('\n');
     }
     console_set_color(VGA_ATTR(VGA_DARK_GREY, VGA_BLACK));
-    console_puts("\n          CATX SYSTEMS  -  CXK v5\n");
+    console_puts("\n          CATX SYSTEMS  -  CXK v" CXK_VERSION_STR "\n");
     console_set_color(VGA_ATTR(VGA_LIGHT_GREY, VGA_BLACK));
     timer_sleep(1000);   /* ~1s pause (busy-delay: timer not running yet) */
     console_clear();
@@ -193,7 +208,7 @@ void kmain_late(void) {
     if (!fb_up) cx_text_logo();
 
     /* first VISIBLE log line - framebuffer left region if one came up, else VGA */
-    klog("KERNEL", SEV_OK, "CXK v5 - higher-half kernel online");
+    klog("KERNEL", SEV_OK, "CXK v" CXK_VERSION_STR " - higher-half kernel online");
 
     /* scheduler + timer (preemption available, enabled on demand). */
     sched_init();

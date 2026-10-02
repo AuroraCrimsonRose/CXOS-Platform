@@ -573,11 +573,11 @@ int ohci_init(void) {
     uint32_t base = pci_bar_mmio32(dev, 0, "OHCI");
     if (base == 0) return 0;
 
-    paging_map(base, base, PAGE_PRESENT | PAGE_WRITE | PAGE_NO_CACHE);
+    paging_map_kernel(base, base, PAGE_PRESENT | PAGE_WRITE | PAGE_NO_CACHE);
     regs = (volatile uint8_t *)base;
 
     for (uint32_t a = ODMA_BASE; a < ODMA_END; a += 0x1000)
-        paging_map(ODMA_V(a), a, PAGE_PRESENT | PAGE_WRITE);
+        paging_map_kernel(ODMA_V(a), a, PAGE_PRESENT | PAGE_WRITE);
 
     ohci_takeover();
 

@@ -14,6 +14,13 @@
 #include "cxex_load.h"
 #include "pmm.h"
 #include "paging.h"
+#include "vmregion.h"
+#include "sched.h"
+
+/* The user half is everything below the higher-half kernel. Defined locally, as
+   the other users of this constant do (usermode.c, paging.c, addr_space.c);
+   giving it one home is engineering review §13's "localise x86 assumptions". */
+#define KERNEL_VBASE 0xC0000000u
 
 static void *k_get_page(void *ctx, uint32_t *out_phys) {
     (void)ctx;
@@ -29,15 +36,35 @@ static void *k_get_page(void *ctx, uint32_t *out_phys) {
 
 static int k_map_page(void *ctx, uint32_t virt, uint32_t phys, uint32_t prot) {
     (void)ctx;
-    uint32_t f = PAGE_PRESENT | PAGE_USER;             /* loaded image is ring 3 */
+
+    /* paging_map_user refuses any address at or above KERNEL_VBASE and adds the
+       USER bit itself, so this call cannot express a kernel mapping at all -
+       which is the point of the split (security review §1, §8). The loader's
+       validation pass has already proved the same thing; this is the layer that
+       still holds if that pass is ever bypassed or wrong. */
+    uint32_t f = PAGE_PRESENT;                         /* loaded image is ring 3 */
     if (prot & CXEX_PROT_WRITE) f |= PAGE_WRITE;
     /* x86 (non-PAE) has no per-page execute bit; EXEC is implicit. */
-    paging_map(virt, phys, f);
-    return 0;
+    return paging_map_user(virt, phys, f);
+}
+
+/* The image is charged to the process that is being built, which is the one
+   running this code: cxex_load is called from proc_trampoline, on the new
+   thread, after the switch into its own address space. That is the same "current"
+   the mapping above relies on, so there is no second notion of the owner to get
+   out of step with it. */
+static int k_charge(void *ctx, uint32_t pages) {
+    (void)ctx;
+    /* pages <= CXEX_LOAD_MAX_PAGES (64 MB) by the time the loader calls this, so
+       the shift into bytes cannot wrap - and vm_charge checks for a wrap anyway,
+       which is the check that holds if the cap ever moves. */
+    return vm_charge(thread_current_id(), pages * 4096u) == E_OK ? 0 : -1;
 }
 
 const struct cxex_load_ops cxex_kernel_load_ops = {
-    0,            /* ctx: current space for now */
+    0,              /* ctx: current space for now */
+    KERNEL_VBASE,   /* va_limit: the user half is everything below the kernel */
     k_get_page,
-    k_map_page
+    k_map_page,
+    k_charge
 };

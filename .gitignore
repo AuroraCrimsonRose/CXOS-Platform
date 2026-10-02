@@ -10,6 +10,11 @@
 # Boot PK lets anyone sign a binary that an enrolled machine trusts forever.
 # -------------------------
 *.xksk
+# Only the PLATFORM public key is tracked. Any other pair in tools/ - a local
+# test key - is local to one machine: its private half can never be committed,
+# so the public half alone would be of no use to anyone else.
+tools/*.xkpk
+!tools/kernel.xkpk
 *.xusk
 boot/uefi/sbkeys/
 *.pfx
@@ -29,7 +34,9 @@ boot/uefi/sbkeys/
 /dist/
 /iso/
 os/executive/app_image.h
-kernel/lib/format/trusted_key.c
+# trusted_key.c is generated into build/ from tools/<key>.xkpk by the build
+# itself now, so there is nothing to ignore in the source tree. The .h beside
+# it IS tracked: it is two extern declarations and carries no key material.
 boot/uefi/BOOTX64.EFI
 boot/uefi/*.obj
 *.o
@@ -79,3 +86,6 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 memory_store.json
+repomix-output.xml
+repomix.config.json
+.gitignore

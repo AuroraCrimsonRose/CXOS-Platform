@@ -70,7 +70,7 @@ commands that replace CXK's `.bat` and `.sh` scripts, so building and running CX
 the same on every host.
 
 ```
-cxk os build [--dev]      configure and build CXK through CMake, signing when a key is present (replaces tools/build.bat)
+cxk os build [--dev]      configure and build CXK through CMake with Ninja, signing when a key is present (replaced tools/build.bat)
 cxk run  --machine ...    q35 / AHCI / e1000 / packet capture options (replaces tools/run_qemu_ahci.bat)
 cxk uefi build            build the UEFI stub (replaces boot/uefi/build.bat)
 ```
@@ -109,13 +109,13 @@ foo.xfxn                          X Native source
   -> Lexer / Parser               AST
   -> Resolver / TypeChecker       typed AST  (ConstFold on the way)
   -> X86Emitter                   foo.s      GAS (AT&T) assembly text
-  -> GccTool.Compile              foo.o      via the i686-elf cross toolchain
-  -> GccTool.Link                 foo        ELF, against a generated linker script
+  -> ClangTool.Compile            foo.o      assembled by clang --target=i686-elf
+  -> ClangTool.Link               foo        ELF, linked by ld.lld against a generated linker script
   -> cxk build                    foo.xuex   CXEX-wrapped, signable
   -> cxk sign                     foo.xuex   signature block attached
 ```
 
-The X front-end emits **assembly text**, not machine code, and leans on an external assembler and linker: `i686-elf-gcc` today, **clang and ld.lld once the LLVM move lands** (`docs/planning/HARDENING_PLAN.md`, D5). Clang's assembler already produces byte-identical code for the compiler's output. Dropping the external assembler by emitting CXEX sections directly is a possible later change — a back-end decision, not a language change.
+The X front-end emits **assembly text**, not machine code, and leans on an external assembler and linker: **clang and ld.lld** (`docs/planning/HARDENING_PLAN.md`, D5). Clang's assembler produces byte-identical code for the compiler's output. Dropping the external assembler by emitting CXEX sections directly is a possible later change - a back-end decision, not a language change.
 
 Note two naming inconsistencies to be aware of when reading the code: X sources use `.xfxn`, but `CompileCommand`'s doc comment says `.x`, and the generated ABI prelude is named `abi.x`. The design doc's taxonomy (§3) says X Native source is `.XFXN`, so `abi.xfxn` would be the consistent name. The taxonomy used to specify an `.XCXN` compiled-object stage; it was never built, and **ELF is now the decided linkable object format** (design doc §3, Q-E).
 
@@ -139,7 +139,7 @@ This has already cost a real bug: the kernel gained `SYS_MOUSE_READ` and `struct
 cxk check-abi [path/to/cxk_abi.h]
 ```
 
-Compares the header against the prelude and fails on real drift. It finds the header itself if you don't pass one, walking up from the working directory to the repository's `abi/` (or `CXK_ROOT`, if set). CXK's `tools/build.bat` (and, once it replaces that script, `cxk os build`) runs it as a pre-flight beside the existing source check, so drift stops the build with a clear message rather than surfacing as "undefined name" errors inside `gui.xfxn`.
+Compares the header against the prelude and fails on real drift. It finds the header itself if you don't pass one, walking up from the working directory to the repository's `abi/` (or `CXK_ROOT`, if set). `cxk os build` runs it as a pre-flight beside the existing source check, so drift stops the build with a clear message rather than surfacing as "undefined name" errors inside `gui.xfxn`.
 
 It reports three kinds of problem: a constant missing from a family the prelude mirrors, a constant whose **value** disagrees, and a struct whose **field order** disagrees — that last being the nastiest, since a reordered struct compiles fine on both sides and silently corrupts every call using it.
 
@@ -182,7 +182,7 @@ The X *language* is specified on the kernel side, since the kernel owns the ABI 
 
 ## Building
 
-Requirements: .NET (see the `.csproj` files for the target framework), and for producing CXK artifacts an `i686-elf` GCC cross toolchain plus NASM. QEMU or Bochs to run an image.
+Requirements: .NET (see the `.csproj` files for the target framework), and for producing CXK artifacts clang, ld.lld, NASM, CMake and Ninja. QEMU or Bochs to run an image.
 
 ```
 dotnet build devkit/CXEX.Studio.slnx

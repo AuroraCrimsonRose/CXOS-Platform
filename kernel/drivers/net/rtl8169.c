@@ -236,13 +236,13 @@ int rtl8169_init(void) {
        under us and reads have side effects, so a cached line would serve stale
        values. 64 KB covers the whole register file on every family member. */
     for (uint32_t off = 0; off < 0x10000; off += 0x1000)
-        paging_map(base + off, base + off, PAGE_PRESENT | PAGE_WRITE | PAGE_NO_CACHE);
+        paging_map_kernel(base + off, base + off, PAGE_PRESENT | PAGE_WRITE | PAGE_NO_CACHE);
     regs = (volatile uint8_t *)base;
 
     /* DMA region into the kernel half - deliberately left CACHEABLE; x86 snoops
        bus-master DMA, so write-back is both correct and faster for buffers. */
     for (uint32_t a = RTL_DMA_BASE; a < RTL_DMA_END; a += 0x1000)
-        paging_map(DMA_V(a), a, PAGE_PRESENT | PAGE_WRITE);
+        paging_map_kernel(DMA_V(a), a, PAGE_PRESENT | PAGE_WRITE);
 
     if (!soft_reset()) {
         klog("RTL8169", SEV_WARN, "soft reset did not complete - chip wedged or absent");

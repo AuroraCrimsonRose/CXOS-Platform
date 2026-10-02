@@ -117,6 +117,33 @@ uint32_t vm_quota_of(int pid) {
     return procs[pid].quota;
 }
 
+int vm_charge(int pid, uint32_t bytes) {
+    if (!pid_ok(pid) || !procs[pid].live) return E_INVAL;
+    struct vm_proc *p = &procs[pid];
+
+    /* The same three checks vm_map makes, in the same order and for the same
+       reasons: a rounded length that wrapped, a sum that wrapped, and the
+       ceiling itself. Two accounts kept by different arithmetic would disagree
+       on exactly the inputs chosen to make them disagree. */
+    uint32_t len = page_up(bytes);
+    if (len < bytes)                 return E_RANGE;
+    if (p->mapped + len < p->mapped) return E_RANGE;
+    if (p->mapped + len > p->quota)  return E_NOMEM;
+
+    p->mapped += len;
+    return E_OK;
+}
+
+void vm_uncharge(int pid, uint32_t bytes) {
+    if (!pid_ok(pid) || !procs[pid].live) return;
+    struct vm_proc *p = &procs[pid];
+    uint32_t len = page_up(bytes);
+    /* Clamped rather than allowed to go negative: an over-refund would hand a
+       process a quota larger than it was given, which is worse than losing
+       track of a page. */
+    p->mapped = (len > p->mapped) ? 0 : p->mapped - len;
+}
+
 /* Unmap and free the first `done` pages of a mapping that failed part way in.
    A half-built mapping must leave nothing behind: the caller gets an error and
    must be able to treat it as though it had never asked. */
@@ -181,11 +208,19 @@ int vm_map(int pid, struct mem_op_args *a) {
            zeroing is not tidiness: a frame just off the free list may hold
            another process's memory, and handing that to a caller would leak
            whatever it was. */
-        paging_map(base + off, (uint32_t)frame, PAGE_PRESENT | PAGE_WRITE | PAGE_USER);
+        /* Unreachable unless the range check above let a kernel address through,
+           but it unwinds the same way the allocation failure does: returning
+           without undo() would leave the pages already mapped in this loop
+           stranded in the address space with nothing owning them. */
+        if (paging_map_user(base + off, (uint32_t)frame, PAGE_PRESENT | PAGE_WRITE) != 0) {
+            pmm_free(frame);
+            undo(base, off);
+            return E_INVAL;
+        }
         uint32_t *z = (uint32_t *)(base + off);
         for (uint32_t i = 0; i < PAGE_SIZE / 4u; i++) z[i] = 0;
         if (flags != (PAGE_PRESENT | PAGE_WRITE | PAGE_USER))
-            paging_map(base + off, (uint32_t)frame, flags);
+            paging_map_user(base + off, (uint32_t)frame, flags);
     }
 
     p->r[slot].base   = base;

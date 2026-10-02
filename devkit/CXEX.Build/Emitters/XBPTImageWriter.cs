@@ -109,9 +109,34 @@ public static class XBPTImageWriter
         // Entries 1-3 stay zero: one entry is all firmware needs to see.
     }
 
+    /// <summary>
+    /// How many sectors stage 2 actually reads: <c>KERNEL_SECTORS</c> in
+    /// boot/stage2.asm. It is a hard cap, not a hint — the read loop reads exactly
+    /// this many, and a larger kernel simply has its tail left on disk.
+    ///
+    /// <para>Keep the two in step. The constant was 512 for a long time with a
+    /// comment reading "Kernel is ~50KB now: 5x room"; the kernel reached 99.4% of
+    /// it, and the next few KB anyone added silently truncated <c>.text</c>. The
+    /// only symptom was one self-test failing — the X Data object is linked last,
+    /// so it is the first thing to fall off the end — which points nowhere near
+    /// the boot loader.</para>
+    /// </summary>
+    private const int Stage2KernelSectorBudget = 1024;   // 512 KB
+
     private static void PatchStage2KernelSectors(byte[] diskImage, ulong stage2Lba, int kernelByteSize)
     {
         int kernelSectors = (int)Math.Ceiling((double)kernelByteSize / 512);
+
+        // Refuse rather than ship an image whose kernel is cut off at boot. The
+        // failure this replaces had no error of its own: the machine booted, ran,
+        // and one unrelated-looking self-test failed.
+        if (kernelSectors > Stage2KernelSectorBudget)
+            throw new InvalidDataException(
+                $"the kernel is {kernelByteSize} bytes ({kernelSectors} sectors), beyond the " +
+                $"{Stage2KernelSectorBudget} sectors stage 2 reads ({Stage2KernelSectorBudget * 512} bytes). " +
+                "Raise KERNEL_SECTORS in boot/stage2.asm and Stage2KernelSectorBudget here together, " +
+                "keeping the load buffer at 0x10000 clear of the protected-mode stack at 0x9F000.");
+
         int searchStart = (int)(stage2Lba * 512);
         int searchEnd = searchStart + (16 * 512);
 
@@ -128,9 +153,15 @@ public static class XBPTImageWriter
         return;
     }
 
-    /* The XSTG manifest (version 2, CXK install.h): a 16-byte header, then 48
-       bytes per file, running on over as many sectors as they need - up to
-       16 - with the count of sectors at offset 8. */
+    /* The XSTG manifest: a 16-byte header, then 48 bytes per file, running on
+       over as many sectors as they need - up to 16 - with the count of sectors at
+       offset 8.
+
+       The version was a number in this comment and nowhere else, so "the kernel's
+       install.h says 2" was a claim no build could check. It is a constant now,
+       declared in versions.json as `xstg` and checked against XSTG_VERSION in
+       kernel/drivers/storage/install.h. */
+    public const int XstgVersion = 2;
     public const int XstgEntrySize = 48;
     public const int XstgNameLen = 32;
     public const int XstgMaxSectors = 16;

@@ -29,6 +29,7 @@
 #include "cxex_verify.h"
 #include "cxex.h"
 #include "keyvault.h"
+#include "ktest_loader.h"
 #include "vmregion.h"
 #include "exec.h"
 #include "kstack.h"
@@ -52,7 +53,7 @@ static int test_paging(void) {
     uint32_t test_virt = 0xCE000000;   /* clear of the kernel-stack region above */
     uint32_t frame = (uint32_t)pmm_alloc();
     if (!frame) return 0;
-    paging_map(test_virt, frame, PAGE_WRITE);
+    paging_map_kernel(test_virt, frame, PAGE_WRITE);
     volatile uint32_t *p = (volatile uint32_t *)test_virt;
     *p = 0xCAFEBABE;
     int ok = (*p == 0xCAFEBABE) && (paging_get_phys(test_virt) == frame);
@@ -161,6 +162,42 @@ static int test_identity(void) {
     /* the launch-as-SYSTEM rejection above is the observable proof of the
        "user can never be UID 0" invariant. */
     return sched_active_count() == 1;
+}
+
+/* An LBA past what the ATA driver can address must be refused, not truncated.
+   ata.c is LBA28 - the top nibble goes in the drive-select register - so
+   anything over 0x0FFFFFFF used to be cast down to a real but WRONG sector.
+   On a write that is the worst kind of failure: success reported, damage done
+   somewhere else entirely. */
+static int test_disk_lba_range(void) {
+    if (disk_count() == 0) return 1;          /* diskless config: nothing to check */
+
+    const struct disk *d = 0;
+    for (unsigned i = 0; i < disk_count(); i++) {
+        const struct disk *c = disk_get(i);
+        if (c && c->driver == DISK_DRV_ATA) { d = c; break; }
+    }
+    if (!d) {
+        /* Say so rather than return a quiet pass. On q35 the disk arrives through
+           AHCI, which is LBA48 and not what this checks, so the whole test is
+           vacuous there - and a vacuous pass that looks identical to a real one
+           is how a check stops meaning anything. Boot with `-machine pc` to get
+           legacy IDE and exercise it. */
+        klog("KTEST", SEV_WARN, "ATA LBA range NOT checked: no ATA disk (AHCI is LBA48)");
+        return 1;
+    }
+
+    static uint8_t sector[512];
+
+    /* The control: a legal read still works, so this cannot pass by the path
+       being broken for everything. */
+    if (disk_read(d->id, 0, 1, sector) != DISK_OK) return 0;
+
+    /* One past the LBA28 ceiling, and far past it. */
+    if (disk_read(d->id, 0x10000000ull, 1, sector) != DISK_ERR_PARAMS) return 0;
+    if (disk_read(d->id, 0xFFFFFFFFFull, 1, sector) != DISK_ERR_PARAMS) return 0;
+
+    return 1;
 }
 
 /* ---- storage: read sector 0 from a registered disk ---- */
@@ -669,6 +706,37 @@ static int vm_cycle(int pid) {
     if (vm_info(pid, &a) != E_OK)                   goto done;
     if (a.mapped != 0)                              goto done;
 
+    /* The pages that are NOT mmap regions - the image the loader places, the
+       stack and argument pages spawn builds - go through vm_charge, and the
+       ceiling has to apply to them exactly as it does to a mapping. Before it
+       did, `mapped` reported only what SYS_MEM_OP had asked for, so a process
+       could hold an image and a stack that the quota never saw. */
+    if (vm_charge(pid, PAGE_SIZE) != E_OK)           goto done;
+    RESET_ARGS(); a.op = MEM_OP_INFO;
+    if (vm_info(pid, &a) != E_OK)                    goto done;
+    if (a.mapped != PAGE_SIZE)                       goto done;
+
+    if (vm_charge(pid, 1) != E_OK)                   goto done;   /* rounds up */
+    RESET_ARGS(); a.op = MEM_OP_INFO;
+    if (vm_info(pid, &a) != E_OK)                    goto done;
+    if (a.mapped != 2u * PAGE_SIZE)                  goto done;
+
+    /* Past the ceiling, and a length whose rounding wraps to something small.
+       Both are refused, and a refusal leaves the account untouched. */
+    if (vm_charge(pid, vm_quota_of(pid)) != E_NOMEM) goto done;
+    if (vm_charge(pid, 0xFFFFFFFFu) != E_RANGE)      goto done;
+    RESET_ARGS(); a.op = MEM_OP_INFO;
+    if (vm_info(pid, &a) != E_OK)                    goto done;
+    if (a.mapped != 2u * PAGE_SIZE)                  goto done;
+
+    vm_uncharge(pid, 2u * PAGE_SIZE);
+    /* An over-refund clamps at zero instead of wrapping, which would hand the
+       process a ceiling far wider than the one it was given. */
+    vm_uncharge(pid, 16u * PAGE_SIZE);
+    RESET_ARGS(); a.op = MEM_OP_INFO;
+    if (vm_info(pid, &a) != E_OK)                    goto done;
+    if (a.mapped != 0)                               goto done;
+
     /* Quota attenuation: a child may never be given a wider ceiling than its
        parent holds, which is the same rule grants follow. */
     vm_proc_init(pid, vm_default_quota() / 4u, -1);
@@ -925,6 +993,9 @@ void ktest_run(void) {
     total++; passed += report("kernel config (X Data, linked X)",  test_kconfig());
     total++; passed += report("thread limit + stack size",         test_thread_limit());
     total++; passed += report("cxex signature + tamper",           test_cxex_signature());
+    total++; passed += report("disk: ATA LBA range refused",        test_disk_lba_range());
+    total++; passed += report("cxex loader refuses bad images",    ktest_loader_adversarial());
+    total++; passed += report("user pointer writability",          ktest_user_ptr_writability());
     total++; passed += report("exec admission (dev / release)",   test_exec_admit());
     total++; passed += report("file syscalls (SYS_FILE_OP)",       usermode_file_test());
 

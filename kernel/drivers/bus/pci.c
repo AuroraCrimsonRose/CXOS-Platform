@@ -308,7 +308,7 @@ int pci_msix_enable(const struct pci_device *d, uint8_t vector) {
     if (!base) return 0;
 
     uint32_t entry = base + offset;   /* entry 0 - one vector is all we want */
-    paging_map(entry & ~0xFFFu, entry & ~0xFFFu,
+    paging_map_kernel(entry & ~0xFFFu, entry & ~0xFFFu,
                PAGE_PRESENT | PAGE_WRITE | PAGE_NO_CACHE);
 
     volatile uint32_t *e = (volatile uint32_t *)entry;

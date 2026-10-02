@@ -59,7 +59,12 @@ public class KeygenCommand : Command<KeygenCommand.Settings>
         AnsiConsole.MarkupLine($"  public key   [cyan]{pk}[/] ({xkpk.Length} bytes)");
         AnsiConsole.MarkupLine($"  fingerprint  [grey]{Convert.ToHexString(fp).ToLowerInvariant()}[/]");
         AnsiConsole.MarkupLine("");
-        AnsiConsole.MarkupLine($"Next: [grey]cxk embed {pk} trusted_key.c cxos_trusted_key --extern[/] to bake it into the kernel's root of trust.");
+        // No `cxk embed` step any more: the build generates the kernel's root of
+        // trust from the public half of whichever key it signs with, so telling
+        // anyone to embed one by hand is telling them how to produce a kernel
+        // that trusts a different key than the one signing its userland.
+        string baseName = Path.GetFileNameWithoutExtension(sk);
+        AnsiConsole.MarkupLine($"Next: [grey]cxk os build --key {baseName}[/] - the build signs with this pair and compiles the public half in as the kernel's root of trust.");
 
         return 0;
     }

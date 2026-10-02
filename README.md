@@ -274,23 +274,23 @@ The objective is a **self-sufficient system** — one that compiles its own soft
 >
 > | Today | Replacement |
 > |---|---|
-> | `tools\build.bat [dev]` | `cxk os build [--dev]` (planned) |
+> | `tools\build.bat [dev]` | `cxk os build [--dev]` (works now) |
 > | `tools\run_qemu_ahci.bat` | `cxk run` with machine options: q35, AHCI, e1000, packet capture (planned) |
 > | `tools\run_bochs.bat` | `cxk run -e bochs` (works now) |
 > | `boot\uefi\build.bat` | `cxk uefi build` (planned) |
 > | `boot\uefi\secureboot.bat` | `cxk secureboot keygen` / `varstore` / `sign` / `test` (work now) |
 >
-> **The toolchain is moving to LLVM on every host** (decision D5): clang
-> replaces the i686-elf GCC cross toolchain, ld.lld links, and Ninja
-> replaces NMake. When that lands, the MSVC Developer Command Prompt and the
-> GCC cross toolchain stop being requirements; NASM stays. Tests run in the DevKit with `dotnet test`; no Python is needed.
+> **The toolchain is LLVM on every host** (decision D5): `clang --target=i686-elf`
+> compiles the kernel and assembles the X compiler's output, ld.lld links it, and
+> Ninja is the CMake generator. The i686-elf GCC cross toolchain, NMake and the
+> MSVC Developer Command Prompt are no longer requirements; NASM stays, for the
+> boot sector and stage 2. Tests run in the DevKit with `dotnet test`; no Python is needed.
 
 Requirements:
 
-- **MSVC Developer Command Prompt** — `build.bat` configures CMake with `-G "NMake Makefiles"`, so `nmake` must be on PATH. Run the build from a Developer Command Prompt (or after `vcvarsall.bat`), not a plain shell.
-- **i686-elf GCC cross toolchain** — compiles and links everything in `kernel/`. Paths come from `tools/cmake/cxk_toolchain.cmake`.
+- **clang + ld.lld** — compile and link everything in `kernel/`. The kernel is built with `clang --target=i686-elf`, so no cross-GCC is installed; override with `-DKCC=`, `-DCMAKE_LD=` or `-DCXK_TARGET=`. The toolchain block is at the top of `tools/cmake/CMakeLists.txt`.
+- **CMake + Ninja** — Ninja is the generator on every host. No MSVC, and no Developer Command Prompt: an ordinary shell is enough.
 - NASM — the boot chain and the kernel's assembly
-- CMake
 - QEMU
 - Bochs (optional)
 - **`tools/cxk.exe`** — the DevKit's CLI. CMake drives it for packaging, signing,
@@ -312,7 +312,7 @@ Requirements:
 Build:
 
 ```bat
-tools\build.bat
+cxk os build
 ```
 
 The build **signs automatically when a signing key is present** (`tools\kernel.xksk`,
@@ -324,7 +324,7 @@ Build a **development kernel**, which runs unsigned programs, so testing needs n
 signing key at all:
 
 ```bat
-tools\build.bat dev
+cxk os build --dev
 ```
 
 A development kernel says so at every boot and logs each unsigned program it
@@ -366,7 +366,7 @@ Everything is under [`docs/`](docs/README.md), by topic:
 > **Note for anyone changing `abi/cxk_abi.h`:** the X compiler carries a hand-maintained copy
 > of this ABI as an X prelude (`devkit/CXEX.Lang/Abi/AbiPrelude.cs`). Nothing generates it
 > yet, so **a syscall or ABI struct added here must be added there in the same change** or the
-> toolchain will not compile the userland. `tools\build.bat` runs `cxk check-abi` before
+> toolchain will not compile the userland. `cxk os build` runs `cxk check-abi` before
 > building, which reports drift; a `CXEX.Tests` unit test is planned to check it on every
 > test run. See `docs/devkit/CX_DEVKIT_DESIGN.md` §5.2.
 

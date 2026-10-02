@@ -95,6 +95,7 @@ public class InspectCommand : Command<InspectCommand.Settings>
                 AnsiConsole.MarkupLine($"[bold]CXSG[/]");
                 AnsiConsole.MarkupLine($"  sig_algo      {sig.SigAlgo} {(sig.SigAlgo == 1 ? "(RSA2048-SHA256)" : "")}");
                 AnsiConsole.MarkupLine($"  hash_algo     {sig.HashAlgo} {(sig.HashAlgo == 1 ? "(SHA256)" : "")}");
+                AnsiConsole.MarkupLine($"  pubkey_len    {sig.PubKeyLen}");
                 AnsiConsole.MarkupLine($"  sig_len       {sig.SigLen}");
                 AnsiConsole.MarkupLine($"  fingerprint   [grey]{Convert.ToHexString(sig.Fingerprint).ToLowerInvariant()}[/]");
                 if (!flagSigned)

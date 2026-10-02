@@ -10,6 +10,7 @@
   <Project Path="CXEX.Lang/CXEX.Lang.csproj" Id="63810b49-407d-440f-8919-5fa3ca74bbc2" />
   <Project Path="CXEX.SDK/CXEX.SDK.csproj" Id="c324e7a1-fd6d-426c-be65-e623fa34b05c" />
   <Project Path="CXEX.Studio/CXEX.Studio.csproj" />
+  <Project Path="CXEX.Tests/CXEX.Tests.csproj" />
   <Project Path="CXEX.Text/CXEX.Text.csproj" Id="9a5e5f88-5698-479a-a023-0535228d3612" />
   <Project Path="CXEX.Tools/CXEX.Tools.csproj" Id="10fd83c0-7d3c-4d35-9f63-fe7209bc2c33" />
   <Project Path="CXEX.Uefi/CXEX.Uefi.csproj" />
