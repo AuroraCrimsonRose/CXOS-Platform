@@ -143,6 +143,12 @@ jobs:
           V=$(jq -er '.components.cxos.version' versions.json)
           N=$(jq -er '.components.cxos.release_name' versions.json | tr '[:upper:]' '[:lower:]')
           cp dist/CXK_x86_32/images/cxk_disk.img "assets/cxos-$V-$N-selfsigned.img"
+          # The OFL requires its text to travel with any distribution of the font
+          # data, and the kernel image CONTAINS those glyphs - so the notices ship
+          # with the binaries, not only with the source.
+          mkdir -p assets/licenses
+          cp LICENSES/*.txt THIRD-PARTY-NOTICES.md LICENSE.md assets/licenses/
+          (cd assets && zip -qr LICENSES.zip licenses && rm -rf licenses)
           # Belt and braces: the key must not reach an artifact. It is gitignored
           # and never copied, and this makes a mistake here fail the job instead
           # of publishing a private key.

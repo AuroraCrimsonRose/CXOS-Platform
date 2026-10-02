@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
-/* /CXLite/kernel/lib/font.ch */
+/* /kernel/lib/gfx/font.h */
 /* Aurora Tejeda */
+/*
+ * These are declarations, not font software, so this header keeps the kernel's
+ * licence. The DATA they refer to does not: font.c is derived from Terminus Font
+ * and is OFL-1.1. See that file and THIRD-PARTY-NOTICES.md.
+ */
 
 #ifndef FONT_DEFAULT_H
 #define FONT_DEFAULT_H

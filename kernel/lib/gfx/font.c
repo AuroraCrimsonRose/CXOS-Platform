@@ -1,7 +1,25 @@
-// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
-/* /CXLite/kernel/lib/font.c */
-/* Aurora Tejeda */
+// SPDX-License-Identifier: OFL-1.1
+// SPDX-FileCopyrightText: 2020 Dimitar Toshkov Zhekov, with Reserved Font Name "Terminus Font"
+/* /kernel/lib/gfx/font.c */
+/*
+ * NOT original work, and NOT under the licence the rest of kernel/ carries.
+ *
+ * The glyph data below is derived from Terminus Font, which is licensed under
+ * the SIL Open Font License 1.1 (LICENSES/OFL-1.1.txt, and the upstream copy at
+ * assets/fonts/terminus/OFL.txt). Under the OFL a Modified Version of Font
+ * Software stays under the OFL, so this file is OFL-1.1 and cannot be relicensed
+ * as PolyForm Noncommercial along with the rest of the kernel. The OFL permits
+ * it to be bundled inside software under any licence, which is why that is not
+ * a conflict - but the font itself does not become ours by being compiled in.
+ *
+ * "Terminus Font" is a RESERVED FONT NAME. This derivative must not be presented
+ * under that name, which is why the arrays are `font_default_*` and nothing user
+ * facing says Terminus.
+ *
+ * The OFL also requires its text to travel with any distribution of this data.
+ * The kernel binary contains these glyphs, so the licence has to ship with the
+ * disk image, not only with the source - see THIRD-PARTY-NOTICES.md.
+ */
 
 #include <stdint.h>
 

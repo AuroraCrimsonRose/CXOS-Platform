@@ -231,7 +231,13 @@ or through the Releases page.
 | `cxk-win-x64.exe`, `cxk-linux-x64`, `cxk-osx-arm64` | `publish` job, single-file self-contained |
 | `CXEX-Studio-<platform>.zip` | `publish` job |
 | `cxos-<version>-<name>-selfsigned.img` | `image` job, on a clean ubuntu runner with apt clang/lld/nasm/ninja/cmake |
+| `LICENSES.zip` | the licence texts, `THIRD-PARTY-NOTICES.md` and `LICENSE.md` |
 | `SHA256SUMS` | `release` job |
+
+**`LICENSES.zip` is an obligation, not a courtesy.** The kernel image embeds glyph
+data derived from Terminus Font, and the SIL Open Font License requires its text
+to accompany any distribution of that data — binaries included, not just source.
+Shipping the image without it would breach the OFL.
 
 The release body is written in the workflow and lists what each asset is. The
 auto-generated commit notes are appended to it.
