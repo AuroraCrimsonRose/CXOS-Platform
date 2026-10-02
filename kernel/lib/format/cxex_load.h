@@ -30,6 +30,19 @@
 struct cxex_load_ops {
     void *ctx;   /* opaque target (e.g. an address space); passed back to the ops */
 
+    /* One past the highest virtual address this image may occupy. Every byte of
+       every section must fall below it, so a loaded image can never name a
+       kernel address (security review §1) - the loader used to pass the image's
+       virt_addr straight to map_page, which happily mapped 0xC0000000 and up
+       with the USER bit set.
+
+       It lives here rather than as a constant in the loader because the loader
+       is deliberately free of kernel headers, so it stays host-testable with
+       mock ops. The kernel binding sets it to KERNEL_VBASE; a test can set it to
+       whatever it wants to exercise. Zero means "no limit" and is refused, so a
+       caller that forgets it fails loudly rather than silently losing the check. */
+    uint32_t va_limit;
+
     /* Allocate one page, ZEROED, for the target space. Return a pointer the
        loader can write the page's contents through, and set *out_phys to the
        physical address that map_page should map. NULL on failure. */
@@ -47,8 +60,17 @@ enum cxex_load_result {
     CXEX_LOAD_BAD_SECTION = -3,   /* a section entry failed to parse */
     CXEX_LOAD_OOB         = -4,   /* a section's file bytes lie outside the image */
     CXEX_LOAD_NOMEM       = -5,   /* get_page failed */
-    CXEX_LOAD_MAP_FAIL    = -6    /* map_page failed */
+    CXEX_LOAD_MAP_FAIL    = -6,   /* map_page failed */
+    CXEX_LOAD_BAD_RANGE   = -7,   /* a section leaves the user half, or its range wraps */
+    CXEX_LOAD_WX          = -8,   /* a section is both writable and executable */
+    CXEX_LOAD_UNSIGNED    = -9,   /* a section's bytes lie outside the signed range */
+    CXEX_LOAD_TOO_BIG     = -10   /* the image asks for more pages than are allowed */
 };
+
+/* Ceiling on how many pages one image may map. A real .xoex is a handful; the
+   cap stops a header claiming gigabytes from draining the PMM one frame at a
+   time before anything notices (security review §3). */
+#define CXEX_LOAD_MAX_PAGES 16384u   /* 64 MB */
 
 /* Load `file` (a complete CXEX image; verify it first) into the space described
    by `ops`. On success returns CXEX_LOAD_OK and writes the entry-point virtual
