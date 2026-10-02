@@ -83,8 +83,14 @@ int cxex_is_signed(const struct cxex_header *h) {
 int cxex_get_sig(const uint8_t *file, size_t len,
                  const struct cxex_header *h, struct cxex_sig *out) {
     if (!cxex_is_signed(h)) return -1;
-    size_t so = h->signature_offset;
-    if (so + CXEX_SIG_HDR_SIZE > len) return -2;
+
+    /* 64-bit, not size_t. size_t is 32 bits here, so a signature_offset near the
+       top of the address space makes `so + CXEX_SIG_HDR_SIZE` wrap to a small
+       number that compares happily against len - and then `file + so` reads a
+       gigabyte past the image (security review §2). The same applies to the two
+       sums below, which are built from it. */
+    uint64_t so = h->signature_offset;
+    if (so + CXEX_SIG_HDR_SIZE > (uint64_t)len) return -2;
 
     const uint8_t *p = file + so;
     if (!(p[0]==CXSG_MAGIC0 && p[1]==CXSG_MAGIC1 &&
@@ -101,9 +107,9 @@ int cxex_get_sig(const uint8_t *file, size_t len,
        lengths out of an untrusted image, and the whole point of this block is
        that it may have come from someone we have no reason to believe. */
     out->pubkey_file_offset = (uint32_t)(so + CXEX_SIG_HDR_SIZE);
-    if ((size_t)out->pubkey_file_offset + out->pubkey_len > len) return -2;
+    if ((uint64_t)out->pubkey_file_offset + out->pubkey_len > (uint64_t)len) return -2;
 
     out->sig_file_offset = out->pubkey_file_offset + out->pubkey_len;
-    if ((size_t)out->sig_file_offset + out->sig_len > len) return -2;
+    if ((uint64_t)out->sig_file_offset + out->sig_len > (uint64_t)len) return -2;
     return 0;
 }

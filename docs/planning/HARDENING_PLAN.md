@@ -284,14 +284,14 @@ an open decision (§5): sign locally and upload, or keep the key as a CI secret.
 
 **Kernel**
 
-- [ ] Two-phase loader: **validate the whole image, then allocate and map.** Nothing is mapped until every section has been checked.
-- [ ] Every section's address range lies wholly in user space: overflow-safe, and below `KERNEL_VBASE` (security §1).
-- [ ] `paging_map_user` / `paging_map_kernel`, with the loader able to call only the first (security §8).
-- [ ] Overflow-safe offset and size checks throughout `cxex.c` and `cxex_load.c` (security §2, §3).
-- [ ] Every section's file bytes lie within `[0, signature_offset)` (added finding).
-- [ ] Image pages are charged to the process memory quota (security §3).
+- [x] Two-phase loader: **validate the whole image, then allocate and map.** Nothing is mapped until every section has been checked. Done 2026-10-01. `cxex_load` runs a validation pass over every section before it allocates a single frame; the checks live in one `check_section` so both passes cannot drift apart. Previously each section was validated as it was mapped, so a bad section half way through left the earlier ones already mapped into a live address space.
+- [x] Every section's address range lies wholly in user space: overflow-safe, and below `KERNEL_VBASE` (security §1). Done 2026-10-01. `virt_addr + mem_size` is summed in 64 bits and compared against a `va_limit` the caller supplies — `cxex_loadk.c` sets it to `KERNEL_VBASE`. It is passed in rather than hard-coded because `cxex_load.c` is deliberately free of kernel headers so it stays host-testable; a zero limit is refused outright, so a caller that forgets it fails loudly instead of silently losing the check.
+- [ ] `paging_map_user` / `paging_map_kernel`, with the loader able to call only the first (security §8). **Partly done:** `k_map_page` now refuses any `virt >= KERNEL_VBASE`, so the loader's mapping call cannot express a kernel address even if the validation pass were bypassed. Splitting `paging_map` itself into the two entry points is still to do.
+- [x] Overflow-safe offset and size checks throughout `cxex.c` and `cxex_load.c` (security §2, §3). Done 2026-10-01. `cxex_get_sig` compared in `size_t`, which is **32 bits here**, so a `signature_offset` near the top of the address space wrapped to a small number, passed the bounds test and then read a gigabyte past the image. That and the two sums derived from it are now 64-bit, as are every `file_offset + file_size` and `virt_addr + mem_size` in the loader.
+- [x] Every section's file bytes lie within `[0, signature_offset)` (added finding). Done 2026-10-01, in the loader's validation pass. The DevKit refuses to write such an image and the kernel refuses to load one, which is the independent validation the reviews ask for (security §11).
+- [ ] Image pages are charged to the process memory quota (security §3). **Partly done:** the loader now caps one image at `CXEX_LOAD_MAX_PAGES` (64 MB), so a header claiming gigabytes is refused before it drains the PMM a frame at a time. Charging the pages to the owning process's quota is still to do.
 - [ ] `user_ptr_readable` / `user_ptr_writable`, and every syscall uses the right one (security §4).
-- [ ] W^X: refuse a section that is both writable and executable (security §5).
+- [x] W^X: refuse a section that is both writable and executable (security §5). Done 2026-10-01 in the loader's validation pass. This matters more on x86 without PAE than it reads: there is no per-page execute bit, so a writable page **is** executable whether or not anyone intended it, and refusing the combination at load is the only place the rule can be enforced at all.
 - [ ] ATA: reject an LBA beyond 32 bits with `DISK_ERR_PARAMS` (engineering §1).
 - [ ] `os/xc` lexer: subtraction-based range checks (engineering §5).
 - [ ] Adversarial `ktest.c` cases: a kernel-range address, wrapped offsets, an oversized image, data past the signature, a W+X section, a write through a read-only user pointer.
