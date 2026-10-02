@@ -125,9 +125,31 @@ const struct disk *disk_find_by_name(const char *name) {
     return 0;
 }
 
+/* ATA here is LBA28, not LBA48: ata.c puts the top nibble of the address in the
+   drive-select register (`(lba >> 24) & 0x0F`) and the rest in three 8-bit
+   registers, so the addressable range is 0..0x0FFFFFFF - 268435455 sectors, or
+   128 GB.
+
+   `(uint32_t)lba` hid that twice over. A 64-bit LBA lost its high half at 4 GB,
+   and whatever survived lost four more bits at 128 GB - both silently, and both
+   landing the transfer on a real but WRONG sector. For a write that is the worst
+   possible failure: it reports success and corrupts somewhere else on the disk.
+   An out-of-range address is a caller error, so say so instead.
+
+   The count is checked for the same reason, though no caller can currently trip
+   it: disk_read and disk_write split at DISK_XFER_MAX (128), well inside the
+   8-bit sector-count register. The check states the driver's own limit rather
+   than relying on every future caller knowing it. */
+#define ATA_LBA28_MAX 0x0FFFFFFFu
+
+static int ata_range_ok(uint64_t lba, uint32_t count) {
+    return lba <= ATA_LBA28_MAX && count > 0 && count <= 255u;
+}
+
 static int disk_read_once(const struct disk *d, uint64_t lba, uint32_t count, void *buf) {
     switch (d->driver) {
         case DISK_DRV_ATA:
+            if (!ata_range_ok(lba, count)) return DISK_ERR_PARAMS;
             return ata_read(d->unit, (uint32_t)lba, (uint8_t)count, buf);
 #if CXK_HAVE_AHCI
         case DISK_DRV_AHCI:
@@ -145,6 +167,7 @@ static int disk_read_once(const struct disk *d, uint64_t lba, uint32_t count, vo
 static int disk_write_once(const struct disk *d, uint64_t lba, uint32_t count, const void *buf) {
     switch (d->driver) {
         case DISK_DRV_ATA:
+            if (!ata_range_ok(lba, count)) return DISK_ERR_PARAMS;
             return ata_write(d->unit, (uint32_t)lba, (uint8_t)count, buf);
 #if CXK_HAVE_AHCI
         case DISK_DRV_AHCI:
