@@ -20,8 +20,8 @@ them without any custom mapping.
 
 | SPDX identifier | Licence text | Covers |
 |---|---|---|
-| `PolyForm-Noncommercial-1.0.0` | [licenses/PolyForm-Noncommercial-1.0.0.txt](licenses/PolyForm-Noncommercial-1.0.0.txt) | the operating system |
-| `MIT` | [licenses/MIT.txt](licenses/MIT.txt) | the SDK and tooling |
+| `PolyForm-Noncommercial-1.0.0` | [LICENSES/PolyForm-Noncommercial-1.0.0.txt](LICENSES/PolyForm-Noncommercial-1.0.0.txt) | the operating system |
+| `MIT` | [LICENSES/MIT.txt](LICENSES/MIT.txt) | the SDK and tooling |
 
 The paths below are a **structural fallback only**, for files that carry no SPDX
 header — data files, assets, configuration, documentation. Where a header and
@@ -35,6 +35,22 @@ this table ever disagree, the header wins.
 
 **Licensor:** Aurora Tejeda, trading as CATX Systems.
 
+### Required notice
+
+PolyForm's *Notices* section obliges anyone who passes on any part of the
+PolyForm-licensed components to pass on the licence (or its URL) **and any
+plain-text line beginning with `Required Notice:` that the licensor supplied**.
+This is that line:
+
+```
+Required Notice: Copyright (c) 2026 Aurora Tejeda (trading as CATX Systems) https://github.com/AuroraCrimsonRose/CXOS-Platform
+```
+
+Keep it with the software when you redistribute it. It is supplied here rather
+than written into `LICENSES/PolyForm-Noncommercial-1.0.0.txt`, because that file
+is the licence **verbatim** — editing the worked example inside it would make it
+a bespoke licence that no longer matches its SPDX identifier.
+
 ---
 
 ## The operating system — PolyForm Noncommercial 1.0.0
@@ -44,7 +60,7 @@ services and the system applications.
 
 **You may** read, audit, build, modify, run and share these components **for any
 noncommercial purpose**, under the terms of
-[PolyForm Noncommercial 1.0.0](licenses/PolyForm-Noncommercial-1.0.0.txt), which
+[PolyForm Noncommercial 1.0.0](LICENSES/PolyForm-Noncommercial-1.0.0.txt), which
 is the controlling text. The licence states its own scope, and it is broader than
 "hobbyists only": personal study, research, experiment, teaching, amateur
 pursuits — and **use by charitable organisations, educational institutions,
@@ -94,7 +110,7 @@ one is free.
 
 The ABI headers, the X standard library, the X compiler, the CX DevKit (the `cxk`
 CLI and CX DevKit Studio), the VS Code extension, the build system and the
-documentation are [MIT](licenses/MIT.txt).
+documentation are [MIT](LICENSES/MIT.txt).
 
 MIT deliberately, for one reason: **everything an application developer must
 touch should impose nothing on them.** Build, modify, redistribute and
