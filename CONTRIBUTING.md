@@ -42,8 +42,9 @@ A fix sent as a public PR discloses the bug before anyone can update.
 
 ## Working agreements
 
-These are the rules the repository actually enforces. They are in
-[CLAUDE.md](CLAUDE.md) in full; the ones that most often catch people out:
+These are the rules the repository actually enforces — most of them by a check
+that fails the build, not by convention. The ones that most often catch people
+out:
 
 **Branches.** `x86_32_DEV` is master — work goes there. `x86_32_RELEASE` is
 releases only, by PR. Don't create per-feature branches unless asked.
@@ -93,7 +94,9 @@ cxk run dist/CXK_x86_32/images/cxk_disk.img         # boot it
 ```
 
 Needs clang, ld.lld, NASM, CMake and Ninja on PATH. No i686-elf GCC, no NMake.
-Full detail in [CLAUDE.md](CLAUDE.md).
+`cxk os build` pre-flights the toolchain and names whatever is missing rather
+than failing somewhere inside CMake. Release-side detail is in
+[docs/planning/VERSIONING_AND_RELEASE.md](docs/planning/VERSIONING_AND_RELEASE.md).
 
 ## Style
 
