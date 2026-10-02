@@ -1,0 +1,4 @@
+# Every path, one owner. CXOS has a single maintainer, and source access is
+# granted only to Authorized Contributors (LICENSE.md §8) - so a review request
+# should never route anywhere else.
+*       @AuroraCrimsonRose

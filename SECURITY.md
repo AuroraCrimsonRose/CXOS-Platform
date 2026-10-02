@@ -9,23 +9,21 @@ exist yet, it says so by name.
 
 ## Reporting a vulnerability
 
-**This repository is private.** GitHub's private vulnerability reporting is a
-public-repository feature and cannot be enabled here — the API returns 404 — so
-there is no in-product reporting channel at present. Anyone who can read this
-file can already reach the maintainer directly; use whatever private channel you
-already have, and do not open an issue.
+Report privately, to:
 
-> **Maintainers: fill in a contact address below, and revisit this section the day
-> the repository becomes public.** This file deliberately does **not** publish a
-> personal email address; choose one you are willing to have indexed, such as a
-> role address.
+**security contact — `aurora.tejeda@catxhosting.com`**
+
+Please do **not** open an issue or a pull request for a vulnerability, and please
+do not discuss it publicly until a fix is released.
+
+> **This repository is private**, so GitHub's in-product private vulnerability
+> reporting is unavailable — it is a public-repository feature and the API returns
+> 404 here. Email is the channel.
 >
-> **Security contact:** _not yet set_
->
-> On going public, turn on **Settings → Advanced Security → Private vulnerability
-> reporting**, and make it the primary channel in this section. It creates a draft
-> advisory visible only to the maintainer, so nothing is disclosed while it is
-> being fixed.
+> **Maintainers:** on going public, turn on **Settings → Advanced Security →
+> Private vulnerability reporting** and make it the primary channel in this
+> section, keeping the address above as the fallback. It creates a draft advisory
+> visible only to the maintainer, so nothing is disclosed while it is being fixed.
 
 Please include the CXOS version (`cxk --version`, or the kernel banner at boot),
 whether the kernel was a **development** build, and the smallest input or steps
