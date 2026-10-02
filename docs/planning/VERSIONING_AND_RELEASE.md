@@ -234,10 +234,12 @@ or through the Releases page.
 | `LICENSES.zip` | the licence texts, `THIRD-PARTY-NOTICES.md` and `LICENSE.md` |
 | `SHA256SUMS` | `release` job |
 
-**`LICENSES.zip` is an obligation, not a courtesy.** The kernel image embeds glyph
-data derived from Terminus Font, and the SIL Open Font License requires its text
-to accompany any distribution of that data — binaries included, not just source.
-Shipping the image without it would breach the OFL.
+**`LICENSES.zip` ships the terms with the binaries**, so someone who downloads an
+image without the repository still has them. Nothing currently in the image
+*requires* it — the glyph data in `font.c` is a hand transcription rather than a
+copied font file, which `THIRD-PARTY-NOTICES.md` explains — but a release that
+makes people go and find its licence is a worse release, and the moment a real
+third-party port lands this stops being optional.
 
 The release body is written in the workflow and lists what each asset is. The
 auto-generated commit notes are appended to it.
