@@ -3,7 +3,7 @@
 # SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 # The X compiler compiling itself.
 #
-#   python3 tests/xc/selfhost.py
+#   uv run --python 3.12 tests/xc/selfhost.py
 #
 # The classic bootstrap check, on CXK os/xc/xc.xfxn:
 #   stage 1  the C# compiler compiles xc            -> xc1
@@ -33,7 +33,7 @@ def link(asm, exe):
     open(fixed, "w").write(s)
     stub = os.path.join(W, "hstub.s")
     if not os.path.exists(stub): open(stub, "w").write(xcdiff.STUB)
-    subprocess.run(["gcc", "-m32", "-nostdlib", "-static", "-o", exe, fixed, stub], check=True)
+    subprocess.run([xcdiff.HOSTCC, "-m32", "-nostdlib", "-static", "-o", exe, fixed, stub], check=True)
 
 
 def xc(compiler, out, *args):
@@ -76,7 +76,7 @@ try:
             print(f"FAIL {os.path.basename(p)}: xc2 did not compile it\n{r.stdout}{r.stderr}"); fails += 1; continue
         s = open(base + ".s").read().replace(".globl _start", ".globl main", 1)
         open(base + ".s", "w").write(s)
-        subprocess.run(["gcc", "-m32", "-nostdlib", "-static", "-o", base, base + ".s", run_stub], check=True)
+        subprocess.run([xcdiff.HOSTCC, "-m32", "-nostdlib", "-static", "-o", base, base + ".s", run_stub], check=True)
         rc = subprocess.run([base]).returncode
         if rc != 0: print(f"FAIL {os.path.basename(p)}: exit {rc}"); fails += 1
         else: ok += 1

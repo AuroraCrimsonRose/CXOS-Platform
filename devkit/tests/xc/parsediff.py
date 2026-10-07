@@ -6,7 +6,7 @@
 # files - every node, where it starts, what it holds - and then every syntax
 # error with its line, column and message. The outputs must be identical.
 #
-#   python3 tests/xc/parsediff.py [mutants] [seed]
+#   uv run --python 3.12 tests/xc/parsediff.py [mutants] [seed]
 #
 # The corpus is every .xfxn in CXK and in this repository, then `mutants`
 # documents cut from those and broken at random: whole tokens inserted,

@@ -288,7 +288,7 @@ The objective is a **self-sufficient system**, one that compiles its own softwar
 
 Requirements:
 
-- **clang + ld.lld** compile and link everything in `kernel/`. The kernel is built with `clang --target=i686-elf`, so no cross-GCC is installed; override with `-DKCC=`, `-DCMAKE_LD=` or `-DCXK_TARGET=`. The toolchain block is at the top of `tools/cmake/CMakeLists.txt`.
+- **clang 23 or newer, + ld.lld** compile and link everything in `kernel/`. The kernel is built with `clang --target=i686-elf`, so no cross-GCC is installed; override with `-DKCC=`, `-DCMAKE_LD=` or `-DCXK_TARGET=`. The toolchain block is at the top of `tools/cmake/CMakeLists.txt`. **The version floor is real:** clang 18 through 22 ignore `-fuse-ld=lld` for this target and try to link through `gcc`, which fails on a host that has none. `tools/ci/Dockerfile` pins a known-good toolchain if your distribution ships something older.
 - **CMake + Ninja.** Ninja is the generator on every host. No MSVC, and no Developer Command Prompt: an ordinary shell is enough.
 - NASM assembles the boot chain and the kernel's assembly
 - QEMU

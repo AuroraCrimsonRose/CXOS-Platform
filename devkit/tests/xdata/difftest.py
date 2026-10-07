@@ -5,7 +5,7 @@
 # (os/std/xdata.xfxn). Every generated document goes through both; the error code AND the
 # byte offset must match, or the build-time check and the supervisor disagree about a file.
 #
-#   python3 tests/xdata/difftest.py [count] [seed]
+#   uv run --python 3.12 tests/xdata/difftest.py [count] [seed]
 #
 # Needs: a Release build of CXEX.CLI, a CXK checkout (the platform root this devkit/ sits in, or CXK_ROOT),
 # and a host gcc that can link -m32 - the X side runs natively, not under QEMU.
@@ -14,6 +14,9 @@ import os, random, subprocess, sys, collections, tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.normpath(os.path.join(HERE, "..", ".."))
 CXK = os.path.join(REPO, "CXEX.CLI", "bin", "Release", "net10.0", "cxk")
+# Links the X side into a native 32-bit binary. clang, not gcc (D5); -nostdlib
+# means no multilib is needed. Override with CXOS_HOSTCC.
+HOSTCC = os.environ.get("CXOS_HOSTCC", "clang")
 ROOT = os.environ.get("CXK_ROOT") or os.path.normpath(os.path.join(REPO, ".."))
 STD = next((p for p in (os.path.join(ROOT, "CXK", "os", "std"), os.path.join(ROOT, "os", "std"))
             if os.path.exists(os.path.join(p, "xdata.xfxn"))), None)
@@ -114,7 +117,7 @@ for b in range(0, N, 200):
     if "emitted" not in r.stdout: sys.exit("X compile failed: " + r.stdout + r.stderr)
     s = open(base + ".s").read().replace(".globl _start", ".globl main", 1)
     open(base + ".s", "w").write(s)
-    subprocess.run(["gcc", "-m32", "-nostdlib", "-static", "-o", base + ".bin", base + ".s", os.path.join(SP, "stub.s")], check=True)
+    subprocess.run([HOSTCC, "-m32", "-nostdlib", "-static", "-o", base + ".bin", base + ".s", os.path.join(SP, "stub.s")], check=True)
     rc = subprocess.run([base + ".bin"]).returncode
     if rc != 0:
         fails += 1

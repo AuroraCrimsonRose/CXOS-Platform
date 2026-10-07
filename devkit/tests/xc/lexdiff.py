@@ -5,7 +5,7 @@
 # C# one (CXEX.Lang/Lexer). Both print every token of the same files - kind,
 # line:col, and value - and the outputs must be identical, byte for byte.
 #
-#   python3 tests/xc/lexdiff.py [mutants] [seed]
+#   uv run --python 3.12 tests/xc/lexdiff.py [mutants] [seed]
 #
 # The corpus is every .xfxn in CXK and in this repository, then `mutants`
 # documents made by editing those at random: characters inserted, deleted and

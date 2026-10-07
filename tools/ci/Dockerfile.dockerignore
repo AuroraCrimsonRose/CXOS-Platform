@@ -1,0 +1,13 @@
+# The build context is the repository root; keep generated output and history
+# out of it. A stale build/ copied into the image would be worse than useless.
+.git
+build
+dist
+**/bin
+**/obj
+docs/devkit/_site
+docs/devkit/api
+*.xksk
+*.xusk
+*.pfx
+*.pem

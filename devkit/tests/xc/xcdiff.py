@@ -17,6 +17,10 @@ import os, random, subprocess, sys, tempfile, shutil, glob
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.normpath(os.path.join(HERE, "..", ".."))
 CXK = os.path.join(REPO, "CXEX.CLI", "bin", "Release", "net10.0", "cxk")
+# Links the X compiler's output into a native 32-bit binary. clang, not gcc
+# (HARDENING_PLAN D5): -nostdlib means no 32-bit libc is involved, so this needs
+# no multilib. Override with CXOS_HOSTCC if a host only has gcc.
+HOSTCC = os.environ.get("CXOS_HOSTCC", "clang")
 ROOT = os.environ.get("CXK_ROOT") or os.path.normpath(os.path.join(REPO, ".."))
 
 def find_os(prog):
@@ -38,7 +42,7 @@ def build(osdir, prog, work):
     if not os.path.exists(base + ".s"): sys.exit(f"{prog} did not compile:\n" + r.stdout + r.stderr)
     s = open(base + ".s").read().replace(".globl _start", ".globl main", 1)
     open(base + ".s", "w").write(s)
-    subprocess.run(["gcc", "-m32", "-nostdlib", "-static", "-o", base, base + ".s", stub], check=True)
+    subprocess.run([HOSTCC, "-m32", "-nostdlib", "-static", "-o", base, base + ".s", stub], check=True)
     return base
 
 def run(prog, verb, alphabet, window, edits, line_ops=False):

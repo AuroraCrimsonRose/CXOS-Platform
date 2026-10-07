@@ -94,8 +94,17 @@ cxk run dist/CXK_x86_32/images/cxk_disk.img         # boot it
 ```
 
 Needs clang, ld.lld, NASM, CMake and Ninja on PATH. No i686-elf GCC, no NMake.
-`cxk os build` pre-flights the toolchain and names whatever is missing rather
-than failing somewhere inside CMake. Release-side detail is in
+**clang 23 or newer** — not negotiable, and newer than most distributions ship:
+clang 18 through 22 ignore `-fuse-ld=lld` for `--target=i686-elf` and try to link
+through `gcc`, which fails on a host that has none. The CI container pins it. `cxk os build` pre-flights the toolchain and
+names whatever is missing rather than failing somewhere inside CMake.
+
+Or build in the CI container, which pins the whole toolchain:
+
+```
+docker build -f tools/ci/Dockerfile -t cxos-ci .
+docker run --rm -v "$PWD:/src" -w /src cxos-ci tools/ci/build.sh
+``` Release-side detail is in
 [docs/planning/VERSIONING_AND_RELEASE.md](docs/planning/VERSIONING_AND_RELEASE.md).
 
 ## Style

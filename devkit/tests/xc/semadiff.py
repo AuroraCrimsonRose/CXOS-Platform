@@ -6,7 +6,7 @@
 # prelude, the file, everything it imports - and print every diagnostic, then
 # the type of every expression and local. The outputs must be identical.
 #
-#   python3 tests/xc/semadiff.py [mutants] [seed]
+#   uv run --python 3.12 tests/xc/semadiff.py [mutants] [seed]
 #
 # The corpus is every X file in CXK (each app and std module with the prelude,
 # each piece of the X compiler without it, as their builds do) and every

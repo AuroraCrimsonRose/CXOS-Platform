@@ -7,7 +7,7 @@
 # that stop the compile or, if there are none, the assembly `cxk compile`
 # writes. The outputs must be identical, character for character.
 #
-#   python3 tests/xc/asmdiff.py [mutants] [seed]
+#   uv run --python 3.12 tests/xc/asmdiff.py [mutants] [seed]
 #
 # The corpus and the mutants are semadiff.py's: every X file in CXK and in
 # tests/lang, and versions of them changed a few tokens at a time. The ones

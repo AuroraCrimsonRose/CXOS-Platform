@@ -3,7 +3,7 @@
 # SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 # X language tests, run natively on the host.
 #
-#   python3 tests/lang/run.py
+#   uv run --python 3.12 tests/lang/run.py
 #
 #   run/      each program must compile and exit 0. A nonzero exit is the
 #             number of the first check that failed - read the source.
@@ -22,6 +22,9 @@ import os, subprocess, sys, tempfile, shutil, glob
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.normpath(os.path.join(HERE, "..", ".."))
 CXK = os.path.join(REPO, "CXEX.CLI", "bin", "Release", "net10.0", "cxk")
+# Compiles and links the native 32-bit test binaries. clang, not gcc (D5):
+# -nostdlib keeps libc out of it, so no multilib. Override with CXOS_HOSTCC.
+HOSTCC = os.environ.get("CXOS_HOSTCC", "clang")
 if not os.path.exists(CXK): sys.exit(f"build the CLI first: dotnet build CXEX.CLI -c Release  ({CXK})")
 W = tempfile.mkdtemp(prefix="xlang-")
 STUB = os.path.join(W, "stub.s")
@@ -62,7 +65,7 @@ for src in sorted(glob.glob(os.path.join(HERE, "run", "*.xfxn"))):
         print(f"FAIL {name}: did not compile\n{r.stdout}{r.stderr}"); fails += 1; continue
     s = open(base + ".s").read().replace(".globl _start", ".globl main", 1)
     open(base + ".s", "w").write(s)
-    subprocess.run(["gcc", "-m32", "-nostdlib", "-static", "-o", base + ".bin", base + ".s", STUB],
+    subprocess.run([HOSTCC, "-m32", "-nostdlib", "-static", "-o", base + ".bin", base + ".s", STUB],
                    check=True, capture_output=True)
     rc = subprocess.run([base + ".bin"]).returncode
     print(f"{'ok  ' if rc == 0 else 'FAIL'} {name}" + ("" if rc == 0 else f": check {rc} failed"))
@@ -83,7 +86,7 @@ if not os.path.exists(xo):
     print(f"FAIL interop: X did not compile\n{r.stdout}{r.stderr}"); fails += 1
 else:
     exe = os.path.join(W, "interop.bin")
-    subprocess.run(["gcc", "-m32", "-O2", "-ffreestanding", "-fno-builtin", "-fno-pic", "-fno-stack-protector",
+    subprocess.run([HOSTCC, "-m32", "-O2", "-ffreestanding", "-fno-builtin", "-fno-pic", "-fno-stack-protector",
                     "-nostdlib", "-static", "-o", exe, os.path.join(HERE, "interop", "c.c"), xo, STUB],
                    check=True, capture_output=True)
     rc = subprocess.run([exe]).returncode
@@ -106,7 +109,7 @@ else:
     else:
         s = open(base + ".s").read().replace(".globl _start", ".globl main", 1)
         open(base + ".s", "w").write(s)
-        subprocess.run(["gcc", "-m32", "-nostdlib", "-static", "-o", base + ".bin", base + ".s", STUB],
+        subprocess.run([HOSTCC, "-m32", "-nostdlib", "-static", "-o", base + ".bin", base + ".s", STUB],
                        check=True, capture_output=True)
         rc = subprocess.run([base + ".bin"]).returncode
         print(f"{'ok  ' if rc == 0 else 'FAIL'} std/buf.xfxn" + ("" if rc == 0 else f": check {rc} failed"))

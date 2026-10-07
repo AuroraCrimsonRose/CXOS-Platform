@@ -217,19 +217,20 @@ silently passes. Mutant counts and seeds come from `CXEX_TEST_MUTANTS` and
 `CXEX_TEST_SEED`. Each script below is deleted in the change that ports it; the
 plan is in [`docs/planning/HARDENING_PLAN.md`](../docs/planning/HARDENING_PLAN.md), D1.
 
-Until then, the suites are Python:
+Until then, the suites are Python. Run them through `uv` (a bare `python3` is a
+Store stub on Windows), or in the CI container, which has both:
 
 ```
-python3 tests/lang/run.py        # the X language: programs that must run, programs that must be refused, C <-> X interop, std/buf
-python3 tests/xdata/difftest.py  # the DevKit's X Data reader against the OS's, document by document
-python3 tests/xc/lexdiff.py      # the lexer written in X (os/xc) against this one, token by token
-python3 tests/xc/parsediff.py    # the parser written in X against this one, node by node, error by error
-python3 tests/xc/semadiff.py     # the type checker written in X against this one, on whole programs
-python3 tests/xc/asmdiff.py      # the code generator written in X against this one, the assembly exactly
-python3 tests/xc/selfhost.py     # xc compiles itself, twice: three identical assemblies, and working programs
+uv run --python 3.12 tests/lang/run.py        # the X language: programs that must run, programs that must be refused, C <-> X interop, std/buf
+uv run --python 3.12 tests/xdata/difftest.py  # the DevKit's X Data reader against the OS's, document by document
+uv run --python 3.12 tests/xc/lexdiff.py      # the lexer written in X (os/xc) against this one, token by token
+uv run --python 3.12 tests/xc/parsediff.py    # the parser written in X against this one, node by node, error by error
+uv run --python 3.12 tests/xc/semadiff.py     # the type checker written in X against this one, on whole programs
+uv run --python 3.12 tests/xc/asmdiff.py      # the code generator written in X against this one, the assembly exactly
+uv run --python 3.12 tests/xc/selfhost.py     # xc compiles itself, twice: three identical assemblies, and working programs
 ```
 
-They run X natively on the host (a 32-bit `gcc` links the output), so no VM is involved. `tests/lang/refuse` holds programs the compiler must reject, each with the error it must give: every one of them used to compile and produce a wrong answer.
+They run X natively on the host — `clang -m32 -nostdlib -static` links the output, so no VM and no GCC are involved — which does mean they need an ELF host. Set `CXOS_HOSTCC` to use a different compiler for that link. `tests/lang/refuse` holds programs the compiler must reject, each with the error it must give: every one of them used to compile and produce a wrong answer.
 
 ---
 
