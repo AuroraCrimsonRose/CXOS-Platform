@@ -1,14 +1,17 @@
 # Canonical identity for the contributor graph.
 #
-# Four spellings of one person: the GitHub handle, the full name, a typo of the
-# handle, and - after the 2026-10-02 re-authoring - the commits that had been
-# recorded as authored by an assistant rather than co-authored with one. This
-# maps them to a single author without rewriting anything further; git log,
-# shortlog and GitHub's contributor view all honour it.
+# One person, recorded under four spellings over time: the GitHub handle, the
+# full name, a typo of the handle, and the commits that had been attributed to an
+# assistant as author rather than co-author.
+#
+# The canonical address is the GitHub noreply form. A personal address in commit
+# metadata becomes public the moment a repository does, and a mailmap does not
+# hide it, so the history itself was rewritten on 2026-10-07 to use noreply
+# throughout. This file collapses the remaining name variants.
 #
 # Assistance is recorded where it belongs: in the Co-Authored-By trailer of the
-# commits it applies to, not in the author field.
-Aurora Tejeda <auracrimsonrose@gmail.com> <66587640+AuroraCrimsonRose@users.noreply.github.com>
-Aurora Tejeda <auracrimsonrose@gmail.com> AuroraCrimsonRose <auracrimsonrose@gmail.com>
-Aurora Tejeda <auracrimsonrose@gmail.com> AuraCrimsonRose <auracrimsonrose@gmail.com>
-Aurora Tejeda <auracrimsonrose@gmail.com> Aurora Lisanna Tejeda <auracrimsonrose@gmail.com>
+# commits it applies to, never in the author field.
+Aurora Tejeda <66587640+AuroraCrimsonRose@users.noreply.github.com> AuroraCrimsonRose <66587640+AuroraCrimsonRose@users.noreply.github.com>
+Aurora Tejeda <66587640+AuroraCrimsonRose@users.noreply.github.com> Aurora Lisanna Tejeda <66587640+AuroraCrimsonRose@users.noreply.github.com>
+Aurora Tejeda <66587640+AuroraCrimsonRose@users.noreply.github.com> AuraCrimsonRose <66587640+AuroraCrimsonRose@users.noreply.github.com>
+Aurora Tejeda <66587640+AuroraCrimsonRose@users.noreply.github.com> <auracrimsonrose@gmail.com>
