@@ -14,7 +14,7 @@ imaging) and CXEX Studio.
 | `tools/` | CMake build (`cmake/`), the platform public key, remaining scripts |
 | `devkit/` | The C# toolchain and Studio, and their tests: see [`devkit/README.md`](devkit/README.md) |
 | `editors/` | X language support for editors (VS Code) |
-| `assets/` | Branding, UI icons, file-type icons |
+| `assets/` | Branding and the console font |
 | `docs/` | All documentation: start at [`docs/README.md`](docs/README.md) |
 
 **Binaries are not in the repository.** `cxk`, CXEX Studio and the OS disk
@@ -42,7 +42,7 @@ The project is designed around modularity, verifiable execution, and reusable sy
 
 CXK is currently under active development.
 
-The v5 architecture focuses on preserving proven subsystems from previous releases while modernizing the boot chain, executable loading infrastructure, and trust model. **The v5 port is complete** — see `docs/planning/history/V5_PORTING_MANIFEST.md`, retained as the historical plan.
+The v5 architecture focuses on preserving proven subsystems from previous releases while modernizing the boot chain, executable loading infrastructure, and trust model. **The v5 port is complete.** See `docs/planning/history/V5_PORTING_MANIFEST.md`, retained as the historical plan.
 
 Delivered:
 
@@ -261,7 +261,7 @@ The primary objective of v5 is to modernize executable loading and deployment wh
 
 ### Long-term goal: building CXK from CXK
 
-The objective is a **self-sufficient system** — one that compiles its own software, on itself, with no external host. The X toolchain currently runs on .NET, so CXK can execute X programs but cannot yet produce them. Closing that gap is the long-term direction, and it drives the language roadmap: see `docs/language/CX_X_CORE_LANG.md` §0 and §10 for what self-hosting requires and the staged route to it.
+The objective is a **self-sufficient system**, one that compiles its own software, on itself, with no external host. The X toolchain currently runs on .NET, so CXK can execute X programs but cannot yet produce them. Closing that gap is the long-term direction, and it drives the language roadmap: see `docs/language/CX_X_CORE_LANG.md` §0 and §10 for what self-hosting requires and the staged route to it.
 
 ---
 
@@ -288,12 +288,12 @@ The objective is a **self-sufficient system** — one that compiles its own soft
 
 Requirements:
 
-- **clang + ld.lld** — compile and link everything in `kernel/`. The kernel is built with `clang --target=i686-elf`, so no cross-GCC is installed; override with `-DKCC=`, `-DCMAKE_LD=` or `-DCXK_TARGET=`. The toolchain block is at the top of `tools/cmake/CMakeLists.txt`.
-- **CMake + Ninja** — Ninja is the generator on every host. No MSVC, and no Developer Command Prompt: an ordinary shell is enough.
-- NASM — the boot chain and the kernel's assembly
+- **clang + ld.lld** compile and link everything in `kernel/`. The kernel is built with `clang --target=i686-elf`, so no cross-GCC is installed; override with `-DKCC=`, `-DCMAKE_LD=` or `-DCXK_TARGET=`. The toolchain block is at the top of `tools/cmake/CMakeLists.txt`.
+- **CMake + Ninja.** Ninja is the generator on every host. No MSVC, and no Developer Command Prompt: an ordinary shell is enough.
+- NASM assembles the boot chain and the kernel's assembly
 - QEMU
 - Bochs (optional)
-- **`tools/cxk.exe`** — the DevKit's CLI. CMake drives it for packaging, signing,
+- **`tools/cxk.exe`** is the DevKit's CLI. CMake drives it for packaging, signing,
   imaging and X compilation. **It is not committed.** Take it from the latest
   [release](https://github.com/AuroraCrimsonRose/CXOS-Platform/releases)
   (`cxk-win-x64.exe`, saved as `tools/cxk.exe`; `cxk-linux-x64` and
@@ -317,7 +317,7 @@ cxk os build
 
 The build **signs automatically when a signing key is present** (`tools\kernel.xksk`,
 created once with `tools\cxk.exe keygen tools\kernel`). Without one it builds
-unsigned — and a release kernel refuses to launch unsigned programs, so an unsigned
+unsigned, and a release kernel refuses to launch unsigned programs, so an unsigned
 release build boots to the kernel and stops.
 
 Build a **development kernel**, which runs unsigned programs, so testing needs no
@@ -331,7 +331,7 @@ A development kernel says so at every boot and logs each unsigned program it
 admits. It admits only programs with *no* signature: a tampered image, a forged
 signature, or a file that is not a program is refused exactly as in a release
 kernel. It is a build option (`-DDEV_UNSIGNED=ON`), never a runtime setting, so a
-release kernel contains no code that can run an unsigned image — and CMake refuses
+release kernel contains no code that can run an unsigned image, and CMake refuses
 to build one that is both signed and development. **Never ship a development
 kernel.**
 
@@ -372,9 +372,42 @@ Everything is under [`docs/`](docs/README.md), by topic:
 
 ---
 
-## License
+## Licence
 
-See LICENSE.md.
+CXOS is source-available, not open source. It is licensed in two tiers, and which
+one applies depends on where a file lives.
+
+| | |
+|---|---|
+| The operating system: `boot/`, `kernel/`, `os/executive/`, `os/services/`, `os/apps/`, `os/config/` | [PolyForm Noncommercial 1.0.0](LICENSES/PolyForm-Noncommercial-1.0.0.txt) |
+| The SDK and tooling: `abi/`, `os/std/`, `os/xc/`, `devkit/`, `editors/`, `tools/`, `docs/` | [MIT](LICENSES/MIT.txt) |
+
+Every source file carries an `SPDX-License-Identifier` header saying which, and
+that header is what governs.
+
+**Applications you write for CXOS are independent works.** Compiling against the
+ABI headers, linking the X standard library, making system calls and shipping as
+CXEX do not make your program a derivative of the kernel. Licence and sell it
+however you like.
+
+Full detail, including the application exemption in its exact wording, is in
+[LICENSE.md](LICENSE.md). Security policy is in [SECURITY.md](SECURITY.md).
+
+---
+
+## Credits
+
+CXOS is written by **Aurora Tejeda** (CATX Systems). The kernel, the X language
+and its two compilers, CXFS, the CXEX format and the boot chain are her work.
+
+**Claude** (Anthropic) has contributed as a co-author since 2026-09-26, working
+on the security hardening of the CXEX loader, the move to a clang/ld.lld/Ninja
+toolchain, the version registry, and the licensing and provenance of this
+repository. Those commits carry a `Co-Authored-By` trailer, which is the honest
+boundary: the assistance is real and it is recorded, and the project is Aurora's.
+
+The console font is derived from Terminus. See
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
 ---
 

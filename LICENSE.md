@@ -24,7 +24,7 @@ them without any custom mapping.
 | `MIT` | [LICENSES/MIT.txt](LICENSES/MIT.txt) | the SDK and tooling |
 
 The paths below are a **structural fallback only**, for files that carry no SPDX
-header — data files, assets, configuration, documentation. Where a header and
+header: data files, assets, configuration, documentation. Where a header and
 this table ever disagree, the header wins.
 
 | Fallback paths | Licence |
@@ -48,12 +48,12 @@ Required Notice: Copyright (c) 2026 Aurora Tejeda (trading as CATX Systems) http
 
 Keep it with the software when you redistribute it. It is supplied here rather
 than written into `LICENSES/PolyForm-Noncommercial-1.0.0.txt`, because that file
-is the licence **verbatim** — editing the worked example inside it would make it
+is the licence **verbatim**. Editing the worked example inside it would make it
 a bespoke licence that no longer matches its SPDX identifier.
 
 ---
 
-## The operating system — PolyForm Noncommercial 1.0.0
+## The operating system: PolyForm Noncommercial 1.0.0
 
 The kernel (CXK), the boot chain, the CXFS filesystem, the executive, the system
 services and the system applications.
@@ -63,7 +63,7 @@ noncommercial purpose**, under the terms of
 [PolyForm Noncommercial 1.0.0](LICENSES/PolyForm-Noncommercial-1.0.0.txt), which
 is the controlling text. The licence states its own scope, and it is broader than
 "hobbyists only": personal study, research, experiment, teaching, amateur
-pursuits — and **use by charitable organisations, educational institutions,
+pursuits. It also covers **charitable organisations, educational institutions,
 public research bodies, public safety and health organisations, environmental
 organisations and government institutions**, regardless of how they are funded.
 
@@ -73,7 +73,7 @@ organisations and government institutions**, regardless of how they are funded.
 
 > **There is currently no commercial licence to buy, and no commercial use is
 > permitted.** Commercial licensing is **paused pending formation of a legal
-> entity** — CATX Systems is presently a sole proprietorship, and a commercial
+> entity**. CATX Systems is presently a sole proprietorship, and a commercial
 > agreement should be issued by a company, not a person.
 >
 > This is a deliberate closure, not an oversight. Until it lifts, commercial use
@@ -111,7 +111,7 @@ ship a device with CXOS on it, on the strength of its application being
 independently licensed. Those are separate questions, and today only the second
 one is free.
 
-## The SDK and tooling — MIT
+## The SDK and tooling: MIT
 
 The ABI headers, the X standard library, the X compiler, the CX DevKit (the `cxk`
 CLI and CX DevKit Studio), the VS Code extension, the build system and the

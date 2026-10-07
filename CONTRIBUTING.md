@@ -14,7 +14,7 @@ a tangle that is painful to unwind and unfair to the contributor.
 When it opens, this file will say so and will state what is required.
 
 **If you have found a bug**, or want to propose something, please open an
-[issue](https://github.com/AuroraCrimsonRose/CXOS-Platform/issues) instead — a
+[issue](https://github.com/AuroraCrimsonRose/CXOS-Platform/issues) instead. A
 clear report is genuinely more useful right now than a patch, because the report
 can be acted on and the patch cannot.
 
@@ -23,8 +23,8 @@ can be acted on and the patch cannot.
 
 ## What you *can* do today
 
-The MIT tier — `abi/`, `os/std/`, `os/xc/`, `devkit/`, `editors/vscode/`,
-`tools/`, `docs/` — is yours under [MIT](LICENSES/MIT.txt). Fork it, modify it,
+The MIT tier (`abi/`, `os/std/`, `os/xc/`, `devkit/`, `editors/vscode/`,
+`tools/`, `docs/`) is yours under [MIT](LICENSES/MIT.txt). Fork it, modify it,
 build on it, ship it commercially; nothing is owed.
 
 **Applications, drivers and extensions you write for CXOS are independent
@@ -42,11 +42,11 @@ A fix sent as a public PR discloses the bug before anyone can update.
 
 ## Working agreements
 
-These are the rules the repository actually enforces — most of them by a check
+These are the rules the repository actually enforces, most of them by a check
 that fails the build, not by convention. The ones that most often catch people
 out:
 
-**Branches.** `x86_32_DEV` is master — work goes there. `x86_32_RELEASE` is
+**Branches.** `x86_32_DEV` is master; work goes there. `x86_32_RELEASE` is
 releases only, by PR. Don't create per-feature branches unless asked.
 
 **Never commit key material.** `*.xksk`, `*.xusk`, `boot/uefi/sbkeys/`, `*.pfx`,
@@ -60,7 +60,7 @@ the branch is deleted, because the object stays reachable.
 **ABI and version changes are one commit.** A syscall or struct added to
 `abi/cxk_abi.h` is added to `devkit/CXEX.Lang/Abi/AbiPrelude.cs` in the same
 change, and `cxk check-abi` must pass. Versions are decided in `versions.json`
-and nowhere else — `cxk check-versions` will fail the build if a number in the
+and nowhere else. `cxk check-versions` fails the build if a number in the
 tree disagrees with it. See
 [docs/planning/VERSIONING_AND_RELEASE.md](docs/planning/VERSIONING_AND_RELEASE.md).
 
@@ -74,11 +74,11 @@ compiler keeps the differential tests and the self-hosting fixed point identical
 A change is not finished because it compiles.
 
 - **Kernel changes must boot.** `ktest.c` runs at every boot; the change is not
-  done until a boot logs `self-tests: all N passed`. Watch for CPU exceptions too
-  — `qemu -d int` and check that only the expected vectors appear.
+  done until a boot logs `self-tests: all N passed`. Watch for CPU exceptions
+  too: run `qemu -d int` and check that only the expected vectors appear.
 - **New checks must be seen to fail.** Delete the check, rebuild, and confirm
   that exactly the tests covering it go red. Several tests in this repository
-  have been caught passing for the wrong reason — a mutation that was a no-op, a
+  have been caught passing for the wrong reason: a mutation that was a no-op, a
   builder that sized a file around the field under test, a disk test silently
   skipped on the wrong machine type. A test that has never failed is not evidence.
 - **Run the checks:** `cxk check-abi`, `cxk check-versions`,
@@ -100,7 +100,7 @@ than failing somewhere inside CMake. Release-side detail is in
 
 ## Style
 
-Match the surrounding code — its naming, its idiom, its comment density.
+Match the surrounding code: its naming, its idiom, its comment density.
 
 Comments here explain **why**, and especially why something that looks wrong is
 right: the bug that motivated a check, the failure a line prevents, the reason an
