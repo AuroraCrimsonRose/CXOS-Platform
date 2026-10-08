@@ -92,6 +92,15 @@ app.Configure(config =>
             .WithDescription("Builds CXK with clang, ld.lld and Ninja (replaces tools/build.bat).");
     });
 
+    // ---- UEFI boot stub (replaces boot/uefi/build.bat and its MSVC prompt) ----
+    config.AddBranch("uefi", uefi =>
+    {
+        uefi.SetDescription("Builds the UEFI boot stub.");
+
+        uefi.AddCommand<UefiBuildCommand>("build")
+            .WithDescription("Builds BOOTX64.EFI with clang and lld-link, on any host (replaces boot/uefi/build.bat).");
+    });
+
     // ---- UEFI Secure Boot (replaces openssl + virt-fw-vars + sbsign + sbverify) ----
     config.AddBranch("secureboot", sb =>
     {

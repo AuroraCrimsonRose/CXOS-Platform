@@ -161,7 +161,7 @@ cxk check-xdata <files...> [--keys exec,args,start,every,grants] [--porcelain]
 
 A typo is then a build error naming `file:line:col`, not a line in a boot log. `--keys` refuses any top-level key outside the list, so a misspelt key cannot be silently ignored.
 
-Two readers of one format are worth having only if they agree, so they are held to it: the differential test (`tests/xdata/difftest.py` today, `CXEX.Tests/XData` once ported) generates thousands of documents - valid, mutated, and nested past the depth limit - runs each through both readers (the X one compiled and run natively), and fails if any error code or byte offset differs. `SABOTAGE=1` skews one expectation, to show the test can fail; under xUnit that becomes a unit test of its own.
+Two readers of one format are worth having only if they agree, so they are held to it: the differential test (`CXEX.Tests/Differential/XDataDiffTests`) generates documents - valid, mutated, and nested past the depth limit - runs each through both readers (the X one compiled and run natively), and fails if any error code or byte offset differs. `SABOTAGE=1` skews one expectation, to show the test can fail.
 
 ---
 
@@ -209,28 +209,35 @@ The tool manifest (`.config/dotnet-tools.json`) pins docfx. The output
 dotnet test
 ```
 
-No Python interpreter will be needed. Tests are grouped by trait. `Unit` and
-`Adversarial` need only .NET. `Toolchain` needs clang and ld.lld, on Linux or WSL.
-`Differential` compares against the OS sources in this repository. A test
-whose requirement is missing reports **skipped**, with the reason; it never
-silently passes. Mutant counts and seeds come from `CXEX_TEST_MUTANTS` and
-`CXEX_TEST_SEED`. Each script below is deleted in the change that ports it; the
-plan is in [`docs/planning/HARDENING_PLAN.md`](../docs/planning/HARDENING_PLAN.md), D1.
+**No Python interpreter is needed** — the harnesses were ported and deleted on
+2026-10-08 (D1); only the corpus under `tests/` remains. Tests are grouped by
+trait. `Unit` and `Adversarial` need only .NET. `Toolchain` needs clang and
+ld.lld, on Linux or WSL. `Differential` compares against the OS sources in this
+repository. A test whose requirement is missing reports **skipped**, with the
+reason; it never silently passes.
 
-Until then, the suites are Python. Run them through `uv` (a bare `python3` is a
-Store stub on Windows), or in the CI container, which has both:
+`CXEX.Tests/Differential/` holds the ports:
 
-```
-uv run --python 3.12 tests/lang/run.py        # the X language: programs that must run, programs that must be refused, C <-> X interop, std/buf
-uv run --python 3.12 tests/xdata/difftest.py  # the DevKit's X Data reader against the OS's, document by document
-uv run --python 3.12 tests/xc/lexdiff.py      # the lexer written in X (os/xc) against this one, token by token
-uv run --python 3.12 tests/xc/parsediff.py    # the parser written in X against this one, node by node, error by error
-uv run --python 3.12 tests/xc/semadiff.py     # the type checker written in X against this one, on whole programs
-uv run --python 3.12 tests/xc/asmdiff.py      # the code generator written in X against this one, the assembly exactly
-uv run --python 3.12 tests/xc/selfhost.py     # xc compiles itself, twice: three identical assemblies, and working programs
-```
+| test | |
+|---|---|
+| `LexParseDiffTests` | the lexer and parser written in X (`os/xc`) against these, token for token and node for node |
+| `SemaAsmDiffTests` | the type checker and code generator written in X against these, on whole programs |
+| `SelfHostTests` | `xc` compiles itself twice: three identical assemblies, and the programs it builds must run |
+| `LangRunTests` | the X language: programs that must run, programs that must be refused *for the stated reason*, C↔X interop, `std/buf` |
+| `XDataDiffTests` | the DevKit's X Data reader against the OS's, document by document, on code **and** byte offset |
 
-They run X natively on the host — `clang -m32 -nostdlib -static` links the output, so no VM and no GCC are involved — which does mean they need an ELF host. Set `CXOS_HOSTCC` to use a different compiler for that link. `tests/lang/refuse` holds programs the compiler must reject, each with the error it must give: every one of them used to compile and produce a wrong answer.
+They run X natively on the host — `clang -m32 -nostdlib -static` links the
+output, so no VM and no GCC are involved — which does mean they need an ELF
+host, and they skip on Windows. `CXOS_HOSTCC` picks a different compiler for
+that link.
+
+`CXEX_TEST_MUTANTS` (default 50) and `CXEX_TEST_SEED` size and replay a run;
+`KEEP=1` keeps the scratch directory. **`SABOTAGE=1` must turn the five
+comparison tests red** — if it does not, they are comparing nothing.
+
+`tests/lang/refuse` holds programs the compiler must reject, each pinned to the
+error it must give: every one of them used to compile and produce a wrong
+answer, and refusing for the wrong reason would pass a looser test.
 
 ---
 

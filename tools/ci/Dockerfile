@@ -59,9 +59,10 @@ RUN printf 'int main(void){return 0;}\n' > /tmp/smoke.c \
  && rm -f /tmp/smoke.c /tmp/smoke.elf \
  && echo 'smoke: clang links for i686-elf with no GCC present'
 
-# Python for the legacy test suites, from uv rather than the distro, matching
-# how they are run on the developer machine. D1 retires these; until then the
-# image has to be able to run them.
+# Python, from uv rather than the distro. The test suites no longer need it -
+# D1 retired the nine Python harnesses on 2026-10-08 and `dotnet test` is the
+# whole gate now - but the boot harness is still Python, and that is what runs
+# an image in QEMU and reads the verdict back. Drop this when that is ported.
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 ENV UV_PYTHON_INSTALL_DIR=/opt/uv/python \
     UV_CACHE_DIR=/opt/uv/cache \

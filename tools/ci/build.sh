@@ -84,21 +84,14 @@ if has_stage os; then
   ls -l dist/CXK_x86_32/images/cxk_disk.img
 fi
 
-# --- legacy Python suites ---------------------------------------------------
-# Opt-in. They link the X compiler's output into a *native* 32-bit binary and
-# execute it, so they need an ELF host - which is why they have never run on
-# Windows. They no longer need gcc: CXOS_HOSTCC defaults to clang. D1 retires
-# them altogether.
+# --- differential suites ----------------------------------------------------
+# Opt-in, because they are the slow ones: they compile X, link it into a
+# *native* 32-bit binary and execute it, so they need an ELF host. On a host
+# that is not Linux they skip, with the reason, rather than passing quietly.
+# (These were nine Python scripts until D1 retired them on 2026-10-08.)
 if [[ "${CXOS_CI_SUITES:-0}" == "1" ]]; then
-  log 'suites: legacy Python (D1 will retire these)'
-  for s in devkit/tests/lang/run.py devkit/tests/xdata/difftest.py \
-           devkit/tests/xc/lexdiff.py devkit/tests/xc/parsediff.py \
-           devkit/tests/xc/semadiff.py devkit/tests/xc/asmdiff.py \
-           devkit/tests/xc/selfhost.py; do
-    [[ -f "$s" ]] || continue
-    log "suites: $s"
-    uv run --python 3.12 "$s"
-  done
+  log 'tests: differential (X against C#)'
+  dotnet test devkit/CXEX.Tests -c Release --filter "Category=Differential"
 fi
 
 log 'done'
