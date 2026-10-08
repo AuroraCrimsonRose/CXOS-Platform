@@ -33,6 +33,7 @@
 #include "heap.h"
 #include "kstack.h"
 #include "console.h"
+#include "serial.h"
 #include "color.h"
 #include "fb.h"
 #include "mouse.h"
@@ -134,6 +135,10 @@ static void cx_text_logo(void) {
 void kmain_late(void) __attribute__((noreturn, used));
 
 void kmain(void) {
+    /* Serial before the console, so the first console line is already being
+       mirrored. The probe prints nothing and is a no-op without a UART. */
+    serial_init();
+
     /* console first, so everything after it logs cleanly. */
     console_init();
 

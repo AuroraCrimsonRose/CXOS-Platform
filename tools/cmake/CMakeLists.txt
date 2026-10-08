@@ -187,6 +187,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/cpu/keyvault.c
     ${SRC_DIR}/kernel/cpu/launch.c
     ${SRC_DIR}/kernel/drivers/char/console.c
+    ${SRC_DIR}/kernel/drivers/char/serial.c
     ${SRC_DIR}/kernel/drivers/video/vga.c
     ${SRC_DIR}/kernel/drivers/video/fb.c
     ${SRC_DIR}/kernel/drivers/input/keyboard.c
