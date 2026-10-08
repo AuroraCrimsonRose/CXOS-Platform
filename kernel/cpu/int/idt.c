@@ -26,6 +26,7 @@
 #include "kstack.h"
 #include "paging.h"
 #include "usermode.h"   /* usercopy_start / usercopy_end / usercopy_trampoline */
+#include "serial.h"     /* the panic tee - see panic_putc_at */
 
 #define KERNEL_VBASE 0xC0000000u   /* user half is everything below it */
 
@@ -56,11 +57,34 @@ static struct idt_ptr   idtp;
 
 static int panic_pos = 0;
 
-/* Write one panic character to whichever display is live. On the framebuffer we
-   render white-on-red 8x16 glyphs (the screen is cleared to red when the panic
-   begins, in isr_handler); otherwise we poke white-on-red VGA cells. panic_pos
-   is a linear cell index in both cases, wrapped at the live width. */
+/* Write one panic character to whichever display is live, and to the serial
+   port. On the framebuffer we render white-on-red 8x16 glyphs (the screen is
+   cleared to red when the panic begins, in isr_handler); otherwise we poke
+   white-on-red VGA cells. panic_pos is a linear cell index in both cases,
+   wrapped at the live width.
+ *
+ * The serial tee comes FIRST, before the screen, and that order is deliberate:
+ * a panic is the one moment the display is most likely to be the broken thing,
+ * and the bytes that matter should already be out of the machine before this
+ * function touches a framebuffer pointer. SerenityOS's critical_console_out
+ * writes serial first and the graphics console last for the same reason, and
+ * notes that in a fatal situation nobody is likely to read the normal console
+ * anyway; Haiku's early-boot messages go straight to the UART.
+ *
+ * It is teed here and nowhere else because, unlike the console, this really is
+ * one chokepoint: panic_puts and panic_puthex both route through it, and the
+ * two '\n' branches below return early, so emitting the byte before them is
+ * what makes every path - including both newlines - send exactly once. (The
+ * console tee needed two call sites for exactly that reason; see
+ * console_newline.)
+ *
+ * serial_putc is safe to call here: it is a bounded spin on THRE that drops
+ * the byte rather than hanging, and it is a no-op when the probe found no UART
+ * or the panic happened before serial_init. */
 static void panic_putc_at(char c) {
+    if (c == '\n') { serial_putc('\r'); serial_putc('\n'); }
+    else            serial_putc(c);
+
     if (fb_active()) {
         uint32_t cols = fb_width() / 8;
         if (cols == 0) cols = 1;
