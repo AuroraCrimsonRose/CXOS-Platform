@@ -103,13 +103,19 @@ given `caps=0` behaves exactly as v1 described.
   inside a fault-recoverable region, so a mapping that has gone away yields `E_FAULT` instead
   of a stale-probe write or a ring-0 fault. On failure the destination is **partially
   written** and must be treated as undefined.
-- **Both layers of that are load-bearing, because `CR0.WP` is clear.** A ring-0 write to a
-  read-only user page does not fault at all — it silently succeeds — so fault recovery alone
-  would not catch one and only the range check refuses it. Conversely no check can cover a
-  page that stops being mapped after the check and before the instruction that uses it, which
-  is what recovery is for. Enabling `WP` would collapse the two into one and is the obvious
-  next step, but it changes the behaviour of every kernel write to a read-only page and so
-  needs its own verification.
+- **`CR0.WP` is set** (in `kernel.asm`, with `PG`, so it holds for the whole life of the paged
+  kernel). The CPU therefore enforces the read-only bit against ring 0 as well: a kernel write
+  to a read-only page faults like any other write violation, instead of silently succeeding
+  and leaving the page tables claiming it could not have happened.
+- **Both layers are still load-bearing, and they are not the same check.** `WP` enforces the
+  **write** bit only. It says nothing about `PAGE_USER`, and nothing stops ring 0 writing to a
+  kernel address — so a copy-out aimed at a kernel address, or at a page that is writable but
+  not ring-3-accessible, passes the hardware and is caught only by the range check. A fault
+  also stops the copy *where it faults*: for a buffer spanning several pages, writable at the
+  start and read-only later, recovery alone leaves the earlier pages modified, while the check
+  refuses the whole transfer before anything moves. Conversely no check can cover a page that
+  stops being mapped after the check and before the instruction that uses it, which is what
+  recovery is for.
 - Fault recovery is scoped by **where the fault happened** — the faulting EIP inside
   `usercopy_start`…`usercopy_end` (`cpu/usermode.asm`), checked in `cpu/int/idt.c` — and not
   by an armed flag, so there is nothing that can be left switched on. A kernel page fault

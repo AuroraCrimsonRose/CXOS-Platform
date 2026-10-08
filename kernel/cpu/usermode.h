@@ -55,6 +55,22 @@ extern char usercopy_start[];
 extern char usercopy_end[];
 void usercopy_trampoline(void);
 
+/* How many page faults have been recovered inside that region.
+ *
+ * This exists because CR0.WP makes the two layers overlap. With WP set, a
+ * ring-0 write to a read-only user page faults, and that fault is recoverable,
+ * so removing the range check from user_copy_out still yields E_FAULT - the
+ * copy just reaches it the other way. The returned value alone can no longer
+ * tell which layer refused.
+ *
+ * The count can. A copy refused by the range check takes NO fault; one refused
+ * by recovery takes exactly one. The self-tests assert on the difference, which
+ * is the only thing that keeps each layer independently provable. */
+uint32_t usercopy_faults_recovered(void);
+
+/* Called only from the page-fault handler, on a recovered fault. */
+void usercopy_note_recovered_fault(void);
+
 /* SYS_FILE_OP exercised over a real PAGE_USER mapping (see usermode.c).
    1 = pass, 0 = fail. Lives here because it needs map_user_page. */
 int  usermode_file_test(void);

@@ -180,9 +180,13 @@ int paging_is_user(uint32_t virt) {
 /* Present, ring-3 accessible AND writable.
    paging_is_user alone answers "may ring 3 touch this", which is not the
    question a syscall writing into a user buffer is asking: a read-only user page
-   passes it, and the kernel's write then succeeds anyway, because CR0.WP does
-   not apply to ring 0 unless it is set. The caller must ask for the access it
-   intends (security review §4). */
+   passes it. When this split was introduced CR0.WP was clear, so the kernel's
+   write then went through regardless and this check was the only thing refusing
+   it (security review §4). WP is set now (kernel.asm), so the CPU refuses that
+   write as well - but this remains the policy answer rather than a duplicate of
+   it, because WP enforces only the WRITE bit: it says nothing about PAGE_USER,
+   which this also requires. The caller must still ask for the access it
+   intends. */
 int paging_is_user_writable(uint32_t virt) {
     return paging_has(virt, PAGE_PRESENT | PAGE_USER | PAGE_WRITE);
 }

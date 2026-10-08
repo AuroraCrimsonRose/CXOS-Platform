@@ -117,14 +117,17 @@ static int test_ipc_endpoint_lifetime(void) {
 }
 
 /* ---- user copies: validated at the copy (security §6) ----
-   The range check's half of user_copy_out. A page that is mapped and
-   ring-3-readable but NOT ring-3-writable is the case fault recovery cannot
-   catch: CR0.WP is clear, so the kernel's write to it does not fault at all,
-   it silently succeeds. Only the check refuses it.
+   The range check's half of user_copy_out: policy, decided before any byte
+   moves. A page that is mapped and ring-3-readable but NOT ring-3-writable is
+   refused here rather than by the hardware.
 
-   That is also what makes this sabotage-detectable without a panic: delete
-   the user_ptr_writable call in user_copy_out and the copy goes through, so
-   the "unchanged" assertions below fail and this test alone goes red. */
+   Since CR0.WP was set, reaching the copy would refuse it too - the write
+   faults and recovery turns that into the same E_FAULT - so the return value
+   no longer says which layer acted. The assertions below are on the recovered
+   fault COUNT for that reason: refused by the check means no fault at all.
+   Delete the user_ptr_writable call in user_copy_out and the count moves,
+   and this test alone goes red. Without that count the sabotage would pass
+   unnoticed, which is the trap WP introduces here. */
 static int test_user_copy_validation(void) {
     const uint32_t va = 0x00810000u;   /* clear of ktest_user_ptr_writability's page */
     const uint8_t  src[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
@@ -143,11 +146,21 @@ static int test_user_copy_validation(void) {
     ok = ok && (user_copy_out(va, src, 8) == 0);
     for (int i = 0; i < 8; i++) ok = ok && (p[i] == src[i]);
 
-    /* Read-only: refused, and nothing written. */
+    /* Read-only: refused by the CHECK, before the copy runs - which is the
+       part that matters now that CR0.WP is set. With WP, reaching the copy
+       would also refuse it, by faulting and recovering, and the return value
+       would look identical. The fault count is what tells the two apart:
+       refused by the check means no fault was taken at all. Delete the
+       user_ptr_writable call in user_copy_out and this goes red on the count,
+       not on the return value. */
     for (int i = 0; i < 8; i++) p[i] = 0xAA;
     if (paging_map_user(va, (uint32_t)frame, PAGE_PRESENT) != 0) { ok = 0; goto done; }
-    ok = ok && (user_copy_out(va, src, 8) == E_FAULT);
-    for (int i = 0; i < 8; i++) ok = ok && (p[i] == 0xAA);   /* the sabotage signal */
+    {
+        uint32_t faults_before = usercopy_faults_recovered();
+        ok = ok && (user_copy_out(va, src, 8) == E_FAULT);
+        ok = ok && (usercopy_faults_recovered() == faults_before);   /* the sabotage signal */
+    }
+    for (int i = 0; i < 8; i++) ok = ok && (p[i] == 0xAA);
 
     /* Reading out of the same read-only page is legitimate - readable is all a
        copy-in needs - so the check must not have become "refuse everything". */
@@ -196,6 +209,8 @@ static int test_user_copy_fault_recovery(void) {
        than passing vacuously. */
     if (paging_get_phys(va) != 0) return 0;
 
+    uint32_t faults_before = usercopy_faults_recovered();
+
     if (user_copy_bytes((void *)va, src, 8) != 1) return 0;   /* faulted, recovered */
 
     /* Reading from it is recoverable in the same way. */
@@ -204,19 +219,81 @@ static int test_user_copy_fault_recovery(void) {
         if (user_copy_bytes(dst, (const void *)va, 8) != 1) return 0;
     }
 
-    /* A copy that does not fault still reports success afterwards: the
-       recovery must not have left anything latched that makes every later
-       copy look faulted. */
+    /* Exactly two faults, not none and not a storm: the recovery really fired,
+       once per copy, rather than the copies having succeeded for some other
+       reason. */
+    if (usercopy_faults_recovered() != faults_before + 2) return 0;
+
+    /* A copy that does not fault still reports success afterwards, and takes no
+       fault: recovery must not have left anything latched that makes every
+       later copy look faulted. */
     {
         uint8_t dst[8] = { 0 };
+        uint32_t f = usercopy_faults_recovered();
         if (user_copy_bytes(dst, src, 8) != 0) return 0;
         for (int i = 0; i < 8; i++) if (dst[i] != src[i]) return 0;
+        if (usercopy_faults_recovered() != f) return 0;
     }
 
     /* And the validated path refuses it up front, without reaching the copy. */
     if (user_copy_out(va, src, 8) != E_FAULT) return 0;
 
     return 1;
+}
+
+/* ---- CR0.WP: the kernel obeys the read-only bit ----
+   x86 lets ring 0 write through a read-only page unless CR0.WP is set. For
+   most of this kernel's life it was clear, which is why `user_ptr_writable`
+   was the *only* thing standing between a syscall handed a pointer into a
+   process's own text and the kernel scribbling on it (security review §4): the
+   hardware would not have objected.
+
+   Asserting the bit is set proves almost nothing on its own - a constant can
+   be wrong in the same direction as the code reading it - so the real check is
+   behavioural: a ring-0 write to a read-only user page must now FAULT. It is
+   driven through user_copy_bytes because that is the one place a fault is
+   survivable; anywhere else it would be a panic rather than a test result. */
+static int test_cr0_write_protect(void) {
+    const uint32_t va = 0x00830000u;
+    const uint8_t  src[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
+
+    uint32_t cr0;
+    __asm__ volatile ("mov %%cr0, %0" : "=r"(cr0));
+    if (!(cr0 & (1u << 16))) return 0;          /* WP must be set */
+
+    void *frame = pmm_alloc();
+    if (!frame) return 0;
+
+    int ok = 1;
+    volatile uint8_t *p = (volatile uint8_t *)va;
+
+    /* Seed while it is still writable, then take the write permission away. */
+    if (paging_map_user(va, (uint32_t)frame, PAGE_PRESENT | PAGE_WRITE) != 0) { ok = 0; goto done; }
+    for (int i = 0; i < 8; i++) p[i] = 0xAA;
+    if (paging_map_user(va, (uint32_t)frame, PAGE_PRESENT) != 0) { ok = 0; goto done; }
+
+    {
+        uint32_t faults_before = usercopy_faults_recovered();
+        /* Before WP this returned 0 and the bytes changed. */
+        ok = ok && (user_copy_bytes((void *)va, src, 8) == 1);
+        ok = ok && (usercopy_faults_recovered() == faults_before + 1);
+        for (int i = 0; i < 8; i++) ok = ok && (p[i] == 0xAA);
+    }
+
+    /* Writable again: the same write must go through, so this is testing WP
+       and not simply a mapping that never worked. */
+    if (paging_map_user(va, (uint32_t)frame, PAGE_PRESENT | PAGE_WRITE) != 0) { ok = 0; goto done; }
+    {
+        uint32_t faults_before = usercopy_faults_recovered();
+        ok = ok && (user_copy_bytes((void *)va, src, 8) == 0);
+        ok = ok && (usercopy_faults_recovered() == faults_before);
+        for (int i = 0; i < 8; i++) ok = ok && (p[i] == src[i]);
+    }
+
+done:
+    paging_unmap(va);
+    pmm_free(frame);
+    return ok;
 }
 
 /* ---- paging: map a scratch frame, write+read it back ---- */
@@ -1249,6 +1326,7 @@ void ktest_run(void) {
     total++; passed += report("ipc endpoints refcounted + reclaimed", test_ipc_endpoint_lifetime());
     total++; passed += report("user copies validated at the copy",  test_user_copy_validation());
     total++; passed += report("user copy faults are recoverable",   test_user_copy_fault_recovery());
+    total++; passed += report("CR0.WP: kernel obeys read-only",     test_cr0_write_protect());
 
     /* single summary line: green if all passed, red if any failed. */
     if (passed == total) {

@@ -197,6 +197,7 @@ static int recover_user_copy_fault(struct registers *r) {
        so r->useresp and r->ss are not part of this frame and must not be
        touched. EIP is the one thing worth changing, which is why the landing
        pad exists instead of patching the copy in place. */
+    usercopy_note_recovered_fault();
     r->eip = (uint32_t)usercopy_trampoline;
     return 1;
 }

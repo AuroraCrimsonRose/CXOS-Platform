@@ -78,9 +78,26 @@ kernel_entry:
     mov eax, PHYS(boot_page_dir)
     mov cr3, eax
 
-    ; Enable paging (CR0.PG = bit 31).
+    ; Enable paging (CR0.PG = bit 31) and write protection (CR0.WP = bit 16).
+    ;
+    ; WP makes a ring-0 write to a read-only page fault like any other write
+    ; violation. Without it the CPU lets the kernel ignore the read-only bit
+    ; entirely, so a syscall handed a pointer into a process's own text would
+    ; quietly scribble on it, and the page tables would say that could not have
+    ; happened (security review §4, §6).
+    ;
+    ; Set here, with PG, rather than switched on later: WP is part of the
+    ; baseline CR0 for the whole life of the paged kernel, so there is never a
+    ; window where kernel writes behave one way and then another. Haiku does the
+    ; same, as part of its canonical CR0 value (CR0_WRITE_PROTECT in
+    ; arch_cpu_preboot_init_percpu). Nothing is mapped read-only at this point
+    ; - the boot page table is all PG_WRITE - so enabling it this early costs
+    ; nothing.
+    ;
+    ; fpu.c later does a read-modify-write of CR0 for EM/MP/TS and preserves
+    ; every other bit, so it does not clear this.
     mov eax, cr0
-    or  eax, 0x80000000
+    or  eax, 0x80010000              ; PG (bit 31) | WP (bit 16)
     mov cr0, eax
 
     ; We're now paged, but EIP is still low (identity map keeps us alive).

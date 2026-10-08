@@ -120,19 +120,33 @@ int user_ptr_writable(uint32_t ptr, uint32_t len) { return user_ptr_span(ptr, le
  * one instant and nothing refreshes it.
  *
  * So the copy carries its own validation, and the two layers are *both*
- * load-bearing, for a reason specific to this kernel:
+ * load-bearing:
  *
- *   the range check   catches a page that is mapped but not writable by ring
- *                     3. That is not a fault at all from ring 0 - CR0.WP is
- *                     clear, so the kernel's write to a read-only user page
- *                     silently succeeds (paging.c, security review §4).
- *                     Recovery would never fire; only the check refuses it.
- *   the recoverable   catches a page that is not there. Validation cannot be
- *   copy              made to hold across the instruction that uses it, so
+ *   the range check   decides POLICY: is this address in the user half, and
+ *                     may ring 3 write there. It also refuses before a single
+ *                     byte moves.
+ *   the recoverable   is the hardware BACKSTOP: a page that is not there, or
+ *   copy              stopped being there after the check. Validation cannot
+ *                     be made to hold across the instruction that uses it, so
  *                     the copy is allowed to fail instead (usermode.asm).
  *
- * Dropping either one leaves a hole the other does not cover, which is why
- * ktest tests them separately.
+ * CR0.WP (set in kernel.asm) now makes the CPU enforce the read-only bit
+ * against ring 0 too, so the two overlap on one case - a read-only user page -
+ * where before WP only the check caught it. They are still not the same check,
+ * and the range check is not redundant:
+ *
+ *   - WP enforces the WRITE bit. It does not enforce the USER bit, and nothing
+ *     stops ring 0 touching a kernel address. A copy-out to a kernel address,
+ *     or to a page writable but not ring-3-accessible, passes the hardware and
+ *     is caught only here.
+ *   - A fault stops the copy WHERE IT FAULTS. For a buffer spanning several
+ *     pages, writable at the start and read-only later, recovery alone leaves
+ *     the first pages modified. The check refuses the whole thing up front.
+ *
+ * ktest proves them separately, and has to: once WP makes both refuse a
+ * read-only page, the return value no longer says which one did it, so the
+ * tests assert on usercopy_faults_recovered() - refused by the check means no
+ * fault was taken at all.
  *
  * This is the shape every system that has solved it converged on: Haiku's
  * user_memcpy validates the range and traps the fault, returning
@@ -141,6 +155,14 @@ int user_ptr_writable(uint32_t ptr, uint32_t len) { return user_ptr_span(ptr, le
  * not pre-check the mapping at all and relies entirely on a recoverable copy
  * returning EFAULT. None of them hold a probe across a block.
  */
+/* Recovered-fault accounting. The counter lives here, with the rest of the
+   user-copy bookkeeping, and the fault handler only reports the event: idt.c
+   knows about faults, this file knows what a user copy is. */
+static uint32_t recovered_faults = 0;
+
+uint32_t usercopy_faults_recovered(void)  { return recovered_faults; }
+void     usercopy_note_recovered_fault(void) { recovered_faults++; }
+
 int user_copy_out(uint32_t udst, const void *ksrc, uint32_t len) {
     if (len == 0) return 0;
     if (!user_ptr_writable(udst, len)) return E_FAULT;

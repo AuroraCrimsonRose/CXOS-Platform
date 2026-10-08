@@ -260,9 +260,12 @@ int ktest_loader_adversarial(void) {
 /* ---- user pointer writability -------------------------------------------- */
 
 int ktest_user_ptr_writability(void) {
-    /* A page mapped present + user but NOT writable. user_ptr_ok accepted this
-       and the kernel's write went through anyway, because ring 0 ignores the
-       read-only bit unless CR0.WP is set (security review §4). */
+    /* A page mapped present + user but NOT writable. The old single user_ptr_ok
+       accepted this, and the kernel's write went through anyway, because ring 0
+       ignored the read-only bit while CR0.WP was clear (security review §4).
+       WP is set now, so that write would also fault - but this test is about the
+       checks themselves, and asserts on what they answer, not on what the
+       hardware would do with the result. */
     const uint32_t va = 0x00800000u;
 
     void *frame = pmm_alloc();
