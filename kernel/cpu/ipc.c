@@ -14,8 +14,80 @@
 #define MAX_ENDPOINTS 32
 static struct endpoint endpoints[MAX_ENDPOINTS];
 
+int ep_in_use_count(void) {
+    int n = 0;
+    for (int i = 0; i < MAX_ENDPOINTS; i++)
+        if (endpoints[i].in_use) n++;
+    return n;
+}
+
+void ep_acquire(struct endpoint *ep) {
+    if (!ep || !ep->in_use) return;
+    ep->refs++;
+}
+
+void ep_release(struct endpoint *ep) {
+    if (!ep || !ep->in_use) return;
+    if (ep->refs > 0) ep->refs--;
+    if (ep->refs > 0) return;
+
+    /* Last reference: the slot goes back to the pool. Wiping buf is not
+       tidiness - it has held request and reply bodies, and the next owner of
+       this slot is a different process. */
+    for (uint32_t i = 0; i < sizeof ep->buf; i++) ep->buf[i] = 0;
+    ep->in_use       = 0;
+    ep->active       = 0;
+    ep->handles      = 0;
+    ep->owner_pid    = -1;
+    ep->recv_blocked = 0;
+    ep->caller_pid   = -1;
+    ep->reply_ptr    = NULL;
+    ep->reply_cap    = 0;
+    ep->msg_len      = 0;
+}
+
+/* The last handle has gone. Close the endpoint for business and wake anyone
+   standing on it, so a peer that closes mid-rendezvous ends the other side
+   with an error instead of a permanent block. The slot itself survives until
+   those woken threads drop their own references. */
+static void ep_destroy(struct endpoint *ep) {
+    if (!ep || !ep->active) return;
+    ep->active = 0;
+
+    if (ep->recv_blocked) {
+        ep->recv_blocked = 0;
+        thread_unblock(ep->owner_pid);
+    }
+    if (ep->caller_pid != -1)
+        thread_unblock(ep->caller_pid);
+}
+
+void ep_handle_release(struct cap_handle *h) {
+    if (!h || h->type != HANDLE_ENDPOINT) return;
+    struct endpoint *ep = (struct endpoint *)h->object;
+    if (!ep || !ep->in_use) return;
+
+    /* A handle is the only thing that makes an endpoint reachable, so the last
+       one going is what destroys it logically. In-flight operations hold their
+       own references and keep the slot alive a little longer. */
+    if (ep->handles > 0) ep->handles--;
+    if (ep->handles == 0) ep_destroy(ep);
+    ep_release(ep);
+}
+
+void ipc_init(void) {
+    for (int i = 0; i < MAX_ENDPOINTS; i++) endpoints[i].owner_pid = -1;
+    handle_set_release(HANDLE_ENDPOINT, ep_handle_release);
+}
+
 int ep_create(void) {
     int me = thread_current_id();
+
+    int mine = 0;
+    for (int i = 0; i < MAX_ENDPOINTS; i++)
+        if (endpoints[i].in_use && endpoints[i].owner_pid == me) mine++;
+    if (mine >= MAX_ENDPOINTS_PER_PROC) return E_NOMEM;
+
     int slot = -1;
     for (int i = 0; i < MAX_ENDPOINTS; i++)
         if (!endpoints[i].in_use) { slot = i; break; }
@@ -23,6 +95,9 @@ int ep_create(void) {
 
     struct endpoint *ep = &endpoints[slot];
     ep->in_use       = 1;
+    ep->active       = 1;
+    ep->refs         = 1;   /* the handle installed just below */
+    ep->handles      = 1;
     ep->owner_pid    = me;
     ep->recv_blocked = 0;
     ep->caller_pid   = -1;
@@ -31,7 +106,26 @@ int ep_create(void) {
     ep->msg_len      = 0;
 
     int h = thread_handle_install(me, HANDLE_ENDPOINT, HRIGHT_RECV, ep);
-    if (h < 0) { ep->in_use = 0; return E_NOMEM; }
+    if (h < 0) {
+        ep->handles = 0;
+        ep->active  = 0;
+        ep_release(ep);      /* drops the reference taken above: frees the slot */
+        return E_NOMEM;
+    }
+    return h;
+}
+
+/* A second handle onto an existing endpoint - spawn.c hands every child a SEND
+   right to the broker's. Each handle is a reference, which is exactly why the
+   first close must not free. */
+int ep_install_handle(int pid, struct endpoint *ep, uint8_t rights) {
+    if (!ep || !ep->in_use || !ep->active) return E_BADF;
+
+    int h = thread_handle_install(pid, HANDLE_ENDPOINT, rights, ep);
+    if (h < 0) return E_NOMEM;
+
+    ep->handles++;
+    ep_acquire(ep);
     return h;
 }
 
@@ -39,7 +133,12 @@ struct endpoint *ep_from_handle(int idx, uint8_t need_rights) {
     struct cap_handle *h = thread_handle_get(thread_current_id(), idx);
     if (!h || h->type != HANDLE_ENDPOINT) return NULL;
     if ((h->rights & need_rights) != need_rights) return NULL;
-    return (struct endpoint *)h->object;
+
+    struct endpoint *ep = (struct endpoint *)h->object;
+    /* A handle on a destroyed endpoint is a dead name: it resolves to nothing,
+       rather than to a slot that may already belong to someone else. */
+    if (!ep || !ep->in_use || !ep->active) return NULL;
+    return ep;
 }
 
 /* app side: stage the request, wake a waiting owner, block until replied, then
@@ -62,15 +161,28 @@ int ipc_call(const struct ipc_call_args *ua) {
     ep->reply_cap  = a.reply_cap;
     ep->caller_pid = thread_current_id();
 
+    /* Held across the block: the owner may close its handle while we sleep,
+       and without this the slot could be freed and reused under us - we would
+       wake and copy a reply out of some other process's endpoint. */
+    ep_acquire(ep);
+
     if (ep->recv_blocked) { ep->recv_blocked = 0; thread_unblock(ep->owner_pid); }
 
     thread_block();   /* until ipc_reply wakes us; reply now staged in ep->buf */
+
+    /* ep_destroy also wakes us, so waking does not mean a reply arrived. */
+    if (!ep->active) {
+        ep->caller_pid = -1;
+        ep_release(ep);
+        return E_BADF;
+    }
 
     uint32_t rl = ep->msg_len;
     if (rl > a.reply_cap) rl = a.reply_cap;
     for (uint32_t i = 0; i < rl; i++)                    /* write reply in caller space */
         ((uint8_t *)a.reply)[i] = ep->buf[i];
     ep->caller_pid = -1;   /* rendezvous complete */
+    ep_release(ep);
     return (int)rl;
 }
 
@@ -84,10 +196,15 @@ int ipc_recv(const struct ipc_recv_args *ua) {
     if (!ep) return E_BADF;
     if (a.cap && !user_ptr_writable((uint32_t)a.buf, a.cap)) return E_FAULT;
 
+    ep_acquire(ep);                    /* see ipc_call: held across the block */
     while (ep->caller_pid == -1) {     /* no request staged yet: wait */
         ep->recv_blocked = 1;
         thread_block();
+
+        /* A last-handle close wakes us with no caller staged. */
+        if (!ep->active) { ep_release(ep); return E_BADF; }
     }
+    ep_release(ep);
 
     uint32_t ml = ep->msg_len;
     if (ml > a.cap) ml = a.cap;

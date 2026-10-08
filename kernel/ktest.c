@@ -22,6 +22,7 @@
 #include "logging.h"
 #include "color.h"
 #include "sched.h"
+#include "ipc.h"
 #include "usermode.h"
 #include "uid.h"
 #include "disk.h"
@@ -49,6 +50,68 @@ static int report(const char *name, int ok) {
         klog("KTEST", SEV_FAIL, name);
 
     return ok;
+}
+
+/* ---- IPC endpoints: reference counted, and reclaimed (security §7) ----
+   Before this, closing an endpoint handle blanked the handle slot but left
+   the endpoint's in_use set, so the 32-entry pool drained permanently: a
+   process that created and closed endpoints could deny them to everyone, and
+   every exited process leaked its own. The fix is a count, because an
+   endpoint legitimately has several handles - the owner's RECV plus a SEND in
+   every spawned child - so freeing on the first close would be a
+   use-after-free rather than merely early.
+
+   Each stage fails distinctly, so a regression says which rule broke. */
+static int test_ipc_endpoint_lifetime(void) {
+    int me       = thread_current_id();
+    int baseline = ep_in_use_count();
+
+    /* 1. create then close: the slot comes back. */
+    int h = ep_create();
+    if (h < 0) return 0;
+    if (ep_in_use_count() != baseline + 1) return 0;
+
+    struct endpoint *ep = ep_from_handle(h, HRIGHT_RECV);
+    if (!ep || ep->refs != 1 || ep->handles != 1 || !ep->active) return 0;
+
+    if (thread_handle_close(me, h) != 0) return 0;
+    if (ep_in_use_count() != baseline) return 0;      /* the leak this fixes */
+
+    /* 2. a second handle is a second reference: the first close must not free. */
+    h = ep_create();
+    if (h < 0) return 0;
+    ep = ep_from_handle(h, HRIGHT_RECV);
+    if (!ep) return 0;
+
+    int h2 = ep_install_handle(me, ep, HRIGHT_SEND);
+    if (h2 < 0) return 0;
+    if (ep->refs != 2 || ep->handles != 2) return 0;
+
+    if (thread_handle_close(me, h) != 0) return 0;
+    if (!ep->in_use || !ep->active) return 0;         /* must still be alive */
+    if (ep->refs != 1 || ep->handles != 1) return 0;
+    if (ep_in_use_count() != baseline + 1) return 0;
+
+    /* 3. the last handle frees it, and the stale handle is a dead name. */
+    if (thread_handle_close(me, h2) != 0) return 0;
+    if (ep_in_use_count() != baseline) return 0;
+    if (ep->in_use || ep->active) return 0;
+    if (ep_from_handle(h2, HRIGHT_SEND) != NULL) return 0;
+
+    /* 4. the per-process quota holds, and releases. */
+    int hs[MAX_ENDPOINTS_PER_PROC];
+    int made = 0;
+    for (int i = 0; i < MAX_ENDPOINTS_PER_PROC; i++) {
+        hs[i] = ep_create();
+        if (hs[i] < 0) break;
+        made++;
+    }
+    int ok = (made == MAX_ENDPOINTS_PER_PROC) && (ep_create() < 0);
+    for (int i = 0; i < made; i++) thread_handle_close(me, hs[i]);
+    if (!ok) return 0;
+    if (ep_in_use_count() != baseline) return 0;
+
+    return 1;
 }
 
 /* ---- paging: map a scratch frame, write+read it back ---- */
@@ -1078,6 +1141,7 @@ void ktest_run(void) {
     total++; passed += report("crypto profile: one key shape only", test_crypto_profile());
     total++; passed += report("exec admission (dev / release)",   test_exec_admit());
     total++; passed += report("file syscalls (SYS_FILE_OP)",       usermode_file_test());
+    total++; passed += report("ipc endpoints refcounted + reclaimed", test_ipc_endpoint_lifetime());
 
     /* single summary line: green if all passed, red if any failed. */
     if (passed == total) {

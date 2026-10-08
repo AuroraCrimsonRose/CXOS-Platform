@@ -291,6 +291,7 @@ void usermode_init(void) {
     /* install the syscall gate: int 0x80, DPL=3 so ring 3 can invoke it */
     idt_set_user_gate(0x80, (uint32_t)syscall_stub);
     sysfile_init();   /* registers the HANDLE_FILE releaser */
+    ipc_init();       /* registers the HANDLE_ENDPOINT releaser */
 }
 
 /* ---- Checkpoint 3a: the minimal single-process ring-3 round-trip ---- */
