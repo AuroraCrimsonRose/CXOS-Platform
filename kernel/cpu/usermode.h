@@ -27,6 +27,34 @@ void usermode_init(void);
 int  user_ptr_readable(uint32_t ptr, uint32_t len);
 int  user_ptr_writable(uint32_t ptr, uint32_t len);
 
+/* Copy across the ring boundary (security review §6).
+ *
+ * Use these rather than validating a pointer and then dereferencing it: a
+ * validation is only true at the instant it runs, and any syscall that
+ * validates, blocks, and then copies is trusting a snapshot that nothing has
+ * refreshed. These validate at the copy and copy fault-recoverably, so the
+ * failure is E_FAULT rather than a stale-probe write or a ring-0 fault.
+ *
+ * `len == 0` is a success that touches nothing, so a NULL/absent buffer with
+ * zero length needs no special case at the call site.
+ *
+ * On failure the destination is PARTIALLY WRITTEN: treat it as undefined.
+ */
+int  user_copy_out(uint32_t udst, const void *ksrc, uint32_t len);
+int  user_copy_in(void *kdst, uint32_t usrc, uint32_t len);
+
+/* The primitive behind both, in usermode.asm: 0 = copied, 1 = faulted and
+   recovered. It does NOT validate - it is exported for the self-test, which
+   has to reach the recovery path that the validation in user_copy_out exists
+   to keep anything from reaching. */
+int  user_copy_bytes(void *dst, const void *src, uint32_t len);
+
+/* The recoverable region's bounds and its landing pad (usermode.asm). The
+   page-fault handler needs these; nothing else should. */
+extern char usercopy_start[];
+extern char usercopy_end[];
+void usercopy_trampoline(void);
+
 /* SYS_FILE_OP exercised over a real PAGE_USER mapping (see usermode.c).
    1 = pass, 0 = fail. Lives here because it needs map_user_page. */
 int  usermode_file_test(void);

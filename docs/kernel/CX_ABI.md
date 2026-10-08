@@ -87,25 +87,38 @@ given `caps=0` behaves exactly as v1 described.
 
 ## 3. Pointer & fault rules (security invariants)
 
-- The kernel **never dereferences a ring-3 pointer** without validating it. Every user
-  pointer argument is checked with `user_ptr_ok(ptr, len)` against the **calling process's**
-  mapped user region, length-bounded. Failure → `E_FAULT`. (This is the per-process
-  generalization of the legacy single-region `user_ptr_ok`.)
+- The kernel **never dereferences a ring-3 pointer** without validating it, against the
+  **calling process's** mapped user region, length-bounded. Failure → `E_FAULT`.
+- **Ask for the access you intend.** There is no single check: `user_ptr_readable(ptr, len)`
+  requires present + ring-3-accessible, and `user_ptr_writable(ptr, len)` additionally
+  requires `PAGE_RW`. The combined `user_ptr_ok` is deliberately gone rather than kept as an
+  alias, so a new call site has to say which it means and cannot default to the weaker check
+  by forgetting (security review §4).
 - Maximum single user transfer is bounded (one page, `0x1000`, for messages; primitives
   state their own caps).
-- **Gap: `user_ptr_ok` does not check writability.** It validates present + ring-3-accessible
-  (`paging_is_user`) across every page the buffer spans, but never `PAGE_RW`. Calls that write
-  *into* a user buffer (`mouse_read`, `fb_op`'s `INFO`, `net_op`'s `out`) will therefore happily
-  write into a process's read-only text or rodata if handed such a pointer. It is currently
-  harmless only because `CR0.WP` is clear, so ring-0 writes bypass the read-only bit — which
-  also means the day `WP` is enabled this becomes a kernel-mode page fault reachable from ring
-  3. The fix is a `user_ptr_w_ok` used by every write-out path, then enabling `WP` so
-  violations fault loudly instead of silently corrupting.
-- **Gap: a bounded scan is not a bounded read.** `FB_OP_DRAW_TEXT` computes a validated string
-  length and then passes the raw pointer to a function that walks to its own NUL, so a string
-  filling a mapped page with no terminator reads past the mapping. `SYS_CONSOLE_WRITE` gets
-  this right — it scans for a length, then reads exactly that many bytes. Any future call
-  taking a user string must follow the console's pattern.
+- **Copy with `user_copy_out` / `user_copy_in`; never validate and then dereference.** A
+  validation is only true at the instant it runs. Any call that validates, blocks, and then
+  copies is trusting a snapshot nothing has refreshed — which is what both IPC blocking paths
+  did (security review §6). These copy primitives re-validate at the copy *and* perform it
+  inside a fault-recoverable region, so a mapping that has gone away yields `E_FAULT` instead
+  of a stale-probe write or a ring-0 fault. On failure the destination is **partially
+  written** and must be treated as undefined.
+- **Both layers of that are load-bearing, because `CR0.WP` is clear.** A ring-0 write to a
+  read-only user page does not fault at all — it silently succeeds — so fault recovery alone
+  would not catch one and only the range check refuses it. Conversely no check can cover a
+  page that stops being mapped after the check and before the instruction that uses it, which
+  is what recovery is for. Enabling `WP` would collapse the two into one and is the obvious
+  next step, but it changes the behaviour of every kernel write to a read-only page and so
+  needs its own verification.
+- Fault recovery is scoped by **where the fault happened** — the faulting EIP inside
+  `usercopy_start`…`usercopy_end` (`cpu/usermode.asm`), checked in `cpu/int/idt.c` — and not
+  by an armed flag, so there is nothing that can be left switched on. A kernel page fault
+  anywhere else still panics.
+- **A bounded scan is not a bounded read.** Scan for a length, then read exactly that many
+  bytes; never hand the raw pointer to something that walks to its own NUL, or a string
+  filling a mapped page with no terminator reads past the mapping. `SYS_CONSOLE_WRITE` and
+  `FB_OP_DRAW_TEXT` (via `fb_draw_string_n`) both follow this. Any future call taking a user
+  string must too.
 - A CPU fault taken while in ring 3 routes to the user-fault hook, which **terminates the
   faulting process** and returns to the scheduler. A buggy app/executive never takes down
   the kernel.

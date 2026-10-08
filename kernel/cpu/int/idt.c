@@ -25,6 +25,9 @@
 #include "gdt.h"
 #include "kstack.h"
 #include "paging.h"
+#include "usermode.h"   /* usercopy_start / usercopy_end / usercopy_trampoline */
+
+#define KERNEL_VBASE 0xC0000000u   /* user half is everything below it */
 
 void pic_remap(void);
 void pic_send_eoi(uint32_t int_no);
@@ -138,7 +141,47 @@ static void panic_name_overflow(uint32_t addr) {
 static void (*user_fault_hook)(struct registers *r) = 0;
 void set_user_fault_hook(void (*hook)(struct registers *)) { user_fault_hook = hook; }
 
+/* Page-fault recovery for the user-copy primitives (security review §6).
+ *
+ * A fault taken *inside* usermode.asm's copy region is the one kernel fault
+ * that is not a bug: it means a user buffer stopped being mapped, which the
+ * copy is required to report rather than die of. Recovery redirects the return
+ * to the copy's landing pad, which returns the fault indicator, and
+ * user_copy_out/in turn that into E_FAULT.
+ *
+ * All four conditions matter, and the EIP range is what makes this safe: there
+ * is no armed flag to leak, so a kernel fault anywhere else still panics
+ * exactly as before. Redox's page_fault_handler guards it with the same four
+ * (src/memory/mod.rs); Haiku and Mach use a per-thread fault-handler slot,
+ * which also works but can be left armed.
+ *
+ * Returns 1 if the fault was recovered and the handler must return at once.
+ */
+static int recover_user_copy_fault(struct registers *r) {
+    if (r->int_no != 14) return 0;
+
+    uint32_t cr2;
+    __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
+
+    if (cr2 >= KERNEL_VBASE)   return 0;   /* a user address */
+    if (r->err_code & 0x4)     return 0;   /* taken in ring 0: the kernel did it */
+    if (r->err_code & 0x10)    return 0;   /* data, not an instruction fetch */
+    if (r->eip <  (uint32_t)usercopy_start) return 0;
+    if (r->eip >= (uint32_t)usercopy_end)   return 0;
+
+    /* A same-ring fault pushes only EIP/CS/EFLAGS - ESP and SS are NOT saved,
+       so r->useresp and r->ss are not part of this frame and must not be
+       touched. EIP is the one thing worth changing, which is why the landing
+       pad exists instead of patching the copy in place. */
+    r->eip = (uint32_t)usercopy_trampoline;
+    return 1;
+}
+
 void isr_handler(struct registers *r) {
+    /* Before anything else, including the panic tone: a recovered fault must
+       be silent and leave no trace. */
+    if (recover_user_copy_fault(r)) return;
+
     speaker_panic_tone();
     if ((r->cs & 3) == 3 && user_fault_hook) {
         user_fault_hook(r);

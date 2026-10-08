@@ -111,6 +111,50 @@ int user_ptr_readable(uint32_t ptr, uint32_t len) { return user_ptr_span(ptr, le
  */
 int user_ptr_writable(uint32_t ptr, uint32_t len) { return user_ptr_span(ptr, len, 1); }
 
+/* ---- copying across the ring boundary (security review §6) ---------------
+ *
+ * The review's case is a syscall that validates a user pointer, blocks, and
+ * then copies through the pointer it validated before sleeping. IPC did
+ * exactly that on both of its blocking paths. The checks above are passive
+ * reads of the page tables, so such a check is a snapshot of the mapping at
+ * one instant and nothing refreshes it.
+ *
+ * So the copy carries its own validation, and the two layers are *both*
+ * load-bearing, for a reason specific to this kernel:
+ *
+ *   the range check   catches a page that is mapped but not writable by ring
+ *                     3. That is not a fault at all from ring 0 - CR0.WP is
+ *                     clear, so the kernel's write to a read-only user page
+ *                     silently succeeds (paging.c, security review §4).
+ *                     Recovery would never fire; only the check refuses it.
+ *   the recoverable   catches a page that is not there. Validation cannot be
+ *   copy              made to hold across the instruction that uses it, so
+ *                     the copy is allowed to fail instead (usermode.asm).
+ *
+ * Dropping either one leaves a hole the other does not cover, which is why
+ * ktest tests them separately.
+ *
+ * This is the shape every system that has solved it converged on: Haiku's
+ * user_memcpy validates the range and traps the fault, returning
+ * B_BAD_ADDRESS; Mach copies through copyoutmsg, whose copy_validate runs per
+ * copy against the target map, with asm recovery entries under it; Redox does
+ * not pre-check the mapping at all and relies entirely on a recoverable copy
+ * returning EFAULT. None of them hold a probe across a block.
+ */
+int user_copy_out(uint32_t udst, const void *ksrc, uint32_t len) {
+    if (len == 0) return 0;
+    if (!user_ptr_writable(udst, len)) return E_FAULT;
+    if (user_copy_bytes((void *)udst, ksrc, len) != 0) return E_FAULT;
+    return 0;
+}
+
+int user_copy_in(void *kdst, uint32_t usrc, uint32_t len) {
+    if (len == 0) return 0;
+    if (!user_ptr_readable(usrc, len)) return E_FAULT;
+    if (user_copy_bytes(kdst, (const void *)usrc, len) != 0) return E_FAULT;
+    return 0;
+}
+
 /* ---- syscall dispatch (called from syscall_stub) ---- */
 int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
     switch (num) {

@@ -28,6 +28,9 @@ struct endpoint {
     int      caller_pid;    /* a blocked ipc_call caller, or -1 */
     void    *reply_ptr;     /* caller's reply buffer (in the caller's space) */
     uint32_t reply_cap;     /* caller's reply buffer size */
+                            /* These two are the authority for the copy-out in
+                               ipc_call, re-validated there rather than
+                               trusted from before the block (review §6). */
     uint32_t msg_len;       /* bytes currently staged in buf (request, then reply) */
     uint8_t  buf[4096];     /* kernel bounce buffer for request + reply */
 };

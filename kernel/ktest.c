@@ -41,6 +41,8 @@
 #include "gdt.h"
 #include "idt.h"
 
+#define KERNEL_VBASE 0xC0000000u
+
 /* concise pass/fail reporter */
 /* Report a test result. Stays SILENT on success - only failures are printed,
    so a clean boot is quiet and any problem stands out. Returns 1 if passed,
@@ -110,6 +112,109 @@ static int test_ipc_endpoint_lifetime(void) {
     for (int i = 0; i < made; i++) thread_handle_close(me, hs[i]);
     if (!ok) return 0;
     if (ep_in_use_count() != baseline) return 0;
+
+    return 1;
+}
+
+/* ---- user copies: validated at the copy (security §6) ----
+   The range check's half of user_copy_out. A page that is mapped and
+   ring-3-readable but NOT ring-3-writable is the case fault recovery cannot
+   catch: CR0.WP is clear, so the kernel's write to it does not fault at all,
+   it silently succeeds. Only the check refuses it.
+
+   That is also what makes this sabotage-detectable without a panic: delete
+   the user_ptr_writable call in user_copy_out and the copy goes through, so
+   the "unchanged" assertions below fail and this test alone goes red. */
+static int test_user_copy_validation(void) {
+    const uint32_t va = 0x00810000u;   /* clear of ktest_user_ptr_writability's page */
+    const uint8_t  src[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
+
+    void *frame = pmm_alloc();
+    if (!frame) return 0;
+
+    volatile uint8_t *p = (volatile uint8_t *)va;
+    int ok = 1;
+
+    /* Writable: the copy must succeed and the bytes must actually land. A test
+       that only checks refusals passes just as well against a copy that always
+       refuses. */
+    if (paging_map_user(va, (uint32_t)frame, PAGE_PRESENT | PAGE_WRITE) != 0) { ok = 0; goto done; }
+    for (int i = 0; i < 8; i++) p[i] = 0xAA;
+    ok = ok && (user_copy_out(va, src, 8) == 0);
+    for (int i = 0; i < 8; i++) ok = ok && (p[i] == src[i]);
+
+    /* Read-only: refused, and nothing written. */
+    for (int i = 0; i < 8; i++) p[i] = 0xAA;
+    if (paging_map_user(va, (uint32_t)frame, PAGE_PRESENT) != 0) { ok = 0; goto done; }
+    ok = ok && (user_copy_out(va, src, 8) == E_FAULT);
+    for (int i = 0; i < 8; i++) ok = ok && (p[i] == 0xAA);   /* the sabotage signal */
+
+    /* Reading out of the same read-only page is legitimate - readable is all a
+       copy-in needs - so the check must not have become "refuse everything". */
+    {
+        uint8_t dst[8] = { 0 };
+        ok = ok && (user_copy_in(dst, va, 8) == 0);
+        for (int i = 0; i < 8; i++) ok = ok && (dst[i] == 0xAA);
+    }
+
+    /* A length of zero touches nothing and succeeds, including through a null
+       pointer: call sites rely on this for an absent buffer. */
+    ok = ok && (user_copy_out(0, src, 0) == 0);
+    ok = ok && (user_copy_in((void *)src, 0, 0) == 0);
+
+    /* A buffer straddling the kernel boundary is refused by both. */
+    ok = ok && (user_copy_out(KERNEL_VBASE - 4, src, 8) == E_FAULT);
+    {
+        uint8_t dst[8] = { 0 };
+        ok = ok && (user_copy_in(dst, KERNEL_VBASE - 4, 8) == E_FAULT);
+    }
+
+done:
+    paging_unmap(va);
+    pmm_free(frame);
+    return ok;
+}
+
+/* ---- user copies: a fault inside one is recoverable (security §6) ----
+   The other half. An unmapped user page is what the range check cannot be
+   made to cover, because a mapping can change after any check and before the
+   instruction that uses it: the copy itself has to be allowed to fail.
+
+   user_copy_out refuses this before the copy ever runs, which is the point of
+   it, so the primitive is called directly - there is no other way to reach the
+   recovery path.
+
+   The sabotage signal here is a PANIC, not a red test, and it cannot be
+   anything else: without the recovery in idt.c this write is an unrecoverable
+   ring-0 page fault. Remove recover_user_copy_fault and the boot dies here
+   with a page fault inside usermode.asm rather than reporting a failure. */
+static int test_user_copy_fault_recovery(void) {
+    const uint32_t va = 0x00820000u;
+    const uint8_t  src[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
+
+    /* If something has mapped this, the test proves nothing - say so rather
+       than passing vacuously. */
+    if (paging_get_phys(va) != 0) return 0;
+
+    if (user_copy_bytes((void *)va, src, 8) != 1) return 0;   /* faulted, recovered */
+
+    /* Reading from it is recoverable in the same way. */
+    {
+        uint8_t dst[8] = { 0 };
+        if (user_copy_bytes(dst, (const void *)va, 8) != 1) return 0;
+    }
+
+    /* A copy that does not fault still reports success afterwards: the
+       recovery must not have left anything latched that makes every later
+       copy look faulted. */
+    {
+        uint8_t dst[8] = { 0 };
+        if (user_copy_bytes(dst, src, 8) != 0) return 0;
+        for (int i = 0; i < 8; i++) if (dst[i] != src[i]) return 0;
+    }
+
+    /* And the validated path refuses it up front, without reaching the copy. */
+    if (user_copy_out(va, src, 8) != E_FAULT) return 0;
 
     return 1;
 }
@@ -1142,6 +1247,8 @@ void ktest_run(void) {
     total++; passed += report("exec admission (dev / release)",   test_exec_admit());
     total++; passed += report("file syscalls (SYS_FILE_OP)",       usermode_file_test());
     total++; passed += report("ipc endpoints refcounted + reclaimed", test_ipc_endpoint_lifetime());
+    total++; passed += report("user copies validated at the copy",  test_user_copy_validation());
+    total++; passed += report("user copy faults are recoverable",   test_user_copy_fault_recovery());
 
     /* single summary line: green if all passed, red if any failed. */
     if (passed == total) {

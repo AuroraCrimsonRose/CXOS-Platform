@@ -89,9 +89,16 @@ number 1 when `SYS_CONSOLE_WRITE` is `0x30`. See **`docs/kernel/CX_ABI.md` §7**
 The part that belongs *here* is the boundary rule, not the call list:
 
 **Pointer validation:** because there is now a privilege boundary, the kernel
-must never blindly dereference a pointer handed up from ring 3. `user_ptr_ok`
-validates that a user buffer lies within the *calling process's* user region
-(see §6), bounds the length, and rejects overflow.
+must never blindly dereference a pointer handed up from ring 3.
+`user_ptr_readable` and `user_ptr_writable` validate that a user buffer lies
+within the *calling process's* user region (see §6), bound the length, and
+reject overflow; which one to call depends on the access intended, and there is
+no combined form.
+
+Validation alone is not enough for anything that blocks in between, because it
+is only true at the instant it runs. Copies across the boundary go through
+`user_copy_out` / `user_copy_in`, which validate at the copy and survive a
+fault inside it. `CX_ABI.md` §3 has the rule and the reasoning.
 
 ---
 

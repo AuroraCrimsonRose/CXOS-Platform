@@ -96,6 +96,62 @@ syscall_stub:
     sti
     iretd
 
+; ---------------------------------------------------------------------------
+; int user_copy_bytes(void *dst, const void *src, uint32_t len)
+;   0 = copied, 1 = a page fault was taken and recovered from.
+;
+; The fault-recoverable copy primitive behind user_copy_out / user_copy_in
+; (security review §6). Both pointers are range-checked by the caller; this
+; routine exists for the case the range check cannot cover - the mapping
+; changing, or never having been what the page tables said - where the copy
+; itself must fail rather than take an unrecoverable ring-0 fault.
+;
+; Everything between usercopy_start and usercopy_end is the recoverable
+; region. The page-fault handler compares the faulting EIP against it and, on
+; a match, redirects the return to usercopy_trampoline below (idt.c). There is
+; no armed flag anywhere: recovery is a property of *where the fault happened*,
+; so it cannot be left switched on and swallow an unrelated kernel fault.
+; Redox does it this way (__usercopy_start/__usercopy_end, src/memory/mod.rs)
+; for that reason; Haiku and Mach instead keep a per-thread fault-handler slot
+; that each copy arms and restores, which works but has a failure mode this
+; does not.
+;
+; On a recovered fault the destination is PARTIALLY WRITTEN - `rep movsb`
+; stops where it faulted. Callers must treat it as undefined, which every
+; caller here does by returning E_FAULT and copying nothing further.
+; ---------------------------------------------------------------------------
+global user_copy_bytes
+global usercopy_start
+global usercopy_end
+global usercopy_trampoline
+
+usercopy_start:
+user_copy_bytes:
+    push edi
+    push esi                 ; see usercopy_trampoline: it undoes exactly these
+    mov edi, [esp + 12]      ; dst   (2 pushes = 8, + ret = 12)
+    mov esi, [esp + 16]      ; src
+    mov ecx, [esp + 20]      ; len
+    cld                      ; forward; never assume DF
+    rep movsb                ; the only instruction here that can fault
+    pop esi
+    pop edi
+    xor eax, eax             ; 0 = copied
+    ret
+usercopy_end:
+
+; The landing pad the page-fault handler returns to instead of the faulting
+; instruction. A same-ring fault does not save or restore ESP, so ESP is still
+; exactly what it was mid-copy and the prologue's two pushes are still on the
+; stack: undo them and return the fault indicator. Keep in lockstep with the
+; prologue above - this is a hand-maintained pairing, and nothing but a test
+; will notice if it drifts.
+usercopy_trampoline:
+    pop esi
+    pop edi
+    mov eax, 1               ; 1 = faulted, recovered
+    ret
+
 section .bss
 ; (per-process ring-3 return state now lives in the process struct, passed to
 ;  enter_usermode/return_to_kernel as save_slot - no globals needed)
