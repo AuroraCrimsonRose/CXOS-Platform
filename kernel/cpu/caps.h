@@ -32,7 +32,22 @@
    passes a subset of its own to a child and can never amplify (see the
    attenuation note in docs/kernel/CX_ABI.md section 5). */
 #define GRANT_CONSOLE   0x0001u   /* console_write */
-#define GRANT_MEM       0x0002u   /* map / unmap / sbrk */
+/* NOT ENFORCED, and that is deliberate rather than missing. SYS_MEM_OP is
+   unprivileged by design - "a program that could not obtain memory would not
+   be contained, it would be unable to run", and what bounds it is the
+   per-process quota inside vm_map, not a bit every program would have to hold
+   (see the comment on SYS_MEM_OP in cpu/usermode.c). This bit is therefore
+   vestigial: it is carried in GRANT_OS_BASELINE and accepted by the
+   supervisor's descriptor parser, and it gates nothing.
+
+   Found by the syscall-authorisation audit of 2026-10-09, which came looking
+   for a missing check and found a misleading definition instead - this said
+   "map / unmap / sbrk" as though it controlled them. Kept rather than removed,
+   because removing a grant bit is an ABI change and the value is already
+   published; marked reserved, the way GRANT_IOPORT already is. If memory ever
+   does become a gated resource, this is the bit to use and the comment on
+   SYS_MEM_OP is the decision to revisit first. */
+#define GRANT_MEM       0x0002u   /* (reserved, not enforced) see the note above */
 #define GRANT_DISK      0x0004u   /* block_read / block_write */
 #define GRANT_NET       0x0008u   /* SYS_NET_OP: interface config, ping, raw frames */
 #define GRANT_SPAWN     0x0010u   /* spawn */

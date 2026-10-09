@@ -679,6 +679,63 @@ int usermode_file_test(void) {
     if (((uint32_t *)FT_DATA)[0] == 0) goto done;     /* ticks must have advanced */
     step++;
     if (syscall_dispatch(SYS_SLEEP, 1, 0) != E_OK) goto done;
+
+    /* --- the authorisation matrix, with caps stripped to nothing ---
+     *
+     * The 2026-10-09 review asked for an audit of authorisation as distinct
+     * from pointer validity - "a valid user pointer alone does not authorize
+     * the requested operation". The audit found every privileged syscall
+     * already gated; this is what keeps that true, because the failure mode is
+     * a syscall ADDED later without a gate, which no existing test would
+     * notice.
+     *
+     * Each of these must refuse on the capability alone, before it looks at
+     * its argument - so the pointers passed are deliberately garbage. A gate
+     * that ran after argument validation would return E_FAULT here and fail
+     * this test, which is the ordering worth pinning: authorisation first.
+     */
+    step++;
+    if (syscall_dispatch(SYS_CONSOLE_WRITE, 0xC0001000u, 0) != E_PERM) goto done;
+    step++;
+    if (syscall_dispatch(SYS_FILE_OP,       0xC0001000u, 0) != E_PERM) goto done;
+    step++;
+    if (syscall_dispatch(SYS_FB_OP,         0xC0001000u, 0) != E_PERM) goto done;
+    step++;
+    if (syscall_dispatch(SYS_NET_OP,        0xC0001000u, 0) != E_PERM) goto done;
+    step++;
+    if (syscall_dispatch(SYS_POWER,         0, 0)           != E_PERM) goto done;
+    step++;
+    if (syscall_dispatch(SYS_EP_CREATE,     0, 0)           != E_PERM) goto done;
+    step++;
+    if (syscall_dispatch(SYS_SPAWN,         0xC0001000u, 0) != E_PERM) goto done;
+    step++;
+    if (syscall_dispatch(SYS_EXEC_PATH,     0xC0001000u, 0) != E_PERM) goto done;
+
+    /* SYS_MEM_OP is NOT in that list, and that is the audit's one real
+       finding rather than an omission here. It is unprivileged by design -
+       a program that cannot obtain memory is not contained, it is unable to
+       run - and the per-process quota is what bounds it. GRANT_MEM exists,
+       sits in GRANT_OS_BASELINE and is accepted by the supervisor's descriptor
+       parser, and gates nothing; it was documented as "map / unmap / sbrk" as
+       though it did. Now marked reserved in caps.h.
+
+       Asserted in the positive direction, so that if anyone later gates
+       SYS_MEM_OP they break here and have to revisit the decision rather than
+       discovering it through a service that can no longer allocate.
+
+       "Not E_PERM" rather than "E_OK": this runs on a kernel thread, which has
+       no vm_proc record, so vm_info answers E_INVAL. The property under test
+       is that it is not refused on CAPABILITY grounds, and E_INVAL says
+       exactly that - the call got past authorisation and failed on its own
+       terms. */
+    step++;
+    {
+        struct mem_op_args *mo = (struct mem_op_args *)FT_DATA;
+        for (uint32_t i = 0; i < sizeof *mo / 4u; i++) ((uint32_t *)mo)[i] = 0;
+        mo->op = MEM_OP_INFO;
+        if (syscall_dispatch(SYS_MEM_OP, FT_DATA, 0) == E_PERM) goto done;
+    }
+
     thread_set_caps(me, GRANT_DISK | GRANT_SPAWN);
 
     /* a bad clock pointer is caught, not written through */

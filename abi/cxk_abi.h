@@ -217,7 +217,9 @@ struct fb_op_args {
    Values MUST match kernel/cpu/caps.h. Guarded so including both is harmless. */
 #ifndef GRANT_CONSOLE
 #define GRANT_CONSOLE     0x0001u
-#define GRANT_MEM         0x0002u
+#define GRANT_MEM         0x0002u   /* reserved, NOT enforced: SYS_MEM_OP is
+                                        unprivileged by design - see
+                                        kernel/cpu/caps.h */
 #define GRANT_DISK        0x0004u
 #define GRANT_NET         0x0008u
 #define GRANT_SPAWN       0x0010u
