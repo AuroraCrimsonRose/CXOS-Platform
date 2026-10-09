@@ -757,17 +757,29 @@ done:
  *
  * The lower bound is the assertion: a sleep must not finish early, because
  * everything built on it - a scheduler waiting for the next due task, a
- * retry backing off - is wrong if it can. The upper bound is deliberately
- * loose. Scheduling here is cooperative and whatever else ktest has left
- * runnable gets to finish first, so "it took longer than asked" is normal and
- * only a wildly wrong figure means anything.
+ * retry backing off - is wrong if it can.
+ *
+ * The upper bound is the other half of engineering §7: a wakeup bug that
+ * turns a 50 ms sleep into a multi-second stall is a real failure and a
+ * "did it come back?" test cannot see it either. The bound is 100 ms, which
+ * is twice what this actually takes - measured, not guessed: instrumented on
+ * 2026-10-09, `thread_sleep_ms(50)` returns after exactly 50 ticks, so the
+ * previous 500 ms ceiling was ten times looser than the behaviour it was
+ * bounding and would have passed a sleep that overran by 9x. The 2x headroom
+ * is for scheduling: this is cooperative, and whatever ktest has left
+ * runnable finishes first.
+ *
+ * That the ceiling matters is not an assumption either: with thread_sleep_ms
+ * sabotaged to wait four times as long, this test fails at 100 ms and
+ * **passes at 500**, all 32 green. The old bound was wide enough to admit the
+ * exact failure it was there to catch.
  */
 static int test_clock_sleep(void) {
     uint32_t t0 = timer_ticks();
     thread_sleep_ms(50);
     uint32_t dt = timer_ticks() - t0;
     if (dt < 50)  return 0;        /* woke early - the bug that matters */
-    if (dt > 500) return 0;        /* wildly over: something is wrong */
+    if (dt > 100) return 0;        /* a 50 ms sleep that became a long stall */
 
     /* 0 ms is documented as a yield, not a wait. */
     t0 = timer_ticks();
@@ -781,6 +793,85 @@ static int test_clock_sleep(void) {
     if ((int32_t)(b - a) < 10) return 0;
 
     return 1;
+}
+
+/* ---- the tick counter wraps, and the waits built on it must survive it
+ *      (engineering §7) ----
+ *
+ * The counter is 32 bits of milliseconds, so it returns to zero after 49.7
+ * days of uptime. Nothing here had ever run that long, which is why two of
+ * the kernel's three wait primitives were computing a deadline as `now + ms`
+ * and comparing it directly - correct for 49.7 days and then wrong, in
+ * opposite directions:
+ *
+ *   timer_sleep        `while (ticks < target)` - a wrapped target compares
+ *                      small, so the sleep returns at once. Used by every USB
+ *                      host controller for its reset and port-settle delays.
+ *   timer_timeout_*    `ticks >= deadline` - a wrapped deadline is already
+ *                      past, so the wait expires before the hardware is asked.
+ *                      Used by ATA and AHCI, which would report
+ *                      DISK_ERR_TIMEOUT on a disk that was working.
+ *
+ * sched_wake_sleepers had the wrap-safe form already, with a comment saying
+ * why; the idiom simply never made it back into the driver the scheduler got
+ * its time from.
+ *
+ * Testing this needs the counter moved rather than waited out, which is what
+ * timer_ticks_set_for_test is for. The test puts it 16 ticks from the wrap,
+ * drives the real primitives across it, and restores it.
+ */
+static int test_timer_wraparound(void) {
+    int ok = 1;
+
+    /* 1. The comparison itself, at the boundary. These are the values a
+          deadline actually takes when `now + ms` carries past 2^32. */
+    ok = ok && (timer_tick_after (0x00000000u, 0xFFFFFFFFu) == 1);  /* one tick on */
+    ok = ok && (timer_tick_after (0xFFFFFFFFu, 0x00000000u) == 0);  /* one tick back */
+    ok = ok && (timer_tick_after (0x00000009u, 0xFFFFFFF5u) == 1);  /* 20 ticks on */
+    ok = ok && (timer_tick_before(0xFFFFFFF5u, 0x00000009u) == 1);
+    ok = ok && (timer_tick_after (0x00000064u, 0x00000064u) == 1);  /* the deadline tick
+                                                                      itself has arrived */
+    ok = ok && (timer_tick_before(0x00000064u, 0x00000064u) == 0);
+    if (!ok) return 0;
+
+    uint32_t saved = timer_ticks();
+    timer_ticks_set_for_test(0xFFFFFFF0u);      /* 16 ticks from the wrap */
+
+    /* 2. A timeout opened just before the wrap is not already expired. */
+    struct timeout to;
+    timer_timeout_start(&to, 50);
+
+    /* Both primitives have an interrupts-off fallback that does not use the
+       counter at all. If ktest ever ran with interrupts masked this test
+       would pass while exercising none of the arithmetic above, so say so
+       rather than returning a quiet pass. */
+    if (!to.use_timer) {
+        klog("KTEST", SEV_FAIL, "timer wraparound: interrupts off, test is vacuous");
+        timer_ticks_set_for_test(saved);
+        return 0;
+    }
+    ok = ok && (timer_timeout_expired(&to) == 0);
+
+    /* 3. A real sleep across the wrap still waits. */
+    uint32_t t0 = timer_ticks();
+    timer_sleep(32);
+    uint32_t waited = timer_ticks() - t0;       /* unsigned: spans the wrap */
+    ok = ok && (waited >= 32);
+    ok = ok && (waited <= 500);
+    /* and the counter went through zero rather than stopping at the top */
+    ok = ok && (timer_ticks() < 0x10000000u);
+
+    /* 4. Past the deadline, it does expire - so step 2 was not passing by way
+          of a timeout that never expires at all. The budget was 50 ms and
+          step 3 spent 32 of them, both on the far side of the wrap. */
+    ok = ok && (timer_timeout_expired(&to) == 0);   /* still inside the budget */
+    timer_sleep(30);
+    ok = ok && (timer_timeout_expired(&to) == 1);
+
+    /* Put the clock back where it was, plus what the test spent, so uptime
+       stays monotonic for anything already sleeping on it. */
+    timer_ticks_set_for_test(saved + (timer_ticks() - 0xFFFFFFF0u));
+    return ok;
 }
 
 /* ---- volumes ----
@@ -1310,6 +1401,7 @@ void ktest_run(void) {
     total++; passed += report("cxfs offset I/O + compaction",      test_cxfs_offset());
     total++; passed += report("cxfs volume tags",                  test_cxfs_volumes());
     total++; passed += report("clock + timed sleep",               test_clock_sleep());
+    total++; passed += report("tick counter wraparound",           test_timer_wraparound());
     total++; passed += report("memory mappings (SYS_MEM_OP)",     test_vmregion());
     total++; passed += report("guarded kernel stacks",             test_kstack());
     total++; passed += report("double fault on its own stack",     test_double_fault_gate());

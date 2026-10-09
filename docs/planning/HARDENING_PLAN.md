@@ -255,7 +255,7 @@ pipeline exists.
 | 4 | Per-process kernel stacks | **Largely in place.** Every ring-3 process has its own `esp0` stack, and `update_tss_esp0` runs on each switch (`PROCESS_MODEL.md` §8). Kernel-only threads use `kstack_top == 0` by design. To do: write the invariant down as a contract. | 3 |
 | 5 | Overflow-safe lexer lookahead | **Confirmed.** `lx_peek` in `os/xc/lex.xfxn` uses `lx.pos + n >= lx.len`. Change it to a subtraction-based check and audit the other range checks in `os/xc`. The differential tests must stay identical. | 1 |
 | 6 | Which lexer is authoritative | **Done** (`CX_X_CORE_LANG.md` §10): the C# compiler is the oracle while X matches it; an intentional X change updates the grammar and the test corpus; the X compiler becomes normative once it is authoritative. | 3 |
-| 7 | Sleep upper bound; timer wraparound | **Confirmed gap.** `test_clock_sleep` checks the lower bound only. | 2 |
+| 7 | Sleep upper bound; timer wraparound | **Confirmed gap, and wider than stated.** The upper bound existed but was 10x the measured time, wide enough to pass a 4x overrun. Wraparound was unhandled in `timer_sleep` and `timer_timeout_*`, both of which ended their wait immediately once the deadline sum wrapped — while `sched_wake_sleepers` had the safe form already. **Done 2026-10-09.** | 2 |
 | 8 | Block-device contract | To write before VFS work starts (roadmap). | 2 |
 | 9 | Error handling and failure semantics | Ignored return values and cleanup after partial initialisation get one audit pass. | 2 |
 | 10 | Resource ownership and teardown | With IPC reclaim (security §7). | 2 |
@@ -462,7 +462,26 @@ Confirmed by booting a kernel of **515 sectors**: past the old cap: to
   **It also broke a test, which is the part worth remembering.** With WP set, deleting the range check from `user_copy_out` no longer goes undetected — the write faults, recovery turns it into the same `E_FAULT`, and `test_user_copy_validation` passes with the check gone. The two layers now overlap on exactly that case and the return value stops distinguishing them. Fixed by counting recovered faults (`usercopy_faults_recovered`, incremented in the fault handler): a copy refused by the check takes **no** fault, one refused by recovery takes exactly one, and the tests assert on the difference. Without that, enabling WP would have silently retired a working sabotage test.
 
   **Proven able to fail** by `test_cr0_write_protect`, which checks the bit and then the behaviour — a ring-0 write to a read-only user page must fault, driven through `user_copy_bytes` because that is the one place a fault is survivable — and requires the same write to succeed once the page is writable again, so it is testing WP rather than a mapping that never worked. With WP cleared: `self-tests failed: 1 failure(s)` naming `CR0.WP: kernel obeys read-only` **and nothing else**. Set: **31 of 31**.
-- [ ] Sleep upper-bound and timer-wraparound tests (engineering §7).
+- [x] **Sleep upper-bound and timer-wraparound tests (engineering §7). Done 2026-10-09, and it found two live bugs.** The review asked for tests; the tests turned up defects, which is the reason it asked.
+
+  **The wraparound half.** The tick counter is 32 bits of milliseconds, so it returns to zero after 49.7 days of uptime, and two of the kernel's three wait primitives computed a deadline as `now + ms` and compared it directly — correct for 49.7 days and then wrong, in **opposite** directions:
+
+  | | form | what the wrap does |
+  |---|---|---|
+  | `timer_sleep` | `while (ticks < target)` | a wrapped target compares small, so **the sleep returns at once**. Used by every USB host controller for reset and port-settle delays, and by the speaker. 20 call sites. |
+  | `timer_timeout_start`/`_expired` | `ticks >= deadline` | a wrapped deadline is already past, so **the wait expires before the hardware is asked**. Used by `ata.c` and `ahci.c`, which would report `DISK_ERR_TIMEOUT` on a disk that was working. |
+
+  What makes this worth recording rather than just fixing: **`sched_wake_sleepers` already had the wrap-safe form, with a comment explaining why** ("a plain `now >= wake_tick` would stop waking anything for 49 days"). The idiom was worked out once and never made it back into the driver the scheduler takes its time from. The other nine tick comparisons in the kernel — `icmp.c`, `power.c`, the TSC calibration loop, `timer_us_since` — were all already elapsed-based and safe. So it was two sites out of eleven, and they were the two every driver calls.
+
+  Fixed by naming the idiom instead of repeating it: `timer_tick_after`, `timer_tick_before` and `timer_since` in `timer.h`, with the condition stated — the two values must be within 2^31 ticks (~24.8 days), which every wait here satisfies by a wide margin since the longest is `SLEEP_MAX_MS`, one hour. `sched_wake_sleepers` now calls the helper rather than open-coding it.
+
+  **This is the approach the counter's width forces, not a preference.** The alternative is a 64-bit counter, which never wraps — but cannot be read atomically on a 32-bit machine. NT takes that route and pays for it at every reader: `KeTickCount` is 64 bits and the i386 `KeQueryTickCount` is a retry loop over `High1Time`/`LowPart`/`High2Time` (`ntos/inc/i386.h:673`), a seqlock in all but name. A single-word counter keeps `timer_ticks()` a plain load, which matters because it is read from inside the tick handler itself.
+
+  Tested by `test_timer_wraparound`, which moves the counter rather than waiting out 49.7 days (`timer_ticks_set_for_test`, documented as test-only): the boundary arithmetic on synthetic values, then both real primitives driven across the wrap from 16 ticks out, then the counter restored. It **refuses to pass vacuously** — both primitives have an interrupts-off fallback that never touches the counter, so the test asserts `to.use_timer` and fails loudly rather than quietly exercising nothing.
+
+  **The upper-bound half, and why it was not already done.** The plan's §7 row said `test_clock_sleep` "checks the lower bound only", which was stale — it had a ceiling of 500 ms for a 50 ms sleep. The ceiling was the problem: instrumented on 2026-10-09, `thread_sleep_ms(50)` returns after **exactly 50 ticks**, so the bound was ten times looser than the behaviour it was bounding. Tightened to 100 ms (2x measured, the headroom being for cooperative scheduling), and the difference is demonstrated rather than argued: with `thread_sleep_ms` sabotaged to wait four times as long, the test **fails at 100 and passes at 500 — all 32 green**. The old bound admitted the exact failure the review wanted caught.
+
+  **Proven able to fail, three ways, each alone:** `timer_sleep`'s deadline form restored → `tick counter wraparound` red and nothing else; the timeout comparison restored → same test red and nothing else; sleeps stretched 4x → `clock + timed sleep` red and nothing else. Restored, **32 of 32** and a full userland boot.
 - [ ] Block-device contract and bounded-string contracts (engineering §2, §8).
 - [ ] Error-path audit (engineering §9). Lifecycle tests (engineering §16).
 
