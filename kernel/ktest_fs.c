@@ -448,37 +448,113 @@ int ktest_cxfs_entry_adversarial(void) {
         if (cxfs_rename((uint32_t)vid, "ktfs_victim.txt") != 0) ok = 0;
     }
 
-    /* ---- deleting an entry frees its blocks AND marks the slot free ----
-       On a secondary volume this used to fail after the blocks were already
-       released, leaving an entry pointing at freed blocks for the next
-       allocation to hand to someone else. The tag on parent_id is what fixes
-       it, and volume 0's tag is 0 - so this case can only prove the fix where
-       a second volume is mounted, and says so rather than implying otherwise. */
+    /* ---- deleting an entry on a SECONDARY volume ----
+     *
+     * The §5 finding, and it needs no corrupted disk. cxfs_delete_entry memsets
+     * the entry and sets e.id = id, which leaves parent_id at 0 while id still
+     * carries its volume tag. cxfs_write_entry's cross-volume guard then refused
+     * the write, so the delete failed - AFTER cxfs_free_file_data had already
+     * released the blocks. The entry survived pointing at freed blocks, for the
+     * next allocation to hand to another file.
+     *
+     * Volume 0's tag is 0, so the bug is invisible on the root volume: this case
+     * needs a volume in a slot >= 1. QEMU boots with one disk, so rather than
+     * depend on a second drive ever being present, the test mounts the ROOT
+     * VOLUME A SECOND TIME into a free slot. That is an ordinary mount - same
+     * disk, same base_lba, a valid superblock it has already read once - and it
+     * is what produces tagged ids.
+     *
+     * Why that is safe is the part worth checking. Slot 0 holds the manifest
+     * cache and a second slot gets none, so every entry and bitmap write through
+     * the alias goes straight to disk and leaves slot 0's copies stale. The
+     * test's net effect is therefore kept at ZERO: it creates one file and
+     * deletes it, so the entry ends FREE and its blocks end free, which is
+     * exactly what slot 0's untouched caches still say. Nothing can observe the
+     * window in between, because CXFS is entered serially - preemption is only
+     * ever enabled around ktest's contained cases, never system-wide (see the
+     * staging-buffer note in cxfs.c).
+     *
+     * Mounted under /Temp rather than /Drives so it cannot disturb the real
+     * drive listing, and unmounted with its mount point removed before
+     * returning.
+     *
+     * NOTE: the mount point is NOT where the file goes. cxfs_mount_volume
+     * creates that directory on the PARENT's volume, so an entry made in it
+     * would land on volume 0 and this case would prove nothing. The file is
+     * created in the alias volume's own root, id (v << 24) | 0.
+     */
     {
-        uint32_t v = 0;
-        for (uint32_t i = 1; i < cxfs_volume_slots(); i++)
-            if (cxfs_volume_mounted(i)) { v = i; break; }
+        /* Resolving an absolute path leaves `vol` on the root volume, which is
+           what makes the disk id and superblock below the ROOT's. */
+        int tmp = cxfs_resolve(FS_PROBE_DIR, 0);
+        const struct cxfs_superblock *rsb = cxfs_get_superblock();
 
-        if (!v) {
+        int v = -1;
+        if (tmp >= 0 && rsb)
+            v = cxfs_mount_volume(cxfs_get_id(), rsb->base_lba, (uint32_t)tmp, "ktalias");
+
+        if (v < 1) {
+            /* sb.base_lba is advisory, so a volume found somewhere other than
+               where its superblock says would land here. Say so rather than
+               pass. */
             klog("KTEST", SEV_WARN,
-                 "cxfs delete-on-secondary-volume untested: only the root volume is mounted");
+                 "cxfs delete-on-secondary-volume untested: no second volume could be mounted");
         } else {
-            uint32_t mp = cxfs_volume_mount_point(v);
-            int dirv = (int)mp;
-            int fid = cxfs_find_in_dir((uint32_t)dirv, "ktfs_del.txt");
-            if (fid < 0) fid = cxfs_create_entry((uint32_t)dirv, "ktfs_del.txt",
-                                                 CXFS_TYPE_FILE);
+            uint32_t vroot = (uint32_t)v << 24;      /* tag v, manifest index 0 */
+
+            int fid = cxfs_create_entry(vroot, "ktfs_sec.txt", CXFS_TYPE_FILE);
             if (fid < 0) {
                 ok = 0;
             } else {
-                ok = ok && (cxfs_write_file((uint32_t)fid, "x", 1) == 0);
-                /* the delete must SUCCEED, and the slot must actually be free */
+                /* the id really is on the alias, not quietly on the root */
+                ok = ok && ((uint32_t)fid >> 24 == (uint32_t)v);
+                /* real blocks, so the delete has something to free */
+                ok = ok && (cxfs_write_file((uint32_t)fid, "secondary", 9) == 0);
+
+                /* The delete must SUCCEED. Before the fix it returned -1 here,
+                   having already released the blocks. */
                 ok = ok && (cxfs_delete_entry((uint32_t)fid) == 0);
+
+                /* And the slot must actually BE free, with its extents cleared -
+                   the symptom was a live entry still naming freed blocks, so the
+                   return value alone is not the assertion. */
                 struct cxfs_entry e;
                 ok = ok && (cxfs_read_entry((uint32_t)fid, &e) == 0);
                 ok = ok && (e.type == CXFS_TYPE_FREE);
-                ok = ok && (cxfs_find_in_dir((uint32_t)dirv, "ktfs_del.txt") < 0);
+                ok = ok && (e.extent_len[0] == 0 && e.extent_start[0] == 0);
+                ok = ok && (e.size == 0);
+                ok = ok && (cxfs_find_in_dir(vroot, "ktfs_sec.txt") < 0);
+
+                /* Clean up without relying on the fix under test. A failing
+                   delete leaves the entry LIVE, and the alias shares the root's
+                   manifest, so the debris would sit in / for later tests to trip
+                   over - which is how the first sabotage run of this case also
+                   failed the SYS_FILE_OP test at step 17. Freeing the slot by
+                   hand keeps a red run attributable to one line. */
+                if (cxfs_read_entry((uint32_t)fid, &e) == 0 &&
+                    e.type != CXFS_TYPE_FREE) {
+                    struct cxfs_entry f;
+                    memset(&f, 0, sizeof f);
+                    f.id        = (uint32_t)fid;
+                    f.parent_id = vroot;        /* tagged, so the write is accepted */
+                    f.type      = CXFS_TYPE_FREE;
+                    cxfs_write_entry(&f);
+                }
             }
+
+            /* Leave the tree as it was found.
+             *
+             * Teardown must NOT be written as `ok = ok && teardown()`: once ok
+             * is 0 the && short-circuits and the call never happens. Writing it
+             * that way is what made the first sabotage run of this case fail a
+             * SECOND test - the alias was left mounted while its mount point
+             * was deleted underneath it, so cross_mount kept redirecting to a
+             * freed entry and path resolution broke, failing SYS_FILE_OP at
+             * step 17. Unconditional first, asserted afterwards. */
+            int mp = (int)cxfs_volume_mount_point((uint32_t)v);
+            int um = cxfs_unmount_volume((uint32_t)v);
+            if (mp > 0) cxfs_delete_entry((uint32_t)mp);
+            ok = ok && (um == 0);
         }
     }
 
