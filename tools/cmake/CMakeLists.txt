@@ -229,6 +229,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/drivers/usb/usb_hid.c
     ${SRC_DIR}/kernel/ktest_loader.c
     ${SRC_DIR}/kernel/ktest_net.c
+    ${SRC_DIR}/kernel/ktest_fs.c
 )
 
 # ---- KERNEL ASM SOURCES (elf32 objects; append new ones here) ----

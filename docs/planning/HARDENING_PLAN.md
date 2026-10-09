@@ -5,7 +5,7 @@ kernel security, kernel engineering, DevKit security, DevKit engineering — and
 the platform security review of 2026-10-09 in
 [`docs/reviews/2026-10-09/`](../reviews/2026-10-09/), which reaches the network
 stack and reopens the executable boundary (§2.3, Phase 2.5).
-**Status:** decisions recorded 2026-10-01. Phase 0 is complete bar one item deferred on artwork; **Phase 1 complete 2026-10-02; Phase 2 complete 2026-10-09.** A second review arrived the same day and opened **Phase 2.5**, which runs before Phase 3 because it is confirmed defects rather than documentation. Then Phase 3 (documentation and architecture), with Phase 4 holding what genuinely waits on concurrency or a design decision.
+**Status:** decisions recorded 2026-10-01. Phase 0 is complete bar one item deferred on artwork; **Phase 1 complete 2026-10-02; Phase 2 complete 2026-10-09.** A second review arrived the same day and opened **Phase 2.5**, which runs before Phase 3 because it is confirmed defects rather than documentation. **Phase 2.5 complete 2026-10-09**, its last and largest item being the `cxfs.c` adversarial pass. Then Phase 3 (documentation and architecture), with Phase 4 holding what genuinely waits on concurrency or a design decision.
 
 **The headline from the 2026-10-09 review: CXK is not hardened against hostile
 network input, and the executable boundary has one gap Phase 1 missed.** The
@@ -720,11 +720,109 @@ subsystem this plan has never covered.
       The matrix is now **pinned by a test**, because the failure mode is a syscall added later without a gate and no existing test would notice. Each case passes a deliberately garbage pointer, so a gate that ran after argument validation would answer `E_FAULT` and fail - the ordering under test is authorisation first. `SYS_MEM_OP` is asserted in the positive direction (not `E_PERM`), so gating it later breaks here and forces the decision to be revisited rather than surfacing as a service that can no longer allocate.
 
       **Proven able to fail:** `SYS_NET_OP` ungated → the syscall test fails at the exact step, naming it.
-- [ ] **`cxfs.c` adversarial pass (§3):** block addresses, directory entries,
-      file sizes, allocation chains, and the arithmetic around disk reads.
-      Corrupted metadata, extreme lengths, cyclic and repeated references,
-      invalid block indices, truncated images, and operations crossing the last
-      valid block.
+- [x] **`cxfs.c` adversarial pass (§3). Done 2026-10-09.** Seven findings, one
+      of them the most serious of the review: a crafted superblock gave an
+      arbitrary kernel write at boot.
+
+      **The threat model was the finding behind the findings.**
+      `cxk_mount_extra_volumes` probes **every non-boot disk at boot** - the
+      whole drive first, then every partition an XBPT table declares - and
+      mounts anything whose first sector carries `CXFS_MAGIC` and version 2.
+      Attaching a disk is the whole attack: no privilege, no user action. Against
+      that, `cxfs_mount_at` validated exactly three fields - magic, version, and
+      `block_size >= 512`. Every other field was adopted as true and then used
+      to address blocks.
+
+      **§1 (critical) - `block_size` sized every disk read.**
+      `sectors_per_block = block_size / 512` reaches 127 for a `uint16_t` field,
+      `disk_read`'s count is a `uint32_t`, and `disk_check` bounds `lba` and
+      `count` against the **device** and never against the destination. So
+      `read_block(0, &vol->sb)` transferred up to **65024 bytes into a
+      4096-byte struct** - off the end of `volumes[]` and through
+      `uint8_t *manifest`, a pointer `manifest_load` then writes 4KB blocks
+      through. A crafted superblock meant a controlled kernel pointer.
+      Fixed structurally rather than by a guard: **nothing a disk says sizes a
+      transfer any more.** `sectors_per_block` is now the constant
+      `CXFS_BLOCK_SIZE / 512`, and a volume whose superblock disagrees is
+      rejected by a *comparison* instead of feeding arithmetic. That matters for
+      testability as much as safety - a probe-stage guard would have been the one
+      check no test could reach.
+
+      **§2 (high) - nothing related `manifest_count` to `manifest_blocks`.**
+      `cxfs_read_entry` bounds an index against the count alone, so count 1024
+      with one manifest block made entries 16..1023 come from blocks past the
+      manifest - data blocks, or another partition - parsed as `cxfs_entry`.
+      `cxfs_write_entry` took the same path and **wrote** there.
+
+      **§3 (high) - no extent field was ever validated, and the free path was
+      destructive.** `block_at`, `cxfs_read_file` and `compact_into_run` all
+      computed `extent_start[i] + b` and called `read_block` / `write_block`
+      unchecked, and `start + len` wraps. The sharp one is the release path:
+      `bitmap_mark` is bounded, but `bitmap_flush_span` then walked every bitmap
+      block the span touched, writing a zero-filled block to `bitmap_start + w`
+      for each - so a corrupt `extent_len` sent it far past `bitmap_blocks`,
+      **zeroing the manifest and the data region**. One `cxfs_delete_entry`
+      destroyed the volume.
+
+      **§4 (medium)** `bitmap_load` looped on `sb.bitmap_blocks` with a disk read
+      per iteration and no ceiling - a mount-time stall. Falls out of validation.
+
+      **§5 (medium) - and not a corrupted-disk case at all.**
+      `cxfs_delete_entry` memsets the entry and sets `e.id = id`, leaving
+      `parent_id` at 0 while `id` carries its volume tag, so
+      `cxfs_write_entry`'s cross-volume guard refused the write: **deleting
+      anything on a secondary volume failed - after `cxfs_free_file_data` had
+      already released its blocks.** The entry survived pointing at freed blocks
+      for the next allocation to hand to another file: the same capability leak
+      `zero_blocks` exists to prevent.
+
+      **§6, §7 (low)** `cxfs_rename` left `name_len` describing the old name; and
+      a 64-byte name with no terminator is representable on disk, while CXOS's
+      `strlcpy` measures its source before consulting `size`, so `cxfs_path_of`
+      read past the name field and built a path out of what followed.
+
+      **The fixes are two chokepoints, not checks sprinkled down the call
+      paths.** `cxfs_sb_validate` is a pure function over the superblock plus the
+      device size, run by **both** `cxfs_mount_at` and `cxfs_format_at` - format
+      is held to the same standard, because a caller passing a `total_blocks`
+      too small for the computed layout would otherwise write a superblock whose
+      `data_start` is past the end of the volume and then mount it.
+      `extent_ok` / `entry_extents_ok` gate the I/O entry points, so a corrupt
+      entry is one honest refusal rather than a partial read of whatever those
+      addresses land on - which also makes `extent_blocks()` safe by
+      precondition, since eight validated lengths sum well inside a `uint32_t`
+      where eight arbitrary ones wrap.
+
+      `block_at` keeps a redundant `extent_ok` call, for the reason `ip_parse`
+      keeps its `ihl > avail` test: it makes the safety of the address handed to
+      `read_block` **local** rather than derived from a caller. Deriving it is
+      what left every extent unvalidated in the first place.
+
+      **Proven able to fail - and two sabotages went further than red.** The
+      suites are paired one per boot so each failure is attributable to its own
+      `report()` line. The validator's `block_size` equality check, the
+      `manifest_count`-vs-`manifest_blocks` check, the manifest/data overlap
+      check, the `root_id` bound, the device-fit check, `extent_ok`'s
+      metadata-region clause, the entry-name termination and the rename's
+      `name_len` each turn exactly their own suite red.
+      Removing **`cxfs_free_run`'s range check**, or **`extent_ok`'s length
+      clause** (which is the same check at its one use), does not produce a
+      clean FAIL: the boot **dies mid-test** with no panic line, because the
+      corrupt `extent_len` case zeroes the manifest through the bitmap flush
+      before the suite can report. That is the finding demonstrated rather than
+      merely detected, and it is why the extent cases assert on the canary file's
+      exact contents instead of only on a return value.
+
+      **One case cannot pass or fail here, and says so out loud.** §5 needs a
+      mounted secondary volume, and QEMU boots with one disk, so the suite emits
+      `[WARN] cxfs delete-on-secondary-volume untested: only the root volume is
+      mounted` rather than quietly reporting a pass. The fix is
+      correct by construction and covered by no test - the honest state, recorded
+      instead of implied.
+
+      Two new suites in `kernel/ktest_fs.c`, **39 of 39 at every boot** (was 37).
+      The superblock half needs no disk at all, so mount-time validation is
+      covered on every machine rather than only one with a second drive.
 
 **DevKit**
 

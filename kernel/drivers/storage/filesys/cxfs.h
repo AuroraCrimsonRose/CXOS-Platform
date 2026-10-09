@@ -128,6 +128,20 @@ int cxfs_format_at(uint64_t base_lba, uint32_t total_blocks);
    that name rather than a generated one. */
 int cxfs_format_labeled(uint64_t base_lba, uint32_t total_blocks, const char *label);
 
+/* Validate a superblock before any of it is used to address a block.
+ *
+ * The superblock of a non-boot disk is untrusted input: cxk_mount_extra_volumes
+ * probes every attached disk at boot and mounts anything carrying CXFS_MAGIC,
+ * so attaching a disk is enough to choose these fields. Both cxfs_mount_at and
+ * cxfs_format_at go through here. Returns 0 if the volume is self-consistent
+ * and fits `disk_sectors`, -1 otherwise.
+ *
+ * `disk_sectors` is the device capacity, or 0 to skip the does-it-fit test -
+ * which is what lets the adversarial suite call this on a struct in RAM with no
+ * disk attached. */
+int cxfs_sb_validate(const struct cxfs_superblock *sb, uint64_t base_lba,
+                     uint64_t disk_sectors);
+
 /* mount: read the superblock, verify magic. returns 0 on success, -1 if no
    valid CXFS found (e.g. unformatted disk). */
 int cxfs_mount(void);
