@@ -720,13 +720,15 @@ subsystem this plan has never covered.
 
 **Kernel: the executable boundary, reopened**
 
-- [ ] **Refuse sections whose *page* ranges overlap (§3).** Pass 1 must compare
-      sections against each other, not only validate each alone. Page-granular,
-      not byte-granular: two sections that do not overlap in bytes can still
-      share a page, which is the case that broke the executive in Phase 1 and
-      was fixed in the linker scripts rather than in the loader. **This closes
-      a §11 violation** — the DevKit already rejects overlap, so today only a
-      DevKit-produced image is safe.
+- [x] **Sections sharing a page are refused (§3). Done 2026-10-09.** Pass 1 now compares each section against every earlier one, page-granular rather than byte-granular - two sections that do not overlap in bytes can still share a page, and that is the case that broke the executive in Phase 1, when `.rodata` shared a page with `.text`. Phase 1 fixed the **producer** (`executive.ld` and `hello.ld` gained explicit `ALIGN`s); the loader was never fixed, so any image the DevKit did not build still triggered it. **That closes the §11 violation:** the DevKit rejects overlap, so CXK had been relying on the toolchain to check something it must check itself.
+
+      **A second §11 asymmetry fell out of making it affordable.** The comparison is O(n squared), and `section_count` is a `u16` - so the kernel needed the cap the DevKit has had since Phase 1 and the kernel did not have **at all**. `CXEX_LOAD_MAX_SECTIONS` is 256, matching `CXEXExecutable.MaxSections`; 256 sections is at most 32640 comparisons.
+
+      Earlier sections are **re-parsed** rather than held in an array: it costs a few reads and buys no stack growth in a function running on a guarded kernel stack, plus the comparison uses the very same parse the validation used, so the two cannot disagree about what a section says.
+
+      **Verified on real images first.** All three - kernel, executive, `hello` - are page-disjoint and boot unchanged, so the check rejects nothing valid. Four adversarial cases in `ktest_loader.c`, each asserting nothing was mapped: byte-disjoint but page-sharing (the case byte-granular checking would miss), identical addresses, a tail spilling into the next section page, and a count above the cap. Plus **two controls** - two sections one page apart load with `g_maps == 2`, and a count exactly at the cap fails for a different reason than the cap - so this cannot pass by refusing every multi-section image or by being an off-by-one.
+
+      **Proven able to fail:** the overlap test removed → `cxex loader refuses bad images` red, alone; the section cap removed → same test red, alone.
 - [ ] **Close SYS_SPAWN's unsigned-image path (§4).** `sys_spawn` calls
       `proc_start` with no verification; `GRANT_SPAWN` is the only thing
       stopping unsigned ring-3 code. Either verify there too or remove the

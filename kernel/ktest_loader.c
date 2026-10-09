@@ -250,6 +250,95 @@ int ktest_loader_adversarial(void) {
         ok = ok && g_maps == 0;
     }
 
+    /* ---- two sections sharing a page (2026-10-09 review §3) ----
+     *
+     * check_section validates one section alone, and until this landed nothing
+     * compared two. Pass 2 allocates a fresh page per page with the start
+     * rounded DOWN, so overlapping sections each allocate and map one: the
+     * second replaces the first, the first's bytes vanish, its frame leaks,
+     * and the page's protection becomes whichever section was mapped last -
+     * W^X decided by section ordering rather than by the rule.
+     *
+     * The first case is the one that matters, and it is the one byte-granular
+     * overlap checking would MISS: two sections that do not overlap in bytes
+     * at all, but land in the same 4 KiB page. That is the exact shape that
+     * broke the executive in Phase 1, when .rodata shared a page with .text.
+     */
+    {
+        /* .text at 0x400000+0x100 (RX), .data at 0x400200+0x100 (RW).
+           Disjoint in bytes, same page. */
+        img_valid();
+        wr16(32, 2);                                   /* two sections */
+        /* mem_size only: the body is 64 bytes, so raising file_size would trip
+           the OOB check first and this would be testing that instead. */
+        wr32(SEC0_MSIZE, 0x100);
+
+        uint32_t s1 = SEC0 + CXEX_SECTION_SIZE;
+        g_img[s1 + 0] = '.'; g_img[s1 + 1] = 'd'; g_img[s1 + 2] = 'a';
+        g_img[s1 + 3] = 't'; g_img[s1 + 4] = 'a';
+        wr32(s1 + 8,  IMG_BODY);                       /* share the file bytes; irrelevant here */
+        wr32(s1 + 12, 0x00400200);                     /* same page as section 0 */
+        wr32(s1 + 16, 0x40);
+        wr32(s1 + 20, 0x40);
+        wr32(s1 + 24, CXEX_SEC_READ | CXEX_SEC_WRITE);
+        ok = ok && refuses(CXEX_LOAD_OVERLAP);
+
+        /* Byte-for-byte the same address: overlap at its most obvious. */
+        img_valid();
+        wr16(32, 2);
+        s1 = SEC0 + CXEX_SECTION_SIZE;
+        for (int k = 0; k < (int)CXEX_SECTION_SIZE; k++) g_img[s1 + k] = g_img[SEC0 + k];
+        wr32(s1 + 24, CXEX_SEC_READ | CXEX_SEC_WRITE);
+        ok = ok && refuses(CXEX_LOAD_OVERLAP);
+
+        /* A section whose tail runs into the next section's page. */
+        img_valid();
+        wr16(32, 2);
+        wr32(SEC0_MSIZE, 0x1800);                      /* spills into the second page */
+        s1 = SEC0 + CXEX_SECTION_SIZE;
+        for (int k = 0; k < (int)CXEX_SECTION_SIZE; k++) g_img[s1 + k] = g_img[SEC0 + k];
+        wr32(s1 + 12, 0x00401000);                     /* the page section 0 spills into */
+        wr32(s1 + 16, 0x40);
+        wr32(s1 + 20, 0x40);
+        ok = ok && refuses(CXEX_LOAD_OVERLAP);
+
+        /* THE CONTROL, and the one that stops this being a check that refuses
+           every multi-section image: two sections one page apart are fine, and
+           both are mapped. Without this the three refusals above would pass on
+           a loader that rejected any image with two sections. */
+        img_valid();
+        wr16(32, 2);
+        wr32(SEC0_MSIZE, 0x40);
+        wr32(SEC0_FSIZE, 0x40);
+        s1 = SEC0 + CXEX_SECTION_SIZE;
+        for (int k = 0; k < (int)CXEX_SECTION_SIZE; k++) g_img[s1 + k] = g_img[SEC0 + k];
+        wr32(s1 + 12, 0x00401000);                     /* the next page along */
+        wr32(s1 + 24, CXEX_SEC_READ | CXEX_SEC_WRITE);
+        {
+            uint32_t e3 = 0;
+            g_maps = 0; g_charged = 0; g_charge_maps = 0xFFFFFFFFu; g_charge_deny = 0;
+            ok = ok && cxex_load(g_img, (size_t)g_img_len, &mock_ops, &e3) == CXEX_LOAD_OK;
+            ok = ok && g_maps == 2;                    /* both placed, not merged */
+        }
+
+        /* More sections than the loader will consider. The kernel had no cap
+           at all where the DevKit has had one since Phase 1. */
+        img_valid();
+        wr16(32, (uint16_t)(CXEX_LOAD_MAX_SECTIONS + 1));
+        ok = ok && refuses(CXEX_LOAD_TOO_MANY);
+
+        /* Exactly at the cap is not refused BY the cap - it fails later, on the
+           section table running off the end of the image, which is a different
+           answer and the right one. The cap must be an upper bound, not an
+           off-by-one that rejects the largest legal count. */
+        img_valid();
+        wr16(32, (uint16_t)CXEX_LOAD_MAX_SECTIONS);
+        {
+            int rc = run_load();
+            ok = ok && rc != CXEX_LOAD_TOO_MANY && rc != CXEX_LOAD_OK && g_maps == 0;
+        }
+    }
+
     kfree(g_img);
     kfree(g_scratch);
     g_img = 0;

@@ -76,7 +76,9 @@ enum cxex_load_result {
     CXEX_LOAD_WX          = -8,   /* a section is both writable and executable */
     CXEX_LOAD_UNSIGNED    = -9,   /* a section's bytes lie outside the signed range */
     CXEX_LOAD_TOO_BIG     = -10,  /* the image asks for more pages than are allowed */
-    CXEX_LOAD_QUOTA       = -11   /* the owner's memory quota has no room for it */
+    CXEX_LOAD_QUOTA       = -11,  /* the owner's memory quota has no room for it */
+    CXEX_LOAD_OVERLAP     = -12,  /* two sections share a page */
+    CXEX_LOAD_TOO_MANY    = -13   /* more sections than the loader will consider */
 };
 
 /* Ceiling on how many pages one image may map, whoever is loading it. A real
@@ -85,6 +87,11 @@ enum cxex_load_result {
    It is the floor of the two limits, not the only one: charge_pages puts the
    same image against the owning process's quota, which is far smaller. */
 #define CXEX_LOAD_MAX_PAGES 16384u   /* 64 MB */
+
+/* Matches the DevKit's MaxSections. A real CXEX has a handful - the kernel,
+   the largest, has five - and the cap is what makes the pairwise page-overlap
+   check in pass 1 affordable. */
+#define CXEX_LOAD_MAX_SECTIONS 256u
 
 /* Load `file` (a complete CXEX image; verify it first) into the space described
    by `ops`. On success returns CXEX_LOAD_OK and writes the entry-point virtual
