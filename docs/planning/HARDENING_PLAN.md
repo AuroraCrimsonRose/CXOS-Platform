@@ -1,8 +1,21 @@
 # CXOS Platform: Review Response & Hardening Plan
 
 **Responds to:** the four reviews of 2026-10-01 in [`docs/reviews/2026-10-01/`](../reviews/2026-10-01/):
-kernel security, kernel engineering, DevKit security, DevKit engineering.
-**Status:** decisions recorded 2026-10-01. Phase 0 is complete bar one item deferred on artwork; **Phase 1 complete 2026-10-02; Phase 2 complete 2026-10-09.** Phase 3 (documentation and architecture) is what remains.
+kernel security, kernel engineering, DevKit security, DevKit engineering — and
+the platform security review of 2026-10-09 in
+[`docs/reviews/2026-10-09/`](../reviews/2026-10-09/), which reaches the network
+stack and reopens the executable boundary (§2.3, Phase 2.5).
+**Status:** decisions recorded 2026-10-01. Phase 0 is complete bar one item deferred on artwork; **Phase 1 complete 2026-10-02; Phase 2 complete 2026-10-09.** A second review arrived the same day and opened **Phase 2.5**, which runs before Phase 3 because it is confirmed defects rather than documentation. Then Phase 3 (documentation and architecture), with Phase 4 holding what genuinely waits on concurrency or a design decision.
+
+**The headline from the 2026-10-09 review: CXK is not hardened against hostile
+network input, and the executable boundary has one gap Phase 1 missed.** The
+network stack had never been reviewed or planned at all, and `ip_parse`
+contains a confirmed length underflow that discloses kernel buffer contents to
+a remote sender. The loader validates each image section in isolation and never
+compares sections to each other, so two sections sharing a page defeat both the
+content and the permission the loader believes it placed — a gap the DevKit
+closes and CXK therefore relies on it to close, which is the one thing §11 says
+must never be true.
 
 This document turns the reviews into decisions and one ordered checklist. The
 reviews stay as written; this is where their findings are tracked to done.
@@ -13,9 +26,19 @@ review was missing something, this says that too.
 It replaces the two plans the CXK and CX_DEVKIT repositories carried before
 they were merged.
 
-**Until Phase 1 is done, CXK is not hardened.** Signed-executable verification
-is real, but the loader that runs after it still trusts the image's layout.
-Nothing should be described as hardened or zero-day resistant before then.
+**CXK is not hardened.** This line used to say "until Phase 1 is done", and
+Phase 1 is done — but the claim it was guarding has only narrowed, not gone.
+What is true as of 2026-10-09: the executable boundary is strong and tested,
+and **the network stack has not been hardened at all.** `ip_parse` discloses
+kernel buffer contents to a remote sender, no header checksum is verified, no
+fragment is rejected, and any ARP frame updates the cache. The loader also
+still validates each image section in isolation, so two sections sharing a
+page defeat what it thinks it placed.
+
+Nothing should be described as hardened or zero-day resistant while Phase 2.5
+is open. A machine that never brings up a NIC is in a materially better
+position than one that does, and that distinction is worth making out loud
+rather than averaging away.
 
 ---
 
@@ -96,6 +119,14 @@ Signing and Secure Boot key material (`*.xksk`, `*.xusk`, `sbkeys/`, `*.pfx`,
 ever contained any; this was checked before the merge.
 
 ### D4. Order of work
+
+**Amended 2026-10-09:** Phase 2.5, from the second security review, takes
+precedence over Phase 3. Phase 3 is documentation and architecture; Phase 2.5
+is confirmed defects in code that parses untrusted input, including a remote
+kernel-memory disclosure. Within it, the IPv4 parser and the loader's
+page-overlap check come first — they are the two that are both confirmed and
+reachable.
+
 
 Phase 0 (tooling) first, so the fixes after it are tested the new way. Then
 Phase 1 (the executable boundary). Then 2 and 3. Stage 5 of the roadmap (an
@@ -265,6 +296,47 @@ pipeline exists.
 | 14 | Fatal vs recoverable failures | To define. | 3 |
 | 15 | Retire transitional code | The first sweep is D2's dead scripts and D3's tracked `app_image.h`. | 0 |
 | 16 | Lifecycle tests | **Done 2026-10-09.** Three sequences added. The sharpest catch: a release that frees the frames but leaves the PTE present - a use-after-free the existing accounting check cannot see, because the frame count balances. | 2 |
+
+### 2.3 Platform security review, 2026-10-09
+
+[`docs/reviews/2026-10-09/PLATFORM_SECURITY_REVIEW.md`](../reviews/2026-10-09/PLATFORM_SECURITY_REVIEW.md).
+A second pass over both sides, deliberately separating confirmed defects from
+properties that are merely undemonstrated. Every row below was checked against
+the code before being planned, and three of them came back different from what
+the review said.
+
+**It reaches somewhere the first four reviews did not: the network stack, which
+has never been in this plan at all.** That is the bulk of the new work.
+
+| § | Finding | Checked against code | Phase |
+|---|---|---|---|
+| 1 | **High: IPv4 parser length underflow** | **Confirmed, and it is two bugs rather than one.** In `ip_parse` (`drivers/net/ip.c:83`): (a) `ihl` is validated as `>= IP_HDR_LEN` but **never against `frame_len`**, so `*payload = ip + ihl` can point past the received frame — with `ihl` up to 60 and the 34-byte minimum frame this check allows, 40 bytes past it; and (b) `total` is clamped down to the received length *without re-checking `total >= ihl`*, so `*payload_len = total - ihl` **underflows** to as much as 65496. The review's impact estimate needs correcting in both directions, see the note below. | 2.5 |
+| 1 | **Added: the IPv4 header checksum is never verified on receive** | **Confirmed.** `ip_checksum` exists and is called only when *building* a header (`ip.c:72`). Nothing validates it on the parse path, so a corrupted packet is indistinguishable from a good one. | 2.5 |
+| 1 | **Added: fragmented packets are accepted as whole datagrams** | **Confirmed, and worse than "not reassembled".** The flags/fragment-offset field is *written* as zero on send (`ip.c:63-64`) and **never read** on receive, so a fragment with a non-zero offset is handed to the protocol handler as if it were a complete datagram. There is no reassembly and no rejection. | 2.5 |
+| 2 | **ARP cache poisoning** | **Confirmed as a policy gap, not a memory-safety one.** `arp_input` (`drivers/net/arp.c:95`) is bounds-safe — it checks `len < ETH_HDR_LEN + 28` and every read is inside the 28 bytes. But `cache_put` runs for **any** ARP frame: request or reply, solicited or not, with no check against an outstanding request. **Added:** it also never validates the hardware type, protocol type, `hlen` or `plen` fields (`p[0..5]`), so a non-Ethernet/non-IPv4 ARP still populates the IPv4 cache. | 2.5 |
+| 2 | GPT parser trusts unbounded disk offsets | **Confirmed, with one correction and one addition.** *Correction:* the review says the signature is unvalidated; it **is** checked — by `DiskAnalyzer.Analyze`, which matches `"EFI PART"` before dispatching. `GptParser.Parse` is `public static` so a direct caller skips it, which matters for the §11 reason, but the real path checks it. *Confirmed:* no CRC validation, `entryArrayLba * sectorSize` overflows, and `(int)(numEntries * entrySize)` is worse than an unchecked cast — `entrySize` has **no upper bound**, so the `uint` multiply wraps first (256 × 0x01000000 → 0, giving a zero-length buffer the loop then indexes). *Addition:* `ReadAt` treats a short read as success, leaving the buffer **zero-filled**, so a truncated image yields partitions parsed from zeros rather than an error — a silent wrong answer, which is worse than the exception the review predicted. | 2.5 |
+| 2 | **Added: the sibling parsers do not share the flaw** | Checked because the review only looked at one. `MbrParser` and `XbptParser` take an **already-read byte array** rather than a `Stream`, so neither can over-seek, and `XbptParser` bounds its loop with `o + entrySize <= lba1.Length`. GPT is the only one that seeks further into the image, which is why it is the only one with the problem. | — |
+| 3 | **High: the kernel loader does not detect sections that share a page** | **Confirmed, and this is the most serious new finding.** `check_section` validates **one section in isolation** — its own comment says so — and pass 1 calls it per section. **Nothing compares sections to each other.** Pass 2 then allocates a *fresh* page for every page in `[va_lo, va_end)` with `va_lo` aligned **down**, so two sections sharing a page each allocate and map one: the second replaces the first, the first's content is lost, its frame leaks, and the page's protection is last-writer-wins rather than either section's intent. This **breaks the §11 invariant directly** — the DevKit *does* reject overlapping sections (`CXEXExecutable.Load`, `ElfParser`), so only an image the DevKit produced is safe, which is exactly what CXK must not rely on. Phase 1 met this bug for real and fixed the **producer**: `executive.ld` and `hello.ld` gained explicit `ALIGN`s because `.rodata` shared a page with `.text` and "mapping `.rodata` replaced the entry point's page". The loader was never fixed. | 2.5 |
+| 4 | **High: SYS_SPAWN runs unverified images** | **Confirmed, and the code already says so.** `sys_spawn` validates its arguments properly and then calls `proc_start(a.image, ...)` with **no signature check at all**. The comment above `sys_exec_path` states the problem in its own words — "SYS_SPAWN takes an image ALREADY in the caller's memory and does not verify it … SYS_FILE_OP ended that: a process can now read arbitrary bytes off a disk. Handing those to SYS_SPAWN would be a way to run code the trusted key never signed" — and the fix taken was to **add** a safe path (`SYS_EXEC_PATH`) rather than close the unsafe one. The only thing standing between a process and unsigned ring-3 execution is `GRANT_SPAWN`. The review asked for an audit of SYS_SPAWN's "argument validation and capability checks"; the arguments and caps are fine, and the verification is absent by design. | 2.5 |
+| 4 | TOCTOU: the bytes verified must be the bytes loaded | **Two paths, two answers.** `sys_exec_path` is safe **by construction**, as its comment claims: the kernel `kmalloc`s a buffer, reads the file into it, verifies that buffer and loads from the same one — the caller never holds the bytes. `sys_spawn` has the dangerous shape — `user_ptr_readable(a.image)` then `proc_start` copying from that user pointer afterwards — but since it never verifies at all, the TOCTOU is moot until it does. Unreachable today regardless: one ring-3 process runs at a time. **It becomes real with concurrent user threads, for the same reason §6 did**, so whatever closes SYS_SPAWN must copy *then* verify, never the reverse. | 2.5 |
+| 4 | Minimum key size should be 2048, not 1024 | **Already done, 2026-10-09**, hours before this review was read: `CXKeyGenerator.Generate` now requires exactly 2048 bits and the pinned exponent, enforced in the crypto layer rather than the CLI. See Phase 2. | done |
+| 4 | Trust policy: verify the chain checks key identity | **Already done, 2026-10-09.** `CXAuthChain` derives the level from which key signed, compares the platform key byte for byte, and `TrustAuthorityTests` proves a publisher key cannot reach platform tier. See Phase 2. | done |
+| 4 | Key handling: permissions | **Already done, 2026-10-09** — the private key is created owner-only, at creation. See Phase 2. | done |
+| 4 | Key handling: rotation, revocation, compromise recovery | **Confirmed gap.** `SECURITY.md` says a committed private key is a trust-root compromise requiring rotation, and `CX_KEY_FORMAT.md` says to rotate "through the trusted-key mechanism" — but there is no revocation list, no key-generation counter, and nothing that refuses a previously-trusted key. Rotating the platform key today means rebuilding the kernel. | 4 |
+| 4 | Host and kernel verifiers agree byte for byte on the signed range | **Partly.** Phase 1 found and fixed the one real disagreement (the CXSG layout), and `CxsgRoundTripTests` locks the layout. What is **not** asserted is that the two compute the same *hash over the same byte range*: nothing feeds one image to both and compares. | 2.5 |
+| 1 | Syscall authorisation audit (SYS_SPAWN, SYS_EXEC_PATH, SYS_FILE_OP, SYS_NET_OP, memory ops) | **Partly answered already, and the one real hole is the SYS_SPAWN row above.** Phase 1 split `user_ptr_ok` and converted all 38 call sites deliberately; Phase 2 moved validation to the copy. What has not been done is a systematic pass over *authorisation* as distinct from pointer validity — the review's point that "a valid user pointer alone does not authorize the requested operation". | 2.5 |
+| 1 | IPC: concurrent calls and wake-up ordering | **Confirmed gap, and deferred on purpose.** `test_ipc_endpoint_lifetime` covers closure, process exit, dead names and the quota. Concurrent calls and caller/receiver wake ordering **cannot be meaningfully tested until concurrent user threads exist** — one ring-3 process runs at a time. Noted rather than planned, so it is not mistaken for coverage. | 4 |
+| 3 | `cxfs.c` needs a line-by-line audit | **Confirmed as untouched.** Block addresses, directory entries, file sizes, allocation chains and the arithmetic around disk reads have never had an adversarial pass. The bounded-string work (§2) reached two of its name paths and found a real truncation defect in both, which is weak evidence the rest is worth reading. | 2.5 |
+| 5 | X compiler and generated code | **Open, and correctly framed as a specification question first.** The review's own conclusion is the right one: a type checker cannot enforce runtime memory safety for arbitrary native pointers, so X needs a stated safety model before a test matrix means anything. That is language design, not hardening, and belongs with roadmap stage 5 rather than here. | roadmap |
+
+**Correcting the IPv4 impact, in both directions.** The review says a downstream
+handler "may trust that length and read beyond the received packet". Traced
+through the only caller, it is both less and more than that:
+
+- **Less:** `icmp_input` clamps the echo payload to 64 bytes (`if (dlen > 64) dlen = 64`), and the single call site passes a **1600-byte stack buffer** much larger than any frame. So the reads stay *inside the buffer* — this is not an out-of-bounds access today, and the 65496 length is never acted on in full.
+- **More:** those 64 bytes are stale buffer content from beyond the received frame, and `icmp_input` **echoes them back to the sender**. That is a remote kernel-memory disclosure, not merely a crash or a DoS.
+- Both mitigations are accidents of the current caller. `ip_parse`'s contract is still wrong, and a second caller — or a tighter buffer — turns it into a real out-of-bounds read of up to 64 KB.
+- Reachability is narrow: `icmp_input` is only called inside `icmp_ping`'s one-second poll loop, so the crafted packet has to arrive while the machine is actively pinging. `arp_input` is reachable from both poll loops.
 
 ---
 
@@ -614,6 +686,88 @@ knowledge the green run cannot give.
 
   **Proven able to fail:** bumping `cxex` to 3 in `versions.json` without touching the policy turns `The_version_the_devkit_writes_is_the_registrys_current_version` red, alone. The comparison also refuses to pass if it matched fewer than five formats by name, so it cannot go green by comparing nothing - the vacuous-pass failure mode `AbiSyncTests` was written to rule out for the ABI prelude.
 
+### Phase 2.5: the 2026-10-09 review (critical / high)
+
+**Runs before Phase 3**, which is documentation. Numbered 2.5 rather than 4
+precisely so the ordering is not a matter of taste: these are confirmed
+defects in code that parses untrusted input, and Phase 3 is writing things
+down. The two highest-value items are the IPv4 parser and the loader's
+page-overlap gap; everything in the "network stack" group below is work on a
+subsystem this plan has never covered.
+
+**Kernel: the network stack**
+
+- [ ] **Fix `ip_parse`, both halves (§1).** Validate `ihl` against the bytes
+      actually received *before* using it to place the payload pointer, and
+      re-validate the effective length against `ihl` *after* any clamping.
+      Reject rather than clamp: a packet whose declared length exceeds the
+      frame is malformed, and clamping it was the choice that created the
+      underflow. Test truncated frames with every IHL from 5 through 15, and
+      assert on the returned `payload`/`payload_len` rather than only on the
+      return value — the function returns 1 in the broken case.
+- [ ] **Verify the IPv4 header checksum on receive (§1).** `ip_checksum`
+      already exists and is only used when building.
+- [ ] **Reject fragmented packets explicitly (§1)** until reassembly exists:
+      read the flags/offset field instead of ignoring it. A non-zero offset or
+      a set MF bit is a refusal, not a datagram.
+- [ ] **Decide and write down an ARP trust policy (§2).** The question is
+      whether an unsolicited mapping may update the cache at all; today any
+      ARP frame does. Also validate the hardware/protocol type and the address
+      lengths before believing the addresses.
+- [ ] **Malformed-packet tests, driven at boot.** The pattern that works here
+      is `ktest_loader.c`'s: build a known-good frame, then make each case a
+      single mutation of it, and assert the known-good one is still accepted so
+      the suite cannot pass by rejecting everything. The frames can be fed to
+      `ip_parse`/`arp_input` directly — no NIC required, so this runs on every
+      machine.
+
+**Kernel: the executable boundary, reopened**
+
+- [ ] **Refuse sections whose *page* ranges overlap (§3).** Pass 1 must compare
+      sections against each other, not only validate each alone. Page-granular,
+      not byte-granular: two sections that do not overlap in bytes can still
+      share a page, which is the case that broke the executive in Phase 1 and
+      was fixed in the linker scripts rather than in the loader. **This closes
+      a §11 violation** — the DevKit already rejects overlap, so today only a
+      DevKit-produced image is safe.
+- [ ] **Close SYS_SPAWN's unsigned-image path (§4).** `sys_spawn` calls
+      `proc_start` with no verification; `GRANT_SPAWN` is the only thing
+      stopping unsigned ring-3 code. Either verify there too or remove the
+      syscall in favour of `SYS_EXEC_PATH`, which is safe by construction.
+      **If it is verified rather than removed, copy to kernel memory first and
+      verify the copy** — verifying the user buffer and then copying is the
+      TOCTOU §6 already closed once, and it becomes reachable the moment
+      concurrent user threads exist.
+- [ ] **Syscall authorisation pass (§1)**, as distinct from pointer validity:
+      for each of SYS_SPAWN, SYS_EXEC_PATH, SYS_FILE_OP, SYS_NET_OP and the
+      memory operations, state what authority the call requires and check that
+      the code demands it. A valid pointer is not an authorisation.
+- [ ] **Assert the host and kernel verifiers hash the same range (§4).** Feed
+      one signed image to both and compare. The CXSG layout is locked by a
+      round-trip test; the *signed range* is not.
+- [ ] **`cxfs.c` adversarial pass (§3):** block addresses, directory entries,
+      file sizes, allocation chains, and the arithmetic around disk reads.
+      Corrupted metadata, extreme lengths, cyclic and repeated references,
+      invalid block indices, truncated images, and operations crossing the last
+      valid block.
+
+**DevKit**
+
+- [ ] **Harden `GptParser` (§2).** Validate the header and entry-array ranges
+      against the stream length before seeking or allocating; use checked
+      arithmetic; cap `entrySize` (it is currently unbounded, and the `uint`
+      multiply wraps before the cast to `int` ever happens); validate each
+      partition's first/last LBA; verify the header and entry-array CRCs. Make
+      `ReadAt` **report a short read** instead of returning a zero-filled
+      buffer — a truncated image currently parses as zeros rather than failing.
+      Adversarial tests in `CXEX.Tests/Adversarial`, built as single mutations
+      of a known-good image like the ELF and CXEX suites.
+- [ ] **Check the signature in the parser as well as the dispatcher (§2).**
+      `DiskAnalyzer` matches `"EFI PART"` before dispatching, but
+      `GptParser.Parse` is public and does not, so the guarantee depends on the
+      caller. Deliberately twice, for the reason `CXEXWriter` refuses W+X even
+      though the layout engine already did (security §11).
+
 ### Phase 3
 
 **Kernel: documentation and architecture**
@@ -628,6 +782,29 @@ knowledge the green run cannot give.
 - [ ] Toolchain identity recorded; pinned versions (security §13, engineering §9).
 - [ ] ABI generator (engineering §7).
 - [ ] Transitional-code sweep (engineering §14).
+
+### Phase 4: waits on concurrency or on a design decision
+
+Not deferred for lack of appetite — each of these cannot be done well yet, and
+saying so is better than listing them as open work that keeps not happening.
+
+- [ ] **IPC concurrent-call and wake-ordering tests** (2026-10-09 §1). One
+      ring-3 process runs at a time, so a test for concurrent callers would
+      assert nothing. This lands with concurrent user threads, and it should
+      land *with* them rather than after — the §6 TOCTOU and the SYS_SPAWN
+      TOCTOU both become reachable at the same moment.
+- [ ] **Key rotation and revocation** (2026-10-09 §4). Today rotating the
+      platform key means rebuilding the kernel, and nothing can refuse a key
+      that was previously trusted. Needs a design decision first: a revocation
+      list in the vault, a generation counter in CXPK, or acceptance that
+      rotation is a rebuild. It also interacts with the open release-signing
+      question in §5.
+- [ ] **X's memory-safety model** (2026-10-09 §5). The review's own conclusion
+      is the right one: a type checker cannot enforce runtime memory safety for
+      arbitrary native pointers, so X needs a *stated* safety contract — what
+      is guaranteed, and what is the programmer's responsibility — before a
+      test matrix means anything. Language design, and it belongs with roadmap
+      stage 5.
 
 ---
 
