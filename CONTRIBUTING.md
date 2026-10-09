@@ -106,12 +106,4 @@ docker build -f tools/ci/Dockerfile -t cxos-ci .
 docker run --rm -v "$PWD:/src" -w /src cxos-ci tools/ci/build.sh
 ``` Release-side detail is in
 [docs/planning/VERSIONING_AND_RELEASE.md](docs/planning/VERSIONING_AND_RELEASE.md).
-
-## Style
-
-Match the surrounding code: its naming, its idiom, its comment density.
-
-Comments here explain **why**, and especially why something that looks wrong is
-right: the bug that motivated a check, the failure a line prevents, the reason an
-obvious simplification is unsafe. A comment restating what the code plainly does
-is noise; a comment recording the hour someone lost is worth keeping.
+```
