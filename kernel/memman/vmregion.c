@@ -221,8 +221,21 @@ int vm_map(int pid, struct mem_op_args *a) {
         }
         uint32_t *z = (uint32_t *)(base + off);
         for (uint32_t i = 0; i < PAGE_SIZE / 4u; i++) z[i] = 0;
-        if (flags != (PAGE_PRESENT | PAGE_WRITE | PAGE_USER))
-            paging_map_user(base + off, (uint32_t)frame, flags);
+
+        /* The re-protect is checked for the same reason the mapping above is,
+           and the consequence of not checking it is worse: the page is
+           writable at this point, so a dropped failure hands the caller write
+           access to a region it asked to be read-only - and on x86-32 without
+           PAE there is no execute bit, so a writable page is also executable,
+           which is the W^X combination the loader refuses by name. It cannot
+           fail in practice, because the page table the first call allocated is
+           the one this call reuses; that is a fact about the callee, which is
+           exactly the kind of reasoning a caller should not be doing. */
+        if (flags != (PAGE_PRESENT | PAGE_WRITE | PAGE_USER) &&
+            paging_map_user(base + off, (uint32_t)frame, flags) != 0) {
+            undo(base, off + PAGE_SIZE);   /* this page is mapped: unwind it too */
+            return E_INVAL;
+        }
     }
 
     p->r[slot].base   = base;

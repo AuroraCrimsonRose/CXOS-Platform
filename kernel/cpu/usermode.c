@@ -245,7 +245,10 @@ int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
                Capped rather than unbounded: a sleep is a promise to come back,
                and one that never does is indistinguishable from a hang. */
             if (a1 > SLEEP_MAX_MS) return E_RANGE;
-            thread_sleep_ms(a1);
+            /* The tick it woke on is deliberately not returned: SYS_SLEEP's
+               ABI result is a status, and a caller that wants the clock asks
+               SYS_CLOCK. Cast so this reads as a decision. */
+            (void)thread_sleep_ms(a1);
             return E_OK;
 
         case SYS_SPAWN:

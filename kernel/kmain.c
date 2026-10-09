@@ -270,8 +270,13 @@ void kmain_late(void) {
         klog_child_u32("  sub ", (uint32_t)d->subclass, LOG_COLOR_VALUE, "");
     }
 
-    /* ACPI: enables the real shutdown (S5) and sleep paths */
-    acpi_init();
+    /* ACPI: enables the real shutdown (S5) and sleep paths.
+       The status is dropped on purpose, and that is the documented behaviour
+       rather than an oversight: a machine with no usable ACPI tables still
+       boots and runs, it just loses the clean shutdown path, which power.c
+       reports when something actually asks for one. Written as a cast so the
+       audit of engineering §9 can tell "decided to ignore" from "forgot". */
+    (void)acpi_init();
 
     /* Interrupt controllers, BEFORE any device driver. Two orderings matter:
        after acpi_init(), because the MADT is the only description of where the
@@ -279,8 +284,9 @@ void kmain_late(void) {
        a device cannot be given an MSI vector until the local APIC that would
        receive it is running.
        Declines to a working 8259 if anything is missing, so this cannot stop a
-       machine booting. */
-    apic_init();
+       machine booting - which is why the status is dropped on purpose: there
+       is no failure here that is not already a working fallback. */
+    (void)apic_init();
 
     /* network: whichever NIC is on the bus (polled). netif_init() returns 0 if
        none is. It logs which driver bound, so this line no longer names one -
@@ -292,7 +298,11 @@ void kmain_late(void) {
     /* storage: probe ATA + AHCI drives into the disk registry. AHCI is found via
        PCI; on a machine without one, ahci_init returns 0 harmlessly. */
     ata_init();
-    ahci_init();
+    /* Returns the number of ports it found, which is not what the boot log
+       reports - that comes from disk_count(), the registry, so a port that
+       was found but could not be registered is not counted twice. Dropped on
+       purpose; ahci.c warns per port if the registry refuses one. */
+    (void)ahci_init();
 
     /* USB AFTER the internal drives, and the order is load-bearing rather than
        stylistic. mount_cxfs() treats disk index 0 as the boot disk and never

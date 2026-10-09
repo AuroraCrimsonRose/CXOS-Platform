@@ -1115,6 +1115,148 @@ static int test_vmregion(void) {
     return ok;
 }
 
+/* ---- lifecycles, not helpers (engineering §16) ----
+ * The review's point is that many kernel bugs live between individually
+ * correct operations, and names three sequences this kernel could already run
+ * end to end without asserting the end: what happens *after* the last step.
+ *
+ * Two of its five examples were already covered - endpoint create/call/reply/
+ * close/reclaim by test_ipc_endpoint_lifetime, and block device register then
+ * read by test_storage and test_ahci (there is no unregister to test; see the
+ * contract note in disk.h). The three below were not:
+ *
+ *   map -> access -> unmap -> access FAILS    the last step was missing: the
+ *                                             mappings were released and the
+ *                                             accounting checked, but nothing
+ *                                             ever confirmed the memory had
+ *                                             actually stopped being reachable.
+ *   process create -> run -> exit -> frames back
+ *                                             test_ring3_processes ran this and
+ *                                             only checked the process left.
+ *                                             Phase 1 found proc_trampoline
+ *                                             leaking a whole address space on
+ *                                             its failure paths, which is
+ *                                             exactly what this would catch.
+ *   sleep -> wake -> reschedule               a sleep that blocks the machine
+ *                                             instead of yielding it passes any
+ *                                             test that only measures elapsed
+ *                                             time, including this file's.
+ */
+static volatile uint32_t lifecycle_ticker = 0;
+static volatile int      lifecycle_run    = 0;
+
+static void lifecycle_counter_thread(void) {
+    /* Runs until the test says stop, with a guard so a scheduler that never
+       returns here cannot hang the boot either way. */
+    uint32_t guard = 0;
+    while (lifecycle_run && guard++ < 4000000u) {
+        lifecycle_ticker++;
+        yield();
+    }
+}
+
+static int test_lifecycle_sequences(void) {
+    const int pid = MAX_THREADS - 1;
+    int ok = 1;
+
+    /* ---- 1. map -> access -> unmap -> access fails ---- */
+    vm_proc_init(pid, vm_default_quota(), -1);
+
+    struct mem_op_args a;
+    for (uint32_t i = 0; i < sizeof a / 4u; i++) ((uint32_t *)&a)[i] = 0;
+    a.op = MEM_OP_MAP; a.object = MOBJ_ANON;
+    a.length = PAGE_SIZE; a.prot = MPROT_READ | MPROT_WRITE;
+
+    if (vm_map(pid, &a) != E_OK) { ok = 0; goto done_vm; }
+    uint32_t va = a.addr;
+
+    /* reachable while mapped, by both the check and the hardware */
+    if (!user_ptr_writable(va, PAGE_SIZE)) { ok = 0; goto done_vm; }
+    *(volatile uint8_t *)va = 0xC7;
+    if (*(volatile uint8_t *)va != 0xC7)   { ok = 0; goto done_vm; }
+
+    /* ---- 1b. the protection that was asked for is the protection applied ----
+       Nothing asserted this before, which made a whole class of failure
+       invisible: vm_map maps every page writable first so it can zero it
+       through that mapping, then re-protects it to what the caller asked for.
+       The re-protect's status was discarded (engineering §9), so a failure
+       there would hand back a *writable* page to a caller that asked for
+       read-only - and on x86-32 without PAE, where every readable page is
+       executable, that is the W^X combination the loader refuses by name.
+       Checked at both layers, as above. */
+    for (uint32_t i = 0; i < sizeof a / 4u; i++) ((uint32_t *)&a)[i] = 0;
+    a.op = MEM_OP_MAP; a.object = MOBJ_ANON;
+    a.length = PAGE_SIZE; a.prot = MPROT_READ;
+    if (vm_map(pid, &a) != E_OK) { ok = 0; goto done_vm; }
+    uint32_t ro = a.addr;
+
+    if (!user_ptr_readable(ro, PAGE_SIZE)) { ok = 0; goto done_vm; }
+    if (user_ptr_writable(ro, 1))          { ok = 0; goto done_vm; }
+
+    /* and the hardware agrees, because CR0.WP is set */
+    uint32_t ro_faults = usercopy_faults_recovered();
+    uint8_t  one = 0x5C;
+    if (user_copy_bytes((void *)ro, &one, 1) == 0)                { ok = 0; goto done_vm; }
+    if (usercopy_faults_recovered() != ro_faults + 1)             { ok = 0; goto done_vm; }
+    if (vm_unmap(pid, ro, PAGE_SIZE) != E_OK)                     { ok = 0; goto done_vm; }
+
+    if (vm_unmap(pid, va, PAGE_SIZE) != E_OK) { ok = 0; goto done_vm; }
+
+    /* Now the step that was missing. Two layers, because they can disagree:
+       the page-table check must refuse, and the CPU must refuse. The second
+       is only askable at all because a fault inside user_copy_bytes is
+       recoverable (security §6) - without that this would be a panic, which
+       is why it had never been asserted. */
+    if (user_ptr_readable(va, 1)) { ok = 0; goto done_vm; }
+    if (user_ptr_writable(va, 1)) { ok = 0; goto done_vm; }
+
+    uint32_t faults_before = usercopy_faults_recovered();
+    uint8_t  sink = 0;
+    if (user_copy_bytes(&sink, (const void *)va, 1) == 0) { ok = 0; goto done_vm; }
+    if (usercopy_faults_recovered() != faults_before + 1) { ok = 0; goto done_vm; }
+
+done_vm:
+    vm_proc_reset(pid);
+    if (!ok) return 0;
+
+    /* ---- 2. process create -> run -> exit -> frames returned ----
+       An address space is page directory + page tables + image + stack + argv,
+       so a leak here is tens of pages per spawn, not one. */
+    for (int i = 0; i < 8 && sched_active_count() > 1; i++) yield();
+    uint32_t free_before = pmm_free_count();
+
+    uint32_t blen = (uint32_t)(user_blob_end - user_blob_start);
+    if (process_create_ring3("lifecycle", user_blob_start, blen, "") < 0) return 0;
+    for (int i = 0; i < 64 && sched_active_count() > 1; i++) yield();
+    if (sched_active_count() != 1) { return 0; }
+    for (int i = 0; i < 8; i++) yield();              /* let sched_reap run */
+
+    if (pmm_free_count() != free_before) return 0;
+
+    /* ---- 3. sleep -> wake -> reschedule ----
+       A sleeping thread must hand the CPU over, not hold it. */
+    lifecycle_ticker = 0;
+    lifecycle_run    = 1;
+    if (thread_create("lc_count", lifecycle_counter_thread) < 0) { lifecycle_run = 0; return 0; }
+
+    uint32_t seen_at_start = lifecycle_ticker;
+    thread_sleep_ms(30);
+    uint32_t advanced = lifecycle_ticker - seen_at_start;
+
+    /* Stop it and let it leave, so it cannot outlive the test and perturb
+       whatever runs next. */
+    lifecycle_run = 0;
+    for (int i = 0; i < 2000 && sched_active_count() > 1; i++) yield();
+
+    /* It must have run *during* the sleep. A sleep that spun or halted without
+       yielding leaves this at zero - and passes every elapsed-time assertion
+       in this file, which is the reason to measure the other thread instead of
+       the clock. */
+    if (advanced == 0)             return 0;
+    if (sched_active_count() != 1) return 0;
+    return ok;
+}
+
 /* ---- admission: what a verification result lets run ----
  * Held to the rule of whichever build this is. Both kinds refuse a tampered
  * image, a forged or wrong-key signature and a file that is not a CXEX, and
@@ -1403,6 +1545,7 @@ void ktest_run(void) {
     total++; passed += report("clock + timed sleep",               test_clock_sleep());
     total++; passed += report("tick counter wraparound",           test_timer_wraparound());
     total++; passed += report("memory mappings (SYS_MEM_OP)",     test_vmregion());
+    total++; passed += report("lifecycles: unmap, exit, resched", test_lifecycle_sequences());
     total++; passed += report("guarded kernel stacks",             test_kstack());
     total++; passed += report("double fault on its own stack",     test_double_fault_gate());
     total++; passed += report("thread 0 on a guarded stack",       test_main_stack());
