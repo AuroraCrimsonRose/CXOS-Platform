@@ -96,6 +96,7 @@ repomix.config.json
 # code they describe.
 # -------------------------
 CLAUDE.md
+CLAUDE_NOTES.md
 HANDOFF.md
 .claude/
 .repomixignore
