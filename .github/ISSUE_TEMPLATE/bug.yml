@@ -35,7 +35,7 @@ body:
     id: host
     attributes:
       label: Host and machine
-      description: "Build host OS, and how it ran - QEMU (which -machine), Bochs, or real hardware."
+      description: "Build host OS, and how it ran - QEMU (which -machine), or real hardware."
     validations: { required: true }
   - type: textarea
     id: expected

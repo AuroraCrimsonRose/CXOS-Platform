@@ -3,7 +3,7 @@
 using System;
 using System.IO;
 
-namespace CXEX.CLI.Infrastructure;
+namespace CXEX.Tools;
 
 /// <summary>
 /// Turns a tool's plain name into something the OS will actually launch.

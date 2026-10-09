@@ -41,7 +41,6 @@ public sealed class CxToolchain
     public string Nasm { get; set; } = "nasm";
     public string CMake { get; set; } = "cmake";
     public string Qemu { get; set; } = "qemu-system-i386";
-    public string Bochs { get; set; } = "bochs";
 }
 
 public sealed class CxBuildSettings
@@ -65,7 +64,7 @@ public sealed class CxDiskSettings
 
 public sealed class CxEmulatorSettings
 {
-    public string Engine { get; set; } = "qemu";    // "qemu" | "bochs"
+    public string Engine { get; set; } = "qemu";    // "qemu" is the only engine; Bochs support was removed
     public int MemoryMb { get; set; } = 128;
     public bool SerialToConsole { get; set; } = true;
     public System.Collections.Generic.List<string> ExtraArgs { get; set; } = new();

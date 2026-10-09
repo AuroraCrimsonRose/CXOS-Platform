@@ -195,7 +195,15 @@ Keys are not flat: every `XKPK`/`XKSK` carries a **header declaring its Authorit
 
 **Scaffolded but empty — project file, zero source:** `CXEX.Font`, `CXEX.Text`, `CXEX.Tools`, `CXEX.UI` (the `CXEX.ICO` icons moved to `assets/icons/filetypes/`, deleted 2026-10-02 and to be redrawn). Nothing is missing; these are placeholders awaiting the phases in §14. Worth stating plainly because opening the solution gives no hint which libraries are real.
 
-**`CXEX.Tools` [Q-D answered — created, not yet populated]:** the project exists and is empty. The process-tool wrappers (`GccTool`, `NasmTool`, `QemuTool`, `BochsTool`, `CMakeTool`, `ProcessRunner`) still live in `CXEX.CLI/Wrappers`, so Studio cannot drive the toolchain without depending on the CLI. Relocating them is Phase 2 and remains the right call — the compile pipeline already calls `GccTool` from inside `CompileCommand`, which is exactly the coupling this fixes.
+**`CXEX.Tools` [Q-D answered — populated 2026-10-09]:** holds every external-tool wrapper — `ClangTool`, `NasmTool`, `CMakeTool`, `QemuTool` — over one runner, `ToolProcess`, plus `ToolProbe` for version pre-flights and `ExecutableResolver` for discovery. It depends on nothing but the BCL.
+
+The move did what it was for: **Studio no longer references `CXEX.CLI`.** It had been pulling in the whole command-line front end — Spectre.Console, the command registrar and all — in order to launch an emulator, because `QemuTool` lived in the CLI's `Wrappers` folder. That reference is gone, and the layering rule of engineering §8 is now a build-time fact rather than a convention. `ToolsLayeringTests` asserts it, so it cannot come back unnoticed.
+
+Output goes through callbacks rather than to a console: a library that writes to `AnsiConsole` is a front end wearing a library's name. Presentation lives in `CXEX.CLI/Infrastructure/CliTools.cs`.
+
+`ToolProcess` also carries the execution rules security §9 asked for — argument **lists** rather than command strings, no shell, an explicit working directory, stated environment inheritance, a real timeout, captured stdout/stderr, and a structured `ToolResult` instead of a bare `int` whose `-1` meant both "could not start the tool" and "the tool exited -1".
+
+`BochsTool` is **not** here: Bochs support was removed on 2026-10-09 rather than moved. `GccTool` went with D5 and the LLVM toolchain.
 
 **`CXEX.Lang` is the component this section under-describes.** It is the second-largest project and the one everything downstream depends on, yet the table below never mentions it. Its internal pipeline (Lexer → Parser → Sema → CodeGen) is documented on the kernel side in `docs/language/CX_X_CORE_LANG.md` §7, because the language spec and the ABI it compiles against live there. That split is deliberate but it has a cost — see §5.2.
 
@@ -267,7 +275,7 @@ A tabbed/selectable console host with a **stream selector** and **context-aware 
 | Stream | Content |
 |---|---|
 | **Build Log / Output** | Build pipeline output — logger, read-only |
-| **Emulator Output** | QEMU/Bochs guest **serial (COM1)** — kernel debug |
+| **Emulator Output** | QEMU guest **serial (COM1)** — kernel debug |
 | **Terminal** | A **real interactive shell**: bash on Linux, pwsh on Windows, the mac equivalent on mac |
 
 Auto-switch on context: starting a build surfaces Build; launching the emulator surfaces Emulator. (Real shell = a PTY-backed terminal control; flagged as a real component to source.)
@@ -296,7 +304,7 @@ Display PNG / BMP / ICO (+ more). `XFSIFile.cs` lib stub now; format later.
 
 ## 7. Emulation & Debug **[LOCKED]**
 
-- **Near term:** launch QEMU/Bochs as a process, capture **serial (COM1) → Emulator Output**. CXK currently does **not** mirror klog to serial — add a small serial-mirror in the kernel (it already collects the log for disk, so wiring a COM1 echo is cheap). No in-window graphical embedding.
+- **Near term:** launch QEMU as a process, capture **serial (COM1) → Emulator Output**. CXK currently does **not** mirror klog to serial — add a small serial-mirror in the kernel (it already collects the log for disk, so wiring a COM1 echo is cheap). No in-window graphical embedding.
 - **Custom X emulator (later):** a **host-side X VM** that runs `.XFXN`/ELF objects against a **stubbed `cxk_abi.h`** (syscalls → host console/files) so apps preview without booting CXK. User-space preview, not full-system emulation.
 
 ---

@@ -32,14 +32,14 @@
         {
             "label": "Run QEMU (q35 / AHCI / e1000)",
             "type": "shell",
-            "command": "${workspaceFolder}/tools/run_qemu_ahci.bat",
+            "command": "${workspaceFolder}/tools/cxk.exe run ${workspaceFolder}/dist/CXK_x86_32/images/cxk_disk.img --machine q35",
             "group": "test",
             "problemMatcher": []
         },
         {
-            "label": "Run Bochs",
+            "label": "Run QEMU (serial log to boot.log)",
             "type": "shell",
-            "command": "${workspaceFolder}/tools/run_bochs.bat",
+            "command": "${workspaceFolder}/tools/cxk.exe run ${workspaceFolder}/dist/CXK_x86_32/images/cxk_disk.img --machine pc --snapshot --headless --serial boot.log",
             "group": "test",
             "problemMatcher": []
         }

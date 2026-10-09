@@ -182,7 +182,7 @@ The X *language* is specified on the kernel side, since the kernel owns the ABI 
 
 ## Building
 
-Requirements: .NET (see the `.csproj` files for the target framework), and for producing CXK artifacts clang, ld.lld, NASM, CMake and Ninja. QEMU or Bochs to run an image.
+Requirements: .NET (see the `.csproj` files for the target framework), and for producing CXK artifacts clang, ld.lld, NASM, CMake and Ninja. QEMU to run an image.
 
 ```
 dotnet build devkit/CXEX.Studio.slnx

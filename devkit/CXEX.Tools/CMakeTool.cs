@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
-using System.Collections.Generic;
-using System.Text;
-using CXEX.CLI.Infrastructure;
-using Spectre.Console;
-
-namespace CXEX.CLI.Wrappers;
+namespace CXEX.Tools;
 
 /// <summary>
 /// CMake, driven with the Ninja generator on every host (HARDENING_PLAN D5).
@@ -17,21 +12,20 @@ public static class CMakeTool
     public const string Generator = "Ninja";
 
     /// <summary>Configure <paramref name="buildDir"/> from <paramref name="sourceDir"/>, passing each -D flag through verbatim.</summary>
-    public static bool Configure(string sourceDir, string buildDir, IEnumerable<string> defines)
+    public static ToolResult Configure(string sourceDir, string buildDir,
+                                       IEnumerable<string> defines,
+                                       ToolRunOptions? options = null)
     {
-        var args = new StringBuilder();
-        args.Append($"-S \"{sourceDir}\" -B \"{buildDir}\" -G \"{Generator}\" ");
-        foreach (var d in defines) args.Append($"{d} ");
-
-        return ProcessRunner.Run("cmake", args.ToString().Trim()) == 0;
+        var args = new List<string> { "-S", sourceDir, "-B", buildDir, "-G", Generator };
+        args.AddRange(defines);
+        return ToolProcess.Run("cmake", args, options);
     }
 
     /// <summary>Build every target in <paramref name="buildDir"/>. <paramref name="jobs"/> of 0 lets Ninja pick.</summary>
-    public static bool Build(string buildDir, int jobs = 0)
+    public static ToolResult Build(string buildDir, int jobs = 0, ToolRunOptions? options = null)
     {
-        string args = $"--build \"{buildDir}\"";
-        if (jobs > 0) args += $" -j {jobs}";
-
-        return ProcessRunner.Run("cmake", args) == 0;
+        var args = new List<string> { "--build", buildDir };
+        if (jobs > 0) { args.Add("-j"); args.Add(jobs.ToString()); }
+        return ToolProcess.Run("cmake", args, options);
     }
 }

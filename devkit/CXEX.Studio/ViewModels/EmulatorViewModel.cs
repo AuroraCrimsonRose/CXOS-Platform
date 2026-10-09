@@ -5,7 +5,7 @@ using System.IO;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Dock.Model.Mvvm.Controls;
-using CXEX.CLI.Wrappers;
+using CXEX.Tools;
 
 namespace CXEX.Studio.ViewModels;
 
@@ -13,7 +13,6 @@ public partial class EmulatorViewModel : Document
 {
     // These properties automatically generate INotifyPropertyChanged events
     [ObservableProperty] private int _memoryMb = 2048;
-    [ObservableProperty] private int _emulatorType = 0; // 0 = QEMU, 1 = Bochs
     [ObservableProperty] private string _machineType = "q35";
     [ObservableProperty] private bool _enableAudio = true;
     [ObservableProperty] private bool _enableNetworking = true;
@@ -31,30 +30,18 @@ public partial class EmulatorViewModel : Document
     {
         string diskPath = GetDiskPath();
 
-        if (EmulatorType == 0) // QEMU
+        var config = new QemuConfig
         {
-            var config = new QemuConfig
-            {
-                MemoryMb = MemoryMb,
-                MachineType = MachineType,
-                BootDisk = diskPath,
-                EnableAudio = EnableAudio,
-                EnableNetworking = EnableNetworking
-            };
+            MemoryMb = MemoryMb,
+            MachineType = MachineType,
+            BootDisk = diskPath,
+            EnableAudio = EnableAudio,
+            EnableNetworking = EnableNetworking
+        };
 
-            // Runs the CLI wrapper natively!
-            QemuTool.Run(config);
-        }
-        else // Bochs
-        {
-            var config = new BochsConfig
-            {
-                MemoryMb = MemoryMb,
-                BootDisk = diskPath
-            };
-
-            string imgDir = Path.GetDirectoryName(diskPath) ?? Environment.CurrentDirectory;
-            BochsTool.Run(config, imgDir);
-        }
+        // Through CXEX.Tools, which is why Studio no longer references
+        // CXEX.CLI: this used to reach into the command-line front end's
+        // wrappers to launch an emulator (DevKit engineering §8).
+        QemuTool.Run(config);
     }
 }

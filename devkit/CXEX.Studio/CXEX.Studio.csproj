@@ -79,7 +79,6 @@
     <ProjectReference Include="..\CXEX.Tools\CXEX.Tools.csproj" />
     <ProjectReference Include="..\CXEX.UI\CXEX.UI.csproj" />
     <ProjectReference Include="..\CXEX.Build\CXEX.Build.csproj" />
-    <ProjectReference Include="..\CXEX.CLI\CXEX.CLI.csproj" />
     <ProjectReference Include="..\CXEX.Core\CXEX.Core.csproj" />
     <ProjectReference Include="..\CXEX.Crypto\CXEX.Crypto.csproj" />
     <ProjectReference Include="..\CXEX.FileSystem\CXEX.FileSystem.csproj" />

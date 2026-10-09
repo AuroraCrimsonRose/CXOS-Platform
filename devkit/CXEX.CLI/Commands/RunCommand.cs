@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
-using CXEX.CLI.Wrappers;
+using CXEX.CLI.Infrastructure;
+using CXEX.Tools;
 using Spectre.Console;
 using Spectre.Console.Cli;
 using System.ComponentModel;
@@ -22,7 +23,7 @@ public class RunCommand : Command<RunCommand.Settings>
         public string ImagePath { get; set; } = string.Empty;
 
         [CommandOption("-e|--emu")]
-        [Description("Emulator: qemu or bochs")]
+        [Description("Emulator: qemu (the only one supported; Bochs support was removed)")]
         [DefaultValue("qemu")]
         public string Emulator { get; set; } = "qemu";
 
@@ -96,19 +97,16 @@ public class RunCommand : Command<RunCommand.Settings>
                 return RunQemu(settings);
 
             case "bochs":
-                var bochsConfig = new BochsConfig
-                {
-                    BootDisk = settings.ImagePath,
-                    MemoryMb = settings.MemoryMb,
-                };
-                string imgDir = Path.GetDirectoryName(Path.GetFullPath(settings.ImagePath))
-                                ?? Environment.CurrentDirectory;
-                BochsTool.Run(bochsConfig, imgDir);
-                return 0;
+                // Named rather than reported as unknown, so an old script or
+                // habit gets an answer instead of looking like a typo.
+                AnsiConsole.MarkupLine("[red]error:[/] Bochs support was removed.");
+                AnsiConsole.MarkupLine("[grey]  QEMU is the only emulator CXOS targets. Every option the Bochs path had[/]");
+                AnsiConsole.MarkupLine("[grey]  - memory, boot disk - has a 'cxk run' equivalent; see 'cxk run --help'.[/]");
+                return 1;
 
             default:
                 AnsiConsole.MarkupLine(
-                    $"[red]Error:[/] unsupported emulator '{Markup.Escape(settings.Emulator)}'. Use 'qemu' or 'bochs'.");
+                    $"[red]Error:[/] unsupported emulator '{Markup.Escape(settings.Emulator)}'. Use 'qemu'.");
                 return 1;
         }
     }
@@ -145,10 +143,11 @@ public class RunCommand : Command<RunCommand.Settings>
 
         if (settings.DryRun)
         {
-            AnsiConsole.WriteLine($"qemu-system-i386 {QemuTool.BuildArguments(config)}");
+            AnsiConsole.WriteLine(QemuTool.CommandLine(config));
             return 0;
         }
 
-        return QemuTool.Run(config);
+        var result = QemuTool.Run(config, CliTools.Options($"Launching QEMU ({config.MachineType}) with {config.MemoryMb}MB RAM..."));
+        return CliTools.Report(result) ? 0 : 1;
     }
 }

@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
-using System;
-using System.Collections.Generic;
-using System.Text;
-using CXEX.CLI.Infrastructure;
-using Spectre.Console;
-
-namespace CXEX.CLI.Wrappers;
+namespace CXEX.Tools;
 
 /// <summary>
 /// The LLVM cross toolchain: clang's integrated assembler and ld.lld, targeting
@@ -31,25 +25,29 @@ public static class ClangTool
     /// against GNU as on xc's own 70,000 lines, the resulting .text is
     /// byte-identical (D5).
     /// </summary>
-    public static bool Compile(string sourceFile, string outputFile, IEnumerable<string>? includeDirs = null, string extraFlags = "")
+    public static ToolResult Compile(string sourceFile, string outputFile,
+                                     IEnumerable<string>? includeDirs = null,
+                                     IEnumerable<string>? extraFlags = null,
+                                     ToolRunOptions? options = null)
     {
-        AnsiConsole.MarkupLine($"[cyan]clang (compile):[/] {System.IO.Path.GetFileName(sourceFile)}");
-
-        var args = new StringBuilder();
-        // Mandatory flags for freestanding CXK code. --target replaces GCC's -m32:
-        // the triple already fixes the architecture, so passing both is redundant.
-        args.Append($"--target={Target} -ffreestanding -fno-pic -fno-stack-protector -Wall -Wextra -c ");
-
-        if (includeDirs != null)
+        var args = new List<string>
         {
-            foreach (var inc in includeDirs) args.Append($"-I\"{inc}\" ");
-        }
+            // Mandatory flags for freestanding CXK code. --target replaces GCC's
+            // -m32: the triple already fixes the architecture, so passing both
+            // is redundant.
+            $"--target={Target}", "-ffreestanding", "-fno-pic",
+            "-fno-stack-protector", "-Wall", "-Wextra", "-c",
+        };
 
-        if (!string.IsNullOrEmpty(extraFlags)) args.Append($"{extraFlags} ");
+        if (includeDirs is not null)
+            foreach (string inc in includeDirs) args.Add($"-I{inc}");
 
-        args.Append($"-o \"{outputFile}\" \"{sourceFile}\"");
+        if (extraFlags is not null) args.AddRange(extraFlags);
 
-        return ProcessRunner.Run(Clang, args.ToString().Trim()) == 0;
+        args.Add("-o"); args.Add(outputFile);
+        args.Add(sourceFile);
+
+        return ToolProcess.Run(Clang, args, options);
     }
 
     /// <summary>
@@ -61,19 +59,18 @@ public static class ClangTool
     /// the emitted layout must not depend on lld inferring it from the first
     /// object it happens to read.
     /// </summary>
-    public static bool Link(IEnumerable<string> objectFiles, string outputFile, string linkerScript, string extraFlags = "")
+    public static ToolResult Link(IEnumerable<string> objectFiles, string outputFile,
+                                  string linkerScript,
+                                  IEnumerable<string>? extraFlags = null,
+                                  ToolRunOptions? options = null)
     {
-        AnsiConsole.MarkupLine($"[cyan]ld.lld (link):[/] {System.IO.Path.GetFileName(outputFile)}");
+        var args = new List<string> { "-m", "elf_i386", "-nostdlib", "-T", linkerScript };
 
-        var args = new StringBuilder();
-        args.Append($"-m elf_i386 -nostdlib -T \"{linkerScript}\" ");
+        if (extraFlags is not null) args.AddRange(extraFlags);
 
-        if (!string.IsNullOrEmpty(extraFlags)) args.Append($"{extraFlags} ");
+        args.Add("-o"); args.Add(outputFile);
+        args.AddRange(objectFiles);
 
-        args.Append($"-o \"{outputFile}\" ");
-
-        foreach (var obj in objectFiles) args.Append($"\"{obj}\" ");
-
-        return ProcessRunner.Run(Lld, args.ToString().Trim()) == 0;
+        return ToolProcess.Run(Lld, args, options);
     }
 }

@@ -50,7 +50,7 @@ app.Configure(config =>
 
     // ---- run + inspect ----
     config.AddCommand<RunCommand>("run")
-        .WithDescription("Boots a CXK disk image in QEMU or Bochs (replaces run_qemu.bat / run_bochs.bat).");
+        .WithDescription("Boots a CXK disk image in QEMU (replaces run_qemu.bat).");
 
     config.AddCommand<InspectCommand>("inspect")
         .WithDescription("Dumps a CXEX image's header, sections, and signature (replaces cxkdump.py).");

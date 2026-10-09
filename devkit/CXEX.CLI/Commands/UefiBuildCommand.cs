@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+using CXEX.Tools;
 using CXEX.CLI.Infrastructure;
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -75,28 +76,36 @@ public class UefiBuildCommand : Command<UefiBuildCommand.Settings>
            interrupts on the stack this stub is running on, and the red zone
            would be clobbered. -fshort-wchar makes L"..." UTF-16, which is what
            every UEFI string is. Both are documented in boot/uefi/README.md. */
-        string compileArgs =
-            $"-target x86_64-unknown-windows -ffreestanding -fshort-wchar -mno-red-zone " +
-            $"-Wall -Wextra -I\"{abiDir}\" -c \"{source}\" -o \"{objPath}\"";
+        // Argument lists, not command strings: the runtime quotes each one, so
+        // a repository path containing a space no longer depends on the
+        // escaping being written out correctly here (security §9).
+        string[] compileArgs =
+        {
+            "-target", "x86_64-unknown-windows", "-ffreestanding", "-fshort-wchar",
+            "-mno-red-zone", "-Wall", "-Wextra", $"-I{abiDir}",
+            "-c", source, "-o", objPath,
+        };
 
-        string linkArgs =
-            $"-subsystem:efi_application -entry:efi_main -nodefaultlib " +
-            $"-out:\"{output}\" \"{objPath}\"";
+        string[] linkArgs =
+        {
+            "-subsystem:efi_application", "-entry:efi_main", "-nodefaultlib",
+            $"-out:{output}", objPath,
+        };
 
         if (s.DryRun)
         {
-            AnsiConsole.WriteLine($"{s.Cc} {compileArgs}");
-            AnsiConsole.WriteLine($"{s.Linker} {linkArgs}");
+            AnsiConsole.WriteLine(ToolProcess.Quote(s.Cc, compileArgs));
+            AnsiConsole.WriteLine(ToolProcess.Quote(s.Linker, linkArgs));
             return 0;
         }
 
         // Named up front rather than failing inside the compiler, the same way
         // `cxk os build` pre-flights its toolchain. ExecutableResolver is no
         // use for this: it returns the name unchanged when it finds nothing,
-        // so it can never report absence. ProcessProbe actually runs the tool.
+        // so it can never report absence. ToolProbe actually runs the tool.
         foreach (string tool in new[] { s.Cc, s.Linker })
         {
-            string? version = ProcessProbe.FirstLine(tool, "--version");
+            string? version = ToolProbe.FirstLine(tool, "--version");
             if (version is null)
             {
                 AnsiConsole.MarkupLine($"[red]Error:[/] '{Markup.Escape(tool)}' is not on PATH.");
@@ -107,7 +116,9 @@ public class UefiBuildCommand : Command<UefiBuildCommand.Settings>
         }
 
         AnsiConsole.MarkupLine($"[grey][[1/2]][/] compiling cxboot.c with {Markup.Escape(s.Cc)} ...");
-        int rc = ProcessRunner.Run(s.Cc, compileArgs, srcDir);
+        var cres = ToolProcess.Run(s.Cc, compileArgs, CliTools.Options(workingDirectory: srcDir));
+        int rc = cres.Ok ? 0 : 1;
+        if (!cres.Ok) CliTools.Report(cres);
         if (rc != 0)
         {
             AnsiConsole.MarkupLine("[red]Error:[/] compile failed.");
@@ -115,7 +126,9 @@ public class UefiBuildCommand : Command<UefiBuildCommand.Settings>
         }
 
         AnsiConsole.MarkupLine($"[grey][[2/2]][/] linking {Markup.Escape(Path.GetFileName(output))} with {Markup.Escape(s.Linker)} ...");
-        rc = ProcessRunner.Run(s.Linker, linkArgs, srcDir);
+        var lres = ToolProcess.Run(s.Linker, linkArgs, CliTools.Options(workingDirectory: srcDir));
+        rc = lres.Ok ? 0 : 1;
+        if (!lres.Ok) CliTools.Report(lres);
         if (rc != 0)
         {
             AnsiConsole.MarkupLine("[red]Error:[/] link failed.");

@@ -275,9 +275,9 @@ The objective is a **self-sufficient system**, one that compiles its own softwar
 > | Today | Replacement |
 > |---|---|
 > | `tools\build.bat [dev]` | `cxk os build [--dev]` (works now) |
-> | `tools\run_qemu_ahci.bat` | `cxk run` with machine options: q35, AHCI, e1000, packet capture (planned) |
-> | `tools\run_bochs.bat` | `cxk run -e bochs` (works now) |
-> | `boot\uefi\build.bat` | `cxk uefi build` (planned) |
+> | `tools\run_qemu_ahci.bat` | `cxk run` with machine options: q35, AHCI, e1000, packet capture (works now) |
+> | `tools\run_bochs.bat` | **deleted**: Bochs support was removed 2026-10-09 |
+> | `boot\uefi\build.bat` | `cxk uefi build` (works now) |
 > | `boot\uefi\secureboot.bat` | `cxk secureboot keygen` / `varstore` / `sign` / `test` (work now) |
 >
 > **The toolchain is LLVM on every host** (decision D5): `clang --target=i686-elf`
@@ -291,8 +291,8 @@ Requirements:
 - **clang 23 or newer, + ld.lld** compile and link everything in `kernel/`. The kernel is built with `clang --target=i686-elf`, so no cross-GCC is installed; override with `-DKCC=`, `-DCMAKE_LD=` or `-DCXK_TARGET=`. The toolchain block is at the top of `tools/cmake/CMakeLists.txt`. **The version floor is real:** clang 18 through 22 ignore `-fuse-ld=lld` for this target and try to link through `gcc`, which fails on a host that has none. `tools/ci/Dockerfile` pins a known-good toolchain if your distribution ships something older.
 - **CMake + Ninja.** Ninja is the generator on every host. No MSVC, and no Developer Command Prompt: an ordinary shell is enough.
 - NASM assembles the boot chain and the kernel's assembly
-- QEMU
-- Bochs (optional)
+- QEMU: the only emulator CXOS targets, and the one `cxk run` drives
+
 - **`tools/cxk.exe`** is the DevKit's CLI. CMake drives it for packaging, signing,
   imaging and X compilation. **It is not committed.** Take it from the latest
   [release](https://github.com/AuroraCrimsonRose/CXOS-Platform/releases)
