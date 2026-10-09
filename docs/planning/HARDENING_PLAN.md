@@ -2,7 +2,7 @@
 
 **Responds to:** the four reviews of 2026-10-01 in [`docs/reviews/2026-10-01/`](../reviews/2026-10-01/):
 kernel security, kernel engineering, DevKit security, DevKit engineering.
-**Status:** decisions recorded 2026-10-01. The repository merge (D6) is done; Phase 0 is in progress.
+**Status:** decisions recorded 2026-10-01. Phase 0 is complete bar one item deferred on artwork; **Phase 1 complete 2026-10-02; Phase 2 complete 2026-10-09.** Phase 3 (documentation and architecture) is what remains.
 
 This document turns the reviews into decisions and one ordered checklist. The
 reviews stay as written; this is where their findings are tracked to done.
@@ -422,7 +422,44 @@ Fixed twice over:
 Confirmed by booting a kernel of **515 sectors**: past the old cap: to
 `self-tests: all 25 passed`, with no CPU exception anywhere in the boot.
 
-### Phase 2
+### Phase 2: IPC, resources, contracts and trust
+
+**Complete, 2026-10-09.** Every item below is ticked, on both sides.
+
+What the phase bought, stated plainly: the IPC pool can no longer be drained
+and a closed endpoint is a dead name rather than a pointer to a slot someone
+else now owns; a user pointer is validated at the instant of the copy and a
+fault during one is survivable; the kernel obeys the read-only bit; one
+cryptographic profile is enforced where the keys are made rather than at the
+command line; a trust level is derived from which key signed and cannot be
+claimed by an artifact; and the three boundaries that higher layers are about
+to be built on — the block device, bounded strings, and the external-tool
+runner — have written contracts with tests behind them.
+
+**Eight of the fourteen items found defects rather than merely documenting
+work already done**, and that is the phase's real result. The ones nobody had
+asked for: two wait primitives that ended their wait immediately once the
+tick counter wrapped, while the scheduler alongside them had the wrap-safe
+form and a comment explaining it; `vm_map` discarding the status of the
+re-protect that turns a writable page into the protection the caller asked
+for; `disk_capacity_str` writing one byte past a zero-length buffer; two CXFS
+entry points truncating a filename and only then asking whether it was too
+long, so the length check could never fire; four promises in `disk_read` that
+the `disk_err` enum's own comments already made and the code did not keep; a
+private signing key created world-readable; the crypto profile enforced in
+the CLI but not in the library that makes the keys; and a DevKit trust model
+that granted kernel privilege from a flag the image sets about itself.
+
+Three things about the method are worth carrying forward. **Writing a
+contract down is a defect-finding activity** — §2 and §8 were both filed as
+documentation and both turned up live bugs, because stating what a boundary
+promises is how you discover the code does something else. **A fix nothing
+can falsify is not finished**: the `vm_map` repair was unfalsifiable until a
+test asserted that a read-only mapping is actually read-only, since nothing
+anywhere had. And **a sabotage that fails to go red is a result, not a
+setback** — two of them here showed that a check was redundant with another,
+or that two tests covered different halves of one condition, which is
+knowledge the green run cannot give.
 
 **Kernel: IPC, resources, contracts**
 
@@ -567,7 +604,15 @@ Confirmed by booting a kernel of **515 sectors**: past the old cap: to
 
   **Bochs support was removed in the same change** (2026-10-09, at Aurora's direction) rather than moved: QEMU is the only emulator CXOS targets, and a second emulator path nothing exercised was a maintenance claim the project was not making good on. Gone: `BochsTool`, `BochsConfig`, `tools/run_bochs.bat`, the Studio emulator selector (a two-item combo with one item left is not a choice), `CXProject`'s `Bochs` toolchain entry, and the VS Code task. `cxk run -e bochs` **names it as removed** rather than reporting an unknown emulator, so an old script or habit gets an answer. The kernel's `power.c` port comment and `pmode.asm` note stay — those document hardware behaviour, not DevKit support. Two stale things fell out alongside: the VS Code tasks still invoked `tools/run_qemu_ahci.bat`, deleted by D2, so both QEMU tasks now call `cxk run`.
 
-- [ ] Central version/format compatibility (engineering §13).
+- [x] **Central version/format compatibility (engineering §13). Done 2026-10-09.** `FormatPolicy` (`CXEX.Core/Constants`) answers the five questions the review lists - is this format version supported, can this DevKit read it, can it write it, is an ABI version compatible, and what to say when the answer is no - in one place instead of a private literal per type. `CXEXExecutable.SupportedFormatVersion`, `CXEXMemoryLayout.FormatVersion` and `CXKeyGenerator.XKPK_VERSION` were each a bare `1`, so the read side and the write side agreed by coincidence and a bump meant finding every one.
+
+  **It is a policy, not a second registry, and the distinction is the point.** `versions.json` stays the authority on what the current version of each format IS. What it cannot express is the question a reader actually asks - *can I handle this?* - which is a RANGE, because a reader may legitimately be older than the file it is handed; that asymmetry is why formats are versioned separately from components at all. `FormatPolicy` holds the range, and a test compares the two so a format bumped in the registry and forgotten in the policy cannot leave the DevKit writing a version it declares it cannot read.
+
+  Ranges claim only what the code supports: CXFS is at 2 and the DevKit does not read v1, so its range is 2..2 rather than 1..2 - a claimed range wider than the implementation is worse than none. Writing is a single version rather than a range, deliberately, and a test asserts that so widening it has to be a decision.
+
+  **`cxk check-versions` caught the refactor, which is exactly what it is for:** removing `SupportedFormatVersion = 1` broke the registry check that was looking for it, and the build refused. The check entry moved to `FormatPolicy.cs` rather than the checker being edited - the rule `versions.json` states about itself. 15 sites agree.
+
+  **Proven able to fail:** bumping `cxex` to 3 in `versions.json` without touching the policy turns `The_version_the_devkit_writes_is_the_registrys_current_version` red, alone. The comparison also refuses to pass if it matched fewer than five formats by name, so it cannot go green by comparing nothing - the vacuous-pass failure mode `AbiSyncTests` was written to rule out for the ABI prelude.
 
 ### Phase 3
 

@@ -98,8 +98,9 @@
       "bump_when": "the header or the section table changes shape, in one commit on both sides",
       "checks": [
         {
-          "file": "devkit/CXEX.FileType/Types/CXEXExecutable.cs",
-          "pattern": "SupportedFormatVersion = ([0-9]+)"
+          "file": "devkit/CXEX.Core/Constants/FormatPolicy.cs",
+          "pattern": "\\[CXFormat\\.Cxex\\] *= *new\\(Min: [0-9]+, Max: [0-9]+, Writes: ([0-9]+)\\)",
+          "note": "moved here 2026-10-09 from CXEXExecutable.SupportedFormatVersion, which no longer names a version: the DevKit's read/write policy is central now (DevKit engineering §13). cxk check-versions caught the move, which is what it is for"
         },
         {
           "file": "kernel/lib/format/cxex.h",

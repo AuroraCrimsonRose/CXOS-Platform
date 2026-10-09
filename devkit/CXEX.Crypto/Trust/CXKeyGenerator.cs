@@ -36,6 +36,13 @@ namespace CXEX.Crypto.Trust;
 /// </summary>
 public static class CXKeyGenerator
 {
+    /// <summary>
+    /// The CXPK version this writes. A <c>const</c> rather than a lookup into
+    /// <see cref="CXEX.Core.Constants.FormatPolicy"/> only because it is a
+    /// default parameter value below, which C# requires to be a compile-time
+    /// constant. The policy is still the authority: a test asserts the two are
+    /// equal, so this cannot quietly disagree with it (engineering §13).
+    /// </summary>
     public const ushort XKPK_VERSION = 1;
     private const int XKPK_HEADER_SIZE = 16;
 

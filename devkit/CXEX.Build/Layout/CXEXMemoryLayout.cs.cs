@@ -8,7 +8,7 @@ namespace CXEX.Build.Layout;
 public class CxexMemoryLayout
 {
     public ushort TypeCode { get; set; }
-    public ushort FormatVersion { get; set; } = 1;
+    public ushort FormatVersion { get; set; } = (ushort)CXEX.Core.Constants.FormatPolicy.WriteVersion(CXEX.Core.Constants.CXFormat.Cxex);
     public ushort ArchTarget { get; set; } = 1;
     public ushort AbiVersion { get; set; } = 1;
     public uint Flags { get; set; }
