@@ -39,11 +39,35 @@ public static class CXKeyGenerator
     public const ushort XKPK_VERSION = 1;
     private const int XKPK_HEADER_SIZE = 16;
 
+    /// <summary>
+    /// The one permitted cryptographic profile, declared here rather than
+    /// shared with the kernel so the DevKit does not depend on CXK to decide
+    /// what CXK can verify (security §12.5). These must equal
+    /// <c>RSA_PROFILE_*</c> in <c>kernel/lib/crypto/rsa.h</c>; the pair is
+    /// held together by the signed round-trip tests, which sign with these
+    /// and are verified by the kernel's own bignum at boot.
+    /// </summary>
+    public const int PROFILE_KEY_BITS = 2048;
+    public const int PROFILE_MODULUS_LEN = PROFILE_KEY_BITS / 8;
+    public const uint PROFILE_EXPONENT = 65537;   // F4
+
     /// <summary>Generate a keypair and write both files. Returns the .xkpk bytes.</summary>
-    public static byte[] Generate(string privateKeyPath, string publicKeyPath, int keyBits = 2048)
+    public static byte[] Generate(string privateKeyPath, string publicKeyPath, int keyBits = PROFILE_KEY_BITS)
     {
-        if (keyBits < 1024 || keyBits % 8 != 0)
-            throw new ArgumentException("keyBits must be a multiple of 8 and at least 1024.", nameof(keyBits));
+        // The policy is enforced HERE, in the crypto layer, not only in the
+        // CLI (security §6: "reject algorithms and parameters outside the
+        // project's defined security policy rather than accepting whatever
+        // the underlying framework can technically parse"). KeygenCommand
+        // checked --bits and this did not, so Studio, a test or any future
+        // command calling the library directly could still produce a key CXK
+        // cannot verify - a key that signs perfectly and whose every artifact
+        // is refused at boot as BAD_SIGNATURE, which reads as tampering
+        // rather than as the wrong key size. It is also the layering rule
+        // (engineering §8): the library is the authority, the front-end is a
+        // front-end.
+        if (keyBits != PROFILE_KEY_BITS)
+            throw new CryptographicException(
+                $"CXK implements RSA-{PROFILE_KEY_BITS} only; {keyBits} bits would produce a key it cannot verify.");
 
         using var rsa = RSA.Create(keyBits);
         RSAParameters p = rsa.ExportParameters(includePrivateParameters: false);
@@ -51,16 +75,70 @@ public static class CXKeyGenerator
         byte[] modulus = p.Modulus ?? throw new CryptographicException("RSA modulus was not exported.");
         uint exponent = BigEndianToU32(p.Exponent ?? throw new CryptographicException("RSA exponent was not exported."));
 
+        // .NET picks the exponent, and every current version picks F4 - but
+        // the kernel pins it (RSA_PROFILE_EXPONENT in rsa.h) and will refuse
+        // anything else, so this is checked rather than assumed. A degenerate
+        // exponent is the one crypto parameter that makes verification
+        // meaningless rather than merely incompatible: e = 1 makes RSA the
+        // identity function and every signature forgeable.
+        if (exponent != PROFILE_EXPONENT)
+            throw new CryptographicException(
+                $"CXK pins the public exponent to {PROFILE_EXPONENT}; this key uses {exponent}.");
+
+        // Deliberately redundant with the keyBits check above: that one is a
+        // request filter, this one is a fact about what was produced. They
+        // overlap for every size, and the sabotage run showed it - restoring
+        // the old permissive `keyBits >= 1024` check alone changed nothing,
+        // because a 1024-bit key still failed here on its 128-byte modulus.
+        // Both are kept: the first refuses before spending the key
+        // generation and names the real reason, the second is the one that
+        // would still catch a framework that honoured the request loosely.
+        if (modulus.Length != PROFILE_MODULUS_LEN)
+            throw new CryptographicException(
+                $"expected a {PROFILE_MODULUS_LEN}-byte modulus for RSA-{PROFILE_KEY_BITS}, got {modulus.Length}.");
+
         byte[] xkpk = BuildXkpk(modulus, exponent, XKPK_VERSION);
 
         EnsureDirectory(privateKeyPath);
         EnsureDirectory(publicKeyPath);
 
+        // The PUBLIC half first, deliberately. If the second write fails, the
+        // leftover on disk is then a public key with no private half - which
+        // is useless to everyone - rather than a private signing key with
+        // nothing to pair it with, sitting in a directory the caller may not
+        // know it needs to clean up (security §7, temporary-file leakage).
+        File.WriteAllBytes(publicKeyPath, xkpk);
+
         // Private key as PEM. CXSigner uses RSA.ImportFromPem, which accepts both
         // PKCS#8 ("BEGIN PRIVATE KEY") and PKCS#1 ("BEGIN RSA PRIVATE KEY").
         // PKCS#8 matches what modern `openssl genrsa` emits.
-        File.WriteAllText(privateKeyPath, rsa.ExportPkcs8PrivateKeyPem());
-        File.WriteAllBytes(publicKeyPath, xkpk);
+        //
+        // Created OWNER-ONLY, and at creation rather than afterwards
+        // (security §7, "overly broad filesystem permissions"). File.Write*
+        // creates with the default mode, which umask usually leaves
+        // world-readable, so a private signing key was readable by every user
+        // on the machine for the whole life of the file. Setting the mode
+        // after the write would leave a window in which it was not; passing
+        // it in UnixCreateMode means the file never exists with any other
+        // mode.
+        //
+        // Set only off Windows, and that is not defensive tidiness: the
+        // UnixCreateMode *setter* throws PlatformNotSupportedException on
+        // Windows rather than ignoring the value, so assigning it
+        // unconditionally breaks `cxk keygen` on the platform this is
+        // developed on. On Windows the inherited directory ACL governs
+        // instead, which is why the permission test says so rather than
+        // passing quietly there.
+        var opts = new FileStreamOptions
+        {
+            Mode = FileMode.Create,
+            Access = FileAccess.Write,
+        };
+        if (!OperatingSystem.IsWindows())
+            opts.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+
+        using (var writer = new StreamWriter(new FileStream(privateKeyPath, opts)))
+            writer.Write(rsa.ExportPkcs8PrivateKeyPem());
 
         return xkpk;
     }

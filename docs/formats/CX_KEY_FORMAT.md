@@ -117,31 +117,107 @@ The CXK trusted-key store answers:
 
 A valid signature from an untrusted key must not be sufficient to execute an artifact.
 
-The intended verification sequence is therefore:
+The verification sequence is **integrity first, identity second**, and the
+order is load-bearing rather than stylistic:
 
 ```text
 CXEX + CXSG
    |
    +-- parse signature metadata
    |
-   +-- compute SHA-256 of signed CXEX range
+   +-- compute SHA-256 of the signed CXEX range
    |
-   +-- resolve fingerprint in trusted-key store
+   +-- verify RSA-2048 PKCS#1 v1.5/SHA-256 against the key the image CARRIES
+   |      (nothing below is worth asking until the bytes are known to be
+   |       what the signer signed)
    |
-   +-- verify RSA-2048 PKCS#1 v1.5/SHA-256 signature
+   +-- resolve that key's identity: platform, publisher, or neither
    |
-   +-- only then permit CXEX loading/execution
+   +-- only then permit CXEX loading/execution, per the caller's policy
 ```
+
+Earlier revisions of this document put the trusted-key lookup *before* the
+signature check. The implementation has always done it the other way round
+(`keyvault_trust_of`, `kernel/cpu/keyvault.c`), and the implementation is
+right: resolving a fingerprint first means making a trust decision about
+metadata that has not yet been authenticated, and the fingerprint is part of
+the signed range.
+
+### Authority levels
+
+Three levels, ordered so that a policy reads as a minimum
+(`enum cx_trust`, `kernel/cpu/keyvault.h`; `CXTrustLevel` in
+`devkit/CXEX.Crypto/Trust/CXAuthChain.cs` mirrors it):
+
+| Level | Means |
+|---|---|
+| `PLATFORM` (2) | The signing key is **byte-for-byte** the key compiled into this kernel. |
+| `PUBLISHER` (1) | The signing key is in `/System/KeyVault` — someone decided to believe this publisher. |
+| `UNVERIFIED` (0) | Valid signature, by a key this machine has never been told to believe. A real answer, and not the same as tampered. |
+
+**The authority invariant:** a level is *derived from which key signed*, and
+from nothing the artifact says about itself. There is deliberately **no**
+authority, tier or privilege field in CXEX for a signer to fill in, so there is
+nothing for a publisher to claim and nothing for a verifier to have to
+disbelieve. What an image may then do follows from its level
+(`kernel/cpu/exec.c`), never from a flag it carries — `CXEX_FLAG_KERNEL_PRIV`
+exists in the format and is deliberately not consulted by any trust decision.
+
+**Importing a key can make a publisher; it can never make the platform.** The
+platform key is compared byte for byte rather than looked up, because it is
+compiled into the kernel rather than stored in the vault — so it cannot be
+added, removed or replaced by anything with write access to a disk. The DevKit
+takes the same route for the same reason: a key store is something a developer,
+a build script or an installer can add to.
+
+### Secure Boot is a separate trust domain
+
+A key trusted to authenticate firmware is **not** a key authorized to sign user
+executables, and the separation is structural rather than a rule to remember:
+Secure Boot uses X.509 (`cxk secureboot keygen` writes `.pem`/`.cer`) while CXEX
+uses CXPK, and the CXPK parser enforces one profile — so Secure Boot material
+cannot be loaded into a CXEX key store at all, let alone trusted by it. The two
+chains can meet in one overall boot story without either becoming the other.
 
 ## Cryptographic Algorithms
 
-Current implementation:
+**One profile, and it is enforced rather than conventional.** Every parameter
+below is checked on both sides; a key or signature outside the profile is
+refused, not accepted-if-parseable (DevKit security review §6).
 
-- RSA-2048
-- RSA PKCS#1 v1.5 signatures
-- SHA-256
-- SHA-256 public-key fingerprints
-- RSA public exponent as encoded by XKPK; the current generated key profile uses the conventional exponent 65537.
+| Parameter | Value | Refused if otherwise |
+|---|---|---|
+| Signature algorithm | RSA PKCS#1 v1.5 | yes |
+| Hash | SHA-256 | yes |
+| Key size | RSA-2048, modulus exactly 256 bytes | yes |
+| Public exponent | **65537, pinned** | yes |
+| CXPK version | 1 | yes |
+| CXPK `reserved` | 0 | yes |
+| Fingerprint | SHA-256 over the serialized `.xkpk` bytes | — |
+| Signature length | must equal the modulus length | yes |
+
+The exponent is the one that matters most, and it is pinned rather than
+"conventional": `e = 1` makes RSA verification the identity function and every
+signature forgeable, and an even `e` is not an exponent at all. Both parsed
+cleanly before 2026-10-02.
+
+The constants live in two places on purpose — `RSA_PROFILE_*` in
+`kernel/lib/crypto/rsa.h` and `CXKeyGenerator.PROFILE_*` in the DevKit —
+declared separately rather than shared so that CXK does not depend on the
+DevKit to decide what CXK can verify. A test compares them
+(`CryptoPolicyTests`), because separately declared means they can drift.
+
+Policy is enforced in the **crypto layer**, not in the CLI. `cxk keygen`
+refusing `--bits 4096` is a convenience; `CXKeyGenerator.Generate` refusing it
+is the guarantee, and before 2026-10-09 only the former existed — so Studio or
+any other caller of the library could mint a key that signs perfectly and whose
+every artifact is refused at boot as `BAD_SIGNATURE`, which reads as tampering
+rather than as the wrong key size.
+
+**No algorithm agility.** There is no negotiation and no "any algorithm the
+framework can parse". A new algorithm is added by changing the profile on both
+sides in one commit, bumping the XKPK format version, and extending the policy
+tests — never by accepting an identifier that happens to be recognised.
 
 The host-side signer uses the platform .NET RSA implementation. CXK contains its own verification-only RSA, bignum, and SHA-256 implementations because the kernel must verify artifacts before relying on higher-level OS facilities.
 
@@ -164,6 +240,39 @@ This prevents accidentally producing an artifact whose embedded public key does 
 - Restrict access to signing keys.
 - Treat a compromised trusted private key as a trust-root compromise.
 - Rotate/revoke a key through the trusted-key mechanism rather than silently replacing the serialized key.
+
+**Handling, as audited 2026-10-09 (DevKit security review §7).** What the
+tooling actually does, rather than what it ought to:
+
+- **Permissions.** `cxk keygen` creates the `.xksk` **owner-only**, and at
+  creation rather than by chmod afterwards, so the file never exists with any
+  other mode. Before this it was written with `File.WriteAllText`, i.e. the
+  default mode, which umask normally leaves world-readable — a private signing
+  key readable by every user on the machine for the whole life of the file. On
+  Windows the inherited directory ACL governs instead; `UnixCreateMode` cannot
+  be set there at all (its setter throws), which is itself worth knowing.
+- **Write order.** The public half is written first. If the second write
+  fails, what is left on disk is a public key with no private half — useless to
+  everyone — rather than a private signing key with nothing to pair it with,
+  in a directory the caller may not know it needs to clean.
+- **Plaintext persistence is accepted, not solved.** The private key is an
+  unencrypted PKCS#8 PEM, because an unattended `cxk os build --key test` has
+  to be able to sign. The mitigation is permissions, `.gitignore` coverage and
+  the key never being an argument; a protected store or handle-based signing
+  API is the real answer and is not built. Recorded so it is a known position
+  rather than an oversight.
+- **Not on the command line.** Keys are passed by *path* (`--key <name>`
+  resolving `tools/<name>.xksk`), never as material, so key bytes never reach
+  a process argument list, a shell history or a CI log.
+- **Not in output.** `cxk` prints and logs paths and fingerprints, never key
+  bytes, and no exception message carries private material — the signer's
+  mismatch error names the modulus length, not the modulus.
+- **Not in source control.** `*.xksk`, `*.xusk`, `*.pem`, `*.pfx`, `*.cer`,
+  `sbkeys/` and `tools/*.xkpk` (except the tracked platform public half) are
+  gitignored, and neither merged history ever contained any — checked before
+  the merge.
+- **Not in build output.** `trusted_key.c` is generated into `build/` from the
+  **public** half only, and `dist/` receives signed artifacts, never keys.
 
 ### Public keys
 
