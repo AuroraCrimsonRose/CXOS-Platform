@@ -715,9 +715,13 @@ subsystem this plan has never covered.
       for each of SYS_SPAWN, SYS_EXEC_PATH, SYS_FILE_OP, SYS_NET_OP and the
       memory operations, state what authority the call requires and check that
       the code demands it. A valid pointer is not an authorisation.
-- [ ] **Assert the host and kernel verifiers hash the same range (§4).** Feed
-      one signed image to both and compare. The CXSG layout is locked by a
-      round-trip test; the *signed range* is not.
+- [x] **Host and kernel verifiers pinned together (§4). Done 2026-10-09, and checking it found an asymmetry rather than a disagreement.** Both hash `[0, signature_offset)` and always did - but by coincidence of two separately written expressions. `SignedRangeTests` now pins them: it reads `sha256(file, h->signature_offset, digest)` out of `cxex_verify.c` and asserts the host digest over the same range, from both directions - a byte flipped inside the range breaks verification, one flipped after it does not.
+
+      **The real finding: `verify_self` makes four checks before it hashes and `CXVerifier.VerifyIntegrity` made none of them.** The kernel pins the algorithm identifiers, requires `sig_len == key.modulus_len`, requires the fingerprint to describe the carried key, and requires a parseable key. The host ignored the algorithm fields entirely and verified RSA/SHA-256 regardless - algorithm agility by omission, which is what security §6 says not to have. CXK is the authority so nothing was exploitable, but §11 asks the two to validate **independently**, not for one to be a weaker copy of the other, and a host verifier that accepts what the kernel refuses tells a developer their artifact is fine when it will not boot. All four added, plus a bounds check on `signature_offset` against the buffer: `exe` and `rawImageBytes` arrive as separate arguments, so a mismatched pair used to throw `ArgumentOutOfRange` instead of returning a verdict.
+
+      The signature-length check is the one that would have caught the CXSG layout disagreement Phase 1 found by reading a signed image back - it reported a 272-byte signature where RSA-2048 produces 256.
+
+      11 cases, including that every section of a **real signed image** lies inside the signed range. **Proven able to fail:** the algorithm check removed → 5 red (three `SigAlgo`, two `HashAlgo`), alone.
 - [ ] **`cxfs.c` adversarial pass (§3):** block addresses, directory entries,
       file sizes, allocation chains, and the arithmetic around disk reads.
       Corrupted metadata, extreme lengths, cyclic and repeated references,
