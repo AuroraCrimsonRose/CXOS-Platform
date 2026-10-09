@@ -15,10 +15,100 @@
  * disk_register() and appear automatically.
  */
 
+/* ====================================================================
+ * THE BLOCK-DEVICE CONTRACT (engineering §8)
+ *
+ * Frozen here before the VFS and block cache start depending on whatever the
+ * current backends happen to do. Every driver registering through
+ * disk_register() promises all of this, and ATA, AHCI and USB mass storage
+ * are held to it by test_disk_contract in ktest.c.
+ *
+ *   Sector size        512 bytes, always, for every medium - including
+ *                      CD-ROM, whose native 2048-byte blocks the driver
+ *                      presents as four 512-byte sectors. `sectors` in struct
+ *                      disk is a count of these, so capacity is
+ *                      sectors * 512 and nothing above needs to ask.
+ *
+ *   LBA width          64 bits at this interface. Each backend narrows it and
+ *                      REFUSES rather than truncates what it cannot address:
+ *                      ATA here is LBA28 (the top nibble goes in the
+ *                      drive-select register), so its ceiling is 0x0FFFFFFF,
+ *                      128 GB; AHCI is LBA48. A request past a backend's
+ *                      limit is DISK_ERR_BOUNDS, never a transfer aimed
+ *                      somewhere else - which is what the pre-Phase-1 cast to
+ *                      32 bits did, landing writes on real but wrong sectors.
+ *                      The generic check is here, against the capacity the
+ *                      registry already holds, so every backend refuses an
+ *                      unreachable sector and not just the one whose own
+ *                      limit happens to be narrowest.
+ *
+ *   Max transfer       Unlimited at this interface: disk_read/disk_write
+ *                      split requests into DISK_XFER_MAX (128) sector pieces
+ *                      and loop. Callers do not chunk. The figure is not
+ *                      arbitrary - it is AHCI's 64 KB bounce buffer, and it
+ *                      is also inside ATA's 8-bit sector count, so one
+ *                      constant satisfies both.
+ *
+ *   Alignment          None. A buffer at any address works. This is the one
+ *                      promise that costs something: AHCI DMAs through its
+ *                      own physically contiguous bounce buffer and memcpys to
+ *                      the caller, precisely so a caller never has to know
+ *                      whether its buffer is contiguous in physical memory.
+ *                      NT exposes the opposite choice and makes the caller
+ *                      conform - STORAGE_ADAPTER_DESCRIPTOR carries
+ *                      AlignmentMask, MaximumTransferLength and
+ *                      MaximumPhysicalPages for the caller to query
+ *                      (ntddstor.h:645). That is the better design once there
+ *                      are enough backends for the weakest one to be a real
+ *                      cost; it is the wrong trade at three.
+ *
+ *   Buffers            Kernel virtual addresses, no DMA properties required
+ *                      (see Alignment). A user pointer is never passed here:
+ *                      the syscall layer copies through the kernel first.
+ *
+ *   Synchronous        Every call completes, or fails, before it returns.
+ *                      There is no queue, no completion callback and no
+ *                      in-flight state, so a caller may reuse its buffer
+ *                      immediately. Introducing async means a new entry
+ *                      point, not a changed meaning for these.
+ *
+ *   Ordering           A write that returned DISK_OK is readable by the next
+ *                      read. There is no write cache in this layer; whether
+ *                      the device has one is not modelled, so this is not a
+ *                      durability guarantee across power loss and nothing
+ *                      should read it as one. A flush/FUA op is the way that
+ *                      gets added.
+ *
+ *   Error codes        The disk_err enum below, never a bare -1. Distinct
+ *                      causes stay distinct: BOUNDS (outside the device) is
+ *                      not PARAMS (a nonsense request) is not NO_DEVICE (no
+ *                      such disk) is not TIMEOUT (hardware silent) is not
+ *                      FAULT (hardware refused). Callers may branch on them.
+ *
+ *   Lifetime           A registration lasts for the boot. Ids and names are
+ *                      stable from disk_register() until shutdown, and
+ *                      `const struct disk *` handed out by disk_get() and
+ *                      friends stays valid for the same span.
+ *
+ *                      There is deliberately NO disk_unregister(): removal is
+ *                      not implemented, so pulling a USB disk leaves a
+ *                      registered entry whose transfers fail with TIMEOUT or
+ *                      NO_DEVICE. Stated rather than discovered, because a
+ *                      caching layer written against this must not assume
+ *                      a device it holds an id for is still physically there.
+ *                      Adding hotplug means adding removal notification
+ *                      here, and every holder of an id becomes a holder of a
+ *                      reference - the same problem IPC endpoints already
+ *                      solved by counting (security §7).
+ * ==================================================================== */
+
 #ifndef DISK_H
 #define DISK_H
 
 #include <stdint.h>
+
+/* Sector size, in bytes. Fixed for every medium - see the contract above. */
+#define DISK_SECTOR_SIZE 512u
 
 #define DISK_MAX        16
 #define DISK_NAME_LEN   16

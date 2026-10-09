@@ -825,12 +825,20 @@ int cxfs_create_entry(uint32_t parent_id, const char *name, uint8_t type) {
        what makes the cxfs_alloc_entry below take a slot from the right one. */
     if (!vol_select(parent_id)) return -1;
 
-    /* copy + normalize the name */
+    /* Copy + normalize the name. The copy REFUSES a name that does not fit
+       rather than cutting it down: this loop used to truncate into nm and then
+       hand the short version to cxfs_normalize_name, whose `len >=
+       CXFS_NAME_LEN` rejection therefore could never fire from here. A 100
+       character name silently became a 63 character file, and two different
+       long names became the same one - at which point the "must not already
+       exist" check below refused a collision the caller had not caused. See
+       the bounded-string contract in string.h, rule 4. */
+    if (!name) return -1;
     char nm[CXFS_NAME_LEN];
+    if (strlcpy(nm, name, sizeof nm) >= sizeof nm) return -1;   /* too long */
+    if (cxfs_normalize_name(nm) != 0) return -1;                /* bad name */
     int i = 0;
-    for (; name[i] && i < CXFS_NAME_LEN - 1; i++) nm[i] = name[i];
-    nm[i] = '\0';
-    if (cxfs_normalize_name(nm) != 0) return -1;     /* bad name */
+    while (nm[i]) i++;                               /* name_len, post-normalize */
 
     /* must not already exist in this directory */
     if (cxfs_find_in_dir(parent_id, nm) >= 0) return -1;
@@ -1379,10 +1387,12 @@ int cxfs_rename(uint32_t id, const char *newname) {
     if (cxfs_read_entry(id, &e) != 0) return -1;
     if (id == TAG_ID(VOL_OF(id), vol->sb.root_id)) return -1;   /* don't rename root */
 
+    /* Refuses rather than truncates, for the reason in cxfs_create_entry:
+       renaming to an over-long name used to succeed and quietly give the file
+       a different name than the one asked for. */
+    if (!newname) return -1;
     char nm[CXFS_NAME_LEN];
-    int i = 0;
-    for (; newname[i] && i < CXFS_NAME_LEN - 1; i++) nm[i] = newname[i];
-    nm[i] = '\0';
+    if (strlcpy(nm, newname, sizeof nm) >= sizeof nm) return -1;   /* too long */
     if (cxfs_normalize_name(nm) != 0) return -1;
 
     strlcpy(e.name, nm, CXFS_NAME_LEN);

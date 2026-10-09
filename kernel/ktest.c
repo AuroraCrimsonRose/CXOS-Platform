@@ -441,9 +441,25 @@ static int test_disk_lba_range(void) {
        being broken for everything. */
     if (disk_read(d->id, 0, 1, sector) != DISK_OK) return 0;
 
-    /* One past the LBA28 ceiling, and far past it. */
-    if (disk_read(d->id, 0x10000000ull, 1, sector) != DISK_ERR_PARAMS) return 0;
-    if (disk_read(d->id, 0xFFFFFFFFFull, 1, sector) != DISK_ERR_PARAMS) return 0;
+    /* One past the LBA28 ceiling, and far past it.
+     *
+     * These asserted DISK_ERR_PARAMS until 2026-10-09, which is the code
+     * Phase 1 chose on the review's recommendation (engineering §1). Writing
+     * the block-device contract down (§8, disk.h) made that untenable: the
+     * enum documents BOUNDS as "LBA/count outside the device" and PARAMS as
+     * "bad arguments (null buffer, zero count)", and an unreachable sector is
+     * the former by the enum's own words. A caller cannot act differently on
+     * the two either - both mean "that sector is not there" - so keeping both
+     * was a distinction without a decision behind it.
+     *
+     * The refusal now also comes from a different place, which is the real
+     * improvement: disk_read compares the request against the capacity the
+     * registry already knew, so EVERY backend refuses an over-range LBA
+     * rather than only ATA, and only because ATA's own limit happened to be
+     * narrower. ata_range_ok stays as defence in depth and keeps returning
+     * PARAMS; it is simply no longer the thing that catches this. */
+    if (disk_read(d->id, 0x10000000ull, 1, sector) != DISK_ERR_BOUNDS) return 0;
+    if (disk_read(d->id, 0xFFFFFFFFFull, 1, sector) != DISK_ERR_BOUNDS) return 0;
 
     return 1;
 }
@@ -1115,6 +1131,172 @@ static int test_vmregion(void) {
     return ok;
 }
 
+/* ---- the block-device contract (engineering §8) ----
+ * The contract is written down in disk.h; this holds every registered backend
+ * to the part of it that can be checked at boot, on whatever disks this
+ * machine actually has. The review's reason for wanting it frozen now is that
+ * a VFS and a block cache written against incidental behaviour are much
+ * harder to correct later than a driver is.
+ *
+ * Read-only throughout except on the data disk, and it says when a property
+ * could not be exercised rather than counting an untested promise as kept.
+ */
+static int test_disk_contract(void) {
+    unsigned n = disk_count();
+    if (n == 0) {
+        klog("KTEST", SEV_WARN, "disk contract: no disks registered, untested");
+        return 0;              /* nothing to conclude from, so not a pass */
+    }
+
+    static uint8_t a[DISK_SECTOR_SIZE * 3];
+    static uint8_t b[DISK_SECTOR_SIZE * 3];
+    int checked_multi = 0, checked_unaligned = 0;
+
+    for (unsigned i = 0; i < n; i++) {
+        const struct disk *d = disk_get(i);
+        if (!d) return 0;
+        uint8_t id = d->id;
+
+        /* Ids and names are stable: the same disk must come back by id and by
+           name, and be the same object. Lifetime, as documented. */
+        if (disk_find_by_id(id) != d)        return 0;
+        if (disk_find_by_name(d->name) != d) return 0;
+
+        /* Error codes stay distinct. A nonsense request is PARAMS; a sector
+           past the end is BOUNDS. Collapsing these to one code would make a
+           caching layer unable to tell "ask differently" from "ask less". */
+        if (disk_read(id, 0, 1, 0)   != DISK_ERR_PARAMS) return 0;
+        if (disk_read(id, 0, 0, a)   != DISK_ERR_PARAMS) return 0;
+        if (d->sectors) {
+            /* Exactly one past the end, and a count that runs off the end
+               from a legal start. These are separate conditions in
+               disk_check and the far-past-the-end case is separate again
+               (test_disk_lba_range), because the subtraction underflows
+               there - so all three are asserted rather than assuming one
+               implies the others. */
+            if (disk_read(id, d->sectors,     1, a) != DISK_ERR_BOUNDS) return 0;
+            if (disk_read(id, d->sectors - 1, 2, a) != DISK_ERR_BOUNDS) return 0;
+            if (disk_read(id, d->sectors + 4096, 1, a) != DISK_ERR_BOUNDS) return 0;
+        }
+
+        /* An unknown id is NO_DEVICE, not any of the above. */
+        if (disk_read(0xFE, 0, 1, a) != DISK_ERR_NO_DEVICE) return 0;
+
+        /* Sector 0 reads, synchronously: the buffer is filled by the time the
+           call returns, with no completion to wait for. Non-removable media
+           only - an empty optical drive legitimately has nothing to read. */
+        if (d->media == DISK_MEDIA_CDROM || d->media == DISK_MEDIA_FDD) continue;
+        if (d->sectors < 3) continue;
+
+        for (unsigned k = 0; k < sizeof a; k++) { a[k] = 0x11; b[k] = 0x22; }
+        if (disk_read(id, 0, 1, a) != DISK_OK) return 0;
+
+        /* Sector size is 512: reading one sector must have written exactly
+           that much. The byte after it is still the fill pattern. */
+        if (a[DISK_SECTOR_SIZE] != 0x11) return 0;
+
+        /* A multi-sector read is split internally and must agree with the
+           single-sector reads it is made of - the splitting is where an
+           8-bit count or a wrapped LBA used to go wrong. */
+        if (disk_read(id, 0, 3, b) != DISK_OK) return 0;
+        for (unsigned k = 0; k < DISK_SECTOR_SIZE; k++)
+            if (a[k] != b[k]) return 0;
+        checked_multi = 1;
+
+        /* No alignment requirement: the same sector through a deliberately
+           odd address must read identically. This is the promise AHCI's
+           bounce buffer exists to keep, so it is worth asserting rather than
+           trusting. */
+        if (disk_read(id, 1, 1, b + 1) != DISK_OK) return 0;
+        if (disk_read(id, 1, 1, a)     != DISK_OK) return 0;
+        for (unsigned k = 0; k < DISK_SECTOR_SIZE; k++)
+            if (a[k] != b[1 + k]) return 0;
+        checked_unaligned = 1;
+    }
+
+    /* Refuse to report a pass for promises nothing exercised. */
+    if (!checked_multi || !checked_unaligned) {
+        klog("KTEST", SEV_WARN, "disk contract: no readable disk, partly untested");
+        return 0;
+    }
+    return 1;
+}
+
+/* ---- the bounded-string contract (engineering §2) ----
+ * The rules are stated once, in string.h; this is what holds the kernel to
+ * them. Two of the four cases below were live defects rather than
+ * hypotheticals, which is why the review asked for the convention to be
+ * written down instead of left to each subsystem.
+ */
+static int test_bounded_strings(void) {
+    int ok = 1;
+    char buf[32];
+
+    /* 1. cap == 0 writes nothing. disk_capacity_str used to put a terminator
+          at buf[0] regardless, which is one byte past a zero-length buffer.
+          A canary is the only way to see that from inside the kernel. */
+    buf[0] = 0x7E;
+    disk_capacity_str(2097152ull, buf, 0);
+    ok = ok && (buf[0] == 0x7E);          /* untouched */
+    buf[0] = 0x7E;
+    disk_capacity_str(2097152ull, buf, -1);
+    ok = ok && (buf[0] == 0x7E);          /* a negative cap is not a huge one */
+
+    /* 2. cap > 0 always terminates, and a result that does not fit is empty
+          rather than a fragment that reads as complete. "1 GB" needs five
+          bytes; at four it used to emit "GB" and a 500 GB disk displayed as
+          its unit alone. */
+    for (int c = 1; c <= 4; c++) {
+        for (unsigned i = 0; i < sizeof buf; i++) buf[i] = 0x7E;
+        disk_capacity_str(2097152ull, buf, c);
+        ok = ok && (buf[0] == '\0');                 /* terminated, and empty */
+        ok = ok && (buf[c] == 0x7E);                 /* nothing past the cap */
+    }
+
+    /* 3. given room, the whole thing appears. */
+    for (unsigned i = 0; i < sizeof buf; i++) buf[i] = 0x7E;
+    disk_capacity_str(2097152ull, buf, (int)sizeof buf);
+    ok = ok && (buf[0] == '1' && buf[1] == ' ' && buf[2] == 'G' &&
+                buf[3] == 'B' && buf[4] == '\0');
+
+    /* 4. truncation is refused, not performed. A name one byte too long for
+          the on-disk field must be rejected by both entry points. Before
+          this, both truncated the name into a 64-byte buffer and only then
+          asked whether it was too long - so the check could never fire, a
+          100-character name became a 63-character file, and two distinct
+          names became one. */
+    char longname[CXFS_NAME_LEN + 8];
+    for (unsigned i = 0; i < sizeof longname - 1; i++) longname[i] = 'x';
+    longname[sizeof longname - 1] = '\0';
+
+    /* /Temp, the same writable directory the other cxfs tests use - the root
+       is read-only on a release mount. */
+    int dir = cxfs_resolve("/Temp", 0);
+    if (dir < 0) return 0;
+    uint32_t root = (uint32_t)dir;
+    ok = ok && (cxfs_create_entry(root, longname, CXFS_TYPE_FILE) < 0);
+
+    /* exactly at the limit is still refused: the field needs room for the
+       terminator, so CXFS_NAME_LEN characters is one too many. */
+    longname[CXFS_NAME_LEN] = '\0';
+    ok = ok && (cxfs_create_entry(root, longname, CXFS_TYPE_FILE) < 0);
+
+    /* and one byte under the limit is accepted, so this is not passing by
+       refusing everything. */
+    longname[CXFS_NAME_LEN - 1] = '\0';
+    int id = cxfs_create_entry(root, longname, CXFS_TYPE_FILE);
+    if (id < 0) return 0;                  /* read-only mount: cannot conclude */
+
+    /* rename refuses the same way */
+    char toolong[CXFS_NAME_LEN + 4];
+    for (unsigned i = 0; i < sizeof toolong - 1; i++) toolong[i] = 'y';
+    toolong[sizeof toolong - 1] = '\0';
+    ok = ok && (cxfs_rename((uint32_t)id, toolong) != 0);
+
+    cxfs_delete_entry((uint32_t)id);
+    return ok;
+}
+
 /* ---- lifecycles, not helpers (engineering §16) ----
  * The review's point is that many kernel bugs live between individually
  * correct operations, and names three sequences this kernel could already run
@@ -1546,6 +1728,8 @@ void ktest_run(void) {
     total++; passed += report("tick counter wraparound",           test_timer_wraparound());
     total++; passed += report("memory mappings (SYS_MEM_OP)",     test_vmregion());
     total++; passed += report("lifecycles: unmap, exit, resched", test_lifecycle_sequences());
+    total++; passed += report("bounded strings: cap, truncation", test_bounded_strings());
+    total++; passed += report("block-device contract",             test_disk_contract());
     total++; passed += report("guarded kernel stacks",             test_kstack());
     total++; passed += report("double fault on its own stack",     test_double_fault_gate());
     total++; passed += report("thread 0 on a guarded stack",       test_main_stack());
