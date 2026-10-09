@@ -22,17 +22,6 @@ does not need one.
 Please do not open an issue or a pull request for a vulnerability, and please do
 not discuss it publicly until a fix is released.
 
-> **If that link 404s**, private vulnerability reporting is not enabled yet, or
-> the repository is still private. It is a public-repository feature.
->
-> In that case, start a
-> [discussion](https://github.com/AuroraCrimsonRose/CXOS-Platform/discussions)
-> titled "security contact request". Say only that you have something to report.
-> Do not say what it is. You will be contacted privately.
->
-> That is a poor substitute and it is temporary. If you are reading this and the
-> link still 404s, the repository is not finished being set up.
-
 Please include:
 
 | | |
