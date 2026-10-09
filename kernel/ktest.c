@@ -34,6 +34,7 @@
 #include "cxex.h"
 #include "keyvault.h"
 #include "ktest_loader.h"
+#include "ktest_net.h"
 #include "vmregion.h"
 #include "exec.h"
 #include "kstack.h"
@@ -1730,6 +1731,8 @@ void ktest_run(void) {
     total++; passed += report("lifecycles: unmap, exit, resched", test_lifecycle_sequences());
     total++; passed += report("bounded strings: cap, truncation", test_bounded_strings());
     total++; passed += report("block-device contract",             test_disk_contract());
+    total++; passed += report("ipv4 parser refuses bad frames",   ktest_ip_parse_adversarial());
+    total++; passed += report("arp parser refuses bad frames",    ktest_arp_input_adversarial());
     total++; passed += report("guarded kernel stacks",             test_kstack());
     total++; passed += report("double fault on its own stack",     test_double_fault_gate());
     total++; passed += report("thread 0 on a guarded stack",       test_main_stack());

@@ -697,29 +697,26 @@ subsystem this plan has never covered.
 
 **Kernel: the network stack**
 
-- [ ] **Fix `ip_parse`, both halves (§1).** Validate `ihl` against the bytes
-      actually received *before* using it to place the payload pointer, and
-      re-validate the effective length against `ihl` *after* any clamping.
-      Reject rather than clamp: a packet whose declared length exceeds the
-      frame is malformed, and clamping it was the choice that created the
-      underflow. Test truncated frames with every IHL from 5 through 15, and
-      assert on the returned `payload`/`payload_len` rather than only on the
-      return value — the function returns 1 in the broken case.
-- [ ] **Verify the IPv4 header checksum on receive (§1).** `ip_checksum`
-      already exists and is only used when building.
-- [ ] **Reject fragmented packets explicitly (§1)** until reassembly exists:
-      read the flags/offset field instead of ignoring it. A non-zero offset or
-      a set MF bit is a refusal, not a datagram.
+- [x] **`ip_parse` fixed, all of it (§1). Done 2026-10-09.** `ihl` is checked against the bytes received before it places the payload pointer, and a packet declaring more than arrived is now **refused rather than clamped** - the clamp was the bug, since it reduced `total` without re-testing it against `ihl`. The header checksum is verified on receive (`ip_checksum` existed and was only ever used when building), and fragments are refused rather than handed on as whole datagrams: the MF bit and the 13-bit offset are read instead of ignored, while DF is correctly not treated as a fragment.
+
+      **Verified against a real network, not only against the tests.** The checksum check was the one change that could break something that worked, so a temporary boot-time `icmp_ping` to the SLIRP gateway was run: a genuine reply passed the new verification, RTT 560 us. Assuming it would have been the easy mistake here.
+
+      **Proven able to fail, four ways** (`ktest_net.c`, 1 test covering all of it): the pre-fix clamp restored verbatim → red; `total > avail` removed → red; the fragment check removed → red; the checksum check removed → red. **A fifth sabotage deliberately turned nothing red and is recorded in the code:** removing `ihl > avail` changes no test, because `total >= ihl` and `total <= avail` together imply it. That check is kept anyway, and the comment says why - it makes the safety of the `ip_checksum(ip, ihl)` read a fact established three lines above rather than a property derived from two later comparisons, and deriving it is the reasoning that produced the original bug.
 - [ ] **Decide and write down an ARP trust policy (§2).** The question is
       whether an unsolicited mapping may update the cache at all; today any
       ARP frame does. Also validate the hardware/protocol type and the address
       lengths before believing the addresses.
-- [ ] **Malformed-packet tests, driven at boot.** The pattern that works here
-      is `ktest_loader.c`'s: build a known-good frame, then make each case a
-      single mutation of it, and assert the known-good one is still accepted so
-      the suite cannot pass by rejecting everything. The frames can be fed to
-      `ip_parse`/`arp_input` directly — no NIC required, so this runs on every
-      machine.
+
+      **Partly started 2026-10-09:** `ktest_net.c` now covers `arp_input`'s
+      length boundary and its EtherType check, so the bounds half is pinned.
+      The field validation and the cache-update policy are deliberately NOT
+      asserted yet - the policy is a decision to make, and a test written
+      before the decision would only pin today's behaviour.
+- [x] **Malformed-packet tests, driven at boot (§1-§2). Done 2026-10-09**, in `kernel/ktest_net.c` - kept out of `ktest.c` for the reason `ktest_loader.c` is, since they bring their own frame builder. Built on `ktest_loader.c`'s pattern: one known-good frame, every case a single mutation of it, and the known-good frame kept as a case so the suite cannot pass by refusing everything.
+
+      They need **no NIC**: both parsers take a buffer and a length, so every frame is built in memory and handed straight to them. That is what makes this coverage rather than a demo - the network parsers are now exercised on every machine instead of only on one with a working e1000.
+
+      Two things they assert that a looser test would not. They check the **outputs**, not just the return value, because `ip_parse` returned 1 in the broken case - a test asking only "did it accept?" would have passed on the bug. And they assert the accepted cases too: a zero-length payload, a legal 40-byte header with options actually present, a declared length exactly equal to what arrived, and DF set. Covering IHL 0 through 15, the length boundary from both sides, both fragment indicators, three checksum corruptions, and the ARP length boundary.
 
 **Kernel: the executable boundary, reopened**
 
