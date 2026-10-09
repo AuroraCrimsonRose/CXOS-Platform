@@ -729,14 +729,13 @@ subsystem this plan has never covered.
       **Verified on real images first.** All three - kernel, executive, `hello` - are page-disjoint and boot unchanged, so the check rejects nothing valid. Four adversarial cases in `ktest_loader.c`, each asserting nothing was mapped: byte-disjoint but page-sharing (the case byte-granular checking would miss), identical addresses, a tail spilling into the next section page, and a count above the cap. Plus **two controls** - two sections one page apart load with `g_maps == 2`, and a count exactly at the cap fails for a different reason than the cap - so this cannot pass by refusing every multi-section image or by being an off-by-one.
 
       **Proven able to fail:** the overlap test removed → `cxex loader refuses bad images` red, alone; the section cap removed → same test red, alone.
-- [ ] **Close SYS_SPAWN's unsigned-image path (§4).** `sys_spawn` calls
-      `proc_start` with no verification; `GRANT_SPAWN` is the only thing
-      stopping unsigned ring-3 code. Either verify there too or remove the
-      syscall in favour of `SYS_EXEC_PATH`, which is safe by construction.
-      **If it is verified rather than removed, copy to kernel memory first and
-      verify the copy** — verifying the user buffer and then copying is the
-      TOCTOU §6 already closed once, and it becomes reachable the moment
-      concurrent user threads exist.
+- [x] **SYS_SPAWN verifies what it is handed (§4). Done 2026-10-09, and the vulnerability was demonstrated before it was fixed.** `sys_spawn` called `proc_start` with no signature check at all, so `GRANT_SPAWN` was the only thing between a process and unsigned ring-3 code.
+
+      **Verified rather than removed**, and the choice matters. SYS_SPAWN has exactly one caller - the executive, spawning the shell from a blob embedded in its own image - and that embedding is a property worth keeping: an embedded shell cannot be replaced on disk. Removing the syscall would have forced the shell onto the filesystem. `sys_spawn` now **copies the image into the kernel, then verifies the copy, then loads the copy**, which makes it safe by the same construction `SYS_EXEC_PATH` achieves by reading the file itself. The order is the point: verifying `a.image` in place and letting `proc_start` copy afterwards would authenticate one set of bytes and load another, which is the §6 TOCTOU again - unreachable today with one ring-3 process, reachable the moment concurrent user threads exist. The copy goes through `user_copy_in`, so the range is re-checked at the instant of the copy and a fault during it is recoverable.
+
+      **This exposed that the shell was the one artifact nobody signed.** It is built as a complete type-system CXEX and then embedded, with no signing step - trusted only because the executive around it was signed. The build now signs it (`SHSIGN`, applied before `cxk embed` so the embedded array is the signed image), which makes the chain explicit instead of transitive.
+
+      **Proven able to fail, on a real signed kernel in three configurations.** Fixed + shell signed: `SPAWN pid 2`, `CXK shell`, supervisor up, 37/37. Fixed + shell unsigned: `executive: spawn failed`, no shell - the refusal working. And the one that demonstrates the hole itself: **pre-fix `sys_spawn` + shell unsigned on a signature-enforcing kernel spawned the unsigned privileged shell successfully** - `SPAWN pid 2 (privileged, ring 3)`, `CXK shell - type help` - on the same kernel that refuses unsigned images through `exec_path`. That is unsigned privileged ring-3 code running on a kernel built to refuse it.
 - [ ] **Syscall authorisation pass (§1)**, as distinct from pointer validity:
       for each of SYS_SPAWN, SYS_EXEC_PATH, SYS_FILE_OP, SYS_NET_OP and the
       memory operations, state what authority the call requires and check that

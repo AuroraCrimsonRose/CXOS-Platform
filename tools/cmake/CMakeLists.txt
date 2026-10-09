@@ -443,8 +443,9 @@ add_custom_command(
 add_custom_command(
     OUTPUT ${APP_XCEX}
     COMMAND ${CXK} build ${APP_ELF} ${APP_XCEX} --type system
+    ${SHSIGN}
     DEPENDS ${APP_ELF} ${CXK}
-    COMMENT "Packaging ${APP_BOOT_NAME}.xsex (CXEX, type system)"
+    COMMENT "Packaging ${APP_BOOT_NAME}.xsex (CXEX, type system, signed then embedded)"
 )
 
 # ---- shell.xsex -> app_image.h (byte array the executive embeds) ----
