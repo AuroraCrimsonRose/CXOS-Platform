@@ -28,6 +28,14 @@
 #include "paging.h"
 #include "usermode.h"
 #include "heap.h"
+#include "cxfs.h"
+#include "cxex_verify.h"
+#include "spawn.h"
+#include "exec.h"
+#include "ipc.h"
+#include "sched.h"
+#include "logging.h"
+#include "cxk_abi.h"
 
 #define KERNEL_VBASE 0xC0000000u
 
@@ -378,5 +386,132 @@ int ktest_user_ptr_writability(void) {
 
     paging_unmap(va);
     pmm_free(frame);
+    return ok;
+}
+
+/* ====================================================================
+ * SYS_SPAWN verifies the image it is handed
+ *
+ * The 2026-10-09 review's §1 finding (GHSA-2c4w-cgcw-9732) was that sys_spawn
+ * called proc_start directly and did no signature check at all, so GRANT_SPAWN
+ * was the only thing between a process and unsigned ring-3 code. The fix
+ * copies the image into the kernel and routes the copy through cxex_exec_as.
+ *
+ * Nothing pinned that. exec_admit has a test, and it covers the POLICY in
+ * isolation - which verdict maps to which trust level - but it says nothing
+ * about whether sys_spawn consults it. Replacing the cxex_exec_as call with
+ * the pre-fix proc_start call left all 39 self-tests green, which is exactly
+ * the regression this file exists to prevent elsewhere.
+ *
+ * So the assertion is made THROUGH the syscall, with real user pointers, and
+ * on a signed image with one byte of its signed payload flipped. A tampered
+ * signature is refused in every build configuration, unlike an unsigned image,
+ * which a --dev build admits deliberately - so this does not quietly become
+ * vacuous in the configuration that ships.
+ *
+ * The positive direction is not asserted here, because a valid image would
+ * actually start a process. It is covered at boot instead: the executive
+ * spawns the shell through this same syscall, so a sys_spawn that refused
+ * valid signed images would never reach "boot complete".
+ * ==================================================================== */
+
+#define SPV_ARGS_VA   0x00900000u             /* user page for the spawn_args */
+#define SPV_IMG_VA    (SPV_ARGS_VA + 0x1000u) /* user pages for the image */
+#define SPV_MAX_PAGES 16                       /* 64KB of image is plenty for hi.xuex */
+
+int ktest_spawn_verifies_image(void) {
+    if (!cxfs_is_mounted()) return 1;                 /* nothing mounted - skip */
+
+    int id = cxfs_resolve("/Shared/Programs/hi.xuex", 0);
+    if (id < 0) return 1;                             /* nothing staged - skip */
+
+    struct cxfs_entry e;
+    if (cxfs_read_entry((uint32_t)id, &e) != 0) return 0;
+    if (e.size == 0) return 0;
+    if (e.size > (uint64_t)SPV_MAX_PAGES * PAGE_SIZE) {
+        klog("KTEST", SEV_WARN,
+             "spawn verification untested: staged image larger than the test's window");
+        return 1;
+    }
+
+    uint32_t pages = ((uint32_t)e.size + PAGE_SIZE - 1) / PAGE_SIZE;
+
+    /* One page for the args, then as many as the image needs. The frames do not
+       have to be contiguous; the mapping makes them look it. */
+    void *frames[SPV_MAX_PAGES + 1];
+    uint32_t got = 0;
+    for (uint32_t i = 0; i < pages + 1; i++) {
+        frames[i] = pmm_alloc();
+        if (!frames[i]) break;
+        if (paging_map_user(SPV_ARGS_VA + i * PAGE_SIZE, (uint32_t)frames[i],
+                            PAGE_PRESENT | PAGE_WRITE) != 0) {
+            pmm_free(frames[i]);
+            break;
+        }
+        got++;
+    }
+    int ok = 0;
+    int h  = -1;
+    if (got != pages + 1) goto done;
+
+    uint8_t *img = (uint8_t *)SPV_IMG_VA;
+    if (cxfs_read_file((uint32_t)id, img, (uint32_t)e.size) != (int)e.size) goto done;
+
+    /* An unsigned build stages an unsigned image, and admits it on purpose.
+       Tampering one would still be admitted, so there is nothing to assert -
+       say so rather than passing silently. */
+    if (cxex_verify_self(img, (size_t)e.size) == CXEX_VERIFY_UNSIGNED) {
+        klog("KTEST", SEV_WARN,
+             "spawn verification untested: staged image is unsigned (dev build)");
+        ok = 1;
+        goto done;
+    }
+    if (cxex_verify_self(img, (size_t)e.size) != CXEX_VERIFY_OK) goto done;
+
+    h = ep_create();                       /* sys_spawn needs a RECV broker handle */
+    if (h < 0) goto done;
+
+    struct spawn_args *a = (struct spawn_args *)SPV_ARGS_VA;
+    a->image           = img;
+    a->image_len       = (uint32_t)e.size;
+    a->name            = 0;
+    a->broker_endpoint = h;
+    a->caps            = 0;                /* attenuated to nothing: caps are not the point */
+    a->args            = 0;
+    a->args_len        = 0;
+
+    /* ---- the controls ----
+       Distinct codes for distinct causes, which is what stops this suite from
+       passing on a sys_spawn that refuses everything with one error. They also
+       prove the call plumbing reaches past the early gates, so the refusal
+       below is the signature check and not a malformed request. */
+    a->image_len = 0;
+    ok = (sys_spawn(a) == E_RANGE);
+    a->image_len = (uint32_t)e.size;
+    if (!ok) goto done;
+
+    a->broker_endpoint = 9999;             /* no such handle */
+    ok = (sys_spawn(a) == E_BADF);
+    a->broker_endpoint = h;
+    if (!ok) goto done;
+
+    a->image = (const void *)KERNEL_VBASE; /* a kernel address is not a user pointer */
+    ok = (sys_spawn(a) == E_FAULT);
+    a->image = img;
+    if (!ok) goto done;
+
+    /* ---- the finding itself ----
+       One byte of the signed payload flipped. Before the fix this spawned. */
+    img[16] ^= 0xFF;
+    int rc = sys_spawn(a);
+    img[16] ^= 0xFF;
+    ok = (rc == CXEX_EXEC_VERIFY_FAILED);
+
+done:
+    if (h >= 0) thread_handle_close(thread_current_id(), h);
+    for (uint32_t i = 0; i < got; i++) {
+        paging_unmap(SPV_ARGS_VA + i * PAGE_SIZE);
+        pmm_free(frames[i]);
+    }
     return ok;
 }

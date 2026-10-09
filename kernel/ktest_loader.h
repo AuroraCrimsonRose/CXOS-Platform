@@ -21,4 +21,10 @@ int ktest_loader_adversarial(void);
    user_ptr_writable must refuse it. */
 int ktest_user_ptr_writability(void);
 
+/* SYS_SPAWN must refuse an image whose signature does not hold, asserted
+   through the syscall with real user pointers. The policy function exec_admit
+   has its own test, but nothing established that sys_spawn consults it - and
+   the pre-fix call to proc_start left every self-test green. */
+int ktest_spawn_verifies_image(void);
+
 #endif

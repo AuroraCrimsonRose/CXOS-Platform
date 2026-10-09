@@ -1745,6 +1745,7 @@ void ktest_run(void) {
     total++; passed += report("disk: ATA LBA range refused",        test_disk_lba_range());
     total++; passed += report("cxex loader refuses bad images",    ktest_loader_adversarial());
     total++; passed += report("user pointer writability",          ktest_user_ptr_writability());
+    total++; passed += report("SYS_SPAWN verifies its image",      ktest_spawn_verifies_image());
     total++; passed += report("crypto profile: one key shape only", test_crypto_profile());
     total++; passed += report("exec admission (dev / release)",   test_exec_admit());
     total++; passed += report("file syscalls (SYS_FILE_OP)",       usermode_file_test());
