@@ -263,6 +263,11 @@ int ktest_ip_parse_adversarial(void) {
  * before the decision would just pin today's behaviour.
  */
 
+static int mac_is(const uint8_t *a, const uint8_t *b) {
+    for (int i = 0; i < 6; i++) if (a[i] != b[i]) return 0;
+    return 1;
+}
+
 static void arp_good(uint8_t *buf, uint16_t *len) {
     for (int i = 0; i < 64; i++) buf[i] = 0;
     buf[12] = 0x08; buf[13] = 0x06;               /* ETH_TYPE_ARP */
@@ -299,6 +304,74 @@ int ktest_arp_input_adversarial(void) {
     arp_good(buf, &len);
     buf[12] = 0x08; buf[13] = 0x00;               /* IPv4 */
     ok = ok && (arp_input(buf, len) == 0);
+
+    /* ---- the fields that say what kind of ARP this is (2026-10-09 §2) ----
+       None of these were checked, so a frame declaring different hardware or
+       protocol types - or different address lengths - still populated the
+       IPv4 cache from whatever sat at those offsets. */
+    arp_good(buf, &len); buf[ETH_HDR + 1] = 6;    /* hardware type: not Ethernet */
+    ok = ok && (arp_input(buf, len) == 0);
+    arp_good(buf, &len); buf[ETH_HDR + 2] = 0x86; buf[ETH_HDR + 3] = 0xDD;  /* IPv6 */
+    ok = ok && (arp_input(buf, len) == 0);
+    arp_good(buf, &len); buf[ETH_HDR + 4] = 8;    /* hlen != 6 */
+    ok = ok && (arp_input(buf, len) == 0);
+    arp_good(buf, &len); buf[ETH_HDR + 5] = 16;   /* plen != 4 */
+    ok = ok && (arp_input(buf, len) == 0);
+    arp_good(buf, &len); buf[ETH_HDR + 7] = 9;    /* opcode neither request nor reply */
+    ok = ok && (arp_input(buf, len) == 0);
+
+    /* ---- the cache refuses to be re-pointed (the poisoning case) ----
+       An address resolved once is not replaced by a different MAC while the
+       entry is live. This is the finding itself: before it, the second frame
+       below silently took the mapping.
+       A fresh IP is used so this does not depend on what earlier tests or the
+       real network left in the cache. */
+    ip4_t victim = { 10, 0, 2, 231 };
+    uint8_t first[6]  = { 0xAA, 0, 0, 0, 0, 0x01 };
+    uint8_t second[6] = { 0xBB, 0, 0, 0, 0, 0x02 };
+    uint8_t got[6];
+
+    arp_good(buf, &len);
+    for (int i = 0; i < 6; i++) buf[6 + i] = first[i];           /* Ethernet source */
+    buf[ETH_HDR + 14] = 10; buf[ETH_HDR + 15] = 0;
+    buf[ETH_HDR + 16] = 2;  buf[ETH_HDR + 17] = 231;             /* sender IP */
+    ok = ok && (arp_input(buf, len) == 1);
+    ok = ok && arp_cache_lookup(victim, got) && mac_is(got, first);
+
+    /* the same host again is a refresh, not a conflict */
+    ok = ok && (arp_input(buf, len) == 1);
+    ok = ok && arp_cache_lookup(victim, got) && mac_is(got, first);
+
+    /* a different MAC for that IP must NOT take it */
+    for (int i = 0; i < 6; i++) buf[6 + i] = second[i];
+    arp_input(buf, len);
+    ok = ok && arp_cache_lookup(victim, got) && mac_is(got, first);
+
+    /* ---- the MAC is taken from the Ethernet source, not the payload ----
+       The payload's sender-hardware field is whatever the sender chose to
+       write. Here the two disagree, and the Ethernet source must win. */
+    ip4_t other = { 10, 0, 2, 232 };
+    uint8_t ethsrc[6]  = { 0xCC, 0, 0, 0, 0, 0x03 };
+    uint8_t claimed[6] = { 0xDD, 0, 0, 0, 0, 0x04 };
+    arp_good(buf, &len);
+    for (int i = 0; i < 6; i++) buf[6 + i] = ethsrc[i];          /* Ethernet source */
+    for (int i = 0; i < 6; i++) buf[ETH_HDR + 8 + i] = claimed[i];  /* payload sha */
+    buf[ETH_HDR + 14] = 10; buf[ETH_HDR + 15] = 0;
+    buf[ETH_HDR + 16] = 2;  buf[ETH_HDR + 17] = 232;
+    ok = ok && (arp_input(buf, len) == 1);
+    ok = ok && arp_cache_lookup(other, got);
+    ok = ok && mac_is(got, ethsrc) && !mac_is(got, claimed);
+
+    /* ---- a static entry outranks the network ---- */
+    ip4_t gw = { 10, 0, 2, 233 };
+    uint8_t cfg[6] = { 0xEE, 0, 0, 0, 0, 0x05 };
+    arp_cache_set_static(gw, cfg);
+    arp_good(buf, &len);
+    for (int i = 0; i < 6; i++) buf[6 + i] = second[i];
+    buf[ETH_HDR + 14] = 10; buf[ETH_HDR + 15] = 0;
+    buf[ETH_HDR + 16] = 2;  buf[ETH_HDR + 17] = 233;
+    arp_input(buf, len);
+    ok = ok && arp_cache_lookup(gw, got) && mac_is(got, cfg);
 
     return ok;
 }

@@ -19,6 +19,12 @@
 
 #define ETH_TYPE_ARP   0x0806
 #define ETH_TYPE_IPV4  0x0800
+
+/* ARP header constants. Named so arp_input can refuse a frame that is not
+   Ethernet/IPv4 before it believes any address in it. */
+#define ARP_HW_ETHERNET 1
+#define ARP_OP_REQUEST  1
+#define ARP_OP_REPLY    2
 #define ETH_HDR_LEN    14
 #define ETH_ALEN       6
 
@@ -33,6 +39,10 @@ int arp_resolve(const ip4_t ip, uint8_t *out_mac);
 /* feed a received frame to ARP (handles replies + answers requests for our IP).
    returns 1 if it was an ARP frame we consumed, 0 otherwise. */
 int arp_input(const uint8_t *frame, uint16_t len);
+
+/* Install a mapping from configuration. Outranks anything learned from the
+   network and never ages out. */
+void arp_cache_set_static(const ip4_t ip, const uint8_t *mac);
 
 /* look up a cached entry without sending a request. 1 if found. */
 int arp_cache_lookup(const ip4_t ip, uint8_t *out_mac);
