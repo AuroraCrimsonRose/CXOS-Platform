@@ -366,9 +366,11 @@ Everything is under [`docs/`](docs/README.md), by topic:
 > **Note for anyone changing `abi/cxk_abi.h`:** the X compiler carries a hand-maintained copy
 > of this ABI as an X prelude (`devkit/CXEX.Lang/Abi/AbiPrelude.cs`). Nothing generates it
 > yet, so **a syscall or ABI struct added here must be added there in the same change** or the
-> toolchain will not compile the userland. `cxk os build` runs `cxk check-abi` before
-> building, which reports drift; a `CXEX.Tests` unit test is planned to check it on every
-> test run. See `docs/devkit/CX_DEVKIT_DESIGN.md` §5.2.
+> toolchain will not compile the userland. Two things check it: `cxk os build` runs
+> `cxk check-abi` as a pre-flight, and `CXEX.Tests/Unit/AbiSyncTests.cs` compares the
+> prelude against the real header on every `dotnet test` — including a test that the
+> comparison is not vacuous, and one proving a planted mismatch is reported. See
+> `docs/devkit/CX_DEVKIT_DESIGN.md` §5.2.
 
 ---
 

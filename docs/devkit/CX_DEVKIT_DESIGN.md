@@ -170,7 +170,9 @@ Keys are not flat: every `XKPK`/`XKSK` carries a **header declaring its Authorit
 
 **Key header (draft fields):** `magic`, `formatVersion`, `authority` (tier enum/flags), `keyId`, `ownerName`, `algorithm`, key material, optional `signedBy` (chain to a higher authority).
 
-**Enforcement [REC, see Q-A]:** CXK verifies an artifact's signature **and** that the signing key's authority tier is permitted for that artifact type (System files require `ROOT`; apps accept `PUBLISHER`). A `PUBLISHER` key signing an `XOEX` is rejected.
+**Enforcement [implemented — Q-A answered]:** CXK verifies an artifact's signature **and** that the signing key's authority tier is permitted for that artifact type. `min_trust_for` (`kernel/cpu/exec.c`) requires `CX_TRUST_PUBLISHER` for a `CXEX_TYPE_USER` image and `CX_TRUST_PLATFORM` for every other type, and `cxex_exec_as` refuses anything below it with `CXEX_EXEC_VERIFY_FAILED`. So a `PUBLISHER` key signing an `XOEX` is rejected, as this always said it should be.
+
+Note the tier names: they are **`PLATFORM`** and **`PUBLISHER`**. Earlier drafts of this line said System files require `ROOT`, which was the name Q-B retired.
 
 > **As-built — the tier is the extension, not a header field.** CXK ships this, and it
 > arrived simpler than the draft. A key's authority is stated by its filename: `.xkpk`
@@ -349,10 +351,10 @@ Separate Avalonia app (not yet built), aimed at third-party developers compiling
 ## 13. Remaining Open Questions
 
 - **[Q5 — still open]** `CXEX.Text` is confirmed for tooling/interop reading. Do we *also* need a parallel **C UTF-8 implementation in the kernel**, or does CXK stay ASCII for now? (Leaning: defer; add C side only when CXOS needs it.)
-- **[Q-A]** Confirm authority enforcement: should CXK **reject at load** any artifact whose signing key tier is below what its type requires (System ⇒ ROOT)? (I've assumed yes.)
+- **[Q-A]** ~~Confirm authority enforcement: should CXK **reject at load** any artifact whose signing key tier is below what its type requires?~~ **Answered: yes, and implemented.** `min_trust_for` in `kernel/cpu/exec.c` requires `CX_TRUST_PLATFORM` for every type but `CXEX_TYPE_USER`, which takes `CX_TRUST_PUBLISHER`; `cxex_exec_as` refuses below it. The tiers are `PLATFORM` and `PUBLISHER` per Q-B, not `ROOT`.
 - **[Q-B]** ~~Authority tiers: `ROOT` + `DEVELOPER` enough to start, or add an intermediate "trusted vendor" tier now?~~ **Settled.** Two tiers, named `PLATFORM` and `PUBLISHER`, carried by the key's extension. A vendor is trusted by being in the vault, so the third tier is a directory entry rather than a format change.
 - **[Q-C]** `XCFM` font editor: confirm the in-Studio "draw glyphs on a character map → export/compile to XFNT" workflow is what you want for the bitmap path.
-- **[Q-D — half answered]** `CXEX.Tools` was created but left empty; the wrappers still live in `CXEX.CLI/Wrappers`. The relocation itself is still pending (Phase 2).
+- **[Q-D]** ~~`CXEX.Tools`: created but empty; the wrappers still live in `CXEX.CLI/Wrappers`.~~ **Answered and done 2026-10-09.** Every wrapper moved, over one `ToolProcess` runner, and Studio no longer references `CXEX.CLI` - which was the point. See §5.2.
 - **[Q-E]** ~~Amend the chain to name ELF, or build `.XCXN`?~~ **Answered: ELF.** The §3 chain is amended.
 - **[Q-F]** ~~Test project or generator for the ABI prelude?~~ **Answered:** the test now, in `CXEX.Tests` (xUnit); the generator later (§5.2 item 2).
 - **[Q-G]** ~~`cxk uefi build`: MSVC or clang + lld-link?~~ **Answered: clang + lld-link, with clang, ld.lld and Ninja for the whole CXK build too** (`docs/planning/HARDENING_PLAN.md`, D5).
@@ -375,7 +377,7 @@ the Studio phases below. Its Phases 2–3 interleave with them.
 
 **Phase 1 — Identity & shell:** `CXEX.UI` skeleton + **CX Dark** theme; de-VS-Code chrome (Spyder-style icon bar, flat-with-contrast, no palette-only); min sizes; locked docking + Window Editor Mode + preset/custom layouts (global & per-project).
 
-**Phase 2 — Build Config window + `CXEX.Tools`:** relocate tool wrappers to `CXEX.Tools`; move building out of the bottom panel into a flags/config window → pipeline → Build Log; define `Config/settings.json` schema + mounted-disk UI. (Script replacement no longer waits for this phase: `cxk os build`, the `cxk run` machine options and `cxk uefi build` are hardening Phase 0. This phase makes Studio drive the same pipeline.)
+**Phase 2 — Build Config window + `CXEX.Tools`:** ~~relocate tool wrappers to `CXEX.Tools`~~ **(done 2026-10-09, with hardening Phase 2; Studio no longer references `CXEX.CLI`)**; move building out of the bottom panel into a flags/config window → pipeline → Build Log; define `Config/settings.json` schema + mounted-disk UI. (Script replacement no longer waits for this phase: `cxk os build`, the `cxk run` machine options and `cxk uefi build` are hardening Phase 0. This phase makes Studio drive the same pipeline.) The emulator panel lost its engine selector in the same change: Bochs support was removed, so there is one engine and nothing to select.
 
 **Phase 3 — Console Host:** multi-stream consoles (Build / Emulator-serial / real Terminal) with selector + context auto-switch; add CXK klog→COM1 serial mirror.
 

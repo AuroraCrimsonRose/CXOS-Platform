@@ -538,13 +538,27 @@ synchronous rendezvous together.
 
 > **Status: CP1, CP2 and CP3 are implemented.** The capability gate, the handle table with
 > endpoints, and synchronous IPC with scheduler block/wake all exist and the §10 demo flow
-> runs. **CP4 (hardening) is the open one** — lifecycle edge cases and message-bound fuzzing
-> have not been done systematically. The next ABI work is not a checkpoint below but §7.10.
+> runs.
+>
+> **CP4 (hardening) is mostly closed as of 2026-10-09**, by Phase 2 of
+> `docs/planning/HARDENING_PLAN.md` rather than as ABI work. Endpoints are reference
+> counted and reclaimed, a closed endpoint is a dead name, a close mid-rendezvous wakes
+> the peer with `E_BADF`, user copies are validated at the instant of the copy and a
+> fault during one is recoverable, and the lifecycle sequences this used to call out —
+> create, run, block, wake, exit, and the frames coming back — are driven at every boot
+> by `test_lifecycle_sequences` and `test_ipc_endpoint_lifetime`.
+>
+> **What remains of CP4 is message-bound fuzzing**, which is still not done
+> systematically: the length checks are asserted at their edges, but nothing generates
+> adversarial message sizes across the three IPC entry points the way `ktest_loader.c`
+> does for CXEX images. The next ABI work is not a checkpoint below but §7.10.
 
 - **CP1 — caps + gate.** Per-process `caps` bitmask, `caps_for` at the `cxex_exec` handoff,
   the privileged primitives (`console_write`, `map/unmap/sbrk`, `block_read/write`, `power`)
-  gated on their caps. Port the per-process `user_ptr_ok` and the user-fault hook from
-  legacy. Executive can call primitives; a capless process gets `E_PERM`.
+  gated on their caps. Port the per-process user-pointer check and the user-fault hook
+  from legacy. Executive can call primitives; a capless process gets `E_PERM`.
+  *(Landed, and the check is now the split `user_ptr_readable` / `user_ptr_writable`
+  pair rather than the single `user_ptr_ok` this line was written against — see §3.)*
 - **CP2 — handle table + endpoints.** The 16-slot table, `ep_create`, `handle_close`, and
   `spawn` installing the child's broker handle 0 + forcing `caps=0`.
 - **CP3 — synchronous IPC.** `ipc_call` / `ipc_recv` / `ipc_reply` with scheduler

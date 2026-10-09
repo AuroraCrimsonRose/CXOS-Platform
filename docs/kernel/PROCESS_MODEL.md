@@ -258,6 +258,12 @@ not carry it over. The tests moved somewhere better: **`kernel/ktest.c`, run
 automatically from `kmain` on every boot** (`ktest_run()`), before the executive
 is launched. A regression cannot be forgotten because nobody typed the command.
 
+**The authority on which self-tests exist is `ktest_run()` itself**, not this
+table. The suite was 11 tests when this section was written and is 35 as of
+2026-10-09; a table that implies it is the full list goes stale every time one
+is added, so this one lists the tests that bear on the **process model** and
+leaves the rest to the source.
+
 | Self-test | Exercises |
 |-----------|-----------|
 | `test_paging` | map/unmap, recursive directory |
@@ -267,10 +273,17 @@ is launched. A regression cannot be forgotten because nobody typed the command.
 | `test_ring3_single` | ring-3 entry, syscall, clean return (3a) |
 | `test_ring3_processes` | cooperative *and* preemptible ring-3 processes (3b/3c) |
 | `test_identity` | a user process can never be UID 0 |
-| `test_storage` | disk read/write |
-| `test_cxfs` | filesystem format/mount/create/read |
-| `test_pci` | bus enumeration |
-| `test_ahci` | AHCI bring-up |
+| `test_kstack` | guarded kernel stacks |
+| `test_main_stack` | thread 0 on a guarded stack |
+| `test_double_fault_gate` | a double fault lands on its own stack |
+| `test_thread_limit` | the thread ceiling and per-thread stack size |
+| `test_vmregion` | `SYS_MEM_OP` map/unmap, and no frames leaked across a full cycle |
+| `test_lifecycle_sequences` | map → access → unmap → **access fails**; the protection asked for is the one applied; process create → run → exit → **frames returned**; sleep → wake → **reschedule** |
+| `test_ipc_endpoint_lifetime` | endpoint refcounting, reclaim, dead names, the per-process quota |
+| `test_user_copy_validation` | a user copy is re-validated at the copy, not before the block |
+| `test_user_copy_fault_recovery` | a page fault inside a user copy is recoverable |
+| `test_cr0_write_protect` | ring 0 obeys the read-only bit |
+| `test_clock_sleep`, `test_timer_wraparound` | sleep bounds both ways, and the 32-bit tick wrap |
 
 `test_sched_preempt` and `test_ring3_processes` each call `sched_preempt_enable(5)`
 and then `sched_preempt_disable()`. So **preemption is proven on every boot and
@@ -291,7 +304,20 @@ records what turning it on permanently still needs.
 - A preemptive switch from an IRQ must happen **after** the EOI.
 - The hand-crafted initial thread stack must mirror `context_switch`'s restore
   order exactly.
-- Validate every pointer handed up from ring 3 before dereferencing it.
+- Validate every pointer handed up from ring 3 before dereferencing it — and
+  validate it **at the copy**, not before a block. A check followed by
+  `thread_block()` is a snapshot of a mapping that nothing is holding still;
+  the process can unmap it while the caller sleeps. `user_copy_in` /
+  `user_copy_out` re-check at the instant of the copy and refuse before a byte
+  moves, and the copy itself is fault-recoverable, because the mapping can
+  change after any check and before the instruction that uses it.
+- A deadline computed as `now + ms` is wrong for as long as the counter takes
+  to wrap and then wrong forever. Compare tick values through
+  `timer_tick_after` / `timer_since`, never with `<` or `>=` directly.
+- When a layer is added that makes an older check redundant, look for the test
+  the older check was keeping honest. Setting `CR0.WP` made a deleted range
+  check undetectable through its return value, and would have silently retired
+  a working sabotage test.
 
 ---
 
