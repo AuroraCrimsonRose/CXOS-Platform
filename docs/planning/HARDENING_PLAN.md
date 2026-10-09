@@ -726,20 +726,15 @@ subsystem this plan has never covered.
 
 **DevKit**
 
-- [ ] **Harden `GptParser` (§2).** Validate the header and entry-array ranges
-      against the stream length before seeking or allocating; use checked
-      arithmetic; cap `entrySize` (it is currently unbounded, and the `uint`
-      multiply wraps before the cast to `int` ever happens); validate each
-      partition's first/last LBA; verify the header and entry-array CRCs. Make
-      `ReadAt` **report a short read** instead of returning a zero-filled
-      buffer — a truncated image currently parses as zeros rather than failing.
-      Adversarial tests in `CXEX.Tests/Adversarial`, built as single mutations
-      of a known-good image like the ELF and CXEX suites.
-- [ ] **Check the signature in the parser as well as the dispatcher (§2).**
-      `DiskAnalyzer` matches `"EFI PART"` before dispatching, but
-      `GptParser.Parse` is public and does not, so the guarantee depends on the
-      caller. Deliberately twice, for the reason `CXEXWriter` refuses W+X even
-      though the layout engine already did (security §11).
+- [x] **`GptParser` hardened (§2). Done 2026-10-09.** A GPT is untrusted input - the reason to inspect a disk image is that you do not know what is in it - and this trusted it in five ways. All closed: the signature and **both CRCs** are validated (neither was), `entrySize` is bounded and must be a multiple of 8, `numEntries` is capped, the entry-array offset and length are range-checked in 64-bit against the **stream length** rather than the caller's `diskSize` (they disagree for a truncated file and the smaller is the only safe bound), and each partition's first/last LBA is validated - a backwards or out-of-range entry is dropped rather than producing a negative `StartOffset`, so one bad row does not make a whole disk unreadable.
+
+      The sharpest one was the allocation: **`entrySize` had no upper bound, and `numEntries * entrySize` wrapped as `uint` before the cast to `int` ever happened** - 256 x 0x01000000 is exactly 0, giving a zero-length buffer the entry loop then indexed. `ReadAt` is replaced by a `ReadExact` that throws instead of returning a zero-filled buffer on a short read.
+
+      The signature is checked here **as well as** in `DiskAnalyzer`, deliberately, for the reason `CXEXWriter` refuses W+X even though the layout engine already did (§11): `Parse` is public, and a guarantee living in a caller you did not use is not a guarantee. That closes the §11 half of this finding too.
+
+      29 cases in `CXEX.Tests/Adversarial/GptParserTests.cs`, each a single mutation of `GptBuilder.Valid()`, with the valid image and the dispatcher path as controls. A CRC check-value test (`"123456789"` -> `0xCBF43926`) keeps the two CRC tests from being circular, since the builder uses the same function.
+
+      **Proven able to fail - and one sabotage proved the opposite, which is recorded in the test.** Removing the `entrySize` bound turns 3 cases red. Making `ReadExact` tolerate a short read turns **nothing** red: the bounds check catches an honestly-truncated image, and the entry-array CRC catches any under-delivery at all, because zero-filling the tail changes the checksum. `ReadExact`'s throw is therefore **unfalsifiable by construction** - no input can reach it that the CRC would not also reject. It stays for the error message and because a caller that skipped CRCs would need it, but it is defence in depth rather than a tested line, and the test says so instead of implying a sabotage proved it.
 
 ### Phase 3
 
