@@ -131,7 +131,7 @@ set(KCFLAGS --target=${CXK_TARGET} -ffreestanding -fno-pic -fno-stack-protector
 # string literal "CXK v5", which is how it stayed at v5 through every change.
 # The fallback exists for a bare host-compile with no CMake, and is itself
 # checked against the registry by `cxk check-versions`.
-set(CXK_KERNEL_VERSION_FALLBACK "1.0.0")
+set(CXK_KERNEL_VERSION_FALLBACK "1.0.1")
 set(CXK_KERNEL_VERSION "${CXK_KERNEL_VERSION_FALLBACK}")
 if(EXISTS ${SRC_DIR}/versions.json)
     file(READ ${SRC_DIR}/versions.json CXK_VERSIONS_JSON)

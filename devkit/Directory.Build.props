@@ -19,8 +19,8 @@
     Add a component by adding a property here AND a check entry in versions.json.
   -->
   <PropertyGroup>
-    <CxkCliVersion>1.0.0</CxkCliVersion>
-    <CxexStudioVersion>1.0.0</CxexStudioVersion>
+    <CxkCliVersion>1.0.1</CxkCliVersion>
+    <CxexStudioVersion>1.0.1</CxexStudioVersion>
   </PropertyGroup>
 
   <!--
