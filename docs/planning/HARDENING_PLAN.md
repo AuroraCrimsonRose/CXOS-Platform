@@ -824,6 +824,38 @@ subsystem this plan has never covered.
       The superblock half needs no disk at all, so mount-time validation is
       covered on every machine rather than only one with a second drive.
 
+- [x] **Advisory fixes re-verified by sabotage, and the highest-severity one had
+      no test. Done 2026-10-09.** Before cutting a release that claims these are
+      patched, all five advisories were checked by removing each guard and
+      rebuilding rather than by reading the code. Four behaved: the loader's
+      pairwise page-overlap test, `ip_parse`'s `total > avail`, and ARP's
+      refuse-to-overwrite branch each turn exactly their own suite red, and the
+      CXFS checks are covered above.
+
+      **`SYS_SPAWN` did not.** Restoring the pre-fix `proc_start` call - the
+      whole of the `GHSA-2c4w-cgcw-9732` defect, CVSS 8.4 - left **all 39
+      self-tests green**. `test_exec_admit` looks like coverage and is not: it
+      tests the policy in isolation, which verify verdict maps to which trust
+      level, and never asks whether `sys_spawn` consults it. **A test on a
+      policy function is not a test that its caller applies it**, which is worth
+      carrying to every other `*_admit` / `*_check` helper that has its own test.
+
+      Closed by asserting through the syscall, with real user pointers and a
+      real `ep_create` broker handle, against the staged `hi.xuex` with one byte
+      of its signed payload flipped. Tampering rather than leaving it unsigned
+      is deliberate: a `--dev` kernel admits unsigned images on purpose, so a
+      test built on one would be vacuous in the configuration that ships, and
+      when the staged image *is* unsigned the case says so with a WARN instead
+      of passing. Three controls return distinct codes for distinct causes
+      (`E_RANGE`, `E_BADF`, `E_FAULT`) so it cannot pass on a `sys_spawn` that
+      refuses everything. The positive direction is left to the boot itself,
+      where the executive spawns the shell through this same syscall.
+
+      **40 of 40 on a signed kernel**, which is the only configuration in which
+      this case is not a skip. Restoring the `proc_start` call now fails it with
+      `exception: 14` - the tampered image is loaded and *runs*, which is the
+      finding rather than a refusal.
+
 **DevKit**
 
 - [x] **`GptParser` hardened (§2). Done 2026-10-09.** A GPT is untrusted input - the reason to inspect a disk image is that you do not know what is in it - and this trusted it in five ways. All closed: the signature and **both CRCs** are validated (neither was), `entrySize` is bounded and must be a multiple of 8, `numEntries` is capped, the entry-array offset and length are range-checked in 64-bit against the **stream length** rather than the caller's `diskSize` (they disagree for a truncated file and the smaller is the only safe bound), and each partition's first/last LBA is validated - a backwards or out-of-range entry is dropped rather than producing a negative `StartOffset`, so one bad row does not make a whole disk unreadable.
