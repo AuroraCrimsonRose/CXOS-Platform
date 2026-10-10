@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /CXLite/kernel/drivers/timer.c */
 /* Aurora Tejeda */
 
@@ -42,8 +44,12 @@ void timer_sleep(uint32_t ms) {
         return;
     }
 
-    uint32_t target = ticks + ms;
-    while (ticks < target) {
+    /* Elapsed-since rather than a `ticks < target` deadline: the sum wraps
+       every 49.7 days, and a wrapped target compares small, so the wait would
+       end immediately. An unsigned difference does not care where the wrap
+       falls. See the note on timer_tick_after in timer.h. */
+    uint32_t start = ticks;
+    while ((uint32_t)(ticks - start) < ms) {
         __asm__ volatile ("hlt");
     }
 }
@@ -71,7 +77,10 @@ void timer_timeout_start(struct timeout *to, uint32_t ms) {
 
 int timer_timeout_expired(struct timeout *to) {
     if (to->use_timer) {
-        return (ticks >= to->deadline) ? 1 : 0;
+        /* Wrap-safe: a plain `ticks >= to->deadline` reports expiry the
+           instant the deadline sum wraps, which would fail a disk transfer
+           with DISK_ERR_TIMEOUT before the hardware was even asked. */
+        return timer_tick_after(ticks, to->deadline) ? 1 : 0;
     }
     /* spin mode: each call burns one unit of budget */
     if (to->spins_left == 0) return 1;
@@ -130,3 +139,8 @@ uint32_t timer_us_since(uint32_t start) {
 }
 
 uint32_t timer_tsc_mhz(void) { return tsc_per_us; }
+
+/* ---- testing only: see timer.h ---- */
+void timer_ticks_set_for_test(uint32_t t) {
+    ticks = t;
+}

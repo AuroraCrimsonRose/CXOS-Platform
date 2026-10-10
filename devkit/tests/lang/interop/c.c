@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 #include <stdint.h>
 struct pt { uint32_t x, y; };
 uint64_t x_add(uint64_t a, uint64_t b);

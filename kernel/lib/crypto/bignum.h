@@ -1,5 +1,7 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/lib/bignum.h */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * Fixed-size big integers for RSA-2048 signature VERIFICATION only
  * (CX_EXTENSION_SYSTEM.md section 10). Just the operations modular

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 struct pt  { x: u32, y: u32 }
 struct big { a: u32, b: u32, c: u32, d: u32, e: u32, f: u32 }
 

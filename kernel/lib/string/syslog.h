@@ -1,5 +1,7 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/lib/string/syslog.h */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * Structured system logger - kernel-side recorder. Every klog() and slog() call
  * lands in an in-memory ring buffer of fixed, pointer-free entries

@@ -1,5 +1,7 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/drivers/usb/ehci.c */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /* EHCI host controller, stage 1. See ehci.h for scope and for why a USB
    keyboard is deliberately not this driver's job. */
 

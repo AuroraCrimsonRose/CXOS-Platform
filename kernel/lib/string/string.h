@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/lib/string/string.h */
 /* Aurora Tejeda */
 /* Freestanding string / memory helpers (no libc available). */
@@ -10,6 +12,48 @@
 
 /* length of a null-terminated string */
 size_t strlen(const char *s);
+
+/* ====================================================================
+ * The bounded-string contract (engineering §2)
+ *
+ * One convention for every kernel function that writes into a buffer the
+ * caller supplies with a capacity - the string helpers below, and equally
+ * the formatters that are not in this file (disk_capacity_str, cxfs_path_of,
+ * fmt_u32 and the rest). The review's point was that each subsystem had
+ * invented its own edge-case behaviour; these are the rules they all follow,
+ * and a new one is wrong if it does something else.
+ *
+ *   1. `cap == 0` means write nothing and do not dereference the buffer.
+ *      Not even a terminator - there is nowhere to put one. A negative `cap`
+ *      is treated as zero, because an `int` capacity can carry one.
+ *   2. With `cap > 0` the result is ALWAYS null-terminated, including when
+ *      it had to be cut short and when the operation failed.
+ *   3. Truncation is reported, never silent. A function returning a length
+ *      returns the length the source NEEDED (strlcpy's BSD semantics), so
+ *      `ret >= cap` is the test for "it did not fit". A function returning a
+ *      status returns an error. A `void` function must not truncate at all:
+ *      if it cannot say so, it must not do it.
+ *   4. Truncation is the caller's decision, not the callee's. A caller that
+ *      copies untrusted input into a fixed buffer checks for it and refuses,
+ *      unless truncation is explicitly what it wants - the shape Haiku uses
+ *      for exactly this, where ddm_strlcpy() turns a truncating copy into
+ *      B_NAME_TOO_LONG unless the caller passes allowTruncation
+ *      (src/system/kernel/disk_device_manager/ddm_userland_interface.cpp).
+ *      This matters because a check applied to an already-truncated copy is
+ *      not a check: cxfs_create_entry and cxfs_rename both truncated a name
+ *      into a 64-byte buffer and then asked cxfs_normalize_name whether it
+ *      was too long, which it never could be by then.
+ *   5. A NULL destination is permitted only with `cap == 0`; a NULL source is
+ *      always an error. Haiku's user_strlcpy draws the line in the same
+ *      place (B_BAD_VALUE vs B_BAD_ADDRESS, vm.cpp), and the asymmetry is
+ *      deliberate: (NULL, 0) is the useful "how long would this be?" call,
+ *      while there is no useful read from nowhere.
+ *
+ * Partial output is not a success. A formatter that cannot fit the whole
+ * result emits nothing meaningful rather than a fragment that reads as
+ * complete - disk_capacity_str used to print the unit with no number when the
+ * buffer was small, so a 500 GB disk read as "GB".
+ * ==================================================================== */
 
 /* compare two strings: 0 if equal, <0 or >0 otherwise */
 int strcmp(const char *a, const char *b);

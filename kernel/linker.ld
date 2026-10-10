@@ -1,5 +1,7 @@
+/* SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 */
+/* SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems) */
 /* /kernel/kernel/linker.ld - v5 higher-half kernel
- * Aurora Tejeda / CATX SYSTEMS LLC
+ * Aurora Tejeda / CATX Systems
  *
  * Higher-half layout: the kernel is LINKED at a high virtual address
  * (0xC0000000 + 1MB) but LOADED physically at 1MB (0x100000). The AT()

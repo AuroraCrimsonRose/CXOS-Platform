@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: MIT -->
+<!-- SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems) -->
 <Solution>
   <Project Path="CXEX.Build/CXEX.Build.csproj" Id="67b1a560-c355-4858-a3a7-3f4124b44c17" />
   <Project Path="CXEX.CLI/CXEX.CLI.csproj" />

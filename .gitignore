@@ -89,3 +89,17 @@ memory_store.json
 repomix-output.xml
 repomix.config.json
 .gitignore
+
+# -------------------------
+# Agent / assistant working files. Local only: they are instructions for tools
+# the author happens to use, not part of CXOS, and they date faster than the
+# code they describe.
+# -------------------------
+CLAUDE.md
+CLAUDE_NOTES.md
+HANDOFF.md
+.claude/
+.repomixignore
+repomix-output.*
+AGENTS.md
+.cursorrules

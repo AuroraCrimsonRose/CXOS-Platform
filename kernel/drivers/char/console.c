@@ -1,5 +1,7 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/drivers/char/console.c */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * Text console with two interchangeable backends behind one interface:
  *   - VGA text  (vga.c, 80x25, hardware cursor) - the default at boot
@@ -16,6 +18,7 @@
 #include "fb.h"
 #include "color.h"
 #include "format.h"
+#include "serial.h"
 
 #define TAB_WIDTH 4
 
@@ -128,6 +131,14 @@ void console_set_color(uint8_t a) { attr = a; }
 uint8_t console_get_color(void)   { return attr; }
 
 void console_newline(void) {
+    /* The serial tee lives here as well as in console_putc because the loggers
+       (lib/string/logging.c, syslog.c) call console_newline() directly rather
+       than printing '\n'. Teeing only in console_putc would run every log line
+       together in the serial capture. console_putc delegates '\n' to this
+       function and tees everything else, so each byte is sent exactly once. */
+    serial_putc('\r');
+    serial_putc('\n');
+
     cx = 0;
     cy++;
     scroll_if_needed();
@@ -135,7 +146,10 @@ void console_newline(void) {
 }
 
 void console_putc(char c) {
-    if (c == '\n') { console_newline(); return; }
+    if (c == '\n') { console_newline(); return; }   /* tees there, not here */
+
+    serial_putc(c);
+
     if (c == '\r') { cx = 0; be_set_cursor(cx, cy); return; }
     if (c == '\b') {
         /* Move the cursor back one cell, wrapping to the end of the previous

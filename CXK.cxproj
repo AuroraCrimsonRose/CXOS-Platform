@@ -9,8 +9,7 @@
     "ld": "ld.lld",
     "nasm": "nasm",
     "cMake": "cmake",
-    "qemu": "qemu-system-i386",
-    "bochs": "bochs"
+    "qemu": "qemu-system-i386"
   },
   "build": {
     "sourceDir": "src",

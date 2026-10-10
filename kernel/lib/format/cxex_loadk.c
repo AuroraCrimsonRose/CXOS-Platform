@@ -1,5 +1,7 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/lib/format/cxex_loadk.c */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * Kernel binding for cxex_load: supply the get_page/map_page ops backed by the
  * PMM and the pager. Kept separate from cxex_load.c so the loader logic stays

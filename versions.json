@@ -25,7 +25,7 @@
 
   "components": {
     "cxos": {
-      "version": "1.0.0",
+      "version": "1.0.1",
       "what": "The platform release: the kernel, the X userland and the boot chain as one bootable image. Its version names the GIT TAG and the GitHub Release.",
       "major_means": "A new generation of the platform: the image is a different thing, not an update to the previous one. Every component starts at 1.0.0 because 1.0.0 is the first release anyone outside the project can actually obtain. The kernel called itself v5 internally for four unreleased generations; shipping that as a public 5.0.0 would have claimed four releases that never existed, to an audience with no way to know what they were.",
       "ships_as": "cxos-<version>-<release_name>-selfsigned.img",
@@ -41,7 +41,7 @@
       ]
     },
     "cxk-kernel": {
-      "version": "1.0.0",
+      "version": "1.0.1",
       "what": "CXK itself.",
       "major_means": "A re-architecture of the kernel, not merely a broken interface - in this repository interfaces may break in any release, so a major keyed to breakage would increment every time and say nothing. The internal generation counter that reached 5 is retired: it was never public, and the names that carried it (the CMake project, the boot-chain banners) have had it removed rather than renumbered, because a version repeated in five hand-written strings is five things to forget.",
       "checks": [
@@ -53,7 +53,7 @@
       ]
     },
     "cxk-cli": {
-      "version": "1.0.0",
+      "version": "1.0.1",
       "what": "The `cxk` command line tool: the X compiler, the imager, signing, `cxk os build`, `cxk run`.",
       "major_means": "The command surface. A removed or renamed command or option is a major; a new one is a minor.",
       "ships_as": "cxk-win-x64.exe, cxk-linux-x64, cxk-osx-arm64",
@@ -65,7 +65,7 @@
       ]
     },
     "cxex-studio": {
-      "version": "1.0.0",
+      "version": "1.0.1",
       "what": "CX DevKit Studio, the GUI front end over the same libraries the CLI uses.",
       "major_means": "The command surface it presents, on the same rule as the CLI.",
       "ships_as": "CXEX-Studio-<platform>.zip",
@@ -98,8 +98,9 @@
       "bump_when": "the header or the section table changes shape, in one commit on both sides",
       "checks": [
         {
-          "file": "devkit/CXEX.FileType/Types/CXEXExecutable.cs",
-          "pattern": "SupportedFormatVersion = ([0-9]+)"
+          "file": "devkit/CXEX.Core/Constants/FormatPolicy.cs",
+          "pattern": "\\[CXFormat\\.Cxex\\] *= *new\\(Min: [0-9]+, Max: [0-9]+, Writes: ([0-9]+)\\)",
+          "note": "moved here 2026-10-09 from CXEXExecutable.SupportedFormatVersion, which no longer names a version: the DevKit's read/write policy is central now (DevKit engineering §13). cxk check-versions caught the move, which is what it is for"
         },
         {
           "file": "kernel/lib/format/cxex.h",

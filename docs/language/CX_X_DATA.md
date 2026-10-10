@@ -1,5 +1,5 @@
 # X Data
-### CX Design Spec — Aurora Tejeda / CATX SYSTEMS LLC
+### CX Design Spec — Aurora Tejeda / CATX Systems
 
 > **Status: v0, reader implemented** (`os/std/xdata.xfxn`), with **service
 > descriptors (`.xosv`)** and **the kernel's own configuration

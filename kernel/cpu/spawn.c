@@ -1,5 +1,7 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/cpu/spawn.c */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * ABI v1 process launch. Every ring-3 process - the executive AND its apps -
  * is a normal scheduler thread with its own address space, kernel stack (esp0),
@@ -232,7 +234,10 @@ int proc_start(const void *image, uint32_t image_len, uint32_t caps,
     vm_proc_init(pid, vm_default_quota(), thread_current_id());
 
     if (broker) {
-        int bh = thread_handle_install(pid, HANDLE_ENDPOINT, HRIGHT_SEND, broker);
+        /* ep_install_handle, not thread_handle_install: the child's handle is
+           a reference on the broker's endpoint, which has to outlive every one
+           of them (see the lifetime note in cpu/ipc.h). */
+        int bh = ep_install_handle(pid, broker, HRIGHT_SEND);
         if (bh != 0) klog_u32("PROC", SEV_WARN, "broker handle not 0: ", (uint32_t)bh, LOG_COLOR_VALUE, "");
     }
     thread_start(pid);
@@ -277,7 +282,38 @@ int sys_spawn(const struct spawn_args *ua) {
        Pass a subset of your authority, never amplify. App-spawner (caps=0) -> 0. */
     uint32_t granted = a.caps & thread_current_caps();
 
-    int pid = proc_start(a.image, a.image_len, granted, bep, a.args, a.args_len);
+    /* COPY FIRST, THEN VERIFY, THEN LOAD THE COPY.
+     *
+     * This call used to go straight to proc_start, which does no verification
+     * at all - so SYS_SPAWN ran whatever bytes it was handed. The comment below
+     * on SYS_EXEC_PATH has described that as a way to run code the trusted key
+     * never signed since SYS_FILE_OP landed, and the answer taken at the time
+     * was to add a safe path beside it rather than to close this one. The only
+     * thing standing between a GRANT_SPAWN holder and unsigned ring-3 code was
+     * that nobody had tried.
+     *
+     * The order is the whole point. Verifying `a.image` in place and then
+     * letting proc_start copy it would authenticate one set of bytes and load
+     * another - the caller holds that memory, so it can change underneath.
+     * Unreachable today, because one ring-3 process runs at a time; reachable
+     * the moment concurrent user threads exist, which is the same window §6
+     * closed for IPC. Copying into the kernel first means the bytes that are
+     * verified are the bytes that are loaded, by construction, exactly as
+     * SYS_EXEC_PATH achieves it by reading the file itself.
+     *
+     * user_copy_in rather than a raw loop: the range is re-checked at the
+     * instant of the copy and a fault during it is recoverable (§6). The
+     * user_ptr_readable above is an early reject, not the authority. */
+    uint8_t *kimg = (uint8_t *)kmalloc(a.image_len);
+    if (!kimg) return E_NOMEM;
+    if (user_copy_in(kimg, (uint32_t)a.image, a.image_len) != 0) {
+        kfree(kimg);
+        return E_FAULT;
+    }
+
+    int pid = cxex_exec_as(kimg, (size_t)a.image_len, granted, bep, a.args, a.args_len);
+    kfree(kimg);        /* proc_start took its own copy for the new address space */
+
     if (pid >= 0)
         klog_u32("SPAWN", SEV_OK, "pid ", (uint32_t)pid, LOG_COLOR_VALUE,
                  granted ? " (privileged, ring 3)" : " (caps=0, ring 3)");
@@ -287,9 +323,12 @@ int sys_spawn(const struct spawn_args *ua) {
  * Run a program straight off the disk.
  *
  * The reason this is a syscall of its own, and not a shell that reads a file
- * and calls SYS_SPAWN with the bytes: SYS_SPAWN takes an image ALREADY in the
- * caller's memory and does not verify it - only the kernel's own load path
- * calls cxex_verify_trusted. That was harmless while ring 3 had no filesystem,
+ * and calls SYS_SPAWN with the bytes:
+ *
+ * HISTORICAL, and corrected 2026-10-09. What this said, accurately at the
+ * time: SYS_SPAWN takes an image ALREADY in the caller's memory and does not
+ * verify it - only the kernel's own load path calls cxex_verify_trusted. That
+ * was harmless while ring 3 had no filesystem,
  * because the only images that could reach SYS_SPAWN came in through a trusted
  * build. SYS_FILE_OP ended that: a process can now read arbitrary bytes off a
  * disk. Handing those to SYS_SPAWN would be a way to run code the trusted key
@@ -298,8 +337,22 @@ int sys_spawn(const struct spawn_args *ua) {
  * So the kernel reads the file itself. The bytes that are verified are exactly
  * the bytes that are loaded - there is no window in which the caller could
  * swap them, because the caller never holds them. CX_ABI.md section 7.10 calls
- * this closing the gap "by construction", which is the better fix than adding
- * a verify to SYS_SPAWN and hoping every future caller goes through it.
+ * this closing the gap "by construction".
+ *
+ * WHAT CHANGED: that paragraph went on to call this "the better fix than
+ * adding a verify to SYS_SPAWN and hoping every future caller goes through
+ * it" - and the 2026-10-09 review made the flaw in that reasoning plain.
+ * Adding a safe path beside an unsafe one does not close the unsafe one. A
+ * verify placed in SYS_SPAWN *itself* is not hope, it is enforcement, and
+ * every caller goes through it by definition. SYS_SPAWN now copies the image
+ * into the kernel and verifies the copy, so it is safe by the same
+ * construction this path is, and both reach cxex_exec_as with bytes the
+ * caller can no longer touch.
+ *
+ * This syscall still earns its place: it reads the file, so a caller does not
+ * need the whole image in its own memory, and the shell stays EMBEDDED in the
+ * executive rather than sitting on the disk where it could be replaced. Two
+ * routes to ring 3, both verified, neither trusting the caller's buffer.
  */
 int sys_exec_path(const char *upath, const struct spawn_args *ua) {
     if (!user_ptr_readable((uint32_t)ua, sizeof *ua)) return E_FAULT;

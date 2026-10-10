@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+using CXEX.CLI.Infrastructure;
+using CXEX.Tools;
 ﻿using CXEX.Lang.Abi;
 using CXEX.Lang.Ast;
 using CXEX.Lang.CodeGen;
@@ -105,7 +109,7 @@ public class CompileCommand : Command<CompileCommand.Settings>
         // 4a. an object stops at assembly: whatever links it supplies the rest
         if (s.Object)
         {
-            if (!Wrappers.ClangTool.Compile(asmPath, s.Output))
+            if (!CliTools.Report(ClangTool.Compile(asmPath, s.Output, options: CliTools.Options($"clang (assemble): {Path.GetFileName(asmPath)}"))))
             {
                 AnsiConsole.MarkupLine("[red]error:[/] assembling the emitted .s failed");
                 return 1;
@@ -117,14 +121,14 @@ public class CompileCommand : Command<CompileCommand.Settings>
 
         // 4. assemble + link via the cross toolchain
         string objPath = Path.ChangeExtension(s.Output, ".o");
-        if (!Wrappers.ClangTool.Compile(asmPath, objPath))
+        if (!CliTools.Report(ClangTool.Compile(asmPath, objPath, options: CliTools.Options($"clang (assemble): {Path.GetFileName(asmPath)}"))))
         {
             AnsiConsole.MarkupLine("[red]error:[/] assembling the emitted .s failed");
             return 1;
         }
 
         string ld = s.LinkerScript ?? WriteDefaultScript(s.Output);
-        if (!Wrappers.ClangTool.Link(new[] { objPath }, s.Output, ld))
+        if (!CliTools.Report(ClangTool.Link(new[] { objPath }, s.Output, ld, options: CliTools.Options($"ld.lld (link): {Path.GetFileName(s.Output)}"))))
         {
             AnsiConsole.MarkupLine("[red]error:[/] linking failed");
             return 1;

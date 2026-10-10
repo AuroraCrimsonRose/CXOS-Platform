@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 

@@ -1,5 +1,7 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 // xc/dumputil.xfxn - what the X compiler's dump programs share.
-// Aurora Tejeda / CATX SYSTEMS LLC
+// Aurora Tejeda / CATX Systems
 //
 // Escaping text the way the DevKit dump commands do, numbers, the FNV-1a
 // hash their -s summaries print, and recognising an argument.

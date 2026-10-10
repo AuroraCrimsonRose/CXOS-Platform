@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/drivers/net/ip.c */
 /* Aurora Tejeda */
 /* IPv4 layer: header build/parse, checksum, routing + ARP next-hop. */
@@ -86,16 +88,59 @@ int ip_parse(const uint8_t *frame, uint16_t frame_len,
     if (etype != ETH_TYPE_IPV4) return 0;
 
     const uint8_t *ip = frame + ETH_HDR_LEN;
+    uint16_t avail = (uint16_t)(frame_len - ETH_HDR_LEN);   /* IP bytes received */
+
     uint8_t version = (ip[0] >> 4) & 0x0F;
     uint8_t ihl = (ip[0] & 0x0F) * 4;     /* header length in bytes */
     if (version != 4 || ihl < IP_HDR_LEN) return 0;
 
+    /* The declared header must be ENTIRELY PRESENT before any field past the
+       first 20 bytes is trusted, and before `ihl` is used to place the payload
+       pointer. IHL may be up to 15 (60 bytes) and the frame-length check above
+       only guarantees 20, so a 34-byte frame declaring IHL 15 used to produce
+       `*payload = ip + 60` - forty bytes past the end of the frame.
+
+       This test is REDUNDANT with the two below, and knowing that is worth
+       more than removing it: `total >= ihl` and `total <= avail` together
+       imply `ihl <= avail`, so no frame can reach the checks below and fail
+       here. Confirmed by sabotage - deleting this line turns no test red,
+       because every case it would catch is caught by `total > avail`.
+
+       It stays for one reason: `ip_checksum(ip, ihl)` below reads `ihl` bytes,
+       and this makes that read's safety a fact established three lines above
+       it rather than a property derived from two later comparisons. Deriving
+       it is exactly the reasoning that produced the original bug. */
+    if (ihl > avail) return 0;
+
     uint16_t total = (uint16_t)(ip[2] << 8) | ip[3];
     if (total < ihl) return 0;
-    if ((uint16_t)(ETH_HDR_LEN + total) > frame_len) {
-        /* trust the smaller of declared/received to avoid over-read */
-        total = (uint16_t)(frame_len - ETH_HDR_LEN);
-    }
+
+    /* A packet that declares more than arrived is MALFORMED, and is refused
+       rather than clamped. Clamping was the bug: `total` was reduced to the
+       received length without re-testing it against `ihl`, so `total - ihl`
+       underflowed and `*payload_len` came back as much as 65496 on a frame of
+       34 bytes. The caller then had a length that was not merely wrong but
+       enormous, and `icmp_input` echoes that payload back to the sender - so
+       the kernel disclosed whatever lay past the frame in its receive buffer.
+       Truncation is not something a receiver can repair; the only safe answer
+       is to drop the packet. */
+    if (total > avail) return 0;
+
+    /* Fragments are refused, not reassembled. The flags/fragment-offset field
+       was written as zero on send and never read on receive, so a fragment
+       arrived looking exactly like a complete datagram and its partial payload
+       was handed to the protocol handler as a whole one. Reassembly is real
+       work and is not done; until it is, saying no is the honest behaviour.
+       MF = bit 5 of ip[6]; the 13-bit offset is the low 5 bits of ip[6] plus
+       all of ip[7]. DF (bit 6) is not a fragment and is ignored. */
+    uint16_t frag = (uint16_t)(((ip[6] & 0x1F) << 8) | ip[7]);
+    if ((ip[6] & 0x20) || frag != 0) return 0;
+
+    /* The header checksum, which was computed on send and never verified on
+       receive - so a corrupted packet was indistinguishable from a good one.
+       Checked over the declared header length, which is why it comes after
+       `ihl` has been proved present. A correct header sums to zero. */
+    if (ip_checksum(ip, (int)ihl) != 0) return 0;
 
     for (int i = 0; i < 4; i++) src_ip[i] = ip[12 + i];
     *protocol = ip[9];

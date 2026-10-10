@@ -21,7 +21,7 @@ because a reader can always be older than the file it is handed — which is the
 one place in this repository where two different ages do meet, since `cxk` from a
 release may be pointed at an image or a key written by a different one.
 
-Everything else in CXOS is held to one age by `cxk check-abi` and by CLAUDE.md's
+Everything else in CXOS is held to one age by `cxk check-abi` and by the project's
 "update every user in the same commit". Format versions are the exception, so
 they are the thing that actually needs numbering.
 
@@ -53,7 +53,7 @@ be about.
 
 | | |
 |---|---|
-| **MAJOR** | A new generation of that component — it is a different thing, not an update to the previous one. **Not** keyed to breaking changes: CLAUDE.md says compatibility is never a constraint and formats may change freely, so a major keyed to breakage would increment every release and carry no information at all. |
+| **MAJOR** | A new generation of that component — it is a different thing, not an update to the previous one. **Not** keyed to breaking changes: compatibility is never a constraint here and formats may change freely, so a major keyed to breakage would increment every release and carry no information at all. |
 | **MINOR** | New capability. This is where format, ABI and interface changes land, and that is expected. |
 | **PATCH** | Fixes only. No interface, format or ABI change. |
 
@@ -173,24 +173,24 @@ Each has been verified to fire.
 
 ## 5. Cutting a release
 
-> **GitHub Actions does not run on this repository.** Every run since the workflow
-> was added is a `startup_failure` at 0 seconds, on tags and branch pushes alike:
-> *"The job was not started because recent account payments have failed or your
-> spending limit needs to be increased."* The repository is private, so runs
-> consume paid minutes. `release.yml` itself is sound — js-yaml parses it,
-> `actionlint` reports nothing, the committed blob is valid UTF-8 — and it is kept
-> for the day Actions is enabled. **Until then releases are built locally**, and
-> the workflow's claim to be "the only continuous check that D5's one toolchain on
-> every host is true" is **not** currently true of anything.
+> **GitHub Actions is not used on this repository, and will not be.** Aurora is
+> building the CI/CD pipeline herself. `release.yml` never ran a single time —
+> every run was a `startup_failure` at 0 seconds, on tags and branch pushes alike
+> — and it is not something to debug or re-enable. **Releases are built locally**
+> by the procedure below, and a pushed tag publishes nothing by itself: the assets
+> are built and uploaded by hand. The workflow's old claim to be "the only
+> continuous check that D5's one toolchain on every host is true" was never true
+> of anything, and clang/ld.lld/Ninja on Linux stays unverified until the new
+> pipeline builds there.
 
 1. Decide the new version in `versions.json`. That is the only file a human edits
    for a version.
 2. `cxk check-versions` — or just `cxk os build`, which runs it.
 3. Commit, push to `x86_32_DEV`.
 4. Tag `v<CXOS version>` and push the tag. For the VSIX alone, `vsix-v<version>`.
-5. Build the assets and attach them (below). `release.yml` would do this step
-   if Actions were available; the artifacts and their names are identical either
-   way, deliberately, so enabling Actions later changes nothing a user sees.
+5. Build the assets and attach them (below). This step is manual. The artifact
+   names are fixed and deliberate, so when Aurora's pipeline takes the step over
+   nothing a user sees changes.
 
 ### Building the assets locally
 
@@ -215,6 +215,14 @@ Name the binaries `cxk-<rid>[.exe]`, zip each Studio directory as
 `CXEX-Studio-<rid>.zip`, copy the image to
 `cxos-<version>-<name>-selfsigned.img`, and `sha256sum * > SHA256SUMS`.
 
+**Boot-test the image with `-snapshot`.** CXOS writes to its disk on first boot —
+`/System created from staged payload` — so verifying a release image in QEMU with
+a writable drive *modifies the artifact you are about to publish*. This has
+happened: an image was booted, uploaded, and then failed its own `SHA256SUMS`,
+because the checksum was recorded at build time and the file no longer matched
+it. Verify with `-snapshot`, or verify a copy; either way, check the hash against
+`SHA256SUMS` after the boot and before uploading.
+
 **Delete the private half of the signing key when the build finishes.** That is
 not tidiness — it is the property the asset's name claims: the image verifies
 itself end to end and the key behind it can sign nothing for anyone else's
@@ -224,26 +232,36 @@ purpose.
 Attach them with `gh release create v<version> --title 'v<version> "<Name>"'`,
 or through the Releases page.
 
-### What the workflow produces
+### What a release contains
 
 | Asset | From |
 |---|---|
-| `cxk-win-x64.exe`, `cxk-linux-x64`, `cxk-osx-arm64` | `publish` job, single-file self-contained |
-| `CXEX-Studio-<platform>.zip` | `publish` job |
-| `cxos-<version>-<name>-selfsigned.img` | `image` job, on a clean ubuntu runner with apt clang/lld/nasm/ninja/cmake |
-| `SHA256SUMS` | `release` job |
+| `cxk-win-x64.exe`, `cxk-linux-x64`, `cxk-osx-arm64` | `dotnet publish` per RID, single-file self-contained |
+| `CXEX-Studio-<platform>.zip` | `dotnet publish` per RID |
+| `cxos-<version>-<name>-selfsigned.img` | `cxk os build` with an ephemeral key, in the CI image (`tools/ci/Dockerfile`) or locally |
+| `LICENSES.zip` | the licence texts, `THIRD-PARTY-NOTICES.md` and `LICENSE.md` |
+| `SHA256SUMS` | `sha256sum` over the finished set, last |
 
-The release body is written in the workflow and lists what each asset is. The
+**`LICENSES.zip` ships the terms with the binaries**, so someone who downloads an
+image without the repository still has them. Nothing currently in the image
+*requires* it — the glyph data in `font.c` is a hand transcription rather than a
+copied font file, which `THIRD-PARTY-NOTICES.md` explains — but a release that
+makes people go and find its licence is a worse release, and the moment a real
+third-party port lands this stops being optional.
+
+The release body lists what each asset is, and is written by hand (it used to
+live in `release.yml`; the table above is the content it carried). The
 auto-generated commit notes are appended to it.
 
 ### The image's signatures
 
-The `image` job generates a key, signs every artifact with it, and the key is
-destroyed with the runner. The image therefore verifies itself end to end — and
+The release build generates a key, signs every artifact with it, and deletes the
+key afterwards — with the container, if it runs in one. The image therefore
+verifies itself end to end — and
 attests to nothing, because the key behind it can sign nothing for anyone else's
 machine. It is a test image.
 
-This matters because of what it replaced: the job used to build with no key and
+This matters because of what it replaced: the build used to run with no key and
 without `--dev`, which is a **release** kernel (one that requires signatures)
 packaged with a userland that has none. It booted, passed its self-tests, and
 then refused its own executive. CMake had been saying so the whole time —
@@ -251,7 +269,7 @@ then refused its own executive. CMake had been saying so the whole time —
 
 An image signed by the **platform** key waits on the release-signing decision in
 `HARDENING_PLAN.md` §5, which is now a policy question only: local signing versus
-a CI secret.
+holding the key as a secret in the pipeline.
 
 ### Keys
 

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /CXLite/kernel/drivers/disk.c */
 /* Aurora Tejeda */
 /* Unified disk registry - see disk.h. */
@@ -189,9 +191,39 @@ static int disk_write_once(const struct disk *d, uint64_t lba, uint32_t count, c
    served in pieces of this size, so neither limit leaks out of the drivers. */
 #define DISK_XFER_MAX 128u
 
+/* The checks both entry points owe the contract, in one place so they cannot
+   drift apart. Writing the contract down (disk.h) is what exposed these: the
+   enum already documented PARAMS as covering "null buffer, zero count" and
+   BOUNDS as "LBA/count outside the device", and neither was checked here.
+   A null buffer went to the driver, which would have written 512 bytes to
+   address 0; a zero count returned DISK_OK having done nothing, which the
+   enum says is an error; an unknown id returned a bare -1 (GENERIC), so a
+   caller could not tell "no such disk" from "I/O error"; and nothing compared
+   the request against the capacity the registry already knew, so only ATA
+   caught an over-range LBA and only because of its own narrower limit. */
+static int disk_check(const struct disk *d, uint64_t lba, uint32_t count,
+                      const void *buf) {
+    if (!d)              return DISK_ERR_NO_DEVICE;
+    if (!buf)            return DISK_ERR_PARAMS;
+    if (count == 0)      return DISK_ERR_PARAMS;
+    /* Overflow-safe, and both halves are load-bearing. The subtraction form
+       avoids summing lba + count, which a count near 2^32 could wrap past the
+       ceiling - but it is only valid once lba is known to be inside the
+       device, because otherwise `d->sectors - lba` underflows to something
+       enormous and any count compares smaller than it. So the first test
+       catches an LBA past the end and the second a count that runs off it;
+       remove either and one of the two cases goes unguarded. The two are
+       covered by different tests for that reason - the contract test reads
+       exactly one sector past the end, the ATA range test reads far past it. */
+    if (lba >= d->sectors)                  return DISK_ERR_BOUNDS;
+    if ((uint64_t)count > d->sectors - lba) return DISK_ERR_BOUNDS;
+    return DISK_OK;
+}
+
 int disk_read(uint8_t id, uint64_t lba, uint32_t count, void *buf) {
     const struct disk *d = disk_find_by_id(id);
-    if (!d) return -1;
+    int bad = disk_check(d, lba, count, buf);
+    if (bad != DISK_OK) return bad;
     uint8_t *p = (uint8_t *)buf;
     while (count > 0) {
         uint32_t n = count < DISK_XFER_MAX ? count : DISK_XFER_MAX;
@@ -204,7 +236,8 @@ int disk_read(uint8_t id, uint64_t lba, uint32_t count, void *buf) {
 
 int disk_write(uint8_t id, uint64_t lba, uint32_t count, const void *buf) {
     const struct disk *d = disk_find_by_id(id);
-    if (!d) return -1;
+    int bad = disk_check(d, lba, count, buf);
+    if (bad != DISK_OK) return bad;
     const uint8_t *p = (const uint8_t *)buf;
     while (count > 0) {
         uint32_t n = count < DISK_XFER_MAX ? count : DISK_XFER_MAX;
@@ -241,6 +274,12 @@ void disk_capacity_str(uint64_t sectors, char *buf, int cap) {
     uint64_t val;
     const char *unit;
 
+    /* The bounded-string contract (string.h). cap == 0 wrote a terminator at
+       buf[0] anyway, one byte past a zero-length buffer, and a negative cap
+       did the same; both are now nothing at all. */
+    if (!buf || cap <= 0) return;
+    buf[0] = '\0';
+
     if (sectors >= (2097152ull)) {        /* >= 1 GB */
         val = sectors >> 21; unit = "GB";
     } else if (sectors >= 2048ull) {      /* >= 1 MB */
@@ -259,9 +298,18 @@ void disk_capacity_str(uint64_t sectors, char *buf, int cap) {
     if (v == 0) tmp[n++] = '0';
     while (v > 0 && n < (int)sizeof(tmp)) { tmp[n++] = (char)('0' + (v % 10u)); v /= 10u; }
 
+    /* Rule 3: a void function must not truncate. Work out whether the whole
+       thing fits first - digits, a space, the unit, the terminator - and
+       leave the buffer empty if it does not, rather than emitting a fragment
+       that reads as complete. A small buffer used to get the unit with no
+       number in front of it, so a 500 GB disk displayed as "GB". */
+    int unit_len = 0;
+    while (unit[unit_len]) unit_len++;
+    if (n + 1 + unit_len + 1 > cap) return;   /* already "" from above */
+
     int p = 0;
-    while (n > 0 && p < cap - 4) buf[p++] = tmp[--n];
-    if (p < cap - 4) buf[p++] = ' ';
-    for (int k = 0; unit[k] && p < cap - 1; k++) buf[p++] = unit[k];
+    while (n > 0) buf[p++] = tmp[--n];
+    buf[p++] = ' ';
+    for (int k = 0; unit[k]; k++) buf[p++] = unit[k];
     buf[p] = '\0';
 }

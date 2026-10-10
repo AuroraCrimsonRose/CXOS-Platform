@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /CXLite/kernel/drivers/ata.c */
 /* Aurora Tejeda */
 /* ATA PIO driver - primary + secondary channels, 28-bit LBA, 512-byte sectors.
@@ -16,6 +18,7 @@
 #include "ata.h"
 #include "timer.h"
 #include "disk.h"
+#include "logging.h"
 #include "io.h"
 
 /* per-channel I/O base ports */
@@ -162,8 +165,13 @@ void ata_init(void) {
     for (uint8_t drive = 0; drive < ATA_DRIVE_COUNT; drive++) {
         if (!drive_present[drive]) continue;
         enum disk_media media = drive_ssd[drive] ? DISK_MEDIA_SSD : DISK_MEDIA_HDD;
-        disk_register(DISK_DRV_ATA, drive, media, DISK_ATTACH_INTERNAL,
-                      drive_model[drive], (uint64_t)drive_sectors[drive]);
+        /* A full registry (DISK_MAX) refuses, and a drive that was probed but
+           not registered is invisible to every layer above - so say so, rather
+           than leaving the boot log's disk count to be noticed as one short. */
+        if (disk_register(DISK_DRV_ATA, drive, media, DISK_ATTACH_INTERNAL,
+                          drive_model[drive], (uint64_t)drive_sectors[drive]) < 0)
+            klog_u32("ATA", SEV_WARN, "disk registry full, drive not registered: ",
+                     (uint32_t)drive, LOG_COLOR_VALUE, "");
     }
 }
 

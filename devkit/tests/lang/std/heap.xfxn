@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 // A stand-in for std/heap.xfxn, so buf.xfxn can be tested on the host: the real
 // allocator asks the kernel for memory, and there is no kernel here. Bump
 // allocation from a fixed arena, sizes kept in a header, and a switch that

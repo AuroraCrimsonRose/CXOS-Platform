@@ -364,3 +364,122 @@ CXK already has the shape of a security-conscious protected kernel rather than a
 The current hardening gap is concentrated at the boundary where **untrusted executable metadata becomes privileged VM operations**. Fixing that boundary first, then systematically making arithmetic and user-memory access overflow-safe and direction-aware, will remove the most important classes of kernel memory-corruption and isolation failures identified in this review.
 
 Until those issues are addressed and covered by regression tests, CXK should be described as having a **security architecture under active hardening**, rather than as hardened or zero-day resistant.
+
+---
+
+## 12. Key Signing Hardening Recommendations
+
+The CXEX signing design is now functionally coherent end to end: the host signer creates the CXSG block, the kernel parses the embedded XKPK, resolves its fingerprint through the trusted-key store, and verifies the RSA signature before execution. The remaining recommendations are primarily about making the cryptographic contract explicit and preventing future implementations from accepting combinations the current kernel cannot safely verify.
+
+### 12.1 Enforce one cryptographic profile
+
+The current kernel implementation is specifically RSA-2048 with SHA-256 and PKCS#1 v1.5 padding. The host-side key generator has historically permitted other RSA key sizes.
+
+Until the kernel explicitly supports additional sizes, key generation should reject anything other than RSA-2048.
+
+The corresponding XKPK parser should enforce:
+
+- format version supported by CXK;
+- key_bits == 2048;
+- modulus_len == 256;
+- reserved fields are zero;
+- the exponent satisfies the platform policy, currently expected to be 65537.
+
+The CXSG algorithm identifier must describe this exact profile. A future algorithm or key-size profile must receive a distinct identifier rather than being silently accepted under the RSA-2048 identifier.
+
+### 12.2 Keep the trust root separate from the embedded public key
+
+The .xkpk embedded in CXSG identifies the key used to sign the artifact. It must not itself establish trust.
+
+The verification chain should remain:
+
+CXSG embedded .xkpk -> SHA-256 fingerprint -> CXK trusted-key store / root -> authorized signer? -> RSA-2048/SHA-256 verification -> load CXEX
+
+This distinction prevents an attacker from generating a new key pair, embedding the public half in a CXSG block, and treating a mathematically valid signature as sufficient authorization.
+
+### 12.3 Protect private signing keys as trust-root material
+
+.xksk / PEM private keys must remain outside source control and outside distributable artifacts.
+
+The existing repository ignore rules should remain mandatory for *.xksk, *.pem, other private signing-key containers, and generated Secure Boot private-key material.
+
+Signing commands should avoid printing private-key contents, and temporary files should not expose private material unnecessarily.
+
+A compromised trusted private key should be treated as a trust-root compromise requiring key rotation/revocation, not merely as an artifact rebuild.
+
+### 12.4 Preserve exact-byte key identity
+
+The trusted-key fingerprint currently hashes the exact serialized .xkpk bytes.
+
+That makes the trust decision deterministic, but it means serialization is part of the trust protocol. XKPK should therefore have one canonical serialization: fixed field ordering, fixed endianness, defined version, defined reserved bytes, defined modulus representation, and no alternate encodings of the same mathematical key.
+
+Do not normalize an XKPK after fingerprinting or verification and then compare the normalized representation to the original fingerprint.
+
+### 12.5 Keep signing and verification independently implemented
+
+The host-side signer uses the platform .NET cryptography implementation, while CXK performs independent verification.
+
+That separation should remain deliberate. The kernel should not depend on the DevKit implementation or assumptions to establish artifact authenticity.
+
+The DevKit should validate artifacts according to the same documented format, but CXK remains the final authority at the execution boundary.
+
+### 12.6 Make the signed-range invariant explicit
+
+The signature must cover every byte of the CXEX image that the kernel will consume as executable or initialized data.
+
+all loader-consumed file bytes ⊆ [CXEX start, signature_offset)
+
+The kernel should reject any section whose file-backed range extends into or beyond the CXSG block. The DevKit writer should construct images so this is true by construction.
+
+This is more important than merely checking that the signature itself is valid: otherwise an attacker could potentially alter data that the loader reads but that the signature never authenticated.
+
+### 12.7 Add explicit crypto-policy regression tests
+
+Keep adversarial tests for:
+
+- RSA-2048 accepted;
+- wrong key size rejected;
+- wrong algorithm identifier rejected;
+- unsupported XKPK version rejected;
+- non-zero reserved fields rejected;
+- invalid exponent rejected;
+- malformed/truncated XKPK rejected;
+- fingerprint mismatch rejected;
+- valid signature with an untrusted key rejected;
+- valid signature with a trusted key accepted;
+- modified signed bytes rejected;
+- bytes after the signed range rejected when they are loader-consumed;
+- already-signed artifacts rejected by the signer;
+- private/public key mismatch rejected by the signer.
+
+The most important distinction to test is cryptographic validity versus authorization: a valid signature from a key that is not in the CXK trust store must never be sufficient.
+
+### 12.8 Release-signing policy
+
+For release builds, the platform signing private key should be treated as a high-value trust-root asset.
+
+A practical policy is:
+
+1. Build the release artifact.
+2. Validate it completely.
+3. Sign only the final validated artifact.
+4. Verify the resulting artifact independently.
+5. Boot-test the signed artifact through the real CXK verification path.
+6. Publish the artifact and its public-key/fingerprint information.
+7. Keep the private signing key out of the repository and normal build output.
+
+Whether signing occurs locally or in CI is a deployment decision, but any CI environment holding the platform private key must be treated as an authorized signing environment. Workflow changes therefore deserve the same scrutiny as changes to the signing tool itself.
+
+### 12.9 Recommended implementation order
+
+The remaining key-signing hardening should be completed in this order:
+
+1. Enforce RSA-2048 consistently in the generator and kernel XKPK parser.
+2. Enforce XKPK version, reserved-field, and exponent policy.
+3. Add trust-versus-validity regression tests.
+4. Complete the private-key handling audit.
+5. Document platform/publisher authority transitions.
+6. Keep independent kernel/DevKit verification.
+7. Establish the final release-signing procedure.
+
+The existing signed boot path should remain a regression test for every subsequent change to CXEX, crypto, trust-store, boot, or release tooling.

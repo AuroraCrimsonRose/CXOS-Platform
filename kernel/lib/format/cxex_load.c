@@ -1,5 +1,7 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/lib/format/cxex_load.c */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /* CXEX runtime loader. See cxex_load.h. */
 
 #include "cxex_load.h"
@@ -52,6 +54,15 @@ static int check_section(const struct cxex_section *s, const struct cxex_header 
     return CXEX_LOAD_OK;
 }
 
+/* The PAGE range a section occupies: start rounded down, end rounded up. Both
+   sums are safe because check_section has already proved virt_addr + mem_size
+   is at or below va_limit, which is in the user half - so rounding the end up
+   to a page boundary cannot reach the top of the address space. */
+static void section_pages(const struct cxex_section *s, uint32_t *lo, uint32_t *hi) {
+    *lo = s->virt_addr & ~(CXEX_PAGE_SIZE - 1);
+    *hi = (s->virt_addr + s->mem_size + CXEX_PAGE_SIZE - 1) & ~(CXEX_PAGE_SIZE - 1);
+}
+
 int cxex_load(const uint8_t *file, size_t len,
               const struct cxex_load_ops *ops, uint32_t *entry_out) {
     if (!file || !ops || !ops->get_page || !ops->map_page)
@@ -64,6 +75,14 @@ int cxex_load(const uint8_t *file, size_t len,
     struct cxex_header h;
     if (cxex_parse_header(file, len, &h) != 0) return CXEX_LOAD_BAD_FORMAT;
     if (!(h.flags & CXEX_FLAG_EXECUTABLE))     return CXEX_LOAD_NOT_EXEC;
+
+    /* A real CXEX has a handful of sections - the kernel, the largest, has
+       five. The cap refuses an absurd section_count on sight, and it is what
+       makes the pairwise overlap check below affordable: 256 sections is at
+       most 32640 comparisons, where a u16 count would allow two billion.
+       The DevKit has capped this at 256 since Phase 1 and the kernel did not
+       cap it at all, which is the §11 asymmetry this closes. */
+    if (h.section_count > CXEX_LOAD_MAX_SECTIONS) return CXEX_LOAD_TOO_MANY;
 
     /* ---- pass 1: validate everything, map nothing ----
        The loader used to validate each section as it mapped it, so a bad section
@@ -78,6 +97,47 @@ int cxex_load(const uint8_t *file, size_t len,
         uint32_t pages = 0;
         int rc = check_section(&s, &h, len, ops->va_limit, &pages);
         if (rc != CXEX_LOAD_OK) return rc;
+
+        /* No two sections may share a PAGE.
+         *
+         * check_section deliberately looks at one section alone - and until
+         * now nothing looked at two. That was the gap: pass 2 allocates a
+         * fresh page for every page in [va_lo, va_end) with va_lo rounded
+         * DOWN, so two sections sharing a page each allocate and map one. The
+         * second replaces the first, so the first section's bytes are gone,
+         * its frame is leaked (the PTE is overwritten and nothing frees what
+         * it pointed at), and the page's protection is whichever section was
+         * mapped last rather than either section's intent - which is W^X
+         * decided by section ordering instead of by the rule.
+         *
+         * Phase 1 met this for real and fixed the PRODUCER: executive.ld and
+         * hello.ld gained explicit ALIGNs because .rodata shared a page with
+         * .text and mapping .rodata replaced the entry point's page. The
+         * loader was never fixed, so any image the DevKit did not build still
+         * triggered it - and the DevKit DOES reject overlapping sections,
+         * which made this a direct breach of the independent-validation
+         * invariant (security §11): CXK was relying on the toolchain to check
+         * something it must check itself.
+         *
+         * PAGE granularity, not byte: two sections that do not overlap in
+         * bytes can still share a page, and that is the case that broke the
+         * executive. Byte overlap is a subset, so this covers both.
+         *
+         * Re-parsing the earlier sections rather than keeping an array of
+         * ranges costs a few reads and buys two things: no stack growth in a
+         * function that runs on a guarded kernel stack, and the comparison
+         * uses the very same parse the validation used, so the two cannot
+         * disagree about what a section says. */
+        uint32_t lo_i, hi_i;
+        section_pages(&s, &lo_i, &hi_i);
+        for (uint16_t j = 0; j < i; j++) {
+            struct cxex_section o;
+            if (cxex_get_section(file, len, &h, j, &o) != 0) return CXEX_LOAD_BAD_SECTION;
+            if (o.mem_size == 0) continue;
+            uint32_t lo_j, hi_j;
+            section_pages(&o, &lo_j, &hi_j);
+            if (lo_i < hi_j && lo_j < hi_i) return CXEX_LOAD_OVERLAP;
+        }
 
         total_pages += pages;
         if (total_pages > CXEX_LOAD_MAX_PAGES) return CXEX_LOAD_TOO_BIG;
@@ -152,6 +212,8 @@ const char *cxex_load_strerror(int r) {
         case CXEX_LOAD_UNSIGNED:    return "section data lies outside the signed range";
         case CXEX_LOAD_TOO_BIG:     return "image asks for more pages than are allowed";
         case CXEX_LOAD_QUOTA:       return "image does not fit the process memory quota";
+        case CXEX_LOAD_OVERLAP:     return "two sections share a page";
+        case CXEX_LOAD_TOO_MANY:    return "image declares more sections than the loader will consider";
         default:                    return "unknown error";
     }
 }

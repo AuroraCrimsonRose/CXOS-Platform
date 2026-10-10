@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 using System;
 using System.ComponentModel;
 using System.IO;
@@ -17,7 +19,7 @@ public class KeygenCommand : Command<KeygenCommand.Settings>
         public string Name { get; set; } = string.Empty;
 
         [CommandOption("-b|--bits")]
-        [Description("RSA key size in bits")]
+        [Description("RSA key size in bits. CXK implements RSA-2048 only; anything else is refused.")]
         [DefaultValue(2048)]
         public int Bits { get; set; } = 2048;
 
@@ -28,6 +30,17 @@ public class KeygenCommand : Command<KeygenCommand.Settings>
 
     protected override int Execute(CommandContext context, Settings settings, CancellationToken cancellationToken)
     {
+        // CXK implements exactly one profile: RSA-2048 / SHA-256 / PKCS#1 v1.5
+        // (security review §12.1). Generating anything else produced a key that
+        // looked fine, signed fine, and was then refused at boot - the failure
+        // landing as far as possible from the command that caused it.
+        if (settings.Bits != 2048)
+        {
+            AnsiConsole.MarkupLine($"[red]error:[/] CXK implements RSA-2048 only; --bits {settings.Bits} would produce a key it cannot verify.");
+            AnsiConsole.MarkupLine("[grey]  A different key size needs a new CXSG algorithm identifier and kernel support for it, not a wider range here.[/]");
+            return 1;
+        }
+
         string sk = settings.Name + ".xksk";
         string pk = settings.Name + ".xkpk";
 

@@ -1,5 +1,7 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /os/apps/hello/hello.c */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * Tiny CXK USER app (.xuex), capability-less. It cannot touch the console
  * directly (no GRANT_CONSOLE - that was CP2's E_PERM proof). Instead it asks its

@@ -1,7 +1,9 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 # ============================================================================
 #  CXK - CMakeLists.txt
-#  Copyright (c) 2026 CATX Systems LLC.  All rights reserved.
-#  Author: Aurora Tejeda / CATX Systems LLC
+#  Copyright (c) 2026 CATX Systems.  All rights reserved.
+#  Author: Aurora Tejeda / CATX Systems
 # ============================================================================
 #
 # v5 build - boot chain + higher-half kernel + X apps.
@@ -129,7 +131,7 @@ set(KCFLAGS --target=${CXK_TARGET} -ffreestanding -fno-pic -fno-stack-protector
 # string literal "CXK v5", which is how it stayed at v5 through every change.
 # The fallback exists for a bare host-compile with no CMake, and is itself
 # checked against the registry by `cxk check-versions`.
-set(CXK_KERNEL_VERSION_FALLBACK "1.0.0")
+set(CXK_KERNEL_VERSION_FALLBACK "1.0.1")
 set(CXK_KERNEL_VERSION "${CXK_KERNEL_VERSION_FALLBACK}")
 if(EXISTS ${SRC_DIR}/versions.json)
     file(READ ${SRC_DIR}/versions.json CXK_VERSIONS_JSON)
@@ -185,6 +187,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/cpu/keyvault.c
     ${SRC_DIR}/kernel/cpu/launch.c
     ${SRC_DIR}/kernel/drivers/char/console.c
+    ${SRC_DIR}/kernel/drivers/char/serial.c
     ${SRC_DIR}/kernel/drivers/video/vga.c
     ${SRC_DIR}/kernel/drivers/video/fb.c
     ${SRC_DIR}/kernel/drivers/input/keyboard.c
@@ -225,6 +228,8 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/drivers/usb/usb_storage.c
     ${SRC_DIR}/kernel/drivers/usb/usb_hid.c
     ${SRC_DIR}/kernel/ktest_loader.c
+    ${SRC_DIR}/kernel/ktest_net.c
+    ${SRC_DIR}/kernel/ktest_fs.c
 )
 
 # ---- KERNEL ASM SOURCES (elf32 objects; append new ones here) ----
@@ -439,8 +444,9 @@ add_custom_command(
 add_custom_command(
     OUTPUT ${APP_XCEX}
     COMMAND ${CXK} build ${APP_ELF} ${APP_XCEX} --type system
+    ${SHSIGN}
     DEPENDS ${APP_ELF} ${CXK}
-    COMMENT "Packaging ${APP_BOOT_NAME}.xsex (CXEX, type system)"
+    COMMENT "Packaging ${APP_BOOT_NAME}.xsex (CXEX, type system, signed then embedded)"
 )
 
 # ---- shell.xsex -> app_image.h (byte array the executive embeds) ----

@@ -11,25 +11,26 @@ call `ExitBootServices`, or leave long mode.
 |---|---|
 | `efi.h` | the minimal UEFI subset the stub uses; service tables in spec order with `void*` placeholders for the entries we never call |
 | `cxboot.c` | the stub |
-| `build.bat` | MSVC build. **Being replaced by `cxk uefi build`**; see below |
 | `secureboot.bat` | generate keys, enroll them in an OVMF variable store, sign the stub, boot it. **Being replaced by the `cxk secureboot` commands it already calls** |
 
 > **Scripts are being retired.** CXK is moving from `.bat`/`.sh` scripts to
 > `cxk` commands, so building and testing work the same way on every host
-> (`docs/planning/HARDENING_PLAN.md`, decision D2). `secureboot.bat` goes once this page
-> gives its `cxk` sequence, which it does below. `build.bat` goes when
-> `cxk uefi build` lands. That command uses clang and lld-link on every host,
-> the route given below (decision D5).
+> (`docs/planning/HARDENING_PLAN.md`, decision D2). `secureboot.bat` goes once
+> this page gives its `cxk` sequence, which it does below. The MSVC `build.bat`
+> is **already gone**, replaced by `cxk uefi build` on 2026-10-08: with it went
+> the last thing in this repository that needed MSVC and a Developer Command
+> Prompt.
 
 ## Building
 
-**Planned:** `cxk uefi build`, on every host.
+    cxk uefi build
 
-**MSVC** (Developer Command Prompt for x64), until then (being retired):
+clang and lld-link, on every host. `--dry-run` prints the two command lines
+without running them; `--src`, `--root` and `-o` move the inputs and output.
+It pre-flights both tools and names whichever is missing rather than failing
+inside the compiler.
 
-    build.bat
-
-**clang / lld**, the supported route, and what `cxk uefi build` will run:
+The command runs exactly this, which is also the route to use by hand:
 
     clang -target x86_64-unknown-windows -ffreestanding -fshort-wchar \
           -mno-red-zone -Wall -Wextra -I../../abi -c cxboot.c

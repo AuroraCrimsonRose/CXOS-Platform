@@ -1,5 +1,7 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/lib/time/datetime.h */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * Pure calendar <-> epoch conversion. No hardware: callers pass in a broken-down
  * date (e.g. read from the RTC driver) and get seconds since the CXOS epoch

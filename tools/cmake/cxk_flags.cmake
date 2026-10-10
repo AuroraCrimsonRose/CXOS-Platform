@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 # ============================================================================
 #  CXK build-time flags  -  EDIT HERE, not CMakeLists.
 # ============================================================================
@@ -19,6 +21,10 @@ set(CXK_FLAGS
     CXK_ENABLE_FB=1         # 1 = bootloader sets a VBE LFB mode + kernel uses the framebuffer console
                             #     0 = force VGA text mode end-to-end (bootloader never touches video;
                             #         use this to keep early-boot output visible when debugging a fault)
+    CXK_ENABLE_SERIAL=1     # 1 = tee all console output to a 16550 UART on COM1 at 115200 8N1.
+                            #     Costs nothing when no UART is present (the driver probes with a
+                            #     loopback test and goes quiet), and makes a boot readable as text
+                            #     in BOTH video modes: qemu ... -serial file:boot.log
     CXK_ALLOW_DISK_WRITE=1  # 1 = DEV build: may format / write a scratch disk. DANGER on bare metal.
                             #     0 = read-only/never-format (safe default for sharing)
     CXK_KTEST_STACK_OVERFLOW=0  # 1 = after the self-tests, run a thread that recurses until it

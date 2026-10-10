@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /CXLite/kernel/filesys/cxfs.c */
 /* Aurora Tejeda */
 /* CXFS v1 - format and mount. */
@@ -81,6 +83,11 @@ static int cxfs_lock_blocks(struct cxfs_entry *e) {
 #define CXFS_MAX_BITMAP_BYTES 8192   /* 32768 blocks / 8 = 4096; headroom */
 #define CXFS_MAX_ENTRIES      1024   /* manifest capacity */
 #define CXFS_MAX_MANIFEST_BYTES (CXFS_MAX_ENTRIES * CXFS_ENTRY_SIZE)   /* 256KB */
+
+/* Entries per manifest block (16). Up here with the capacities because
+   cxfs_sb_validate needs it to check manifest_count against manifest_blocks,
+   and that runs before anything else in the file. */
+#define ENTRIES_PER_BLOCK (CXFS_BLOCK_SIZE / sizeof(struct cxfs_entry))
 
 /* One manifest cache, handed to the root volume below. See the comment above
    for why the other volumes do without one rather than getting one each. */
@@ -244,6 +251,109 @@ static int write_block(uint32_t block, const void *buf) {
     return disk_write(vol->disk_id, lba, (uint8_t)vol->sectors_per_block, buf);
 }
 
+/* ---- the superblock is untrusted input -----------------------------------
+ *
+ * cxk_mount_extra_volumes probes every non-boot disk at boot - the whole drive
+ * first, then every partition an XBPT table declares - and mounts anything
+ * whose first sector carries CXFS_MAGIC and version 2. So attaching a disk is
+ * enough to hand this driver a superblock an attacker wrote, and before this
+ * function exactly three fields were ever checked: magic, version, and
+ * block_size >= 512. Everything else was adopted as true and used to address
+ * blocks.
+ *
+ * What that cost, and why each check below is here rather than at the point of
+ * use (2026-10-09 review §3):
+ *
+ *   - block_size sized every disk read. sectors_per_block = block_size / 512
+ *     reaches 127 for a uint16_t field, disk_read's count is a uint32_t, and
+ *     disk_check bounds lba and count against the DEVICE and never against the
+ *     destination. read_block(0, &vol->sb) therefore transferred up to 65024
+ *     bytes into a 4096-byte struct, running off the end of volumes[] and
+ *     through `uint8_t *manifest` - a pointer manifest_load then writes 4KB
+ *     blocks through. A crafted superblock meant a controlled kernel pointer.
+ *     block_size == CXFS_BLOCK_SIZE is the check that closes it, and it has to
+ *     be made on the PROBE value, before it sizes a read.
+ *
+ *   - Nothing related manifest_count to manifest_blocks. cxfs_read_entry bounds
+ *     the index against manifest_count alone, so count 1024 with blocks 1 made
+ *     entries 16..1023 come from blocks past the manifest - data blocks, or
+ *     another partition - parsed as cxfs_entry. cxfs_write_entry took the same
+ *     path and WROTE there.
+ *
+ *   - bitmap_blocks drove a disk read per iteration in bitmap_load with no
+ *     ceiling, so a large value stalled the boot inside mount.
+ *
+ * `disk_sectors` is the device's capacity, or 0 to skip the does-it-fit test -
+ * which is what keeps this a pure function the adversarial suite can call with
+ * a struct in RAM and no disk at all.
+ */
+int cxfs_sb_validate(const struct cxfs_superblock *sb, uint64_t base_lba,
+                     uint64_t disk_sectors) {
+    if (!sb) return -1;
+
+    /* identity */
+    if (sb->magic   != CXFS_MAGIC)      return -1;
+    if (sb->version != CXFS_VERSION)    return -1;
+
+    /* Geometry is not negotiable: this driver is compiled for 4KB blocks and
+       256-byte entries - the staging buffers, ENTRIES_PER_BLOCK, and all the
+       bitmap and manifest arithmetic hardcode them. The header already calls
+       block_size authoritative; this is what makes that true. */
+    if (sb->block_size != CXFS_BLOCK_SIZE)  return -1;
+    if (sb->entry_size != CXFS_ENTRY_SIZE)  return -1;
+
+    /* The manifest must be describable by the slots that exist to hold it, and
+       must fit the cache's capacity. */
+    if (sb->manifest_count < 1)                     return -1;
+    if (sb->manifest_count > CXFS_MAX_ENTRIES)      return -1;
+    if (sb->manifest_blocks < 1)                    return -1;
+    if ((uint64_t)sb->manifest_count >
+        (uint64_t)sb->manifest_blocks * ENTRIES_PER_BLOCK) return -1;
+
+    /* Region order, with no overlap. Each test is "this region ends at or
+       before the next one starts", which also bounds every start+len inside
+       total_blocks once data_start is checked against it below. Written as
+       additions on uint64_t so a field near 2^32 cannot wrap past a ceiling. */
+    if (sb->bitmap_start < 1)                       return -1;  /* block 0 is the sb */
+    if (sb->bitmap_blocks < 1)                      return -1;
+    if ((uint64_t)sb->bitmap_start + sb->bitmap_blocks > sb->manifest_start)
+        return -1;
+    if ((uint64_t)sb->manifest_start + sb->manifest_blocks > sb->data_start)
+        return -1;
+    if (sb->data_start >= sb->total_blocks)         return -1;  /* no data at all */
+    if ((uint64_t)sb->reserved_blocks > (uint64_t)sb->total_blocks - sb->data_start)
+        return -1;
+
+    /* The bitmap must actually describe the blocks that will be addressed
+       through it. Past CXFS_MAX_BITMAP_BYTES the RAM buffer is the limit and
+       bitmap_test answers "used" for anything it does not cover, which is safe
+       - so the requirement is only that the on-disk bitmap covers as much as
+       the buffer will hold. */
+    uint64_t need_bytes = ((uint64_t)sb->total_blocks + 7) / 8;
+    if (need_bytes > CXFS_MAX_BITMAP_BYTES) need_bytes = CXFS_MAX_BITMAP_BYTES;
+    if ((uint64_t)sb->bitmap_blocks * CXFS_BLOCK_SIZE < need_bytes) return -1;
+
+    /* The root has to be a slot that exists, or every path walk starts nowhere. */
+    if (sb->root_id >= sb->manifest_count)          return -1;
+
+    /* And the volume has to fit the device it claims to be on. Without this,
+       "inside total_blocks" bounds nothing, because total_blocks itself could
+       be 0xFFFFFFFF. */
+    if (disk_sectors) {
+        uint64_t spb  = sb->block_size / 512;
+        uint64_t last = base_lba + (uint64_t)sb->total_blocks * spb;
+        if (last < base_lba)        return -1;      /* 64-bit wrap */
+        if (last > disk_sectors)    return -1;
+    }
+    return 0;
+}
+
+/* the capacity of the disk the current volume sits on, or 0 if unknown */
+static uint64_t vol_disk_sectors(void) {
+    const struct disk *d = disk_find_by_id(vol->disk_id);
+    return d ? d->sectors : 0;
+}
+
 /* The label for the NEXT format, set by cxfs_format_labeled. A parameter would
    be better, but cxfs_format_at is called from several places that have no
    label to give and the signature is in the header; this keeps those callers
@@ -295,6 +405,13 @@ int cxfs_format_at(uint64_t base_lba, uint32_t total_blocks) {
     format_label[0] = '\0';     /* one format, one label - never a leftover */
     vol->sb.created         = 0;                /* timestamp wired in a later step */
     vol->sb.modified        = 0;
+
+    /* Format is held to the same standard as mount, against the same function:
+       a caller passing a total_blocks too small to hold the layout computed
+       above would otherwise write a superblock whose data_start is past the end
+       of the volume, and then mount it. Checked before anything is written, so
+       a refused format leaves the disk alone. */
+    if (cxfs_sb_validate(&vol->sb, vol->base_lba, vol_disk_sectors()) != 0) return -1;
 
     if (write_block(0, &vol->sb) != 0) return -1;
 
@@ -369,13 +486,31 @@ int cxfs_mount_at(uint64_t base_lba) {
     memcpy(&probe_block_size, first + 6, sizeof probe_block_size);
     if (probe_magic   != CXFS_MAGIC)   { vol->mounted = 0; return -1; }
     if (probe_version != CXFS_VERSION) { vol->mounted = 0; return -1; }  /* v2 only */
-    if (probe_block_size < 512)        { vol->mounted = 0; return -1; }
 
-    /* adopt this volume's geometry, then read the full superblock as a block. */
-    vol->sectors_per_block = probe_block_size / 512;
+    /* The geometry is NOT taken from the disk. It used to be -
+       `sectors_per_block = probe_block_size / 512` - and that is what made the
+       overflow: the field is a uint16_t, so the quotient reached 127, and the
+       very next line read that many sectors into vol->sb, which is 4096 bytes.
+       disk_read's count is a uint32_t and disk_check bounds it against the
+       DEVICE, never the destination, so up to 65024 bytes landed in a 4096-byte
+       struct - off the end of volumes[] and through `uint8_t *manifest`, a
+       pointer manifest_load then writes 4KB blocks through.
+       This driver only implements 4KB blocks, so the constant is the truth and
+       nothing a disk says can size a transfer. A volume whose superblock
+       disagrees is rejected by cxfs_sb_validate below, which is a comparison
+       rather than an arithmetic input. */
+    vol->sectors_per_block = CXFS_BLOCK_SIZE / 512;
+    if (probe_block_size != CXFS_BLOCK_SIZE) { vol->mounted = 0; return -1; }
+
     /* keep vol->base_lba = base_lba (where we actually found the volume) */
     if (read_block(0, &vol->sb) != 0) { vol->mounted = 0; return -1; }
-    if (vol->sb.magic != CXFS_MAGIC)  { vol->mounted = 0; return -1; }
+
+    /* Everything the rest of this driver turns into a block address comes out
+       of here, so it is all checked once, before anything uses it. */
+    if (cxfs_sb_validate(&vol->sb, vol->base_lba, vol_disk_sectors()) != 0) {
+        vol->mounted = 0;
+        return -1;
+    }
 
     vol->mounted = 1;
     bitmap_load();
@@ -670,11 +805,53 @@ uint32_t cxfs_alloc_run(uint32_t n) {
     return 0;   /* no run that long is free */
 }
 
+/* Is [start, start+len) a run of real data blocks on this volume?
+ *
+ * A manifest entry is untrusted for the same reason the superblock is - it came
+ * off a disk someone else may have written - and no extent field was ever
+ * checked against anything. An entry claiming extent_start in the metadata
+ * region, or past the end of the volume, had its blocks read and written: the
+ * address goes to read_block, which adds base_lba and asks the device, so a
+ * crafted extent reaches other partitions.
+ *
+ * len == 0 is a vacuously valid empty extent, which is what an unused slot is.
+ * The length test is written as a subtraction because start + len wraps.
+ */
+static int extent_ok(uint32_t start, uint32_t len) {
+    if (len == 0)                       return 1;
+    if (!vol->mounted)                  return 0;
+    if (start <  vol->sb.data_start)    return 0;   /* the metadata region */
+    if (start >= vol->sb.total_blocks)  return 0;
+    if (len   >  vol->sb.total_blocks - start) return 0;
+    return 1;
+}
+
+/* Every extent of an entry is a real run on this volume.
+ *
+ * Checked once at each I/O entry point rather than per block, so a file whose
+ * manifest entry is corrupt is one honest refusal instead of a partial read of
+ * whatever those addresses happen to land on. It also makes extent_blocks()
+ * safe by precondition: eight validated lengths sum well inside a uint32_t,
+ * where eight arbitrary ones wrap. */
+static int entry_extents_ok(const struct cxfs_entry *e) {
+    for (int i = 0; i < CXFS_MAX_EXTENTS; i++)
+        if (!extent_ok(e->extent_start[i], e->extent_len[i])) return 0;
+    return 1;
+}
+
 /* release `n` consecutive blocks starting at `first`, one flush per bitmap
    block rather than per released block. */
 static void cxfs_free_run(uint32_t first, uint32_t n) {
     if (!vol->mounted || n == 0) return;
     if (first < vol->sb.data_start) return;
+    /* An out-of-range run is refused rather than clamped, and this is the
+       destructive one of the extent findings (§3). bitmap_mark is bounded by
+       bitmap_bytes, so the MARKS were always safe - but bitmap_flush_span then
+       looped over every bitmap block the span touched and wrote a zero-filled
+       block to bitmap_start + w for each. With a corrupt extent_len of, say,
+       0x10000000, that walks `w` far past bitmap_blocks and zeroes the manifest
+       and the data region: one cxfs_delete_entry destroyed the volume. */
+    if (!extent_ok(first, n)) return;
     for (uint32_t i = 0; i < n; i++) bitmap_mark(first + i, 0);
     bitmap_flush_span(first, first + n - 1);
 }
@@ -696,8 +873,6 @@ uint32_t cxfs_free_blocks(void) {
  * Manifest / entry operations
  * ==================================================================== */
 
-#define ENTRIES_PER_BLOCK (CXFS_BLOCK_SIZE / sizeof(struct cxfs_entry))  /* 16 */
-
 int cxfs_read_entry(uint32_t id, struct cxfs_entry *out) {
     if (!vol_select(id)) return -1;
     uint32_t local = IDX_OF(id);
@@ -708,6 +883,13 @@ int cxfs_read_entry(uint32_t id, struct cxfs_entry *out) {
     const uint8_t *buf = manifest_fetch(rel);
     if (!buf) return -1;
     memcpy(out, buf + idx * sizeof(struct cxfs_entry), sizeof(struct cxfs_entry));
+
+    /* A name is 64 bytes on disk and nothing guarantees one of them is a zero.
+       strlcpy measures its source before consulting `size`, so an unterminated
+       name made cxfs_path_of read past the name field, through the rest of the
+       256-byte entry and potentially past the object - a path built out of
+       whatever followed. One byte, at the one place every entry comes through. */
+    out->name[CXFS_NAME_LEN - 1] = '\0';
 
     /* On the way out, the two id fields become the caller's kind of id. Doing
        it here means every caller that hands e.id or e.parent_id straight back
@@ -823,12 +1005,20 @@ int cxfs_create_entry(uint32_t parent_id, const char *name, uint8_t type) {
        what makes the cxfs_alloc_entry below take a slot from the right one. */
     if (!vol_select(parent_id)) return -1;
 
-    /* copy + normalize the name */
+    /* Copy + normalize the name. The copy REFUSES a name that does not fit
+       rather than cutting it down: this loop used to truncate into nm and then
+       hand the short version to cxfs_normalize_name, whose `len >=
+       CXFS_NAME_LEN` rejection therefore could never fire from here. A 100
+       character name silently became a 63 character file, and two different
+       long names became the same one - at which point the "must not already
+       exist" check below refused a collision the caller had not caused. See
+       the bounded-string contract in string.h, rule 4. */
+    if (!name) return -1;
     char nm[CXFS_NAME_LEN];
+    if (strlcpy(nm, name, sizeof nm) >= sizeof nm) return -1;   /* too long */
+    if (cxfs_normalize_name(nm) != 0) return -1;                /* bad name */
     int i = 0;
-    for (; name[i] && i < CXFS_NAME_LEN - 1; i++) nm[i] = name[i];
-    nm[i] = '\0';
-    if (cxfs_normalize_name(nm) != 0) return -1;     /* bad name */
+    while (nm[i]) i++;                               /* name_len, post-normalize */
 
     /* must not already exist in this directory */
     if (cxfs_find_in_dir(parent_id, nm) >= 0) return -1;
@@ -1021,6 +1211,7 @@ int cxfs_read_file(uint32_t id, void *buf, uint32_t cap) {
     if (e.type != CXFS_TYPE_FILE) return -1;
 
     if (!cxfs_check_perm(&e, CXFS_ACC_READ)) return -1;    /* v2: permission */
+    if (!entry_extents_ok(&e)) return -1;   /* corrupt extents: refuse, don't read */
 
     uint32_t want = e.size;
     if (want > cap) want = cap;
@@ -1082,7 +1273,16 @@ static int last_extent(const struct cxfs_entry *e) {
 static uint32_t block_at(const struct cxfs_entry *e, uint32_t bi) {
     uint32_t seen = 0;
     for (int i = 0; i < CXFS_MAX_EXTENTS; i++) {
-        if (bi < seen + e->extent_len[i]) return e->extent_start[i] + (bi - seen);
+        if (bi < seen + e->extent_len[i]) {
+            /* The I/O entry points already gated the whole entry through
+               entry_extents_ok, so this is redundant - and it stays, for the
+               reason ip_parse keeps its `ihl > avail` test: it makes the
+               safety of the address this function hands to read_block LOCAL,
+               rather than derived from a check in a caller. Deriving it is
+               what left every extent unvalidated in the first place. */
+            if (!extent_ok(e->extent_start[i], e->extent_len[i])) return 0;
+            return e->extent_start[i] + (bi - seen);
+        }
         seen += e->extent_len[i];
     }
     return 0;
@@ -1129,6 +1329,10 @@ static int compact_into_run(struct cxfs_entry *e, uint32_t total) {
 
     uint32_t dst = 0;
     for (int i = 0; i < CXFS_MAX_EXTENTS; i++) {
+        if (!extent_ok(e->extent_start[i], e->extent_len[i])) {
+            cxfs_free_run(run, total);
+            return CXFS_E_FAIL;
+        }
         for (uint32_t b = 0; b < e->extent_len[i]; b++) {
             if (read_block(e->extent_start[i] + b, dat_blk) != 0 ||
                 write_block(run + dst, dat_blk) != 0) {
@@ -1231,6 +1435,7 @@ static int open_for_write(uint32_t id, struct cxfs_entry *e) {
     if (e->type != CXFS_TYPE_FILE)          return CXFS_E_INVAL;
     if (!cxfs_check_perm(e, CXFS_ACC_WRITE)) return CXFS_E_PERM;
     if (cxfs_lock_blocks(e))                return CXFS_E_LOCKED;
+    if (!entry_extents_ok(e))               return CXFS_E_FAIL;
     return CXFS_E_OK;
 }
 
@@ -1243,6 +1448,7 @@ int cxfs_read_at(uint32_t id, uint64_t off, void *buf, uint32_t len) {
     if (e.type == CXFS_TYPE_DIR)           return CXFS_E_ISDIR;
     if (e.type != CXFS_TYPE_FILE)          return CXFS_E_INVAL;
     if (!cxfs_check_perm(&e, CXFS_ACC_READ)) return CXFS_E_PERM;
+    if (!entry_extents_ok(&e))             return CXFS_E_FAIL;
 
     if (off >= e.size) return 0;                      /* at or past EOF */
     uint64_t avail = e.size - off;
@@ -1377,13 +1583,17 @@ int cxfs_rename(uint32_t id, const char *newname) {
     if (cxfs_read_entry(id, &e) != 0) return -1;
     if (id == TAG_ID(VOL_OF(id), vol->sb.root_id)) return -1;   /* don't rename root */
 
+    /* Refuses rather than truncates, for the reason in cxfs_create_entry:
+       renaming to an over-long name used to succeed and quietly give the file
+       a different name than the one asked for. */
+    if (!newname) return -1;
     char nm[CXFS_NAME_LEN];
-    int i = 0;
-    for (; newname[i] && i < CXFS_NAME_LEN - 1; i++) nm[i] = newname[i];
-    nm[i] = '\0';
+    if (strlcpy(nm, newname, sizeof nm) >= sizeof nm) return -1;   /* too long */
     if (cxfs_normalize_name(nm) != 0) return -1;
 
-    strlcpy(e.name, nm, CXFS_NAME_LEN);
+    /* name_len is on-disk metadata the DevKit's CXFSEntry reads, and a rename
+       used to leave it describing the old name. */
+    e.name_len = (uint8_t)strlcpy(e.name, nm, CXFS_NAME_LEN);
     return cxfs_write_entry(&e);
 }
 
@@ -1457,10 +1667,19 @@ int cxfs_delete_entry(uint32_t id) {
 
     if (e.type == CXFS_TYPE_FILE) cxfs_free_file_data(&e);
 
-    /* mark the manifest slot free (type 0) and write it back */
+    /* Mark the manifest slot free (type 0) and write it back.
+     *
+     * parent_id has to carry the same volume tag as id. The memset leaves it 0,
+     * which is volume 0, so on any secondary volume cxfs_write_entry's
+     * cross-volume guard refused the write and the delete failed - AFTER
+     * cxfs_free_file_data above had already released the blocks. The entry
+     * survived still pointing at freed blocks, so the next allocation handed
+     * them to another file and two entries shared data: the same capability
+     * leak zero_blocks exists to prevent. (2026-10-09 review §3.) */
     memset(&e, 0, sizeof(e));
-    e.id   = id;
-    e.type = CXFS_TYPE_FREE;
+    e.id        = id;
+    e.parent_id = TAG_ID(VOL_OF(id), 0);
+    e.type      = CXFS_TYPE_FREE;
     return cxfs_write_entry(&e);
 }
 

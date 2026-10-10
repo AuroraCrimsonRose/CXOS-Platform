@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 */
+/* SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems) */
 /* /os/apps/hello/hello.ld - link a .xuex in the user half (its own space)
  *
  * Page-aligned per section for the same reason as executive.ld: the CXEX

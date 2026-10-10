@@ -1,5 +1,7 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 // shell.xfxn - the CXK console shell.
-// Aurora Tejeda / CATX SYSTEMS LLC
+// Aurora Tejeda / CATX Systems
 //
 // A privileged OS-level executable (GRANT_OS_BASELINE): reads input, writes the
 // console, draws, and reboots directly.

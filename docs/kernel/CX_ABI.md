@@ -87,25 +87,44 @@ given `caps=0` behaves exactly as v1 described.
 
 ## 3. Pointer & fault rules (security invariants)
 
-- The kernel **never dereferences a ring-3 pointer** without validating it. Every user
-  pointer argument is checked with `user_ptr_ok(ptr, len)` against the **calling process's**
-  mapped user region, length-bounded. Failure → `E_FAULT`. (This is the per-process
-  generalization of the legacy single-region `user_ptr_ok`.)
+- The kernel **never dereferences a ring-3 pointer** without validating it, against the
+  **calling process's** mapped user region, length-bounded. Failure → `E_FAULT`.
+- **Ask for the access you intend.** There is no single check: `user_ptr_readable(ptr, len)`
+  requires present + ring-3-accessible, and `user_ptr_writable(ptr, len)` additionally
+  requires `PAGE_RW`. The combined `user_ptr_ok` is deliberately gone rather than kept as an
+  alias, so a new call site has to say which it means and cannot default to the weaker check
+  by forgetting (security review §4).
 - Maximum single user transfer is bounded (one page, `0x1000`, for messages; primitives
   state their own caps).
-- **Gap: `user_ptr_ok` does not check writability.** It validates present + ring-3-accessible
-  (`paging_is_user`) across every page the buffer spans, but never `PAGE_RW`. Calls that write
-  *into* a user buffer (`mouse_read`, `fb_op`'s `INFO`, `net_op`'s `out`) will therefore happily
-  write into a process's read-only text or rodata if handed such a pointer. It is currently
-  harmless only because `CR0.WP` is clear, so ring-0 writes bypass the read-only bit — which
-  also means the day `WP` is enabled this becomes a kernel-mode page fault reachable from ring
-  3. The fix is a `user_ptr_w_ok` used by every write-out path, then enabling `WP` so
-  violations fault loudly instead of silently corrupting.
-- **Gap: a bounded scan is not a bounded read.** `FB_OP_DRAW_TEXT` computes a validated string
-  length and then passes the raw pointer to a function that walks to its own NUL, so a string
-  filling a mapped page with no terminator reads past the mapping. `SYS_CONSOLE_WRITE` gets
-  this right — it scans for a length, then reads exactly that many bytes. Any future call
-  taking a user string must follow the console's pattern.
+- **Copy with `user_copy_out` / `user_copy_in`; never validate and then dereference.** A
+  validation is only true at the instant it runs. Any call that validates, blocks, and then
+  copies is trusting a snapshot nothing has refreshed — which is what both IPC blocking paths
+  did (security review §6). These copy primitives re-validate at the copy *and* perform it
+  inside a fault-recoverable region, so a mapping that has gone away yields `E_FAULT` instead
+  of a stale-probe write or a ring-0 fault. On failure the destination is **partially
+  written** and must be treated as undefined.
+- **`CR0.WP` is set** (in `kernel.asm`, with `PG`, so it holds for the whole life of the paged
+  kernel). The CPU therefore enforces the read-only bit against ring 0 as well: a kernel write
+  to a read-only page faults like any other write violation, instead of silently succeeding
+  and leaving the page tables claiming it could not have happened.
+- **Both layers are still load-bearing, and they are not the same check.** `WP` enforces the
+  **write** bit only. It says nothing about `PAGE_USER`, and nothing stops ring 0 writing to a
+  kernel address — so a copy-out aimed at a kernel address, or at a page that is writable but
+  not ring-3-accessible, passes the hardware and is caught only by the range check. A fault
+  also stops the copy *where it faults*: for a buffer spanning several pages, writable at the
+  start and read-only later, recovery alone leaves the earlier pages modified, while the check
+  refuses the whole transfer before anything moves. Conversely no check can cover a page that
+  stops being mapped after the check and before the instruction that uses it, which is what
+  recovery is for.
+- Fault recovery is scoped by **where the fault happened** — the faulting EIP inside
+  `usercopy_start`…`usercopy_end` (`cpu/usermode.asm`), checked in `cpu/int/idt.c` — and not
+  by an armed flag, so there is nothing that can be left switched on. A kernel page fault
+  anywhere else still panics.
+- **A bounded scan is not a bounded read.** Scan for a length, then read exactly that many
+  bytes; never hand the raw pointer to something that walks to its own NUL, or a string
+  filling a mapped page with no terminator reads past the mapping. `SYS_CONSOLE_WRITE` and
+  `FB_OP_DRAW_TEXT` (via `fb_draw_string_n`) both follow this. Any future call taking a user
+  string must too.
 - A CPU fault taken while in ring 3 routes to the user-fault hook, which **terminates the
   faulting process** and returns to the scheduler. A buggy app/executive never takes down
   the kernel.
@@ -519,13 +538,27 @@ synchronous rendezvous together.
 
 > **Status: CP1, CP2 and CP3 are implemented.** The capability gate, the handle table with
 > endpoints, and synchronous IPC with scheduler block/wake all exist and the §10 demo flow
-> runs. **CP4 (hardening) is the open one** — lifecycle edge cases and message-bound fuzzing
-> have not been done systematically. The next ABI work is not a checkpoint below but §7.10.
+> runs.
+>
+> **CP4 (hardening) is mostly closed as of 2026-10-09**, by Phase 2 of
+> `docs/planning/HARDENING_PLAN.md` rather than as ABI work. Endpoints are reference
+> counted and reclaimed, a closed endpoint is a dead name, a close mid-rendezvous wakes
+> the peer with `E_BADF`, user copies are validated at the instant of the copy and a
+> fault during one is recoverable, and the lifecycle sequences this used to call out —
+> create, run, block, wake, exit, and the frames coming back — are driven at every boot
+> by `test_lifecycle_sequences` and `test_ipc_endpoint_lifetime`.
+>
+> **What remains of CP4 is message-bound fuzzing**, which is still not done
+> systematically: the length checks are asserted at their edges, but nothing generates
+> adversarial message sizes across the three IPC entry points the way `ktest_loader.c`
+> does for CXEX images. The next ABI work is not a checkpoint below but §7.10.
 
 - **CP1 — caps + gate.** Per-process `caps` bitmask, `caps_for` at the `cxex_exec` handoff,
   the privileged primitives (`console_write`, `map/unmap/sbrk`, `block_read/write`, `power`)
-  gated on their caps. Port the per-process `user_ptr_ok` and the user-fault hook from
-  legacy. Executive can call primitives; a capless process gets `E_PERM`.
+  gated on their caps. Port the per-process user-pointer check and the user-fault hook
+  from legacy. Executive can call primitives; a capless process gets `E_PERM`.
+  *(Landed, and the check is now the split `user_ptr_readable` / `user_ptr_writable`
+  pair rather than the single `user_ptr_ok` this line was written against — see §3.)*
 - **CP2 — handle table + endpoints.** The 16-slot table, `ep_create`, `handle_close`, and
   `spawn` installing the child's broker handle 0 + forcing `caps=0`.
 - **CP3 — synchronous IPC.** `ipc_call` / `ipc_recv` / `ipc_reply` with scheduler

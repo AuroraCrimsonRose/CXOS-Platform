@@ -1,5 +1,7 @@
+; SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+; SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 ; /kernel/cpu/gdt_flush.asm
-; Aurora Tejeda / CATX Systems LLC
+; Aurora Tejeda / CATX Systems
 ; Load the kernel GDT + reload segment registers, and load the TSS.
 
 bits 32

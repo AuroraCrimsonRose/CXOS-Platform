@@ -1,5 +1,7 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 // xc/host/xc_sys.xfxn - the X compiler's platform, on a Linux host.
-// Aurora Tejeda / CATX SYSTEMS LLC
+// Aurora Tejeda / CATX Systems
 //
 // The X compiler written in X runs in two places: on CXK, which is the point,
 // and on the Linux host it is developed on, which is how it is tested - every

@@ -1,6 +1,8 @@
 @echo off
+rem SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+rem SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 REM /boot/uefi/secureboot.bat
-REM Aurora Tejeda / CATX SYSTEMS LLC
+REM Aurora Tejeda / CATX Systems
 REM
 REM Generate a CXK Secure Boot key set, enroll it into an OVMF variable store,
 REM sign the UEFI stub with it, and boot the result under QEMU - twice.

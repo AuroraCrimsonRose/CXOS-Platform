@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 // hello.xosv - a service descriptor, and the one that proves the mechanism.
 //
 // Starts the same program `run hi` starts, but at boot and without anyone

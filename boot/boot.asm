@@ -1,13 +1,15 @@
+; SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+; SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 ; ============================================================================
 ;  CXK - the CXOS Kernel : Bootloader (Stage 1)  [v5]
-;  Copyright (c) 2026 CATX Systems LLC.  All rights reserved.
+;  Copyright (c) 2026 CATX Systems.  All rights reserved.
 ;
 ;  This file is part of the CXK / CXOS Project and is licensed under the
 ;  CXK and CXOS Project License, Version 1.0.7 (Effective June 16, 2026).
 ;  Use of this software is subject to the terms of that License. See the
 ;  LICENSE file distributed with the Project for the full terms.
 ;
-;  Author: Aurora Tejeda / CATX Systems LLC
+;  Author: Aurora Tejeda / CATX Systems
 ; ============================================================================
 ; /boot/boot.asm - Stage 1 (minimal)
 ;
@@ -194,7 +196,7 @@ msg_nolba   db '[BOOT] NO INT13H LBA SUPPORT', 0
 ; It must stop short of offset 446, where the MBR partition table lives.
 ; ----------------------------------------------------------------------------
 copyright_notice:
-    db 'CXK Bootloader v5 - (c) 2026 CATX Systems LLC. '
+    db 'CXK Bootloader - (c) 2026 CATX Systems. '
     db 'CXK/CXOS Project License v1.0.7. All rights reserved.', 0
 
 ; Fail the build rather than ship a boot sector that overruns the partition

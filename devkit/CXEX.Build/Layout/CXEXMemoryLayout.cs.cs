@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 ﻿using System;
 using System.Collections.Generic;
 
@@ -6,7 +8,7 @@ namespace CXEX.Build.Layout;
 public class CxexMemoryLayout
 {
     public ushort TypeCode { get; set; }
-    public ushort FormatVersion { get; set; } = 1;
+    public ushort FormatVersion { get; set; } = (ushort)CXEX.Core.Constants.FormatPolicy.WriteVersion(CXEX.Core.Constants.CXFormat.Cxex);
     public ushort ArchTarget { get; set; } = 1;
     public ushort AbiVersion { get; set; } = 1;
     public uint Flags { get; set; }

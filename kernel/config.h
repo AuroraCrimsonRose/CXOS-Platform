@@ -1,5 +1,7 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/config.h */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * Kernel build-time configuration / safety switches.
  *
@@ -40,6 +42,21 @@
  */
 #ifndef CXK_ENABLE_FB
 #define CXK_ENABLE_FB 1             /* 1 = framebuffer console (default), 0 = force text mode */
+#endif
+
+/*
+ * CXK_ENABLE_SERIAL tees every byte the console prints to a 16550 UART on
+ * COM1 (115200 8N1), so a boot can be captured as text with
+ * `qemu ... -serial file:boot.log` whatever the video mode is. Screen output
+ * is unchanged either way: this only adds a second destination.
+ *
+ * Safe to leave on. serial_init() probes with a loopback test and every call
+ * is a no-op if nothing answered, so a machine with no COM1 pays nothing. As
+ * with CXK_ENABLE_FB the authority in a CMake build is cmake/cxk_flags.cmake;
+ * this is only the fallback.
+ */
+#ifndef CXK_ENABLE_SERIAL
+#define CXK_ENABLE_SERIAL 1         /* 1 = mirror console output to COM1 */
 #endif
 
 /*

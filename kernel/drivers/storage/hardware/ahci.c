@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /CXLite/kernel/drivers/ahci.c */
 /* Aurora Tejeda */
 /* AHCI SATA driver - PCI discovery, port init, DMA read/write. */
@@ -10,6 +12,7 @@
 #include "console.h"
 #include "string.h"
 #include "disk.h"
+#include "logging.h"
 
 /* ---- HBA memory registers (the ABAR-mapped structure) ---- */
 
@@ -445,8 +448,14 @@ int ahci_init(void) {
             /* bridge into the unified disk registry (same step ATA needs) so
                the filesystem layer can find AHCI disks. unit = port number. */
             enum disk_media media = port_ssd[p] ? DISK_MEDIA_SSD : DISK_MEDIA_HDD;
-            disk_register(DISK_DRV_AHCI, (uint8_t)p, media, DISK_ATTACH_INTERNAL,
-                          port_model[p], port_sectors[p]);
+            /* Checked for the same reason ATA checks it: DISK_MAX is 16 and a
+               controller can present 32 ports, so this is reachable on real
+               hardware rather than theoretical. A refused port is a disk
+               nothing above can see. */
+            if (disk_register(DISK_DRV_AHCI, (uint8_t)p, media, DISK_ATTACH_INTERNAL,
+                              port_model[p], port_sectors[p]) < 0)
+                klog_u32("AHCI", SEV_WARN, "disk registry full, port not registered: ",
+                         (uint32_t)p, LOG_COLOR_VALUE, "");
         }
     }
 

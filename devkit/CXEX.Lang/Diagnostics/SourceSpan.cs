@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 ﻿namespace CXEX.Lang.Diagnostics;
 
 /// <summary>A half-open [Start,End) byte range in a source file, with line/col for messages.</summary>

@@ -1,5 +1,7 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 // os/apps/cxos.xfxn - the CXOS graphical shell.
-// Aurora Tejeda / CATX SYSTEMS LLC
+// Aurora Tejeda / CATX Systems
 //
 // The GUI counterpart to the text shell: a desktop with a menu bar, a window,
 // and a mouse cursor. Entered from the text shell with `gui`, left with Esc or

@@ -1,5 +1,7 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/cpu/int/idt.c */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * v5 IDT: exception + IRQ handling with a self-contained panic dump.
  * Differences from the v4 port (deliberate for the current v5 stage):
@@ -23,6 +25,10 @@
 #include "gdt.h"
 #include "kstack.h"
 #include "paging.h"
+#include "usermode.h"   /* usercopy_start / usercopy_end / usercopy_trampoline */
+#include "serial.h"     /* the panic tee - see panic_putc_at */
+
+#define KERNEL_VBASE 0xC0000000u   /* user half is everything below it */
 
 void pic_remap(void);
 void pic_send_eoi(uint32_t int_no);
@@ -51,11 +57,34 @@ static struct idt_ptr   idtp;
 
 static int panic_pos = 0;
 
-/* Write one panic character to whichever display is live. On the framebuffer we
-   render white-on-red 8x16 glyphs (the screen is cleared to red when the panic
-   begins, in isr_handler); otherwise we poke white-on-red VGA cells. panic_pos
-   is a linear cell index in both cases, wrapped at the live width. */
+/* Write one panic character to whichever display is live, and to the serial
+   port. On the framebuffer we render white-on-red 8x16 glyphs (the screen is
+   cleared to red when the panic begins, in isr_handler); otherwise we poke
+   white-on-red VGA cells. panic_pos is a linear cell index in both cases,
+   wrapped at the live width.
+ *
+ * The serial tee comes FIRST, before the screen, and that order is deliberate:
+ * a panic is the one moment the display is most likely to be the broken thing,
+ * and the bytes that matter should already be out of the machine before this
+ * function touches a framebuffer pointer. SerenityOS's critical_console_out
+ * writes serial first and the graphics console last for the same reason, and
+ * notes that in a fatal situation nobody is likely to read the normal console
+ * anyway; Haiku's early-boot messages go straight to the UART.
+ *
+ * It is teed here and nowhere else because, unlike the console, this really is
+ * one chokepoint: panic_puts and panic_puthex both route through it, and the
+ * two '\n' branches below return early, so emitting the byte before them is
+ * what makes every path - including both newlines - send exactly once. (The
+ * console tee needed two call sites for exactly that reason; see
+ * console_newline.)
+ *
+ * serial_putc is safe to call here: it is a bounded spin on THRE that drops
+ * the byte rather than hanging, and it is a no-op when the probe found no UART
+ * or the panic happened before serial_init. */
 static void panic_putc_at(char c) {
+    if (c == '\n') { serial_putc('\r'); serial_putc('\n'); }
+    else            serial_putc(c);
+
     if (fb_active()) {
         uint32_t cols = fb_width() / 8;
         if (cols == 0) cols = 1;
@@ -136,7 +165,48 @@ static void panic_name_overflow(uint32_t addr) {
 static void (*user_fault_hook)(struct registers *r) = 0;
 void set_user_fault_hook(void (*hook)(struct registers *)) { user_fault_hook = hook; }
 
+/* Page-fault recovery for the user-copy primitives (security review §6).
+ *
+ * A fault taken *inside* usermode.asm's copy region is the one kernel fault
+ * that is not a bug: it means a user buffer stopped being mapped, which the
+ * copy is required to report rather than die of. Recovery redirects the return
+ * to the copy's landing pad, which returns the fault indicator, and
+ * user_copy_out/in turn that into E_FAULT.
+ *
+ * All four conditions matter, and the EIP range is what makes this safe: there
+ * is no armed flag to leak, so a kernel fault anywhere else still panics
+ * exactly as before. Redox's page_fault_handler guards it with the same four
+ * (src/memory/mod.rs); Haiku and Mach use a per-thread fault-handler slot,
+ * which also works but can be left armed.
+ *
+ * Returns 1 if the fault was recovered and the handler must return at once.
+ */
+static int recover_user_copy_fault(struct registers *r) {
+    if (r->int_no != 14) return 0;
+
+    uint32_t cr2;
+    __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
+
+    if (cr2 >= KERNEL_VBASE)   return 0;   /* a user address */
+    if (r->err_code & 0x4)     return 0;   /* taken in ring 0: the kernel did it */
+    if (r->err_code & 0x10)    return 0;   /* data, not an instruction fetch */
+    if (r->eip <  (uint32_t)usercopy_start) return 0;
+    if (r->eip >= (uint32_t)usercopy_end)   return 0;
+
+    /* A same-ring fault pushes only EIP/CS/EFLAGS - ESP and SS are NOT saved,
+       so r->useresp and r->ss are not part of this frame and must not be
+       touched. EIP is the one thing worth changing, which is why the landing
+       pad exists instead of patching the copy in place. */
+    usercopy_note_recovered_fault();
+    r->eip = (uint32_t)usercopy_trampoline;
+    return 1;
+}
+
 void isr_handler(struct registers *r) {
+    /* Before anything else, including the panic tone: a recovered fault must
+       be silent and leave no trace. */
+    if (recover_user_copy_fault(r)) return;
+
     speaker_panic_tone();
     if ((r->cs & 3) == 3 && user_fault_hook) {
         user_fault_hook(r);

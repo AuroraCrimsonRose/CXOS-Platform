@@ -1,5 +1,7 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/ktest.c */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * Kernel self-tests, extracted from kmain. Each ktest_* function exercises one
  * subsystem and logs a concise pass/fail line. ktest_run() calls them in order.
@@ -15,10 +17,12 @@
 #include "pmm.h"
 #include "paging.h"
 #include "heap.h"
+#include "rsa.h"
 #include "console.h"
 #include "logging.h"
 #include "color.h"
 #include "sched.h"
+#include "ipc.h"
 #include "usermode.h"
 #include "uid.h"
 #include "disk.h"
@@ -30,12 +34,16 @@
 #include "cxex.h"
 #include "keyvault.h"
 #include "ktest_loader.h"
+#include "ktest_net.h"
+#include "ktest_fs.h"
 #include "vmregion.h"
 #include "exec.h"
 #include "kstack.h"
 #include "kconfig.h"
 #include "gdt.h"
 #include "idt.h"
+
+#define KERNEL_VBASE 0xC0000000u
 
 /* concise pass/fail reporter */
 /* Report a test result. Stays SILENT on success - only failures are printed,
@@ -45,6 +53,248 @@ static int report(const char *name, int ok) {
     if (!ok)
         klog("KTEST", SEV_FAIL, name);
 
+    return ok;
+}
+
+/* ---- IPC endpoints: reference counted, and reclaimed (security §7) ----
+   Before this, closing an endpoint handle blanked the handle slot but left
+   the endpoint's in_use set, so the 32-entry pool drained permanently: a
+   process that created and closed endpoints could deny them to everyone, and
+   every exited process leaked its own. The fix is a count, because an
+   endpoint legitimately has several handles - the owner's RECV plus a SEND in
+   every spawned child - so freeing on the first close would be a
+   use-after-free rather than merely early.
+
+   Each stage fails distinctly, so a regression says which rule broke. */
+static int test_ipc_endpoint_lifetime(void) {
+    int me       = thread_current_id();
+    int baseline = ep_in_use_count();
+
+    /* 1. create then close: the slot comes back. */
+    int h = ep_create();
+    if (h < 0) return 0;
+    if (ep_in_use_count() != baseline + 1) return 0;
+
+    struct endpoint *ep = ep_from_handle(h, HRIGHT_RECV);
+    if (!ep || ep->refs != 1 || ep->handles != 1 || !ep->active) return 0;
+
+    if (thread_handle_close(me, h) != 0) return 0;
+    if (ep_in_use_count() != baseline) return 0;      /* the leak this fixes */
+
+    /* 2. a second handle is a second reference: the first close must not free. */
+    h = ep_create();
+    if (h < 0) return 0;
+    ep = ep_from_handle(h, HRIGHT_RECV);
+    if (!ep) return 0;
+
+    int h2 = ep_install_handle(me, ep, HRIGHT_SEND);
+    if (h2 < 0) return 0;
+    if (ep->refs != 2 || ep->handles != 2) return 0;
+
+    if (thread_handle_close(me, h) != 0) return 0;
+    if (!ep->in_use || !ep->active) return 0;         /* must still be alive */
+    if (ep->refs != 1 || ep->handles != 1) return 0;
+    if (ep_in_use_count() != baseline + 1) return 0;
+
+    /* 3. the last handle frees it, and the stale handle is a dead name. */
+    if (thread_handle_close(me, h2) != 0) return 0;
+    if (ep_in_use_count() != baseline) return 0;
+    if (ep->in_use || ep->active) return 0;
+    if (ep_from_handle(h2, HRIGHT_SEND) != NULL) return 0;
+
+    /* 4. the per-process quota holds, and releases. */
+    int hs[MAX_ENDPOINTS_PER_PROC];
+    int made = 0;
+    for (int i = 0; i < MAX_ENDPOINTS_PER_PROC; i++) {
+        hs[i] = ep_create();
+        if (hs[i] < 0) break;
+        made++;
+    }
+    int ok = (made == MAX_ENDPOINTS_PER_PROC) && (ep_create() < 0);
+    for (int i = 0; i < made; i++) thread_handle_close(me, hs[i]);
+    if (!ok) return 0;
+    if (ep_in_use_count() != baseline) return 0;
+
+    return 1;
+}
+
+/* ---- user copies: validated at the copy (security §6) ----
+   The range check's half of user_copy_out: policy, decided before any byte
+   moves. A page that is mapped and ring-3-readable but NOT ring-3-writable is
+   refused here rather than by the hardware.
+
+   Since CR0.WP was set, reaching the copy would refuse it too - the write
+   faults and recovery turns that into the same E_FAULT - so the return value
+   no longer says which layer acted. The assertions below are on the recovered
+   fault COUNT for that reason: refused by the check means no fault at all.
+   Delete the user_ptr_writable call in user_copy_out and the count moves,
+   and this test alone goes red. Without that count the sabotage would pass
+   unnoticed, which is the trap WP introduces here. */
+static int test_user_copy_validation(void) {
+    const uint32_t va = 0x00810000u;   /* clear of ktest_user_ptr_writability's page */
+    const uint8_t  src[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
+
+    void *frame = pmm_alloc();
+    if (!frame) return 0;
+
+    volatile uint8_t *p = (volatile uint8_t *)va;
+    int ok = 1;
+
+    /* Writable: the copy must succeed and the bytes must actually land. A test
+       that only checks refusals passes just as well against a copy that always
+       refuses. */
+    if (paging_map_user(va, (uint32_t)frame, PAGE_PRESENT | PAGE_WRITE) != 0) { ok = 0; goto done; }
+    for (int i = 0; i < 8; i++) p[i] = 0xAA;
+    ok = ok && (user_copy_out(va, src, 8) == 0);
+    for (int i = 0; i < 8; i++) ok = ok && (p[i] == src[i]);
+
+    /* Read-only: refused by the CHECK, before the copy runs - which is the
+       part that matters now that CR0.WP is set. With WP, reaching the copy
+       would also refuse it, by faulting and recovering, and the return value
+       would look identical. The fault count is what tells the two apart:
+       refused by the check means no fault was taken at all. Delete the
+       user_ptr_writable call in user_copy_out and this goes red on the count,
+       not on the return value. */
+    for (int i = 0; i < 8; i++) p[i] = 0xAA;
+    if (paging_map_user(va, (uint32_t)frame, PAGE_PRESENT) != 0) { ok = 0; goto done; }
+    {
+        uint32_t faults_before = usercopy_faults_recovered();
+        ok = ok && (user_copy_out(va, src, 8) == E_FAULT);
+        ok = ok && (usercopy_faults_recovered() == faults_before);   /* the sabotage signal */
+    }
+    for (int i = 0; i < 8; i++) ok = ok && (p[i] == 0xAA);
+
+    /* Reading out of the same read-only page is legitimate - readable is all a
+       copy-in needs - so the check must not have become "refuse everything". */
+    {
+        uint8_t dst[8] = { 0 };
+        ok = ok && (user_copy_in(dst, va, 8) == 0);
+        for (int i = 0; i < 8; i++) ok = ok && (dst[i] == 0xAA);
+    }
+
+    /* A length of zero touches nothing and succeeds, including through a null
+       pointer: call sites rely on this for an absent buffer. */
+    ok = ok && (user_copy_out(0, src, 0) == 0);
+    ok = ok && (user_copy_in((void *)src, 0, 0) == 0);
+
+    /* A buffer straddling the kernel boundary is refused by both. */
+    ok = ok && (user_copy_out(KERNEL_VBASE - 4, src, 8) == E_FAULT);
+    {
+        uint8_t dst[8] = { 0 };
+        ok = ok && (user_copy_in(dst, KERNEL_VBASE - 4, 8) == E_FAULT);
+    }
+
+done:
+    paging_unmap(va);
+    pmm_free(frame);
+    return ok;
+}
+
+/* ---- user copies: a fault inside one is recoverable (security §6) ----
+   The other half. An unmapped user page is what the range check cannot be
+   made to cover, because a mapping can change after any check and before the
+   instruction that uses it: the copy itself has to be allowed to fail.
+
+   user_copy_out refuses this before the copy ever runs, which is the point of
+   it, so the primitive is called directly - there is no other way to reach the
+   recovery path.
+
+   The sabotage signal here is a PANIC, not a red test, and it cannot be
+   anything else: without the recovery in idt.c this write is an unrecoverable
+   ring-0 page fault. Remove recover_user_copy_fault and the boot dies here
+   with a page fault inside usermode.asm rather than reporting a failure. */
+static int test_user_copy_fault_recovery(void) {
+    const uint32_t va = 0x00820000u;
+    const uint8_t  src[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
+
+    /* If something has mapped this, the test proves nothing - say so rather
+       than passing vacuously. */
+    if (paging_get_phys(va) != 0) return 0;
+
+    uint32_t faults_before = usercopy_faults_recovered();
+
+    if (user_copy_bytes((void *)va, src, 8) != 1) return 0;   /* faulted, recovered */
+
+    /* Reading from it is recoverable in the same way. */
+    {
+        uint8_t dst[8] = { 0 };
+        if (user_copy_bytes(dst, (const void *)va, 8) != 1) return 0;
+    }
+
+    /* Exactly two faults, not none and not a storm: the recovery really fired,
+       once per copy, rather than the copies having succeeded for some other
+       reason. */
+    if (usercopy_faults_recovered() != faults_before + 2) return 0;
+
+    /* A copy that does not fault still reports success afterwards, and takes no
+       fault: recovery must not have left anything latched that makes every
+       later copy look faulted. */
+    {
+        uint8_t dst[8] = { 0 };
+        uint32_t f = usercopy_faults_recovered();
+        if (user_copy_bytes(dst, src, 8) != 0) return 0;
+        for (int i = 0; i < 8; i++) if (dst[i] != src[i]) return 0;
+        if (usercopy_faults_recovered() != f) return 0;
+    }
+
+    /* And the validated path refuses it up front, without reaching the copy. */
+    if (user_copy_out(va, src, 8) != E_FAULT) return 0;
+
+    return 1;
+}
+
+/* ---- CR0.WP: the kernel obeys the read-only bit ----
+   x86 lets ring 0 write through a read-only page unless CR0.WP is set. For
+   most of this kernel's life it was clear, which is why `user_ptr_writable`
+   was the *only* thing standing between a syscall handed a pointer into a
+   process's own text and the kernel scribbling on it (security review §4): the
+   hardware would not have objected.
+
+   Asserting the bit is set proves almost nothing on its own - a constant can
+   be wrong in the same direction as the code reading it - so the real check is
+   behavioural: a ring-0 write to a read-only user page must now FAULT. It is
+   driven through user_copy_bytes because that is the one place a fault is
+   survivable; anywhere else it would be a panic rather than a test result. */
+static int test_cr0_write_protect(void) {
+    const uint32_t va = 0x00830000u;
+    const uint8_t  src[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
+
+    uint32_t cr0;
+    __asm__ volatile ("mov %%cr0, %0" : "=r"(cr0));
+    if (!(cr0 & (1u << 16))) return 0;          /* WP must be set */
+
+    void *frame = pmm_alloc();
+    if (!frame) return 0;
+
+    int ok = 1;
+    volatile uint8_t *p = (volatile uint8_t *)va;
+
+    /* Seed while it is still writable, then take the write permission away. */
+    if (paging_map_user(va, (uint32_t)frame, PAGE_PRESENT | PAGE_WRITE) != 0) { ok = 0; goto done; }
+    for (int i = 0; i < 8; i++) p[i] = 0xAA;
+    if (paging_map_user(va, (uint32_t)frame, PAGE_PRESENT) != 0) { ok = 0; goto done; }
+
+    {
+        uint32_t faults_before = usercopy_faults_recovered();
+        /* Before WP this returned 0 and the bytes changed. */
+        ok = ok && (user_copy_bytes((void *)va, src, 8) == 1);
+        ok = ok && (usercopy_faults_recovered() == faults_before + 1);
+        for (int i = 0; i < 8; i++) ok = ok && (p[i] == 0xAA);
+    }
+
+    /* Writable again: the same write must go through, so this is testing WP
+       and not simply a mapping that never worked. */
+    if (paging_map_user(va, (uint32_t)frame, PAGE_PRESENT | PAGE_WRITE) != 0) { ok = 0; goto done; }
+    {
+        uint32_t faults_before = usercopy_faults_recovered();
+        ok = ok && (user_copy_bytes((void *)va, src, 8) == 0);
+        ok = ok && (usercopy_faults_recovered() == faults_before);
+        for (int i = 0; i < 8; i++) ok = ok && (p[i] == src[i]);
+    }
+
+done:
+    paging_unmap(va);
+    pmm_free(frame);
     return ok;
 }
 
@@ -193,9 +443,25 @@ static int test_disk_lba_range(void) {
        being broken for everything. */
     if (disk_read(d->id, 0, 1, sector) != DISK_OK) return 0;
 
-    /* One past the LBA28 ceiling, and far past it. */
-    if (disk_read(d->id, 0x10000000ull, 1, sector) != DISK_ERR_PARAMS) return 0;
-    if (disk_read(d->id, 0xFFFFFFFFFull, 1, sector) != DISK_ERR_PARAMS) return 0;
+    /* One past the LBA28 ceiling, and far past it.
+     *
+     * These asserted DISK_ERR_PARAMS until 2026-10-09, which is the code
+     * Phase 1 chose on the review's recommendation (engineering §1). Writing
+     * the block-device contract down (§8, disk.h) made that untenable: the
+     * enum documents BOUNDS as "LBA/count outside the device" and PARAMS as
+     * "bad arguments (null buffer, zero count)", and an unreachable sector is
+     * the former by the enum's own words. A caller cannot act differently on
+     * the two either - both mean "that sector is not there" - so keeping both
+     * was a distinction without a decision behind it.
+     *
+     * The refusal now also comes from a different place, which is the real
+     * improvement: disk_read compares the request against the capacity the
+     * registry already knew, so EVERY backend refuses an over-range LBA
+     * rather than only ATA, and only because ATA's own limit happened to be
+     * narrower. ata_range_ok stays as defence in depth and keeps returning
+     * PARAMS; it is simply no longer the thing that catches this. */
+    if (disk_read(d->id, 0x10000000ull, 1, sector) != DISK_ERR_BOUNDS) return 0;
+    if (disk_read(d->id, 0xFFFFFFFFFull, 1, sector) != DISK_ERR_BOUNDS) return 0;
 
     return 1;
 }
@@ -509,17 +775,29 @@ done:
  *
  * The lower bound is the assertion: a sleep must not finish early, because
  * everything built on it - a scheduler waiting for the next due task, a
- * retry backing off - is wrong if it can. The upper bound is deliberately
- * loose. Scheduling here is cooperative and whatever else ktest has left
- * runnable gets to finish first, so "it took longer than asked" is normal and
- * only a wildly wrong figure means anything.
+ * retry backing off - is wrong if it can.
+ *
+ * The upper bound is the other half of engineering §7: a wakeup bug that
+ * turns a 50 ms sleep into a multi-second stall is a real failure and a
+ * "did it come back?" test cannot see it either. The bound is 100 ms, which
+ * is twice what this actually takes - measured, not guessed: instrumented on
+ * 2026-10-09, `thread_sleep_ms(50)` returns after exactly 50 ticks, so the
+ * previous 500 ms ceiling was ten times looser than the behaviour it was
+ * bounding and would have passed a sleep that overran by 9x. The 2x headroom
+ * is for scheduling: this is cooperative, and whatever ktest has left
+ * runnable finishes first.
+ *
+ * That the ceiling matters is not an assumption either: with thread_sleep_ms
+ * sabotaged to wait four times as long, this test fails at 100 ms and
+ * **passes at 500**, all 32 green. The old bound was wide enough to admit the
+ * exact failure it was there to catch.
  */
 static int test_clock_sleep(void) {
     uint32_t t0 = timer_ticks();
     thread_sleep_ms(50);
     uint32_t dt = timer_ticks() - t0;
     if (dt < 50)  return 0;        /* woke early - the bug that matters */
-    if (dt > 500) return 0;        /* wildly over: something is wrong */
+    if (dt > 100) return 0;        /* a 50 ms sleep that became a long stall */
 
     /* 0 ms is documented as a yield, not a wait. */
     t0 = timer_ticks();
@@ -533,6 +811,85 @@ static int test_clock_sleep(void) {
     if ((int32_t)(b - a) < 10) return 0;
 
     return 1;
+}
+
+/* ---- the tick counter wraps, and the waits built on it must survive it
+ *      (engineering §7) ----
+ *
+ * The counter is 32 bits of milliseconds, so it returns to zero after 49.7
+ * days of uptime. Nothing here had ever run that long, which is why two of
+ * the kernel's three wait primitives were computing a deadline as `now + ms`
+ * and comparing it directly - correct for 49.7 days and then wrong, in
+ * opposite directions:
+ *
+ *   timer_sleep        `while (ticks < target)` - a wrapped target compares
+ *                      small, so the sleep returns at once. Used by every USB
+ *                      host controller for its reset and port-settle delays.
+ *   timer_timeout_*    `ticks >= deadline` - a wrapped deadline is already
+ *                      past, so the wait expires before the hardware is asked.
+ *                      Used by ATA and AHCI, which would report
+ *                      DISK_ERR_TIMEOUT on a disk that was working.
+ *
+ * sched_wake_sleepers had the wrap-safe form already, with a comment saying
+ * why; the idiom simply never made it back into the driver the scheduler got
+ * its time from.
+ *
+ * Testing this needs the counter moved rather than waited out, which is what
+ * timer_ticks_set_for_test is for. The test puts it 16 ticks from the wrap,
+ * drives the real primitives across it, and restores it.
+ */
+static int test_timer_wraparound(void) {
+    int ok = 1;
+
+    /* 1. The comparison itself, at the boundary. These are the values a
+          deadline actually takes when `now + ms` carries past 2^32. */
+    ok = ok && (timer_tick_after (0x00000000u, 0xFFFFFFFFu) == 1);  /* one tick on */
+    ok = ok && (timer_tick_after (0xFFFFFFFFu, 0x00000000u) == 0);  /* one tick back */
+    ok = ok && (timer_tick_after (0x00000009u, 0xFFFFFFF5u) == 1);  /* 20 ticks on */
+    ok = ok && (timer_tick_before(0xFFFFFFF5u, 0x00000009u) == 1);
+    ok = ok && (timer_tick_after (0x00000064u, 0x00000064u) == 1);  /* the deadline tick
+                                                                      itself has arrived */
+    ok = ok && (timer_tick_before(0x00000064u, 0x00000064u) == 0);
+    if (!ok) return 0;
+
+    uint32_t saved = timer_ticks();
+    timer_ticks_set_for_test(0xFFFFFFF0u);      /* 16 ticks from the wrap */
+
+    /* 2. A timeout opened just before the wrap is not already expired. */
+    struct timeout to;
+    timer_timeout_start(&to, 50);
+
+    /* Both primitives have an interrupts-off fallback that does not use the
+       counter at all. If ktest ever ran with interrupts masked this test
+       would pass while exercising none of the arithmetic above, so say so
+       rather than returning a quiet pass. */
+    if (!to.use_timer) {
+        klog("KTEST", SEV_FAIL, "timer wraparound: interrupts off, test is vacuous");
+        timer_ticks_set_for_test(saved);
+        return 0;
+    }
+    ok = ok && (timer_timeout_expired(&to) == 0);
+
+    /* 3. A real sleep across the wrap still waits. */
+    uint32_t t0 = timer_ticks();
+    timer_sleep(32);
+    uint32_t waited = timer_ticks() - t0;       /* unsigned: spans the wrap */
+    ok = ok && (waited >= 32);
+    ok = ok && (waited <= 500);
+    /* and the counter went through zero rather than stopping at the top */
+    ok = ok && (timer_ticks() < 0x10000000u);
+
+    /* 4. Past the deadline, it does expire - so step 2 was not passing by way
+          of a timeout that never expires at all. The budget was 50 ms and
+          step 3 spent 32 of them, both on the far side of the wrap. */
+    ok = ok && (timer_timeout_expired(&to) == 0);   /* still inside the budget */
+    timer_sleep(30);
+    ok = ok && (timer_timeout_expired(&to) == 1);
+
+    /* Put the clock back where it was, plus what the test spent, so uptime
+       stays monotonic for anything already sleeping on it. */
+    timer_ticks_set_for_test(saved + (timer_ticks() - 0xFFFFFFF0u));
+    return ok;
 }
 
 /* ---- volumes ----
@@ -776,6 +1133,314 @@ static int test_vmregion(void) {
     return ok;
 }
 
+/* ---- the block-device contract (engineering §8) ----
+ * The contract is written down in disk.h; this holds every registered backend
+ * to the part of it that can be checked at boot, on whatever disks this
+ * machine actually has. The review's reason for wanting it frozen now is that
+ * a VFS and a block cache written against incidental behaviour are much
+ * harder to correct later than a driver is.
+ *
+ * Read-only throughout except on the data disk, and it says when a property
+ * could not be exercised rather than counting an untested promise as kept.
+ */
+static int test_disk_contract(void) {
+    unsigned n = disk_count();
+    if (n == 0) {
+        klog("KTEST", SEV_WARN, "disk contract: no disks registered, untested");
+        return 0;              /* nothing to conclude from, so not a pass */
+    }
+
+    static uint8_t a[DISK_SECTOR_SIZE * 3];
+    static uint8_t b[DISK_SECTOR_SIZE * 3];
+    int checked_multi = 0, checked_unaligned = 0;
+
+    for (unsigned i = 0; i < n; i++) {
+        const struct disk *d = disk_get(i);
+        if (!d) return 0;
+        uint8_t id = d->id;
+
+        /* Ids and names are stable: the same disk must come back by id and by
+           name, and be the same object. Lifetime, as documented. */
+        if (disk_find_by_id(id) != d)        return 0;
+        if (disk_find_by_name(d->name) != d) return 0;
+
+        /* Error codes stay distinct. A nonsense request is PARAMS; a sector
+           past the end is BOUNDS. Collapsing these to one code would make a
+           caching layer unable to tell "ask differently" from "ask less". */
+        if (disk_read(id, 0, 1, 0)   != DISK_ERR_PARAMS) return 0;
+        if (disk_read(id, 0, 0, a)   != DISK_ERR_PARAMS) return 0;
+        if (d->sectors) {
+            /* Exactly one past the end, and a count that runs off the end
+               from a legal start. These are separate conditions in
+               disk_check and the far-past-the-end case is separate again
+               (test_disk_lba_range), because the subtraction underflows
+               there - so all three are asserted rather than assuming one
+               implies the others. */
+            if (disk_read(id, d->sectors,     1, a) != DISK_ERR_BOUNDS) return 0;
+            if (disk_read(id, d->sectors - 1, 2, a) != DISK_ERR_BOUNDS) return 0;
+            if (disk_read(id, d->sectors + 4096, 1, a) != DISK_ERR_BOUNDS) return 0;
+        }
+
+        /* An unknown id is NO_DEVICE, not any of the above. */
+        if (disk_read(0xFE, 0, 1, a) != DISK_ERR_NO_DEVICE) return 0;
+
+        /* Sector 0 reads, synchronously: the buffer is filled by the time the
+           call returns, with no completion to wait for. Non-removable media
+           only - an empty optical drive legitimately has nothing to read. */
+        if (d->media == DISK_MEDIA_CDROM || d->media == DISK_MEDIA_FDD) continue;
+        if (d->sectors < 3) continue;
+
+        for (unsigned k = 0; k < sizeof a; k++) { a[k] = 0x11; b[k] = 0x22; }
+        if (disk_read(id, 0, 1, a) != DISK_OK) return 0;
+
+        /* Sector size is 512: reading one sector must have written exactly
+           that much. The byte after it is still the fill pattern. */
+        if (a[DISK_SECTOR_SIZE] != 0x11) return 0;
+
+        /* A multi-sector read is split internally and must agree with the
+           single-sector reads it is made of - the splitting is where an
+           8-bit count or a wrapped LBA used to go wrong. */
+        if (disk_read(id, 0, 3, b) != DISK_OK) return 0;
+        for (unsigned k = 0; k < DISK_SECTOR_SIZE; k++)
+            if (a[k] != b[k]) return 0;
+        checked_multi = 1;
+
+        /* No alignment requirement: the same sector through a deliberately
+           odd address must read identically. This is the promise AHCI's
+           bounce buffer exists to keep, so it is worth asserting rather than
+           trusting. */
+        if (disk_read(id, 1, 1, b + 1) != DISK_OK) return 0;
+        if (disk_read(id, 1, 1, a)     != DISK_OK) return 0;
+        for (unsigned k = 0; k < DISK_SECTOR_SIZE; k++)
+            if (a[k] != b[1 + k]) return 0;
+        checked_unaligned = 1;
+    }
+
+    /* Refuse to report a pass for promises nothing exercised. */
+    if (!checked_multi || !checked_unaligned) {
+        klog("KTEST", SEV_WARN, "disk contract: no readable disk, partly untested");
+        return 0;
+    }
+    return 1;
+}
+
+/* ---- the bounded-string contract (engineering §2) ----
+ * The rules are stated once, in string.h; this is what holds the kernel to
+ * them. Two of the four cases below were live defects rather than
+ * hypotheticals, which is why the review asked for the convention to be
+ * written down instead of left to each subsystem.
+ */
+static int test_bounded_strings(void) {
+    int ok = 1;
+    char buf[32];
+
+    /* 1. cap == 0 writes nothing. disk_capacity_str used to put a terminator
+          at buf[0] regardless, which is one byte past a zero-length buffer.
+          A canary is the only way to see that from inside the kernel. */
+    buf[0] = 0x7E;
+    disk_capacity_str(2097152ull, buf, 0);
+    ok = ok && (buf[0] == 0x7E);          /* untouched */
+    buf[0] = 0x7E;
+    disk_capacity_str(2097152ull, buf, -1);
+    ok = ok && (buf[0] == 0x7E);          /* a negative cap is not a huge one */
+
+    /* 2. cap > 0 always terminates, and a result that does not fit is empty
+          rather than a fragment that reads as complete. "1 GB" needs five
+          bytes; at four it used to emit "GB" and a 500 GB disk displayed as
+          its unit alone. */
+    for (int c = 1; c <= 4; c++) {
+        for (unsigned i = 0; i < sizeof buf; i++) buf[i] = 0x7E;
+        disk_capacity_str(2097152ull, buf, c);
+        ok = ok && (buf[0] == '\0');                 /* terminated, and empty */
+        ok = ok && (buf[c] == 0x7E);                 /* nothing past the cap */
+    }
+
+    /* 3. given room, the whole thing appears. */
+    for (unsigned i = 0; i < sizeof buf; i++) buf[i] = 0x7E;
+    disk_capacity_str(2097152ull, buf, (int)sizeof buf);
+    ok = ok && (buf[0] == '1' && buf[1] == ' ' && buf[2] == 'G' &&
+                buf[3] == 'B' && buf[4] == '\0');
+
+    /* 4. truncation is refused, not performed. A name one byte too long for
+          the on-disk field must be rejected by both entry points. Before
+          this, both truncated the name into a 64-byte buffer and only then
+          asked whether it was too long - so the check could never fire, a
+          100-character name became a 63-character file, and two distinct
+          names became one. */
+    char longname[CXFS_NAME_LEN + 8];
+    for (unsigned i = 0; i < sizeof longname - 1; i++) longname[i] = 'x';
+    longname[sizeof longname - 1] = '\0';
+
+    /* /Temp, the same writable directory the other cxfs tests use - the root
+       is read-only on a release mount. */
+    int dir = cxfs_resolve("/Temp", 0);
+    if (dir < 0) return 0;
+    uint32_t root = (uint32_t)dir;
+    ok = ok && (cxfs_create_entry(root, longname, CXFS_TYPE_FILE) < 0);
+
+    /* exactly at the limit is still refused: the field needs room for the
+       terminator, so CXFS_NAME_LEN characters is one too many. */
+    longname[CXFS_NAME_LEN] = '\0';
+    ok = ok && (cxfs_create_entry(root, longname, CXFS_TYPE_FILE) < 0);
+
+    /* and one byte under the limit is accepted, so this is not passing by
+       refusing everything. */
+    longname[CXFS_NAME_LEN - 1] = '\0';
+    int id = cxfs_create_entry(root, longname, CXFS_TYPE_FILE);
+    if (id < 0) return 0;                  /* read-only mount: cannot conclude */
+
+    /* rename refuses the same way */
+    char toolong[CXFS_NAME_LEN + 4];
+    for (unsigned i = 0; i < sizeof toolong - 1; i++) toolong[i] = 'y';
+    toolong[sizeof toolong - 1] = '\0';
+    ok = ok && (cxfs_rename((uint32_t)id, toolong) != 0);
+
+    cxfs_delete_entry((uint32_t)id);
+    return ok;
+}
+
+/* ---- lifecycles, not helpers (engineering §16) ----
+ * The review's point is that many kernel bugs live between individually
+ * correct operations, and names three sequences this kernel could already run
+ * end to end without asserting the end: what happens *after* the last step.
+ *
+ * Two of its five examples were already covered - endpoint create/call/reply/
+ * close/reclaim by test_ipc_endpoint_lifetime, and block device register then
+ * read by test_storage and test_ahci (there is no unregister to test; see the
+ * contract note in disk.h). The three below were not:
+ *
+ *   map -> access -> unmap -> access FAILS    the last step was missing: the
+ *                                             mappings were released and the
+ *                                             accounting checked, but nothing
+ *                                             ever confirmed the memory had
+ *                                             actually stopped being reachable.
+ *   process create -> run -> exit -> frames back
+ *                                             test_ring3_processes ran this and
+ *                                             only checked the process left.
+ *                                             Phase 1 found proc_trampoline
+ *                                             leaking a whole address space on
+ *                                             its failure paths, which is
+ *                                             exactly what this would catch.
+ *   sleep -> wake -> reschedule               a sleep that blocks the machine
+ *                                             instead of yielding it passes any
+ *                                             test that only measures elapsed
+ *                                             time, including this file's.
+ */
+static volatile uint32_t lifecycle_ticker = 0;
+static volatile int      lifecycle_run    = 0;
+
+static void lifecycle_counter_thread(void) {
+    /* Runs until the test says stop, with a guard so a scheduler that never
+       returns here cannot hang the boot either way. */
+    uint32_t guard = 0;
+    while (lifecycle_run && guard++ < 4000000u) {
+        lifecycle_ticker++;
+        yield();
+    }
+}
+
+static int test_lifecycle_sequences(void) {
+    const int pid = MAX_THREADS - 1;
+    int ok = 1;
+
+    /* ---- 1. map -> access -> unmap -> access fails ---- */
+    vm_proc_init(pid, vm_default_quota(), -1);
+
+    struct mem_op_args a;
+    for (uint32_t i = 0; i < sizeof a / 4u; i++) ((uint32_t *)&a)[i] = 0;
+    a.op = MEM_OP_MAP; a.object = MOBJ_ANON;
+    a.length = PAGE_SIZE; a.prot = MPROT_READ | MPROT_WRITE;
+
+    if (vm_map(pid, &a) != E_OK) { ok = 0; goto done_vm; }
+    uint32_t va = a.addr;
+
+    /* reachable while mapped, by both the check and the hardware */
+    if (!user_ptr_writable(va, PAGE_SIZE)) { ok = 0; goto done_vm; }
+    *(volatile uint8_t *)va = 0xC7;
+    if (*(volatile uint8_t *)va != 0xC7)   { ok = 0; goto done_vm; }
+
+    /* ---- 1b. the protection that was asked for is the protection applied ----
+       Nothing asserted this before, which made a whole class of failure
+       invisible: vm_map maps every page writable first so it can zero it
+       through that mapping, then re-protects it to what the caller asked for.
+       The re-protect's status was discarded (engineering §9), so a failure
+       there would hand back a *writable* page to a caller that asked for
+       read-only - and on x86-32 without PAE, where every readable page is
+       executable, that is the W^X combination the loader refuses by name.
+       Checked at both layers, as above. */
+    for (uint32_t i = 0; i < sizeof a / 4u; i++) ((uint32_t *)&a)[i] = 0;
+    a.op = MEM_OP_MAP; a.object = MOBJ_ANON;
+    a.length = PAGE_SIZE; a.prot = MPROT_READ;
+    if (vm_map(pid, &a) != E_OK) { ok = 0; goto done_vm; }
+    uint32_t ro = a.addr;
+
+    if (!user_ptr_readable(ro, PAGE_SIZE)) { ok = 0; goto done_vm; }
+    if (user_ptr_writable(ro, 1))          { ok = 0; goto done_vm; }
+
+    /* and the hardware agrees, because CR0.WP is set */
+    uint32_t ro_faults = usercopy_faults_recovered();
+    uint8_t  one = 0x5C;
+    if (user_copy_bytes((void *)ro, &one, 1) == 0)                { ok = 0; goto done_vm; }
+    if (usercopy_faults_recovered() != ro_faults + 1)             { ok = 0; goto done_vm; }
+    if (vm_unmap(pid, ro, PAGE_SIZE) != E_OK)                     { ok = 0; goto done_vm; }
+
+    if (vm_unmap(pid, va, PAGE_SIZE) != E_OK) { ok = 0; goto done_vm; }
+
+    /* Now the step that was missing. Two layers, because they can disagree:
+       the page-table check must refuse, and the CPU must refuse. The second
+       is only askable at all because a fault inside user_copy_bytes is
+       recoverable (security §6) - without that this would be a panic, which
+       is why it had never been asserted. */
+    if (user_ptr_readable(va, 1)) { ok = 0; goto done_vm; }
+    if (user_ptr_writable(va, 1)) { ok = 0; goto done_vm; }
+
+    uint32_t faults_before = usercopy_faults_recovered();
+    uint8_t  sink = 0;
+    if (user_copy_bytes(&sink, (const void *)va, 1) == 0) { ok = 0; goto done_vm; }
+    if (usercopy_faults_recovered() != faults_before + 1) { ok = 0; goto done_vm; }
+
+done_vm:
+    vm_proc_reset(pid);
+    if (!ok) return 0;
+
+    /* ---- 2. process create -> run -> exit -> frames returned ----
+       An address space is page directory + page tables + image + stack + argv,
+       so a leak here is tens of pages per spawn, not one. */
+    for (int i = 0; i < 8 && sched_active_count() > 1; i++) yield();
+    uint32_t free_before = pmm_free_count();
+
+    uint32_t blen = (uint32_t)(user_blob_end - user_blob_start);
+    if (process_create_ring3("lifecycle", user_blob_start, blen, "") < 0) return 0;
+    for (int i = 0; i < 64 && sched_active_count() > 1; i++) yield();
+    if (sched_active_count() != 1) { return 0; }
+    for (int i = 0; i < 8; i++) yield();              /* let sched_reap run */
+
+    if (pmm_free_count() != free_before) return 0;
+
+    /* ---- 3. sleep -> wake -> reschedule ----
+       A sleeping thread must hand the CPU over, not hold it. */
+    lifecycle_ticker = 0;
+    lifecycle_run    = 1;
+    if (thread_create("lc_count", lifecycle_counter_thread) < 0) { lifecycle_run = 0; return 0; }
+
+    uint32_t seen_at_start = lifecycle_ticker;
+    thread_sleep_ms(30);
+    uint32_t advanced = lifecycle_ticker - seen_at_start;
+
+    /* Stop it and let it leave, so it cannot outlive the test and perturb
+       whatever runs next. */
+    lifecycle_run = 0;
+    for (int i = 0; i < 2000 && sched_active_count() > 1; i++) yield();
+
+    /* It must have run *during* the sleep. A sleep that spun or halted without
+       yielding leaves this at zero - and passes every elapsed-time assertion
+       in this file, which is the reason to measure the other thread instead of
+       the clock. */
+    if (advanced == 0)             return 0;
+    if (sched_active_count() != 1) return 0;
+    return ok;
+}
+
 /* ---- admission: what a verification result lets run ----
  * Held to the rule of whichever build this is. Both kinds refuse a tampered
  * image, a forged or wrong-key signature and a file that is not a CXEX, and
@@ -786,6 +1451,82 @@ static int test_vmregion(void) {
  * The refusals are the half that matters most. A dev flag that let a TAMPERED
  * image through would turn "skip signing while testing" into "ignore
  * corruption", and this is what makes sure it never can. */
+/* ---- the key parser accepts exactly one cryptographic profile ----
+ *
+ * Security review §12.1 and §12.7. CXK is RSA-2048 / SHA-256 / PKCS#1 v1.5, and
+ * rsa_parse_xkpk used to read `version` and `key_bits` and discard them both -
+ * the comment said "(not strictly needed)" - while never looking at the exponent
+ * or the reserved field at all. It would therefore hand back a key with
+ * exponent 1, for which RSA verification is the identity function and every
+ * signature is forgeable.
+ *
+ * Nothing reachable could exploit that, because trust is decided by comparing
+ * the whole key byte for byte against the compiled-in root. But that is a
+ * property of the CALLER, and a parser that returns a forgeable key is one
+ * careless caller away from mattering. These cases exist so the checks cannot be
+ * quietly removed again: each is a single mutation of a header the parser
+ * accepts, and the accepted header is itself a case, so the suite cannot pass by
+ * refusing everything. */
+static void xkpk_hdr(uint8_t *b, uint16_t version, uint16_t key_bits,
+                     uint32_t exponent, uint16_t mod_len, uint16_t reserved) {
+    for (uint32_t i = 0; i < 16u + 256u; i++) b[i] = 0;
+    b[0]='C'; b[1]='X'; b[2]='P'; b[3]='K';
+    b[4]=(uint8_t)version;   b[5]=(uint8_t)(version >> 8);
+    b[6]=(uint8_t)key_bits;  b[7]=(uint8_t)(key_bits >> 8);
+    b[8]=(uint8_t)exponent;  b[9]=(uint8_t)(exponent >> 8);
+    b[10]=(uint8_t)(exponent >> 16); b[11]=(uint8_t)(exponent >> 24);
+    b[12]=(uint8_t)mod_len;  b[13]=(uint8_t)(mod_len >> 8);
+    b[14]=(uint8_t)reserved; b[15]=(uint8_t)(reserved >> 8);
+    b[16] = 0xC0;            /* a non-zero leading modulus byte */
+}
+
+static int test_crypto_profile(void) {
+    uint8_t *b = (uint8_t *)kmalloc(16u + 256u);
+    if (!b) return 0;
+    struct rsa_pubkey k;
+    int ok = 1;
+    const uint32_t len = 16u + 256u;
+
+    /* The control: the one profile, which must be ACCEPTED. Without it every
+       case below could pass by the parser refusing everything. */
+    xkpk_hdr(b, 1, 2048, 65537, 256, 0);
+    ok = ok && rsa_parse_xkpk(b, len, &k) == 0;
+    ok = ok && k.modulus_len == 256 && k.exponent == 65537;
+
+    /* exponent 1: verification becomes the identity function. */
+    xkpk_hdr(b, 1, 2048, 1, 256, 0);
+    ok = ok && rsa_parse_xkpk(b, len, &k) != 0;
+
+    /* an even exponent is not an RSA exponent at all. */
+    xkpk_hdr(b, 1, 2048, 4, 256, 0);
+    ok = ok && rsa_parse_xkpk(b, len, &k) != 0;
+
+    /* a key size this kernel cannot verify, declared consistently. */
+    xkpk_hdr(b, 1, 4096, 65537, 256, 0);
+    ok = ok && rsa_parse_xkpk(b, len, &k) != 0;
+
+    /* modulus_len disagreeing with key_bits: built by something that does not
+       understand the format. */
+    xkpk_hdr(b, 1, 2048, 65537, 128, 0);
+    ok = ok && rsa_parse_xkpk(b, len, &k) != 0;
+
+    /* a format version whose field offsets may not be where we just read them. */
+    xkpk_hdr(b, 2, 2048, 65537, 256, 0);
+    ok = ok && rsa_parse_xkpk(b, len, &k) != 0;
+
+    /* reserved must be zero: a non-zero value means a field we do not know. */
+    xkpk_hdr(b, 1, 2048, 65537, 256, 1);
+    ok = ok && rsa_parse_xkpk(b, len, &k) != 0;
+
+    /* and the magic still has to be right. */
+    xkpk_hdr(b, 1, 2048, 65537, 256, 0);
+    b[1] = 'Y';
+    ok = ok && rsa_parse_xkpk(b, len, &k) != 0;
+
+    kfree(b);
+    return ok;
+}
+
 static int test_exec_admit(void) {
     if (exec_admit(CXEX_VERIFY_BAD_SIGNATURE) >= 0) return 0;
     if (exec_admit(CXEX_VERIFY_BAD_FORMAT)    >= 0) return 0;
@@ -986,7 +1727,15 @@ void ktest_run(void) {
     total++; passed += report("cxfs offset I/O + compaction",      test_cxfs_offset());
     total++; passed += report("cxfs volume tags",                  test_cxfs_volumes());
     total++; passed += report("clock + timed sleep",               test_clock_sleep());
+    total++; passed += report("tick counter wraparound",           test_timer_wraparound());
     total++; passed += report("memory mappings (SYS_MEM_OP)",     test_vmregion());
+    total++; passed += report("lifecycles: unmap, exit, resched", test_lifecycle_sequences());
+    total++; passed += report("bounded strings: cap, truncation", test_bounded_strings());
+    total++; passed += report("block-device contract",             test_disk_contract());
+    total++; passed += report("ipv4 parser refuses bad frames",   ktest_ip_parse_adversarial());
+    total++; passed += report("arp parser refuses bad frames",    ktest_arp_input_adversarial());
+    total++; passed += report("cxfs refuses bad superblocks",     ktest_cxfs_sb_adversarial());
+    total++; passed += report("cxfs refuses bad extents + names", ktest_cxfs_entry_adversarial());
     total++; passed += report("guarded kernel stacks",             test_kstack());
     total++; passed += report("double fault on its own stack",     test_double_fault_gate());
     total++; passed += report("thread 0 on a guarded stack",       test_main_stack());
@@ -996,8 +1745,14 @@ void ktest_run(void) {
     total++; passed += report("disk: ATA LBA range refused",        test_disk_lba_range());
     total++; passed += report("cxex loader refuses bad images",    ktest_loader_adversarial());
     total++; passed += report("user pointer writability",          ktest_user_ptr_writability());
+    total++; passed += report("SYS_SPAWN verifies its image",      ktest_spawn_verifies_image());
+    total++; passed += report("crypto profile: one key shape only", test_crypto_profile());
     total++; passed += report("exec admission (dev / release)",   test_exec_admit());
     total++; passed += report("file syscalls (SYS_FILE_OP)",       usermode_file_test());
+    total++; passed += report("ipc endpoints refcounted + reclaimed", test_ipc_endpoint_lifetime());
+    total++; passed += report("user copies validated at the copy",  test_user_copy_validation());
+    total++; passed += report("user copy faults are recoverable",   test_user_copy_fault_recovery());
+    total++; passed += report("CR0.WP: kernel obeys read-only",     test_cr0_write_protect());
 
     /* single summary line: green if all passed, red if any failed. */
     if (passed == total) {

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 # ============================================================================
 # cxk_toolchain.cmake  -  CXEX toolchain via the cxk CLI
 # ============================================================================
@@ -84,6 +86,12 @@ if(SIGN)
     # refusal at boot rather than as a build error.
     set(KSIGN COMMAND ${CXK} sign ${KERNEL_XKEX} ${SIGN_SK} ${SIGN_PK})
     set(XSIGN COMMAND ${CXK} sign ${EXEC_XOEX}   ${SIGN_SK} ${SIGN_PK})
+    # The boot shell is EMBEDDED in the executive rather than staged on disk,
+    # and used to be the one artifact nobody signed - trusted only because the
+    # executive around it was. SYS_SPAWN now verifies what it is handed, so the
+    # shell needs a signature of its own. Signed BEFORE `cxk embed` runs, so
+    # the byte array the executive carries is the signed image.
+    set(SHSIGN COMMAND ${CXK} sign ${APP_XCEX} ${SIGN_SK} ${SIGN_PK})
     set(ASIGN COMMAND ${CXK} sign ${DISK_APP_XCEX} ${SIGN_SK} ${SIGN_PK})
     set(VSIGN COMMAND ${CXK} sign ${SUPERVISOR_XCEX} ${SIGN_SK} ${SIGN_PK})
     set(TSIGN COMMAND ${CXK} sign ${TOKDUMP_XUEX} ${SIGN_SK} ${SIGN_PK})
@@ -97,6 +105,7 @@ elseif(DEV_UNSIGNED)
     # no parentheses, no semicolons.
     set(KSIGN COMMAND ${CMAKE_COMMAND} -E echo "  kernel.xkex UNSIGNED - development kernel, never ship")
     set(XSIGN COMMAND ${CMAKE_COMMAND} -E echo "  executive.xoex UNSIGNED - runs on this development kernel only")
+    set(SHSIGN COMMAND ${CMAKE_COMMAND} -E echo "  shell.xsex UNSIGNED - runs on this development kernel only")
     set(ASIGN COMMAND ${CMAKE_COMMAND} -E echo "  hi.xuex UNSIGNED - runs on this development kernel only")
     set(VSIGN COMMAND ${CMAKE_COMMAND} -E echo "  supervisor.xsex UNSIGNED - runs on this development kernel only")
     set(TSIGN COMMAND ${CMAKE_COMMAND} -E echo "  tokdump.xuex UNSIGNED - runs on this development kernel only")
@@ -110,6 +119,7 @@ else()
     # harmless under cmd.exe, so the restriction costs nothing on Windows.
     set(KSIGN COMMAND ${CMAKE_COMMAND} -E echo "  kernel.xkex UNSIGNED - configure -DSIGN=ON to sign")
     set(XSIGN COMMAND ${CMAKE_COMMAND} -E echo "  executive.xoex UNSIGNED - the kernel WILL REFUSE to launch it - configure -DSIGN=ON")
+    set(SHSIGN COMMAND ${CMAKE_COMMAND} -E echo "  shell.xsex UNSIGNED - SYS_SPAWN WILL REFUSE it - configure -DSIGN=ON")
     set(ASIGN COMMAND ${CMAKE_COMMAND} -E echo "  hi.xuex UNSIGNED - exec_path WILL REFUSE it - configure -DSIGN=ON")
     set(VSIGN COMMAND ${CMAKE_COMMAND} -E echo "  supervisor.xsex UNSIGNED - the executive WILL REFUSE it - configure -DSIGN=ON")
     set(TSIGN COMMAND ${CMAKE_COMMAND} -E echo "  tokdump.xuex UNSIGNED - exec_path WILL REFUSE it - configure -DSIGN=ON")

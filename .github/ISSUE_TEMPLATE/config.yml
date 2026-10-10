@@ -1,8 +1,13 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 blank_issues_enabled: false
 contact_links:
-  - name: Security vulnerability
+  - name: Report a security vulnerability (private)
+    url: https://github.com/AuroraCrimsonRose/CXOS-Platform/security/advisories/new
+    about: Opens a private advisory visible only to you and the maintainer. Never open a public issue for a vulnerability.
+  - name: What counts as a vulnerability
     url: https://github.com/AuroraCrimsonRose/CXOS-Platform/blob/x86_32_DEV/SECURITY.md
-    about: Do NOT open an issue. Report privately - see SECURITY.md.
+    about: The boundaries CXOS actually claims, and the things that are documented behaviour rather than bugs.
   - name: Contributing, and who may
     url: https://github.com/AuroraCrimsonRose/CXOS-Platform/blob/x86_32_DEV/CONTRIBUTING.md
     about: CXOS is not open source. Source access needs written authorisation.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /CXLite/kernel/power/power.c */
 /* Aurora Tejeda */
 /* Power management: ACPI shutdown (S5), reboot (ACPI reset / 8042), and a

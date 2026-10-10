@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /CXLite/kernel/cpu/pic.c */
 /* Aurora Tejeda */
 /* Remap the 8259 PIC so hardware IRQs land on vectors 32..47,

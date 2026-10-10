@@ -32,7 +32,7 @@ The two things most people come looking for:
 | `CXEX.Core` | 102 | Shared primitives |
 | `CXEX.Tests` | — | **Planned:** the xUnit test project (see [Tests](#tests)) |
 
-**Scaffolded but empty** — these have project files and no source yet: `CXEX.Font`, `CXEX.Text`, `CXEX.Tools`, `CXEX.UI`. (The file-type icons that used to sit in `CXEX.ICO` are in `assets/icons/filetypes/`.) They are placeholders for planned work (see the design doc §5), not missing code. `CXEX.Tools` in particular is where the process-tool wrappers are *intended* to move so the CLI and Studio share one toolchain driver; today those wrappers still live in `CXEX.CLI/Wrappers`.
+**Scaffolded but empty** — these have project files and no source yet: `CXEX.Font`, `CXEX.Text`, `CXEX.Tools`, `CXEX.UI`. (The file-type icons that used to sit in `CXEX.ICO` moved to `assets/icons/filetypes/`, which was deleted 2026-10-02 — they are to be redrawn.) They are placeholders for planned work (see the design doc §5), not missing code. `CXEX.Tools` in particular is where the process-tool wrappers are *intended* to move so the CLI and Studio share one toolchain driver; today those wrappers still live in `CXEX.CLI/Wrappers`.
 
 ---
 
@@ -161,7 +161,7 @@ cxk check-xdata <files...> [--keys exec,args,start,every,grants] [--porcelain]
 
 A typo is then a build error naming `file:line:col`, not a line in a boot log. `--keys` refuses any top-level key outside the list, so a misspelt key cannot be silently ignored.
 
-Two readers of one format are worth having only if they agree, so they are held to it: the differential test (`tests/xdata/difftest.py` today, `CXEX.Tests/XData` once ported) generates thousands of documents - valid, mutated, and nested past the depth limit - runs each through both readers (the X one compiled and run natively), and fails if any error code or byte offset differs. `SABOTAGE=1` skews one expectation, to show the test can fail; under xUnit that becomes a unit test of its own.
+Two readers of one format are worth having only if they agree, so they are held to it: the differential test (`CXEX.Tests/Differential/XDataDiffTests`) generates documents - valid, mutated, and nested past the depth limit - runs each through both readers (the X one compiled and run natively), and fails if any error code or byte offset differs. `SABOTAGE=1` skews one expectation, to show the test can fail.
 
 ---
 
@@ -182,7 +182,7 @@ The X *language* is specified on the kernel side, since the kernel owns the ABI 
 
 ## Building
 
-Requirements: .NET (see the `.csproj` files for the target framework), and for producing CXK artifacts clang, ld.lld, NASM, CMake and Ninja. QEMU or Bochs to run an image.
+Requirements: .NET (see the `.csproj` files for the target framework), and for producing CXK artifacts clang, ld.lld, NASM, CMake and Ninja. QEMU to run an image.
 
 ```
 dotnet build devkit/CXEX.Studio.slnx
@@ -209,27 +209,35 @@ The tool manifest (`.config/dotnet-tools.json`) pins docfx. The output
 dotnet test
 ```
 
-No Python interpreter will be needed. Tests are grouped by trait. `Unit` and
-`Adversarial` need only .NET. `Toolchain` needs clang and ld.lld, on Linux or WSL.
-`Differential` compares against the OS sources in this repository. A test
-whose requirement is missing reports **skipped**, with the reason; it never
-silently passes. Mutant counts and seeds come from `CXEX_TEST_MUTANTS` and
-`CXEX_TEST_SEED`. Each script below is deleted in the change that ports it; the
-plan is in [`docs/planning/HARDENING_PLAN.md`](../docs/planning/HARDENING_PLAN.md), D1.
+**No Python interpreter is needed** — the harnesses were ported and deleted on
+2026-10-08 (D1); only the corpus under `tests/` remains. Tests are grouped by
+trait. `Unit` and `Adversarial` need only .NET. `Toolchain` needs clang and
+ld.lld, on Linux or WSL. `Differential` compares against the OS sources in this
+repository. A test whose requirement is missing reports **skipped**, with the
+reason; it never silently passes.
 
-Until then, the suites are Python:
+`CXEX.Tests/Differential/` holds the ports:
 
-```
-python3 tests/lang/run.py        # the X language: programs that must run, programs that must be refused, C <-> X interop, std/buf
-python3 tests/xdata/difftest.py  # the DevKit's X Data reader against the OS's, document by document
-python3 tests/xc/lexdiff.py      # the lexer written in X (os/xc) against this one, token by token
-python3 tests/xc/parsediff.py    # the parser written in X against this one, node by node, error by error
-python3 tests/xc/semadiff.py     # the type checker written in X against this one, on whole programs
-python3 tests/xc/asmdiff.py      # the code generator written in X against this one, the assembly exactly
-python3 tests/xc/selfhost.py     # xc compiles itself, twice: three identical assemblies, and working programs
-```
+| test | |
+|---|---|
+| `LexParseDiffTests` | the lexer and parser written in X (`os/xc`) against these, token for token and node for node |
+| `SemaAsmDiffTests` | the type checker and code generator written in X against these, on whole programs |
+| `SelfHostTests` | `xc` compiles itself twice: three identical assemblies, and the programs it builds must run |
+| `LangRunTests` | the X language: programs that must run, programs that must be refused *for the stated reason*, C↔X interop, `std/buf` |
+| `XDataDiffTests` | the DevKit's X Data reader against the OS's, document by document, on code **and** byte offset |
 
-They run X natively on the host (a 32-bit `gcc` links the output), so no VM is involved. `tests/lang/refuse` holds programs the compiler must reject, each with the error it must give: every one of them used to compile and produce a wrong answer.
+They run X natively on the host — `clang -m32 -nostdlib -static` links the
+output, so no VM and no GCC are involved — which does mean they need an ELF
+host, and they skip on Windows. `CXOS_HOSTCC` picks a different compiler for
+that link.
+
+`CXEX_TEST_MUTANTS` (default 50) and `CXEX_TEST_SEED` size and replay a run;
+`KEEP=1` keeps the scratch directory. **`SABOTAGE=1` must turn the five
+comparison tests red** — if it does not, they are comparing nothing.
+
+`tests/lang/refuse` holds programs the compiler must reject, each pinned to the
+error it must give: every one of them used to compile and produce a wrong
+answer, and refusing for the wrong reason would pass a looser test.
 
 ---
 
@@ -242,4 +250,4 @@ They run X natively on the host (a 32-bit `gcc` links the output), so no VM is i
 
 ---
 
-© Aurora Tejeda / CATX SYSTEMS LLC
+© Aurora Tejeda / CATX Systems

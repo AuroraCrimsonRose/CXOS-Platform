@@ -1,5 +1,7 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/ktest_loader.h */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * Adversarial cases for the CXEX runtime loader (kernel security review §14,
  * and the Phase 1 items in docs/planning/HARDENING_PLAN.md).
@@ -18,5 +20,11 @@ int ktest_loader_adversarial(void);
 /* A read-only ring-3 page: user_ptr_readable must accept it and
    user_ptr_writable must refuse it. */
 int ktest_user_ptr_writability(void);
+
+/* SYS_SPAWN must refuse an image whose signature does not hold, asserted
+   through the syscall with real user pointers. The policy function exec_admit
+   has its own test, but nothing established that sys_spawn consults it - and
+   the pre-fix call to proc_start left every self-test green. */
+int ktest_spawn_verifies_image(void);
 
 #endif

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 using System.ComponentModel;
 using System.Security.Cryptography.X509Certificates;
 using CXEX.Uefi.Authenticode;
@@ -35,8 +37,8 @@ public class SecureBootKeygenCommand : Command<SecureBootKeygenCommand.Settings>
     {
         [CommandOption("-o|--org")]
         [Description("Organisation name placed in each certificate's subject")]
-        [DefaultValue("CATX SYSTEMS LLC")]
-        public string Organisation { get; set; } = "CATX SYSTEMS LLC";
+        [DefaultValue("CATX Systems")]
+        public string Organisation { get; set; } = "CATX Systems";
 
         [CommandOption("-b|--bits")]
         [Description("RSA key size in bits")]

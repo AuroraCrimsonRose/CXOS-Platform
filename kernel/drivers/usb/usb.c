@@ -1,5 +1,7 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/drivers/usb/usb.c */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /* USB core: enumeration, descriptor parsing, the device registry. See usb.h. */
 
 #include "usb.h"
@@ -126,7 +128,14 @@ static void read_configuration(struct usb_device *dev) {
 }
 
 int usb_enumerate(struct usb_device *dev) {
-    if (!dev || !dev->ops || !dev->ops->attach) return 0;
+    /* This consumes `dev` whichever way it goes, so every exit frees it and
+       no caller has to work out which ones did. The three host controllers all
+       discard the return value, which is correct precisely because of that -
+       there is nothing left for them to release and the failure is logged
+       here. Freeing on this path too is what makes that single sentence true;
+       without it one unreachable branch handed ownership back. */
+    if (!dev) return 0;
+    if (!dev->ops || !dev->ops->attach) { usb_free_device(dev); return 0; }
 
     /* The controller gets the device addressed and control() working. What that
        takes is wildly different per controller - see the note in usb.h. */

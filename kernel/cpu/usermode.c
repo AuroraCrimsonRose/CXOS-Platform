@@ -1,5 +1,7 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/cpu/usermode.c */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /* Ring 3 entry, syscall dispatch, and the user-mode tests (Checkpoints 3a/3b). */
 
 #include "usermode.h"
@@ -109,6 +111,72 @@ int user_ptr_readable(uint32_t ptr, uint32_t len) { return user_ptr_span(ptr, le
  */
 int user_ptr_writable(uint32_t ptr, uint32_t len) { return user_ptr_span(ptr, len, 1); }
 
+/* ---- copying across the ring boundary (security review §6) ---------------
+ *
+ * The review's case is a syscall that validates a user pointer, blocks, and
+ * then copies through the pointer it validated before sleeping. IPC did
+ * exactly that on both of its blocking paths. The checks above are passive
+ * reads of the page tables, so such a check is a snapshot of the mapping at
+ * one instant and nothing refreshes it.
+ *
+ * So the copy carries its own validation, and the two layers are *both*
+ * load-bearing:
+ *
+ *   the range check   decides POLICY: is this address in the user half, and
+ *                     may ring 3 write there. It also refuses before a single
+ *                     byte moves.
+ *   the recoverable   is the hardware BACKSTOP: a page that is not there, or
+ *   copy              stopped being there after the check. Validation cannot
+ *                     be made to hold across the instruction that uses it, so
+ *                     the copy is allowed to fail instead (usermode.asm).
+ *
+ * CR0.WP (set in kernel.asm) now makes the CPU enforce the read-only bit
+ * against ring 0 too, so the two overlap on one case - a read-only user page -
+ * where before WP only the check caught it. They are still not the same check,
+ * and the range check is not redundant:
+ *
+ *   - WP enforces the WRITE bit. It does not enforce the USER bit, and nothing
+ *     stops ring 0 touching a kernel address. A copy-out to a kernel address,
+ *     or to a page writable but not ring-3-accessible, passes the hardware and
+ *     is caught only here.
+ *   - A fault stops the copy WHERE IT FAULTS. For a buffer spanning several
+ *     pages, writable at the start and read-only later, recovery alone leaves
+ *     the first pages modified. The check refuses the whole thing up front.
+ *
+ * ktest proves them separately, and has to: once WP makes both refuse a
+ * read-only page, the return value no longer says which one did it, so the
+ * tests assert on usercopy_faults_recovered() - refused by the check means no
+ * fault was taken at all.
+ *
+ * This is the shape every system that has solved it converged on: Haiku's
+ * user_memcpy validates the range and traps the fault, returning
+ * B_BAD_ADDRESS; Mach copies through copyoutmsg, whose copy_validate runs per
+ * copy against the target map, with asm recovery entries under it; Redox does
+ * not pre-check the mapping at all and relies entirely on a recoverable copy
+ * returning EFAULT. None of them hold a probe across a block.
+ */
+/* Recovered-fault accounting. The counter lives here, with the rest of the
+   user-copy bookkeeping, and the fault handler only reports the event: idt.c
+   knows about faults, this file knows what a user copy is. */
+static uint32_t recovered_faults = 0;
+
+uint32_t usercopy_faults_recovered(void)  { return recovered_faults; }
+void     usercopy_note_recovered_fault(void) { recovered_faults++; }
+
+int user_copy_out(uint32_t udst, const void *ksrc, uint32_t len) {
+    if (len == 0) return 0;
+    if (!user_ptr_writable(udst, len)) return E_FAULT;
+    if (user_copy_bytes((void *)udst, ksrc, len) != 0) return E_FAULT;
+    return 0;
+}
+
+int user_copy_in(void *kdst, uint32_t usrc, uint32_t len) {
+    if (len == 0) return 0;
+    if (!user_ptr_readable(usrc, len)) return E_FAULT;
+    if (user_copy_bytes(kdst, (const void *)usrc, len) != 0) return E_FAULT;
+    return 0;
+}
+
 /* ---- syscall dispatch (called from syscall_stub) ---- */
 int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
     switch (num) {
@@ -177,7 +245,10 @@ int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
                Capped rather than unbounded: a sleep is a promise to come back,
                and one that never does is indistinguishable from a hang. */
             if (a1 > SLEEP_MAX_MS) return E_RANGE;
-            thread_sleep_ms(a1);
+            /* The tick it woke on is deliberately not returned: SYS_SLEEP's
+               ABI result is a status, and a caller that wants the clock asks
+               SYS_CLOCK. Cast so this reads as a decision. */
+            (void)thread_sleep_ms(a1);
             return E_OK;
 
         case SYS_SPAWN:
@@ -289,6 +360,7 @@ void usermode_init(void) {
     /* install the syscall gate: int 0x80, DPL=3 so ring 3 can invoke it */
     idt_set_user_gate(0x80, (uint32_t)syscall_stub);
     sysfile_init();   /* registers the HANDLE_FILE releaser */
+    ipc_init();       /* registers the HANDLE_ENDPOINT releaser */
 }
 
 /* ---- Checkpoint 3a: the minimal single-process ring-3 round-trip ---- */
@@ -607,6 +679,63 @@ int usermode_file_test(void) {
     if (((uint32_t *)FT_DATA)[0] == 0) goto done;     /* ticks must have advanced */
     step++;
     if (syscall_dispatch(SYS_SLEEP, 1, 0) != E_OK) goto done;
+
+    /* --- the authorisation matrix, with caps stripped to nothing ---
+     *
+     * The 2026-10-09 review asked for an audit of authorisation as distinct
+     * from pointer validity - "a valid user pointer alone does not authorize
+     * the requested operation". The audit found every privileged syscall
+     * already gated; this is what keeps that true, because the failure mode is
+     * a syscall ADDED later without a gate, which no existing test would
+     * notice.
+     *
+     * Each of these must refuse on the capability alone, before it looks at
+     * its argument - so the pointers passed are deliberately garbage. A gate
+     * that ran after argument validation would return E_FAULT here and fail
+     * this test, which is the ordering worth pinning: authorisation first.
+     */
+    step++;
+    if (syscall_dispatch(SYS_CONSOLE_WRITE, 0xC0001000u, 0) != E_PERM) goto done;
+    step++;
+    if (syscall_dispatch(SYS_FILE_OP,       0xC0001000u, 0) != E_PERM) goto done;
+    step++;
+    if (syscall_dispatch(SYS_FB_OP,         0xC0001000u, 0) != E_PERM) goto done;
+    step++;
+    if (syscall_dispatch(SYS_NET_OP,        0xC0001000u, 0) != E_PERM) goto done;
+    step++;
+    if (syscall_dispatch(SYS_POWER,         0, 0)           != E_PERM) goto done;
+    step++;
+    if (syscall_dispatch(SYS_EP_CREATE,     0, 0)           != E_PERM) goto done;
+    step++;
+    if (syscall_dispatch(SYS_SPAWN,         0xC0001000u, 0) != E_PERM) goto done;
+    step++;
+    if (syscall_dispatch(SYS_EXEC_PATH,     0xC0001000u, 0) != E_PERM) goto done;
+
+    /* SYS_MEM_OP is NOT in that list, and that is the audit's one real
+       finding rather than an omission here. It is unprivileged by design -
+       a program that cannot obtain memory is not contained, it is unable to
+       run - and the per-process quota is what bounds it. GRANT_MEM exists,
+       sits in GRANT_OS_BASELINE and is accepted by the supervisor's descriptor
+       parser, and gates nothing; it was documented as "map / unmap / sbrk" as
+       though it did. Now marked reserved in caps.h.
+
+       Asserted in the positive direction, so that if anyone later gates
+       SYS_MEM_OP they break here and have to revisit the decision rather than
+       discovering it through a service that can no longer allocate.
+
+       "Not E_PERM" rather than "E_OK": this runs on a kernel thread, which has
+       no vm_proc record, so vm_info answers E_INVAL. The property under test
+       is that it is not refused on CAPABILITY grounds, and E_INVAL says
+       exactly that - the call got past authorisation and failed on its own
+       terms. */
+    step++;
+    {
+        struct mem_op_args *mo = (struct mem_op_args *)FT_DATA;
+        for (uint32_t i = 0; i < sizeof *mo / 4u; i++) ((uint32_t *)mo)[i] = 0;
+        mo->op = MEM_OP_INFO;
+        if (syscall_dispatch(SYS_MEM_OP, FT_DATA, 0) == E_PERM) goto done;
+    }
+
     thread_set_caps(me, GRANT_DISK | GRANT_SPAWN);
 
     /* a bad clock pointer is caught, not written through */

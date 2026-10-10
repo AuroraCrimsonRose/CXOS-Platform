@@ -1,5 +1,8 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 ﻿using System;
 using System.Collections.Generic;
+using CXEX.Core.Constants;
 using CXEX.Core.Interfaces;
 using CXEX.FileType.Structures;
 using CXEX.FileType.Parsers;
@@ -36,8 +39,14 @@ public class CXEXExecutable : ICXFile
     /// The image format version this understands. An image declaring anything else
     /// is refused rather than read with these field offsets, since a future version
     /// is free to move them.
+    ///
+    /// <para>The answer comes from <see cref="FormatPolicy"/> rather than from a
+    /// constant here: the read side and the write side used to carry a private
+    /// literal each, so they agreed by coincidence and a bump meant finding
+    /// every one (DevKit engineering §13).</para>
     /// </summary>
-    private const ushort SupportedFormatVersion = 1;
+    private static bool SupportedFormatVersion(int v) =>
+        FormatPolicy.CanRead(CXFormat.Cxex, v);
 
     /// <summary>
     /// A real CXEX has a handful of sections - the kernel, the largest, has five.
@@ -70,9 +79,9 @@ public class CXEXExecutable : ICXFile
 
         Header = CXEXParser.ParseHeader(span);
 
-        if (Header.FormatVersion != SupportedFormatVersion)
+        if (!SupportedFormatVersion(Header.FormatVersion))
             throw new InvalidDataException(
-                $"CXEX format version {Header.FormatVersion} is not supported (this reads version {SupportedFormatVersion}).");
+                FormatPolicy.ExplainRead(CXFormat.Cxex, Header.FormatVersion));
 
         if (Header.SectionCount > MaxSections)
             throw new InvalidDataException(

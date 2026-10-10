@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 using CXEX.Build.Emitters;
 using CXEX.Build.Engines;
 using CXEX.Build.Layout;

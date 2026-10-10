@@ -1,5 +1,7 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/cpu/spawn.h */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /* ABI v1 process launch. proc_start is the one path that turns a CXEX image into
    a ring-3 scheduler thread (own space + esp0 + caps). cxex_exec and sys_spawn
    both use it. struct spawn_args lives in the shared public ABI header. */

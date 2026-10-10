@@ -1,5 +1,7 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/cpu/sched.c */
-/* Aurora Tejeda / CATX Systems LLC */
+/* Aurora Tejeda / CATX Systems */
 /* Cooperative kernel-thread scheduler (Checkpoint 1). */
 
 #include "sched.h"
@@ -270,10 +272,9 @@ void sched_wake_sleepers(void) {
     uint32_t now = timer_ticks();
     for (int i = 0; i < MAX_THREADS; i++) {
         if (!threads[i].sleeping) continue;
-        /* Signed difference, so this still works the tick the counter wraps.
-           A plain `now >= wake_tick` would stop waking anything for 49 days
-           the first time it happened. */
-        if ((int32_t)(now - threads[i].wake_tick) < 0) continue;
+        /* Wrap-safe: a plain `now >= wake_tick` would stop waking anything for
+           49 days the first time the counter wrapped. */
+        if (!timer_tick_after(now, threads[i].wake_tick)) continue;
         threads[i].sleeping = 0;
         if (threads[i].state == THREAD_BLOCKED) threads[i].state = THREAD_READY;
     }

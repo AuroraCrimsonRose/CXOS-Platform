@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: MIT -->
+<!-- SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems) -->
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:CXEX.Studio.ViewModels"
@@ -17,14 +19,6 @@
         <StackPanel Spacing="20">
 
           <StackPanel Spacing="10">
-            <TextBlock Text="Target Emulator" FontWeight="SemiBold" Foreground="#D4D4D4"/>
-            <ComboBox SelectedIndex="{Binding EmulatorType}" HorizontalAlignment="Stretch">
-              <ComboBoxItem>QEMU (Quick Emulator)</ComboBoxItem>
-              <ComboBoxItem>Bochs (x86 Emulator)</ComboBoxItem>
-            </ComboBox>
-          </StackPanel>
-
-          <StackPanel Spacing="10">
             <Grid ColumnDefinitions="*, Auto">
               <TextBlock Grid.Column="0" Text="Memory (RAM)" FontWeight="SemiBold" Foreground="#D4D4D4"/>
               <TextBlock Grid.Column="1" Text="{Binding MemoryMb, StringFormat='{}{0} MB'}" Foreground="#007ACC" FontWeight="Bold"/>
@@ -32,7 +26,7 @@
             <Slider Minimum="256" Maximum="8192" Value="{Binding MemoryMb}" TickFrequency="256" IsSnapToTickEnabled="True"/>
           </StackPanel>
 
-          <StackPanel Spacing="15" IsVisible="{Binding EmulatorType, Converter={x:Static ObjectConverters.Equal}, ConverterParameter=0}">
+          <StackPanel Spacing="15">
 
             <StackPanel Spacing="10">
               <TextBlock Text="Machine Type" FontWeight="SemiBold" Foreground="#D4D4D4"/>

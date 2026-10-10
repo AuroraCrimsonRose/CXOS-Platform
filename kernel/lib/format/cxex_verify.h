@@ -1,5 +1,7 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/lib/format/cxex_verify.h */
-/* Aurora Tejeda / CATX SYSTEMS LLC */
+/* Aurora Tejeda / CATX Systems */
 /*
  * CXEX signature verification (CX_EXTENSION_SYSTEM.md section 10), the on-device
  * half of code signing. Ties together the format layer (cxex.c: locate the CXSG

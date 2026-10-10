@@ -1,10 +1,12 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.IO;
 using System.Threading;
 using CXEX.CLI.Infrastructure;
-using CXEX.CLI.Wrappers;
+using CXEX.Tools;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -185,7 +187,7 @@ public class OsBuildCommand : Command<OsBuildCommand.Settings>
 
         AnsiConsole.MarkupLine("");
         AnsiConsole.MarkupLine($"[bold][[4/5]][/] Configuring CMake ({CMakeTool.Generator}) {string.Join(" ", defines)}");
-        if (!CMakeTool.Configure(cmakeDir, buildDir, defines))
+        if (!CliTools.Report(CMakeTool.Configure(cmakeDir, buildDir, defines, CliTools.Options())))
         {
             AnsiConsole.MarkupLine("[red]error:[/] CMake configure failed.");
             return 1;
@@ -194,7 +196,7 @@ public class OsBuildCommand : Command<OsBuildCommand.Settings>
         // ---- [5/5] build ----
         AnsiConsole.MarkupLine("");
         AnsiConsole.MarkupLine("[bold][[5/5]][/] Building");
-        if (!CMakeTool.Build(buildDir, s.Jobs))
+        if (!CliTools.Report(CMakeTool.Build(buildDir, s.Jobs, CliTools.Options())))
         {
             AnsiConsole.MarkupLine("[red]error:[/] build failed.");
             return 1;
@@ -241,7 +243,7 @@ public class OsBuildCommand : Command<OsBuildCommand.Settings>
 
         foreach (var (exe, arg, why) in RequiredTools)
         {
-            string? version = ProcessProbe.FirstLine(exe, arg);
+            string? version = ToolProbe.FirstLine(exe, arg);
             if (version is null)
             {
                 AnsiConsole.MarkupLine($"  [red]x[/]  {exe,-7} [red]not found[/]");

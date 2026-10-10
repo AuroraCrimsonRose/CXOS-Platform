@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /CXLite/kernel/drivers/e1000.c */
 /* Aurora Tejeda */
 /* Intel e1000 (82540EM) NIC driver - Stage 1: bring-up + raw frame TX/RX. */

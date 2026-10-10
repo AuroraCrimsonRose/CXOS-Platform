@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: MIT -->
+<!-- SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems) -->
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
@@ -19,9 +21,11 @@
   <ItemGroup>
     <ProjectReference Include="../CXEX.Build/CXEX.Build.csproj" />
     <ProjectReference Include="../CXEX.Core/CXEX.Core.csproj" />
+    <ProjectReference Include="../CXEX.Disk/CXEX.Disk.csproj" />
     <ProjectReference Include="../CXEX.Crypto/CXEX.Crypto.csproj" />
     <ProjectReference Include="../CXEX.FileType/CXEX.FileType.csproj" />
     <ProjectReference Include="../CXEX.Lang/CXEX.Lang.csproj" />
+    <ProjectReference Include="../CXEX.Tools/CXEX.Tools.csproj" />
   </ItemGroup>
 
 </Project>
