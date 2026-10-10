@@ -65,12 +65,16 @@ void fb_scroll_up(uint32_t pixels, uint32_t bg);
 void fb_scroll_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
                     uint32_t dy, uint32_t bg);
 
-/* Text rendering using the built-in 8x16 font. Width is always FB_CHAR_W. */
-#define FB_CHAR_W   8
-#define FB_CHAR_H   16
-
-/* Glyph height in pixels (always 16). Kept as a function so console code reads
-   it the same way it would a runtime-selectable value. */
+/* ---- text rendering ------------------------------------------------------
+ *
+ * The cell is the ACTIVE font's, not a constant: the compiled-in default is
+ * 8x16, and a loaded XFNT of any size replaces it (see lib/gfx/font.h). There
+ * used to be FB_CHAR_W and FB_CHAR_H macros here; they are deliberately gone
+ * rather than kept alongside these, because a constant that is right most of
+ * the time is how half the layout ends up disagreeing with the other half.
+ *
+ * Both are guaranteed non-zero, so dividing by them needs no guard. */
+uint32_t fb_font_width(void);
 uint32_t fb_font_height(void);
 
 void fb_draw_char(uint32_t x, uint32_t y, char c, uint32_t fg, uint32_t bg);

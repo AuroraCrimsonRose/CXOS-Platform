@@ -86,13 +86,20 @@ static void panic_putc_at(char c) {
     else            serial_putc(c);
 
     if (fb_active()) {
-        uint32_t cols = fb_width() / 8;
+        /* The cell follows the active font, so a panic under a loaded 8x8 font
+           lays out at 8x8 instead of writing every line over the last one.
+           fb_font_* are guaranteed non-zero, and the `cols == 0` guard stays
+           anyway: a divide by zero on the path that reports faults would
+           replace the report with a second fault. */
+        uint32_t cw = fb_font_width();
+        uint32_t chh = fb_font_height();
+        uint32_t cols = fb_width() / cw;
         if (cols == 0) cols = 1;
         if (c == '\n') { panic_pos = ((panic_pos / (int)cols) + 1) * (int)cols; return; }
         uint32_t col = (uint32_t)panic_pos % cols;
         uint32_t row = (uint32_t)panic_pos / cols;
-        if ((row + 1) * 16 <= fb_height())
-            fb_draw_char(col * 8, row * 16, c, fb_rgb(255, 255, 255), fb_rgb(0xAA, 0, 0));
+        if ((row + 1) * chh <= fb_height())
+            fb_draw_char(col * cw, row * chh, c, fb_rgb(255, 255, 255), fb_rgb(0xAA, 0, 0));
         panic_pos++;
         return;
     }

@@ -47,8 +47,8 @@ static void be_put_cell(int x, int y, char c, uint8_t a) {
     if (use_fb) {
         uint32_t fg = pal_fb(a & 0x0F);
         uint32_t bg = pal_fb((a >> 4) & 0x0F);
-        fb_draw_char(vp_x + (uint32_t)x * FB_CHAR_W,
-                     vp_y + (uint32_t)y * FB_CHAR_H, c, fg, bg);
+        fb_draw_char(vp_x + (uint32_t)x * fb_font_width(),
+                     vp_y + (uint32_t)y * fb_font_height(), c, fg, bg);
     } else {
         vga_put_cell(x, y, c, a);
     }
@@ -65,7 +65,7 @@ static void be_clear(uint8_t a) {
 /* scroll the text area up one row, clearing the new bottom row to `a`'s bg */
 static void be_scroll_one(uint8_t a) {
     if (use_fb) {
-        fb_scroll_rect(vp_x, vp_y, vp_w, vp_h, FB_CHAR_H, pal_fb((a >> 4) & 0x0F));
+        fb_scroll_rect(vp_x, vp_y, vp_w, vp_h, fb_font_height(), pal_fb((a >> 4) & 0x0F));
     } else {
         /* mirror vga.c's cell formula against the higher-half text buffer */
         volatile uint16_t *mem = (volatile uint16_t *)(0xC0000000 + 0xB8000);
@@ -113,13 +113,42 @@ void console_use_fb(uint32_t x0, uint32_t y0, uint32_t w, uint32_t h) {
     if (!fb_active()) return;
     use_fb = 1;
     vp_x = x0; vp_y = y0; vp_w = w; vp_h = h;
-    cols = (int)(w / FB_CHAR_W);
-    rows = (int)(h / FB_CHAR_H);
-    if (cols < 1) cols = 1;
-    if (rows < 1) rows = 1;
+    console_font_changed();
     cx = 0; cy = 0;
     be_clear(attr);
 }
+
+/* Recompute the grid after the active font's cell changed.
+ *
+ * The viewport is a fixed pixel rectangle, so the cell size is what decides how
+ * many columns and rows fit in it - an 8x8 font in the same viewport gives
+ * twice the rows of an 8x16 one. Only the framebuffer path has an opinion:
+ * VGA text cells are the hardware's, drawn from character ROM at a size this
+ * kernel does not choose, so 80x25 stands there whatever font is loaded.
+ *
+ * Deliberately does NOT clear. A font swap leaves glyphs of the old size on
+ * screen and the honest response is to redraw, but that is the caller's call -
+ * wiping the boot log is not something this function should decide. The cursor
+ * is clamped instead, so the next write lands somewhere real.
+ *
+ * Whoever installs a font calls this. xfnt.c does not, on purpose: the font
+ * layer has no business depending on a console. */
+void console_font_changed(void) {
+    if (!use_fb) return;
+
+    uint32_t cw = fb_font_width();
+    uint32_t ch = fb_font_height();
+
+    cols = (int)(vp_w / cw);
+    rows = (int)(vp_h / ch);
+    if (cols < 1) cols = 1;
+    if (rows < 1) rows = 1;
+    if (cx >= cols) cx = cols - 1;
+    if (cy >= rows) cy = rows - 1;
+}
+
+int console_cols(void) { return cols; }
+int console_rows(void) { return rows; }
 
 void console_clear(void) {
     be_clear(attr);

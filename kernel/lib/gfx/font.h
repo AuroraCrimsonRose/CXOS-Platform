@@ -20,32 +20,54 @@
 
 extern const uint8_t font_default_8x16[95][16];
 
-/* Return pointer to the 16 bytes of the 8x16 glyph for character c.
+/* ---- the active cell ------------------------------------------------------
  *
- * A loaded XFNT wins when one is installed AND its cell is exactly 8x16, which
- * is the geometry every caller of this function is built around - FB_CHAR_W and
- * FB_CHAR_H, the console's grid, the scroll arithmetic. A font of another size
- * is not refused at load time, because it is still useful to inspect and to
- * draw with directly; it simply does not become the console font, and the
- * compiled-in default keeps that job.
+ * The cell is whatever the active font says, not a constant, so a loaded font
+ * of another size changes the console's grid rather than being refused for not
+ * being 8x16. Everything that lays out text asks these - fb_draw_char's loops,
+ * fb_draw_string's advance, the console's cols/rows, the scroll step, and the
+ * panic renderer - which is what "variable font size" amounts to: there is no
+ * longer a second place that believes it knows the answer.
+ *
+ * Both return a non-zero value even if the font layer is somehow empty,
+ * because every caller divides by them. A cell of zero would turn a panic into
+ * a divide by zero, which is the one failure that must not happen on the path
+ * that reports failures.
+ */
+static inline uint32_t font_cell_width(void) {
+    uint32_t w = xfnt_active() ? xfnt_width() : 8u;
+    return w ? w : 8u;
+}
+
+static inline uint32_t font_cell_height(void) {
+    uint32_t h = xfnt_active() ? xfnt_height() : 16u;
+    return h ? h : 16u;
+}
+
+/* Rows of the glyph for byte `ch`: font_cell_height() bytes, one per row,
+ * MSB first.
  *
  * Indexing is by SLOT, and ASCII sits at its own value, so a loaded font prints
- * every byte this printed before. The cast to unsigned is the whole reason the
- * extras are reachable at all: `char` is signed here, so a byte above 127
- * arrives negative and the default font's range test rejects it. A loaded font
- * covers 0..255, and the high half is where its box drawing and blocks live.
+ * every byte this printed before. Taking an unsigned char is the whole reason
+ * the extras are reachable: `char` is signed here, so a byte above 127 arrives
+ * negative and the default font's range test rejects it. A loaded font covers
+ * 0..255, and the high half is where its box drawing and blocks live.
+ *
+ * When a font IS loaded this never falls back to the compiled-in default, even
+ * for a slot the font does not reach - it returns that font's slot 0 instead.
+ * Mixing them would hand back 16 rows while font_cell_height() said 8, and the
+ * caller would read past the glyph.
  */
-static inline const uint8_t *font_glyph_8x16(char c) {
-    unsigned char ch = (unsigned char)c;
-    if (xfnt_active() && xfnt_width() == 8 && xfnt_height() == 16) {
+static inline const uint8_t *font_glyph(unsigned char ch) {
+    if (xfnt_active()) {
         const uint8_t *g = xfnt_glyph(ch);
         if (g) return g;
-        /* A slot the font does not reach: blank rather than the wrong glyph. */
-        g = xfnt_glyph(0);
-        if (g) return g;
+        /* A slot past what this font holds: blank, not the wrong glyph. Slot 0
+           always exists, because a count of zero is refused at install. */
+        return xfnt_glyph(0);
     }
-    if (c < FONT_FIRST_CHAR || c > FONT_LAST_CHAR) c = FONT_FIRST_CHAR;
-    return font_default_8x16[(unsigned char)c - FONT_FIRST_CHAR];
+    if (ch < FONT_FIRST_CHAR || ch > FONT_LAST_CHAR) ch = FONT_FIRST_CHAR;
+    return font_default_8x16[ch - FONT_FIRST_CHAR];
 }
 
 /* There was an 8x8 font here. It was removed: nothing ever called it, and its

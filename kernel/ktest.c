@@ -38,6 +38,7 @@
 #include "ktest_fs.h"
 #include "xfnt.h"
 #include "font.h"
+#include "fb.h"
 #include "vmregion.h"
 #include "exec.h"
 #include "kstack.h"
@@ -1535,7 +1536,7 @@ static int test_xfnt(void) {
 
     /* An 8x16 font becomes the console font, and ASCII keeps its own slot - so
        a byte the console printed before prints this font's glyph for it now. */
-    ok = ok && (font_glyph_8x16((char)1)[0] == 0x80);
+    ok = ok && (font_glyph(1)[0] == 0x80);
 
     /* ---- refusals: one mutation each ---- */
     xf_good(f); f[0] = 'Y';                  ok = ok && (xfnt_install(f, XF_LEN) == XFNT_E_MAGIC);
@@ -1590,6 +1591,86 @@ static int test_xfnt(void) {
     ok = ok && !xfnt_active();
     ok = ok && (xfnt_glyph(1) == 0);
     ok = ok && (xfnt_width() == 0);
+    return ok;
+}
+
+/* ---- variable font cell size -------------------------------------------
+ *
+ * The console's grid is derived from the active font's cell, so a font of
+ * another size changes how many columns and rows fit the same viewport. What
+ * this pins is that there is exactly ONE place that decides the cell: before
+ * this, fb.h had FB_CHAR_W/FB_CHAR_H macros and the console, the blit, the
+ * scroll step and the panic renderer each multiplied by them independently, so
+ * a loaded font could only ever be 8x16.
+ *
+ * The teardown is unconditional, and it matters more here than usual: the
+ * console being written to is the one this test is reconfiguring, so leaving a
+ * 6x8 font installed would lay out the rest of the boot log on the wrong grid.
+ */
+static void xf_build(uint8_t *f, uint32_t w, uint32_t h, uint32_t n) {
+    uint32_t len = XFNT_HEADER_SIZE + n * h;
+    for (uint32_t i = 0; i < len; i++) f[i] = 0;
+    f[0] = 'X'; f[1] = 'F'; f[2] = 'N'; f[3] = 'T';
+    f[4] = XFNT_VERSION;
+    f[6] = XFNT_KIND_BITMAP;
+    f[7] = 1;
+    f[8] = (uint8_t)w;
+    f[9] = (uint8_t)h;
+    f[10] = (uint8_t)n;
+    f[12] = (uint8_t)XFNT_FLAG_MSB_FIRST;
+}
+
+static int test_font_cell(void) {
+    int ok = 1;
+
+    /* the compiled-in default, and the one place everything now asks */
+    ok = ok && (font_cell_width() == 8) && (font_cell_height() == 16);
+    ok = ok && (fb_font_width() == 8) && (fb_font_height() == 16);
+
+    int cols0 = console_cols(), rows0 = console_rows();
+    ok = ok && (cols0 > 0) && (rows0 > 0);
+    if (!ok) return 0;
+
+    /* ---- half the height: the same viewport holds twice the rows ----
+       Integer division means the doubled count can be one more than 2x when the
+       viewport is not a multiple of 16, so the assertion allows exactly that
+       and nothing looser. */
+    uint8_t f8[XFNT_HEADER_SIZE + 8 * 8];
+    xf_build(f8, 8, 8, 8);
+    if (xfnt_install(f8, sizeof f8) != XFNT_E_OK) { xfnt_clear(); console_font_changed(); return 0; }
+    console_font_changed();
+
+    ok = ok && (font_cell_height() == 8) && (fb_font_height() == 8);
+    ok = ok && (font_cell_width() == 8);
+    int rows8 = console_rows();
+    ok = ok && (rows8 == rows0 * 2 || rows8 == rows0 * 2 + 1);
+    ok = ok && (console_cols() == cols0);          /* width did not change */
+
+    /* ---- a narrower cell gives more columns ----
+       Width is variable too, not just height: a 6-wide glyph packs into the
+       high bits of its row byte, which is the order the converter writes, so
+       the blit needs no special case. */
+    uint8_t f6[XFNT_HEADER_SIZE + 8 * 8];
+    xf_build(f6, 6, 8, 8);
+    if (xfnt_install(f6, sizeof f6) == XFNT_E_OK) {
+        console_font_changed();
+        ok = ok && (font_cell_width() == 6) && (fb_font_width() == 6);
+        ok = ok && (console_cols() > cols0);
+    } else {
+        ok = 0;
+    }
+
+    /* ---- a glyph past what the font holds is blank, never the default ----
+       Falling back to the compiled-in 8x16 default here would hand back 16 rows
+       while the cell said 8, and fb_draw_char would read past the glyph. */
+    const uint8_t *g = font_glyph(200);            /* the font has 8 slots */
+    ok = ok && (g != 0) && (g == font_glyph(0));
+
+    /* teardown: unconditional, then assert it took */
+    xfnt_clear();
+    console_font_changed();
+    ok = ok && (font_cell_width() == 8) && (font_cell_height() == 16);
+    ok = ok && (console_cols() == cols0) && (console_rows() == rows0);
     return ok;
 }
 
@@ -1860,6 +1941,7 @@ void ktest_run(void) {
     total++; passed += report("user pointer writability",          ktest_user_ptr_writability());
     total++; passed += report("SYS_SPAWN verifies its image",      ktest_spawn_verifies_image());
     total++; passed += report("xfnt: loadable font validated",     test_xfnt());
+    total++; passed += report("variable font cell size",           test_font_cell());
     total++; passed += report("crypto profile: one key shape only", test_crypto_profile());
     total++; passed += report("exec admission (dev / release)",   test_exec_admit());
     total++; passed += report("file syscalls (SYS_FILE_OP)",       usermode_file_test());

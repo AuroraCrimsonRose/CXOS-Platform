@@ -31,6 +31,17 @@ void console_use_fb(uint32_t x0, uint32_t y0, uint32_t w, uint32_t h);
 /* clear the screen to the current background and home the cursor. */
 void console_clear(void);
 
+/* Recompute the text grid from the active font's cell. Call this after
+   installing an XFNT whose cell differs from the previous font's, or the
+   console keeps laying out text on the old grid. A no-op in VGA text mode,
+   where the cell belongs to the hardware. Does not clear: a caller that wants
+   the screen redrawn calls console_clear() too. */
+void console_font_changed(void);
+
+/* The current grid, in cells. Follows the active font. */
+int console_cols(void);
+int console_rows(void);
+
 /* set / get the active text attribute (fg/bg) for subsequent writes. */
 void console_set_color(uint8_t attr);
 uint8_t console_get_color(void);

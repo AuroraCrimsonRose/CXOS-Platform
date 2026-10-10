@@ -201,16 +201,23 @@ void fb_scroll_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
     fb_fill_rect(x, y + move_rows, w, dy, bg);
 }
 
-uint32_t fb_font_height(void) { return FB_CHAR_H; }
+uint32_t fb_font_width(void)  { return font_cell_width(); }
+uint32_t fb_font_height(void) { return font_cell_height(); }
 
-/* Draw one 8x16 glyph. Each font byte is a row; bit 0x80 = leftmost pixel. */
+/* Draw one glyph of the active font. Each font byte is a row of up to 8 pixels;
+   bit 0x80 is the leftmost. A font narrower than 8 uses the high bits, which is
+   the order `cxk font build` packs them in, so a 6-wide cell needs no special
+   case here. */
 void fb_draw_char(uint32_t x, uint32_t y, char c, uint32_t fg, uint32_t bg) {
     if (!active) return;
-    const uint8_t *glyph = font_glyph_8x16(c);
-    for (uint32_t row = 0; row < FB_CHAR_H; row++) {
+    const uint8_t *glyph = font_glyph((unsigned char)c);
+    if (!glyph) return;
+    uint32_t cw = font_cell_width();
+    uint32_t chh = font_cell_height();
+    for (uint32_t row = 0; row < chh; row++) {
         uint8_t bits = glyph[row];
-        for (int col = 0; col < FB_CHAR_W; col++) {
-            uint32_t color = (bits & (0x80 >> col)) ? fg : bg;
+        for (uint32_t col = 0; col < cw; col++) {
+            uint32_t color = (bits & (0x80u >> col)) ? fg : bg;
             fb_put_pixel(x + col, y + row, color);
         }
     }
@@ -218,9 +225,10 @@ void fb_draw_char(uint32_t x, uint32_t y, char c, uint32_t fg, uint32_t bg) {
 
 void fb_draw_string(uint32_t x, uint32_t y, const char *s, uint32_t fg, uint32_t bg) {
     if (!active) return;
+    uint32_t cw = font_cell_width();
     while (*s) {
         fb_draw_char(x, y, *s, fg, bg);
-        x += FB_CHAR_W;
+        x += cw;
         s++;
     }
 }
@@ -231,9 +239,10 @@ void fb_draw_string(uint32_t x, uint32_t y, const char *s, uint32_t fg, uint32_t
 void fb_draw_string_n(uint32_t x, uint32_t y, const char *s, uint32_t n,
                       uint32_t fg, uint32_t bg) {
     if (!active) return;
+    uint32_t cw = font_cell_width();
     for (uint32_t i = 0; i < n && s[i]; i++) {
         fb_draw_char(x, y, s[i], fg, bg);
-        x += FB_CHAR_W;
+        x += cw;
     }
 }
 

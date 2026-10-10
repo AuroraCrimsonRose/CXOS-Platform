@@ -340,14 +340,34 @@ include(${CMAKE_SOURCE_DIR}/cxk_toolchain.cmake)
 set(CXK_DISK  ${IMAGES_DIR}/cxk_disk.img)
 
 # ---- generate compile rules for each kernel C source ----
+#
+# DEPFILE is load-bearing, not a nicety. These are custom commands, so the only
+# dependency CMake knows about is the one named in DEPENDS - the .c file. Without
+# a depfile, **editing a header rebuilt nothing at all**: the build reported
+# success, ninja said "0/2 re-checking globbed directories", and the image kept
+# whatever the headers used to say.
+#
+# That is worse than a change not taking effect. Headers here carry struct
+# layouts, ABI constants and inline functions, so a stale object does not merely
+# miss an edit - it disagrees with the objects that did get rebuilt, about the
+# shape of memory they share. It also quietly defeats the verification standard
+# this repository runs on: a sabotage in a header, rebuilt and booted, would come
+# back green while the code under test was never compiled.
+#
+# Caught 2026-10-10 by the mtime habit the handoff already prescribes - the
+# sabotage was in font.h, and build/kernel.elf came back older than the edit.
+#
+# clang writes the depfile with -MD -MF; CMake needs DEPFILE to read it back.
 set(KERNEL_OBJS "")
 foreach(src ${KERNEL_C_SRCS})
     get_filename_component(name ${src} NAME_WE)
     set(obj ${BUILD_DIR}/k_${name}.o)
+    set(dep ${BUILD_DIR}/k_${name}.o.d)
     add_custom_command(
         OUTPUT ${obj}
-        COMMAND ${KCC} ${KCFLAGS} ${src} -o ${obj}
+        COMMAND ${KCC} ${KCFLAGS} -MD -MF ${dep} ${src} -o ${obj}
         DEPENDS ${src}
+        DEPFILE ${dep}
         COMMENT "CC  ${name}.c"
     )
     list(APPEND KERNEL_OBJS ${obj})
