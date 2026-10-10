@@ -21,6 +21,7 @@ callers end up disagreeing.
 │   ├── Kernel/             kernel images — see §4
 │   ├── Boot/               boot chain    — see §4
 │   ├── Drivers/            .xkdr / .xklo, when module loading lands
+│   ├── Fonts/              console bitmap fonts (.xfnt)
 │   └── Temp/               scratch belonging to the OS
 │
 ├── Shared/                 SYSTEM, 0775 — shared between users, user-writable
@@ -59,6 +60,20 @@ does not mean "the one the user meant".
 
 `/System/Temp` and `/Temp` are deliberately separate: the OS should not have to
 compete for space, or contend for names, with whatever a user program is doing.
+
+**`/System/Fonts` holds the console's bitmap fonts**, and is `/System` for the
+same reason `/System/Programs` is: a font decides what every kernel message
+*looks like*, so who may place one there is a protection question. `SYS_FB_OP`'s
+`FB_OP_SET_FONT` takes a **name**, never a path, and composes
+`/System/Fonts/<name>.xfnt` itself — a name carrying `/` or `.` is refused, so
+the capability to change the console font cannot become a capability to make the
+kernel read an arbitrary file. A `/Shared/Fonts` for user-installed fonts would
+be searched **second**, for the reason given above for programs: a
+user-writable directory searched first could shadow a system font invisibly.
+
+Selecting a font does not survive a reboot yet, and nothing is loaded from here
+at boot: the compiled-in 8x16 font is what the console starts with, so a missing
+or broken font can never cost you a console to read the error on.
 
 ---
 

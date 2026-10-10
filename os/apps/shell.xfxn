@@ -302,6 +302,71 @@ fn file_err(what: *u8, rc: i32) -> i32 {
     return 1;
 }
 
+// ---- font: list and select the console font ----
+//
+// Listing is plain directory reading - the kernel has no syscall for it and
+// does not need one, because the shell can already read a directory. Selecting
+// goes through SYS_FB_OP, which takes a NAME and composes the path itself.
+//
+// The ".xfnt" is trimmed when listing so that what is printed is what you type.
+// The kernel refuses a name containing '.', deliberately, so "term_8.xfnt"
+// would be rejected - showing it and then refusing it would be a trap.
+fn put_font_name(name: *u8) -> void {
+    let tmp: [64]u8;
+    strcopy(&tmp[0], name, sizeof tmp);
+    let n: u32 = strlen(&tmp[0]);
+    if (n > 5) {
+        if (streq(&tmp[n - 5], ".xfnt") == 1) { n = n - 5; }
+    }
+    write(&tmp[0], n);
+}
+
+fn cmd_font(arg: *u8) -> void {
+    // VGA text cells come from character ROM at a size this kernel does not
+    // choose, so there is nothing to select there. Say which, rather than
+    // failing obscurely.
+    if (gfx_width() < 320) {
+        puts("font needs the framebuffer - VGA text glyphs are the hardware's\n");
+        return;
+    }
+
+    if (arg[0] == 0) {
+        let st: file_stat;
+        let i: u32 = 0;
+        let n: u32 = 0;
+        while (1 == 1) {
+            let rc: i32 = dir_entry("/System/Fonts", i, &st);
+            if (rc < 0) { file_err("/System/Fonts", rc); return; }
+            if (rc == 0) { break; }
+            if (st.kind != FTYPE_DIR) {
+                puts("  ");
+                put_font_name(&st.name[0]);
+                newline();
+                n = n + 1;
+            }
+            i = i + 1;
+        }
+        if (n == 0) { puts("  (no fonts installed)\n"); return; }
+        puts("  ");
+        print_u32(n);
+        puts(" font(s) - 'font <name>' to use one\n");
+        return;
+    }
+
+    let rc: i32 = gfx_set_font(arg);
+    if (rc == 0) {
+        // The console was cleared by the change, so this line is the first
+        // thing drawn in the new font - which is the confirmation.
+        puts("font: ");
+        puts(arg);
+        newline();
+        return;
+    }
+    if (rc == E_NOENT) { puts("font: no such font - 'font' lists them\n"); return; }
+    if (rc == E_INVAL) { puts("font: bad name, or not a usable .xfnt\n"); return; }
+    puts("font: refused\n");
+}
+
 fn cmd_pwd(arg: *u8) -> void {
     let buf: [256]u8;
     if (file_err("pwd", getcwd(&buf[0], sizeof buf)) == 1) { return; }
@@ -635,6 +700,7 @@ fn _start() -> void {
     register("mv",     cmd_mv,     "rename an entry");
     register("cd",     cmd_cd,     "change the working directory");
     register("pwd",    cmd_pwd,    "print the working directory");
+    register("font",   cmd_font,   "list console fonts, or 'font <name>' to use one");
     register("ifconfig", cmd_ifconfig, "network interface status");
     register("setip",  cmd_setip,  "set the local IP address");
     register("ping",   cmd_ping,   "ICMP echo a host");

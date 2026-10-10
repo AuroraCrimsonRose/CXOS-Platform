@@ -1674,6 +1674,132 @@ static int test_font_cell(void) {
     return ok;
 }
 
+/* ---- the console font on disk ------------------------------------------
+ *
+ * Covers the whole chain in one go: cxk font build converted the BMFont
+ * descriptor and its atlas at build time, the image staged the result at
+ * /System/Fonts, and the kernel reads it back and validates it. A break
+ * anywhere along that - a converter that writes the wrong slot, a stage line
+ * that drops the file, a reader that disagrees with the writer - lands here.
+ *
+ * The SYSCALL's success path is deliberately not exercised. FB_OP_SET_FONT
+ * clears the console on a successful change, because what is on screen is the
+ * old cell, and wiping the boot log out from under the rest of the tests is a
+ * poor trade for a case the shell's `font` command exercises directly. What IS
+ * tested through the syscall is every refusal, because that is where the name
+ * handling lives and a name is the only thing a caller controls.
+ */
+static uint8_t font_disk_buf[XFNT_HEADER_SIZE + XFNT_MAX_GLYPHS * XFNT_MAX_HEIGHT
+                             + XFNT_MAX_GLYPHS * 4];
+
+static int test_console_font_disk(void) {
+    if (!cxfs_is_mounted()) return 1;                 /* nothing mounted - skip */
+
+    int ok = 1;
+    int id = cxfs_resolve("/System/Fonts/term_8.xfnt", 0);
+    if (id < 0) {
+        klog("KTEST", SEV_WARN, "console font untested: /System/Fonts/term_8.xfnt is not staged");
+        return 1;
+    }
+
+    struct cxfs_entry fe;
+    if (cxfs_read_entry((uint32_t)id, &fe) != 0) return 0;
+    if (fe.size == 0 || fe.size > sizeof font_disk_buf) return 0;
+
+    int got = cxfs_read_file((uint32_t)id, font_disk_buf, (uint32_t)sizeof font_disk_buf);
+    ok = ok && (got > 0) && ((uint64_t)got == fe.size);
+    if (!ok) return 0;
+
+    /* ---- it is the font the converter wrote ---- */
+    if (xfnt_install(font_disk_buf, (uint32_t)got) != XFNT_E_OK) return 0;
+    ok = ok && (xfnt_width() == 8) && (xfnt_height() == 8);
+    ok = ok && (xfnt_glyph_count() == 256);
+
+    /* 'A' at its own slot, with ink, and not a solid block - the shape of the
+       converter bug that produced 206 filled cells and nothing else noticed. */
+    const uint8_t *a = xfnt_glyph('A');
+    ok = ok && (a != 0);
+    if (a) {
+        int any = 0, solid = 1;
+        for (uint32_t r = 0; r < 8; r++) {
+            if (a[r]) any = 1;
+            if (a[r] != 0xFF) solid = 0;
+        }
+        ok = ok && any && !solid;
+    }
+
+    /* ASCII keeps its own slot, and the extras start at 128 with the first
+       non-ASCII codepoint the font carries. Pins the slot assignment across
+       the whole build, not just the converter's own tests. */
+    ok = ok && (xfnt_codepoint('A') == 'A');
+    ok = ok && (xfnt_codepoint(128) == 0x00A1);       /* the inverted exclamation */
+
+    xfnt_clear();
+    console_font_changed();
+
+    /* ---- the syscall refuses every name that could leave /System/Fonts ---- */
+    if (fb_active()) {
+        const uint32_t va = 0x00A00000u;
+        void *frame = pmm_alloc();
+        if (!frame) return 0;
+        if (paging_map_user(va, (uint32_t)frame, PAGE_PRESENT | PAGE_WRITE) != 0) {
+            pmm_free(frame);
+            return 0;
+        }
+
+        struct fb_op_args *args = (struct fb_op_args *)va;
+        char *nm = (char *)(va + 256);
+
+        /* Each of these is a way out of the directory, or a way to confuse the
+           path the kernel builds. The '.' rule is what makes ".." need no case
+           of its own. */
+        const char *bad[] = {
+            "..", "../x", "a/b", "/abs", "term_8.xfnt", "a.b", "", "a\\b",
+        };
+        for (unsigned i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+            uint32_t k = 0;
+            while (bad[i][k] && k < 200) { nm[k] = bad[i][k]; k++; }
+            nm[k] = '\0';
+            args->op = FB_OP_SET_FONT;
+            args->x = args->y = args->w = args->h = 0;
+            args->color = args->color2 = 0;
+            args->text = nm;
+            args->out = 0;
+            int rc = sys_fb_op(args);
+            /* E_INVAL specifically, NOT "some error". The distinction is the
+               security property: E_INVAL means the NAME RULES refused it,
+               E_NOENT means the kernel built a path and went looking. Accepting
+               either would pass a kernel that allowed "../x" straight through -
+               it would compose /System/Fonts/../x.xfnt, find nothing, and
+               answer E_NOENT, which reads like a refusal and is not one. */
+            ok = ok && (rc == E_INVAL);
+            /* and nothing was installed by a refused call */
+            ok = ok && !xfnt_active();
+        }
+
+        /* A well-formed name that simply is not there is NOT_FOUND, not
+           INVALID - the two are different answers and a caller acts on them
+           differently. */
+        const char *absent = "no_such_font_here";
+        uint32_t k = 0;
+        while (absent[k]) { nm[k] = absent[k]; k++; }
+        nm[k] = '\0';
+        args->text = nm;
+        ok = ok && (sys_fb_op(args) == E_NOENT);
+        ok = ok && !xfnt_active();
+
+        paging_unmap(va);
+        pmm_free(frame);
+    }
+
+    /* teardown is unconditional: the default font must be back whatever
+       happened above, or the rest of the boot draws from a cleared one */
+    xfnt_clear();
+    console_font_changed();
+    ok = ok && (font_cell_height() == 16);
+    return ok;
+}
+
 static int test_crypto_profile(void) {
     uint8_t *b = (uint8_t *)kmalloc(16u + 256u);
     if (!b) return 0;
@@ -1942,6 +2068,7 @@ void ktest_run(void) {
     total++; passed += report("SYS_SPAWN verifies its image",      ktest_spawn_verifies_image());
     total++; passed += report("xfnt: loadable font validated",     test_xfnt());
     total++; passed += report("variable font cell size",           test_font_cell());
+    total++; passed += report("console font staged on disk",       test_console_font_disk());
     total++; passed += report("crypto profile: one key shape only", test_crypto_profile());
     total++; passed += report("exec admission (dev / release)",   test_exec_admit());
     total++; passed += report("file syscalls (SYS_FILE_OP)",       usermode_file_test());

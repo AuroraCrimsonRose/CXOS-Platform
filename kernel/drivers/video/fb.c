@@ -252,6 +252,15 @@ void fb_draw_string_n(uint32_t x, uint32_t y, const char *s, uint32_t n,
  * 0x00RRGGBB and are converted here via fb_rgb to the active mode. */
 #include "../../cpu/usermode.h"   /* user_ptr_readable / user_ptr_writable */
 #include "../../../abi/cxk_abi.h" /* fb_op_args, FB_OP_*, E_* */
+#include "cxfs.h"                 /* FB_OP_SET_FONT reads the font itself */
+#include "console.h"              /* the grid follows the font's cell */
+
+/* Staging for a font being loaded, sized to the largest file XFNT permits:
+   header + 256 glyphs of 32 rows + a codepoint per slot. Static rather than a
+   local, for the reason cxfs.c keeps its block buffers out of frames - this
+   runs on a syscall stack, and nine kilobytes is not something to put there. */
+static uint8_t font_buf[XFNT_HEADER_SIZE + XFNT_MAX_GLYPHS * XFNT_MAX_HEIGHT
+                        + XFNT_MAX_GLYPHS * 4];
 
 static uint32_t fb_pack(uint32_t rgb) {
     return fb_rgb((uint8_t)(rgb >> 16), (uint8_t)(rgb >> 8), (uint8_t)rgb);
@@ -290,6 +299,62 @@ int sys_fb_op(const struct fb_op_args *ua) {
             if (n == 0 && !user_ptr_readable((uint32_t)a.text, 1)) return E_FAULT;
             fb_draw_string_n(a.x, a.y, a.text, n, fb_pack(a.color), fb_pack(a.color2));
             return (int)n;
+        }
+        case FB_OP_SET_FONT: {
+            /* A NAME, not a path. The kernel composes /System/Fonts/<name>.xfnt
+               and reads it itself, which is the SYS_EXEC_PATH shape: the bytes
+               validated are the bytes installed, with no caller-held buffer in
+               between, and GRANT_FRAMEBUFFER does not become a way to make the
+               kernel read an arbitrary file. */
+            char name[CXFS_NAME_LEN];
+            uint32_t n = 0;
+            for (;;) {
+                if (n >= sizeof name) return E_INVAL;          /* no terminator in range */
+                if (!user_ptr_readable((uint32_t)a.text + n, 1)) return E_FAULT;
+                char c = a.text[n];
+                if (c == '\0') break;
+                /* Everything that could leave /System/Fonts is refused here, so
+                   nothing downstream has to reason about traversal. '.' goes
+                   too: the extension is ours to add, and without it ".." never
+                   needs a special case. */
+                if (c == '/' || c == '\\' || c == '.') return E_INVAL;
+                if ((unsigned char)c < 0x20 || (unsigned char)c == 0x7F) return E_INVAL;
+                name[n++] = c;
+            }
+            if (n == 0) return E_INVAL;
+            name[n] = '\0';
+
+            static const char dir[] = "/System/Fonts/";
+            static const char ext[] = ".xfnt";
+            char path[FILE_PATH_MAX];
+            /* (sizeof - 1) twice for the two NULs, then one back for the path's
+               own. Checked rather than assumed, even though the three lengths
+               are bounded well below FILE_PATH_MAX. */
+            if ((sizeof dir - 1) + n + (sizeof ext - 1) + 1 > sizeof path) return E_INVAL;
+            uint32_t p = 0;
+            for (uint32_t i = 0; i < sizeof dir - 1; i++) path[p++] = dir[i];
+            for (uint32_t i = 0; i < n; i++)              path[p++] = name[i];
+            for (uint32_t i = 0; i < sizeof ext - 1; i++) path[p++] = ext[i];
+            path[p] = '\0';
+
+            struct cxfs_entry fe;
+            if (cxfs_stat_path(path, &fe) != 0) return E_NOENT;
+            if (fe.type != CXFS_TYPE_FILE)      return E_NOENT;
+            if (fe.size == 0 || fe.size > sizeof font_buf) return E_INVAL;
+
+            int got = cxfs_read_path(path, font_buf, (uint32_t)sizeof font_buf);
+            if (got <= 0 || (uint64_t)got != fe.size) return E_NOENT;
+
+            /* xfnt_install validates before it commits, so a font that is not
+               one leaves the console drawing with whatever it had. */
+            if (xfnt_install(font_buf, (uint32_t)got) != XFNT_E_OK) return E_INVAL;
+
+            /* The cell may have changed, so the grid has to be recomputed - and
+               here, unlike xfnt_install's callers in general, the screen is
+               full of glyphs at the old size, so it is cleared too. */
+            console_font_changed();
+            console_clear();
+            return 0;
         }
         default: return E_INVAL;
     }

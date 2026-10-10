@@ -198,6 +198,18 @@ enum {
     FB_OP_PUT_PIXEL = 3,   /* x,y,color */
     FB_OP_DRAW_LINE = 4,   /* x,y=(x0,y0) w,h=(x1,y1) color */
     FB_OP_DRAW_TEXT = 5,   /* x,y,color(fg),color2(bg),text */
+    /* Install a console font by NAME, from /System/Fonts/<text>.xfnt.
+     *
+     * A name, not a path, on purpose. The kernel composes the path and reads
+     * the file itself, so there is no user buffer holding the font between
+     * being validated and being installed - the same reason SYS_EXEC_PATH
+     * reads the image rather than taking the caller's copy - and a capability
+     * to draw on the screen does not become a capability to make the kernel
+     * read an arbitrary path. Names carrying '/' or '.' are refused.
+     *
+     * The font is validated as an XFNT before anything is installed; a bad one
+     * leaves the current font working. Returns 0, or E_INVAL / E_NOENT. */
+    FB_OP_SET_FONT  = 6,   /* text = font name, no path, no extension */
 };
 struct fb_op_args {
     uint32_t    op;

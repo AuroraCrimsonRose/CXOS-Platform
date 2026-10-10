@@ -70,6 +70,22 @@ fn gfx_text(x: u32, y: u32, s: *u8, fg: color, bg: color) -> i32 {
     return fb_op(&a);
 }
 
+// ---- console font ----
+// Install /System/Fonts/<name>.xfnt as the console font. `name` is a NAME, not
+// a path: the kernel composes the path and reads the file itself, so a name
+// carrying '/' or '.' is refused. Returns 0, or E_INVAL / E_NOENT.
+//
+// The console's grid follows the font's cell, so a font of another size changes
+// how many columns and rows fit the screen. The kernel clears on a successful
+// change, because what is already drawn is the old size.
+fn gfx_set_font(name: *u8) -> i32 {
+    let a: fb_op_args;
+    a.op = FB_OP_SET_FONT;
+    a.x = 0; a.y = 0; a.w = 0; a.h = 0;
+    a.color = 0; a.color2 = 0; a.text = name;
+    return fb_op(&a);
+}
+
 // ---- geometry ----
 // fills out[0..3] with width, height, bpp, pitch; returns 0 on success
 fn gfx_info(out: *u32) -> i32 {

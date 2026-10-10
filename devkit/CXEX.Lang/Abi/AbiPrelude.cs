@@ -124,6 +124,7 @@ const FB_OP_FILL_RECT: u32 = 2;
 const FB_OP_PUT_PIXEL: u32 = 3;
 const FB_OP_DRAW_LINE: u32 = 4;
 const FB_OP_DRAW_TEXT: u32 = 5;
+const FB_OP_SET_FONT: u32 = 6;
 struct fb_op_args { op: u32, x: u32, y: u32, w: u32, h: u32, color: u32, color2: u32, text: *u8, out: *u32 }
 
 // ---- network (SYS_NET_OP; GRANT_NET) ----

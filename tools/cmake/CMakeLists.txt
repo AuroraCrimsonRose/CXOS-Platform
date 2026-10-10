@@ -478,6 +478,27 @@ add_custom_command(
     COMMENT "Embedding ${APP_BOOT_NAME}.xsex -> app_image.h"
 )
 
+# ---- console fonts: BMFont + atlas -> .xfnt, staged to /System/Fonts ----
+#
+# Converted here rather than checked in built, so the .xfnt can never drift from
+# the .fnt and .png it came from. The conversion is STRICT: a glyph that does
+# not fit the cell fails the build rather than being silently cropped, which is
+# what makes staging a font a statement that it is finished.
+#
+# term_16 is not here yet. It converts with --allow-unfit today because 66 of
+# its glyphs are still 16x16 in an 8x16 cell; it joins this list the moment it
+# passes strict, and the build is what will say so.
+set(FONT_DIR   ${SRC_DIR}/assets/fonts/cx_term)
+set(TERM8_FNT  ${FONT_DIR}/term_8.fnt)
+set(TERM8_PNG  ${FONT_DIR}/term_8_0.png)
+set(TERM8_XFNT ${BUILD_DIR}/term_8.xfnt)
+add_custom_command(
+    OUTPUT ${TERM8_XFNT}
+    COMMAND ${CXK} font build ${TERM8_FNT} -o ${TERM8_XFNT}
+    DEPENDS ${TERM8_FNT} ${TERM8_PNG} ${CXK}
+    COMMENT "FONT term_8.fnt -> term_8.xfnt"
+)
+
 # ---- disk app: hi.xfxn -> ELF -> signed .xuex (staged, not embedded) ----
 add_custom_command(
     OUTPUT ${DISK_APP_ELF}
@@ -642,6 +663,7 @@ add_custom_command(
             --stage Shared/Programs/astdump.xuex=${ASTDUMP_XUEX}
             --stage Shared/Programs/semadump.xuex=${SEMADUMP_XUEX}
             --stage Shared/Programs/xc.xuex=${XC_XUEX}
+            --stage System/Fonts/term_8.xfnt=${TERM8_XFNT}
             --stage Shared/Source/xc.xfxn=${SRC_DIR}/os/xc/xc.xfxn
             --stage Shared/Source/front.xfxn=${SRC_DIR}/os/xc/front.xfxn
             --stage Shared/Source/emit.xfxn=${SRC_DIR}/os/xc/emit.xfxn
@@ -667,7 +689,7 @@ add_custom_command(
             ${SUPERVISOR_XCEX} ${TOKDUMP_XUEX} ${ASTDUMP_XUEX} ${SEMADUMP_XUEX} ${XC_XUEX}
             ${XC_SRCS} ${SRC_DIR}/os/std/buf.xfxn ${SRC_DIR}/os/std/heap.xfxn
             ${SRC_DIR}/os/std/mem.xfxn ${PRELUDE_XFXN} ${STD_SRCS}
-            ${SERVICE_XOSV} ${KERNEL_XKCO} ${CXK}
+            ${SERVICE_XOSV} ${KERNEL_XKCO} ${TERM8_XFNT} ${CXK}
     COMMENT "Building unified CXK disk (XBPT: boot + stage + system)"
 )
 add_custom_target(cxk_disk ALL DEPENDS ${CXK_DISK})
