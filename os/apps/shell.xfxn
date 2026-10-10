@@ -16,6 +16,7 @@ import "mem.xfxn";
 import "fmt.xfxn";
 import "fixed.xfxn";
 import "gfx.xfxn";
+import "settings.xfxn";
 import "cxos.xfxn";
 import "net.xfxn";
 import "file.xfxn";
@@ -311,6 +312,43 @@ fn file_err(what: *u8, rc: i32) -> i32 {
 // The ".xfnt" is trimmed when listing so that what is printed is what you type.
 // The kernel refuses a name containing '.', deliberately, so "term_8.xfnt"
 // would be rejected - showing it and then refusing it would be a trap.
+// ---- the console's own settings document ----
+//
+// /Shared/Config/console.<slot>.xuco, written through settings.xfxn so a power
+// cut mid-save costs the last change at worst, never the file. Two slots, a
+// sequence number and a commit marker; see settings.xfxn for why that shape.
+//
+// /Shared/Config rather than /System/Config, and .xuco rather than .xoco,
+// because this is written from ring 3: a user process can never be UID_SYSTEM,
+// so /System is readable to it and not writable. The OS's own .xoco documents
+// stay where they are and stay SYSTEM-written - kernel.xkco is one.
+
+fn console_save_font(name: *u8) -> i32 {
+    let body: [160]u8;
+    let n: u32 = 0;
+    body[0] = 0;
+    n = settings_cat(&body[0], sizeof body, n, "font = \"");
+    n = settings_cat(&body[0], sizeof body, n, name);
+    n = settings_cat(&body[0], sizeof body, n, "\"");
+    return settings_store("/Shared/Config", "console", "xuco", &body[0]);
+}
+
+// Apply the saved font, if there is one. Silent about absence - no settings
+// yet is the normal state on a fresh install, not a problem to report - and
+// silent about a font that will not load, because the compiled-in one is
+// already drawing this line and saying so would be the only visible effect.
+fn console_restore_font() -> void {
+    if (gfx_width() < 320) { return; }            // VGA text: nothing to apply
+    let text: [2048]u8;
+    let seq: u32 = 0;
+    let n: i32 = settings_load("/Shared/Config", "console", "xuco",
+                               &text[0], sizeof text, &seq);
+    if (n <= 0) { return; }
+    let name: [64]u8;
+    if (settings_get_str(&text[0], n as u32, "font", &name[0], sizeof name) != 1) { return; }
+    gfx_set_font(&name[0]);
+}
+
 fn put_font_name(name: *u8) -> void {
     let tmp: [64]u8;
     strcopy(&tmp[0], name, sizeof tmp);
@@ -371,6 +409,12 @@ fn cmd_font(arg: *u8) -> void {
 
     let rc: i32 = gfx_set_font(arg);
     if (rc == 0) {
+        // Remember it, but never at the cost of the change itself: the font is
+        // already applied, so a failed save is worth saying and not worth
+        // undoing.
+        if (console_save_font(arg) != 0) {
+            puts("font: applied, but could not be saved for next boot\n");
+        }
         // The console was cleared by the change, so this line is the first
         // thing drawn in the new font - which is the confirmation.
         puts("font: ");
@@ -723,6 +767,7 @@ fn _start() -> void {
     register("reboot", cmd_reboot, "restart the machine");
     register("shutdown", cmd_shutdown, "ACPI soft off");
 
+    console_restore_font();
     puts("CXK shell - type 'help'\n");
 
     while (1 == 1) {

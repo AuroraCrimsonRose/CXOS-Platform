@@ -1,0 +1,122 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// /os/apps/setcheck.xfxn
+//
+// Boot-time self-test for the crash-safe settings protocol in settings.xfxn.
+//
+// It exists because that protocol is X code and the kernel's ktest cannot reach
+// it: ktest is C, and a C reimplementation of the same idea would test the
+// reimplementation. This runs as an ordinary ring-3 program started by the
+// supervisor, so it exercises the real module through the real syscalls, and
+// prints one verdict line the serial log captures - the same contract every
+// ktest has.
+//
+// The cases that matter are the ones a power cut produces, so they are made
+// rather than waited for: a slot truncated mid-write, a slot that parses but
+// never got its commit marker, and both slots gone.
+
+import "io.xfxn";
+import "file.xfxn";
+import "string.xfxn";
+import "settings.xfxn";
+import "fmt.xfxn";
+
+fn fail(step: *u8) -> void {
+    puts("SETTINGS: FAIL at ");
+    puts(step);
+    puts("\n");
+}
+
+// Overwrite one slot with raw text, to make a damaged slot on purpose.
+fn poke_slot(slot: u32, text: *u8) -> i32 {
+    let path: [256]u8;
+    settings_path(&path[0], sizeof path, "/Shared/Config", "kttest", slot, "xuco");
+    let h: i32 = file_create(&path[0]);
+    if (h < 0) { return h; }
+    let rc: i32 = 0;
+    if (text[0] != 0) { rc = file_puts(h, text); }
+    file_close(h);
+    return rc;
+}
+
+fn wipe() -> void {
+    let path: [256]u8;
+    settings_path(&path[0], sizeof path, "/Shared/Config", "kttest", 0, "xuco");
+    unlink(&path[0]);
+    settings_path(&path[0], sizeof path, "/Shared/Config", "kttest", 1, "xuco");
+    unlink(&path[0]);
+}
+
+fn read_name(out: *u8, cap: u32) -> i32 {
+    let text: [2048]u8;
+    let seq: u32 = 0;
+    let n: i32 = settings_load("/Shared/Config", "kttest", "xuco",
+                               &text[0], sizeof text, &seq);
+    if (n <= 0) { return -1; }
+    if (settings_get_str(&text[0], n as u32, "font", out, cap) != 1) { return -1; }
+    return seq as i32;
+}
+
+fn _start() -> void {
+    let got: [64]u8;
+
+    wipe();
+
+    // ---- nothing saved yet is not an error, it is the normal first boot ----
+    if (read_name(&got[0], sizeof got) >= 0) { fail("empty: expected no settings"); exit(1); }
+
+    // ---- a round trip ----
+    if (settings_store("/Shared/Config", "kttest", "xuco", "font = \"alpha\"") != 0) {
+        fail("store alpha"); exit(1);
+    }
+    if (read_name(&got[0], sizeof got) < 0) { fail("load alpha"); exit(1); }
+    if (streq(&got[0], "alpha") != 1) { fail("alpha came back wrong"); exit(1); }
+
+    // ---- a second write lands in the OTHER slot ----
+    // The live document is never the file being overwritten, which is the whole
+    // reason there are two. If both writes went to one slot, a cut during the
+    // second would lose the first as well.
+    if (settings_store("/Shared/Config", "kttest", "xuco", "font = \"beta\"") != 0) {
+        fail("store beta"); exit(1);
+    }
+    if (read_name(&got[0], sizeof got) < 0) { fail("load beta"); exit(1); }
+    if (streq(&got[0], "beta") != 1) { fail("beta came back wrong"); exit(1); }
+
+    // Slot 0 must still hold alpha: the second write went elsewhere.
+    let t0: [2048]u8;
+    let p0: [256]u8;
+    settings_path(&p0[0], sizeof p0, "/Shared/Config", "kttest", 0, "xuco");
+    let n0: i32 = file_slurp(&p0[0], &t0[0], sizeof t0);
+    if (n0 <= 0) { fail("slot 0 vanished"); exit(1); }
+
+    // ---- a torn write is ignored, and the previous generation survives ----
+    // This is the power-cut case. Truncated text does not parse, so the slot is
+    // not merely stale, it is INVALID - and the reader falls back to the other
+    // one rather than to defaults.
+    if (poke_slot(1, "seq = 99\nfont = \"trunc") < 0) { fail("poke torn"); exit(1); }
+    if (read_name(&got[0], sizeof got) < 0) { fail("load after torn"); exit(1); }
+    if (streq(&got[0], "alpha") != 1) { fail("torn slot was believed"); exit(1); }
+
+    // ---- a slot that PARSES but never got its commit marker is ignored ----
+    // The sharper case, and the reason `end` exists. This text is valid X Data
+    // with a higher sequence number than the good slot; only the missing marker
+    // says the write never finished. Without it this would win.
+    if (poke_slot(1, "seq = 99\nfont = \"nocommit\"\n") < 0) { fail("poke nocommit"); exit(1); }
+    if (read_name(&got[0], sizeof got) < 0) { fail("load after nocommit"); exit(1); }
+    if (streq(&got[0], "alpha") != 1) { fail("uncommitted slot was believed"); exit(1); }
+
+    // ---- and a write after damage still works, and still alternates ----
+    if (settings_store("/Shared/Config", "kttest", "xuco", "font = \"gamma\"") != 0) {
+        fail("store gamma"); exit(1);
+    }
+    if (read_name(&got[0], sizeof got) < 0) { fail("load gamma"); exit(1); }
+    if (streq(&got[0], "gamma") != 1) { fail("gamma came back wrong"); exit(1); }
+
+    // ---- both slots lost is indistinguishable from a fresh install ----
+    wipe();
+    if (read_name(&got[0], sizeof got) >= 0) { fail("wiped: expected no settings"); exit(1); }
+
+    wipe();
+    puts("SETTINGS: all cases passed\n");
+    exit(0);
+}

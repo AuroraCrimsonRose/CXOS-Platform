@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// setcheck.xosv - run the settings protocol's self-test at boot.
+//
+// settings.xfxn is X code, so the kernel's ktest cannot reach it: ktest is C,
+// and a C reimplementation of the same protocol would be testing the
+// reimplementation. Running it as an ordinary ring-3 service exercises the real
+// module through the real syscalls, and its verdict line lands in the same
+// serial log every ktest result does.
+//
+// `disk` because it writes settings documents, `console` to print the verdict.
+// Nothing else: it should fail if it ever needs more authority than reading
+// and writing files it owns.
+
+exec   = "/Shared/Programs/setcheck.xuex"
+start  = boot
+grants = [console, disk]

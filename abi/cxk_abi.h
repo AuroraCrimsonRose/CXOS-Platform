@@ -420,6 +420,13 @@ enum {
     FILE_OP_RENAME  = 12,  /* path = existing, path2 = the new name */
     FILE_OP_CHDIR   = 13,  /* path */
     FILE_OP_GETCWD  = 14,  /* data = buffer, len = capacity -> length written */
+    /* Commit everything written so far to stable media. No arguments.
+     *
+     * Separate from WRITE on purpose: a sync per write costs a device cache
+     * flush on every byte, so it is the caller's decision - as fsync,
+     * FlushFileBuffers and VNOP_FSYNC all are. Anything that must survive a
+     * power cut writes, syncs, and only then treats the result as committed. */
+    FILE_OP_SYNC    = 15,
 };
 
 /* FILE_OP_OPEN flags. One of FOPEN_READ / FOPEN_WRITE is required. */

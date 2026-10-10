@@ -272,6 +272,13 @@ set(APP_IMAGE ${SRC_DIR}/os/executive/app_image.h)
 # .xuex sitting on disk is refused, which is the property worth having.
 set(DISK_APP      ${SRC_DIR}/os/apps/hi.xfxn)
 set(DISK_APP_NAME hi)
+
+# The settings protocol's self-test. X code, so ktest cannot reach it - it runs
+# as an ordinary ring-3 program at boot and prints a verdict line the serial log
+# captures, which is the same contract a ktest has.
+set(SETTINGS_TEST      ${SRC_DIR}/os/apps/setcheck.xfxn)
+set(SETTINGS_TEST_ELF  ${BUILD_DIR}/setcheck.elf)
+set(SETTINGS_TEST_XUEX ${PACKAGES_DIR}/setcheck.xuex)
 set(DISK_APP_ELF  ${BUILD_DIR}/${DISK_APP_NAME}.elf)
 set(DISK_APP_XCEX ${PACKAGES_DIR}/${DISK_APP_NAME}.xuex)
 
@@ -515,6 +522,22 @@ add_custom_command(
     COMMENT "Packaging ${DISK_APP_NAME}.xuex (CXEX, type user, staged to disk)"
 )
 
+# ---- the settings protocol's self-test, built like any other disk program ----
+add_custom_command(
+    OUTPUT ${SETTINGS_TEST_ELF}
+    COMMAND ${CXK} compile ${SETTINGS_TEST} ${SETTINGS_TEST_ELF} -I ${SRC_DIR}/os/std
+    DEPENDS ${SETTINGS_TEST} ${CXK} ${STD_SRCS}
+    COMMENT "X   setcheck.xfxn -> ELF"
+)
+add_custom_command(
+    OUTPUT ${SETTINGS_TEST_XUEX}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${PACKAGES_DIR}
+    COMMAND ${CXK} build ${SETTINGS_TEST_ELF} ${SETTINGS_TEST_XUEX} --type user
+    ${SCSIGN}
+    DEPENDS ${SETTINGS_TEST_ELF} ${CXK}
+    COMMENT "Packaging setcheck.xuex (CXEX, type user, staged to disk)"
+)
+
 # ---- supervisor: the service supervisor (staged + signed, like the disk app) ----
 add_custom_command(
     OUTPUT ${SUPERVISOR_ELF}
@@ -632,6 +655,7 @@ add_custom_command(
 # break a build that is otherwise fine. So it warns and skips until cxk is
 # republished from the DevKit; a bad descriptor is a hard failure after that.
 set(SERVICE_XOSV
+    ${SRC_DIR}/os/services/setcheck.xosv
     ${SRC_DIR}/os/services/hello.xosv
     ${SRC_DIR}/os/services/disabled.xosv
     ${SRC_DIR}/os/services/heartbeat.xosv)
@@ -682,6 +706,8 @@ add_custom_command(
             --stage Shared/Source/mem.xfxn=${SRC_DIR}/os/std/mem.xfxn
             --stage Shared/Source/prelude.xfxn=${PRELUDE_XFXN}
             --stage System/Services/hello.xosv=${SRC_DIR}/os/services/hello.xosv
+            --stage System/Services/setcheck.xosv=${SRC_DIR}/os/services/setcheck.xosv
+            --stage Shared/Programs/setcheck.xuex=${SETTINGS_TEST_XUEX}
             --stage System/Services/disabled.xosv=${SRC_DIR}/os/services/disabled.xosv
             --stage System/Services/heartbeat.xosv=${SRC_DIR}/os/services/heartbeat.xosv
             --stage System/Config/kernel.xkco=${KERNEL_XKCO}
@@ -689,7 +715,7 @@ add_custom_command(
             ${SUPERVISOR_XCEX} ${TOKDUMP_XUEX} ${ASTDUMP_XUEX} ${SEMADUMP_XUEX} ${XC_XUEX}
             ${XC_SRCS} ${SRC_DIR}/os/std/buf.xfxn ${SRC_DIR}/os/std/heap.xfxn
             ${SRC_DIR}/os/std/mem.xfxn ${PRELUDE_XFXN} ${STD_SRCS}
-            ${SERVICE_XOSV} ${KERNEL_XKCO} ${TERM8_XFNT} ${CXK}
+            ${SERVICE_XOSV} ${KERNEL_XKCO} ${TERM8_XFNT} ${SETTINGS_TEST_XUEX} ${CXK}
     COMMENT "Building unified CXK disk (XBPT: boot + stage + system)"
 )
 add_custom_target(cxk_disk ALL DEPENDS ${CXK_DISK})

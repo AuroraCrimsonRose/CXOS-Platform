@@ -1,0 +1,213 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// /os/std/settings.xfxn
+//
+// Settings documents that survive the power going out mid-write.
+//
+// The storage is ordinary X Data - one document per domain, named by the
+// extension rule: .xoco for the OS's own, .xuco for a user's. What this adds is
+// the write protocol, because the obvious way to save a setting is unsafe here
+// and quietly so.
+//
+// WHY NOT JUST WRITE THE FILE. cxfs_write_file is a truncate to zero followed
+// by a write. Power cut between the two and the file is EMPTY - not stale, not
+// torn, gone. Writing settings in place therefore trades "my last change was
+// lost" for "all my settings were lost", which is the wrong way round.
+//
+// WHY NOT WRITE A TEMP AND RENAME. That is the usual answer and it needs the
+// rename to be atomic. CXFS renames by rewriting one manifest entry inside a
+// 4KB block holding sixteen of them, and a torn block write there takes the
+// neighbours with it. There is no atomic replace to build on.
+//
+// SO: TWO SLOTS AND A SEQUENCE NUMBER. Each domain is two documents, slot 0 and
+// slot 1. A write always goes to the slot that is NOT live, so the live one is
+// never the one being written; then the sequence number decides which is live.
+// A power cut at any point leaves at least one complete slot, and the reader
+// takes the valid one with the higher seq. This is how UEFI variable stores and
+// bootloader A/B images handle the same problem, for the same reason: no
+// atomic rename to lean on.
+//
+// AND A COMMIT MARKER. A slot counts as valid only if it parses AND ends with
+// `end = true`, which is written last. That is the commit record from
+// journalling, applied to a text document: the transaction is not a transaction
+// until the final record lands. Without it a write torn exactly at a line
+// boundary would parse cleanly and silently be missing everything after the
+// tear. xd_check refuses most torn files on its own - X Data is checked whole
+// before any of it is believed - but "most" is not a guarantee and this is.
+//
+// AND A SYNC. Between writing the slot and treating it as live, file_sync()
+// asks the device to commit its cache. Without it the ordering above is a
+// story about data still sitting in a disk's RAM.
+
+import "file.xfxn";
+import "xdata.xfxn";
+import "string.xfxn";
+import "fmt.xfxn";
+
+const SETTINGS_MAX: u32 = 2048;      // largest settings document
+const SETTINGS_SLOTS: u32 = 2;
+
+// Append a NUL-terminated string at `n`, stopping before `cap`. Returns the
+// new length. Bounded at every step rather than trusting the total, because
+// the caller's `cap` is the only thing that knows how big dst really is.
+fn settings_cat(dst: *u8, cap: u32, n: u32, s: *u8) -> u32 {
+    let i: u32 = 0;
+    while (s[i] != 0) {
+        if (n + 1 >= cap) { break; }
+        dst[n] = s[i];
+        n = n + 1;
+        i = i + 1;
+    }
+    dst[n] = 0;
+    return n;
+}
+
+// Build "<dir>/<name>.<slot>.<ext>" into dst.
+fn settings_path(dst: *u8, cap: u32, dir: *u8, name: *u8, slot: u32, ext: *u8) -> void {
+    let n: u32 = 0;
+    dst[0] = 0;
+    n = settings_cat(dst, cap, n, dir);
+    n = settings_cat(dst, cap, n, "/");
+    n = settings_cat(dst, cap, n, name);
+    n = settings_cat(dst, cap, n, ".");
+    if (slot == 0) { n = settings_cat(dst, cap, n, "0"); }
+    else           { n = settings_cat(dst, cap, n, "1"); }
+    n = settings_cat(dst, cap, n, ".");
+    n = settings_cat(dst, cap, n, ext);
+}
+
+// Write a u32 as decimal to a handle.
+fn settings_put_u32(h: i32, v: u32) -> i32 {
+    let b: [12]u8;
+    let i: u32 = 12;
+    if (v == 0) { i = i - 1; b[i] = 48; }
+    while (v > 0) { i = i - 1; b[i] = 48 + ((v % 10) as u8); v = v / 10; }
+    return file_write(h, &b[i], 12 - i);
+}
+
+// Is this text a complete settings document, and what is its seq?
+// Returns 1 and fills *seq when valid, 0 otherwise.
+fn settings_valid(text: *u8, len: u32, seq: *u32) -> i32 {
+    if (len == 0) { return 0; }
+    if (xd_check(text, len) != XD_OK) { return 0; }
+
+    let root: xd_val;
+    let v: xd_val;
+    xd_root(text, len, &root);
+
+    // The commit marker, written last. Its absence means the write did not
+    // finish, however well-formed what landed happens to be.
+    if (xd_get(text, &root, "end", &v) != 1) { return 0; }
+    let b: u32 = 0;
+    if (xd_bool(text, &v, &b) != XD_OK) { return 0; }
+    if (b == 0) { return 0; }
+
+    if (xd_get(text, &root, "seq", &v) != 1) { return 0; }
+    if (xd_u32(text, &v, seq) != XD_OK) { return 0; }
+    return 1;
+}
+
+// Read the live slot of a domain into buf. Returns its length, or -1 when
+// neither slot is valid (no settings yet, or both lost - indistinguishable, and
+// the caller wants defaults either way). Fills *seq with the live sequence.
+fn settings_load(dir: *u8, name: *u8, ext: *u8, buf: *u8, cap: u32, seq: *u32) -> i32 {
+    let path: [256]u8;
+    let best: i32 = -1;
+    let best_seq: u32 = 0;
+    let tmp: [2048]u8;
+
+    let s: u32 = 0;
+    while (s < SETTINGS_SLOTS) {
+        settings_path(&path[0], sizeof path, dir, name, s, ext);
+        let n: i32 = file_slurp(&path[0], &tmp[0], sizeof tmp);
+        if (n > 0) {
+            let this_seq: u32 = 0;
+            if (settings_valid(&tmp[0], n as u32, &this_seq) == 1) {
+                // >= so that a tie prefers the later slot; ties should not
+                // happen, and if they do the newer write is the later slot.
+                if (best < 0 || this_seq >= best_seq) {
+                    best = n;
+                    best_seq = this_seq;
+                    let i: u32 = 0;
+                    while (i < (n as u32) && i < cap) { buf[i] = tmp[i]; i = i + 1; }
+                }
+            }
+        }
+        s = s + 1;
+    }
+
+    if (best < 0) { return -1; }
+    *seq = best_seq;
+    return best;
+}
+
+// Write `body` as the next generation of a domain.
+//
+// `body` is the document WITHOUT seq or end; this adds both, seq first and end
+// last, so a reader can tell a finished write from an interrupted one. Returns
+// 0 on success.
+fn settings_store(dir: *u8, name: *u8, ext: *u8, body: *u8) -> i32 {
+    // Which slot is live? The next write goes to the other one, so the live
+    // document is never the file being overwritten.
+    let cur: [2048]u8;
+    let seq: u32 = 0;
+    let have: i32 = settings_load(dir, name, ext, &cur[0], sizeof cur, &seq);
+
+    let live_slot: u32 = 0;
+    if (have >= 0) {
+        // the live slot is whichever holds seq; find it rather than remember it
+        let path: [256]u8;
+        let s: u32 = 0;
+        while (s < SETTINGS_SLOTS) {
+            settings_path(&path[0], sizeof path, dir, name, s, ext);
+            let n: i32 = file_slurp(&path[0], &cur[0], sizeof cur);
+            if (n > 0) {
+                let this_seq: u32 = 0;
+                if (settings_valid(&cur[0], n as u32, &this_seq) == 1) {
+                    if (this_seq == seq) { live_slot = s; }
+                }
+            }
+            s = s + 1;
+        }
+    }
+
+    let target: u32 = 0;
+    if (have >= 0) {
+        if (live_slot == 0) { target = 1; } else { target = 0; }
+    }
+
+    let path: [256]u8;
+    settings_path(&path[0], sizeof path, dir, name, target, ext);
+
+    let h: i32 = file_create(&path[0]);
+    if (h < 0) { return h; }
+
+    // seq FIRST so a torn write cannot produce a higher sequence than it
+    // earned, and `end` LAST so an unfinished write is detectable.
+    let rc: i32 = 0;
+    if (rc >= 0) { rc = file_puts(h, "// CXOS settings - written by the system, safe to read\n"); }
+    if (rc >= 0) { rc = file_puts(h, "seq = "); }
+    if (rc >= 0) { rc = settings_put_u32(h, seq + 1); }
+    if (rc >= 0) { rc = file_puts(h, "\n"); }
+    if (rc >= 0) { rc = file_puts(h, body); }
+    if (rc >= 0) { rc = file_puts(h, "\nend = true\n"); }
+    file_close(h);
+    if (rc < 0) { return rc; }
+
+    // Only now is the new slot allowed to count. Before the sync the bytes may
+    // be in a device cache, and the whole scheme is a story if they are.
+    return file_sync();
+}
+
+// Read one string key out of a loaded document. Returns 1 when found.
+fn settings_get_str(text: *u8, len: u32, key: *u8, out: *u8, cap: u32) -> i32 {
+    let root: xd_val;
+    let v: xd_val;
+    xd_root(text, len, &root);
+    if (xd_get(text, &root, key, &v) != 1) { return 0; }
+    // xd_str returns the LENGTH on success, not XD_OK - its errors are the
+    // negative XD_E_* codes. Comparing it against XD_OK rejects every string
+    // that is not empty, which is every string worth reading.
+    if (xd_str(text, &v, out, cap) < 0) { return 0; }
+    return 1;
+}

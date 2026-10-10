@@ -377,6 +377,17 @@ int sys_file_op(const struct file_op_args *ua) {
             return 1;
         }
 
+        /* Commit what has been written to stable media.
+         *
+         * Takes no arguments and touches no handle: CXFS writes through, so
+         * there is nothing buffered in the filesystem to pick out - what this
+         * asks is that the DEVICE commit its cache, which is per-volume and
+         * not per-file. Returning E_IO when the device cannot confirm is the
+         * point; a caller told a write is durable when it is not is worse off
+         * than one told nothing. */
+        case FILE_OP_SYNC:
+            return (cxfs_sync() == 0) ? E_OK : E_IO;
+
         case FILE_OP_MKDIR: {
             if ((rc = copy_path_in(a.path, path, sizeof path)) < 0) return rc;
             if (cxfs_resolve(path, cwd) >= 0) return E_EXIST;

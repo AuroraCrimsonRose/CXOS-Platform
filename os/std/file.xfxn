@@ -83,6 +83,20 @@ fn file_write(h: i32, buf: *u8, n: u32) -> i32 {
 // write a NUL-terminated string (without the terminator)
 fn file_puts(h: i32, s: *u8) -> i32 { return file_write(h, s, strlen(s)); }
 
+// Commit everything written so far to stable media. Returns 0, or E_IO if the
+// device would not confirm it.
+//
+// Separate from writing on purpose: a sync per write costs a device cache
+// flush on every byte, so it is the caller's decision - as fsync,
+// FlushFileBuffers and VNOP_FSYNC all are. Write, close, sync, and only then
+// treat the data as safe against a power cut.
+fn file_sync() -> i32 {
+    let a: file_op_args;
+    memzero((&a) as *u8, sizeof a);
+    a.op = FILE_OP_SYNC;
+    return file_op(&a);
+}
+
 // ---- position ----
 
 // `origin` is FSEEK_SET, FSEEK_CUR or FSEEK_END. Returns the new offset.

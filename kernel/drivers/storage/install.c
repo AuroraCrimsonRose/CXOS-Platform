@@ -50,6 +50,17 @@ static const struct tree_dir system_tree[] = {
     /* Fonts a user installs. Group-writable like the rest of /Shared, and
        searched AFTER /System/Fonts - see fb_font_select. */
     { "/Shared/Fonts",     CXFS_PERM_DIR_DEFAULT | CXFS_PERM_GW },
+    /* Settings a user may change, which is why this is the one /Shared entry
+       that is world-writable rather than group-writable.
+       A ring-3 process can never be UID_SYSTEM (sched.c forbids it), and there
+       is no group membership model yet, so cxfs_check_perm judges every user
+       program by the OTHER bits - under which 0775 grants no write at all.
+       Without CXFS_PERM_TW the only directory a program could save anything in
+       would be /Temp, and settings do not belong in scratch.
+       PROVISIONAL, and narrowed by the same thing that makes it unnecessary:
+       when users exist, settings move to /User/<name> at 0700 and this drops
+       back to 0775. /Temp is 0777 today for the same reason. */
+    { "/Shared/Config",    CXFS_PERM_DIR_DEFAULT | CXFS_PERM_GW | CXFS_PERM_TW },
     { "/Shared/Documents", CXFS_PERM_DIR_DEFAULT | CXFS_PERM_GW },
     { "/Shared/Pictures",  CXFS_PERM_DIR_DEFAULT | CXFS_PERM_GW },
     { "/Shared/Audio",     CXFS_PERM_DIR_DEFAULT | CXFS_PERM_GW },

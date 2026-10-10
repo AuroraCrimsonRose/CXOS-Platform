@@ -171,6 +171,7 @@ const FILE_OP_UNLINK:  u32 = 11;
 const FILE_OP_RENAME:  u32 = 12;
 const FILE_OP_CHDIR:   u32 = 13;
 const FILE_OP_GETCWD:  u32 = 14;
+const FILE_OP_SYNC:    u32 = 15;
 
 const FOPEN_READ:   u32 = 0x01;
 const FOPEN_WRITE:  u32 = 0x02;
