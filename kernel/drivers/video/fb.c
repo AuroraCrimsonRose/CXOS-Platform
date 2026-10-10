@@ -262,6 +262,75 @@ void fb_draw_string_n(uint32_t x, uint32_t y, const char *s, uint32_t n,
 static uint8_t font_buf[XFNT_HEADER_SIZE + XFNT_MAX_GLYPHS * XFNT_MAX_HEIGHT
                         + XFNT_MAX_GLYPHS * 4];
 
+/* Where a font may come from, in the order it is searched.
+ *
+ * /System first is not a detail. Both directories hold signed-by-nobody data -
+ * a font is not executable and carries no signature - so the difference is who
+ * may WRITE them: /System is the OS, /Shared is group-writable. Searching the
+ * user-writable one first would let anyone shadow a system font invisibly,
+ * which is the reason CX_FILESYSTEM_LAYOUT.md already gives for
+ * /System/Programs coming before /Shared/Programs. Same hazard, same order. */
+static const char *const font_dirs[] = {
+    "/System/Fonts/",
+    "/Shared/Fonts/",
+};
+
+/* Find <name>.xfnt in the search path, read it, validate it, and install it.
+ *
+ * `name` is a bare name that has ALREADY been checked for path separators by
+ * whoever accepted it from outside - sys_fb_op does that before calling here.
+ * Does not clear the console: the grid is recomputed, but what to do about the
+ * glyphs already drawn is the caller's decision.
+ *
+ * Returns 0, E_NOENT if no directory holds it, or E_INVAL if what was found is
+ * not a font this kernel can use. */
+int fb_font_select(const char *name) {
+    static const char ext[] = ".xfnt";
+    if (!name || !name[0]) return E_INVAL;
+
+    uint32_t n = 0;
+    while (name[n]) {
+        if (n >= CXFS_NAME_LEN) return E_INVAL;
+        n++;
+    }
+
+    int found = 0;
+    for (unsigned d = 0; d < sizeof font_dirs / sizeof font_dirs[0]; d++) {
+        const char *dir = font_dirs[d];
+        uint32_t dlen = 0;
+        while (dir[dlen]) dlen++;
+
+        char path[FILE_PATH_MAX];
+        /* Checked rather than assumed, even though the three lengths are
+           bounded well below FILE_PATH_MAX. */
+        if (dlen + n + (sizeof ext - 1) + 1 > sizeof path) return E_INVAL;
+        uint32_t p = 0;
+        for (uint32_t i = 0; i < dlen; i++)           path[p++] = dir[i];
+        for (uint32_t i = 0; i < n; i++)              path[p++] = name[i];
+        for (uint32_t i = 0; i < sizeof ext - 1; i++) path[p++] = ext[i];
+        path[p] = '\0';
+
+        struct cxfs_entry fe;
+        if (cxfs_stat_path(path, &fe) != 0)  continue;   /* not here; try the next */
+        if (fe.type != CXFS_TYPE_FILE)       continue;
+        found = 1;
+        if (fe.size == 0 || fe.size > sizeof font_buf) return E_INVAL;
+
+        int got = cxfs_read_path(path, font_buf, (uint32_t)sizeof font_buf);
+        if (got <= 0 || (uint64_t)got != fe.size) return E_INVAL;
+
+        /* xfnt_install validates before it commits, so a file that is not a
+           font leaves the console drawing with whatever it had. The search
+           stops at the first directory holding the NAME - a broken font in
+           /System is an error, not a reason to fall through to /Shared and
+           silently use a different one. */
+        if (xfnt_install(font_buf, (uint32_t)got) != XFNT_E_OK) return E_INVAL;
+        console_font_changed();
+        return 0;
+    }
+    return found ? E_INVAL : E_NOENT;
+}
+
 static uint32_t fb_pack(uint32_t rgb) {
     return fb_rgb((uint8_t)(rgb >> 16), (uint8_t)(rgb >> 8), (uint8_t)rgb);
 }
@@ -324,35 +393,12 @@ int sys_fb_op(const struct fb_op_args *ua) {
             if (n == 0) return E_INVAL;
             name[n] = '\0';
 
-            static const char dir[] = "/System/Fonts/";
-            static const char ext[] = ".xfnt";
-            char path[FILE_PATH_MAX];
-            /* (sizeof - 1) twice for the two NULs, then one back for the path's
-               own. Checked rather than assumed, even though the three lengths
-               are bounded well below FILE_PATH_MAX. */
-            if ((sizeof dir - 1) + n + (sizeof ext - 1) + 1 > sizeof path) return E_INVAL;
-            uint32_t p = 0;
-            for (uint32_t i = 0; i < sizeof dir - 1; i++) path[p++] = dir[i];
-            for (uint32_t i = 0; i < n; i++)              path[p++] = name[i];
-            for (uint32_t i = 0; i < sizeof ext - 1; i++) path[p++] = ext[i];
-            path[p] = '\0';
-
-            struct cxfs_entry fe;
-            if (cxfs_stat_path(path, &fe) != 0) return E_NOENT;
-            if (fe.type != CXFS_TYPE_FILE)      return E_NOENT;
-            if (fe.size == 0 || fe.size > sizeof font_buf) return E_INVAL;
-
-            int got = cxfs_read_path(path, font_buf, (uint32_t)sizeof font_buf);
-            if (got <= 0 || (uint64_t)got != fe.size) return E_NOENT;
-
-            /* xfnt_install validates before it commits, so a font that is not
-               one leaves the console drawing with whatever it had. */
-            if (xfnt_install(font_buf, (uint32_t)got) != XFNT_E_OK) return E_INVAL;
-
-            /* The cell may have changed, so the grid has to be recomputed - and
-               here, unlike xfnt_install's callers in general, the screen is
-               full of glyphs at the old size, so it is cleared too. */
-            console_font_changed();
+            int rc = fb_font_select(name);
+            if (rc != 0) return rc;
+            /* Only the syscall clears. What is on screen is the old cell, and a
+               user asking for a different font is asking to see it - but
+               fb_font_select is also what the self-tests use, and wiping the
+               boot log out from under them would be collateral. */
             console_clear();
             return 0;
         }

@@ -77,6 +77,13 @@ void fb_scroll_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
 uint32_t fb_font_width(void);
 uint32_t fb_font_height(void);
 
+/* Install <name>.xfnt as the console font, searching /System/Fonts then
+   /Shared/Fonts - system first, so a user-writable directory cannot shadow a
+   system font. `name` must already be known free of path separators; sys_fb_op
+   checks that before calling. Recomputes the grid, does NOT clear the screen.
+   Returns 0, E_NOENT (no such font) or E_INVAL (found, but unusable). */
+int fb_font_select(const char *name);
+
 void fb_draw_char(uint32_t x, uint32_t y, char c, uint32_t fg, uint32_t bg);
 void fb_draw_string(uint32_t x, uint32_t y, const char *s, uint32_t fg, uint32_t bg);
 

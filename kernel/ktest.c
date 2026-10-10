@@ -1792,6 +1792,53 @@ static int test_console_font_disk(void) {
         pmm_free(frame);
     }
 
+    /* ---- /System wins over /Shared, which is the whole point of the order ----
+     *
+     * /Shared/Fonts is group-writable, so if it were searched first anyone able
+     * to write there could shadow a system font and decide what every kernel
+     * message looks like. The hazard is the one CX_FILESYSTEM_LAYOUT.md names
+     * for /System/Programs, so it gets the same answer and the same kind of
+     * test: put a DIFFERENT font at the same name in /Shared, ask for the name,
+     * and require the system one.
+     *
+     * fb_font_select rather than the syscall, because the syscall clears the
+     * console and this runs in the middle of the boot log.
+     */
+    if (cxfs_resolve("/Shared/Fonts", 0) >= 0 && fb_active()) {
+        /* an 8x16 decoy, distinguishable from the real term_8 at 8x8 */
+        uint8_t decoy[XFNT_HEADER_SIZE + 4 * 16];
+        xf_build(decoy, 8, 16, 4);
+
+        int dir = cxfs_resolve("/Shared/Fonts", 0);
+        int fid = cxfs_find_in_dir((uint32_t)dir, "term_8.xfnt");
+        if (fid < 0) fid = cxfs_create_entry((uint32_t)dir, "term_8.xfnt", CXFS_TYPE_FILE);
+        if (fid < 0) {
+            ok = 0;
+        } else {
+            ok = ok && (cxfs_write_file((uint32_t)fid, decoy, (uint32_t)sizeof decoy) == 0);
+
+            /* The name exists in BOTH. The system one is 8x8; the decoy is
+               8x16. Getting 8 proves the order held. */
+            ok = ok && (fb_font_select("term_8") == 0);
+            ok = ok && (xfnt_height() == 8);
+            ok = ok && (xfnt_glyph_count() == 256);   /* the real font, not the 4-slot decoy */
+
+            /* And a name only /Shared has IS found - the second directory is
+               searched, not merely declared. */
+            int uid2 = cxfs_find_in_dir((uint32_t)dir, "ktshared.xfnt");
+            if (uid2 < 0) uid2 = cxfs_create_entry((uint32_t)dir, "ktshared.xfnt", CXFS_TYPE_FILE);
+            if (uid2 >= 0) {
+                ok = ok && (cxfs_write_file((uint32_t)uid2, decoy, (uint32_t)sizeof decoy) == 0);
+                ok = ok && (fb_font_select("ktshared") == 0);
+                ok = ok && (xfnt_height() == 16);     /* the decoy, from /Shared */
+                ok = ok && (xfnt_glyph_count() == 4);
+                cxfs_delete_entry((uint32_t)uid2);
+            }
+
+            cxfs_delete_entry((uint32_t)fid);         /* unconditional: leave no decoy */
+        }
+    }
+
     /* teardown is unconditional: the default font must be back whatever
        happened above, or the rest of the boot draws from a cleared one */
     xfnt_clear();

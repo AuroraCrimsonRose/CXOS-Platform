@@ -43,9 +43,13 @@ static const struct tree_dir system_tree[] = {
     { "/System/Boot",      CXFS_PERM_DIR_DEFAULT },              /* update staging */
     { "/System/KeyVault",  CXFS_PERM_DIR_DEFAULT },              /* .xupk publisher keys */
     { "/System/Services",  CXFS_PERM_DIR_DEFAULT },              /* .xosv descriptors */
+    { "/System/Fonts",     CXFS_PERM_DIR_DEFAULT },              /* console .xfnt */
     { "/System/Temp",      CXFS_PERM_DIR_DEFAULT },
     { "/Shared",           CXFS_PERM_DIR_DEFAULT | CXFS_PERM_GW },  /* 0775 */
     { "/Shared/Programs",  CXFS_PERM_DIR_DEFAULT | CXFS_PERM_GW },
+    /* Fonts a user installs. Group-writable like the rest of /Shared, and
+       searched AFTER /System/Fonts - see fb_font_select. */
+    { "/Shared/Fonts",     CXFS_PERM_DIR_DEFAULT | CXFS_PERM_GW },
     { "/Shared/Documents", CXFS_PERM_DIR_DEFAULT | CXFS_PERM_GW },
     { "/Shared/Pictures",  CXFS_PERM_DIR_DEFAULT | CXFS_PERM_GW },
     { "/Shared/Audio",     CXFS_PERM_DIR_DEFAULT | CXFS_PERM_GW },

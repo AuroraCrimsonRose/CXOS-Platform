@@ -321,6 +321,32 @@ fn put_font_name(name: *u8) -> void {
     write(&tmp[0], n);
 }
 
+// List one font directory, tagging each entry with where it came from. Returns
+// how many were printed. A missing directory is not an error worth reporting:
+// /Shared/Fonts is empty on a fresh install and may not have been created yet
+// on a disk from before it existed.
+fn list_fonts_in(dir: *u8, tag: *u8) -> u32 {
+    let st: file_stat;
+    let i: u32 = 0;
+    let n: u32 = 0;
+    while (1 == 1) {
+        let rc: i32 = dir_entry(dir, i, &st);
+        if (rc < 0) { return n; }
+        if (rc == 0) { break; }
+        if (st.kind != FTYPE_DIR) {
+            puts("  ");
+            put_font_name(&st.name[0]);
+            puts("  [");
+            puts(tag);
+            puts("]");
+            newline();
+            n = n + 1;
+        }
+        i = i + 1;
+    }
+    return n;
+}
+
 fn cmd_font(arg: *u8) -> void {
     // VGA text cells come from character ROM at a size this kernel does not
     // choose, so there is nothing to select there. Say which, rather than
@@ -331,21 +357,11 @@ fn cmd_font(arg: *u8) -> void {
     }
 
     if (arg[0] == 0) {
-        let st: file_stat;
-        let i: u32 = 0;
+        // Listed in the order the kernel searches them, so a name appearing
+        // twice is visibly the system one that wins.
         let n: u32 = 0;
-        while (1 == 1) {
-            let rc: i32 = dir_entry("/System/Fonts", i, &st);
-            if (rc < 0) { file_err("/System/Fonts", rc); return; }
-            if (rc == 0) { break; }
-            if (st.kind != FTYPE_DIR) {
-                puts("  ");
-                put_font_name(&st.name[0]);
-                newline();
-                n = n + 1;
-            }
-            i = i + 1;
-        }
+        n = n + list_fonts_in("/System/Fonts", "system");
+        n = n + list_fonts_in("/Shared/Fonts", "shared");
         if (n == 0) { puts("  (no fonts installed)\n"); return; }
         puts("  ");
         print_u32(n);

@@ -27,6 +27,7 @@ callers end up disagreeing.
 ├── Shared/                 SYSTEM, 0775 — shared between users, user-writable
 │   ├── Programs/           programs anyone may install
 │   ├── Documents/
+│   ├── Fonts/              user-installed console fonts (.xfnt)
 │   ├── Pictures/
 │   ├── Audio/
 │   └── Videos/
@@ -61,15 +62,25 @@ does not mean "the one the user meant".
 `/System/Temp` and `/Temp` are deliberately separate: the OS should not have to
 compete for space, or contend for names, with whatever a user program is doing.
 
-**`/System/Fonts` holds the console's bitmap fonts**, and is `/System` for the
-same reason `/System/Programs` is: a font decides what every kernel message
-*looks like*, so who may place one there is a protection question. `SYS_FB_OP`'s
-`FB_OP_SET_FONT` takes a **name**, never a path, and composes
-`/System/Fonts/<name>.xfnt` itself — a name carrying `/` or `.` is refused, so
-the capability to change the console font cannot become a capability to make the
-kernel read an arbitrary file. A `/Shared/Fonts` for user-installed fonts would
-be searched **second**, for the reason given above for programs: a
-user-writable directory searched first could shadow a system font invisibly.
+**Font search order is `/System/Fonts`, then `/Shared/Fonts`** — never the
+reverse, and for the reason given above for programs. `/System/Fonts` is the
+OS's own and only SYSTEM writes it; `/Shared/Fonts` is group-writable, where a
+user installs their own — which the graphical shell will want far more than the
+text console does. Neither is signed, because a font is not executable, so the
+difference between them is entirely *who may write*, and a user-writable
+directory searched first could shadow a system font invisibly. A font decides
+what every kernel message **looks like**, which is what makes that worth
+guarding rather than a matter of taste.
+
+The search stops at the first directory holding the **name**. A broken font in
+`/System/Fonts` is an error, not a reason to fall through and quietly use a
+different font of the same name from `/Shared`.
+
+`SYS_FB_OP`'s `FB_OP_SET_FONT` takes a **name**, never a path, and composes
+`<dir>/<name>.xfnt` itself — a name carrying `/`, `\` or `.` is refused, so the
+capability to change the console font cannot become a capability to make the
+kernel read an arbitrary file. Dropping `.` is what means `..` needs no case of
+its own.
 
 Selecting a font does not survive a reboot yet, and nothing is loaded from here
 at boot: the compiled-in 8x16 font is what the console starts with, so a missing
