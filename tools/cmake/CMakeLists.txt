@@ -198,6 +198,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/lib/gfx/color.c
     ${SRC_DIR}/kernel/lib/gfx/resolution.c
     ${SRC_DIR}/kernel/lib/gfx/font.c
+    ${SRC_DIR}/kernel/lib/gfx/xfnt.c
     ${SRC_DIR}/kernel/lib/gfx/klogo.c
     ${SRC_DIR}/kernel/drivers/bus/pci.c
     ${SRC_DIR}/kernel/drivers/storage/hardware/ata.c

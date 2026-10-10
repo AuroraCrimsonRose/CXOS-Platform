@@ -36,6 +36,8 @@
 #include "ktest_loader.h"
 #include "ktest_net.h"
 #include "ktest_fs.h"
+#include "xfnt.h"
+#include "font.h"
 #include "vmregion.h"
 #include "exec.h"
 #include "kstack.h"
@@ -1480,6 +1482,117 @@ static void xkpk_hdr(uint8_t *b, uint16_t version, uint16_t key_bits,
     b[16] = 0xC0;            /* a non-zero leading modulus byte */
 }
 
+/* ---- XFNT: a loadable font is untrusted input --------------------------
+ *
+ * The header is believed by nothing: every field is checked before it is used
+ * to address a glyph, and the shape of the checks is the CXFS superblock
+ * finding applied before rather than after. The length test is the important
+ * one - the header must describe the file EXACTLY - because that is what stops
+ * a glyph read running off the end of the buffer.
+ *
+ * Every case is one mutation of a known-good font, and the known-good font is a
+ * case of its own, so the suite cannot pass by refusing everything.
+ */
+#define XF_W   8
+#define XF_H   16
+#define XF_N   4
+#define XF_LEN (XFNT_HEADER_SIZE + XF_N * XF_H)
+
+static void xf_good(uint8_t *f) {
+    for (uint32_t i = 0; i < XF_LEN; i++) f[i] = 0;
+    f[0] = 'X'; f[1] = 'F'; f[2] = 'N'; f[3] = 'T';
+    f[4] = XFNT_VERSION; f[5] = 0;
+    f[6] = XFNT_KIND_BITMAP;
+    f[7] = 1;                      /* bytes per row */
+    f[8] = XF_W;
+    f[9] = XF_H;
+    f[10] = XF_N; f[11] = 0;       /* glyph count */
+    f[12] = (uint8_t)XFNT_FLAG_MSB_FIRST; f[13] = 0;
+    /* slot 1 is a solid left column, so a wrong stride is visible */
+    for (int r = 0; r < XF_H; r++) f[XFNT_HEADER_SIZE + 1 * XF_H + r] = 0x80;
+    /* slot 3's first row is distinctive */
+    f[XFNT_HEADER_SIZE + 3 * XF_H] = 0x5A;
+}
+
+static int test_xfnt(void) {
+    uint8_t f[XF_LEN];
+    int ok = 1;
+
+    /* ---- the control ---- */
+    xf_good(f);
+    if (xfnt_install(f, XF_LEN) != XFNT_E_OK) { xfnt_clear(); return 0; }
+    ok = ok && xfnt_active();
+    ok = ok && (xfnt_width() == XF_W) && (xfnt_height() == XF_H);
+    ok = ok && (xfnt_glyph_count() == XF_N);
+    ok = ok && (xfnt_glyph_bytes() == XF_H);
+
+    /* the glyph that came back is the glyph that went in, at the right stride */
+    const uint8_t *g = xfnt_glyph(1);
+    ok = ok && g && g[0] == 0x80 && g[XF_H - 1] == 0x80;
+    g = xfnt_glyph(3);
+    ok = ok && g && g[0] == 0x5A;
+    ok = ok && (xfnt_glyph(XF_N) == 0);      /* one past the end is NULL */
+
+    /* An 8x16 font becomes the console font, and ASCII keeps its own slot - so
+       a byte the console printed before prints this font's glyph for it now. */
+    ok = ok && (font_glyph_8x16((char)1)[0] == 0x80);
+
+    /* ---- refusals: one mutation each ---- */
+    xf_good(f); f[0] = 'Y';                  ok = ok && (xfnt_install(f, XF_LEN) == XFNT_E_MAGIC);
+    xf_good(f); f[4] = XFNT_VERSION + 1;     ok = ok && (xfnt_install(f, XF_LEN) == XFNT_E_VERSION);
+    xf_good(f); f[6] = XFNT_KIND_VECTOR;     ok = ok && (xfnt_install(f, XF_LEN) == XFNT_E_KIND);
+    xf_good(f); f[6] = 99;                   ok = ok && (xfnt_install(f, XF_LEN) == XFNT_E_KIND);
+
+    /* bytes_per_row is derived from width, so a file disagreeing is caught
+       rather than believed - believing it walks the glyph data at the wrong
+       stride, which reads real memory and looks like a corrupt font. */
+    xf_good(f); f[7] = 4;                    ok = ok && (xfnt_install(f, XF_LEN) == XFNT_E_GEOMETRY);
+    xf_good(f); f[7] = 0;                    ok = ok && (xfnt_install(f, XF_LEN) == XFNT_E_GEOMETRY);
+
+    xf_good(f); f[8] = 0;                    ok = ok && (xfnt_install(f, XF_LEN) == XFNT_E_GEOMETRY);
+    xf_good(f); f[8] = XFNT_MAX_WIDTH + 1;   ok = ok && (xfnt_install(f, XF_LEN) == XFNT_E_GEOMETRY);
+    xf_good(f); f[9] = 0;                    ok = ok && (xfnt_install(f, XF_LEN) == XFNT_E_GEOMETRY);
+    xf_good(f); f[9] = XFNT_MAX_HEIGHT + 1;  ok = ok && (xfnt_install(f, XF_LEN) == XFNT_E_GEOMETRY);
+    xf_good(f); f[10] = 0; f[11] = 0;        ok = ok && (xfnt_install(f, XF_LEN) == XFNT_E_GEOMETRY);
+
+    /* MSB-first is the only order the blit reads; an unknown flag may mean
+       something this version does not implement. */
+    xf_good(f); f[12] = 0;                   ok = ok && (xfnt_install(f, XF_LEN) == XFNT_E_FLAGS);
+    xf_good(f); f[13] = 0x80;                ok = ok && (xfnt_install(f, XF_LEN) == XFNT_E_FLAGS);
+
+    /* ---- the length, from both sides ---- */
+    xf_good(f);
+    ok = ok && (xfnt_install(f, XF_LEN - 1) == XFNT_E_LENGTH);
+    ok = ok && (xfnt_install(f, XF_LEN + 1) == XFNT_E_LENGTH);
+    ok = ok && (xfnt_install(f, XFNT_HEADER_SIZE - 1) == XFNT_E_SHORT);
+    ok = ok && (xfnt_install(f, 0) == XFNT_E_SHORT);
+    /* a count the file cannot hold: the header describes more than arrived */
+    xf_good(f); f[10] = 200;
+    ok = ok && (xfnt_install(f, XF_LEN) == XFNT_E_LENGTH);
+    /* and a NULL file is a refusal, not a fault */
+    ok = ok && (xfnt_install(0, XF_LEN) == XFNT_E_SHORT);
+
+    /* ---- a refused font leaves the installed one alone ----
+       This is the property that makes a bad font cost nothing: the commit
+       happens only after every check has passed. */
+    xf_good(f);
+    ok = ok && (xfnt_install(f, XF_LEN) == XFNT_E_OK);
+    uint8_t bad[XF_LEN];
+    xf_good(bad); bad[0] = 'Z';
+    ok = ok && (xfnt_install(bad, XF_LEN) != XFNT_E_OK);
+    ok = ok && xfnt_active() && (xfnt_glyph(1) != 0) && (xfnt_glyph(1)[0] == 0x80);
+
+    /* Teardown is UNCONDITIONAL. A 4-glyph font is installed as the console
+       font right now, so returning without clearing would leave the rest of
+       the boot drawing from it - and an `ok && xfnt_clear()` would skip exactly
+       when the test had already failed. */
+    xfnt_clear();
+    ok = ok && !xfnt_active();
+    ok = ok && (xfnt_glyph(1) == 0);
+    ok = ok && (xfnt_width() == 0);
+    return ok;
+}
+
 static int test_crypto_profile(void) {
     uint8_t *b = (uint8_t *)kmalloc(16u + 256u);
     if (!b) return 0;
@@ -1746,6 +1859,7 @@ void ktest_run(void) {
     total++; passed += report("cxex loader refuses bad images",    ktest_loader_adversarial());
     total++; passed += report("user pointer writability",          ktest_user_ptr_writability());
     total++; passed += report("SYS_SPAWN verifies its image",      ktest_spawn_verifies_image());
+    total++; passed += report("xfnt: loadable font validated",     test_xfnt());
     total++; passed += report("crypto profile: one key shape only", test_crypto_profile());
     total++; passed += report("exec admission (dev / release)",   test_exec_admit());
     total++; passed += report("file syscalls (SYS_FILE_OP)",       usermode_file_test());

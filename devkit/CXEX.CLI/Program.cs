@@ -83,6 +83,18 @@ app.Configure(config =>
     config.AddCommand<CheckXDataCommand>("check-xdata")
         .WithDescription("Validates X Data documents (service descriptors), with the same rules as the X reader.");
 
+    // ---- bitmap fonts ----
+    config.AddBranch("font", font =>
+    {
+        font.SetDescription("Builds and inspects XFNT bitmap fonts for the console and framebuffer.");
+
+        font.AddCommand<FontBuildCommand>("build")
+            .WithDescription("Converts a BMFont descriptor and its atlas into an .xfnt. Refuses glyphs that do not fit the cell, and names them.");
+
+        font.AddCommand<FontInspectCommand>("inspect")
+            .WithDescription("Reports an .xfnt's geometry and slot usage, and can print one glyph as ASCII art.");
+    });
+
     // ---- the OS build (replaces tools/build.bat) ----
     config.AddBranch("os", os =>
     {

@@ -170,6 +170,15 @@
         { "file": "devkit/CXEX.Crypto/Trust/CXKeyGenerator.cs", "pattern": "XKPK_VERSION = ([0-9]+)" }
       ]
     },
+    "xfnt": {
+      "version": 1,
+      "what": "XFNT - X Format foNT: a 24-byte header then bitmap glyph rows, indexed by slot, with an optional slot-to-codepoint table. The font defines the OS's 8-bit codepage rather than any table in the kernel doing so.",
+      "bump_when": "the header layout, the row bit order or the codepoint table changes",
+      "checks": [
+        { "file": "devkit/CXEX.Build/Fonts/XfntFormat.cs", "pattern": "Version = ([0-9]+)" },
+        { "file": "kernel/lib/gfx/xfnt.h", "pattern": "XFNT_VERSION\\s+([0-9]+)" }
+      ]
+    },
     "cxsg": {
       "version": 0,
       "what": "The CXSG signature block: 44-byte header, then the signer's .xkpk verbatim, then the signature.",
