@@ -38,4 +38,9 @@ int usb_storage_attach(struct usb_device *dev);
 int usb_storage_read(uint8_t unit, uint64_t lba, uint32_t count, void *buf);
 int usb_storage_write(uint8_t unit, uint64_t lba, uint32_t count, const void *buf);
 
+/* SYNCHRONIZE CACHE (10): commit the device's write cache to the medium.
+   Without it a stick acknowledges a write from cache, and pulling it out -
+   which is what people do to USB sticks - loses it. */
+int usb_storage_flush(uint8_t unit);
+
 #endif

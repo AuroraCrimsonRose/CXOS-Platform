@@ -246,3 +246,23 @@ int ata_write(uint8_t drive, uint32_t lba, uint8_t count, const void *buffer) {
     if (r != DISK_OK) return r;
     return DISK_OK;
 }
+/* Tell the drive to commit its write cache to the platter.
+ *
+ * ata_write already issues FLUSH CACHE after every transfer, so on this
+ * backend a caller that got DISK_OK from a write is already durable. This
+ * exists anyway, because durability has to be something a caller can ASK for
+ * rather than something one driver happens to do - AHCI and USB did not, and a
+ * guarantee that depends on which cable the disk is on is not a guarantee.
+ * Both NT and XNU plumb flush as its own operation through every layer for the
+ * same reason (IRP_MJ_FLUSH_BUFFERS, DKIOCSYNCHRONIZECACHE). */
+int ata_flush(uint8_t drive) {
+    if (drive >= ATA_DRIVE_COUNT) return DISK_ERR_PARAMS;
+    if (!drive_present[drive]) return DISK_ERR_NO_DEVICE;
+    uint16_t base = drive_base(drive);
+
+    int r = ata_wait_busy(base);
+    if (r != DISK_OK) return r;
+    ata_select(drive, 0);
+    outb(base + REG_COMMAND, ATA_CMD_FLUSH);
+    return ata_wait_busy(base);
+}

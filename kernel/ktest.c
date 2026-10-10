@@ -1847,6 +1847,70 @@ static int test_console_font_disk(void) {
     return ok;
 }
 
+/* ---- durability: a write can be asked to be committed ------------------
+ *
+ * disk.h's contract used to say outright that it made no durability guarantee
+ * across power loss, and it was right: ata_write issued FLUSH CACHE after every
+ * transfer while AHCI and USB issued nothing at all, so whether a write
+ * survived a power cut depended on which cable the disk was on.
+ *
+ * What this pins is that asking is possible and that the answer is honest. A
+ * flush cannot be observed from software - the platter is not visible from
+ * here - so what is asserted is the contract around it: a real disk accepts
+ * the request, a disk that does not exist is refused rather than quietly
+ * succeeding, and data written before a sync reads back after it.
+ *
+ * The thing that must never happen is a silent success from a backend that did
+ * nothing, because a caller then believes data is safe when it is not. That is
+ * untestable from here by construction, so disk_flush is written to return the
+ * driver's answer rather than DISK_OK, and the default arm of its switch
+ * refuses instead of falling through to success.
+ */
+static int test_disk_durability(void) {
+    if (!cxfs_is_mounted()) return 1;              /* nothing mounted - skip */
+
+    int ok = 1;
+
+    /* A disk id that does not exist is refused. Were this to answer DISK_OK,
+       every caller asking for durability would get a lie. */
+    ok = ok && (disk_flush(0xFE) == DISK_ERR_NO_DEVICE);
+    ok = ok && (disk_flush(0xFF) == DISK_ERR_NO_DEVICE);
+
+    /* The mounted volume's own disk accepts the request. */
+    ok = ok && (cxfs_sync() == 0);
+
+    /* An unmounted volume slot is refused rather than flushing whatever disk
+       happens to be in that slot's stale fields. */
+    ok = ok && (cxfs_sync_volume(cxfs_volume_slots()) != 0);      /* past the end */
+    ok = ok && (cxfs_sync_volume(cxfs_volume_slots() - 1) != 0);  /* a free slot */
+    ok = ok && (cxfs_sync_volume(0) == 0);                        /* the root volume */
+
+    /* Write, sync, read back. This does not prove the platter - nothing here
+       can - but it does prove the sync is not destructive and that the write
+       path still works around it, which is the failure a flush implemented
+       against the wrong register would actually produce. */
+    int dir = cxfs_resolve("/Temp", 0);
+    if (dir < 0) return ok;                        /* no /Temp - the rest is moot */
+    int fid = cxfs_find_in_dir((uint32_t)dir, "ktsync.txt");
+    if (fid < 0) fid = cxfs_create_entry((uint32_t)dir, "ktsync.txt", CXFS_TYPE_FILE);
+    if (fid < 0) return 0;
+
+    const char *msg = "durable";
+    ok = ok && (cxfs_write_file((uint32_t)fid, msg, 7) == 0);
+    ok = ok && (cxfs_sync() == 0);
+
+    char back[8];
+    ok = ok && (cxfs_read_file((uint32_t)fid, back, 7) == 7);
+    for (int i = 0; i < 7; i++) ok = ok && (back[i] == msg[i]);
+
+    /* and a second sync with nothing outstanding is still fine - a flush is
+       not a one-shot resource */
+    ok = ok && (cxfs_sync() == 0);
+
+    cxfs_delete_entry((uint32_t)fid);
+    return ok;
+}
+
 static int test_crypto_profile(void) {
     uint8_t *b = (uint8_t *)kmalloc(16u + 256u);
     if (!b) return 0;
@@ -2116,6 +2180,7 @@ void ktest_run(void) {
     total++; passed += report("xfnt: loadable font validated",     test_xfnt());
     total++; passed += report("variable font cell size",           test_font_cell());
     total++; passed += report("console font staged on disk",       test_console_font_disk());
+    total++; passed += report("disk durability: flush is askable", test_disk_durability());
     total++; passed += report("crypto profile: one key shape only", test_crypto_profile());
     total++; passed += report("exec admission (dev / release)",   test_exec_admit());
     total++; passed += report("file syscalls (SYS_FILE_OP)",       usermode_file_test());

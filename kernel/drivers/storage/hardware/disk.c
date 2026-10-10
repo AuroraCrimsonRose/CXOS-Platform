@@ -234,6 +234,35 @@ int disk_read(uint8_t id, uint64_t lba, uint32_t count, void *buf) {
     return 0;
 }
 
+/* Commit everything already written to `id` to stable media.
+ *
+ * Durability is a thing a caller ASKS for, which is the whole point of this
+ * being its own operation. Before it, ata_write issued FLUSH CACHE after every
+ * transfer while AHCI and USB issued nothing, so whether a write survived a
+ * power cut depended on which cable the disk was on - and the contract in
+ * disk.h correctly refused to promise anything because of it.
+ *
+ * Both NT and XNU make the same split: a write is a write, and a flush is a
+ * separate request plumbed through every layer (IRP_MJ_FLUSH_BUFFERS,
+ * DKIOCSYNCHRONIZECACHE). A driver that cannot flush says so rather than
+ * returning success, because a flush that silently does nothing is worse than
+ * no flush at all - the caller then believes something it must not.
+ */
+int disk_flush(uint8_t id) {
+    const struct disk *d = disk_find_by_id(id);
+    if (!d) return DISK_ERR_NO_DEVICE;
+    switch (d->driver) {
+        case DISK_DRV_ATA:  return ata_flush((uint8_t)d->unit);
+#if CXK_HAVE_AHCI
+        case DISK_DRV_AHCI: return ahci_flush((int)d->unit);
+#endif
+#if CXK_HAVE_USB
+        case DISK_DRV_USB:  return usb_storage_flush((uint8_t)d->unit);
+#endif
+        default:            return DISK_ERR_NO_DEVICE;
+    }
+}
+
 int disk_write(uint8_t id, uint64_t lba, uint32_t count, const void *buf) {
     const struct disk *d = disk_find_by_id(id);
     int bad = disk_check(d, lba, count, buf);

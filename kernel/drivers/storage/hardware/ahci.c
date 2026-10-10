@@ -114,6 +114,7 @@ struct fis_reg_h2d {
 #define FIS_TYPE_REG_H2D 0x27
 #define ATA_CMD_READ_DMA_EX   0x25
 #define ATA_CMD_WRITE_DMA_EX  0x35
+#define ATA_CMD_FLUSH_EX      0xEA   /* FLUSH CACHE EXT: no data transfer */
 #define ATA_CMD_IDENTIFY      0xEC
 
 #define HBA_PORT_CMD_ST   0x0001   /* start */
@@ -281,7 +282,10 @@ static int port_cmd(int p, uint8_t cmd, uint64_t lba, uint32_t count,
     hdr += slot;
     hdr->cfl = sizeof(struct fis_reg_h2d) / sizeof(uint32_t);
     hdr->w = write ? 1 : 0;
-    hdr->prdtl = 1;
+    /* A command that moves no data - FLUSH CACHE - has NO PRDT entry. Leaving
+       prdtl at 1 would point the HBA at a region with a byte count of
+       `bytes - 1` = 0xFFFFFFFF, which is not a description of nothing. */
+    hdr->prdtl = count ? 1 : 0;
     hdr->prdbc = 0;
 
     /* command table, written via VIRT */
@@ -289,12 +293,14 @@ static int port_cmd(int p, uint8_t cmd, uint64_t lba, uint32_t count,
     uint8_t *tb = (uint8_t *)tbl;
     for (unsigned i = 0; i < sizeof(struct hba_cmd_table); i++) tb[i] = 0;
 
-    /* one PRDT entry covering the bounce buffer; the HBA needs the PHYSICAL
-       address of the data region. */
-    tbl->prdt[0].dba = bounce_phys;
-    tbl->prdt[0].dbau = 0;
-    tbl->prdt[0].dbc = bytes - 1;     /* byte count - 1 */
-    tbl->prdt[0].i = 0;
+    if (count) {
+        /* one PRDT entry covering the bounce buffer; the HBA needs the
+           PHYSICAL address of the data region. */
+        tbl->prdt[0].dba = bounce_phys;
+        tbl->prdt[0].dbau = 0;
+        tbl->prdt[0].dbc = bytes - 1;     /* byte count - 1 */
+        tbl->prdt[0].i = 0;
+    }
 
     /* build the command FIS (in the command table, via VIRT) */
     struct fis_reg_h2d *fis = (struct fis_reg_h2d *)tbl->cfis;
@@ -490,4 +496,16 @@ int ahci_read(int port, uint64_t lba, uint32_t count, void *buf) {
 int ahci_write(int port, uint64_t lba, uint32_t count, const void *buf) {
     if (!ahci_present(port) || count == 0) return -1;
     return port_cmd(port, ATA_CMD_WRITE_DMA_EX, lba, count, (void *)buf, 1);
+}
+
+/* FLUSH CACHE EXT: commit the drive's write cache to the platter.
+ *
+ * This backend had no flush at all, so an AHCI disk acknowledged a write as
+ * soon as the data reached its cache and a power cut lost it. The ATA backend
+ * flushes after every write, which meant durability silently depended on
+ * whether the disk arrived through IDE or AHCI. A command that moves no data,
+ * hence count 0 and no buffer. */
+int ahci_flush(int port) {
+    if (!ahci_present(port)) return DISK_ERR_NO_DEVICE;
+    return port_cmd(port, ATA_CMD_FLUSH_EX, 0, 0, 0, 0);
 }

@@ -1715,3 +1715,26 @@ int cxfs_is_locked(uint32_t id) {
     if (cxfs_read_entry(id, &e) != 0) return 0;
     return cxfs_lock_blocks(&e);
 }
+/* Commit this volume's writes to stable media.
+ *
+ * CXFS writes through - the manifest cache updates the disk with it, and the
+ * bitmap flushes the block it touched - so by the time a call returns, the
+ * filesystem has handed everything to the device. What it cannot know is
+ * whether the DEVICE has handed it to the platter, and that is the gap this
+ * closes: anything that has to survive a power cut writes, then syncs, and
+ * only then treats the result as committed.
+ *
+ * Nothing above is made automatic. A sync per write would cost a cache flush
+ * on every byte written, and most writes do not need it - which is why every
+ * filesystem worth the name makes this the caller's decision rather than its
+ * own (fsync, FlushFileBuffers, VNOP_FSYNC). */
+int cxfs_sync(void) {
+    if (!vol->mounted) return -1;
+    return disk_flush(vol->disk_id) == DISK_OK ? 0 : -1;
+}
+
+/* The same, for a named volume rather than whichever was touched last. */
+int cxfs_sync_volume(uint32_t v) {
+    if (v >= CXFS_MAX_VOLUMES || !volumes[v].mounted) return -1;
+    return disk_flush(volumes[v].disk_id) == DISK_OK ? 0 : -1;
+}

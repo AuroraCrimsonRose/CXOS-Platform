@@ -73,11 +73,18 @@
  *                      point, not a changed meaning for these.
  *
  *   Ordering           A write that returned DISK_OK is readable by the next
- *                      read. There is no write cache in this layer; whether
- *                      the device has one is not modelled, so this is not a
- *                      durability guarantee across power loss and nothing
- *                      should read it as one. A flush/FUA op is the way that
- *                      gets added.
+ *                      read. There is no write cache in this layer, but the
+ *                      DEVICE may have one, so a returned write is not by
+ *                      itself durable across power loss.
+ *
+ *   Durability         disk_flush() is how a caller asks for it, and it is a
+ *                      separate operation on purpose. It used to be absent,
+ *                      and the result was that ata_write issued FLUSH CACHE
+ *                      after every transfer while AHCI and USB issued nothing
+ *                      - so whether a write survived a power cut depended on
+ *                      which cable the disk was on. Write, then flush, then
+ *                      treat it as committed; a backend that cannot flush
+ *                      returns an error rather than pretending.
  *
  *   Error codes        The disk_err enum below, never a bare -1. Distinct
  *                      causes stay distinct: BOUNDS (outside the device) is
@@ -176,6 +183,12 @@ const struct disk *disk_find_by_name(const char *name);
    code (DISK_OK on success, negative DISK_ERR_* on failure). */
 int disk_read (uint8_t id, uint64_t lba, uint32_t count, void *buf);
 int disk_write(uint8_t id, uint64_t lba, uint32_t count, const void *buf);
+
+/* Commit everything already written to `id` to stable media. Returns DISK_OK
+   when the device confirmed it, or an error - never a quiet success from a
+   backend that cannot flush, because a caller that believes a lie here loses
+   data it was told was safe. See the Durability note above. */
+int disk_flush(uint8_t id);
 
 /* human-readable text for a disk_err code (e.g. "timeout", "not ready"). */
 const char *disk_err_str(int err);

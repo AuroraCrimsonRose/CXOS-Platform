@@ -191,6 +191,17 @@ uint8_t cxfs_get_disk(void);
 void    cxfs_set_id(uint8_t id);
 uint8_t cxfs_get_id(void);
 
+/* Commit this volume's writes to stable media.
+ *
+ * CXFS writes through, so a returned write is already with the DEVICE - but
+ * the device may hold it in a cache, and a power cut then loses it. Anything
+ * that must survive one writes, calls this, and only then treats the result as
+ * committed. Deliberately not automatic: a sync per write would cost a cache
+ * flush on every byte, which is why fsync, FlushFileBuffers and VNOP_FSYNC are
+ * all the caller's decision too. Returns 0 on success. */
+int cxfs_sync(void);
+int cxfs_sync_volume(uint32_t v);
+
 /* is a valid CXFS currently mounted? */
 int cxfs_is_mounted(void);
 

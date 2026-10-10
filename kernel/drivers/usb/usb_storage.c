@@ -42,6 +42,7 @@ _Static_assert(sizeof(struct bot_csw) == 13, "a CSW is 13 bytes on the wire");
 #define SCSI_READ_CAPACITY10  0x25
 #define SCSI_READ10           0x28
 #define SCSI_WRITE10          0x2A
+#define SCSI_SYNC_CACHE10     0x35
 
 #define MAX_UNITS 4
 #define USB_BLOCK_MAX 4096        /* one bulk transfer's worth */
@@ -308,4 +309,18 @@ int usb_storage_read(uint8_t unit, uint64_t lba, uint32_t count, void *buf) {
 
 int usb_storage_write(uint8_t unit, uint64_t lba, uint32_t count, const void *buf) {
     return rw(unit, lba, count, (void *)buf, 0);
+}
+
+/* SYNCHRONIZE CACHE (10): commit the device's write cache.
+ *
+ * This backend had no flush either, so a USB stick acknowledged a write from
+ * its cache and pulling it out - which is what people do to USB sticks - lost
+ * it. The CDB's LBA and block-count fields are left zero, which SBC defines as
+ * "the whole medium", and IMMED is left clear so the device finishes before it
+ * answers rather than returning as soon as it has accepted the request. */
+int usb_storage_flush(uint8_t unit) {
+    if (unit >= MAX_UNITS || !units[unit].in_use) return DISK_ERR_NO_DEVICE;
+    struct storage_unit *u = &units[unit];
+    uint8_t cdb[10] = { SCSI_SYNC_CACHE10, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    return bot_transfer(u, cdb, sizeof(cdb), 0, 0, 1) < 0 ? DISK_ERR_FAULT : DISK_OK;
 }

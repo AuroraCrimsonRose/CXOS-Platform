@@ -30,6 +30,11 @@ int ata_read(uint8_t drive, uint32_t lba, uint8_t count, void *buffer);
    returns 0 on success, -1 on error. */
 int ata_write(uint8_t drive, uint32_t lba, uint8_t count, const void *buffer);
 
+/* FLUSH CACHE: commit the drive's write cache. ata_write already issues this
+   after every transfer, so this is redundant on this backend - it exists so a
+   caller can ASK for durability rather than depend on which driver it got. */
+int ata_flush(uint8_t drive);
+
 /* is the given drive present? (set by ata_init) */
 int ata_present(uint8_t drive);
 

@@ -42,4 +42,8 @@ int ahci_read(int port, uint64_t lba, uint32_t count, void *buf);
    returns 0 on success, -1 on error. */
 int ahci_write(int port, uint64_t lba, uint32_t count, const void *buf);
 
+/* FLUSH CACHE EXT: commit the drive's write cache. This backend had none, so
+   an AHCI write was acknowledged from cache and a power cut lost it. */
+int ahci_flush(int port);
+
 #endif
