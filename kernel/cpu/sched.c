@@ -89,29 +89,40 @@ void sched_init(void) {
     for (int i = 0; i < MAX_THREADS; i++) {
         threads[i].state = THREAD_UNUSED;
         threads[i].id = i;
-        htab_init(&threads[i].handles);
-        threads[i].broker = -1;
+        threads[i].proc = 0;
     }
+    proc_sys_init();
     /* thread 0 = the currently-running kernel context. Its esp is filled in on
        the first switch away from it (context_switch saves into &threads[0].esp). */
     threads[0].state = THREAD_RUNNING;
     threads[0].name  = "main";
     threads[0].stack_base = 0;   /* uses the existing kernel stack */
-    threads[0].uid   = UID_SYSTEM;   /* the boot/kernel context is the machine (User 0) */
+    /* the boot/kernel context is the machine (User 0): proc_create with no
+       parent gives exactly that */
+    threads[0].proc  = proc_create(0);
+    if (!threads[0].proc) return;   /* initialized stays 0: nothing schedules */
+    proc_thread_in(threads[0].proc);
+    proc_put(threads[0].proc);      /* the thread's reference is the one that counts */
     current = 0;
     /* capture the kernel space CR3 (active at boot); kernel threads run in it. */
     __asm__ volatile ("mov %%cr3, %0" : "=r"(kernel_pd_phys));
     initialized = 1;
 }
 
-static int thread_create_in(const char *name, void (*entry)(void), int held);
+static int thread_create_in(const char *name, void (*entry)(void), int held, struct proc *into);
 
 int thread_create(const char *name, void (*entry)(void)) {
-    return thread_create_in(name, entry, 0);
+    return thread_create_in(name, entry, 0, 0);
+}
+
+int thread_create_sibling(int id, const char *name, void (*entry)(void)) {
+    struct proc *p = thread_proc(id);
+    if (!p) return -1;
+    return thread_create_in(name, entry, 0, p);
 }
 
 int thread_create_process(const char *name, void (*entry)(void)) {
-    int id = thread_create_in(name, entry, 1);
+    int id = thread_create_in(name, entry, 1, 0);
     if (id < 0) return -1;
     if (thread_alloc_kstack(id) != 0) { thread_discard(id); return -1; }
     return id;
@@ -129,11 +140,12 @@ void thread_discard(int id) {
     if (threads[id].stack_base)  { kstack_free(threads[id].stack_base);  threads[id].stack_base = 0; }
     if (threads[id].kstack_base) { kstack_free(threads[id].kstack_base); threads[id].kstack_base = 0; }
     threads[id].kstack_top = 0;
-    htab_close_all(&threads[id].handles);
+    proc_thread_gone(threads[id].proc);
+    threads[id].proc  = 0;
     threads[id].state = THREAD_UNUSED;
 }
 
-static int thread_create_in(const char *name, void (*entry)(void), int held) {
+static int thread_create_in(const char *name, void (*entry)(void), int held, struct proc *into) {
     if (!initialized) return -1;
     if (threads_allocated() >= thread_limit) return -1;
     int slot = -1;
@@ -148,9 +160,16 @@ static int thread_create_in(const char *name, void (*entry)(void), int held) {
 
     /* A guarded stack (memman/kstack.h): running off the bottom faults rather
        than overwriting the heap, which is what a kmalloc'd stack did. */
+    /* Its process: the one it joins, or a new one that inherits the
+       creator's uid and cwd and nothing else. */
+    struct proc *p = into ? into : proc_create(threads[current].proc);
+    if (!p) return -1;
+
     uint32_t stack;
     uint32_t stack_top = kstack_alloc(stack_bytes, slot, &stack);
-    if (!stack_top) return -1;
+    if (!stack_top) { if (!into) proc_put(p); return -1; }
+    proc_thread_in(p);
+    if (!into) proc_put(p);   /* the new thread's reference keeps it */
 
     /* build the initial stack frame (top-down). The new stack must look exactly
        like a thread that was switched out by context_switch. context_switch
@@ -172,13 +191,8 @@ static int thread_create_in(const char *name, void (*entry)(void), int held) {
     threads[slot].stack_base = stack;
     threads[slot].state      = held ? THREAD_HELD : THREAD_READY;
     threads[slot].name       = name;
-    threads[slot].is_user    = 0;
+    threads[slot].proc       = p;
     threads[slot].exit_code  = 0;
-    threads[slot].uid        = threads[current].uid;   /* inherit creator UID */
-    threads[slot].cwd        = threads[current].cwd;   /* inherit creator cwd */
-    threads[slot].caps       = 0;                      /* no authority by default (apps) */
-    htab_close_all(&threads[slot].handles);   /* empty already: the reaper closed them */
-    threads[slot].broker = -1;
     threads[slot].user_stack_base = 0;
     threads[slot].u_saved_esp   = 0;
     threads[slot].u_saved_flags = 0;
@@ -187,7 +201,6 @@ static int thread_create_in(const char *name, void (*entry)(void), int held) {
        with thread_create_process, which gives it its own esp0 before it can be
        scheduled (PROCESS_MODEL.md §8). */
     threads[slot].kstack_top  = 0;
-    threads[slot].pd_phys     = 0;     /* kernel space until assigned (spawn) */
     threads[slot].kstack_base = 0;
     thread_entry[slot]       = entry;
     return slot;
@@ -225,12 +238,14 @@ static void update_tss_esp0(void) {
    right after update_tss_esp0(). The kernel half is mapped in every space,
    so this is safe for kernel threads regardless of which space is loaded. */
 static void update_address_space(void) {
-    uint32_t pd = threads[current].pd_phys ? threads[current].pd_phys : kernel_pd_phys;
+    uint32_t mine = threads[current].proc ? threads[current].proc->pd_phys : 0;
+    uint32_t pd = mine ? mine : kernel_pd_phys;
     if (pd) __asm__ volatile ("mov %0, %%cr3" : : "r"(pd) : "memory");
 }
 
 void thread_set_space(int id, uint32_t pd_phys) {
-    if (id >= 0 && id < MAX_THREADS) threads[id].pd_phys = pd_phys;
+    struct proc *p = thread_proc(id);
+    if (p) p->pd_phys = pd_phys;
 }
 
 /* Block the current thread (e.g. waiting on an IPC reply) and switch away.
@@ -343,10 +358,9 @@ static void sched_reap(void) {
                 kstack_free(threads[i].kstack_base);
                 threads[i].kstack_base = 0;
             }
-            /* close whatever the handle table still holds: every object
-               belongs to its handles, so a process that exits mid-write or
-               with an endpoint open leaves nothing behind. */
-            htab_close_all(&threads[i].handles);
+            /* The last thread of a process to go closes its handles. */
+            proc_thread_gone(threads[i].proc);
+            threads[i].proc = 0;
             threads[i].state = THREAD_UNUSED;   /* slot reusable */
         }
     }
@@ -358,13 +372,16 @@ void thread_exit(void) {
     /* stack is freed later by sched_reap, running in another thread's context
        (we can't free the stack we're still standing on). */
 
+    /* Nothing else runnable - every other thread blocked or asleep - is not a
+       reason to switch to ourselves: our saved esp is from the last time we
+       were switched out, and resuming it ran stale context on the stack we
+       are leaving. Idle on this stack until an interrupt makes a thread
+       runnable (a sleeper's timer, a keystroke). It stays ours until another
+       thread reaps it, which cannot happen before we switch away. */
     int next = next_runnable();
-    if (next == current) {
-        /* no one else runnable: fall back to thread 0 if it's alive */
-        for (int i = 0; i < MAX_THREADS; i++) {
-            if (i != current && (threads[i].state == THREAD_READY ||
-                                 threads[i].state == THREAD_RUNNING)) { next = i; break; }
-        }
+    while (next == current) {
+        __asm__ volatile ("sti; hlt; cli" : : : "memory");
+        next = next_runnable();
     }
     threads[next].state = THREAD_RUNNING;
     current = next;
@@ -439,6 +456,20 @@ void sched_preempt_point(void) {
 
 int thread_current_id(void) { return current; }
 
+struct proc *thread_proc(int id) {
+    if (id < 0 || id >= MAX_THREADS || threads[id].state == THREAD_UNUSED) return 0;
+    return threads[id].proc;
+}
+
+int thread_pid(int id) {
+    struct proc *p = thread_proc(id);
+    return p ? p->pid : -1;
+}
+
+int thread_current_pid(void) {
+    return initialized ? thread_pid(current) : 0;
+}
+
 const char *thread_name(int id) {
     if (id < 0 || id >= MAX_THREADS || threads[id].state == THREAD_UNUSED) return 0;
     return threads[id].name;
@@ -453,7 +484,8 @@ int thread_is_alive(int id) {
 }
 
 void thread_mark_user(int id) {
-    if (id >= 0 && id < MAX_THREADS) threads[id].is_user = 1;
+    struct proc *p = thread_proc(id);
+    if (p) p->is_user = 1;
 }
 
 uint32_t *thread_current_usave(void) {
@@ -488,47 +520,50 @@ int thread_alloc_kstack(int id) {
 
 uint32_t thread_current_cwd(void) {
     if (!initialized) return 0;            /* bare kernel boot context = root */
-    return threads[current].cwd;
+    return threads[current].proc->cwd;
 }
 
 void thread_set_cwd(int id, uint32_t entry_id) {
-    if (id < 0 || id >= MAX_THREADS) return;
-    threads[id].cwd = entry_id;
+    struct proc *p = thread_proc(id);
+    if (p) p->cwd = entry_id;
 }
 
 uint32_t thread_current_uid(void) {
     if (!initialized) return UID_SYSTEM;   /* bare kernel boot context = SYSTEM */
-    return threads[current].uid;
+    return threads[current].proc->uid;
 }
 
 uint32_t thread_current_caps(void) {
     if (!initialized) return 0;            /* bare kernel boot context: ring 0, caps N/A */
-    return threads[current].caps;
+    return threads[current].proc->caps;
 }
 
 void thread_set_caps(int id, uint32_t caps) {
-    if (id >= 0 && id < MAX_THREADS) threads[id].caps = caps;
+    struct proc *p = thread_proc(id);
+    if (p) p->caps = caps;
 }
 
 struct htab *thread_htab(int id) {
-    if (id < 0 || id >= MAX_THREADS) return 0;
-    return &threads[id].handles;
+    struct proc *p = thread_proc(id);
+    return p ? &p->handles : 0;
 }
 
 int32_t thread_broker(int id) {
-    if (id < 0 || id >= MAX_THREADS) return -1;
-    return threads[id].broker;
+    struct proc *p = thread_proc(id);
+    return p ? p->broker : -1;
 }
 
 void thread_set_broker(int id, int32_t h) {
-    if (id >= 0 && id < MAX_THREADS) threads[id].broker = h;
+    struct proc *p = thread_proc(id);
+    if (p) p->broker = h;
 }
 
 void thread_set_uid(int id, uint32_t uid) {
-    if (id < 0 || id >= MAX_THREADS) return;
+    struct proc *p = thread_proc(id);
+    if (!p) return;
     /* Invariant: a user process can never become UID 0 (SYSTEM). If this thread
        is a user process, reject any attempt to set it to SYSTEM - users are
        always UID >= 1. (SYSTEM kernel threads may carry UID 0 legitimately.) */
-    if (uid == UID_SYSTEM && threads[id].is_user) return;
-    threads[id].uid = uid;
+    if (uid == UID_SYSTEM && p->is_user) return;
+    p->uid = uid;
 }

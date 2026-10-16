@@ -24,6 +24,7 @@
 #include "sched.h"
 #include "gdt.h"
 #include "ipc.h"
+#include "addr_space.h"
 #include "object/htab.h"
 #include "usermode.h"
 #include "sysrec.h"
@@ -74,6 +75,76 @@ static int report(const char *name, int ok) {
    Each stage fails distinctly, so a regression says which rule broke. */
 static int ep_refs(struct endpoint *ep)    { return (int)atomic_load(&ep->hdr.refs); }
 static int ep_handles(struct endpoint *ep) { return (int)atomic_load(&ep->hdr.handles); }
+
+/* ---- a process owns what its threads share (cpu/proc.h) ----
+ * Two threads in one process, which has an address space of its own. The
+ * sibling makes an endpoint and exits; the first thread, running after it,
+ * must still find that handle, because the table is the process's and the
+ * process has a thread left. Both see the same table, CR3 and pid, and a pid
+ * that is not their thread id's business. When both are gone the process
+ * has closed the endpoint and its record is freed. */
+static volatile int      pt_sib_done, pt_first_done, pt_first_ok;
+static volatile int32_t  pt_handle;
+static volatile int      pt_pid[2], pt_tid[2];
+static volatile uint32_t pt_cr3[2];
+static struct htab *volatile pt_table[2];
+
+static void pt_note(int i) {
+    uint32_t cr3;
+    __asm__ volatile ("mov %%cr3, %0" : "=r"(cr3));
+    pt_cr3[i]   = cr3;
+    pt_pid[i]   = thread_current_pid();
+    pt_tid[i]   = thread_current_id();
+    pt_table[i] = thread_htab(thread_current_id());
+}
+
+static void pt_sibling(void) {
+    pt_note(1);
+    pt_handle = ep_create();      /* into the process's table, then leave it open */
+    pt_sib_done = 1;
+}
+
+static void pt_first(void) {
+    pt_note(0);
+    for (int i = 0; i < 2000 && !pt_sib_done; i++) yield();
+    for (int i = 0; i < 50; i++) yield();   /* let the sibling exit, and be reaped */
+    struct endpoint *ep = pt_sib_done && pt_handle > 0
+                        ? ep_from_handle(pt_handle, HRIGHT_RECV, NULL) : NULL;
+    pt_first_ok = ep != NULL;
+    ep_put(ep);
+    pt_first_done = 1;
+}
+
+static int test_proc_threads(void) {
+    uint32_t procs0 = proc_live();
+    uint32_t eps0   = kobj_live(KOBJ_ENDPOINT);
+    pt_sib_done = pt_first_done = pt_first_ok = 0;
+    pt_handle = -1;
+
+    struct addr_space space;
+    if (addr_space_create(&space) != 0) return 0;
+    int first = thread_create_process("pt-first", pt_first);
+    if (first < 0) { addr_space_destroy(&space); return 0; }
+    thread_set_space(first, space.pd_phys);
+    int sib = thread_create_sibling(first, "pt-sibling", pt_sibling);
+    if (sib < 0) { thread_discard(first); addr_space_destroy(&space); return 0; }
+    if (proc_live() != procs0 + 1) return 0;   /* one process, two threads */
+    thread_start(first);
+
+    for (int i = 0; i < 400 && !(pt_first_done && !thread_is_alive(first)
+                                 && !thread_is_alive(sib) && proc_live() == procs0); i++)
+        thread_sleep_ms(1);
+
+    int ok = pt_first_done && pt_first_ok
+          && pt_table[0] && pt_table[0] == pt_table[1]
+          && pt_cr3[0] == space.pd_phys && pt_cr3[1] == space.pd_phys
+          && pt_pid[0] == pt_pid[1] && pt_pid[0] != thread_current_pid()
+          && pt_tid[0] == first && pt_tid[1] == sib
+          && proc_live() == procs0                       /* the record went */
+          && kobj_live(KOBJ_ENDPOINT) == eps0;           /* and closed its handle */
+    addr_space_destroy(&space);
+    return ok;
+}
 
 /* ---- object caches on real pages (memman/ocache.h) ----
  * The host tests prove the allocator's logic; this proves its pages. A slab
@@ -2400,6 +2471,7 @@ void ktest_run(void) {
     total++; passed += report("advisory locks follow the open file", usermode_flock_test());
     total++; passed += report("ipc endpoints refcounted + reclaimed", test_ipc_endpoint_lifetime());
     total++; passed += report("object caches map and return pages", test_ocache_pages());
+    total++; passed += report("two threads share one process",   test_proc_threads());
     total++; passed += report("user copies validated at the copy",  test_user_copy_validation());
     total++; passed += report("user copy faults are recoverable",   test_user_copy_fault_recovery());
     total++; passed += report("CR0.WP: kernel obeys read-only",     test_cr0_write_protect());

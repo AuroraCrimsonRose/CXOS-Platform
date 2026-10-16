@@ -197,7 +197,7 @@ static int syscall_do(uint32_t num, uint32_t a1, uint32_t a2) {
     switch (num) {
         case SYS_CONSOLE_WRITE: {
             if (!(thread_current_caps() & GRANT_CONSOLE)) {
-                klog_u32("GRANT", SEV_WARN, "console_write DENIED for pid ", (uint32_t)thread_current_id(), LOG_COLOR_VALUE, " (no GRANT_CONSOLE)");
+                klog_u32("GRANT", SEV_WARN, "console_write DENIED for pid ", (uint32_t)thread_current_pid(), LOG_COLOR_VALUE, " (no GRANT_CONSOLE)");
                 return E_PERM;
             }
             uint32_t len = a2;
@@ -211,7 +211,7 @@ static int syscall_do(uint32_t num, uint32_t a1, uint32_t a2) {
             return (int)len;
         }
         case SYS_GETPID:
-            return thread_current_id();
+            return thread_current_pid();
         case SYS_GETUID:
             return (int)thread_current_uid();
         case SYS_EXIT:
@@ -277,14 +277,14 @@ static int syscall_do(uint32_t num, uint32_t a1, uint32_t a2) {
 
         case SYS_FILE_OP:
             if (!(thread_current_caps() & GRANT_DISK)) {
-                klog_u32("GRANT", SEV_WARN, "file_op DENIED for pid ", (uint32_t)thread_current_id(), LOG_COLOR_VALUE, " (no GRANT_DISK)");
+                klog_u32("GRANT", SEV_WARN, "file_op DENIED for pid ", (uint32_t)thread_current_pid(), LOG_COLOR_VALUE, " (no GRANT_DISK)");
                 return E_PERM;
             }
             return sys_file_op((const struct file_op_args *)a1);
 
         case SYS_FB_OP:
             if (!(thread_current_caps() & GRANT_FRAMEBUFFER)) {
-                klog_u32("GRANT", SEV_WARN, "fb_op DENIED for pid ", (uint32_t)thread_current_id(), LOG_COLOR_VALUE, " (no GRANT_FRAMEBUFFER)");
+                klog_u32("GRANT", SEV_WARN, "fb_op DENIED for pid ", (uint32_t)thread_current_pid(), LOG_COLOR_VALUE, " (no GRANT_FRAMEBUFFER)");
                 return E_PERM;
             }
             return sys_fb_op((const struct fb_op_args *)a1);
@@ -297,7 +297,7 @@ static int syscall_do(uint32_t num, uint32_t a1, uint32_t a2) {
 
         case SYS_NET_OP:
             if (!(thread_current_caps() & GRANT_NET)) {
-                klog_u32("GRANT", SEV_WARN, "net DENIED for pid ", (uint32_t)thread_current_id(), LOG_COLOR_VALUE, " (no GRANT_NET)");
+                klog_u32("GRANT", SEV_WARN, "net DENIED for pid ", (uint32_t)thread_current_pid(), LOG_COLOR_VALUE, " (no GRANT_NET)");
                 return E_PERM;
             }
             return sys_net_op((const struct net_op_args *)a1);
@@ -316,7 +316,7 @@ static int syscall_do(uint32_t num, uint32_t a1, uint32_t a2) {
 
         case SYS_POWER:
             if (!(thread_current_caps() & GRANT_POWER)) {
-                klog_u32("GRANT", SEV_WARN, "power DENIED for pid ", (uint32_t)thread_current_id(), LOG_COLOR_VALUE, " (no GRANT_POWER)");
+                klog_u32("GRANT", SEV_WARN, "power DENIED for pid ", (uint32_t)thread_current_pid(), LOG_COLOR_VALUE, " (no GRANT_POWER)");
                 return E_PERM;
             }
             if (a1 == POWER_REBOOT)   power_reboot();     /* does not return */
@@ -331,7 +331,7 @@ static int syscall_do(uint32_t num, uint32_t a1, uint32_t a2) {
                a grant bit every program would have to hold. */
             if (!user_ptr_writable(a1, sizeof(struct mem_op_args))) return E_FAULT;
             struct mem_op_args *m = (struct mem_op_args *)a1;
-            int pid = thread_current_id();
+            int pid = thread_current_pid();   /* the quota is the process's */
             switch (m->op) {
                 case MEM_OP_MAP:   return vm_map(pid, m);
                 case MEM_OP_UNMAP: return vm_unmap(pid, m->addr, m->length);
@@ -1258,7 +1258,7 @@ int process_create_ring3_as_user(const char *name, const void *blob, uint32_t bl
  * A CPU exception while in ring 3 kills the offending process instead of
  * panicking the kernel - a buggy user program can't take the system down. */
 static void usermode_fault(struct registers *r) {
-    int pid = thread_current_id();
+    int pid = thread_current_pid();
 
     klog_u32("USERMODE", SEV_ERR, "user process ", (uint32_t)pid, LOG_COLOR_VALUE, " faulted");
     klog_child_u32("exception: ", r->int_no, LOG_COLOR_VALUE, "");

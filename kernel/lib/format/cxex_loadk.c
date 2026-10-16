@@ -59,7 +59,7 @@ static int k_charge(void *ctx, uint32_t pages) {
     /* pages <= CXEX_LOAD_MAX_PAGES (64 MB) by the time the loader calls this, so
        the shift into bytes cannot wrap - and vm_charge checks for a wrap anyway,
        which is the check that holds if the cap ever moves. */
-    return vm_charge(thread_current_id(), pages * 4096u) == E_OK ? 0 : -1;
+    return vm_charge(thread_current_pid(), pages * 4096u) == E_OK ? 0 : -1;
 }
 
 const struct cxex_load_ops cxex_kernel_load_ops = {

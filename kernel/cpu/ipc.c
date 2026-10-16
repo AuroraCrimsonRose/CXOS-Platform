@@ -32,12 +32,13 @@ static void ep_last_handle(struct kobj *o) {
     if (!ep->active) return;
     ep->active = 0;
 
-    if (ep->recv_blocked) {
-        ep->recv_blocked = 0;
-        thread_unblock(ep->owner_pid);
+    if (ep->recv_tid != -1) {
+        int t = ep->recv_tid;
+        ep->recv_tid = -1;
+        thread_unblock(t);
     }
-    if (ep->caller_pid != -1)
-        thread_unblock(ep->caller_pid);
+    if (ep->caller_tid != -1)
+        thread_unblock(ep->caller_tid);
 }
 
 /* Last reference: the endpoint goes back to its cache. The cache fills it with
@@ -73,7 +74,7 @@ static int count_owned(void *obj, void *ctx) {
 }
 
 int ep_create(void) {
-    int me = thread_current_id();
+    int me = thread_current_pid();   /* the quota is the process's */
 
     struct owned o = { me, 0 };
     ocache_walk(&ep_cache, count_owned, &o);
@@ -88,13 +89,14 @@ int ep_create(void) {
     }
     ep->active       = 1;
     ep->owner_pid    = me;
-    ep->recv_blocked = 0;
+    ep->recv_tid     = -1;
+    ep->caller_tid   = -1;
     ep->caller_pid   = -1;
     ep->reply_ptr    = NULL;
     ep->reply_cap    = 0;
     ep->msg_len      = 0;
 
-    int32_t h = htab_install(thread_htab(me), &ep->hdr, HRIGHT_RECV | HRIGHT_DUPLICATE, 0);
+    int32_t h = htab_install(thread_htab(thread_current_id()), &ep->hdr, HRIGHT_RECV | HRIGHT_DUPLICATE, 0);
     /* The creator's reference goes either way: on success the handle holds
        the endpoint; on failure this was the only reference, and it goes back
        to its cache here. */
@@ -105,9 +107,9 @@ int ep_create(void) {
 /* A further handle onto an existing endpoint - spawn.c hands every child a
    SEND right to the broker's. Each handle is a reference, which is exactly why
    the first close must not free. */
-int32_t ep_install_handle(int pid, struct endpoint *ep, uint32_t rights, uint32_t parent_grant) {
+int32_t ep_install_handle(int tid, struct endpoint *ep, uint32_t rights, uint32_t parent_grant) {
     if (!ep || !ep->active) return E_BADF;
-    return htab_install(thread_htab(pid), &ep->hdr, rights, parent_grant);
+    return htab_install(thread_htab(tid), &ep->hdr, rights, parent_grant);
 }
 
 struct endpoint *ep_from_handle(int32_t h, uint32_t need_rights, uint32_t *grant) {
@@ -145,22 +147,23 @@ static int call_on(struct endpoint *ep, const struct ipc_call_args *ap) {
 
     /* Before anything writes ep->buf: it still holds an in-flight
        transaction's message if one is live. */
-    if (ep->caller_pid != -1) return E_AGAIN;   /* single in-flight (v1) */
+    if (ep->caller_tid != -1) return E_AGAIN;   /* single in-flight (v1) */
 
     if (user_copy_in(ep->buf, (uint32_t)a.req, a.req_len) != 0) return E_FAULT;
     ep->msg_len    = a.req_len;
     ep->reply_ptr  = a.reply;
     ep->reply_cap  = a.reply_cap;
-    ep->caller_pid = thread_current_id();
+    ep->caller_tid = thread_current_id();
+    ep->caller_pid = thread_current_pid();   /* what ipc_recv reports */
 
-    if (ep->recv_blocked) { ep->recv_blocked = 0; thread_unblock(ep->owner_pid); }
+    if (ep->recv_tid != -1) { int t = ep->recv_tid; ep->recv_tid = -1; thread_unblock(t); }
 
     thread_block();   /* until ipc_reply wakes us; reply now staged in ep->buf */
 
     /* The last handle's hook also wakes us, so waking does not mean a reply
        arrived. */
     if (!ep->active) {
-        ep->caller_pid = -1;
+        ep->caller_tid = -1;
         return E_BADF;
     }
 
@@ -176,7 +179,7 @@ static int call_on(struct endpoint *ep, const struct ipc_call_args *ap) {
     if (rl > ep->reply_cap) rl = ep->reply_cap;
     int rc = user_copy_out((uint32_t)ep->reply_ptr, ep->buf, rl);
 
-    ep->caller_pid = -1;   /* rendezvous complete either way */
+    ep->caller_tid = -1;   /* rendezvous complete either way */
     return rc != 0 ? E_FAULT : (int)rl;
 }
 
@@ -200,8 +203,8 @@ static int recv_on(struct endpoint *ep, const struct ipc_recv_args *ap) {
     if (a.cap && !user_ptr_writable((uint32_t)a.buf, a.cap)) return E_FAULT;
     if (a.sender && !user_ptr_writable((uint32_t)a.sender, sizeof(int))) return E_FAULT;
 
-    while (ep->caller_pid == -1) {     /* no request staged yet: wait */
-        ep->recv_blocked = 1;
+    while (ep->caller_tid == -1) {     /* no request staged yet: wait */
+        ep->recv_tid = thread_current_id();
         thread_block();
 
         /* A last-handle close wakes us with no caller staged. */
@@ -239,7 +242,7 @@ int ipc_recv(const struct ipc_recv_args *ua) {
 /* owner side: stage the reply + wake the blocked caller. */
 static int reply_on(struct endpoint *ep, const struct ipc_reply_args *ap) {
     struct ipc_reply_args a = *ap;
-    if (ep->caller_pid == -1) return E_INVAL;   /* nobody waiting */
+    if (ep->caller_tid == -1) return E_INVAL;   /* nobody waiting */
     if (a.len > sizeof ep->buf) return E_RANGE;
 
     /* Read in the owner's space. A failure leaves ep->buf partially written
@@ -249,7 +252,7 @@ static int reply_on(struct endpoint *ep, const struct ipc_reply_args *ap) {
     if (user_copy_in(ep->buf, (uint32_t)a.data, a.len) != 0) return E_FAULT;
     ep->msg_len = a.len;
 
-    thread_unblock(ep->caller_pid);   /* caller resumes in ipc_call, copies reply */
+    thread_unblock(ep->caller_tid);   /* caller resumes in ipc_call, copies reply */
     return 0;
 }
 

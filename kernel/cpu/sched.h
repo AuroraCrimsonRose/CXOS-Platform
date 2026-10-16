@@ -19,7 +19,7 @@
 #define SCHED_H
 
 #include <stdint.h>
-#include "object/htab.h"
+#include "proc.h"
 
 /* MAX_THREADS is CAPACITY: the size of every per-thread table, and the bound
    on a pid. How many threads may actually be alive is a runtime LIMIT below it,
@@ -51,16 +51,10 @@ struct thread {
     uint32_t esp;              /* saved kernel stack pointer (THE context) */
     uint32_t stack_base;       /* guarded kernel stack base, from kstack_alloc (freed on exit) */
     enum thread_state state;
-    int       id;              /* PID */
+    int       id;              /* thread id (not a pid: see proc.h) */
+    struct proc *proc;         /* the process it runs in; holds a reference */
     const char *name;
-    int       is_user;         /* 1 = runs in ring 3 (a user process) */
     int       exit_code;       /* set on exit */
-    uint32_t  uid;             /* owning user id; 0 = SYSTEM (machine identity) */
-    uint32_t  cwd;             /* CXFS entry id of the working directory (0 = root) */
-    uint32_t  caps;            /* ABI v1 capability bitmask (ring-3 authority) */
-    struct htab handles;       /* the process's handle table (object/htab.h) */
-    int32_t   broker;          /* its SEND handle on its launcher's broker, or -1 (SYS_ARGS) */
-    uint32_t  pd_phys;         /* address-space page-dir phys; 0 = shared kernel space */
     uint32_t  user_stack_base; /* allocated ring-3 stack (user processes) */
     /* per-process ring-3 return state: enter_usermode saves the kernel esp +
        eflags here so SYS_EXIT (return_to_kernel) can come back, even if another
@@ -129,8 +123,20 @@ void sched_tick(void);
    switch if one is due. */
 void sched_preempt_point(void);
 
-/* the id (pid) of the currently running thread/process. */
+/* the id of the currently running thread. Not a pid: see thread_pid. */
 int thread_current_id(void);
+
+/* The process a live thread runs in, and its pid; NULL / -1 for no such
+   thread. Every accessor below that takes an id takes a THREAD id and acts on
+   that thread's process. */
+struct proc *thread_proc(int id);
+int          thread_pid(int id);
+int          thread_current_pid(void);
+
+/* A further thread in the process of thread `id`, runnable at once. It shares
+   the process's handle table, address space, caps, uid and cwd. Kernel mode
+   only for now: it gets no esp0 stack. Returns its thread id, or -1. */
+int thread_create_sibling(int id, const char *name, void (*entry)(void));
 /* a live thread's name, or 0 (for panic reports) */
 const char *thread_name(int id);
 int thread_is_alive(int id);

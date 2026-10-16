@@ -39,6 +39,7 @@ enum kobj_type {
     KOBJ_ENDPOINT = 1,   /* IPC endpoint (cpu/ipc.c) */
     KOBJ_FILE     = 2,   /* open file (cpu/sysfile.c) */
     KOBJ_TEST     = 3,   /* the self-tests' own type; nothing else creates one */
+    KOBJ_PROCESS  = 4,   /* process (cpu/proc.c) */
     KOBJ_TYPE_MAX
 };
 

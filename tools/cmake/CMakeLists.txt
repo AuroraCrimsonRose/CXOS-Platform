@@ -182,6 +182,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/drivers/char/rtc.c
     ${SRC_DIR}/kernel/cpu/usermode.c
     ${SRC_DIR}/kernel/cpu/sysrec.c
+    ${SRC_DIR}/kernel/cpu/proc.c
     ${SRC_DIR}/kernel/cpu/ipc.c
     ${SRC_DIR}/kernel/cpu/spawn.c
     ${SRC_DIR}/kernel/cpu/sysfile.c

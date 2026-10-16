@@ -21,9 +21,10 @@
 struct endpoint {
     struct kobj hdr;        /* first: the handle table holds &hdr */
     int      active;        /* not yet logically destroyed (see below) */
-    int      owner_pid;     /* holder of the RECV side (the broker) */
-    int      recv_blocked;  /* owner is blocked in ipc_recv waiting for a caller */
-    int      caller_pid;    /* a blocked ipc_call caller, or -1 */
+    int      owner_pid;     /* the process that created it (its quota); a pid */
+    int      recv_tid;      /* the thread blocked in ipc_recv on it, or -1 */
+    int      caller_tid;    /* the thread blocked in ipc_call on it, or -1 */
+    int      caller_pid;    /* and its process, which ipc_recv reports */
     void    *reply_ptr;     /* caller's reply buffer (in the caller's space) */
     uint32_t reply_cap;     /* caller's reply buffer size */
                             /* These two are the authority for the copy-out in
@@ -84,9 +85,10 @@ int ep_create(void);
 struct endpoint *ep_from_handle(int32_t h, uint32_t need_rights, uint32_t *grant);
 void ep_put(struct endpoint *ep);
 
-/* Give process `pid` a handle on an existing, active endpoint, derived from
-   the grant `parent_grant`. Returns the handle, or a negative ABI error. */
-int32_t ep_install_handle(int pid, struct endpoint *ep, uint32_t rights, uint32_t parent_grant);
+/* Give the process of thread `tid` a handle on an existing, active endpoint,
+   derived from the grant `parent_grant`. Returns the handle, or a negative
+   ABI error. */
+int32_t ep_install_handle(int tid, struct endpoint *ep, uint32_t rights, uint32_t parent_grant);
 
 /* the synchronous rendezvous (each takes a user pointer to its args struct) */
 int ipc_call(const struct ipc_call_args *ua);    /* caller (app); blocks -> reply len */

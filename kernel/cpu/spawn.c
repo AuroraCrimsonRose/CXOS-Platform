@@ -38,7 +38,7 @@
 #define USER_STACK_PAGES  64u
 #define PROC_MAX_IMAGE    (1u << 20)   /* 1 MiB cap on an image */
 
-/* per-pid record handed from proc_start to the trampoline (which runs later, on
+/* per-THREAD record (indexed by thread id) handed from proc_start to the trampoline (which runs later, on
    the new thread, in that thread's own address space). */
 struct proc_rec {
     const void       *image;     /* kernel-heap copy of the CXEX bytes */
@@ -105,7 +105,7 @@ static int build_args_page(const char *blob, uint32_t len) {
    refusal was the thing doing the draining. The frames must go while this
    thread still has the space loaded, so the order here is not negotiable:
    reclaim, then drop the bookkeeping, then leave the space, then free it. */
-static void proc_teardown(int pid, struct proc_rec *r) {
+static void proc_teardown(int tid, struct proc_rec *r) {
     if (r->image) { kfree((void *)r->image); r->image = NULL; }
     if (r->args)  { kfree((void *)r->args);  r->args  = NULL; }
 
@@ -113,11 +113,11 @@ static void proc_teardown(int pid, struct proc_rec *r) {
     addr_space_reclaim_user();         /* frees the user frames and page tables */
     /* After the reclaim, never before: that walk is what frees the frames behind
        this process's mappings, and this only drops the bookkeeping. */
-    vm_proc_reset(pid);
+    vm_proc_reset(thread_pid(tid));
     struct addr_space kspace;
     addr_space_kernel(&kspace);
     addr_space_switch(&kspace);
-    thread_set_space(pid, 0);          /* stop referencing the freed space */
+    thread_set_space(tid, 0);          /* stop referencing the freed space */
     addr_space_destroy(&self);         /* free the PD frame + unregister */
 }
 
@@ -125,8 +125,9 @@ static void proc_teardown(int pid, struct proc_rec *r) {
    before switching here). Places the image, builds a ring-3 stack, drops to user
    mode. Returns only when the process SYS_EXITs. */
 static void proc_trampoline(void) {
-    int pid = thread_current_id();
-    struct proc_rec *r = &proc_recs[pid];
+    int tid = thread_current_id();
+    int pid = thread_current_pid();
+    struct proc_rec *r = &proc_recs[tid];
 
     uint32_t entry = 0;
     int lrc = cxex_load(r->image, r->image_len, &cxex_kernel_load_ops, &entry);
@@ -136,7 +137,7 @@ static void proc_trampoline(void) {
            a quota that has no room - and which one fired is the whole content of
            the message. */
         klog("PROC", SEV_ERR, cxex_load_strerror(lrc));
-        proc_teardown(pid, r);
+        proc_teardown(tid, r);
         thread_exit();
     }
 
@@ -145,16 +146,16 @@ static void proc_trampoline(void) {
        ceiling cannot cover a stack is refused having taken nothing. */
     if (vm_charge(pid, USER_STACK_PAGES * 0x1000u) != E_OK) {
         klog("PROC", SEV_ERR, "the memory quota has no room for a user stack");
-        proc_teardown(pid, r);
+        proc_teardown(tid, r);
         thread_exit();
     }
     for (uint32_t i = 0; i < USER_STACK_PAGES; i++) {
         void *p = pmm_alloc();
-        if (!p) { klog("PROC", SEV_ERR, "no stack memory"); proc_teardown(pid, r); thread_exit(); }
+        if (!p) { klog("PROC", SEV_ERR, "no stack memory"); proc_teardown(tid, r); thread_exit(); }
         if (paging_map_user(USER_STACK_TOP - (i + 1) * 0x1000u, (uint32_t)p,
                             PAGE_PRESENT | PAGE_WRITE) != 0) {
             klog("PROC", SEV_ERR, "user stack is not in the user half");
-            pmm_free(p); proc_teardown(pid, r); thread_exit();
+            pmm_free(p); proc_teardown(tid, r); thread_exit();
         }
     }
     uint32_t ustack_top = USER_STACK_TOP - 16u;
@@ -163,12 +164,12 @@ static void proc_trampoline(void) {
        holding stack pages it will never use. */
     if (vm_charge(pid, 0x1000u) != E_OK) {
         klog("PROC", SEV_ERR, "the memory quota has no room for the argument page");
-        proc_teardown(pid, r);
+        proc_teardown(tid, r);
         thread_exit();
     }
     if (build_args_page(r->args, r->args_len) != 0) {
         klog("PROC", SEV_ERR, "no memory for the argument page");
-        proc_teardown(pid, r);
+        proc_teardown(tid, r);
         thread_exit();
     }
 
@@ -179,7 +180,7 @@ static void proc_trampoline(void) {
 
     /* process exited: reclaim its address space so spawning doesn't leak - the
        same teardown the failure paths above take, for the same reason. */
-    proc_teardown(pid, r);
+    proc_teardown(tid, r);
     klog_u32("PROC", SEV_INFO, "exited + reclaimed; free frames: ", pmm_free_count(), LOG_COLOR_VALUE, "");
 
     thread_exit();   /* never returns; sched_reap frees the kernel + esp0 stacks */
@@ -216,36 +217,37 @@ int proc_start(const void *image, uint32_t image_len, uint32_t caps,
     if (addr_space_create(&space) != 0) { kfree(kimg); kfree(kargs); return E_NOMEM; }
 
     /* Held until every record below is filled in: see thread_create_process. */
-    int pid = thread_create_process("proc", proc_trampoline);
-    if (pid < 0) { kfree(kimg); kfree(kargs); addr_space_destroy(&space); return E_NOMEM; }
+    int tid = thread_create_process("proc", proc_trampoline);
+    if (tid < 0) { kfree(kimg); kfree(kargs); addr_space_destroy(&space); return E_NOMEM; }
 
-    proc_recs[pid].image     = kimg;
-    proc_recs[pid].image_len = image_len;
-    proc_recs[pid].args      = kargs;
-    proc_recs[pid].args_len  = args_len;
-    proc_recs[pid].space     = space;
+    proc_recs[tid].image     = kimg;
+    proc_recs[tid].image_len = image_len;
+    proc_recs[tid].args      = kargs;
+    proc_recs[tid].args_len  = args_len;
+    proc_recs[tid].space     = space;
 
-    thread_mark_user(pid);
-    thread_set_space(pid, space.pd_phys);   /* scheduler loads this CR3 for it */
-    thread_set_caps(pid, caps);
+    thread_mark_user(tid);
+    thread_set_space(tid, space.pd_phys);   /* scheduler loads this CR3 for it */
+    thread_set_caps(tid, caps);
 
     /* Memory authority attenuates down the spawn chain the same way grants do.
        The parent is whoever is running this call: the kernel for the executive
        (not tracked, so nothing narrows the default) or a ring-3 process for
        everything it launches. */
-    vm_proc_init(pid, vm_default_quota(), thread_current_id());
+    int pid = thread_pid(tid);
+    vm_proc_init(pid, vm_default_quota(), thread_current_pid());
 
     if (broker) {
         /* The child's handle is a reference on the broker's endpoint, which
            has to outlive every one of them (see the lifetime note in
            cpu/ipc.h). Its number is whatever the table gives, so the child
            asks for it with SYS_ARGS rather than assuming one. */
-        int32_t bh = ep_install_handle(pid, broker, HRIGHT_SEND, broker_grant);
+        int32_t bh = ep_install_handle(tid, broker, HRIGHT_SEND, broker_grant);
         if (bh < 0) klog_u32("PROC", SEV_WARN, "broker handle refused: ", (uint32_t)-bh, LOG_COLOR_VALUE, "");
-        else        thread_set_broker(pid, bh);
+        else        thread_set_broker(tid, bh);
     }
-    thread_start(pid);
-    return pid;
+    thread_start(tid);
+    return pid;   /* the process, not its thread */
 }
 
 /* Check a caller-supplied argument blob before anything copies it.

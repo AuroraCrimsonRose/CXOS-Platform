@@ -1,0 +1,72 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+/* /kernel/cpu/proc.h */
+/* Aurora Tejeda / CATX Systems */
+/*
+ * Processes (docs/kernel/CX_KERNEL_PLAN.md section 3).
+ *
+ * A process owns what its threads share: the address space, the handle table,
+ * the capabilities, the uid and the working directory. A thread owns its
+ * registers, its stacks and its scheduling state, and names its process.
+ * Until this existed a process WAS a thread, and those fields sat on the
+ * thread, so two threads could not share a handle table.
+ *
+ * A process is a kernel object (KOBJ_PROCESS) from its own cache. Every
+ * thread in it holds a reference. When the last of them is reaped, the process
+ * closes every handle it holds and gives up its reference; the record goes
+ * when the last reference does (later, process handles will hold some, which
+ * is how a parent waits without zombies: plan section 4).
+ *
+ * A pid names a process, not a thread. Thread ids and pids are allocated
+ * separately, so a process keeps its pid whichever of its threads exits.
+ * The address space itself is set up and torn down by its creator
+ * (cpu/spawn.c); this file records which one the threads run in.
+ */
+#ifndef CXK_PROC_H
+#define CXK_PROC_H
+
+#include <stdint.h>
+#include "object/kobj.h"
+#include "object/htab.h"
+
+/* Pids are below this. One process needs at least one thread, so live
+   processes never outnumber live threads. */
+#define PROC_PID_MAX 64
+
+struct proc {
+    struct kobj hdr;        /* first; KOBJ_PROCESS */
+    int         pid;
+    int         threads;    /* threads naming this process, exited-unreaped included */
+    int         is_user;    /* runs ring-3 code: never uid 0 (thread_set_uid) */
+    uint32_t    uid;        /* owning user; 0 = SYSTEM */
+    uint32_t    cwd;        /* CXFS entry id of the working directory; 0 = root */
+    uint32_t    caps;       /* ABI capability bits */
+    struct htab handles;
+    int32_t     broker;     /* its SEND handle on its launcher's broker, or -1 */
+    uint32_t    pd_phys;    /* page directory its threads run in; 0 = the kernel's */
+};
+
+/* Register the type and make the cache. Once, before the first proc_create. */
+void proc_sys_init(void);
+
+/* A new process with no threads yet, inheriting uid and cwd from `parent`
+   (SYSTEM and the root if NULL) and nothing else: no caps, no handles, the
+   kernel's address space. The caller holds the one reference; proc_thread_in
+   gives one to each thread. NULL if out of pids or memory. */
+struct proc *proc_create(const struct proc *parent);
+
+/* A thread now names `p` (a reference), or no longer does. When the last
+   thread is gone, every handle closes; the record follows its last reference. */
+void proc_thread_in(struct proc *p);
+void proc_thread_gone(struct proc *p);
+
+/* Drop a reference taken by proc_create (or kobj_ref). */
+void proc_put(struct proc *p);
+
+/* The live process with this pid, or NULL. No reference is taken. */
+struct proc *proc_by_pid(int pid);
+
+/* Live processes, for the self-tests. */
+uint32_t proc_live(void);
+
+#endif
