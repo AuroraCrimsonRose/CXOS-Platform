@@ -31,6 +31,11 @@
   QEMU's emulated AMD IOMMU (`kernel/CX_DRIVERS.md`).
 - **CPU security features to probe, not assume.** No CET (needs Zen 3), no
   SMAP. SMEP is probably absent. The kernel reads CPUID and uses what exists.
+- **A test machine, not the target.** Nothing is compiled for Piledriver;
+  CXOS runs on any x86-64 CPU and detects features at boot
+  (`kernel/CX_KERNEL_PLAN.md` §2.3).
+- **Logs without serial.** A failed boot is read from the crash log kept in
+  reserved memory and saved on the next boot.
 - **Timekeeping.** The TSC is expected to run at a constant rate on this
   family; confirm with CPUID's invariant-TSC bit before relying on it.
 

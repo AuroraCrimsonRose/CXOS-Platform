@@ -56,15 +56,52 @@ later would touch every place a handle is created.
 place. Nothing records yet; the rule keeps process record and replay possible
 later.
 
-### 2.2 Architecture split
+**Safe across CPUs from the start.** Reference counts are atomic and every
+handle table has its own lock, even while one CPU runs. SMP (§8) then turns on
+without revisiting each object.
 
-`kernel/arch/x86_32/` and `kernel/arch/x86_64/` hold the CPU-specific code
-(GDT, IDT, TSS, context switch, entry stubs, paging); everything else is
-generic. Paging sits behind one interface with one implementation per
-architecture, as Haiku does (`src/system/kernel/arch/x86/paging/{32bit,pae,64bit}`).
-XNU's `osfmk/i386` beside `osfmk/kern` and NT's HAL are the same idea.
+### 2.2 Architecture layer
 
-### 2.3 x86-64 bring-up
+`kernel/arch/<arch>/` holds the CPU-specific code (GDT, IDT, TSS, context
+switch, entry stubs, paging); everything else is generic. Paging sits behind
+one interface with one implementation per architecture, as Haiku does
+(`src/system/kernel/arch/x86/paging/{32bit,pae,64bit}`). XNU's `osfmk/i386`
+beside `osfmk/kern` and NT's HAL are the same idea. The 32-bit code moves
+there first, as the baseline that still boots; it is deleted once x86-64
+passes the full boot (roadmap Phase 0.6). ARM will be the next directory.
+
+### 2.3 CPU features, detected at boot
+
+CXOS is built for any x86-64 CPU, not for the rig. The kernel reads CPUID once
+at boot into one feature table, and every optional path asks the table.
+
+- **Required:** long mode, NX, APIC, and the SSE2 that every x86-64 CPU has.
+  Without them the loader refuses with a clear message.
+- **Used where present:** SMEP, SMAP, UMIP, PCID, 1 GiB pages, XSAVE and AVX,
+  x2APIC, invariant TSC, RDRAND/RDSEED, CET (later).
+- **Counted, not assumed:** CPUs from ACPI's MADT, memory from E820 or the UEFI
+  map, devices from PCI and ACPI.
+- The kernel itself is built without SIMD (`-mno-sse` and kin). Programs are
+  built for baseline x86-64; a faster path (AVX for the compositor, say) is
+  chosen at run time.
+- **Tested both ways.** QEMU boots with a minimal CPU model and a full one, so
+  both sides of each feature check run.
+
+### 2.4 Memory layout
+
+Four-level paging, 48-bit addresses.
+
+| Range | Holds |
+|---|---|
+| `0x0000_0000_0000_0000`–`0x0000_7FFF_FFFF_FFFF` | the process (lower half); page 0 never mapped |
+| `0xFFFF_8000_0000_0000` onward | every physical page, mapped once (the direct map), NX, large pages |
+| a region above the direct map | kernel heap, kernel stacks with guard pages, device registers |
+| `0xFFFF_FFFF_8000_0000` (top 2 GiB) | the kernel image, so clang's kernel code model applies |
+
+The upper half is shared by every address space. KASLR later slides the image
+and the direct map, seeded from `cxk_boot_info.rng_seed`.
+
+### 2.5 x86-64 bring-up
 
 Long-mode paging with NX on every non-code mapping; a 64-bit GDT, IDT and TSS,
 with the double fault on an IST stack (the 32-bit task gate maps onto IST

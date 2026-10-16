@@ -41,8 +41,8 @@ One loader, two front ends (BIOS, UEFI), one shared core in C.
 
 1. **BIOS is the main path** (the rig is BIOS-only). The BIOS front end goes
    from real mode to long mode itself, as Haiku does.
-2. **Choose the kernel by CPU.** Long mode means `x86_64.xkex`; without it, the
-   32-bit kernel while it is still built, or a clear refusal.
+2. **Check the CPU.** Without long mode or NX, refuse with a clear message.
+   There is one kernel, for x86-64.
 3. **Hand over through CXBI only.** Both front ends fill `cxk_boot_info`; the
    kernel never reads a fixed address. This step can land first, on 32-bit.
 4. **Verify the kernel's signature in the loader.** With Secure Boot (already

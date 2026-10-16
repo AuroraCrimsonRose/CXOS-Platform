@@ -22,7 +22,12 @@ order, and every decision with its reason.
 | **x86-64 is the primary target, and comes first.** | The test rig is a 64-bit CPU with 8 GB (`hardware/CX_TARGET_HARDWARE.md`). Everything built for 32-bit before the move gets ported afterwards, so the move goes ahead of the IPC, display and driver work. |
 | **PAE is not a separate step.** | Long mode includes NX and the four-level page tables that PAE was a stepping stone to. |
 | **ARM is deferred until after the ecosystem phase.** | Nothing on the near path needs it, and the rig is x86. |
-| **The 32-bit kernel keeps building in CI until 64-bit catches up, then retires as a target.** | It costs little while CI runs it, and it keeps the code honest about what is architecture-specific. |
+| **x86-32 is retired.** The `x86_32_DEV` and `x86_32_RELEASE` branches stay as the reference. On this branch the 32-bit kernel and code generator are the working baseline only until their 64-bit replacements pass the full boot (Phase 0.6), then they are deleted. | The rig is 64-bit and ARM is far off; two x86 targets would double every kernel test for no user. A 32-bit port later starts from the reference branches. |
+| **Built for any x86-64 CPU; features are detected at boot.** | The rig is the first test machine, not the target. Nothing is compiled for Piledriver: the kernel reads CPUID once at boot and every optional feature is used only where it exists (`kernel/CX_KERNEL_PLAN.md` §2.3). |
+| **The kernel lives in the top half of the address space, with all physical memory mapped there.** | What every modern 64-bit kernel does; with 8 GB nothing needs mapping on demand (`kernel/CX_KERNEL_PLAN.md` §2.4). |
+| **Kernel objects are safe across CPUs from the start.** | The object model is used everywhere; atomic reference counts and locked tables now mean SMP does not revisit every object later. |
+| **A crash log that survives a reboot comes before the rig.** | A boot that fails on real hardware before the screen works shows nothing, and the rig may have no serial port to read it from. |
+| **The assembler and linker in X (stage 5) leave Phase 0.** | Nothing in the 64-bit move needs them; ld.lld already links x86-64. |
 | **BIOS boot is the main path; UEFI is second.** | The rig has BIOS only. The BIOS loader must start a 64-bit kernel itself. |
 | **GUI first, never GUI only.** | Every feature is a service with a typed IPC interface; the GUI and the CLI are both clients of it. The CLI remains the recovery and test path. |
 | **Stop and kill are separate operations with separate rights.** | Stop asks politely and forces after a deadline; it is the everyday one. Kill is absolute, immediate and unrefusable, harder to obtain, and confirmed in the UI. |
@@ -62,32 +67,38 @@ by breaking it on purpose.
 
 Done in order; each step boots with all self-tests passing before the next.
 
+Steps 1–3 land on the inherited kernel, which still boots and so checks them.
+The kernel is C, so it boots on x86-64 (step 5) before the X compiler can build
+programs for it (step 6).
+
 1. **Kernel object model.** One header for every kernel object: type,
-   reference count, rights, signalled state. Each handle records the grant it
-   came from (§5). Every syscall and IPC message passes one recording point.
-   See `kernel/CX_KERNEL_PLAN.md` §2.
-2. **Architecture split.** `kernel/arch/x86_32` and `kernel/arch/x86_64`
-   beneath generic code; paging behind one interface (Haiku's model).
-3. **Processes separate from threads.** Handle table, capabilities, uid, cwd
+   reference count, rights, signalled state, safe across CPUs. Each handle
+   records the grant it came from (§5). Every syscall and IPC message passes
+   one recording point. See `kernel/CX_KERNEL_PLAN.md` §2.1.
+2. **Processes separate from threads.** Handle table, capabilities, uid, cwd
    and address space move from the thread to a process object. Thread and
    handle tables become dynamic.
-4. **X for x86-64.** `usize` / `isize`, a target layer in both compilers, a
+3. **Architecture layer and CPU features.** CPU-specific code moves under
+   `kernel/arch/`, beneath generic code; paging behind one interface (Haiku's
+   model). CPUID is read once at boot into one feature table (`kernel/CX_KERNEL_PLAN.md` §2.2–§2.3).
+4. **Boot hands over through CXBI, and the crash log.** The kernel reads
+   `cxk_boot_info` instead of fixed addresses. A crash log in reserved memory
+   is read and saved on the next boot. See `boot/CX_BOOT.md`.
+5. **The x86-64 kernel boots.** The BIOS loader enters long mode and starts a
+   64-bit kernel in the top half (`kernel/CX_KERNEL_PLAN.md` §2.4), with NX, the 64-bit GDT, IDT and TSS
+   (IST for the double fault) and `syscall`/`sysret`. The self-test suite
+   passes, in QEMU and then on the rig.
+6. **X for x86-64.** `usize` / `isize`, a target layer in both compilers, a
    64-bit code generator held to the C# oracle by the differential tests, and
-   syscalls through the `syscall` instruction. See `language/CX_X_PLAN.md`.
-5. **Boot hands over through CXBI.** The kernel reads `cxk_boot_info` instead
-   of fixed addresses, and the BIOS loader enters long mode and starts a
-   64-bit kernel. See `boot/CX_BOOT.md`.
-6. **The x86-64 kernel boots.** Long-mode paging with NX, the 64-bit GDT, IDT
-   and TSS (with IST for the double fault), `syscall`/`sysret`, and the self-test
-   suite passing on x86-64.
-7. **Stage 5: assembler and linker in X, multi-target from the start.**
+   syscalls through the `syscall` instruction (`language/CX_X_PLAN.md`). The
+   executive starts and the full boot passes; the 32-bit kernel and code
+   generator are then deleted.
 
 Independent of the order above, and small enough to land whenever convenient:
 
 - **Close the input hole:** `SYS_INPUT_READ` and `SYS_MOUSE_READ` need no
   capability today, so any process can read keystrokes meant for another.
 - Stack protector on, seeded from boot entropy.
-- A crash log that survives a reboot.
 - Find the intermittent first-boot install failure (about 1 in 20 boots,
   `CXK_INSTALL_FORMAT_ERR`), using QEMU's whole-machine record and replay.
 
@@ -141,7 +152,8 @@ and DNS, then TCP). Audio (`system/CX_AUDIO.md`) joins here.
 
 Vulkan through Venus on virtio-gpu; the native AMD driver; the IOMMU (QEMU
 first; the rig's chipset has none); the ecosystem phase (package repository,
-key distribution, in-place updates); then ARM.
+key distribution, in-place updates); the assembler and linker in X (stage 5),
+multi-target from the start; then ARM.
 
 ---
 
