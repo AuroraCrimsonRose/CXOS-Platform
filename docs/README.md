@@ -43,7 +43,8 @@ Start with the roadmap.
 |---|---|
 | [CX_DISPLAY.md](system/CX_DISPLAY.md) | The display server, compositor, animations, trusted UI, GPU path |
 | [CX_AUDIO.md](system/CX_AUDIO.md) | The audio graph, timing, drivers, privacy |
-| [CX_FILESYSTEM.md](system/CX_FILESYSTEM.md) | The layout, the VFS layer, CXFS v3 |
+| [CX_NETWORK.md](system/CX_NETWORK.md) | The network stack as a user-space service, per-app permission, connect by name, TLS |
+| [CX_FILESYSTEM.md](system/CX_FILESYSTEM.md) | The layout, the VFS layer, CXFS v3, foreign filesystems in user space, one cache |
 
 ## Language and formats
 

@@ -29,6 +29,7 @@ order, and every decision with its reason.
 | **A crash log that survives a reboot comes before the rig.** | A boot that fails on real hardware before the screen works shows nothing, and the rig may have no serial port to read it from. |
 | **The assembler and linker in X (stage 5) leave Phase 0.** | Nothing in the 64-bit move needs them; ld.lld already links x86-64. |
 | **Syscalls are one operation each on a handle; everything else is a typed service; one `.xidl` definition generates every binding.** | Fuchsia's shape. Multiplexed `*_OP` calls hide what a program does from tracing and recording, and three hand-kept copies of the ABI drift (`kernel/CX_SYSCALLS_IPC.md`). |
+| **The network stack is a user-space service; foreign filesystems run in user space; CXFS stays in the kernel.** | Packets from the network and disks from outside are hostile input, the classic way into a kernel. The system disk is trusted and its speed matters most (`system/CX_NETWORK.md`, `system/CX_FILESYSTEM.md` §6). |
 | **Memory: object caches by type, a page database with a buddy allocator, memory objects filled on first touch, strict commit.** | The heap, bitmap and eager mappings do not scale to 8 GB and 8 cores. Strict commit means running out is an error at the call that asked, never an OOM killer. Swapping, compression and NUMA are later (`kernel/CX_KERNEL_PLAN.md` §9). |
 | **BIOS boot is the main path; UEFI is second.** | The rig has BIOS only. The BIOS loader must start a 64-bit kernel itself. |
 | **GUI first, never GUI only.** | Every feature is a service with a typed IPC interface; the GUI and the CLI are both clients of it. The CLI remains the recovery and test path. |
@@ -154,9 +155,11 @@ Independent of the order above, and small enough to land whenever convenient:
 
 ### Phase B: the minimum viable OS
 
-Carried from x86-32, now on 64-bit: X Data (done), FAT32 on the VFS, X Shell
-and a terminal, the Process Manager, basic apps, networking (UDP, then DHCP
-and DNS, then TCP). Audio (`system/CX_AUDIO.md`) joins here.
+Carried from x86-32, now on 64-bit: X Data (done), FAT32 on the VFS (as a
+user-space filesystem), X Shell and a terminal, the Process Manager, basic
+apps. Networking as a user-space service: UDP and DHCP, then DNS, then TCP,
+then IPv6, per-app permission, and connect by name with TLS
+(`system/CX_NETWORK.md`). Audio (`system/CX_AUDIO.md`) joins here.
 
 ### Later
 

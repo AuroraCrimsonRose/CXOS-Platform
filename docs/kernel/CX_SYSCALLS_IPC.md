@@ -291,10 +291,8 @@ generalised.
 
 ## 13. Open questions
 
-- **Where the network stack lives.** In the kernel as now (XNU, NT, Haiku), or
-  a user-space service (Fuchsia, Redox). A stack parsing packets from the
-  network is a large kernel attack surface; moving it out costs some speed.
-- Whether filesystems stay in the kernel behind the VFS
-  (`system/CX_FILESYSTEM.md` §3, the current plan) or become services later.
+- Settled 2026-10-16: the network stack is a user-space service
+  (`system/CX_NETWORK.md`); CXFS stays in the kernel and foreign filesystems
+  run in user space (`system/CX_FILESYSTEM.md` §6).
 - The `.xidl` syntax above is a sketch; it is settled when the generator is
   written.

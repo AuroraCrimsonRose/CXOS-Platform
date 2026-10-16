@@ -87,10 +87,62 @@ on downloaded files, indexed for live queries as in Haiku's BFS.
    tree; system information comes from APIs.
 9. **The kernel lives in its system layer** once the loader can read CXFS.
 
-## 6. Order
+## 6. Where CXOS aims to be better
 
-1. VFS layer and RAM filesystem; directory handles.
-2. Known-folders API.
-3. CXFS v3.
-4. Packages, layers, `/Local`, per-app folders, the picker, layered settings.
-5. FAT32 (Phase B) on the VFS.
+1. **Foreign filesystems run in user space.** CXFS and the RAM filesystem stay
+   in the kernel. FAT32, exFAT, ISO 9660, and reading NTFS or ext4 run as
+   services behind the VFS, because a USB stick from outside is hostile input
+   and a crafted disk image is a known way into a kernel. macOS moved FAT and
+   exFAT to user space (FSKit) for this reason; Fuchsia and Redox run every
+   filesystem there.
+2. **One cache.** File data is cached in memory objects, so reading a file and
+   mapping it see the same pages (Haiku `cache/file_cache.cpp` and
+   `vnode_store.cpp`; NT's cache manager; XNU's unified buffer cache). A
+   user-space filesystem fills pages through a pager interface, so a cached
+   read never visits its process.
+3. **Asynchronous I/O.** Requests queue with completions through the wait
+   queue; the AHCI driver keeps up to 32 commands in flight (NCQ).
+4. **Safe save.** Create an unnamed file in a directory, write it, then put it
+   in place in one atomic step that survives a crash. `std`'s save uses it, so
+   a crash never leaves a half-written document or settings file.
+5. **Change notifications and a change journal.** Watch handles report changes
+   through the wait queue (inotify, kqueue, FSEvents), and each volume keeps a
+   persistent journal of changes (NTFS's USN journal, `base/fs/ntfs/usnsup.c`;
+   macOS FSEvents), so search indexing and backup catch up after a reboot
+   without rescanning.
+6. **Crash-consistency testing.** A test run records every block write, then
+   every prefix of that record, and every reordering the write barriers allow,
+   is mounted and checked (CrashMonkey, Linux dm-log-writes). This is the
+   "prove it by breaking it" rule applied to the disk, and it is the tool for
+   the class of failure behind the intermittent install bug.
+7. **Instant copies.** Copy-on-write lets a copy share blocks until either side
+   changes (APFS `clonefile`, Linux reflink).
+8. **`/System` checked as it is read.** The signed system layers carry a hash
+   tree, so every block is verified when read, not only at install (dm-verity,
+   APFS's signed system volume).
+9. **Background scrub** of the checksums, so a failing disk is found before the
+   data is needed.
+10. **Rights on file handles:** read, write, append-only, execute, map. A
+    directory handle can never reach above itself: no `..` out of it, and no
+    symbolic link that escapes (Capsicum, Linux `RESOLVE_BENEATH`).
+11. **Quotas** per user and per app folder, charged to job budgets.
+12. **Encryption** later: per-user keys from the password, a key per file
+    (APFS, Linux fscrypt). The rig has no TPM.
+
+## 7. Order
+
+1. VFS layer and RAM filesystem; directory handles with rights.
+2. Known-folders API; safe save.
+3. One cache in memory objects; asynchronous I/O.
+4. CXFS v3, with the crash-consistency harness built alongside it; change
+   notifications and the change journal; instant copies.
+5. Packages, layers, `/Local`, per-app folders, the picker, layered settings;
+   the hash tree for `/System`.
+6. Foreign filesystems in user space: FAT32 first (Phase B), on the VFS.
+7. Later: quotas, encryption, background scrub.
+
+## 8. Open questions
+
+- **Name matching:** case-sensitive (Linux) or case-insensitive but
+  case-preserving (Windows, macOS), and which Unicode normalisation. It must
+  be settled before CXFS v3's directory index is written.
