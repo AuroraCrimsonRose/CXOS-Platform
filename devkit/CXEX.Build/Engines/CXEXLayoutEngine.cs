@@ -37,9 +37,6 @@ public static class CXEXLayoutEngine
             Flags = CXFlags.FLAG_EXECUTABLE | CXFlags.FLAG_REQUIRE_ABI_MATCH | CXFlags.FLAG_REQUIRE_ARCH_MATCH
         };
 
-        if (typeCode == CXFlags.TYPE_KERNEL)
-            layout.Flags |= CXFlags.FLAG_KERNEL_PRIV;
-
         if (loadSegments.Count == 0)
             throw new InvalidDataException("no loadable segments: there is nothing to package.");
 

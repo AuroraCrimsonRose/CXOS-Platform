@@ -62,7 +62,8 @@ public enum CXAuthFailure
 /// decision anywhere rested on the flag. It is replaced rather than deleted
 /// because the question it was trying to answer is a real one.
 ///
-/// FLAG_KERNEL_PRIV is still not consulted below, and that is the point: what
+/// The bit was retired on 2026-10-16 (bit 3 is now reserved and no writer sets it),
+/// but an old or hostile image can still carry it, and it is not consulted below. What
 /// an image may do follows from who signed it (kernel/cpu/exec.c decides that
 /// from the trust level), not from what the image says about itself.
 /// </summary>

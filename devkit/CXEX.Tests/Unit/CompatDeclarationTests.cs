@@ -53,6 +53,11 @@ public class CompatDeclarationTests
             $"type 0x{typeCode:X4} does not set FLAG_REQUIRE_ABI_MATCH: the kernel will refuse it");
         Assert.True((layout.Flags & CXFlags.FLAG_REQUIRE_ARCH_MATCH) != 0,
             $"type 0x{typeCode:X4} does not set FLAG_REQUIRE_ARCH_MATCH: the kernel will refuse it");
+
+        // Bit 3 was KERNEL_PRIV: a privilege an image claimed for itself and that
+        // nothing read. Retired 2026-10-16; no writer sets it, kernel images included.
+        Assert.True((layout.Flags & CXFlags.FLAG_RETIRED_3) == 0,
+            $"type 0x{typeCode:X4} sets retired bit 3 (was KERNEL_PRIV)");
     }
 
     [Fact]

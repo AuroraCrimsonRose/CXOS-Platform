@@ -23,7 +23,9 @@ public static class CXFlags
     public const uint FLAG_EXECUTABLE = 1 << 0;
     public const uint FLAG_RELOCATABLE = 1 << 1;
     public const uint FLAG_SIGNED = 1 << 2;
-    public const uint FLAG_KERNEL_PRIV = 1 << 3;
+    // bit 3 is retired (was FLAG_KERNEL_PRIV): reserved, never set, never reused.
+    // Privilege follows from who signed an image, not from a bit it sets on itself.
+    public const uint FLAG_RETIRED_3 = 1 << 3;
     public const uint FLAG_REQUIRE_ABI_MATCH = 1 << 4;
     public const uint FLAG_REQUIRE_ARCH_MATCH = 1 << 5;
 

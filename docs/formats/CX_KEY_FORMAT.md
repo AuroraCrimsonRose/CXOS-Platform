@@ -160,8 +160,9 @@ from nothing the artifact says about itself. There is deliberately **no**
 authority, tier or privilege field in CXEX for a signer to fill in, so there is
 nothing for a publisher to claim and nothing for a verifier to have to
 disbelieve. What an image may then do follows from its level
-(`kernel/cpu/exec.c`), never from a flag it carries — `CXEX_FLAG_KERNEL_PRIV`
-exists in the format and is deliberately not consulted by any trust decision.
+(`kernel/cpu/exec.c`), never from a flag it carries. The one flag that claimed
+otherwise, `KERNEL_PRIV`, was never consulted and was retired on 2026-10-16;
+its bit is reserved.
 
 **Importing a key can make a publisher; it can never make the platform.** The
 platform key is compared byte for byte rather than looked up, because it is

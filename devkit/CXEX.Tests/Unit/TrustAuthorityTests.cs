@@ -110,14 +110,14 @@ public class TrustAuthorityTests : IDisposable
         // The exact shape of the old defect: a publisher-signed image that
         // declares itself kernel-privileged. The flag must change nothing.
         var platform = Sign();
-        var privileged = Sign(CXFlags.FLAG_KERNEL_PRIV);
+        var privileged = Sign(CXFlags.FLAG_RETIRED_3);
 
         var store = new CXKeyStore();
         store.ImportKey(privileged.XkpkPath);
         var chain = new CXAuthChain(store, platform.Xkpk);
 
         var (exe, raw) = Load(privileged.Path);
-        Assert.True((exe.Header.Flags & CXFlags.FLAG_KERNEL_PRIV) != 0,
+        Assert.True((exe.Header.Flags & CXFlags.FLAG_RETIRED_3) != 0,
                     "the test image does not actually carry the flag, so this proves nothing");
         Assert.Equal(CXTrustLevel.Publisher, chain.Evaluate(exe, raw, out _));
     }

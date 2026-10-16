@@ -130,7 +130,7 @@ Future architectures may define additional values.
 #define FLAG_EXECUTABLE          (1 << 0)
 #define FLAG_RELOCATABLE         (1 << 1)
 #define FLAG_SIGNED             (1 << 2)
-#define FLAG_KERNEL_PRIV        (1 << 3)
+/* bit 3 retired (was FLAG_KERNEL_PRIV); reserved, never reused */
 #define FLAG_REQUIRE_ABI_MATCH  (1 << 4)
 #define FLAG_REQUIRE_ARCH_MATCH (1 << 5)
 ```

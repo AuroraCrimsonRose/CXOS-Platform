@@ -52,7 +52,9 @@
 #define CXEX_FLAG_EXECUTABLE         (1u << 0)
 #define CXEX_FLAG_RELOCATABLE        (1u << 1)
 #define CXEX_FLAG_SIGNED             (1u << 2)
-#define CXEX_FLAG_KERNEL_PRIV        (1u << 3)
+/* bit 3: RETIRED 2026-10-16. Was KERNEL_PRIV, a privilege bit an image set on
+   itself and nothing ever read; privilege follows from who signed (exec.c).
+   Reserved: writers leave it clear, readers ignore it, and it is never reused. */
 #define CXEX_FLAG_REQUIRE_ABI_MATCH  (1u << 4)
 #define CXEX_FLAG_REQUIRE_ARCH_MATCH (1u << 5)
 

@@ -128,7 +128,7 @@ public class InspectCommand : Command<InspectCommand.Settings>
         if ((f & (1u << 0)) != 0) parts.Add("EXECUTABLE");
         if ((f & (1u << 1)) != 0) parts.Add("RELOCATABLE");
         if ((f & (1u << 2)) != 0) parts.Add("SIGNED");
-        if ((f & (1u << 3)) != 0) parts.Add("KERNEL_PRIV");
+        if ((f & (1u << 3)) != 0) parts.Add("RETIRED_BIT_3 (was KERNEL_PRIV; ignored)");
         if ((f & (1u << 4)) != 0) parts.Add("REQUIRE_ABI_MATCH");
         if ((f & (1u << 5)) != 0) parts.Add("REQUIRE_ARCH_MATCH");
         return parts.Count == 0 ? "" : string.Join(" | ", parts);

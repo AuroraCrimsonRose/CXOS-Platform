@@ -508,7 +508,7 @@ The header `flags` field (extends §5.1):
 | 0 | `EXECUTABLE` | the artifact may be executed |
 | 1 | `RELOCATABLE` | may load away from `load_base` (apply reloc table) |
 | 2 | `SIGNED` | a signature block is present and must verify |
-| 3 | `KERNEL_PRIV` | requests ring-0 / kernel privilege |
+| 3 | *(retired)* | Was `KERNEL_PRIV`, "requests ring-0 privilege". Retired 2026-10-16: an image cannot grant itself privilege, nothing ever read it, and privilege follows from who signed (`CX_KEY_FORMAT.md`). Reserved: writers leave it clear, readers ignore it, never reused. |
 | 4 | `REQUIRE_ABI_MATCH` | refuse to load on ABI mismatch |
 | 5 | `REQUIRE_ARCH_MATCH` | refuse to load on arch mismatch |
 
