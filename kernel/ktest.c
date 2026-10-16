@@ -47,7 +47,6 @@
 #include "gdt.h"
 #include "idt.h"
 
-#define KERNEL_VBASE 0xC0000000u
 
 /* concise pass/fail reporter */
 /* Report a test result. Stays SILENT on success - only failures are printed,

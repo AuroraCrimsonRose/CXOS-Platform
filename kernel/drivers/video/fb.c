@@ -13,7 +13,6 @@
    struct at PHYSICAL 0x1C40, so we reach it at 0x1C40 + KERNEL_VBASE. (The
    low identity map is dropped after boot, so the raw physical address is
    unmapped - this matches how pmm.c reaches the E820 map at 0x500.) */
-#define KERNEL_VBASE    0xC0000000u
 #define PHYS_TO_VIRT(p) ((volatile void *)((uint32_t)(p) + KERNEL_VBASE))
 
 /* fixed PHYSICAL addresses where vbe.asm stashed the mode info */

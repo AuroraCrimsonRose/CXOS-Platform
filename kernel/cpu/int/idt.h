@@ -60,4 +60,10 @@ void irq_uninstall_handler(int irq);
 /* the double-fault handler: entered as its own task through a task gate */
 void double_fault_task(void);
 
+/* Kernel-fatal: an internal invariant is broken. Renders the panic screen with
+   `why`, the caller and a stack trace, saves crash.log, halts. Never for a bad
+   request, a missing device or a faulting process - those have lesser tiers
+   (docs/kernel/KERNEL_CONTRACTS.md §1). */
+__attribute__((noreturn)) void kpanic(const char *why);
+
 #endif

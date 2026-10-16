@@ -13,6 +13,7 @@
  * Severity/tag logging built on these primitives lives in lib/string/logging.c.
  */
 
+#include "paging.h"   /* KERNEL_VBASE */
 #include "console.h"
 #include "vga.h"
 #include "fb.h"
@@ -68,7 +69,7 @@ static void be_scroll_one(uint8_t a) {
         fb_scroll_rect(vp_x, vp_y, vp_w, vp_h, fb_font_height(), pal_fb((a >> 4) & 0x0F));
     } else {
         /* mirror vga.c's cell formula against the higher-half text buffer */
-        volatile uint16_t *mem = (volatile uint16_t *)(0xC0000000 + 0xB8000);
+        volatile uint16_t *mem = (volatile uint16_t *)(KERNEL_VBASE + 0xB8000);
         for (int y = 1; y < VGA_HEIGHT; y++)
             for (int x = 0; x < VGA_WIDTH; x++)
                 mem[(y - 1) * VGA_WIDTH + x] = mem[y * VGA_WIDTH + x];

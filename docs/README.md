@@ -6,6 +6,7 @@
 |---|---|
 | [CX_ABI.md](kernel/CX_ABI.md) | The syscall and capability contract (v2): numbers, capabilities, IPC, handles |
 | [PROCESS_MODEL.md](kernel/PROCESS_MODEL.md) | Ring 3, scheduling, preemption, per-process address spaces |
+| [KERNEL_CONTRACTS.md](kernel/KERNEL_CONTRACTS.md) | Failure tiers (request, process, subsystem, kernel), and where x86 assumptions are allowed to live |
 
 ## System — `system/`
 

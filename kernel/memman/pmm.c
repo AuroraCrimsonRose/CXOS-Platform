@@ -4,6 +4,7 @@
 /* Aurora Tejeda / CATX Systems */
 /* Physical Memory Manager - bitmap allocator (v5, higher-half aware). */
 
+#include "paging.h"   /* KERNEL_VBASE */
 #include "pmm.h"
 #include "align.h"
 #include "bitmap.h"
@@ -15,7 +16,6 @@
  * at 0x500 and the bitmap, placed just past the kernel near ~1 MB) live inside
  * the window, so this reaches them. pmm_alloc returns PHYSICAL addresses.
  */
-#define KERNEL_VBASE     0xC0000000u
 #define PHYS_TO_VIRT(p)  ((void *)((uint32_t)(p) + KERNEL_VBASE))
 
 /* E820 map from stage 2 (boot/mem.asm): count(word)@0x500, entries@0x504. */

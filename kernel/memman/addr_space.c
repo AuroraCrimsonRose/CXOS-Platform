@@ -8,7 +8,6 @@
 #include "pmm.h"
 #include "paging.h"
 
-#define KERNEL_VBASE  0xC0000000u
 
 /* the kernel's page directory, built by kernel.asm (a kernel symbol => virtual).
    Its physical address is (virtual - KERNEL_VBASE). */

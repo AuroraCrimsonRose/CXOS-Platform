@@ -119,8 +119,10 @@ set(KERNEL_INCLUDES
 # its own stack walker. The result is an early triple-fault-ish panic loop with
 # no obvious connection to the compiler.
 #
-# x87 stays ENABLED (no -mno-80387): kernel/lib/math/kmath.c genuinely uses
-# double, and cpu/fpu.c initialises the FPU for exactly that.
+# x87 stays ENABLED (no -mno-80387) for kernel/lib/math/kmath.c and cpu/fpu.c.
+# Neither is in the build today, deliberately: fpu.c explains that enabling FP
+# needs FPU state saved on context switch first. Leaving x87 on means wiring
+# them in is a source-list change, not a flags change.
 set(KCFLAGS --target=${CXK_TARGET} -ffreestanding -fno-pic -fno-stack-protector
             -mno-sse -mno-sse2 -mno-mmx -mno-implicit-float
             -Wall -Wextra ${CXK_DEFS} ${KERNEL_INCLUDES} -c)

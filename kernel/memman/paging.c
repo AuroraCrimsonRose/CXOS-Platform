@@ -23,7 +23,6 @@
 #include "color.h"
 #include "pmm.h"
 
-#define KERNEL_VBASE   0xC0000000u
 #define RECURSIVE_SLOT 1023
 
 /* A reserved higher-half scratch page for temporarily mapping an arbitrary

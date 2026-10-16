@@ -38,7 +38,6 @@
 #include "logging.h"
 #include "cxk_abi.h"
 
-#define KERNEL_VBASE 0xC0000000u
 
 /* ---- a CXEX image, built in a buffer ------------------------------------- */
 

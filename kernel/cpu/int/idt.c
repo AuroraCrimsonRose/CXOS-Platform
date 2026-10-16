@@ -28,7 +28,6 @@
 #include "usermode.h"   /* usercopy_start / usercopy_end / usercopy_trampoline */
 #include "serial.h"     /* the panic tee - see panic_putc_at */
 
-#define KERNEL_VBASE 0xC0000000u   /* user half is everything below it */
 
 void pic_remap(void);
 void pic_send_eoi(uint32_t int_no);
@@ -52,7 +51,7 @@ static struct idt_entry idt[256];
 static struct idt_ptr   idtp;
 
 /* higher-half VGA text buffer (physical 0xB8000 mapped at 0xC0000000+) */
-#define VGA_PANIC ((volatile uint16_t *)(0xC0000000 + 0xB8000))
+#define VGA_PANIC ((volatile uint16_t *)(KERNEL_VBASE + 0xB8000))
 #define PANIC_ATTR 0x4F00   /* white on red */
 
 static int panic_pos = 0;
@@ -214,11 +213,15 @@ void isr_handler(struct registers *r) {
        be silent and leave no trace. */
     if (recover_user_copy_fault(r)) return;
 
-    speaker_panic_tone();
+    /* Process-fatal, not kernel-fatal: the hook ends the process and never
+       returns. The panic tone used to sound before this check, so every user
+       program that crashed announced itself as a kernel panic
+       (docs/kernel/KERNEL_CONTRACTS.md section 1). */
     if ((r->cs & 3) == 3 && user_fault_hook) {
         user_fault_hook(r);
     }
 
+    speaker_panic_tone();
     panic_pos = 0;
     if (fb_active()) fb_clear(fb_rgb(0xAA, 0, 0));   /* red screen for the panic */
     panic_puts("*** KERNEL PANIC ***\n");
@@ -338,6 +341,34 @@ void double_fault_task(void) {
     panic_puts(" ESP:"); panic_puthex(f.esp);
     panic_puts("\n");
     panic_tail(f.ebp);
+}
+
+/* ---- software panic --------------------------------------------------------
+ * The kernel-fatal tier of the failure model (docs/kernel/KERNEL_CONTRACTS.md
+ * §1): an internal invariant is broken, and carrying on would run on state the
+ * kernel can no longer vouch for. Everything lesser - a bad request, a missing
+ * device, a process that faults - has its own tier and must use it.
+ *
+ * Until this existed the only way to the panic screen was a CPU exception, so
+ * a violated invariant could only be ignored or downgraded to a WARN. Same
+ * renderer, stack trace, recent log and crash.log as an exception. */
+void kpanic(const char *why) {
+    __asm__ volatile ("cli");
+    uint32_t ebp  = (uint32_t)__builtin_frame_address(0);
+    uint32_t from = (uint32_t)__builtin_return_address(0);
+
+    speaker_panic_tone();
+    panic_pos = 0;
+    if (fb_active()) fb_clear(fb_rgb(0xAA, 0, 0));
+    panic_puts("*** KERNEL PANIC ***\n");
+    panic_puts("Invariant violated: ");
+    panic_puts(why ? why : "(no reason given)");
+    panic_puts("\n");
+    panic_puts("Called from EIP: ");
+    panic_puthex(from);
+    panic_puts("\n");
+    panic_tail(ebp);   /* halts */
+    __builtin_unreachable();
 }
 
 static void (*irq_routines[16])(struct registers *) = { 0 };

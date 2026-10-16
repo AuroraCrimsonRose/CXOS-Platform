@@ -215,7 +215,7 @@ uint32_t pci_bar_mmio32(const struct pci_device *d, int index, const char *tag) 
     }
     uint32_t base = (uint32_t)b.base;
     if (base == 0) return 0;
-    if (base < 0xC0000000u) {
+    if (base < KERNEL_VBASE) {
         klog_u32(tag, SEV_WARN, "register BAR below the kernel half: ", base,
                  LOG_COLOR_VALUE, " - not visible from a process address space");
         return 0;

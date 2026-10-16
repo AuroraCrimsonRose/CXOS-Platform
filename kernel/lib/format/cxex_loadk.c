@@ -22,7 +22,6 @@
 /* The user half is everything below the higher-half kernel. Defined locally, as
    the other users of this constant do (usermode.c, paging.c, addr_space.c);
    giving it one home is engineering review §13's "localise x86 assumptions". */
-#define KERNEL_VBASE 0xC0000000u
 
 static void *k_get_page(void *ctx, uint32_t *out_phys) {
     (void)ctx;

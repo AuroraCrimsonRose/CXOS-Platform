@@ -19,6 +19,12 @@
 #define PAGE_SIZE        4096u
 #define PAGE_ENTRIES     1024          /* entries per directory / table */
 
+/* The higher-half base: the kernel lives at and above it, user space below.
+   The ONE C definition - nine files used to carry their own copy. kernel.asm
+   (KERNEL_VBASE equ) and linker.ld restate it because they cannot include a C
+   header (docs/kernel/KERNEL_CONTRACTS.md section 2). */
+#define KERNEL_VBASE     0xC0000000u
+
 /* page flags (low bits of a PDE/PTE) */
 #define PAGE_PRESENT     0x001
 #define PAGE_WRITE       0x002

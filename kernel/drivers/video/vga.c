@@ -4,13 +4,14 @@
 /* Aurora Tejeda */
 /* Text-mode VGA renderer. Stateless cell drawing + hardware cursor. */
 
+#include "paging.h"   /* KERNEL_VBASE */
 #include "vga.h"
 #include "io.h"
 
 /* higher-half VGA text buffer: physical 0xB8000 mapped at 0xC0000000 + 0xB8000
    by the boot page tables. (v4 used physical 0xB8000, which is unmapped in v5
    once the identity map is dropped.) */
-#define VGA_MEM ((volatile uint16_t *)(0xC0000000 + 0xB8000))
+#define VGA_MEM ((volatile uint16_t *)(KERNEL_VBASE + 0xB8000))
 
 /* CRT controller ports for the hardware cursor */
 #define CRTC_INDEX 0x3D4

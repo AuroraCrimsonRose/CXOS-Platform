@@ -587,7 +587,75 @@ Then v-next: shared-memory grants (bulk transfer), concurrent IPC, a second exec
 | Argument page | `USER_ARGS_BASE` = `0xBFFFF000`, one page, always mapped |
 | Max argument bytes | `USER_ARGS_MAX` = `4096` (header included) |
 | Max arguments | `USER_ARGS_MAXC` = `64` |
-| Syscalls implemented | 16 |
+| Syscalls implemented | 22 (every `SYS_*` in the header is dispatched) |
+
+---
+
+## 13. ABI structures: layout, versioning and stability
+
+The kernel engineering review (§12) asks for ABI-facing structures to be marked
+and their rules written down before the user-space surface grows. Every
+structure in `abi/cxk_abi.h` is ABI-facing, because that file holds nothing
+else.
+
+**Layout.**
+
+| Structure | Size | Used by |
+|---|---:|---|
+| `args_info` | 8 | `SYS_ARGS` |
+| `spawn_args` | 28 | `SYS_SPAWN`, `SYS_EXEC_PATH` |
+| `clock_info` | 8 | `SYS_CLOCK` |
+| `ipc_call_args` | 20 | `SYS_IPC_CALL` |
+| `ipc_recv_args` | 16 | `SYS_IPC_RECV` |
+| `ipc_reply_args` | 12 | `SYS_IPC_REPLY` |
+| `fb_op_args` | 36 | `SYS_FB_OP` |
+| `net_op_args` | 20 | `SYS_NET_OP` |
+| `mem_op_args` | 44 | `SYS_MEM_OP` |
+| `file_op_args` | 32 | `SYS_FILE_OP` |
+| `file_stat` | 32 + `FILE_NAME_MAX` (96) | `SYS_FILE_OP` stat |
+| `mouse_state` | 16 | `SYS_MOUSE_READ` |
+
+- **Every field is 4 bytes and 4-byte aligned.** So there is no padding, no
+  `packed` attribute, and no layout that depends on the compiler. A field that
+  would break this, such as a `uint16_t` or a `uint64_t`, is an ABI change and
+  is split or widened instead.
+- **The sizes are asserted** at the bottom of `cxk_abi.h`, so a change that
+  moves one fails the kernel build and names the structure. Verified: widening
+  `mouse_state.seq` to 64 bits stops the build at that assert.
+- **The x86-32 assumptions are asserted there too:** pointers and `int` are 32
+  bits. Pointer fields (`const void *image`, `int *sender`) are the ABI's one
+  real architecture dependency. A 64-bit port fails at those two asserts first,
+  which is the point: the assumption is named where it crosses the boundary
+  (`KERNEL_CONTRACTS.md` §2).
+
+**Versioning: one number for the whole contract, not one per structure.**
+`CXK_ABI_VERSION` is stamped into every CXEX image's `abi_version`, and the
+loader refuses an image built against a different one (`CXEX_LOAD_BAD_ABI`).
+So a structure can never meet a reader of a different age, and that is what
+size or version fields inside structures exist for elsewhere. Formats on disk
+are the opposite case and are versioned individually (`VERSIONING_AND_RELEASE.md`
+§3). Consequently:
+- **No structure carries a size or version field, and none needs one.**
+- **No structure carries reserved fields.** Adding a field is an ABI change: it
+  bumps `CXK_ABI_VERSION`, in the same commit as the header, the X prelude and
+  this table. Backwards compatibility is not a constraint in this repository,
+  so reserving space for it would buy nothing.
+- **Numbers are frozen within a version.** `SYS_*`, `E_*`, `GRANT_*`, the op
+  codes and `FTYPE_*` keep their values for the life of an ABI version. A
+  retired one is marked reserved, not reused (`GRANT_MEM`).
+
+**Handles** (§6): per-process, small integers, closed explicitly or at exit,
+never shared, and released by their type's registered releaser.
+
+**Errors** (§4): every call returns a non-negative result or a negative `E_*`.
+The specific code is part of the contract, which is why the self-tests assert
+the exact code rather than "some error" (`KERNEL_CONTRACTS.md` §1).
+
+**What keeps the X side honest:** `cxk check-abi` compares the X prelude with
+this header: constants by value, and structures by field order and field
+name. It does **not** compare field types. A `u16` in the prelude against a
+`uint32_t` here passes, and that is the gap the ABI generator closes (hardening
+plan, Phase 3).
 
 ---
 

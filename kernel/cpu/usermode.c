@@ -24,7 +24,6 @@
 #include "cxfs.h"
 #include "spawn.h"
 
-#define KERNEL_VBASE 0xC0000000u   /* user half is everything below the higher-half kernel */
 #include "ipc.h"
 #include "keyboard.h"
 #include "mouse.h"

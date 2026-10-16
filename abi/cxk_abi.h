@@ -486,4 +486,37 @@ struct mouse_state {
     uint32_t seq;
 };
 
+/* ---- layout lock (CX_ABI.md §13) ----
+   Every structure above crosses the user/kernel boundary, so its size is the
+   contract, not an accident of the compiler. Each field is 4 bytes and 4-byte
+   aligned, so there is no padding and no packing attribute is needed - and
+   these asserts say so in a way the compiler checks.
+
+   The first two are this ABI's x86-32 assumptions, stated at the one place
+   they cross the boundary: pointers and `int` fields are 32 bits wide. A port
+   to a 64-bit target fails HERE, at compile time, naming the assumption -
+   rather than in a syscall that reads half a pointer. Changing any size below
+   is an ABI change: bump CXK_ABI_VERSION with it. */
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+  #define CXK_ABI_STATIC_ASSERT(c, m) _Static_assert(c, m)
+#else
+  #define CXK_ABI_STATIC_ASSERT(c, m) typedef char cxk_abi_assert_##__LINE__[(c) ? 1 : -1]
+#endif
+
+CXK_ABI_STATIC_ASSERT(sizeof(void *) == 4, "CXK ABI v2 assumes 32-bit pointers in its structures");
+CXK_ABI_STATIC_ASSERT(sizeof(int)    == 4, "CXK ABI v2 assumes a 32-bit int in its structures");
+
+CXK_ABI_STATIC_ASSERT(sizeof(struct args_info)      ==  8, "ABI layout: args_info");
+CXK_ABI_STATIC_ASSERT(sizeof(struct spawn_args)     == 28, "ABI layout: spawn_args");
+CXK_ABI_STATIC_ASSERT(sizeof(struct clock_info)     ==  8, "ABI layout: clock_info");
+CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_call_args)  == 20, "ABI layout: ipc_call_args");
+CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_recv_args)  == 16, "ABI layout: ipc_recv_args");
+CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_reply_args) == 12, "ABI layout: ipc_reply_args");
+CXK_ABI_STATIC_ASSERT(sizeof(struct fb_op_args)     == 36, "ABI layout: fb_op_args");
+CXK_ABI_STATIC_ASSERT(sizeof(struct net_op_args)    == 20, "ABI layout: net_op_args");
+CXK_ABI_STATIC_ASSERT(sizeof(struct mem_op_args)    == 44, "ABI layout: mem_op_args");
+CXK_ABI_STATIC_ASSERT(sizeof(struct file_op_args)   == 32, "ABI layout: file_op_args");
+CXK_ABI_STATIC_ASSERT(sizeof(struct file_stat)      == 32 + FILE_NAME_MAX, "ABI layout: file_stat");
+CXK_ABI_STATIC_ASSERT(sizeof(struct mouse_state)    == 16, "ABI layout: mouse_state");
+
 #endif

@@ -222,9 +222,12 @@ void kmain_late(void) {
     /* Thread 0 enters ring 3 too (the self-tests do), so it needs an esp0 stack
        of its own like any process. Without one, the TSS kept whichever esp0 the
        previous thread left, and thread 0's interrupts from ring 3 landed on
-       another thread's kernel stack. */
+       another thread's kernel stack. Kernel-fatal rather than a WARN: thread 0
+       runs ring-3 self-tests next, and the esp0 invariant (PROCESS_MODEL.md §8)
+       says no thread enters ring 3 without its own. Failing a 8 KB allocation
+       this early means the stack allocator itself is broken. */
     if (thread_alloc_kstack(0) != 0)
-        klog("SCHED", SEV_WARN, "no esp0 stack for thread 0");
+        kpanic("no esp0 stack for thread 0 (PROCESS_MODEL.md section 8)");
     klog("SCHED", SEV_OK, "online");
 
     timer_init();
