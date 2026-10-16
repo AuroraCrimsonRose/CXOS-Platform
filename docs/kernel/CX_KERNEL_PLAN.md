@@ -185,8 +185,85 @@ Synchronous call and reply stays the fast path (L4, QNX). Added:
 | Area | Change |
 |---|---|
 | Locking | Spinlocks that save interrupt state; per-CPU data; a lock-order checker in debug builds (as Linux lockdep) |
-| Allocator | Size-class slab allocator, per-CPU caches later; debug builds poison freed memory, add guard zones and catch double frees |
+| Allocator | Object caches by type and size class, per-CPU magazines, a page database and buddy allocator (§9) |
 | Time | LAPIC timer and TSC; program the next deadline instead of a fixed tick; HPET as fallback |
 | Hardening | Stack protector; KASLR seeded from `cxk_boot_info.rng_seed`; SMEP and SMAP where CPUID reports them; kernel UBSan in debug builds (Serenity `Kernel/Prekernel/UBSanitizer.cpp`); control-flow integrity later |
 | Diagnostics | A crash log in reserved RAM read on the next boot; symbolised backtraces; a GDB stub over serial; a timestamped trace buffer; per-thread CPU time |
 | Scheduler | Priority classes (real-time for input and audio, normal, background); per-CPU run queues; HLT when idle |
+
+## 9. Memory
+
+Decided 2026-10-16 after comparing `kernel/memman/` with Haiku, Serenity,
+Redox, XNU and NT.
+
+### 9.1 Where it stands
+
+| Part | Today | Problem |
+|---|---|---|
+| Kernel heap (`heap.c`) | One first-fit linked list for every size | Allocating and freeing both walk the list; memory is never returned; each header sits directly before the data, so a small overflow corrupts the allocator |
+| Physical pages (`pmm.c`) | One bitmap, searched from page 0 | Up to 65,536 words per search at 8 GB; `pmm_free` checks nothing, so a double free corrupts the count; contiguous runs by linear search |
+| Process mappings (`vmregion.c`) | 32 regions per process in a fixed array | Every page allocated and zeroed when mapped; no shared memory |
+| Paging (`paging.c`) | Recursive mapping, one temporary-mapping slot | The single slot cannot serve several CPUs; new kernel page directory entries need a hook to reach live spaces |
+
+### 9.2 Kernel heap: object caches
+
+- **One cache per kernel object type**, and size-class caches behind
+  `kmalloc`. Objects of different types never share a slab, so a
+  use-after-free can only be reused as the same type (XNU `kalloc_type`,
+  `osfmk/kern/kalloc.c`).
+- **Per-CPU magazines** in front of each cache, so most allocations take no
+  lock (Haiku `slab/ObjectCache.cpp`, `ObjectDepot.cpp`; Bonwick's design).
+  Serenity's `KmallocSlabheap` (`Kernel/Heap/kmalloc.cpp`) is the simpler
+  version; NT's lookaside lists are the same idea.
+- Allocations over a page or two come straight from the page allocator.
+  Allocator records are kept away from the data. Empty slabs go back.
+- Debug builds poison freed memory, add guard zones and catch double frees.
+
+### 9.3 Physical pages
+
+- **A page database:** one record per physical page with its state (free,
+  zeroed, in use, page table, kernel) and a reference count (NT's PFN database,
+  `base/ntos/mm/pfnlist.c`; Haiku `vm_page`; Serenity `PhysicalRAMPage`).
+  About 16–32 bytes per page. Freeing a page that is already free is a panic.
+- **A buddy allocator** for contiguous runs (Serenity
+  `Kernel/Memory/PhysicalZone.cpp`, Redox `rmm/src/allocator/frame/buddy.rs`).
+- **Zones:** a pool below 4 GB for devices that address only 32 bits (the rig's
+  OHCI USB controller is one). Asking for it is part of every DMA allocation.
+- **Pages zeroed ahead of time** by a low-priority thread, kept on a zeroed
+  list (NT `MiZeroPageThread`; Haiku `page_scrubber`, `vm/vm_page.cpp`).
+- **Per-CPU page caches** once SMP is on.
+
+### 9.4 Process memory
+
+- **Memory objects** hold pages; a mapping is a view of one. Pages arrive on
+  the first touch, through the page-fault handler (Serenity
+  `AnonymousVMObject`, Haiku `VMCache`). The same objects are the shared memory
+  of IPC (§6).
+- **Regions in a balanced tree**, not a fixed array (Haiku
+  `VMUserAddressSpace`, NT's VAD tree, Serenity's `RegionTree`).
+- **Strict commit.** Mapping memory reserves its pages up front; running out
+  is a clean error from the call that asked. There is no overcommit and no OOM
+  killer (NT and Serenity; Haiku's `vm_page_reserve_pages` does the same inside
+  the kernel). Commit is charged to the process's job budget (§4), which
+  replaces `vm_charge`.
+- **Copy-on-write waits.** CXOS has no `fork`, where other systems need it
+  most; it arrives with snapshots and file mappings.
+
+### 9.5 Paging on x86-64
+
+- **The direct map** (§2.4) replaces the temporary-mapping slot and the
+  recursive mapping (Redox, Haiku x86-64).
+- **All 256 kernel top-level entries are allocated at boot**, so every address
+  space shares the kernel half and the propagation hook is deleted.
+- Where CPUID reports them: PCID, so a process switch keeps the TLB; global
+  pages for the kernel; large pages for the direct map and the kernel image.
+  TLB shootdowns are batched once SMP is on.
+
+### 9.6 Order
+
+| When | Work |
+|---|---|
+| Phase 0.1, with the object model | Object caches by type; the new `kmalloc` |
+| Phase 0.5, with the 64-bit kernel | Page database, buddy allocator with the below-4 GB zone, direct map, kernel top level at boot |
+| Phase 1, with IPC and SMP | Memory objects, pages on first touch, the region tree, strict commit, background zeroing, per-CPU caches |
+| Later | Swapping to disk, memory compression (XNU), NUMA |

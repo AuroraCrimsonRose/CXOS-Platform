@@ -28,6 +28,7 @@ order, and every decision with its reason.
 | **Kernel objects are safe across CPUs from the start.** | The object model is used everywhere; atomic reference counts and locked tables now mean SMP does not revisit every object later. |
 | **A crash log that survives a reboot comes before the rig.** | A boot that fails on real hardware before the screen works shows nothing, and the rig may have no serial port to read it from. |
 | **The assembler and linker in X (stage 5) leave Phase 0.** | Nothing in the 64-bit move needs them; ld.lld already links x86-64. |
+| **Memory: object caches by type, a page database with a buddy allocator, memory objects filled on first touch, strict commit.** | The heap, bitmap and eager mappings do not scale to 8 GB and 8 cores. Strict commit means running out is an error at the call that asked, never an OOM killer. Swapping, compression and NUMA are later (`kernel/CX_KERNEL_PLAN.md` §9). |
 | **BIOS boot is the main path; UEFI is second.** | The rig has BIOS only. The BIOS loader must start a 64-bit kernel itself. |
 | **GUI first, never GUI only.** | Every feature is a service with a typed IPC interface; the GUI and the CLI are both clients of it. The CLI remains the recovery and test path. |
 | **Stop and kill are separate operations with separate rights.** | Stop asks politely and forces after a deadline; it is the everyday one. Kill is absolute, immediate and unrefusable, harder to obtain, and confirmed in the UI. |
@@ -74,7 +75,8 @@ programs for it (step 6).
 1. **Kernel object model.** One header for every kernel object: type,
    reference count, rights, signalled state, safe across CPUs. Each handle
    records the grant it came from (§5). Every syscall and IPC message passes
-   one recording point. See `kernel/CX_KERNEL_PLAN.md` §2.1.
+   one recording point. Object caches by type replace the linked-list heap
+   (§9.2). See `kernel/CX_KERNEL_PLAN.md` §2.1.
 2. **Processes separate from threads.** Handle table, capabilities, uid, cwd
    and address space move from the thread to a process object. Thread and
    handle tables become dynamic.
@@ -86,7 +88,9 @@ programs for it (step 6).
    is read and saved on the next boot. See `boot/CX_BOOT.md`.
 5. **The x86-64 kernel boots.** The BIOS loader enters long mode and starts a
    64-bit kernel in the top half (`kernel/CX_KERNEL_PLAN.md` §2.4), with NX, the 64-bit GDT, IDT and TSS
-   (IST for the double fault) and `syscall`/`sysret`. The self-test suite
+   (IST for the double fault) and `syscall`/`sysret`; the page database, the
+   buddy allocator with a below-4 GB zone, and the direct map
+   (`kernel/CX_KERNEL_PLAN.md` §9). The self-test suite
    passes, in QEMU and then on the rig.
 6. **X for x86-64.** `usize` / `isize`, a target layer in both compilers, a
    64-bit code generator held to the C# oracle by the differential tests, and
@@ -110,7 +114,9 @@ Independent of the order above, and small enough to land whenever convenient:
    memory and thread budgets.
 2. The wait queue, and timers as handles (LAPIC timer and TSC).
 3. IPC: queued calls with reply tokens, badges, handle transfer, sealable
-   memory objects, notifications, priority passed through calls.
+   memory objects, notifications, priority passed through calls. Memory
+   objects with pages on first touch, the region tree, and strict commit
+   (`kernel/CX_KERNEL_PLAN.md` §9.4).
 4. Pipes and explicit handle passing at spawn; the shell runs from disk.
 5. User threads, futex (owner in the futex word), thread-local storage.
 6. SMP readiness: spinlocks that save interrupt state, per-CPU data, a lock
@@ -152,7 +158,8 @@ and DNS, then TCP). Audio (`system/CX_AUDIO.md`) joins here.
 
 Vulkan through Venus on virtio-gpu; the native AMD driver; the IOMMU (QEMU
 first; the rig's chipset has none); the ecosystem phase (package repository,
-key distribution, in-place updates); the assembler and linker in X (stage 5),
+key distribution, in-place updates); swapping to disk, memory compression and
+NUMA; the assembler and linker in X (stage 5),
 multi-target from the start; then ARM.
 
 ---
