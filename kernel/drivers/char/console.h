@@ -42,6 +42,11 @@ void console_font_changed(void);
 int console_cols(void);
 int console_rows(void);
 
+/* Where the next write will land, in cells. Either pointer may be null.
+   Exposed because "the cursor did not move" is how a caller - or a test - tells
+   a clear apart from a change that left the screen alone. */
+void console_cursor(int *col, int *row);
+
 /* set / get the active text attribute (fg/bg) for subsequent writes. */
 void console_set_color(uint8_t attr);
 uint8_t console_get_color(void);

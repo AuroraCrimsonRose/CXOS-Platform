@@ -147,6 +147,11 @@ void console_font_changed(void) {
     if (cy >= rows) cy = rows - 1;
 }
 
+void console_cursor(int *col, int *row) {
+    if (col) *col = cx;
+    if (row) *row = cy;
+}
+
 int console_cols(void) { return cols; }
 int console_rows(void) { return rows; }
 

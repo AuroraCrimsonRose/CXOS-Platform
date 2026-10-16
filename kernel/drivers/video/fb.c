@@ -288,13 +288,22 @@ int fb_font_select(const char *name) {
     static const char ext[] = ".xfnt";
     if (!name || !name[0]) return E_INVAL;
 
+    /* The composed filename is <name>.xfnt, and that is the name CXFS has to
+       store, so the extension counts against the name field. Measuring `name`
+       alone against CXFS_NAME_LEN accepted names cxfs_normalize_name can never
+       keep: they got as far as cxfs_stat_path and then always missed, so a
+       too-long name answered "no such font" rather than "that is not a name". */
     uint32_t n = 0;
     while (name[n]) {
-        if (n >= CXFS_NAME_LEN) return E_INVAL;
+        /* After the increment, so `n` is a LENGTH when it is measured. Tested
+           before it, as the original was, `n` is an index and the bound lands
+           one character too late - which is how the first version of this
+           rejected 60 and let 59 through, and is why both sides of the limit
+           are asserted in ktest rather than only the refusal. */
         n++;
+        if (n + (sizeof ext - 1) >= CXFS_NAME_LEN) return E_INVAL;
     }
 
-    int found = 0;
     for (unsigned d = 0; d < sizeof font_dirs / sizeof font_dirs[0]; d++) {
         const char *dir = font_dirs[d];
         uint32_t dlen = 0;
@@ -313,7 +322,6 @@ int fb_font_select(const char *name) {
         struct cxfs_entry fe;
         if (cxfs_stat_path(path, &fe) != 0)  continue;   /* not here; try the next */
         if (fe.type != CXFS_TYPE_FILE)       continue;
-        found = 1;
         if (fe.size == 0 || fe.size > sizeof font_buf) return E_INVAL;
 
         int got = cxfs_read_path(path, font_buf, (uint32_t)sizeof font_buf);
@@ -328,7 +336,11 @@ int fb_font_select(const char *name) {
         console_font_changed();
         return 0;
     }
-    return found ? E_INVAL : E_NOENT;
+    /* Falling out means no directory held the name at all. Every path that DID
+       match returns from inside the loop - a font that is present but unusable
+       is E_INVAL there - so there is no "found but rejected" case left to carry
+       out here, and a flag implying one only misleads the next reader. */
+    return E_NOENT;
 }
 
 static uint32_t fb_pack(uint32_t rgb) {
@@ -393,13 +405,24 @@ int sys_fb_op(const struct fb_op_args *ua) {
             if (n == 0) return E_INVAL;
             name[n] = '\0';
 
+            /* Only the syscall clears, and only when the GRID changed.
+               fb_font_select is also what the self-tests use, and wiping the
+               boot log out from under them would be collateral.
+
+               A different cell makes what is on screen garbage: the pixels no
+               longer line up with the rows the console believes it has, and the
+               honest response is to start again. A font with the SAME cell
+               leaves old text in old glyphs above the cursor, correctly placed
+               and perfectly readable, just in a different face - clearing for
+               that buys nothing and costs a boot log nobody can scroll back to.
+               Not hypothetical: the shell restores a saved font at startup, so
+               an unconditional clear meant every boot after the first `font`
+               command erased the boot log the moment the shell came up. */
+            uint32_t cw = font_cell_width();
+            uint32_t ch = font_cell_height();
             int rc = fb_font_select(name);
             if (rc != 0) return rc;
-            /* Only the syscall clears. What is on screen is the old cell, and a
-               user asking for a different font is asking to see it - but
-               fb_font_select is also what the self-tests use, and wiping the
-               boot log out from under them would be collateral. */
-            console_clear();
+            if (font_cell_width() != cw || font_cell_height() != ch) console_clear();
             return 0;
         }
         default: return E_INVAL;

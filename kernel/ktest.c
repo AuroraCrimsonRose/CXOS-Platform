@@ -1788,6 +1788,64 @@ static int test_console_font_disk(void) {
         ok = ok && (sys_fb_op(args) == E_NOENT);
         ok = ok && !xfnt_active();
 
+        /* ---- where the name length bound actually is ----
+         *
+         * The filename is <name>.xfnt, so the extension counts against the 64
+         * byte CXFS name field. 58 characters is the longest name that can
+         * become one (58 + 5 = 63, with room for the terminator); 59 cannot.
+         *
+         * Both halves are asserted, because a bound set one too tight is as
+         * wrong as one too loose and only the pair says where it is. And the
+         * CODES are what distinguish them: a name that could never be a
+         * filename is malformed - E_INVAL - whereas measuring the bare name
+         * against CXFS_NAME_LEN let 59 through to a lookup that always missed,
+         * answering E_NOENT, "no such font", about something that could never
+         * have been one. */
+        const char *n58 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const char *n59 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+        k = 0; while (n58[k]) { nm[k] = n58[k]; k++; } nm[k] = '\0';
+        args->text = nm;
+        ok = ok && (sys_fb_op(args) == E_NOENT);
+
+        k = 0; while (n59[k]) { nm[k] = n59[k]; k++; } nm[k] = '\0';
+        args->text = nm;
+        ok = ok && (sys_fb_op(args) == E_INVAL);
+        ok = ok && !xfnt_active();
+
+        /* ---- and a change that keeps the CELL does not clear the screen ----
+         *
+         * The one success path worth taking here, and it was not taken before.
+         * Installing term_8 first makes the syscall's change a real one with an
+         * unchanged cell, which is exactly the shape of the shell restoring a
+         * saved font at startup - and an unconditional clear there wiped the
+         * boot log at every boot once a font had been saved, with no test
+         * anywhere near it because the success path was skipped as a whole.
+         *
+         * "Did not clear" is observable as "the cursor did not move": homing
+         * the cursor is all console_clear leaves behind that is visible from
+         * in here. The row is required to be non-zero first, or a console that
+         * happened to be homed already would make the check vacuous. */
+        if (fb_font_select("term_8") == 0) {
+            const char *same = "term_8";
+            uint32_t m = 0;
+            while (same[m]) { nm[m] = same[m]; m++; }
+            nm[m] = '\0';
+            args->op   = FB_OP_SET_FONT;
+            args->text = nm;
+
+            int c0 = 0, r0 = 0;
+            console_cursor(&c0, &r0);
+            ok = ok && (r0 > 0);
+
+            ok = ok && (sys_fb_op(args) == 0);
+            ok = ok && xfnt_active() && (xfnt_height() == 8);
+
+            int c1 = 0, r1 = 0;
+            console_cursor(&c1, &r1);
+            ok = ok && (c1 == c0) && (r1 == r0);
+        }
+
         paging_unmap(va);
         pmm_free(frame);
     }
@@ -1801,8 +1859,9 @@ static int test_console_font_disk(void) {
      * test: put a DIFFERENT font at the same name in /Shared, ask for the name,
      * and require the system one.
      *
-     * fb_font_select rather than the syscall, because the syscall clears the
-     * console and this runs in the middle of the boot log.
+     * fb_font_select rather than the syscall: these fonts differ in cell size,
+     * which is precisely when the syscall clears, and this runs in the middle
+     * of the boot log.
      */
     if (cxfs_resolve("/Shared/Fonts", 0) >= 0 && fb_active()) {
         /* an 8x16 decoy, distinguishable from the real term_8 at 8x8 */
