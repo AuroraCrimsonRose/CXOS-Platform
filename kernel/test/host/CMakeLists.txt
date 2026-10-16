@@ -24,6 +24,7 @@ set(KDIR ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 set(KERNEL_SOURCES
     ${KDIR}/lib/mem/bitmap.c
     ${KDIR}/lib/crypto/sha256.c
+    ${KDIR}/object/kobj.c
 )
 
 file(GLOB TEST_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/test_*.c)
@@ -31,6 +32,7 @@ file(GLOB TEST_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/test_*.c)
 add_executable(khost_tests ${CMAKE_CURRENT_SOURCE_DIR}/runner.c ${TEST_SOURCES} ${KERNEL_SOURCES})
 
 target_include_directories(khost_tests PRIVATE ${KDIR} ${KDIR}/../abi)
+target_compile_definitions(khost_tests PRIVATE CXK_HOST_TEST)
 set_property(TARGET khost_tests PROPERTY C_STANDARD 11)
 
 target_compile_options(khost_tests PRIVATE
