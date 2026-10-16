@@ -47,9 +47,18 @@ public static class TestEnv
     public static string? AbiHeader => RepoRoot is null ? null : Path.Combine(RepoRoot, "abi", "cxk_abi.h");
 
     /// <summary>
-    /// The `cxk` CLI, if a built one can be found. Checked in the order a developer
-    /// would expect: an explicit CXK override, the copy the OS build uses, then the
-    /// Release output of CXEX.CLI.
+    /// The `cxk` CLI, if a built one can be found: an explicit CXK override, then
+    /// the Release output of CXEX.CLI from THIS tree, and only then the prebuilt
+    /// in tools/.
+    ///
+    /// <para>The order used to put tools/ first, and that meant the suites tested a
+    /// gitignored prebuilt nothing refreshes instead of the compiler in the tree.
+    /// Found 2026-10-16: the Linux tools/cxk was from 2026-10-07, so every
+    /// Differential run in the CI container had been exercising a nine-day-old
+    /// compiler. It surfaced only when a test compiled a program using an ABI
+    /// constant added since (FILE_OP_SYNC). CXEX.Tests now builds CXEX.CLI first
+    /// (a build-order reference in its csproj), so the tree's own cxk is always
+    /// present and current when a test runs.</para>
     /// </summary>
     public static string? Cxk
     {
@@ -62,8 +71,8 @@ public static class TestEnv
             string exe = OperatingSystem.IsWindows() ? "cxk.exe" : "cxk";
             foreach (string candidate in new[]
                      {
-                         Path.Combine(RepoRoot, "tools", exe),
                          Path.Combine(RepoRoot, "devkit", "CXEX.CLI", "bin", "Release", "net10.0", exe),
+                         Path.Combine(RepoRoot, "tools", exe),
                      })
             {
                 if (File.Exists(candidate)) return candidate;

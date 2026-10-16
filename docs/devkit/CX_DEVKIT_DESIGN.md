@@ -226,32 +226,21 @@ Output goes through callbacks rather than to a console: a library that writes to
 
 ---
 
-### 5.2 The cross-repo ABI coupling **[known hazard]**
+### 5.2 The ABI coupling **[resolved 2026-10-16: generated]**
 
-The kernel's syscall ABI is defined in `abi/cxk_abi.h`. The compiler needs it as X source, and carries it as `CXEX.Lang/Abi/AbiPrelude.cs`, prepended to every compilation.
+The kernel's syscall ABI is defined in `abi/cxk_abi.h`. The compiler needs it as X source, prepended to every compilation (`CXEX.Lang/Abi/AbiPrelude.cs`).
 
-**That file emits a header reading `GENERATED from cxk_abi.h — Do not edit by hand`, and nothing generates it.** It is a hand-written C# string literal, in a different repository from the header it claims to track, with no build step or test between them.
+**The history, briefly.** For a long time that prelude was a hand-written string literal, in a different repository from the header it tracked, carrying a banner that said `GENERATED from cxk_abi.h`. Nothing generated it, and it drifted: the kernel gained `SYS_MOUSE_READ` and `struct mouse_state`, the prelude did not, and the committed compiler could not compile the committed OS. `AbiSync` and `cxk check-abi` were the mitigation. Because the prelude mirrored only some families, `os/std/net.xfxn` kept a third copy of `NET_OP_*`.
 
-This is not hypothetical. The kernel gained `SYS_MOUSE_READ` and `struct mouse_state`; the prelude did not; `gui.xfxn` referenced both; and the committed compiler could not compile the committed OS. The drift was exactly one syscall and one struct — small enough to be invisible, fatal enough to break the build.
+### As built now
 
-### Mitigation, as built
+- **`abi/cxk_abi.h` is the one source.** `CXEX.Lang` embeds it at build time, and `AbiModel` reads it: integer `#define`s, OR-expressions of earlier constants, anonymous `enum`s, and structures of fixed-width integers, pointers and arrays. It **throws** on anything else, so a header construct the generator does not understand stops the build instead of being dropped.
+- **The prelude's constants and structures are generated** (`AbiModel.EmitX`): all 107 constants and 12 structures, every family included, with no notes left about unmirrored or unchecked families. The hand-written part of `AbiPrelude.cs` is only the typed `__syscall` wrappers and their notes, and it declares nothing the generator does. `NET_OP_*` left `os/std/net.xfxn`.
+- **It changed nothing it should not have.** Before the switch, the generated declarations were compared with the hand-kept ones: all 95 constants and 12 structures matched in name, value and type. Then the OS was built both ways, and every package came out byte-identical. Only the disk image differs, because it stages `prelude.xfxn` as source for the self-hosted compiler.
+- **`cxk check-abi` now catches a stale `cxk`.** It compares the header on disk with the prelude this `cxk` generates from its built-in copy, struct field **types** included (names and order alone passed a `u16` against a `uint32_t`). One parser serves both sides. `AbiSync`'s older line-by-line reading misread `GRANT_OS_BASELINE` and survives only as a fallback.
+- **Held by `AbiGeneratorTests`.** Every header constant and structure reaches the prelude exactly once, the C-to-X type mapping, refusal of what it cannot express, the type-mismatch check, and every DevKit restatement of `CXK_ABI_VERSION` (`CXEXLayoutEngine.AbiVersion`, `FormatPolicy`) agreeing with the header. `FormatPolicy`'s copy had been tied to nothing. Each test has been seen to fail against a planted defect.
 
-`CXEX.Lang/Abi/AbiSync.cs` compares the two and `cxk check-abi` runs it. `cxk os build` invokes it as a pre-flight next to the existing `cxk check`, so drift fails the build early and legibly. The prelude's banner no longer claims to be generated; it says it is hand-maintained and points at the check.
-
-**The family rule** is what makes this usable. The prelude mirrors only part of the header — `SYS_*`, `E_*`, `POWER_*`, `FB_OP_*` — and not `CAP_*` or `NET_OP_*`. Demanding total parity would report sixteen false positives on the first run and promptly be ignored, which is worse than no check at all. So: *a family with at least one member in the prelude must be complete; a family with none is reported as information.* Add one `NET_OP_` constant and the other six become required.
-
-It checks three things, in ascending order of nastiness: a constant present in the header and missing from a mirrored family; a constant whose **value** differs; and a struct whose **field order** differs. The last is the worst failure available here — a reordered struct compiles on both sides and silently corrupts every call that uses it.
-
-Still outstanding:
-
-1. **A test project.** *Decided:* `CXEX.Tests` (xUnit). Its first batch includes a unit test running `AbiSync` against the real header, so `dotnet test` becomes the gate (Q-F; `docs/planning/HARDENING_PLAN.md`, Phase 0). Until it lands, the check depends on someone running the CXK build.
-2. **Generate it.** A build step emitting `abi.x` from the header, making the old banner true. Requires both repos visible at build time, which is why the check came first.
-
-`AbiPrelude.cs` therefore remains a **manual sync point** — but now a declared and verified one. Whoever changes `cxk_abi.h` changes the prelude in the same pass, and `cxk check-abi` says so if they forget.
-
-**The drift surface is wider than this one file.** `os/std/net.xfxn` redeclares all seven `NET_OP_*` constants locally, because the prelude does not carry them — a third copy of the ABI, in a third repository location, with no link back to the header. `cxk check-abi` reports unmirrored families partly to make that visible. The same applies to the `CAP_*` bits, the CXEX header offsets in `CXEX.Build`, and the CXFS layout in `CXEX.FileSystem`.
-
-The same hazard applies to anything else duplicated across the two repos: `CAP_*` bits (already double-declared in `caps.h` and `cxk_abi.h`, but at least those two are static-checked against each other on the kernel side), CXEX header field offsets in `CXEX.Build`, and the CXFS on-disk layout in `CXEX.FileSystem`. Each is a copy of a kernel-side truth with no mechanical link back to it.
+**Still copies, and recorded as such:** the CXEX header field offsets in `CXEX.Build` and the CXFS on-disk layout in `CXEX.FileSystem` each restate a kernel-side truth. The CXEX offsets are held by the writer/reader round-trip tests and the kernel's loader tests, not by generation. They are candidates for the same treatment if they start to move.
 
 ---
 

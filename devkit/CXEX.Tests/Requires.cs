@@ -29,8 +29,8 @@ public static class Requires
     {
         Repo();
         if (TestEnv.Cxk is null)
-            Assert.Skip("no `cxk` found: looked at $CXK, tools/cxk.exe and devkit/CXEX.CLI/bin/Release/net10.0. " +
-                        "Build it with: dotnet publish devkit/CXEX.CLI -c Release");
+            Assert.Skip("no `cxk` found: looked at $CXK, devkit/CXEX.CLI/bin/Release/net10.0 and tools/. " +
+                        "Build it with: dotnet build devkit/CXEX.CLI -c Release");
         return TestEnv.Cxk!;
     }
 

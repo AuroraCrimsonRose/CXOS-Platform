@@ -13,12 +13,12 @@ namespace CXEX.CLI.Commands;
 /// <summary>
 /// Pre-flight: confirm the X ABI prelude still matches the kernel's ABI header.
 ///
-/// <para>The prelude (<c>CXEX.Lang/Abi/AbiPrelude.cs</c>) is a hand-maintained copy of
-/// <c>abi/cxk_abi.h</c> that claims in its own banner to be generated. Nothing generates
-/// it and the two live in different repositories, so it drifts silently - and when it drifts,
-/// the toolchain cannot compile the userland. That has already happened: the kernel gained
-/// <c>SYS_MOUSE_READ</c> and <c>struct mouse_state</c>, the prelude did not, and
-/// <c>gui.xfxn</c> used both.</para>
+/// <para>The prelude's constants and structures are generated from the copy of
+/// <c>abi/cxk_abi.h</c> embedded in this <c>cxk</c> when it was built
+/// (<see cref="CXEX.Lang.Abi.AbiModel"/>). So what this catches now is a <c>cxk</c> older than
+/// the header on disk. That is easy to have, because <c>tools/cxk.exe</c> is a gitignored
+/// prebuilt. The comparison includes struct field types. It used to guard a hand-kept copy in
+/// another repository, which drifted once and stopped the userland compiling.</para>
 ///
 /// <para>Run this before building CXK's userland. Exit code 0 means the mirrored surface
 /// agrees; 1 means it does not. The comparison itself lives in
@@ -97,7 +97,10 @@ public class CheckAbiCommand : Command<CheckAbiCommand.Settings>
             AnsiConsole.MarkupLine(
                 $"[red]ABI check failed:[/] {errors} difference(s) between cxk_abi.h and the X prelude.");
             AnsiConsole.MarkupLine(
-                "[grey]  Fix AbiPrelude.Generate() in CXEX.Lang/Abi/AbiPrelude.cs, then re-run.[/]");
+                "[grey]  The prelude is generated from the header this cxk was built with, so this cxk is " +
+                "older than abi/cxk_abi.h. Rebuild it (and refresh tools/cxk.exe), then re-run. If a " +
+                "rebuilt cxk still fails, the header uses something CXEX.Lang/Abi/AbiModel.cs cannot " +
+                "express yet.[/]");
             return 1;
         }
 

@@ -651,11 +651,13 @@ never shared, and released by their type's registered releaser.
 The specific code is part of the contract, which is why the self-tests assert
 the exact code rather than "some error" (`KERNEL_CONTRACTS.md` §1).
 
-**What keeps the X side honest:** `cxk check-abi` compares the X prelude with
-this header: constants by value, and structures by field order and field
-name. It does **not** compare field types. A `u16` in the prelude against a
-`uint32_t` here passes, and that is the gap the ABI generator closes (hardening
-plan, Phase 3).
+**What keeps the X side honest:** it is generated. The X prelude's constants
+and structures come from this header, embedded in `cxk` at build time
+(`CXEX.Lang/Abi/AbiModel.cs`; `CX_DEVKIT_DESIGN.md` §5.2). `cxk check-abi`
+compares this file on disk with what the running `cxk` was built from, so a
+`cxk` older than the header is caught. It compares constants by value and
+structures by field order, name **and type**. Change the header, rebuild the
+DevKit, and X follows, with nothing to edit by hand.
 
 ---
 

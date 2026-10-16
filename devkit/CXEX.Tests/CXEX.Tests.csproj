@@ -26,6 +26,9 @@
     <ProjectReference Include="../CXEX.FileType/CXEX.FileType.csproj" />
     <ProjectReference Include="../CXEX.Lang/CXEX.Lang.csproj" />
     <ProjectReference Include="../CXEX.Tools/CXEX.Tools.csproj" />
+    <!-- Build order only: the suites run the cxk this tree builds, so building
+         the tests builds it first (see TestEnv.Cxk for what went wrong without). -->
+    <ProjectReference Include="../CXEX.CLI/CXEX.CLI.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
 </Project>

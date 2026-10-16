@@ -10,10 +10,16 @@ namespace CXEX.Lang.Abi;
 /// Compares the kernel's ABI header (<c>abi/cxk_abi.h</c>) against the X prelude
 /// <see cref="AbiPrelude"/> generates, and reports anything that has drifted.
 ///
-/// <para><b>Why this exists.</b> The prelude emits a banner reading "GENERATED from
-/// cxk_abi.h - Do not edit by hand", and nothing generates it: it is a hand-maintained
-/// string literal living in a different repository from the header it claims to track.
-/// That has already broken a build once. The kernel gained <c>SYS_MOUSE_READ</c> and
+/// <para><b>What it guards now.</b> Since 2026-10-16 the prelude's constants and
+/// structures are generated from the header <c>cxk</c> was built with
+/// (<see cref="AbiModel"/>). So the drift left to catch is between the header on disk
+/// and the one built in: a <c>cxk</c> not rebuilt after the header changed. That is a
+/// real trap here, because <c>tools/cxk.exe</c> is a gitignored prebuilt.
+/// Struct fields are compared by name, order <i>and type</i>.</para>
+///
+/// <para><b>Why it was written.</b> The prelude used to be a hand-maintained string
+/// literal in a different repository from the header it claimed to track, and that
+/// broke a build once. The kernel gained <c>SYS_MOUSE_READ</c> and
 /// <c>struct mouse_state</c>, the prelude did not, and <c>gui.xfxn</c> referenced both, so
 /// the committed compiler could not compile the committed OS. The drift was exactly one
 /// syscall and one struct - small enough to be invisible, fatal enough to stop the
@@ -54,12 +60,41 @@ public static class AbiSync
         string header = StripComments(headerText);
         string prelude = StripComments(preludeText);
 
-        Dictionary<string, long> hConst = ParseCDefines(header);
-        AddCEnumMembers(header, hConst);
+        // The header is read through AbiModel - the parser that generates the
+        // prelude - so the two sides cannot disagree about what the header says.
+        // A second, looser reading here once missed GRANT_OS_BASELINE, an OR of
+        // other constants, and reported it absent. If the model cannot read the
+        // header that is itself an error, and the old line-by-line reading stands
+        // in so the rest of the report still means something.
+        AbiModel? model = null;
+        try
+        {
+            model = AbiModel.Parse(headerText);
+        }
+        catch (InvalidDataException ex)
+        {
+            report.Add(AbiFindingKind.Error, $"the ABI generator cannot read the header: {ex.Message}");
+        }
+
+        Dictionary<string, long> hConst;
+        if (model is not null)
+        {
+            hConst = model.Constants.ToDictionary(c => c.Name, c => c.Value, StringComparer.Ordinal);
+        }
+        else
+        {
+            hConst = ParseCDefines(header);
+            AddCEnumMembers(header, hConst);
+        }
         Dictionary<string, long> pConst = ParseXConsts(prelude);
 
         Dictionary<string, List<string>> hStructs = ParseCStructs(header);
         Dictionary<string, List<string>> pStructs = ParseXStructs(prelude);
+
+        // Field types: the header's through AbiModel's C-to-X mapping, the prelude's as written.
+        Dictionary<string, List<string>>? hTypes = model?.Structs
+            .ToDictionary(s => s.Name, s => s.Fields.Select(f => f.XType).ToList(), StringComparer.Ordinal);
+        Dictionary<string, List<string>> pTypes = ParseXStructTypes(prelude);
 
         report.HeaderConstants = hConst.Count;
         report.PreludeConstants = pConst.Count;
@@ -182,6 +217,22 @@ public static class AbiSync
                         $"struct {kv.Key} field {i} differs: header '{hf[i]}', prelude '{pf[i]}' " +
                         $"- field order is the layout contract, so this silently corrupts every " +
                         $"call using this struct");
+                }
+            }
+
+            // Types too. Names and order alone passed a u16 in the prelude against a
+            // uint32_t in the header: same name, same position, every later field
+            // two bytes adrift. The header's C types are mapped to X by AbiModel,
+            // the same mapping that generates the prelude.
+            if (hTypes is not null && hTypes.TryGetValue(kv.Key, out var ht) &&
+                pTypes.TryGetValue(kv.Key, out var pt) && ht.Count == pt.Count)
+            {
+                for (int i = 0; i < ht.Count; i++)
+                {
+                    if (!string.Equals(ht[i], pt[i], StringComparison.Ordinal))
+                        report.Add(AbiFindingKind.Error,
+                            $"struct {kv.Key} field '{hf[i]}' type differs: the header's C type maps to " +
+                            $"'{ht[i]}', the prelude says '{pt[i]}' - every later field is misplaced");
                 }
             }
         }
@@ -396,6 +447,26 @@ public static class AbiSync
                 fields.Add(t.Substring(0, colon).Trim());
             }
             result[m.Groups[1].Value] = fields;
+        }
+        return result;
+    }
+
+    /// <summary>Field types of each X struct, in order, whitespace removed: <c>*u8</c>, <c>[64]u8</c>.</summary>
+    private static Dictionary<string, List<string>> ParseXStructTypes(string text)
+    {
+        var result = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        foreach (Match m in Regex.Matches(
+                     text, @"^[ \t]*struct\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{([^}]*)\}",
+                     RegexOptions.Multiline | RegexOptions.Singleline))
+        {
+            var types = new List<string>();
+            foreach (string f in m.Groups[2].Value.Split(','))
+            {
+                int colon = f.IndexOf(':');
+                if (colon <= 0) continue;
+                types.Add(Regex.Replace(f[(colon + 1)..], @"\s+", ""));
+            }
+            result[m.Groups[1].Value] = types;
         }
         return result;
     }

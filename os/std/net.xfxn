@@ -17,13 +17,9 @@ import "fmt.xfxn";
 
 type ipv4 = u32;
 
-const NET_OP_STATUS:  u32 = 0;
-const NET_OP_MAC:     u32 = 1;
-const NET_OP_GET_IP:  u32 = 2;
-const NET_OP_SET_IP:  u32 = 3;
-const NET_OP_PING:    u32 = 4;
-const NET_OP_SEND:    u32 = 5;
-const NET_OP_RECV:    u32 = 6;
+// NET_OP_* come from the prelude, generated from abi/cxk_abi.h. This file
+// used to redeclare them: a third copy of the ABI, there only because the
+// hand-kept prelude had left the family out.
 
 // which field NET_OP_SET_IP writes
 const NET_FIELD_IP:      u32 = 0;
