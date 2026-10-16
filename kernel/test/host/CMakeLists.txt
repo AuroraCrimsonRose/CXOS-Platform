@@ -25,6 +25,7 @@ set(KERNEL_SOURCES
     ${KDIR}/lib/mem/bitmap.c
     ${KDIR}/lib/crypto/sha256.c
     ${KDIR}/object/kobj.c
+    ${KDIR}/object/htab.c
 )
 
 file(GLOB TEST_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/test_*.c)

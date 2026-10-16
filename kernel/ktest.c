@@ -24,6 +24,7 @@
 #include "sched.h"
 #include "gdt.h"
 #include "ipc.h"
+#include "object/htab.h"
 #include "usermode.h"
 #include "uid.h"
 #include "disk.h"
@@ -69,43 +70,79 @@ static int report(const char *name, int ok) {
    use-after-free rather than merely early.
 
    Each stage fails distinctly, so a regression says which rule broke. */
+static int ep_refs(struct endpoint *ep)    { return (int)atomic_load(&ep->hdr.refs); }
+static int ep_handles(struct endpoint *ep) { return (int)atomic_load(&ep->hdr.handles); }
+
 static int test_ipc_endpoint_lifetime(void) {
     int me       = thread_current_id();
+    struct htab *t = thread_htab(me);
     int baseline = ep_in_use_count();
+    uint32_t live = kobj_live(KOBJ_ENDPOINT);
 
-    /* 1. create then close: the slot comes back. */
+    /* 1. create then close: the slot comes back. A handle is never a small
+       number, so nothing can assume one. */
     int h = ep_create();
-    if (h < 0) return 0;
+    if (h < 256) return 0;
     if (ep_in_use_count() != baseline + 1) return 0;
+    if (kobj_live(KOBJ_ENDPOINT) != live + 1) return 0;
 
-    struct endpoint *ep = ep_from_handle(h, HRIGHT_RECV);
-    if (!ep || ep->refs != 1 || ep->handles != 1 || !ep->active) return 0;
+    struct endpoint *ep = ep_from_handle(h, HRIGHT_RECV, NULL);
+    /* the handle's reference plus this lookup's */
+    if (!ep || ep_refs(ep) != 2 || ep_handles(ep) != 1 || !ep->active) return 0;
+    ep_put(ep);
 
-    if (thread_handle_close(me, h) != 0) return 0;
+    if (htab_close(t, h) != 0) return 0;
     if (ep_in_use_count() != baseline) return 0;      /* the leak this fixes */
+    if (kobj_live(KOBJ_ENDPOINT) != live) return 0;
 
-    /* 2. a second handle is a second reference: the first close must not free. */
+    /* 2. a closed number is refused, even once its slot holds something else */
+    int stale = h;
     h = ep_create();
-    if (h < 0) return 0;
-    ep = ep_from_handle(h, HRIGHT_RECV);
-    if (!ep) return 0;
+    if (h < 0 || h == stale) return 0;
+    if (ep_from_handle(stale, 0, NULL) != NULL) return 0;
+    if (htab_close(t, stale) != E_BADF) return 0;
 
-    int h2 = ep_install_handle(me, ep, HRIGHT_SEND);
-    if (h2 < 0) return 0;
-    if (ep->refs != 2 || ep->handles != 2) return 0;
+    /* 3. a second handle is a second reference: the first close must not
+       free. It records the grant it came from. */
+    uint32_t grant = 0;
+    ep = ep_from_handle(h, HRIGHT_RECV, &grant);
+    if (!ep || grant == 0) return 0;
 
-    if (thread_handle_close(me, h) != 0) return 0;
+    int h2 = ep_install_handle(me, ep, HRIGHT_SEND, grant);
+    if (h2 < 0) { ep_put(ep); return 0; }
+    if (ep_refs(ep) != 3 || ep_handles(ep) != 2) { ep_put(ep); return 0; }
+    ep_put(ep);
+
+    struct htab_info info;
+    struct kobj *o = htab_ref(t, h2, KOBJ_ENDPOINT, 0, &info);
+    if (!o) return 0;
+    kobj_unref(o);
+    if (info.parent != grant || info.grant == grant || info.rights != HRIGHT_SEND) return 0;
+
+    if (htab_close(t, h) != 0) return 0;
     if (!ep->in_use || !ep->active) return 0;         /* must still be alive */
-    if (ep->refs != 1 || ep->handles != 1) return 0;
+    if (ep_refs(ep) != 1 || ep_handles(ep) != 1) return 0;
     if (ep_in_use_count() != baseline + 1) return 0;
 
-    /* 3. the last handle frees it, and the stale handle is a dead name. */
-    if (thread_handle_close(me, h2) != 0) return 0;
+    /* 4. rights only shrink: the SEND handle cannot become a RECV one, and
+       no handle can carry a right endpoints do not define. */
+    if (htab_dup(t, h2, HRIGHT_RECV) != E_PERM) return 0;
+    if (htab_dup(t, h2, HRIGHT_SEND | HRIGHT_RECV) != E_PERM) return 0;
+    if (ep_from_handle(h2, HRIGHT_RECV, NULL) != NULL) return 0;
+    if (ep_install_handle(me, ep, 0x80u, grant) != E_PERM) return 0;
+    int h3 = htab_dup(t, h2, HRIGHT_SEND);
+    if (h3 < 0) return 0;
+    if (ep_handles(ep) != 2) return 0;
+    if (htab_close(t, h3) != 0) return 0;
+
+    /* 5. the last handle frees it, and the stale handle is a dead name. */
+    if (htab_close(t, h2) != 0) return 0;
     if (ep_in_use_count() != baseline) return 0;
     if (ep->in_use || ep->active) return 0;
-    if (ep_from_handle(h2, HRIGHT_SEND) != NULL) return 0;
+    if (ep_from_handle(h2, HRIGHT_SEND, NULL) != NULL) return 0;
+    if (kobj_live(KOBJ_ENDPOINT) != live) return 0;
 
-    /* 4. the per-process quota holds, and releases. */
+    /* 6. the per-process quota holds, and releases. */
     int hs[MAX_ENDPOINTS_PER_PROC];
     int made = 0;
     for (int i = 0; i < MAX_ENDPOINTS_PER_PROC; i++) {
@@ -114,9 +151,10 @@ static int test_ipc_endpoint_lifetime(void) {
         made++;
     }
     int ok = (made == MAX_ENDPOINTS_PER_PROC) && (ep_create() < 0);
-    for (int i = 0; i < made; i++) thread_handle_close(me, hs[i]);
+    for (int i = 0; i < made; i++) htab_close(t, hs[i]);
     if (!ok) return 0;
     if (ep_in_use_count() != baseline) return 0;
+    if (kobj_live(KOBJ_ENDPOINT) != live) return 0;
 
     return 1;
 }

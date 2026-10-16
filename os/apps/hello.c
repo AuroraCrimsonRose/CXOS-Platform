@@ -6,7 +6,8 @@
  * Tiny CXK USER app (.xuex), capability-less. It cannot touch the console
  * directly (no GRANT_CONSOLE - that was CP2's E_PERM proof). Instead it asks its
  * broker executive to print a message on its behalf, over IPC: it ipc_calls
- * its broker endpoint (handle 0) with the text as the request, blocks until the
+ * its broker endpoint (the handle SYS_ARGS reports) with the text as the
+ * request, blocks until the
  * executive replies, then exits. The text reaching the screen - printed BY the
  * executive - is the positive half of the brokered model.
  */
@@ -18,6 +19,11 @@ static inline long ipc_call(struct ipc_call_args *a) {
     __asm__ volatile ("int $0x80" : "=a"(r) : "a"(SYS_IPC_CALL), "b"(a) : "memory");
     return r;
 }
+static inline long sys_args(struct args_info *ai) {
+    long r;
+    __asm__ volatile ("int $0x80" : "=a"(r) : "a"(SYS_ARGS), "b"(ai) : "memory");
+    return r;
+}
 static inline void sys_exit(int code) {
     __asm__ volatile ("int $0x80" : : "a"(SYS_EXIT), "b"(code) : "memory");
     for (;;) { }
@@ -27,8 +33,10 @@ static unsigned slen(const char *s) { unsigned n = 0; while (s[n]) n++; return n
 void _start(void) {
     const char *msg = "    hello from the app, printed for it by the broker\n";
     char reply[8];
+    struct args_info ai;
+    if (sys_args(&ai) != E_OK || ai.broker < 0) sys_exit(1);
     struct ipc_call_args a;
-    a.ep_handle = 0;                 /* the broker channel (installed by spawn) */
+    a.ep_handle = ai.broker;         /* the broker channel (installed by spawn) */
     a.req       = msg;
     a.req_len   = slen(msg);
     a.reply     = reply;

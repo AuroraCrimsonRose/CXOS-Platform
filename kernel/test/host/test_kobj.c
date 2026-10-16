@@ -10,33 +10,27 @@
  * started.
  */
 #include "khost.h"
-#include "object/kobj.h"
+#include "tobj.h"
 
 #include <string.h>
 
-struct tobj {
-    struct kobj hdr;
-    int         last_handle_runs;
-    int         destroy_runs;
-};
-
-static int panics;
-void kobj_panic(const char *why) { (void)why; panics++; }
+int tobj_panics;
+void kobj_panic(const char *why) { (void)why; tobj_panics++; }
 
 static void t_last_handle(struct kobj *o) { ((struct tobj *)o)->last_handle_runs++; }
 static void t_destroy(struct kobj *o)     { ((struct tobj *)o)->destroy_runs++; }
 
 static const struct kobj_ops test_ops = {
-    .name = "test", .rights_valid = 0, .last_handle = t_last_handle, .destroy = t_destroy,
+    .name = "test", .rights_valid = TOBJ_RIGHTS, .last_handle = t_last_handle, .destroy = t_destroy,
 };
 
-static void test_type(void) {
+void tobj_type(void) {
     if (!kobj_type_ops(KOBJ_TEST)) kobj_type_register(KOBJ_TEST, &test_ops);
 }
 
 KH_TEST(kobj_registration_refuses_what_could_not_work) {
     static const struct kobj_ops no_destroy = { .name = "x", .destroy = 0 };
-    test_type();
+    tobj_type();
     KH_CHECK(kobj_type_register(KOBJ_NONE, &test_ops) == -1);
     KH_CHECK(kobj_type_register(KOBJ_TYPE_MAX, &test_ops) == -1);
     KH_CHECK(kobj_type_register(KOBJ_ENDPOINT, &no_destroy) == -1);
@@ -54,7 +48,7 @@ KH_TEST(kobj_init_refuses_an_unregistered_type_and_counts_nothing) {
 }
 
 KH_TEST(kobj_last_handle_then_destroy_each_exactly_once) {
-    test_type();
+    tobj_type();
     struct tobj o;
     memset(&o, 0, sizeof o);
     uint32_t live0 = kobj_live(KOBJ_TEST);
@@ -79,7 +73,7 @@ KH_TEST(kobj_last_handle_then_destroy_each_exactly_once) {
 /* The endpoint case: a thread blocked on the object holds a reference, so the
    last handle closing makes it unreachable but must not free it. */
 KH_TEST(kobj_a_reference_outlives_the_last_handle) {
-    test_type();
+    tobj_type();
     struct tobj o;
     memset(&o, 0, sizeof o);
     KH_CHECK(kobj_init(&o.hdr, KOBJ_TEST) == 0);
@@ -96,20 +90,20 @@ KH_TEST(kobj_a_reference_outlives_the_last_handle) {
 }
 
 KH_TEST(kobj_counts_below_zero_are_reported_not_obeyed) {
-    test_type();
+    tobj_type();
     struct tobj o;
     memset(&o, 0, sizeof o);
     KH_CHECK(kobj_init(&o.hdr, KOBJ_TEST) == 0);
     kobj_unref(&o.hdr);
     KH_CHECK_EQ(o.destroy_runs, 1);
 
-    int p0 = panics;
+    int p0 = tobj_panics;
     kobj_unref(&o.hdr);                 /* a second release of a dead object */
-    KH_CHECK_EQ(panics, p0 + 1);
+    KH_CHECK_EQ(tobj_panics, p0 + 1);
     KH_CHECK_EQ(o.destroy_runs, 1);     /* not destroyed twice */
 
     kobj_handle_closed(&o.hdr);         /* a handle that was never opened */
-    KH_CHECK_EQ(panics, p0 + 2);
+    KH_CHECK_EQ(tobj_panics, p0 + 2);
     KH_CHECK_EQ(o.destroy_runs, 1);
 }
 
@@ -117,11 +111,11 @@ KH_TEST(kobj_counts_below_zero_are_reported_not_obeyed) {
    against a model: nothing destroyed early, everything destroyed once, and the
    live count back where it started. */
 KH_TEST(kobj_random_lifetimes_agree_with_a_model) {
-    test_type();
+    tobj_type();
     enum { N = 8, ROUNDS = 500 };
     uint64_t seed = 0xB0B0ull;
     uint32_t live0 = kobj_live(KOBJ_TEST);
-    int p0 = panics;
+    int p0 = tobj_panics;
 
     for (int round = 0; round < ROUNDS; round++) {
         struct tobj o[N];
@@ -157,5 +151,5 @@ KH_TEST(kobj_random_lifetimes_agree_with_a_model) {
         }
     }
     KH_CHECK_EQ(kobj_live(KOBJ_TEST), live0);
-    KH_CHECK_EQ(panics, p0);
+    KH_CHECK_EQ(tobj_panics, p0);
 }

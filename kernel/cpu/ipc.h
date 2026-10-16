@@ -15,14 +15,13 @@
 #define IPC_H
 
 #include "cxk_abi.h"
-#include "handle.h"
+#include "object/kobj.h"
 #include <stdint.h>
 
 struct endpoint {
+    struct kobj hdr;        /* first: the handle table holds &hdr */
     int      in_use;        /* slot allocated out of the global pool */
     int      active;        /* not yet logically destroyed (see below) */
-    int      refs;          /* handles + in-flight operations referencing this */
-    int      handles;       /* handles alone; the last one going destroys it */
     int      owner_pid;     /* holder of the RECV side (the broker) */
     int      recv_blocked;  /* owner is blocked in ipc_recv waiting for a caller */
     int      caller_pid;    /* a blocked ipc_call caller, or -1 */
@@ -43,17 +42,19 @@ struct endpoint {
  * endpoint (cpu/spawn.c). Freeing on the first close would therefore be a
  * use-after-free, not merely early.
  *
- * So lifetime is a count, and destruction is two-phase - the shape Haiku's
- * ports and Mach's ip_active / ip_references both use:
+ * So lifetime is the kernel object's two counts (object/kobj.h), and
+ * destruction is two-phase - the shape Haiku's ports and Mach's ip_active /
+ * ip_references both use:
  *
- *   refs    every handle holds one, and every in-flight ipc_* operation holds
- *           one across the part where it can block. The slot returns to the
- *           pool when this reaches zero, and not before.
- *   active  cleared the moment the last *handle* goes. The slot may still be
- *           alive, because a blocked thread holds a reference, but it is
- *           closed for business: every entry point refuses, and anyone already
- *           blocked on it is woken to find that out rather than waiting
- *           forever.
+ *   refs    every handle holds one, and so does every ipc_* operation, from
+ *           its lookup until it returns, across the part where it can block.
+ *           The slot returns to the pool when this reaches zero, and not
+ *           before.
+ *   active  cleared by the last *handle* going (the type's last_handle hook).
+ *           The slot may still be alive, because a blocked thread holds a
+ *           reference, but it is closed for business: every entry point
+ *           refuses, and anyone already blocked on it is woken to find that
+ *           out rather than waiting forever.
  *
  * Keeping the two separate is the point. One counter cannot express "nobody
  * can reach this any more, but a thread is still standing on it".
@@ -64,16 +65,7 @@ struct endpoint {
    which is the denial a global limit alone does not prevent. */
 #define MAX_ENDPOINTS_PER_PROC 8
 
-/* Take a reference. The endpoint must already hold one. */
-void ep_acquire(struct endpoint *ep);
-
-/* Drop a reference, returning the slot to the pool at zero. */
-void ep_release(struct endpoint *ep);
-
-/* Handle-close hook, registered with handle_set_release(HANDLE_ENDPOINT). */
-void ep_handle_release(struct cap_handle *h);
-
-/* Register that hook. Called once during boot. */
+/* Register the endpoint type. Called once during boot. */
 void ipc_init(void);
 
 /* Endpoints currently allocated. For the self-tests, which assert that a
@@ -81,17 +73,19 @@ void ipc_init(void);
 int ep_in_use_count(void);
 
 /* ep_create: allocate an endpoint owned by the caller + install a RECV handle.
-   Returns the handle index, or a negative ABI error. (GRANT_ENDPOINT, checked by
+   Returns the handle, or a negative ABI error. (GRANT_ENDPOINT, checked by
    the dispatcher.) */
 int ep_create(void);
 
-/* resolve a handle index to its endpoint, requiring `need_rights`. */
-struct endpoint *ep_from_handle(int idx, uint8_t need_rights);
+/* Resolve one of the caller's handles to its endpoint, requiring
+   `need_rights`. The endpoint comes back with a reference the caller must
+   drop with ep_put. `grant`, if given, receives the handle's grant id. */
+struct endpoint *ep_from_handle(int32_t h, uint32_t need_rights, uint32_t *grant);
+void ep_put(struct endpoint *ep);
 
-/* Install an additional handle onto an existing endpoint, counting it. Use
-   this rather than thread_handle_install, which would create a handle the
-   endpoint does not know about and so cannot outlive. */
-int ep_install_handle(int pid, struct endpoint *ep, uint8_t rights);
+/* Give process `pid` a handle on an existing, active endpoint, derived from
+   the grant `parent_grant`. Returns the handle, or a negative ABI error. */
+int32_t ep_install_handle(int pid, struct endpoint *ep, uint32_t rights, uint32_t parent_grant);
 
 /* the synchronous rendezvous (each takes a user pointer to its args struct) */
 int ipc_call(const struct ipc_call_args *ua);    /* caller (app); blocks -> reply len */

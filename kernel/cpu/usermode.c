@@ -18,7 +18,7 @@
 #include "color.h"
 #include "fb.h"
 #include "caps.h"
-#include "handle.h"
+#include "object/htab.h"
 #include "spawn.h"
 #include "sysfile.h"
 #include "cxfs.h"
@@ -232,6 +232,7 @@ int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
             struct args_info *ai = (struct args_info *)a1;
             ai->base  = USER_ARGS_BASE;
             ai->count = *(const uint32_t *)USER_ARGS_BASE;
+            ai->broker = thread_broker(thread_current_id());
             return E_OK;
         }
 
@@ -337,7 +338,11 @@ int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
             return ep_create();
 
         case SYS_HANDLE_CLOSE:
-            return thread_handle_close(thread_current_id(), (int)a1);
+            return htab_close(thread_htab(thread_current_id()), (int32_t)a1);
+
+        case SYS_HANDLE_DUPLICATE:
+            /* Unprivileged: a duplicate is never more authority than its source. */
+            return htab_dup(thread_htab(thread_current_id()), (int32_t)a1, a2);
 
         default:
             return E_NOSYS;
@@ -358,8 +363,8 @@ static const char user_msg[] = "                   -> ring 3 SYS_WRITE ok\n";
 void usermode_init(void) {
     /* install the syscall gate: int 0x80, DPL=3 so ring 3 can invoke it */
     idt_set_user_gate(0x80, (uint32_t)syscall_stub);
-    sysfile_init();   /* registers the HANDLE_FILE releaser */
-    ipc_init();       /* registers the HANDLE_ENDPOINT releaser */
+    sysfile_init();   /* registers the open-file object type */
+    ipc_init();       /* registers the endpoint object type */
 }
 
 /* ---- Checkpoint 3a: the minimal single-process ring-3 round-trip ---- */
@@ -503,6 +508,30 @@ int usermode_file_test(void) {
     if (ft_call(FILE_OP_WRITE, h, 0, FT_DATA, 11, 0, 0) != 11) goto done;
     step++;
     if (ft_call(FILE_OP_TELL,  h, 0, 0, 0, 0, 0) != 11) goto done;
+
+    /* --- a duplicate narrowed to read cannot write, though the file was
+       opened for both: the handle's rights decide, not the open flags. It
+       shares the open file (and so the offset), and closing it leaves the
+       file to the handle it came from. --- */
+    int d = syscall_dispatch(SYS_HANDLE_DUPLICATE, (uint32_t)h, FOPEN_READ);
+    step++;
+    if (d < 0 || d == h) goto done;
+    step++;
+    if (syscall_dispatch(SYS_HANDLE_DUPLICATE, (uint32_t)d, FOPEN_READ | FOPEN_WRITE) != E_PERM) goto done;
+    step++;
+    if (ft_call(FILE_OP_WRITE, d, 0, FT_DATA, 1, 0, 0) != E_PERM) goto done;
+    step++;
+    if (ft_call(FILE_OP_TRUNC, d, 0, 0, 0, 0, 0) != E_PERM) goto done;
+    step++;
+    if (ft_call(FILE_OP_TELL, d, 0, 0, 0, 0, 0) != 11) goto done;
+    step++;
+    if (syscall_dispatch(SYS_HANDLE_CLOSE, (uint32_t)d, 0) != E_OK) goto done;
+    step++;
+    if (sysfile_open_count() != base + 1) goto done;  /* h still holds it */
+    step++;
+    if (ft_call(FILE_OP_TELL, d, 0, 0, 0, 0, 0) != E_BADF) goto done;
+    step++;
+    if (ft_call(FILE_OP_TELL, h, 0, 0, 0, 0, 0) != 11) goto done;
 
     step++;
     if (ft_call(FILE_OP_SEEK, h, 0, 0, 0, 0, FSEEK_SET) != 0) goto done;
@@ -784,7 +813,7 @@ int usermode_file_test(void) {
     if (h < 0) goto done;
     step++;
     if (sysfile_open_count() != base + 1) goto done;
-    handle_release_all(thread_handle_table(me), CXK_MAX_HANDLES);
+    htab_close_all(thread_htab(me));
     step++;
     if (sysfile_open_count() != base) goto done;
 
@@ -794,7 +823,7 @@ done:
     if (!ok) klog_u32("KTEST", SEV_ERR, "file syscall test failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
     /* tidy up whatever got made, so a re-run starts from the same state */
     thread_set_caps(me, GRANT_DISK);
-    handle_release_all(thread_handle_table(me), CXK_MAX_HANDLES);
+    htab_close_all(thread_htab(me));
     int id;
     if ((id = cxfs_resolve(ft_join(scratch, "/kt_dir/renamed.txt"), 0)) >= 0) cxfs_delete_entry((uint32_t)id);
     if ((id = cxfs_resolve(ft_join(scratch, "/kt_dir/inner.txt"), 0))   >= 0) cxfs_delete_entry((uint32_t)id);
@@ -1034,7 +1063,7 @@ int usermode_flock_test(void) {
 
 done:
     if (!ok) klog_u32("KTEST", SEV_ERR, "file lock test failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
-    handle_release_all(thread_handle_table(me), CXK_MAX_HANDLES);
+    htab_close_all(thread_htab(me));
     /* a helper still waiting is woken by the release above; let it finish */
     for (int i = 0; i < 50 && fl_stage > 0 && fl_stage < 3; i++) yield();
     ft_call(FILE_OP_SYNC, 0, 0, 0, 0, 0, 0);                /* runs any deferred delete */

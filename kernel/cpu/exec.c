@@ -72,7 +72,7 @@ static int min_trust_for(uint16_t type_code) {
 }
 
 int cxex_exec_as(const uint8_t *file, size_t len, uint32_t caps, struct endpoint *broker,
-                 const char *args, uint32_t args_len) {
+                 uint32_t broker_grant, const char *args, uint32_t args_len) {
     /* INTEGRITY FIRST, before this code forms any opinion about the image.
        keyvault_trust_of establishes that the bytes are what the signer signed,
        and only then says who that was - so a negative here means unsigned,
@@ -102,7 +102,7 @@ int cxex_exec_as(const uint8_t *file, size_t len, uint32_t caps, struct endpoint
     /* Start it as a normal ring-3 thread: its own address space, kernel stack,
        and capability tier. The scheduler handles its CR3/esp0 like any process -
        no special-casing. */
-    int pid = proc_start(file, len, caps, broker, args, args_len);
+    int pid = proc_start(file, len, caps, broker, broker_grant, args, args_len);
     return pid;   /* >= 0 pid, or a negative error */
 }
 
@@ -115,5 +115,5 @@ int cxex_exec(const uint8_t *file, size_t len) {
        verify-and-check sequence to save it. */
     struct cxex_header h;
     if (cxex_parse_header(file, len, &h) != 0) return CXEX_EXEC_LOAD_FAILED;
-    return cxex_exec_as(file, len, caps_for(h.type_code, 1 /* verified */), NULL, NULL, 0);
+    return cxex_exec_as(file, len, caps_for(h.type_code, 1 /* verified */), NULL, 0, NULL, 0);
 }

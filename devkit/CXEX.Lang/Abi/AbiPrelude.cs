@@ -79,6 +79,14 @@ fn arg_at(i: u32) -> *u8 {
     return (ai.base + head[1 + i]) as *u8;
 }
 
+// the SEND handle on this program's broker endpoint, installed by a launcher
+// that gave it one, or -1. Handles are never small numbers, so ask.
+fn broker_handle() -> i32 {
+    let ai: args_info;
+    if (args_read(&ai) != E_OK) { return 0 - 1; }
+    return ai.broker;
+}
+
 // ---- network (SYS_NET_OP; GRANT_NET) ----
 
 // ---- capabilities ----
@@ -193,6 +201,8 @@ fn shutdown() -> void                        { __syscall(SYS_POWER, POWER_SHUTDO
 fn sleep(ms: u32) -> i32                     { return __syscall(SYS_POWER, POWER_SLEEP, ms, 0, 0, 0); }
 fn ep_create() -> i32                        { return __syscall(SYS_EP_CREATE, 0, 0, 0, 0, 0); }
 fn handle_close(h: i32) -> i32               { return __syscall(SYS_HANDLE_CLOSE, h as u32, 0, 0, 0, 0); }
+// a second handle on the same object with `rights`, a subset of h's own
+fn handle_duplicate(h: i32, rights: u32) -> i32 { return __syscall(SYS_HANDLE_DUPLICATE, h as u32, rights, 0, 0, 0); }
 
 fn ipc_call(a: *ipc_call_args) -> i32   { return __syscall(SYS_IPC_CALL, a as u32, 0, 0, 0, 0); }
 fn ipc_recv(a: *ipc_recv_args) -> i32   { return __syscall(SYS_IPC_RECV, a as u32, 0, 0, 0, 0); }

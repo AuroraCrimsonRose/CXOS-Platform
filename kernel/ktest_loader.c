@@ -548,7 +548,7 @@ int ktest_spawn_verifies_image(void) {
     ok = (rc == CXEX_EXEC_VERIFY_FAILED);
 
 done:
-    if (h >= 0) thread_handle_close(thread_current_id(), h);
+    if (h >= 0) htab_close(thread_htab(thread_current_id()), h);
     for (uint32_t i = 0; i < got; i++) {
         paging_unmap(SPV_ARGS_VA + i * PAGE_SIZE);
         pmm_free(frames[i]);

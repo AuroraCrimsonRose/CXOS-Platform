@@ -15,12 +15,13 @@
 struct endpoint;   /* cpu/ipc.h */
 
 /* create a ring-3 thread from a CXEX image readable in the current space.
-   caps = its capabilities; broker = SEND handle to install as handle 0 (or NULL
-   for a root executive). args/args_len are the argument blob described in
+   caps = its capabilities; broker = an endpoint to give it a SEND handle on,
+   derived from broker_grant (or NULL for a root executive). args/args_len are the argument blob described in
    cxk_abi.h, also read in the current space; pass NULL/0 for none. Returns pid,
    or a negative ABI error. */
 int proc_start(const void *image, uint32_t image_len, uint32_t caps,
-               struct endpoint *broker, const char *args, uint32_t args_len);
+               struct endpoint *broker, uint32_t broker_grant,
+               const char *args, uint32_t args_len);
 
 /* SYS_SPAWN handler (called after the GRANT_SPAWN check). */
 int sys_spawn(const struct spawn_args *ua);

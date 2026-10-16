@@ -47,6 +47,18 @@
 #define SYS_IPC_REPLY     0x12   /* ebx = *ipc_reply_args -> 0 */
 #define SYS_EP_CREATE     0x13   /* create an endpoint -> RECV handle (GRANT_ENDPOINT) */
 #define SYS_HANDLE_CLOSE  0x16   /* release a handle */
+#define SYS_HANDLE_DUPLICATE 0x17 /* ebx = handle, ecx = rights (a subset of its own) -> new handle */
+
+/* ---- handles ----
+   A handle is a positive number, never 0 and never below 256, and a closed
+   handle's number is refused rather than naming whatever comes next. Its
+   rights say what its holder may do with the object, and they only shrink:
+   SYS_HANDLE_DUPLICATE can drop rights, never add one. Each object type
+   defines its own (kernel/object/htab.h). */
+#define HRIGHT_SEND       0x1u   /* endpoint: ipc_call through it */
+#define HRIGHT_RECV       0x2u   /* endpoint: ipc_recv and ipc_reply on it */
+                                 /* file: FOPEN_READ, FOPEN_WRITE */
+
 /* input 0x20-0x2F (unprivileged: reading your own keystrokes) */
 #define SYS_INPUT_READ    0x20   /* ebx = flags (0=block, 1=nonblocking) -> char, 0 if none */
 #define SYS_MOUSE_READ    0x21   /* ebx = *mouse_state -> 1 if a mouse is present */
@@ -122,6 +134,7 @@
 struct args_info {
     uint32_t count;   /* argc */
     uint32_t base;    /* address of the argument page in THIS process */
+    int      broker;  /* a SEND handle on the launcher's broker endpoint, or -1 */
 };
 
 /* ---- shared call structures ---- */
@@ -536,7 +549,7 @@ struct mouse_state {
 CXK_ABI_STATIC_ASSERT(sizeof(void *) == 4, "CXK ABI v2 assumes 32-bit pointers in its structures");
 CXK_ABI_STATIC_ASSERT(sizeof(int)    == 4, "CXK ABI v2 assumes a 32-bit int in its structures");
 
-CXK_ABI_STATIC_ASSERT(sizeof(struct args_info)      ==  8, "ABI layout: args_info");
+CXK_ABI_STATIC_ASSERT(sizeof(struct args_info)      == 12, "ABI layout: args_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct spawn_args)     == 28, "ABI layout: spawn_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct clock_info)     ==  8, "ABI layout: clock_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_call_args)  == 20, "ABI layout: ipc_call_args");

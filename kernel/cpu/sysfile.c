@@ -6,7 +6,7 @@
 
 #include "sysfile.h"
 #include "sched.h"
-#include "handle.h"
+#include "object/htab.h"
 #include "usermode.h"       /* user_ptr_readable / user_ptr_writable */
 #include "cxfs.h"
 #include "string.h"
@@ -14,17 +14,22 @@
 
 /* ---- open files ------------------------------------------------------------
  * A fixed pool rather than kmalloc per open: an open file is 16 bytes, the
- * handle table caps a process at CXK_MAX_HANDLES anyway, and a pool cannot
+ * handle table caps a process at HTAB_SLOTS anyway, and a pool cannot
  * fragment the heap or fail an allocation half way through an open.
  *
- * The pool slot is what a HANDLE_FILE handle points at. Its lifetime is the
- * handle's, enforced by the releaser registered in sysfile_init: whether the
- * process calls FILE_OP_CLOSE, calls SYS_HANDLE_CLOSE, or exits and gets
- * reaped, the slot comes back.
+ * An open file is a kernel object (KOBJ_FILE, object/kobj.h). Its lifetime is
+ * its references': every handle holds one, and so does a file operation in
+ * progress. Whether the process calls FILE_OP_CLOSE, calls SYS_HANDLE_CLOSE,
+ * or exits and gets reaped, the slot comes back when the last one goes.
+ *
+ * What a handle may do is its RIGHTS (FOPEN_READ, FOPEN_WRITE), not the flags
+ * the file was opened with: SYS_HANDLE_DUPLICATE can hand out a read-only handle on
+ * a file opened read-write, and that handle must not write.
  */
 #define MAX_OPEN_FILES 32
 
 struct open_file {
+    struct kobj hdr;     /* first: the handle table holds &hdr */
     int      used;
     uint32_t entry;      /* CXFS manifest id */
     uint32_t off;        /* current offset (see the INT32_MAX cap in the ABI) */
@@ -38,6 +43,7 @@ static struct open_file open_files[MAX_OPEN_FILES];
 static struct open_file *of_alloc(void) {
     for (int i = 0; i < MAX_OPEN_FILES; i++)
         if (!open_files[i].used) {
+            if (kobj_init(&open_files[i].hdr, KOBJ_FILE) != 0) return NULL;
             open_files[i].used  = 1;
             open_files[i].entry = 0;
             open_files[i].off   = 0;
@@ -209,23 +215,29 @@ static void lock_drop(const struct open_file *of, uint32_t start, uint32_t len) 
 }
 
 /* Releasing the slot is the whole lifetime rule: its locks go with it, and a
-   doomed file whose last open this was is queued for deletion. It runs however
-   the handle goes - FILE_OP_CLOSE, SYS_HANDLE_CLOSE, or the reaper at exit. */
-static void of_release(struct cap_handle *h) {
-    struct open_file *f = (struct open_file *)h->object;
-    if (!(f >= open_files && f < open_files + MAX_OPEN_FILES)) return;
+   doomed file whose last open this was is queued for deletion. It runs when
+   the last reference goes, however the handles went - FILE_OP_CLOSE,
+   SYS_HANDLE_CLOSE, or the reaper at exit. */
+static void of_destroy(struct kobj *o) {
+    struct open_file *f = (struct open_file *)o;
     lock_drop(f, 0, 0);
     f->used = 0;
     if (f->doomed && !entry_open(f->entry) && graves < MAX_OPEN_FILES)
         graveyard[graves++] = f->entry;
 }
 
+static const struct kobj_ops file_ops = {
+    .name         = "file",
+    .rights_valid = FOPEN_READ | FOPEN_WRITE,
+    .destroy      = of_destroy,
+};
+
 void sysfile_init(void) {
     for (int i = 0; i < MAX_OPEN_FILES; i++) open_files[i].used = 0;
     for (int i = 0; i < MAX_FILE_LOCKS; i++) locks[i].of = NULL;
     for (int i = 0; i < MAX_THREADS; i++) waits[i].waiting = 0;
     graves = 0;
-    handle_set_release(HANDLE_FILE, of_release);
+    kobj_type_register(KOBJ_FILE, &file_ops);
 }
 
 int sysfile_open_count(void) {
@@ -348,11 +360,26 @@ static void fill_stat(const struct cxfs_entry *e, struct file_stat *st) {
     strlcpy(st->name, e->name, FILE_NAME_MAX);
 }
 
-/* look up one of the caller's open files */
-static struct open_file *of_from_handle(int h) {
-    struct cap_handle *ch = thread_handle_get(thread_current_id(), h);
-    if (!ch || ch->type != HANDLE_FILE) return NULL;
-    return (struct open_file *)ch->object;
+/* Look up one of the caller's open files, with a reference the caller drops,
+   and the rights its handle carries. */
+static struct open_file *of_ref(int32_t h, uint32_t *rights) {
+    struct htab_info info;
+    struct kobj *o = htab_ref(thread_htab(thread_current_id()), h, KOBJ_FILE, 0, &info);
+    if (!o) return NULL;
+    *rights = info.rights;
+    return (struct open_file *)o;
+}
+
+/* The operations that act on an open file rather than on a path. */
+static int names_handle(uint32_t op) {
+    switch (op) {
+        case FILE_OP_CLOSE: case FILE_OP_READ:  case FILE_OP_WRITE:
+        case FILE_OP_SEEK:  case FILE_OP_TELL:  case FILE_OP_TRUNC:
+        case FILE_OP_FSTAT: case FILE_OP_LOCK:  case FILE_OP_UNLOCK:
+            return 1;
+        default:
+            return 0;
+    }
 }
 
 /* ---- readdir ---------------------------------------------------------------
@@ -383,13 +410,10 @@ static int lookup(const char *path, uint32_t cwd) {
 
 /* ---- the syscall ---------------------------------------------------------- */
 
-int sys_file_op(const struct file_op_args *ua) {
-    if (!user_ptr_readable((uint32_t)ua, sizeof *ua)) return E_FAULT;
-    struct file_op_args a = *ua;          /* copy in: never re-read user memory */
-
-    if (!cxfs_is_mounted()) return E_IO;
-    bury_pending();
-
+/* One operation. `f` is the open file the handle names, held for the whole
+   operation, and `rights` that handle's rights; both are 0 for an operation
+   on a path. */
+static int file_op(struct file_op_args a, struct open_file *f, uint32_t rights) {
     uint32_t cwd = thread_current_cwd();
     char path[FILE_PATH_MAX];
     int rc;
@@ -426,32 +450,32 @@ int sys_file_op(const struct file_op_args *ua) {
                claimed before a failure would be a handle leaked per failed
                open - the sort of thing a program retrying in a loop turns into
                an exhausted table. */
-            struct open_file *f = of_alloc();
-            if (!f) return E_NOMEM;
-            f->entry = (uint32_t)id;
-            f->flags = a.flags;
-            f->off   = 0;
+            struct open_file *nf = of_alloc();
+            if (!nf) return E_NOMEM;
+            nf->entry = (uint32_t)id;
+            nf->flags = a.flags;
+            nf->off   = 0;
             if (a.flags & FOPEN_APPEND) {
                 struct cxfs_entry e;
-                if (cxfs_read_entry(f->entry, &e) == 0) f->off = (uint32_t)e.size;
+                if (cxfs_read_entry(nf->entry, &e) == 0) nf->off = (uint32_t)e.size;
             }
 
-            int h = thread_handle_install(thread_current_id(), HANDLE_FILE,
-                                          (uint8_t)(a.flags & (FOPEN_READ | FOPEN_WRITE)), f);
-            if (h < 0) { f->used = 0; return E_NOMEM; }
-            return h;
+            int32_t h = htab_install(thread_htab(thread_current_id()), &nf->hdr,
+                                     a.flags & (FOPEN_READ | FOPEN_WRITE), 0);
+            /* The open's own reference goes either way: on success the handle
+               holds the file; on failure the slot goes back to the pool here. */
+            kobj_unref(&nf->hdr);
+            return h < 0 ? E_NOMEM : h;
         }
 
         case FILE_OP_CLOSE:
-            if (!of_from_handle(a.handle)) return E_BADF;
-            if (thread_handle_close(thread_current_id(), a.handle) != 0) return E_BADF;
-            bury_pending();               /* the last close of an unlinked file */
+            /* The file itself goes when sys_file_op drops its reference, and
+               the delete of an unlinked file runs after that. */
+            if (htab_close(thread_htab(thread_current_id()), a.handle) != 0) return E_BADF;
             return E_OK;
 
         case FILE_OP_READ: {
-            struct open_file *f = of_from_handle(a.handle);
-            if (!f) return E_BADF;
-            if (!(f->flags & FOPEN_READ)) return E_PERM;
+            if (!(rights & FOPEN_READ)) return E_PERM;
             if (a.len == 0) return 0;
             if (a.len > 0x7FFFFFFFu) return E_RANGE;
             if (!user_ptr_writable((uint32_t)a.data, a.len)) return E_FAULT;
@@ -463,9 +487,7 @@ int sys_file_op(const struct file_op_args *ua) {
         }
 
         case FILE_OP_WRITE: {
-            struct open_file *f = of_from_handle(a.handle);
-            if (!f) return E_BADF;
-            if (!(f->flags & FOPEN_WRITE)) return E_PERM;
+            if (!(rights & FOPEN_WRITE)) return E_PERM;
             if (a.len == 0) return 0;
             if (a.len > 0x7FFFFFFFu) return E_RANGE;
             if (!user_ptr_readable((uint32_t)a.data, a.len)) return E_FAULT;
@@ -488,8 +510,6 @@ int sys_file_op(const struct file_op_args *ua) {
         }
 
         case FILE_OP_SEEK: {
-            struct open_file *f = of_from_handle(a.handle);
-            if (!f) return E_BADF;
 
             struct cxfs_entry e;
             if (cxfs_read_entry(f->entry, &e) != 0) return E_IO;
@@ -511,15 +531,11 @@ int sys_file_op(const struct file_op_args *ua) {
         }
 
         case FILE_OP_TELL: {
-            struct open_file *f = of_from_handle(a.handle);
-            if (!f) return E_BADF;
             return (int)f->off;
         }
 
         case FILE_OP_TRUNC: {
-            struct open_file *f = of_from_handle(a.handle);
-            if (!f) return E_BADF;
-            if (!(f->flags & FOPEN_WRITE)) return E_PERM;
+            if (!(rights & FOPEN_WRITE)) return E_PERM;
             if (a.off < 0) return E_INVAL;
             return abi_err(cxfs_truncate(f->entry, (uint64_t)(uint32_t)a.off));
         }
@@ -533,8 +549,6 @@ int sys_file_op(const struct file_op_args *ua) {
                 if (r < 0) return E_NOENT;
                 id = (uint32_t)r;
             } else {
-                struct open_file *f = of_from_handle(a.handle);
-                if (!f) return E_BADF;
                 id = f->entry;
             }
             if (!user_ptr_writable((uint32_t)a.data, sizeof(struct file_stat))) return E_FAULT;
@@ -579,8 +593,6 @@ int sys_file_op(const struct file_op_args *ua) {
            does - unless waiting could never end, which is E_DEADLK. A
            conversion that conflicts leaves the lock already held unchanged. */
         case FILE_OP_LOCK: {
-            struct open_file *f = of_from_handle(a.handle);
-            if (!f) return E_BADF;
             uint32_t mode = a.flags & ~(uint32_t)FLOCK_WAIT;
             if (mode != FLOCK_SHARED && mode != FLOCK_EXCLUSIVE) return E_INVAL;
             if (a.off < 0) return E_INVAL;
@@ -606,8 +618,6 @@ int sys_file_op(const struct file_op_args *ua) {
         }
 
         case FILE_OP_UNLOCK: {
-            struct open_file *f = of_from_handle(a.handle);
-            if (!f) return E_BADF;
             if (a.off < 0) return E_INVAL;
             lock_drop(f, (uint32_t)a.off, a.len);
             return E_OK;
@@ -702,4 +712,25 @@ int sys_file_op(const struct file_op_args *ua) {
         default:
             return E_INVAL;
     }
+}
+
+int sys_file_op(const struct file_op_args *ua) {
+    if (!user_ptr_readable((uint32_t)ua, sizeof *ua)) return E_FAULT;
+    struct file_op_args a = *ua;          /* copy in: never re-read user memory */
+
+    if (!cxfs_is_mounted()) return E_IO;
+    bury_pending();
+
+    /* The handle is resolved once, here, and the reference held until the
+       operation returns: a lock wait blocks, and the file must not be freed
+       under it, on this CPU or another. */
+    struct open_file *f = NULL;
+    uint32_t rights = 0;
+    if (names_handle(a.op) && !(f = of_ref(a.handle, &rights))) return E_BADF;
+
+    int rc = file_op(a, f, rights);
+
+    if (f) kobj_unref(&f->hdr);
+    if (a.op == FILE_OP_CLOSE) bury_pending();   /* the last close of an unlinked file */
+    return rc;
 }

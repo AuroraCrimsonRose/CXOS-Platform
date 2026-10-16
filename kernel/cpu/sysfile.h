@@ -14,7 +14,7 @@
  * Everything here is one syscall taking a *file_op_args, matching the shape
  * SYS_FB_OP and SYS_NET_OP already use.
  *
- * An open file is a HANDLE_FILE entry in the calling process's handle table, so
+ * An open file is a KOBJ_FILE object in the calling process's handle table, so
  * SYS_HANDLE_CLOSE releases one as readily as FILE_OP_CLOSE, and a process that
  * exits without closing has its open files released by the scheduler's reaper.
  */
@@ -28,7 +28,7 @@
 /* SYS_FILE_OP handler (called after the GRANT_DISK check). */
 int sys_file_op(const struct file_op_args *ua);
 
-/* register the HANDLE_FILE releaser; call once during init. */
+/* register the open-file object type; call once during init. */
 void sysfile_init(void);
 
 /* how many open files are in use - for the self-tests to prove handles are

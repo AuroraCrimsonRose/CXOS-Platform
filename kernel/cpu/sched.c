@@ -5,7 +5,6 @@
 /* Cooperative kernel-thread scheduler (Checkpoint 1). */
 
 #include "sched.h"
-#include "handle.h"
 #include "heap.h"
 #include "kstack.h"
 #include "gdt.h"
@@ -90,6 +89,8 @@ void sched_init(void) {
     for (int i = 0; i < MAX_THREADS; i++) {
         threads[i].state = THREAD_UNUSED;
         threads[i].id = i;
+        htab_init(&threads[i].handles);
+        threads[i].broker = -1;
     }
     /* thread 0 = the currently-running kernel context. Its esp is filled in on
        the first switch away from it (context_switch saves into &threads[0].esp). */
@@ -128,7 +129,7 @@ void thread_discard(int id) {
     if (threads[id].stack_base)  { kstack_free(threads[id].stack_base);  threads[id].stack_base = 0; }
     if (threads[id].kstack_base) { kstack_free(threads[id].kstack_base); threads[id].kstack_base = 0; }
     threads[id].kstack_top = 0;
-    handle_release_all(threads[id].handles, CXK_MAX_HANDLES);
+    htab_close_all(&threads[id].handles);
     threads[id].state = THREAD_UNUSED;
 }
 
@@ -176,7 +177,8 @@ static int thread_create_in(const char *name, void (*entry)(void), int held) {
     threads[slot].uid        = threads[current].uid;   /* inherit creator UID */
     threads[slot].cwd        = threads[current].cwd;   /* inherit creator cwd */
     threads[slot].caps       = 0;                      /* no authority by default (apps) */
-    for (int hi = 0; hi < CXK_MAX_HANDLES; hi++) threads[slot].handles[hi].type = HANDLE_NONE;
+    htab_close_all(&threads[slot].handles);   /* empty already: the reaper closed them */
+    threads[slot].broker = -1;
     threads[slot].user_stack_base = 0;
     threads[slot].u_saved_esp   = 0;
     threads[slot].u_saved_flags = 0;
@@ -341,10 +343,10 @@ static void sched_reap(void) {
                 kstack_free(threads[i].kstack_base);
                 threads[i].kstack_base = 0;
             }
-            /* release whatever the handle table still owns - an open file
-               belongs to its handle, so a process that exits mid-write must not
-               leave the slot held. Endpoints are unaffected (no releaser). */
-            handle_release_all(threads[i].handles, CXK_MAX_HANDLES);
+            /* close whatever the handle table still holds: every object
+               belongs to its handles, so a process that exits mid-write or
+               with an endpoint open leaves nothing behind. */
+            htab_close_all(&threads[i].handles);
             threads[i].state = THREAD_UNUSED;   /* slot reusable */
         }
     }
@@ -508,24 +510,18 @@ void thread_set_caps(int id, uint32_t caps) {
     if (id >= 0 && id < MAX_THREADS) threads[id].caps = caps;
 }
 
-int thread_handle_install(int id, uint8_t type, uint8_t rights, void *object) {
-    if (id < 0 || id >= MAX_THREADS) return -1;
-    return handle_install(threads[id].handles, CXK_MAX_HANDLES, type, rights, object);
-}
-
-struct cap_handle *thread_handle_get(int id, int idx) {
+struct htab *thread_htab(int id) {
     if (id < 0 || id >= MAX_THREADS) return 0;
-    return handle_get(threads[id].handles, CXK_MAX_HANDLES, idx);
+    return &threads[id].handles;
 }
 
-struct cap_handle *thread_handle_table(int id) {
-    if (id < 0 || id >= MAX_THREADS) return 0;
-    return threads[id].handles;
-}
-
-int thread_handle_close(int id, int idx) {
+int32_t thread_broker(int id) {
     if (id < 0 || id >= MAX_THREADS) return -1;
-    return handle_close(threads[id].handles, CXK_MAX_HANDLES, idx);
+    return threads[id].broker;
+}
+
+void thread_set_broker(int id, int32_t h) {
+    if (id >= 0 && id < MAX_THREADS) threads[id].broker = h;
 }
 
 void thread_set_uid(int id, uint32_t uid) {

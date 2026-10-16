@@ -7,13 +7,12 @@
  * is a normal scheduler thread with its own address space, kernel stack (esp0),
  * and capabilities. proc_start() is the one path that creates them; cxex_exec()
  * (the executive, kernel-launched, trusted, GRANT_OS_BASELINE, no broker) and
- * sys_spawn() (apps, executive-launched, caps=0, broker handle 0) both call it.
+ * sys_spawn() (apps, executive-launched, caps=0, a broker handle) both call it.
  * There is no special "thread 0 runs the executive" case anymore.
  */
 
 #include "spawn.h"
 #include "sched.h"
-#include "handle.h"
 #include "ipc.h"
 #include "caps.h"
 #include "usermode.h"          /* user_ptr_readable / user_ptr_writable */
@@ -187,10 +186,12 @@ static void proc_trampoline(void) {
 }
 
 /* Create a ring-3 scheduler thread running `image` (which must be readable in
-   the CURRENT address space). caps = its capability set; broker = a SEND handle
-   to install as handle 0 (or NULL for a root executive). Returns pid or -E_*. */
+   the CURRENT address space). caps = its capability set; broker = an endpoint
+   to give it a SEND handle on, derived from broker_grant (or NULL for a root
+   executive). Returns pid or -E_*. */
 int proc_start(const void *image, uint32_t image_len, uint32_t caps,
-               struct endpoint *broker, const char *args, uint32_t args_len) {
+               struct endpoint *broker, uint32_t broker_grant,
+               const char *args, uint32_t args_len) {
     if (image_len == 0 || image_len > PROC_MAX_IMAGE) return E_RANGE;
     if (args_len > USER_ARGS_MAX)                     return E_RANGE;
     if (!args) args_len = 0;
@@ -235,11 +236,13 @@ int proc_start(const void *image, uint32_t image_len, uint32_t caps,
     vm_proc_init(pid, vm_default_quota(), thread_current_id());
 
     if (broker) {
-        /* ep_install_handle, not thread_handle_install: the child's handle is
-           a reference on the broker's endpoint, which has to outlive every one
-           of them (see the lifetime note in cpu/ipc.h). */
-        int bh = ep_install_handle(pid, broker, HRIGHT_SEND);
-        if (bh != 0) klog_u32("PROC", SEV_WARN, "broker handle not 0: ", (uint32_t)bh, LOG_COLOR_VALUE, "");
+        /* The child's handle is a reference on the broker's endpoint, which
+           has to outlive every one of them (see the lifetime note in
+           cpu/ipc.h). Its number is whatever the table gives, so the child
+           asks for it with SYS_ARGS rather than assuming one. */
+        int32_t bh = ep_install_handle(pid, broker, HRIGHT_SEND, broker_grant);
+        if (bh < 0) klog_u32("PROC", SEV_WARN, "broker handle refused: ", (uint32_t)-bh, LOG_COLOR_VALUE, "");
+        else        thread_set_broker(pid, bh);
     }
     thread_start(pid);
     return pid;
@@ -276,7 +279,8 @@ int sys_spawn(const struct spawn_args *ua) {
     int arc = check_args(&a);
     if (arc != E_OK) return arc;
 
-    struct endpoint *bep = ep_from_handle(a.broker_endpoint, HRIGHT_RECV);
+    uint32_t bgrant = 0;
+    struct endpoint *bep = ep_from_handle(a.broker_endpoint, HRIGHT_RECV, &bgrant);
     if (!bep) return E_BADF;
 
     /* Attenuation: child gets requested caps masked by the spawner's own caps.
@@ -306,14 +310,16 @@ int sys_spawn(const struct spawn_args *ua) {
      * instant of the copy and a fault during it is recoverable (§6). The
      * user_ptr_readable above is an early reject, not the authority. */
     uint8_t *kimg = (uint8_t *)kmalloc(a.image_len);
-    if (!kimg) return E_NOMEM;
+    if (!kimg) { ep_put(bep); return E_NOMEM; }
     if (user_copy_in(kimg, (uint32_t)a.image, a.image_len) != 0) {
         kfree(kimg);
+        ep_put(bep);
         return E_FAULT;
     }
 
-    int pid = cxex_exec_as(kimg, (size_t)a.image_len, granted, bep, a.args, a.args_len);
+    int pid = cxex_exec_as(kimg, (size_t)a.image_len, granted, bep, bgrant, a.args, a.args_len);
     kfree(kimg);        /* proc_start took its own copy for the new address space */
+    ep_put(bep);        /* the child holds its own handle on it now */
 
     if (pid >= 0)
         klog_u32("SPAWN", SEV_OK, "pid ", (uint32_t)pid, LOG_COLOR_VALUE,
@@ -395,8 +401,8 @@ int sys_exec_path(const char *upath, const struct spawn_args *ua) {
        the cheap failure and there is no reason to pull a megabyte off the disk
        to discover it.
      *
-     * A NEGATIVE handle means "no broker", and the child simply gets no handle
-     * 0. SYS_SPAWN requires one because it was written for the brokered model,
+     * A NEGATIVE handle means "no broker", and the child simply gets no broker
+     * handle. SYS_SPAWN requires one because it was written for the brokered model,
      * where an app holds no capabilities and reaches privilege only by calling
      * its executive. CX_ABI.md section 1 records that this is now a spectrum
      * rather than a rule: attenuation lets a launcher hand a child exactly the
@@ -405,23 +411,26 @@ int sys_exec_path(const char *upath, const struct spawn_args *ua) {
      * mean no shell could ever launch anything - it would first have to become
      * a broker and serve the child's IPC itself. */
     struct endpoint *bep = NULL;
+    uint32_t bgrant = 0;
     if (a.broker_endpoint >= 0) {
-        bep = ep_from_handle(a.broker_endpoint, HRIGHT_RECV);
+        bep = ep_from_handle(a.broker_endpoint, HRIGHT_RECV, &bgrant);
         if (!bep) return E_BADF;
     }
 
     uint8_t *buf = (uint8_t *)kmalloc((size_t)e.size);
-    if (!buf) return E_NOMEM;
+    if (!buf) { ep_put(bep); return E_NOMEM; }
     if (cxfs_read_file((uint32_t)id, buf, (uint32_t)e.size) != (int)e.size) {
         kfree(buf);
+        ep_put(bep);
         return E_IO;
     }
 
     /* Attenuation, exactly as SYS_SPAWN does it: a subset of your own set. */
     uint32_t granted = a.caps & thread_current_caps();
 
-    int rc = cxex_exec_as(buf, (size_t)e.size, granted, bep, a.args, a.args_len);
+    int rc = cxex_exec_as(buf, (size_t)e.size, granted, bep, bgrant, a.args, a.args_len);
     kfree(buf);   /* proc_start took its own copy for the new address space */
+    ep_put(bep);
 
     if (rc < 0) {
         /* cxex_exec_* has its own small error space; the one a caller most

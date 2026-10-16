@@ -19,7 +19,7 @@
 #define SCHED_H
 
 #include <stdint.h>
-#include "handle.h"
+#include "object/htab.h"
 
 /* MAX_THREADS is CAPACITY: the size of every per-thread table, and the bound
    on a pid. How many threads may actually be alive is a runtime LIMIT below it,
@@ -58,7 +58,8 @@ struct thread {
     uint32_t  uid;             /* owning user id; 0 = SYSTEM (machine identity) */
     uint32_t  cwd;             /* CXFS entry id of the working directory (0 = root) */
     uint32_t  caps;            /* ABI v1 capability bitmask (ring-3 authority) */
-    struct cap_handle handles[CXK_MAX_HANDLES];  /* ABI v1 per-process handle table */
+    struct htab handles;       /* the process's handle table (object/htab.h) */
+    int32_t   broker;          /* its SEND handle on its launcher's broker, or -1 (SYS_ARGS) */
     uint32_t  pd_phys;         /* address-space page-dir phys; 0 = shared kernel space */
     uint32_t  user_stack_base; /* allocated ring-3 stack (user processes) */
     /* per-process ring-3 return state: enter_usermode saves the kernel esp +
@@ -167,13 +168,11 @@ void     thread_set_cwd(int id, uint32_t entry_id);
 /* ABI v1 capabilities (cpu/caps.h) */
 uint32_t thread_current_caps(void);
 
-/* ABI v1 handle table (cpu/handle.h), wrapped per-thread */
-int  thread_handle_install(int id, uint8_t type, uint8_t rights, void *object);
-struct cap_handle *thread_handle_get(int id, int idx);
-int  thread_handle_close(int id, int idx);
-/* the raw table, for handle_release_all (process teardown, and the test that
-   proves teardown actually releases). */
-struct cap_handle *thread_handle_table(int id);
+/* The handle table of process `id` (object/htab.h), or 0 if there is none. */
+struct htab *thread_htab(int id);
+/* Its broker handle, as spawn installed it, or -1. */
+int32_t  thread_broker(int id);
+void     thread_set_broker(int id, int32_t h);
 void     thread_set_caps(int id, uint32_t caps);
 void     thread_set_space(int id, uint32_t pd_phys);   /* CR3 to load when this thread runs */
 void     thread_block(void);            /* block the current thread (IPC wait) + yield */

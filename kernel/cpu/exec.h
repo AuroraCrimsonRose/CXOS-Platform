@@ -41,7 +41,7 @@ int cxex_exec(const uint8_t *file, size_t len);
  * The verification is identical either way: the signature is what says the
  * image may run at all, never what it may do. */
 int cxex_exec_as(const uint8_t *file, size_t len, uint32_t caps, struct endpoint *broker,
-                 const char *args, uint32_t args_len);
+                 uint32_t broker_grant, const char *args, uint32_t args_len);
 
 /* Turn a keyvault_trust_of result into the trust an image is admitted at, or a
    negative refusal. Identity on a release kernel; a DEV_UNSIGNED build also
