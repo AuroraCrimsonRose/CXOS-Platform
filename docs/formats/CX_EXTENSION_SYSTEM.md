@@ -547,6 +547,47 @@ build path is to **link as ELF, then convert** the loadable sections into a CXEX
 image with a small build tool — keeping the toolchain standard while the on-disk
 artifact is CXOS's own format.
 
+### 9.9 Deterministic output
+
+**Identical inputs produce identical bytes.** This is an invariant, tested, and
+for signed software it is a security property: anyone holding the source can
+rebuild an image and compare hashes instead of trusting the signer's account of
+what was signed (DevKit security review §12).
+
+What counts as the inputs, layer by layer:
+
+| Layer | Output is a function of | Not an input |
+|---|---|---|
+| X compiler (`cxk compile`) | source text, source **basenames**, the ABI prelude, the compiler build, the toolchain identity | the directory sources or output live in, the working directory, the time |
+| Packaging (`cxk build`) | the ELF's `PT_LOAD` segments and entry point, the type code, the ABI version | the output path, the time, anything outside a loadable segment (symbols, `.file`, debug info) |
+| Signing (`cxk sign`) | the unsigned image and the key pair | the time — PKCS#1 v1.5 (§10.2) has no random input |
+| Disk image | the staged files and the layout | the time |
+
+Rules that keep it true:
+
+- **No clock and no randomness in an artifact.** No build timestamp in a header,
+  no generated GUID, no `__DATE__`/`__TIME__`. A CXFS manifest's timestamps
+  come from the Studio file editor, never from the build.
+- **No absolute paths in loaded bytes.** The compiler records basenames only, and
+  the kernel's C uses no `__FILE__`. A path in a symbol table is harmless because
+  it never reaches a CXEX, but it shows up first in the `.s`, which is why the
+  test compares the assembly as well as the image.
+- **Ordered iteration only.** Anything emitted while walking a collection walks
+  it in a defined order: declaration order, insertion order, or an explicit
+  ordinal sort. Never hash order and never directory-listing order.
+- **No build-id.** `ld.lld` emits none by default. If one is ever enabled it must
+  be content-derived (`--build-id=sha1`), never `uuid`, because the note lands in
+  a loadable segment.
+
+Toolchain identity is an input, not an incidental. A different clang can change
+the bytes, which is why the toolchain is pinned (D5) and recorded.
+
+Verified 2026-10-16: two clean signed builds produced the same 11 artifacts byte
+for byte, and so did a third with a different build directory. That covers every
+package and both disk images. `CXEX.Tests/Unit/DeterminismTests.cs` holds the
+invariant per layer, and each of its tests has been seen to fail against a
+planted timestamp or a switch to PSS signing.
+
 ---
 
 ## 10. Code Signing (`.xkpk` / `.xksk`)

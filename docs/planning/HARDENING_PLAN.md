@@ -61,8 +61,9 @@ devkit/CXEX.Tests/
 ```
 
 - **Categories, by trait.** `Unit` and `Adversarial` need nothing but. NET.
-  `Toolchain` needs clang and ld.lld (D5) and a Linux host or WSL, because it
-  runs compiled X natively and X's host platform makes Linux system calls.
+  `Toolchain` needs clang and ld.lld (D5), and usually a Linux host or WSL as
+  well, because most of it runs compiled X natively and X's host platform makes
+  Linux system calls. A test that only compiles and compares needs no Linux.
   `Differential` compares against the OS sources in this repository. A test
   whose requirement is missing reports **skipped, with the reason**. It never
   silently passes.
@@ -878,7 +879,7 @@ subsystem this plan has never covered.
 
 **DevKit: maturity**
 
-- [ ] Deterministic CXEX output, tested (security §12, engineering §11).
+- [x] **Deterministic CXEX output, tested (security §12, engineering §11). Done 2026-10-16. It already held; nothing had ever checked.** Two clean signed builds produced all 11 artifacts byte for byte (every package and both disk images), and so did a third from a different build directory. The likely culprits were each checked and absent: no clock or randomness on the build path (the one `UtcNow` is the Studio file editor's), no `__FILE__`/`__DATE__` in the kernel, basenames only in the compiler, no build-id, and RSA PKCS#1 v1.5, which is deterministic, so even *signed* images reproduce. Now a stated invariant, with its inputs per layer, in `CX_EXTENSION_SYSTEM.md` §9.9, and held by `DeterminismTests` (packaging, signing, and `xc.xfxn` compiled end to end from two directories, comparing the `.s` as well as the image). Each test was seen to fail: a timestamp in the writer's reserved header word turned packaging and signing red, and PSS padding plus a timestamp comment in the emitter turned signing and end-to-end red, while the untouched layer stayed green each time.
 - [ ] Toolchain identity recorded; pinned versions (security §13, engineering §9).
 - [ ] ABI generator (engineering §7).
 - [ ] Transitional-code sweep (engineering §14).

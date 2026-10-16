@@ -21,8 +21,9 @@ public static class Categories
     public const string Adversarial = "Adversarial";
 
     /// <summary>
-    /// Needs clang and ld.lld (D5), and a Linux host or WSL — these run compiled X
-    /// natively, and X's host platform makes Linux system calls.
+    /// Needs clang and ld.lld (D5). Most also need a Linux host or WSL, because
+    /// they run compiled X natively and X's host platform makes Linux system
+    /// calls; a test that only compiles and compares (DeterminismTests) does not.
     /// </summary>
     public const string Toolchain = "Toolchain";
 
