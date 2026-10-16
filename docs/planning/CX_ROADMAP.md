@@ -119,7 +119,7 @@ sabotage that turns it red, on top of every existing self-test passing:
 
 | Step | Done when |
 |---|---|
-| Before 1 | Kernel code with no hardware dependency builds and runs as host unit tests under AddressSanitizer and UBSan (`safety/CX_SAFETY.md` §3.7) |
+| Before 1 | Kernel code with no hardware dependency builds and runs as host unit tests under AddressSanitizer and UBSan (`safety/CX_SAFETY.md` §3.7). **Done 2026-10-16.** |
 | 1. Object model | A duplicated or transferred handle never has more rights than its source; a closed handle's number is refused, not reused silently; every object type's live count returns to its starting value after a stress run of create, duplicate and close; reference counts are atomic; every syscall passes the one recording point (a counter there equals the dispatch count); kernel objects come from per-type caches and the linked-list heap serves only what remains |
 | 2. Processes | Two threads in one process share its handle table and address space; the thread and handle tables grow past today's 64 and 16; a process's exit releases every handle and frame (live counts return to their start) |
 | 3. Arch layer | No file outside `kernel/arch/` contains CPU-specific code (an include check enforces it); the feature table is printed at boot; QEMU with a minimal and a full CPU model both pass |

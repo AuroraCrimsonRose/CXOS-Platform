@@ -18,7 +18,8 @@
 | Differential testing | The C# compiler is the oracle for `os/xc`; the self-hosting fixed point is checked |
 | Sabotage | Every check must be seen to fail; done by hand |
 | Determinism | Builds are byte-for-byte reproducible |
-| Fuzzing, property tests, model checking, proofs | None |
+| Kernel C on the host | Since 2026-10-16: `kernel/test/host`, under AddressSanitizer and UBSan, run by `dotnet test` (§3.7). Covers the bitmap and SHA-256 so far |
+| Fuzzing, model checking, proofs | None |
 
 The discipline is unusually good. The tools stop at example-based tests: each
 test checks the cases someone thought of.
