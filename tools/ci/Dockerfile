@@ -37,8 +37,11 @@ RUN apt-get update \
     done \
  && rm -rf /var/lib/apt/lists/*
 
-# The rest of the toolchain, plus QEMU for boot verification - the gate a kernel
-# change has to pass - and xorriso/mtools for imaging.
+# The rest of the toolchain, plus QEMU for boot verification (`cxk verify-boot`,
+# the gate a kernel change has to pass) and xorriso/mtools for imaging. No
+# Python: the last thing that needed it was the boot harness, which is now a cxk
+# command. That also removed the only :latest pull (uv). The base image and the
+# apt packages still float within their release lines; LLVM is the pinned one.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       nasm \
@@ -58,16 +61,6 @@ RUN printf 'int main(void){return 0;}\n' > /tmp/smoke.c \
  && ! command -v gcc \
  && rm -f /tmp/smoke.c /tmp/smoke.elf \
  && echo 'smoke: clang links for i686-elf with no GCC present'
-
-# Python, from uv rather than the distro. The test suites no longer need it -
-# D1 retired the nine Python harnesses on 2026-10-08 and `dotnet test` is the
-# whole gate now - but the boot harness is still Python, and that is what runs
-# an image in QEMU and reads the verdict back. Drop this when that is ported.
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
-ENV UV_PYTHON_INSTALL_DIR=/opt/uv/python \
-    UV_CACHE_DIR=/opt/uv/cache \
-    UV_NO_PROGRESS=1
-RUN uv python install 3.12 && chmod -R a+rX /opt/uv
 
 # .NET chatter that is noise in a CI log, and a NuGet cache inside the image.
 ENV DOTNET_NOLOGO=1 \

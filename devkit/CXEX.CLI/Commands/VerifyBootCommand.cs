@@ -1,0 +1,79 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+using CXEX.Tools;
+using Spectre.Console;
+using Spectre.Console.Cli;
+using System.ComponentModel;
+using System.Threading;
+
+namespace CXEX.CLI.Commands;
+
+/// <summary>
+/// Boots an image headless and reports the verdict from the serial console:
+/// PASS, FAIL or INCONCLUSIVE, as exit codes 0, 1 and 2. The gate a kernel
+/// change has to pass, and the step that lets the CI image prove Linux can
+/// build CXOS *and* boot it. Replaces serialboot.ps1 and bootverify.py, which
+/// lived outside the repository (HARDENING_PLAN D2).
+/// </summary>
+public class VerifyBootCommand : Command<VerifyBootCommand.Settings>
+{
+    public class Settings : CommandSettings
+    {
+        [CommandArgument(0, "<IMAGE_PATH>")]
+        [Description("The disk image to boot. Booted with -snapshot: the image is never modified")]
+        public string ImagePath { get; set; } = string.Empty;
+
+        [CommandOption("--full")]
+        [Description("Also wait for the executive to start, not just the kernel self-tests")]
+        public bool Full { get; set; }
+
+        [CommandOption("-t|--timeout")]
+        [Description("Seconds to wait for a verdict before calling it inconclusive")]
+        [DefaultValue(120)]
+        public int TimeoutSeconds { get; set; } = 120;
+
+        [CommandOption("--log")]
+        [Description("Where to write the serial log. Default: beside the image, <image>.serial.log")]
+        public string? LogPath { get; set; }
+    }
+
+    protected override int Execute(CommandContext context, Settings settings, CancellationToken cancellationToken)
+    {
+        if (!File.Exists(settings.ImagePath))
+        {
+            AnsiConsole.MarkupLine($"[red]error:[/] disk image not found: '{Markup.Escape(settings.ImagePath)}'");
+            return 1;
+        }
+
+        string log = settings.LogPath is { Length: > 0 } l ? l : settings.ImagePath + ".serial.log";
+        AnsiConsole.MarkupLine($"[grey]booting[/] {Markup.Escape(settings.ImagePath)} [grey](snapshot, serial -> {Markup.Escape(log)})[/]");
+        AnsiConsole.MarkupLine($"[grey]{Markup.Escape(QemuTool.CommandLine(BootVerifier.ConfigFor(settings.ImagePath, log)))}[/]");
+
+        BootVerdict v;
+        try
+        {
+            v = BootVerifier.Run(settings.ImagePath, log, TimeSpan.FromSeconds(settings.TimeoutSeconds), settings.Full,
+                                 line => AnsiConsole.MarkupLine($"[grey]{Markup.Escape(line)}[/]"));
+        }
+        catch (System.ComponentModel.Win32Exception ex)
+        {
+            AnsiConsole.MarkupLine($"[red]error:[/] could not start {QemuTool.Executable}: {Markup.Escape(ex.Message)}");
+            return 1;
+        }
+
+        switch (v.Outcome)
+        {
+            case BootOutcome.Pass:
+                AnsiConsole.MarkupLine($"[green]VERDICT: PASS[/] - {Markup.Escape(v.Reason)}");
+                return 0;
+            case BootOutcome.Fail:
+                AnsiConsole.MarkupLine($"[red]VERDICT: FAIL[/] - {Markup.Escape(v.Reason)}");
+                AnsiConsole.MarkupLine($"[grey]  full log: {Markup.Escape(log)}[/]");
+                return 1;
+            default:
+                AnsiConsole.MarkupLine($"[yellow]VERDICT: INCONCLUSIVE[/] - {Markup.Escape(v.Reason)}");
+                AnsiConsole.MarkupLine($"[grey]  full log: {Markup.Escape(log)}[/]");
+                return 2;
+        }
+    }
+}

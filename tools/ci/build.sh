@@ -82,6 +82,13 @@ if has_stage os; then
   rm -f tools/ci-ephemeral.xksk
   log 'os: image'
   ls -l dist/CXK_x86_32/images/cxk_disk.img
+
+  # Boot what was just built. The kernel self-tests and the executive coming up
+  # are the gate a kernel change has to pass (CLAUDE.md), and booting here is
+  # what turns "Linux can build CXOS" into "Linux builds a CXOS that runs".
+  # -snapshot inside verify-boot: the artifact is never modified by booting it.
+  log 'os: boot (self-tests + executive)'
+  tools/cxk verify-boot dist/CXK_x86_32/images/cxk_disk.img --full --timeout 300
 fi
 
 # --- differential suites ----------------------------------------------------

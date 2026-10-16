@@ -52,6 +52,9 @@ app.Configure(config =>
     config.AddCommand<RunCommand>("run")
         .WithDescription("Boots a CXK disk image in QEMU (replaces run_qemu.bat).");
 
+    config.AddCommand<VerifyBootCommand>("verify-boot")
+        .WithDescription("Boots an image headless and reports PASS/FAIL from the serial console (replaces serialboot.ps1, bootverify.py).");
+
     config.AddCommand<InspectCommand>("inspect")
         .WithDescription("Dumps a CXEX image's header, sections, and signature (replaces cxkdump.py).");
 
