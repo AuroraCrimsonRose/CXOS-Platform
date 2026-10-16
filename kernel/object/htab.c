@@ -10,6 +10,7 @@
 _Static_assert(HTAB_E_PERM == E_PERM && HTAB_E_INVAL == E_INVAL &&
                HTAB_E_NOMEM == E_NOMEM && HTAB_E_BADF == E_BADF,
                "htab.h error values must be the ABI's");
+_Static_assert(HTAB_RIGHT_DUPLICATE == HRIGHT_DUPLICATE, "htab.h's duplicate right must be the ABI's");
 #endif
 
 /* Grant ids are system-wide, so a grant chain can cross processes. */
@@ -38,7 +39,7 @@ static struct htab_entry *entry_of(struct htab *t, int32_t h) {
 
 static int rights_allowed(const struct kobj *o, uint32_t rights) {
     const struct kobj_ops *ops = kobj_type_ops((enum kobj_type)o->type);
-    return ops && (rights & ~ops->rights_valid) == 0;
+    return ops && (rights & ~(ops->rights_valid | HTAB_RIGHTS_GENERIC)) == 0;
 }
 
 /* Put `o` in the first free slot. Called with the lock held. */
@@ -99,6 +100,7 @@ int32_t htab_dup(struct htab *t, int32_t h, uint32_t rights) {
     struct htab_entry *e = entry_of(t, h);
     int32_t r;
     if (!e)                            r = HTAB_E_BADF;
+    else if (!(e->rights & HTAB_RIGHT_DUPLICATE)) r = HTAB_E_PERM;   /* not copyable */
     else if (rights & ~e->rights)      r = HTAB_E_PERM;   /* rights only shrink */
     else                               r = place(t, e->obj, rights, e->grant);
     spin_unlock(&t->lock, f);

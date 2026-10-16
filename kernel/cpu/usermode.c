@@ -182,6 +182,10 @@ int user_copy_in(void *kdst, uint32_t usrc, uint32_t len) {
 
 /* Calls the switch below has handled: a witness for the recording point,
    kept here rather than in sysrec.c so the two are counted apart. */
+/* object_info reports the kernel's type numbers as they are. */
+_Static_assert(KOBJ_ENDPOINT == OBJ_TYPE_ENDPOINT && KOBJ_FILE == OBJ_TYPE_FILE,
+               "kobj types must be the ABI's OBJ_TYPE_*");
+
 static atomic_u32 dispatched;
 uint32_t syscall_dispatch_count(void) { return atomic_load(&dispatched); }
 
@@ -356,6 +360,25 @@ static int syscall_do(uint32_t num, uint32_t a1, uint32_t a2) {
             /* Unprivileged: a duplicate is never more authority than its source. */
             return htab_dup(thread_htab(thread_current_id()), (int32_t)a1, a2);
 
+        case SYS_OBJECT_INFO: {
+            /* Unprivileged: it describes only a handle the caller holds. */
+            struct object_info_args oa;
+            if (user_copy_in(&oa, a1, sizeof oa) != 0) return E_FAULT;
+            struct htab_info hi;
+            struct kobj *o = htab_ref(thread_htab(thread_current_id()), oa.handle,
+                                      KOBJ_NONE, 0, &hi);
+            if (!o) return E_BADF;
+            struct object_basic b = {
+                .kind = o->type, .rights = hi.rights, .koid = o->koid,
+                .grant = hi.grant, .parent_grant = hi.parent,
+            };
+            kobj_unref(o);
+            if (oa.topic != OBJINFO_BASIC) return E_INVAL;
+            if (oa.cap < sizeof b) return E_RANGE;
+            if (user_copy_out((uint32_t)oa.buf, &b, sizeof b) != 0) return E_FAULT;
+            return (int)sizeof b;
+        }
+
         default:
             return E_NOSYS;
     }
@@ -447,6 +470,18 @@ int usermode_test(void) {
 #define FT_PATH2 (TEST_CODE_VIRT + 0x180)
 #define FT_DATA  (TEST_CODE_VIRT + 0x200)
 #define FT_STAT  (TEST_CODE_VIRT + 0x400)
+#define FT_INFO  (TEST_CODE_VIRT + 0x600)
+#define FT_IARGS (TEST_CODE_VIRT + 0x680)
+
+/* SYS_OBJECT_INFO on `h`, its answer at FT_INFO. */
+static int oi_call(int h, uint32_t topic, uint32_t cap) {
+    struct object_info_args *a = (struct object_info_args *)FT_IARGS;
+    a->handle = h;
+    a->topic  = topic;
+    a->buf    = (void *)FT_INFO;
+    a->cap    = cap;
+    return syscall_dispatch(SYS_OBJECT_INFO, FT_IARGS, 0);
+}
 
 static void ft_str(uint32_t at, const char *s) {
     char *d = (char *)at;
@@ -540,6 +575,29 @@ int usermode_file_test(void) {
     if (d < 0 || d == h) goto done;
     step++;
     if (syscall_dispatch(SYS_HANDLE_DUPLICATE, (uint32_t)d, FOPEN_READ | FOPEN_WRITE) != E_PERM) goto done;
+
+    /* object_info: d names the same open file as h, with only the rights it
+       was given, derived from h's grant; and d, given no duplicate right,
+       cannot be copied at all. */
+    const int ob = (int)sizeof(struct object_basic);
+    step++;
+    if (oi_call(h, OBJINFO_BASIC, (uint32_t)ob) != ob) goto done;
+    struct object_basic bh = *(struct object_basic *)FT_INFO;
+    step++;
+    if (oi_call(d, OBJINFO_BASIC, (uint32_t)ob) != ob) goto done;
+    struct object_basic bd = *(struct object_basic *)FT_INFO;
+    step++;
+    if (bh.kind != OBJ_TYPE_FILE || bh.parent_grant != 0 || bh.koid == 0
+        || bh.rights != (FOPEN_READ | FOPEN_WRITE | HRIGHT_DUPLICATE)) goto done;
+    step++;
+    if (bd.kind != OBJ_TYPE_FILE || bd.koid != bh.koid || bd.rights != FOPEN_READ
+        || bd.parent_grant != bh.grant || bd.grant == bh.grant) goto done;
+    step++;
+    if (syscall_dispatch(SYS_HANDLE_DUPLICATE, (uint32_t)d, FOPEN_READ) != E_PERM) goto done;
+    step++;
+    if (oi_call(d, 99, (uint32_t)ob) != E_INVAL) goto done;
+    step++;
+    if (oi_call(d, OBJINFO_BASIC, (uint32_t)ob - 1) != E_RANGE) goto done;
     step++;
     if (ft_call(FILE_OP_WRITE, d, 0, FT_DATA, 1, 0, 0) != E_PERM) goto done;
     step++;
@@ -552,6 +610,8 @@ int usermode_file_test(void) {
     if (sysfile_open_count() != base + 1) goto done;  /* h still holds it */
     step++;
     if (ft_call(FILE_OP_TELL, d, 0, 0, 0, 0, 0) != E_BADF) goto done;
+    step++;
+    if (oi_call(d, OBJINFO_BASIC, sizeof(struct object_basic)) != E_BADF) goto done;
     step++;
     if (ft_call(FILE_OP_TELL, h, 0, 0, 0, 0, 0) != 11) goto done;
 

@@ -94,10 +94,10 @@ int ep_create(void) {
     ep->reply_cap    = 0;
     ep->msg_len      = 0;
 
-    int32_t h = htab_install(thread_htab(me), &ep->hdr, HRIGHT_RECV, 0);
+    int32_t h = htab_install(thread_htab(me), &ep->hdr, HRIGHT_RECV | HRIGHT_DUPLICATE, 0);
     /* The creator's reference goes either way: on success the handle holds
-       the endpoint; on failure this was the only reference, and the slot goes
-       back to the pool here. */
+       the endpoint; on failure this was the only reference, and it goes back
+       to its cache here. */
     kobj_unref(&ep->hdr);
     return h < 0 ? E_NOMEM : h;
 }

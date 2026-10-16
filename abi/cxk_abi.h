@@ -47,7 +47,8 @@
 #define SYS_IPC_REPLY     0x12   /* ebx = *ipc_reply_args -> 0 */
 #define SYS_EP_CREATE     0x13   /* create an endpoint -> RECV handle (GRANT_ENDPOINT) */
 #define SYS_HANDLE_CLOSE  0x16   /* release a handle */
-#define SYS_HANDLE_DUPLICATE 0x17 /* ebx = handle, ecx = rights (a subset of its own) -> new handle */
+#define SYS_HANDLE_DUPLICATE 0x17 /* ebx = handle, ecx = rights (a subset of its own; needs HRIGHT_DUPLICATE) -> new handle */
+#define SYS_OBJECT_INFO   0x18   /* ebx = *object_info_args -> bytes written */
 
 /* ---- handles ----
    A handle is a positive number, never 0 and never below 256, and a closed
@@ -58,6 +59,10 @@
 #define HRIGHT_SEND       0x1u   /* endpoint: ipc_call through it */
 #define HRIGHT_RECV       0x2u   /* endpoint: ipc_recv and ipc_reply on it */
                                  /* file: FOPEN_READ, FOPEN_WRITE */
+/* Generic rights, which mean the same on every type, count down from the top
+   bit; a type's own count up from the bottom. A handle without
+   HRIGHT_DUPLICATE cannot be copied, and a copy has it only if asked for. */
+#define HRIGHT_DUPLICATE  0x80000000u
 
 /* input 0x20-0x2F (unprivileged: reading your own keystrokes) */
 #define SYS_INPUT_READ    0x20   /* ebx = flags (0=block, 1=nonblocking) -> char, 0 if none */
@@ -184,6 +189,27 @@ struct clock_info {
 /* IPC is synchronous: ipc_call blocks the caller until the owner ipc_replies.
    Messages are bounded (<= one page) and copied through the kernel. The message
    schema is defined by the executive; the kernel just moves bytes. */
+/* SYS_OBJECT_INFO: what one of the caller's handles names. It needs no right
+   and no grant: it describes only what the caller already holds. */
+#define OBJINFO_BASIC     1      /* -> struct object_basic */
+
+#define OBJ_TYPE_ENDPOINT 1
+#define OBJ_TYPE_FILE     2
+
+struct object_info_args {
+    int       handle;
+    uint32_t  topic;         /* OBJINFO_* */
+    void     *buf;           /* the topic's structure is written here */
+    uint32_t  cap;           /* bytes at buf; smaller than the topic needs is E_RANGE */
+};
+struct object_basic {
+    uint32_t  kind;          /* OBJ_TYPE_* (not `type`: an X keyword) */
+    uint32_t  rights;        /* this handle's */
+    uint32_t  koid;          /* the object's kernel id: handles on one object agree */
+    uint32_t  grant;         /* this handle's grant id */
+    uint32_t  parent_grant;  /* the grant it was derived from; 0 = none */
+};
+
 struct ipc_call_args {
     int         ep_handle;   /* a SEND endpoint handle (the broker channel) */
     const void *req;         /* request bytes */
@@ -553,6 +579,8 @@ CXK_ABI_STATIC_ASSERT(sizeof(struct args_info)      == 12, "ABI layout: args_inf
 CXK_ABI_STATIC_ASSERT(sizeof(struct spawn_args)     == 28, "ABI layout: spawn_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct clock_info)     ==  8, "ABI layout: clock_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_call_args)  == 20, "ABI layout: ipc_call_args");
+CXK_ABI_STATIC_ASSERT(sizeof(struct object_info_args) == 16, "ABI layout: object_info_args");
+CXK_ABI_STATIC_ASSERT(sizeof(struct object_basic) == 20, "ABI layout: object_basic");
 CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_recv_args)  == 16, "ABI layout: ipc_recv_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_reply_args) == 12, "ABI layout: ipc_reply_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct fb_op_args)     == 36, "ABI layout: fb_op_args");

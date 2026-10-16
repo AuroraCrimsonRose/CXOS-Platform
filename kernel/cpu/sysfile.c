@@ -467,9 +467,9 @@ static int file_op(struct file_op_args a, struct open_file *f, uint32_t rights) 
             }
 
             int32_t h = htab_install(thread_htab(thread_current_id()), &nf->hdr,
-                                     a.flags & (FOPEN_READ | FOPEN_WRITE), 0);
+                                     (a.flags & (FOPEN_READ | FOPEN_WRITE)) | HRIGHT_DUPLICATE, 0);
             /* The open's own reference goes either way: on success the handle
-               holds the file; on failure the slot goes back to the pool here. */
+               holds the file; on failure it goes back to its cache here. */
             kobj_unref(&nf->hdr);
             return h < 0 ? E_NOMEM : h;
         }

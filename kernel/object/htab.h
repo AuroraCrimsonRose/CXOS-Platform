@@ -20,7 +20,9 @@
  * never 0). A program that assumes small handles fails at once.
  *
  * RIGHTS ONLY SHRINK. A handle carries only rights its type defines
- * (kobj_ops.rights_valid), and a duplicate carries a subset of its source's.
+ * (kobj_ops.rights_valid) and the generic ones (HTAB_RIGHTS_GENERIC), and a
+ * duplicate carries a subset of its source's. Only a handle holding
+ * HTAB_RIGHT_DUPLICATE can be duplicated at all.
  *
  * EVERY HANDLE HAS A GRANT ID, unique for the life of the system (32 bits,
  * skipping 0), and records the grant it was derived from (0 for a handle made
@@ -52,6 +54,11 @@
 #define HTAB_E_INVAL  (-2)
 #define HTAB_E_NOMEM  (-5)
 #define HTAB_E_BADF   (-6)
+
+/* Generic rights, the same on every type (the ABI's HRIGHT_DUPLICATE, checked
+   in htab.c in the kernel build). */
+#define HTAB_RIGHT_DUPLICATE  0x80000000u
+#define HTAB_RIGHTS_GENERIC   HTAB_RIGHT_DUPLICATE
 
 struct htab_entry {
     struct kobj *obj;      /* 0: the slot is free */
@@ -91,8 +98,8 @@ struct kobj *htab_ref(struct htab *t, int32_t h, enum kobj_type type, uint32_t n
 
 /* A second handle in the same table on the same object, with `rights`, which
    must be a subset of the source's. Its parent grant is the source's grant.
-   Returns the new value, or HTAB_E_BADF, HTAB_E_PERM (a right the source lacks) or
-   HTAB_E_NOMEM. */
+   Returns the new value, or HTAB_E_BADF, HTAB_E_PERM (the source lacks
+   HTAB_RIGHT_DUPLICATE, or one of `rights`) or HTAB_E_NOMEM. */
 int32_t htab_dup(struct htab *t, int32_t h, uint32_t rights);
 
 /* Close `h`. Returns 0, or HTAB_E_BADF if it names nothing. */

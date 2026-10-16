@@ -141,7 +141,7 @@ static int test_ipc_endpoint_lifetime(void) {
     ep = ep_from_handle(h, HRIGHT_RECV, &grant);
     if (!ep || grant == 0) return 0;
 
-    int h2 = ep_install_handle(me, ep, HRIGHT_SEND, grant);
+    int h2 = ep_install_handle(me, ep, HRIGHT_SEND | HRIGHT_DUPLICATE, grant);
     if (h2 < 0) { ep_put(ep); return 0; }
     if (ep_refs(ep) != 3 || ep_handles(ep) != 2) { ep_put(ep); return 0; }
     ep_put(ep);
@@ -150,7 +150,7 @@ static int test_ipc_endpoint_lifetime(void) {
     struct kobj *o = htab_ref(t, h2, KOBJ_ENDPOINT, 0, &info);
     if (!o) return 0;
     kobj_unref(o);
-    if (info.parent != grant || info.grant == grant || info.rights != HRIGHT_SEND) return 0;
+    if (info.parent != grant || info.grant == grant || info.rights != (HRIGHT_SEND | HRIGHT_DUPLICATE)) return 0;
 
     if (htab_close(t, h) != 0) return 0;
     if (!ep_is_cached(ep) || !ep->active) return 0;   /* must still be alive */
@@ -166,6 +166,7 @@ static int test_ipc_endpoint_lifetime(void) {
     int h3 = htab_dup(t, h2, HRIGHT_SEND);
     if (h3 < 0) return 0;
     if (ep_handles(ep) != 2) return 0;
+    if (htab_dup(t, h3, HRIGHT_SEND) != E_PERM) return 0;   /* h3 was not given the duplicate right */
     if (htab_close(t, h3) != 0) return 0;
 
     /* 5. the last handle frees it, and the stale handle is a dead name. */

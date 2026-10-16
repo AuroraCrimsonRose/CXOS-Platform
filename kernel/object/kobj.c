@@ -14,6 +14,7 @@ void kobj_panic(const char *why) { kpanic(why); }
 
 static const struct kobj_ops *types[KOBJ_TYPE_MAX];
 static atomic_u32 live[KOBJ_TYPE_MAX];
+static atomic_u32 next_koid = { 1 };
 
 int kobj_type_register(enum kobj_type t, const struct kobj_ops *ops) {
     if ((unsigned)t == KOBJ_NONE || (unsigned)t >= KOBJ_TYPE_MAX) return -1;
@@ -35,6 +36,7 @@ int kobj_init(struct kobj *o, enum kobj_type t) {
     atomic_store(&o->refs, 1);
     atomic_store(&o->handles, 0);
     atomic_store(&o->signals, 0);
+    do o->koid = atomic_fetch_add(&next_koid, 1); while (o->koid == 0);   /* 0: none */
     atomic_fetch_add(&live[t], 1);
     return 0;
 }

@@ -48,6 +48,7 @@ struct kobj {
     atomic_u32 refs;
     atomic_u32 handles;
     atomic_u32 signals;   /* signalled state the wait queue reads (Phase 1) */
+    uint32_t   koid;      /* kernel id: unique for the life of the system, never 0 */
 };
 
 struct kobj_ops {

@@ -203,6 +203,7 @@ fn ep_create() -> i32                        { return __syscall(SYS_EP_CREATE, 0
 fn handle_close(h: i32) -> i32               { return __syscall(SYS_HANDLE_CLOSE, h as u32, 0, 0, 0, 0); }
 // a second handle on the same object with `rights`, a subset of h's own
 fn handle_duplicate(h: i32, rights: u32) -> i32 { return __syscall(SYS_HANDLE_DUPLICATE, h as u32, rights, 0, 0, 0); }
+fn object_info(a: *object_info_args) -> i32 { return __syscall(SYS_OBJECT_INFO, a as u32, 0, 0, 0, 0); }
 
 fn ipc_call(a: *ipc_call_args) -> i32   { return __syscall(SYS_IPC_CALL, a as u32, 0, 0, 0, 0); }
 fn ipc_recv(a: *ipc_recv_args) -> i32   { return __syscall(SYS_IPC_RECV, a as u32, 0, 0, 0, 0); }

@@ -111,11 +111,11 @@ KH_TEST(htab_rights_only_shrink) {
 
     /* A right the type does not define cannot be put on a handle at all. */
     KH_CHECK_EQ(htab_install(&t, &o.hdr, 0x8u, 0), HTAB_E_PERM);
-    KH_CHECK_EQ(htab_install(&t, &o.hdr, TOBJ_RIGHTS | 0x80000000u, 0), HTAB_E_PERM);
+    KH_CHECK_EQ(htab_install(&t, &o.hdr, TOBJ_RIGHTS | 0x40000000u, 0), HTAB_E_PERM);   /* no such generic right */
     KH_CHECK_EQ(htab_count(&t), 0u);
     KH_CHECK_EQ(atomic_load(&o.hdr.handles), 0u);
 
-    int32_t h = htab_install(&t, &o.hdr, TOBJ_R1 | TOBJ_R2, 0);
+    int32_t h = htab_install(&t, &o.hdr, TOBJ_R1 | TOBJ_R2 | HTAB_RIGHT_DUPLICATE, 0);
     KH_CHECK(h > 0);
 
     /* A duplicate may keep or drop rights, never gain one, including one the
@@ -123,7 +123,7 @@ KH_TEST(htab_rights_only_shrink) {
     KH_CHECK_EQ(htab_dup(&t, h, TOBJ_R3), HTAB_E_PERM);
     KH_CHECK_EQ(htab_dup(&t, h, TOBJ_R1 | TOBJ_R3), HTAB_E_PERM);
     KH_CHECK_EQ(htab_dup(&t, h, 0x8u), HTAB_E_PERM);
-    int32_t d = htab_dup(&t, h, TOBJ_R2);
+    int32_t d = htab_dup(&t, h, TOBJ_R2 | HTAB_RIGHT_DUPLICATE);
     KH_CHECK(d > 0 && d != h);
     KH_CHECK_EQ(htab_dup(&t, d, TOBJ_R1), HTAB_E_PERM);          /* from the narrower one */
 
@@ -133,7 +133,7 @@ KH_TEST(htab_rights_only_shrink) {
     KH_CHECK(r == 0);
     r = htab_ref(&t, d, KOBJ_TEST, TOBJ_R2, &info);
     KH_CHECK(r == &o.hdr);
-    KH_CHECK_EQ(info.rights, TOBJ_R2);
+    KH_CHECK_EQ(info.rights, TOBJ_R2 | HTAB_RIGHT_DUPLICATE);
     if (r) kobj_unref(r);
     r = htab_ref(&t, h, KOBJ_TEST, TOBJ_R1 | TOBJ_R2, 0);
     KH_CHECK(r == &o.hdr);
@@ -158,8 +158,8 @@ KH_TEST(htab_grants_are_unique_and_record_their_parent) {
     htab_init(&u);
     new_tobj(&o);
 
-    int32_t h = htab_install(&t, &o.hdr, TOBJ_RIGHTS, 0);
-    int32_t d = htab_dup(&t, h, TOBJ_R1);
+    int32_t h = htab_install(&t, &o.hdr, TOBJ_RIGHTS | HTAB_RIGHT_DUPLICATE, 0);
+    int32_t d = htab_dup(&t, h, TOBJ_R1 | HTAB_RIGHT_DUPLICATE);
     int32_t dd = htab_dup(&t, d, TOBJ_R1);
 
     struct htab_info ih, id, idd, iu;
@@ -276,17 +276,19 @@ KH_TEST(htab_random_operations_agree_with_a_model) {
         for (int step = 0; step < STEPS; step++) {
             uint32_t op = kh_rand(&seed) % 5;
             uint32_t rights = kh_rand(&seed) & 0xFu;           /* sometimes invalid */
+            if (kh_rand(&seed) & 1) rights |= HTAB_RIGHT_DUPLICATE;
             if (op == 0 || open == 0) {                        /* install */
                 int i = (int)(kh_rand(&seed) % N);
                 int32_t h = htab_install(&t, &o[i].hdr, rights, 0);
-                if (rights & ~TOBJ_RIGHTS)  KH_CHECK_EQ(h, HTAB_E_PERM);
+                if (rights & ~(TOBJ_RIGHTS | HTAB_RIGHT_DUPLICATE)) KH_CHECK_EQ(h, HTAB_E_PERM);
                 else if (open == HTAB_SLOTS) KH_CHECK_EQ(h, HTAB_E_NOMEM);
                 else { KH_CHECK(h > 0); val[open] = h; obj[open] = i; rts[open] = rights; open++; }
             } else {
                 int k = (int)(kh_rand(&seed) % (uint32_t)open);
                 if (op == 1) {                                 /* duplicate */
                     int32_t d = htab_dup(&t, val[k], rights);
-                    if (rights & ~rts[k])        KH_CHECK_EQ(d, HTAB_E_PERM);
+                    if (!(rts[k] & HTAB_RIGHT_DUPLICATE)) KH_CHECK_EQ(d, HTAB_E_PERM);
+                    else if (rights & ~rts[k])   KH_CHECK_EQ(d, HTAB_E_PERM);
                     else if (open == HTAB_SLOTS) KH_CHECK_EQ(d, HTAB_E_NOMEM);
                     else { KH_CHECK(d > 0); val[open] = d; obj[open] = obj[k]; rts[open] = rights; open++; }
                 } else if (op == 2) {                          /* look up */
@@ -326,4 +328,39 @@ KH_TEST(htab_random_operations_agree_with_a_model) {
     }
     KH_CHECK_EQ(kobj_live(KOBJ_TEST), live0);
     KH_CHECK_EQ(tobj_panics, p0);
+}
+
+/* Only a handle holding the duplicate right can be copied, and a copy holds
+   it only if it was asked for. */
+KH_TEST(htab_duplicate_needs_the_right) {
+    struct htab t;
+    struct tobj o;
+    htab_init(&t);
+    new_tobj(&o);
+
+    int32_t plain = htab_install(&t, &o.hdr, TOBJ_R1, 0);
+    KH_CHECK(plain > 0);
+    KH_CHECK_EQ(htab_dup(&t, plain, TOBJ_R1), HTAB_E_PERM);
+    KH_CHECK_EQ(htab_dup(&t, plain, 0), HTAB_E_PERM);
+    KH_CHECK_EQ(htab_dup(&t, plain, TOBJ_R1 | HTAB_RIGHT_DUPLICATE), HTAB_E_PERM);
+
+    int32_t h = htab_install(&t, &o.hdr, TOBJ_R1 | HTAB_RIGHT_DUPLICATE, 0);
+    int32_t once = htab_dup(&t, h, TOBJ_R1);                         /* not asked for */
+    KH_CHECK(once > 0);
+    KH_CHECK_EQ(htab_dup(&t, once, TOBJ_R1), HTAB_E_PERM);
+    int32_t again = htab_dup(&t, h, TOBJ_R1 | HTAB_RIGHT_DUPLICATE); /* asked for */
+    KH_CHECK(again > 0);
+    int32_t third = htab_dup(&t, again, 0);
+    KH_CHECK(third > 0);
+
+    struct htab_info info;
+    struct kobj *r = htab_ref(&t, once, KOBJ_NONE, 0, &info);
+    KH_CHECK(r != 0); if (r) kobj_unref(r);
+    KH_CHECK_EQ(info.rights, TOBJ_R1);
+    KH_CHECK_EQ(htab_count(&t), 5u);
+    KH_CHECK_EQ(atomic_load(&o.hdr.handles), 5u);
+
+    htab_close_all(&t);
+    kobj_unref(&o.hdr);
+    KH_CHECK_EQ(o.destroy_runs, 1);
 }

@@ -153,3 +153,16 @@ KH_TEST(kobj_random_lifetimes_agree_with_a_model) {
     KH_CHECK_EQ(kobj_live(KOBJ_TEST), live0);
     KH_CHECK_EQ(tobj_panics, p0);
 }
+
+/* Every object gets its own kernel id, never 0, and keeps it. */
+KH_TEST(kobj_ids_are_unique_and_never_zero) {
+    tobj_type();
+    enum { N = 64 };
+    static struct tobj o[N];
+    for (int i = 0; i < N; i++) {
+        KH_CHECK_EQ(kobj_init(&o[i].hdr, KOBJ_TEST), 0);
+        KH_CHECK(o[i].hdr.koid != 0);
+        for (int j = 0; j < i; j++) KH_CHECK(o[j].hdr.koid != o[i].hdr.koid);
+    }
+    for (int i = 0; i < N; i++) kobj_unref(&o[i].hdr);
+}
