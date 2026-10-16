@@ -21,6 +21,15 @@
 
 /* install the syscall IDT gate (int 0x80, DPL=3). call once at boot. */
 void usermode_init(void);
+
+/* The syscall entry: runs one call through the recording point (sysrec.h).
+   syscall_stub calls it for ring 3; the self-tests call it directly. */
+int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2);
+
+/* Witnesses for the recording point, counted apart from it: traps taken at
+   int 0x80, and calls the dispatcher handled. */
+uint32_t syscall_trapped_count(void);
+uint32_t syscall_dispatch_count(void);
 /* Validate a ring-3 buffer. Ask for the access you intend: the writable form
    also requires the pages to be writable by ring 3, which the single old
    user_ptr_ok did not check (security review §4). */

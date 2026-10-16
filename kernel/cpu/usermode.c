@@ -19,6 +19,8 @@
 #include "fb.h"
 #include "caps.h"
 #include "object/htab.h"
+#include "sync/atomic.h"
+#include "sysrec.h"
 #include "spawn.h"
 #include "sysfile.h"
 #include "cxfs.h"
@@ -176,8 +178,18 @@ int user_copy_in(void *kdst, uint32_t usrc, uint32_t len) {
     return 0;
 }
 
-/* ---- syscall dispatch (called from syscall_stub) ---- */
-int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
+/* ---- syscall dispatch ---- */
+
+/* Calls the switch below has handled: a witness for the recording point,
+   kept here rather than in sysrec.c so the two are counted apart. */
+static atomic_u32 dispatched;
+uint32_t syscall_dispatch_count(void) { return atomic_load(&dispatched); }
+
+extern atomic_u32 syscall_trapped;   /* usermode.asm */
+uint32_t syscall_trapped_count(void) { return atomic_load(&syscall_trapped); }
+
+static int syscall_do(uint32_t num, uint32_t a1, uint32_t a2) {
+    atomic_fetch_add(&dispatched, 1);
     switch (num) {
         case SYS_CONSOLE_WRITE: {
             if (!(thread_current_caps() & GRANT_CONSOLE)) {
@@ -347,6 +359,16 @@ int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
         default:
             return E_NOSYS;
     }
+}
+
+/* Called from syscall_stub, and by the self-tests. The only caller of
+   syscall_do, so every call passes the recording point on its way in and on
+   its way out (sysrec.h). */
+int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
+    sysrec_enter(num, a1, a2);
+    int rc = syscall_do(num, a1, a2);
+    sysrec_exit(num, rc);
+    return rc;
 }
 
 /* the position-independent ring-3 routines (usermode.asm) */

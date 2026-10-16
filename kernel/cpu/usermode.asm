@@ -9,6 +9,7 @@ bits 32
 global enter_usermode
 global syscall_stub
 global return_to_kernel
+global syscall_trapped
 extern syscall_dispatch     ; C: int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2)
 
 ; ---------------------------------------------------------------------------
@@ -83,6 +84,8 @@ syscall_stub:
     mov fs, bp
     mov gs, bp
 
+    lock inc dword [syscall_trapped]   ; a witness for the recording point
+
     push ecx                 ; arg2
     push ebx                 ; arg1
     push eax                 ; syscall number
@@ -153,6 +156,10 @@ usercopy_trampoline:
     ret
 
 section .bss
+; Traps taken through int 0x80 (C: syscall_trapped_count, usermode.h). Counted
+; here, before C runs, so the self-test can tell a call that reached the
+; recording point from one that only reached the gate.
+syscall_trapped: resd 1
 ; (per-process ring-3 return state now lives in the process struct, passed to
 ;  enter_usermode/return_to_kernel as save_slot - no globals needed)
 

@@ -26,6 +26,7 @@
 #include "ipc.h"
 #include "object/htab.h"
 #include "usermode.h"
+#include "sysrec.h"
 #include "uid.h"
 #include "disk.h"
 #include "cxfs.h"
@@ -430,6 +431,40 @@ static int test_esp0_follows_thread(void) {
 /* ---- ring 3: single round-trip (3a) ---- */
 static int test_ring3_single(void) {
     return usermode_test() == 0;
+}
+
+/* ---- the one recording point (cpu/sysrec.h) ----
+ * Every syscall passes it on the way in, and every call that returns passes it
+ * on the way out. Checked against two witnesses counted elsewhere: the traps
+ * syscall_stub took, and the calls the dispatcher handled. A path that reaches
+ * the dispatcher, or returns to ring 3, without passing the point moves the
+ * witnesses and not the recorder. */
+static int test_sysrec(void) {
+    struct sysrec_stats s0, s1, s2;
+
+    /* a kernel-side call: through the point, not through the gate */
+    sysrec_snapshot(&s0);
+    uint32_t t0 = syscall_trapped_count(), d0 = syscall_dispatch_count();
+    int pid = syscall_dispatch(SYS_GETPID, 0, 0);
+    sysrec_snapshot(&s1);
+    if (s1.entered - s0.entered != 1 || s1.exited - s0.exited != 1) return 0;
+    if (syscall_dispatch_count() - d0 != 1) return 0;
+    if (syscall_trapped_count() != t0) return 0;
+    if (s1.last_num != SYS_GETPID || s1.last_rc != pid) return 0;
+
+    /* ring 3: the routine traps twice, SYS_CONSOLE_WRITE then SYS_EXIT. Exit
+       does not return, so it has an entry and no exit, and the last call out
+       is the write. */
+    uint32_t t1 = syscall_trapped_count(), d1 = syscall_dispatch_count();
+    if (usermode_test() != 0) return 0;
+    sysrec_snapshot(&s2);
+    uint32_t traps = syscall_trapped_count() - t1;
+    if (traps != 2) return 0;
+    if (s2.entered - s1.entered != traps) return 0;
+    if (syscall_dispatch_count() - d1 != traps) return 0;
+    if (s2.exited - s1.exited != traps - 1) return 0;
+    if (s2.last_num != SYS_CONSOLE_WRITE) return 0;
+    return 1;
 }
 
 /* ---- ring 3: scheduler-integrated + preemptible processes (3b/3c) ---- */
@@ -2271,6 +2306,7 @@ void ktest_run(void) {
     total++; passed += report("scheduler (preemptive)",           test_sched_preempt());
     total++; passed += report("esp0 follows the running thread",  test_esp0_follows_thread());
     total++; passed += report("ring 3 single round-trip",         test_ring3_single());
+    total++; passed += report("every syscall passes one point",   test_sysrec());
     total++; passed += report("ring 3 processes (coop+preempt)",  test_ring3_processes());
     total++; passed += report("identity (user never UID 0)",      test_identity());
     total++; passed += report("storage (ATA read sector 0)",      test_storage());
