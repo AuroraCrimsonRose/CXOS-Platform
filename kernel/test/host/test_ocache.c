@@ -129,6 +129,7 @@ KH_TEST(ocache_slabs_come_and_go) {
     }
     KH_CHECK_EQ(ocache_live(&c), n);
     KH_CHECK_EQ(ocache_slabs(&c), 4);
+    for (uint32_t i = 0; i < n; i++) KH_CHECK(ocache_owner(o[i]) == &c);
     KH_CHECK_EQ(mapped_pages(), 4 * c.pages);
 
     /* each object kept its own bytes: none overlaps another */
@@ -141,6 +142,10 @@ KH_TEST(ocache_slabs_come_and_go) {
     KH_CHECK_EQ(ocache_slabs(&c), 0);
     KH_CHECK_EQ(mapped_pages(), 0);
     KH_CHECK(!ocache_owns(&c, o[0]));
+    KH_CHECK(ocache_owner(o[0]) == NULL);          /* its span went back */
+    KH_CHECK(ocache_in_window(o[0]));
+    static uint8_t elsewhere[16];
+    KH_CHECK(!ocache_in_window(elsewhere) && ocache_owner(elsewhere) == NULL);
     KH_CHECK_EQ(backend_errors, 0);
     KH_CHECK_EQ(oc_panics, 0);
 }

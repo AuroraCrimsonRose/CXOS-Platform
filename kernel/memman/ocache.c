@@ -208,6 +208,20 @@ int ocache_owns(struct ocache *c, const void *p) {
     return yes;
 }
 
+int ocache_in_window(const void *p) {
+    int32_t s; uint32_t off;
+    return locate(p, &s, &off);
+}
+
+struct ocache *ocache_owner(const void *p) {
+    int32_t s; uint32_t off;
+    if (!locate(p, &s, &off)) return 0;
+    uint32_t f = spin_lock(&slots_lock);
+    struct ocache *c = recs[s].owner;
+    spin_unlock(&slots_lock, f);
+    return c;
+}
+
 static int walk_list(struct ocache *c, int32_t s, int (*fn)(void *, void *), void *ctx) {
     for (; s >= 0; s = recs[s].next)
         for (uint32_t i = 0; i < c->per_slab; i++)

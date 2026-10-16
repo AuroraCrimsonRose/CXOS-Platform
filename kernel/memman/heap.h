@@ -9,14 +9,13 @@
  * dynamic allocation going through them so the implementation can change
  * underneath without touching callers.
  *
- * v1 is a linked-list (free-list) allocator for all sizes. See heap.c for
- * the documented seam where slab caches for small fixed sizes would later
- * be inserted (the Linux model: kmalloc routes small sizes to slab caches,
- * larger ones to the general allocator).
+ * Sizes up to 2048 bytes come from power-of-two size-class caches (ocache.h),
+ * zeroed; larger ones from a first-fit linked list, which stops below the
+ * caches' window. kfree tells them apart by address. (The Linux model:
+ * kmalloc routes small sizes to slab caches, larger ones to the general
+ * allocator.) heap_bytes_used / heap_bytes_free describe the list only.
  *
- * Kernel objects do not come from here: each type has its own cache
- * (ocache.h). The heap serves what remains, and stops below the caches'
- * window.
+ * Kernel objects do not come from here at all: each type has its own cache.
  */
 
 #ifndef HEAP_H

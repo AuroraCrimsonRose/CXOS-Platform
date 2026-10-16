@@ -83,6 +83,12 @@ uint32_t ocache_slabs(struct ocache *c);
 /* Is `p` the start of a live object of `c`? */
 int   ocache_owns(struct ocache *c, const void *p);
 
+/* Is `p` inside the caches' window at all? And if so, the cache whose slab
+   holds it, or NULL for a span no cache holds. For a caller that frees by
+   address (kfree). */
+int            ocache_in_window(const void *p);
+struct ocache *ocache_owner(const void *p);
+
 /* Call fn on every live object of `c`, under the cache's lock, until it
    returns nonzero; returns that value, or 0. fn must not allocate from or
    free to `c`. */

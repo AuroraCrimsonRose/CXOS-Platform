@@ -405,6 +405,28 @@ static int test_heap(void) {
         if (!d) ok = 0;
         kfree(a); kfree(c); kfree(d);
     }
+
+    /* Up to 2048 bytes: the size-class caches, zeroed, never across a page.
+       Larger: the list, which the heap's own count sees. */
+    uint32_t used0 = heap_bytes_used();
+    uint8_t *s1 = kmalloc(1), *s2 = kmalloc(2048), *big = kmalloc(2049);
+    if (!s1 || !s2 || !big) ok = 0;
+    if (ok) {
+        if (!ocache_owner(s1) || !ocache_owner(s2) || ocache_owner(s1) == ocache_owner(s2)) ok = 0;
+        if (ocache_in_window(big)) ok = 0;
+        if (((uint32_t)s2 & 0xFFFu) + 2048u > 0x1000u) ok = 0;
+        for (int i = 0; i < 2048; i++) if (s2[i]) { ok = 0; break; }
+        if (heap_bytes_used() < used0 + 2049u) ok = 0;
+        for (int i = 0; i < 2048; i++) s2[i] = 0xEE;
+        kfree(s2);
+        s2 = kmalloc(2000);              /* the same class: handed out zeroed again */
+        for (int i = 0; s2 && i < 2000; i++) if (s2[i]) { ok = 0; break; }
+    }
+    struct ocache *c1 = s1 ? ocache_owner(s1) : 0;
+    uint32_t live1 = c1 ? ocache_live(c1) : 0;
+    kfree(s1); kfree(s2); kfree(big);
+    if (!c1 || ocache_live(c1) != live1 - 1) ok = 0;   /* a small free really frees */
+    if (heap_bytes_used() != used0) ok = 0;
     return ok;
 }
 

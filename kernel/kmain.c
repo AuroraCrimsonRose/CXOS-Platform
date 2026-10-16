@@ -161,16 +161,17 @@ void kmain(void) {
     addr_space_init();
     klog("VMSPACE", SEV_OK, "address-space layer ready");
 
+    /* before any address space but the kernel's exists, as kstack_init below;
+       and before the heap, whose small sizes come from these caches */
+    ocache_sys_init();
+    klog("OCACHE", SEV_OK, "object cache window reserved");
+
     heap_init();
     klog("HEAP", SEV_OK, "online (kmalloc/kfree)");
 
     /* before any address space but the kernel's exists: see kstack_init */
     kstack_init();
     klog("KSTACK", SEV_OK, "guarded kernel stacks ready");
-
-    /* likewise: the object caches' window (memman/ocache.h) */
-    ocache_sys_init();
-    klog("OCACHE", SEV_OK, "object cache window reserved");
 
     /* Leave the boot stack. kernel.asm could only give kmain a stack in .bss,
        with nothing below it, and kmain goes on to become thread 0 - the thread

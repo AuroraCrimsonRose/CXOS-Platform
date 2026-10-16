@@ -33,6 +33,33 @@ static uint32_t total_bytes = 0;
 static uint32_t used_bytes = 0;
 static uint32_t heap_virt_next = HEAP_VIRT_BASE;   /* next free virtual address */
 
+/* ---- size classes ----------------------------------------------------------
+   Small requests come from object caches (ocache.h), one per power of two
+   from KM_MIN to KM_MAX bytes, not from the list: no header before the data,
+   a free checked rather than trusted, and poison between owners. A class's
+   objects never straddle a page, so a small allocation is physically
+   contiguous, as the list's were. Larger requests still come from the list. */
+#define KM_MIN      64u
+#define KM_MAX      2048u
+#define KM_CLASSES  6
+static struct ocache classes[KM_CLASSES];
+static const char *const class_names[KM_CLASSES] = {
+    "kmalloc-64", "kmalloc-128", "kmalloc-256", "kmalloc-512", "kmalloc-1024", "kmalloc-2048",
+};
+
+static int class_of(size_t size) {
+    uint32_t c = KM_MIN;
+    for (int i = 0; i < KM_CLASSES; i++, c <<= 1)
+        if (size <= c) return i;
+    return -1;
+}
+
+static struct ocache *as_class(struct ocache *c) {
+    for (int i = 0; i < KM_CLASSES; i++)
+        if (c == &classes[i]) return c;
+    return 0;
+}
+
 /* grow the heap: allocate physical frames from the PMM, map them at the next
    kernel-virtual heap addresses, and append one big free block. Returns the new
    block (virtual pointer), or 0 if out of memory. */
@@ -74,6 +101,9 @@ static block_t *heap_grow(size_t need) {
 }
 
 void heap_init(void) {
+    uint32_t c = KM_MIN;
+    for (int i = 0; i < KM_CLASSES; i++, c <<= 1)
+        ocache_init(&classes[i], class_names[i], c);
     head = 0;
     total_bytes = 0;
     used_bytes = 0;
@@ -96,15 +126,9 @@ static void split_block(block_t *b, size_t size) {
 
 void *kmalloc(size_t size) {
     if (size == 0) return 0;
+    int k = class_of(size);
+    if (k >= 0) return ocache_alloc(&classes[k]);   /* zeroed */
     size = ALIGN8(size);
-
-    /* ---- SIZE-ROUTING SEAM ----------------------------------------------
-       v1 sends every request through the general free-list below.
-       FUTURE (slab): route small fixed sizes (e.g. <= 256 bytes, rounded to
-       size classes) to per-size slab caches here for speed and to cut
-       fragmentation; fall through to the free list for large/odd sizes.
-       Callers never change - they only ever call kmalloc().
-       --------------------------------------------------------------------- */
 
     /* first-fit: walk the list for a free block big enough */
     block_t *b = head;
@@ -138,6 +162,15 @@ static void coalesce(block_t *b) {
 
 void kfree(void *ptr) {
     if (!ptr) return;
+
+    /* From the caches' window: a size class's, or a mistake. A kernel object
+       is freed through its type, never here. */
+    if (ocache_in_window(ptr)) {
+        struct ocache *c = as_class(ocache_owner(ptr));
+        if (!c) { ocache_panic("kfree: not a kmalloc pointer"); return; }
+        ocache_free(c, ptr);
+        return;
+    }
 
     block_t *b = (block_t *)((uint8_t *)ptr - BLOCK_HEADER_SIZE);
     if (b->free) return;          /* double-free guard */
