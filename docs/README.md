@@ -37,6 +37,12 @@ Start with the roadmap.
 |---|---|
 | [CX_BOOT.md](boot/CX_BOOT.md) | One loader for BIOS and UEFI that starts a 64-bit kernel |
 
+## Safety: `safety/`
+
+| Document | Covers |
+|---|---|
+| [CX_SAFETY.md](safety/CX_SAFETY.md) | How correctness is established: property tests, fuzzing, TLA+, CBMC, verified crypto, the assurance register |
+
 ## Security: `security/`
 
 | Document | Covers |
@@ -63,6 +69,7 @@ Start with the roadmap.
 
 | Document | Covers |
 |---|---|
+| [CX_CXK_PLAN.md](devkit/CX_CXK_PLAN.md) | `cxk` next: never stale, grouped commands, quiet and JSON output, sabotage as a command, the rig |
 | [CX_DEVKIT_DESIGN.md](devkit/CX_DEVKIT_DESIGN.md) | DevKit architecture (carried over) |
 | [index.md](devkit/index.md) | Home of the DevKit API reference, built with DocFX |
 
