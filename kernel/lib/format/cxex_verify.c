@@ -10,7 +10,7 @@
 #include "rsa.h"
 #include "trusted_key.h"
 
-/* algorithm IDs the signer (signcxex.py) writes into the CXSG block */
+/* algorithm IDs the signer (CXSigner, `cxk sign`) writes into the CXSG block */
 #define SIG_ALGO_RSA2048_SHA256  1
 #define HASH_ALGO_SHA256         1
 

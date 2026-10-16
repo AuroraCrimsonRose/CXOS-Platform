@@ -99,7 +99,7 @@ enum cxex_load_result {
 /* Load `file` (a complete CXEX image; verify it first) into the space described
    by `ops`. On success returns CXEX_LOAD_OK and writes the entry-point virtual
    address to *entry_out. Assumes sections are page-aligned and non-overlapping
-   in their pages (true for mkcxes output from ELF PT_LOAD). */
+   in their pages (true for CXEXWriter output from ELF PT_LOAD). */
 int cxex_load(const uint8_t *file, size_t len,
               const struct cxex_load_ops *ops, uint32_t *entry_out);
 

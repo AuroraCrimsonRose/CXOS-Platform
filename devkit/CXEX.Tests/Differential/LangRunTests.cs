@@ -157,8 +157,8 @@ public class LangRunTests
         var (repo, cxk, work, tests) = Setup();
         using var _ = work;
 
-        string? stdDir = new[] { Path.Combine(repo, "os", "std"), Path.Combine(repo, "CXK", "os", "std") }
-            .FirstOrDefault(d => File.Exists(Path.Combine(d, "buf.xfxn")));
+        string? stdDir = Path.Combine(repo, "os", "std");
+        if (!File.Exists(Path.Combine(stdDir, "buf.xfxn"))) stdDir = null;
         Assert.SkipWhen(stdDir is null, "no CXOS checkout with os/std/buf.xfxn (set CXK_ROOT).");
 
         string sd = Path.Combine(work.Path, "std");

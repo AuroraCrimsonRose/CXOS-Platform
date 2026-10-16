@@ -20,7 +20,7 @@ public class XBPTFile : ICXFile
         ReadOnlySpan<byte> span = data;
         Header = CXOtherParsers.ParseXbptHeader(span);
 
-        int offset = 32; // Header size from mkdisk.py
+        int offset = 32; // Header size, as XBPTImageWriter writes it
         for (int i = 0; i < Header.EntryCount; i++)
         {
             Partitions.Add(CXOtherParsers.ParseXbptEntry(span, offset));

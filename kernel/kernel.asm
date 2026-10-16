@@ -1,6 +1,6 @@
 ; SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 ; SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
-; /kernel/kernel.asm - v5 higher-half entry stub
+; /kernel/kernel.asm - higher-half entry stub
 ; Aurora Tejeda / CATX Systems
 ;
 ; Stage 2 jumps here at the PHYSICAL entry (0x100000) with paging OFF, in flat

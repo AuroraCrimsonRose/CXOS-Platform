@@ -39,8 +39,8 @@ public class XDataDiffTests
         Requires.Toolchain();
         Requires.Linux();
 
-        string? std = new[] { Path.Combine(repo, "os", "std"), Path.Combine(repo, "CXK", "os", "std") }
-            .FirstOrDefault(p => File.Exists(Path.Combine(p, "xdata.xfxn")));
+        string? std = Path.Combine(repo, "os", "std");
+        if (!File.Exists(Path.Combine(std, "xdata.xfxn"))) std = null;
         Assert.SkipWhen(std is null, "no CXOS checkout with os/std/xdata.xfxn (set CXK_ROOT).");
 
         using var work = new HostBuild.Workspace("xdiff");

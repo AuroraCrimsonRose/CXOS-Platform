@@ -1,0 +1,97 @@
+# Transitional code register
+
+Both engineering reviews ask the same thing (kernel §15, DevKit §14): classify
+code that is on its way somewhere, so a temporary path does not quietly become
+an undocumented second implementation. This file is that classification. It is
+a register, not a history: an entry leaves when its code does.
+
+**The classes.** Every entry is exactly one of them.
+
+| Class | Meaning |
+|---|---|
+| **Planned replacement** | The supported path today, with a named successor and a named trigger for the switch. |
+| **Compatibility** | Kept so something older keeps working. |
+| **Test-only** | Exists for verification, whatever binary it lands in. |
+| **Declared, not live** | A name, flag or function the code defines and nothing acts on. |
+| **Obsolete** | Its replacement is proven. It gets deleted, not registered. |
+
+**The rule.** Transitional code carries a comment at the site saying what
+replaces it and when. The register is the index of those comments. A sweep
+re-reads each entry against the code. When the trigger has fired, the entry is
+either acted on or rewritten to say why not.
+
+"Legacy" in this codebase usually names **hardware**, not code: legacy PIO ATA,
+the 8259 IRQ range, PCI configuration mechanism #1, e1000 legacy descriptors,
+EHCI's legacy-support capability. Those are active drivers for real machine
+interfaces and are not transitional.
+
+---
+
+## Removed in the 2026-10-16 sweep
+
+| What | Why it could go |
+|---|---|
+| `boot/uefi/secureboot.bat` | D2's last script. Its own retirement condition (`boot/uefi/README.md` gives the `cxk` sequence) was met. The sequence was then run from scratch and all three Secure Boot boots passed before the script was deleted. |
+| The pre-merge layout fallbacks: `CheckCommand.ResolveRoot`'s "CMakeLists at the root" candidate, and the `CXK/os` candidates in `HostBuild.FindOsDir`, `LangRunTests` and `XDataDiffTests` | Kept for "a tree that still nests it". After D6 there is one repository, and nothing nests it. |
+| Comments citing `mkcxes.py`, `signcxex.py`, `makekeys.py` and `mkdisk.py` as the reference for a layout | The scripts were deleted under D1/D2. Nine sites still named them as the authority for byte layouts. They now name `CXEXWriter`, `CXSigner`, `cxk keygen` and `XBPTImageWriter`. "Replaces X.py" comments stay, because those are history, not authority. |
+| `kernel.asm`'s "v5" | The internal generation counter `versions.json` retired. |
+| `build.sh`'s "legacy Python suites" | They have been the C# Differential suites since D1. |
+
+## Planned replacement
+
+| Where | Today | Replaced by | Trigger |
+|---|---|---|---|
+| `devkit/CXEX.Lang` | The C# X compiler, which is the oracle `os/xc` is tested against | `os/xc`, self-hosted | `os/xc` matches it on every differential suite and the self-hosting fixed point holds, which is already true. Retiring the oracle is a decision, not a test result. |
+| `kernel/cpu/sched.c` `kstack_top = 0`, `thread_set_kstack_top` (no caller) | One dedicated TSS stack for every ring-3 entry | Per-process `esp0` | Before two processes can be in ring 3 at once. The comment says "step 2b", and `fpu.c` says preemptible ring-3 has landed. The two cannot both be current. Settled in `PROCESS_MODEL.md` (Phase 3). |
+| `kernel/cpu/fpu.c` | FP and SSE left disabled | `fxsave`/`fxrstor` or lazy switching in `context_switch` | Before anything enables FP. The file explains why enabling it today would corrupt state. |
+| `kernel/drivers/input/keyboard.c` `kwaiter` | One blocked reader | A wait queue | A second process that reads the keyboard |
+| `kernel/drivers/net/netif.h` | Static IP configuration | DHCP | A network that is not QEMU's user-mode NAT |
+| `kernel/lib/format/cxex_loadk.c` `ctx = 0` | Loads into the current address space | An explicit target space | Loading into a process other than the caller |
+| `kernel/drivers/video/fb.c` | Write-back caching on the framebuffer | Write-combining (PAT) | Framebuffer throughput matters |
+| `kernel/cpu/exec.c` unverified-image policy | Always refuses | An administrator's choice | User accounts exist |
+| `/Shared/Config` at 0777 | Any program with `GRANT_DISK` can write any program's settings | `/User/<name>` at 0700 | Users exist (`CX_FILESYSTEM_LAYOUT.md` rule 6) |
+| `devkit/CXEX.Studio/ViewModels/EmulatorViewModel.cs` `GetDiskPath` | A path relative to Studio's working directory | The project's settings | Studio project settings carry a disk image |
+
+## Test-only
+
+| Where | Note |
+|---|---|
+| `kernel/ktest*.c` (`ktest_run`) | Ships in every kernel and runs at every boot. Read-only. This is established practice here. |
+| `setcheck.xuex` | Ships in the image and **writes** to `/Shared/Config` at every boot. A cut mid-test leaves `kttest.*` behind. Aurora's call before the next release: gate it behind a build flag, or keep it. |
+
+## Declared, not live
+
+| Name | State | Recommendation |
+|---|---|---|
+| `GRANT_MEM` | Defined in the ABI and in `caps.h`, enforced nowhere. `SYS_MEM_OP` is unprivileged by design. Marked reserved at both sites. | Keep it reserved: the bit is spoken for, and reusing it would be a silent ABI change. |
+| `CXEX_FLAG_KERNEL_PRIV` | `CXEXLayoutEngine` sets it on every kernel image. The kernel defines it and never reads it. `CXAuthChain` deliberately ignores it, because privilege follows from who signed, not from what an image says about itself. | **Retire it.** A self-declared privilege bit that nothing reads invites a future reader to trust it, and that is the confusion DevKit security §4 names. It is a format change: stop setting it, mark bit 3 reserved in `CX_EXTENSION_SYSTEM.md` §9.6, and the kernel image's bytes change. Aurora's call. |
+| CXFS advisory locks: `cxfs_lock`, `cxfs_unlock`, `cxfs_is_locked` | Implemented, and **enforced** on the write path (`CXFS_E_LOCKED`), but no syscall can take or release a lock. So `lock_state` only ever comes from what is already on disk, and a non-boot disk is hostile input. A crafted volume can mark its own entries locked to an owner pid that happens to be live, and writes to them are refused. That is contained to the attacker's own volume. | Either expose locks through a syscall with a lifetime (released at process exit), or clear `lock_state` at mount and stop consulting it until they are. |
+| `CXAuthChain` (DevKit) | **Active, not dead.** Rewritten 2026-10-09 to the right model (the level derives from which key signed) and covered by `TrustAuthorityTests`. It is the DevKit's advisory mirror of `keyvault_trust_of`, independent by design (security §12.5). No CLI command surfaces it yet. | Keep. A `cxk inspect` line saying "the kernel will admit this as Publisher" is its natural first caller. |
+
+## Unused surface: not transitional, but recorded
+
+The graph and a grep pass agree that about 60 kernel functions have no caller.
+Almost all of them are deliberate API: driver identity getters (`ata_model`,
+`ahci_is_ssd`, `e1000_stats`), the string library, `kmath`, console field
+helpers, and heap and PMM statistics. Some are features with no front end yet
+(`speaker_boot_chime`, `klogo_draw_centered`, `acpi_sleep_s1`). None is a second
+implementation of anything, so none is transitional.
+
+Three are worth a look because an unused *reporting* function often means
+errors are reported less well than they could be: `cxex_verify_strerror`,
+`disk_err_str` and `disk_driver_name`. And `irq_mask`, `irq_unmask` and
+`irq_uninstall_handler` have no caller, so no driver ever releases an IRQ.
+
+Keep `memcmp`, `memmove` and `memcpy` whatever a call graph says: clang emits
+calls to them on its own, for struct copies and comparisons.
+
+## Open finding: the CI image's Python
+
+`tools/ci/Dockerfile` installs `uv` and Python 3.12 "for the boot harness". The
+boot harness (`bootverify.py`, `serialboot.ps1`) lives in `E:\Sandbox\scratch`,
+outside the repository, and `tools/ci/build.sh` never calls it. The `uv` layer
+is also the only unpinned image reference in the repository
+(`ghcr.io/astral-sh/uv:latest`), which sits badly with the pinned toolchain
+(`versions.json`, `toolchain`). Either bring the harness into the repository
+and pin `uv` to a version, or drop the layer. Not changed in the sweep, because
+the image may be used with the harness mounted in.

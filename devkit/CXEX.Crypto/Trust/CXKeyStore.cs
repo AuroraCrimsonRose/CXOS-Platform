@@ -19,7 +19,7 @@ public class CXKeyStore
         var pk = new XKPKFile();
         pk.Load(rawBytes);
 
-        // Your signcxex.py computes the fingerprint over the entire raw .xkpk file
+        // The fingerprint is taken over the entire raw .xkpk file, as CXSigner and the kernel both take it
         string fingerprint = Convert.ToHexString(SHA256.HashData(rawBytes));
         _trustedKeys[fingerprint] = pk;
     }

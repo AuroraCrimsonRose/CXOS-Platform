@@ -7,8 +7,8 @@
  * Verifies a PKCS#1 v1.5 signature over a SHA-256 digest, using a public key.
  *
  * The kernel only ever VERIFIES (the cheap direction: sig^65537 mod n). Signing
- * and key generation happen offline on the build machine (signcxex.py /
- * makekeys.py). This is the on-device half of code signing.
+ * and key generation happen offline on the build machine (`cxk sign` /
+ * `cxk keygen`). This is the on-device half of code signing.
  */
 
 #ifndef RSA_H
@@ -38,7 +38,7 @@ struct rsa_pubkey {
     uint32_t exponent;       /* public exponent, e.g. 65537 */
 };
 
-/* Parse a .xkpk public-key file (the format makekeys.py writes) into a pubkey.
+/* Parse a .xkpk public-key file (the format `cxk keygen` writes) into a pubkey.
    Layout (little-endian, no padding - matches Python struct "<4sHHIHH"):
      off 0:  "CXPK"  (4)
      off 4:  version (2)

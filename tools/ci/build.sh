@@ -10,7 +10,7 @@
 #
 # Stages are skippable so a pipeline can fan them out:
 #   CXOS_CI_STAGES="devkit,os"   (default: devkit,os)
-#   CXOS_CI_SUITES=1             also run the legacy Python suites (needs an ELF host)
+#   CXOS_CI_SUITES=1             also run the Differential suites (needs an ELF host)
 #
 set -euo pipefail
 

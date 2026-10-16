@@ -72,7 +72,7 @@ public static class CXSigner
 
         byte[] fingerprint = SHA256.HashData(pkBytes);
 
-        // 2. Patch the header BEFORE hashing (just like signcxex.py)
+        // 2. Patch the header BEFORE hashing, so the signature covers FLAG_SIGNED and signature_offset too
         uint sigOffset = (uint)binary.Length;
 
         // Offset 12: Flags

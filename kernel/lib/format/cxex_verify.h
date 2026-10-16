@@ -36,7 +36,7 @@ enum cxex_verify_result {
 };
 
 /* Verify `file` (a complete .xkex/.xuex image incl. the appended CXSG block)
-   against the trusted public key `trusted_xkpk` (CXPK format, as makekeys.py
+   against the trusted public key `trusted_xkpk` (CXPK format, as `cxk keygen`
    writes). Returns CXEX_VERIFY_OK (0) or a negative cxex_verify_result. */
 int cxex_verify(const uint8_t *file, size_t len,
                 const uint8_t *trusted_xkpk, size_t xkpk_len);

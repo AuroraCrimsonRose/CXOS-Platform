@@ -129,16 +129,15 @@ public static class HostBuild
     }
 
     /// <summary>
-    /// The <c>os/</c> directory holding <c>xc/&lt;prog&gt;.xfxn</c>. In this
-    /// repository that is simply <c>os/</c>; the second candidate is kept for a
-    /// CXK_ROOT pointing at a tree that still nests it.
+    /// The <c>os/</c> directory holding <c>xc/&lt;prog&gt;.xfxn</c>, or null when the
+    /// checkout does not have it. There used to be a second candidate,
+    /// <c>CXK/os</c>, for the tree before the repositories merged (D6); there is
+    /// one copy of this repository, so nothing nests it any more.
     /// </summary>
     public static string? FindOsDir(string repoRoot, string prog)
     {
-        foreach (string d in new[] { Path.Combine(repoRoot, "os"), Path.Combine(repoRoot, "CXK", "os") })
-            if (File.Exists(Path.Combine(d, "xc", prog + ".xfxn")))
-                return d;
-        return null;
+        string d = Path.Combine(repoRoot, "os");
+        return File.Exists(Path.Combine(d, "xc", prog + ".xfxn")) ? d : null;
     }
 
     /// <summary>A scratch directory that deletes itself, unless KEEP is set.</summary>

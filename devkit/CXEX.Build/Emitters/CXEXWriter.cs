@@ -88,8 +88,8 @@ public static class CXEXWriter
         int secOffset = 56;
         foreach (var sec in layout.Sections)
         {
-            // Write 8-byte NUL-padded name. Names longer than 8 bytes are truncated,
-            // matching mkcxes.py's "8s" pack. (The previous form threw on any name
+            // Write 8-byte NUL-padded name. Names longer than 8 bytes are truncated
+            // to the 8-byte field. (The previous form threw on any name
             // over 8 chars: CopyTo requires the destination to be at least as long
             // as the source, and the destination was clamped to 8.)
             byte[] nameBytes = Encoding.ASCII.GetBytes(sec.Name);

@@ -11,15 +11,12 @@ call `ExitBootServices`, or leave long mode.
 |---|---|
 | `efi.h` | the minimal UEFI subset the stub uses; service tables in spec order with `void*` placeholders for the entries we never call |
 | `cxboot.c` | the stub |
-| `secureboot.bat` | generate keys, enroll them in an OVMF variable store, sign the stub, boot it. **Being replaced by the `cxk secureboot` commands it already calls** |
 
-> **Scripts are being retired.** CXK is moving from `.bat`/`.sh` scripts to
-> `cxk` commands, so building and testing work the same way on every host
-> (`docs/planning/HARDENING_PLAN.md`, decision D2). `secureboot.bat` goes once
-> this page gives its `cxk` sequence, which it does below. The MSVC `build.bat`
-> is **already gone**, replaced by `cxk uefi build` on 2026-10-08: with it went
-> the last thing in this repository that needed MSVC and a Developer Command
-> Prompt.
+> **No scripts.** Building and testing are `cxk` commands, so they work the same
+> way on every host (`docs/planning/HARDENING_PLAN.md`, decision D2). The MSVC
+> `build.bat` went on 2026-10-08, replaced by `cxk uefi build`, and with it the
+> last thing here that needed MSVC. `secureboot.bat` went on 2026-10-16, after
+> the `cxk secureboot` sequence below passed all three boots on its own.
 
 ## Building
 
@@ -55,8 +52,7 @@ proves nothing, and an OVMF build carrying the Microsoft keys refuses to
 launch the unsigned stub at all, so the code never runs.
 
 The way through is to become the platform owner - enroll our own PK/KEK/db and
-sign the stub with our db key. Until it is deleted, `secureboot.bat` runs the
-whole sequence below in one go.
+sign the stub with our db key.
 
 Everything it needs is in `tools\cxk.exe`: key generation, the EFI variable
 store, and Authenticode signing. **No OpenSSL, no Python, no Windows SDK, no

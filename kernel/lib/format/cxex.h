@@ -9,7 +9,7 @@
  * (.xkex / .xbex / .xuex) looks like. It provides the structs callers use plus
  * pure parse/validate/accessor helpers. It owns the on-disk byte layout via
  * EXPLICIT-OFFSET parsing (not packed structs / casts), so it is immune to
- * compiler padding/alignment surprises and matches the bytes mkcxes.py writes
+ * compiler padding/alignment surprises and matches the bytes CXEXWriter writes
  * exactly.
  *
  * Scope: format knowledge ONLY - definitions, parsing, validation, accessors.

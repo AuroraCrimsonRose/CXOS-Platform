@@ -88,26 +88,16 @@ public class CheckCommand : Command<CheckCommand.Settings>
     }
 
     /// <summary>
-    /// Repo root for ${SRC_DIR}/${CXK_ROOT}. Explicit --root wins. Otherwise:
-    /// if the CMakeLists is at &lt;root&gt;/tools/cmake, root is two levels up;
-    /// if it's at the repo root (legacy layout), root is its own directory.
-    /// Detection: a real root contains a 'kernel' directory.
+    /// Repo root for ${SRC_DIR}/${CXK_ROOT}. Explicit --root wins; otherwise it is
+    /// two levels above tools/cmake/CMakeLists.txt. There used to be a second
+    /// candidate for a CMakeLists at the root itself, the layout before the
+    /// repositories merged (D6). Nothing has that layout any more.
     /// </summary>
     private static string ResolveRoot(string? explicitRoot, string cmakeDir)
     {
         if (!string.IsNullOrEmpty(explicitRoot))
             return Path.GetFullPath(explicitRoot);
 
-        // Candidate 1: two levels up (tools/cmake/CMakeLists.txt -> root)
-        string twoUp = Path.GetFullPath(Path.Combine(cmakeDir, "..", ".."));
-        if (Directory.Exists(Path.Combine(twoUp, "kernel")))
-            return twoUp;
-
-        // Candidate 2: the CMakeLists' own directory (legacy root layout)
-        if (Directory.Exists(Path.Combine(cmakeDir, "kernel")))
-            return cmakeDir;
-
-        // Fallback: two-up is the intended new layout even if we can't confirm.
-        return twoUp;
+        return Path.GetFullPath(Path.Combine(cmakeDir, "..", ".."));
     }
 }

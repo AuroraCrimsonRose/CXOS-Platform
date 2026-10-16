@@ -267,18 +267,18 @@ The objective is a **self-sufficient system**, one that compiles its own softwar
 
 ## Building
 
-> **Moving to `cxk` commands.** The `.bat` scripts below are being replaced by
+> **Everything is a `cxk` command.** The `.bat` scripts were replaced by
 > cross-platform `cxk` commands (decision D2 in
-> [`docs/planning/HARDENING_PLAN.md`](docs/planning/HARDENING_PLAN.md)). Each script is removed
-> when its replacement lands:
+> [`docs/planning/HARDENING_PLAN.md`](docs/planning/HARDENING_PLAN.md)), and the
+> last of them was deleted 2026-10-16:
 >
-> | Today | Replacement |
+> | Was | Now |
 > |---|---|
-> | `tools\build.bat [dev]` | `cxk os build [--dev]` (works now) |
-> | `tools\run_qemu_ahci.bat` | `cxk run` with machine options: q35, AHCI, e1000, packet capture (works now) |
-> | `tools\run_bochs.bat` | **deleted**: Bochs support was removed 2026-10-09 |
-> | `boot\uefi\build.bat` | `cxk uefi build` (works now) |
-> | `boot\uefi\secureboot.bat` | `cxk secureboot keygen` / `varstore` / `sign` / `test` (work now) |
+> | `tools\build.bat [dev]` | `cxk os build [--dev]` |
+> | `tools\run_qemu_ahci.bat` | `cxk run` with machine options: q35, AHCI, e1000, packet capture |
+> | `tools\run_bochs.bat` | nothing: Bochs support was removed 2026-10-09 |
+> | `boot\uefi\build.bat` | `cxk uefi build` |
+> | `boot\uefi\secureboot.bat` | `cxk secureboot keygen` / `varstore` / `sign` / `test` |
 >
 > **The toolchain is LLVM on every host** (decision D5): `clang --target=i686-elf`
 > compiles the kernel and assembles the X compiler's output, ld.lld links it, and
