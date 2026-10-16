@@ -30,7 +30,10 @@ CXOS does not. The ownership ladder (`.xkex`, `.xbex`, `.xoex`, `.xsex`,
 4. **One header prefix for every binary CX format** (magic, type, version,
    size, flags), so any tool can identify any CX file. X Data documents gain an
    optional schema line so they can be validated.
-5. **The CXEX architecture code gains x86-64**, and the loader refuses an image
+5. **`.xfil`, X Format Interface Language:** the one definition of every
+   syscall and service interface (`kernel/CX_SYSCALLS_IPC.md` §9). Domain `F`
+   (format), type `IL` (interface language).
+6. **The CXEX architecture code gains x86-64**, and the loader refuses an image
    for another architecture.
-6. **Attributes in CXFS v3:** an origin marker on downloaded files, and indexed
+7. **Attributes in CXFS v3:** an origin marker on downloaded files, and indexed
    attributes for live queries (`system/CX_FILESYSTEM.md` §4).

@@ -141,8 +141,32 @@ on downloaded files, indexed for live queries as in Haiku's BFS.
 6. Foreign filesystems in user space: FAT32 first (Phase B), on the VFS.
 7. Later: quotas, encryption, background scrub.
 
-## 8. Open questions
+## 8. Names
 
-- **Name matching:** case-sensitive (Linux) or case-insensitive but
-  case-preserving (Windows, macOS), and which Unicode normalisation. It must
-  be settled before CXFS v3's directory index is written.
+Decided 2026-10-16: **case-insensitive and case-preserving**, as on Windows
+and macOS. A name is stored exactly as typed and compared after Unicode
+normalisation and case folding, so `Report.txt`, `report.TXT` and the same
+name typed with a composed or a decomposed accent are one file (APFS behaves
+this way). Names must be valid UTF-8, with no control characters and no `/`.
+The directory index stores the folded form beside the name, so a lookup costs
+no more than a case-sensitive one.
+
+## 9. CXFS in the kernel: the risk, and the answer
+
+A filesystem in the kernel parses whatever is on the disk. If an attacker can
+write that disk, the kernel parses the attacker's data with full privilege.
+How an attacker could write it:
+
+| Path | Answer |
+|---|---|
+| A CXFS disk or image from elsewhere: a USB stick, a downloaded image, a second drive | **Only the boot disk's own volumes mount in the kernel.** Any other CXFS volume mounts through the user-space instance of the same CXFS code (§6.1), as a foreign filesystem would. |
+| A program writing raw sectors under the filesystem | **No program gets raw access to a mounted volume.** `GRANT_DISK` today is all or nothing; it becomes a handle to one unmounted device, given only to disk tools. |
+| Someone with the machine off: edits the disk, then boots it | **`/System` is verified before it is parsed:** the hash tree (§6.8) is checked against the signed root, so tampered metadata is rejected rather than interpreted. Writable volumes get **authenticated metadata** with encryption (§6.12): without the key, an edit fails the check before any parsing. Until then, physical tampering with the data volume is a stated gap (`security/CX_SECURITY.md` §2). |
+| A bug in CXFS itself | **Fuzzed on the host:** CXFS builds for the DevKit, and every image the crash-consistency harness produces (§6.6) is also mutated and mounted. Every on-disk field is range-checked on read. |
+
+**The VFS keeps the choice open.** A filesystem implements one operations
+table and does not know whether it runs in the kernel or as a service. If
+CXFS in the kernel ever proves a problem, it moves out without rewriting it.
+Fuchsia runs every filesystem as a service; the price is that the filesystem
+needed to boot must itself be started from something simpler (Fuchsia's
+bootfs), which CXOS's loader can provide.

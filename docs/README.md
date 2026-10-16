@@ -28,7 +28,7 @@ Start with the roadmap.
 | Document | Covers |
 |---|---|
 | [CX_KERNEL_PLAN.md](kernel/CX_KERNEL_PLAN.md) | The kernel base, objects and handles, processes and threads, waiting, IPC, scheduling |
-| [CX_SYSCALLS_IPC.md](kernel/CX_SYSCALLS_IPC.md) | Syscalls, calling convention, ABI rules, errors, the system page, `.xidl`, IPC messages |
+| [CX_SYSCALLS_IPC.md](kernel/CX_SYSCALLS_IPC.md) | Syscalls, calling convention, ABI rules, errors, the system page, `.xfil`, IPC messages |
 | [CX_DRIVERS.md](kernel/CX_DRIVERS.md) | The device tree, matching, user-space drivers, device classes |
 
 ## Boot: `boot/`
@@ -36,6 +36,12 @@ Start with the roadmap.
 | Document | Covers |
 |---|---|
 | [CX_BOOT.md](boot/CX_BOOT.md) | One loader for BIOS and UEFI that starts a 64-bit kernel |
+
+## Security: `security/`
+
+| Document | Covers |
+|---|---|
+| [CX_SECURITY.md](security/CX_SECURITY.md) | What is protected, from whom, the layers that do it, the gaps on the rig, the order |
 
 ## System: `system/`
 

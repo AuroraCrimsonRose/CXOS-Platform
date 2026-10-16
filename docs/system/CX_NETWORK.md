@@ -72,7 +72,7 @@ NIC driver  ⇄  shared rings  ⇄  network service  ⇄  per-socket rings / IPC
 - **Driver to stack:** rings of packet buffers in memory objects, with
   notifications through the wait queue. Nothing is copied. A driver is an
   ordinary user-space driver (`kernel/CX_DRIVERS.md`) holding only its device.
-- **Stack to apps:** a typed `.xidl` interface for control (open, connect,
+- **Stack to apps:** a typed `.xfil` interface for control (open, connect,
   bind, options) and, per socket, a pair of shared-memory rings for data, so a
   send or receive does not pass through the kernel at all.
 - **Dual stack from the start:** IPv4 and IPv6 in one code path, never two

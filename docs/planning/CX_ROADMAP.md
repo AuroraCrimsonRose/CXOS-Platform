@@ -28,8 +28,12 @@ order, and every decision with its reason.
 | **Kernel objects are safe across CPUs from the start.** | The object model is used everywhere; atomic reference counts and locked tables now mean SMP does not revisit every object later. |
 | **A crash log that survives a reboot comes before the rig.** | A boot that fails on real hardware before the screen works shows nothing, and the rig may have no serial port to read it from. |
 | **The assembler and linker in X (stage 5) leave Phase 0.** | Nothing in the 64-bit move needs them; ld.lld already links x86-64. |
-| **Syscalls are one operation each on a handle; everything else is a typed service; one `.xidl` definition generates every binding.** | Fuchsia's shape. Multiplexed `*_OP` calls hide what a program does from tracing and recording, and three hand-kept copies of the ABI drift (`kernel/CX_SYSCALLS_IPC.md`). |
+| **Syscalls are one operation each on a handle; everything else is a typed service; one `.xfil` definition generates every binding.** | Fuchsia's shape. Multiplexed `*_OP` calls hide what a program does from tracing and recording, and three hand-kept copies of the ABI drift (`kernel/CX_SYSCALLS_IPC.md`). |
 | **The network stack is a user-space service; foreign filesystems run in user space; CXFS stays in the kernel.** | Packets from the network and disks from outside are hostile input, the classic way into a kernel. The system disk is trusted and its speed matters most (`system/CX_NETWORK.md`, `system/CX_FILESYSTEM.md` §6). |
+| **File names are case-insensitive and case-preserving.** | As on Windows and macOS; compared after Unicode normalisation and case folding (`system/CX_FILESYSTEM.md` §8). |
+| **Interfaces are written in X Format Interface Language, `.xfil`.** | One definition for syscalls and services, named by the `x` + domain + type formula (`kernel/CX_SYSCALLS_IPC.md` §9). |
+| **Only the boot disk's CXFS volumes mount in the kernel.** | Any other CXFS volume is treated as foreign and mounts in user space; `/System` is verified before it is parsed; the VFS lets CXFS move out later without a rewrite (`system/CX_FILESYSTEM.md` §9). |
+| **Security is planned as one document, with the rig's gaps stated** (`security/CX_SECURITY.md`). | The rig has no verified boot, IOMMU, TPM, SMEP or SMAP; CXOS says so instead of implying protection it lacks. |
 | **Memory: object caches by type, a page database with a buddy allocator, memory objects filled on first touch, strict commit.** | The heap, bitmap and eager mappings do not scale to 8 GB and 8 cores. Strict commit means running out is an error at the call that asked, never an OOM killer. Swapping, compression and NUMA are later (`kernel/CX_KERNEL_PLAN.md` §9). |
 | **BIOS boot is the main path; UEFI is second.** | The rig has BIOS only. The BIOS loader must start a 64-bit kernel itself. |
 | **GUI first, never GUI only.** | Every feature is a service with a typed IPC interface; the GUI and the CLI are both clients of it. The CLI remains the recovery and test path. |
@@ -99,7 +103,7 @@ programs for it (step 6).
    syscalls through the `syscall` instruction (`language/CX_X_PLAN.md`). The
    new ABI lands here, since every program is rebuilt anyway: one operation
    per syscall, fixed widths, the system page, interfaces generated from
-   `.xidl` (`kernel/CX_SYSCALLS_IPC.md`). The
+   `.xfil` (`kernel/CX_SYSCALLS_IPC.md`). The
    executive starts and the full boot passes; the 32-bit kernel and code
    generator are then deleted.
 
@@ -107,7 +111,9 @@ Independent of the order above, and small enough to land whenever convenient:
 
 - **Close the input hole:** `SYS_INPUT_READ` and `SYS_MOUSE_READ` need no
   capability today, so any process can read keystrokes meant for another.
-- Stack protector on, seeded from boot entropy.
+- A kernel random number generator: there is none today, and KASLR, the
+  stack protector, TCP and keys all need one (`security/CX_SECURITY.md` §3.2).
+- Stack protector on, seeded from it.
 - Find the intermittent first-boot install failure (about 1 in 20 boots,
   `CXK_INSTALL_FORMAT_ERR`), using QEMU's whole-machine record and replay.
 

@@ -219,7 +219,8 @@ Mapped read-only in every process at an address the loader picks.
 ## 9. One definition for everything
 
 Syscalls and service interfaces are written in one small interface language,
-`.xidl`, parsed by the DevKit:
+**X Format Interface Language**, in `.xfil` files (decided 2026-10-16), parsed
+by the DevKit:
 
 ```
 interface Window @ "cx.display.Window" {
@@ -285,7 +286,7 @@ generalised.
 |---|---|
 | Phase 0.1 | Handle table with rights and generations; `handle_close`, `handle_duplicate`, `object_info`; the error list |
 | Phase 0.5 | `syscall` entry, `swapgs`, the per-CPU stack, SMAP where present |
-| Phase 0.6 | **The ABI break.** Every program is rebuilt for x86-64 here anyway, so the new numbering, widths, the system page, the `.xidl` generator and the ABI hash land together |
+| Phase 0.6 | **The ABI break.** Every program is rebuilt for x86-64 here anyway, so the new numbering, widths, the system page, the `.xfil` generator and the ABI hash land together |
 | Phase 1 | Waiting, timers, IPC v3, pipes, threads, futex, jobs, `process_spawn` with the start message, the broker by interface name |
 | Phase 2 | Driver syscalls; the display server and input service; `FB_OP` and the input syscalls removed |
 
@@ -294,5 +295,5 @@ generalised.
 - Settled 2026-10-16: the network stack is a user-space service
   (`system/CX_NETWORK.md`); CXFS stays in the kernel and foreign filesystems
   run in user space (`system/CX_FILESYSTEM.md` §6).
-- The `.xidl` syntax above is a sketch; it is settled when the generator is
+- The `.xfil` syntax above is a sketch; it is settled when the generator is
   written.
