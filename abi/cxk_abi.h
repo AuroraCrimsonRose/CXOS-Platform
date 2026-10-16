@@ -24,7 +24,7 @@
    capability meanings below. It is stamped into every CXEX image's abi_version
    so a kernel can refuse one built against a different contract.
 
-   It is 2 because docs/kernel/CX_ABI.md has declared the live contract v2 since
+   It is 2 because docs/x86_32/kernel/CX_ABI.md has declared the live contract v2 since
    it was written - what was missing was anywhere in the CODE that said so, which
    is how every image came to be stamped 1 while asking to be refused on a
    mismatch. Declared in versions.json as `cxex-abi` and checked against this

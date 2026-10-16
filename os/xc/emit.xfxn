@@ -7,7 +7,7 @@
 //   emit_init(&e, &s, library);
 //   emit_program(&e, &decls, &out);   // the assembly text, into out
 //
-// Step four of stage 4 (docs/language/CX_X_CORE_LANG.md section 10): a line-for-line
+// Step four of stage 4 (docs/x86_32/language/CX_X_CORE_LANG.md section 10): a line-for-line
 // port of the C# X86Emitter in devkit/CXEX.Lang/CodeGen, held to it by
 // `cxk asm` - the same assembly, character for character. It lowers the typed
 // tree to x86-32 GAS (AT&T) text for the cross toolchain to assemble:

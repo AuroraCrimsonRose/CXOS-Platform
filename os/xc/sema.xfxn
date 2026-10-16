@@ -9,7 +9,7 @@
 //   if (dg_count(&dg) == 0) { sema_check(&s, &decls); }
 //   st_get(&s.types, expr)                      // an expression's type node
 //
-// Step three of stage 4 (docs/language/CX_X_CORE_LANG.md section 10): a port of the C#
+// Step three of stage 4 (docs/x86_32/language/CX_X_CORE_LANG.md section 10): a port of the C#
 // Resolver, ConstFold and TypeChecker in devkit/CXEX.Lang/Sema, held to
 // them by `cxk sema` - the same diagnostics in the same order, the same type
 // for every expression. Where the C# looks at a type as written rather than

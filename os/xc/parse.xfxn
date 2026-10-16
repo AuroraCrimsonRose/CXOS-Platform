@@ -13,7 +13,7 @@
 // One parser can take many files - a program and everything it imports - into
 // one tree, each node remembering which file it came from.
 //
-// Step two of stage 4 (docs/language/CX_X_CORE_LANG.md section 10): a line-for-line
+// Step two of stage 4 (docs/x86_32/language/CX_X_CORE_LANG.md section 10): a line-for-line
 // port of the C# parser (devkit/CXEX.Lang/Parsing/Parser.cs) - the same
 // grammar, the same precedence, the same recovery after an error and the same
 // messages, at the same line and column. It is held to that one the way the

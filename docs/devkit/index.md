@@ -28,7 +28,7 @@ X is specified on the kernel side, because the kernel owns the ABI it compiles a
 
 | Document | Covers |
 |---|---|
-| `docs/language/CX_X_CORE_LANG.md` | X core language spec (v0.2); the route to self-hosting |
-| `docs/kernel/CX_ABI.md` | Syscall numbers, capabilities, IPC, handles |
-| `docs/formats/CX_EXTENSION_SYSTEM.md` | CXEX format, file-type system, code signing |
-| `docs/kernel/PROCESS_MODEL.md` | Ring 3, scheduling, preemption, address spaces |
+| `docs/x86_32/language/CX_X_CORE_LANG.md` | X core language spec (v0.2); the route to self-hosting |
+| `docs/x86_32/kernel/CX_ABI.md` | Syscall numbers, capabilities, IPC, handles |
+| `docs/x86_32/formats/CX_EXTENSION_SYSTEM.md` | CXEX format, file-type system, code signing |
+| `docs/x86_32/kernel/PROCESS_MODEL.md` | Ring 3, scheduling, preemption, address spaces |

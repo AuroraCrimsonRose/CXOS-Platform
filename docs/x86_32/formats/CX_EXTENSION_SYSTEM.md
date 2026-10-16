@@ -146,7 +146,7 @@ type code `0x4345 'CE'` is retired with it and is not reissued.
 | `.xosv` | OS Service descriptor (what to run at boot, and with what authority) |
 
 `.xosv` is **not** a CXEX container and has no `type_code` — it is an X Data
-document (`docs/language/CX_X_DATA.md`), read by the service supervisor. It names a
+document (`docs/x86_32/language/CX_X_DATA.md`), read by the service supervisor. It names a
 program; it is not one. That is why it is XO rather than XC: the thing it
 describes is part of the operating system's startup, even when the program it
 points at is an ordinary `.xuex`.
@@ -605,7 +605,7 @@ planted timestamp or a switch to PSS signing.
 > and does **not** verify it. Kernel/disk-loaded executables are verified;
 > ring-3-spawned ones are not. The intended fix is not to add verification to
 > `spawn` but to make the verified path the only way new code enters the system —
-> see `docs/kernel/CX_ABI.md` §7.10 (`exec_path`).
+> see `docs/x86_32/kernel/CX_ABI.md` §7.10 (`exec_path`).
 >
 > This defines how CXOS artifacts are signed and verified. **Threat model, stated honestly:** this is
 > **code safety / integrity / authenticity** — ensuring the kernel, drivers, and

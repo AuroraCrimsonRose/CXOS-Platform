@@ -520,7 +520,7 @@ static int test_cxfs(void) {
 #if CXK_ALLOW_DISK_WRITE
     /* DEV ONLY (scratch disk): create a file, write, read back, verify. */
     /* Scratch goes in /Temp, not the root. The root is a documented namespace
-       now (docs/system/CX_FILESYSTEM_LAYOUT.md) and a test file sitting in it is
+       now (docs/x86_32/system/CX_FILESYSTEM_LAYOUT.md) and a test file sitting in it is
        litter that every `ls /` shows forever. Falls back to the root on a
        volume old enough to have no /Temp. */
     int dir = cxfs_resolve("/Temp", 0);

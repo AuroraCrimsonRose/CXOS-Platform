@@ -6,7 +6,7 @@
 > address spaces), storage + CXFS, the CXEX loader with signature verification,
 > and the remaining drivers. This document is kept as the record of *how* v5 was
 > sequenced and *why* each piece was ported rather than rewritten. It is not a
-> current task list — for that see `README.md` and `docs/kernel/PROCESS_MODEL.md` §12.
+> current task list — for that see `README.md` and `docs/x86_32/kernel/PROCESS_MODEL.md` §12.
 >
 > Two items named here did **not** land as described, deliberately or otherwise:
 > - **`usb/ohci.c`** was never ported. `disk.c` still has a `DISK_DRV_USB` case

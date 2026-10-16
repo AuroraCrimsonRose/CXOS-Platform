@@ -10,7 +10,7 @@
 //   if (!lex_all(&lx)) { ...out of memory... }
 //   let t: *token = lex_tok(&lx, 0);
 //
-// Stage 4 of the route to self-hosting (docs/language/CX_X_CORE_LANG.md section 10)
+// Stage 4 of the route to self-hosting (docs/x86_32/language/CX_X_CORE_LANG.md section 10)
 // starts here: the X compiler, written in X, one stage at a time. This is a
 // line-for-line port of the C# lexer (devkit/CXEX.Lang/Lexer/Lexer.cs),
 // and it is held to it - the same tokens, the same values, the same line and

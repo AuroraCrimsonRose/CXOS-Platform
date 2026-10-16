@@ -38,7 +38,7 @@
    0x4345 'CE' (.xuex) is deliberately absent. It named an executable for how
    it was built, and every executable here is compiled, so it distinguished
    nothing - a kernel image is as compiled as an application. Programs are
-   named by owner instead. See docs/formats/CX_EXTENSION_SYSTEM.md. */
+   named by owner instead. See docs/x86_32/formats/CX_EXTENSION_SYSTEM.md. */
 #define CXEX_TYPE_KERNEL 0x4B45u   /* 'KE' the kernel          (.xkex) */
 #define CXEX_TYPE_BOOT   0x4245u   /* 'BE' the boot chain      (.xbex) */
 #define CXEX_TYPE_OS     0x4F45u   /* 'OE' the OS proper       (.xoex) */

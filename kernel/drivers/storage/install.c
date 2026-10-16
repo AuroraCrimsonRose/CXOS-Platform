@@ -17,7 +17,7 @@ static uint16_t rd16(const uint8_t *p){ return (uint16_t)(p[0] | (p[1] << 8)); }
 static uint32_t rd32(const uint8_t *p){ return (uint32_t)(p[0] | (p[1]<<8) | (p[2]<<16) | ((uint32_t)p[3]<<24)); }
 
 /* ---- the system tree -------------------------------------------------------
- * The directory layout a fresh volume gets, per docs/system/CX_FILESYSTEM_LAYOUT.md.
+ * The directory layout a fresh volume gets, per docs/x86_32/system/CX_FILESYSTEM_LAYOUT.md.
  *
  * /System is the OS and only SYSTEM writes it. /Shared is group-writable, so a
  * user can put something there for other users without being SYSTEM - that is

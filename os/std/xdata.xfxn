@@ -5,7 +5,7 @@
 //
 //   import "xdata.xfxn";
 //
-// The format is specified in docs/language/CX_X_DATA.md; this file implements it and
+// The format is specified in docs/x86_32/language/CX_X_DATA.md; this file implements it and
 // should be read against it.
 //
 // ALLOCATES NOTHING AND IMPORTS NOTHING - not the allocator, not the prelude,

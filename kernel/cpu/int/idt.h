@@ -63,7 +63,7 @@ void double_fault_task(void);
 /* Kernel-fatal: an internal invariant is broken. Renders the panic screen with
    `why`, the caller and a stack trace, saves crash.log, halts. Never for a bad
    request, a missing device or a faulting process - those have lesser tiers
-   (docs/kernel/KERNEL_CONTRACTS.md §1). */
+   (docs/x86_32/kernel/KERNEL_CONTRACTS.md §1). */
 __attribute__((noreturn)) void kpanic(const char *why);
 
 #endif

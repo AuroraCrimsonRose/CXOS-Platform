@@ -83,10 +83,10 @@ fault. It requests services through a software-interrupt gate:
 There are **16 implemented syscalls** (`cpu/usermode.c`, `syscall_dispatch`), spanning
 lifecycle, IPC, handles, input, console, framebuffer, network, spawn and power.
 
-**They are not listed here.** `abi/cxk_abi.h` is the source of truth and `docs/kernel/CX_ABI.md`
+**They are not listed here.** `abi/cxk_abi.h` is the source of truth and `docs/x86_32/kernel/CX_ABI.md`
 is the reference; duplicating the table in this document is how it went stale — it sat at
 three entries long after the real count reached sixteen, and misdescribed `SYS_WRITE` as
-number 1 when `SYS_CONSOLE_WRITE` is `0x30`. See **`docs/kernel/CX_ABI.md` §7**.
+number 1 when `SYS_CONSOLE_WRITE` is `0x30`. See **`docs/x86_32/kernel/CX_ABI.md` §7**.
 
 The part that belongs *here* is the boundary rule, not the call list:
 
@@ -419,7 +419,7 @@ Remaining, in the order they unblock each other:
 3. **System-wide preemption:** enable it in the boot path once (2) holds, making
    the shell an ordinary scheduled thread alongside everything else.
 
-4. **CP4 hardening** (`docs/kernel/CX_ABI.md` §11): IPC lifecycle edge cases — a caller
+4. **CP4 hardening** (`docs/x86_32/kernel/CX_ABI.md` §11): IPC lifecycle edge cases — a caller
    dying mid-call, an executive dying with a caller blocked — handle cleanup on
    exit, and message-bound fuzzing.
 ---

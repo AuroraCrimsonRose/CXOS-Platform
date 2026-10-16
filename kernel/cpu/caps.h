@@ -30,7 +30,7 @@
 
 /* The grants, one bit each. A process holds some subset of these; a launcher
    passes a subset of its own to a child and can never amplify (see the
-   attenuation note in docs/kernel/CX_ABI.md section 5). */
+   attenuation note in docs/x86_32/kernel/CX_ABI.md section 5). */
 #define GRANT_CONSOLE   0x0001u   /* console_write */
 /* NOT ENFORCED, and that is deliberate rather than missing. SYS_MEM_OP is
    unprivileged by design - "a program that could not obtain memory would not

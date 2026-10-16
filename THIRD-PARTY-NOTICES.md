@@ -95,4 +95,4 @@ vendor something:
 
 The roadmap will add far more. It plans to port zlib, FAT32, codecs, SSH, an HTTP
 server and a SQL server, and to embed an existing browser engine rather than
-write one ([docs/planning/CX_ROADMAP.md](docs/planning/CX_ROADMAP.md)).
+write one ([docs/x86_32/planning/CX_ROADMAP.md](docs/x86_32/planning/CX_ROADMAP.md)).

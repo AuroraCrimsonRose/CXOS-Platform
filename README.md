@@ -42,7 +42,7 @@ The project is designed around modularity, verifiable execution, and reusable sy
 
 CXK is currently under active development.
 
-The v5 architecture focuses on preserving proven subsystems from previous releases while modernizing the boot chain, executable loading infrastructure, and trust model. **The v5 port is complete.** See `docs/planning/history/V5_PORTING_MANIFEST.md`, retained as the historical plan.
+The v5 architecture focuses on preserving proven subsystems from previous releases while modernizing the boot chain, executable loading infrastructure, and trust model. **The v5 port is complete.** See `docs/x86_32/planning/history/V5_PORTING_MANIFEST.md`, retained as the historical plan.
 
 Delivered:
 
@@ -66,7 +66,7 @@ Delivered:
 - X: enums and sum types with exhaustive `switch`, struct and array initializers, character literals, compound assignment, values passed by value (C-compatible), and growable buffers in `std/buf.xfxn`
 - The X compiler written in X (`os/xc`): `xc` produces exactly what the C# compiler does, compiles itself to a fixed point, and compiles itself on CXK
 
-**Where it is going, and in what order, is in [`docs/planning/CX_ROADMAP.md`](docs/planning/CX_ROADMAP.md).** The current phase is self-hosting, X compiling X, which gates nearly everything else. Its stage 4 is done; stage 5 (an assembler and linker in X) follows hardening Phase 1.
+**Where it is going, and in what order, is in [`docs/x86_32/planning/CX_ROADMAP.md`](docs/x86_32/planning/CX_ROADMAP.md).** The current phase is self-hosting, X compiling X, which gates nearly everything else. Its stage 4 is done; stage 5 (an assembler and linker in X) follows hardening Phase 1.
 
 **Security: under active hardening, not yet hardened.** The 2026-10-01 reviews ([`docs/reviews/2026-10-01/KERNEL_SECURITY_REVIEW.md`](docs/reviews/2026-10-01/KERNEL_SECURITY_REVIEW.md), [`docs/reviews/2026-10-01/KERNEL_ENGINEERING_REVIEW.md`](docs/reviews/2026-10-01/KERNEL_ENGINEERING_REVIEW.md)) found that the CXEX loader still trusts parts of a signed image's layout. Most seriously, it does not stop an image from mapping kernel addresses. Every finding has been checked against the code and planned in [`docs/planning/HARDENING_PLAN.md`](docs/planning/HARDENING_PLAN.md); closing the executable boundary is its Phase 1. Until then, do not treat signature verification as a complete defence against a malicious program.
 
@@ -223,8 +223,8 @@ This naming system allows tooling and developers to identify broad file purpose 
 
 See:
 
-- docs/formats/CX_EXTENSION_NAMING.md
-- docs/formats/CX_EXTENSION_SYSTEM.md
+- docs/x86_32/formats/CX_EXTENSION_NAMING.md
+- docs/x86_32/formats/CX_EXTENSION_SYSTEM.md
 
 for additional details.
 
@@ -261,7 +261,7 @@ The primary objective of v5 is to modernize executable loading and deployment wh
 
 ### Long-term goal: building CXK from CXK
 
-The objective is a **self-sufficient system**, one that compiles its own software, on itself, with no external host. The X toolchain currently runs on .NET, so CXK can execute X programs but cannot yet produce them. Closing that gap is the long-term direction, and it drives the language roadmap: see `docs/language/CX_X_CORE_LANG.md` §0 and §10 for what self-hosting requires and the staged route to it.
+The objective is a **self-sufficient system**, one that compiles its own software, on itself, with no external host. The X toolchain currently runs on .NET, so CXK can execute X programs but cannot yet produce them. Closing that gap is the long-term direction, and it drives the language roadmap: see `docs/x86_32/language/CX_X_CORE_LANG.md` §0 and §10 for what self-hosting requires and the staged route to it.
 
 ---
 
@@ -355,10 +355,10 @@ Everything is under [`docs/`](docs/README.md), by topic:
 
 | Folder | Covers |
 |---|---|
-| `docs/kernel/` | The syscall and capability ABI; the process model |
-| `docs/system/` | CXFS; the OS filesystem layout |
-| `docs/formats/` | CXEX, the extension system and naming, file structure |
-| `docs/language/` | The X language and X Data |
+| `docs/x86_32/kernel/` | The syscall and capability ABI; the process model |
+| `docs/x86_32/system/` | CXFS; the OS filesystem layout |
+| `docs/x86_32/formats/` | CXEX, the extension system and naming, file structure |
+| `docs/x86_32/language/` | The X language and X Data |
 | `docs/devkit/` | The DevKit design document and its API reference (DocFX) |
 | `docs/planning/` | The roadmap; the hardening plan; history |
 | `docs/reviews/` | External reviews, kept as written |

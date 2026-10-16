@@ -13,7 +13,7 @@
 // API, and both are already gated by capabilities the executive had to hand
 // over deliberately.
 //
-// A descriptor is an X Data document (docs/language/CX_X_DATA.md):
+// A descriptor is an X Data document (docs/x86_32/language/CX_X_DATA.md):
 //
 //     // /System/Services/hello.xosv
 //     exec   = "/Shared/Programs/hi.xuex"

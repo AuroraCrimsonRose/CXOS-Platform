@@ -97,7 +97,7 @@ the final CXEX-headered, signable artifact.
 > **Stale as of the domain restructure.** This table said `XCEX` above. `.xcex`
 > is retired: it named an executable for how it was BUILT, and every executable
 > is compiled, so the letter distinguished nothing. See
-> `docs/formats/CX_EXTENSION_SYSTEM.md` §2.
+> `docs/x86_32/formats/CX_EXTENSION_SYSTEM.md` §2.
 
 > **Resolved 2026-10-01 (Q-E): ELF, not `.XCXN`.** The chain above now names ELF; the note below is kept for its
 > reasoning. ELF is also what lets X objects link into the C kernel (`cxk compile --object`), and what clang, ld.lld and
@@ -207,7 +207,7 @@ Output goes through callbacks rather than to a console: a library that writes to
 
 `BochsTool` is **not** here: Bochs support was removed on 2026-10-09 rather than moved. `GccTool` went with D5 and the LLVM toolchain.
 
-**`CXEX.Lang` is the component this section under-describes.** It is the second-largest project and the one everything downstream depends on, yet the table below never mentions it. Its internal pipeline (Lexer → Parser → Sema → CodeGen) is documented on the kernel side in `docs/language/CX_X_CORE_LANG.md` §7, because the language spec and the ABI it compiles against live there. That split is deliberate but it has a cost — see §5.2.
+**`CXEX.Lang` is the component this section under-describes.** It is the second-largest project and the one everything downstream depends on, yet the table below never mentions it. Its internal pipeline (Lexer → Parser → Sema → CodeGen) is documented on the kernel side in `docs/x86_32/language/CX_X_CORE_LANG.md` §7, because the language spec and the ABI it compiles against live there. That split is deliberate but it has a cost — see §5.2.
 
 | Library | Purpose |
 |---|---|

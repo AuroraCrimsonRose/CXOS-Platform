@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 // kernel.xkco - the kernel's own limits, read once at boot.
 //
-// X Data (docs/language/CX_X_DATA.md). Every key is optional: one left out keeps the
+// X Data (docs/x86_32/language/CX_X_DATA.md). Every key is optional: one left out keeps the
 // built-in value, which is what each is set to here. The whole file is checked
 // before any of it is used - a typo, an unknown key or a value out of range
 // refuses the ENTIRE file, the boot log says which line, and the kernel runs on

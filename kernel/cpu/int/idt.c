@@ -216,7 +216,7 @@ void isr_handler(struct registers *r) {
     /* Process-fatal, not kernel-fatal: the hook ends the process and never
        returns. The panic tone used to sound before this check, so every user
        program that crashed announced itself as a kernel panic
-       (docs/kernel/KERNEL_CONTRACTS.md section 1). */
+       (docs/x86_32/kernel/KERNEL_CONTRACTS.md section 1). */
     if ((r->cs & 3) == 3 && user_fault_hook) {
         user_fault_hook(r);
     }
@@ -344,7 +344,7 @@ void double_fault_task(void) {
 }
 
 /* ---- software panic --------------------------------------------------------
- * The kernel-fatal tier of the failure model (docs/kernel/KERNEL_CONTRACTS.md
+ * The kernel-fatal tier of the failure model (docs/x86_32/kernel/KERNEL_CONTRACTS.md
  * §1): an internal invariant is broken, and carrying on would run on state the
  * kernel can no longer vouch for. Everything lesser - a bad request, a missing
  * device, a process that faults - has its own tier and must use it.

@@ -714,7 +714,7 @@ The order below is chosen so each step is independently useful — nothing is bu
 purely in service of the compiler.
 
 **Stage 1 — make the OS able to hold source at all.** Filesystem access from ring
-3 (`docs/kernel/CX_ABI.md` §7.10) and `exec_path`. Without file I/O there is no reading a
+3 (`docs/x86_32/kernel/CX_ABI.md` §7.10) and `exec_path`. Without file I/O there is no reading a
 `.xfxn` and no writing a `.xuex`, so this gates everything. Useful on its own: it
 is what lets the shell and GUI launch application files.
 

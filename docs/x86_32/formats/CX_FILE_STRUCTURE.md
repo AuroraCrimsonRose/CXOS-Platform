@@ -108,7 +108,7 @@ for how it was built, and every executable is compiled, so it distinguished
 nothing.
 
 Each code is the domain letter followed by 'E' for executable, matching the
-extension: X + domain + type. See `docs/formats/CX_EXTENSION_SYSTEM.md` for the full
+extension: X + domain + type. See `docs/x86_32/formats/CX_EXTENSION_SYSTEM.md` for the full
 taxonomy. The kernel's copies are `CXEX_TYPE_*` in
 `kernel/lib/format/cxex.h`.
 

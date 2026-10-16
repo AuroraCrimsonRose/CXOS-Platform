@@ -147,13 +147,13 @@ The prelude only mirrors part of the header (`SYS_*`, `E_*`, `POWER_*`, `FB_OP_*
 
 The comparison lives in `CXEX.Lang/Abi/AbiSync.cs` rather than in the command, so a test project can call it. **That project is decided: `CXEX.Tests` (xUnit),** and a unit test running `AbiSync` against the real header is in its first batch, making `dotnet test` the gate. Until it lands, the check depends on running the CXK build.
 
-**Treat `AbiPrelude.cs` as requiring a manual update whenever `cxk_abi.h` changes**, and run `cxk check-abi` after. The CXK-side reference is `docs/kernel/CX_ABI.md`.
+**Treat `AbiPrelude.cs` as requiring a manual update whenever `cxk_abi.h` changes**, and run `cxk check-abi` after. The CXK-side reference is `docs/x86_32/kernel/CX_ABI.md`.
 
 Note the drift surface is wider than this one file: `os/std/net.xfxn` redeclares all seven `NET_OP_*` constants locally because the prelude doesn't carry them — a third copy of the ABI with no link back to the header.
 
 ### X Data: the second shared format
 
-Service descriptors (`.xosv`) are X Data, specified in `docs/language/CX_X_DATA.md`. The supervisor reads them on the device with `os/std/xdata.xfxn`; the build checks them first with `CXEX.Lang/Data/XData.cs`, a line-for-line port of that reader:
+Service descriptors (`.xosv`) are X Data, specified in `docs/x86_32/language/CX_X_DATA.md`. The supervisor reads them on the device with `os/std/xdata.xfxn`; the build checks them first with `CXEX.Lang/Data/XData.cs`, a line-for-line port of that reader:
 
 ```
 cxk check-xdata <files...> [--keys exec,args,start,every,grants] [--porcelain]
@@ -174,9 +174,9 @@ Two readers of one format are worth having only if they agree, so they are held 
 
 The X *language* is specified on the kernel side, since the kernel owns the ABI it compiles against:
 
-- `docs/language/CX_X_CORE_LANG.md` — the X core language spec (v0.2), including the route to self-hosting
-- `docs/kernel/CX_ABI.md` — the syscall and capability contract
-- `docs/formats/CX_EXTENSION_SYSTEM.md` — the CXEX format and the signing scheme
+- `docs/x86_32/language/CX_X_CORE_LANG.md` — the X core language spec (v0.2), including the route to self-hosting
+- `docs/x86_32/kernel/CX_ABI.md` — the syscall and capability contract
+- `docs/x86_32/formats/CX_EXTENSION_SYSTEM.md` — the CXEX format and the signing scheme
 
 ---
 
@@ -246,7 +246,7 @@ answer, and refusing for the wrong reason would pass a looser test.
 - Not a general-purpose IDE; built specifically for CX ecosystem development
 - i686 / 32-bit is the live target; other architectures are registry stubs
 - Contains experimental and unstable tooling
-- Long-term goal: X hosted on CXK, so the system can build its own software without a .NET host. See `docs/language/CX_X_CORE_LANG.md` §10.
+- Long-term goal: X hosted on CXK, so the system can build its own software without a .NET host. See `docs/x86_32/language/CX_X_CORE_LANG.md` §10.
 
 ---
 

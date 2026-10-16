@@ -11,7 +11,7 @@
 // same program: the four stages in os/xc are each held to their C#
 // counterpart by a differential test in devkit/tests/xc. Assembling and
 // linking are still the cross toolchain's - stage 5 of the route to
-// self-hosting (docs/language/CX_X_CORE_LANG.md section 10).
+// self-hosting (docs/x86_32/language/CX_X_CORE_LANG.md section 10).
 //
 // Diagnostics are printed as `cxk compile` prints them - file:line:col:
 // error: message - and the exit code is 0 for success, 1 for errors in the

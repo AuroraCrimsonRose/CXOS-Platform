@@ -22,7 +22,7 @@
 /* The higher-half base: the kernel lives at and above it, user space below.
    The ONE C definition - nine files used to carry their own copy. kernel.asm
    (KERNEL_VBASE equ) and linker.ld restate it because they cannot include a C
-   header (docs/kernel/KERNEL_CONTRACTS.md section 2). */
+   header (docs/x86_32/kernel/KERNEL_CONTRACTS.md section 2). */
 #define KERNEL_VBASE     0xC0000000u
 
 /* page flags (low bits of a PDE/PTE) */
