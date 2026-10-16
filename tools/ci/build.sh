@@ -11,6 +11,8 @@
 # Stages are skippable so a pipeline can fan them out:
 #   CXOS_CI_STAGES="devkit,os"   (default: devkit,os)
 #   CXOS_CI_SUITES=1             also run the Differential suites (needs an ELF host)
+#   CXOS_CI_CLI=<dir>            where cxk is published (default /tmp/cxos-ci/cli,
+#                                outside the checkout; os needs devkit in the same run)
 #
 set -euo pipefail
 
@@ -47,6 +49,13 @@ if command -v gcc >/dev/null 2>&1; then
 fi
 
 # --- devkit -----------------------------------------------------------------
+# The cxk this run uses is the one it publishes, called where it was published.
+# It used to be copied into tools/, which is the mounted checkout: a run without
+# the devkit stage then picked up whatever an older run had left there, and the
+# gitignored copy went stale (nine days, by 2026-10-16). It is published outside
+# the checkout too, because `cxk os build --clean` empties build/, and a cxk
+# published there deleted itself before CMake could run it.
+CLI_DIR="${CXOS_CI_CLI:-/tmp/cxos-ci/cli}"
 if has_stage devkit; then
   log 'devkit: build'
   dotnet build devkit/CXEX.Studio.slnx -c Release
@@ -54,21 +63,26 @@ if has_stage devkit; then
   log 'devkit: test'
   dotnet test devkit/CXEX.Studio.slnx -c Release --no-build
 
-  log 'devkit: publish cxk into tools/'
+  log 'devkit: publish cxk'
   dotnet publish devkit/CXEX.CLI -c Release -r linux-x64 \
     -p:SelfContained=true -p:PublishSingleFile=true \
     -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=none \
-    -o build/ci/cli
-  install -m 0755 build/ci/cli/cxk tools/cxk
+    -o "$CLI_DIR"
+fi
+
+CXK="$CLI_DIR/cxk"
+if [[ ! -x "$CXK" ]]; then
+  printf 'error: %s is missing. Run the devkit stage first (CXOS_CI_STAGES=devkit,...).\n' "$CXK" >&2
+  exit 1
 fi
 
 # --- registry and ABI checks ------------------------------------------------
 # cxk os build runs these as pre-flights anyway; running them first means a
 # version or ABI mismatch is reported as itself, not as a build failure.
 log 'checks: versions, ABI, cmake'
-tools/cxk check-versions
-tools/cxk check-abi
-tools/cxk check tools/cmake/CMakeLists.txt
+"$CXK" check-versions
+"$CXK" check-abi
+"$CXK" check tools/cmake/CMakeLists.txt
 
 # --- os ---------------------------------------------------------------------
 if has_stage os; then
@@ -76,9 +90,9 @@ if has_stage os; then
   # The kernel's root of trust is generated from the public half of this same
   # key, so the key the kernel trusts is the key the build signs with. The
   # private half is destroyed below and never leaves the container.
-  tools/cxk keygen tools/ci-ephemeral
+  "$CXK" keygen tools/ci-ephemeral
   trap 'rm -f tools/ci-ephemeral.xksk tools/ci-ephemeral.xkpk' EXIT
-  tools/cxk os build --key ci-ephemeral --clean
+  "$CXK" os build --key ci-ephemeral --clean
   rm -f tools/ci-ephemeral.xksk
   log 'os: image'
   ls -l dist/CXK_x86_32/images/cxk_disk.img
@@ -88,7 +102,7 @@ if has_stage os; then
   # what turns "Linux can build CXOS" into "Linux builds a CXOS that runs".
   # -snapshot inside verify-boot: the artifact is never modified by booting it.
   log 'os: boot (self-tests + executive)'
-  tools/cxk verify-boot dist/CXK_x86_32/images/cxk_disk.img --full --timeout 300
+  "$CXK" verify-boot dist/CXK_x86_32/images/cxk_disk.img --full --timeout 300
 fi
 
 # --- differential suites ----------------------------------------------------
