@@ -21,15 +21,17 @@
 #include <stdint.h>
 #include "proc.h"
 
-/* MAX_THREADS is CAPACITY: the size of every per-thread table, and the bound
-   on a pid. How many threads may actually be alive is a runtime LIMIT below it,
-   set from /System/Config/kernel.xkco (kconfig.h) - policy, not a constant.
-   The limit stays below capacity so a pid at the top of the tables is always
-   free, which the self-tests use as a scratch process. */
-#define MAX_THREADS           64
+/* How many threads may be alive is a runtime LIMIT, set from
+   /System/Config/kernel.xkco (kconfig.h): policy, not a constant. Thread
+   records come from a cache and their ids from a table that grows
+   (object/idtab.h), so nothing is sized by the limit; THREAD_LIMIT_MAX only
+   bounds what configuration may ask for. Thread ids are below it. Every
+   thread also holds a guarded kernel stack and a ring-3 one an esp0 stack
+   (memman/kstack.h, KSTACK_SLOTS of them), so asking for more than the
+   stacks allow is refused at creation, not at configuration. */
 #define THREAD_LIMIT_DEFAULT  8
 #define THREAD_LIMIT_MIN      4
-#define THREAD_LIMIT_MAX      32
+#define THREAD_LIMIT_MAX      256
 
 /* Kernel stack size, per thread. Guarded (memman/kstack.h), so a stack that is
    too small is a panic naming the thread rather than silent corruption - which
@@ -69,6 +71,12 @@ struct thread {
        every 49 days. */
     uint32_t  wake_tick;
     int       sleeping;
+    void    (*entry)(void);    /* what thread_launch calls */
+    /* What its creator handed it (thread_set_arg): a record the entry reads,
+       and how to free it. Freed when the thread is reaped or discarded, so a
+       thread that dies early (a ring-3 fault) leaks nothing of it. */
+    void     *arg;
+    void    (*arg_drop)(void *arg);
 };
 
 /* initialize the scheduler (registers the currently-running code as thread 0). */
@@ -89,6 +97,13 @@ int thread_create(const char *name, void (*entry)(void));
    one was left with saved state on freed memory. Returns the id, or -1. */
 int  thread_create_process(const char *name, void (*entry)(void));
 void thread_start(int id);     /* a held thread becomes runnable */
+
+/* Hand a HELD thread a record, and the function that frees it (NULL: nothing
+   to free). The thread reads it with thread_current_arg. -1 if `id` is not a
+   held thread. These replace the per-thread arrays callers used to keep,
+   indexed by thread id. */
+int   thread_set_arg(int id, void *arg, void (*drop)(void *arg));
+void *thread_current_arg(void);
 void thread_discard(int id);   /* a held thread that will never start is freed now */
 
 /* Set the thread limit and the size of stacks made from now on. Refused (-1)

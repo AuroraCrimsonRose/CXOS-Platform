@@ -189,6 +189,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/object/kobj.c
     ${SRC_DIR}/kernel/object/htab.c
     ${SRC_DIR}/kernel/memman/ocache.c
+    ${SRC_DIR}/kernel/object/idtab.c
     ${SRC_DIR}/kernel/cpu/exec.c
     ${SRC_DIR}/kernel/cpu/keyvault.c
     ${SRC_DIR}/kernel/cpu/launch.c

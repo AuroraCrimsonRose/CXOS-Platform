@@ -38,8 +38,8 @@
 #define USER_STACK_PAGES  64u
 #define PROC_MAX_IMAGE    (1u << 20)   /* 1 MiB cap on an image */
 
-/* per-THREAD record (indexed by thread id) handed from proc_start to the trampoline (which runs later, on
-   the new thread, in that thread's own address space). */
+/* The record proc_start hands the new thread (thread_set_arg) for its
+   trampoline, which runs later, on that thread, in its own address space. */
 struct proc_rec {
     const void       *image;     /* kernel-heap copy of the CXEX bytes */
     uint32_t          image_len;
@@ -47,7 +47,15 @@ struct proc_rec {
     uint32_t          args_len;
     struct addr_space space;
 };
-static struct proc_rec proc_recs[MAX_THREADS];
+
+/* Freed with the thread, however it ended: the heap copies first, if the
+   trampoline never got as far as freeing them. */
+static void proc_rec_drop(void *arg) {
+    struct proc_rec *r = arg;
+    if (r->image) kfree((void *)r->image);
+    if (r->args)  kfree((void *)r->args);
+    kfree(r);
+}
 
 extern const struct cxex_load_ops cxex_kernel_load_ops;   /* cxex_loadk.c */
 extern int enter_usermode(uint32_t entry_eip, uint32_t user_esp, uint32_t *save_slot);
@@ -127,7 +135,7 @@ static void proc_teardown(int tid, struct proc_rec *r) {
 static void proc_trampoline(void) {
     int tid = thread_current_id();
     int pid = thread_current_pid();
-    struct proc_rec *r = &proc_recs[tid];
+    struct proc_rec *r = thread_current_arg();
 
     uint32_t entry = 0;
     int lrc = cxex_load(r->image, r->image_len, &cxex_kernel_load_ops, &entry);
@@ -217,14 +225,16 @@ int proc_start(const void *image, uint32_t image_len, uint32_t caps,
     if (addr_space_create(&space) != 0) { kfree(kimg); kfree(kargs); return E_NOMEM; }
 
     /* Held until every record below is filled in: see thread_create_process. */
-    int tid = thread_create_process("proc", proc_trampoline);
-    if (tid < 0) { kfree(kimg); kfree(kargs); addr_space_destroy(&space); return E_NOMEM; }
+    struct proc_rec *rec = kmalloc(sizeof *rec);
+    int tid = rec ? thread_create_process("proc", proc_trampoline) : -1;
+    if (tid < 0) { kfree(rec); kfree(kimg); kfree(kargs); addr_space_destroy(&space); return E_NOMEM; }
 
-    proc_recs[tid].image     = kimg;
-    proc_recs[tid].image_len = image_len;
-    proc_recs[tid].args      = kargs;
-    proc_recs[tid].args_len  = args_len;
-    proc_recs[tid].space     = space;
+    rec->image     = kimg;
+    rec->image_len = image_len;
+    rec->args      = kargs;
+    rec->args_len  = args_len;
+    rec->space     = space;
+    thread_set_arg(tid, rec, proc_rec_drop);
 
     thread_mark_user(tid);
     thread_set_space(tid, space.pd_phys);   /* scheduler loads this CR3 for it */

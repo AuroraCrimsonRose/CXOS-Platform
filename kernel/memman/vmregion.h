@@ -44,6 +44,24 @@
    process, NOT a budget shared with its children - see vm_proc_init. */
 #define VM_DEFAULT_QUOTA (16u * 1024u * 1024u)   /* built in; kernel.xkco may change it */
 
+/* One process's mappings and quota. It lives in the process (cpu/proc.h);
+   the functions below find it by pid. */
+struct vm_region {
+    uint32_t base;       /* page-aligned start; 0 = this slot is free */
+    uint32_t len;        /* page-aligned length */
+    uint32_t prot;       /* MPROT_* as requested */
+    uint32_t object;     /* MOBJ_* this is a view of */
+    uint32_t off_lo;     /* 64-bit offset into that object */
+    uint32_t off_hi;
+};
+
+struct vm_proc {
+    int      live;
+    uint32_t quota;      /* ceiling in bytes */
+    uint32_t mapped;     /* how much of it is in use */
+    struct vm_region r[MMAP_MAX_REGIONS];
+};
+
 /* The quota a process gets when its parent asks for none, and the most any
    process may be given. Starts at VM_DEFAULT_QUOTA. */
 uint32_t vm_default_quota(void);

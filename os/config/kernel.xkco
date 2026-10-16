@@ -16,7 +16,7 @@
 // does not corrupt memory. Larger costs memory for every thread.
 kernel_stack_kib = 8
 
-// How many threads may be alive at once: 4 to 32. The executive, shell,
+// How many threads may be alive at once: 4 to 256. The executive, shell,
 // supervisor and each running service or program is one.
 max_threads = 8
 

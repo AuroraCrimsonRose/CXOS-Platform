@@ -1175,8 +1175,8 @@ static int test_cxfs_volumes(void) {
 /* ---- memory mappings (SYS_MEM_OP) ----
  * Runs on a SCRATCH pid rather than a live one. ktest_run() is called after
  * the ring-3 test threads have exited and before the executive starts, so no
- * process is being tracked and slot MAX_THREADS-1 belongs to nobody; it is
- * reset again at the end either way.
+ * process is being tracked. The scratch pid is a process of its own made for
+ * the test (proc_create), with no thread, reset and released at the end.
  *
  * The frame count is taken before and restored-to after, because the failure
  * this most needs to catch is not a wrong answer but a leak: a map/unmap pair
@@ -1345,15 +1345,19 @@ done:
  * mapping is released, placement produces the same addresses again, so a full
  * unmap really does return the space rather than merely forgetting it. */
 static int test_vmregion(void) {
-    const int pid = MAX_THREADS - 1;
+    struct proc *scratch = proc_create(0);
+    if (!scratch) return 0;
+    const int pid = scratch->pid;
 
-    if (!vm_cycle(pid)) { vm_proc_reset(pid); return 0; }
-    vm_proc_reset(pid);
-
-    uint32_t free0 = pmm_free_count();
     int ok = vm_cycle(pid);
     vm_proc_reset(pid);
-    if (pmm_free_count() != free0) return 0;
+    if (ok) {
+        uint32_t free0 = pmm_free_count();
+        ok = vm_cycle(pid);
+        vm_proc_reset(pid);
+        if (pmm_free_count() != free0) ok = 0;
+    }
+    proc_put(scratch);
     return ok;
 }
 
@@ -1564,7 +1568,9 @@ static void lifecycle_counter_thread(void) {
 }
 
 static int test_lifecycle_sequences(void) {
-    const int pid = MAX_THREADS - 1;
+    struct proc *scratch = proc_create(0);   /* see test_vmregion */
+    if (!scratch) return 0;
+    const int pid = scratch->pid;
     int ok = 1;
 
     /* ---- 1. map -> access -> unmap -> access fails ---- */
@@ -1625,6 +1631,7 @@ static int test_lifecycle_sequences(void) {
 
 done_vm:
     vm_proc_reset(pid);
+    proc_put(scratch);
     if (!ok) return 0;
 
     /* ---- 2. process create -> run -> exit -> frames returned ----
@@ -2356,7 +2363,7 @@ static int test_kconfig(void) {
 
     return kc_refused("kernel_stack = 8\n", 0)                             /* unknown key */
         && kc_refused("max_threads = 12\nmax_thread = 12\n", 17)          /* misspelt */
-        && kc_refused("max_threads = 99\n", 14)                            /* out of range */
+        && kc_refused("max_threads = 257\n", 14)                           /* out of range */
         && kc_refused("max_threads = 3\n", 14)
         && kc_refused("kernel_stack_kib = 10\n", 19)                       /* not a multiple of 4 */
         && kc_refused("kernel_stack_kib = 64\n", 19)
@@ -2410,6 +2417,49 @@ static int test_thread_limit(void) {
     return ok && sched_thread_limit() == L && sched_stack_bytes() == S;
 }
 
+/* ---- the thread and pid tables grow (object/idtab.h) ----
+ * Thread ids and pids were slots in fixed arrays of 64, with every per-thread
+ * table beside them the same size. Here more than 64 threads are alive at
+ * once, each in a process of its own, so both tables must have grown past it;
+ * each must run, and once all have exited every id, record and process must
+ * be given back. */
+#define TG_THREADS 80
+static volatile int tg_ran;
+static volatile int tg_release;
+static void tg_thread(void) {
+    tg_ran++;
+    while (!tg_release) yield();
+}
+
+static int test_thread_table_grows(void) {
+    uint32_t L = sched_thread_limit(), S = sched_stack_bytes();
+    uint32_t n0 = sched_thread_count(), p0 = proc_live();
+    if (sched_configure(n0 + TG_THREADS, S) != 0) return 0;
+
+    tg_ran = 0;
+    tg_release = 0;
+    int ok = 1, top_tid = -1, top_pid = -1, made = 0;
+    for (int i = 0; i < TG_THREADS; i++) {
+        int id = thread_create("grow", tg_thread);
+        if (id < 0) { ok = 0; break; }
+        made++;
+        if (id > top_tid) top_tid = id;
+        if (thread_pid(id) > top_pid) top_pid = thread_pid(id);
+    }
+    for (int i = 0; i < 64 && tg_ran < made; i++) yield();
+    ok = ok && tg_ran == TG_THREADS
+            && top_tid >= 64 && top_pid >= 64
+            && sched_thread_count() == n0 + TG_THREADS
+            && proc_live() == p0 + TG_THREADS;
+
+    tg_release = 1;
+    for (int i = 0; i < 256 && sched_thread_count() > n0; i++) yield();
+    ok = ok && sched_thread_count() == n0 && proc_live() == p0;
+
+    sched_configure(L, S);
+    return ok;
+}
+
 #if CXK_KTEST_STACK_OVERFLOW
 /* Recurse until the stack runs out. The volatile buffer keeps each frame real
    and the addition after the call keeps it from becoming a loop. */
@@ -2456,6 +2506,7 @@ void ktest_run(void) {
     total++; passed += report("thread 0 on a guarded stack",       test_main_stack());
     total++; passed += report("kernel config (X Data, linked X)",  test_kconfig());
     total++; passed += report("thread limit + stack size",         test_thread_limit());
+    total++; passed += report("thread and pid tables grow past 64", test_thread_table_grows());
     total++; passed += report("cxex signature + tamper",           test_cxex_signature());
     total++; passed += report("disk: ATA LBA range refused",        test_disk_lba_range());
     total++; passed += report("cxex loader refuses bad images",    ktest_loader_adversarial());

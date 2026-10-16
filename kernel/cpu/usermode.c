@@ -11,6 +11,7 @@
 #include "uid.h"
 #include "paging.h"
 #include "pmm.h"
+#include "heap.h"
 #include "vmregion.h"
 #include "console.h"
 #include "logging.h"
@@ -54,6 +55,9 @@ extern void return_to_kernel(int retval, uint32_t *save_slot);
  */
 #define R3_BASE       0x00800000u      /* 8 MB: base of user virtual region */
 #define R3_SLOT_SIZE  0x00010000u      /* 64 KB virtual slot per process */
+/* Slots, so thread ids, it serves: 8 MB to 10 MB, the range these helpers
+   have always used (thread ids were below 32 while the limit was). */
+#define R3_SLOTS      32
 #define USER_MSG_OFF  0x800            /* message sits 2KB into the code page */
 
 /* single-test (3a) user virtual addresses (pid-independent fixed slot 0) */
@@ -1166,11 +1170,11 @@ struct ring3_setup {
     uint32_t    code_phys;     /* pmm frame backing the code page (for free) */
     uint32_t    stack_phys;    /* pmm frame backing the stack page (for free) */
 };
-static struct ring3_setup r3[MAX_THREADS];
 
+/* The thread's own record (thread_set_arg), freed when it is reaped. */
 static void process_trampoline(void) {
     int pid = thread_current_id();
-    struct ring3_setup *s = &r3[pid];
+    struct ring3_setup *s = thread_current_arg();
 
     /* back this process's pages with pmm frames, mapped user-accessible */
     s->code_phys  = map_user_page(s->code_virt);
@@ -1212,13 +1216,16 @@ static int process_prepare_ring3(const char *name,
                                  const char *msg) {
     int pid = thread_create_process(name, process_trampoline);
     if (pid < 0) return -1;
-    r3[pid].blob       = blob;
-    r3[pid].blob_len   = blob_len;
-    r3[pid].msg        = msg;
-    r3[pid].code_virt  = R3_BASE + (uint32_t)pid * R3_SLOT_SIZE;
-    r3[pid].stack_virt = r3[pid].code_virt + 0x1000;
-    r3[pid].code_phys  = 0;
-    r3[pid].stack_phys = 0;
+    struct ring3_setup *s = (pid < R3_SLOTS) ? kmalloc(sizeof *s) : 0;
+    if (!s) { thread_discard(pid); return -1; }
+    s->blob       = blob;
+    s->blob_len   = blob_len;
+    s->msg        = msg;
+    s->code_virt  = R3_BASE + (uint32_t)pid * R3_SLOT_SIZE;
+    s->stack_virt = s->code_virt + 0x1000;
+    s->code_phys  = 0;
+    s->stack_phys = 0;
+    thread_set_arg(pid, s, kfree);
     thread_mark_user(pid);
     thread_set_caps(pid, GRANT_CONSOLE);   /* SYSTEM ring-3 helper: may write console */
     klog_u32("RING3", SEV_INFO, "SYSMODE CALL - pid ", (uint32_t)pid, LOG_COLOR_VALUE, "");

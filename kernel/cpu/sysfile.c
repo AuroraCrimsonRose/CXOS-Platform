@@ -128,14 +128,27 @@ struct file_lock {
 };
 static struct file_lock locks[MAX_FILE_LOCKS];
 
-/* What each thread blocked in FILE_OP_LOCK is waiting for. The deadlock check
-   walks it, and a release wakes every thread with `waiting` set. */
+/* What a thread blocked in FILE_OP_LOCK is waiting for. The record lives on
+   that thread's own stack for as long as it waits, linked into `waiters`, so
+   there is one per waiting thread and nothing sized by how many threads there
+   could be. The deadlock check walks the list; a release wakes everyone on it.
+   Unlocked, like `locks` itself: only thread context touches either, and
+   the kernel is not preempted outside the preemption self-tests. One lock
+   for both arrives with preemption or SMP. */
 struct lock_wait {
-    int      waiting;
+    int      tid;
+    int      seen;          /* visited by the current deadlock walk */
     struct open_file *of;
     uint32_t entry, start, len, mode;
+    struct lock_wait *next;
 };
-static struct lock_wait waits[MAX_THREADS];
+static struct lock_wait *waiters;
+
+static struct lock_wait *waiter_of(int tid) {
+    for (struct lock_wait *w = waiters; w; w = w->next)
+        if (w->tid == tid) return w;
+    return NULL;
+}
 
 static int ranges_overlap(uint32_t s1, uint32_t l1, uint32_t s2, uint32_t l2) {
     uint64_t e1 = l1 ? (uint64_t)s1 + l1 : UINT64_MAX;
@@ -162,22 +175,21 @@ static int lock_conflict(const struct open_file *of, uint32_t entry, uint32_t st
    checks POSIX locks the same way and answers EDEADLK; Serenity does not check,
    and a program that gets it wrong hangs. */
 static int lock_cycle(int me, const struct open_file *of, uint32_t entry, uint32_t start,
-                      uint32_t len, uint32_t mode, uint8_t *seen) {
+                      uint32_t len, uint32_t mode) {
     for (int i = lock_conflict(of, entry, start, len, mode, 0); i >= 0;
          i = lock_conflict(of, entry, start, len, mode, i + 1)) {
         int h = locks[i].of->owner;
         if (h == me) return 1;
-        if (h < 0 || h >= MAX_THREADS || seen[h] || !waits[h].waiting) continue;
-        seen[h] = 1;
-        const struct lock_wait *w = &waits[h];
-        if (lock_cycle(me, w->of, w->entry, w->start, w->len, w->mode, seen)) return 1;
+        struct lock_wait *w = waiter_of(h);
+        if (!w || w->seen) continue;
+        w->seen = 1;
+        if (lock_cycle(me, w->of, w->entry, w->start, w->len, w->mode)) return 1;
     }
     return 0;
 }
 
 static void lock_wake_all(void) {
-    for (int t = 0; t < MAX_THREADS; t++)
-        if (waits[t].waiting) thread_unblock(t);
+    for (struct lock_wait *w = waiters; w; w = w->next) thread_unblock(w->tid);
 }
 
 /* Take or convert a lock. The caller has checked there is no conflict. */
@@ -243,7 +255,7 @@ void sysfile_init(void) {
     if (ocache_init(&of_cache, "file", sizeof(struct open_file)) != 0)
         kpanic("sysfile_init: no open-file cache");
     for (int i = 0; i < MAX_FILE_LOCKS; i++) locks[i].of = NULL;
-    for (int i = 0; i < MAX_THREADS; i++) waits[i].waiting = 0;
+    waiters = NULL;
     graves = 0;
     kobj_type_register(KOBJ_FILE, &file_ops);
 }
@@ -607,18 +619,17 @@ static int file_op(struct file_op_args a, struct open_file *f, uint32_t rights) 
             int me = thread_current_id();
             while (lock_conflict(f, f->entry, start, a.len, mode, 0) >= 0) {
                 if (!(a.flags & FLOCK_WAIT)) return E_AGAIN;
-                uint8_t seen[MAX_THREADS];
-                memset(seen, 0, sizeof seen);
-                if (lock_cycle(me, f, f->entry, start, a.len, mode, seen)) return E_DEADLK;
+                for (struct lock_wait *w = waiters; w; w = w->next) w->seen = 0;
+                if (lock_cycle(me, f, f->entry, start, a.len, mode)) return E_DEADLK;
 
-                waits[me].of = f;
-                waits[me].entry = f->entry;
-                waits[me].start = start;
-                waits[me].len = a.len;
-                waits[me].mode = mode;
-                waits[me].waiting = 1;
+                struct lock_wait self = { .tid = me, .of = f, .entry = f->entry,
+                                          .start = start, .len = a.len, .mode = mode,
+                                          .next = waiters };
+                waiters = &self;
                 thread_wait();
-                waits[me].waiting = 0;
+                struct lock_wait **pp = &waiters;
+                while (*pp != &self) pp = &(*pp)->next;
+                *pp = self.next;
             }
             return lock_apply(f, start, a.len, mode);
         }

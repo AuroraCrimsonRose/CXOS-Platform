@@ -10,14 +10,31 @@
 #include "gdt.h"
 #include "uid.h"
 #include "timer.h"   /* timer_ticks for the sleep queue */
+#include "object/idtab.h"
+#include "memman/ocache.h"
+#include "cpu/int/idt.h"   /* kpanic */
 
 extern void context_switch(uint32_t *old_esp, uint32_t new_esp);
 
 static void sched_reap(void);   /* forward decl: used by yield, defined below */
 static uint32_t kernel_pd_phys = 0;   /* CR3 of the shared kernel space (captured at init) */
 
-static struct thread threads[MAX_THREADS];
-static int current = 0;       /* index of the running thread */
+/* Every thread is a record from its own cache, named by an id from `tids`.
+   The id is the index the old fixed array had: small, lowest free first,
+   0 for the boot context. The table grows as threads are made, so the limit
+   is configuration (sched_configure) and not the size of an array. */
+static struct ocache thread_cache;
+static struct idtab  tids;
+static int current = 0;       /* id of the running thread */
+
+static inline struct thread *th(int id) { return (struct thread *)idtab_get(&tids, id); }
+static inline struct thread *self(void) { return th(current); }
+
+/* A live thread (allocated, exited-unreaped included), or NULL. */
+static inline struct thread *live(int id) {
+    struct thread *t = th(id);
+    return (t && t->state != THREAD_UNUSED) ? t : 0;
+}
 static int initialized = 0;
 
 /* Interrupts off across a switch. yield() and thread_exit() used to run with
@@ -46,15 +63,11 @@ static inline void irq_restore(uint32_t f) {
 static uint32_t thread_limit = THREAD_LIMIT_DEFAULT;
 static uint32_t stack_bytes  = THREAD_STACK_DEFAULT;
 
-/* Slots in use, EXITED ones included: an exited thread still holds its stacks
-   until the reaper runs. Counting them keeps the limit honest, and because a
-   new thread takes the lowest free slot, it also keeps every pid below the
-   limit. */
-static uint32_t threads_allocated(void) {
-    uint32_t n = 0;
-    for (int i = 0; i < MAX_THREADS; i++) if (threads[i].state != THREAD_UNUSED) n++;
-    return n;
-}
+/* Threads that hold an id, EXITED ones included: an exited thread still holds
+   its stacks until the reaper runs. Counting them keeps the limit honest, and
+   because a new thread takes the lowest free id, it also keeps every thread
+   id below the limit. */
+static uint32_t threads_allocated(void) { return tids.used; }
 
 int sched_configure(uint32_t max_threads, uint32_t bytes) {
     if (max_threads < THREAD_LIMIT_MIN || max_threads > THREAD_LIMIT_MAX) return -1;
@@ -75,34 +88,32 @@ uint32_t sched_stack_bytes(void)  { return stack_bytes; }
    then `ret` pops the return address. We make that return address thread_launch
    and stash the entry fn where thread_launch can find it. */
 
-/* per-thread entry function, looked up by thread_launch via `current` */
-static void (*thread_entry[MAX_THREADS])(void);
-
 /* trampoline: the first thing a new thread runs. calls its entry, then exits. */
 static void thread_launch(void) {
-    void (*entry)(void) = thread_entry[current];
+    void (*entry)(void) = self()->entry;
     if (entry) entry();
     thread_exit();
 }
 
 void sched_init(void) {
-    for (int i = 0; i < MAX_THREADS; i++) {
-        threads[i].state = THREAD_UNUSED;
-        threads[i].id = i;
-        threads[i].proc = 0;
-    }
+    if (ocache_init(&thread_cache, "thread", sizeof(struct thread)) != 0)
+        kpanic("sched_init: no thread cache");
+    idtab_init(&tids, THREAD_LIMIT_MAX);
     proc_sys_init();
+    struct thread *t0 = ocache_alloc(&thread_cache);   /* zeroed */
+    if (!t0 || idtab_alloc(&tids, t0, 0) != 0) kpanic("sched_init: no thread 0");
+    t0->id = 0;
     /* thread 0 = the currently-running kernel context. Its esp is filled in on
-       the first switch away from it (context_switch saves into &threads[0].esp). */
-    threads[0].state = THREAD_RUNNING;
-    threads[0].name  = "main";
-    threads[0].stack_base = 0;   /* uses the existing kernel stack */
+       the first switch away from it (context_switch saves into &th(0)->esp). */
+    th(0)->state = THREAD_RUNNING;
+    th(0)->name  = "main";
+    th(0)->stack_base = 0;   /* uses the existing kernel stack */
     /* the boot/kernel context is the machine (User 0): proc_create with no
        parent gives exactly that */
-    threads[0].proc  = proc_create(0);
-    if (!threads[0].proc) return;   /* initialized stays 0: nothing schedules */
-    proc_thread_in(threads[0].proc);
-    proc_put(threads[0].proc);      /* the thread's reference is the one that counts */
+    th(0)->proc  = proc_create(0);
+    if (!th(0)->proc) return;   /* initialized stays 0: nothing schedules */
+    proc_thread_in(th(0)->proc);
+    proc_put(th(0)->proc);      /* the thread's reference is the one that counts */
     current = 0;
     /* capture the kernel space CR3 (active at boot); kernel threads run in it. */
     __asm__ volatile ("mov %%cr3, %0" : "=r"(kernel_pd_phys));
@@ -129,45 +140,81 @@ int thread_create_process(const char *name, void (*entry)(void)) {
 }
 
 void thread_start(int id) {
-    if (id > 0 && id < MAX_THREADS && threads[id].state == THREAD_HELD)
-        threads[id].state = THREAD_READY;
+    struct thread *t = th(id);
+    if (id > 0 && t && t->state == THREAD_HELD) t->state = THREAD_READY;
+}
+
+int thread_set_arg(int id, void *arg, void (*drop)(void *arg)) {
+    struct thread *t = th(id);
+    if (id <= 0 || !t || t->state != THREAD_HELD) return -1;
+    t->arg      = arg;
+    t->arg_drop = drop;
+    return 0;
+}
+
+void *thread_current_arg(void) {
+    return initialized ? self()->arg : 0;
+}
+
+/* Everything a thread holds goes back, then its id and its record. Never the
+   running thread: a thread cannot free the stack it stands on. */
+static void thread_free(struct thread *t) {
+    if (t->stack_base)      { kstack_free(t->stack_base);  t->stack_base = 0; }
+    if (t->user_stack_base) { kfree((void *)t->user_stack_base); t->user_stack_base = 0; }
+    if (t->kstack_base)     { kstack_free(t->kstack_base); t->kstack_base = 0; }
+    t->kstack_top = 0;
+    /* What its creator handed it (thread_set_arg), however it ended. */
+    if (t->arg_drop) t->arg_drop(t->arg);
+    t->arg = 0;
+    t->arg_drop = 0;
+    /* The last thread of a process to go closes its handles. */
+    proc_thread_gone(t->proc);
+    t->proc  = 0;
+    t->state = THREAD_UNUSED;
+    idtab_take(&tids, t->id);
+    ocache_free(&thread_cache, t);
 }
 
 /* Never ran, so nothing is standing on its stacks: free them here rather than
    leave it to the reaper, which only collects EXITED threads. */
 void thread_discard(int id) {
-    if (id <= 0 || id >= MAX_THREADS || threads[id].state != THREAD_HELD) return;
-    if (threads[id].stack_base)  { kstack_free(threads[id].stack_base);  threads[id].stack_base = 0; }
-    if (threads[id].kstack_base) { kstack_free(threads[id].kstack_base); threads[id].kstack_base = 0; }
-    threads[id].kstack_top = 0;
-    proc_thread_gone(threads[id].proc);
-    threads[id].proc  = 0;
-    threads[id].state = THREAD_UNUSED;
+    struct thread *t = th(id);
+    if (id <= 0 || !t || t->state != THREAD_HELD) return;
+    uint32_t f = irq_save();
+    thread_free(t);
+    irq_restore(f);
 }
 
 static int thread_create_in(const char *name, void (*entry)(void), int held, struct proc *into) {
     if (!initialized) return -1;
     if (threads_allocated() >= thread_limit) return -1;
-    int slot = -1;
-    for (int i = 1; i < MAX_THREADS; i++) {
-        /* only reuse fully-reaped slots; an EXITED slot still has a stack
-           pending free by the reaper, so don't clobber it here. */
-        if (threads[i].state == THREAD_UNUSED) {
-            slot = i; break;
-        }
-    }
-    if (slot < 0) return -1;
+
+    /* Zeroed, and UNUSED until the end: the timer interrupt can see it in the
+       table from here on, and must not run it half-built. An EXITED thread
+       keeps its id until it is reaped, so its stacks are never clobbered. */
+    struct thread *t = ocache_alloc(&thread_cache);
+    if (!t) return -1;
+    uint32_t f = irq_save();
+    int slot = idtab_alloc(&tids, t, 1);
+    irq_restore(f);
+    if (slot < 0) { ocache_free(&thread_cache, t); return -1; }
+    t->id = slot;
 
     /* A guarded stack (memman/kstack.h): running off the bottom faults rather
        than overwriting the heap, which is what a kmalloc'd stack did. */
     /* Its process: the one it joins, or a new one that inherits the
        creator's uid and cwd and nothing else. */
-    struct proc *p = into ? into : proc_create(threads[current].proc);
-    if (!p) return -1;
-
-    uint32_t stack;
-    uint32_t stack_top = kstack_alloc(stack_bytes, slot, &stack);
-    if (!stack_top) { if (!into) proc_put(p); return -1; }
+    struct proc *p = into ? into : proc_create(self()->proc);
+    uint32_t stack = 0;
+    uint32_t stack_top = p ? kstack_alloc(stack_bytes, slot, &stack) : 0;
+    if (!stack_top) {
+        if (p && !into) proc_put(p);
+        f = irq_save();
+        idtab_take(&tids, slot);
+        irq_restore(f);
+        ocache_free(&thread_cache, t);
+        return -1;
+    }
     proc_thread_in(p);
     if (!into) proc_put(p);   /* the new thread's reference keeps it */
 
@@ -187,31 +234,35 @@ static int thread_create_in(const char *name, void (*entry)(void), int held, str
     *(--sp) = 0;                         /* [+4]  edi */
     *(--sp) = 0;                         /* [+0]  ebp  <- esp points here */
 
-    threads[slot].esp        = (uint32_t)sp;
-    threads[slot].stack_base = stack;
-    threads[slot].state      = held ? THREAD_HELD : THREAD_READY;
-    threads[slot].name       = name;
-    threads[slot].proc       = p;
-    threads[slot].exit_code  = 0;
-    threads[slot].user_stack_base = 0;
-    threads[slot].u_saved_esp   = 0;
-    threads[slot].u_saved_flags = 0;
+    t->esp        = (uint32_t)sp;
+    t->stack_base = stack;
+    t->name       = name;
+    t->proc       = p;
+    t->exit_code  = 0;
+    t->user_stack_base = 0;
+    t->u_saved_esp   = 0;
+    t->u_saved_flags = 0;
     /* kstack_top 0: a kernel-only thread, which never enters ring 3 and so runs
        on the dedicated gdt_init stack. A thread that WILL enter ring 3 is made
        with thread_create_process, which gives it its own esp0 before it can be
        scheduled (PROCESS_MODEL.md §8). */
-    threads[slot].kstack_top  = 0;
-    threads[slot].kstack_base = 0;
-    thread_entry[slot]       = entry;
+    t->kstack_top  = 0;
+    t->kstack_base = 0;
+    t->entry       = entry;
+    t->arg         = 0;
+    t->arg_drop    = 0;
+    /* Last: from here the timer may run it. */
+    __atomic_store_n(&t->state, held ? THREAD_HELD : THREAD_READY, __ATOMIC_RELEASE);
     return slot;
 }
 
 /* pick the next READY/RUNNING thread after `current` (round-robin). */
 static int next_runnable(void) {
-    for (int n = 1; n <= MAX_THREADS; n++) {
-        int i = (current + n) % MAX_THREADS;
-        if (threads[i].state == THREAD_READY || threads[i].state == THREAD_RUNNING)
-            return i;
+    int cap = (int)tids.cap;
+    for (int n = 1; n <= cap; n++) {
+        struct thread *t = th((current + n) % cap);
+        if (t && (t->state == THREAD_READY || t->state == THREAD_RUNNING))
+            return t->id;
     }
     return current;   /* nobody else: keep running current */
 }
@@ -229,7 +280,7 @@ static int next_runnable(void) {
    saved interrupt frame. The self-test "esp0 follows the running thread"
    holds it. */
 static void update_tss_esp0(void) {
-    uint32_t top = threads[current].kstack_top;
+    uint32_t top = self()->kstack_top;
     tss_set_kernel_stack(top ? top : tss_default_kernel_stack());
 }
 
@@ -238,7 +289,7 @@ static void update_tss_esp0(void) {
    right after update_tss_esp0(). The kernel half is mapped in every space,
    so this is safe for kernel threads regardless of which space is loaded. */
 static void update_address_space(void) {
-    uint32_t mine = threads[current].proc ? threads[current].proc->pd_phys : 0;
+    uint32_t mine = self()->proc ? self()->proc->pd_phys : 0;
     uint32_t pd = mine ? mine : kernel_pd_phys;
     if (pd) __asm__ volatile ("mov %0, %%cr3" : : "r"(pd) : "memory");
 }
@@ -254,26 +305,26 @@ void thread_set_space(int id, uint32_t pd_phys) {
    always unblocks its counterpart before blocking). */
 void thread_block(void) {
     if (!initialized) return;
-    threads[current].state = THREAD_BLOCKED;
+    self()->state = THREAD_BLOCKED;
     yield();   /* yield leaves a BLOCKED thread alone; picks another */
 }
 
 void thread_wait(void) {
     if (!initialized) return;
-    threads[current].state = THREAD_BLOCKED;
+    self()->state = THREAD_BLOCKED;
     for (;;) {
         yield();
-        if (threads[current].state != THREAD_BLOCKED) break;  /* woken */
+        if (self()->state != THREAD_BLOCKED) break;  /* woken */
         /* yield found nothing else runnable and stayed: wait for an interrupt
            (a timer tick that wakes a sleeping lock holder) instead of spinning */
         __asm__ volatile ("sti; hlt");
     }
-    threads[current].state = THREAD_RUNNING;
+    self()->state = THREAD_RUNNING;
 }
 
 void thread_unblock(int id) {
-    if (id >= 0 && id < MAX_THREADS && threads[id].state == THREAD_BLOCKED)
-        threads[id].state = THREAD_READY;
+    struct thread *t = th(id);
+    if (t && t->state == THREAD_BLOCKED) t->state = THREAD_READY;
 }
 
 /* ---- timed sleep ----
@@ -284,14 +335,21 @@ void thread_unblock(int id) {
 uint32_t thread_sleep_ms(uint32_t ms) {
     if (!initialized || ms == 0) { yield(); return timer_ticks(); }
 
-    threads[current].wake_tick = timer_ticks() + ms;
-    threads[current].sleeping  = 1;
-    threads[current].state     = THREAD_BLOCKED;
+    /* All three at once, with the timer held off. Set one at a time, a tick
+       landing between `sleeping` and `state` found a thread already due but
+       still RUNNING: it cleared `sleeping` and left the state alone, the
+       thread then blocked itself, and nothing would ever wake it. A 1 ms
+       sleep is due at the very next tick, so the window was real. */
+    uint32_t f = irq_save();
+    self()->wake_tick = timer_ticks() + ms;
+    self()->sleeping  = 1;
+    self()->state     = THREAD_BLOCKED;
+    irq_restore(f);
 
     for (;;) {
         yield();
-        if (!threads[current].sleeping) break;                /* the timer woke us */
-        if (threads[current].state != THREAD_BLOCKED) break;  /* something else did */
+        if (!self()->sleeping) break;                /* the timer woke us */
+        if (self()->state != THREAD_BLOCKED) break;  /* something else did */
 
         /* Still blocked and still here, which means yield found nothing else
            to run and declined to switch. We are the only thread awake, so wait
@@ -301,21 +359,22 @@ uint32_t thread_sleep_ms(uint32_t ms) {
         __asm__ volatile ("sti; hlt");
     }
 
-    threads[current].sleeping = 0;
-    threads[current].state    = THREAD_RUNNING;
+    self()->sleeping = 0;
+    self()->state    = THREAD_RUNNING;
     return timer_ticks();
 }
 
 void sched_wake_sleepers(void) {
     if (!initialized) return;
     uint32_t now = timer_ticks();
-    for (int i = 0; i < MAX_THREADS; i++) {
-        if (!threads[i].sleeping) continue;
+    for (uint32_t i = 0; i < tids.cap; i++) {
+        struct thread *t = th((int)i);
+        if (!t || !t->sleeping) continue;
         /* Wrap-safe: a plain `now >= wake_tick` would stop waking anything for
            49 days the first time the counter wrapped. */
-        if (!timer_tick_after(now, threads[i].wake_tick)) continue;
-        threads[i].sleeping = 0;
-        if (threads[i].state == THREAD_BLOCKED) threads[i].state = THREAD_READY;
+        if (!timer_tick_after(now, t->wake_tick)) continue;
+        t->sleeping = 0;
+        if (t->state == THREAD_BLOCKED) t->state = THREAD_READY;
     }
 }
 
@@ -326,13 +385,13 @@ void yield(void) {
     int next = next_runnable();
     if (next == prev) { irq_restore(flags); return; }   /* only one runnable thread */
 
-    if (threads[prev].state == THREAD_RUNNING) threads[prev].state = THREAD_READY;
-    threads[next].state = THREAD_RUNNING;
+    if (th(prev)->state == THREAD_RUNNING) th(prev)->state = THREAD_READY;
+    th(next)->state = THREAD_RUNNING;
     current = next;
     update_tss_esp0();
     update_address_space();
 
-    context_switch(&threads[prev].esp, threads[next].esp);
+    context_switch(&th(prev)->esp, th(next)->esp);
     /* when we resume here later, we're `prev` again, now running */
     sched_reap();   /* reclaim any threads that exited while we were away -
                        still with interrupts off, so two reapers never race */
@@ -344,31 +403,16 @@ void yield(void) {
    the slot EXITED and leaves the stack pointers in place. The reaper runs from
    a DIFFERENT thread's context (after a switch) and frees them safely. */
 static void sched_reap(void) {
-    for (int i = 1; i < MAX_THREADS; i++) {
-        if (threads[i].state == THREAD_EXITED && i != current) {
-            if (threads[i].stack_base) {
-                kstack_free(threads[i].stack_base);
-                threads[i].stack_base = 0;
-            }
-            if (threads[i].user_stack_base) {
-                kfree((void *)threads[i].user_stack_base);
-                threads[i].user_stack_base = 0;
-            }
-            if (threads[i].kstack_base) {
-                kstack_free(threads[i].kstack_base);
-                threads[i].kstack_base = 0;
-            }
-            /* The last thread of a process to go closes its handles. */
-            proc_thread_gone(threads[i].proc);
-            threads[i].proc = 0;
-            threads[i].state = THREAD_UNUSED;   /* slot reusable */
-        }
+    for (uint32_t i = 1; i < tids.cap; i++) {
+        struct thread *t = th((int)i);
+        if (t && t->state == THREAD_EXITED && (int)i != current)
+            thread_free(t);   /* its id is reusable */
     }
 }
 
 void thread_exit(void) {
     irq_save();   /* never restored here: the next thread resumes with its own flags */
-    threads[current].state = THREAD_EXITED;
+    self()->state = THREAD_EXITED;
     /* stack is freed later by sched_reap, running in another thread's context
        (we can't free the stack we're still standing on). */
 
@@ -383,19 +427,21 @@ void thread_exit(void) {
         __asm__ volatile ("sti; hlt; cli" : : : "memory");
         next = next_runnable();
     }
-    threads[next].state = THREAD_RUNNING;
+    th(next)->state = THREAD_RUNNING;
     current = next;
     update_tss_esp0();
     update_address_space();
     uint32_t dummy;
-    context_switch(&dummy, threads[next].esp);   /* save into dummy (discarded) */
+    context_switch(&dummy, th(next)->esp);   /* save into dummy (discarded) */
     /* never reached */
 }
 
 int sched_active_count(void) {
     int c = 0;
-    for (int i = 0; i < MAX_THREADS; i++)
-        if (threads[i].state == THREAD_READY || threads[i].state == THREAD_RUNNING) c++;
+    for (uint32_t i = 0; i < tids.cap; i++) {
+        struct thread *t = th((int)i);
+        if (t && (t->state == THREAD_READY || t->state == THREAD_RUNNING)) c++;
+    }
     return c;
 }
 
@@ -443,13 +489,13 @@ void sched_preempt_point(void) {
     if (next == prev) return;
 
     in_switch = 1;
-    if (threads[prev].state == THREAD_RUNNING) threads[prev].state = THREAD_READY;
-    threads[next].state = THREAD_RUNNING;
+    if (th(prev)->state == THREAD_RUNNING) th(prev)->state = THREAD_READY;
+    th(next)->state = THREAD_RUNNING;
     current = next;
     update_tss_esp0();
     update_address_space();
     in_switch = 0;
-    context_switch(&threads[prev].esp, threads[next].esp);
+    context_switch(&th(prev)->esp, th(next)->esp);
     /* resumed as `prev` later */
     sched_reap();   /* reclaim threads that exited while we were away */
 }
@@ -457,8 +503,8 @@ void sched_preempt_point(void) {
 int thread_current_id(void) { return current; }
 
 struct proc *thread_proc(int id) {
-    if (id < 0 || id >= MAX_THREADS || threads[id].state == THREAD_UNUSED) return 0;
-    return threads[id].proc;
+    struct thread *t = live(id);
+    return t ? t->proc : 0;
 }
 
 int thread_pid(int id) {
@@ -471,15 +517,16 @@ int thread_current_pid(void) {
 }
 
 const char *thread_name(int id) {
-    if (id < 0 || id >= MAX_THREADS || threads[id].state == THREAD_UNUSED) return 0;
-    return threads[id].name;
+    struct thread *t = live(id);
+    return t ? t->name : 0;
 }
 
 /* is thread `id` a live (non-exited, allocated) thread? Used for stale-lock
    detection: an advisory lock owned by a dead pid is ignorable. */
 int thread_is_alive(int id) {
-    if (id < 0 || id >= MAX_THREADS) return 0;
-    enum thread_state st = threads[id].state;
+    struct thread *t = th(id);
+    if (!t) return 0;
+    enum thread_state st = t->state;
     return (st == THREAD_READY || st == THREAD_RUNNING);
 }
 
@@ -489,15 +536,16 @@ void thread_mark_user(int id) {
 }
 
 uint32_t *thread_current_usave(void) {
-    return &threads[current].u_saved_esp;   /* [0]=esp, [1]=flags (contiguous) */
+    return &self()->u_saved_esp;   /* [0]=esp, [1]=flags (contiguous) */
 }
 
 void thread_set_kstack_top(int id, uint32_t top) {
-    if (id >= 0 && id < MAX_THREADS) threads[id].kstack_top = top;
+    struct thread *t = live(id);
+    if (t) t->kstack_top = top;
 }
 
 uint32_t thread_current_kstack_top(void) {
-    return threads[current].kstack_top;
+    return self()->kstack_top;
 }
 
 /* Allocate a dedicated esp0 (ring-0 entry) stack for a ring-3 process, separate
@@ -506,21 +554,21 @@ uint32_t thread_current_kstack_top(void) {
    interrupt frame never collides with the trampoline's saved frame on the main
    kernel stack. Returns 0 on success, -1 on alloc failure. */
 int thread_alloc_kstack(int id) {
-    if (id < 0 || id >= MAX_THREADS) return -1;   /* thread 0 (the executive via
+    if (!live(id)) return -1;   /* thread 0 (the executive via
                                                      cxex_exec) DOES need an esp0:
                                                      it runs ring-3 code + makes
                                                      syscalls while apps coexist. */
     uint32_t k;
     uint32_t top = kstack_alloc(stack_bytes, id, &k);
     if (!top) return -1;
-    threads[id].kstack_base = k;
-    threads[id].kstack_top  = top - 16;   /* 16-byte slack at top */
+    th(id)->kstack_base = k;
+    th(id)->kstack_top  = top - 16;   /* 16-byte slack at top */
     return 0;
 }
 
 uint32_t thread_current_cwd(void) {
     if (!initialized) return 0;            /* bare kernel boot context = root */
-    return threads[current].proc->cwd;
+    return self()->proc->cwd;
 }
 
 void thread_set_cwd(int id, uint32_t entry_id) {
@@ -530,12 +578,12 @@ void thread_set_cwd(int id, uint32_t entry_id) {
 
 uint32_t thread_current_uid(void) {
     if (!initialized) return UID_SYSTEM;   /* bare kernel boot context = SYSTEM */
-    return threads[current].proc->uid;
+    return self()->proc->uid;
 }
 
 uint32_t thread_current_caps(void) {
     if (!initialized) return 0;            /* bare kernel boot context: ring 0, caps N/A */
-    return threads[current].proc->caps;
+    return self()->proc->caps;
 }
 
 void thread_set_caps(int id, uint32_t caps) {

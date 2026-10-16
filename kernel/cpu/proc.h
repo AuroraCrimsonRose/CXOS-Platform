@@ -28,10 +28,12 @@
 #include <stdint.h>
 #include "object/kobj.h"
 #include "object/htab.h"
+#include "memman/vmregion.h"
 
-/* Pids are below this. One process needs at least one thread, so live
-   processes never outnumber live threads. */
-#define PROC_PID_MAX 64
+/* Pids are below this. Pids come from a table that grows (object/idtab.h);
+   this only bounds it. A process needs a thread to do anything, so the bound
+   matches THREAD_LIMIT_MAX (cpu/sched.h). */
+#define PROC_PID_MAX 256
 
 struct proc {
     struct kobj hdr;        /* first; KOBJ_PROCESS */
@@ -44,6 +46,7 @@ struct proc {
     struct htab handles;
     int32_t     broker;     /* its SEND handle on its launcher's broker, or -1 */
     uint32_t    pd_phys;    /* page directory its threads run in; 0 = the kernel's */
+    struct vm_proc vm;      /* its mappings and memory quota (memman/vmregion.h) */
 };
 
 /* Register the type and make the cache. Once, before the first proc_create. */

@@ -26,6 +26,7 @@ set(KERNEL_SOURCES
     ${KDIR}/lib/crypto/sha256.c
     ${KDIR}/object/kobj.c
     ${KDIR}/object/htab.c
+    ${KDIR}/object/idtab.c
     ${KDIR}/memman/ocache.c
 )
 

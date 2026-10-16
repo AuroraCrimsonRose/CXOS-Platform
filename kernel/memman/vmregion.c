@@ -9,31 +9,17 @@
 #include "sched.h"
 #include "logging.h"
 
-struct vm_region {
-    uint32_t base;       /* page-aligned start; 0 = this slot is free */
-    uint32_t len;        /* page-aligned length */
-    uint32_t prot;       /* MPROT_* as requested */
-    uint32_t object;     /* MOBJ_* this is a view of */
-    uint32_t off_lo;     /* 64-bit offset into that object */
-    uint32_t off_hi;
-};
-
-struct vm_proc {
-    int      live;
-    uint32_t quota;      /* ceiling in bytes */
-    uint32_t mapped;     /* how much of it is in use */
-    struct vm_region r[MMAP_MAX_REGIONS];
-};
-
-static struct vm_proc procs[MAX_THREADS];
+/* A process's records live in its process (cpu/proc.h); the pid names it. */
+static struct vm_proc *vp(int pid) {
+    struct proc *p = proc_by_pid(pid);
+    return p ? &p->vm : 0;
+}
 
 static uint32_t page_up(uint32_t n) { return (n + PAGE_SIZE - 1u) & ~(PAGE_SIZE - 1u); }
 
 static uint32_t default_quota = VM_DEFAULT_QUOTA;
 uint32_t vm_default_quota(void) { return default_quota; }
 void     vm_set_default_quota(uint32_t bytes) { if (bytes) default_quota = bytes; }
-
-static int pid_ok(int pid) { return pid >= 0 && pid < MAX_THREADS; }
 
 /* Do [a, a+alen) and [b, b+blen) share a byte? Written with the ends compared
    rather than the starts so a zero-length range never counts as overlapping. */
@@ -91,37 +77,37 @@ static uint32_t pte_flags(uint32_t prot) {
 }
 
 void vm_proc_init(int pid, uint32_t quota, int parent) {
-    if (!pid_ok(pid)) return;
-    struct vm_proc *p = &procs[pid];
+    if (!vp(pid)) return;
+    struct vm_proc *p = vp(pid);
     for (int i = 0; i < MMAP_MAX_REGIONS; i++) p->r[i].base = 0;
     p->mapped = 0;
     p->live   = 1;
 
     if (quota == 0 || quota > default_quota) quota = default_quota;
-    if (pid_ok(parent) && procs[parent].live && quota > procs[parent].quota)
-        quota = procs[parent].quota;
+    if (vp(parent) && vp(parent)->live && quota > vp(parent)->quota)
+        quota = vp(parent)->quota;
     p->quota = quota;
 }
 
 void vm_proc_reset(int pid) {
-    if (!pid_ok(pid)) return;
+    if (!vp(pid)) return;
     /* Bookkeeping only. The frames are freed by addr_space_reclaim_user(),
        which walks the whole user half; freeing them here as well would be a
        double free. See the header. */
-    procs[pid].live   = 0;
-    procs[pid].quota  = 0;
-    procs[pid].mapped = 0;
-    for (int i = 0; i < MMAP_MAX_REGIONS; i++) procs[pid].r[i].base = 0;
+    vp(pid)->live   = 0;
+    vp(pid)->quota  = 0;
+    vp(pid)->mapped = 0;
+    for (int i = 0; i < MMAP_MAX_REGIONS; i++) vp(pid)->r[i].base = 0;
 }
 
 uint32_t vm_quota_of(int pid) {
-    if (!pid_ok(pid) || !procs[pid].live) return 0;
-    return procs[pid].quota;
+    if (!vp(pid) || !vp(pid)->live) return 0;
+    return vp(pid)->quota;
 }
 
 int vm_charge(int pid, uint32_t bytes) {
-    if (!pid_ok(pid) || !procs[pid].live) return E_INVAL;
-    struct vm_proc *p = &procs[pid];
+    if (!vp(pid) || !vp(pid)->live) return E_INVAL;
+    struct vm_proc *p = vp(pid);
 
     /* The same three checks vm_map makes, in the same order and for the same
        reasons: a rounded length that wrapped, a sum that wrapped, and the
@@ -137,8 +123,8 @@ int vm_charge(int pid, uint32_t bytes) {
 }
 
 void vm_uncharge(int pid, uint32_t bytes) {
-    if (!pid_ok(pid) || !procs[pid].live) return;
-    struct vm_proc *p = &procs[pid];
+    if (!vp(pid) || !vp(pid)->live) return;
+    struct vm_proc *p = vp(pid);
     uint32_t len = page_up(bytes);
     /* Clamped rather than allowed to go negative: an over-refund would hand a
        process a quota larger than it was given, which is worse than losing
@@ -158,8 +144,8 @@ static void undo(uint32_t base, uint32_t done) {
 }
 
 int vm_map(int pid, struct mem_op_args *a) {
-    if (!pid_ok(pid) || !procs[pid].live) return E_INVAL;
-    struct vm_proc *p = &procs[pid];
+    if (!vp(pid) || !vp(pid)->live) return E_INVAL;
+    struct vm_proc *p = vp(pid);
 
     if (a->object != MOBJ_ANON)             return E_INVAL;
     /* Anonymous memory has no interior to be at an offset into. Rejecting a
@@ -252,8 +238,8 @@ int vm_map(int pid, struct mem_op_args *a) {
 }
 
 int vm_unmap(int pid, uint32_t addr, uint32_t length) {
-    if (!pid_ok(pid) || !procs[pid].live) return E_INVAL;
-    struct vm_proc *p = &procs[pid];
+    if (!vp(pid) || !vp(pid)->live) return E_INVAL;
+    struct vm_proc *p = vp(pid);
 
     /* A mapping is released whole or not at all. Partial release would mean
        splitting a region into two, which needs a free slot to put the second
@@ -273,8 +259,8 @@ int vm_unmap(int pid, uint32_t addr, uint32_t length) {
 }
 
 int vm_info(int pid, struct mem_op_args *a) {
-    if (!pid_ok(pid) || !procs[pid].live) return E_INVAL;
-    a->quota  = procs[pid].quota;
-    a->mapped = procs[pid].mapped;
+    if (!vp(pid) || !vp(pid)->live) return E_INVAL;
+    a->quota  = vp(pid)->quota;
+    a->mapped = vp(pid)->mapped;
     return E_OK;
 }

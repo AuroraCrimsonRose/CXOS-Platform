@@ -53,7 +53,7 @@ int kconfig_parse(const char *s, uint32_t len, struct kconfig *out,
             c.kernel_stack = n * KIB;
         } else if (xd_sym_is(s, &k, "max_threads")) {
             if (setting(s, &v, THREAD_LIMIT_MIN, THREAD_LIMIT_MAX, &n, why,
-                        "max_threads must be 4 to 32") < 0) return -1;
+                        "max_threads must be 4 to 256") < 0) return -1;
             c.max_threads = n;
         } else if (xd_sym_is(s, &k, "memory_quota_mib")) {
             if (setting(s, &v, 1, 64, &n, why, "memory_quota_mib must be 1 to 64") < 0) return -1;

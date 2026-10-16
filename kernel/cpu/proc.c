@@ -6,14 +6,21 @@
 #include "proc.h"
 #include "uid.h"
 #include "memman/ocache.h"
+#include "object/idtab.h"
+#include "sync/spinlock.h"
 #include "cpu/int/idt.h"   /* kpanic */
 
 static struct ocache proc_cache;
-static struct proc  *by_pid[PROC_PID_MAX];
+static struct idtab  pids;   /* pid -> process */
+/* The reaper frees a process with interrupts off, possibly while a preempted
+   proc_create is part way through growing the table. */
+static spinlock_t    pids_lock = SPINLOCK_INIT;
 
 static void proc_destroy(struct kobj *o) {
     struct proc *p = (struct proc *)o;
-    if (p->pid >= 0 && p->pid < PROC_PID_MAX && by_pid[p->pid] == p) by_pid[p->pid] = 0;
+    uint32_t f = spin_lock(&pids_lock);
+    if (idtab_get(&pids, p->pid) == p) idtab_take(&pids, p->pid);
+    spin_unlock(&pids_lock, f);
     ocache_free(&proc_cache, p);
 }
 
@@ -27,22 +34,28 @@ void proc_sys_init(void) {
     if (ocache_init(&proc_cache, "process", sizeof(struct proc)) != 0 ||
         kobj_type_register(KOBJ_PROCESS, &proc_ops) != 0)
         kpanic("proc_sys_init: no process cache");
+    idtab_init(&pids, PROC_PID_MAX);
 }
 
 struct proc *proc_create(const struct proc *parent) {
-    int pid = -1;
-    for (int i = 0; i < PROC_PID_MAX; i++) if (!by_pid[i]) { pid = i; break; }
-    if (pid < 0) return 0;
-
     struct proc *p = ocache_alloc(&proc_cache);   /* zeroed */
     if (!p) return 0;
-    if (kobj_init(&p->hdr, KOBJ_PROCESS) != 0) { ocache_free(&proc_cache, p); return 0; }
+    uint32_t f = spin_lock(&pids_lock);
+    int pid = idtab_alloc(&pids, p, 0);
+    spin_unlock(&pids_lock, f);
+    if (pid < 0) { ocache_free(&proc_cache, p); return 0; }
+    if (kobj_init(&p->hdr, KOBJ_PROCESS) != 0) {
+        f = spin_lock(&pids_lock);
+        idtab_take(&pids, pid);
+        spin_unlock(&pids_lock, f);
+        ocache_free(&proc_cache, p);
+        return 0;
+    }
     p->pid    = pid;
     p->uid    = parent ? parent->uid : UID_SYSTEM;
     p->cwd    = parent ? parent->cwd : 0;
     p->broker = -1;
     htab_init(&p->handles);
-    by_pid[pid] = p;
     return p;
 }
 
@@ -66,8 +79,10 @@ void proc_put(struct proc *p) {
 }
 
 struct proc *proc_by_pid(int pid) {
-    if (pid < 0 || pid >= PROC_PID_MAX) return 0;
-    return by_pid[pid];
+    uint32_t f = spin_lock(&pids_lock);
+    struct proc *p = (struct proc *)idtab_get(&pids, pid);
+    spin_unlock(&pids_lock, f);
+    return p;
 }
 
 uint32_t proc_live(void) { return kobj_live(KOBJ_PROCESS); }
