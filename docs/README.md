@@ -28,6 +28,7 @@ Start with the roadmap.
 | Document | Covers |
 |---|---|
 | [CX_KERNEL_PLAN.md](kernel/CX_KERNEL_PLAN.md) | The kernel base, objects and handles, processes and threads, waiting, IPC, scheduling |
+| [CX_SYSCALLS_IPC.md](kernel/CX_SYSCALLS_IPC.md) | Syscalls, calling convention, ABI rules, errors, the system page, `.xidl`, IPC messages |
 | [CX_DRIVERS.md](kernel/CX_DRIVERS.md) | The device tree, matching, user-space drivers, device classes |
 
 ## Boot: `boot/`

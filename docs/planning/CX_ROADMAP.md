@@ -95,6 +95,9 @@ programs for it (step 6).
 6. **X for x86-64.** `usize` / `isize`, a target layer in both compilers, a
    64-bit code generator held to the C# oracle by the differential tests, and
    syscalls through the `syscall` instruction (`language/CX_X_PLAN.md`). The
+   new ABI lands here, since every program is rebuilt anyway: one operation
+   per syscall, fixed widths, the system page, interfaces generated from
+   `.xidl` (`kernel/CX_SYSCALLS_IPC.md`). The
    executive starts and the full boot passes; the 32-bit kernel and code
    generator are then deleted.
 
