@@ -21,11 +21,15 @@ callers end up disagreeing.
 │   ├── Kernel/             kernel images — see §4
 │   ├── Boot/               boot chain    — see §4
 │   ├── Drivers/            .xkdr / .xklo, when module loading lands
+│   ├── KeyVault/           publisher public keys (.xupk)
+│   ├── Services/           service descriptors (.xosv)
+│   ├── Config/             the OS's own settings (kernel.xkco, .xoco)
 │   ├── Fonts/              console bitmap fonts (.xfnt)
 │   └── Temp/               scratch belonging to the OS
 │
 ├── Shared/                 SYSTEM, 0775 — shared between users, user-writable
 │   ├── Programs/           programs anyone may install
+│   ├── Config/             0777 — user settings (.xuco); PROVISIONAL, see §5
 │   ├── Documents/
 │   ├── Fonts/              user-installed console fonts (.xfnt)
 │   ├── Pictures/
@@ -95,10 +99,12 @@ this scale; the second matters more than expected, and is the reason for §2.1.
 
 **Manifest entries are finite but not scarce here.** The manifest is a fixed
 1024 entries (`CXFS_MAX_ENTRIES`) and every directory permanently spends one.
-The tree above is about 15 directories — **1.5% of the volume's total entry
-count**. An earlier draft of this document argued against structure on the
-grounds that "speculative directories are not free"; at fifteen of them that
-was simply wrong, and the structure costs nothing worth counting.
+`install.c`'s `system_tree` creates **20** of them — **2% of the volume's total
+entry count**. An earlier draft of this document argued against structure on
+the grounds that "speculative directories are not free"; at twenty of them that
+was simply wrong, and the structure costs nothing worth counting. The number is
+`system_tree`'s length, not this document's tree: `Drivers/` is listed above and
+deliberately not created (rule 2).
 
 **Depth is expensive, and more than it looks.** A directory has no data blocks:
 `cxfs_find_in_dir` derives membership by scanning the *whole manifest* for
@@ -252,6 +258,17 @@ than guessed.
    which the CXFS permission check already enforces.
 4. **Search `/System/Programs` before `/Shared/Programs`**, never the reverse.
 5. **Depth stays ≤ 4 from the root**, well inside `cxfs_path_of`'s 16-level cap.
+6. **`/Shared/Config` at 0777 is provisional, and is the only `/Shared` entry
+   that is not 0775.** A ring-3 thread can never hold `UID_SYSTEM` (`sched.c`
+   refuses it) and there is no group membership model yet, so
+   `cxfs_check_perm` judges every user program by the OTHER bits — under which
+   0775 grants no write at all. Without it the only place a program could save
+   a setting would be `/Temp`, and settings are not scratch. It narrows to 0775
+   when users exist and settings move to `/User/<name>` at 0700. Note what this
+   buys an attacker meanwhile: `GRANT_DISK` alone is enough to write another
+   program's settings document, so a capability a program does hold can
+   influence what one it does not hold would have done — the console font is
+   the live example.
 
 ---
 

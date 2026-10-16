@@ -43,6 +43,10 @@ static const struct tree_dir system_tree[] = {
     { "/System/Boot",      CXFS_PERM_DIR_DEFAULT },              /* update staging */
     { "/System/KeyVault",  CXFS_PERM_DIR_DEFAULT },              /* .xupk publisher keys */
     { "/System/Services",  CXFS_PERM_DIR_DEFAULT },              /* .xosv descriptors */
+    /* kernel.xkco and the OS's own .xoco documents. This existed only as a
+       side effect of staging until now, so an image that happened to stage no
+       config file had nowhere to put one later. */
+    { "/System/Config",    CXFS_PERM_DIR_DEFAULT },
     { "/System/Fonts",     CXFS_PERM_DIR_DEFAULT },              /* console .xfnt */
     { "/System/Temp",      CXFS_PERM_DIR_DEFAULT },
     { "/Shared",           CXFS_PERM_DIR_DEFAULT | CXFS_PERM_GW },  /* 0775 */
