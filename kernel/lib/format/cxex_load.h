@@ -78,7 +78,10 @@ enum cxex_load_result {
     CXEX_LOAD_TOO_BIG     = -10,  /* the image asks for more pages than are allowed */
     CXEX_LOAD_QUOTA       = -11,  /* the owner's memory quota has no room for it */
     CXEX_LOAD_OVERLAP     = -12,  /* two sections share a page */
-    CXEX_LOAD_TOO_MANY    = -13   /* more sections than the loader will consider */
+    CXEX_LOAD_TOO_MANY    = -13,  /* more sections than the loader will consider */
+    CXEX_LOAD_NO_COMPAT   = -14,  /* image declines to declare arch/ABI matching */
+    CXEX_LOAD_BAD_ARCH    = -15,  /* image was built for another architecture */
+    CXEX_LOAD_BAD_ABI     = -16   /* image was built against another ABI contract */
 };
 
 /* Ceiling on how many pages one image may map, whoever is loading it. A real

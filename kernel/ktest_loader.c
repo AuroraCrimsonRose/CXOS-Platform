@@ -24,6 +24,7 @@
 #include "ktest_loader.h"
 #include "cxex.h"
 #include "cxex_load.h"
+#include "cxk_abi.h"
 #include "pmm.h"
 #include "paging.h"
 #include "usermode.h"
@@ -44,6 +45,12 @@
 #define IMG_CAP     1024
 #define IMG_SECS    2
 #define IMG_BODY    (CXEX_HEADER_SIZE + IMG_SECS * CXEX_SECTION_SIZE)
+
+/* The flags every artifact the DevKit writes carries, and which the loader now
+   requires: an image declining the arch/ABI check is refused before any of the
+   cases below could be reached, so every mutation keeps them. */
+#define IMG_FLAGS (CXEX_FLAG_EXECUTABLE | CXEX_FLAG_REQUIRE_ARCH_MATCH | \
+                   CXEX_FLAG_REQUIRE_ABI_MATCH)
 
 static uint8_t *g_img;          /* heap, not .bss - see ktest_loader_adversarial */
 static uint32_t g_img_len;
@@ -66,9 +73,9 @@ static void img_valid(void) {
     g_img[2] = CXEX_MAGIC2; g_img[3] = CXEX_MAGIC3;
     wr16(4, 0x5545);                      /* type .xuex */
     wr16(6, 1);                           /* format version */
-    wr16(8, 1);                           /* arch */
-    wr16(10, 1);                          /* abi */
-    wr32(12, CXEX_FLAG_EXECUTABLE);
+    wr16(8, CXEX_ARCH_X86_32);            /* arch */
+    wr16(10, CXK_ABI_VERSION);            /* abi - the contract this kernel is */
+    wr32(12, IMG_FLAGS);
     wr32(16, 0x00400000);                 /* entry */
     wr32(20, 0x00400000);                 /* load base */
     wr32(24, 0x00400000);                 /* image min */
@@ -238,7 +245,7 @@ int ktest_loader_adversarial(void) {
        cover, which the loader would map anyway. */
     img_valid();
     wr32(40, IMG_BODY + 8);               /* signature starts inside the section */
-    wr32(12, CXEX_FLAG_EXECUTABLE | CXEX_FLAG_SIGNED);
+    wr32(12, IMG_FLAGS | CXEX_FLAG_SIGNED);
     ok = ok && refuses(CXEX_LOAD_UNSIGNED);
 
     /* An entry point outside the user half, even with every section in it. */
@@ -257,6 +264,40 @@ int ktest_loader_adversarial(void) {
         ok = ok && cxex_load(g_img, (size_t)g_img_len, &no_limit, &e2) == CXEX_LOAD_BAD_FORMAT;
         ok = ok && g_maps == 0;
     }
+
+    /* ---- the contract the image was built against ----
+     *
+     * cxex_check_compat was written with the format and never called by
+     * anything: every image declared an abi_version, set both REQUIRE_* flags
+     * asking to be refused on a mismatch, and was loaded without either being
+     * read. These four cases are what wiring it in actually buys.
+     *
+     * The first of them is what the synthetic image above USED to be - abi 1,
+     * one contract behind this kernel - and it passed, which is the shape of
+     * the whole problem: the only images anyone compared were the ones nobody
+     * was comparing.
+     */
+    img_valid();
+    wr16(10, CXK_ABI_VERSION - 1);
+    ok = ok && refuses(CXEX_LOAD_BAD_ABI);
+
+    img_valid();
+    wr16(8, CXEX_ARCH_X86_32 + 1);
+    ok = ok && refuses(CXEX_LOAD_BAD_ARCH);
+
+    /* And an image that declines to be checked at all. cxex_check_compat is
+       gated on these two flags, so without a rule requiring them, clearing one
+       is a complete opt-out of the check - the cheapest bypass there is, and
+       available to anything that can get an image signed, since the signature
+       covers whatever the flags say. Both flags are tested separately: one rule
+       covering two conditions is one rule that can be half-written. */
+    img_valid();
+    wr32(12, IMG_FLAGS & ~CXEX_FLAG_REQUIRE_ABI_MATCH);
+    ok = ok && refuses(CXEX_LOAD_NO_COMPAT);
+
+    img_valid();
+    wr32(12, IMG_FLAGS & ~CXEX_FLAG_REQUIRE_ARCH_MATCH);
+    ok = ok && refuses(CXEX_LOAD_NO_COMPAT);
 
     /* ---- two sections sharing a page (2026-10-09 review §3) ----
      *

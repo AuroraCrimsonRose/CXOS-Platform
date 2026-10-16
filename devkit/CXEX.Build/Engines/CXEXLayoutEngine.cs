@@ -15,9 +15,12 @@ public static class CXEXLayoutEngine
     /// The ABI contract images are stamped with. It was 1 while the live contract
     /// (docs/kernel/CX_ABI.md, abi/cxk_abi.h CXK_ABI_VERSION) was 2 - and every
     /// image sets FLAG_REQUIRE_ABI_MATCH, asking to be refused on exactly that
-    /// mismatch. It survived only because the kernel's cxex_check_compat has no
-    /// caller, so nothing ever compared the two. Declared in versions.json as
-    /// `cxex-abi` and checked against both sides.
+    /// mismatch. It survived only because the kernel's cxex_check_compat had no
+    /// caller, so nothing ever compared the two. The loader calls it now, which
+    /// makes this number load-bearing: stamp the wrong one and every image this
+    /// writer produces builds, signs and stages cleanly and then refuses to run
+    /// with CXEX_LOAD_BAD_ABI. Declared in versions.json as `cxex-abi`, checked
+    /// against both sides, and tied to the header in CompatDeclarationTests.
     /// </summary>
     public const ushort AbiVersion = 2;
 

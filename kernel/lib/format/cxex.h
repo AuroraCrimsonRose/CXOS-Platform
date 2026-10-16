@@ -143,7 +143,11 @@ struct cxex_sig {
 int cxex_parse_header(const uint8_t *file, size_t len, struct cxex_header *out);
 
 /* Check arch/abi compatibility against this kernel, honoring the REQUIRE_* flags.
-   Returns 0 if loadable here, negative on mismatch. */
+   Returns 0 if loadable here, -1 on an arch mismatch, -2 on an ABI mismatch.
+
+   Gated on the flags, so an image declaring neither is compatible with
+   everything by its own say-so. cxex_load therefore REQUIRES both before
+   calling this, which is where that gap is closed - see the reasoning there. */
 int cxex_check_compat(const struct cxex_header *h,
                       uint16_t my_arch, uint16_t my_abi);
 

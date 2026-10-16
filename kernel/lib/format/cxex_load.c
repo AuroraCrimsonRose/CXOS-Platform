@@ -6,6 +6,7 @@
 
 #include "cxex_load.h"
 #include "cxex.h"
+#include "cxk_abi.h"              /* CXK_ABI_VERSION - the contract we implement */
 
 #define CXEX_PAGE_SIZE 4096u
 
@@ -75,6 +76,40 @@ int cxex_load(const uint8_t *file, size_t len,
     struct cxex_header h;
     if (cxex_parse_header(file, len, &h) != 0) return CXEX_LOAD_BAD_FORMAT;
     if (!(h.flags & CXEX_FLAG_EXECUTABLE))     return CXEX_LOAD_NOT_EXEC;
+
+    /* ---- the contract the image was built against ----
+     *
+     * cxk_abi.h stamps CXK_ABI_VERSION into every image so that, in its own
+     * words, "a kernel can refuse one built against a different contract".
+     * No kernel did. cxex_check_compat had no caller anywhere, so every image
+     * set both REQUIRE_* flags, declared an abi_version, and was loaded without
+     * either being looked at - a program built against ABI 1 would have run as
+     * though it matched, and the first symptom would have been a syscall
+     * quietly doing something else, because the ABI version IS the syscall
+     * numbering and the struct layouts.
+     *
+     * The flags are REQUIRED here, not merely honoured. cxex_check_compat is
+     * gated on them by design, which leaves an image declaring neither entirely
+     * unchecked, and unchecked is not a safe default for the one field that
+     * says what contract the code in front of us expects. Nothing legitimate
+     * omits them: the DevKit sets both on every artifact it writes, the kernel
+     * image included. Signing is no help - the signature covers whatever the
+     * flags happen to say, so an image that declines the check is signed as
+     * confidently as one that accepts it.
+     */
+    if (!(h.flags & CXEX_FLAG_REQUIRE_ARCH_MATCH) ||
+        !(h.flags & CXEX_FLAG_REQUIRE_ABI_MATCH))
+        return CXEX_LOAD_NO_COMPAT;
+
+    switch (cxex_check_compat(&h, CXEX_ARCH_X86_32, CXK_ABI_VERSION)) {
+        case  0: break;
+        case -1: return CXEX_LOAD_BAD_ARCH;
+        case -2: return CXEX_LOAD_BAD_ABI;
+        /* cxex_check_compat has three outcomes today. A fourth would mean the
+           two files disagree about what it returns, and guessing which of the
+           two known refusals it meant is worse than refusing the image. */
+        default: return CXEX_LOAD_BAD_FORMAT;
+    }
 
     /* A real CXEX has a handful of sections - the kernel, the largest, has
        five. The cap refuses an absurd section_count on sight, and it is what
@@ -214,6 +249,9 @@ const char *cxex_load_strerror(int r) {
         case CXEX_LOAD_QUOTA:       return "image does not fit the process memory quota";
         case CXEX_LOAD_OVERLAP:     return "two sections share a page";
         case CXEX_LOAD_TOO_MANY:    return "image declares more sections than the loader will consider";
+        case CXEX_LOAD_NO_COMPAT:   return "image does not declare arch/ABI matching";
+        case CXEX_LOAD_BAD_ARCH:    return "image was built for another architecture";
+        case CXEX_LOAD_BAD_ABI:     return "image was built against another ABI version";
         default:                    return "unknown error";
     }
 }
