@@ -95,8 +95,10 @@ programs for it (step 6).
    `kernel/arch/`, beneath generic code; paging behind one interface (Haiku's
    model). CPUID is read once at boot into one feature table (`kernel/CX_KERNEL_PLAN.md` §2.2–§2.3).
 4. **Boot hands over through CXBI, and the crash log.** The kernel reads
-   `cxk_boot_info` instead of fixed addresses. A crash log in reserved memory
-   is read and saved on the next boot. See `boot/CX_BOOT.md`.
+   `cxk_boot_info` instead of fixed addresses. A panic writes a crash log to a
+   reserved disk area through a minimal polled write, because a BIOS may clear
+   RAM during startup; the next boot saves it (`kernel/CX_KERNEL_PLAN.md` §8).
+   See `boot/CX_BOOT.md`.
 5. **The x86-64 kernel boots.** The BIOS loader enters long mode and starts a
    64-bit kernel in the top half (`kernel/CX_KERNEL_PLAN.md` §2.4), with NX, the 64-bit GDT, IDT and TSS
    (IST for the double fault) and `syscall`/`sysret`; the page database, the
@@ -111,6 +113,19 @@ programs for it (step 6).
    `.xfil` (`kernel/CX_SYSCALLS_IPC.md`). The
    executive starts and the full boot passes; the 32-bit kernel and code
    generator are then deleted.
+
+**Done when.** Each step closes only when these hold, each proven by a
+sabotage that turns it red, on top of every existing self-test passing:
+
+| Step | Done when |
+|---|---|
+| Before 1 | Kernel code with no hardware dependency builds and runs as host unit tests under AddressSanitizer and UBSan (`safety/CX_SAFETY.md` §3.7) |
+| 1. Object model | A duplicated or transferred handle never has more rights than its source; a closed handle's number is refused, not reused silently; every object type's live count returns to its starting value after a stress run of create, duplicate and close; reference counts are atomic; every syscall passes the one recording point (a counter there equals the dispatch count); kernel objects come from per-type caches and the linked-list heap serves only what remains |
+| 2. Processes | Two threads in one process share its handle table and address space; the thread and handle tables grow past today's 64 and 16; a process's exit releases every handle and frame (live counts return to their start) |
+| 3. Arch layer | No file outside `kernel/arch/` contains CPU-specific code (an include check enforces it); the feature table is printed at boot; QEMU with a minimal and a full CPU model both pass |
+| 4. CXBI, crash log | Nothing reads a fixed boot address (the loader's old addresses are poisoned in a test build); a deliberate panic's log is recovered on the next boot, in QEMU and on the rig |
+| 5. x86-64 kernel | The self-test suite passes in QEMU, minimal and full CPU models, then on the rig; NX, W^X and the guard pages are proven by tests that must fault |
+| 6. X for x86-64 | The differential tests and the self-hosting fixed point hold on x86-64; the executive starts; the full boot passes |
 
 Independent of the order above, and small enough to land whenever convenient:
 

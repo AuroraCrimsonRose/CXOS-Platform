@@ -188,7 +188,7 @@ Synchronous call and reply stays the fast path (L4, QNX). Added:
 | Allocator | Object caches by type and size class, per-CPU magazines, a page database and buddy allocator (§9) |
 | Time | LAPIC timer and TSC; program the next deadline instead of a fixed tick; HPET as fallback |
 | Hardening | Stack protector; KASLR seeded from `cxk_boot_info.rng_seed`; SMEP and SMAP where CPUID reports them; kernel UBSan in debug builds (Serenity `Kernel/Prekernel/UBSanitizer.cpp`); control-flow integrity later |
-| Diagnostics | A crash log in reserved RAM read on the next boot; symbolised backtraces; a GDB stub over serial; a timestamped trace buffer; per-thread CPU time |
+| Diagnostics | A crash log written at panic to a reserved disk area by a minimal polled write (no interrupts, no allocation, no filesystem), copied into a file on the next boot; RAM alone is not trusted, because a BIOS may clear or test memory during startup; symbolised backtraces; a GDB stub over serial; a timestamped trace buffer; per-thread CPU time |
 | Scheduler | Priority classes (real-time for input and audio, normal, background); per-CPU run queues; HLT when idle |
 
 ## 9. Memory

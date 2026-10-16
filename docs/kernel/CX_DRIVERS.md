@@ -77,3 +77,27 @@ must be signed and trusted; isolation is built and tested under QEMU.
 5. IOMMU under QEMU (AMD-Vi).
 6. Hot-plug and power.
 7. New drivers in X.
+
+## 5. ACPI
+
+**Today:** `kernel/drivers/power/acpi.c` reads the static tables. It does not
+run AML, the bytecode in the DSDT and SSDTs that describes how a real board
+routes interrupts (`_PRT`), powers devices, sleeps and shuts down.
+
+**Why it matters:** in QEMU the static tables and the legacy PIC are enough.
+On the rig, SMP needs the I/O APIC, and routing PCI interrupts through the I/O
+APIC needs `_PRT`, which only AML can evaluate. Sleep states and a reliable
+shutdown need it too.
+
+**How the others do it:** Haiku, FreeBSD and many hobby kernels port ACPICA,
+Intel's reference interpreter. Serenity wrote its own. Smaller embeddable
+interpreters exist (`lai`, `uACPI`).
+
+**Plan:** port an existing interpreter under the Build / Port / Embed rule,
+after checking its licence against the kernel's (ACPICA is offered under a BSD
+licence among others; `uACPI` is MIT; `lai` is zlib), into `vendor/`. AML is
+code from the firmware, so the interpreter runs with limits on loops and
+memory, and its parser is fuzzed on the host (`safety/CX_SAFETY.md` §3.2).
+
+**When:** before SMP on the rig (roadmap Phase 1.6), so in Phase 1. Until then
+the legacy PIC serves.

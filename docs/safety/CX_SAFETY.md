@@ -114,6 +114,23 @@ clang-tidy on the kernel in the container; a short list of banned C functions
 and patterns. In X, the language rules (`language/CX_X_PLAN.md` §5)
 carry most of this.
 
+### 3.7 Kernel code tested on the host
+
+Today kernel code is tested only by booting. Code with no hardware
+dependency (handle tables, rights arithmetic, allocators, the buddy and slab
+logic, path handling, parsers) is also compiled for the host with clang and
+run as unit tests under AddressSanitizer and UndefinedBehaviorSanitizer,
+in seconds rather than a boot.
+
+- A small C test runner (`kernel/test/host/`), driven by CMake and `cxk test
+  host`; hardware is stubbed at a narrow seam (page allocation, locks, the
+  clock), never mocked function by function.
+- The same files are the CBMC harnesses (§3.4) and the libFuzzer targets
+  (§3.2), so one build target serves three rungs of the ladder.
+- The boot self-tests remain: they are what proves the code works on the
+  machine. Host tests prove its logic; boot tests prove its integration.
+- Built **before Phase 0 step 1**, so the object model is written against it.
+
 ## 4. Test discipline
 
 1. **A test that passes tells nothing until it has been seen to fail.** Kept
@@ -170,7 +187,7 @@ today; nothing depends on GitHub Actions.
 
 | When | Work |
 |---|---|
-| Now | CsCheck in the host tests; the first libFuzzer targets (CXEX, GPT, X Data) on the host; `cxk test sabotage` |
+| Now | The host test runner for kernel C (§3.7); CsCheck in the host tests; the first libFuzzer targets (CXEX, GPT, X Data) on the host; `cxk test sabotage` |
 | Phase 0 | TLA+ for handle lifetime; CBMC harnesses for rights, generations, user pointers; KASAN-style checker and UBSan in debug kernels; mitigation self-tests |
 | Phase 0.6 | The generated syscall fuzzer; random X programs against both compilers |
 | Phase 1 | TLA+ for IPC, the wait queue, futex, stop and kill; HACL\* replaces the RSA verifier; mutation testing in the container |
