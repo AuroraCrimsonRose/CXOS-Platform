@@ -87,7 +87,8 @@ mean anything. Proposed:
   compiled out of release builds, run by `cxk x test` (Zig's model).
 - **A formatter** (`cxk x fmt`), so style is never a review comment.
 - **A language server** from the C# front end: errors as you type,
-  go-to-definition, hover types, for the Studio and any editor.
+  go-to-definition, hover types, for the VS Code extension (`editors/vscode`)
+  and any other editor.
 - **Diagnostics with codes and fixes:** every error has a stable code, the
   exact span, and a suggestion where one exists.
 - **Random program testing.** A generator writes random valid X programs, and

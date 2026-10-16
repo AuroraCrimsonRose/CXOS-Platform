@@ -1,12 +1,12 @@
 # CX DevKit
 
 Host-side toolchain for the CX ecosystem: the X Native compiler, the `cxk` CLI, the CXEX
-format and signing libraries, and CXEX Studio.
+format and signing libraries. (CXEX Studio, the Avalonia GUI, was retired on 2026-10-16.)
 
 ## Start here
 
 - **[Architecture, Vision & Roadmap](CX_DEVKIT_DESIGN.md)** — the main design document.
-  Artifact taxonomy, key authority and signing, Studio design, the phased roadmap, and the
+  Artifact taxonomy, key authority and signing, the (retired) Studio design, the phased roadmap, and the
   known cross-repo ABI hazard (§5.2).
 - **[README](../../devkit/README.md)** — project layout, the `cxk` command set, and the compile
   pipeline as it actually runs.

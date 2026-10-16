@@ -10,7 +10,7 @@ namespace CXEX.Tests.Unit;
 /// Library → front-end layering (DevKit engineering §8), asserted rather than
 /// agreed.
 ///
-/// <para>Studio referenced <c>CXEX.CLI</c> — the whole command-line front end,
+/// <para>Studio (retired 2026-10-16) referenced <c>CXEX.CLI</c> — the whole command-line front end,
 /// Spectre.Console and the command registrar included — in order to launch an
 /// emulator, because <c>QemuTool</c> lived in <c>CXEX.CLI/Wrappers</c>. Moving
 /// the wrappers to <c>CXEX.Tools</c> (§6) is what let that reference go, which
@@ -80,18 +80,31 @@ public class ToolsLayeringTests
 
     [Fact]
     [Trait(Categories.Key, Categories.Unit)]
-    public void Studio_does_not_reference_the_cli()
+    public void Nothing_but_the_tests_references_the_cli()
     {
-        string? studio = Csproj("CXEX.Studio");
-        if (studio is null) { Assert.True(true, "no checkout: skipped"); return; }
+        // This was "Studio does not reference the CLI". Studio was retired on
+        // 2026-10-16, which left that test passing with nothing to look at, so
+        // it now states the rule it was an instance of: the CLI is a front end,
+        // and no library or other front end may depend on it.
+        string? repo = TestEnv.RepoRoot;
+        if (repo is null) { Assert.True(true, "no checkout: skipped"); return; }
 
-        var refs = ProjectReferences(studio).ToList();
+        var projects = Directory.GetFiles(Path.Combine(repo, "devkit"), "*.csproj",
+                                          SearchOption.AllDirectories)
+            .Where(p => !p.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                          .Any(part => part is "bin" or "obj"))
+            .ToList();
 
-        // The test is only meaningful if it parsed something.
-        Assert.NotEmpty(refs);
-        Assert.Contains("CXEX.Tools", refs);
+        // The test is only meaningful if it found the projects.
+        Assert.True(projects.Count >= 10, $"found only {projects.Count} projects");
 
-        Assert.DoesNotContain("CXEX.CLI", refs);
+        var offenders = projects
+            .Where(p => Path.GetFileNameWithoutExtension(p) is not ("CXEX.CLI" or "CXEX.Tests"))
+            .Where(p => ProjectReferences(p).Contains("CXEX.CLI"))
+            .Select(Path.GetFileNameWithoutExtension)
+            .ToList();
+
+        Assert.Empty(offenders);
     }
 
     [Fact]

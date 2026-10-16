@@ -88,7 +88,7 @@ A change is not finished because it compiles.
 ## Building
 
 ```
-dotnet build devkit/CXEX.Studio.slnx -c Release     # the DevKit
+dotnet build devkit/CXEX.slnx -c Release     # the DevKit
 cxk os build --dev                                  # the OS, development kernel
 cxk run dist/CXK_x86_32/images/cxk_disk.img         # boot it
 ```

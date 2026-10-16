@@ -4,7 +4,6 @@
       "src": [
         {
           "files": [ "CXEX.*/**/*.csproj" ],
-          "exclude": [ "**/CXEX.Studio.csproj", "**/CXEX.UI.csproj", "**/CXEX.SDK.csproj" ],
           "src": "../../devkit"
         }
       ],

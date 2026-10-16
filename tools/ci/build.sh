@@ -58,10 +58,10 @@ fi
 CLI_DIR="${CXOS_CI_CLI:-/tmp/cxos-ci/cli}"
 if has_stage devkit; then
   log 'devkit: build'
-  dotnet build devkit/CXEX.Studio.slnx -c Release
+  dotnet build devkit/CXEX.slnx -c Release
 
   log 'devkit: test'
-  dotnet test devkit/CXEX.Studio.slnx -c Release --no-build
+  dotnet test devkit/CXEX.slnx -c Release --no-build
 
   log 'devkit: publish cxk'
   dotnet publish devkit/CXEX.CLI -c Release -r linux-x64 \

@@ -22,7 +22,7 @@ namespace CXEX.CLI.Commands;
 ///
 /// <para>Run this before building CXK's userland. Exit code 0 means the mirrored surface
 /// agrees; 1 means it does not. The comparison itself lives in
-/// <see cref="CXEX.Lang.Abi.AbiSync"/> so Studio and a future test project can share it.</para>
+/// <see cref="CXEX.Lang.Abi.AbiSync"/> so the tests and any other front end can share it.</para>
 /// </summary>
 public class CheckAbiCommand : Command<CheckAbiCommand.Settings>
 {

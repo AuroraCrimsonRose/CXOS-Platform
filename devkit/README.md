@@ -2,7 +2,7 @@
 
 **Toolchain and development environment for the CX ecosystem** — the CXK kernel, CXOS, the boot chain, and the X language.
 
-`devkit/` holds the **host side** of CX development: the X Native compiler, the `cxk` command-line toolchain, the CXEX format libraries, the signing tools, and CXEX Studio (the IDE). The kernel and the OS it builds are the rest of this repository, [CXOS Platform](../README.md).
+`devkit/` holds the **host side** of CX development: the X Native compiler, the `cxk` command-line toolchain, the CXEX format libraries, and the signing tools. CXEX Studio, the Avalonia IDE, was retired on 2026-10-16; editor support is the VS Code extension in `editors/vscode`. The kernel and the OS it builds are the rest of this repository, [CXOS Platform](../README.md).
 
 > Internal development tooling, tightly coupled to ongoing CX ecosystem work. Interfaces change without notice. See the repository's `LICENSE.md`.
 
@@ -21,7 +21,6 @@ The two things most people come looking for:
 |---|---:|---|
 | `CXEX.Lang` | 5,726 | **The X Native compiler** (see below) |
 | `CXEX.CLI` | 3,149 | The `cxk` command-line toolchain |
-| `CXEX.Studio` | 2,420 | Avalonia IDE — project explorer, hex viewer, editors, emulator host |
 | `CXEX.Uefi` | 1,019 | UEFI Secure Boot — EFI variable stores, Authenticode PE signing |
 | `CXEX.FileSystem` | 582 | CXFS, host side (format, read, write, browse) |
 | `CXEX.Build` | 551 | CXEX packaging — ELF parsing, layout, writing |
@@ -32,7 +31,7 @@ The two things most people come looking for:
 | `CXEX.Core` | 102 | Shared primitives |
 | `CXEX.Tests` | — | **Planned:** the xUnit test project (see [Tests](#tests)) |
 
-**Scaffolded but empty** — these have project files and no source yet: `CXEX.Font`, `CXEX.Text`, `CXEX.Tools`, `CXEX.UI`. (The file-type icons that used to sit in `CXEX.ICO` moved to `assets/icons/filetypes/`, which was deleted 2026-10-02 — they are to be redrawn.) They are placeholders for planned work (see the design doc §5), not missing code. `CXEX.Tools` in particular is where the process-tool wrappers are *intended* to move so the CLI and Studio share one toolchain driver; today those wrappers still live in `CXEX.CLI/Wrappers`.
+**Scaffolded but empty** — these have project files and no source yet: `CXEX.Font`, `CXEX.Text`, `CXEX.Tools`. (The file-type icons that used to sit in `CXEX.ICO` moved to `assets/icons/filetypes/`, which was deleted 2026-10-02 — they are to be redrawn.) They are placeholders for planned work (see the design doc §5), not missing code. `CXEX.Tools` in particular is where the process-tool wrappers are *intended* to move so the CLI and Studio share one toolchain driver; today those wrappers still live in `CXEX.CLI/Wrappers`.
 
 ---
 
@@ -167,7 +166,7 @@ Two readers of one format are worth having only if they agree, so they are held 
 
 ## Documentation
 
-- **`docs/devkit/CX_DEVKIT_DESIGN.md`** — architecture, visual identity, artifact taxonomy, key authority and signing, Studio design, and the phased roadmap. The main design document for this repository.
+- **`docs/devkit/CX_DEVKIT_DESIGN.md`** — architecture, visual identity, artifact taxonomy, key authority and signing, the (retired) Studio design, and the phased roadmap. The main design document for this repository.
 - **`docs/reviews/2026-10-01/DEVKIT_SECURITY_REVIEW.md`**, **`docs/reviews/2026-10-01/DEVKIT_ENGINEERING_REVIEW.md`** — the 2026-10-01 reviews of this repository, kept as written.
 - **`docs/planning/HARDENING_PLAN.md`** — the response to both: decisions (xUnit, `cxk` commands in place of scripts, no tracked build output), the status of every finding checked against the code, and a phased checklist. Its kernel-side companion is `docs/planning/HARDENING_PLAN.md`.
 - **`docs/devkit/index.md`** — entry point for the generated API reference (DocFX). `///` comments in source appear there on the next build.
@@ -185,10 +184,10 @@ The X *language* is specified on the kernel side, since the kernel owns the ABI 
 Requirements: .NET (see the `.csproj` files for the target framework), and for producing CXK artifacts clang, ld.lld, NASM, CMake and Ninja. QEMU to run an image.
 
 ```
-dotnet build devkit/CXEX.Studio.slnx
+dotnet build devkit/CXEX.slnx
 ```
 
-Prebuilt `cxk` and CXEX Studio, per platform, are on the repository's
+Prebuilt `cxk`, per platform, is on the repository's
 [releases](https://github.com/AuroraCrimsonRose/CXOS-Platform/releases) page.
 
 API reference (DocFX), from the repository root:
@@ -203,7 +202,7 @@ The tool manifest (`.config/dotnet-tools.json`) pins docfx. The output
 
 ### Tests
 
-**Decided: every suite moves to xUnit,** in a `CXEX.Tests` project in `CXEX.Studio.slnx`, run with:
+**Decided: every suite moves to xUnit,** in a `CXEX.Tests` project in `CXEX.slnx`, run with:
 
 ```
 dotnet test

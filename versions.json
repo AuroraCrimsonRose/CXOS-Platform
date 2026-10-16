@@ -36,7 +36,7 @@
       "major_means": "A new generation of the platform: the image is a different thing, not an update to the previous one. Every component starts at 1.0.0 because 1.0.0 is the first release anyone outside the project can actually obtain. The kernel called itself v5 internally for four unreleased generations; shipping that as a public 5.0.0 would have claimed four releases that never existed, to an audience with no way to know what they were.",
       "ships_as": "cxos-<version>-<release_name>-selfsigned.img",
       "release_name": "Hekate",
-      "release_name_note": "CXOS ONLY. The name belongs to the platform release and to nothing else - CXK, the cxk CLI, Studio and the VSIX have versions and no names. Approved by Aurora 2026-10-02 for the 1.x line: Hekate Kleidophoros, the key-bearer at the threshold, for the generation in which CXOS gained a guarded boundary and the keys to it. Minor and patch releases inherit it. A new major needs a new name, recommended and approved - see docs/planning/VERSIONING_AND_RELEASE.md.",
+      "release_name_note": "CXOS ONLY. The name belongs to the platform release and to nothing else - CXK, the cxk CLI and the VSIX have versions and no names. Approved by Aurora 2026-10-02 for the 1.x line: Hekate Kleidophoros, the key-bearer at the threshold, for the generation in which CXOS gained a guarded boundary and the keys to it. Minor and patch releases inherit it. A new major needs a new name, recommended and approved - see docs/planning/VERSIONING_AND_RELEASE.md.",
       "checks": [
         {
           "file": "docs/planning/VERSIONING_AND_RELEASE.md",
@@ -67,18 +67,6 @@
         {
           "file": "devkit/Directory.Build.props",
           "pattern": "<CxkCliVersion>([0-9]+\\.[0-9]+\\.[0-9]+)</CxkCliVersion>"
-        }
-      ]
-    },
-    "cxex-studio": {
-      "version": "1.0.1",
-      "what": "CX DevKit Studio, the GUI front end over the same libraries the CLI uses.",
-      "major_means": "The command surface it presents, on the same rule as the CLI.",
-      "ships_as": "CXEX-Studio-<platform>.zip",
-      "checks": [
-        {
-          "file": "devkit/Directory.Build.props",
-          "pattern": "<CxexStudioVersion>([0-9]+\\.[0-9]+\\.[0-9]+)</CxexStudioVersion>"
         }
       ]
     },

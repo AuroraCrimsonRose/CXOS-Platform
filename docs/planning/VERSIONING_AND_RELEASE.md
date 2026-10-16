@@ -32,7 +32,6 @@ they are the thing that actually needs numbering.
 | **CXOS** | The platform release: kernel, X userland and boot chain as one bootable image. Its version names the **git tag** and the **GitHub Release**. | `cxos-<version>-<name>-selfsigned.img` |
 | **CXK** | The kernel. | inside the image |
 | **cxk CLI** | The X compiler, the imager, signing, `cxk os build`, `cxk run`. | `cxk-win-x64.exe`, `cxk-linux-x64`, `cxk-osx-arm64` |
-| **CX DevKit Studio** | The GUI over the same libraries the CLI uses. | `CXEX-Studio-<platform>.zip` |
 | **X Native VSIX** | The X language extension for VS Code. | VS Code marketplace, tag `vsix-v*` |
 
 All five start at **1.0.0**. 1.0.0 is the first version anyone outside the
@@ -74,8 +73,8 @@ Every **major CXOS release** carries a Greek mythological name after the version
 > major generation *means*.**
 
 **The name belongs to the CXOS release and to nothing else.** Not the kernel, not
-the boot chain, not the tooling: CXK, the BIOS/UEFI boot chain, the `cxk` CLI, CX
-DevKit Studio and the X Native VSIX all have versions and **no names**. They are
+the boot chain, not the tooling: CXK, the BIOS/UEFI boot chain, the `cxk` CLI and
+the X Native VSIX all have versions and **no names**. They are
 components, and a component is a part of a generation rather than a generation in
 itself.
 
@@ -196,7 +195,7 @@ Each has been verified to fire.
 | | |
 |---|---|
 | **Kernel** | `tools/cmake/CMakeLists.txt` reads `versions.json` with `string(JSON …)` and generates `build/cxk_version.h`. A generated header, not a `-D` — the quotes a C string needs do not survive into a custom-command argument list, so the define arrived unquoted and the banner failed to compile. |
-| **C# (16 projects)** | `devkit/Directory.Build.props` holds `CxkCliVersion` and `CxexStudioVersion`, because MSBuild has no JSON reader. Held to the registry by `check-versions`. The CLI reads its own assembly version rather than carrying a string. |
+| **C# (16 projects)** | `devkit/Directory.Build.props` holds `CxkCliVersion`, because MSBuild has no JSON reader. Held to the registry by `check-versions`. The CLI reads its own assembly version rather than carrying a string. |
 | **VSIX** | `editors/vscode/package.json`, checked directly. |
 
 ## 5. Cutting a release
@@ -222,9 +221,9 @@ Each has been verified to fire.
 
 ### Building the assets locally
 
-The same six binaries, the same image, the same checksum file. .NET
-cross-publishes all three RIDs from any host, and CXEX Studio is Avalonia rather
-than WPF, so it genuinely builds for Linux and macOS too.
+The same three binaries, the same image, the same checksum file. .NET
+cross-publishes all three RIDs from any host. (CXEX Studio was retired on
+2026-10-16 and is no longer a release asset.)
 
 ```
 for RID in win-x64 linux-x64 osx-arm64; do
@@ -232,15 +231,12 @@ for RID in win-x64 linux-x64 osx-arm64; do
     -p:SelfContained=true -p:PublishSingleFile=true \
     -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=none \
     -o build/rel/cli-$RID
-  dotnet publish devkit/CXEX.Studio -c Release -r $RID \
-    -p:SelfContained=true -p:DebugType=none -o build/rel/studio-$RID
 done
 
 cxk keygen tools/rel && cxk os build --key rel --clean && rm tools/rel.xksk
 ```
 
-Name the binaries `cxk-<rid>[.exe]`, zip each Studio directory as
-`CXEX-Studio-<rid>.zip`, copy the image to
+Name the binaries `cxk-<rid>[.exe]`, copy the image to
 `cxos-<version>-<name>-selfsigned.img`, and `sha256sum * > SHA256SUMS`.
 
 **Boot-test the image with `-snapshot`.** CXOS writes to its disk on first boot —
@@ -265,7 +261,6 @@ or through the Releases page.
 | Asset | From |
 |---|---|
 | `cxk-win-x64.exe`, `cxk-linux-x64`, `cxk-osx-arm64` | `dotnet publish` per RID, single-file self-contained |
-| `CXEX-Studio-<platform>.zip` | `dotnet publish` per RID |
 | `cxos-<version>-<name>-selfsigned.img` | `cxk os build` with an ephemeral key, in the CI image (`tools/ci/Dockerfile`) or locally |
 | `LICENSES.zip` | the licence texts, `THIRD-PARTY-NOTICES.md` and `LICENSE.md` |
 | `SHA256SUMS` | `sha256sum` over the finished set, last |

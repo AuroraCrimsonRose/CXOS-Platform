@@ -20,7 +20,6 @@
   -->
   <PropertyGroup>
     <CxkCliVersion>1.0.1</CxkCliVersion>
-    <CxexStudioVersion>1.0.1</CxexStudioVersion>
   </PropertyGroup>
 
   <!--
@@ -31,11 +30,6 @@
     <Version>$(CxkCliVersion)</Version>
     <Company>CATX Systems</Company>
     <Product>CX DevKit</Product>
-  </PropertyGroup>
-
-  <PropertyGroup Condition="'$(MSBuildProjectName)' == 'CXEX.Studio'">
-    <Version>$(CxexStudioVersion)</Version>
-    <Product>CX DevKit Studio</Product>
   </PropertyGroup>
 
 </Project>

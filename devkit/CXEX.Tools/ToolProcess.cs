@@ -107,7 +107,7 @@ public sealed class ToolRunOptions
 /// calling <c>QemuTool</c> and <c>BochsTool</c>, which lived in the CLI, so
 /// it referenced the whole command-line front end - Spectre.Console, the
 /// command registrar and all - to launch an emulator. Moving the runner is
-/// what let that reference go.</para>
+/// what let that reference go. (Studio was retired on 2026-10-16.)</para>
 ///
 /// <para>It therefore depends on nothing but the BCL. Output is delivered
 /// through callbacks instead of being written to a console, because a library

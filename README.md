@@ -3,7 +3,7 @@
 Everything that makes CXOS, in one repository: **CXK**, the kernel; the **X
 userland**, including the X compiler written in X; the boot chain; and the **CX
 DevKit**, the host toolchain (the `cxk` CLI, the C# X compiler, signing,
-imaging) and CXEX Studio.
+imaging).
 
 | Directory | What it holds |
 |---|---|
@@ -12,12 +12,12 @@ imaging) and CXEX Studio.
 | `kernel/` | CXK |
 | `os/` | X userland: `apps/`, `std/`, `xc/` (the compiler in X), `executive/`, `config/`, `services/` |
 | `tools/` | CMake build (`cmake/`), the platform public key, remaining scripts |
-| `devkit/` | The C# toolchain and Studio, and their tests: see [`devkit/README.md`](devkit/README.md) |
+| `devkit/` | The C# toolchain and its tests: see [`devkit/README.md`](devkit/README.md) |
 | `editors/` | X language support for editors (VS Code) |
 | `assets/` | Branding and the console font |
 | `docs/` | All documentation: start at [`docs/README.md`](docs/README.md) |
 
-**Binaries are not in the repository.** `cxk`, CXEX Studio and the OS disk
+**Binaries are not in the repository.** `cxk` and the OS disk
 image ship as [releases](https://github.com/AuroraCrimsonRose/CXOS-Platform/releases)
 (`docs/planning/HARDENING_PLAN.md`, D7).
 

@@ -3,6 +3,13 @@
 **Owner:** Aurora Tejeda · **Company:** CATX Systems · **Products:** CX, CXK, CXOS
 **Doc status:** **v0.3** — the v0.2 Q&A decisions remain **locked** (marked **[LOCKED]**); genuinely-open items are in §13. This revision reconciles the document with what has actually shipped and moves it out of `CXEX.Studio/` (it describes the whole DevKit, not just Studio).
 
+> **CXEX Studio is retired (2026-10-16).** The Avalonia GUI (`CXEX.Studio`),
+> its theme library (`CXEX.UI`) and the empty `CXEX.SDK` app were removed on
+> `x86_64-DEV`. Editor support is the VS Code extension (`editors/vscode`),
+> with a language server planned (`language/CX_X_PLAN.md` §6); everything else
+> is `cxk` (`devkit/CX_CXK_PLAN.md`). The Studio sections below (§6 onward)
+> are kept as the record of what was designed, not as plans.
+>
 > **Implementation status at a glance.** What exists today: the X Native compiler
 > (`CXEX.Lang` — lexer, parser, resolver, type checker, x86-32 emitter), the `cxk` CLI, CXEX packaging, host-side CXFS, disk/partition models, RSA+SHA-256 keygen and
 > signing, and a working Studio shell. §11's bugs 1 and 2 are **fixed**. Four projects named

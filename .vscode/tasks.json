@@ -18,7 +18,7 @@
         {
             "label": "Build DevKit",
             "type": "shell",
-            "command": "dotnet build ${workspaceFolder}/devkit/CXEX.Studio.slnx",
+            "command": "dotnet build ${workspaceFolder}/devkit/CXEX.slnx",
             "group": "build",
             "problemMatcher": "$msCompile"
         },

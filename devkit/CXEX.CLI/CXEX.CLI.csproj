@@ -15,7 +15,7 @@
       IncludeNativeLibrariesForSelfExtract / EnableCompressionInSingleFile) are
       deliberately NOT here. As build properties they made every build of this
       project a self-contained win-x64 executable, and a non-self-contained
-      project cannot reference one - so CXEX.Studio and CXEX.SDK both failed with
+      project cannot reference one - so the GUI projects (retired 2026-10-16) failed with
       NETSDK1151 and the solution could not build as a unit.
 
       They belong to publishing, so pass them there. To produce tools/cxk.exe for

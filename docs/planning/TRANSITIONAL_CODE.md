@@ -52,7 +52,6 @@ interfaces and are not transitional.
 | `kernel/drivers/video/fb.c` | Write-back caching on the framebuffer | Write-combining (PAT) | Framebuffer throughput matters |
 | `kernel/cpu/exec.c` unverified-image policy | Always refuses | An administrator's choice | User accounts exist |
 | `/Shared/Config` at 0777 | Any program with `GRANT_DISK` can write any program's settings | `/User/<name>` at 0700 | Users exist (`CX_FILESYSTEM_LAYOUT.md` rule 6) |
-| `devkit/CXEX.Studio/ViewModels/EmulatorViewModel.cs` `GetDiskPath` | A path relative to Studio's working directory | The project's settings | Studio project settings carry a disk image |
 
 ## Test-only
 
