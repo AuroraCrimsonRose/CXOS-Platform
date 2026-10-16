@@ -85,6 +85,7 @@
 #define E_EXIST  (-11)   /* the name is already taken */
 #define E_ISDIR  (-12)   /* expected a file, got a directory */
 #define E_NOTDIR (-13)   /* expected a directory, got a file */
+#define E_DEADLK (-14)   /* waiting would never end (FILE_OP_LOCK) */
 
 /* ---- program arguments ----
    A launcher hands over a flat blob: the argument strings, NUL-terminated, one
@@ -427,25 +428,36 @@ enum {
      * FlushFileBuffers and VNOP_FSYNC all are. Anything that must survive a
      * power cut writes, syncs, and only then treats the result as committed. */
     FILE_OP_SYNC    = 15,
-    /* Advisory whole-file locks: handle, flags = FLOCK_SHARED or FLOCK_EXCLUSIVE.
+    /* Advisory byte-range locks: handle, off = start, len = length (0 runs to
+     * the end of the file however it grows, so off 0 len 0 is the whole file),
+     * flags = FLOCK_SHARED or FLOCK_EXCLUSIVE, optionally | FLOCK_WAIT.
      *
      * A lock belongs to the OPEN FILE (the handle), not to the process and not
-     * to the file on disk - SerenityOS's choice, and flock()'s. It never blocks:
-     * a conflicting lock is E_AGAIN, and the caller decides whether to retry.
-     * Locking a handle that already holds a lock converts it. Closing the handle
-     * releases it, however the handle goes (FILE_OP_CLOSE, SYS_HANDLE_CLOSE,
-     * process exit), so a lock cannot outlive its holder.
+     * to the file on disk - SerenityOS's model. Shared ranges overlap freely;
+     * an exclusive range overlaps nothing another open file holds, a second
+     * open in the same process included. A handle's own locks never conflict,
+     * so locking the same range again converts it. Closing the handle releases
+     * them all, however it goes (FILE_OP_CLOSE, SYS_HANDLE_CLOSE, exit).
+     *
+     * A conflict is E_AGAIN, or with FLOCK_WAIT the call sleeps until the
+     * conflicting locks are released - except when that could never happen (a
+     * conflicting lock is the caller's own, or its holder is waiting, directly
+     * or through others, on one of the caller's), which is E_DEADLK.
      *
      * Advisory: only another LOCK is refused. Opening, reading, writing and
      * unlinking a locked file all still work, as they do on every Unix. Nothing
      * is written to disk. */
     FILE_OP_LOCK    = 16,
-    FILE_OP_UNLOCK  = 17,  /* handle; E_OK even when it held no lock */
+    /* handle, off, len: drop this handle's locks lying wholly inside the range
+     * (off 0 len 0: all of them). Ranges are not split - unlock what was
+     * locked. E_OK even when nothing was held. */
+    FILE_OP_UNLOCK  = 17,
 };
 
 /* FILE_OP_LOCK modes. Shared locks coexist; an exclusive lock excludes all. */
 #define FLOCK_SHARED     1
 #define FLOCK_EXCLUSIVE  2
+#define FLOCK_WAIT       0x100  /* sleep until the lock can be had */
 
 /* FILE_OP_OPEN flags. One of FOPEN_READ / FOPEN_WRITE is required. */
 #define FOPEN_READ    0x01

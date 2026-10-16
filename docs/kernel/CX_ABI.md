@@ -145,6 +145,11 @@ given `caps=0` behaves exactly as v1 described.
 | -7 | `E_AGAIN` | would block / no message ready |
 | -8 | `E_RANGE` | message too large / buffer too small |
 | -9 | `E_NOSYS` | unknown syscall number |
+| -10 | `E_IO`     | disk or filesystem I/O failure |
+| -11 | `E_EXIST`  | the name is already taken |
+| -12 | `E_ISDIR`  | expected a file, got a directory |
+| -13 | `E_NOTDIR` | expected a directory, got a file |
+| -14 | `E_DEADLK` | waiting would never end (`FILE_OP_LOCK` with `FLOCK_WAIT`) |
 
 ---
 
@@ -440,15 +445,28 @@ a user-addressable file tops out at 2 GB. CXFS remains 64-bit underneath.
   a dozen numbers: ops for `STAT`, `OPEN`, `READ`, `WRITE`, `CLOSE`, `READDIR`, `MKDIR`,
   `UNLINK`, `RENAME`. Open files become a second handle type (`HANDLE_FILE`), which is what
   the handle table in §6 was built to absorb.
-- **Advisory locks** are `FILE_OP_LOCK` (`FLOCK_SHARED` or `FLOCK_EXCLUSIVE`) and
-  `FILE_OP_UNLOCK`, added 2026-10-16 as SerenityOS has them: held by the **open file**, in
-  memory, and released when the handle goes, whether by `CLOSE`, `SYS_HANDLE_CLOSE` or exit.
-  Shared locks coexist; an exclusive one excludes every other open file, including a second
-  open in the same process. They never block (a conflict is `E_AGAIN`), and they are
-  advisory: only another lock is refused, never a read, a write or an unlink. Before this,
-  CXFS kept a lock in the manifest entry owned by a pid. No syscall could set it, it survived
-  reboots, and a crafted volume could use it to refuse writes. Those bytes are now reserved
-  (`CXFS_FILESYSTEM.md` §6.3).
+- **Advisory locks** are `FILE_OP_LOCK` and `FILE_OP_UNLOCK`, added 2026-10-16 on
+  SerenityOS's model. They are **byte ranges** (`off`, `len`; `len` 0 runs to the end of the
+  file, so `0, 0` is the whole file) held by the **open file**, in memory, and released when
+  the handle goes, whether by `CLOSE`, `SYS_HANDLE_CLOSE` or exit. Shared ranges overlap
+  freely; an exclusive one overlaps nothing another open file holds, a second open in the
+  same process included. A conflict is `E_AGAIN`, or with `FLOCK_WAIT` the caller sleeps until
+  a release wakes it. Where waiting could never end, `E_DEADLK` instead: the conflicting lock
+  is the caller's own, or its holder waits, directly or round a chain, on one of the
+  caller's. Linux checks POSIX locks the same way; Serenity does not, and hangs. Unlock does
+  not split a range (Serenity's rule too). The locks are advisory: only another lock is
+  refused, never a read, a write or an unlink. Before this, CXFS kept a lock in the manifest
+  entry owned by a pid. No syscall could set it, it survived reboots, and a crafted volume
+  could use it to refuse writes. Those bytes are now reserved (`CXFS_FILESYSTEM.md` §6.3).
+- **Unlinking an open file** removes its name at once and its entry at the last close, as a
+  Unix inode lives until its last reference and an NT file stays delete-pending until its
+  last handle closes. Until 2026-10-16 the entry went immediately. CXFS reuses the lowest
+  free id, and an open file reaches its data by id with permission checked once at open, so
+  the next file created, possibly another user's, became readable and writable through the
+  old handle. While pending, the name is absent to every lookup (`OPEN`, `STAT`, `READDIR`,
+  `exec_path`) but still taken (`E_EXIST` to a create). The delete runs from a safe context:
+  right after the `CLOSE`, or at the next `SYS_FILE_OP` when the last handle went at exit. A
+  crash first leaves the file in place, which is the safe direction to fail.
 - **`exec_path`** loads apps from disk with signature verification inherited from the
   kernel's own load path, closing the `spawn` gap noted above. It shares `cxex_exec`'s verify
   and type checks through `cxex_exec_as()`; the two differ only in where authority comes

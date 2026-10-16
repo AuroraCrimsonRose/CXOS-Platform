@@ -35,4 +35,9 @@ void sysfile_init(void);
    actually being released rather than leaked. */
 int sysfile_open_count(void);
 
+/* 1 if this CXFS entry was unlinked while open: its name is gone to every
+   lookup, and the entry itself goes at its last close. Anything else that
+   resolves paths for a program (exec_path) must treat it as absent too. */
+int sysfile_entry_doomed(uint32_t id);
+
 #endif

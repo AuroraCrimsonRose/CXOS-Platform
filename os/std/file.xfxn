@@ -99,26 +99,41 @@ fn file_sync() -> i32 {
 
 // ---- advisory locks ----
 
-// Lock an open file: `mode` is FLOCK_SHARED or FLOCK_EXCLUSIVE. Returns 0, or
-// E_AGAIN at once if another open file's lock conflicts - it never waits.
-// The lock belongs to this handle, and file_close releases it; so does exit.
-// Advisory: it refuses only other locks, never a read, write or unlink.
-fn file_lock(h: i32, mode: u32) -> i32 {
+// Lock `len` bytes of an open file from `start` (len 0: to the end, however
+// far it grows). `mode` is FLOCK_SHARED or FLOCK_EXCLUSIVE, and with
+// | FLOCK_WAIT the call sleeps until the lock can be had rather than returning
+// E_AGAIN. E_DEADLK means waiting would never end - the conflicting lock is
+// this program's own, through another handle, or its holder waits on us.
+// Locks belong to this handle, and file_close releases them; so does exit.
+// Advisory: they refuse only other locks, never a read, write or unlink.
+fn file_lock_range(h: i32, start: i32, len: u32, mode: u32) -> i32 {
     let a: file_op_args;
     memzero((&a) as *u8, sizeof a);
     a.op = FILE_OP_LOCK;
     a.handle = h;
+    a.off = start;
+    a.len = len;
     a.flags = mode;
     return file_op(&a);
 }
 
-fn file_unlock(h: i32) -> i32 {
+// The whole file.
+fn file_lock(h: i32, mode: u32) -> i32 { return file_lock_range(h, 0, 0, mode); }
+
+// Drop this handle's locks lying wholly inside the range; ranges are not
+// split, so unlock what was locked.
+fn file_unlock_range(h: i32, start: i32, len: u32) -> i32 {
     let a: file_op_args;
     memzero((&a) as *u8, sizeof a);
     a.op = FILE_OP_UNLOCK;
     a.handle = h;
+    a.off = start;
+    a.len = len;
     return file_op(&a);
 }
+
+// Every lock this handle holds.
+fn file_unlock(h: i32) -> i32 { return file_unlock_range(h, 0, 0); }
 
 // ---- position ----
 
@@ -311,5 +326,6 @@ fn file_strerror(rc: i32) -> *u8 {
     if (rc == E_EXIST)  { return "already exists"; }
     if (rc == E_ISDIR)  { return "is a directory"; }
     if (rc == E_NOTDIR) { return "not a directory"; }
+    if (rc == E_DEADLK) { return "would wait forever"; }
     return "error";
 }

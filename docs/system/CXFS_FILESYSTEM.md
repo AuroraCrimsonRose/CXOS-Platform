@@ -167,9 +167,9 @@ user/session model, SYSTEM (uid 0) bypasses checks.
 
 ### 6.3 Advisory locking
 
-CXFS stores **no** lock state. Locks belong to open files, live in kernel
-memory, and end with the handle that took them (`FILE_OP_LOCK`,
-`CX_ABI.md` §7.10). SerenityOS, Haiku, XNU and NT all keep locks the same way:
+CXFS stores **no** lock state. Locks are byte ranges that belong to open
+files, live in kernel memory, and end with the handle that took them
+(`FILE_OP_LOCK`, `CX_ABI.md` §7.10). SerenityOS, Haiku, XNU and NT all keep locks the same way:
 on the in-memory node, owned by an open description, a team or a file object,
 and released on close. None of them writes a lock to disk.
 

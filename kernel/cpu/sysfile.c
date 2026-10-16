@@ -29,7 +29,8 @@ struct open_file {
     uint32_t entry;      /* CXFS manifest id */
     uint32_t off;        /* current offset (see the INT32_MAX cap in the ABI) */
     uint32_t flags;      /* FOPEN_* the file was opened with */
-    uint32_t lock;       /* 0, FLOCK_SHARED or FLOCK_EXCLUSIVE */
+    int      owner;      /* the thread (process) whose handle this is */
+    int      doomed;     /* unlinked while open: delete at the last close */
 };
 
 static struct open_file open_files[MAX_OPEN_FILES];
@@ -40,46 +41,190 @@ static struct open_file *of_alloc(void) {
             open_files[i].used  = 1;
             open_files[i].entry = 0;
             open_files[i].off   = 0;
-            open_files[i].flags = 0;
-            open_files[i].lock  = 0;
+            open_files[i].flags  = 0;
+            open_files[i].owner  = thread_current_id();
+            open_files[i].doomed = 0;
             return &open_files[i];
         }
     return NULL;
 }
 
-/* Releasing the slot releases its lock: the lock lives in the slot. That is the
-   whole lifetime rule (FILE_OP_LOCK in the ABI), and why it needs no cleanup of
-   its own at close or at process exit. */
-static void of_release(struct cap_handle *h) {
-    struct open_file *f = (struct open_file *)h->object;
-    if (f >= open_files && f < open_files + MAX_OPEN_FILES) {
-        f->lock = 0;
-        f->used = 0;
+/* ---- unlinked while open ---------------------------------------------------
+ * CXFS reuses the lowest free manifest id, and an open file reaches its data
+ * by id with permission checked once, at open. So deleting an entry that is
+ * still open would hand that open file to whatever is created next, another
+ * user's file included. Every reference kernel defers the delete instead: a
+ * Unix inode lives until its last reference, and NT marks the file
+ * delete-pending until the last handle closes. CXK does the same. FILE_OP_UNLINK
+ * on an open file marks it doomed, which hides its name from every lookup at
+ * once, and the entry is deleted when the last open file on it is released.
+ *
+ * The release can happen in the reaper, inside the scheduler with interrupts
+ * off, which is no place for disk I/O. So the release only queues the id, and
+ * the delete runs at the start of the next SYS_FILE_OP, from anyone, and right
+ * after a FILE_OP_CLOSE. A crash before that leaves the file in place: the
+ * unlink simply did not happen, which is the safe direction to fail in.
+ */
+static uint32_t graveyard[MAX_OPEN_FILES];
+static int      graves;
+
+static int entry_open(uint32_t id) {
+    for (int i = 0; i < MAX_OPEN_FILES; i++)
+        if (open_files[i].used && open_files[i].entry == id) return 1;
+    return 0;
+}
+
+/* Unlinked, and so invisible to lookups, but not deleted yet. */
+static int entry_doomed(uint32_t id) {
+    for (int i = 0; i < MAX_OPEN_FILES; i++)
+        if (open_files[i].used && open_files[i].doomed && open_files[i].entry == id) return 1;
+    for (int i = 0; i < graves; i++)
+        if (graveyard[i] == id) return 1;
+    return 0;
+}
+
+int sysfile_entry_doomed(uint32_t id) { return entry_doomed(id); }
+
+static void bury_pending(void) {
+    while (graves > 0) {
+        uint32_t id = graveyard[--graves];
+        cxfs_delete_entry(id);
     }
 }
 
 /* ---- advisory locks --------------------------------------------------------
- * Held by the open file, in memory, as SerenityOS holds them on its
- * OpenFileDescription. They used to be fields in the CXFS manifest entry owned
- * by a pid, which had three faults: a pid is a reused thread slot, so a lock
- * could pass to an unrelated process; a lock written to disk survived a reboot;
- * and every volume's lock state was whatever the disk said, which for a
- * removable volume is hostile input. Nothing on disk is consulted now.
+ * SerenityOS's model (Kernel/FileSystem/Inode.cpp): a list of byte-range locks
+ * per file, each owned by the open file that took it, removed when that open
+ * file goes. Shared locks overlap freely; an exclusive one overlaps nothing
+ * held by another open file. An open file's own locks never conflict with
+ * each other, so re-locking a range converts it.
  *
- * Returns whether another open file holds a lock on the same entry that `want`
- * conflicts with. Shared coexists with shared; exclusive with nothing.
+ * Unlike the CXFS locks this replaces, nothing is on disk: a pid is a reused
+ * thread slot, a lock written to disk survives a reboot, and a removable
+ * volume's lock state would be whatever its author wanted.
+ *
+ * A range is [start, start + len), and len 0 runs to the end of the file
+ * however far it grows, so (0, 0) is the whole file.
  */
-static int lock_conflicts(const struct open_file *self, uint32_t want) {
-    for (int i = 0; i < MAX_OPEN_FILES; i++) {
-        const struct open_file *o = &open_files[i];
-        if (o == self || !o->used || !o->lock || o->entry != self->entry) continue;
-        if (want == FLOCK_EXCLUSIVE || o->lock == FLOCK_EXCLUSIVE) return 1;
+#define MAX_FILE_LOCKS 64
+
+struct file_lock {
+    struct open_file *of;      /* NULL: slot free */
+    uint32_t entry;
+    uint32_t start;
+    uint32_t len;
+    uint32_t mode;             /* FLOCK_SHARED or FLOCK_EXCLUSIVE */
+};
+static struct file_lock locks[MAX_FILE_LOCKS];
+
+/* What each thread blocked in FILE_OP_LOCK is waiting for. The deadlock check
+   walks it, and a release wakes every thread with `waiting` set. */
+struct lock_wait {
+    int      waiting;
+    struct open_file *of;
+    uint32_t entry, start, len, mode;
+};
+static struct lock_wait waits[MAX_THREADS];
+
+static int ranges_overlap(uint32_t s1, uint32_t l1, uint32_t s2, uint32_t l2) {
+    uint64_t e1 = l1 ? (uint64_t)s1 + l1 : UINT64_MAX;
+    uint64_t e2 = l2 ? (uint64_t)s2 + l2 : UINT64_MAX;
+    return s1 < e2 && s2 < e1;
+}
+
+/* The first lock held by ANOTHER open file that this request collides with,
+   starting the scan at `from`; -1 if none. */
+static int lock_conflict(const struct open_file *of, uint32_t entry, uint32_t start,
+                         uint32_t len, uint32_t mode, int from) {
+    for (int i = from; i < MAX_FILE_LOCKS; i++) {
+        const struct file_lock *l = &locks[i];
+        if (!l->of || l->of == of || l->entry != entry) continue;
+        if (!ranges_overlap(l->start, l->len, start, len)) continue;
+        if (mode == FLOCK_EXCLUSIVE || l->mode == FLOCK_EXCLUSIVE) return i;
+    }
+    return -1;
+}
+
+/* Would thread `me` waiting for this lock never wake? It would if some holder
+   of a conflicting lock is `me` (a second open file in the same process), or
+   is itself waiting, directly or down a chain, on a lock `me` holds. Linux
+   checks POSIX locks the same way and answers EDEADLK; Serenity does not check,
+   and a program that gets it wrong hangs. */
+static int lock_cycle(int me, const struct open_file *of, uint32_t entry, uint32_t start,
+                      uint32_t len, uint32_t mode, uint8_t *seen) {
+    for (int i = lock_conflict(of, entry, start, len, mode, 0); i >= 0;
+         i = lock_conflict(of, entry, start, len, mode, i + 1)) {
+        int h = locks[i].of->owner;
+        if (h == me) return 1;
+        if (h < 0 || h >= MAX_THREADS || seen[h] || !waits[h].waiting) continue;
+        seen[h] = 1;
+        const struct lock_wait *w = &waits[h];
+        if (lock_cycle(me, w->of, w->entry, w->start, w->len, w->mode, seen)) return 1;
     }
     return 0;
 }
 
+static void lock_wake_all(void) {
+    for (int t = 0; t < MAX_THREADS; t++)
+        if (waits[t].waiting) thread_unblock(t);
+}
+
+/* Take or convert a lock. The caller has checked there is no conflict. */
+static int lock_apply(struct open_file *of, uint32_t start, uint32_t len, uint32_t mode) {
+    int free_slot = -1;
+    for (int i = 0; i < MAX_FILE_LOCKS; i++) {
+        struct file_lock *l = &locks[i];
+        if (!l->of) { if (free_slot < 0) free_slot = i; continue; }
+        if (l->of == of && l->start == start && l->len == len) {
+            int downgrade = (l->mode == FLOCK_EXCLUSIVE && mode == FLOCK_SHARED);
+            l->mode = mode;
+            if (downgrade) lock_wake_all();
+            return E_OK;
+        }
+    }
+    if (free_slot < 0) return E_NOMEM;
+    locks[free_slot].of    = of;
+    locks[free_slot].entry = of->entry;
+    locks[free_slot].start = start;
+    locks[free_slot].len   = len;
+    locks[free_slot].mode  = mode;
+    return E_OK;
+}
+
+/* Drop this open file's locks that lie wholly inside [start, start+len). A
+   lock that only partly overlaps is left alone: ranges are not split, which is
+   also Serenity's rule, so unlock what was locked. (0, 0) drops them all. */
+static void lock_drop(const struct open_file *of, uint32_t start, uint32_t len) {
+    uint64_t end = len ? (uint64_t)start + len : UINT64_MAX;
+    int any = 0;
+    for (int i = 0; i < MAX_FILE_LOCKS; i++) {
+        struct file_lock *l = &locks[i];
+        if (l->of != of) continue;
+        uint64_t lend = l->len ? (uint64_t)l->start + l->len : UINT64_MAX;
+        if (l->start < start || lend > end) continue;
+        l->of = NULL;
+        any = 1;
+    }
+    if (any) lock_wake_all();
+}
+
+/* Releasing the slot is the whole lifetime rule: its locks go with it, and a
+   doomed file whose last open this was is queued for deletion. It runs however
+   the handle goes - FILE_OP_CLOSE, SYS_HANDLE_CLOSE, or the reaper at exit. */
+static void of_release(struct cap_handle *h) {
+    struct open_file *f = (struct open_file *)h->object;
+    if (!(f >= open_files && f < open_files + MAX_OPEN_FILES)) return;
+    lock_drop(f, 0, 0);
+    f->used = 0;
+    if (f->doomed && !entry_open(f->entry) && graves < MAX_OPEN_FILES)
+        graveyard[graves++] = f->entry;
+}
+
 void sysfile_init(void) {
     for (int i = 0; i < MAX_OPEN_FILES; i++) open_files[i].used = 0;
+    for (int i = 0; i < MAX_FILE_LOCKS; i++) locks[i].of = NULL;
+    for (int i = 0; i < MAX_THREADS; i++) waits[i].waiting = 0;
+    graves = 0;
     handle_set_release(HANDLE_FILE, of_release);
 }
 
@@ -222,10 +367,18 @@ static int      rd_found;
 static struct cxfs_entry rd_entry;
 
 static void rd_cb(const struct cxfs_entry *e) {
+    if (entry_doomed(e->id)) return;                   /* already unlinked */
     if (rd_seen++ == rd_want && !rd_found) {
         rd_entry = *e;
         rd_found = 1;
     }
+}
+
+/* Resolve a path the way a program should see it: an entry unlinked while
+   open is gone, though CXFS still holds it until the last close. */
+static int lookup(const char *path, uint32_t cwd) {
+    int r = cxfs_resolve(path, cwd);
+    return (r >= 0 && entry_doomed((uint32_t)r)) ? -1 : r;
 }
 
 /* ---- the syscall ---------------------------------------------------------- */
@@ -235,6 +388,7 @@ int sys_file_op(const struct file_op_args *ua) {
     struct file_op_args a = *ua;          /* copy in: never re-read user memory */
 
     if (!cxfs_is_mounted()) return E_IO;
+    bury_pending();
 
     uint32_t cwd = thread_current_cwd();
     char path[FILE_PATH_MAX];
@@ -246,10 +400,13 @@ int sys_file_op(const struct file_op_args *ua) {
             if ((rc = copy_path_in(a.path, path, sizeof path)) < 0) return rc;
             if (!(a.flags & (FOPEN_READ | FOPEN_WRITE))) return E_INVAL;
 
-            int id = cxfs_resolve(path, cwd);
+            int id = lookup(path, cwd);
 
             if (id < 0) {
                 if (!(a.flags & FOPEN_CREATE)) return E_NOENT;
+                /* an unlinked file still open elsewhere holds its name until
+                   its last close, as a delete-pending file does on NT */
+                if (cxfs_resolve(path, cwd) >= 0) return E_EXIST;
                 uint32_t parent;
                 char leaf[FILE_NAME_MAX];
                 if ((rc = resolve_parent(path, cwd, &parent, leaf, sizeof leaf)) < 0) return rc;
@@ -287,7 +444,9 @@ int sys_file_op(const struct file_op_args *ua) {
 
         case FILE_OP_CLOSE:
             if (!of_from_handle(a.handle)) return E_BADF;
-            return (thread_handle_close(thread_current_id(), a.handle) == 0) ? E_OK : E_BADF;
+            if (thread_handle_close(thread_current_id(), a.handle) != 0) return E_BADF;
+            bury_pending();               /* the last close of an unlinked file */
+            return E_OK;
 
         case FILE_OP_READ: {
             struct open_file *f = of_from_handle(a.handle);
@@ -370,7 +529,7 @@ int sys_file_op(const struct file_op_args *ua) {
             uint32_t id;
             if (a.op == FILE_OP_STAT) {
                 if ((rc = copy_path_in(a.path, path, sizeof path)) < 0) return rc;
-                int r = cxfs_resolve(path, cwd);
+                int r = lookup(path, cwd);
                 if (r < 0) return E_NOENT;
                 id = (uint32_t)r;
             } else {
@@ -389,7 +548,7 @@ int sys_file_op(const struct file_op_args *ua) {
             if ((rc = copy_path_in(a.path, path, sizeof path)) < 0) return rc;
             if (!user_ptr_writable((uint32_t)a.data, sizeof(struct file_stat))) return E_FAULT;
 
-            int r = cxfs_resolve(path, cwd);
+            int r = lookup(path, cwd);
             if (r < 0) return E_NOENT;
             struct cxfs_entry dir;
             if (cxfs_read_entry((uint32_t)r, &dir) != 0) return E_IO;
@@ -415,22 +574,42 @@ int sys_file_op(const struct file_op_args *ua) {
         case FILE_OP_SYNC:
             return (cxfs_sync() == 0) ? E_OK : E_IO;
 
-        /* Never blocks: a waiting lock needs a wait queue the scheduler does
-           not have per object yet, and E_AGAIN lets the caller choose. A
+        /* Without FLOCK_WAIT a conflict is E_AGAIN at once. With it the thread
+           sleeps until a release, then looks again, as Serenity's FlockBlocker
+           does - unless waiting could never end, which is E_DEADLK. A
            conversion that conflicts leaves the lock already held unchanged. */
         case FILE_OP_LOCK: {
             struct open_file *f = of_from_handle(a.handle);
             if (!f) return E_BADF;
-            if (a.flags != FLOCK_SHARED && a.flags != FLOCK_EXCLUSIVE) return E_INVAL;
-            if (lock_conflicts(f, a.flags)) return E_AGAIN;
-            f->lock = a.flags;
-            return E_OK;
+            uint32_t mode = a.flags & ~(uint32_t)FLOCK_WAIT;
+            if (mode != FLOCK_SHARED && mode != FLOCK_EXCLUSIVE) return E_INVAL;
+            if (a.off < 0) return E_INVAL;
+            uint32_t start = (uint32_t)a.off;
+
+            int me = thread_current_id();
+            while (lock_conflict(f, f->entry, start, a.len, mode, 0) >= 0) {
+                if (!(a.flags & FLOCK_WAIT)) return E_AGAIN;
+                uint8_t seen[MAX_THREADS];
+                memset(seen, 0, sizeof seen);
+                if (lock_cycle(me, f, f->entry, start, a.len, mode, seen)) return E_DEADLK;
+
+                waits[me].of = f;
+                waits[me].entry = f->entry;
+                waits[me].start = start;
+                waits[me].len = a.len;
+                waits[me].mode = mode;
+                waits[me].waiting = 1;
+                thread_wait();
+                waits[me].waiting = 0;
+            }
+            return lock_apply(f, start, a.len, mode);
         }
 
         case FILE_OP_UNLOCK: {
             struct open_file *f = of_from_handle(a.handle);
             if (!f) return E_BADF;
-            f->lock = 0;
+            if (a.off < 0) return E_INVAL;
+            lock_drop(f, (uint32_t)a.off, a.len);
             return E_OK;
         }
 
@@ -445,7 +624,7 @@ int sys_file_op(const struct file_op_args *ua) {
 
         case FILE_OP_UNLINK: {
             if ((rc = copy_path_in(a.path, path, sizeof path)) < 0) return rc;
-            int r = cxfs_resolve(path, cwd);
+            int r = lookup(path, cwd);
             if (r < 0) return E_NOENT;
             if (r == 0) return E_INVAL;                    /* never the root */
 
@@ -464,6 +643,14 @@ int sys_file_op(const struct file_op_args *ua) {
                 return E_INVAL;                            /* must be empty */
             if ((uint32_t)r == cwd) return E_INVAL;         /* not your own cwd */
 
+            /* Still open somewhere: the name goes now, the entry at the last
+               close (see "unlinked while open" above). */
+            if (entry_open((uint32_t)r)) {
+                for (int i = 0; i < MAX_OPEN_FILES; i++)
+                    if (open_files[i].used && open_files[i].entry == (uint32_t)r)
+                        open_files[i].doomed = 1;
+                return E_OK;
+            }
             return (cxfs_delete_entry((uint32_t)r) == 0) ? E_OK : E_IO;
         }
 
@@ -474,7 +661,7 @@ int sys_file_op(const struct file_op_args *ua) {
 
             if (names_self(path)) return E_INVAL;   /* "." / ".." name a directory,
                                                        not an entry within it */
-            int r = cxfs_resolve(path, cwd);
+            int r = lookup(path, cwd);
             if (r < 0) return E_NOENT;
             if (r == 0) return E_INVAL;
 
@@ -491,7 +678,7 @@ int sys_file_op(const struct file_op_args *ua) {
 
         case FILE_OP_CHDIR: {
             if ((rc = copy_path_in(a.path, path, sizeof path)) < 0) return rc;
-            int r = cxfs_resolve(path, cwd);
+            int r = lookup(path, cwd);
             if (r < 0) return E_NOENT;
             struct cxfs_entry e;
             if (cxfs_read_entry((uint32_t)r, &e) != 0) return E_IO;

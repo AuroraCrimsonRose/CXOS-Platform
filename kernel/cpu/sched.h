@@ -179,6 +179,12 @@ void     thread_set_space(int id, uint32_t pd_phys);   /* CR3 to load when this 
 void     thread_block(void);            /* block the current thread (IPC wait) + yield */
 void     thread_unblock(int id);        /* make a blocked thread runnable again */
 
+/* Block until thread_unblock(). Unlike thread_block, safe when nothing else is
+   runnable at the moment: it halts until an interrupt changes that, the way
+   thread_sleep_ms does, instead of returning still blocked. For waits whose
+   waker is another thread that may itself be asleep (FILE_OP_LOCK). */
+void     thread_wait(void);
+
 /* Block the current thread for `ms` milliseconds, then return. Built on
    thread_block: the thread leaves the run queue entirely, so a sleeping
    process costs nothing but its memory - this is not a spin.

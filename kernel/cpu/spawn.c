@@ -17,6 +17,7 @@
 #include "ipc.h"
 #include "caps.h"
 #include "usermode.h"          /* user_ptr_readable / user_ptr_writable */
+#include "sysfile.h"           /* sysfile_entry_doomed */
 #include "addr_space.h"
 #include "paging.h"
 #include "pmm.h"
@@ -382,7 +383,7 @@ int sys_exec_path(const char *upath, const struct spawn_args *ua) {
     /* Resolve against the caller's working directory, so `exec doc.xuex`
        means what it says from wherever the process happens to be. */
     int id = cxfs_resolve(path, thread_current_cwd());
-    if (id < 0) return E_NOENT;
+    if (id < 0 || sysfile_entry_doomed((uint32_t)id)) return E_NOENT;   /* unlinked, still open */
 
     struct cxfs_entry e;
     if (cxfs_read_entry((uint32_t)id, &e) != 0) return E_IO;

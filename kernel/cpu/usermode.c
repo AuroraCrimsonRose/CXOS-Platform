@@ -807,13 +807,51 @@ done:
 }
 
 /* ---- advisory file locks ---------------------------------------------------
- * FILE_OP_LOCK's contract, the parts a regression would break quietly: shared
- * locks coexist and exclusive ones do not; the lock belongs to the open file,
- * so a second open in the same process conflicts like anyone else's; closing a
- * handle releases its lock without an UNLOCK; and the lock is advisory, so
- * writing and unlinking a locked file still work. Last, the old on-disk lock
- * bytes, set to a live owner as a crafted volume could, are ignored.
+ * FILE_OP_LOCK's contract, the parts a regression would break quietly:
+ * - Shared locks coexist and exclusive ones do not. The lock belongs to the
+ *   open file, so a second open in the same process conflicts like anyone's.
+ * - Closing a handle releases its locks without an UNLOCK.
+ * - Byte ranges: disjoint ranges coexist, len 0 runs to the end, and an
+ *   unlock does not split a lock.
+ * - FLOCK_WAIT sleeps until a release wakes it, and refuses with E_DEADLK
+ *   where waiting could never end: on its own lock, and round a cycle with
+ *   another thread.
+ * - Advisory: a locked file can still be written and unlinked, and the old
+ *   on-disk lock bytes, set to a live owner as a crafted volume could, are
+ *   ignored.
+ * - Unlinked while open: the name goes at once, the entry stays (and its id
+ *   is not handed to the next file created) until the last close.
+ *
+ * The helper thread makes its calls from its own part of the test page, so a
+ * preemption between the two threads cannot mix up their arguments.
  */
+#define FL_ARGS  (TEST_CODE_VIRT + 0x800)
+#define FL_PATH  (TEST_CODE_VIRT + 0x900)
+
+static volatile int fl_stage;      /* how far the helper has got */
+static volatile int fl_go;         /* set once its caps are in place */
+static volatile int fl_rc;         /* what its waiting lock returned */
+
+static int fl_call(uint32_t op, int handle, int32_t off, uint32_t len, uint32_t flags) {
+    struct file_op_args *a = (struct file_op_args *)FL_ARGS;
+    a->op = op; a->handle = handle; a->path = (const char *)FL_PATH; a->path2 = 0;
+    a->data = 0; a->len = len; a->off = off; a->flags = flags;
+    return syscall_dispatch(SYS_FILE_OP, FL_ARGS, 0);
+}
+
+/* Holds [10,20), then waits for [0,10), which the test thread holds. */
+static void fl_helper(void) {
+    while (!fl_go) yield();               /* may run before thread_set_caps */
+    int h = fl_call(FILE_OP_OPEN, 0, 0, 0, FOPEN_READ);
+    if (h < 0) { fl_rc = h; fl_stage = -1; return; }
+    if (fl_call(FILE_OP_LOCK, h, 10, 10, FLOCK_EXCLUSIVE) != E_OK) { fl_stage = -2; return; }
+    fl_stage = 1;
+    fl_rc = fl_call(FILE_OP_LOCK, h, 0, 10, FLOCK_EXCLUSIVE | FLOCK_WAIT);
+    fl_stage = 2;
+    fl_call(FILE_OP_CLOSE, h, 0, 0, 0);
+    fl_stage = 3;
+}
+
 int usermode_flock_test(void) {
     if (!cxfs_is_mounted()) return 1;         /* nothing mounted - skip */
 
@@ -825,84 +863,183 @@ int usermode_flock_test(void) {
     thread_set_caps(me, GRANT_DISK);
 
     int ok = 0, step = 0;
-    int a = -1, b = -1, w = -1, id;
+    int a = -1, b = -1, w = -1, id, other, closed, helper;
     struct cxfs_entry e;
     const char *scratch = (cxfs_resolve("/Temp", 0) >= 0) ? "/Temp" : "";
+    fl_stage = 0;
+    fl_go = 0;
     ft_strp(FT_PATH, scratch, "/kt_lock.txt");
 
     a = ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_READ | FOPEN_WRITE | FOPEN_CREATE | FOPEN_TRUNC);
     b = ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_READ);
-    step++;
+    step++;                                                                       /* 1 */
     if (a < 0 || b < 0) goto done;
 
-    /* shared with shared */
+    /* --- whole file: shared with shared, exclusive with nothing --- */
     step++;
     if (ft_call(FILE_OP_LOCK, a, 0, 0, 0, 0, FLOCK_SHARED) != E_OK) goto done;
     step++;
     if (ft_call(FILE_OP_LOCK, b, 0, 0, 0, 0, FLOCK_SHARED) != E_OK) goto done;
-    /* exclusive against a shared lock held by another open file, even ours */
-    step++;
+    step++;                                                                       /* 4 */
     if (ft_call(FILE_OP_LOCK, b, 0, 0, 0, 0, FLOCK_EXCLUSIVE) != E_AGAIN) goto done;
     /* a refused conversion keeps the lock it had: a still conflicts with b */
     step++;
     if (ft_call(FILE_OP_LOCK, a, 0, 0, 0, 0, FLOCK_EXCLUSIVE) != E_AGAIN) goto done;
-    /* once a lets go, b converts to exclusive, and a cannot share */
     step++;
     if (ft_call(FILE_OP_UNLOCK, a, 0, 0, 0, 0, 0) != E_OK) goto done;
     step++;
     if (ft_call(FILE_OP_LOCK, b, 0, 0, 0, 0, FLOCK_EXCLUSIVE) != E_OK) goto done;
-    step++;
+    step++;                                                                       /* 8 */
     if (ft_call(FILE_OP_LOCK, a, 0, 0, 0, 0, FLOCK_SHARED) != E_AGAIN) goto done;
+    /* waiting on a lock this same process holds could never end */
+    step++;
+    if (ft_call(FILE_OP_LOCK, a, 0, 0, 0, 0, FLOCK_SHARED | FLOCK_WAIT) != E_DEADLK) goto done;
 
     /* advisory: a write through another handle is not refused */
-    ft_str(FT_DATA, "locked");
-    step++;
-    if (ft_call(FILE_OP_WRITE, a, 0, FT_DATA, 6, 0, 0) != 6) goto done;
+    ft_str(FT_DATA, "locked..............");
+    step++;                                                                       /* 10 */
+    if (ft_call(FILE_OP_WRITE, a, 0, FT_DATA, 20, 0, 0) != 20) goto done;
 
     /* closing b, with no UNLOCK, releases its lock */
     step++;
     if (ft_call(FILE_OP_CLOSE, b, 0, 0, 0, 0, 0) != E_OK) goto done;
-    int closed = b;
+    closed = b;
     b = -1;
-    step++;
+    step++;                                                                       /* 12 */
     if (ft_call(FILE_OP_LOCK, a, 0, 0, 0, 0, FLOCK_EXCLUSIVE) != E_OK) goto done;
 
     /* bad arguments */
     step++;
     if (ft_call(FILE_OP_LOCK, a, 0, 0, 0, 0, 3) != E_INVAL) goto done;
     step++;
+    if (ft_call(FILE_OP_LOCK, a, 0, 0, 0, -1, FLOCK_SHARED) != E_INVAL) goto done;
+    step++;                                                                       /* 15 */
     if (ft_call(FILE_OP_LOCK, closed, 0, 0, 0, 0, FLOCK_SHARED) != E_BADF) goto done;
-
-    /* the old on-disk lock, owned by a live thread (us): ignored by writes */
     ft_call(FILE_OP_UNLOCK, a, 0, 0, 0, 0, 0);
-    id = cxfs_resolve(ft_join(scratch, "/kt_lock.txt"), 0);
+
+    /* --- byte ranges --- */
+    b = ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_READ);
     step++;
+    if (b < 0) goto done;
+    step++;
+    if (ft_call(FILE_OP_LOCK, a, 0, 0, 10, 0, FLOCK_EXCLUSIVE) != E_OK) goto done;
+    step++;                                                                       /* 18 */
+    if (ft_call(FILE_OP_LOCK, b, 0, 0, 10, 10, FLOCK_EXCLUSIVE) != E_OK) goto done;   /* disjoint */
+    step++;
+    if (ft_call(FILE_OP_LOCK, b, 0, 0, 2, 9, FLOCK_SHARED) != E_AGAIN) goto done;     /* overlaps a */
+    /* an unlock inside a lock does not split it */
+    step++;                                                                       /* 20 */
+    if (ft_call(FILE_OP_UNLOCK, a, 0, 0, 5, 0, 0) != E_OK) goto done;
+    step++;
+    if (ft_call(FILE_OP_LOCK, b, 0, 0, 1, 0, FLOCK_SHARED) != E_AGAIN) goto done;
+    step++;
+    if (ft_call(FILE_OP_UNLOCK, a, 0, 0, 10, 0, 0) != E_OK) goto done;
+    step++;                                                                       /* 23 */
+    if (ft_call(FILE_OP_LOCK, b, 0, 0, 1, 0, FLOCK_SHARED) != E_OK) goto done;
+    /* len 0 runs to the end of the file, past anything written */
+    step++;
+    if (ft_call(FILE_OP_LOCK, a, 0, 0, 0, 100, FLOCK_SHARED) != E_OK) goto done;
+    step++;                                                                       /* 25 */
+    if (ft_call(FILE_OP_LOCK, b, 0, 0, 10, 5000, FLOCK_EXCLUSIVE) != E_AGAIN) goto done;
+    ft_call(FILE_OP_UNLOCK, a, 0, 0, 0, 0, 0);
+    ft_call(FILE_OP_CLOSE, b, 0, 0, 0, 0, 0);
+    b = -1;
+
+    /* --- FLOCK_WAIT sleeps, a deadlock cycle is refused, a release wakes --- */
+    step++;                                                                       /* 26 */
+    if (ft_call(FILE_OP_LOCK, a, 0, 0, 10, 0, FLOCK_EXCLUSIVE) != E_OK) goto done;
+    ft_strp(FL_PATH, scratch, "/kt_lock.txt");
+    fl_rc = 1;
+    helper = thread_create("ktlock", fl_helper);
+    step++;
+    if (helper < 0) goto done;
+    thread_set_caps(helper, GRANT_DISK);
+    fl_go = 1;
+    for (int i = 0; i < 50 && fl_stage == 0; i++) yield();
+    for (int i = 0; i < 10; i++) yield();     /* let it reach the wait */
+    step++;                                                                       /* 28 */
+    if (fl_stage != 1) goto done;             /* it must be asleep, not through */
+    /* the helper holds [10,20) and waits on our [0,10): our wait on [10,20)
+       would close the cycle */
+    step++;
+    if (ft_call(FILE_OP_LOCK, a, 0, 0, 10, 10, FLOCK_EXCLUSIVE | FLOCK_WAIT) != E_DEADLK) goto done;
+    step++;                                                                       /* 30 */
+    if (ft_call(FILE_OP_UNLOCK, a, 0, 0, 10, 0, 0) != E_OK) goto done;
+    for (int i = 0; i < 50 && fl_stage < 3; i++) yield();
+    step++;
+    if (fl_stage != 3 || fl_rc != E_OK) goto done;
+
+    /* --- the old on-disk lock, owned by a live thread (us): ignored --- */
+    id = cxfs_resolve(ft_join(scratch, "/kt_lock.txt"), 0);
+    step++;                                                                       /* 32 */
     if (id < 0 || cxfs_read_entry((uint32_t)id, &e) != 0) goto done;
     e.reserved_9e[0] = 1;                                   /* lock_state */
     *(uint32_t *)&e.reserved_9e[2] = (uint32_t)me;          /* lock_owner_pid */
     if (cxfs_write_entry(&e) != 0) goto done;
-    w = ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_WRITE);
+    w = ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_READ | FOPEN_WRITE);
     step++;
     if (w < 0) goto done;
-    step++;
+    step++;                                                                       /* 34 */
     if (ft_call(FILE_OP_WRITE, w, 0, FT_DATA, 6, 0, 0) != 6) goto done;
 
-    /* advisory: a file with a lock held on it can still be unlinked */
+    /* --- unlinked while open: locked, still unlinkable, entry kept --- */
     step++;
     if (ft_call(FILE_OP_LOCK, a, 0, 0, 0, 0, FLOCK_EXCLUSIVE) != E_OK) goto done;
+    step++;                                                                       /* 36 */
+    if (ft_call(FILE_OP_UNLINK, 0, FT_PATH, 0, 0, 0, 0) != E_OK) goto done;
+    step++;
+    if (ft_call(FILE_OP_STAT, 0, FT_PATH, FT_STAT, 0, 0, 0) != E_NOENT) goto done;
+    step++;                                                                       /* 38 */
+    if (ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_READ) != E_NOENT) goto done;
+    step++;
+    if (ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_WRITE | FOPEN_CREATE) != E_EXIST) goto done;
+    /* the open handles still work */
+    step++;                                                                       /* 40 */
+    if (ft_call(FILE_OP_SEEK, w, 0, 0, 0, 0, FSEEK_SET) != 0) goto done;
+    step++;
+    if (ft_call(FILE_OP_READ, w, 0, FT_DATA, 6, 0, 0) != 6) goto done;
+    /* exec_path resolves for itself, and must not find it either (it would
+       otherwise reach the signature check: E_INVAL, not E_NOENT) */
+    {
+        struct spawn_args *sa = (struct spawn_args *)FT_STAT;
+        sa->image = 0; sa->image_len = 0; sa->name = (const char *)FT_PATH;
+        sa->broker_endpoint = -1; sa->caps = 0; sa->args = 0; sa->args_len = 0;
+        step++;                                                                   /* 42 */
+        if (sys_exec_path((const char *)FT_PATH, sa) != E_NOENT) goto done;
+    }
+    /* and the id is not handed to the next file created */
+    ft_strp(FT_PATH, scratch, "/kt_lock2.txt");
+    other = ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_WRITE | FOPEN_CREATE);
+    step++;                                                                       /* 43 */
+    if (other < 0) goto done;
+    ft_call(FILE_OP_CLOSE, other, 0, 0, 0, 0, 0);
+    step++;
+    if (cxfs_resolve(ft_join(scratch, "/kt_lock2.txt"), 0) == id) goto done;
+    /* the entry goes with the last close, not the first */
     ft_call(FILE_OP_CLOSE, w, 0, 0, 0, 0, 0);
     w = -1;
-    step++;
-    if (ft_call(FILE_OP_UNLINK, 0, FT_PATH, 0, 0, 0, 0) != E_OK) goto done;
+    step++;                                                                       /* 45 */
+    if (cxfs_read_entry((uint32_t)id, &e) != 0 || e.type != CXFS_TYPE_FILE) goto done;
     ft_call(FILE_OP_CLOSE, a, 0, 0, 0, 0, 0);
     a = -1;
+    step++;
+    if (cxfs_read_entry((uint32_t)id, &e) == 0 && e.type != CXFS_TYPE_FREE) goto done;
+    /* and the name is free again */
+    ft_strp(FT_PATH, scratch, "/kt_lock.txt");
+    w = ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_WRITE | FOPEN_CREATE);
+    step++;                                                                       /* 47 */
+    if (w < 0) goto done;
 
     ok = 1;
 
 done:
     if (!ok) klog_u32("KTEST", SEV_ERR, "file lock test failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
     handle_release_all(thread_handle_table(me), CXK_MAX_HANDLES);
-    if ((id = cxfs_resolve(ft_join(scratch, "/kt_lock.txt"), 0)) >= 0) cxfs_delete_entry((uint32_t)id);
+    /* a helper still waiting is woken by the release above; let it finish */
+    for (int i = 0; i < 50 && fl_stage > 0 && fl_stage < 3; i++) yield();
+    ft_call(FILE_OP_SYNC, 0, 0, 0, 0, 0, 0);                /* runs any deferred delete */
+    if ((id = cxfs_resolve(ft_join(scratch, "/kt_lock.txt"), 0))  >= 0) cxfs_delete_entry((uint32_t)id);
+    if ((id = cxfs_resolve(ft_join(scratch, "/kt_lock2.txt"), 0)) >= 0) cxfs_delete_entry((uint32_t)id);
     thread_set_caps(me, save);
     unmap_user_page(TEST_CODE_VIRT, phys);
     return ok;

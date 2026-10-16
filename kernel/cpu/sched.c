@@ -241,6 +241,19 @@ void thread_block(void) {
     yield();   /* yield leaves a BLOCKED thread alone; picks another */
 }
 
+void thread_wait(void) {
+    if (!initialized) return;
+    threads[current].state = THREAD_BLOCKED;
+    for (;;) {
+        yield();
+        if (threads[current].state != THREAD_BLOCKED) break;  /* woken */
+        /* yield found nothing else runnable and stayed: wait for an interrupt
+           (a timer tick that wakes a sleeping lock holder) instead of spinning */
+        __asm__ volatile ("sti; hlt");
+    }
+    threads[current].state = THREAD_RUNNING;
+}
+
 void thread_unblock(int id) {
     if (id >= 0 && id < MAX_THREADS && threads[id].state == THREAD_BLOCKED)
         threads[id].state = THREAD_READY;
