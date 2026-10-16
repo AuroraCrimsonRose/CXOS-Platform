@@ -13,6 +13,12 @@
     "                always be older than the file it is handed, which is the whole",
     "                reason these exist separately from the semvers above.",
     "",
+    "  toolchain   - the external tools the build runs, each with the MINIMUM version",
+    "                it is known to need and the evidence for that floor. `cxk os",
+    "                build` refuses an older tool by name and records the exact",
+    "                versions it ran with in dist/CXK_x86_32/toolchain.json. A tool",
+    "                with no known floor has minimum null: recorded, not enforced.",
+    "",
     "`checks` is what makes this file authoritative rather than decorative: each",
     "entry names a file and a regex whose first capture group MUST equal `version`.",
     "`cxk check-versions` enforces every one, and `cxk os build` runs it as a",
@@ -184,6 +190,44 @@
       "what": "The CXSG signature block: 44-byte header, then the signer's .xkpk verbatim, then the signature.",
       "note": "Carries NO version field, by design: it is described by its sig_algo and hash_algo identifiers instead, which say what to do rather than what generation it is. Recorded here with version 0 and no checks so the set of formats is complete and nobody has to wonder whether one was forgotten.",
       "checks": []
+    }
+  },
+
+  "toolchain": {
+    "clang": {
+      "minimum": "23",
+      "probe": ["--version"],
+      "pattern": "clang version ([0-9]+(?:\\.[0-9]+)*)",
+      "role": "compiles the kernel's C and assembles X's output",
+      "evidence": "Measured against apt.llvm.org, not inferred: for --target=i686-elf, clang 18 through 22 all ignore -fuse-ld=lld (and --ld-path=) and link via gcc, so the build dies around step 100 with `Executable \"gcc\" doesn't exist!`. tools/ci/Dockerfile's LLVM_VERSION must equal this major; ToolchainPinTests holds them together."
+    },
+    "ld.lld": {
+      "minimum": "23",
+      "probe": ["--version"],
+      "pattern": "LLD ([0-9]+(?:\\.[0-9]+)*)",
+      "role": "links the kernel, executive and programs",
+      "evidence": "Pinned to the clang it ships with, because D5 is one LLVM release, not because an older lld is known to fail. Nothing has ever been built with a mismatched pair."
+    },
+    "nasm": {
+      "minimum": null,
+      "probe": ["-v"],
+      "pattern": "NASM version ([0-9]+(?:\\.[0-9]+)*)",
+      "role": "assembles the boot sector and stage 2",
+      "evidence": "No known floor. Builds with 3.02. Recorded, not enforced."
+    },
+    "cmake": {
+      "minimum": "3.19",
+      "probe": ["--version"],
+      "pattern": "cmake version ([0-9]+(?:\\.[0-9]+)*)",
+      "role": "drives the build",
+      "evidence": "tools/cmake/CMakeLists.txt's cmake_minimum_required, which is there for string(JSON) reading this file. ToolchainPinTests holds the two equal."
+    },
+    "ninja": {
+      "minimum": null,
+      "probe": ["--version"],
+      "pattern": "^([0-9]+(?:\\.[0-9]+)*)",
+      "role": "runs it",
+      "evidence": "No known floor. Builds with 1.13.2. Recorded, not enforced."
     }
   }
 }

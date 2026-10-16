@@ -132,6 +132,34 @@ A format version bumps **in the commit that changes the format, on every side of
 it at once.** `XBPT_VERSION` is not the `5` that the imager used to print — that
 was the kernel generation, and it is gone.
 
+### 3.1 The toolchain
+
+A third group, and the only one that is not ours: `versions.json`'s `toolchain`
+names every external tool `cxk os build` runs, the **oldest version of each known
+to work**, and the evidence for that floor. The build reads it as its pre-flight,
+so a tool below its floor is refused by name before CMake is configured, with the
+evidence printed underneath. A floor is never a guess. A tool with no known floor
+has `"minimum": null`, which means it is recorded and not enforced.
+
+| Tool | Minimum | Why |
+|---|---|---|
+| clang | 23 | Measured: 18–22 ignore `-fuse-ld=lld` for `i686-elf` and link through gcc |
+| ld.lld | 23 | One LLVM release with clang (D5), not a known failure |
+| CMake | 3.19 | `cmake_minimum_required`, for `string(JSON …)` |
+| NASM, Ninja | none | No known floor |
+
+The restatements are held to it by `ToolchainPinTests`: the CI image's
+`ARG LLVM_VERSION` must equal clang's major, and `cmake_minimum_required` must
+equal CMake's floor. Raise a floor in `versions.json` and those tests name the
+other places that have to follow.
+
+**Every build records what it ran with** in `dist/CXK_x86_32/toolchain.json`:
+the `cxk` version with its commit, the host, the target, the signing mode, and
+each tool's version banner verbatim, because clang's banner carries the exact
+LLVM commit. It holds no timestamp, machine name or path, so two builds with the
+same tools write the same file and `dist/` stays reproducible
+(`CX_EXTENSION_SYSTEM.md` §9.9). It is the answer to "what built this image".
+
 ## 4. What makes the registry true
 
 Every entry in `versions.json` may carry `checks`: a file and a regex whose first

@@ -4,6 +4,8 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.IO;
+using System.Linq;
+using System.Reflection;
 using System.Threading;
 using CXEX.CLI.Infrastructure;
 using CXEX.Tools;
@@ -20,7 +22,7 @@ namespace CXEX.CLI.Commands;
 ///
 /// The steps are build.bat's, in the same order: toolchain pre-flight, the
 /// source-list and ABI pre-flights, then configure and build. What it adds is a
-/// toolchain probe that names the missing tool, instead of failing a hundred
+/// toolchain probe that names a missing or too-old tool, instead of failing a hundred
 /// lines later inside CMake.
 /// </summary>
 public class OsBuildCommand : Command<OsBuildCommand.Settings>
@@ -85,7 +87,8 @@ public class OsBuildCommand : Command<OsBuildCommand.Settings>
         // compiler it could not identify.
         AnsiConsole.MarkupLine("");
         AnsiConsole.MarkupLine("[bold][[1/5]][/] Toolchain");
-        if (!ProbeToolchain()) return 1;
+        var toolchain = ProbeToolchain(root);
+        if (toolchain is null) return 1;
 
         // ---- [2/5] source list ----
         AnsiConsole.MarkupLine("");
@@ -202,6 +205,8 @@ public class OsBuildCommand : Command<OsBuildCommand.Settings>
             return 1;
         }
 
+        WriteToolchainRecord(root, toolchain, s.Dev ? "development, unsigned" : sign ? $"signed, tools/{keyName}.xksk" : "unsigned");
+
         string packages = Path.Combine(root, "dist", "CXK_x86_32", "packages");
         string image = Path.Combine(root, "dist", "CXK_x86_32", "images", "cxk_disk.img");
 
@@ -224,44 +229,100 @@ public class OsBuildCommand : Command<OsBuildCommand.Settings>
         command.ExecuteAsync(context, settings, ct).GetAwaiter().GetResult();
 
     /// <summary>
-    /// Every external tool the build shells out to, with the argument that makes
-    /// it print its version. nasm is here because the boot sector and stage 2 are
-    /// NASM syntax and stay that way (D5); everything else is LLVM, CMake or Ninja.
+    /// Probes every tool versions.json's <c>toolchain</c> group lists, and refuses
+    /// one that is missing or older than its pinned minimum. The list and the
+    /// floors both come from that file (security §13, engineering §9), so this
+    /// method has no opinion of its own about which clang is new enough.
+    ///
+    /// <para>The floor exists because of a failure that names the wrong thing:
+    /// clang 18-22 build for i686-elf by linking through gcc, and die a hundred
+    /// steps in with "gcc doesn't exist". Refused here, it says "clang 22 is
+    /// older than 23" instead.</para>
     /// </summary>
-    private static readonly (string Exe, string Arg, string Why)[] RequiredTools =
+    private static IReadOnlyList<ToolFinding>? ProbeToolchain(string root)
     {
-        ("clang",  "--version", "compiles the kernel's C and assembles X's output"),
-        ("ld.lld", "--version", "links the kernel, executive and programs"),
-        ("nasm",   "-v",        "assembles the boot sector and stage 2"),
-        ("cmake",  "--version", "drives the build"),
-        ("ninja",  "--version", "runs it"),
-    };
-
-    private static bool ProbeToolchain()
-    {
-        var missing = new List<(string Exe, string Why)>();
-
-        foreach (var (exe, arg, why) in RequiredTools)
+        IReadOnlyList<ToolPin> pins;
+        try
         {
-            string? version = ToolProbe.FirstLine(exe, arg);
-            if (version is null)
-            {
-                AnsiConsole.MarkupLine($"  [red]x[/]  {exe,-7} [red]not found[/]");
-                missing.Add((exe, why));
-            }
-            else
-            {
-                AnsiConsole.MarkupLine($"  [green]ok[/] {exe,-7} [grey]{Markup.Escape(version)}[/]");
-            }
+            pins = ToolchainPolicy.Load(Path.Combine(root, "versions.json"));
+        }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or System.Text.Json.JsonException)
+        {
+            AnsiConsole.MarkupLine($"[red]error:[/] cannot read the toolchain pins: {Markup.Escape(ex.Message)}");
+            return null;
         }
 
-        if (missing.Count == 0) return true;
+        var findings = ToolchainPolicy.Probe(pins);
+        foreach (var f in findings)
+        {
+            string name = f.Pin.Name;
+            if (!f.Found)
+                AnsiConsole.MarkupLine($"  [red]x[/]  {name,-7} [red]not found[/]");
+            else if (f.BelowMinimum)
+                AnsiConsole.MarkupLine($"  [red]x[/]  {name,-7} [red]{Markup.Escape(f.Banner!)}[/]");
+            else
+                AnsiConsole.MarkupLine($"  [green]ok[/] {name,-7} [grey]{Markup.Escape(f.Banner!)}[/]");
+        }
+
+        var missing = findings.Where(f => !f.Found).ToList();
+        var old = findings.Where(f => f.BelowMinimum).ToList();
+        if (missing.Count == 0 && old.Count == 0) return findings;
 
         AnsiConsole.MarkupLine("");
-        AnsiConsole.MarkupLine($"[red]error:[/] {missing.Count} required tool(s) missing from PATH:");
-        foreach (var (exe, why) in missing)
-            AnsiConsole.MarkupLine($"  [red]{exe}[/] - {why}");
-        return false;
+        if (missing.Count > 0)
+        {
+            AnsiConsole.MarkupLine($"[red]error:[/] {missing.Count} required tool(s) missing from PATH:");
+            foreach (var f in missing)
+                AnsiConsole.MarkupLine($"  [red]{f.Pin.Name}[/] - {Markup.Escape(f.Pin.Role)}");
+        }
+        foreach (var f in old)
+        {
+            string found = f.Version is null ? "a version this build cannot read" : f.Version.ToString();
+            AnsiConsole.MarkupLine($"[red]error:[/] {f.Pin.Name} is {Markup.Escape(found)}; the build needs {f.Pin.Minimum} or newer.");
+            AnsiConsole.MarkupLine($"[grey]  {Markup.Escape(f.Pin.Evidence)}[/]");
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Records what the build ran with, beside what it produced (security §13,
+    /// engineering §9). The banners are kept verbatim because they are the
+    /// identity: clang's carries the exact LLVM commit.
+    ///
+    /// <para>Deliberately no timestamp, no machine name and no paths: two builds
+    /// with the same tools must write the same record, or dist/ stops being
+    /// reproducible (CX_EXTENSION_SYSTEM.md §9.9).</para>
+    /// </summary>
+    private static void WriteToolchainRecord(string root, IReadOnlyList<ToolFinding> findings, string signing)
+    {
+        string dir = Path.Combine(root, "dist", "CXK_x86_32");
+        Directory.CreateDirectory(dir);
+
+        string cxk = typeof(OsBuildCommand).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "unknown";
+
+        using var ms = new MemoryStream();
+        using (var w = new System.Text.Json.Utf8JsonWriter(ms, new System.Text.Json.JsonWriterOptions
+        {
+            Indented = true,
+            // Relaxed so the record reads as written: a version's "+commit" would
+            // otherwise come out as +. Nothing here is ever embedded in HTML.
+            Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+        }))
+        {
+            w.WriteStartObject();
+            w.WriteString("cxk", cxk);
+            w.WriteString("host", System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier);
+            w.WriteString("target", "i686-elf");
+            w.WriteString("signing", signing);
+            w.WriteStartObject("tools");
+            foreach (var f in findings)
+                w.WriteString(f.Pin.Name, f.Banner);
+            w.WriteEndObject();
+            w.WriteEndObject();
+        }
+        ms.WriteByte((byte)'\n');
+        File.WriteAllBytes(Path.Combine(dir, "toolchain.json"), ms.ToArray());
     }
 
     /// <summary>
