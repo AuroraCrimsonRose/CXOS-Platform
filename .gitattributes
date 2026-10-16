@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+#
+# Line endings: LF everywhere, in the repository AND in the working tree, on
+# every OS. Everything in the tree reads LF (clang, NASM, CMake, .NET, the
+# CI container's bash), and a working tree that is CRLF on Windows and LF
+# elsewhere made every scripted edit a guess about which one it was facing.
+# This overrides a local core.autocrlf.
+* text=auto eol=lf
+
+# Binary: never touched.
+*.png   binary
+*.ico   binary
+*.img   binary
+*.xkpk  binary
+*.xfnt  binary
+*.xuex  binary
+*.xsex  binary
+*.xoex  binary
+*.xkex  binary
+*.xbex  binary

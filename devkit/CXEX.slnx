@@ -8,10 +8,8 @@
   <Project Path="CXEX.Disk/CXEX.Disk.csproj" Id="5ca63d9c-42ff-4dae-b08c-0a193d5b0635" />
   <Project Path="CXEX.FileSystem/CXEX.FileSystem.csproj" Id="5f7bfc56-58fc-4198-8d5a-049cfe610c8d" />
   <Project Path="CXEX.FileType/CXEX.FileType.csproj" Id="f7d250b1-1a90-475a-b6e0-8ca54230cd12" />
-  <Project Path="CXEX.Font/CXEX.Font.csproj" Id="5ba18e15-21b3-4fd7-a6a2-12e920c3f1da" />
   <Project Path="CXEX.Lang/CXEX.Lang.csproj" Id="63810b49-407d-440f-8919-5fa3ca74bbc2" />
   <Project Path="CXEX.Tests/CXEX.Tests.csproj" />
-  <Project Path="CXEX.Text/CXEX.Text.csproj" Id="9a5e5f88-5698-479a-a023-0535228d3612" />
   <Project Path="CXEX.Tools/CXEX.Tools.csproj" Id="10fd83c0-7d3c-4d35-9f63-fe7209bc2c33" />
   <Project Path="CXEX.Uefi/CXEX.Uefi.csproj" />
 </Solution>

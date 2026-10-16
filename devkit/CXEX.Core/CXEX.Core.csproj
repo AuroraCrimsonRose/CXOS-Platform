@@ -7,11 +7,6 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Nullable>enable</Nullable>
-    <ApplicationIcon>XFILE.ico</ApplicationIcon>
   </PropertyGroup>
-
-  <ItemGroup>
-    <Content Include="XFILE.ico" />
-  </ItemGroup>
 
 </Project>

@@ -46,8 +46,10 @@ These are the rules the repository actually enforces, most of them by a check
 that fails the build, not by convention. The ones that most often catch people
 out:
 
-**Branches.** `x86_32_DEV` is master; work goes there. `x86_32_RELEASE` is
-releases only, by PR. Don't create per-feature branches unless asked.
+**Branches.** `x86_64-DEV` is the default branch; work goes there.
+`x86_64-RELEASE` is releases only, by PR. `x86_32_DEV` and `x86_32_RELEASE` are
+the retired x86-32 line, kept as a reference. Don't create per-feature branches
+unless asked.
 
 **Never commit key material.** `*.xksk`, `*.xusk`, `boot/uefi/sbkeys/`, `*.pfx`,
 `*.pem`, `*.cer`, `*_VARS.fd`, `*.signed.efi`. Only `tools/kernel.xkpk`, the

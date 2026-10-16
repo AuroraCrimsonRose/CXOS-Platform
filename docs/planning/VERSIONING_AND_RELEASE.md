@@ -213,7 +213,7 @@ Each has been verified to fire.
 1. Decide the new version in `versions.json`. That is the only file a human edits
    for a version.
 2. `cxk check-versions` — or just `cxk os build`, which runs it.
-3. Commit, push to `x86_32_DEV`.
+3. Commit, push to `x86_64-DEV`.
 4. Tag `v<CXOS version>` and push the tag. For the VSIX alone, `vsix-v<version>`.
 5. Build the assets and attach them (below). This step is manual. The artifact
    names are fixed and deliberate, so when Aurora's pipeline takes the step over

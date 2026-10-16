@@ -23,15 +23,14 @@ The two things most people come looking for:
 | `CXEX.CLI` | 3,149 | The `cxk` command-line toolchain |
 | `CXEX.Uefi` | 1,019 | UEFI Secure Boot — EFI variable stores, Authenticode PE signing |
 | `CXEX.FileSystem` | 582 | CXFS, host side (format, read, write, browse) |
-| `CXEX.Build` | 551 | CXEX packaging — ELF parsing, layout, writing |
+| `CXEX.Build` | 551 | CXEX packaging — ELF parsing, layout, writing; console fonts (BDF to XFNT) |
 | `CXEX.FileType` | 369 | Format/magic registry and identification |
 | `CXEX.Disk` | 301 | Disk images, MBR / GPT / XBPT |
 | `CXEX.Crypto` | 299 | RSA + SHA-256 keygen and signing |
-| `CXEX.SDK` | 120 | SDK surface (early) |
 | `CXEX.Core` | 102 | Shared primitives |
-| `CXEX.Tests` | — | **Planned:** the xUnit test project (see [Tests](#tests)) |
+| `CXEX.Tests` | — | The xUnit test project (see [Tests](#tests)) |
+| `CXEX.Tools` | — | External tool runners: clang, NASM, CMake, QEMU |
 
-**Scaffolded but empty** — these have project files and no source yet: `CXEX.Font`, `CXEX.Text`, `CXEX.Tools`. (The file-type icons that used to sit in `CXEX.ICO` moved to `assets/icons/filetypes/`, which was deleted 2026-10-02 — they are to be redrawn.) They are placeholders for planned work (see the design doc §5), not missing code. `CXEX.Tools` in particular is where the process-tool wrappers are *intended* to move so the CLI and Studio share one toolchain driver; today those wrappers still live in `CXEX.CLI/Wrappers`.
 
 ---
 

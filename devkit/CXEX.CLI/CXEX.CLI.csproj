@@ -7,7 +7,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <ApplicationIcon>XFILE.ico</ApplicationIcon>
+    <ApplicationIcon>../../assets/branding/XFILE.ico</ApplicationIcon>
     <AssemblyName>cxk</AssemblyName>
 
     <!--
@@ -33,7 +33,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Content Include="XFILE.ico" />
   </ItemGroup>
 
   <ItemGroup>
@@ -53,9 +52,7 @@
     <ProjectReference Include="..\CXEX.Disk\CXEX.Disk.csproj" />
     <ProjectReference Include="..\CXEX.FileSystem\CXEX.FileSystem.csproj" />
     <ProjectReference Include="..\CXEX.FileType\CXEX.FileType.csproj" />
-    <ProjectReference Include="..\CXEX.Font\CXEX.Font.csproj" />
     <ProjectReference Include="..\CXEX.Lang\CXEX.Lang.csproj" />
-    <ProjectReference Include="..\CXEX.Text\CXEX.Text.csproj" />
     <ProjectReference Include="..\CXEX.Tools\CXEX.Tools.csproj" />
     <ProjectReference Include="..\CXEX.Uefi\CXEX.Uefi.csproj" />
   </ItemGroup>

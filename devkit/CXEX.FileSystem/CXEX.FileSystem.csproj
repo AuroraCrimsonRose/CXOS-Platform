@@ -6,12 +6,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <ApplicationIcon>XFILE.ico</ApplicationIcon>
   </PropertyGroup>
-
-  <ItemGroup>
-    <Content Include="XFILE.ico" />
-  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\CXEX.FileType\CXEX.FileType.csproj" />

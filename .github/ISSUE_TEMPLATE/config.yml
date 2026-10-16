@@ -6,8 +6,8 @@ contact_links:
     url: https://github.com/AuroraCrimsonRose/CXOS-Platform/security/advisories/new
     about: Opens a private advisory visible only to you and the maintainer. Never open a public issue for a vulnerability.
   - name: What counts as a vulnerability
-    url: https://github.com/AuroraCrimsonRose/CXOS-Platform/blob/x86_32_DEV/SECURITY.md
+    url: https://github.com/AuroraCrimsonRose/CXOS-Platform/blob/x86_64-DEV/SECURITY.md
     about: The boundaries CXOS actually claims, and the things that are documented behaviour rather than bugs.
   - name: Contributing, and who may
-    url: https://github.com/AuroraCrimsonRose/CXOS-Platform/blob/x86_32_DEV/CONTRIBUTING.md
+    url: https://github.com/AuroraCrimsonRose/CXOS-Platform/blob/x86_64-DEV/CONTRIBUTING.md
     about: CXOS is not open source. Source access needs written authorisation.
