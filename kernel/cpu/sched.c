@@ -180,9 +180,10 @@ static int thread_create_in(const char *name, void (*entry)(void), int held) {
     threads[slot].user_stack_base = 0;
     threads[slot].u_saved_esp   = 0;
     threads[slot].u_saved_flags = 0;
-    /* kstack_top stays 0 for now: cooperative ring-3 uses the single dedicated
-       TSS stack (set in gdt_init), which is correct when only one process is in
-       ring 3 at a time. Per-process esp0 is wired in step 2b (ring-3 preemption). */
+    /* kstack_top 0: a kernel-only thread, which never enters ring 3 and so runs
+       on the dedicated gdt_init stack. A thread that WILL enter ring 3 is made
+       with thread_create_process, which gives it its own esp0 before it can be
+       scheduled (PROCESS_MODEL.md §8). */
     threads[slot].kstack_top  = 0;
     threads[slot].pd_phys     = 0;     /* kernel space until assigned (spawn) */
     threads[slot].kstack_base = 0;
@@ -200,13 +201,21 @@ static int next_runnable(void) {
     return current;   /* nobody else: keep running current */
 }
 
-/* Point the TSS ring-0 stack at the current thread's kernel stack, so a
+/* Point the TSS ring-0 stack at the current thread's esp0 stack, so a
    syscall/interrupt arriving while THIS process is in ring 3 lands on its own
-   kernel stack (not another process's). Kernel-only threads have kstack_top 0
-   and keep the default dedicated TSS stack. Called on every context switch. */
+   stack, never another process's. Called on every context switch.
+
+   THE esp0 INVARIANT (PROCESS_MODEL.md §8): after every switch, tss.esp0 is
+   the running thread's kstack_top, or the dedicated gdt_init stack when it has
+   none. A kernel-only thread used to leave tss.esp0 untouched - still pointing
+   at the previous process's esp0 stack, despite this comment saying otherwise.
+   Harmless only while no kernel-only thread enters ring 3, which nothing
+   checked: one that did would have pushed its frames onto a live process's
+   saved interrupt frame. The self-test "esp0 follows the running thread"
+   holds it. */
 static void update_tss_esp0(void) {
     uint32_t top = threads[current].kstack_top;
-    if (top) tss_set_kernel_stack(top);
+    tss_set_kernel_stack(top ? top : tss_default_kernel_stack());
 }
 
 /* Load the current thread's address space into CR3. Threads with pd_phys 0

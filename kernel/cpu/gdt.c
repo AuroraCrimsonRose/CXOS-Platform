@@ -79,6 +79,14 @@ void tss_set_kernel_stack(uint32_t esp0) {
     tss.esp0 = esp0;
 }
 
+uint32_t tss_default_kernel_stack(void) {
+    return (uint32_t)(tss_kernel_stack + TSS_STACK_SIZE);
+}
+
+uint32_t tss_current_esp0(void) {
+    return tss.esp0;
+}
+
 void tss_faulted_state(struct tss_fault *out) {
     out->eip    = tss.eip;
     out->esp    = tss.esp;
@@ -133,7 +141,7 @@ void gdt_init(void) {
        iomap_base past the limit = no I/O bitmap. */
     for (unsigned i = 0; i < sizeof(tss); i++) ((uint8_t *)&tss)[i] = 0;
     tss.ss0  = KERNEL_DATA_SEL;          /* 0x10 */
-    tss.esp0 = (uint32_t)(tss_kernel_stack + TSS_STACK_SIZE);  /* dedicated stack top */
+    tss.esp0 = tss_default_kernel_stack();  /* dedicated stack top */
     tss.iomap_base = sizeof(struct tss_entry);
 
     gdtr.limit = sizeof(gdt) - 1;

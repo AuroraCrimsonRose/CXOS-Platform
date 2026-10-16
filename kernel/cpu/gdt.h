@@ -33,6 +33,13 @@ void gdt_init(void);
    (updates tss.esp0; call before entering user mode or per context switch.) */
 void tss_set_kernel_stack(uint32_t esp0);
 
+/* The dedicated esp0 stack gdt_init installs: the one a thread with no esp0
+   of its own (a kernel-only thread) gets on every switch. */
+uint32_t tss_default_kernel_stack(void);
+
+/* tss.esp0 as it stands now. For the esp0 invariant self-test. */
+uint32_t tss_current_esp0(void);
+
 /* Where the code that double faulted was. The task switch into the
    double-fault task saves the outgoing registers into the main TSS; this reads
    them back. Meaningful only inside double_fault_task. */

@@ -22,6 +22,7 @@
 #include "logging.h"
 #include "color.h"
 #include "sched.h"
+#include "gdt.h"
 #include "ipc.h"
 #include "usermode.h"
 #include "uid.h"
@@ -364,6 +365,29 @@ static int test_sched_preempt(void) {
     sched_preempt_disable();
     /* both spinners completed only because the timer preempted them */
     return (pre_a != 0) && (pre_b != 0) && (sched_active_count() == 1);
+}
+
+/* ---- the esp0 invariant (PROCESS_MODEL.md §8) ----
+ * After every switch tss.esp0 is the running thread's own esp0 stack, or the
+ * dedicated gdt_init stack when it has none. Checked from both sides: a
+ * kernel-only thread must see the dedicated stack, not the previous thread's,
+ * and the boot thread must get its own back. Before 2026-10-16 a kernel-only
+ * thread inherited whatever esp0 the last process left behind. */
+static volatile uint32_t esp0_seen_by_kthread = 0;
+static void esp0_kthread(void) { esp0_seen_by_kthread = tss_current_esp0(); }
+
+static int test_esp0_follows_thread(void) {
+    uint32_t mine = thread_current_kstack_top();
+    /* Vacuous unless the two stacks differ: kmain gives thread 0 its own esp0. */
+    if (mine == 0 || mine == tss_default_kernel_stack()) return 0;
+
+    esp0_seen_by_kthread = 0;
+    if (thread_create("esp0_k", esp0_kthread) < 0) return 0;
+    for (int i = 0; i < 8 && sched_active_count() > 1; i++) yield();
+
+    return esp0_seen_by_kthread == tss_default_kernel_stack()
+        && tss_current_esp0() == mine
+        && sched_active_count() == 1;
 }
 
 /* ---- ring 3: single round-trip (3a) ---- */
@@ -2207,6 +2231,7 @@ void ktest_run(void) {
     total++; passed += report("heap kmalloc/kfree",               test_heap());
     total++; passed += report("scheduler (cooperative)",          test_sched_coop());
     total++; passed += report("scheduler (preemptive)",           test_sched_preempt());
+    total++; passed += report("esp0 follows the running thread",  test_esp0_follows_thread());
     total++; passed += report("ring 3 single round-trip",         test_ring3_single());
     total++; passed += report("ring 3 processes (coop+preempt)",  test_ring3_processes());
     total++; passed += report("identity (user never UID 0)",      test_identity());

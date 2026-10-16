@@ -35,6 +35,7 @@ interfaces and are not transitional.
 | The pre-merge layout fallbacks: `CheckCommand.ResolveRoot`'s "CMakeLists at the root" candidate, and the `CXK/os` candidates in `HostBuild.FindOsDir`, `LangRunTests` and `XDataDiffTests` | Kept for "a tree that still nests it". After D6 there is one repository, and nothing nests it. |
 | Comments citing `mkcxes.py`, `signcxex.py`, `makekeys.py` and `mkdisk.py` as the reference for a layout | The scripts were deleted under D1/D2. Nine sites still named them as the authority for byte layouts. They now name `CXEXWriter`, `CXSigner`, `cxk keygen` and `XBPTImageWriter`. "Replaces X.py" comments stay, because those are history, not authority. |
 | `kernel.asm`'s "v5" | The internal generation counter `versions.json` retired. |
+| `sched.c`'s "per-process esp0 is wired in step 2b" | Step 2b was done long ago. `thread_create_process` gives every process its own esp0. The comment sat in `thread_create`, which builds kernel-only threads, and read as if esp0 were still to come. Rewritten, and the fallback it described made true (`PROCESS_MODEL.md` §8). |
 | `build.sh`'s "legacy Python suites" | They have been the C# Differential suites since D1. |
 
 ## Planned replacement
@@ -42,7 +43,6 @@ interfaces and are not transitional.
 | Where | Today | Replaced by | Trigger |
 |---|---|---|---|
 | `devkit/CXEX.Lang` | The C# X compiler, which is the oracle `os/xc` is tested against | `os/xc`, self-hosted | `os/xc` matches it on every differential suite and the self-hosting fixed point holds, which is already true. Retiring the oracle is a decision, not a test result. |
-| `kernel/cpu/sched.c` `kstack_top = 0`, `thread_set_kstack_top` (no caller) | One dedicated TSS stack for every ring-3 entry | Per-process `esp0` | Before two processes can be in ring 3 at once. The comment says "step 2b", and `fpu.c` says preemptible ring-3 has landed. The two cannot both be current. Settled in `PROCESS_MODEL.md` (Phase 3). |
 | `kernel/cpu/fpu.c` | FP and SSE left disabled | `fxsave`/`fxrstor` or lazy switching in `context_switch` | Before anything enables FP. The file explains why enabling it today would corrupt state. |
 | `kernel/drivers/input/keyboard.c` `kwaiter` | One blocked reader | A wait queue | A second process that reads the keyboard |
 | `kernel/drivers/net/netif.h` | Static IP configuration | DHCP | A network that is not QEMU's user-mode NAT |

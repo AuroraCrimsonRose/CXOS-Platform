@@ -18,8 +18,10 @@ rediscover.
 > **What remains** (see §12): preemption is implemented but **not enabled in the
 > boot path** (`sched_preempt_enable()` is called only from `ktest.c`), because
 > system-wide preemption additionally needs console/framebuffer arbitration and
-> preemption-safe drivers. And programs are still compiled into the kernel image
-> rather than loaded from disk.
+> preemption-safe drivers (§5.1 says exactly which mode runs when). Programs
+> load from disk now (`SYS_EXEC_PATH`, and the executive itself comes from
+> `/System/Boot.xoex`), but the shell is still compiled into the executive
+> (`os/executive/app_image.h`).
 
 ---
 
@@ -146,6 +148,48 @@ user/kernel flag).
   stack, user stack, and esp0 stack, then marks the slot reusable. This is what
   makes process creation/teardown leak-free.
 
+### 5.1 Scheduler modes
+
+The kernel engineering review (§3) asks for the scheduler's lifecycle to be
+explicit, rather than inferred from several flags. These are the stages, and
+where CXK stands on each:
+
+| Stage | State | What makes it so |
+|---|---|---|
+| **Boot, one thread** | Before `sched_init` | Only thread 0 exists. `yield`, `thread_block` (and so `thread_sleep_ms`) and `sched_tick` all return at once (`initialized == 0`). |
+| **Cooperative kernel threads** | **Live, always** | A switch happens only at `yield`, `thread_block`, `thread_sleep_ms` and `thread_exit`. |
+| **Validated preemption** | **Self-tests only** | `ktest` turns it on around two tests (quantum 5 ticks) and off again. Nothing else calls `sched_preempt_enable`. |
+| **Preemptive single-CPU user execution** | **Not enabled** | Ring-3 processes run today, several at once, but they switch at the points above. A process blocks in a syscall (IPC, input, sleep) or exits; it is never preempted mid-instruction outside the self-tests. Waits on §12 item 2. |
+| **Concurrent user threads** | Not built | One thread per process. Phase 4 of the hardening plan waits on this. |
+| **SMP** | Not built | One CPU. `apic_init` brings up the BSP's local APIC only. |
+
+The mode lives in **one variable**, `preempt_on` in `sched.c`. `initialized`
+gates everything before `sched_init`, and `in_switch` is a reentrancy guard, not
+a mode. So "which mode is the system in" has one answer, and there is nothing to
+infer.
+
+**What is legal in each mode:**
+
+| Call | Before `sched_init` | Cooperative | Preemptive |
+|---|---|---|---|
+| `yield`, `thread_block`, `thread_sleep_ms` | no-op | yes | yes |
+| `thread_create`, `thread_create_process` + `thread_start` | no | yes | yes; the HELD state exists for this (§8) |
+| `sched_preempt_enable` | no | yes, from thread context | — |
+| `sched_tick` | IRQ path only, returns at once | IRQ path only, returns at once | IRQ path only, **before** EOI |
+| `sched_preempt_point` | no-op | no-op | IRQ path only, **after** EOI (§7) |
+| Driver code touching the console or framebuffer | yes | yes | **no**: not preemption-safe, which is the reason for the row above |
+
+**What changes at each step up:**
+- **Cooperative to preemptive.** Every invariant that was true "because nobody
+  else runs until I yield" stops being true. That is the console, the
+  framebuffer, and any driver state touched outside an IRQ.
+- **Preemptive to concurrent user threads.** The esp0 invariant (§8) becomes
+  per *thread* instead of per process. The FPU needs saving on switch
+  (`fpu.c` explains why it is off today). The IPC and `SYS_SPAWN` TOCTOU
+  windows in the hardening plan's Phase 4 become reachable.
+- **To SMP.** `current`, `need_resched` and the run queue become per-CPU, and
+  every "interrupts off, so nothing else runs" section needs a lock instead.
+
 ---
 
 ## 6. Per-Process Address Spaces (checkpoint 3b — complete)
@@ -223,9 +267,37 @@ Combining ring 3 with preemption requires per-process kernel stacks for the
   at the *currently scheduled* process's esp0 stack. Without this, a syscall or
   interrupt taken by process B while A is still mid-ring-3 would land on the
   wrong stack and corrupt state.
-- Kernel-only threads leave `kstack_top` at 0; for them `update_tss_esp0` is a
-  no-op and the single dedicated TSS stack set in `gdt_init` is used (this also
-  serves the non-scheduled `usermode_test` path).
+- Kernel-only threads leave `kstack_top` at 0, and for them `update_tss_esp0`
+  installs the single dedicated TSS stack from `gdt_init`.
+
+> **The esp0 invariant.** After every context switch, `TSS.esp0` is the running
+> thread's own esp0 stack (`kstack_top`), or the dedicated `gdt_init` stack when
+> it has none. A thread enters ring 3 **only** if it has its own:
+>
+>     current ring-3 thread -> its own esp0 stack -> its own saved kernel context
+>
+> Who establishes it:
+> - `thread_create_process` allocates the esp0 stack while the thread is still
+>   HELD, before it can be scheduled. A process thread therefore never runs
+>   without one, even with preemption on.
+> - `kmain` gives thread 0 an esp0 stack right after `sched_init`, because the
+>   self-tests enter ring 3 from thread 0.
+> - `update_tss_esp0` re-establishes it on every switch, on all three switch
+>   paths (`yield`, `thread_exit`, `sched_preempt_point`).
+>
+> **Found while writing this down (2026-10-16).** The bullet above used to say
+> that kernel-only threads get the dedicated stack. They did not:
+> `update_tss_esp0` skipped the write when `kstack_top` was 0, so a kernel thread
+> inherited the **previous process's** esp0 stack. Nothing broke, because no
+> kernel-only thread enters ring 3 and ring-0 interrupts never consult the TSS.
+> But the documented fallback was false, and a kernel thread that did drop to
+> ring 3 would have pushed its interrupt frames onto a live process's saved
+> frame. Fixed, and held by the self-test "esp0 follows the running thread":
+> reverting the fix fails exactly that test.
+>
+> When concurrent user threads arrive, the unit of the invariant changes from
+> process to thread. That is the only change: the per-thread `kstack_top` field
+> it needs is already there.
 
 Trace of a preemption during ring 3:
 
@@ -329,17 +401,13 @@ records what turning it on permanently still needs.
 
 Remaining, in the order they unblock each other:
 
-1. **Program loading from disk.** Running user code read from CXFS rather than
-   copied from a blob compiled into the kernel image. Today the entire userland
-   is one embedded array (`os/executive/app_image.h`) holding a single image, and
-   `spawn` takes an in-memory image rather than a path — so the shell and the GUI
-   are statically linked into *one* binary and cannot launch separate application
-   files. The kernel side already exists: `cxk_launch_executive(path)` reads a
-   CXEX from CXFS and hands it to `cxex_exec`, which verifies its signature. What
-   is missing is the syscall exposing it (`docs/kernel/CX_ABI.md` §7.10) and filesystem
-   access from ring 3. **This is the top priority**: it is what makes an
-   application ecosystem possible at all, and because it routes through
-   `cxex_exec`, loading apps from disk inherits signature verification for free.
+1. **Program loading from disk. Mostly done.** `SYS_EXEC_PATH` runs a CXEX
+   straight from CXFS through `cxex_exec`, so a program loaded from disk gets
+   signature verification for free, and ring 3 has file access through
+   `SYS_FILE_OP`. The executive itself comes from `/System/Boot.xoex`. **What
+   remains:** the shell is still compiled into the executive as an embedded
+   array (`os/executive/app_image.h`), rather than staged as its own file and
+   run by path.
 
 2. **Display and console arbitration.** Preemption is already proven (§10); what
    it lacks is drivers that tolerate it. With two ring-3 processes runnable, both
@@ -354,3 +422,50 @@ Remaining, in the order they unblock each other:
 4. **CP4 hardening** (`docs/kernel/CX_ABI.md` §11): IPC lifecycle edge cases — a caller
    dying mid-call, an executive dying with a caller blocked — handle cleanup on
    exit, and message-bound fuzzing.
+---
+
+## 13. Initialization Order
+
+Boot ordering is a dependency graph, not a list that happens to work (kernel
+engineering review §11). This is `kmain` as it stands, with the edge that forces
+each step. An arrow means "must be up before".
+
+```text
+serial ──> console ──────────────────────────────> (every klog after this)
+gdt (+TSS, dedicated esp0) ──> idt
+pmm ──> paging ──> addr_space ──> heap ──> kstack ──> [move kmain off the .bss boot stack]
+                                                         │
+             sched_init ──> thread_alloc_kstack(0) ──> timer ──> sti
+                                                         │
+                       keyboard, mouse ──> usermode_init (syscall gate, ring-3 fault handler)
+                                                         │
+pci ──> acpi ──> apic ──> net, ata, ahci ──> usb ──> mount_cxfs ──> install / extra volumes
+                                                         │
+                                  kconfig_load ──> ktest_run ──> executive (/System/Boot.xoex)
+```
+
+The edges that are not obvious, each recorded at its call site in `kmain.c`:
+
+| Edge | Why |
+|---|---|
+| serial before console | The first console line is already mirrored to serial, so a crash in console bring-up is still visible. |
+| kstack before any second address space | `kstack_init` creates the page tables for the guarded-stack region while the kernel space is the only one. Every later space then copies them as part of the shared kernel half. Created afterwards, each would have to be propagated into every live space. |
+| `thread_alloc_kstack(0)` right after `sched_init` | The self-tests enter ring 3 from thread 0, and the esp0 invariant (§8) needs it to have its own stack first. |
+| acpi before apic | The MADT is the only description of where the APICs are. |
+| apic before any device driver | A device cannot be given an MSI vector until the local APIC that receives it is running. |
+| pci before ahci, net and usb | They find their controllers by enumeration. |
+| ata and ahci before usb | `mount_cxfs` treats disk 0 as the boot disk. USB first once let a flash drive take index 0, and the real boot disk was reformatted. |
+| kconfig before ktest and the executive | Every thread is created under the configured limits. |
+| ktest before the executive | The self-tests create and reap their own ring-3 threads. They finish before anything else is scheduled. |
+
+**Failing cleanly when called too early.** The review asks for this, and it
+is uneven today:
+- **Guarded explicitly:** the scheduler (`initialized`: `yield`,
+  `thread_block` and `sched_tick` return at once), the APIC (`apic_up`,
+  `lapic_up`), and `netif` (`ready`).
+- **Fail cleanly by construction:** the PMM (an empty bitmap finds no free
+  frame and returns 0) and CXFS (every entry point goes through `vol_select`,
+  which refuses with no volume mounted).
+- **Order only:** the heap and paging. `kmalloc` grows the heap through
+  `pmm_alloc_pages` and `paging_map_kernel` without checking that either is up.
+  Nothing calls it that early, and nothing would say so if something did.
