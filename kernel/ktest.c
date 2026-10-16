@@ -27,6 +27,7 @@
 #include "object/htab.h"
 #include "usermode.h"
 #include "sysrec.h"
+#include "memman/ocache.h"
 #include "uid.h"
 #include "disk.h"
 #include "cxfs.h"
@@ -74,6 +75,36 @@ static int report(const char *name, int ok) {
 static int ep_refs(struct endpoint *ep)    { return (int)atomic_load(&ep->hdr.refs); }
 static int ep_handles(struct endpoint *ep) { return (int)atomic_load(&ep->hdr.handles); }
 
+/* ---- object caches on real pages (memman/ocache.h) ----
+ * The host tests prove the allocator's logic; this proves its pages. A slab
+ * is mapped in the window when it is made, and when its last object goes its
+ * frames go back to the page allocator and the address stops being mapped,
+ * so a stale pointer faults rather than reading what was there. */
+static int test_ocache_pages(void) {
+    static struct ocache c;
+    if (ocache_init(&c, "ktest", 1000) != 0) return 0;
+    if (c.pages != 1 || c.per_slab != 4) return 0;
+
+    uint32_t free0 = pmm_free_count();
+    void *o[9];
+    for (int i = 0; i < 9; i++) {
+        o[i] = ocache_alloc(&c);
+        uint32_t a = (uint32_t)o[i];
+        if (!o[i]) return 0;
+        if (a < OCACHE_WINDOW_BASE || a >= OCACHE_WINDOW_BASE + OCACHE_SLOTS * OCACHE_SPAN) return 0;
+        if (paging_get_phys(a) == 0) return 0;
+    }
+    if (ocache_slabs(&c) != 3) return 0;
+    if (free0 - pmm_free_count() != 3 * c.pages) return 0;
+
+    uint32_t first = (uint32_t)o[0] & ~0xFFFu;
+    for (int i = 0; i < 9; i++) ocache_free(&c, o[i]);
+    if (ocache_slabs(&c) != 0 || ocache_live(&c) != 0) return 0;
+    if (pmm_free_count() != free0) return 0;
+    if (paging_get_phys(first) != 0) return 0;
+    return 1;
+}
+
 static int test_ipc_endpoint_lifetime(void) {
     int me       = thread_current_id();
     struct htab *t = thread_htab(me);
@@ -90,6 +121,7 @@ static int test_ipc_endpoint_lifetime(void) {
     struct endpoint *ep = ep_from_handle(h, HRIGHT_RECV, NULL);
     /* the handle's reference plus this lookup's */
     if (!ep || ep_refs(ep) != 2 || ep_handles(ep) != 1 || !ep->active) return 0;
+    if (!ep_is_cached(ep)) { ep_put(ep); return 0; }   /* from its cache, not the heap */
     ep_put(ep);
 
     if (htab_close(t, h) != 0) return 0;
@@ -121,7 +153,7 @@ static int test_ipc_endpoint_lifetime(void) {
     if (info.parent != grant || info.grant == grant || info.rights != HRIGHT_SEND) return 0;
 
     if (htab_close(t, h) != 0) return 0;
-    if (!ep->in_use || !ep->active) return 0;         /* must still be alive */
+    if (!ep_is_cached(ep) || !ep->active) return 0;   /* must still be alive */
     if (ep_refs(ep) != 1 || ep_handles(ep) != 1) return 0;
     if (ep_in_use_count() != baseline + 1) return 0;
 
@@ -139,7 +171,7 @@ static int test_ipc_endpoint_lifetime(void) {
     /* 5. the last handle frees it, and the stale handle is a dead name. */
     if (htab_close(t, h2) != 0) return 0;
     if (ep_in_use_count() != baseline) return 0;
-    if (ep->in_use || ep->active) return 0;
+    if (ep_is_cached(ep)) return 0;                   /* back in its cache; not read, it may be unmapped */
     if (ep_from_handle(h2, HRIGHT_SEND, NULL) != NULL) return 0;
     if (kobj_live(KOBJ_ENDPOINT) != live) return 0;
 
@@ -2344,6 +2376,7 @@ void ktest_run(void) {
     total++; passed += report("file syscalls (SYS_FILE_OP)",       usermode_file_test());
     total++; passed += report("advisory locks follow the open file", usermode_flock_test());
     total++; passed += report("ipc endpoints refcounted + reclaimed", test_ipc_endpoint_lifetime());
+    total++; passed += report("object caches map and return pages", test_ocache_pages());
     total++; passed += report("user copies validated at the copy",  test_user_copy_validation());
     total++; passed += report("user copy faults are recoverable",   test_user_copy_fault_recovery());
     total++; passed += report("CR0.WP: kernel obeys read-only",     test_cr0_write_protect());

@@ -7,6 +7,7 @@
 #include "heap.h"
 #include "paging.h"
 #include "pmm.h"
+#include "memman/ocache.h"   /* OCACHE_WINDOW_BASE: where the heap must stop */
 
 /* Each block (free or allocated) is preceded by this header. The heap is a
    singly-linked list walked in address order via `next`. */
@@ -38,6 +39,9 @@ static uint32_t heap_virt_next = HEAP_VIRT_BASE;   /* next free virtual address 
 static block_t *heap_grow(size_t need) {
     size_t bytes = ALIGN8(need) + BLOCK_HEADER_SIZE;
     size_t pages = (bytes + PMM_PAGE_SIZE - 1) / PMM_PAGE_SIZE;
+
+    /* The object caches' window starts where the heap must stop. */
+    if (pages > (OCACHE_WINDOW_BASE - heap_virt_next) / PMM_PAGE_SIZE) return 0;
 
     /* physically-contiguous frames (so the block is contiguous once mapped) */
     void *phys = pmm_alloc_pages(pages);

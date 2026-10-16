@@ -10,17 +10,20 @@
 #include "usermode.h"       /* user_ptr_readable / user_ptr_writable */
 #include "cxfs.h"
 #include "string.h"
+#include "memman/ocache.h"
+#include "cpu/int/idt.h"   /* kpanic */
 #include <stddef.h>
 
 /* ---- open files ------------------------------------------------------------
- * A fixed pool rather than kmalloc per open: an open file is 16 bytes, the
- * handle table caps a process at HTAB_SLOTS anyway, and a pool cannot
- * fragment the heap or fail an allocation half way through an open.
+ * Open files come from their own cache (memman/ocache.h), never the heap: a
+ * stale pointer to one can only alias another open file, and freeing one
+ * that is not live panics. MAX_OPEN_FILES stays as a cap, and is what bounds
+ * the graveyard below.
  *
  * An open file is a kernel object (KOBJ_FILE, object/kobj.h). Its lifetime is
  * its references': every handle holds one, and so does a file operation in
  * progress. Whether the process calls FILE_OP_CLOSE, calls SYS_HANDLE_CLOSE,
- * or exits and gets reaped, the slot comes back when the last one goes.
+ * or exits and gets reaped, it goes back to its cache when the last one goes.
  *
  * What a handle may do is its RIGHTS (FOPEN_READ, FOPEN_WRITE), not the flags
  * the file was opened with: SYS_HANDLE_DUPLICATE can hand out a read-only handle on
@@ -30,7 +33,6 @@
 
 struct open_file {
     struct kobj hdr;     /* first: the handle table holds &hdr */
-    int      used;
     uint32_t entry;      /* CXFS manifest id */
     uint32_t off;        /* current offset (see the INT32_MAX cap in the ABI) */
     uint32_t flags;      /* FOPEN_* the file was opened with */
@@ -38,21 +40,25 @@ struct open_file {
     int      doomed;     /* unlinked while open: delete at the last close */
 };
 
-static struct open_file open_files[MAX_OPEN_FILES];
+static struct ocache of_cache;
 
 static struct open_file *of_alloc(void) {
-    for (int i = 0; i < MAX_OPEN_FILES; i++)
-        if (!open_files[i].used) {
-            if (kobj_init(&open_files[i].hdr, KOBJ_FILE) != 0) return NULL;
-            open_files[i].used  = 1;
-            open_files[i].entry = 0;
-            open_files[i].off   = 0;
-            open_files[i].flags  = 0;
-            open_files[i].owner  = thread_current_id();
-            open_files[i].doomed = 0;
-            return &open_files[i];
-        }
-    return NULL;
+    if (ocache_live(&of_cache) >= MAX_OPEN_FILES) return NULL;
+    struct open_file *f = ocache_alloc(&of_cache);   /* zeroed */
+    if (!f) return NULL;
+    if (kobj_init(&f->hdr, KOBJ_FILE) != 0) { ocache_free(&of_cache, f); return NULL; }
+    f->owner = thread_current_id();
+    return f;
+}
+
+/* Walks over the live open files. */
+struct of_match { uint32_t entry; int doomed_only; int mark; };
+static int of_match_fn(void *obj, void *ctx) {
+    struct open_file *f = obj;
+    struct of_match *m = ctx;
+    if (f->entry != m->entry) return 0;
+    if (m->mark) { f->doomed = 1; return 0; }
+    return !m->doomed_only || f->doomed;
 }
 
 /* ---- unlinked while open ---------------------------------------------------
@@ -75,15 +81,14 @@ static uint32_t graveyard[MAX_OPEN_FILES];
 static int      graves;
 
 static int entry_open(uint32_t id) {
-    for (int i = 0; i < MAX_OPEN_FILES; i++)
-        if (open_files[i].used && open_files[i].entry == id) return 1;
-    return 0;
+    struct of_match m = { id, 0, 0 };
+    return ocache_walk(&of_cache, of_match_fn, &m);
 }
 
 /* Unlinked, and so invisible to lookups, but not deleted yet. */
 static int entry_doomed(uint32_t id) {
-    for (int i = 0; i < MAX_OPEN_FILES; i++)
-        if (open_files[i].used && open_files[i].doomed && open_files[i].entry == id) return 1;
+    struct of_match m = { id, 1, 0 };
+    if (ocache_walk(&of_cache, of_match_fn, &m)) return 1;
     for (int i = 0; i < graves; i++)
         if (graveyard[i] == id) return 1;
     return 0;
@@ -220,10 +225,12 @@ static void lock_drop(const struct open_file *of, uint32_t start, uint32_t len) 
    SYS_HANDLE_CLOSE, or the reaper at exit. */
 static void of_destroy(struct kobj *o) {
     struct open_file *f = (struct open_file *)o;
+    uint32_t entry  = f->entry;
+    int      doomed = f->doomed;
     lock_drop(f, 0, 0);
-    f->used = 0;
-    if (f->doomed && !entry_open(f->entry) && graves < MAX_OPEN_FILES)
-        graveyard[graves++] = f->entry;
+    ocache_free(&of_cache, f);
+    if (doomed && !entry_open(entry) && graves < MAX_OPEN_FILES)
+        graveyard[graves++] = entry;
 }
 
 static const struct kobj_ops file_ops = {
@@ -233,7 +240,8 @@ static const struct kobj_ops file_ops = {
 };
 
 void sysfile_init(void) {
-    for (int i = 0; i < MAX_OPEN_FILES; i++) open_files[i].used = 0;
+    if (ocache_init(&of_cache, "file", sizeof(struct open_file)) != 0)
+        kpanic("sysfile_init: no open-file cache");
     for (int i = 0; i < MAX_FILE_LOCKS; i++) locks[i].of = NULL;
     for (int i = 0; i < MAX_THREADS; i++) waits[i].waiting = 0;
     graves = 0;
@@ -241,9 +249,7 @@ void sysfile_init(void) {
 }
 
 int sysfile_open_count(void) {
-    int n = 0;
-    for (int i = 0; i < MAX_OPEN_FILES; i++) if (open_files[i].used) n++;
-    return n;
+    return (int)ocache_live(&of_cache);
 }
 
 /* ---- error translation -----------------------------------------------------
@@ -656,9 +662,8 @@ static int file_op(struct file_op_args a, struct open_file *f, uint32_t rights) 
             /* Still open somewhere: the name goes now, the entry at the last
                close (see "unlinked while open" above). */
             if (entry_open((uint32_t)r)) {
-                for (int i = 0; i < MAX_OPEN_FILES; i++)
-                    if (open_files[i].used && open_files[i].entry == (uint32_t)r)
-                        open_files[i].doomed = 1;
+                struct of_match m = { (uint32_t)r, 0, 1 };
+                ocache_walk(&of_cache, of_match_fn, &m);
                 return E_OK;
             }
             return (cxfs_delete_entry((uint32_t)r) == 0) ? E_OK : E_IO;

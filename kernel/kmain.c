@@ -32,6 +32,7 @@
 #include "addr_space.h"
 #include "heap.h"
 #include "kstack.h"
+#include "memman/ocache.h"
 #include "console.h"
 #include "serial.h"
 #include "color.h"
@@ -166,6 +167,10 @@ void kmain(void) {
     /* before any address space but the kernel's exists: see kstack_init */
     kstack_init();
     klog("KSTACK", SEV_OK, "guarded kernel stacks ready");
+
+    /* likewise: the object caches' window (memman/ocache.h) */
+    ocache_sys_init();
+    klog("OCACHE", SEV_OK, "object cache window reserved");
 
     /* Leave the boot stack. kernel.asm could only give kmain a stack in .bss,
        with nothing below it, and kmain goes on to become thread 0 - the thread

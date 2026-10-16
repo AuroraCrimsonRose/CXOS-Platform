@@ -13,6 +13,10 @@
  * the documented seam where slab caches for small fixed sizes would later
  * be inserted (the Linux model: kmalloc routes small sizes to slab caches,
  * larger ones to the general allocator).
+ *
+ * Kernel objects do not come from here: each type has its own cache
+ * (ocache.h). The heap serves what remains, and stops below the caches'
+ * window.
  */
 
 #ifndef HEAP_H

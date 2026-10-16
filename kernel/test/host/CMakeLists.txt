@@ -26,6 +26,7 @@ set(KERNEL_SOURCES
     ${KDIR}/lib/crypto/sha256.c
     ${KDIR}/object/kobj.c
     ${KDIR}/object/htab.c
+    ${KDIR}/memman/ocache.c
 )
 
 file(GLOB TEST_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/test_*.c)
@@ -33,7 +34,8 @@ file(GLOB TEST_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/test_*.c)
 add_executable(khost_tests ${CMAKE_CURRENT_SOURCE_DIR}/runner.c ${TEST_SOURCES} ${KERNEL_SOURCES})
 
 target_include_directories(khost_tests PRIVATE ${KDIR} ${KDIR}/../abi)
-target_compile_definitions(khost_tests PRIVATE CXK_HOST_TEST)
+# A 2 MB window instead of the kernel's 64 MB, so a test can fill it.
+target_compile_definitions(khost_tests PRIVATE CXK_HOST_TEST OCACHE_SLOTS=64)
 set_property(TARGET khost_tests PROPERTY C_STANDARD 11)
 
 target_compile_options(khost_tests PRIVATE

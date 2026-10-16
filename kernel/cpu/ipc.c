@@ -9,17 +9,19 @@
 #include "sched.h"
 #include "caps.h"
 #include "usermode.h"   /* user_ptr_readable / user_ptr_writable */
+#include "memman/ocache.h"
+#include "cpu/int/idt.h"   /* kpanic */
 #include <stddef.h>
 
+/* Endpoints come from their own cache (memman/ocache.h): a stale pointer to
+   one can only ever alias another endpoint. The global cap stays as policy. */
 #define MAX_ENDPOINTS 32
-static struct endpoint endpoints[MAX_ENDPOINTS];
+_Static_assert(sizeof(struct endpoint) <= OCACHE_SPAN, "an endpoint must fit a slab");
+static struct ocache ep_cache;
 
-int ep_in_use_count(void) {
-    int n = 0;
-    for (int i = 0; i < MAX_ENDPOINTS; i++)
-        if (endpoints[i].in_use) n++;
-    return n;
-}
+int ep_in_use_count(void) { return (int)ocache_live(&ep_cache); }
+
+int ep_is_cached(const struct endpoint *ep) { return ocache_owns(&ep_cache, ep); }
 
 /* The last handle has gone. Close the endpoint for business and wake anyone
    standing on it, so a peer that closes mid-rendezvous ends the other side
@@ -38,20 +40,11 @@ static void ep_last_handle(struct kobj *o) {
         thread_unblock(ep->caller_pid);
 }
 
-/* Last reference: the slot goes back to the pool. Wiping buf is not tidiness -
-   it has held request and reply bodies, and the next owner of this slot is a
-   different process. */
+/* Last reference: the endpoint goes back to its cache. The cache fills it with
+   poison as it does, and that fill is not tidiness: buf has held request and
+   reply bodies, and the next owner of this memory is a different process. */
 static void ep_free(struct kobj *o) {
-    struct endpoint *ep = (struct endpoint *)o;
-    for (uint32_t i = 0; i < sizeof ep->buf; i++) ep->buf[i] = 0;
-    ep->in_use       = 0;
-    ep->active       = 0;
-    ep->owner_pid    = -1;
-    ep->recv_blocked = 0;
-    ep->caller_pid   = -1;
-    ep->reply_ptr    = NULL;
-    ep->reply_cap    = 0;
-    ep->msg_len      = 0;
+    ocache_free(&ep_cache, o);
 }
 
 static const struct kobj_ops ep_ops = {
@@ -62,7 +55,8 @@ static const struct kobj_ops ep_ops = {
 };
 
 void ipc_init(void) {
-    for (int i = 0; i < MAX_ENDPOINTS; i++) endpoints[i].owner_pid = -1;
+    if (ocache_init(&ep_cache, "endpoint", sizeof(struct endpoint)) != 0)
+        kpanic("ipc_init: no endpoint cache");
     kobj_type_register(KOBJ_ENDPOINT, &ep_ops);
 }
 
@@ -70,22 +64,28 @@ void ep_put(struct endpoint *ep) {
     if (ep) kobj_unref(&ep->hdr);
 }
 
+/* Endpoints a process owns, for its quota. */
+struct owned { int pid; int n; };
+static int count_owned(void *obj, void *ctx) {
+    struct owned *o = ctx;
+    if (((struct endpoint *)obj)->owner_pid == o->pid) o->n++;
+    return 0;
+}
+
 int ep_create(void) {
     int me = thread_current_id();
 
-    int mine = 0;
-    for (int i = 0; i < MAX_ENDPOINTS; i++)
-        if (endpoints[i].in_use && endpoints[i].owner_pid == me) mine++;
-    if (mine >= MAX_ENDPOINTS_PER_PROC) return E_NOMEM;
+    struct owned o = { me, 0 };
+    ocache_walk(&ep_cache, count_owned, &o);
+    if (o.n >= MAX_ENDPOINTS_PER_PROC) return E_NOMEM;
+    if (ocache_live(&ep_cache) >= MAX_ENDPOINTS) return E_NOMEM;
 
-    int slot = -1;
-    for (int i = 0; i < MAX_ENDPOINTS; i++)
-        if (!endpoints[i].in_use) { slot = i; break; }
-    if (slot < 0) return E_NOMEM;
-
-    struct endpoint *ep = &endpoints[slot];
-    if (kobj_init(&ep->hdr, KOBJ_ENDPOINT) != 0) return E_NOMEM;   /* ipc_init not run */
-    ep->in_use       = 1;
+    struct endpoint *ep = ocache_alloc(&ep_cache);
+    if (!ep) return E_NOMEM;
+    if (kobj_init(&ep->hdr, KOBJ_ENDPOINT) != 0) {               /* ipc_init not run */
+        ocache_free(&ep_cache, ep);
+        return E_NOMEM;
+    }
     ep->active       = 1;
     ep->owner_pid    = me;
     ep->recv_blocked = 0;
@@ -106,7 +106,7 @@ int ep_create(void) {
    SEND right to the broker's. Each handle is a reference, which is exactly why
    the first close must not free. */
 int32_t ep_install_handle(int pid, struct endpoint *ep, uint32_t rights, uint32_t parent_grant) {
-    if (!ep || !ep->in_use || !ep->active) return E_BADF;
+    if (!ep || !ep->active) return E_BADF;
     return htab_install(thread_htab(pid), &ep->hdr, rights, parent_grant);
 }
 

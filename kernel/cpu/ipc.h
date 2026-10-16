@@ -20,7 +20,6 @@
 
 struct endpoint {
     struct kobj hdr;        /* first: the handle table holds &hdr */
-    int      in_use;        /* slot allocated out of the global pool */
     int      active;        /* not yet logically destroyed (see below) */
     int      owner_pid;     /* holder of the RECV side (the broker) */
     int      recv_blocked;  /* owner is blocked in ipc_recv waiting for a caller */
@@ -48,8 +47,8 @@ struct endpoint {
  *
  *   refs    every handle holds one, and so does every ipc_* operation, from
  *           its lookup until it returns, across the part where it can block.
- *           The slot returns to the pool when this reaches zero, and not
- *           before.
+ *           The endpoint returns to its cache when this reaches zero,
+ *           and not before.
  *   active  cleared by the last *handle* going (the type's last_handle hook).
  *           The slot may still be alive, because a blocked thread holds a
  *           reference, but it is closed for business: every entry point
@@ -71,6 +70,8 @@ void ipc_init(void);
 /* Endpoints currently allocated. For the self-tests, which assert that a
    create/close cycle returns the slot rather than leaking it. */
 int ep_in_use_count(void);
+/* Is `ep` a live object of the endpoint cache? For the self-tests. */
+int ep_is_cached(const struct endpoint *ep);
 
 /* ep_create: allocate an endpoint owned by the caller + install a RECV handle.
    Returns the handle, or a negative ABI error. (GRANT_ENDPOINT, checked by
