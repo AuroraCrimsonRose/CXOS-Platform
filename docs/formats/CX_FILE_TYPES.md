@@ -32,7 +32,10 @@ CXOS does not. The ownership ladder (`.xkex`, `.xbex`, `.xoex`, `.xsex`,
    optional schema line so they can be validated.
 5. **`.xfil`, X Format Interface Language:** the one definition of every
    syscall and service interface (`kernel/CX_SYSCALLS_IPC.md` §9). Domain `F`
-   (format), type `IL` (interface language).
+   (format), type `IL` (interface language). Whose an interface is (kernel,
+   boot, OS, system or user) is the `domain` line in the file's header, not the
+   extension, and each program's signed image lists the interfaces it serves
+   and uses.
 6. **The CXEX architecture code gains x86-64**, and the loader refuses an image
    for another architecture.
 7. **Attributes in CXFS v3:** an origin marker on downloaded files, and indexed

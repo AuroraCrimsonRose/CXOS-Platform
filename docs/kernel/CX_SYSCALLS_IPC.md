@@ -223,13 +223,80 @@ Syscalls and service interfaces are written in one small interface language,
 by the DevKit:
 
 ```
-interface Window @ "cx.display.Window" {
+xfil 1
+library cx.display
+domain system
+
+interface Window {
     set_title(title: string[256]) -> ()
     resize(width: u32, height: u32) -> result<(), Error>
     attach_buffer(buffer: handle<memory, read | map>) -> ()
     event closed()
 }
 ```
+
+### 9.1 The header decides the domain
+
+The extension is always `.xfil`: under the naming formula, `F` is the source
+domain, the same for every source file (`.xfxn` does not say whether X Native
+code is for the kernel or an app either). **Whose an interface is lives in the
+file's header**, the rule CXOS already applies to executables: the extension is
+a hint, the header decides (`formats/CX_FILE_TYPES.md` §1).
+
+Every `.xfil` file starts with three lines:
+
+| Line | Meaning |
+|---|---|
+| `xfil 1` | the language version, so the generator can refuse a file it does not understand |
+| `library <name>` | the namespace, reverse-dotted; each library is owned by one signing key |
+| `domain <tier>` | whose the interface is, using the executable ladder's tiers |
+
+The domain changes what is generated and what is enforced:
+
+| Domain | Mirrors | Who serves it | Generated | Enforced |
+|---|---|---|---|---|
+| `kernel` | `.xkex` | the kernel | syscall numbers, the C dispatch table and argument decoding, the system-page stubs, X Native wrappers | Only the platform tree may contain one; there is exactly one (`cx.kernel`) |
+| `boot` | `.xbex` | the loader | `cxk_boot.h` (CXBI) and its X and C# views | Only the platform tree; fixed layout, no messages |
+| `os` | `.xoex` | the executive | IPC stubs | Served only by the platform-signed executive (the broker itself) |
+| `system` | `.xsex` | OS-owned services: display, network, files, audio | IPC stubs | The broker registers a server for a `system` interface only if its image is a platform-signed `.xsex` |
+| `user` | `.xuex` | any app, for other apps (plugins, sharing) | IPC stubs | The library name must sit under its publisher's namespace, and only that publisher's key may serve it |
+
+A file holds one library and one domain. Mixing kernel and user interfaces in
+one file would make every review and every generator decide per item; one
+domain per file keeps the boundary visible in the file list.
+
+### 9.2 Interfaces in the executable
+
+The generator also records, for each program, the interfaces it **serves** and
+the interfaces it **uses**: library, interface, domain and a hash of the
+definition. `cxk build` writes this list into the CXEX image as a section
+covered by the signature.
+
+- **The loader** refuses an image that claims to serve an interface above its
+  own tier (a `.xuex` serving a `system` interface).
+- **The broker** compares hashes when it connects a client to a server; a
+  mismatch is a clear "built against a different interface" error instead of
+  `E_PROTOCOL` at the first call.
+- **The Process Manager and the install screen** show what an app talks to
+  before it runs, read from the signed list.
+
+The ABI hash of §5 is this hash for the `kernel` library.
+
+### 9.3 Bindings
+
+- **X Native** (`.xfxn`) is the main client and server language: the
+  generator writes `.xfxn` stubs. The generated prelude, `abi.x` today, becomes
+  `abi.xfxn`, which also fixes the naming inconsistency recorded in
+  `devkit/CX_DEVKIT_DESIGN.md` §3.
+- **The kernel** (`kernel.xkex`, C) gets the C side of the `kernel` domain: the
+  dispatch table, argument structures and decoders. It never links a
+  service's stubs.
+- **C# (the DevKit)** gets the constants, structures and the trace decoder.
+  The generator lives in `cxk`, so a stale `cxk` generates stale files;
+  `check-abi` compares them with the committed ones and fails by name, as it
+  does today.
+
+### 9.4 Rules
 
 - **Types:** fixed-width integers, `bool`, enums, bit sets, bounded strings and
   arrays, structures, `result<T, E>`, and handles with their object type and
