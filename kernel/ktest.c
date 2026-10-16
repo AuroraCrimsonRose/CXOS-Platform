@@ -1698,8 +1698,8 @@ static int test_font_cell(void) {
 
 /* ---- the console font on disk ------------------------------------------
  *
- * Covers the whole chain in one go: cxk font build converted the BMFont
- * descriptor and its atlas at build time, the image staged the result at
+ * Covers the whole chain in one go: cxk font build converted Terminus's
+ * BDF source for code page 437 at build time, the image staged the result at
  * /System/Fonts, and the kernel reads it back and validates it. A break
  * anywhere along that - a converter that writes the wrong slot, a stage line
  * that drops the file, a reader that disagrees with the writer - lands here.
@@ -1718,9 +1718,9 @@ static int test_console_font_disk(void) {
     if (!cxfs_is_mounted()) return 1;                 /* nothing mounted - skip */
 
     int ok = 1;
-    int id = cxfs_resolve("/System/Fonts/term_8.xfnt", 0);
+    int id = cxfs_resolve("/System/Fonts/console_16.xfnt", 0);
     if (id < 0) {
-        klog("KTEST", SEV_WARN, "console font untested: /System/Fonts/term_8.xfnt is not staged");
+        klog("KTEST", SEV_WARN, "console font untested: /System/Fonts/console_16.xfnt is not staged");
         return 1;
     }
 
@@ -1734,7 +1734,7 @@ static int test_console_font_disk(void) {
 
     /* ---- it is the font the converter wrote ---- */
     if (xfnt_install(font_disk_buf, (uint32_t)got) != XFNT_E_OK) return 0;
-    ok = ok && (xfnt_width() == 8) && (xfnt_height() == 8);
+    ok = ok && (xfnt_width() == 8) && (xfnt_height() == 16);
     ok = ok && (xfnt_glyph_count() == 256);
 
     /* 'A' at its own slot, with ink, and not a solid block - the shape of the
@@ -1743,18 +1743,20 @@ static int test_console_font_disk(void) {
     ok = ok && (a != 0);
     if (a) {
         int any = 0, solid = 1;
-        for (uint32_t r = 0; r < 8; r++) {
+        for (uint32_t r = 0; r < 16; r++) {
             if (a[r]) any = 1;
             if (a[r] != 0xFF) solid = 0;
         }
         ok = ok && any && !solid;
     }
 
-    /* ASCII keeps its own slot, and the extras start at 128 with the first
-       non-ASCII codepoint the font carries. Pins the slot assignment across
-       the whole build, not just the converter's own tests. */
+    /* ASCII keeps its own slot, and the upper half is IBM code page 437 in its
+       own order: byte 0x80 is C-cedilla, 0xC4 the horizontal box line. Pins the
+       slot assignment across the whole build, not just the converter's own
+       tests. */
     ok = ok && (xfnt_codepoint('A') == 'A');
-    ok = ok && (xfnt_codepoint(128) == 0x00A1);       /* the inverted exclamation */
+    ok = ok && (xfnt_codepoint(0x80) == 0x00C7);
+    ok = ok && (xfnt_codepoint(0xC4) == 0x2500);
 
     xfnt_clear();
     console_font_changed();
@@ -1776,7 +1778,7 @@ static int test_console_font_disk(void) {
            path the kernel builds. The '.' rule is what makes ".." need no case
            of its own. */
         const char *bad[] = {
-            "..", "../x", "a/b", "/abs", "term_8.xfnt", "a.b", "", "a\\b",
+            "..", "../x", "a/b", "/abs", "console_16.xfnt", "a.b", "", "a\\b",
         };
         for (unsigned i = 0; i < sizeof bad / sizeof bad[0]; i++) {
             uint32_t k = 0;
@@ -1838,7 +1840,7 @@ static int test_console_font_disk(void) {
         /* ---- and a change that keeps the CELL does not clear the screen ----
          *
          * The one success path worth taking here, and it was not taken before.
-         * Installing term_8 first makes the syscall's change a real one with an
+         * Installing console_16 first makes the syscall's change a real one with an
          * unchanged cell, which is exactly the shape of the shell restoring a
          * saved font at startup - and an unconditional clear there wiped the
          * boot log at every boot once a font had been saved, with no test
@@ -1848,8 +1850,8 @@ static int test_console_font_disk(void) {
          * the cursor is all console_clear leaves behind that is visible from
          * in here. The row is required to be non-zero first, or a console that
          * happened to be homed already would make the check vacuous. */
-        if (fb_font_select("term_8") == 0) {
-            const char *same = "term_8";
+        if (fb_font_select("console_16") == 0) {
+            const char *same = "console_16";
             uint32_t m = 0;
             while (same[m]) { nm[m] = same[m]; m++; }
             nm[m] = '\0';
@@ -1861,7 +1863,7 @@ static int test_console_font_disk(void) {
             ok = ok && (r0 > 0);
 
             ok = ok && (sys_fb_op(args) == 0);
-            ok = ok && xfnt_active() && (xfnt_height() == 8);
+            ok = ok && xfnt_active() && (xfnt_height() == 16);
 
             int c1 = 0, r1 = 0;
             console_cursor(&c1, &r1);
@@ -1886,22 +1888,22 @@ static int test_console_font_disk(void) {
      * of the boot log.
      */
     if (cxfs_resolve("/Shared/Fonts", 0) >= 0 && fb_active()) {
-        /* an 8x16 decoy, distinguishable from the real term_8 at 8x8 */
-        uint8_t decoy[XFNT_HEADER_SIZE + 4 * 16];
-        xf_build(decoy, 8, 16, 4);
+        /* an 8x8 decoy, distinguishable from the real console_16 at 8x16 */
+        uint8_t decoy[XFNT_HEADER_SIZE + 4 * 8];
+        xf_build(decoy, 8, 8, 4);
 
         int dir = cxfs_resolve("/Shared/Fonts", 0);
-        int fid = cxfs_find_in_dir((uint32_t)dir, "term_8.xfnt");
-        if (fid < 0) fid = cxfs_create_entry((uint32_t)dir, "term_8.xfnt", CXFS_TYPE_FILE);
+        int fid = cxfs_find_in_dir((uint32_t)dir, "console_16.xfnt");
+        if (fid < 0) fid = cxfs_create_entry((uint32_t)dir, "console_16.xfnt", CXFS_TYPE_FILE);
         if (fid < 0) {
             ok = 0;
         } else {
             ok = ok && (cxfs_write_file((uint32_t)fid, decoy, (uint32_t)sizeof decoy) == 0);
 
-            /* The name exists in BOTH. The system one is 8x8; the decoy is
-               8x16. Getting 8 proves the order held. */
-            ok = ok && (fb_font_select("term_8") == 0);
-            ok = ok && (xfnt_height() == 8);
+            /* The name exists in BOTH. The system one is 8x16; the decoy is
+               8x8. Getting 16 proves the order held. */
+            ok = ok && (fb_font_select("console_16") == 0);
+            ok = ok && (xfnt_height() == 16);
             ok = ok && (xfnt_glyph_count() == 256);   /* the real font, not the 4-slot decoy */
 
             /* And a name only /Shared has IS found - the second directory is
@@ -1911,7 +1913,7 @@ static int test_console_font_disk(void) {
             if (uid2 >= 0) {
                 ok = ok && (cxfs_write_file((uint32_t)uid2, decoy, (uint32_t)sizeof decoy) == 0);
                 ok = ok && (fb_font_select("ktshared") == 0);
-                ok = ok && (xfnt_height() == 16);     /* the decoy, from /Shared */
+                ok = ok && (xfnt_height() == 8);      /* the decoy, from /Shared */
                 ok = ok && (xfnt_glyph_count() == 4);
                 cxfs_delete_entry((uint32_t)uid2);
             }

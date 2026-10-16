@@ -226,6 +226,11 @@ Output goes through callbacks rather than to a console: a library that writes to
 
 ### 5.1 Font formats **[LOCKED]**
 
+> **Superseded 2026-10-16** (`system/CX_FONTS.md`): CXOS uses published fonts
+> converted from their BDF source, not fonts drawn as `XCFM` masks. `XCFM`, the
+> BMFont import and the ink polarity question below are retired; `XFNT` stays as
+> the format the kernel reads.
+
 - **`XFNT`** — the deliverable **font container**: `magic` + header describing whether contents are **scalable vector** or **bitmap**, plus name; if bitmap, the **supported sizes** and glyph metrics; then glyph data.
 - **`XCFM`** — editable **source** mask: glyphs **drawn on a character map in Studio's font editor**, exported/compiled to a bitmap `XFNT`. (Mirrors the `XF*`→`XC*` source→compiled idea.)
 - **`cxk font` (CLI) ingests:** TTF/OTF → vector `XFNT`; BDF (a bitmap-font container — confirmed) and PNG/BMP glyph sheets → bitmap `XFNT`; `XCFM` → bitmap `XFNT`.

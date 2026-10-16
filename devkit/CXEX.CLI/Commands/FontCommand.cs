@@ -12,47 +12,36 @@ using Spectre.Console.Cli;
 namespace CXEX.CLI.Commands;
 
 /// <summary>
-/// `cxk font build` - BMFont descriptor + atlas -> XFNT.
+/// `cxk font build` - a published BDF font -> a console XFNT for one standard
+/// character set.
 ///
-/// It doubles as a checker. A glyph that does not fit the cell is refused and
-/// named, so running this against a font still being drawn prints exactly the
-/// list of glyphs left to adjust instead of quietly cropping them.
+/// CXOS uses existing fonts rather than drawing its own (decided 2026-10-16);
+/// BDF is the source format they are published in. The conversion is strict:
+/// a font that lacks a character of the set fails with the missing codepoints
+/// named, and a glyph that does not fit the cell is refused rather than
+/// cropped.
 /// </summary>
 public class FontBuildCommand : Command<FontBuildCommand.Settings>
 {
     public class Settings : CommandSettings
     {
-        [CommandArgument(0, "<FNT>")]
-        [Description("BMFont text descriptor (.fnt). Its page-0 PNG is read from the same directory")]
-        public string Fnt { get; set; } = string.Empty;
+        [CommandArgument(0, "<BDF>")]
+        [Description("The font's BDF source, as its publisher ships it")]
+        public string Bdf { get; set; } = string.Empty;
 
         [CommandOption("-o|--out")]
-        [Description("Output .xfnt. Default: the descriptor's name with .xfnt")]
+        [Description("Output .xfnt. Default: the source's name with .xfnt")]
         public string? Out { get; set; }
 
-        [CommandOption("-w|--width")]
-        [Description("Cell width in pixels. Default: the most common glyph width")]
-        [DefaultValue(0)]
-        public int Width { get; set; }
+        [CommandOption("--charset")]
+        [Description("The standard character set the console's bytes mean: cp437 (default)")]
+        [DefaultValue("cp437")]
+        public string Charset { get; set; } = "cp437";
 
-        [CommandOption("-h|--height")]
-        [Description("Cell height in pixels. Default: the descriptor's lineHeight")]
-        [DefaultValue(0)]
-        public int Height { get; set; }
-
-        [CommandOption("-t|--threshold")]
-        [Description("Ink threshold, 1-255. A pixel at or above this is on")]
-        [DefaultValue(128)]
-        public int Threshold { get; set; } = 128;
-
-        [CommandOption("--ink")]
-        [Description("Which pixels are glyph: auto (default, measured), light (white on black), dark (black on white), alpha")]
-        [DefaultValue("auto")]
-        public string Ink { get; set; } = "auto";
-
-        [CommandOption("--allow-unfit")]
-        [Description("Write the font anyway, leaving glyphs that do not fit the cell blank")]
-        public bool AllowUnfit { get; set; }
+        [CommandOption("--face")]
+        [Description("The face name stored in the font, at most 8 characters. Never the source font's own name: OFL fonts reserve it for unmodified copies")]
+        [DefaultValue("Console")]
+        public string Face { get; set; } = "Console";
 
         [CommandOption("--check")]
         [Description("Report only; write nothing")]
@@ -61,82 +50,36 @@ public class FontBuildCommand : Command<FontBuildCommand.Settings>
 
     protected override int Execute(CommandContext context, Settings settings, CancellationToken cancellationToken)
     {
-        if (!File.Exists(settings.Fnt))
+        if (!File.Exists(settings.Bdf))
         {
-            AnsiConsole.MarkupLine($"[red]error:[/] no such file: {settings.Fnt}");
+            AnsiConsole.MarkupLine($"[red]error:[/] no such file: {Markup.Escape(settings.Bdf)}");
             return 1;
         }
-        if (settings.Threshold is < 1 or > 255)
+        if (!Enum.TryParse<ConsoleFont.Charset>(settings.Charset, true, out var set))
         {
-            AnsiConsole.MarkupLine($"[red]error:[/] --threshold must be 1-255, got {settings.Threshold}");
+            AnsiConsole.MarkupLine($"[red]error:[/] --charset must be cp437; got '{Markup.Escape(settings.Charset)}'");
             return 1;
         }
 
-        BmFont font;
-        PngImage atlas;
-        string pagePath;
+        ConsoleFont.Result result;
         try
         {
-            font = BmFont.Load(settings.Fnt);
-            string dir = Path.GetDirectoryName(Path.GetFullPath(settings.Fnt)) ?? ".";
-            pagePath = Path.Combine(dir, font.PageFile);
-            if (!File.Exists(pagePath))
-            {
-                AnsiConsole.MarkupLine($"[red]error:[/] the descriptor names page file '{font.PageFile}', which is not beside it.");
-                AnsiConsole.MarkupLine("[grey]  A .fnt carries no pixels; the glyphs are in that PNG.[/]");
-                return 1;
-            }
-            atlas = PngImage.Load(pagePath);
-        }
-        catch (Exception ex)
-        {
-            AnsiConsole.MarkupLine($"[red]error:[/] {ex.Message}");
-            return 1;
-        }
-
-        if (!Enum.TryParse<FontAssembler.InkPolarity>(settings.Ink, true, out var polarity))
-        {
-            AnsiConsole.MarkupLine($"[red]error:[/] --ink must be auto, light, dark or alpha; got '{settings.Ink}'");
-            return 1;
-        }
-
-        FontAssembler.Result result;
-        try
-        {
-            result = FontAssembler.Build(font, atlas, settings.Width, settings.Height,
-                                         settings.Threshold, strict: !settings.AllowUnfit,
-                                         polarity: polarity);
+            var font = BdfFont.Load(settings.Bdf);
+            result = ConsoleFont.Build(font, set, settings.Face);
         }
         catch (FontNotReadyException nr)
         {
-            AnsiConsole.MarkupLine($"[yellow]{font.Face}[/]: [red]{nr.Rejected.Count} glyph(s) do not fit the {nr.CellWidth}x{nr.CellHeight} cell[/]");
-            AnsiConsole.MarkupLine("");
-            var byReason = nr.Rejected.GroupBy(r => r.Why).OrderByDescending(g => g.Count());
-            foreach (var grp in byReason)
-            {
-                AnsiConsole.MarkupLine($"  [red]{grp.Count()}[/] x {Markup.Escape(grp.Key)}");
-                var cps = grp.OrderBy(r => r.Codepoint).Select(r => $"U+{r.Codepoint:X4}");
-                AnsiConsole.MarkupLine($"    [grey]{string.Join(" ", cps)}[/]");
-            }
-            AnsiConsole.MarkupLine("");
-            AnsiConsole.MarkupLine("[grey]These are the glyphs still to adjust. Re-run when they are the cell size,[/]");
-            AnsiConsole.MarkupLine("[grey]or pass --allow-unfit to write the font with those slots left blank.[/]");
+            AnsiConsole.MarkupLine($"[red]error:[/] {Markup.Escape(nr.Message)}");
             return 1;
         }
         catch (Exception ex)
         {
-            AnsiConsole.MarkupLine($"[red]error:[/] {ex.Message}");
+            AnsiConsole.MarkupLine($"[red]error:[/] {Markup.Escape(ex.Message)}");
             return 1;
         }
 
-        int extras = result.Assignments.Count(a => a.Slot >= FontAssembler.ExtraFirstSlot);
-        int ascii = result.Placed - extras;
-
-        AnsiConsole.MarkupLine($"[green]{font.Face}[/]  {result.CellWidth}x{result.CellHeight}  [grey]from {Path.GetFileName(pagePath)} ({atlas.Width}x{atlas.Height}, ink={result.Polarity.ToString().ToLowerInvariant()}{(settings.Ink == "auto" ? " measured" : " forced")})[/]");
-        AnsiConsole.MarkupLine($"  glyphs      [cyan]{result.Placed}[/]  ({ascii} ASCII at their own slots, {extras} extras from slot {FontAssembler.ExtraFirstSlot})");
-        AnsiConsole.MarkupLine($"  size        {result.Bytes.Length} bytes");
-        if (result.Rejected.Count > 0)
-            AnsiConsole.MarkupLine($"  [yellow]left blank  {result.Rejected.Count} glyph(s) that did not fit[/]");
+        AnsiConsole.MarkupLine($"[green]{Markup.Escape(result.Face)}[/]  {result.CellWidth}x{result.CellHeight}  " +
+                               $"{result.Placed} characters of {set.ToString().ToLowerInvariant()}, {result.Bytes.Length} bytes");
 
         if (settings.Check)
         {
@@ -144,7 +87,7 @@ public class FontBuildCommand : Command<FontBuildCommand.Settings>
             return 0;
         }
 
-        string outPath = settings.Out ?? Path.ChangeExtension(settings.Fnt, ".xfnt");
+        string outPath = settings.Out ?? Path.ChangeExtension(settings.Bdf, ".xfnt");
         try
         {
             File.WriteAllBytes(outPath, result.Bytes);
@@ -158,11 +101,11 @@ public class FontBuildCommand : Command<FontBuildCommand.Settings>
         }
         catch (Exception ex)
         {
-            AnsiConsole.MarkupLine($"[red]error:[/] {ex.Message}");
+            AnsiConsole.MarkupLine($"[red]error:[/] {Markup.Escape(ex.Message)}");
             return 1;
         }
 
-        AnsiConsole.MarkupLine($"[green]SUCCESS:[/] wrote [cyan]{outPath}[/]");
+        AnsiConsole.MarkupLine($"[green]SUCCESS:[/] wrote [cyan]{Markup.Escape(outPath)}[/]");
         return 0;
     }
 }

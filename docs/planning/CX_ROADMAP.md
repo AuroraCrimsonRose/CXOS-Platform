@@ -38,6 +38,7 @@ order, and every decision with its reason.
 | **X has no undefined behaviour outside `unsafe`, linear handles, and contracts** (`language/CX_X_PLAN.md` §5). | Every operation either has a defined result or traps; what cannot be checked is marked and searchable. |
 | **`cxk` is never stale, quiet by default, and runs sabotage itself** (`devkit/CX_CXK_PLAN.md`). | The prebuilt has been found days out of date; builds print 300 lines for four that matter; sabotage by hand has destroyed real fixes. |
 | **CXEX Studio (the Avalonia GUI) is retired.** | Editor support is the VS Code extension, with an X language server planned; everything else is `cxk`. Removed with it: `CXEX.UI` and the empty `CXEX.SDK` app. The solution is now `devkit/CXEX.slnx`. |
+| **CXOS uses published fonts, never its own; text uses standard character sets.** | The console is Terminus (OFL-1.1) for IBM code page 437, converted from its BDF source at build time; the drawn `cx_term` fonts are removed. The GUI will use Noto (OFL-1.1) and Unicode (`system/CX_FONTS.md`). |
 | **Memory: object caches by type, a page database with a buddy allocator, memory objects filled on first touch, strict commit.** | The heap, bitmap and eager mappings do not scale to 8 GB and 8 cores. Strict commit means running out is an error at the call that asked, never an OOM killer. Swapping, compression and NUMA are later (`kernel/CX_KERNEL_PLAN.md` §9). |
 | **BIOS boot is the main path; UEFI is second.** | The rig has BIOS only. The BIOS loader must start a 64-bit kernel itself. |
 | **GUI first, never GUI only.** | Every feature is a service with a typed IPC interface; the GUI and the CLI are both clients of it. The CLI remains the recovery and test path. |
@@ -223,5 +224,5 @@ signing log (ecosystem phase), handles across machines (dropped).
 ## 6. Open questions
 
 - What replaces each `docs/x86_32/` document as its area is reworked.
-- The ink polarity question in `devkit/CX_DEVKIT_DESIGN.md` §5.1.
+- ~~The ink polarity question in `devkit/CX_DEVKIT_DESIGN.md` §5.1.~~ Moot since 2026-10-16: fonts come from published BDF sources, which have no ink to interpret (`system/CX_FONTS.md`).
 - Whether `setcheck.xuex` should write on every boot.

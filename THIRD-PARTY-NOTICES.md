@@ -6,7 +6,13 @@ Each component keeps its own.
 
 ## Current inventory
 
-**None.** No third-party source, no vendored libraries, no bundled assets.
+| Component | Where | Licence | Use |
+|---|---|---|---|
+| Terminus Font 4.49.1, `ter-u16n.bdf`, by Dimitar Toshkov Zhekov | `vendor/terminus/` | `OFL-1.1` (`vendor/terminus/OFL.txt`, `LICENSES/OFL-1.1.txt`), Reserved Font Name "Terminus Font" | Vendored unmodified since 2026-10-16. The build converts it to `console_16.xfnt`, the 8×16 console font, cut to IBM code page 437. That file is a Modified Version under the OFL (converted and subset), so it is named "Console", never Terminus. Source: terminus-font-4.49.1.tar.gz from SourceForge, SHA-256 `d961c1b781627bf417f9b340693d64fc219e0113ad3a3af1a3424c7aa373ef79`. |
+
+Removed on the same day: `assets/fonts/cx_term/` (`term_8`, `term_16`), the
+console fonts drawn for CXOS. Not third-party; CXOS now uses published fonts
+instead of drawing its own.
 
 | Was | Licence | What happened |
 |---|---|---|
@@ -22,7 +28,7 @@ The glyph array was produced from a bitmap PNG of a rendered font, put through a
 Python converter written for the job. No font file was copied: no BDF, no PSF, no
 TTF. The converter has since been lost, so the conversion cannot be re-run or
 audited. Only its output survives, as `font.c`. The shapes are Terminus Font, and
-`assets/fonts/terminus/OFL.txt` is kept as a record of where they came from
+`vendor/terminus/OFL.txt` (moved from `assets/fonts/terminus/`) records where they came from
 rather than as a licence CXOS operates under.
 
 US copyright excludes "typeface as such" (37 CFR § 202.1(e)). What it protects is

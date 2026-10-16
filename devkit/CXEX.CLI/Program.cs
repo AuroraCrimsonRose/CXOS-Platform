@@ -92,7 +92,7 @@ app.Configure(config =>
         font.SetDescription("Builds and inspects XFNT bitmap fonts for the console and framebuffer.");
 
         font.AddCommand<FontBuildCommand>("build")
-            .WithDescription("Converts a BMFont descriptor and its atlas into an .xfnt. Refuses glyphs that do not fit the cell, and names them.");
+            .WithDescription("Converts a published BDF font into a console .xfnt for one standard character set (CP437). Refuses a font missing any character of the set, and names them.");
 
         font.AddCommand<FontInspectCommand>("inspect")
             .WithDescription("Reports an .xfnt's geometry and slot usage, and can print one glyph as ASCII art.");

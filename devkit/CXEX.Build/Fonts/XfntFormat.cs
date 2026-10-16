@@ -10,13 +10,12 @@ namespace CXEX.Build.Fonts;
 /// XFNT - X Format foNT. A bitmap font as literally the bits, plus a header a
 /// reader can validate with comparisons instead of parsing.
 ///
-/// Why this exists rather than loading a BMFont .fnt in the kernel: a .fnt
-/// carries no pixels at all. The glyphs live in a companion PNG, so "load the
-/// .fnt" would mean a PNG decoder - zlib inflate, chunk walking, CRCs, filter
-/// reconstruction - and an ASCII key=value parser, both in ring 0, both over
-/// untrusted input. The conversion happens here on the host instead, and the
-/// kernel reads a fixed layout. Same split as CXEX: the DevKit produces, the
-/// kernel validates.
+/// Why this exists rather than loading a font's published source in the
+/// kernel: that source is BDF, a text format with properties, per-glyph boxes
+/// and hex rows, and parsing it in ring 0 over untrusted input buys nothing.
+/// The conversion happens here on the host instead (`BdfFont`, `ConsoleFont`),
+/// and the kernel reads a fixed layout. Same split as CXEX: the DevKit
+/// produces, the kernel validates.
 ///
 /// Glyphs are indexed by SLOT, not by codepoint. A slot is a byte, so the
 /// kernel's lookup is base + slot * bytes_per_glyph with no search, and the

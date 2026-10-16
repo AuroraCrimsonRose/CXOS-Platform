@@ -310,7 +310,7 @@ fn file_err(what: *u8, rc: i32) -> i32 {
 // goes through SYS_FB_OP, which takes a NAME and composes the path itself.
 //
 // The ".xfnt" is trimmed when listing so that what is printed is what you type.
-// The kernel refuses a name containing '.', deliberately, so "term_8.xfnt"
+// The kernel refuses a name containing '.', deliberately, so "console_16.xfnt"
 // would be rejected - showing it and then refusing it would be a trap.
 // ---- the console's own settings document ----
 //

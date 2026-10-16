@@ -5,14 +5,12 @@
 /*
  * XFNT - X Format foNT. A loadable bitmap font.
  *
- * The format is the bits and a header, nothing else. That is the point: the
- * fonts are drawn with a font editor which exports an AngelCode BMFont
- * descriptor plus a PNG atlas, and NEITHER of those belongs in a kernel. The
- * descriptor carries no pixels at all - they are in the PNG - so loading one
- * here would mean a PNG decoder (zlib inflate, chunk walking, CRCs, scanline
- * filters) and a text key=value parser, both in ring 0, both over a file that
- * arrived from a disk. `cxk font build` does that conversion on the host and
- * this reads a fixed layout, which is the same split CXEX already uses.
+ * The format is the bits and a header, nothing else. That is the point: CXOS
+ * ships published fonts (Terminus, OFL-1.1), whose source is BDF - a text
+ * format of properties, per-glyph boxes and hex rows - and parsing that in
+ * ring 0, over a file that arrived from a disk, buys nothing. `cxk font build`
+ * does the conversion on the host and this reads a fixed layout, which is the
+ * same split CXEX already uses.
  *
  * Glyphs are indexed by SLOT, not by codepoint, so a lookup is a shift and an
  * add with no search and the console keeps its one-byte char. ASCII 32..126 sit
