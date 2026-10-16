@@ -39,7 +39,8 @@
 /* v2 feature flags (superblock feature_flags) */
 #define CXFS_FEAT_TIMESTAMPS 0x01
 #define CXFS_FEAT_PERMS      0x02
-#define CXFS_FEAT_LOCKING    0x04
+/*      0x04 was CXFS_FEAT_LOCKING: retired with the on-disk locks. Not set, not
+        read, not reused - volumes formatted before 2026-10-16 still carry it. */
 #define CXFS_FEAT_LARGE_BLK  0x08
 
 /* permission bits (low 9 of `permissions`): rwx for owner/group/other */
@@ -110,9 +111,9 @@ struct cxfs_entry {
     uint32_t owner_uid;                   /* 0 = SYSTEM */
     uint32_t group_id;                    /* 0 = system group */
     uint16_t permissions;                 /* rwx owner/group/other */
-    uint8_t  lock_state;                  /* 0 unlocked, 1 advisory write-lock */
-    uint8_t  lock_pad;
-    uint32_t lock_owner_pid;              /* process holding the lock (0 = none) */
+    uint8_t  reserved_9e[6];              /* were lock_state, lock_pad and
+                                             lock_owner_pid: written 0, never
+                                             read (CXFS_FILESYSTEM.md 6.3) */
     uint64_t created;                     /* timestamps (epoch seconds) */
     uint64_t modified;
     uint64_t accessed;
@@ -284,7 +285,7 @@ void cxfs_free_file_data(struct cxfs_entry *e);
 #define CXFS_E_OK        0
 #define CXFS_E_FAIL     -1    /* generic / not mounted / disk error */
 #define CXFS_E_PERM     -2    /* permission bits say no */
-#define CXFS_E_LOCKED   -3    /* advisory lock held by another live process */
+/*      -3 was CXFS_E_LOCKED; retired with the on-disk locks, not reused */
 #define CXFS_E_NOSPACE  -4    /* volume full */
 #define CXFS_E_FRAGMENT -5    /* out of extents, and no contiguous run to compact into */
 #define CXFS_E_INVAL    -6    /* bad argument (offset overflow, not a file, ...) */
@@ -334,10 +335,7 @@ int cxfs_count_children(uint32_t dir_id);
    does NOT recurse (caller handles recursion). returns 0 on success. */
 int cxfs_delete_entry(uint32_t id);
 
-
-/* v2 advisory locking */
-int cxfs_lock(uint32_t id);
-int cxfs_unlock(uint32_t id);
-int cxfs_is_locked(uint32_t id);
+/* Advisory locks are not a filesystem feature: they belong to open files and
+   live in memory (kernel/cpu/sysfile.c, FILE_OP_LOCK). */
 
 #endif

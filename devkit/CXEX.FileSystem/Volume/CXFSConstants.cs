@@ -18,6 +18,6 @@ public static class CXFSConstants
     // Feature Flags
     public const uint FeatTimestamps = 0x01;
     public const uint FeatPerms = 0x02;
-    public const uint FeatLocking = 0x04;
+    // 0x04 was FeatLocking: retired with the on-disk locks, never reused.
     public const uint FeatLargeBlk = 0x08;
 }

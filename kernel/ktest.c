@@ -953,7 +953,6 @@ static int test_cxfs_volumes(void) {
     if (cxfs_read_entry(beyond, &e)    == 0) return 0;
     if (cxfs_find_in_dir(beyond, "System") >= 0) return 0;
     if (cxfs_count_children(beyond) != 0)        return 0;
-    if (cxfs_is_locked(beyond)      != 0)        return 0;
 
     /* cxfs_path_of must say "nothing", not walk off into the root volume. */
     char p[64];
@@ -2267,6 +2266,7 @@ void ktest_run(void) {
     total++; passed += report("crypto profile: one key shape only", test_crypto_profile());
     total++; passed += report("exec admission (dev / release)",   test_exec_admit());
     total++; passed += report("file syscalls (SYS_FILE_OP)",       usermode_file_test());
+    total++; passed += report("advisory locks follow the open file", usermode_flock_test());
     total++; passed += report("ipc endpoints refcounted + reclaimed", test_ipc_endpoint_lifetime());
     total++; passed += report("user copies validated at the copy",  test_user_copy_validation());
     total++; passed += report("user copy faults are recoverable",   test_user_copy_fault_recovery());

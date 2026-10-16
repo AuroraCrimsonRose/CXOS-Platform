@@ -72,7 +72,7 @@ static void sb_good(struct cxfs_superblock *sb) {
     sb->reserved_blocks = 64;
     sb->root_id         = 0;
     sb->entry_size      = CXFS_ENTRY_SIZE;
-    sb->feature_flags   = CXFS_FEAT_TIMESTAMPS | CXFS_FEAT_PERMS | CXFS_FEAT_LOCKING;
+    sb->feature_flags   = CXFS_FEAT_TIMESTAMPS | CXFS_FEAT_PERMS;
 }
 
 /* accepted / refused, at the volume's real size */

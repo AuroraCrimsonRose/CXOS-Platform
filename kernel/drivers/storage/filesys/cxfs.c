@@ -40,24 +40,6 @@ static int cxfs_check_perm(const struct cxfs_entry *e, int access) {
     return (p & need) ? 1 : 0;
 }
 
-/* --- v2 advisory locking ("in use, don't edit") ---
-   A cooperating writer locks a file (recording its pid); other cooperating
-   writers honor it. Advisory only: not enforced against non-cooperating code.
-   A lock whose owner pid is no longer a live thread is STALE and ignored. */
-
-/* is `e` effectively locked by someone OTHER than the current process?
-   Clears the stale flag in *e (caller may persist it) if the owner is dead. */
-static int cxfs_lock_blocks(struct cxfs_entry *e) {
-    if (!e->lock_state) return 0;                       /* not locked */
-    if (!thread_is_alive((int)e->lock_owner_pid)) {     /* stale -> clear */
-        e->lock_state = 0;
-        e->lock_owner_pid = 0;
-        return 0;
-    }
-    if ((uint32_t)thread_current_id() == e->lock_owner_pid) return 0; /* ours */
-    return 1;                                           /* held by another live proc */
-}
-
 /* ====================================================================
  * Mounted volumes
  *
@@ -399,7 +381,7 @@ int cxfs_format_at(uint64_t base_lba, uint32_t total_blocks) {
     vol->sb.data_start      = data_start;
     vol->sb.reserved_blocks = reserved_blocks;
     vol->sb.root_id         = 0;                /* entry 0 = root directory */
-    vol->sb.feature_flags   = CXFS_FEAT_TIMESTAMPS | CXFS_FEAT_PERMS | CXFS_FEAT_LOCKING;
+    vol->sb.feature_flags   = CXFS_FEAT_TIMESTAMPS | CXFS_FEAT_PERMS;
     vol->sb.entry_size      = CXFS_ENTRY_SIZE;
     if (format_label[0]) strlcpy(vol->sb.label, format_label, CXFS_LABEL_LEN);
     format_label[0] = '\0';     /* one format, one label - never a leftover */
@@ -1426,15 +1408,15 @@ static void trim_to_blocks(struct cxfs_entry *e, uint32_t keep) {
     }
 }
 
-/* shared preamble: fetch the entry, confirm it is a writable file nobody else
-   has locked. Returns 0, or a CXFS_E_* code. */
+/* shared preamble: fetch the entry, confirm it is a file the caller may write.
+   Locks are not consulted: they are advisory, and live in sysfile.c. Returns
+   0, or a CXFS_E_* code. */
 static int open_for_write(uint32_t id, struct cxfs_entry *e) {
     if (!vol_select(id)) return CXFS_E_FAIL;
     if (cxfs_read_entry(id, e) != 0)        return CXFS_E_NOTFOUND;
     if (e->type == CXFS_TYPE_DIR)           return CXFS_E_ISDIR;
     if (e->type != CXFS_TYPE_FILE)          return CXFS_E_INVAL;
     if (!cxfs_check_perm(e, CXFS_ACC_WRITE)) return CXFS_E_PERM;
-    if (cxfs_lock_blocks(e))                return CXFS_E_LOCKED;
     if (!entry_extents_ok(e))               return CXFS_E_FAIL;
     return CXFS_E_OK;
 }
@@ -1683,38 +1665,6 @@ int cxfs_delete_entry(uint32_t id) {
     return cxfs_write_entry(&e);
 }
 
-/* set an advisory lock on entry `id` for the current process. Returns 0 on
-   success, -1 if it doesn't exist or is already locked by another live proc. */
-int cxfs_lock(uint32_t id) {
-    if (!vol_select(id)) return -1;
-    struct cxfs_entry e;
-    if (cxfs_read_entry(id, &e) != 0) return -1;
-    if (cxfs_lock_blocks(&e)) return -1;                /* someone else holds it */
-    e.lock_state     = 1;
-    e.lock_owner_pid = (uint32_t)thread_current_id();
-    return cxfs_write_entry(&e);
-}
-
-/* release an advisory lock. Only the lock owner or SYSTEM may unlock. */
-int cxfs_unlock(uint32_t id) {
-    if (!vol_select(id)) return -1;
-    struct cxfs_entry e;
-    if (cxfs_read_entry(id, &e) != 0) return -1;
-    if (!e.lock_state) return 0;                        /* already unlocked */
-    if (current_uid() != UID_SYSTEM &&
-        (uint32_t)thread_current_id() != e.lock_owner_pid) return -1;
-    e.lock_state = 0;
-    e.lock_owner_pid = 0;
-    return cxfs_write_entry(&e);
-}
-
-/* 1 if locked by another live process, else 0. */
-int cxfs_is_locked(uint32_t id) {
-    if (!vol_select(id)) return 0;
-    struct cxfs_entry e;
-    if (cxfs_read_entry(id, &e) != 0) return 0;
-    return cxfs_lock_blocks(&e);
-}
 /* Commit this volume's writes to stable media.
  *
  * CXFS writes through - the manifest cache updates the disk with it, and the

@@ -22,8 +22,9 @@ required); existing v1 volumes must be reformatted.
 - **64-bit disk addressing** for placement (a volume can sit anywhere on a large
   disk), with **32-bit internal block numbers** — a practical ceiling of
   **16 TB** per volume at 4 KB blocks, keeping on-disk structures compact.
-- **Ownership, permissions, timestamps, and advisory locking** as first-class
-  per-entry metadata (the fields v1 reserved are now defined and used).
+- **Ownership, permissions and timestamps** as first-class per-entry metadata
+  (the fields v1 reserved are now defined and used). Advisory locking was here
+  too, and moved out of the format in 2026-10 (§6.3).
 - **No backward compatibility with v1.** The version field gates this.
 
 ---
@@ -131,9 +132,7 @@ unused slot. Root is id 0 (a directory whose `parent_id` is itself).
 | 0x94   | 4    | `owner_uid`      | owning user (0 = SYSTEM; users ≥ 1)                |
 | 0x98   | 4    | `group_id`       | owning group (0 = system group)                    |
 | 0x9C   | 2    | `permissions`    | permission bits (see §6.2)                         |
-| 0x9E   | 1    | `lock_state`     | 0 unlocked, 1 advisory write-lock (see §6.3)       |
-| 0x9F   | 1    | `lock_pad`       | alignment                                          |
-| 0xA0   | 4    | `lock_owner_pid` | process holding the advisory lock (0 = none)       |
+| 0x9E   | 6    | `reserved_9e`    | reserved: written 0 on create, never read (§6.3)   |
 | 0xA4   | 8    | `created`        | creation timestamp                                 |
 | 0xAC   | 8    | `modified`       | last-modified timestamp                            |
 | 0xB4   | 8    | `accessed`       | last-accessed timestamp                            |
@@ -168,13 +167,25 @@ user/session model, SYSTEM (uid 0) bypasses checks.
 
 ### 6.3 Advisory locking
 
-`lock_state = 1` marks an **advisory** write lock: a cooperating writer sets it
-(recording its pid in `lock_owner_pid`) to signal "in use — don't edit," and
-other cooperating writers honor it. It is **advisory**, not enforced by the
-hardware or paging — a non-cooperating writer is not prevented from writing. A
-reader must treat a lock whose `lock_owner_pid` no longer corresponds to a live
-process as stale (the driver clears stale locks). Range locks and richer lock
-modes are reserved for a future revision (the field has headroom).
+CXFS stores **no** lock state. Locks belong to open files, live in kernel
+memory, and end with the handle that took them (`FILE_OP_LOCK`,
+`CX_ABI.md` §7.10). SerenityOS, Haiku, XNU and NT all keep locks the same way:
+on the in-memory node, owned by an open description, a team or a file object,
+and released on close. None of them writes a lock to disk.
+
+Until 2026-10-16 the bytes at 0x9E–0xA3 held `lock_state`, `lock_pad` and
+`lock_owner_pid`, and the driver refused writes to an entry locked by a live
+pid. That had three faults:
+- **No lifetime.** Nothing released a lock, so it outlived its process and
+  survived reboots.
+- **Pids are reused.** A pid is a thread slot, so a stale lock could pass to an
+  unrelated process.
+- **Hostile input.** A crafted removable volume could mark its own entries
+  locked and have writes to them refused.
+
+That range is now reserved. New entries write it as zero. An existing entry may
+still carry old bytes, and they mean nothing: the driver does not read them,
+and a self-test sets them to a live owner to prove it.
 
 ---
 
@@ -187,7 +198,7 @@ was written with, so a reader can refuse a volume using features it lacks:
 |----:|-------------------|-----------------------------------------------|
 | 0   | `FEAT_TIMESTAMPS` | entry timestamps are maintained               |
 | 1   | `FEAT_PERMS`      | ownership/permission bits are meaningful      |
-| 2   | `FEAT_LOCKING`    | advisory locking is in use                    |
+| 2   | retired           | was `FEAT_LOCKING`; not set, ignored (§6.3)   |
 | 3   | `FEAT_LARGE_BLK`  | block_size > 4096 (CXFSX profile)             |
 | 4.. | reserved          | must be 0                                     |
 

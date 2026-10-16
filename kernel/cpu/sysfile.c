@@ -29,6 +29,7 @@ struct open_file {
     uint32_t entry;      /* CXFS manifest id */
     uint32_t off;        /* current offset (see the INT32_MAX cap in the ABI) */
     uint32_t flags;      /* FOPEN_* the file was opened with */
+    uint32_t lock;       /* 0, FLOCK_SHARED or FLOCK_EXCLUSIVE */
 };
 
 static struct open_file open_files[MAX_OPEN_FILES];
@@ -40,14 +41,41 @@ static struct open_file *of_alloc(void) {
             open_files[i].entry = 0;
             open_files[i].off   = 0;
             open_files[i].flags = 0;
+            open_files[i].lock  = 0;
             return &open_files[i];
         }
     return NULL;
 }
 
+/* Releasing the slot releases its lock: the lock lives in the slot. That is the
+   whole lifetime rule (FILE_OP_LOCK in the ABI), and why it needs no cleanup of
+   its own at close or at process exit. */
 static void of_release(struct cap_handle *h) {
     struct open_file *f = (struct open_file *)h->object;
-    if (f >= open_files && f < open_files + MAX_OPEN_FILES) f->used = 0;
+    if (f >= open_files && f < open_files + MAX_OPEN_FILES) {
+        f->lock = 0;
+        f->used = 0;
+    }
+}
+
+/* ---- advisory locks --------------------------------------------------------
+ * Held by the open file, in memory, as SerenityOS holds them on its
+ * OpenFileDescription. They used to be fields in the CXFS manifest entry owned
+ * by a pid, which had three faults: a pid is a reused thread slot, so a lock
+ * could pass to an unrelated process; a lock written to disk survived a reboot;
+ * and every volume's lock state was whatever the disk said, which for a
+ * removable volume is hostile input. Nothing on disk is consulted now.
+ *
+ * Returns whether another open file holds a lock on the same entry that `want`
+ * conflicts with. Shared coexists with shared; exclusive with nothing.
+ */
+static int lock_conflicts(const struct open_file *self, uint32_t want) {
+    for (int i = 0; i < MAX_OPEN_FILES; i++) {
+        const struct open_file *o = &open_files[i];
+        if (o == self || !o->used || !o->lock || o->entry != self->entry) continue;
+        if (want == FLOCK_EXCLUSIVE || o->lock == FLOCK_EXCLUSIVE) return 1;
+    }
+    return 0;
 }
 
 void sysfile_init(void) {
@@ -75,7 +103,6 @@ static int abi_err(int cxfs_rc) {
     switch (cxfs_rc) {
         case CXFS_E_OK:       return E_OK;
         case CXFS_E_PERM:     return E_PERM;
-        case CXFS_E_LOCKED:   return E_AGAIN;
         case CXFS_E_NOSPACE:  return E_NOMEM;
         case CXFS_E_FRAGMENT: return E_NOMEM;
         case CXFS_E_INVAL:    return E_INVAL;
@@ -388,6 +415,25 @@ int sys_file_op(const struct file_op_args *ua) {
         case FILE_OP_SYNC:
             return (cxfs_sync() == 0) ? E_OK : E_IO;
 
+        /* Never blocks: a waiting lock needs a wait queue the scheduler does
+           not have per object yet, and E_AGAIN lets the caller choose. A
+           conversion that conflicts leaves the lock already held unchanged. */
+        case FILE_OP_LOCK: {
+            struct open_file *f = of_from_handle(a.handle);
+            if (!f) return E_BADF;
+            if (a.flags != FLOCK_SHARED && a.flags != FLOCK_EXCLUSIVE) return E_INVAL;
+            if (lock_conflicts(f, a.flags)) return E_AGAIN;
+            f->lock = a.flags;
+            return E_OK;
+        }
+
+        case FILE_OP_UNLOCK: {
+            struct open_file *f = of_from_handle(a.handle);
+            if (!f) return E_BADF;
+            f->lock = 0;
+            return E_OK;
+        }
+
         case FILE_OP_MKDIR: {
             if ((rc = copy_path_in(a.path, path, sizeof path)) < 0) return rc;
             if (cxfs_resolve(path, cwd) >= 0) return E_EXIST;
@@ -416,7 +462,6 @@ int sys_file_op(const struct file_op_args *ua) {
             }
             if (e.type == CXFS_TYPE_DIR && cxfs_count_children((uint32_t)r) > 0)
                 return E_INVAL;                            /* must be empty */
-            if (cxfs_is_locked((uint32_t)r)) return E_AGAIN;
             if ((uint32_t)r == cwd) return E_INVAL;         /* not your own cwd */
 
             return (cxfs_delete_entry((uint32_t)r) == 0) ? E_OK : E_IO;

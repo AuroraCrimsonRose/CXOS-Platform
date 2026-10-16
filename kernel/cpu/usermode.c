@@ -806,6 +806,108 @@ done:
     return ok;
 }
 
+/* ---- advisory file locks ---------------------------------------------------
+ * FILE_OP_LOCK's contract, the parts a regression would break quietly: shared
+ * locks coexist and exclusive ones do not; the lock belongs to the open file,
+ * so a second open in the same process conflicts like anyone else's; closing a
+ * handle releases its lock without an UNLOCK; and the lock is advisory, so
+ * writing and unlinking a locked file still work. Last, the old on-disk lock
+ * bytes, set to a live owner as a crafted volume could, are ignored.
+ */
+int usermode_flock_test(void) {
+    if (!cxfs_is_mounted()) return 1;         /* nothing mounted - skip */
+
+    uint32_t phys = map_user_page(TEST_CODE_VIRT);
+    if (!phys) return 0;
+
+    int      me   = thread_current_id();
+    uint32_t save = thread_current_caps();
+    thread_set_caps(me, GRANT_DISK);
+
+    int ok = 0, step = 0;
+    int a = -1, b = -1, w = -1, id;
+    struct cxfs_entry e;
+    const char *scratch = (cxfs_resolve("/Temp", 0) >= 0) ? "/Temp" : "";
+    ft_strp(FT_PATH, scratch, "/kt_lock.txt");
+
+    a = ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_READ | FOPEN_WRITE | FOPEN_CREATE | FOPEN_TRUNC);
+    b = ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_READ);
+    step++;
+    if (a < 0 || b < 0) goto done;
+
+    /* shared with shared */
+    step++;
+    if (ft_call(FILE_OP_LOCK, a, 0, 0, 0, 0, FLOCK_SHARED) != E_OK) goto done;
+    step++;
+    if (ft_call(FILE_OP_LOCK, b, 0, 0, 0, 0, FLOCK_SHARED) != E_OK) goto done;
+    /* exclusive against a shared lock held by another open file, even ours */
+    step++;
+    if (ft_call(FILE_OP_LOCK, b, 0, 0, 0, 0, FLOCK_EXCLUSIVE) != E_AGAIN) goto done;
+    /* a refused conversion keeps the lock it had: a still conflicts with b */
+    step++;
+    if (ft_call(FILE_OP_LOCK, a, 0, 0, 0, 0, FLOCK_EXCLUSIVE) != E_AGAIN) goto done;
+    /* once a lets go, b converts to exclusive, and a cannot share */
+    step++;
+    if (ft_call(FILE_OP_UNLOCK, a, 0, 0, 0, 0, 0) != E_OK) goto done;
+    step++;
+    if (ft_call(FILE_OP_LOCK, b, 0, 0, 0, 0, FLOCK_EXCLUSIVE) != E_OK) goto done;
+    step++;
+    if (ft_call(FILE_OP_LOCK, a, 0, 0, 0, 0, FLOCK_SHARED) != E_AGAIN) goto done;
+
+    /* advisory: a write through another handle is not refused */
+    ft_str(FT_DATA, "locked");
+    step++;
+    if (ft_call(FILE_OP_WRITE, a, 0, FT_DATA, 6, 0, 0) != 6) goto done;
+
+    /* closing b, with no UNLOCK, releases its lock */
+    step++;
+    if (ft_call(FILE_OP_CLOSE, b, 0, 0, 0, 0, 0) != E_OK) goto done;
+    int closed = b;
+    b = -1;
+    step++;
+    if (ft_call(FILE_OP_LOCK, a, 0, 0, 0, 0, FLOCK_EXCLUSIVE) != E_OK) goto done;
+
+    /* bad arguments */
+    step++;
+    if (ft_call(FILE_OP_LOCK, a, 0, 0, 0, 0, 3) != E_INVAL) goto done;
+    step++;
+    if (ft_call(FILE_OP_LOCK, closed, 0, 0, 0, 0, FLOCK_SHARED) != E_BADF) goto done;
+
+    /* the old on-disk lock, owned by a live thread (us): ignored by writes */
+    ft_call(FILE_OP_UNLOCK, a, 0, 0, 0, 0, 0);
+    id = cxfs_resolve(ft_join(scratch, "/kt_lock.txt"), 0);
+    step++;
+    if (id < 0 || cxfs_read_entry((uint32_t)id, &e) != 0) goto done;
+    e.reserved_9e[0] = 1;                                   /* lock_state */
+    *(uint32_t *)&e.reserved_9e[2] = (uint32_t)me;          /* lock_owner_pid */
+    if (cxfs_write_entry(&e) != 0) goto done;
+    w = ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_WRITE);
+    step++;
+    if (w < 0) goto done;
+    step++;
+    if (ft_call(FILE_OP_WRITE, w, 0, FT_DATA, 6, 0, 0) != 6) goto done;
+
+    /* advisory: a file with a lock held on it can still be unlinked */
+    step++;
+    if (ft_call(FILE_OP_LOCK, a, 0, 0, 0, 0, FLOCK_EXCLUSIVE) != E_OK) goto done;
+    ft_call(FILE_OP_CLOSE, w, 0, 0, 0, 0, 0);
+    w = -1;
+    step++;
+    if (ft_call(FILE_OP_UNLINK, 0, FT_PATH, 0, 0, 0, 0) != E_OK) goto done;
+    ft_call(FILE_OP_CLOSE, a, 0, 0, 0, 0, 0);
+    a = -1;
+
+    ok = 1;
+
+done:
+    if (!ok) klog_u32("KTEST", SEV_ERR, "file lock test failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    handle_release_all(thread_handle_table(me), CXK_MAX_HANDLES);
+    if ((id = cxfs_resolve(ft_join(scratch, "/kt_lock.txt"), 0)) >= 0) cxfs_delete_entry((uint32_t)id);
+    thread_set_caps(me, save);
+    unmap_user_page(TEST_CODE_VIRT, phys);
+    return ok;
+}
+
 /* ---- Checkpoint 3b: scheduler-integrated ring-3 processes ---- */
 struct ring3_setup {
     const void *blob;

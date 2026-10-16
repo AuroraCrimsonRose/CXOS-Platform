@@ -440,6 +440,15 @@ a user-addressable file tops out at 2 GB. CXFS remains 64-bit underneath.
   a dozen numbers: ops for `STAT`, `OPEN`, `READ`, `WRITE`, `CLOSE`, `READDIR`, `MKDIR`,
   `UNLINK`, `RENAME`. Open files become a second handle type (`HANDLE_FILE`), which is what
   the handle table in §6 was built to absorb.
+- **Advisory locks** are `FILE_OP_LOCK` (`FLOCK_SHARED` or `FLOCK_EXCLUSIVE`) and
+  `FILE_OP_UNLOCK`, added 2026-10-16 as SerenityOS has them: held by the **open file**, in
+  memory, and released when the handle goes, whether by `CLOSE`, `SYS_HANDLE_CLOSE` or exit.
+  Shared locks coexist; an exclusive one excludes every other open file, including a second
+  open in the same process. They never block (a conflict is `E_AGAIN`), and they are
+  advisory: only another lock is refused, never a read, a write or an unlink. Before this,
+  CXFS kept a lock in the manifest entry owned by a pid. No syscall could set it, it survived
+  reboots, and a crafted volume could use it to refuse writes. Those bytes are now reserved
+  (`CXFS_FILESYSTEM.md` §6.3).
 - **`exec_path`** loads apps from disk with signature verification inherited from the
   kernel's own load path, closing the `spawn` gap noted above. It shares `cxex_exec`'s verify
   and type checks through `cxex_exec_as()`; the two differ only in where authority comes

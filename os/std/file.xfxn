@@ -97,6 +97,29 @@ fn file_sync() -> i32 {
     return file_op(&a);
 }
 
+// ---- advisory locks ----
+
+// Lock an open file: `mode` is FLOCK_SHARED or FLOCK_EXCLUSIVE. Returns 0, or
+// E_AGAIN at once if another open file's lock conflicts - it never waits.
+// The lock belongs to this handle, and file_close releases it; so does exit.
+// Advisory: it refuses only other locks, never a read, write or unlink.
+fn file_lock(h: i32, mode: u32) -> i32 {
+    let a: file_op_args;
+    memzero((&a) as *u8, sizeof a);
+    a.op = FILE_OP_LOCK;
+    a.handle = h;
+    a.flags = mode;
+    return file_op(&a);
+}
+
+fn file_unlock(h: i32) -> i32 {
+    let a: file_op_args;
+    memzero((&a) as *u8, sizeof a);
+    a.op = FILE_OP_UNLOCK;
+    a.handle = h;
+    return file_op(&a);
+}
+
 // ---- position ----
 
 // `origin` is FSEEK_SET, FSEEK_CUR or FSEEK_END. Returns the new offset.

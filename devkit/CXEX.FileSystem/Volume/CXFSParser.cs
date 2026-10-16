@@ -69,8 +69,6 @@ public static class CXFSParser
         entry.OwnerUid = MemoryPrimitives.ReadU32(data, offset + 148);
         entry.GroupId = MemoryPrimitives.ReadU32(data, offset + 152);
         entry.Permissions = MemoryPrimitives.ReadU16(data, offset + 156);
-        entry.LockState = data[offset + 158];
-        entry.LockOwnerPid = MemoryPrimitives.ReadU32(data, offset + 160);
         entry.Created = MemoryPrimitives.ReadU64(data, offset + 164);
         entry.Modified = MemoryPrimitives.ReadU64(data, offset + 172);
         entry.Accessed = MemoryPrimitives.ReadU64(data, offset + 180);

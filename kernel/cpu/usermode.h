@@ -74,6 +74,7 @@ void usercopy_note_recovered_fault(void);
 /* SYS_FILE_OP exercised over a real PAGE_USER mapping (see usermode.c).
    1 = pass, 0 = fail. Lives here because it needs map_user_page. */
 int  usermode_file_test(void);
+int  usermode_flock_test(void);
 
 /* register the ring-3 fault handler so user faults kill the process, not the
    kernel. call once at boot after the scheduler is up. */

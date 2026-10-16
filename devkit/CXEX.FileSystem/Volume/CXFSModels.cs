@@ -39,8 +39,6 @@ public class CXFSEntry
     public uint OwnerUid { get; set; }
     public uint GroupId { get; set; }
     public ushort Permissions { get; set; }
-    public byte LockState { get; set; }
-    public uint LockOwnerPid { get; set; }
     public ulong Created { get; set; }
     public ulong Modified { get; set; }
     public ulong Accessed { get; set; }
