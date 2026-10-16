@@ -1,6 +1,11 @@
 # CXOS Roadmap
 ### CX Design Spec: Aurora Tejeda / CATX Systems
 
+> **Superseded (2026-10-16).** Development has moved to x86-64 on the
+> `x86_64-DEV` branch, which has a new roadmap and design documents. This file
+> is kept as the record of the x86-32 line and is no longer updated. The
+> x86-32 line is in maintenance: fixes only, no new direction.
+
 > **Status: DIRECTION, not schedule.** This records where CXOS is going, the
 > order it should get there, and the reasoning behind each call, so decisions
 > survive longer than the conversation they were made in. Nothing here has a

@@ -1,5 +1,10 @@
 # CXOS Platform documentation
 
+> **The x86-32 line is in maintenance (2026-10-16).** New development, and the
+> documents that describe where CXOS is going, are on the `x86_64-DEV` branch.
+> The documents here describe the x86-32 system as built and stay accurate for
+> it; the roadmap is superseded.
+
 ## Kernel — `kernel/`
 
 | Document | Covers |
