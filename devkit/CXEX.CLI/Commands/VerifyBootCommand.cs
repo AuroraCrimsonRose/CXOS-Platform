@@ -32,6 +32,10 @@ public class VerifyBootCommand : Command<VerifyBootCommand.Settings>
         [DefaultValue(120)]
         public int TimeoutSeconds { get; set; } = 120;
 
+        [CommandOption("--cpu")]
+        [Description("QEMU CPU model, e.g. pentium (minimal) or max (every feature). Default: QEMU's own")]
+        public string? Cpu { get; set; }
+
         [CommandOption("--log")]
         [Description("Where to write the serial log. Default: beside the image, <image>.serial.log")]
         public string? LogPath { get; set; }
@@ -45,15 +49,21 @@ public class VerifyBootCommand : Command<VerifyBootCommand.Settings>
             return 1;
         }
 
+        if (settings.Cpu is { Length: > 0 } c && (c[0] == '-' || !c.All(ch => char.IsAsciiLetterOrDigit(ch) || "_-.,+=".Contains(ch))))
+        {
+            AnsiConsole.MarkupLine($"[red]error:[/] not a CPU model: '{Markup.Escape(c)}'");
+            return 1;
+        }
+
         string log = settings.LogPath is { Length: > 0 } l ? l : settings.ImagePath + ".serial.log";
         AnsiConsole.MarkupLine($"[grey]booting[/] {Markup.Escape(settings.ImagePath)} [grey](snapshot, serial -> {Markup.Escape(log)})[/]");
-        AnsiConsole.MarkupLine($"[grey]{Markup.Escape(QemuTool.CommandLine(BootVerifier.ConfigFor(settings.ImagePath, log)))}[/]");
+        AnsiConsole.MarkupLine($"[grey]{Markup.Escape(QemuTool.CommandLine(BootVerifier.ConfigFor(settings.ImagePath, log, settings.Cpu)))}[/]");
 
         BootVerdict v;
         try
         {
             v = BootVerifier.Run(settings.ImagePath, log, TimeSpan.FromSeconds(settings.TimeoutSeconds), settings.Full,
-                                 line => AnsiConsole.MarkupLine($"[grey]{Markup.Escape(line)}[/]"));
+                                 line => AnsiConsole.MarkupLine($"[grey]{Markup.Escape(line)}[/]"), settings.Cpu);
         }
         catch (System.ComponentModel.Win32Exception ex)
         {

@@ -57,6 +57,7 @@
 #include "cxfs.h"
 #include "pci.h"
 #include "ktest.h"
+#include "arch/x86/cpufeat.h"
 #include "kconfig.h"
 #include "klogo.h"
 #include "speaker.h"
@@ -148,6 +149,8 @@ void kmain(void) {
     klog("GDT", SEV_OK, "GDT + TSS installed");
     idt_init();
     klog("IDT", SEV_OK, "installed");
+    /* Before anything that might ask what the CPU has. */
+    cpufeat_init();
 
     /* memory: physical frames -> virtual mappings -> heap. */
     pmm_init();

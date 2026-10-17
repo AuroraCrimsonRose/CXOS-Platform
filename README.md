@@ -75,6 +75,7 @@ Republish whenever the DevKit changes; `cxk check-abi` names a stale one.
 | Build a development kernel (runs unsigned programs; never ship it) | `cxk os build --dev` |
 | Run | `cxk run dist/CXK_x86_32/images/cxk_disk.img` |
 | Boot and check the self-tests | `cxk verify-boot dist/CXK_x86_32/images/cxk_disk.img --full` |
+| The same on a minimal and a full CPU model | add `--cpu pentium2,-apic`, then `--cpu max` |
 | Host tests | `dotnet test devkit/CXEX.slnx -c Release` |
 | CI, by hand | `tools/ci/Dockerfile` and `tools/ci/build.sh` |
 

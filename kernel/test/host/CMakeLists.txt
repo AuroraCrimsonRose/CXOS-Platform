@@ -28,6 +28,7 @@ set(KERNEL_SOURCES
     ${KDIR}/object/htab.c
     ${KDIR}/object/idtab.c
     ${KDIR}/memman/ocache.c
+    ${KDIR}/arch/x86/cpufeat.c
 )
 
 file(GLOB TEST_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/test_*.c)

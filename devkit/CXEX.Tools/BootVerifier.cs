@@ -80,7 +80,7 @@ public static class BootVerifier
     /// boot, and verifying a release image without it has broken its
     /// SHA256SUMS), and -icount for timing that does not depend on the host.
     /// </summary>
-    public static QemuConfig ConfigFor(string image, string serialLog) => new()
+    public static QemuConfig ConfigFor(string image, string serialLog, string? cpu = null) => new()
     {
         BootDisk = image,
         MachineType = "pc",
@@ -91,6 +91,7 @@ public static class BootVerifier
         Headless = true,
         Serial = serialLog,
         ICountShift = "6",
+        CpuModel = cpu,
     };
 
     /// <summary>
@@ -98,7 +99,7 @@ public static class BootVerifier
     /// time is up. Kills only the QEMU it started: killing by process name
     /// would take down any other emulator on the machine.
     /// </summary>
-    public static BootVerdict Run(string image, string serialLog, TimeSpan timeout, bool full, Action<string>? progress = null)
+    public static BootVerdict Run(string image, string serialLog, TimeSpan timeout, bool full, Action<string>? progress = null, string? cpu = null)
     {
         if (File.Exists(serialLog)) File.Delete(serialLog);
 
@@ -110,7 +111,7 @@ public static class BootVerifier
             RedirectStandardError = true,
             CreateNoWindow = true,
         };
-        foreach (string a in QemuTool.BuildArguments(ConfigFor(image, serialLog))) psi.ArgumentList.Add(a);
+        foreach (string a in QemuTool.BuildArguments(ConfigFor(image, serialLog, cpu))) psi.ArgumentList.Add(a);
 
         using var qemu = Process.Start(psi)
             ?? throw new InvalidOperationException($"could not start {QemuTool.Executable}");

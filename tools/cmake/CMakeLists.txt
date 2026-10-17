@@ -164,6 +164,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/cpu/int/idt.c
     ${SRC_DIR}/kernel/cpu/int/pic.c
     ${SRC_DIR}/kernel/cpu/int/apic.c
+    ${SRC_DIR}/kernel/arch/x86/cpufeat.c
     ${SRC_DIR}/kernel/memman/pmm.c
     ${SRC_DIR}/kernel/memman/paging.c
     ${SRC_DIR}/kernel/memman/addr_space.c

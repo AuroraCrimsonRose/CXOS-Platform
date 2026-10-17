@@ -78,4 +78,18 @@ public class BootVerdictTests
         Assert.Contains("-snapshot", args);
         Assert.Contains("pc", args);   // q35 makes the ATA self-test vacuous
     }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
+    public void The_cpu_model_reaches_qemu_only_when_asked_for()
+    {
+        // QEMU's default model unless one is named; a named one as -cpu, so
+        // the minimal and the full model boots really differ.
+        var plain = QemuTool.BuildArguments(BootVerifier.ConfigFor("cxk_disk.img", "serial.log"));
+        Assert.DoesNotContain("-cpu", plain);
+        var args = QemuTool.BuildArguments(BootVerifier.ConfigFor("cxk_disk.img", "serial.log", "pentium"));
+        int i = args.IndexOf("-cpu");
+        Assert.True(i >= 0 && i + 1 < args.Count);
+        Assert.Equal("pentium", args[i + 1]);
+    }
 }

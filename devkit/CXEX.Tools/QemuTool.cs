@@ -27,6 +27,11 @@ public class QemuConfig
 
     /// <summary>Value of -icount shift=N, or null to leave timing alone.</summary>
     public string? ICountShift { get; set; }
+
+    /// <summary>Value of -cpu, or null for QEMU's default model. The kernel
+    /// is tested on a minimal model and a full one, so both sides of each
+    /// feature check run (docs/kernel/CX_KERNEL_PLAN.md §2.3).</summary>
+    public string? CpuModel { get; set; }
 }
 
 public static class QemuTool
@@ -48,6 +53,11 @@ public static class QemuTool
             "-m", $"{config.MemoryMb}M",
             "-machine", config.MachineType,
         };
+
+        if (config.CpuModel is { Length: > 0 } cpu)
+        {
+            args.Add("-cpu"); args.Add(cpu);
+        }
 
         if (config.EnableAudio)
         {

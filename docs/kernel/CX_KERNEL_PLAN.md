@@ -25,7 +25,7 @@ What it lacks, and what this plan answers:
 | One thing waited on at a time | input, one endpoint, or sleep | §5 |
 | Narrow IPC | one call in flight per endpoint, one page copied, no handle passing, no shared memory | §6 |
 | No user threads, no futex, no pipes | | §7 |
-| x86 code mixed with generic code | `kernel/cpu` holds both `gdt.c` and `sched.c` | §2.2 |
+| x86 code mixed with generic code | `kernel/cpu` holds both `gdt.c` and `sched.c`. Step 3a began `kernel/arch/x86/` with the CPU feature table | §2.2 |
 | Uniprocessor locking | critical sections switch interrupts off | §8 |
 | First-fit linked-list heap | `heap.c` | §8 |
 | PIT at 1000 Hz | | §8 |
@@ -85,7 +85,12 @@ at boot into one feature table, and every optional path asks the table.
   built for baseline x86-64; a faster path (AVX for the compositor, say) is
   chosen at run time.
 - **Tested both ways.** QEMU boots with a minimal CPU model and a full one, so
-  both sides of each feature check run.
+  both sides of each feature check run. Done for the 32-bit kernel in roadmap
+  step 3a: `cxk verify-boot --cpu pentium2,-apic` (no local APIC, no SSE) and
+  `--cpu max`. The table is `kernel/arch/x86/cpufeat.h`, printed at boot; its
+  decoder is host-tested on register values from CPUs QEMU does not model.
+  The 32-bit kernel needs an i686: it is compiled with `cmov`, so a plain
+  `pentium` model panics at the first one, with no message saying why.
 
 ### 2.4 Memory layout
 

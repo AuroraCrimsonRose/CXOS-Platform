@@ -5,6 +5,7 @@
 /* Local APIC + I/O APIC. See apic.h for what this replaces and what it does not. */
 
 #include "apic.h"
+#include "arch/x86/cpufeat.h"
 #include "pic.h"
 #include "io.h"
 #include "paging.h"
@@ -92,13 +93,6 @@ static uint32_t ioapic_rd(uint32_t reg) {
 static void ioapic_wr(uint32_t reg, uint32_t v) {
     *(volatile uint32_t *)(ioapic + IOAPIC_REGSEL) = reg;
     *(volatile uint32_t *)(ioapic + IOAPIC_IOWIN) = v;
-}
-
-static int cpu_has_apic(void) {
-    uint32_t eax, ebx, ecx, edx;
-    __asm__ volatile ("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
-                              : "a"(1));
-    return (edx >> 9) & 1;      /* leaf 1, EDX bit 9 */
 }
 
 void lapic_eoi(void) {
@@ -206,7 +200,7 @@ int apic_init(void) {
     lapic_up = 0;
     apic_up = 0;
 
-    if (!cpu_has_apic()) {
+    if (!cpu_has(CPU_APIC)) {     /* the feature table, read at boot */
         klog("APIC", SEV_INFO, "no local APIC on this CPU - staying on the 8259");
         return 0;
     }

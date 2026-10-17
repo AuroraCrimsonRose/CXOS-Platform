@@ -50,6 +50,8 @@
 #include "kconfig.h"
 #include "gdt.h"
 #include "idt.h"
+#include "apic.h"
+#include "arch/x86/cpufeat.h"
 
 
 /* concise pass/fail reporter */
@@ -2593,6 +2595,38 @@ static int test_process_exit_releases(void) {
         && pmm_free_count() == free0;
 }
 
+/* ---- the CPU feature table is this CPU's (roadmap step 3a) ----
+ * The decoding rules are host-tested (test_cpufeat.c). This proves the table
+ * the kernel booted with was read from the CPU it is running on: rebuilt here
+ * from CPUID executed now, leaf by leaf, it must match exactly. A table left
+ * empty, read from the wrong leaf, or filled before the CPU was asked fails.
+ * And the APIC code must have obeyed it: no local APIC in the table means
+ * none was brought up. Booted on a minimal and a full CPU model, both sides
+ * of that run. */
+static int test_cpu_features(void) {
+    const struct cpu_info *ci = cpu_info();
+    struct cpuid_raw raw = { 0 };
+    uint32_t r[4];
+    cpuid_read(0, 0, r);
+    raw.max_basic = r[0];
+    raw.vendor[0] = r[1]; raw.vendor[1] = r[3]; raw.vendor[2] = r[2];
+    if (raw.max_basic >= 1) cpuid_read(1, 0, raw.l1);
+    if (raw.max_basic >= 7) cpuid_read(7, 0, raw.l7);
+    cpuid_read(0x80000000u, 0, r);
+    raw.max_ext = r[0];
+    if ((raw.max_ext >> 16) == 0x8000u && raw.max_ext >= 0x80000001u) cpuid_read(0x80000001u, 0, raw.e1);
+    if ((raw.max_ext >> 16) == 0x8000u && raw.max_ext >= 0x80000007u) cpuid_read(0x80000007u, 0, raw.e7);
+    struct cpu_info now;
+    cpufeat_decode(&raw, &now);
+
+    if (ci->max_basic < 1 || ci->vendor[0] == 0) return 0;   /* never filled */
+    for (int i = 0; i < 13; i++) if (ci->vendor[i] != now.vendor[i]) return 0;
+    if (ci->feat != now.feat || ci->family != now.family || ci->model != now.model) return 0;
+    if (cpu_has(CPU_FPU) != (int)((raw.l1[3] >> 0) & 1u)) return 0;   /* cpu_has reads it */
+    if (lapic_active() && !cpu_has(CPU_APIC)) return 0;   /* APIC obeyed the table */
+    return 1;
+}
+
 #if CXK_KTEST_STACK_OVERFLOW
 /* Recurse until the stack runs out. The volatile buffer keeps each frame real
    and the addition after the call keeps it from becoming a loop. */
@@ -2642,6 +2676,7 @@ void ktest_run(void) {
     total++; passed += report("thread and pid tables grow past 64", test_thread_table_grows());
     total++; passed += report("a handle table grows to its limit and is freed", test_handle_table_grows());
     total++; passed += report("a process that faults gives back everything", test_process_exit_releases());
+    total++; passed += report("the cpu feature table is this cpu's",   test_cpu_features());
     total++; passed += report("cxex signature + tamper",           test_cxex_signature());
     total++; passed += report("disk: ATA LBA range refused",        test_disk_lba_range());
     total++; passed += report("cxex loader refuses bad images",    ktest_loader_adversarial());
