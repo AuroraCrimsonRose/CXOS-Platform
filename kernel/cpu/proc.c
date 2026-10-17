@@ -9,7 +9,7 @@
 #include "object/idtab.h"
 #include "sync/spinlock.h"
 #include "panic.h"
-#include "memman/addr_space.h"
+#include "arch/paging.h"
 
 static struct ocache proc_cache;
 static struct idtab  pids;   /* pid -> process */

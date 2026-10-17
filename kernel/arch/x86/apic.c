@@ -8,7 +8,7 @@
 #include "arch/x86/cpufeat.h"
 #include "pic.h"
 #include "io.h"
-#include "paging.h"
+#include "arch/paging.h"
 #include "acpi.h"
 #include "logging.h"
 
@@ -133,7 +133,7 @@ static void parse_madt(struct madt_header *madt) {
         if (e->type == MADT_IOAPIC && !ioapic) {
             uint32_t addr = *(uint32_t *)(p + 4);
             ioapic_gsi_base = *(uint32_t *)(p + 8);
-            paging_map_kernel(addr, addr, PAGE_PRESENT | PAGE_WRITE | PAGE_NO_CACHE);
+            paging_map_kernel(addr, addr, VM_WRITE | VM_UNCACHED);
             ioapic = (volatile uint8_t *)addr;
         } else if (e->type == MADT_ISO) {
             uint8_t source = p[3];
@@ -146,7 +146,7 @@ static void parse_madt(struct madt_header *madt) {
             uint64_t addr = *(uint64_t *)(p + 4);
             if ((addr >> 32) == 0 && addr) {
                 paging_map_kernel((uint32_t)addr, (uint32_t)addr,
-                           PAGE_PRESENT | PAGE_WRITE | PAGE_NO_CACHE);
+                           VM_WRITE | VM_UNCACHED);
                 lapic = (volatile uint8_t *)(uint32_t)addr;
             }
         }
@@ -212,7 +212,7 @@ int apic_init(void) {
     if (!base) base = 0xFEE00000u;
     wrmsr(IA32_APIC_BASE, (base_msr | APIC_BASE_ENABLE));
 
-    paging_map_kernel(base, base, PAGE_PRESENT | PAGE_WRITE | PAGE_NO_CACHE);
+    paging_map_kernel(base, base, VM_WRITE | VM_UNCACHED);
     lapic = (volatile uint8_t *)base;
 
     struct madt_header *madt = (struct madt_header *)acpi_find_table("APIC");

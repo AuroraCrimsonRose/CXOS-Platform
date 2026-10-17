@@ -24,7 +24,7 @@
 #include "fb.h"
 #include "gdt.h"
 #include "kstack.h"
-#include "paging.h"
+#include "arch/paging.h"
 #include "usermode.h"   /* usercopy_start / usercopy_end / usercopy_trampoline */
 #include "serial.h"     /* the panic tee - see panic_putc_at */
 

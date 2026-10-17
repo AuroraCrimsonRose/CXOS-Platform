@@ -8,7 +8,7 @@
 #include "arch/x86/io.h"
 #include "logging.h"
 #include "arch/x86/apic.h"
-#include "paging.h"
+#include "arch/paging.h"
 
 #define PCI_CONFIG_ADDR 0xCF8
 #define PCI_CONFIG_DATA 0xCFC
@@ -311,7 +311,7 @@ int pci_msix_enable(const struct pci_device *d, uint8_t vector) {
 
     uint32_t entry = base + offset;   /* entry 0 - one vector is all we want */
     paging_map_kernel(entry & ~0xFFFu, entry & ~0xFFFu,
-               PAGE_PRESENT | PAGE_WRITE | PAGE_NO_CACHE);
+               VM_WRITE | VM_UNCACHED);
 
     volatile uint32_t *e = (volatile uint32_t *)entry;
     e[0] = msi_message_address();     /* address low  */

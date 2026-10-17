@@ -8,7 +8,7 @@
 #include "arch/x86_32/idt.h"
 #include "sched.h"
 #include "uid.h"
-#include "paging.h"
+#include "arch/paging.h"
 #include "pmm.h"
 #include "heap.h"
 #include "vmregion.h"
@@ -46,7 +46,7 @@ extern void return_to_kernel(int retval, uint32_t *save_slot);
  * by frames ALLOCATED from the pmm and mapped at user-VIRTUAL addresses (low,
  * below the kernel's 0xC0000000, so ring 3 can reach them). The kernel copies
  * the blob in via the user-virtual address - legal because ring 0 may touch
- * PAGE_USER pages, and the mapping is live in the current address space.
+ * user pages, and the mapping is live in the current address space.
  *
  * user virtual layout (per process slot):
  *   code_virt  = R3_BASE + pid * R3_SLOT_SIZE
@@ -63,12 +63,12 @@ extern void return_to_kernel(int retval, uint32_t *save_slot);
 #define TEST_CODE_VIRT   R3_BASE
 #define TEST_STACK_VIRT  (R3_BASE + 0x1000)
 
-/* map one fresh pmm frame at virtual `virt` (PAGE_USER). returns the physical
+/* map one fresh pmm frame at virtual `virt` (a user page). returns the physical
    frame (so it can be freed later), or 0 on failure. */
 static uint32_t map_user_page(uint32_t virt) {
     uint32_t phys = (uint32_t)pmm_alloc();
     if (!phys) return 0;
-    if (paging_map_user(virt, phys, PAGE_PRESENT | PAGE_WRITE) != 0) { pmm_free((void *)phys); return 0; }
+    if (paging_map_user(virt, phys, VM_WRITE) != 0) { pmm_free((void *)phys); return 0; }
     return phys;
 }
 
@@ -462,7 +462,7 @@ int usermode_test(void) {
  * Drives SYS_FILE_OP the way ring 3 does, short of the int 0x80 gate itself
  * (which the other syscalls already prove). The point of doing it from here
  * rather than from ktest.c is map_user_page: the args and buffers have to live
- * in a PAGE_USER mapping or user_ptr_readable rejects them, which is exactly the
+ * in a user mapping or user_ptr_readable rejects them, which is exactly the
  * check that would otherwise go untested until a real program tripped it.
  *
  * Goes through syscall_dispatch rather than calling sys_file_op directly, so

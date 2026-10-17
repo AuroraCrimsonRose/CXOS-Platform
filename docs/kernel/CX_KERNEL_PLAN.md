@@ -25,7 +25,7 @@ What it lacks, and what this plan answers:
 | One thing waited on at a time | input, one endpoint, or sleep | §5 |
 | Narrow IPC | one call in flight per endpoint, one page copied, no handle passing, no shared memory | §6 |
 | No user threads, no futex, no pipes | | §7 |
-| x86 code mixed with generic code | Step 3b moved the GDT, IDT, TSS, context switch, entry stub and linker script to `kernel/arch/x86_32/`, and the local APIC and port primitives to `kernel/arch/x86/`. Left: paging, port I/O in 12 drivers, inline assembly in nine generic files (`sched.c`, `spinlock.h`, `kmain.c`, `ktest.c`, `power.c`, `acpi.c`, `timer.c`, `keyboard.c`, `kmath.c`) and the unbuilt `cpu/fpu.c`, `usermode.c`'s view of the register frame, MSI addresses in `pci.c` | §2.2 |
+| x86 code mixed with generic code | Step 3b moved the GDT, IDT, TSS, context switch, entry stub and linker script to `kernel/arch/x86_32/`, and the local APIC and port primitives to `kernel/arch/x86/`. Step 3c put paging behind `arch/paging.h`. Left: port I/O in 12 drivers, inline assembly in nine generic files (`sched.c`, `spinlock.h`, `kmain.c`, `ktest.c`, `power.c`, `acpi.c`, `timer.c`, `keyboard.c`, `kmath.c`) and the unbuilt `cpu/fpu.c`, `usermode.c`'s view of the register frame, MSI addresses in `pci.c` | §2.2 |
 | Uniprocessor locking | critical sections switch interrupts off | §8 |
 | First-fit linked-list heap | `heap.c` | §8 |
 | PIT at 1000 Hz | | §8 |
@@ -74,8 +74,17 @@ The layout (step 3b): `kernel/arch/x86_32/` and later `x86_64/` hold what
 differs by width; `kernel/arch/x86/` holds what both share (the feature table,
 the local APIC, port I/O). Generic code does not include either. It includes
 the arch-neutral interfaces beside them, which every architecture implements:
-`arch/cpu.h` (the processor's tables, the stack taken on entry from user mode)
-and `arch/irq.h` (handlers, MSI vectors; the register frame is opaque).
+`arch/cpu.h` (the processor's tables, the stack taken on entry from user mode),
+`arch/irq.h` (handlers, MSI vectors; the register frame is opaque) and
+`arch/paging.h` (step 3c). A mapping is asked for by what it allows,
+`VM_WRITE`, `VM_EXEC`, `VM_UNCACHED`, never by page-table bits, and there is
+no flag that makes a kernel mapping reachable from user mode: only
+`paging_map_user` can, and only below `KERNEL_VBASE`. An address space is named
+by its root table's physical address (`paddr_t`, 32 bits on x86-32). The 32-bit
+recursive directory, its entry format and the propagation of new kernel-half
+entries are private to `arch/x86_32/`; the encoders (`pagetable.c`) are
+host-tested. `VM_EXEC` is accepted everywhere and enforced where the MMU can,
+which on x86-32 without PAE is nowhere; x86-64 enforces it with NX.
 `kpanic` is declared in `kernel/panic.h`. Device registers are reached
 through an I/O window, port-mapped or memory-mapped, so a driver's logic is
 the same for both (SerenityOS `Kernel/Library/IOWindow.cpp`); only the window's

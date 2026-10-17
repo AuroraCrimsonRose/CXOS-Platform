@@ -29,6 +29,7 @@ set(KERNEL_SOURCES
     ${KDIR}/object/idtab.c
     ${KDIR}/memman/ocache.c
     ${KDIR}/arch/x86/cpufeat.c
+    ${KDIR}/arch/x86_32/pagetable.c
 )
 
 file(GLOB TEST_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/test_*.c)

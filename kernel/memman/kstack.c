@@ -5,7 +5,7 @@
 /* Guarded kernel stacks - see kstack.h. */
 
 #include "kstack.h"
-#include "paging.h"
+#include "arch/paging.h"
 #include "pmm.h"
 
 struct kstack_slot {
@@ -25,7 +25,7 @@ void kstack_init(void) {
        space; created now, it is simply copied into each space as it is made. */
     for (uint32_t v = KSTACK_REGION_BASE; v < KSTACK_REGION_BASE + KSTACK_REGION_SIZE;
          v += 0x00400000u) {
-        paging_map_kernel(v, 0, PAGE_PRESENT | PAGE_WRITE);
+        paging_map_kernel(v, 0, VM_WRITE);
         paging_unmap(v);
     }
     for (uint32_t i = 0; i < KSTACK_SLOTS; i++) { slots[i].base = 0; slots[i].owner = -1; }
@@ -54,7 +54,7 @@ uint32_t kstack_alloc(uint32_t bytes, int owner, uint32_t *base_out) {
             }
             return 0;
         }
-        paging_map_kernel(base + p * PAGE_SIZE, (uint32_t)frame, PAGE_PRESENT | PAGE_WRITE);
+        paging_map_kernel(base + p * PAGE_SIZE, (uint32_t)frame, VM_WRITE);
     }
 
     slots[i].base  = base;

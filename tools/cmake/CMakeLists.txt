@@ -167,8 +167,9 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/arch/x86/apic.c
     ${SRC_DIR}/kernel/arch/x86/cpufeat.c
     ${SRC_DIR}/kernel/memman/pmm.c
-    ${SRC_DIR}/kernel/memman/paging.c
-    ${SRC_DIR}/kernel/memman/addr_space.c
+    ${SRC_DIR}/kernel/arch/x86_32/paging.c
+    ${SRC_DIR}/kernel/arch/x86_32/pagetable.c
+    ${SRC_DIR}/kernel/arch/x86_32/addr_space.c
     ${SRC_DIR}/kernel/memman/heap.c
     ${SRC_DIR}/kernel/memman/vmregion.c
     ${SRC_DIR}/kernel/memman/kstack.c

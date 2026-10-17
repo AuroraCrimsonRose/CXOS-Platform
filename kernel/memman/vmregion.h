@@ -17,7 +17,7 @@
  * VIEW of - its object and 64-bit offset - which has no room in a PTE. When
  * file-backed mappings arrive, that last one is what makes them possible.
  *
- * WHAT THIS DOES NOT DO: free frames on exit. addr_space_reclaim_user() walks
+ * WHAT THIS DOES NOT DO: free frames on exit. addr_space_release() walks
  * the whole user half and frees every present frame, so an exiting process's
  * mappings are already reclaimed by the address-space teardown that was there
  * before this existed. This module only forgets its bookkeeping. Duplicating
@@ -77,7 +77,7 @@ void     vm_set_default_quota(uint32_t bytes);
    whole subtree, which is a different and larger design. */
 void vm_proc_init(int pid, uint32_t quota, int parent);
 
-/* Forget pid's regions. Call on exit AFTER addr_space_reclaim_user(), which is
+/* Forget pid's regions. Call on exit AFTER addr_space_release(), which is
    what actually frees the frames. */
 void vm_proc_reset(int pid);
 

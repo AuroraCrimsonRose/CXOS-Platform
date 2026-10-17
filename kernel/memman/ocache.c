@@ -241,7 +241,7 @@ int ocache_walk(struct ocache *c, int (*fn)(void *obj, void *ctx), void *ctx) {
 }
 
 #ifndef CXK_HOST_TEST
-#include "paging.h"
+#include "arch/paging.h"
 #include "pmm.h"
 #include "panic.h"
 
@@ -255,7 +255,7 @@ void ocache_sys_init(void) {
        rather than propagated into live ones later. kstack_init does the same. */
     for (uint32_t v = OCACHE_WINDOW_BASE; v < OCACHE_WINDOW_BASE + OCACHE_SLOTS * OCACHE_SPAN;
          v += 0x00400000u) {
-        paging_map_kernel(v, 0, PAGE_PRESENT | PAGE_WRITE);
+        paging_map_kernel(v, 0, VM_WRITE);
         paging_unmap(v);
     }
 }
@@ -273,7 +273,7 @@ int ocache_map(uintptr_t va, uint32_t pages) {
     for (uint32_t p = 0; p < pages; p++) {
         void *frame = pmm_alloc();
         if (!frame) { ocache_unmap(va, p); return -1; }
-        paging_map_kernel((uint32_t)va + p * OCACHE_PAGE, (uint32_t)frame, PAGE_PRESENT | PAGE_WRITE);
+        paging_map_kernel((uint32_t)va + p * OCACHE_PAGE, (uint32_t)frame, VM_WRITE);
     }
     return 0;
 }

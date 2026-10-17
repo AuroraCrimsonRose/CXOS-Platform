@@ -8,7 +8,7 @@
 #include "xhci.h"
 #include "usb.h"
 #include "pci.h"
-#include "paging.h"
+#include "arch/paging.h"
 #include "logging.h"
 #include "arch/irq.h"
 #include "arch/x86/apic.h"
@@ -820,7 +820,7 @@ int xhci_init(void) {
     /* xHCI register files are large - runtime and doorbell regions sit well
        past the operational registers - so map generously. */
     for (uint32_t off = 0; off < 0x10000; off += 0x1000)
-        paging_map_kernel(base + off, base + off, PAGE_PRESENT | PAGE_WRITE | PAGE_NO_CACHE);
+        paging_map_kernel(base + off, base + off, VM_WRITE | VM_UNCACHED);
     cap_regs = (volatile uint8_t *)base;
 
     uint32_t caplen = *(volatile uint8_t *)(cap_regs + XCAP_CAPLENGTH);
@@ -838,7 +838,7 @@ int xhci_init(void) {
     if (nports == 0 || maxslots == 0) return 0;
 
     for (uint32_t a = XDMA_BASE; a < XDMA_END; a += 0x1000)
-        paging_map_kernel(XDMA_V(a), a, PAGE_PRESENT | PAGE_WRITE);
+        paging_map_kernel(XDMA_V(a), a, VM_WRITE);
 
     /* Wait for the controller to finish its own power-on before touching it. */
     for (int i = 0; i < 100 && (op_rd(XOP_USBSTS) & XSTS_CNR); i++) timer_sleep(1);

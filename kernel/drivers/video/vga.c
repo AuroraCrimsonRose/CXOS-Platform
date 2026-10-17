@@ -4,7 +4,7 @@
 /* Aurora Tejeda */
 /* Text-mode VGA renderer. Stateless cell drawing + hardware cursor. */
 
-#include "paging.h"   /* KERNEL_VBASE */
+#include "arch/paging.h"   /* KERNEL_VBASE */
 #include "vga.h"
 #include "arch/x86/io.h"
 

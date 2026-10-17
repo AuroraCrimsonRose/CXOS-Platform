@@ -13,7 +13,7 @@
  * Severity/tag logging built on these primitives lives in lib/string/logging.c.
  */
 
-#include "paging.h"   /* KERNEL_VBASE */
+#include "arch/paging.h"   /* KERNEL_VBASE */
 #include "console.h"
 #include "vga.h"
 #include "fb.h"

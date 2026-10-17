@@ -6,7 +6,7 @@
 
 #include "acpi.h"
 #include "arch/x86/io.h"
-#include "paging.h"
+#include "arch/paging.h"
 
 /* ---- ACPI table structures (packed, as they appear in memory) ---- */
 
@@ -165,7 +165,7 @@ static void *map_table(uint32_t phys, uint32_t len) {
     uint32_t start = phys & ~0xFFFu;
     uint32_t end = (phys + len + 0xFFF) & ~0xFFFu;
     for (uint32_t a = start; a < end; a += 0x1000)
-        paging_map_kernel(a, a, PAGE_PRESENT | PAGE_WRITE);
+        paging_map_kernel(a, a, VM_WRITE);
     return (void *)phys;
 }
 

@@ -6,7 +6,7 @@
 
 #include "e1000.h"
 #include "pci.h"
-#include "paging.h"
+#include "arch/paging.h"
 #include "logging.h"
 
 /* ---- e1000 register offsets (from the MMIO base, BAR0) ---- */
@@ -76,12 +76,12 @@
  * process's, because a shell `ping` reaches this code through SYS_NET_OP while
  * CR3 points at the shell's page directory.
  *
- * addr_space_init_pd() zeroes the whole user half for each new process, so an
+ * pd_init() zeroes the whole user half for each new process, so an
  * identity mapping at 0x700000 exists only in the kernel's own directory. That
  * is why writing TX_BUF_ADDR faulted (CR2 = 0x712000) the moment ping ran from
  * the shell rather than from boot context.
  *
- * Fix: map the region into the KERNEL half, which addr_space_init_pd copies
+ * Fix: map the region into the KERNEL half, which pd_init copies
  * into every process directory and paging's PDE hook propagates to live ones.
  * The CPU uses the 0xC07..... alias; the NIC still gets 0x007.....
  */
@@ -239,19 +239,19 @@ int e1000_init(void) {
     uint32_t base = pci_bar_mmio32(dev, 0, "E1000");
     if (base == 0) return 0;
 
-    /* PAGE_NO_CACHE: these are device registers, not memory. Reads have side
+    /* VM_UNCACHED: these are device registers, not memory. Reads have side
        effects and the device changes status bits under us, so a cached line
        would serve stale values. The DMA region mapped below is deliberately
        left cacheable - x86 snoops DMA, so write-back is both correct and
        faster there. */
     for (uint32_t off = 0; off < 0x20000; off += 0x1000)
-        paging_map_kernel(base + off, base + off, PAGE_PRESENT | PAGE_WRITE | PAGE_NO_CACHE);
+        paging_map_kernel(base + off, base + off, VM_WRITE | VM_UNCACHED);
     regs = (volatile uint8_t *)base;
 
     /* map the NIC DMA region */
     /* map the DMA region into the KERNEL half so every address space sees it */
     for (uint32_t a = E1000_DMA_BASE; a < E1000_DMA_END; a += 0x1000)
-        paging_map_kernel(DMA_V(a), a, PAGE_PRESENT | PAGE_WRITE);
+        paging_map_kernel(DMA_V(a), a, VM_WRITE);
 
     /* mask off all interrupts (we poll in stage 1) */
     mmio_wr(E1000_IMC, 0xFFFFFFFF);

@@ -4,7 +4,7 @@
 /* Aurora Tejeda / CATX Systems */
 /* Physical Memory Manager - bitmap allocator (v5, higher-half aware). */
 
-#include "paging.h"   /* KERNEL_VBASE */
+#include "arch/paging.h"   /* KERNEL_VBASE */
 #include "pmm.h"
 #include "align.h"
 #include "bitmap.h"

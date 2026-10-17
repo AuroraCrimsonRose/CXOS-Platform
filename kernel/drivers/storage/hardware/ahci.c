@@ -6,7 +6,7 @@
 
 #include "ahci.h"
 #include "pci.h"
-#include "paging.h"
+#include "arch/paging.h"
 #include "pmm.h"
 #include "timer.h"
 #include "console.h"
@@ -191,7 +191,7 @@ static int ahci_dma_init(void) {
     for (int i = 0; i < AHCI_MAX_PORTS; i++)
         paging_map_kernel(dma_virt_base + i * 0x1000,
                    dma_phys_base + i * 0x1000,
-                   PAGE_PRESENT | PAGE_WRITE);
+                   VM_WRITE);
 
     /* bounce buffer: physically contiguous, for data transfers */
     void *bp = pmm_alloc_pages(AHCI_BOUNCE_PAGES);
@@ -201,7 +201,7 @@ static int ahci_dma_init(void) {
     for (int i = 0; i < AHCI_BOUNCE_PAGES; i++)
         paging_map_kernel((uint32_t)bounce_virt + i * 0x1000,
                    bounce_phys + i * 0x1000,
-                   PAGE_PRESENT | PAGE_WRITE);
+                   VM_WRITE);
     return 0;
 }
 
@@ -406,14 +406,14 @@ int ahci_init(void) {
        ABAR is a hardware MMIO physical address (not RAM the PMM manages), so
        identity-mapping it (virt == phys) is correct - hba is then a usable
        kernel pointer. */
-    /* PAGE_NO_CACHE: the ABAR is a register window. Port status, the command
+    /* VM_UNCACHED: the ABAR is a register window. Port status, the command
        issue/completion bits and the interrupt status are all changed by the HBA
        behind the CPU's back, so caching them means polling a stale copy - which
        on real hardware shows up as a command that never appears to complete.
        The DMA structures allocated in ahci_dma_init stay cacheable; x86 keeps
        those coherent by snooping. */
     for (uint32_t off = 0; off < 0x2000; off += 0x1000)
-        paging_map_kernel(abar + off, abar + off, PAGE_PRESENT | PAGE_WRITE | PAGE_NO_CACHE);
+        paging_map_kernel(abar + off, abar + off, VM_WRITE | VM_UNCACHED);
     hba = (volatile struct hba_mem *)abar;
 
     /* allocate + map the DMA structures region and bounce buffer from the PMM

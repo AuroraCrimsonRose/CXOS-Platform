@@ -5,7 +5,7 @@
 /* Kernel heap - v1 linked-list (free-list) allocator on top of the PMM. */
 
 #include "heap.h"
-#include "paging.h"
+#include "arch/paging.h"
 #include "pmm.h"
 #include "memman/ocache.h"   /* OCACHE_WINDOW_BASE: where the heap must stop */
 
@@ -79,7 +79,7 @@ static block_t *heap_grow(size_t need) {
     for (size_t i = 0; i < pages; i++) {
         paging_map_kernel(virt_base + i * PMM_PAGE_SIZE,
                    pbase     + i * PMM_PAGE_SIZE,
-                   PAGE_PRESENT | PAGE_WRITE);   /* kernel-only, writable */
+                   VM_WRITE);   /* kernel-only, writable */
     }
     heap_virt_next += pages * PMM_PAGE_SIZE;
 

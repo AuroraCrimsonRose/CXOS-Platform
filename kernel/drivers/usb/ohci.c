@@ -8,7 +8,7 @@
 #include "ohci.h"
 #include "usb.h"
 #include "pci.h"
-#include "paging.h"
+#include "arch/paging.h"
 #include "logging.h"
 #include "timer.h"
 
@@ -575,11 +575,11 @@ int ohci_init(void) {
     uint32_t base = pci_bar_mmio32(dev, 0, "OHCI");
     if (base == 0) return 0;
 
-    paging_map_kernel(base, base, PAGE_PRESENT | PAGE_WRITE | PAGE_NO_CACHE);
+    paging_map_kernel(base, base, VM_WRITE | VM_UNCACHED);
     regs = (volatile uint8_t *)base;
 
     for (uint32_t a = ODMA_BASE; a < ODMA_END; a += 0x1000)
-        paging_map_kernel(ODMA_V(a), a, PAGE_PRESENT | PAGE_WRITE);
+        paging_map_kernel(ODMA_V(a), a, VM_WRITE);
 
     ohci_takeover();
 

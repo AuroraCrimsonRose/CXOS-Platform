@@ -8,7 +8,7 @@
 #include "ehci.h"
 #include "usb.h"
 #include "pci.h"
-#include "paging.h"
+#include "arch/paging.h"
 #include "logging.h"
 #include "timer.h"
 
@@ -638,7 +638,7 @@ int ehci_init(void) {
     uint32_t base = pci_bar_mmio32(dev, 0, "EHCI");
     if (base == 0) return 0;
     for (uint32_t off = 0; off < 0x1000; off += 0x1000)
-        paging_map_kernel(base + off, base + off, PAGE_PRESENT | PAGE_WRITE | PAGE_NO_CACHE);
+        paging_map_kernel(base + off, base + off, VM_WRITE | VM_UNCACHED);
     cap_regs = (volatile uint8_t *)base;
 
     uint32_t hccparams = cap_rd32(CAP_HCCPARAMS);
@@ -653,7 +653,7 @@ int ehci_init(void) {
 
     /* DMA window into the kernel half, cacheable - x86 snoops bus-master DMA. */
     for (uint32_t a = EHCI_DMA_BASE; a < EHCI_DMA_END; a += 0x1000)
-        paging_map_kernel(DMA_V(a), a, PAGE_PRESENT | PAGE_WRITE);
+        paging_map_kernel(DMA_V(a), a, VM_WRITE);
 
     qh  = (struct ehci_qh  *)DMA_V(QH_ADDR);
     qtd = (struct ehci_qtd *)DMA_V(QTD_ADDR);

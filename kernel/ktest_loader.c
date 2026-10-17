@@ -26,7 +26,7 @@
 #include "cxex_load.h"
 #include "cxk_abi.h"
 #include "pmm.h"
-#include "paging.h"
+#include "arch/paging.h"
 #include "usermode.h"
 #include "heap.h"
 #include "cxfs.h"
@@ -186,7 +186,7 @@ int ktest_loader_adversarial(void) {
     ok = ok && g_charged == 1 && g_charge_maps == 0;
 
     /* A section naming a kernel address. This is the Critical finding: it used
-       to be mapped, with PAGE_USER, handing ring 3 the kernel. */
+       to be mapped, reachable from ring 3, handing ring 3 the kernel. */
     img_valid();
     wr32(SEC0_VADDR, KERNEL_VBASE);
     ok = ok && refuses(CXEX_LOAD_BAD_RANGE);
@@ -408,7 +408,7 @@ int ktest_user_ptr_writability(void) {
     void *frame = pmm_alloc();
     if (!frame) return 0;
 
-    if (paging_map_user(va, (uint32_t)frame, PAGE_PRESENT) != 0) { pmm_free(frame); return 0; }   /* no PAGE_WRITE */
+    if (paging_map_user(va, (uint32_t)frame, 0) != 0) { pmm_free(frame); return 0; }   /* no VM_WRITE */
 
     int ok = 1;
     ok = ok && user_ptr_readable(va, 64) == 1;
@@ -416,7 +416,7 @@ int ktest_user_ptr_writability(void) {
 
     /* The same page, now writable, must pass both - otherwise the check could be
        refusing everything and this test would not notice. */
-    if (paging_map_user(va, (uint32_t)frame, PAGE_PRESENT | PAGE_WRITE) != 0) { pmm_free(frame); return 0; }
+    if (paging_map_user(va, (uint32_t)frame, VM_WRITE) != 0) { pmm_free(frame); return 0; }
     ok = ok && user_ptr_readable(va, 64) == 1;
     ok = ok && user_ptr_writable(va, 64) == 1;
 
@@ -484,7 +484,7 @@ int ktest_spawn_verifies_image(void) {
         frames[i] = pmm_alloc();
         if (!frames[i]) break;
         if (paging_map_user(SPV_ARGS_VA + i * PAGE_SIZE, (uint32_t)frames[i],
-                            PAGE_PRESENT | PAGE_WRITE) != 0) {
+                            VM_WRITE) != 0) {
             pmm_free(frames[i]);
             break;
         }

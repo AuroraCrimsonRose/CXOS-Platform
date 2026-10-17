@@ -7,7 +7,7 @@
 
 #include "rtl8169.h"
 #include "pci.h"
-#include "paging.h"
+#include "arch/paging.h"
 #include "logging.h"
 
 /* ---- register map (offsets from the MMIO base) --------------------------
@@ -100,7 +100,7 @@ struct rtl_desc {
  * arrives here through SYS_NET_OP with CR3 pointing at the shell's directory.
  * An identity mapping would live only in the kernel's own directory and fault
  * the moment it was touched from a process. So the CPU uses a KERNEL-half
- * alias, which addr_space_init_pd copies into every new directory.
+ * alias, which pd_init copies into every new directory.
  *
  * 0x730000 sits in the window pmm.c already reserves for driver DMA
  * (0x500000-0x800000), just past e1000's region which ends at 0x722000. It
@@ -234,17 +234,17 @@ int rtl8169_init(void) {
 
     /* Without bus master the rings are never read, which looks like dead silicon. */
     pci_enable_bus_master(dev);
-    /* PAGE_NO_CACHE: device registers, not memory. The chip changes status bits
+    /* VM_UNCACHED: device registers, not memory. The chip changes status bits
        under us and reads have side effects, so a cached line would serve stale
        values. 64 KB covers the whole register file on every family member. */
     for (uint32_t off = 0; off < 0x10000; off += 0x1000)
-        paging_map_kernel(base + off, base + off, PAGE_PRESENT | PAGE_WRITE | PAGE_NO_CACHE);
+        paging_map_kernel(base + off, base + off, VM_WRITE | VM_UNCACHED);
     regs = (volatile uint8_t *)base;
 
     /* DMA region into the kernel half - deliberately left CACHEABLE; x86 snoops
        bus-master DMA, so write-back is both correct and faster for buffers. */
     for (uint32_t a = RTL_DMA_BASE; a < RTL_DMA_END; a += 0x1000)
-        paging_map_kernel(DMA_V(a), a, PAGE_PRESENT | PAGE_WRITE);
+        paging_map_kernel(DMA_V(a), a, VM_WRITE);
 
     if (!soft_reset()) {
         klog("RTL8169", SEV_WARN, "soft reset did not complete - chip wedged or absent");

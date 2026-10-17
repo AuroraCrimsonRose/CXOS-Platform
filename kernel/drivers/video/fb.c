@@ -6,7 +6,7 @@
 
 #include "fb.h"
 #include "font.h"
-#include "paging.h"
+#include "arch/paging.h"
 
 /* The kernel runs at 0xC0000000+; the boot page tables map the first 4 MB of
    physical RAM at 0xC0000000..0xC03FFFFF. The bootloader wrote the VBE info
@@ -72,7 +72,7 @@ int fb_init(void) {
     for (uint32_t i = 0; i < pages; i++) {
         paging_map_kernel(FB_VIRT_BASE + (i << 12),
                    map_phys     + (i << 12),
-                   PAGE_WRITE);
+                   VM_WRITE);
     }
     fb = (uint8_t *)(FB_VIRT_BASE + off);
 

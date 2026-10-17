@@ -15,7 +15,7 @@
 #include "config.h"
 #include "ktest.h"
 #include "pmm.h"
-#include "paging.h"
+#include "arch/paging.h"
 #include "heap.h"
 #include "rsa.h"
 #include "console.h"
@@ -24,7 +24,6 @@
 #include "sched.h"
 #include "arch/x86_32/gdt.h"
 #include "ipc.h"
-#include "addr_space.h"
 #include "object/htab.h"
 #include "usermode.h"
 #include "sysrec.h"
@@ -87,13 +86,11 @@ static int ep_handles(struct endpoint *ep) { return (int)atomic_load(&ep->hdr.ha
 static volatile int      pt_sib_done, pt_first_done, pt_first_ok;
 static volatile int32_t  pt_handle;
 static volatile int      pt_pid[2], pt_tid[2];
-static volatile uint32_t pt_cr3[2];
+static volatile uint32_t pt_space[2];
 static struct htab *volatile pt_table[2];
 
 static void pt_note(int i) {
-    uint32_t cr3;
-    __asm__ volatile ("mov %%cr3, %0" : "=r"(cr3));
-    pt_cr3[i]   = cr3;
+    pt_space[i]   = addr_space_current();
     pt_pid[i]   = thread_current_pid();
     pt_tid[i]   = thread_current_id();
     pt_table[i] = thread_htab(thread_current_id());
@@ -123,11 +120,11 @@ static int test_proc_threads(void) {
     pt_sib_done = pt_first_done = pt_first_ok = 0;
     pt_handle = -1;
 
-    struct addr_space space;
+    paddr_t space;
     if (addr_space_create(&space) != 0) return 0;
     int first = thread_create_process("pt-first", pt_first);
-    if (first < 0) { addr_space_destroy(&space); return 0; }
-    thread_set_space(first, space.pd_phys);   /* the process's from here */
+    if (first < 0) { addr_space_release(space); return 0; }
+    thread_set_space(first, space);   /* the process's from here */
     int sib = thread_create_sibling(first, "pt-sibling", pt_sibling);
     if (sib < 0) { thread_discard(first); return 0; }
     if (proc_live() != procs0 + 1) return 0;   /* one process, two threads */
@@ -139,7 +136,7 @@ static int test_proc_threads(void) {
 
     int ok = pt_first_done && pt_first_ok
           && pt_table[0] && pt_table[0] == pt_table[1]
-          && pt_cr3[0] == space.pd_phys && pt_cr3[1] == space.pd_phys
+          && pt_space[0] == space && pt_space[1] == space
           && pt_pid[0] == pt_pid[1] && pt_pid[0] != thread_current_pid()
           && pt_tid[0] == first && pt_tid[1] == sib
           && proc_live() == procs0                       /* the record went */
@@ -291,7 +288,7 @@ static int test_user_copy_validation(void) {
     /* Writable: the copy must succeed and the bytes must actually land. A test
        that only checks refusals passes just as well against a copy that always
        refuses. */
-    if (paging_map_user(va, (uint32_t)frame, PAGE_PRESENT | PAGE_WRITE) != 0) { ok = 0; goto done; }
+    if (paging_map_user(va, (uint32_t)frame, VM_WRITE) != 0) { ok = 0; goto done; }
     for (int i = 0; i < 8; i++) p[i] = 0xAA;
     ok = ok && (user_copy_out(va, src, 8) == 0);
     for (int i = 0; i < 8; i++) ok = ok && (p[i] == src[i]);
@@ -304,7 +301,7 @@ static int test_user_copy_validation(void) {
        user_ptr_writable call in user_copy_out and this goes red on the count,
        not on the return value. */
     for (int i = 0; i < 8; i++) p[i] = 0xAA;
-    if (paging_map_user(va, (uint32_t)frame, PAGE_PRESENT) != 0) { ok = 0; goto done; }
+    if (paging_map_user(va, (uint32_t)frame, 0) != 0) { ok = 0; goto done; }
     {
         uint32_t faults_before = usercopy_faults_recovered();
         ok = ok && (user_copy_out(va, src, 8) == E_FAULT);
@@ -418,9 +415,9 @@ static int test_cr0_write_protect(void) {
     volatile uint8_t *p = (volatile uint8_t *)va;
 
     /* Seed while it is still writable, then take the write permission away. */
-    if (paging_map_user(va, (uint32_t)frame, PAGE_PRESENT | PAGE_WRITE) != 0) { ok = 0; goto done; }
+    if (paging_map_user(va, (uint32_t)frame, VM_WRITE) != 0) { ok = 0; goto done; }
     for (int i = 0; i < 8; i++) p[i] = 0xAA;
-    if (paging_map_user(va, (uint32_t)frame, PAGE_PRESENT) != 0) { ok = 0; goto done; }
+    if (paging_map_user(va, (uint32_t)frame, 0) != 0) { ok = 0; goto done; }
 
     {
         uint32_t faults_before = usercopy_faults_recovered();
@@ -432,7 +429,7 @@ static int test_cr0_write_protect(void) {
 
     /* Writable again: the same write must go through, so this is testing WP
        and not simply a mapping that never worked. */
-    if (paging_map_user(va, (uint32_t)frame, PAGE_PRESENT | PAGE_WRITE) != 0) { ok = 0; goto done; }
+    if (paging_map_user(va, (uint32_t)frame, VM_WRITE) != 0) { ok = 0; goto done; }
     {
         uint32_t faults_before = usercopy_faults_recovered();
         ok = ok && (user_copy_bytes((void *)va, src, 8) == 0);
@@ -446,16 +443,29 @@ done:
     return ok;
 }
 
-/* ---- paging: map a scratch frame, write+read it back ---- */
+/* ---- paging: map a scratch frame, write+read it back; and the refusals of
+   arch/paging.h: a kernel mapping is not reachable from ring 3, a user mapping
+   cannot name kernel memory, and a flag that is not VM_* maps nothing. ---- */
 static int test_paging(void) {
     uint32_t test_virt = 0xCE000000;   /* clear of the kernel-stack region above */
+    uint32_t user_virt = 0x3F000000;   /* user half, unused by the kernel space */
     uint32_t frame = (uint32_t)pmm_alloc();
     if (!frame) return 0;
-    paging_map_kernel(test_virt, frame, PAGE_WRITE);
+    paging_map_kernel(test_virt, frame, VM_WRITE);
     volatile uint32_t *p = (volatile uint32_t *)test_virt;
     *p = 0xCAFEBABE;
     int ok = (*p == 0xCAFEBABE) && (paging_get_phys(test_virt) == frame);
+    ok = ok && !paging_is_user(test_virt);
     paging_unmap(test_virt);
+
+    ok = ok && paging_map_user(test_virt, frame, VM_WRITE) == -1
+            && paging_get_phys(test_virt) == 0;
+    ok = ok && paging_map_user(user_virt, frame, VM_ALL + 1) == -1
+            && paging_get_phys(user_virt) == 0;
+    paging_map_kernel(test_virt, frame, VM_ALL + 1);
+    ok = ok && paging_get_phys(test_virt) == 0;
+    paging_unmap(test_virt);   /* whichever of these a broken pager made */
+    paging_unmap(user_virt);
     pmm_free((void *)frame);
     return ok;
 }
@@ -1337,7 +1347,7 @@ done:
  * Not the first, because the first legitimately consumes frames that never
  * return: paging_map allocates a PAGE TABLE the first time a 4 MB region is
  * touched, and paging_unmap frees the page but deliberately not the table -
- * for a process that is the right call, since addr_space_reclaim_user() frees
+ * for a process that is the right call, since addr_space_release() frees
  * the whole user half at exit and a table freed and re-allocated per mapping
  * would be pure churn. Asserting no-leak on a cold pass therefore fails
  * against correct behaviour, which is exactly what it did when this test was
@@ -1974,7 +1984,7 @@ static int test_console_font_disk(void) {
         const uint32_t va = 0x00A00000u;
         void *frame = pmm_alloc();
         if (!frame) return 0;
-        if (paging_map_user(va, (uint32_t)frame, PAGE_PRESENT | PAGE_WRITE) != 0) {
+        if (paging_map_user(va, (uint32_t)frame, VM_WRITE) != 0) {
             pmm_free(frame);
             return 0;
         }
@@ -2544,14 +2554,12 @@ static volatile uint32_t px_pd;
 extern int enter_usermode(uint32_t entry_eip, uint32_t user_esp, uint32_t *save_slot);
 
 static void px_thread(void) {
-    uint32_t cr3;
-    __asm__ volatile ("mov %%cr3, %0" : "=r"(cr3));
-    if ((cr3 & ~0xFFFu) != px_pd) return;          /* not running in its own space */
+    if (addr_space_current() != px_pd) return;          /* not running in its own space */
     if (ep_create() <= 0) return;                  /* a handle only the exit closes */
     void *c = pmm_alloc(), *s = pmm_alloc();
     if (!c || !s) return;
-    if (paging_map_user(PX_CODE,  (uint32_t)c, PAGE_PRESENT | PAGE_WRITE) != 0) return;
-    if (paging_map_user(PX_STACK, (uint32_t)s, PAGE_PRESENT | PAGE_WRITE) != 0) return;
+    if (paging_map_user(PX_CODE,  (uint32_t)c, VM_WRITE) != 0) return;
+    if (paging_map_user(PX_STACK, (uint32_t)s, VM_WRITE) != 0) return;
     ((volatile uint8_t *)PX_CODE)[0] = 0x0F;       /* ud2: an invalid opcode, at once */
     ((volatile uint8_t *)PX_CODE)[1] = 0x0B;
     px_mine = 1;
@@ -2569,14 +2577,14 @@ static int test_process_exit_releases(void) {
     px_rc = 0;
 
     int ok = 0;
-    struct addr_space space;
+    paddr_t space;
     if (addr_space_create(&space) == 0) {
         int id = thread_create_process("pexit", px_thread);
-        if (id < 0) addr_space_destroy(&space);
+        if (id < 0) addr_space_release(space);
         else {
-            px_pd = space.pd_phys;
+            px_pd = space;
             thread_mark_user(id);
-            thread_set_space(id, space.pd_phys);   /* the process's from here */
+            thread_set_space(id, space);   /* the process's from here */
             thread_start(id);
             for (int i = 0; i < 400 && !(px_back && sched_thread_count() == n0
                                          && proc_live() == p0); i++)
@@ -2642,7 +2650,7 @@ void ktest_run(void) {
 
     /* each test: total++, and passed += its pass/fail. report() prints only on
        failure, so the only per-test output is failures. */
-    total++; passed += report("paging map/write/read",            test_paging());
+    total++; passed += report("paging maps, and refuses what it must not", test_paging());
     total++; passed += report("heap kmalloc/kfree",               test_heap());
     total++; passed += report("scheduler (cooperative)",          test_sched_coop());
     total++; passed += report("scheduler (preemptive)",           test_sched_preempt());

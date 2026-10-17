@@ -4,7 +4,7 @@
 /* Aurora Tejeda / CATX Systems */
 
 #include "vmregion.h"
-#include "paging.h"
+#include "arch/paging.h"
 #include "pmm.h"
 #include "sched.h"
 #include "logging.h"
@@ -64,15 +64,15 @@ static uint32_t place(struct vm_proc *p, uint32_t len) {
     return 0;
 }
 
-/* PTE flags for a requested protection. PAGE_USER always - this is ring-3
-   memory by definition. PAGE_WRITE only when asked, and that one IS enforced.
-   MPROT_EXEC has no bit to set: a 32-bit non-PAE PTE has no no-execute flag,
-   so every mapped page is executable whatever was asked for. The request is
-   still recorded in the region, so the day this kernel gains PAE or moves to
-   64 bits, the missing enforcement is a change here and nowhere else. */
-static uint32_t pte_flags(uint32_t prot) {
-    uint32_t f = PAGE_PRESENT | PAGE_USER;
-    if (prot & MPROT_WRITE) f |= PAGE_WRITE;
+/* Mapping flags for a requested protection; paging_map_user makes them ring
+   3. MPROT_EXEC passes through as VM_EXEC, which the architecture enforces
+   where its MMU can: a 32-bit non-PAE page table has no no-execute bit, so
+   there every mapped page is executable whatever was asked for. The request
+   is recorded in the region either way. */
+static uint32_t vm_flags(uint32_t prot) {
+    uint32_t f = 0;
+    if (prot & MPROT_WRITE) f |= VM_WRITE;
+    if (prot & MPROT_EXEC)  f |= VM_EXEC;
     return f;
 }
 
@@ -91,7 +91,7 @@ void vm_proc_init(int pid, uint32_t quota, int parent) {
 
 void vm_proc_reset(int pid) {
     if (!vp(pid)) return;
-    /* Bookkeeping only. The frames are freed by addr_space_reclaim_user(),
+    /* Bookkeeping only. The frames are freed by addr_space_release(),
        which walks the whole user half; freeing them here as well would be a
        double free. See the header. */
     vp(pid)->live   = 0;
@@ -186,7 +186,7 @@ int vm_map(int pid, struct mem_op_args *a) {
     if (!base) base = place(p, len);
     if (!base) return E_NOMEM;
 
-    uint32_t flags = pte_flags(a->prot);
+    uint32_t flags = vm_flags(a->prot);
     for (uint32_t off = 0; off < len; off += PAGE_SIZE) {
         void *frame = pmm_alloc();
         if (!frame) { undo(base, off); return E_NOMEM; }
@@ -200,7 +200,7 @@ int vm_map(int pid, struct mem_op_args *a) {
            but it unwinds the same way the allocation failure does: returning
            without undo() would leave the pages already mapped in this loop
            stranded in the address space with nothing owning them. */
-        if (paging_map_user(base + off, (uint32_t)frame, PAGE_PRESENT | PAGE_WRITE) != 0) {
+        if (paging_map_user(base + off, (uint32_t)frame, VM_WRITE) != 0) {
             pmm_free(frame);
             undo(base, off);
             return E_INVAL;
@@ -217,7 +217,7 @@ int vm_map(int pid, struct mem_op_args *a) {
            fail in practice, because the page table the first call allocated is
            the one this call reuses; that is a fact about the callee, which is
            exactly the kind of reasoning a caller should not be doing. */
-        if (flags != (PAGE_PRESENT | PAGE_WRITE | PAGE_USER) &&
+        if (flags != VM_WRITE &&
             paging_map_user(base + off, (uint32_t)frame, flags) != 0) {
             undo(base, off + PAGE_SIZE);   /* this page is mapped: unwind it too */
             return E_INVAL;

@@ -15,13 +15,9 @@
 
 #include "cxex_load.h"
 #include "pmm.h"
-#include "paging.h"
+#include "arch/paging.h"
 #include "vmregion.h"
 #include "sched.h"
-
-/* The user half is everything below the higher-half kernel. Defined locally, as
-   the other users of this constant do (usermode.c, paging.c, addr_space.c);
-   giving it one home is engineering review §13's "localise x86 assumptions". */
 
 static void *k_get_page(void *ctx, uint32_t *out_phys) {
     (void)ctx;
@@ -43,9 +39,9 @@ static int k_map_page(void *ctx, uint32_t virt, uint32_t phys, uint32_t prot) {
        which is the point of the split (security review §1, §8). The loader's
        validation pass has already proved the same thing; this is the layer that
        still holds if that pass is ever bypassed or wrong. */
-    uint32_t f = PAGE_PRESENT;                         /* loaded image is ring 3 */
-    if (prot & CXEX_PROT_WRITE) f |= PAGE_WRITE;
-    /* x86 (non-PAE) has no per-page execute bit; EXEC is implicit. */
+    uint32_t f = 0;                                    /* readable, ring 3 */
+    if (prot & CXEX_PROT_WRITE) f |= VM_WRITE;
+    if (prot & CXEX_PROT_EXEC)  f |= VM_EXEC;   /* enforced where the MMU can */
     return paging_map_user(virt, phys, f);
 }
 

@@ -17,8 +17,7 @@
 #include "caps.h"
 #include "usermode.h"          /* user_ptr_readable / user_ptr_writable */
 #include "sysfile.h"           /* sysfile_entry_doomed */
-#include "addr_space.h"
-#include "paging.h"
+#include "arch/paging.h"
 #include "pmm.h"
 #include "vmregion.h"
 #include "heap.h"
@@ -76,7 +75,7 @@ extern int enter_usermode(uint32_t entry_eip, uint32_t user_esp, uint32_t *save_
 static int build_args_page(const char *blob, uint32_t len) {
     void *frame = pmm_alloc();
     if (!frame) return -1;
-    if (paging_map_user(USER_ARGS_BASE, (uint32_t)frame, PAGE_PRESENT | PAGE_WRITE) != 0) {
+    if (paging_map_user(USER_ARGS_BASE, (uint32_t)frame, VM_WRITE) != 0) {
         pmm_free(frame);
         return -1;
     }
@@ -143,7 +142,7 @@ static void proc_trampoline(void) {
         void *p = pmm_alloc();
         if (!p) { klog("PROC", SEV_ERR, "no stack memory"); thread_exit(); }
         if (paging_map_user(USER_STACK_TOP - (i + 1) * 0x1000u, (uint32_t)p,
-                            PAGE_PRESENT | PAGE_WRITE) != 0) {
+                            VM_WRITE) != 0) {
             klog("PROC", SEV_ERR, "user stack is not in the user half");
             pmm_free(p); thread_exit();
         }
@@ -198,13 +197,13 @@ int proc_start(const void *image, uint32_t image_len, uint32_t caps,
         for (uint32_t i = 0; i < args_len; i++) kargs[i] = args[i];
     }
 
-    struct addr_space space;
+    paddr_t space;
     if (addr_space_create(&space) != 0) { kfree(kimg); kfree(kargs); return E_NOMEM; }
 
     /* Held until every record below is filled in: see thread_create_process. */
     struct proc_rec *rec = kmalloc(sizeof *rec);
     int tid = rec ? thread_create_process("proc", proc_trampoline) : -1;
-    if (tid < 0) { kfree(rec); kfree(kimg); kfree(kargs); addr_space_destroy(&space); return E_NOMEM; }
+    if (tid < 0) { kfree(rec); kfree(kimg); kfree(kargs); addr_space_release(space); return E_NOMEM; }
 
     rec->image     = kimg;
     rec->image_len = image_len;
@@ -213,7 +212,7 @@ int proc_start(const void *image, uint32_t image_len, uint32_t caps,
     thread_set_arg(tid, rec, proc_rec_drop);
 
     thread_mark_user(tid);
-    thread_set_space(tid, space.pd_phys);   /* now the process's: loaded for it, freed with it */
+    thread_set_space(tid, space);   /* now the process's: loaded for it, freed with it */
     thread_set_caps(tid, caps);
 
     /* Memory authority attenuates down the spawn chain the same way grants do.

@@ -8,6 +8,7 @@
 #include "heap.h"
 #include "kstack.h"
 #include "arch/cpu.h"
+#include "arch/paging.h"
 #include "uid.h"
 #include "timer.h"   /* timer_ticks for the sleep queue */
 #include "object/idtab.h"
@@ -17,7 +18,6 @@
 extern void context_switch(uint32_t *old_esp, uint32_t new_esp);
 
 static void sched_reap(void);   /* forward decl: used by yield, defined below */
-static uint32_t kernel_pd_phys = 0;   /* CR3 of the shared kernel space (captured at init) */
 
 /* Every thread is a record from its own cache, named by an id from `tids`.
    The id is the index the old fixed array had: small, lowest free first,
@@ -115,8 +115,6 @@ void sched_init(void) {
     proc_thread_in(th(0)->proc);
     proc_put(th(0)->proc);      /* the thread's reference is the one that counts */
     current = 0;
-    /* capture the kernel space CR3 (active at boot); kernel threads run in it. */
-    __asm__ volatile ("mov %%cr3, %0" : "=r"(kernel_pd_phys));
     initialized = 1;
 }
 
@@ -285,14 +283,13 @@ static void update_kernel_stack(void) {
     arch_kernel_stack_set(top ? top : arch_kernel_stack_default());
 }
 
-/* Load the current thread's address space into CR3. Threads with pd_phys 0
+/* Make the current thread's address space the active one. Threads with pd_phys 0
    (kernel threads) run in the shared kernel space. Called on every switch,
    right after update_kernel_stack(). The kernel half is mapped in every space,
    so this is safe for kernel threads regardless of which space is loaded. */
 static void update_address_space(void) {
     uint32_t mine = self()->proc ? self()->proc->pd_phys : 0;
-    uint32_t pd = mine ? mine : kernel_pd_phys;
-    if (pd) __asm__ volatile ("mov %0, %%cr3" : : "r"(pd) : "memory");
+    addr_space_switch(mine ? mine : addr_space_kernel());
 }
 
 void thread_set_space(int id, uint32_t pd_phys) {
