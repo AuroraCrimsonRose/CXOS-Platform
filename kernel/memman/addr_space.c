@@ -7,6 +7,8 @@
 #include "addr_space.h"
 #include "pmm.h"
 #include "paging.h"
+#include "sync/spinlock.h"
+#include "cpu/int/idt.h"   /* kpanic */
 
 
 /* the kernel's page directory, built by kernel.asm (a kernel symbol => virtual).
@@ -110,6 +112,24 @@ void addr_space_destroy(const struct addr_space *s) {
     pmm_free((void *)s->pd_phys);   /* free the page-directory frame itself.
                                        MUST NOT be the active space - switch away
                                        (e.g. to the kernel space) before calling. */
+}
+
+void addr_space_release(uint32_t pd_phys) {
+    if (!pd_phys) return;
+    uint32_t f = spin_irq_save();
+    uint32_t was;
+    __asm__ volatile ("mov %%cr3, %0" : "=r"(was));
+    /* Freeing the directory in use would leave the CPU walking a free frame. */
+    if ((was & ~0xFFFu) == pd_phys) kpanic("addr_space_release: the space is in use");
+    /* Its own recursive slot is the only view of its page tables, so the walk
+       runs inside it. The kernel code, stack and heap doing the walk are in the
+       shared half, mapped identically in every space. */
+    __asm__ volatile ("mov %0, %%cr3" : : "r"(pd_phys) : "memory");
+    addr_space_reclaim_user();
+    __asm__ volatile ("mov %0, %%cr3" : : "r"(was) : "memory");   /* drops its TLB entries too */
+    spin_irq_restore(f);
+    struct addr_space s = { .pd_phys = pd_phys };
+    addr_space_destroy(&s);
 }
 
 void addr_space_kernel(struct addr_space *out) {

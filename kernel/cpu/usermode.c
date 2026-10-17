@@ -1202,7 +1202,7 @@ static void process_trampoline(void) {
 
     enter_usermode(s->code_virt, ustack_top, thread_current_usave());
 
-    /* user routine SYS_EXITed: reclaim its pages, then leave the scheduler. */
+    /* user routine SYS_EXITed or faulted: reclaim its pages, then leave the scheduler. */
     unmap_user_page(s->code_virt, s->code_phys);
     unmap_user_page(s->stack_virt, s->stack_phys);
     s->code_virt = 0;
@@ -1263,14 +1263,26 @@ int process_create_ring3_as_user(const char *name, const void *blob, uint32_t bl
 
 /* ---- user fault handler (registered with the IDT) ----
  * A CPU exception while in ring 3 kills the offending process instead of
- * panicking the kernel - a buggy user program can't take the system down. */
+ * panicking the kernel - a buggy user program can't take the system down.
+ *
+ * It leaves the way SYS_EXIT does: back out of enter_usermode, into whatever
+ * entered ring 3, which then cleans up as after any exit. It used to call
+ * thread_exit() from here, which skipped that cleanup: a spawned process's
+ * whole address space, or a ring-3 helper's two pages, leaked on every fault.
+ * Safe because the fault came from ring 3: this kernel stack holds only the
+ * trap frame, no lock and nothing half done, and the saved EFLAGS come back. */
+static atomic_u32 user_faults;
+
+uint32_t usermode_faults(void) { return atomic_load(&user_faults); }
+
 static void usermode_fault(struct registers *r) {
     int pid = thread_current_pid();
 
+    atomic_fetch_add(&user_faults, 1);
     klog_u32("USERMODE", SEV_ERR, "user process ", (uint32_t)pid, LOG_COLOR_VALUE, " faulted");
     klog_child_u32("exception: ", r->int_no, LOG_COLOR_VALUE, "");
     klog_child("process terminated");
-    thread_exit();   /* never returns */
+    return_to_kernel(USERMODE_FAULTED, thread_current_usave());   /* never returns */
 }
 
 void usermode_register_fault_handler(void) {

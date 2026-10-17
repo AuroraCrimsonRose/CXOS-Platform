@@ -13,14 +13,17 @@
  *
  * A process is a kernel object (KOBJ_PROCESS) from its own cache. Every
  * thread in it holds a reference. When the last of them is reaped, the process
- * closes every handle it holds and gives up its reference; the record goes
- * when the last reference does (later, process handles will hold some, which
- * is how a parent waits without zombies: plan section 4).
+ * closes every handle it holds, frees its address space and gives up its
+ * reference; the record goes when the last reference does (later, process
+ * handles will hold some, which is how a parent waits without zombies: plan
+ * section 4).
  *
  * A pid names a process, not a thread. Thread ids and pids are allocated
  * separately, so a process keeps its pid whichever of its threads exits.
- * The address space itself is set up and torn down by its creator
- * (cpu/spawn.c); this file records which one the threads run in.
+ * Its creator (cpu/spawn.c) builds the address space and hands it over with
+ * thread_set_space; from then on it is the process's, and it goes when the
+ * last thread does, however that thread ended. It goes from the reaper, in
+ * another thread's context, so the space being freed is never the one loaded.
  */
 #ifndef CXK_PROC_H
 #define CXK_PROC_H
@@ -45,7 +48,7 @@ struct proc {
     uint32_t    caps;       /* ABI capability bits */
     struct htab handles;
     int32_t     broker;     /* its SEND handle on its launcher's broker, or -1 */
-    uint32_t    pd_phys;    /* page directory its threads run in; 0 = the kernel's */
+    uint32_t    pd_phys;    /* its own page directory, freed with it; 0 = the kernel's */
     struct vm_proc vm;      /* its mappings and memory quota (memman/vmregion.h) */
 };
 
@@ -59,7 +62,8 @@ void proc_sys_init(void);
 struct proc *proc_create(const struct proc *parent);
 
 /* A thread now names `p` (a reference), or no longer does. When the last
-   thread is gone, every handle closes; the record follows its last reference. */
+   thread is gone, every handle closes and the address space is freed; the
+   record follows its last reference. */
 void proc_thread_in(struct proc *p);
 void proc_thread_gone(struct proc *p);
 

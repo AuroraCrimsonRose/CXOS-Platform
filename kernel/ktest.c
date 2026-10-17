@@ -118,6 +118,7 @@ static void pt_first(void) {
 static int test_proc_threads(void) {
     uint32_t procs0 = proc_live();
     uint32_t eps0   = kobj_live(KOBJ_ENDPOINT);
+    uint32_t free0  = pmm_free_count();
     pt_sib_done = pt_first_done = pt_first_ok = 0;
     pt_handle = -1;
 
@@ -125,9 +126,9 @@ static int test_proc_threads(void) {
     if (addr_space_create(&space) != 0) return 0;
     int first = thread_create_process("pt-first", pt_first);
     if (first < 0) { addr_space_destroy(&space); return 0; }
-    thread_set_space(first, space.pd_phys);
+    thread_set_space(first, space.pd_phys);   /* the process's from here */
     int sib = thread_create_sibling(first, "pt-sibling", pt_sibling);
-    if (sib < 0) { thread_discard(first); addr_space_destroy(&space); return 0; }
+    if (sib < 0) { thread_discard(first); return 0; }
     if (proc_live() != procs0 + 1) return 0;   /* one process, two threads */
     thread_start(first);
 
@@ -141,8 +142,8 @@ static int test_proc_threads(void) {
           && pt_pid[0] == pt_pid[1] && pt_pid[0] != thread_current_pid()
           && pt_tid[0] == first && pt_tid[1] == sib
           && proc_live() == procs0                       /* the record went */
-          && kobj_live(KOBJ_ENDPOINT) == eps0;           /* and closed its handle */
-    addr_space_destroy(&space);
+          && kobj_live(KOBJ_ENDPOINT) == eps0            /* and closed its handle */
+          && pmm_free_count() == free0;                  /* and freed its space */
     return ok;
 }
 
@@ -2523,6 +2524,75 @@ static int test_handle_table_grows(void) {
         && heap_allocs_live() == allocs0;
 }
 
+/* ---- a process that faults gives back everything (roadmap step 2d) ----
+ * A process in its own address space, holding a handle, with a code and a
+ * stack page mapped, faults in ring 3. Afterwards every count is back where it
+ * started: the frames (code, stack, page table, directory), the endpoint, the
+ * heap, the process record and the thread.
+ *
+ * Two separate things are proven. The process frees its space when its last
+ * thread goes, however it went: a fault used to thread_exit() past the
+ * teardown, which sat on the normal way out of the trampoline, so a spawned
+ * process that crashed leaked its whole space. And the fault leaves the way
+ * SYS_EXIT does, back out of enter_usermode with USERMODE_FAULTED, so whatever
+ * entered ring 3 cleans up after it: px_back is set only on that path. */
+#define PX_CODE   0x00400000u
+#define PX_STACK  0x00401000u
+static volatile int      px_mine, px_back, px_rc;
+static volatile uint32_t px_pd;
+extern int enter_usermode(uint32_t entry_eip, uint32_t user_esp, uint32_t *save_slot);
+
+static void px_thread(void) {
+    uint32_t cr3;
+    __asm__ volatile ("mov %%cr3, %0" : "=r"(cr3));
+    if ((cr3 & ~0xFFFu) != px_pd) return;          /* not running in its own space */
+    if (ep_create() <= 0) return;                  /* a handle only the exit closes */
+    void *c = pmm_alloc(), *s = pmm_alloc();
+    if (!c || !s) return;
+    if (paging_map_user(PX_CODE,  (uint32_t)c, PAGE_PRESENT | PAGE_WRITE) != 0) return;
+    if (paging_map_user(PX_STACK, (uint32_t)s, PAGE_PRESENT | PAGE_WRITE) != 0) return;
+    ((volatile uint8_t *)PX_CODE)[0] = 0x0F;       /* ud2: an invalid opcode, at once */
+    ((volatile uint8_t *)PX_CODE)[1] = 0x0B;
+    px_mine = 1;
+    px_rc   = enter_usermode(PX_CODE, PX_STACK + 0x1000u - 16u, thread_current_usave());
+    px_back = 1;
+}
+
+static int test_process_exit_releases(void) {
+    uint32_t L = sched_thread_limit(), S = sched_stack_bytes();
+    uint32_t n0 = sched_thread_count(), p0 = proc_live();
+    if (n0 + 1 > L && sched_configure(n0 + 1, S) != 0) return 0;   /* room for one */
+    uint32_t eps0 = kobj_live(KOBJ_ENDPOINT), allocs0 = heap_allocs_live();
+    uint32_t faults0 = usermode_faults(), free0 = pmm_free_count();
+    px_mine = px_back = 0;
+    px_rc = 0;
+
+    int ok = 0;
+    struct addr_space space;
+    if (addr_space_create(&space) == 0) {
+        int id = thread_create_process("pexit", px_thread);
+        if (id < 0) addr_space_destroy(&space);
+        else {
+            px_pd = space.pd_phys;
+            thread_mark_user(id);
+            thread_set_space(id, space.pd_phys);   /* the process's from here */
+            thread_start(id);
+            for (int i = 0; i < 400 && !(px_back && sched_thread_count() == n0
+                                         && proc_live() == p0); i++)
+                thread_sleep_ms(1);
+            ok = 1;
+        }
+    }
+    sched_configure(L, S);
+
+    return ok && px_mine && px_back && px_rc == USERMODE_FAULTED
+        && usermode_faults() == faults0 + 1
+        && sched_thread_count() == n0 && proc_live() == p0
+        && kobj_live(KOBJ_ENDPOINT) == eps0
+        && heap_allocs_live() == allocs0
+        && pmm_free_count() == free0;
+}
+
 #if CXK_KTEST_STACK_OVERFLOW
 /* Recurse until the stack runs out. The volatile buffer keeps each frame real
    and the addition after the call keeps it from becoming a loop. */
@@ -2571,6 +2641,7 @@ void ktest_run(void) {
     total++; passed += report("thread limit + stack size",         test_thread_limit());
     total++; passed += report("thread and pid tables grow past 64", test_thread_table_grows());
     total++; passed += report("a handle table grows to its limit and is freed", test_handle_table_grows());
+    total++; passed += report("a process that faults gives back everything", test_process_exit_releases());
     total++; passed += report("cxex signature + tamper",           test_cxex_signature());
     total++; passed += report("disk: ATA LBA range refused",        test_disk_lba_range());
     total++; passed += report("cxex loader refuses bad images",    ktest_loader_adversarial());

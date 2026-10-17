@@ -70,4 +70,9 @@ void addr_space_destroy(const struct addr_space *s);
    switching away + addr_space_destroy() to fully reclaim an exited process. */
 void addr_space_reclaim_user(void);
 
+/* Free everything a space holds, user half and directory, when it is NOT the
+   active one: the last thread of its process is gone (cpu/proc.c). Panics if
+   it is the active space. */
+void addr_space_release(uint32_t pd_phys);
+
 #endif

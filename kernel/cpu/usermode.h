@@ -89,6 +89,14 @@ int  usermode_flock_test(void);
    kernel. call once at boot after the scheduler is up. */
 void usermode_register_fault_handler(void);
 
+/* What enter_usermode returns when the ring-3 code faulted instead of calling
+   SYS_EXIT. A SYS_EXIT can pass the same number; usermode_faults() tells them
+   apart. */
+#define USERMODE_FAULTED E_FAULT
+
+/* Ring-3 faults taken since boot, for the self-tests. */
+uint32_t usermode_faults(void);
+
 /* run the ring-3 demo: enter user mode, run the test routine, return here.
    returns 0 on a clean round-trip. */
 int usermode_test(void);

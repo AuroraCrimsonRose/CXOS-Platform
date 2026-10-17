@@ -9,6 +9,7 @@
 #include "object/idtab.h"
 #include "sync/spinlock.h"
 #include "cpu/int/idt.h"   /* kpanic */
+#include "memman/addr_space.h"
 
 static struct ocache proc_cache;
 static struct idtab  pids;   /* pid -> process */
@@ -17,11 +18,23 @@ static struct idtab  pids;   /* pid -> process */
 static spinlock_t    pids_lock = SPINLOCK_INIT;
 static uint32_t      handle_limit = HTAB_LIMIT_DEFAULT;   /* kernel.xkco max_handles */
 
+/* Its own address space, frames, page tables and directory, and the
+   bookkeeping that describes them. Never while one of its threads can run in
+   it: the last one is gone, or there never was one. */
+static void release_space(struct proc *p) {
+    uint32_t pd = p->pd_phys;
+    if (!pd) return;
+    p->pd_phys = 0;
+    vm_proc_reset(p->pid);    /* bookkeeping only: the release frees the frames */
+    addr_space_release(pd);
+}
+
 static void proc_destroy(struct kobj *o) {
     struct proc *p = (struct proc *)o;
     /* Empty already if it ever had a thread (proc_thread_gone). */
     htab_close_all(&p->handles);
     htab_destroy(&p->handles);
+    release_space(p);
     uint32_t f = spin_lock(&pids_lock);
     if (idtab_get(&pids, p->pid) == p) idtab_take(&pids, p->pid);
     spin_unlock(&pids_lock, f);
@@ -74,6 +87,10 @@ void proc_thread_gone(struct proc *p) {
            or with an endpoint open leaves nothing behind. */
         htab_close_all(&p->handles);
         p->broker = -1;
+        /* However the thread ended: SYS_EXIT, a fault, a failed start. Its
+           creator used to tear the space down on the way out of the
+           trampoline, so every way out that skipped that line leaked it. */
+        release_space(p);
     }
     kobj_unref(&p->hdr);
 }

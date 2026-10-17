@@ -45,7 +45,6 @@ struct proc_rec {
     uint32_t          image_len;
     const char       *args;      /* kernel-heap copy of the argument blob, or NULL */
     uint32_t          args_len;
-    struct addr_space space;
 };
 
 /* Freed with the thread, however it ended: the heap copies first, if the
@@ -105,35 +104,20 @@ static int build_args_page(const char *blob, uint32_t len) {
     return 0;
 }
 
-/* Give back everything this process has taken and leave the thread in the kernel
-   address space. Shared by the exit path and every failure path above it.
-   A spawn that died before enter_usermode used to just thread_exit(), which left
-   its user frames, its page tables and its page directory behind - so an image
-   the loader REFUSES could be spawned in a loop to drain the PMM, and the
-   refusal was the thing doing the draining. The frames must go while this
-   thread still has the space loaded, so the order here is not negotiable:
-   reclaim, then drop the bookkeeping, then leave the space, then free it. */
-static void proc_teardown(int tid, struct proc_rec *r) {
-    if (r->image) { kfree((void *)r->image); r->image = NULL; }
-    if (r->args)  { kfree((void *)r->args);  r->args  = NULL; }
-
-    struct addr_space self = r->space;
-    addr_space_reclaim_user();         /* frees the user frames and page tables */
-    /* After the reclaim, never before: that walk is what frees the frames behind
-       this process's mappings, and this only drops the bookkeeping. */
-    vm_proc_reset(thread_pid(tid));
-    struct addr_space kspace;
-    addr_space_kernel(&kspace);
-    addr_space_switch(&kspace);
-    thread_set_space(tid, 0);          /* stop referencing the freed space */
-    addr_space_destroy(&self);         /* free the PD frame + unregister */
-}
+/* Every way out of the trampoline below is a plain thread_exit. What the
+   process took goes when its last thread is reaped (cpu/proc.c): the address
+   space, its frames and page tables, its handles; and this record, with the
+   heap copies, goes with the thread (proc_rec_drop). A spawn that died before
+   enter_usermode once just thread_exit()ed while the space was torn down only
+   on the normal way out, so an image the loader REFUSES could be spawned in a
+   loop to drain the PMM; and a process that faulted leaked the same way.
+   Tying the release to the process instead of to a line here is what makes
+   every exit, including ones not written yet, release it. */
 
 /* Runs on the new thread, in its own address space (the scheduler loaded its CR3
    before switching here). Places the image, builds a ring-3 stack, drops to user
    mode. Returns only when the process SYS_EXITs. */
 static void proc_trampoline(void) {
-    int tid = thread_current_id();
     int pid = thread_current_pid();
     struct proc_rec *r = thread_current_arg();
 
@@ -145,7 +129,6 @@ static void proc_trampoline(void) {
            a quota that has no room - and which one fired is the whole content of
            the message. */
         klog("PROC", SEV_ERR, cxex_load_strerror(lrc));
-        proc_teardown(tid, r);
         thread_exit();
     }
 
@@ -154,16 +137,15 @@ static void proc_trampoline(void) {
        ceiling cannot cover a stack is refused having taken nothing. */
     if (vm_charge(pid, USER_STACK_PAGES * 0x1000u) != E_OK) {
         klog("PROC", SEV_ERR, "the memory quota has no room for a user stack");
-        proc_teardown(tid, r);
         thread_exit();
     }
     for (uint32_t i = 0; i < USER_STACK_PAGES; i++) {
         void *p = pmm_alloc();
-        if (!p) { klog("PROC", SEV_ERR, "no stack memory"); proc_teardown(tid, r); thread_exit(); }
+        if (!p) { klog("PROC", SEV_ERR, "no stack memory"); thread_exit(); }
         if (paging_map_user(USER_STACK_TOP - (i + 1) * 0x1000u, (uint32_t)p,
                             PAGE_PRESENT | PAGE_WRITE) != 0) {
             klog("PROC", SEV_ERR, "user stack is not in the user half");
-            pmm_free(p); proc_teardown(tid, r); thread_exit();
+            pmm_free(p); thread_exit();
         }
     }
     uint32_t ustack_top = USER_STACK_TOP - 16u;
@@ -172,12 +154,10 @@ static void proc_trampoline(void) {
        holding stack pages it will never use. */
     if (vm_charge(pid, 0x1000u) != E_OK) {
         klog("PROC", SEV_ERR, "the memory quota has no room for the argument page");
-        proc_teardown(tid, r);
         thread_exit();
     }
     if (build_args_page(r->args, r->args_len) != 0) {
         klog("PROC", SEV_ERR, "no memory for the argument page");
-        proc_teardown(tid, r);
         thread_exit();
     }
 
@@ -186,12 +166,9 @@ static void proc_trampoline(void) {
 
     enter_usermode(entry, ustack_top, thread_current_usave());
 
-    /* process exited: reclaim its address space so spawning doesn't leak - the
-       same teardown the failure paths above take, for the same reason. */
-    proc_teardown(tid, r);
-    klog_u32("PROC", SEV_INFO, "exited + reclaimed; free frames: ", pmm_free_count(), LOG_COLOR_VALUE, "");
-
-    thread_exit();   /* never returns; sched_reap frees the kernel + esp0 stacks */
+    /* SYS_EXIT, or a fault (usermode_fault returns here the same way). */
+    klog_u32("PROC", SEV_INFO, "exited, pid ", (uint32_t)pid, LOG_COLOR_VALUE, "");
+    thread_exit();   /* never returns; the reaper frees the stacks, the process its space */
 }
 
 /* Create a ring-3 scheduler thread running `image` (which must be readable in
@@ -233,11 +210,10 @@ int proc_start(const void *image, uint32_t image_len, uint32_t caps,
     rec->image_len = image_len;
     rec->args      = kargs;
     rec->args_len  = args_len;
-    rec->space     = space;
     thread_set_arg(tid, rec, proc_rec_drop);
 
     thread_mark_user(tid);
-    thread_set_space(tid, space.pd_phys);   /* scheduler loads this CR3 for it */
+    thread_set_space(tid, space.pd_phys);   /* now the process's: loaded for it, freed with it */
     thread_set_caps(tid, caps);
 
     /* Memory authority attenuates down the spawn chain the same way grants do.
