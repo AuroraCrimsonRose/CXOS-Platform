@@ -2353,18 +2353,22 @@ static int test_kconfig(void) {
                        "max_threads = 12, memory_quota_mib = 0x8   /* hex is fine */\n";
     if (kconfig_parse(good, kc_len(good), &c, &at, &why) != 0) return 0;
     if (c.kernel_stack != 16384 || c.max_threads != 12 || c.memory_quota != 8u * 1024u * 1024u) return 0;
+    if (kconfig_parse("max_handles = 4096\n", 19, &c, &at, &why) != 0 || c.max_handles != 4096) return 0;
 
     /* absent keys keep their defaults; an empty file is all defaults */
     struct kconfig d;
     kconfig_defaults(&d);
     if (kconfig_parse("max_threads = 6\n", 16, &c, &at, &why) != 0) return 0;
-    if (c.max_threads != 6 || c.kernel_stack != d.kernel_stack || c.memory_quota != d.memory_quota) return 0;
+    if (c.max_threads != 6 || c.kernel_stack != d.kernel_stack || c.memory_quota != d.memory_quota
+        || c.max_handles != d.max_handles) return 0;
     if (kconfig_parse("", 0, &c, &at, &why) != 0 || c.max_threads != d.max_threads) return 0;
 
     return kc_refused("kernel_stack = 8\n", 0)                             /* unknown key */
         && kc_refused("max_threads = 12\nmax_thread = 12\n", 17)          /* misspelt */
         && kc_refused("max_threads = 257\n", 14)                           /* out of range */
         && kc_refused("max_threads = 3\n", 14)
+        && kc_refused("max_handles = 4097\n", 14)
+        && kc_refused("max_handles = 15\n", 14)
         && kc_refused("kernel_stack_kib = 10\n", 19)                       /* not a multiple of 4 */
         && kc_refused("kernel_stack_kib = 64\n", 19)
         && kc_refused("memory_quota_mib = \"16\"\n", 19)                   /* a string */
@@ -2460,6 +2464,65 @@ static int test_thread_table_grows(void) {
     return ok;
 }
 
+/* ---- a handle table grows to its limit, and its process gives it all back ----
+ * One thread, in a process of its own, fills its table with duplicates of one
+ * endpoint until the table refuses, and exits holding all of them. Every
+ * handle must work and be distinct, the table must stop at exactly the limit
+ * set for new processes (100: it starts at 16 and is not a power of two), and once the process is gone the endpoint, the process
+ * record and every byte of the table's array must be back. */
+static volatile int hg_done, hg_ok;
+static volatile uint32_t hg_count, hg_limit;
+
+static void hg_thread(void) {
+    struct htab *t = thread_htab(thread_current_id());
+    int32_t first = ep_create();
+    int ok = t && first > 0 && t->max >= HTAB_LIMIT_MIN;
+    int32_t prev = first, past16 = 0, r = 0;
+    while (ok && (r = htab_dup(t, first, HRIGHT_RECV | HRIGHT_DUPLICATE)) > 0) {
+        if (r == prev || r == first) ok = 0;
+        if (((uint32_t)r & (HTAB_MAX_SLOTS - 1)) >= 16) past16 = 1;
+        prev = r;
+    }
+    hg_count = htab_count(t);
+    hg_limit = t ? t->max : 0;
+    ok = ok && r == E_NOMEM && past16 && hg_count == hg_limit;
+
+    /* every one of them names the endpoint */
+    uint32_t found = 0;
+    for (uint32_t i = 0; ok && i < t->cap; i++) {
+        if (!t->e[i].obj) continue;
+        struct endpoint *ep = ep_from_handle((int32_t)((t->e[i].gen << HTAB_SLOT_BITS) | i),
+                                             HRIGHT_RECV, NULL);
+        if (ep) found++;
+        ep_put(ep);
+    }
+    hg_ok = ok && found == hg_count;
+    hg_done = 1;                  /* and exit with every handle still open */
+}
+
+static int test_handle_table_grows(void) {
+    uint32_t L = sched_thread_limit(), S = sched_stack_bytes();
+    uint32_t n0 = sched_thread_count(), p0 = proc_live();
+    uint32_t eps0 = kobj_live(KOBJ_ENDPOINT), heap0 = heap_bytes_used(), allocs0 = heap_allocs_live();
+    if (n0 + 1 > L && sched_configure(n0 + 1, S) != 0) return 0;   /* room for one */
+    uint32_t H = proc_handle_limit();
+    proc_set_handle_limit(100);
+
+    hg_done = hg_ok = 0;
+    int id = thread_create("hgrow", hg_thread);
+    for (int i = 0; i < 400 && id >= 0 && !(hg_done && sched_thread_count() == n0
+                                             && proc_live() == p0); i++)
+        thread_sleep_ms(1);
+    sched_configure(L, S);
+    proc_set_handle_limit(H);
+
+    return id >= 0 && hg_done && hg_ok && hg_limit == 100
+        && sched_thread_count() == n0 && proc_live() == p0
+        && kobj_live(KOBJ_ENDPOINT) == eps0      /* every handle closed */
+        && heap_bytes_used() == heap0            /* and the array freed */
+        && heap_allocs_live() == allocs0;
+}
+
 #if CXK_KTEST_STACK_OVERFLOW
 /* Recurse until the stack runs out. The volatile buffer keeps each frame real
    and the addition after the call keeps it from becoming a loop. */
@@ -2507,6 +2570,7 @@ void ktest_run(void) {
     total++; passed += report("kernel config (X Data, linked X)",  test_kconfig());
     total++; passed += report("thread limit + stack size",         test_thread_limit());
     total++; passed += report("thread and pid tables grow past 64", test_thread_table_grows());
+    total++; passed += report("a handle table grows to its limit and is freed", test_handle_table_grows());
     total++; passed += report("cxex signature + tamper",           test_cxex_signature());
     total++; passed += report("disk: ATA LBA range refused",        test_disk_lba_range());
     total++; passed += report("cxex loader refuses bad images",    ktest_loader_adversarial());

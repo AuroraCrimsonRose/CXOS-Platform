@@ -15,9 +15,13 @@ static struct idtab  pids;   /* pid -> process */
 /* The reaper frees a process with interrupts off, possibly while a preempted
    proc_create is part way through growing the table. */
 static spinlock_t    pids_lock = SPINLOCK_INIT;
+static uint32_t      handle_limit = HTAB_LIMIT_DEFAULT;   /* kernel.xkco max_handles */
 
 static void proc_destroy(struct kobj *o) {
     struct proc *p = (struct proc *)o;
+    /* Empty already if it ever had a thread (proc_thread_gone). */
+    htab_close_all(&p->handles);
+    htab_destroy(&p->handles);
     uint32_t f = spin_lock(&pids_lock);
     if (idtab_get(&pids, p->pid) == p) idtab_take(&pids, p->pid);
     spin_unlock(&pids_lock, f);
@@ -55,7 +59,7 @@ struct proc *proc_create(const struct proc *parent) {
     p->uid    = parent ? parent->uid : UID_SYSTEM;
     p->cwd    = parent ? parent->cwd : 0;
     p->broker = -1;
-    htab_init(&p->handles);
+    htab_init(&p->handles, handle_limit);
     return p;
 }
 
@@ -84,5 +88,8 @@ struct proc *proc_by_pid(int pid) {
     spin_unlock(&pids_lock, f);
     return p;
 }
+
+void proc_set_handle_limit(uint32_t n) { handle_limit = n; }
+uint32_t proc_handle_limit(void)        { return handle_limit; }
 
 uint32_t proc_live(void) { return kobj_live(KOBJ_PROCESS); }

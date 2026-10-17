@@ -188,3 +188,10 @@ void kfree(void *ptr) {
 
 uint32_t heap_bytes_used(void) { return used_bytes; }
 uint32_t heap_bytes_free(void) { return total_bytes - used_bytes; }
+
+uint32_t heap_allocs_live(void) {
+    uint32_t n = 0;
+    for (int i = 0; i < KM_CLASSES; i++) n += ocache_live(&classes[i]);
+    for (block_t *b = head; b; b = b->next) if (!b->free) n++;
+    return n;
+}

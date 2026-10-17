@@ -19,8 +19,8 @@ What it lacks, and what this plan answers:
 
 | Gap | Today | Section |
 |---|---|---|
-| No process object | Handle table, caps, uid, cwd and address space are on the **thread** (`sched.h`); a process is one thread | §3 |
-| Fixed small tables | 64 threads system-wide, 8 by default; 16 handles per process | §3 |
+| No process object | Done in roadmap step 2a: `cpu/proc.h` holds the handle table, uid, cwd and address space; threads may share one | §3 |
+| Fixed small tables | Grow on demand since steps 2b and 2c: threads and pids to 256 (the kernel-stack slots bound them), handles to `max_handles` per process (16 to 4096, 1024 by default) | §3 |
 | No way to learn a child's exit, or to kill | `sched.c` stores an exit code nothing returns | §4 |
 | One thing waited on at a time | input, one endpoint, or sleep | §5 |
 | Narrow IPC | one call in flight per endpoint, one page copied, no handle passing, no shared memory | §6 |

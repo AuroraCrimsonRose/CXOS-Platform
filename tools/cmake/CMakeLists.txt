@@ -673,7 +673,7 @@ execute_process(COMMAND ${CXK} check-xdata --help
                 RESULT_VARIABLE CXK_HAS_XDATA OUTPUT_QUIET ERROR_QUIET)
 if(CXK_HAS_XDATA EQUAL 0)
     set(XDCHECK COMMAND ${CXK} check-xdata --quiet --keys exec,args,start,every,grants ${SERVICE_XOSV}
-                COMMAND ${CXK} check-xdata --quiet --keys kernel_stack_kib,max_threads,memory_quota_mib ${KERNEL_XKCO})
+                COMMAND ${CXK} check-xdata --quiet --keys kernel_stack_kib,max_threads,max_handles,memory_quota_mib ${KERNEL_XKCO})
 else()
     message(WARNING "this cxk predates check-xdata - service descriptors will not be checked "
                     "at build time. Republish cxk from the DevKit to enable it.")

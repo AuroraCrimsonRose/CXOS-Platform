@@ -37,4 +37,8 @@ void kfree(void *ptr);
 uint32_t heap_bytes_used(void);
 uint32_t heap_bytes_free(void);
 
+/* Allocations not yet freed, small (size-class) and large alike. Byte counts
+   miss the small ones, which come from the classes' own caches. */
+uint32_t heap_allocs_live(void);
+
 #endif

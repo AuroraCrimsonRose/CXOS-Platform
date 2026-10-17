@@ -70,6 +70,10 @@ void proc_put(struct proc *p);
 struct proc *proc_by_pid(int pid);
 
 /* Live processes, for the self-tests. */
+/* The handle limit for processes made from now on (kernel.xkco). */
+void proc_set_handle_limit(uint32_t n);
+uint32_t proc_handle_limit(void);
+
 uint32_t proc_live(void);
 
 #endif

@@ -7,10 +7,11 @@
  * once at boot.
  *
  *   kernel_stack_kib = 8      // each kernel stack: 8 to 32 KiB, a multiple of 4
- *   max_threads      = 8      // threads alive at once: 4 to 32
+ *   max_threads      = 8      // threads alive at once: 4 to 256
+ *   max_handles      = 1024   // open handles per process: 16 to 4096
  *   memory_quota_mib = 16     // default SYS_MEM_OP quota per process: 1 to 64 MiB
  *
- * All three are optional; an absent key keeps its built-in default. The file is
+ * All four are optional; an absent key keeps its built-in default. The file is
  * checked WHOLE before any of it is applied: a syntax error, an unknown key, a
  * value of the wrong kind or out of range refuses the entire file, logs where,
  * and the kernel boots on its built-in defaults. A typo is never half-applied -
@@ -31,6 +32,7 @@
 struct kconfig {
     uint32_t kernel_stack;       /* bytes */
     uint32_t max_threads;
+    uint32_t max_handles;
     uint32_t memory_quota;       /* bytes */
 };
 

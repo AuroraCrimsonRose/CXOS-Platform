@@ -13,11 +13,11 @@
  * slot's generation, and the generation moves on every close. A program that
  * keeps using a number after closing it gets E_BADF, not whatever object the
  * slot holds next. Under the old table a stale number silently named the next
- * occupant. The generation is 23 bits, so a number comes back only after its
- * slot has been reused 8,388,607 times; NT reuses handle values at once.
+ * occupant. The generation is 19 bits, so a number comes back only after its
+ * slot has been reused 524,287 times; NT reuses handle values at once.
  *
- * 0 IS NEVER A HANDLE, and neither is any value below 256 (the generation is
- * never 0). A program that assumes small handles fails at once.
+ * 0 IS NEVER A HANDLE, and neither is any value below 4096 (the generation
+ * is never 0; the ABI promises 256). A program that assumes small handles fails at once.
  *
  * RIGHTS ONLY SHRINK. A handle carries only rights its type defines
  * (kobj_ops.rights_valid) and the generic ones (HTAB_RIGHTS_GENERIC), and a
@@ -28,6 +28,11 @@
  * skipping 0), and records the grant it was derived from (0 for a handle made
  * with a new object). That chain is what revoking a grant, and asking "why
  * can this process do that?", will walk.
+ *
+ * THE TABLE GROWS. It starts empty, takes HTAB_FIRST_SLOTS on the first
+ * handle and doubles when full, up to its limit (kernel.xkco max_handles, at
+ * most HTAB_MAX_SLOTS). Growing never moves a handle to another slot, so no
+ * value changes; a failed growth refuses the one handle and keeps the table.
  *
  * The table has its own lock. Object hooks (last_handle, destroy) never run
  * under it: a close takes the object out of the slot under the lock and drops
@@ -42,11 +47,13 @@
 #include "object/kobj.h"
 #include "sync/spinlock.h"
 
-/* Slots per process. Fixed until processes become separate from threads
-   (Phase 0 step 2), when tables grow on demand. At most 1 << HTAB_SLOT_BITS. */
-#define HTAB_SLOTS      16
-#define HTAB_SLOT_BITS  8
-#define HTAB_GEN_MAX    0x7FFFFFu     /* 31 - HTAB_SLOT_BITS bits: values stay positive */
+/* A handle value is (generation << HTAB_SLOT_BITS) | slot. */
+#define HTAB_SLOT_BITS     12
+#define HTAB_MAX_SLOTS     (1u << HTAB_SLOT_BITS)           /* 4096: the most any table may have */
+#define HTAB_GEN_MAX       ((1u << (31 - HTAB_SLOT_BITS)) - 1)   /* values stay positive */
+#define HTAB_FIRST_SLOTS   16      /* the array made for the first handle */
+#define HTAB_LIMIT_DEFAULT 1024    /* a process's limit unless kernel.xkco says */
+#define HTAB_LIMIT_MIN     16
 
 /* The ABI's error values (cxk_abi.h). That header asserts 32-bit pointers, so the
    host tests cannot include it; htab.c checks these agree in the kernel build. */
@@ -69,8 +76,10 @@ struct htab_entry {
 };
 
 struct htab {
-    spinlock_t        lock;
-    struct htab_entry e[HTAB_SLOTS];
+    spinlock_t         lock;
+    struct htab_entry *e;      /* cap entries; 0 until the first handle */
+    uint32_t           cap;
+    uint32_t           max;    /* cap never passes it */
 };
 
 /* What a lookup can report besides the object. */
@@ -80,14 +89,19 @@ struct htab_info {
     uint32_t parent;
 };
 
-/* An empty table. Every slot starts at generation 1. */
-void htab_init(struct htab *t);
+/* An empty table that may grow to `max` slots (at most HTAB_MAX_SLOTS).
+   Allocates nothing. Every slot starts at generation 1. */
+void htab_init(struct htab *t, uint32_t max);
+
+/* Free the array. The table must have no handles (htab_close_all first). */
+void htab_destroy(struct htab *t);
 
 /* Give `o` a handle in `t` with `rights`, derived from `parent_grant` (0 for
    a handle on an object the caller just made). The handle holds its own
    reference; the caller's is untouched. Returns the handle value (> 0), or
    HTAB_E_INVAL (no object, or its type is not registered), HTAB_E_PERM (a right the type
-   does not define) or HTAB_E_NOMEM (the table is full). */
+   does not define) or HTAB_E_NOMEM (the table is at its limit, or could
+   not grow). */
 int32_t htab_install(struct htab *t, struct kobj *o, uint32_t rights, uint32_t parent_grant);
 
 /* Look up `h`. It must name an object of `type` (KOBJ_NONE: any type) holding
@@ -110,5 +124,10 @@ void htab_close_all(struct htab *t);
 
 /* Open handles in the table. */
 uint32_t htab_count(struct htab *t);
+
+/* The array, freed with htab_mem_free: kmalloc in the kernel; the host tests
+   bring their own, which can fail on demand. */
+void *htab_mem_alloc(uint32_t bytes);
+void  htab_mem_free(void *p);
 
 #endif

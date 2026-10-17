@@ -6,13 +6,33 @@
  * object/htab.c: handle tables. The properties htab.h promises: a closed
  * handle's number is refused, 0 and small numbers are never handles, rights
  * only shrink, every handle has a unique grant id and records its parent, and
- * whatever happens the objects' live count returns to where it started.
+ * whatever happens the objects' live count returns to where it started. And
+ * the table grows: no value changes when it does, it stops at its limit, and
+ * a growth that cannot get memory refuses one handle and keeps the rest.
  */
 #include "khost.h"
 #include "tobj.h"
 #include "object/htab.h"
 
+#include <stdlib.h>
 #include <string.h>
+
+#define T_SMALL 16    /* one first array: full without growing */
+#define T_RAND  40    /* grows 16 -> 32 -> 40 */
+
+static int fail_allocs;   /* the next allocation fails while set */
+static int live_arrays;   /* allocated and not yet freed */
+
+void *htab_mem_alloc(uint32_t bytes) {
+    if (fail_allocs) return 0;
+    live_arrays++;
+    return malloc(bytes);
+}
+
+void htab_mem_free(void *p) {
+    live_arrays--;
+    free(p);
+}
 
 static struct tobj *new_tobj(struct tobj *o) {
     tobj_type();
@@ -24,20 +44,20 @@ static struct tobj *new_tobj(struct tobj *o) {
 KH_TEST(htab_values_are_never_zero_or_small_and_never_repeat) {
     struct htab t;
     struct tobj o;
-    htab_init(&t);
+    htab_init(&t, T_SMALL);
     new_tobj(&o);
 
-    int32_t seen[HTAB_SLOTS * 4];
+    int32_t seen[T_SMALL * 4];
     int n = 0;
     for (int round = 0; round < 4; round++) {
-        int32_t hs[HTAB_SLOTS];
-        for (int i = 0; i < HTAB_SLOTS; i++) {
+        int32_t hs[T_SMALL];
+        for (int i = 0; i < T_SMALL; i++) {
             hs[i] = htab_install(&t, &o.hdr, TOBJ_R1, 0);
             KH_CHECK(hs[i] >= (1 << HTAB_SLOT_BITS));
             for (int j = 0; j < n; j++) KH_CHECK(seen[j] != hs[i]);
             seen[n++] = hs[i];
         }
-        for (int i = 0; i < HTAB_SLOTS; i++) KH_CHECK_EQ(htab_close(&t, hs[i]), 0);
+        for (int i = 0; i < T_SMALL; i++) KH_CHECK_EQ(htab_close(&t, hs[i]), 0);
     }
     kobj_unref(&o.hdr);
     KH_CHECK_EQ(o.destroy_runs, 1);
@@ -46,7 +66,7 @@ KH_TEST(htab_values_are_never_zero_or_small_and_never_repeat) {
 KH_TEST(htab_a_closed_number_is_refused_even_after_its_slot_is_reused) {
     struct htab t;
     struct tobj a, b;
-    htab_init(&t);
+    htab_init(&t, T_SMALL);
     new_tobj(&a);
     new_tobj(&b);
 
@@ -78,7 +98,7 @@ KH_TEST(htab_a_closed_number_is_refused_even_after_its_slot_is_reused) {
 KH_TEST(htab_refuses_values_that_name_no_slot) {
     struct htab t;
     struct tobj o;
-    htab_init(&t);
+    htab_init(&t, T_SMALL);
     new_tobj(&o);
     int32_t h = htab_install(&t, &o.hdr, TOBJ_R1, 0);
     int32_t slot = h & ((1 << HTAB_SLOT_BITS) - 1);
@@ -87,7 +107,7 @@ KH_TEST(htab_refuses_values_that_name_no_slot) {
     const int32_t bad[] = {
         0, -1, HTAB_E_BADF, INT32_MIN, slot,                       /* no generation */
         ((gen + 1) << HTAB_SLOT_BITS) | slot,                 /* a future generation */
-        (gen << HTAB_SLOT_BITS) | HTAB_SLOTS,                 /* past the table */
+        (gen << HTAB_SLOT_BITS) | (int32_t)t.cap,             /* past the table */
         (gen << HTAB_SLOT_BITS) | ((1 << HTAB_SLOT_BITS) - 1),
         (gen << HTAB_SLOT_BITS) | (slot + 1),                 /* an empty slot */
     };
@@ -105,7 +125,7 @@ KH_TEST(htab_refuses_values_that_name_no_slot) {
 KH_TEST(htab_rights_only_shrink) {
     struct htab t;
     struct tobj o;
-    htab_init(&t);
+    htab_init(&t, T_SMALL);
     new_tobj(&o);
     uint32_t live0 = kobj_live(KOBJ_TEST);
 
@@ -154,8 +174,8 @@ KH_TEST(htab_rights_only_shrink) {
 KH_TEST(htab_grants_are_unique_and_record_their_parent) {
     struct htab t, u;
     struct tobj o;
-    htab_init(&t);
-    htab_init(&u);
+    htab_init(&t, T_SMALL);
+    htab_init(&u, T_SMALL);
     new_tobj(&o);
 
     int32_t h = htab_install(&t, &o.hdr, TOBJ_RIGHTS | HTAB_RIGHT_DUPLICATE, 0);
@@ -196,14 +216,14 @@ KH_TEST(htab_grants_are_unique_and_record_their_parent) {
 KH_TEST(htab_a_full_table_refuses_and_takes_nothing) {
     struct htab t;
     struct tobj o;
-    htab_init(&t);
+    htab_init(&t, T_SMALL);
     new_tobj(&o);
-    for (int i = 0; i < HTAB_SLOTS; i++) KH_CHECK(htab_install(&t, &o.hdr, TOBJ_R1, 0) > 0);
+    for (int i = 0; i < T_SMALL; i++) KH_CHECK(htab_install(&t, &o.hdr, TOBJ_R1, 0) > 0);
     uint32_t refs = atomic_load(&o.hdr.refs);
     KH_CHECK_EQ(htab_install(&t, &o.hdr, TOBJ_R1, 0), HTAB_E_NOMEM);
     KH_CHECK_EQ(htab_dup(&t, htab_install(&t, &o.hdr, TOBJ_R1, 0), 0), HTAB_E_BADF);
     KH_CHECK_EQ(atomic_load(&o.hdr.refs), refs);
-    KH_CHECK_EQ(atomic_load(&o.hdr.handles), (uint32_t)HTAB_SLOTS);
+    KH_CHECK_EQ(atomic_load(&o.hdr.handles), (uint32_t)T_SMALL);
     htab_close_all(&t);
     KH_CHECK_EQ(htab_count(&t), 0u);
     KH_CHECK_EQ(o.last_handle_runs, 1);
@@ -216,7 +236,7 @@ KH_TEST(htab_a_full_table_refuses_and_takes_nothing) {
 KH_TEST(htab_a_looked_up_object_outlives_its_handle) {
     struct htab t;
     struct tobj o;
-    htab_init(&t);
+    htab_init(&t, T_SMALL);
     new_tobj(&o);
     int32_t h = htab_install(&t, &o.hdr, TOBJ_R1, 0);
     kobj_unref(&o.hdr);                         /* the creator lets go */
@@ -234,8 +254,9 @@ KH_TEST(htab_a_looked_up_object_outlives_its_handle) {
 KH_TEST(htab_generation_wraps_to_one_and_stays_positive) {
     struct htab t;
     struct tobj o;
-    htab_init(&t);
+    htab_init(&t, T_SMALL);
     new_tobj(&o);
+    KH_CHECK_EQ(htab_close(&t, htab_install(&t, &o.hdr, TOBJ_R1, 0)), 0);   /* make the array */
     t.e[0].gen = HTAB_GEN_MAX;
     int32_t h = htab_install(&t, &o.hdr, TOBJ_R1, 0);
     KH_CHECK(h > 0);
@@ -259,16 +280,17 @@ KH_TEST(htab_random_operations_agree_with_a_model) {
     uint64_t seed = 0xC0FFEEull;
     uint32_t live0 = kobj_live(KOBJ_TEST);
     int p0 = tobj_panics;
+    int a0 = live_arrays;
 
     for (int round = 0; round < ROUNDS; round++) {
         struct htab t;
         struct tobj o[N];
-        htab_init(&t);
+        htab_init(&t, T_RAND);
         for (int i = 0; i < N; i++) new_tobj(&o[i]);
 
-        int32_t  val[HTAB_SLOTS];
-        int      obj[HTAB_SLOTS];
-        uint32_t rts[HTAB_SLOTS];
+        int32_t  val[T_RAND];
+        int      obj[T_RAND];
+        uint32_t rts[T_RAND];
         int      open = 0;
         int32_t  closed[CLOSED_MAX];
         int      nclosed = 0;
@@ -281,7 +303,7 @@ KH_TEST(htab_random_operations_agree_with_a_model) {
                 int i = (int)(kh_rand(&seed) % N);
                 int32_t h = htab_install(&t, &o[i].hdr, rights, 0);
                 if (rights & ~(TOBJ_RIGHTS | HTAB_RIGHT_DUPLICATE)) KH_CHECK_EQ(h, HTAB_E_PERM);
-                else if (open == HTAB_SLOTS) KH_CHECK_EQ(h, HTAB_E_NOMEM);
+                else if (open == T_RAND) KH_CHECK_EQ(h, HTAB_E_NOMEM);
                 else { KH_CHECK(h > 0); val[open] = h; obj[open] = i; rts[open] = rights; open++; }
             } else {
                 int k = (int)(kh_rand(&seed) % (uint32_t)open);
@@ -289,7 +311,7 @@ KH_TEST(htab_random_operations_agree_with_a_model) {
                     int32_t d = htab_dup(&t, val[k], rights);
                     if (!(rts[k] & HTAB_RIGHT_DUPLICATE)) KH_CHECK_EQ(d, HTAB_E_PERM);
                     else if (rights & ~rts[k])   KH_CHECK_EQ(d, HTAB_E_PERM);
-                    else if (open == HTAB_SLOTS) KH_CHECK_EQ(d, HTAB_E_NOMEM);
+                    else if (open == T_RAND) KH_CHECK_EQ(d, HTAB_E_NOMEM);
                     else { KH_CHECK(d > 0); val[open] = d; obj[open] = obj[k]; rts[open] = rights; open++; }
                 } else if (op == 2) {                          /* look up */
                     struct htab_info info;
@@ -321,6 +343,8 @@ KH_TEST(htab_random_operations_agree_with_a_model) {
         }
         htab_close_all(&t);
         for (int i = 0; i < nclosed; i++) KH_CHECK_EQ(htab_close(&t, closed[i]), HTAB_E_BADF);
+        htab_destroy(&t);
+        KH_CHECK_EQ(live_arrays, a0);
         for (int i = 0; i < N; i++) {
             kobj_unref(&o[i].hdr);
             KH_CHECK_EQ(o[i].destroy_runs, 1);
@@ -335,7 +359,7 @@ KH_TEST(htab_random_operations_agree_with_a_model) {
 KH_TEST(htab_duplicate_needs_the_right) {
     struct htab t;
     struct tobj o;
-    htab_init(&t);
+    htab_init(&t, T_SMALL);
     new_tobj(&o);
 
     int32_t plain = htab_install(&t, &o.hdr, TOBJ_R1, 0);
@@ -361,6 +385,117 @@ KH_TEST(htab_duplicate_needs_the_right) {
     KH_CHECK_EQ(atomic_load(&o.hdr.handles), 5u);
 
     htab_close_all(&t);
+    kobj_unref(&o.hdr);
+    KH_CHECK_EQ(o.destroy_runs, 1);
+}
+
+/* Growing moves no handle: every value made before a growth still names its
+   object after several, and the array is freed with the table. */
+KH_TEST(htab_grows_and_keeps_every_value) {
+    int a0 = live_arrays;
+    enum { N = 300 };
+    struct htab t;
+    struct tobj o[3];
+    htab_init(&t, HTAB_LIMIT_DEFAULT);
+    KH_CHECK(t.cap == 0 && t.e == 0);                       /* nothing until used */
+    for (int i = 0; i < 3; i++) new_tobj(&o[i]);
+
+    static int32_t h[N];
+    for (int i = 0; i < N; i++) {
+        h[i] = htab_install(&t, &o[i % 3].hdr, TOBJ_R1, 0);
+        KH_CHECK(h[i] >= (1 << HTAB_SLOT_BITS));
+        KH_CHECK_EQ(h[i] & (HTAB_MAX_SLOTS - 1), i);       /* lowest free slot */
+    }
+    KH_CHECK(t.cap >= N && t.cap < 2 * N);
+    KH_CHECK_EQ(live_arrays, a0 + 1);                            /* the old ones went */
+    for (int i = 0; i < N; i++) {
+        struct kobj *r = htab_ref(&t, h[i], KOBJ_TEST, TOBJ_R1, 0);
+        KH_CHECK(r == &o[i % 3].hdr);
+        if (r) kobj_unref(r);
+    }
+    KH_CHECK_EQ(htab_count(&t), (uint32_t)N);
+    htab_close_all(&t);
+    KH_CHECK_EQ(htab_count(&t), 0u);
+    htab_destroy(&t);
+    KH_CHECK_EQ(live_arrays, a0);
+    for (int i = 0; i < 3; i++) {
+        KH_CHECK_EQ(atomic_load(&o[i].hdr.handles), 0u);
+        kobj_unref(&o[i].hdr);
+        KH_CHECK_EQ(o[i].destroy_runs, 1);
+    }
+}
+
+/* A limit that is not a power of two is kept exactly, by install and by
+   duplicate alike, and a refusal takes no reference. A limit past what a
+   value can encode is cut to HTAB_MAX_SLOTS, where the last slot still makes
+   a positive value. */
+KH_TEST(htab_stops_at_its_limit) {
+    int a0 = live_arrays;
+    struct htab t;
+    struct tobj o;
+    htab_init(&t, T_RAND);
+    new_tobj(&o);
+    int32_t h = 0;
+    for (int i = 0; i < T_RAND; i++) {
+        h = htab_install(&t, &o.hdr, TOBJ_R1 | HTAB_RIGHT_DUPLICATE, 0);
+        KH_CHECK(h > 0);
+    }
+    uint32_t refs = atomic_load(&o.hdr.refs);
+    KH_CHECK_EQ(htab_install(&t, &o.hdr, TOBJ_R1, 0), HTAB_E_NOMEM);
+    KH_CHECK_EQ(htab_dup(&t, h, TOBJ_R1), HTAB_E_NOMEM);
+    KH_CHECK_EQ(atomic_load(&o.hdr.refs), refs);
+    KH_CHECK_EQ(t.cap, (uint32_t)T_RAND);
+    htab_close_all(&t);
+    htab_destroy(&t);
+
+    htab_init(&t, 0xFFFFFFFFu);
+    KH_CHECK_EQ(t.max, HTAB_MAX_SLOTS);
+    for (uint32_t i = 0; i < HTAB_MAX_SLOTS; i++) {
+        h = htab_install(&t, &o.hdr, TOBJ_R1, 0);
+        KH_CHECK(h > 0);
+    }
+    KH_CHECK_EQ(h & (HTAB_MAX_SLOTS - 1), (int32_t)(HTAB_MAX_SLOTS - 1));
+    struct kobj *r = htab_ref(&t, h, KOBJ_TEST, 0, 0);
+    KH_CHECK(r == &o.hdr);
+    if (r) kobj_unref(r);
+    KH_CHECK_EQ(htab_install(&t, &o.hdr, TOBJ_R1, 0), HTAB_E_NOMEM);
+    htab_close_all(&t);
+    htab_destroy(&t);
+    KH_CHECK_EQ(live_arrays, a0);
+    kobj_unref(&o.hdr);
+    KH_CHECK_EQ(o.destroy_runs, 1);
+}
+
+/* No memory to grow: the one handle is refused, with no reference taken, and
+   every handle already there still works. Memory back, it grows. */
+KH_TEST(htab_growth_failure_refuses_and_keeps) {
+    int a0 = live_arrays;
+    struct htab t;
+    struct tobj o;
+    htab_init(&t, HTAB_LIMIT_DEFAULT);
+    new_tobj(&o);
+    int32_t h[HTAB_FIRST_SLOTS];
+    for (int i = 0; i < HTAB_FIRST_SLOTS; i++)
+        h[i] = htab_install(&t, &o.hdr, TOBJ_R1 | HTAB_RIGHT_DUPLICATE, 0);
+
+    uint32_t refs = atomic_load(&o.hdr.refs);
+    fail_allocs = 1;
+    KH_CHECK_EQ(htab_install(&t, &o.hdr, TOBJ_R1, 0), HTAB_E_NOMEM);
+    KH_CHECK_EQ(htab_dup(&t, h[0], TOBJ_R1), HTAB_E_NOMEM);
+    fail_allocs = 0;
+    KH_CHECK_EQ(atomic_load(&o.hdr.refs), refs);
+    KH_CHECK_EQ(t.cap, (uint32_t)HTAB_FIRST_SLOTS);
+    for (int i = 0; i < HTAB_FIRST_SLOTS; i++) {
+        struct kobj *r = htab_ref(&t, h[i], KOBJ_TEST, TOBJ_R1, 0);
+        KH_CHECK(r == &o.hdr);
+        if (r) kobj_unref(r);
+    }
+    int32_t d = htab_dup(&t, h[0], TOBJ_R1);
+    KH_CHECK(d > 0);
+    KH_CHECK_EQ(d & (HTAB_MAX_SLOTS - 1), HTAB_FIRST_SLOTS);
+    htab_close_all(&t);
+    htab_destroy(&t);
+    KH_CHECK_EQ(live_arrays, a0);
     kobj_unref(&o.hdr);
     KH_CHECK_EQ(o.destroy_runs, 1);
 }

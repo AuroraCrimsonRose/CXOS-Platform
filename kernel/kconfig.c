@@ -8,6 +8,7 @@
 #include "xdata.h"
 #include "sched.h"
 #include "vmregion.h"
+#include "proc.h"
 #include "cxfs.h"
 #include "logging.h"
 #include "color.h"
@@ -19,6 +20,7 @@
 void kconfig_defaults(struct kconfig *out) {
     out->kernel_stack = THREAD_STACK_DEFAULT;
     out->max_threads  = THREAD_LIMIT_DEFAULT;
+    out->max_handles  = HTAB_LIMIT_DEFAULT;
     out->memory_quota = VM_DEFAULT_QUOTA;
 }
 
@@ -55,6 +57,10 @@ int kconfig_parse(const char *s, uint32_t len, struct kconfig *out,
             if (setting(s, &v, THREAD_LIMIT_MIN, THREAD_LIMIT_MAX, &n, why,
                         "max_threads must be 4 to 256") < 0) return -1;
             c.max_threads = n;
+        } else if (xd_sym_is(s, &k, "max_handles")) {
+            if (setting(s, &v, HTAB_LIMIT_MIN, HTAB_MAX_SLOTS, &n, why,
+                        "max_handles must be 16 to 4096") < 0) return -1;
+            c.max_handles = n;
         } else if (xd_sym_is(s, &k, "memory_quota_mib")) {
             if (setting(s, &v, 1, 64, &n, why, "memory_quota_mib must be 1 to 64") < 0) return -1;
             c.memory_quota = n * MIB;
@@ -117,9 +123,11 @@ void kconfig_load(void) {
         return;
     }
     vm_set_default_quota(c.memory_quota);
+    proc_set_handle_limit(c.max_handles);
 
     klog("KCONFIG", SEV_OK, KCONFIG_PATH " applied");
     klog_child_u32("kernel stack KiB: ", c.kernel_stack / KIB, LOG_COLOR_VALUE, "");
     klog_child_u32("max threads: ", c.max_threads, LOG_COLOR_VALUE, "");
+    klog_child_u32("max handles: ", c.max_handles, LOG_COLOR_VALUE, "");
     klog_child_u32("memory quota MiB: ", c.memory_quota / MIB, LOG_COLOR_VALUE, "");
 }

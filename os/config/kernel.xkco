@@ -20,6 +20,10 @@ kernel_stack_kib = 8
 // supervisor and each running service or program is one.
 max_threads = 8
 
+// How many handles one process may have open at once: 16 to 4096. Open
+// files, endpoints and every other object a program holds each take one.
+max_handles = 1024
+
 // The memory a process may map with SYS_MEM_OP unless its parent gives it
 // less, in MiB: 1 to 64. A process can never be given more than its parent.
 memory_quota_mib = 16
