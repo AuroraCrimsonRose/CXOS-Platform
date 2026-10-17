@@ -8,10 +8,10 @@
 #include "pmm.h"
 #include "paging.h"
 #include "sync/spinlock.h"
-#include "cpu/int/idt.h"   /* kpanic */
+#include "panic.h"
 
 
-/* the kernel's page directory, built by kernel.asm (a kernel symbol => virtual).
+/* the kernel's page directory, built by arch/x86_32/entry.asm (a kernel symbol => virtual).
    Its physical address is (virtual - KERNEL_VBASE). */
 extern uint32_t boot_page_dir[];
 

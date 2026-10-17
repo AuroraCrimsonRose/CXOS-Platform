@@ -5,7 +5,7 @@
 /* Minimal ACPI: RSDP/FADT discovery + targeted DSDT scan for _S5_/_S1_. */
 
 #include "acpi.h"
-#include "io.h"
+#include "arch/x86/io.h"
 #include "paging.h"
 
 /* ---- ACPI table structures (packed, as they appear in memory) ---- */
@@ -123,7 +123,7 @@ static void *map_table(uint32_t phys, uint32_t len);
 /* find the RSDP by scanning the BIOS areas for "RSD PTR " on a 16-byte boundary.
    search: the EBDA (first 1KB) and the BIOS ROM area 0xE0000-0xFFFFF. */
 static struct acpi_rsdp *find_rsdp(void) {
-    /* v5 is a HIGHER-HALF kernel: kernel.asm identity-maps the first 4 MB only
+    /* v5 is a HIGHER-HALF kernel: arch/x86_32/entry.asm identity-maps the first 4 MB only
        long enough to enable paging, then drops the identity map. So low physical
        memory is NOT readable at its physical address any more - reading 0x40E
        directly page-faults (CR2 = 0x40E), which is what v4 could get away with.

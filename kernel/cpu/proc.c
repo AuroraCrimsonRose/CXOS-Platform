@@ -8,7 +8,7 @@
 #include "memman/ocache.h"
 #include "object/idtab.h"
 #include "sync/spinlock.h"
-#include "cpu/int/idt.h"   /* kpanic */
+#include "panic.h"
 #include "memman/addr_space.h"
 
 static struct ocache proc_cache;

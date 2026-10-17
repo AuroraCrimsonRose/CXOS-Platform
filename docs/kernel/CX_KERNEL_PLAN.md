@@ -25,7 +25,7 @@ What it lacks, and what this plan answers:
 | One thing waited on at a time | input, one endpoint, or sleep | §5 |
 | Narrow IPC | one call in flight per endpoint, one page copied, no handle passing, no shared memory | §6 |
 | No user threads, no futex, no pipes | | §7 |
-| x86 code mixed with generic code | `kernel/cpu` holds both `gdt.c` and `sched.c`. Step 3a began `kernel/arch/x86/` with the CPU feature table | §2.2 |
+| x86 code mixed with generic code | Step 3b moved the GDT, IDT, TSS, context switch, entry stub and linker script to `kernel/arch/x86_32/`, and the local APIC and port primitives to `kernel/arch/x86/`. Left: paging, port I/O in 12 drivers, inline assembly in nine generic files (`sched.c`, `spinlock.h`, `kmain.c`, `ktest.c`, `power.c`, `acpi.c`, `timer.c`, `keyboard.c`, `kmath.c`) and the unbuilt `cpu/fpu.c`, `usermode.c`'s view of the register frame, MSI addresses in `pci.c` | §2.2 |
 | Uniprocessor locking | critical sections switch interrupts off | §8 |
 | First-fit linked-list heap | `heap.c` | §8 |
 | PIT at 1000 Hz | | §8 |
@@ -69,6 +69,18 @@ one interface with one implementation per architecture, as Haiku does
 beside `osfmk/kern` and NT's HAL are the same idea. The 32-bit code moves
 there first, as the baseline that still boots; it is deleted once x86-64
 passes the full boot (roadmap Phase 0.6). ARM will be the next directory.
+
+The layout (step 3b): `kernel/arch/x86_32/` and later `x86_64/` hold what
+differs by width; `kernel/arch/x86/` holds what both share (the feature table,
+the local APIC, port I/O). Generic code does not include either. It includes
+the arch-neutral interfaces beside them, which every architecture implements:
+`arch/cpu.h` (the processor's tables, the stack taken on entry from user mode)
+and `arch/irq.h` (handlers, MSI vectors; the register frame is opaque).
+`kpanic` is declared in `kernel/panic.h`. Device registers are reached
+through an I/O window, port-mapped or memory-mapped, so a driver's logic is
+the same for both (SerenityOS `Kernel/Library/IOWindow.cpp`); only the window's
+port backend is x86 (step 3d). Legacy PC devices (PIC, PIT, PS/2, CMOS clock,
+speaker) are platform code, `kernel/platform/pc/`, not arch code.
 
 ### 2.3 CPU features, detected at boot
 

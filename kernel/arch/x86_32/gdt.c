@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
-/* /kernel/cpu/gdt.c */
+/* /kernel/arch/x86_32/gdt.c */
 /* Aurora Tejeda / CATX Systems */
 /* Kernel GDT + TSS setup for ring 0/3 + privilege transitions. */
 

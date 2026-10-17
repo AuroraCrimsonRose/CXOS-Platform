@@ -7,7 +7,7 @@
 #include <stdint.h>
 #include "keyboard.h"
 #include "usb_hid.h"
-#include "../../cpu/int/idt.h"
+#include "arch/irq.h"
 #include "../../cpu/sched.h"   /* thread_block / thread_unblock */
 
 #define KBD_DATA_PORT 0x60

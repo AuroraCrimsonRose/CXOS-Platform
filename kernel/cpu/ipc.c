@@ -10,7 +10,7 @@
 #include "caps.h"
 #include "usermode.h"   /* user_ptr_readable / user_ptr_writable */
 #include "memman/ocache.h"
-#include "cpu/int/idt.h"   /* kpanic */
+#include "panic.h"
 #include <stddef.h>
 
 /* Endpoints come from their own cache (memman/ocache.h): a stale pointer to

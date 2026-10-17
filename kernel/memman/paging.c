@@ -6,7 +6,7 @@
  * x86 32-bit paging - v5, RECURSIVE page directory.
  *
  * Unlike v4 (identity-mapped, enabled paging itself), v5 inherits paging ALREADY
- * ON from kernel.asm's higher-half bootstrap. paging_init does NOT re-enable
+ * ON from arch/x86_32/entry.asm's higher-half bootstrap. paging_init does NOT re-enable
  * paging; it ADOPTS the existing boot page directory and installs the recursive
  * mapping so the kernel can edit page tables it can't otherwise reach.
  *
@@ -39,7 +39,7 @@ void paging_set_pde_hook(void (*fn)(uint32_t index, uint32_t value)) {
     g_kernel_pde_hook = fn;
 }
 
-/* the boot page directory built by kernel.asm (a kernel symbol => virtual addr).
+/* the boot page directory built by arch/x86_32/entry.asm (a kernel symbol => virtual addr).
    Its PHYSICAL address is (virtual - KERNEL_VBASE). */
 extern uint32_t boot_page_dir[];
 
@@ -181,7 +181,7 @@ int paging_is_user(uint32_t virt) {
    question a syscall writing into a user buffer is asking: a read-only user page
    passes it. When this split was introduced CR0.WP was clear, so the kernel's
    write then went through regardless and this check was the only thing refusing
-   it (security review §4). WP is set now (kernel.asm), so the CPU refuses that
+   it (security review §4). WP is set now (arch/x86_32/entry.asm), so the CPU refuses that
    write as well - but this remains the policy answer rather than a duplicate of
    it, because WP enforces only the WRITE bit: it says nothing about PAGE_USER,
    which this also requires. The caller must still ask for the access it

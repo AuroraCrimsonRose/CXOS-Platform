@@ -6,7 +6,7 @@
    clear of the CPU exception vectors 0..31. */
 
 #include <stdint.h>
-#include "io.h"
+#include "arch/x86/io.h"
 #include "pic.h"
 
 #define PIC1_CMD   0x20

@@ -10,8 +10,8 @@
 #include "pci.h"
 #include "paging.h"
 #include "logging.h"
-#include "idt.h"
-#include "apic.h"
+#include "arch/irq.h"
+#include "arch/x86/apic.h"
 #include "timer.h"
 
 /* ---- capability registers (at BAR0) ------------------------------------- */

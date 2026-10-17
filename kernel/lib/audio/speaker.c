@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 #include "speaker.h"
-#include "io.h"
+#include "arch/x86/io.h"
 #include "timer.h"
 
 #define PIT_COMMAND 0x43

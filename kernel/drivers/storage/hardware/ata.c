@@ -19,7 +19,7 @@
 #include "timer.h"
 #include "disk.h"
 #include "logging.h"
-#include "io.h"
+#include "arch/x86/io.h"
 
 /* per-channel I/O base ports */
 #define PRI_BASE   0x1F0

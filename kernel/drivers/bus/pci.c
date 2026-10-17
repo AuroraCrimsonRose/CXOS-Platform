@@ -5,9 +5,9 @@
 /* PCI bus driver - legacy configuration mechanism #1 (see pci.h). */
 
 #include "pci.h"
-#include "io.h"
+#include "arch/x86/io.h"
 #include "logging.h"
-#include "apic.h"
+#include "arch/x86/apic.h"
 #include "paging.h"
 
 #define PCI_CONFIG_ADDR 0xCF8

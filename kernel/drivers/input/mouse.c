@@ -19,8 +19,8 @@
 
 #include <stdint.h>
 #include "mouse.h"
-#include "../../cpu/io.h"
-#include "../../cpu/int/idt.h"
+#include "arch/x86/io.h"
+#include "arch/irq.h"
 #include "../../cpu/int/pic.h"
 
 #define PS2_DATA    0x60

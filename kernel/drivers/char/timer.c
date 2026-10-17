@@ -7,8 +7,8 @@
 #include "sched.h"
 #include "timer.h"
 #include "keyboard.h"
-#include "idt.h"
-#include "io.h"
+#include "arch/irq.h"
+#include "arch/x86/io.h"
 
 #define PIT_BASE_FREQ 1193182u
 #define TIMER_HZ      1000u            /* 1000 Hz -> ~1 ms per tick */

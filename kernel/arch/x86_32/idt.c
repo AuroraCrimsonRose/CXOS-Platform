@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
-/* /kernel/cpu/int/idt.c */
+/* /kernel/arch/x86_32/idt.c */
 /* Aurora Tejeda / CATX Systems */
 /*
  * v5 IDT: exception + IRQ handling with a self-contained panic dump.
@@ -16,7 +16,7 @@
  */
 
 #include "idt.h"
-#include "apic.h"
+#include "arch/x86/apic.h"
 #include "syslog.h"
 #include "format.h"
 #include "sched.h"

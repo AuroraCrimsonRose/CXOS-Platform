@@ -5,8 +5,7 @@
 /* Ring 3 entry, syscall dispatch, and the user-mode tests (Checkpoints 3a/3b). */
 
 #include "usermode.h"
-#include "idt.h"
-#include "gdt.h"
+#include "arch/x86_32/idt.h"
 #include "sched.h"
 #include "uid.h"
 #include "paging.h"
@@ -135,7 +134,7 @@ int user_ptr_writable(uint32_t ptr, uint32_t len) { return user_ptr_span(ptr, le
  *                     be made to hold across the instruction that uses it, so
  *                     the copy is allowed to fail instead (usermode.asm).
  *
- * CR0.WP (set in kernel.asm) now makes the CPU enforce the read-only bit
+ * CR0.WP (set in arch/x86_32/entry.asm) now makes the CPU enforce the read-only bit
  * against ring 0 too, so the two overlap on one case - a read-only user page -
  * where before WP only the check caught it. They are still not the same check,
  * and the range check is not redundant:

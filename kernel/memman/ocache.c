@@ -243,7 +243,7 @@ int ocache_walk(struct ocache *c, int (*fn)(void *obj, void *ctx), void *ctx) {
 #ifndef CXK_HOST_TEST
 #include "paging.h"
 #include "pmm.h"
-#include "cpu/int/idt.h"
+#include "panic.h"
 
 uintptr_t ocache_window(void) { return OCACHE_WINDOW_BASE; }
 

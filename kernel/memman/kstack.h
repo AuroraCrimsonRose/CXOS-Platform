@@ -33,7 +33,7 @@
 #define KSTACK_SLOTS        (KSTACK_REGION_SIZE / KSTACK_SLOT_SIZE)   /* 256 */
 
 /* Thread 0 (kmain, then the self-tests and the idle loop): the size the boot
-   stack in kernel.asm always was, which kmain moves off early in boot. */
+   stack in arch/x86_32/entry.asm always was, which kmain moves off early in boot. */
 #define KSTACK_MAIN_SIZE    16384u
 
 /* Reserve the region's page tables. Call once after paging_init and before any

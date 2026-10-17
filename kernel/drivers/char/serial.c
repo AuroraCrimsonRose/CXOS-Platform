@@ -5,7 +5,7 @@
 /* 16550 UART on COM1. See serial.h for what this is for. */
 
 #include "serial.h"
-#include "io.h"
+#include "arch/x86/io.h"
 
 #if CXK_ENABLE_SERIAL
 

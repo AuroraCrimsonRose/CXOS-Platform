@@ -6,7 +6,7 @@
 
 #include "paging.h"   /* KERNEL_VBASE */
 #include "vga.h"
-#include "io.h"
+#include "arch/x86/io.h"
 
 /* higher-half VGA text buffer: physical 0xB8000 mapped at 0xC0000000 + 0xB8000
    by the boot page tables. (v4 used physical 0xB8000, which is unmapped in v5

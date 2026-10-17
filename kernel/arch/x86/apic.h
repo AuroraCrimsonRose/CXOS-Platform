@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
-/* /kernel/cpu/int/apic.h */
+/* /kernel/arch/x86/apic.h */
 /* Aurora Tejeda / CATX Systems */
 /*
  * Local APIC and I/O APIC - the modern interrupt path, replacing the 8259 pair.

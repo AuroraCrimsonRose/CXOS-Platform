@@ -1,6 +1,6 @@
 ; SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 ; SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
-; /CXLite/kernel/idt.asm
+; /kernel/arch/x86_32/idt.asm
 ; Aurora Tejeda
 
 bits 32

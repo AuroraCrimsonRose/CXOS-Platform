@@ -22,7 +22,7 @@
 #include "logging.h"
 #include "color.h"
 #include "sched.h"
-#include "gdt.h"
+#include "arch/x86_32/gdt.h"
 #include "ipc.h"
 #include "addr_space.h"
 #include "object/htab.h"
@@ -48,9 +48,8 @@
 #include "exec.h"
 #include "kstack.h"
 #include "kconfig.h"
-#include "gdt.h"
-#include "idt.h"
-#include "apic.h"
+#include "arch/x86_32/idt.h"
+#include "arch/x86/apic.h"
 #include "arch/x86/cpufeat.h"
 
 

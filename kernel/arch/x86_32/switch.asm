@@ -1,6 +1,6 @@
 ; SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 ; SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
-; /kernel/cpu/switch.asm
+; /kernel/arch/x86_32/switch.asm
 ; Aurora Tejeda / CATX Systems
 ; Cooperative kernel-thread context switch.
 

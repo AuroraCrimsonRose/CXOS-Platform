@@ -160,10 +160,11 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/kmain.c
     ${SRC_DIR}/kernel/ktest.c
     ${SRC_DIR}/kernel/kconfig.c
-    ${SRC_DIR}/kernel/cpu/gdt.c
-    ${SRC_DIR}/kernel/cpu/int/idt.c
+    ${SRC_DIR}/kernel/arch/x86_32/cpu.c
+    ${SRC_DIR}/kernel/arch/x86_32/gdt.c
+    ${SRC_DIR}/kernel/arch/x86_32/idt.c
     ${SRC_DIR}/kernel/cpu/int/pic.c
-    ${SRC_DIR}/kernel/cpu/int/apic.c
+    ${SRC_DIR}/kernel/arch/x86/apic.c
     ${SRC_DIR}/kernel/arch/x86/cpufeat.c
     ${SRC_DIR}/kernel/memman/pmm.c
     ${SRC_DIR}/kernel/memman/paging.c
@@ -243,15 +244,15 @@ set(KERNEL_C_SRCS
 
 # ---- KERNEL ASM SOURCES (elf32 objects; append new ones here) ----
 set(KERNEL_ASM_SRCS
-    ${SRC_DIR}/kernel/kernel.asm
-    ${SRC_DIR}/kernel/cpu/gdt_flush.asm
-    ${SRC_DIR}/kernel/cpu/int/idt.asm
-    ${SRC_DIR}/kernel/cpu/switch.asm
-    ${SRC_DIR}/kernel/cpu/usermode.asm
+    ${SRC_DIR}/kernel/arch/x86_32/entry.asm
+    ${SRC_DIR}/kernel/arch/x86_32/gdt_flush.asm
+    ${SRC_DIR}/kernel/arch/x86_32/idt.asm
+    ${SRC_DIR}/kernel/arch/x86_32/switch.asm
+    ${SRC_DIR}/kernel/arch/x86_32/usermode.asm
 )
 
 # ---- linker script ----
-set(LINKER ${SRC_DIR}/kernel/linker.ld)
+set(LINKER ${SRC_DIR}/kernel/arch/x86_32/linker.ld)
 
 # ---- boot sources ----
 set(BOOT_SRC   ${SRC_DIR}/boot/boot.asm)

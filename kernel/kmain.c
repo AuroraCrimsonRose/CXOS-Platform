@@ -3,7 +3,7 @@
 /* /kernel/kmain.c - v5 kernel C entry
  * Aurora Tejeda / CATX Systems
  *
- * Runs in the higher half. kernel.asm has set up paging, mapped the kernel high,
+ * Runs in the higher half. arch/x86_32/entry.asm has set up paging, mapped the kernel high,
  * switched to a higher-half stack, and zeroed BSS. kmain brings up the kernel
  * subsystems in dependency order, then hands off to the self-tests (ktest.c).
  */
@@ -25,8 +25,8 @@
 #ifndef CXK_VERSION_STR
 #define CXK_VERSION_STR "0.0.0-nocmake"
 #endif
-#include "gdt.h"
-#include "idt.h"
+#include "arch/cpu.h"
+#include "panic.h"
 #include "pmm.h"
 #include "paging.h"
 #include "addr_space.h"
@@ -46,7 +46,7 @@
 #include "power.h"
 #include "netif.h"
 #include "usb.h"
-#include "apic.h"
+#include "arch/x86/apic.h"
 #include "acpi.h"
 #include "usermode.h"
 #include "ata.h"
@@ -144,11 +144,8 @@ void kmain(void) {
     /* console first, so everything after it logs cleanly. */
     console_init();
 
-    /* CPU core: segments + interrupts. */
-    gdt_init();
-    klog("GDT", SEV_OK, "GDT + TSS installed");
-    idt_init();
-    klog("IDT", SEV_OK, "installed");
+    /* CPU core: the processor's own tables, then interrupts. */
+    arch_cpu_init();
     /* Before anything that might ask what the CPU has. */
     cpufeat_init();
 
@@ -176,7 +173,7 @@ void kmain(void) {
     kstack_init();
     klog("KSTACK", SEV_OK, "guarded kernel stacks ready");
 
-    /* Leave the boot stack. kernel.asm could only give kmain a stack in .bss,
+    /* Leave the boot stack. arch/x86_32/entry.asm could only give kmain a stack in .bss,
        with nothing below it, and kmain goes on to become thread 0 - the thread
        the self-tests and every file path run on. From here it runs on a guarded
        stack like every other thread, so an overflow is a panic naming "main"

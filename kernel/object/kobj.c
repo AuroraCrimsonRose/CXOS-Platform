@@ -6,7 +6,7 @@
 #include "object/kobj.h"
 
 #ifndef CXK_HOST_TEST
-#include "cpu/int/idt.h"
+#include "panic.h"
 /* A count below zero means memory is already wrong; carrying on would turn
    it into a use-after-free somewhere far from the cause. */
 void kobj_panic(const char *why) { kpanic(why); }

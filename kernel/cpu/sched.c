@@ -7,12 +7,12 @@
 #include "sched.h"
 #include "heap.h"
 #include "kstack.h"
-#include "gdt.h"
+#include "arch/cpu.h"
 #include "uid.h"
 #include "timer.h"   /* timer_ticks for the sleep queue */
 #include "object/idtab.h"
 #include "memman/ocache.h"
-#include "cpu/int/idt.h"   /* kpanic */
+#include "panic.h"
 
 extern void context_switch(uint32_t *old_esp, uint32_t new_esp);
 
@@ -243,7 +243,7 @@ static int thread_create_in(const char *name, void (*entry)(void), int held, str
     t->u_saved_esp   = 0;
     t->u_saved_flags = 0;
     /* kstack_top 0: a kernel-only thread, which never enters ring 3 and so runs
-       on the dedicated gdt_init stack. A thread that WILL enter ring 3 is made
+       on the dedicated default stack. A thread that WILL enter ring 3 is made
        with thread_create_process, which gives it its own esp0 before it can be
        scheduled (PROCESS_MODEL.md §8). */
     t->kstack_top  = 0;
@@ -267,26 +267,27 @@ static int next_runnable(void) {
     return current;   /* nobody else: keep running current */
 }
 
-/* Point the TSS ring-0 stack at the current thread's esp0 stack, so a
+/* Point the stack the CPU takes on entry from ring 3 (arch/cpu.h; the TSS on
+   x86) at the current thread's esp0 stack, so a
    syscall/interrupt arriving while THIS process is in ring 3 lands on its own
    stack, never another process's. Called on every context switch.
 
    THE esp0 INVARIANT (PROCESS_MODEL.md §8): after every switch, tss.esp0 is
-   the running thread's kstack_top, or the dedicated gdt_init stack when it has
+   the running thread's kstack_top, or the dedicated default stack when it has
    none. A kernel-only thread used to leave tss.esp0 untouched - still pointing
    at the previous process's esp0 stack, despite this comment saying otherwise.
    Harmless only while no kernel-only thread enters ring 3, which nothing
    checked: one that did would have pushed its frames onto a live process's
    saved interrupt frame. The self-test "esp0 follows the running thread"
    holds it. */
-static void update_tss_esp0(void) {
+static void update_kernel_stack(void) {
     uint32_t top = self()->kstack_top;
-    tss_set_kernel_stack(top ? top : tss_default_kernel_stack());
+    arch_kernel_stack_set(top ? top : arch_kernel_stack_default());
 }
 
 /* Load the current thread's address space into CR3. Threads with pd_phys 0
    (kernel threads) run in the shared kernel space. Called on every switch,
-   right after update_tss_esp0(). The kernel half is mapped in every space,
+   right after update_kernel_stack(). The kernel half is mapped in every space,
    so this is safe for kernel threads regardless of which space is loaded. */
 static void update_address_space(void) {
     uint32_t mine = self()->proc ? self()->proc->pd_phys : 0;
@@ -388,7 +389,7 @@ void yield(void) {
     if (th(prev)->state == THREAD_RUNNING) th(prev)->state = THREAD_READY;
     th(next)->state = THREAD_RUNNING;
     current = next;
-    update_tss_esp0();
+    update_kernel_stack();
     update_address_space();
 
     context_switch(&th(prev)->esp, th(next)->esp);
@@ -429,7 +430,7 @@ void thread_exit(void) {
     }
     th(next)->state = THREAD_RUNNING;
     current = next;
-    update_tss_esp0();
+    update_kernel_stack();
     update_address_space();
     uint32_t dummy;
     context_switch(&dummy, th(next)->esp);   /* save into dummy (discarded) */
@@ -492,7 +493,7 @@ void sched_preempt_point(void) {
     if (th(prev)->state == THREAD_RUNNING) th(prev)->state = THREAD_READY;
     th(next)->state = THREAD_RUNNING;
     current = next;
-    update_tss_esp0();
+    update_kernel_stack();
     update_address_space();
     in_switch = 0;
     context_switch(&th(prev)->esp, th(next)->esp);

@@ -5,7 +5,7 @@
 /* CMOS RTC reader - ports 0x70 (register select) / 0x71 (data). */
 
 #include "rtc.h"
-#include "io.h"
+#include "arch/x86/io.h"
 
 #define CMOS_SELECT 0x70
 #define CMOS_DATA   0x71

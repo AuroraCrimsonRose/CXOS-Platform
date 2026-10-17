@@ -11,7 +11,7 @@
 #include "cxfs.h"
 #include "string.h"
 #include "memman/ocache.h"
-#include "cpu/int/idt.h"   /* kpanic */
+#include "panic.h"
 #include <stddef.h>
 
 /* ---- open files ------------------------------------------------------------

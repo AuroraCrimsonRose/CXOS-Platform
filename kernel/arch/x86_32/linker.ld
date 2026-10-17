@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 */
 /* SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems) */
-/* /kernel/kernel/linker.ld - v5 higher-half kernel
+/* /kernel/arch/x86_32/linker.ld - higher-half kernel
  * Aurora Tejeda / CATX Systems
  *
  * Higher-half layout: the kernel is LINKED at a high virtual address
@@ -10,7 +10,7 @@
  *   LMA (where the bytes physically sit on disk / in RAM): 0x00100000+
  *
  * Stage 2 loads the kernel image to physical 0x100000 and jumps to the
- * PHYSICAL entry. The entry stub (kernel.asm) sets up paging to map
+ * PHYSICAL entry. The entry stub (entry.asm) sets up paging to map
  * physical 1MB -> virtual 0xC0100000 (plus a temporary identity map so the
  * instruction right after enabling paging doesn't fault), then jumps high.
  */

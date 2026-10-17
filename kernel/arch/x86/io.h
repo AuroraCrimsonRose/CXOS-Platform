@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
-/* /CXLite/kernel/cpu/io.h */
+/* /kernel/arch/x86/io.h */
 /* Aurora Tejeda */
 /* Shared x86 port I/O primitives. Include this instead of redefining
    outb/inb in each driver. */

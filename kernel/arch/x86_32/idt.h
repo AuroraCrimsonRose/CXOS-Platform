@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
-/* /CXLite/kernel/idt.h */
+/* /kernel/arch/x86_32/idt.h */
 /* Aurora Tejeda */
 
 #ifndef IDT_H
 #define IDT_H
 
 #include <stdint.h>
+#include "arch/irq.h"
+#include "panic.h"
 
 struct idt_entry {
     uint16_t offset_low;
@@ -38,20 +40,9 @@ void idt_set_user_gate(int n, uint32_t handler);
    kill the offending process instead of panicking). */
 void set_user_fault_hook(void (*hook)(struct registers *));
 
-void irq_install_handler(int irq, void (*handler)(struct registers *));
-
-/* ---- MSI vectors --------------------------------------------------------
- * An MSI has no IRQ number - the device writes a vector straight to the local
- * APIC - so these are allocated from a pool above the legacy IRQ range rather
- * than installed against a line. */
+/* The MSI vector pool (arch/irq.h): above the legacy IRQ range. */
 #define MSI_VECTOR_BASE  48
 #define MSI_VECTOR_COUNT 8
-
-/* Claim a vector and attach a handler. Returns the vector to program into the
-   device's MSI capability, or -1 if none are free. */
-int  irq_alloc_msi_vector(void (*handler)(struct registers *));
-void irq_free_msi_vector(int vector);
-void irq_uninstall_handler(int irq);
 
 #define IDT_GATE_INT32 0x8E
 #define IDT_GATE_INT32_DPL3 0xEE   /* present, DPL=3, 32-bit interrupt gate */
@@ -59,11 +50,5 @@ void irq_uninstall_handler(int irq);
 
 /* the double-fault handler: entered as its own task through a task gate */
 void double_fault_task(void);
-
-/* Kernel-fatal: an internal invariant is broken. Renders the panic screen with
-   `why`, the caller and a stack trace, saves crash.log, halts. Never for a bad
-   request, a missing device or a faulting process - those have lesser tiers
-   (docs/x86_32/kernel/KERNEL_CONTRACTS.md §1). */
-__attribute__((noreturn)) void kpanic(const char *why);
 
 #endif

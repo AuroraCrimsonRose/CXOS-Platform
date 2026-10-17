@@ -6,7 +6,7 @@
    low-power sleep (ACPI S1 if supported, else C1 halt-idle). */
 
 #include "power.h"
-#include "io.h"
+#include "arch/x86/io.h"
 #include "console.h"
 #include "vga.h"
 #include "color.h"   /* v5: vga_attr(fg,bg) packs the attribute byte */
