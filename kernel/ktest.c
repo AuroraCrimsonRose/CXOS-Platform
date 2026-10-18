@@ -52,6 +52,9 @@
 #include "arch/x86/cpufeat.h"
 #include "drivers/iowin.h"
 #include "acpi.h"
+#include "keyboard.h"
+#include "mouse.h"
+#include "platform/pc/i8042.h"
 
 
 /* concise pass/fail reporter */
@@ -1131,6 +1134,72 @@ static int test_tick_rate(void) {
 stalled:
     klog("KTEST", SEV_FAIL, "tick rate: 100 ticks took over 2 s of the PM timer");
     return 0;
+}
+
+/* ---- the PS/2 keyboard and mouse reach the kernel's input ----
+ *
+ * The 8042 will put a byte in its output buffer as though the keyboard (0xD2)
+ * or the mouse (0xD3) had sent it, and raise the same interrupt. That drives
+ * the whole path a key takes - the controller, IRQ 1 or 12 through whichever
+ * interrupt controller is live, the decoder, the buffer - with nobody at the
+ * keyboard. A machine with no 8042 (reads all ones) is untested, with a WARN. */
+static int ps2_send(uint8_t cmd, uint8_t byte) {
+    i8042_command(cmd);
+    i8042_write(byte);
+    /* Wait for the interrupt handler to take it. Real hardware latches the
+       byte a little after the write, so an empty buffer means "taken" only
+       once two ticks have passed. */
+    uint32_t t0 = timer_ticks();
+    while (timer_ticks() - t0 < 100)
+        if (!(i8042_status() & I8042_STAT_OUTPUT_FULL) && timer_ticks() - t0 > 1) return 1;
+    return 0;
+}
+
+static int test_ps2_input(void) {
+    if (i8042_status() == 0xFF) {
+        klog("KTEST", SEV_WARN, "PS/2 input untested: no 8042");
+        return 1;
+    }
+    while (keyboard_getchar()) { }                         /* drain */
+
+    /* 'a' pressed and released: one key, and the release none */
+    if (!ps2_send(I8042_CMD_WRITE_KBD_OUT, 0x1E) || !ps2_send(I8042_CMD_WRITE_KBD_OUT, 0x9E)) {
+        klog("KTEST", SEV_FAIL, "PS/2: the controller never handed over a keyboard byte");
+        return 0;
+    }
+    char c1 = keyboard_getchar(), c2 = keyboard_getchar();
+    if (c1 != 'a' || c2 != 0) {
+        klog("KTEST", SEV_FAIL, "PS/2: a key sent through the 8042 did not arrive as 'a'");
+        return 0;
+    }
+
+    if (!mouse_present()) {
+        klog("KTEST", SEV_WARN, "PS/2 mouse untested: none attached");
+        return 1;
+    }
+    /* Right 5 and up 3, then left 5 and down 3, which uses the 9-bit signs.
+       PS/2 Y is positive-up and the screen's is positive-down, so "up 3" is
+       3 rows nearer the top. The cursor starts centred, clear of the clamp. */
+    int32_t x0 = mouse_x(), y0 = mouse_y();
+    static const uint8_t pkt[2][3] = { { 0x08, 5, 3 }, { 0x38, 0xFB, 0xFD } };
+    static const int32_t want_dx[2] = { 5, 0 }, want_dy[2] = { -3, 0 };
+    for (int p = 0; p < 2; p++) {
+        uint32_t seq0 = mouse_seq();
+        for (int i = 0; i < 3; i++)
+            if (!ps2_send(I8042_CMD_WRITE_AUX_OUT, pkt[p][i])) {
+                klog("KTEST", SEV_FAIL, "PS/2: the controller never handed over a mouse byte");
+                return 0;
+            }
+        if (mouse_seq() - seq0 != 1) {
+            klog("KTEST", SEV_FAIL, "PS/2: a mouse packet was not one movement");
+            return 0;
+        }
+        if (mouse_x() != x0 + want_dx[p] || mouse_y() != y0 + want_dy[p]) {
+            klog("KTEST", SEV_FAIL, "PS/2: a mouse packet moved the pointer wrongly");
+            return 0;
+        }
+    }
+    return 1;
 }
 
 /* ---- the tick counter wraps, and the waits built on it must survive it
@@ -2752,6 +2821,7 @@ void ktest_run(void) {
     total++; passed += report("clock + timed sleep",               test_clock_sleep());
     total++; passed += report("tick counter wraparound",           test_timer_wraparound());
     total++; passed += report("a tick is a millisecond, by the PM timer", test_tick_rate());
+    total++; passed += report("PS/2 keyboard and mouse reach the kernel", test_ps2_input());
     total++; passed += report("memory mappings (SYS_MEM_OP)",     test_vmregion());
     total++; passed += report("lifecycles: unmap, exit, resched", test_lifecycle_sequences());
     total++; passed += report("bounded strings: cap, truncation", test_bounded_strings());

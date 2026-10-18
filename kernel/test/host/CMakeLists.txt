@@ -31,6 +31,7 @@ set(KERNEL_SOURCES
     ${KDIR}/arch/x86/cpufeat.c
     ${KDIR}/arch/x86_32/pagetable.c
     ${KDIR}/drivers/iowin.c
+    ${KDIR}/platform/pc/ps2kbd.c
 )
 
 file(GLOB TEST_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/test_*.c)

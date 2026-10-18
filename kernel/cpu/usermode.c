@@ -14,7 +14,6 @@
 #include "vmregion.h"
 #include "console.h"
 #include "logging.h"
-#include "vga.h"
 #include "color.h"
 #include "fb.h"
 #include "caps.h"
@@ -32,7 +31,7 @@
 #include "power.h"
 #include "netif.h"
 #include "timer.h"
-#include "rtc.h"
+#include "platform/pc/rtc.h"
 #include "datetime.h"
 
 /* asm entry points (usermode.asm) */

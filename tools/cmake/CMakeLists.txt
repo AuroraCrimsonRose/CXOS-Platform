@@ -83,7 +83,6 @@ set(KERNEL_INCLUDES
     -I${SRC_DIR}/abi
     -I${SRC_DIR}/kernel
     -I${SRC_DIR}/kernel/lib/time
-    -I${SRC_DIR}/kernel/lib/audio
     -I${SRC_DIR}/kernel/lib/string
     -I${SRC_DIR}/kernel/lib/math
     -I${SRC_DIR}/kernel/lib/crypto
@@ -93,7 +92,6 @@ set(KERNEL_INCLUDES
     -I${SRC_DIR}/kernel/drivers/storage
     -I${SRC_DIR}/kernel/drivers/storage/partition
     -I${SRC_DIR}/kernel/cpu
-    -I${SRC_DIR}/kernel/cpu/int
     -I${SRC_DIR}/kernel/memman
     -I${SRC_DIR}/kernel/drivers/char
     -I${SRC_DIR}/kernel/drivers/usb
@@ -163,7 +161,6 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/arch/x86_32/cpu.c
     ${SRC_DIR}/kernel/arch/x86_32/gdt.c
     ${SRC_DIR}/kernel/arch/x86_32/idt.c
-    ${SRC_DIR}/kernel/cpu/int/pic.c
     ${SRC_DIR}/kernel/arch/x86/apic.c
     ${SRC_DIR}/kernel/arch/x86/cpufeat.c
     ${SRC_DIR}/kernel/memman/pmm.c
@@ -182,7 +179,6 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/cpu/sched.c
     ${SRC_DIR}/kernel/cpu/uid.c
     ${SRC_DIR}/kernel/drivers/char/timer.c
-    ${SRC_DIR}/kernel/drivers/char/rtc.c
     ${SRC_DIR}/kernel/cpu/usermode.c
     ${SRC_DIR}/kernel/cpu/sysrec.c
     ${SRC_DIR}/kernel/cpu/proc.c
@@ -198,19 +194,26 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/cpu/launch.c
     ${SRC_DIR}/kernel/drivers/char/console.c
     ${SRC_DIR}/kernel/drivers/char/serial.c
-    ${SRC_DIR}/kernel/drivers/video/vga.c
     ${SRC_DIR}/kernel/drivers/video/fb.c
     ${SRC_DIR}/kernel/drivers/input/keyboard.c
     ${SRC_DIR}/kernel/drivers/input/mouse.c
     ${SRC_DIR}/kernel/drivers/power/power.c
     ${SRC_DIR}/kernel/drivers/power/acpi.c
-    ${SRC_DIR}/kernel/lib/audio/speaker.c
     ${SRC_DIR}/kernel/lib/gfx/color.c
     ${SRC_DIR}/kernel/lib/gfx/resolution.c
     ${SRC_DIR}/kernel/lib/gfx/font.c
     ${SRC_DIR}/kernel/lib/gfx/xfnt.c
     ${SRC_DIR}/kernel/lib/gfx/klogo.c
     ${SRC_DIR}/kernel/drivers/iowin.c
+    ${SRC_DIR}/kernel/platform/pc/pic.c
+    ${SRC_DIR}/kernel/platform/pc/pit.c
+    ${SRC_DIR}/kernel/platform/pc/i8042.c
+    ${SRC_DIR}/kernel/platform/pc/ps2kbd.c
+    ${SRC_DIR}/kernel/platform/pc/ps2mouse.c
+    ${SRC_DIR}/kernel/platform/pc/rtc.c
+    ${SRC_DIR}/kernel/platform/pc/speaker.c
+    ${SRC_DIR}/kernel/platform/pc/vga.c
+    ${SRC_DIR}/kernel/platform/pc/emupower.c
     ${SRC_DIR}/kernel/drivers/bus/pci.c
     ${SRC_DIR}/kernel/drivers/storage/hardware/ata.c
     ${SRC_DIR}/kernel/drivers/storage/hardware/ahci.c

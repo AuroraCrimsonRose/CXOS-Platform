@@ -2,16 +2,21 @@
 // SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/drivers/input/mouse.h */
 /* Aurora Tejeda / CATX Systems */
-/* PS/2 mouse: absolute cursor position + button state, driven by IRQ12. */
+/* The pointer: absolute cursor position + button state, fed by whichever
+   mouse driver is attached (platform/pc/ps2mouse.c, usb_hid.c). */
 
 #ifndef MOUSE_H
 #define MOUSE_H
 
 #include <stdint.h>
 
-/* Initialise the mouse and clamp the cursor to a screen of this size.
-   Returns 1 if a mouse responded, 0 if not. Call after the IDT/PIC are up. */
-int mouse_init(int screen_w, int screen_h);
+/* Clamp the cursor to a screen of this size (a zero keeps 640x480) and centre
+   it. Call before any mouse driver starts. */
+void mouse_init(int screen_w, int screen_h);
+
+/* A mouse driver found its device. (Movement through mouse_inject says the
+   same thing; this is for a driver that probes before anything moves.) */
+void mouse_attach(void);
 
 int      mouse_present(void);
 int32_t  mouse_x(void);
@@ -25,9 +30,9 @@ uint32_t mouse_seq(void);
 /* Re-clamp when the display mode changes. */
 void mouse_set_bounds(int w, int h);
 
-/* Apply a movement from outside the IRQ12 path, in SCREEN direction - dy
-   positive means downward. USB HID uses this; the PS/2 handler negates its own
-   dy on the way in, because PS/2 reports Y positive-up and USB does not. */
+/* Apply a movement, in SCREEN direction - dy positive means downward. Every
+   mouse driver reports through this; the PS/2 one negates its own dy on the
+   way in, because PS/2 reports Y positive-up and USB does not. */
 void mouse_inject(int32_t dx, int32_t dy, uint32_t btns);
 
 #endif

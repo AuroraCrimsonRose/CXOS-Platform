@@ -8,15 +8,12 @@
 
 #include <stdint.h>
 
-/* install the IRQ1 handler and initialize state */
-void keyboard_init(void);
-
 /* return the next character typed, or 0 if none available */
 char keyboard_getchar(void);
 
-/* Push a character into the input buffer from outside the IRQ1 path. USB HID
-   uses this so a USB keyboard's keys arrive exactly like PS/2 ones and nothing
-   above here can tell the difference. */
+/* Push a key into the input buffer. Every keyboard driver does: PS/2
+   (platform/pc/ps2kbd.c, from IRQ 1) and USB HID alike, so nothing above here
+   can tell them apart. Safe from an interrupt handler. */
 void keyboard_inject(unsigned char c);
 
 /* Called from the timer IRQ. A USB keyboard raises no IRQ1, so a thread parked

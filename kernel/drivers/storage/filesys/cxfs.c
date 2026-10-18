@@ -8,7 +8,7 @@
 #include "disk.h"
 #include "string.h"
 #include "datetime.h"
-#include "rtc.h"
+#include "platform/pc/rtc.h"
 #include "uid.h"
 #include "sched.h"
 

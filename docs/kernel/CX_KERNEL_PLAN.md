@@ -25,7 +25,7 @@ What it lacks, and what this plan answers:
 | One thing waited on at a time | input, one endpoint, or sleep | §5 |
 | Narrow IPC | one call in flight per endpoint, one page copied, no handle passing, no shared memory | §6 |
 | No user threads, no futex, no pipes | | §7 |
-| x86 code mixed with generic code | Step 3b moved the GDT, IDT, TSS, context switch, entry stub and linker script to `kernel/arch/x86_32/`, and the local APIC and port primitives to `kernel/arch/x86/`. Step 3c put paging behind `arch/paging.h`. Step 3d put every port access behind I/O windows (`drivers/iowin.h`). Left: the legacy PC devices are still under `drivers/` (they go to `platform/pc/`), the memory-mapped drivers (AHCI, e1000, RTL8169, the USB hosts, the I/O APIC) still use raw pointers rather than windows, inline assembly in eight generic files (`sched.c`, `spinlock.h`, `kmain.c`, `ktest.c`, `power.c`, `acpi.c`, `timer.c`, `kmath.c`) and the unbuilt `cpu/fpu.c`, `usermode.c`'s view of the register frame, MSI addresses in `pci.c` | §2.2 |
+| x86 code mixed with generic code | Step 3b moved the GDT, IDT, TSS, context switch, entry stub and linker script to `kernel/arch/x86_32/`, and the local APIC and port primitives to `kernel/arch/x86/`. Step 3c put paging behind `arch/paging.h`. Step 3d put every port access behind I/O windows (`drivers/iowin.h`) and moved the legacy PC devices to `kernel/platform/pc/`. Left: generic code that still names a PC device (`timer.c` starts the PIT, `power.c` uses the 8042 reset and the emulators' poweroff ports, `console.c` draws and scrolls VGA text, `cxfs.c` and `usermode.c` read the CMOS clock, `kmain.c` starts them all), the memory-mapped drivers (AHCI, e1000, RTL8169, the USB hosts, the I/O APIC) still use raw pointers rather than windows, inline assembly in eight generic files (`sched.c`, `spinlock.h`, `kmain.c`, `ktest.c`, `power.c`, `acpi.c`, `timer.c`, `kmath.c`) and the unbuilt `cpu/fpu.c`, `usermode.c`'s view of the register frame, MSI addresses in `pci.c` | §2.2 |
 | Uniprocessor locking | critical sections switch interrupts off | §8 |
 | First-fit linked-list heap | `heap.c` | §8 |
 | PIT at 1000 Hz | | §8 |
@@ -95,8 +95,12 @@ is dropped, and both are counted, so a self-test can tell that no driver
 reached past its registers. The port instructions themselves are in
 `arch/pio.h`, which only `iowin.c` includes; on an architecture with no port
 space a port window simply fails to open. The legacy devices, whose ports
-never move, use windows fixed at build time (`IOWIN_PORTS`). Legacy PC devices (PIC, PIT, PS/2, CMOS clock,
-speaker) are platform code, `kernel/platform/pc/`, not arch code.
+never move, use windows fixed at build time (`IOWIN_PORTS`). Legacy PC devices are platform code, `kernel/platform/pc/`, not arch code:
+the 8259 PIC, the PIT, the 8042 (one file owning the controller, with the PS/2
+keyboard and mouse drivers on it), the CMOS clock, the speaker, VGA text, and
+the emulators' fixed poweroff ports. A device class the rest of the kernel
+uses keeps a generic front: `drivers/input/keyboard.c` is a buffer of keys and
+`mouse.c` a pointer position, fed alike by the PS/2 drivers and USB HID.
 
 ### 2.3 CPU features, detected at boot
 

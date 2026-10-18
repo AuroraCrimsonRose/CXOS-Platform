@@ -20,7 +20,8 @@
 #include "syslog.h"
 #include "format.h"
 #include "sched.h"
-#include "speaker.h"
+#include "platform/pc/speaker.h"
+#include "platform/pc/pic.h"
 #include "fb.h"
 #include "gdt.h"
 #include "kstack.h"
@@ -28,9 +29,6 @@
 #include "usermode.h"   /* usercopy_start / usercopy_end / usercopy_trampoline */
 #include "serial.h"     /* the panic tee - see panic_putc_at */
 
-
-void pic_remap(void);
-void pic_send_eoi(uint32_t int_no);
 
 extern void isr0();  extern void isr1();  extern void isr2();  extern void isr3();
 extern void isr4();  extern void isr5();  extern void isr6();  extern void isr7();

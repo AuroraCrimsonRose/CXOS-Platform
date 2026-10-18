@@ -41,7 +41,6 @@
 #include "format.h"
 #include "sched.h"
 #include "timer.h"
-#include "keyboard.h"
 #include "power.h"
 #include "netif.h"
 #include "usb.h"
@@ -59,7 +58,9 @@
 #include "arch/x86/cpufeat.h"
 #include "kconfig.h"
 #include "klogo.h"
-#include "speaker.h"
+#include "platform/pc/speaker.h"
+#include "platform/pc/ps2kbd.h"
+#include "platform/pc/ps2mouse.h"
 #include "logging.h"
 
 /* Mount CXFS on the data disk (first non-boot disk). Read-only by default:
@@ -244,14 +245,15 @@ void kmain_late(void) {
     timer_calibrate_tsc();
     klog_u32("TIMER", SEV_OK, "TSC calibrated, MHz: ", timer_tsc_mhz(), LOG_COLOR_VALUE, "");
 
-    keyboard_init();
+    ps2kbd_init();
     klog("INPUT", SEV_OK, "PS/2 keyboard online (IRQ1)");
 
     /* PS/2 mouse. Clamped to the display so userspace gets an absolute position
        it can use directly; fb_width/fb_height return 0 in text mode, and
        mouse_init keeps its 640x480 default for a zero, so this is safe whether
        or not the framebuffer came up. */
-    if (mouse_init((int)fb_width(), (int)fb_height()))
+    mouse_init((int)fb_width(), (int)fb_height());
+    if (ps2mouse_init())
         klog("INPUT", SEV_OK, "PS/2 mouse online (IRQ12)");
     else
         klog("INPUT", SEV_WARN, "no PS/2 mouse detected");

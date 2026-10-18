@@ -5,12 +5,10 @@
 #include "speaker.h"
 #include "drivers/iowin.h"
 #include "timer.h"
+#include "pit.h"
 
 /* PIT channel 2 drives the speaker; port 0x61 bits 0-1 gate it on */
-static struct iowin pit = IOWIN_PORTS(0x40, 4);
 static struct iowin port_b = IOWIN_PORTS(0x61, 1);
-#define PIT_CH2     2
-#define PIT_COMMAND 3
 
 static uint8_t speaker_enabled = 0;
 
@@ -24,12 +22,7 @@ void speaker_on(uint32_t freq)
     if (!speaker_enabled) return;
     if (freq < 20) freq = 20;
 
-    uint32_t divisor = 1193182u / freq;
-
-    iowin_write8(&pit, PIT_COMMAND, 0xB6);
-
-    iowin_write8(&pit, PIT_CH2, divisor & 0xFF);
-    iowin_write8(&pit, PIT_CH2, (divisor >> 8) & 0xFF);
+    pit_channel2_square(freq);
 
     uint8_t tmp = iowin_read8(&port_b, 0);
 

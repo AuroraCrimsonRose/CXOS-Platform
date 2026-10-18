@@ -15,7 +15,7 @@
 
 #include "arch/paging.h"   /* KERNEL_VBASE */
 #include "console.h"
-#include "vga.h"
+#include "platform/pc/vga.h"
 #include "fb.h"
 #include "color.h"
 #include "format.h"

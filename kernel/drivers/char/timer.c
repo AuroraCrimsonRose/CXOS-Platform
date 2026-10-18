@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
-/* /CXLite/kernel/drivers/timer.c */
+/* /kernel/drivers/char/timer.c */
 /* Aurora Tejeda */
 
 #include <stdint.h>
@@ -8,15 +8,9 @@
 #include "timer.h"
 #include "keyboard.h"
 #include "arch/irq.h"
-#include "drivers/iowin.h"
+#include "platform/pc/pit.h"   /* the tick's source: the only PC dependency here */
 
-#define PIT_BASE_FREQ 1193182u
 #define TIMER_HZ      1000u            /* 1000 Hz -> ~1 ms per tick */
-
-/* the PIT: channels 0..2 at +0..+2, the mode/command register at +3 */
-static struct iowin pit = IOWIN_PORTS(0x40, 4);
-#define PIT_CHANNEL0  0
-#define PIT_COMMAND   3
 
 static volatile uint32_t ticks = 0;
 
@@ -91,19 +85,7 @@ int timer_timeout_expired(struct timeout *to) {
 }
 
 void timer_init(void) {
-    uint32_t divisor = PIT_BASE_FREQ / TIMER_HZ;   /* 1193182/1000 = 1193 */
-
-    /* Channel 0, low then high byte, mode 2 (rate generator): one short pulse
-       per period. Mode 3, the square wave, was used until the tick-rate
-       self-test measured it against the ACPI PM timer: through the I/O APIC
-       QEMU delivered two interrupts per period, so every "millisecond" was
-       half of one. The 8259 counted it right, which is why nothing noticed.
-       Linux programs the periodic PIT in mode 2 too (0x34). */
-    iowin_write8(&pit, PIT_COMMAND, 0x34);
-    iowin_write8(&pit, PIT_CHANNEL0, (uint8_t)(divisor & 0xFF));
-    iowin_write8(&pit, PIT_CHANNEL0, (uint8_t)((divisor >> 8) & 0xFF));
-
-    irq_install_handler(0, timer_callback);
+    pit_start_periodic(TIMER_HZ, timer_callback);
 }
 
 /* ---- TSC: sub-millisecond timing ----

@@ -2,7 +2,7 @@
 ### CX Design Spec: Aurora Tejeda / CATX Systems
 
 > **Status: DESIGN.** A clean slate: the inherited system has only the PC
-> speaker (`kernel/lib/audio/speaker.c`).
+> speaker (`kernel/platform/pc/speaker.c`).
 
 ---
 
