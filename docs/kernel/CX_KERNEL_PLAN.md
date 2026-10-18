@@ -25,7 +25,7 @@ What it lacks, and what this plan answers:
 | One thing waited on at a time | input, one endpoint, or sleep | §5 |
 | Narrow IPC | one call in flight per endpoint, one page copied, no handle passing, no shared memory | §6 |
 | No user threads, no futex, no pipes | | §7 |
-| x86 code mixed with generic code | Step 3b moved the GDT, IDT, TSS, context switch, entry stub and linker script to `kernel/arch/x86_32/`, and the local APIC and port primitives to `kernel/arch/x86/`. Step 3c put paging behind `arch/paging.h`. Left: port I/O in 12 drivers, inline assembly in nine generic files (`sched.c`, `spinlock.h`, `kmain.c`, `ktest.c`, `power.c`, `acpi.c`, `timer.c`, `keyboard.c`, `kmath.c`) and the unbuilt `cpu/fpu.c`, `usermode.c`'s view of the register frame, MSI addresses in `pci.c` | §2.2 |
+| x86 code mixed with generic code | Step 3b moved the GDT, IDT, TSS, context switch, entry stub and linker script to `kernel/arch/x86_32/`, and the local APIC and port primitives to `kernel/arch/x86/`. Step 3c put paging behind `arch/paging.h`. Step 3d put every port access behind I/O windows (`drivers/iowin.h`). Left: the legacy PC devices are still under `drivers/` (they go to `platform/pc/`), the memory-mapped drivers (AHCI, e1000, RTL8169, the USB hosts, the I/O APIC) still use raw pointers rather than windows, inline assembly in eight generic files (`sched.c`, `spinlock.h`, `kmain.c`, `ktest.c`, `power.c`, `acpi.c`, `timer.c`, `kmath.c`) and the unbuilt `cpu/fpu.c`, `usermode.c`'s view of the register frame, MSI addresses in `pci.c` | §2.2 |
 | Uniprocessor locking | critical sections switch interrupts off | §8 |
 | First-fit linked-list heap | `heap.c` | §8 |
 | PIT at 1000 Hz | | §8 |
@@ -88,7 +88,14 @@ which on x86-32 without PAE is nowhere; x86-64 enforces it with NX.
 `kpanic` is declared in `kernel/panic.h`. Device registers are reached
 through an I/O window, port-mapped or memory-mapped, so a driver's logic is
 the same for both (SerenityOS `Kernel/Library/IOWindow.cpp`); only the window's
-port backend is x86 (step 3d). Legacy PC devices (PIC, PIT, PS/2, CMOS clock,
+port backend is x86 (step 3d). `drivers/iowin.h` opens a window over a range
+of ports or of mapped device memory, and reads and writes it by offset. An
+access not wholly inside the window is refused: a read gives all ones, a write
+is dropped, and both are counted, so a self-test can tell that no driver
+reached past its registers. The port instructions themselves are in
+`arch/pio.h`, which only `iowin.c` includes; on an architecture with no port
+space a port window simply fails to open. The legacy devices, whose ports
+never move, use windows fixed at build time (`IOWIN_PORTS`). Legacy PC devices (PIC, PIT, PS/2, CMOS clock,
 speaker) are platform code, `kernel/platform/pc/`, not arch code.
 
 ### 2.3 CPU features, detected at boot

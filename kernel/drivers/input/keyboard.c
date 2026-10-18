@@ -8,15 +8,11 @@
 #include "keyboard.h"
 #include "usb_hid.h"
 #include "arch/irq.h"
+#include "drivers/iowin.h"
 #include "../../cpu/sched.h"   /* thread_block / thread_unblock */
 
-#define KBD_DATA_PORT 0x60
-
-static inline uint8_t inb(uint16_t port) {
-    uint8_t r;
-    __asm__ volatile ("inb %1, %0" : "=a"(r) : "Nd"(port));
-    return r;
-}
+/* the 8042's data port: the scancode IRQ1 announced */
+static struct iowin kbd_data = IOWIN_PORTS(0x60, 1);
 
 /* --- US QWERTY scancode -> ASCII (set 1), unshifted and shifted --- */
 /* index = scancode (press codes 0x00..0x58). 0 = no printable char. */
@@ -131,7 +127,7 @@ char keyboard_getchar_blocking(void) {
 /* IRQ1 handler */
 static void keyboard_callback(struct registers *r) {
     (void)r;
-    uint8_t sc = inb(KBD_DATA_PORT);
+    uint8_t sc = iowin_read8(&kbd_data, 0);
 
     /* 0xE0 = extended-key prefix; the next byte is the real (extended) code */
     if (sc == 0xE0) { ext_pending = 1; return; }

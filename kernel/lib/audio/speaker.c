@@ -3,11 +3,14 @@
 #include <stdint.h>
 
 #include "speaker.h"
-#include "arch/x86/io.h"
+#include "drivers/iowin.h"
 #include "timer.h"
 
-#define PIT_COMMAND 0x43
-#define PIT_CH2     0x42
+/* PIT channel 2 drives the speaker; port 0x61 bits 0-1 gate it on */
+static struct iowin pit = IOWIN_PORTS(0x40, 4);
+static struct iowin port_b = IOWIN_PORTS(0x61, 1);
+#define PIT_CH2     2
+#define PIT_COMMAND 3
 
 static uint8_t speaker_enabled = 0;
 
@@ -23,21 +26,21 @@ void speaker_on(uint32_t freq)
 
     uint32_t divisor = 1193182u / freq;
 
-    outb(PIT_COMMAND, 0xB6);
+    iowin_write8(&pit, PIT_COMMAND, 0xB6);
 
-    outb(PIT_CH2, divisor & 0xFF);
-    outb(PIT_CH2, (divisor >> 8) & 0xFF);
+    iowin_write8(&pit, PIT_CH2, divisor & 0xFF);
+    iowin_write8(&pit, PIT_CH2, (divisor >> 8) & 0xFF);
 
-    uint8_t tmp = inb(0x61);
+    uint8_t tmp = iowin_read8(&port_b, 0);
 
     if ((tmp & 3) != 3)
-        outb(0x61, tmp | 3);
+        iowin_write8(&port_b, 0, tmp | 3);
 }
 
 void speaker_off(void)
 {
-    uint8_t tmp = inb(0x61) & 0xFC;
-    outb(0x61, tmp);
+    uint8_t tmp = iowin_read8(&port_b, 0) & 0xFC;
+    iowin_write8(&port_b, 0, tmp);
 }
 
 void speaker_beep(uint32_t freq, uint32_t ms)

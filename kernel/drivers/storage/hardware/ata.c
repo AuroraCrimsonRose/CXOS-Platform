@@ -19,15 +19,14 @@
 #include "timer.h"
 #include "disk.h"
 #include "logging.h"
-#include "arch/x86/io.h"
+#include "drivers/iowin.h"
 
-/* per-channel I/O base ports */
-#define PRI_BASE   0x1F0
-#define PRI_CTRL   0x3F6
-#define SEC_BASE   0x170
-#define SEC_CTRL   0x376
+/* each channel's eight command-block registers, at the legacy ports. A PCI IDE
+   controller in native mode names its own in its BARs; only these windows
+   would change. (The device-control ports, 0x3F6 and 0x376, are not used.) */
+static struct iowin chan[2] = { IOWIN_PORTS(0x1F0, 8), IOWIN_PORTS(0x170, 8) };
 
-/* register offsets from a channel's base port */
+/* register offsets within a channel's window */
 #define REG_DATA       0       /* read/write data (16-bit) */
 #define REG_ERROR      1
 #define REG_SECCOUNT   2
@@ -57,11 +56,9 @@ static char     drive_model[ATA_DRIVE_COUNT][41];
 static uint32_t drive_sectors[ATA_DRIVE_COUNT] = { 0, 0, 0, 0 };
 static uint8_t  drive_ssd[ATA_DRIVE_COUNT] = { 0, 0, 0, 0 };  /* 1 = solid-state */
 
-/* --- 16-bit port helpers: inw/outw now come from io.h --- */
-
-/* channel base port for a drive (0,1 -> primary; 2,3 -> secondary) */
-static uint16_t drive_base(uint8_t drive) {
-    return (drive < 2) ? PRI_BASE : SEC_BASE;
+/* the channel a drive is on (0,1 -> primary; 2,3 -> secondary) */
+static struct iowin *drive_chan(uint8_t drive) {
+    return &chan[drive < 2 ? 0 : 1];
 }
 /* is this drive the slave on its channel? (odd numbers) */
 static int drive_is_slave(uint8_t drive) {
@@ -75,11 +72,11 @@ static int drive_is_slave(uint8_t drive) {
 
 /* wait while BSY is set. returns DISK_OK when cleared, DISK_ERR_NO_DEVICE on a
    floating bus (0xFF), DISK_ERR_TIMEOUT if it never clears in time. */
-static int ata_wait_busy(uint16_t base) {
+static int ata_wait_busy(struct iowin *ch) {
     struct timeout to;
     timer_timeout_start(&to, ATA_TIMEOUT_MS);
     for (;;) {
-        uint8_t s = inb(base + REG_STATUS);
+        uint8_t s = iowin_read8(ch, REG_STATUS);
         if (s == 0xFF) return DISK_ERR_NO_DEVICE;   /* floating bus: no drive */
         if (!(s & ATA_SR_BSY)) return DISK_OK;
         if (timer_timeout_expired(&to)) return DISK_ERR_TIMEOUT;
@@ -88,11 +85,11 @@ static int ata_wait_busy(uint16_t base) {
 
 /* wait for DRQ. returns DISK_OK when ready, DISK_ERR_NO_DEVICE on floating bus,
    DISK_ERR_FAULT if the device sets ERR, DISK_ERR_TIMEOUT on timeout. */
-static int ata_wait_drq(uint16_t base) {
+static int ata_wait_drq(struct iowin *ch) {
     struct timeout to;
     timer_timeout_start(&to, ATA_TIMEOUT_MS);
     for (;;) {
-        uint8_t s = inb(base + REG_STATUS);
+        uint8_t s = iowin_read8(ch, REG_STATUS);
         if (s == 0xFF) return DISK_ERR_NO_DEVICE;
         if (s & ATA_SR_ERR) return DISK_ERR_FAULT;
         if (!(s & ATA_SR_BSY) && (s & ATA_SR_DRQ)) return DISK_OK;
@@ -103,38 +100,38 @@ static int ata_wait_drq(uint16_t base) {
 /* select drive on its channel and set high LBA bits.
    0xE0 = LBA + master, 0xF0 = LBA + slave. */
 static void ata_select(uint8_t drive, uint32_t lba) {
-    uint16_t base = drive_base(drive);
+    struct iowin *ch = drive_chan(drive);
     uint8_t d = (drive_is_slave(drive) ? 0xF0 : 0xE0) | ((lba >> 24) & 0x0F);
-    outb(base + REG_DRIVE, d);
+    iowin_write8(ch, REG_DRIVE, d);
 }
 
 /* probe a single drive position; fills the info tables. */
 static void ata_probe(uint8_t drive) {
-    uint16_t base = drive_base(drive);
+    struct iowin *ch = drive_chan(drive);
 
     ata_select(drive, 0);
-    for (int i = 0; i < 4; i++) inb(base + REG_STATUS);   /* small delay */
+    for (int i = 0; i < 4; i++) iowin_read8(ch, REG_STATUS);   /* small delay */
 
-    outb(base + REG_SECCOUNT, 0);
-    outb(base + REG_LBA_LO, 0);
-    outb(base + REG_LBA_MID, 0);
-    outb(base + REG_LBA_HI, 0);
-    outb(base + REG_COMMAND, ATA_CMD_IDENTIFY);
+    iowin_write8(ch, REG_SECCOUNT, 0);
+    iowin_write8(ch, REG_LBA_LO, 0);
+    iowin_write8(ch, REG_LBA_MID, 0);
+    iowin_write8(ch, REG_LBA_HI, 0);
+    iowin_write8(ch, REG_COMMAND, ATA_CMD_IDENTIFY);
 
-    uint8_t status = inb(base + REG_STATUS);
+    uint8_t status = iowin_read8(ch, REG_STATUS);
     if (status == 0 || status == 0xFF) { drive_present[drive] = 0; return; }
 
-    if (ata_wait_busy(base) != 0) { drive_present[drive] = 0; return; }
+    if (ata_wait_busy(ch) != 0) { drive_present[drive] = 0; return; }
 
     /* ATA disks keep LBA_MID/HI at 0; nonzero = ATAPI/other signature */
-    if (inb(base + REG_LBA_MID) != 0 || inb(base + REG_LBA_HI) != 0) {
+    if (iowin_read8(ch, REG_LBA_MID) != 0 || iowin_read8(ch, REG_LBA_HI) != 0) {
         drive_present[drive] = 0;
         return;
     }
 
-    if (ata_wait_drq(base) == 0) {
+    if (ata_wait_drq(ch) == 0) {
         uint16_t id[256];
-        for (int i = 0; i < 256; i++) id[i] = inw(base + REG_DATA);
+        for (int i = 0; i < 256; i++) id[i] = iowin_read16(ch, REG_DATA);
 
         for (int i = 0; i < 20; i++) {
             uint16_t w = id[27 + i];
@@ -198,23 +195,23 @@ uint32_t ata_sectors(uint8_t drive) {
 int ata_read(uint8_t drive, uint32_t lba, uint8_t count, void *buffer) {
     if (drive >= ATA_DRIVE_COUNT || count == 0 || !buffer) return DISK_ERR_PARAMS;
     if (!drive_present[drive]) return DISK_ERR_NO_DEVICE;
-    uint16_t base = drive_base(drive);
+    struct iowin *ch = drive_chan(drive);
     uint16_t *buf = (uint16_t *)buffer;
 
-    int r = ata_wait_busy(base);
+    int r = ata_wait_busy(ch);
     if (r != DISK_OK) return r;
     ata_select(drive, lba);
-    outb(base + REG_SECCOUNT, count);
-    outb(base + REG_LBA_LO,  (uint8_t)(lba & 0xFF));
-    outb(base + REG_LBA_MID, (uint8_t)((lba >> 8) & 0xFF));
-    outb(base + REG_LBA_HI,  (uint8_t)((lba >> 16) & 0xFF));
-    outb(base + REG_COMMAND, ATA_CMD_READ);
+    iowin_write8(ch, REG_SECCOUNT, count);
+    iowin_write8(ch, REG_LBA_LO,  (uint8_t)(lba & 0xFF));
+    iowin_write8(ch, REG_LBA_MID, (uint8_t)((lba >> 8) & 0xFF));
+    iowin_write8(ch, REG_LBA_HI,  (uint8_t)((lba >> 16) & 0xFF));
+    iowin_write8(ch, REG_COMMAND, ATA_CMD_READ);
 
     for (int s = 0; s < count; s++) {
-        r = ata_wait_drq(base);
+        r = ata_wait_drq(ch);
         if (r != DISK_OK) return r;
         for (int i = 0; i < ATA_SECTOR_SIZE / 2; i++)
-            *buf++ = inw(base + REG_DATA);
+            *buf++ = iowin_read16(ch, REG_DATA);
     }
     return DISK_OK;
 }
@@ -222,27 +219,27 @@ int ata_read(uint8_t drive, uint32_t lba, uint8_t count, void *buffer) {
 int ata_write(uint8_t drive, uint32_t lba, uint8_t count, const void *buffer) {
     if (drive >= ATA_DRIVE_COUNT || count == 0 || !buffer) return DISK_ERR_PARAMS;
     if (!drive_present[drive]) return DISK_ERR_NO_DEVICE;
-    uint16_t base = drive_base(drive);
+    struct iowin *ch = drive_chan(drive);
     const uint16_t *buf = (const uint16_t *)buffer;
 
-    int r = ata_wait_busy(base);
+    int r = ata_wait_busy(ch);
     if (r != DISK_OK) return r;
     ata_select(drive, lba);
-    outb(base + REG_SECCOUNT, count);
-    outb(base + REG_LBA_LO,  (uint8_t)(lba & 0xFF));
-    outb(base + REG_LBA_MID, (uint8_t)((lba >> 8) & 0xFF));
-    outb(base + REG_LBA_HI,  (uint8_t)((lba >> 16) & 0xFF));
-    outb(base + REG_COMMAND, ATA_CMD_WRITE);
+    iowin_write8(ch, REG_SECCOUNT, count);
+    iowin_write8(ch, REG_LBA_LO,  (uint8_t)(lba & 0xFF));
+    iowin_write8(ch, REG_LBA_MID, (uint8_t)((lba >> 8) & 0xFF));
+    iowin_write8(ch, REG_LBA_HI,  (uint8_t)((lba >> 16) & 0xFF));
+    iowin_write8(ch, REG_COMMAND, ATA_CMD_WRITE);
 
     for (int s = 0; s < count; s++) {
-        r = ata_wait_drq(base);
+        r = ata_wait_drq(ch);
         if (r != DISK_OK) return r;
         for (int i = 0; i < ATA_SECTOR_SIZE / 2; i++)
-            outw(base + REG_DATA, *buf++);
+            iowin_write16(ch, REG_DATA, *buf++);
     }
 
-    outb(base + REG_COMMAND, ATA_CMD_FLUSH);
-    r = ata_wait_busy(base);
+    iowin_write8(ch, REG_COMMAND, ATA_CMD_FLUSH);
+    r = ata_wait_busy(ch);
     if (r != DISK_OK) return r;
     return DISK_OK;
 }
@@ -258,11 +255,11 @@ int ata_write(uint8_t drive, uint32_t lba, uint8_t count, const void *buffer) {
 int ata_flush(uint8_t drive) {
     if (drive >= ATA_DRIVE_COUNT) return DISK_ERR_PARAMS;
     if (!drive_present[drive]) return DISK_ERR_NO_DEVICE;
-    uint16_t base = drive_base(drive);
+    struct iowin *ch = drive_chan(drive);
 
-    int r = ata_wait_busy(base);
+    int r = ata_wait_busy(ch);
     if (r != DISK_OK) return r;
     ata_select(drive, 0);
-    outb(base + REG_COMMAND, ATA_CMD_FLUSH);
-    return ata_wait_busy(base);
+    iowin_write8(ch, REG_COMMAND, ATA_CMD_FLUSH);
+    return ata_wait_busy(ch);
 }

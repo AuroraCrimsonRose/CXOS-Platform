@@ -5,11 +5,13 @@
 /* 16550 UART on COM1. See serial.h for what this is for. */
 
 #include "serial.h"
-#include "arch/x86/io.h"
+#include "drivers/iowin.h"
 
 #if CXK_ENABLE_SERIAL
 
-#define COM1 0x3F8
+/* COM1's eight registers, at the PC's fixed ports. The same 16550 behind a PCI
+   card is memory-mapped; only this window would change. */
+static struct iowin com1 = IOWIN_PORTS(0x3F8, 8);
 
 /* Register offsets. 0 and 1 change meaning when DLAB (LCR bit 7) is set: they
    become the low and high halves of the baud divisor. */
@@ -60,14 +62,14 @@ void serial_init(void)
 {
     active = 0;
 
-    outb(COM1 + REG_IER, 0x00);                 /* no interrupts: polled only */
+    iowin_write8(&com1, REG_IER, 0x00);                 /* no interrupts: polled only */
 
-    outb(COM1 + REG_LCR, LCR_DLAB);             /* divisor latch visible      */
-    outb(COM1 + REG_DATA, BAUD_DIVISOR & 0xFF);
-    outb(COM1 + REG_IER, (BAUD_DIVISOR >> 8) & 0xFF);
-    outb(COM1 + REG_LCR, LCR_8N1);              /* latch away, 8N1            */
+    iowin_write8(&com1, REG_LCR, LCR_DLAB);             /* divisor latch visible      */
+    iowin_write8(&com1, REG_DATA, BAUD_DIVISOR & 0xFF);
+    iowin_write8(&com1, REG_IER, (BAUD_DIVISOR >> 8) & 0xFF);
+    iowin_write8(&com1, REG_LCR, LCR_8N1);              /* latch away, 8N1            */
 
-    outb(COM1 + REG_FCR, FCR_ENABLE | FCR_CLEAR_RX | FCR_CLEAR_TX | FCR_TRIGGER_14);
+    iowin_write8(&com1, REG_FCR, FCR_ENABLE | FCR_CLEAR_RX | FCR_CLEAR_TX | FCR_TRIGGER_14);
 
     /* Is anything actually there? Put the UART in loopback and require two
        bytes back. Without this, a machine with no COM1 reads 0xFF from every
@@ -79,7 +81,7 @@ void serial_init(void)
        and reading immediately can fail the probe on hardware that is perfectly
        fine; and use the alternating patterns 0x55 / 0xAA, so a bus stuck at a
        value cannot pass by luck. */
-    outb(COM1 + REG_MCR, MCR_LOOPBACK | MCR_OUT2 | MCR_RTS | MCR_DTR);
+    iowin_write8(&com1, REG_MCR, MCR_LOOPBACK | MCR_OUT2 | MCR_RTS | MCR_DTR);
     {
         static const uint8_t pattern[2] = { 0x55, 0xAA };
         int i;
@@ -87,18 +89,18 @@ void serial_init(void)
         for (i = 0; i < 2; i++) {
             int waits = LOOPBACK_WAIT;
 
-            outb(COM1 + REG_DATA, pattern[i]);
-            while ((inb(COM1 + REG_LSR) & LSR_DR) == 0) {
+            iowin_write8(&com1, REG_DATA, pattern[i]);
+            while ((iowin_read8(&com1, REG_LSR) & LSR_DR) == 0) {
                 if (--waits == 0) break;
             }
-            if (inb(COM1 + REG_DATA) != pattern[i]) {
-                outb(COM1 + REG_MCR, 0x00);
+            if (iowin_read8(&com1, REG_DATA) != pattern[i]) {
+                iowin_write8(&com1, REG_MCR, 0x00);
                 return;                         /* no UART: stay inactive */
             }
         }
     }
 
-    outb(COM1 + REG_MCR, MCR_OUT2 | MCR_RTS | MCR_DTR);
+    iowin_write8(&com1, REG_MCR, MCR_OUT2 | MCR_RTS | MCR_DTR);
     active = 1;
 }
 
@@ -113,10 +115,10 @@ void serial_putc(char c)
 
     if (!active) return;
 
-    while ((inb(COM1 + REG_LSR) & LSR_THRE) == 0) {
+    while ((iowin_read8(&com1, REG_LSR) & LSR_THRE) == 0) {
         if (--spins == 0) return;               /* drop the byte, keep booting */
     }
-    outb(COM1 + REG_DATA, (uint8_t)c);
+    iowin_write8(&com1, REG_DATA, (uint8_t)c);
 }
 
 void serial_puts(const char *s)

@@ -19,13 +19,13 @@
 
 #include <stdint.h>
 #include "mouse.h"
-#include "arch/x86/io.h"
+#include "drivers/iowin.h"
 #include "arch/irq.h"
 #include "../../cpu/int/pic.h"
 
-#define PS2_DATA    0x60
-#define PS2_STATUS  0x64
-#define PS2_CMD     0x64
+/* the 8042: data at 0x60; status (read) and command (write) share 0x64 */
+static struct iowin ps2_data = IOWIN_PORTS(0x60, 1);
+static struct iowin ps2_ctl  = IOWIN_PORTS(0x64, 1);
 
 #define PS2_STAT_OUTPUT_FULL 0x01
 #define PS2_STAT_INPUT_FULL  0x02
@@ -55,22 +55,22 @@ static uint32_t moved;                  /* bumped on every state change */
 
 static void wait_input(void) {          /* wait until we may write */
     for (int i = 0; i < 100000; i++)
-        if (!(inb(PS2_STATUS) & PS2_STAT_INPUT_FULL)) return;
+        if (!(iowin_read8(&ps2_ctl, 0) & PS2_STAT_INPUT_FULL)) return;
 }
 
 static void wait_output(void) {         /* wait until there is a byte to read */
     for (int i = 0; i < 100000; i++)
-        if (inb(PS2_STATUS) & PS2_STAT_OUTPUT_FULL) return;
+        if (iowin_read8(&ps2_ctl, 0) & PS2_STAT_OUTPUT_FULL) return;
 }
 
 static void mouse_write(uint8_t v) {
-    wait_input(); outb(PS2_CMD, PS2_CMD_TO_MOUSE);
-    wait_input(); outb(PS2_DATA, v);
+    wait_input(); iowin_write8(&ps2_ctl, 0, PS2_CMD_TO_MOUSE);
+    wait_input(); iowin_write8(&ps2_data, 0, v);
 }
 
 static uint8_t mouse_read(void) {
     wait_output();
-    return inb(PS2_DATA);
+    return iowin_read8(&ps2_data, 0);
 }
 
 /* ---- IRQ12 ---- */
@@ -79,10 +79,10 @@ static void mouse_callback(struct registers *r) {
     (void)r;
 
     /* only consume bytes the controller says came from the mouse */
-    uint8_t status = inb(PS2_STATUS);
+    uint8_t status = iowin_read8(&ps2_ctl, 0);
     if (!(status & PS2_STAT_OUTPUT_FULL) || !(status & PS2_STAT_FROM_MOUSE)) return;
 
-    uint8_t b = inb(PS2_DATA);
+    uint8_t b = iowin_read8(&ps2_data, 0);
 
     /* byte 0 always has bit 3 set; if it doesn't we've lost sync - drop it */
     if (packet_idx == 0 && !(b & 0x08)) return;
@@ -133,15 +133,15 @@ int mouse_init(int screen_w, int screen_h) {
     my = clamp_h / 2;
 
     /* enable the auxiliary (mouse) port */
-    wait_input(); outb(PS2_CMD, PS2_CMD_ENABLE_AUX);
+    wait_input(); iowin_write8(&ps2_ctl, 0, PS2_CMD_ENABLE_AUX);
 
     /* turn on IRQ12 in the controller config byte */
-    wait_input(); outb(PS2_CMD, PS2_CMD_READ_CFG);
+    wait_input(); iowin_write8(&ps2_ctl, 0, PS2_CMD_READ_CFG);
     uint8_t cfg = mouse_read();
     cfg |= 0x02;            /* enable the mouse interrupt */
     cfg &= (uint8_t)~0x20;  /* clear "mouse clock disabled" */
-    wait_input(); outb(PS2_CMD, PS2_CMD_WRITE_CFG);
-    wait_input(); outb(PS2_DATA, cfg);
+    wait_input(); iowin_write8(&ps2_ctl, 0, PS2_CMD_WRITE_CFG);
+    wait_input(); iowin_write8(&ps2_data, 0, cfg);
 
     /* defaults, then start streaming - each command is ACKed */
     mouse_write(MOUSE_SET_DEFAULTS);

@@ -7,7 +7,7 @@
 #include "apic.h"
 #include "arch/x86/cpufeat.h"
 #include "pic.h"
-#include "io.h"
+#include "arch/x86/msr.h"
 #include "arch/paging.h"
 #include "acpi.h"
 #include "logging.h"

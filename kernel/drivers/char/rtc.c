@@ -5,10 +5,12 @@
 /* CMOS RTC reader - ports 0x70 (register select) / 0x71 (data). */
 
 #include "rtc.h"
-#include "arch/x86/io.h"
+#include "drivers/iowin.h"
 
-#define CMOS_SELECT 0x70
-#define CMOS_DATA   0x71
+/* CMOS: write a register number to +0, then read it at +1 */
+static struct iowin cmos = IOWIN_PORTS(0x70, 2);
+#define CMOS_SELECT 0
+#define CMOS_DATA   1
 
 /* CMOS register numbers */
 #define RTC_SECONDS 0x00
@@ -22,8 +24,8 @@
 #define RTC_STATUS_B 0x0B
 
 static uint8_t cmos_read(uint8_t reg) {
-    outb(CMOS_SELECT, reg);
-    return inb(CMOS_DATA);
+    iowin_write8(&cmos, CMOS_SELECT, reg);
+    return iowin_read8(&cmos, CMOS_DATA);
 }
 
 /* is an RTC update in progress? (status A, bit 7) - don't read during one */

@@ -50,6 +50,7 @@
 #include "arch/x86_32/idt.h"
 #include "arch/x86/apic.h"
 #include "arch/x86/cpufeat.h"
+#include "drivers/iowin.h"
 
 
 /* concise pass/fail reporter */
@@ -440,6 +441,46 @@ static int test_cr0_write_protect(void) {
 done:
     paging_unmap(va);
     pmm_free(frame);
+    return ok;
+}
+
+/* ---- I/O windows (drivers/iowin.h): every driver brought up so far has stayed
+   inside its windows, and a window refuses an access that is not wholly inside
+   it, port-mapped or memory-mapped, without reaching the device. ---- */
+static int test_iowin(void) {
+    int ok = 1;
+    /* Taken first: a driver that reached past its window during boot (the
+       serial probe, the PIC remap, the ATA probe, ACPI) has counted here. */
+    if (iowin_refusals != 0) {
+        klog("KTEST", SEV_FAIL, "iowin: a driver reached outside its window");
+        ok = 0;
+    }
+    uint32_t before = iowin_refusals;
+
+    /* Memory-mapped, over ordinary memory: what is inside reaches it, what is
+       past the end does not, even though the memory is there. */
+    static volatile uint8_t regs[16];
+    for (int i = 0; i < 16; i++) regs[i] = 0;
+    struct iowin m;
+    ok = ok && iowin_mmio(&m, regs, 8) == 0;
+    iowin_write32(&m, 4, 0x11223344u);
+    ok = ok && regs[4] == 0x44 && regs[7] == 0x11 && iowin_read16(&m, 6) == 0x1122;
+    iowin_write32(&m, 6, 0xFFFFFFFFu);      /* straddles the end */
+    iowin_write8(&m, 8, 0xFF);              /* just past it */
+    ok = ok && iowin_read32(&m, 5) == 0xFFFFFFFFu;
+    for (int i = 8; i < 16; i++) ok = ok && regs[i] == 0;
+    ok = ok && regs[6] == 0x22;
+
+    /* A port window: the POST diagnostic port, which any read or write is safe
+       on. One byte wide, so a 16- or 32-bit access is refused before it runs. */
+    struct iowin p;
+    ok = ok && iowin_port(&p, 0x80, 1) == 0;
+    iowin_read8(&p, 0);
+    ok = ok && iowin_read16(&p, 0) == 0xFFFF && iowin_read32(&p, 0) == 0xFFFFFFFFu;
+    ok = ok && iowin_port(&p, 0xFFFF, 2) == -1;
+
+    ok = ok && iowin_refusals - before == 5;
+    iowin_refusals = before;   /* leave the count for real drivers */
     return ok;
 }
 
@@ -2651,6 +2692,7 @@ void ktest_run(void) {
     /* each test: total++, and passed += its pass/fail. report() prints only on
        failure, so the only per-test output is failures. */
     total++; passed += report("paging maps, and refuses what it must not", test_paging());
+    total++; passed += report("I/O windows refuse what lies outside them", test_iowin());
     total++; passed += report("heap kmalloc/kfree",               test_heap());
     total++; passed += report("scheduler (cooperative)",          test_sched_coop());
     total++; passed += report("scheduler (preemptive)",           test_sched_preempt());

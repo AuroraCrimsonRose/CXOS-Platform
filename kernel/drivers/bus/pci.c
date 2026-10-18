@@ -5,13 +5,15 @@
 /* PCI bus driver - legacy configuration mechanism #1 (see pci.h). */
 
 #include "pci.h"
-#include "arch/x86/io.h"
+#include "drivers/iowin.h"
 #include "logging.h"
 #include "arch/x86/apic.h"
 #include "arch/paging.h"
 
-#define PCI_CONFIG_ADDR 0xCF8
-#define PCI_CONFIG_DATA 0xCFC
+/* configuration mechanism #1: the address dword at +0, the data dword at +4 */
+static struct iowin pci_cfg = IOWIN_PORTS(0xCF8, 8);
+#define PCI_CONFIG_ADDR 0
+#define PCI_CONFIG_DATA 4
 
 /* build the config address dword: enable bit (31) | bus | slot | func | offset.
    offset is dword-aligned (low 2 bits cleared). */
@@ -24,14 +26,14 @@ static uint32_t pci_addr(uint8_t bus, uint8_t slot, uint8_t func, uint8_t off) {
 }
 
 uint32_t pci_config_read32(uint8_t bus, uint8_t slot, uint8_t func, uint8_t off) {
-    outl(PCI_CONFIG_ADDR, pci_addr(bus, slot, func, off));
-    return inl(PCI_CONFIG_DATA);
+    iowin_write32(&pci_cfg, PCI_CONFIG_ADDR, pci_addr(bus, slot, func, off));
+    return iowin_read32(&pci_cfg, PCI_CONFIG_DATA);
 }
 
 void pci_config_write32(uint8_t bus, uint8_t slot, uint8_t func,
                         uint8_t off, uint32_t value) {
-    outl(PCI_CONFIG_ADDR, pci_addr(bus, slot, func, off));
-    outl(PCI_CONFIG_DATA, value);
+    iowin_write32(&pci_cfg, PCI_CONFIG_ADDR, pci_addr(bus, slot, func, off));
+    iowin_write32(&pci_cfg, PCI_CONFIG_DATA, value);
 }
 
 uint16_t pci_config_read16(uint8_t bus, uint8_t slot, uint8_t func, uint8_t off) {

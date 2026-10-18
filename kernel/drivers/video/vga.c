@@ -6,7 +6,7 @@
 
 #include "arch/paging.h"   /* KERNEL_VBASE */
 #include "vga.h"
-#include "arch/x86/io.h"
+#include "drivers/iowin.h"
 
 /* higher-half VGA text buffer: physical 0xB8000 mapped at 0xC0000000 + 0xB8000
    by the boot page tables. (v4 used physical 0xB8000, which is unmapped in v5
@@ -14,8 +14,9 @@
 #define VGA_MEM ((volatile uint16_t *)(KERNEL_VBASE + 0xB8000))
 
 /* CRT controller ports for the hardware cursor */
-#define CRTC_INDEX 0x3D4
-#define CRTC_DATA  0x3D5
+static struct iowin crtc = IOWIN_PORTS(0x3D4, 2);
+#define CRTC_INDEX 0
+#define CRTC_DATA  1
 
 void vga_put_cell(int x, int y, char c, uint8_t attr) {
     if (x < 0 || x >= VGA_WIDTH || y < 0 || y >= VGA_HEIGHT) return;
@@ -35,21 +36,21 @@ void vga_set_cursor(int x, int y) {
     if (y >= VGA_HEIGHT) y = VGA_HEIGHT - 1;
     uint16_t pos = (uint16_t)(y * VGA_WIDTH + x);
 
-    outb(CRTC_INDEX, 0x0F);                 /* cursor location low  */
-    outb(CRTC_DATA, (uint8_t)(pos & 0xFF));
-    outb(CRTC_INDEX, 0x0E);                 /* cursor location high */
-    outb(CRTC_DATA, (uint8_t)((pos >> 8) & 0xFF));
+    iowin_write8(&crtc, CRTC_INDEX, 0x0F);                 /* cursor location low  */
+    iowin_write8(&crtc, CRTC_DATA, (uint8_t)(pos & 0xFF));
+    iowin_write8(&crtc, CRTC_INDEX, 0x0E);                 /* cursor location high */
+    iowin_write8(&crtc, CRTC_DATA, (uint8_t)((pos >> 8) & 0xFF));
 }
 
 void vga_disable_cursor(void) {
-    outb(CRTC_INDEX, 0x0A);
-    outb(CRTC_DATA, 0x20);                  /* bit 5 = cursor disable */
+    iowin_write8(&crtc, CRTC_INDEX, 0x0A);
+    iowin_write8(&crtc, CRTC_DATA, 0x20);                  /* bit 5 = cursor disable */
 }
 
 void vga_enable_cursor(void) {
     /* set cursor scanline start/end to make a visible block-ish cursor */
-    outb(CRTC_INDEX, 0x0A);
-    outb(CRTC_DATA, (inb(CRTC_DATA) & 0xC0) | 13);  /* start scanline */
-    outb(CRTC_INDEX, 0x0B);
-    outb(CRTC_DATA, (inb(CRTC_DATA) & 0xE0) | 15);  /* end scanline */
+    iowin_write8(&crtc, CRTC_INDEX, 0x0A);
+    iowin_write8(&crtc, CRTC_DATA, (iowin_read8(&crtc, CRTC_DATA) & 0xC0) | 13);  /* start scanline */
+    iowin_write8(&crtc, CRTC_INDEX, 0x0B);
+    iowin_write8(&crtc, CRTC_DATA, (iowin_read8(&crtc, CRTC_DATA) & 0xE0) | 15);  /* end scanline */
 }

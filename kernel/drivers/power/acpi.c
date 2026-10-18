@@ -5,7 +5,7 @@
 /* Minimal ACPI: RSDP/FADT discovery + targeted DSDT scan for _S5_/_S1_. */
 
 #include "acpi.h"
-#include "arch/x86/io.h"
+#include "drivers/iowin.h"
 #include "arch/paging.h"
 
 /* ---- ACPI table structures (packed, as they appear in memory) ---- */
@@ -86,12 +86,11 @@ struct acpi_fadt {
 
 /* ---- cached state ---- */
 static int      have_acpi = 0;
-static uint32_t pm1a_cnt = 0;
-static uint32_t pm1b_cnt = 0;
-/* PM1 event blocks: the enable register (where PWRBTN_EN lives) is in the upper
-   half of the event block, at evt_blk + pm1_evt_len/2. */
-static uint32_t pm1a_en = 0;       /* PM1a enable register address */
-static uint32_t pm1b_en = 0;
+/* the PM1 control registers, and the PM1 enable registers (where PWRBTN_EN
+   lives: the upper half of each event block, at evt_blk + pm1_evt_len/2).
+   A window the FADT did not name stays closed (IOWIN_NONE). */
+static struct iowin pm1a_cnt, pm1b_cnt;
+static struct iowin pm1a_en, pm1b_en;
 
 static int      s5_ok = 0;
 static uint16_t s5_typa = 0, s5_typb = 0;
@@ -101,6 +100,7 @@ static uint16_t s1_typa = 0, s1_typb = 0;
 static int      reset_ok = 0;
 static uint8_t  reset_space = 0;
 static uint64_t reset_addr = 0;
+static struct iowin reset_reg;     /* opened here for a port, at reboot for memory */
 static uint8_t  reset_val = 0;
 
 /* ---- helpers ---- */
@@ -262,21 +262,26 @@ int acpi_init(void) {
     if (!fadt) return 0;
 
     have_acpi = 1;
-    pm1a_cnt = fadt->pm1a_cnt_blk;
-    pm1b_cnt = fadt->pm1b_cnt_blk;
+    /* PM1 control and enable registers are 16 bits wide, in I/O space. */
+    if (fadt->pm1a_cnt_blk) iowin_port(&pm1a_cnt, fadt->pm1a_cnt_blk, 2);
+    if (fadt->pm1b_cnt_blk) iowin_port(&pm1b_cnt, fadt->pm1b_cnt_blk, 2);
     /* the PM1 enable register sits in the upper half of the PM1 event block.
        evt_len covers both status + enable, so enable = evt_blk + evt_len/2. */
     if (fadt->pm1a_evt_blk && fadt->pm1_evt_len)
-        pm1a_en = fadt->pm1a_evt_blk + (fadt->pm1_evt_len / 2);
+        iowin_port(&pm1a_en, fadt->pm1a_evt_blk + (fadt->pm1_evt_len / 2), 2);
     if (fadt->pm1b_evt_blk && fadt->pm1_evt_len)
-        pm1b_en = fadt->pm1b_evt_blk + (fadt->pm1_evt_len / 2);
+        iowin_port(&pm1b_en, fadt->pm1b_evt_blk + (fadt->pm1_evt_len / 2), 2);
 
-    /* reset register (only if it's a system I/O port we can write) */
+    /* reset register: system I/O (space id 1) or memory (0). A port past
+       0xFFFF opens no window, so it is not offered as a way to reset. */
     if (fadt->header.length >= 129 && fadt->reset_reg_address != 0) {
         reset_space = fadt->reset_reg_space;
         reset_addr  = fadt->reset_reg_address;
         reset_val   = fadt->reset_value;
-        reset_ok = 1;
+        if (reset_space == 1)
+            reset_ok = reset_addr <= 0xFFFF && iowin_port(&reset_reg, (uint32_t)reset_addr, 1) == 0;
+        else
+            reset_ok = reset_space == 0;
     }
 
     /* scan the DSDT for _S5_ and _S1_ */
@@ -294,17 +299,17 @@ int acpi_init(void) {
     return 1;
 }
 
-int acpi_can_shutdown(void) { return have_acpi && s5_ok && pm1a_cnt; }
-int acpi_can_s1(void)       { return have_acpi && s1_ok && pm1a_cnt; }
+int acpi_can_shutdown(void) { return have_acpi && s5_ok && pm1a_cnt.kind; }
+int acpi_can_s1(void)       { return have_acpi && s1_ok && pm1a_cnt.kind; }
 int acpi_can_reset(void)    { return have_acpi && reset_ok; }
 
 void acpi_shutdown(void) {
     if (!acpi_can_shutdown()) return;
     __asm__ volatile ("cli");
     /* write SLP_TYPa | SLP_EN to PM1a control, and PM1b if present */
-    outw((uint16_t)pm1a_cnt, (uint16_t)((s5_typa << 10) | SLP_EN));
-    if (pm1b_cnt)
-        outw((uint16_t)pm1b_cnt, (uint16_t)((s5_typb << 10) | SLP_EN));
+    iowin_write16(&pm1a_cnt, 0, (uint16_t)((s5_typa << 10) | SLP_EN));
+    if (pm1b_cnt.kind)
+        iowin_write16(&pm1b_cnt, 0, (uint16_t)((s5_typb << 10) | SLP_EN));
     /* if we got here, it didn't power off */
     for (;;) __asm__ volatile ("hlt");
 }
@@ -322,15 +327,15 @@ int acpi_sleep_s1(void) {
        so you press the power button to wake the machine. (Keyboard wake would
        need GPE/_PRW parsing - an AML-interpreter job for later; the power
        button is the standard, reliable, no-AML wake source.) */
-    if (pm1a_en) {
-        uint16_t en = inw((uint16_t)pm1a_en);
+    if (pm1a_en.kind) {
+        uint16_t en = iowin_read16(&pm1a_en, 0);
         en |= PM1_PWRBTN_EN;
-        outw((uint16_t)pm1a_en, en);
+        iowin_write16(&pm1a_en, 0, en);
     }
-    if (pm1b_en) {
-        uint16_t en = inw((uint16_t)pm1b_en);
+    if (pm1b_en.kind) {
+        uint16_t en = iowin_read16(&pm1b_en, 0);
         en |= PM1_PWRBTN_EN;
-        outw((uint16_t)pm1b_en, en);
+        iowin_write16(&pm1b_en, 0, en);
     }
 
     /* clear any stale power-button status so a previous press doesn't
@@ -341,9 +346,9 @@ int acpi_sleep_s1(void) {
     __asm__ volatile ("sti");   /* allow the wake event to be serviced */
 
     /* enter S1: write SLP_TYP(S1) | SLP_EN to PM1 control */
-    outw((uint16_t)pm1a_cnt, (uint16_t)((s1_typa << 10) | SLP_EN));
-    if (pm1b_cnt)
-        outw((uint16_t)pm1b_cnt, (uint16_t)((s1_typb << 10) | SLP_EN));
+    iowin_write16(&pm1a_cnt, 0, (uint16_t)((s1_typa << 10) | SLP_EN));
+    if (pm1b_cnt.kind)
+        iowin_write16(&pm1b_cnt, 0, (uint16_t)((s1_typb << 10) | SLP_EN));
 
     return 0;   /* resumed after a wake event */
 }
@@ -353,12 +358,13 @@ int acpi_reboot(void) {
     __asm__ volatile ("cli");
     /* reset register may be in system I/O space (space id 1) or memory (0) */
     if (reset_space == 1) {
-        outb((uint16_t)reset_addr, reset_val);
+        iowin_write8(&reset_reg, 0, reset_val);
     } else if (reset_space == 0) {
         /* the reset register may be memory-mapped; map its page first (same
            higher-half reason as the RSDP scan above) */
         map_table((uint32_t)reset_addr, 1);
-        *(volatile uint8_t *)(uint32_t)reset_addr = reset_val;
+        if (iowin_mmio(&reset_reg, (volatile void *)(uint32_t)reset_addr, 1) == 0)
+            iowin_write8(&reset_reg, 0, reset_val);
     }
     /* may take a moment; spin briefly */
     for (volatile int i = 0; i < 100000000; i++) { }

@@ -6,13 +6,20 @@
    low-power sleep (ACPI S1 if supported, else C1 halt-idle). */
 
 #include "power.h"
-#include "arch/x86/io.h"
+#include "drivers/iowin.h"
 #include "console.h"
 #include "vga.h"
 #include "color.h"   /* v5: vga_attr(fg,bg) packs the attribute byte */
 #include "acpi.h"
 #include "timer.h"
 #include "keyboard.h"
+
+/* the 8042: data at 0x60, status/command at 0x64 */
+static struct iowin ps2_data = IOWIN_PORTS(0x60, 1);
+static struct iowin ps2_ctl  = IOWIN_PORTS(0x64, 1);
+/* the emulators' fixed ACPI PM1a control registers */
+static struct iowin qemu_pm  = IOWIN_PORTS(0x604, 2);
+static struct iowin bochs_pm = IOWIN_PORTS(0xB004, 2);
 
 /* Reboot: prefer the ACPI reset register (works on the widest range of real
    hardware), then the 8042 keyboard-controller pulse, then a triple fault. */
@@ -25,10 +32,10 @@ void power_reboot(void) {
     /* 2. 8042 keyboard controller: pulse the CPU reset line */
     uint8_t status;
     do {
-        status = inb(0x64);
-        if (status & 0x01) inb(0x60);   /* drain output buffer */
+        status = iowin_read8(&ps2_ctl, 0);
+        if (status & 0x01) iowin_read8(&ps2_data, 0);   /* drain output buffer */
     } while (status & 0x02);            /* wait while input buffer full */
-    outb(0x64, 0xFE);                   /* pulse: CPU reset */
+    iowin_write8(&ps2_ctl, 0, 0xFE);   /* pulse: CPU reset */
 
     /* 3. triple fault via a zero-limit IDT */
     struct { uint16_t limit; uint32_t base; } __attribute__((packed)) null_idt = {0, 0};
@@ -47,8 +54,8 @@ void power_shutdown(void) {
     }
 
     /* emulator fallback: QEMU/Bochs ACPI poweroff ports (no effect on real HW) */
-    outw(0x604,  0x2000);   /* QEMU */
-    outw(0xB004, 0x2000);   /* Bochs / older QEMU */
+    iowin_write16(&qemu_pm, 0, 0x2000);    /* QEMU */
+    iowin_write16(&bochs_pm, 0, 0x2000);   /* Bochs / older QEMU */
 
     /* last resort: halt with the classic message */
     console_set_color(vga_attr(VGA_YELLOW, VGA_BLACK));

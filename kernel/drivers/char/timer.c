@@ -8,13 +8,15 @@
 #include "timer.h"
 #include "keyboard.h"
 #include "arch/irq.h"
-#include "arch/x86/io.h"
+#include "drivers/iowin.h"
 
 #define PIT_BASE_FREQ 1193182u
 #define TIMER_HZ      1000u            /* 1000 Hz -> ~1 ms per tick */
 
-#define PIT_CHANNEL0  0x40
-#define PIT_COMMAND   0x43
+/* the PIT: channels 0..2 at +0..+2, the mode/command register at +3 */
+static struct iowin pit = IOWIN_PORTS(0x40, 4);
+#define PIT_CHANNEL0  0
+#define PIT_COMMAND   3
 
 static volatile uint32_t ticks = 0;
 
@@ -91,9 +93,9 @@ int timer_timeout_expired(struct timeout *to) {
 void timer_init(void) {
     uint32_t divisor = PIT_BASE_FREQ / TIMER_HZ;   /* 1193182/1000 = 1193 */
 
-    outb(PIT_COMMAND, 0x36);
-    outb(PIT_CHANNEL0, (uint8_t)(divisor & 0xFF));
-    outb(PIT_CHANNEL0, (uint8_t)((divisor >> 8) & 0xFF));
+    iowin_write8(&pit, PIT_COMMAND, 0x36);
+    iowin_write8(&pit, PIT_CHANNEL0, (uint8_t)(divisor & 0xFF));
+    iowin_write8(&pit, PIT_CHANNEL0, (uint8_t)((divisor >> 8) & 0xFF));
 
     irq_install_handler(0, timer_callback);
 }
