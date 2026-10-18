@@ -8,6 +8,7 @@
 #include "drivers/iowin.h"
 #include "arch/paging.h"
 #include "arch/cpu_ops.h"
+#include "boot/cxbi.h"
 
 /* ---- ACPI table structures (packed, as they appear in memory) ---- */
 
@@ -118,46 +119,21 @@ static uint8_t sum_bytes(const uint8_t *p, uint32_t n) {
     return s;
 }
 
-/* forward: identity-maps a physical range on demand (defined below). The RSDP
-   scan needs it because the higher-half kernel has no identity map. */
+/* forward: identity-maps a physical range on demand (defined below). */
 static void *map_table(uint32_t phys, uint32_t len);
 
-/* find the RSDP by scanning the BIOS areas for "RSD PTR " on a 16-byte boundary.
-   search: the EBDA (first 1KB) and the BIOS ROM area 0xE0000-0xFFFFF. */
+/* The RSDP, from the loader's handover (boot/cxbi.h): finding it is the
+   firmware interface's business - a BIOS loader searches the EBDA and the ROM
+   area, a UEFI one reads the configuration table - and the kernel reads no
+   firmware area itself. Checked rather than trusted: the signature, and the
+   checksum of the ACPI 1.0 part. */
 static struct acpi_rsdp *find_rsdp(void) {
-    /* v5 is a HIGHER-HALF kernel: arch/x86_32/entry.asm identity-maps the first 4 MB only
-       long enough to enable paging, then drops the identity map. So low physical
-       memory is NOT readable at its physical address any more - reading 0x40E
-       directly page-faults (CR2 = 0x40E), which is what v4 could get away with.
-       Map what we are about to scan first, using the same on-demand identity
-       mapping the ACPI tables use. */
-    map_table(0x0,     0x1000);    /* page 0: BIOS Data Area, EBDA pointer at 0x40E */
-    map_table(0xE0000, 0x20000);   /* BIOS ROM area 0xE0000-0xFFFFF */
-
-    /* EBDA segment pointer is at physical 0x40E (word, in paragraphs) */
-    uint16_t ebda_seg = *(volatile uint16_t *)0x40E;
-    uint32_t ebda = (uint32_t)ebda_seg << 4;
-
-    const char *target = "RSD PTR ";
-
-    if (ebda >= 0x80000 && ebda < 0xA0000) {
-        map_table(ebda, 1024);     /* the EBDA itself sits above 4 MB-mapped range */
-        for (uint32_t a = ebda; a < ebda + 1024; a += 16) {
-            if (sig_eq((const char *)a, target, 8)) {
-                struct acpi_rsdp *r = (struct acpi_rsdp *)a;
-                if (sum_bytes((const uint8_t *)r, 20) == 0) { paging_unmap(0x0); return r; }
-            }
-        }
-    }
-    for (uint32_t a = 0xE0000; a < 0x100000; a += 16) {
-        if (sig_eq((const char *)a, target, 8)) {
-            struct acpi_rsdp *r = (struct acpi_rsdp *)a;
-            if (sum_bytes((const uint8_t *)r, 20) == 0) { paging_unmap(0x0); return r; }
-        }
-    }
-    /* restore the null-pointer guard: page 0 stays unmapped after the scan */
-    paging_unmap(0x0);
-    return 0;
+    uint64_t at = cxbi()->acpi_rsdp;
+    if (at == 0 || at >= 0x100000000ull) return 0;
+    struct acpi_rsdp *r = (struct acpi_rsdp *)map_table((uint32_t)at, 20);
+    if (!sig_eq((const char *)r, "RSD PTR ", 8) || sum_bytes((const uint8_t *)r, 20) != 0)
+        return 0;
+    return r;
 }
 
 /* map a physical region so we can read a table (ACPI tables are usually in low

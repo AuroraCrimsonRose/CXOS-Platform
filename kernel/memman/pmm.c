@@ -8,30 +8,19 @@
 #include "pmm.h"
 #include "align.h"
 #include "bitmap.h"
+#include "boot/cxbi.h"
 
 /* --- higher-half access ---------------------------------------------------
  * The kernel runs at 0xC0000000+. The boot page tables map the first 4 MB of
  * physical RAM at 0xC0000000..0xC03FFFFF. To TOUCH a physical address P in that
- * window the kernel dereferences (P + KERNEL_VBASE). pmm's data (the E820 map
- * at 0x500 and the bitmap, placed just past the kernel near ~1 MB) live inside
- * the window, so this reaches them. pmm_alloc returns PHYSICAL addresses.
+ * window the kernel dereferences (P + KERNEL_VBASE). The bitmap, placed just
+ * past the kernel near ~1 MB, lives inside the window, so this reaches it.
+ * pmm_alloc returns PHYSICAL addresses.
  */
 #define PHYS_TO_VIRT(p)  ((void *)((uint32_t)(p) + KERNEL_VBASE))
 
-/* E820 map from stage 2 (boot/mem.asm): count(word)@0x500, entries@0x504. */
-#define E820_COUNT_PHYS   0x0500u
-#define E820_BUFFER_PHYS  0x0504u
-#define E820_TYPE_USABLE  1
-
 /* ignore RAM above ~3.75 GB (32-bit reach + device/ROM area near 4 GB). */
 #define PMM_MAX_ADDR      0xF0000000u
-
-struct e820_entry {
-    uint64_t base;
-    uint64_t length;
-    uint32_t type;
-    uint32_t flags;
-} __attribute__((packed));
 
 extern uint8_t __kernel_end[];   /* end of kernel image (VIRTUAL), from linker */
 
@@ -57,14 +46,15 @@ static void mark_region_used(uint64_t start, uint64_t end) {
 }
 
 void pmm_init(void) {
-    uint16_t count = *(volatile uint16_t *)PHYS_TO_VIRT(E820_COUNT_PHYS);
-    struct e820_entry *e = (struct e820_entry *)PHYS_TO_VIRT(E820_BUFFER_PHYS);
+    /* the loader's memory map (boot/cxbi.h) */
+    uint32_t count = cxbi_mmap_count();
 
     /* 1. highest usable physical address, capped at the 32-bit limit */
     uint64_t highest = 0;
-    for (int i = 0; i < count; i++) {
-        if (e[i].type == E820_TYPE_USABLE) {
-            uint64_t top = e[i].base + e[i].length;
+    for (uint32_t i = 0; i < count; i++) {
+        const struct cxk_mmap_entry *e = cxbi_mmap(i);
+        if (e->type == CXBI_MEM_USABLE) {
+            uint64_t top = e->base + e->length;
             if (top > highest) highest = top;
         }
     }
@@ -84,10 +74,11 @@ void pmm_init(void) {
     bitmap_fill(bitmap, total_pages, 1);
     used_pages = total_pages;
 
-    for (int i = 0; i < count; i++) {
-        if (e[i].type == E820_TYPE_USABLE) {
-            uint64_t base_addr = e[i].base;
-            uint64_t end_addr  = e[i].base + e[i].length;
+    for (uint32_t i = 0; i < count; i++) {
+        const struct cxk_mmap_entry *e = cxbi_mmap(i);
+        if (e->type == CXBI_MEM_USABLE) {
+            uint64_t base_addr = e->base;
+            uint64_t end_addr  = e->base + e->length;
             if (base_addr >= PMM_MAX_ADDR) continue;
             if (end_addr > PMM_MAX_ADDR) end_addr = PMM_MAX_ADDR;
             uint32_t first = (uint32_t)(base_addr / PMM_PAGE_SIZE);

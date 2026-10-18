@@ -32,6 +32,8 @@ stage2_start:
 
     call enable_a20             ; a20.asm (prints its own OK/!fail)
 
+    call cxbi_clear             ; cxbi.asm - mem.asm and vbe.asm fill it from here
+
     call gather_memory_map      ; mem.asm - MUST be before pmode (needs BIOS)
     call print_mem_count        ; show how many E820 entries we got
 
@@ -39,9 +41,9 @@ stage2_start:
 
     ; LAST real-mode step: set a VBE linear-framebuffer graphics mode (needs BIOS
     ; int 10h, gone after the pmode switch). Self-gates on CXK_ENABLE_FB: when 0
-    ; it just clears VBE_VALID and leaves the display in text mode. On success it
+    ; it just leaves CXBI's fb_addr 0 and the display in text mode. On success it
     ; prints the chosen mode BEFORE switching (text is invisible once graphics is
-    ; live), then the kernel reads the info struct via fb_init. Comes after all
+    ; live), and the mode goes into CXBI for the kernel. Comes after all
     ; other logging so the boot text above stays visible.
     call set_vbe_mode
 
@@ -220,7 +222,7 @@ print_mem_count:
     push si
     mov si, msg_e820
     call print_string
-    mov ax, [E820_COUNT_ADDR]
+    mov ax, [CXBI_ADDR + CXBI_O_MMAP_COUNT]
     call print_dec_ax
     call print_newline
     pop si
@@ -302,6 +304,7 @@ msg_a20_fail db '[BOOT] A20 FAIL', 0
 ; includes (order matters): A20 logic, memory map, the boot GDT data, pmode.
 ; ----------------------------------------------------------------------------
 %include "a20.asm"
+%include "cxbi.asm"
 %include "mem.asm"
 %include "gdt.asm"
 %include "pmode.asm"

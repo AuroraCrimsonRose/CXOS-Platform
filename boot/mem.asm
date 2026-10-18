@@ -3,34 +3,22 @@
 ; /boot/mem.asm  -  E820 memory map gathering (v5 stage 2)
 ; Aurora Tejeda / CATX Systems
 ;
-; Gathers the BIOS memory map via int 15h / EAX=0xE820 and stores the raw
-; entries at a fixed buffer the kernel can read after handoff. This MUST run in
-; real mode (BIOS is unavailable once we enter protected mode), so stage 2 calls
-; it BEFORE the pmode switch.
+; Gathers the BIOS memory map via int 15h / EAX=0xE820 straight into the CXBI
+; memory map (cxbi.asm): an E820 entry - base(8) length(8) type(4) attrs(4) -
+; is a struct cxk_mmap_entry already, and types 1-5 are CXBI's. This MUST run
+; in real mode (BIOS is unavailable once we enter protected mode), so stage 2
+; calls it BEFORE the pmode switch; cxbi_finish later turns the types CXBI
+; does not have into reserved.
 ;
 ; We store the RAW map only. Filtering (usable vs reserved), finding the largest
-; region, etc. is policy the kernel's memory manager does later in C from this
-; raw data - stage 2's job is just to capture it before BIOS access is lost.
-;
-; Layout the kernel will read:
-;   E820_COUNT  (word) at E820_COUNT_ADDR : number of entries gathered
-;   E820_BUFFER (array) at E820_BUFFER     : that many 24-byte entries
-; Each entry: base(8) length(8) type(4) acpi_attrs(4) = 24 bytes.
+; region, etc. is policy the kernel's memory manager does later in C.
 
-; Layout the kernel will read (in the free 0x500 conventional-memory area,
-; safely below stage 1 at 0x7C00 - NOT overlapping stage 2 at 0x7E00):
-;   E820_COUNT  (word) at 0x0500 : number of entries gathered
-;   E820_BUFFER (array) at 0x0504 : that many 24-byte entries
-; Each entry: base(8) length(8) type(4) acpi_attrs(4) = 24 bytes.
-; 64 entries * 24 = 1536 bytes -> 0x0504..0x0B04, clear of stage 1 at 0x7C00.
-
-E820_COUNT_ADDR    equ 0x0500        ; entry count (word)
-E820_BUFFER        equ 0x0504        ; raw entries
+E820_BUFFER        equ CXBI_MMAP     ; the entries, in the CXBI map
 E820_ENTRY_SIZE    equ 24
 E820_MAX_ENTRIES   equ 64
 E820_SMAP          equ 0x534D4150    ; 'SMAP'
 
-; gather_memory_map - fills E820_BUFFER, sets [E820_COUNT_ADDR]. Real mode.
+; gather_memory_map - fills E820_BUFFER and the CXBI entry count. Real mode.
 gather_memory_map:
     push es
     xor ax, ax
@@ -63,6 +51,6 @@ gather_memory_map:
     jmp .next
 
 .done:
-    mov [E820_COUNT_ADDR], bp
+    mov [CXBI_ADDR + CXBI_O_MMAP_COUNT], bp
     pop es
     ret

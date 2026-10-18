@@ -60,6 +60,7 @@
 #include "klogo.h"
 #include "platform/platform.h"
 #include "logging.h"
+#include "boot/cxbi.h"
 
 /* Mount CXFS on the data disk (first non-boot disk). Read-only by default:
    mounts an existing filesystem if present and NEVER formats, so this can't
@@ -134,13 +135,18 @@ static void cx_text_logo(void) {
 
 void kmain_late(void) __attribute__((noreturn, used));
 
-void kmain(void) {
+/* `cxbi_phys` is the loader's handover (boot/cxbi.h), passed by the entry
+   stub. */
+void kmain(uintptr_t cxbi_phys) {
     /* Serial before the console, so the first console line is already being
        mirrored. The probe prints nothing and is a no-op without a UART. */
     serial_init();
 
     /* console first, so everything after it logs cleanly. */
     console_init();
+
+    /* the handover, before anything asks about memory, the screen or ACPI */
+    cxbi_init(cxbi_phys);
 
     /* CPU core: the processor's own tables, then interrupts, then the feature
        table, before anything that might ask what the CPU has. */

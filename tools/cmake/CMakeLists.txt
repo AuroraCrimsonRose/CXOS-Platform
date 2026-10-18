@@ -156,6 +156,7 @@ list(APPEND KCFLAGS -I${BUILD_DIR})
 # ---- KERNEL C SOURCES (append new subsystems here) ----
 set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/kmain.c
+    ${SRC_DIR}/kernel/boot/cxbi.c
     ${SRC_DIR}/kernel/ktest.c
     ${SRC_DIR}/kernel/kconfig.c
     ${SRC_DIR}/kernel/arch/x86_32/cpu.c
@@ -454,7 +455,7 @@ add_custom_command(
     OUTPUT ${STAGE2_BIN}
     COMMAND ${CMAKE_ASM_NASM_COMPILER} ${CXK_DEFS} -I${SRC_DIR}/boot -f bin ${STAGE2_SRC} -o ${STAGE2_BIN}
     DEPENDS ${STAGE2_SRC}
-        ${SRC_DIR}/boot/a20.asm ${SRC_DIR}/boot/mem.asm
+        ${SRC_DIR}/boot/a20.asm ${SRC_DIR}/boot/mem.asm ${SRC_DIR}/boot/cxbi.asm
         ${SRC_DIR}/boot/gdt.asm ${SRC_DIR}/boot/pmode.asm
         ${SRC_DIR}/boot/cxexload.asm ${SRC_DIR}/boot/vbe.asm
     COMMENT "Assembling stage 2 (stage2.asm + includes)"

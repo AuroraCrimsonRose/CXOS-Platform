@@ -40,6 +40,9 @@ extern __bss_end
 section .text
 kernel_entry:
     ; --- running at PHYSICAL ~0x100000, paging OFF ---
+    ; EBX = the physical address of the loader's struct cxk_boot_info
+    ; (boot/cxbi.asm). Nothing below touches EBX; it goes to kmain as its
+    ; argument.
     cli
 
     ; Build a page table that maps the first 4 MB (1024 * 4 KB) identity-style:
@@ -145,6 +148,7 @@ higher_half_entry:
 .done:
 
     ; into C - kmain runs in the higher half on the .bss stack.
+    push ebx                         ; kmain(cxbi_phys)
     call kmain
 
 .hang:

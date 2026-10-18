@@ -102,6 +102,7 @@ cxex_load_and_jump:
     mov esi, CXEX_SRC
     mov eax, [esi + CXH_ENTRY]
     sub eax, [cxex_delta]
+    mov ebx, CXBI_ADDR                           ; the handover (cxbi.asm)
     jmp eax                                      ; into the kernel (paging off)
 
 .badmagic:

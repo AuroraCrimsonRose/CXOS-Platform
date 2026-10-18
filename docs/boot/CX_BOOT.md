@@ -8,14 +8,14 @@
 ## 1. Inherited
 
 - **BIOS:** `boot.asm` loads stage 2 from LBA 2 (32 sectors). Stage 2 enables
-  A20, saves the E820 map at `0x500`, sets a VBE mode, and `cxexload.asm`
-  places the kernel's sections and jumps. Nothing checks the kernel's
-  signature, and the kernel reads its boot data from fixed addresses.
+  A20, gathers the E820 map, sets a VBE mode, and `cxexload.asm` places the
+  kernel's sections and jumps. Nothing checks the kernel's signature. Since
+  roadmap step 4a the kernel no longer reads its boot data from fixed
+  addresses (§4 item 1).
 - **UEFI:** `boot/uefi/cxboot.c` is part 1 only: it gathers information into
   CXBI, prints it and stops.
 - **The handoff structure is right already.** `abi/cxk_boot.h` uses fixed
-  64-bit fields so a 32-bit or 64-bit kernel reads it identically. The kernel
-  does not read it yet.
+  64-bit fields so a 32-bit or 64-bit kernel reads it identically.
 
 ## 2. How the others do it
 
@@ -64,7 +64,17 @@ One loader, two front ends (BIOS, UEFI), one shared core in C.
 
 ## 4. Order
 
-1. The kernel reads CXBI; the BIOS stage fills it (32-bit, now).
+1. The kernel reads CXBI; the BIOS stage fills it (32-bit, now). **Done
+   2026-10-18** (roadmap step 4a). Stage 2 builds `cxk_boot_info` at physical
+   `0x2000` (`boot/cxbi.asm`): the E820 map, gathered straight into it with
+   unknown types folded into reserved; the VBE mode with its pixel layout; the
+   ACPI RSDP, found and checksummed by the loader (EBDA, then
+   `0xE0000`–`0xFFFFF`); CPUID leaf 0 and leaf 1; the firmware kind. Its
+   address goes to the kernel in EBX. `kernel/boot/cxbi.c` checks the magic,
+   version, size and every map entry's type, refuses the boot otherwise, and
+   keeps a copy; the PMM, the framebuffer driver and ACPI read only that. The
+   loader fills its old addresses (`0x500`, `0x1C40`) with `0xA5`, and a
+   self-test checks the poison, so nothing can go on reading them unnoticed.
 2. The shared C core and the BIOS front end into long mode, with the 64-bit
    kernel bring-up.
 3. Signature check in the loader.

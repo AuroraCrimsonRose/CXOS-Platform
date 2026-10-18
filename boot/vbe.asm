@@ -17,12 +17,13 @@
 ; code. (Only one mode is chosen at boot; the rest of the table is the fallback
 ; chain - reorder to change the effective preference.)
 ;
-; On success: stash a compact info struct at VBE_INFO (read by kernel fb.c).
-; On any failure: VBE_VALID byte = 0 and we leave the display in text mode, so
+; On success: the mode goes into the CXBI framebuffer fields (cxbi.asm), the
+; physical base last, so a nonzero fb_addr means every other field is set.
+; On any failure: fb_addr = 0 and we leave the display in text mode, so
 ; the kernel's text console stays visible (important for debugging early boots).
 ;
 ; Gated by CXK_ENABLE_FB: when 0, set_vbe_mode is a no-op that just clears
-; VBE_VALID, guaranteeing the bootloader never touches the video hardware and
+; fb_addr, guaranteeing the bootloader never touches the video hardware and
 ; the text-mode fallback is real. The flag MUST match the kernel's config.h -
 ; wire it from CMake as `nasm -DCXK_ENABLE_FB=<n>` AND `clang -DCXK_ENABLE_FB=<n>`
 ; from one CMake variable so both sides agree.
@@ -41,20 +42,11 @@ bits 16
 
 ; ----------------------------------------------------------------------------
 ; Fixed low-memory scratch + handoff addresses (real mode, < 1 MB).
-; Clear of: stage1 (0x7C00), stage2 (0x7E00+), the E820 buffer (0x0504..0x0B04).
+; Clear of: stage1 (0x7C00), stage2 (0x7E00+), CXBI (0x2000..0x2800).
 ; ----------------------------------------------------------------------------
 VBE_CTRL_BUF   equ 0x1000    ; 512-byte VbeInfoBlock      (0x1000..0x1200), transient
 VBE_MODE_BUF   equ 0x1200    ; 256-byte ModeInfoBlock     (0x1200..0x1300), transient
 
-; Persistent 14-byte struct the kernel reads (must match fb.c VBE_* defines):
-VBE_INFO       equ 0x1C40
-VBE_VALID      equ 0x1C40    ; byte  : 1 = framebuffer active, 0 = stay text mode
-VBE_WIDTH      equ 0x1C42    ; word  : pixels
-VBE_HEIGHT     equ 0x1C44    ; word  : pixels
-VBE_BPP        equ 0x1C46    ; byte  : 16
-VBE_PITCH      equ 0x1C48    ; word  : bytes per scanline
-VBE_FB         equ 0x1C4A    ; dword : linear framebuffer physical base
-                             ; (ends 0x1C4E)
 
 ; VbeInfoBlock field offsets (we only need the mode-list far pointer)
 VIB_VIDEOMODEPTR equ 0x0E    ; dword far ptr (offset:segment) to the mode list
@@ -67,8 +59,11 @@ MIB_HEIGHT       equ 0x14    ; word  : YResolution
 MIB_BPP          equ 0x19    ; byte  : BitsPerPixel
 MIB_MEMMODEL     equ 0x1B    ; byte  : MemoryModel (6 = direct color)
 MIB_RED_MASK     equ 0x1F    ; byte  : RedMaskSize
+MIB_RED_POS      equ 0x20    ; byte  : RedFieldPosition
 MIB_GREEN_MASK   equ 0x21    ; byte  : GreenMaskSize
+MIB_GREEN_POS    equ 0x22    ; byte  : GreenFieldPosition
 MIB_BLUE_MASK    equ 0x23    ; byte  : BlueMaskSize
+MIB_BLUE_POS     equ 0x24    ; byte  : BlueFieldPosition
 MIB_PHYSBASE     equ 0x28    ; dword : PhysBasePtr (LFB physical address)
 MIB_LIN_PITCH    equ 0x32    ; word  : LinBytesPerScanLine (VBE 3.0, LFB pitch)
 
@@ -83,7 +78,7 @@ SET_LFB_BIT      equ 0x4000  ; bit 14 : use linear framebuffer
 
 ; ----------------------------------------------------------------------------
 ; set_vbe_mode  -  entry point called from stage2. Real mode. Always leaves
-; VBE_VALID written (0 or 1); preserves caller registers via pusha/push.
+; fb_addr written (0, or the base); preserves caller registers via pusha/push.
 ; ----------------------------------------------------------------------------
 set_vbe_mode:
     pusha
@@ -93,7 +88,7 @@ set_vbe_mode:
     ; default to "no framebuffer" so every early-out path is text-mode-safe
     xor ax, ax
     mov es, ax
-    mov byte [es:VBE_VALID], 0
+    mov dword [es:CXBI_ADDR + CXBI_O_FB_ADDR], 0
 
 %if CXK_ENABLE_FB == 0
     ; framebuffer disabled at build time: never touch the video hardware.
@@ -245,22 +240,33 @@ set_vbe_mode:
     xor ax, ax
     mov es, ax                   ; re-assert es=0 (4F02 may clobber es)
     mov ax, [es:VBE_MODE_BUF + MIB_WIDTH]
-    mov [es:VBE_WIDTH], ax
+    mov [es:CXBI_ADDR + CXBI_O_FB_WIDTH], ax
     mov ax, [es:VBE_MODE_BUF + MIB_HEIGHT]
-    mov [es:VBE_HEIGHT], ax
+    mov [es:CXBI_ADDR + CXBI_O_FB_HEIGHT], ax
     mov al, [es:VBE_MODE_BUF + MIB_BPP]
-    mov [es:VBE_BPP], al
+    mov [es:CXBI_ADDR + CXBI_O_FB_BPP], al
+    mov al, [es:VBE_MODE_BUF + MIB_RED_MASK]
+    mov [es:CXBI_ADDR + CXBI_O_FB_RBITS], al
+    mov al, [es:VBE_MODE_BUF + MIB_RED_POS]
+    mov [es:CXBI_ADDR + CXBI_O_FB_RSHIFT], al
+    mov al, [es:VBE_MODE_BUF + MIB_GREEN_MASK]
+    mov [es:CXBI_ADDR + CXBI_O_FB_GBITS], al
+    mov al, [es:VBE_MODE_BUF + MIB_GREEN_POS]
+    mov [es:CXBI_ADDR + CXBI_O_FB_GSHIFT], al
+    mov al, [es:VBE_MODE_BUF + MIB_BLUE_MASK]
+    mov [es:CXBI_ADDR + CXBI_O_FB_BBITS], al
+    mov al, [es:VBE_MODE_BUF + MIB_BLUE_POS]
+    mov [es:CXBI_ADDR + CXBI_O_FB_BSHIFT], al
     ; pitch: prefer VBE 3.0 LinBytesPerScanLine; fall back to BytesPerScanLine
     mov ax, [es:VBE_MODE_BUF + MIB_LIN_PITCH]
     test ax, ax
     jnz .pitch_ok
     mov ax, [es:VBE_MODE_BUF + MIB_PITCH]
 .pitch_ok:
-    mov [es:VBE_PITCH], ax
+    mov [es:CXBI_ADDR + CXBI_O_FB_PITCH], ax
+    ; the base LAST, after every field is written
     mov eax, [es:VBE_MODE_BUF + MIB_PHYSBASE]
-    mov [es:VBE_FB], eax
-    ; mark valid LAST, after every field is written
-    mov byte [es:VBE_VALID], 1
+    mov [es:CXBI_ADDR + CXBI_O_FB_ADDR], eax
     jmp .ret
 
 .pref_advance:
@@ -271,12 +277,12 @@ set_vbe_mode:
     mov si, msg_vbe_none         ; VBE present, no listed mode offered
     call print_string
     call print_newline
-    jmp .ret                     ; VBE_VALID already 0
+    jmp .ret                     ; fb_addr already 0
 
 .fail:
     xor ax, ax
     mov es, ax
-    mov byte [es:VBE_VALID], 0
+    mov dword [es:CXBI_ADDR + CXBI_O_FB_ADDR], 0
     mov si, msg_vbe_fail
     call print_string
     call print_newline

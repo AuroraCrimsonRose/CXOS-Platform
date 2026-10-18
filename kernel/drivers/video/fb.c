@@ -7,21 +7,7 @@
 #include "fb.h"
 #include "font.h"
 #include "arch/paging.h"
-
-/* The kernel runs at 0xC0000000+; the boot page tables map the first 4 MB of
-   physical RAM at 0xC0000000..0xC03FFFFF. The bootloader wrote the VBE info
-   struct at PHYSICAL 0x1C40, so we reach it at 0x1C40 + KERNEL_VBASE. (The
-   low identity map is dropped after boot, so the raw physical address is
-   unmapped - this matches how pmm.c reaches the E820 map at 0x500.) */
-#define PHYS_TO_VIRT(p) ((volatile void *)((uint32_t)(p) + KERNEL_VBASE))
-
-/* fixed PHYSICAL addresses where vbe.asm stashed the mode info */
-#define VBE_VALID_PHYS   0x1C40
-#define VBE_WIDTH_PHYS   0x1C42
-#define VBE_HEIGHT_PHYS  0x1C44
-#define VBE_BPP_PHYS     0x1C46
-#define VBE_PITCH_PHYS   0x1C48
-#define VBE_FB_PHYS      0x1C4A
+#include "boot/cxbi.h"
 
 /* Kernel-virtual window the LFB is mapped into. The high kernel address space
    is already carved up: heap at 0xD0000000 (grows up), the AHCI DMA window at
@@ -42,21 +28,37 @@ static uint32_t  height = 0;
 static uint32_t  bpp = 0;       /* 16 or 32 */
 static uint32_t  pitch = 0;     /* bytes per scanline */
 
+/* The pixel layouts fb_rgb packs: 5-6-5 at 16 bpp and 8-8-8 at 32, red
+   highest. A mode in any other order (BGR, as UEFI GOP often gives) would
+   draw every colour wrong, so it is refused rather than used. */
+static int layout_ok(const struct cxk_boot_info *b) {
+    if (b->fb_bpp == 32)
+        return b->fb_red_bits == 8 && b->fb_red_shift == 16 &&
+               b->fb_green_bits == 8 && b->fb_green_shift == 8 &&
+               b->fb_blue_bits == 8 && b->fb_blue_shift == 0;
+    if (b->fb_bpp == 16)
+        return b->fb_red_bits == 5 && b->fb_red_shift == 11 &&
+               b->fb_green_bits == 6 && b->fb_green_shift == 5 &&
+               b->fb_blue_bits == 5 && b->fb_blue_shift == 0;
+    return 0;
+}
+
 int fb_init(void) {
-    uint8_t valid = *(volatile uint8_t *)PHYS_TO_VIRT(VBE_VALID_PHYS);
-    if (!valid) { active = 0; return -1; }
+    /* the mode the loader set, from the handover (boot/cxbi.h) */
+    const struct cxk_boot_info *b = cxbi();
+    active = 0;
+    if (b->fb_addr == 0) return -1;              /* text mode */
+    if ((b->fb_addr >> 32) || (b->flags & CXBI_FLAG_FB_ABOVE_4G)) return -1;
 
-    width   = *(volatile uint16_t *)PHYS_TO_VIRT(VBE_WIDTH_PHYS);
-    height  = *(volatile uint16_t *)PHYS_TO_VIRT(VBE_HEIGHT_PHYS);
-    bpp     = *(volatile uint8_t  *)PHYS_TO_VIRT(VBE_BPP_PHYS);
-    pitch   = *(volatile uint16_t *)PHYS_TO_VIRT(VBE_PITCH_PHYS);
-    fb_phys = *(volatile uint32_t *)PHYS_TO_VIRT(VBE_FB_PHYS);
+    width   = b->fb_width;
+    height  = b->fb_height;
+    bpp     = b->fb_bpp;
+    pitch   = b->fb_pitch;
+    fb_phys = (uint32_t)b->fb_addr;
 
-    /* we only handle 16 and 32 bpp; anything else -> fall back to text mode */
-    if ((bpp != 16 && bpp != 32) || fb_phys == 0 || width == 0 || height == 0) {
-        active = 0;
+    /* we only handle 16 and 32 bpp in fb_rgb's layout; else text mode */
+    if (!layout_ok(b) || width == 0 || height == 0 || pitch < width * (bpp / 8))
         return -1;
-    }
 
     /* Map the LFB into our kernel-virtual window. The framebuffer's physical
        base is often high (e.g. 0xFD000000) and outside the low 4 MB the boot

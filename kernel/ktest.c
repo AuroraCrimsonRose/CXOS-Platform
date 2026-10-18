@@ -57,6 +57,7 @@
 #include "platform/ktest_platform.h"
 #include "platform/platform.h"
 #include "xhci_spad.h"
+#include "boot/cxbi.h"
 
 
 /* concise pass/fail reporter */
@@ -1182,6 +1183,53 @@ static int test_xhci_scratchpad(void) {
         ok = 0;
     }
     return ok;
+}
+
+/* ---- the boot handover came through CXBI (boot/cxbi.h, roadmap step 4) ----
+ * Everything the kernel takes from the loader is in one structure: a memory
+ * map with usable memory in it and no type CXBI lacks, the RSDP ACPI is
+ * running from, and the framebuffer the screen is drawn on. A BIOS loader
+ * also poisons where it used to leave the E820 map (0x500) and the VBE mode
+ * (0x1C40), so a reader of those old addresses gets nonsense; that it did is
+ * checked here, and the boot failing when pmm.c or fb.c is pointed back at
+ * them is the sabotage that shows nothing reads them. */
+static int test_cxbi(void) {
+    const struct cxk_boot_info *b = cxbi();
+    if (b->firmware != CXBI_FW_BIOS && b->firmware != CXBI_FW_UEFI) {
+        klog("KTEST", SEV_FAIL, "CXBI: the handover names no firmware");
+        return 0;
+    }
+    uint64_t usable = 0;
+    for (uint32_t i = 0; i < cxbi_mmap_count(); i++) {
+        const struct cxk_mmap_entry *e = cxbi_mmap(i);
+        if (e->type < CXBI_MEM_USABLE || e->type > CXBI_MEM_FRAMEBUFFER) {
+            klog_u32("KTEST", SEV_FAIL, "CXBI: memory map type not in CXBI: ", e->type,
+                     LOG_COLOR_VALUE, "");
+            return 0;
+        }
+        if (e->type == CXBI_MEM_USABLE && e->base >= 0x100000) usable += e->length;
+    }
+    if (usable < (uint64_t)pmm_total_pages() * PAGE_SIZE / 2 || cxbi_mmap_dropped()) {
+        klog("KTEST", SEV_FAIL, "CXBI: the memory map is short of usable memory");
+        return 0;
+    }
+    if (b->acpi_rsdp == 0 || !acpi_can_shutdown()) {
+        klog("KTEST", SEV_FAIL, "CXBI: no RSDP handed over, or ACPI did not start from it");
+        return 0;
+    }
+    uint32_t fp, fs;
+    if (fb_get_region(&fp, &fs) &&
+        (fp != b->fb_addr || fs != b->fb_size || fb_width() != b->fb_width)) {
+        klog("KTEST", SEV_FAIL, "CXBI: the screen is not the framebuffer handed over");
+        return 0;
+    }
+    if (b->firmware == CXBI_FW_BIOS &&
+        (*(volatile uint16_t *)(KERNEL_VBASE + 0x500) != 0xA5A5u ||
+         *(volatile uint8_t *)(KERNEL_VBASE + 0x1C40) != 0xA5u)) {
+        klog("KTEST", SEV_FAIL, "CXBI: the loader's old addresses are not poisoned");
+        return 0;
+    }
+    return 1;
 }
 
 /* ---- the wall clock reads a plausible date (platform_wallclock, step 3) ----
@@ -2799,6 +2847,7 @@ void ktest_run(void) {
     total++; passed += report("a tick is a millisecond, by the PM timer", test_tick_rate());
     total++; passed += report("the cycle counter measures time",   test_cycle_counter());
     total++; passed += report("the wall clock reads a plausible date", test_wallclock());
+    total++; passed += report("the boot handover came through CXBI", test_cxbi());
     total++; passed += report("xHCI scratchpad pages are whole and returned", test_xhci_scratchpad());
     total++; passed += report("PS/2 keyboard and mouse reach the kernel", ktest_platform_input());
     total++; passed += report("memory mappings (SYS_MEM_OP)",     test_vmregion());

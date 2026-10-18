@@ -11,6 +11,7 @@
 #include "arch/x86/cpufeat.h"
 #include "gdt.h"
 #include "idt.h"
+#include "boot/cxbi.h"
 
 /* ---- the double fault has a stack of its own ----
  * Checks the wiring rather than taking a double fault, which cannot be
@@ -55,5 +56,12 @@ int ktest_arch_cpu_features(void) {
     if (ci->feat != now.feat || ci->family != now.family || ci->model != now.model) return 0;
     if (cpu_has(CPU_FPU) != (int)((raw.l1[3] >> 0) & 1u)) return 0;   /* cpu_has reads it */
     if (lapic_active() && !cpu_has(CPU_APIC)) return 0;   /* APIC obeyed the table */
+    /* The loader read CPUID too and handed it over (boot/cxbi.h); it saw this
+       CPU. Leaf 1 bits the kernel itself changes are left out: ECX 27 is
+       OSXSAVE (CR4), EDX 9 the local APIC's global enable (IA32_APIC_BASE). */
+    const struct cxk_boot_info *b = cxbi();
+    if (b->cpuid_max_leaf != raw.max_basic) return 0;
+    if ((b->cpuid1_ecx & ~(1u << 27)) != (raw.l1[2] & ~(1u << 27))) return 0;
+    if ((b->cpuid1_edx & ~(1u << 9)) != (raw.l1[3] & ~(1u << 9))) return 0;
     return 1;
 }

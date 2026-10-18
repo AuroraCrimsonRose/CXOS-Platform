@@ -98,7 +98,9 @@ programs for it (step 6).
    `cxk_boot_info` instead of fixed addresses. A panic writes a crash log to a
    reserved disk area through a minimal polled write, because a BIOS may clear
    RAM during startup; the next boot saves it (`kernel/CX_KERNEL_PLAN.md` §8).
-   See `boot/CX_BOOT.md`.
+   See `boot/CX_BOOT.md`. The CXBI half landed 2026-10-18 (4a); the crash log
+   is 4b, written first to IDE and SATA disks, with the USB stick the rig
+   boots from as a later slice.
 5. **The x86-64 kernel boots.** The BIOS loader enters long mode and starts a
    64-bit kernel in the top half (`kernel/CX_KERNEL_PLAN.md` §2.4), with NX, the 64-bit GDT, IDT and TSS
    (IST for the double fault) and `syscall`/`sysret`; the page database, the

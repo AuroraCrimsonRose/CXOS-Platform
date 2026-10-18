@@ -44,6 +44,9 @@ pmode_entry:
 
     call vga_print_pmode
 
+    ; the rest of the handover, then seal it (cxbi.asm)
+    call cxbi_finish
+
     ; parse the loaded .xkex, place its sections at their physical addresses,
     ; and jump to the physical entry. The kernel's stub then sets up paging +
     ; the higher half. (Replaces the old flat copy-blob-and-jump.)
