@@ -7,6 +7,7 @@
 #include "acpi.h"
 #include "drivers/iowin.h"
 #include "arch/paging.h"
+#include "arch/cpu_ops.h"
 
 /* ---- ACPI table structures (packed, as they appear in memory) ---- */
 
@@ -315,13 +316,13 @@ int acpi_pm_timer_read(uint32_t *out) {
 
 void acpi_shutdown(void) {
     if (!acpi_can_shutdown()) return;
-    __asm__ volatile ("cli");
+    arch_irq_disable();
     /* write SLP_TYPa | SLP_EN to PM1a control, and PM1b if present */
     iowin_write16(&pm1a_cnt, 0, (uint16_t)((s5_typa << 10) | SLP_EN));
     if (pm1b_cnt.kind)
         iowin_write16(&pm1b_cnt, 0, (uint16_t)((s5_typb << 10) | SLP_EN));
     /* if we got here, it didn't power off */
-    for (;;) __asm__ volatile ("hlt");
+    arch_cpu_halt_forever();
 }
 
 #define PM1_PWRBTN_EN  (1u << 8)   /* power button enable (in PM1 enable reg) */
@@ -353,7 +354,7 @@ int acpi_sleep_s1(void) {
     /* (status reg is the LOWER half of the event block = cnt-independent;
         we conservatively clear via the control-adjacent status if known) */
 
-    __asm__ volatile ("sti");   /* allow the wake event to be serviced */
+    arch_irq_enable();   /* allow the wake event to be serviced */
 
     /* enter S1: write SLP_TYP(S1) | SLP_EN to PM1 control */
     iowin_write16(&pm1a_cnt, 0, (uint16_t)((s1_typa << 10) | SLP_EN));
@@ -365,7 +366,7 @@ int acpi_sleep_s1(void) {
 
 int acpi_reboot(void) {
     if (!acpi_can_reset()) return -1;
-    __asm__ volatile ("cli");
+    arch_irq_disable();
     /* reset register may be in system I/O space (space id 1) or memory (0) */
     if (reset_space == 1) {
         iowin_write8(&reset_reg, 0, reset_val);

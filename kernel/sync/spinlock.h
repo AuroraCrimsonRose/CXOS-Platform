@@ -16,33 +16,23 @@
  * Saved and restored rather than cli/sti, for the reason sched.c gives: a
  * caller that already had interrupts off must get them back off.
  *
- * Built for the host tests (CXK_HOST_TEST), the interrupt part is empty and
- * the lock word is the whole lock, so the logic above it is testable.
+ * Built for the host tests (CXK_HOST_TEST), the interrupt part is empty
+ * (arch/cpu_ops.h) and the lock word is the whole lock, so the logic above it
+ * is testable.
  */
 #ifndef CXK_SPINLOCK_H
 #define CXK_SPINLOCK_H
 
 #include <stdint.h>
+#include "arch/cpu_ops.h"
 
 typedef struct { volatile uint32_t locked; } spinlock_t;
 
 #define SPINLOCK_INIT { 0 }
 
-#ifdef CXK_HOST_TEST
-static inline uint32_t spin_irq_save(void)          { return 0; }
-static inline void     spin_irq_restore(uint32_t f) { (void)f; }
-static inline void     spin_relax(void)             { }
-#else
-static inline uint32_t spin_irq_save(void) {
-    uint32_t f;
-    __asm__ volatile ("pushf; pop %0; cli" : "=r"(f) : : "memory");
-    return f;
-}
-static inline void spin_irq_restore(uint32_t f) {
-    if (f & 0x200u) __asm__ volatile ("sti" : : : "memory");
-}
-static inline void spin_relax(void) { __asm__ volatile ("pause"); }
-#endif
+static inline uint32_t spin_irq_save(void)          { return arch_irq_save(); }
+static inline void     spin_irq_restore(uint32_t f) { arch_irq_restore(f); }
+static inline void     spin_relax(void)             { arch_cpu_relax(); }
 
 /* Take the lock with interrupts off. Returns the flags to give back. */
 static inline uint32_t spin_lock(spinlock_t *l) {

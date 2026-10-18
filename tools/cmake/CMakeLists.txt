@@ -117,7 +117,7 @@ set(KERNEL_INCLUDES
 # its own stack walker. The result is an early triple-fault-ish panic loop with
 # no obvious connection to the compiler.
 #
-# x87 stays ENABLED (no -mno-80387) for kernel/lib/math/kmath.c and cpu/fpu.c.
+# x87 stays ENABLED (no -mno-80387) for kernel/lib/math/kmath.c and arch/x86/fpu.c.
 # Neither is in the build today, deliberately: fpu.c explains that enabling FP
 # needs FPU state saved on context switch first. Leaving x87 on means wiring
 # them in is a source-list change, not a flags change.
@@ -159,6 +159,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/ktest.c
     ${SRC_DIR}/kernel/kconfig.c
     ${SRC_DIR}/kernel/arch/x86_32/cpu.c
+    ${SRC_DIR}/kernel/arch/x86_32/ktest_arch.c
     ${SRC_DIR}/kernel/arch/x86_32/gdt.c
     ${SRC_DIR}/kernel/arch/x86_32/idt.c
     ${SRC_DIR}/kernel/arch/x86/apic.c
@@ -456,11 +457,32 @@ add_custom_command(
     COMMENT "Assembling stage 2 (stage2.asm + includes)"
 )
 
+# ---- the architecture boundary ----
+# No file outside kernel/arch/ may contain code for one CPU: inline assembly,
+# an assembly source, a CPU intrinsic, or an include of arch/<name>/
+# (check_arch_boundary.cmake says exactly what it refuses). The kernel does not
+# link until it passes. It scans every file under kernel/, in the build or not,
+# so new and unbuilt files are held to it too. (Globbed through ARCH_CHECK_KDIR
+# because cxk's source pre-flight reads every path under SRC_DIR ending in .c
+# here as a file the build lists, and a pattern is not one.)
+set(ARCH_CHECK_KDIR ${SRC_DIR}/kernel)
+file(GLOB_RECURSE ARCH_CHECK_FILES CONFIGURE_DEPENDS
+     ${ARCH_CHECK_KDIR}/*.c ${ARCH_CHECK_KDIR}/*.h
+     ${ARCH_CHECK_KDIR}/*.asm ${ARCH_CHECK_KDIR}/*.S ${ARCH_CHECK_KDIR}/*.s)
+set(ARCH_CHECK_STAMP ${BUILD_DIR}/arch_boundary.ok)
+add_custom_command(
+    OUTPUT ${ARCH_CHECK_STAMP}
+    COMMAND ${CMAKE_COMMAND} -DKDIR=${ARCH_CHECK_KDIR} -DSTAMP=${ARCH_CHECK_STAMP}
+            -P ${CMAKE_CURRENT_LIST_DIR}/check_arch_boundary.cmake
+    DEPENDS ${ARCH_CHECK_FILES} ${CMAKE_CURRENT_LIST_DIR}/check_arch_boundary.cmake
+    COMMENT "Checking the architecture boundary"
+)
+
 # ---- link the kernel (higher-half) ----
 add_custom_command(
     OUTPUT ${KERNEL_ELF}
     COMMAND ${CMAKE_LD} -m elf_i386 -T ${LINKER} -o ${KERNEL_ELF} ${KERNEL_OBJS}
-    DEPENDS ${KERNEL_OBJS}
+    DEPENDS ${KERNEL_OBJS} ${ARCH_CHECK_STAMP}
     COMMENT "Linking kernel (higher-half)"
 )
 

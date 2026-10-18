@@ -45,7 +45,7 @@ interfaces and are not transitional.
 | Where | Today | Replaced by | Trigger |
 |---|---|---|---|
 | `devkit/CXEX.Lang` | The C# X compiler, which is the oracle `os/xc` is tested against | `os/xc`, self-hosted | `os/xc` matches it on every differential suite and the self-hosting fixed point holds, which is already true. Retiring the oracle is a decision, not a test result. |
-| `kernel/cpu/fpu.c` | FP and SSE left disabled | `fxsave`/`fxrstor` or lazy switching in `context_switch` | Before anything enables FP. The file explains why enabling it today would corrupt state. |
+| `kernel/arch/x86/fpu.c` | FP and SSE left disabled | `fxsave`/`fxrstor` or lazy switching in `context_switch` | Before anything enables FP. The file explains why enabling it today would corrupt state. |
 | `kernel/drivers/input/keyboard.c` `kwaiter` | One blocked reader | A wait queue | A second process that reads the keyboard |
 | `kernel/drivers/net/netif.h` | Static IP configuration | DHCP | A network that is not QEMU's user-mode NAT |
 | `kernel/lib/format/cxex_loadk.c` `ctx = 0` | Loads into the current address space | An explicit target space | Loading into a process other than the caller |
@@ -65,7 +65,7 @@ interfaces and are not transitional.
 | Name | State | Recommendation |
 |---|---|---|
 | `GRANT_MEM` | Defined in the ABI and in `caps.h`, enforced nowhere. `SYS_MEM_OP` is unprivileged by design. Marked reserved at both sites. | Keep it reserved: the bit is spoken for, and reusing it would be a silent ABI change. |
-| `kernel/cpu/fpu.c`, `kernel/lib/math/kmath.c` | Not in the build at all, deliberately. `fpu.c` documents why: FP needs FPU state saved on context switch before anything can use it. `CMakeLists.txt` keeps x87 enabled so wiring them in is a source-list change. Its comment used to say `kmath.c` "genuinely uses double" in the kernel, which it does not. | Keep until FP is wanted; the trigger is in the "Planned replacement" table. |
+| `kernel/arch/x86/fpu.c`, `kernel/lib/math/kmath.c` | Not in the build at all, deliberately. `fpu.c` documents why: FP needs FPU state saved on context switch before anything can use it. `CMakeLists.txt` keeps x87 enabled so wiring them in is a source-list change. Its comment used to say `kmath.c` "genuinely uses double" in the kernel, which it does not. Since step 3e `kmath.c` is plain C (its square root was the SSE instruction) and host-tested (`test_kmath.c`), which found sine and cosine 2e-5 out at the ends of their range rather than the 1e-9 claimed; fixed. | Keep until FP is wanted; the trigger is in the "Planned replacement" table. |
 | `CXAuthChain` (DevKit) | **Active, not dead.** Rewritten 2026-10-09 to the right model (the level derives from which key signed) and covered by `TrustAuthorityTests`. It is the DevKit's advisory mirror of `keyvault_trust_of`, independent by design (security §12.5). No CLI command surfaces it yet. | Keep. A `cxk inspect` line saying "the kernel will admit this as Publisher" is its natural first caller. |
 
 ## Unused surface: not transitional, but recorded

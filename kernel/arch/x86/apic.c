@@ -107,13 +107,14 @@ uint32_t lapic_id(void) {
 
 int apic_active(void)  { return apic_up; }
 int lapic_active(void) { return lapic_up; }
+int irq_msi_available(void) { return lapic_up; }
 
-uint32_t msi_message_address(void) {
+uint32_t irq_msi_address(void) {
     /* 0xFEE00000 | (destination APIC id << 12). Fixed delivery to this CPU. */
     return 0xFEE00000u | (lapic_id() << 12);
 }
 
-uint32_t msi_message_data(uint8_t vector) {
+uint32_t irq_msi_data(uint8_t vector) {
     /* Fixed delivery mode, edge triggered: the vector alone. */
     return vector;
 }
@@ -196,7 +197,7 @@ void irq_unmask(int irq) {
               ioapic_rd(IOAPIC_REG_RED + idx * 2) & ~RED_MASKED);
 }
 
-int apic_init(void) {
+int irq_controller_init(void) {
     lapic_up = 0;
     apic_up = 0;
 
@@ -250,7 +251,7 @@ int apic_init(void) {
        everything else, and it presents as an intermittent hang partway through
        boot rather than as an interrupt problem. */
     /* Mask interrupts for the whole handover. The timer is firing at 1000 Hz
-       while this runs (kmain enables interrupts long before apic_init), so
+       while this runs (kmain enables interrupts long before irq_controller_init), so
        every step below is racing it. See the apic_up note further down for
        what that race actually cost. */
     uint32_t saved_flags;

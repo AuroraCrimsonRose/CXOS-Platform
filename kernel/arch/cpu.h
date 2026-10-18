@@ -12,8 +12,9 @@
 
 #include <stdint.h>
 
-/* The CPU's own tables: segments, the interrupt table, the task state.
-   Called once, early, before interrupts are enabled. */
+/* The CPU's own tables: segments, the interrupt table, the task state; then
+   the feature table (what this CPU has). Called once, early, before
+   interrupts are enabled. */
 void arch_cpu_init(void);
 
 /* The stack the CPU switches to when an interrupt arrives from user mode.
@@ -23,5 +24,16 @@ void arch_kernel_stack_set(uintptr_t top);
 /* The stack used when the running thread has none of its own (a kernel-only
    thread). */
 uintptr_t arch_kernel_stack_default(void);
+
+/* The stack an interrupt from user mode would switch to right now. */
+uintptr_t arch_kernel_stack_current(void);
+
+/* Move onto the stack whose top is `top` and call fn there, with no frame
+   above it (a stack trace ends at fn). Never returns. */
+__attribute__((noreturn)) void arch_run_on_stack(uintptr_t top, void (*fn)(void));
+
+/* Reset the processor by the means of last resort, when the platform's own
+   reset did nothing. Never returns. */
+__attribute__((noreturn)) void arch_cpu_reset(void);
 
 #endif

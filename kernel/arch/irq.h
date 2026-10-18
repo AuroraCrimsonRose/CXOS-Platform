@@ -11,6 +11,8 @@
 #ifndef ARCH_IRQ_H
 #define ARCH_IRQ_H
 
+#include <stdint.h>
+
 struct registers;   /* the interrupted state: arch/<arch>/idt.h */
 
 typedef void (*irq_handler_t)(struct registers *);
@@ -19,10 +21,35 @@ typedef void (*irq_handler_t)(struct registers *);
 void irq_install_handler(int irq, irq_handler_t handler);
 void irq_uninstall_handler(int irq);
 
+/* Mask or unmask a legacy line at whichever controller is live. */
+void irq_mask(int irq);
+void irq_unmask(int irq);
+
+/* Bring up the interrupt controllers beyond the legacy ones (x86: the local
+   APIC, and the I/O APIC if the MADT describes one). Call after acpi_init()
+   and before any driver. Returns 1 if they took over; 0 leaves the legacy
+   controller in charge, which still works. */
+int irq_controller_init(void);
+
 /* An MSI has no line - the device writes a vector straight to the interrupt
    controller - so vectors come from a pool. Returns the vector to program
    into the device's MSI capability, or -1 if none are free. */
 int  irq_alloc_msi_vector(irq_handler_t handler);
 void irq_free_msi_vector(int vector);
+
+/* Whether an MSI can be delivered at all (x86: the local APIC is running). */
+int irq_msi_available(void);
+
+/* The address a device writes to raise an MSI, and the data word that selects
+   `vector`. Set by the architecture, not by the device. */
+uint32_t irq_msi_address(void);
+uint32_t irq_msi_data(uint8_t vector);
+
+/* A fault taken in user mode goes to this hook instead of to a panic, so the
+   process can be ended. */
+void set_user_fault_hook(void (*hook)(struct registers *));
+
+/* Which exception or interrupt a frame records, for a log line. */
+uint32_t irq_frame_vector(const struct registers *r);
 
 #endif

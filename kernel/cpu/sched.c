@@ -8,6 +8,7 @@
 #include "heap.h"
 #include "kstack.h"
 #include "arch/cpu.h"
+#include "arch/cpu_ops.h"
 #include "arch/paging.h"
 #include "uid.h"
 #include "timer.h"   /* timer_ticks for the sleep queue */
@@ -51,14 +52,8 @@ static int initialized = 0;
    Saved and restored rather than cli/sti: the flags context_switch pushes are
    the ones a thread resumes with, and a caller that already had interrupts
    off must get them back off. */
-static inline uint32_t irq_save(void) {
-    uint32_t f;
-    __asm__ volatile ("pushf; pop %0; cli" : "=r"(f) : : "memory");
-    return f;
-}
-static inline void irq_restore(uint32_t f) {
-    if (f & 0x200) __asm__ volatile ("sti" : : : "memory");
-}
+static inline uint32_t irq_save(void)          { return arch_irq_save(); }
+static inline void     irq_restore(uint32_t f) { arch_irq_restore(f); }
 
 static uint32_t thread_limit = THREAD_LIMIT_DEFAULT;
 static uint32_t stack_bytes  = THREAD_STACK_DEFAULT;
@@ -315,7 +310,7 @@ void thread_wait(void) {
         if (self()->state != THREAD_BLOCKED) break;  /* woken */
         /* yield found nothing else runnable and stayed: wait for an interrupt
            (a timer tick that wakes a sleeping lock holder) instead of spinning */
-        __asm__ volatile ("sti; hlt");
+        arch_cpu_idle();
     }
     self()->state = THREAD_RUNNING;
 }
@@ -354,7 +349,7 @@ uint32_t thread_sleep_ms(uint32_t ms) {
            for the interrupt that will advance the clock instead of spinning on
            it - the timer is at most one tick away. Halting rather than
            spinning is the difference between an idle machine and a hot one. */
-        __asm__ volatile ("sti; hlt");
+        arch_cpu_idle();
     }
 
     self()->sleeping = 0;
@@ -422,7 +417,7 @@ void thread_exit(void) {
        thread reaps it, which cannot happen before we switch away. */
     int next = next_runnable();
     while (next == current) {
-        __asm__ volatile ("sti; hlt; cli" : : : "memory");
+        arch_cpu_idle_irqs_off();
         next = next_runnable();
     }
     th(next)->state = THREAD_RUNNING;

@@ -32,6 +32,7 @@ set(KERNEL_SOURCES
     ${KDIR}/arch/x86_32/pagetable.c
     ${KDIR}/drivers/iowin.c
     ${KDIR}/platform/pc/ps2kbd.c
+    ${KDIR}/lib/math/kmath.c
 )
 
 file(GLOB TEST_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/test_*.c)
@@ -54,4 +55,8 @@ target_link_options(khost_tests PRIVATE -fsanitize=address,undefined)
 if(WIN32)
     # clang targeting MSVC warns about the CRT's own declarations otherwise.
     target_compile_definitions(khost_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+else()
+    # test_kmath.c checks lib/math/kmath.c against the host's libm; on an ELF
+    # host that is a separate library (the CRT carries it on Windows).
+    target_link_libraries(khost_tests PRIVATE m)
 endif()

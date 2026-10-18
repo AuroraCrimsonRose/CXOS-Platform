@@ -36,10 +36,6 @@ void idt_init(void);
 /* install a handler reachable from ring 3 (DPL=3) - for the syscall gate. */
 void idt_set_user_gate(int n, uint32_t handler);
 
-/* register a handler for faults that occur in ring 3 (so the process model can
-   kill the offending process instead of panicking). */
-void set_user_fault_hook(void (*hook)(struct registers *));
-
 /* The MSI vector pool (arch/irq.h): above the legacy IRQ range. */
 #define MSI_VECTOR_BASE  48
 #define MSI_VECTOR_COUNT 8

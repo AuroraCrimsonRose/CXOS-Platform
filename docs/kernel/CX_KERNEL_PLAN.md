@@ -25,7 +25,7 @@ What it lacks, and what this plan answers:
 | One thing waited on at a time | input, one endpoint, or sleep | §5 |
 | Narrow IPC | one call in flight per endpoint, one page copied, no handle passing, no shared memory | §6 |
 | No user threads, no futex, no pipes | | §7 |
-| x86 code mixed with generic code | Step 3b moved the GDT, IDT, TSS, context switch, entry stub and linker script to `kernel/arch/x86_32/`, and the local APIC and port primitives to `kernel/arch/x86/`. Step 3c put paging behind `arch/paging.h`. Step 3d put every port access behind I/O windows (`drivers/iowin.h`) and moved the legacy PC devices to `kernel/platform/pc/`. Left: generic code that still names a PC device (`timer.c` starts the PIT, `power.c` uses the 8042 reset and the emulators' poweroff ports, `console.c` draws and scrolls VGA text, `cxfs.c` and `usermode.c` read the CMOS clock, `kmain.c` starts them all), the memory-mapped drivers (AHCI, e1000, RTL8169, the USB hosts, the I/O APIC) still use raw pointers rather than windows, inline assembly in eight generic files (`sched.c`, `spinlock.h`, `kmain.c`, `ktest.c`, `power.c`, `acpi.c`, `timer.c`, `kmath.c`) and the unbuilt `cpu/fpu.c`, `usermode.c`'s view of the register frame, MSI addresses in `pci.c` | §2.2 |
+| x86 code mixed with generic code | Step 3b moved the GDT, IDT, TSS, context switch, entry stub and linker script to `kernel/arch/x86_32/`, and the local APIC and port primitives to `kernel/arch/x86/`. Step 3c put paging behind `arch/paging.h`. Step 3d put every port access behind I/O windows (`drivers/iowin.h`) and moved the legacy PC devices to `kernel/platform/pc/`. Left: generic code that still names a PC device (`timer.c` starts the PIT, `power.c` uses the 8042 reset and the emulators' poweroff ports, `console.c` draws and scrolls VGA text, `cxfs.c` and `usermode.c` read the CMOS clock, `kmain.c` starts them all), the memory-mapped drivers (AHCI, e1000, RTL8169, the USB hosts, the I/O APIC) still use raw pointers rather than windows. Step 3e moved the last CPU-specific code out of generic files (the interrupt flag, halting, the cycle counter, the stack switch, the reset, the syscall gate, the register frame, MSI addresses, the self-tests that read the CPU's tables) and added the check: the kernel build refuses inline assembly, assembly sources, CPU intrinsics and `arch/<name>/` includes anywhere outside `kernel/arch/` (`tools/cmake/check_arch_boundary.cmake`) | §2.2 |
 | Uniprocessor locking | critical sections switch interrupts off | §8 |
 | First-fit linked-list heap | `heap.c` | §8 |
 | PIT at 1000 Hz | | §8 |
@@ -75,8 +75,16 @@ differs by width; `kernel/arch/x86/` holds what both share (the feature table,
 the local APIC, port I/O). Generic code does not include either. It includes
 the arch-neutral interfaces beside them, which every architecture implements:
 `arch/cpu.h` (the processor's tables, the stack taken on entry from user mode),
-`arch/irq.h` (handlers, MSI vectors; the register frame is opaque) and
-`arch/paging.h` (step 3c). A mapping is asked for by what it allows,
+`arch/irq.h` (handlers, MSI vectors and addresses, the interrupt controllers;
+the register frame is opaque), `arch/paging.h` (step 3c), `arch/cpu_ops.h`
+(the interrupt flag, halting, a spin hint and the cycle counter, inline
+because they are single instructions), `arch/usermode.h` (entering and leaving
+user mode, the syscall gate) and `arch/ktest_arch.h` (the self-tests that must
+read the CPU's own tables) (step 3e). The kernel build enforces the
+boundary: `tools/cmake/check_arch_boundary.cmake` runs before the link and
+refuses inline assembly, assembly sources, CPU intrinsics and includes of
+`arch/<name>/` in any file under `kernel/` outside `kernel/arch/` (and
+`kernel/test/`, whose host tests test arch code directly), built or not. A mapping is asked for by what it allows,
 `VM_WRITE`, `VM_EXEC`, `VM_UNCACHED`, never by page-table bits, and there is
 no flag that makes a kernel mapping reachable from user mode: only
 `paging_map_user` can, and only below `KERNEL_VBASE`. An address space is named

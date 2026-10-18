@@ -11,7 +11,6 @@
 #include "arch/paging.h"
 #include "logging.h"
 #include "arch/irq.h"
-#include "arch/x86/apic.h"
 #include "timer.h"
 
 /* ---- capability registers (at BAR0) ------------------------------------- */
@@ -773,7 +772,7 @@ static void xhci_msi_handler(struct registers *r) {
 }
 
 static void msi_self_test(const struct pci_device *dev) {
-    if (!lapic_active()) return;
+    if (!irq_msi_available()) return;
 
     int vector = irq_alloc_msi_vector(xhci_msi_handler);
     if (vector < 0) return;

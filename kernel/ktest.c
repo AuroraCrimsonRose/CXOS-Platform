@@ -22,7 +22,6 @@
 #include "logging.h"
 #include "color.h"
 #include "sched.h"
-#include "arch/x86_32/gdt.h"
 #include "ipc.h"
 #include "object/htab.h"
 #include "usermode.h"
@@ -47,9 +46,10 @@
 #include "exec.h"
 #include "kstack.h"
 #include "kconfig.h"
-#include "arch/x86_32/idt.h"
-#include "arch/x86/apic.h"
-#include "arch/x86/cpufeat.h"
+#include "arch/cpu.h"          /* arch_kernel_stack_current / _default */
+#include "arch/cpu_ops.h"
+#include "arch/usermode.h"     /* enter_usermode */
+#include "arch/ktest_arch.h"
 #include "drivers/iowin.h"
 #include "acpi.h"
 #include "keyboard.h"
@@ -394,11 +394,11 @@ static int test_user_copy_fault_recovery(void) {
 }
 
 /* ---- CR0.WP: the kernel obeys the read-only bit ----
-   x86 lets ring 0 write through a read-only page unless CR0.WP is set. For
-   most of this kernel's life it was clear, which is why `user_ptr_writable`
-   was the *only* thing standing between a syscall handed a pointer into a
-   process's own text and the kernel scribbling on it (security review §4): the
-   hardware would not have objected.
+   x86 lets ring 0 write through a read-only page unless CR0.WP is set
+   (paging_kernel_obeys_readonly asks). For most of this kernel's life it was
+   clear, which is why `user_ptr_writable` was the *only* thing standing
+   between a syscall handed a pointer into a process's own text and the kernel
+   scribbling on it (security review §4): the hardware would not have objected.
 
    Asserting the bit is set proves almost nothing on its own - a constant can
    be wrong in the same direction as the code reading it - so the real check is
@@ -409,9 +409,7 @@ static int test_cr0_write_protect(void) {
     const uint32_t va = 0x00830000u;
     const uint8_t  src[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
 
-    uint32_t cr0;
-    __asm__ volatile ("mov %%cr0, %0" : "=r"(cr0));
-    if (!(cr0 & (1u << 16))) return 0;          /* WP must be set */
+    if (!paging_kernel_obeys_readonly()) return 0;   /* WP must be set */
 
     void *frame = pmm_alloc();
     if (!frame) return 0;
@@ -582,7 +580,7 @@ static int test_sched_preempt(void) {
     thread_create("pre_a", pre_thread_a);
     thread_create("pre_b", pre_thread_b);
     sched_preempt_enable(5);
-    while (sched_active_count() > 1) { __asm__ __volatile__("pause"); }
+    while (sched_active_count() > 1) { arch_cpu_relax(); }
     sched_preempt_disable();
     /* both spinners completed only because the timer preempted them */
     return (pre_a != 0) && (pre_b != 0) && (sched_active_count() == 1);
@@ -595,19 +593,19 @@ static int test_sched_preempt(void) {
  * and the boot thread must get its own back. Before 2026-10-16 a kernel-only
  * thread inherited whatever esp0 the last process left behind. */
 static volatile uint32_t esp0_seen_by_kthread = 0;
-static void esp0_kthread(void) { esp0_seen_by_kthread = tss_current_esp0(); }
+static void esp0_kthread(void) { esp0_seen_by_kthread = arch_kernel_stack_current(); }
 
 static int test_esp0_follows_thread(void) {
     uint32_t mine = thread_current_kstack_top();
     /* Vacuous unless the two stacks differ: kmain gives thread 0 its own esp0. */
-    if (mine == 0 || mine == tss_default_kernel_stack()) return 0;
+    if (mine == 0 || mine == arch_kernel_stack_default()) return 0;
 
     esp0_seen_by_kthread = 0;
     if (thread_create("esp0_k", esp0_kthread) < 0) return 0;
     for (int i = 0; i < 8 && sched_active_count() > 1; i++) yield();
 
-    return esp0_seen_by_kthread == tss_default_kernel_stack()
-        && tss_current_esp0() == mine
+    return esp0_seen_by_kthread == arch_kernel_stack_default()
+        && arch_kernel_stack_current() == mine
         && sched_active_count() == 1;
 }
 
@@ -669,7 +667,7 @@ static int test_ring3_processes(void) {
     process_create_ring3("busy1", user_blob_busy_start, blen2, "");
     process_create_ring3("busy2", user_blob_busy_start, blen2, "");
     sched_preempt_enable(5);
-    while (sched_active_count() > 1) { __asm__ __volatile__("pause"); }
+    while (sched_active_count() > 1) { arch_cpu_relax(); }
     sched_preempt_disable();
     int preempt_ok = (sched_active_count() == 1);
 
@@ -1134,6 +1132,24 @@ static int test_tick_rate(void) {
 stalled:
     klog("KTEST", SEV_FAIL, "tick rate: 100 ticks took over 2 s of the PM timer");
     return 0;
+}
+
+/* ---- the cycle counter measures time (arch_cycles32, roadmap step 3e) ----
+ * Ping's round-trip times come from it, and before this nothing looked: a
+ * counter that never moved was "calibrated" at 1 MHz, logged as OK, and every
+ * interval read 0. 20 ms of sleep must read as 20 ms, within the slack QEMU's
+ * late timer interrupts need. The calibration came from the tick, so this
+ * proves the counter runs and the arithmetic holds, not the tick (that is
+ * test_tick_rate). */
+static int test_cycle_counter(void) {
+    uint32_t c0 = timer_tsc32();
+    thread_sleep_ms(20);
+    uint32_t us = timer_us_since(c0);
+    if (timer_tsc_mhz() < 2 || us < 15000 || us > 60000) {
+        klog_u32("KTEST", SEV_FAIL, "cycle counter: 20 ms read as us ", us, LOG_COLOR_VALUE, "");
+        return 0;
+    }
+    return 1;
 }
 
 /* ---- the PS/2 keyboard and mouse reach the kernel's input ----
@@ -2477,20 +2493,6 @@ static int test_main_stack(void) {
         && thread_current_kstack_top() != 0;
 }
 
-/* ---- the double fault has a stack of its own ----
- * Checks the wiring rather than taking a double fault, which cannot be
- * recovered from: vector 8 is a task gate, and it names an available 32-bit
- * TSS. (CXK_KTEST_STACK_OVERFLOW takes the real one.) */
-static int test_double_fault_gate(void) {
-    struct { uint16_t limit; uint32_t base; } __attribute__((packed)) idtr, gdtr;
-    __asm__ volatile ("sidt %0" : "=m"(idtr));
-    __asm__ volatile ("sgdt %0" : "=m"(gdtr));
-    const struct idt_entry *e = (const struct idt_entry *)idtr.base + 8;
-    if (e->type_attr != IDT_GATE_TASK || e->selector != DF_TSS_SEL) return 0;
-    const uint8_t *d = (const uint8_t *)gdtr.base + DF_TSS_SEL;
-    return d[5] == 0x89;   /* present, DPL 0, 32-bit TSS, not busy */
-}
-
 /* ---- kernel configuration (kernel.xkco) ----
  * Parsed with the X Data reader linked in from os/std/xdata.xfxn, so this is
  * also the test that X code runs correctly inside the kernel. Every refusal is
@@ -2703,7 +2705,6 @@ static int test_handle_table_grows(void) {
 #define PX_STACK  0x00401000u
 static volatile int      px_mine, px_back, px_rc;
 static volatile uint32_t px_pd;
-extern int enter_usermode(uint32_t entry_eip, uint32_t user_esp, uint32_t *save_slot);
 
 static void px_thread(void) {
     if (addr_space_current() != px_pd) return;          /* not running in its own space */
@@ -2754,38 +2755,6 @@ static int test_process_exit_releases(void) {
         && pmm_free_count() == free0;
 }
 
-/* ---- the CPU feature table is this CPU's (roadmap step 3a) ----
- * The decoding rules are host-tested (test_cpufeat.c). This proves the table
- * the kernel booted with was read from the CPU it is running on: rebuilt here
- * from CPUID executed now, leaf by leaf, it must match exactly. A table left
- * empty, read from the wrong leaf, or filled before the CPU was asked fails.
- * And the APIC code must have obeyed it: no local APIC in the table means
- * none was brought up. Booted on a minimal and a full CPU model, both sides
- * of that run. */
-static int test_cpu_features(void) {
-    const struct cpu_info *ci = cpu_info();
-    struct cpuid_raw raw = { 0 };
-    uint32_t r[4];
-    cpuid_read(0, 0, r);
-    raw.max_basic = r[0];
-    raw.vendor[0] = r[1]; raw.vendor[1] = r[3]; raw.vendor[2] = r[2];
-    if (raw.max_basic >= 1) cpuid_read(1, 0, raw.l1);
-    if (raw.max_basic >= 7) cpuid_read(7, 0, raw.l7);
-    cpuid_read(0x80000000u, 0, r);
-    raw.max_ext = r[0];
-    if ((raw.max_ext >> 16) == 0x8000u && raw.max_ext >= 0x80000001u) cpuid_read(0x80000001u, 0, raw.e1);
-    if ((raw.max_ext >> 16) == 0x8000u && raw.max_ext >= 0x80000007u) cpuid_read(0x80000007u, 0, raw.e7);
-    struct cpu_info now;
-    cpufeat_decode(&raw, &now);
-
-    if (ci->max_basic < 1 || ci->vendor[0] == 0) return 0;   /* never filled */
-    for (int i = 0; i < 13; i++) if (ci->vendor[i] != now.vendor[i]) return 0;
-    if (ci->feat != now.feat || ci->family != now.family || ci->model != now.model) return 0;
-    if (cpu_has(CPU_FPU) != (int)((raw.l1[3] >> 0) & 1u)) return 0;   /* cpu_has reads it */
-    if (lapic_active() && !cpu_has(CPU_APIC)) return 0;   /* APIC obeyed the table */
-    return 1;
-}
-
 #if CXK_KTEST_STACK_OVERFLOW
 /* Recurse until the stack runs out. The volatile buffer keeps each frame real
    and the addition after the call keeps it from becoming a loop. */
@@ -2821,6 +2790,7 @@ void ktest_run(void) {
     total++; passed += report("clock + timed sleep",               test_clock_sleep());
     total++; passed += report("tick counter wraparound",           test_timer_wraparound());
     total++; passed += report("a tick is a millisecond, by the PM timer", test_tick_rate());
+    total++; passed += report("the cycle counter measures time",   test_cycle_counter());
     total++; passed += report("PS/2 keyboard and mouse reach the kernel", test_ps2_input());
     total++; passed += report("memory mappings (SYS_MEM_OP)",     test_vmregion());
     total++; passed += report("lifecycles: unmap, exit, resched", test_lifecycle_sequences());
@@ -2831,14 +2801,14 @@ void ktest_run(void) {
     total++; passed += report("cxfs refuses bad superblocks",     ktest_cxfs_sb_adversarial());
     total++; passed += report("cxfs refuses bad extents + names", ktest_cxfs_entry_adversarial());
     total++; passed += report("guarded kernel stacks",             test_kstack());
-    total++; passed += report("double fault on its own stack",     test_double_fault_gate());
+    total++; passed += report("double fault on its own stack",     ktest_arch_double_fault_stack());
     total++; passed += report("thread 0 on a guarded stack",       test_main_stack());
     total++; passed += report("kernel config (X Data, linked X)",  test_kconfig());
     total++; passed += report("thread limit + stack size",         test_thread_limit());
     total++; passed += report("thread and pid tables grow past 64", test_thread_table_grows());
     total++; passed += report("a handle table grows to its limit and is freed", test_handle_table_grows());
     total++; passed += report("a process that faults gives back everything", test_process_exit_releases());
-    total++; passed += report("the cpu feature table is this cpu's",   test_cpu_features());
+    total++; passed += report("the cpu feature table is this cpu's",   ktest_arch_cpu_features());
     total++; passed += report("cxex signature + tamper",           test_cxex_signature());
     total++; passed += report("disk: ATA LBA range refused",        test_disk_lba_range());
     total++; passed += report("cxex loader refuses bad images",    ktest_loader_adversarial());

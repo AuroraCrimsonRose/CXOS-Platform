@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
-/* /CXLite/kernel/cpu/fpu.h */
+/* /kernel/arch/x86/fpu.h */
 /* Aurora Tejeda */
 /* Enable the x87 FPU and SSE so the kernel can use floating-point math.
    Must be called early in kmain, before ANY float/SSE code runs - otherwise

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
-/* /CXLite/kernel/cpu/fpu.c */
+/* /kernel/arch/x86/fpu.c */
 /* Aurora Tejeda */
 /*
  * FPU + SSE bring-up.

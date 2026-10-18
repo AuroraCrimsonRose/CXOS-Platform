@@ -32,11 +32,7 @@
 #define APIC_H
 
 #include <stdint.h>
-
-/* Bring up the local APIC, and the I/O APIC if the MADT describes one. Returns
-   1 if interrupts are now delivered through the APICs, 0 if the 8259 is still
-   in charge. Call after acpi_init(). */
-int apic_init(void);
+#include "arch/irq.h"   /* irq_controller_init, irq_msi_*, irq_mask/unmask */
 
 int apic_active(void);        /* are IRQs coming from the I/O APIC?     */
 int lapic_active(void);       /* is the local APIC enabled? MSI needs this */
@@ -46,13 +42,5 @@ void lapic_eoi(void);
 
 uint32_t lapic_id(void);      /* this CPU's local APIC id - MSI destination */
 
-/* Physical address a device writes to signal an MSI, and the data value that
-   selects `vector`. Both are architectural on x86 rather than device-specific. */
-uint32_t msi_message_address(void);
-uint32_t msi_message_data(uint8_t vector);
-
-/* Mask or unmask a legacy IRQ at whichever controller is live. */
-void irq_mask(int irq);
-void irq_unmask(int irq);
 
 #endif

@@ -13,11 +13,14 @@
 #include "keyboard.h"
 #include "platform/pc/i8042.h"     /* the reset line */
 #include "platform/pc/emupower.h"
+#include "arch/cpu.h"        /* arch_cpu_reset */
+#include "arch/cpu_ops.h"
 
 /* Reboot: prefer the ACPI reset register (works on the widest range of real
-   hardware), then the 8042 keyboard-controller pulse, then a triple fault. */
+   hardware), then the 8042 keyboard-controller pulse, then the processor's own
+   last resort (a triple fault on x86). */
 void power_reboot(void) {
-    __asm__ volatile ("cli");
+    arch_irq_disable();
 
     /* 1. ACPI reset register, if the FADT provided one */
     acpi_reboot();   /* returns only if it didn't work */
@@ -25,11 +28,8 @@ void power_reboot(void) {
     /* 2. 8042 keyboard controller: pulse the CPU reset line */
     i8042_pulse_reset();
 
-    /* 3. triple fault via a zero-limit IDT */
-    struct { uint16_t limit; uint32_t base; } __attribute__((packed)) null_idt = {0, 0};
-    __asm__ volatile ("lidt %0; int $0x03" : : "m"(null_idt));
-
-    for (;;) __asm__ volatile ("hlt");
+    /* 3. the processor's own reset */
+    arch_cpu_reset();
 }
 
 void power_shutdown(void) {
@@ -48,8 +48,7 @@ void power_shutdown(void) {
     console_set_color(vga_attr(VGA_YELLOW, VGA_BLACK));
     console_puts("\nIt is now safe to turn off your computer.\n");
     console_set_color(vga_attr(VGA_LIGHT_GREY, VGA_BLACK));
-    __asm__ volatile ("cli");
-    for (;;) __asm__ volatile ("hlt");
+    arch_cpu_halt_forever();
 }
 
 /* C1 idle: halt the CPU until an interrupt. If ms > 0, idle for ~ms
@@ -60,7 +59,7 @@ static void c1_idle(uint32_t ms) {
         char c = keyboard_getchar();
         if (c != 0) break;             /* any key wakes/cancels */
         if (ms > 0 && (timer_ticks() - start) >= ms) break;
-        __asm__ volatile ("hlt");      /* sleep until next interrupt (>=1ms via PIT) */
+        arch_cpu_halt();               /* sleep until next interrupt (>=1ms via PIT) */
     }
 }
 

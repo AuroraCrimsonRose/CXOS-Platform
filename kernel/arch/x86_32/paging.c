@@ -199,3 +199,9 @@ void *paging_temp_map(paddr_t phys) {
 void paging_temp_unmap(void) {
     paging_unmap(TEMP_MAP_VADDR);
 }
+
+int paging_kernel_obeys_readonly(void) {
+    uint32_t cr0;
+    __asm__ volatile ("mov %%cr0, %0" : "=r"(cr0));
+    return (cr0 & (1u << 16)) != 0;   /* CR0.WP */
+}

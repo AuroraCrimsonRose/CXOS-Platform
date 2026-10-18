@@ -26,6 +26,8 @@
 #define CXK_VERSION_STR "0.0.0-nocmake"
 #endif
 #include "arch/cpu.h"
+#include "arch/cpu_ops.h"
+#include "arch/irq.h"
 #include "panic.h"
 #include "pmm.h"
 #include "arch/paging.h"
@@ -44,7 +46,6 @@
 #include "power.h"
 #include "netif.h"
 #include "usb.h"
-#include "arch/x86/apic.h"
 #include "acpi.h"
 #include "usermode.h"
 #include "ata.h"
@@ -55,7 +56,6 @@
 #include "cxfs.h"
 #include "pci.h"
 #include "ktest.h"
-#include "arch/x86/cpufeat.h"
 #include "kconfig.h"
 #include "klogo.h"
 #include "platform/pc/speaker.h"
@@ -144,10 +144,9 @@ void kmain(void) {
     /* console first, so everything after it logs cleanly. */
     console_init();
 
-    /* CPU core: the processor's own tables, then interrupts. */
+    /* CPU core: the processor's own tables, then interrupts, then the feature
+       table, before anything that might ask what the CPU has. */
     arch_cpu_init();
-    /* Before anything that might ask what the CPU has. */
-    cpufeat_init();
 
     /* memory: physical frames -> virtual mappings -> heap. */
     pmm_init();
@@ -184,11 +183,7 @@ void kmain(void) {
         klog("KSTACK", SEV_WARN, "no guarded stack for thread 0 - staying on the boot stack");
         kmain_late();
     }
-    __asm__ volatile ("mov %0, %%esp\n\t"
-                      "xor %%ebp, %%ebp\n\t"      /* ends a panic's stack trace here */
-                      "call kmain_late"
-                      : : "r"(main_top) : "memory");
-    __builtin_unreachable();
+    arch_run_on_stack(main_top, kmain_late);
 }
 
 /* Everything after the move to a guarded stack. Never returns. */
@@ -237,7 +232,7 @@ void kmain_late(void) {
     klog("SCHED", SEV_OK, "online");
 
     timer_init();
-    __asm__ __volatile__("sti");          /* enable interrupts: timer can fire */
+    arch_irq_enable();                    /* enable interrupts: timer can fire */
     klog("TIMER", SEV_OK, "online (PIT @ 1000 Hz), interrupts enabled");
 
     /* calibrate the cycle counter against the PIT so RTTs can be reported in
@@ -296,7 +291,7 @@ void kmain_late(void) {
        Declines to a working 8259 if anything is missing, so this cannot stop a
        machine booting - which is why the status is dropped on purpose: there
        is no failure here that is not already a working fallback. */
-    (void)apic_init();
+    (void)irq_controller_init();
 
     /* network: whichever NIC is on the bus (polled). netif_init() returns 0 if
        none is. It logs which driver bound, so this line no longer names one -
@@ -386,6 +381,6 @@ void kmain_late(void) {
     klog("KERNEL", SEV_OK, "boot complete - idle");
     for (;;) {
         yield();                       /* let the executive + its apps run */
-        __asm__ __volatile__("hlt");
+        arch_cpu_halt();
     }
 }

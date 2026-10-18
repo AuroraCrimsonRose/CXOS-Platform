@@ -105,4 +105,8 @@ void addr_space_switch(paddr_t root);
 paddr_t addr_space_current(void);   /* the active space */
 paddr_t addr_space_kernel(void);    /* the kernel's own, where kernel threads run */
 
+/* 1 if a kernel write to a page mapped without VM_WRITE faults. x86 lets ring 0
+   write through a read-only page unless CR0.WP is set; it is set at boot. */
+int paging_kernel_obeys_readonly(void);
+
 #endif

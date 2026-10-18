@@ -5,7 +5,8 @@
 /* Ring 3 entry, syscall dispatch, and the user-mode tests (Checkpoints 3a/3b). */
 
 #include "usermode.h"
-#include "arch/x86_32/idt.h"
+#include "arch/irq.h"        /* set_user_fault_hook, irq_frame_vector */
+#include "arch/usermode.h"   /* enter_usermode, return_to_kernel, the gate */
 #include "sched.h"
 #include "uid.h"
 #include "arch/paging.h"
@@ -34,10 +35,6 @@
 #include "platform/pc/rtc.h"
 #include "datetime.h"
 
-/* asm entry points (usermode.asm) */
-extern int  enter_usermode(uint32_t entry_eip, uint32_t user_esp, uint32_t *save_slot);
-extern void syscall_stub(void);
-extern void return_to_kernel(int retval, uint32_t *save_slot);
 
 /* ---- v5 user memory --------------------------------------------------------
  * v4 mapped user pages identity (virt==phys) at low physical RAM, ASSUMING that
@@ -386,9 +383,9 @@ static int syscall_do(uint32_t num, uint32_t a1, uint32_t a2) {
     }
 }
 
-/* Called from syscall_stub, and by the self-tests. The only caller of
-   syscall_do, so every call passes the recording point on its way in and on
-   its way out (sysrec.h). */
+/* Called from the system-call gate (arch/usermode.h), and by the self-tests.
+   The only caller of syscall_do, so every call passes the recording point on
+   its way in and on its way out (sysrec.h). */
 int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
     sysrec_enter(num, a1, a2);
     int rc = syscall_do(num, a1, a2);
@@ -408,8 +405,7 @@ extern uint8_t user_blob_end[];
 static const char user_msg[] = "                   -> ring 3 SYS_WRITE ok\n";
 
 void usermode_init(void) {
-    /* install the syscall gate: int 0x80, DPL=3 so ring 3 can invoke it */
-    idt_set_user_gate(0x80, (uint32_t)syscall_stub);
+    arch_syscall_gate_init();   /* the gate ring 3 calls the kernel through */
     sysfile_init();   /* registers the open-file object type */
     ipc_init();       /* registers the endpoint object type */
 }
@@ -1278,7 +1274,7 @@ static void usermode_fault(struct registers *r) {
 
     atomic_fetch_add(&user_faults, 1);
     klog_u32("USERMODE", SEV_ERR, "user process ", (uint32_t)pid, LOG_COLOR_VALUE, " faulted");
-    klog_child_u32("exception: ", r->int_no, LOG_COLOR_VALUE, "");
+    klog_child_u32("exception: ", irq_frame_vector(r), LOG_COLOR_VALUE, "");
     klog_child("process terminated");
     return_to_kernel(USERMODE_FAULTED, thread_current_usave());   /* never returns */
 }

@@ -169,6 +169,8 @@ static void panic_name_overflow(uint32_t addr) {
 static void (*user_fault_hook)(struct registers *r) = 0;
 void set_user_fault_hook(void (*hook)(struct registers *)) { user_fault_hook = hook; }
 
+uint32_t irq_frame_vector(const struct registers *r) { return r->int_no; }
+
 /* Page-fault recovery for the user-copy primitives (security review §6).
  *
  * A fault taken *inside* usermode.asm's copy region is the one kernel fault

@@ -8,6 +8,7 @@
 #include "timer.h"
 #include "keyboard.h"
 #include "arch/irq.h"
+#include "arch/cpu_ops.h"
 #include "platform/pc/pit.h"   /* the tick's source: the only PC dependency here */
 
 #define TIMER_HZ      1000u            /* 1000 Hz -> ~1 ms per tick */
@@ -31,9 +32,7 @@ void timer_sleep(uint32_t ms) {
        fire), so the normal wait would hang forever. Detect that and fall back
        to a bounded busy-delay instead - prevents a deadlock if timer_sleep is
        ever called during early boot init (before sti) or inside a cli section. */
-    uint32_t flags;
-    __asm__ volatile ("pushf; pop %0" : "=r"(flags));
-    if (!(flags & 0x200)) {              /* IF (bit 9) clear = interrupts off */
+    if (!arch_irqs_enabled()) {
         volatile uint32_t x = 0;
         /* rough busy-delay: ~ a few hundred thousand iterations per ms */
         for (uint32_t i = 0; i < ms * 200000u; i++) x += i;
@@ -46,7 +45,7 @@ void timer_sleep(uint32_t ms) {
        falls. See the note on timer_tick_after in timer.h. */
     uint32_t start = ticks;
     while ((uint32_t)(ticks - start) < ms) {
-        __asm__ volatile ("hlt");
+        arch_cpu_halt();
     }
 }
 
@@ -57,9 +56,7 @@ void timer_sleep(uint32_t ms) {
 #define TIMEOUT_SPINS_PER_MS  200000u
 
 void timer_timeout_start(struct timeout *to, uint32_t ms) {
-    uint32_t flags;
-    __asm__ volatile ("pushf; pop %0" : "=r"(flags));
-    if (flags & 0x200) {                 /* IF set = interrupts on: use ticks */
+    if (arch_irqs_enabled()) {           /* interrupts on: use ticks */
         to->use_timer  = 1;
         to->deadline   = ticks + ms + 1; /* +1 so sub-ms budgets get a full tick */
         to->spins_left = 0;
@@ -100,11 +97,7 @@ void timer_init(void) {
  */
 static uint32_t tsc_per_us = 0;      /* cycles per microsecond; 0 = not calibrated */
 
-static inline uint32_t rdtsc32(void) {
-    uint32_t lo;
-    __asm__ volatile ("rdtsc" : "=a"(lo) : : "edx");
-    return lo;
-}
+static inline uint32_t rdtsc32(void) { return arch_cycles32(); }
 
 uint32_t timer_tsc32(void) { return rdtsc32(); }
 

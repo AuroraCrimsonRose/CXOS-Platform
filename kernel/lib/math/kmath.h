@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
-/* /CXLite/kernel/lib/kmath.h */
+/* /kernel/lib/math/kmath.h */
 /* Aurora Tejeda */
 /* Tiny freestanding math: sin, cos, sqrt. No libm in the kernel, so we roll
-   our own. sin/cos use range reduction + Taylor series; sqrt uses the SSE
-   hardware instruction. Requires fpu_init() to have run. */
+   our own. sin/cos use range reduction + Taylor series; sqrt uses Newton's
+   method. Floating point in the kernel needs arch/x86/fpu.c, which is not in
+   the build either (it says why). */
 
 #ifndef KMATH_H
 #define KMATH_H

@@ -18,6 +18,7 @@
 #include "usermode.h"          /* user_ptr_readable / user_ptr_writable */
 #include "sysfile.h"           /* sysfile_entry_doomed */
 #include "arch/paging.h"
+#include "arch/usermode.h"     /* enter_usermode */
 #include "pmm.h"
 #include "vmregion.h"
 #include "heap.h"
@@ -56,7 +57,6 @@ static void proc_rec_drop(void *arg) {
 }
 
 extern const struct cxex_load_ops cxex_kernel_load_ops;   /* cxex_loadk.c */
-extern int enter_usermode(uint32_t entry_eip, uint32_t user_esp, uint32_t *save_slot);
 
 /* Map and fill the argument page in the CURRENT (new) address space.
  *
