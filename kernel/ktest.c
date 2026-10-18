@@ -51,6 +51,7 @@
 #include "arch/x86/apic.h"
 #include "arch/x86/cpufeat.h"
 #include "drivers/iowin.h"
+#include "acpi.h"
 
 
 /* concise pass/fail reporter */
@@ -1089,6 +1090,47 @@ static int test_clock_sleep(void) {
     if ((int32_t)(b - a) < 10) return 0;
 
     return 1;
+}
+
+/* ---- a tick is a millisecond, measured by a clock the PIT does not drive ----
+ *
+ * test_clock_sleep compares the tick with itself, and the TSC is calibrated
+ * from it, so a timer programmed at the wrong rate passes both: left at the
+ * BIOS's 18.2 Hz, every "millisecond" is 55. The ACPI PM timer runs from its
+ * own crystal. 100 ticks must be 100 ms of it, within a fifth: QEMU delivers
+ * timer interrupts late under load, and a wrong divisor is out by far more. */
+static int test_tick_rate(void) {
+    uint32_t p0, p1;
+    if (acpi_pm_timer_read(&p0) != 0) {
+        klog("KTEST", SEV_WARN, "tick rate untested: no ACPI PM timer");
+        return 1;
+    }
+    const uint32_t want = ACPI_PM_TIMER_HZ / 10;          /* 100 ms of PM timer */
+    const uint32_t limit = ACPI_PM_TIMER_HZ * 2;          /* give up after 2 s */
+
+    uint32_t t0 = timer_ticks();
+    acpi_pm_timer_read(&p0);
+    while (timer_ticks() == t0) {                        /* align to a tick edge */
+        acpi_pm_timer_read(&p1);
+        if (((p1 - p0) & 0xFFFFFFu) > limit) goto stalled;
+    }
+    t0 = timer_ticks();
+    acpi_pm_timer_read(&p0);
+    for (;;) {
+        acpi_pm_timer_read(&p1);
+        uint32_t pm = (p1 - p0) & 0xFFFFFFu;
+        if (timer_ticks() - t0 >= 100) {
+            if (pm < want - want / 5 || pm > want + want / 5) {
+                klog("KTEST", SEV_FAIL, "tick rate: 100 ticks were not 100 ms of the PM timer");
+                return 0;
+            }
+            return 1;
+        }
+        if (pm > limit) goto stalled;
+    }
+stalled:
+    klog("KTEST", SEV_FAIL, "tick rate: 100 ticks took over 2 s of the PM timer");
+    return 0;
 }
 
 /* ---- the tick counter wraps, and the waits built on it must survive it
@@ -2709,6 +2751,7 @@ void ktest_run(void) {
     total++; passed += report("cxfs volume tags",                  test_cxfs_volumes());
     total++; passed += report("clock + timed sleep",               test_clock_sleep());
     total++; passed += report("tick counter wraparound",           test_timer_wraparound());
+    total++; passed += report("a tick is a millisecond, by the PM timer", test_tick_rate());
     total++; passed += report("memory mappings (SYS_MEM_OP)",     test_vmregion());
     total++; passed += report("lifecycles: unmap, exit, resched", test_lifecycle_sequences());
     total++; passed += report("bounded strings: cap, truncation", test_bounded_strings());

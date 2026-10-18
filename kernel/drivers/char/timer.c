@@ -93,7 +93,13 @@ int timer_timeout_expired(struct timeout *to) {
 void timer_init(void) {
     uint32_t divisor = PIT_BASE_FREQ / TIMER_HZ;   /* 1193182/1000 = 1193 */
 
-    iowin_write8(&pit, PIT_COMMAND, 0x36);
+    /* Channel 0, low then high byte, mode 2 (rate generator): one short pulse
+       per period. Mode 3, the square wave, was used until the tick-rate
+       self-test measured it against the ACPI PM timer: through the I/O APIC
+       QEMU delivered two interrupts per period, so every "millisecond" was
+       half of one. The 8259 counted it right, which is why nothing noticed.
+       Linux programs the periodic PIT in mode 2 too (0x34). */
+    iowin_write8(&pit, PIT_COMMAND, 0x34);
     iowin_write8(&pit, PIT_CHANNEL0, (uint8_t)(divisor & 0xFF));
     iowin_write8(&pit, PIT_CHANNEL0, (uint8_t)((divisor >> 8) & 0xFF));
 

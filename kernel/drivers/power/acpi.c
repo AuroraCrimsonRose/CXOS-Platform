@@ -101,6 +101,7 @@ static int      reset_ok = 0;
 static uint8_t  reset_space = 0;
 static uint64_t reset_addr = 0;
 static struct iowin reset_reg;     /* opened here for a port, at reboot for memory */
+static struct iowin pm_tmr;        /* the PM timer's 32-bit register */
 static uint8_t  reset_val = 0;
 
 /* ---- helpers ---- */
@@ -272,6 +273,9 @@ int acpi_init(void) {
     if (fadt->pm1b_evt_blk && fadt->pm1_evt_len)
         iowin_port(&pm1b_en, fadt->pm1b_evt_blk + (fadt->pm1_evt_len / 2), 2);
 
+    if (fadt->pm_tmr_blk && fadt->pm_tmr_len >= 4)
+        iowin_port(&pm_tmr, fadt->pm_tmr_blk, 4);
+
     /* reset register: system I/O (space id 1) or memory (0). A port past
        0xFFFF opens no window, so it is not offered as a way to reset. */
     if (fadt->header.length >= 129 && fadt->reset_reg_address != 0) {
@@ -302,6 +306,12 @@ int acpi_init(void) {
 int acpi_can_shutdown(void) { return have_acpi && s5_ok && pm1a_cnt.kind; }
 int acpi_can_s1(void)       { return have_acpi && s1_ok && pm1a_cnt.kind; }
 int acpi_can_reset(void)    { return have_acpi && reset_ok; }
+
+int acpi_pm_timer_read(uint32_t *out) {
+    if (!pm_tmr.kind) return -1;
+    *out = iowin_read32(&pm_tmr, 0) & 0xFFFFFFu;
+    return 0;
+}
 
 void acpi_shutdown(void) {
     if (!acpi_can_shutdown()) return;

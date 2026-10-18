@@ -38,4 +38,12 @@ void acpi_shutdown(void);      /* enter S5 (soft off) */
 int  acpi_sleep_s1(void);      /* enter S1; returns 0 on wake, -1 if unsupported */
 int  acpi_reboot(void);        /* via ACPI reset register; returns -1 if unavailable */
 
+/* The power-management timer: a free-running counter at 3.579545 MHz on its own
+   crystal, nothing to do with the PIT, which is what makes it a reference for
+   checking the tick. Puts the low 24 bits of the count (every timer has at
+   least those; they wrap after 4.7 s) in *out and returns 0, or returns -1 if
+   the FADT names no timer. Valid after acpi_init. */
+#define ACPI_PM_TIMER_HZ 3579545u
+int  acpi_pm_timer_read(uint32_t *out);
+
 #endif
