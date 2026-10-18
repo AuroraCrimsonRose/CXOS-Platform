@@ -58,6 +58,8 @@
 #include "platform/platform.h"
 #include "xhci_spad.h"
 #include "boot/cxbi.h"
+#include "diag/crashlog.h"
+#include "diag/crashrec.h"
 
 
 /* concise pass/fail reporter */
@@ -1230,6 +1232,80 @@ static int test_cxbi(void) {
         return 0;
     }
     return 1;
+}
+
+/* ---- a crash record goes to the crash area and reads back (step 4b) -------
+ * The writes a panic makes (crashlog_write_record), read back raw and checked
+ * as the next boot checks them; then one byte of the text is changed on disk
+ * and the check must refuse it; then the area is cleared, so the next boot
+ * does not recover this test's record as a crash. The two-boot version, a
+ * real panic recovered by the next boot, is `cxk verify-crashlog`. */
+static int test_crashlog(void) {
+#if !CXK_ALLOW_DISK_WRITE
+    klog("KTEST", SEV_WARN, "crash log untested: this build writes to no disk");
+    return 1;
+#endif
+    uint8_t disk;
+    uint64_t lba, secs;
+    if (crashlog_area(&disk, &lba, &secs) != 0) {
+        klog("KTEST", SEV_FAIL, "crash log: no crash area on an IDE or SATA disk");
+        return 0;
+    }
+    int ok = 1;
+
+    /* A boot that recovered a record must have put exactly that in the file:
+       the area is cleared once the file is written, so a short or wrong file
+       would be all that is left of the crash. */
+    uint32_t rlen, rcrc;
+    if (crashlog_recovered(&rlen, &rcrc)) {
+        static char back[XCRL_TEXT_MAX];
+        int id = cxfs_resolve("/System/crash.log", 0);
+        int got = id < 0 ? -1 : cxfs_read_file((uint32_t)id, back, sizeof back);
+        if (got != (int)rlen || xcrl_crc32(0, back, rlen) != rcrc) {
+            klog("KTEST", SEV_FAIL, "crash log: /System/crash.log is not the record recovered");
+            ok = 0;
+        }
+    }
+
+    static char wr[2 * XCRL_SECTOR], rd[2 * XCRL_SECTOR];
+    static uint8_t h[XCRL_SECTOR];
+
+    /* By now the boot has dealt with whatever the area held: recovered and
+       cleared it, cleared a request, or discarded a torn record. Anything
+       still there was left behind, and is not overwritten here - it may be
+       the only copy of a crash. */
+    if (disk_read(disk, lba, 1, h) != DISK_OK || xcrl_check_header(h, 0, 0) != XCRL_EMPTY) {
+        klog("KTEST", SEV_FAIL, "crash log: the area still holds a record; left as it is");
+        return 0;
+    }
+
+    const uint32_t len = XCRL_SECTOR + 77;          /* into a second sector */
+    for (uint32_t i = 0; i < sizeof wr; i++) wr[i] = i < len ? (char)('A' + i % 26) : 0;
+
+    uint16_t kind = 0;
+    uint32_t n = 0;
+    if (crashlog_write_record(XCRL_KIND_CRASH, wr, len) != DISK_OK ||
+        disk_read(disk, lba, 1, h) != DISK_OK || disk_read(disk, lba + 1, 2, rd) != DISK_OK) {
+        klog("KTEST", SEV_FAIL, "crash log: the area could not be written or read");
+        ok = 0;
+    } else if (xcrl_check_header(h, &kind, &n) != XCRL_VALID || kind != XCRL_KIND_CRASH ||
+               n != len || xcrl_check_text(h, rd, n) != XCRL_VALID || memcmp(rd, wr, len) != 0) {
+        klog("KTEST", SEV_FAIL, "crash log: the record did not read back whole");
+        ok = 0;
+    } else {
+        rd[100] ^= 0x01;
+        if (disk_write(disk, lba + 1, 2, rd) != DISK_OK || disk_read(disk, lba + 1, 2, rd) != DISK_OK ||
+            xcrl_check_text(h, rd, n) != XCRL_BAD_CRC) {
+            klog("KTEST", SEV_FAIL, "crash log: a torn record was not refused");
+            ok = 0;
+        }
+    }
+    if (crashlog_clear() != DISK_OK || disk_read(disk, lba, 1, h) != DISK_OK ||
+        xcrl_check_header(h, 0, 0) != XCRL_EMPTY) {
+        klog("KTEST", SEV_FAIL, "crash log: the area did not clear");
+        ok = 0;
+    }
+    return ok;
 }
 
 /* ---- the wall clock reads a plausible date (platform_wallclock, step 3) ----
@@ -2848,6 +2924,7 @@ void ktest_run(void) {
     total++; passed += report("the cycle counter measures time",   test_cycle_counter());
     total++; passed += report("the wall clock reads a plausible date", test_wallclock());
     total++; passed += report("the boot handover came through CXBI", test_cxbi());
+    total++; passed += report("a crash record goes to the crash area and back", test_crashlog());
     total++; passed += report("xHCI scratchpad pages are whole and returned", test_xhci_scratchpad());
     total++; passed += report("PS/2 keyboard and mouse reach the kernel", ktest_platform_input());
     total++; passed += report("memory mappings (SYS_MEM_OP)",     test_vmregion());

@@ -33,6 +33,7 @@ set(KERNEL_SOURCES
     ${KDIR}/drivers/iowin.c
     ${KDIR}/platform/pc/ps2kbd.c
     ${KDIR}/lib/math/kmath.c
+    ${KDIR}/diag/crashrec.c
 )
 
 file(GLOB TEST_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/test_*.c)

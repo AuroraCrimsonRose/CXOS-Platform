@@ -18,7 +18,7 @@ public static class XbptParser
     public static readonly byte[] Magic = { 0x58, 0x42, 0x50, 0x54 };
 
     // CXFlags PART_CX* values (CXEX.Core.Constants.CXFlags)
-    private const byte PART_CXBOOT = 0xCB, PART_CXSTAGE = 0xCA, PART_CXFS = 0xC5;
+    private const byte PART_CXBOOT = 0xCB, PART_CXSTAGE = 0xCA, PART_CXFS = 0xC5, PART_CXCRASH = 0xCC;
 
     public static DiskLayout Parse(byte[] lba1, long diskSize, int sectorSize = 512)
     {
@@ -58,6 +58,7 @@ public static class XbptParser
         PART_CXBOOT => "CX Boot",
         PART_CXSTAGE => "CX Stage",
         PART_CXFS => "CXFS System",
+        PART_CXCRASH => "CX Crash Log",
         _ => string.IsNullOrWhiteSpace(label) ? $"CX type 0x{t:X2}" : label,
     };
 }

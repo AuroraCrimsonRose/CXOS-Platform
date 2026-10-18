@@ -55,6 +55,9 @@ app.Configure(config =>
     config.AddCommand<VerifyBootCommand>("verify-boot")
         .WithDescription("Boots an image headless and reports PASS/FAIL from the serial console (replaces serialboot.ps1, bootverify.py).");
 
+    config.AddCommand<VerifyCrashlogCommand>("verify-crashlog")
+        .WithDescription("Boots a copy of an image twice: the first panics on request and must save its crash log, the second must recover it to /System/crash.log and clear the area.");
+
     config.AddCommand<InspectCommand>("inspect")
         .WithDescription("Dumps a CXEX image's header, sections, and signature (replaces cxkdump.py).");
 
@@ -85,6 +88,15 @@ app.Configure(config =>
 
     config.AddCommand<CheckXDataCommand>("check-xdata")
         .WithDescription("Validates X Data documents (service descriptors), with the same rules as the X reader.");
+
+    // ---- the real machine ----
+    config.AddBranch("rig", rig =>
+    {
+        rig.SetDescription("Tools for testing on real hardware.");
+
+        rig.AddCommand<RigCrashlogCommand>("crashlog")
+            .WithDescription("Prints the crash log a panic left in a disk's CRASH partition, without booting it.");
+    });
 
     // ---- bitmap fonts ----
     config.AddBranch("font", font =>

@@ -46,8 +46,7 @@ uint32_t slog_total(void);
 /* read entry i (0 = oldest retained). Returns 0 if out of range. */
 const struct slog_entry *slog_get(uint32_t i);
 
-/* best-effort: write the ring (as text) to /System/crash.log; survives reboot.
-   Guarded against re-entry (a secondary fault during flush). Returns 0 on success. */
-int slog_flush_crash(void);
+/* A panic's copy of the log goes to disk through diag/crashlog.h, which
+   reads the ring with slog_count and slog_get. */
 
 #endif

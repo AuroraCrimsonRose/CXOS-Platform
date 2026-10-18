@@ -39,6 +39,7 @@ public static class CXFlags
     public const byte PART_CXBOOT = 0xCB;
     public const byte PART_CXSTAGE = 0xCA;
     public const byte PART_CXFS = 0xC5;
+    public const byte PART_CXCRASH = 0xCC;   // the crash log area (kernel/diag/crashrec.h)
 
     // Partition Flags
     public const byte PART_FLAG_BOOTABLE = 0x01;

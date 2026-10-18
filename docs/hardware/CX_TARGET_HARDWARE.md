@@ -36,7 +36,10 @@
   (`kernel/CX_KERNEL_PLAN.md` §2.3).
 - **Logs without serial.** A failed boot is read from the crash log, written
   at panic to a reserved area of the disk (not kept in RAM, which the BIOS may
-  clear) and saved as a file on the next boot.
+  clear) and saved as a file on the next boot. Built for IDE and SATA disks
+  (roadmap step 4b); the rig boots from a USB stick, and writing the log there
+  at panic needs a polled USB path that is the next slice, so until then a
+  panic on the rig saves nothing.
 - **ACPI tables need an interpreter.** Interrupt routing (`_PRT`), sleep and
   reliable shutdown on this board are described in ACPI bytecode (AML).
   Booting does not need it (the legacy PIC works); SMP and proper device

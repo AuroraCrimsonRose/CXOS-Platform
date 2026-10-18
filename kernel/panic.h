@@ -7,8 +7,9 @@
 #define PANIC_H
 
 /* Kernel-fatal: an internal invariant is broken. Renders the panic screen with
-   `why`, the caller and a stack trace, saves crash.log, halts. Never for a bad
-   request, a missing device or a faulting process - those have lesser tiers
+   `why`, the caller and a stack trace, saves the crash log (diag/crashlog.h),
+   halts. Never for a bad request, a missing device or a faulting process -
+   those have lesser tiers
    (docs/x86_32/kernel/KERNEL_CONTRACTS.md section 1). The architecture
    supplies it (arch/x86_32/idt.c), because the screen walks its stack. */
 __attribute__((noreturn)) void kpanic(const char *why);

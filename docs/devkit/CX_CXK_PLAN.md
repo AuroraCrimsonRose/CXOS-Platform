@@ -113,7 +113,12 @@ real machine as QEMU gets.
   cannot be overwritten by a typo.
 - `cxk rig crashlog <disk>` reads the crash log saved on the stick
   (`kernel/CX_KERNEL_PLAN.md` §8) and `cxk rig symbolize` turns its addresses
-  into function names and lines.
+  into function names and lines. **`crashlog` exists since roadmap step 4b**
+  for disk images; reading the stick itself comes with the USB slice of the
+  crash log. So does `cxk verify-crashlog <image>`: it boots a copy twice, the
+  first asked to panic (through a request record it writes into the CRASH
+  partition), and requires the record on disk after the panic, then
+  `/System/crash.log` recovered and the area cleared by the second boot.
 
 ### 3.8 Later
 

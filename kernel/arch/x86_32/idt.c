@@ -28,6 +28,7 @@
 #include "arch/paging.h"
 #include "usermode.h"   /* usercopy_start / usercopy_end / usercopy_trampoline */
 #include "serial.h"     /* the panic tee - see panic_putc_at */
+#include "diag/crashlog.h"   /* and the crash log - see panic_putc_at */
 
 
 extern void isr0();  extern void isr1();  extern void isr2();  extern void isr3();
@@ -79,6 +80,7 @@ static int panic_pos = 0;
  * the byte rather than hanging, and it is a no-op when the probe found no UART
  * or the panic happened before serial_init. */
 static void panic_putc_at(char c) {
+    crashlog_putc(c);   /* everything on the panic screen goes to disk too */
     if (c == '\n') { serial_putc('\r'); serial_putc('\n'); }
     else            serial_putc(c);
 
@@ -302,7 +304,16 @@ static void panic_tail(uint32_t ebp) {
         }
     }
 
-    if (slog_flush_crash() == 0) panic_puts("Log saved to /System/crash.log\n");
+    /* To the CRASH partition by a polled write, never through the filesystem
+       (diag/crashlog.h); the next boot copies it to /System/crash.log. */
+    int saved = crashlog_panic_save();
+    if (saved == 0) {
+        panic_puts("Crash log saved; the next boot copies it to /System/crash.log\n");
+    } else {
+        panic_puts("Crash log not saved, code ");
+        panic_puthex((uint32_t)saved);
+        panic_puts("\n");
+    }
 
     panic_puts("System halted.");
     for (;;) { __asm__ volatile ("cli; hlt"); }

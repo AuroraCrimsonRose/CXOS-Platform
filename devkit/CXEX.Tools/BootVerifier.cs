@@ -62,6 +62,33 @@ public sealed record BootVerdict(BootOutcome Outcome, string Reason, int? TestsP
             ? $"self-tests: all {n} passed, and the executive started"
             : $"self-tests: all {n} passed", n);
     }
+
+    /// <summary>The kpanic reason a crash-log test request leads to (kernel/kmain.c).</summary>
+    public const string CrashTestReason = "deliberate panic: a crash-log test asked for one";
+
+    /// <summary>
+    /// The first boot of <c>cxk verify-crashlog</c>, which is asked to panic: it
+    /// passes when it panicked for that reason and said it saved the crash log,
+    /// and fails when it said it could not, panicked for another reason, or got
+    /// past the self-tests without panicking. The console wraps at its width,
+    /// so lines are joined before they are searched.
+    /// </summary>
+    public static BootVerdict ClassifyRequestedPanic(string log)
+    {
+        string joined = log.Replace("\r", "").Replace("\n", "");
+        bool panicked = Panic.IsMatch(joined);
+        if (panicked && joined.Contains("Crash log saved"))
+            return joined.Contains(CrashTestReason)
+                ? new BootVerdict(BootOutcome.Pass, "panicked on request and saved the crash log", null)
+                : new BootVerdict(BootOutcome.Fail, "panicked, but not the requested panic", null);
+        if (panicked && joined.Contains("Crash log not saved"))
+            return new BootVerdict(BootOutcome.Fail, "panicked, but the crash log was not saved", null);
+        if (panicked && joined.Contains("System halted"))
+            return new BootVerdict(BootOutcome.Fail, "panicked without saying whether the crash log was saved", null);
+        if (ExecutiveUp.IsMatch(joined) || TestsFailed.IsMatch(joined))
+            return new BootVerdict(BootOutcome.Fail, "the requested panic did not happen", null);
+        return new BootVerdict(BootOutcome.Inconclusive, "no panic yet", null);
+    }
 }
 
 /// <summary>
@@ -80,14 +107,14 @@ public static class BootVerifier
     /// boot, and verifying a release image without it has broken its
     /// SHA256SUMS), and -icount for timing that does not depend on the host.
     /// </summary>
-    public static QemuConfig ConfigFor(string image, string serialLog, string? cpu = null) => new()
+    public static QemuConfig ConfigFor(string image, string serialLog, string? cpu = null, bool snapshot = true) => new()
     {
         BootDisk = image,
         MachineType = "pc",
         MemoryMb = 256,
         EnableAudio = false,
         EnableNetworking = false,
-        Snapshot = true,
+        Snapshot = snapshot,
         Headless = true,
         Serial = serialLog,
         ICountShift = "6",
@@ -100,6 +127,16 @@ public static class BootVerifier
     /// would take down any other emulator on the machine.
     /// </summary>
     public static BootVerdict Run(string image, string serialLog, TimeSpan timeout, bool full, Action<string>? progress = null, string? cpu = null)
+        => Run(image, serialLog, timeout, log => BootVerdict.Classify(log, full), progress, cpu, snapshot: true);
+
+    /// <summary>
+    /// The same boot with the verdict decided by <paramref name="classify"/>,
+    /// and, with <paramref name="snapshot"/> false, writing to the image: for
+    /// a test that needs what one boot left on disk, such as the crash log
+    /// (<c>cxk verify-crashlog</c>). Only ever on a copy.
+    /// </summary>
+    public static BootVerdict Run(string image, string serialLog, TimeSpan timeout, Func<string, BootVerdict> classify,
+                                  Action<string>? progress, string? cpu, bool snapshot)
     {
         if (File.Exists(serialLog)) File.Delete(serialLog);
 
@@ -111,7 +148,7 @@ public static class BootVerifier
             RedirectStandardError = true,
             CreateNoWindow = true,
         };
-        foreach (string a in QemuTool.BuildArguments(ConfigFor(image, serialLog, cpu))) psi.ArgumentList.Add(a);
+        foreach (string a in QemuTool.BuildArguments(ConfigFor(image, serialLog, cpu, snapshot))) psi.ArgumentList.Add(a);
 
         using var qemu = Process.Start(psi)
             ?? throw new InvalidOperationException($"could not start {QemuTool.Executable}");
@@ -128,7 +165,7 @@ public static class BootVerifier
             {
                 Thread.Sleep(500);
                 string log = ReadShared(serialLog);
-                verdict = BootVerdict.Classify(log, full);
+                verdict = classify(log);
                 if (verdict.Outcome != BootOutcome.Inconclusive) break;
                 if (qemu.HasExited)
                 {

@@ -53,7 +53,21 @@ public static class DiskGeometryEngine
             cursorLba += stageTotalSectors;
         }
 
-        // 3. SYSTEM Partition (Takes up the rest of the disk)
+        // 3. CRASH Partition: where a kernel panic leaves its log for the next
+        // boot (kernel/diag/crashrec.h). A raw area rather than a file because
+        // the panic may not touch the filesystem; one aligned MiB, well past
+        // the record's 33 sectors.
+        map.Partitions.Add(new PartitionLayout
+        {
+            Label = "CRASH",
+            TypeCode = CXFlags.PART_CXCRASH,
+            Flags = 0,
+            StartLba = cursorLba,
+            SectorCount = ALIGN_SECTORS
+        });
+        cursorLba += ALIGN_SECTORS;
+
+        // 4. SYSTEM Partition (Takes up the rest of the disk)
         if (cursorLba >= map.TotalSectors)
             throw new InvalidOperationException("Disk size is too small for the requested partition layout.");
 

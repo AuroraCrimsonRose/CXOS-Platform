@@ -53,6 +53,7 @@
 #define PART_TYPE_CXBOOT    0xCBu        /* raw boot area: stage2 + kernel.xkex */
 #define PART_TYPE_CXFS      0xC5u        /* a CXFS volume */
 #define PART_TYPE_CXSTAGE   0xCAu        /* first-boot staging payload (XSTG) */
+#define PART_TYPE_CXCRASH   0xCCu        /* the crash log area (diag/crashrec.h) */
 
 /* partition flags */
 #define PART_FLAG_BOOTABLE  0x01u

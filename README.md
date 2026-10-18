@@ -76,6 +76,8 @@ Republish whenever the DevKit changes; `cxk check-abi` names a stale one.
 | Run | `cxk run dist/CXK_x86_32/images/cxk_disk.img` |
 | Boot and check the self-tests | `cxk verify-boot dist/CXK_x86_32/images/cxk_disk.img --full` |
 | The same on a minimal and a full CPU model | add `--cpu pentium2,-apic`, then `--cpu max` |
+| A deliberate panic, and its crash log recovered by the next boot | `cxk verify-crashlog dist/CXK_x86_32/images/cxk_disk.img` |
+| Read the crash log a panic left on a disk image | `cxk rig crashlog <image>` |
 | Host tests | `dotnet test devkit/CXEX.slnx -c Release` |
 | CI, by hand | `tools/ci/Dockerfile` and `tools/ci/build.sh` |
 

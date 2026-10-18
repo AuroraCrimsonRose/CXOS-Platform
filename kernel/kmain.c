@@ -61,6 +61,7 @@
 #include "platform/platform.h"
 #include "logging.h"
 #include "boot/cxbi.h"
+#include "diag/crashlog.h"
 
 /* Mount CXFS on the data disk (first non-boot disk). Read-only by default:
    mounts an existing filesystem if present and NEVER formats, so this can't
@@ -350,9 +351,20 @@ void kmain_late(void) {
        create a thread, so every thread is made under the configured limits. */
     if (launch_exec) kconfig_load();
 
+    /* The crash area: a previous boot's panic goes to /System/crash.log, so
+       after the system volume is up; before the self-tests, which write the
+       area themselves. */
+    crashlog_boot();
+
     /* run the kernel self-tests (ktest.c) first - they create + reap their own
        ring-3 threads, so let them finish before starting the executive. */
     ktest_run();
+
+    /* `cxk verify-crashlog` armed the crash area: panic now, through the same
+       path any panic takes, for the next boot to recover. After the
+       self-tests, so this boot is an ordinary one up to here. */
+    if (crashlog_test_requested())
+        kpanic("deliberate panic: a crash-log test asked for one");
 
 #ifdef CXK_DEV_UNSIGNED
     /* Said at every boot, in the log, just before anything unsigned could run:

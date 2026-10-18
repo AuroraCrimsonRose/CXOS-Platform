@@ -7,7 +7,6 @@
 #include "syslog.h"
 #include "console.h"
 #include "color.h"
-#include "cxfs.h"
 
 static struct slog_entry ring[SLOG_RING];
 static uint32_t head = 0;     /* next write slot */
@@ -65,45 +64,3 @@ void slog_dump_console(void) {
     }
 }
 
-
-static char crashbuf[8192];
-static int  flushing = 0;
-
-static uint32_t app_str(char *dst, uint32_t pos, uint32_t cap, const char *s) {
-    if (!s) return pos;
-    while (*s && pos < cap - 1) dst[pos++] = *s++;
-    return pos;
-}
-
-int slog_flush_crash(void) {
-    if (flushing) return -1;            /* don't re-enter on a secondary fault */
-    flushing = 1;
-    if (!cxfs_is_mounted()) { flushing = 0; return -1; }
-
-    uint32_t n = slog_count();
-    uint32_t start = (n > 120u) ? (n - 120u) : 0u;   /* cap to fit crashbuf */
-    uint32_t pos = 0;
-    for (uint32_t i = start; i < n && pos < sizeof crashbuf - SLOG_EVT_W - 32; i++) {
-        const struct slog_entry *e = slog_get(i);
-        if (!e) break;
-        pos = app_str(crashbuf, pos, sizeof crashbuf, e->system);
-        if (e->subsystem[0]) {
-            pos = app_str(crashbuf, pos, sizeof crashbuf, "/");
-            pos = app_str(crashbuf, pos, sizeof crashbuf, e->subsystem);
-        }
-        pos = app_str(crashbuf, pos, sizeof crashbuf, ": ");
-        pos = app_str(crashbuf, pos, sizeof crashbuf, e->event);
-        pos = app_str(crashbuf, pos, sizeof crashbuf, "\n");
-    }
-
-    int id = cxfs_resolve("/System/crash.log", 0);
-    if (id < 0) {
-        int dir = cxfs_resolve("/System", 0);
-        if (dir < 0) { flushing = 0; return -1; }
-        id = cxfs_create_entry((uint32_t)dir, "crash.log", CXFS_TYPE_FILE);
-        if (id < 0) { flushing = 0; return -1; }
-    }
-    int rc = cxfs_write_file((uint32_t)id, crashbuf, pos);
-    flushing = 0;
-    return rc;
-}

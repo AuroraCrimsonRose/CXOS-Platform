@@ -156,6 +156,15 @@
         }
       ]
     },
+    "xcrl": {
+      "version": 1,
+      "what": "The XCRL crash record: a 512-byte header then up to 16 KB of text, in the CRASH partition, written at panic and read by the next boot and by cxk.",
+      "bump_when": "the header or the text area changes size or meaning",
+      "checks": [
+        { "file": "kernel/diag/crashrec.h", "pattern": "#define XCRL_VERSION +([0-9]+)" },
+        { "file": "devkit/CXEX.Disk/CrashLog.cs", "pattern": "XcrlVersion = ([0-9]+)" }
+      ]
+    },
     "xkpk": {
       "version": 1,
       "what": "The CXPK public key container: a 16-byte header then the big-endian modulus.",
