@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/drivers/power/power.c */
 /* Aurora Tejeda */
-/* Power management: ACPI shutdown (S5), reboot (ACPI reset / 8042), and a
+/* Power management: ACPI shutdown (S5), reboot (ACPI reset / the platform's reset line), and a
    low-power sleep (ACPI S1 if supported, else C1 halt-idle). */
 
 #include "power.h"
@@ -11,22 +11,21 @@
 #include "acpi.h"
 #include "timer.h"
 #include "keyboard.h"
-#include "platform/pc/i8042.h"     /* the reset line */
-#include "platform/pc/emupower.h"
+#include "platform/platform.h"
 #include "arch/cpu.h"        /* arch_cpu_reset */
 #include "arch/cpu_ops.h"
 
 /* Reboot: prefer the ACPI reset register (works on the widest range of real
-   hardware), then the 8042 keyboard-controller pulse, then the processor's own
-   last resort (a triple fault on x86). */
+   hardware), then the platform's reset line (the 8042 on a PC), then the
+   processor's own last resort (a triple fault on x86). */
 void power_reboot(void) {
     arch_irq_disable();
 
     /* 1. ACPI reset register, if the FADT provided one */
     acpi_reboot();   /* returns only if it didn't work */
 
-    /* 2. 8042 keyboard controller: pulse the CPU reset line */
-    i8042_pulse_reset();
+    /* 2. the platform's reset line */
+    platform_reset();
 
     /* 3. the processor's own reset */
     arch_cpu_reset();
@@ -41,8 +40,9 @@ void power_shutdown(void) {
         acpi_shutdown();    /* does not return on success */
     }
 
-    /* emulator fallback: QEMU/Bochs ACPI poweroff ports (no effect on real HW) */
-    emu_poweroff();
+    /* the platform's fixed fallback (on a PC, the emulators' poweroff ports,
+       which do nothing on real hardware) */
+    platform_poweroff();
 
     /* last resort: halt with the classic message */
     console_set_color(vga_attr(VGA_YELLOW, VGA_BLACK));
@@ -59,7 +59,7 @@ static void c1_idle(uint32_t ms) {
         char c = keyboard_getchar();
         if (c != 0) break;             /* any key wakes/cancels */
         if (ms > 0 && (timer_ticks() - start) >= ms) break;
-        arch_cpu_halt();               /* sleep until next interrupt (>=1ms via PIT) */
+        arch_cpu_halt();               /* sleep until next interrupt (>=1ms: the tick) */
     }
 }
 

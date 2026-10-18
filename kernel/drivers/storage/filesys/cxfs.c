@@ -8,15 +8,15 @@
 #include "disk.h"
 #include "string.h"
 #include "datetime.h"
-#include "platform/pc/rtc.h"
+#include "platform/platform.h"
 #include "uid.h"
 #include "sched.h"
 
-/* current wall-clock time as epoch seconds, from the RTC. 0 if unavailable. */
+/* current wall-clock time as epoch seconds, from the platform's
+   battery-backed clock. 0 if there is none. */
 static uint64_t cxfs_now(void) {
-    struct rtc_time t;
-    rtc_read(&t);
-    struct datetime dt = { t.year, t.month, t.day, t.hour, t.minute, t.second };
+    struct datetime dt;
+    if (platform_wallclock(&dt) != 0) return 0;
     return datetime_to_epoch(&dt);
 }
 

@@ -58,9 +58,7 @@
 #include "ktest.h"
 #include "kconfig.h"
 #include "klogo.h"
-#include "platform/pc/speaker.h"
-#include "platform/pc/ps2kbd.h"
-#include "platform/pc/ps2mouse.h"
+#include "platform/platform.h"
 #include "logging.h"
 
 /* Mount CXFS on the data disk (first non-boot disk). Read-only by default:
@@ -189,8 +187,8 @@ void kmain(void) {
 /* Everything after the move to a guarded stack. Never returns. */
 void kmain_late(void) {
 
-    /* initalize speakers */
-    speaker_init();
+    /* the platform's devices that need neither interrupts nor memory */
+    platform_init();
 
     int fb_up = 0;
 #if CXK_ENABLE_FB
@@ -233,25 +231,20 @@ void kmain_late(void) {
 
     timer_init();
     arch_irq_enable();                    /* enable interrupts: timer can fire */
-    klog("TIMER", SEV_OK, "online (PIT @ 1000 Hz), interrupts enabled");
+    klog("TIMER", SEV_OK, "online (1000 Hz), interrupts enabled");
 
-    /* calibrate the cycle counter against the PIT so RTTs can be reported in
+    /* calibrate the cycle counter against the tick so RTTs can be reported in
        microseconds rather than whole 1 ms ticks */
     timer_calibrate_tsc();
     klog_u32("TIMER", SEV_OK, "TSC calibrated, MHz: ", timer_tsc_mhz(), LOG_COLOR_VALUE, "");
 
-    ps2kbd_init();
-    klog("INPUT", SEV_OK, "PS/2 keyboard online (IRQ1)");
-
-    /* PS/2 mouse. Clamped to the display so userspace gets an absolute position
-       it can use directly; fb_width/fb_height return 0 in text mode, and
-       mouse_init keeps its 640x480 default for a zero, so this is safe whether
-       or not the framebuffer came up. */
+    /* The pointer is clamped to the display so userspace gets an absolute
+       position it can use directly; fb_width/fb_height return 0 in text mode,
+       and mouse_init keeps its 640x480 default for a zero, so this is safe
+       whether or not the framebuffer came up. Then the platform's own keyboard
+       and mouse (PS/2 on a PC); USB ones arrive with the USB hosts. */
     mouse_init((int)fb_width(), (int)fb_height());
-    if (ps2mouse_init())
-        klog("INPUT", SEV_OK, "PS/2 mouse online (IRQ12)");
-    else
-        klog("INPUT", SEV_WARN, "no PS/2 mouse detected");
+    platform_input_init();
 
 
     /* user mode: syscall gate + ring-3 fault handler. */

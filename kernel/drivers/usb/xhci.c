@@ -12,6 +12,7 @@
 #include "logging.h"
 #include "arch/irq.h"
 #include "timer.h"
+#include "drivers/iowin.h"
 
 /* ---- capability registers (at BAR0) ------------------------------------- */
 #define XCAP_CAPLENGTH   0x00   /* 8-bit  */
@@ -141,7 +142,16 @@ _Static_assert(sizeof(struct xhci_trb) == 16, "a TRB is 16 bytes");
 #define XFER_MAX        4096
 #define MAX_SPAD_PAGES  16
 
-static volatile uint8_t *cap_regs, *op_regs, *rt_regs, *db_regs;
+/* BAR 0 holds four register files, each reached through its own window: the
+   capability registers at 0, the operational ones after them (CAPLENGTH), and
+   the runtime and doorbell ones wherever RTSOFF and DBOFF say. Only the first
+   XHCI_MAP_SIZE bytes are mapped, so a controller that puts one further out is
+   refused rather than reached through an unmapped address. */
+#define XHCI_MAP_SIZE  0x10000u
+#define XHCI_CAP_SIZE  0x20u                            /* CAPLENGTH..HCCPARAMS2 */
+#define XHCI_RT_SIZE   0x40u                            /* MFINDEX, interrupter 0 */
+#define XHCI_DB_SIZE   ((MAX_SLOTS_USED + 1) * 4u)      /* command ring + slots */
+static struct iowin cap_regs, op_regs, rt_regs, db_regs;
 static int present = 0;
 static unsigned nports = 0;
 static unsigned ctx_size = 32;
@@ -179,23 +189,23 @@ static uint32_t int_len[MAX_SLOTS_USED + 1];
 static uint8_t  int_done[MAX_SLOTS_USED + 1];
 static uint32_t int_done_status[MAX_SLOTS_USED + 1];
 
-static inline uint32_t cap_rd(uint32_t o) { return *(volatile uint32_t *)(cap_regs + o); }
-static inline uint32_t op_rd(uint32_t o)  { return *(volatile uint32_t *)(op_regs + o); }
-static inline void op_wr(uint32_t o, uint32_t v) { *(volatile uint32_t *)(op_regs + o) = v; }
+static inline uint32_t cap_rd(uint32_t o) { return iowin_read32(&cap_regs, o); }
+static inline uint32_t op_rd(uint32_t o)  { return iowin_read32(&op_regs, o); }
+static inline void op_wr(uint32_t o, uint32_t v) { iowin_write32(&op_regs, o, v); }
 static inline void op_wr64(uint32_t o, uint64_t v) {
     /* Split deliberately: several controllers mis-handle a 64-bit MMIO write,
        and the low dword must land first so the high dword completes the value. */
-    *(volatile uint32_t *)(op_regs + o) = (uint32_t)v;
-    *(volatile uint32_t *)(op_regs + o + 4) = (uint32_t)(v >> 32);
+    iowin_write32(&op_regs, o, (uint32_t)v);
+    iowin_write32(&op_regs, o + 4, (uint32_t)(v >> 32));
 }
-static inline uint32_t rt_rd(uint32_t o) { return *(volatile uint32_t *)(rt_regs + o); }
-static inline void rt_wr(uint32_t o, uint32_t v) { *(volatile uint32_t *)(rt_regs + o) = v; }
+static inline uint32_t rt_rd(uint32_t o) { return iowin_read32(&rt_regs, o); }
+static inline void rt_wr(uint32_t o, uint32_t v) { iowin_write32(&rt_regs, o, v); }
 static inline void rt_wr64(uint32_t o, uint64_t v) {
-    *(volatile uint32_t *)(rt_regs + o) = (uint32_t)v;
-    *(volatile uint32_t *)(rt_regs + o + 4) = (uint32_t)(v >> 32);
+    iowin_write32(&rt_regs, o, (uint32_t)v);
+    iowin_write32(&rt_regs, o + 4, (uint32_t)(v >> 32));
 }
 static inline void doorbell(unsigned slot, uint32_t v) {
-    *(volatile uint32_t *)(db_regs + slot * 4) = v;
+    iowin_write32(&db_regs, slot * 4, v);
 }
 
 static inline uint32_t portsc_off(unsigned port1) {
@@ -818,16 +828,24 @@ int xhci_init(void) {
 
     /* xHCI register files are large - runtime and doorbell regions sit well
        past the operational registers - so map generously. */
-    for (uint32_t off = 0; off < 0x10000; off += 0x1000)
+    for (uint32_t off = 0; off < XHCI_MAP_SIZE; off += 0x1000)
         paging_map_kernel(base + off, base + off, VM_WRITE | VM_UNCACHED);
-    cap_regs = (volatile uint8_t *)base;
-
-    uint32_t caplen = *(volatile uint8_t *)(cap_regs + XCAP_CAPLENGTH);
-    op_regs = cap_regs + caplen;
-    rt_regs = cap_regs + (cap_rd(XCAP_RTSOFF) & ~0x1Fu);
-    db_regs = cap_regs + (cap_rd(XCAP_DBOFF) & ~0x3u);
+    if (iowin_mmio(&cap_regs, (volatile void *)base, XHCI_CAP_SIZE) != 0) return 0;
 
     uint32_t hcs1 = cap_rd(XCAP_HCSPARAMS1);
+    uint32_t caplen = iowin_read8(&cap_regs, XCAP_CAPLENGTH);
+    uint32_t op_size = XOP_PORTSC_BASE + HCS1_MAXPORTS(hcs1) * 0x10u;
+    uint32_t rtsoff = cap_rd(XCAP_RTSOFF) & ~0x1Fu;
+    uint32_t dboff  = cap_rd(XCAP_DBOFF) & ~0x3u;
+    if (caplen < XHCI_CAP_SIZE || caplen + op_size > XHCI_MAP_SIZE ||
+        rtsoff > XHCI_MAP_SIZE - XHCI_RT_SIZE || dboff > XHCI_MAP_SIZE - XHCI_DB_SIZE ||
+        iowin_mmio(&op_regs, (volatile void *)(base + caplen), op_size) != 0 ||
+        iowin_mmio(&rt_regs, (volatile void *)(base + rtsoff), XHCI_RT_SIZE) != 0 ||
+        iowin_mmio(&db_regs, (volatile void *)(base + dboff), XHCI_DB_SIZE) != 0) {
+        klog("xHCI", SEV_WARN, "register files outside the mapped BAR - not initialising");
+        return 0;
+    }
+
     uint32_t hcs2 = cap_rd(XCAP_HCSPARAMS2);
     uint32_t hcc1 = cap_rd(XCAP_HCCPARAMS1);
     nports = HCS1_MAXPORTS(hcs1);

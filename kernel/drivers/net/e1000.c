@@ -8,6 +8,7 @@
 #include "pci.h"
 #include "arch/paging.h"
 #include "logging.h"
+#include "drivers/iowin.h"
 
 /* ---- e1000 register offsets (from the MMIO base, BAR0) ---- */
 #define E1000_CTRL     0x0000   /* device control */
@@ -119,7 +120,7 @@ struct e1000_tx_desc {
     volatile uint16_t special;
 } __attribute__((packed));
 
-static volatile uint8_t *regs = 0;
+static struct iowin regs;   /* BAR 0: the 128 KB register file */
 static int present = 0;
 static uint8_t mac[6];
 
@@ -131,8 +132,8 @@ static int use_eeprom = 1;
 static int rx_cur = 0;
 static int tx_cur = 0;
 
-static uint32_t mmio_rd(uint32_t off)            { return *(volatile uint32_t *)(regs + off); }
-static void     mmio_wr(uint32_t off, uint32_t v){ *(volatile uint32_t *)(regs + off) = v; }
+static uint32_t mmio_rd(uint32_t off)            { return iowin_read32(&regs, off); }
+static void     mmio_wr(uint32_t off, uint32_t v){ iowin_write32(&regs, off, v); }
 
 static void busy_delay(uint32_t loops) {
     volatile uint32_t x = 0;
@@ -246,7 +247,7 @@ int e1000_init(void) {
        faster there. */
     for (uint32_t off = 0; off < 0x20000; off += 0x1000)
         paging_map_kernel(base + off, base + off, VM_WRITE | VM_UNCACHED);
-    regs = (volatile uint8_t *)base;
+    if (iowin_mmio(&regs, (volatile void *)base, 0x20000) != 0) return 0;
 
     /* map the NIC DMA region */
     /* map the DMA region into the KERNEL half so every address space sees it */

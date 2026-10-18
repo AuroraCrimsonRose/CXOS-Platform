@@ -25,7 +25,7 @@ What it lacks, and what this plan answers:
 | One thing waited on at a time | input, one endpoint, or sleep | §5 |
 | Narrow IPC | one call in flight per endpoint, one page copied, no handle passing, no shared memory | §6 |
 | No user threads, no futex, no pipes | | §7 |
-| x86 code mixed with generic code | Step 3b moved the GDT, IDT, TSS, context switch, entry stub and linker script to `kernel/arch/x86_32/`, and the local APIC and port primitives to `kernel/arch/x86/`. Step 3c put paging behind `arch/paging.h`. Step 3d put every port access behind I/O windows (`drivers/iowin.h`) and moved the legacy PC devices to `kernel/platform/pc/`. Left: generic code that still names a PC device (`timer.c` starts the PIT, `power.c` uses the 8042 reset and the emulators' poweroff ports, `console.c` draws and scrolls VGA text, `cxfs.c` and `usermode.c` read the CMOS clock, `kmain.c` starts them all), the memory-mapped drivers (AHCI, e1000, RTL8169, the USB hosts, the I/O APIC) still use raw pointers rather than windows. Step 3e moved the last CPU-specific code out of generic files (the interrupt flag, halting, the cycle counter, the stack switch, the reset, the syscall gate, the register frame, MSI addresses, the self-tests that read the CPU's tables) and added the check: the kernel build refuses inline assembly, assembly sources, CPU intrinsics and `arch/<name>/` includes anywhere outside `kernel/arch/` (`tools/cmake/check_arch_boundary.cmake`) | §2.2 |
+| x86 code mixed with generic code | Step 3b moved the GDT, IDT, TSS, context switch, entry stub and linker script to `kernel/arch/x86_32/`, and the local APIC and port primitives to `kernel/arch/x86/`. Step 3c put paging behind `arch/paging.h`. Step 3d put every port access behind I/O windows (`drivers/iowin.h`) and moved the legacy PC devices to `kernel/platform/pc/`. Step 3e moved the last CPU-specific code out of generic files (the interrupt flag, halting, the cycle counter, the stack switch, the reset, the syscall gate, the register frame, MSI addresses, the self-tests that read the CPU's tables) and added the check: the kernel build refuses inline assembly, assembly sources, CPU intrinsics and `arch/<name>/` includes anywhere outside `kernel/arch/` (`tools/cmake/check_arch_boundary.cmake`). Step 3f put the PC's fixed devices behind `platform/platform.h` (the tick, the reset and poweroff lines, the wall clock, the boot text screen, the built-in keyboard and mouse; implemented in `platform/pc/platform.c`), moved the PS/2 self-test to `platform/pc/ktest_pc.c`, extended the check to refuse `platform/<name>/` includes outside `kernel/arch/` and `kernel/platform/`, and moved every memory-mapped driver onto windows: AHCI, e1000, RTL8169, OHCI, EHCI, xHCI (four windows, refused if one lies outside the mapped BAR), the local and I/O APICs, and the MSI-X table entry. **Done 2026-10-18.** | §2.2 |
 | Uniprocessor locking | critical sections switch interrupts off | §8 |
 | First-fit linked-list heap | `heap.c` | §8 |
 | PIT at 1000 Hz | | §8 |
@@ -106,7 +106,11 @@ space a port window simply fails to open. The legacy devices, whose ports
 never move, use windows fixed at build time (`IOWIN_PORTS`). Legacy PC devices are platform code, `kernel/platform/pc/`, not arch code:
 the 8259 PIC, the PIT, the 8042 (one file owning the controller, with the PS/2
 keyboard and mouse drivers on it), the CMOS clock, the speaker, VGA text, and
-the emulators' fixed poweroff ports. A device class the rest of the kernel
+the emulators' fixed poweroff ports. Generic code reaches them only through
+`platform/platform.h` (the tick, reset, poweroff, wall clock, boot text
+screen, and built-in input), which `platform/pc/platform.c` implements; the
+build refuses a `platform/<name>/` include anywhere else outside
+`kernel/arch/`. A device class the rest of the kernel
 uses keeps a generic front: `drivers/input/keyboard.c` is a buffer of keys and
 `mouse.c` a pointer position, fed alike by the PS/2 drivers and USB HID.
 

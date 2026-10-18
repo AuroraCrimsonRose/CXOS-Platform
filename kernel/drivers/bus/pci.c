@@ -315,11 +315,12 @@ int pci_msix_enable(const struct pci_device *d, uint8_t vector) {
     paging_map_kernel(entry & ~0xFFFu, entry & ~0xFFFu,
                VM_WRITE | VM_UNCACHED);
 
-    volatile uint32_t *e = (volatile uint32_t *)entry;
-    e[0] = irq_msi_address();     /* address low  */
-    e[1] = 0;                         /* address high */
-    e[2] = irq_msi_data(vector);
-    e[3] = 0;                         /* vector control: bit 0 clear = unmasked */
+    struct iowin e;
+    if (iowin_mmio(&e, (volatile void *)entry, MSIX_ENTRY_SIZE) != 0) return 0;
+    iowin_write32(&e, 0x0, irq_msi_address());   /* address low  */
+    iowin_write32(&e, 0x4, 0);                   /* address high */
+    iowin_write32(&e, 0x8, irq_msi_data(vector));
+    iowin_write32(&e, 0xC, 0);                   /* vector control: bit 0 clear = unmasked */
 
     /* Function mask must be cleared as well as the per-vector mask above - it
        gates the whole table and a device powers up with it set. */

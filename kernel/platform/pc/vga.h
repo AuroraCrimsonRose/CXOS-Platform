@@ -20,6 +20,9 @@ void vga_put_cell(int x, int y, char c, uint8_t attr);
 /* fill the whole screen with spaces of the given attribute */
 void vga_clear(uint8_t attr);
 
+/* move every row up one, the new bottom row spaces of the given attribute */
+void vga_scroll_up(uint8_t attr);
+
 /* move the blinking hardware cursor to (x, y) */
 void vga_set_cursor(int x, int y);
 

@@ -4,7 +4,8 @@
 /* Aurora Tejeda / CATX Systems */
 /*
  * Text console with two interchangeable backends behind one interface:
- *   - VGA text  (vga.c, 80x25, hardware cursor) - the default at boot
+ *   - the platform's text screen (platform.h; VGA text on a PC) - the default
+ *     at boot
  *   - framebuffer (fb.c, 8x16 glyphs in a pixel viewport) - after console_use_fb
  *
  * The 16-color VGA attribute model is identical for both backends; on the
@@ -13,9 +14,8 @@
  * Severity/tag logging built on these primitives lives in lib/string/logging.c.
  */
 
-#include "arch/paging.h"   /* KERNEL_VBASE */
 #include "console.h"
-#include "platform/pc/vga.h"
+#include "platform/platform.h"
 #include "fb.h"
 #include "color.h"
 #include "format.h"
@@ -29,9 +29,9 @@ static int     cy = 0;              /* cursor row (cells) */
 static uint8_t attr = 0;            /* current VGA attribute (bg<<4 | fg) */
 
 /* active backend + geometry */
-static int     use_fb = 0;          /* 0 = VGA text, 1 = framebuffer */
-static int     cols = VGA_WIDTH;    /* text columns */
-static int     rows = VGA_HEIGHT;   /* text rows */
+static int     use_fb = 0;          /* 0 = text screen, 1 = framebuffer */
+static int     cols = 80;           /* text columns (console_init asks) */
+static int     rows = 25;           /* text rows */
 
 /* framebuffer viewport (pixels), valid only when use_fb */
 static uint32_t vp_x = 0, vp_y = 0, vp_w = 0, vp_h = 0;
@@ -51,7 +51,7 @@ static void be_put_cell(int x, int y, char c, uint8_t a) {
         fb_draw_char(vp_x + (uint32_t)x * fb_font_width(),
                      vp_y + (uint32_t)y * fb_font_height(), c, fg, bg);
     } else {
-        vga_put_cell(x, y, c, a);
+        platform_text_put(x, y, c, a);
     }
 }
 
@@ -59,7 +59,7 @@ static void be_clear(uint8_t a) {
     if (use_fb) {
         fb_fill_rect(vp_x, vp_y, vp_w, vp_h, pal_fb((a >> 4) & 0x0F));
     } else {
-        vga_clear(a);
+        platform_text_clear(a);
     }
 }
 
@@ -68,13 +68,7 @@ static void be_scroll_one(uint8_t a) {
     if (use_fb) {
         fb_scroll_rect(vp_x, vp_y, vp_w, vp_h, fb_font_height(), pal_fb((a >> 4) & 0x0F));
     } else {
-        /* mirror vga.c's cell formula against the higher-half text buffer */
-        volatile uint16_t *mem = (volatile uint16_t *)(KERNEL_VBASE + 0xB8000);
-        for (int y = 1; y < VGA_HEIGHT; y++)
-            for (int x = 0; x < VGA_WIDTH; x++)
-                mem[(y - 1) * VGA_WIDTH + x] = mem[y * VGA_WIDTH + x];
-        for (int x = 0; x < VGA_WIDTH; x++)
-            vga_put_cell(x, VGA_HEIGHT - 1, ' ', a);
+        platform_text_scroll(a);
     }
 }
 
@@ -84,7 +78,7 @@ static void be_set_cursor(int x, int y) {
            caret. (A software caret could be drawn here later.) */
         (void)x; (void)y;
     } else {
-        vga_set_cursor(x, y);
+        platform_text_cursor(x, y);
     }
 }
 
@@ -100,11 +94,11 @@ static void scroll_if_needed(void) {
 void console_init(void) {
     attr = VGA_ATTR(VGA_LIGHT_GREY, VGA_BLACK);
     use_fb = 0;
-    cols = VGA_WIDTH;
-    rows = VGA_HEIGHT;
+    cols = platform_text_cols();
+    rows = platform_text_rows();
     cx = 0; cy = 0;
-    vga_clear(attr);
-    vga_set_cursor(0, 0);
+    platform_text_clear(attr);
+    platform_text_cursor(0, 0);
 }
 
 /* Switch the console onto the framebuffer, rendering into the pixel rectangle

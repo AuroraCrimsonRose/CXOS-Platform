@@ -11,6 +11,7 @@
 #include "arch/paging.h"
 #include "acpi.h"
 #include "logging.h"
+#include "drivers/iowin.h"
 
 /* ---- local APIC registers (MMIO, 16-byte spaced) ------------------------ */
 #define LAPIC_ID        0x020
@@ -66,8 +67,11 @@ struct madt_entry {
 #define MADT_ISO           2    /* interrupt source override */
 #define MADT_LAPIC_ADDR_OVR 5
 
-static volatile uint8_t *lapic = 0;
-static volatile uint8_t *ioapic = 0;
+/* The local APIC's registers end at 0x3F0; the I/O APIC is a select register
+   at 0x00 and a data window at 0x10. */
+static struct iowin lapic;
+static struct iowin ioapic;
+static int ioapic_found = 0;
 static uint32_t ioapic_gsi_base = 0;
 static unsigned ioapic_entries = 0;
 static int lapic_up = 0;
@@ -80,19 +84,19 @@ static uint32_t iso_gsi[16];
 static uint16_t iso_flags[16];
 
 static inline uint32_t lapic_rd(uint32_t reg) {
-    return *(volatile uint32_t *)(lapic + reg);
+    return iowin_read32(&lapic, reg);
 }
 static inline void lapic_wr(uint32_t reg, uint32_t v) {
-    *(volatile uint32_t *)(lapic + reg) = v;
+    iowin_write32(&lapic, reg, v);
 }
 
 static uint32_t ioapic_rd(uint32_t reg) {
-    *(volatile uint32_t *)(ioapic + IOAPIC_REGSEL) = reg;
-    return *(volatile uint32_t *)(ioapic + IOAPIC_IOWIN);
+    iowin_write32(&ioapic, IOAPIC_REGSEL, reg);
+    return iowin_read32(&ioapic, IOAPIC_IOWIN);
 }
 static void ioapic_wr(uint32_t reg, uint32_t v) {
-    *(volatile uint32_t *)(ioapic + IOAPIC_REGSEL) = reg;
-    *(volatile uint32_t *)(ioapic + IOAPIC_IOWIN) = v;
+    iowin_write32(&ioapic, IOAPIC_REGSEL, reg);
+    iowin_write32(&ioapic, IOAPIC_IOWIN, v);
 }
 
 void lapic_eoi(void) {
@@ -131,11 +135,11 @@ static void parse_madt(struct madt_header *madt) {
         if (e->length < 2) break;              /* malformed: stop, do not spin */
         if (p + e->length > end) break;
 
-        if (e->type == MADT_IOAPIC && !ioapic) {
+        if (e->type == MADT_IOAPIC && !ioapic_found) {
             uint32_t addr = *(uint32_t *)(p + 4);
             ioapic_gsi_base = *(uint32_t *)(p + 8);
             paging_map_kernel(addr, addr, VM_WRITE | VM_UNCACHED);
-            ioapic = (volatile uint8_t *)addr;
+            ioapic_found = iowin_mmio(&ioapic, (volatile void *)addr, 0x20) == 0;
         } else if (e->type == MADT_ISO) {
             uint8_t source = p[3];
             uint32_t gsi = *(uint32_t *)(p + 4);
@@ -148,7 +152,7 @@ static void parse_madt(struct madt_header *madt) {
             if ((addr >> 32) == 0 && addr) {
                 paging_map_kernel((uint32_t)addr, (uint32_t)addr,
                            VM_WRITE | VM_UNCACHED);
-                lapic = (volatile uint8_t *)(uint32_t)addr;
+                (void)iowin_mmio(&lapic, (volatile void *)(uint32_t)addr, 0x400);
             }
         }
         p += e->length;
@@ -214,7 +218,7 @@ int irq_controller_init(void) {
     wrmsr(IA32_APIC_BASE, (base_msr | APIC_BASE_ENABLE));
 
     paging_map_kernel(base, base, VM_WRITE | VM_UNCACHED);
-    lapic = (volatile uint8_t *)base;
+    (void)iowin_mmio(&lapic, (volatile void *)base, 0x400);
 
     struct madt_header *madt = (struct madt_header *)acpi_find_table("APIC");
     if (madt) parse_madt(madt);       /* may relocate lapic via an override */
@@ -232,7 +236,7 @@ int irq_controller_init(void) {
         klog("APIC", SEV_INFO, "no MADT - local APIC only, IRQs stay on the 8259");
         return 0;
     }
-    if (!ioapic) {
+    if (!ioapic_found) {
         klog("APIC", SEV_INFO, "MADT describes no I/O APIC - IRQs stay on the 8259");
         return 0;
     }

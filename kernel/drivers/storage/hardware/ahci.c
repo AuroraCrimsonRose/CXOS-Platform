@@ -13,49 +13,28 @@
 #include "string.h"
 #include "disk.h"
 #include "logging.h"
+#include "drivers/iowin.h"
 
 /* ---- HBA memory registers (the ABAR-mapped structure) ---- */
 
 /* generic host control (at ABAR + 0x00) */
-struct hba_mem {
-    uint32_t cap;        /* 0x00 host capabilities */
-    uint32_t ghc;        /* 0x04 global host control */
-    uint32_t is;         /* 0x08 interrupt status */
-    uint32_t pi;         /* 0x0C ports implemented (bitmask) */
-    uint32_t vs;         /* 0x10 version */
-    uint32_t ccc_ctl;    /* 0x14 */
-    uint32_t ccc_pts;    /* 0x18 */
-    uint32_t em_loc;     /* 0x1C */
-    uint32_t em_ctl;     /* 0x20 */
-    uint32_t cap2;       /* 0x24 */
-    uint32_t bohc;       /* 0x28 BIOS/OS handoff */
-    uint8_t  reserved[0xA0 - 0x2C];
-    uint8_t  vendor[0x100 - 0xA0];
-    /* port control registers start at offset 0x100, 0x80 bytes each */
-};
+#define HBA_GHC          0x04   /* global host control */
+#define HBA_PI           0x0C   /* ports implemented (bitmask) */
+#define HBA_CAP2         0x24
+#define HBA_BOHC         0x28   /* BIOS/OS handoff */
 
 /* per-port registers (at ABAR + 0x100 + port*0x80) */
-struct hba_port {
-    uint32_t clb;        /* 0x00 command list base (1K aligned) */
-    uint32_t clbu;       /* 0x04 command list base upper 32 (we keep 0) */
-    uint32_t fb;         /* 0x08 FIS base (256 aligned) */
-    uint32_t fbu;        /* 0x0C FIS base upper 32 */
-    uint32_t is;         /* 0x10 interrupt status */
-    uint32_t ie;         /* 0x14 interrupt enable */
-    uint32_t cmd;        /* 0x18 command and status */
-    uint32_t reserved0;  /* 0x1C */
-    uint32_t tfd;        /* 0x20 task file data */
-    uint32_t sig;        /* 0x24 signature */
-    uint32_t ssts;       /* 0x28 SATA status (SCR0) */
-    uint32_t sctl;       /* 0x2C SATA control (SCR2) */
-    uint32_t serr;       /* 0x30 SATA error (SCR1) */
-    uint32_t sact;       /* 0x34 SATA active (SCR3) */
-    uint32_t ci;         /* 0x38 command issue */
-    uint32_t sntf;       /* 0x3C */
-    uint32_t fbs;        /* 0x40 */
-    uint32_t reserved1[11];
-    uint32_t vendor[4];
-};
+#define HBA_PORT(p)      (0x100u + (uint32_t)(p) * 0x80u)
+#define PX_CLB           0x00   /* command list base (1K aligned) */
+#define PX_CLBU          0x04   /* command list base upper 32 (we keep 0) */
+#define PX_FB            0x08   /* FIS base (256 aligned) */
+#define PX_FBU           0x0C   /* FIS base upper 32 */
+#define PX_IS            0x10   /* interrupt status */
+#define PX_CMD           0x18   /* command and status */
+#define PX_TFD           0x20   /* task file data */
+#define PX_SIG           0x24   /* signature */
+#define PX_SSTS          0x28   /* SATA status (SCR0) */
+#define PX_CI            0x38   /* command issue */
 
 /* command header (entry in the command list; 32 bytes each, 32 per port) */
 struct hba_cmd_header {
@@ -135,7 +114,7 @@ struct fis_reg_h2d {
 
 /* ---- driver state ---- */
 
-static volatile struct hba_mem *hba = 0;
+static struct iowin hba;   /* ABAR: the generic registers, then every port's */
 static int port_present[AHCI_MAX_PORTS];
 static uint64_t port_sectors[AHCI_MAX_PORTS];
 static char     port_model[AHCI_MAX_PORTS][41];
@@ -205,55 +184,56 @@ static int ahci_dma_init(void) {
     return 0;
 }
 
-static struct hba_port *port_regs(int p) {
-    return (struct hba_port *)((uint8_t *)hba + 0x100 + p * 0x80);
-}
+static uint32_t hba_rd(uint32_t reg)             { return iowin_read32(&hba, reg); }
+static void     hba_wr(uint32_t reg, uint32_t v) { iowin_write32(&hba, reg, v); }
+static uint32_t px_rd(int p, uint32_t reg)             { return hba_rd(HBA_PORT(p) + reg); }
+static void     px_wr(int p, uint32_t reg, uint32_t v) { hba_wr(HBA_PORT(p) + reg, v); }
 
 /* stop a port's command engine before reprogramming its pointers */
-static void port_stop(struct hba_port *px) {
-    px->cmd &= ~HBA_PORT_CMD_ST;
-    px->cmd &= ~HBA_PORT_CMD_FRE;
+static void port_stop(int p) {
+    px_wr(p, PX_CMD, px_rd(p, PX_CMD) & ~HBA_PORT_CMD_ST);
+    px_wr(p, PX_CMD, px_rd(p, PX_CMD) & ~HBA_PORT_CMD_FRE);
     /* wait for FR and CR to clear */
     uint32_t timeout = 1000000;
-    while ((px->cmd & (HBA_PORT_CMD_FR | HBA_PORT_CMD_CR)) && timeout--) { }
+    while ((px_rd(p, PX_CMD) & (HBA_PORT_CMD_FR | HBA_PORT_CMD_CR)) && timeout--) { }
 }
 
 /* start a port's command engine */
-static void port_start(struct hba_port *px) {
+static void port_start(int p) {
     uint32_t timeout = 1000000;
-    while ((px->cmd & HBA_PORT_CMD_CR) && timeout--) { }
-    px->cmd |= HBA_PORT_CMD_FRE;
-    px->cmd |= HBA_PORT_CMD_ST;
+    while ((px_rd(p, PX_CMD) & HBA_PORT_CMD_CR) && timeout--) { }
+    px_wr(p, PX_CMD, px_rd(p, PX_CMD) | HBA_PORT_CMD_FRE);
+    px_wr(p, PX_CMD, px_rd(p, PX_CMD) | HBA_PORT_CMD_ST);
 }
 
 /* set up a port's command list + FIS area in the DMA region */
-static void port_rebase(struct hba_port *px, int p) {
-    port_stop(px);
+static void port_rebase(int p) {
+    port_stop(p);
 
     /* zero and assign the command list (32 headers * 32 bytes = 1KB). Kernel
        writes via VIRT; the HBA register gets PHYS. */
     uint8_t *clb = (uint8_t *)port_clb_virt(p);
     for (int i = 0; i < 1024; i++) clb[i] = 0;
-    px->clb = port_clb_phys(p);
-    px->clbu = 0;
+    px_wr(p, PX_CLB, port_clb_phys(p));
+    px_wr(p, PX_CLBU, 0);
 
     /* zero and assign the FIS receive area (256 bytes) */
     uint8_t *fb = (uint8_t *)port_fb_virt(p);
     for (int i = 0; i < 256; i++) fb[i] = 0;
-    px->fb = port_fb_phys(p);
-    px->fbu = 0;
+    px_wr(p, PX_FB, port_fb_phys(p));
+    px_wr(p, PX_FBU, 0);
 
     /* point command header 0 at our single command table (HBA wants PHYS) */
     struct hba_cmd_header *hdr = (struct hba_cmd_header *)clb;
     hdr[0].ctba = port_ctba_phys(p);
     hdr[0].ctbau = 0;
 
-    port_start(px);
+    port_start(p);
 }
 
 /* find a free command slot (we only use slot 0, single-threaded) */
-static int find_slot(struct hba_port *px) {
-    (void)px;
+static int find_slot(int p) {
+    (void)p;
     return 0;
 }
 
@@ -261,8 +241,6 @@ static int find_slot(struct hba_port *px) {
    returns 0 on success. */
 static int port_cmd(int p, uint8_t cmd, uint64_t lba, uint32_t count,
                     void *buf, int write) {
-    struct hba_port *px = port_regs(p);
-
     /* the bounce buffer is our DMA target/source - bound the transfer to it. */
     uint32_t bytes = count * 512;
     if (bytes > AHCI_BOUNCE_PAGES * 0x1000) return DISK_ERR_FAULT;
@@ -274,9 +252,9 @@ static int port_cmd(int p, uint8_t cmd, uint64_t lba, uint32_t count,
         for (uint32_t i = 0; i < bytes; i++) bounce_virt[i] = s[i];
     }
 
-    px->is = (uint32_t)-1;            /* clear pending interrupts */
+    px_wr(p, PX_IS, (uint32_t)-1);    /* clear pending interrupts */
 
-    int slot = find_slot(px);
+    int slot = find_slot(p);
     /* kernel writes the command header via its VIRTUAL mapping */
     struct hba_cmd_header *hdr = (struct hba_cmd_header *)port_clb_virt(p);
     hdr += slot;
@@ -320,21 +298,21 @@ static int port_cmd(int p, uint8_t cmd, uint64_t lba, uint32_t count,
     /* wait until the port isn't busy */
     struct timeout to;
     timer_timeout_start(&to, AHCI_TIMEOUT_MS);
-    while (px->tfd & (HBA_TFD_BSY | HBA_TFD_DRQ)) {
-        if (px->tfd & HBA_TFD_ERR) return DISK_ERR_FAULT;
+    while (px_rd(p, PX_TFD) & (HBA_TFD_BSY | HBA_TFD_DRQ)) {
+        if (px_rd(p, PX_TFD) & HBA_TFD_ERR) return DISK_ERR_FAULT;
         if (timer_timeout_expired(&to)) return DISK_ERR_NOT_READY;
     }
 
-    px->ci = 1u << slot;              /* issue the command */
+    px_wr(p, PX_CI, 1u << slot);      /* issue the command */
 
     /* wait for completion */
     timer_timeout_start(&to, AHCI_TIMEOUT_MS);
     for (;;) {
-        if (!(px->ci & (1u << slot))) break;
-        if (px->is & HBA_PxIS_TFES) return DISK_ERR_FAULT;   /* task file error */
+        if (!(px_rd(p, PX_CI) & (1u << slot))) break;
+        if (px_rd(p, PX_IS) & HBA_PxIS_TFES) return DISK_ERR_FAULT;   /* task file error */
         if (timer_timeout_expired(&to)) return DISK_ERR_TIMEOUT;
     }
-    if (px->is & HBA_PxIS_TFES) return DISK_ERR_FAULT;
+    if (px_rd(p, PX_IS) & HBA_PxIS_TFES) return DISK_ERR_FAULT;
 
     /* for reads, copy the DMA'd data out of the bounce into the caller's buf. */
     if (!write && buf) {
@@ -404,8 +382,8 @@ int ahci_init(void) {
 
     /* map the HBA registers (ABAR region, ~8KB covers the HBA + ports). The
        ABAR is a hardware MMIO physical address (not RAM the PMM manages), so
-       identity-mapping it (virt == phys) is correct - hba is then a usable
-       kernel pointer. */
+       identity-mapping it (virt == phys) is correct, and the window opens on
+       that address. */
     /* VM_UNCACHED: the ABAR is a register window. Port status, the command
        issue/completion bits and the interrupt status are all changed by the HBA
        behind the CPU's back, so caching them means polling a stale copy - which
@@ -414,7 +392,7 @@ int ahci_init(void) {
        those coherent by snooping. */
     for (uint32_t off = 0; off < 0x2000; off += 0x1000)
         paging_map_kernel(abar + off, abar + off, VM_WRITE | VM_UNCACHED);
-    hba = (volatile struct hba_mem *)abar;
+    if (iowin_mmio(&hba, (volatile void *)abar, HBA_PORT(AHCI_MAX_PORTS)) != 0) return 0;
 
     /* allocate + map the DMA structures region and bounce buffer from the PMM
        (v5: no identity-mapped low region; DMA memory is PMM-backed and mapped
@@ -422,31 +400,30 @@ int ahci_init(void) {
     if (ahci_dma_init() != 0) return 0;
 
     /* request ownership from BIOS if the handoff bit is supported (CAP2.BOH) */
-    if (hba->cap2 & 0x01) {
-        hba->bohc |= (1 << 1);    /* OS ownership request */
+    if (hba_rd(HBA_CAP2) & 0x01) {
+        hba_wr(HBA_BOHC, hba_rd(HBA_BOHC) | (1 << 1));   /* OS ownership request */
         uint32_t spin = 1000000;
-        while ((hba->bohc & 0x01) && spin--) { }  /* wait for BIOS to release */
+        while ((hba_rd(HBA_BOHC) & 0x01) && spin--) { }  /* wait for BIOS to release */
     }
 
     /* enable AHCI mode in global host control */
-    hba->ghc |= (1u << 31);   /* AHCI enable */
+    hba_wr(HBA_GHC, hba_rd(HBA_GHC) | (1u << 31));   /* AHCI enable */
 
     /* probe each implemented port */
-    uint32_t pi = hba->pi;
+    uint32_t pi = hba_rd(HBA_PI);
     for (int p = 0; p < AHCI_MAX_PORTS; p++) {
         if (!(pi & (1u << p))) continue;
-        struct hba_port *px = port_regs(p);
 
         /* device detection: SSTS DET = 3 (present + comm), IPM = 1 (active) */
-        uint32_t ssts = px->ssts;
+        uint32_t ssts = px_rd(p, PX_SSTS);
         uint8_t det = ssts & 0x0F;
         uint8_t ipm = (ssts >> 8) & 0x0F;
         if (det != 3 || ipm != 1) continue;
 
         /* only handle SATA disk signature */
-        if (px->sig != SATA_SIG_ATA) continue;
+        if (px_rd(p, PX_SIG) != SATA_SIG_ATA) continue;
 
-        port_rebase(px, p);
+        port_rebase(p);
         port_present[p] = 1;
         port_identify(p);
         if (port_present[p]) {

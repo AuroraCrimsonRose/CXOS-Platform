@@ -54,7 +54,8 @@
 #include "acpi.h"
 #include "keyboard.h"
 #include "mouse.h"
-#include "platform/pc/i8042.h"
+#include "platform/ktest_platform.h"
+#include "platform/platform.h"
 
 
 /* concise pass/fail reporter */
@@ -451,8 +452,10 @@ done:
    it, port-mapped or memory-mapped, without reaching the device. ---- */
 static int test_iowin(void) {
     int ok = 1;
-    /* Taken first: a driver that reached past its window during boot (the
-       serial probe, the PIC remap, the ATA probe, ACPI) has counted here. */
+    /* Taken first: a driver that reached past its window during boot has
+       counted here - the port drivers (serial, the PIC, ATA, ACPI) and the
+       memory-mapped ones on whatever bus they found (the APICs, AHCI, the
+       NICs, the USB hosts, an MSI-X entry). */
     if (iowin_refusals != 0) {
         klog("KTEST", SEV_FAIL, "iowin: a driver reached outside its window");
         ok = 0;
@@ -1134,6 +1137,29 @@ stalled:
     return 0;
 }
 
+/* ---- the wall clock reads a plausible date (platform_wallclock, step 3) ----
+ * File times and SYS_CLOCK's epoch come from here. The clock's own encoding
+ * (BCD, the century, 12-hour mode on a PC) is the platform's to decode; a
+ * field it left undecoded is out of range for most of the year (October is
+ * BCD 0x10, read raw as month 16), and an epoch of 0 means no date at all.
+ * A platform with no clock is untested, with a WARN. */
+static int test_wallclock(void) {
+    struct datetime d;
+    if (platform_wallclock(&d) != 0) {
+        klog("KTEST", SEV_WARN, "wall clock untested: the platform has none");
+        return 1;
+    }
+    if (d.year < 2020 || d.year > 2199 || d.month < 1 || d.month > 12 ||
+        d.day < 1 || d.day > 31 || d.hour > 23 || d.minute > 59 || d.second > 59 ||
+        datetime_to_epoch(&d) == 0) {
+        klog_u32("KTEST", SEV_FAIL, "wall clock: implausible date, year ", d.year,
+                 LOG_COLOR_VALUE, "");
+        klog_u32("KTEST", SEV_FAIL, "wall clock: month ", d.month, LOG_COLOR_VALUE, "");
+        return 0;
+    }
+    return 1;
+}
+
 /* ---- the cycle counter measures time (arch_cycles32, roadmap step 3e) ----
  * Ping's round-trip times come from it, and before this nothing looked: a
  * counter that never moved was "calibrated" at 1 MHz, logged as OK, and every
@@ -1148,72 +1174,6 @@ static int test_cycle_counter(void) {
     if (timer_tsc_mhz() < 2 || us < 15000 || us > 60000) {
         klog_u32("KTEST", SEV_FAIL, "cycle counter: 20 ms read as us ", us, LOG_COLOR_VALUE, "");
         return 0;
-    }
-    return 1;
-}
-
-/* ---- the PS/2 keyboard and mouse reach the kernel's input ----
- *
- * The 8042 will put a byte in its output buffer as though the keyboard (0xD2)
- * or the mouse (0xD3) had sent it, and raise the same interrupt. That drives
- * the whole path a key takes - the controller, IRQ 1 or 12 through whichever
- * interrupt controller is live, the decoder, the buffer - with nobody at the
- * keyboard. A machine with no 8042 (reads all ones) is untested, with a WARN. */
-static int ps2_send(uint8_t cmd, uint8_t byte) {
-    i8042_command(cmd);
-    i8042_write(byte);
-    /* Wait for the interrupt handler to take it. Real hardware latches the
-       byte a little after the write, so an empty buffer means "taken" only
-       once two ticks have passed. */
-    uint32_t t0 = timer_ticks();
-    while (timer_ticks() - t0 < 100)
-        if (!(i8042_status() & I8042_STAT_OUTPUT_FULL) && timer_ticks() - t0 > 1) return 1;
-    return 0;
-}
-
-static int test_ps2_input(void) {
-    if (i8042_status() == 0xFF) {
-        klog("KTEST", SEV_WARN, "PS/2 input untested: no 8042");
-        return 1;
-    }
-    while (keyboard_getchar()) { }                         /* drain */
-
-    /* 'a' pressed and released: one key, and the release none */
-    if (!ps2_send(I8042_CMD_WRITE_KBD_OUT, 0x1E) || !ps2_send(I8042_CMD_WRITE_KBD_OUT, 0x9E)) {
-        klog("KTEST", SEV_FAIL, "PS/2: the controller never handed over a keyboard byte");
-        return 0;
-    }
-    char c1 = keyboard_getchar(), c2 = keyboard_getchar();
-    if (c1 != 'a' || c2 != 0) {
-        klog("KTEST", SEV_FAIL, "PS/2: a key sent through the 8042 did not arrive as 'a'");
-        return 0;
-    }
-
-    if (!mouse_present()) {
-        klog("KTEST", SEV_WARN, "PS/2 mouse untested: none attached");
-        return 1;
-    }
-    /* Right 5 and up 3, then left 5 and down 3, which uses the 9-bit signs.
-       PS/2 Y is positive-up and the screen's is positive-down, so "up 3" is
-       3 rows nearer the top. The cursor starts centred, clear of the clamp. */
-    int32_t x0 = mouse_x(), y0 = mouse_y();
-    static const uint8_t pkt[2][3] = { { 0x08, 5, 3 }, { 0x38, 0xFB, 0xFD } };
-    static const int32_t want_dx[2] = { 5, 0 }, want_dy[2] = { -3, 0 };
-    for (int p = 0; p < 2; p++) {
-        uint32_t seq0 = mouse_seq();
-        for (int i = 0; i < 3; i++)
-            if (!ps2_send(I8042_CMD_WRITE_AUX_OUT, pkt[p][i])) {
-                klog("KTEST", SEV_FAIL, "PS/2: the controller never handed over a mouse byte");
-                return 0;
-            }
-        if (mouse_seq() - seq0 != 1) {
-            klog("KTEST", SEV_FAIL, "PS/2: a mouse packet was not one movement");
-            return 0;
-        }
-        if (mouse_x() != x0 + want_dx[p] || mouse_y() != y0 + want_dy[p]) {
-            klog("KTEST", SEV_FAIL, "PS/2: a mouse packet moved the pointer wrongly");
-            return 0;
-        }
     }
     return 1;
 }
@@ -2791,7 +2751,8 @@ void ktest_run(void) {
     total++; passed += report("tick counter wraparound",           test_timer_wraparound());
     total++; passed += report("a tick is a millisecond, by the PM timer", test_tick_rate());
     total++; passed += report("the cycle counter measures time",   test_cycle_counter());
-    total++; passed += report("PS/2 keyboard and mouse reach the kernel", test_ps2_input());
+    total++; passed += report("the wall clock reads a plausible date", test_wallclock());
+    total++; passed += report("PS/2 keyboard and mouse reach the kernel", ktest_platform_input());
     total++; passed += report("memory mappings (SYS_MEM_OP)",     test_vmregion());
     total++; passed += report("lifecycles: unmap, exit, resched", test_lifecycle_sequences());
     total++; passed += report("bounded strings: cap, truncation", test_bounded_strings());

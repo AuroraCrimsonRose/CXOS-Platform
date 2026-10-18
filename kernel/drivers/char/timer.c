@@ -9,7 +9,7 @@
 #include "keyboard.h"
 #include "arch/irq.h"
 #include "arch/cpu_ops.h"
-#include "platform/pc/pit.h"   /* the tick's source: the only PC dependency here */
+#include "platform/platform.h"   /* the tick's source */
 
 #define TIMER_HZ      1000u            /* 1000 Hz -> ~1 ms per tick */
 
@@ -28,8 +28,8 @@ uint32_t timer_ticks(void) {
 }
 
 void timer_sleep(uint32_t ms) {
-    /* If interrupts are disabled, `ticks` can never advance (the PIT IRQ can't
-       fire), so the normal wait would hang forever. Detect that and fall back
+    /* If interrupts are disabled, `ticks` can never advance (the tick interrupt
+       can't fire), so the normal wait would hang forever. Detect that and fall back
        to a bounded busy-delay instead - prevents a deadlock if timer_sleep is
        ever called during early boot init (before sti) or inside a cli section. */
     if (!arch_irqs_enabled()) {
@@ -82,11 +82,11 @@ int timer_timeout_expired(struct timeout *to) {
 }
 
 void timer_init(void) {
-    pit_start_periodic(TIMER_HZ, timer_callback);
+    platform_tick_start(TIMER_HZ, timer_callback);
 }
 
 /* ---- TSC: sub-millisecond timing ----
- * The PIT runs at 1000 Hz, so timer_ticks() cannot express anything shorter
+ * The tick runs at 1000 Hz, so timer_ticks() cannot express anything shorter
  * than a millisecond - which is why every ping measured 0 ms even when it was
  * genuinely working. The TSC counts CPU cycles and gives us microseconds.
  *
@@ -101,7 +101,7 @@ static inline uint32_t rdtsc32(void) { return arch_cycles32(); }
 
 uint32_t timer_tsc32(void) { return rdtsc32(); }
 
-/* Calibrate against the PIT. Called once, after the timer is running. */
+/* Calibrate against the tick. Called once, after the timer is running. */
 void timer_calibrate_tsc(void) {
     uint32_t t0 = timer_ticks();
     while (timer_ticks() == t0) { }          /* align to a tick edge */

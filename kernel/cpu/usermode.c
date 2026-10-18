@@ -32,7 +32,7 @@
 #include "power.h"
 #include "netif.h"
 #include "timer.h"
-#include "platform/pc/rtc.h"
+#include "platform/platform.h"
 #include "datetime.h"
 
 
@@ -229,12 +229,11 @@ static int syscall_do(uint32_t num, uint32_t a1, uint32_t a2) {
 
             /* epoch 0 means "no usable RTC", which the ABI documents, so a
                caller that needs a real date can tell. Deriving it here rather
-               than handing over the raw RTC fields keeps the BCD/century mess
-               on this side of the boundary. */
-            struct rtc_time t;
-            rtc_read(&t);
-            struct datetime dt = { t.year, t.month, t.day, t.hour, t.minute, t.second };
-            ci->epoch = (uint32_t)datetime_to_epoch(&dt);
+               than handing over the clock's raw fields keeps its format (BCD and
+               century, on a PC) on this side of the boundary. */
+            struct datetime dt;
+            ci->epoch = platform_wallclock(&dt) == 0
+                      ? (uint32_t)datetime_to_epoch(&dt) : 0;
             return E_OK;
         }
 

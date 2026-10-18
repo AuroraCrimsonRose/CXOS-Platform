@@ -11,6 +11,7 @@
 #include "arch/paging.h"
 #include "logging.h"
 #include "timer.h"
+#include "drivers/iowin.h"
 
 /* ---- capability registers (at BAR0) ------------------------------------- */
 #define CAP_CAPLENGTH   0x00   /* 8-bit: distance from BAR0 to the op regs   */
@@ -148,18 +149,21 @@ _Static_assert(sizeof(struct ehci_qh) % 32 == 0, "QH stride must stay 32-byte al
 
 #define NUM_QTD 4
 
-static volatile uint8_t *cap_regs = 0;
-static volatile uint8_t *op_regs = 0;
+/* BAR 0 is 256 bytes: the capability registers, then from CAPLENGTH on the
+   operational ones, each reached through its own window */
+#define EHCI_BAR_SIZE 0x100u
+static struct iowin cap_regs;
+static struct iowin op_regs;
 static int present = 0;
 static unsigned nports = 0;
 static int port_power_control = 0;
 
 static uint8_t next_address = 1;
 
-static inline uint32_t cap_rd32(uint32_t o) { return *(volatile uint32_t *)(cap_regs + o); }
-static inline uint8_t  cap_rd8(uint32_t o)  { return *(volatile uint8_t  *)(cap_regs + o); }
-static inline uint32_t op_rd(uint32_t o)    { return *(volatile uint32_t *)(op_regs + o); }
-static inline void     op_wr(uint32_t o, uint32_t v) { *(volatile uint32_t *)(op_regs + o) = v; }
+static inline uint32_t cap_rd32(uint32_t o) { return iowin_read32(&cap_regs, o); }
+static inline uint8_t  cap_rd8(uint32_t o)  { return iowin_read8(&cap_regs, o); }
+static inline uint32_t op_rd(uint32_t o)    { return iowin_read32(&op_regs, o); }
+static inline void     op_wr(uint32_t o, uint32_t v) { iowin_write32(&op_regs, o, v); }
 
 static inline uint32_t portsc_rd(unsigned p) { return op_rd(OP_PORTSC + p * 4); }
 
@@ -639,12 +643,14 @@ int ehci_init(void) {
     if (base == 0) return 0;
     for (uint32_t off = 0; off < 0x1000; off += 0x1000)
         paging_map_kernel(base + off, base + off, VM_WRITE | VM_UNCACHED);
-    cap_regs = (volatile uint8_t *)base;
+    if (iowin_mmio(&cap_regs, (volatile void *)base, EHCI_BAR_SIZE) != 0) return 0;
 
     uint32_t hccparams = cap_rd32(CAP_HCCPARAMS);
     ehci_bios_handoff(dev, hccparams);
 
-    op_regs = cap_regs + cap_rd8(CAP_CAPLENGTH);
+    uint8_t caplen = cap_rd8(CAP_CAPLENGTH);
+    if (iowin_mmio(&op_regs, (volatile void *)(base + caplen), EHCI_BAR_SIZE - caplen) != 0)
+        return 0;
 
     uint32_t hcsparams = cap_rd32(CAP_HCSPARAMS);
     nports = HCSPARAMS_NPORTS(hcsparams);

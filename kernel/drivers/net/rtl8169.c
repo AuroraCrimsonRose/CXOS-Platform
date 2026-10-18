@@ -9,6 +9,7 @@
 #include "pci.h"
 #include "arch/paging.h"
 #include "logging.h"
+#include "drivers/iowin.h"
 
 /* ---- register map (offsets from the MMIO base) --------------------------
  * Access WIDTH matters on this chip: several of these are byte or word
@@ -116,7 +117,7 @@ struct rtl_desc {
 #define TX_BUF_ADDR    (RX_BUF_ADDR + NUM_RX_DESC * RX_BUF_SIZE)
 #define RTL_DMA_END    (TX_BUF_ADDR + NUM_TX_DESC * TX_BUF_SIZE)
 
-static volatile uint8_t *regs = 0;
+static struct iowin regs;   /* the register file, R_* below */
 static int present = 0;
 static int link = 0;
 static uint8_t mac[6];
@@ -128,12 +129,12 @@ static struct rtl_desc *rxd = 0;
 static struct rtl_desc *txd = 0;
 
 /* ---- MMIO accessors, width-typed (see the register map note) ------------- */
-static inline uint8_t  rd8(uint32_t o)  { return *(volatile uint8_t  *)(regs + o); }
-static inline uint16_t rd16(uint32_t o) { return *(volatile uint16_t *)(regs + o); }
-static inline uint32_t rd32(uint32_t o) { return *(volatile uint32_t *)(regs + o); }
-static inline void wr8(uint32_t o, uint8_t v)   { *(volatile uint8_t  *)(regs + o) = v; }
-static inline void wr16(uint32_t o, uint16_t v) { *(volatile uint16_t *)(regs + o) = v; }
-static inline void wr32(uint32_t o, uint32_t v) { *(volatile uint32_t *)(regs + o) = v; }
+static inline uint8_t  rd8(uint32_t o)  { return iowin_read8(&regs, o); }
+static inline uint16_t rd16(uint32_t o) { return iowin_read16(&regs, o); }
+static inline uint32_t rd32(uint32_t o) { return iowin_read32(&regs, o); }
+static inline void wr8(uint32_t o, uint8_t v)   { iowin_write8(&regs, o, v); }
+static inline void wr16(uint32_t o, uint16_t v) { iowin_write16(&regs, o, v); }
+static inline void wr32(uint32_t o, uint32_t v) { iowin_write32(&regs, o, v); }
 
 static void busy_delay(volatile uint32_t n) { while (n--) { } }
 
@@ -236,10 +237,11 @@ int rtl8169_init(void) {
     pci_enable_bus_master(dev);
     /* VM_UNCACHED: device registers, not memory. The chip changes status bits
        under us and reads have side effects, so a cached line would serve stale
-       values. 64 KB covers the whole register file on every family member. */
+       values. 64 KB of mapping covers the BAR on every family member; the
+       registers this driver uses are the first 256 bytes. */
     for (uint32_t off = 0; off < 0x10000; off += 0x1000)
         paging_map_kernel(base + off, base + off, VM_WRITE | VM_UNCACHED);
-    regs = (volatile uint8_t *)base;
+    if (iowin_mmio(&regs, (volatile void *)base, 0x100) != 0) return 0;
 
     /* DMA region into the kernel half - deliberately left CACHEABLE; x86 snoops
        bus-master DMA, so write-back is both correct and faster for buffers. */

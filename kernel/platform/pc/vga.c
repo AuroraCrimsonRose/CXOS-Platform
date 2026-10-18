@@ -29,6 +29,13 @@ void vga_clear(uint8_t attr) {
         VGA_MEM[i] = cell;
 }
 
+void vga_scroll_up(uint8_t attr) {
+    for (int i = 0; i < VGA_WIDTH * (VGA_HEIGHT - 1); i++)
+        VGA_MEM[i] = VGA_MEM[i + VGA_WIDTH];
+    for (int x = 0; x < VGA_WIDTH; x++)
+        vga_put_cell(x, VGA_HEIGHT - 1, ' ', attr);
+}
+
 void vga_set_cursor(int x, int y) {
     if (x < 0) x = 0;
     if (x >= VGA_WIDTH) x = VGA_WIDTH - 1;

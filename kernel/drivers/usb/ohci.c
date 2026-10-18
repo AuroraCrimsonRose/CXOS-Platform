@@ -11,6 +11,7 @@
 #include "arch/paging.h"
 #include "logging.h"
 #include "timer.h"
+#include "drivers/iowin.h"
 
 /* ---- operational registers (at BAR0) ------------------------------------ */
 #define OHCI_REVISION        0x00
@@ -149,7 +150,7 @@ _Static_assert(sizeof(struct ohci_td) == 16, "a TD is 16 bytes");
 #define OXFER_MAX       4096
 #define NUM_TD          4
 
-static volatile uint8_t *regs = 0;
+static struct iowin regs;   /* BAR 0: the 4 KB operational registers */
 static int present = 0;
 static unsigned nports = 0;
 
@@ -158,8 +159,8 @@ static struct ohci_td *td;
 static uint8_t *xfer_buf;
 static uint8_t next_address = 1;
 
-static inline uint32_t rd(uint32_t o) { return *(volatile uint32_t *)(regs + o); }
-static inline void wr(uint32_t o, uint32_t v) { *(volatile uint32_t *)(regs + o) = v; }
+static inline uint32_t rd(uint32_t o) { return iowin_read32(&regs, o); }
+static inline void wr(uint32_t o, uint32_t v) { iowin_write32(&regs, o, v); }
 static inline uint32_t port_rd(unsigned p) { return rd(OHCI_RHPORTSTATUS + p * 4); }
 static inline void port_wr(unsigned p, uint32_t v) { wr(OHCI_RHPORTSTATUS + p * 4, v); }
 
@@ -576,7 +577,7 @@ int ohci_init(void) {
     if (base == 0) return 0;
 
     paging_map_kernel(base, base, VM_WRITE | VM_UNCACHED);
-    regs = (volatile uint8_t *)base;
+    if (iowin_mmio(&regs, (volatile void *)base, 0x1000) != 0) return 0;
 
     for (uint32_t a = ODMA_BASE; a < ODMA_END; a += 0x1000)
         paging_map_kernel(ODMA_V(a), a, VM_WRITE);
