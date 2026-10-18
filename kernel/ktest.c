@@ -56,6 +56,7 @@
 #include "mouse.h"
 #include "platform/ktest_platform.h"
 #include "platform/platform.h"
+#include "xhci_spad.h"
 
 
 /* concise pass/fail reporter */
@@ -1135,6 +1136,52 @@ static int test_tick_rate(void) {
 stalled:
     klog("KTEST", SEV_FAIL, "tick rate: 100 ticks took over 2 s of the PM timer");
     return 0;
+}
+
+/* ---- xHCI scratchpad pages, as a controller asking for them would get ----
+ * QEMU's xHCI asks for none, so no boot gives a controller any; this builds
+ * what one asking for 600 would get (two array pages, far past the 16 the
+ * driver once had room for) and checks it: every entry a distinct, page-
+ * aligned, 32-bit page, every page zero, and all of it back to the page
+ * allocator afterwards. */
+#define SPAD_TEST_N 600u
+static int test_xhci_scratchpad(void) {
+    static uint32_t pages[SPAD_TEST_N];
+    uint32_t free0 = pmm_free_count();
+    paddr_t arr;
+    if (xhci_spad_build(SPAD_TEST_N, &arr) != 0 || arr == 0 || (arr & 0x3F)) {
+        klog("KTEST", SEV_FAIL, "scratchpad: not built, or the array is misaligned");
+        return 0;
+    }
+    int ok = 1;
+    for (uint32_t i = 0; i < SPAD_TEST_N && ok; i++) {
+        uint64_t e = xhci_spad_entry(arr, i);
+        if (e == 0 || (e & 0xFFF) || (e >> 32)) {
+            klog_u32("KTEST", SEV_FAIL, "scratchpad: bad entry ", i, LOG_COLOR_VALUE, "");
+            ok = 0;
+        }
+        pages[i] = (uint32_t)e;
+        for (uint32_t j = 0; j < i && ok; j++)
+            if (pages[j] == pages[i]) {
+                klog_u32("KTEST", SEV_FAIL, "scratchpad: page given twice, entry ", i,
+                         LOG_COLOR_VALUE, "");
+                ok = 0;
+            }
+    }
+    for (uint32_t i = 0; i < SPAD_TEST_N && ok; i++) {
+        const volatile uint32_t *v = (const volatile uint32_t *)paging_temp_map(pages[i]);
+        for (uint32_t w = 0; w < PAGE_SIZE / 4; w++)
+            if (v[w]) { ok = 0; break; }
+        paging_temp_unmap();
+        if (!ok) klog_u32("KTEST", SEV_FAIL, "scratchpad: page not zero, entry ", i,
+                          LOG_COLOR_VALUE, "");
+    }
+    xhci_spad_release(arr, SPAD_TEST_N);
+    if (pmm_free_count() != free0) {
+        klog("KTEST", SEV_FAIL, "scratchpad: pages not all returned");
+        ok = 0;
+    }
+    return ok;
 }
 
 /* ---- the wall clock reads a plausible date (platform_wallclock, step 3) ----
@@ -2752,6 +2799,7 @@ void ktest_run(void) {
     total++; passed += report("a tick is a millisecond, by the PM timer", test_tick_rate());
     total++; passed += report("the cycle counter measures time",   test_cycle_counter());
     total++; passed += report("the wall clock reads a plausible date", test_wallclock());
+    total++; passed += report("xHCI scratchpad pages are whole and returned", test_xhci_scratchpad());
     total++; passed += report("PS/2 keyboard and mouse reach the kernel", ktest_platform_input());
     total++; passed += report("memory mappings (SYS_MEM_OP)",     test_vmregion());
     total++; passed += report("lifecycles: unmap, exit, resched", test_lifecycle_sequences());

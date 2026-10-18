@@ -242,6 +242,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/drivers/usb/usb.c
     ${SRC_DIR}/kernel/drivers/usb/ehci.c
     ${SRC_DIR}/kernel/drivers/usb/xhci.c
+    ${SRC_DIR}/kernel/drivers/usb/xhci_spad.c
     ${SRC_DIR}/kernel/drivers/usb/ohci.c
     ${SRC_DIR}/kernel/drivers/usb/usb_storage.c
     ${SRC_DIR}/kernel/drivers/usb/usb_hid.c

@@ -13,6 +13,7 @@
 #include "arch/irq.h"
 #include "timer.h"
 #include "drivers/iowin.h"
+#include "xhci_spad.h"
 
 /* ---- capability registers (at BAR0) ------------------------------------- */
 #define XCAP_CAPLENGTH   0x00   /* 8-bit  */
@@ -26,12 +27,12 @@
 #define HCS1_MAXPORTS(x) (((x) >> 24) & 0xFF)
 /* Scratchpad count is split across two non-adjacent fields, which is easy to
    get wrong and fails as a controller that will not start. */
-#define HCS2_SPB(x)      (((((x) >> 21) & 0x1F) << 5) | (((x) >> 27) & 0x1F))
 #define HCC1_CSZ(x)      (((x) >> 2) & 1)   /* 1 = 64-byte contexts          */
 
 /* ---- operational registers (at BAR0 + CAPLENGTH) ------------------------ */
 #define XOP_USBCMD       0x00
 #define XOP_USBSTS       0x04
+#define XOP_PAGESIZE     0x08   /* bit n: pages of 2^(n+12) bytes supported   */
 #define XOP_CRCR         0x18
 #define XOP_DCBAAP       0x30
 #define XOP_CONFIG       0x38
@@ -123,8 +124,7 @@ _Static_assert(sizeof(struct xhci_trb) == 16, "a TRB is 16 bytes");
 #define DEVCTX_ADDR     (XDMA_BASE + 0x5000)   /* one page per slot          */
 #define EP0RING_ADDR    (XDMA_BASE + 0xD000)   /* 256 bytes per slot         */
 #define XFERBUF_ADDR    (XDMA_BASE + 0xE000)
-#define SPAD_ARRAY_ADDR (XDMA_BASE + 0xF000)
-#define SPAD_PAGES_ADDR (XDMA_BASE + 0x10000)  /* up to 16 scratchpad pages  */
+/* 0xF000-0x1FFFF: free (the scratchpad pages come from the page allocator) */
 #define BULKRING_ADDR   (XDMA_BASE + 0x20000)  /* 256 bytes per slot per dir */
 /* Its own ring rather than sharing the bulk IN one: a composite device with
    both a bulk and an interrupt IN endpoint would otherwise have them collide. */
@@ -140,7 +140,6 @@ _Static_assert(sizeof(struct xhci_trb) == 16, "a TRB is 16 bytes");
 #define EVT_RING_TRBS   16
 #define EP0_RING_TRBS   16
 #define XFER_MAX        4096
-#define MAX_SPAD_PAGES  16
 
 /* BAR 0 holds four register files, each reached through its own window: the
    capability registers at 0, the operational ones after them (CAPLENGTH), and
@@ -851,7 +850,6 @@ int xhci_init(void) {
     nports = HCS1_MAXPORTS(hcs1);
     unsigned maxslots = HCS1_MAXSLOTS(hcs1);
     ctx_size = HCC1_CSZ(hcc1) ? 64 : 32;
-    unsigned spad = HCS2_SPB(hcs2);
     if (nports == 0 || maxslots == 0) return 0;
 
     for (uint32_t a = XDMA_BASE; a < XDMA_END; a += 0x1000)
@@ -873,6 +871,12 @@ int xhci_init(void) {
     }
     if (!ok) { klog("xHCI", SEV_WARN, "controller reset did not complete"); return 0; }
 
+    uint32_t spad;
+    if (xhci_spad_plan(hcs2, op_rd(XOP_PAGESIZE), &spad) != 0) {
+        klog("xHCI", SEV_WARN, "controller cannot use 4 KB pages - not initialising");
+        return 0;
+    }
+
     if (maxslots > MAX_SLOTS_USED) maxslots = MAX_SLOTS_USED;
     op_wr(XOP_CONFIG, maxslots);
 
@@ -884,19 +888,19 @@ int xhci_init(void) {
        DCBAA points at the array of pages. Skipping this on a controller that
        asks for them is a controller that never starts. */
     if (spad) {
-        if (spad > MAX_SPAD_PAGES) {
-            klog_u32("xHCI", SEV_WARN, "controller wants more scratchpad pages than reserved: ",
+        /* Kept across a second xhci_init rather than leaked. */
+        static paddr_t spad_array;
+        static uint32_t spad_count;
+        xhci_spad_release(spad_array, spad_count);
+        spad_array = 0; spad_count = 0;
+        if (xhci_spad_build(spad, &spad_array) != 0) {
+            klog_u32("xHCI", SEV_WARN, "no memory for the scratchpad pages asked for: ",
                      spad, LOG_COLOR_VALUE, "");
             return 0;
         }
-        volatile uint64_t *arr = (volatile uint64_t *)XDMA_V(SPAD_ARRAY_ADDR);
-        for (unsigned i = 0; i < spad; i++) {
-            uint32_t page = SPAD_PAGES_ADDR + i * 0x1000;
-            volatile uint8_t *p = (volatile uint8_t *)XDMA_V(page);
-            for (unsigned b = 0; b < 0x1000; b++) p[b] = 0;
-            arr[i] = page;
-        }
-        dcbaa[0] = SPAD_ARRAY_ADDR;
+        spad_count = spad;
+        dcbaa[0] = spad_array;
+        klog_u32("xHCI", SEV_INFO, "scratchpad pages: ", spad, LOG_COLOR_VALUE, "");
     }
     op_wr64(XOP_DCBAAP, DCBAA_ADDR);
 
