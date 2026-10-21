@@ -55,6 +55,7 @@ struct storage_unit {
     uint8_t  sector_shift;    /* log2(block_size / 512) - see the note in rw() */
     uint64_t blocks;
     uint8_t  disk_id;
+    uint8_t  dirty;           /* a transaction began and no CSW has answered it */
 };
 
 static struct storage_unit units[MAX_UNITS];
@@ -74,28 +75,38 @@ static void put_be16(uint8_t *p, uint16_t v) {
 
 /* CLEAR_FEATURE(ENDPOINT_HALT). A stalled bulk endpoint stays stalled until it
    is cleared, and the clear resets the toggle on the DEVICE - so the host's
-   copy has to be reset to match or every packet after is silently dropped. */
+   side has to be reset to match or every packet after is silently dropped. */
 static void clear_stall(struct usb_device *dev, uint8_t ep) {
     dev->ops->control(dev, 0x02, 0x01 /* CLEAR_FEATURE */, 0 /* ENDPOINT_HALT */, ep, 0, 0);
-    if (dev->ops->reset_toggle) dev->ops->reset_toggle(dev, ep);
+    if (dev->ops->reset_ep) dev->ops->reset_ep(dev, ep);
+}
+
+/* A CBW for `cdb`, with a fresh tag, which it returns. */
+static uint32_t make_cbw(struct bot_cbw *cbw, const struct storage_unit *u,
+                         const uint8_t *cdb, uint8_t cdb_len, uint32_t len, int data_in) {
+    for (unsigned i = 0; i < sizeof(*cbw); i++) ((uint8_t *)cbw)[i] = 0;
+    uint32_t tag = next_tag++;
+    cbw->signature = CBW_SIGNATURE;
+    cbw->tag = tag;
+    cbw->data_transfer_length = len;
+    cbw->flags = data_in ? CBW_FLAG_IN : 0;
+    cbw->lun = u->lun;
+    cbw->cb_length = cdb_len;
+    for (unsigned i = 0; i < cdb_len && i < 16; i++) cbw->cb[i] = cdb[i];
+    return tag;
 }
 
 /* One complete Bulk-Only transaction: CBW, optional data, CSW.
-   Returns the bytes transferred in the data phase, or -1. */
+   Returns the bytes transferred in the data phase, or -1.
+   `dirty` is set for the whole transaction and cleared only by a CSW that
+   answers it, so a panic in the middle - or a transaction that ended out of
+   step - leaves it set for usb_storage_panic_reset to see. */
 static int bot_transfer(struct storage_unit *u, const uint8_t *cdb, uint8_t cdb_len,
                         void *data, uint32_t len, int data_in) {
     struct usb_device *dev = u->dev;
     struct bot_cbw cbw;
-    for (unsigned i = 0; i < sizeof(cbw); i++) ((uint8_t *)&cbw)[i] = 0;
-
-    uint32_t tag = next_tag++;
-    cbw.signature = CBW_SIGNATURE;
-    cbw.tag = tag;
-    cbw.data_transfer_length = len;
-    cbw.flags = data_in ? CBW_FLAG_IN : 0;
-    cbw.lun = u->lun;
-    cbw.cb_length = cdb_len;
-    for (unsigned i = 0; i < cdb_len && i < 16; i++) cbw.cb[i] = cdb[i];
+    uint32_t tag = make_cbw(&cbw, u, cdb, cdb_len, len, data_in);
+    u->dirty = 1;
 
     if (dev->ops->bulk(dev, dev->ep_out, &cbw, sizeof(cbw)) != (int)sizeof(cbw)) {
         clear_stall(dev, dev->ep_out);
@@ -127,6 +138,7 @@ static int bot_transfer(struct storage_unit *u, const uint8_t *cdb, uint8_t cdb_
     /* A mismatched tag means host and device have lost step with each other -
        the reply belongs to some earlier command, so nothing here is trustworthy. */
     if (csw.tag != tag) return -1;
+    u->dirty = 0;                 /* in step again, whatever the status says */
     if (csw.status != 0) return -1;
 
     return moved;
@@ -323,4 +335,46 @@ int usb_storage_flush(uint8_t unit) {
     struct storage_unit *u = &units[unit];
     uint8_t cdb[10] = { SCSI_SYNC_CACHE10, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
     return bot_transfer(u, cdb, sizeof(cdb), 0, 0, 1) < 0 ? DISK_ERR_FAULT : DISK_OK;
+}
+
+/* ---- panic -------------------------------------------------------------- */
+
+int usb_storage_panic_reset(uint8_t unit) {
+    if (unit >= MAX_UNITS || !units[unit].in_use) return DISK_ERR_NO_DEVICE;
+    struct storage_unit *u = &units[unit];
+    if (!u->dirty) return 0;
+    struct usb_device *dev = u->dev;
+    /* The controller first: whatever the interrupted transaction left on its
+       schedule must not run ahead of the reset. */
+    if (dev->ops->reset_ep) {
+        dev->ops->reset_ep(dev, 0);
+        dev->ops->reset_ep(dev, dev->ep_in);
+        dev->ops->reset_ep(dev, dev->ep_out);
+    }
+    /* Bulk-Only Mass Storage Reset: class request 0xFF to the interface, which
+       is interface 0 - the one usb_enumerate selected, as GET_MAX_LUN assumes. */
+    if (dev->ops->control(dev, 0x21, 0xFF, 0, 0, 0, 0) < 0) return DISK_ERR_FAULT;
+    clear_stall(dev, dev->ep_in);
+    clear_stall(dev, dev->ep_out);
+    u->dirty = 0;
+    return 1;
+}
+
+static uint8_t abandon_buf[USB_BLOCK_MAX];
+
+int usb_storage_test_interrupt(uint8_t unit) {
+    if (unit >= MAX_UNITS || !units[unit].in_use) return DISK_ERR_NO_DEVICE;
+    struct storage_unit *u = &units[unit];
+    struct usb_device *dev = u->dev;
+    uint16_t blocks = (uint16_t)(USB_BLOCK_MAX / u->block_size);
+    if (blocks < 2) return DISK_ERR_PARAMS;          /* nothing would be left over */
+    uint8_t cdb[10] = { SCSI_READ10, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    put_be16(&cdb[7], blocks);
+    struct bot_cbw cbw;
+    (void)make_cbw(&cbw, u, cdb, sizeof(cdb), (uint32_t)blocks * u->block_size, 1);
+    u->dirty = 1;
+    if (dev->ops->bulk(dev, dev->ep_out, &cbw, sizeof(cbw)) != (int)sizeof(cbw))
+        return DISK_ERR_FAULT;
+    return dev->ops->bulk(dev, dev->ep_in, abandon_buf, u->block_size) < 0
+         ? DISK_ERR_FAULT : DISK_OK;
 }

@@ -74,11 +74,14 @@ struct usb_hc_ops {
        hard error. */
     int (*interrupt_poll)(struct usb_device *dev, uint8_t ep, void *data, uint32_t len);
 
-    /* Forget the software data toggle for an endpoint. Needed after a stall is
-       cleared: CLEAR_FEATURE(ENDPOINT_HALT) resets the toggle on the device
-       side, and host and device must agree or every later packet is dropped.
-       May be null on controllers that track the toggle in hardware. */
-    void (*reset_toggle)(struct usb_device *dev, uint8_t ep);
+    /* Bring an endpoint's host side back to a known state, whatever a stall or
+       an abandoned transfer left it in: nothing still in flight, not halted,
+       and the data toggle back at DATA0. Needed after a stall is cleared -
+       CLEAR_FEATURE(ENDPOINT_HALT) resets the toggle on the device side, and
+       host and device must agree or every later packet is dropped - and after
+       a panic that interrupted a transfer (usb_storage_panic_reset). `ep` 0 is
+       the control endpoint. Polled; never needs interrupts. */
+    void (*reset_ep)(struct usb_device *dev, uint8_t ep);
 };
 
 struct usb_device {

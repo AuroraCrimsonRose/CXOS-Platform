@@ -190,6 +190,18 @@ int disk_write(uint8_t id, uint64_t lba, uint32_t count, const void *buf);
    data it was told was safe. See the Durability note above. */
 int disk_flush(uint8_t id);
 
+/* For a panic about to write to `id` (diag/crashlog.h): put the disk back in
+   a state that takes a new command, if the panic may have interrupted one.
+   Returns 1 if a reset was needed and done, 0 if none was needed, or a
+   disk_err code. Only USB is handled; an ATA or AHCI command a panic
+   interrupted is not recovered from yet, and returns 0 here. */
+int disk_panic_reset(uint8_t id);
+
+/* For the crash-log test only (`cxk verify-crashlog`): leave a transfer to
+   `id` half done, as a panic in the middle of one would. DISK_OK if one was
+   left; DISK_ERR_NO_DEVICE where there is nothing to interrupt (not USB). */
+int disk_test_interrupt(uint8_t id);
+
 /* human-readable text for a disk_err code (e.g. "timeout", "not ready"). */
 const char *disk_err_str(int err);
 

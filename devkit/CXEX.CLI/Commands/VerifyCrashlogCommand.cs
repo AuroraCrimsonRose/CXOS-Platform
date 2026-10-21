@@ -36,6 +36,10 @@ public class VerifyCrashlogCommand : Command<VerifyCrashlogCommand.Settings>
         [CommandOption("--cpu")]
         [Description("QEMU CPU model. Default: QEMU's own")]
         public string? Cpu { get; set; }
+
+        [CommandOption("--usb")]
+        [Description("Boot the copy as a USB stick on this host controller: xhci, ehci or ohci. The first boot then leaves a transfer half done before it panics, and the save must reset the stick. Default: IDE")]
+        public string? Usb { get; set; }
     }
 
     private const string Reason = BootVerdict.CrashTestReason;
@@ -45,6 +49,12 @@ public class VerifyCrashlogCommand : Command<VerifyCrashlogCommand.Settings>
         if (!File.Exists(settings.ImagePath))
         {
             AnsiConsole.MarkupLine($"[red]error:[/] disk image not found: '{Markup.Escape(settings.ImagePath)}'");
+            return 1;
+        }
+        UsbHost? usb = null;
+        if (settings.Usb is not null && (usb = QemuTool.ParseUsbHost(settings.Usb)) is null)
+        {
+            AnsiConsole.MarkupLine($"[red]error:[/] --usb takes xhci, ehci or ohci, not '{Markup.Escape(settings.Usb)}'");
             return 1;
         }
 
@@ -63,20 +73,24 @@ public class VerifyCrashlogCommand : Command<VerifyCrashlogCommand.Settings>
             }
 
             AnsiConsole.MarkupLine($"[grey]boot 1: armed, expecting a panic (serial -> {Markup.Escape(log1)})[/]");
-            var v1 = BootVerifier.Run(copy, log1, timeout, BootVerdict.ClassifyRequestedPanic, null, settings.Cpu, snapshot: false);
+            var v1 = BootVerifier.Run(copy, log1, timeout, BootVerdict.ClassifyRequestedPanic, null, settings.Cpu, snapshot: false, usb);
             if (v1.Outcome != BootOutcome.Pass) return Verdict(v1.Outcome, "boot 1: " + v1.Reason, log1);
 
             CrashAreaReading saved;
             using (var fs = new FileStream(copy, FileMode.Open, FileAccess.Read)) saved = CrashLog.Read(fs);
             if (saved.State != CrashAreaState.Record)
                 return Verdict(BootOutcome.Fail, "after boot 1 the crash area holds no record: " + saved.Detail, log1);
-            foreach (string want in new[] { "*** KERNEL PANIC ***", Reason, "Stack trace", "---- system log" })
+            // On USB the first boot left a transfer half done before panicking
+            // (crashlog_test_interrupt), so the save must have reset the stick.
+            var wants = new List<string> { "*** KERNEL PANIC ***", Reason, "Stack trace", "---- system log" };
+            if (usb is not null) wants.Add(CrashLog.UsbResetLine);
+            foreach (string want in wants)
                 if (!saved.Text.Contains(want))
                     return Verdict(BootOutcome.Fail, $"the saved record lacks \"{want}\"", log1);
 
             AnsiConsole.MarkupLine($"[grey]boot 1: {Markup.Escape(saved.Detail)}[/]");
             AnsiConsole.MarkupLine($"[grey]boot 2: expecting the record recovered (serial -> {Markup.Escape(log2)})[/]");
-            var v2 = BootVerifier.Run(copy, log2, timeout, l => BootVerdict.Classify(l, full: false), null, settings.Cpu, snapshot: false);
+            var v2 = BootVerifier.Run(copy, log2, timeout, l => BootVerdict.Classify(l, full: false), null, settings.Cpu, snapshot: false, usb);
             if (v2.Outcome != BootOutcome.Pass) return Verdict(v2.Outcome, "boot 2: " + v2.Reason, log2);
 
             // The console wraps at its width, so a line can arrive in pieces.
@@ -113,7 +127,7 @@ public class VerifyCrashlogCommand : Command<VerifyCrashlogCommand.Settings>
 /// <summary>
 /// Prints the crash log a panic left on a disk, without booting it
 /// (docs/devkit/CX_CXK_PLAN.md section 3.7). Reads disk image files today;
-/// reading the rig's USB stick directly comes with the USB crash-log slice.
+/// reading the rig's USB stick directly (a raw device) is still to come.
 /// </summary>
 public class RigCrashlogCommand : Command<RigCrashlogCommand.Settings>
 {

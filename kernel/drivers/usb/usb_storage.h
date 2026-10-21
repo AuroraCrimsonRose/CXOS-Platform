@@ -43,4 +43,19 @@ int usb_storage_write(uint8_t unit, uint64_t lba, uint32_t count, const void *bu
    which is what people do to USB sticks - loses it. */
 int usb_storage_flush(uint8_t unit);
 
+/* For a panic about to write the crash log (diag/crashlog.h). If the panic
+   interrupted a transaction with this unit - or the last one ended out of
+   step - the host controller and the device are each mid-command, and the
+   next CBW would be taken as data or refused. This does the Bulk-Only reset
+   recovery (BOT 5.3.4): the controller's endpoints put back to a known state,
+   Bulk-Only Mass Storage Reset, both bulk endpoints' halts cleared. Polled,
+   so it works with interrupts off. Returns 1 if a reset was needed and done,
+   0 if none was needed, or a disk_err code if it failed. */
+int usb_storage_panic_reset(uint8_t unit);
+
+/* For the crash-log test only: start a READ and walk away after its first
+   block, leaving the device with data and a CSW still to send - what a panic
+   in the middle of a transfer leaves. The save that follows must recover. */
+int usb_storage_test_interrupt(uint8_t unit);
+
 #endif

@@ -43,6 +43,10 @@ public static class CrashLog
     public const int TextMax = 32 * Sector;
     public const int Sectors = 1 + TextMax / Sector;
 
+    /// <summary>What a save writes into the record when it had to reset a USB
+    /// disk a panic left mid-transfer (CRASHLOG_RESET_LINE, kernel/diag/crashlog.h).</summary>
+    public const string UsbResetLine = "crash log: the disk was mid-transfer; reset before this save";
+
     /// <summary>CRC-32 (IEEE, reflected, as zlib), chained like the kernel's xcrl_crc32.</summary>
     public static uint Crc32(uint crc, ReadOnlySpan<byte> data)
     {

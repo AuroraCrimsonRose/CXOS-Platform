@@ -342,3 +342,20 @@ void disk_capacity_str(uint64_t sectors, char *buf, int cap) {
     for (int k = 0; unit[k]; k++) buf[p++] = unit[k];
     buf[p] = '\0';
 }
+int disk_panic_reset(uint8_t id) {
+    const struct disk *d = disk_find_by_id(id);
+    if (!d) return DISK_ERR_NO_DEVICE;
+#if CXK_HAVE_USB
+    if (d->driver == DISK_DRV_USB) return usb_storage_panic_reset((uint8_t)d->unit);
+#endif
+    return 0;
+}
+
+int disk_test_interrupt(uint8_t id) {
+    const struct disk *d = disk_find_by_id(id);
+    if (!d) return DISK_ERR_NO_DEVICE;
+#if CXK_HAVE_USB
+    if (d->driver == DISK_DRV_USB) return usb_storage_test_interrupt((uint8_t)d->unit);
+#endif
+    return DISK_ERR_NO_DEVICE;
+}

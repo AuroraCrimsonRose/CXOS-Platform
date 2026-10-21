@@ -1248,7 +1248,7 @@ static int test_crashlog(void) {
     uint8_t disk;
     uint64_t lba, secs;
     if (crashlog_area(&disk, &lba, &secs) != 0) {
-        klog("KTEST", SEV_FAIL, "crash log: no crash area on an IDE or SATA disk");
+        klog("KTEST", SEV_FAIL, "crash log: no crash area on any disk");
         return 0;
     }
     int ok = 1;

@@ -49,13 +49,6 @@ static void find_area(void) {
         if (!d) continue;
         struct partition p;
         if (part_find_type(d->id, PART_TYPE_CXCRASH, &p) != 0) continue;
-        if (d->attach == DISK_ATTACH_USB) {
-            /* Polled writes through a USB host controller with interrupts
-               off do not exist yet, so a panic could not write here. */
-            klog("CRASHLOG", SEV_WARN, "crash area on a USB disk: not used yet");
-            klog_child(d->name);
-            continue;
-        }
         if (p.sectors < XCRL_SECTORS) {
             klog("CRASHLOG", SEV_WARN, "crash area too small, not used");
             continue;
@@ -223,14 +216,25 @@ static void put_slog_tail(void) {
 int crashlog_panic_save(void) {
     if (saving) return -1;               /* a panic inside the save */
     if (!have_area) return DISK_ERR_NO_DEVICE;
-    put_slog_tail();
     saving = 1;
+    /* A panic in the middle of a USB transaction leaves the disk unable to
+       take the record's commands until it is reset (crashlog.h). The reset
+       goes in the record, ahead of the system log so it is never cut off. */
+    int reset = disk_panic_reset(area_disk);
+    if (reset > 0) put_str(CRASHLOG_RESET_LINE "\n");
+    put_slog_tail();
     int r = crashlog_write_record(XCRL_KIND_CRASH, text, text_len);
     saving = 0;
     return r;
 }
 
 int crashlog_test_requested(void) { return test_requested; }
+
+void crashlog_test_interrupt(void) {
+    if (!test_requested || !have_area) return;
+    if (disk_test_interrupt(area_disk) == DISK_OK)
+        klog("CRASHLOG", SEV_WARN, "left a transfer to the crash area's disk half done");
+}
 
 int crashlog_recovered(uint32_t *len, uint32_t *crc) {
     if (!recovered) return 0;

@@ -114,11 +114,15 @@ real machine as QEMU gets.
 - `cxk rig crashlog <disk>` reads the crash log saved on the stick
   (`kernel/CX_KERNEL_PLAN.md` §8) and `cxk rig symbolize` turns its addresses
   into function names and lines. **`crashlog` exists since roadmap step 4b**
-  for disk images; reading the stick itself comes with the USB slice of the
-  crash log. So does `cxk verify-crashlog <image>`: it boots a copy twice, the
-  first asked to panic (through a request record it writes into the CRASH
-  partition), and requires the record on disk after the panic, then
-  `/System/crash.log` recovered and the area cleared by the second boot.
+  for disk images; reading the stick itself (a raw Windows device, which
+  needs an administrator) is still to come. `cxk verify-crashlog <image>`
+  boots a copy twice, the first asked to panic (through a request record it
+  writes into the CRASH partition), and requires the record on disk after the
+  panic, then `/System/crash.log` recovered and the area cleared by the second
+  boot. With `--usb xhci|ehci|ohci` (step 4c) the copy is a stick on that
+  controller, the first boot leaves a READ half done before it panics, and
+  the record must say the save reset the stick first. `cxk verify-boot` takes
+  the same `--usb`.
 
 ### 3.8 Later
 

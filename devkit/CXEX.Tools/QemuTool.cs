@@ -40,7 +40,14 @@ public class QemuConfig
     /// is tested on a minimal model and a full one, so both sides of each
     /// feature check run (docs/kernel/CX_KERNEL_PLAN.md §2.3).</summary>
     public string? CpuModel { get; set; }
+
+    /// <summary>Attach the boot disk as a USB stick on this host controller
+    /// instead of IDE, as the rig boots (roadmap step 4c). Null: IDE.</summary>
+    public UsbHost? BootUsb { get; set; }
 }
+
+/// <summary>The USB host controllers CXK drives, as QEMU can attach them.</summary>
+public enum UsbHost { Xhci, Ehci, Ohci }
 
 public static class QemuTool
 {
@@ -73,7 +80,15 @@ public static class QemuTool
             args.Add("-audiodev"); args.Add("dsound,id=speaker");
         }
 
-        if (config.MachineType.Equals("q35", StringComparison.OrdinalIgnoreCase))
+        if (config.BootUsb is UsbHost host)
+        {
+            // The boot disk as a stick on its own controller; SeaBIOS boots
+            // from all three. Nothing on IDE, as on a machine with no disk.
+            args.Add("-device"); args.Add($"{UsbHostDevice(host)},id=usbhc");
+            args.Add("-drive"); args.Add($"id=cxkdisk,format=raw,file={config.BootDisk},if=none");
+            args.Add("-device"); args.Add("usb-storage,bus=usbhc.0,drive=cxkdisk,bootindex=0");
+        }
+        else if (config.MachineType.Equals("q35", StringComparison.OrdinalIgnoreCase))
         {
             // Modern AHCI/SATA setup (single unified disk)
             args.Add("-drive"); args.Add($"id=cxkdisk,format=raw,file={config.BootDisk},if=none");
@@ -127,6 +142,24 @@ public static class QemuTool
 
         return args;
     }
+
+    /// <summary>QEMU's device for each host controller.</summary>
+    public static string UsbHostDevice(UsbHost host) => host switch
+    {
+        UsbHost.Xhci => "qemu-xhci",
+        UsbHost.Ehci => "usb-ehci",
+        _ => "pci-ohci",
+    };
+
+    /// <summary>"xhci", "ehci" or "ohci", any case, as typed on a command
+    /// line; null for anything else.</summary>
+    public static UsbHost? ParseUsbHost(string? name) => name?.ToLowerInvariant() switch
+    {
+        "xhci" => UsbHost.Xhci,
+        "ehci" => UsbHost.Ehci,
+        "ohci" => UsbHost.Ohci,
+        _ => null,
+    };
 
     /// <summary>
     /// The command line as it would be typed, for `--dry-run` and logs.

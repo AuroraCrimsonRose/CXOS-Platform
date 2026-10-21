@@ -16,9 +16,11 @@
  * bounded by a spin count when interrupts are off (timer.h). Which disk and
  * where are settled at boot, so the panic does not search.
  *
- * Only IDE and SATA disks carry the area for now. A USB disk (the rig boots
- * from a stick) needs a polled path through its host controller that does not
- * exist yet; such a disk is passed over, and the boot says so.
+ * The area can be on an IDE, SATA or USB disk; the rig has no other disk
+ * than the stick it boots from. The USB drivers are polled already, but a
+ * panic can land in the middle of a USB transaction, leaving the controller
+ * and the stick each mid-command, so the save first does the Bulk-Only reset
+ * recovery when one is needed (disk_panic_reset), and the record says so.
  */
 
 #ifndef DIAG_CRASHLOG_H
@@ -41,6 +43,15 @@ int crashlog_panic_save(void);
 
 /* Did `cxk verify-crashlog` ask this boot to panic on purpose? */
 int crashlog_test_requested(void);
+
+/* Just before that deliberate panic: on a USB disk, leave a transfer to the
+   area's disk half done (disk_test_interrupt), so the test covers the save
+   recovering from one. Nothing on other disks. */
+void crashlog_test_interrupt(void);
+
+/* The line a save puts in the record when it had to reset the disk first;
+   `cxk verify-crashlog --usb` looks for it. */
+#define CRASHLOG_RESET_LINE "crash log: the disk was mid-transfer; reset before this save"
 
 /* Did this boot copy a previous boot's record to /System/crash.log? 1 with the
    text's length and CRC-32 (xcrl_crc32), so the self-test can read the file

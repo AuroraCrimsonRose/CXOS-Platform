@@ -363,8 +363,10 @@ void kmain_late(void) {
     /* `cxk verify-crashlog` armed the crash area: panic now, through the same
        path any panic takes, for the next boot to recover. After the
        self-tests, so this boot is an ordinary one up to here. */
-    if (crashlog_test_requested())
+    if (crashlog_test_requested()) {
+        crashlog_test_interrupt();
         kpanic("deliberate panic: a crash-log test asked for one");
+    }
 
 #ifdef CXK_DEV_UNSIGNED
     /* Said at every boot, in the log, just before anything unsigned could run:

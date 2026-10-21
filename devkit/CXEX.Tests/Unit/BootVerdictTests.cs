@@ -104,4 +104,32 @@ public class BootVerdictTests
         Assert.True(i >= 0 && i + 1 < args.Count);
         Assert.Equal("shift=6,sleep=off", args[i + 1]);
     }
+
+    [Theory]
+    [Trait(Categories.Key, Categories.Unit)]
+    [InlineData(UsbHost.Xhci, "qemu-xhci")]
+    [InlineData(UsbHost.Ehci, "usb-ehci")]
+    [InlineData(UsbHost.Ohci, "pci-ohci")]
+    public void A_usb_boot_puts_the_image_on_a_stick_and_nothing_on_ide(UsbHost host, string device)
+    {
+        // As the rig boots: the stick is the only disk, so a crash log or a
+        // self-test that passes has passed on USB, not on an IDE disk beside it.
+        var args = QemuTool.BuildArguments(BootVerifier.ConfigFor("cxk_disk.img", "serial.log", usb: host));
+        Assert.Contains($"{device},id=usbhc", args);
+        Assert.Contains("usb-storage,bus=usbhc.0,drive=cxkdisk,bootindex=0", args);
+        Assert.DoesNotContain(args, a => a.Contains("if=ide"));
+        Assert.Contains("-snapshot", args);
+    }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
+    public void Only_the_three_host_controllers_parse()
+    {
+        Assert.Equal(UsbHost.Xhci, QemuTool.ParseUsbHost("XHCI"));
+        Assert.Equal(UsbHost.Ehci, QemuTool.ParseUsbHost("ehci"));
+        Assert.Equal(UsbHost.Ohci, QemuTool.ParseUsbHost("ohci"));
+        Assert.Null(QemuTool.ParseUsbHost("uhci"));
+        Assert.Null(QemuTool.ParseUsbHost(""));
+        Assert.Null(QemuTool.ParseUsbHost(null));
+    }
 }

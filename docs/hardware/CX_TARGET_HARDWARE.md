@@ -37,9 +37,10 @@
 - **Logs without serial.** A failed boot is read from the crash log, written
   at panic to a reserved area of the disk (not kept in RAM, which the BIOS may
   clear) and saved as a file on the next boot. Built for IDE and SATA disks
-  (roadmap step 4b); the rig boots from a USB stick, and writing the log there
-  at panic needs a polled USB path that is the next slice, so until then a
-  panic on the rig saves nothing.
+  (roadmap step 4b) and for the USB stick the rig boots from (4c), which is
+  reset first if the panic caught it mid-transfer. Proven in QEMU on xHCI,
+  EHCI and OHCI; not yet on the rig. The rig has no internal disk and an AMI
+  BIOS from 2005: no UEFI.
 - **ACPI tables need an interpreter.** Interrupt routing (`_PRT`), sleep and
   reliable shutdown on this board are described in ACPI bytecode (AML).
   Booting does not need it (the legacy PIC works); SMP and proper device

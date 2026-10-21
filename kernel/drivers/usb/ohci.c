@@ -349,9 +349,17 @@ static int ohci_bulk(struct usb_device *dev, uint8_t ep, void *data, uint32_t le
     return transferred;
 }
 
-/* Clearing a stall resets the device's toggle, so drop the ED's carry to match. */
-static void ohci_reset_toggle(struct usb_device *dev, uint8_t ep) {
+/* Stop the bulk list, so a TD a panic interrupted does not run on, and drop
+   the ED's toggle carry to match a device whose stall was cleared (usb.h).
+   The 2 ms lets the controller finish the frame it was in. Control transfers
+   rebuild their ED from scratch each time, so `ep` 0 needs nothing. */
+static void ohci_reset_ep(struct usb_device *dev, uint8_t ep) {
     (void)dev;
+    if (!present || !(ep & 0x0F)) return;
+    wr(OHCI_CONTROL, rd(OHCI_CONTROL) & ~CTRL_BLE);
+    wr(OHCI_BULKHEADED, 0);
+    wr(OHCI_BULKCURRENTED, 0);
+    timer_sleep(2);
     struct ohci_ed *bed = (struct ohci_ed *)ODMA_V((ep & 0x80) ? ED_BULK_IN : ED_BULK_OUT);
     bed->head_td = 0;
 }
@@ -384,7 +392,7 @@ static const struct usb_hc_ops ohci_ops = {
     .control = ohci_control,
     .bulk    = ohci_bulk,
     .interrupt_poll = ohci_interrupt_poll,
-    .reset_toggle = ohci_reset_toggle,
+    .reset_ep = ohci_reset_ep,
 };
 
 static void enumerate_port(unsigned p) {

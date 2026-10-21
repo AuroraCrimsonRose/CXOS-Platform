@@ -39,6 +39,10 @@ public class VerifyBootCommand : Command<VerifyBootCommand.Settings>
         [CommandOption("--log")]
         [Description("Where to write the serial log. Default: beside the image, <image>.serial.log")]
         public string? LogPath { get; set; }
+
+        [CommandOption("--usb")]
+        [Description("Boot the image as a USB stick on this host controller: xhci, ehci or ohci. Default: IDE")]
+        public string? Usb { get; set; }
     }
 
     protected override int Execute(CommandContext context, Settings settings, CancellationToken cancellationToken)
@@ -55,15 +59,22 @@ public class VerifyBootCommand : Command<VerifyBootCommand.Settings>
             return 1;
         }
 
+        UsbHost? usb = null;
+        if (settings.Usb is not null && (usb = QemuTool.ParseUsbHost(settings.Usb)) is null)
+        {
+            AnsiConsole.MarkupLine($"[red]error:[/] --usb takes xhci, ehci or ohci, not '{Markup.Escape(settings.Usb)}'");
+            return 1;
+        }
+
         string log = settings.LogPath is { Length: > 0 } l ? l : settings.ImagePath + ".serial.log";
         AnsiConsole.MarkupLine($"[grey]booting[/] {Markup.Escape(settings.ImagePath)} [grey](snapshot, serial -> {Markup.Escape(log)})[/]");
-        AnsiConsole.MarkupLine($"[grey]{Markup.Escape(QemuTool.CommandLine(BootVerifier.ConfigFor(settings.ImagePath, log, settings.Cpu)))}[/]");
+        AnsiConsole.MarkupLine($"[grey]{Markup.Escape(QemuTool.CommandLine(BootVerifier.ConfigFor(settings.ImagePath, log, settings.Cpu, usb: usb)))}[/]");
 
         BootVerdict v;
         try
         {
             v = BootVerifier.Run(settings.ImagePath, log, TimeSpan.FromSeconds(settings.TimeoutSeconds), settings.Full,
-                                 line => AnsiConsole.MarkupLine($"[grey]{Markup.Escape(line)}[/]"), settings.Cpu);
+                                 line => AnsiConsole.MarkupLine($"[grey]{Markup.Escape(line)}[/]"), settings.Cpu, usb);
         }
         catch (System.ComponentModel.Win32Exception ex)
         {

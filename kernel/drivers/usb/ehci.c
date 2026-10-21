@@ -40,6 +40,7 @@
 #define CMD_ASE         (1u << 5)    /* async schedule enable                */
 
 #define STS_HCHALTED    (1u << 12)
+#define STS_ASS         (1u << 15)   /* async schedule status: really running */
 
 /* PORTSC. Bits 1, 3 and 5 are write-1-to-CLEAR: a read-modify-write that does
    not mask them off will clear change flags as a side effect of any unrelated
@@ -433,12 +434,31 @@ done:
     return transferred;
 }
 
-/* Reset the software toggle for an endpoint. The mass-storage layer calls this
-   after clearing a stall, because CLEAR_FEATURE(ENDPOINT_HALT) resets the
-   toggle on the DEVICE side and the two must agree. */
-static void ehci_reset_toggle(struct usb_device *dev, uint8_t ep) {
-    uint8_t *tg = toggle_slot(dev->address, ep);
-    if (tg) *tg = 0;
+/* Take an abandoned transfer off the async schedule and reset the software
+   toggle (usb.h). Control and bulk share the one queue head, so whatever was
+   left on it - a qTD a panic interrupted, or one a timeout gave up on - would
+   otherwise run when the schedule next reaches it, ahead of the next request.
+   The overlay is only written with the async schedule stopped, as the spec
+   requires; it is restarted afterwards. */
+static void ehci_reset_ep(struct usb_device *dev, uint8_t ep) {
+    if (!present || !qh) return;
+    uint32_t cmd = op_rd(OP_USBCMD);
+    op_wr(OP_USBCMD, cmd & ~CMD_ASE);
+    for (int i = 0; i < 20 && (op_rd(OP_USBSTS) & STS_ASS); i++) timer_sleep(1);
+
+    for (int i = 0; i < NUM_QTD; i++) qtd_clear(&qtd[i]);
+    qh->next = QTD_T;
+    qh->alt_next = QTD_T;
+    qh->current = 0;
+    qh->token = 0;                       /* not active, not halted, DATA0 */
+
+    op_wr(OP_USBCMD, cmd | CMD_ASE);
+    for (int i = 0; i < 20 && !(op_rd(OP_USBSTS) & STS_ASS); i++) timer_sleep(1);
+
+    if (ep & 0x0F) {                     /* the control endpoint's toggle is fixed */
+        uint8_t *tg = toggle_slot(dev->address, ep);
+        if (tg) *tg = 0;
+    }
 }
 
 /* ---- interrupt transfers ------------------------------------------------
@@ -572,7 +592,7 @@ static const struct usb_hc_ops ehci_ops = {
     .control = ehci_control,
     .bulk    = ehci_bulk,
     .interrupt_poll = ehci_interrupt_poll,
-    .reset_toggle = ehci_reset_toggle,
+    .reset_ep = ehci_reset_ep,
 };
 
 static void enumerate_port(unsigned p) {

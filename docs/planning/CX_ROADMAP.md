@@ -102,8 +102,14 @@ programs for it (step 6).
    for IDE and SATA disks landed the same day (4b): a CRASH partition in every
    image, the panic's screen and the system log's tail written there by the
    drivers' polled transfers, `/System/crash.log` on the next boot, and
-   `cxk verify-crashlog` proving it across two boots in QEMU. Still open: the
-   USB stick the rig boots from (4c), and the run on the rig itself.
+   `cxk verify-crashlog` proving it across two boots in QEMU. The USB stick
+   the rig boots from followed on 2026-10-21 (4c): a panic that lands in the
+   middle of a USB transaction now resets the stick and its controller's
+   endpoints before the save (Bulk-Only reset recovery; real Stop/Reset
+   Endpoint on xHCI), and `cxk verify-crashlog --usb xhci|ehci|ohci` proves it
+   in QEMU with a READ abandoned half way before the panic. Still open:
+   `cxk rig crashlog` reading the stick as a raw device, and the run on the
+   rig itself.
 5. **The x86-64 kernel boots.** The BIOS loader enters long mode and starts a
    64-bit kernel in the top half (`kernel/CX_KERNEL_PLAN.md` §2.4), with NX, the 64-bit GDT, IDT and TSS
    (IST for the double fault) and `syscall`/`sysret`; the page database, the
