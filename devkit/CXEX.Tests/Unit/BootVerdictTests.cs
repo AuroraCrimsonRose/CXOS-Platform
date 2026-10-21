@@ -92,4 +92,16 @@ public class BootVerdictTests
         Assert.True(i >= 0 && i + 1 < args.Count);
         Assert.Equal("pentium", args[i + 1]);
     }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
+    public void Verification_boots_keep_guest_time_off_the_host_clock()
+    {
+        // Headless QEMU's host timers are coarsened by Windows 11, which made
+        // the cycle-counter self-test fail on a good tree (QemuConfig.ICountNoSleep).
+        var args = QemuTool.BuildArguments(BootVerifier.ConfigFor("cxk_disk.img", "serial.log"));
+        int i = args.IndexOf("-icount");
+        Assert.True(i >= 0 && i + 1 < args.Count);
+        Assert.Equal("shift=6,sleep=off", args[i + 1]);
+    }
 }

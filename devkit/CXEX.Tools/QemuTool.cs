@@ -28,6 +28,14 @@ public class QemuConfig
     /// <summary>Value of -icount shift=N, or null to leave timing alone.</summary>
     public string? ICountShift { get; set; }
 
+    /// <summary>With -icount, sleep=off: the guest's clock runs by instruction
+    /// count alone and never waits on a host timer. Without it an idle guest's
+    /// timers fire when the host's do, and Windows 11 coarsens those for a
+    /// process with no visible window - headless QEMU - to about 15.6 ms, so a
+    /// 20 ms sleep read as 250 ms and the cycle-counter self-test failed on a
+    /// tree that had passed (2026-10-21). Also makes a boot repeatable.</summary>
+    public bool ICountNoSleep { get; set; }
+
     /// <summary>Value of -cpu, or null for QEMU's default model. The kernel
     /// is tested on a minimal model and a full one, so both sides of each
     /// feature check run (docs/kernel/CX_KERNEL_PLAN.md §2.3).</summary>
@@ -114,7 +122,7 @@ public static class QemuTool
 
         if (!string.IsNullOrEmpty(config.ICountShift))
         {
-            args.Add("-icount"); args.Add($"shift={config.ICountShift}");
+            args.Add("-icount"); args.Add($"shift={config.ICountShift}" + (config.ICountNoSleep ? ",sleep=off" : ""));
         }
 
         return args;

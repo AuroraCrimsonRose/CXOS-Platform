@@ -118,6 +118,7 @@ public static class BootVerifier
         Headless = true,
         Serial = serialLog,
         ICountShift = "6",
+        ICountNoSleep = true,
         CpuModel = cpu,
     };
 
