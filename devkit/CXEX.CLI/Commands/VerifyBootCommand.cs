@@ -43,6 +43,10 @@ public class VerifyBootCommand : Command<VerifyBootCommand.Settings>
         [CommandOption("--usb")]
         [Description("Boot the image as a USB stick on this host controller: xhci, ehci or ohci. Default: IDE")]
         public string? Usb { get; set; }
+
+        [CommandOption("--foreign-disk")]
+        [Description("Put a patterned disk ahead of the image, as a machine's own drive, and fail if the boot changes a byte of it")]
+        public bool ForeignDisk { get; set; }
     }
 
     protected override int Execute(CommandContext context, Settings settings, CancellationToken cancellationToken)
@@ -67,19 +71,38 @@ public class VerifyBootCommand : Command<VerifyBootCommand.Settings>
         }
 
         string log = settings.LogPath is { Length: > 0 } l ? l : settings.ImagePath + ".serial.log";
+        string? foreign = settings.ForeignDisk ? settings.ImagePath + ".foreign.img" : null;
+        byte[]? foreignHash = foreign is null ? null : CXEX.Tools.ForeignDisk.Create(foreign);
         AnsiConsole.MarkupLine($"[grey]booting[/] {Markup.Escape(settings.ImagePath)} [grey](snapshot, serial -> {Markup.Escape(log)})[/]");
-        AnsiConsole.MarkupLine($"[grey]{Markup.Escape(QemuTool.CommandLine(BootVerifier.ConfigFor(settings.ImagePath, log, settings.Cpu, usb: usb)))}[/]");
+        AnsiConsole.MarkupLine($"[grey]{Markup.Escape(QemuTool.CommandLine(BootVerifier.ConfigFor(settings.ImagePath, log, settings.Cpu, usb: usb, foreignDisk: foreign)))}[/]");
 
         BootVerdict v;
         try
         {
             v = BootVerifier.Run(settings.ImagePath, log, TimeSpan.FromSeconds(settings.TimeoutSeconds), settings.Full,
-                                 line => AnsiConsole.MarkupLine($"[grey]{Markup.Escape(line)}[/]"), settings.Cpu, usb);
+                                 line => AnsiConsole.MarkupLine($"[grey]{Markup.Escape(line)}[/]"), settings.Cpu, usb, foreign);
         }
         catch (System.ComponentModel.Win32Exception ex)
         {
             AnsiConsole.MarkupLine($"[red]error:[/] could not start {QemuTool.Executable}: {Markup.Escape(ex.Message)}");
             return 1;
+        }
+
+        // Decided after the boot whatever its verdict: a write to a disk that
+        // is not CXOS's fails the boot even if every self-test passed.
+        if (foreign is not null && foreignHash is not null)
+        {
+            if (!CXEX.Tools.ForeignDisk.Unchanged(foreign, foreignHash))
+                v = v with { Outcome = BootOutcome.Fail, Reason = $"the boot wrote to the foreign disk (kept at {foreign})" };
+            else
+            {
+                File.Delete(foreign);
+                int seen = CXEX.Tools.ForeignDisk.DisksSeen(File.Exists(log) ? File.ReadAllText(log) : "");
+                if (seen < 2 && v.Outcome == BootOutcome.Pass)
+                    v = v with { Outcome = BootOutcome.Inconclusive, Reason = $"the kernel reported {seen} disk(s): the foreign disk was never seen" };
+                else if (v.Outcome == BootOutcome.Pass)
+                    v = v with { Reason = v.Reason + "; the foreign disk is unchanged" };
+            }
         }
 
         switch (v.Outcome)

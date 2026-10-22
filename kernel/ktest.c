@@ -1234,6 +1234,56 @@ static int test_cxbi(void) {
     return 1;
 }
 
+/* ---- writes reach only the CXOS disk (the install guard) --------------------
+ * With automatic install off the kernel must write to no disk but the one it
+ * booted from. Checked three ways: the restriction is on, it names the disk
+ * the system volume and the crash area are on, and the disk layer applies it -
+ * with every disk refused for a moment, a write to the CXOS disk itself must
+ * come back DISK_ERR_DENIED and leave the sector as it was. The sector is the
+ * last of the crash area, which nothing else uses while the tests run. A boot
+ * with a second disk that must come out unchanged is `cxk verify-boot
+ * --foreign-disk`. */
+static int test_disk_write_guard(void) {
+#if CXK_AUTO_INSTALL || !CXK_ALLOW_DISK_WRITE
+    klog("KTEST", SEV_WARN, "write guard untested: automatic install on, or no writes at all");
+    return 1;
+#endif
+    int home = disk_write_home();
+    if (home < 0) {
+        klog("KTEST", SEV_FAIL, "write guard: writes are not limited to the CXOS disk");
+        return 0;
+    }
+    uint8_t disk;
+    uint64_t lba, secs;
+    if (crashlog_area(&disk, &lba, &secs) != 0 || disk != (uint8_t)home ||
+        !cxfs_is_mounted() || cxfs_get_id() != (uint8_t)home) {
+        klog("KTEST", SEV_FAIL, "write guard: the CXOS disk is not the one in use");
+        return 0;
+    }
+    static uint8_t before[512], probe[512], after[512];
+    uint64_t at = lba + secs - 1;
+    if (disk_read(disk, at, 1, before) != DISK_OK) return 0;
+    for (int i = 0; i < 512; i++) probe[i] = (uint8_t)(before[i] ^ 0xA5);
+
+    disk_restrict_writes(-1);
+    int r = disk_write(disk, at, 1, probe);
+    disk_restrict_writes(home);
+
+    int ok = 1;
+    if (r != DISK_ERR_DENIED) {
+        klog("KTEST", SEV_FAIL, "write guard: a refused disk took a write");
+        ok = 0;
+    }
+    if (disk_read(disk, at, 1, after) != DISK_OK || memcmp(before, after, 512) != 0) {
+        klog("KTEST", SEV_FAIL, "write guard: the refused sector changed");
+        ok = 0;
+        (void)disk_write(disk, at, 1, before);
+    }
+    /* and the CXOS disk is writable again */
+    if (disk_write(disk, at, 1, before) != DISK_OK) ok = 0;
+    return ok;
+}
+
 /* ---- a crash record goes to the crash area and reads back (step 4b) -------
  * The writes a panic makes (crashlog_write_record), read back raw and checked
  * as the next boot checks them; then one byte of the text is changed on disk
@@ -2925,6 +2975,7 @@ void ktest_run(void) {
     total++; passed += report("the wall clock reads a plausible date", test_wallclock());
     total++; passed += report("the boot handover came through CXBI", test_cxbi());
     total++; passed += report("a crash record goes to the crash area and back", test_crashlog());
+    total++; passed += report("disk writes reach only the CXOS disk", test_disk_write_guard());
     total++; passed += report("xHCI scratchpad pages are whole and returned", test_xhci_scratchpad());
     total++; passed += report("PS/2 keyboard and mouse reach the kernel", ktest_platform_input());
     total++; passed += report("memory mappings (SYS_MEM_OP)",     test_vmregion());

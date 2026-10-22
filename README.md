@@ -1,3 +1,4 @@
+| A disk that is not CXOS's, ahead of it, comes out unchanged | add `--foreign-disk` to `verify-boot` |
 # CXOS Platform
 
 Everything that makes CXOS, in one repository: **CXK**, the kernel; the **X

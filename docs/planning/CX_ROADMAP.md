@@ -109,7 +109,10 @@ programs for it (step 6).
    Endpoint on xHCI), and `cxk verify-crashlog --usb xhci|ehci|ohci` proves it
    in QEMU with a READ abandoned half way before the panic. Still open:
    `cxk rig crashlog` reading the stick as a raw device, and the run on the
-   rig itself.
+   rig itself. Before booting any machine but the rig, the install guard
+   (2026-10-22): with `CXK_AUTO_INSTALL=0`, the default, the disk layer
+   refuses every write to a disk but the one CXOS booted from, and
+   `cxk verify-boot --foreign-disk` proves a drive ahead of it is untouched.
 5. **The x86-64 kernel boots.** The BIOS loader enters long mode and starts a
    64-bit kernel in the top half (`kernel/CX_KERNEL_PLAN.md` §2.4), with NX, the 64-bit GDT, IDT and TSS
    (IST for the double fault) and `syscall`/`sysret`; the page database, the

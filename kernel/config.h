@@ -29,6 +29,26 @@
 #endif
 
 /*
+ * CXK_AUTO_INSTALL decides whether the kernel may claim a disk that is not its
+ * own. Its own disk is the one it booted from: the first carrying CXOS's
+ * partition table (XBPT) with a BOOT partition, where the first-boot install
+ * fills the SYSTEM volume and a panic writes the crash log.
+ *
+ *   0  Off. Every write to any other disk is refused in the disk layer
+ *      (disk_restrict_writes), so CXOS can be booted from a stick on a machine
+ *      whose own disks must survive. With no CXOS disk found, nothing is
+ *      written at all.
+ *   1  On, the old development behaviour: a second disk with no CXFS on it is
+ *      formatted as a "Data" volume, and every disk may be written.
+ *
+ * Independent of CXK_ALLOW_DISK_WRITE, which can still turn every write off.
+ * As with the flags below, cmake/cxk_flags.cmake is the authority.
+ */
+#ifndef CXK_AUTO_INSTALL
+#define CXK_AUTO_INSTALL 0          /* 0 = touch only CXOS's own disk, 1 = may claim others */
+#endif
+
+/*
  * CXK_ENABLE_FB controls the VBE linear-framebuffer path. When 1, the
  * bootloader sets a graphics mode and the kernel runs its console on the
  * framebuffer; when 0, the bootloader never touches the video hardware and the

@@ -27,6 +27,9 @@ set(CXK_FLAGS
                             #     in BOTH video modes: qemu ... -serial file:boot.log
     CXK_ALLOW_DISK_WRITE=1  # 1 = DEV build: may format / write a scratch disk. DANGER on bare metal.
                             #     0 = read-only/never-format (safe default for sharing)
+    CXK_AUTO_INSTALL=0      # 0 = write ONLY to CXOS's own disk (the stick it booted from); every
+                            #     other disk is refused in the disk layer. Safe on any machine.
+                            # 1 = may claim other disks: a second disk with no CXFS is formatted.
     CXK_KTEST_STACK_OVERFLOW=0  # 1 = after the self-tests, run a thread that recurses until it
                             #     overflows its kernel stack. The boot MUST end in a red panic naming
                             #     that thread - which proves the guard page and the double-fault task

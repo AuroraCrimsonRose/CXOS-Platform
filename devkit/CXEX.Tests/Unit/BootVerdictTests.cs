@@ -123,6 +123,44 @@ public class BootVerdictTests
 
     [Fact]
     [Trait(Categories.Key, Categories.Unit)]
+    public void A_foreign_disk_comes_first_and_keeps_what_the_guest_writes()
+    {
+        // The kernel must meet it before its own disk, as a machine's drive,
+        // and -snapshot must not hide a write to it.
+        var args = QemuTool.BuildArguments(BootVerifier.ConfigFor("cxk_disk.img", "serial.log", foreignDisk: "f.img"));
+        int foreign = args.IndexOf("format=raw,file=f.img,if=ide,index=0,snapshot=off");
+        int boot = args.IndexOf("ide-hd,drive=cxkdisk,bus=ide.0,unit=1,bootindex=0");
+        Assert.True(foreign >= 0 && boot > foreign);
+        Assert.Contains("-snapshot", args);
+
+        var usb = QemuTool.BuildArguments(BootVerifier.ConfigFor("cxk_disk.img", "serial.log", usb: UsbHost.Xhci, foreignDisk: "f.img"));
+        Assert.Contains("format=raw,file=f.img,if=ide,index=0,snapshot=off", usb);
+        Assert.Contains("usb-storage,bus=usbhc.0,drive=cxkdisk,bootindex=0", usb);
+    }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
+    public void A_foreign_disk_is_patterned_and_any_change_is_seen()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"cxk-foreign-{Guid.NewGuid():N}.img");
+        try
+        {
+            byte[] hash = ForeignDisk.Create(path);
+            Assert.True(ForeignDisk.Unchanged(path, hash));
+            byte[] disk = File.ReadAllBytes(path);
+            Assert.Contains(disk.Take(4096), b => b != 0);   // zeros would hide a write of zeros
+
+            using (var f = File.OpenWrite(path)) { f.Position = ForeignDisk.SizeBytes - 1; f.WriteByte((byte)~disk[^1]); }
+            Assert.False(ForeignDisk.Unchanged(path, hash));
+        }
+        finally { File.Delete(path); }
+
+        Assert.Equal(2, ForeignDisk.DisksSeen("[STORAGE ] - [OK  ] - online, disks: 2\n"));
+        Assert.Equal(-1, ForeignDisk.DisksSeen("no storage line"));
+    }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
     public void Only_the_three_host_controllers_parse()
     {
         Assert.Equal(UsbHost.Xhci, QemuTool.ParseUsbHost("XHCI"));

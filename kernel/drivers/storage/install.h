@@ -54,8 +54,14 @@ enum cxk_install_result {
    Leaves CXFS mounted on success. Returns a cxk_install_result. */
 int cxk_install_first_boot(uint8_t disk_id);
 
-/* Find the disk that carries an XBPT table, point CXFS at it, and run the
-   first-boot install on it. Returns a cxk_install_result. */
+/* The disk CXOS booted from: the first whose XBPT table holds a BOOT
+   partition. Its id, or -1 if no disk carries one. Only reads. This is the
+   disk the install fills and, with automatic install off, the only disk the
+   kernel writes (CXK_AUTO_INSTALL, config.h). */
+int cxk_find_boot_disk(void);
+
+/* Point CXFS at cxk_find_boot_disk's disk and run the first-boot install on
+   it. Returns a cxk_install_result. */
 int cxk_install_boot_disk(void);
 
 /* Put every drive that is not the boot drive under /Drives, and mount each

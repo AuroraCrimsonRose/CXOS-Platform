@@ -44,6 +44,12 @@ public class QemuConfig
     /// <summary>Attach the boot disk as a USB stick on this host controller
     /// instead of IDE, as the rig boots (roadmap step 4c). Null: IDE.</summary>
     public UsbHost? BootUsb { get; set; }
+
+    /// <summary>A disk that is not CXOS's, as a machine's own drive would be:
+    /// the first IDE disk, ahead of the boot disk, and never snapshotted, so
+    /// whatever the guest writes to it reaches the file (`cxk verify-boot
+    /// --foreign-disk`). On the pc machine only.</summary>
+    public string? ForeignDisk { get; set; }
 }
 
 /// <summary>The USB host controllers CXK drives, as QEMU can attach them.</summary>
@@ -87,6 +93,15 @@ public static class QemuTool
             args.Add("-device"); args.Add($"{UsbHostDevice(host)},id=usbhc");
             args.Add("-drive"); args.Add($"id=cxkdisk,format=raw,file={config.BootDisk},if=none");
             args.Add("-device"); args.Add("usb-storage,bus=usbhc.0,drive=cxkdisk,bootindex=0");
+            AddForeignDisk(args, config);
+        }
+        else if (!string.IsNullOrEmpty(config.ForeignDisk))
+        {
+            // The foreign disk takes the primary master, so the kernel finds
+            // it first; the boot disk is the slave, booted by bootindex.
+            AddForeignDisk(args, config);
+            args.Add("-drive"); args.Add($"id=cxkdisk,format=raw,file={config.BootDisk},if=none");
+            args.Add("-device"); args.Add("ide-hd,drive=cxkdisk,bus=ide.0,unit=1,bootindex=0");
         }
         else if (config.MachineType.Equals("q35", StringComparison.OrdinalIgnoreCase))
         {
@@ -141,6 +156,14 @@ public static class QemuTool
         }
 
         return args;
+    }
+
+    // snapshot=off on the drive itself wins over -snapshot, which only sets
+    // the drives that did not say.
+    private static void AddForeignDisk(List<string> args, QemuConfig config)
+    {
+        if (string.IsNullOrEmpty(config.ForeignDisk)) return;
+        args.Add("-drive"); args.Add($"format=raw,file={config.ForeignDisk},if=ide,index=0,snapshot=off");
     }
 
     /// <summary>QEMU's device for each host controller.</summary>

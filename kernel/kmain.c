@@ -63,21 +63,43 @@
 #include "boot/cxbi.h"
 #include "diag/crashlog.h"
 
+/* Which disks this boot may write (CXK_AUTO_INSTALL, config.h). Before
+   anything writes: the filesystem, the install and the crash log all come
+   after. Returns the CXOS disk's id, or -1. */
+static int guard_disks(void) {
+    int home = cxk_find_boot_disk();
+#if CXK_AUTO_INSTALL
+    klog("STORAGE", SEV_WARN, "automatic install on: other disks may be formatted");
+#else
+    disk_restrict_writes(home);
+    if (home >= 0)
+        klog_u32("STORAGE", SEV_OK, "writes limited to the CXOS disk, id: ",
+                 (uint32_t)home, LOG_COLOR_VALUE, "");
+    else
+        klog("STORAGE", SEV_WARN, "no CXOS disk: every disk is read-only");
+#endif
+    return home;
+}
+
 /* Mount CXFS on the data disk (first non-boot disk). Read-only by default:
    mounts an existing filesystem if present and NEVER formats, so this can't
-   wipe a non-CXFS disk on real hardware. A dev build (CXK_ALLOW_DISK_WRITE)
-   formats a scratch disk if it has no filesystem. The boot disk (index 0) is
-   never touched. */
-static void mount_cxfs(void) {
+   wipe a non-CXFS disk on real hardware. Only with automatic install on (and
+   CXK_ALLOW_DISK_WRITE) is a disk with no filesystem formatted. The CXOS disk
+   itself is never taken for one: whole-disk CXFS there would overwrite its
+   partition table. */
+static void mount_cxfs(int home) {
     const struct disk *fsdisk = 0;
     if (disk_count() >= 2) fsdisk = disk_get(1);   /* first non-boot disk */
-    if (!fsdisk) { klog_u32("FILESYS", SEV_WARN, "DATA DISKS PRESENT: ", (uint32_t)disk_count(), LOG_COLOR_VALUE, ""); return; }
+    if (fsdisk && fsdisk->id == home) fsdisk = disk_get(0);
+    if (!fsdisk || fsdisk->id == home) { klog_u32("FILESYS", SEV_WARN, "DATA DISKS PRESENT: ", (uint32_t)disk_count(), LOG_COLOR_VALUE, ""); return; }
 
     cxfs_set_id(fsdisk->id);
     if (cxfs_mount() == 0) {
         klog("FILESYS", SEV_OK, "MOUNTED - EXISTING FILESYSTEM");
     } else {
-#if CXK_ALLOW_DISK_WRITE
+#if CXK_ALLOW_DISK_WRITE && !CXK_AUTO_INSTALL
+        klog("FILESYS", SEV_INFO, "NO FILESYSTEM - LEFT ALONE (automatic install off)");
+#elif CXK_ALLOW_DISK_WRITE
         klog("FILESYS", SEV_WARN, "NO FILESYSTEM - FORMATING TO CXFS");
         /* Stamp a label while we are formatting it. Without one the volume
            mounts under a generated "VolumeN", which tells a reader nothing and
@@ -319,8 +341,11 @@ void kmain_late(void) {
     usb_init();
     klog_u32("STORAGE", SEV_OK, "online, disks: ", (uint32_t)disk_count(), LOG_COLOR_VALUE, "");
 
+    /* Before the first write: which disks may be written at all. */
+    int home = guard_disks();
+
     /* filesystem: mount CXFS on the data disk (read-only unless a dev build). */
-    mount_cxfs();
+    mount_cxfs(home);
 
     /* partitioned (XBPT) disk: ensure the SYSTEM partition is a mounted CXFS
        volume - formatting it and populating /System from the STAGE payload on

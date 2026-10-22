@@ -295,18 +295,20 @@ int cxk_mount_extra_volumes(uint8_t boot_disk_id) {
     return mounted;
 }
 
-int cxk_install_boot_disk(void) {
-    /* find the disk carrying an XBPT table, point CXFS at it, and install. */
+int cxk_find_boot_disk(void) {
     unsigned n = disk_count();
     for (unsigned i = 0; i < n; i++) {
         const struct disk *d = disk_get(i);
         if (!d) continue;
-        struct partition parts[XBPT_MAX_ENTRIES];
-        int cnt = 0;
-        if (part_scan(d->id, parts, XBPT_MAX_ENTRIES, &cnt) == 0 && cnt > 0) {
-            cxfs_set_id(d->id);
-            return cxk_install_first_boot(d->id);
-        }
+        struct partition boot;
+        if (part_find_type(d->id, PART_TYPE_CXBOOT, &boot) == 0) return d->id;
     }
-    return CXK_INSTALL_NO_SYSTEM;   /* no XBPT disk present */
+    return -1;
+}
+
+int cxk_install_boot_disk(void) {
+    int id = cxk_find_boot_disk();
+    if (id < 0) return CXK_INSTALL_NO_SYSTEM;   /* no CXOS disk present */
+    cxfs_set_id((uint8_t)id);
+    return cxk_install_first_boot((uint8_t)id);
 }

@@ -154,7 +154,8 @@ enum disk_err {
     DISK_ERR_NOT_READY = -4,    /* device busy / not ready */
     DISK_ERR_FAULT     = -5,    /* device reported an error (ERR/DF/TFES) */
     DISK_ERR_BOUNDS    = -6,    /* LBA/count outside the device */
-    DISK_ERR_PARAMS    = -7     /* bad arguments (null buffer, zero count) */
+    DISK_ERR_PARAMS    = -7,    /* bad arguments (null buffer, zero count) */
+    DISK_ERR_DENIED    = -8     /* write refused: not this system's disk (disk_restrict_writes) */
 };
 
 struct disk {
@@ -189,6 +190,21 @@ int disk_write(uint8_t id, uint64_t lba, uint32_t count, const void *buf);
    backend that cannot flush, because a caller that believes a lie here loses
    data it was told was safe. See the Durability note above. */
 int disk_flush(uint8_t id);
+
+/* ---- which disks may be written ---------------------------------------------
+ * A machine CXOS boots on may have disks of its own, and with automatic
+ * install off (CXK_AUTO_INSTALL, config.h) the kernel writes to none of them.
+ * After disk_restrict_writes(home), disk_write to any disk but `home` returns
+ * DISK_ERR_DENIED without reaching the driver; home < 0 refuses every write.
+ * Checked here, under every caller, so a filesystem, the crash log or a later
+ * driver cannot reach another disk by forgetting to ask. Reads are not
+ * restricted. Until it is called, every disk may be written. */
+#define DISK_WRITES_ANY (-2)
+void disk_restrict_writes(int home);
+
+/* The disk writes are restricted to, -1 if every write is refused, or
+   DISK_WRITES_ANY if they are not restricted. */
+int disk_write_home(void);
 
 /* For a panic about to write to `id` (diag/crashlog.h): put the disk back in
    a state that takes a new command, if the panic may have interrupted one.

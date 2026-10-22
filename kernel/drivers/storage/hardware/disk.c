@@ -263,10 +263,16 @@ int disk_flush(uint8_t id) {
     }
 }
 
+static int write_home = DISK_WRITES_ANY;
+
+void disk_restrict_writes(int home) { write_home = home < 0 ? -1 : home; }
+int  disk_write_home(void)          { return write_home; }
+
 int disk_write(uint8_t id, uint64_t lba, uint32_t count, const void *buf) {
     const struct disk *d = disk_find_by_id(id);
     int bad = disk_check(d, lba, count, buf);
     if (bad != DISK_OK) return bad;
+    if (write_home != DISK_WRITES_ANY && d->id != write_home) return DISK_ERR_DENIED;
     const uint8_t *p = (const uint8_t *)buf;
     while (count > 0) {
         uint32_t n = count < DISK_XFER_MAX ? count : DISK_XFER_MAX;
@@ -287,6 +293,7 @@ const char *disk_err_str(int err) {
         case DISK_ERR_FAULT:     return "device fault";
         case DISK_ERR_BOUNDS:    return "out of bounds";
         case DISK_ERR_PARAMS:    return "bad parameters";
+        case DISK_ERR_DENIED:    return "not this system's disk";
         case DISK_ERR_GENERIC:   return "I/O error";
         default:                 return "unknown error";
     }
