@@ -19,6 +19,7 @@
 #define CAP_HCCPARAMS   0x08
 
 #define HCSPARAMS_NPORTS(x)  ((x) & 0x0F)
+#define EHCI_MAX_PORTS       15       /* NPORTS is four bits */
 #define HCSPARAMS_PPC(x)     (((x) >> 4) & 1)     /* port power control      */
 #define HCCPARAMS_EECP(x)    (((x) >> 8) & 0xFF)  /* PCI cfg offset of the
                                                      legacy-support capability */
@@ -225,7 +226,11 @@ static void ehci_bios_handoff(const struct pci_device *dev, uint32_t hccparams) 
     klog("EHCI", SEV_INFO, "requesting controller ownership from firmware");
     pci_config_write32(dev->bus, dev->slot, dev->func, eecp, legsup | (1u << 24));
 
-    for (int i = 0; i < 250; i++) {        /* up to ~250 ms, per the spec's guidance */
+    /* Up to 1 s, as Linux waits (ehci_bios_handoff in pci-quirks.c). It was
+       250 ms, and a firmware still servicing the controller after a forced
+       takeover is two drivers on one stick - the FX found its stick only on
+       some boots. */
+    for (int i = 0; i < 1000; i++) {
         legsup = pci_config_read32(dev->bus, dev->slot, dev->func, eecp);
         if (!(legsup & (1u << 16)) && (legsup & (1u << 24))) {
             klog("EHCI", SEV_OK, "firmware released the controller");
@@ -618,6 +623,61 @@ static const struct usb_hc_ops ehci_ops = {
     .reset_ep = ehci_reset_ep,
 };
 
+/* Wait for every port's connection to hold still for 100 ms (Linux's
+ * HUB_DEBOUNCE_STABLE; Haiku's _DebouncePort), at most 1.5 s. Once
+ * CONFIGFLAG hands the ports over from the companions, a device that was
+ * attached to one reconnects here, and a single look at a fixed time -
+ * which this was - reads a stick still reconnecting as an empty port. */
+#define DEBOUNCE_STEP_MS    10
+#define DEBOUNCE_STABLE_MS  100
+#define DEBOUNCE_MAX_MS     1500
+static void settle_ports(struct ehci_hc *c) {
+    uint32_t last[EHCI_MAX_PORTS];
+    uint32_t stable[EHCI_MAX_PORTS];
+    unsigned n = c->nports < EHCI_MAX_PORTS ? c->nports : EHCI_MAX_PORTS;
+    for (unsigned p = 0; p < n; p++) { last[p] = portsc_rd(c, p) & PORTSC_CCS; stable[p] = 0; }
+
+    for (uint32_t t = 0; t < DEBOUNCE_MAX_MS; t += DEBOUNCE_STEP_MS) {
+        timer_sleep(DEBOUNCE_STEP_MS);
+        int settled = 1;
+        for (unsigned p = 0; p < n; p++) {
+            uint32_t sc = portsc_rd(c, p);
+            if (sc & PORTSC_CSC)            /* write 1 to clear the change */
+                op_wr(c, OP_PORTSC + p * 4, (sc & ~PORTSC_RWC_MASK) | PORTSC_CSC);
+            uint32_t now = sc & PORTSC_CCS;
+            if (now != last[p] || (sc & PORTSC_CSC)) { last[p] = now; stable[p] = 0; }
+            else if (stable[p] < DEBOUNCE_STABLE_MS) stable[p] += DEBOUNCE_STEP_MS;
+            if (stable[p] < DEBOUNCE_STABLE_MS) settled = 0;
+        }
+        if (settled) return;
+    }
+    klog("EHCI", SEV_WARN, "a port's connection never settled; scanning anyway");
+}
+
+/* Reset a port: hold for 50 ms (the spec's TDRSTR), then clear and let the
+   controller finish. PORTSC_PED must be written 0 during a reset. 1 when the
+   controller finished it. */
+static int reset_port(struct ehci_hc *c, unsigned p) {
+    uint32_t sc = portsc_rd(c, p);
+    portsc_wr(c, p, (sc & ~PORTSC_PED) | PORTSC_RESET);
+    timer_sleep(50);
+    sc = portsc_rd(c, p);
+    portsc_wr(c, p, sc & ~PORTSC_RESET);
+
+    /* The controller clears the reset bit itself; the spec allows 2 ms. */
+    for (int i = 0; i < 20; i++) {
+        if (!(portsc_rd(c, p) & PORTSC_RESET)) return 1;
+        timer_sleep(1);
+    }
+    return 0;
+}
+
+/* A device that does not answer its first request is reset and asked again,
+   as Linux (PORT_INIT_TRIES) and Haiku (two tries) both do: a stick that
+   was busy, or had not finished reconnecting, answers the second time. */
+#define PORT_TRIES          3
+#define RESET_RECOVERY_MS   50          /* TRSTRCY is 10 ms; Haiku waits 50 */
+
 static void enumerate_port(struct ehci_hc *c, unsigned p) {
     uint32_t sc = portsc_rd(c, p);
     if (!(sc & PORTSC_CCS)) return;           /* nothing plugged in */
@@ -631,43 +691,45 @@ static void enumerate_port(struct ehci_hc *c, unsigned p) {
         return;
     }
 
-    /* Reset: hold for 50 ms (the spec's TDRSTR), then clear and let the
-       controller finish. PORTSC_PED must be written 0 during a reset. */
-    portsc_wr(c, p, (sc & ~PORTSC_PED) | PORTSC_RESET);
-    timer_sleep(50);
-    sc = portsc_rd(c, p);
-    portsc_wr(c, p, sc & ~PORTSC_RESET);
+    for (int attempt = 0; attempt < PORT_TRIES; attempt++) {
+        if (attempt) {
+            klog_u32("EHCI", SEV_WARN, "port ", p, LOG_COLOR_VALUE, ": no answer, resetting again");
+            timer_sleep(100);
+            if (!(portsc_rd(c, p) & PORTSC_CCS)) {
+                klog_u32("EHCI", SEV_WARN, "port ", p, LOG_COLOR_VALUE, ": device went away");
+                return;
+            }
+        }
+        if (!reset_port(c, p)) {
+            klog_u32("EHCI", SEV_WARN, "port ", p, LOG_COLOR_VALUE, ": reset never completed");
+            continue;
+        }
 
-    /* The controller clears the reset bit itself; the spec allows 2 ms. */
-    int cleared = 0;
-    for (int i = 0; i < 20; i++) {
-        if (!(portsc_rd(c, p) & PORTSC_RESET)) { cleared = 1; break; }
-        timer_sleep(1);
-    }
-    if (!cleared) {
-        klog_u32("EHCI", SEV_WARN, "port ", p, LOG_COLOR_VALUE, ": reset never completed");
-        return;
-    }
+        /* THE speed test. The controller enables the port only for a
+           high-speed device; anything else must be handed to the companion or
+           it becomes unreachable by everyone - which is how an EHCI driver
+           kills a USB keyboard. */
+        sc = portsc_rd(c, p);
+        if (!(sc & PORTSC_PED)) {
+            klog_u32("EHCI", SEV_INFO, "port ", p, LOG_COLOR_VALUE,
+                     ": full-speed device, released to the companion controller");
+            portsc_wr(c, p, sc | PORTSC_OWNER);
+            return;
+        }
 
-    /* THE speed test. The controller enables the port only for a high-speed
-       device; anything else must be handed to the companion or it becomes
-       unreachable by everyone - which is how an EHCI driver kills a USB
-       keyboard. */
-    sc = portsc_rd(c, p);
-    if (!(sc & PORTSC_PED)) {
-        klog_u32("EHCI", SEV_INFO, "port ", p, LOG_COLOR_VALUE,
-                 ": full-speed device, released to the companion controller");
-        portsc_wr(c, p, sc | PORTSC_OWNER);
-        return;
-    }
+        /* Reset recovery: a device need not answer until TRSTRCY after the
+           reset ends. The first request went out at once before. */
+        timer_sleep(RESET_RECOVERY_MS);
 
-    /* High speed confirmed. Everything from here is the core's job. */
-    struct usb_device *dev = usb_alloc_device(&ehci_ops, c, (uint8_t)p, USB_SPEED_HIGH);
-    if (!dev) {
-        klog("EHCI", SEV_WARN, "device table full");
-        return;
+        /* High speed confirmed. Everything from here is the core's job. */
+        struct usb_device *dev = usb_alloc_device(&ehci_ops, c, (uint8_t)p, USB_SPEED_HIGH);
+        if (!dev) {
+            klog("EHCI", SEV_WARN, "device table full");
+            return;
+        }
+        if (usb_enumerate(dev)) return;       /* it frees the device on failure */
     }
-    usb_enumerate(dev);
+    klog_u32("EHCI", SEV_WARN, "port ", p, LOG_COLOR_VALUE, ": gave up on the device");
 }
 
 /* Bring up one controller. Returns 1 if it came up. */
@@ -760,7 +822,14 @@ static int ehci_start(struct ehci_hc *c, const struct pci_device *dev, unsigned 
             timer_sleep(20);             /* the spec's settle time after power-on */
         }
     }
-    timer_sleep(100);                    /* let devices finish attaching */
+    settle_ports(c);                     /* let devices finish attaching */
+
+    /* Said even when it is none, so a boot that finds no stick shows whether
+       the controller saw it connected at all. */
+    uint32_t connected = 0;
+    for (unsigned p = 0; p < c->nports; p++)
+        if (portsc_rd(c, p) & PORTSC_CCS) connected++;
+    klog_child_u32("  ports with a device: ", connected, LOG_COLOR_VALUE, "");
 
     for (unsigned p = 0; p < c->nports; p++) enumerate_port(c, p);
     return 1;
