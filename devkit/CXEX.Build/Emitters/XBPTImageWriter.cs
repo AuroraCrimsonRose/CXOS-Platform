@@ -53,8 +53,33 @@ public static class XBPTImageWriter
         // 4. XBPT Table (LBA 1)
         Put(map.XbptTableLba, SerializeXbpt(map));
 
+        // 5. Last, because it is a hash of everything above
+        StampDiskId(diskImage, (long)map.XbptTableLba * map.SectorSize);
+
         File.WriteAllBytes(outPath, diskImage);
     }
+
+    public const int XbptVersion = 2;
+    public const int DiskIdOffset = 20;   // in the XBPT header
+
+    /// <summary>
+    /// Gives the image its XBPT disk_id: the first 8 bytes of the SHA-256 of
+    /// the whole image with the field zero, never 0. The BIOS loader hands it
+    /// to the kernel (CXBI boot_disk_id), which writes only to the disk that
+    /// carries it, so a machine's own drive with another CXOS on it is not
+    /// taken for the one booted from. A hash rather than a random number so
+    /// the same inputs still build the same image.
+    /// </summary>
+    public static void StampDiskId(byte[] image, long tableOffset)
+    {
+        Span<byte> field = image.AsSpan((int)tableOffset + DiskIdOffset, 8);
+        field.Clear();
+        ulong id = BitConverter.ToUInt64(System.Security.Cryptography.SHA256.HashData(image), 0);
+        BitConverter.TryWriteBytes(field, id == 0 ? 1UL : id);
+    }
+
+    public static ulong DiskId(ReadOnlySpan<byte> image, long tableOffset) =>
+        BitConverter.ToUInt64(image.Slice((int)tableOffset + DiskIdOffset, 8));
 
     /// <summary>
     /// Writes a <b>protective</b> MBR partition table into sector 0, at the classic
@@ -211,7 +236,7 @@ public static class XBPTImageWriter
         Span<byte> span = sector;
 
         MemoryPrimitives.WriteU32(span, 0, 0x54504258); // "XBPT"
-        MemoryPrimitives.WriteU16(span, 4, 1);
+        MemoryPrimitives.WriteU16(span, 4, XbptVersion);
         MemoryPrimitives.WriteU16(span, 6, (ushort)map.Partitions.Count);
         MemoryPrimitives.WriteU16(span, 8, 32); // 32 bytes per entry
         MemoryPrimitives.WriteU64(span, 12, map.TotalSectors);

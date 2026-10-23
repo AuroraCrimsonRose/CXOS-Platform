@@ -16,16 +16,32 @@ static uint64_t rd64(const uint8_t *p) {
     return v;
 }
 
+/* Read disk `id`'s table sector into sec and check its magic and version. */
+static int read_table(uint8_t id, uint8_t *sec) {
+    if (disk_read(id, XBPT_LBA, 1, sec) != 0) return -2;
+    for (int i = 0; i < 4; i++)
+        if (sec[i] != XBPT_MAGIC[i]) return -3;            /* not an XBPT disk */
+    if (rd16(sec + 4) != XBPT_VERSION) return -4;
+    return 0;
+}
+
+int part_disk_id(uint8_t id, uint64_t *out) {
+    uint8_t sec[512];
+    int r = read_table(id, sec);
+    if (r != 0) return r;
+    uint64_t v = rd64(sec + 20);
+    if (v == 0) return -6;
+    if (out) *out = v;
+    return 0;
+}
+
 int part_scan(uint8_t id, struct partition *out, int max, int *count) {
     if (count) *count = 0;
     if (!out || max <= 0) return -1;
 
     uint8_t sec[512];
-    if (disk_read(id, XBPT_LBA, 1, sec) != 0) return -2;
-
-    for (int i = 0; i < 4; i++)
-        if (sec[i] != XBPT_MAGIC[i]) return -3;            /* not an XBPT disk */
-    if (rd16(sec + 4) != XBPT_VERSION) return -4;
+    int r = read_table(id, sec);
+    if (r != 0) return r;
 
     uint16_t n  = rd16(sec + 6);
     uint16_t es = rd16(sec + 8);

@@ -69,7 +69,9 @@ One loader, two front ends (BIOS, UEFI), one shared core in C.
    `0x2000` (`boot/cxbi.asm`): the E820 map, gathered straight into it with
    unknown types folded into reserved; the VBE mode with its pixel layout; the
    ACPI RSDP, found and checksummed by the loader (EBDA, then
-   `0xE0000`–`0xFFFFF`); CPUID leaf 0 and leaf 1; the firmware kind. Its
+   `0xE0000`–`0xFFFFF`); CPUID leaf 0 and leaf 1; the firmware kind; and
+   (CXBI 2, 2026-10-22) the XBPT disk id of the disk it read the kernel from,
+   the one disk the kernel may write with automatic install off. Its
    address goes to the kernel in EBX. `kernel/boot/cxbi.c` checks the magic,
    version, size and every map entry's type, refuses the boot otherwise, and
    keeps a copy; the PMM, the framebuffer driver and ACPI read only that. The

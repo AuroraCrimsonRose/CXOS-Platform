@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+using CXEX.Build.Emitters;
 using CXEX.Tools;
 using Xunit;
 
@@ -140,21 +141,35 @@ public class BootVerdictTests
 
     [Fact]
     [Trait(Categories.Key, Categories.Unit)]
-    public void A_foreign_disk_is_patterned_and_any_change_is_seen()
+    public void A_foreign_disk_is_the_image_under_another_id_and_any_change_is_seen()
     {
+        // a stand-in image: an XBPT header at LBA 1 carrying a stamped disk_id
+        var image = new byte[64 * 1024];
+        "XBPT"u8.CopyTo(image.AsSpan(512));
+        image[1000] = 0x5A;
+        XBPTImageWriter.StampDiskId(image, 512);
+        ulong id = XBPTImageWriter.DiskId(image, 512);
+        Assert.Equal(512 + XBPTImageWriter.DiskIdOffset, ForeignDisk.DiskIdAt);
+
         string path = Path.Combine(Path.GetTempPath(), $"cxk-foreign-{Guid.NewGuid():N}.img");
         try
         {
-            byte[] hash = ForeignDisk.Create(path);
-            Assert.True(ForeignDisk.Unchanged(path, hash));
+            byte[] hash = ForeignDisk.Create(path, image);
             byte[] disk = File.ReadAllBytes(path);
-            Assert.Contains(disk.Take(4096), b => b != 0);   // zeros would hide a write of zeros
+            Assert.Equal(image.Length + ForeignDisk.PadBytes, disk.Length);
+            // the same CXOS, but not the same disk
+            Assert.Equal(image[1000], disk[1000]);
+            Assert.True(disk.AsSpan(0, 512 + 20).SequenceEqual(image.AsSpan(0, 512 + 20)));
+            ulong other = XBPTImageWriter.DiskId(disk, 512);
+            Assert.NotEqual(0UL, other);
+            Assert.NotEqual(id, other);
+            Assert.Contains(disk.Skip(image.Length).Take(4096), b => b != 0);   // zeros would hide a write of zeros
 
             // read back while still held open for writing, as QEMU may hold it
             using (var f = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite))
             {
                 Assert.True(ForeignDisk.Unchanged(path, hash));
-                f.Position = ForeignDisk.SizeBytes - 1;
+                f.Position = disk.Length - 1;
                 f.WriteByte((byte)~disk[^1]);
                 f.Flush();
                 Assert.False(ForeignDisk.Unchanged(path, hash));
@@ -164,10 +179,30 @@ public class BootVerdictTests
         Assert.Null(ForeignDisk.Unchanged(path, [0]));   // gone: no verdict, not a pass
 
         // Seen by its size, the one the kernel logs for each disk it refuses
-        Assert.Equal(65536, ForeignDisk.SizeBytes / 512);
-        Assert.True(ForeignDisk.Seen("[STORAGE ] - [INFO] - left read-only, sectors: 65536\n"));
-        Assert.False(ForeignDisk.Seen("[STORAGE ] - [INFO] - left read-only, sectors: 655360\n"));
-        Assert.False(ForeignDisk.Seen("[STORAGE ] - [OK  ] - online, disks: 2\n"));
+        long size = image.Length + ForeignDisk.PadBytes;
+        Assert.True(ForeignDisk.Seen($"[STORAGE ] - [INFO] - left read-only, sectors: {size / 512}\n", size));
+        Assert.False(ForeignDisk.Seen($"[STORAGE ] - [INFO] - left read-only, sectors: {size / 512}0\n", size));
+        Assert.False(ForeignDisk.Seen("[STORAGE ] - [OK  ] - online, disks: 2\n", size));
+    }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
+    public void The_disk_id_is_a_hash_of_the_image_and_never_zero()
+    {
+        var a = new byte[8192];
+        a[4000] = 1;
+        var b = (byte[])a.Clone();
+        XBPTImageWriter.StampDiskId(a, 512);
+        XBPTImageWriter.StampDiskId(b, 512);
+        Assert.Equal(XBPTImageWriter.DiskId(a, 512), XBPTImageWriter.DiskId(b, 512));   // reproducible
+        Assert.NotEqual(0UL, XBPTImageWriter.DiskId(a, 512));
+
+        XBPTImageWriter.StampDiskId(a, 512);   // stamping again hashes with the field cleared
+        Assert.Equal(XBPTImageWriter.DiskId(b, 512), XBPTImageWriter.DiskId(a, 512));
+
+        b[4000] = 2;
+        XBPTImageWriter.StampDiskId(b, 512);
+        Assert.NotEqual(XBPTImageWriter.DiskId(a, 512), XBPTImageWriter.DiskId(b, 512));   // another image, another id
     }
 
     [Fact]

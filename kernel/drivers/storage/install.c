@@ -295,15 +295,20 @@ int cxk_mount_extra_volumes(uint8_t boot_disk_id) {
     return mounted;
 }
 
-int cxk_find_boot_disk(void) {
+int cxk_find_boot_disk(uint64_t want) {
+    if (want == 0) return CXK_BOOT_DISK_UNNAMED;
+    int found = CXK_BOOT_DISK_NONE;
     unsigned n = disk_count();
     for (unsigned i = 0; i < n; i++) {
         const struct disk *d = disk_get(i);
-        if (!d) continue;
-        struct partition boot;
-        if (part_find_type(d->id, PART_TYPE_CXBOOT, &boot) == 0) return d->id;
+        uint64_t have;
+        if (!d || part_disk_id(d->id, &have) != 0 || have != want) continue;
+        /* The same image written to two disks: either could be the one the
+           loader read, and a guess is what this replaced. */
+        if (found >= 0) return CXK_BOOT_DISK_TWICE;
+        found = d->id;
     }
-    return -1;
+    return found;
 }
 
 int cxk_install_boot_disk(int id) {

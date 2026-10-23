@@ -17,12 +17,17 @@
  *
  *   header (32 bytes):
  *     0   4   magic        "XBPT"
- *     4   2   version      (1)
+ *     4   2   version      (2)
  *     6   2   entry_count  number of populated entries
  *     8   2   entry_size   bytes per entry (32) - for forward compatibility
  *     10  2   flags        (reserved, 0)
  *     12  8   disk_sectors total disk size in 512B sectors (for validation)
- *     20  12  reserved     (0)
+ *     20  8   disk_id      which CXOS disk this is: the first 8 bytes of the
+ *                          SHA-256 of the image as built, with this field
+ *                          zero; never 0. The loader hands it on (CXBI
+ *                          boot_disk_id), so the kernel can tell the disk it
+ *                          booted from from any other CXOS disk present.
+ *     28  4   reserved     (0)
  *
  *   then entry_count entries (32 bytes each, up to XBPT_MAX_ENTRIES):
  *     0   8   start_lba     first sector of the partition
@@ -43,7 +48,7 @@
 #include <stdint.h>
 
 #define XBPT_LBA            1u          /* fixed sector holding the table */
-#define XBPT_VERSION        1u
+#define XBPT_VERSION        2u
 #define XBPT_HEADER_SIZE    32u
 #define XBPT_ENTRY_SIZE     32u
 #define XBPT_MAX_ENTRIES    15u         /* (512 - 32) / 32 */
@@ -73,5 +78,9 @@ int part_scan(uint8_t id, struct partition *out, int max, int *count);
 /* Find the first partition of `type` on disk `id`. Returns 0 and fills *out on
    success, negative if none / on error. */
 int part_find_type(uint8_t id, uint8_t type, struct partition *out);
+
+/* Disk `id`'s XBPT disk_id into *out. Returns 0, or negative on a read error,
+   a bad table, or an id of 0 (none). Only reads. */
+int part_disk_id(uint8_t id, uint64_t *out);
 
 #endif

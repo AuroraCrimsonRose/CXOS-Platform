@@ -122,8 +122,10 @@ real machine as QEMU gets.
   boot. With `--usb xhci|ehci|ohci` (step 4c) the copy is a stick on that
   controller, the first boot leaves a READ half done before it panics, and
   the record must say the save reset the stick first. `cxk verify-boot` takes
-  the same `--usb`, and `--foreign-disk`: a patterned 32 MB disk ahead of the
-  image, as a machine's own drive, which must come out of the boot
+  the same `--usb`, and `--foreign-disk`: a copy of the image under another
+  XBPT disk id, with 8 MB of pattern after it, ahead of the image - a
+  machine's own drive with CXOS on it already, BOOT, SYSTEM and CRASH
+  included - which must come out of the boot
   byte-for-byte unchanged (the install guard, `CXK_AUTO_INSTALL`). It must
   also be seen: the kernel logs each disk it leaves read-only by size, and a
   boot that never names this one is INCONCLUSIVE, as is a disk that cannot be

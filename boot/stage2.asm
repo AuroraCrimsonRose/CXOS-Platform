@@ -152,7 +152,7 @@ msg_kerr db '[BOOT] KERNEL READ ERROR', 0
 ; XBPT on-disk layout (little-endian, must match drivers/storage/partition +
 ; tools/mkdisk.py):
 ;   header (32B): "XBPT"(4) version(2) entry_count(2 @6) entry_size(2 @8)
-;                 flags(2) disk_sectors(8) pad(12)
+;                 flags(2) disk_sectors(8) disk_id(8 @20) pad(4)
 ;   entry  (32B): start_lba(8 @0) sectors(8 @8) type(1 @16) flags(1 @17)
 ;                 reserved(2) name(12)
 ; ----------------------------------------------------------------------------
@@ -188,6 +188,12 @@ find_boot_partition:
     mov [dap_kernel + 8], eax
     mov eax, [bx + 4]
     mov [dap_kernel + 12], eax
+    ; and which disk this is, for the kernel (CXBI boot_disk_id): BIOS drive
+    ; numbers mean nothing to it, an id read from this very table does
+    mov eax, [si + 20]
+    mov [CXBI_ADDR + CXBI_O_BOOT_DISK], eax
+    mov eax, [si + 24]
+    mov [CXBI_ADDR + CXBI_O_BOOT_DISK + 4], eax
     popa
     ret
 .read_err:

@@ -41,7 +41,9 @@
   reset first if the panic caught it mid-transfer. Proven in QEMU on xHCI,
   EHCI and OHCI; not yet on the rig. The rig has no internal disk and an AMI
   BIOS from 2005: no UEFI. On any other machine, boot only a build with
-  `CXK_AUTO_INSTALL=0` (the default): it writes to no disk but its own stick.
+  `CXK_AUTO_INSTALL=0` (the default): it writes to no disk but its own stick,
+  which it knows by the id the loader read from it, even if the machine's own
+  drive has CXOS on it too.
 - **ACPI tables need an interpreter.** Interrupt routing (`_PRT`), sleep and
   reliable shutdown on this board are described in ACPI bytecode (AML).
   Booting does not need it (the legacy PIC works); SMP and proper device

@@ -1,4 +1,3 @@
-| A disk that is not CXOS's, ahead of it, comes out unchanged | add `--foreign-disk` to `verify-boot` |
 # CXOS Platform
 
 Everything that makes CXOS, in one repository: **CXK**, the kernel; the **X
@@ -78,6 +77,7 @@ Republish whenever the DevKit changes; `cxk check-abi` names a stale one.
 | Boot and check the self-tests | `cxk verify-boot dist/CXK_x86_32/images/cxk_disk.img --full` |
 | The same on a minimal and a full CPU model | add `--cpu pentium2,-apic`, then `--cpu max` |
 | The same booted from a USB stick, as the rig boots | add `--usb xhci` (or `ehci`, `ohci`) |
+| A machine's own drive with another CXOS on it, ahead of the image, comes out unchanged | add `--foreign-disk` |
 | A deliberate panic, and its crash log recovered by the next boot | `cxk verify-crashlog dist/CXK_x86_32/images/cxk_disk.img` |
 | The same on a USB stick, the panic landing mid-transfer | add `--usb xhci` (or `ehci`, `ohci`) |
 | Read the crash log a panic left on a disk image | `cxk rig crashlog <image>` |

@@ -65,9 +65,17 @@
 
 /* Which disks this boot may write (CXK_AUTO_INSTALL, config.h). Before
    anything writes: the filesystem, the install and the crash log all come
-   after. Returns the CXOS disk's id, or -1. */
+   after. Returns the CXOS disk's id, or -1. The disk is the one the loader
+   read the kernel from, named by the id in its partition table. */
 static int guard_disks(void) {
-    int home = cxk_find_boot_disk();
+    int home = cxk_find_boot_disk(cxbi()->boot_disk_id);
+    if (home == CXK_BOOT_DISK_UNNAMED)
+        klog("STORAGE", SEV_WARN, "the loader did not say which disk it booted from");
+    else if (home == CXK_BOOT_DISK_TWICE)
+        klog("STORAGE", SEV_WARN, "two disks carry this system's id: neither is trusted");
+    else if (home == CXK_BOOT_DISK_NONE)
+        klog("STORAGE", SEV_WARN, "the disk the loader booted from is not present");
+    if (home < 0) home = -1;
 #if CXK_AUTO_INSTALL
     klog("STORAGE", SEV_WARN, "automatic install on: other disks may be formatted");
 #else

@@ -120,11 +120,12 @@
       ]
     },
     "cxbi": {
-      "version": 1,
+      "version": 2,
       "what": "The boot-information block stage 2 hands the kernel.",
       "bump_when": "a field is added or moved. The size is in the header so a kernel can refuse a loader it does not understand.",
       "checks": [
-        { "file": "abi/cxk_boot.h", "pattern": "#define CXBI_VERSION +([0-9]+)" }
+        { "file": "abi/cxk_boot.h", "pattern": "#define CXBI_VERSION +([0-9]+)" },
+        { "file": "boot/cxbi.asm", "pattern": "CXBI_VERSION_VAL +equ +([0-9]+)" }
       ]
     },
     "cxfs": {
@@ -136,12 +137,13 @@
       ]
     },
     "xbpt": {
-      "version": 1,
+      "version": 2,
       "what": "The XBPT partition table: where the boot chain, the packages and the filesystem sit on a CXOS disk.",
       "bump_when": "the table layout or an entry's meaning changes",
-      "note": "Not the same 5 as 'Building v5 boot image' in the imager, which is the CXK generation, not this.",
+      "note": "Not the same 5 as 'Building v5 boot image' in the imager, which is the CXK generation, not this. 2 gave header bytes 20-27 a meaning: the disk_id the loader hands the kernel.",
       "checks": [
-        { "file": "kernel/drivers/storage/partition/partition.h", "pattern": "#define XBPT_VERSION +([0-9]+)" }
+        { "file": "kernel/drivers/storage/partition/partition.h", "pattern": "#define XBPT_VERSION +([0-9]+)" },
+        { "file": "devkit/CXEX.Build/Emitters/XBPTImageWriter.cs", "pattern": "XbptVersion = ([0-9]+)" }
       ]
     },
     "xstg": {

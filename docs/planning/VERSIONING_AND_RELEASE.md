@@ -120,9 +120,9 @@ Minor and patch releases inherit their major's name; they do not get their own.
 |---|---|---|---|
 | **CXEX** | 1 | The executable container: 56-byte header, 28-byte section entries | `kernel/lib/format/cxex.h` `CXEX_FORMAT_VERSION`, `CXEXExecutable.SupportedFormatVersion` |
 | **ABI** | 2 | Syscall numbers, struct layouts, capability meanings. Stamped into every image's `abi_version`. | `abi/cxk_abi.h` `CXK_ABI_VERSION`, `CXEXLayoutEngine.AbiVersion` |
-| **CXBI** | 1 | The boot-information block stage 2 hands the kernel | `abi/cxk_boot.h` `CXBI_VERSION` |
+| **CXBI** | 2 | The boot-information block stage 2 hands the kernel | `abi/cxk_boot.h` `CXBI_VERSION`, `boot/cxbi.asm` `CXBI_VERSION_VAL` |
 | **CXFS** | 2 | The filesystem on-disk layout | `kernel/drivers/storage/filesys/cxfs.h` `CXFS_VERSION` |
-| **XBPT** | 1 | The partition table: where the boot chain, packages and filesystem sit | `kernel/drivers/storage/partition/partition.h` `XBPT_VERSION` |
+| **XBPT** | 2 | The partition table: where the boot chain, packages and filesystem sit | `kernel/drivers/storage/partition/partition.h` `XBPT_VERSION`, `XBPTImageWriter.XbptVersion` |
 | **XSTG** | 2 | The install manifest: 16-byte header, 48 bytes per file | `kernel/drivers/storage/install.h` `XSTG_VERSION`, `XBPTImageWriter.XstgVersion` |
 | **XKPK** | 1 | The CXPK public key container | `CXKeyGenerator.XKPK_VERSION` |
 | **CXSG** | — | The signature block | **No version field, by design**: described by its `sig_algo` and `hash_algo` identifiers instead, which say what to do rather than what generation it is. Recorded in the registry with version `0` and no checks so the set is complete and nobody wonders whether one was forgotten. |

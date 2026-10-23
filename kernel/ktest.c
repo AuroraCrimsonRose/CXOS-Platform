@@ -30,6 +30,7 @@
 #include "uid.h"
 #include "disk.h"
 #include "cxfs.h"
+#include "partition.h"
 #include "string.h"
 #include "pci.h"
 #include "timer.h"
@@ -1237,7 +1238,8 @@ static int test_cxbi(void) {
 /* ---- writes reach only the CXOS disk (the install guard) --------------------
  * With automatic install off the kernel must write to no disk but the one it
  * booted from. Checked three ways: the restriction is on, it names the disk
- * the system volume and the crash area are on, and the disk layer applies it -
+ * the loader read the kernel from (the XBPT id in CXBI boot_disk_id) and the
+ * system volume and the crash area are on, and the disk layer applies it -
  * with every disk refused for a moment, a write to the CXOS disk itself must
  * come back DISK_ERR_DENIED and leave the sector as it was. The sector is the
  * last of the crash area, which nothing else uses while the tests run. A boot
@@ -1265,6 +1267,12 @@ static int test_disk_write_guard(void) {
     int home = disk_write_home();
     if (home < 0) {
         klog("KTEST", SEV_FAIL, "write guard: writes are not limited to the CXOS disk");
+        return 0;
+    }
+    /* and the disk is the one the loader read, by the id it handed over */
+    uint64_t have = 0, want = cxbi()->boot_disk_id;
+    if (want == 0 || part_disk_id((uint8_t)home, &have) != 0 || have != want) {
+        klog("KTEST", SEV_FAIL, "write guard: the CXOS disk is not the one the loader named");
         return 0;
     }
     uint8_t disk;

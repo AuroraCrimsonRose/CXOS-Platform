@@ -54,11 +54,16 @@ enum cxk_install_result {
    Leaves CXFS mounted on success. Returns a cxk_install_result. */
 int cxk_install_first_boot(uint8_t disk_id);
 
-/* The disk CXOS booted from: the first whose XBPT table holds a BOOT
-   partition. Its id, or -1 if no disk carries one. Only reads. This is the
-   disk the install fills and, with automatic install off, the only disk the
-   kernel writes (CXK_AUTO_INSTALL, config.h). */
-int cxk_find_boot_disk(void);
+/* The disk CXOS booted from: the one whose XBPT disk_id is `want`, the id the
+   loader read it by (CXBI boot_disk_id). Its id, or a CXK_BOOT_DISK_* below.
+   Only reads. This is the disk the install fills and, with automatic install
+   off, the only disk the kernel writes (CXK_AUTO_INSTALL, config.h). Not the
+   first disk carrying CXOS: a machine's own drive with CXOS on it can come
+   before the stick that booted, and would have been taken for it. */
+#define CXK_BOOT_DISK_NONE     (-1)   /* no disk carries that id */
+#define CXK_BOOT_DISK_UNNAMED  (-2)   /* the loader gave no id */
+#define CXK_BOOT_DISK_TWICE    (-3)   /* two disks carry it: the same image twice */
+int cxk_find_boot_disk(uint64_t want);
 
 /* Point CXFS at `id`, cxk_find_boot_disk's answer (taken, not asked again, so
    the install fills the disk the write guard opened), and run the first-boot

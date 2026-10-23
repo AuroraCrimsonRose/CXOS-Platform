@@ -72,7 +72,7 @@
 #include <stdint.h>
 
 #define CXBI_MAGIC    0x49425843u   /* "CXBI" little-endian */
-#define CXBI_VERSION  1u
+#define CXBI_VERSION  2u
 
 /* ---- memory map ----------------------------------------------------------
  * Normalised deliberately: E820 and UEFI describe memory differently, and the
@@ -155,6 +155,13 @@ struct cxk_boot_info {
     uint8_t  fb_green_shift;    /* 117 */
     uint8_t  fb_blue_shift;     /* 118 */
     uint8_t  _reserved0;        /* 119 */
+
+    /* The disk this loader read the kernel from, by the 8-byte id in its XBPT
+       header (kernel/drivers/storage/partition/partition.h): the one disk the
+       kernel may write when automatic install is off. 0 = the loader cannot
+       say (a UEFI stub with no XBPT disk, say), and then the kernel writes to
+       no disk at all rather than guess. */
+    uint64_t boot_disk_id;      /* 120 */
 };
 
 /* Layout must be identical whether this is compiled for the 32-bit kernel or a
@@ -168,8 +175,8 @@ struct cxk_boot_info {
 
 CXBI_STATIC_ASSERT(sizeof(struct cxk_mmap_entry) == 24,
                    "cxk_mmap_entry must be 24 bytes on every ABI");
-CXBI_STATIC_ASSERT(sizeof(struct cxk_boot_info) == 120,
-                   "cxk_boot_info must be 120 bytes on every ABI");
+CXBI_STATIC_ASSERT(sizeof(struct cxk_boot_info) == 128,
+                   "cxk_boot_info must be 128 bytes on every ABI");
 
 /* Spot-check the members most likely to drift if the order is disturbed. */
 #if defined(__GNUC__)
@@ -181,6 +188,8 @@ CXBI_STATIC_ASSERT(__builtin_offsetof(struct cxk_boot_info, firmware) == 72,
                    "the 32-bit block must start at offset 72");
 CXBI_STATIC_ASSERT(__builtin_offsetof(struct cxk_boot_info, fb_bpp) == 112,
                    "the pixel-format block must start at offset 112");
+CXBI_STATIC_ASSERT(__builtin_offsetof(struct cxk_boot_info, boot_disk_id) == 120,
+                   "boot_disk_id must stay at offset 120");
 #endif
 
 #endif /* CXK_BOOT_H */

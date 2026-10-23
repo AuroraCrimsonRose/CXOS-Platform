@@ -45,7 +45,7 @@ public class VerifyBootCommand : Command<VerifyBootCommand.Settings>
         public string? Usb { get; set; }
 
         [CommandOption("--foreign-disk")]
-        [Description("Put a patterned disk ahead of the image, as a machine's own drive, and fail if the boot changes a byte of it")]
+        [Description("Put a copy of the image under another disk id ahead of it, as a machine's own drive with CXOS on it already, and fail if the boot changes a byte of it")]
         public bool ForeignDisk { get; set; }
     }
 
@@ -72,7 +72,8 @@ public class VerifyBootCommand : Command<VerifyBootCommand.Settings>
 
         string log = settings.LogPath is { Length: > 0 } l ? l : settings.ImagePath + ".serial.log";
         string? foreign = settings.ForeignDisk ? settings.ImagePath + ".foreign.img" : null;
-        byte[]? foreignHash = foreign is null ? null : CXEX.Tools.ForeignDisk.Create(foreign);
+        byte[]? foreignHash = foreign is null ? null : CXEX.Tools.ForeignDisk.Create(foreign, File.ReadAllBytes(settings.ImagePath));
+        long foreignSize = foreign is null ? 0 : new FileInfo(foreign).Length;
         AnsiConsole.MarkupLine($"[grey]booting[/] {Markup.Escape(settings.ImagePath)} [grey](snapshot, serial -> {Markup.Escape(log)})[/]");
         AnsiConsole.MarkupLine($"[grey]{Markup.Escape(QemuTool.CommandLine(BootVerifier.ConfigFor(settings.ImagePath, log, settings.Cpu, usb: usb, foreignDisk: foreign)))}[/]");
 
@@ -101,7 +102,7 @@ public class VerifyBootCommand : Command<VerifyBootCommand.Settings>
             else
             {
                 DeleteQuietly(foreign);
-                bool seen = CXEX.Tools.ForeignDisk.Seen(File.Exists(log) ? File.ReadAllText(log) : "");
+                bool seen = CXEX.Tools.ForeignDisk.Seen(File.Exists(log) ? File.ReadAllText(log) : "", foreignSize);
                 if (!seen && v.Outcome == BootOutcome.Pass)
                     v = v with { Outcome = BootOutcome.Inconclusive, Reason = "the kernel never named the foreign disk as left read-only: it was never seen" };
                 else if (v.Outcome == BootOutcome.Pass)

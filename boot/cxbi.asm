@@ -17,7 +17,7 @@
 ;
 ; Offsets mirror abi/cxk_boot.h; the kernel checks magic, version and size.
 
-CXBI_ADDR          equ 0x2000      ; the structure (120 bytes)
+CXBI_ADDR          equ 0x2000      ; the structure (128 bytes)
 CXBI_MMAP          equ 0x2100      ; its memory map, up to E820_MAX_ENTRIES
 CXBI_AREA_END      equ 0x2800
 
@@ -44,10 +44,11 @@ CXBI_O_FB_BBITS    equ 115
 CXBI_O_FB_RSHIFT   equ 116
 CXBI_O_FB_GSHIFT   equ 117
 CXBI_O_FB_BSHIFT   equ 118
+CXBI_O_BOOT_DISK   equ 120         ; qword: the XBPT disk id (stage2 find_boot_partition)
 
 CXBI_MAGIC_VAL     equ 0x49425843  ; "CXBI"
-CXBI_VERSION_VAL   equ 1
-CXBI_SIZE_VAL      equ 120
+CXBI_VERSION_VAL   equ 2
+CXBI_SIZE_VAL      equ 128
 CXBI_ENTRY_SIZE    equ 24
 CXBI_FW_BIOS       equ 1
 CXBI_MEM_RESERVED  equ 2

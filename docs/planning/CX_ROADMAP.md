@@ -113,6 +113,12 @@ programs for it (step 6).
    (2026-10-22): with `CXK_AUTO_INSTALL=0`, the default, the disk layer
    refuses every write to a disk but the one CXOS booted from, and
    `cxk verify-boot --foreign-disk` proves a drive ahead of it is untouched.
+   That disk is named, not guessed: the image build stamps an id into its
+   XBPT header, stage 2 hands the one it booted from over in CXBI
+   (`boot_disk_id`, CXBI 2, XBPT 2), and the kernel writes only to the disk
+   that carries it - to none if no disk does, or if two do. The foreign disk
+   is the image itself under another id, so a machine whose own drive
+   already holds CXOS is the case proven.
 5. **The x86-64 kernel boots.** The BIOS loader enters long mode and starts a
    64-bit kernel in the top half (`kernel/CX_KERNEL_PLAN.md` §2.4), with NX, the 64-bit GDT, IDT and TSS
    (IST for the double fault) and `syscall`/`sysret`; the page database, the
