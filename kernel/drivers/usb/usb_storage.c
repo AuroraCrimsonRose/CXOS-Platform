@@ -39,6 +39,7 @@ _Static_assert(sizeof(struct bot_csw) == 13, "a CSW is 13 bytes on the wire");
 #define SCSI_TEST_UNIT_READY  0x00
 #define SCSI_REQUEST_SENSE    0x03
 #define SCSI_INQUIRY          0x12
+#define SCSI_MODE_SENSE6      0x1A
 #define SCSI_READ_CAPACITY10  0x25
 #define SCSI_READ10           0x28
 #define SCSI_WRITE10          0x2A
@@ -56,6 +57,8 @@ struct storage_unit {
     uint64_t blocks;
     uint8_t  disk_id;
     uint8_t  dirty;           /* a transaction began and no CSW has answered it */
+    uint8_t  wce;             /* the caching page says the write cache is on  */
+    uint8_t  sync_refused;    /* SYNCHRONIZE CACHE was refused as unsupported */
 };
 
 static struct storage_unit units[MAX_UNITS];
@@ -159,6 +162,35 @@ static int scsi_inquiry(struct storage_unit *u, uint8_t *out36) {
     return bot_transfer(u, cdb, sizeof(cdb), out36, 36, 1);
 }
 
+/* MODE SENSE (6) for the caching page (08h), block descriptors suppressed.
+   192 bytes is the length Linux asks with, which sticks are tested against;
+   a shorter reply is fine because its length is in the header. */
+#define MODE_REPLY_MAX 192
+static int scsi_mode_sense_caching(struct storage_unit *u, uint8_t *out) {
+    uint8_t cdb[6] = { SCSI_MODE_SENSE6, 0x08 /* DBD */, 0x08, 0, MODE_REPLY_MAX, 0 };
+    return bot_transfer(u, cdb, sizeof(cdb), out, MODE_REPLY_MAX, 1);
+}
+
+int usb_storage_caching_wce(const uint8_t *mode, int len) {
+    if (!mode || len < 4) return -1;
+    int avail = mode[0] + 1;                     /* the mode data length excludes itself */
+    if (avail < len) len = avail;
+    /* DBD is a request, not a promise: skip whatever descriptors came back. */
+    int off = 4 + mode[3];
+    if (off + 3 > len) return -1;
+    if ((mode[off] & 0x3F) != 0x08 || mode[off + 1] < 1) return -1;
+    return (mode[off + 2] & 0x04) ? 1 : 0;       /* byte 2, bit 2: WCE */
+}
+
+int usb_storage_sync_unsupported(const uint8_t *sense, int len) {
+    if (!sense || len < 3) return 0;
+    uint8_t code = sense[0] & 0x7F, key;
+    if (code == 0x70 || code == 0x71)      key = sense[2] & 0x0F;   /* fixed      */
+    else if (code == 0x72 || code == 0x73) key = sense[1] & 0x0F;   /* descriptor */
+    else return 0;
+    return key == 0x05;                          /* ILLEGAL REQUEST */
+}
+
 static int scsi_read_capacity(struct storage_unit *u) {
     uint8_t cdb[10] = { SCSI_READ_CAPACITY10, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
     uint8_t cap[8];
@@ -248,6 +280,24 @@ int usb_storage_attach(struct usb_device *dev) {
         return 0;
     }
 
+    /* Whether the device caches writes at all, which decides whether a flush
+       has anything to do. This is Linux's rule (sd_read_cache_type, and
+       usb-storage's skip_ms_page_8): only a SCSI-transparent device is asked,
+       since other subclasses are known to choke on page 08h, and a device
+       that does not answer is taken as write-through and is not flushed. */
+    u->wce = 0;
+    if (dev->if_subclass == 0x06) {
+        uint8_t mode[MODE_REPLY_MAX];
+        for (int i = 0; i < MODE_REPLY_MAX; i++) mode[i] = 0;
+        int got = scsi_mode_sense_caching(u, mode);
+        if (got < 0) {
+            uint8_t sense[18];
+            scsi_request_sense(u, sense);        /* clear the CHECK CONDITION */
+        } else if (usb_storage_caching_wce(mode, got) == 1) {
+            u->wce = 1;
+        }
+    }
+
     /* The disk layer counts 512-byte sectors. A device with 4096-byte blocks
        reports a quarter as many, so convert rather than handing over the raw
        block count. */
@@ -273,6 +323,7 @@ int usb_storage_attach(struct usb_device *dev) {
     klog_u32("USBSTOR", SEV_OK, "registered disk, sectors: ", (uint32_t)sectors,
              LOG_COLOR_VALUE, "");
     klog_child_u32("  block size ", u->block_size, LOG_COLOR_VALUE, "");
+    klog_child(u->wce ? "  write cache: on" : "  write cache: off or unreported - not flushed");
     klog_child(model);
     return 1;
 }
@@ -329,12 +380,38 @@ int usb_storage_write(uint8_t unit, uint64_t lba, uint32_t count, const void *bu
  * its cache and pulling it out - which is what people do to USB sticks - lost
  * it. The CDB's LBA and block-count fields are left zero, which SBC defines as
  * "the whole medium", and IMMED is left clear so the device finishes before it
- * answers rather than returning as soon as it has accepted the request. */
+ * answers rather than returning as soon as it has accepted the request.
+ *
+ * Many sticks do not implement the command; on the FX rig a SanDisk Cruzer
+ * failed every test that flushes. Linux's rule is followed (sd.c): a device without a write cache
+ * is not asked, and one that answers ILLEGAL REQUEST has nothing to flush, so
+ * that is success and the command is not sent to it again. Any other failure
+ * is still an error, and its sense data is logged. */
 int usb_storage_flush(uint8_t unit) {
     if (unit >= MAX_UNITS || !units[unit].in_use) return DISK_ERR_NO_DEVICE;
     struct storage_unit *u = &units[unit];
+    if (!u->wce || u->sync_refused) return DISK_OK;
+
     uint8_t cdb[10] = { SCSI_SYNC_CACHE10, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-    return bot_transfer(u, cdb, sizeof(cdb), 0, 0, 1) < 0 ? DISK_ERR_FAULT : DISK_OK;
+    if (bot_transfer(u, cdb, sizeof(cdb), 0, 0, 1) >= 0) return DISK_OK;
+
+    uint8_t sense[18];
+    for (int i = 0; i < 18; i++) sense[i] = 0;
+    int got = scsi_request_sense(u, sense);
+    if (got > 0 && usb_storage_sync_unsupported(sense, got)) {
+        u->sync_refused = 1;
+        klog("USBSTOR", SEV_INFO, "SYNCHRONIZE CACHE unsupported - no longer sent");
+        return DISK_OK;
+    }
+    klog("USBSTOR", SEV_WARN, "SYNCHRONIZE CACHE failed");
+    if (got >= 14) {
+        klog_child_u32("sense key ", sense[2] & 0x0F, LOG_COLOR_VALUE, "");
+        klog_child_u32("asc ", sense[12], LOG_COLOR_VALUE, "");
+        klog_child_u32("ascq ", sense[13], LOG_COLOR_VALUE, "");
+    } else {
+        klog_child("no sense data");
+    }
+    return DISK_ERR_FAULT;
 }
 
 /* ---- panic -------------------------------------------------------------- */

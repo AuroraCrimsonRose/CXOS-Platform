@@ -5,7 +5,8 @@
 /* Ring 3 entry, syscall dispatch, and the user-mode tests (Checkpoints 3a/3b). */
 
 #include "usermode.h"
-#include "arch/irq.h"        /* set_user_fault_hook, irq_frame_vector */
+#include "arch/irq.h"        /* set_user_fault_hook, irq_frame_* */
+#include "format.h"          /* fmt_hex */
 #include "arch/usermode.h"   /* enter_usermode, return_to_kernel, the gate */
 #include "sched.h"
 #include "uid.h"
@@ -1273,7 +1274,25 @@ static void usermode_fault(struct registers *r) {
 
     atomic_fetch_add(&user_faults, 1);
     klog_u32("USERMODE", SEV_ERR, "user process ", (uint32_t)pid, LOG_COLOR_VALUE, " faulted");
-    klog_child_u32("exception: ", irq_frame_vector(r), LOG_COLOR_VALUE, "");
+    uint32_t vector = irq_frame_vector(r);
+    klog_child_u32("exception: ", vector, LOG_COLOR_VALUE, "");
+
+    /* Where, and why: without these a fault on real hardware, which has no
+       debugger, says only that something went wrong. CR2 matters only for a
+       page fault (14), and reading it later would see some other fault's. */
+    char line[64];
+    size_t n = 0;
+    const char *ip = "at 0x", *err = "  error 0x", *addr = "  address 0x";
+    while (*ip) line[n++] = *ip++;
+    n += fmt_hex(line + n, (uint32_t)irq_frame_ip(r), 8, 0);
+    while (*err) line[n++] = *err++;
+    n += fmt_hex(line + n, irq_frame_error(r), 0, 0);
+    if (vector == 14) {
+        while (*addr) line[n++] = *addr++;
+        n += fmt_hex(line + n, (uint32_t)irq_fault_address(), 8, 0);
+    }
+    line[n] = 0;
+    klog_child(line);
     klog_child("process terminated");
     return_to_kernel(USERMODE_FAULTED, thread_current_usave());   /* never returns */
 }

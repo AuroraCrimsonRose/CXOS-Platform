@@ -29,6 +29,7 @@
 #include "memman/ocache.h"
 #include "uid.h"
 #include "disk.h"
+#include "usb_storage.h"
 #include "cxfs.h"
 #include "partition.h"
 #include "string.h"
@@ -2593,6 +2594,44 @@ static int test_disk_durability(void) {
     return ok;
 }
 
+/* When a USB stick is not flushed (usb_storage_flush). Real sticks cannot be
+ * made to refuse on demand, so the two decisions are checked against crafted
+ * replies: the caching page's WCE bit, found past any block descriptors the
+ * device sent despite DBD, and ILLEGAL REQUEST in either sense format meaning
+ * "no such command" while any other key stays an error. */
+static int test_usb_flush_policy(void) {
+    int ok = 1;
+
+    /* header (length, medium, flags, bdl=0), then page 08h with WCE set */
+    uint8_t m[24] = { 23, 0, 0, 0,  0x08, 0x12, 0x04 };
+    ok = ok && (usb_storage_caching_wce(m, 24) == 1);
+    m[6] = 0x00;                                    /* WCE clear */
+    ok = ok && (usb_storage_caching_wce(m, 24) == 0);
+    m[4] = 0x0A;                                    /* some other page */
+    ok = ok && (usb_storage_caching_wce(m, 24) == -1);
+    ok = ok && (usb_storage_caching_wce(m, 3) == -1);
+
+    /* an 8-byte block descriptor the device sent anyway: the page moves */
+    uint8_t d[32] = { 31, 0, 0, 8,  0, 0, 0, 0, 0, 0, 2, 0,  0x88, 0x12, 0x04 };
+    ok = ok && (usb_storage_caching_wce(d, 32) == 1);
+    /* a reply cut short before the page's byte 2 is not read past its end */
+    ok = ok && (usb_storage_caching_wce(d, 14) == -1);
+    d[0] = 13;                                      /* nor past its own length */
+    ok = ok && (usb_storage_caching_wce(d, 32) == -1);
+
+    uint8_t s[18] = { 0x70, 0, 0x05, 0, 0, 0, 0, 10, 0, 0, 0, 0, 0x20, 0 };
+    ok = ok && (usb_storage_sync_unsupported(s, 18) == 1);
+    s[2] = 0x02;                                    /* NOT READY: a real failure */
+    ok = ok && (usb_storage_sync_unsupported(s, 18) == 0);
+    s[2] = 0x03;                                    /* MEDIUM ERROR */
+    ok = ok && (usb_storage_sync_unsupported(s, 18) == 0);
+    uint8_t x[8] = { 0x72, 0x05, 0x20, 0x00 };      /* descriptor format */
+    ok = ok && (usb_storage_sync_unsupported(x, 8) == 1);
+    x[0] = 0x00;                                    /* not sense data at all */
+    ok = ok && (usb_storage_sync_unsupported(x, 8) == 0);
+    return ok;
+}
+
 static int test_crypto_profile(void) {
     uint8_t *b = (uint8_t *)kmalloc(16u + 256u);
     if (!b) return 0;
@@ -3036,6 +3075,7 @@ void ktest_run(void) {
     total++; passed += report("variable font cell size",           test_font_cell());
     total++; passed += report("console font staged on disk",       test_console_font_disk());
     total++; passed += report("disk durability: flush is askable", test_disk_durability());
+    total++; passed += report("USB flush: when a stick is not asked", test_usb_flush_policy());
     total++; passed += report("crypto profile: one key shape only", test_crypto_profile());
     total++; passed += report("exec admission (dev / release)",   test_exec_admit());
     total++; passed += report("file syscalls (SYS_FILE_OP)",       usermode_file_test());

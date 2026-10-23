@@ -40,8 +40,18 @@ int usb_storage_write(uint8_t unit, uint64_t lba, uint32_t count, const void *bu
 
 /* SYNCHRONIZE CACHE (10): commit the device's write cache to the medium.
    Without it a stick acknowledges a write from cache, and pulling it out -
-   which is what people do to USB sticks - loses it. */
+   which is what people do to USB sticks - loses it. A device with no write
+   cache, or one that refuses the command as unsupported, has nothing to flush
+   and answers DISK_OK (Linux's rule, sd.c). */
 int usb_storage_flush(uint8_t unit);
+
+/* The two decisions behind that, apart from the transfers so the self-tests
+   can check them against crafted replies.
+   caching_wce: a MODE SENSE (6) reply -> 1 write cache on, 0 off, -1 no
+   caching page in it. sync_unsupported: REQUEST SENSE data -> 1 if it says
+   ILLEGAL REQUEST, the answer of a device without the command. */
+int usb_storage_caching_wce(const uint8_t *mode, int len);
+int usb_storage_sync_unsupported(const uint8_t *sense, int len);
 
 /* For a panic about to write the crash log (diag/crashlog.h). If the panic
    interrupted a transaction with this unit - or the last one ended out of

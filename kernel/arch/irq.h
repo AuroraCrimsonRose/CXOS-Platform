@@ -52,4 +52,11 @@ void set_user_fault_hook(void (*hook)(struct registers *));
 /* Which exception or interrupt a frame records, for a log line. */
 uint32_t irq_frame_vector(const struct registers *r);
 
+/* The faulting instruction, the error code the CPU pushed (0 when it pushes
+   none), and the address a page fault was taken on - for a log line. The last
+   is read from the CPU, so it is only meaningful inside the fault's handler. */
+uintptr_t irq_frame_ip(const struct registers *r);
+uint32_t  irq_frame_error(const struct registers *r);
+uintptr_t irq_fault_address(void);
+
 #endif
