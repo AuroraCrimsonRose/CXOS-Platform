@@ -90,6 +90,10 @@ public static class QemuTool
         {
             // The boot disk as a stick on its own controller; SeaBIOS boots
             // from all three. Nothing on IDE, as on a machine with no disk.
+            // An empty controller of the same kind comes first, so it is the
+            // one PCI lists first: the rig's southbridge has several, and a
+            // kernel that brings up only the first never sees the stick.
+            args.Add("-device"); args.Add($"{UsbHostDevice(host)},id=usbhc_empty");
             args.Add("-device"); args.Add($"{UsbHostDevice(host)},id=usbhc");
             args.Add("-drive"); args.Add($"id=cxkdisk,format=raw,file={config.BootDisk},if=none");
             args.Add("-device"); args.Add("usb-storage,bus=usbhc.0,drive=cxkdisk,bootindex=0");

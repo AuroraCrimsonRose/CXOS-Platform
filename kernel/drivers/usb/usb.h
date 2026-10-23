@@ -217,4 +217,12 @@ const struct usb_device *usb_get(unsigned index);
 /* Bring up every USB host controller that is present. Call after pci_init(). */
 void usb_init(void);
 
+/* A host controller's DMA memory: `pages` physically contiguous pages from the
+   page allocator, zeroed, and mapped cacheable at `vbase` in the kernel half -
+   the controller is given the physical address (*phys), the CPU uses the
+   returned alias, which stays reachable whatever CR3 holds. Every controller
+   gets its own, which is what lets a machine with several of them drive all of
+   them. Returns 0 when the allocator has no run that long. */
+void *usb_dma_alloc(uint32_t pages, uintptr_t vbase, uint32_t *phys);
+
 #endif

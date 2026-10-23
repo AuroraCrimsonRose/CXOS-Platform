@@ -118,53 +118,75 @@ _Static_assert(sizeof(struct ohci_td) == 16, "a TD is 16 bytes");
 #define TD_CC_NOERROR   0
 #define TD_CC_NOTACCESSED 14         /* still owned by the controller         */
 
-/* ---- DMA layout ---------------------------------------------------------
- * 0x600000 is the window pmm.c has reserved for OHCI since before it existed -
- * see the comment there. Inside the 0x500000-0x800000 driver DMA range. */
-#define ODMA_BASE       0x600000u
-#define ODMA_VBASE      0xE5000000u
-#define ODMA_V(p)       ((p) - ODMA_BASE + ODMA_VBASE)
+/* ---- DMA memory ---------------------------------------------------------
+ * Each controller has its own eight pages (usb_dma_alloc), physical for the
+ * controller and a kernel-half alias for the CPU. The offsets below are within
+ * those pages. */
+#define ODMA_VBASE      0xE5000000u     /* controller i's alias: + i * 0x10000 */
+#define ODMA_PAGES      8
 
-#define HCCA_ADDR       (ODMA_BASE + 0x0000)   /* 256 bytes, 256-byte aligned */
-#define ED_ADDR         (ODMA_BASE + 0x1000)
+#define HCCA_OFF        0x0000          /* 256 bytes, 256-byte aligned */
+#define ED_OFF          0x1000
 /* One bulk ED per DIRECTION, kept alive between transfers. OHCI carries the
    data toggle in the ED (headTD bit 1, "toggleCarry") and advances it itself,
    which is exactly what a bulk endpoint needs - but only while the ED survives.
    The control ED has its head rewritten every transfer, which would reset the
    carry, so bulk cannot share it. IN and OUT are separate endpoints with
    separate toggles, hence two. */
-#define ED_BULK_IN      (ODMA_BASE + 0x1040)
-#define ED_BULK_OUT     (ODMA_BASE + 0x1080)
+#define ED_BULK_IN      0x1040
+#define ED_BULK_OUT     0x1080
 /* One interrupt ED per HID endpoint, chained together on the HCCA periodic
    list. A single shared ED looked fine with one device and silently broke the
    moment a keyboard and a mouse were both attached - they overwrote each
    other's in-flight transfer. */
 #define MAX_INT_EPS     4
-#define ED_INT(i)       (ODMA_BASE + 0x1100 + (uint32_t)(i) * 0x40)
-#define INT_TD(i)       (ODMA_BASE + 0x2400 + (uint32_t)(i) * 0x80)
-#define INT_BUF(i)      (ODMA_BASE + 0x4000 + (uint32_t)(i) * 0x100)
-#define TD_ADDR         (ODMA_BASE + 0x2000)
-#define OXFER_ADDR      (ODMA_BASE + 0x3000)
-#define ODMA_END        (ODMA_BASE + 0x8000)
+#define ED_INT(i)       (0x1100 + (uint32_t)(i) * 0x40)
+#define INT_TD(i)       (0x2400 + (uint32_t)(i) * 0x80)
+#define INT_BUF(i)      (0x4000 + (uint32_t)(i) * 0x100)
+#define TD_OFF          0x2000
+#define OXFER_OFF       0x3000
 
 #define OXFER_MAX       4096
 #define NUM_TD          4
 
-static struct iowin regs;   /* BAR 0: the 4 KB operational registers */
-static int present = 0;
-static unsigned nports = 0;
+/* An AMD SB950 has five OHCI controllers: one companion per EHCI, and one on
+   its own. A full- or low-speed device is reachable only through the companion
+   of the EHCI whose port it is in, so every one has to come up. */
+#define OHCI_MAX_HCS    6
 
-static struct ohci_ed *ed;
-static struct ohci_td *td;
-static uint8_t *xfer_buf;
-static uint8_t next_address = 1;
+/* Everything one controller needs; a usb_device's `hc` points at its
+   controller's. */
+struct ohci_hc {
+    struct iowin regs;              /* BAR 0: the 4 KB operational registers */
+    unsigned nports;
+    uint8_t next_address;           /* USB addresses are per bus */
 
-static inline uint32_t rd(uint32_t o) { return iowin_read32(&regs, o); }
-static inline void wr(uint32_t o, uint32_t v) { iowin_write32(&regs, o, v); }
-static inline uint32_t port_rd(unsigned p) { return rd(OHCI_RHPORTSTATUS + p * 4); }
-static inline void port_wr(unsigned p, uint32_t v) { wr(OHCI_RHPORTSTATUS + p * 4, v); }
+    uint32_t dma;                   /* physical base of the DMA pages */
+    uint8_t *dma_v;                 /* the CPU's alias of them        */
+    struct ohci_ed *ed;
+    struct ohci_td *td;
+    uint8_t *xfer_buf;
 
-static uint32_t td_phys(int i) { return TD_ADDR + (uint32_t)i * (uint32_t)sizeof(struct ohci_td); }
+    struct {
+        uint8_t addr, ep, armed, len;
+    } int_eps[MAX_INT_EPS];
+    int int_list_live;
+};
+
+static struct ohci_hc hcs[OHCI_MAX_HCS];
+static unsigned nhcs = 0;
+
+static inline uint32_t dma_phys(const struct ohci_hc *c, uint32_t off) { return c->dma + off; }
+static inline void    *dma_virt(const struct ohci_hc *c, uint32_t off) { return c->dma_v + off; }
+
+static inline uint32_t rd(struct ohci_hc *c, uint32_t o) { return iowin_read32(&c->regs, o); }
+static inline void wr(struct ohci_hc *c, uint32_t o, uint32_t v) { iowin_write32(&c->regs, o, v); }
+static inline uint32_t port_rd(struct ohci_hc *c, unsigned p) { return rd(c, OHCI_RHPORTSTATUS + p * 4); }
+static inline void port_wr(struct ohci_hc *c, unsigned p, uint32_t v) { wr(c, OHCI_RHPORTSTATUS + p * 4, v); }
+
+static uint32_t td_phys(const struct ohci_hc *c, int i) {
+    return dma_phys(c, TD_OFF) + (uint32_t)i * (uint32_t)sizeof(struct ohci_td);
+}
 
 /* ---- control transfers --------------------------------------------------
  * Same three stages as every USB control transfer: SETUP (always DATA0), an
@@ -174,8 +196,13 @@ static uint32_t td_phys(int i) { return TD_ADDR + (uint32_t)i * (uint32_t)sizeof
 static int ohci_control(struct usb_device *dev, uint8_t bm_request_type,
                         uint8_t b_request, uint16_t w_value, uint16_t w_index,
                         void *data, uint16_t w_length) {
-    if (!present || !dev) return -1;
+    if (!dev || !dev->hc) return -1;
     if (w_length > OXFER_MAX) return -1;
+    struct ohci_hc *c = dev->hc;
+    struct ohci_ed *ed = c->ed;
+    struct ohci_td *td = c->td;
+    uint8_t *xfer_buf = c->xfer_buf;
+    uint32_t xfer_phys = dma_phys(c, OXFER_OFF);
 
     int dev_to_host = (bm_request_type & 0x80) != 0;
     uint8_t mps = dev->max_packet0 ? dev->max_packet0 : 8;
@@ -186,7 +213,7 @@ static int ohci_control(struct usb_device *dev, uint8_t bm_request_type,
     sp->w_value = w_value;
     sp->w_index = w_index;
     sp->w_length = w_length;
-    uint32_t setup_phys = OXFER_ADDR + OXFER_MAX;
+    uint32_t setup_phys = xfer_phys + OXFER_MAX;
 
     if (!dev_to_host && data && w_length)
         for (uint16_t i = 0; i < w_length; i++) xfer_buf[i] = ((const uint8_t *)data)[i];
@@ -206,8 +233,8 @@ static int ohci_control(struct usb_device *dev, uint8_t bm_request_type,
         t_data = &td[n++];
         t_data->control = (dev_to_host ? TD_DP_IN : TD_DP_OUT)
                         | TD_TOGGLE_DATA1 | TD_DI_NONE | TD_ROUNDING;
-        t_data->current_buf = OXFER_ADDR;
-        t_data->buf_end = OXFER_ADDR + w_length - 1;
+        t_data->current_buf = xfer_phys;
+        t_data->buf_end = xfer_phys + w_length - 1;
     }
 
     struct ohci_td *t_status = &td[n++];
@@ -221,21 +248,21 @@ static int ohci_control(struct usb_device *dev, uint8_t bm_request_type,
     struct ohci_td *t_tail = &td[n];
     t_tail->control = 0; t_tail->current_buf = 0; t_tail->next_td = 0; t_tail->buf_end = 0;
 
-    for (int i = 0; i < n; i++) td[i].next_td = td_phys(i + 1);
+    for (int i = 0; i < n; i++) td[i].next_td = td_phys(c, i + 1);
     td[n].next_td = 0;
 
     ed->control = ED_FA(dev->address) | ED_EN(0) | ED_DIR_TD | ED_MPS(mps)
                 | (dev->speed == USB_SPEED_LOW ? ED_SPEED_LOW : 0);
-    ed->tail_td = td_phys(n);
+    ed->tail_td = td_phys(c, n);
     ed->next_ed = 0;
     /* head is written LAST and without the halt/toggle bits: writing it is what
        hands the chain to the controller. */
-    ed->head_td = td_phys(0);
+    ed->head_td = td_phys(c, 0);
 
-    wr(OHCI_CTRLHEADED, ED_ADDR);
-    wr(OHCI_INTSTATUS, INT_WDH);
-    wr(OHCI_CMDSTATUS, CMD_CLF);
-    wr(OHCI_CONTROL, rd(OHCI_CONTROL) | CTRL_CLE);
+    wr(c, OHCI_CTRLHEADED, dma_phys(c, ED_OFF));
+    wr(c, OHCI_INTSTATUS, INT_WDH);
+    wr(c, OHCI_CMDSTATUS, CMD_CLF);
+    wr(c, OHCI_CONTROL, rd(c, OHCI_CONTROL) | CTRL_CLE);
 
     int err = 0;
     int done = 0;
@@ -250,8 +277,8 @@ static int ohci_control(struct usb_device *dev, uint8_t bm_request_type,
     if (!done) err = 1;
 
     /* Take the ED back out of the list before touching it again. */
-    wr(OHCI_CONTROL, rd(OHCI_CONTROL) & ~CTRL_CLE);
-    wr(OHCI_CTRLHEADED, 0);
+    wr(c, OHCI_CONTROL, rd(c, OHCI_CONTROL) & ~CTRL_CLE);
+    wr(c, OHCI_CTRLHEADED, 0);
     ed->head_td = 0;
     ed->tail_td = 0;
 
@@ -267,7 +294,7 @@ static int ohci_control(struct usb_device *dev, uint8_t bm_request_type,
            when the TD completes in full. Non-zero means it stopped early. */
         uint32_t cur = t_data->current_buf;
         if (cur) {
-            transferred = (int)(cur - OXFER_ADDR);
+            transferred = (int)(cur - xfer_phys);
             if (transferred < 0) transferred = 0;
             if (transferred > (int)w_length) transferred = (int)w_length;
         }
@@ -286,14 +313,19 @@ static int ohci_control(struct usb_device *dev, uint8_t bm_request_type,
  * advances - so the persistence a bulk endpoint requires is free here, unlike
  * on EHCI where it has to be saved and restored by hand. */
 static int ohci_bulk(struct usb_device *dev, uint8_t ep, void *data, uint32_t len) {
-    if (!present || !dev || !data) return -1;
+    if (!dev || !dev->hc || !data) return -1;
     if (len == 0 || len > OXFER_MAX) return -1;
+    struct ohci_hc *c = dev->hc;
+    struct ohci_td *td = c->td;
+    uint8_t *xfer_buf = c->xfer_buf;
+    uint32_t xfer_phys = dma_phys(c, OXFER_OFF);
 
     int in = (ep & 0x80) != 0;
     uint16_t mps = in ? dev->ep_in_mps : dev->ep_out_mps;
     if (mps == 0) mps = 64;
 
-    struct ohci_ed *bed = (struct ohci_ed *)ODMA_V(in ? ED_BULK_IN : ED_BULK_OUT);
+    uint32_t bed_off = in ? ED_BULK_IN : ED_BULK_OUT;
+    struct ohci_ed *bed = dma_virt(c, bed_off);
 
     if (!in) for (uint32_t i = 0; i < len; i++) xfer_buf[i] = ((const uint8_t *)data)[i];
 
@@ -303,9 +335,9 @@ static int ohci_bulk(struct usb_device *dev, uint8_t ep, void *data, uint32_t le
 
     struct ohci_td *t = &td[0];
     t->control = (in ? TD_DP_IN : TD_DP_OUT) | TD_DI_NONE | TD_ROUNDING;  /* toggle from the ED */
-    t->current_buf = OXFER_ADDR;
-    t->buf_end = OXFER_ADDR + len - 1;          /* LAST byte */
-    t->next_td = td_phys(1);
+    t->current_buf = xfer_phys;
+    t->buf_end = xfer_phys + len - 1;           /* LAST byte */
+    t->next_td = td_phys(c, 1);
 
     struct ohci_td *t_tail = &td[1];
     t_tail->control = 0; t_tail->current_buf = 0; t_tail->next_td = 0; t_tail->buf_end = 0;
@@ -314,13 +346,13 @@ static int ohci_bulk(struct usb_device *dev, uint8_t ep, void *data, uint32_t le
     uint32_t carry = bed->head_td & 2u;
     bed->control = ED_FA(dev->address) | ED_EN(ep & 0x0F) | ED_DIR_TD | ED_MPS(mps)
                  | (dev->speed == USB_SPEED_LOW ? ED_SPEED_LOW : 0);
-    bed->tail_td = td_phys(1);
+    bed->tail_td = td_phys(c, 1);
     bed->next_ed = 0;
-    bed->head_td = td_phys(0) | carry;
+    bed->head_td = td_phys(c, 0) | carry;
 
-    wr(OHCI_BULKHEADED, in ? ED_BULK_IN : ED_BULK_OUT);
-    wr(OHCI_CMDSTATUS, CMD_BLF);
-    wr(OHCI_CONTROL, rd(OHCI_CONTROL) | CTRL_BLE);
+    wr(c, OHCI_BULKHEADED, dma_phys(c, bed_off));
+    wr(c, OHCI_CMDSTATUS, CMD_BLF);
+    wr(c, OHCI_CONTROL, rd(c, OHCI_CONTROL) | CTRL_BLE);
 
     int err = 0, done = 0;
     for (int ms = 0; ms < 2000; ms++) {
@@ -331,8 +363,8 @@ static int ohci_bulk(struct usb_device *dev, uint8_t ep, void *data, uint32_t le
     }
     if (!done) err = 1;
 
-    wr(OHCI_CONTROL, rd(OHCI_CONTROL) & ~CTRL_BLE);
-    wr(OHCI_BULKHEADED, 0);
+    wr(c, OHCI_CONTROL, rd(c, OHCI_CONTROL) & ~CTRL_BLE);
+    wr(c, OHCI_BULKHEADED, 0);
 
     if (!err && TD_CC(t->control) != TD_CC_NOERROR) err = 1;
     if (err) return -1;
@@ -340,7 +372,7 @@ static int ohci_bulk(struct usb_device *dev, uint8_t ep, void *data, uint32_t le
     int transferred = (int)len;
     uint32_t cur = t->current_buf;
     if (cur) {
-        transferred = (int)(cur - OXFER_ADDR);
+        transferred = (int)(cur - xfer_phys);
         if (transferred < 0) transferred = 0;
         if (transferred > (int)len) transferred = (int)len;
     }
@@ -354,17 +386,18 @@ static int ohci_bulk(struct usb_device *dev, uint8_t ep, void *data, uint32_t le
    The 2 ms lets the controller finish the frame it was in. Control transfers
    rebuild their ED from scratch each time, so `ep` 0 needs nothing. */
 static void ohci_reset_ep(struct usb_device *dev, uint8_t ep) {
-    (void)dev;
-    if (!present || !(ep & 0x0F)) return;
-    wr(OHCI_CONTROL, rd(OHCI_CONTROL) & ~CTRL_BLE);
-    wr(OHCI_BULKHEADED, 0);
-    wr(OHCI_BULKCURRENTED, 0);
+    if (!dev || !dev->hc || !(ep & 0x0F)) return;
+    struct ohci_hc *c = dev->hc;
+    wr(c, OHCI_CONTROL, rd(c, OHCI_CONTROL) & ~CTRL_BLE);
+    wr(c, OHCI_BULKHEADED, 0);
+    wr(c, OHCI_BULKCURRENTED, 0);
     timer_sleep(2);
-    struct ohci_ed *bed = (struct ohci_ed *)ODMA_V((ep & 0x80) ? ED_BULK_IN : ED_BULK_OUT);
+    struct ohci_ed *bed = dma_virt(c, (ep & 0x80) ? ED_BULK_IN : ED_BULK_OUT);
     bed->head_td = 0;
 }
 
 static int ohci_attach(struct usb_device *dev) {
+    struct ohci_hc *c = dev->hc;
     struct usb_device_descriptor dd;
     for (unsigned i = 0; i < sizeof(dd); i++) ((uint8_t *)&dd)[i] = 0;
 
@@ -375,7 +408,7 @@ static int ohci_attach(struct usb_device *dev) {
     if (usb_get_descriptor(dev, USB_DESC_DEVICE, 0, &dd, 8) < 8) return 0;
     dev->max_packet0 = dd.b_max_packet_size0 ? dd.b_max_packet_size0 : 8;
 
-    uint8_t addr = next_address++;
+    uint8_t addr = c->next_address++;
     if (ohci_control(dev, 0x00, USB_REQ_SET_ADDRESS, addr, 0, 0, 0) < 0) return 0;
     dev->address = addr;
     timer_sleep(2);
@@ -395,35 +428,35 @@ static const struct usb_hc_ops ohci_ops = {
     .reset_ep = ohci_reset_ep,
 };
 
-static void enumerate_port(unsigned p) {
-    uint32_t st = port_rd(p);
+static void enumerate_port(struct ohci_hc *c, unsigned p) {
+    uint32_t st = port_rd(c, p);
     if (!(st & RH_CCS)) return;
 
-    port_wr(p, RH_SET_PR);                  /* single action bit, see the note */
+    port_wr(c, p, RH_SET_PR);               /* single action bit, see the note */
     int ok = 0;
     for (int i = 0; i < 100; i++) {
         timer_sleep(1);
-        st = port_rd(p);
+        st = port_rd(c, p);
         if (st & RH_PRSC) { ok = 1; break; }
     }
-    port_wr(p, RH_PRSC);                    /* write-1-to-clear the change */
+    port_wr(c, p, RH_PRSC);                 /* write-1-to-clear the change */
     if (!ok) {
         klog_u32("OHCI", SEV_WARN, "port ", p, LOG_COLOR_VALUE, ": reset never completed");
         return;
     }
     timer_sleep(10);                        /* the spec's post-reset recovery */
 
-    st = port_rd(p);
+    st = port_rd(c, p);
     if (!(st & RH_PES)) {
-        port_wr(p, RH_SET_PE);
+        port_wr(c, p, RH_SET_PE);
         timer_sleep(5);
-        st = port_rd(p);
+        st = port_rd(c, p);
     }
     if (!(st & RH_PES)) return;
 
     enum usb_speed sp = (st & RH_LSDA) ? USB_SPEED_LOW : USB_SPEED_FULL;
 
-    struct usb_device *dev = usb_alloc_device(&ohci_ops, 0, (uint8_t)p, sp);
+    struct usb_device *dev = usb_alloc_device(&ohci_ops, c, (uint8_t)p, sp);
     if (!dev) { klog("OHCI", SEV_WARN, "device table full"); return; }
     usb_enumerate(dev);
 }
@@ -442,29 +475,28 @@ static void enumerate_port(unsigned p) {
  *
  * Its own TDs and buffer, because a control or bulk transfer running between
  * two polls would otherwise overwrite the report in flight. */
-static struct {
-    uint8_t addr, ep, armed, len;
-} int_eps[MAX_INT_EPS];
-static int int_list_live = 0;
 
 /* One slot per (device address, endpoint). Claimed on first poll. */
-static int int_slot_for(uint8_t addr, uint8_t ep) {
+static int int_slot_for(struct ohci_hc *c, uint8_t addr, uint8_t ep) {
     for (int i = 0; i < MAX_INT_EPS; i++)
-        if (int_eps[i].armed && int_eps[i].addr == addr && int_eps[i].ep == ep) return i;
+        if (c->int_eps[i].armed && c->int_eps[i].addr == addr && c->int_eps[i].ep == ep) return i;
     for (int i = 0; i < MAX_INT_EPS; i++)
-        if (!int_eps[i].armed) { int_eps[i].addr = addr; int_eps[i].ep = ep; return i; }
+        if (!c->int_eps[i].armed) { c->int_eps[i].addr = addr; c->int_eps[i].ep = ep; return i; }
     return -1;
 }
 
-static void arm_interrupt(struct usb_device *dev, int i, uint8_t ep, uint32_t len) {
-    struct ohci_ed *ied = (struct ohci_ed *)ODMA_V(ED_INT(i));
-    struct ohci_td *t = (struct ohci_td *)ODMA_V(INT_TD(i));
+static void arm_interrupt(struct ohci_hc *c, struct usb_device *dev, int i, uint8_t ep,
+                          uint32_t len) {
+    struct ohci_ed *ied = dma_virt(c, ED_INT(i));
+    struct ohci_td *t = dma_virt(c, INT_TD(i));
     struct ohci_td *tail = t + 1;
+    uint32_t t_phys = dma_phys(c, INT_TD(i));
+    uint32_t buf = dma_phys(c, INT_BUF(i));
 
     t->control = TD_DP_IN | TD_DI_NONE | TD_ROUNDING;   /* toggle from the ED */
-    t->current_buf = INT_BUF(i);
-    t->buf_end = INT_BUF(i) + len - 1;                  /* LAST byte */
-    t->next_td = INT_TD(i) + sizeof(struct ohci_td);
+    t->current_buf = buf;
+    t->buf_end = buf + len - 1;                         /* LAST byte */
+    t->next_td = t_phys + sizeof(struct ohci_td);
 
     tail->control = 0; tail->current_buf = 0; tail->next_td = 0; tail->buf_end = 0;
 
@@ -473,64 +505,65 @@ static void arm_interrupt(struct usb_device *dev, int i, uint8_t ep, uint32_t le
     /* next_ed is preserved: it is what keeps this ED in the periodic chain. */
     ied->control = ED_FA(dev->address) | ED_EN(ep & 0x0F) | ED_DIR_TD | ED_MPS(mps)
                  | (dev->speed == USB_SPEED_LOW ? ED_SPEED_LOW : 0);
-    ied->tail_td = INT_TD(i) + sizeof(struct ohci_td);
-    ied->head_td = INT_TD(i) | carry;
+    ied->tail_td = t_phys + sizeof(struct ohci_td);
+    ied->head_td = t_phys | carry;
 
-    int_eps[i].len = (uint8_t)len;
-    int_eps[i].armed = 1;
+    c->int_eps[i].len = (uint8_t)len;
+    c->int_eps[i].armed = 1;
 }
 
 static int ohci_interrupt_poll(struct usb_device *dev, uint8_t ep,
                                void *data, uint32_t len) {
-    if (!present || !dev || !data) return -1;
+    if (!dev || !dev->hc || !data) return -1;
     if (len == 0 || len > 64) return -1;
+    struct ohci_hc *c = dev->hc;
 
-    int i = int_slot_for(dev->address, ep);
+    int i = int_slot_for(c, dev->address, ep);
     if (i < 0) return -1;
 
-    struct ohci_ed *ied = (struct ohci_ed *)ODMA_V(ED_INT(i));
-    struct ohci_td *t = (struct ohci_td *)ODMA_V(INT_TD(i));
+    struct ohci_ed *ied = dma_virt(c, ED_INT(i));
+    struct ohci_td *t = dma_virt(c, INT_TD(i));
 
-    if (!int_list_live) {
+    if (!c->int_list_live) {
         /* Chain every interrupt ED together, skipped until armed, and publish
            the head into all 32 HCCA interrupt entries. Until PLE is set the
            controller never looks at the periodic schedule at all. */
         for (int k = 0; k < MAX_INT_EPS; k++) {
-            struct ohci_ed *e = (struct ohci_ed *)ODMA_V(ED_INT(k));
+            struct ohci_ed *e = dma_virt(c, ED_INT(k));
             e->control = ED_SKIP;
             e->head_td = 0;
             e->tail_td = 0;
-            e->next_ed = (k + 1 < MAX_INT_EPS) ? ED_INT(k + 1) : 0;
+            e->next_ed = (k + 1 < MAX_INT_EPS) ? dma_phys(c, ED_INT(k + 1)) : 0;
         }
-        volatile uint32_t *hcca = (volatile uint32_t *)ODMA_V(HCCA_ADDR);
-        for (int k = 0; k < 32; k++) hcca[k] = ED_INT(0);
-        wr(OHCI_CONTROL, rd(OHCI_CONTROL) | CTRL_PLE);
-        int_list_live = 1;
+        volatile uint32_t *hcca = dma_virt(c, HCCA_OFF);
+        for (int k = 0; k < 32; k++) hcca[k] = dma_phys(c, ED_INT(0));
+        wr(c, OHCI_CONTROL, rd(c, OHCI_CONTROL) | CTRL_PLE);
+        c->int_list_live = 1;
     }
 
-    if (!int_eps[i].armed) { arm_interrupt(dev, i, ep, len); return 0; }
+    if (!c->int_eps[i].armed) { arm_interrupt(c, dev, i, ep, len); return 0; }
 
     uint32_t head = ied->head_td;
     if (head & 1u) {                       /* halted - clear and re-arm */
         ied->head_td = 0;
-        arm_interrupt(dev, i, ep, len);
+        arm_interrupt(c, dev, i, ep, len);
         return -1;
     }
     if ((head & ~0x0Fu) != (ied->tail_td & ~0x0Fu)) return 0;   /* still running */
 
-    int got = (int)int_eps[i].len;
+    int got = (int)c->int_eps[i].len;
     uint32_t cur = t->current_buf;
     if (cur) {                             /* short report */
-        got = (int)(cur - INT_BUF(i));
+        got = (int)(cur - dma_phys(c, INT_BUF(i)));
         if (got < 0) got = 0;
     }
     if (TD_CC(t->control) != TD_CC_NOERROR) got = 0;
 
     if (got > (int)len) got = (int)len;
-    const uint8_t *src = (const uint8_t *)ODMA_V(INT_BUF(i));
+    const uint8_t *src = dma_virt(c, INT_BUF(i));
     for (int b = 0; b < got; b++) ((uint8_t *)data)[b] = src[b];
 
-    arm_interrupt(dev, i, ep, len);        /* keep it running */
+    arm_interrupt(c, dev, i, ep, len);     /* keep it running */
     return got;
 }
 
@@ -540,22 +573,22 @@ static int ohci_interrupt_poll(struct usb_device *dev, uint8_t ep,
  * HcCommandStatus.OCR asks for it back. Same purpose - stop the firmware
  * servicing this controller behind us - and the same conservative timeout,
  * because a firmware that never answers should not leave USB dead. */
-static void ohci_takeover(void) {
-    uint32_t control = rd(OHCI_CONTROL);
+static void ohci_takeover(struct ohci_hc *c) {
+    uint32_t control = rd(c, OHCI_CONTROL);
 
     if (control & CTRL_IR) {
         klog("OHCI", SEV_INFO, "requesting controller ownership from SMM");
-        wr(OHCI_INTENABLE, INT_OC);
-        wr(OHCI_CMDSTATUS, CMD_OCR);
+        wr(c, OHCI_INTENABLE, INT_OC);
+        wr(c, OHCI_CMDSTATUS, CMD_OCR);
         for (int i = 0; i < 500; i++) {
-            if (!(rd(OHCI_CONTROL) & CTRL_IR)) {
+            if (!(rd(c, OHCI_CONTROL) & CTRL_IR)) {
                 klog("OHCI", SEV_OK, "SMM released the controller");
                 return;
             }
             timer_sleep(1);
         }
         klog("OHCI", SEV_WARN, "SMM did not release the controller - taking it anyway");
-        wr(OHCI_CONTROL, rd(OHCI_CONTROL) & ~CTRL_IR);
+        wr(c, OHCI_CONTROL, rd(c, OHCI_CONTROL) & ~CTRL_IR);
         return;
     }
 
@@ -563,93 +596,103 @@ static void ohci_takeover(void) {
        yank it, then let the reset below do the real work. */
     if ((control & CTRL_HCFS_MASK) != CTRL_HCFS_RESET) {
         if ((control & CTRL_HCFS_MASK) != CTRL_HCFS_OPERATIONAL) {
-            wr(OHCI_CONTROL, (control & ~CTRL_HCFS_MASK) | CTRL_HCFS_RESUME);
+            wr(c, OHCI_CONTROL, (control & ~CTRL_HCFS_MASK) | CTRL_HCFS_RESUME);
             timer_sleep(20);
         }
     }
 }
 
-int ohci_init(void) {
-    present = 0;
-    next_address = 1;
-    int_list_live = 0;
-    for (int i = 0; i < MAX_INT_EPS; i++) int_eps[i].armed = 0;
-
-    /* class 0x0C serial bus, subclass 0x03 USB, prog-if 0x10 = OHCI */
-    const struct pci_device *dev = pci_find(0x0C, 0x03, 0x10, 0);
-    if (!dev) return 0;
-
+/* Bring up one controller. Returns 1 if it came up. */
+static int ohci_start(struct ohci_hc *c, const struct pci_device *dev, unsigned index) {
     pci_enable_bus_master(dev);
 
     uint32_t base = pci_bar_mmio32(dev, 0, "OHCI");
     if (base == 0) return 0;
 
     paging_map_kernel(base, base, VM_WRITE | VM_UNCACHED);
-    if (iowin_mmio(&regs, (volatile void *)base, 0x1000) != 0) return 0;
+    if (iowin_mmio(&c->regs, (volatile void *)base, 0x1000) != 0) return 0;
 
-    for (uint32_t a = ODMA_BASE; a < ODMA_END; a += 0x1000)
-        paging_map_kernel(ODMA_V(a), a, VM_WRITE);
+    c->dma_v = usb_dma_alloc(ODMA_PAGES, ODMA_VBASE + index * 0x10000u, &c->dma);
+    if (!c->dma_v) {
+        klog("OHCI", SEV_WARN, "no memory for the controller's DMA pages");
+        return 0;
+    }
 
-    ohci_takeover();
+    ohci_takeover(c);
 
     /* FmInterval is destroyed by the reset and has to be put back, so save it
        first - the controller will not schedule anything without a sane frame
        interval, and its reset default is not necessarily it. */
-    uint32_t fminterval = rd(OHCI_FMINTERVAL);
+    uint32_t fminterval = rd(c, OHCI_FMINTERVAL);
 
-    wr(OHCI_CMDSTATUS, CMD_HCR);
+    wr(c, OHCI_CMDSTATUS, CMD_HCR);
     int ok = 0;
     for (int i = 0; i < 100; i++) {
-        if (!(rd(OHCI_CMDSTATUS) & CMD_HCR)) { ok = 1; break; }
+        if (!(rd(c, OHCI_CMDSTATUS) & CMD_HCR)) { ok = 1; break; }
         timer_sleep(1);      /* the spec says 10 us; a millisecond is generous */
     }
     if (!ok) { klog("OHCI", SEV_WARN, "controller reset did not complete"); return 0; }
 
     /* After reset the controller is in SUSPEND and must reach OPERATIONAL
        within 2 ms or it drops back to RESET. */
-    struct ohci_ed *e = (struct ohci_ed *)ODMA_V(ED_ADDR);
+    struct ohci_ed *e = dma_virt(c, ED_OFF);
     e->control = ED_SKIP;
     e->tail_td = 0; e->head_td = 0; e->next_ed = 0;
-    ed = e;
+    c->ed = e;
     for (uint32_t a = ED_BULK_IN; a <= ED_BULK_OUT; a += 0x40) {
-        struct ohci_ed *b = (struct ohci_ed *)ODMA_V(a);
+        struct ohci_ed *b = dma_virt(c, a);
         b->control = ED_SKIP; b->tail_td = 0; b->head_td = 0; b->next_ed = 0;
     }
-    td = (struct ohci_td *)ODMA_V(TD_ADDR);
-    xfer_buf = (uint8_t *)ODMA_V(OXFER_ADDR);
+    c->td = dma_virt(c, TD_OFF);
+    c->xfer_buf = dma_virt(c, OXFER_OFF);
 
-    volatile uint8_t *hcca = (volatile uint8_t *)ODMA_V(HCCA_ADDR);
+    volatile uint8_t *hcca = dma_virt(c, HCCA_OFF);
     for (unsigned i = 0; i < 256; i++) hcca[i] = 0;
 
-    wr(OHCI_HCCA, HCCA_ADDR);
-    wr(OHCI_CTRLHEADED, 0);
-    wr(OHCI_BULKHEADED, 0);
-    wr(OHCI_FMINTERVAL, fminterval);
-    wr(OHCI_PERIODICSTART, (fminterval & 0x3FFF) * 9 / 10);   /* 90%, per the spec */
-    wr(OHCI_INTDISABLE, 0xFFFFFFFF);                          /* we poll */
+    wr(c, OHCI_HCCA, dma_phys(c, HCCA_OFF));
+    wr(c, OHCI_CTRLHEADED, 0);
+    wr(c, OHCI_BULKHEADED, 0);
+    wr(c, OHCI_FMINTERVAL, fminterval);
+    wr(c, OHCI_PERIODICSTART, (fminterval & 0x3FFF) * 9 / 10);   /* 90%, per the spec */
+    wr(c, OHCI_INTDISABLE, 0xFFFFFFFF);                          /* we poll */
 
-    wr(OHCI_CONTROL, (rd(OHCI_CONTROL) & ~(CTRL_HCFS_MASK | CTRL_IR))
-                     | CTRL_HCFS_OPERATIONAL);
+    wr(c, OHCI_CONTROL, (rd(c, OHCI_CONTROL) & ~(CTRL_HCFS_MASK | CTRL_IR))
+                        | CTRL_HCFS_OPERATIONAL);
 
-    uint32_t rhda = rd(OHCI_RHDESCRIPTORA);
-    nports = rhda & 0xFF;
-    if (nports == 0 || nports > 15) {
-        klog_u32("OHCI", SEV_WARN, "implausible root port count ", nports, LOG_COLOR_VALUE, "");
+    uint32_t rhda = rd(c, OHCI_RHDESCRIPTORA);
+    c->nports = rhda & 0xFF;
+    if (c->nports == 0 || c->nports > 15) {
+        klog_u32("OHCI", SEV_WARN, "implausible root port count ", c->nports, LOG_COLOR_VALUE, "");
         return 0;
     }
 
     /* Global power on, then per-port. POTPGT (the top byte of HcRhDescriptorA)
        is the power-on-to-power-good time in 2 ms units, and devices are not
        required to answer before it elapses. */
-    wr(OHCI_RHSTATUS, RHS_LPSC);
-    for (unsigned p = 0; p < nports; p++) port_wr(p, RH_SET_PP);
+    wr(c, OHCI_RHSTATUS, RHS_LPSC);
+    for (unsigned p = 0; p < c->nports; p++) port_wr(c, p, RH_SET_PP);
     unsigned potpgt = ((rhda >> 24) & 0xFF) * 2;
     timer_sleep(potpgt < 20 ? 20 : potpgt);
 
-    present = 1;
-    klog_u32("OHCI", SEV_OK, "controller online, root ports: ", nports, LOG_COLOR_VALUE, "");
+    klog_u32("OHCI", SEV_OK, "controller online, root ports: ", c->nports, LOG_COLOR_VALUE, "");
+    klog_child_u32("  pci device ", dev->slot, LOG_COLOR_VALUE, "");
 
     timer_sleep(100);
-    for (unsigned p = 0; p < nports; p++) enumerate_port(p);
+    for (unsigned p = 0; p < c->nports; p++) enumerate_port(c, p);
     return 1;
+}
+
+int ohci_init(void) {
+    nhcs = 0;
+    /* class 0x0C serial bus, subclass 0x03 USB, prog-if 0x10 = OHCI. Every
+       one of them: each is the companion for a different set of ports. */
+    for (unsigned k = 0; nhcs < OHCI_MAX_HCS; k++) {
+        const struct pci_device *dev = pci_find(0x0C, 0x03, 0x10, k);
+        if (!dev) break;
+        struct ohci_hc *c = &hcs[nhcs];
+        for (unsigned i = 0; i < sizeof(*c); i++) ((uint8_t *)c)[i] = 0;
+        c->next_address = 1;
+        if (ohci_start(c, dev, nhcs)) nhcs++;
+    }
+    return nhcs > 0;
 }

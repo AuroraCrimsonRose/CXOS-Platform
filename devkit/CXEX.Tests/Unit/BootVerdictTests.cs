@@ -116,8 +116,12 @@ public class BootVerdictTests
         // As the rig boots: the stick is the only disk, so a crash log or a
         // self-test that passes has passed on USB, not on an IDE disk beside it.
         var args = QemuTool.BuildArguments(BootVerifier.ConfigFor("cxk_disk.img", "serial.log", usb: host));
-        Assert.Contains($"{device},id=usbhc", args);
         Assert.Contains("usb-storage,bus=usbhc.0,drive=cxkdisk,bootindex=0", args);
+        // The stick's controller is not the first of its kind: a kernel that
+        // drives only the first controller must fail this boot, as on the rig.
+        int empty = args.IndexOf($"{device},id=usbhc_empty");
+        int stick = args.IndexOf($"{device},id=usbhc");
+        Assert.True(empty >= 0 && stick > empty);
         Assert.DoesNotContain(args, a => a.Contains("if=ide"));
         Assert.Contains("-snapshot", args);
     }

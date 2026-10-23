@@ -122,61 +122,81 @@ _Static_assert(sizeof(struct ehci_qh) % 32 == 0, "QH stride must stay 32-byte al
                                             the queue silently never runs.    */
 #define LINK_TYP_QH         (1u << 1)
 
-/* ---- DMA window ---------------------------------------------------------
- * Same pattern as the NIC drivers: the controller bus-masters from PHYSICAL
- * addresses while the CPU reaches the identical structures through a KERNEL-half
- * alias, so they stay visible when CR3 points at a process directory.
- *
- * 0x760000 is inside the 0x500000-0x800000 window pmm.c already reserves for
- * driver DMA, past the RTL8169 region which ends at 0x752000. */
-#define EHCI_DMA_BASE   0x760000u
-#define EHCI_DMA_VBASE  0xE3000000u
-#define DMA_V(phys)     ((phys) - EHCI_DMA_BASE + EHCI_DMA_VBASE)
+/* ---- DMA memory ---------------------------------------------------------
+ * Each controller has its own eight pages (usb_dma_alloc): the controller
+ * bus-masters from their PHYSICAL addresses while the CPU reaches the same
+ * structures through a KERNEL-half alias, so they stay visible when CR3 points
+ * at a process directory. The offsets below are within those pages. */
+#define EHCI_DMA_VBASE  0xE3000000u     /* controller i's alias: + i * 0x10000 */
+#define EHCI_DMA_PAGES  8
 
-#define PFLIST_ADDR     (EHCI_DMA_BASE + 0x0000)   /* 1024 dwords, 4K aligned */
-#define QH_ADDR         (EHCI_DMA_BASE + 0x1000)
-#define QTD_ADDR        (EHCI_DMA_BASE + 0x2000)
-#define XFER_BUF_ADDR   (EHCI_DMA_BASE + 0x3000)   /* EHCI_XFER_MAX, page aligned */
+#define PFLIST_OFF      0x0000          /* 1024 dwords, 4K aligned */
+#define QH_OFF          0x1000
+#define QTD_OFF         0x2000
+#define XFER_BUF_OFF    0x3000          /* EHCI_XFER_MAX, page aligned */
 /* One queue head, qTD and buffer PER interrupt endpoint - not one shared set.
    They are separate from the control/bulk queue head so a transfer between two
    polls cannot overwrite a report in flight, and separate from each other
    because a keyboard and a mouse are both interrupt endpoints and a single
    shared set makes them clobber one another. */
 #define MAX_INT_EPS     4
-#define INT_QH_ADDR(i)  (EHCI_DMA_BASE + 0x5000 + (uint32_t)(i) * 0x80)
-#define INT_QTD_ADDR(i) (EHCI_DMA_BASE + 0x6000 + (uint32_t)(i) * 0x40)
-#define INT_BUF_ADDR(i) (EHCI_DMA_BASE + 0x7000 + (uint32_t)(i) * 0x100)
-#define EHCI_DMA_END    (EHCI_DMA_BASE + 0x8000)
+#define INT_QH_OFF(i)   (0x5000 + (uint32_t)(i) * 0x80)
+#define INT_QTD_OFF(i)  (0x6000 + (uint32_t)(i) * 0x40)
+#define INT_BUF_OFF(i)  (0x7000 + (uint32_t)(i) * 0x100)
 
 #define NUM_QTD 4
+#define MAX_TOGGLES 16
+
+/* An AMD SB950 has three EHCI controllers and an SB850 two, each with its own
+   ports; a driver that brings up only the first leaves a stick in any other
+   port invisible. */
+#define EHCI_MAX_HCS    4
 
 /* BAR 0 is 256 bytes: the capability registers, then from CAPLENGTH on the
    operational ones, each reached through its own window */
 #define EHCI_BAR_SIZE 0x100u
-static struct iowin cap_regs;
-static struct iowin op_regs;
-static int present = 0;
-static unsigned nports = 0;
-static int port_power_control = 0;
 
-static uint8_t next_address = 1;
+/* Everything one controller needs. A usb_device's `hc` points at its
+   controller's, so the transfer functions below never have to guess. */
+struct ehci_hc {
+    struct iowin cap_regs;
+    struct iowin op_regs;
+    unsigned nports;
+    int port_power_control;
+    uint8_t next_address;           /* USB addresses are per bus */
 
-static inline uint32_t cap_rd32(uint32_t o) { return iowin_read32(&cap_regs, o); }
-static inline uint8_t  cap_rd8(uint32_t o)  { return iowin_read8(&cap_regs, o); }
-static inline uint32_t op_rd(uint32_t o)    { return iowin_read32(&op_regs, o); }
-static inline void     op_wr(uint32_t o, uint32_t v) { iowin_write32(&op_regs, o, v); }
+    uint32_t dma;                   /* physical base of the DMA pages */
+    uint8_t *dma_v;                 /* the CPU's alias of them        */
+    struct ehci_qh  *qh;
+    struct ehci_qtd *qtd;
+    uint8_t *xfer_buf;
 
-static inline uint32_t portsc_rd(unsigned p) { return op_rd(OP_PORTSC + p * 4); }
+    struct { uint8_t addr, ep, toggle; } toggles[MAX_TOGGLES];
+    struct {
+        uint8_t addr, ep, armed;
+        uint16_t len;
+    } int_eps[MAX_INT_EPS];
+    int int_list_live;
+};
+
+static struct ehci_hc hcs[EHCI_MAX_HCS];
+static unsigned nhcs = 0;
+
+static inline uint32_t dma_phys(const struct ehci_hc *c, uint32_t off) { return c->dma + off; }
+static inline void    *dma_virt(const struct ehci_hc *c, uint32_t off) { return c->dma_v + off; }
+
+static inline uint32_t cap_rd32(struct ehci_hc *c, uint32_t o) { return iowin_read32(&c->cap_regs, o); }
+static inline uint8_t  cap_rd8(struct ehci_hc *c, uint32_t o)  { return iowin_read8(&c->cap_regs, o); }
+static inline uint32_t op_rd(struct ehci_hc *c, uint32_t o)    { return iowin_read32(&c->op_regs, o); }
+static inline void     op_wr(struct ehci_hc *c, uint32_t o, uint32_t v) { iowin_write32(&c->op_regs, o, v); }
+
+static inline uint32_t portsc_rd(struct ehci_hc *c, unsigned p) { return op_rd(c, OP_PORTSC + p * 4); }
 
 /* Write PORTSC without disturbing the write-1-to-clear change bits. Every port
    write in this driver goes through here for that reason. */
-static inline void portsc_wr(unsigned p, uint32_t v) {
-    op_wr(OP_PORTSC + p * 4, v & ~PORTSC_RWC_MASK);
+static inline void portsc_wr(struct ehci_hc *c, unsigned p, uint32_t v) {
+    op_wr(c, OP_PORTSC + p * 4, v & ~PORTSC_RWC_MASK);
 }
-
-static struct ehci_qh  *qh  = 0;
-static struct ehci_qtd *qtd = 0;
-static uint8_t *xfer_buf = 0;
 
 /* ---- BIOS handoff -------------------------------------------------------
  * The EECP field points at a PCI capability (id 1, USB Legacy Support) holding
@@ -234,8 +254,8 @@ disable_smi:
 /* Physical address of pool entry i. A file-scope function rather than one
    nested in the caller: GCC implements a nested function as a trampoline on the
    stack, which needs an executable stack to call through. */
-static uint32_t qtd_phys(int i) {
-    return QTD_ADDR + (uint32_t)i * (uint32_t)sizeof(struct ehci_qtd);
+static uint32_t qtd_phys(const struct ehci_hc *c, int i) {
+    return dma_phys(c, QTD_OFF) + (uint32_t)i * (uint32_t)sizeof(struct ehci_qtd);
 }
 
 static void qtd_clear(struct ehci_qtd *t) {
@@ -258,8 +278,12 @@ static void qtd_buffers(struct ehci_qtd *t, uint32_t phys, uint16_t len) {
 static int ehci_control(struct usb_device *dev, uint8_t bm_request_type,
                         uint8_t b_request, uint16_t w_value, uint16_t w_index,
                         void *data, uint16_t w_length) {
-    if (!present || !dev) return -1;
+    if (!dev || !dev->hc) return -1;
     if (w_length > EHCI_XFER_MAX) return -1;
+    struct ehci_hc *c = dev->hc;
+    struct ehci_qh *qh = c->qh;
+    struct ehci_qtd *qtd = c->qtd;
+    uint8_t *xfer_buf = c->xfer_buf;
     uint8_t addr = dev->address;
     uint8_t max_packet = dev->max_packet0 ? dev->max_packet0 : 64;
 
@@ -272,7 +296,7 @@ static int ehci_control(struct usb_device *dev, uint8_t bm_request_type,
     sp->w_value = w_value;
     sp->w_index = w_index;
     sp->w_length = w_length;
-    uint32_t setup_phys = XFER_BUF_ADDR + EHCI_XFER_MAX;
+    uint32_t setup_phys = dma_phys(c, XFER_BUF_OFF) + EHCI_XFER_MAX;
 
     if (!dev_to_host && data && w_length)
         for (uint16_t i = 0; i < w_length; i++) xfer_buf[i] = ((const uint8_t *)data)[i];
@@ -291,7 +315,7 @@ static int ehci_control(struct usb_device *dev, uint8_t bm_request_type,
         t_data = &qtd[n++];
         t_data->token = QTD_STS_ACTIVE | QTD_CERR_3 | QTD_LEN(w_length) | QTD_TOGGLE
                       | (dev_to_host ? QTD_PID_IN : QTD_PID_OUT);
-        qtd_buffers(t_data, XFER_BUF_ADDR, w_length);
+        qtd_buffers(t_data, dma_phys(c, XFER_BUF_OFF), w_length);
     }
 
     /* --- STATUS: zero length, DATA1, opposite direction to the data --- */
@@ -300,7 +324,7 @@ static int ehci_control(struct usb_device *dev, uint8_t bm_request_type,
                     | (dev_to_host ? QTD_PID_OUT : QTD_PID_IN);
 
     /* chain them */
-    for (int i = 0; i < n - 1; i++) qtd[i].next = qtd_phys(i + 1);
+    for (int i = 0; i < n - 1; i++) qtd[i].next = qtd_phys(c, i + 1);
     qtd[n - 1].next = QTD_T;
 
     /* Point the queue head at the chain. The overlay must be cleared too: a
@@ -312,7 +336,7 @@ static int ehci_control(struct usb_device *dev, uint8_t bm_request_type,
     qh->token = 0;
     qh->alt_next = QTD_T;
     for (int i = 0; i < 5; i++) qh->buffer[i] = 0;
-    qh->next = qtd_phys(0);          /* set LAST: this is what starts the work */
+    qh->next = qtd_phys(c, 0);       /* set LAST: this is what starts the work */
 
     /* wait for the final qTD to retire */
     int err = 0;
@@ -362,38 +386,38 @@ done:
  * head for every endpoint.
  *
  * `ep` is the endpoint ADDRESS from the descriptor: bit 7 is the direction. */
-#define MAX_TOGGLES 16
-static struct { uint8_t addr, ep, toggle; } toggles[MAX_TOGGLES];
-
-static uint8_t *toggle_slot(uint8_t addr, uint8_t ep) {
+static uint8_t *toggle_slot(struct ehci_hc *c, uint8_t addr, uint8_t ep) {
     for (int i = 0; i < MAX_TOGGLES; i++)
-        if (toggles[i].addr == addr && toggles[i].ep == ep) return &toggles[i].toggle;
+        if (c->toggles[i].addr == addr && c->toggles[i].ep == ep) return &c->toggles[i].toggle;
     for (int i = 0; i < MAX_TOGGLES; i++)
-        if (toggles[i].addr == 0) {
-            toggles[i].addr = addr; toggles[i].ep = ep; toggles[i].toggle = 0;
-            return &toggles[i].toggle;
+        if (c->toggles[i].addr == 0) {
+            c->toggles[i].addr = addr; c->toggles[i].ep = ep; c->toggles[i].toggle = 0;
+            return &c->toggles[i].toggle;
         }
     return 0;
 }
 
 static int ehci_bulk(struct usb_device *dev, uint8_t ep, void *data, uint32_t len) {
-    if (!present || !dev || !data) return -1;
+    if (!dev || !dev->hc || !data) return -1;
     if (len == 0 || len > EHCI_XFER_MAX) return -1;
+    struct ehci_hc *c = dev->hc;
+    struct ehci_qh *qh = c->qh;
+    uint8_t *xfer_buf = c->xfer_buf;
 
     int in = (ep & 0x80) != 0;
     uint16_t mps = in ? dev->ep_in_mps : dev->ep_out_mps;
     if (mps == 0) mps = 512;
 
-    uint8_t *tg = toggle_slot(dev->address, ep);
+    uint8_t *tg = toggle_slot(c, dev->address, ep);
     if (!tg) return -1;
 
     if (!in) for (uint32_t i = 0; i < len; i++) xfer_buf[i] = ((const uint8_t *)data)[i];
 
-    for (int i = 0; i < NUM_QTD; i++) qtd_clear(&qtd[i]);
-    struct ehci_qtd *t = &qtd[0];
+    for (int i = 0; i < NUM_QTD; i++) qtd_clear(&c->qtd[i]);
+    struct ehci_qtd *t = &c->qtd[0];
     t->token = QTD_STS_ACTIVE | QTD_CERR_3 | QTD_LEN(len) | QTD_IOC
              | (in ? QTD_PID_IN : QTD_PID_OUT);
-    qtd_buffers(t, XFER_BUF_ADDR, (uint16_t)len);
+    qtd_buffers(t, dma_phys(c, XFER_BUF_OFF), (uint16_t)len);
     t->next = QTD_T;
 
     /* DTC clear: the queue head owns the toggle. Restore ours into the overlay
@@ -405,7 +429,7 @@ static int ehci_bulk(struct usb_device *dev, uint8_t ep, void *data, uint32_t le
     qh->alt_next = QTD_T;
     qh->token = *tg ? QTD_TOGGLE : 0;
     for (int i = 0; i < 5; i++) qh->buffer[i] = 0;
-    qh->next = qtd_phys(0);
+    qh->next = qtd_phys(c, 0);
 
     int err = 0;
     for (int ms = 0; ms < 2000; ms++) {
@@ -441,22 +465,24 @@ done:
    The overlay is only written with the async schedule stopped, as the spec
    requires; it is restarted afterwards. */
 static void ehci_reset_ep(struct usb_device *dev, uint8_t ep) {
-    if (!present || !qh) return;
-    uint32_t cmd = op_rd(OP_USBCMD);
-    op_wr(OP_USBCMD, cmd & ~CMD_ASE);
-    for (int i = 0; i < 20 && (op_rd(OP_USBSTS) & STS_ASS); i++) timer_sleep(1);
+    if (!dev || !dev->hc) return;
+    struct ehci_hc *c = dev->hc;
+    struct ehci_qh *qh = c->qh;
+    uint32_t cmd = op_rd(c, OP_USBCMD);
+    op_wr(c, OP_USBCMD, cmd & ~CMD_ASE);
+    for (int i = 0; i < 20 && (op_rd(c, OP_USBSTS) & STS_ASS); i++) timer_sleep(1);
 
-    for (int i = 0; i < NUM_QTD; i++) qtd_clear(&qtd[i]);
+    for (int i = 0; i < NUM_QTD; i++) qtd_clear(&c->qtd[i]);
     qh->next = QTD_T;
     qh->alt_next = QTD_T;
     qh->current = 0;
     qh->token = 0;                       /* not active, not halted, DATA0 */
 
-    op_wr(OP_USBCMD, cmd | CMD_ASE);
-    for (int i = 0; i < 20 && !(op_rd(OP_USBSTS) & STS_ASS); i++) timer_sleep(1);
+    op_wr(c, OP_USBCMD, cmd | CMD_ASE);
+    for (int i = 0; i < 20 && !(op_rd(c, OP_USBSTS) & STS_ASS); i++) timer_sleep(1);
 
     if (ep & 0x0F) {                     /* the control endpoint's toggle is fixed */
-        uint8_t *tg = toggle_slot(dev->address, ep);
+        uint8_t *tg = toggle_slot(c, dev->address, ep);
         if (tg) *tg = 0;
     }
 }
@@ -469,30 +495,25 @@ static void ehci_reset_ep(struct usb_device *dev, uint8_t ep) {
  * The transfer is armed once and left running, and each poll only asks whether
  * it finished. An idle keyboard NAKs rather than answering, so a poll that
  * waited would stall for its whole timeout on every check for a keypress. */
-static struct {
-    uint8_t addr, ep, armed;
-    uint16_t len;
-} int_eps[MAX_INT_EPS];
-static int int_list_live = 0;
-
-static int int_slot_for(uint8_t addr, uint8_t ep) {
+static int int_slot_for(struct ehci_hc *c, uint8_t addr, uint8_t ep) {
     for (int i = 0; i < MAX_INT_EPS; i++)
-        if (int_eps[i].armed && int_eps[i].addr == addr && int_eps[i].ep == ep) return i;
+        if (c->int_eps[i].armed && c->int_eps[i].addr == addr && c->int_eps[i].ep == ep) return i;
     for (int i = 0; i < MAX_INT_EPS; i++)
-        if (!int_eps[i].armed) { int_eps[i].addr = addr; int_eps[i].ep = ep; return i; }
+        if (!c->int_eps[i].armed) { c->int_eps[i].addr = addr; c->int_eps[i].ep = ep; return i; }
     return -1;
 }
 
-static void arm_int(struct usb_device *dev, int i, uint8_t ep, uint16_t len) {
-    struct ehci_qh  *iqh = (struct ehci_qh  *)DMA_V(INT_QH_ADDR(i));
-    struct ehci_qtd *itd = (struct ehci_qtd *)DMA_V(INT_QTD_ADDR(i));
+static void arm_int(struct ehci_hc *c, struct usb_device *dev, int i, uint8_t ep, uint16_t len) {
+    struct ehci_qh  *iqh = dma_virt(c, INT_QH_OFF(i));
+    struct ehci_qtd *itd = dma_virt(c, INT_QTD_OFF(i));
+    uint32_t buf = dma_phys(c, INT_BUF_OFF(i));
 
     itd->next = QTD_T;
     itd->alt_next = QTD_T;
     itd->token = QTD_STS_ACTIVE | QTD_CERR_3 | QTD_LEN(len) | QTD_PID_IN;
     for (int b = 0; b < 5; b++) itd->buffer[b] = 0;
-    itd->buffer[0] = INT_BUF_ADDR(i);
-    itd->buffer[1] = (INT_BUF_ADDR(i) & ~0xFFFu) + 0x1000;
+    itd->buffer[0] = buf;
+    itd->buffer[1] = (buf & ~0xFFFu) + 0x1000;
 
     uint16_t mps = dev->ep_int_mps ? dev->ep_int_mps : 8;
     uint32_t toggle = iqh->token & QTD_TOGGLE;     /* the controller owns it */
@@ -506,28 +527,29 @@ static void arm_int(struct usb_device *dev, int i, uint8_t ep, uint16_t len) {
     iqh->alt_next = QTD_T;
     iqh->token = toggle;
     for (int b = 0; b < 5; b++) iqh->buffer[b] = 0;
-    iqh->next = INT_QTD_ADDR(i);
+    iqh->next = dma_phys(c, INT_QTD_OFF(i));
 
-    int_eps[i].len = len;
-    int_eps[i].armed = 1;
+    c->int_eps[i].len = len;
+    c->int_eps[i].armed = 1;
 }
 
 static int ehci_interrupt_poll(struct usb_device *dev, uint8_t ep,
                                void *data, uint32_t len) {
-    if (!present || !dev || !data) return -1;
+    if (!dev || !dev->hc || !data) return -1;
     if (len == 0 || len > 64) return -1;
+    struct ehci_hc *c = dev->hc;
 
-    int i = int_slot_for(dev->address, ep);
+    int i = int_slot_for(c, dev->address, ep);
     if (i < 0) return -1;
 
-    struct ehci_qtd *itd = (struct ehci_qtd *)DMA_V(INT_QTD_ADDR(i));
+    struct ehci_qtd *itd = dma_virt(c, INT_QTD_OFF(i));
 
-    if (!int_list_live) {
+    if (!c->int_list_live) {
         /* Chain the interrupt queue heads together and point every frame-list
            entry at the head. Until PSE is set the controller never reads the
            frame list at all. */
         for (int k = 0; k < MAX_INT_EPS; k++) {
-            struct ehci_qh *q = (struct ehci_qh *)DMA_V(INT_QH_ADDR(k));
+            struct ehci_qh *q = dma_virt(c, INT_QH_OFF(k));
             q->chars = 0;
             q->caps = QH_CAPS_MULT1 | 0x01;
             q->current = 0;
@@ -535,29 +557,29 @@ static int ehci_interrupt_poll(struct usb_device *dev, uint8_t ep,
             q->alt_next = QTD_T;
             q->token = 0;
             q->horizontal = (k + 1 < MAX_INT_EPS)
-                          ? (INT_QH_ADDR(k + 1) | LINK_TYP_QH) : QTD_T;
+                          ? (dma_phys(c, INT_QH_OFF(k + 1)) | LINK_TYP_QH) : QTD_T;
         }
-        volatile uint32_t *pflist = (volatile uint32_t *)DMA_V(PFLIST_ADDR);
-        for (int k = 0; k < 1024; k++) pflist[k] = INT_QH_ADDR(0) | LINK_TYP_QH;
-        op_wr(OP_USBCMD, op_rd(OP_USBCMD) | CMD_PSE);
-        int_list_live = 1;
+        volatile uint32_t *pflist = dma_virt(c, PFLIST_OFF);
+        for (int k = 0; k < 1024; k++) pflist[k] = dma_phys(c, INT_QH_OFF(0)) | LINK_TYP_QH;
+        op_wr(c, OP_USBCMD, op_rd(c, OP_USBCMD) | CMD_PSE);
+        c->int_list_live = 1;
     }
 
-    if (!int_eps[i].armed) { arm_int(dev, i, ep, (uint16_t)len); return 0; }
+    if (!c->int_eps[i].armed) { arm_int(c, dev, i, ep, (uint16_t)len); return 0; }
 
     uint32_t tok = itd->token;
     if (tok & QTD_STS_ACTIVE) return 0;             /* still waiting */
-    if (tok & QTD_STS_ERRMASK) { arm_int(dev, i, ep, (uint16_t)len); return -1; }
+    if (tok & QTD_STS_ERRMASK) { arm_int(c, dev, i, ep, (uint16_t)len); return -1; }
 
     uint32_t remaining = (tok >> 16) & 0x7FFF;
-    int got = (int)int_eps[i].len - (int)remaining;
+    int got = (int)c->int_eps[i].len - (int)remaining;
     if (got < 0) got = 0;
     if (got > (int)len) got = (int)len;
 
-    const uint8_t *src = (const uint8_t *)DMA_V(INT_BUF_ADDR(i));
+    const uint8_t *src = dma_virt(c, INT_BUF_OFF(i));
     for (int b = 0; b < got; b++) ((uint8_t *)data)[b] = src[b];
 
-    arm_int(dev, i, ep, (uint16_t)len);
+    arm_int(c, dev, i, ep, (uint16_t)len);
     return got;
 }
 
@@ -570,6 +592,7 @@ static int ehci_interrupt_poll(struct usb_device *dev, uint8_t ep,
  *
  * xHCI inverts all of this; see the note in usb.h. */
 static int ehci_attach(struct usb_device *dev) {
+    struct ehci_hc *c = dev->hc;
     struct usb_device_descriptor dd;
     for (unsigned i = 0; i < sizeof(dd); i++) ((uint8_t *)&dd)[i] = 0;
 
@@ -579,7 +602,7 @@ static int ehci_attach(struct usb_device *dev) {
 
     dev->max_packet0 = dd.b_max_packet_size0 ? dd.b_max_packet_size0 : 64;
 
-    uint8_t addr = next_address++;
+    uint8_t addr = c->next_address++;
     if (ehci_control(dev, 0x00, USB_REQ_SET_ADDRESS, addr, 0, 0, 0) < 0) return 0;
     dev->address = addr;
     timer_sleep(2);                 /* the spec's 2 ms address-recovery delay */
@@ -595,8 +618,8 @@ static const struct usb_hc_ops ehci_ops = {
     .reset_ep = ehci_reset_ep,
 };
 
-static void enumerate_port(unsigned p) {
-    uint32_t sc = portsc_rd(p);
+static void enumerate_port(struct ehci_hc *c, unsigned p) {
+    uint32_t sc = portsc_rd(c, p);
     if (!(sc & PORTSC_CCS)) return;           /* nothing plugged in */
 
     /* A K-state line reading identifies a low-speed device before we even try:
@@ -604,21 +627,21 @@ static void enumerate_port(unsigned p) {
     if ((sc & PORTSC_LINESTS) == PORTSC_LS_KSTATE) {
         klog_u32("EHCI", SEV_INFO, "port ", p, LOG_COLOR_VALUE,
                  ": low-speed device, released to the companion controller");
-        portsc_wr(p, sc | PORTSC_OWNER);
+        portsc_wr(c, p, sc | PORTSC_OWNER);
         return;
     }
 
     /* Reset: hold for 50 ms (the spec's TDRSTR), then clear and let the
        controller finish. PORTSC_PED must be written 0 during a reset. */
-    portsc_wr(p, (sc & ~PORTSC_PED) | PORTSC_RESET);
+    portsc_wr(c, p, (sc & ~PORTSC_PED) | PORTSC_RESET);
     timer_sleep(50);
-    sc = portsc_rd(p);
-    portsc_wr(p, sc & ~PORTSC_RESET);
+    sc = portsc_rd(c, p);
+    portsc_wr(c, p, sc & ~PORTSC_RESET);
 
     /* The controller clears the reset bit itself; the spec allows 2 ms. */
     int cleared = 0;
     for (int i = 0; i < 20; i++) {
-        if (!(portsc_rd(p) & PORTSC_RESET)) { cleared = 1; break; }
+        if (!(portsc_rd(c, p) & PORTSC_RESET)) { cleared = 1; break; }
         timer_sleep(1);
     }
     if (!cleared) {
@@ -630,16 +653,16 @@ static void enumerate_port(unsigned p) {
        device; anything else must be handed to the companion or it becomes
        unreachable by everyone - which is how an EHCI driver kills a USB
        keyboard. */
-    sc = portsc_rd(p);
+    sc = portsc_rd(c, p);
     if (!(sc & PORTSC_PED)) {
         klog_u32("EHCI", SEV_INFO, "port ", p, LOG_COLOR_VALUE,
                  ": full-speed device, released to the companion controller");
-        portsc_wr(p, sc | PORTSC_OWNER);
+        portsc_wr(c, p, sc | PORTSC_OWNER);
         return;
     }
 
     /* High speed confirmed. Everything from here is the core's job. */
-    struct usb_device *dev = usb_alloc_device(&ehci_ops, 0, (uint8_t)p, USB_SPEED_HIGH);
+    struct usb_device *dev = usb_alloc_device(&ehci_ops, c, (uint8_t)p, USB_SPEED_HIGH);
     if (!dev) {
         klog("EHCI", SEV_WARN, "device table full");
         return;
@@ -647,52 +670,45 @@ static void enumerate_port(unsigned p) {
     usb_enumerate(dev);
 }
 
-int ehci_init(void) {
-    present = 0;
-    next_address = 1;
-    int_list_live = 0;
-    for (int i = 0; i < MAX_INT_EPS; i++) int_eps[i].armed = 0;
-
-    /* class 0x0C serial bus, subclass 0x03 USB, prog-if 0x20 = EHCI */
-    const struct pci_device *dev = pci_find(0x0C, 0x03, 0x20, 0);
-    if (!dev) return 0;
-
+/* Bring up one controller. Returns 1 if it came up. */
+static int ehci_start(struct ehci_hc *c, const struct pci_device *dev, unsigned index) {
     pci_enable_bus_master(dev);
 
     uint32_t base = pci_bar_mmio32(dev, 0, "EHCI");
     if (base == 0) return 0;
     for (uint32_t off = 0; off < 0x1000; off += 0x1000)
         paging_map_kernel(base + off, base + off, VM_WRITE | VM_UNCACHED);
-    if (iowin_mmio(&cap_regs, (volatile void *)base, EHCI_BAR_SIZE) != 0) return 0;
+    if (iowin_mmio(&c->cap_regs, (volatile void *)base, EHCI_BAR_SIZE) != 0) return 0;
 
-    uint32_t hccparams = cap_rd32(CAP_HCCPARAMS);
+    uint32_t hccparams = cap_rd32(c, CAP_HCCPARAMS);
     ehci_bios_handoff(dev, hccparams);
 
-    uint8_t caplen = cap_rd8(CAP_CAPLENGTH);
-    if (iowin_mmio(&op_regs, (volatile void *)(base + caplen), EHCI_BAR_SIZE - caplen) != 0)
+    uint8_t caplen = cap_rd8(c, CAP_CAPLENGTH);
+    if (iowin_mmio(&c->op_regs, (volatile void *)(base + caplen), EHCI_BAR_SIZE - caplen) != 0)
         return 0;
 
-    uint32_t hcsparams = cap_rd32(CAP_HCSPARAMS);
-    nports = HCSPARAMS_NPORTS(hcsparams);
-    port_power_control = HCSPARAMS_PPC(hcsparams);
-    if (nports == 0) return 0;
+    uint32_t hcsparams = cap_rd32(c, CAP_HCSPARAMS);
+    c->nports = HCSPARAMS_NPORTS(hcsparams);
+    c->port_power_control = HCSPARAMS_PPC(hcsparams);
+    if (c->nports == 0) return 0;
 
-    /* DMA window into the kernel half, cacheable - x86 snoops bus-master DMA. */
-    for (uint32_t a = EHCI_DMA_BASE; a < EHCI_DMA_END; a += 0x1000)
-        paging_map_kernel(DMA_V(a), a, VM_WRITE);
-
-    qh  = (struct ehci_qh  *)DMA_V(QH_ADDR);
-    qtd = (struct ehci_qtd *)DMA_V(QTD_ADDR);
-    xfer_buf = (uint8_t *)DMA_V(XFER_BUF_ADDR);
+    c->dma_v = usb_dma_alloc(EHCI_DMA_PAGES, EHCI_DMA_VBASE + index * 0x10000u, &c->dma);
+    if (!c->dma_v) {
+        klog("EHCI", SEV_WARN, "no memory for the controller's DMA pages");
+        return 0;
+    }
+    c->qh  = dma_virt(c, QH_OFF);
+    c->qtd = dma_virt(c, QTD_OFF);
+    c->xfer_buf = dma_virt(c, XFER_BUF_OFF);
 
     /* Stop, then reset. Resetting a running controller is undefined. */
-    op_wr(OP_USBCMD, op_rd(OP_USBCMD) & ~CMD_RS);
-    for (int i = 0; i < 100 && !(op_rd(OP_USBSTS) & STS_HCHALTED); i++) timer_sleep(1);
+    op_wr(c, OP_USBCMD, op_rd(c, OP_USBCMD) & ~CMD_RS);
+    for (int i = 0; i < 100 && !(op_rd(c, OP_USBSTS) & STS_HCHALTED); i++) timer_sleep(1);
 
-    op_wr(OP_USBCMD, CMD_HCRESET);
+    op_wr(c, OP_USBCMD, CMD_HCRESET);
     int reset_ok = 0;
     for (int i = 0; i < 250; i++) {
-        if (!(op_rd(OP_USBCMD) & CMD_HCRESET)) { reset_ok = 1; break; }
+        if (!(op_rd(c, OP_USBCMD) & CMD_HCRESET)) { reset_ok = 1; break; }
         timer_sleep(1);
     }
     if (!reset_ok) {
@@ -703,12 +719,13 @@ int ehci_init(void) {
     /* The periodic list must exist and be valid even though nothing is
        scheduled on it - the controller reads it whenever PSE is set, and we
        leave PSE off. Every entry terminated. */
-    volatile uint32_t *pflist = (volatile uint32_t *)DMA_V(PFLIST_ADDR);
+    volatile uint32_t *pflist = dma_virt(c, PFLIST_OFF);
     for (int i = 0; i < 1024; i++) pflist[i] = QTD_T;
 
     /* A single queue head serving as both the list head and the working QH:
        it links to itself, which is what makes it a ring. */
-    qh->horizontal = QH_ADDR | LINK_TYP_QH;
+    struct ehci_qh *qh = c->qh;
+    qh->horizontal = dma_phys(c, QH_OFF) | LINK_TYP_QH;
     qh->chars = QH_CHARS_HEAD;
     qh->caps = QH_CAPS_MULT1;
     qh->current = 0;
@@ -717,35 +734,49 @@ int ehci_init(void) {
     qh->token = 0;
     for (int i = 0; i < 5; i++) qh->buffer[i] = 0;
 
-    op_wr(OP_CTRLDSSEG, 0);              /* 32-bit: everything is in segment 0 */
-    op_wr(OP_PERIODICLIST, PFLIST_ADDR);
-    op_wr(OP_ASYNCLIST, QH_ADDR);
-    op_wr(OP_USBINTR, 0);                /* we poll */
+    op_wr(c, OP_CTRLDSSEG, 0);           /* 32-bit: everything is in segment 0 */
+    op_wr(c, OP_PERIODICLIST, dma_phys(c, PFLIST_OFF));
+    op_wr(c, OP_ASYNCLIST, dma_phys(c, QH_OFF));
+    op_wr(c, OP_USBINTR, 0);             /* we poll */
 
-    op_wr(OP_USBCMD, CMD_ASE | CMD_RS);
-    for (int i = 0; i < 100 && (op_rd(OP_USBSTS) & STS_HCHALTED); i++) timer_sleep(1);
-    if (op_rd(OP_USBSTS) & STS_HCHALTED) {
+    op_wr(c, OP_USBCMD, CMD_ASE | CMD_RS);
+    for (int i = 0; i < 100 && (op_rd(c, OP_USBSTS) & STS_HCHALTED); i++) timer_sleep(1);
+    if (op_rd(c, OP_USBSTS) & STS_HCHALTED) {
         klog("EHCI", SEV_WARN, "controller would not leave the halted state");
         return 0;
     }
 
     /* Route the ports to us rather than to the companion controllers. Until
        this is written the root ports answer to OHCI/UHCI and EHCI sees nothing. */
-    op_wr(OP_CONFIGFLAG, 1);
+    op_wr(c, OP_CONFIGFLAG, 1);
     timer_sleep(5);
 
-    present = 1;
-    klog_u32("EHCI", SEV_OK, "controller online, root ports: ", nports, LOG_COLOR_VALUE, "");
+    klog_u32("EHCI", SEV_OK, "controller online, root ports: ", c->nports, LOG_COLOR_VALUE, "");
+    klog_child_u32("  pci device ", dev->slot, LOG_COLOR_VALUE, "");
 
-    for (unsigned p = 0; p < nports; p++) {
-        if (port_power_control) {
-            portsc_wr(p, portsc_rd(p) | PORTSC_POWER);
+    for (unsigned p = 0; p < c->nports; p++) {
+        if (c->port_power_control) {
+            portsc_wr(c, p, portsc_rd(c, p) | PORTSC_POWER);
             timer_sleep(20);             /* the spec's settle time after power-on */
         }
     }
     timer_sleep(100);                    /* let devices finish attaching */
 
-    for (unsigned p = 0; p < nports; p++) enumerate_port(p);
-
+    for (unsigned p = 0; p < c->nports; p++) enumerate_port(c, p);
     return 1;
+}
+
+int ehci_init(void) {
+    nhcs = 0;
+    /* class 0x0C serial bus, subclass 0x03 USB, prog-if 0x20 = EHCI. Every
+       one of them: each has its own ports. */
+    for (unsigned k = 0; nhcs < EHCI_MAX_HCS; k++) {
+        const struct pci_device *dev = pci_find(0x0C, 0x03, 0x20, k);
+        if (!dev) break;
+        struct ehci_hc *c = &hcs[nhcs];
+        for (unsigned i = 0; i < sizeof(*c); i++) ((uint8_t *)c)[i] = 0;
+        c->next_address = 1;
+        if (ehci_start(c, dev, nhcs)) nhcs++;
+    }
+    return nhcs > 0;
 }

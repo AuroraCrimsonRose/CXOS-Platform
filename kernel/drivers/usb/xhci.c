@@ -107,43 +107,43 @@ _Static_assert(sizeof(struct xhci_trb) == 16, "a TRB is 16 bytes");
 #define TRB_CC_SUCCESS   1
 #define TRB_CC_SHORT_PKT 13
 
-/* ---- DMA layout ---------------------------------------------------------
- * Same arrangement as the other DMA drivers: physical for the controller, a
- * kernel-half alias for the CPU so the structures stay reachable from a process
- * address space. 0x770000 is inside the 0x500000-0x800000 window pmm.c reserves
- * for driver DMA, past EHCI which ends at 0x768000.
+/* ---- DMA memory ---------------------------------------------------------
+ * Each controller has its own pages (usb_dma_alloc): physical for the
+ * controller, a kernel-half alias for the CPU so the structures stay reachable
+ * from a process address space. The offsets below are within those pages.
  *
  * xHCI's alignment rules are strict and silent when violated: the DCBAA, the
  * command ring, the ERST and every context must be 64-byte aligned. Page
  * granularity below satisfies all of that with room to spare. */
-#define XDMA_BASE       0x770000u
-#define XDMA_VBASE      0xE4000000u
-#define XDMA_V(p)       ((p) - XDMA_BASE + XDMA_VBASE)
+#define XDMA_VBASE      0xE4000000u     /* controller i's alias: + i * 0x20000 */
+#define XDMA_PAGES      0x12
 
-#define DCBAA_ADDR      (XDMA_BASE + 0x0000)
-#define CMDRING_ADDR    (XDMA_BASE + 0x1000)
-#define EVTRING_ADDR    (XDMA_BASE + 0x2000)
-#define ERST_ADDR       (XDMA_BASE + 0x3000)
-#define INPUTCTX_ADDR   (XDMA_BASE + 0x4000)
-#define DEVCTX_ADDR     (XDMA_BASE + 0x5000)   /* one page per slot          */
-#define EP0RING_ADDR    (XDMA_BASE + 0xD000)   /* 256 bytes per slot         */
-#define XFERBUF_ADDR    (XDMA_BASE + 0xE000)
-/* 0xF000-0x1FFFF: free (the scratchpad pages come from the page allocator) */
-#define BULKRING_ADDR   (XDMA_BASE + 0x20000)  /* 256 bytes per slot per dir */
+#define DCBAA_OFF       0x0000
+#define CMDRING_OFF     0x1000
+#define EVTRING_OFF     0x2000
+#define ERST_OFF        0x3000
+#define INPUTCTX_OFF    0x4000
+#define DEVCTX_OFF      0x5000          /* one page per slot          */
+#define EP0RING_OFF     0xD000          /* 256 bytes per slot         */
+#define XFERBUF_OFF     0xE000
+#define BULKRING_OFF    0xF000          /* 256 bytes per slot per dir */
 /* Its own ring rather than sharing the bulk IN one: a composite device with
    both a bulk and an interrupt IN endpoint would otherwise have them collide. */
-#define INTRING_ADDR    (XDMA_BASE + 0x21000)
+#define INTRING_OFF     0x10000
 /* Per-slot interrupt buffer. Sharing the general transfer buffer would have a
    keyboard and a mouse - and any control transfer between their polls - all
    writing into the same bytes. */
-#define INTBUF_ADDR     (XDMA_BASE + 0x22000)
-#define XDMA_END        (XDMA_BASE + 0x23000)
+#define INTBUF_OFF      0x11000
+_Static_assert(INTBUF_OFF + 0x1000 == XDMA_PAGES * 0x1000, "xHCI DMA layout overruns its pages");
 
 #define MAX_SLOTS_USED  8
 #define CMD_RING_TRBS   16
 #define EVT_RING_TRBS   16
 #define EP0_RING_TRBS   16
 #define XFER_MAX        4096
+
+/* AM3+ boards carry their USB 3 ports on one or two add-on controllers. */
+#define XHCI_MAX_HCS    4
 
 /* BAR 0 holds four register files, each reached through its own window: the
    capability registers at 0, the operational ones after them (CAPLENGTH), and
@@ -154,70 +154,85 @@ _Static_assert(sizeof(struct xhci_trb) == 16, "a TRB is 16 bytes");
 #define XHCI_CAP_SIZE  0x20u                            /* CAPLENGTH..HCCPARAMS2 */
 #define XHCI_RT_SIZE   0x40u                            /* MFINDEX, interrupter 0 */
 #define XHCI_DB_SIZE   ((MAX_SLOTS_USED + 1) * 4u)      /* command ring + slots */
-static struct iowin cap_regs, op_regs, rt_regs, db_regs;
-static int present = 0;
-static unsigned nports = 0;
-static unsigned ctx_size = 32;
 
-static volatile uint64_t *dcbaa;
-static struct xhci_trb *cmd_ring, *evt_ring;
-static uint8_t *xfer_buf;
+/* Everything one controller needs; a usb_device's `hc` points at its
+   controller's. */
+struct xhci_hc {
+    struct iowin cap_regs, op_regs, rt_regs, db_regs;
+    unsigned nports;
+    unsigned ctx_size;
 
-static unsigned cmd_enq = 0;      /* our command-ring enqueue index          */
-static unsigned cmd_cycle = 1;    /* producer cycle state                    */
-static unsigned evt_deq = 0;      /* event-ring dequeue index                */
-static unsigned evt_cycle = 1;    /* consumer cycle state                    */
+    uint32_t dma;                   /* physical base of the DMA pages */
+    uint8_t *dma_v;                 /* the CPU's alias of them        */
+    volatile uint64_t *dcbaa;
+    struct xhci_trb *cmd_ring, *evt_ring;
+    uint8_t *xfer_buf;
+    paddr_t spad_array;             /* scratchpad pages, page allocator */
+    uint32_t spad_count;
 
-/* per-slot EP0 ring bookkeeping */
-static unsigned ep0_enq[MAX_SLOTS_USED + 1];
-static unsigned ep0_cycle[MAX_SLOTS_USED + 1];
+    unsigned cmd_enq;               /* our command-ring enqueue index          */
+    unsigned cmd_cycle;             /* producer cycle state                    */
+    unsigned evt_deq;               /* event-ring dequeue index                */
+    unsigned evt_cycle;             /* consumer cycle state                    */
 
-/* per-slot bulk rings, one each way. Indexed [slot][0]=OUT, [slot][1]=IN.
-   `configured` records whether Configure Endpoint has run for that direction -
-   xHCI will not accept a transfer on an endpoint the slot does not know about. */
-static unsigned bulk_enq[MAX_SLOTS_USED + 1][2];
-static unsigned bulk_cycle[MAX_SLOTS_USED + 1][2];
-static uint8_t  bulk_configured[MAX_SLOTS_USED + 1][2];
-static uint8_t  max_dci[MAX_SLOTS_USED + 1];      /* highest DCI configured, for Context Entries */
+    /* per-slot EP0 ring bookkeeping */
+    unsigned ep0_enq[MAX_SLOTS_USED + 1];
+    unsigned ep0_cycle[MAX_SLOTS_USED + 1];
 
-static unsigned int_enq[MAX_SLOTS_USED + 1];
-static unsigned int_cycle[MAX_SLOTS_USED + 1];
-static uint8_t  int_configured[MAX_SLOTS_USED + 1];
-static uint8_t  int_pending[MAX_SLOTS_USED + 1];
-static uint32_t int_len[MAX_SLOTS_USED + 1];
-/* Completion landing pad, per slot. The event ring is SHARED across every
-   device on the controller, so a poll that simply took the next event would
-   consume another device's completion and report it as its own - which is
-   exactly what made a keyboard and a mouse work only one at a time. Events are
-   drained and filed by the slot id the TRB carries. */
-static uint8_t  int_done[MAX_SLOTS_USED + 1];
-static uint32_t int_done_status[MAX_SLOTS_USED + 1];
+    /* per-slot bulk rings, one each way. Indexed [slot][0]=OUT, [slot][1]=IN.
+       `configured` records whether Configure Endpoint has run for that
+       direction - xHCI will not accept a transfer on an endpoint the slot does
+       not know about. */
+    unsigned bulk_enq[MAX_SLOTS_USED + 1][2];
+    unsigned bulk_cycle[MAX_SLOTS_USED + 1][2];
+    uint8_t  bulk_configured[MAX_SLOTS_USED + 1][2];
+    uint8_t  max_dci[MAX_SLOTS_USED + 1];      /* highest DCI configured, for Context Entries */
 
-static inline uint32_t cap_rd(uint32_t o) { return iowin_read32(&cap_regs, o); }
-static inline uint32_t op_rd(uint32_t o)  { return iowin_read32(&op_regs, o); }
-static inline void op_wr(uint32_t o, uint32_t v) { iowin_write32(&op_regs, o, v); }
-static inline void op_wr64(uint32_t o, uint64_t v) {
+    unsigned int_enq[MAX_SLOTS_USED + 1];
+    unsigned int_cycle[MAX_SLOTS_USED + 1];
+    uint8_t  int_configured[MAX_SLOTS_USED + 1];
+    uint8_t  int_pending[MAX_SLOTS_USED + 1];
+    uint32_t int_len[MAX_SLOTS_USED + 1];
+    /* Completion landing pad, per slot. The event ring is SHARED across every
+       device on the controller, so a poll that simply took the next event
+       would consume another device's completion and report it as its own -
+       which is exactly what made a keyboard and a mouse work only one at a
+       time. Events are drained and filed by the slot id the TRB carries. */
+    uint8_t  int_done[MAX_SLOTS_USED + 1];
+    uint32_t int_done_status[MAX_SLOTS_USED + 1];
+};
+
+static struct xhci_hc hcs[XHCI_MAX_HCS];
+static unsigned nhcs = 0;
+
+static inline uint32_t dma_phys(const struct xhci_hc *c, uint32_t off) { return c->dma + off; }
+static inline void    *dma_virt(const struct xhci_hc *c, uint32_t off) { return c->dma_v + off; }
+
+static inline uint32_t cap_rd(struct xhci_hc *c, uint32_t o) { return iowin_read32(&c->cap_regs, o); }
+static inline uint32_t op_rd(struct xhci_hc *c, uint32_t o)  { return iowin_read32(&c->op_regs, o); }
+static inline void op_wr(struct xhci_hc *c, uint32_t o, uint32_t v) { iowin_write32(&c->op_regs, o, v); }
+static inline void op_wr64(struct xhci_hc *c, uint32_t o, uint64_t v) {
     /* Split deliberately: several controllers mis-handle a 64-bit MMIO write,
        and the low dword must land first so the high dword completes the value. */
-    iowin_write32(&op_regs, o, (uint32_t)v);
-    iowin_write32(&op_regs, o + 4, (uint32_t)(v >> 32));
+    iowin_write32(&c->op_regs, o, (uint32_t)v);
+    iowin_write32(&c->op_regs, o + 4, (uint32_t)(v >> 32));
 }
-static inline uint32_t rt_rd(uint32_t o) { return iowin_read32(&rt_regs, o); }
-static inline void rt_wr(uint32_t o, uint32_t v) { iowin_write32(&rt_regs, o, v); }
-static inline void rt_wr64(uint32_t o, uint64_t v) {
-    iowin_write32(&rt_regs, o, (uint32_t)v);
-    iowin_write32(&rt_regs, o + 4, (uint32_t)(v >> 32));
+static inline uint32_t rt_rd(struct xhci_hc *c, uint32_t o) { return iowin_read32(&c->rt_regs, o); }
+static inline void rt_wr(struct xhci_hc *c, uint32_t o, uint32_t v) { iowin_write32(&c->rt_regs, o, v); }
+static inline void rt_wr64(struct xhci_hc *c, uint32_t o, uint64_t v) {
+    iowin_write32(&c->rt_regs, o, (uint32_t)v);
+    iowin_write32(&c->rt_regs, o + 4, (uint32_t)(v >> 32));
 }
-static inline void doorbell(unsigned slot, uint32_t v) {
-    iowin_write32(&db_regs, slot * 4, v);
+static inline void doorbell(struct xhci_hc *c, unsigned slot, uint32_t v) {
+    iowin_write32(&c->db_regs, slot * 4, v);
 }
 
 static inline uint32_t portsc_off(unsigned port1) {
     return XOP_PORTSC_BASE + (port1 - 1) * 0x10;
 }
-static inline uint32_t portsc_rd(unsigned port1) { return op_rd(portsc_off(port1)); }
-static inline void portsc_wr(unsigned port1, uint32_t set) {
-    op_wr(portsc_off(port1), (portsc_rd(port1) & XPORT_PRESERVE) | set);
+static inline uint32_t portsc_rd(struct xhci_hc *c, unsigned port1) { return op_rd(c, portsc_off(port1)); }
+static inline void portsc_wr(struct xhci_hc *c, unsigned port1, uint32_t set) {
+    op_wr(c, portsc_off(port1), (portsc_rd(c, port1) & XPORT_PRESERVE) | set);
 }
 
 static void trb_clear(struct xhci_trb *t) { t->parameter = 0; t->status = 0; t->control = 0; }
@@ -240,11 +255,11 @@ struct ev_want {
 
 /* A transfer completion nobody is waiting for, filed under its slot for
    xhci_interrupt_poll. */
-static void file_transfer(const struct xhci_trb *ev) {
+static void file_transfer(struct xhci_hc *c, const struct xhci_trb *ev) {
     unsigned es = TRB_EV_SLOT(ev->control);
     if (es >= 1 && es <= MAX_SLOTS_USED) {
-        int_done[es] = 1;
-        int_done_status[es] = ev->status;
+        c->int_done[es] = 1;
+        c->int_done_status[es] = ev->status;
     }
 }
 
@@ -256,25 +271,32 @@ static int event_matches(const struct xhci_trb *ev, const struct ev_want *w) {
     return 1;
 }
 
-static int wait_event(const struct ev_want *want, struct xhci_trb *out, int timeout_ms) {
+/* Take the next event if the controller has written one, and tell the
+   controller how far we have consumed. Bit 3 of ERDP is EHB (event handler
+   busy) and is write-1-to-clear. */
+static int take_event(struct xhci_hc *c, struct xhci_trb *copy) {
+    struct xhci_trb *e = &c->evt_ring[c->evt_deq];
+    uint32_t ctrl = e->control;
+    if ((ctrl & TRB_CYCLE) != c->evt_cycle) return 0;
+    copy->parameter = e->parameter;
+    copy->status = e->status;
+    copy->control = ctrl;
+
+    if (++c->evt_deq == EVT_RING_TRBS) { c->evt_deq = 0; c->evt_cycle ^= 1; }
+    rt_wr64(c, 0x20 + 0x18,
+            (dma_phys(c, EVTRING_OFF) + c->evt_deq * sizeof(struct xhci_trb)) | (1u << 3));
+    return 1;
+}
+
+static int wait_event(struct xhci_hc *c, const struct ev_want *want, struct xhci_trb *out,
+                      int timeout_ms) {
     for (int ms = 0; ms < timeout_ms; ms++) {
-        struct xhci_trb *e = &evt_ring[evt_deq];
-        uint32_t ctrl = e->control;
-        if ((ctrl & TRB_CYCLE) == evt_cycle) {
-            struct xhci_trb copy;
-            copy.parameter = e->parameter;
-            copy.status = e->status;
-            copy.control = ctrl;
-
-            if (++evt_deq == EVT_RING_TRBS) { evt_deq = 0; evt_cycle ^= 1; }
-            /* Tell the controller how far we have consumed. Bit 3 is EHB
-               (event handler busy) and is write-1-to-clear. */
-            rt_wr64(0x20 + 0x18, (EVTRING_ADDR + evt_deq * sizeof(struct xhci_trb)) | (1u << 3));
-
+        struct xhci_trb copy;
+        if (take_event(c, &copy)) {
             if (event_matches(&copy, want)) { if (out) *out = copy; return 1; }
             /* Port status change events arrive unsolicited while we work; they
                are consumed above and otherwise ignored. */
-            if ((uint8_t)TRB_GET_TYPE(copy.control) == TRB_EV_TRANSFER) file_transfer(&copy);
+            if ((uint8_t)TRB_GET_TYPE(copy.control) == TRB_EV_TRANSFER) file_transfer(c, &copy);
             continue;
         }
         timer_sleep(1);
@@ -285,19 +307,9 @@ static int wait_event(const struct ev_want *want, struct xhci_trb *out, int time
 /* Check the event ring once, without sleeping. Same consumer-cycle logic as
    wait_event, but returns immediately if nothing new has landed - which is what
    an interrupt-endpoint poll needs. */
-static int poll_event(uint8_t want_type, struct xhci_trb *out) {
-    struct xhci_trb *e = &evt_ring[evt_deq];
-    uint32_t ctrl = e->control;
-    if ((ctrl & TRB_CYCLE) != evt_cycle) return 0;
-
+static int poll_event(struct xhci_hc *c, uint8_t want_type, struct xhci_trb *out) {
     struct xhci_trb copy;
-    copy.parameter = e->parameter;
-    copy.status = e->status;
-    copy.control = ctrl;
-
-    if (++evt_deq == EVT_RING_TRBS) { evt_deq = 0; evt_cycle ^= 1; }
-    rt_wr64(0x20 + 0x18, (EVTRING_ADDR + evt_deq * sizeof(struct xhci_trb)) | (1u << 3));
-
+    if (!take_event(c, &copy)) return 0;
     if ((uint8_t)TRB_GET_TYPE(copy.control) != want_type) return 0;
     if (out) *out = copy;
     return 1;
@@ -305,32 +317,32 @@ static int poll_event(uint8_t want_type, struct xhci_trb *out) {
 
 /* Post a command and wait for its completion event. Returns the completion
    code, or 0 on timeout (0 is "Invalid", never a real success). */
-static uint8_t run_command(uint64_t param, uint32_t status, uint32_t control,
+static uint8_t run_command(struct xhci_hc *c, uint64_t param, uint32_t status, uint32_t control,
                            struct xhci_trb *out) {
-    uint32_t trb_addr = CMDRING_ADDR + cmd_enq * (uint32_t)sizeof(struct xhci_trb);
-    struct xhci_trb *t = &cmd_ring[cmd_enq];
+    uint32_t trb_addr = dma_phys(c, CMDRING_OFF) + c->cmd_enq * (uint32_t)sizeof(struct xhci_trb);
+    struct xhci_trb *t = &c->cmd_ring[c->cmd_enq];
     t->parameter = param;
     t->status = status;
     /* The cycle bit is written LAST as part of control: it is what hands the
        TRB to the controller, so everything else must already be visible. */
-    t->control = control | (cmd_cycle ? TRB_CYCLE : 0);
+    t->control = control | (c->cmd_cycle ? TRB_CYCLE : 0);
 
-    if (++cmd_enq == CMD_RING_TRBS - 1) {
+    if (++c->cmd_enq == CMD_RING_TRBS - 1) {
         /* The final TRB is a Link back to the start; toggling the cycle there
            is what makes the ring circular rather than a buffer we overrun. */
-        struct xhci_trb *link = &cmd_ring[CMD_RING_TRBS - 1];
-        link->parameter = CMDRING_ADDR;
+        struct xhci_trb *link = &c->cmd_ring[CMD_RING_TRBS - 1];
+        link->parameter = dma_phys(c, CMDRING_OFF);
         link->status = 0;
-        link->control = TRB_TYPE(TRB_LINK) | TRB_ENT | (cmd_cycle ? TRB_CYCLE : 0);
-        cmd_enq = 0;
-        cmd_cycle ^= 1;
+        link->control = TRB_TYPE(TRB_LINK) | TRB_ENT | (c->cmd_cycle ? TRB_CYCLE : 0);
+        c->cmd_enq = 0;
+        c->cmd_cycle ^= 1;
     }
 
-    doorbell(0, 0);         /* doorbell 0 is the command ring */
+    doorbell(c, 0, 0);      /* doorbell 0 is the command ring */
 
     struct xhci_trb ev;
     struct ev_want w = { TRB_EV_CMD_COMPLETE, 0, 0, trb_addr };
-    if (!wait_event(&w, &ev, 1000)) return 0;
+    if (!wait_event(c, &w, &ev, 1000)) return 0;
     if (out) *out = ev;
     return (uint8_t)TRB_CC(ev.status);
 }
@@ -340,12 +352,12 @@ static uint8_t run_command(uint64_t param, uint32_t status, uint32_t control,
  * every context access is computed rather than indexed as an array. Assuming 32
  * on a 64-byte controller puts the endpoint context at the wrong offset and the
  * Address Device command fails with a parameter error. */
-static volatile uint32_t *ctx_at(uint32_t base_phys, unsigned index) {
-    return (volatile uint32_t *)(XDMA_V(base_phys) + index * ctx_size);
+static volatile uint32_t *ctx_at(struct xhci_hc *c, uint32_t base_off, unsigned index) {
+    return (volatile uint32_t *)((uint8_t *)dma_virt(c, base_off) + index * c->ctx_size);
 }
 
-static uint32_t devctx_addr(unsigned slot) { return DEVCTX_ADDR + (slot - 1) * 0x1000; }
-static uint32_t ep0ring_addr(unsigned slot) { return EP0RING_ADDR + (slot - 1) * 256; }
+static uint32_t devctx_off(unsigned slot) { return DEVCTX_OFF + (slot - 1) * 0x1000; }
+static uint32_t ep0ring_off(unsigned slot) { return EP0RING_OFF + (slot - 1) * 256; }
 
 static uint32_t speed_to_mps0(enum usb_speed s) {
     switch (s) {
@@ -369,16 +381,17 @@ static uint32_t xspeed_to_id(enum usb_speed s) {
 
 /* Build the input context for Address Device / Evaluate Context: the control
    context says which pieces are valid, then the slot and EP0 contexts. */
-static void build_input_context(struct usb_device *dev, uint32_t mps0, int for_eval) {
+static void build_input_context(struct xhci_hc *c, struct usb_device *dev, uint32_t mps0,
+                                int for_eval) {
     unsigned slot = dev->slot;
 
     /* zero the whole input context - stale fields are interpreted, not ignored */
-    volatile uint8_t *raw = (volatile uint8_t *)XDMA_V(INPUTCTX_ADDR);
-    for (unsigned i = 0; i < ctx_size * 3; i++) raw[i] = 0;
+    volatile uint8_t *raw = dma_virt(c, INPUTCTX_OFF);
+    for (unsigned i = 0; i < c->ctx_size * 3; i++) raw[i] = 0;
 
-    volatile uint32_t *icc = ctx_at(INPUTCTX_ADDR, 0);   /* input control    */
-    volatile uint32_t *sc  = ctx_at(INPUTCTX_ADDR, 1);   /* slot context     */
-    volatile uint32_t *ep0 = ctx_at(INPUTCTX_ADDR, 2);   /* EP0 context      */
+    volatile uint32_t *icc = ctx_at(c, INPUTCTX_OFF, 0);   /* input control    */
+    volatile uint32_t *sc  = ctx_at(c, INPUTCTX_OFF, 1);   /* slot context     */
+    volatile uint32_t *ep0 = ctx_at(c, INPUTCTX_OFF, 2);   /* EP0 context      */
 
     /* Add flags: bit0 = slot context, bit1 = EP0. Evaluate Context only needs
        EP0 (we are correcting the packet size), Address Device needs both. */
@@ -390,7 +403,7 @@ static void build_input_context(struct usb_device *dev, uint32_t mps0, int for_e
 
     /* EP0: control endpoint, three retries, the transfer ring with its cycle */
     ep0[1] = (4u << 3) | (3u << 1) | (mps0 << 16);
-    uint32_t ring = ep0ring_addr(slot);
+    uint32_t ring = dma_phys(c, ep0ring_off(slot));
     ep0[2] = ring | 1u;          /* dequeue pointer | DCS */
     ep0[3] = 0;
     ep0[4] = 8;                  /* average TRB length */
@@ -400,18 +413,19 @@ static void build_input_context(struct usb_device *dev, uint32_t mps0, int for_e
 static int xhci_control(struct usb_device *dev, uint8_t bm_request_type,
                         uint8_t b_request, uint16_t w_value, uint16_t w_index,
                         void *data, uint16_t w_length) {
-    if (!present || !dev || dev->slot == 0) return -1;
+    if (!dev || !dev->hc || dev->slot == 0) return -1;
     if (w_length > XFER_MAX) return -1;
+    struct xhci_hc *c = dev->hc;
 
     unsigned slot = dev->slot;
-    struct xhci_trb *ring = (struct xhci_trb *)XDMA_V(ep0ring_addr(slot));
+    struct xhci_trb *ring = dma_virt(c, ep0ring_off(slot));
     int dev_to_host = (bm_request_type & 0x80) != 0;
 
     if (!dev_to_host && data && w_length)
-        for (uint16_t i = 0; i < w_length; i++) xfer_buf[i] = ((const uint8_t *)data)[i];
+        for (uint16_t i = 0; i < w_length; i++) c->xfer_buf[i] = ((const uint8_t *)data)[i];
 
-    unsigned i = ep0_enq[slot];
-    unsigned cyc = ep0_cycle[slot];
+    unsigned i = c->ep0_enq[slot];
+    unsigned cyc = c->ep0_cycle[slot];
 
     /* Setup Stage. The eight setup bytes travel INSIDE the TRB (IDT), not via a
        pointer - which is why parameter is built by hand here. */
@@ -434,7 +448,7 @@ static int xhci_control(struct usb_device *dev, uint8_t bm_request_type,
 
     if (w_length) {
         t = &ring[i];
-        t->parameter = XFERBUF_ADDR;
+        t->parameter = dma_phys(c, XFERBUF_OFF);
         t->status = w_length;
         t->control = TRB_TYPE(TRB_DATA_STAGE) | (dev_to_host ? (1u << 16) : 0)
                    | TRB_ISP | (cyc ? TRB_CYCLE : 0);
@@ -449,19 +463,19 @@ static int xhci_control(struct usb_device *dev, uint8_t bm_request_type,
                | TRB_IOC | (cyc ? TRB_CYCLE : 0);
     if (++i == EP0_RING_TRBS - 1) {
         struct xhci_trb *link = &ring[EP0_RING_TRBS - 1];
-        link->parameter = ep0ring_addr(slot);
+        link->parameter = dma_phys(c, ep0ring_off(slot));
         link->status = 0;
         link->control = TRB_TYPE(TRB_LINK) | TRB_ENT | (cyc ? TRB_CYCLE : 0);
         i = 0; cyc ^= 1;
     }
-    ep0_enq[slot] = i;
-    ep0_cycle[slot] = cyc;
+    c->ep0_enq[slot] = i;
+    c->ep0_cycle[slot] = cyc;
 
-    doorbell(slot, 1);          /* DCI 1 = EP0 */
+    doorbell(c, slot, 1);       /* DCI 1 = EP0 */
 
     struct xhci_trb ev;
     struct ev_want w = { TRB_EV_TRANSFER, (uint8_t)slot, 1, 0 };
-    if (!wait_event(&w, &ev, 1000)) return -1;
+    if (!wait_event(c, &w, &ev, 1000)) return -1;
     uint8_t cc = (uint8_t)TRB_CC(ev.status);
     if (cc != TRB_CC_SUCCESS && cc != TRB_CC_SHORT_PKT) return -1;
 
@@ -473,16 +487,17 @@ static int xhci_control(struct usb_device *dev, uint8_t bm_request_type,
     if (transferred > (int)w_length) transferred = (int)w_length;
 
     if (dev_to_host && data && transferred > 0)
-        for (int b = 0; b < transferred; b++) ((uint8_t *)data)[b] = xfer_buf[b];
+        for (int b = 0; b < transferred; b++) ((uint8_t *)data)[b] = c->xfer_buf[b];
 
     return transferred;
 }
 
 /* ---- attach: enable a slot and let the controller address the device ----- */
 static int xhci_attach(struct usb_device *dev) {
+    struct xhci_hc *c = dev->hc;
     struct xhci_trb ev;
 
-    uint8_t cc = run_command(0, 0, TRB_TYPE(TRB_CMD_ENABLE_SLOT), &ev);
+    uint8_t cc = run_command(c, 0, 0, TRB_TYPE(TRB_CMD_ENABLE_SLOT), &ev);
     if (cc != TRB_CC_SUCCESS) {
         klog_u32("xHCI", SEV_WARN, "Enable Slot failed, completion code ", cc,
                  LOG_COLOR_VALUE, "");
@@ -497,25 +512,25 @@ static int xhci_attach(struct usb_device *dev) {
     dev->slot = slot;
 
     /* Device context: the controller writes here, we only provide it. */
-    volatile uint8_t *dc = (volatile uint8_t *)XDMA_V(devctx_addr(slot));
-    for (unsigned i = 0; i < ctx_size * 32; i++) dc[i] = 0;
-    dcbaa[slot] = devctx_addr(slot);
+    volatile uint8_t *dc = dma_virt(c, devctx_off(slot));
+    for (unsigned i = 0; i < c->ctx_size * 32; i++) dc[i] = 0;
+    c->dcbaa[slot] = dma_phys(c, devctx_off(slot));
 
     /* EP0 transfer ring */
-    struct xhci_trb *ring = (struct xhci_trb *)XDMA_V(ep0ring_addr(slot));
+    struct xhci_trb *ring = dma_virt(c, ep0ring_off(slot));
     for (unsigned i = 0; i < EP0_RING_TRBS; i++) trb_clear(&ring[i]);
-    ep0_enq[slot] = 0;
-    ep0_cycle[slot] = 1;
-    bulk_configured[slot][0] = bulk_configured[slot][1] = 0;
-    max_dci[slot] = 1;
-    int_configured[slot] = 0;
-    int_pending[slot] = 0;
-    int_done[slot] = 0;
+    c->ep0_enq[slot] = 0;
+    c->ep0_cycle[slot] = 1;
+    c->bulk_configured[slot][0] = c->bulk_configured[slot][1] = 0;
+    c->max_dci[slot] = 1;
+    c->int_configured[slot] = 0;
+    c->int_pending[slot] = 0;
+    c->int_done[slot] = 0;
 
     uint32_t mps0 = speed_to_mps0(dev->speed);
-    build_input_context(dev, mps0, 0);
+    build_input_context(c, dev, mps0, 0);
 
-    cc = run_command(INPUTCTX_ADDR, 0,
+    cc = run_command(c, dma_phys(c, INPUTCTX_OFF), 0,
                      TRB_TYPE(TRB_CMD_ADDRESS_DEV) | ((uint32_t)slot << 24), &ev);
     if (cc != TRB_CC_SUCCESS) {
         klog_u32("xHCI", SEV_WARN, "Address Device failed, completion code ", cc,
@@ -525,7 +540,7 @@ static int xhci_attach(struct usb_device *dev) {
 
     /* The controller chose the address and wrote it into the output slot
        context; read it back rather than assuming. */
-    volatile uint32_t *out_slot = ctx_at(devctx_addr(slot), 0);
+    volatile uint32_t *out_slot = ctx_at(c, devctx_off(slot), 0);
     dev->address = (uint8_t)(out_slot[3] & 0xFF);
     dev->max_packet0 = (uint8_t)mps0;
 
@@ -537,8 +552,8 @@ static int xhci_attach(struct usb_device *dev) {
     for (unsigned i = 0; i < sizeof(dd); i++) ((uint8_t *)&dd)[i] = 0;
     if (usb_get_descriptor(dev, USB_DESC_DEVICE, 0, &dd, 8) >= 8 &&
         dd.b_max_packet_size0 && dd.b_max_packet_size0 != (uint8_t)mps0) {
-        build_input_context(dev, dd.b_max_packet_size0, 1);
-        run_command(INPUTCTX_ADDR, 0,
+        build_input_context(c, dev, dd.b_max_packet_size0, 1);
+        run_command(c, dma_phys(c, INPUTCTX_OFF), 0,
                     TRB_TYPE(TRB_CMD_EVAL_CTX) | ((uint32_t)slot << 24), &ev);
         dev->max_packet0 = dd.b_max_packet_size0;
     }
@@ -561,8 +576,8 @@ static unsigned dci_for(uint8_t ep) {
     return n * 2 + ((ep & 0x80) ? 1 : 0);
 }
 
-static uint32_t bulkring_addr(unsigned slot, int in) {
-    return BULKRING_ADDR + ((slot - 1) * 2 + (in ? 1 : 0)) * 256;
+static uint32_t bulkring_off(unsigned slot, int in) {
+    return BULKRING_OFF + ((slot - 1) * 2 + (in ? 1 : 0)) * 256;
 }
 
 #define BULK_RING_TRBS 16
@@ -571,37 +586,38 @@ static uint32_t bulkring_addr(unsigned slot, int in) {
    OUT, 7 = Interrupt IN. `interval` is the encoded polling interval, ignored
    for bulk. `redo` drops the endpoint and adds it back in the one command,
    which is how an endpoint that already exists is put back to its first
-   state - toggle and all (xhci_reset_ep). */
-static int configure_ep(struct usb_device *dev, uint8_t ep, uint16_t mps,
+   state - toggle and all (xhci_reset_ep). `ring` is the ring's offset in the
+   controller's DMA pages. */
+static int configure_ep(struct xhci_hc *c, struct usb_device *dev, uint8_t ep, uint16_t mps,
                         uint32_t ring, unsigned ep_type, uint32_t interval, int redo) {
     unsigned slot = dev->slot;
     unsigned dci = dci_for(ep);
-    if (dci > max_dci[slot]) max_dci[slot] = (uint8_t)dci;
+    if (dci > c->max_dci[slot]) c->max_dci[slot] = (uint8_t)dci;
 
     /* Input context: the control context names what is being added, then the
        slot context (whose "context entries" must reach the highest DCI in
        use, not just this one, or a later endpoint would cut off an earlier
        one) and the endpoint context itself. */
-    volatile uint8_t *raw = (volatile uint8_t *)XDMA_V(INPUTCTX_ADDR);
-    for (unsigned i = 0; i < ctx_size * 32; i++) raw[i] = 0;
+    volatile uint8_t *raw = dma_virt(c, INPUTCTX_OFF);
+    for (unsigned i = 0; i < c->ctx_size * 32; i++) raw[i] = 0;
 
-    volatile uint32_t *icc = ctx_at(INPUTCTX_ADDR, 0);
-    volatile uint32_t *sc  = ctx_at(INPUTCTX_ADDR, 1);
-    volatile uint32_t *epc = ctx_at(INPUTCTX_ADDR, dci + 1);
+    volatile uint32_t *icc = ctx_at(c, INPUTCTX_OFF, 0);
+    volatile uint32_t *sc  = ctx_at(c, INPUTCTX_OFF, 1);
+    volatile uint32_t *epc = ctx_at(c, INPUTCTX_OFF, dci + 1);
 
     if (redo) icc[0] = 1u << dci;           /* drop it ... */
     icc[1] = (1u << 0) | (1u << dci);       /* ... and add: slot + this endpoint */
-    sc[0] = (xspeed_to_id(dev->speed) << 20) | ((uint32_t)max_dci[slot] << 27);
+    sc[0] = (xspeed_to_id(dev->speed) << 20) | ((uint32_t)c->max_dci[slot] << 27);
     sc[1] = ((uint32_t)dev->port << 16);
 
     epc[0] = interval << 16;
     epc[1] = ((uint32_t)ep_type << 3) | (3u << 1) | ((uint32_t)mps << 16);
-    epc[2] = ring | 1u;                     /* dequeue pointer | DCS */
+    epc[2] = dma_phys(c, ring) | 1u;        /* dequeue pointer | DCS */
     epc[3] = 0;
     epc[4] = mps;                           /* average TRB length */
 
     struct xhci_trb ev;
-    uint8_t cc = run_command(INPUTCTX_ADDR, 0,
+    uint8_t cc = run_command(c, dma_phys(c, INPUTCTX_OFF), 0,
                              TRB_TYPE(TRB_CMD_CONFIG_EP) | ((uint32_t)slot << 24), &ev);
     if (cc != TRB_CC_SUCCESS) {
         klog_u32("xHCI", SEV_WARN, "Configure Endpoint failed, completion code ", cc,
@@ -612,33 +628,34 @@ static int configure_ep(struct usb_device *dev, uint8_t ep, uint16_t mps,
 }
 
 static int xhci_bulk(struct usb_device *dev, uint8_t ep, void *data, uint32_t len) {
-    if (!present || !dev || dev->slot == 0 || !data) return -1;
+    if (!dev || !dev->hc || dev->slot == 0 || !data) return -1;
     if (len == 0 || len > XFER_MAX) return -1;
+    struct xhci_hc *c = dev->hc;
 
     unsigned slot = dev->slot;
     int in = (ep & 0x80) != 0;
     uint16_t mps = in ? dev->ep_in_mps : dev->ep_out_mps;
     if (mps == 0) mps = 512;
 
-    if (!bulk_configured[slot][in]) {
-        struct xhci_trb *r = (struct xhci_trb *)XDMA_V(bulkring_addr(slot, in));
+    if (!c->bulk_configured[slot][in]) {
+        struct xhci_trb *r = dma_virt(c, bulkring_off(slot, in));
         for (unsigned i = 0; i < BULK_RING_TRBS; i++) trb_clear(&r[i]);
-        bulk_enq[slot][in] = 0;
-        bulk_cycle[slot][in] = 1;
-        if (!configure_ep(dev, ep, mps, bulkring_addr(slot, in), in ? 6u : 2u, 0, 0))
+        c->bulk_enq[slot][in] = 0;
+        c->bulk_cycle[slot][in] = 1;
+        if (!configure_ep(c, dev, ep, mps, bulkring_off(slot, in), in ? 6u : 2u, 0, 0))
             return -1;
-        bulk_configured[slot][in] = 1;
+        c->bulk_configured[slot][in] = 1;
     }
 
-    if (!in) for (uint32_t i = 0; i < len; i++) xfer_buf[i] = ((const uint8_t *)data)[i];
+    if (!in) for (uint32_t i = 0; i < len; i++) c->xfer_buf[i] = ((const uint8_t *)data)[i];
 
-    struct xhci_trb *ring = (struct xhci_trb *)XDMA_V(bulkring_addr(slot, in));
-    unsigned i = bulk_enq[slot][in];
-    unsigned cyc = bulk_cycle[slot][in];
-    uint32_t trb_addr = bulkring_addr(slot, in) + i * (uint32_t)sizeof(struct xhci_trb);
+    struct xhci_trb *ring = dma_virt(c, bulkring_off(slot, in));
+    unsigned i = c->bulk_enq[slot][in];
+    unsigned cyc = c->bulk_cycle[slot][in];
+    uint32_t trb_addr = dma_phys(c, bulkring_off(slot, in)) + i * (uint32_t)sizeof(struct xhci_trb);
 
     struct xhci_trb *t = &ring[i];
-    t->parameter = XFERBUF_ADDR;
+    t->parameter = dma_phys(c, XFERBUF_OFF);
     t->status = len;
     /* ISP so a short packet completes rather than being an error - a CSW read
        is routinely shorter than the buffer offered for it. */
@@ -646,19 +663,19 @@ static int xhci_bulk(struct usb_device *dev, uint8_t ep, void *data, uint32_t le
 
     if (++i == BULK_RING_TRBS - 1) {
         struct xhci_trb *link = &ring[BULK_RING_TRBS - 1];
-        link->parameter = bulkring_addr(slot, in);
+        link->parameter = dma_phys(c, bulkring_off(slot, in));
         link->status = 0;
         link->control = TRB_TYPE(TRB_LINK) | TRB_ENT | (cyc ? TRB_CYCLE : 0);
         i = 0; cyc ^= 1;
     }
-    bulk_enq[slot][in] = i;
-    bulk_cycle[slot][in] = cyc;
+    c->bulk_enq[slot][in] = i;
+    c->bulk_cycle[slot][in] = cyc;
 
-    doorbell(slot, dci_for(ep));
+    doorbell(c, slot, dci_for(ep));
 
     struct xhci_trb ev;
     struct ev_want w = { TRB_EV_TRANSFER, (uint8_t)slot, (uint8_t)dci_for(ep), trb_addr };
-    if (!wait_event(&w, &ev, 2000)) return -1;
+    if (!wait_event(c, &w, &ev, 2000)) return -1;
     uint8_t cc = (uint8_t)TRB_CC(ev.status);
     if (cc != TRB_CC_SUCCESS && cc != TRB_CC_SHORT_PKT) return -1;
 
@@ -668,75 +685,76 @@ static int xhci_bulk(struct usb_device *dev, uint8_t ep, void *data, uint32_t le
     if (transferred > (int)len) transferred = (int)len;
 
     if (in && transferred > 0)
-        for (int b = 0; b < transferred; b++) ((uint8_t *)data)[b] = xfer_buf[b];
+        for (int b = 0; b < transferred; b++) ((uint8_t *)data)[b] = c->xfer_buf[b];
     return transferred;
 }
 
-static uint32_t intring_addr(unsigned slot) { return INTRING_ADDR + (slot - 1) * 256; }
-static uint32_t intbuf_addr(unsigned slot)  { return INTBUF_ADDR  + (slot - 1) * 256; }
+static uint32_t intring_off(unsigned slot) { return INTRING_OFF + (slot - 1) * 256; }
+static uint32_t intbuf_off(unsigned slot)  { return INTBUF_OFF  + (slot - 1) * 256; }
 
 static int xhci_interrupt_poll(struct usb_device *dev, uint8_t ep,
                                void *data, uint32_t len) {
-    if (!present || !dev || dev->slot == 0 || !data) return -1;
+    if (!dev || !dev->hc || dev->slot == 0 || !data) return -1;
     if (len == 0 || len > 64) return -1;
+    struct xhci_hc *c = dev->hc;
 
     unsigned slot = dev->slot;
     uint16_t mps = dev->ep_int_mps ? dev->ep_int_mps : 8;
 
-    if (!int_configured[slot]) {
-        struct xhci_trb *r = (struct xhci_trb *)XDMA_V(intring_addr(slot));
+    if (!c->int_configured[slot]) {
+        struct xhci_trb *r = dma_virt(c, intring_off(slot));
         for (unsigned i = 0; i < BULK_RING_TRBS; i++) trb_clear(&r[i]);
-        int_enq[slot] = 0;
-        int_cycle[slot] = 1;
+        c->int_enq[slot] = 0;
+        c->int_cycle[slot] = 1;
         /* bInterval for a high-speed interrupt endpoint is already the
            2^(n-1) microframe exponent xHCI wants; a full-speed one counts
            frames, and 3 (8 microframes = 1 ms) is the usual mapping. */
         uint32_t interval = dev->speed == USB_SPEED_HIGH
                           ? (dev->ep_int_interval ? dev->ep_int_interval - 1 : 3) : 3;
-        if (!configure_ep(dev, ep, mps, intring_addr(slot), 7u, interval, 0)) return -1;
-        int_configured[slot] = 1;
-        int_pending[slot] = 0;
+        if (!configure_ep(c, dev, ep, mps, intring_off(slot), 7u, interval, 0)) return -1;
+        c->int_configured[slot] = 1;
+        c->int_pending[slot] = 0;
     }
 
-    if (!int_pending[slot]) {
-        struct xhci_trb *ring = (struct xhci_trb *)XDMA_V(intring_addr(slot));
-        unsigned i = int_enq[slot], cyc = int_cycle[slot];
+    if (!c->int_pending[slot]) {
+        struct xhci_trb *ring = dma_virt(c, intring_off(slot));
+        unsigned i = c->int_enq[slot], cyc = c->int_cycle[slot];
         struct xhci_trb *t = &ring[i];
-        t->parameter = intbuf_addr(slot);
+        t->parameter = dma_phys(c, intbuf_off(slot));
         t->status = len;
         t->control = TRB_TYPE(TRB_NORMAL) | TRB_IOC | TRB_ISP | (cyc ? TRB_CYCLE : 0);
         if (++i == BULK_RING_TRBS - 1) {
             struct xhci_trb *link = &ring[BULK_RING_TRBS - 1];
-            link->parameter = intring_addr(slot);
+            link->parameter = dma_phys(c, intring_off(slot));
             link->status = 0;
             link->control = TRB_TYPE(TRB_LINK) | TRB_ENT | (cyc ? TRB_CYCLE : 0);
             i = 0; cyc ^= 1;
         }
-        int_enq[slot] = i;
-        int_cycle[slot] = cyc;
-        int_len[slot] = len;
-        doorbell(slot, dci_for(ep));
-        int_pending[slot] = 1;
+        c->int_enq[slot] = i;
+        c->int_cycle[slot] = cyc;
+        c->int_len[slot] = len;
+        doorbell(c, slot, dci_for(ep));
+        c->int_pending[slot] = 1;
         return 0;
     }
 
     /* Drain whatever has landed and file each completion under its own slot,
        then look only at ours. */
     struct xhci_trb ev;
-    while (poll_event(TRB_EV_TRANSFER, &ev)) file_transfer(&ev);
-    if (!int_done[slot]) return 0;                      /* nothing for us yet */
-    int_done[slot] = 0;
-    int_pending[slot] = 0;
+    while (poll_event(c, TRB_EV_TRANSFER, &ev)) file_transfer(c, &ev);
+    if (!c->int_done[slot]) return 0;                   /* nothing for us yet */
+    c->int_done[slot] = 0;
+    c->int_pending[slot] = 0;
 
-    uint32_t status = int_done_status[slot];
+    uint32_t status = c->int_done_status[slot];
     uint8_t cc = (uint8_t)TRB_CC(status);
     if (cc != TRB_CC_SUCCESS && cc != TRB_CC_SHORT_PKT) return -1;
 
     int residual = (int)(status & 0x00FFFFFF);
-    int got = (int)int_len[slot] - residual;
+    int got = (int)c->int_len[slot] - residual;
     if (got < 0) got = 0;
     if (got > (int)len) got = (int)len;
-    const uint8_t *src = (const uint8_t *)XDMA_V(intbuf_addr(slot));
+    const uint8_t *src = dma_virt(c, intbuf_off(slot));
     for (int b = 0; b < got; b++) ((uint8_t *)data)[b] = src[b];
     return got;
 }
@@ -758,36 +776,39 @@ static int xhci_interrupt_poll(struct usb_device *dev, uint8_t ep,
    the controller past what was abandoned is enough there. Late completions
    of abandoned TRBs are not mistaken for new ones (struct ev_want). */
 static void xhci_reset_ep(struct usb_device *dev, uint8_t ep) {
-    if (!present || !dev || dev->slot == 0) return;
+    if (!dev || !dev->hc || dev->slot == 0) return;
+    struct xhci_hc *c = dev->hc;
     unsigned slot = dev->slot;
     int bulk = (ep & 0x0F) != 0;
     int in = (ep & 0x80) != 0;
-    if (bulk && !bulk_configured[slot][in]) return;      /* nothing ever ran on it */
+    if (bulk && !c->bulk_configured[slot][in]) return;   /* nothing ever ran on it */
     unsigned dci = bulk ? dci_for(ep) : 1;
 
     /* The OUTPUT device context: the slot context, then one per DCI. */
-    volatile uint32_t *epc = ctx_at(devctx_addr(slot), dci);
+    volatile uint32_t *epc = ctx_at(c, devctx_off(slot), dci);
     uint32_t state = epc[0] & 7u;
     if (state == EP_STATE_DISABLED) return;
     uint32_t id = ((uint32_t)slot << 24) | ((uint32_t)dci << 16);
     if (state == EP_STATE_HALTED)
-        run_command(0, 0, TRB_TYPE(TRB_CMD_RESET_EP) | id, 0);
+        run_command(c, 0, 0, TRB_TYPE(TRB_CMD_RESET_EP) | id, 0);
     else if (state == EP_STATE_RUNNING)
-        run_command(0, 0, TRB_TYPE(TRB_CMD_STOP_EP) | id, 0);
+        run_command(c, 0, 0, TRB_TYPE(TRB_CMD_STOP_EP) | id, 0);
 
     if (!bulk) {
-        uint32_t deq = ep0ring_addr(slot) + ep0_enq[slot] * (uint32_t)sizeof(struct xhci_trb);
-        run_command(deq | (ep0_cycle[slot] ? 1u : 0u), 0, TRB_TYPE(TRB_CMD_SET_TR_DEQ) | id, 0);
+        uint32_t deq = dma_phys(c, ep0ring_off(slot))
+                     + c->ep0_enq[slot] * (uint32_t)sizeof(struct xhci_trb);
+        run_command(c, deq | (c->ep0_cycle[slot] ? 1u : 0u), 0,
+                    TRB_TYPE(TRB_CMD_SET_TR_DEQ) | id, 0);
         return;
     }
-    struct xhci_trb *r = (struct xhci_trb *)XDMA_V(bulkring_addr(slot, in));
+    struct xhci_trb *r = dma_virt(c, bulkring_off(slot, in));
     for (unsigned i = 0; i < BULK_RING_TRBS; i++) trb_clear(&r[i]);
-    bulk_enq[slot][in] = 0;
-    bulk_cycle[slot][in] = 1;
+    c->bulk_enq[slot][in] = 0;
+    c->bulk_cycle[slot][in] = 1;
     uint16_t mps = in ? dev->ep_in_mps : dev->ep_out_mps;
     if (mps == 0) mps = 512;
-    if (!configure_ep(dev, ep, mps, bulkring_addr(slot, in), in ? 6u : 2u, 0, 1))
-        bulk_configured[slot][in] = 0;   /* the next transfer configures it afresh */
+    if (!configure_ep(c, dev, ep, mps, bulkring_off(slot, in), in ? 6u : 2u, 0, 1))
+        c->bulk_configured[slot][in] = 0;   /* the next transfer configures it afresh */
 }
 
 static const struct usb_hc_ops xhci_ops = {
@@ -810,29 +831,29 @@ static enum usb_speed port_speed(uint32_t sc) {
     }
 }
 
-static void enumerate_port(unsigned port1) {
-    uint32_t sc = portsc_rd(port1);
+static void enumerate_port(struct xhci_hc *c, unsigned port1) {
+    uint32_t sc = portsc_rd(c, port1);
     if (!(sc & XPORT_CCS)) return;
 
     /* A USB 3 port reports itself enabled straight out of reset; a USB 2 port
        needs the reset driven explicitly. Doing the reset either way is
        harmless and covers both. */
     if (!(sc & XPORT_PED)) {
-        portsc_wr(port1, XPORT_PR);
+        portsc_wr(c, port1, XPORT_PR);
         int ok = 0;
         for (int i = 0; i < 100; i++) {
             timer_sleep(1);
-            sc = portsc_rd(port1);
+            sc = portsc_rd(c, port1);
             if (sc & XPORT_PRC) { ok = 1; break; }
         }
         /* clear the reset-change flag (write 1) */
-        op_wr(portsc_off(port1), (sc & XPORT_PRESERVE) | XPORT_PRC);
+        op_wr(c, portsc_off(port1), (sc & XPORT_PRESERVE) | XPORT_PRC);
         if (!ok) {
             klog_u32("xHCI", SEV_WARN, "port ", port1, LOG_COLOR_VALUE,
                      ": reset never completed");
             return;
         }
-        sc = portsc_rd(port1);
+        sc = portsc_rd(c, port1);
     }
     if (!(sc & XPORT_PED)) return;       /* nothing usable here */
 
@@ -843,7 +864,7 @@ static void enumerate_port(unsigned port1) {
         return;
     }
 
-    struct usb_device *dev = usb_alloc_device(&xhci_ops, 0, (uint8_t)port1, sp);
+    struct usb_device *dev = usb_alloc_device(&xhci_ops, c, (uint8_t)port1, sp);
     if (!dev) { klog("xHCI", SEV_WARN, "device table full"); return; }
     usb_enumerate(dev);
 }
@@ -856,18 +877,20 @@ static void enumerate_port(unsigned port1) {
  * The whole path gets exercised: the controller writes a dword to 0xFEE.....,
  * the local APIC turns that into a vector, the IDT dispatches it, and the
  * handler runs. The driver goes straight back to polling afterwards, so a
- * failure here costs nothing. */
+ * failure here costs nothing. Run on the first controller only: one delivery
+ * proves the path. */
 static volatile uint32_t msi_hits = 0;
+static struct xhci_hc *msi_hc;          /* the controller under test */
 
 static void xhci_msi_handler(struct registers *r) {
     (void)r;
     msi_hits++;
     /* Acknowledge at the device as well as the APIC: the interrupter's pending
        bit is write-1-to-clear and a set one suppresses the next interrupt. */
-    rt_wr(0x20 + 0x00, rt_rd(0x20 + 0x00) | 1u);
+    if (msi_hc) rt_wr(msi_hc, 0x20 + 0x00, rt_rd(msi_hc, 0x20 + 0x00) | 1u);
 }
 
-static void msi_self_test(const struct pci_device *dev) {
+static void msi_self_test(struct xhci_hc *c, const struct pci_device *dev) {
     if (!irq_msi_available()) return;
 
     int vector = irq_alloc_msi_vector(xhci_msi_handler);
@@ -879,20 +902,22 @@ static void msi_self_test(const struct pci_device *dev) {
         return;
     }
 
+    msi_hc = c;
     msi_hits = 0;
-    rt_wr(0x20 + 0x00, 0x3);                     /* interrupter 0: pending clear + enable */
-    op_wr(XOP_USBCMD, op_rd(XOP_USBCMD) | (1u << 2));   /* INTE */
+    rt_wr(c, 0x20 + 0x00, 0x3);                  /* interrupter 0: pending clear + enable */
+    op_wr(c, XOP_USBCMD, op_rd(c, XOP_USBCMD) | (1u << 2));   /* INTE */
 
     struct xhci_trb ev;
-    run_command(0, 0, TRB_TYPE(TRB_CMD_NOOP) | TRB_IOC, &ev);
+    run_command(c, 0, 0, TRB_TYPE(TRB_CMD_NOOP) | TRB_IOC, &ev);
 
     for (int i = 0; i < 200000 && msi_hits == 0; i++) { }
 
     uint32_t hits = msi_hits;
-    op_wr(XOP_USBCMD, op_rd(XOP_USBCMD) & ~(1u << 2));  /* back to polling */
-    rt_wr(0x20 + 0x00, 0x1);
+    op_wr(c, XOP_USBCMD, op_rd(c, XOP_USBCMD) & ~(1u << 2));  /* back to polling */
+    rt_wr(c, 0x20 + 0x00, 0x1);
     pci_msi_disable(dev);
     irq_free_msi_vector(vector);
+    msi_hc = 0;
 
     if (hits) klog_u32("xHCI", SEV_OK, "MSI delivered on vector ",
                        (uint32_t)vector, LOG_COLOR_VALUE, "");
@@ -900,13 +925,8 @@ static void msi_self_test(const struct pci_device *dev) {
                        (uint32_t)vector, LOG_COLOR_VALUE, "");
 }
 
-int xhci_init(void) {
-    present = 0;
-
-    /* class 0x0C serial bus, subclass 0x03 USB, prog-if 0x30 = xHCI */
-    const struct pci_device *dev = pci_find(0x0C, 0x03, 0x30, 0);
-    if (!dev) return 0;
-
+/* Bring up one controller. Returns 1 if it came up. */
+static int xhci_start(struct xhci_hc *c, const struct pci_device *dev, unsigned index) {
     pci_enable_bus_master(dev);
 
     uint32_t base = pci_bar_mmio32(dev, 0, "xHCI");
@@ -916,42 +936,45 @@ int xhci_init(void) {
        past the operational registers - so map generously. */
     for (uint32_t off = 0; off < XHCI_MAP_SIZE; off += 0x1000)
         paging_map_kernel(base + off, base + off, VM_WRITE | VM_UNCACHED);
-    if (iowin_mmio(&cap_regs, (volatile void *)base, XHCI_CAP_SIZE) != 0) return 0;
+    if (iowin_mmio(&c->cap_regs, (volatile void *)base, XHCI_CAP_SIZE) != 0) return 0;
 
-    uint32_t hcs1 = cap_rd(XCAP_HCSPARAMS1);
-    uint32_t caplen = iowin_read8(&cap_regs, XCAP_CAPLENGTH);
+    uint32_t hcs1 = cap_rd(c, XCAP_HCSPARAMS1);
+    uint32_t caplen = iowin_read8(&c->cap_regs, XCAP_CAPLENGTH);
     uint32_t op_size = XOP_PORTSC_BASE + HCS1_MAXPORTS(hcs1) * 0x10u;
-    uint32_t rtsoff = cap_rd(XCAP_RTSOFF) & ~0x1Fu;
-    uint32_t dboff  = cap_rd(XCAP_DBOFF) & ~0x3u;
+    uint32_t rtsoff = cap_rd(c, XCAP_RTSOFF) & ~0x1Fu;
+    uint32_t dboff  = cap_rd(c, XCAP_DBOFF) & ~0x3u;
     if (caplen < XHCI_CAP_SIZE || caplen + op_size > XHCI_MAP_SIZE ||
         rtsoff > XHCI_MAP_SIZE - XHCI_RT_SIZE || dboff > XHCI_MAP_SIZE - XHCI_DB_SIZE ||
-        iowin_mmio(&op_regs, (volatile void *)(base + caplen), op_size) != 0 ||
-        iowin_mmio(&rt_regs, (volatile void *)(base + rtsoff), XHCI_RT_SIZE) != 0 ||
-        iowin_mmio(&db_regs, (volatile void *)(base + dboff), XHCI_DB_SIZE) != 0) {
+        iowin_mmio(&c->op_regs, (volatile void *)(base + caplen), op_size) != 0 ||
+        iowin_mmio(&c->rt_regs, (volatile void *)(base + rtsoff), XHCI_RT_SIZE) != 0 ||
+        iowin_mmio(&c->db_regs, (volatile void *)(base + dboff), XHCI_DB_SIZE) != 0) {
         klog("xHCI", SEV_WARN, "register files outside the mapped BAR - not initialising");
         return 0;
     }
 
-    uint32_t hcs2 = cap_rd(XCAP_HCSPARAMS2);
-    uint32_t hcc1 = cap_rd(XCAP_HCCPARAMS1);
-    nports = HCS1_MAXPORTS(hcs1);
+    uint32_t hcs2 = cap_rd(c, XCAP_HCSPARAMS2);
+    uint32_t hcc1 = cap_rd(c, XCAP_HCCPARAMS1);
+    c->nports = HCS1_MAXPORTS(hcs1);
     unsigned maxslots = HCS1_MAXSLOTS(hcs1);
-    ctx_size = HCC1_CSZ(hcc1) ? 64 : 32;
-    if (nports == 0 || maxslots == 0) return 0;
+    c->ctx_size = HCC1_CSZ(hcc1) ? 64 : 32;
+    if (c->nports == 0 || maxslots == 0) return 0;
 
-    for (uint32_t a = XDMA_BASE; a < XDMA_END; a += 0x1000)
-        paging_map_kernel(XDMA_V(a), a, VM_WRITE);
+    c->dma_v = usb_dma_alloc(XDMA_PAGES, XDMA_VBASE + index * 0x20000u, &c->dma);
+    if (!c->dma_v) {
+        klog("xHCI", SEV_WARN, "no memory for the controller's DMA pages");
+        return 0;
+    }
 
     /* Wait for the controller to finish its own power-on before touching it. */
-    for (int i = 0; i < 100 && (op_rd(XOP_USBSTS) & XSTS_CNR); i++) timer_sleep(1);
+    for (int i = 0; i < 100 && (op_rd(c, XOP_USBSTS) & XSTS_CNR); i++) timer_sleep(1);
 
-    op_wr(XOP_USBCMD, op_rd(XOP_USBCMD) & ~XCMD_RS);
-    for (int i = 0; i < 100 && !(op_rd(XOP_USBSTS) & XSTS_HCH); i++) timer_sleep(1);
+    op_wr(c, XOP_USBCMD, op_rd(c, XOP_USBCMD) & ~XCMD_RS);
+    for (int i = 0; i < 100 && !(op_rd(c, XOP_USBSTS) & XSTS_HCH); i++) timer_sleep(1);
 
-    op_wr(XOP_USBCMD, XCMD_HCRST);
+    op_wr(c, XOP_USBCMD, XCMD_HCRST);
     int ok = 0;
     for (int i = 0; i < 500; i++) {
-        if (!(op_rd(XOP_USBCMD) & XCMD_HCRST) && !(op_rd(XOP_USBSTS) & XSTS_CNR)) {
+        if (!(op_rd(c, XOP_USBCMD) & XCMD_HCRST) && !(op_rd(c, XOP_USBSTS) & XSTS_CNR)) {
             ok = 1; break;
         }
         timer_sleep(1);
@@ -959,82 +982,92 @@ int xhci_init(void) {
     if (!ok) { klog("xHCI", SEV_WARN, "controller reset did not complete"); return 0; }
 
     uint32_t spad;
-    if (xhci_spad_plan(hcs2, op_rd(XOP_PAGESIZE), &spad) != 0) {
+    if (xhci_spad_plan(hcs2, op_rd(c, XOP_PAGESIZE), &spad) != 0) {
         klog("xHCI", SEV_WARN, "controller cannot use 4 KB pages - not initialising");
         return 0;
     }
 
     if (maxslots > MAX_SLOTS_USED) maxslots = MAX_SLOTS_USED;
-    op_wr(XOP_CONFIG, maxslots);
+    op_wr(c, XOP_CONFIG, maxslots);
 
     /* device context base address array */
-    dcbaa = (volatile uint64_t *)XDMA_V(DCBAA_ADDR);
-    for (unsigned i = 0; i <= maxslots; i++) dcbaa[i] = 0;
+    c->dcbaa = dma_virt(c, DCBAA_OFF);
+    for (unsigned i = 0; i <= maxslots; i++) c->dcbaa[i] = 0;
 
     /* Scratchpad: memory the controller wants for its own use. Entry 0 of the
        DCBAA points at the array of pages. Skipping this on a controller that
        asks for them is a controller that never starts. */
     if (spad) {
-        /* Kept across a second xhci_init rather than leaked. */
-        static paddr_t spad_array;
-        static uint32_t spad_count;
-        xhci_spad_release(spad_array, spad_count);
-        spad_array = 0; spad_count = 0;
-        if (xhci_spad_build(spad, &spad_array) != 0) {
+        if (xhci_spad_build(spad, &c->spad_array) != 0) {
             klog_u32("xHCI", SEV_WARN, "no memory for the scratchpad pages asked for: ",
                      spad, LOG_COLOR_VALUE, "");
             return 0;
         }
-        spad_count = spad;
-        dcbaa[0] = spad_array;
+        c->spad_count = spad;
+        c->dcbaa[0] = c->spad_array;
         klog_u32("xHCI", SEV_INFO, "scratchpad pages: ", spad, LOG_COLOR_VALUE, "");
     }
-    op_wr64(XOP_DCBAAP, DCBAA_ADDR);
+    op_wr64(c, XOP_DCBAAP, dma_phys(c, DCBAA_OFF));
 
     /* command ring, with its trailing Link TRB back to the start */
-    cmd_ring = (struct xhci_trb *)XDMA_V(CMDRING_ADDR);
-    for (unsigned i = 0; i < CMD_RING_TRBS; i++) trb_clear(&cmd_ring[i]);
-    cmd_ring[CMD_RING_TRBS - 1].parameter = CMDRING_ADDR;
-    cmd_ring[CMD_RING_TRBS - 1].control = TRB_TYPE(TRB_LINK) | TRB_ENT;
-    cmd_enq = 0; cmd_cycle = 1;
-    op_wr64(XOP_CRCR, CMDRING_ADDR | 1u);     /* | RCS */
+    c->cmd_ring = dma_virt(c, CMDRING_OFF);
+    for (unsigned i = 0; i < CMD_RING_TRBS; i++) trb_clear(&c->cmd_ring[i]);
+    c->cmd_ring[CMD_RING_TRBS - 1].parameter = dma_phys(c, CMDRING_OFF);
+    c->cmd_ring[CMD_RING_TRBS - 1].control = TRB_TYPE(TRB_LINK) | TRB_ENT;
+    c->cmd_enq = 0; c->cmd_cycle = 1;
+    op_wr64(c, XOP_CRCR, dma_phys(c, CMDRING_OFF) | 1u);     /* | RCS */
 
     /* event ring: one segment, described by a one-entry segment table */
-    evt_ring = (struct xhci_trb *)XDMA_V(EVTRING_ADDR);
-    for (unsigned i = 0; i < EVT_RING_TRBS; i++) trb_clear(&evt_ring[i]);
-    evt_deq = 0; evt_cycle = 1;
+    c->evt_ring = dma_virt(c, EVTRING_OFF);
+    for (unsigned i = 0; i < EVT_RING_TRBS; i++) trb_clear(&c->evt_ring[i]);
+    c->evt_deq = 0; c->evt_cycle = 1;
 
-    volatile uint32_t *erst = (volatile uint32_t *)XDMA_V(ERST_ADDR);
-    erst[0] = EVTRING_ADDR;
+    volatile uint32_t *erst = dma_virt(c, ERST_OFF);
+    erst[0] = dma_phys(c, EVTRING_OFF);
     erst[1] = 0;
     erst[2] = EVT_RING_TRBS;
     erst[3] = 0;
 
     /* Interrupter 0 lives at runtime offset 0x20. ERDP must be set BEFORE
        ERSTBA: writing the segment table base is what arms the interrupter. */
-    rt_wr(0x20 + 0x08, 1);                              /* ERSTSZ = 1 segment */
-    rt_wr64(0x20 + 0x18, EVTRING_ADDR);                 /* ERDP               */
-    rt_wr64(0x20 + 0x10, ERST_ADDR);                    /* ERSTBA             */
+    rt_wr(c, 0x20 + 0x08, 1);                               /* ERSTSZ = 1 segment */
+    rt_wr64(c, 0x20 + 0x18, dma_phys(c, EVTRING_OFF));      /* ERDP               */
+    rt_wr64(c, 0x20 + 0x10, dma_phys(c, ERST_OFF));         /* ERSTBA             */
 
-    xfer_buf = (uint8_t *)XDMA_V(XFERBUF_ADDR);
+    c->xfer_buf = dma_virt(c, XFERBUF_OFF);
 
-    op_wr(XOP_USBCMD, XCMD_RS);
-    for (int i = 0; i < 100 && (op_rd(XOP_USBSTS) & XSTS_HCH); i++) timer_sleep(1);
-    if (op_rd(XOP_USBSTS) & XSTS_HCH) {
+    op_wr(c, XOP_USBCMD, XCMD_RS);
+    for (int i = 0; i < 100 && (op_rd(c, XOP_USBSTS) & XSTS_HCH); i++) timer_sleep(1);
+    if (op_rd(c, XOP_USBSTS) & XSTS_HCH) {
         klog("xHCI", SEV_WARN, "controller would not leave the halted state");
+        xhci_spad_release(c->spad_array, c->spad_count);   /* halted: nobody uses them */
         return 0;
     }
 
-    present = 1;
-    klog_u32("xHCI", SEV_OK, "controller online, root ports: ", nports, LOG_COLOR_VALUE, "");
+    klog_u32("xHCI", SEV_OK, "controller online, root ports: ", c->nports, LOG_COLOR_VALUE, "");
+    klog_child_u32("  pci device ", dev->slot, LOG_COLOR_VALUE, "");
 
-    msi_self_test(dev);
+    if (index == 0) msi_self_test(c, dev);
 
     /* Power every port, then let devices settle before looking. */
-    for (unsigned p = 1; p <= nports; p++)
-        if (!(portsc_rd(p) & XPORT_PP)) portsc_wr(p, XPORT_PP);
+    for (unsigned p = 1; p <= c->nports; p++)
+        if (!(portsc_rd(c, p) & XPORT_PP)) portsc_wr(c, p, XPORT_PP);
     timer_sleep(100);
 
-    for (unsigned p = 1; p <= nports; p++) enumerate_port(p);
+    for (unsigned p = 1; p <= c->nports; p++) enumerate_port(c, p);
     return 1;
+}
+
+int xhci_init(void) {
+    nhcs = 0;
+    /* class 0x0C serial bus, subclass 0x03 USB, prog-if 0x30 = xHCI. Every
+       one of them: each has its own ports. */
+    for (unsigned k = 0; nhcs < XHCI_MAX_HCS; k++) {
+        const struct pci_device *dev = pci_find(0x0C, 0x03, 0x30, k);
+        if (!dev) break;
+        struct xhci_hc *c = &hcs[nhcs];
+        for (unsigned i = 0; i < sizeof(*c); i++) ((uint8_t *)c)[i] = 0;
+        if (xhci_start(c, dev, nhcs)) nhcs++;
+    }
+    return nhcs > 0;
 }

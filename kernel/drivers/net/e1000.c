@@ -69,7 +69,7 @@
 #define RX_BUF_SIZE    2048
 #define TX_BUF_SIZE    2048
 
-/* fixed DMA region for the NIC (clear of AHCI 0x500000, OHCI 0x600000) */
+/* fixed DMA region for the NIC, inside the window pmm.c reserves */
 /* ---- DMA region: physical vs virtual ----
  * The NIC is a bus master: descriptor and buffer addresses written into its
  * registers must be PHYSICAL. The CPU also has to touch those same structures,

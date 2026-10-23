@@ -92,9 +92,10 @@ void pmm_init(void) {
     mark_region_used(0x100000, kend_phys);
     mark_region_used(bitmap_phys, bitmap_phys + bitmap_pages * PMM_PAGE_SIZE);
 
-    /* 5. driver DMA windows. AHCI, OHCI and e1000 each use a FIXED physical
-       region (0x500000, 0x600000, 0x700000) that they identity-map and hand to
-       the controller for bus-master DMA. Those frames are above the kernel image,
+    /* 5. driver DMA windows. The NIC drivers use a FIXED physical region
+       (e1000 0x700000, RTL8169 0x730000) and hand it to the controller for
+       bus-master DMA; AHCI and the USB controllers allocate theirs from here
+       instead, so 0x500000-0x700000 is now unused. Those frames are above the kernel image,
        so without this they look free and pmm_alloc would hand them out - and the
        device would then DMA over whatever got them (heap, page tables, a process
        image) with no fault and no warning. Reserve the whole window. */
