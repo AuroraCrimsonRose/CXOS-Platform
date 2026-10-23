@@ -78,6 +78,16 @@ return_to_kernel:
 syscall_stub:
     cli
     pushad
+    ; The caller's segment registers, given back on the way out. Left as the
+    ; kernel's, the iretd to ring 3 loads each with NULL (their DPL 0 is below
+    ; CPL 3), and the program's next DS access takes #GP(0) - which is what
+    ; pids 2 and 3 did on the FX, the first DS access after a syscall. QEMU
+    ; nulls the selector but keeps the old base and does not check it, so it
+    ; never showed there; ktest_arch_user_segments_kept reads the selectors.
+    push ds
+    push es
+    push fs
+    push gs
     mov bp, 0x10             ; kernel data segments
     mov ds, bp
     mov es, bp
@@ -92,9 +102,14 @@ syscall_stub:
     call syscall_dispatch
     add esp, 12
 
-    ; store return value into saved eax (pushad: eax at [esp+28])
-    mov [esp + 28], eax
+    ; store return value into saved eax (pushad: eax at [esp+28], above the
+    ; four segment registers)
+    mov [esp + 16 + 28], eax
 
+    pop gs
+    pop fs
+    pop es
+    pop ds
     popad
     sti
     iretd
@@ -218,3 +233,32 @@ user_blob_busy_start:
 .bhang:
     jmp .bhang
 user_blob_busy_end:
+
+; ---------------------------------------------------------------------------
+; user_blob_segs - makes one syscall, then exits with its four data segment
+; selectors packed one per byte (gs fs es ds, high to low). After a syscall
+; that hands them back, that is 0x23232323; a syscall that leaves the kernel's
+; in place gets them nulled by the iretd, and reads 0.
+; ---------------------------------------------------------------------------
+global user_blob_segs_start
+global user_blob_segs_end
+user_blob_segs_start:
+    mov eax, 0x01       ; SYS_YIELD
+    int 0x80
+    xor ebx, ebx
+    mov ax, gs
+    mov bl, al
+    shl ebx, 8
+    mov ax, fs
+    mov bl, al
+    shl ebx, 8
+    mov ax, es
+    mov bl, al
+    shl ebx, 8
+    mov ax, ds
+    mov bl, al
+    xor eax, eax        ; SYS_EXIT(ebx)
+    int 0x80
+.shang:
+    jmp .shang
+user_blob_segs_end:

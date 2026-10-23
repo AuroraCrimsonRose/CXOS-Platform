@@ -19,4 +19,8 @@ int ktest_arch_double_fault_stack(void);
    obeyed it. */
 int ktest_arch_cpu_features(void);
 
+/* A syscall gives ring 3 its data segment registers back, not the kernel's
+   (which the return to ring 3 would turn into NULL). */
+int ktest_arch_user_segments_kept(void);
+
 #endif

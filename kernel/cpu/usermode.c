@@ -453,6 +453,25 @@ int usermode_test(void) {
     return rc;
 }
 
+int usermode_run_blob(const uint8_t *start, uint32_t len) {
+    if (!start || len == 0 || len > USER_MSG_OFF) return -1;
+    uint32_t code_phys  = map_user_page(TEST_CODE_VIRT);
+    uint32_t stack_phys = map_user_page(TEST_STACK_VIRT);
+    if (!code_phys || !stack_phys) {
+        if (code_phys)  unmap_user_page(TEST_CODE_VIRT, code_phys);
+        if (stack_phys) unmap_user_page(TEST_STACK_VIRT, stack_phys);
+        return -1;
+    }
+    uint8_t *dst = (uint8_t *)TEST_CODE_VIRT;
+    for (uint32_t i = 0; i < len; i++) dst[i] = start[i];
+
+    int rc = enter_usermode(TEST_CODE_VIRT, TEST_STACK_VIRT + 0x1000 - 16, thread_current_usave());
+
+    unmap_user_page(TEST_CODE_VIRT, code_phys);
+    unmap_user_page(TEST_STACK_VIRT, stack_phys);
+    return rc;
+}
+
 
 /* ---- file syscall test -----------------------------------------------------
  * Drives SYS_FILE_OP the way ring 3 does, short of the int 0x80 gate itself

@@ -101,6 +101,11 @@ uint32_t usermode_faults(void);
    returns 0 on a clean round-trip. */
 int usermode_test(void);
 
+/* For the self-tests: copy `len` bytes of position-independent code to a
+   fresh user page, run it in ring 3 with an empty stack, and return the code
+   it gives SYS_EXIT (or USERMODE_FAULTED); -1 when it could not be set up. */
+int usermode_run_blob(const uint8_t *start, uint32_t len);
+
 /* Create a ring-3 PROCESS managed by the scheduler: a scheduler thread whose
    kernel-stack trampoline drops into ring 3 to run the given user routine, and
    calls thread_exit() (reaped by the scheduler) when the routine SYS_EXITs.

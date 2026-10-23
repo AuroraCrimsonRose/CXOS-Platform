@@ -3118,6 +3118,7 @@ void ktest_run(void) {
     total++; passed += report("a handle table grows to its limit and is freed", test_handle_table_grows());
     total++; passed += report("a process that faults gives back everything", test_process_exit_releases());
     total++; passed += report("the cpu feature table is this cpu's",   ktest_arch_cpu_features());
+    total++; passed += report("a syscall leaves ring 3 its segments",  ktest_arch_user_segments_kept());
     total++; passed += report("cxex signature + tamper",           test_cxex_signature());
     total++; passed += report("disk: ATA LBA range refused",        test_disk_lba_range());
     total++; passed += report("cxex loader refuses bad images",    ktest_loader_adversarial());
