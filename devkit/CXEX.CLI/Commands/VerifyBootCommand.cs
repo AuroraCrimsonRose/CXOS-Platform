@@ -85,6 +85,7 @@ public class VerifyBootCommand : Command<VerifyBootCommand.Settings>
         catch (System.ComponentModel.Win32Exception ex)
         {
             AnsiConsole.MarkupLine($"[red]error:[/] could not start {QemuTool.Executable}: {Markup.Escape(ex.Message)}");
+            if (foreign is not null) DeleteQuietly(foreign);   // nothing ran, so nothing to keep
             return 1;
         }
 
@@ -92,16 +93,19 @@ public class VerifyBootCommand : Command<VerifyBootCommand.Settings>
         // is not CXOS's fails the boot even if every self-test passed.
         if (foreign is not null && foreignHash is not null)
         {
-            if (!CXEX.Tools.ForeignDisk.Unchanged(foreign, foreignHash))
+            bool? unchanged = CXEX.Tools.ForeignDisk.Unchanged(foreign, foreignHash);
+            if (unchanged is null)
+                v = v with { Outcome = BootOutcome.Inconclusive, Reason = $"the foreign disk could not be read back (kept at {foreign})" };
+            else if (unchanged is false)
                 v = v with { Outcome = BootOutcome.Fail, Reason = $"the boot wrote to the foreign disk (kept at {foreign})" };
             else
             {
-                File.Delete(foreign);
-                int seen = CXEX.Tools.ForeignDisk.DisksSeen(File.Exists(log) ? File.ReadAllText(log) : "");
-                if (seen < 2 && v.Outcome == BootOutcome.Pass)
-                    v = v with { Outcome = BootOutcome.Inconclusive, Reason = $"the kernel reported {seen} disk(s): the foreign disk was never seen" };
+                DeleteQuietly(foreign);
+                bool seen = CXEX.Tools.ForeignDisk.Seen(File.Exists(log) ? File.ReadAllText(log) : "");
+                if (!seen && v.Outcome == BootOutcome.Pass)
+                    v = v with { Outcome = BootOutcome.Inconclusive, Reason = "the kernel never named the foreign disk as left read-only: it was never seen" };
                 else if (v.Outcome == BootOutcome.Pass)
-                    v = v with { Reason = v.Reason + "; the foreign disk is unchanged" };
+                    v = v with { Reason = v.Reason + "; the foreign disk was seen, refused and is unchanged" };
             }
         }
 
@@ -119,5 +123,13 @@ public class VerifyBootCommand : Command<VerifyBootCommand.Settings>
                 AnsiConsole.MarkupLine($"[grey]  full log: {Markup.Escape(log)}[/]");
                 return 2;
         }
+    }
+
+    // A 32 MB scratch file left behind is untidy, not a reason to lose the verdict.
+    private static void DeleteQuietly(string path)
+    {
+        try { File.Delete(path); }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
     }
 }

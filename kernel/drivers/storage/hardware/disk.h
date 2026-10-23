@@ -198,7 +198,12 @@ int disk_flush(uint8_t id);
  * DISK_ERR_DENIED without reaching the driver; home < 0 refuses every write.
  * Checked here, under every caller, so a filesystem, the crash log or a later
  * driver cannot reach another disk by forgetting to ask. Reads are not
- * restricted. Until it is called, every disk may be written. */
+ * restricted. Until it is called, every disk may be written.
+ *
+ * One way: a later call replaces `home`, but nothing lifts the restriction -
+ * DISK_WRITES_ANY, like any id that is not a registered disk, is taken as -1
+ * and refuses everything. A mistake here closes the disks rather than opening
+ * them. */
 #define DISK_WRITES_ANY (-2)
 void disk_restrict_writes(int home);
 

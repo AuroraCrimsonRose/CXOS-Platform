@@ -60,9 +60,10 @@ int cxk_install_first_boot(uint8_t disk_id);
    kernel writes (CXK_AUTO_INSTALL, config.h). */
 int cxk_find_boot_disk(void);
 
-/* Point CXFS at cxk_find_boot_disk's disk and run the first-boot install on
-   it. Returns a cxk_install_result. */
-int cxk_install_boot_disk(void);
+/* Point CXFS at `id`, cxk_find_boot_disk's answer (taken, not asked again, so
+   the install fills the disk the write guard opened), and run the first-boot
+   install on it. Returns a cxk_install_result; NO_SYSTEM if id < 0. */
+int cxk_install_boot_disk(int id);
 
 /* Put every drive that is not the boot drive under /Drives, and mount each
    CXFS volume it holds inside its drive's directory, named by the volume's own

@@ -29,21 +29,29 @@ public static partial class ForeignDisk
         return SHA256.HashData(bytes);
     }
 
-    public static bool Unchanged(string path, byte[] hash)
+    /// <summary>True if the disk is as Create left it, false if it changed,
+    /// null if it could not be read back (still held open, say): not a
+    /// verdict either way, and the caller must not call it a pass.</summary>
+    public static bool? Unchanged(string path, byte[] hash)
     {
-        using var f = File.OpenRead(path);
-        return f.Length == SizeBytes && SHA256.HashData(f).AsSpan().SequenceEqual(hash);
+        try
+        {
+            // ReadWrite: QEMU may not have let go of the file yet, and
+            // reading must not throw for that.
+            using var f = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            return f.Length == SizeBytes && SHA256.HashData(f).AsSpan().SequenceEqual(hash);
+        }
+        catch (IOException) { return null; }
+        catch (UnauthorizedAccessException) { return null; }
     }
 
-    /// <summary>How many disks the kernel said it found, from its boot log,
-    /// or -1. Under two, the foreign disk was never seen and its being
-    /// unchanged proves nothing.</summary>
-    public static int DisksSeen(string log)
-    {
-        Match m = DisksLine().Match(log);
-        return m.Success ? int.Parse(m.Groups[1].Value) : -1;
-    }
+    /// <summary>Whether the kernel's boot log names this disk among those it
+    /// left read-only, by its size, which no other disk in the run shares.
+    /// Without that line the disk was never seen, and its being unchanged
+    /// proves nothing. A count of disks is not enough: it cannot tell this
+    /// disk from some other one.</summary>
+    public static bool Seen(string log) => RefusedLine().IsMatch(log);
 
-    [GeneratedRegex(@"online, disks: (\d+)")]
-    private static partial Regex DisksLine();
+    [GeneratedRegex(@"left read-only, sectors: 65536\b")]
+    private static partial Regex RefusedLine();
 }

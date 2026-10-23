@@ -150,13 +150,24 @@ public class BootVerdictTests
             byte[] disk = File.ReadAllBytes(path);
             Assert.Contains(disk.Take(4096), b => b != 0);   // zeros would hide a write of zeros
 
-            using (var f = File.OpenWrite(path)) { f.Position = ForeignDisk.SizeBytes - 1; f.WriteByte((byte)~disk[^1]); }
-            Assert.False(ForeignDisk.Unchanged(path, hash));
+            // read back while still held open for writing, as QEMU may hold it
+            using (var f = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite))
+            {
+                Assert.True(ForeignDisk.Unchanged(path, hash));
+                f.Position = ForeignDisk.SizeBytes - 1;
+                f.WriteByte((byte)~disk[^1]);
+                f.Flush();
+                Assert.False(ForeignDisk.Unchanged(path, hash));
+            }
         }
         finally { File.Delete(path); }
+        Assert.Null(ForeignDisk.Unchanged(path, [0]));   // gone: no verdict, not a pass
 
-        Assert.Equal(2, ForeignDisk.DisksSeen("[STORAGE ] - [OK  ] - online, disks: 2\n"));
-        Assert.Equal(-1, ForeignDisk.DisksSeen("no storage line"));
+        // Seen by its size, the one the kernel logs for each disk it refuses
+        Assert.Equal(65536, ForeignDisk.SizeBytes / 512);
+        Assert.True(ForeignDisk.Seen("[STORAGE ] - [INFO] - left read-only, sectors: 65536\n"));
+        Assert.False(ForeignDisk.Seen("[STORAGE ] - [INFO] - left read-only, sectors: 655360\n"));
+        Assert.False(ForeignDisk.Seen("[STORAGE ] - [OK  ] - online, disks: 2\n"));
     }
 
     [Fact]

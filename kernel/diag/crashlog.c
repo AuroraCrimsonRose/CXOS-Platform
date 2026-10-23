@@ -37,16 +37,21 @@ static void clear_text(void) {
     text_len = 0;
 }
 
-/* The first disk with a CRASH partition big enough for a record. */
+/* The first disk with a CRASH partition big enough for a record, among the
+   disks this boot may write (disk_restrict_writes): a crash area found on any
+   other disk would have every record refused, and a panic would lose its
+   record without a word. */
 static void find_area(void) {
 #if !CXK_ALLOW_DISK_WRITE
     /* config.h: this build writes to no disk, the crash area included. */
     klog("CRASHLOG", SEV_INFO, "crash log off: this build writes to no disk");
     return;
 #endif
+    int home = disk_write_home();
     for (unsigned i = 0; i < disk_count(); i++) {
         const struct disk *d = disk_get(i);
         if (!d) continue;
+        if (home != DISK_WRITES_ANY && d->id != home) continue;
         struct partition p;
         if (part_find_type(d->id, PART_TYPE_CXCRASH, &p) != 0) continue;
         if (p.sectors < XCRL_SECTORS) {

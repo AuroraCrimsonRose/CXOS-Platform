@@ -1242,12 +1242,26 @@ static int test_cxbi(void) {
  * come back DISK_ERR_DENIED and leave the sector as it was. The sector is the
  * last of the crash area, which nothing else uses while the tests run. A boot
  * with a second disk that must come out unchanged is `cxk verify-boot
- * --foreign-disk`. */
+ * --foreign-disk`.
+ *
+ * The moment every disk is refused cannot cost another thread a write: the
+ * scheduler is cooperative (sched_preempt_enable is for contained tests only),
+ * and a refused disk_write returns before the driver, so nothing yields
+ * between closing the disks and opening the CXOS one again.
+ *
+ * With automatic install on, the promise is the opposite one - nothing is
+ * restricted - and that is what is checked. */
 static int test_disk_write_guard(void) {
-#if CXK_AUTO_INSTALL || !CXK_ALLOW_DISK_WRITE
-    klog("KTEST", SEV_WARN, "write guard untested: automatic install on, or no writes at all");
+#if CXK_AUTO_INSTALL
+    if (disk_write_home() != DISK_WRITES_ANY) {
+        klog("KTEST", SEV_FAIL, "write guard: automatic install on, but writes are restricted");
+        return 0;
+    }
     return 1;
-#endif
+#elif !CXK_ALLOW_DISK_WRITE
+    klog("KTEST", SEV_WARN, "write guard untested: this build writes to no disk");
+    return 1;
+#else
     int home = disk_write_home();
     if (home < 0) {
         klog("KTEST", SEV_FAIL, "write guard: writes are not limited to the CXOS disk");
@@ -1267,11 +1281,20 @@ static int test_disk_write_guard(void) {
 
     disk_restrict_writes(-1);
     int r = disk_write(disk, at, 1, probe);
+    /* nothing lifts the restriction, and an id that is no disk closes them all */
+    disk_restrict_writes(DISK_WRITES_ANY);
+    int lifted = disk_write_home();
+    disk_restrict_writes(0xFE);
+    int bogus = disk_find_by_id(0xFE) ? -1 : disk_write_home();
     disk_restrict_writes(home);
 
     int ok = 1;
     if (r != DISK_ERR_DENIED) {
         klog("KTEST", SEV_FAIL, "write guard: a refused disk took a write");
+        ok = 0;
+    }
+    if (lifted != -1 || bogus != -1) {
+        klog("KTEST", SEV_FAIL, "write guard: the restriction was lifted, or opened to no disk");
         ok = 0;
     }
     if (disk_read(disk, at, 1, after) != DISK_OK || memcmp(before, after, 512) != 0) {
@@ -1282,6 +1305,7 @@ static int test_disk_write_guard(void) {
     /* and the CXOS disk is writable again */
     if (disk_write(disk, at, 1, before) != DISK_OK) ok = 0;
     return ok;
+#endif
 }
 
 /* ---- a crash record goes to the crash area and reads back (step 4b) -------

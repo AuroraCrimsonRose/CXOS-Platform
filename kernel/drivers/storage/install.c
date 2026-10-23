@@ -306,8 +306,7 @@ int cxk_find_boot_disk(void) {
     return -1;
 }
 
-int cxk_install_boot_disk(void) {
-    int id = cxk_find_boot_disk();
+int cxk_install_boot_disk(int id) {
     if (id < 0) return CXK_INSTALL_NO_SYSTEM;   /* no CXOS disk present */
     cxfs_set_id((uint8_t)id);
     return cxk_install_first_boot((uint8_t)id);

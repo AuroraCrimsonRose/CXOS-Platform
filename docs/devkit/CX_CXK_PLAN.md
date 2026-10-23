@@ -124,7 +124,10 @@ real machine as QEMU gets.
   the record must say the save reset the stick first. `cxk verify-boot` takes
   the same `--usb`, and `--foreign-disk`: a patterned 32 MB disk ahead of the
   image, as a machine's own drive, which must come out of the boot
-  byte-for-byte unchanged (the install guard, `CXK_AUTO_INSTALL`).
+  byte-for-byte unchanged (the install guard, `CXK_AUTO_INSTALL`). It must
+  also be seen: the kernel logs each disk it leaves read-only by size, and a
+  boot that never names this one is INCONCLUSIVE, as is a disk that cannot be
+  read back afterwards.
 
 ### 3.8 Later
 

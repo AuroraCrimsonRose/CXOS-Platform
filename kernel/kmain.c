@@ -77,20 +77,28 @@ static int guard_disks(void) {
                  (uint32_t)home, LOG_COLOR_VALUE, "");
     else
         klog("STORAGE", SEV_WARN, "no CXOS disk: every disk is read-only");
+    /* Each disk refused, by size: what `cxk verify-boot --foreign-disk` looks
+       for to know its disk was the one seen, not merely some second disk. */
+    for (unsigned i = 0; i < disk_count(); i++) {
+        const struct disk *d = disk_get(i);
+        if (d && d->id != home)
+            klog_u32("STORAGE", SEV_INFO, "left read-only, sectors: ",
+                     (uint32_t)d->sectors, LOG_COLOR_VALUE, "");
+    }
 #endif
     return home;
 }
 
-/* Mount CXFS on the data disk (first non-boot disk). Read-only by default:
-   mounts an existing filesystem if present and NEVER formats, so this can't
-   wipe a non-CXFS disk on real hardware. Only with automatic install on (and
+/* Mount CXFS on the data disk (index 1). Read-only by default: mounts an
+   existing filesystem if present and NEVER formats, so this can't wipe a
+   non-CXFS disk on real hardware. Only with automatic install on (and
    CXK_ALLOW_DISK_WRITE) is a disk with no filesystem formatted. The CXOS disk
    itself is never taken for one: whole-disk CXFS there would overwrite its
-   partition table. */
+   partition table. Nor, when the CXOS disk is index 1, is index 0 taken in its
+   place: that is the machine's own first drive. */
 static void mount_cxfs(int home) {
     const struct disk *fsdisk = 0;
-    if (disk_count() >= 2) fsdisk = disk_get(1);   /* first non-boot disk */
-    if (fsdisk && fsdisk->id == home) fsdisk = disk_get(0);
+    if (disk_count() >= 2) fsdisk = disk_get(1);
     if (!fsdisk || fsdisk->id == home) { klog_u32("FILESYS", SEV_WARN, "DATA DISKS PRESENT: ", (uint32_t)disk_count(), LOG_COLOR_VALUE, ""); return; }
 
     cxfs_set_id(fsdisk->id);
@@ -352,7 +360,7 @@ void kmain_late(void) {
        first boot. No-ops if no XBPT disk is present. */
     int launch_exec = 0;
     {
-        int ir = cxk_install_boot_disk();
+        int ir = cxk_install_boot_disk(home);
         if      (ir == CXK_INSTALL_DONE)      klog("INSTALL", SEV_OK,   "first boot: /System created from staged payload");
         else if (ir == CXK_INSTALL_MOUNTED)   klog("INSTALL", SEV_OK,   "SYSTEM partition mounted");
         else if (ir == CXK_INSTALL_NO_SYSTEM) klog("INSTALL", SEV_INFO, "no XBPT system disk (skipped)");

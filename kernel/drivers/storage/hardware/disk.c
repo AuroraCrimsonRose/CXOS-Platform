@@ -265,7 +265,9 @@ int disk_flush(uint8_t id) {
 
 static int write_home = DISK_WRITES_ANY;
 
-void disk_restrict_writes(int home) { write_home = home < 0 ? -1 : home; }
+void disk_restrict_writes(int home) {
+    write_home = (home >= 0 && home <= 0xFF && disk_find_by_id((uint8_t)home)) ? home : -1;
+}
 int  disk_write_home(void)          { return write_home; }
 
 int disk_write(uint8_t id, uint64_t lba, uint32_t count, const void *buf) {
