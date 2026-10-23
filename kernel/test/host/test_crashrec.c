@@ -48,6 +48,10 @@ KH_TEST(xcrl_refuses_torn_and_foreign) {
 
     memcpy(bad, hdr, sizeof bad); bad[4] = 2;                    /* newer version */
     KH_CHECK_EQ(xcrl_check_header(bad, 0, 0), XCRL_BAD_VER);
+    uint16_t fkind = 0;
+    memcpy(bad, hdr, sizeof bad); bad[6] = XCRL_KIND_FAULT;      /* a user-fault record */
+    KH_CHECK_EQ(xcrl_check_header(bad, &fkind, 0), XCRL_VALID);
+    KH_CHECK_EQ(fkind, XCRL_KIND_FAULT);
     memcpy(bad, hdr, sizeof bad); bad[6] = 7;                    /* unknown kind */
     KH_CHECK_EQ(xcrl_check_header(bad, 0, 0), XCRL_BAD_KIND);
     memcpy(bad, hdr, sizeof bad); bad[10] = 0x01;                /* 64 KB + 46: too long */

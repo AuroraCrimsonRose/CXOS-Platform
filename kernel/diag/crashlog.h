@@ -70,4 +70,21 @@ int crashlog_write_record(uint16_t kind, const char *text, uint32_t len);
 /* Zero the header, so the area reads as empty. A disk_err code. */
 int crashlog_clear(void);
 
+/* ---- user faults ----
+   A user process that faults is ended, not a panic, so the crash log would
+   hold nothing; on the rig the screen was the only record. These save them.
+   arm:    on once the self-tests are done (their faults are deliberate).
+   note:   from the fault handler: one line about the fault into a static
+           buffer. No disk I/O, no allocation.
+   save:   from the faulted process's own thread, once it is out of ring 3:
+           write an XCRL_KIND_FAULT record of every fault noted so far and
+           the system log's tail. Nothing when nothing is pending.
+   saved:  how many saves were written. forget: drop the noted faults (the
+           self-test, after its own). */
+void     crashlog_faults_arm(int on);
+void     crashlog_note_fault(const char *line);
+void     crashlog_save_faults(void);
+uint32_t crashlog_faults_saved(void);
+void     crashlog_faults_forget(void);
+
 #endif

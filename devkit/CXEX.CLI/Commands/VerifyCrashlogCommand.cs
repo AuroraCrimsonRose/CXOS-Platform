@@ -150,6 +150,7 @@ public class RigCrashlogCommand : Command<RigCrashlogCommand.Settings>
         switch (r.State)
         {
             case CrashAreaState.Record:
+            case CrashAreaState.FaultRecord:
                 AnsiConsole.MarkupLine($"[grey]{Markup.Escape(r.Detail)}[/]");
                 Console.Out.Write(r.Text.Replace("\r", ""));
                 if (!r.Text.EndsWith('\n')) Console.Out.WriteLine();

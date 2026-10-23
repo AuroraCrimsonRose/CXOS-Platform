@@ -323,8 +323,10 @@ int usb_storage_attach(struct usb_device *dev) {
     klog_u32("USBSTOR", SEV_OK, "registered disk, sectors: ", (uint32_t)sectors,
              LOG_COLOR_VALUE, "");
     klog_child_u32("  block size ", u->block_size, LOG_COLOR_VALUE, "");
-    klog_child(u->wce ? "  write cache: on" : "  write cache: off or unreported - not flushed");
     klog_child(model);
+    /* A full entry, not a child line, so it reaches the system log and with
+       it a saved crash or fault record. */
+    klog("USBSTOR", SEV_INFO, u->wce ? "write cache: on" : "write cache: off or unreported - not flushed");
     return 1;
 }
 

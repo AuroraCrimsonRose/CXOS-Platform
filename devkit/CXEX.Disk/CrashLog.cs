@@ -11,6 +11,9 @@ public enum CrashAreaState
 {
     /// <summary>A whole record: <see cref="CrashAreaReading.Text"/> holds it.</summary>
     Record,
+    /// <summary>User processes that faulted after the self-tests, and the system
+    /// log (no panic): <see cref="CrashAreaReading.Text"/> holds it.</summary>
+    FaultRecord,
     /// <summary>A test request, armed by <c>cxk verify-crashlog</c> and not yet taken.</summary>
     Request,
     /// <summary>The area is there and holds nothing.</summary>
@@ -39,6 +42,7 @@ public static class CrashLog
 
     public const ushort KindCrash = 1;
     public const ushort KindRequest = 2;
+    public const ushort KindFault = 3;
     public const int Sector = 512;
     public const int TextMax = 32 * Sector;
     public const int Sectors = 1 + TextMax / Sector;
@@ -100,7 +104,7 @@ public static class CrashLog
         ushort ver = BitConverter.ToUInt16(h, 4), kind = BitConverter.ToUInt16(h, 6);
         uint len = BitConverter.ToUInt32(h, 8);
         if (ver != XcrlVersion) return new(CrashAreaState.Invalid, $"record version {ver}; this cxk reads {XcrlVersion}");
-        if (kind != KindCrash && kind != KindRequest) return new(CrashAreaState.Invalid, $"record of unknown kind {kind}");
+        if (kind != KindCrash && kind != KindRequest && kind != KindFault) return new(CrashAreaState.Invalid, $"record of unknown kind {kind}");
         if (len > TextMax || (kind == KindRequest && len != 0)) return new(CrashAreaState.Invalid, $"record length {len} out of range");
 
         var text = new byte[len];
@@ -112,9 +116,12 @@ public static class CrashLog
         uint crc = Crc32(Crc32(0, h.AsSpan(0, 12)), text);
         if (crc != BitConverter.ToUInt32(h, 12)) return new(CrashAreaState.Invalid, "record torn: the CRC does not match");
 
-        return kind == KindRequest
-            ? new(CrashAreaState.Request, "a crash-log test request, not yet taken")
-            : new(CrashAreaState.Record, $"crash record, {len} bytes", Encoding.ASCII.GetString(text));
+        return kind switch
+        {
+            KindRequest => new(CrashAreaState.Request, "a crash-log test request, not yet taken"),
+            KindFault => new(CrashAreaState.FaultRecord, $"user-fault record (no panic), {len} bytes", Encoding.ASCII.GetString(text)),
+            _ => new(CrashAreaState.Record, $"crash record, {len} bytes", Encoding.ASCII.GetString(text)),
+        };
     }
 
     /// <summary>Ask the next boot of this disk to panic on purpose (the kernel clears it first).</summary>

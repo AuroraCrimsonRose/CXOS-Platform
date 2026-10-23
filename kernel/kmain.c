@@ -409,6 +409,10 @@ void kmain_late(void) {
         kpanic("deliberate panic: a crash-log test asked for one");
     }
 
+    /* From here a user process that faults is saved to the crash area; the
+       self-tests' faults, before this, are deliberate. */
+    crashlog_faults_arm(1);
+
 #ifdef CXK_DEV_UNSIGNED
     /* Said at every boot, in the log, just before anything unsigned could run:
        a development kernel must never be mistakable for a release one. */

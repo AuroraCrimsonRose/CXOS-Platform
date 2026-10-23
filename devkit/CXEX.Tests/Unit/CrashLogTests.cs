@@ -141,6 +141,19 @@ public class CrashLogTests
         Assert.Equal(BootOutcome.Inconclusive, BootVerdict.ClassifyRequestedPanic("[KTEST   ] - [OK  ] - self-tests: all 61 passed\n").Outcome);
     }
 
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
+    public void A_user_fault_record_reads_back_as_one_and_not_as_a_panic()
+    {
+        using var img = Image();
+        var text = Encoding.ASCII.GetBytes("user faults since the self-tests: 1\npid 2 (shell) exception 13 at 0x00401234  error 0x0\n");
+        PutRecord(img, CrashLog.KindFault, text);
+        var r = CrashLog.Read(img);
+        Assert.Equal(CrashAreaState.FaultRecord, r.State);
+        Assert.Equal(Encoding.ASCII.GetString(text), r.Text);
+        Assert.NotEqual(CrashAreaState.Record, r.State);   // verify-crashlog wants a panic's
+    }
+
     /// <summary>
     /// A disk as Windows presents a raw device: any read that does not start
     /// and end on a sector boundary fails, and it cannot be written.

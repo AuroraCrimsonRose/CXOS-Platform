@@ -6,7 +6,8 @@
 
 #include "usermode.h"
 #include "arch/irq.h"        /* set_user_fault_hook, irq_frame_* */
-#include "format.h"          /* fmt_hex */
+#include "format.h"          /* fmt_hex, fmt_u32 */
+#include "diag/crashlog.h"   /* crashlog_note_fault, crashlog_save_faults */
 #include "arch/usermode.h"   /* enter_usermode, return_to_kernel, the gate */
 #include "sched.h"
 #include "uid.h"
@@ -1196,7 +1197,9 @@ static void process_trampoline(void) {
 
     enter_usermode(s->code_virt, ustack_top, thread_current_usave());
 
-    /* user routine SYS_EXITed or faulted: reclaim its pages, then leave the scheduler. */
+    /* user routine SYS_EXITed or faulted: save a fault noted on the way out
+       (out of the exception now), reclaim its pages, leave the scheduler. */
+    crashlog_save_faults();
     unmap_user_page(s->code_virt, s->code_phys);
     unmap_user_page(s->stack_virt, s->stack_phys);
     s->code_virt = 0;
@@ -1294,6 +1297,26 @@ static void usermode_fault(struct registers *r) {
     line[n] = 0;
     klog_child(line);
     klog_child("process terminated");
+
+    /* The same, as one line for the crash area: "pid 2 (name) exception 13
+       at 0x... error 0x...". Saved by this thread once it is out of ring 3
+       (crashlog_save_faults), not from here. */
+    char rec[128];
+    size_t m = 0;
+    const char *name = thread_name(thread_current_id());
+    #define REC_PUT(s) do { const char *p_ = (s); while (*p_ && m < sizeof rec - 1) rec[m++] = *p_++; } while (0)
+    char num[12];
+    REC_PUT("pid ");
+    fmt_u32(num, (uint32_t)pid); REC_PUT(num);
+    if (name) { REC_PUT(" ("); REC_PUT(name); REC_PUT(")"); }
+    REC_PUT(" exception ");
+    fmt_u32(num, vector); REC_PUT(num);
+    REC_PUT(" ");
+    REC_PUT(line);
+    #undef REC_PUT
+    rec[m] = 0;
+    crashlog_note_fault(rec);
+
     return_to_kernel(USERMODE_FAULTED, thread_current_usave());   /* never returns */
 }
 

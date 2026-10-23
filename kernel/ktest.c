@@ -1391,6 +1391,57 @@ static int test_crashlog(void) {
     return ok;
 }
 
+static int kt_has(const char *hay, uint32_t n, const char *needle) {
+    uint32_t m = 0;
+    while (needle[m]) m++;
+    for (uint32_t i = 0; i + m <= n; i++)
+        if (memcmp(hay + i, needle, m) == 0) return 1;
+    return 0;
+}
+
+/* ---- a user fault after the self-tests is saved (crashlog_save_faults) ----
+ * A ring-3 process whose first instruction is ud2 faults the way pids 2 and
+ * 3 do on the FX: through usermode_fault, which notes it, and back out of
+ * enter_usermode into the trampoline, which saves it. So the record read
+ * back here was written by the same calls a real fault makes, not by the
+ * test. Faults are armed only for this test until the executive starts. */
+static const uint8_t kt_ud2[2] = { 0x0F, 0x0B };
+
+static int test_user_fault_saved(void) {
+#if !CXK_ALLOW_DISK_WRITE
+    return 1;
+#endif
+    uint8_t disk;
+    uint64_t lba, secs;
+    if (crashlog_area(&disk, &lba, &secs) != 0) return 1;   /* test_crashlog says why */
+
+    static char rd[3 * XCRL_SECTOR];
+    if (disk_read(disk, lba, 1, rd) != DISK_OK || xcrl_check_header((const uint8_t *)rd, 0, 0) != XCRL_EMPTY)
+        return 0;                                /* a record left behind: not overwritten */
+
+    uint32_t saved0 = crashlog_faults_saved();
+    crashlog_faults_arm(1);
+    int pid = process_create_ring3("faultrec", kt_ud2, sizeof kt_ud2, "");
+    for (int i = 0; i < 3000 && pid >= 0 && crashlog_faults_saved() == saved0; i++)
+        thread_sleep_ms(1);
+    crashlog_faults_arm(0);
+
+    int ok = pid >= 0 && crashlog_faults_saved() == saved0 + 1;
+    uint16_t kind = 0;
+    uint32_t n = 0;
+    ok = ok && disk_read(disk, lba, 3, rd) == DISK_OK
+            && xcrl_check_header((const uint8_t *)rd, &kind, &n) == XCRL_VALID
+            && kind == XCRL_KIND_FAULT;
+    uint32_t look = n < 2 * XCRL_SECTOR ? n : 2 * XCRL_SECTOR;
+    ok = ok && kt_has(rd + XCRL_SECTOR, look, "user faults since the self-tests: 1\n")
+            && kt_has(rd + XCRL_SECTOR, look, "(faultrec) exception 6 at 0x")
+            && kt_has(rd + XCRL_SECTOR, look, "---- system log");
+
+    crashlog_faults_forget();
+    if (crashlog_clear() != DISK_OK) ok = 0;
+    return ok;
+}
+
 /* ---- the wall clock reads a plausible date (platform_wallclock, step 3) ----
  * File times and SYS_CLOCK's epoch come from here. The clock's own encoding
  * (BCD, the century, 12-hour mode on a PC) is the platform's to decode; a
@@ -3046,6 +3097,7 @@ void ktest_run(void) {
     total++; passed += report("the wall clock reads a plausible date", test_wallclock());
     total++; passed += report("the boot handover came through CXBI", test_cxbi());
     total++; passed += report("a crash record goes to the crash area and back", test_crashlog());
+    total++; passed += report("a user fault is saved to the crash area", test_user_fault_saved());
     total++; passed += report("disk writes reach only the CXOS disk", test_disk_write_guard());
     total++; passed += report("xHCI scratchpad pages are whole and returned", test_xhci_scratchpad());
     total++; passed += report("PS/2 keyboard and mouse reach the kernel", ktest_platform_input());

@@ -27,6 +27,7 @@
 #include "launch.h"
 #include "cxfs.h"
 #include "logging.h"
+#include "diag/crashlog.h"     /* crashlog_save_faults */
 #include <stddef.h>
 
 #define USER_STACK_TOP    0xBFFFF000u
@@ -165,7 +166,9 @@ static void proc_trampoline(void) {
 
     enter_usermode(entry, ustack_top, thread_current_usave());
 
-    /* SYS_EXIT, or a fault (usermode_fault returns here the same way). */
+    /* SYS_EXIT, or a fault (usermode_fault returns here the same way, and a
+       fault it noted is saved now that this thread is out of the exception). */
+    crashlog_save_faults();
     klog_u32("PROC", SEV_INFO, "exited, pid ", (uint32_t)pid, LOG_COLOR_VALUE, "");
     thread_exit();   /* never returns; the reaper frees the stacks, the process its space */
 }

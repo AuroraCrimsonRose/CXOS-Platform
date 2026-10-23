@@ -37,6 +37,9 @@
 #define XCRL_KIND_CRASH     1u   /* a panic's log */
 #define XCRL_KIND_REQUEST   2u   /* `cxk verify-crashlog` asks this boot to
                                     panic on purpose; carries no text */
+#define XCRL_KIND_FAULT     3u   /* user processes that faulted after the
+                                    self-tests, then the system log; a panic's
+                                    record replaces it */
 
 /* What xcrl_check_header made of a header. */
 enum xcrl_state {
