@@ -140,4 +140,87 @@ public class CrashLogTests
             "[KTEST   ] - [OK  ] - self-tests: all 61 passed\n[EXEC    ] - [OK  ] - executive started, pid 1\n").Outcome);
         Assert.Equal(BootOutcome.Inconclusive, BootVerdict.ClassifyRequestedPanic("[KTEST   ] - [OK  ] - self-tests: all 61 passed\n").Outcome);
     }
+
+    /// <summary>
+    /// A disk as Windows presents a raw device: any read that does not start
+    /// and end on a sector boundary fails, and it cannot be written.
+    /// </summary>
+    private sealed class StrictDisk(byte[] data) : MemoryStream(data, writable: false)
+    {
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            if (Position % 512 != 0 || count % 512 != 0)
+                throw new IOException($"unaligned read: {count} bytes at {Position}");
+            return base.Read(buffer, offset, count);
+        }
+
+        // MemoryStream's span Read on a subclass comes back through the array
+        // one, so this goes there directly rather than through base.
+        public override int Read(Span<byte> buffer)
+        {
+            var a = new byte[buffer.Length];
+            int n = Read(a, 0, a.Length);
+            a.AsSpan(0, n).CopyTo(buffer);
+            return n;
+        }
+    }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
+    public void A_record_reads_back_from_a_disk_that_takes_only_whole_sectors()
+    {
+        using var img = Image();
+        // 700 bytes: the text ends partway through its second sector.
+        var text = Encoding.ASCII.GetBytes("*** KERNEL PANIC ***\n" + new string('x', 679));
+        PutRecord(img, CrashLog.KindCrash, text);
+
+        var strict = new StrictDisk(img.ToArray());
+        // The reader's own reads are unaligned, so read directly they fail ...
+        Assert.Throws<IOException>(() => CrashLog.Read(strict));
+        // ... and through the aligning stream they come back whole.
+        using var disk = new SectorAlignedStream(new StrictDisk(img.ToArray()), img.Length);
+        var r = CrashLog.Read(disk);
+        Assert.Equal(CrashAreaState.Record, r.State);
+        Assert.Equal(Encoding.ASCII.GetString(text), r.Text);
+    }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
+    public void The_aligning_stream_reads_any_span_and_never_writes()
+    {
+        var data = new byte[8 * 512];
+        for (int i = 0; i < data.Length; i++) data[i] = (byte)(i * 7 + 3);
+        using var disk = new SectorAlignedStream(new StrictDisk(data), data.Length);
+
+        foreach (var (at, len) in new[] { (0, 1), (1, 511), (511, 2), (100, 1500), (3584, 512), (4000, 96) })
+        {
+            var got = new byte[len];
+            disk.Seek(at, SeekOrigin.Begin);
+            disk.ReadExactly(got);
+            Assert.Equal(data.AsSpan(at, len).ToArray(), got);
+            Assert.Equal(at + len, disk.Position);
+        }
+        disk.Seek(-10, SeekOrigin.End);                 // a read past the end stops at it
+        Assert.Equal(10, disk.Read(new byte[64], 0, 64));
+        Assert.Equal(0, disk.Read(new byte[64], 0, 64));
+
+        Assert.False(disk.CanWrite);
+        Assert.Throws<NotSupportedException>(() => disk.Write(new byte[512], 0, 512));
+    }
+
+    [Theory]
+    [Trait(Categories.Key, Categories.Unit)]
+    [InlineData("disk5", @"\\.\PhysicalDrive5")]
+    [InlineData("DISK12", @"\\.\PhysicalDrive12")]
+    [InlineData(@"\\.\PhysicalDrive3", @"\\.\PhysicalDrive3")]
+    [InlineData("//./PhysicalDrive3", @"\\.\PhysicalDrive3")]
+    [InlineData("/dev/sdb", "/dev/sdb")]
+    [InlineData("disk", null)]
+    [InlineData("disk-1", null)]
+    [InlineData("disk5.img", null)]
+    [InlineData("cxk_disk.img", null)]
+    public void A_disk_is_named_by_number_or_device_path_and_a_file_is_not_a_disk(string arg, string? device)
+    {
+        Assert.Equal(device, RawDisk.DevicePath(arg));
+    }
 }

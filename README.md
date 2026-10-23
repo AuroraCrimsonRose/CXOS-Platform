@@ -80,7 +80,9 @@ Republish whenever the DevKit changes; `cxk check-abi` names a stale one.
 | A machine's own drive with another CXOS on it, ahead of the image, comes out unchanged | add `--foreign-disk` |
 | A deliberate panic, and its crash log recovered by the next boot | `cxk verify-crashlog dist/CXK_x86_32/images/cxk_disk.img` |
 | The same on a USB stick, the panic landing mid-transfer | add `--usb xhci` (or `ehci`, `ohci`) |
-| Read the crash log a panic left on a disk image | `cxk rig crashlog <image>` |
+| Read the crash log a panic left on a disk image or stick | `cxk rig crashlog <image or disk5>` (a disk needs an administrator prompt) |
+| Find the stick's disk number | `cxk rig disks` |
+| Copy a stick's CXOS part to an image | `cxk rig dump disk5 out.img` |
 | Host tests | `dotnet test devkit/CXEX.slnx -c Release` |
 | CI, by hand | `tools/ci/Dockerfile` and `tools/ci/build.sh` |
 

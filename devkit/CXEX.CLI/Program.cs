@@ -96,6 +96,10 @@ app.Configure(config =>
 
         rig.AddCommand<RigCrashlogCommand>("crashlog")
             .WithDescription("Prints the crash log a panic left in a disk's CRASH partition, without booting it.");
+        rig.AddCommand<RigDisksCommand>("disks")
+            .WithDescription("Lists this machine's disks, to find the stick's number (disk5). Needs no elevation.");
+        rig.AddCommand<RigDumpCommand>("dump")
+            .WithDescription("Copies a disk's CXOS part into an image file, read-only, for the image tools.");
     });
 
     // ---- bitmap fonts ----

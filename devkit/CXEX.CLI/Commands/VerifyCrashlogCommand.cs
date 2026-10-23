@@ -126,28 +126,26 @@ public class VerifyCrashlogCommand : Command<VerifyCrashlogCommand.Settings>
 
 /// <summary>
 /// Prints the crash log a panic left on a disk, without booting it
-/// (docs/devkit/CX_CXK_PLAN.md section 3.7). Reads disk image files today;
-/// reading the rig's USB stick directly (a raw device) is still to come.
+/// (docs/devkit/CX_CXK_PLAN.md section 3.7), from an image file or straight
+/// from the rig's USB stick (<see cref="RigDisk"/>).
 /// </summary>
 public class RigCrashlogCommand : Command<RigCrashlogCommand.Settings>
 {
     public class Settings : CommandSettings
     {
         [CommandArgument(0, "<DISK>")]
-        [Description("A disk image holding a CRASH partition. Opened read-only")]
+        [Description(RigDisk.Help)]
         public string DiskPath { get; set; } = string.Empty;
     }
 
     protected override int Execute(CommandContext context, Settings settings, CancellationToken cancellationToken)
     {
-        if (!File.Exists(settings.DiskPath))
-        {
-            AnsiConsole.MarkupLine($"[red]error:[/] not found: '{Markup.Escape(settings.DiskPath)}'");
-            return 1;
-        }
         CrashAreaReading r;
-        using (var fs = new FileStream(settings.DiskPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-            r = CrashLog.Read(fs);
+        using (var disk = RigDisk.Open(settings.DiskPath))
+        {
+            if (disk is null) return 1;
+            r = CrashLog.Read(disk);
+        }
 
         switch (r.State)
         {

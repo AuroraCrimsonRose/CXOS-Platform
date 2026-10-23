@@ -113,9 +113,13 @@ real machine as QEMU gets.
   cannot be overwritten by a typo.
 - `cxk rig crashlog <disk>` reads the crash log saved on the stick
   (`kernel/CX_KERNEL_PLAN.md` §8) and `cxk rig symbolize` turns its addresses
-  into function names and lines. **`crashlog` exists since roadmap step 4b**
-  for disk images; reading the stick itself (a raw Windows device, which
-  needs an administrator) is still to come. `cxk verify-crashlog <image>`
+  into function names and lines. **`crashlog` exists since roadmap step 4b**,
+  and reads the stick itself as well as an image: `cxk rig disks` lists the
+  disks (no elevation needed), `disk5` names one, and reading it needs an
+  administrator prompt. Whole disks are opened read-only and read in whole
+  sectors (`CXEX.Disk/RawDisk.cs`). `cxk rig dump <disk> <out.img>` copies a
+  disk's CXOS part, as far as its XBPT table reaches, into an image file for
+  the other tools. `cxk verify-crashlog <image>`
   boots a copy twice, the first asked to panic (through a request record it
   writes into the CRASH partition), and requires the record on disk after the
   panic, then `/System/crash.log` recovered and the area cleared by the second
