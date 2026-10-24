@@ -6,7 +6,7 @@
  * Paging, as generic code sees it (docs/kernel/CX_KERNEL_PLAN.md section 2.2).
  * One interface, one implementation per architecture, as Haiku does
  * (src/system/kernel/arch/x86/paging/{32bit,pae,64bit}): kernel/arch/x86_32/
- * paging.c and addr_space.c today.
+ * paging.c and addr_space.c, kernel/arch/x86_64/paging.c.
  *
  * A mapping is described by what it allows (VM_*), never by the bits of a page
  * table entry; the architecture encodes it. A page is always readable when
@@ -65,7 +65,9 @@
  *         happens to be reserved.
  */
 
-/* Adopt the boot page tables. Call after pmm_init. */
+/* Take over paging from the loader. x86-32 adopts the boot page tables and is
+   called after pmm_init; x86-64 builds its own (the direct map, the image by
+   section, every kernel PML4 entry) from pmm_boot_alloc, before pmm_init. */
 void paging_init(void);
 
 /* Map one page in the ACTIVE space. Both addresses page-aligned; `vm` is VM_*
@@ -76,7 +78,8 @@ void paging_init(void);
      - user: reachable from user mode, but an address at or above KERNEL_VBASE
        is refused, so a user mapping can never name kernel memory.
    paging_map_user returns 0, or -1 if the address is not in the user half or
-   `vm` holds a flag that is not VM_*. */
+   `vm` holds a flag that is not VM_*; on x86-64 also when no page table can
+   be had. */
 void paging_map_kernel(uintptr_t virt, paddr_t phys, uint32_t vm);
 int  paging_map_user  (uintptr_t virt, paddr_t phys, uint32_t vm);
 
@@ -86,7 +89,8 @@ int  paging_map_user  (uintptr_t virt, paddr_t phys, uint32_t vm);
    be mapped again, longer. For device registers (`vm` with VM_UNCACHED) and
    firmware tables. Where it lands
    is the architecture's choice: x86-32 maps it where it sits, which is safe
-   only because pci_bar_mmio32 refuses a BAR below KERNEL_VBASE. */
+   only because pci_bar_mmio32 refuses a BAR below KERNEL_VBASE; x86-64 maps
+   it at PHYS_WINDOW_BASE + phys. */
 volatile void *paging_map_phys(paddr_t phys, uint32_t len, uint32_t vm);
 
 /* Remove the mapping of one page in the active space. */
@@ -98,7 +102,9 @@ int     paging_is_user(uintptr_t virt);           /* mapped and reachable from u
 int     paging_is_user_writable(uintptr_t virt);  /* the above, and writable from user mode */
 
 /* Map an arbitrary physical frame into a reserved scratch page so the kernel
-   can read and write it; unmap when done. One frame at a time. */
+   can read and write it; unmap when done. One frame at a time on x86-32; on
+   x86-64 it is the frame's place in the direct map, and unmapping does
+   nothing. */
 void *paging_temp_map(paddr_t phys);
 void  paging_temp_unmap(void);
 

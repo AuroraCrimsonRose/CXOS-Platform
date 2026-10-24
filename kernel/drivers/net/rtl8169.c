@@ -108,7 +108,7 @@ struct rtl_desc {
  * therefore needs no change to the PMM - but it also means the two NICs must
  * never have their windows resized into each other. */
 #define RTL_DMA_BASE   0x730000u
-#define RTL_DMA_VBASE  0xE2000000u   /* beside AHCI 0xE0000000 and e1000 0xE1000000 */
+#define RTL_DMA_VBASE  KVA_RTL_DMA   /* arch/<arch>/paging_defs.h */
 #define DMA_V(phys)    ((uintptr_t)((phys) - RTL_DMA_BASE + RTL_DMA_VBASE))
 
 #define RX_DESC_ADDR   (RTL_DMA_BASE + 0x0000)

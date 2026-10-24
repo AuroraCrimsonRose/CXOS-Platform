@@ -123,6 +123,8 @@ paddr_t pmm_alloc_pages(size_t count) {
     return (paddr_t)start * PMM_PAGE_SIZE;
 }
 
+paddr_t pmm_alloc_pages_low(size_t count) { return pmm_alloc_pages(count); }
+
 void pmm_free_pages(paddr_t first_page, size_t count) {
     uint32_t start = (uint32_t)(first_page / PMM_PAGE_SIZE);
     for (uint32_t p = start; p < start + count; p++) mark_free(p);

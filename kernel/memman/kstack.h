@@ -26,8 +26,9 @@
 #define KSTACK_H
 
 #include <stdint.h>
+#include "arch/paging.h"   /* KVA_KSTACKS */
 
-#define KSTACK_REGION_BASE  0xCF000000u   /* 16 MB, directly below the heap */
+#define KSTACK_REGION_BASE  KVA_KSTACKS   /* 16 MB (arch/<arch>/paging_defs.h) */
 #define KSTACK_REGION_SIZE  0x01000000u
 #define KSTACK_SLOT_SIZE    0x00010000u   /* 64 KB: stack at the top, guard below */
 #define KSTACK_SLOTS        (KSTACK_REGION_SIZE / KSTACK_SLOT_SIZE)   /* 256 */

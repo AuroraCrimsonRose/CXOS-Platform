@@ -9,16 +9,13 @@
 #include "arch/paging.h"
 #include "boot/cxbi.h"
 
-/* Kernel-virtual window the LFB is mapped into. The high kernel address space
-   is already carved up: heap at 0xD0000000 (grows up), the AHCI DMA window at
-   0xE0000000 (ahci.c), and the recursive page-directory area at 0xFFC00000.
-   So the framebuffer lives at 0xF0000000 - clear of all of them, with ~252 MB
-   (0xF0000000..0xFFC00000) for any mode's LFB.
+/* Kernel-virtual window the LFB is mapped into, placed with the rest of the
+   kernel half in arch/<arch>/paging_defs.h.
    IMPORTANT: must NOT overlap AHCI_DMA_VIRT. An earlier revision put both at
    0xE0000000; ahci_init() then remapped the top of the LFB onto DMA pages and
    corrupted the upper scanlines once storage came online (text drawn there lost
    its top rows). */
-#define FB_VIRT_BASE     0xF0000000u
+#define FB_VIRT_BASE     KVA_FRAMEBUFFER
 
 static int       active = 0;
 static uint8_t  *fb = 0;        /* framebuffer base (VIRTUAL, mapped) */

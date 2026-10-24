@@ -87,10 +87,9 @@
  * The CPU uses the 0xC07..... alias; the NIC still gets 0x007.....
  */
 #define E1000_DMA_BASE 0x700000u                 /* PHYSICAL - programmed into the NIC */
-#define E1000_DMA_VBASE 0xE1000000u              /* kernel-half alias - used by the CPU.
-                                                   Sits beside AHCI's window (0xE0000000)
-                                                   and clear of the kernel image/heap at
-                                                   0xC01xxxxx. Region is 0x22000 (136 KB). */
+#define E1000_DMA_VBASE KVA_E1000_DMA            /* kernel-half alias - used by the CPU
+                                                   (arch/<arch>/paging_defs.h). Region is
+                                                   0x22000 (136 KB). */
 #define DMA_V(phys) ((uintptr_t)((phys) - E1000_DMA_BASE + E1000_DMA_VBASE))
 /* layout: RX descriptors, TX descriptors, then RX buffers, then TX buffers */
 #define RX_DESC_ADDR   (E1000_DMA_BASE + 0x0000)

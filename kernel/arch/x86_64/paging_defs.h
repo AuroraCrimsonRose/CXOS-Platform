@@ -23,4 +23,27 @@ typedef uint64_t paddr_t;
 /* The user half ends where the canonical lower half does. */
 #define USER_VLIMIT      0x0000800000000000ull
 
+/* The kernel half, by PML4 entry (CX_KERNEL_PLAN section 2.4). All 256
+   entries are made at boot (paging.c), so every region below exists in every
+   address space from the start.
+     256-383  the direct map: physical P at DIRECT_MAP_BASE + P, RAM only,
+              no-execute, 2 MiB pages where they fit (64 TiB)
+     384-447  the physical window: what paging_map_phys maps, device registers
+              and firmware tables, at PHYS_WINDOW_BASE + P (32 TiB)
+     448-452  the fixed regions generic code names, one entry (512 GiB) each
+     511      the kernel image, in its top 2 GiB */
+#define DIRECT_MAP_BASE  0xFFFF800000000000ull
+#define DIRECT_MAP_SIZE  0x0000400000000000ull
+#define PHYS_WINDOW_BASE 0xFFFFC00000000000ull
+#define PHYS_WINDOW_SIZE 0x0000200000000000ull
+
+#define KVA_HEAP         0xFFFFE00000000000ull   /* growing up to KVA_OCACHE */
+#define KVA_OCACHE       0xFFFFE08000000000ull
+#define KVA_KSTACKS      0xFFFFE10000000000ull
+#define KVA_AHCI_DMA     0xFFFFE18000000000ull   /* the drivers' DMA windows */
+#define KVA_E1000_DMA    0xFFFFE18001000000ull
+#define KVA_RTL_DMA      0xFFFFE18002000000ull
+#define KVA_FRAMEBUFFER  0xFFFFE20000000000ull
+
+
 #endif

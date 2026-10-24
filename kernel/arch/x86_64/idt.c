@@ -10,6 +10,7 @@
 #include "idt.h"
 #include "gdt.h"
 #include "early_con.h"
+#include "panic.h"
 
 struct idt_gate64 {
     uint16_t offset_low;
@@ -100,6 +101,16 @@ void idt64_dispatch(struct trap_frame64 *f) {
     reg("\n RAX ", f->rax);   reg("  RBX ", f->rbx); reg("  RCX ", f->rcx);
     reg("\n RDX ", f->rdx);   reg("  RSI ", f->rsi); reg("  RDI ", f->rdi);
     reg("\n RBP ", f->rbp);   reg("  frame ", (uint64_t)(uintptr_t)f);
+    early_puts("\nSystem halted.\n");
+    for (;;) __asm__ volatile ("cli; hlt");
+}
+
+/* panic.h's kpanic, until the panic screen and the crash log run on x86-64:
+   the banner verify-boot looks for, the reason, and a halt. */
+void kpanic(const char *why) {
+    __asm__ volatile ("cli");
+    early_puts("\n*** KERNEL PANIC ***\n");
+    early_puts(why);
     early_puts("\nSystem halted.\n");
     for (;;) __asm__ volatile ("cli; hlt");
 }

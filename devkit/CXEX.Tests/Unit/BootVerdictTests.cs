@@ -232,8 +232,11 @@ public class BootVerdictTests
 
         string wide = QemuTool.CommandLine(BootVerifier.ConfigFor("cxk_x86_64.img", "serial.log", arch: QemuArch.X86_64));
         Assert.StartsWith("qemu-system-x86_64 ", wide);
+        // RAM past 4 GB, so the page allocator's high zone exists
+        Assert.Contains($"-m {BootVerifier.X86_64MemoryMb}M ", wide);
+        Assert.True(BootVerifier.X86_64MemoryMb > 4096);
         // the same verification boot otherwise: snapshot, headless, icount
-        Assert.Equal(plain.Replace("cxk_disk.img", "cxk_x86_64.img")["qemu-system-i386".Length..],
+        Assert.Equal(plain.Replace("cxk_disk.img", "cxk_x86_64.img").Replace("-m 256M ", $"-m {BootVerifier.X86_64MemoryMb}M ")["qemu-system-i386".Length..],
                      wide["qemu-system-x86_64".Length..]);
     }
 

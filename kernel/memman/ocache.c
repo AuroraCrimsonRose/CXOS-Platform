@@ -253,7 +253,7 @@ void ocache_sys_init(void) {
     /* Each 4 MB page table of the window, made now while the kernel's is the
        only address space, so it is copied into every space as it is made
        rather than propagated into live ones later. kstack_init does the same. */
-    for (uint32_t v = OCACHE_WINDOW_BASE; v < OCACHE_WINDOW_BASE + OCACHE_SLOTS * OCACHE_SPAN;
+    for (uintptr_t v = OCACHE_WINDOW_BASE; v < OCACHE_WINDOW_BASE + OCACHE_SLOTS * OCACHE_SPAN;
          v += 0x00400000u) {
         paging_map_kernel(v, 0, VM_WRITE);
         paging_unmap(v);

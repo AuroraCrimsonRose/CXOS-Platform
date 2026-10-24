@@ -25,8 +25,7 @@ typedef struct block {
    identity-mapped low memory. We reserve a virtual window and grow it upward,
    mapping fresh PMM frames into it via the (recursive) paging layer. Block
    pointers are VIRTUAL addresses in this window. */
-#define HEAP_VIRT_BASE  0xD0000000u    /* above the kernel, below the recursive
-                                          page-table window at 0xFFC00000 */
+#define HEAP_VIRT_BASE  KVA_HEAP       /* arch/<arch>/paging_defs.h */
 
 static block_t *head = 0;
 static uint32_t total_bytes = 0;

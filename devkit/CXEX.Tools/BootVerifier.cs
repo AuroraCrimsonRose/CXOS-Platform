@@ -106,12 +106,18 @@ public static class BootVerifier
     /// the ATA self-test vacuous), -snapshot (CXOS writes to its disk on first
     /// boot, and verifying a release image without it has broken its
     /// SHA256SUMS), and -icount for timing that does not depend on the host.
+    /// The x86-64 kernel gets 5 GB, so RAM lies on both sides of 4 GB and its
+    /// page allocator's two zones, and the hole below 4 GB, are all exercised
+    /// (docs/kernel/CX_KERNEL_PLAN.md section 9.3).
     /// </summary>
+    /// <summary>The x86-64 verification boot's RAM: past 4 GB.</summary>
+    public const int X86_64MemoryMb = 5120;
+
     public static QemuConfig ConfigFor(string image, string serialLog, string? cpu = null, bool snapshot = true, UsbHost? usb = null, string? foreignDisk = null, QemuArch arch = QemuArch.X86_32) => new()
     {
         BootDisk = image,
         MachineType = "pc",
-        MemoryMb = 256,
+        MemoryMb = arch == QemuArch.X86_64 ? X86_64MemoryMb : 256,
         EnableAudio = false,
         EnableNetworking = false,
         Snapshot = snapshot,

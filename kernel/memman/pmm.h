@@ -8,9 +8,9 @@
  * Hands out physical RAM in 4 KB pages. One bit per page tracks
  * free (0) / used (1). Reads the BIOS E820 map to learn what RAM exists.
  *
- * The interface below is stable: a future buddy allocator can replace the
- * bitmap internals without changing callers. pmm_alloc_pages() (contiguous
- * multi-page allocation) is the call the buddy allocator will most improve.
+ * The interface below is stable. On x86-64 it is the page database and buddy
+ * allocator (memman/pagedb.c, pagedb.h); this bitmap stays the 32-bit
+ * kernel's until roadmap step 6 deletes it.
  */
 
 #ifndef PMM_H
@@ -38,6 +38,13 @@ void    pmm_free(paddr_t page);
    the contiguous search later). */
 paddr_t pmm_alloc_pages(size_t count);
 void    pmm_free_pages(paddr_t first_page, size_t count);
+
+/* N contiguous pages below 4 GB, for a device that addresses only 32 bits
+   (the rig's OHCI controller is one; CX_KERNEL_PLAN section 9.3). Asking is
+   part of every DMA allocation. On x86-32 all memory the PMM holds is below
+   4 GB, so it is pmm_alloc_pages. */
+paddr_t pmm_alloc_pages_low(size_t count);
+
 
 /* stats (pages, not bytes) */
 uint32_t pmm_total_pages(void);

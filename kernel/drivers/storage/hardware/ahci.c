@@ -140,8 +140,8 @@ static int      ndisks = 0;
  * DMA region is mapped at a dedicated kernel-virtual window. */
 #define AHCI_PORT_STRIDE  0x1000u             /* one page of structures per port */
 #define AHCI_MAX_PORTS    32
-#define AHCI_DMA_VIRT     0xE0000000u         /* kernel-virtual window for AHCI DMA
-                                                 (above heap 0xD..., below recursive) */
+#define AHCI_DMA_VIRT     KVA_AHCI_DMA        /* kernel-virtual window for AHCI DMA
+                                                 (arch/<arch>/paging_defs.h) */
 #define AHCI_BOUNCE_PAGES 16                  /* 64 KB bounce: up to 128 sectors/xfer */
 
 static uint32_t dma_phys_base = 0;            /* physical base of the structures region */

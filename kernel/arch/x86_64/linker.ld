@@ -5,7 +5,9 @@
 /* The x86-64 kernel: linked in the top 2 GiB (clang's kernel code model),
    placed at physical 1 MiB, with every address at KERNEL_VBASE + physical
    (arch/x86_64/paging_defs.h). Stage 2 (boot/long.asm) refuses a PT_LOAD
-   segment that breaks that rule, so it is the one rule this script keeps. */
+   segment that breaks that rule. Each section starts on a page, because
+   paging.c maps each with its own rights: text read-only and executable,
+   rodata read-only, data and bss writable; only text is executable. */
 
 ENTRY(_start)
 
@@ -26,11 +28,13 @@ SECTIONS
 
     .rodata ALIGN(4K) : AT(ADDR(.rodata) - KERNEL_VBASE)
     {
+        __rodata_start = .;
         *(.rodata .rodata.*)
     }
 
     .data ALIGN(4K) : AT(ADDR(.data) - KERNEL_VBASE)
     {
+        __data_start = .;
         *(.data .data.*)
     }
 

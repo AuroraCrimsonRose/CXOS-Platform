@@ -170,6 +170,30 @@ error code, and a double fault forced from a non-canonical RSP arriving on
 its IST stack. Without the IST that fault is a triple fault, so the boot
 stops with no summary line. Generic code joins in 5c.
 
+**Step 5c, done 2026-10-24.** The kernel takes the handover through the
+generic `boot/cxbi.c` while the loader's mapping of low memory still exists,
+then `arch/x86_64/paging.c` replaces the loader's tables instead of adopting
+them: a PML4 with all 256 kernel entries made at boot (so a new space copies
+them and nothing is ever propagated), the direct map of every RAM entry of the
+memory map at `DIRECT_MAP_BASE`, writable and no-execute, 2 MiB pages where a
+whole one fits and none over a hole, and the image section by section (text
+read-only, rodata read-only and no-execute, data and bss no-execute). The low
+identity map goes with the loader's tables, so a null pointer faults; CR0.WP
+is set. Until the switch the new tables are written through the loader's
+window, so their pages come from below 1 GiB (`pmm_boot_alloc`); after it,
+every table is reached through the direct map, in any space, which replaces
+x86-32's recursive slot and temporary mapping. `paging_map_phys` maps at
+`PHYS_WINDOW_BASE` plus the physical address, so a frame always comes back at
+the same place. The kernel half's layout, x86-32's fixed windows included, is
+named once per architecture in `paging_defs.h` (`KVA_*`) and generic code uses
+the names. The page allocator is §9.3's: `memman/buddy.c` (pure, host-tested)
+over a page database of 16 bytes a page, placed at the top of the highest
+usable range, with the zone below 4 GB; `memman/pagedb.c` implements `pmm.h`
+on it and panics on a double free. x86-32 keeps its bitmap until step 6,
+because its 4 MiB boot window cannot hold a database. Sixteen more bring-up
+self-tests (27 in all), and `cxk verify-boot --arch x86_64` boots with 5 GB so
+both zones and the hole below 4 GB are always exercised.
+
 ---
 
 ## 3. Processes and threads
@@ -326,6 +350,6 @@ Redox, XNU and NT.
 | When | Work |
 |---|---|
 | Phase 0.1, with the object model | Object caches by type; the new `kmalloc` |
-| Phase 0.5, with the 64-bit kernel | Page database, buddy allocator with the below-4 GB zone, direct map, kernel top level at boot |
+| Phase 0.5, with the 64-bit kernel | Page database, buddy allocator with the below-4 GB zone, direct map, kernel top level at boot (**done in step 5c** for x86-64; PCID, global pages and 1 GiB pages wait) |
 | Phase 1, with IPC and SMP | Memory objects, pages on first touch, the region tree, strict commit, background zeroing, per-CPU caches |
 | Later | Swapping to disk, memory compression (XNU), NUMA |

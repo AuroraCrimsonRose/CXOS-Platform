@@ -44,6 +44,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "sync/spinlock.h"
+#include "arch/paging.h"   /* KVA_OCACHE */
 
 #define OCACHE_SPAN          0x8000u     /* 32 KB of address space per slab */
 #define OCACHE_PAGE          0x1000u
@@ -109,9 +110,9 @@ void ocache_unmap(uintptr_t va, uint32_t pages);
 void ocache_panic(const char *why);
 
 #ifndef CXK_HOST_TEST
-/* The kernel's window: above the heap, which stops here, and below the DMA
-   windows from 0xE0000000. 64 MB. */
-#define OCACHE_WINDOW_BASE   0xD8000000u
+/* The kernel's window: above the heap, which stops here. 64 MB. Placed with
+   the rest of the kernel half in arch/<arch>/paging_defs.h. */
+#define OCACHE_WINDOW_BASE   KVA_OCACHE
 
 /* Reserve the window's page tables. Once, at boot, before any address space
    but the kernel's exists (as kstack_init). */

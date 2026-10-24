@@ -825,8 +825,9 @@ add_dependencies(disk_image cxk_disk)
 # Its own image beside the 32-bit one, from the same stage 1 and stage 2:
 # stage 2 sees an ELF kernel rather than CXEX and enters long mode
 # (boot/long.asm). Built on every build so both boots stay green while the
-# 32-bit kernel is still the system. Step 5b is arch code only - entry, GDT,
-# TSS, IDT, COM1 and their self-tests; generic code joins from step 5c.
+# 32-bit kernel is still the system. Step 5b brought the arch code (entry,
+# GDT, TSS, IDT, COM1); step 5c paging, the page database and the buddy
+# allocator, the first generic code.
 # The ELF is the image as it stands: CXEX for x86-64, and the signature check
 # in the loader, come with it (docs/boot/CX_BOOT.md section 4).
 set(IMAGES64_DIR ${SRC_DIR}/dist/CXK_x86_64/images)
@@ -838,6 +839,11 @@ set(KERNEL64_C_SRCS
     ${SRC_DIR}/kernel/arch/x86_64/early_con.c
     ${SRC_DIR}/kernel/arch/x86_64/gdt.c
     ${SRC_DIR}/kernel/arch/x86_64/idt.c
+    ${SRC_DIR}/kernel/arch/x86_64/pagetable.c
+    ${SRC_DIR}/kernel/arch/x86_64/paging.c
+    ${SRC_DIR}/kernel/boot/cxbi.c
+    ${SRC_DIR}/kernel/memman/buddy.c
+    ${SRC_DIR}/kernel/memman/pagedb.c
 )
 set(KERNEL64_ASM_SRCS
     ${SRC_DIR}/kernel/arch/x86_64/entry.asm
@@ -848,7 +854,8 @@ set(KERNEL64_ASM_SRCS
 set(K64CFLAGS --target=x86_64-elf -ffreestanding -fno-pic -fno-stack-protector
               -mcmodel=kernel -mno-red-zone
               -mno-sse -mno-sse2 -mno-mmx -mno-implicit-float
-              -Wall -Wextra -Werror ${CXK_DEFS} -I${SRC_DIR}/abi -I${SRC_DIR}/kernel -c)
+              -Wall -Wextra -Werror ${CXK_DEFS} -Wshorten-64-to-32
+              ${KERNEL_INCLUDES} -I${BUILD_DIR} -c)
 set(KERNEL64_OBJS "")
 foreach(src ${KERNEL64_C_SRCS})
     get_filename_component(name ${src} NAME_WE)
