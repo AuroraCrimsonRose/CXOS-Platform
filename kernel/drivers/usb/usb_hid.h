@@ -40,4 +40,7 @@ void usb_hid_poll(void);
 
 int usb_hid_present(void);
 
+/* How many boot-protocol keyboards attached. */
+int usb_hid_keyboards(void);
+
 #endif

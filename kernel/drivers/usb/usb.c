@@ -14,6 +14,7 @@
 #include "timer.h"
 #include "pmm.h"
 #include "arch/paging.h"
+#include "format.h"
 
 static struct usb_device devices[USB_MAX_DEVICES];
 static unsigned ndevices = 0;
@@ -221,19 +222,58 @@ void *usb_dma_alloc(uint32_t pages, uintptr_t vbase, uint32_t *phys) {
     return (void *)vbase;
 }
 
+static int n_xhci, n_ehci, n_ohci;   /* controllers that came up, for usb_summary */
+
 void usb_init(void) {
     /* xHCI first, deliberately. On hardware carrying both, xHCI handles every
        speed by itself while EHCI needs companions - so where a port could be
        driven by either, the better controller should claim it. On this era of
        AMD hardware they are separate silicon and both will come up. */
-    int any = 0;
-    any |= xhci_init();
-    any |= ehci_init();
-    any |= ohci_init();
+    n_xhci = xhci_init();
+    n_ehci = ehci_init();
+    n_ohci = ohci_init();
 
-    if (!any) return;      /* no controllers: say nothing, this is the norm */
+    if (!n_xhci && !n_ehci && !n_ohci) return;   /* no controllers: say nothing, this is the norm */
 
     unsigned n = usb_device_count();
     if (n == 0) klog("USB", SEV_INFO, "no devices attached");
     else        klog_u32("USB", SEV_OK, "devices: ", n, LOG_COLOR_VALUE, "");
+}
+
+/* Build "name port N: speed, class C" into `out` (at least 48 bytes). */
+static void describe(const struct usb_device *d, char *out) {
+    int n = 0;
+    const char *parts[] = { d->ops->name, " port ", 0, ": ", usb_speed_name(d->speed), ", class ", 0 };
+    char port[12], cls[12];
+    port[fmt_u32(port, d->port)] = 0;
+    cls[fmt_u32(cls, d->if_class)] = 0;
+    parts[2] = port;
+    parts[6] = cls;
+    for (unsigned k = 0; k < sizeof parts / sizeof parts[0]; k++)
+        for (const char *s = parts[k]; s && *s && n < 47; s++) out[n++] = *s;
+    out[n] = 0;
+}
+
+void usb_summary(void) {
+    if (!n_xhci && !n_ehci && !n_ohci) {
+        klog("USB", SEV_INFO, "no USB controllers");
+        return;
+    }
+    klog_u32("USB", SEV_INFO, "controllers: xhci ", (uint32_t)n_xhci, LOG_COLOR_VALUE, "");
+    klog_child_u32("ehci ", (uint32_t)n_ehci, LOG_COLOR_VALUE, "");
+    klog_child_u32("ohci ", (uint32_t)n_ohci, LOG_COLOR_VALUE, "");
+    if (n_ehci)
+        klog_child_u32("ports ehci handed to a companion: ", ehci_released(), LOG_COLOR_VALUE, "");
+
+    const struct usb_device *d;
+    char line[48];
+    for (unsigned i = 0; (d = usb_get(i)) != 0; i++) {
+        describe(d, line);
+        klog_child(line);
+    }
+
+    if (usb_hid_keyboards())
+        klog("USB", SEV_OK, "keyboard online (USB)");
+    else
+        klog("USB", SEV_WARN, "no USB keyboard attached: typing needs PS/2");
 }

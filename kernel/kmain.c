@@ -440,6 +440,7 @@ void kmain_late(void) {
         }
     }
 
+    usb_summary();      /* last before the prompt: the rig has no serial port */
     klog("KERNEL", SEV_OK, "boot complete - idle");
 
     /* The screen is the shell's from here: kernel lines below SEV_ERR go to the

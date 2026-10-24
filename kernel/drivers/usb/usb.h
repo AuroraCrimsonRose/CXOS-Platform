@@ -217,6 +217,11 @@ const struct usb_device *usb_get(unsigned index);
 /* Bring up every USB host controller that is present. Call after pci_init(). */
 void usb_init(void);
 
+/* The controllers, devices and whether a keyboard attached, logged together.
+   kmain calls it just before "boot complete", so it is what is left on the
+   screen above the prompt on a machine with no serial port to read. */
+void usb_summary(void);
+
 /* A host controller's DMA memory: `pages` physically contiguous pages from the
    page allocator, zeroed, and mapped cacheable at `vbase` in the kernel half -
    the controller is given the physical address (*phys), the CPU uses the

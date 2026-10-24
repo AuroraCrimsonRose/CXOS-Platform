@@ -694,5 +694,5 @@ int ohci_init(void) {
         c->next_address = 1;
         if (ohci_start(c, dev, nhcs)) nhcs++;
     }
-    return nhcs > 0;
+    return (int)nhcs;
 }

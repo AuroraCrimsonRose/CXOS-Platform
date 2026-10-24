@@ -32,6 +32,7 @@ struct hid_device {
 
 static struct hid_device hids[MAX_HID];
 static int any_present = 0;
+static int keyboards = 0;
 
 /* ---- HID usage id -> the codes keyboard.c already produces ---------------
  * Usage ids are NOT ASCII and NOT PS/2 scancodes; they are their own numbering,
@@ -190,6 +191,7 @@ int usb_hid_attach(struct usb_device *dev) {
     dev->ops->control(dev, 0x21, HID_REQ_SET_IDLE, 0, 0, 0, 0);
 
     any_present = 1;
+    keyboards += kbd;
     klog("USBHID", SEV_OK, kbd ? "keyboard online (boot protocol)"
                                : "mouse online (boot protocol)");
     return 1;
@@ -205,3 +207,4 @@ void usb_hid_poll(void) {
 }
 
 int usb_hid_present(void) { return any_present; }
+int usb_hid_keyboards(void) { return keyboards; }

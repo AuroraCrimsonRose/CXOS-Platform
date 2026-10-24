@@ -182,6 +182,8 @@ struct ehci_hc {
 
 static struct ehci_hc hcs[EHCI_MAX_HCS];
 static unsigned nhcs = 0;
+static unsigned released = 0;   /* ports handed to a companion, for usb_summary */
+unsigned ehci_released(void) { return released; }
 
 static inline uint32_t dma_phys(const struct ehci_hc *c, uint32_t off) { return c->dma + off; }
 static inline void    *dma_virt(const struct ehci_hc *c, uint32_t off) { return c->dma_v + off; }
@@ -687,6 +689,7 @@ static void enumerate_port(struct ehci_hc *c, unsigned p) {
     if ((sc & PORTSC_LINESTS) == PORTSC_LS_KSTATE) {
         klog_u32("EHCI", SEV_INFO, "port ", p, LOG_COLOR_VALUE,
                  ": low-speed device, released to the companion controller");
+        released++;
         portsc_wr(c, p, sc | PORTSC_OWNER);
         return;
     }
@@ -713,6 +716,7 @@ static void enumerate_port(struct ehci_hc *c, unsigned p) {
         if (!(sc & PORTSC_PED)) {
             klog_u32("EHCI", SEV_INFO, "port ", p, LOG_COLOR_VALUE,
                      ": full-speed device, released to the companion controller");
+            released++;
             portsc_wr(c, p, sc | PORTSC_OWNER);
             return;
         }
@@ -847,5 +851,5 @@ int ehci_init(void) {
         c->next_address = 1;
         if (ehci_start(c, dev, nhcs)) nhcs++;
     }
-    return nhcs > 0;
+    return (int)nhcs;
 }

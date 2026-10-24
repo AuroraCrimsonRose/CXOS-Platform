@@ -21,7 +21,7 @@
 #define XHCI_H
 
 /* probe PCI for an xHCI controller and bring it up, enumerating what is
-   attached. returns 1 if a controller came up, 0 if none present. */
+   attached. Returns how many came up, 0 if none. */
 int xhci_init(void);
 
 #endif

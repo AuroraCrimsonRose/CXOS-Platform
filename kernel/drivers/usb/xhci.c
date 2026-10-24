@@ -1069,5 +1069,5 @@ int xhci_init(void) {
         for (unsigned i = 0; i < sizeof(*c); i++) ((uint8_t *)c)[i] = 0;
         if (xhci_start(c, dev, nhcs)) nhcs++;
     }
-    return nhcs > 0;
+    return (int)nhcs;
 }
