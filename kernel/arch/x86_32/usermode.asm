@@ -106,6 +106,10 @@ syscall_stub:
     ; four segment registers)
     mov [esp + 16 + 28], eax
 
+    ; Interrupts off before the selectors go back: a syscall that blocked can
+    ; return with IF set, and an IRQ landing mid-pop would restore ES/FS/GS
+    ; from the still-kernel DS - nulled by the iretd, #GP on the next movs.
+    cli
     pop gs
     pop fs
     pop es
