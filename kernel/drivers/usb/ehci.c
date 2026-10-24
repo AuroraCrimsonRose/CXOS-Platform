@@ -685,6 +685,8 @@ static void enumerate_port(struct ehci_hc *c, unsigned p) {
     uint32_t sc = portsc_rd(c, p);
     if (!(sc & PORTSC_CCS)) return;           /* nothing plugged in */
     c->seen |= (uint16_t)(1u << p);           /* tried once, whatever comes of it */
+    if (sc & PORTSC_CSC)                      /* this connection is handled: see ehci_poll_ports */
+        op_wr(c, OP_PORTSC + p * 4, (sc & ~PORTSC_RWC_MASK) | PORTSC_CSC);
 
     /* A K-state line reading identifies a low-speed device before we even try:
        the spec says release it to the companion rather than attempt a reset. */
@@ -848,16 +850,28 @@ void ehci_poll_ports(void) {
         for (unsigned p = 0; p < n; p++) {
             uint32_t sc = portsc_rd(c, p);
             if (sc & PORTSC_OWNER) continue;               /* the companion's for now */
-            if (sc & PORTSC_CSC)                           /* write 1 to clear the change */
-                op_wr(c, OP_PORTSC + p * 4, (sc & ~PORTSC_RWC_MASK) | PORTSC_CSC);
+            /* The change bit, as in ohci_poll_ports. It is what catches a
+               device handed to the companion at boot coming straight back:
+               the companion's own start-up (reset, port power) disconnects
+               it, the controller returns the port here, and it reconnects
+               before the first poll - so the port never reads empty. Seen on
+               the FX rig: keyboard and mouse released, every OHCI port then
+               empty, both found only after a replug. */
+            if (!(sc & PORTSC_CSC)) continue;              /* nothing since the last look */
+            op_wr(c, OP_PORTSC + p * 4, (sc & ~PORTSC_RWC_MASK) | PORTSC_CSC);
             uint16_t bit = (uint16_t)(1u << p);
-            if ((sc & PORTSC_CCS) && !(c->seen & bit)) {
+            struct usb_device *d = usb_find(c, (uint8_t)p);
+            /* A disk still connected stays as it is: it cannot be registered
+               a second time, and a stray change bit must not cost the system
+               its boot disk. */
+            if (d && (sc & PORTSC_CCS) && d->if_class == USB_CLASS_MASS_STORAGE) continue;
+            if (c->seen & bit) {                           /* whatever was there is gone */
+                c->seen &= (uint16_t)~bit;
+                if (d) usb_port_gone(d);
+            }
+            if (sc & PORTSC_CCS) {
                 timer_sleep(100);                          /* connect debounce (USB 2.0 7.1.7.3) */
                 enumerate_port(c, p);
-            } else if (!(sc & PORTSC_CCS) && (c->seen & bit)) {
-                c->seen &= (uint16_t)~bit;
-                struct usb_device *d = usb_find(c, (uint8_t)p);
-                if (d) usb_port_gone(d);
             }
         }
     }

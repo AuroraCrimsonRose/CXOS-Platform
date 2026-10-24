@@ -434,6 +434,7 @@ static void enumerate_port(struct ohci_hc *c, unsigned p) {
     uint32_t st = port_rd(c, p);
     if (!(st & RH_CCS)) return;
     c->seen |= (uint16_t)(1u << p);         /* tried once, whatever comes of it */
+    port_wr(c, p, RH_CSC);                  /* this connection is handled: see ohci_poll_ports */
 
     port_wr(c, p, RH_SET_PR);              /* single action bit, see the note */
     int ok = 0;
@@ -708,19 +709,25 @@ void ohci_poll_ports(void) {
     for (unsigned h = 0; h < nhcs; h++) {
         struct ohci_hc *c = &hcs[h];
         for (unsigned p = 0; p < c->nports; p++) {
+            /* The change bit, not the connect bit: a device can go and come
+               back between two looks, and then only the change bit says so.
+               enumerate_port clears it, so a device found at boot is not
+               taken for a new one here. */
             uint32_t st = port_rd(c, p);
-            if (st & RH_CSC) port_wr(c, p, RH_CSC);        /* write-1-to-clear */
+            if (!(st & RH_CSC)) continue;                  /* nothing since the last look */
+            port_wr(c, p, RH_CSC);                         /* write-1-to-clear */
             uint16_t bit = (uint16_t)(1u << p);
-            if ((st & RH_CCS) && !(c->seen & bit)) {
-                timer_sleep(100);                          /* connect debounce (USB 2.0 7.1.7.3) */
-                enumerate_port(c, p);
-            } else if (!(st & RH_CCS) && (c->seen & bit)) {
+            if (c->seen & bit) {                           /* whatever was there is gone */
                 c->seen &= (uint16_t)~bit;
                 struct usb_device *d = usb_find(c, (uint8_t)p);
                 if (d) {
                     release_int_slots(c, d->address);
                     usb_port_gone(d);
                 }
+            }
+            if (st & RH_CCS) {
+                timer_sleep(100);                          /* connect debounce (USB 2.0 7.1.7.3) */
+                enumerate_port(c, p);
             }
         }
     }

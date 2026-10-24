@@ -449,6 +449,14 @@ void kmain_late(void) {
         }
     }
 
+    /* Two looks at the USB ports before the summary, 200 ms apart: a device
+       EHCI handed to a companion at boot can have come back to EHCI since
+       (the companion's start-up disconnects it), and is handed over again on
+       the first look and found on the companion on the second. Without this
+       the summary says no keyboard while one is about to come online. */
+    usb_poll();
+    timer_sleep(200);
+    usb_poll();
     usb_summary();      /* last before the prompt: the rig has no serial port */
     klog("KERNEL", SEV_OK, "boot complete - idle");
 
