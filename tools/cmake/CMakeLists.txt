@@ -459,7 +459,7 @@ add_custom_command(
     DEPENDS ${STAGE2_SRC}
         ${SRC_DIR}/boot/a20.asm ${SRC_DIR}/boot/mem.asm ${SRC_DIR}/boot/cxbi.asm
         ${SRC_DIR}/boot/gdt.asm ${SRC_DIR}/boot/pmode.asm
-        ${SRC_DIR}/boot/cxexload.asm ${SRC_DIR}/boot/vbe.asm
+        ${SRC_DIR}/boot/cxexload.asm ${SRC_DIR}/boot/long.asm ${SRC_DIR}/boot/vbe.asm
     COMMENT "Assembling stage 2 (stage2.asm + includes)"
 )
 
@@ -820,6 +820,78 @@ add_custom_target(disk_image ALL DEPENDS ${DISK_IMG})
 # to date and skips it, so nothing is ever written twice at once. The file-level
 # DEPENDS above are all kept, so a changed source still forces a rebuild.
 add_dependencies(disk_image cxk_disk)
+
+# ---- the x86-64 kernel (roadmap Phase 0 step 5) ----
+# Its own image beside the 32-bit one, from the same stage 1 and stage 2:
+# stage 2 sees an ELF kernel rather than CXEX and enters long mode
+# (boot/long.asm). Built on every build so both boots stay green while the
+# 32-bit kernel is still the system. Step 5b is arch code only - entry, GDT,
+# TSS, IDT, COM1 and their self-tests; generic code joins from step 5c.
+# The ELF is the image as it stands: CXEX for x86-64, and the signature check
+# in the loader, come with it (docs/boot/CX_BOOT.md section 4).
+set(IMAGES64_DIR ${SRC_DIR}/dist/CXK_x86_64/images)
+set(KERNEL64_ELF ${BUILD_DIR}/kernel64.elf)
+set(DISK64_IMG   ${IMAGES64_DIR}/cxk_x86_64.img)
+set(LINKER64     ${SRC_DIR}/kernel/arch/x86_64/linker.ld)
+set(KERNEL64_C_SRCS
+    ${SRC_DIR}/kernel/arch/x86_64/boot64.c
+    ${SRC_DIR}/kernel/arch/x86_64/early_con.c
+    ${SRC_DIR}/kernel/arch/x86_64/gdt.c
+    ${SRC_DIR}/kernel/arch/x86_64/idt.c
+)
+set(KERNEL64_ASM_SRCS
+    ${SRC_DIR}/kernel/arch/x86_64/entry.asm
+    ${SRC_DIR}/kernel/arch/x86_64/isr.asm
+)
+# The kernel code model and no red zone: interrupts land on the current stack
+# in ring 0, below RSP. No SIMD, for the reason given at KCFLAGS.
+set(K64CFLAGS --target=x86_64-elf -ffreestanding -fno-pic -fno-stack-protector
+              -mcmodel=kernel -mno-red-zone
+              -mno-sse -mno-sse2 -mno-mmx -mno-implicit-float
+              -Wall -Wextra -Werror ${CXK_DEFS} -I${SRC_DIR}/abi -I${SRC_DIR}/kernel -c)
+set(KERNEL64_OBJS "")
+foreach(src ${KERNEL64_C_SRCS})
+    get_filename_component(name ${src} NAME_WE)
+    set(obj ${BUILD_DIR}/k64_${name}.o)
+    set(dep ${BUILD_DIR}/k64_${name}.o.d)
+    add_custom_command(
+        OUTPUT ${obj}
+        COMMAND ${KCC} ${K64CFLAGS} -MD -MF ${dep} ${src} -o ${obj}
+        DEPENDS ${src}
+        DEPFILE ${dep}
+        COMMENT "CC64 ${name}.c"
+    )
+    list(APPEND KERNEL64_OBJS ${obj})
+endforeach()
+foreach(src ${KERNEL64_ASM_SRCS})
+    get_filename_component(name ${src} NAME_WE)
+    set(obj ${BUILD_DIR}/ka64_${name}.o)
+    add_custom_command(
+        OUTPUT ${obj}
+        COMMAND ${CMAKE_ASM_NASM_COMPILER} -f elf64 ${src} -o ${obj}
+        DEPENDS ${src}
+        COMMENT "ASM64 ${name}.asm"
+    )
+    list(APPEND KERNEL64_OBJS ${obj})
+endforeach()
+add_custom_command(
+    OUTPUT ${KERNEL64_ELF}
+    COMMAND ${CMAKE_LD} -m elf_x86_64 -nostdlib -T ${LINKER64} -o ${KERNEL64_ELF} ${KERNEL64_OBJS}
+    DEPENDS ${KERNEL64_OBJS} ${LINKER64} ${ARCH_CHECK_STAMP}
+    COMMENT "Linking the x86-64 kernel (top 2 GiB)"
+)
+add_custom_command(
+    OUTPUT ${DISK64_IMG}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${IMAGES64_DIR}
+    COMMAND ${CXK} image --out ${DISK64_IMG} --size-mb 64 --boot-mb 8
+            --stage1 ${BOOT_BIN} --stage2 ${STAGE2_BIN} --kernel ${KERNEL64_ELF}
+    DEPENDS ${BOOT_BIN} ${STAGE2_BIN} ${KERNEL64_ELF} ${CXK}
+    COMMENT "Building the x86-64 disk (stage 2 enters long mode)"
+)
+add_custom_target(disk64_image ALL DEPENDS ${DISK64_IMG})
+# Shares stage 1 and stage 2 with the 32-bit images; ordered for the reason
+# given above.
+add_dependencies(disk64_image disk_image)
 
 # ---- convenience: build just the X app chain ----
 add_custom_target(apps DEPENDS ${APP_IMAGE})

@@ -78,7 +78,16 @@ One loader, two front ends (BIOS, UEFI), one shared core in C.
    loader fills its old addresses (`0x500`, `0x1C40`) with `0xA5`, and a
    self-test checks the poison, so nothing can go on reading them unnoticed.
 2. The shared C core and the BIOS front end into long mode, with the 64-bit
-   kernel bring-up.
+   kernel bring-up. **Long mode done 2026-10-24** (roadmap step 5b), still
+   in assembly: stage 2 dispatches on the kernel's magic, CXEX to the 32-bit
+   path as before and ELF to `boot/long.asm`, which refuses a CPU without
+   long mode or NX (on screen and on COM1), places each `PT_LOAD` segment
+   (linked at `KERNEL_VBASE` + its physical address, nothing below 1 MiB or
+   above 1 GiB), maps the first GiB at 0 and at `KERNEL_VBASE` with 2 MiB
+   pages, sets `EFER.LME` and `NXE`, and enters the kernel with the CXBI
+   address in RDI. The image is `dist/CXK_x86_64/images/cxk_x86_64.img`;
+   `cxk verify-boot --arch x86_64` boots it on `qemu-system-x86_64`. The C
+   core is still to come.
 3. Signature check in the loader.
 4. UEFI part 2 on the shared core.
 5. The CXFS reader, boot entries, rollback and the menu, with the layered

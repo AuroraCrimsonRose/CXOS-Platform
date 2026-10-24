@@ -16,6 +16,10 @@
 ; kernel's own entry stub will later set up paging and map itself into the
 ; higher half. Stage 2 does NOT do paging/higher-half or build the kernel's
 ; real GDT/TSS (those are kernel-owned).
+;
+; The exception is the x86-64 kernel (roadmap step 5), an ELF image rather
+; than CXEX: long.asm places it, builds the minimal page tables long mode
+; cannot run without, and enters long mode. The kernel's GDT and TSS stay its own.
 
 org 0x7E00              ; stage 1 loads us here
 bits 16
@@ -315,6 +319,7 @@ msg_a20_fail db '[BOOT] A20 FAIL', 0
 %include "gdt.asm"
 %include "pmode.asm"
 %include "cxexload.asm"
+%include "long.asm"
 %include "vbe.asm"
 
 ; embedded copyright (binary)

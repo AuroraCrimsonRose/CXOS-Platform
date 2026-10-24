@@ -50,7 +50,14 @@ public class QemuConfig
     /// whatever the guest writes to it reaches the file (`cxk verify-boot
     /// --foreign-disk`). On the pc machine only.</summary>
     public string? ForeignDisk { get; set; }
+
+    /// <summary>Which kernel the image carries, so which QEMU boots it. Both
+    /// are the same PC; the 64-bit one has a CPU that can enter long mode.</summary>
+    public QemuArch Arch { get; set; } = QemuArch.X86_32;
 }
+
+/// <summary>The CPU architectures CXK is built for (roadmap Phase 0 step 5).</summary>
+public enum QemuArch { X86_32, X86_64 }
 
 /// <summary>The USB host controllers CXK drives, as QEMU can attach them.</summary>
 public enum UsbHost { Xhci, Ehci, Ohci }
@@ -192,9 +199,22 @@ public static class QemuTool
     /// The command line as it would be typed, for `--dry-run` and logs.
     /// </summary>
     public static string CommandLine(QemuConfig config) =>
-        ToolProcess.Quote(Executable, BuildArguments(config));
+        ToolProcess.Quote(ExecutableFor(config.Arch), BuildArguments(config));
 
     public const string Executable = "qemu-system-i386";
+    public const string Executable64 = "qemu-system-x86_64";
+
+    /// <summary>The QEMU for an architecture.</summary>
+    public static string ExecutableFor(QemuArch arch) => arch == QemuArch.X86_64 ? Executable64 : Executable;
+
+    /// <summary>"x86_32" or "x86_64", any case, as typed on a command line;
+    /// null for anything else.</summary>
+    public static QemuArch? ParseArch(string? name) => name?.ToLowerInvariant() switch
+    {
+        "x86_32" => QemuArch.X86_32,
+        "x86_64" => QemuArch.X86_64,
+        _ => null,
+    };
 
     /// <summary>
     /// Boots the image. No timeout by default: an emulator session lasts as
@@ -204,6 +224,6 @@ public static class QemuTool
     public static ToolResult Run(QemuConfig config, ToolRunOptions? options = null)
     {
         options ??= new ToolRunOptions { Timeout = TimeSpan.Zero };
-        return ToolProcess.Run(Executable, BuildArguments(config), options);
+        return ToolProcess.Run(ExecutableFor(config.Arch), BuildArguments(config), options);
     }
 }

@@ -158,6 +158,18 @@ with the double fault on an IST stack (the 32-bit task gate maps onto IST
 directly); `syscall`/`sysret` as the transition; the self-test suite passing.
 Kernel stacks keep their guard slots.
 
+**Step 5b, done 2026-10-24.** `kernel/arch/x86_64/`: `entry.asm` moves to a
+stack in the image; `gdt.c` installs ring-0 code and data and a 64-bit TSS
+whose IST1 is the double-fault stack (the user segments wait for 5e, whose
+`STAR` layout fixes their order); `idt.c` and `isr.asm` take the 32 CPU
+exceptions, the double fault on IST1, anything unexpected a panic on COM1.
+`boot64.c` runs eleven bring-up self-tests and halts: long mode and NX
+active, the image and its stack in the top 2 GiB, CXBI handed over, the GDT,
+TSS and IDT loaded, `#BP`, `#UD` and `#GP` delivered with the right RIP and
+error code, and a double fault forced from a non-canonical RSP arriving on
+its IST stack. Without the IST that fault is a triple fault, so the boot
+stops with no summary line. Generic code joins in 5c.
+
 ---
 
 ## 3. Processes and threads

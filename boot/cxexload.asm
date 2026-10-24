@@ -40,6 +40,11 @@ bits 32
 cxex_load_and_jump:
     mov esi, CXEX_SRC
 
+    ; An ELF file is the x86-64 kernel, which long.asm loads: one stage 2 boots
+    ; both kernels while the 32-bit one is still the system (roadmap step 5).
+    cmp dword [esi], ELF_MAGIC
+    je elf64_load_and_jump                      ; long.asm; no return
+
     ; check magic 'CXEX' - bytes C,X,E,X = 0x43,0x58,0x45,0x58, which as a
     ; little-endian dword load is 0x58455843.
     cmp dword [esi + CXH_MAGIC], 0x58455843

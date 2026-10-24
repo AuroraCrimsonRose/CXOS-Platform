@@ -9,6 +9,7 @@
 GDT_NULL        equ 0x00    ; null descriptor
 GDT_CODE        equ 0x08    ; code segment
 GDT_DATA        equ 0x10    ; data segment
+GDT_CODE64      equ 0x18    ; 64-bit code segment (long.asm only)
 
 ; GDT table
 gdt_start:
@@ -63,6 +64,21 @@ gdt_start:
                             ;   G=1  4KB granularity
                             ;   DB=1 32-bit
                             ;   L=0  not 64-bit
+                            ;   limit high = 0xF
+        db 0x00             ; base high 8 bits
+
+    ; 64-bit code segment descriptor, for the jump into long mode (long.asm).
+    ; Base and limit are ignored in 64-bit mode; what matters is L=1 with D=0.
+    ; The 32-bit kernel never loads it.
+    gdt_code64:
+        dw 0xFFFF           ; limit low 16 bits
+        dw 0x0000           ; base  low 16 bits
+        db 0x00             ; base  mid  8 bits
+        db 0x9A             ; access byte: present, ring 0, code, readable
+        db 0xAF             ; flags + limit high:
+                            ;   G=1  4KB granularity
+                            ;   DB=0 (must be 0 when L=1)
+                            ;   L=1  64-bit
                             ;   limit high = 0xF
         db 0x00             ; base high 8 bits
 

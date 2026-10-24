@@ -220,4 +220,32 @@ public class BootVerdictTests
         Assert.Null(QemuTool.ParseUsbHost(""));
         Assert.Null(QemuTool.ParseUsbHost(null));
     }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
+    public void The_x86_64_image_boots_on_the_64_bit_qemu_and_the_default_stays_32_bit()
+    {
+        // The default is the 32-bit kernel's QEMU: every existing verification
+        // boot keeps the CPU model it was green on.
+        string plain = QemuTool.CommandLine(BootVerifier.ConfigFor("cxk_disk.img", "serial.log"));
+        Assert.StartsWith("qemu-system-i386 ", plain);
+
+        string wide = QemuTool.CommandLine(BootVerifier.ConfigFor("cxk_x86_64.img", "serial.log", arch: QemuArch.X86_64));
+        Assert.StartsWith("qemu-system-x86_64 ", wide);
+        // the same verification boot otherwise: snapshot, headless, icount
+        Assert.Equal(plain.Replace("cxk_disk.img", "cxk_x86_64.img")["qemu-system-i386".Length..],
+                     wide["qemu-system-x86_64".Length..]);
+    }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
+    public void Only_the_two_architectures_parse()
+    {
+        Assert.Equal(QemuArch.X86_32, QemuTool.ParseArch("x86_32"));
+        Assert.Equal(QemuArch.X86_64, QemuTool.ParseArch("X86_64"));
+        Assert.Null(QemuTool.ParseArch("amd64"));
+        Assert.Null(QemuTool.ParseArch("i386"));
+        Assert.Null(QemuTool.ParseArch(""));
+        Assert.Null(QemuTool.ParseArch(null));
+    }
 }

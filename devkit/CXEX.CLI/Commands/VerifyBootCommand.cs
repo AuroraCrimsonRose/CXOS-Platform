@@ -47,6 +47,10 @@ public class VerifyBootCommand : Command<VerifyBootCommand.Settings>
         [CommandOption("--foreign-disk")]
         [Description("Put a copy of the image under another disk id ahead of it, as a machine's own drive with CXOS on it already, and fail if the boot changes a byte of it")]
         public bool ForeignDisk { get; set; }
+
+        [CommandOption("--arch")]
+        [Description("The kernel the image carries: x86_32 (default) or x86_64, which boots it on qemu-system-x86_64")]
+        public string? Arch { get; set; }
     }
 
     protected override int Execute(CommandContext context, Settings settings, CancellationToken cancellationToken)
@@ -70,22 +74,33 @@ public class VerifyBootCommand : Command<VerifyBootCommand.Settings>
             return 1;
         }
 
+        QemuArch arch = QemuArch.X86_32;
+        if (settings.Arch is not null)
+        {
+            if (QemuTool.ParseArch(settings.Arch) is not QemuArch a)
+            {
+                AnsiConsole.MarkupLine($"[red]error:[/] --arch takes x86_32 or x86_64, not '{Markup.Escape(settings.Arch)}'");
+                return 1;
+            }
+            arch = a;
+        }
+
         string log = settings.LogPath is { Length: > 0 } l ? l : settings.ImagePath + ".serial.log";
         string? foreign = settings.ForeignDisk ? settings.ImagePath + ".foreign.img" : null;
         byte[]? foreignHash = foreign is null ? null : CXEX.Tools.ForeignDisk.Create(foreign, File.ReadAllBytes(settings.ImagePath));
         long foreignSize = foreign is null ? 0 : new FileInfo(foreign).Length;
         AnsiConsole.MarkupLine($"[grey]booting[/] {Markup.Escape(settings.ImagePath)} [grey](snapshot, serial -> {Markup.Escape(log)})[/]");
-        AnsiConsole.MarkupLine($"[grey]{Markup.Escape(QemuTool.CommandLine(BootVerifier.ConfigFor(settings.ImagePath, log, settings.Cpu, usb: usb, foreignDisk: foreign)))}[/]");
+        AnsiConsole.MarkupLine($"[grey]{Markup.Escape(QemuTool.CommandLine(BootVerifier.ConfigFor(settings.ImagePath, log, settings.Cpu, usb: usb, foreignDisk: foreign, arch: arch)))}[/]");
 
         BootVerdict v;
         try
         {
             v = BootVerifier.Run(settings.ImagePath, log, TimeSpan.FromSeconds(settings.TimeoutSeconds), settings.Full,
-                                 line => AnsiConsole.MarkupLine($"[grey]{Markup.Escape(line)}[/]"), settings.Cpu, usb, foreign);
+                                 line => AnsiConsole.MarkupLine($"[grey]{Markup.Escape(line)}[/]"), settings.Cpu, usb, foreign, arch);
         }
         catch (System.ComponentModel.Win32Exception ex)
         {
-            AnsiConsole.MarkupLine($"[red]error:[/] could not start {QemuTool.Executable}: {Markup.Escape(ex.Message)}");
+            AnsiConsole.MarkupLine($"[red]error:[/] could not start {QemuTool.ExecutableFor(arch)}: {Markup.Escape(ex.Message)}");
             if (foreign is not null) DeleteQuietly(foreign);   // nothing ran, so nothing to keep
             return 1;
         }

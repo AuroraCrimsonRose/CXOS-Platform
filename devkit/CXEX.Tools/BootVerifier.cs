@@ -107,7 +107,7 @@ public static class BootVerifier
     /// boot, and verifying a release image without it has broken its
     /// SHA256SUMS), and -icount for timing that does not depend on the host.
     /// </summary>
-    public static QemuConfig ConfigFor(string image, string serialLog, string? cpu = null, bool snapshot = true, UsbHost? usb = null, string? foreignDisk = null) => new()
+    public static QemuConfig ConfigFor(string image, string serialLog, string? cpu = null, bool snapshot = true, UsbHost? usb = null, string? foreignDisk = null, QemuArch arch = QemuArch.X86_32) => new()
     {
         BootDisk = image,
         MachineType = "pc",
@@ -122,6 +122,7 @@ public static class BootVerifier
         CpuModel = cpu,
         BootUsb = usb,
         ForeignDisk = foreignDisk,
+        Arch = arch,
     };
 
     /// <summary>
@@ -129,8 +130,8 @@ public static class BootVerifier
     /// time is up. Kills only the QEMU it started: killing by process name
     /// would take down any other emulator on the machine.
     /// </summary>
-    public static BootVerdict Run(string image, string serialLog, TimeSpan timeout, bool full, Action<string>? progress = null, string? cpu = null, UsbHost? usb = null, string? foreignDisk = null)
-        => Run(image, serialLog, timeout, log => BootVerdict.Classify(log, full), progress, cpu, snapshot: true, usb, foreignDisk);
+    public static BootVerdict Run(string image, string serialLog, TimeSpan timeout, bool full, Action<string>? progress = null, string? cpu = null, UsbHost? usb = null, string? foreignDisk = null, QemuArch arch = QemuArch.X86_32)
+        => Run(image, serialLog, timeout, log => BootVerdict.Classify(log, full), progress, cpu, snapshot: true, usb, foreignDisk, arch);
 
     /// <summary>
     /// The same boot with the verdict decided by <paramref name="classify"/>,
@@ -139,22 +140,22 @@ public static class BootVerifier
     /// (<c>cxk verify-crashlog</c>). Only ever on a copy.
     /// </summary>
     public static BootVerdict Run(string image, string serialLog, TimeSpan timeout, Func<string, BootVerdict> classify,
-                                  Action<string>? progress, string? cpu, bool snapshot, UsbHost? usb = null, string? foreignDisk = null)
+                                  Action<string>? progress, string? cpu, bool snapshot, UsbHost? usb = null, string? foreignDisk = null, QemuArch arch = QemuArch.X86_32)
     {
         if (File.Exists(serialLog)) File.Delete(serialLog);
 
         var psi = new ProcessStartInfo
         {
-            FileName = ExecutableResolver.Resolve(QemuTool.Executable),
+            FileName = ExecutableResolver.Resolve(QemuTool.ExecutableFor(arch)),
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             CreateNoWindow = true,
         };
-        foreach (string a in QemuTool.BuildArguments(ConfigFor(image, serialLog, cpu, snapshot, usb, foreignDisk))) psi.ArgumentList.Add(a);
+        foreach (string a in QemuTool.BuildArguments(ConfigFor(image, serialLog, cpu, snapshot, usb, foreignDisk, arch))) psi.ArgumentList.Add(a);
 
         using var qemu = Process.Start(psi)
-            ?? throw new InvalidOperationException($"could not start {QemuTool.Executable}");
+            ?? throw new InvalidOperationException($"could not start {QemuTool.ExecutableFor(arch)}");
         qemu.OutputDataReceived += (_, _) => { };
         qemu.ErrorDataReceived += (_, e) => { if (e.Data is { Length: > 0 }) progress?.Invoke("qemu: " + e.Data); };
         qemu.BeginOutputReadLine();

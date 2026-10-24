@@ -52,6 +52,10 @@ interfaces and are not transitional.
 | `kernel/drivers/video/fb.c` | Write-back caching on the framebuffer | Write-combining (PAT) | Framebuffer throughput matters |
 | `kernel/cpu/exec.c` unverified-image policy | Always refuses | An administrator's choice | User accounts exist |
 | `/Shared/Config` at 0777 | Any program with `GRANT_DISK` can write any program's settings | `/User/<name>` at 0700 | Users exist (`CX_FILESYSTEM_LAYOUT.md` rule 6) |
+| `kernel/arch/x86_64/boot64.c` | The x86-64 kernel's whole run: GDT, TSS, IDT, eleven bring-up self-tests, halt | `kmain` and `ktest_run`, built for x86-64 | Roadmap step 5c, when the generic kernel first links for x86-64 |
+| `kernel/arch/x86_64/early_con.c` | COM1, polled, for the x86-64 kernel | `klog` over `drivers/char/serial.c` | The same: `klog` running on x86-64 |
+| `boot/long.asm` page tables | The loader maps the first GiB at 0 and at `KERNEL_VBASE` with 2 MiB pages, and the kernel runs on them | The kernel's own tables: the direct map, NX, the kernel top level made at boot | Roadmap step 5c |
+| The x86-64 kernel image as a plain ELF | Stage 2 loads it unsigned and unchecked, beside the 32-bit CXEX path | CXEX for x86-64, the signature check in the loader | `CX_BOOT.md` section 4 item 3 |
 
 ## Test-only
 
