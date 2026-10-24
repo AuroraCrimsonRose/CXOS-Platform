@@ -61,6 +61,14 @@ int crashlog_recovered(uint32_t *len, uint32_t *crc);
 /* For the self-test: where the area is. 0, or -1 if there is none. */
 int crashlog_area(uint8_t *disk, uint64_t *lba, uint64_t *sectors);
 
+/* The whole system log, as text, into the crash partition after the crash
+   record (XCRL_BOOTLOG_LBA), for `cxk rig bootlog`: how a machine with no
+   serial port gets its log to another. Interrupts off while it writes.
+   DISK_OK, or the disk error. crashlog_bootlog_stale says whether anything
+   was logged since the last save. */
+int crashlog_save_bootlog(void);
+int crashlog_bootlog_stale(void);
+
 /* Write a record of `kind` with `len` bytes of `text` to the area: the text,
    then the header, then a flush. A disk_err code. `text` must hold whole
    sectors (zero past `len`). Shared by the panic and the self-test, so the

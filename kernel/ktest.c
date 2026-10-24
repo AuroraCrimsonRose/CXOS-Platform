@@ -1317,6 +1317,52 @@ static int test_disk_write_guard(void) {
 #endif
 }
 
+/* The system log goes to the crash area after the crash record and reads back
+   whole: a valid XCRL_KIND_BOOTLOG header at XCRL_BOOTLOG_LBA whose CRC the text
+   passes, the text starting with the summary line and holding a line logged
+   just before - a child line, which the ring did not used to keep. The crash
+   record's own sector is left as it was. */
+static int test_bootlog_saved(void) {
+#if !CXK_ALLOW_DISK_WRITE
+    klog("KTEST", SEV_WARN, "boot log untested: this build writes to no disk");
+    return 1;
+#endif
+    uint8_t disk;
+    uint64_t lba, secs;
+    if (crashlog_area(&disk, &lba, &secs) != 0) return 0;
+    static uint8_t h0[XCRL_SECTOR], h[XCRL_SECTOR], h0after[XCRL_SECTOR];
+    static char text[XCRL_BOOTLOG_MAX];
+    if (disk_read(disk, lba, 1, h0) != DISK_OK) return 0;
+
+    klog("KTEST", SEV_INFO, "boot log test line");
+    klog_child("bootlog-child-marker");
+    if (crashlog_save_bootlog() != DISK_OK) return 0;
+    if (crashlog_bootlog_stale()) return 0;                      /* nothing logged since */
+
+    uint16_t kind = 0; uint32_t len = 0;
+    if (disk_read(disk, lba + XCRL_BOOTLOG_LBA, 1, h) != DISK_OK) return 0;
+    if (xcrl_check_header(h, &kind, &len) != XCRL_VALID || kind != XCRL_KIND_BOOTLOG) return 0;
+    if (len == 0 || len > XCRL_BOOTLOG_MAX) return 0;
+    uint32_t n = (len + XCRL_SECTOR - 1) / XCRL_SECTOR;
+    if (disk_read(disk, lba + XCRL_BOOTLOG_LBA + 1, n, text) != DISK_OK) return 0;
+    if (xcrl_check_text(h, text, len) != XCRL_VALID) return 0;
+
+    static const char head[] = "CXOS system log: ";
+    for (uint32_t i = 0; head[i]; i++) if (text[i] != head[i]) return 0;
+    static const char mark[] = "-> bootlog-child-marker";
+    int found = 0;
+    for (uint32_t i = 0; !found && i + sizeof mark - 1 <= len; i++) {
+        uint32_t k = 0;
+        while (mark[k] && text[i + k] == mark[k]) k++;
+        found = mark[k] == 0;
+    }
+    if (!found) return 0;
+
+    if (disk_read(disk, lba, 1, h0after) != DISK_OK) return 0;
+    for (uint32_t i = 0; i < XCRL_SECTOR; i++) if (h0[i] != h0after[i]) return 0;
+    return 1;
+}
+
 /* ---- a crash record goes to the crash area and reads back (step 4b) -------
  * The writes a panic makes (crashlog_write_record), read back raw and checked
  * as the next boot checks them; then one byte of the text is changed on disk
@@ -3098,6 +3144,7 @@ void ktest_run(void) {
     total++; passed += report("the boot handover came through CXBI", test_cxbi());
     total++; passed += report("a crash record goes to the crash area and back", test_crashlog());
     total++; passed += report("a user fault is saved to the crash area", test_user_fault_saved());
+    total++; passed += report("the system log is saved to the crash area", test_bootlog_saved());
     total++; passed += report("disk writes reach only the CXOS disk", test_disk_write_guard());
     total++; passed += report("xHCI scratchpad pages are whole and returned", test_xhci_scratchpad());
     total++; passed += report("PS/2 keyboard and mouse reach the kernel", ktest_platform_input());

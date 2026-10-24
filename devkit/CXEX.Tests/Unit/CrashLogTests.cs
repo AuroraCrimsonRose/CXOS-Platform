@@ -236,4 +236,27 @@ public class CrashLogTests
     {
         Assert.Equal(device, RawDisk.DevicePath(arg));
     }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
+    public void The_system_log_reads_back_from_past_the_crash_record_and_a_torn_one_is_refused()
+    {
+        using var img = Image();
+        Assert.Equal(CrashAreaState.Empty, CrashLog.ReadBootLog(img).State);
+
+        // bigger than a crash record may be: the system log has its own cap
+        var text = Encoding.ASCII.GetBytes(new string('l', CrashLog.TextMax + 3000) + "\n[OK  ] USB: keyboard online (USB)\n");
+        img.Seek((4096L + CrashLog.BootLogLba) * 512, SeekOrigin.Begin);
+        img.Write(CrashLog.Seal(CrashLog.KindBootLog, text));
+        img.Write(text);
+
+        var r = CrashLog.ReadBootLog(img);
+        Assert.Equal(CrashAreaState.Record, r.State);
+        Assert.EndsWith("keyboard online (USB)\n", r.Text);
+        Assert.Equal(CrashAreaState.Empty, CrashLog.Read(img).State);   // the crash record's place is untouched
+
+        img.Seek((4096L + CrashLog.BootLogLba + 1) * 512 + 10, SeekOrigin.Begin);
+        img.WriteByte((byte)'X');
+        Assert.Equal(CrashAreaState.Invalid, CrashLog.ReadBootLog(img).State);
+    }
 }

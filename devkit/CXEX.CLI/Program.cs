@@ -96,6 +96,8 @@ app.Configure(config =>
 
         rig.AddCommand<RigCrashlogCommand>("crashlog")
             .WithDescription("Prints the crash log a panic left in a disk's CRASH partition, without booting it.");
+        rig.AddCommand<RigBootlogCommand>("bootlog")
+            .WithDescription("Prints (or -o saves) the system log the last boot left in a disk's CRASH partition. Needs an elevated prompt for a disk.");
         rig.AddCommand<RigDisksCommand>("disks")
             .WithDescription("Lists this machine's disks, to find the stick's number (disk5). Needs no elevation.");
         rig.AddCommand<RigDumpCommand>("dump")

@@ -117,7 +117,9 @@ real machine as QEMU gets.
   and reads the stick itself as well as an image: `cxk rig disks` lists the
   disks (no elevation needed), `disk5` names one, and reading it needs an
   administrator prompt. Whole disks are opened read-only and read in whole
-  sectors (`CXEX.Disk/RawDisk.cs`). `cxk rig dump <disk> <out.img>` copies a
+  sectors (`CXEX.Disk/RawDisk.cs`). `cxk rig bootlog <disk>` reads the system log a boot
+  saves in the same CRASH partition (sector 64 on, kind 4, rewritten while the
+  machine idles), for a machine with no serial port or framebuffer. `cxk rig dump <disk> <out.img>` copies a
   disk's CXOS part, as far as its XBPT table reaches, into an image file for
   the other tools. `cxk verify-crashlog <image>`
   boots a copy twice, the first asked to panic (through a request record it

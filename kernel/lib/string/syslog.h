@@ -18,7 +18,7 @@
 #define SLOG_SYS_W   12
 #define SLOG_SUB_W   12
 #define SLOG_EVT_W   48
-#define SLOG_RING    256   /* entries retained (ring wraps) */
+#define SLOG_RING    1024  /* entries retained (ring wraps); a boot is a few hundred */
 
 struct slog_entry {
     uint32_t seq;                 /* monotonic order */

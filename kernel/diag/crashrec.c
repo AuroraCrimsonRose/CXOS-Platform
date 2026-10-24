@@ -26,9 +26,13 @@ uint32_t xcrl_crc32(uint32_t crc, const void *data, uint32_t len) {
     return ~crc;
 }
 
+uint32_t xcrl_max_len(uint16_t kind) {
+    return kind == XCRL_KIND_BOOTLOG ? XCRL_BOOTLOG_MAX : XCRL_TEXT_MAX;
+}
+
 void xcrl_seal(uint8_t hdr[XCRL_SECTOR], uint16_t kind, const char *text, uint32_t len) {
     for (uint32_t i = 0; i < XCRL_SECTOR; i++) hdr[i] = 0;
-    if (len > XCRL_TEXT_MAX) len = XCRL_TEXT_MAX;
+    if (len > xcrl_max_len(kind)) len = xcrl_max_len(kind);
     wr32(hdr + 0, XCRL_MAGIC);
     hdr[4] = (uint8_t)XCRL_VERSION; hdr[5] = (uint8_t)(XCRL_VERSION >> 8);
     hdr[6] = (uint8_t)kind;         hdr[7] = (uint8_t)(kind >> 8);
@@ -44,8 +48,9 @@ int xcrl_check_header(const uint8_t hdr[XCRL_SECTOR], uint16_t *kind, uint32_t *
     uint16_t k   = (uint16_t)(hdr[6] | (hdr[7] << 8));
     uint32_t n   = rd32(hdr + 8);
     if (ver != XCRL_VERSION) return XCRL_BAD_VER;
-    if (k != XCRL_KIND_CRASH && k != XCRL_KIND_REQUEST && k != XCRL_KIND_FAULT) return XCRL_BAD_KIND;
-    if (n > XCRL_TEXT_MAX || (k == XCRL_KIND_REQUEST && n != 0)) return XCRL_BAD_LEN;
+    if (k != XCRL_KIND_CRASH && k != XCRL_KIND_REQUEST && k != XCRL_KIND_FAULT
+        && k != XCRL_KIND_BOOTLOG) return XCRL_BAD_KIND;
+    if (n > xcrl_max_len(k) || (k == XCRL_KIND_REQUEST && n != 0)) return XCRL_BAD_LEN;
     if (kind) *kind = k;
     if (len)  *len = n;
     return XCRL_VALID;

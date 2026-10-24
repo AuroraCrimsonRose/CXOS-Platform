@@ -40,6 +40,20 @@
 #define XCRL_KIND_FAULT     3u   /* user processes that faulted after the
                                     self-tests, then the system log; a panic's
                                     record replaces it */
+#define XCRL_KIND_BOOTLOG   4u   /* the whole system log as text, rewritten as
+                                    the boot goes on. Never at sector 0: it has
+                                    its own header at XCRL_BOOTLOG_LBA, so a
+                                    crash or fault record never displaces it */
+
+/* The boot log sits past the crash record (sectors 0..XCRL_SECTORS-1), header
+   first and text after, in the same layout with a larger cap. `cxk rig
+   bootlog` reads it, which is how a machine with no serial port gets its log
+   to another one. */
+#define XCRL_BOOTLOG_LBA    64u
+#define XCRL_BOOTLOG_MAX    (256u * XCRL_SECTOR)           /* 128 KB */
+
+/* The most text a record of this kind may carry. */
+uint32_t xcrl_max_len(uint16_t kind);
 
 /* What xcrl_check_header made of a header. */
 enum xcrl_state {

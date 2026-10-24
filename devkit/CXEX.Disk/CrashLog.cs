@@ -43,6 +43,10 @@ public static class CrashLog
     public const ushort KindCrash = 1;
     public const ushort KindRequest = 2;
     public const ushort KindFault = 3;
+    public const ushort KindBootLog = 4;
+    /// <summary>Where the system log starts in the crash partition, and its cap (XCRL_BOOTLOG_LBA, XCRL_BOOTLOG_MAX).</summary>
+    public const int BootLogLba = 64;
+    public const int BootLogMax = 256 * 512;
     public const int Sector = 512;
     public const int TextMax = 32 * Sector;
     public const int Sectors = 1 + TextMax / Sector;
@@ -67,7 +71,8 @@ public static class CrashLog
     /// <summary>The 512-byte header for <paramref name="text"/>.</summary>
     public static byte[] Seal(ushort kind, ReadOnlySpan<byte> text)
     {
-        if (text.Length > TextMax) throw new ArgumentException($"a crash record holds at most {TextMax} bytes");
+        int max = kind == KindBootLog ? BootLogMax : TextMax;
+        if (text.Length > max) throw new ArgumentException($"a record of kind {kind} holds at most {max} bytes");
         var h = new byte[Sector];
         BitConverter.TryWriteBytes(h.AsSpan(0), Magic);
         BitConverter.TryWriteBytes(h.AsSpan(4), (ushort)XcrlVersion);
@@ -122,6 +127,42 @@ public static class CrashLog
             KindFault => new(CrashAreaState.FaultRecord, $"user-fault record (no panic), {len} bytes", Encoding.ASCII.GetString(text)),
             _ => new(CrashAreaState.Record, $"crash record, {len} bytes", Encoding.ASCII.GetString(text)),
         };
+    }
+
+    /// <summary>
+    /// The system log a boot keeps in the crash partition at <see cref="BootLogLba"/>,
+    /// after the crash record (XCRL_KIND_BOOTLOG, kernel/diag/crashrec.h): the same
+    /// header layout, a larger cap. How a machine with no serial port gets its log
+    /// to this one. Record and FaultRecord are never the answer; Record means a
+    /// whole boot log.
+    /// </summary>
+    public static CrashAreaReading ReadBootLog(Stream disk)
+    {
+        var area = FindArea(disk);
+        if (area is null) return new(CrashAreaState.NoArea, "no XBPT table with a CRASH partition");
+        if (area.Value.Sectors <= BootLogLba + 1) return new(CrashAreaState.Invalid, $"the CRASH partition is {area.Value.Sectors} sectors, too short for a system log");
+
+        var h = new byte[Sector];
+        disk.Seek((area.Value.Lba + BootLogLba) * Sector, SeekOrigin.Begin);
+        disk.ReadExactly(h);
+
+        if (BitConverter.ToUInt32(h, 0) != Magic) return new(CrashAreaState.Empty, "no system log saved: the disk has not finished a boot with this kernel");
+        ushort ver = BitConverter.ToUInt16(h, 4), kind = BitConverter.ToUInt16(h, 6);
+        uint len = BitConverter.ToUInt32(h, 8);
+        if (ver != XcrlVersion) return new(CrashAreaState.Invalid, $"record version {ver}; this cxk reads {XcrlVersion}");
+        if (kind != KindBootLog) return new(CrashAreaState.Invalid, $"record of kind {kind} where the system log goes");
+        long room = (area.Value.Sectors - BootLogLba - 1) * Sector;
+        if (len > BootLogMax || len > room) return new(CrashAreaState.Invalid, $"record length {len} out of range");
+
+        var text = new byte[len];
+        if (len > 0)
+        {
+            disk.Seek((area.Value.Lba + BootLogLba + 1) * Sector, SeekOrigin.Begin);
+            disk.ReadExactly(text);
+        }
+        uint crc = Crc32(Crc32(0, h.AsSpan(0, 12)), text);
+        if (crc != BitConverter.ToUInt32(h, 12)) return new(CrashAreaState.Invalid, "system log torn: the CRC does not match (the machine was switched off mid-save?)");
+        return new(CrashAreaState.Record, $"system log, {len} bytes", Encoding.ASCII.GetString(text));
     }
 
     /// <summary>Ask the next boot of this disk to panic on purpose (the kernel clears it first).</summary>

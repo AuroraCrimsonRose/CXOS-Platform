@@ -149,6 +149,9 @@ static const char *cx_logo_art[] = {
 };
 #define CX_LOGO_ROWS 9
 
+/* How often the idle loop re-saves a grown system log to the crash area. */
+#define BOOTLOG_SAVE_MS 5000u
+
 static void cx_text_logo(void) {
     /* per-character coloring: stroke glyphs '/' and '\\' are yellow, the
        fill/underscore glyphs are white. */
@@ -448,8 +451,21 @@ void kmain_late(void) {
        an executive is running - with none, the screen is all there is. */
     if (xc_started) klog_quiet();
 
+    /* The log goes to the stick now and again every few seconds while it
+       grows, so `cxk rig bootlog` reads it off a machine with no serial port:
+       the boot at once, then the executive, the services and anything after. */
+    int bl = crashlog_save_bootlog();
+    if (bl == DISK_OK) klog("CRASHLOG", SEV_OK, "system log saved to the crash area (cxk rig bootlog)");
+    else if (bl != DISK_ERR_NO_DEVICE)
+        klog_u32("CRASHLOG", SEV_WARN, "system log not saved, disk error ", (uint32_t)-bl, LOG_COLOR_VALUE, "");
+    uint32_t bl_at = timer_ticks();
+
     for (;;) {
         yield();                       /* let the executive + its apps run */
+        if (timer_since(bl_at) >= BOOTLOG_SAVE_MS && crashlog_bootlog_stale()) {
+            (void)crashlog_save_bootlog();
+            bl_at = timer_ticks();
+        }
         arch_cpu_halt();
     }
 }

@@ -164,3 +164,59 @@ public class RigCrashlogCommand : Command<RigCrashlogCommand.Settings>
         }
     }
 }
+
+/// <summary>
+/// <c>cxk rig bootlog &lt;disk&gt; [-o file]</c>: the system log the last boot saved
+/// to the disk's CRASH partition, printed or written to a file. The kernel saves
+/// it at the end of the boot and again every few seconds while the log grows, so
+/// it covers the boot, the services, and whatever came after.
+/// </summary>
+public class RigBootlogCommand : Command<RigBootlogCommand.Settings>
+{
+    public class Settings : CommandSettings
+    {
+        [CommandArgument(0, "<DISK>")]
+        [Description(RigDisk.Help)]
+        public string DiskPath { get; set; } = string.Empty;
+
+        [CommandOption("-o|--out <FILE>")]
+        [Description("Write the log to this file instead of printing it")]
+        public string? OutPath { get; set; }
+    }
+
+    protected override int Execute(CommandContext context, Settings settings, CancellationToken cancellationToken)
+    {
+        CrashAreaReading r;
+        using (var disk = RigDisk.Open(settings.DiskPath))
+        {
+            if (disk is null) return 1;
+            r = CrashLog.ReadBootLog(disk);
+        }
+
+        switch (r.State)
+        {
+            case CrashAreaState.Record:
+                if (settings.OutPath is string o)
+                {
+                    if (RawDisk.DevicePath(o) is not null)
+                    {
+                        AnsiConsole.MarkupLine("[red]error:[/] the output is a disk; rig bootlog only writes files");
+                        return 1;
+                    }
+                    File.WriteAllText(o, r.Text.Replace("\r", ""));
+                    AnsiConsole.MarkupLine($"[green]wrote[/] {Markup.Escape(r.Detail)} to {Markup.Escape(o)}");
+                    return 0;
+                }
+                AnsiConsole.MarkupLine($"[grey]{Markup.Escape(r.Detail)}[/]");
+                Console.Out.Write(r.Text.Replace("\r", ""));
+                if (!r.Text.EndsWith('\n')) Console.Out.WriteLine();
+                return 0;
+            case CrashAreaState.Invalid:
+                AnsiConsole.MarkupLine($"[red]error:[/] {Markup.Escape(r.Detail)}");
+                return 1;
+            default:
+                AnsiConsole.MarkupLine($"[grey]{Markup.Escape(r.Detail)}[/]");
+                return 2;
+        }
+    }
+}

@@ -69,9 +69,18 @@ static void put_field(const char *s, int width, uint8_t attr) {
     out_s(b, attr);
 }
 
+/* The last line's tag and severity: its child lines go into the ring under
+   them, so the saved log (cxk rig bootlog) keeps the detail the screen shows. */
+static char      last_tag[LOG_TAG_W + 1];
+static log_sev_t last_sev;
+
 static void prefix(const char *tag, log_sev_t sev, int on_screen) {
     if ((int)sev < 0 || (int)sev >= SEV_COUNT) sev = SEV_INFO;
     screen = on_screen;
+    int t = 0;
+    for (; tag && tag[t] && t < LOG_TAG_W; t++) last_tag[t] = tag[t];
+    last_tag[t] = 0;
+    last_sev = sev;
     out_s("[", LOG_SEP);
     put_field(tag, LOG_TAG_W, LOG_TAG_COL);
     out_s("] - [", LOG_SEP);
@@ -129,10 +138,29 @@ static void child_indent(void) {
     out_s(b, LOG_SEP);
 }
 
+/* A child line into the ring, under the tag and severity of the line above
+   it: "-> " then `a`, the value if there is one, then `b`. */
+static void child_record(const char *a, int has_value, uint32_t value, const char *b) {
+    if (slog_in_progress) return;
+    char line[SLOG_EVT_W];
+    int n = 0;
+    for (const char *p = "-> "; *p; p++) line[n++] = *p;
+    for (const char *p = a; p && *p && n < SLOG_EVT_W - 1; p++) line[n++] = *p;
+    if (has_value) {
+        char num[12];
+        num[fmt_u32(num, value)] = 0;
+        for (const char *p = num; *p && n < SLOG_EVT_W - 1; p++) line[n++] = *p;
+    }
+    for (const char *p = b; p && *p && n < SLOG_EVT_W - 1; p++) line[n++] = *p;
+    line[n] = 0;
+    slog_record(last_tag, "", last_sev, line);
+}
+
 void klog_child(const char *msg) {
     child_indent();
     if (msg) out_s(msg, LOG_MSG_COL);
     out_nl();
+    child_record(msg, 0, 0, 0);
 }
 
 void klog_child_u32(const char *label, uint32_t value, uint8_t value_attr,
@@ -142,4 +170,5 @@ void klog_child_u32(const char *label, uint32_t value, uint8_t value_attr,
     out_u32(value, value_attr);
     if (suffix) out_s(suffix, LOG_MSG_COL);
     out_nl();
+    child_record(label, 1, value, suffix);
 }

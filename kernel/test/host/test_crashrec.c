@@ -73,3 +73,21 @@ KH_TEST(xcrl_text_is_capped) {
     KH_CHECK_EQ(len, XCRL_TEXT_MAX);
     KH_CHECK_EQ(xcrl_check_text(hdr, big, len), XCRL_VALID);
 }
+
+KH_TEST(xcrl_boot_log_has_its_own_cap) {
+    static char big[XCRL_BOOTLOG_MAX + 100];
+    memset(big, 'y', sizeof big);
+    uint8_t hdr[XCRL_SECTOR]; uint32_t len = 0; uint16_t kind = 0;
+    xcrl_seal(hdr, XCRL_KIND_BOOTLOG, big, sizeof big);
+    KH_CHECK_EQ(xcrl_check_header(hdr, &kind, &len), XCRL_VALID);
+    KH_CHECK_EQ(kind, XCRL_KIND_BOOTLOG);
+    KH_CHECK_EQ(len, XCRL_BOOTLOG_MAX);
+    KH_CHECK_EQ(xcrl_check_text(hdr, big, len), XCRL_VALID);
+
+    /* the larger cap is the boot log's only: a crash record that long is not */
+    uint8_t bad[XCRL_SECTOR];
+    memcpy(bad, hdr, sizeof bad); bad[6] = XCRL_KIND_CRASH;
+    KH_CHECK_EQ(xcrl_check_header(bad, 0, 0), XCRL_BAD_LEN);
+    memcpy(bad, hdr, sizeof bad); bad[8] = 1; bad[10] = 0x02;        /* 128 KB + 1 */
+    KH_CHECK_EQ(xcrl_check_header(bad, 0, 0), XCRL_BAD_LEN);
+}

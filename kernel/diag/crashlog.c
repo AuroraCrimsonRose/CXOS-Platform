@@ -179,6 +179,10 @@ void crashlog_boot(void) {
             test_requested = 1;
             klog("CRASHLOG", SEV_WARN, "a crash-log test asked this boot to panic");
         }
+    } else if (st == XCRL_VALID && kind == XCRL_KIND_BOOTLOG) {
+        /* Never written here: its text would not fit the recovery buffer. */
+        klog("CRASHLOG", SEV_WARN, "crash area held a boot log at the record's place; cleared");
+        (void)crashlog_clear();
     } else if (st == XCRL_VALID) {
         recover(kind, len);
     } else if (st != XCRL_EMPTY) {
@@ -335,4 +339,70 @@ int crashlog_area(uint8_t *disk, uint64_t *lba, uint64_t *sectors) {
     if (lba) *lba = area_lba;
     if (sectors) *sectors = area_sectors;
     return 0;
+}
+
+/* ---- the boot log ----------------------------------------------------------
+ * The whole system log as text, in the crash partition after the crash record
+ * (XCRL_BOOTLOG_LBA), for `cxk rig bootlog`. Rewritten whole each time:
+ * text first, header last, as the crash record is, so a save cut short
+ * leaves the previous header's CRC failing rather than a log that reads as
+ * whole and is not. */
+static char     bootlog[XCRL_BOOTLOG_MAX];
+static uint8_t  bootlog_hdr[XCRL_SECTOR];
+static uint32_t bootlog_saved_total;
+
+static void put_bl(uint32_t *len, const char *s) {
+    while (s && *s && *len < XCRL_BOOTLOG_MAX) bootlog[(*len)++] = *s++;
+}
+
+static const char *const sev_name[] = { "INFO", "OK  ", "WARN", "ERR ", "FAIL" };
+
+int crashlog_save_bootlog(void) {
+    if (!have_area) return DISK_ERR_NO_DEVICE;
+    if (area_sectors <= XCRL_BOOTLOG_LBA + 1) return DISK_ERR_NO_DEVICE;
+    uint32_t cap = XCRL_BOOTLOG_MAX;
+    uint64_t room = (area_sectors - XCRL_BOOTLOG_LBA - 1) * XCRL_SECTOR;
+    if (room < cap) cap = (uint32_t)room;
+
+    /* Interrupts off for the whole save, as crashlog_save_faults: no other
+       thread's transfer can start in the middle of this one, and the ring
+       cannot move under the copy. */
+    uint32_t f = arch_irq_save();
+    uint32_t len = 0, total = slog_total(), n = slog_count();
+    char num[12];
+    put_bl(&len, "CXOS system log: ");
+    num[fmt_u32(num, n)] = 0;   put_bl(&len, num);
+    put_bl(&len, " entries kept of ");
+    num[fmt_u32(num, total)] = 0; put_bl(&len, num);
+    put_bl(&len, " recorded\n");
+    for (uint32_t i = 0; i < n && len < cap; i++) {
+        const struct slog_entry *e = slog_get(i);
+        if (!e) break;
+        if (len + SLOG_SYS_W + SLOG_SUB_W + SLOG_EVT_W + 16 > cap) break;
+        put_bl(&len, "[");
+        put_bl(&len, e->sev < 5 ? sev_name[e->sev] : "?   ");
+        put_bl(&len, "] ");
+        put_bl(&len, e->system);
+        if (e->subsystem[0]) { put_bl(&len, "/"); put_bl(&len, e->subsystem); }
+        put_bl(&len, ": ");
+        put_bl(&len, e->event);
+        put_bl(&len, "\n");
+    }
+
+    int r = DISK_OK;
+    uint32_t secs = (len + XCRL_SECTOR - 1) / XCRL_SECTOR;
+    for (uint32_t i = len; i < secs * XCRL_SECTOR; i++) bootlog[i] = 0;
+    if (secs) r = disk_write(area_disk, area_lba + XCRL_BOOTLOG_LBA + 1, secs, bootlog);
+    if (r == DISK_OK) {
+        xcrl_seal(bootlog_hdr, XCRL_KIND_BOOTLOG, bootlog, len);
+        r = disk_write(area_disk, area_lba + XCRL_BOOTLOG_LBA, 1, bootlog_hdr);
+    }
+    if (r == DISK_OK) r = disk_flush(area_disk);
+    if (r == DISK_OK) bootlog_saved_total = total;
+    arch_irq_restore(f);
+    return r;
+}
+
+int crashlog_bootlog_stale(void) {
+    return have_area && slog_total() != bootlog_saved_total;
 }
