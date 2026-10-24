@@ -29,7 +29,7 @@ fn file_open(path: *u8, flags: u32) -> i32 {
     let a: file_op_args;
     memzero((&a) as *u8, sizeof a);
     a.op = FILE_OP_OPEN;
-    a.path = path;
+    a.path = path as u32;
     a.flags = flags;
     return file_op(&a);
 }
@@ -65,7 +65,7 @@ fn file_read(h: i32, buf: *u8, n: u32) -> i32 {
     memzero((&a) as *u8, sizeof a);
     a.op = FILE_OP_READ;
     a.handle = h;
-    a.data = buf;
+    a.data = buf as u32;
     a.len = n;
     return file_op(&a);
 }
@@ -75,7 +75,7 @@ fn file_write(h: i32, buf: *u8, n: u32) -> i32 {
     memzero((&a) as *u8, sizeof a);
     a.op = FILE_OP_WRITE;
     a.handle = h;
-    a.data = buf;
+    a.data = buf as u32;
     a.len = n;
     return file_op(&a);
 }
@@ -174,8 +174,8 @@ fn stat(path: *u8, st: *file_stat) -> i32 {
     let a: file_op_args;
     memzero((&a) as *u8, sizeof a);
     a.op = FILE_OP_STAT;
-    a.path = path;
-    a.data = st as *u8;
+    a.path = path as u32;
+    a.data = st as u32;
     return file_op(&a);
 }
 
@@ -184,7 +184,7 @@ fn fstat(h: i32, st: *file_stat) -> i32 {
     memzero((&a) as *u8, sizeof a);
     a.op = FILE_OP_FSTAT;
     a.handle = h;
-    a.data = st as *u8;
+    a.data = st as u32;
     return file_op(&a);
 }
 
@@ -212,9 +212,9 @@ fn dir_entry(path: *u8, index: u32, st: *file_stat) -> i32 {
     let a: file_op_args;
     memzero((&a) as *u8, sizeof a);
     a.op = FILE_OP_READDIR;
-    a.path = path;
+    a.path = path as u32;
     a.len = index;
-    a.data = st as *u8;
+    a.data = st as u32;
     return file_op(&a);
 }
 
@@ -222,7 +222,7 @@ fn mkdir(path: *u8) -> i32 {
     let a: file_op_args;
     memzero((&a) as *u8, sizeof a);
     a.op = FILE_OP_MKDIR;
-    a.path = path;
+    a.path = path as u32;
     return file_op(&a);
 }
 
@@ -231,7 +231,7 @@ fn unlink(path: *u8) -> i32 {
     let a: file_op_args;
     memzero((&a) as *u8, sizeof a);
     a.op = FILE_OP_UNLINK;
-    a.path = path;
+    a.path = path as u32;
     return file_op(&a);
 }
 
@@ -240,8 +240,8 @@ fn rename(path: *u8, newname: *u8) -> i32 {
     let a: file_op_args;
     memzero((&a) as *u8, sizeof a);
     a.op = FILE_OP_RENAME;
-    a.path = path;
-    a.path2 = newname;
+    a.path = path as u32;
+    a.path2 = newname as u32;
     return file_op(&a);
 }
 
@@ -249,7 +249,7 @@ fn chdir(path: *u8) -> i32 {
     let a: file_op_args;
     memzero((&a) as *u8, sizeof a);
     a.op = FILE_OP_CHDIR;
-    a.path = path;
+    a.path = path as u32;
     return file_op(&a);
 }
 
@@ -258,7 +258,7 @@ fn getcwd(buf: *u8, cap: u32) -> i32 {
     let a: file_op_args;
     memzero((&a) as *u8, sizeof a);
     a.op = FILE_OP_GETCWD;
-    a.data = buf;
+    a.data = buf as u32;
     a.len = cap;
     return file_op(&a);
 }

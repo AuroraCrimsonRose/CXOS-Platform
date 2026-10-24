@@ -934,9 +934,8 @@ static int xhci_start(struct xhci_hc *c, const struct pci_device *dev, unsigned 
 
     /* xHCI register files are large - runtime and doorbell regions sit well
        past the operational registers - so map generously. */
-    for (uint32_t off = 0; off < XHCI_MAP_SIZE; off += 0x1000)
-        paging_map_kernel(base + off, base + off, VM_WRITE | VM_UNCACHED);
-    if (iowin_mmio(&c->cap_regs, (volatile void *)base, XHCI_CAP_SIZE) != 0) return 0;
+    volatile uint8_t *mmio = (volatile uint8_t *)paging_map_phys(base, XHCI_MAP_SIZE, VM_WRITE | VM_UNCACHED);
+    if (!mmio || iowin_mmio(&c->cap_regs, mmio, XHCI_CAP_SIZE) != 0) return 0;
 
     uint32_t hcs1 = cap_rd(c, XCAP_HCSPARAMS1);
     uint32_t caplen = iowin_read8(&c->cap_regs, XCAP_CAPLENGTH);
@@ -945,9 +944,9 @@ static int xhci_start(struct xhci_hc *c, const struct pci_device *dev, unsigned 
     uint32_t dboff  = cap_rd(c, XCAP_DBOFF) & ~0x3u;
     if (caplen < XHCI_CAP_SIZE || caplen + op_size > XHCI_MAP_SIZE ||
         rtsoff > XHCI_MAP_SIZE - XHCI_RT_SIZE || dboff > XHCI_MAP_SIZE - XHCI_DB_SIZE ||
-        iowin_mmio(&c->op_regs, (volatile void *)(base + caplen), op_size) != 0 ||
-        iowin_mmio(&c->rt_regs, (volatile void *)(base + rtsoff), XHCI_RT_SIZE) != 0 ||
-        iowin_mmio(&c->db_regs, (volatile void *)(base + dboff), XHCI_DB_SIZE) != 0) {
+        iowin_mmio(&c->op_regs, mmio + caplen, op_size) != 0 ||
+        iowin_mmio(&c->rt_regs, mmio + rtsoff, XHCI_RT_SIZE) != 0 ||
+        iowin_mmio(&c->db_regs, mmio + dboff, XHCI_DB_SIZE) != 0) {
         klog("xHCI", SEV_WARN, "register files outside the mapped BAR - not initialising");
         return 0;
     }

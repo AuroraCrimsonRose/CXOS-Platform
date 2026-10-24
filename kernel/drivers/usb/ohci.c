@@ -613,8 +613,8 @@ static int ohci_start(struct ohci_hc *c, const struct pci_device *dev, unsigned 
     uint32_t base = pci_bar_mmio32(dev, 0, "OHCI");
     if (base == 0) return 0;
 
-    paging_map_kernel(base, base, VM_WRITE | VM_UNCACHED);
-    if (iowin_mmio(&c->regs, (volatile void *)base, 0x1000) != 0) return 0;
+    volatile uint8_t *mmio = (volatile uint8_t *)paging_map_phys(base, 0x1000, VM_WRITE | VM_UNCACHED);
+    if (!mmio || iowin_mmio(&c->regs, mmio, 0x1000) != 0) return 0;
 
     c->dma_v = usb_dma_alloc(ODMA_PAGES, ODMA_VBASE + index * 0x10000u, &c->dma);
     if (!c->dma_v) {

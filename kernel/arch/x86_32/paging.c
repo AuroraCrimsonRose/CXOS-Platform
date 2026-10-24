@@ -89,6 +89,25 @@ void paging_map_kernel(uintptr_t virt, paddr_t phys, uint32_t vm) {
     map_raw(virt, phys, vm, 0);
 }
 
+/* Where it sits: virtual = physical. Device registers must lie in the kernel
+   half: only it is shared by every address space, so registers mapped below
+   it would fault the moment a driver touched them from a syscall. Firmware
+   tables are read at boot, before any process exists. */
+volatile void *paging_map_phys(paddr_t phys, uint32_t len, uint32_t vm) {
+    paddr_t last = phys + len - 1;   /* inclusive: a range may end at 4 GB */
+    if (len == 0 || last < phys) return 0;
+    if ((vm & VM_UNCACHED) && phys < KERNEL_VBASE) {
+        klog_u32("PAGING", SEV_WARN, "device registers below the kernel half: ", phys,
+                 LOG_COLOR_VALUE, " - not visible from a process address space");
+        return 0;
+    }
+    for (paddr_t a = phys & ~0xFFFu; ; a += PAGE_SIZE) {
+        paging_map_kernel(a, a, vm);
+        if (a == (last & ~0xFFFu)) break;
+    }
+    return (volatile void *)phys;
+}
+
 /* Map a page into the ring-3 half. Returns 0, or -1 if the address is not in
    the user half - which is the whole reason this exists. The CXEX loader reaches
    the page tables through here, and an image naming 0xC0000000 would otherwise

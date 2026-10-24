@@ -746,15 +746,14 @@ static int ehci_start(struct ehci_hc *c, const struct pci_device *dev, unsigned 
 
     uint32_t base = pci_bar_mmio32(dev, 0, "EHCI");
     if (base == 0) return 0;
-    for (uint32_t off = 0; off < 0x1000; off += 0x1000)
-        paging_map_kernel(base + off, base + off, VM_WRITE | VM_UNCACHED);
-    if (iowin_mmio(&c->cap_regs, (volatile void *)base, EHCI_BAR_SIZE) != 0) return 0;
+    volatile uint8_t *mmio = (volatile uint8_t *)paging_map_phys(base, 0x1000, VM_WRITE | VM_UNCACHED);
+    if (!mmio || iowin_mmio(&c->cap_regs, mmio, EHCI_BAR_SIZE) != 0) return 0;
 
     uint32_t hccparams = cap_rd32(c, CAP_HCCPARAMS);
     ehci_bios_handoff(dev, hccparams);
 
     uint8_t caplen = cap_rd8(c, CAP_CAPLENGTH);
-    if (iowin_mmio(&c->op_regs, (volatile void *)(base + caplen), EHCI_BAR_SIZE - caplen) != 0)
+    if (iowin_mmio(&c->op_regs, mmio + caplen, EHCI_BAR_SIZE - caplen) != 0)
         return 0;
 
     uint32_t hcsparams = cap_rd32(c, CAP_HCSPARAMS);

@@ -66,7 +66,7 @@ fn gfx_text(x: u32, y: u32, s: *u8, fg: color, bg: color) -> i32 {
     let a: fb_op_args;
     a.op = FB_OP_DRAW_TEXT;
     a.x = x; a.y = y; a.w = 0; a.h = 0;
-    a.color = fg; a.color2 = bg; a.text = s;
+    a.color = fg; a.color2 = bg; a.text = s as u32;
     return fb_op(&a);
 }
 
@@ -82,7 +82,7 @@ fn gfx_set_font(name: *u8) -> i32 {
     let a: fb_op_args;
     a.op = FB_OP_SET_FONT;
     a.x = 0; a.y = 0; a.w = 0; a.h = 0;
-    a.color = 0; a.color2 = 0; a.text = name;
+    a.color = 0; a.color2 = 0; a.text = name as u32;
     return fb_op(&a);
 }
 
@@ -92,7 +92,7 @@ fn gfx_info(out: *u32) -> i32 {
     let a: fb_op_args;
     a.op = FB_OP_INFO;
     a.x = 0; a.y = 0; a.w = 0; a.h = 0; a.color = 0; a.color2 = 0;
-    a.out = out;
+    a.out = out as u32;
     return fb_op(&a);
 }
 

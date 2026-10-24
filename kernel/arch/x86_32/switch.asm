@@ -7,7 +7,7 @@
 bits 32
 global context_switch
 
-; void context_switch(uint32_t *old_esp, uint32_t new_esp)
+; void context_switch(uintptr_t *old_esp, uintptr_t new_esp)  (arch/cpu.h)
 ;   Saves the current thread's callee-saved registers on its stack, stores the
 ;   resulting ESP into *old_esp, then loads new_esp and restores the next
 ;   thread's saved registers. Returns into the next thread.

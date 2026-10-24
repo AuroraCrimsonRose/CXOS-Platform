@@ -40,7 +40,7 @@ struct cxex_load_ops {
 
        It lives here rather than as a constant in the loader because the loader
        is deliberately free of kernel headers, so it stays host-testable with
-       mock ops. The kernel binding sets it to KERNEL_VBASE; a test can set it to
+       mock ops. The kernel binding sets it to USER_ADDR32_END; a test can set it to
        whatever it wants to exercise. Zero means "no limit" and is refused, so a
        caller that forgets it fails loudly rather than silently losing the check. */
     uint32_t va_limit;
@@ -48,11 +48,11 @@ struct cxex_load_ops {
     /* Allocate one page, ZEROED, for the target space. Return a pointer the
        loader can write the page's contents through, and set *out_phys to the
        physical address that map_page should map. NULL on failure. */
-    void *(*get_page)(void *ctx, uint32_t *out_phys);
+    void *(*get_page)(void *ctx, uint64_t *out_phys);
 
     /* Map physical page `phys` at page-aligned target virtual address `virt`
        with the given prot bits. Return 0 on success, non-zero on failure. */
-    int (*map_page)(void *ctx, uint32_t virt, uint32_t phys, uint32_t prot);
+    int (*map_page)(void *ctx, uint32_t virt, uint64_t phys, uint32_t prot);
 
     /* Charge `pages` 4 KB pages to whoever owns this load. Called ONCE, with
        the whole bill, after validation and before the first get_page - so an

@@ -24,7 +24,7 @@ static uint32_t      handle_limit = HTAB_LIMIT_DEFAULT;   /* kernel.xkco max_han
    bookkeeping that describes them. Never while one of its threads can run in
    it: the last one is gone, or there never was one. */
 static void release_space(struct proc *p) {
-    uint32_t pd = p->pd_phys;
+    paddr_t pd = p->pd_phys;
     if (!pd) return;
     p->pd_phys = 0;
     vm_proc_reset(p->pid);    /* bookkeeping only: the release frees the frames */

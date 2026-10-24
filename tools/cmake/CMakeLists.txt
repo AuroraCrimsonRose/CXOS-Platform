@@ -484,11 +484,40 @@ add_custom_command(
     COMMENT "Checking the architecture boundary"
 )
 
+# ---- generic code is width-clean (roadmap Phase 0 step 5) ----
+# Every kernel C source outside kernel/arch/ must also compile for x86-64,
+# warning-free, with -Wshorten-64-to-32 an error: a pointer, a paddr_t or a
+# size_t squeezed through uint32_t builds silently on x86-32 and truncates on
+# x86-64. Syntax only - no object is kept - so it costs one parse per file.
+# The kernel does not link until it passes, as with the boundary above.
+set(WIDTH_CHECK_FLAGS --target=x86_64-elf -ffreestanding -fno-pic -mcmodel=kernel
+            -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -mno-implicit-float
+            -Wall -Wextra -Wshorten-64-to-32 -Werror
+            ${CXK_DEFS} ${KERNEL_INCLUDES} -I${BUILD_DIR} -fsyntax-only)
+set(WIDTH_CHECK_STAMPS "")
+foreach(src ${KERNEL_C_SRCS})
+    if(src MATCHES "/kernel/arch/")
+        continue()
+    endif()
+    get_filename_component(name ${src} NAME_WE)
+    set(stamp ${BUILD_DIR}/w64_${name}.ok)
+    set(dep ${BUILD_DIR}/w64_${name}.d)
+    add_custom_command(
+        OUTPUT ${stamp}
+        COMMAND ${KCC} ${WIDTH_CHECK_FLAGS} -MD -MF ${dep} -MT ${stamp} ${src}
+        COMMAND ${CMAKE_COMMAND} -E touch ${stamp}
+        DEPENDS ${src}
+        DEPFILE ${dep}
+        COMMENT "W64 ${name}.c"
+    )
+    list(APPEND WIDTH_CHECK_STAMPS ${stamp})
+endforeach()
+
 # ---- link the kernel (higher-half) ----
 add_custom_command(
     OUTPUT ${KERNEL_ELF}
     COMMAND ${CMAKE_LD} -m elf_i386 -T ${LINKER} -o ${KERNEL_ELF} ${KERNEL_OBJS}
-    DEPENDS ${KERNEL_OBJS} ${ARCH_CHECK_STAMP}
+    DEPENDS ${KERNEL_OBJS} ${ARCH_CHECK_STAMP} ${WIDTH_CHECK_STAMPS}
     COMMENT "Linking kernel (higher-half)"
 )
 

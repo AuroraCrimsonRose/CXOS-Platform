@@ -38,9 +38,9 @@ fn _start() -> void {
     msg[10] = 0;     // NUL
 
     a.ep_handle = broker_handle();   // the broker channel (installed by spawn)
-    a.req       = &msg[0];
+    a.req       = (&msg[0]) as u32;
     a.req_len   = 10;
-    a.reply     = &reply[0];
+    a.reply     = (&reply[0]) as u32;
     a.reply_cap = 8;
 
     let rc: i32 = ipc_call(&a);   // blocks; executive prints msg, replies "ok"

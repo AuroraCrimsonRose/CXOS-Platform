@@ -230,7 +230,7 @@ void kmain(uintptr_t cxbi_phys) {
        stack like every other thread, so an overflow is a panic naming "main"
        rather than corruption of whatever .bss sits underneath. Nothing on the
        old stack is needed again: the rest of boot is kmain_late, entered fresh. */
-    uint32_t main_top = kstack_alloc(KSTACK_MAIN_SIZE, 0, 0);
+    uintptr_t main_top = kstack_alloc(KSTACK_MAIN_SIZE, 0, 0);
     if (!main_top) {
         klog("KSTACK", SEV_WARN, "no guarded stack for thread 0 - staying on the boot stack");
         kmain_late();

@@ -32,9 +32,9 @@ static uint32_t pack_ip(const ip4_t a) {
            ((uint32_t)a[2] << 8)  | (uint32_t)a[3];
 }
 
-int sys_net_op(const struct net_op_args *ua) {
-    if (!user_ptr_readable((uint32_t)ua, sizeof *ua)) return E_FAULT;
-    struct net_op_args a = *ua;           /* copy out of user space */
+int sys_net_op(uint32_t ua) {
+    struct net_op_args a;           /* copy out of user space */
+    if (user_copy_in(&a, ua, sizeof a) != 0) return E_FAULT;
 
     switch (a.op) {
 
@@ -43,21 +43,21 @@ int sys_net_op(const struct net_op_args *ua) {
 
         case NET_OP_MAC: {
             if (a.len < 6) return E_RANGE;
-            if (!user_ptr_writable((uint32_t)a.data, 6)) return E_FAULT;
+            if (!user_ptr_writable(a.data, 6)) return E_FAULT;
             const uint8_t *m = netif_mac();
-            uint8_t *dst = (uint8_t *)a.data;
+            uint8_t *dst = (uint8_t *)user_ptr(a.data);
             for (int i = 0; i < 6; i++) dst[i] = m[i];
             return 6;
         }
 
         case NET_OP_GET_IP: {
-            if (!user_ptr_writable((uint32_t)a.out, 4 * sizeof(uint32_t))) return E_FAULT;
+            if (!user_ptr_writable(a.out, 4 * sizeof(uint32_t))) return E_FAULT;
             const struct net_config *c = netif_cfg();
             if (!c) return E_NOENT;
-            a.out[0] = pack_ip(c->ip);
-            a.out[1] = pack_ip(c->mask);
-            a.out[2] = pack_ip(c->gateway);
-            a.out[3] = pack_ip(c->dns1);
+            ((uint32_t *)user_ptr(a.out))[0] = pack_ip(c->ip);
+            ((uint32_t *)user_ptr(a.out))[1] = pack_ip(c->mask);
+            ((uint32_t *)user_ptr(a.out))[2] = pack_ip(c->gateway);
+            ((uint32_t *)user_ptr(a.out))[3] = pack_ip(c->dns1);
             return 0;
         }
 
@@ -109,22 +109,22 @@ int sys_net_op(const struct net_op_args *ua) {
                believed it, so every timeout was reported as a 0 ms reply.) */
             int r = icmp_ping(dst, (uint16_t)a.len, &rtt);   /* rtt in microseconds */
             if (a.out) {
-                if (!user_ptr_writable((uint32_t)a.out, sizeof(uint32_t))) return E_FAULT;
-                a.out[0] = r ? rtt : 0;            /* rtt is only valid on success */
+                if (!user_ptr_writable(a.out, sizeof(uint32_t))) return E_FAULT;
+                ((uint32_t *)user_ptr(a.out))[0] = r ? rtt : 0;            /* rtt is only valid on success */
             }
             return r;                              /* 1 = reply, 0 = timeout */
         }
 
         case NET_OP_SEND: {
             if (a.len == 0 || a.len > 1514) return E_RANGE;
-            if (!user_ptr_readable((uint32_t)a.data, a.len)) return E_FAULT;
-            return netif_send(a.data, (uint16_t)a.len);
+            if (!user_ptr_readable(a.data, a.len)) return E_FAULT;
+            return netif_send(user_ptr(a.data), (uint16_t)a.len);
         }
 
         case NET_OP_RECV: {
             if (a.len == 0) return E_RANGE;
-            if (!user_ptr_writable((uint32_t)a.data, a.len)) return E_FAULT;
-            return netif_receive(a.data, (uint16_t)a.len);
+            if (!user_ptr_writable(a.data, a.len)) return E_FAULT;
+            return netif_receive(user_ptr(a.data), (uint16_t)a.len);
         }
 
         default:

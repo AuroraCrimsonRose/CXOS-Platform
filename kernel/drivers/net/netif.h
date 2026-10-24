@@ -59,6 +59,6 @@ void netif_ip_str(const ip4_t ip, char *buf);
 
 /* SYS_NET_OP handler (kernel/drivers/net/net_syscall.c) */
 struct net_op_args;
-int sys_net_op(const struct net_op_args *ua);
+int sys_net_op(uint32_t ua);
 
 #endif

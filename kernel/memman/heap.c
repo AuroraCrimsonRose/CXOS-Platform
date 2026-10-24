@@ -31,7 +31,7 @@ typedef struct block {
 static block_t *head = 0;
 static uint32_t total_bytes = 0;
 static uint32_t used_bytes = 0;
-static uint32_t heap_virt_next = HEAP_VIRT_BASE;   /* next free virtual address */
+static uintptr_t heap_virt_next = HEAP_VIRT_BASE;   /* next free virtual address */
 
 /* ---- size classes ----------------------------------------------------------
    Small requests come from object caches (ocache.h), one per power of two
@@ -71,14 +71,13 @@ static block_t *heap_grow(size_t need) {
     if (pages > (OCACHE_WINDOW_BASE - heap_virt_next) / PMM_PAGE_SIZE) return 0;
 
     /* physically-contiguous frames (so the block is contiguous once mapped) */
-    void *phys = pmm_alloc_pages(pages);
+    paddr_t phys = pmm_alloc_pages(pages);
     if (!phys) return 0;
 
-    uint32_t virt_base = heap_virt_next;
-    uint32_t pbase = (uint32_t)phys;
+    uintptr_t virt_base = heap_virt_next;
     for (size_t i = 0; i < pages; i++) {
         paging_map_kernel(virt_base + i * PMM_PAGE_SIZE,
-                   pbase     + i * PMM_PAGE_SIZE,
+                   phys      + i * PMM_PAGE_SIZE,
                    VM_WRITE);   /* kernel-only, writable */
     }
     heap_virt_next += pages * PMM_PAGE_SIZE;

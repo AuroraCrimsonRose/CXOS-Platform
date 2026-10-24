@@ -263,17 +263,17 @@ void ocache_sys_init(void) {
 void ocache_unmap(uintptr_t va, uint32_t pages) {
     for (uint32_t p = 0; p < pages; p++) {
         uint32_t v = (uint32_t)va + p * OCACHE_PAGE;
-        uint32_t phys = paging_get_phys(v) & ~0xFFFu;
+        paddr_t phys = paging_get_phys(v) & ~(paddr_t)0xFFF;
         paging_unmap(v);
-        if (phys) pmm_free((void *)phys);
+        if (phys) pmm_free(phys);
     }
 }
 
 int ocache_map(uintptr_t va, uint32_t pages) {
     for (uint32_t p = 0; p < pages; p++) {
-        void *frame = pmm_alloc();
+        paddr_t frame = pmm_alloc();
         if (!frame) { ocache_unmap(va, p); return -1; }
-        paging_map_kernel((uint32_t)va + p * OCACHE_PAGE, (uint32_t)frame, VM_WRITE);
+        paging_map_kernel((uintptr_t)va + p * OCACHE_PAGE, frame, VM_WRITE);
     }
     return 0;
 }

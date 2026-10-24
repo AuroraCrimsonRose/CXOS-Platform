@@ -684,10 +684,10 @@ fn cmd_run(arg: *u8) -> void {
 
     let a: spawn_args;
     memzero((&a) as *u8, sizeof a);
-    a.name            = name;
+    a.name            = name as u32;
     a.broker_endpoint = 0 - 1;
     a.caps            = caps;
-    a.args            = &run_argbuf[0];
+    a.args            = (&run_argbuf[0]) as u32;
     a.args_len        = blob;
 
     let pid: i32 = E_NOENT;
@@ -699,7 +699,7 @@ fn cmd_run(arg: *u8) -> void {
             let ext: u32 = 0;
             while (ext <= RUN_EXTS) {
                 let p: *u8 = run_candidate(run_dirs[d], name, ext);
-                a.name = p;
+                a.name = p as u32;
                 pid = exec_path(p, &a);
                 // Only E_NOENT means "not here, keep looking". A file that
                 // exists but will not run - unsigned, a directory, not a CXEX
@@ -710,7 +710,7 @@ fn cmd_run(arg: *u8) -> void {
             }
             d = d + 1;
         }
-        a.name = name;
+        a.name = name as u32;
     }
 
     if (pid < 0) {

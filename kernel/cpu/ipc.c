@@ -92,7 +92,7 @@ int ep_create(void) {
     ep->recv_tid     = -1;
     ep->caller_tid   = -1;
     ep->caller_pid   = -1;
-    ep->reply_ptr    = NULL;
+    ep->reply_ptr    = 0;
     ep->reply_cap    = 0;
     ep->msg_len      = 0;
 
@@ -143,13 +143,13 @@ static int call_on(struct endpoint *ep, const struct ipc_call_args *ap) {
        so a caller that passes an unusable reply buffer is told now rather than
        after a whole round trip through the broker. Haiku keeps its up-front
        IS_USER_ADDRESS check for the same reason. */
-    if (a.reply_cap && !user_ptr_writable((uint32_t)a.reply, a.reply_cap)) return E_FAULT;
+    if (a.reply_cap && !user_ptr_writable(a.reply, a.reply_cap)) return E_FAULT;
 
     /* Before anything writes ep->buf: it still holds an in-flight
        transaction's message if one is live. */
     if (ep->caller_tid != -1) return E_AGAIN;   /* single in-flight (v1) */
 
-    if (user_copy_in(ep->buf, (uint32_t)a.req, a.req_len) != 0) return E_FAULT;
+    if (user_copy_in(ep->buf, a.req, a.req_len) != 0) return E_FAULT;
     ep->msg_len    = a.req_len;
     ep->reply_ptr  = a.reply;
     ep->reply_cap  = a.reply_cap;
@@ -177,15 +177,15 @@ static int call_on(struct endpoint *ep, const struct ipc_call_args *ap) {
        may return the slot to the pool and wipe buf. */
     uint32_t rl = ep->msg_len;
     if (rl > ep->reply_cap) rl = ep->reply_cap;
-    int rc = user_copy_out((uint32_t)ep->reply_ptr, ep->buf, rl);
+    int rc = user_copy_out(ep->reply_ptr, ep->buf, rl);
 
     ep->caller_tid = -1;   /* rendezvous complete either way */
     return rc != 0 ? E_FAULT : (int)rl;
 }
 
-int ipc_call(const struct ipc_call_args *ua) {
+int ipc_call(uint32_t ua) {
     struct ipc_call_args a;
-    if (user_copy_in(&a, (uint32_t)ua, sizeof a) != 0) return E_FAULT;
+    if (user_copy_in(&a, ua, sizeof a) != 0) return E_FAULT;
 
     struct endpoint *ep = ep_from_handle(a.ep_handle, HRIGHT_SEND, NULL);
     if (!ep) return E_BADF;
@@ -200,8 +200,8 @@ static int recv_on(struct endpoint *ep, const struct ipc_recv_args *ap) {
     struct ipc_recv_args a = *ap;
     /* Early rejects, as in ipc_call: both buffers are validated again at the
        copies below, which are the checks that count. */
-    if (a.cap && !user_ptr_writable((uint32_t)a.buf, a.cap)) return E_FAULT;
-    if (a.sender && !user_ptr_writable((uint32_t)a.sender, sizeof(int))) return E_FAULT;
+    if (a.cap && !user_ptr_writable(a.buf, a.cap)) return E_FAULT;
+    if (a.sender && !user_ptr_writable(a.sender, sizeof(int))) return E_FAULT;
 
     while (ep->caller_tid == -1) {     /* no request staged yet: wait */
         ep->recv_tid = thread_current_id();
@@ -216,21 +216,21 @@ static int recv_on(struct endpoint *ep, const struct ipc_recv_args *ap) {
        slot to be reclaimed and wiped underneath the copy. */
     uint32_t ml = ep->msg_len;
     if (ml > a.cap) ml = a.cap;
-    int rc = user_copy_out((uint32_t)a.buf, ep->buf, ml);
+    int rc = user_copy_out(a.buf, ep->buf, ml);
 
     /* The sender's pid, written only if the body made it out. A failure here
        loses the message, as it does in Haiku's _user_read_port_etc: the
        request has been taken off the endpoint by then and there is nowhere to
        put it back. The up-front check above is what keeps that narrow. */
     if (rc == 0 && a.sender)
-        rc = user_copy_out((uint32_t)a.sender, &ep->caller_pid, sizeof(int));
+        rc = user_copy_out(a.sender, &ep->caller_pid, sizeof(int));
 
     return rc != 0 ? E_FAULT : (int)ml;
 }
 
-int ipc_recv(const struct ipc_recv_args *ua) {
+int ipc_recv(uint32_t ua) {
     struct ipc_recv_args a;
-    if (user_copy_in(&a, (uint32_t)ua, sizeof a) != 0) return E_FAULT;
+    if (user_copy_in(&a, ua, sizeof a) != 0) return E_FAULT;
 
     struct endpoint *ep = ep_from_handle(a.ep_handle, HRIGHT_RECV, NULL);
     if (!ep) return E_BADF;
@@ -249,16 +249,16 @@ static int reply_on(struct endpoint *ep, const struct ipc_reply_args *ap) {
        and the caller still blocked, which is what it did before this change
        too: whether a failed reply should abort the transaction and wake the
        caller with an error is a behaviour decision, not a copy-safety one. */
-    if (user_copy_in(ep->buf, (uint32_t)a.data, a.len) != 0) return E_FAULT;
+    if (user_copy_in(ep->buf, a.data, a.len) != 0) return E_FAULT;
     ep->msg_len = a.len;
 
     thread_unblock(ep->caller_tid);   /* caller resumes in ipc_call, copies reply */
     return 0;
 }
 
-int ipc_reply(const struct ipc_reply_args *ua) {
+int ipc_reply(uint32_t ua) {
     struct ipc_reply_args a;
-    if (user_copy_in(&a, (uint32_t)ua, sizeof a) != 0) return E_FAULT;
+    if (user_copy_in(&a, ua, sizeof a) != 0) return E_FAULT;
 
     struct endpoint *ep = ep_from_handle(a.ep_handle, HRIGHT_RECV, NULL);
     if (!ep) return E_BADF;

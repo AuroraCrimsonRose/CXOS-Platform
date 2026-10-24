@@ -137,9 +137,9 @@ void vm_uncharge(int pid, uint32_t bytes) {
    must be able to treat it as though it had never asked. */
 static void undo(uint32_t base, uint32_t done) {
     for (uint32_t i = 0; i < done; i += PAGE_SIZE) {
-        uint32_t phys = paging_get_phys(base + i);
+        paddr_t phys = paging_get_phys(base + i);
         paging_unmap(base + i);
-        if (phys) pmm_free((void *)phys);
+        if (phys) pmm_free(phys);
     }
 }
 
@@ -188,7 +188,7 @@ int vm_map(int pid, struct mem_op_args *a) {
 
     uint32_t flags = vm_flags(a->prot);
     for (uint32_t off = 0; off < len; off += PAGE_SIZE) {
-        void *frame = pmm_alloc();
+        paddr_t frame = pmm_alloc();
         if (!frame) { undo(base, off); return E_NOMEM; }
 
         /* Mapped writable first so the zeroing below can happen through this
@@ -200,12 +200,12 @@ int vm_map(int pid, struct mem_op_args *a) {
            but it unwinds the same way the allocation failure does: returning
            without undo() would leave the pages already mapped in this loop
            stranded in the address space with nothing owning them. */
-        if (paging_map_user(base + off, (uint32_t)frame, VM_WRITE) != 0) {
+        if (paging_map_user(base + off, frame, VM_WRITE) != 0) {
             pmm_free(frame);
             undo(base, off);
             return E_INVAL;
         }
-        uint32_t *z = (uint32_t *)(base + off);
+        uint32_t *z = (uint32_t *)(uintptr_t)(base + off);
         for (uint32_t i = 0; i < PAGE_SIZE / 4u; i++) z[i] = 0;
 
         /* The re-protect is checked for the same reason the mapping above is,
@@ -218,7 +218,7 @@ int vm_map(int pid, struct mem_op_args *a) {
            the one this call reuses; that is a fact about the callee, which is
            exactly the kind of reasoning a caller should not be doing. */
         if (flags != VM_WRITE &&
-            paging_map_user(base + off, (uint32_t)frame, flags) != 0) {
+            paging_map_user(base + off, frame, flags) != 0) {
             undo(base, off + PAGE_SIZE);   /* this page is mapped: unwind it too */
             return E_INVAL;
         }

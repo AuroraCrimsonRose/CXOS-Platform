@@ -213,7 +213,7 @@ const struct usb_device *usb_get(unsigned index) {
    has nothing wider), which every page is while the kernel is 32-bit. The
    64-bit kernel must ask for memory below 4 GB here. */
 void *usb_dma_alloc(uint32_t pages, uintptr_t vbase, uint32_t *phys) {
-    void *p = pmm_alloc_pages(pages);
+    paddr_t p = pmm_alloc_pages(pages);
     if (!p) return 0;
     uint32_t base = (uint32_t)(uintptr_t)p;
     for (uint32_t i = 0; i < pages; i++)

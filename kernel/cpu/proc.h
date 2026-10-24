@@ -32,6 +32,7 @@
 #include "object/kobj.h"
 #include "object/htab.h"
 #include "memman/vmregion.h"
+#include "arch/paging.h"   /* paddr_t */
 
 /* Pids are below this. Pids come from a table that grows (object/idtab.h);
    this only bounds it. A process needs a thread to do anything, so the bound
@@ -51,7 +52,7 @@ struct proc {
     char        outbuf[48]; /* one log line in the making (SLOG_EVT_W) */
     struct htab handles;
     int32_t     broker;     /* its SEND handle on its launcher's broker, or -1 */
-    uint32_t    pd_phys;    /* its own page directory, freed with it; 0 = the kernel's */
+    paddr_t     pd_phys;    /* its own page directory, freed with it; 0 = the kernel's */
     struct vm_proc vm;      /* its mappings and memory quota (memman/vmregion.h) */
 };
 

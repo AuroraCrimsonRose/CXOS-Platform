@@ -19,10 +19,10 @@ void arch_syscall_gate_init(void);
 /* Run user code at `entry` on the user stack `user_sp`. The kernel's own
    return state is kept in save_slot (the thread's, thread_current_usave()).
    Returns only when that code ends, with the value given to return_to_kernel. */
-int  enter_usermode(uint32_t entry, uint32_t user_sp, uint32_t *save_slot);
+int  enter_usermode(uintptr_t entry, uintptr_t user_sp, uintptr_t *save_slot);
 
 /* From inside a system call or a user fault: abandon the user code and return
    `retval` from the enter_usermode that started it. */
-void return_to_kernel(int retval, uint32_t *save_slot);
+void return_to_kernel(int retval, uintptr_t *save_slot);
 
 #endif

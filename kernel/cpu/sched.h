@@ -50,21 +50,21 @@ enum thread_state {
 };
 
 struct thread {
-    uint32_t esp;              /* saved kernel stack pointer (THE context) */
-    uint32_t stack_base;       /* guarded kernel stack base, from kstack_alloc (freed on exit) */
+    uintptr_t esp;             /* saved kernel stack pointer (THE context) */
+    uintptr_t stack_base;      /* guarded kernel stack base, from kstack_alloc (freed on exit) */
     enum thread_state state;
     int       id;              /* thread id (not a pid: see proc.h) */
     struct proc *proc;         /* the process it runs in; holds a reference */
     const char *name;
     int       exit_code;       /* set on exit */
-    uint32_t  user_stack_base; /* allocated ring-3 stack (user processes) */
+    uintptr_t user_stack_base; /* allocated ring-3 stack (user processes) */
     /* per-process ring-3 return state: enter_usermode saves the kernel esp +
        eflags here so SYS_EXIT (return_to_kernel) can come back, even if another
        ring-3 process runs in between (preemption during ring 3). */
-    uint32_t  u_saved_esp;
-    uint32_t  u_saved_flags;
-    uint32_t  kstack_top;      /* top of this process's esp0 stack -> TSS esp0 */
-    uint32_t  kstack_base;     /* guarded esp0 stack base, from kstack_alloc (freed on exit) */
+    uintptr_t u_saved_esp;
+    uintptr_t u_saved_flags;
+    uintptr_t kstack_top;      /* top of this process's esp0 stack -> TSS esp0 */
+    uintptr_t kstack_base;     /* guarded esp0 stack base, from kstack_alloc (freed on exit) */
     /* Timed sleep. `wake_tick` is the timer tick this thread becomes runnable
        again; `sleeping` says the field means anything, because tick 0 is a
        real tick and a wrapped counter makes "0 = not sleeping" a lie roughly
@@ -161,11 +161,11 @@ void thread_mark_user(int id);
 
 /* pointer to the current process's [saved_esp, saved_flags] slot (2 words),
    for enter_usermode/return_to_kernel to stash per-process ring-3 return state. */
-uint32_t *thread_current_usave(void);
+uintptr_t *thread_current_usave(void);
 
 /* set/get a process's kernel-stack top (used for the TSS esp0). */
-void     thread_set_kstack_top(int id, uint32_t top);
-uint32_t thread_current_kstack_top(void);
+void     thread_set_kstack_top(int id, uintptr_t top);
+uintptr_t thread_current_kstack_top(void);
 
 /* allocate a dedicated esp0 (ring-0 entry) stack for a ring-3 process so timer
    preemption / syscalls from ring 3 land on it (not the trampoline stack).
@@ -195,7 +195,7 @@ struct htab *thread_htab(int id);
 int32_t  thread_broker(int id);
 void     thread_set_broker(int id, int32_t h);
 void     thread_set_caps(int id, uint32_t caps);
-void     thread_set_space(int id, uint32_t pd_phys);   /* CR3 to load when this thread runs */
+void     thread_set_space(int id, paddr_t pd_phys);   /* CR3 to load when this thread runs */
 void     thread_block(void);            /* block the current thread (IPC wait) + yield */
 void     thread_unblock(int id);        /* make a blocked thread runnable again */
 

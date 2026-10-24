@@ -208,7 +208,7 @@ int cxex_load(const uint8_t *file, size_t len,
         uint32_t va_end = s.virt_addr + s.mem_size;              /* exclusive */
 
         for (uint32_t pg = va_lo; pg < va_end; pg += CXEX_PAGE_SIZE) {
-            uint32_t phys = 0;
+            uint64_t phys = 0;
             uint8_t *dst = (uint8_t *)ops->get_page(ops->ctx, &phys);
             if (!dst) return CXEX_LOAD_NOMEM;      /* page arrives zeroed (BSS-ready) */
 

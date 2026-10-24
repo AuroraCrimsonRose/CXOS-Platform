@@ -39,8 +39,8 @@ uint64_t xhci_spad_entry(paddr_t array, uint32_t i) {
 /* Free the first `filled` pages and the array, sized for `count` entries. */
 static void release(paddr_t array, uint32_t filled, uint32_t count) {
     for (uint32_t i = 0; i < filled; i++)
-        pmm_free((void *)(uintptr_t)xhci_spad_entry(array, i));
-    pmm_free_pages((void *)(uintptr_t)array, array_pages(count));
+        pmm_free(xhci_spad_entry(array, i));
+    pmm_free_pages(array, array_pages(count));
 }
 
 int xhci_spad_build(uint32_t count, paddr_t *array) {

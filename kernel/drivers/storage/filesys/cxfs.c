@@ -1195,8 +1195,7 @@ int cxfs_read_file(uint32_t id, void *buf, uint32_t cap) {
     if (!cxfs_check_perm(&e, CXFS_ACC_READ)) return -1;    /* v2: permission */
     if (!entry_extents_ok(&e)) return -1;   /* corrupt extents: refuse, don't read */
 
-    uint32_t want = e.size;
-    if (want > cap) want = cap;
+    uint32_t want = e.size > cap ? cap : (uint32_t)e.size;
 
     uint8_t *dst = (uint8_t *)buf;
     uint32_t got = 0;

@@ -91,7 +91,7 @@
                                                    Sits beside AHCI's window (0xE0000000)
                                                    and clear of the kernel image/heap at
                                                    0xC01xxxxx. Region is 0x22000 (136 KB). */
-#define DMA_V(phys) ((phys) - E1000_DMA_BASE + E1000_DMA_VBASE)
+#define DMA_V(phys) ((uintptr_t)((phys) - E1000_DMA_BASE + E1000_DMA_VBASE))
 /* layout: RX descriptors, TX descriptors, then RX buffers, then TX buffers */
 #define RX_DESC_ADDR   (E1000_DMA_BASE + 0x0000)
 #define TX_DESC_ADDR   (E1000_DMA_BASE + 0x1000)
@@ -245,9 +245,8 @@ int e1000_init(void) {
        would serve stale values. The DMA region mapped below is deliberately
        left cacheable - x86 snoops DMA, so write-back is both correct and
        faster there. */
-    for (uint32_t off = 0; off < 0x20000; off += 0x1000)
-        paging_map_kernel(base + off, base + off, VM_WRITE | VM_UNCACHED);
-    if (iowin_mmio(&regs, (volatile void *)base, 0x20000) != 0) return 0;
+    volatile uint8_t *mmio = (volatile uint8_t *)paging_map_phys(base, 0x20000, VM_WRITE | VM_UNCACHED);
+    if (!mmio || iowin_mmio(&regs, mmio, 0x20000) != 0) return 0;
 
     /* map the NIC DMA region */
     /* map the DMA region into the KERNEL half so every address space sees it */

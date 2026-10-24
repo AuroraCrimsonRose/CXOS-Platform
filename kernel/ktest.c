@@ -98,7 +98,7 @@ static int ep_handles(struct endpoint *ep) { return (int)atomic_load(&ep->hdr.ha
 static volatile int      pt_sib_done, pt_first_done, pt_first_ok;
 static volatile int32_t  pt_handle;
 static volatile int      pt_pid[2], pt_tid[2];
-static volatile uint32_t pt_space[2];
+static volatile paddr_t pt_space[2];
 static struct htab *volatile pt_table[2];
 
 static void pt_note(int i) {
@@ -171,7 +171,7 @@ static int test_ocache_pages(void) {
     void *o[9];
     for (int i = 0; i < 9; i++) {
         o[i] = ocache_alloc(&c);
-        uint32_t a = (uint32_t)o[i];
+        uintptr_t a = (uintptr_t)o[i];
         if (!o[i]) return 0;
         if (a < OCACHE_WINDOW_BASE || a >= OCACHE_WINDOW_BASE + OCACHE_SLOTS * OCACHE_SPAN) return 0;
         if (paging_get_phys(a) == 0) return 0;
@@ -179,7 +179,7 @@ static int test_ocache_pages(void) {
     if (ocache_slabs(&c) != 3) return 0;
     if (free0 - pmm_free_count() != 3 * c.pages) return 0;
 
-    uint32_t first = (uint32_t)o[0] & ~0xFFFu;
+    uintptr_t first = (uintptr_t)o[0] & ~(uintptr_t)0xFFF;
     for (int i = 0; i < 9; i++) ocache_free(&c, o[i]);
     if (ocache_slabs(&c) != 0 || ocache_live(&c) != 0) return 0;
     if (pmm_free_count() != free0) return 0;
@@ -291,16 +291,16 @@ static int test_user_copy_validation(void) {
     const uint32_t va = 0x00810000u;   /* clear of ktest_user_ptr_writability's page */
     const uint8_t  src[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
 
-    void *frame = pmm_alloc();
+    paddr_t frame = pmm_alloc();
     if (!frame) return 0;
 
-    volatile uint8_t *p = (volatile uint8_t *)va;
+    volatile uint8_t *p = (volatile uint8_t *)user_ptr(va);
     int ok = 1;
 
     /* Writable: the copy must succeed and the bytes must actually land. A test
        that only checks refusals passes just as well against a copy that always
        refuses. */
-    if (paging_map_user(va, (uint32_t)frame, VM_WRITE) != 0) { ok = 0; goto done; }
+    if (paging_map_user(va, frame, VM_WRITE) != 0) { ok = 0; goto done; }
     for (int i = 0; i < 8; i++) p[i] = 0xAA;
     ok = ok && (user_copy_out(va, src, 8) == 0);
     for (int i = 0; i < 8; i++) ok = ok && (p[i] == src[i]);
@@ -313,7 +313,7 @@ static int test_user_copy_validation(void) {
        user_ptr_writable call in user_copy_out and this goes red on the count,
        not on the return value. */
     for (int i = 0; i < 8; i++) p[i] = 0xAA;
-    if (paging_map_user(va, (uint32_t)frame, 0) != 0) { ok = 0; goto done; }
+    if (paging_map_user(va, frame, 0) != 0) { ok = 0; goto done; }
     {
         uint32_t faults_before = usercopy_faults_recovered();
         ok = ok && (user_copy_out(va, src, 8) == E_FAULT);
@@ -335,10 +335,10 @@ static int test_user_copy_validation(void) {
     ok = ok && (user_copy_in((void *)src, 0, 0) == 0);
 
     /* A buffer straddling the kernel boundary is refused by both. */
-    ok = ok && (user_copy_out(KERNEL_VBASE - 4, src, 8) == E_FAULT);
+    ok = ok && (user_copy_out(USER_ADDR32_END - 4, src, 8) == E_FAULT);
     {
         uint8_t dst[8] = { 0 };
-        ok = ok && (user_copy_in(dst, KERNEL_VBASE - 4, 8) == E_FAULT);
+        ok = ok && (user_copy_in(dst, USER_ADDR32_END - 4, 8) == E_FAULT);
     }
 
 done:
@@ -370,12 +370,12 @@ static int test_user_copy_fault_recovery(void) {
 
     uint32_t faults_before = usercopy_faults_recovered();
 
-    if (user_copy_bytes((void *)va, src, 8) != 1) return 0;   /* faulted, recovered */
+    if (user_copy_bytes(user_ptr(va), src, 8) != 1) return 0;   /* faulted, recovered */
 
     /* Reading from it is recoverable in the same way. */
     {
         uint8_t dst[8] = { 0 };
-        if (user_copy_bytes(dst, (const void *)va, 8) != 1) return 0;
+        if (user_copy_bytes(dst, user_ptr(va), 8) != 1) return 0;
     }
 
     /* Exactly two faults, not none and not a storm: the recovery really fired,
@@ -418,31 +418,31 @@ static int test_cr0_write_protect(void) {
 
     if (!paging_kernel_obeys_readonly()) return 0;   /* WP must be set */
 
-    void *frame = pmm_alloc();
+    paddr_t frame = pmm_alloc();
     if (!frame) return 0;
 
     int ok = 1;
-    volatile uint8_t *p = (volatile uint8_t *)va;
+    volatile uint8_t *p = (volatile uint8_t *)user_ptr(va);
 
     /* Seed while it is still writable, then take the write permission away. */
-    if (paging_map_user(va, (uint32_t)frame, VM_WRITE) != 0) { ok = 0; goto done; }
+    if (paging_map_user(va, frame, VM_WRITE) != 0) { ok = 0; goto done; }
     for (int i = 0; i < 8; i++) p[i] = 0xAA;
-    if (paging_map_user(va, (uint32_t)frame, 0) != 0) { ok = 0; goto done; }
+    if (paging_map_user(va, frame, 0) != 0) { ok = 0; goto done; }
 
     {
         uint32_t faults_before = usercopy_faults_recovered();
         /* Before WP this returned 0 and the bytes changed. */
-        ok = ok && (user_copy_bytes((void *)va, src, 8) == 1);
+        ok = ok && (user_copy_bytes(user_ptr(va), src, 8) == 1);
         ok = ok && (usercopy_faults_recovered() == faults_before + 1);
         for (int i = 0; i < 8; i++) ok = ok && (p[i] == 0xAA);
     }
 
     /* Writable again: the same write must go through, so this is testing WP
        and not simply a mapping that never worked. */
-    if (paging_map_user(va, (uint32_t)frame, VM_WRITE) != 0) { ok = 0; goto done; }
+    if (paging_map_user(va, frame, VM_WRITE) != 0) { ok = 0; goto done; }
     {
         uint32_t faults_before = usercopy_faults_recovered();
-        ok = ok && (user_copy_bytes((void *)va, src, 8) == 0);
+        ok = ok && (user_copy_bytes(user_ptr(va), src, 8) == 0);
         ok = ok && (usercopy_faults_recovered() == faults_before);
         for (int i = 0; i < 8; i++) ok = ok && (p[i] == src[i]);
     }
@@ -504,7 +504,7 @@ static int test_paging(void) {
     uint32_t frame = (uint32_t)pmm_alloc();
     if (!frame) return 0;
     paging_map_kernel(test_virt, frame, VM_WRITE);
-    volatile uint32_t *p = (volatile uint32_t *)test_virt;
+    volatile uint32_t *p = (volatile uint32_t *)user_ptr(test_virt);
     *p = 0xCAFEBABE;
     int ok = (*p == 0xCAFEBABE) && (paging_get_phys(test_virt) == frame);
     ok = ok && !paging_is_user(test_virt);
@@ -518,7 +518,7 @@ static int test_paging(void) {
     ok = ok && paging_get_phys(test_virt) == 0;
     paging_unmap(test_virt);   /* whichever of these a broken pager made */
     paging_unmap(user_virt);
-    pmm_free((void *)frame);
+    pmm_free(frame);
     return ok;
 }
 
@@ -549,7 +549,7 @@ static int test_heap(void) {
     if (ok) {
         if (!ocache_owner(s1) || !ocache_owner(s2) || ocache_owner(s1) == ocache_owner(s2)) ok = 0;
         if (ocache_in_window(big)) ok = 0;
-        if (((uint32_t)s2 & 0xFFFu) + 2048u > 0x1000u) ok = 0;
+        if (((uintptr_t)s2 & 0xFFFu) + 2048u > 0x1000u) ok = 0;
         for (int i = 0; i < 2048; i++) if (s2[i]) { ok = 0; break; }
         if (heap_bytes_used() < used0 + 2049u) ok = 0;
         for (int i = 0; i < 2048; i++) s2[i] = 0xEE;
@@ -601,11 +601,11 @@ static int test_sched_preempt(void) {
  * kernel-only thread must see the dedicated stack, not the previous thread's,
  * and the boot thread must get its own back. Before 2026-10-16 a kernel-only
  * thread inherited whatever esp0 the last process left behind. */
-static volatile uint32_t esp0_seen_by_kthread = 0;
+static volatile uintptr_t esp0_seen_by_kthread = 0;
 static void esp0_kthread(void) { esp0_seen_by_kthread = arch_kernel_stack_current(); }
 
 static int test_esp0_follows_thread(void) {
-    uint32_t mine = thread_current_kstack_top();
+    uintptr_t mine = thread_current_kstack_top();
     /* Vacuous unless the two stacks differ: kmain gives thread 0 its own esp0. */
     if (mine == 0 || mine == arch_kernel_stack_default()) return 0;
 
@@ -1698,7 +1698,7 @@ static int vm_cycle(int pid) {
 
     /* Readable, writable, and zero - a frame off the free list may hold
        another process's memory, so anything non-zero here is a disclosure. */
-    volatile uint8_t *m = (volatile uint8_t *)first;
+    volatile uint8_t *m = (volatile uint8_t *)user_ptr(first);
     for (uint32_t i = 0; i < PAGE_SIZE; i++) if (m[i] != 0) goto done;
     m[0] = 0xA5; m[PAGE_SIZE - 1] = 0x5A;
     if (m[0] != 0xA5 || m[PAGE_SIZE - 1] != 0x5A) goto done;
@@ -2077,8 +2077,8 @@ static int test_lifecycle_sequences(void) {
 
     /* reachable while mapped, by both the check and the hardware */
     if (!user_ptr_writable(va, PAGE_SIZE)) { ok = 0; goto done_vm; }
-    *(volatile uint8_t *)va = 0xC7;
-    if (*(volatile uint8_t *)va != 0xC7)   { ok = 0; goto done_vm; }
+    *(volatile uint8_t *)user_ptr(va) = 0xC7;
+    if (*(volatile uint8_t *)user_ptr(va) != 0xC7)   { ok = 0; goto done_vm; }
 
     /* ---- 1b. the protection that was asked for is the protection applied ----
        Nothing asserted this before, which made a whole class of failure
@@ -2101,7 +2101,7 @@ static int test_lifecycle_sequences(void) {
     /* and the hardware agrees, because CR0.WP is set */
     uint32_t ro_faults = usercopy_faults_recovered();
     uint8_t  one = 0x5C;
-    if (user_copy_bytes((void *)ro, &one, 1) == 0)                { ok = 0; goto done_vm; }
+    if (user_copy_bytes(user_ptr(ro), &one, 1) == 0)                { ok = 0; goto done_vm; }
     if (usercopy_faults_recovered() != ro_faults + 1)             { ok = 0; goto done_vm; }
     if (vm_unmap(pid, ro, PAGE_SIZE) != E_OK)                     { ok = 0; goto done_vm; }
 
@@ -2117,7 +2117,7 @@ static int test_lifecycle_sequences(void) {
 
     uint32_t faults_before = usercopy_faults_recovered();
     uint8_t  sink = 0;
-    if (user_copy_bytes(&sink, (const void *)va, 1) == 0) { ok = 0; goto done_vm; }
+    if (user_copy_bytes(&sink, user_ptr(va), 1) == 0) { ok = 0; goto done_vm; }
     if (usercopy_faults_recovered() != faults_before + 1) { ok = 0; goto done_vm; }
 
 done_vm:
@@ -2461,15 +2461,15 @@ static int test_console_font_disk(void) {
     /* ---- the syscall refuses every name that could leave /System/Fonts ---- */
     if (fb_active()) {
         const uint32_t va = 0x00A00000u;
-        void *frame = pmm_alloc();
+        paddr_t frame = pmm_alloc();
         if (!frame) return 0;
-        if (paging_map_user(va, (uint32_t)frame, VM_WRITE) != 0) {
+        if (paging_map_user(va, frame, VM_WRITE) != 0) {
             pmm_free(frame);
             return 0;
         }
 
-        struct fb_op_args *args = (struct fb_op_args *)va;
-        char *nm = (char *)(va + 256);
+        struct fb_op_args *args = (struct fb_op_args *)user_ptr(va);
+        char *nm = (char *)user_ptr(va + 256);
 
         /* Each of these is a way out of the directory, or a way to confuse the
            path the kernel builds. The '.' rule is what makes ".." need no case
@@ -2484,9 +2484,9 @@ static int test_console_font_disk(void) {
             args->op = FB_OP_SET_FONT;
             args->x = args->y = args->w = args->h = 0;
             args->color = args->color2 = 0;
-            args->text = nm;
+            args->text = user_addr(nm);
             args->out = 0;
-            int rc = sys_fb_op(args);
+            int rc = sys_fb_op(user_addr(args));
             /* E_INVAL specifically, NOT "some error". The distinction is the
                security property: E_INVAL means the NAME RULES refused it,
                E_NOENT means the kernel built a path and went looking. Accepting
@@ -2505,8 +2505,8 @@ static int test_console_font_disk(void) {
         uint32_t k = 0;
         while (absent[k]) { nm[k] = absent[k]; k++; }
         nm[k] = '\0';
-        args->text = nm;
-        ok = ok && (sys_fb_op(args) == E_NOENT);
+        args->text = user_addr(nm);
+        ok = ok && (sys_fb_op(user_addr(args)) == E_NOENT);
         ok = ok && !xfnt_active();
 
         /* ---- where the name length bound actually is ----
@@ -2526,12 +2526,12 @@ static int test_console_font_disk(void) {
         const char *n59 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
         k = 0; while (n58[k]) { nm[k] = n58[k]; k++; } nm[k] = '\0';
-        args->text = nm;
-        ok = ok && (sys_fb_op(args) == E_NOENT);
+        args->text = user_addr(nm);
+        ok = ok && (sys_fb_op(user_addr(args)) == E_NOENT);
 
         k = 0; while (n59[k]) { nm[k] = n59[k]; k++; } nm[k] = '\0';
-        args->text = nm;
-        ok = ok && (sys_fb_op(args) == E_INVAL);
+        args->text = user_addr(nm);
+        ok = ok && (sys_fb_op(user_addr(args)) == E_INVAL);
         ok = ok && !xfnt_active();
 
         /* ---- and a change that keeps the CELL does not clear the screen ----
@@ -2553,13 +2553,13 @@ static int test_console_font_disk(void) {
             while (same[m]) { nm[m] = same[m]; m++; }
             nm[m] = '\0';
             args->op   = FB_OP_SET_FONT;
-            args->text = nm;
+            args->text = user_addr(nm);
 
             int c0 = 0, r0 = 0;
             console_cursor(&c0, &r0);
             ok = ok && (r0 > 0);
 
-            ok = ok && (sys_fb_op(args) == 0);
+            ok = ok && (sys_fb_op(user_addr(args)) == 0);
             ok = ok && xfnt_active() && (xfnt_height() == 16);
 
             int c1 = 0, r1 = 0;
@@ -2798,11 +2798,11 @@ static int test_exec_admit(void) {
 static int test_kstack(void) {
     uint32_t free0 = pmm_free_count();
     uint32_t live0 = kstack_live();
-    uint32_t base, base2;
+    uintptr_t base, base2;
 
-    uint32_t top = kstack_alloc(THREAD_STACK_DEFAULT, 7, &base);
+    uintptr_t top = kstack_alloc(THREAD_STACK_DEFAULT, 7, &base);
     if (!top) return 0;
-    uint32_t top2 = kstack_alloc(THREAD_STACK_DEFAULT, 6, &base2);
+    uintptr_t top2 = kstack_alloc(THREAD_STACK_DEFAULT, 6, &base2);
     int ok = top2 != 0 && top2 != top;
 
     ok = ok && (top - base == THREAD_STACK_DEFAULT) && (top % KSTACK_SLOT_SIZE == 0);
@@ -2832,7 +2832,7 @@ static int test_kstack(void) {
  * must have an esp0 stack of its own for its trips to ring 3. */
 static int test_main_stack(void) {
     volatile uint32_t here = 0;
-    uint32_t a = (uint32_t)&here;
+    uintptr_t a = (uintptr_t)&here;
     if (thread_current_id() != 0) return 0;
     if (a < KSTACK_REGION_BASE || a >= KSTACK_REGION_BASE + KSTACK_REGION_SIZE) return 0;
     uint32_t top  = (a & ~(KSTACK_SLOT_SIZE - 1)) + KSTACK_SLOT_SIZE;
@@ -2901,8 +2901,8 @@ static void kc_stack_thread(void) {
     /* Find our own stack from a local: it sits at the top of its 64 KB slot.
        The configured size must be mapped, and the page just under it must not. */
     volatile uint32_t here = 0;
-    uint32_t top  = ((uint32_t)&here & ~(KSTACK_SLOT_SIZE - 1)) + KSTACK_SLOT_SIZE;
-    uint32_t base = top - 16384u;
+    uintptr_t top  = ((uintptr_t)&here & ~(uintptr_t)(KSTACK_SLOT_SIZE - 1)) + KSTACK_SLOT_SIZE;
+    uintptr_t base = top - 16384u;
     kc_stack_ok = paging_get_phys(base) != 0 && paging_get_phys(base - PAGE_SIZE) == 0;
 }
 
@@ -3053,15 +3053,15 @@ static int test_handle_table_grows(void) {
 #define PX_CODE   0x00400000u
 #define PX_STACK  0x00401000u
 static volatile int      px_mine, px_back, px_rc;
-static volatile uint32_t px_pd;
+static volatile paddr_t px_pd;
 
 static void px_thread(void) {
     if (addr_space_current() != px_pd) return;          /* not running in its own space */
     if (ep_create() <= 0) return;                  /* a handle only the exit closes */
-    void *c = pmm_alloc(), *s = pmm_alloc();
+    paddr_t c = pmm_alloc(), s = pmm_alloc();
     if (!c || !s) return;
     if (paging_map_user(PX_CODE,  (uint32_t)c, VM_WRITE) != 0) return;
-    if (paging_map_user(PX_STACK, (uint32_t)s, VM_WRITE) != 0) return;
+    if (paging_map_user(PX_STACK, s, VM_WRITE) != 0) return;
     ((volatile uint8_t *)PX_CODE)[0] = 0x0F;       /* ud2: an invalid opcode, at once */
     ((volatile uint8_t *)PX_CODE)[1] = 0x0B;
     px_mine = 1;

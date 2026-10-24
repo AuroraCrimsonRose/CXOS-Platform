@@ -55,7 +55,7 @@ void addr_space_init(void) {
 
 int addr_space_create(paddr_t *root) {
     if (!root) return -1;
-    void *pd_phys = pmm_alloc();                  /* one 4 KB frame for the PD */
+    paddr_t pd_phys = pmm_alloc();                  /* one 4 KB frame for the PD */
     if (!pd_phys) return -1;
     /* reach the frame through the temp-map to fill it in (works for any frame,
        not just boot-mapped low RAM). */
@@ -81,10 +81,10 @@ static void reclaim_user(void) {
         volatile uint32_t *pt = AS_RECURSIVE_PT(i);
         for (uint32_t j = 0; j < PT_ENTRIES; j++) {
             uint32_t pte = pt[j];
-            if (pte & PTE_PRESENT) pmm_free((void *)(pte & PTE_ADDR_MASK));  /* user frame */
+            if (pte & PTE_PRESENT) pmm_free((pte & PTE_ADDR_MASK));  /* user frame */
         }
         AS_RECURSIVE_PD[i] = 0;                  /* unmap the PT (recursive view gone) */
-        pmm_free((void *)(pde & PTE_ADDR_MASK)); /* then free the page-table frame */
+        pmm_free((pde & PTE_ADDR_MASK)); /* then free the page-table frame */
     }
 }
 
@@ -102,7 +102,7 @@ void addr_space_release(paddr_t root) {
     addr_space_switch(was);   /* drops its TLB entries too */
     spin_irq_restore(f);
     registry_remove(root);
-    pmm_free((void *)root);   /* the directory itself */
+    pmm_free(root);   /* the directory itself */
 }
 
 paddr_t addr_space_kernel(void) {

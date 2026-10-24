@@ -110,14 +110,14 @@ static uint8_t *g_scratch;      /* heap, not .bss */
 static uint32_t g_maps;          /* how many pages were mapped */
 static uint32_t g_max_virt;      /* the highest virtual address mapped */
 
-static void *mock_get_page(void *ctx, uint32_t *out_phys) {
+static void *mock_get_page(void *ctx, uint64_t *out_phys) {
     (void)ctx;
     *out_phys = 0x1000;                  /* never used: nothing is really mapped */
     for (uint32_t i = 0; i < 4096; i++) g_scratch[i] = 0;
     return g_scratch;
 }
 
-static int mock_map_page(void *ctx, uint32_t virt, uint32_t phys, uint32_t prot) {
+static int mock_map_page(void *ctx, uint32_t virt, uint64_t phys, uint32_t prot) {
     (void)ctx; (void)phys; (void)prot;
     g_maps++;
     if (virt > g_max_virt) g_max_virt = virt;
@@ -139,7 +139,7 @@ static int mock_charge(void *ctx, uint32_t pages) {
 }
 
 static struct cxex_load_ops mock_ops = {
-    0, KERNEL_VBASE, mock_get_page, mock_map_page, mock_charge
+    0, USER_ADDR32_END, mock_get_page, mock_map_page, mock_charge
 };
 
 /* Run the loader over the image as currently built and return its result,
@@ -188,12 +188,12 @@ int ktest_loader_adversarial(void) {
     /* A section naming a kernel address. This is the Critical finding: it used
        to be mapped, reachable from ring 3, handing ring 3 the kernel. */
     img_valid();
-    wr32(SEC0_VADDR, KERNEL_VBASE);
+    wr32(SEC0_VADDR, USER_ADDR32_END);
     ok = ok && refuses(CXEX_LOAD_BAD_RANGE);
 
     /* Just below the limit, but long enough to cross it. */
     img_valid();
-    wr32(SEC0_VADDR, KERNEL_VBASE - 0x1000);
+    wr32(SEC0_VADDR, USER_ADDR32_END - 0x1000);
     wr32(SEC0_MSIZE, 0x4000);
     ok = ok && refuses(CXEX_LOAD_BAD_RANGE);
 
@@ -249,7 +249,7 @@ int ktest_loader_adversarial(void) {
 
     /* An entry point outside the user half, even with every section in it. */
     img_valid();
-    wr32(16, KERNEL_VBASE + 0x1000);
+    wr32(16, USER_ADDR32_END);
     ok = ok && refuses(CXEX_LOAD_BAD_RANGE);
 
     /* A caller that forgets va_limit must fail loudly rather than lose the
@@ -405,10 +405,10 @@ int ktest_user_ptr_writability(void) {
        hardware would do with the result. */
     const uint32_t va = 0x00800000u;
 
-    void *frame = pmm_alloc();
+    paddr_t frame = pmm_alloc();
     if (!frame) return 0;
 
-    if (paging_map_user(va, (uint32_t)frame, 0) != 0) { pmm_free(frame); return 0; }   /* no VM_WRITE */
+    if (paging_map_user(va, frame, 0) != 0) { pmm_free(frame); return 0; }   /* no VM_WRITE */
 
     int ok = 1;
     ok = ok && user_ptr_readable(va, 64) == 1;
@@ -416,13 +416,13 @@ int ktest_user_ptr_writability(void) {
 
     /* The same page, now writable, must pass both - otherwise the check could be
        refusing everything and this test would not notice. */
-    if (paging_map_user(va, (uint32_t)frame, VM_WRITE) != 0) { pmm_free(frame); return 0; }
+    if (paging_map_user(va, frame, VM_WRITE) != 0) { pmm_free(frame); return 0; }
     ok = ok && user_ptr_readable(va, 64) == 1;
     ok = ok && user_ptr_writable(va, 64) == 1;
 
     /* A buffer straddling the kernel boundary is refused either way. */
-    ok = ok && user_ptr_readable(KERNEL_VBASE - 8, 64) == 0;
-    ok = ok && user_ptr_writable(KERNEL_VBASE - 8, 64) == 0;
+    ok = ok && user_ptr_readable(USER_ADDR32_END - 8, 64) == 0;
+    ok = ok && user_ptr_writable(USER_ADDR32_END - 8, 64) == 0;
 
     paging_unmap(va);
     pmm_free(frame);
@@ -478,12 +478,12 @@ int ktest_spawn_verifies_image(void) {
 
     /* One page for the args, then as many as the image needs. The frames do not
        have to be contiguous; the mapping makes them look it. */
-    void *frames[SPV_MAX_PAGES + 1];
+    paddr_t frames[SPV_MAX_PAGES + 1];
     uint32_t got = 0;
     for (uint32_t i = 0; i < pages + 1; i++) {
         frames[i] = pmm_alloc();
         if (!frames[i]) break;
-        if (paging_map_user(SPV_ARGS_VA + i * PAGE_SIZE, (uint32_t)frames[i],
+        if (paging_map_user(SPV_ARGS_VA + i * PAGE_SIZE, frames[i],
                             VM_WRITE) != 0) {
             pmm_free(frames[i]);
             break;
@@ -512,7 +512,7 @@ int ktest_spawn_verifies_image(void) {
     if (h < 0) goto done;
 
     struct spawn_args *a = (struct spawn_args *)SPV_ARGS_VA;
-    a->image           = img;
+    a->image           = user_addr(img);
     a->image_len       = (uint32_t)e.size;
     a->name            = 0;
     a->broker_endpoint = h;
@@ -526,24 +526,24 @@ int ktest_spawn_verifies_image(void) {
        prove the call plumbing reaches past the early gates, so the refusal
        below is the signature check and not a malformed request. */
     a->image_len = 0;
-    ok = (sys_spawn(a) == E_RANGE);
+    ok = (sys_spawn(user_addr(a)) == E_RANGE);
     a->image_len = (uint32_t)e.size;
     if (!ok) goto done;
 
     a->broker_endpoint = 9999;             /* no such handle */
-    ok = (sys_spawn(a) == E_BADF);
+    ok = (sys_spawn(user_addr(a)) == E_BADF);
     a->broker_endpoint = h;
     if (!ok) goto done;
 
-    a->image = (const void *)KERNEL_VBASE; /* a kernel address is not a user pointer */
-    ok = (sys_spawn(a) == E_FAULT);
-    a->image = img;
+    a->image = (uint32_t)KERNEL_VBASE; /* a kernel address is not a user pointer */
+    ok = (sys_spawn(user_addr(a)) == E_FAULT);
+    a->image = user_addr(img);
     if (!ok) goto done;
 
     /* ---- the finding itself ----
        One byte of the signed payload flipped. Before the fix this spawned. */
     img[16] ^= 0xFF;
-    int rc = sys_spawn(a);
+    int rc = sys_spawn(user_addr(a));
     img[16] ^= 0xFF;
     ok = (rc == CXEX_EXEC_VERIFY_FAILED);
 

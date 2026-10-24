@@ -17,7 +17,7 @@
  * past the kernel near ~1 MB, lives inside the window, so this reaches it.
  * pmm_alloc returns PHYSICAL addresses.
  */
-#define PHYS_TO_VIRT(p)  ((void *)((uint32_t)(p) + KERNEL_VBASE))
+#define PHYS_TO_VIRT(p)  ((void *)((uintptr_t)(p) + KERNEL_VBASE))
 
 /* ignore RAM above ~3.75 GB (32-bit reach + device/ROM area near 4 GB). */
 #define PMM_MAX_ADDR      0xF0000000u
@@ -63,7 +63,7 @@ void pmm_init(void) {
 
     /* 2. bitmap just past the kernel image, page-aligned. Physical address =
           __kernel_end (virtual) - KERNEL_VBASE; within the mapped 4 MB window. */
-    uint32_t kend_phys = (uint32_t)__kernel_end - KERNEL_VBASE;
+    uint32_t kend_phys = (uint32_t)((uintptr_t)__kernel_end - KERNEL_VBASE);
     bitmap_phys = align_up(kend_phys, PMM_PAGE_SIZE);
     bitmap = (uint32_t *)PHYS_TO_VIRT(bitmap_phys);
 
@@ -102,29 +102,29 @@ void pmm_init(void) {
     mark_region_used(0x500000, 0x800000);
 }
 
-void *pmm_alloc(void) {
+paddr_t pmm_alloc(void) {
     uint32_t p = bitmap_first_clear(bitmap, total_pages);
     if (p == BITMAP_NONE) return 0;
     mark_used(p);
-    return (void *)(p * PMM_PAGE_SIZE);   /* PHYSICAL address */
+    return (paddr_t)p * PMM_PAGE_SIZE;
 }
 
-void pmm_free(void *page) {
-    uint32_t p = (uint32_t)page / PMM_PAGE_SIZE;
+void pmm_free(paddr_t page) {
+    uint32_t p = (uint32_t)(page / PMM_PAGE_SIZE);
     mark_free(p);
 }
 
-void *pmm_alloc_pages(size_t count) {
+paddr_t pmm_alloc_pages(size_t count) {
     if (count == 0) return 0;
     if (count == 1) return pmm_alloc();
     uint32_t start = bitmap_first_clear_run(bitmap, total_pages, (uint32_t)count);
     if (start == BITMAP_NONE) return 0;
     for (uint32_t q = start; q < start + count; q++) mark_used(q);
-    return (void *)(start * PMM_PAGE_SIZE);
+    return (paddr_t)start * PMM_PAGE_SIZE;
 }
 
-void pmm_free_pages(void *first_page, size_t count) {
-    uint32_t start = (uint32_t)first_page / PMM_PAGE_SIZE;
+void pmm_free_pages(paddr_t first_page, size_t count) {
+    uint32_t start = (uint32_t)(first_page / PMM_PAGE_SIZE);
     for (uint32_t p = start; p < start + count; p++) mark_free(p);
 }
 

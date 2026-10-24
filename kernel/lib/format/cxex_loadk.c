@@ -19,19 +19,19 @@
 #include "vmregion.h"
 #include "sched.h"
 
-static void *k_get_page(void *ctx, uint32_t *out_phys) {
+static void *k_get_page(void *ctx, uint64_t *out_phys) {
     (void)ctx;
-    void *phys = pmm_alloc();
+    paddr_t phys = pmm_alloc();
     if (!phys) return NULL;
     /* reach the frame through the temp-map window (works for any frame, not just
        boot-mapped low RAM); the loader writes the page's contents through it. */
-    uint8_t *v = (uint8_t *)paging_temp_map((uint32_t)phys);
+    uint8_t *v = (uint8_t *)paging_temp_map(phys);
     for (uint32_t i = 0; i < 4096u; i++) v[i] = 0;     /* arrive zeroed (BSS) */
-    *out_phys = (uint32_t)phys;
+    *out_phys = phys;
     return v;
 }
 
-static int k_map_page(void *ctx, uint32_t virt, uint32_t phys, uint32_t prot) {
+static int k_map_page(void *ctx, uint32_t virt, uint64_t phys, uint32_t prot) {
     (void)ctx;
 
     /* paging_map_user refuses any address at or above KERNEL_VBASE and adds the
@@ -42,7 +42,7 @@ static int k_map_page(void *ctx, uint32_t virt, uint32_t phys, uint32_t prot) {
     uint32_t f = 0;                                    /* readable, ring 3 */
     if (prot & CXEX_PROT_WRITE) f |= VM_WRITE;
     if (prot & CXEX_PROT_EXEC)  f |= VM_EXEC;   /* enforced where the MMU can */
-    return paging_map_user(virt, phys, f);
+    return paging_map_user(virt, (paddr_t)phys, f);
 }
 
 /* The image is charged to the process that is being built, which is the one
@@ -60,7 +60,7 @@ static int k_charge(void *ctx, uint32_t pages) {
 
 const struct cxex_load_ops cxex_kernel_load_ops = {
     0,              /* ctx: current space for now */
-    KERNEL_VBASE,   /* va_limit: the user half is everything below the kernel */
+    USER_ADDR32_END, /* va_limit: the user half is everything below the kernel */
     k_get_page,
     k_map_page,
     k_charge

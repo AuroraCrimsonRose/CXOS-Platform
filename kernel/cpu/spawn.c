@@ -75,9 +75,9 @@ extern const struct cxex_load_ops cxex_kernel_load_ops;   /* cxex_loadk.c */
  * an oversized blob up front, so reaching this is a kernel bug, not a user
  * one. Returns 0 on success, negative if the page could not be mapped. */
 static int build_args_page(const char *blob, uint32_t len) {
-    void *frame = pmm_alloc();
+    paddr_t frame = pmm_alloc();
     if (!frame) return -1;
-    if (paging_map_user(USER_ARGS_BASE, (uint32_t)frame, VM_WRITE) != 0) {
+    if (paging_map_user(USER_ARGS_BASE, frame, VM_WRITE) != 0) {
         pmm_free(frame);
         return -1;
     }
@@ -141,9 +141,9 @@ static void proc_trampoline(void) {
         thread_exit();
     }
     for (uint32_t i = 0; i < USER_STACK_PAGES; i++) {
-        void *p = pmm_alloc();
+        paddr_t p = pmm_alloc();
         if (!p) { klog("PROC", SEV_ERR, "no stack memory"); thread_exit(); }
-        if (paging_map_user(USER_STACK_TOP - (i + 1) * 0x1000u, (uint32_t)p,
+        if (paging_map_user(USER_STACK_TOP - (i + 1) * 0x1000u, p,
                             VM_WRITE) != 0) {
             klog("PROC", SEV_ERR, "user stack is not in the user half");
             pmm_free(p); thread_exit();
@@ -255,19 +255,19 @@ int proc_start(const void *image, uint32_t image_len, uint32_t caps,
 static int check_args(const struct spawn_args *a) {
     if (!a->args) return a->args_len ? E_INVAL : E_OK;   /* length without a blob */
     if (a->args_len == 0 || a->args_len > USER_ARGS_MAX) return E_RANGE;
-    if (!user_ptr_readable((uint32_t)a->args, a->args_len))    return E_FAULT;
-    if (a->args[a->args_len - 1] != '\0')                return E_INVAL;
+    if (!user_ptr_readable(a->args, a->args_len))    return E_FAULT;
+    if (((const char *)user_ptr(a->args))[a->args_len - 1] != '\0') return E_INVAL;
     return E_OK;
 }
 
 /* SYS_SPAWN: an executive (GRANT_SPAWN) launches a capability-less app, brokered
    through one of its endpoints. */
-int sys_spawn(const struct spawn_args *ua) {
-    if (!user_ptr_readable((uint32_t)ua, sizeof *ua)) return E_FAULT;
-    struct spawn_args a = *ua;
+int sys_spawn(uint32_t ua) {
+    struct spawn_args a;
+    if (user_copy_in(&a, ua, sizeof a) != 0) return E_FAULT;
 
     if (a.image_len == 0 || a.image_len > PROC_MAX_IMAGE) return E_RANGE;
-    if (!user_ptr_readable((uint32_t)a.image, a.image_len))     return E_FAULT;
+    if (!user_ptr_readable(a.image, a.image_len))     return E_FAULT;
 
     int arc = check_args(&a);
     if (arc != E_OK) return arc;
@@ -304,13 +304,13 @@ int sys_spawn(const struct spawn_args *ua) {
      * user_ptr_readable above is an early reject, not the authority. */
     uint8_t *kimg = (uint8_t *)kmalloc(a.image_len);
     if (!kimg) { ep_put(bep); return E_NOMEM; }
-    if (user_copy_in(kimg, (uint32_t)a.image, a.image_len) != 0) {
+    if (user_copy_in(kimg, a.image, a.image_len) != 0) {
         kfree(kimg);
         ep_put(bep);
         return E_FAULT;
     }
 
-    int pid = cxex_exec_as(kimg, (size_t)a.image_len, granted, bep, bgrant, a.args, a.args_len);
+    int pid = cxex_exec_as(kimg, (size_t)a.image_len, granted, bep, bgrant, user_ptr(a.args), a.args_len);
     kfree(kimg);        /* proc_start took its own copy for the new address space */
     ep_put(bep);        /* the child holds its own handle on it now */
 
@@ -354,9 +354,9 @@ int sys_spawn(const struct spawn_args *ua) {
  * executive rather than sitting on the disk where it could be replaced. Two
  * routes to ring 3, both verified, neither trusting the caller's buffer.
  */
-int sys_exec_path(const char *upath, const struct spawn_args *ua) {
-    if (!user_ptr_readable((uint32_t)ua, sizeof *ua)) return E_FAULT;
-    struct spawn_args a = *ua;
+int sys_exec_path(uint32_t upath, uint32_t ua) {
+    struct spawn_args a;
+    if (user_copy_in(&a, ua, sizeof a) != 0) return E_FAULT;
 
     int arc = check_args(&a);
     if (arc != E_OK) return arc;
@@ -364,7 +364,7 @@ int sys_exec_path(const char *upath, const struct spawn_args *ua) {
     /* copy the path in a page at a time; user_ptr_readable walks page tables, so
        per-byte would be a page-table walk per character */
     char path[FILE_PATH_MAX];
-    uint32_t addr = (uint32_t)upath;
+    uint32_t addr = upath;
     if (!addr) return E_FAULT;
     uint32_t n = 0;
     for (;;) {
@@ -372,7 +372,7 @@ int sys_exec_path(const char *upath, const struct spawn_args *ua) {
         if (n == 0 || (((addr + n) & 0xFFFu) == 0)) {
             if (!user_ptr_readable(addr + n, 1)) return E_FAULT;
         }
-        path[n] = ((const char *)addr)[n];
+        path[n] = ((const char *)user_ptr(addr))[n];
         if (!path[n]) break;
         n++;
     }
@@ -421,7 +421,7 @@ int sys_exec_path(const char *upath, const struct spawn_args *ua) {
     /* Attenuation, exactly as SYS_SPAWN does it: a subset of your own set. */
     uint32_t granted = (a.caps & thread_current_caps()) | (a.caps & SPAWN_BACKGROUND);
 
-    int rc = cxex_exec_as(buf, (size_t)e.size, granted, bep, bgrant, a.args, a.args_len);
+    int rc = cxex_exec_as(buf, (size_t)e.size, granted, bep, bgrant, user_ptr(a.args), a.args_len);
     kfree(buf);   /* proc_start took its own copy for the new address space */
     ep_put(bep);
 

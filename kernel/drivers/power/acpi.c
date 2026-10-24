@@ -140,11 +140,9 @@ static struct acpi_rsdp *find_rsdp(void) {
    reserved memory, already identity-mapped by our 128MB floor, but map to be
    safe for higher addresses). */
 static void *map_table(uint32_t phys, uint32_t len) {
-    uint32_t start = phys & ~0xFFFu;
-    uint32_t end = (phys + len + 0xFFF) & ~0xFFFu;
-    for (uint32_t a = start; a < end; a += 0x1000)
-        paging_map_kernel(a, a, VM_WRITE);
-    return (void *)phys;
+    /* Mapping a table again, longer, once its header gives the length, must
+       not move it: paging_map_phys keeps a range at one address. */
+    return (void *)paging_map_phys(phys, len, VM_WRITE);
 }
 
 /* scan the DSDT for a _Sx_ package and extract SLP_TYPa/b.
@@ -349,8 +347,8 @@ int acpi_reboot(void) {
     } else if (reset_space == 0) {
         /* the reset register may be memory-mapped; map its page first (same
            higher-half reason as the RSDP scan above) */
-        map_table((uint32_t)reset_addr, 1);
-        if (iowin_mmio(&reset_reg, (volatile void *)(uint32_t)reset_addr, 1) == 0)
+        volatile void *v = paging_map_phys((paddr_t)reset_addr, 1, VM_WRITE);
+        if (v && iowin_mmio(&reset_reg, v, 1) == 0)
             iowin_write8(&reset_reg, 0, reset_val);
     }
     /* may take a moment; spin briefly */

@@ -76,7 +76,7 @@ int fb_init(void) {
                    map_phys     + (i << 12),
                    VM_WRITE);
     }
-    fb = (uint8_t *)(FB_VIRT_BASE + off);
+    fb = (uint8_t *)(uintptr_t)(FB_VIRT_BASE + off);
 
     active = 1;
     return 0;
@@ -348,18 +348,18 @@ static uint32_t fb_pack(uint32_t rgb) {
     return fb_rgb((uint8_t)(rgb >> 16), (uint8_t)(rgb >> 8), (uint8_t)rgb);
 }
 
-int sys_fb_op(const struct fb_op_args *ua) {
-    if (!user_ptr_readable((uint32_t)ua, sizeof *ua)) return E_FAULT;
-    struct fb_op_args a = *ua;
+int sys_fb_op(uint32_t ua) {
+    struct fb_op_args a;
+    if (user_copy_in(&a, ua, sizeof a) != 0) return E_FAULT;
     if (!fb_active()) return E_NOENT;
 
     switch (a.op) {
         case FB_OP_INFO: {
-            if (!user_ptr_writable((uint32_t)a.out, 4 * sizeof(uint32_t))) return E_FAULT;
-            a.out[0] = fb_width();
-            a.out[1] = fb_height();
-            a.out[2] = fb_bpp();
-            a.out[3] = fb_pitch();
+            if (!user_ptr_writable(a.out, 4 * sizeof(uint32_t))) return E_FAULT;
+            ((uint32_t *)user_ptr(a.out))[0] = fb_width();
+            ((uint32_t *)user_ptr(a.out))[1] = fb_height();
+            ((uint32_t *)user_ptr(a.out))[2] = fb_bpp();
+            ((uint32_t *)user_ptr(a.out))[3] = fb_pitch();
             return 0;
         }
         case FB_OP_CLEAR:     fb_clear(fb_pack(a.color)); return 0;
@@ -376,10 +376,10 @@ int sys_fb_op(const struct fb_op_args *ua) {
                n != 0 in that case, the E_FAULT check below does not catch it.
                SYS_CONSOLE_WRITE has always done this correctly; this now matches it. */
             uint32_t n = 0;
-            const char *p = a.text;
-            while (n < 0x1000 && user_ptr_readable((uint32_t)a.text + n, 1) && p[n]) n++;
-            if (n == 0 && !user_ptr_readable((uint32_t)a.text, 1)) return E_FAULT;
-            fb_draw_string_n(a.x, a.y, a.text, n, fb_pack(a.color), fb_pack(a.color2));
+            const char *p = user_ptr(a.text);
+            while (n < 0x1000 && user_ptr_readable(a.text + n, 1) && p[n]) n++;
+            if (n == 0 && !user_ptr_readable(a.text, 1)) return E_FAULT;
+            fb_draw_string_n(a.x, a.y, p, n, fb_pack(a.color), fb_pack(a.color2));
             return (int)n;
         }
         case FB_OP_SET_FONT: {
@@ -392,8 +392,8 @@ int sys_fb_op(const struct fb_op_args *ua) {
             uint32_t n = 0;
             for (;;) {
                 if (n >= sizeof name) return E_INVAL;          /* no terminator in range */
-                if (!user_ptr_readable((uint32_t)a.text + n, 1)) return E_FAULT;
-                char c = a.text[n];
+                if (!user_ptr_readable(a.text + n, 1)) return E_FAULT;
+                char c = ((const char *)user_ptr(a.text))[n];
                 if (c == '\0') break;
                 /* Everything that could leave /System/Fonts is refused here, so
                    nothing downstream has to reason about traversal. '.' goes

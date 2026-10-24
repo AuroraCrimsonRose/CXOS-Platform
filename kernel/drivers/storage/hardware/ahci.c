@@ -145,7 +145,7 @@ static int      ndisks = 0;
 #define AHCI_BOUNCE_PAGES 16                  /* 64 KB bounce: up to 128 sectors/xfer */
 
 static uint32_t dma_phys_base = 0;            /* physical base of the structures region */
-static uint32_t dma_virt_base = 0;            /* kernel-virtual base of same */
+static uintptr_t dma_virt_base = 0;           /* kernel-virtual base of same */
 static uint32_t bounce_phys   = 0;            /* physical base of the bounce buffer */
 static uint8_t *bounce_virt   = 0;            /* kernel-virtual base of the bounce buffer */
 
@@ -163,8 +163,9 @@ static void *port_ctba_virt(int p) { return (void *)(dma_virt_base + p * AHCI_PO
    before any port is rebased. Returns 0 on success. */
 static int ahci_dma_init(void) {
     /* structures: one page per port, physically contiguous from the PMM */
-    void *sp = pmm_alloc_pages(AHCI_MAX_PORTS);
+    paddr_t sp = pmm_alloc_pages(AHCI_MAX_PORTS);
     if (!sp) return -1;
+    if ((uint64_t)sp >> 32) return -1;   /* this driver programs 32-bit DMA addresses */
     dma_phys_base = (uint32_t)sp;
     dma_virt_base = AHCI_DMA_VIRT;
     for (int i = 0; i < AHCI_MAX_PORTS; i++)
@@ -173,12 +174,12 @@ static int ahci_dma_init(void) {
                    VM_WRITE);
 
     /* bounce buffer: physically contiguous, for data transfers */
-    void *bp = pmm_alloc_pages(AHCI_BOUNCE_PAGES);
-    if (!bp) return -1;
+    paddr_t bp = pmm_alloc_pages(AHCI_BOUNCE_PAGES);
+    if (!bp || (uint64_t)bp >> 32) return -1;
     bounce_phys = (uint32_t)bp;
-    bounce_virt = (uint8_t *)(AHCI_DMA_VIRT + AHCI_MAX_PORTS * 0x1000);
+    bounce_virt = (uint8_t *)(uintptr_t)(AHCI_DMA_VIRT + AHCI_MAX_PORTS * 0x1000);
     for (int i = 0; i < AHCI_BOUNCE_PAGES; i++)
-        paging_map_kernel((uint32_t)bounce_virt + i * 0x1000,
+        paging_map_kernel((uintptr_t)bounce_virt + i * 0x1000,
                    bounce_phys + i * 0x1000,
                    VM_WRITE);
     return 0;
@@ -390,9 +391,8 @@ int ahci_init(void) {
        on real hardware shows up as a command that never appears to complete.
        The DMA structures allocated in ahci_dma_init stay cacheable; x86 keeps
        those coherent by snooping. */
-    for (uint32_t off = 0; off < 0x2000; off += 0x1000)
-        paging_map_kernel(abar + off, abar + off, VM_WRITE | VM_UNCACHED);
-    if (iowin_mmio(&hba, (volatile void *)abar, HBA_PORT(AHCI_MAX_PORTS)) != 0) return 0;
+    volatile uint8_t *mmio = (volatile uint8_t *)paging_map_phys(abar, 0x2000, VM_WRITE | VM_UNCACHED);
+    if (!mmio || iowin_mmio(&hba, mmio, HBA_PORT(AHCI_MAX_PORTS)) != 0) return 0;
 
     /* allocate + map the DMA structures region and bounce buffer from the PMM
        (v5: no identity-mapped low region; DMA memory is PMM-backed and mapped

@@ -109,7 +109,7 @@ struct rtl_desc {
  * never have their windows resized into each other. */
 #define RTL_DMA_BASE   0x730000u
 #define RTL_DMA_VBASE  0xE2000000u   /* beside AHCI 0xE0000000 and e1000 0xE1000000 */
-#define DMA_V(phys)    ((phys) - RTL_DMA_BASE + RTL_DMA_VBASE)
+#define DMA_V(phys)    ((uintptr_t)((phys) - RTL_DMA_BASE + RTL_DMA_VBASE))
 
 #define RX_DESC_ADDR   (RTL_DMA_BASE + 0x0000)
 #define TX_DESC_ADDR   (RTL_DMA_BASE + 0x1000)
@@ -239,9 +239,8 @@ int rtl8169_init(void) {
        under us and reads have side effects, so a cached line would serve stale
        values. 64 KB of mapping covers the BAR on every family member; the
        registers this driver uses are the first 256 bytes. */
-    for (uint32_t off = 0; off < 0x10000; off += 0x1000)
-        paging_map_kernel(base + off, base + off, VM_WRITE | VM_UNCACHED);
-    if (iowin_mmio(&regs, (volatile void *)base, 0x100) != 0) return 0;
+    volatile uint8_t *mmio = (volatile uint8_t *)paging_map_phys(base, 0x10000, VM_WRITE | VM_UNCACHED);
+    if (!mmio || iowin_mmio(&regs, mmio, 0x100) != 0) return 0;
 
     /* DMA region into the kernel half - deliberately left CACHEABLE; x86 snoops
        bus-master DMA, so write-back is both correct and faster for buffers. */

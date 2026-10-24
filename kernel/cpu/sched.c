@@ -16,7 +16,6 @@
 #include "memman/ocache.h"
 #include "panic.h"
 
-extern void context_switch(uint32_t *old_esp, uint32_t new_esp);
 
 static void sched_reap(void);   /* forward decl: used by yield, defined below */
 
@@ -76,12 +75,6 @@ int sched_configure(uint32_t max_threads, uint32_t bytes) {
 uint32_t sched_thread_limit(void) { return thread_limit; }
 uint32_t sched_thread_count(void) { return threads_allocated(); }
 uint32_t sched_stack_bytes(void)  { return stack_bytes; }
-
-/* a freshly-created thread's stack is hand-crafted so the first switch INTO it
-   lands at thread_launch, which calls the entry function. The layout must match
-   what context_switch's restore sequence pops: [ebp][edi][esi][ebx][eflags]
-   then `ret` pops the return address. We make that return address thread_launch
-   and stash the entry fn where thread_launch can find it. */
 
 /* trampoline: the first thing a new thread runs. calls its entry, then exits. */
 static void thread_launch(void) {
@@ -198,8 +191,8 @@ static int thread_create_in(const char *name, void (*entry)(void), int held, str
     /* Its process: the one it joins, or a new one that inherits the
        creator's uid and cwd and nothing else. */
     struct proc *p = into ? into : proc_create(self()->proc);
-    uint32_t stack = 0;
-    uint32_t stack_top = p ? kstack_alloc(stack_bytes, slot, &stack) : 0;
+    uintptr_t stack = 0;
+    uintptr_t stack_top = p ? kstack_alloc(stack_bytes, slot, &stack) : 0;
     if (!stack_top) {
         if (p && !into) proc_put(p);
         f = irq_save();
@@ -211,23 +204,9 @@ static int thread_create_in(const char *name, void (*entry)(void), int held, str
     proc_thread_in(p);
     if (!into) proc_put(p);   /* the new thread's reference keeps it */
 
-    /* build the initial stack frame (top-down). The new stack must look exactly
-       like a thread that was switched out by context_switch. context_switch
-       saves (in this push order): pushfd, ebx, esi, edi, ebp - so from the
-       saved esp UPWARD the layout is:
-         [esp+0]=ebp [+4]=edi [+8]=esi [+12]=ebx [+16]=eflags [+20]=return addr
-       It then restores with: pop ebp; pop edi; pop esi; pop ebx; popfd; ret.
-       So we push (high->low addr): return-addr, eflags, ebx, esi, edi, ebp,
-       leaving esp pointing at the ebp slot. */
-    uint32_t *sp = (uint32_t *)stack_top;
-    *(--sp) = (uint32_t)thread_launch;   /* [+20] ret target */
-    *(--sp) = 0x202;                     /* [+16] eflags: IF set, reserved bit 1 */
-    *(--sp) = 0;                         /* [+12] ebx */
-    *(--sp) = 0;                         /* [+8]  esi */
-    *(--sp) = 0;                         /* [+4]  edi */
-    *(--sp) = 0;                         /* [+0]  ebp  <- esp points here */
-
-    t->esp        = (uint32_t)sp;
+    /* The new stack must look exactly like a thread that context_switch
+       switched out, so the first switch into it lands at thread_launch. */
+    t->esp        = arch_thread_frame(stack_top, thread_launch);
     t->stack_base = stack;
     t->name       = name;
     t->proc       = p;
@@ -274,7 +253,7 @@ static int next_runnable(void) {
    saved interrupt frame. The self-test "esp0 follows the running thread"
    holds it. */
 static void update_kernel_stack(void) {
-    uint32_t top = self()->kstack_top;
+    uintptr_t top = self()->kstack_top;
     arch_kernel_stack_set(top ? top : arch_kernel_stack_default());
 }
 
@@ -283,11 +262,11 @@ static void update_kernel_stack(void) {
    right after update_kernel_stack(). The kernel half is mapped in every space,
    so this is safe for kernel threads regardless of which space is loaded. */
 static void update_address_space(void) {
-    uint32_t mine = self()->proc ? self()->proc->pd_phys : 0;
+    paddr_t mine = self()->proc ? self()->proc->pd_phys : 0;
     addr_space_switch(mine ? mine : addr_space_kernel());
 }
 
-void thread_set_space(int id, uint32_t pd_phys) {
+void thread_set_space(int id, paddr_t pd_phys) {
     struct proc *p = thread_proc(id);
     if (p) p->pd_phys = pd_phys;
 }
@@ -424,7 +403,7 @@ void thread_exit(void) {
     current = next;
     update_kernel_stack();
     update_address_space();
-    uint32_t dummy;
+    uintptr_t dummy;
     context_switch(&dummy, th(next)->esp);   /* save into dummy (discarded) */
     /* never reached */
 }
@@ -528,16 +507,16 @@ void thread_mark_user(int id) {
     if (p) p->is_user = 1;
 }
 
-uint32_t *thread_current_usave(void) {
+uintptr_t *thread_current_usave(void) {
     return &self()->u_saved_esp;   /* [0]=esp, [1]=flags (contiguous) */
 }
 
-void thread_set_kstack_top(int id, uint32_t top) {
+void thread_set_kstack_top(int id, uintptr_t top) {
     struct thread *t = live(id);
     if (t) t->kstack_top = top;
 }
 
-uint32_t thread_current_kstack_top(void) {
+uintptr_t thread_current_kstack_top(void) {
     return self()->kstack_top;
 }
 
@@ -551,8 +530,8 @@ int thread_alloc_kstack(int id) {
                                                      cxex_exec) DOES need an esp0:
                                                      it runs ring-3 code + makes
                                                      syscalls while apps coexist. */
-    uint32_t k;
-    uint32_t top = kstack_alloc(stack_bytes, id, &k);
+    uintptr_t k;
+    uintptr_t top = kstack_alloc(stack_bytes, id, &k);
     if (!top) return -1;
     th(id)->kstack_base = k;
     th(id)->kstack_top  = top - 16;   /* 16-byte slack at top */

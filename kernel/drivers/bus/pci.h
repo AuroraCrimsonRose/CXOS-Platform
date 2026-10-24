@@ -69,14 +69,10 @@ struct pci_bar {
    the device is running. */
 int pci_bar_get(const struct pci_device *d, int index, struct pci_bar *out);
 
-/* The common case: a 32-bit-addressable MMIO base this kernel can identity-map.
-   Returns 0, having logged why, if the BAR is I/O space, lives above 4 GB, or
-   lands below 0xC0000000.
- *
- * That last rule is CXK's, not PCI's: register windows are identity-mapped, and
- * only the kernel half of the address space is shared by every process. A BAR
- * below it would be mapped into the per-process half and fault the moment a
- * driver touched it from a syscall. */
+/* The common case: a 32-bit-addressable MMIO base. Returns 0, having logged
+   why, if the BAR is I/O space or lives above 4 GB. Map it with
+   paging_map_phys, which refuses what this kernel cannot reach (on x86-32, a
+   BAR below the kernel half). */
 uint32_t pci_bar_mmio32(const struct pci_device *d, int index, const char *tag);
 
 /* Set the Bus Master and Memory Space enable bits. Without bus master the

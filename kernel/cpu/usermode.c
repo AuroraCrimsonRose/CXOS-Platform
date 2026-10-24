@@ -68,13 +68,13 @@
 static uint32_t map_user_page(uint32_t virt) {
     uint32_t phys = (uint32_t)pmm_alloc();
     if (!phys) return 0;
-    if (paging_map_user(virt, phys, VM_WRITE) != 0) { pmm_free((void *)phys); return 0; }
+    if (paging_map_user(virt, phys, VM_WRITE) != 0) { pmm_free(phys); return 0; }
     return phys;
 }
 
 static void unmap_user_page(uint32_t virt, uint32_t phys) {
     paging_unmap(virt);
-    if (phys) pmm_free((void *)phys);
+    if (phys) pmm_free(phys);
 }
 
 /* ---- syscall pointer validation -------------------------------------------
@@ -87,7 +87,7 @@ static void unmap_user_page(uint32_t virt, uint32_t phys) {
 static int user_ptr_span(uint32_t ptr, uint32_t len, int need_write) {
     if (len == 0) len = 1;
     if (ptr + len < ptr)            return 0;   /* wrap/overflow */
-    if (ptr + len > KERNEL_VBASE)   return 0;   /* must lie entirely in the user half */
+    if (ptr + len > USER_ADDR32_END) return 0;  /* must lie entirely in the user half */
     /* every page the buffer spans must be present + ring-3 accessible in the
        caller's active address space (its CR3 is live during this syscall). */
     for (uint32_t p = ptr & ~0xFFFu; p < ptr + len; p += 0x1000) {
@@ -170,14 +170,14 @@ void     usercopy_note_recovered_fault(void) { recovered_faults++; }
 int user_copy_out(uint32_t udst, const void *ksrc, uint32_t len) {
     if (len == 0) return 0;
     if (!user_ptr_writable(udst, len)) return E_FAULT;
-    if (user_copy_bytes((void *)udst, ksrc, len) != 0) return E_FAULT;
+    if (user_copy_bytes(user_ptr(udst), ksrc, len) != 0) return E_FAULT;
     return 0;
 }
 
 int user_copy_in(void *kdst, uint32_t usrc, uint32_t len) {
     if (len == 0) return 0;
     if (!user_ptr_readable(usrc, len)) return E_FAULT;
-    if (user_copy_bytes(kdst, (const void *)usrc, len) != 0) return E_FAULT;
+    if (user_copy_bytes(kdst, user_ptr(usrc), len) != 0) return E_FAULT;
     return 0;
 }
 
@@ -208,11 +208,11 @@ static int syscall_do(uint32_t num, uint32_t a1, uint32_t a2) {
             }
             uint32_t len = a2;
             if (len == 0) {
-                const char *p = (const char *)a1;
+                const char *p = (const char *)user_ptr(a1);
                 while (len < 0x1000 && user_ptr_readable(a1 + len, 1) && p[len]) len++;
             }
             if (!user_ptr_readable(a1, len ? len : 1)) return -1;
-            const char *s = (const char *)a1;
+            const char *s = (const char *)user_ptr(a1);
 
             /* A background process (SPAWN_BACKGROUND, the supervisor and its
                services) writes to the log, so it never prints over the shell. */
@@ -228,7 +228,7 @@ static int syscall_do(uint32_t num, uint32_t a1, uint32_t a2) {
             if (!user_ptr_writable(a2, sizeof(struct log_entry))) return E_FAULT;
             const struct slog_entry *e = slog_get(a1);
             if (!e) return 0;
-            struct log_entry *out = (struct log_entry *)a2;
+            struct log_entry *out = (struct log_entry *)user_ptr(a2);
             out->seq = e->seq;
             out->sev = e->sev;
             for (int i = 0; i < LOG_SYSTEM_W; i++) out->system[i]    = e->system[i];
@@ -251,7 +251,7 @@ static int syscall_do(uint32_t num, uint32_t a1, uint32_t a2) {
             /* Unprivileged: the time of day is not authority. A process that
                could not read it would simply count its own loop iterations. */
             if (!user_ptr_writable(a1, sizeof(struct clock_info))) return E_FAULT;
-            struct clock_info *ci = (struct clock_info *)a1;
+            struct clock_info *ci = (struct clock_info *)user_ptr(a1);
             ci->ticks = timer_ticks();
 
             /* epoch 0 means "no usable RTC", which the ABI documents, so a
@@ -270,9 +270,9 @@ static int syscall_do(uint32_t num, uint32_t a1, uint32_t a2) {
                every program - the address is a 32-bit x86 fact, and a userland
                that knew it would have to be ported alongside the kernel. */
             if (!user_ptr_writable(a1, sizeof(struct args_info))) return E_FAULT;
-            struct args_info *ai = (struct args_info *)a1;
+            struct args_info *ai = (struct args_info *)user_ptr(a1);
             ai->base  = USER_ARGS_BASE;
-            ai->count = *(const uint32_t *)USER_ARGS_BASE;
+            ai->count = *(const uint32_t *)user_ptr(USER_ARGS_BASE);
             ai->broker = thread_broker(thread_current_id());
             return E_OK;
         }
@@ -294,25 +294,25 @@ static int syscall_do(uint32_t num, uint32_t a1, uint32_t a2) {
 
         case SYS_SPAWN:
             if (!(thread_current_caps() & GRANT_SPAWN)) return E_PERM;
-            return sys_spawn((const struct spawn_args *)a1);
+            return sys_spawn(a1);
 
         case SYS_EXEC_PATH:
             if (!(thread_current_caps() & GRANT_SPAWN)) return E_PERM;
-            return sys_exec_path((const char *)a1, (const struct spawn_args *)a2);
+            return sys_exec_path(a1, a2);
 
         case SYS_FILE_OP:
             if (!(thread_current_caps() & GRANT_DISK)) {
                 klog_u32("GRANT", SEV_WARN, "file_op DENIED for pid ", (uint32_t)thread_current_pid(), LOG_COLOR_VALUE, " (no GRANT_DISK)");
                 return E_PERM;
             }
-            return sys_file_op((const struct file_op_args *)a1);
+            return sys_file_op(a1);
 
         case SYS_FB_OP:
             if (!(thread_current_caps() & GRANT_FRAMEBUFFER)) {
                 klog_u32("GRANT", SEV_WARN, "fb_op DENIED for pid ", (uint32_t)thread_current_pid(), LOG_COLOR_VALUE, " (no GRANT_FRAMEBUFFER)");
                 return E_PERM;
             }
-            return sys_fb_op((const struct fb_op_args *)a1);
+            return sys_fb_op(a1);
 
         case SYS_INPUT_READ:
             /* unprivileged: reading your own keyboard input.
@@ -325,13 +325,13 @@ static int syscall_do(uint32_t num, uint32_t a1, uint32_t a2) {
                 klog_u32("GRANT", SEV_WARN, "net DENIED for pid ", (uint32_t)thread_current_pid(), LOG_COLOR_VALUE, " (no GRANT_NET)");
                 return E_PERM;
             }
-            return sys_net_op((const struct net_op_args *)a1);
+            return sys_net_op(a1);
 
         case SYS_MOUSE_READ: {
             /* unprivileged, same reasoning as keyboard input: a process reading
                the pointer it is already being shown */
-            struct mouse_state *ms = (struct mouse_state *)a1;
-            if (!user_ptr_writable((uint32_t)ms, sizeof *ms)) return E_FAULT;
+            struct mouse_state *ms = (struct mouse_state *)user_ptr(a1);
+            if (!user_ptr_writable(a1, sizeof *ms)) return E_FAULT;
             ms->x       = mouse_x();
             ms->y       = mouse_y();
             ms->buttons = mouse_buttons();
@@ -355,7 +355,7 @@ static int syscall_do(uint32_t num, uint32_t a1, uint32_t a2) {
                run. What bounds it is the per-process quota inside vm_map, not
                a grant bit every program would have to hold. */
             if (!user_ptr_writable(a1, sizeof(struct mem_op_args))) return E_FAULT;
-            struct mem_op_args *m = (struct mem_op_args *)a1;
+            struct mem_op_args *m = (struct mem_op_args *)user_ptr(a1);
             int pid = thread_current_pid();   /* the quota is the process's */
             switch (m->op) {
                 case MEM_OP_MAP:   return vm_map(pid, m);
@@ -366,13 +366,13 @@ static int syscall_do(uint32_t num, uint32_t a1, uint32_t a2) {
         }
 
         case SYS_IPC_CALL:
-            return ipc_call((const struct ipc_call_args *)a1);
+            return ipc_call(a1);
 
         case SYS_IPC_RECV:
-            return ipc_recv((const struct ipc_recv_args *)a1);
+            return ipc_recv(a1);
 
         case SYS_IPC_REPLY:
-            return ipc_reply((const struct ipc_reply_args *)a1);
+            return ipc_reply(a1);
 
         case SYS_EP_CREATE:
             if (!(thread_current_caps() & GRANT_ENDPOINT)) return E_PERM;
@@ -454,14 +454,14 @@ int usermode_test(void) {
     for (uint32_t i = 0; i < len; i++) dst[i] = user_blob_start[i];
 
     /* place the message just after the routine, in the user-accessible page */
-    char *umsg = (char *)(TEST_CODE_VIRT + USER_MSG_OFF);
+    char *umsg = (char *)user_ptr(TEST_CODE_VIRT + USER_MSG_OFF);
     uint32_t i = 0;
     for (; user_msg[i] && i < 0x100; i++) umsg[i] = user_msg[i];
     umsg[i] = '\0';
 
     /* seed the message pointer at the top of the user stack ([esp] on entry) */
     uint32_t ustack_top = TEST_STACK_VIRT + 0x1000 - 16;
-    *(uint32_t *)ustack_top = (uint32_t)umsg;
+    *(uint32_t *)user_ptr(ustack_top) = user_addr(umsg);
 
     /* dev test runs as a SYSTEM ring-3 helper: grant it console so the gated
        SYS_WRITE works (restored after). */
@@ -534,7 +534,7 @@ int usermode_log_test(void) {
     for (int i = 0; ; i++) { line[i] = msg[i]; if (!msg[i]) break; }
     uint32_t t0 = slog_total();
     console_cursor(&col, &row);
-    step = 1; if (syscall_dispatch(SYS_CONSOLE_WRITE, (uint32_t)line, 0) != 12) goto done;
+    step = 1; if (syscall_dispatch(SYS_CONSOLE_WRITE, user_addr(line), 0) != 12) goto done;
     console_cursor(&col2, &row2);
     step = 2; if (col2 != col || row2 != row) goto done;
     step = 3; if (slog_total() != t0 + 1) goto done;
@@ -554,12 +554,12 @@ int usermode_log_test(void) {
 
     /* 7-9: SYS_LOG_READ returns the newest entry, then 0, and needs the grant */
     uint32_t last = slog_count() - 1;
-    step = 7; if (syscall_dispatch(SYS_LOG_READ, last, (uint32_t)out) != 1) goto done;
+    step = 7; if (syscall_dispatch(SYS_LOG_READ, last, user_addr(out)) != 1) goto done;
     step = 8; if (out->seq != e->seq || !lt_streq(out->event, "half", LOG_EVENT_W)
                   || !lt_streq(out->system, tag, LOG_SYSTEM_W)) goto done;
-    step = 9; if (syscall_dispatch(SYS_LOG_READ, last + 1, (uint32_t)out) != 0) goto done;
+    step = 9; if (syscall_dispatch(SYS_LOG_READ, last + 1, user_addr(out)) != 0) goto done;
     thread_set_caps(me, 0);
-    step = 10; if (syscall_dispatch(SYS_LOG_READ, last, (uint32_t)out) != E_PERM) goto done;
+    step = 10; if (syscall_dispatch(SYS_LOG_READ, last, user_addr(out)) != E_PERM) goto done;
     ok = 1;
 
 done:
@@ -594,13 +594,13 @@ static int oi_call(int h, uint32_t topic, uint32_t cap) {
     struct object_info_args *a = (struct object_info_args *)FT_IARGS;
     a->handle = h;
     a->topic  = topic;
-    a->buf    = (void *)FT_INFO;
+    a->buf    = FT_INFO;
     a->cap    = cap;
     return syscall_dispatch(SYS_OBJECT_INFO, FT_IARGS, 0);
 }
 
 static void ft_str(uint32_t at, const char *s) {
-    char *d = (char *)at;
+    char *d = (char *)user_ptr(at);
     int i = 0;
     while (s[i] && i < 0x7F) { d[i] = s[i]; i++; }
     d[i] = '\0';
@@ -615,7 +615,7 @@ static void ft_str(uint32_t at, const char *s) {
    syscall path, ft_join into a kernel buffer for the cxfs_* checks. ft_join
    returns its one static buffer, so use it once per statement. */
 static void ft_strp(uint32_t at, const char *pre, const char *leaf) {
-    char *d = (char *)at;
+    char *d = (char *)user_ptr(at);
     int i = 0;
     while (*pre  && i < 0x7F) d[i++] = *pre++;
     while (*leaf && i < 0x7F) d[i++] = *leaf++;
@@ -636,9 +636,9 @@ static int ft_call(uint32_t op, int handle, uint32_t path, uint32_t data,
     struct file_op_args *a = (struct file_op_args *)FT_ARGS;
     a->op     = op;
     a->handle = handle;
-    a->path   = (const char *)path;
-    a->path2  = (const char *)FT_PATH2;
-    a->data   = (void *)data;
+    a->path   = path;
+    a->path2  = FT_PATH2;
+    a->data   = data;
     a->len    = len;
     a->off    = off;
     a->flags  = flags;
@@ -869,29 +869,29 @@ int usermode_file_test(void) {
      */
     thread_set_caps(me, GRANT_DISK | GRANT_SPAWN);
     struct spawn_args *sa = (struct spawn_args *)FT_STAT;   /* reuse the page */
-    sa->image = 0; sa->image_len = 0; sa->name = (const char *)FT_PATH;
+    sa->image = 0; sa->image_len = 0; sa->name = FT_PATH;
     sa->broker_endpoint = -1; sa->caps = 0;
     sa->args = 0; sa->args_len = 0;
 
     ft_strp(FT_PATH, scratch, "/kt_absent.xuex");
     step++;
-    if (sys_exec_path((const char *)FT_PATH, sa) != E_NOENT) goto done;
+    if (sys_exec_path(FT_PATH, user_addr(sa)) != E_NOENT) goto done;
 
     ft_strp(FT_PATH, scratch, "/kt_dir");
     step++;
-    if (sys_exec_path((const char *)FT_PATH, sa) != E_ISDIR) goto done;
+    if (sys_exec_path(FT_PATH, user_addr(sa)) != E_ISDIR) goto done;
 
     /* a real file whose contents are not a CXEX at all: the signature check
        must refuse it rather than the loader trying to run the bytes */
     ft_strp(FT_PATH, scratch, "/kt_sys.txt");
     step++;
-    if (sys_exec_path((const char *)FT_PATH, sa) != E_PERM) goto done;
+    if (sys_exec_path(FT_PATH, user_addr(sa)) != E_PERM) goto done;
 
     /* a bad path pointer is caught, not dereferenced */
     step++;
-    if (sys_exec_path((const char *)0xC0001000u, sa) != E_FAULT) goto done;
+    if (sys_exec_path(0xC0001000u, user_addr(sa)) != E_FAULT) goto done;
     step++;
-    if (sys_exec_path((const char *)FT_PATH, (const struct spawn_args *)0xC0001000u) != E_FAULT) goto done;
+    if (sys_exec_path(FT_PATH, 0xC0001000u) != E_FAULT) goto done;
 
     /* --- clock and sleep, through the real dispatcher ---
      * Both are unprivileged, so they must work with caps stripped to nothing -
@@ -980,29 +980,29 @@ int usermode_file_test(void) {
      * arguments by counting terminators, so a blob whose last byte is not one
      * would leave the final string running off the end of what was copied.
      * The check that stops it is one line, and nothing else would catch it. */
-    sa->args = (const char *)0xC0001000u; sa->args_len = 8;
+    sa->args = 0xC0001000u; sa->args_len = 8;
     step++;
-    if (sys_exec_path((const char *)FT_PATH, sa) != E_FAULT) goto done;
+    if (sys_exec_path(FT_PATH, user_addr(sa)) != E_FAULT) goto done;
 
     ft_str(FT_DATA, "noterm");
-    sa->args = (const char *)FT_DATA; sa->args_len = 6;   /* stops before the NUL */
+    sa->args = FT_DATA; sa->args_len = 6;   /* stops before the NUL */
     step++;
-    if (sys_exec_path((const char *)FT_PATH, sa) != E_INVAL) goto done;
+    if (sys_exec_path(FT_PATH, user_addr(sa)) != E_INVAL) goto done;
 
     sa->args_len = USER_ARGS_MAX + 1;                     /* wider than the page */
     step++;
-    if (sys_exec_path((const char *)FT_PATH, sa) != E_RANGE) goto done;
+    if (sys_exec_path(FT_PATH, user_addr(sa)) != E_RANGE) goto done;
 
     sa->args = 0; sa->args_len = 4;                       /* a length with no blob */
     step++;
-    if (sys_exec_path((const char *)FT_PATH, sa) != E_INVAL) goto done;
+    if (sys_exec_path(FT_PATH, user_addr(sa)) != E_INVAL) goto done;
 
     sa->args = 0; sa->args_len = 0;
 
     /* and GRANT_SPAWN is the gate: the dispatcher checks it, so go through it */
     thread_set_caps(me, GRANT_DISK);
     step++;
-    if (syscall_dispatch(SYS_EXEC_PATH, FT_PATH, (uint32_t)sa) != E_PERM) goto done;
+    if (syscall_dispatch(SYS_EXEC_PATH, FT_PATH, user_addr(sa)) != E_PERM) goto done;
     thread_set_caps(me, GRANT_DISK);
 
     /* --- the reaper releases handles a process never closed --- */
@@ -1061,7 +1061,7 @@ static volatile int fl_rc;         /* what its waiting lock returned */
 
 static int fl_call(uint32_t op, int handle, int32_t off, uint32_t len, uint32_t flags) {
     struct file_op_args *a = (struct file_op_args *)FL_ARGS;
-    a->op = op; a->handle = handle; a->path = (const char *)FL_PATH; a->path2 = 0;
+    a->op = op; a->handle = handle; a->path = FL_PATH; a->path2 = 0;
     a->data = 0; a->len = len; a->off = off; a->flags = flags;
     return syscall_dispatch(SYS_FILE_OP, FL_ARGS, 0);
 }
@@ -1229,10 +1229,10 @@ int usermode_flock_test(void) {
        otherwise reach the signature check: E_INVAL, not E_NOENT) */
     {
         struct spawn_args *sa = (struct spawn_args *)FT_STAT;
-        sa->image = 0; sa->image_len = 0; sa->name = (const char *)FT_PATH;
+        sa->image = 0; sa->image_len = 0; sa->name = FT_PATH;
         sa->broker_endpoint = -1; sa->caps = 0; sa->args = 0; sa->args_len = 0;
         step++;                                                                   /* 42 */
-        if (sys_exec_path((const char *)FT_PATH, sa) != E_NOENT) goto done;
+        if (sys_exec_path(FT_PATH, user_addr(sa)) != E_NOENT) goto done;
     }
     /* and the id is not handed to the next file created */
     ft_strp(FT_PATH, scratch, "/kt_lock2.txt");
@@ -1300,17 +1300,17 @@ static void process_trampoline(void) {
 
     uint32_t len = s->blob_len;
     if (len == 0 || len > USER_MSG_OFF) len = USER_MSG_OFF;
-    uint8_t *dst = (uint8_t *)s->code_virt;
+    uint8_t *dst = (uint8_t *)user_ptr(s->code_virt);
     const uint8_t *src = (const uint8_t *)s->blob;
     for (uint32_t i = 0; i < len; i++) dst[i] = src[i];
 
-    char *umsg = (char *)(s->code_virt + USER_MSG_OFF);
+    char *umsg = (char *)user_ptr(s->code_virt + USER_MSG_OFF);
     uint32_t i = 0;
     if (s->msg) { for (; s->msg[i] && i < 0x100; i++) umsg[i] = s->msg[i]; }
     umsg[i] = '\0';
 
     uint32_t ustack_top = s->stack_virt + 0x1000 - 16;
-    *(uint32_t *)ustack_top = (uint32_t)umsg;
+    *(uint32_t *)user_ptr(ustack_top) = user_addr(umsg);
 
     enter_usermode(s->code_virt, ustack_top, thread_current_usave());
 

@@ -94,6 +94,6 @@ void fb_draw_string_n(uint32_t x, uint32_t y, const char *s, uint32_t n,
                       uint32_t fg, uint32_t bg);
 
 struct fb_op_args;
-int sys_fb_op(const struct fb_op_args *ua);
+int sys_fb_op(uint32_t ua);
 
 #endif

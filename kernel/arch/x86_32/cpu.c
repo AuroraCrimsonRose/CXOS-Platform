@@ -38,6 +38,20 @@ void arch_run_on_stack(uintptr_t top, void (*fn)(void)) {
     __builtin_unreachable();
 }
 
+uintptr_t arch_thread_frame(uintptr_t stack_top, void (*launch)(void)) {
+    /* context_switch (switch.asm) saves pushfd, ebx, esi, edi, ebp, so from
+       the saved esp upward the frame is [ebp][edi][esi][ebx][eflags][return],
+       and it restores with pop ebp; pop edi; pop esi; pop ebx; popfd; ret. */
+    uint32_t *sp = (uint32_t *)stack_top;
+    *(--sp) = (uint32_t)launch;          /* [+20] ret target */
+    *(--sp) = 0x202;                     /* [+16] eflags: IF set, reserved bit 1 */
+    *(--sp) = 0;                         /* [+12] ebx */
+    *(--sp) = 0;                         /* [+8]  esi */
+    *(--sp) = 0;                         /* [+4]  edi */
+    *(--sp) = 0;                         /* [+0]  ebp  <- esp points here */
+    return (uintptr_t)sp;
+}
+
 void arch_cpu_reset(void) {
     /* A triple fault: with an empty IDT the breakpoint cannot be delivered,
        nor can the double fault that follows, and the processor resets. */

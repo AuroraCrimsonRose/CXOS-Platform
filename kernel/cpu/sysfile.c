@@ -296,14 +296,13 @@ static int abi_err(int cxfs_rc) {
    Validates one page at a time rather than one byte at a time: user_ptr_readable
    walks page tables, so per-byte would be a page-table walk per character.
    Returns the length, or a negative E_* code. */
-static int copy_path_in(const char *upath, char *dst, uint32_t cap) {
-    uint32_t addr = (uint32_t)upath;
+static int copy_path_in(uint32_t addr, char *dst, uint32_t cap) {
     if (!addr) return E_FAULT;
     for (uint32_t i = 0; i < cap; i++) {
         if (i == 0 || (((addr + i) & 0xFFFu) == 0)) {       /* new page */
             if (!user_ptr_readable(addr + i, 1)) return E_FAULT;
         }
-        char c = ((const char *)addr)[i];
+        char c = ((const char *)user_ptr(addr))[i];
         dst[i] = c;
         if (!c) return (int)i;
     }
@@ -496,9 +495,9 @@ static int file_op(struct file_op_args a, struct open_file *f, uint32_t rights) 
             if (!(rights & FOPEN_READ)) return E_PERM;
             if (a.len == 0) return 0;
             if (a.len > 0x7FFFFFFFu) return E_RANGE;
-            if (!user_ptr_writable((uint32_t)a.data, a.len)) return E_FAULT;
+            if (!user_ptr_writable(a.data, a.len)) return E_FAULT;
 
-            rc = cxfs_read_at(f->entry, f->off, a.data, a.len);
+            rc = cxfs_read_at(f->entry, f->off, user_ptr(a.data), a.len);
             if (rc < 0) return abi_err(rc);
             f->off += (uint32_t)rc;
             return rc;
@@ -508,7 +507,7 @@ static int file_op(struct file_op_args a, struct open_file *f, uint32_t rights) 
             if (!(rights & FOPEN_WRITE)) return E_PERM;
             if (a.len == 0) return 0;
             if (a.len > 0x7FFFFFFFu) return E_RANGE;
-            if (!user_ptr_readable((uint32_t)a.data, a.len)) return E_FAULT;
+            if (!user_ptr_readable(a.data, a.len)) return E_FAULT;
             /* the offset cap is the ABI's, so refuse rather than wrap */
             if (f->off > 0x7FFFFFFFu - a.len) return E_RANGE;
 
@@ -521,7 +520,7 @@ static int file_op(struct file_op_args a, struct open_file *f, uint32_t rights) 
                 f->off = (uint32_t)e.size;
             }
 
-            rc = cxfs_write_at(f->entry, f->off, a.data, a.len);
+            rc = cxfs_write_at(f->entry, f->off, user_ptr(a.data), a.len);
             if (rc < 0) return abi_err(rc);
             f->off += (uint32_t)rc;
             return rc;
@@ -569,16 +568,16 @@ static int file_op(struct file_op_args a, struct open_file *f, uint32_t rights) 
             } else {
                 id = f->entry;
             }
-            if (!user_ptr_writable((uint32_t)a.data, sizeof(struct file_stat))) return E_FAULT;
+            if (!user_ptr_writable(a.data, sizeof(struct file_stat))) return E_FAULT;
             struct cxfs_entry e;
             if (cxfs_read_entry(id, &e) != 0) return E_IO;
-            fill_stat(&e, (struct file_stat *)a.data);
+            fill_stat(&e, (struct file_stat *)user_ptr(a.data));
             return E_OK;
         }
 
         case FILE_OP_READDIR: {
             if ((rc = copy_path_in(a.path, path, sizeof path)) < 0) return rc;
-            if (!user_ptr_writable((uint32_t)a.data, sizeof(struct file_stat))) return E_FAULT;
+            if (!user_ptr_writable(a.data, sizeof(struct file_stat))) return E_FAULT;
 
             int r = lookup(path, cwd);
             if (r < 0) return E_NOENT;
@@ -591,7 +590,7 @@ static int file_op(struct file_op_args a, struct open_file *f, uint32_t rights) 
             rd_found = 0;
             cxfs_list_dir((uint32_t)r, rd_cb);
             if (!rd_found) return 0;                 /* index past the end */
-            fill_stat(&rd_entry, (struct file_stat *)a.data);
+            fill_stat(&rd_entry, (struct file_stat *)user_ptr(a.data));
             return 1;
         }
 
@@ -716,12 +715,12 @@ static int file_op(struct file_op_args a, struct open_file *f, uint32_t rights) 
         case FILE_OP_GETCWD: {
             if (a.len == 0) return E_RANGE;
             if (a.len > FILE_PATH_MAX) a.len = FILE_PATH_MAX;
-            if (!user_ptr_writable((uint32_t)a.data, a.len)) return E_FAULT;
+            if (!user_ptr_writable(a.data, a.len)) return E_FAULT;
             cxfs_path_of(cwd, path, (int)a.len);
             uint32_t n = 0;
             while (n + 1 < a.len && path[n]) n++;
-            memcpy(a.data, path, n);
-            ((char *)a.data)[n] = '\0';
+            memcpy(user_ptr(a.data), path, n);
+            ((char *)user_ptr(a.data))[n] = '\0';
             return (int)n;
         }
 
@@ -730,9 +729,9 @@ static int file_op(struct file_op_args a, struct open_file *f, uint32_t rights) 
     }
 }
 
-int sys_file_op(const struct file_op_args *ua) {
-    if (!user_ptr_readable((uint32_t)ua, sizeof *ua)) return E_FAULT;
-    struct file_op_args a = *ua;          /* copy in: never re-read user memory */
+int sys_file_op(uint32_t ua) {
+    struct file_op_args a;          /* copy in: never re-read user memory */
+    if (user_copy_in(&a, ua, sizeof a) != 0) return E_FAULT;
 
     if (!cxfs_is_mounted()) return E_IO;
     bury_pending();

@@ -25,7 +25,7 @@ struct endpoint {
     int      recv_tid;      /* the thread blocked in ipc_recv on it, or -1 */
     int      caller_tid;    /* the thread blocked in ipc_call on it, or -1 */
     int      caller_pid;    /* and its process, which ipc_recv reports */
-    void    *reply_ptr;     /* caller's reply buffer (in the caller's space) */
+    uint32_t reply_ptr;     /* caller's reply buffer (in the caller's space) */
     uint32_t reply_cap;     /* caller's reply buffer size */
                             /* These two are the authority for the copy-out in
                                ipc_call, re-validated there rather than
@@ -91,8 +91,8 @@ void ep_put(struct endpoint *ep);
 int32_t ep_install_handle(int tid, struct endpoint *ep, uint32_t rights, uint32_t parent_grant);
 
 /* the synchronous rendezvous (each takes a user pointer to its args struct) */
-int ipc_call(const struct ipc_call_args *ua);    /* caller (app); blocks -> reply len */
-int ipc_recv(const struct ipc_recv_args *ua);    /* owner (executive); blocks -> req len */
-int ipc_reply(const struct ipc_reply_args *ua);  /* owner; wakes the caller -> 0 */
+int ipc_call(uint32_t ua);    /* caller (app); blocks -> reply len */
+int ipc_recv(uint32_t ua);    /* owner (executive); blocks -> req len */
+int ipc_reply(uint32_t ua);  /* owner; wakes the caller -> 0 */
 
 #endif

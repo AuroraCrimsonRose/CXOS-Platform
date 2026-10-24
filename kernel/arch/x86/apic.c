@@ -138,8 +138,8 @@ static void parse_madt(struct madt_header *madt) {
         if (e->type == MADT_IOAPIC && !ioapic_found) {
             uint32_t addr = *(uint32_t *)(p + 4);
             ioapic_gsi_base = *(uint32_t *)(p + 8);
-            paging_map_kernel(addr, addr, VM_WRITE | VM_UNCACHED);
-            ioapic_found = iowin_mmio(&ioapic, (volatile void *)addr, 0x20) == 0;
+            volatile void *v = paging_map_phys(addr, 0x20, VM_WRITE | VM_UNCACHED);
+            ioapic_found = v && iowin_mmio(&ioapic, v, 0x20) == 0;
         } else if (e->type == MADT_ISO) {
             uint8_t source = p[3];
             uint32_t gsi = *(uint32_t *)(p + 4);
@@ -150,9 +150,8 @@ static void parse_madt(struct madt_header *madt) {
                half is zero, which it is on every real machine. */
             uint64_t addr = *(uint64_t *)(p + 4);
             if ((addr >> 32) == 0 && addr) {
-                paging_map_kernel((uint32_t)addr, (uint32_t)addr,
-                           VM_WRITE | VM_UNCACHED);
-                (void)iowin_mmio(&lapic, (volatile void *)(uint32_t)addr, 0x400);
+                volatile void *v = paging_map_phys((paddr_t)addr, 0x400, VM_WRITE | VM_UNCACHED);
+                if (v) (void)iowin_mmio(&lapic, v, 0x400);
             }
         }
         p += e->length;
@@ -217,8 +216,8 @@ int irq_controller_init(void) {
     if (!base) base = 0xFEE00000u;
     wrmsr(IA32_APIC_BASE, (base_msr | APIC_BASE_ENABLE));
 
-    paging_map_kernel(base, base, VM_WRITE | VM_UNCACHED);
-    (void)iowin_mmio(&lapic, (volatile void *)base, 0x400);
+    volatile void *v = paging_map_phys(base, 0x400, VM_WRITE | VM_UNCACHED);
+    if (v) (void)iowin_mmio(&lapic, v, 0x400);
 
     struct madt_header *madt = (struct madt_header *)acpi_find_table("APIC");
     if (madt) parse_madt(madt);       /* may relocate lapic via an override */

@@ -26,7 +26,7 @@
 #include <stdint.h>
 
 /* SYS_FILE_OP handler (called after the GRANT_DISK check). */
-int sys_file_op(const struct file_op_args *ua);
+int sys_file_op(uint32_t ua);
 
 /* register the open-file object type; call once during init. */
 void sysfile_init(void);

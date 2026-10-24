@@ -102,7 +102,9 @@ int cxex_exec_as(const uint8_t *file, size_t len, uint32_t caps, struct endpoint
     /* Start it as a normal ring-3 thread: its own address space, kernel stack,
        and capability tier. The scheduler handles its CR3/esp0 like any process -
        no special-casing. */
-    int pid = proc_start(file, len, caps, broker, broker_grant, args, args_len);
+    /* Saturated, not truncated: proc_start refuses an oversized image. */
+    uint32_t ulen = len > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)len;
+    int pid = proc_start(file, ulen, caps, broker, broker_grant, args, args_len);
     return pid;   /* >= 0 pid, or a negative error */
 }
 

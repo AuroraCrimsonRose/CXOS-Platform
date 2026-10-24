@@ -22,7 +22,7 @@ static uint32_t map_n, map_dropped;
    wholly inside. */
 static const void *boot_window(uint64_t phys, uint32_t len) {
     if (phys == 0 || phys >= BOOT_WINDOW || len > BOOT_WINDOW - phys) return 0;
-    return (const void *)(uintptr_t)((uint32_t)phys + KERNEL_VBASE);
+    return (const void *)((uintptr_t)phys + KERNEL_VBASE);
 }
 
 void cxbi_init(uintptr_t phys) {

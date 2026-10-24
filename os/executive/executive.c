@@ -49,8 +49,8 @@ void _start(void) {
     if (ep < 0) { sys_write("executive: ep_create failed\n"); sys_exit(1); }
 
     struct spawn_args sa;
-    sa.image = shell_xsex; sa.image_len = shell_xsex_len;
-    sa.name = "shell";     sa.broker_endpoint = ep;
+    sa.image = (uint32_t)shell_xsex; sa.image_len = shell_xsex_len;
+    sa.name = (uint32_t)"shell";    sa.broker_endpoint = ep;
     sa.caps = GRANT_OS_BASELINE;   /* privileged shell (attenuated to executive's caps) */
     /* No arguments for the shell - but say so rather than leaving the fields
        as whatever was on the stack. The kernel validates args against
@@ -77,7 +77,7 @@ void _start(void) {
      * machine with no services - so this is a note, not a failure. */
     struct spawn_args svc;
     svc.image = 0; svc.image_len = 0;
-    svc.name = "supervisor"; svc.broker_endpoint = -1;
+    svc.name = (uint32_t)"supervisor"; svc.broker_endpoint = -1;
     svc.caps = GRANT_OS_BASELINE | SPAWN_BACKGROUND;
     svc.args = 0; svc.args_len = 0;
     if (sys_exec_path("/System/Programs/supervisor.xsex", &svc) < 0)
@@ -86,7 +86,7 @@ void _start(void) {
     /* serve one request from the app */
     char buf[256]; int sender = 0;
     struct ipc_recv_args ra;
-    ra.ep_handle = ep; ra.buf = buf; ra.cap = sizeof buf; ra.sender = &sender;
+    ra.ep_handle = ep; ra.buf = (uint32_t)buf; ra.cap = sizeof buf; ra.sender = (uint32_t)&sender;
     int n = sys_ipc_recv(&ra);          /* blocks until the app ipc_calls */
     if (n > 0) {
         if (n < (int)sizeof buf) buf[n] = 0;   /* NUL-terminate for the write */
@@ -94,7 +94,7 @@ void _start(void) {
     }
 
     struct ipc_reply_args rp;
-    rp.ep_handle = ep; rp.data = "ok"; rp.len = 2;
+    rp.ep_handle = ep; rp.data = (uint32_t)"ok"; rp.len = 2;
     sys_ipc_reply(&rp);                  /* wake the app */
 
     sys_yield();                         /* let the app resume and exit */

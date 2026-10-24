@@ -28,6 +28,17 @@ uintptr_t arch_kernel_stack_default(void);
 /* The stack an interrupt from user mode would switch to right now. */
 uintptr_t arch_kernel_stack_current(void);
 
+/* Switch threads: save the running thread's callee-saved state on its own
+   stack and its stack pointer in *old_sp, then resume the thread whose saved
+   stack pointer is new_sp. Returns when something switches back. */
+void context_switch(uintptr_t *old_sp, uintptr_t new_sp);
+
+/* Lay out a new thread's first frame at the top of its kernel stack, as
+   context_switch leaves a thread it switched away from, so the first switch
+   to it calls `launch` with interrupts enabled. Returns the saved stack
+   pointer to give context_switch. */
+uintptr_t arch_thread_frame(uintptr_t stack_top, void (*launch)(void));
+
 /* Move onto the stack whose top is `top` and call fn there, with no frame
    above it (a stack trace ends at fn). Never returns. */
 __attribute__((noreturn)) void arch_run_on_stack(uintptr_t top, void (*fn)(void));

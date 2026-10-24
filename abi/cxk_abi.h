@@ -146,14 +146,14 @@ struct args_info {
 
 /* ---- shared call structures ---- */
 struct spawn_args {
-    const void *image;            /* the app's CXEX bytes (in the caller's space) */
+    uint32_t    image;            /* the app's CXEX bytes (in the caller's space) */
     uint32_t    image_len;
-    const char *name;             /* optional; not dereferenced in v1 */
+    uint32_t    name;             /* optional; not dereferenced in v1 */
     int         broker_endpoint;  /* a RECV endpoint handle the caller owns */
     uint32_t    caps;             /* requested caps for the child; kernel masks against
                                      the spawner's own caps (attenuation, never amplify).
                                      0 = capability-less app. */
-    const char *args;             /* argc NUL-terminated strings back to back, or NULL */
+    uint32_t    args;             /* argc NUL-terminated strings back to back, or NULL */
     uint32_t    args_len;         /* total bytes of that blob, terminators included */
 };
 
@@ -201,7 +201,7 @@ struct clock_info {
 struct object_info_args {
     int       handle;
     uint32_t  topic;         /* OBJINFO_* */
-    void     *buf;           /* the topic's structure is written here */
+    uint32_t  buf;           /* the topic's structure is written here */
     uint32_t  cap;           /* bytes at buf; smaller than the topic needs is E_RANGE */
 };
 struct object_basic {
@@ -214,20 +214,20 @@ struct object_basic {
 
 struct ipc_call_args {
     int         ep_handle;   /* a SEND endpoint handle (the broker channel) */
-    const void *req;         /* request bytes */
+    uint32_t    req;         /* request bytes */
     uint32_t    req_len;
-    void       *reply;       /* buffer the reply is copied into */
+    uint32_t    reply;       /* buffer the reply is copied into */
     uint32_t    reply_cap;
 };
 struct ipc_recv_args {
     int       ep_handle;     /* a RECV endpoint handle (owner side) */
-    void     *buf;           /* request copied here */
+    uint32_t  buf;           /* request copied here */
     uint32_t  cap;
-    int      *sender;        /* set to the caller's pid (may be 0) */
+    uint32_t  sender;        /* set to the caller's pid (may be 0) */
 };
 struct ipc_reply_args {
     int         ep_handle;   /* the RECV endpoint just received on */
-    const void *data;        /* reply bytes */
+    uint32_t    data;        /* reply bytes */
     uint32_t    len;
 };
 
@@ -259,8 +259,8 @@ struct fb_op_args {
     uint32_t    w, h;
     uint32_t    color;       /* 0x00RRGGBB (fg for text) */
     uint32_t    color2;      /* bg for DRAW_TEXT */
-    const char *text;        /* DRAW_TEXT: NUL-terminated */
-    uint32_t   *out;         /* INFO: caller buffer >= 4 u32 */
+    uint32_t    text;        /* DRAW_TEXT: NUL-terminated */
+    uint32_t    out;         /* INFO: caller buffer >= 4 u32 */
 };
 
 /* ---- capabilities (for spawn_args.caps) ----
@@ -309,9 +309,9 @@ enum {
 struct net_op_args {
     uint32_t  op;
     uint32_t  ip;        /* packed IPv4, network order */
-    void     *data;      /* frame or MAC buffer */
+    uint32_t  data;      /* frame or MAC buffer */
     uint32_t  len;       /* buffer length, or a small selector/sequence */
-    uint32_t *out;       /* results (>= 4 u32 for GET_IP) */
+    uint32_t  out;       /* results (>= 4 u32 for GET_IP) */
 };
 
 
@@ -529,9 +529,9 @@ enum {
 struct file_op_args {
     uint32_t    op;
     int32_t     handle;
-    const char *path;
-    const char *path2;       /* RENAME: the new name */
-    void       *data;        /* READ/WRITE buffer, or *file_stat */
+    uint32_t    path;
+    uint32_t    path2;       /* RENAME: the new name */
+    uint32_t    data;        /* READ/WRITE buffer, or *file_stat */
     uint32_t    len;         /* buffer length, or READDIR index */
     int32_t     off;         /* SEEK offset (signed), TRUNC size */
     uint32_t    flags;       /* FOPEN_* or FSEEK_* */
@@ -586,18 +586,18 @@ struct log_entry {
    aligned, so there is no padding and no packing attribute is needed - and
    these asserts say so in a way the compiler checks.
 
-   The first two are this ABI's x86-32 assumptions, stated at the one place
-   they cross the boundary: pointers and `int` fields are 32 bits wide. A port
-   to a 64-bit target fails HERE, at compile time, naming the assumption -
-   rather than in a syscall that reads half a pointer. Changing any size below
-   is an ABI change: bump CXK_ABI_VERSION with it. */
+   No field is a C pointer: a user address is a uint32_t, so a 64-bit kernel
+   reads the same layout a 32-bit program writes, and the kernel cannot
+   dereference one by accident - it goes through user_copy_in/out. (Until the
+   new ABI of roadmap step 6, which widens them.) The assert below is the
+   one x86-32 assumption left: `int` fields are 32 bits wide. Changing any
+   size below is an ABI change: bump CXK_ABI_VERSION with it. */
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
   #define CXK_ABI_STATIC_ASSERT(c, m) _Static_assert(c, m)
 #else
   #define CXK_ABI_STATIC_ASSERT(c, m) typedef char cxk_abi_assert_##__LINE__[(c) ? 1 : -1]
 #endif
 
-CXK_ABI_STATIC_ASSERT(sizeof(void *) == 4, "CXK ABI v2 assumes 32-bit pointers in its structures");
 CXK_ABI_STATIC_ASSERT(sizeof(int)    == 4, "CXK ABI v2 assumes a 32-bit int in its structures");
 
 CXK_ABI_STATIC_ASSERT(sizeof(struct args_info)      == 12, "ABI layout: args_info");

@@ -36,6 +36,13 @@ uint32_t syscall_dispatch_count(void);
 int  user_ptr_readable(uint32_t ptr, uint32_t len);
 int  user_ptr_writable(uint32_t ptr, uint32_t len);
 
+/* A user address (the ABI carries them as uint32_t, never as C pointers) as a
+   pointer the kernel may dereference: only after user_ptr_readable or
+   user_ptr_writable said yes for the whole span. Prefer the copies below. */
+static inline void *user_ptr(uint32_t uaddr) { return (void *)(uintptr_t)uaddr; }
+/* The reverse, for the self-tests that build a call in a user-half buffer. */
+static inline uint32_t user_addr(const void *p) { return (uint32_t)(uintptr_t)p; }
+
 /* Copy across the ring boundary (security review §6).
  *
  * Use these rather than validating a pointer and then dereferencing it: a

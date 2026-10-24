@@ -217,11 +217,6 @@ uint32_t pci_bar_mmio32(const struct pci_device *d, int index, const char *tag) 
     }
     uint32_t base = (uint32_t)b.base;
     if (base == 0) return 0;
-    if (base < KERNEL_VBASE) {
-        klog_u32(tag, SEV_WARN, "register BAR below the kernel half: ", base,
-                 LOG_COLOR_VALUE, " - not visible from a process address space");
-        return 0;
-    }
     return base;
 }
 
@@ -311,12 +306,11 @@ int pci_msix_enable(const struct pci_device *d, uint8_t vector) {
     uint32_t base = pci_bar_mmio32(d, bir, "MSI-X");
     if (!base) return 0;
 
-    uint32_t entry = base + offset;   /* entry 0 - one vector is all we want */
-    paging_map_kernel(entry & ~0xFFFu, entry & ~0xFFFu,
-               VM_WRITE | VM_UNCACHED);
+    /* entry 0 - one vector is all we want */
+    volatile void *entry = paging_map_phys(base + offset, MSIX_ENTRY_SIZE, VM_WRITE | VM_UNCACHED);
 
     struct iowin e;
-    if (iowin_mmio(&e, (volatile void *)entry, MSIX_ENTRY_SIZE) != 0) return 0;
+    if (!entry || iowin_mmio(&e, entry, MSIX_ENTRY_SIZE) != 0) return 0;
     iowin_write32(&e, 0x0, irq_msi_address());   /* address low  */
     iowin_write32(&e, 0x4, 0);                   /* address high */
     iowin_write32(&e, 0x8, irq_msi_data(vector));

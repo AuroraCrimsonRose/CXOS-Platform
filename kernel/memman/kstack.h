@@ -46,15 +46,15 @@ void kstack_init(void);
    (one past its highest byte - the initial esp), or 0 if out of slots or
    memory. *base_out receives the lowest mapped address, which kstack_free
    takes back. */
-uint32_t kstack_alloc(uint32_t bytes, int owner, uint32_t *base_out);
+uintptr_t kstack_alloc(uint32_t bytes, int owner, uintptr_t *base_out);
 
 /* Unmap and free a stack from kstack_alloc. 0 is a safe no-op. */
-void kstack_free(uint32_t base);
+void kstack_free(uintptr_t base);
 
 /* If `addr` lies in the guard part of a live stack's slot, the thread that
    owns it; otherwise -1. Lets the double-fault handler say "thread 3 ran out
    of stack" rather than print an address and leave the reader to work it out. */
-int kstack_guard_owner(uint32_t addr);
+int kstack_guard_owner(uintptr_t addr);
 
 /* live stacks (for the self-test's leak check) */
 uint32_t kstack_live(void);

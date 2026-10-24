@@ -21,4 +21,8 @@ typedef uint32_t paddr_t;
    section 2). */
 #define KERNEL_VBASE     0xC0000000u
 
+/* The first address past the user half: user space is everything below the
+   kernel. */
+#define USER_VLIMIT      KERNEL_VBASE
+
 #endif

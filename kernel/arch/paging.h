@@ -20,10 +20,19 @@
 #include <stdint.h>
 
 #if defined(__i386__) || defined(CXK_HOST_TEST)
-#include "arch/x86_32/paging_defs.h"   /* paddr_t, PAGE_SIZE, KERNEL_VBASE */
+#include "arch/x86_32/paging_defs.h"   /* paddr_t, PAGE_SIZE, KERNEL_VBASE, USER_VLIMIT */
+#elif defined(__x86_64__)
+#include "arch/x86_64/paging_defs.h"
 #else
 #error "kernel/arch/paging.h: no paging for this architecture"
 #endif
+
+/* The end of the user half as a 32-bit user address can name it: the ABI
+   carries user addresses as uint32_t (abi/cxk_abi.h) until roadmap step 6
+   widens them. USER_VLIMIT itself on x86-32; the last page below 4 GB on
+   x86-64. */
+#define USER_ADDR32_END \
+    ((uint32_t)(USER_VLIMIT <= 0xFFFFF000ull ? USER_VLIMIT : 0xFFFFF000ull))
 
 /* ---- what a mapping allows -------------------------------------------------- */
 #define VM_WRITE     0x1u
@@ -70,6 +79,15 @@ void paging_init(void);
    `vm` holds a flag that is not VM_*. */
 void paging_map_kernel(uintptr_t virt, paddr_t phys, uint32_t vm);
 int  paging_map_user  (uintptr_t virt, paddr_t phys, uint32_t vm);
+
+/* Map the physical range [phys, phys+len) for the kernel and return where it
+   now is (phys's own offset kept), or 0 if this kernel cannot reach it. The
+   same physical address always comes back at the same place, so a range can
+   be mapped again, longer. For device registers (`vm` with VM_UNCACHED) and
+   firmware tables. Where it lands
+   is the architecture's choice: x86-32 maps it where it sits, which is safe
+   only because pci_bar_mmio32 refuses a BAR below KERNEL_VBASE. */
+volatile void *paging_map_phys(paddr_t phys, uint32_t len, uint32_t vm);
 
 /* Remove the mapping of one page in the active space. */
 void paging_unmap(uintptr_t virt);
