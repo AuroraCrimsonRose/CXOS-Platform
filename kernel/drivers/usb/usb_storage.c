@@ -368,12 +368,20 @@ static int rw(uint8_t unit, uint64_t lba, uint32_t count, void *buf, int read) {
     return DISK_OK;
 }
 
+/* Under usb_lock: the idle loop's port polling and the keyboard poll share
+   the controller's transfer descriptors with these. */
 int usb_storage_read(uint8_t unit, uint64_t lba, uint32_t count, void *buf) {
-    return rw(unit, lba, count, buf, 1);
+    int k = usb_lock();
+    int r = rw(unit, lba, count, buf, 1);
+    usb_unlock(k);
+    return r;
 }
 
 int usb_storage_write(uint8_t unit, uint64_t lba, uint32_t count, const void *buf) {
-    return rw(unit, lba, count, (void *)buf, 0);
+    int k = usb_lock();
+    int r = rw(unit, lba, count, (void *)buf, 0);
+    usb_unlock(k);
+    return r;
 }
 
 /* SYNCHRONIZE CACHE (10): commit the device's write cache.
@@ -389,7 +397,7 @@ int usb_storage_write(uint8_t unit, uint64_t lba, uint32_t count, const void *bu
  * is not asked, and one that answers ILLEGAL REQUEST has nothing to flush, so
  * that is success and the command is not sent to it again. Any other failure
  * is still an error, and its sense data is logged. */
-int usb_storage_flush(uint8_t unit) {
+static int flush_unit(uint8_t unit) {
     if (unit >= MAX_UNITS || !units[unit].in_use) return DISK_ERR_NO_DEVICE;
     struct storage_unit *u = &units[unit];
     if (!u->wce || u->sync_refused) return DISK_OK;
@@ -414,6 +422,13 @@ int usb_storage_flush(uint8_t unit) {
         klog_child("no sense data");
     }
     return DISK_ERR_FAULT;
+}
+
+int usb_storage_flush(uint8_t unit) {
+    int k = usb_lock();
+    int r = flush_unit(unit);
+    usb_unlock(k);
+    return r;
 }
 
 /* ---- panic -------------------------------------------------------------- */

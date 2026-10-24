@@ -152,6 +152,12 @@ static const char *cx_logo_art[] = {
 /* How often the idle loop re-saves a grown system log to the crash area. */
 #define BOOTLOG_SAVE_MS 5000u
 
+/* How often the idle loop looks at the USB root ports for a device plugged in
+   or pulled out (usb_poll). A keyboard EHCI hands to its companion connects
+   there after the boot has looked, and one plugged in later never connects
+   during a boot at all. */
+#define USB_POLL_MS 250u
+
 static void cx_text_logo(void) {
     /* per-character coloring: stroke glyphs '/' and '\\' are yellow, the
        fill/underscore glyphs are white. */
@@ -454,17 +460,26 @@ void kmain_late(void) {
     /* The log goes to the stick now and again every few seconds while it
        grows, so `cxk rig bootlog` reads it off a machine with no serial port:
        the boot at once, then the executive, the services and anything after. */
+    int blk = usb_lock();
     int bl = crashlog_save_bootlog();
+    usb_unlock(blk);
     if (bl == DISK_OK) klog("CRASHLOG", SEV_OK, "system log saved to the crash area (cxk rig bootlog)");
     else if (bl != DISK_ERR_NO_DEVICE)
         klog_u32("CRASHLOG", SEV_WARN, "system log not saved, disk error ", (uint32_t)-bl, LOG_COLOR_VALUE, "");
     uint32_t bl_at = timer_ticks();
+    uint32_t usb_at = bl_at;
 
     for (;;) {
         yield();                       /* let the executive + its apps run */
         if (timer_since(bl_at) >= BOOTLOG_SAVE_MS && crashlog_bootlog_stale()) {
+            int k = usb_lock();        /* the save writes with interrupts off: wait first */
             (void)crashlog_save_bootlog();
+            usb_unlock(k);
             bl_at = timer_ticks();
+        }
+        if (timer_since(usb_at) >= USB_POLL_MS) {
+            usb_poll();
+            usb_at = timer_ticks();
         }
         arch_cpu_halt();
     }

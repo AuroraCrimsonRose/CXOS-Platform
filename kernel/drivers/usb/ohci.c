@@ -12,6 +12,7 @@
 #include "logging.h"
 #include "timer.h"
 #include "drivers/iowin.h"
+#include "format.h"
 
 /* ---- operational registers (at BAR0) ------------------------------------ */
 #define OHCI_REVISION        0x00
@@ -171,6 +172,7 @@ struct ohci_hc {
         uint8_t addr, ep, armed, len;
     } int_eps[MAX_INT_EPS];
     int int_list_live;
+    uint16_t seen;                  /* ports already found connected and tried */
 };
 
 static struct ohci_hc hcs[OHCI_MAX_HCS];
@@ -431,8 +433,9 @@ static const struct usb_hc_ops ohci_ops = {
 static void enumerate_port(struct ohci_hc *c, unsigned p) {
     uint32_t st = port_rd(c, p);
     if (!(st & RH_CCS)) return;
+    c->seen |= (uint16_t)(1u << p);         /* tried once, whatever comes of it */
 
-    port_wr(c, p, RH_SET_PR);               /* single action bit, see the note */
+    port_wr(c, p, RH_SET_PR);              /* single action bit, see the note */
     int ok = 0;
     for (int i = 0; i < 100; i++) {
         timer_sleep(1);
@@ -620,6 +623,14 @@ static int ohci_start(struct ohci_hc *c, const struct pci_device *dev, unsigned 
 
     ohci_takeover(c);
 
+    /* Hold the bus in USB reset before resetting the controller. The spec does
+       not ask for it, but Haiku and FreeBSD both do it after taking a
+       controller from the BIOS, because some do not start without it (Haiku's
+       ohci.cpp, "without it some controllers don't start"). It also resets
+       whatever the BIOS left configured on the ports. */
+    wr(c, OHCI_CONTROL, CTRL_HCFS_RESET);
+    timer_sleep(100);
+
     /* FmInterval is destroyed by the reset and has to be put back, so save it
        first - the controller will not schedule anything without a sane frame
        interval, and its reset default is not necessarily it. */
@@ -680,6 +691,60 @@ static int ohci_start(struct ohci_hc *c, const struct pci_device *dev, unsigned 
     timer_sleep(100);
     for (unsigned p = 0; p < c->nports; p++) enumerate_port(c, p);
     return 1;
+}
+
+/* A removed device's interrupt slots: skip its EDs and free the slots, or
+   four replugs would use them all up and the fifth keyboard get none. */
+static void release_int_slots(struct ohci_hc *c, uint8_t addr) {
+    for (int i = 0; i < MAX_INT_EPS; i++) {
+        if (!c->int_eps[i].armed || c->int_eps[i].addr != addr) continue;
+        struct ohci_ed *ied = dma_virt(c, ED_INT(i));
+        ied->control |= ED_SKIP;
+        c->int_eps[i].armed = 0;
+    }
+}
+
+void ohci_poll_ports(void) {
+    for (unsigned h = 0; h < nhcs; h++) {
+        struct ohci_hc *c = &hcs[h];
+        for (unsigned p = 0; p < c->nports; p++) {
+            uint32_t st = port_rd(c, p);
+            if (st & RH_CSC) port_wr(c, p, RH_CSC);        /* write-1-to-clear */
+            uint16_t bit = (uint16_t)(1u << p);
+            if ((st & RH_CCS) && !(c->seen & bit)) {
+                timer_sleep(100);                          /* connect debounce (USB 2.0 7.1.7.3) */
+                enumerate_port(c, p);
+            } else if (!(st & RH_CCS) && (c->seen & bit)) {
+                c->seen &= (uint16_t)~bit;
+                struct usb_device *d = usb_find(c, (uint8_t)p);
+                if (d) {
+                    release_int_slots(c, d->address);
+                    usb_port_gone(d);
+                }
+            }
+        }
+    }
+}
+
+void ohci_report(void) {
+    for (unsigned h = 0; h < nhcs; h++) {
+        struct ohci_hc *c = &hcs[h];
+        /* "OHCI 0 ports: 00000100 00000303 ..." three to a line, to fit the
+           log's 48 columns. */
+        for (unsigned p0 = 0; p0 < c->nports; p0 += 3) {
+            char line[48];
+            int n = 0;
+            for (const char *s = "OHCI "; *s; s++) line[n++] = *s;
+            n += (int)fmt_u32(line + n, h);
+            for (const char *s = p0 ? " more:" : " ports:"; *s; s++) line[n++] = *s;
+            for (unsigned p = p0; p < c->nports && p < p0 + 3; p++) {
+                line[n++] = ' ';
+                n += (int)fmt_hex(line + n, port_rd(c, p), 8, 0);
+            }
+            line[n] = 0;
+            klog_child(line);
+        }
+    }
 }
 
 int ohci_init(void) {

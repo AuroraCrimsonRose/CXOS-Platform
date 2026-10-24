@@ -178,6 +178,7 @@ struct ehci_hc {
         uint16_t len;
     } int_eps[MAX_INT_EPS];
     int int_list_live;
+    uint16_t seen;                  /* ports already found connected and tried */
 };
 
 static struct ehci_hc hcs[EHCI_MAX_HCS];
@@ -683,6 +684,7 @@ static int reset_port(struct ehci_hc *c, unsigned p) {
 static void enumerate_port(struct ehci_hc *c, unsigned p) {
     uint32_t sc = portsc_rd(c, p);
     if (!(sc & PORTSC_CCS)) return;           /* nothing plugged in */
+    c->seen |= (uint16_t)(1u << p);           /* tried once, whatever comes of it */
 
     /* A K-state line reading identifies a low-speed device before we even try:
        the spec says release it to the companion rather than attempt a reset. */
@@ -837,6 +839,28 @@ static int ehci_start(struct ehci_hc *c, const struct pci_device *dev, unsigned 
 
     for (unsigned p = 0; p < c->nports; p++) enumerate_port(c, p);
     return 1;
+}
+
+void ehci_poll_ports(void) {
+    for (unsigned h = 0; h < nhcs; h++) {
+        struct ehci_hc *c = &hcs[h];
+        unsigned n = c->nports < EHCI_MAX_PORTS ? c->nports : EHCI_MAX_PORTS;
+        for (unsigned p = 0; p < n; p++) {
+            uint32_t sc = portsc_rd(c, p);
+            if (sc & PORTSC_OWNER) continue;               /* the companion's for now */
+            if (sc & PORTSC_CSC)                           /* write 1 to clear the change */
+                op_wr(c, OP_PORTSC + p * 4, (sc & ~PORTSC_RWC_MASK) | PORTSC_CSC);
+            uint16_t bit = (uint16_t)(1u << p);
+            if ((sc & PORTSC_CCS) && !(c->seen & bit)) {
+                timer_sleep(100);                          /* connect debounce (USB 2.0 7.1.7.3) */
+                enumerate_port(c, p);
+            } else if (!(sc & PORTSC_CCS) && (c->seen & bit)) {
+                c->seen &= (uint16_t)~bit;
+                struct usb_device *d = usb_find(c, (uint8_t)p);
+                if (d) usb_port_gone(d);
+            }
+        }
+    }
 }
 
 int ehci_init(void) {

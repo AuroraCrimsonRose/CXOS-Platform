@@ -222,6 +222,30 @@ void usb_init(void);
    screen above the prompt on a machine with no serial port to read. */
 void usb_summary(void);
 
+/* One thread on the controllers at a time. A controller's transfer descriptors
+   are shared by every device on it, and timer_sleep does not stop the timer
+   from preempting a thread mid-transfer, so the idle loop's port polling, the
+   keyboard poll and disk I/O would otherwise interleave on them. The owner may
+   take it again (the boot log's disk write inside a held section). With
+   interrupts off and another thread holding it, there is no waiting - a panic
+   must still save its crash log - so it returns 0 and goes ahead unlocked;
+   give the result to usb_unlock. */
+int  usb_lock(void);
+void usb_unlock(int taken);
+
+/* Hot-plug: every controller's root ports, looked at once (ehci_poll_ports,
+   ohci_poll_ports). The idle loop calls it a few times a second. Takes
+   usb_lock and sleeps: a thread only. xHCI is not polled yet. */
+void usb_poll(void);
+
+/* The device on `port` of controller `hc`, or 0. */
+struct usb_device *usb_find(const void *hc, uint8_t port);
+
+/* A device was unplugged: log it, drop it from its class driver and free it.
+   A disk stays registered (its unit is still named in the disk table), so a
+   mass-storage device is only logged. */
+void usb_port_gone(struct usb_device *dev);
+
 /* A host controller's DMA memory: `pages` physically contiguous pages from the
    page allocator, zeroed, and mapped cacheable at `vbase` in the kernel half -
    the controller is given the physical address (*phys), the CPU uses the

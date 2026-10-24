@@ -26,4 +26,10 @@ int ehci_init(void);
 /* Ports released to a companion controller (low- and full-speed devices). */
 unsigned ehci_released(void);
 
+/* Hot-plug, as ohci_poll_ports: a device plugged in after boot connects here
+   first, whatever its speed, and a low- or full-speed one is handed to the
+   companion from here. A port the companion owns is left alone; the
+   controller gives it back by itself when that device is unplugged. */
+void ehci_poll_ports(void);
+
 #endif

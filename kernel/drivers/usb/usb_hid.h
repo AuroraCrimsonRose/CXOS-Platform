@@ -34,6 +34,9 @@ struct usb_device;
    mouse. Returns 1 if claimed. */
 int usb_hid_attach(struct usb_device *dev);
 
+/* `dev` was unplugged: stop polling it. Returns 1 if it was a HID device. */
+int usb_hid_detach(struct usb_device *dev);
+
 /* Poll every claimed HID device and push what arrived into the input layer.
    Cheap and non-blocking when nothing is attached or nothing has happened. */
 void usb_hid_poll(void);

@@ -24,4 +24,15 @@
    attached. Returns how many came up, 0 if none. */
 int ohci_init(void);
 
+/* Hot-plug: look at every root port once, enumerating a device that connected
+   since the last look and dropping one that went away. A device EHCI hands
+   over arrives late (it disconnects there and connects again here), so the
+   one look ohci_init takes can miss it; this is what finds it. Sleeps: call
+   from a thread holding usb_lock, never from an interrupt. */
+void ohci_poll_ports(void);
+
+/* One log line per controller: every root port's raw HcRhPortStatus, so a
+   saved log (cxk rig bootlog) shows what each port reported. */
+void ohci_report(void);
+
 #endif

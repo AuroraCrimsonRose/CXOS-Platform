@@ -197,13 +197,30 @@ int usb_hid_attach(struct usb_device *dev) {
     return 1;
 }
 
+int usb_hid_detach(struct usb_device *dev) {
+    int found = 0, any = 0;
+    for (int i = 0; i < MAX_HID; i++) {
+        if (hids[i].in_use && hids[i].dev == dev) {
+            keyboards -= hids[i].is_keyboard;
+            hids[i].in_use = 0;
+            found = 1;
+        }
+        if (hids[i].in_use) any = 1;
+    }
+    any_present = any;
+    if (found) klog("USBHID", SEV_INFO, "device unplugged");
+    return found;
+}
+
 void usb_hid_poll(void) {
     if (!any_present) return;
+    int k = usb_lock();     /* the idle loop's port polling shares the controller */
     for (int i = 0; i < MAX_HID; i++) {
         if (!hids[i].in_use) continue;
         if (hids[i].is_keyboard) poll_keyboard(&hids[i]);
         else                     poll_mouse(&hids[i]);
     }
+    usb_unlock(k);
 }
 
 int usb_hid_present(void) { return any_present; }

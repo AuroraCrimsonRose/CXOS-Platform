@@ -15,6 +15,8 @@
 #include "pmm.h"
 #include "arch/paging.h"
 #include "format.h"
+#include "sched.h"
+#include "arch/cpu_ops.h"
 
 static struct usb_device devices[USB_MAX_DEVICES];
 static unsigned ndevices = 0;
@@ -272,8 +274,59 @@ void usb_summary(void) {
         klog_child(line);
     }
 
+    if (n_ohci) ohci_report();
+
     if (usb_hid_keyboards())
         klog("USB", SEV_OK, "keyboard online (USB)");
     else
         klog("USB", SEV_WARN, "no USB keyboard attached: typing needs PS/2");
+}
+
+static volatile int lock_owner = -1;   /* thread id holding usb_lock, or -1 */
+static unsigned lock_depth;
+
+int usb_lock(void) {
+    int me = thread_current_id();
+    for (;;) {
+        int irqs = arch_irqs_enabled();
+        uint32_t f = arch_irq_save();
+        if (lock_owner < 0 || lock_owner == me) {
+            lock_owner = me;
+            lock_depth++;
+            arch_irq_restore(f);
+            return 1;
+        }
+        arch_irq_restore(f);
+        if (!irqs) return 0;            /* cannot wait: see usb.h */
+        yield();
+    }
+}
+
+void usb_unlock(int taken) {
+    if (!taken) return;
+    uint32_t f = arch_irq_save();
+    if (lock_depth && --lock_depth == 0) lock_owner = -1;
+    arch_irq_restore(f);
+}
+
+struct usb_device *usb_find(const void *hc, uint8_t port) {
+    for (unsigned i = 0; i < ndevices; i++)
+        if (devices[i].in_use && devices[i].hc == hc && devices[i].port == port)
+            return &devices[i];
+    return 0;
+}
+
+void usb_port_gone(struct usb_device *dev) {
+    klog_u32(dev->ops->name, SEV_INFO, "port ", dev->port, LOG_COLOR_VALUE, ": device removed");
+    if (dev->if_class == USB_CLASS_MASS_STORAGE) return;   /* still a registered disk */
+    usb_hid_detach(dev);
+    usb_free_device(dev);
+}
+
+void usb_poll(void) {
+    if (!n_ehci && !n_ohci) return;
+    int k = usb_lock();
+    ehci_poll_ports();
+    ohci_poll_ports();
+    usb_unlock(k);
 }
