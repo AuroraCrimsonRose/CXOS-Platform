@@ -44,6 +44,9 @@
   `CXK_AUTO_INSTALL=0` (the default): it writes to no disk but its own stick,
   which it knows by the id the loader read from it, even if the machine's own
   drive has CXOS on it too.
+  The system log is saved to the stick as well, from the end of the boot on,
+  and read off it on another machine with `cxk rig bootlog disk5`; this is how
+  the rig was debugged (2026-10-24).
 - **ACPI tables need an interpreter.** Interrupt routing (`_PRT`), sleep and
   reliable shutdown on this board are described in ACPI bytecode (AML).
   Booting does not need it (the legacy PIC works); SMP and proper device
@@ -56,7 +59,7 @@
 | Device | Expected | Driver |
 |---|---|---|
 | SATA | SB710 AHCI | exists (`ahci.c`) |
-| USB | OHCI and EHCI; no USB 3 | exist |
+| USB | OHCI and EHCI; no USB 3. On the rig: 2 EHCI, 5 OHCI companions | exist; the USB keyboard and mouse work on the rig (2026-10-24): low-speed devices go to the OHCI companion, and the ports are polled so a device that bounces back to EHCI during the companion's start-up, or is plugged in later, is found |
 | Network | Realtek 8111 family | exists (`rtl8169.c` handles the 8111) |
 | Audio | HD Audio with a Realtek codec | new (`system/CX_AUDIO.md`) |
 | Display | the W5000's video BIOS gives VBE | the existing framebuffer path works today |

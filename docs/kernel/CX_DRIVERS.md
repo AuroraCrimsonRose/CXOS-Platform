@@ -12,7 +12,9 @@
 - Each driver searches the PCI bus itself (for example `ahci.c` calls
   `pci_find`).
 - `netif.c` tries e1000 then rtl8169 and uses the first found, polled.
-- No device tree, no unloading, no general hot-plug, no power states.
+- No device tree, no unloading, no power states. Hot-plug only on USB root
+  ports: the idle loop polls EHCI and OHCI (`usb_poll`); a removed disk stays
+  registered.
 - Everything is C in the kernel; a driver bug crashes the machine.
 - Worth keeping: an operations table per device class (`netif_ops`,
   `struct disk`), working MSI and MSI-X, the reserved `.xkdr` type, signing.
