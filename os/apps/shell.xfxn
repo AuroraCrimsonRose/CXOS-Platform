@@ -439,6 +439,45 @@ fn cmd_cd(arg: *u8) -> void {
     file_err(arg, chdir(arg));
 }
 
+
+// write a fixed-width log field: up to `max` bytes, stopping at a NUL
+fn put_fixed(s: *u8, max: u32) -> void {
+    let n: u32 = 0;
+    while (n < max && s[n] != 0) { n = n + 1; }
+    write(s, n);
+}
+
+// The kernel log: the kernel's own lines and everything the supervisor and its
+// services printed, which go there rather than over this prompt. `log` shows
+// what the ring still holds; `log N` the newest N.
+fn cmd_log(arg: *u8) -> void {
+    let want: u32 = 0;
+    let i: u32 = 0;
+    while (arg[i] >= 48 && arg[i] <= 57) { want = want * 10 + ((arg[i] - 48) as u32); i = i + 1; }
+
+    let e: log_entry;
+    let total: u32 = 0;
+    while (log_read(total, &e) == 1) { total = total + 1; }
+    if (total == 0) { puts("log: nothing recorded, or no GRANT_CONSOLE\n"); return; }
+
+    let first: u32 = 0;
+    if (want != 0 && want < total) { first = total - want; }
+    let sev: [5]*u8;
+    sev[0] = "INFO"; sev[1] = "OK  "; sev[2] = "WARN"; sev[3] = "ERR "; sev[4] = "FAIL";
+
+    let k: u32 = first;
+    while (k < total && log_read(k, &e) == 1) {
+        puts("[");
+        if (e.sev < 5) { puts(sev[e.sev]); } else { puts("?   "); }
+        puts("] ");
+        put_fixed(&e.system[0], LOG_SYSTEM_W);
+        if (e.subsystem[0] != 0) { puts("/"); put_fixed(&e.subsystem[0], LOG_SYSTEM_W); }
+        puts(": ");
+        put_fixed(&e.event[0], LOG_EVENT_W);
+        newline();
+        k = k + 1;
+    }
+}
 fn cmd_ls(arg: *u8) -> void {
     if (arg[0] == 0) { arg = "."; }       // default to the working directory
     let st: file_stat;
@@ -742,6 +781,7 @@ fn _start() -> void {
     register("help",   cmd_help,   "list commands");
     register("echo",   cmd_echo,   "print the rest of the line");
     register("pid",    cmd_pid,    "process and user id");
+    register("log",    cmd_log,    "kernel and service log (log N: newest N)");
     register("str",    cmd_str,    "string library demo");
     register("mem",    cmd_mem,    "memory library demo");
     register("heap",   cmd_heap,   "allocation: quota, use, and a round trip");

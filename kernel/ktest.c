@@ -3132,6 +3132,7 @@ void ktest_run(void) {
     total++; passed += report("crypto profile: one key shape only", test_crypto_profile());
     total++; passed += report("exec admission (dev / release)",   test_exec_admit());
     total++; passed += report("file syscalls (SYS_FILE_OP)",       usermode_file_test());
+    total++; passed += report("background output goes to the log", usermode_log_test());
     total++; passed += report("advisory locks follow the open file", usermode_flock_test());
     total++; passed += report("ipc endpoints refcounted + reclaimed", test_ipc_endpoint_lifetime());
     total++; passed += report("object caches map and return pages", test_ocache_pages());

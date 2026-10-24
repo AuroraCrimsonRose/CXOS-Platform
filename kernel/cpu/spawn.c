@@ -13,6 +13,7 @@
 
 #include "spawn.h"
 #include "sched.h"
+#include "proc.h"               /* ->background */
 #include "ipc.h"
 #include "caps.h"
 #include "usermode.h"          /* user_ptr_readable / user_ptr_writable */
@@ -216,7 +217,9 @@ int proc_start(const void *image, uint32_t image_len, uint32_t caps,
 
     thread_mark_user(tid);
     thread_set_space(tid, space);   /* now the process's: loaded for it, freed with it */
-    thread_set_caps(tid, caps);
+    /* SPAWN_BACKGROUND rides in the caps word but is not a grant. */
+    thread_set_caps(tid, caps & ~SPAWN_BACKGROUND);
+    if (caps & SPAWN_BACKGROUND) thread_proc(tid)->background = 1;
 
     /* Memory authority attenuates down the spawn chain the same way grants do.
        The parent is whoever is running this call: the kernel for the executive
@@ -275,7 +278,7 @@ int sys_spawn(const struct spawn_args *ua) {
 
     /* Attenuation: child gets requested caps masked by the spawner's own caps.
        Pass a subset of your authority, never amplify. App-spawner (caps=0) -> 0. */
-    uint32_t granted = a.caps & thread_current_caps();
+    uint32_t granted = (a.caps & thread_current_caps()) | (a.caps & SPAWN_BACKGROUND);
 
     /* COPY FIRST, THEN VERIFY, THEN LOAD THE COPY.
      *
@@ -313,7 +316,7 @@ int sys_spawn(const struct spawn_args *ua) {
 
     if (pid >= 0)
         klog_u32("SPAWN", SEV_OK, "pid ", (uint32_t)pid, LOG_COLOR_VALUE,
-                 granted ? " (privileged, ring 3)" : " (caps=0, ring 3)");
+                 (granted & ~SPAWN_BACKGROUND) ? " (privileged, ring 3)" : " (caps=0, ring 3)");
     return pid;
 }
 /* ---- SYS_EXEC_PATH ---------------------------------------------------------
@@ -416,7 +419,7 @@ int sys_exec_path(const char *upath, const struct spawn_args *ua) {
     }
 
     /* Attenuation, exactly as SYS_SPAWN does it: a subset of your own set. */
-    uint32_t granted = a.caps & thread_current_caps();
+    uint32_t granted = (a.caps & thread_current_caps()) | (a.caps & SPAWN_BACKGROUND);
 
     int rc = cxex_exec_as(buf, (size_t)e.size, granted, bep, bgrant, a.args, a.args_len);
     kfree(buf);   /* proc_start took its own copy for the new address space */
@@ -436,6 +439,6 @@ int sys_exec_path(const char *upath, const struct spawn_args *ua) {
     }
 
     klog_u32("EXEC", SEV_OK, "pid ", (uint32_t)rc, LOG_COLOR_VALUE,
-             granted ? " from disk (privileged, ring 3)" : " from disk (caps=0, ring 3)");
+             (granted & ~SPAWN_BACKGROUND) ? " from disk (privileged, ring 3)" : " from disk (caps=0, ring 3)");
     return rc;
 }

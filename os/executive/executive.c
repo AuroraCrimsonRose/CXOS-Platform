@@ -70,12 +70,15 @@ void _start(void) {
      * only pass a subset of its own. What each service actually receives is
      * decided by that service's descriptor, not here.
      *
+     * SPAWN_BACKGROUND: it and every service it starts print to the kernel
+     * log, not the screen, which is the shell's. The shell's `log` reads it.
+     *
      * A machine with no supervisor on disk is not a broken machine, it is a
      * machine with no services - so this is a note, not a failure. */
     struct spawn_args svc;
     svc.image = 0; svc.image_len = 0;
     svc.name = "supervisor"; svc.broker_endpoint = -1;
-    svc.caps = GRANT_OS_BASELINE;
+    svc.caps = GRANT_OS_BASELINE | SPAWN_BACKGROUND;
     svc.args = 0; svc.args_len = 0;
     if (sys_exec_path("/System/Programs/supervisor.xsex", &svc) < 0)
         sys_write("executive: no service supervisor (/System/Programs/supervisor.xsex)\n");

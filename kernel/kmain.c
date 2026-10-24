@@ -420,12 +420,16 @@ void kmain_late(void) {
     klog_child("built with DEV_UNSIGNED=ON; never ship this image");
 #endif
 
+    int xc_started = 0;
     /* capstone: start the signed executive as the root ring-3 process (its own
        address space + scheduler thread). It runs once we idle + yield below. */
     if (launch_exec) {
         klog("EXEC", SEV_INFO, "launching /System/Boot.xoex");
         int xc = cxk_launch_executive("/System/Boot.xoex");
-        if (xc >= 0) klog_u32("EXEC", SEV_OK,  "executive started, pid ", (uint32_t)xc, LOG_COLOR_VALUE, "");
+        if (xc >= 0) {
+            klog_u32("EXEC", SEV_OK,  "executive started, pid ", (uint32_t)xc, LOG_COLOR_VALUE, "");
+            xc_started = 1;
+        }
         else {
             /* klog_u32 prints unsigned, so a bare -1 came out as 4294967295 -
                which reads like corruption rather than a negative error code.
@@ -437,6 +441,12 @@ void kmain_late(void) {
     }
 
     klog("KERNEL", SEV_OK, "boot complete - idle");
+
+    /* The screen is the shell's from here: kernel lines below SEV_ERR go to the
+       serial port and the log ring, which the shell's `log` reads. Only once
+       an executive is running - with none, the screen is all there is. */
+    if (xc_started) klog_quiet();
+
     for (;;) {
         yield();                       /* let the executive + its apps run */
         arch_cpu_halt();

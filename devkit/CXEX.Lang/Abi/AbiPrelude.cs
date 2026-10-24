@@ -153,6 +153,7 @@ fn getpid() -> i32         { return __syscall(SYS_GETPID, 0, 0, 0, 0, 0); }
 fn getuid() -> i32         { return __syscall(SYS_GETUID, 0, 0, 0, 0, 0); }
 
 fn console_write(buf: *u8, len: u32) -> i32 { return __syscall(SYS_CONSOLE_WRITE, buf as u32, len, 0, 0, 0); }
+fn log_read(i: u32, e: *log_entry) -> i32   { return __syscall(SYS_LOG_READ, i, e as u32, 0, 0, 0); }   // 1 filled, 0 past the newest
 fn input_read() -> i32                       { return __syscall(SYS_INPUT_READ, 0, 0, 0, 0, 0); }        // block for a key
 fn input_poll() -> i32                       { return __syscall(SYS_INPUT_READ, 1, 0, 0, 0, 0); }        // 0 if none
 fn mouse_read(m: *mouse_state) -> i32        { return __syscall(SYS_MOUSE_READ, m as u32, 0, 0, 0, 0); } // 1 if a mouse is present

@@ -58,4 +58,13 @@ void klog_child(const char *msg);
 void klog_child_u32(const char *label, uint32_t value, uint8_t value_attr,
                     const char *suffix);
 
+/* A line for the serial port and the ring only, never the screen. */
+void klog_offscreen(const char *tag, log_sev_t sev, const char *msg);
+
+/* From now on, lines below SEV_ERR go to the serial port and the log ring but
+   not the screen. Called when a foreground program first writes to the
+   console; there is no way back. */
+void klog_quiet(void);
+int  klog_is_quiet(void);
+
 #endif

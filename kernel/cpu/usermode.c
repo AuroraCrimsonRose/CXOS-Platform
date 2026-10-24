@@ -17,6 +17,8 @@
 #include "vmregion.h"
 #include "console.h"
 #include "logging.h"
+#include "syslog.h"           /* slog_get, for SYS_LOG_READ */
+#include "proc.h"             /* ->background, proc_out_write */
 #include "color.h"
 #include "fb.h"
 #include "caps.h"
@@ -186,6 +188,9 @@ int user_copy_in(void *kdst, uint32_t usrc, uint32_t len) {
 /* object_info reports the kernel's type numbers as they are. */
 _Static_assert(KOBJ_ENDPOINT == OBJ_TYPE_ENDPOINT && KOBJ_FILE == OBJ_TYPE_FILE,
                "kobj types must be the ABI's OBJ_TYPE_*");
+/* SYS_LOG_READ copies the ring's entries field by field into the ABI's. */
+_Static_assert(SLOG_SYS_W == LOG_SYSTEM_W && SLOG_SUB_W == LOG_SYSTEM_W && SLOG_EVT_W == LOG_EVENT_W,
+               "the log ring's fields must be the ABI's log_entry widths");
 
 static atomic_u32 dispatched;
 uint32_t syscall_dispatch_count(void) { return atomic_load(&dispatched); }
@@ -208,8 +213,28 @@ static int syscall_do(uint32_t num, uint32_t a1, uint32_t a2) {
             }
             if (!user_ptr_readable(a1, len ? len : 1)) return -1;
             const char *s = (const char *)a1;
+
+            /* A background process (SPAWN_BACKGROUND, the supervisor and its
+               services) writes to the log, so it never prints over the shell. */
+            struct proc *p = thread_proc(thread_current_id());
+            if (p && p->background) { proc_out_write(p, s, len); return (int)len; }
             for (uint32_t i = 0; i < len; i++) console_putc(s[i]);
             return (int)len;
+        }
+        case SYS_LOG_READ: {
+            /* GRANT_CONSOLE: the log holds what every process printed in the
+               background, and what the kernel said about all of them. */
+            if (!(thread_current_caps() & GRANT_CONSOLE)) return E_PERM;
+            if (!user_ptr_writable(a2, sizeof(struct log_entry))) return E_FAULT;
+            const struct slog_entry *e = slog_get(a1);
+            if (!e) return 0;
+            struct log_entry *out = (struct log_entry *)a2;
+            out->seq = e->seq;
+            out->sev = e->sev;
+            for (int i = 0; i < LOG_SYSTEM_W; i++) out->system[i]    = e->system[i];
+            for (int i = 0; i < LOG_SYSTEM_W; i++) out->subsystem[i] = e->subsystem[i];
+            for (int i = 0; i < LOG_EVENT_W;  i++) out->event[i]     = e->event[i];
+            return 1;
         }
         case SYS_GETPID:
             return thread_current_pid();
@@ -472,6 +497,79 @@ int usermode_run_blob(const uint8_t *start, uint32_t len) {
     return rc;
 }
 
+
+/* ---- the background console and the log -----------------------------------
+ * A SPAWN_BACKGROUND process's console writes become log entries tagged with
+ * its pid, a line at a time, and leave the screen alone; SYS_LOG_READ hands
+ * the ring back. Driven through syscall_dispatch over a user mapping, from
+ * this thread's own process with its background flag set for the duration.
+ * 1 = pass, 0 = fail. */
+static int lt_streq(const char *a, const char *b, int n) {
+    for (int i = 0; i < n; i++) {
+        if (a[i] != b[i]) return 0;
+        if (!a[i]) return 1;
+    }
+    return 1;
+}
+
+int usermode_log_test(void) {
+    uint32_t phys = map_user_page(TEST_CODE_VIRT);
+    if (!phys) return 0;
+
+    int me = thread_current_id();
+    struct proc *p = thread_proc(me);
+    uint32_t save = thread_current_caps();
+    int was_bg = p->background;
+    thread_set_caps(me, GRANT_CONSOLE);
+
+    char *line = (char *)TEST_CODE_VIRT;
+    struct log_entry *out = (struct log_entry *)(TEST_CODE_VIRT + 0x100);
+    char tag[12] = "pid ";
+    tag[4 + fmt_u32(tag + 4, (uint32_t)p->pid)] = 0;
+    int ok = 0, step = 0, col, row, col2, row2;
+
+    /* 1-3: a whole line becomes exactly one entry, and the cursor stays put */
+    p->background = 1;
+    const char *msg = "bg line\nhalf";
+    for (int i = 0; ; i++) { line[i] = msg[i]; if (!msg[i]) break; }
+    uint32_t t0 = slog_total();
+    console_cursor(&col, &row);
+    step = 1; if (syscall_dispatch(SYS_CONSOLE_WRITE, (uint32_t)line, 0) != 12) goto done;
+    console_cursor(&col2, &row2);
+    step = 2; if (col2 != col || row2 != row) goto done;
+    step = 3; if (slog_total() != t0 + 1) goto done;
+    const struct slog_entry *e = slog_get(slog_count() - 1);
+    step = 4; if (!lt_streq(e->system, tag, SLOG_SYS_W) || !lt_streq(e->event, "bg line", SLOG_EVT_W)) goto done;
+
+    /* 5: what is left without a newline waits, and a flush records it */
+    proc_out_flush(p);
+    e = slog_get(slog_count() - 1);
+    step = 5; if (slog_total() != t0 + 2 || !lt_streq(e->event, "half", SLOG_EVT_W)) goto done;
+
+    /* 6: a child inherits it, asked for or not */
+    struct proc *c = proc_create(p);
+    int inherited = c && c->background;
+    if (c) proc_put(c);
+    step = 6; if (!inherited) goto done;
+
+    /* 7-9: SYS_LOG_READ returns the newest entry, then 0, and needs the grant */
+    uint32_t last = slog_count() - 1;
+    step = 7; if (syscall_dispatch(SYS_LOG_READ, last, (uint32_t)out) != 1) goto done;
+    step = 8; if (out->seq != e->seq || !lt_streq(out->event, "half", LOG_EVENT_W)
+                  || !lt_streq(out->system, tag, LOG_SYSTEM_W)) goto done;
+    step = 9; if (syscall_dispatch(SYS_LOG_READ, last + 1, (uint32_t)out) != 0) goto done;
+    thread_set_caps(me, 0);
+    step = 10; if (syscall_dispatch(SYS_LOG_READ, last, (uint32_t)out) != E_PERM) goto done;
+    ok = 1;
+
+done:
+    if (!ok) klog_u32("KTEST", SEV_ERR, "log test failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    p->outlen = 0;
+    p->background = was_bg;
+    thread_set_caps(me, save);
+    unmap_user_page(TEST_CODE_VIRT, phys);
+    return ok;
+}
 
 /* ---- file syscall test -----------------------------------------------------
  * Drives SYS_FILE_OP the way ring 3 does, short of the int 0x80 gate itself

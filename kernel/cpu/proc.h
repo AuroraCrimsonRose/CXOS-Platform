@@ -46,6 +46,9 @@ struct proc {
     uint32_t    uid;        /* owning user; 0 = SYSTEM */
     uint32_t    cwd;        /* CXFS entry id of the working directory; 0 = root */
     uint32_t    caps;       /* ABI capability bits */
+    int         background; /* console output goes to the log (SPAWN_BACKGROUND); inherited */
+    uint32_t    outlen;     /* bytes waiting in outbuf for their newline */
+    char        outbuf[48]; /* one log line in the making (SLOG_EVT_W) */
     struct htab handles;
     int32_t     broker;     /* its SEND handle on its launcher's broker, or -1 */
     uint32_t    pd_phys;    /* its own page directory, freed with it; 0 = the kernel's */
@@ -66,6 +69,13 @@ struct proc *proc_create(const struct proc *parent);
    record follows its last reference. */
 void proc_thread_in(struct proc *p);
 void proc_thread_gone(struct proc *p);
+
+/* A background process's console output, collected into lines for the log:
+   each newline, or a full line's worth, records one entry tagged "pid N".
+   proc_out_flush records what is left without a newline; the last thread
+   going calls it, so a final line without one is not lost. */
+void proc_out_write(struct proc *p, const char *s, uint32_t len);
+void proc_out_flush(struct proc *p);
 
 /* Drop a reference taken by proc_create (or kobj_ref). */
 void proc_put(struct proc *p);

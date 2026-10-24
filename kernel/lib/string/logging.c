@@ -8,6 +8,8 @@
 #include "syslog.h"
 #include "console.h"
 #include "color.h"
+#include "serial.h"
+#include "format.h"
 
 #define LOG_SEP      VGA_ATTR(VGA_DARK_GREY,  VGA_BLACK)  /* brackets + " - " */
 #define LOG_TAG_COL  VGA_ATTR(VGA_LIGHT_CYAN, VGA_BLACK)  /* the tag text */
@@ -28,64 +30,116 @@ static const struct { const char *name; uint8_t attr; } sev_tbl[] = {
 
 static int slen(const char *s) { int n = 0; while (s && s[n]) n++; return n; }
 
-/* write `s` left-aligned in `width` cols (truncated if longer), in `attr` */
-static void put_field(const char *s, int width, uint8_t attr) {
-    int len = slen(s);
-    if (len > width) len = width;
-    uint8_t save = console_get_color();
-    console_set_color(attr);
-    for (int i = 0; i < len;   i++) console_putc(s[i]);
-    for (int i = len; i < width; i++) console_putc(' ');   /* pad on the right */
-    console_set_color(save);
+/* Where a line goes. The screen belongs to the boot until a foreground program
+   writes to it; after that a line below SEV_ERR goes to the serial port and the
+   ring only, so the kernel stops printing over the shell's prompt. An error
+   still reaches the screen - a fault is worth interrupting for. `screen` is the
+   choice made for the last klog line, which the child lines under it follow. */
+static int quiet;
+static int screen = 1;
+
+void klog_quiet(void) { quiet = 1; }
+int  klog_is_quiet(void) { return quiet; }
+
+static void out_s(const char *s, uint8_t attr) {
+    if (screen) console_puts_color(s, attr);
+    else        serial_puts(s);
 }
 
-static void prefix(const char *tag, log_sev_t sev) {
+static void out_u32(uint32_t v, uint8_t attr) {
+    if (screen) { console_put_u32_color(v, attr); return; }
+    char b[12];
+    b[fmt_u32(b, v)] = 0;
+    serial_puts(b);
+}
+
+static void out_nl(void) {
+    if (screen) console_newline();
+    else        { serial_putc('\r'); serial_putc('\n'); }
+}
+
+/* write `s` left-aligned in `width` cols (truncated if longer), in `attr` */
+static void put_field(const char *s, int width, uint8_t attr) {
+    char b[16];
+    int len = slen(s);
+    if (len > width) len = width;
+    if (width > (int)sizeof b - 1) width = (int)sizeof b - 1;
+    for (int i = 0; i < width; i++) b[i] = i < len ? s[i] : ' ';   /* pad on the right */
+    b[width] = 0;
+    out_s(b, attr);
+}
+
+static void prefix(const char *tag, log_sev_t sev, int on_screen) {
     if ((int)sev < 0 || (int)sev >= SEV_COUNT) sev = SEV_INFO;
-    console_puts_color("[", LOG_SEP);
+    screen = on_screen;
+    out_s("[", LOG_SEP);
     put_field(tag, LOG_TAG_W, LOG_TAG_COL);
-    console_puts_color("] - [", LOG_SEP);
+    out_s("] - [", LOG_SEP);
     put_field(sev_tbl[sev].name, LOG_SEV_W, sev_tbl[sev].attr);
-    console_puts_color("] - ", LOG_SEP);
+    out_s("] - ", LOG_SEP);
 }
 
 void klog(const char *tag, log_sev_t sev, const char *msg) {
-    prefix(tag, sev);
-    if (msg) console_puts_color(msg, LOG_MSG_COL);
-    console_newline();
+    prefix(tag, sev, !quiet || sev >= SEV_ERR);
+    if (msg) out_s(msg, LOG_MSG_COL);
+    out_nl();
+    if (!slog_in_progress) slog_record(tag, "", sev, msg);
+}
+
+/* klog without the screen, whatever the quiet state: a background process's
+   line, which was never meant to be seen there. */
+void klog_offscreen(const char *tag, log_sev_t sev, const char *msg) {
+    prefix(tag, sev, 0);
+    if (msg) out_s(msg, LOG_MSG_COL);
+    out_nl();
     if (!slog_in_progress) slog_record(tag, "", sev, msg);
 }
 
 void klog_u32(const char *tag, log_sev_t sev,
               const char *label, uint32_t value, uint8_t value_attr,
               const char *suffix) {
-    prefix(tag, sev);
-    if (label)  console_puts_color(label, LOG_MSG_COL);
-    console_put_u32_color(value, value_attr);
-    if (suffix) console_puts_color(suffix, LOG_MSG_COL);
-    console_newline();
-    if (!slog_in_progress) slog_record(tag, "", sev, label ? label : "");
+    prefix(tag, sev, !quiet || sev >= SEV_ERR);
+    if (label)  out_s(label, LOG_MSG_COL);
+    out_u32(value, value_attr);
+    if (suffix) out_s(suffix, LOG_MSG_COL);
+    out_nl();
+
+    /* The ring gets the whole line, not just the label: read back with
+       SYS_LOG_READ, "pid " alone says nothing. */
+    if (!slog_in_progress) {
+        char line[SLOG_EVT_W];
+        int n = 0;
+        for (const char *p = label; p && *p && n < SLOG_EVT_W - 1; p++) line[n++] = *p;
+        char num[12];
+        num[fmt_u32(num, value)] = 0;
+        for (const char *p = num; *p && n < SLOG_EVT_W - 1; p++) line[n++] = *p;
+        for (const char *p = suffix; p && *p && n < SLOG_EVT_W - 1; p++) line[n++] = *p;
+        line[n] = 0;
+        slog_record(tag, "", sev, line);
+    }
 }
 
 /* indent + arrow so child content aligns under the message column */
 static void child_indent(void) {
-    uint8_t save = console_get_color();
-    console_set_color(LOG_SEP);
-    for (int i = 0; i < LOG_PREFIX_W - 3; i++) console_putc(' ');
-    console_puts("-> ");
-    console_set_color(save);
+    char b[LOG_PREFIX_W + 1];
+    int n = 0;
+    while (n < LOG_PREFIX_W - 3) b[n++] = ' ';
+    b[n++] = '-'; b[n++] = '>'; b[n++] = ' ';
+    b[n] = 0;
+    out_s(b, LOG_SEP);
 }
 
 void klog_child(const char *msg) {
     child_indent();
-    if (msg) console_puts_color(msg, LOG_MSG_COL);
-    console_newline();
+    if (msg) out_s(msg, LOG_MSG_COL);
+    out_nl();
 }
 
 void klog_child_u32(const char *label, uint32_t value, uint8_t value_attr,
                     const char *suffix) {
     child_indent();
-    if (label)  console_puts_color(label, LOG_MSG_COL);
-    console_put_u32_color(value, value_attr);
-    if (suffix) console_puts_color(suffix, LOG_MSG_COL);
-    console_newline();
+    if (label)  out_s(label, LOG_MSG_COL);
+    out_u32(value, value_attr);
+    if (suffix) out_s(suffix, LOG_MSG_COL);
+    out_nl();
 }

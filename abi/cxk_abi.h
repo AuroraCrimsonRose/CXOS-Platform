@@ -30,7 +30,7 @@
    mismatch. Declared in versions.json as `cxex-abi` and checked against this
    line; bump both, and the DevKit's stamp, in the one commit that changes the
    contract. */
-#define CXK_ABI_VERSION   2
+#define CXK_ABI_VERSION   3
 
 /* ---- syscall numbers ---- */
 /* lifecycle 0x00-0x0F (no capability required) */
@@ -69,6 +69,8 @@
 #define SYS_MOUSE_READ    0x21   /* ebx = *mouse_state -> 1 if a mouse is present */
 /* console 0x30-0x3F (privileged: GRANT_CONSOLE) */
 #define SYS_CONSOLE_WRITE 0x30   /* ebx = buf, ecx = len (0 = bounded NUL-scan) */
+#define SYS_LOG_READ      0x31   /* ebx = index (0 = oldest kept), ecx = *log_entry
+                                    -> 1 filled, 0 past the newest */
 /* network 0x50-0x5F (privileged: GRANT_NET) */
 #define SYS_NET_OP        0x50   /* ebx = *net_op_args (GRANT_NET) -> op-specific */
 /* framebuffer 0x40-0x4F (privileged: GRANT_FRAMEBUFFER) */
@@ -283,6 +285,13 @@ struct fb_op_args {
 #ifndef GRANT_OS_BASELINE
 #define GRANT_OS_BASELINE (GRANT_CONSOLE | GRANT_MEM | GRANT_DISK | GRANT_SPAWN | GRANT_POWER | GRANT_ENDPOINT | GRANT_FRAMEBUFFER | GRANT_NET)
 #endif
+
+/* Not a grant: a restriction, carried in spawn_args.caps's top bit. The child's
+   SYS_CONSOLE_WRITE goes to the kernel log, a line at a time, instead of the
+   screen - the supervisor and its services, which would otherwise print over
+   the shell. Every process the child starts inherits it, asked for or not, so
+   a background process cannot hand the screen to its own children. */
+#define SPAWN_BACKGROUND  0x80000000u
 
 
 /* ---- network (SYS_NET_OP; GRANT_NET) ----
@@ -555,6 +564,22 @@ struct mouse_state {
     uint32_t seq;
 };
 
+/* ---- the kernel log (SYS_LOG_READ; GRANT_CONSOLE) ----
+   One entry of the kernel's log ring, oldest first: every kernel log line and
+   every line a background process wrote. The ring keeps the newest few hundred;
+   `seq` counts every entry ever recorded, so a gap between two reads shows how
+   many were overwritten. The strings are NUL-padded and need not be
+   terminated when full. */
+#define LOG_SYSTEM_W      12
+#define LOG_EVENT_W       48
+struct log_entry {
+    uint32_t seq;
+    uint32_t sev;                    /* 0 INFO, 1 OK, 2 WARN, 3 ERR, 4 FAIL */
+    char     system[LOG_SYSTEM_W];   /* the tag: EXEC, KTEST, or the pid as "pid 3" */
+    char     subsystem[LOG_SYSTEM_W];
+    char     event[LOG_EVENT_W];
+};
+
 /* ---- layout lock (CX_ABI.md §13) ----
    Every structure above crosses the user/kernel boundary, so its size is the
    contract, not an accident of the compiler. Each field is 4 bytes and 4-byte
@@ -589,5 +614,6 @@ CXK_ABI_STATIC_ASSERT(sizeof(struct mem_op_args)    == 44, "ABI layout: mem_op_a
 CXK_ABI_STATIC_ASSERT(sizeof(struct file_op_args)   == 32, "ABI layout: file_op_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct file_stat)      == 32 + FILE_NAME_MAX, "ABI layout: file_stat");
 CXK_ABI_STATIC_ASSERT(sizeof(struct mouse_state)    == 16, "ABI layout: mouse_state");
+CXK_ABI_STATIC_ASSERT(sizeof(struct log_entry)      == 8 + 2 * LOG_SYSTEM_W + LOG_EVENT_W, "ABI layout: log_entry");
 
 #endif

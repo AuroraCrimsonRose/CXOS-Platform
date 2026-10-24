@@ -198,6 +198,12 @@ addresses).
 `random_read`, `log_write` (to the kernel log, replacing `SYS_CONSOLE_WRITE`),
 `power_set(resource, state)`, `system_info(topic, buf)`.
 
+The x86-32 kernel has a first step towards `log_write`: a process started with
+`SPAWN_BACKGROUND` (the supervisor, and every service through it) has its
+`SYS_CONSOLE_WRITE` turned into log lines, and `SYS_LOG_READ` reads the ring
+back (the shell's `log`). Once the executive runs, kernel lines below ERR stop
+going to the screen as well.
+
 **Retired:** `SYS_FB_OP` (the display server draws, into memory objects);
 `SYS_INPUT_READ` and `SYS_MOUSE_READ` (the input driver sends events to the
 display server, which routes them to the focused window); `SYS_GETPID` and

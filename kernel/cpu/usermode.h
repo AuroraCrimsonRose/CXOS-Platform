@@ -85,6 +85,9 @@ void usercopy_note_recovered_fault(void);
 int  usermode_file_test(void);
 int  usermode_flock_test(void);
 
+/* The background console and SYS_LOG_READ (see usermode.c). 1 = pass. */
+int  usermode_log_test(void);
+
 /* register the ring-3 fault handler so user faults kill the process, not the
    kernel. call once at boot after the scheduler is up. */
 void usermode_register_fault_handler(void);

@@ -10,6 +10,8 @@
 #include "sync/spinlock.h"
 #include "panic.h"
 #include "arch/paging.h"
+#include "logging.h"
+#include "format.h"
 
 static struct ocache proc_cache;
 static struct idtab  pids;   /* pid -> process */
@@ -71,6 +73,7 @@ struct proc *proc_create(const struct proc *parent) {
     p->pid    = pid;
     p->uid    = parent ? parent->uid : UID_SYSTEM;
     p->cwd    = parent ? parent->cwd : 0;
+    p->background = parent ? parent->background : 0;   /* never handed back */
     p->broker = -1;
     htab_init(&p->handles, handle_limit);
     return p;
@@ -85,6 +88,7 @@ void proc_thread_gone(struct proc *p) {
     if (--p->threads == 0) {
         /* Every object belongs to its handles, so a process that ends mid-write
            or with an endpoint open leaves nothing behind. */
+        proc_out_flush(p);
         htab_close_all(&p->handles);
         p->broker = -1;
         /* However the thread ended: SYS_EXIT, a fault, a failed start. Its
@@ -110,3 +114,23 @@ void proc_set_handle_limit(uint32_t n) { handle_limit = n; }
 uint32_t proc_handle_limit(void)        { return handle_limit; }
 
 uint32_t proc_live(void) { return kobj_live(KOBJ_PROCESS); }
+
+void proc_out_flush(struct proc *p) {
+    if (!p->outlen) return;
+    char tag[12] = "pid ";
+    tag[4 + fmt_u32(tag + 4, (uint32_t)p->pid)] = 0;
+    p->outbuf[p->outlen] = 0;
+    p->outlen = 0;
+    klog_offscreen(tag, SEV_INFO, p->outbuf);
+}
+
+void proc_out_write(struct proc *p, const char *s, uint32_t len) {
+    for (uint32_t i = 0; i < len; i++) {
+        char c = s[i];
+        if (c == '\n') { proc_out_flush(p); continue; }
+        if (c == '\r') continue;
+        if ((unsigned char)c < ' ' && c != '\t') c = '?';   /* no escapes into the log */
+        p->outbuf[p->outlen++] = c;
+        if (p->outlen == sizeof p->outbuf - 1) proc_out_flush(p);
+    }
+}
