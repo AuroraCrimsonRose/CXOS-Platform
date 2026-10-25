@@ -250,11 +250,11 @@ uintptr_t ocache_window(void) { return OCACHE_WINDOW_BASE; }
 void ocache_panic(const char *why) { kpanic(why); }
 
 void ocache_sys_init(void) {
-    /* Each 4 MB page table of the window, made now while the kernel's is the
-       only address space, so it is copied into every space as it is made
-       rather than propagated into live ones later. kstack_init does the same. */
+    /* Each page table of the window, made now while the kernel's is the only
+       address space, so it is copied into every space as it is made rather
+       than propagated into live ones later. kstack_init does the same. */
     for (uintptr_t v = OCACHE_WINDOW_BASE; v < OCACHE_WINDOW_BASE + OCACHE_SLOTS * OCACHE_SPAN;
-         v += 0x00400000u) {
+         v += PAGE_TABLE_SPAN) {
         paging_map_kernel(v, 0, VM_WRITE);
         paging_unmap(v);
     }
@@ -262,7 +262,7 @@ void ocache_sys_init(void) {
 
 void ocache_unmap(uintptr_t va, uint32_t pages) {
     for (uint32_t p = 0; p < pages; p++) {
-        uint32_t v = (uint32_t)va + p * OCACHE_PAGE;
+        uintptr_t v = va + p * OCACHE_PAGE;
         paddr_t phys = paging_get_phys(v) & ~(paddr_t)0xFFF;
         paging_unmap(v);
         if (phys) pmm_free(phys);

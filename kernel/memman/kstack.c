@@ -19,12 +19,13 @@ static uint32_t live = 0;
 static uintptr_t slot_start(uint32_t i) { return KSTACK_REGION_BASE + i * KSTACK_SLOT_SIZE; }
 
 void kstack_init(void) {
-    /* Force each 4 MB page table of the region into existence while the kernel
+    /* Force each page table of the region into existence while the kernel
        space is the only one, the same way paging_init reserves the temp-map
        PDE. Creating one later would have to be propagated into every live
-       space; created now, it is simply copied into each space as it is made. */
+       space; created now, it is simply copied into each space as it is made,
+       and a stack's pages free after it goes are the count from before. */
     for (uintptr_t v = KSTACK_REGION_BASE; v < KSTACK_REGION_BASE + KSTACK_REGION_SIZE;
-         v += 0x00400000u) {
+         v += PAGE_TABLE_SPAN) {
         paging_map_kernel(v, 0, VM_WRITE);
         paging_unmap(v);
     }

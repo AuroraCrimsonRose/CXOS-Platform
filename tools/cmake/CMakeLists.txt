@@ -167,6 +167,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/arch/x86_32/idt.c
     ${SRC_DIR}/kernel/arch/x86/apic.c
     ${SRC_DIR}/kernel/arch/x86/cpufeat.c
+    ${SRC_DIR}/kernel/arch/x86/ktest_x86.c
     ${SRC_DIR}/kernel/memman/pmm.c
     ${SRC_DIR}/kernel/arch/x86_32/paging.c
     ${SRC_DIR}/kernel/arch/x86_32/pagetable.c
@@ -745,6 +746,41 @@ else()
     set(XDCHECK COMMAND ${CMAKE_COMMAND} -E echo "  service descriptors and kernel.xkco NOT checked - cxk predates check-xdata")
 endif()
 
+# What the system partition holds: the same on both architectures' disks.
+set(CXK_STAGED
+    --stage System/Boot.xoex=${EXEC_XOEX}
+    --stage Shared/Programs/${DISK_APP_NAME}.xuex=${DISK_APP_XCEX}
+    --stage System/Programs/supervisor.xsex=${SUPERVISOR_XCEX}
+    --stage Shared/Programs/tokdump.xuex=${TOKDUMP_XUEX}
+    --stage Shared/Programs/astdump.xuex=${ASTDUMP_XUEX}
+    --stage Shared/Programs/semadump.xuex=${SEMADUMP_XUEX}
+    --stage Shared/Programs/xc.xuex=${XC_XUEX}
+    --stage System/Fonts/console_16.xfnt=${CONSOLE16_XFNT}
+    --stage Shared/Source/xc.xfxn=${SRC_DIR}/os/xc/xc.xfxn
+    --stage Shared/Source/front.xfxn=${SRC_DIR}/os/xc/front.xfxn
+    --stage Shared/Source/emit.xfxn=${SRC_DIR}/os/xc/emit.xfxn
+    --stage Shared/Source/dumputil.xfxn=${SRC_DIR}/os/xc/dumputil.xfxn
+    --stage Shared/Source/xc_sys.xfxn=${SRC_DIR}/os/xc/cxk/xc_sys.xfxn
+    --stage Shared/Source/io.xfxn=${SRC_DIR}/os/std/io.xfxn
+    --stage Shared/Source/file.xfxn=${SRC_DIR}/os/std/file.xfxn
+    --stage Shared/Source/string.xfxn=${SRC_DIR}/os/std/string.xfxn
+    --stage Shared/Source/lex.xfxn=${SRC_DIR}/os/xc/lex.xfxn
+    --stage Shared/Source/parse.xfxn=${SRC_DIR}/os/xc/parse.xfxn
+    --stage Shared/Source/diag.xfxn=${SRC_DIR}/os/xc/diag.xfxn
+    --stage Shared/Source/map.xfxn=${SRC_DIR}/os/xc/map.xfxn
+    --stage Shared/Source/sema.xfxn=${SRC_DIR}/os/xc/sema.xfxn
+    --stage Shared/Source/buf.xfxn=${SRC_DIR}/os/std/buf.xfxn
+    --stage Shared/Source/heap.xfxn=${SRC_DIR}/os/std/heap.xfxn
+    --stage Shared/Source/mem.xfxn=${SRC_DIR}/os/std/mem.xfxn
+    --stage Shared/Source/prelude.xfxn=${PRELUDE_XFXN}
+    --stage System/Services/hello.xosv=${SRC_DIR}/os/services/hello.xosv
+    --stage System/Services/setcheck.xosv=${SRC_DIR}/os/services/setcheck.xosv
+    --stage Shared/Programs/setcheck.xuex=${SETTINGS_TEST_XUEX}
+    --stage System/Services/disabled.xosv=${SRC_DIR}/os/services/disabled.xosv
+    --stage System/Services/heartbeat.xosv=${SRC_DIR}/os/services/heartbeat.xosv
+    --stage System/Config/kernel.xkco=${KERNEL_XKCO}
+)
+
 # ---- unified disk: stage1 + XBPT + stage2 + BOOT/STAGE/SYSTEM partitions ----
 add_custom_command(
     OUTPUT ${CXK_DISK}
@@ -752,37 +788,7 @@ add_custom_command(
     COMMAND ${CMAKE_COMMAND} -E make_directory ${IMAGES_DIR}
     COMMAND ${CXK} image --out ${CXK_DISK} --size-mb 64 --boot-mb 8
             --stage1 ${BOOT_BIN} --stage2 ${STAGE2_BIN} --kernel ${KERNEL_XKEX}
-            --stage System/Boot.xoex=${EXEC_XOEX}
-            --stage Shared/Programs/${DISK_APP_NAME}.xuex=${DISK_APP_XCEX}
-            --stage System/Programs/supervisor.xsex=${SUPERVISOR_XCEX}
-            --stage Shared/Programs/tokdump.xuex=${TOKDUMP_XUEX}
-            --stage Shared/Programs/astdump.xuex=${ASTDUMP_XUEX}
-            --stage Shared/Programs/semadump.xuex=${SEMADUMP_XUEX}
-            --stage Shared/Programs/xc.xuex=${XC_XUEX}
-            --stage System/Fonts/console_16.xfnt=${CONSOLE16_XFNT}
-            --stage Shared/Source/xc.xfxn=${SRC_DIR}/os/xc/xc.xfxn
-            --stage Shared/Source/front.xfxn=${SRC_DIR}/os/xc/front.xfxn
-            --stage Shared/Source/emit.xfxn=${SRC_DIR}/os/xc/emit.xfxn
-            --stage Shared/Source/dumputil.xfxn=${SRC_DIR}/os/xc/dumputil.xfxn
-            --stage Shared/Source/xc_sys.xfxn=${SRC_DIR}/os/xc/cxk/xc_sys.xfxn
-            --stage Shared/Source/io.xfxn=${SRC_DIR}/os/std/io.xfxn
-            --stage Shared/Source/file.xfxn=${SRC_DIR}/os/std/file.xfxn
-            --stage Shared/Source/string.xfxn=${SRC_DIR}/os/std/string.xfxn
-            --stage Shared/Source/lex.xfxn=${SRC_DIR}/os/xc/lex.xfxn
-            --stage Shared/Source/parse.xfxn=${SRC_DIR}/os/xc/parse.xfxn
-            --stage Shared/Source/diag.xfxn=${SRC_DIR}/os/xc/diag.xfxn
-            --stage Shared/Source/map.xfxn=${SRC_DIR}/os/xc/map.xfxn
-            --stage Shared/Source/sema.xfxn=${SRC_DIR}/os/xc/sema.xfxn
-            --stage Shared/Source/buf.xfxn=${SRC_DIR}/os/std/buf.xfxn
-            --stage Shared/Source/heap.xfxn=${SRC_DIR}/os/std/heap.xfxn
-            --stage Shared/Source/mem.xfxn=${SRC_DIR}/os/std/mem.xfxn
-            --stage Shared/Source/prelude.xfxn=${PRELUDE_XFXN}
-            --stage System/Services/hello.xosv=${SRC_DIR}/os/services/hello.xosv
-            --stage System/Services/setcheck.xosv=${SRC_DIR}/os/services/setcheck.xosv
-            --stage Shared/Programs/setcheck.xuex=${SETTINGS_TEST_XUEX}
-            --stage System/Services/disabled.xosv=${SRC_DIR}/os/services/disabled.xosv
-            --stage System/Services/heartbeat.xosv=${SRC_DIR}/os/services/heartbeat.xosv
-            --stage System/Config/kernel.xkco=${KERNEL_XKCO}
+            ${CXK_STAGED}
     DEPENDS ${BOOT_BIN} ${STAGE2_BIN} ${KERNEL_XKEX} ${EXEC_XOEX} ${DISK_APP_XCEX}
             ${SUPERVISOR_XCEX} ${TOKDUMP_XUEX} ${ASTDUMP_XUEX} ${SEMADUMP_XUEX} ${XC_XUEX}
             ${XC_SRCS} ${SRC_DIR}/os/std/buf.xfxn ${SRC_DIR}/os/std/heap.xfxn
@@ -830,45 +836,32 @@ add_dependencies(disk_image cxk_disk)
 # GDT, TSS, IDT, COM1); step 5c paging, the page database and the buddy
 # allocator, the first generic code; step 5d interrupts, the APICs, the tick,
 # the context switch and the scheduler, with the generic code they need; step
-# 5e ring 3 (syscall/sysret) and the user-pointer checks.
+# 5e ring 3 (syscall/sysret) and the user-pointer checks; step 5f1 kmain and
+# every driver, on the same staged disk as the 32-bit image.
 # The ELF is the image as it stands: CXEX for x86-64, and the signature check
 # in the loader, come with it (docs/boot/CX_BOOT.md section 4).
 set(IMAGES64_DIR ${SRC_DIR}/dist/CXK_x86_64/images)
 set(KERNEL64_ELF ${BUILD_DIR}/kernel64.elf)
 set(DISK64_IMG   ${IMAGES64_DIR}/cxk_x86_64.img)
 set(LINKER64     ${SRC_DIR}/kernel/arch/x86_64/linker.ld)
-set(KERNEL64_C_SRCS
-    ${SRC_DIR}/kernel/arch/x86_64/boot64.c
-    ${SRC_DIR}/kernel/arch/x86_64/bringup64.c
+# The whole kernel since step 5f1: every generic source the 32-bit kernel
+# builds, taken from its list so the two cannot drift, less its architecture
+# and its bitmap page allocator (x86-64 has the page database), plus x86-64's
+# own. The X linked into the 32-bit kernel is not here: X compiles to x86-32
+# only until step 6, and xdata64.c stands in for it.
+set(KERNEL64_C_SRCS ${KERNEL_C_SRCS})
+list(FILTER KERNEL64_C_SRCS EXCLUDE REGEX "/kernel/arch/x86_32/|/kernel/memman/pmm\\.c$")
+list(APPEND KERNEL64_C_SRCS
     ${SRC_DIR}/kernel/arch/x86_64/cpu.c
     ${SRC_DIR}/kernel/arch/x86_64/early_con.c
     ${SRC_DIR}/kernel/arch/x86_64/gdt.c
     ${SRC_DIR}/kernel/arch/x86_64/idt.c
+    ${SRC_DIR}/kernel/arch/x86_64/ktest_arch.c
     ${SRC_DIR}/kernel/arch/x86_64/pagetable.c
     ${SRC_DIR}/kernel/arch/x86_64/paging.c
-    ${SRC_DIR}/kernel/boot/cxbi.c
+    ${SRC_DIR}/kernel/arch/x86_64/xdata64.c
     ${SRC_DIR}/kernel/memman/buddy.c
     ${SRC_DIR}/kernel/memman/pagedb.c
-    ${SRC_DIR}/kernel/memman/heap.c
-    ${SRC_DIR}/kernel/memman/kstack.c
-    ${SRC_DIR}/kernel/memman/ocache.c
-    ${SRC_DIR}/kernel/object/idtab.c
-    ${SRC_DIR}/kernel/cpu/sched.c
-    ${SRC_DIR}/kernel/cpu/proc.c
-    ${SRC_DIR}/kernel/cpu/uid.c
-    ${SRC_DIR}/kernel/drivers/char/timer.c
-    ${SRC_DIR}/kernel/object/kobj.c
-    ${SRC_DIR}/kernel/object/htab.c
-    ${SRC_DIR}/kernel/lib/string/format.c
-    ${SRC_DIR}/kernel/memman/vmregion.c
-    ${SRC_DIR}/kernel/drivers/iowin.c
-    ${SRC_DIR}/kernel/platform/pc/pic.c
-    ${SRC_DIR}/kernel/platform/pc/pit.c
-    ${SRC_DIR}/kernel/arch/x86/apic.c
-    ${SRC_DIR}/kernel/arch/x86/cpufeat.c
-    ${SRC_DIR}/kernel/drivers/power/acpi.c
-    ${SRC_DIR}/kernel/cpu/usercopy.c
-    ${SRC_DIR}/kernel/cpu/sysrec.c
 )
 set(KERNEL64_ASM_SRCS
     ${SRC_DIR}/kernel/arch/x86_64/entry.asm
@@ -882,6 +875,7 @@ set(K64CFLAGS --target=x86_64-elf -ffreestanding -fno-pic -fno-stack-protector
               -mcmodel=kernel -mno-red-zone
               -mno-sse -mno-sse2 -mno-mmx -mno-implicit-float
               -Wall -Wextra -Werror ${CXK_DEFS} -Wshorten-64-to-32
+              -DCXK_X_USERLAND=0   # X programs are x86-32 until step 6: no executive
               ${KERNEL_INCLUDES} -I${BUILD_DIR} -c)
 set(KERNEL64_OBJS "")
 foreach(src ${KERNEL64_C_SRCS})
@@ -919,8 +913,10 @@ add_custom_command(
     COMMAND ${CMAKE_COMMAND} -E make_directory ${IMAGES64_DIR}
     COMMAND ${CXK} image --out ${DISK64_IMG} --size-mb 64 --boot-mb 8
             --stage1 ${BOOT_BIN} --stage2 ${STAGE2_BIN} --kernel ${KERNEL64_ELF}
+            ${CXK_STAGED}
     DEPENDS ${BOOT_BIN} ${STAGE2_BIN} ${KERNEL64_ELF} ${CXK}
-    COMMENT "Building the x86-64 disk (stage 2 enters long mode)"
+            ${CXK_DISK}   # built from the same staged files: rebuilt when one changes
+    COMMENT "Building the x86-64 disk (stage 2 enters long mode; the system partition as on x86-32)"
 )
 add_custom_target(disk64_image ALL DEPENDS ${DISK64_IMG})
 # Shares stage 1 and stage 2 with the 32-bit images; ordered for the reason

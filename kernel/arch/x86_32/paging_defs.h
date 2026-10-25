@@ -14,6 +14,7 @@
 typedef uint32_t paddr_t;
 
 #define PAGE_SIZE        4096u
+#define PAGE_TABLE_SPAN  0x00400000u   /* what one page table maps: 4 MB */
 
 /* The higher-half base: the kernel lives at and above it, user space below.
    The ONE C definition. entry.asm (KERNEL_VBASE equ) and linker.ld restate it
@@ -29,6 +30,7 @@ typedef uint32_t paddr_t;
    (drivers/video/fb.c records the time two did). Generic code names them;
    each architecture places them. Above them, 0xFFC00000 up is the recursive
    page-table window (paging.c). */
+#define KVA_KTEST_SCRATCH 0xCE000000u  /* a page the self-tests map (ktest.c) */
 #define KVA_KSTACKS      0xCF000000u   /* 16 MB of kernel stacks (memman/kstack.h) */
 #define KVA_HEAP         0xD0000000u   /* the heap, growing up to KVA_OCACHE */
 #define KVA_OCACHE       0xD8000000u   /* 64 MB of object caches (memman/ocache.h) */

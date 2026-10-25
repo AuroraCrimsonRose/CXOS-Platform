@@ -252,6 +252,27 @@ arriving as a double fault on IST 1, each layer of the user copy on its own,
 the tick preempting two processes spinning in ring 3, and a process giving
 back every page and heap block whether it exited or faulted.
 
+**Step 5f1, done 2026-10-24.** kmain runs on x86-64. Its source list is
+x86-32's minus `arch/x86_32/` and the bitmap `pmm.c`, plus the x86-64 files,
+so a generic file cannot be left out of one kernel and not the other.
+`arch_memory_init` states each architecture's order once (x86-64 builds its
+tables before the page database; x86-32 the reverse), and `paging_init`
+keeps the VGA text buffer where the loader had it. Every driver probes and
+the first-boot install runs. `boot64.c` became `arch/x86_64/ktest_arch.c`,
+whose 54 cases `ktest_run` runs first (they check boot's state: the kernel
+space's user half empty, DS as boot set it), and `bringup64.c` is gone:
+logging, the tick, the keyboard and the syscall table are the real ones. X
+compiles to x86-32 only, so `CXK_X_USERLAND` is 0 on x86-64: no executive,
+and `arch/x86_64/xdata64.c` refuses every X Data document, so `kconfig`
+boots on its defaults (TRANSITIONAL_CODE.md). The port found five narrowings
+that 4 GB of RAM had hidden: `ocache_unmap` cut the virtual address to 32
+bits and freed nothing, the xHCI scratchpad took pages above 4 GB, the
+process-exit test mapped a truncated frame, the stack test truncated its
+own address, and `kstack_init` and `ocache_sys_init` made a page table every
+4 MB, which is x86-32's reach and every other one of x86-64's
+(`PAGE_TABLE_SPAN`). User code pages are remapped read-and-execute once they are
+written (W^X), since x86-64 enforces NX. 121 self-tests (67 + 54).
+
 ---
 
 ## 3. Processes and threads

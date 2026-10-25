@@ -52,6 +52,12 @@ static inline void invlpg(uint32_t v) {
 
 static void map_raw(uint32_t virt, paddr_t phys, uint32_t vm, int user);
 
+/* The boot directory is adopted, and the tables it grows come from the bitmap. */
+void arch_memory_init(void) {
+    pmm_init();
+    paging_init();
+}
+
 void paging_init(void) {
     /* install the recursive entry into the existing boot page directory:
        PDE[1023] -> the PD's own physical address, present + writable. */

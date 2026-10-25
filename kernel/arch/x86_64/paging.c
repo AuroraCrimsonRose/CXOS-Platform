@@ -26,9 +26,12 @@
 #include "memman/pagedb.h"
 #include "pmm.h"
 #include "panic.h"
+#include "logging.h"
 
 #define LOADER_WINDOW_END  0x40000000ull   /* long.asm maps this much at KERNEL_VBASE */
 #define CR0_WP             (1ull << 16)
+#define VGA_TEXT_PHYS      0xB8000ull      /* the colour text buffer, 32 KiB */
+#define VGA_TEXT_END       0xC0000ull
 
 extern uint8_t __text_start[], __rodata_start[], __data_start[], __kernel_end[];
 
@@ -142,8 +145,21 @@ void paging_init(void) {
         *walk(kernel_root, v, 1, 0) = pte64_encode(v - KERNEL_VBASE, vm, 0);
     }
 
+    /* The VGA text buffer, where the loader's window had it and where
+       platform/pc/vga.c writes it (KERNEL_VBASE + physical), so the console
+       carries on across the switch. Write-back, as the framebuffer is
+       (arch/paging.h); the firmware's MTRRs make the legacy hole uncached. */
+    for (uint64_t p = VGA_TEXT_PHYS; p < VGA_TEXT_END; p += PAGE_SIZE)
+        *walk(kernel_root, KERNEL_VBASE + p, 1, 0) = pte64_encode(p, VM_WRITE, 0);
     addr_space_switch(kernel_root);
     live = 1;
+}
+
+/* The tables first, from pmm_boot_alloc; the page database, which takes the
+   pages they used out of what it hands out, after (pagedb.c). */
+void arch_memory_init(void) {
+    paging_init();
+    pmm_init();
 }
 
 /* ---- mappings ------------------------------------------------------------------ */
@@ -157,7 +173,10 @@ static int in_kernel_regions(uint64_t virt) {
    address space only, and one in the direct map would split its large pages:
    both are bugs in the caller. */
 void paging_map_kernel(uintptr_t virt, paddr_t phys, uint32_t vm) {
-    if (vm & ~VM_ALL) kpanic("paging_map_kernel: not a VM_* flag");
+    if (vm & ~VM_ALL) {   /* refused, as on x86-32 (paging.h): ktest.c checks it */
+        klog("PAGING", SEV_WARN, "paging_map_kernel refused: not a VM_* flag");
+        return;
+    }
     if (!in_kernel_regions(virt)) kpanic("paging_map_kernel: outside the kernel's mappable regions");
     uint64_t *e = walk(addr_space_current(), virt, 1, 0);
     if (!e) return;   /* out of memory: the page stays unmapped */

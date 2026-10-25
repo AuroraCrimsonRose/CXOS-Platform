@@ -70,6 +70,10 @@
    section, every kernel PML4 entry) from pmm_boot_alloc, before pmm_init. */
 void paging_init(void);
 
+/* pmm_init and paging_init, in this architecture's order (above). kmain calls
+   this, so the order is stated once, where the reason is. */
+void arch_memory_init(void);
+
 /* Map one page in the ACTIVE space. Both addresses page-aligned; `vm` is VM_*
    flags. Two entry points, not one, so neither can express the dangerous
    combination (security review §8):
@@ -79,7 +83,8 @@ void paging_init(void);
        is refused, so a user mapping can never name kernel memory.
    paging_map_user returns 0, or -1 if the address is not in the user half or
    `vm` holds a flag that is not VM_*; on x86-64 also when no page table can
-   be had. */
+   be had. paging_map_kernel maps nothing, and logs it, for a flag that is not
+   VM_*. */
 void paging_map_kernel(uintptr_t virt, paddr_t phys, uint32_t vm);
 int  paging_map_user  (uintptr_t virt, paddr_t phys, uint32_t vm);
 

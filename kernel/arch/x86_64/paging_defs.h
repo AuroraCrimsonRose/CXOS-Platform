@@ -14,6 +14,7 @@
 typedef uint64_t paddr_t;
 
 #define PAGE_SIZE        4096u
+#define PAGE_TABLE_SPAN  0x00200000u   /* what one page table maps: 2 MiB */
 
 /* The kernel image: the top 2 GiB, so clang's kernel code model applies.
    Physical P of the image, and of the low window the loader maps with it, is
@@ -30,7 +31,8 @@ typedef uint64_t paddr_t;
               no-execute, 2 MiB pages where they fit (64 TiB)
      384-447  the physical window: what paging_map_phys maps, device registers
               and firmware tables, at PHYS_WINDOW_BASE + P (32 TiB)
-     448-452  the fixed regions generic code names, one entry (512 GiB) each
+     448-453  the fixed regions, one entry (512 GiB) each: those generic code
+              names, and the arch self-tests' scratch page
      511      the kernel image, in its top 2 GiB */
 #define DIRECT_MAP_BASE  0xFFFF800000000000ull
 #define DIRECT_MAP_SIZE  0x0000400000000000ull
@@ -44,6 +46,7 @@ typedef uint64_t paddr_t;
 #define KVA_E1000_DMA    0xFFFFE18001000000ull
 #define KVA_RTL_DMA      0xFFFFE18002000000ull
 #define KVA_FRAMEBUFFER  0xFFFFE20000000000ull
+#define KVA_KTEST_SCRATCH 0xFFFFE28000000000ull  /* one page the arch self-tests map */
 
 
 #endif

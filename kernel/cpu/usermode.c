@@ -65,16 +65,24 @@
 
 /* map one fresh pmm frame at virtual `virt` (a user page). returns the physical
    frame (so it can be freed later), or 0 on failure. */
-static uint32_t map_user_page(uint32_t virt) {
-    uint32_t phys = (uint32_t)pmm_alloc();
+static paddr_t map_user_page(uint32_t virt) {
+    paddr_t phys = pmm_alloc();
     if (!phys) return 0;
     if (paging_map_user(virt, phys, VM_WRITE) != 0) { pmm_free(phys); return 0; }
     return phys;
 }
 
-static void unmap_user_page(uint32_t virt, uint32_t phys) {
+static void unmap_user_page(uint32_t virt, paddr_t phys) {
     paging_unmap(virt);
     if (phys) pmm_free(phys);
+}
+
+/* A code page, once written: executable from ring 3 and no longer writable
+   (W^X). Mapped VM_WRITE it is no-execute where the MMU has the bit, and its
+   first instruction faults (x86-64); x86-32 runs every page, so there this
+   only takes the write away. 0, or -1 as paging_map_user. */
+static int seal_user_code(uint32_t virt, paddr_t phys) {
+    return paging_map_user(virt, phys, VM_EXEC);
 }
 
 /* Checking and copying user buffers: usercopy.c. */
@@ -337,8 +345,8 @@ void usermode_init(void) {
 /* ---- Checkpoint 3a: the minimal single-process ring-3 round-trip ---- */
 int usermode_test(void) {
     /* back the code + stack pages with real pmm frames, mapped user-accessible */
-    uint32_t code_phys  = map_user_page(TEST_CODE_VIRT);
-    uint32_t stack_phys = map_user_page(TEST_STACK_VIRT);
+    paddr_t code_phys  = map_user_page(TEST_CODE_VIRT);
+    paddr_t stack_phys = map_user_page(TEST_STACK_VIRT);
     if (!code_phys || !stack_phys) {
         if (code_phys)  unmap_user_page(TEST_CODE_VIRT, code_phys);
         if (stack_phys) unmap_user_page(TEST_STACK_VIRT, stack_phys);
@@ -356,6 +364,7 @@ int usermode_test(void) {
     uint32_t i = 0;
     for (; user_msg[i] && i < 0x100; i++) umsg[i] = user_msg[i];
     umsg[i] = '\0';
+    int sealed = seal_user_code(TEST_CODE_VIRT, code_phys) == 0;
 
     /* seed the message pointer at the top of the user stack ([esp] on entry) */
     uint32_t ustack_top = TEST_STACK_VIRT + 0x1000 - 16;
@@ -367,7 +376,7 @@ int usermode_test(void) {
     uint32_t tsav = thread_current_caps();
     thread_set_caps(tme, GRANT_CONSOLE);
     /* enter ring 3; returns when the routine SYS_EXITs */
-    int rc = enter_usermode(TEST_CODE_VIRT, ustack_top, thread_current_usave());
+    int rc = sealed ? enter_usermode(TEST_CODE_VIRT, ustack_top, thread_current_usave()) : -1;
     thread_set_caps(tme, tsav);
 
     /* reclaim the user pages */
@@ -378,8 +387,8 @@ int usermode_test(void) {
 
 int usermode_run_blob(const uint8_t *start, uint32_t len) {
     if (!start || len == 0 || len > USER_MSG_OFF) return -1;
-    uint32_t code_phys  = map_user_page(TEST_CODE_VIRT);
-    uint32_t stack_phys = map_user_page(TEST_STACK_VIRT);
+    paddr_t code_phys  = map_user_page(TEST_CODE_VIRT);
+    paddr_t stack_phys = map_user_page(TEST_STACK_VIRT);
     if (!code_phys || !stack_phys) {
         if (code_phys)  unmap_user_page(TEST_CODE_VIRT, code_phys);
         if (stack_phys) unmap_user_page(TEST_STACK_VIRT, stack_phys);
@@ -388,7 +397,8 @@ int usermode_run_blob(const uint8_t *start, uint32_t len) {
     uint8_t *dst = (uint8_t *)TEST_CODE_VIRT;
     for (uint32_t i = 0; i < len; i++) dst[i] = start[i];
 
-    int rc = enter_usermode(TEST_CODE_VIRT, TEST_STACK_VIRT + 0x1000 - 16, thread_current_usave());
+    int rc = seal_user_code(TEST_CODE_VIRT, code_phys) != 0 ? -1
+           : enter_usermode(TEST_CODE_VIRT, TEST_STACK_VIRT + 0x1000 - 16, thread_current_usave());
 
     unmap_user_page(TEST_CODE_VIRT, code_phys);
     unmap_user_page(TEST_STACK_VIRT, stack_phys);
@@ -411,7 +421,7 @@ static int lt_streq(const char *a, const char *b, int n) {
 }
 
 int usermode_log_test(void) {
-    uint32_t phys = map_user_page(TEST_CODE_VIRT);
+    paddr_t phys = map_user_page(TEST_CODE_VIRT);
     if (!phys) return 0;
 
     int me = thread_current_id();
@@ -546,7 +556,7 @@ static int ft_call(uint32_t op, int handle, uint32_t path, uint32_t data,
 int usermode_file_test(void) {
     if (!cxfs_is_mounted()) return 1;         /* nothing mounted - skip */
 
-    uint32_t phys = map_user_page(TEST_CODE_VIRT);
+    paddr_t phys = map_user_page(TEST_CODE_VIRT);
     if (!phys) return 0;
 
     int      me   = thread_current_id();
@@ -980,7 +990,7 @@ static void fl_helper(void) {
 int usermode_flock_test(void) {
     if (!cxfs_is_mounted()) return 1;         /* nothing mounted - skip */
 
-    uint32_t phys = map_user_page(TEST_CODE_VIRT);
+    paddr_t phys = map_user_page(TEST_CODE_VIRT);
     if (!phys) return 0;
 
     int      me   = thread_current_id();
@@ -1177,8 +1187,8 @@ struct ring3_setup {
     const char *msg;
     uint32_t    code_virt;
     uint32_t    stack_virt;
-    uint32_t    code_phys;     /* pmm frame backing the code page (for free) */
-    uint32_t    stack_phys;    /* pmm frame backing the stack page (for free) */
+    paddr_t     code_phys;     /* pmm frame backing the code page (for free) */
+    paddr_t     stack_phys;    /* pmm frame backing the stack page (for free) */
 };
 
 /* The thread's own record (thread_set_arg), freed when it is reaped. */
@@ -1206,11 +1216,12 @@ static void process_trampoline(void) {
     uint32_t i = 0;
     if (s->msg) { for (; s->msg[i] && i < 0x100; i++) umsg[i] = s->msg[i]; }
     umsg[i] = '\0';
+    int sealed = seal_user_code(s->code_virt, s->code_phys) == 0;
 
     uint32_t ustack_top = s->stack_virt + 0x1000 - 16;
     *(uint32_t *)user_ptr(ustack_top) = user_addr(umsg);
 
-    enter_usermode(s->code_virt, ustack_top, thread_current_usave());
+    if (sealed) enter_usermode(s->code_virt, ustack_top, thread_current_usave());
 
     /* user routine SYS_EXITed or faulted: save a fault noted on the way out
        (out of the exception now), reclaim its pages, leave the scheduler. */

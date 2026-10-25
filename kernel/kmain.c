@@ -200,14 +200,13 @@ void kmain(uintptr_t cxbi_phys) {
        table, before anything that might ask what the CPU has. */
     arch_cpu_init();
 
-    /* memory: physical frames -> virtual mappings -> heap. */
-    pmm_init();
+    /* memory: physical frames and the kernel's page tables, in the order the
+       architecture needs (arch/paging.h) -> heap. */
+    arch_memory_init();
     klog("PMM", SEV_OK, "online");
     klog_child_u32("total pages: ", pmm_total_pages(), LOG_COLOR_VALUE, "");
     klog_child_u32("free pages: ", pmm_free_count(), VGA_ATTR(VGA_LIGHT_GREEN, VGA_BLACK), "");
-
-    paging_init();
-    klog("PAGING", SEV_OK, "online (recursive page directory)");
+    klog("PAGING", SEV_OK, "online");
 
     addr_space_init();
     klog("VMSPACE", SEV_OK, "address-space layer ready");
@@ -432,7 +431,9 @@ void kmain_late(void) {
     int xc_started = 0;
     /* capstone: start the signed executive as the root ring-3 process (its own
        address space + scheduler thread). It runs once we idle + yield below. */
-    if (launch_exec) {
+    if (launch_exec && !CXK_X_USERLAND)
+        klog("EXEC", SEV_INFO, "no executive: X programs are x86-32 until step 6");
+    else if (launch_exec) {
         klog("EXEC", SEV_INFO, "launching /System/Boot.xoex");
         int xc = cxk_launch_executive("/System/Boot.xoex");
         if (xc >= 0) {

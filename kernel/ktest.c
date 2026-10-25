@@ -499,12 +499,12 @@ static int test_iowin(void) {
    arch/paging.h: a kernel mapping is not reachable from ring 3, a user mapping
    cannot name kernel memory, and a flag that is not VM_* maps nothing. ---- */
 static int test_paging(void) {
-    uint32_t test_virt = 0xCE000000;   /* clear of the kernel-stack region above */
-    uint32_t user_virt = 0x3F000000;   /* user half, unused by the kernel space */
-    uint32_t frame = (uint32_t)pmm_alloc();
+    uintptr_t test_virt = KVA_KTEST_SCRATCH;   /* kernel half, mapped by nothing else */
+    uintptr_t user_virt = 0x3F000000;          /* user half, unused by the kernel space */
+    paddr_t frame = pmm_alloc();
     if (!frame) return 0;
     paging_map_kernel(test_virt, frame, VM_WRITE);
-    volatile uint32_t *p = (volatile uint32_t *)user_ptr(test_virt);
+    volatile uint32_t *p = (volatile uint32_t *)test_virt;
     *p = 0xCAFEBABE;
     int ok = (*p == 0xCAFEBABE) && (paging_get_phys(test_virt) == frame);
     ok = ok && !paging_is_user(test_virt);
@@ -1197,6 +1197,16 @@ static int test_xhci_scratchpad(void) {
  * (0x1C40), so a reader of those old addresses gets nonsense; that it did is
  * checked here, and the boot failing when pmm.c or fb.c is pointed back at
  * them is the sabotage that shows nothing reads them. */
+
+/* 16 bits of low memory, through the scratch mapping: x86-64 does not keep the
+   loader's view of it at KERNEL_VBASE. `phys` must not straddle a page. */
+static uint16_t low_u16(paddr_t phys) {
+    const volatile uint8_t *page = paging_temp_map(phys & ~(paddr_t)0xFFF);
+    uint16_t v = *(const volatile uint16_t *)(page + (phys & 0xFFF));
+    paging_temp_unmap();
+    return v;
+}
+
 static int test_cxbi(void) {
     const struct cxk_boot_info *b = cxbi();
     if (b->firmware != CXBI_FW_BIOS && b->firmware != CXBI_FW_UEFI) {
@@ -1227,9 +1237,7 @@ static int test_cxbi(void) {
         klog("KTEST", SEV_FAIL, "CXBI: the screen is not the framebuffer handed over");
         return 0;
     }
-    if (b->firmware == CXBI_FW_BIOS &&
-        (*(volatile uint16_t *)(KERNEL_VBASE + 0x500) != 0xA5A5u ||
-         *(volatile uint8_t *)(KERNEL_VBASE + 0x1C40) != 0xA5u)) {
+    if (b->firmware == CXBI_FW_BIOS && (low_u16(0x500) != 0xA5A5u || (low_u16(0x1C40) & 0xFFu) != 0xA5u)) {
         klog("KTEST", SEV_FAIL, "CXBI: the loader's old addresses are not poisoned");
         return 0;
     }
@@ -2835,8 +2843,8 @@ static int test_main_stack(void) {
     uintptr_t a = (uintptr_t)&here;
     if (thread_current_id() != 0) return 0;
     if (a < KSTACK_REGION_BASE || a >= KSTACK_REGION_BASE + KSTACK_REGION_SIZE) return 0;
-    uint32_t top  = (a & ~(KSTACK_SLOT_SIZE - 1)) + KSTACK_SLOT_SIZE;
-    uint32_t base = top - KSTACK_MAIN_SIZE;
+    uintptr_t top  = (a & ~(uintptr_t)(KSTACK_SLOT_SIZE - 1)) + KSTACK_SLOT_SIZE;
+    uintptr_t base = top - KSTACK_MAIN_SIZE;
     return paging_get_phys(base) && !paging_get_phys(base - PAGE_SIZE)
         && kstack_guard_owner(base - 4) == 0
         && thread_current_kstack_top() != 0;
@@ -2860,6 +2868,18 @@ static int kc_refused(const char *doc, uint32_t want_at) {
     return c.max_threads == 999 && at == want_at && why && why[0];
 }
 
+#if !CXK_X_USERLAND
+/* No X here until step 6, so no reader: kernel.xkco is refused whole, the
+   good document as surely as a bad one, at offset 0 with a reason, and the
+   caller's values are never touched (arch/x86_64/xdata64.c). When X compiles
+   for this architecture the reader is linked and the test below runs. */
+static int test_kconfig(void) {
+    return kc_refused("// the kernel's limits\nkernel_stack_kib = 16\n", 0)
+        && kc_refused("max_threads = 6\n", 0)
+        && kc_refused("", 0)
+        && kc_refused("kernel_stack = 8\n", 0);
+}
+#else
 static int test_kconfig(void) {
     struct kconfig c;
     uint32_t at;
@@ -2892,6 +2912,7 @@ static int test_kconfig(void) {
         && kc_refused("max_threads = 8\nmax_threads = 9\n", 16)            /* given twice */
         && kc_refused("max_threads = 12\nkernel_stack_kib = 12\nbogus = 1\n", 39);  /* valid, then not */
 }
+#endif
 
 /* ---- the thread limit, and the stack size, are live settings ---- */
 static void kc_exit_thread(void) { }
@@ -3060,10 +3081,11 @@ static void px_thread(void) {
     if (ep_create() <= 0) return;                  /* a handle only the exit closes */
     paddr_t c = pmm_alloc(), s = pmm_alloc();
     if (!c || !s) return;
-    if (paging_map_user(PX_CODE,  (uint32_t)c, VM_WRITE) != 0) return;
+    if (paging_map_user(PX_CODE,  c, VM_WRITE) != 0) return;
     if (paging_map_user(PX_STACK, s, VM_WRITE) != 0) return;
     ((volatile uint8_t *)PX_CODE)[0] = 0x0F;       /* ud2: an invalid opcode, at once */
     ((volatile uint8_t *)PX_CODE)[1] = 0x0B;
+    if (paging_map_user(PX_CODE,  c, VM_EXEC) != 0) return;   /* W^X: now it runs */
     px_mine = 1;
     px_rc   = enter_usermode(PX_CODE, PX_STACK + 0x1000u - 16u, thread_current_usave());
     px_back = 1;
@@ -3120,6 +3142,16 @@ void ktest_run(void) {
 
     /* each test: total++, and passed += its pass/fail. report() prints only on
        failure, so the only per-test output is failures. */
+
+    /* the architecture's own first (arch/ktest_arch.h): some state what boot
+       left, such as a kernel space with nothing in its user half, which the
+       ring-3 tests below change. */
+    unsigned n_arch;
+    const struct ktest_arch_case *arch_case = ktest_arch_cases(&n_arch);
+    for (unsigned i = 0; i < n_arch; i++) {
+        total++; passed += report(arch_case[i].name, arch_case[i].fn());
+    }
+
     total++; passed += report("paging maps, and refuses what it must not", test_paging());
     total++; passed += report("I/O windows refuse what lies outside them", test_iowin());
     total++; passed += report("heap kmalloc/kfree",               test_heap());

@@ -23,4 +23,13 @@ int ktest_arch_cpu_features(void);
    (which the return to ring 3 would turn into NULL). */
 int ktest_arch_user_segments_kept(void);
 
+/* The architecture's own further tests, which ktest_run runs and reports
+   after its own: *count of them, each named. None on x86-32, whose arch tests
+   are the three above; x86-64's bring-up tests (steps 5b to 5e). */
+struct ktest_arch_case {
+    const char *name;
+    int (*fn)(void);
+};
+const struct ktest_arch_case *ktest_arch_cases(unsigned *count);
+
 #endif

@@ -5,7 +5,7 @@
 ;
 ; arch/usermode.h on x86-64: entering ring 3, the syscall gate, leaving ring 3
 ; for good, and the fault-recoverable user copy (cpu/usermode.h). Then the
-; ring-3 routines the bring-up self-tests run (boot64.c).
+; ring-3 routines the arch self-tests run (ktest_arch.c).
 ;
 ; The calling convention, until step 6 fixes it in the ABI: the number in
 ; rax, the arguments in rdi and rsi (each 32 bits, as the ABI's are until
@@ -192,7 +192,7 @@ syscall64_user_rsp: resq 1
 syscall_trapped:    resd 1
 
 ; ---------------------------------------------------------------------------
-; The ring-3 routines of the bring-up self-tests (boot64.c). Each is copied to
+; The ring-3 routines of the arch self-tests (ktest_arch.c). Each is copied to
 ; the start of a user code page, so each is position-independent: RIP-relative
 ; addresses inside itself only. The test's one argument, if any, is at [rsp].
 ; ---------------------------------------------------------------------------
@@ -387,3 +387,84 @@ user64_spin_start:
     mov eax, SYS_EXIT
     syscall
 user64_spin_end:
+
+; Packs ds, es, fs and gs one per byte, makes a SYS_YIELD (which switches
+; away and back), packs them again, and exits with CS | SS << 8 if the two
+; agree and 0 if not: 0x1B23 when the call gave ring 3 back everything it
+; had (ktest_arch_user_segments_kept).
+%macro PACK_SEGS 2            ; the register, and its low byte
+    mov eax, gs
+    movzx %1, al
+    shl %1, 8
+    mov eax, fs
+    mov %2, al
+    shl %1, 8
+    mov eax, es
+    mov %2, al
+    shl %1, 8
+    mov eax, ds
+    mov %2, al
+%endmacro
+global user64_segs_start, user64_segs_end
+user64_segs_start:
+    PACK_SEGS r12d, r12b
+    mov eax, SYS_YIELD
+    syscall
+    PACK_SEGS r13d, r13b
+    mov eax, cs
+    mov edi, eax
+    mov eax, ss
+    shl eax, 8
+    or edi, eax
+    cmp r12d, r13d
+    je .same
+    xor edi, edi
+.same:
+    mov eax, SYS_EXIT
+    syscall
+.hang:
+    jmp .hang
+user64_segs_end:
+
+; ---------------------------------------------------------------------------
+; usermode.c's ring-3 routines, as x86-32's (arch/x86_32/usermode.asm) in
+; this convention. The kernel seeds a 32-bit message pointer at [rsp].
+;
+; user_blob: SYS_CONSOLE_WRITE(msg, 0 = bounded NUL-scan), then SYS_EXIT(0).
+; ---------------------------------------------------------------------------
+global user_blob_start, user_blob_end
+user_blob_start:
+    mov edi, [rsp]
+    xor esi, esi
+    mov eax, SYS_CONSOLE_WRITE
+    syscall
+    xor edi, edi
+    mov eax, SYS_EXIT
+    syscall
+.hang:
+    jmp .hang
+user_blob_end:
+
+; user_blob_busy: writes its message, spins in ring 3 long enough for the tick
+; to preempt it, three times over, then exits.
+global user_blob_busy_start, user_blob_busy_end
+user_blob_busy_start:
+    mov r12d, [rsp]          ; the message, kept across the calls
+    mov r13d, 3
+.loop:
+    mov edi, r12d
+    xor esi, esi
+    mov eax, SYS_CONSOLE_WRITE
+    syscall
+    mov ecx, 0x02000000
+.spin:
+    dec ecx
+    jnz .spin
+    dec r13d
+    jnz .loop
+    xor edi, edi
+    mov eax, SYS_EXIT
+    syscall
+.hang:
+    jmp .hang
+user_blob_busy_end:

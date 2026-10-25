@@ -535,7 +535,7 @@ int ktest_spawn_verifies_image(void) {
     a->broker_endpoint = h;
     if (!ok) goto done;
 
-    a->image = (uint32_t)KERNEL_VBASE; /* a kernel address is not a user pointer */
+    a->image = USER_ADDR32_END;    /* past the user half: not a user pointer */
     ok = (sys_spawn(user_addr(a)) == E_FAULT);
     a->image = user_addr(img);
     if (!ok) goto done;

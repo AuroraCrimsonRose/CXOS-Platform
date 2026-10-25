@@ -1,18 +1,13 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
-/* /kernel/arch/x86_64/boot64.c */
+/* /kernel/arch/x86_64/ktest_arch.c */
 /* Aurora Tejeda / CATX Systems */
-/* The x86-64 kernel as roadmap step 5e leaves it: entered in long mode by
-   stage 2 (boot/long.asm), it installs its own GDT, TSS and IDT, takes the
-   loader's handover (boot/cxbi.c), replaces the loader's page tables with its
-   own (paging.c), starts the page allocator (memman/pagedb.c), and runs the
-   first group of self-tests. Then kmain's order: the object caches, the heap
-   and the guarded kernel stacks; onto a guarded stack as thread 0; the
-   scheduler, the 1000 Hz tick, interrupts on, ACPI, and the local and I/O
-   APIC; the syscall gate; the second group of tests, ring 3 among them; the
-   summary on COM1, and a halt. Its job moves to kmain once the drivers run
-   here (step 5f).
-   Listed in docs/planning/TRANSITIONAL_CODE.md.
+/* arch/ktest_arch.h on x86-64: the boot self-tests that read the CPU's own
+   state - its tables, its MSRs, its page tables, its exceptions and ring 3 -
+   run by ktest_run with the rest, on thread 0 after kmain has brought up
+   everything. They were boot64.c's, the x86-64 kernel's whole run from step
+   5b to 5e, written as each piece arrived; kmain took that job over at step
+   5f1.
 
    Each test is checked against a sabotage, and some sabotages do not turn a
    test red but stop the boot: with no IST on the double-fault gate the fault
@@ -22,7 +17,6 @@
 
 #include <stdint.h>
 #include "cxk_boot.h"
-#include "early_con.h"
 #include "gdt.h"
 #include "idt.h"
 #include "pagetable.h"
@@ -46,6 +40,7 @@
 #include "caps.h"
 #include "sysrec.h"
 #include "usermode.h"
+#include "arch/ktest_arch.h"
 #include "arch/usermode.h"
 
 #define EFER_LME    (1ull << 8)
@@ -75,15 +70,12 @@
 #define FOUR_GB            0x100000000ull
 #define LAPIC_DEFAULT      0xFEE00000ull  /* the local APIC's registers, where firmware leaves them */
 
-/* A page the tests map and unmap: the framebuffer's region, which nothing
-   uses on x86-64 until the display runs here. */
-#define SCRATCH_VA         KVA_FRAMEBUFFER
+/* A page the tests map and unmap, in a region of its own (paging_defs.h). */
+#define SCRATCH_VA         KVA_KTEST_SCRATCH
 
-void boot64_main(uint64_t cxbi_phys);
+void kmain(uintptr_t cxbi_phys);
 
 extern uint8_t __kernel_end[];   /* the linker's, virtual */
-
-static uint64_t cxbi_phys_addr;
 
 struct dt_ptr {
     uint16_t limit;
@@ -132,16 +124,15 @@ static int t_nx(void) {
     return (rdmsr(MSR_EFER) & EFER_NXE) != 0;
 }
 
+/* The image, entry to end. Thread 0's stack is a guarded one by now, in the
+   stacks' region (t_main_stack_guarded). */
 static int t_top_2g(void) {
-    uintptr_t rsp;
-    __asm__ volatile ("movq %%rsp, %0" : "=r"(rsp));
-    return (uintptr_t)&boot64_main >= KERNEL_VBASE && rsp >= KERNEL_VBASE;
+    return (uintptr_t)&kmain >= KERNEL_VBASE && (uintptr_t)__kernel_end > (uintptr_t)&kmain;
 }
 
 /* The kernel's copy (boot/cxbi.c), taken while the loader's mapping of low
-   memory was still there. */
+   memory was still there; cxbi_init refuses a handover outside it. */
 static int t_cxbi(void) {
-    if (cxbi_phys_addr == 0 || cxbi_phys_addr >= 0x40000000ull) return 0;
     const struct cxk_boot_info *bi = cxbi();
     return bi->magic == CXBI_MAGIC && bi->version == CXBI_VERSION &&
            bi->size == sizeof(struct cxk_boot_info) &&
@@ -583,7 +574,13 @@ static int t_map_phys(void) {
 
 /* ---- step 5d: the heap, interrupts, the timer, threads ---- */
 
-static uintptr_t main_stack_top;    /* thread 0's guarded stack (boot64_main) */
+/* The top of the stack this runs on: thread 0's, which kmain took from
+   kstack_alloc, at the top of its slot. */
+static uintptr_t main_stack_top(void) {
+    uintptr_t rsp;
+    __asm__ volatile ("movq %%rsp, %0" : "=r"(rsp));
+    return (rsp & ~(uintptr_t)(KSTACK_SLOT_SIZE - 1)) + KSTACK_SLOT_SIZE;
+}
 
 /* The heap's own round trip: small sizes from the object caches, large ones
    from the list, and every byte back afterwards. */
@@ -599,14 +596,14 @@ static int t_heap(void) {
     return ok && heap_bytes_used() == used0;
 }
 
-/* Thread 0 left the image's stack for a guarded one, as kmain's does: below
-   it is a guard page that is not mapped and that kstack knows is thread 0's. */
+/* Thread 0 left the image's stack for a guarded one (kmain): below it is a
+   guard page that is not mapped and that kstack knows is thread 0's. */
 static int t_main_stack_guarded(void) {
     uintptr_t rsp;
     __asm__ volatile ("movq %%rsp, %0" : "=r"(rsp));
-    uintptr_t lo = main_stack_top - KSTACK_MAIN_SIZE;
-    return main_stack_top != 0 && rsp < main_stack_top && rsp >= lo &&
-           lo >= KSTACK_REGION_BASE && main_stack_top <= KSTACK_REGION_BASE + KSTACK_REGION_SIZE &&
+    uintptr_t top = main_stack_top(), lo = top - KSTACK_MAIN_SIZE;
+    return thread_current_id() == 0 && rsp < top && rsp >= lo &&
+           lo >= KSTACK_REGION_BASE && top <= KSTACK_REGION_BASE + KSTACK_REGION_SIZE &&
            paging_get_phys(lo - PAGE_SIZE) == 0 && kstack_guard_owner(lo - PAGE_SIZE) == 0;
 }
 
@@ -691,7 +688,7 @@ static int t_coop(void) {
    others; back on thread 0 its own must be there. The registers are set and
    read in one asm statement around the call, so the compiler cannot keep
    copies elsewhere. rbp is the frame pointer and is left alone. */
-volatile uint64_t boot64_regs_seen[5];
+volatile uint64_t ktest64_regs_seen[5];
 static volatile int clobber_ran;
 
 static void clobber_thread(void) {
@@ -714,17 +711,17 @@ static int t_switch_keeps_registers(void) {
                       "movq $0x4444, %%r14\n\t"
                       "movq $0x5555, %%r15\n\t"
                       "call yield\n\t"
-                      "movq %%rbx, boot64_regs_seen+0(%%rip)\n\t"
-                      "movq %%r12, boot64_regs_seen+8(%%rip)\n\t"
-                      "movq %%r13, boot64_regs_seen+16(%%rip)\n\t"
-                      "movq %%r14, boot64_regs_seen+24(%%rip)\n\t"
-                      "movq %%r15, boot64_regs_seen+32(%%rip)\n\t"
+                      "movq %%rbx, ktest64_regs_seen+0(%%rip)\n\t"
+                      "movq %%r12, ktest64_regs_seen+8(%%rip)\n\t"
+                      "movq %%r13, ktest64_regs_seen+16(%%rip)\n\t"
+                      "movq %%r14, ktest64_regs_seen+24(%%rip)\n\t"
+                      "movq %%r15, ktest64_regs_seen+32(%%rip)\n\t"
                       : : : "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "r8", "r9",
                             "r10", "r11", "r12", "r13", "r14", "r15", "memory", "cc");
     settle();
-    return clobber_ran && boot64_regs_seen[0] == 0x1111 && boot64_regs_seen[1] == 0x2222 &&
-           boot64_regs_seen[2] == 0x3333 && boot64_regs_seen[3] == 0x4444 &&
-           boot64_regs_seen[4] == 0x5555 && sched_active_count() == 1;
+    return clobber_ran && ktest64_regs_seen[0] == 0x1111 && ktest64_regs_seen[1] == 0x2222 &&
+           ktest64_regs_seen[2] == 0x3333 && ktest64_regs_seen[3] == 0x4444 &&
+           ktest64_regs_seen[4] == 0x5555 && sched_active_count() == 1;
 }
 
 /* arch_thread_frame's RFLAGS: a new thread starts with interrupts on, even
@@ -814,8 +811,9 @@ extern void syscall64_entry(void);
 
 #define CPL_EXIT   (USER_CODE_SEL | USER_DATA_SEL << 8 | 1u << 16)
 
-/* The fault hook, standing in for usermode.c's: it notes what arrived and
-   leaves the same way, back out of enter_usermode with USERMODE_FAULTED. */
+/* The fault hook, in place of usermode.c's while a test process runs
+   (run_user): it notes what arrived, which usermode.c's only logs, and leaves
+   the same way, back out of enter_usermode with USERMODE_FAULTED. */
 static volatile struct {
     uint32_t count;
     uint64_t vector, error, rip, cr2;
@@ -899,8 +897,10 @@ static int urun_wait(const struct urun *u, uint32_t threads, uint32_t procs) {
 static int run_user(struct urun *u, const uint8_t *start, const uint8_t *end, uint64_t arg) {
     urun_init(u, start, end, arg);
     uint32_t n0 = sched_thread_count(), p0 = proc_live();
-    if (urun_start(u) < 0) return 0;
-    return urun_wait(u, n0, p0) && u->set_up;
+    set_user_fault_hook(user_fault);
+    int ok = urun_start(u) >= 0 && urun_wait(u, n0, p0) && u->set_up;
+    usermode_register_fault_handler();   /* usermode.c's again, as kmain left it */
+    return ok;
 }
 
 static int t_syscall_msrs(void) {
@@ -989,7 +989,7 @@ static int t_ring3_stack_guard(void) {
 static int t_kernel_stack_overflow(void) {
     uintptr_t lo, hi;
     gdt64_ist_stack(IST_DOUBLE_FAULT, &lo, &hi);
-    uintptr_t bottom = main_stack_top - KSTACK_MAIN_SIZE;
+    uintptr_t bottom = main_stack_top() - KSTACK_MAIN_SIZE;
     uint32_t flags = arch_irq_save();
     arm(VEC_DOUBLE_FAULT);
     __asm__ volatile ("leaq 1f(%%rip), %%rax\n\t"
@@ -1082,16 +1082,33 @@ static int t_user_top_page(void) {
     return ok;
 }
 
-struct ktest64 {
-    const char *name;
-    int (*fn)(void);
-};
+/* ---- arch/ktest_arch.h ---- */
 
-/* Before the heap: the CPU's tables, paging, the page allocator. */
-static const struct ktest64 early_tests[] = {
+/* The double fault's IST stack (t_idt checks the gate names it): the wiring
+   ktest_run asks every architecture about, by taking one. */
+int ktest_arch_double_fault_stack(void) {
+    return t_double_fault_ist();
+}
+
+/* What x86-32's asks, in 64-bit terms: a syscall gives ring 3 back its own
+   segment registers. sysretq loads CS and SS from STAR; the data registers it
+   leaves as the entry found them, so the blob compares them across a call
+   that switches away (usermode.asm, user64_segs). */
+extern uint8_t user64_segs_start[], user64_segs_end[];
+
+int ktest_arch_user_segments_kept(void) {
+    int rc = usermode_run_blob(user64_segs_start,
+                               (uint32_t)(user64_segs_end - user64_segs_start));
+    return rc == (int)(USER_CODE_SEL | USER_DATA_SEL << 8);
+}
+
+/* In the order they were written: the CPU's tables, paging and the page
+   allocator (5b, 5c), then the heap, interrupts, the tick and threads (5d),
+   then ring 3 (5e). */
+static const struct ktest_arch_case cases[] = {
     { "long mode is active (EFER.LMA)",                 t_long_mode },
     { "no-execute is enabled (EFER.NXE)",               t_nx },
-    { "the kernel and its stack run in the top 2 GiB",  t_top_2g },
+    { "the kernel runs in the top 2 GiB",               t_top_2g },
     { "the loader handed over CXBI",                    t_cxbi },
     { "the GDT is loaded, with ring-3 code and data",   t_gdt },
     { "the TSS is loaded and busy",                     t_tss },
@@ -1117,10 +1134,6 @@ static const struct ktest64 early_tests[] = {
     { "a new address space shares the kernel, frees all", t_address_space },
     { "device registers map once, uncached, and answer", t_map_phys },
     { "the user half's last page is never mapped",     t_user_top_page },
-};
-
-/* On thread 0's guarded stack, with the scheduler, the tick and the APICs. */
-static const struct ktest64 late_tests[] = {
     { "kmalloc: small from the caches, large from the list", t_heap },
     { "thread 0 runs on a guarded kernel stack",        t_main_stack_guarded },
     { "the PIT ticks with interrupts on",               t_ticks },
@@ -1149,106 +1162,7 @@ static const struct ktest64 late_tests[] = {
     { "a ring-3 process gives back everything it had",   t_ring3_releases },
 };
 
-static unsigned run_tests(const struct ktest64 *t, unsigned n) {
-    unsigned passed = 0;
-    for (unsigned i = 0; i < n; i++) {
-        int ok = t[i].fn();
-        passed += ok ? 1u : 0u;
-        early_log("KTEST", ok ? EARLY_OK : EARLY_FAIL, t[i].name);
-    }
-    return passed;
-}
-
-#define COUNT(a) (unsigned)(sizeof(a) / sizeof((a)[0]))
-
-static unsigned early_passed;
-
-static void boot64_late(void) __attribute__((noreturn));
-
-void boot64_main(uint64_t cxbi_phys) {
-    cxbi_phys_addr = cxbi_phys;
-    early_con_init();
-    early_puts("\n");
-    early_log("BOOT", EARLY_INFO, "CXK x86-64, roadmap step 5e: ring 3, syscall/sysret");
-    early_log_start("BOOT", EARLY_INFO);
-    early_puts("CXBI at ");
-    early_hex(cxbi_phys);
-    early_puts("\n");
-
-    arch_cpu_init();
-
-    /* the copy is taken through the loader's window, so before paging_init */
-    cxbi_init(cxbi_phys);
-    paging_init();
-    early_log("PAGING", EARLY_OK, "own tables: direct map, NX, kernel half made at boot");
-    pmm_init();
-    addr_space_init();
-    paddr_t db;
-    uint64_t db_len;
-    pagedb_database(&db, &db_len);
-    early_log_start("PMM", EARLY_OK);
-    early_dec(pmm_free_count());
-    early_puts(" of ");
-    early_dec(pmm_total_pages());
-    early_puts(" pages free; page database at ");
-    early_hex(db);
-    early_puts(", ");
-    early_dec(db_len / 1024);
-    early_puts(" KiB\n");
-
-    /* Before anything is built on it: some of these check the boot stack. */
-    early_passed = run_tests(early_tests, COUNT(early_tests));
-
-    /* kmain's order from here (kernel/kmain.c). */
-    ocache_sys_init();
-    klog("OCACHE", SEV_OK, "object cache window reserved");
-    heap_init();
-    klog("HEAP", SEV_OK, "online (kmalloc/kfree)");
-    kstack_init();
-    klog("KSTACK", SEV_OK, "guarded kernel stacks ready");
-
-    /* Leave the image's stack, as kmain does, so thread 0 overflowing is a
-       fault on its guard page. Nothing on this stack is needed again. */
-    main_stack_top = kstack_alloc(KSTACK_MAIN_SIZE, 0, 0);
-    if (!main_stack_top) kpanic("no guarded stack for thread 0");
-    arch_run_on_stack(main_stack_top, boot64_late);
-}
-
-static void boot64_late(void) {
-    sched_init();
-    /* Thread 0 gets an RSP0 stack of its own, as on x86-32 (kmain.c): the
-       syscall entry moves to it, and the RSP0 test is vacuous without one. */
-    if (thread_alloc_kstack(0) != 0) kpanic("no RSP0 stack for thread 0");
-    klog("SCHED", SEV_OK, "online");
-    timer_init();
-    arch_irq_enable();
-    klog("TIMER", SEV_OK, "online (1000 Hz), interrupts enabled");
-    timer_calibrate_tsc();
-    klog_u32("TIMER", SEV_OK, "TSC calibrated, MHz: ", timer_tsc_mhz(), LOG_COLOR_VALUE, "");
-    /* The MADT is the only description of the APICs, so ACPI first; with
-       either missing the 8259 stays in charge, which works. */
-    (void)acpi_init();
-    (void)irq_controller_init();
-    /* kmain's usermode_init and fault handler (usermode.c), in their place */
-    arch_syscall_gate_init();
-    set_user_fault_hook(user_fault);
-    klog("RING3", SEV_OK, "syscall/sysret gate installed");
-
-    unsigned n = COUNT(early_tests) + COUNT(late_tests);
-    unsigned passed = early_passed + run_tests(late_tests, COUNT(late_tests));
-
-    early_log_start("KTEST", passed == n ? EARLY_OK : EARLY_FAIL);
-    if (passed == n) {
-        early_puts("self-tests: all ");
-        early_dec(n);
-        early_puts(" passed\n");
-    } else {
-        early_puts("self-tests failed: ");
-        early_dec(n - passed);
-        early_puts(" of ");
-        early_dec(n);
-        early_puts("\n");
-    }
-    early_log("BOOT", EARLY_INFO, "nothing more to run until step 5f; halted");
-    for (;;) __asm__ volatile ("cli; hlt");
+const struct ktest_arch_case *ktest_arch_cases(unsigned *count) {
+    *count = (unsigned)(sizeof cases / sizeof cases[0]);
+    return cases;
 }

@@ -4,7 +4,9 @@
 /* Aurora Tejeda / CATX Systems */
 /* xHCI scratchpad buffers, from the page allocator (see xhci_spad.h). The
    pages need no kernel mapping of their own: only the controller uses them,
-   so each is zeroed through the temporary mapping and left unmapped. */
+   so each is zeroed through the temporary mapping and left unmapped. All of
+   it is below 4 GB, as a controller without 64-bit addressing (HCCPARAMS1.AC64
+   clear) needs. */
 
 #include "xhci_spad.h"
 #include "pmm.h"
@@ -49,12 +51,12 @@ int xhci_spad_build(uint32_t count, paddr_t *array) {
     if (count > XHCI_SPAD_MAX) return -1;
 
     uint32_t ap = array_pages(count);
-    paddr_t arr = (paddr_t)(uintptr_t)pmm_alloc_pages(ap);
+    paddr_t arr = pmm_alloc_pages_low(ap);
     if (!arr) return -1;
     for (uint32_t k = 0; k < ap; k++) zero_page(arr + k * PAGE_SIZE);
 
     for (uint32_t i = 0; i < count; i++) {
-        paddr_t pg = (paddr_t)(uintptr_t)pmm_alloc();
+        paddr_t pg = pmm_alloc_pages_low(1);
         if (!pg) { release(arr, i, count); return -1; }
         zero_page(pg);
         set_entry(arr, i, pg);
