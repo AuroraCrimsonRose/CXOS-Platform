@@ -45,6 +45,10 @@ void    pmm_free_pages(paddr_t first_page, size_t count);
    4 GB, so it is pmm_alloc_pages. */
 paddr_t pmm_alloc_pages_low(size_t count);
 
+/* 1 when the page is not the allocator's to give: handed out, or never
+   given to it (the first MiB, the kernel image, the allocator's own
+   records). 0 when it is free. For the self-tests (memman/dma.h). */
+int pmm_page_in_use(paddr_t page);
 
 /* stats (pages, not bytes) */
 uint32_t pmm_total_pages(void);

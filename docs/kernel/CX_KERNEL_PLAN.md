@@ -273,6 +273,22 @@ own address, and `kstack_init` and `ocache_sys_init` made a page table every
 (`PAGE_TABLE_SPAN`). User code pages are remapped read-and-execute once they are
 written (W^X), since x86-64 enforces NX. 121 self-tests (67 + 54).
 
+**Step 5f2, done 2026-10-24.** Device DMA memory comes from the allocator's
+zone below 4 GB through one function, `dma_alloc` (`memman/dma.c`), which
+maps it into the kernel half, zeroes it and records it in a ledger. The e1000
+and RTL8169 regions were fixed at `0x700000` and `0x730000`, kept safe on
+x86-32 only by `pmm.c` reserving `0x500000-0x800000`; x86-64's page database
+never had that reserve, so there the e1000 shared RAM the allocator also
+gave out. Both NICs now allocate, and the reserve is gone. AHCI took its
+command structures and bounce buffer from `pmm_alloc_pages`, which on
+x86-64 prefers the zone above 4 GB, and would then refuse them as out of its
+32-bit reach. `usb_dma_alloc` became `dma_alloc`, so EHCI, OHCI and
+xHCI use it too. One more self-test (68 and 122): every ledger region is
+held by the allocator, lies below 4 GB and overlaps no other, and the ring
+or command-list base each NIC and AHCI port holds, read back from its
+registers, falls inside a region of its own name. xHCI's scratchpad pages
+stay on `pmm_alloc_pages_low` directly (one page at a time, never mapped).
+
 ---
 
 ## 3. Processes and threads
@@ -393,7 +409,8 @@ Redox, XNU and NT.
 - **A buddy allocator** for contiguous runs (Serenity
   `Kernel/Memory/PhysicalZone.cpp`, Redox `rmm/src/allocator/frame/buddy.rs`).
 - **Zones:** a pool below 4 GB for devices that address only 32 bits (the rig's
-  OHCI USB controller is one). Asking for it is part of every DMA allocation.
+  OHCI USB controller is one). Asking for it is part of every DMA allocation
+  (`dma_alloc`, roadmap step 5f2).
 - **Pages zeroed ahead of time** by a low-priority thread, kept on a zeroed
   list (NT `MiZeroPageThread`; Haiku `page_scrubber`, `vm/vm_page.cpp`).
 - **Per-CPU page caches** once SMP is on.

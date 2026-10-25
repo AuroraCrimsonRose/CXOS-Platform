@@ -87,19 +87,13 @@ void pmm_init(void) {
         }
     }
 
-    /* 4. re-reserve: low memory (<1 MB), the kernel image, the bitmap itself. */
+    /* 4. re-reserve: low memory (<1 MB), the kernel image, the bitmap itself.
+       Driver DMA memory is allocated like any other (memman/dma.h); the
+       0x500000-0x800000 reserve the fixed NIC regions needed went with them
+       in roadmap step 5f2. */
     mark_region_used(0, 0x100000);
     mark_region_used(0x100000, kend_phys);
     mark_region_used(bitmap_phys, bitmap_phys + bitmap_pages * PMM_PAGE_SIZE);
-
-    /* 5. driver DMA windows. The NIC drivers use a FIXED physical region
-       (e1000 0x700000, RTL8169 0x730000) and hand it to the controller for
-       bus-master DMA; AHCI and the USB controllers allocate theirs from here
-       instead, so 0x500000-0x700000 is now unused. Those frames are above the kernel image,
-       so without this they look free and pmm_alloc would hand them out - and the
-       device would then DMA over whatever got them (heap, page tables, a process
-       image) with no fault and no warning. Reserve the whole window. */
-    mark_region_used(0x500000, 0x800000);
 }
 
 paddr_t pmm_alloc(void) {
@@ -124,6 +118,12 @@ paddr_t pmm_alloc_pages(size_t count) {
 }
 
 paddr_t pmm_alloc_pages_low(size_t count) { return pmm_alloc_pages(count); }
+
+int pmm_page_in_use(paddr_t page) {
+    uint64_t p = page / PMM_PAGE_SIZE;
+    if (p >= total_pages) return 1;
+    return bitmap_test(bitmap, (uint32_t)p) ? 1 : 0;
+}
 
 void pmm_free_pages(paddr_t first_page, size_t count) {
     uint32_t start = (uint32_t)(first_page / PMM_PAGE_SIZE);

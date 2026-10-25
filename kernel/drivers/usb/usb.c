@@ -12,8 +12,6 @@
 #include "usb_hid.h"
 #include "logging.h"
 #include "timer.h"
-#include "pmm.h"
-#include "arch/paging.h"
 #include "format.h"
 #include "sched.h"
 #include "arch/cpu_ops.h"
@@ -207,21 +205,6 @@ const struct usb_device *usb_get(unsigned index) {
         if (n++ == index) return &devices[i];
     }
     return 0;
-}
-
-/* The controllers take 32-bit DMA addresses (EHCI runs with CTRLDSSEG 0, OHCI
-   has nothing wider), which every page is while the kernel is 32-bit. The
-   64-bit kernel must ask for memory below 4 GB here. */
-void *usb_dma_alloc(uint32_t pages, uintptr_t vbase, uint32_t *phys) {
-    paddr_t p = pmm_alloc_pages(pages);
-    if (!p) return 0;
-    uint32_t base = (uint32_t)(uintptr_t)p;
-    for (uint32_t i = 0; i < pages; i++)
-        paging_map_kernel(vbase + i * 0x1000, base + i * 0x1000, VM_WRITE);
-    volatile uint8_t *v = (volatile uint8_t *)vbase;
-    for (uint32_t i = 0; i < pages * 0x1000; i++) v[i] = 0;
-    *phys = base;
-    return (void *)vbase;
 }
 
 static int n_xhci, n_ehci, n_ohci;   /* controllers that came up, for usb_summary */

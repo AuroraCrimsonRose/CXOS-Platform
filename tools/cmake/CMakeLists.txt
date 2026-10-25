@@ -175,6 +175,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/memman/heap.c
     ${SRC_DIR}/kernel/memman/vmregion.c
     ${SRC_DIR}/kernel/memman/kstack.c
+    ${SRC_DIR}/kernel/memman/dma.c
     ${SRC_DIR}/kernel/lib/time/datetime.c
     ${SRC_DIR}/kernel/lib/string/string.c
     ${SRC_DIR}/kernel/lib/mem/bitmap.c

@@ -9,6 +9,7 @@
 #include "arch/paging.h"
 #include "logging.h"
 #include "drivers/iowin.h"
+#include "memman/dma.h"
 
 /* ---- e1000 register offsets (from the MMIO base, BAR0) ---- */
 #define E1000_CTRL     0x0000   /* device control */
@@ -69,7 +70,6 @@
 #define RX_BUF_SIZE    2048
 #define TX_BUF_SIZE    2048
 
-/* fixed DMA region for the NIC, inside the window pmm.c reserves */
 /* ---- DMA region: physical vs virtual ----
  * The NIC is a bus master: descriptor and buffer addresses written into its
  * registers must be PHYSICAL. The CPU also has to touch those same structures,
@@ -78,25 +78,28 @@
  * CR3 points at the shell's page directory.
  *
  * pd_init() zeroes the whole user half for each new process, so an
- * identity mapping at 0x700000 exists only in the kernel's own directory. That
- * is why writing TX_BUF_ADDR faulted (CR2 = 0x712000) the moment ping ran from
- * the shell rather than from boot context.
+ * identity mapping of the region exists only in the kernel's own directory.
+ * That is why writing TX_BUF_ADDR faulted (CR2 = 0x712000, when the region was
+ * fixed at 0x700000) the moment ping ran from the shell rather than from boot
+ * context.
  *
  * Fix: map the region into the KERNEL half, which pd_init copies
  * into every process directory and paging's PDE hook propagates to live ones.
- * The CPU uses the 0xC07..... alias; the NIC still gets 0x007.....
+ * The CPU uses the KVA_E1000_DMA alias; the NIC gets the physical address.
+ * The pages come from dma_alloc (memman/dma.h), below 4 GB: RDBAH and TDBAH
+ * are written 0, and the buffer addresses are built in 32 bits.
  */
-#define E1000_DMA_BASE 0x700000u                 /* PHYSICAL - programmed into the NIC */
+static uint32_t dma_phys;                        /* PHYSICAL - programmed into the NIC */
+#define E1000_DMA_BASE dma_phys
 #define E1000_DMA_VBASE KVA_E1000_DMA            /* kernel-half alias - used by the CPU
-                                                   (arch/<arch>/paging_defs.h). Region is
-                                                   0x22000 (136 KB). */
+                                                   (arch/<arch>/paging_defs.h) */
 #define DMA_V(phys) ((uintptr_t)((phys) - E1000_DMA_BASE + E1000_DMA_VBASE))
 /* layout: RX descriptors, TX descriptors, then RX buffers, then TX buffers */
 #define RX_DESC_ADDR   (E1000_DMA_BASE + 0x0000)
 #define TX_DESC_ADDR   (E1000_DMA_BASE + 0x1000)
 #define RX_BUF_ADDR    (E1000_DMA_BASE + 0x2000)              /* 32 * 2048 = 64KB */
 #define TX_BUF_ADDR    (E1000_DMA_BASE + 0x12000)             /* after RX bufs */
-#define E1000_DMA_END  (TX_BUF_ADDR + NUM_TX_DESC * TX_BUF_SIZE)
+#define E1000_DMA_PAGES ((0x12000 + NUM_TX_DESC * TX_BUF_SIZE) / 0x1000)   /* 0x22000, 136 KB */
 
 /* legacy RX descriptor (16 bytes) */
 struct e1000_rx_desc {
@@ -247,10 +250,11 @@ int e1000_init(void) {
     volatile uint8_t *mmio = (volatile uint8_t *)paging_map_phys(base, 0x20000, VM_WRITE | VM_UNCACHED);
     if (!mmio || iowin_mmio(&regs, mmio, 0x20000) != 0) return 0;
 
-    /* map the NIC DMA region */
-    /* map the DMA region into the KERNEL half so every address space sees it */
-    for (uint32_t a = E1000_DMA_BASE; a < E1000_DMA_END; a += 0x1000)
-        paging_map_kernel(DMA_V(a), a, VM_WRITE);
+    /* the DMA region, mapped into the KERNEL half so every address space sees it */
+    if (!dma_alloc(E1000_DMA_PAGES, E1000_DMA_VBASE, &dma_phys, "e1000")) {
+        klog("E1000", SEV_WARN, "no DMA memory below 4 GB");
+        return 0;
+    }
 
     /* mask off all interrupts (we poll in stage 1) */
     mmio_wr(E1000_IMC, 0xFFFFFFFF);
@@ -275,6 +279,11 @@ int e1000_init(void) {
 }
 
 int e1000_present(void) { return present; }
+
+uint64_t e1000_ring_base(void) {
+    if (!present) return 0;
+    return ((uint64_t)mmio_rd(E1000_RDBAH) << 32) | mmio_rd(E1000_RDBAL);
+}
 void e1000_stats(uint32_t *tx_ok, uint32_t *tx_fail, uint32_t *rx_ok) {
     if (tx_ok)   *tx_ok   = stat_tx_ok;
     if (tx_fail) *tx_fail = stat_tx_fail;

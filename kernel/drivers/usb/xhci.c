@@ -7,6 +7,7 @@
 
 #include "xhci.h"
 #include "usb.h"
+#include "memman/dma.h"
 #include "pci.h"
 #include "arch/paging.h"
 #include "logging.h"
@@ -108,7 +109,7 @@ _Static_assert(sizeof(struct xhci_trb) == 16, "a TRB is 16 bytes");
 #define TRB_CC_SHORT_PKT 13
 
 /* ---- DMA memory ---------------------------------------------------------
- * Each controller has its own pages (usb_dma_alloc): physical for the
+ * Each controller has its own pages (dma_alloc): physical for the
  * controller, a kernel-half alias for the CPU so the structures stay reachable
  * from a process address space. The offsets below are within those pages.
  *
@@ -958,7 +959,7 @@ static int xhci_start(struct xhci_hc *c, const struct pci_device *dev, unsigned 
     c->ctx_size = HCC1_CSZ(hcc1) ? 64 : 32;
     if (c->nports == 0 || maxslots == 0) return 0;
 
-    c->dma_v = usb_dma_alloc(XDMA_PAGES, XDMA_VBASE + index * 0x20000u, &c->dma);
+    c->dma_v = dma_alloc(XDMA_PAGES, XDMA_VBASE + index * 0x20000u, &c->dma, "xhci");
     if (!c->dma_v) {
         klog("xHCI", SEV_WARN, "no memory for the controller's DMA pages");
         return 0;

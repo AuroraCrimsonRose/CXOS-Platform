@@ -61,6 +61,10 @@
 #include "xhci_spad.h"
 #include "boot/cxbi.h"
 #include "diag/crashlog.h"
+#include "memman/dma.h"
+#include "e1000.h"
+#include "rtl8169.h"
+#include "ahci.h"
 #include "diag/crashrec.h"
 
 
@@ -971,6 +975,60 @@ static int test_ahci(void) {
 
     static uint8_t sector[512];
     return disk_read(ad->id, 0, 1, sector) == DISK_OK;
+}
+
+/* ---- device DMA memory is the allocator's, below 4 GB (memman/dma.h, roadmap step 5f2) ----
+ *
+ * A device bus-masters by physical address with no page tables in the way, so
+ * memory it was given that the allocator still thinks is free gets handed to
+ * someone else and overwritten under them with no fault. The NICs once used
+ * fixed regions that only a reserve in pmm.c kept safe, and x86-64's page
+ * database never had that reserve. Every region dma_alloc gave out must be
+ * held by the allocator, lie below 4 GB (each driver writes 32-bit addresses)
+ * and overlap no other. And since a ledger only speaks for what went through
+ * dma_alloc, the addresses the NICs and the AHCI ports actually hold are read
+ * back from their registers and must fall inside a region of their own name. */
+static int dma_owned_by(uint64_t phys, const char *name) {
+    for (unsigned i = 0; i < dma_region_count(); i++) {
+        const struct dma_region *r = dma_region_at(i);
+        if (strcmp(r->name, name) == 0 && phys >= r->phys
+            && phys < (uint64_t)r->phys + (uint64_t)r->pages * 0x1000)
+            return 1;
+    }
+    return 0;
+}
+
+static int test_dma_regions(void) {
+    unsigned n = dma_region_count();
+    for (unsigned i = 0; i < n; i++) {
+        const struct dma_region *r = dma_region_at(i);
+        uint64_t lo = r->phys, hi = lo + (uint64_t)r->pages * 0x1000;
+        if (r->pages == 0 || (lo & 0xFFF) || hi > 0x100000000ull) return 0;
+        for (uint64_t p = lo; p < hi; p += 0x1000)
+            if (!pmm_page_in_use((paddr_t)p)) return 0;
+        for (unsigned j = 0; j < i; j++) {
+            const struct dma_region *o = dma_region_at(j);
+            if (lo < (uint64_t)o->phys + (uint64_t)o->pages * 0x1000 && o->phys < hi) return 0;
+        }
+    }
+    if (dma_region_at(n) != 0) return 0;   /* the ledger ends where it says */
+
+    int checked = 0;
+    if (e1000_present()) {
+        if (!dma_owned_by(e1000_ring_base(), "e1000")) return 0;
+        checked++;
+    }
+    if (rtl8169_present()) {
+        if (!dma_owned_by(rtl8169_ring_base(), "rtl8169")) return 0;
+        checked++;
+    }
+    for (int p = 0; p < 32; p++) {   /* AHCI's port limit; ahci_present refuses past it */
+        if (!ahci_present(p)) continue;
+        if (!dma_owned_by(ahci_command_list(p), "ahci")) return 0;
+        checked++;
+    }
+    if (!checked) klog("KTEST", SEV_WARN, "dma regions: no NIC or AHCI disk, partly untested");
+    return 1;
 }
 
 /* ---- signature verification ----
@@ -3165,6 +3223,7 @@ void ktest_run(void) {
     total++; passed += report("storage (ATA read sector 0)",      test_storage());
     total++; passed += report("pci (bus enumeration)",            test_pci());
     total++; passed += report("ahci (controller + read)",         test_ahci());
+    total++; passed += report("device DMA held, below 4 GB",      test_dma_regions());
     total++; passed += report("cxfs (read-only mount check)",     test_cxfs());
     total++; passed += report("cxfs offset I/O + compaction",      test_cxfs_offset());
     total++; passed += report("cxfs volume tags",                  test_cxfs_volumes());

@@ -7,6 +7,7 @@
 
 #include "ohci.h"
 #include "usb.h"
+#include "memman/dma.h"
 #include "pci.h"
 #include "arch/paging.h"
 #include "logging.h"
@@ -120,7 +121,7 @@ _Static_assert(sizeof(struct ohci_td) == 16, "a TD is 16 bytes");
 #define TD_CC_NOTACCESSED 14         /* still owned by the controller         */
 
 /* ---- DMA memory ---------------------------------------------------------
- * Each controller has its own eight pages (usb_dma_alloc), physical for the
+ * Each controller has its own eight pages (dma_alloc), physical for the
  * controller and a kernel-half alias for the CPU. The offsets below are within
  * those pages. */
 #define ODMA_VBASE      0xE5000000u     /* controller i's alias: + i * 0x10000 */
@@ -616,7 +617,7 @@ static int ohci_start(struct ohci_hc *c, const struct pci_device *dev, unsigned 
     volatile uint8_t *mmio = (volatile uint8_t *)paging_map_phys(base, 0x1000, VM_WRITE | VM_UNCACHED);
     if (!mmio || iowin_mmio(&c->regs, mmio, 0x1000) != 0) return 0;
 
-    c->dma_v = usb_dma_alloc(ODMA_PAGES, ODMA_VBASE + index * 0x10000u, &c->dma);
+    c->dma_v = dma_alloc(ODMA_PAGES, ODMA_VBASE + index * 0x10000u, &c->dma, "ohci");
     if (!c->dma_v) {
         klog("OHCI", SEV_WARN, "no memory for the controller's DMA pages");
         return 0;

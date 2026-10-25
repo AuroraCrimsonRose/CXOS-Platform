@@ -165,6 +165,15 @@ paddr_t pmm_alloc(void)                      { return alloc_run(1, 0); }
 paddr_t pmm_alloc_pages(size_t count)        { return alloc_run(count, 0); }
 paddr_t pmm_alloc_pages_low(size_t count)    { return alloc_run(count, 1); }
 
+int pmm_page_in_use(paddr_t page) {
+    uint64_t pfn = page / PAGE_SIZE;
+    if (pfn >= b.npages) return 1;
+    uint32_t f = spin_lock(&lock);
+    int used = b.db[pfn].state != PG_FREE;
+    spin_unlock(&lock, f);
+    return used;
+}
+
 int pmm_free_checked(paddr_t first, size_t count) {
     if ((first & (PAGE_SIZE - 1)) || count > 0xFFFFFFFFu) return -1;
     uint64_t pfn = first / PAGE_SIZE;

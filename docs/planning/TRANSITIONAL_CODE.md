@@ -57,7 +57,6 @@ interfaces and are not transitional.
 | `CXK_X_USERLAND` (`kernel/config.h`), 0 on x86-64 | No executive and no X program: kmain logs that it starts none | The executive, as on x86-32 | X compiles for x86-64 (roadmap step 6) |
 | `kernel/arch/x86_64/idt.c` `kpanic` | The banner, the reason and a halt, on COM1 | The panic screen, its stack trace and the crash log (`kernel/diag/`) | Those running on x86-64 |
 | `kernel/memman/pmm.c` | The 32-bit kernel's bitmap page allocator; its 4 MiB boot window cannot hold a page database | `memman/pagedb.c`, the page database and buddy allocator x86-64 uses | Roadmap step 6: the 32-bit kernel is deleted |
-| Drivers' DMA memory | e1000 and RTL8169 use fixed physical regions (`0x700000`, `0x730000`; `pmm.c` reserves `0x500000`-`0x800000`); AHCI programs 32-bit addresses and refuses a frame above 4 GB | `pmm_alloc_pages_low`, the zone below 4 GB, for every DMA allocation | The drivers running on x86-64 |
 
 | The x86-64 kernel image as a plain ELF | Stage 2 loads it unsigned and unchecked, beside the 32-bit CXEX path | CXEX for x86-64, the signature check in the loader | `CX_BOOT.md` section 4 item 3 |
 

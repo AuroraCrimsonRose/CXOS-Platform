@@ -28,6 +28,10 @@ int e1000_present(void);                 /* was a NIC found + initialized? */
 const uint8_t *e1000_mac(void);          /* 6-byte MAC address */
 int e1000_link_up(void);                 /* 1 if link is up */
 
+/* the receive ring's physical base as the NIC holds it (RDBAH:RDBAL), 0 when
+   absent: the self-tests check it is DMA memory (memman/dma.h). */
+uint64_t e1000_ring_base(void);
+
 /* send a raw Ethernet frame (len bytes). returns 0 on success, -1 on error. */
 int e1000_send(const void *frame, uint16_t len);
 

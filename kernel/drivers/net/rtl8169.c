@@ -10,6 +10,7 @@
 #include "arch/paging.h"
 #include "logging.h"
 #include "drivers/iowin.h"
+#include "memman/dma.h"
 
 /* ---- register map (offsets from the MMIO base) --------------------------
  * Access WIDTH matters on this chip: several of these are byte or word
@@ -103,11 +104,12 @@ struct rtl_desc {
  * the moment it was touched from a process. So the CPU uses a KERNEL-half
  * alias, which pd_init copies into every new directory.
  *
- * 0x730000 sits in the window pmm.c already reserves for driver DMA
- * (0x500000-0x800000), just past e1000's region which ends at 0x722000. It
- * therefore needs no change to the PMM - but it also means the two NICs must
- * never have their windows resized into each other. */
-#define RTL_DMA_BASE   0x730000u
+ * The pages come from dma_alloc (memman/dma.h), below 4 GB: the rings' high
+ * dwords are written 0 and the buffer addresses are built in 32 bits. (The
+ * region was fixed at 0x730000, inside a window pmm.c reserved, until roadmap
+ * step 5f2.) */
+static uint32_t dma_phys;
+#define RTL_DMA_BASE   dma_phys
 #define RTL_DMA_VBASE  KVA_RTL_DMA   /* arch/<arch>/paging_defs.h */
 #define DMA_V(phys)    ((uintptr_t)((phys) - RTL_DMA_BASE + RTL_DMA_VBASE))
 
@@ -115,7 +117,7 @@ struct rtl_desc {
 #define TX_DESC_ADDR   (RTL_DMA_BASE + 0x1000)
 #define RX_BUF_ADDR    (RTL_DMA_BASE + 0x2000)                 /* 32 * 2048 = 64 KB */
 #define TX_BUF_ADDR    (RX_BUF_ADDR + NUM_RX_DESC * RX_BUF_SIZE)
-#define RTL_DMA_END    (TX_BUF_ADDR + NUM_TX_DESC * TX_BUF_SIZE)
+#define RTL_DMA_PAGES  ((0x2000 + NUM_RX_DESC * RX_BUF_SIZE + NUM_TX_DESC * TX_BUF_SIZE) / 0x1000)
 
 static struct iowin regs;   /* the register file, R_* below */
 static int present = 0;
@@ -244,8 +246,10 @@ int rtl8169_init(void) {
 
     /* DMA region into the kernel half - deliberately left CACHEABLE; x86 snoops
        bus-master DMA, so write-back is both correct and faster for buffers. */
-    for (uint32_t a = RTL_DMA_BASE; a < RTL_DMA_END; a += 0x1000)
-        paging_map_kernel(DMA_V(a), a, VM_WRITE);
+    if (!dma_alloc(RTL_DMA_PAGES, RTL_DMA_VBASE, &dma_phys, "rtl8169")) {
+        klog("RTL8169", SEV_WARN, "no DMA memory below 4 GB");
+        return 0;
+    }
 
     if (!soft_reset()) {
         klog("RTL8169", SEV_WARN, "soft reset did not complete - chip wedged or absent");
@@ -308,6 +312,11 @@ int rtl8169_init(void) {
 }
 
 int rtl8169_present(void) { return present; }
+
+uint64_t rtl8169_ring_base(void) {
+    if (!present) return 0;
+    return ((uint64_t)rd32(R_RDSAR + 4) << 32) | rd32(R_RDSAR);
+}
 const uint8_t *rtl8169_mac(void) { return mac; }
 
 int rtl8169_link_up(void) {

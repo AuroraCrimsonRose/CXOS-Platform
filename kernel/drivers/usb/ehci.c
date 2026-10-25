@@ -7,6 +7,7 @@
 
 #include "ehci.h"
 #include "usb.h"
+#include "memman/dma.h"
 #include "pci.h"
 #include "arch/paging.h"
 #include "logging.h"
@@ -124,7 +125,7 @@ _Static_assert(sizeof(struct ehci_qh) % 32 == 0, "QH stride must stay 32-byte al
 #define LINK_TYP_QH         (1u << 1)
 
 /* ---- DMA memory ---------------------------------------------------------
- * Each controller has its own eight pages (usb_dma_alloc): the controller
+ * Each controller has its own eight pages (dma_alloc): the controller
  * bus-masters from their PHYSICAL addresses while the CPU reaches the same
  * structures through a KERNEL-half alias, so they stay visible when CR3 points
  * at a process directory. The offsets below are within those pages. */
@@ -761,7 +762,7 @@ static int ehci_start(struct ehci_hc *c, const struct pci_device *dev, unsigned 
     c->port_power_control = HCSPARAMS_PPC(hcsparams);
     if (c->nports == 0) return 0;
 
-    c->dma_v = usb_dma_alloc(EHCI_DMA_PAGES, EHCI_DMA_VBASE + index * 0x10000u, &c->dma);
+    c->dma_v = dma_alloc(EHCI_DMA_PAGES, EHCI_DMA_VBASE + index * 0x10000u, &c->dma, "ehci");
     if (!c->dma_v) {
         klog("EHCI", SEV_WARN, "no memory for the controller's DMA pages");
         return 0;

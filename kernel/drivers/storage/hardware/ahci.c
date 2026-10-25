@@ -7,13 +7,13 @@
 #include "ahci.h"
 #include "pci.h"
 #include "arch/paging.h"
-#include "pmm.h"
 #include "timer.h"
 #include "console.h"
 #include "string.h"
 #include "disk.h"
 #include "logging.h"
 #include "drivers/iowin.h"
+#include "memman/dma.h"
 
 /* ---- HBA memory registers (the ABAR-mapped structure) ---- */
 
@@ -162,27 +162,16 @@ static void *port_ctba_virt(int p) { return (void *)(dma_virt_base + p * AHCI_PO
 /* allocate + map the DMA structures region and the bounce buffer. Called once
    before any port is rebased. Returns 0 on success. */
 static int ahci_dma_init(void) {
-    /* structures: one page per port, physically contiguous from the PMM */
-    paddr_t sp = pmm_alloc_pages(AHCI_MAX_PORTS);
-    if (!sp) return -1;
-    if ((uint64_t)sp >> 32) return -1;   /* this driver programs 32-bit DMA addresses */
-    dma_phys_base = (uint32_t)sp;
+    /* Both from dma_alloc (memman/dma.h), below 4 GB: this driver programs
+       32-bit DMA addresses (PxCLBU, PxFBU, CTBAU and the PRDT's DBAU stay 0). */
+    /* structures: one page per port, physically contiguous */
     dma_virt_base = AHCI_DMA_VIRT;
-    for (int i = 0; i < AHCI_MAX_PORTS; i++)
-        paging_map_kernel(dma_virt_base + i * 0x1000,
-                   dma_phys_base + i * 0x1000,
-                   VM_WRITE);
+    if (!dma_alloc(AHCI_MAX_PORTS, dma_virt_base, &dma_phys_base, "ahci")) return -1;
 
     /* bounce buffer: physically contiguous, for data transfers */
-    paddr_t bp = pmm_alloc_pages(AHCI_BOUNCE_PAGES);
-    if (!bp || (uint64_t)bp >> 32) return -1;
-    bounce_phys = (uint32_t)bp;
-    bounce_virt = (uint8_t *)(uintptr_t)(AHCI_DMA_VIRT + AHCI_MAX_PORTS * 0x1000);
-    for (int i = 0; i < AHCI_BOUNCE_PAGES; i++)
-        paging_map_kernel((uintptr_t)bounce_virt + i * 0x1000,
-                   bounce_phys + i * 0x1000,
-                   VM_WRITE);
-    return 0;
+    bounce_virt = dma_alloc(AHCI_BOUNCE_PAGES, AHCI_DMA_VIRT + AHCI_MAX_PORTS * 0x1000,
+                            &bounce_phys, "ahci bounce");
+    return bounce_virt ? 0 : -1;
 }
 
 static uint32_t hba_rd(uint32_t reg)             { return iowin_read32(&hba, reg); }
@@ -448,6 +437,11 @@ int ahci_init(void) {
 int ahci_present(int port) {
     if (port < 0 || port >= AHCI_MAX_PORTS) return 0;
     return port_present[port];
+}
+
+uint64_t ahci_command_list(int port) {
+    if (port < 0 || port >= AHCI_MAX_PORTS || !port_present[port]) return 0;
+    return ((uint64_t)px_rd(port, PX_CLBU) << 32) | px_rd(port, PX_CLB);
 }
 
 uint64_t ahci_sectors(int port) {

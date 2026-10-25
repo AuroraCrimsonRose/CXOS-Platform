@@ -27,6 +27,10 @@ int ahci_init(void);
 /* is there a SATA disk on this port? */
 int ahci_present(int port);
 
+/* the port's command list base as the HBA holds it (PxCLBU:PxCLB), 0 if no
+   disk: the self-tests check it is DMA memory (memman/dma.h). */
+uint64_t ahci_command_list(int port);
+
 /* total sectors on the disk at `port` (from IDENTIFY); 0 if absent. */
 uint64_t ahci_sectors(int port);
 

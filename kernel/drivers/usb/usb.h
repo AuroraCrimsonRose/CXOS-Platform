@@ -246,12 +246,4 @@ struct usb_device *usb_find(const void *hc, uint8_t port);
    mass-storage device is only logged. */
 void usb_port_gone(struct usb_device *dev);
 
-/* A host controller's DMA memory: `pages` physically contiguous pages from the
-   page allocator, zeroed, and mapped cacheable at `vbase` in the kernel half -
-   the controller is given the physical address (*phys), the CPU uses the
-   returned alias, which stays reachable whatever CR3 holds. Every controller
-   gets its own, which is what lets a machine with several of them drive all of
-   them. Returns 0 when the allocator has no run that long. */
-void *usb_dma_alloc(uint32_t pages, uintptr_t vbase, uint32_t *phys);
-
 #endif
