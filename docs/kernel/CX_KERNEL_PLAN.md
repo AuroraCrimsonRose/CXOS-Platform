@@ -194,6 +194,30 @@ because its 4 MiB boot window cannot hold a database. Sixteen more bring-up
 self-tests (27 in all), and `cxk verify-boot --arch x86_64` boots with 5 GB so
 both zones and the hole below 4 GB are always exercised.
 
+**Step 5d, done 2026-10-24.** Interrupts, the APICs, the tick, the context
+switch and the scheduler run on x86-64, as generic code: `cpu/sched.c`,
+`cpu/proc.c`, the object caches, the heap, guarded kernel stacks,
+`object/kobj.c` and `htab.c`, `drivers/char/timer.c`, the 8259 and the PIT,
+`drivers/power/acpi.c` and `arch/x86/apic.c` (whose interrupt-off handover
+now uses `arch_irq_save`, not a 32-bit `pushfl`). The architecture adds
+`switch.asm` (rbx, rbp, r12-r15 and RFLAGS), `cpu.c` (`arch/cpu.h`: RSP0 in
+the TSS, a new thread's first frame with IF set and RSP aligned as after a
+call), and in `idt.c` and `isr.asm` the legacy IRQs at 32-47, the MSI pool at
+48-55, a spurious-vector gate that only returns, and the dispatch in x86-32's
+order: handler, EOI to whichever controller delivered it, then the deferred
+preemption point. The tick stays the 1000 Hz PIT (Aurora, 2026-10-24); a
+deadline-programmed LAPIC timer is a later change of its own. `boot64.c` runs
+kmain's order up to `irq_controller_init`, thread 0 on a guarded stack, and
+twelve more self-tests (39 in all): the heap, the guard below thread 0's stack,
+the tick, the I/O APIC routing it with the 8259 masked, 100 ticks against the
+ACPI PM timer, sleep bounds, cooperative and preemptive switching, a switch
+keeping the callee-saved registers, a new thread starting with interrupts on,
+RSP0 following the running thread, and the MSI pool. `klog`, the tick's
+source and `keyboard_tick` are small stand-ins in `arch/x86_64/bringup64.c`
+until the console, the PC platform and the input drivers run here. kmain and
+`ktest_run` take over from `boot64.c` with the drivers and ring 3 (steps 5e
+and 5f), not at 5d as first planned (Aurora, 2026-10-24).
+
 ---
 
 ## 3. Processes and threads

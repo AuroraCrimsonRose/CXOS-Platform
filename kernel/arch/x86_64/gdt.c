@@ -12,7 +12,7 @@
 
 struct tss64 {
     uint32_t reserved0;
-    uint64_t rsp[3];            /* the stack for an entry from ring 3 (step 5e) */
+    uint64_t rsp[3];            /* rsp[0]: the stack for an entry from ring 3 */
     uint64_t reserved1;
     uint64_t ist[7];            /* IST1..IST7 */
     uint64_t reserved2;
@@ -34,11 +34,15 @@ struct gdt_ptr64 {
 #define DESC_KDATA  0x00CF92000000FFFFull   /* present, ring 0, data, writable */
 #define TSS_TYPE_AVAILABLE  0x89u           /* present, 64-bit TSS, not busy */
 
-#define DF_STACK_SIZE 8192
+#define DF_STACK_SIZE   8192
+#define RSP0_STACK_SIZE 8192
 
 static uint64_t gdt[GDT64_COUNT] __attribute__((aligned(16)));
 static struct tss64 tss __attribute__((aligned(16)));
 static uint8_t df_stack[DF_STACK_SIZE] __attribute__((aligned(16)));
+/* RSP0 while the running thread has no kernel stack of its own (arch/cpu.h's
+   arch_kernel_stack_default), as x86-32's tss_kernel_stack. */
+static uint8_t rsp0_stack[RSP0_STACK_SIZE] __attribute__((aligned(16)));
 
 static void set_tss_descriptor(void) {
     uint64_t base  = (uint64_t)(uintptr_t)&tss;
@@ -58,6 +62,7 @@ void gdt64_init(void) {
     gdt[2] = DESC_KDATA;
 
     tss.ist[IST_DOUBLE_FAULT - 1] = (uint64_t)(uintptr_t)(df_stack + DF_STACK_SIZE);
+    tss.rsp[0] = gdt64_default_rsp0();
     tss.iomap_base = sizeof(tss);           /* no I/O bitmap: ring 3 gets no ports */
     set_tss_descriptor();
 
@@ -91,3 +96,9 @@ void gdt64_df_stack(uintptr_t *lo, uintptr_t *hi) {
     *lo = (uintptr_t)df_stack;
     *hi = (uintptr_t)(df_stack + DF_STACK_SIZE);
 }
+
+void gdt64_set_rsp0(uintptr_t top) { tss.rsp[0] = (uint64_t)top; }
+
+uintptr_t gdt64_rsp0(void) { return (uintptr_t)tss.rsp[0]; }
+
+uintptr_t gdt64_default_rsp0(void) { return (uintptr_t)(rsp0_stack + RSP0_STACK_SIZE); }

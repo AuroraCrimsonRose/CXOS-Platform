@@ -2,13 +2,16 @@
 // SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/arch/x86_64/boot64.c */
 /* Aurora Tejeda / CATX Systems */
-/* The x86-64 kernel as roadmap step 5c leaves it: entered in long mode by
+/* The x86-64 kernel as roadmap step 5d leaves it: entered in long mode by
    stage 2 (boot/long.asm), it installs its own GDT, TSS and IDT, takes the
    loader's handover (boot/cxbi.c), replaces the loader's page tables with its
-   own (paging.c), starts the page allocator (memman/pagedb.c), proves all of
-   it with the bring-up self-tests below, says so on COM1, and halts. Its job
-   moves to kmain once interrupts, the timer and the scheduler run here (step
-   5d). Listed in docs/planning/TRANSITIONAL_CODE.md.
+   own (paging.c), starts the page allocator (memman/pagedb.c), and runs the
+   first group of self-tests. Then kmain's order: the object caches, the heap
+   and the guarded kernel stacks; onto a guarded stack as thread 0; the
+   scheduler, the 1000 Hz tick, interrupts on, ACPI, and the local and I/O
+   APIC; the second group of tests; the summary on COM1, and a halt. Its job
+   moves to kmain once the drivers and ring 3 run here (steps 5e and 5f).
+   Listed in docs/planning/TRANSITIONAL_CODE.md.
 
    Each test is checked against a sabotage, and some sabotages do not turn a
    test red but stop the boot: with no IST on the double-fault gate the fault
@@ -25,7 +28,19 @@
 #include "arch/x86/msr.h"
 #include "boot/cxbi.h"
 #include "memman/pagedb.h"
+#include "memman/ocache.h"
 #include "pmm.h"
+#include "heap.h"
+#include "kstack.h"
+#include "sched.h"
+#include "timer.h"
+#include "acpi.h"
+#include "logging.h"
+#include "panic.h"
+#include "arch/cpu.h"
+#include "arch/cpu_ops.h"
+#include "arch/x86/apic.h"
+#include "platform/pc/pic.h"
 
 #define MSR_EFER    0xC0000080u
 #define EFER_LME    (1ull << 8)
@@ -51,9 +66,9 @@
 #define FOUR_GB            0x100000000ull
 #define LAPIC_DEFAULT      0xFEE00000ull  /* the local APIC's registers, where firmware leaves them */
 
-/* A page the tests map and unmap: the heap's region, which nothing uses on
-   x86-64 until the heap runs here. */
-#define SCRATCH_VA         KVA_HEAP
+/* A page the tests map and unmap: the framebuffer's region, which nothing
+   uses on x86-64 until the display runs here. */
+#define SCRATCH_VA         KVA_FRAMEBUFFER
 
 void boot64_main(uint64_t cxbi_phys);
 
@@ -75,7 +90,7 @@ static volatile struct {
     uint64_t error, rip, frame;
 } expect;
 
-static int probe(struct trap_frame64 *f) {
+static int probe(struct registers *f) {
     if (f->vector != expect.vector) return 0;   /* anything else still panics */
     expect.hits++;
     expect.error = f->error;
@@ -551,10 +566,228 @@ static int t_map_phys(void) {
            paging_map_phys(PHYS_WINDOW_SIZE, 1, 0) == 0;
 }
 
-static const struct {
+/* ---- step 5d: the heap, interrupts, the timer, threads ---- */
+
+static uintptr_t main_stack_top;    /* thread 0's guarded stack (boot64_main) */
+
+/* The heap's own round trip: small sizes from the object caches, large ones
+   from the list, and every byte back afterwards. */
+static int t_heap(void) {
+    uint32_t used0 = heap_bytes_used();
+    uint8_t *small = kmalloc(64), *big = kmalloc(8192);
+    int ok = small && big && ocache_owner(small) && !ocache_in_window(big) &&
+             heap_bytes_used() >= used0 + 8192u;
+    for (uint32_t i = 0; ok && i < 8192; i++) big[i] = (uint8_t)(i * 7);
+    for (uint32_t i = 0; ok && i < 8192; i++) if (big[i] != (uint8_t)(i * 7)) ok = 0;
+    if (small) kfree(small);
+    if (big) kfree(big);
+    return ok && heap_bytes_used() == used0;
+}
+
+/* Thread 0 left the image's stack for a guarded one, as kmain's does: below
+   it is a guard page that is not mapped and that kstack knows is thread 0's. */
+static int t_main_stack_guarded(void) {
+    uintptr_t rsp;
+    __asm__ volatile ("movq %%rsp, %0" : "=r"(rsp));
+    uintptr_t lo = main_stack_top - KSTACK_MAIN_SIZE;
+    return main_stack_top != 0 && rsp < main_stack_top && rsp >= lo &&
+           lo >= KSTACK_REGION_BASE && main_stack_top <= KSTACK_REGION_BASE + KSTACK_REGION_SIZE &&
+           paging_get_phys(lo - PAGE_SIZE) == 0 && kstack_guard_owner(lo - PAGE_SIZE) == 0;
+}
+
+/* Interrupts on, and the tick advancing. A spin, not hlt: with the tick
+   broken, hlt waits forever and the test would stop the boot, not fail. Ten
+   million rounds are seconds; five ticks are 5 ms. */
+static int ticks_advance(uint32_t n) {
+    if (!arch_irqs_enabled()) return 0;
+    uint32_t t0 = timer_ticks();
+    for (uint32_t i = 0; i < 10000000u; i++) {
+        if (timer_ticks() - t0 >= n) return 1;
+        arch_cpu_relax();
+    }
+    return 0;
+}
+
+static int t_ticks(void) { return ticks_advance(5); }
+
+/* irq_controller_init took over: the 8259 is masked outright, the I/O APIC
+   routes the tick, and its EOI goes to the local APIC - an EOI sent to the
+   wrong controller stops the tick after the first one. */
+static int t_io_apic(void) {
+    return lapic_active() && apic_active() && pic_get_masks() == 0xFFFF &&
+           ticks_advance(5);
+}
+
+/* A tick is a millisecond by a clock the PIT does not drive (ktest.c's
+   test_tick_rate): 100 ticks must be 100 ms of the ACPI PM timer, within a
+   fifth. Left at the BIOS's 18.2 Hz every tick would be 55 ms. */
+static int t_tick_rate(void) {
+    uint32_t p0, p1;
+    if (acpi_pm_timer_read(&p0) != 0) {
+        klog("KTEST", SEV_WARN, "tick rate untested: no ACPI PM timer");
+        return 1;
+    }
+    const uint32_t want = ACPI_PM_TIMER_HZ / 10;
+    const uint32_t limit = ACPI_PM_TIMER_HZ * 2;
+    uint32_t t0 = timer_ticks();
+    while (timer_ticks() == t0) {                        /* align to a tick edge */
+        acpi_pm_timer_read(&p1);
+        if (((p1 - p0) & 0xFFFFFFu) > limit) return 0;
+    }
+    t0 = timer_ticks();
+    acpi_pm_timer_read(&p0);
+    for (;;) {
+        acpi_pm_timer_read(&p1);
+        uint32_t pm = (p1 - p0) & 0xFFFFFFu;
+        if (timer_ticks() - t0 >= 100) return pm >= want - want / 5 && pm <= want + want / 5;
+        if (pm > limit) return 0;
+    }
+}
+
+/* ktest.c's test_clock_sleep: a 50 ms sleep is 50 to 100 ticks, never fewer. */
+static int t_sleep(void) {
+    uint32_t t0 = timer_ticks();
+    thread_sleep_ms(50);
+    uint32_t dt = timer_ticks() - t0;
+    if (dt < 50 || dt > 100) return 0;
+    t0 = timer_ticks();
+    thread_sleep_ms(0);                                  /* a yield, not a wait */
+    return timer_ticks() - t0 <= 50;
+}
+
+static void settle(void) {
+    for (int i = 0; i < 8 && sched_active_count() > 1; i++) yield();
+}
+
+static volatile int coop_a, coop_b;
+static void coop_thread_a(void) { for (int i = 0; i < 3; i++) { coop_a++; yield(); } }
+static void coop_thread_b(void) { for (int i = 0; i < 3; i++) { coop_b++; yield(); } }
+
+static int t_coop(void) {
+    coop_a = coop_b = 0;
+    if (thread_create("coop_a", coop_thread_a) < 0) return 0;
+    if (thread_create("coop_b", coop_thread_b) < 0) return 0;
+    settle();
+    return coop_a == 3 && coop_b == 3 && sched_active_count() == 1;
+}
+
+/* context_switch keeps what the ABI says a callee keeps. Thread 0 loads
+   rbx and r12-r15 with patterns and yields to a thread that loads them with
+   others; back on thread 0 its own must be there. The registers are set and
+   read in one asm statement around the call, so the compiler cannot keep
+   copies elsewhere. rbp is the frame pointer and is left alone. */
+volatile uint64_t boot64_regs_seen[5];
+static volatile int clobber_ran;
+
+static void clobber_thread(void) {
+    __asm__ volatile ("movq $0xBAD0, %%rbx\n\t"
+                      "movq $0xBAD2, %%r12\n\t"
+                      "movq $0xBAD3, %%r13\n\t"
+                      "movq $0xBAD4, %%r14\n\t"
+                      "movq $0xBAD5, %%r15\n\t"
+                      : : : "rbx", "r12", "r13", "r14", "r15");
+    clobber_ran = 1;
+    yield();
+}
+
+static int t_switch_keeps_registers(void) {
+    clobber_ran = 0;
+    if (thread_create("clobber", clobber_thread) < 0) return 0;
+    __asm__ volatile ("movq $0x1111, %%rbx\n\t"
+                      "movq $0x2222, %%r12\n\t"
+                      "movq $0x3333, %%r13\n\t"
+                      "movq $0x4444, %%r14\n\t"
+                      "movq $0x5555, %%r15\n\t"
+                      "call yield\n\t"
+                      "movq %%rbx, boot64_regs_seen+0(%%rip)\n\t"
+                      "movq %%r12, boot64_regs_seen+8(%%rip)\n\t"
+                      "movq %%r13, boot64_regs_seen+16(%%rip)\n\t"
+                      "movq %%r14, boot64_regs_seen+24(%%rip)\n\t"
+                      "movq %%r15, boot64_regs_seen+32(%%rip)\n\t"
+                      : : : "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "r8", "r9",
+                            "r10", "r11", "r12", "r13", "r14", "r15", "memory", "cc");
+    settle();
+    return clobber_ran && boot64_regs_seen[0] == 0x1111 && boot64_regs_seen[1] == 0x2222 &&
+           boot64_regs_seen[2] == 0x3333 && boot64_regs_seen[3] == 0x4444 &&
+           boot64_regs_seen[4] == 0x5555 && sched_active_count() == 1;
+}
+
+/* arch_thread_frame's RFLAGS: a new thread starts with interrupts on, even
+   when the thread that switched to it had them off. */
+static volatile int launched_if;
+static void if_thread(void) { launched_if = arch_irqs_enabled() ? 1 : 2; }
+
+static int t_new_thread_irqs_on(void) {
+    launched_if = 0;
+    if (thread_create("if", if_thread) < 0) return 0;
+    uint32_t f = arch_irq_save();
+    yield();
+    arch_irq_restore(f);
+    settle();
+    return launched_if == 1 && arch_irqs_enabled();
+}
+
+/* ktest.c's test_sched_preempt: two threads that never yield both finish,
+   only because the tick switches between them. */
+static volatile uint32_t pre_a, pre_b;
+static void pre_thread_a(void) { for (uint32_t i = 0; i < 3000000u; i++) pre_a = i; }
+static void pre_thread_b(void) { for (uint32_t i = 0; i < 3000000u; i++) pre_b = i; }
+
+static int t_preempt(void) {
+    pre_a = pre_b = 0;
+    if (thread_create("pre_a", pre_thread_a) < 0) return 0;
+    if (thread_create("pre_b", pre_thread_b) < 0) return 0;
+    /* Bounded by the tick, which keeps counting even if nothing preempts: the
+       spinners are then left behind, but the test fails rather than hangs. */
+    uint32_t t0 = timer_ticks();
+    sched_preempt_enable(5);
+    while (sched_active_count() > 1 && timer_ticks() - t0 < 5000) arch_cpu_relax();
+    sched_preempt_disable();
+    return pre_a != 0 && pre_b != 0 && sched_active_count() == 1;
+}
+
+/* ktest.c's test_esp0_follows_thread, for RSP0: a kernel-only thread sees the
+   dedicated stack, and thread 0 gets its own back. */
+static volatile uintptr_t rsp0_seen;
+static void rsp0_thread(void) { rsp0_seen = arch_kernel_stack_current(); }
+
+static int t_rsp0_follows_thread(void) {
+    uintptr_t mine = thread_current_kstack_top();
+    if (mine == 0 || mine == arch_kernel_stack_default()) return 0;
+    rsp0_seen = 0;
+    if (thread_create("rsp0", rsp0_thread) < 0) return 0;
+    settle();
+    return rsp0_seen == arch_kernel_stack_default() &&
+           arch_kernel_stack_current() == mine && sched_active_count() == 1;
+}
+
+/* The MSI pool: a vector from it reaches the handler it was given, a freed
+   one reaches nothing, and the slot is handed out again. The vector is raised
+   with int, which is how a device's write arrives at the IDT. */
+static volatile int msi_hits;
+static volatile uint32_t msi_vector_seen;
+static void msi_handler(struct registers *r) { msi_hits++; msi_vector_seen = irq_frame_vector(r); }
+
+static int t_msi_pool(void) {
+    msi_hits = 0;
+    int v = irq_alloc_msi_vector(msi_handler);
+    __asm__ volatile ("int %0" : : "i"(MSI_VECTOR_BASE) : "memory");
+    int ok = v == MSI_VECTOR_BASE && msi_hits == 1 && msi_vector_seen == MSI_VECTOR_BASE;
+    if (v >= 0) irq_free_msi_vector(v);
+    __asm__ volatile ("int %0" : : "i"(MSI_VECTOR_BASE) : "memory");
+    ok = ok && msi_hits == 1;
+    int w = irq_alloc_msi_vector(msi_handler);
+    if (w >= 0) irq_free_msi_vector(w);
+    return ok && w == v;
+}
+
+struct ktest64 {
     const char *name;
     int (*fn)(void);
-} tests[] = {
+};
+
+/* Before the heap: the CPU's tables, paging, the page allocator. */
+static const struct ktest64 early_tests[] = {
     { "long mode is active (EFER.LMA)",                 t_long_mode },
     { "no-execute is enabled (EFER.NXE)",               t_nx },
     { "the kernel and its stack run in the top 2 GiB",  t_top_2g },
@@ -584,20 +817,49 @@ static const struct {
     { "device registers map once, uncached, and answer", t_map_phys },
 };
 
+/* On thread 0's guarded stack, with the scheduler, the tick and the APICs. */
+static const struct ktest64 late_tests[] = {
+    { "kmalloc: small from the caches, large from the list", t_heap },
+    { "thread 0 runs on a guarded kernel stack",        t_main_stack_guarded },
+    { "the PIT ticks with interrupts on",               t_ticks },
+    { "the I/O APIC routes the tick; the 8259 is masked", t_io_apic },
+    { "100 ticks are 100 ms of the ACPI PM timer",      t_tick_rate },
+    { "a 50 ms sleep is 50 to 100 ticks",               t_sleep },
+    { "two threads that yield both run to the end",     t_coop },
+    { "a switch keeps rbx and r12-r15",                 t_switch_keeps_registers },
+    { "a new thread starts with interrupts on",         t_new_thread_irqs_on },
+    { "the tick preempts threads that never yield",     t_preempt },
+    { "RSP0 follows the running thread",                t_rsp0_follows_thread },
+    { "an MSI vector reaches its handler, then nothing", t_msi_pool },
+};
+
+static unsigned run_tests(const struct ktest64 *t, unsigned n) {
+    unsigned passed = 0;
+    for (unsigned i = 0; i < n; i++) {
+        int ok = t[i].fn();
+        passed += ok ? 1u : 0u;
+        early_log("KTEST", ok ? EARLY_OK : EARLY_FAIL, t[i].name);
+    }
+    return passed;
+}
+
+#define COUNT(a) (unsigned)(sizeof(a) / sizeof((a)[0]))
+
+static unsigned early_passed;
+
+static void boot64_late(void) __attribute__((noreturn));
+
 void boot64_main(uint64_t cxbi_phys) {
     cxbi_phys_addr = cxbi_phys;
     early_con_init();
     early_puts("\n");
-    early_log("BOOT", EARLY_INFO, "CXK x86-64, roadmap step 5c: long mode, paging, page allocator");
+    early_log("BOOT", EARLY_INFO, "CXK x86-64, roadmap step 5d: interrupts, APIC, timer, scheduler");
     early_log_start("BOOT", EARLY_INFO);
     early_puts("CXBI at ");
     early_hex(cxbi_phys);
     early_puts("\n");
 
-    gdt64_init();
-    early_log("GDT", EARLY_OK, "GDT + TSS installed (double fault on IST 1)");
-    idt64_init();
-    early_log("IDT", EARLY_OK, "installed (exceptions 0-31)");
+    arch_cpu_init();
 
     /* the copy is taken through the loader's window, so before paging_init */
     cxbi_init(cxbi_phys);
@@ -618,12 +880,42 @@ void boot64_main(uint64_t cxbi_phys) {
     early_dec(db_len / 1024);
     early_puts(" KiB\n");
 
-    unsigned n = sizeof(tests) / sizeof(tests[0]), passed = 0;
-    for (unsigned i = 0; i < n; i++) {
-        int ok = tests[i].fn();
-        passed += ok ? 1u : 0u;
-        early_log("KTEST", ok ? EARLY_OK : EARLY_FAIL, tests[i].name);
-    }
+    /* Before anything is built on it: some of these check the boot stack. */
+    early_passed = run_tests(early_tests, COUNT(early_tests));
+
+    /* kmain's order from here (kernel/kmain.c). */
+    ocache_sys_init();
+    klog("OCACHE", SEV_OK, "object cache window reserved");
+    heap_init();
+    klog("HEAP", SEV_OK, "online (kmalloc/kfree)");
+    kstack_init();
+    klog("KSTACK", SEV_OK, "guarded kernel stacks ready");
+
+    /* Leave the image's stack, as kmain does, so thread 0 overflowing is a
+       fault on its guard page. Nothing on this stack is needed again. */
+    main_stack_top = kstack_alloc(KSTACK_MAIN_SIZE, 0, 0);
+    if (!main_stack_top) kpanic("no guarded stack for thread 0");
+    arch_run_on_stack(main_stack_top, boot64_late);
+}
+
+static void boot64_late(void) {
+    sched_init();
+    /* Thread 0 gets an RSP0 stack of its own, as on x86-32 (kmain.c): ring 3
+       comes in step 5e, and the RSP0 test is vacuous without one. */
+    if (thread_alloc_kstack(0) != 0) kpanic("no RSP0 stack for thread 0");
+    klog("SCHED", SEV_OK, "online");
+    timer_init();
+    arch_irq_enable();
+    klog("TIMER", SEV_OK, "online (1000 Hz), interrupts enabled");
+    timer_calibrate_tsc();
+    klog_u32("TIMER", SEV_OK, "TSC calibrated, MHz: ", timer_tsc_mhz(), LOG_COLOR_VALUE, "");
+    /* The MADT is the only description of the APICs, so ACPI first; with
+       either missing the 8259 stays in charge, which works. */
+    (void)acpi_init();
+    (void)irq_controller_init();
+
+    unsigned n = COUNT(early_tests) + COUNT(late_tests);
+    unsigned passed = early_passed + run_tests(late_tests, COUNT(late_tests));
 
     early_log_start("KTEST", passed == n ? EARLY_OK : EARLY_FAIL);
     if (passed == n) {
@@ -637,6 +929,6 @@ void boot64_main(uint64_t cxbi_phys) {
         early_dec(n);
         early_puts("\n");
     }
-    early_log("BOOT", EARLY_INFO, "nothing more to run until step 5d; halted");
+    early_log("BOOT", EARLY_INFO, "nothing more to run until step 5e; halted");
     for (;;) __asm__ volatile ("cli; hlt");
 }

@@ -1,17 +1,21 @@
 ; SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 ; SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
-; /kernel/arch/x86_64/isr.asm  -  the CPU exception entry stubs
+; /kernel/arch/x86_64/isr.asm  -  the exception and interrupt entry stubs
 ; Aurora Tejeda / CATX Systems
 ;
-; One stub per exception vector 0-31. Each makes the frame uniform - a zero
+; One stub per vector 0-55: the exceptions 0-31, the legacy IRQs 32-47 and
+; the MSI pool 48-55 (idt.h). Each makes the frame uniform - a zero
 ; where the CPU pushes no error code, then the vector - saves the general
-; registers and calls idt64_dispatch(struct trap_frame64 *). Whatever the
+; registers and calls idt64_dispatch(struct registers *). Whatever the
 ; handler leaves in the frame is what iretq resumes, RIP and RSP included.
-; The layout is struct trap_frame64 in idt.h; keep the two in step.
+; The layout is struct registers in idt.h; keep the two in step.
 ;
 ; In 64-bit mode the CPU aligns RSP to 16 before it pushes its frame, so the
 ; 5 + 2 + 15 = 22 quadwords below leave the call 16-byte aligned, as the
-; SysV ABI wants. The device interrupts arrive in roadmap step 5d.
+; SysV ABI wants.
+;
+; The local APIC's spurious vector has a stub of its own that only returns:
+; a spurious interrupt sets no in-service bit, so it takes no EOI.
 
 bits 64
 default rel
@@ -65,6 +69,19 @@ ISR_ERR   29
 ISR_ERR   30
 ISR_NOERR 31
 
+%assign i 32
+%rep 24
+isr %+ i:
+    push 0
+    push i
+    jmp isr_common
+%assign i i + 1
+%endrep
+
+global isr64_spurious
+isr64_spurious:
+    iretq
+
 isr_common:
     push rax
     push rbx
@@ -106,7 +123,7 @@ section .rodata
 global isr64_stubs
 isr64_stubs:
 %assign i 0
-%rep 32
+%rep 56
     dq isr %+ i
 %assign i i + 1
 %endrep

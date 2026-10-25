@@ -2,15 +2,21 @@
 // SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/arch/x86_64/idt.c */
 /* Aurora Tejeda / CATX Systems */
-/* The x86-64 IDT (idt.h). Every exception gate is an interrupt gate, so the
-   CPU clears IF on entry. An exception no self-test asked for is a panic: the
-   banner cxk verify-boot looks for, then the vector, the error code and the
-   registers, on COM1, and the CPU halts. */
+/* The x86-64 IDT (idt.h) and arch/irq.h. Every gate is an interrupt gate, so
+   the CPU clears IF on entry. An exception no self-test asked for, and no user
+   fault hook takes, is a panic: the banner cxk verify-boot looks for, then the
+   vector, the error code and the registers, on COM1, and the CPU halts. A
+   device interrupt runs its handler, is acknowledged at whichever controller
+   delivered it, and then lets the scheduler switch if a tick asked for one -
+   x86-32's idt.c, the same order for the same reasons. */
 
 #include "idt.h"
 #include "gdt.h"
 #include "early_con.h"
 #include "panic.h"
+#include "sched.h"
+#include "arch/x86/apic.h"
+#include "platform/pc/pic.h"
 
 struct idt_gate64 {
     uint16_t offset_low;
@@ -33,7 +39,10 @@ struct idt_ptr64 {
 #define GATE_INTERRUPT    0x8Eu     /* present, ring 0, 64-bit interrupt gate */
 #define VEC_DOUBLE_FAULT  8
 
-extern const uint64_t isr64_stubs[32];      /* isr.asm */
+#define STUB_COUNT        (MSI_VECTOR_BASE + MSI_VECTOR_COUNT)
+
+extern const uint64_t isr64_stubs[STUB_COUNT];  /* isr.asm */
+extern void isr64_spurious(void);
 
 static struct idt_gate64 idt[IDT64_COUNT] __attribute__((aligned(16)));
 static volatile trap_probe_fn probe;
@@ -61,8 +70,13 @@ static void set_gate(unsigned vector, uint64_t handler, unsigned ist) {
 }
 
 void idt64_init(void) {
-    for (unsigned v = 0; v < 32; v++)
+    /* The 8259 off the exception vectors before anything can unmask a line:
+       IRQ n arrives at 32 + n, every line as masked as the BIOS left it. */
+    pic_remap();
+
+    for (unsigned v = 0; v < STUB_COUNT; v++)
         set_gate(v, isr64_stubs[v], v == VEC_DOUBLE_FAULT ? IST_DOUBLE_FAULT : 0);
+    set_gate(SPURIOUS_VECTOR64, (uint64_t)(uintptr_t)isr64_spurious, 0);
 
     struct idt_ptr64 idtr = { sizeof(idt) - 1, (uint64_t)(uintptr_t)idt };
     __asm__ volatile ("lidt %0" : : "m"(idtr) : "memory");
@@ -81,10 +95,89 @@ static void reg(const char *name, uint64_t v) {
     early_hex(v);
 }
 
-void idt64_dispatch(struct trap_frame64 *f);
-void idt64_dispatch(struct trap_frame64 *f) {
+/* ---- arch/irq.h ---- */
+
+static irq_handler_t irq_routines[16];
+/* MSI handlers, by vector - MSI_VECTOR_BASE: an MSI is a bare vector with no
+   line behind it. */
+static irq_handler_t msi_routines[MSI_VECTOR_COUNT];
+static void (*user_fault_hook)(struct registers *);
+
+void irq_install_handler(int irq, irq_handler_t handler) {
+    if (irq >= 0 && irq < 16) irq_routines[irq] = handler;
+}
+
+void irq_uninstall_handler(int irq) {
+    if (irq >= 0 && irq < 16) irq_routines[irq] = 0;
+}
+
+int irq_alloc_msi_vector(irq_handler_t handler) {
+    for (int i = 0; i < MSI_VECTOR_COUNT; i++) {
+        if (!msi_routines[i]) {
+            msi_routines[i] = handler;
+            return MSI_VECTOR_BASE + i;
+        }
+    }
+    return -1;
+}
+
+void irq_free_msi_vector(int vector) {
+    int i = vector - MSI_VECTOR_BASE;
+    if (i >= 0 && i < MSI_VECTOR_COUNT) msi_routines[i] = 0;
+}
+
+void set_user_fault_hook(void (*hook)(struct registers *)) { user_fault_hook = hook; }
+
+uint32_t  irq_frame_vector(const struct registers *r) { return (uint32_t)r->vector; }
+uintptr_t irq_frame_ip(const struct registers *r)     { return (uintptr_t)r->rip; }
+uint32_t  irq_frame_error(const struct registers *r)  { return (uint32_t)r->error; }
+
+uintptr_t irq_fault_address(void) {
+    uintptr_t cr2;
+    __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
+    return cr2;
+}
+
+/* Acknowledge at whichever controller delivered it. An EOI sent to the 8259
+   while the I/O APIC is in charge leaves the local APIC's in-service bit set,
+   and nothing of equal or lower priority is delivered again (x86-32 idt.c). */
+static inline void irq_eoi(uint64_t vector) {
+    if (apic_active()) lapic_eoi();
+    else               pic_send_eoi((uint32_t)vector);
+}
+
+static void irq_dispatch(struct registers *r) {
+    if (r->vector >= MSI_VECTOR_BASE) {
+        /* An MSI still takes an EOI, at the local APIC that delivered it. */
+        irq_handler_t h = msi_routines[r->vector - MSI_VECTOR_BASE];
+        if (h) h(r);
+        irq_eoi(r->vector);
+        return;
+    }
+    irq_handler_t h = irq_routines[r->vector - IRQ_VECTOR_BASE];
+    if (h) h(r);
+    irq_eoi(r->vector);
+
+    /* The deferred preemption sched_tick may have asked for, after the EOI so
+       the controller delivers the next tick to the thread switched to. */
+    sched_preempt_point();
+}
+
+void idt64_dispatch(struct registers *f);
+void idt64_dispatch(struct registers *f) {
+    if (f->vector >= IRQ_VECTOR_BASE) {
+        irq_dispatch(f);
+        return;
+    }
+
     trap_probe_fn p = probe;
     if (p && p(f)) return;
+
+    /* A fault in ring 3 ends the process rather than the kernel (step 5e). */
+    if ((f->cs & 3) && user_fault_hook) {
+        user_fault_hook(f);
+        return;
+    }
 
     uint64_t cr2;
     __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));

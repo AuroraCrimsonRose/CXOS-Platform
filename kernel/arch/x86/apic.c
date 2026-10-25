@@ -8,6 +8,7 @@
 #include "arch/x86/cpufeat.h"
 #include "platform/pc/pic.h"
 #include "arch/x86/msr.h"
+#include "arch/cpu_ops.h"
 #include "arch/paging.h"
 #include "acpi.h"
 #include "logging.h"
@@ -257,8 +258,7 @@ int irq_controller_init(void) {
        while this runs (kmain enables interrupts long before irq_controller_init), so
        every step below is racing it. See the apic_up note further down for
        what that race actually cost. */
-    uint32_t saved_flags;
-    __asm__ volatile ("pushfl; popl %0; cli" : "=r"(saved_flags) :: "memory");
+    uint32_t saved_flags = arch_irq_save();
 
     uint16_t masks = pic_get_masks();
 
@@ -320,7 +320,7 @@ int irq_controller_init(void) {
         route_irq(irq, (uint8_t)(32 + irq), (masks >> irq) & 1);
     }
 
-    if (saved_flags & 0x200u) __asm__ volatile ("sti" ::: "memory");
+    arch_irq_restore(saved_flags);
 
     klog_u32("APIC", SEV_OK, "I/O APIC online, redirection entries: ",
              ioapic_entries, LOG_COLOR_VALUE, "");

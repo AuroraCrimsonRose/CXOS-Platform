@@ -28,4 +28,11 @@ uintptr_t gdt64_base(void);
 uint64_t  gdt64_tss_descriptor(void);
 void      gdt64_df_stack(uintptr_t *lo, uintptr_t *hi);
 
+/* RSP0, the stack an interrupt from ring 3 switches to (cpu.c sets it on
+   every thread switch), and the dedicated one used while the running thread
+   has none. */
+void      gdt64_set_rsp0(uintptr_t top);
+uintptr_t gdt64_rsp0(void);
+uintptr_t gdt64_default_rsp0(void);
+
 #endif

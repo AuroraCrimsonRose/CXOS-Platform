@@ -827,7 +827,8 @@ add_dependencies(disk_image cxk_disk)
 # (boot/long.asm). Built on every build so both boots stay green while the
 # 32-bit kernel is still the system. Step 5b brought the arch code (entry,
 # GDT, TSS, IDT, COM1); step 5c paging, the page database and the buddy
-# allocator, the first generic code.
+# allocator, the first generic code; step 5d interrupts, the APICs, the tick,
+# the context switch and the scheduler, with the generic code they need.
 # The ELF is the image as it stands: CXEX for x86-64, and the signature check
 # in the loader, come with it (docs/boot/CX_BOOT.md section 4).
 set(IMAGES64_DIR ${SRC_DIR}/dist/CXK_x86_64/images)
@@ -836,6 +837,8 @@ set(DISK64_IMG   ${IMAGES64_DIR}/cxk_x86_64.img)
 set(LINKER64     ${SRC_DIR}/kernel/arch/x86_64/linker.ld)
 set(KERNEL64_C_SRCS
     ${SRC_DIR}/kernel/arch/x86_64/boot64.c
+    ${SRC_DIR}/kernel/arch/x86_64/bringup64.c
+    ${SRC_DIR}/kernel/arch/x86_64/cpu.c
     ${SRC_DIR}/kernel/arch/x86_64/early_con.c
     ${SRC_DIR}/kernel/arch/x86_64/gdt.c
     ${SRC_DIR}/kernel/arch/x86_64/idt.c
@@ -844,10 +847,29 @@ set(KERNEL64_C_SRCS
     ${SRC_DIR}/kernel/boot/cxbi.c
     ${SRC_DIR}/kernel/memman/buddy.c
     ${SRC_DIR}/kernel/memman/pagedb.c
+    ${SRC_DIR}/kernel/memman/heap.c
+    ${SRC_DIR}/kernel/memman/kstack.c
+    ${SRC_DIR}/kernel/memman/ocache.c
+    ${SRC_DIR}/kernel/object/idtab.c
+    ${SRC_DIR}/kernel/cpu/sched.c
+    ${SRC_DIR}/kernel/cpu/proc.c
+    ${SRC_DIR}/kernel/cpu/uid.c
+    ${SRC_DIR}/kernel/drivers/char/timer.c
+    ${SRC_DIR}/kernel/object/kobj.c
+    ${SRC_DIR}/kernel/object/htab.c
+    ${SRC_DIR}/kernel/lib/string/format.c
+    ${SRC_DIR}/kernel/memman/vmregion.c
+    ${SRC_DIR}/kernel/drivers/iowin.c
+    ${SRC_DIR}/kernel/platform/pc/pic.c
+    ${SRC_DIR}/kernel/platform/pc/pit.c
+    ${SRC_DIR}/kernel/arch/x86/apic.c
+    ${SRC_DIR}/kernel/arch/x86/cpufeat.c
+    ${SRC_DIR}/kernel/drivers/power/acpi.c
 )
 set(KERNEL64_ASM_SRCS
     ${SRC_DIR}/kernel/arch/x86_64/entry.asm
     ${SRC_DIR}/kernel/arch/x86_64/isr.asm
+    ${SRC_DIR}/kernel/arch/x86_64/switch.asm
 )
 # The kernel code model and no red zone: interrupts land on the current stack
 # in ring 0, below RSP. No SIMD, for the reason given at KCFLAGS.
