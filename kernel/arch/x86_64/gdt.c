@@ -8,6 +8,7 @@
    to - RSP0 for an entry from ring 3, and the seven IST stacks an IDT gate can
    name. */
 
+#include <stddef.h>
 #include "gdt.h"
 
 struct tss64 {
@@ -21,49 +22,58 @@ struct tss64 {
 } __attribute__((packed));
 
 _Static_assert(sizeof(struct tss64) == 104, "the 64-bit TSS is 104 bytes");
+_Static_assert(offsetof(struct tss64, rsp) == TSS64_RSP0_OFFSET, "usermode.asm reads RSP0 here");
 
 struct gdt_ptr64 {
     uint16_t limit;
     uint64_t base;
 } __attribute__((packed));
 
-#define GDT64_COUNT 5
+#define GDT64_COUNT 7
 
 /* Flat descriptors: limit 0xFFFFF, G set, base 0. Code is L=1 D=0. */
 #define DESC_KCODE  0x00AF9A000000FFFFull   /* present, ring 0, code, L */
 #define DESC_KDATA  0x00CF92000000FFFFull   /* present, ring 0, data, writable */
+#define DESC_UDATA  0x00CFF2000000FFFFull   /* present, ring 3, data, writable */
+#define DESC_UCODE  0x00AFFA000000FFFFull   /* present, ring 3, code, L */
 #define TSS_TYPE_AVAILABLE  0x89u           /* present, 64-bit TSS, not busy */
 
-#define DF_STACK_SIZE   8192
+#define IST_STACK_SIZE  8192
+#define IST_STACKS      4                   /* IST1..IST4, gdt.h */
 #define RSP0_STACK_SIZE 8192
 
 static uint64_t gdt[GDT64_COUNT] __attribute__((aligned(16)));
-static struct tss64 tss __attribute__((aligned(16)));
-static uint8_t df_stack[DF_STACK_SIZE] __attribute__((aligned(16)));
+/* Not static: the syscall entry reads RSP0 from it (usermode.asm). */
+struct tss64 gdt64_tss __attribute__((aligned(16)));
+static uint8_t ist_stack[IST_STACKS][IST_STACK_SIZE] __attribute__((aligned(16)));
 /* RSP0 while the running thread has no kernel stack of its own (arch/cpu.h's
    arch_kernel_stack_default), as x86-32's tss_kernel_stack. */
 static uint8_t rsp0_stack[RSP0_STACK_SIZE] __attribute__((aligned(16)));
 
 static void set_tss_descriptor(void) {
-    uint64_t base  = (uint64_t)(uintptr_t)&tss;
-    uint64_t limit = sizeof(tss) - 1;
+    uint64_t base  = (uint64_t)(uintptr_t)&gdt64_tss;
+    uint64_t limit = sizeof(gdt64_tss) - 1;
+    unsigned slot  = GDT64_TSS / 8;
 
-    gdt[3] = (limit & 0xFFFF)
-           | ((base & 0xFFFFFF) << 16)
-           | ((uint64_t)TSS_TYPE_AVAILABLE << 40)
-           | (((limit >> 16) & 0xF) << 48)
-           | (((base >> 24) & 0xFF) << 56);
-    gdt[4] = base >> 32;                    /* the upper half of the base */
+    gdt[slot] = (limit & 0xFFFF)
+              | ((base & 0xFFFFFF) << 16)
+              | ((uint64_t)TSS_TYPE_AVAILABLE << 40)
+              | (((limit >> 16) & 0xF) << 48)
+              | (((base >> 24) & 0xFF) << 56);
+    gdt[slot + 1] = base >> 32;             /* the upper half of the base */
 }
 
 void gdt64_init(void) {
     gdt[0] = 0;
-    gdt[1] = DESC_KCODE;
-    gdt[2] = DESC_KDATA;
+    gdt[GDT64_KCODE / 8] = DESC_KCODE;
+    gdt[GDT64_KDATA / 8] = DESC_KDATA;
+    gdt[GDT64_UDATA / 8] = DESC_UDATA;
+    gdt[GDT64_UCODE / 8] = DESC_UCODE;
 
-    tss.ist[IST_DOUBLE_FAULT - 1] = (uint64_t)(uintptr_t)(df_stack + DF_STACK_SIZE);
-    tss.rsp[0] = gdt64_default_rsp0();
-    tss.iomap_base = sizeof(tss);           /* no I/O bitmap: ring 3 gets no ports */
+    for (unsigned i = 0; i < IST_STACKS; i++)
+        gdt64_tss.ist[i] = (uint64_t)(uintptr_t)(ist_stack[i] + IST_STACK_SIZE);
+    gdt64_tss.rsp[0] = gdt64_default_rsp0();
+    gdt64_tss.iomap_base = sizeof(gdt64_tss);   /* no I/O bitmap: ring 3 gets no ports */
     set_tss_descriptor();
 
     struct gdt_ptr64 gdtr = { sizeof(gdt) - 1, (uint64_t)(uintptr_t)gdt };
@@ -90,15 +100,18 @@ void gdt64_init(void) {
 
 uintptr_t gdt64_base(void) { return (uintptr_t)gdt; }
 
-uint64_t gdt64_tss_descriptor(void) { return gdt[3]; }
+uint64_t gdt64_descriptor(unsigned n) { return n < GDT64_COUNT ? gdt[n] : 0; }
 
-void gdt64_df_stack(uintptr_t *lo, uintptr_t *hi) {
-    *lo = (uintptr_t)df_stack;
-    *hi = (uintptr_t)(df_stack + DF_STACK_SIZE);
+uint64_t gdt64_tss_descriptor(void) { return gdt[GDT64_TSS / 8]; }
+
+void gdt64_ist_stack(unsigned ist, uintptr_t *lo, uintptr_t *hi) {
+    if (ist < 1 || ist > IST_STACKS) { *lo = *hi = 0; return; }
+    *lo = (uintptr_t)ist_stack[ist - 1];
+    *hi = (uintptr_t)(ist_stack[ist - 1] + IST_STACK_SIZE);
 }
 
-void gdt64_set_rsp0(uintptr_t top) { tss.rsp[0] = (uint64_t)top; }
+void gdt64_set_rsp0(uintptr_t top) { gdt64_tss.rsp[0] = (uint64_t)top; }
 
-uintptr_t gdt64_rsp0(void) { return (uintptr_t)tss.rsp[0]; }
+uintptr_t gdt64_rsp0(void) { return (uintptr_t)gdt64_tss.rsp[0]; }
 
 uintptr_t gdt64_default_rsp0(void) { return (uintptr_t)(rsp0_stack + RSP0_STACK_SIZE); }

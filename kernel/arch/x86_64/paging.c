@@ -178,9 +178,14 @@ volatile void *paging_map_phys(paddr_t phys, uint32_t len, uint32_t vm) {
 }
 
 /* Returns -1 for an address outside the user half or a flag that is not
-   VM_*, and also, unlike x86-32, when no page is left for a table. */
+   VM_*, and also, unlike x86-32, when no page is left for a table.
+
+   The user half's last page is refused too. A syscall at its very end would
+   return to USER_VLIMIT, which is not canonical, and sysretq to a
+   non-canonical RIP faults in ring 0 on Intel, on the user's stack
+   (usermode.asm). Linux leaves the same page out of TASK_SIZE_MAX. */
 int paging_map_user(uintptr_t virt, paddr_t phys, uint32_t vm) {
-    if (virt >= USER_VLIMIT || (vm & ~VM_ALL)) return -1;
+    if (virt >= USER_VLIMIT - PAGE_SIZE || (vm & ~VM_ALL)) return -1;
     uint64_t *e = walk(addr_space_current(), virt, 1, 1);
     if (!e) return -1;
     *e = pte64_encode(phys, vm, 1);

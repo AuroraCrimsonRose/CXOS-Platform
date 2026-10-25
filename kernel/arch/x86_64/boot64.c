@@ -2,15 +2,16 @@
 // SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/arch/x86_64/boot64.c */
 /* Aurora Tejeda / CATX Systems */
-/* The x86-64 kernel as roadmap step 5d leaves it: entered in long mode by
+/* The x86-64 kernel as roadmap step 5e leaves it: entered in long mode by
    stage 2 (boot/long.asm), it installs its own GDT, TSS and IDT, takes the
    loader's handover (boot/cxbi.c), replaces the loader's page tables with its
    own (paging.c), starts the page allocator (memman/pagedb.c), and runs the
    first group of self-tests. Then kmain's order: the object caches, the heap
    and the guarded kernel stacks; onto a guarded stack as thread 0; the
    scheduler, the 1000 Hz tick, interrupts on, ACPI, and the local and I/O
-   APIC; the second group of tests; the summary on COM1, and a halt. Its job
-   moves to kmain once the drivers and ring 3 run here (steps 5e and 5f).
+   APIC; the syscall gate; the second group of tests, ring 3 among them; the
+   summary on COM1, and a halt. Its job moves to kmain once the drivers run
+   here (step 5f).
    Listed in docs/planning/TRANSITIONAL_CODE.md.
 
    Each test is checked against a sabotage, and some sabotages do not turn a
@@ -41,26 +42,34 @@
 #include "arch/cpu_ops.h"
 #include "arch/x86/apic.h"
 #include "platform/pc/pic.h"
+#include "proc.h"
+#include "caps.h"
+#include "sysrec.h"
+#include "usermode.h"
+#include "arch/usermode.h"
 
-#define MSR_EFER    0xC0000080u
 #define EFER_LME    (1ull << 8)
 #define EFER_LMA    (1ull << 10)
 #define EFER_NXE    (1ull << 11)
 
+#define VEC_DEBUG          1
+#define VEC_NMI            2
 #define VEC_BREAKPOINT     3
 #define VEC_INVALID_OPCODE 6
 #define VEC_DOUBLE_FAULT   8
 #define VEC_GP             13
 #define VEC_PAGE_FAULT     14
+#define VEC_MACHINE_CHECK  18
 
 /* the #PF error code */
 #define PF_PRESENT         0x01u   /* a protection fault, not a missing page */
 #define PF_WRITE           0x02u
+#define PF_USER            0x04u   /* taken in ring 3 */
 #define PF_FETCH           0x10u   /* an instruction fetch: no-execute */
 
 /* A selector one slot past the GDT's end, so loading it is a #GP whose error
    code is the selector itself. */
-#define SEL_PAST_GDT       0x28
+#define SEL_PAST_GDT       0x38
 
 #define LOADER_PML4        0x3000u        /* boot/long.asm's PT_PML4 */
 #define FOUR_GB            0x100000000ull
@@ -146,8 +155,11 @@ static int t_gdt(void) {
     __asm__ volatile ("sgdt %0" : "=m"(g));
     __asm__ volatile ("movw %%cs, %0" : "=r"(cs));
     __asm__ volatile ("movw %%ss, %0" : "=r"(ss));
-    return g.base == gdt64_base() && g.limit == 5 * 8 - 1 &&
-           cs == GDT64_KCODE && ss == GDT64_KDATA;
+    return g.base == gdt64_base() && g.limit == 7 * 8 - 1 &&
+           cs == GDT64_KCODE && ss == GDT64_KDATA &&
+           ((gdt64_descriptor(GDT64_UCODE / 8) >> 40) & 0xFF) == 0xFA &&   /* ring 3 code */
+           ((gdt64_descriptor(GDT64_UCODE / 8) >> 53) & 1) == 1 &&         /* 64-bit */
+           ((gdt64_descriptor(GDT64_UDATA / 8) >> 40) & 0xFF) == 0xF2;     /* ring 3 data */
 }
 
 static int t_tss(void) {
@@ -162,6 +174,9 @@ static int t_idt(void) {
     __asm__ volatile ("sidt %0" : "=m"(i));
     return i.base == idt64_base() && i.limit == 256 * 16 - 1 &&
            idt64_gate_ist(VEC_DOUBLE_FAULT) == IST_DOUBLE_FAULT &&
+           idt64_gate_ist(VEC_NMI) == IST_NMI &&
+           idt64_gate_ist(VEC_DEBUG) == IST_DEBUG &&
+           idt64_gate_ist(VEC_MACHINE_CHECK) == IST_MACHINE_CHECK &&
            idt64_gate_ist(VEC_GP) == 0;
 }
 
@@ -213,7 +228,7 @@ static int t_general_protection(void) {
    the int3. */
 static int t_double_fault_ist(void) {
     uintptr_t lo, hi;
-    gdt64_df_stack(&lo, &hi);
+    gdt64_ist_stack(IST_DOUBLE_FAULT, &lo, &hi);
     arm(VEC_DOUBLE_FAULT);
     __asm__ volatile ("leaq 1f(%%rip), %%rax\n\t"
                       "movq %%rax, %0\n\t"
@@ -781,6 +796,292 @@ static int t_msi_pool(void) {
     return ok && w == v;
 }
 
+/* ---- ring 3 (step 5e) ---- */
+
+/* Each test process's pages, in a space of its own. Below 4 GB, since the
+   ABI's user addresses stay 32 bits until step 6. */
+#define U_CODE     0x00400000u
+#define U_GUARD    0x00401000u      /* never mapped: the stack's guard */
+#define U_STACK    0x00402000u
+#define U_SHARED   0x00403000u
+#define U_SP       (U_STACK + PAGE_SIZE - 16)   /* the argument sits at [rsp] */
+
+#define BLOB(n) extern uint8_t user64_##n##_start[], user64_##n##_end[]
+BLOB(cpl); BLOB(regs); BLOB(write); BLOB(ud2); BLOB(read);
+BLOB(exec_stack); BLOB(write_code); BLOB(overflow); BLOB(spin);
+extern uint8_t user64_write_msg[], user64_write_msg_end[];
+extern void syscall64_entry(void);
+
+#define CPL_EXIT   (USER_CODE_SEL | USER_DATA_SEL << 8 | 1u << 16)
+
+/* The fault hook, standing in for usermode.c's: it notes what arrived and
+   leaves the same way, back out of enter_usermode with USERMODE_FAULTED. */
+static volatile struct {
+    uint32_t count;
+    uint64_t vector, error, rip, cr2;
+} ufault;
+
+static void user_fault(struct registers *r) {
+    ufault.count++;
+    ufault.vector = r->vector;
+    ufault.error  = r->error;
+    ufault.rip    = r->rip;
+    ufault.cr2    = read_cr2();
+    return_to_kernel(USERMODE_FAULTED, thread_current_usave());
+}
+
+struct urun {
+    const uint8_t *code;
+    uint32_t len;
+    uint64_t arg;               /* at [rsp] on entry */
+    paddr_t  shared;            /* mapped at U_SHARED when not 0 */
+    volatile int set_up, done, rc, pid;
+    volatile uint64_t code_pte, stack_pte;
+};
+
+/* A process's one thread: its code written and then made executable and
+   read-only (W^X), its stack writable and no-execute with nothing mapped
+   below, and into ring 3. The space, and every frame mapped in it, goes when
+   the thread does. */
+static void urun_thread(void) {
+    struct urun *u = thread_current_arg();
+    u->pid = thread_current_pid();
+    paddr_t c = pmm_alloc();
+    if (!c || paging_map_user(U_CODE, c, VM_WRITE) != 0) return;
+    paddr_t s = pmm_alloc();
+    if (!s || paging_map_user(U_STACK, s, VM_WRITE) != 0) return;
+    for (uint32_t i = 0; i < u->len; i++) ((volatile uint8_t *)(uintptr_t)U_CODE)[i] = u->code[i];
+    if (paging_map_user(U_CODE, c, VM_EXEC) != 0) return;
+    if (u->shared && paging_map_user(U_SHARED, u->shared, VM_WRITE) != 0) return;
+    *(volatile uint64_t *)(uintptr_t)U_SP = u->arg;
+    u->code_pte  = entry_of(U_CODE);
+    u->stack_pte = entry_of(U_STACK);
+    u->set_up = 1;
+    u->rc = enter_usermode(U_CODE, U_SP, thread_current_usave());
+    if (u->shared) paging_unmap(U_SHARED);   /* the test's frame, not the space's */
+    u->done = 1;
+}
+
+static void urun_init(struct urun *u, const uint8_t *start, const uint8_t *end, uint64_t arg) {
+    u->code = start;
+    u->len = (uint32_t)(end - start);
+    u->arg = arg;
+    u->shared = 0;
+    u->set_up = u->done = u->pid = 0;
+    u->rc = 0x7FFFFFFF;
+    u->code_pte = u->stack_pte = 0;
+}
+
+static int urun_start(struct urun *u) {
+    paddr_t space;
+    if (addr_space_create(&space) != 0) return -1;
+    int id = thread_create_process("ring3", urun_thread);
+    if (id < 0) { addr_space_release(space); return -1; }
+    thread_mark_user(id);
+    thread_set_space(id, space);   /* the process's from here */
+    thread_set_arg(id, u, 0);
+    thread_set_caps(id, GRANT_CONSOLE);
+    thread_start(id);
+    return id;
+}
+
+/* Until the thread has finished and been reaped, process and all. */
+static int urun_wait(const struct urun *u, uint32_t threads, uint32_t procs) {
+    for (int i = 0; i < 2000; i++) {
+        if (u->done && sched_thread_count() == threads && proc_live() == procs) return 1;
+        thread_sleep_ms(1);
+    }
+    return 0;
+}
+
+/* Run [start, end) in ring 3 in a process of its own: 1 if it was set up, ran
+   to an exit or a fault, and is gone. */
+static int run_user(struct urun *u, const uint8_t *start, const uint8_t *end, uint64_t arg) {
+    urun_init(u, start, end, arg);
+    uint32_t n0 = sched_thread_count(), p0 = proc_live();
+    if (urun_start(u) < 0) return 0;
+    return urun_wait(u, n0, p0) && u->set_up;
+}
+
+static int t_syscall_msrs(void) {
+    return (rdmsr(MSR_EFER) & EFER_SCE) && rdmsr(MSR_STAR) == STAR_VALUE &&
+           rdmsr(MSR_LSTAR) == (uint64_t)(uintptr_t)syscall64_entry &&
+           rdmsr(MSR_FMASK) == FMASK_VALUE &&
+           /* what sysretq loads: STAR[63:48] + 8 and + 16, at RPL 3 */
+           (((STAR_VALUE >> 48) + 8) | 3) == USER_DATA_SEL &&
+           (((STAR_VALUE >> 48) + 16) | 3) == USER_CODE_SEL;
+}
+
+static int t_ring3_cpl(void) {
+    struct urun u;
+    return run_user(&u, user64_cpl_start, user64_cpl_end, 0) && u.rc == (int)CPL_EXIT;
+}
+
+static int t_ring3_mappings(void) {
+    struct urun u;
+    if (!run_user(&u, user64_cpl_start, user64_cpl_end, 0)) return 0;
+    uint64_t c = u.code_pte, s = u.stack_pte;
+    return (c & PTE64_USER) && !(c & PTE64_WRITE) && !(c & PTE64_NX) &&
+           (s & PTE64_USER) && (s & PTE64_WRITE) && (s & PTE64_NX);
+}
+
+static int t_ring3_regs(void) {
+    struct urun u;
+    return run_user(&u, user64_regs_start, user64_regs_end, 0) &&
+           ((uint32_t)u.rc >> 16) == 0 && (u.rc & 0xFFFF) == (u.pid & 0xFFFF);
+}
+
+/* Two writes and an exit, each counted at the gate, at the dispatcher and at
+   the recording point; the exit never returns, so it has no exit record. */
+static int t_ring3_write(void) {
+    struct sysrec_stats s0, s1;
+    sysrec_snapshot(&s0);
+    uint32_t t0 = syscall_trapped_count(), d0 = syscall_dispatch_count();
+    struct urun u;
+    if (!run_user(&u, user64_write_start, user64_write_end, 0)) return 0;
+    sysrec_snapshot(&s1);
+    uint32_t len = (uint32_t)(user64_write_msg_end - user64_write_msg);
+    return (uint32_t)(u.rc & 0xFFFF) == len && ((u.rc >> 16) & 0xFF) == 0xFF &&
+           syscall_trapped_count() - t0 == 3 && syscall_dispatch_count() - d0 == 3 &&
+           s1.entered - s0.entered == 3 && s1.exited - s0.exited == 2 &&
+           s1.last_num == SYS_CONSOLE_WRITE;
+}
+
+/* The process faulted as described, and enter_usermode came back. */
+static int user_faults(const uint8_t *start, const uint8_t *end, uint64_t arg,
+                       uint64_t vector, uint64_t error, uint64_t cr2) {
+    struct urun u;
+    uint32_t n = ufault.count;
+    return run_user(&u, start, end, arg) && u.rc == USERMODE_FAULTED &&
+           ufault.count == n + 1 && ufault.vector == vector && ufault.error == error &&
+           (vector != VEC_PAGE_FAULT || ufault.cr2 == cr2);
+}
+
+static int t_ring3_fault(void) {
+    return user_faults(user64_ud2_start, user64_ud2_end, 0, VEC_INVALID_OPCODE, 0, 0) &&
+           ufault.rip == U_CODE;
+}
+
+static int t_ring3_kernel_read(void) {
+    uint64_t at = (uint64_t)(uintptr_t)&expect;
+    return user_faults(user64_read_start, user64_read_end, at,
+                       VEC_PAGE_FAULT, PF_PRESENT | PF_USER, at);
+}
+
+static int t_ring3_stack_nx(void) {
+    return user_faults(user64_exec_stack_start, user64_exec_stack_end, 0,
+                       VEC_PAGE_FAULT, PF_PRESENT | PF_USER | PF_FETCH, U_SP);
+}
+
+static int t_ring3_code_readonly(void) {
+    return user_faults(user64_write_code_start, user64_write_code_end, 0,
+                       VEC_PAGE_FAULT, PF_PRESENT | PF_WRITE | PF_USER, U_CODE);
+}
+
+static int t_ring3_stack_guard(void) {
+    return user_faults(user64_overflow_start, user64_overflow_end, 0,
+                       VEC_PAGE_FAULT, PF_WRITE | PF_USER, U_STACK - 8);
+}
+
+/* A kernel stack that overflows runs into its guard page, and the CPU cannot
+   push that page fault's frame there either: a double fault, on IST 1. With
+   interrupts off, since a tick taken at that RSP would be lost with its EOI. */
+static int t_kernel_stack_overflow(void) {
+    uintptr_t lo, hi;
+    gdt64_ist_stack(IST_DOUBLE_FAULT, &lo, &hi);
+    uintptr_t bottom = main_stack_top - KSTACK_MAIN_SIZE;
+    uint32_t flags = arch_irq_save();
+    arm(VEC_DOUBLE_FAULT);
+    __asm__ volatile ("leaq 1f(%%rip), %%rax\n\t"
+                      "movq %%rax, %0\n\t"
+                      "movq %%rsp, %1\n\t"
+                      "movq %2, %%rsp\n\t"
+                      "pushq $0\n"
+                      "1:"
+                      : "=m"(expect.resume_rip), "=m"(expect.resume_rsp)
+                      : "r"(bottom) : "rax", "memory");
+    disarm();
+    uint64_t cr2 = read_cr2();
+    arch_irq_restore(flags);
+    return expect.hits == 1 && expect.error == 0 &&
+           expect.frame >= lo && expect.frame < hi && cr2 == bottom - 8;
+}
+
+/* Each layer of the user copy on its own: the check refuses an unmapped or a
+   read-only buffer before touching it, so takes no fault; the primitive,
+   unchecked, takes the fault and comes back with 1; a good copy takes none. */
+static int t_usercopy(void) {
+    paddr_t root;
+    if (addr_space_create(&root) != 0) return 0;
+    addr_space_switch(root);
+    paddr_t ro = pmm_alloc();
+    uint8_t buf[16] = { 0 };
+    uint32_t r0 = usercopy_faults_recovered();
+    int ok = ro && paging_map_user(U_CODE, ro, 0) == 0;
+    ok = ok && user_copy_in(buf, U_STACK, sizeof buf) == E_FAULT &&
+               user_copy_out(U_CODE, buf, sizeof buf) == E_FAULT &&
+               usercopy_faults_recovered() == r0;
+    ok = ok && user_copy_bytes(user_ptr(U_CODE), buf, sizeof buf) == 1 &&
+               user_copy_bytes(buf, user_ptr(U_STACK), sizeof buf) == 1 &&
+               usercopy_faults_recovered() == r0 + 2;
+    ok = ok && user_copy_in(buf, U_CODE, sizeof buf) == 0 &&
+               usercopy_faults_recovered() == r0 + 2;
+    addr_space_switch(addr_space_kernel());
+    addr_space_release(root);   /* frees ro with it */
+    return ok;
+}
+
+/* Two processes that spin in ring 3 and never make a call until the kernel
+   writes a word they share. This thread neither sleeps nor yields while they
+   spin, so it runs at all only because the tick took the CPU from ring 3; if
+   it never does, the boot stops here rather than failing. */
+static int t_ring3_preempted(void) {
+    paddr_t sh = pmm_alloc();
+    if (!sh) return 0;
+    volatile uint32_t *word = paging_temp_map(sh);
+    word[0] = 0;                /* the word they wait for */
+    word[1] = 0;                /* how many have started spinning */
+    struct urun a, b;
+    uint32_t n0 = sched_thread_count(), p0 = proc_live();
+    urun_init(&a, user64_spin_start, user64_spin_end, U_SHARED);
+    urun_init(&b, user64_spin_start, user64_spin_end, U_SHARED);
+    a.shared = b.shared = sh;
+    int ok = urun_start(&a) >= 0 && urun_start(&b) >= 0;
+    sched_preempt_enable(5);
+    while (ok && word[1] < 2) arch_cpu_relax();
+    word[0] = 0x5E;
+    while (ok && !(a.done && b.done)) arch_cpu_relax();
+    sched_preempt_disable();
+    ok = ok && urun_wait(&a, n0, p0) && a.rc == 0x5E && b.rc == 0x5E;
+    pmm_free(sh);
+    return ok;
+}
+
+/* After an exit and after a fault, every page, heap block, thread and process
+   is back. The earlier tests have run the same path, so the heap and the
+   caches have what they keep. */
+static int t_ring3_releases(void) {
+    uint32_t free0 = pmm_free_count(), heap0 = heap_allocs_live();
+    struct urun u, v;
+    int ok = run_user(&u, user64_cpl_start, user64_cpl_end, 0) && u.rc == (int)CPL_EXIT &&
+             run_user(&v, user64_ud2_start, user64_ud2_end, 0) && v.rc == USERMODE_FAULTED;
+    return ok && pmm_free_count() == free0 && heap_allocs_live() == heap0;
+}
+
+/* Both sides of the bound: the user half's last page is refused, the one
+   below it is not (paging.c says why). */
+static int t_user_top_page(void) {
+    paddr_t root;
+    if (addr_space_create(&root) != 0) return 0;
+    addr_space_switch(root);
+    paddr_t f = pmm_alloc();
+    int ok = f && paging_map_user(USER_VLIMIT - PAGE_SIZE, f, 0) == -1 &&
+                  paging_map_user(USER_VLIMIT - 2 * PAGE_SIZE, f, 0) == 0;
+    addr_space_switch(addr_space_kernel());
+    addr_space_release(root);   /* frees f with it */
+    return ok;
+}
+
 struct ktest64 {
     const char *name;
     int (*fn)(void);
@@ -792,9 +1093,9 @@ static const struct ktest64 early_tests[] = {
     { "no-execute is enabled (EFER.NXE)",               t_nx },
     { "the kernel and its stack run in the top 2 GiB",  t_top_2g },
     { "the loader handed over CXBI",                    t_cxbi },
-    { "the kernel's GDT is loaded",                     t_gdt },
+    { "the GDT is loaded, with ring-3 code and data",   t_gdt },
     { "the TSS is loaded and busy",                     t_tss },
-    { "the IDT is loaded; #DF has IST 1",               t_idt },
+    { "the IDT is loaded; #DF, NMI, #DB, #MC on ISTs",  t_idt },
     { "#BP returns through the IDT after int3",         t_breakpoint },
     { "#UD reports the faulting RIP",                   t_invalid_opcode },
     { "#GP carries the selector as its error code",     t_general_protection },
@@ -815,6 +1116,7 @@ static const struct ktest64 early_tests[] = {
     { "a user mapping cannot name the kernel half",     t_user_map_refuses_kernel },
     { "a new address space shares the kernel, frees all", t_address_space },
     { "device registers map once, uncached, and answer", t_map_phys },
+    { "the user half's last page is never mapped",     t_user_top_page },
 };
 
 /* On thread 0's guarded stack, with the scheduler, the tick and the APICs. */
@@ -831,6 +1133,20 @@ static const struct ktest64 late_tests[] = {
     { "the tick preempts threads that never yield",     t_preempt },
     { "RSP0 follows the running thread",                t_rsp0_follows_thread },
     { "an MSI vector reaches its handler, then nothing", t_msi_pool },
+    { "syscall: EFER.SCE, STAR, LSTAR, FMASK; sysret's selectors", t_syscall_msrs },
+    { "ring 3 starts at CPL 3, registers clear; SYS_EXIT", t_ring3_cpl },
+    { "user code is R-X, the user stack RW- and no-execute", t_ring3_mappings },
+    { "a syscall keeps every register but rax, rcx, r11", t_ring3_regs },
+    { "SYS_CONSOLE_WRITE from ring 3; a bad buffer refused", t_ring3_write },
+    { "a fault in ring 3 ends the process, not the kernel", t_ring3_fault },
+    { "ring 3 cannot read kernel memory",                t_ring3_kernel_read },
+    { "a user stack is no-execute",                      t_ring3_stack_nx },
+    { "user code is not writable (W^X)",                 t_ring3_code_readonly },
+    { "a user stack overflow faults on its guard page",  t_ring3_stack_guard },
+    { "a kernel stack overflow is a double fault on IST 1", t_kernel_stack_overflow },
+    { "a user copy: the check refuses, the copy recovers", t_usercopy },
+    { "the tick preempts ring 3: two spinning processes end", t_ring3_preempted },
+    { "a ring-3 process gives back everything it had",   t_ring3_releases },
 };
 
 static unsigned run_tests(const struct ktest64 *t, unsigned n) {
@@ -853,7 +1169,7 @@ void boot64_main(uint64_t cxbi_phys) {
     cxbi_phys_addr = cxbi_phys;
     early_con_init();
     early_puts("\n");
-    early_log("BOOT", EARLY_INFO, "CXK x86-64, roadmap step 5d: interrupts, APIC, timer, scheduler");
+    early_log("BOOT", EARLY_INFO, "CXK x86-64, roadmap step 5e: ring 3, syscall/sysret");
     early_log_start("BOOT", EARLY_INFO);
     early_puts("CXBI at ");
     early_hex(cxbi_phys);
@@ -900,8 +1216,8 @@ void boot64_main(uint64_t cxbi_phys) {
 
 static void boot64_late(void) {
     sched_init();
-    /* Thread 0 gets an RSP0 stack of its own, as on x86-32 (kmain.c): ring 3
-       comes in step 5e, and the RSP0 test is vacuous without one. */
+    /* Thread 0 gets an RSP0 stack of its own, as on x86-32 (kmain.c): the
+       syscall entry moves to it, and the RSP0 test is vacuous without one. */
     if (thread_alloc_kstack(0) != 0) kpanic("no RSP0 stack for thread 0");
     klog("SCHED", SEV_OK, "online");
     timer_init();
@@ -913,6 +1229,10 @@ static void boot64_late(void) {
        either missing the 8259 stays in charge, which works. */
     (void)acpi_init();
     (void)irq_controller_init();
+    /* kmain's usermode_init and fault handler (usermode.c), in their place */
+    arch_syscall_gate_init();
+    set_user_fault_hook(user_fault);
+    klog("RING3", SEV_OK, "syscall/sysret gate installed");
 
     unsigned n = COUNT(early_tests) + COUNT(late_tests);
     unsigned passed = early_passed + run_tests(late_tests, COUNT(late_tests));
@@ -929,6 +1249,6 @@ static void boot64_late(void) {
         early_dec(n);
         early_puts("\n");
     }
-    early_log("BOOT", EARLY_INFO, "nothing more to run until step 5e; halted");
+    early_log("BOOT", EARLY_INFO, "nothing more to run until step 5f; halted");
     for (;;) __asm__ volatile ("cli; hlt");
 }

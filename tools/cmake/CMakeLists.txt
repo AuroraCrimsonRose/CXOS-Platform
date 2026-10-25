@@ -184,6 +184,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/cpu/uid.c
     ${SRC_DIR}/kernel/drivers/char/timer.c
     ${SRC_DIR}/kernel/cpu/usermode.c
+    ${SRC_DIR}/kernel/cpu/usercopy.c
     ${SRC_DIR}/kernel/cpu/sysrec.c
     ${SRC_DIR}/kernel/cpu/proc.c
     ${SRC_DIR}/kernel/cpu/ipc.c
@@ -828,7 +829,8 @@ add_dependencies(disk_image cxk_disk)
 # 32-bit kernel is still the system. Step 5b brought the arch code (entry,
 # GDT, TSS, IDT, COM1); step 5c paging, the page database and the buddy
 # allocator, the first generic code; step 5d interrupts, the APICs, the tick,
-# the context switch and the scheduler, with the generic code they need.
+# the context switch and the scheduler, with the generic code they need; step
+# 5e ring 3 (syscall/sysret) and the user-pointer checks.
 # The ELF is the image as it stands: CXEX for x86-64, and the signature check
 # in the loader, come with it (docs/boot/CX_BOOT.md section 4).
 set(IMAGES64_DIR ${SRC_DIR}/dist/CXK_x86_64/images)
@@ -865,11 +867,14 @@ set(KERNEL64_C_SRCS
     ${SRC_DIR}/kernel/arch/x86/apic.c
     ${SRC_DIR}/kernel/arch/x86/cpufeat.c
     ${SRC_DIR}/kernel/drivers/power/acpi.c
+    ${SRC_DIR}/kernel/cpu/usercopy.c
+    ${SRC_DIR}/kernel/cpu/sysrec.c
 )
 set(KERNEL64_ASM_SRCS
     ${SRC_DIR}/kernel/arch/x86_64/entry.asm
     ${SRC_DIR}/kernel/arch/x86_64/isr.asm
     ${SRC_DIR}/kernel/arch/x86_64/switch.asm
+    ${SRC_DIR}/kernel/arch/x86_64/usermode.asm
 )
 # The kernel code model and no red zone: interrupts land on the current stack
 # in ring 0, below RSP. No SIMD, for the reason given at KCFLAGS.

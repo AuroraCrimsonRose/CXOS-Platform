@@ -3,11 +3,13 @@
 /* /kernel/arch/x86_64/cpu.c */
 /* Aurora Tejeda / CATX Systems */
 /* arch/cpu.h on x86-64: the GDT, the TSS and its RSP0, the IDT, the feature
-   table, and a new thread's first frame. The int 0x80 gate of x86-32 has no
-   counterpart here; syscall/sysret comes in roadmap step 5e. */
+   table, and a new thread's first frame; and arch/usermode.h's gate, which
+   is syscall/sysret rather than x86-32's int 0x80 (usermode.asm). */
 
 #include "arch/cpu.h"
 #include "arch/cpu_ops.h"
+#include "arch/usermode.h"
+#include "arch/x86/msr.h"
 #include "arch/x86/cpufeat.h"
 #include "gdt.h"
 #include "idt.h"
@@ -20,6 +22,15 @@ void arch_cpu_init(void) {
     klog("IDT", SEV_OK, "installed (exceptions, IRQs 0-15, MSI pool)");
     /* Before anything that might ask what the CPU has. */
     cpufeat_init();
+}
+
+extern void syscall64_entry(void);   /* usermode.asm */
+
+void arch_syscall_gate_init(void) {
+    wrmsr(MSR_STAR, STAR_VALUE);
+    wrmsr(MSR_LSTAR, (uint64_t)(uintptr_t)syscall64_entry);
+    wrmsr(MSR_FMASK, FMASK_VALUE);
+    wrmsr(MSR_EFER, rdmsr(MSR_EFER) | EFER_SCE);
 }
 
 void arch_kernel_stack_set(uintptr_t top) { gdt64_set_rsp0(top); }

@@ -218,6 +218,40 @@ until the console, the PC platform and the input drivers run here. kmain and
 `ktest_run` take over from `boot64.c` with the drivers and ring 3 (steps 5e
 and 5f), not at 5d as first planned (Aurora, 2026-10-24).
 
+**Step 5e, done 2026-10-24.** Ring 3 on x86-64, through `syscall`/`sysret`.
+The GDT gains ring-3 data and code after the kernel's, the order `STAR`
+fixes (sysretq loads SS from `STAR[63:48]` + 8 and CS from + 16); the TSS
+moves to `0x28`. `arch_syscall_gate_init` sets `EFER.SCE`, `STAR`, `LSTAR`
+and `FMASK` (IF, TF, DF, AC, NT and IOPL cleared on entry).
+`arch/x86_64/usermode.asm` implements `arch/usermode.h`: `enter_usermode`
+enters by `iretq` with every register cleared, the syscall entry moves to
+RSP0 (read from the TSS) in its first two instructions and keeps every
+register but rax, rcx and r11, and `return_to_kernel` is x86-32's. The
+calling convention until step 6: number in rax, arguments in rdi and rsi (32
+bits each, as the ABI's are), result in rax. Three hazards of that entry are
+closed: NMI, `#DB` and `#MC` get IST stacks of their own (IST 2-4), since one
+landing before the stack switch would push its frame wherever ring 3 left
+RSP; `paging_map_user` refuses the user half's last page, so the RIP sysretq
+returns to is always canonical (Intel faults in ring 0 on the user's stack
+otherwise; Linux's `TASK_SIZE_MAX` leaves the same page out); and the entry
+reloads SS before sysret, for AMD's sysret, which keeps a null SS's unusable
+attributes (Linux `X86_BUG_SYSRET_SS_ATTRS`; QEMU does not model it, so only
+the rig can show it). The user copy's recoverable region and its page-fault
+recovery are ported, and the pointer checks and copies moved out of
+`usermode.c` into `cpu/usercopy.c`, which both kernels link. Until kmain
+takes over (5f), `bringup64.c` stands in for the syscall table with
+`SYS_EXIT`, `SYS_YIELD`, `SYS_GETPID` and `SYS_CONSOLE_WRITE`, through the
+recording point. Fifteen more self-tests (54 in all), each a 64-bit blob in
+a process of its own: CPL 3 with registers cleared, the code mapped R-X and
+the stack RW- and no-execute, every register kept across a syscall,
+`SYS_CONSOLE_WRITE` and a refused buffer counted at the gate, the dispatcher
+and the recording point, a fault ending the process and not the kernel,
+ring 3 unable to read kernel memory, execute its stack or write its code,
+a user stack overflow faulting on its guard page, a kernel stack overflow
+arriving as a double fault on IST 1, each layer of the user copy on its own,
+the tick preempting two processes spinning in ring 3, and a process giving
+back every page and heap block whether it exited or faulted.
+
 ---
 
 ## 3. Processes and threads

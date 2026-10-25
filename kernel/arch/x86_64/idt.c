@@ -17,6 +17,8 @@
 #include "sched.h"
 #include "arch/x86/apic.h"
 #include "platform/pc/pic.h"
+#include "usermode.h"          /* usercopy_start, usercopy_end, usercopy_trampoline */
+#include "paging_defs.h"       /* USER_VLIMIT */
 
 struct idt_gate64 {
     uint16_t offset_low;
@@ -37,7 +39,11 @@ struct idt_ptr64 {
 
 #define IDT64_COUNT       256
 #define GATE_INTERRUPT    0x8Eu     /* present, ring 0, 64-bit interrupt gate */
+#define VEC_DEBUG         1
+#define VEC_NMI           2
 #define VEC_DOUBLE_FAULT  8
+#define VEC_PAGE_FAULT    14
+#define VEC_MACHINE_CHECK 18
 
 #define STUB_COUNT        (MSI_VECTOR_BASE + MSI_VECTOR_COUNT)
 
@@ -69,13 +75,26 @@ static void set_gate(unsigned vector, uint64_t handler, unsigned ist) {
     g->reserved    = 0;
 }
 
+/* The gates that must not trust RSP (gdt.h): the double fault, and what can
+   arrive in the syscall entry's first instructions, before it leaves the
+   user's stack. */
+static unsigned ist_of(unsigned vector) {
+    switch (vector) {
+    case VEC_DOUBLE_FAULT:  return IST_DOUBLE_FAULT;
+    case VEC_NMI:           return IST_NMI;
+    case VEC_DEBUG:         return IST_DEBUG;
+    case VEC_MACHINE_CHECK: return IST_MACHINE_CHECK;
+    default:                return 0;
+    }
+}
+
 void idt64_init(void) {
     /* The 8259 off the exception vectors before anything can unmask a line:
        IRQ n arrives at 32 + n, every line as masked as the BIOS left it. */
     pic_remap();
 
     for (unsigned v = 0; v < STUB_COUNT; v++)
-        set_gate(v, isr64_stubs[v], v == VEC_DOUBLE_FAULT ? IST_DOUBLE_FAULT : 0);
+        set_gate(v, isr64_stubs[v], ist_of(v));
     set_gate(SPURIOUS_VECTOR64, (uint64_t)(uintptr_t)isr64_spurious, 0);
 
     struct idt_ptr64 idtr = { sizeof(idt) - 1, (uint64_t)(uintptr_t)idt };
@@ -163,12 +182,35 @@ static void irq_dispatch(struct registers *r) {
     sched_preempt_point();
 }
 
+/* A page fault inside user_copy_bytes (usermode.asm) is the one kernel fault
+   that is not a bug: a user buffer that stopped being mapped, or was never
+   what its check thought. The copy returns 1 from its landing pad instead,
+   and user_copy_out/in make that E_FAULT. The same four conditions as
+   x86-32's idt.c, for the same reason: recovery is a property of where the
+   fault happened, with no flag that could be left armed. */
+static int recover_user_copy_fault(struct registers *f) {
+    if (f->vector != VEC_PAGE_FAULT) return 0;
+    uint64_t cr2;
+    __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
+    if (cr2 >= USER_VLIMIT)  return 0;     /* a user address */
+    if (f->error & 0x4)      return 0;     /* taken in ring 0: the kernel did it */
+    if (f->error & 0x10)     return 0;     /* data, not an instruction fetch */
+    if (f->rip <  (uint64_t)(uintptr_t)usercopy_start) return 0;
+    if (f->rip >= (uint64_t)(uintptr_t)usercopy_end)   return 0;
+    usercopy_note_recovered_fault();
+    f->rip = (uint64_t)(uintptr_t)usercopy_trampoline;
+    return 1;
+}
+
 void idt64_dispatch(struct registers *f);
 void idt64_dispatch(struct registers *f) {
     if (f->vector >= IRQ_VECTOR_BASE) {
         irq_dispatch(f);
         return;
     }
+
+    /* Before the probe and the panic: a recovered fault leaves no trace. */
+    if (recover_user_copy_fault(f)) return;
 
     trap_probe_fn p = probe;
     if (p && p(f)) return;
