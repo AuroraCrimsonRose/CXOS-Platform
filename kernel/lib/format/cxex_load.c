@@ -7,6 +7,7 @@
 #include "cxex_load.h"
 #include "cxex.h"
 #include "cxk_abi.h"              /* CXK_ABI_VERSION - the contract we implement */
+#include "arch/cpu.h"             /* ARCH_CXEX_TARGET - the code we can run */
 
 #define CXEX_PAGE_SIZE 4096u
 
@@ -101,7 +102,7 @@ int cxex_load(const uint8_t *file, size_t len,
         !(h.flags & CXEX_FLAG_REQUIRE_ABI_MATCH))
         return CXEX_LOAD_NO_COMPAT;
 
-    switch (cxex_check_compat(&h, CXEX_ARCH_X86_32, CXK_ABI_VERSION)) {
+    switch (cxex_check_compat(&h, ARCH_CXEX_TARGET, CXK_ABI_VERSION)) {
         case  0: break;
         case -1: return CXEX_LOAD_BAD_ARCH;
         case -2: return CXEX_LOAD_BAD_ABI;

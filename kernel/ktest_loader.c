@@ -25,6 +25,7 @@
 #include "cxex.h"
 #include "cxex_load.h"
 #include "cxk_abi.h"
+#include "arch/cpu.h"           /* ARCH_CXEX_TARGET */
 #include "pmm.h"
 #include "arch/paging.h"
 #include "usermode.h"
@@ -72,7 +73,7 @@ static void img_valid(void) {
     g_img[2] = CXEX_MAGIC2; g_img[3] = CXEX_MAGIC3;
     wr16(4, 0x5545);                      /* type .xuex */
     wr16(6, 1);                           /* format version */
-    wr16(8, CXEX_ARCH_X86_32);            /* arch */
+    wr16(8, ARCH_CXEX_TARGET);            /* arch: this kernel's */
     wr16(10, CXK_ABI_VERSION);            /* abi - the contract this kernel is */
     wr32(12, IMG_FLAGS);
     wr32(16, 0x00400000);                 /* entry */
@@ -280,8 +281,15 @@ int ktest_loader_adversarial(void) {
     wr16(10, CXK_ABI_VERSION - 1);
     ok = ok && refuses(CXEX_LOAD_BAD_ABI);
 
+    /* The other x86 is the case that matters: on x86-64 a signed x86-32 image
+       was loaded and entered in long mode, its code read as 64-bit
+       instructions. An id nothing defines is refused too. */
     img_valid();
-    wr16(8, CXEX_ARCH_X86_32 + 1);
+    wr16(8, ARCH_CXEX_TARGET == CXEX_ARCH_X86_32 ? CXEX_ARCH_X86_64 : CXEX_ARCH_X86_32);
+    ok = ok && refuses(CXEX_LOAD_BAD_ARCH);
+
+    img_valid();
+    wr16(8, 0);
     ok = ok && refuses(CXEX_LOAD_BAD_ARCH);
 
     /* And an image that declines to be checked at all. cxex_check_compat is

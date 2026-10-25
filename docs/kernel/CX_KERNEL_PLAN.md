@@ -289,6 +289,19 @@ or command-list base each NIC and AHCI port holds, read back from its
 registers, falls inside a region of its own name. xHCI's scratchpad pages
 stay on `pmm_alloc_pages_low` directly (one page at a time, never mapped).
 
+**Step 5f3, done 2026-10-25.** The loader checks an image's `arch_target`
+against the kernel's own, `ARCH_CXEX_TARGET` (`arch/cpu.h`: 1 x86-32, 2
+x86-64), instead of a fixed x86-32. On x86-64 it had accepted x86-32 images,
+so a signed x86-32 program spawned there would have been entered in long mode
+with its code read as 64-bit instructions. The loader self-test builds its
+images for the native arch and requires the other x86 width, and an id
+nothing defines, to be refused. The rest of the coverage needed no port: the
+ring-3 tests already run 64-bit blobs, the spawn test refuses on the
+signature before the arch matters, and the file and lock tests are kernel
+code. File access from ring 3 through the executive waits for step 6, when
+the DevKit writes `CXEX_ARCH_X86_64` (nothing writes it today). Self-test
+counts unchanged (68 and 122).
+
 ---
 
 ## 3. Processes and threads
