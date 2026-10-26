@@ -134,6 +134,31 @@ programs for it (step 6).
    executive starts and the full boot passes; the 32-bit kernel and code
    generator are then deleted.
 
+   The ABI goes first (Aurora, 2026-10-26), while the 32-bit system still
+   boots in full with the executive, so the new interface is proven end to end
+   before any 64-bit code generator exists:
+
+   - **6a1** The `.xfil` language and its generator in the DevKit, the
+     `kernel` domain only. The first `.xfil` describes today's ABI unchanged;
+     `cxk_abi.h` and the X prelude's constants, structures and syscall
+     wrappers are generated from it, and `check-abi` requires the committed
+     files to match. Every program compiles to the same bytes as before.
+   - **6a2** The reshape: one operation per syscall, fixed widths, the new
+     error list, a generated kernel dispatch table with argument decoding.
+     The userland, the executive and `xc`'s host layer move to it, still on
+     `int 0x80` on x86-32.
+   - **6a3** The system page: the syscall stubs, the ABI hash recorded in the
+     image and checked by the loader, and the kernel refusing a syscall from
+     anywhere else.
+   - **6b** `usize` and `isize` (a type of their own, Aurora 2026-10-26: mixing
+     them with `u32` or `u64` needs `as`, even where the widths agree), the
+     typed IR, and an x86-64 back end on it in the C# compiler, System V
+     AMD64. The x86-32 emitter stays as it is until it is deleted.
+   - **6c** `xc` gains the IR and the x86-64 back end; the differential tests
+     and the self-hosting fixed point hold on x86-64.
+   - **6d** The executive starts on x86-64 and the full boot passes; the
+     32-bit kernel and code generator are deleted.
+
 **Done when.** Each step closes only when these hold, each proven by a
 sabotage that turns it red, on top of every existing self-test passing:
 
