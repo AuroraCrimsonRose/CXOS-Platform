@@ -37,6 +37,9 @@ typedef uint32_t paddr_t;
 #define KVA_AHCI_DMA     0xE0000000u   /* the drivers' DMA windows */
 #define KVA_E1000_DMA    0xE1000000u
 #define KVA_RTL_DMA      0xE2000000u
+#define KVA_EHCI_DMA     0xE3000000u   /* controller i: + i * 0x10000 */
+#define KVA_XHCI_DMA     0xE4000000u   /* controller i: + i * 0x20000 */
+#define KVA_OHCI_DMA     0xE5000000u   /* controller i: + i * 0x10000 */
 #define KVA_FRAMEBUFFER  0xF0000000u   /* about 252 MB, to the recursive window */
 
 

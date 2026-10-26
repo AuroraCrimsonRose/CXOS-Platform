@@ -124,7 +124,7 @@ _Static_assert(sizeof(struct ohci_td) == 16, "a TD is 16 bytes");
  * Each controller has its own eight pages (dma_alloc), physical for the
  * controller and a kernel-half alias for the CPU. The offsets below are within
  * those pages. */
-#define ODMA_VBASE      0xE5000000u     /* controller i's alias: + i * 0x10000 */
+#define ODMA_VBASE      KVA_OHCI_DMA    /* controller i's alias: + i * 0x10000 (arch/<arch>/paging_defs.h) */
 #define ODMA_PAGES      8
 
 #define HCCA_OFF        0x0000          /* 256 bytes, 256-byte aligned */

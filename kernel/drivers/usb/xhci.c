@@ -116,7 +116,7 @@ _Static_assert(sizeof(struct xhci_trb) == 16, "a TRB is 16 bytes");
  * xHCI's alignment rules are strict and silent when violated: the DCBAA, the
  * command ring, the ERST and every context must be 64-byte aligned. Page
  * granularity below satisfies all of that with room to spare. */
-#define XDMA_VBASE      0xE4000000u     /* controller i's alias: + i * 0x20000 */
+#define XDMA_VBASE      KVA_XHCI_DMA    /* controller i's alias: + i * 0x20000 (arch/<arch>/paging_defs.h) */
 #define XDMA_PAGES      0x12
 
 #define DCBAA_OFF       0x0000

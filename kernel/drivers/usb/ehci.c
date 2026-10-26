@@ -129,7 +129,7 @@ _Static_assert(sizeof(struct ehci_qh) % 32 == 0, "QH stride must stay 32-byte al
  * bus-masters from their PHYSICAL addresses while the CPU reaches the same
  * structures through a KERNEL-half alias, so they stay visible when CR3 points
  * at a process directory. The offsets below are within those pages. */
-#define EHCI_DMA_VBASE  0xE3000000u     /* controller i's alias: + i * 0x10000 */
+#define EHCI_DMA_VBASE  KVA_EHCI_DMA    /* controller i's alias: + i * 0x10000 (arch/<arch>/paging_defs.h) */
 #define EHCI_DMA_PAGES  8
 
 #define PFLIST_OFF      0x0000          /* 1024 dwords, 4K aligned */

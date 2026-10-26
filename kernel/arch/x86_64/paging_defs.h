@@ -45,6 +45,9 @@ typedef uint64_t paddr_t;
 #define KVA_AHCI_DMA     0xFFFFE18000000000ull   /* the drivers' DMA windows */
 #define KVA_E1000_DMA    0xFFFFE18001000000ull
 #define KVA_RTL_DMA      0xFFFFE18002000000ull
+#define KVA_EHCI_DMA     0xFFFFE18003000000ull   /* controller i: + i * 0x10000 */
+#define KVA_XHCI_DMA     0xFFFFE18004000000ull   /* controller i: + i * 0x20000 */
+#define KVA_OHCI_DMA     0xFFFFE18005000000ull   /* controller i: + i * 0x10000 */
 #define KVA_FRAMEBUFFER  0xFFFFE20000000000ull
 #define KVA_KTEST_SCRATCH 0xFFFFE28000000000ull  /* one page the arch self-tests map */
 
