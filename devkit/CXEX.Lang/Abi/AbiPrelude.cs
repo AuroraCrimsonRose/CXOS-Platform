@@ -6,7 +6,7 @@ namespace CXEX.Lang.Abi;
 /// The X prelude (abi.x): the CXK ABI (abi/cxk_abi.h) as X sees it. Prepended to
 /// every compilation so X programs stay in lockstep with the kernel.
 ///
-/// <para><b>Constants and structures are generated</b> from the header this
+/// <para><b>Constants and structures are generated</b> from the interface this
 /// assembly was built with (<see cref="AbiModel"/>, DevKit engineering review §7).
 /// They used to be a hand-kept copy of a header in another repository. That copy
 /// drifted at least once: the kernel gained SYS_MOUSE_READ and struct mouse_state,
@@ -15,10 +15,11 @@ namespace CXEX.Lang.Abi;
 /// repositories merged (D6) the header is in reach, and nothing about the ABI is
 /// copied by hand any more.</para>
 ///
-/// <para><b>Written by hand:</b> <see cref="Notes"/>, <see cref="Wrappers"/> (one
-/// typed __syscall wrapper per syscall, in number order) and <see cref="Helpers"/>
-/// (everything built on them). They name the generated declarations and declare
-/// none of their own. <c>cxk check-abi</c> compares the header on disk with the
+/// <para><b>Generated</b> since roadmap step 6a1, from <c>abi/kernel.xfil</c>: the
+/// constants, the structures, and one typed __syscall wrapper per syscall that
+/// declares one (<see cref="XfilEmit"/>). <b>Written by hand:</b> <see cref="Notes"/>
+/// and <see cref="Helpers"/> (everything built on the wrappers). They name the
+/// generated declarations and declare none of their own. <c>cxk check-abi</c> compares the header on disk with the
 /// one built in, field types included (<see cref="AbiSync"/>).</para>
 ///
 /// <para>Every function in the prelude is compiled into every program, so their
@@ -28,14 +29,14 @@ public static class AbiPrelude
 {
     public const string FileName = "abi.x";
 
-    /// <summary>The whole prelude: the generated declarations, then the hand-written notes, wrappers and helpers.</summary>
-    public static string Generate() => Banner + AbiModel.Embedded.EmitX() + "\n" + Notes + Wrappers + Helpers;
+    /// <summary>The whole prelude: the generated declarations, the hand-written notes, the generated wrappers, the hand-written helpers.</summary>
+    public static string Generate() => Banner + AbiModel.Embedded.EmitX() + "\n" + Notes + XfilEmit.XWrappers(AbiModel.EmbeddedFile) + Helpers;
 
     private const string Banner = """
-// abi.x - the CXK ABI (abi/cxk_abi.h) for X.
-// Constants and structures are GENERATED from the header cxk was built
-// against: change the header, rebuild the DevKit, and they follow. Below them,
-// written by hand, are the __syscall wrappers that name the kernel's calls.
+// abi.x - the CXK ABI (abi/kernel.xfil) for X.
+// Constants, structures and the syscall wrappers are GENERATED from the
+// interface cxk was built with: change it, rebuild the DevKit, and they follow.
+// The notes and the helpers built on the wrappers are written by hand.
 
 """;
 
@@ -109,39 +110,6 @@ public static class AbiPrelude
 // userspace never sees relative deltas. `seq` increments on every state change:
 // compare it with the previous read to detect movement without diffing x/y.
 // Unprivileged, like keyboard input.
-
-""";
-
-    /// <summary>
-    /// Hand-written: one wrapper per syscall that has a plain one, in syscall-number
-    /// order. SYS_INPUT_READ and SYS_POWER have none; their callers are in
-    /// <see cref="Helpers"/>.
-    /// </summary>
-    private const string Wrappers = """
-// ---- typed syscall wrappers ----
-fn exit(code: i32) -> void { __syscall(SYS_EXIT, code as u32, 0, 0, 0, 0); }
-fn yield_() -> void { __syscall(SYS_YIELD, 0, 0, 0, 0, 0); }
-fn getpid() -> i32 { return __syscall(SYS_GETPID, 0, 0, 0, 0, 0); }
-fn getuid() -> i32 { return __syscall(SYS_GETUID, 0, 0, 0, 0, 0); }
-fn clock_read(c: *clock_info) -> i32 { return __syscall(SYS_CLOCK, c as u32, 0, 0, 0, 0); }
-fn sleep_ms(ms: u32) -> i32 { return __syscall(SYS_SLEEP, ms, 0, 0, 0, 0); }
-fn args_read(a: *args_info) -> i32 { return __syscall(SYS_ARGS, a as u32, 0, 0, 0, 0); }
-fn ipc_call(a: *ipc_call_args) -> i32 { return __syscall(SYS_IPC_CALL, a as u32, 0, 0, 0, 0); }
-fn ipc_recv(a: *ipc_recv_args) -> i32 { return __syscall(SYS_IPC_RECV, a as u32, 0, 0, 0, 0); }
-fn ipc_reply(a: *ipc_reply_args) -> i32 { return __syscall(SYS_IPC_REPLY, a as u32, 0, 0, 0, 0); }
-fn ep_create() -> i32 { return __syscall(SYS_EP_CREATE, 0, 0, 0, 0, 0); }
-fn handle_close(h: i32) -> i32 { return __syscall(SYS_HANDLE_CLOSE, h as u32, 0, 0, 0, 0); }
-fn handle_duplicate(h: i32, rights: u32) -> i32 { return __syscall(SYS_HANDLE_DUPLICATE, h as u32, rights, 0, 0, 0); }
-fn object_info(a: *object_info_args) -> i32 { return __syscall(SYS_OBJECT_INFO, a as u32, 0, 0, 0, 0); }
-fn mouse_read(m: *mouse_state) -> i32 { return __syscall(SYS_MOUSE_READ, m as u32, 0, 0, 0, 0); }
-fn console_write(buf: *u8, len: u32) -> i32 { return __syscall(SYS_CONSOLE_WRITE, buf as u32, len, 0, 0, 0); }
-fn log_read(i: u32, e: *log_entry) -> i32 { return __syscall(SYS_LOG_READ, i, e as u32, 0, 0, 0); }
-fn net_op(a: *net_op_args) -> i32 { return __syscall(SYS_NET_OP, a as u32, 0, 0, 0, 0); }
-fn fb_op(a: *fb_op_args) -> i32 { return __syscall(SYS_FB_OP, a as u32, 0, 0, 0, 0); }
-fn file_op(a: *file_op_args) -> i32 { return __syscall(SYS_FILE_OP, a as u32, 0, 0, 0, 0); }
-fn spawn(a: *spawn_args) -> i32 { return __syscall(SYS_SPAWN, a as u32, 0, 0, 0, 0); }
-fn exec_path(path: *u8, a: *spawn_args) -> i32 { return __syscall(SYS_EXEC_PATH, path as u32, a as u32, 0, 0, 0); }
-fn mem_op(a: *mem_op_args) -> i32 { return __syscall(SYS_MEM_OP, a as u32, 0, 0, 0, 0); }
 
 """;
 

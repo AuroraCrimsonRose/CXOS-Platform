@@ -11,7 +11,8 @@ using Spectre.Console.Cli;
 namespace CXEX.CLI.Commands;
 
 /// <summary>
-/// Pre-flight: confirm the X ABI prelude still matches the kernel's ABI header.
+/// Pre-flight: confirm the kernel's ABI header and the X prelude are what
+/// <c>abi/kernel.xfil</c> generates (roadmap step 6a1), then that the two agree.
 ///
 /// <para>The prelude's constants and structures are generated from the copy of
 /// <c>abi/cxk_abi.h</c> embedded in this <c>cxk</c> when it was built
@@ -63,6 +64,42 @@ public class CheckAbiCommand : Command<CheckAbiCommand.Settings>
 
         AnsiConsole.MarkupLine($"[grey]header:[/] {Markup.Escape(headerPath)}");
 
+        // The header is generated from kernel.xfil beside it (roadmap step 6a1), and
+        // the prelude from the copy of kernel.xfil built into this cxk. Either can
+        // fall behind the file on disk, and each has its own fix.
+        int generated = 0;
+        string xfilPath = Path.Combine(Path.GetDirectoryName(headerPath)!, "kernel.xfil");
+        if (!File.Exists(xfilPath))
+        {
+            AnsiConsole.MarkupLine($"[red]DRIFT:[/] {Markup.Escape(xfilPath)} not found; the header is generated from it.");
+            generated++;
+        }
+        else
+        {
+            string xfilText = File.ReadAllText(xfilPath).Replace("\r\n", "\n");
+            if (xfilText != AbiModel.EmbeddedXfil.Replace("\r\n", "\n"))
+            {
+                AnsiConsole.MarkupLine("[red]DRIFT:[/] this cxk was built from a different abi/kernel.xfil. " +
+                                       "Rebuild it (and refresh tools/cxk.exe), then re-run.");
+                generated++;
+            }
+            try
+            {
+                string expected = XfilEmit.CHeader(XfilParser.Parse(xfilText));
+                if (File.ReadAllText(headerPath).Replace("\r\n", "\n") != expected)
+                {
+                    AnsiConsole.MarkupLine("[red]DRIFT:[/] abi/cxk_abi.h is not what abi/kernel.xfil generates. " +
+                                           "Run `cxk abi generate`; never edit the header by hand.");
+                    generated++;
+                }
+            }
+            catch (XfilException e)
+            {
+                AnsiConsole.MarkupLine($"[red]DRIFT:[/] abi/kernel.xfil, {Markup.Escape(e.Message)}");
+                generated++;
+            }
+        }
+
         AbiSyncReport report = AbiSync.Compare(File.ReadAllText(headerPath), AbiPrelude.Generate());
 
         foreach (AbiFinding f in report.Findings)
@@ -80,6 +117,12 @@ public class CheckAbiCommand : Command<CheckAbiCommand.Settings>
                         AnsiConsole.MarkupLine($"[grey]note:[/] {Markup.Escape(f.Message)}");
                     break;
             }
+        }
+
+        if (generated > 0)
+        {
+            AnsiConsole.MarkupLine($"[red]ABI check failed:[/] {generated} generated file(s) out of step with abi/kernel.xfil.");
+            return 1;
         }
 
         int errors = report.Count(AbiFindingKind.Error);
@@ -113,7 +156,7 @@ public class CheckAbiCommand : Command<CheckAbiCommand.Settings>
         AnsiConsole.MarkupLine(
             warnings > 0
                 ? $"[green]ABI check passed[/] [grey]({warnings} warning(s))[/]"
-                : "[green]ABI check passed:[/] the prelude matches cxk_abi.h.");
+                : "[green]ABI check passed:[/] cxk_abi.h and the prelude are what abi/kernel.xfil generates.");
         return 0;
     }
 
@@ -123,7 +166,7 @@ public class CheckAbiCommand : Command<CheckAbiCommand.Settings>
     /// <c>&lt;repo&gt;/abi/cxk_abi.h</c> - the repository root contains a nested CXK
     /// directory - so both layouts are tried at each level.
     /// </summary>
-    private static string? LocateHeader()
+    internal static string? LocateHeader()
     {
         string? envRoot = Environment.GetEnvironmentVariable("CXK_ROOT");
         if (!string.IsNullOrEmpty(envRoot))

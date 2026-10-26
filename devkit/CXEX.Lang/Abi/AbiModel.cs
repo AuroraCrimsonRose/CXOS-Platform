@@ -6,14 +6,15 @@ using System.Text.RegularExpressions;
 
 namespace CXEX.Lang.Abi;
 
-/// <summary>One ABI constant: a <c>#define</c> or an <c>enum</c> member of <c>cxk_abi.h</c>.</summary>
-public sealed record AbiConstant(string Name, long Value)
+/// <summary>One ABI constant: a <c>const</c>, enum member or syscall number.</summary>
+public sealed record AbiConstant(string Name, long Value, string? DeclaredXType = null)
 {
     /// <summary>
-    /// The X type it is declared with. Error codes are negative and so signed;
-    /// everything else (numbers, flags, op selectors, sizes) is unsigned.
+    /// The X type it is declared with: the <c>.xfil</c>'s, or for one read from a
+    /// C header, signed for error codes (negative) and unsigned for everything
+    /// else (numbers, flags, op selectors, sizes).
     /// </summary>
-    public string XType => Name.StartsWith("E_", StringComparison.Ordinal) || Value < 0 ? "i32" : "u32";
+    public string XType => DeclaredXType ?? (Name.StartsWith("E_", StringComparison.Ordinal) || Value < 0 ? "i32" : "u32");
 }
 
 /// <summary>One field of an ABI structure, with its C type and the X type it maps to.</summary>
@@ -23,18 +24,20 @@ public sealed record AbiField(string Name, string CType, string XType);
 public sealed record AbiStruct(string Name, IReadOnlyList<AbiField> Fields);
 
 /// <summary>
-/// The CXK ABI as data, read from <c>abi/cxk_abi.h</c> - the one canonical
-/// source (DevKit engineering review §7). Everything X sees of the ABI is
-/// generated from this: <see cref="AbiPrelude"/> emits its constants and
-/// structures from <see cref="EmitX"/>, and <c>cxk check-abi</c> compares the
-/// model of the header on disk with the model <c>cxk</c> was built from.
+/// The CXK ABI as data (DevKit engineering review §7). Everything X sees of the
+/// ABI is generated from this: <see cref="AbiPrelude"/> emits its constants and
+/// structures from <see cref="EmitX"/>.
 ///
-/// <para>The header is embedded into this assembly at build time, because a
-/// released <c>cxk</c> has no repository beside it. That makes the build the
-/// moment the two are tied together: change the header, rebuild the DevKit, and
-/// the prelude follows with nobody editing it.</para>
+/// <para>Since roadmap step 6a1 the model comes from <c>abi/kernel.xfil</c>
+/// (<see cref="XfilEmit.Model"/>), which is embedded into this assembly at build
+/// time because a released <c>cxk</c> has no repository beside it. That makes the
+/// build the moment the two are tied together: change the interface, rebuild the
+/// DevKit, and the prelude follows with nobody editing it.</para>
 ///
-/// <para>The parser is deliberately strict. It understands exactly what the
+/// <para><see cref="Parse"/> still reads a C header: the generated
+/// <c>abi/cxk_abi.h</c> is read back with it, by <c>check-abi</c> and the tests, so
+/// what C compiles and what X is given are held to each other. The parser is
+/// deliberately strict. It understands exactly what the
 /// header uses - integer <c>#define</c>s, OR-expressions of earlier constants,
 /// anonymous <c>enum</c>s, and structures of fixed-width integers, pointers and
 /// arrays - and throws on anything else. A generator that skipped what it did
@@ -57,22 +60,38 @@ public sealed class AbiModel
 
     public AbiConstant? Constant(string name) => _byName.GetValueOrDefault(name);
 
-    /// <summary>The header this assembly was built from.</summary>
-    public static string EmbeddedHeader => _embedded.Value;
+    /// <summary>A model from parts already read (<see cref="XfilEmit.Model"/>).</summary>
+    public static AbiModel Create(IEnumerable<AbiConstant> constants, IEnumerable<AbiStruct> structs)
+    {
+        var cs = constants.ToList();
+        var dup = cs.GroupBy(c => c.Name, StringComparer.Ordinal).FirstOrDefault(g => g.Count() > 1);
+        if (dup is not null) throw new InvalidDataException($"{dup.Key} is defined twice.");
+        return new AbiModel(cs, structs.ToList());
+    }
 
-    /// <summary>The model of <see cref="EmbeddedHeader"/>.</summary>
+    /// <summary>The kernel interface (<c>abi/kernel.xfil</c>) this assembly was built from.</summary>
+    public static string EmbeddedXfil => _embedded.Value;
+
+    /// <summary><see cref="EmbeddedXfil"/>, parsed.</summary>
+    public static XfilFile EmbeddedFile => _embeddedFile.Value;
+
+    /// <summary>The header <see cref="EmbeddedXfil"/> generates.</summary>
+    public static string GeneratedHeader => XfilEmit.CHeader(EmbeddedFile);
+
+    /// <summary>The model of <see cref="EmbeddedXfil"/>.</summary>
     public static AbiModel Embedded => _embeddedModel.Value;
 
     private static readonly Lazy<string> _embedded = new(() =>
     {
-        using Stream s = typeof(AbiModel).Assembly.GetManifestResourceStream("cxk_abi.h")
+        using Stream s = typeof(AbiModel).Assembly.GetManifestResourceStream("kernel.xfil")
             ?? throw new InvalidOperationException(
-                "cxk_abi.h is not embedded in CXEX.Lang; the DevKit was built without abi/cxk_abi.h.");
+                "kernel.xfil is not embedded in CXEX.Lang; the DevKit was built without abi/kernel.xfil.");
         using var r = new StreamReader(s, Encoding.UTF8);
         return r.ReadToEnd();
     });
 
-    private static readonly Lazy<AbiModel> _embeddedModel = new(() => Parse(EmbeddedHeader));
+    private static readonly Lazy<XfilFile> _embeddedFile = new(() => XfilParser.Parse(EmbeddedXfil));
+    private static readonly Lazy<AbiModel> _embeddedModel = new(() => XfilEmit.Model(EmbeddedFile));
 
     /// <summary>Constant prefixes of the header that are not ABI surface.</summary>
     private static readonly HashSet<string> NotSurface = new(StringComparer.Ordinal)
@@ -239,7 +258,7 @@ public sealed class AbiModel
     public string EmitX()
     {
         var sb = new StringBuilder();
-        sb.Append("// ---- generated from abi/cxk_abi.h: constants ----\n");
+        sb.Append("// ---- generated from abi/kernel.xfil: constants ----\n");
         int width = Constants.Max(c => c.Name.Length + c.XType.Length + 2);
         foreach (var c in Constants)
         {
@@ -249,7 +268,7 @@ public sealed class AbiModel
             sb.Append("const ").Append(decl.PadRight(width)).Append(" = ").Append(value).Append(";\n");
         }
 
-        sb.Append("\n// ---- generated from abi/cxk_abi.h: structures ----\n");
+        sb.Append("\n// ---- generated from abi/kernel.xfil: structures ----\n");
         foreach (var s in Structs)
             sb.Append("struct ").Append(s.Name).Append(" { ")
               .Append(string.Join(", ", s.Fields.Select(f => $"{f.Name}: {f.XType}")))

@@ -28,11 +28,25 @@
 #include <stdint.h>
 #include "cxk_abi.h"   /* E_* codes + the public ABI contract */
 
-/* The grants, one bit each. A process holds some subset of these; a launcher
-   passes a subset of its own to a child and can never amplify (see the
-   attenuation note in docs/x86_32/kernel/CX_ABI.md section 5). */
-#define GRANT_CONSOLE   0x0001u   /* console_write */
-/* NOT ENFORCED, and that is deliberate rather than missing. SYS_MEM_OP is
+/* The grants, one bit each, are ABI: their values are in abi/kernel.xfil, and
+   so in cxk_abi.h, where userspace spawners name them too. A process holds some
+   subset; a launcher passes a subset of its own to a child and can never
+   amplify (see the attenuation note in docs/x86_32/kernel/CX_ABI.md section 5).
+   What each one guards in the kernel:
+
+     GRANT_CONSOLE      console_write
+     GRANT_MEM          (reserved, not enforced) see the note below
+     GRANT_DISK         block_read / block_write
+     GRANT_NET          SYS_NET_OP: interface config, ping, raw frames
+     GRANT_SPAWN        spawn
+     GRANT_POWER        power (reboot/shutdown)
+     GRANT_ENDPOINT     ep_create (may own an IPC endpoint -> broker)
+     GRANT_IOPORT       (reserved v1) raw port I/O / driver tier
+     GRANT_FRAMEBUFFER  SYS_FB_OP: draw to the framebuffer (in baseline for
+                        now; split to a display-server tier later)
+     GRANT_OS_BASELINE  a broker executive's baseline authority
+
+   GRANT_MEM is NOT ENFORCED, and that is deliberate rather than missing. SYS_MEM_OP is
    unprivileged by design - "a program that could not obtain memory would not
    be contained, it would be unable to run", and what bounds it is the
    per-process quota inside vm_map, not a bit every program would have to hold
@@ -47,24 +61,6 @@
    published; marked reserved, the way GRANT_IOPORT already is. If memory ever
    does become a gated resource, this is the bit to use and the comment on
    SYS_MEM_OP is the decision to revisit first. */
-#define GRANT_MEM       0x0002u   /* (reserved, not enforced) see the note above */
-#define GRANT_DISK      0x0004u   /* block_read / block_write */
-#define GRANT_NET       0x0008u   /* SYS_NET_OP: interface config, ping, raw frames */
-#define GRANT_SPAWN     0x0010u   /* spawn */
-#define GRANT_POWER     0x0020u   /* power (reboot/shutdown) */
-#define GRANT_ENDPOINT  0x0040u   /* ep_create (may own an IPC endpoint -> broker) */
-#define GRANT_IOPORT    0x0080u   /* (reserved v1) raw port I/O / driver tier */
-#define GRANT_FRAMEBUFFER 0x0100u /* SYS_FB_OP: draw to the framebuffer (in baseline
-                                   for now; split to a display-server tier later) */
-
-/* a broker executive's baseline authority */
-/* The ABI (abi/cxk_abi.h) carries a copy of these so userspace spawners can
-   request caps. The two MUST agree - guarded here so including both is
-   silent, and checked below so a future edit to one can't drift. */
-#ifndef GRANT_OS_BASELINE
-#define GRANT_OS_BASELINE \
-    (GRANT_CONSOLE | GRANT_MEM | GRANT_DISK | GRANT_SPAWN | GRANT_POWER | GRANT_ENDPOINT | GRANT_FRAMEBUFFER | GRANT_NET)
-#endif
 
 /* A system program's baseline: what an .xsex gets when the KERNEL starts it.
    Narrower than the executive's on purpose - a system program is OS-owned but

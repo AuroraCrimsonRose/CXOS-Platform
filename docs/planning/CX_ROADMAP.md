@@ -143,6 +143,8 @@ programs for it (step 6).
      `cxk_abi.h` and the X prelude's constants, structures and syscall
      wrappers are generated from it, and `check-abi` requires the committed
      files to match. Every program compiles to the same bytes as before.
+     **Done 2026-10-26** (`kernel/CX_SYSCALLS_IPC.md` §9.5): both kernels
+     and every program byte-identical.
    - **6a2** The reshape: one operation per syscall, fixed widths, the new
      error list, a generated kernel dispatch table with argument decoding.
      The userland, the executive and `xc`'s host layer move to it, still on

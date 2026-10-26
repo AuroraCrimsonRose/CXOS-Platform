@@ -114,6 +114,10 @@
           "pattern": "const ushort AbiVersion = ([0-9]+)"
         },
         {
+          "file": "abi/kernel.xfil",
+          "pattern": "const CXK_ABI_VERSION: u32 = ([0-9]+)"
+        },
+        {
           "file": "abi/cxk_abi.h",
           "pattern": "#define CXK_ABI_VERSION +([0-9]+)"
         },

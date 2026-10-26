@@ -1,0 +1,583 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+//
+// The kernel's interface: the one definition abi/cxk_abi.h and the X prelude's
+// constants, structures and syscall wrappers are generated from
+// (docs/kernel/CX_SYSCALLS_IPC.md §9). `cxk abi generate` writes the header;
+// `cxk check-abi` fails while the committed one differs from what this file
+// generates. Comments starting `//` stay here; `///` comments are documentation
+// and are carried into the generated files.
+//
+// This is today's ABI, described unchanged (roadmap step 6a1). Step 6a2
+// reshapes it: one operation per syscall, fixed widths.
+
+xfil 1
+library cx.kernel
+domain kernel
+
+/// CXK ABI v1 - the PUBLIC contract shared by the kernel, the .xoex executive,
+/// and .xuex apps (and, later, the X toolchain). Syscall numbers, error codes,
+/// and shared call structures: kernel and user code compile against the SAME
+/// definitions, so they can never drift.
+///
+/// Calling convention (see docs/CXK_ABI_v1):
+///   eax = syscall number   ebx,ecx,edx,esi,edi = args 1..5   -> int 0x80
+///   result in eax: >= 0 success (call-specific), < 0 a negative error code.
+///   all GP registers except eax are preserved across the call.
+///   64-bit values are passed by pointer to a struct, never split across regs.
+
+/// The version of THIS contract: the syscall numbers, struct layouts and
+/// capability meanings below. It is stamped into every CXEX image's abi_version
+/// so a kernel can refuse one built against a different contract.
+///
+/// It is 2 because docs/x86_32/kernel/CX_ABI.md has declared the live contract v2 since
+/// it was written - what was missing was anywhere in the CODE that said so, which
+/// is how every image came to be stamped 1 while asking to be refused on a
+/// mismatch. Declared in versions.json as `cxex-abi` and checked against this
+/// line; bump both, and the DevKit's stamp, in the one commit that changes the
+/// contract.
+const CXK_ABI_VERSION: u32 = 3
+
+/// ---- syscall numbers ----
+/// lifecycle 0x00-0x0F (no capability required)
+syscall SYS_EXIT = 0x00 fn exit(code: i32) -> void              /// ebx = exit code; does not return
+syscall SYS_YIELD = 0x01 fn yield_() -> void                    /// cooperatively yield the CPU
+syscall SYS_GETPID = 0x02 fn getpid() -> i32                    /// -> caller pid
+syscall SYS_GETUID = 0x03 fn getuid() -> i32                    /// -> caller owning uid (0 = SYSTEM)
+syscall SYS_CLOCK = 0x04 fn clock_read(c: *clock_info) -> i32   /// ebx = *clock_info -> 0, or -E_*
+syscall SYS_SLEEP = 0x05 fn sleep_ms(ms: u32) -> i32            /// ebx = ms; blocks this thread, then returns 0
+syscall SYS_ARGS = 0x06 fn args_read(a: *args_info) -> i32      /// ebx = *args_info -> 0, or -E_*
+/// IPC + handles 0x10-0x1F
+syscall SYS_IPC_CALL = 0x10 fn ipc_call(a: *ipc_call_args) -> i32       /// ebx = *ipc_call_args -> reply length (blocks)
+syscall SYS_IPC_RECV = 0x11 fn ipc_recv(a: *ipc_recv_args) -> i32       /// ebx = *ipc_recv_args -> request length (blocks)
+syscall SYS_IPC_REPLY = 0x12 fn ipc_reply(a: *ipc_reply_args) -> i32    /// ebx = *ipc_reply_args -> 0
+syscall SYS_EP_CREATE = 0x13 fn ep_create() -> i32                      /// create an endpoint -> RECV handle (GRANT_ENDPOINT)
+syscall SYS_HANDLE_CLOSE = 0x16 fn handle_close(h: i32) -> i32          /// release a handle
+/// ebx = handle, ecx = rights (a subset of its own; needs HRIGHT_DUPLICATE) -> new handle
+syscall SYS_HANDLE_DUPLICATE = 0x17 fn handle_duplicate(h: i32, rights: u32) -> i32
+syscall SYS_OBJECT_INFO = 0x18 fn object_info(a: *object_info_args) -> i32   /// ebx = *object_info_args -> bytes written
+
+/// ---- handles ----
+/// A handle is a positive number, never 0 and never below 256, and a closed
+/// handle's number is refused rather than naming whatever comes next. Its
+/// rights say what its holder may do with the object, and they only shrink:
+/// SYS_HANDLE_DUPLICATE can drop rights, never add one. Each object type
+/// defines its own (kernel/object/htab.h).
+const HRIGHT_SEND: u32 = 0x1u        /// endpoint: ipc_call through it
+/// endpoint: ipc_recv and ipc_reply on it; file: FOPEN_READ, FOPEN_WRITE
+const HRIGHT_RECV: u32 = 0x2u
+/// Generic rights, which mean the same on every type, count down from the top
+/// bit; a type's own count up from the bottom. A handle without
+/// HRIGHT_DUPLICATE cannot be copied, and a copy has it only if asked for.
+const HRIGHT_DUPLICATE: u32 = 0x80000000u
+
+/// input 0x20-0x2F (unprivileged: reading your own keystrokes)
+/// ebx = flags (0=block, 1=nonblocking) -> char, 0 if none. No plain wrapper:
+/// the prelude's input_read and input_poll pass the flag.
+syscall SYS_INPUT_READ = 0x20
+syscall SYS_MOUSE_READ = 0x21 fn mouse_read(m: *mouse_state) -> i32     /// ebx = *mouse_state -> 1 if a mouse is present
+/// console 0x30-0x3F (privileged: GRANT_CONSOLE)
+syscall SYS_CONSOLE_WRITE = 0x30 fn console_write(buf: *u8, len: u32) -> i32   /// ebx = buf, ecx = len (0 = bounded NUL-scan)
+/// ebx = index (0 = oldest kept), ecx = *log_entry -> 1 filled, 0 past the newest
+syscall SYS_LOG_READ = 0x31 fn log_read(i: u32, e: *log_entry) -> i32
+/// network 0x50-0x5F (privileged: GRANT_NET)
+syscall SYS_NET_OP = 0x50 fn net_op(a: *net_op_args) -> i32     /// ebx = *net_op_args (GRANT_NET) -> op-specific
+/// framebuffer 0x40-0x4F (privileged: GRANT_FRAMEBUFFER)
+syscall SYS_FB_OP = 0x40 fn fb_op(a: *fb_op_args) -> i32        /// ebx = *fb_op_args (GRANT_FRAMEBUFFER) -> op-specific
+/// files 0x60-0x6F (privileged: GRANT_DISK)
+syscall SYS_FILE_OP = 0x60 fn file_op(a: *file_op_args) -> i32  /// ebx = *file_op_args (GRANT_DISK) -> op-specific
+/// process 0x70-0x7F (privileged)
+syscall SYS_SPAWN = 0x70 fn spawn(a: *spawn_args) -> i32        /// ebx = *spawn_args (GRANT_SPAWN) -> pid
+/// ebx = path, ecx = *spawn_args (GRANT_SPAWN) -> pid (image/image_len in the
+/// struct are ignored)
+syscall SYS_EXEC_PATH = 0x72 fn exec_path(path: *u8, a: *spawn_args) -> i32
+/// ebx = POWER_* op (GRANT_POWER); reboot does not return. No plain wrapper:
+/// the prelude's reboot, shutdown and sleep pass the op.
+syscall SYS_POWER = 0x71
+
+syscall SYS_MEM_OP = 0x80 fn mem_op(a: *mem_op_args) -> i32     /// ebx = *mem_op_args; unprivileged, quota-bounded
+const POWER_REBOOT: u32 = 0
+const POWER_SHUTDOWN: u32 = 1        /// ACPI S5 soft-off
+const POWER_SLEEP: u32 = 2           /// ecx = ms; 0 = S1/C1 until a keypress
+
+/// ---- error codes (negative; returned in eax) ----
+const E_OK: i32 = 0
+const E_PERM: i32 = -1       /// capability denied
+const E_INVAL: i32 = -2      /// bad argument
+const E_FAULT: i32 = -3      /// bad/unmapped user pointer
+const E_NOENT: i32 = -4      /// no such object
+const E_NOMEM: i32 = -5      /// out of memory
+const E_BADF: i32 = -6       /// bad handle
+const E_AGAIN: i32 = -7      /// would block / no message ready
+const E_RANGE: i32 = -8      /// message too large / buffer too small
+const E_NOSYS: i32 = -9      /// unknown syscall number
+const E_IO: i32 = -10        /// disk or filesystem I/O failure
+const E_EXIST: i32 = -11     /// the name is already taken
+const E_ISDIR: i32 = -12     /// expected a file, got a directory
+const E_NOTDIR: i32 = -13    /// expected a directory, got a file
+const E_DEADLK: i32 = -14    /// waiting would never end (FILE_OP_LOCK)
+
+/// ---- program arguments ----
+/// A launcher hands over a flat blob: the argument strings, NUL-terminated, one
+/// after another. The kernel copies it into the new address space as a single
+/// page at USER_ARGS_BASE, laid out as
+///
+///     u32  argc
+///     u32  off[argc]        byte offsets from the base of the page
+///     ...  the strings, NUL-terminated
+///
+/// The page is always mapped, so a program with no arguments reads argc == 0
+/// rather than faulting, and it is writable, so a program may chew on its own
+/// argument strings in place. Offsets rather than pointers because the blob is
+/// built in one address space and read in another; a launcher never hands a
+/// child a pointer into its own memory.
+
+/// WHERE the page is is the KERNEL's business, and a program must ask.
+///
+/// This address is a 32-bit x86 one. On another architecture the user address
+/// space is laid out differently and this number means nothing - so a program
+/// that hardcoded it would fault on the first argument it read, and the port
+/// would be a userland port rather than a kernel port. SYS_ARGS exists so that
+/// the one arch-specific fact here stays on the kernel's side of the line.
+///
+/// USER_ARGS_BASE is still in this header because the kernel needs it and
+/// because a reader deserves to know where the page actually goes. It is not
+/// for userspace to use.
+const USER_ARGS_BASE: u32 = 0xBFFFF000u  /// x86-32: the page just above the user stack
+const USER_ARGS_MAX: u32 = 4096u         /// one page, header included
+const USER_ARGS_MAXC: u32 = 64u          /// most arguments one program can be given
+
+/// What SYS_ARGS hands back: where this program's arguments are, and how many.
+/// `base` points at the argument page described above - the kernel's choice,
+/// not a constant the program is expected to know.
+struct args_info {
+    count: u32      /// argc
+    base: u32       /// address of the argument page in THIS process
+    broker: i32     /// a SEND handle on the launcher's broker endpoint, or -1
+}
+
+/// ---- shared call structures ----
+struct spawn_args {
+    image: u32              /// the app's CXEX bytes (in the caller's space)
+    image_len: u32
+    name: u32               /// optional; not dereferenced in v1
+    broker_endpoint: i32    /// a RECV endpoint handle the caller owns
+    /// requested caps for the child; kernel masks against the spawner's own
+    /// caps (attenuation, never amplify). 0 = capability-less app.
+    caps: u32
+    args: u32               /// argc NUL-terminated strings back to back, or NULL
+    args_len: u32           /// total bytes of that blob, terminators included
+}
+
+/// ---- clock and sleep (SYS_CLOCK, SYS_SLEEP; unprivileged) ----
+///
+/// Neither needs a capability. Reading the clock discloses nothing a process
+/// could not time for itself, and waiting is the opposite of a privilege - a
+/// sleeping process is one not using the machine. The existing POWER_SLEEP is a
+/// different thing entirely: it puts the MACHINE into an ACPI sleep state and
+/// is rightly behind GRANT_POWER. SYS_SLEEP blocks one thread and leaves the
+/// rest of the system running.
+///
+/// Two clocks, because they answer different questions:
+///
+///   ticks    milliseconds since boot, from the 1000 Hz timer. Monotonic. Use
+///            it to measure an interval - it cannot jump, and it does not care
+///            whether the machine knows what year it is.
+///   epoch    seconds since 1970, from the RTC. Use it to stamp a file or to
+///            decide that it is 3am. 0 means the RTC could not be read, so a
+///            caller that needs a real date must check rather than assume.
+///
+/// A scheduler wants both: `ticks` to decide that 30 seconds have passed, and
+/// `epoch` to record when something ran.
+struct clock_info {
+    ticks: u32      /// ms since boot, monotonic; wraps after ~49 days
+    epoch: u32      /// seconds since 1970 from the RTC, or 0 if unavailable
+}
+
+/// SYS_SLEEP bounds. A sleep is a promise to come back, so it is capped: an
+/// unbounded one is indistinguishable from a hang, and nothing in the system
+/// needs to wait longer than an hour in a single call.
+const SLEEP_MAX_MS: u32 = 3600000u   /// one hour
+
+/// IPC is synchronous: ipc_call blocks the caller until the owner ipc_replies.
+/// Messages are bounded (<= one page) and copied through the kernel. The message
+/// schema is defined by the executive; the kernel just moves bytes.
+
+/// SYS_OBJECT_INFO: what one of the caller's handles names. It needs no right
+/// and no grant: it describes only what the caller already holds.
+const OBJINFO_BASIC: u32 = 1         /// -> struct object_basic
+
+const OBJ_TYPE_ENDPOINT: u32 = 1
+const OBJ_TYPE_FILE: u32 = 2
+
+struct object_info_args {
+    handle: i32
+    topic: u32      /// OBJINFO_*
+    buf: u32        /// the topic's structure is written here
+    cap: u32        /// bytes at buf; smaller than the topic needs is E_RANGE
+}
+struct object_basic {
+    kind: u32           /// OBJ_TYPE_* (not `type`: an X keyword)
+    rights: u32         /// this handle's
+    koid: u32           /// the object's kernel id: handles on one object agree
+    grant: u32          /// this handle's grant id
+    parent_grant: u32   /// the grant it was derived from; 0 = none
+}
+
+struct ipc_call_args {
+    ep_handle: i32  /// a SEND endpoint handle (the broker channel)
+    req: u32        /// request bytes
+    req_len: u32
+    reply: u32      /// buffer the reply is copied into
+    reply_cap: u32
+}
+struct ipc_recv_args {
+    ep_handle: i32  /// a RECV endpoint handle (owner side)
+    buf: u32        /// request copied here
+    cap: u32
+    sender: u32     /// set to the caller's pid (may be 0)
+}
+struct ipc_reply_args {
+    ep_handle: i32  /// the RECV endpoint just received on
+    data: u32       /// reply bytes
+    len: u32
+}
+
+/// ---- framebuffer ops (SYS_FB_OP; GRANT_FRAMEBUFFER) ----
+enum fb_op {
+    FB_OP_INFO = 0          /// -> out[0..3] = width,height,bpp,pitch
+    FB_OP_CLEAR = 1         /// color
+    FB_OP_FILL_RECT = 2     /// x,y,w,h,color
+    FB_OP_PUT_PIXEL = 3     /// x,y,color
+    FB_OP_DRAW_LINE = 4     /// x,y=(x0,y0) w,h=(x1,y1) color
+    FB_OP_DRAW_TEXT = 5     /// x,y,color(fg),color2(bg),text
+    /// Install a console font by NAME, from /System/Fonts/<text>.xfnt.
+    ///
+    /// A name, not a path, on purpose. The kernel composes the path and reads
+    /// the file itself, so there is no user buffer holding the font between
+    /// being validated and being installed - the same reason SYS_EXEC_PATH
+    /// reads the image rather than taking the caller's copy - and a capability
+    /// to draw on the screen does not become a capability to make the kernel
+    /// read an arbitrary path. Names carrying '/' or '.' are refused.
+    ///
+    /// The font is validated as an XFNT before anything is installed; a bad one
+    /// leaves the current font working. Returns 0, or E_INVAL / E_NOENT.
+    FB_OP_SET_FONT = 6      /// text = font name, no path, no extension
+}
+struct fb_op_args {
+    op: u32
+    x: u32
+    y: u32
+    w: u32
+    h: u32
+    color: u32      /// 0x00RRGGBB (fg for text)
+    color2: u32     /// bg for DRAW_TEXT
+    text: u32       /// DRAW_TEXT: NUL-terminated
+    out: u32        /// INFO: caller buffer >= 4 u32
+}
+
+/// ---- capabilities (for spawn_args.caps) ----
+/// A process's authority, as a bitmask: what it is ALLOWED TO DO. One bit per
+/// class of privileged primitive, checked by the syscall dispatcher before the
+/// call runs. GRANT_ because each bit is a grant - handed over when the process
+/// was started, and never wider than what the thing that started it held.
+/// kernel/cpu/caps.h describes what each one guards.
+const GRANT_CONSOLE: u32 = 0x0001u
+/// reserved, NOT enforced: SYS_MEM_OP is unprivileged by design - see
+/// kernel/cpu/caps.h
+const GRANT_MEM: u32 = 0x0002u
+const GRANT_DISK: u32 = 0x0004u
+const GRANT_NET: u32 = 0x0008u
+const GRANT_SPAWN: u32 = 0x0010u
+const GRANT_POWER: u32 = 0x0020u
+const GRANT_ENDPOINT: u32 = 0x0040u
+const GRANT_IOPORT: u32 = 0x0080u
+const GRANT_FRAMEBUFFER: u32 = 0x0100u
+const GRANT_OS_BASELINE: u32 = GRANT_CONSOLE | GRANT_MEM | GRANT_DISK | GRANT_SPAWN | GRANT_POWER | GRANT_ENDPOINT | GRANT_FRAMEBUFFER | GRANT_NET
+
+/// Not a grant: a restriction, carried in spawn_args.caps's top bit. The child's
+/// SYS_CONSOLE_WRITE goes to the kernel log, a line at a time, instead of the
+/// screen - the supervisor and its services, which would otherwise print over
+/// the shell. Every process the child starts inherits it, asked for or not, so
+/// a background process cannot hand the screen to its own children.
+const SPAWN_BACKGROUND: u32 = 0x80000000u
+
+/// ---- network (SYS_NET_OP; GRANT_NET) ----
+/// IPv4 addresses cross the ABI as a packed u32 in NETWORK byte order
+/// (a.b.c.d -> (a<<24)|(b<<16)|(c<<8)|d) so userspace needs no array type.
+enum net_op {
+    NET_OP_STATUS = 0       /// -> 1 if the interface is up, 0 if not
+    NET_OP_MAC = 1          /// data = 6-byte buffer for the MAC
+    NET_OP_GET_IP = 2       /// -> out[0..3] = ip, mask, gateway, dns1
+    NET_OP_SET_IP = 3       /// ip = address, len selects which field (0=ip 1=mask 2=gw 3=dns)
+    NET_OP_PING = 4         /// ip = destination, len = sequence -> out[0] = rtt ms
+    NET_OP_SEND = 5         /// data/len = a raw Ethernet frame
+    NET_OP_RECV = 6         /// data/len = buffer -> bytes received, 0 if none
+}
+struct net_op_args {
+    op: u32
+    ip: u32         /// packed IPv4, network order
+    data: u32       /// frame or MAC buffer
+    len: u32        /// buffer length, or a small selector/sequence
+    out: u32        /// results (>= 4 u32 for GET_IP)
+}
+
+/// ---- path execution (SYS_EXEC_PATH; GRANT_SPAWN) ----
+///
+/// Run the CXEX image at `path`. Takes the same spawn_args as SYS_SPAWN for the
+/// name, broker endpoint and requested caps, and IGNORES its image/image_len -
+/// the kernel reads the file itself.
+///
+/// That is the whole point of having a second call rather than letting a
+/// process read a file and hand the bytes to SYS_SPAWN. SYS_SPAWN takes an
+/// image already in the caller's memory and does not verify it; only the
+/// kernel's own load path checks signatures. Reading the image inside the
+/// kernel means the bytes that are verified are exactly the bytes that are
+/// loaded, with no window in which the caller could swap them, and no way for
+/// ring 3 to introduce code that was never signed.
+///
+/// Caps are attenuated against the caller's own set, as with SYS_SPAWN: you may
+/// pass a subset of your authority and never amplify.
+
+/// ---- memory (SYS_MEM_OP; unprivileged, bounded by a per-process quota) ----
+///
+/// Ask for memory, give it back. This is the only way a ring-3 process obtains
+/// storage beyond its image and its stack.
+///
+/// It is UNPRIVILEGED and deliberately not behind a grant. A capability every
+/// program must hold is not a capability, it is noise - and denying a process
+/// the ability to allocate does not make it safe, it makes it broken. The
+/// containment is a per-process QUOTA instead: a byte ceiling on how much may
+/// be mapped at once, attenuated on spawn exactly as grants are, so a child can
+/// never be given a larger ceiling than its parent holds.
+///
+/// WHAT A MAPPING IS ADDRESSED BY. A request names an OBJECT, a 64-bit OFFSET
+/// into it, and a LENGTH. Today the only object is MOBJ_ANON - anonymous
+/// zero-filled memory - and the offset must be 0, so the shape looks like
+/// overkill. It is not, and the reason is the one thing a 32-bit pointer can
+/// never do:
+///
+///   A pointer here is 32 bits and the kernel occupies 0xC0000000 upward, so a
+///   process sees under 3 GB of flat address space. No single pointer will ever
+///   reach past that; that is the hardware, not a policy. But an OBJECT larger
+///   than 4 GB is perfectly reachable, by mapping a WINDOW of it at a time and
+///   moving the window - the object is addressed by a 64-bit offset, and only
+///   the window is addressed by a pointer. A file, a device aperture, or shared
+///   memory can all be larger than the space that views them.
+///
+/// That only works if the offset is 64 bits from the first day. It is one field
+/// now and an ABI break later, so it is here now, before anything is written
+/// against it. It is carried as two 32-bit halves rather than a uint64_t so the
+/// struct's layout is beyond question on either side of the boundary.
+///
+/// WHAT COMES BACK. `addr` is where the mapping landed and `granted` is how
+/// many bytes it actually covers. Both are outputs, because both are the
+/// kernel's to decide: hardware maps in PAGES, and a page is 4 KB here, 16 KB
+/// or 64 KB elsewhere. A caller asking in bytes and being TOLD what it got
+/// never has to know the page size, which is the whole reason this is a
+/// syscall and not a constant.
+///
+/// `addr` is also an INPUT when MMAP_HINT is set - a suggested address the
+/// kernel may decline. That is what makes a moving window cheap: unmap and
+/// remap at the same address and the pointers inside stay valid. It is a hint
+/// and not a demand because a process that could dictate its own layout could
+/// ask to land on top of something it does not own.
+///
+/// PROTECTION, AND AN HONEST LIMIT. `prot` is explicit, and MPROT_WRITE with
+/// MPROT_EXEC together is REFUSED. Read-only is genuinely enforced: a page
+/// mapped without MPROT_WRITE faults on a store.
+///
+///   Execute is NOT enforced, and cannot be here. A 32-bit non-PAE page table
+///   entry has no no-execute bit - there is nowhere to put "not executable" -
+///   so every readable page is also executable whatever this field says. The
+///   refusal of WRITE|EXEC is therefore a DISCIPLINE today and becomes a
+///   hardware guarantee when this kernel gains PAE or moves to 64-bit, where
+///   the bit exists. It is enforced now so that nothing is ever written that
+///   would break when it starts being real.
+enum mem_op {
+    MEM_OP_MAP = 0      /// -> 0, with addr and granted filled in
+    MEM_OP_UNMAP = 1    /// addr, length -> 0
+    MEM_OP_INFO = 2     /// -> 0, with quota and mapped filled in
+}
+
+/// mem_op_args.prot - what the mapping may be used for.
+const MPROT_NONE: u32 = 0x00
+const MPROT_READ: u32 = 0x01
+const MPROT_WRITE: u32 = 0x02
+const MPROT_EXEC: u32 = 0x04     /// accepted and recorded; see the honest limit above
+
+/// mem_op_args.flags
+const MMAP_HINT: u32 = 0x01      /// try `addr` first; the kernel may place elsewhere
+
+/// mem_op_args.object - what the mapping is a view OF.
+const MOBJ_ANON: u32 = 0         /// anonymous zero-filled memory; offset must be 0
+
+/// The largest single mapping a process may ask for. A bound rather than a
+/// limit of the design: it keeps one bad length from walking the region list
+/// off the end of the user half, and it is far above anything that has a
+/// reason to exist yet. 64 MiB.
+const MMAP_MAX_BYTES: u32 = 0x04000000u
+
+/// How many separate mappings one process may hold at once.
+const MMAP_MAX_REGIONS: u32 = 32
+
+struct mem_op_args {
+    op: u32         /// MEM_OP_*
+    object: u32     /// MOBJ_* (MOBJ_ANON today)
+    offset_lo: u32  /// 64-bit offset into the object, low half
+    offset_hi: u32  /// ... and high half; both 0 for MOBJ_ANON
+    length: u32     /// MAP: bytes wanted. UNMAP: bytes to release
+    /// MAP in: hint if MMAP_HINT. MAP out: where it is. UNMAP in: the address
+    /// to release
+    addr: u32
+    granted: u32    /// MAP out: bytes actually mapped (length, rounded up to a page)
+    prot: u32       /// MPROT_*
+    flags: u32      /// MMAP_*
+    quota: u32      /// INFO out: this process's ceiling, in bytes
+    mapped: u32     /// INFO out: how much of it is currently in use
+}
+
+/// ---- files (SYS_FILE_OP; GRANT_DISK) ----
+///
+/// The filesystem as userspace sees it. CXFS itself is 64-bit throughout, but
+/// X Native has no 64-bit integer type, so every offset and size crossing this
+/// boundary is 32 bits and SIGNED: read/write return a byte count, seek returns
+/// the new offset, and a negative return is an E_* code. That caps a file a
+/// user process can address at INT32_MAX (2 GB). Raising it means either a
+/// 64-bit type in the language or an offset-hi field, and the cap is documented
+/// here rather than silently truncating.
+///
+/// A handle from FILE_OP_OPEN is an ordinary entry in the process's handle table
+/// (abi sec 6), so SYS_HANDLE_CLOSE releases it as well as FILE_OP_CLOSE does,
+/// and it is dropped with the rest of the table when the process exits.
+///
+/// Paths are resolved against the process's cwd unless they start with '/'.
+enum file_op {
+    FILE_OP_OPEN = 0        /// path, flags=FOPEN_* -> handle
+    FILE_OP_CLOSE = 1       /// handle
+    FILE_OP_READ = 2        /// handle, data, len -> bytes read (0 at EOF)
+    FILE_OP_WRITE = 3       /// handle, data, len -> bytes written
+    FILE_OP_SEEK = 4        /// handle, off, flags=FSEEK_* -> the new offset
+    FILE_OP_TELL = 5        /// handle -> the current offset
+    FILE_OP_TRUNC = 6       /// handle, off = the new size
+    FILE_OP_STAT = 7        /// path, data = *file_stat
+    FILE_OP_FSTAT = 8       /// handle, data = *file_stat
+    /// path = dir, len = index, data = *file_stat -> 1 on a hit, 0 once the
+    /// index is past the end
+    FILE_OP_READDIR = 9
+    FILE_OP_MKDIR = 10      /// path
+    FILE_OP_UNLINK = 11     /// path (a directory must be empty)
+    FILE_OP_RENAME = 12     /// path = existing, path2 = the new name
+    FILE_OP_CHDIR = 13      /// path
+    FILE_OP_GETCWD = 14     /// data = buffer, len = capacity -> length written
+    /// Commit everything written so far to stable media. No arguments.
+    ///
+    /// Separate from WRITE on purpose: a sync per write costs a device cache
+    /// flush on every byte, so it is the caller's decision - as fsync,
+    /// FlushFileBuffers and VNOP_FSYNC all are. Anything that must survive a
+    /// power cut writes, syncs, and only then treats the result as committed.
+    FILE_OP_SYNC = 15
+    /// Advisory byte-range locks: handle, off = start, len = length (0 runs to
+    /// the end of the file however it grows, so off 0 len 0 is the whole file),
+    /// flags = FLOCK_SHARED or FLOCK_EXCLUSIVE, optionally | FLOCK_WAIT.
+    ///
+    /// A lock belongs to the OPEN FILE (the handle), not to the process and not
+    /// to the file on disk - SerenityOS's model. Shared ranges overlap freely;
+    /// an exclusive range overlaps nothing another open file holds, a second
+    /// open in the same process included. A handle's own locks never conflict,
+    /// so locking the same range again converts it. Closing the handle releases
+    /// them all, however it goes (FILE_OP_CLOSE, SYS_HANDLE_CLOSE, exit).
+    ///
+    /// A conflict is E_AGAIN, or with FLOCK_WAIT the call sleeps until the
+    /// conflicting locks are released - except when that could never happen (a
+    /// conflicting lock is the caller's own, or its holder is waiting, directly
+    /// or through others, on one of the caller's), which is E_DEADLK.
+    ///
+    /// Advisory: only another LOCK is refused. Opening, reading, writing and
+    /// unlinking a locked file all still work, as they do on every Unix. Nothing
+    /// is written to disk.
+    FILE_OP_LOCK = 16
+    /// handle, off, len: drop this handle's locks lying wholly inside the range
+    /// (off 0 len 0: all of them). Ranges are not split - unlock what was
+    /// locked. E_OK even when nothing was held.
+    FILE_OP_UNLOCK = 17
+}
+
+/// FILE_OP_LOCK modes. Shared locks coexist; an exclusive lock excludes all.
+const FLOCK_SHARED: u32 = 1
+const FLOCK_EXCLUSIVE: u32 = 2
+const FLOCK_WAIT: u32 = 0x100        /// sleep until the lock can be had
+
+/// FILE_OP_OPEN flags. One of FOPEN_READ / FOPEN_WRITE is required.
+const FOPEN_READ: u32 = 0x01
+const FOPEN_WRITE: u32 = 0x02
+const FOPEN_CREATE: u32 = 0x04       /// create the file when it does not exist
+const FOPEN_TRUNC: u32 = 0x08        /// cut an existing file to zero length on open
+const FOPEN_APPEND: u32 = 0x10       /// every write goes to the current end of file
+
+/// FILE_OP_SEEK origin
+const FSEEK_SET: u32 = 0
+const FSEEK_CUR: u32 = 1
+const FSEEK_END: u32 = 2
+
+/// entry kinds reported by file_stat.type
+const FTYPE_FILE: u32 = 1
+const FTYPE_DIR: u32 = 2
+
+const FILE_NAME_MAX: u32 = 64        /// must equal CXFS_NAME_LEN
+const FILE_PATH_MAX: u32 = 256       /// longest path a syscall will copy in
+
+struct file_op_args {
+    op: u32
+    handle: i32
+    path: u32
+    path2: u32      /// RENAME: the new name
+    data: u32       /// READ/WRITE buffer, or *file_stat
+    len: u32        /// buffer length, or READDIR index
+    off: i32        /// SEEK offset (signed), TRUNC size
+    flags: u32      /// FOPEN_* or FSEEK_*
+}
+
+/// Timestamps are unsigned epoch seconds truncated to 32 bits, which runs out in
+/// 2106; CXFS keeps the full 64 bits on disk.
+struct file_stat {
+    id: u32
+    /// FTYPE_* ("type" is a reserved word in X, so the ABI side cannot call it
+    /// that)
+    kind: u32
+    size: u32
+    permissions: u32
+    owner_uid: u32
+    created: u32
+    modified: u32
+    accessed: u32
+    name: char[FILE_NAME_MAX]
+}
+
+/// ---- pointer input (SYS_MOUSE_READ) ----
+/// Absolute cursor position maintained by the kernel driver, already clamped to
+/// the screen, so userspace never sees raw relative deltas. `seq` increments on
+/// every state change - compare it against the previous read to detect movement
+/// without diffing coordinates. Unprivileged, like keyboard input.
+struct mouse_state {
+    x: i32
+    y: i32
+    buttons: u32    /// bit 0 left, bit 1 right, bit 2 middle
+    seq: u32
+}
+
+/// ---- the kernel log (SYS_LOG_READ; GRANT_CONSOLE) ----
+/// One entry of the kernel's log ring, oldest first: every kernel log line and
+/// every line a background process wrote. The ring keeps the newest few hundred;
+/// `seq` counts every entry ever recorded, so a gap between two reads shows how
+/// many were overwritten. The strings are NUL-padded and need not be
+/// terminated when full.
+const LOG_SYSTEM_W: u32 = 12
+const LOG_EVENT_W: u32 = 48
+struct log_entry {
+    seq: u32
+    sev: u32                        /// 0 INFO, 1 OK, 2 WARN, 3 ERR, 4 FAIL
+    system: char[LOG_SYSTEM_W]      /// the tag: EXEC, KTEST, or the pid as "pid 3"
+    subsystem: char[LOG_SYSTEM_W]
+    event: char[LOG_EVENT_W]
+}

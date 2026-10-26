@@ -8,11 +8,12 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
-  <!-- The canonical ABI (DevKit engineering review section 7). Embedded so a
-       released cxk generates the X prelude from the header it was built
-       against, with no repository beside it. See Abi/AbiModel.cs. -->
+  <!-- The kernel interface, the one definition the ABI is generated from
+       (docs/kernel/CX_SYSCALLS_IPC.md section 9). Embedded so a released cxk
+       generates the header and the X prelude from the interface it was built
+       with, with no repository beside it. See Abi/AbiModel.cs. -->
   <ItemGroup>
-    <EmbeddedResource Include="..\..\abi\cxk_abi.h" LogicalName="cxk_abi.h" Link="Abi\cxk_abi.h" />
+    <EmbeddedResource Include="..\..\abi\kernel.xfil" LogicalName="kernel.xfil" Link="Abi\kernel.xfil" />
   </ItemGroup>
 
 </Project>

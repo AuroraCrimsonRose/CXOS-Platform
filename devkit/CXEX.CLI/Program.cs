@@ -66,7 +66,14 @@ app.Configure(config =>
         .WithDescription("Validates that all source files listed in CMakeLists.txt exist.");
 
     config.AddCommand<CheckAbiCommand>("check-abi")
-        .WithDescription("Validates that the X ABI prelude still matches the kernel's cxk_abi.h.");
+        .WithDescription("Validates that cxk_abi.h and the X ABI prelude are what abi/kernel.xfil generates.");
+
+    config.AddBranch("abi", abi =>
+    {
+        abi.SetDescription("The kernel interface, abi/kernel.xfil.");
+        abi.AddCommand<AbiGenerateCommand>("generate")
+            .WithDescription("Writes abi/cxk_abi.h from abi/kernel.xfil.");
+    });
 
     config.AddCommand<CheckVersionsCommand>("check-versions")
         .WithDescription("Validates that every version in versions.json matches the tree that declares it.");

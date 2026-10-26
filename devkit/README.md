@@ -47,7 +47,8 @@ cxk raw-image   build a raw disk image
 cxk run         launch an emulator against an image
 cxk inspect     dump CXEX / disk / CXFS structure
 cxk check       validation pass
-cxk check-abi   verify the X ABI prelude still matches cxk_abi.h
+cxk check-abi   verify cxk_abi.h and the X prelude are what abi/kernel.xfil generates
+cxk abi generate  write abi/cxk_abi.h from abi/kernel.xfil
 cxk check-xdata validate X Data documents (service descriptors)
 
 cxk tokens      print the tokens of X sources         \
@@ -137,7 +138,7 @@ This has already cost a real bug: the kernel gained `SYS_MOUSE_READ` and `struct
 cxk check-abi [path/to/cxk_abi.h]
 ```
 
-Compares the header against the prelude and fails on real drift. It finds the header itself if you don't pass one, walking up from the working directory to the repository's `abi/` (or `CXK_ROOT`, if set). `cxk os build` runs it as a pre-flight beside the existing source check, so drift stops the build with a clear message rather than surfacing as "undefined name" errors inside `gui.xfxn`.
+Since roadmap step 6a1 the header is itself generated, from `abi/kernel.xfil` (`cxk abi generate`). The check first fails if the header is not exactly what `kernel.xfil` beside it generates (a hand edit, or a forgotten `cxk abi generate`), or if this `cxk` was built from a different `kernel.xfil` (a stale `tools/cxk.exe`). Then it compares the header against the prelude and fails on real drift. It finds the header itself if you don't pass one, walking up from the working directory to the repository's `abi/` (or `CXK_ROOT`, if set). `cxk os build` runs it as a pre-flight beside the existing source check, so drift stops the build with a clear message rather than surfacing as "undefined name" errors inside `gui.xfxn`.
 
 It reports three kinds of problem: a constant missing from a family the prelude mirrors, a constant whose **value** disagrees, and a struct whose **field order** disagrees — that last being the nastiest, since a reordered struct compiles fine on both sides and silently corrupts every call using it.
 

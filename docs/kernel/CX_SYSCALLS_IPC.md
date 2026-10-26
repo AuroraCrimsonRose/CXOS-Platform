@@ -21,7 +21,7 @@
 | Arguments | A fixed page at `USER_ARGS_BASE` | An x86-32 address in the ABI |
 | Errors | 15 codes | No timeout, peer-closed, wrong-type or rights-denied distinction |
 | IPC | Synchronous, one page copied, one call in flight per endpoint; the executive defines messages informally | No handles in messages, no shared memory, no types |
-| Definition | `cxk_abi.h` by hand; the X prelude's constants and structures generated from it; the X wrappers by hand | Three places to keep in step |
+| Definition | Since step 6a1, `abi/kernel.xfil`: `cxk_abi.h`, the X prelude's constants and structures, and its plain syscall wrappers are generated from it (§9.5). The prelude's helpers are by hand | The interface it describes is still this table's |
 
 The good parts stay: user copies that validate and recover from faults
 (`usermode.c`), capability attenuation at spawn, the broker model, and
@@ -316,6 +316,61 @@ The ABI hash of §5 is this hash for the `kernel` library.
 - Supersedes the rule that `cxk_abi.h` and `AbiPrelude.cs` change in one
   commit: both are generated from the same file.
 
+### 9.5 As built (roadmap step 6a1)
+
+The `kernel` domain is generated; the other domains, and `interface` blocks
+with their messages, are settled when IPC v3 needs them (Phase 1). The source
+is `abi/kernel.xfil` (`library cx.kernel`), which still describes today's ABI,
+multiplexers included; 6a2 reshapes it. `cxk abi generate` writes
+`abi/cxk_abi.h` from it; `CXEX.Lang` embeds it, and the X prelude's constants,
+structures and plain syscall wrappers come from the embedded copy
+(`CXEX.Lang/Abi/Xfil*.cs`). `cxk check-abi` fails while the committed header
+is not exactly what the `.xfil` beside it generates, or while `cxk` was built
+from a different `.xfil`.
+
+The language is line-oriented: one declaration, member or field per line.
+
+```
+xfil 1
+library cx.kernel
+domain kernel
+
+/// documentation, carried into the generated files
+// a comment that stays in the .xfil
+const NAME: u32 = 0x10u              /// trailing note; u32 or i32
+const BOTH: u32 = A | B              /// a literal, or an OR of earlier constants
+enum file_op {                       /// u32 constants; every value written out
+    FILE_OP_OPEN = 0
+}
+struct file_stat {                   /// u8..u64, i8..i64, char[N], T[N]
+    id: u32
+    name: char[FILE_NAME_MAX]
+}
+syscall SYS_CLOCK = 0x04 fn clock_read(c: *clock_info) -> i32
+syscall SYS_POWER = 0x71             /// no plain wrapper
+```
+
+- Documentation lines directly above an item belong to it; a block followed
+  by a blank line stands on its own (a section heading). Text that would end
+  a C comment is refused.
+- Values keep the tokens they were written with in the header (`0x10u` stays
+  unsigned, `-1` becomes `(-1)`), so the kernel compiles to the same bytes.
+- The parser computes each structure's layout and refuses implicit padding,
+  inside or at the end; the header asserts every size it computed. A
+  structure field is never a pointer.
+- A wrapper takes at most five arguments, each `u32`, `i32` or a pointer
+  (`*u8`, `*struct`), and returns `i32` or `void`. A `u32` is passed as it
+  is, anything else through `as u32`. Wrappers come out in file order, and
+  since every prelude function is compiled into every program, so do the
+  programs' bytes.
+- Every refusal names its line. Nothing is skipped: a generator that dropped
+  what it could not read would drop ABI surface.
+
+When the `.xfil` replaced the hand-written header, the header it generated
+matched the old one in every constant, structure and field type, and every
+kernel and program built from it, both kernels included, came out
+byte-identical.
+
 ## 10. Starting a process
 
 `process_spawn` takes the program as a **file handle or memory object**, the
@@ -368,5 +423,5 @@ generalised.
 - Settled 2026-10-16: the network stack is a user-space service
   (`system/CX_NETWORK.md`); CXFS stays in the kernel and foreign filesystems
   run in user space (`system/CX_FILESYSTEM.md` §6).
-- The `.xfil` syntax above is a sketch; it is settled when the generator is
-  written.
+- The `.xfil` syntax for the `kernel` domain is settled (§9.5, step 6a1).
+  The `interface` syntax of §9 is still a sketch; it is settled with IPC v3.

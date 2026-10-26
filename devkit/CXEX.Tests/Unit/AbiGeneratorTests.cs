@@ -7,8 +7,15 @@ using Xunit;
 namespace CXEX.Tests.Unit;
 
 /// <summary>
-/// The ABI generator (DevKit engineering review §7): <c>abi/cxk_abi.h</c> is the
-/// one source, and X's view of the ABI is generated from it.
+/// The ABI generator (DevKit engineering review §7). Since roadmap step 6a1 the
+/// one source is <c>abi/kernel.xfil</c>: <c>abi/cxk_abi.h</c> and X's view of the ABI
+/// are both generated from it (<see cref="XfilEmit"/>). The C header is still read
+/// back with <see cref="AbiModel.Parse"/>, which holds the two to each other.
+///
+/// <para>When the .xfil replaced the hand-written header (6a1), the header it
+/// generated matched the old one in every constant, structure and field type
+/// (check-abi's comparison, run against the old header), and every kernel and
+/// program built from it, both kernels included, came out byte-identical.</para>
 ///
 /// <para>When it replaced the hand-kept prelude, the generated declarations were
 /// checked against the old ones: all 95 constants and 12 structures matched in
@@ -23,14 +30,40 @@ public class AbiGeneratorTests
     private static string DiskHeader() =>
         File.ReadAllText(Path.Combine(Requires.Repo(), "abi", "cxk_abi.h"));
 
+    private static string DiskXfil() =>
+        File.ReadAllText(Path.Combine(Requires.Repo(), "abi", "kernel.xfil"));
+
     [Fact]
     [Trait(Categories.Key, Categories.Unit)]
-    public void The_built_in_header_is_the_one_on_disk()
+    public void The_built_in_interface_is_the_one_on_disk()
     {
-        // The DevKit embeds the header at build time. If these differ, the test
-        // binary predates a header change - the same staleness check-abi reports
-        // for a stale tools/cxk.exe.
-        Assert.Equal(DiskHeader().Replace("\r\n", "\n"), AbiModel.EmbeddedHeader.Replace("\r\n", "\n"));
+        // The DevKit embeds kernel.xfil at build time. If these differ, the test
+        // binary predates an interface change - the same staleness check-abi
+        // reports for a stale tools/cxk.exe.
+        Assert.Equal(DiskXfil().Replace("\r\n", "\n"), AbiModel.EmbeddedXfil.Replace("\r\n", "\n"));
+    }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
+    public void The_committed_header_is_what_the_interface_generates()
+    {
+        // A hand edit to the header, or an interface change committed without
+        // `cxk abi generate`, fails here and in check-abi.
+        Assert.Equal(XfilEmit.CHeader(XfilParser.Parse(DiskXfil())), DiskHeader().Replace("\r\n", "\n"));
+    }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
+    public void The_header_read_back_is_the_interface()
+    {
+        // What C compiles and what X is given agree: every constant by name,
+        // value and type, every structure field by name, order and type.
+        AbiModel fromC = AbiModel.Parse(DiskHeader());
+        AbiModel fromXfil = XfilEmit.Model(XfilParser.Parse(DiskXfil()));
+        Assert.Equal(fromXfil.Constants.Select(c => (c.Name, c.Value, c.XType)),
+                     fromC.Constants.Select(c => (c.Name, c.Value, c.XType)));
+        Assert.Equal(fromXfil.Structs.Select(s => (s.Name, string.Join(",", s.Fields.Select(f => f.Name + ":" + f.XType)))),
+                     fromC.Structs.Select(s => (s.Name, string.Join(",", s.Fields.Select(f => f.Name + ":" + f.XType)))));
     }
 
     [Fact]
