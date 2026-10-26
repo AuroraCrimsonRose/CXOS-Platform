@@ -5,7 +5,8 @@
 /* The x86-64 IDT (idt.h) and arch/irq.h. Every gate is an interrupt gate, so
    the CPU clears IF on entry. An exception no self-test asked for, and no user
    fault hook takes, is a panic: the banner cxk verify-boot looks for, then the
-   vector, the error code and the registers, on COM1, and the CPU halts. A
+   vector, the error code and the registers, on COM1, the screen and the crash
+   log (cxk rig crashlog), and the CPU halts. A
    device interrupt runs its handler, is acknowledged at whichever controller
    delivered it, and then lets the scheduler switch if a tick asked for one -
    x86-32's idt.c, the same order for the same reasons. */
@@ -18,7 +19,10 @@
 #include "arch/x86/apic.h"
 #include "platform/pc/pic.h"
 #include "usermode.h"          /* usercopy_start, usercopy_end, usercopy_trampoline */
-#include "paging_defs.h"       /* USER_VLIMIT */
+#include "paging_defs.h"       /* USER_VLIMIT, KERNEL_VBASE */
+#include "fb.h"                /* the panic screen */
+#include "platform/pc/speaker.h"
+#include "diag/crashlog.h"     /* the panic's record on the CRASH partition */
 
 struct idt_gate64 {
     uint16_t offset_low;
@@ -109,9 +113,76 @@ unsigned idt64_gate_ist(unsigned vector) {
     return vector < IDT64_COUNT ? idt[vector].ist & 7u : 0;
 }
 
+/* ---- the panic's output: x86-32's panic_putc_at, in its order ----
+ * The crash log's buffer first, then COM1, then the screen: a panic is the
+ * moment the display is most likely to be the broken thing, so the bytes are
+ * out of the machine before a framebuffer pointer is touched. White on red,
+ * on the framebuffer when one is live, otherwise in VGA text. Without the
+ * screen and the crash log, a panic on a machine with no serial port (the
+ * rig) looks like a hang and leaves nothing behind. */
+#define VGA_PANIC  ((volatile uint16_t *)(KERNEL_VBASE + 0xB8000))
+#define PANIC_ATTR 0x4F00
+
+static int panic_pos;
+
+static void panic_putc(char c) {
+    crashlog_putc(c);
+    early_putc(c);
+
+    if (fb_active()) {
+        uint32_t cw = fb_font_width(), chh = fb_font_height();
+        uint32_t cols = fb_width() / cw;
+        if (cols == 0) cols = 1;   /* a divide fault here would replace the report */
+        if (c == '\n') { panic_pos = ((panic_pos / (int)cols) + 1) * (int)cols; return; }
+        uint32_t col = (uint32_t)panic_pos % cols, row = (uint32_t)panic_pos / cols;
+        if ((row + 1) * chh <= fb_height())
+            fb_draw_char(col * cw, row * chh, c, fb_rgb(255, 255, 255), fb_rgb(0xAA, 0, 0));
+        panic_pos++;
+        return;
+    }
+    if (c == '\n') { panic_pos = (panic_pos / 80 + 1) * 80; return; }
+    if (panic_pos < 80 * 25) VGA_PANIC[panic_pos++] = (uint16_t)(uint8_t)c | PANIC_ATTR;
+}
+
+static void panic_puts(const char *s) { while (*s) panic_putc(*s++); }
+
+static void panic_hex(uint64_t v) {
+    panic_puts("0x");
+    for (int i = 60; i >= 0; i -= 4) panic_putc("0123456789ABCDEF"[(v >> i) & 0xF]);
+}
+
+static void panic_dec(uint64_t v) {
+    char d[20];
+    int n = 0;
+    do { d[n++] = (char)('0' + v % 10); v /= 10; } while (v);
+    while (n) panic_putc(d[--n]);
+}
+
 static void reg(const char *name, uint64_t v) {
-    early_puts(name);
-    early_hex(v);
+    panic_puts(name);
+    panic_hex(v);
+}
+
+static void panic_begin(void) {
+    speaker_panic_tone();
+    panic_pos = 0;
+    if (fb_active()) fb_clear(fb_rgb(0xAA, 0, 0));
+    early_puts("\n");   /* the banner starts a line of its own on COM1 */
+}
+
+/* The system log's tail goes in the record (crashlog_panic_save); on
+   screen, whether it was saved. Halts. */
+__attribute__((noreturn)) static void panic_end(void) {
+    panic_puts("\n");   /* the record's system-log tail starts a line */
+    int saved = crashlog_panic_save();
+    if (saved == 0) {
+        panic_puts("Crash log saved (cxk rig crashlog)");
+    } else {
+        panic_puts("Crash log not saved, code ");
+        panic_hex((uint64_t)(uint32_t)saved);
+    }
+    panic_puts("\nSystem halted.\n");
+    for (;;) __asm__ volatile ("cli; hlt");
 }
 
 /* ---- arch/irq.h ---- */
@@ -224,28 +295,30 @@ void idt64_dispatch(struct registers *f) {
     uint64_t cr2;
     __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
 
-    early_puts("\n*** KERNEL PANIC ***\n");
-    early_puts("CPU exception ");
-    early_dec(f->vector);
-    early_puts(" (");
-    early_puts(f->vector < 32 ? exception_names[f->vector] : "unknown");
-    early_puts(")");
+    panic_begin();
+    panic_puts("*** KERNEL PANIC ***\n");
+    panic_puts("CPU exception ");
+    panic_dec(f->vector);
+    panic_puts(" (");
+    panic_puts(f->vector < 32 ? exception_names[f->vector] : "unknown");
+    panic_puts(")");
     reg(", error ", f->error);
     reg("\n RIP ", f->rip);   reg("  CS ", f->cs);   reg("  RFLAGS ", f->rflags);
     reg("\n RSP ", f->rsp);   reg("  SS ", f->ss);   reg("  CR2 ", cr2);
     reg("\n RAX ", f->rax);   reg("  RBX ", f->rbx); reg("  RCX ", f->rcx);
     reg("\n RDX ", f->rdx);   reg("  RSI ", f->rsi); reg("  RDI ", f->rdi);
     reg("\n RBP ", f->rbp);   reg("  frame ", (uint64_t)(uintptr_t)f);
-    early_puts("\nSystem halted.\n");
-    for (;;) __asm__ volatile ("cli; hlt");
+    panic_end();
 }
 
-/* panic.h's kpanic, until the panic screen and the crash log run on x86-64:
-   the banner verify-boot looks for, the reason, and a halt. */
+/* panic.h's kpanic: the banner verify-boot looks for, the reason and the
+   caller, on every output, then the crash log and a halt. */
 void kpanic(const char *why) {
     __asm__ volatile ("cli");
-    early_puts("\n*** KERNEL PANIC ***\n");
-    early_puts(why);
-    early_puts("\nSystem halted.\n");
-    for (;;) __asm__ volatile ("cli; hlt");
+    uint64_t from = (uint64_t)(uintptr_t)__builtin_return_address(0);
+    panic_begin();
+    panic_puts("*** KERNEL PANIC ***\n");
+    panic_puts(why ? why : "(no reason given)");
+    reg("\nCalled from RIP: ", from);
+    panic_end();
 }
