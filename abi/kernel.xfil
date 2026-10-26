@@ -9,7 +9,9 @@
 // and are carried into the generated files.
 //
 // This is today's ABI, described unchanged (roadmap step 6a1). Step 6a2
-// reshapes it: one operation per syscall, fixed widths.
+// reshapes it: one operation per syscall, fixed widths. Every syscall declares
+// its arguments, since the kernel's dispatch table (kernel/cpu/systable.c) is
+// generated from them too; `fn name` adds a plain X wrapper.
 
 xfil 1
 library cx.kernel
@@ -74,7 +76,7 @@ const HRIGHT_DUPLICATE: u32 = 0x80000000u
 /// input 0x20-0x2F (unprivileged: reading your own keystrokes)
 /// ebx = flags (0=block, 1=nonblocking) -> char, 0 if none. No plain wrapper:
 /// the prelude's input_read and input_poll pass the flag.
-syscall SYS_INPUT_READ = 0x20
+syscall SYS_INPUT_READ = 0x20 (flags: u32) -> i32
 syscall SYS_MOUSE_READ = 0x21 fn mouse_read(m: *mouse_state) -> i32     /// ebx = *mouse_state -> 1 if a mouse is present
 /// console 0x30-0x3F (privileged: GRANT_CONSOLE)
 syscall SYS_CONSOLE_WRITE = 0x30 fn console_write(buf: *u8, len: u32) -> i32   /// ebx = buf, ecx = len (0 = bounded NUL-scan)
@@ -93,7 +95,7 @@ syscall SYS_SPAWN = 0x70 fn spawn(a: *spawn_args) -> i32        /// ebx = *spawn
 syscall SYS_EXEC_PATH = 0x72 fn exec_path(path: *u8, a: *spawn_args) -> i32
 /// ebx = POWER_* op (GRANT_POWER); reboot does not return. No plain wrapper:
 /// the prelude's reboot, shutdown and sleep pass the op.
-syscall SYS_POWER = 0x71
+syscall SYS_POWER = 0x71 (op: u32, ms: u32) -> i32
 
 syscall SYS_MEM_OP = 0x80 fn mem_op(a: *mem_op_args) -> i32     /// ebx = *mem_op_args; unprivileged, quota-bounded
 const POWER_REBOOT: u32 = 0

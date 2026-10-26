@@ -10,7 +10,7 @@ global enter_usermode
 global syscall_stub
 global return_to_kernel
 global syscall_trapped
-extern syscall_dispatch     ; C: int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2)
+extern syscall_dispatch     ; C: int syscall_dispatch(uint32_t num, uint32_t a1, ..., uint32_t a5)
 
 ; ---------------------------------------------------------------------------
 ; int enter_usermode(uint32_t entry_eip, uint32_t user_esp, uint32_t *save_slot)
@@ -96,11 +96,14 @@ syscall_stub:
 
     lock inc dword [syscall_trapped]   ; a witness for the recording point
 
-    push ecx                 ; arg2
-    push ebx                 ; arg1
+    push edi                 ; a5
+    push esi                 ; a4
+    push edx                 ; a3
+    push ecx                 ; a2
+    push ebx                 ; a1
     push eax                 ; syscall number
     call syscall_dispatch
-    add esp, 12
+    add esp, 24
 
     ; store return value into saved eax (pushad: eax at [esp+28], above the
     ; four segment registers)
@@ -202,6 +205,10 @@ user_blob_start:
     int 0x80
     mov eax, 0          ; SYS_EXIT
     xor ebx, ebx
+    mov ecx, 0xC0DE0002 ; a2..a5: unused by SYS_EXIT, and read back from the
+    mov edx, 0xC0DE0003 ; recording point by test_sysrec, so every register
+    mov esi, 0xC0DE0004 ; the gate is meant to carry is seen to arrive
+    mov edi, 0xC0DE0005
     int 0x80
 .hang:
     jmp .hang           ; never reached (SYS_EXIT does not return to user)

@@ -33,8 +33,11 @@ public static class XfilParser
     /// <summary>Domains a <c>.xfil</c> file may declare (§9.1).</summary>
     public static readonly IReadOnlyList<string> Domains = new[] { "kernel", "boot", "os", "system", "user" };
 
-    /// <summary>A syscall wrapper passes at most this many arguments (eax holds the number; ebx..edi the rest).</summary>
+    /// <summary>A syscall carries at most this many arguments (eax holds the number; ebx..edi the rest).</summary>
     public const int MaxSyscallArgs = 5;
+
+    /// <summary>The largest syscall number: the kernel's dispatch table has a slot for each one up to the largest used.</summary>
+    public const long MaxSyscallNumber = 0x3FF;
 
     private static readonly Regex Name = new(@"^[A-Za-z_][A-Za-z0-9_]*$", RegexOptions.CultureInvariant);
     private static readonly Regex Literal = new(@"^-?(0[xX][0-9A-Fa-f]+|[0-9]+)[uU]?$", RegexOptions.CultureInvariant);
@@ -43,7 +46,7 @@ public static class XfilParser
     private static readonly Regex ConstDecl = new(@"^const\s+(?<name>\S+)\s*:\s*(?<type>\S+)\s*=\s*(?<value>.+)$", RegexOptions.CultureInvariant);
     private static readonly Regex OpenDecl = new(@"^(?<kw>enum|struct)\s+(?<name>\S+)\s*\{$", RegexOptions.CultureInvariant);
     private static readonly Regex SyscallDecl = new(
-        @"^syscall\s+(?<name>\S+)\s*=\s*(?<num>[^\s]+)(?:\s+fn\s+(?<fn>[A-Za-z_]\w*)\s*\((?<params>[^)]*)\)\s*->\s*(?<ret>\S+))?$",
+        @"^syscall\s+(?<name>\S+)\s*=\s*(?<num>[^\s(]+)\s*(?:fn\s+(?<fn>[A-Za-z_]\w*)\s*)?\((?<params>[^)]*)\)\s*->\s*(?<ret>\S+)$",
         RegexOptions.CultureInvariant);
     private static readonly Regex MemberDecl = new(@"^(?<name>\S+)\s*=\s*(?<value>.+)$", RegexOptions.CultureInvariant);
     private static readonly Regex FieldDecl = new(@"^(?<name>\S+)\s*:\s*(?<type>.+)$", RegexOptions.CultureInvariant);
@@ -63,6 +66,7 @@ public static class XfilParser
         private readonly Dictionary<string, long> _values = new(StringComparer.Ordinal);
         private readonly HashSet<string> _structs = new(StringComparer.Ordinal);
         private readonly HashSet<string> _wrappers = new(StringComparer.Ordinal);
+        private readonly Dictionary<long, string> _numbers = new();
 
         public Reader(string text) => _lines = text.Replace("\r\n", "\n").Split('\n');
 
@@ -88,9 +92,9 @@ public static class XfilParser
             FlushNote();
 
             foreach (var s in _items.OfType<XfilSyscall>())
-                foreach (var p in s.Wrapper?.Params ?? Array.Empty<XfilParam>())
+                foreach (var p in s.Params)
                     if (p.Type is XfilPointer { Pointee: var t } && t != "u8" && !_structs.Contains(t))
-                        throw new XfilException(s.Line, $"{s.Wrapper!.Name}: parameter {p.Name} points at '{t}', which is not a structure in this file");
+                        throw new XfilException(s.Line, $"{s.WrapperName ?? s.Name}: parameter {p.Name} points at '{t}', which is not a structure in this file");
 
             return new XfilFile(version, library, domain, _items);
         }
@@ -189,10 +193,17 @@ public static class XfilParser
                 var u32 = new XfilInt("u32");
                 (long number, string text) = Value(name, m.Groups["num"].Value, u32);
                 Define(name, u32, number);
-                XfilWrapper? wrapper = m.Groups["fn"].Success
-                    ? Wrapper(m.Groups["fn"].Value, m.Groups["params"].Value, m.Groups["ret"].Value)
-                    : null;
-                return new XfilSyscall(name, number, text, wrapper, TakeDoc(trailing), at);
+                if (!name.StartsWith("SYS_", StringComparison.Ordinal) || name.Length == 4)
+                    throw new XfilException(at, $"{name}: a syscall's name starts with SYS_, and its kernel handler is named after the rest");
+                if (number > MaxSyscallNumber)
+                    throw new XfilException(at, $"{name} is number {number}; the dispatch table has a slot per number, up to {MaxSyscallNumber}");
+                if (_numbers.TryGetValue(number, out string? taken))
+                    throw new XfilException(at, $"{name} has number {number}, which is {taken}'s");
+                _numbers[number] = name;
+                string? fn = m.Groups["fn"].Success ? m.Groups["fn"].Value : null;
+                if (fn is not null && !_wrappers.Add(fn)) throw new XfilException(at, $"wrapper {fn} is declared twice");
+                (var ps, string ret) = Signature(fn ?? name, m.Groups["params"].Value, m.Groups["ret"].Value);
+                return new XfilSyscall(name, number, text, ps, ret, fn, TakeDoc(trailing), at);
             }
             if ((m = OpenDecl.Match(line)).Success)
             {
@@ -202,7 +213,8 @@ public static class XfilParser
                 return m.Groups["kw"].Value == "enum" ? Enum(name, doc, at) : Struct(name, doc, at);
             }
             if (line.StartsWith("syscall", StringComparison.Ordinal))
-                throw new XfilException(at, $"cannot read '{line}': syscall NAME = number [fn wrapper(params) -> i32|void]");
+                throw new XfilException(at, $"cannot read '{line}': syscall NAME = number [fn wrapper](params) -> i32|void; " +
+                                            "every syscall declares its arguments, which the kernel's dispatch table decodes");
             throw new XfilException(at, $"cannot read '{line}': expected const, enum, struct or syscall");
         }
 
@@ -271,9 +283,9 @@ public static class XfilParser
             }
         }
 
-        private XfilWrapper Wrapper(string name, string paramText, string ret)
+        /// <summary>A syscall's arguments and result. <paramref name="name"/> is its wrapper's, or the syscall's when it has none.</summary>
+        private (IReadOnlyList<XfilParam>, string) Signature(string name, string paramText, string ret)
         {
-            if (!_wrappers.Add(name)) throw new XfilException(LineNo, $"wrapper {name} is declared twice");
             if (ret is not ("i32" or "void"))
                 throw new XfilException(LineNo, $"{name}: a syscall returns i32 or void, not '{ret}'");
             var ps = new List<XfilParam>();
@@ -295,7 +307,7 @@ public static class XfilParser
             }
             if (ps.Count > MaxSyscallArgs)
                 throw new XfilException(LineNo, $"{name} takes {ps.Count} arguments; a syscall carries at most {MaxSyscallArgs}");
-            return new XfilWrapper(name, ps, ret);
+            return (ps, ret);
         }
 
         private string NewConstant(string name)

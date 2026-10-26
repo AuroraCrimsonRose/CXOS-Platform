@@ -25,6 +25,7 @@
 #include "object/htab.h"
 #include "sync/atomic.h"
 #include "sysrec.h"
+#include "systable.h"         /* the handlers, decoders and table (generated) */
 #include "spawn.h"
 #include "sysfile.h"
 #include "cxfs.h"
@@ -89,7 +90,7 @@ static int seal_user_code(uint32_t virt, paddr_t phys) {
 
 /* ---- syscall dispatch ---- */
 
-/* Calls the switch below has handled: a witness for the recording point,
+/* Calls the dispatcher has handled: a witness for the recording point,
    kept here rather than in sysrec.c so the two are counted apart. */
 /* object_info reports the kernel's type numbers as they are. */
 _Static_assert(KOBJ_ENDPOINT == OBJ_TYPE_ENDPOINT && KOBJ_FILE == OBJ_TYPE_FILE,
@@ -104,223 +105,229 @@ uint32_t syscall_dispatch_count(void) { return atomic_load(&dispatched); }
 extern atomic_u32 syscall_trapped;   /* usermode.asm */
 uint32_t syscall_trapped_count(void) { return atomic_load(&syscall_trapped); }
 
-static int syscall_do(uint32_t num, uint32_t a1, uint32_t a2) {
-    atomic_fetch_add(&dispatched, 1);
-    switch (num) {
-        case SYS_CONSOLE_WRITE: {
-            if (!(thread_current_caps() & GRANT_CONSOLE)) {
-                klog_u32("GRANT", SEV_WARN, "console_write DENIED for pid ", (uint32_t)thread_current_pid(), LOG_COLOR_VALUE, " (no GRANT_CONSOLE)");
-                return E_PERM;
-            }
-            uint32_t len = a2;
-            if (len == 0) {
-                const char *p = (const char *)user_ptr(a1);
-                while (len < 0x1000 && user_ptr_readable(a1 + len, 1) && p[len]) len++;
-            }
-            if (!user_ptr_readable(a1, len ? len : 1)) return -1;
-            const char *s = (const char *)user_ptr(a1);
+/* The handlers, one per syscall. Their signatures, the decoders that give
+   each its arguments, and the table that finds them are generated from
+   abi/kernel.xfil (systable.h, systable.c); what each one does is here. */
 
-            /* A background process (SPAWN_BACKGROUND, the supervisor and its
-               services) writes to the log, so it never prints over the shell. */
-            struct proc *p = thread_proc(thread_current_id());
-            if (p && p->background) { proc_out_write(p, s, len); return (int)len; }
-            for (uint32_t i = 0; i < len; i++) console_putc(s[i]);
-            return (int)len;
-        }
-        case SYS_LOG_READ: {
-            /* GRANT_CONSOLE: the log holds what every process printed in the
-               background, and what the kernel said about all of them. */
-            if (!(thread_current_caps() & GRANT_CONSOLE)) return E_PERM;
-            if (!user_ptr_writable(a2, sizeof(struct log_entry))) return E_FAULT;
-            const struct slog_entry *e = slog_get(a1);
-            if (!e) return 0;
-            struct log_entry *out = (struct log_entry *)user_ptr(a2);
-            out->seq = e->seq;
-            out->sev = e->sev;
-            for (int i = 0; i < LOG_SYSTEM_W; i++) out->system[i]    = e->system[i];
-            for (int i = 0; i < LOG_SYSTEM_W; i++) out->subsystem[i] = e->subsystem[i];
-            for (int i = 0; i < LOG_EVENT_W;  i++) out->event[i]     = e->event[i];
-            return 1;
-        }
-        case SYS_GETPID:
-            return thread_current_pid();
-        case SYS_GETUID:
-            return (int)thread_current_uid();
-        case SYS_EXIT:
-            return_to_kernel((int)a1, thread_current_usave());
-            return 0;   /* unreachable */
-        case SYS_YIELD:
-            yield();
-            return 0;
+int syscall_console_write(uint32_t buf, uint32_t len) {
+    if (!(thread_current_caps() & GRANT_CONSOLE)) {
+        klog_u32("GRANT", SEV_WARN, "console_write DENIED for pid ", (uint32_t)thread_current_pid(), LOG_COLOR_VALUE, " (no GRANT_CONSOLE)");
+        return E_PERM;
+    }
+    if (len == 0) {
+        const char *p = (const char *)user_ptr(buf);
+        while (len < 0x1000 && user_ptr_readable(buf + len, 1) && p[len]) len++;
+    }
+    if (!user_ptr_readable(buf, len ? len : 1)) return -1;
+    const char *s = (const char *)user_ptr(buf);
 
-        case SYS_CLOCK: {
-            /* Unprivileged: the time of day is not authority. A process that
-               could not read it would simply count its own loop iterations. */
-            if (!user_ptr_writable(a1, sizeof(struct clock_info))) return E_FAULT;
-            struct clock_info *ci = (struct clock_info *)user_ptr(a1);
-            ci->ticks = timer_ticks();
+    /* A background process (SPAWN_BACKGROUND, the supervisor and its
+       services) writes to the log, so it never prints over the shell. */
+    struct proc *p = thread_proc(thread_current_id());
+    if (p && p->background) { proc_out_write(p, s, len); return (int)len; }
+    for (uint32_t i = 0; i < len; i++) console_putc(s[i]);
+    return (int)len;
+}
 
-            /* epoch 0 means "no usable RTC", which the ABI documents, so a
-               caller that needs a real date can tell. Deriving it here rather
-               than handing over the clock's raw fields keeps its format (BCD and
-               century, on a PC) on this side of the boundary. */
-            struct datetime dt;
-            ci->epoch = platform_wallclock(&dt) == 0
-                      ? (uint32_t)datetime_to_epoch(&dt) : 0;
-            return E_OK;
-        }
+int syscall_log_read(uint32_t i, uint32_t e) {
+    /* GRANT_CONSOLE: the log holds what every process printed in the
+       background, and what the kernel said about all of them. */
+    if (!(thread_current_caps() & GRANT_CONSOLE)) return E_PERM;
+    if (!user_ptr_writable(e, sizeof(struct log_entry))) return E_FAULT;
+    const struct slog_entry *le = slog_get(i);
+    if (!le) return 0;
+    struct log_entry *out = (struct log_entry *)user_ptr(e);
+    out->seq = le->seq;
+    out->sev = le->sev;
+    for (int k = 0; k < LOG_SYSTEM_W; k++) out->system[k]    = le->system[k];
+    for (int k = 0; k < LOG_SYSTEM_W; k++) out->subsystem[k] = le->subsystem[k];
+    for (int k = 0; k < LOG_EVENT_W;  k++) out->event[k]     = le->event[k];
+    return 1;
+}
 
-        case SYS_ARGS: {
-            /* Unprivileged: a program asking where its own arguments are.
-               This exists so USER_ARGS_BASE does not have to be compiled into
-               every program - the address is a 32-bit x86 fact, and a userland
-               that knew it would have to be ported alongside the kernel. */
-            if (!user_ptr_writable(a1, sizeof(struct args_info))) return E_FAULT;
-            struct args_info *ai = (struct args_info *)user_ptr(a1);
-            ai->base  = USER_ARGS_BASE;
-            ai->count = *(const uint32_t *)user_ptr(USER_ARGS_BASE);
-            ai->broker = thread_broker(thread_current_id());
-            return E_OK;
-        }
+int syscall_getpid(void) { return thread_current_pid(); }
+int syscall_getuid(void) { return (int)thread_current_uid(); }
 
-        case SYS_SLEEP:
-            /* Also unprivileged: waiting is the opposite of a privilege. Note
-               this is NOT POWER_SLEEP, which puts the machine into an ACPI
-               sleep state and is rightly gated - this blocks one thread and
-               leaves everything else running.
+void syscall_exit(int32_t code) {
+    return_to_kernel((int)code, thread_current_usave());
+}
 
-               Capped rather than unbounded: a sleep is a promise to come back,
-               and one that never does is indistinguishable from a hang. */
-            if (a1 > SLEEP_MAX_MS) return E_RANGE;
-            /* The tick it woke on is deliberately not returned: SYS_SLEEP's
-               ABI result is a status, and a caller that wants the clock asks
-               SYS_CLOCK. Cast so this reads as a decision. */
-            (void)thread_sleep_ms(a1);
-            return E_OK;
+void syscall_yield(void) { yield(); }
 
-        case SYS_SPAWN:
-            if (!(thread_current_caps() & GRANT_SPAWN)) return E_PERM;
-            return sys_spawn(a1);
+int syscall_clock(uint32_t c) {
+    /* Unprivileged: the time of day is not authority. A process that
+       could not read it would simply count its own loop iterations. */
+    if (!user_ptr_writable(c, sizeof(struct clock_info))) return E_FAULT;
+    struct clock_info *ci = (struct clock_info *)user_ptr(c);
+    ci->ticks = timer_ticks();
 
-        case SYS_EXEC_PATH:
-            if (!(thread_current_caps() & GRANT_SPAWN)) return E_PERM;
-            return sys_exec_path(a1, a2);
+    /* epoch 0 means "no usable RTC", which the ABI documents, so a
+       caller that needs a real date can tell. Deriving it here rather
+       than handing over the clock's raw fields keeps its format (BCD and
+       century, on a PC) on this side of the boundary. */
+    struct datetime dt;
+    ci->epoch = platform_wallclock(&dt) == 0
+              ? (uint32_t)datetime_to_epoch(&dt) : 0;
+    return E_OK;
+}
 
-        case SYS_FILE_OP:
-            if (!(thread_current_caps() & GRANT_DISK)) {
-                klog_u32("GRANT", SEV_WARN, "file_op DENIED for pid ", (uint32_t)thread_current_pid(), LOG_COLOR_VALUE, " (no GRANT_DISK)");
-                return E_PERM;
-            }
-            return sys_file_op(a1);
+int syscall_args(uint32_t a) {
+    /* Unprivileged: a program asking where its own arguments are.
+       This exists so USER_ARGS_BASE does not have to be compiled into
+       every program - the address is a 32-bit x86 fact, and a userland
+       that knew it would have to be ported alongside the kernel. */
+    if (!user_ptr_writable(a, sizeof(struct args_info))) return E_FAULT;
+    struct args_info *ai = (struct args_info *)user_ptr(a);
+    ai->base  = USER_ARGS_BASE;
+    ai->count = *(const uint32_t *)user_ptr(USER_ARGS_BASE);
+    ai->broker = thread_broker(thread_current_id());
+    return E_OK;
+}
 
-        case SYS_FB_OP:
-            if (!(thread_current_caps() & GRANT_FRAMEBUFFER)) {
-                klog_u32("GRANT", SEV_WARN, "fb_op DENIED for pid ", (uint32_t)thread_current_pid(), LOG_COLOR_VALUE, " (no GRANT_FRAMEBUFFER)");
-                return E_PERM;
-            }
-            return sys_fb_op(a1);
+int syscall_sleep(uint32_t ms) {
+    /* Also unprivileged: waiting is the opposite of a privilege. Note
+       this is NOT POWER_SLEEP, which puts the machine into an ACPI
+       sleep state and is rightly gated - this blocks one thread and
+       leaves everything else running.
 
-        case SYS_INPUT_READ:
-            /* unprivileged: reading your own keyboard input.
-               a1==0 -> block until a key; a1==1 -> return now (0 if none). */
-            if (a1 == 1) return (int)(unsigned char)keyboard_getchar();
-            return (int)(unsigned char)keyboard_getchar_blocking();
+       Capped rather than unbounded: a sleep is a promise to come back,
+       and one that never does is indistinguishable from a hang. */
+    if (ms > SLEEP_MAX_MS) return E_RANGE;
+    /* The tick it woke on is deliberately not returned: SYS_SLEEP's
+       ABI result is a status, and a caller that wants the clock asks
+       SYS_CLOCK. Cast so this reads as a decision. */
+    (void)thread_sleep_ms(ms);
+    return E_OK;
+}
 
-        case SYS_NET_OP:
-            if (!(thread_current_caps() & GRANT_NET)) {
-                klog_u32("GRANT", SEV_WARN, "net DENIED for pid ", (uint32_t)thread_current_pid(), LOG_COLOR_VALUE, " (no GRANT_NET)");
-                return E_PERM;
-            }
-            return sys_net_op(a1);
+int syscall_spawn(uint32_t a) {
+    if (!(thread_current_caps() & GRANT_SPAWN)) return E_PERM;
+    return sys_spawn(a);
+}
 
-        case SYS_MOUSE_READ: {
-            /* unprivileged, same reasoning as keyboard input: a process reading
-               the pointer it is already being shown */
-            struct mouse_state *ms = (struct mouse_state *)user_ptr(a1);
-            if (!user_ptr_writable(a1, sizeof *ms)) return E_FAULT;
-            ms->x       = mouse_x();
-            ms->y       = mouse_y();
-            ms->buttons = mouse_buttons();
-            ms->seq     = mouse_seq();
-            return mouse_present() ? 1 : 0;
-        }
+int syscall_exec_path(uint32_t path, uint32_t a) {
+    if (!(thread_current_caps() & GRANT_SPAWN)) return E_PERM;
+    return sys_exec_path(path, a);
+}
 
-        case SYS_POWER:
-            if (!(thread_current_caps() & GRANT_POWER)) {
-                klog_u32("GRANT", SEV_WARN, "power DENIED for pid ", (uint32_t)thread_current_pid(), LOG_COLOR_VALUE, " (no GRANT_POWER)");
-                return E_PERM;
-            }
-            if (a1 == POWER_REBOOT)   power_reboot();     /* does not return */
-            if (a1 == POWER_SHUTDOWN) power_shutdown();   /* does not return if ACPI S5 works */
-            if (a1 == POWER_SLEEP)  { power_sleep(a2); return 0; }
-            return E_INVAL;
+int syscall_file_op(uint32_t a) {
+    if (!(thread_current_caps() & GRANT_DISK)) {
+        klog_u32("GRANT", SEV_WARN, "file_op DENIED for pid ", (uint32_t)thread_current_pid(), LOG_COLOR_VALUE, " (no GRANT_DISK)");
+        return E_PERM;
+    }
+    return sys_file_op(a);
+}
 
-        case SYS_MEM_OP: {
-            /* Unprivileged, like the clock and the sleep: a program that could
-               not obtain memory would not be contained, it would be unable to
-               run. What bounds it is the per-process quota inside vm_map, not
-               a grant bit every program would have to hold. */
-            if (!user_ptr_writable(a1, sizeof(struct mem_op_args))) return E_FAULT;
-            struct mem_op_args *m = (struct mem_op_args *)user_ptr(a1);
-            int pid = thread_current_pid();   /* the quota is the process's */
-            switch (m->op) {
-                case MEM_OP_MAP:   return vm_map(pid, m);
-                case MEM_OP_UNMAP: return vm_unmap(pid, m->addr, m->length);
-                case MEM_OP_INFO:  return vm_info(pid, m);
-                default:           return E_INVAL;
-            }
-        }
+int syscall_fb_op(uint32_t a) {
+    if (!(thread_current_caps() & GRANT_FRAMEBUFFER)) {
+        klog_u32("GRANT", SEV_WARN, "fb_op DENIED for pid ", (uint32_t)thread_current_pid(), LOG_COLOR_VALUE, " (no GRANT_FRAMEBUFFER)");
+        return E_PERM;
+    }
+    return sys_fb_op(a);
+}
 
-        case SYS_IPC_CALL:
-            return ipc_call(a1);
+int syscall_input_read(uint32_t flags) {
+    /* unprivileged: reading your own keyboard input.
+       flags==0 -> block until a key; flags==1 -> return now (0 if none). */
+    if (flags == 1) return (int)(unsigned char)keyboard_getchar();
+    return (int)(unsigned char)keyboard_getchar_blocking();
+}
 
-        case SYS_IPC_RECV:
-            return ipc_recv(a1);
+int syscall_net_op(uint32_t a) {
+    if (!(thread_current_caps() & GRANT_NET)) {
+        klog_u32("GRANT", SEV_WARN, "net DENIED for pid ", (uint32_t)thread_current_pid(), LOG_COLOR_VALUE, " (no GRANT_NET)");
+        return E_PERM;
+    }
+    return sys_net_op(a);
+}
 
-        case SYS_IPC_REPLY:
-            return ipc_reply(a1);
+int syscall_mouse_read(uint32_t m) {
+    /* unprivileged, same reasoning as keyboard input: a process reading
+       the pointer it is already being shown */
+    struct mouse_state *ms = (struct mouse_state *)user_ptr(m);
+    if (!user_ptr_writable(m, sizeof *ms)) return E_FAULT;
+    ms->x       = mouse_x();
+    ms->y       = mouse_y();
+    ms->buttons = mouse_buttons();
+    ms->seq     = mouse_seq();
+    return mouse_present() ? 1 : 0;
+}
 
-        case SYS_EP_CREATE:
-            if (!(thread_current_caps() & GRANT_ENDPOINT)) return E_PERM;
-            return ep_create();
+int syscall_power(uint32_t op, uint32_t ms) {
+    if (!(thread_current_caps() & GRANT_POWER)) {
+        klog_u32("GRANT", SEV_WARN, "power DENIED for pid ", (uint32_t)thread_current_pid(), LOG_COLOR_VALUE, " (no GRANT_POWER)");
+        return E_PERM;
+    }
+    if (op == POWER_REBOOT)   power_reboot();     /* does not return */
+    if (op == POWER_SHUTDOWN) power_shutdown();   /* does not return if ACPI S5 works */
+    if (op == POWER_SLEEP)  { power_sleep(ms); return 0; }
+    return E_INVAL;
+}
 
-        case SYS_HANDLE_CLOSE:
-            return htab_close(thread_htab(thread_current_id()), (int32_t)a1);
-
-        case SYS_HANDLE_DUPLICATE:
-            /* Unprivileged: a duplicate is never more authority than its source. */
-            return htab_dup(thread_htab(thread_current_id()), (int32_t)a1, a2);
-
-        case SYS_OBJECT_INFO: {
-            /* Unprivileged: it describes only a handle the caller holds. */
-            struct object_info_args oa;
-            if (user_copy_in(&oa, a1, sizeof oa) != 0) return E_FAULT;
-            struct htab_info hi;
-            struct kobj *o = htab_ref(thread_htab(thread_current_id()), oa.handle,
-                                      KOBJ_NONE, 0, &hi);
-            if (!o) return E_BADF;
-            struct object_basic b = {
-                .kind = o->type, .rights = hi.rights, .koid = o->koid,
-                .grant = hi.grant, .parent_grant = hi.parent,
-            };
-            kobj_unref(o);
-            if (oa.topic != OBJINFO_BASIC) return E_INVAL;
-            if (oa.cap < sizeof b) return E_RANGE;
-            if (user_copy_out((uint32_t)oa.buf, &b, sizeof b) != 0) return E_FAULT;
-            return (int)sizeof b;
-        }
-
-        default:
-            return E_NOSYS;
+int syscall_mem_op(uint32_t a) {
+    /* Unprivileged, like the clock and the sleep: a program that could
+       not obtain memory would not be contained, it would be unable to
+       run. What bounds it is the per-process quota inside vm_map, not
+       a grant bit every program would have to hold. */
+    if (!user_ptr_writable(a, sizeof(struct mem_op_args))) return E_FAULT;
+    struct mem_op_args *m = (struct mem_op_args *)user_ptr(a);
+    int pid = thread_current_pid();   /* the quota is the process's */
+    switch (m->op) {
+        case MEM_OP_MAP:   return vm_map(pid, m);
+        case MEM_OP_UNMAP: return vm_unmap(pid, m->addr, m->length);
+        case MEM_OP_INFO:  return vm_info(pid, m);
+        default:           return E_INVAL;
     }
 }
 
-/* Called from the system-call gate (arch/usermode.h), and by the self-tests.
-   The only caller of syscall_do, so every call passes the recording point on
-   its way in and on its way out (sysrec.h). */
-int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2) {
-    sysrec_enter(num, a1, a2);
-    int rc = syscall_do(num, a1, a2);
+int syscall_ipc_call(uint32_t a)  { return ipc_call(a); }
+int syscall_ipc_recv(uint32_t a)  { return ipc_recv(a); }
+int syscall_ipc_reply(uint32_t a) { return ipc_reply(a); }
+
+int syscall_ep_create(void) {
+    if (!(thread_current_caps() & GRANT_ENDPOINT)) return E_PERM;
+    return ep_create();
+}
+
+int syscall_handle_close(int32_t h) {
+    return htab_close(thread_htab(thread_current_id()), h);
+}
+
+int syscall_handle_duplicate(int32_t h, uint32_t rights) {
+    /* Unprivileged: a duplicate is never more authority than its source. */
+    return htab_dup(thread_htab(thread_current_id()), h, rights);
+}
+
+int syscall_object_info(uint32_t a) {
+    /* Unprivileged: it describes only a handle the caller holds. */
+    struct object_info_args oa;
+    if (user_copy_in(&oa, a, sizeof oa) != 0) return E_FAULT;
+    struct htab_info hi;
+    struct kobj *o = htab_ref(thread_htab(thread_current_id()), oa.handle,
+                              KOBJ_NONE, 0, &hi);
+    if (!o) return E_BADF;
+    struct object_basic b = {
+        .kind = o->type, .rights = hi.rights, .koid = o->koid,
+        .grant = hi.grant, .parent_grant = hi.parent,
+    };
+    kobj_unref(o);
+    if (oa.topic != OBJINFO_BASIC) return E_INVAL;
+    if (oa.cap < sizeof b) return E_RANGE;
+    if (user_copy_out((uint32_t)oa.buf, &b, sizeof b) != 0) return E_FAULT;
+    return (int)sizeof b;
+}
+
+/* Called from the system-call gate (arch/usermode.h), and by the self-tests,
+   with the five argument registers as ring 3 left them. Every call passes the
+   recording point on its way in and on its way out (sysrec.h). A number past
+   the table, or in one of its holes, is E_NOSYS. */
+int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2, uint32_t a3,
+                     uint32_t a4, uint32_t a5) {
+    const uint32_t args[SYSCALL_ARGS] = { a1, a2, a3, a4, a5 };
+    sysrec_enter(num, args);
+    atomic_fetch_add(&dispatched, 1);
+    syscall_decoder d = num < SYSCALL_TABLE_SIZE ? syscall_table[num] : 0;
+    int rc = d ? d(args) : E_NOSYS;
     sysrec_exit(num, rc);
     return rc;
 }
@@ -442,7 +449,7 @@ int usermode_log_test(void) {
     for (int i = 0; ; i++) { line[i] = msg[i]; if (!msg[i]) break; }
     uint32_t t0 = slog_total();
     console_cursor(&col, &row);
-    step = 1; if (syscall_dispatch(SYS_CONSOLE_WRITE, user_addr(line), 0) != 12) goto done;
+    step = 1; if (syscall_dispatch(SYS_CONSOLE_WRITE, user_addr(line), 0, 0, 0, 0) != 12) goto done;
     console_cursor(&col2, &row2);
     step = 2; if (col2 != col || row2 != row) goto done;
     step = 3; if (slog_total() != t0 + 1) goto done;
@@ -462,12 +469,12 @@ int usermode_log_test(void) {
 
     /* 7-9: SYS_LOG_READ returns the newest entry, then 0, and needs the grant */
     uint32_t last = slog_count() - 1;
-    step = 7; if (syscall_dispatch(SYS_LOG_READ, last, user_addr(out)) != 1) goto done;
+    step = 7; if (syscall_dispatch(SYS_LOG_READ, last, user_addr(out), 0, 0, 0) != 1) goto done;
     step = 8; if (out->seq != e->seq || !lt_streq(out->event, "half", LOG_EVENT_W)
                   || !lt_streq(out->system, tag, LOG_SYSTEM_W)) goto done;
-    step = 9; if (syscall_dispatch(SYS_LOG_READ, last + 1, user_addr(out)) != 0) goto done;
+    step = 9; if (syscall_dispatch(SYS_LOG_READ, last + 1, user_addr(out), 0, 0, 0) != 0) goto done;
     thread_set_caps(me, 0);
-    step = 10; if (syscall_dispatch(SYS_LOG_READ, last, user_addr(out)) != E_PERM) goto done;
+    step = 10; if (syscall_dispatch(SYS_LOG_READ, last, user_addr(out), 0, 0, 0) != E_PERM) goto done;
     ok = 1;
 
 done:
@@ -504,7 +511,7 @@ static int oi_call(int h, uint32_t topic, uint32_t cap) {
     a->topic  = topic;
     a->buf    = FT_INFO;
     a->cap    = cap;
-    return syscall_dispatch(SYS_OBJECT_INFO, FT_IARGS, 0);
+    return syscall_dispatch(SYS_OBJECT_INFO, FT_IARGS, 0, 0, 0, 0);
 }
 
 static void ft_str(uint32_t at, const char *s) {
@@ -550,7 +557,7 @@ static int ft_call(uint32_t op, int handle, uint32_t path, uint32_t data,
     a->len    = len;
     a->off    = off;
     a->flags  = flags;
-    return syscall_dispatch(SYS_FILE_OP, FT_ARGS, 0);
+    return syscall_dispatch(SYS_FILE_OP, FT_ARGS, 0, 0, 0, 0);
 }
 
 int usermode_file_test(void) {
@@ -594,11 +601,11 @@ int usermode_file_test(void) {
        opened for both: the handle's rights decide, not the open flags. It
        shares the open file (and so the offset), and closing it leaves the
        file to the handle it came from. --- */
-    int d = syscall_dispatch(SYS_HANDLE_DUPLICATE, (uint32_t)h, FOPEN_READ);
+    int d = syscall_dispatch(SYS_HANDLE_DUPLICATE, (uint32_t)h, FOPEN_READ, 0, 0, 0);
     step++;
     if (d < 0 || d == h) goto done;
     step++;
-    if (syscall_dispatch(SYS_HANDLE_DUPLICATE, (uint32_t)d, FOPEN_READ | FOPEN_WRITE) != E_PERM) goto done;
+    if (syscall_dispatch(SYS_HANDLE_DUPLICATE, (uint32_t)d, FOPEN_READ | FOPEN_WRITE, 0, 0, 0) != E_PERM) goto done;
 
     /* object_info: d names the same open file as h, with only the rights it
        was given, derived from h's grant; and d, given no duplicate right,
@@ -617,7 +624,7 @@ int usermode_file_test(void) {
     if (bd.kind != OBJ_TYPE_FILE || bd.koid != bh.koid || bd.rights != FOPEN_READ
         || bd.parent_grant != bh.grant || bd.grant == bh.grant) goto done;
     step++;
-    if (syscall_dispatch(SYS_HANDLE_DUPLICATE, (uint32_t)d, FOPEN_READ) != E_PERM) goto done;
+    if (syscall_dispatch(SYS_HANDLE_DUPLICATE, (uint32_t)d, FOPEN_READ, 0, 0, 0) != E_PERM) goto done;
     step++;
     if (oi_call(d, 99, (uint32_t)ob) != E_INVAL) goto done;
     step++;
@@ -629,7 +636,7 @@ int usermode_file_test(void) {
     step++;
     if (ft_call(FILE_OP_TELL, d, 0, 0, 0, 0, 0) != 11) goto done;
     step++;
-    if (syscall_dispatch(SYS_HANDLE_CLOSE, (uint32_t)d, 0) != E_OK) goto done;
+    if (syscall_dispatch(SYS_HANDLE_CLOSE, (uint32_t)d, 0, 0, 0, 0) != E_OK) goto done;
     step++;
     if (sysfile_open_count() != base + 1) goto done;  /* h still holds it */
     step++;
@@ -808,11 +815,11 @@ int usermode_file_test(void) {
      * service was relying on being able to wait. */
     thread_set_caps(me, 0);
     step++;
-    if (syscall_dispatch(SYS_CLOCK, FT_DATA, 0) != E_OK) goto done;
+    if (syscall_dispatch(SYS_CLOCK, FT_DATA, 0, 0, 0, 0) != E_OK) goto done;
     step++;
     if (((uint32_t *)FT_DATA)[0] == 0) goto done;     /* ticks must have advanced */
     step++;
-    if (syscall_dispatch(SYS_SLEEP, 1, 0) != E_OK) goto done;
+    if (syscall_dispatch(SYS_SLEEP, 1, 0, 0, 0, 0) != E_OK) goto done;
 
     /* --- the authorisation matrix, with caps stripped to nothing ---
      *
@@ -829,21 +836,21 @@ int usermode_file_test(void) {
      * this test, which is the ordering worth pinning: authorisation first.
      */
     step++;
-    if (syscall_dispatch(SYS_CONSOLE_WRITE, 0xC0001000u, 0) != E_PERM) goto done;
+    if (syscall_dispatch(SYS_CONSOLE_WRITE, 0xC0001000u, 0, 0, 0, 0) != E_PERM) goto done;
     step++;
-    if (syscall_dispatch(SYS_FILE_OP,       0xC0001000u, 0) != E_PERM) goto done;
+    if (syscall_dispatch(SYS_FILE_OP,       0xC0001000u, 0, 0, 0, 0) != E_PERM) goto done;
     step++;
-    if (syscall_dispatch(SYS_FB_OP,         0xC0001000u, 0) != E_PERM) goto done;
+    if (syscall_dispatch(SYS_FB_OP,         0xC0001000u, 0, 0, 0, 0) != E_PERM) goto done;
     step++;
-    if (syscall_dispatch(SYS_NET_OP,        0xC0001000u, 0) != E_PERM) goto done;
+    if (syscall_dispatch(SYS_NET_OP,        0xC0001000u, 0, 0, 0, 0) != E_PERM) goto done;
     step++;
-    if (syscall_dispatch(SYS_POWER,         0, 0)           != E_PERM) goto done;
+    if (syscall_dispatch(SYS_POWER,         0, 0, 0, 0, 0)           != E_PERM) goto done;
     step++;
-    if (syscall_dispatch(SYS_EP_CREATE,     0, 0)           != E_PERM) goto done;
+    if (syscall_dispatch(SYS_EP_CREATE,     0, 0, 0, 0, 0)           != E_PERM) goto done;
     step++;
-    if (syscall_dispatch(SYS_SPAWN,         0xC0001000u, 0) != E_PERM) goto done;
+    if (syscall_dispatch(SYS_SPAWN,         0xC0001000u, 0, 0, 0, 0) != E_PERM) goto done;
     step++;
-    if (syscall_dispatch(SYS_EXEC_PATH,     0xC0001000u, 0) != E_PERM) goto done;
+    if (syscall_dispatch(SYS_EXEC_PATH,     0xC0001000u, 0, 0, 0, 0) != E_PERM) goto done;
 
     /* SYS_MEM_OP is NOT in that list, and that is the audit's one real
        finding rather than an omission here. It is unprivileged by design -
@@ -867,18 +874,18 @@ int usermode_file_test(void) {
         struct mem_op_args *mo = (struct mem_op_args *)FT_DATA;
         for (uint32_t i = 0; i < sizeof *mo / 4u; i++) ((uint32_t *)mo)[i] = 0;
         mo->op = MEM_OP_INFO;
-        if (syscall_dispatch(SYS_MEM_OP, FT_DATA, 0) == E_PERM) goto done;
+        if (syscall_dispatch(SYS_MEM_OP, FT_DATA, 0, 0, 0, 0) == E_PERM) goto done;
     }
 
     thread_set_caps(me, GRANT_DISK | GRANT_SPAWN);
 
     /* a bad clock pointer is caught, not written through */
     step++;
-    if (syscall_dispatch(SYS_CLOCK, 0xC0001000u, 0) != E_FAULT) goto done;
+    if (syscall_dispatch(SYS_CLOCK, 0xC0001000u, 0, 0, 0, 0) != E_FAULT) goto done;
     /* and a sleep longer than the cap is refused rather than silently clamped:
        a caller that asked for a day and got an hour would never know */
     step++;
-    if (syscall_dispatch(SYS_SLEEP, SLEEP_MAX_MS + 1, 0) != E_RANGE) goto done;
+    if (syscall_dispatch(SYS_SLEEP, SLEEP_MAX_MS + 1, 0, 0, 0, 0) != E_RANGE) goto done;
 
     /* --- argument blobs the kernel must refuse ---
      * check_args runs before anything touches the disk, so the path here is
@@ -910,7 +917,7 @@ int usermode_file_test(void) {
     /* and GRANT_SPAWN is the gate: the dispatcher checks it, so go through it */
     thread_set_caps(me, GRANT_DISK);
     step++;
-    if (syscall_dispatch(SYS_EXEC_PATH, FT_PATH, user_addr(sa)) != E_PERM) goto done;
+    if (syscall_dispatch(SYS_EXEC_PATH, FT_PATH, user_addr(sa), 0, 0, 0) != E_PERM) goto done;
     thread_set_caps(me, GRANT_DISK);
 
     /* --- the reaper releases handles a process never closed --- */
@@ -971,7 +978,7 @@ static int fl_call(uint32_t op, int handle, int32_t off, uint32_t len, uint32_t 
     struct file_op_args *a = (struct file_op_args *)FL_ARGS;
     a->op = op; a->handle = handle; a->path = FL_PATH; a->path2 = 0;
     a->data = 0; a->len = len; a->off = off; a->flags = flags;
-    return syscall_dispatch(SYS_FILE_OP, FL_ARGS, 0);
+    return syscall_dispatch(SYS_FILE_OP, FL_ARGS, 0, 0, 0, 0);
 }
 
 /* Holds [10,20), then waits for [0,10), which the test thread holds. */

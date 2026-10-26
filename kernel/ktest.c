@@ -639,7 +639,7 @@ static int test_sysrec(void) {
     /* a kernel-side call: through the point, not through the gate */
     sysrec_snapshot(&s0);
     uint32_t t0 = syscall_trapped_count(), d0 = syscall_dispatch_count();
-    int pid = syscall_dispatch(SYS_GETPID, 0, 0);
+    int pid = syscall_dispatch(SYS_GETPID, 0, 0, 0, 0, 0);
     sysrec_snapshot(&s1);
     if (s1.entered - s0.entered != 1 || s1.exited - s0.exited != 1) return 0;
     if (syscall_dispatch_count() - d0 != 1) return 0;
@@ -658,7 +658,38 @@ static int test_sysrec(void) {
     if (syscall_dispatch_count() - d1 != traps) return 0;
     if (s2.exited - s1.exited != traps - 1) return 0;
     if (s2.last_num != SYS_CONSOLE_WRITE) return 0;
+
+    /* The exit came in with all five registers: the routine loads markers into
+       a2..a5 (each arch's usermode.asm, user_blob), which the gate must
+       carry even though SYS_EXIT reads only a1. */
+    if (s2.in_num != SYS_EXIT || s2.in_args[0] != 0) return 0;
+    for (uint32_t i = 1; i < SYSCALL_ARGS; i++)
+        if (s2.in_args[i] != 0xC0DE0001u + i) return 0;
     return 1;
+}
+
+/* ---- the generated dispatch table (systable.h) ----
+ * A number the table has no handler for is E_NOSYS, whether it falls in a hole
+ * between syscalls or past the last one, and it still passes the recording
+ * point. A number past the end must be refused before it indexes the table:
+ * 0xFFFFFFFF would otherwise read four gigabytes beyond it. */
+static int test_syscall_table(void) {
+    static const uint32_t unknown[] = { 0x07, 0x7F, SYSCALL_TABLE_SIZE, 0xFFFFFFFFu };
+    for (uint32_t i = 0; i < sizeof unknown / sizeof unknown[0]; i++) {
+        struct sysrec_stats s0, s1;
+        sysrec_snapshot(&s0);
+        if (syscall_dispatch(unknown[i], 1, 2, 3, 4, 5) != E_NOSYS) return 0;
+        sysrec_snapshot(&s1);
+        if (s1.entered - s0.entered != 1 || s1.exited - s0.exited != 1) return 0;
+        if (s1.in_num != unknown[i] || s1.last_rc != E_NOSYS) return 0;
+        for (uint32_t k = 0; k < SYSCALL_ARGS; k++)
+            if (s1.in_args[k] != k + 1) return 0;
+    }
+
+    /* every slot the interface fills, and no other */
+    uint32_t filled = 0;
+    for (uint32_t n = 0; n < SYSCALL_TABLE_SIZE; n++) filled += syscall_table[n] != 0;
+    return filled == SYSCALL_COUNT && syscall_table[SYS_GETPID] && syscall_table[SYS_MEM_OP];
 }
 
 /* ---- ring 3: scheduler-integrated + preemptible processes (3b/3c) ---- */
@@ -3218,6 +3249,7 @@ void ktest_run(void) {
     total++; passed += report("esp0 follows the running thread",  test_esp0_follows_thread());
     total++; passed += report("ring 3 single round-trip",         test_ring3_single());
     total++; passed += report("every syscall passes one point",   test_sysrec());
+    total++; passed += report("syscall table refuses unknowns",   test_syscall_table());
     total++; passed += report("ring 3 processes (coop+preempt)",  test_ring3_processes());
     total++; passed += report("identity (user never UID 0)",      test_identity());
     total++; passed += report("storage (ATA read sector 0)",      test_storage());

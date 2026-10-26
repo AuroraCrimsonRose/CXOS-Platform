@@ -13,7 +13,8 @@ using Spectre.Console.Cli;
 namespace CXEX.CLI.Commands;
 
 /// <summary>
-/// Writes <c>abi/cxk_abi.h</c> from <c>abi/kernel.xfil</c> (roadmap step 6a1).
+/// Writes <c>abi/cxk_abi.h</c> (roadmap step 6a1) and the kernel's syscall
+/// table, <c>kernel/cpu/systable.h</c> and <c>.c</c> (6a2), from <c>abi/kernel.xfil</c>.
 /// Reads the file on disk, not the copy built into this <c>cxk</c>, so an edit
 /// to the interface can be generated and compiled before the DevKit is rebuilt;
 /// <c>check-abi</c> then reports the DevKit as stale until it is, because the X
@@ -27,9 +28,9 @@ public class AbiGenerateCommand : Command<AbiGenerateCommand.Settings>
         [Description("Path to kernel.xfil. Default: abi/kernel.xfil of the checkout, found as check-abi finds it.")]
         public string? XfilPath { get; set; }
 
-        [CommandOption("-o|--out")]
-        [Description("Where to write the header. Default: cxk_abi.h beside the .xfil.")]
-        public string? Out { get; set; }
+        [CommandOption("--root")]
+        [Description("Repository root the generated files are written under. Default: the directory above the .xfil's.")]
+        public string? Root { get; set; }
     }
 
     protected override int Execute(CommandContext context, Settings settings, CancellationToken cancellationToken)
@@ -51,16 +52,21 @@ public class AbiGenerateCommand : Command<AbiGenerateCommand.Settings>
             return 1;
         }
 
-        string outPath = settings.Out is { Length: > 0 }
-            ? Path.GetFullPath(settings.Out)
-            : Path.Combine(Path.GetDirectoryName(xfil)!, "cxk_abi.h");
-        string header = XfilEmit.CHeader(file);
-        bool same = File.Exists(outPath) && File.ReadAllText(outPath).Replace("\r\n", "\n") == header;
-        if (!same) File.WriteAllBytes(outPath, new UTF8Encoding(false).GetBytes(header));
-
-        AnsiConsole.MarkupLine(
-            $"{(same ? "[grey]unchanged:[/]" : "[green]wrote:[/]")} {Markup.Escape(outPath)} " +
-            $"[grey]({file.Syscalls.Count()} syscalls, {file.Structs.Count()} structures)[/]");
+        string root = settings.Root is { Length: > 0 }
+            ? Path.GetFullPath(settings.Root)
+            : Path.GetDirectoryName(Path.GetDirectoryName(xfil)!)!;
+        foreach ((string rel, string text) in XfilEmit.Outputs(file))
+        {
+            string outPath = Path.Combine(root, rel);
+            bool same = File.Exists(outPath) && File.ReadAllText(outPath).Replace("\r\n", "\n") == text;
+            if (!same)
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(outPath)!);
+                File.WriteAllBytes(outPath, new UTF8Encoding(false).GetBytes(text));
+            }
+            AnsiConsole.MarkupLine($"{(same ? "[grey]unchanged:[/]" : "[green]wrote:[/]")} {Markup.Escape(outPath)}");
+        }
+        AnsiConsole.MarkupLine($"[grey]{file.Syscalls.Count()} syscalls, {file.Structs.Count()} structures[/]");
         return 0;
     }
 }

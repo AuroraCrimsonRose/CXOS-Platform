@@ -148,7 +148,18 @@ programs for it (step 6).
    - **6a2** The reshape: one operation per syscall, fixed widths, the new
      error list, a generated kernel dispatch table with argument decoding.
      The userland, the executive and `xc`'s host layer move to it, still on
-     `int 0x80` on x86-32.
+     `int 0x80` on x86-32. Split in four (Aurora, 2026-10-26), each an ABI
+     commit that boots in full; the calls keep today's meaning (paths
+     relative to the cwd, `fb` and input until the display server), and
+     directory handles, deadlines and memory objects come in their own steps:
+     - **6a2a** The generated dispatch table and five-register gates; no ABI
+       change, every program byte-identical. **Done 2026-10-26.**
+     - **6a2b** The §6 error list.
+     - **6a2c** One operation per syscall, a family at a time (memory, power
+       and input, framebuffer, network, files).
+     - **6a2d** Fixed widths: sizes and offsets `u64`. On x86-32 a `u64`
+       argument takes a register pair (low, high), joined by the generated
+       decoder; on x86-64 it is one register.
    - **6a3** The system page: the syscall stubs, the ABI hash recorded in the
      image and checked by the loader, and the kernel refusing a syscall from
      anywhere else.

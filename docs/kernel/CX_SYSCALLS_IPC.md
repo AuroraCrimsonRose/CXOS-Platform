@@ -316,17 +316,24 @@ The ABI hash of §5 is this hash for the `kernel` library.
 - Supersedes the rule that `cxk_abi.h` and `AbiPrelude.cs` change in one
   commit: both are generated from the same file.
 
-### 9.5 As built (roadmap step 6a1)
+### 9.5 As built (roadmap steps 6a1, 6a2a)
 
 The `kernel` domain is generated; the other domains, and `interface` blocks
 with their messages, are settled when IPC v3 needs them (Phase 1). The source
 is `abi/kernel.xfil` (`library cx.kernel`), which still describes today's ABI,
-multiplexers included; 6a2 reshapes it. `cxk abi generate` writes
-`abi/cxk_abi.h` from it; `CXEX.Lang` embeds it, and the X prelude's constants,
+multiplexers included; the rest of 6a2 reshapes it. `cxk abi generate` writes
+`abi/cxk_abi.h` from it, and since 6a2a the kernel's dispatch side as well:
+`kernel/cpu/systable.h` (one handler prototype per syscall, named after it:
+`SYS_FILE_OP` is `syscall_file_op`) and `kernel/cpu/systable.c` (a decoder per
+syscall, giving each argument register its declared type, and the table,
+indexed by number). `syscall_dispatch` takes the number and all five argument
+registers from either gate, refuses a number past the table or in one of its
+holes with `E_NOSYS`, and the recording point keeps the last entry's
+registers. `CXEX.Lang` embeds the `.xfil`, and the X prelude's constants,
 structures and plain syscall wrappers come from the embedded copy
-(`CXEX.Lang/Abi/Xfil*.cs`). `cxk check-abi` fails while the committed header
-is not exactly what the `.xfil` beside it generates, or while `cxk` was built
-from a different `.xfil`.
+(`CXEX.Lang/Abi/Xfil*.cs`). `cxk check-abi` fails while any committed
+generated file is not exactly what the `.xfil` beside it generates, or while
+`cxk` was built from a different `.xfil`.
 
 The language is line-oriented: one declaration, member or field per line.
 
@@ -347,7 +354,7 @@ struct file_stat {                   /// u8..u64, i8..i64, char[N], T[N]
     name: char[FILE_NAME_MAX]
 }
 syscall SYS_CLOCK = 0x04 fn clock_read(c: *clock_info) -> i32
-syscall SYS_POWER = 0x71             /// no plain wrapper
+syscall SYS_POWER = 0x71 (op: u32, ms: u32) -> i32   /// no plain wrapper
 ```
 
 - Documentation lines directly above an item belong to it; a block followed
@@ -358,9 +365,12 @@ syscall SYS_POWER = 0x71             /// no plain wrapper
 - The parser computes each structure's layout and refuses implicit padding,
   inside or at the end; the header asserts every size it computed. A
   structure field is never a pointer.
-- A wrapper takes at most five arguments, each `u32`, `i32` or a pointer
-  (`*u8`, `*struct`), and returns `i32` or `void`. A `u32` is passed as it
-  is, anything else through `as u32`. Wrappers come out in file order, and
+- Every syscall declares its arguments, since the dispatch table decodes
+  them; `fn name` adds a plain X wrapper. A syscall takes at most five
+  arguments, each `u32`, `i32` or a pointer (`*u8`, `*struct`), and returns
+  `i32` or `void`. Its name starts with `SYS_`, its number is its own and at
+  most `0x3FF`. A wrapper passes a `u32` as it is, anything else through
+  `as u32`; the kernel receives a pointer as a `uint32_t` user address. Wrappers come out in file order, and
   since every prelude function is compiled into every program, so do the
   programs' bytes.
 - Every refusal names its line. Nothing is skipped: a generator that dropped

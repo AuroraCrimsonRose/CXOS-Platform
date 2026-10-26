@@ -16,8 +16,105 @@ public static class XfilEmit
     /// <summary>The kernel interface's source and its generated header, as repository paths.</summary>
     public const string KernelSource = "abi/kernel.xfil";
     public const string KernelHeader = "abi/cxk_abi.h";
+    /// <summary>The kernel's syscall handlers and dispatch table (roadmap step 6a2), as repository paths.</summary>
+    public const string KernelTableHeader = "kernel/cpu/systable.h";
+    public const string KernelTableSource = "kernel/cpu/systable.c";
 
     private const int NameColumn = 24;
+
+    /// <summary>Every file the interface generates, by repository path: what <c>cxk abi generate</c> writes and <c>check-abi</c> compares.</summary>
+    public static IReadOnlyList<(string Path, string Text)> Outputs(XfilFile file) => new[]
+    {
+        (KernelHeader, CHeader(file)),
+        (KernelTableHeader, CTableHeader(file)),
+        (KernelTableSource, CTable(file)),
+    };
+
+    /// <summary>
+    /// The kernel side of each syscall: one handler prototype per syscall, in file
+    /// order, so the compiler holds every handler to the signature the interface
+    /// declares, and the table's size.
+    /// </summary>
+    public static string CTableHeader(XfilFile file)
+    {
+        var sb = new StringBuilder();
+        Banner(sb, KernelTableHeader, file.Library);
+        sb.Append("""
+#ifndef CXK_SYSTABLE_H
+#define CXK_SYSTABLE_H
+
+#include <stdint.h>
+
+/* The handlers, one per syscall, named after it (SYS_FILE_OP: syscall_file_op).
+ * Each is given its arguments as the interface declares them. A pointer arrives
+ * as the user address it is, a uint32_t; the handler checks and copies it. */
+
+
+""");
+        foreach (XfilSyscall s in file.Syscalls)
+        {
+            string ps = s.Params.Count == 0 ? "void" : string.Join(", ", s.Params.Select(p => $"{CParam(p.Type)} {p.Name}"));
+            Line(sb, $"{(s.Returns == "void" ? "void" : "int")} {s.KernelHandler}({ps});", s.Name);
+        }
+
+        long size = file.Syscalls.Select(s => s.Number).DefaultIfEmpty(-1).Max() + 1;
+        sb.Append($"""
+
+/* Registers a syscall carries after its number, and the table's slots: one per
+ * number up to the largest. syscall_dispatch refuses a number past the end
+ * before looking it up, and one that lands in a hole finds no decoder. */
+#define SYSCALL_ARGS            {XfilParser.MaxSyscallArgs}
+#define SYSCALL_TABLE_SIZE      {size}
+#define SYSCALL_COUNT           {file.Syscalls.Count()}
+
+/* A decoder takes the raw argument registers, gives each its declared type,
+ * and calls the handler; a handler that returns nothing answers 0. */
+typedef int (*syscall_decoder)(const uint32_t *args);
+extern const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE];
+
+#endif
+
+""");
+        return sb.ToString();
+    }
+
+    /// <summary>The decoders and the dispatch table, indexed by syscall number; holes are null.</summary>
+    public static string CTable(XfilFile file)
+    {
+        var sb = new StringBuilder();
+        Banner(sb, KernelTableSource, file.Library);
+        sb.Append("#include \"systable.h\"\n#include \"cxk_abi.h\"   /* the SYS_* numbers */\n\n");
+        foreach (XfilSyscall s in file.Syscalls)
+        {
+            string args = string.Join(", ", s.Params.Select((p, i) => p.Type is XfilInt { Name: "i32" } ? $"(int32_t)a[{i}]" : $"a[{i}]"));
+            string unused = s.Params.Count == 0 ? "(void)a; " : "";
+            string body = s.Returns == "void"
+                ? $"{unused}{s.KernelHandler}({args}); return 0;"
+                : $"{unused}return {s.KernelHandler}({args});";
+            sb.Append($"static int decode_{s.KernelHandler[8..]}(const uint32_t *a) {{ {body} }}\n");
+        }
+        sb.Append("\nconst syscall_decoder syscall_table[SYSCALL_TABLE_SIZE] = {\n");
+        foreach (XfilSyscall s in file.Syscalls.OrderBy(s => s.Number))
+            sb.Append($"    [{s.Name}] = decode_{s.KernelHandler[8..]},\n");
+        sb.Append("};\n");
+        return sb.ToString();
+    }
+
+    private static string CParam(XfilType t) => t switch
+    {
+        XfilInt i => i.CType,
+        XfilPointer => "uint32_t",
+        _ => throw new InvalidOperationException($"no C parameter type for {t}"),
+    };
+
+    private static void Banner(StringBuilder sb, string path, string library)
+    {
+        sb.Append("// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0\n");
+        sb.Append("// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)\n");
+        sb.Append($"/* {path}: GENERATED from {KernelSource} ({library}) by `cxk abi generate`.\n");
+        sb.Append($" * Do not edit it: change {KernelSource} and regenerate. `cxk check-abi` fails while\n");
+        sb.Append(" * this file differs from what the .xfil generates. */\n\n");
+    }
 
     /// <summary>The C header: constants as <c>#define</c>s with their tokens as written, structures, and a size assert for each.</summary>
     public static string CHeader(XfilFile file)

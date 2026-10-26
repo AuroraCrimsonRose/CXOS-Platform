@@ -34,7 +34,7 @@ global enter_usermode
 global return_to_kernel
 global syscall64_entry
 global syscall_trapped
-extern syscall_dispatch     ; int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2)
+extern syscall_dispatch     ; int syscall_dispatch(uint32_t num, uint32_t a1, ..., uint32_t a5)
 extern gdt64_tss            ; gdt.c
 
 ; ---------------------------------------------------------------------------
@@ -126,6 +126,11 @@ syscall64_entry:
     push r10
     sub rsp, 8               ; 9 pushes from a 16-byte RSP0: align the call
 
+    ; Ring 3's rdi, rsi, rdx, r10, r8 (CX_SYSCALLS_IPC.md §4) into the C
+    ; call's esi, edx, ecx, r8d, r9d, each moved before its source is reused.
+    mov r9d, r8d             ; a5
+    mov r8d, r10d            ; a4
+    mov ecx, edx             ; a3
     mov edx, esi             ; a2
     mov esi, edi             ; a1
     mov edi, eax             ; num
@@ -323,6 +328,10 @@ user64_write_start:
     shl eax, 16
     movzx edi, r12w
     or edi, eax
+    mov esi, 0xC0DE0002      ; a2..a5: unused by SYS_EXIT, and read back from
+    mov edx, 0xC0DE0003      ; the recording point by t_ring3_write, so every
+    mov r10d, 0xC0DE0004     ; register the gate is meant to carry is seen to
+    mov r8d, 0xC0DE0005      ; arrive
     mov eax, SYS_EXIT
     syscall
 .hang:
@@ -439,6 +448,10 @@ user_blob_start:
     mov eax, SYS_CONSOLE_WRITE
     syscall
     xor edi, edi
+    mov esi, 0xC0DE0002      ; a2..a5 for test_sysrec, as in x86-32's user_blob
+    mov edx, 0xC0DE0003
+    mov r10d, 0xC0DE0004
+    mov r8d, 0xC0DE0005
     mov eax, SYS_EXIT
     syscall
 .hang:

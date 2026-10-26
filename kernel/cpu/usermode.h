@@ -22,9 +22,11 @@
 /* install the syscall IDT gate (int 0x80, DPL=3). call once at boot. */
 void usermode_init(void);
 
-/* The syscall entry: runs one call through the recording point (sysrec.h).
+/* The syscall entry: runs one call through the recording point (sysrec.h)
+   and the generated table (systable.h), with the five argument registers.
    syscall_stub calls it for ring 3; the self-tests call it directly. */
-int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2);
+int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2, uint32_t a3,
+                     uint32_t a4, uint32_t a5);
 
 /* Witnesses for the recording point, counted apart from it: traps taken at
    int 0x80, and calls the dispatcher handled. */

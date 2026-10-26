@@ -48,7 +48,7 @@ cxk run         launch an emulator against an image
 cxk inspect     dump CXEX / disk / CXFS structure
 cxk check       validation pass
 cxk check-abi   verify cxk_abi.h and the X prelude are what abi/kernel.xfil generates
-cxk abi generate  write abi/cxk_abi.h from abi/kernel.xfil
+cxk abi generate  write abi/cxk_abi.h and kernel/cpu/systable.{h,c} from abi/kernel.xfil
 cxk check-xdata validate X Data documents (service descriptors)
 
 cxk tokens      print the tokens of X sources         \

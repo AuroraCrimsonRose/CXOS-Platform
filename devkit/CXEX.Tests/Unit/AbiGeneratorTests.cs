@@ -54,6 +54,16 @@ public class AbiGeneratorTests
 
     [Fact]
     [Trait(Categories.Key, Categories.Unit)]
+    public void The_committed_syscall_table_is_what_the_interface_generates()
+    {
+        // The kernel's handler prototypes and dispatch table (roadmap step 6a2),
+        // held to the interface the same way as the header.
+        foreach ((string rel, string text) in XfilEmit.Outputs(XfilParser.Parse(DiskXfil())))
+            Assert.Equal(text, File.ReadAllText(Path.Combine(Requires.Repo(), rel)).Replace("\r\n", "\n"));
+    }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
     public void The_header_read_back_is_the_interface()
     {
         // What C compiles and what X is given agree: every constant by name,

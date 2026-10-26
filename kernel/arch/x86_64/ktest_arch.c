@@ -943,10 +943,15 @@ static int t_ring3_write(void) {
     if (!run_user(&u, user64_write_start, user64_write_end, 0)) return 0;
     sysrec_snapshot(&s1);
     uint32_t len = (uint32_t)(user64_write_msg_end - user64_write_msg);
+    /* The exit came in with all five registers: the routine loads markers into
+       rsi, rdx, r10 and r8 (usermode.asm), which SYS_EXIT does not read. */
+    int carried = s1.in_num == SYS_EXIT && s1.in_args[0] == (uint32_t)u.rc;
+    for (uint32_t i = 1; i < SYSCALL_ARGS; i++)
+        carried = carried && s1.in_args[i] == 0xC0DE0001u + i;
     return (uint32_t)(u.rc & 0xFFFF) == len && ((u.rc >> 16) & 0xFF) == 0xFF &&
            syscall_trapped_count() - t0 == 3 && syscall_dispatch_count() - d0 == 3 &&
            s1.entered - s0.entered == 3 && s1.exited - s0.exited == 2 &&
-           s1.last_num == SYS_CONSOLE_WRITE;
+           s1.last_num == SYS_CONSOLE_WRITE && carried;
 }
 
 /* The process faulted as described, and enter_usermode came back. */

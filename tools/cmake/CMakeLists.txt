@@ -188,6 +188,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/cpu/usermode.c
     ${SRC_DIR}/kernel/cpu/usercopy.c
     ${SRC_DIR}/kernel/cpu/sysrec.c
+    ${SRC_DIR}/kernel/cpu/systable.c
     ${SRC_DIR}/kernel/cpu/proc.c
     ${SRC_DIR}/kernel/cpu/ipc.c
     ${SRC_DIR}/kernel/cpu/spawn.c

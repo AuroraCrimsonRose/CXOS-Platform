@@ -85,11 +85,14 @@ public class CheckAbiCommand : Command<CheckAbiCommand.Settings>
             }
             try
             {
-                string expected = XfilEmit.CHeader(XfilParser.Parse(xfilText));
-                if (File.ReadAllText(headerPath).Replace("\r\n", "\n") != expected)
+                // The header as given, the rest under the repository it sits in.
+                string root = Path.GetDirectoryName(Path.GetDirectoryName(headerPath)!)!;
+                foreach ((string rel, string expected) in XfilEmit.Outputs(XfilParser.Parse(xfilText)))
                 {
-                    AnsiConsole.MarkupLine("[red]DRIFT:[/] abi/cxk_abi.h is not what abi/kernel.xfil generates. " +
-                                           "Run `cxk abi generate`; never edit the header by hand.");
+                    string path = rel == XfilEmit.KernelHeader ? headerPath : Path.Combine(root, rel);
+                    if (File.Exists(path) && File.ReadAllText(path).Replace("\r\n", "\n") == expected) continue;
+                    AnsiConsole.MarkupLine($"[red]DRIFT:[/] {Markup.Escape(rel)} is not what abi/kernel.xfil generates. " +
+                                           "Run `cxk abi generate`; never edit a generated file by hand.");
                     generated++;
                 }
             }

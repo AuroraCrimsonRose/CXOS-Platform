@@ -80,8 +80,20 @@ public sealed record XfilParam(string Name, XfilType Type);
 /// <summary>The X wrapper a syscall is called through: <c>fn name(params) -> ret</c>. <see cref="Returns"/> is <c>i32</c> or <c>void</c>.</summary>
 public sealed record XfilWrapper(string Name, IReadOnlyList<XfilParam> Params, string Returns);
 
-/// <summary><c>syscall SYS_NAME = number [fn wrapper(...) -> ret]</c>. The number is a u32 constant named <see cref="Name"/>.</summary>
-public sealed record XfilSyscall(string Name, long Number, string NumberText, XfilWrapper? Wrapper, XfilDoc Doc, int Line) : XfilItem(Doc, Line);
+/// <summary>
+/// <c>syscall SYS_NAME = number [fn wrapper](params) -> ret</c>. The number is a
+/// u32 constant named <see cref="Name"/>. Every syscall declares its arguments,
+/// because the kernel's dispatch table decodes them (<see cref="KernelHandler"/>);
+/// only one with a <see cref="WrapperName"/> gets a plain X wrapper.
+/// </summary>
+public sealed record XfilSyscall(string Name, long Number, string NumberText, IReadOnlyList<XfilParam> Params, string Returns,
+                                 string? WrapperName, XfilDoc Doc, int Line) : XfilItem(Doc, Line)
+{
+    public XfilWrapper? Wrapper => WrapperName is null ? null : new XfilWrapper(WrapperName, Params, Returns);
+
+    /// <summary>The kernel function the dispatch table calls: <c>SYS_FILE_OP</c>'s is <c>syscall_file_op</c>.</summary>
+    public string KernelHandler => "syscall_" + Name[4..].ToLowerInvariant();
+}
 
 /// <summary>One parsed <c>.xfil</c> file: its header lines, then its items in file order.</summary>
 public sealed record XfilFile(int Version, string Library, string Domain, IReadOnlyList<XfilItem> Items)

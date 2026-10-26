@@ -27,8 +27,9 @@
 #define CXK_SYSREC_H
 
 #include <stdint.h>
+#include "systable.h"   /* SYSCALL_ARGS */
 
-void sysrec_enter(uint32_t num, uint32_t a1, uint32_t a2);
+void sysrec_enter(uint32_t num, const uint32_t args[SYSCALL_ARGS]);
 void sysrec_exit(uint32_t num, int rc);
 
 struct sysrec_stats {
@@ -36,6 +37,8 @@ struct sysrec_stats {
     uint32_t exited;     /* calls that passed sysrec_exit */
     uint32_t last_num;   /* the most recent exit's syscall number */
     int32_t  last_rc;    /* and what it returned */
+    uint32_t in_num;     /* the most recent entry's syscall number */
+    uint32_t in_args[SYSCALL_ARGS];   /* and its argument registers, as given */
 };
 void sysrec_snapshot(struct sysrec_stats *out);
 

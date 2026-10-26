@@ -36,7 +36,7 @@ public class XfilTests
     [Trait(Categories.Key, Categories.Unit)]
     [InlineData("const A: u32 = 1\nconst A: u32 = 1\n", "declared twice")]
     [InlineData("const A: u32 = 1\nenum e {\n    A = 2\n}\n", "declared twice")]              // one namespace for every constant
-    [InlineData("const A: u32 = 1\nsyscall A = 2\n", "declared twice")]
+    [InlineData("const A: u32 = 1\nsyscall A = 2 () -> i32\n", "declared twice")]
     [InlineData("const A: u32 = 0x100000000\n", "does not fit in u32")]
     [InlineData("const A: u32 = -1\n", "does not fit in u32")]
     [InlineData("const A: i32 = 0x80000000\n", "does not fit in i32")]
@@ -83,6 +83,12 @@ public class XfilTests
     [InlineData("syscall SYS_A = 1 fn a(x: u32, x: u32) -> i32\n", "declared twice")]
     [InlineData("syscall SYS_A = 1 fn a() -> i32\nsyscall SYS_B = 2 fn a() -> i32\n", "wrapper a is declared twice")]
     [InlineData("syscall SYS_A = 1 fn a(\n", "syscall NAME = number")]
+    [InlineData("syscall SYS_A = 1\n", "every syscall declares its arguments")]                  // the table could not decode it
+    [InlineData("syscall SYS_A = 1 (x: u64) -> i32\n", "u32, i32 or a pointer")]                  // no wrapper, still checked
+    [InlineData("syscall SYS_A = 1 () -> i32\nsyscall SYS_B = 1 () -> i32\n", "which is SYS_A's")]  // one table slot, two handlers
+    [InlineData("syscall SYS_A = 0x400 () -> i32\n", "up to 1023")]                               // a table that size is a mistake
+    [InlineData("syscall SYSA = 1 () -> i32\n", "starts with SYS_")]                              // its handler is named after the rest
+    [InlineData("syscall SYS_ = 1 () -> i32\n", "starts with SYS_")]
     public void A_bad_syscall_is_refused(string body, string message)
     {
         var e = Assert.Throws<XfilException>(() => Parse(body));
@@ -158,7 +164,7 @@ public class XfilTests
             "struct s {\n    a: u32\n}\n" +
             "syscall SYS_A = 1 fn a(n: u32, h: i32, p: *s, b: *u8) -> i32\n" +
             "syscall SYS_B = 2 fn b() -> void\n" +
-            "syscall SYS_C = 3\n"));
+            "syscall SYS_C = 3 (op: u32) -> i32\n"));
         Assert.Contains("fn a(n: u32, h: i32, p: *s, b: *u8) -> i32 { return __syscall(SYS_A, n, h as u32, p as u32, b as u32, 0); }\n", x, StringComparison.Ordinal);
         Assert.Contains("fn b() -> void { __syscall(SYS_B, 0, 0, 0, 0, 0); }\n", x, StringComparison.Ordinal);
         Assert.DoesNotContain("SYS_C", x, StringComparison.Ordinal);   // no wrapper declared, none written
@@ -166,10 +172,37 @@ public class XfilTests
 
     [Fact]
     [Trait(Categories.Key, Categories.Unit)]
+    public void Every_syscall_gets_a_handler_prototype_a_decoder_and_a_table_slot()
+    {
+        XfilFile f = Parse(
+            "struct s {\n    a: u32\n}\n" +
+            "syscall SYS_FILE_OP = 0x10 fn file_op(n: u32, h: i32, p: *s, b: *u8, last: i32) -> i32\n" +
+            "syscall SYS_EXIT = 2 fn exit(code: i32) -> void\n" +
+            "syscall SYS_POWER = 0x05 () -> i32\n");
+        string h = XfilEmit.CTableHeader(f), c = XfilEmit.CTable(f);
+
+        // the handler is named after the syscall, not its wrapper; pointers are user addresses
+        Assert.Contains("int syscall_file_op(uint32_t n, int32_t h, uint32_t p, uint32_t b, int32_t last);", h, StringComparison.Ordinal);
+        Assert.Contains("void syscall_exit(int32_t code);", h, StringComparison.Ordinal);
+        Assert.Contains("int syscall_power(void);", h, StringComparison.Ordinal);   // no wrapper, still a handler
+        Assert.Contains("#define SYSCALL_TABLE_SIZE      17\n", h, StringComparison.Ordinal);
+        Assert.Contains("#define SYSCALL_COUNT           3\n", h, StringComparison.Ordinal);
+
+        // each register to its parameter in order, i32 converted; void answers 0
+        Assert.Contains("static int decode_file_op(const uint32_t *a) { return syscall_file_op(a[0], (int32_t)a[1], a[2], a[3], (int32_t)a[4]); }", c, StringComparison.Ordinal);
+        Assert.Contains("static int decode_exit(const uint32_t *a) { syscall_exit((int32_t)a[0]); return 0; }", c, StringComparison.Ordinal);
+        Assert.Contains("static int decode_power(const uint32_t *a) { (void)a; return syscall_power(); }", c, StringComparison.Ordinal);
+
+        // slots by number, in number order
+        Assert.Contains("    [SYS_EXIT] = decode_exit,\n    [SYS_POWER] = decode_power,\n    [SYS_FILE_OP] = decode_file_op,\n};", c, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
     public void Every_constant_reaches_the_model_in_file_order_with_its_type()
     {
         AbiModel m = XfilEmit.Model(Parse(
-            "const A: u32 = 1\nsyscall SYS_X = 0x10\nenum e {\n    E0 = 0\n    E1 = 1\n}\nconst NEG: i32 = -1\n"));
+            "const A: u32 = 1\nsyscall SYS_X = 0x10 () -> void\nenum e {\n    E0 = 0\n    E1 = 1\n}\nconst NEG: i32 = -1\n"));
         Assert.Equal(new[] { ("A", 1L, "u32"), ("SYS_X", 16L, "u32"), ("E0", 0L, "u32"), ("E1", 1L, "u32"), ("NEG", -1L, "i32") },
                      m.Constants.Select(c => (c.Name, c.Value, c.XType)));
     }
