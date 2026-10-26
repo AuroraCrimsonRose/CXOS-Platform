@@ -24,7 +24,11 @@
 
 /* The MSRs syscall and sysret read (cpu.c sets them, arch_syscall_gate_init).
    STAR[47:32] is the kernel CS syscall loads, STAR[63:48] the base sysretq
-   adds 8 (SS) and 16 (CS) to. FMASK names the RFLAGS bits syscall clears:
+   adds 8 (SS) and 16 (CS) to. That base carries RPL 3 itself (0x13): Intel's
+   sysret ORs 3 into SS, AMD's loads STAR[63:48] + 8 as it is, so a base of
+   0x10 gave ring 3 SS 0x18 on the rig, and the first interrupt's iretq back
+   to ring 3 faulted on it (#GP 0x18). Linux's base is __USER32_CS, RPL 3 for
+   the same reason. FMASK names the RFLAGS bits syscall clears:
    IF, so the entry runs with interrupts off until it is on RSP0; TF, DF, AC
    and NT, so ring 3 cannot hand the kernel single-stepping, a backward
    string direction, unchecked user access or a nested task; and IOPL. */
@@ -33,7 +37,7 @@
 #define MSR_LSTAR     0xC0000082u
 #define MSR_FMASK     0xC0000084u
 #define EFER_SCE      (1ull << 0)
-#define STAR_VALUE    (((uint64_t)GDT64_KDATA << 48) | ((uint64_t)GDT64_KCODE << 32))
+#define STAR_VALUE    (((uint64_t)(USER_DATA_SEL - 8) << 48) | ((uint64_t)GDT64_KCODE << 32))
 #define FMASK_VALUE   0x47700ull     /* TF IF DF IOPL NT AC */
 
 /* The IST slots. The double fault's is the guarantee the 32-bit kernel's task

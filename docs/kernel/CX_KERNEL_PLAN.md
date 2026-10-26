@@ -302,6 +302,26 @@ code. File access from ring 3 through the executive waits for step 6, when
 the DevKit writes `CXEX_ARCH_X86_64` (nothing writes it today). Self-test
 counts unchanged (68 and 122).
 
+**Step 5f4, done 2026-10-26.** The x86-64 kernel boots on the rig (FX-8350,
+8 GB, booted from a USB stick on EHCI): all 122 self-tests, then idle. Three
+faults stood in the way, none of which QEMU's verification boot could show.
+The EHCI, OHCI and xHCI DMA windows were x86-32 addresses (`0xE3000000` and
+on), in x86-64's user half, so `paging_map_kernel` panicked on the first
+controller; they are `KVA_EHCI_DMA`, `KVA_XHCI_DMA` and `KVA_OHCI_DMA` in each
+arch's `paging_defs.h` now. `verify-boot` attaches no USB controller unless
+asked, so x86-64's USB had never run: `--usb ehci|ohci|xhci` boots now pass.
+x86-64's panic wrote to COM1 only, so on the rig that panic looked like a hang
+and left nothing behind; it now takes x86-32's path (crash-log buffer, COM1,
+then a red screen on the framebuffer or VGA text, the panic tone, and the
+record on the CRASH partition), and `kpanic` names its caller. The first
+record read back that way showed the third: `STAR[63:48]` was `0x10`.
+Intel's sysret ORs RPL 3 into SS and AMD's does not, so ring 3 ran with SS
+`0x18` and the first interrupt's `iretq` back to it took #GP(0x18). The base
+is `0x13` (`USER_DATA_SEL - 8`), as Linux's carries RPL 3, and the MSR test
+checks AMD's arithmetic, which fails in QEMU on the old base. The SS reload
+before sysret (5e) now runs on AMD hardware too: the ring-3 preemption tests
+that switch inside an interrupt from ring 3 pass on the rig.
+
 ---
 
 ## 3. Processes and threads

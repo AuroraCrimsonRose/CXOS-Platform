@@ -907,9 +907,11 @@ static int t_syscall_msrs(void) {
     return (rdmsr(MSR_EFER) & EFER_SCE) && rdmsr(MSR_STAR) == STAR_VALUE &&
            rdmsr(MSR_LSTAR) == (uint64_t)(uintptr_t)syscall64_entry &&
            rdmsr(MSR_FMASK) == FMASK_VALUE &&
-           /* what sysretq loads: STAR[63:48] + 8 and + 16, at RPL 3 */
-           (((STAR_VALUE >> 48) + 8) | 3) == USER_DATA_SEL &&
-           (((STAR_VALUE >> 48) + 16) | 3) == USER_CODE_SEL;
+           /* what sysretq loads: STAR[63:48] + 8 and + 16, as AMD loads them,
+              with no RPL forced (Intel's OR of 3 is then a no-op); QEMU is
+              Intel's, so only this arithmetic shows AMD's SS */
+           ((STAR_VALUE >> 48) + 8) == USER_DATA_SEL &&
+           ((STAR_VALUE >> 48) + 16) == USER_CODE_SEL;
 }
 
 static int t_ring3_cpl(void) {
