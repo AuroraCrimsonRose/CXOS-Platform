@@ -534,17 +534,17 @@ int ktest_spawn_verifies_image(void) {
        prove the call plumbing reaches past the early gates, so the refusal
        below is the signature check and not a malformed request. */
     a->image_len = 0;
-    ok = (sys_spawn(user_addr(a)) == E_RANGE);
+    ok = (sys_spawn(user_addr(a)) == E_OUT_OF_RANGE);
     a->image_len = (uint32_t)e.size;
     if (!ok) goto done;
 
     a->broker_endpoint = 9999;             /* no such handle */
-    ok = (sys_spawn(user_addr(a)) == E_BADF);
+    ok = (sys_spawn(user_addr(a)) == E_BAD_HANDLE);
     a->broker_endpoint = h;
     if (!ok) goto done;
 
     a->image = USER_ADDR32_END;    /* past the user half: not a user pointer */
-    ok = (sys_spawn(user_addr(a)) == E_FAULT);
+    ok = (sys_spawn(user_addr(a)) == E_BAD_ADDRESS);
     a->image = user_addr(img);
     if (!ok) goto done;
 

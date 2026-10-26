@@ -102,7 +102,7 @@ fn file_sync() -> i32 {
 // Lock `len` bytes of an open file from `start` (len 0: to the end, however
 // far it grows). `mode` is FLOCK_SHARED or FLOCK_EXCLUSIVE, and with
 // | FLOCK_WAIT the call sleeps until the lock can be had rather than returning
-// E_AGAIN. E_DEADLK means waiting would never end - the conflicting lock is
+// E_BUSY. E_DEADLOCK means waiting would never end - the conflicting lock is
 // this program's own, through another handle, or its holder waits on us.
 // Locks belong to this handle, and file_close releases them; so does exit.
 // Advisory: they refuse only other locks, never a read, write or unlink.
@@ -314,18 +314,26 @@ fn file_dump(path: *u8, buf: *u8, n: u32) -> i32 {
 
 // a short name for a negative return, for error messages
 fn file_strerror(rc: i32) -> *u8 {
-    if (rc == E_PERM)   { return "permission denied"; }
-    if (rc == E_INVAL)  { return "invalid argument"; }
-    if (rc == E_FAULT)  { return "bad pointer"; }
-    if (rc == E_NOENT)  { return "no such file or directory"; }
-    if (rc == E_NOMEM)  { return "out of space"; }
-    if (rc == E_BADF)   { return "bad file handle"; }
-    if (rc == E_AGAIN)  { return "file is in use"; }
-    if (rc == E_RANGE)  { return "out of range"; }
-    if (rc == E_IO)     { return "disk error"; }
-    if (rc == E_EXIST)  { return "already exists"; }
-    if (rc == E_ISDIR)  { return "is a directory"; }
-    if (rc == E_NOTDIR) { return "not a directory"; }
-    if (rc == E_DEADLK) { return "would wait forever"; }
+    if (rc == E_INTERNAL)         { return "kernel error"; }
+    if (rc == E_NOT_SUPPORTED)    { return "not supported"; }
+    if (rc == E_INVALID_ARGS)     { return "invalid argument"; }
+    if (rc == E_BAD_ADDRESS)      { return "bad pointer"; }
+    if (rc == E_BAD_HANDLE)       { return "bad handle"; }
+    if (rc == E_WRONG_TYPE)       { return "wrong kind of handle"; }
+    if (rc == E_ACCESS_DENIED)    { return "permission denied"; }
+    if (rc == E_NO_MEMORY)        { return "out of memory"; }
+    if (rc == E_NO_RESOURCES)     { return "too many open"; }
+    if (rc == E_OUT_OF_RANGE)     { return "out of range"; }
+    if (rc == E_BUFFER_TOO_SMALL) { return "buffer too small"; }
+    if (rc == E_PEER_CLOSED)      { return "the other end closed"; }
+    if (rc == E_CANCELED)         { return "canceled"; }
+    if (rc == E_BUSY)             { return "file is in use"; }
+    if (rc == E_ALREADY_EXISTS)   { return "already exists"; }
+    if (rc == E_NOT_FOUND)        { return "no such file or directory"; }
+    if (rc == E_NOT_DIR)          { return "not a directory"; }
+    if (rc == E_IS_DIR)           { return "is a directory"; }
+    if (rc == E_NO_SPACE)         { return "out of space"; }
+    if (rc == E_IO)               { return "disk error"; }
+    if (rc == E_DEADLOCK)         { return "would wait forever"; }
     return "error";
 }

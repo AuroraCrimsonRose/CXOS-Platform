@@ -181,12 +181,12 @@ static void proc_trampoline(void) {
 int proc_start(const void *image, uint32_t image_len, uint32_t caps,
                struct endpoint *broker, uint32_t broker_grant,
                const char *args, uint32_t args_len) {
-    if (image_len == 0 || image_len > PROC_MAX_IMAGE) return E_RANGE;
-    if (args_len > USER_ARGS_MAX)                     return E_RANGE;
+    if (image_len == 0 || image_len > PROC_MAX_IMAGE) return E_OUT_OF_RANGE;
+    if (args_len > USER_ARGS_MAX)                     return E_OUT_OF_RANGE;
     if (!args) args_len = 0;
 
     uint8_t *kimg = (uint8_t *)kmalloc(image_len);
-    if (!kimg) return E_NOMEM;
+    if (!kimg) return E_NO_MEMORY;
     for (uint32_t i = 0; i < image_len; i++)
         kimg[i] = ((const uint8_t *)image)[i];          /* copy from current space */
 
@@ -197,17 +197,17 @@ int proc_start(const void *image, uint32_t image_len, uint32_t caps,
     char *kargs = 0;
     if (args_len) {
         kargs = (char *)kmalloc(args_len);
-        if (!kargs) { kfree(kimg); return E_NOMEM; }
+        if (!kargs) { kfree(kimg); return E_NO_MEMORY; }
         for (uint32_t i = 0; i < args_len; i++) kargs[i] = args[i];
     }
 
     paddr_t space;
-    if (addr_space_create(&space) != 0) { kfree(kimg); kfree(kargs); return E_NOMEM; }
+    if (addr_space_create(&space) != 0) { kfree(kimg); kfree(kargs); return E_NO_MEMORY; }
 
     /* Held until every record below is filled in: see thread_create_process. */
     struct proc_rec *rec = kmalloc(sizeof *rec);
     int tid = rec ? thread_create_process("proc", proc_trampoline) : -1;
-    if (tid < 0) { kfree(rec); kfree(kimg); kfree(kargs); addr_space_release(space); return E_NOMEM; }
+    if (tid < 0) { kfree(rec); kfree(kimg); kfree(kargs); addr_space_release(space); return E_NO_MEMORY; }
 
     rec->image     = kimg;
     rec->image_len = image_len;
@@ -253,10 +253,10 @@ int proc_start(const void *image, uint32_t image_len, uint32_t caps,
  *
  * Returns E_OK, or the error to hand back to the caller. */
 static int check_args(const struct spawn_args *a) {
-    if (!a->args) return a->args_len ? E_INVAL : E_OK;   /* length without a blob */
-    if (a->args_len == 0 || a->args_len > USER_ARGS_MAX) return E_RANGE;
-    if (!user_ptr_readable(a->args, a->args_len))    return E_FAULT;
-    if (((const char *)user_ptr(a->args))[a->args_len - 1] != '\0') return E_INVAL;
+    if (!a->args) return a->args_len ? E_INVALID_ARGS : E_OK;   /* length without a blob */
+    if (a->args_len == 0 || a->args_len > USER_ARGS_MAX) return E_OUT_OF_RANGE;
+    if (!user_ptr_readable(a->args, a->args_len))    return E_BAD_ADDRESS;
+    if (((const char *)user_ptr(a->args))[a->args_len - 1] != '\0') return E_INVALID_ARGS;
     return E_OK;
 }
 
@@ -264,17 +264,17 @@ static int check_args(const struct spawn_args *a) {
    through one of its endpoints. */
 int sys_spawn(uint32_t ua) {
     struct spawn_args a;
-    if (user_copy_in(&a, ua, sizeof a) != 0) return E_FAULT;
+    if (user_copy_in(&a, ua, sizeof a) != 0) return E_BAD_ADDRESS;
 
-    if (a.image_len == 0 || a.image_len > PROC_MAX_IMAGE) return E_RANGE;
-    if (!user_ptr_readable(a.image, a.image_len))     return E_FAULT;
+    if (a.image_len == 0 || a.image_len > PROC_MAX_IMAGE) return E_OUT_OF_RANGE;
+    if (!user_ptr_readable(a.image, a.image_len))     return E_BAD_ADDRESS;
 
     int arc = check_args(&a);
     if (arc != E_OK) return arc;
 
     uint32_t bgrant = 0;
     struct endpoint *bep = ep_from_handle(a.broker_endpoint, HRIGHT_RECV, &bgrant);
-    if (!bep) return E_BADF;
+    if (!bep) return E_BAD_HANDLE;
 
     /* Attenuation: child gets requested caps masked by the spawner's own caps.
        Pass a subset of your authority, never amplify. App-spawner (caps=0) -> 0. */
@@ -303,11 +303,11 @@ int sys_spawn(uint32_t ua) {
      * instant of the copy and a fault during it is recoverable (§6). The
      * user_ptr_readable above is an early reject, not the authority. */
     uint8_t *kimg = (uint8_t *)kmalloc(a.image_len);
-    if (!kimg) { ep_put(bep); return E_NOMEM; }
+    if (!kimg) { ep_put(bep); return E_NO_MEMORY; }
     if (user_copy_in(kimg, a.image, a.image_len) != 0) {
         kfree(kimg);
         ep_put(bep);
-        return E_FAULT;
+        return E_BAD_ADDRESS;
     }
 
     int pid = cxex_exec_as(kimg, (size_t)a.image_len, granted, bep, bgrant, user_ptr(a.args), a.args_len);
@@ -356,7 +356,7 @@ int sys_spawn(uint32_t ua) {
  */
 int sys_exec_path(uint32_t upath, uint32_t ua) {
     struct spawn_args a;
-    if (user_copy_in(&a, ua, sizeof a) != 0) return E_FAULT;
+    if (user_copy_in(&a, ua, sizeof a) != 0) return E_BAD_ADDRESS;
 
     int arc = check_args(&a);
     if (arc != E_OK) return arc;
@@ -365,12 +365,12 @@ int sys_exec_path(uint32_t upath, uint32_t ua) {
        per-byte would be a page-table walk per character */
     char path[FILE_PATH_MAX];
     uint32_t addr = upath;
-    if (!addr) return E_FAULT;
+    if (!addr) return E_BAD_ADDRESS;
     uint32_t n = 0;
     for (;;) {
-        if (n >= sizeof path) return E_RANGE;
+        if (n >= sizeof path) return E_OUT_OF_RANGE;
         if (n == 0 || (((addr + n) & 0xFFFu) == 0)) {
-            if (!user_ptr_readable(addr + n, 1)) return E_FAULT;
+            if (!user_ptr_readable(addr + n, 1)) return E_BAD_ADDRESS;
         }
         path[n] = ((const char *)user_ptr(addr))[n];
         if (!path[n]) break;
@@ -382,13 +382,13 @@ int sys_exec_path(uint32_t upath, uint32_t ua) {
     /* Resolve against the caller's working directory, so `exec doc.xuex`
        means what it says from wherever the process happens to be. */
     int id = cxfs_resolve(path, thread_current_cwd());
-    if (id < 0 || sysfile_entry_doomed((uint32_t)id)) return E_NOENT;   /* unlinked, still open */
+    if (id < 0 || sysfile_entry_doomed((uint32_t)id)) return E_NOT_FOUND;   /* unlinked, still open */
 
     struct cxfs_entry e;
     if (cxfs_read_entry((uint32_t)id, &e) != 0) return E_IO;
-    if (e.type == CXFS_TYPE_DIR)                return E_ISDIR;
-    if (e.type != CXFS_TYPE_FILE || e.size == 0) return E_INVAL;
-    if (e.size > PROC_MAX_IMAGE)                return E_RANGE;
+    if (e.type == CXFS_TYPE_DIR)                return E_IS_DIR;
+    if (e.type != CXFS_TYPE_FILE || e.size == 0) return E_INVALID_ARGS;
+    if (e.size > PROC_MAX_IMAGE)                return E_OUT_OF_RANGE;
 
     /* The broker handle is checked BEFORE the image is read: a bad handle is
        the cheap failure and there is no reason to pull a megabyte off the disk
@@ -407,11 +407,11 @@ int sys_exec_path(uint32_t upath, uint32_t ua) {
     uint32_t bgrant = 0;
     if (a.broker_endpoint >= 0) {
         bep = ep_from_handle(a.broker_endpoint, HRIGHT_RECV, &bgrant);
-        if (!bep) return E_BADF;
+        if (!bep) return E_BAD_HANDLE;
     }
 
     uint8_t *buf = (uint8_t *)kmalloc((size_t)e.size);
-    if (!buf) { ep_put(bep); return E_NOMEM; }
+    if (!buf) { ep_put(bep); return E_NO_MEMORY; }
     if (cxfs_read_file((uint32_t)id, buf, (uint32_t)e.size) != (int)e.size) {
         kfree(buf);
         ep_put(bep);
@@ -435,7 +435,7 @@ int sys_exec_path(uint32_t upath, uint32_t ua) {
         klog("EXEC", SEV_WARN, "exec_path refused the image");
         klog_child(path);
         klog_child(cxk_launch_strerror(rc));
-        return (rc == CXEX_EXEC_VERIFY_FAILED) ? E_PERM : E_INVAL;
+        return (rc == CXEX_EXEC_VERIFY_FAILED) ? E_ACCESS_DENIED : E_INVALID_ARGS;
     }
 
     klog_u32("EXEC", SEV_OK, "pid ", (uint32_t)rc, LOG_COLOR_VALUE,

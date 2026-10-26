@@ -256,7 +256,7 @@ static void irq_dispatch(struct registers *r) {
 /* A page fault inside user_copy_bytes (usermode.asm) is the one kernel fault
    that is not a bug: a user buffer that stopped being mapped, or was never
    what its check thought. The copy returns 1 from its landing pad instead,
-   and user_copy_out/in make that E_FAULT. The same four conditions as
+   and user_copy_out/in make that E_BAD_ADDRESS. The same four conditions as
    x86-32's idt.c, for the same reason: recovery is a property of where the
    fault happened, with no flag that could be left armed. */
 static int recover_user_copy_fault(struct registers *f) {

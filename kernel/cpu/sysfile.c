@@ -205,7 +205,7 @@ static int lock_apply(struct open_file *of, uint32_t start, uint32_t len, uint32
             return E_OK;
         }
     }
-    if (free_slot < 0) return E_NOMEM;
+    if (free_slot < 0) return E_NO_RESOURCES;
     locks[free_slot].of    = of;
     locks[free_slot].entry = of->entry;
     locks[free_slot].start = start;
@@ -269,7 +269,7 @@ int sysfile_open_count(void) {
  * (E_*, cxk_abi.h). They meet here and nowhere else, so a change to either one
  * has exactly one place to be reconciled.
  *
- * CXFS_E_FRAGMENT folds into E_NOMEM along with CXFS_E_NOSPACE: both mean the
+ * CXFS_E_FRAGMENT folds into E_NO_SPACE along with CXFS_E_NOSPACE: both mean the
  * write cannot be satisfied for want of space, and the difference between "no
  * blocks" and "no blocks in one run" is not something a user program can act on
  * differently. The kernel log keeps the distinction.
@@ -277,14 +277,14 @@ int sysfile_open_count(void) {
 static int abi_err(int cxfs_rc) {
     switch (cxfs_rc) {
         case CXFS_E_OK:       return E_OK;
-        case CXFS_E_PERM:     return E_PERM;
-        case CXFS_E_NOSPACE:  return E_NOMEM;
-        case CXFS_E_FRAGMENT: return E_NOMEM;
-        case CXFS_E_INVAL:    return E_INVAL;
-        case CXFS_E_NOTFOUND: return E_NOENT;
-        case CXFS_E_ISDIR:    return E_ISDIR;
-        case CXFS_E_NOTDIR:   return E_NOTDIR;
-        case CXFS_E_EXISTS:   return E_EXIST;
+        case CXFS_E_PERM:     return E_ACCESS_DENIED;
+        case CXFS_E_NOSPACE:  return E_NO_SPACE;
+        case CXFS_E_FRAGMENT: return E_NO_SPACE;
+        case CXFS_E_INVAL:    return E_INVALID_ARGS;
+        case CXFS_E_NOTFOUND: return E_NOT_FOUND;
+        case CXFS_E_ISDIR:    return E_IS_DIR;
+        case CXFS_E_NOTDIR:   return E_NOT_DIR;
+        case CXFS_E_EXISTS:   return E_ALREADY_EXISTS;
         case CXFS_E_FAIL:     return E_IO;
         default:              return (cxfs_rc < 0) ? E_IO : cxfs_rc;
     }
@@ -297,16 +297,16 @@ static int abi_err(int cxfs_rc) {
    walks page tables, so per-byte would be a page-table walk per character.
    Returns the length, or a negative E_* code. */
 static int copy_path_in(uint32_t addr, char *dst, uint32_t cap) {
-    if (!addr) return E_FAULT;
+    if (!addr) return E_BAD_ADDRESS;
     for (uint32_t i = 0; i < cap; i++) {
         if (i == 0 || (((addr + i) & 0xFFFu) == 0)) {       /* new page */
-            if (!user_ptr_readable(addr + i, 1)) return E_FAULT;
+            if (!user_ptr_readable(addr + i, 1)) return E_BAD_ADDRESS;
         }
         char c = ((const char *)user_ptr(addr))[i];
         dst[i] = c;
         if (!c) return (int)i;
     }
-    return E_RANGE;   /* no terminator inside cap bytes */
+    return E_OUT_OF_RANGE;   /* no terminator inside cap bytes */
 }
 
 /* Resolve everything but the last component of `path`, so a create knows which
@@ -315,14 +315,14 @@ static int resolve_parent(const char *path, uint32_t cwd,
                           uint32_t *parent, char *leaf, uint32_t leafcap) {
     uint32_t len = 0;
     while (path[len]) len++;
-    if (len == 0) return E_INVAL;
+    if (len == 0) return E_INVALID_ARGS;
 
     /* find the last '/' */
     int slash = -1;
     for (uint32_t i = 0; i < len; i++) if (path[i] == '/') slash = (int)i;
 
     if (slash < 0) {                       /* bare name: in the cwd */
-        if (len >= leafcap) return E_RANGE;
+        if (len >= leafcap) return E_OUT_OF_RANGE;
         for (uint32_t i = 0; i <= len; i++) leaf[i] = path[i];
         *parent = cwd;
         return 0;
@@ -330,19 +330,19 @@ static int resolve_parent(const char *path, uint32_t cwd,
 
     /* "/name" -> parent is root; "a/b/name" -> parent is the resolved prefix */
     uint32_t leaflen = len - (uint32_t)slash - 1;
-    if (leaflen == 0)       return E_INVAL;   /* trailing slash */
-    if (leaflen >= leafcap) return E_RANGE;
+    if (leaflen == 0)       return E_INVALID_ARGS;   /* trailing slash */
+    if (leaflen >= leafcap) return E_OUT_OF_RANGE;
     for (uint32_t i = 0; i <= leaflen; i++) leaf[i] = path[slash + 1 + i];
 
     if (slash == 0) { *parent = 0; return 0; }   /* 0 = root */
 
     char dir[FILE_PATH_MAX];
-    if ((uint32_t)slash >= sizeof dir) return E_RANGE;
+    if ((uint32_t)slash >= sizeof dir) return E_OUT_OF_RANGE;
     for (int i = 0; i < slash; i++) dir[i] = path[i];
     dir[slash] = '\0';
 
     int pid = cxfs_resolve(dir, cwd);
-    if (pid < 0) return E_NOENT;
+    if (pid < 0) return E_NOT_FOUND;
     *parent = (uint32_t)pid;
     return 0;
 }
@@ -439,15 +439,15 @@ static int file_op(struct file_op_args a, struct open_file *f, uint32_t rights) 
 
         case FILE_OP_OPEN: {
             if ((rc = copy_path_in(a.path, path, sizeof path)) < 0) return rc;
-            if (!(a.flags & (FOPEN_READ | FOPEN_WRITE))) return E_INVAL;
+            if (!(a.flags & (FOPEN_READ | FOPEN_WRITE))) return E_INVALID_ARGS;
 
             int id = lookup(path, cwd);
 
             if (id < 0) {
-                if (!(a.flags & FOPEN_CREATE)) return E_NOENT;
+                if (!(a.flags & FOPEN_CREATE)) return E_NOT_FOUND;
                 /* an unlinked file still open elsewhere holds its name until
                    its last close, as a delete-pending file does on NT */
-                if (cxfs_resolve(path, cwd) >= 0) return E_EXIST;
+                if (cxfs_resolve(path, cwd) >= 0) return E_ALREADY_EXISTS;
                 uint32_t parent;
                 char leaf[FILE_NAME_MAX];
                 if ((rc = resolve_parent(path, cwd, &parent, leaf, sizeof leaf)) < 0) return rc;
@@ -456,7 +456,7 @@ static int file_op(struct file_op_args a, struct open_file *f, uint32_t rights) 
             } else {
                 struct cxfs_entry e;
                 if (cxfs_read_entry((uint32_t)id, &e) != 0) return E_IO;
-                if (e.type == CXFS_TYPE_DIR) return E_ISDIR;
+                if (e.type == CXFS_TYPE_DIR) return E_IS_DIR;
                 if ((a.flags & FOPEN_TRUNC) && (a.flags & FOPEN_WRITE)) {
                     rc = cxfs_truncate((uint32_t)id, 0);
                     if (rc != CXFS_E_OK) return abi_err(rc);
@@ -468,7 +468,7 @@ static int file_op(struct file_op_args a, struct open_file *f, uint32_t rights) 
                open - the sort of thing a program retrying in a loop turns into
                an exhausted table. */
             struct open_file *nf = of_alloc();
-            if (!nf) return E_NOMEM;
+            if (!nf) return E_NO_MEMORY;
             nf->entry = (uint32_t)id;
             nf->flags = a.flags;
             nf->off   = 0;
@@ -482,20 +482,20 @@ static int file_op(struct file_op_args a, struct open_file *f, uint32_t rights) 
             /* The open's own reference goes either way: on success the handle
                holds the file; on failure it goes back to its cache here. */
             kobj_unref(&nf->hdr);
-            return h < 0 ? E_NOMEM : h;
+            return h < 0 ? E_NO_RESOURCES : h;
         }
 
         case FILE_OP_CLOSE:
             /* The file itself goes when sys_file_op drops its reference, and
                the delete of an unlinked file runs after that. */
-            if (htab_close(thread_htab(thread_current_id()), a.handle) != 0) return E_BADF;
+            if (htab_close(thread_htab(thread_current_id()), a.handle) != 0) return E_BAD_HANDLE;
             return E_OK;
 
         case FILE_OP_READ: {
-            if (!(rights & FOPEN_READ)) return E_PERM;
+            if (!(rights & FOPEN_READ)) return E_ACCESS_DENIED;
             if (a.len == 0) return 0;
-            if (a.len > 0x7FFFFFFFu) return E_RANGE;
-            if (!user_ptr_writable(a.data, a.len)) return E_FAULT;
+            if (a.len > 0x7FFFFFFFu) return E_OUT_OF_RANGE;
+            if (!user_ptr_writable(a.data, a.len)) return E_BAD_ADDRESS;
 
             rc = cxfs_read_at(f->entry, f->off, user_ptr(a.data), a.len);
             if (rc < 0) return abi_err(rc);
@@ -504,12 +504,12 @@ static int file_op(struct file_op_args a, struct open_file *f, uint32_t rights) 
         }
 
         case FILE_OP_WRITE: {
-            if (!(rights & FOPEN_WRITE)) return E_PERM;
+            if (!(rights & FOPEN_WRITE)) return E_ACCESS_DENIED;
             if (a.len == 0) return 0;
-            if (a.len > 0x7FFFFFFFu) return E_RANGE;
-            if (!user_ptr_readable(a.data, a.len)) return E_FAULT;
+            if (a.len > 0x7FFFFFFFu) return E_OUT_OF_RANGE;
+            if (!user_ptr_readable(a.data, a.len)) return E_BAD_ADDRESS;
             /* the offset cap is the ABI's, so refuse rather than wrap */
-            if (f->off > 0x7FFFFFFFu - a.len) return E_RANGE;
+            if (f->off > 0x7FFFFFFFu - a.len) return E_OUT_OF_RANGE;
 
             /* APPEND means "at the end as it is now", not "at the end as it was
                when you opened it" - re-read the size each time, so two writers
@@ -537,10 +537,10 @@ static int file_op(struct file_op_args a, struct open_file *f, uint32_t rights) 
                 case FSEEK_SET: base = 0;              break;
                 case FSEEK_CUR: base = (int64_t)f->off; break;
                 case FSEEK_END: base = (int64_t)size;  break;
-                default: return E_INVAL;
+                default: return E_INVALID_ARGS;
             }
             int64_t pos = base + (int64_t)a.off;
-            if (pos < 0 || pos > 0x7FFFFFFF) return E_RANGE;
+            if (pos < 0 || pos > 0x7FFFFFFF) return E_OUT_OF_RANGE;
             /* Seeking past EOF is allowed and allocates nothing: the hole only
                becomes real on the write that reaches it. */
             f->off = (uint32_t)pos;
@@ -552,8 +552,8 @@ static int file_op(struct file_op_args a, struct open_file *f, uint32_t rights) 
         }
 
         case FILE_OP_TRUNC: {
-            if (!(rights & FOPEN_WRITE)) return E_PERM;
-            if (a.off < 0) return E_INVAL;
+            if (!(rights & FOPEN_WRITE)) return E_ACCESS_DENIED;
+            if (a.off < 0) return E_INVALID_ARGS;
             return abi_err(cxfs_truncate(f->entry, (uint64_t)(uint32_t)a.off));
         }
 
@@ -563,12 +563,12 @@ static int file_op(struct file_op_args a, struct open_file *f, uint32_t rights) 
             if (a.op == FILE_OP_STAT) {
                 if ((rc = copy_path_in(a.path, path, sizeof path)) < 0) return rc;
                 int r = lookup(path, cwd);
-                if (r < 0) return E_NOENT;
+                if (r < 0) return E_NOT_FOUND;
                 id = (uint32_t)r;
             } else {
                 id = f->entry;
             }
-            if (!user_ptr_writable(a.data, sizeof(struct file_stat))) return E_FAULT;
+            if (!user_ptr_writable(a.data, sizeof(struct file_stat))) return E_BAD_ADDRESS;
             struct cxfs_entry e;
             if (cxfs_read_entry(id, &e) != 0) return E_IO;
             fill_stat(&e, (struct file_stat *)user_ptr(a.data));
@@ -577,13 +577,13 @@ static int file_op(struct file_op_args a, struct open_file *f, uint32_t rights) 
 
         case FILE_OP_READDIR: {
             if ((rc = copy_path_in(a.path, path, sizeof path)) < 0) return rc;
-            if (!user_ptr_writable(a.data, sizeof(struct file_stat))) return E_FAULT;
+            if (!user_ptr_writable(a.data, sizeof(struct file_stat))) return E_BAD_ADDRESS;
 
             int r = lookup(path, cwd);
-            if (r < 0) return E_NOENT;
+            if (r < 0) return E_NOT_FOUND;
             struct cxfs_entry dir;
             if (cxfs_read_entry((uint32_t)r, &dir) != 0) return E_IO;
-            if (dir.type != CXFS_TYPE_DIR) return E_NOTDIR;
+            if (dir.type != CXFS_TYPE_DIR) return E_NOT_DIR;
 
             rd_want  = a.len;
             rd_seen  = 0;
@@ -605,21 +605,21 @@ static int file_op(struct file_op_args a, struct open_file *f, uint32_t rights) 
         case FILE_OP_SYNC:
             return (cxfs_sync() == 0) ? E_OK : E_IO;
 
-        /* Without FLOCK_WAIT a conflict is E_AGAIN at once. With it the thread
+        /* Without FLOCK_WAIT a conflict is E_BUSY at once. With it the thread
            sleeps until a release, then looks again, as Serenity's FlockBlocker
-           does - unless waiting could never end, which is E_DEADLK. A
+           does - unless waiting could never end, which is E_DEADLOCK. A
            conversion that conflicts leaves the lock already held unchanged. */
         case FILE_OP_LOCK: {
             uint32_t mode = a.flags & ~(uint32_t)FLOCK_WAIT;
-            if (mode != FLOCK_SHARED && mode != FLOCK_EXCLUSIVE) return E_INVAL;
-            if (a.off < 0) return E_INVAL;
+            if (mode != FLOCK_SHARED && mode != FLOCK_EXCLUSIVE) return E_INVALID_ARGS;
+            if (a.off < 0) return E_INVALID_ARGS;
             uint32_t start = (uint32_t)a.off;
 
             int me = thread_current_id();
             while (lock_conflict(f, f->entry, start, a.len, mode, 0) >= 0) {
-                if (!(a.flags & FLOCK_WAIT)) return E_AGAIN;
+                if (!(a.flags & FLOCK_WAIT)) return E_BUSY;
                 for (struct lock_wait *w = waiters; w; w = w->next) w->seen = 0;
-                if (lock_cycle(me, f, f->entry, start, a.len, mode)) return E_DEADLK;
+                if (lock_cycle(me, f, f->entry, start, a.len, mode)) return E_DEADLOCK;
 
                 struct lock_wait self = { .tid = me, .of = f, .entry = f->entry,
                                           .start = start, .len = a.len, .mode = mode,
@@ -634,14 +634,14 @@ static int file_op(struct file_op_args a, struct open_file *f, uint32_t rights) 
         }
 
         case FILE_OP_UNLOCK: {
-            if (a.off < 0) return E_INVAL;
+            if (a.off < 0) return E_INVALID_ARGS;
             lock_drop(f, (uint32_t)a.off, a.len);
             return E_OK;
         }
 
         case FILE_OP_MKDIR: {
             if ((rc = copy_path_in(a.path, path, sizeof path)) < 0) return rc;
-            if (cxfs_resolve(path, cwd) >= 0) return E_EXIST;
+            if (cxfs_resolve(path, cwd) >= 0) return E_ALREADY_EXISTS;
             uint32_t parent;
             char leaf[FILE_NAME_MAX];
             if ((rc = resolve_parent(path, cwd, &parent, leaf, sizeof leaf)) < 0) return rc;
@@ -651,8 +651,8 @@ static int file_op(struct file_op_args a, struct open_file *f, uint32_t rights) 
         case FILE_OP_UNLINK: {
             if ((rc = copy_path_in(a.path, path, sizeof path)) < 0) return rc;
             int r = lookup(path, cwd);
-            if (r < 0) return E_NOENT;
-            if (r == 0) return E_INVAL;                    /* never the root */
+            if (r < 0) return E_NOT_FOUND;
+            if (r == 0) return E_INVALID_ARGS;                    /* never the root */
 
             struct cxfs_entry e;
             if (cxfs_read_entry((uint32_t)r, &e) != 0) return E_IO;
@@ -663,11 +663,11 @@ static int file_op(struct file_op_args a, struct open_file *f, uint32_t rights) 
             if (thread_current_uid() != 0) {
                 uint16_t need = (thread_current_uid() == e.owner_uid)
                                 ? CXFS_PERM_OW : CXFS_PERM_TW;
-                if (!(e.permissions & need)) return E_PERM;
+                if (!(e.permissions & need)) return E_ACCESS_DENIED;
             }
             if (e.type == CXFS_TYPE_DIR && cxfs_count_children((uint32_t)r) > 0)
-                return E_INVAL;                            /* must be empty */
-            if ((uint32_t)r == cwd) return E_INVAL;         /* not your own cwd */
+                return E_INVALID_ARGS;                            /* must be empty */
+            if ((uint32_t)r == cwd) return E_INVALID_ARGS;         /* not your own cwd */
 
             /* Still open somewhere: the name goes now, the entry at the last
                close (see "unlinked while open" above). */
@@ -684,11 +684,11 @@ static int file_op(struct file_op_args a, struct open_file *f, uint32_t rights) 
             char newname[FILE_NAME_MAX];
             if ((rc = copy_path_in(a.path2, newname, sizeof newname)) < 0) return rc;
 
-            if (names_self(path)) return E_INVAL;   /* "." / ".." name a directory,
+            if (names_self(path)) return E_INVALID_ARGS;   /* "." / ".." name a directory,
                                                        not an entry within it */
             int r = lookup(path, cwd);
-            if (r < 0) return E_NOENT;
-            if (r == 0) return E_INVAL;
+            if (r < 0) return E_NOT_FOUND;
+            if (r == 0) return E_INVALID_ARGS;
 
             /* cxfs_rename deliberately does not check for collisions (its doc
                says the caller does), so check here - otherwise two entries in
@@ -696,26 +696,26 @@ static int file_op(struct file_op_args a, struct open_file *f, uint32_t rights) 
             struct cxfs_entry e;
             if (cxfs_read_entry((uint32_t)r, &e) != 0) return E_IO;
             int clash = cxfs_find_in_dir(e.parent_id, newname);
-            if (clash >= 0 && clash != r) return E_EXIST;
+            if (clash >= 0 && clash != r) return E_ALREADY_EXISTS;
 
-            return (cxfs_rename((uint32_t)r, newname) == 0) ? E_OK : E_INVAL;
+            return (cxfs_rename((uint32_t)r, newname) == 0) ? E_OK : E_INVALID_ARGS;
         }
 
         case FILE_OP_CHDIR: {
             if ((rc = copy_path_in(a.path, path, sizeof path)) < 0) return rc;
             int r = lookup(path, cwd);
-            if (r < 0) return E_NOENT;
+            if (r < 0) return E_NOT_FOUND;
             struct cxfs_entry e;
             if (cxfs_read_entry((uint32_t)r, &e) != 0) return E_IO;
-            if (e.type != CXFS_TYPE_DIR) return E_NOTDIR;
+            if (e.type != CXFS_TYPE_DIR) return E_NOT_DIR;
             thread_set_cwd(thread_current_id(), (uint32_t)r);
             return E_OK;
         }
 
         case FILE_OP_GETCWD: {
-            if (a.len == 0) return E_RANGE;
+            if (a.len == 0) return E_BUFFER_TOO_SMALL;
             if (a.len > FILE_PATH_MAX) a.len = FILE_PATH_MAX;
-            if (!user_ptr_writable(a.data, a.len)) return E_FAULT;
+            if (!user_ptr_writable(a.data, a.len)) return E_BAD_ADDRESS;
             cxfs_path_of(cwd, path, (int)a.len);
             uint32_t n = 0;
             while (n + 1 < a.len && path[n]) n++;
@@ -725,13 +725,13 @@ static int file_op(struct file_op_args a, struct open_file *f, uint32_t rights) 
         }
 
         default:
-            return E_INVAL;
+            return E_INVALID_ARGS;
     }
 }
 
 int sys_file_op(uint32_t ua) {
     struct file_op_args a;          /* copy in: never re-read user memory */
-    if (user_copy_in(&a, ua, sizeof a) != 0) return E_FAULT;
+    if (user_copy_in(&a, ua, sizeof a) != 0) return E_BAD_ADDRESS;
 
     if (!cxfs_is_mounted()) return E_IO;
     bury_pending();
@@ -741,7 +741,7 @@ int sys_file_op(uint32_t ua) {
        under it, on this CPU or another. */
     struct open_file *f = NULL;
     uint32_t rights = 0;
-    if (names_handle(a.op) && !(f = of_ref(a.handle, &rights))) return E_BADF;
+    if (names_handle(a.op) && !(f = of_ref(a.handle, &rights))) return E_BAD_HANDLE;
 
     int rc = file_op(a, f, rights);
 

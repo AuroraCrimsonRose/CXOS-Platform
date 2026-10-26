@@ -11,7 +11,7 @@
  *
  * A CLOSED HANDLE'S NUMBER IS REFUSED. A handle value is a slot index plus the
  * slot's generation, and the generation moves on every close. A program that
- * keeps using a number after closing it gets E_BADF, not whatever object the
+ * keeps using a number after closing it gets E_BAD_HANDLE, not whatever object the
  * slot holds next. Under the old table a stale number silently named the next
  * occupant. The generation is 19 bits, so a number comes back only after its
  * slot has been reused 524,287 times; NT reuses handle values at once.
@@ -57,10 +57,10 @@
 
 /* The ABI's error values (cxk_abi.h). That header asserts 32-bit pointers, so the
    host tests cannot include it; htab.c checks these agree in the kernel build. */
-#define HTAB_E_PERM   (-1)
-#define HTAB_E_INVAL  (-2)
-#define HTAB_E_NOMEM  (-5)
-#define HTAB_E_BADF   (-6)
+#define HTAB_E_ACCESS_DENIED  (-7)
+#define HTAB_E_INVALID_ARGS   (-3)
+#define HTAB_E_NO_RESOURCES   (-9)
+#define HTAB_E_BAD_HANDLE     (-5)
 
 /* Generic rights, the same on every type (the ABI's HRIGHT_DUPLICATE, checked
    in htab.c in the kernel build). */
@@ -99,8 +99,8 @@ void htab_destroy(struct htab *t);
 /* Give `o` a handle in `t` with `rights`, derived from `parent_grant` (0 for
    a handle on an object the caller just made). The handle holds its own
    reference; the caller's is untouched. Returns the handle value (> 0), or
-   HTAB_E_INVAL (no object, or its type is not registered), HTAB_E_PERM (a right the type
-   does not define) or HTAB_E_NOMEM (the table is at its limit, or could
+   HTAB_E_INVALID_ARGS (no object, or its type is not registered), HTAB_E_ACCESS_DENIED (a right the type
+   does not define) or HTAB_E_NO_RESOURCES (the table is at its limit, or could
    not grow). */
 int32_t htab_install(struct htab *t, struct kobj *o, uint32_t rights, uint32_t parent_grant);
 
@@ -112,11 +112,11 @@ struct kobj *htab_ref(struct htab *t, int32_t h, enum kobj_type type, uint32_t n
 
 /* A second handle in the same table on the same object, with `rights`, which
    must be a subset of the source's. Its parent grant is the source's grant.
-   Returns the new value, or HTAB_E_BADF, HTAB_E_PERM (the source lacks
-   HTAB_RIGHT_DUPLICATE, or one of `rights`) or HTAB_E_NOMEM. */
+   Returns the new value, or HTAB_E_BAD_HANDLE, HTAB_E_ACCESS_DENIED (the source lacks
+   HTAB_RIGHT_DUPLICATE, or one of `rights`) or HTAB_E_NO_RESOURCES. */
 int32_t htab_dup(struct htab *t, int32_t h, uint32_t rights);
 
-/* Close `h`. Returns 0, or HTAB_E_BADF if it names nothing. */
+/* Close `h`. Returns 0, or HTAB_E_BAD_HANDLE if it names nothing. */
 int htab_close(struct htab *t, int32_t h);
 
 /* Close every handle: process teardown. */

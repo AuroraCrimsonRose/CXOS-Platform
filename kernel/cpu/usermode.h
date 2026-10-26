@@ -51,7 +51,7 @@ static inline uint32_t user_addr(const void *p) { return (uint32_t)(uintptr_t)p;
  * validation is only true at the instant it runs, and any syscall that
  * validates, blocks, and then copies is trusting a snapshot that nothing has
  * refreshed. These validate at the copy and copy fault-recoverably, so the
- * failure is E_FAULT rather than a stale-probe write or a ring-0 fault.
+ * failure is E_BAD_ADDRESS rather than a stale-probe write or a ring-0 fault.
  *
  * `len == 0` is a success that touches nothing, so a NULL/absent buffer with
  * zero length needs no special case at the call site.
@@ -77,7 +77,7 @@ void usercopy_trampoline(void);
  *
  * This exists because CR0.WP makes the two layers overlap. With WP set, a
  * ring-0 write to a read-only user page faults, and that fault is recoverable,
- * so removing the range check from user_copy_out still yields E_FAULT - the
+ * so removing the range check from user_copy_out still yields E_BAD_ADDRESS - the
  * copy just reaches it the other way. The returned value alone can no longer
  * tell which layer refused.
  *
@@ -104,7 +104,7 @@ void usermode_register_fault_handler(void);
 /* What enter_usermode returns when the ring-3 code faulted instead of calling
    SYS_EXIT. A SYS_EXIT can pass the same number; usermode_faults() tells them
    apart. */
-#define USERMODE_FAULTED E_FAULT
+#define USERMODE_FAULTED E_BAD_ADDRESS
 
 /* Ring-3 faults taken since boot, for the self-tests. */
 uint32_t usermode_faults(void);

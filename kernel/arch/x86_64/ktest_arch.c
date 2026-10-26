@@ -1025,8 +1025,8 @@ static int t_usercopy(void) {
     uint8_t buf[16] = { 0 };
     uint32_t r0 = usercopy_faults_recovered();
     int ok = ro && paging_map_user(U_CODE, ro, 0) == 0;
-    ok = ok && user_copy_in(buf, U_STACK, sizeof buf) == E_FAULT &&
-               user_copy_out(U_CODE, buf, sizeof buf) == E_FAULT &&
+    ok = ok && user_copy_in(buf, U_STACK, sizeof buf) == E_BAD_ADDRESS &&
+               user_copy_out(U_CODE, buf, sizeof buf) == E_BAD_ADDRESS &&
                usercopy_faults_recovered() == r0;
     ok = ok && user_copy_bytes(user_ptr(U_CODE), buf, sizeof buf) == 1 &&
                user_copy_bytes(buf, user_ptr(U_STACK), sizeof buf) == 1 &&

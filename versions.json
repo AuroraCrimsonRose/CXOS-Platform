@@ -103,7 +103,7 @@
       ]
     },
     "cxex-abi": {
-      "version": 3,
+      "version": 4,
       "what": "The syscall and capability contract in abi/cxk_abi.h, stamped into every image's abi_version so a kernel can refuse one built against a different contract.",
       "field": "abi_version, u16 at offset 10",
       "bump_when": "a syscall number, struct layout or capability meaning changes. Both sides in one commit - `cxk check-abi` is the gate.",

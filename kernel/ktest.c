@@ -219,7 +219,7 @@ static int test_ipc_endpoint_lifetime(void) {
     h = ep_create();
     if (h < 0 || h == stale) return 0;
     if (ep_from_handle(stale, 0, NULL) != NULL) return 0;
-    if (htab_close(t, stale) != E_BADF) return 0;
+    if (htab_close(t, stale) != E_BAD_HANDLE) return 0;
 
     /* 3. a second handle is a second reference: the first close must not
        free. It records the grant it came from. */
@@ -245,14 +245,14 @@ static int test_ipc_endpoint_lifetime(void) {
 
     /* 4. rights only shrink: the SEND handle cannot become a RECV one, and
        no handle can carry a right endpoints do not define. */
-    if (htab_dup(t, h2, HRIGHT_RECV) != E_PERM) return 0;
-    if (htab_dup(t, h2, HRIGHT_SEND | HRIGHT_RECV) != E_PERM) return 0;
+    if (htab_dup(t, h2, HRIGHT_RECV) != E_ACCESS_DENIED) return 0;
+    if (htab_dup(t, h2, HRIGHT_SEND | HRIGHT_RECV) != E_ACCESS_DENIED) return 0;
     if (ep_from_handle(h2, HRIGHT_RECV, NULL) != NULL) return 0;
-    if (ep_install_handle(me, ep, 0x80u, grant) != E_PERM) return 0;
+    if (ep_install_handle(me, ep, 0x80u, grant) != E_ACCESS_DENIED) return 0;
     int h3 = htab_dup(t, h2, HRIGHT_SEND);
     if (h3 < 0) return 0;
     if (ep_handles(ep) != 2) return 0;
-    if (htab_dup(t, h3, HRIGHT_SEND) != E_PERM) return 0;   /* h3 was not given the duplicate right */
+    if (htab_dup(t, h3, HRIGHT_SEND) != E_ACCESS_DENIED) return 0;   /* h3 was not given the duplicate right */
     if (htab_close(t, h3) != 0) return 0;
 
     /* 5. the last handle frees it, and the stale handle is a dead name. */
@@ -285,7 +285,7 @@ static int test_ipc_endpoint_lifetime(void) {
    refused here rather than by the hardware.
 
    Since CR0.WP was set, reaching the copy would refuse it too - the write
-   faults and recovery turns that into the same E_FAULT - so the return value
+   faults and recovery turns that into the same E_BAD_ADDRESS - so the return value
    no longer says which layer acted. The assertions below are on the recovered
    fault COUNT for that reason: refused by the check means no fault at all.
    Delete the user_ptr_writable call in user_copy_out and the count moves,
@@ -320,7 +320,7 @@ static int test_user_copy_validation(void) {
     if (paging_map_user(va, frame, 0) != 0) { ok = 0; goto done; }
     {
         uint32_t faults_before = usercopy_faults_recovered();
-        ok = ok && (user_copy_out(va, src, 8) == E_FAULT);
+        ok = ok && (user_copy_out(va, src, 8) == E_BAD_ADDRESS);
         ok = ok && (usercopy_faults_recovered() == faults_before);   /* the sabotage signal */
     }
     for (int i = 0; i < 8; i++) ok = ok && (p[i] == 0xAA);
@@ -339,10 +339,10 @@ static int test_user_copy_validation(void) {
     ok = ok && (user_copy_in((void *)src, 0, 0) == 0);
 
     /* A buffer straddling the kernel boundary is refused by both. */
-    ok = ok && (user_copy_out(USER_ADDR32_END - 4, src, 8) == E_FAULT);
+    ok = ok && (user_copy_out(USER_ADDR32_END - 4, src, 8) == E_BAD_ADDRESS);
     {
         uint8_t dst[8] = { 0 };
-        ok = ok && (user_copy_in(dst, USER_ADDR32_END - 4, 8) == E_FAULT);
+        ok = ok && (user_copy_in(dst, USER_ADDR32_END - 4, 8) == E_BAD_ADDRESS);
     }
 
 done:
@@ -399,7 +399,7 @@ static int test_user_copy_fault_recovery(void) {
     }
 
     /* And the validated path refuses it up front, without reaching the copy. */
-    if (user_copy_out(va, src, 8) != E_FAULT) return 0;
+    if (user_copy_out(va, src, 8) != E_BAD_ADDRESS) return 0;
 
     return 1;
 }
@@ -669,7 +669,7 @@ static int test_sysrec(void) {
 }
 
 /* ---- the generated dispatch table (systable.h) ----
- * A number the table has no handler for is E_NOSYS, whether it falls in a hole
+ * A number the table has no handler for is E_NOT_SUPPORTED, whether it falls in a hole
  * between syscalls or past the last one, and it still passes the recording
  * point. A number past the end must be refused before it indexes the table:
  * 0xFFFFFFFF would otherwise read four gigabytes beyond it. */
@@ -678,10 +678,10 @@ static int test_syscall_table(void) {
     for (uint32_t i = 0; i < sizeof unknown / sizeof unknown[0]; i++) {
         struct sysrec_stats s0, s1;
         sysrec_snapshot(&s0);
-        if (syscall_dispatch(unknown[i], 1, 2, 3, 4, 5) != E_NOSYS) return 0;
+        if (syscall_dispatch(unknown[i], 1, 2, 3, 4, 5) != E_NOT_SUPPORTED) return 0;
         sysrec_snapshot(&s1);
         if (s1.entered - s0.entered != 1 || s1.exited - s0.exited != 1) return 0;
-        if (s1.in_num != unknown[i] || s1.last_rc != E_NOSYS) return 0;
+        if (s1.in_num != unknown[i] || s1.last_rc != E_NOT_SUPPORTED) return 0;
         for (uint32_t k = 0; k < SYSCALL_ARGS; k++)
             if (s1.in_args[k] != k + 1) return 0;
     }
@@ -1818,32 +1818,32 @@ static int vm_cycle(int pid) {
        today and code written to rely on a combination that will stop being
        allowed. Asserting it here is what keeps it from being quietly relaxed. */
     RESET_ARGS(); a.prot = MPROT_WRITE | MPROT_EXEC;
-    if (vm_map(pid, &a) != E_INVAL)                 goto done;
+    if (vm_map(pid, &a) != E_INVALID_ARGS)                 goto done;
 
     /* Anonymous memory has no interior, so a non-zero offset is a caller error
        rather than something to ignore. Both halves of the 64-bit field. */
     RESET_ARGS(); a.offset_lo = 4096;
-    if (vm_map(pid, &a) != E_INVAL)                 goto done;
+    if (vm_map(pid, &a) != E_INVALID_ARGS)                 goto done;
     RESET_ARGS(); a.offset_hi = 1;
-    if (vm_map(pid, &a) != E_INVAL)                 goto done;
+    if (vm_map(pid, &a) != E_INVALID_ARGS)                 goto done;
 
     /* An object that does not exist yet is refused rather than treated as
        anonymous, so adding one later cannot silently change what old code did. */
     RESET_ARGS(); a.object = 99;
-    if (vm_map(pid, &a) != E_INVAL)                 goto done;
+    if (vm_map(pid, &a) != E_INVALID_ARGS)                 goto done;
 
     RESET_ARGS(); a.length = 0;
-    if (vm_map(pid, &a) != E_INVAL)                 goto done;
+    if (vm_map(pid, &a) != E_INVALID_ARGS)                 goto done;
     RESET_ARGS(); a.length = MMAP_MAX_BYTES + 1u;
-    if (vm_map(pid, &a) != E_RANGE)                 goto done;
+    if (vm_map(pid, &a) != E_OUT_OF_RANGE)                 goto done;
     RESET_ARGS(); a.prot = MPROT_NONE;
-    if (vm_map(pid, &a) != E_INVAL)                 goto done;
+    if (vm_map(pid, &a) != E_INVALID_ARGS)                 goto done;
 
     /* The quota is a real ceiling, not a number in a struct: a request that
        would cross it fails, and fails without having taken any frames. */
     uint32_t before_quota_try = pmm_free_count();
     RESET_ARGS(); a.length = vm_default_quota();
-    if (vm_map(pid, &a) != E_NOMEM)                 goto done;
+    if (vm_map(pid, &a) != E_NO_MEMORY)                 goto done;
     if (pmm_free_count() != before_quota_try)       goto done;
 
     /* A hint that is free is honoured, which is what makes a moving window
@@ -1861,10 +1861,10 @@ static int vm_cycle(int pid) {
     uint32_t declined = a.addr;
 
     /* Unmapping something never mapped is an error, not a silent success. */
-    if (vm_unmap(pid, VM_MMAP_BASE - PAGE_SIZE, PAGE_SIZE) != E_NOENT) goto done;
+    if (vm_unmap(pid, VM_MMAP_BASE - PAGE_SIZE, PAGE_SIZE) != E_NOT_FOUND) goto done;
     /* A length that disagrees with the region is refused rather than releasing
        a different amount than the caller believes it is releasing. */
-    if (vm_unmap(pid, second, 4096) != E_INVAL)     goto done;
+    if (vm_unmap(pid, second, 4096) != E_INVALID_ARGS)     goto done;
 
     if (vm_unmap(pid, first, 0) != E_OK)            goto done;   /* 0 = whole */
     if (vm_unmap(pid, second, 8192) != E_OK)        goto done;
@@ -1892,8 +1892,8 @@ static int vm_cycle(int pid) {
 
     /* Past the ceiling, and a length whose rounding wraps to something small.
        Both are refused, and a refusal leaves the account untouched. */
-    if (vm_charge(pid, vm_quota_of(pid)) != E_NOMEM) goto done;
-    if (vm_charge(pid, 0xFFFFFFFFu) != E_RANGE)      goto done;
+    if (vm_charge(pid, vm_quota_of(pid)) != E_NO_MEMORY) goto done;
+    if (vm_charge(pid, 0xFFFFFFFFu) != E_OUT_OF_RANGE)      goto done;
     RESET_ARGS(); a.op = MEM_OP_INFO;
     if (vm_info(pid, &a) != E_OK)                    goto done;
     if (a.mapped != 2u * PAGE_SIZE)                  goto done;
@@ -2584,13 +2584,13 @@ static int test_console_font_disk(void) {
             args->text = user_addr(nm);
             args->out = 0;
             int rc = sys_fb_op(user_addr(args));
-            /* E_INVAL specifically, NOT "some error". The distinction is the
-               security property: E_INVAL means the NAME RULES refused it,
-               E_NOENT means the kernel built a path and went looking. Accepting
+            /* E_INVALID_ARGS specifically, NOT "some error". The distinction is the
+               security property: E_INVALID_ARGS means the NAME RULES refused it,
+               E_NOT_FOUND means the kernel built a path and went looking. Accepting
                either would pass a kernel that allowed "../x" straight through -
                it would compose /System/Fonts/../x.xfnt, find nothing, and
-               answer E_NOENT, which reads like a refusal and is not one. */
-            ok = ok && (rc == E_INVAL);
+               answer E_NOT_FOUND, which reads like a refusal and is not one. */
+            ok = ok && (rc == E_INVALID_ARGS);
             /* and nothing was installed by a refused call */
             ok = ok && !xfnt_active();
         }
@@ -2603,7 +2603,7 @@ static int test_console_font_disk(void) {
         while (absent[k]) { nm[k] = absent[k]; k++; }
         nm[k] = '\0';
         args->text = user_addr(nm);
-        ok = ok && (sys_fb_op(user_addr(args)) == E_NOENT);
+        ok = ok && (sys_fb_op(user_addr(args)) == E_NOT_FOUND);
         ok = ok && !xfnt_active();
 
         /* ---- where the name length bound actually is ----
@@ -2615,20 +2615,20 @@ static int test_console_font_disk(void) {
          * Both halves are asserted, because a bound set one too tight is as
          * wrong as one too loose and only the pair says where it is. And the
          * CODES are what distinguish them: a name that could never be a
-         * filename is malformed - E_INVAL - whereas measuring the bare name
+         * filename is malformed - E_INVALID_ARGS - whereas measuring the bare name
          * against CXFS_NAME_LEN let 59 through to a lookup that always missed,
-         * answering E_NOENT, "no such font", about something that could never
+         * answering E_NOT_FOUND, "no such font", about something that could never
          * have been one. */
         const char *n58 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         const char *n59 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
         k = 0; while (n58[k]) { nm[k] = n58[k]; k++; } nm[k] = '\0';
         args->text = user_addr(nm);
-        ok = ok && (sys_fb_op(user_addr(args)) == E_NOENT);
+        ok = ok && (sys_fb_op(user_addr(args)) == E_NOT_FOUND);
 
         k = 0; while (n59[k]) { nm[k] = n59[k]; k++; } nm[k] = '\0';
         args->text = user_addr(nm);
-        ok = ok && (sys_fb_op(user_addr(args)) == E_INVAL);
+        ok = ok && (sys_fb_op(user_addr(args)) == E_INVALID_ARGS);
         ok = ok && !xfnt_active();
 
         /* ---- and a change that keeps the CELL does not clear the screen ----
@@ -3110,7 +3110,7 @@ static void hg_thread(void) {
     }
     hg_count = htab_count(t);
     hg_limit = t ? t->max : 0;
-    ok = ok && r == E_NOMEM && past16 && hg_count == hg_limit;
+    ok = ok && r == E_NO_RESOURCES && past16 && hg_count == hg_limit;
 
     /* every one of them names the endpoint */
     uint32_t found = 0;

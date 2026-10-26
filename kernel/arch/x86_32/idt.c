@@ -186,7 +186,7 @@ uintptr_t irq_fault_address(void) {
  * that is not a bug: it means a user buffer stopped being mapped, which the
  * copy is required to report rather than die of. Recovery redirects the return
  * to the copy's landing pad, which returns the fault indicator, and
- * user_copy_out/in turn that into E_FAULT.
+ * user_copy_out/in turn that into E_BAD_ADDRESS.
  *
  * All four conditions matter, and the EIP range is what makes this safe: there
  * is no armed flag to leak, so a kernel fault anywhere else still panics

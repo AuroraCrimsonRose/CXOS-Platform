@@ -38,7 +38,7 @@ domain kernel
 /// mismatch. Declared in versions.json as `cxex-abi` and checked against this
 /// line; bump both, and the DevKit's stamp, in the one commit that changes the
 /// contract.
-const CXK_ABI_VERSION: u32 = 3
+const CXK_ABI_VERSION: u32 = 4
 
 /// ---- syscall numbers ----
 /// lifecycle 0x00-0x0F (no capability required)
@@ -103,21 +103,33 @@ const POWER_SHUTDOWN: u32 = 1        /// ACPI S5 soft-off
 const POWER_SLEEP: u32 = 2           /// ecx = ms; 0 = S1/C1 until a keypress
 
 /// ---- error codes (negative; returned in eax) ----
+/// One list, shared by syscalls and services (docs/kernel/CX_SYSCALLS_IPC.md sec 6).
 const E_OK: i32 = 0
-const E_PERM: i32 = -1       /// capability denied
-const E_INVAL: i32 = -2      /// bad argument
-const E_FAULT: i32 = -3      /// bad/unmapped user pointer
-const E_NOENT: i32 = -4      /// no such object
-const E_NOMEM: i32 = -5      /// out of memory
-const E_BADF: i32 = -6       /// bad handle
-const E_AGAIN: i32 = -7      /// would block / no message ready
-const E_RANGE: i32 = -8      /// message too large / buffer too small
-const E_NOSYS: i32 = -9      /// unknown syscall number
-const E_IO: i32 = -10        /// disk or filesystem I/O failure
-const E_EXIST: i32 = -11     /// the name is already taken
-const E_ISDIR: i32 = -12     /// expected a file, got a directory
-const E_NOTDIR: i32 = -13    /// expected a directory, got a file
-const E_DEADLK: i32 = -14    /// waiting would never end (FILE_OP_LOCK)
+const E_INTERNAL: i32 = -1           /// a kernel bug; never expected
+const E_NOT_SUPPORTED: i32 = -2      /// no such operation, or not for this object
+const E_INVALID_ARGS: i32 = -3       /// malformed arguments, unknown flags, bad alignment
+const E_BAD_ADDRESS: i32 = -4        /// user memory not mapped or not accessible
+const E_BAD_HANDLE: i32 = -5         /// not a live handle in this process
+const E_WRONG_TYPE: i32 = -6         /// the handle names the wrong kind of object
+const E_ACCESS_DENIED: i32 = -7      /// the handle lacks a right, or policy forbids it
+const E_NO_MEMORY: i32 = -8          /// no memory, or the commit quota refused it
+const E_NO_RESOURCES: i32 = -9       /// a table or budget is full
+const E_OUT_OF_RANGE: i32 = -10      /// an offset or size beyond the object or a limit
+const E_BUFFER_TOO_SMALL: i32 = -11  /// the output buffer is too small
+const E_TIMED_OUT: i32 = -12         /// the deadline passed
+const E_CANCELED: i32 = -13          /// the wait or call was canceled
+const E_PEER_CLOSED: i32 = -14       /// the other end is gone
+const E_SHOULD_WAIT: i32 = -15       /// nothing ready now; wait and retry
+const E_BUSY: i32 = -16              /// in use; try later
+const E_ALREADY_EXISTS: i32 = -17    /// the name is already taken
+const E_NOT_FOUND: i32 = -18         /// no such name or object
+const E_NOT_DIR: i32 = -19           /// expected a directory, got a file
+const E_IS_DIR: i32 = -20            /// expected a file, got a directory
+const E_NO_SPACE: i32 = -21          /// the volume is full
+const E_IO: i32 = -22                /// disk or filesystem I/O failure
+const E_CORRUPT: i32 = -23           /// on-disk data failed a check
+const E_DEADLOCK: i32 = -24          /// waiting would never end (FILE_OP_LOCK)
+const E_PROTOCOL: i32 = -25          /// an IPC message did not match its interface
 
 /// ---- program arguments ----
 /// A launcher hands over a flat blob: the argument strings, NUL-terminated, one
@@ -216,7 +228,7 @@ struct object_info_args {
     handle: i32
     topic: u32      /// OBJINFO_*
     buf: u32        /// the topic's structure is written here
-    cap: u32        /// bytes at buf; smaller than the topic needs is E_RANGE
+    cap: u32        /// bytes at buf; smaller than the topic needs is E_BUFFER_TOO_SMALL
 }
 struct object_basic {
     kind: u32           /// OBJ_TYPE_* (not `type`: an X keyword)
@@ -263,7 +275,7 @@ enum fb_op {
     /// read an arbitrary path. Names carrying '/' or '.' are refused.
     ///
     /// The font is validated as an XFNT before anything is installed; a bad one
-    /// leaves the current font working. Returns 0, or E_INVAL / E_NOENT.
+    /// leaves the current font working. Returns 0, or E_INVALID_ARGS / E_NOT_FOUND.
     FB_OP_SET_FONT = 6      /// text = font name, no path, no extension
 }
 struct fb_op_args {
@@ -490,10 +502,10 @@ enum file_op {
     /// so locking the same range again converts it. Closing the handle releases
     /// them all, however it goes (FILE_OP_CLOSE, SYS_HANDLE_CLOSE, exit).
     ///
-    /// A conflict is E_AGAIN, or with FLOCK_WAIT the call sleeps until the
+    /// A conflict is E_BUSY, or with FLOCK_WAIT the call sleeps until the
     /// conflicting locks are released - except when that could never happen (a
     /// conflicting lock is the caller's own, or its holder is waiting, directly
-    /// or through others, on one of the caller's), which is E_DEADLK.
+    /// or through others, on one of the caller's), which is E_DEADLOCK.
     ///
     /// Advisory: only another LOCK is refused. Opening, reading, writing and
     /// unlinking a locked file all still work, as they do on every Unix. Nothing

@@ -7,7 +7,7 @@
 //
 // A thin, typed wrapper over SYS_FB_OP. Every call needs GRANT_FRAMEBUFFER, which
 // is part of GRANT_OS_BASELINE - so the executive and the shell can draw, but a
-// capability-less app cannot (it gets E_PERM and must go through a broker).
+// capability-less app cannot (it gets E_ACCESS_DENIED and must go through a broker).
 //
 // Colours are canonical 0x00RRGGBB; the kernel converts to the active mode, so
 // nothing here needs to know whether the display is 16bpp or 32bpp.
@@ -73,7 +73,7 @@ fn gfx_text(x: u32, y: u32, s: *u8, fg: color, bg: color) -> i32 {
 // ---- console font ----
 // Install /System/Fonts/<name>.xfnt as the console font. `name` is a NAME, not
 // a path: the kernel composes the path and reads the file itself, so a name
-// carrying '/' or '.' is refused. Returns 0, or E_INVAL / E_NOENT.
+// carrying '/' or '.' is refused. Returns 0, or E_INVALID_ARGS / E_NOT_FOUND.
 //
 // The console's grid follows the font's cell, so a font of another size changes
 // how many columns and rows fit the screen. The kernel clears on a successful

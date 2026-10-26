@@ -14,7 +14,7 @@
  * memory, so ring 3 cannot forge them. The syscall dispatcher gates a
  * privileged call with a single check:
  *
- *     if (!(thread_current_caps() & GRANT_X)) return E_PERM;
+ *     if (!(thread_current_caps() & GRANT_X)) return E_ACCESS_DENIED;
  *
  * In the brokered ("B") model only the .xoex executive holds privileged caps;
  * apps hold none and reach privilege only by IPC to their executive. Authority

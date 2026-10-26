@@ -313,7 +313,7 @@ fn ed_save() -> i32 {
 fn edit_run(path: *u8) -> i32 {
     ed_cols = gfx_width() / ED_CW;
     ed_rows = gfx_height() / ED_CH;
-    if (ed_rows < 3) { return E_INVAL; }
+    if (ed_rows < 3) { return E_INVALID_ARGS; }
     ed_rows = ed_rows - 2;              // title bar + status bar
 
     strcopy(&ed_path[0], path, ED_PATHC);

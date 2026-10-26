@@ -81,7 +81,7 @@ uint32_t fb_font_height(void);
    /Shared/Fonts - system first, so a user-writable directory cannot shadow a
    system font. `name` must already be known free of path separators; sys_fb_op
    checks that before calling. Recomputes the grid, does NOT clear the screen.
-   Returns 0, E_NOENT (no such font) or E_INVAL (found, but unusable). */
+   Returns 0, E_NOT_FOUND (no such font) or E_INVALID_ARGS (found, but unusable). */
 int fb_font_select(const char *name);
 
 void fb_draw_char(uint32_t x, uint32_t y, char c, uint32_t fg, uint32_t bg);

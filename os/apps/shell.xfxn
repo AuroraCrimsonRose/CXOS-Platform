@@ -422,8 +422,8 @@ fn cmd_font(arg: *u8) -> void {
         newline();
         return;
     }
-    if (rc == E_NOENT) { puts("font: no such font - 'font' lists them\n"); return; }
-    if (rc == E_INVAL) { puts("font: bad name, or not a usable .xfnt\n"); return; }
+    if (rc == E_NOT_FOUND) { puts("font: no such font - 'font' lists them\n"); return; }
+    if (rc == E_INVALID_ARGS) { puts("font: bad name, or not a usable .xfnt\n"); return; }
     puts("font: refused\n");
 }
 
@@ -690,7 +690,7 @@ fn cmd_run(arg: *u8) -> void {
     a.args            = (&run_argbuf[0]) as u32;
     a.args_len        = blob;
 
-    let pid: i32 = E_NOENT;
+    let pid: i32 = E_NOT_FOUND;
     if (strchr(name, 47) >= 0) {                             // '/' - a path
         pid = exec_path(name, &a);
     } else {
@@ -701,11 +701,11 @@ fn cmd_run(arg: *u8) -> void {
                 let p: *u8 = run_candidate(run_dirs[d], name, ext);
                 a.name = p as u32;
                 pid = exec_path(p, &a);
-                // Only E_NOENT means "not here, keep looking". A file that
+                // Only E_NOT_FOUND means "not here, keep looking". A file that
                 // exists but will not run - unsigned, a directory, not a CXEX
                 // - is the answer, and reporting it beats walking past it and
                 // saying the program does not exist.
-                if (pid != E_NOENT) { ext = RUN_EXTS + 1; d = RUN_DIRS; }
+                if (pid != E_NOT_FOUND) { ext = RUN_EXTS + 1; d = RUN_DIRS; }
                 else { ext = ext + 1; }
             }
             d = d + 1;
@@ -716,10 +716,10 @@ fn cmd_run(arg: *u8) -> void {
     if (pid < 0) {
         puts(name);
         puts(": ");
-        // E_PERM here means the signature check refused it, not a file
+        // E_ACCESS_DENIED here means the signature check refused it, not a file
         // permission problem - worth saying plainly, since an unsigned build
         // is by far the most likely cause.
-        if (pid == E_PERM) { puts("not signed by a key this kernel trusts\n"); }
+        if (pid == E_ACCESS_DENIED) { puts("not signed by a key this kernel trusts\n"); }
         else { puts(file_strerror(pid)); newline(); }
         return;
     }

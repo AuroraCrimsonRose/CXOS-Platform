@@ -280,11 +280,11 @@ static const char *const font_dirs[] = {
  * Does not clear the console: the grid is recomputed, but what to do about the
  * glyphs already drawn is the caller's decision.
  *
- * Returns 0, E_NOENT if no directory holds it, or E_INVAL if what was found is
+ * Returns 0, E_NOT_FOUND if no directory holds it, or E_INVALID_ARGS if what was found is
  * not a font this kernel can use. */
 int fb_font_select(const char *name) {
     static const char ext[] = ".xfnt";
-    if (!name || !name[0]) return E_INVAL;
+    if (!name || !name[0]) return E_INVALID_ARGS;
 
     /* The composed filename is <name>.xfnt, and that is the name CXFS has to
        store, so the extension counts against the name field. Measuring `name`
@@ -299,7 +299,7 @@ int fb_font_select(const char *name) {
            rejected 60 and let 59 through, and is why both sides of the limit
            are asserted in ktest rather than only the refusal. */
         n++;
-        if (n + (sizeof ext - 1) >= CXFS_NAME_LEN) return E_INVAL;
+        if (n + (sizeof ext - 1) >= CXFS_NAME_LEN) return E_INVALID_ARGS;
     }
 
     for (unsigned d = 0; d < sizeof font_dirs / sizeof font_dirs[0]; d++) {
@@ -310,7 +310,7 @@ int fb_font_select(const char *name) {
         char path[FILE_PATH_MAX];
         /* Checked rather than assumed, even though the three lengths are
            bounded well below FILE_PATH_MAX. */
-        if (dlen + n + (sizeof ext - 1) + 1 > sizeof path) return E_INVAL;
+        if (dlen + n + (sizeof ext - 1) + 1 > sizeof path) return E_INVALID_ARGS;
         uint32_t p = 0;
         for (uint32_t i = 0; i < dlen; i++)           path[p++] = dir[i];
         for (uint32_t i = 0; i < n; i++)              path[p++] = name[i];
@@ -320,25 +320,25 @@ int fb_font_select(const char *name) {
         struct cxfs_entry fe;
         if (cxfs_stat_path(path, &fe) != 0)  continue;   /* not here; try the next */
         if (fe.type != CXFS_TYPE_FILE)       continue;
-        if (fe.size == 0 || fe.size > sizeof font_buf) return E_INVAL;
+        if (fe.size == 0 || fe.size > sizeof font_buf) return E_INVALID_ARGS;
 
         int got = cxfs_read_path(path, font_buf, (uint32_t)sizeof font_buf);
-        if (got <= 0 || (uint64_t)got != fe.size) return E_INVAL;
+        if (got <= 0 || (uint64_t)got != fe.size) return E_INVALID_ARGS;
 
         /* xfnt_install validates before it commits, so a file that is not a
            font leaves the console drawing with whatever it had. The search
            stops at the first directory holding the NAME - a broken font in
            /System is an error, not a reason to fall through to /Shared and
            silently use a different one. */
-        if (xfnt_install(font_buf, (uint32_t)got) != XFNT_E_OK) return E_INVAL;
+        if (xfnt_install(font_buf, (uint32_t)got) != XFNT_E_OK) return E_INVALID_ARGS;
         console_font_changed();
         return 0;
     }
     /* Falling out means no directory held the name at all. Every path that DID
        match returns from inside the loop - a font that is present but unusable
-       is E_INVAL there - so there is no "found but rejected" case left to carry
+       is E_INVALID_ARGS there - so there is no "found but rejected" case left to carry
        out here, and a flag implying one only misleads the next reader. */
-    return E_NOENT;
+    return E_NOT_FOUND;
 }
 
 static uint32_t fb_pack(uint32_t rgb) {
@@ -347,12 +347,12 @@ static uint32_t fb_pack(uint32_t rgb) {
 
 int sys_fb_op(uint32_t ua) {
     struct fb_op_args a;
-    if (user_copy_in(&a, ua, sizeof a) != 0) return E_FAULT;
-    if (!fb_active()) return E_NOENT;
+    if (user_copy_in(&a, ua, sizeof a) != 0) return E_BAD_ADDRESS;
+    if (!fb_active()) return E_NOT_FOUND;
 
     switch (a.op) {
         case FB_OP_INFO: {
-            if (!user_ptr_writable(a.out, 4 * sizeof(uint32_t))) return E_FAULT;
+            if (!user_ptr_writable(a.out, 4 * sizeof(uint32_t))) return E_BAD_ADDRESS;
             ((uint32_t *)user_ptr(a.out))[0] = fb_width();
             ((uint32_t *)user_ptr(a.out))[1] = fb_height();
             ((uint32_t *)user_ptr(a.out))[2] = fb_bpp();
@@ -370,12 +370,12 @@ int sys_fb_op(uint32_t ua) {
                at a page boundary, but fb_draw_string walks to its own NUL, so a
                string filling a mapped page with no terminator - or any string of
                0x1000 characters - ran straight off the end of the mapping. Since
-               n != 0 in that case, the E_FAULT check below does not catch it.
+               n != 0 in that case, the E_BAD_ADDRESS check below does not catch it.
                SYS_CONSOLE_WRITE has always done this correctly; this now matches it. */
             uint32_t n = 0;
             const char *p = user_ptr(a.text);
             while (n < 0x1000 && user_ptr_readable(a.text + n, 1) && p[n]) n++;
-            if (n == 0 && !user_ptr_readable(a.text, 1)) return E_FAULT;
+            if (n == 0 && !user_ptr_readable(a.text, 1)) return E_BAD_ADDRESS;
             fb_draw_string_n(a.x, a.y, p, n, fb_pack(a.color), fb_pack(a.color2));
             return (int)n;
         }
@@ -388,19 +388,19 @@ int sys_fb_op(uint32_t ua) {
             char name[CXFS_NAME_LEN];
             uint32_t n = 0;
             for (;;) {
-                if (n >= sizeof name) return E_INVAL;          /* no terminator in range */
-                if (!user_ptr_readable(a.text + n, 1)) return E_FAULT;
+                if (n >= sizeof name) return E_INVALID_ARGS;          /* no terminator in range */
+                if (!user_ptr_readable(a.text + n, 1)) return E_BAD_ADDRESS;
                 char c = ((const char *)user_ptr(a.text))[n];
                 if (c == '\0') break;
                 /* Everything that could leave /System/Fonts is refused here, so
                    nothing downstream has to reason about traversal. '.' goes
                    too: the extension is ours to add, and without it ".." never
                    needs a special case. */
-                if (c == '/' || c == '\\' || c == '.') return E_INVAL;
-                if ((unsigned char)c < 0x20 || (unsigned char)c == 0x7F) return E_INVAL;
+                if (c == '/' || c == '\\' || c == '.') return E_INVALID_ARGS;
+                if ((unsigned char)c < 0x20 || (unsigned char)c == 0x7F) return E_INVALID_ARGS;
                 name[n++] = c;
             }
-            if (n == 0) return E_INVAL;
+            if (n == 0) return E_INVALID_ARGS;
             name[n] = '\0';
 
             /* Only the syscall clears, and only when the GRID changed.
@@ -423,6 +423,6 @@ int sys_fb_op(uint32_t ua) {
             if (font_cell_width() != cw || font_cell_height() != ch) console_clear();
             return 0;
         }
-        default: return E_INVAL;
+        default: return E_INVALID_ARGS;
     }
 }

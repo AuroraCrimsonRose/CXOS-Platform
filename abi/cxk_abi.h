@@ -34,7 +34,7 @@
  * line; bump both, and the DevKit's stamp, in the one commit that changes the
  * contract.
  */
-#define CXK_ABI_VERSION          3
+#define CXK_ABI_VERSION          4
 
 /*
  * ---- syscall numbers ----
@@ -121,22 +121,36 @@
 #define POWER_SHUTDOWN           1              /* ACPI S5 soft-off */
 #define POWER_SLEEP              2              /* ecx = ms; 0 = S1/C1 until a keypress */
 
-/* ---- error codes (negative; returned in eax) ---- */
+/*
+ * ---- error codes (negative; returned in eax) ----
+ * One list, shared by syscalls and services (docs/kernel/CX_SYSCALLS_IPC.md sec 6).
+ */
 #define E_OK                     0
-#define E_PERM                   (-1)           /* capability denied */
-#define E_INVAL                  (-2)           /* bad argument */
-#define E_FAULT                  (-3)           /* bad/unmapped user pointer */
-#define E_NOENT                  (-4)           /* no such object */
-#define E_NOMEM                  (-5)           /* out of memory */
-#define E_BADF                   (-6)           /* bad handle */
-#define E_AGAIN                  (-7)           /* would block / no message ready */
-#define E_RANGE                  (-8)           /* message too large / buffer too small */
-#define E_NOSYS                  (-9)           /* unknown syscall number */
-#define E_IO                     (-10)          /* disk or filesystem I/O failure */
-#define E_EXIST                  (-11)          /* the name is already taken */
-#define E_ISDIR                  (-12)          /* expected a file, got a directory */
-#define E_NOTDIR                 (-13)          /* expected a directory, got a file */
-#define E_DEADLK                 (-14)          /* waiting would never end (FILE_OP_LOCK) */
+#define E_INTERNAL               (-1)           /* a kernel bug; never expected */
+#define E_NOT_SUPPORTED          (-2)           /* no such operation, or not for this object */
+#define E_INVALID_ARGS           (-3)           /* malformed arguments, unknown flags, bad alignment */
+#define E_BAD_ADDRESS            (-4)           /* user memory not mapped or not accessible */
+#define E_BAD_HANDLE             (-5)           /* not a live handle in this process */
+#define E_WRONG_TYPE             (-6)           /* the handle names the wrong kind of object */
+#define E_ACCESS_DENIED          (-7)           /* the handle lacks a right, or policy forbids it */
+#define E_NO_MEMORY              (-8)           /* no memory, or the commit quota refused it */
+#define E_NO_RESOURCES           (-9)           /* a table or budget is full */
+#define E_OUT_OF_RANGE           (-10)          /* an offset or size beyond the object or a limit */
+#define E_BUFFER_TOO_SMALL       (-11)          /* the output buffer is too small */
+#define E_TIMED_OUT              (-12)          /* the deadline passed */
+#define E_CANCELED               (-13)          /* the wait or call was canceled */
+#define E_PEER_CLOSED            (-14)          /* the other end is gone */
+#define E_SHOULD_WAIT            (-15)          /* nothing ready now; wait and retry */
+#define E_BUSY                   (-16)          /* in use; try later */
+#define E_ALREADY_EXISTS         (-17)          /* the name is already taken */
+#define E_NOT_FOUND              (-18)          /* no such name or object */
+#define E_NOT_DIR                (-19)          /* expected a directory, got a file */
+#define E_IS_DIR                 (-20)          /* expected a file, got a directory */
+#define E_NO_SPACE               (-21)          /* the volume is full */
+#define E_IO                     (-22)          /* disk or filesystem I/O failure */
+#define E_CORRUPT                (-23)          /* on-disk data failed a check */
+#define E_DEADLOCK               (-24)          /* waiting would never end (FILE_OP_LOCK) */
+#define E_PROTOCOL               (-25)          /* an IPC message did not match its interface */
 
 /*
  * ---- program arguments ----
@@ -250,7 +264,7 @@ struct object_info_args {
     int32_t handle;
     uint32_t topic;                             /* OBJINFO_* */
     uint32_t buf;                               /* the topic's structure is written here */
-    uint32_t cap;                               /* bytes at buf; smaller than the topic needs is E_RANGE */
+    uint32_t cap;                               /* bytes at buf; smaller than the topic needs is E_BUFFER_TOO_SMALL */
 };
 
 struct object_basic {
@@ -301,7 +315,7 @@ enum { /* fb_op */
      * read an arbitrary path. Names carrying '/' or '.' are refused.
      *
      * The font is validated as an XFNT before anything is installed; a bad one
-     * leaves the current font working. Returns 0, or E_INVAL / E_NOENT.
+     * leaves the current font working. Returns 0, or E_INVALID_ARGS / E_NOT_FOUND.
      */
     FB_OP_SET_FONT = 6,                         /* text = font name, no path, no extension */
 };
@@ -555,10 +569,10 @@ enum { /* file_op */
      * so locking the same range again converts it. Closing the handle releases
      * them all, however it goes (FILE_OP_CLOSE, SYS_HANDLE_CLOSE, exit).
      *
-     * A conflict is E_AGAIN, or with FLOCK_WAIT the call sleeps until the
+     * A conflict is E_BUSY, or with FLOCK_WAIT the call sleeps until the
      * conflicting locks are released - except when that could never happen (a
      * conflicting lock is the caller's own, or its holder is waiting, directly
-     * or through others, on one of the caller's), which is E_DEADLK.
+     * or through others, on one of the caller's), which is E_DEADLOCK.
      *
      * Advisory: only another LOCK is refused. Opening, reading, writing and
      * unlinking a locked file all still work, as they do on every Unix. Nothing

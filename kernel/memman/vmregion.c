@@ -106,7 +106,7 @@ uint32_t vm_quota_of(int pid) {
 }
 
 int vm_charge(int pid, uint32_t bytes) {
-    if (!vp(pid) || !vp(pid)->live) return E_INVAL;
+    if (!vp(pid) || !vp(pid)->live) return E_INVALID_ARGS;
     struct vm_proc *p = vp(pid);
 
     /* The same three checks vm_map makes, in the same order and for the same
@@ -114,9 +114,9 @@ int vm_charge(int pid, uint32_t bytes) {
        ceiling itself. Two accounts kept by different arithmetic would disagree
        on exactly the inputs chosen to make them disagree. */
     uint32_t len = page_up(bytes);
-    if (len < bytes)                 return E_RANGE;
-    if (p->mapped + len < p->mapped) return E_RANGE;
-    if (p->mapped + len > p->quota)  return E_NOMEM;
+    if (len < bytes)                 return E_OUT_OF_RANGE;
+    if (p->mapped + len < p->mapped) return E_OUT_OF_RANGE;
+    if (p->mapped + len > p->quota)  return E_NO_MEMORY;
 
     p->mapped += len;
     return E_OK;
@@ -144,34 +144,34 @@ static void undo(uint32_t base, uint32_t done) {
 }
 
 int vm_map(int pid, struct mem_op_args *a) {
-    if (!vp(pid) || !vp(pid)->live) return E_INVAL;
+    if (!vp(pid) || !vp(pid)->live) return E_INVALID_ARGS;
     struct vm_proc *p = vp(pid);
 
-    if (a->object != MOBJ_ANON)             return E_INVAL;
+    if (a->object != MOBJ_ANON)             return E_INVALID_ARGS;
     /* Anonymous memory has no interior to be at an offset into. Rejecting a
        non-zero offset keeps the field honest until there is an object it can
        mean something for, rather than silently ignoring what was asked. */
-    if (a->offset_lo || a->offset_hi)       return E_INVAL;
-    if (a->length == 0)                     return E_INVAL;
-    if (a->length > MMAP_MAX_BYTES)         return E_RANGE;
-    if (a->prot & ~(MPROT_READ | MPROT_WRITE | MPROT_EXEC)) return E_INVAL;
-    if (a->flags & ~MMAP_HINT)              return E_INVAL;
+    if (a->offset_lo || a->offset_hi)       return E_INVALID_ARGS;
+    if (a->length == 0)                     return E_INVALID_ARGS;
+    if (a->length > MMAP_MAX_BYTES)         return E_OUT_OF_RANGE;
+    if (a->prot & ~(MPROT_READ | MPROT_WRITE | MPROT_EXEC)) return E_INVALID_ARGS;
+    if (a->flags & ~MMAP_HINT)              return E_INVALID_ARGS;
     /* Refused rather than quietly downgraded, so nothing is ever written that
        depends on it being allowed. The ABI explains why this is discipline
        today and enforcement later. */
-    if ((a->prot & MPROT_WRITE) && (a->prot & MPROT_EXEC)) return E_INVAL;
+    if ((a->prot & MPROT_WRITE) && (a->prot & MPROT_EXEC)) return E_INVALID_ARGS;
     /* A mapping nothing may do anything with is a mistake, not a request. */
-    if (!(a->prot & (MPROT_READ | MPROT_WRITE | MPROT_EXEC))) return E_INVAL;
+    if (!(a->prot & (MPROT_READ | MPROT_WRITE | MPROT_EXEC))) return E_INVALID_ARGS;
 
     uint32_t len = page_up(a->length);
-    if (len < a->length) return E_RANGE;                   /* rounding wrapped */
-    if (p->mapped + len < p->mapped) return E_RANGE;
-    if (p->mapped + len > p->quota)  return E_NOMEM;
+    if (len < a->length) return E_OUT_OF_RANGE;                   /* rounding wrapped */
+    if (p->mapped + len < p->mapped) return E_OUT_OF_RANGE;
+    if (p->mapped + len > p->quota)  return E_NO_MEMORY;
 
     int slot = -1;
     for (int i = 0; i < MMAP_MAX_REGIONS; i++)
         if (!p->r[i].base) { slot = i; break; }
-    if (slot < 0) return E_NOMEM;
+    if (slot < 0) return E_NO_RESOURCES;
 
     /* The hint is tried and then abandoned, never honoured half way. An
        unaligned or occupied hint falls back to placement rather than being
@@ -184,12 +184,12 @@ int vm_map(int pid, struct mem_op_args *a) {
         a->addr && range_free(p, a->addr, len))
         base = a->addr;
     if (!base) base = place(p, len);
-    if (!base) return E_NOMEM;
+    if (!base) return E_NO_RESOURCES;
 
     uint32_t flags = vm_flags(a->prot);
     for (uint32_t off = 0; off < len; off += PAGE_SIZE) {
         paddr_t frame = pmm_alloc();
-        if (!frame) { undo(base, off); return E_NOMEM; }
+        if (!frame) { undo(base, off); return E_NO_MEMORY; }
 
         /* Mapped writable first so the zeroing below can happen through this
            very mapping, then set to the protection that was asked for. The
@@ -203,7 +203,7 @@ int vm_map(int pid, struct mem_op_args *a) {
         if (paging_map_user(base + off, frame, VM_WRITE) != 0) {
             pmm_free(frame);
             undo(base, off);
-            return E_INVAL;
+            return E_INVALID_ARGS;
         }
         uint32_t *z = (uint32_t *)(uintptr_t)(base + off);
         for (uint32_t i = 0; i < PAGE_SIZE / 4u; i++) z[i] = 0;
@@ -220,7 +220,7 @@ int vm_map(int pid, struct mem_op_args *a) {
         if (flags != VM_WRITE &&
             paging_map_user(base + off, frame, flags) != 0) {
             undo(base, off + PAGE_SIZE);   /* this page is mapped: unwind it too */
-            return E_INVAL;
+            return E_INVALID_ARGS;
         }
     }
 
@@ -238,7 +238,7 @@ int vm_map(int pid, struct mem_op_args *a) {
 }
 
 int vm_unmap(int pid, uint32_t addr, uint32_t length) {
-    if (!vp(pid) || !vp(pid)->live) return E_INVAL;
+    if (!vp(pid) || !vp(pid)->live) return E_INVALID_ARGS;
     struct vm_proc *p = vp(pid);
 
     /* A mapping is released whole or not at all. Partial release would mean
@@ -248,18 +248,18 @@ int vm_unmap(int pid, uint32_t addr, uint32_t length) {
        such failure, and a caller wanting halves can ask for two mappings. */
     for (int i = 0; i < MMAP_MAX_REGIONS; i++) {
         if (p->r[i].base != addr) continue;
-        if (length && page_up(length) != p->r[i].len) return E_INVAL;
+        if (length && page_up(length) != p->r[i].len) return E_INVALID_ARGS;
 
         undo(p->r[i].base, p->r[i].len);
         p->mapped -= p->r[i].len;
         p->r[i].base = 0;
         return E_OK;
     }
-    return E_NOENT;
+    return E_NOT_FOUND;
 }
 
 int vm_info(int pid, struct mem_op_args *a) {
-    if (!vp(pid) || !vp(pid)->live) return E_INVAL;
+    if (!vp(pid) || !vp(pid)->live) return E_INVALID_ARGS;
     a->quota  = vp(pid)->quota;
     a->mapped = vp(pid)->mapped;
     return E_OK;

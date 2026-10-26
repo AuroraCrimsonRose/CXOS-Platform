@@ -143,7 +143,7 @@ syscall_stub:
 ;
 ; On a recovered fault the destination is PARTIALLY WRITTEN - `rep movsb`
 ; stops where it faulted. Callers must treat it as undefined, which every
-; caller here does by returning E_FAULT and copying nothing further.
+; caller here does by returning E_BAD_ADDRESS and copying nothing further.
 ; ---------------------------------------------------------------------------
 global user_copy_bytes
 global usercopy_start

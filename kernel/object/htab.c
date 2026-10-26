@@ -7,8 +7,8 @@
 #include "object/htab.h"
 #ifndef CXK_HOST_TEST
 #include "cxk_abi.h"
-_Static_assert(HTAB_E_PERM == E_PERM && HTAB_E_INVAL == E_INVAL &&
-               HTAB_E_NOMEM == E_NOMEM && HTAB_E_BADF == E_BADF,
+_Static_assert(HTAB_E_ACCESS_DENIED == E_ACCESS_DENIED && HTAB_E_INVALID_ARGS == E_INVALID_ARGS &&
+               HTAB_E_NO_RESOURCES == E_NO_RESOURCES && HTAB_E_BAD_HANDLE == E_BAD_HANDLE,
                "htab.h error values must be the ABI's");
 _Static_assert(HTAB_RIGHT_DUPLICATE == HRIGHT_DUPLICATE, "htab.h's duplicate right must be the ABI's");
 #endif
@@ -42,7 +42,7 @@ static int rights_allowed(const struct kobj *o, uint32_t rights) {
     return ops && (rights & ~(ops->rights_valid | HTAB_RIGHTS_GENERIC)) == 0;
 }
 
-/* Put `o` in the first free slot. Called with the lock held. HTAB_E_NOMEM
+/* Put `o` in the first free slot. Called with the lock held. HTAB_E_NO_RESOURCES
    when every slot is taken: the caller may grow the table and try again. */
 static int32_t place(struct htab *t, struct kobj *o, uint32_t rights, uint32_t parent) {
     for (uint32_t i = 0; i < t->cap; i++) {
@@ -55,13 +55,13 @@ static int32_t place(struct htab *t, struct kobj *o, uint32_t rights, uint32_t p
         e->parent = parent;
         return value_of(i, e->gen);
     }
-    return HTAB_E_NOMEM;
+    return HTAB_E_NO_RESOURCES;
 }
 
 /* Double the array (or make the first), never past t->max. Called WITHOUT
    the lock, which is held only to copy and publish: the allocator is not
    called with it held. 0 when the table has more room than it had (here or
-   by another caller meanwhile), HTAB_E_NOMEM when it cannot. */
+   by another caller meanwhile), HTAB_E_NO_RESOURCES when it cannot. */
 static int grow(struct htab *t) {
     uint32_t f = spin_lock(&t->lock);
     uint32_t cap = t->cap;
@@ -69,9 +69,9 @@ static int grow(struct htab *t) {
 
     uint32_t want = cap ? cap * 2 : HTAB_FIRST_SLOTS;
     if (want > t->max) want = t->max;
-    if (want <= cap) return HTAB_E_NOMEM;
+    if (want <= cap) return HTAB_E_NO_RESOURCES;
     struct htab_entry *n = (struct htab_entry *)htab_mem_alloc(want * (uint32_t)sizeof *n);
-    if (!n) return HTAB_E_NOMEM;
+    if (!n) return HTAB_E_NO_RESOURCES;
 
     struct htab_entry *spare = n;
     f = spin_lock(&t->lock);
@@ -111,15 +111,15 @@ void htab_destroy(struct htab *t) {
 }
 
 int32_t htab_install(struct htab *t, struct kobj *o, uint32_t rights, uint32_t parent_grant) {
-    if (!t || !o) return HTAB_E_INVAL;
-    if (!kobj_type_ops((enum kobj_type)o->type)) return HTAB_E_INVAL;
-    if (!rights_allowed(o, rights)) return HTAB_E_PERM;
+    if (!t || !o) return HTAB_E_INVALID_ARGS;
+    if (!kobj_type_ops((enum kobj_type)o->type)) return HTAB_E_INVALID_ARGS;
+    if (!rights_allowed(o, rights)) return HTAB_E_ACCESS_DENIED;
 
     for (;;) {
         uint32_t f = spin_lock(&t->lock);
         int32_t h = place(t, o, rights, parent_grant);
         spin_unlock(&t->lock, f);
-        if (h != HTAB_E_NOMEM || grow(t) != 0) return h;
+        if (h != HTAB_E_NO_RESOURCES || grow(t) != 0) return h;
     }
 }
 
@@ -139,23 +139,23 @@ struct kobj *htab_ref(struct htab *t, int32_t h, enum kobj_type type, uint32_t n
 }
 
 int32_t htab_dup(struct htab *t, int32_t h, uint32_t rights) {
-    if (!t) return HTAB_E_BADF;
+    if (!t) return HTAB_E_BAD_HANDLE;
     for (;;) {
         /* Checked afresh after a growth: the source may have been closed. */
         uint32_t f = spin_lock(&t->lock);
         struct htab_entry *e = entry_of(t, h);
         int32_t r;
-        if (!e)                            r = HTAB_E_BADF;
-        else if (!(e->rights & HTAB_RIGHT_DUPLICATE)) r = HTAB_E_PERM;   /* not copyable */
-        else if (rights & ~e->rights)      r = HTAB_E_PERM;   /* rights only shrink */
+        if (!e)                            r = HTAB_E_BAD_HANDLE;
+        else if (!(e->rights & HTAB_RIGHT_DUPLICATE)) r = HTAB_E_ACCESS_DENIED;   /* not copyable */
+        else if (rights & ~e->rights)      r = HTAB_E_ACCESS_DENIED;   /* rights only shrink */
         else                               r = place(t, e->obj, rights, e->grant);
         spin_unlock(&t->lock, f);
-        if (r != HTAB_E_NOMEM || grow(t) != 0) return r;
+        if (r != HTAB_E_NO_RESOURCES || grow(t) != 0) return r;
     }
 }
 
 int htab_close(struct htab *t, int32_t h) {
-    if (!t) return HTAB_E_BADF;
+    if (!t) return HTAB_E_BAD_HANDLE;
     uint32_t f = spin_lock(&t->lock);
     struct htab_entry *e = entry_of(t, h);
     struct kobj *o = 0;
@@ -169,7 +169,7 @@ int htab_close(struct htab *t, int32_t h) {
     }
     spin_unlock(&t->lock, f);
 
-    if (!o) return HTAB_E_BADF;
+    if (!o) return HTAB_E_BAD_HANDLE;
     kobj_handle_closed(o);               /* hooks run outside the lock */
     return 0;
 }

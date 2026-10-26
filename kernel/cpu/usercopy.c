@@ -102,14 +102,14 @@ void     usercopy_note_recovered_fault(void) { recovered_faults++; }
 
 int user_copy_out(uint32_t udst, const void *ksrc, uint32_t len) {
     if (len == 0) return 0;
-    if (!user_ptr_writable(udst, len)) return E_FAULT;
-    if (user_copy_bytes(user_ptr(udst), ksrc, len) != 0) return E_FAULT;
+    if (!user_ptr_writable(udst, len)) return E_BAD_ADDRESS;
+    if (user_copy_bytes(user_ptr(udst), ksrc, len) != 0) return E_BAD_ADDRESS;
     return 0;
 }
 
 int user_copy_in(void *kdst, uint32_t usrc, uint32_t len) {
     if (len == 0) return 0;
-    if (!user_ptr_readable(usrc, len)) return E_FAULT;
-    if (user_copy_bytes(kdst, user_ptr(usrc), len) != 0) return E_FAULT;
+    if (!user_ptr_readable(usrc, len)) return E_BAD_ADDRESS;
+    if (user_copy_bytes(kdst, user_ptr(usrc), len) != 0) return E_BAD_ADDRESS;
     return 0;
 }

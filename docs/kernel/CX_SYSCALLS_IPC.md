@@ -118,7 +118,7 @@ error against that list.
 |---|---|
 | `E_OK` | |
 | `E_INTERNAL` | a kernel bug; never expected |
-| `E_NOT_SUPPORTED` | the operation does not apply to this object |
+| `E_NOT_SUPPORTED` | no such operation (an unknown syscall number included), or not for this object |
 | `E_INVALID_ARGS` | malformed arguments, unknown flags, bad alignment |
 | `E_BAD_ADDRESS` | user memory not mapped or not accessible |
 | `E_BAD_HANDLE` | not a live handle in this process |
@@ -139,6 +139,20 @@ error against that list.
 | `E_PROTOCOL` | an IPC message did not match its interface |
 
 There is no `EINTR`: with no signals, nothing interrupts a call.
+
+**As built (roadmap step 6a2b, `CXK_ABI_VERSION` 4).** The values are negative,
+`E_OK` 0 and the rest -1 to -25 in the table's order, in `abi/kernel.xfil`.
+Each old code became the new one that names the same condition, chosen per
+site where one old code covered several: `E_RANGE` is `E_BUFFER_TOO_SMALL` for
+an output buffer (object info, the MAC, a receive, the cwd) and
+`E_OUT_OF_RANGE` elsewhere; `E_NOMEM` is `E_NO_RESOURCES` for a full table
+(handles, endpoints, open files, mapping slots, address space), `E_NO_SPACE`
+for a full volume, and `E_NO_MEMORY` for frames, heap and the commit quota;
+`E_AGAIN` is `E_BUSY` (a lock conflict, an endpoint with a call in flight);
+an endpoint closed under a waiting call is `E_PEER_CLOSED`, under a waiting
+receive `E_CANCELED`. No call returns the size needed with
+`E_BUFFER_TOO_SMALL` yet, and nothing yet returns `E_WRONG_TYPE`,
+`E_TIMED_OUT`, `E_SHOULD_WAIT`, `E_CORRUPT` or `E_PROTOCOL`.
 
 ## 7. The syscalls
 
@@ -316,7 +330,7 @@ The ABI hash of §5 is this hash for the `kernel` library.
 - Supersedes the rule that `cxk_abi.h` and `AbiPrelude.cs` change in one
   commit: both are generated from the same file.
 
-### 9.5 As built (roadmap steps 6a1, 6a2a)
+### 9.5 As built (roadmap steps 6a1, 6a2a, 6a2b)
 
 The `kernel` domain is generated; the other domains, and `interface` blocks
 with their messages, are settled when IPC v3 needs them (Phase 1). The source
@@ -328,7 +342,7 @@ multiplexers included; the rest of 6a2 reshapes it. `cxk abi generate` writes
 syscall, giving each argument register its declared type, and the table,
 indexed by number). `syscall_dispatch` takes the number and all five argument
 registers from either gate, refuses a number past the table or in one of its
-holes with `E_NOSYS`, and the recording point keeps the last entry's
+holes with `E_NOT_SUPPORTED`, and the recording point keeps the last entry's
 registers. `CXEX.Lang` embeds the `.xfil`, and the X prelude's constants,
 structures and plain syscall wrappers come from the embedded copy
 (`CXEX.Lang/Abi/Xfil*.cs`). `cxk check-abi` fails while any committed

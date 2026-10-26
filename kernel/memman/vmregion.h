@@ -92,8 +92,8 @@ uint32_t vm_quota_of(int pid);
    could be placed with the quota already full (security review §3).
 
    Charged BEFORE the frames are allocated, so a refusal costs nothing. `bytes`
-   is rounded up to a page. Returns E_OK, or E_NOMEM if it would pass the
-   ceiling (E_RANGE if the rounding or the sum would wrap). vm_uncharge gives it
+   is rounded up to a page. Returns E_OK, or E_NO_MEMORY if it would pass the
+   ceiling (E_OUT_OF_RANGE if the rounding or the sum would wrap). vm_uncharge gives it
    back, for a caller that unwinds a placement it has already paid for; a
    process that dies instead needs nothing, since vm_proc_reset drops the whole
    account. */

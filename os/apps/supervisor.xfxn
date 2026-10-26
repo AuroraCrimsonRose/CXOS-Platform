@@ -197,7 +197,7 @@ fn svc_fail(name: *u8, rc: i32) -> void {
     puts("supervisor: ");
     puts(name);
     puts(": ");
-    if (rc == E_PERM) { puts("not signed by a key this kernel trusts\n"); }
+    if (rc == E_ACCESS_DENIED) { puts("not signed by a key this kernel trusts\n"); }
     else { puts(file_strerror(rc)); newline(); }
 }
 

@@ -4,7 +4,7 @@
 /* Aurora Tejeda / CATX Systems */
 /*
  * Tiny CXK USER app (.xuex), capability-less. It cannot touch the console
- * directly (no GRANT_CONSOLE - that was CP2's E_PERM proof). Instead it asks its
+ * directly (no GRANT_CONSOLE - that was CP2's E_ACCESS_DENIED proof). Instead it asks its
  * broker executive to print a message on its behalf, over IPC: it ipc_calls
  * its broker endpoint (the handle SYS_ARGS reports) with the text as the
  * request, blocks until the

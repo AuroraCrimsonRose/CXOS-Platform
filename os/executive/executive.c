@@ -54,7 +54,7 @@ void _start(void) {
     sa.caps = GRANT_OS_BASELINE;   /* privileged shell (attenuated to executive's caps) */
     /* No arguments for the shell - but say so rather than leaving the fields
        as whatever was on the stack. The kernel validates args against
-       args_len, so a stale pointer here is a spawn that fails with E_FAULT
+       args_len, so a stale pointer here is a spawn that fails with E_BAD_ADDRESS
        and a machine that boots to nothing. */
     sa.args = 0; sa.args_len = 0;
     int pid = sys_spawn(&sa);

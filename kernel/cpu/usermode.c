@@ -112,7 +112,7 @@ uint32_t syscall_trapped_count(void) { return atomic_load(&syscall_trapped); }
 int syscall_console_write(uint32_t buf, uint32_t len) {
     if (!(thread_current_caps() & GRANT_CONSOLE)) {
         klog_u32("GRANT", SEV_WARN, "console_write DENIED for pid ", (uint32_t)thread_current_pid(), LOG_COLOR_VALUE, " (no GRANT_CONSOLE)");
-        return E_PERM;
+        return E_ACCESS_DENIED;
     }
     if (len == 0) {
         const char *p = (const char *)user_ptr(buf);
@@ -132,8 +132,8 @@ int syscall_console_write(uint32_t buf, uint32_t len) {
 int syscall_log_read(uint32_t i, uint32_t e) {
     /* GRANT_CONSOLE: the log holds what every process printed in the
        background, and what the kernel said about all of them. */
-    if (!(thread_current_caps() & GRANT_CONSOLE)) return E_PERM;
-    if (!user_ptr_writable(e, sizeof(struct log_entry))) return E_FAULT;
+    if (!(thread_current_caps() & GRANT_CONSOLE)) return E_ACCESS_DENIED;
+    if (!user_ptr_writable(e, sizeof(struct log_entry))) return E_BAD_ADDRESS;
     const struct slog_entry *le = slog_get(i);
     if (!le) return 0;
     struct log_entry *out = (struct log_entry *)user_ptr(e);
@@ -157,7 +157,7 @@ void syscall_yield(void) { yield(); }
 int syscall_clock(uint32_t c) {
     /* Unprivileged: the time of day is not authority. A process that
        could not read it would simply count its own loop iterations. */
-    if (!user_ptr_writable(c, sizeof(struct clock_info))) return E_FAULT;
+    if (!user_ptr_writable(c, sizeof(struct clock_info))) return E_BAD_ADDRESS;
     struct clock_info *ci = (struct clock_info *)user_ptr(c);
     ci->ticks = timer_ticks();
 
@@ -176,7 +176,7 @@ int syscall_args(uint32_t a) {
        This exists so USER_ARGS_BASE does not have to be compiled into
        every program - the address is a 32-bit x86 fact, and a userland
        that knew it would have to be ported alongside the kernel. */
-    if (!user_ptr_writable(a, sizeof(struct args_info))) return E_FAULT;
+    if (!user_ptr_writable(a, sizeof(struct args_info))) return E_BAD_ADDRESS;
     struct args_info *ai = (struct args_info *)user_ptr(a);
     ai->base  = USER_ARGS_BASE;
     ai->count = *(const uint32_t *)user_ptr(USER_ARGS_BASE);
@@ -192,7 +192,7 @@ int syscall_sleep(uint32_t ms) {
 
        Capped rather than unbounded: a sleep is a promise to come back,
        and one that never does is indistinguishable from a hang. */
-    if (ms > SLEEP_MAX_MS) return E_RANGE;
+    if (ms > SLEEP_MAX_MS) return E_OUT_OF_RANGE;
     /* The tick it woke on is deliberately not returned: SYS_SLEEP's
        ABI result is a status, and a caller that wants the clock asks
        SYS_CLOCK. Cast so this reads as a decision. */
@@ -201,19 +201,19 @@ int syscall_sleep(uint32_t ms) {
 }
 
 int syscall_spawn(uint32_t a) {
-    if (!(thread_current_caps() & GRANT_SPAWN)) return E_PERM;
+    if (!(thread_current_caps() & GRANT_SPAWN)) return E_ACCESS_DENIED;
     return sys_spawn(a);
 }
 
 int syscall_exec_path(uint32_t path, uint32_t a) {
-    if (!(thread_current_caps() & GRANT_SPAWN)) return E_PERM;
+    if (!(thread_current_caps() & GRANT_SPAWN)) return E_ACCESS_DENIED;
     return sys_exec_path(path, a);
 }
 
 int syscall_file_op(uint32_t a) {
     if (!(thread_current_caps() & GRANT_DISK)) {
         klog_u32("GRANT", SEV_WARN, "file_op DENIED for pid ", (uint32_t)thread_current_pid(), LOG_COLOR_VALUE, " (no GRANT_DISK)");
-        return E_PERM;
+        return E_ACCESS_DENIED;
     }
     return sys_file_op(a);
 }
@@ -221,7 +221,7 @@ int syscall_file_op(uint32_t a) {
 int syscall_fb_op(uint32_t a) {
     if (!(thread_current_caps() & GRANT_FRAMEBUFFER)) {
         klog_u32("GRANT", SEV_WARN, "fb_op DENIED for pid ", (uint32_t)thread_current_pid(), LOG_COLOR_VALUE, " (no GRANT_FRAMEBUFFER)");
-        return E_PERM;
+        return E_ACCESS_DENIED;
     }
     return sys_fb_op(a);
 }
@@ -236,7 +236,7 @@ int syscall_input_read(uint32_t flags) {
 int syscall_net_op(uint32_t a) {
     if (!(thread_current_caps() & GRANT_NET)) {
         klog_u32("GRANT", SEV_WARN, "net DENIED for pid ", (uint32_t)thread_current_pid(), LOG_COLOR_VALUE, " (no GRANT_NET)");
-        return E_PERM;
+        return E_ACCESS_DENIED;
     }
     return sys_net_op(a);
 }
@@ -245,7 +245,7 @@ int syscall_mouse_read(uint32_t m) {
     /* unprivileged, same reasoning as keyboard input: a process reading
        the pointer it is already being shown */
     struct mouse_state *ms = (struct mouse_state *)user_ptr(m);
-    if (!user_ptr_writable(m, sizeof *ms)) return E_FAULT;
+    if (!user_ptr_writable(m, sizeof *ms)) return E_BAD_ADDRESS;
     ms->x       = mouse_x();
     ms->y       = mouse_y();
     ms->buttons = mouse_buttons();
@@ -256,12 +256,12 @@ int syscall_mouse_read(uint32_t m) {
 int syscall_power(uint32_t op, uint32_t ms) {
     if (!(thread_current_caps() & GRANT_POWER)) {
         klog_u32("GRANT", SEV_WARN, "power DENIED for pid ", (uint32_t)thread_current_pid(), LOG_COLOR_VALUE, " (no GRANT_POWER)");
-        return E_PERM;
+        return E_ACCESS_DENIED;
     }
     if (op == POWER_REBOOT)   power_reboot();     /* does not return */
     if (op == POWER_SHUTDOWN) power_shutdown();   /* does not return if ACPI S5 works */
     if (op == POWER_SLEEP)  { power_sleep(ms); return 0; }
-    return E_INVAL;
+    return E_INVALID_ARGS;
 }
 
 int syscall_mem_op(uint32_t a) {
@@ -269,14 +269,14 @@ int syscall_mem_op(uint32_t a) {
        not obtain memory would not be contained, it would be unable to
        run. What bounds it is the per-process quota inside vm_map, not
        a grant bit every program would have to hold. */
-    if (!user_ptr_writable(a, sizeof(struct mem_op_args))) return E_FAULT;
+    if (!user_ptr_writable(a, sizeof(struct mem_op_args))) return E_BAD_ADDRESS;
     struct mem_op_args *m = (struct mem_op_args *)user_ptr(a);
     int pid = thread_current_pid();   /* the quota is the process's */
     switch (m->op) {
         case MEM_OP_MAP:   return vm_map(pid, m);
         case MEM_OP_UNMAP: return vm_unmap(pid, m->addr, m->length);
         case MEM_OP_INFO:  return vm_info(pid, m);
-        default:           return E_INVAL;
+        default:           return E_INVALID_ARGS;
     }
 }
 
@@ -285,7 +285,7 @@ int syscall_ipc_recv(uint32_t a)  { return ipc_recv(a); }
 int syscall_ipc_reply(uint32_t a) { return ipc_reply(a); }
 
 int syscall_ep_create(void) {
-    if (!(thread_current_caps() & GRANT_ENDPOINT)) return E_PERM;
+    if (!(thread_current_caps() & GRANT_ENDPOINT)) return E_ACCESS_DENIED;
     return ep_create();
 }
 
@@ -301,33 +301,33 @@ int syscall_handle_duplicate(int32_t h, uint32_t rights) {
 int syscall_object_info(uint32_t a) {
     /* Unprivileged: it describes only a handle the caller holds. */
     struct object_info_args oa;
-    if (user_copy_in(&oa, a, sizeof oa) != 0) return E_FAULT;
+    if (user_copy_in(&oa, a, sizeof oa) != 0) return E_BAD_ADDRESS;
     struct htab_info hi;
     struct kobj *o = htab_ref(thread_htab(thread_current_id()), oa.handle,
                               KOBJ_NONE, 0, &hi);
-    if (!o) return E_BADF;
+    if (!o) return E_BAD_HANDLE;
     struct object_basic b = {
         .kind = o->type, .rights = hi.rights, .koid = o->koid,
         .grant = hi.grant, .parent_grant = hi.parent,
     };
     kobj_unref(o);
-    if (oa.topic != OBJINFO_BASIC) return E_INVAL;
-    if (oa.cap < sizeof b) return E_RANGE;
-    if (user_copy_out((uint32_t)oa.buf, &b, sizeof b) != 0) return E_FAULT;
+    if (oa.topic != OBJINFO_BASIC) return E_INVALID_ARGS;
+    if (oa.cap < sizeof b) return E_BUFFER_TOO_SMALL;
+    if (user_copy_out((uint32_t)oa.buf, &b, sizeof b) != 0) return E_BAD_ADDRESS;
     return (int)sizeof b;
 }
 
 /* Called from the system-call gate (arch/usermode.h), and by the self-tests,
    with the five argument registers as ring 3 left them. Every call passes the
    recording point on its way in and on its way out (sysrec.h). A number past
-   the table, or in one of its holes, is E_NOSYS. */
+   the table, or in one of its holes, is E_NOT_SUPPORTED. */
 int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2, uint32_t a3,
                      uint32_t a4, uint32_t a5) {
     const uint32_t args[SYSCALL_ARGS] = { a1, a2, a3, a4, a5 };
     sysrec_enter(num, args);
     atomic_fetch_add(&dispatched, 1);
     syscall_decoder d = num < SYSCALL_TABLE_SIZE ? syscall_table[num] : 0;
-    int rc = d ? d(args) : E_NOSYS;
+    int rc = d ? d(args) : E_NOT_SUPPORTED;
     sysrec_exit(num, rc);
     return rc;
 }
@@ -474,7 +474,7 @@ int usermode_log_test(void) {
                   || !lt_streq(out->system, tag, LOG_SYSTEM_W)) goto done;
     step = 9; if (syscall_dispatch(SYS_LOG_READ, last + 1, user_addr(out), 0, 0, 0) != 0) goto done;
     thread_set_caps(me, 0);
-    step = 10; if (syscall_dispatch(SYS_LOG_READ, last, user_addr(out), 0, 0, 0) != E_PERM) goto done;
+    step = 10; if (syscall_dispatch(SYS_LOG_READ, last, user_addr(out), 0, 0, 0) != E_ACCESS_DENIED) goto done;
     ok = 1;
 
 done:
@@ -605,7 +605,7 @@ int usermode_file_test(void) {
     step++;
     if (d < 0 || d == h) goto done;
     step++;
-    if (syscall_dispatch(SYS_HANDLE_DUPLICATE, (uint32_t)d, FOPEN_READ | FOPEN_WRITE, 0, 0, 0) != E_PERM) goto done;
+    if (syscall_dispatch(SYS_HANDLE_DUPLICATE, (uint32_t)d, FOPEN_READ | FOPEN_WRITE, 0, 0, 0) != E_ACCESS_DENIED) goto done;
 
     /* object_info: d names the same open file as h, with only the rights it
        was given, derived from h's grant; and d, given no duplicate right,
@@ -624,15 +624,15 @@ int usermode_file_test(void) {
     if (bd.kind != OBJ_TYPE_FILE || bd.koid != bh.koid || bd.rights != FOPEN_READ
         || bd.parent_grant != bh.grant || bd.grant == bh.grant) goto done;
     step++;
-    if (syscall_dispatch(SYS_HANDLE_DUPLICATE, (uint32_t)d, FOPEN_READ, 0, 0, 0) != E_PERM) goto done;
+    if (syscall_dispatch(SYS_HANDLE_DUPLICATE, (uint32_t)d, FOPEN_READ, 0, 0, 0) != E_ACCESS_DENIED) goto done;
     step++;
-    if (oi_call(d, 99, (uint32_t)ob) != E_INVAL) goto done;
+    if (oi_call(d, 99, (uint32_t)ob) != E_INVALID_ARGS) goto done;
     step++;
-    if (oi_call(d, OBJINFO_BASIC, (uint32_t)ob - 1) != E_RANGE) goto done;
+    if (oi_call(d, OBJINFO_BASIC, (uint32_t)ob - 1) != E_BUFFER_TOO_SMALL) goto done;
     step++;
-    if (ft_call(FILE_OP_WRITE, d, 0, FT_DATA, 1, 0, 0) != E_PERM) goto done;
+    if (ft_call(FILE_OP_WRITE, d, 0, FT_DATA, 1, 0, 0) != E_ACCESS_DENIED) goto done;
     step++;
-    if (ft_call(FILE_OP_TRUNC, d, 0, 0, 0, 0, 0) != E_PERM) goto done;
+    if (ft_call(FILE_OP_TRUNC, d, 0, 0, 0, 0, 0) != E_ACCESS_DENIED) goto done;
     step++;
     if (ft_call(FILE_OP_TELL, d, 0, 0, 0, 0, 0) != 11) goto done;
     step++;
@@ -640,9 +640,9 @@ int usermode_file_test(void) {
     step++;
     if (sysfile_open_count() != base + 1) goto done;  /* h still holds it */
     step++;
-    if (ft_call(FILE_OP_TELL, d, 0, 0, 0, 0, 0) != E_BADF) goto done;
+    if (ft_call(FILE_OP_TELL, d, 0, 0, 0, 0, 0) != E_BAD_HANDLE) goto done;
     step++;
-    if (oi_call(d, OBJINFO_BASIC, sizeof(struct object_basic)) != E_BADF) goto done;
+    if (oi_call(d, OBJINFO_BASIC, sizeof(struct object_basic)) != E_BAD_HANDLE) goto done;
     step++;
     if (ft_call(FILE_OP_TELL, h, 0, 0, 0, 0, 0) != 11) goto done;
 
@@ -677,7 +677,7 @@ int usermode_file_test(void) {
     step++;
     if (sysfile_open_count() != base) goto done;      /* the slot came back */
     step++;
-    if (ft_call(FILE_OP_READ, h, 0, FT_DATA, 4, 0, 0) != E_BADF) goto done;
+    if (ft_call(FILE_OP_READ, h, 0, FT_DATA, 4, 0, 0) != E_BAD_HANDLE) goto done;
 
     /* --- append opens at the end, and does not clobber --- */
     h = ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_WRITE | FOPEN_APPEND);
@@ -698,28 +698,28 @@ int usermode_file_test(void) {
     if (data[10] != 'd' || data[11] != '!' || data[12] != '!') goto done;
     /* a read-only handle must refuse a write */
     step++;
-    if (ft_call(FILE_OP_WRITE, h, 0, FT_DATA, 2, 0, 0) != E_PERM) goto done;
+    if (ft_call(FILE_OP_WRITE, h, 0, FT_DATA, 2, 0, 0) != E_ACCESS_DENIED) goto done;
     step++;
     if (ft_call(FILE_OP_CLOSE, h, 0, 0, 0, 0, 0) != E_OK) goto done;
 
-    /* --- a missing file is E_NOENT without FOPEN_CREATE --- */
+    /* --- a missing file is E_NOT_FOUND without FOPEN_CREATE --- */
     ft_strp(FT_PATH, scratch, "/kt_absent.txt");
     step++;
-    if (ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_READ) != E_NOENT) goto done;
+    if (ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_READ) != E_NOT_FOUND) goto done;
 
     /* --- a bad user pointer is caught, not dereferenced --- */
     ft_strp(FT_PATH, scratch, "/kt_sys.txt");
     step++;
-    if (ft_call(FILE_OP_STAT, 0, FT_PATH, 0xC0001000u, 0, 0, 0) != E_FAULT) goto done;
+    if (ft_call(FILE_OP_STAT, 0, FT_PATH, 0xC0001000u, 0, 0, 0) != E_BAD_ADDRESS) goto done;
     step++;
-    if (ft_call(FILE_OP_OPEN, 0, 0xC0001000u, 0, 0, 0, FOPEN_READ) != E_FAULT) goto done;
+    if (ft_call(FILE_OP_OPEN, 0, 0xC0001000u, 0, 0, 0, FOPEN_READ) != E_BAD_ADDRESS) goto done;
 
     /* --- directories, cwd, and relative paths --- */
     ft_strp(FT_PATH, scratch, "/kt_dir");
     step++;
     if (ft_call(FILE_OP_MKDIR, 0, FT_PATH, 0, 0, 0, 0) != E_OK) goto done;
     step++;
-    if (ft_call(FILE_OP_MKDIR, 0, FT_PATH, 0, 0, 0, 0) != E_EXIST) goto done;
+    if (ft_call(FILE_OP_MKDIR, 0, FT_PATH, 0, 0, 0, 0) != E_ALREADY_EXISTS) goto done;
     step++;
     if (ft_call(FILE_OP_CHDIR, 0, FT_PATH, 0, 0, 0, 0) != E_OK) goto done;
     /* Compare the whole path against what we chdir'd to, terminator included,
@@ -768,13 +768,13 @@ int usermode_file_test(void) {
     if (ft_call(FILE_OP_CHDIR, 0, FT_PATH, 0, 0, 0, 0) != E_OK) goto done;
     ft_strp(FT_PATH, scratch, "/kt_dir");
     step++;
-    if (ft_call(FILE_OP_UNLINK, 0, FT_PATH, 0, 0, 0, 0) != E_INVAL) goto done;  /* not empty */
+    if (ft_call(FILE_OP_UNLINK, 0, FT_PATH, 0, 0, 0, 0) != E_INVALID_ARGS) goto done;  /* not empty */
 
     /* --- GRANT_DISK really is the gate --- */
     thread_set_caps(me, 0);
     ft_strp(FT_PATH, scratch, "/kt_sys.txt");
     step++;
-    if (ft_call(FILE_OP_STAT, 0, FT_PATH, FT_STAT, 0, 0, 0) != E_PERM) goto done;
+    if (ft_call(FILE_OP_STAT, 0, FT_PATH, FT_STAT, 0, 0, 0) != E_ACCESS_DENIED) goto done;
     thread_set_caps(me, GRANT_DISK);
 
     /* --- exec_path refuses everything it should ---
@@ -790,23 +790,23 @@ int usermode_file_test(void) {
 
     ft_strp(FT_PATH, scratch, "/kt_absent.xuex");
     step++;
-    if (sys_exec_path(FT_PATH, user_addr(sa)) != E_NOENT) goto done;
+    if (sys_exec_path(FT_PATH, user_addr(sa)) != E_NOT_FOUND) goto done;
 
     ft_strp(FT_PATH, scratch, "/kt_dir");
     step++;
-    if (sys_exec_path(FT_PATH, user_addr(sa)) != E_ISDIR) goto done;
+    if (sys_exec_path(FT_PATH, user_addr(sa)) != E_IS_DIR) goto done;
 
     /* a real file whose contents are not a CXEX at all: the signature check
        must refuse it rather than the loader trying to run the bytes */
     ft_strp(FT_PATH, scratch, "/kt_sys.txt");
     step++;
-    if (sys_exec_path(FT_PATH, user_addr(sa)) != E_PERM) goto done;
+    if (sys_exec_path(FT_PATH, user_addr(sa)) != E_ACCESS_DENIED) goto done;
 
     /* a bad path pointer is caught, not dereferenced */
     step++;
-    if (sys_exec_path(0xC0001000u, user_addr(sa)) != E_FAULT) goto done;
+    if (sys_exec_path(0xC0001000u, user_addr(sa)) != E_BAD_ADDRESS) goto done;
     step++;
-    if (sys_exec_path(FT_PATH, 0xC0001000u) != E_FAULT) goto done;
+    if (sys_exec_path(FT_PATH, 0xC0001000u) != E_BAD_ADDRESS) goto done;
 
     /* --- clock and sleep, through the real dispatcher ---
      * Both are unprivileged, so they must work with caps stripped to nothing -
@@ -832,25 +832,25 @@ int usermode_file_test(void) {
      *
      * Each of these must refuse on the capability alone, before it looks at
      * its argument - so the pointers passed are deliberately garbage. A gate
-     * that ran after argument validation would return E_FAULT here and fail
+     * that ran after argument validation would return E_BAD_ADDRESS here and fail
      * this test, which is the ordering worth pinning: authorisation first.
      */
     step++;
-    if (syscall_dispatch(SYS_CONSOLE_WRITE, 0xC0001000u, 0, 0, 0, 0) != E_PERM) goto done;
+    if (syscall_dispatch(SYS_CONSOLE_WRITE, 0xC0001000u, 0, 0, 0, 0) != E_ACCESS_DENIED) goto done;
     step++;
-    if (syscall_dispatch(SYS_FILE_OP,       0xC0001000u, 0, 0, 0, 0) != E_PERM) goto done;
+    if (syscall_dispatch(SYS_FILE_OP,       0xC0001000u, 0, 0, 0, 0) != E_ACCESS_DENIED) goto done;
     step++;
-    if (syscall_dispatch(SYS_FB_OP,         0xC0001000u, 0, 0, 0, 0) != E_PERM) goto done;
+    if (syscall_dispatch(SYS_FB_OP,         0xC0001000u, 0, 0, 0, 0) != E_ACCESS_DENIED) goto done;
     step++;
-    if (syscall_dispatch(SYS_NET_OP,        0xC0001000u, 0, 0, 0, 0) != E_PERM) goto done;
+    if (syscall_dispatch(SYS_NET_OP,        0xC0001000u, 0, 0, 0, 0) != E_ACCESS_DENIED) goto done;
     step++;
-    if (syscall_dispatch(SYS_POWER,         0, 0, 0, 0, 0)           != E_PERM) goto done;
+    if (syscall_dispatch(SYS_POWER,         0, 0, 0, 0, 0)           != E_ACCESS_DENIED) goto done;
     step++;
-    if (syscall_dispatch(SYS_EP_CREATE,     0, 0, 0, 0, 0)           != E_PERM) goto done;
+    if (syscall_dispatch(SYS_EP_CREATE,     0, 0, 0, 0, 0)           != E_ACCESS_DENIED) goto done;
     step++;
-    if (syscall_dispatch(SYS_SPAWN,         0xC0001000u, 0, 0, 0, 0) != E_PERM) goto done;
+    if (syscall_dispatch(SYS_SPAWN,         0xC0001000u, 0, 0, 0, 0) != E_ACCESS_DENIED) goto done;
     step++;
-    if (syscall_dispatch(SYS_EXEC_PATH,     0xC0001000u, 0, 0, 0, 0) != E_PERM) goto done;
+    if (syscall_dispatch(SYS_EXEC_PATH,     0xC0001000u, 0, 0, 0, 0) != E_ACCESS_DENIED) goto done;
 
     /* SYS_MEM_OP is NOT in that list, and that is the audit's one real
        finding rather than an omission here. It is unprivileged by design -
@@ -864,9 +864,9 @@ int usermode_file_test(void) {
        SYS_MEM_OP they break here and have to revisit the decision rather than
        discovering it through a service that can no longer allocate.
 
-       "Not E_PERM" rather than "E_OK": this runs on a kernel thread, which has
-       no vm_proc record, so vm_info answers E_INVAL. The property under test
-       is that it is not refused on CAPABILITY grounds, and E_INVAL says
+       "Not E_ACCESS_DENIED" rather than "E_OK": this runs on a kernel thread, which has
+       no vm_proc record, so vm_info answers E_INVALID_ARGS. The property under test
+       is that it is not refused on CAPABILITY grounds, and E_INVALID_ARGS says
        exactly that - the call got past authorisation and failed on its own
        terms. */
     step++;
@@ -874,18 +874,18 @@ int usermode_file_test(void) {
         struct mem_op_args *mo = (struct mem_op_args *)FT_DATA;
         for (uint32_t i = 0; i < sizeof *mo / 4u; i++) ((uint32_t *)mo)[i] = 0;
         mo->op = MEM_OP_INFO;
-        if (syscall_dispatch(SYS_MEM_OP, FT_DATA, 0, 0, 0, 0) == E_PERM) goto done;
+        if (syscall_dispatch(SYS_MEM_OP, FT_DATA, 0, 0, 0, 0) == E_ACCESS_DENIED) goto done;
     }
 
     thread_set_caps(me, GRANT_DISK | GRANT_SPAWN);
 
     /* a bad clock pointer is caught, not written through */
     step++;
-    if (syscall_dispatch(SYS_CLOCK, 0xC0001000u, 0, 0, 0, 0) != E_FAULT) goto done;
+    if (syscall_dispatch(SYS_CLOCK, 0xC0001000u, 0, 0, 0, 0) != E_BAD_ADDRESS) goto done;
     /* and a sleep longer than the cap is refused rather than silently clamped:
        a caller that asked for a day and got an hour would never know */
     step++;
-    if (syscall_dispatch(SYS_SLEEP, SLEEP_MAX_MS + 1, 0, 0, 0, 0) != E_RANGE) goto done;
+    if (syscall_dispatch(SYS_SLEEP, SLEEP_MAX_MS + 1, 0, 0, 0, 0) != E_OUT_OF_RANGE) goto done;
 
     /* --- argument blobs the kernel must refuse ---
      * check_args runs before anything touches the disk, so the path here is
@@ -897,27 +897,27 @@ int usermode_file_test(void) {
      * The check that stops it is one line, and nothing else would catch it. */
     sa->args = 0xC0001000u; sa->args_len = 8;
     step++;
-    if (sys_exec_path(FT_PATH, user_addr(sa)) != E_FAULT) goto done;
+    if (sys_exec_path(FT_PATH, user_addr(sa)) != E_BAD_ADDRESS) goto done;
 
     ft_str(FT_DATA, "noterm");
     sa->args = FT_DATA; sa->args_len = 6;   /* stops before the NUL */
     step++;
-    if (sys_exec_path(FT_PATH, user_addr(sa)) != E_INVAL) goto done;
+    if (sys_exec_path(FT_PATH, user_addr(sa)) != E_INVALID_ARGS) goto done;
 
     sa->args_len = USER_ARGS_MAX + 1;                     /* wider than the page */
     step++;
-    if (sys_exec_path(FT_PATH, user_addr(sa)) != E_RANGE) goto done;
+    if (sys_exec_path(FT_PATH, user_addr(sa)) != E_OUT_OF_RANGE) goto done;
 
     sa->args = 0; sa->args_len = 4;                       /* a length with no blob */
     step++;
-    if (sys_exec_path(FT_PATH, user_addr(sa)) != E_INVAL) goto done;
+    if (sys_exec_path(FT_PATH, user_addr(sa)) != E_INVALID_ARGS) goto done;
 
     sa->args = 0; sa->args_len = 0;
 
     /* and GRANT_SPAWN is the gate: the dispatcher checks it, so go through it */
     thread_set_caps(me, GRANT_DISK);
     step++;
-    if (syscall_dispatch(SYS_EXEC_PATH, FT_PATH, user_addr(sa), 0, 0, 0) != E_PERM) goto done;
+    if (syscall_dispatch(SYS_EXEC_PATH, FT_PATH, user_addr(sa), 0, 0, 0) != E_ACCESS_DENIED) goto done;
     thread_set_caps(me, GRANT_DISK);
 
     /* --- the reaper releases handles a process never closed --- */
@@ -955,7 +955,7 @@ done:
  * - Closing a handle releases its locks without an UNLOCK.
  * - Byte ranges: disjoint ranges coexist, len 0 runs to the end, and an
  *   unlock does not split a lock.
- * - FLOCK_WAIT sleeps until a release wakes it, and refuses with E_DEADLK
+ * - FLOCK_WAIT sleeps until a release wakes it, and refuses with E_DEADLOCK
  *   where waiting could never end: on its own lock, and round a cycle with
  *   another thread.
  * - Advisory: a locked file can still be written and unlinked, and the old
@@ -1023,19 +1023,19 @@ int usermode_flock_test(void) {
     step++;
     if (ft_call(FILE_OP_LOCK, b, 0, 0, 0, 0, FLOCK_SHARED) != E_OK) goto done;
     step++;                                                                       /* 4 */
-    if (ft_call(FILE_OP_LOCK, b, 0, 0, 0, 0, FLOCK_EXCLUSIVE) != E_AGAIN) goto done;
+    if (ft_call(FILE_OP_LOCK, b, 0, 0, 0, 0, FLOCK_EXCLUSIVE) != E_BUSY) goto done;
     /* a refused conversion keeps the lock it had: a still conflicts with b */
     step++;
-    if (ft_call(FILE_OP_LOCK, a, 0, 0, 0, 0, FLOCK_EXCLUSIVE) != E_AGAIN) goto done;
+    if (ft_call(FILE_OP_LOCK, a, 0, 0, 0, 0, FLOCK_EXCLUSIVE) != E_BUSY) goto done;
     step++;
     if (ft_call(FILE_OP_UNLOCK, a, 0, 0, 0, 0, 0) != E_OK) goto done;
     step++;
     if (ft_call(FILE_OP_LOCK, b, 0, 0, 0, 0, FLOCK_EXCLUSIVE) != E_OK) goto done;
     step++;                                                                       /* 8 */
-    if (ft_call(FILE_OP_LOCK, a, 0, 0, 0, 0, FLOCK_SHARED) != E_AGAIN) goto done;
+    if (ft_call(FILE_OP_LOCK, a, 0, 0, 0, 0, FLOCK_SHARED) != E_BUSY) goto done;
     /* waiting on a lock this same process holds could never end */
     step++;
-    if (ft_call(FILE_OP_LOCK, a, 0, 0, 0, 0, FLOCK_SHARED | FLOCK_WAIT) != E_DEADLK) goto done;
+    if (ft_call(FILE_OP_LOCK, a, 0, 0, 0, 0, FLOCK_SHARED | FLOCK_WAIT) != E_DEADLOCK) goto done;
 
     /* advisory: a write through another handle is not refused */
     ft_str(FT_DATA, "locked..............");
@@ -1052,11 +1052,11 @@ int usermode_flock_test(void) {
 
     /* bad arguments */
     step++;
-    if (ft_call(FILE_OP_LOCK, a, 0, 0, 0, 0, 3) != E_INVAL) goto done;
+    if (ft_call(FILE_OP_LOCK, a, 0, 0, 0, 0, 3) != E_INVALID_ARGS) goto done;
     step++;
-    if (ft_call(FILE_OP_LOCK, a, 0, 0, 0, -1, FLOCK_SHARED) != E_INVAL) goto done;
+    if (ft_call(FILE_OP_LOCK, a, 0, 0, 0, -1, FLOCK_SHARED) != E_INVALID_ARGS) goto done;
     step++;                                                                       /* 15 */
-    if (ft_call(FILE_OP_LOCK, closed, 0, 0, 0, 0, FLOCK_SHARED) != E_BADF) goto done;
+    if (ft_call(FILE_OP_LOCK, closed, 0, 0, 0, 0, FLOCK_SHARED) != E_BAD_HANDLE) goto done;
     ft_call(FILE_OP_UNLOCK, a, 0, 0, 0, 0, 0);
 
     /* --- byte ranges --- */
@@ -1068,12 +1068,12 @@ int usermode_flock_test(void) {
     step++;                                                                       /* 18 */
     if (ft_call(FILE_OP_LOCK, b, 0, 0, 10, 10, FLOCK_EXCLUSIVE) != E_OK) goto done;   /* disjoint */
     step++;
-    if (ft_call(FILE_OP_LOCK, b, 0, 0, 2, 9, FLOCK_SHARED) != E_AGAIN) goto done;     /* overlaps a */
+    if (ft_call(FILE_OP_LOCK, b, 0, 0, 2, 9, FLOCK_SHARED) != E_BUSY) goto done;     /* overlaps a */
     /* an unlock inside a lock does not split it */
     step++;                                                                       /* 20 */
     if (ft_call(FILE_OP_UNLOCK, a, 0, 0, 5, 0, 0) != E_OK) goto done;
     step++;
-    if (ft_call(FILE_OP_LOCK, b, 0, 0, 1, 0, FLOCK_SHARED) != E_AGAIN) goto done;
+    if (ft_call(FILE_OP_LOCK, b, 0, 0, 1, 0, FLOCK_SHARED) != E_BUSY) goto done;
     step++;
     if (ft_call(FILE_OP_UNLOCK, a, 0, 0, 10, 0, 0) != E_OK) goto done;
     step++;                                                                       /* 23 */
@@ -1082,7 +1082,7 @@ int usermode_flock_test(void) {
     step++;
     if (ft_call(FILE_OP_LOCK, a, 0, 0, 0, 100, FLOCK_SHARED) != E_OK) goto done;
     step++;                                                                       /* 25 */
-    if (ft_call(FILE_OP_LOCK, b, 0, 0, 10, 5000, FLOCK_EXCLUSIVE) != E_AGAIN) goto done;
+    if (ft_call(FILE_OP_LOCK, b, 0, 0, 10, 5000, FLOCK_EXCLUSIVE) != E_BUSY) goto done;
     ft_call(FILE_OP_UNLOCK, a, 0, 0, 0, 0, 0);
     ft_call(FILE_OP_CLOSE, b, 0, 0, 0, 0, 0);
     b = -1;
@@ -1104,7 +1104,7 @@ int usermode_flock_test(void) {
     /* the helper holds [10,20) and waits on our [0,10): our wait on [10,20)
        would close the cycle */
     step++;
-    if (ft_call(FILE_OP_LOCK, a, 0, 0, 10, 10, FLOCK_EXCLUSIVE | FLOCK_WAIT) != E_DEADLK) goto done;
+    if (ft_call(FILE_OP_LOCK, a, 0, 0, 10, 10, FLOCK_EXCLUSIVE | FLOCK_WAIT) != E_DEADLOCK) goto done;
     step++;                                                                       /* 30 */
     if (ft_call(FILE_OP_UNLOCK, a, 0, 0, 10, 0, 0) != E_OK) goto done;
     for (int i = 0; i < 50 && fl_stage < 3; i++) yield();
@@ -1130,24 +1130,24 @@ int usermode_flock_test(void) {
     step++;                                                                       /* 36 */
     if (ft_call(FILE_OP_UNLINK, 0, FT_PATH, 0, 0, 0, 0) != E_OK) goto done;
     step++;
-    if (ft_call(FILE_OP_STAT, 0, FT_PATH, FT_STAT, 0, 0, 0) != E_NOENT) goto done;
+    if (ft_call(FILE_OP_STAT, 0, FT_PATH, FT_STAT, 0, 0, 0) != E_NOT_FOUND) goto done;
     step++;                                                                       /* 38 */
-    if (ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_READ) != E_NOENT) goto done;
+    if (ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_READ) != E_NOT_FOUND) goto done;
     step++;
-    if (ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_WRITE | FOPEN_CREATE) != E_EXIST) goto done;
+    if (ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_WRITE | FOPEN_CREATE) != E_ALREADY_EXISTS) goto done;
     /* the open handles still work */
     step++;                                                                       /* 40 */
     if (ft_call(FILE_OP_SEEK, w, 0, 0, 0, 0, FSEEK_SET) != 0) goto done;
     step++;
     if (ft_call(FILE_OP_READ, w, 0, FT_DATA, 6, 0, 0) != 6) goto done;
     /* exec_path resolves for itself, and must not find it either (it would
-       otherwise reach the signature check: E_INVAL, not E_NOENT) */
+       otherwise reach the signature check: E_INVALID_ARGS, not E_NOT_FOUND) */
     {
         struct spawn_args *sa = (struct spawn_args *)FT_STAT;
         sa->image = 0; sa->image_len = 0; sa->name = FT_PATH;
         sa->broker_endpoint = -1; sa->caps = 0; sa->args = 0; sa->args_len = 0;
         step++;                                                                   /* 42 */
-        if (sys_exec_path(FT_PATH, user_addr(sa)) != E_NOENT) goto done;
+        if (sys_exec_path(FT_PATH, user_addr(sa)) != E_NOT_FOUND) goto done;
     }
     /* and the id is not handed to the next file created */
     ft_strp(FT_PATH, scratch, "/kt_lock2.txt");
