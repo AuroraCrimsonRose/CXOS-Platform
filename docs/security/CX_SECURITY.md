@@ -109,7 +109,7 @@ nothing (`x86_32/formats/CX_KEY_FORMAT.md`). Added:
 - Input reaches only the focused window; screen capture and overlays need a
   capability (`system/CX_DISPLAY.md`).
 - Jobs bound memory, threads and disk (`kernel/CX_KERNEL_PLAN.md` §4).
-- The **input hole** (`SYS_INPUT_READ`, `SYS_MOUSE_READ` need no capability)
+- The **input hole** (`SYS_INPUT_READ`, `SYS_INPUT_POLL`, `SYS_MOUSE_READ` need no capability)
   is closed early, independently of everything else.
 
 ### 3.5 Memory safety

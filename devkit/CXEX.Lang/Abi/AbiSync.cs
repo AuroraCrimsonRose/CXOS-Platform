@@ -26,7 +26,7 @@ namespace CXEX.Lang.Abi;
 /// build.</para>
 ///
 /// <para><b>The family rule.</b> The prelude deliberately mirrors only part of the header:
-/// it carries <c>SYS_*</c>, <c>E_*</c>, <c>POWER_*</c> and <c>FB_OP_*</c>, but not
+/// it carries <c>SYS_*</c>, <c>E_*</c> and <c>FB_OP_*</c>, but not
 /// <c>GRANT_*</c> or <c>NET_OP_*</c>. Demanding total parity would therefore report dozens of
 /// false positives on day one and get ignored, which is worse than no check. So the rule is
 /// <i>if you mirror a family, mirror all of it</i>: a family with at least one member in the
@@ -44,7 +44,7 @@ public static class AbiSync
     private static readonly string[] Families =
     {
         "FILE_OP_", "NET_OP_", "FOPEN_", "FSEEK_", "FTYPE_",
-        "FB_OP_", "POWER_", "MPROT_", "MMAP_", "MOBJ_", "SYS_", "GRANT_", "E_"
+        "FB_OP_", "MPROT_", "MMAP_", "MOBJ_", "SYS_", "GRANT_", "E_"
     };
 
     /// <summary>Header names that are not ABI surface and must not be reported.</summary>

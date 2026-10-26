@@ -34,7 +34,7 @@
  * line; bump both, and the DevKit's stamp, in the one commit that changes the
  * contract.
  */
-#define CXK_ABI_VERSION          5
+#define CXK_ABI_VERSION          6
 
 /*
  * ---- syscall numbers ----
@@ -79,13 +79,10 @@
  */
 #define HRIGHT_DUPLICATE         0x80000000u
 
-/*
- * input 0x20-0x2F (unprivileged: reading your own keystrokes)
- * ebx = flags (0=block, 1=nonblocking) -> char, 0 if none. No plain wrapper:
- * the prelude's input_read and input_poll pass the flag.
- */
-#define SYS_INPUT_READ           0x20
+/* input 0x20-0x2F (unprivileged: reading your own keystrokes) */
+#define SYS_INPUT_READ           0x20           /* block until a key -> char */
 #define SYS_MOUSE_READ           0x21           /* ebx = *mouse_state -> 1 if a mouse is present */
+#define SYS_INPUT_POLL           0x22           /* -> char, 0 if none waiting */
 
 /* console 0x30-0x3F (privileged: GRANT_CONSOLE) */
 #define SYS_CONSOLE_WRITE        0x30           /* ebx = buf, ecx = len (0 = bounded NUL-scan) */
@@ -111,21 +108,19 @@
  */
 #define SYS_EXEC_PATH            0x72
 
-/*
- * ebx = POWER_* op (GRANT_POWER); reboot does not return. No plain wrapper:
- * the prelude's reboot, shutdown and sleep pass the op.
- */
-#define SYS_POWER                0x71
-
 /* memory 0x80-0x8F (unprivileged, quota-bounded) */
 #define SYS_VM_MAP               0x80           /* ebx = *vm_map_args -> 0, with addr and granted filled in */
 
 /* ebx = addr, ecx = length (0 = the whole mapping) -> 0 */
 #define SYS_VM_UNMAP             0x81
 #define SYS_VM_INFO              0x82           /* ebx = *vm_usage -> 0, with quota and mapped filled in */
-#define POWER_REBOOT             0
-#define POWER_SHUTDOWN           1              /* ACPI S5 soft-off */
-#define POWER_SLEEP              2              /* ecx = ms; 0 = S1/C1 until a keypress */
+
+/* power 0x90-0x9F (privileged: GRANT_POWER). Each returns only if refused. */
+#define SYS_POWER_REBOOT         0x90
+#define SYS_POWER_SHUTDOWN       0x91           /* ACPI S5 soft-off */
+
+/* ebx = ms: idle the CPU (C1) that long, or until a key; 0 = until a key -> 0 */
+#define SYS_POWER_SLEEP          0x92
 
 /*
  * ---- error codes (negative; returned in eax) ----
@@ -223,8 +218,8 @@ struct spawn_args {
  *
  * Neither needs a capability. Reading the clock discloses nothing a process
  * could not time for itself, and waiting is the opposite of a privilege - a
- * sleeping process is one not using the machine. The existing POWER_SLEEP is a
- * different thing entirely: it puts the MACHINE into an ACPI sleep state and
+ * sleeping process is one not using the machine. SYS_POWER_SLEEP is a
+ * different thing entirely: it idles the whole CPU, every thread with it, and
  * is rightly behind GRANT_POWER. SYS_SLEEP blocks one thread and leaves the
  * rest of the system running.
  *

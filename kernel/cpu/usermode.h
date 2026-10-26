@@ -98,6 +98,10 @@ int  usermode_flock_test(void);
    real user mapping (see usermode.c). 1 = pass, 0 = fail. */
 int  usermode_vm_test(void);
 
+/* SYS_INPUT_READ, SYS_INPUT_POLL and SYS_POWER_SLEEP through the dispatcher
+   (see usermode.c). 1 = pass, 0 = fail. */
+int  usermode_power_input_test(void);
+
 /* The background console and SYS_LOG_READ (see usermode.c). 1 = pass. */
 int  usermode_log_test(void);
 

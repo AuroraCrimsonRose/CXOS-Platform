@@ -226,11 +226,13 @@ int syscall_fb_op(uint32_t a) {
     return sys_fb_op(a);
 }
 
-int syscall_input_read(uint32_t flags) {
-    /* unprivileged: reading your own keyboard input.
-       flags==0 -> block until a key; flags==1 -> return now (0 if none). */
-    if (flags == 1) return (int)(unsigned char)keyboard_getchar();
+/* unprivileged: reading your own keyboard input */
+int syscall_input_read(void) {
     return (int)(unsigned char)keyboard_getchar_blocking();
+}
+
+int syscall_input_poll(void) {
+    return (int)(unsigned char)keyboard_getchar();   /* 0 if none waiting */
 }
 
 int syscall_net_op(uint32_t a) {
@@ -253,15 +255,29 @@ int syscall_mouse_read(uint32_t m) {
     return mouse_present() ? 1 : 0;
 }
 
-int syscall_power(uint32_t op, uint32_t ms) {
-    if (!(thread_current_caps() & GRANT_POWER)) {
-        klog_u32("GRANT", SEV_WARN, "power DENIED for pid ", (uint32_t)thread_current_pid(), LOG_COLOR_VALUE, " (no GRANT_POWER)");
-        return E_ACCESS_DENIED;
-    }
-    if (op == POWER_REBOOT)   power_reboot();     /* does not return */
-    if (op == POWER_SHUTDOWN) power_shutdown();   /* does not return if ACPI S5 works */
-    if (op == POWER_SLEEP)  { power_sleep(ms); return 0; }
-    return E_INVALID_ARGS;
+/* The three power calls share one gate, so none of them can drift out of it. */
+static int power_granted(void) {
+    if (thread_current_caps() & GRANT_POWER) return 1;
+    klog_u32("GRANT", SEV_WARN, "power DENIED for pid ", (uint32_t)thread_current_pid(), LOG_COLOR_VALUE, " (no GRANT_POWER)");
+    return 0;
+}
+
+int syscall_power_reboot(void) {
+    if (!power_granted()) return E_ACCESS_DENIED;
+    power_reboot();                     /* does not return */
+    return E_OK;
+}
+
+int syscall_power_shutdown(void) {
+    if (!power_granted()) return E_ACCESS_DENIED;
+    power_shutdown();                   /* does not return: S5, or halt */
+    return E_OK;
+}
+
+int syscall_power_sleep(uint32_t ms) {
+    if (!power_granted()) return E_ACCESS_DENIED;
+    power_sleep(ms);
+    return E_OK;
 }
 
 /* The memory calls are unprivileged, like the clock and the sleep: a program
@@ -847,7 +863,11 @@ int usermode_file_test(void) {
     step++;
     if (syscall_dispatch(SYS_NET_OP,        0xC0001000u, 0, 0, 0, 0) != E_ACCESS_DENIED) goto done;
     step++;
-    if (syscall_dispatch(SYS_POWER,         0, 0, 0, 0, 0)           != E_ACCESS_DENIED) goto done;
+    if (syscall_dispatch(SYS_POWER_REBOOT,   0, 0, 0, 0, 0)          != E_ACCESS_DENIED) goto done;
+    step++;
+    if (syscall_dispatch(SYS_POWER_SHUTDOWN, 0, 0, 0, 0, 0)          != E_ACCESS_DENIED) goto done;
+    step++;
+    if (syscall_dispatch(SYS_POWER_SLEEP,    1, 0, 0, 0, 0)          != E_ACCESS_DENIED) goto done;   /* 1 ms: 0 would idle until a key if the gate were missing */
     step++;
     if (syscall_dispatch(SYS_EP_CREATE,     0, 0, 0, 0, 0)           != E_ACCESS_DENIED) goto done;
     step++;
@@ -1014,6 +1034,57 @@ done:
     if (addr) vm_unmap(pid, addr, 0);
     vm_proc_reset(pid);
     unmap_user_page(TEST_CODE_VIRT, phys);
+    return ok;
+}
+
+/* ---- the input and power calls, through the dispatcher ---------------------
+ * Keys are injected into the kernel's buffer, so the blocking read has one
+ * waiting and returns at once. The input calls run with no grants at all,
+ * which is their contract today (the input hole, until the input service
+ * replaces them). Reboot and shutdown cannot be run from here; their gate is in
+ * the authorisation matrix, with SYS_POWER_SLEEP's. Sleep is run for real.
+ */
+int usermode_power_input_test(void) {
+    int me = thread_current_id();
+    uint32_t save = thread_current_caps();
+    int ok = 0, step = 0;
+
+    thread_set_caps(me, 0);
+    for (int i = 0; i < 256 && syscall_dispatch(SYS_INPUT_POLL, 0, 0, 0, 0, 0) != 0; i++) { }
+
+    /* poll: nothing waiting is 0, then a key, then 0 again: one key, read once */
+    step++;
+    if (syscall_dispatch(SYS_INPUT_POLL, 0, 0, 0, 0, 0) != 0) goto done;
+    keyboard_inject('q');
+    step++;
+    if (syscall_dispatch(SYS_INPUT_POLL, 0, 0, 0, 0, 0) != 'q') goto done;
+    step++;
+    if (syscall_dispatch(SYS_INPUT_POLL, 0, 0, 0, 0, 0) != 0) goto done;
+
+    /* a special key is above 0x7F and comes back as itself, not sign-extended */
+    keyboard_inject(KEY_UP);
+    step++;
+    if (syscall_dispatch(SYS_INPUT_POLL, 0, 0, 0, 0, 0) != KEY_UP) goto done;
+
+    /* read: the waiting key, without blocking, and it is consumed */
+    keyboard_inject('z');
+    step++;
+    if (syscall_dispatch(SYS_INPUT_READ, 0, 0, 0, 0, 0) != 'z') goto done;
+    step++;
+    if (syscall_dispatch(SYS_INPUT_POLL, 0, 0, 0, 0, 0) != 0) goto done;
+
+    /* sleep idles for at least what was asked (no key is waiting to cut it short) */
+    thread_set_caps(me, GRANT_POWER);
+    uint32_t t0 = timer_ticks();
+    step++;
+    if (syscall_dispatch(SYS_POWER_SLEEP, 5, 0, 0, 0, 0) != E_OK) goto done;
+    step++;
+    if (timer_ticks() - t0 < 5) goto done;
+    ok = 1;
+
+done:
+    if (!ok) klog_u32("KTEST", SEV_ERR, "power and input syscall test failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    thread_set_caps(me, save);
     return ok;
 }
 

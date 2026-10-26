@@ -158,7 +158,7 @@ programs for it (step 6).
        `CXK_ABI_VERSION` 4).
      - **6a2c** One operation per syscall, a family at a time (memory, power
        and input, framebuffer, network, files). Memory done 2026-10-26
-       (`CXK_ABI_VERSION` 5).
+       (`CXK_ABI_VERSION` 5), power and input 2026-10-26 (6).
      - **6a2d** Fixed widths: sizes and offsets `u64`. On x86-32 a `u64`
        argument takes a register pair (low, high), joined by the generated
        decoder; on x86-64 it is one register.
@@ -189,8 +189,8 @@ sabotage that turns it red, on top of every existing self-test passing:
 
 Independent of the order above, and small enough to land whenever convenient:
 
-- **Close the input hole:** `SYS_INPUT_READ` and `SYS_MOUSE_READ` need no
-  capability today, so any process can read keystrokes meant for another.
+- **Close the input hole:** `SYS_INPUT_READ`, `SYS_INPUT_POLL` and `SYS_MOUSE_READ`
+  need no capability today, so any process can read keystrokes meant for another.
 - A kernel random number generator: there is none today, and KASLR, the
   stack protector, TCP and keys all need one (`security/CX_SECURITY.md` §3.2).
 - Stack protector on, seeded from it.

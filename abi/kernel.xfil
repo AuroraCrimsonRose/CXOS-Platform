@@ -38,7 +38,7 @@ domain kernel
 /// mismatch. Declared in versions.json as `cxex-abi` and checked against this
 /// line; bump both, and the DevKit's stamp, in the one commit that changes the
 /// contract.
-const CXK_ABI_VERSION: u32 = 5
+const CXK_ABI_VERSION: u32 = 6
 
 /// ---- syscall numbers ----
 /// lifecycle 0x00-0x0F (no capability required)
@@ -74,10 +74,9 @@ const HRIGHT_RECV: u32 = 0x2u
 const HRIGHT_DUPLICATE: u32 = 0x80000000u
 
 /// input 0x20-0x2F (unprivileged: reading your own keystrokes)
-/// ebx = flags (0=block, 1=nonblocking) -> char, 0 if none. No plain wrapper:
-/// the prelude's input_read and input_poll pass the flag.
-syscall SYS_INPUT_READ = 0x20 (flags: u32) -> i32
+syscall SYS_INPUT_READ = 0x20 fn input_read() -> i32                   /// block until a key -> char
 syscall SYS_MOUSE_READ = 0x21 fn mouse_read(m: *mouse_state) -> i32     /// ebx = *mouse_state -> 1 if a mouse is present
+syscall SYS_INPUT_POLL = 0x22 fn input_poll() -> i32                   /// -> char, 0 if none waiting
 /// console 0x30-0x3F (privileged: GRANT_CONSOLE)
 syscall SYS_CONSOLE_WRITE = 0x30 fn console_write(buf: *u8, len: u32) -> i32   /// ebx = buf, ecx = len (0 = bounded NUL-scan)
 /// ebx = index (0 = oldest kept), ecx = *log_entry -> 1 filled, 0 past the newest
@@ -93,9 +92,6 @@ syscall SYS_SPAWN = 0x70 fn spawn(a: *spawn_args) -> i32        /// ebx = *spawn
 /// ebx = path, ecx = *spawn_args (GRANT_SPAWN) -> pid (image/image_len in the
 /// struct are ignored)
 syscall SYS_EXEC_PATH = 0x72 fn exec_path(path: *u8, a: *spawn_args) -> i32
-/// ebx = POWER_* op (GRANT_POWER); reboot does not return. No plain wrapper:
-/// the prelude's reboot, shutdown and sleep pass the op.
-syscall SYS_POWER = 0x71 (op: u32, ms: u32) -> i32
 
 /// memory 0x80-0x8F (unprivileged, quota-bounded)
 syscall SYS_VM_MAP = 0x80 fn vm_map(a: *vm_map_args) -> i32     /// ebx = *vm_map_args -> 0, with addr and granted filled in
@@ -103,9 +99,11 @@ syscall SYS_VM_MAP = 0x80 fn vm_map(a: *vm_map_args) -> i32     /// ebx = *vm_ma
 syscall SYS_VM_UNMAP = 0x81 fn vm_unmap(addr: u32, length: u32) -> i32
 syscall SYS_VM_INFO = 0x82 fn vm_info(u: *vm_usage) -> i32      /// ebx = *vm_usage -> 0, with quota and mapped filled in
 
-const POWER_REBOOT: u32 = 0
-const POWER_SHUTDOWN: u32 = 1        /// ACPI S5 soft-off
-const POWER_SLEEP: u32 = 2           /// ecx = ms; 0 = S1/C1 until a keypress
+/// power 0x90-0x9F (privileged: GRANT_POWER). Each returns only if refused.
+syscall SYS_POWER_REBOOT = 0x90 fn reboot() -> i32
+syscall SYS_POWER_SHUTDOWN = 0x91 fn shutdown() -> i32          /// ACPI S5 soft-off
+/// ebx = ms: idle the CPU (C1) that long, or until a key; 0 = until a key -> 0
+syscall SYS_POWER_SLEEP = 0x92 fn sleep(ms: u32) -> i32
 
 /// ---- error codes (negative; returned in eax) ----
 /// One list, shared by syscalls and services (docs/kernel/CX_SYSCALLS_IPC.md sec 6).
@@ -192,8 +190,8 @@ struct spawn_args {
 ///
 /// Neither needs a capability. Reading the clock discloses nothing a process
 /// could not time for itself, and waiting is the opposite of a privilege - a
-/// sleeping process is one not using the machine. The existing POWER_SLEEP is a
-/// different thing entirely: it puts the MACHINE into an ACPI sleep state and
+/// sleeping process is one not using the machine. SYS_POWER_SLEEP is a
+/// different thing entirely: it idles the whole CPU, every thread with it, and
 /// is rightly behind GRANT_POWER. SYS_SLEEP blocks one thread and leaves the
 /// rest of the system running.
 ///

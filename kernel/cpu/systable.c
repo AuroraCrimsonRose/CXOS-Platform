@@ -21,8 +21,9 @@ static int decode_ep_create(const uint32_t *a) { (void)a; return syscall_ep_crea
 static int decode_handle_close(const uint32_t *a) { return syscall_handle_close((int32_t)a[0]); }
 static int decode_handle_duplicate(const uint32_t *a) { return syscall_handle_duplicate((int32_t)a[0], a[1]); }
 static int decode_object_info(const uint32_t *a) { return syscall_object_info(a[0]); }
-static int decode_input_read(const uint32_t *a) { return syscall_input_read(a[0]); }
+static int decode_input_read(const uint32_t *a) { (void)a; return syscall_input_read(); }
 static int decode_mouse_read(const uint32_t *a) { return syscall_mouse_read(a[0]); }
+static int decode_input_poll(const uint32_t *a) { (void)a; return syscall_input_poll(); }
 static int decode_console_write(const uint32_t *a) { return syscall_console_write(a[0], a[1]); }
 static int decode_log_read(const uint32_t *a) { return syscall_log_read(a[0], a[1]); }
 static int decode_net_op(const uint32_t *a) { return syscall_net_op(a[0]); }
@@ -30,10 +31,12 @@ static int decode_fb_op(const uint32_t *a) { return syscall_fb_op(a[0]); }
 static int decode_file_op(const uint32_t *a) { return syscall_file_op(a[0]); }
 static int decode_spawn(const uint32_t *a) { return syscall_spawn(a[0]); }
 static int decode_exec_path(const uint32_t *a) { return syscall_exec_path(a[0], a[1]); }
-static int decode_power(const uint32_t *a) { return syscall_power(a[0], a[1]); }
 static int decode_vm_map(const uint32_t *a) { return syscall_vm_map(a[0]); }
 static int decode_vm_unmap(const uint32_t *a) { return syscall_vm_unmap(a[0], a[1]); }
 static int decode_vm_info(const uint32_t *a) { return syscall_vm_info(a[0]); }
+static int decode_power_reboot(const uint32_t *a) { (void)a; return syscall_power_reboot(); }
+static int decode_power_shutdown(const uint32_t *a) { (void)a; return syscall_power_shutdown(); }
+static int decode_power_sleep(const uint32_t *a) { return syscall_power_sleep(a[0]); }
 
 const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_EXIT] = decode_exit,
@@ -52,15 +55,18 @@ const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_OBJECT_INFO] = decode_object_info,
     [SYS_INPUT_READ] = decode_input_read,
     [SYS_MOUSE_READ] = decode_mouse_read,
+    [SYS_INPUT_POLL] = decode_input_poll,
     [SYS_CONSOLE_WRITE] = decode_console_write,
     [SYS_LOG_READ] = decode_log_read,
     [SYS_FB_OP] = decode_fb_op,
     [SYS_NET_OP] = decode_net_op,
     [SYS_FILE_OP] = decode_file_op,
     [SYS_SPAWN] = decode_spawn,
-    [SYS_POWER] = decode_power,
     [SYS_EXEC_PATH] = decode_exec_path,
     [SYS_VM_MAP] = decode_vm_map,
     [SYS_VM_UNMAP] = decode_vm_unmap,
     [SYS_VM_INFO] = decode_vm_info,
+    [SYS_POWER_REBOOT] = decode_power_reboot,
+    [SYS_POWER_SHUTDOWN] = decode_power_shutdown,
+    [SYS_POWER_SLEEP] = decode_power_sleep,
 };

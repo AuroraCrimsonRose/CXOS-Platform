@@ -141,9 +141,6 @@ fn broker_handle() -> i32 {
     return ai.broker;
 }
 
-fn input_read() -> i32 { return __syscall(SYS_INPUT_READ, 0, 0, 0, 0, 0); }   // block for a key
-fn input_poll() -> i32 { return __syscall(SYS_INPUT_READ, 1, 0, 0, 0, 0); }   // 0 if none
-
 // Map `len` bytes of anonymous read/write memory. Returns the address, or 0.
 // The mapping is zero-filled - a frame off the free list may hold another
 // process's memory, so the kernel clears it before you ever see it.
@@ -173,10 +170,6 @@ fn mem_used() -> u32 {
     if (vm_info(&u) != E_OK) { return 0; }
     return u.mapped;
 }
-
-fn reboot() -> void   { __syscall(SYS_POWER, POWER_REBOOT, 0, 0, 0, 0); }              // does not return
-fn shutdown() -> void { __syscall(SYS_POWER, POWER_SHUTDOWN, 0, 0, 0, 0); }            // does not return
-fn sleep(ms: u32) -> i32 { return __syscall(SYS_POWER, POWER_SLEEP, ms, 0, 0, 0); }
 
 // milliseconds since boot, for code that only wants to measure an interval
 fn ticks_ms() -> u32 {

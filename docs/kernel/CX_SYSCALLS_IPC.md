@@ -13,7 +13,7 @@
 | Area | Today | Problem |
 |---|---|---|
 | Entry | `int 0x80`, a number and two arguments (`syscall_dispatch(num, a1, a2)`) | Slow on x86-64; two arguments force a structure for almost everything |
-| Shape | 27 numbers, three of them multiplexers (`SYS_FILE_OP`, `SYS_NET_OP`, `SYS_FB_OP`) with an `op` field inside a structure; memory was split in step 6a2c (§9.5) | One number hides 18 file operations, so tracing, recording and filtering see "a file call" and nothing more; each multiplexer re-implements dispatch |
+| Shape | 30 numbers, three of them multiplexers (`SYS_FILE_OP`, `SYS_NET_OP`, `SYS_FB_OP`) with an `op` field inside a structure; memory, power and input were split in step 6a2c (§9.5) | One number hides 18 file operations, so tracing, recording and filtering see "a file call" and nothing more; each multiplexer re-implements dispatch |
 | Structures | Raw pointers and `int` inside shared structures | Layout changes with pointer size; every structure changes on x86-64 |
 | Widths | `ticks` in 32-bit milliseconds; file sizes and offsets 32-bit; timestamps 32-bit | Ticks wrap after 49 days; files stop at 4 GB; dates stop in 2106 |
 | Authority | `GRANT_*` bits on the process; handles are small `int`s with no rights | A handle carries no rights of its own; a stale handle number can name a new object |
@@ -219,7 +219,7 @@ back (the shell's `log`). Once the executive runs, kernel lines below ERR stop
 going to the screen as well.
 
 **Retired:** `SYS_FB_OP` (the display server draws, into memory objects);
-`SYS_INPUT_READ` and `SYS_MOUSE_READ` (the input driver sends events to the
+`SYS_INPUT_READ`, `SYS_INPUT_POLL` and `SYS_MOUSE_READ` (the input driver sends events to the
 display server, which routes them to the focused window); `SYS_GETPID` and
 `SYS_GETUID` (`object_info` on the process handle, or the system page);
 `SYS_ARGS` and `USER_ARGS_BASE` (the start message, §10); `SYS_EXEC_PATH`
@@ -368,7 +368,7 @@ struct file_stat {                   /// u8..u64, i8..i64, char[N], T[N]
     name: char[FILE_NAME_MAX]
 }
 syscall SYS_CLOCK = 0x04 fn clock_read(c: *clock_info) -> i32
-syscall SYS_POWER = 0x71 (op: u32, ms: u32) -> i32   /// no plain wrapper
+syscall SYS_EXAMPLE = 0x3F0 (op: u32, ms: u32) -> i32   /// no plain wrapper
 ```
 
 - Documentation lines directly above an item belong to it; a block followed
@@ -401,6 +401,14 @@ operations leave it.
   and `SYS_VM_INFO` (0x82, `*vm_usage`). The object and offset stay until
   memory objects replace them, so an unknown object or a non-zero offset is
   still refused.
+- **Power and input** (`CXK_ABI_VERSION` 6): `SYS_POWER`'s op becomes the
+  number: `SYS_POWER_REBOOT` (0x90), `SYS_POWER_SHUTDOWN` (0x91) and
+  `SYS_POWER_SLEEP` (0x92, `ms`), each behind `GRANT_POWER` and returning
+  only when refused (sleep: after it). `SYS_INPUT_READ`'s flag becomes the
+  number: `SYS_INPUT_READ` (0x20) blocks for a key, `SYS_INPUT_POLL` (0x22)
+  answers 0 when none waits. Every call has its plain wrapper now, so the
+  prelude's `reboot`, `shutdown`, `sleep`, `input_read` and `input_poll` are
+  generated; `reboot` and `shutdown` return the refusal rather than `void`.
 
 When the `.xfil` replaced the hand-written header, the header it generated
 matched the old one in every constant, structure and field type, and every

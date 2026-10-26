@@ -3298,6 +3298,7 @@ void ktest_run(void) {
     total++; passed += report("exec admission (dev / release)",   test_exec_admit());
     total++; passed += report("file syscalls (SYS_FILE_OP)",       usermode_file_test());
     total++; passed += report("memory syscalls (SYS_VM_*)",        usermode_vm_test());
+    total++; passed += report("power and input syscalls",          usermode_power_input_test());
     total++; passed += report("background output goes to the log", usermode_log_test());
     total++; passed += report("advisory locks follow the open file", usermode_flock_test());
     total++; passed += report("ipc endpoints refcounted + reclaimed", test_ipc_endpoint_lifetime());
