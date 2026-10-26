@@ -157,7 +157,8 @@ programs for it (step 6).
      - **6a2b** The §6 error list. **Done 2026-10-26** (`kernel/CX_SYSCALLS_IPC.md` §6,
        `CXK_ABI_VERSION` 4).
      - **6a2c** One operation per syscall, a family at a time (memory, power
-       and input, framebuffer, network, files).
+       and input, framebuffer, network, files). Memory done 2026-10-26
+       (`CXK_ABI_VERSION` 5).
      - **6a2d** Fixed widths: sizes and offsets `u64`. On x86-32 a `u64`
        argument takes a register pair (low, high), joined by the generated
        decoder; on x86-64 it is one register.

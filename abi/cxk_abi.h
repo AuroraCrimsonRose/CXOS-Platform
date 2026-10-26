@@ -34,7 +34,7 @@
  * line; bump both, and the DevKit's stamp, in the one commit that changes the
  * contract.
  */
-#define CXK_ABI_VERSION          4
+#define CXK_ABI_VERSION          5
 
 /*
  * ---- syscall numbers ----
@@ -116,7 +116,13 @@
  * the prelude's reboot, shutdown and sleep pass the op.
  */
 #define SYS_POWER                0x71
-#define SYS_MEM_OP               0x80           /* ebx = *mem_op_args; unprivileged, quota-bounded */
+
+/* memory 0x80-0x8F (unprivileged, quota-bounded) */
+#define SYS_VM_MAP               0x80           /* ebx = *vm_map_args -> 0, with addr and granted filled in */
+
+/* ebx = addr, ecx = length (0 = the whole mapping) -> 0 */
+#define SYS_VM_UNMAP             0x81
+#define SYS_VM_INFO              0x82           /* ebx = *vm_usage -> 0, with quota and mapped filled in */
 #define POWER_REBOOT             0
 #define POWER_SHUTDOWN           1              /* ACPI S5 soft-off */
 #define POWER_SLEEP              2              /* ecx = ms; 0 = S1/C1 until a keypress */
@@ -343,7 +349,7 @@ struct fb_op_args {
 #define GRANT_CONSOLE            0x0001u
 
 /*
- * reserved, NOT enforced: SYS_MEM_OP is unprivileged by design - see
+ * reserved, NOT enforced: the SYS_VM_* calls are unprivileged by design - see
  * kernel/cpu/caps.h
  */
 #define GRANT_MEM                0x0002u
@@ -408,7 +414,7 @@ struct net_op_args {
  */
 
 /*
- * ---- memory (SYS_MEM_OP; unprivileged, bounded by a per-process quota) ----
+ * ---- memory (SYS_VM_MAP, SYS_VM_UNMAP, SYS_VM_INFO; unprivileged, bounded by a per-process quota) ----
  *
  * Ask for memory, give it back. This is the only way a ring-3 process obtains
  * storage beyond its image and its stack.
@@ -463,23 +469,17 @@ struct net_op_args {
  *   hardware guarantee when this kernel gains PAE or moves to 64-bit, where
  *   the bit exists. It is enforced now so that nothing is ever written that
  *   would break when it starts being real.
+ * vm_map_args.prot - what the mapping may be used for.
  */
-enum { /* mem_op */
-    MEM_OP_MAP = 0,                             /* -> 0, with addr and granted filled in */
-    MEM_OP_UNMAP = 1,                           /* addr, length -> 0 */
-    MEM_OP_INFO = 2,                            /* -> 0, with quota and mapped filled in */
-};
-
-/* mem_op_args.prot - what the mapping may be used for. */
 #define MPROT_NONE               0x00
 #define MPROT_READ               0x01
 #define MPROT_WRITE              0x02
 #define MPROT_EXEC               0x04           /* accepted and recorded; see the honest limit above */
 
-/* mem_op_args.flags */
+/* vm_map_args.flags */
 #define MMAP_HINT                0x01           /* try `addr` first; the kernel may place elsewhere */
 
-/* mem_op_args.object - what the mapping is a view OF. */
+/* vm_map_args.object - what the mapping is a view OF. */
 #define MOBJ_ANON                0              /* anonymous zero-filled memory; offset must be 0 */
 
 /*
@@ -493,22 +493,22 @@ enum { /* mem_op */
 /* How many separate mappings one process may hold at once. */
 #define MMAP_MAX_REGIONS         32
 
-struct mem_op_args {
-    uint32_t op;                                /* MEM_OP_* */
+struct vm_map_args {
     uint32_t object;                            /* MOBJ_* (MOBJ_ANON today) */
     uint32_t offset_lo;                         /* 64-bit offset into the object, low half */
     uint32_t offset_hi;                         /* ... and high half; both 0 for MOBJ_ANON */
-    uint32_t length;                            /* MAP: bytes wanted. UNMAP: bytes to release */
-    /*
-     * MAP in: hint if MMAP_HINT. MAP out: where it is. UNMAP in: the address
-     * to release
-     */
+    uint32_t length;                            /* bytes wanted */
+    /* in: a hint if MMAP_HINT; out: where it is */
     uint32_t addr;
-    uint32_t granted;                           /* MAP out: bytes actually mapped (length, rounded up to a page) */
+    uint32_t granted;                           /* out: bytes actually mapped (length, rounded up to a page) */
     uint32_t prot;                              /* MPROT_* */
     uint32_t flags;                             /* MMAP_* */
-    uint32_t quota;                             /* INFO out: this process's ceiling, in bytes */
-    uint32_t mapped;                            /* INFO out: how much of it is currently in use */
+};
+
+/* SYS_VM_INFO: this process's memory account. */
+struct vm_usage {
+    uint32_t quota;                             /* the ceiling, in bytes */
+    uint32_t mapped;                            /* how much of it is in use */
 };
 
 /*
@@ -696,7 +696,8 @@ CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_recv_args) == 16, "ABI layout: ipc_recv_
 CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_reply_args) == 12, "ABI layout: ipc_reply_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct fb_op_args) == 36, "ABI layout: fb_op_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct net_op_args) == 20, "ABI layout: net_op_args");
-CXK_ABI_STATIC_ASSERT(sizeof(struct mem_op_args) == 44, "ABI layout: mem_op_args");
+CXK_ABI_STATIC_ASSERT(sizeof(struct vm_map_args) == 32, "ABI layout: vm_map_args");
+CXK_ABI_STATIC_ASSERT(sizeof(struct vm_usage) == 8, "ABI layout: vm_usage");
 CXK_ABI_STATIC_ASSERT(sizeof(struct file_op_args) == 32, "ABI layout: file_op_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct file_stat) == 96, "ABI layout: file_stat");
 CXK_ABI_STATIC_ASSERT(sizeof(struct mouse_state) == 16, "ABI layout: mouse_state");

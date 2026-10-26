@@ -3,7 +3,7 @@
 /* /kernel/memman/vmregion.h */
 /* Aurora Tejeda / CATX Systems */
 /*
- * Per-process memory mappings - the kernel half of SYS_MEM_OP.
+ * Per-process memory mappings - the kernel half of the SYS_VM_* calls.
  *
  * A ring-3 process starts with an image and a stack and nothing else. This is
  * where it gets more: a table of the regions each process has mapped, the
@@ -100,10 +100,11 @@ uint32_t vm_quota_of(int pid);
 int  vm_charge(int pid, uint32_t bytes);
 void vm_uncharge(int pid, uint32_t bytes);
 
-/* The SYS_MEM_OP operations. `a` has already been validated as a readable and
-   writable user pointer by the caller. Each returns E_OK or a negative E_*. */
-int vm_map(int pid, struct mem_op_args *a);
+/* SYS_VM_MAP, SYS_VM_UNMAP and SYS_VM_INFO. `a` and `u` have already been
+   validated as readable and writable user pointers by the caller. Each returns
+   E_OK or a negative E_*. */
+int vm_map(int pid, struct vm_map_args *a);
 int vm_unmap(int pid, uint32_t addr, uint32_t length);
-int vm_info(int pid, struct mem_op_args *a);
+int vm_info(int pid, struct vm_usage *u);
 
 #endif

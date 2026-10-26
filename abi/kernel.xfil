@@ -38,7 +38,7 @@ domain kernel
 /// mismatch. Declared in versions.json as `cxex-abi` and checked against this
 /// line; bump both, and the DevKit's stamp, in the one commit that changes the
 /// contract.
-const CXK_ABI_VERSION: u32 = 4
+const CXK_ABI_VERSION: u32 = 5
 
 /// ---- syscall numbers ----
 /// lifecycle 0x00-0x0F (no capability required)
@@ -97,7 +97,12 @@ syscall SYS_EXEC_PATH = 0x72 fn exec_path(path: *u8, a: *spawn_args) -> i32
 /// the prelude's reboot, shutdown and sleep pass the op.
 syscall SYS_POWER = 0x71 (op: u32, ms: u32) -> i32
 
-syscall SYS_MEM_OP = 0x80 fn mem_op(a: *mem_op_args) -> i32     /// ebx = *mem_op_args; unprivileged, quota-bounded
+/// memory 0x80-0x8F (unprivileged, quota-bounded)
+syscall SYS_VM_MAP = 0x80 fn vm_map(a: *vm_map_args) -> i32     /// ebx = *vm_map_args -> 0, with addr and granted filled in
+/// ebx = addr, ecx = length (0 = the whole mapping) -> 0
+syscall SYS_VM_UNMAP = 0x81 fn vm_unmap(addr: u32, length: u32) -> i32
+syscall SYS_VM_INFO = 0x82 fn vm_info(u: *vm_usage) -> i32      /// ebx = *vm_usage -> 0, with quota and mapped filled in
+
 const POWER_REBOOT: u32 = 0
 const POWER_SHUTDOWN: u32 = 1        /// ACPI S5 soft-off
 const POWER_SLEEP: u32 = 2           /// ecx = ms; 0 = S1/C1 until a keypress
@@ -297,7 +302,7 @@ struct fb_op_args {
 /// was started, and never wider than what the thing that started it held.
 /// kernel/cpu/caps.h describes what each one guards.
 const GRANT_CONSOLE: u32 = 0x0001u
-/// reserved, NOT enforced: SYS_MEM_OP is unprivileged by design - see
+/// reserved, NOT enforced: the SYS_VM_* calls are unprivileged by design - see
 /// kernel/cpu/caps.h
 const GRANT_MEM: u32 = 0x0002u
 const GRANT_DISK: u32 = 0x0004u
@@ -353,7 +358,7 @@ struct net_op_args {
 /// Caps are attenuated against the caller's own set, as with SYS_SPAWN: you may
 /// pass a subset of your authority and never amplify.
 
-/// ---- memory (SYS_MEM_OP; unprivileged, bounded by a per-process quota) ----
+/// ---- memory (SYS_VM_MAP, SYS_VM_UNMAP, SYS_VM_INFO; unprivileged, bounded by a per-process quota) ----
 ///
 /// Ask for memory, give it back. This is the only way a ring-3 process obtains
 /// storage beyond its image and its stack.
@@ -408,22 +413,16 @@ struct net_op_args {
 ///   hardware guarantee when this kernel gains PAE or moves to 64-bit, where
 ///   the bit exists. It is enforced now so that nothing is ever written that
 ///   would break when it starts being real.
-enum mem_op {
-    MEM_OP_MAP = 0      /// -> 0, with addr and granted filled in
-    MEM_OP_UNMAP = 1    /// addr, length -> 0
-    MEM_OP_INFO = 2     /// -> 0, with quota and mapped filled in
-}
-
-/// mem_op_args.prot - what the mapping may be used for.
+/// vm_map_args.prot - what the mapping may be used for.
 const MPROT_NONE: u32 = 0x00
 const MPROT_READ: u32 = 0x01
 const MPROT_WRITE: u32 = 0x02
 const MPROT_EXEC: u32 = 0x04     /// accepted and recorded; see the honest limit above
 
-/// mem_op_args.flags
+/// vm_map_args.flags
 const MMAP_HINT: u32 = 0x01      /// try `addr` first; the kernel may place elsewhere
 
-/// mem_op_args.object - what the mapping is a view OF.
+/// vm_map_args.object - what the mapping is a view OF.
 const MOBJ_ANON: u32 = 0         /// anonymous zero-filled memory; offset must be 0
 
 /// The largest single mapping a process may ask for. A bound rather than a
@@ -435,20 +434,22 @@ const MMAP_MAX_BYTES: u32 = 0x04000000u
 /// How many separate mappings one process may hold at once.
 const MMAP_MAX_REGIONS: u32 = 32
 
-struct mem_op_args {
-    op: u32         /// MEM_OP_*
+struct vm_map_args {
     object: u32     /// MOBJ_* (MOBJ_ANON today)
     offset_lo: u32  /// 64-bit offset into the object, low half
     offset_hi: u32  /// ... and high half; both 0 for MOBJ_ANON
-    length: u32     /// MAP: bytes wanted. UNMAP: bytes to release
-    /// MAP in: hint if MMAP_HINT. MAP out: where it is. UNMAP in: the address
-    /// to release
+    length: u32     /// bytes wanted
+    /// in: a hint if MMAP_HINT; out: where it is
     addr: u32
-    granted: u32    /// MAP out: bytes actually mapped (length, rounded up to a page)
+    granted: u32    /// out: bytes actually mapped (length, rounded up to a page)
     prot: u32       /// MPROT_*
     flags: u32      /// MMAP_*
-    quota: u32      /// INFO out: this process's ceiling, in bytes
-    mapped: u32     /// INFO out: how much of it is currently in use
+}
+
+/// SYS_VM_INFO: this process's memory account.
+struct vm_usage {
+    quota: u32      /// the ceiling, in bytes
+    mapped: u32     /// how much of it is in use
 }
 
 /// ---- files (SYS_FILE_OP; GRANT_DISK) ----

@@ -46,11 +46,11 @@
                         now; split to a display-server tier later)
      GRANT_OS_BASELINE  a broker executive's baseline authority
 
-   GRANT_MEM is NOT ENFORCED, and that is deliberate rather than missing. SYS_MEM_OP is
-   unprivileged by design - "a program that could not obtain memory would not
+   GRANT_MEM is NOT ENFORCED, and that is deliberate rather than missing. The
+   SYS_VM_* calls are unprivileged by design - "a program that could not obtain memory would not
    be contained, it would be unable to run", and what bounds it is the
    per-process quota inside vm_map, not a bit every program would have to hold
-   (see the comment on SYS_MEM_OP in cpu/usermode.c). This bit is therefore
+   (see the comment on syscall_vm_map in cpu/usermode.c). This bit is therefore
    vestigial: it is carried in GRANT_OS_BASELINE and accepted by the
    supervisor's descriptor parser, and it gates nothing.
 
@@ -60,7 +60,7 @@
    because removing a grant bit is an ABI change and the value is already
    published; marked reserved, the way GRANT_IOPORT already is. If memory ever
    does become a gated resource, this is the bit to use and the comment on
-   SYS_MEM_OP is the decision to revisit first. */
+   syscall_vm_map is the decision to revisit first. */
 
 /* A system program's baseline: what an .xsex gets when the KERNEL starts it.
    Narrower than the executive's on purpose - a system program is OS-owned but

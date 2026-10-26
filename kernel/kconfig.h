@@ -9,7 +9,7 @@
  *   kernel_stack_kib = 8      // each kernel stack: 8 to 32 KiB, a multiple of 4
  *   max_threads      = 8      // threads alive at once: 4 to 256
  *   max_handles      = 1024   // open handles per process: 16 to 4096
- *   memory_quota_mib = 16     // default SYS_MEM_OP quota per process: 1 to 64 MiB
+ *   memory_quota_mib = 16     // default SYS_VM_MAP quota per process: 1 to 64 MiB
  *
  * All four are optional; an absent key keeps its built-in default. The file is
  * checked WHOLE before any of it is applied: a syntax error, an unknown key, a

@@ -43,7 +43,7 @@ public static class AbiSync
     /// <c>NET_OP_</c> is not mistaken for a member of some shorter family.</summary>
     private static readonly string[] Families =
     {
-        "FILE_OP_", "MEM_OP_", "NET_OP_", "FOPEN_", "FSEEK_", "FTYPE_",
+        "FILE_OP_", "NET_OP_", "FOPEN_", "FSEEK_", "FTYPE_",
         "FB_OP_", "POWER_", "MPROT_", "MMAP_", "MOBJ_", "SYS_", "GRANT_", "E_"
     };
 

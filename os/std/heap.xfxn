@@ -5,7 +5,7 @@
 //
 //   import "heap.xfxn";
 //
-// alloc / free / realloc, built on SYS_MEM_OP. Before this existed a program
+// alloc / free / realloc, built on SYS_VM_MAP. Before this existed a program
 // had its image and its stack and nothing else, so every buffer in the system
 // was a fixed-size global sized for the worst case someone imagined.
 //
@@ -57,13 +57,12 @@ fn heap_grow(need: u32) -> u32 {
     let want: u32 = need + HEAP_HDR + HEAP_HDR;
     if (want < HEAP_ARENA_MIN) { want = HEAP_ARENA_MIN; }
 
-    let a: mem_op_args;
+    let a: vm_map_args;
     memzero((&a) as *u8, sizeof a);
-    a.op = MEM_OP_MAP;
     a.object = MOBJ_ANON;
     a.length = want;
     a.prot = MPROT_READ | MPROT_WRITE;
-    if (mem_op(&a) != E_OK) { return 0; }
+    if (vm_map(&a) != E_OK) { return 0; }
 
     let base: u32 = a.addr;
     let total: u32 = a.granted;
@@ -200,7 +199,7 @@ fn realloc(p: u32, n: u32) -> u32 {
 
 // Bytes this process may hold mapped at once, and how many it holds now.
 // Both come from the kernel rather than from this allocator's own accounting -
-// but they count only what SYS_MEM_OP handed out. The image and the stack were
+// but they count only what SYS_VM_MAP handed out. The image and the stack were
 // placed by the kernel when the process was built and are NOT included, which
 // is why a program that has allocated nothing reports 0 rather than the size
 // of itself. The quota bounds what a process ASKS FOR, not what it occupies.

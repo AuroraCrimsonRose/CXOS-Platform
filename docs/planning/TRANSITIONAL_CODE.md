@@ -71,7 +71,7 @@ interfaces and are not transitional.
 
 | Name | State | Recommendation |
 |---|---|---|
-| `GRANT_MEM` | Defined in the ABI and in `caps.h`, enforced nowhere. `SYS_MEM_OP` is unprivileged by design. Marked reserved at both sites. | Keep it reserved: the bit is spoken for, and reusing it would be a silent ABI change. |
+| `GRANT_MEM` | Defined in the ABI and in `caps.h`, enforced nowhere. The `SYS_VM_*` calls are unprivileged by design. Marked reserved at both sites. | Keep it reserved: the bit is spoken for, and reusing it would be a silent ABI change. |
 | `kernel/arch/x86/fpu.c`, `kernel/lib/math/kmath.c` | Not in the build at all, deliberately. `fpu.c` documents why: FP needs FPU state saved on context switch before anything can use it. `CMakeLists.txt` keeps x87 enabled so wiring them in is a source-list change. Its comment used to say `kmath.c` "genuinely uses double" in the kernel, which it does not. Since step 3e `kmath.c` is plain C (its square root was the SSE instruction) and host-tested (`test_kmath.c`), which found sine and cosine 2e-5 out at the ends of their range rather than the 1e-9 claimed; fixed. | Keep until FP is wanted; the trigger is in the "Planned replacement" table. |
 | `CXAuthChain` (DevKit) | **Active, not dead.** Rewritten 2026-10-09 to the right model (the level derives from which key signed) and covered by `TrustAuthorityTests`. It is the DevKit's advisory mirror of `keyvault_trust_of`, independent by design (security §12.5). No CLI command surfaces it yet. | Keep. A `cxk inspect` line saying "the kernel will admit this as Publisher" is its natural first caller. |
 

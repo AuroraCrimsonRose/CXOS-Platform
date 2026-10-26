@@ -689,7 +689,7 @@ static int test_syscall_table(void) {
     /* every slot the interface fills, and no other */
     uint32_t filled = 0;
     for (uint32_t n = 0; n < SYSCALL_TABLE_SIZE; n++) filled += syscall_table[n] != 0;
-    return filled == SYSCALL_COUNT && syscall_table[SYS_GETPID] && syscall_table[SYS_MEM_OP];
+    return filled == SYSCALL_COUNT && syscall_table[SYS_GETPID] && syscall_table[SYS_VM_MAP];
 }
 
 /* ---- ring 3: scheduler-integrated + preemptible processes (3b/3c) ---- */
@@ -1760,7 +1760,7 @@ static int test_cxfs_volumes(void) {
 }
 
 
-/* ---- memory mappings (SYS_MEM_OP) ----
+/* ---- memory mappings (SYS_VM_*) ----
  * Runs on a SCRATCH pid rather than a live one. ktest_run() is called after
  * the ring-3 test threads have exited and before the executive starts, so no
  * process is being tracked. The scratch pid is a process of its own made for
@@ -1776,11 +1776,12 @@ static int vm_cycle(int pid) {
 
     vm_proc_init(pid, vm_default_quota(), -1);
 
-    struct mem_op_args a;
+    struct vm_map_args a;
+    struct vm_usage u;
     #define RESET_ARGS() do {                                        \
         for (uint32_t _i = 0; _i < sizeof a / 4u; _i++)              \
             ((uint32_t *)&a)[_i] = 0;                                \
-        a.op = MEM_OP_MAP; a.object = MOBJ_ANON;                     \
+        a.object = MOBJ_ANON;                     \
         a.length = 4096; a.prot = MPROT_READ | MPROT_WRITE;          \
     } while (0)
 
@@ -1808,10 +1809,9 @@ static int vm_cycle(int pid) {
     uint32_t second = a.addr;
 
     /* INFO must account for exactly what was handed out. */
-    RESET_ARGS(); a.op = MEM_OP_INFO;
-    if (vm_info(pid, &a) != E_OK)                   goto done;
-    if (a.mapped != PAGE_SIZE + 8192)               goto done;
-    if (a.quota != vm_default_quota())                goto done;
+    if (vm_info(pid, &u) != E_OK)                   goto done;
+    if (u.mapped != PAGE_SIZE + 8192)               goto done;
+    if (u.quota != vm_default_quota())                goto done;
 
     /* Write|Execute is refused. It cannot be ENFORCED on 32-bit non-PAE - there
        is no no-execute bit - so the refusal is the only thing standing between
@@ -1871,40 +1871,35 @@ static int vm_cycle(int pid) {
     if (vm_unmap(pid, hinted, 4096) != E_OK)        goto done;
     if (vm_unmap(pid, declined, 4096) != E_OK)      goto done;
 
-    RESET_ARGS(); a.op = MEM_OP_INFO;
-    if (vm_info(pid, &a) != E_OK)                   goto done;
-    if (a.mapped != 0)                              goto done;
+    if (vm_info(pid, &u) != E_OK)                   goto done;
+    if (u.mapped != 0)                              goto done;
 
     /* The pages that are NOT mmap regions - the image the loader places, the
        stack and argument pages spawn builds - go through vm_charge, and the
        ceiling has to apply to them exactly as it does to a mapping. Before it
-       did, `mapped` reported only what SYS_MEM_OP had asked for, so a process
+       did, `mapped` reported only what SYS_VM_MAP had asked for, so a process
        could hold an image and a stack that the quota never saw. */
     if (vm_charge(pid, PAGE_SIZE) != E_OK)           goto done;
-    RESET_ARGS(); a.op = MEM_OP_INFO;
-    if (vm_info(pid, &a) != E_OK)                    goto done;
-    if (a.mapped != PAGE_SIZE)                       goto done;
+    if (vm_info(pid, &u) != E_OK)                    goto done;
+    if (u.mapped != PAGE_SIZE)                       goto done;
 
     if (vm_charge(pid, 1) != E_OK)                   goto done;   /* rounds up */
-    RESET_ARGS(); a.op = MEM_OP_INFO;
-    if (vm_info(pid, &a) != E_OK)                    goto done;
-    if (a.mapped != 2u * PAGE_SIZE)                  goto done;
+    if (vm_info(pid, &u) != E_OK)                    goto done;
+    if (u.mapped != 2u * PAGE_SIZE)                  goto done;
 
     /* Past the ceiling, and a length whose rounding wraps to something small.
        Both are refused, and a refusal leaves the account untouched. */
     if (vm_charge(pid, vm_quota_of(pid)) != E_NO_MEMORY) goto done;
     if (vm_charge(pid, 0xFFFFFFFFu) != E_OUT_OF_RANGE)      goto done;
-    RESET_ARGS(); a.op = MEM_OP_INFO;
-    if (vm_info(pid, &a) != E_OK)                    goto done;
-    if (a.mapped != 2u * PAGE_SIZE)                  goto done;
+    if (vm_info(pid, &u) != E_OK)                    goto done;
+    if (u.mapped != 2u * PAGE_SIZE)                  goto done;
 
     vm_uncharge(pid, 2u * PAGE_SIZE);
     /* An over-refund clamps at zero instead of wrapping, which would hand the
        process a ceiling far wider than the one it was given. */
     vm_uncharge(pid, 16u * PAGE_SIZE);
-    RESET_ARGS(); a.op = MEM_OP_INFO;
-    if (vm_info(pid, &a) != E_OK)                    goto done;
-    if (a.mapped != 0)                               goto done;
+    if (vm_info(pid, &u) != E_OK)                    goto done;
+    if (u.mapped != 0)                               goto done;
 
     /* Quota attenuation: a child may never be given a wider ceiling than its
        parent holds, which is the same rule grants follow. */
@@ -2164,9 +2159,9 @@ static int test_lifecycle_sequences(void) {
     /* ---- 1. map -> access -> unmap -> access fails ---- */
     vm_proc_init(pid, vm_default_quota(), -1);
 
-    struct mem_op_args a;
+    struct vm_map_args a;
     for (uint32_t i = 0; i < sizeof a / 4u; i++) ((uint32_t *)&a)[i] = 0;
-    a.op = MEM_OP_MAP; a.object = MOBJ_ANON;
+    a.object = MOBJ_ANON;
     a.length = PAGE_SIZE; a.prot = MPROT_READ | MPROT_WRITE;
 
     if (vm_map(pid, &a) != E_OK) { ok = 0; goto done_vm; }
@@ -2187,7 +2182,7 @@ static int test_lifecycle_sequences(void) {
        executable, that is the W^X combination the loader refuses by name.
        Checked at both layers, as above. */
     for (uint32_t i = 0; i < sizeof a / 4u; i++) ((uint32_t *)&a)[i] = 0;
-    a.op = MEM_OP_MAP; a.object = MOBJ_ANON;
+    a.object = MOBJ_ANON;
     a.length = PAGE_SIZE; a.prot = MPROT_READ;
     if (vm_map(pid, &a) != E_OK) { ok = 0; goto done_vm; }
     uint32_t ro = a.addr;
@@ -3271,7 +3266,7 @@ void ktest_run(void) {
     total++; passed += report("disk writes reach only the CXOS disk", test_disk_write_guard());
     total++; passed += report("xHCI scratchpad pages are whole and returned", test_xhci_scratchpad());
     total++; passed += report("PS/2 keyboard and mouse reach the kernel", ktest_platform_input());
-    total++; passed += report("memory mappings (SYS_MEM_OP)",     test_vmregion());
+    total++; passed += report("memory mappings (SYS_VM_*)",     test_vmregion());
     total++; passed += report("lifecycles: unmap, exit, resched", test_lifecycle_sequences());
     total++; passed += report("bounded strings: cap, truncation", test_bounded_strings());
     total++; passed += report("block-device contract",             test_disk_contract());
@@ -3302,6 +3297,7 @@ void ktest_run(void) {
     total++; passed += report("crypto profile: one key shape only", test_crypto_profile());
     total++; passed += report("exec admission (dev / release)",   test_exec_admit());
     total++; passed += report("file syscalls (SYS_FILE_OP)",       usermode_file_test());
+    total++; passed += report("memory syscalls (SYS_VM_*)",        usermode_vm_test());
     total++; passed += report("background output goes to the log", usermode_log_test());
     total++; passed += report("advisory locks follow the open file", usermode_flock_test());
     total++; passed += report("ipc endpoints refcounted + reclaimed", test_ipc_endpoint_lifetime());

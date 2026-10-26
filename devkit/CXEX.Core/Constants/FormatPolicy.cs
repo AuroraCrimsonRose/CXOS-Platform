@@ -74,7 +74,7 @@ public static class FormatPolicy
     private static readonly Dictionary<CXFormat, Support> Table = new()
     {
         [CXFormat.Cxex] = new(Min: 1, Max: 1, Writes: 1),
-        [CXFormat.Abi]  = new(Min: 4, Max: 4, Writes: 4),
+        [CXFormat.Abi]  = new(Min: 5, Max: 5, Writes: 5),
         [CXFormat.Cxbi] = new(Min: 2, Max: 2, Writes: 2),
         [CXFormat.Cxfs] = new(Min: 2, Max: 2, Writes: 2),
         [CXFormat.Xbpt] = new(Min: 2, Max: 2, Writes: 2),

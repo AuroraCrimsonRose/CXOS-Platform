@@ -264,20 +264,23 @@ int syscall_power(uint32_t op, uint32_t ms) {
     return E_INVALID_ARGS;
 }
 
-int syscall_mem_op(uint32_t a) {
-    /* Unprivileged, like the clock and the sleep: a program that could
-       not obtain memory would not be contained, it would be unable to
-       run. What bounds it is the per-process quota inside vm_map, not
-       a grant bit every program would have to hold. */
-    if (!user_ptr_writable(a, sizeof(struct mem_op_args))) return E_BAD_ADDRESS;
-    struct mem_op_args *m = (struct mem_op_args *)user_ptr(a);
-    int pid = thread_current_pid();   /* the quota is the process's */
-    switch (m->op) {
-        case MEM_OP_MAP:   return vm_map(pid, m);
-        case MEM_OP_UNMAP: return vm_unmap(pid, m->addr, m->length);
-        case MEM_OP_INFO:  return vm_info(pid, m);
-        default:           return E_INVALID_ARGS;
-    }
+/* The memory calls are unprivileged, like the clock and the sleep: a program
+   that could not obtain memory would not be contained, it would be unable to
+   run. What bounds them is the per-process quota inside vm_map, not a grant
+   bit every program would have to hold. The quota is the process's, so each
+   passes the caller's pid. */
+int syscall_vm_map(uint32_t a) {
+    if (!user_ptr_writable(a, sizeof(struct vm_map_args))) return E_BAD_ADDRESS;
+    return vm_map(thread_current_pid(), (struct vm_map_args *)user_ptr(a));
+}
+
+int syscall_vm_unmap(uint32_t addr, uint32_t length) {
+    return vm_unmap(thread_current_pid(), addr, length);
+}
+
+int syscall_vm_info(uint32_t u) {
+    if (!user_ptr_writable(u, sizeof(struct vm_usage))) return E_BAD_ADDRESS;
+    return vm_info(thread_current_pid(), (struct vm_usage *)user_ptr(u));
 }
 
 int syscall_ipc_call(uint32_t a)  { return ipc_call(a); }
@@ -852,8 +855,8 @@ int usermode_file_test(void) {
     step++;
     if (syscall_dispatch(SYS_EXEC_PATH,     0xC0001000u, 0, 0, 0, 0) != E_ACCESS_DENIED) goto done;
 
-    /* SYS_MEM_OP is NOT in that list, and that is the audit's one real
-       finding rather than an omission here. It is unprivileged by design -
+    /* The SYS_VM_* calls are NOT in that list, and that is the audit's one real
+       finding rather than an omission here. They are unprivileged by design -
        a program that cannot obtain memory is not contained, it is unable to
        run - and the per-process quota is what bounds it. GRANT_MEM exists,
        sits in GRANT_OS_BASELINE and is accepted by the supervisor's descriptor
@@ -861,21 +864,18 @@ int usermode_file_test(void) {
        though it did. Now marked reserved in caps.h.
 
        Asserted in the positive direction, so that if anyone later gates
-       SYS_MEM_OP they break here and have to revisit the decision rather than
+       one of them they break here and have to revisit the decision rather than
        discovering it through a service that can no longer allocate.
 
        "Not E_ACCESS_DENIED" rather than "E_OK": this runs on a kernel thread, which has
-       no vm_proc record, so vm_info answers E_INVALID_ARGS. The property under test
-       is that it is not refused on CAPABILITY grounds, and E_INVALID_ARGS says
+       no vm_proc record, so each answers E_INVALID_ARGS. The property under test
+       is that none is refused on CAPABILITY grounds, and E_INVALID_ARGS says
        exactly that - the call got past authorisation and failed on its own
        terms. */
     step++;
-    {
-        struct mem_op_args *mo = (struct mem_op_args *)FT_DATA;
-        for (uint32_t i = 0; i < sizeof *mo / 4u; i++) ((uint32_t *)mo)[i] = 0;
-        mo->op = MEM_OP_INFO;
-        if (syscall_dispatch(SYS_MEM_OP, FT_DATA, 0, 0, 0, 0) == E_ACCESS_DENIED) goto done;
-    }
+    if (syscall_dispatch(SYS_VM_MAP,   FT_DATA, 0, 0, 0, 0) == E_ACCESS_DENIED) goto done;
+    if (syscall_dispatch(SYS_VM_UNMAP, 0, 0, 0, 0, 0)       == E_ACCESS_DENIED) goto done;
+    if (syscall_dispatch(SYS_VM_INFO,  FT_DATA, 0, 0, 0, 0) == E_ACCESS_DENIED) goto done;
 
     thread_set_caps(me, GRANT_DISK | GRANT_SPAWN);
 
@@ -944,6 +944,75 @@ done:
     if ((id = cxfs_resolve(ft_join(scratch, "/kt_sys.txt"), 0))         >= 0) cxfs_delete_entry((uint32_t)id);
     thread_set_cwd(me, 0);
     thread_set_caps(me, save);
+    unmap_user_page(TEST_CODE_VIRT, phys);
+    return ok;
+}
+
+/* ---- the memory calls, through the dispatcher ------------------------------
+ * ktest.c's memory tests call vm_map() and its neighbours directly, so they
+ * say nothing about the syscalls in front of them: a SYS_VM_MAP that refused
+ * every pointer booted green. This drives all three through syscall_dispatch
+ * with their arguments in a user page. The test thread's process has no
+ * account of its own, so it is given one for the length of the test.
+ */
+#define VT_ARGS  (TEST_CODE_VIRT + 0x000)
+#define VT_USAGE (TEST_CODE_VIRT + 0x100)
+
+int usermode_vm_test(void) {
+    int pid = thread_current_pid();
+    if (vm_quota_of(pid)) return 0;      /* an account here would be clobbered */
+
+    paddr_t phys = map_user_page(TEST_CODE_VIRT);
+    if (!phys) return 0;
+    vm_proc_init(pid, vm_default_quota(), -1);
+
+    int ok = 0, step = 0;
+    uint32_t addr = 0;
+    struct vm_map_args *a = (struct vm_map_args *)user_ptr(VT_ARGS);
+    struct vm_usage    *u = (struct vm_usage *)user_ptr(VT_USAGE);
+
+    step++;
+    if (vm_quota_of(pid) != vm_default_quota()) goto done;
+
+    for (uint32_t i = 0; i < sizeof *a / 4u; i++) ((uint32_t *)a)[i] = 0;
+    a->object = MOBJ_ANON;
+    a->length = 1;
+    a->prot   = MPROT_READ | MPROT_WRITE;
+    step++;
+    if (syscall_dispatch(SYS_VM_MAP, VT_ARGS, 0, 0, 0, 0) != E_OK) goto done;
+    addr = a->addr;
+    step++;
+    if (!addr || a->granted != PAGE_SIZE) goto done;
+    step++;
+    if (!user_ptr_writable(addr, PAGE_SIZE)) goto done;
+
+    step++;
+    if (syscall_dispatch(SYS_VM_INFO, VT_USAGE, 0, 0, 0, 0) != E_OK) goto done;
+    step++;
+    if (u->mapped != PAGE_SIZE || u->quota != vm_default_quota()) goto done;
+
+    /* addr and length arrive in that order: a length that disagrees with the
+       mapping is refused, and the right one releases it */
+    step++;
+    if (syscall_dispatch(SYS_VM_UNMAP, addr, 2u * PAGE_SIZE, 0, 0, 0) != E_INVALID_ARGS) goto done;
+    step++;
+    if (syscall_dispatch(SYS_VM_UNMAP, addr, PAGE_SIZE, 0, 0, 0) != E_OK) goto done;
+    addr = 0;
+    step++;
+    if (syscall_dispatch(SYS_VM_INFO, VT_USAGE, 0, 0, 0, 0) != E_OK || u->mapped != 0) goto done;
+
+    /* a pointer into the kernel is refused, not written through */
+    step++;
+    if (syscall_dispatch(SYS_VM_MAP,  0xC0001000u, 0, 0, 0, 0) != E_BAD_ADDRESS) goto done;
+    step++;
+    if (syscall_dispatch(SYS_VM_INFO, 0xC0001000u, 0, 0, 0, 0) != E_BAD_ADDRESS) goto done;
+
+    ok = 1;
+
+done:
+    if (!ok) klog_u32("KTEST", SEV_ERR, "memory syscall test failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    if (addr) vm_unmap(pid, addr, 0);
+    vm_proc_reset(pid);
     unmap_user_page(TEST_CODE_VIRT, phys);
     return ok;
 }

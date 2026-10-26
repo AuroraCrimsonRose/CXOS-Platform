@@ -143,7 +143,7 @@ static void undo(uint32_t base, uint32_t done) {
     }
 }
 
-int vm_map(int pid, struct mem_op_args *a) {
+int vm_map(int pid, struct vm_map_args *a) {
     if (!vp(pid) || !vp(pid)->live) return E_INVALID_ARGS;
     struct vm_proc *p = vp(pid);
 
@@ -258,9 +258,9 @@ int vm_unmap(int pid, uint32_t addr, uint32_t length) {
     return E_NOT_FOUND;
 }
 
-int vm_info(int pid, struct mem_op_args *a) {
+int vm_info(int pid, struct vm_usage *u) {
     if (!vp(pid) || !vp(pid)->live) return E_INVALID_ARGS;
-    a->quota  = vp(pid)->quota;
-    a->mapped = vp(pid)->mapped;
+    u->quota  = vp(pid)->quota;
+    u->mapped = vp(pid)->mapped;
     return E_OK;
 }

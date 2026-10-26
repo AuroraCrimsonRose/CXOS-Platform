@@ -94,6 +94,10 @@ void usercopy_note_recovered_fault(void);
 int  usermode_file_test(void);
 int  usermode_flock_test(void);
 
+/* SYS_VM_MAP, SYS_VM_UNMAP and SYS_VM_INFO through the dispatcher, over a
+   real user mapping (see usermode.c). 1 = pass, 0 = fail. */
+int  usermode_vm_test(void);
+
 /* The background console and SYS_LOG_READ (see usermode.c). 1 = pass. */
 int  usermode_log_test(void);
 

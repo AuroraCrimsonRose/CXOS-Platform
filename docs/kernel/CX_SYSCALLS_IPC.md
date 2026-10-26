@@ -13,7 +13,7 @@
 | Area | Today | Problem |
 |---|---|---|
 | Entry | `int 0x80`, a number and two arguments (`syscall_dispatch(num, a1, a2)`) | Slow on x86-64; two arguments force a structure for almost everything |
-| Shape | 22 numbers, four of them multiplexers (`SYS_FILE_OP`, `SYS_NET_OP`, `SYS_FB_OP`, `SYS_MEM_OP`) with an `op` field inside a structure | One number hides 18 file operations, so tracing, recording and filtering see "a file call" and nothing more; each multiplexer re-implements dispatch |
+| Shape | 27 numbers, three of them multiplexers (`SYS_FILE_OP`, `SYS_NET_OP`, `SYS_FB_OP`) with an `op` field inside a structure; memory was split in step 6a2c (§9.5) | One number hides 18 file operations, so tracing, recording and filtering see "a file call" and nothing more; each multiplexer re-implements dispatch |
 | Structures | Raw pointers and `int` inside shared structures | Layout changes with pointer size; every structure changes on x86-64 |
 | Widths | `ticks` in 32-bit milliseconds; file sizes and offsets 32-bit; timestamps 32-bit | Ticks wrap after 49 days; files stop at 4 GB; dates stop in 2106 |
 | Authority | `GRANT_*` bits on the process; handles are small `int`s with no rights | A handle carries no rights of its own; a stale handle number can name a new object |
@@ -330,7 +330,7 @@ The ABI hash of §5 is this hash for the `kernel` library.
 - Supersedes the rule that `cxk_abi.h` and `AbiPrelude.cs` change in one
   commit: both are generated from the same file.
 
-### 9.5 As built (roadmap steps 6a1, 6a2a, 6a2b)
+### 9.5 As built (roadmap steps 6a1, 6a2a, 6a2b, 6a2c)
 
 The `kernel` domain is generated; the other domains, and `interface` blocks
 with their messages, are settled when IPC v3 needs them (Phase 1). The source
@@ -389,6 +389,18 @@ syscall SYS_POWER = 0x71 (op: u32, ms: u32) -> i32   /// no plain wrapper
   programs' bytes.
 - Every refusal names its line. Nothing is skipped: a generator that dropped
   what it could not read would drop ABI surface.
+
+Step 6a2c retires the multiplexers a family at a time, each family an ABI
+version of its own. A call keeps its argument structure only where its
+arguments do not fit in registers; the `op` field and the outputs of other
+operations leave it.
+
+- **Memory** (`CXK_ABI_VERSION` 5): `SYS_MEM_OP` becomes `SYS_VM_MAP`
+  (0x80, `*vm_map_args`: object, 64-bit offset, length, hint, protection and
+  flags in, `addr` and `granted` out), `SYS_VM_UNMAP` (0x81, `addr, length`)
+  and `SYS_VM_INFO` (0x82, `*vm_usage`). The object and offset stay until
+  memory objects replace them, so an unknown object or a non-zero offset is
+  still refused.
 
 When the `.xfil` replaced the hand-written header, the header it generated
 matched the old one in every constant, structure and field type, and every

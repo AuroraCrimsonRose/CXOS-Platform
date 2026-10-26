@@ -11,7 +11,7 @@
 // os/xc/cxk and uses the ordinary prelude and std/file.xfxn.
 //
 // What it provides is small on purpose - read a file, write to stdout and
-// stderr, exit - plus the one thing std/heap.xfxn needs from below: mem_op,
+// stderr, exit - plus the one thing std/heap.xfxn needs from below: vm_map,
 // with the prelude's argument struct and constants, so the REAL allocator and
 // std/buf.xfxn run here unchanged. Memory comes from brk, and like a CXK
 // mapping it arrives zeroed.
@@ -33,23 +33,17 @@ const LINUX_EISDIR: i32 = -21;
 
 // ---- what std/heap.xfxn expects of the prelude ----
 const E_OK:    i32 = 0;
-const E_INVALID_ARGS: i32 = -3;
 const E_NO_MEMORY: i32 = -8;
-const MEM_OP_MAP:   u32 = 0;
-const MEM_OP_UNMAP: u32 = 1;
-const MEM_OP_INFO:  u32 = 2;
 const MPROT_READ:  u32 = 0x01;
 const MPROT_WRITE: u32 = 0x02;
 const MOBJ_ANON: u32 = 0;
-struct mem_op_args { op: u32, object: u32, offset_lo: u32, offset_hi: u32, length: u32, addr: u32, granted: u32, prot: u32, flags: u32, quota: u32, mapped: u32 }
+struct vm_map_args { object: u32, offset_lo: u32, offset_hi: u32, length: u32, addr: u32, granted: u32, prot: u32, flags: u32 }
 
 global host_mapped: u32 = 0;
 
-// Only MAP and INFO: the heap never unmaps. Pages come off the end of the data
-// segment, so every grant follows the one before.
-fn mem_op(a: *mem_op_args) -> i32 {
-    if (a.op == MEM_OP_INFO) { a.quota = 0x40000000; a.mapped = host_mapped; return E_OK; }
-    if (a.op != MEM_OP_MAP) { return E_INVALID_ARGS; }
+// No unmap: the heap never unmaps. Pages come off the end of the data segment,
+// so every grant follows the one before.
+fn vm_map(a: *vm_map_args) -> i32 {
     let len: u32 = (a.length + 4095) & 0xFFFFF000;
     let cur: u32 = __syscall(LINUX_BRK, 0, 0, 0, 0, 0) as u32;
     let want: u32 = cur + len;

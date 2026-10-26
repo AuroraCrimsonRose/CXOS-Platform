@@ -82,7 +82,7 @@ public static class AbiPrelude
 // up to 2 GB. An open handle lives in the process handle table, so
 // handle_close() releases one just as file_close() does.
 
-// ---- memory (SYS_MEM_OP; unprivileged, bounded by a per-process quota) ----
+// ---- memory (SYS_VM_MAP, SYS_VM_UNMAP, SYS_VM_INFO; unprivileged, bounded by a per-process quota) ----
 // The only way to get memory beyond your image and stack. Not behind a grant:
 // a capability every program must hold is noise, and a process that cannot
 // allocate is broken rather than contained. A per-process byte quota bounds it
@@ -148,36 +148,30 @@ fn input_poll() -> i32 { return __syscall(SYS_INPUT_READ, 1, 0, 0, 0, 0); }   //
 // The mapping is zero-filled - a frame off the free list may hold another
 // process's memory, so the kernel clears it before you ever see it.
 fn mem_map(len: u32) -> u32 {
-    let a: mem_op_args;
-    a.op = MEM_OP_MAP; a.object = MOBJ_ANON;
+    let a: vm_map_args;
+    a.object = MOBJ_ANON;
     a.offset_lo = 0; a.offset_hi = 0;
     a.length = len; a.addr = 0; a.granted = 0;
     a.prot = MPROT_READ | MPROT_WRITE; a.flags = 0;
-    if (mem_op(&a) != E_OK) { return 0; }
+    if (vm_map(&a) != E_OK) { return 0; }
     return a.addr;
 }
 
 // Release a whole mapping, by the address mem_map returned. Whole or not at
 // all: a partial release would have to split the region in two, which could
 // fail for want of a slot while trying to give memory BACK.
-fn mem_unmap(addr: u32, len: u32) -> i32 {
-    let a: mem_op_args;
-    a.op = MEM_OP_UNMAP; a.addr = addr; a.length = len;
-    return mem_op(&a);
-}
+fn mem_unmap(addr: u32, len: u32) -> i32 { return vm_unmap(addr, len); }
 
 // How many bytes this process may hold at once, and how many it holds now.
 fn mem_quota() -> u32 {
-    let a: mem_op_args;
-    a.op = MEM_OP_INFO;
-    if (mem_op(&a) != E_OK) { return 0; }
-    return a.quota;
+    let u: vm_usage;
+    if (vm_info(&u) != E_OK) { return 0; }
+    return u.quota;
 }
 fn mem_used() -> u32 {
-    let a: mem_op_args;
-    a.op = MEM_OP_INFO;
-    if (mem_op(&a) != E_OK) { return 0; }
-    return a.mapped;
+    let u: vm_usage;
+    if (vm_info(&u) != E_OK) { return 0; }
+    return u.mapped;
 }
 
 fn reboot() -> void   { __syscall(SYS_POWER, POWER_REBOOT, 0, 0, 0, 0); }              // does not return

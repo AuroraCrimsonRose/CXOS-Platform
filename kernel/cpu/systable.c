@@ -31,7 +31,9 @@ static int decode_file_op(const uint32_t *a) { return syscall_file_op(a[0]); }
 static int decode_spawn(const uint32_t *a) { return syscall_spawn(a[0]); }
 static int decode_exec_path(const uint32_t *a) { return syscall_exec_path(a[0], a[1]); }
 static int decode_power(const uint32_t *a) { return syscall_power(a[0], a[1]); }
-static int decode_mem_op(const uint32_t *a) { return syscall_mem_op(a[0]); }
+static int decode_vm_map(const uint32_t *a) { return syscall_vm_map(a[0]); }
+static int decode_vm_unmap(const uint32_t *a) { return syscall_vm_unmap(a[0], a[1]); }
+static int decode_vm_info(const uint32_t *a) { return syscall_vm_info(a[0]); }
 
 const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_EXIT] = decode_exit,
@@ -58,5 +60,7 @@ const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_SPAWN] = decode_spawn,
     [SYS_POWER] = decode_power,
     [SYS_EXEC_PATH] = decode_exec_path,
-    [SYS_MEM_OP] = decode_mem_op,
+    [SYS_VM_MAP] = decode_vm_map,
+    [SYS_VM_UNMAP] = decode_vm_unmap,
+    [SYS_VM_INFO] = decode_vm_info,
 };

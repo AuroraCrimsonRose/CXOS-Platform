@@ -37,14 +37,16 @@ int syscall_file_op(uint32_t a);                /* SYS_FILE_OP */
 int syscall_spawn(uint32_t a);                  /* SYS_SPAWN */
 int syscall_exec_path(uint32_t path, uint32_t a); /* SYS_EXEC_PATH */
 int syscall_power(uint32_t op, uint32_t ms);    /* SYS_POWER */
-int syscall_mem_op(uint32_t a);                 /* SYS_MEM_OP */
+int syscall_vm_map(uint32_t a);                 /* SYS_VM_MAP */
+int syscall_vm_unmap(uint32_t addr, uint32_t length); /* SYS_VM_UNMAP */
+int syscall_vm_info(uint32_t u);                /* SYS_VM_INFO */
 
 /* Registers a syscall carries after its number, and the table's slots: one per
  * number up to the largest. syscall_dispatch refuses a number past the end
  * before looking it up, and one that lands in a hole finds no decoder. */
 #define SYSCALL_ARGS            5
-#define SYSCALL_TABLE_SIZE      129
-#define SYSCALL_COUNT           25
+#define SYSCALL_TABLE_SIZE      131
+#define SYSCALL_COUNT           27
 
 /* A decoder takes the raw argument registers, gives each its declared type,
  * and calls the handler; a handler that returns nothing answers 0. */
