@@ -9,7 +9,7 @@
 
 ## 1. Inherited
 
-- **The kernel draws.** `FB_OP_*` syscalls fill rectangles, draw lines and draw
+- **The kernel draws.** The `SYS_FB_*` syscalls fill rectangles, draw lines and draw
   text in the kernel, straight onto the screen; no back buffer
   (`kernel/drivers/video/fb.c`).
 - **The resolution is fixed at boot** by the firmware (VBE or GOP).

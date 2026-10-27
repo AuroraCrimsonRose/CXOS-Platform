@@ -42,7 +42,7 @@
      GRANT_POWER        power (reboot/shutdown)
      GRANT_ENDPOINT     ep_create (may own an IPC endpoint -> broker)
      GRANT_IOPORT       (reserved v1) raw port I/O / driver tier
-     GRANT_FRAMEBUFFER  SYS_FB_OP: draw to the framebuffer (in baseline for
+     GRANT_FRAMEBUFFER  SYS_FB_*: draw to the framebuffer (in baseline for
                         now; split to a display-server tier later)
      GRANT_OS_BASELINE  a broker executive's baseline authority
 

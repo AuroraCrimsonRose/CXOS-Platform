@@ -34,7 +34,7 @@
  * line; bump both, and the DevKit's stamp, in the one commit that changes the
  * contract.
  */
-#define CXK_ABI_VERSION          6
+#define CXK_ABI_VERSION          7
 
 /*
  * ---- syscall numbers ----
@@ -93,8 +93,34 @@
 /* network 0x50-0x5F (privileged: GRANT_NET) */
 #define SYS_NET_OP               0x50           /* ebx = *net_op_args (GRANT_NET) -> op-specific */
 
-/* framebuffer 0x40-0x4F (privileged: GRANT_FRAMEBUFFER) */
-#define SYS_FB_OP                0x40           /* ebx = *fb_op_args (GRANT_FRAMEBUFFER) -> op-specific */
+/*
+ * framebuffer 0x40-0x4F (privileged: GRANT_FRAMEBUFFER). Colours are 0x00RRGGBB;
+ * the kernel converts them to the active mode. Each answers E_NOT_FOUND when
+ * there is no framebuffer (VGA text mode).
+ */
+#define SYS_FB_INFO              0x40           /* ebx = *fb_geometry -> 0, filled in */
+#define SYS_FB_CLEAR             0x41
+#define SYS_FB_FILL_RECT         0x42
+#define SYS_FB_PUT_PIXEL         0x43
+#define SYS_FB_DRAW_LINE         0x44
+
+/* text NUL-terminated, at most 4096 drawn -> characters drawn */
+#define SYS_FB_DRAW_TEXT         0x45
+
+/*
+ * Install a console font by NAME, from /System/Fonts/<name>.xfnt.
+ *
+ * A name, not a path, on purpose. The kernel composes the path and reads
+ * the file itself, so there is no user buffer holding the font between
+ * being validated and being installed - the same reason SYS_EXEC_PATH
+ * reads the image rather than taking the caller's copy - and a capability
+ * to draw on the screen does not become a capability to make the kernel
+ * read an arbitrary path. Names carrying '/' or '.' are refused.
+ *
+ * The font is validated as an XFNT before anything is installed; a bad one
+ * leaves the current font working. Returns 0, or E_INVALID_ARGS / E_NOT_FOUND.
+ */
+#define SYS_FB_SET_FONT          0x46
 
 /* files 0x60-0x6F (privileged: GRANT_DISK) */
 #define SYS_FILE_OP              0x60           /* ebx = *file_op_args (GRANT_DISK) -> op-specific */
@@ -297,40 +323,12 @@ struct ipc_reply_args {
     uint32_t len;
 };
 
-/* ---- framebuffer ops (SYS_FB_OP; GRANT_FRAMEBUFFER) ---- */
-enum { /* fb_op */
-    FB_OP_INFO = 0,                             /* -> out[0..3] = width,height,bpp,pitch */
-    FB_OP_CLEAR = 1,                            /* color */
-    FB_OP_FILL_RECT = 2,                        /* x,y,w,h,color */
-    FB_OP_PUT_PIXEL = 3,                        /* x,y,color */
-    FB_OP_DRAW_LINE = 4,                        /* x,y=(x0,y0) w,h=(x1,y1) color */
-    FB_OP_DRAW_TEXT = 5,                        /* x,y,color(fg),color2(bg),text */
-    /*
-     * Install a console font by NAME, from /System/Fonts/<text>.xfnt.
-     *
-     * A name, not a path, on purpose. The kernel composes the path and reads
-     * the file itself, so there is no user buffer holding the font between
-     * being validated and being installed - the same reason SYS_EXEC_PATH
-     * reads the image rather than taking the caller's copy - and a capability
-     * to draw on the screen does not become a capability to make the kernel
-     * read an arbitrary path. Names carrying '/' or '.' are refused.
-     *
-     * The font is validated as an XFNT before anything is installed; a bad one
-     * leaves the current font working. Returns 0, or E_INVALID_ARGS / E_NOT_FOUND.
-     */
-    FB_OP_SET_FONT = 6,                         /* text = font name, no path, no extension */
-};
-
-struct fb_op_args {
-    uint32_t op;
-    uint32_t x;
-    uint32_t y;
-    uint32_t w;
-    uint32_t h;
-    uint32_t color;                             /* 0x00RRGGBB (fg for text) */
-    uint32_t color2;                            /* bg for DRAW_TEXT */
-    uint32_t text;                              /* DRAW_TEXT: NUL-terminated */
-    uint32_t out;                               /* INFO: caller buffer >= 4 u32 */
+/* ---- framebuffer (SYS_FB_INFO) ---- */
+struct fb_geometry {
+    uint32_t width;
+    uint32_t height;
+    uint32_t bpp;                               /* 16 or 32 */
+    uint32_t pitch;                             /* bytes per scanline */
 };
 
 /*
@@ -689,7 +687,7 @@ CXK_ABI_STATIC_ASSERT(sizeof(struct object_basic) == 20, "ABI layout: object_bas
 CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_call_args) == 20, "ABI layout: ipc_call_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_recv_args) == 16, "ABI layout: ipc_recv_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_reply_args) == 12, "ABI layout: ipc_reply_args");
-CXK_ABI_STATIC_ASSERT(sizeof(struct fb_op_args) == 36, "ABI layout: fb_op_args");
+CXK_ABI_STATIC_ASSERT(sizeof(struct fb_geometry) == 16, "ABI layout: fb_geometry");
 CXK_ABI_STATIC_ASSERT(sizeof(struct net_op_args) == 20, "ABI layout: net_op_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct vm_map_args) == 32, "ABI layout: vm_map_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct vm_usage) == 8, "ABI layout: vm_usage");

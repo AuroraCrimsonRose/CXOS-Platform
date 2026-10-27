@@ -38,7 +38,7 @@ domain kernel
 /// mismatch. Declared in versions.json as `cxex-abi` and checked against this
 /// line; bump both, and the DevKit's stamp, in the one commit that changes the
 /// contract.
-const CXK_ABI_VERSION: u32 = 6
+const CXK_ABI_VERSION: u32 = 7
 
 /// ---- syscall numbers ----
 /// lifecycle 0x00-0x0F (no capability required)
@@ -83,8 +83,28 @@ syscall SYS_CONSOLE_WRITE = 0x30 fn console_write(buf: *u8, len: u32) -> i32   /
 syscall SYS_LOG_READ = 0x31 fn log_read(i: u32, e: *log_entry) -> i32
 /// network 0x50-0x5F (privileged: GRANT_NET)
 syscall SYS_NET_OP = 0x50 fn net_op(a: *net_op_args) -> i32     /// ebx = *net_op_args (GRANT_NET) -> op-specific
-/// framebuffer 0x40-0x4F (privileged: GRANT_FRAMEBUFFER)
-syscall SYS_FB_OP = 0x40 fn fb_op(a: *fb_op_args) -> i32        /// ebx = *fb_op_args (GRANT_FRAMEBUFFER) -> op-specific
+/// framebuffer 0x40-0x4F (privileged: GRANT_FRAMEBUFFER). Colours are 0x00RRGGBB;
+/// the kernel converts them to the active mode. Each answers E_NOT_FOUND when
+/// there is no framebuffer (VGA text mode).
+syscall SYS_FB_INFO = 0x40 fn fb_info(g: *fb_geometry) -> i32   /// ebx = *fb_geometry -> 0, filled in
+syscall SYS_FB_CLEAR = 0x41 fn fb_clear(color: u32) -> i32
+syscall SYS_FB_FILL_RECT = 0x42 fn fb_fill_rect(x: u32, y: u32, w: u32, h: u32, color: u32) -> i32
+syscall SYS_FB_PUT_PIXEL = 0x43 fn fb_put_pixel(x: u32, y: u32, color: u32) -> i32
+syscall SYS_FB_DRAW_LINE = 0x44 fn fb_draw_line(x0: u32, y0: u32, x1: u32, y1: u32, color: u32) -> i32
+/// text NUL-terminated, at most 4096 drawn -> characters drawn
+syscall SYS_FB_DRAW_TEXT = 0x45 fn fb_draw_text(x: u32, y: u32, text: *u8, fg: u32, bg: u32) -> i32
+/// Install a console font by NAME, from /System/Fonts/<name>.xfnt.
+///
+/// A name, not a path, on purpose. The kernel composes the path and reads
+/// the file itself, so there is no user buffer holding the font between
+/// being validated and being installed - the same reason SYS_EXEC_PATH
+/// reads the image rather than taking the caller's copy - and a capability
+/// to draw on the screen does not become a capability to make the kernel
+/// read an arbitrary path. Names carrying '/' or '.' are refused.
+///
+/// The font is validated as an XFNT before anything is installed; a bad one
+/// leaves the current font working. Returns 0, or E_INVALID_ARGS / E_NOT_FOUND.
+syscall SYS_FB_SET_FONT = 0x46 fn fb_set_font(name: *u8) -> i32
 /// files 0x60-0x6F (privileged: GRANT_DISK)
 syscall SYS_FILE_OP = 0x60 fn file_op(a: *file_op_args) -> i32  /// ebx = *file_op_args (GRANT_DISK) -> op-specific
 /// process 0x70-0x7F (privileged)
@@ -260,37 +280,12 @@ struct ipc_reply_args {
     len: u32
 }
 
-/// ---- framebuffer ops (SYS_FB_OP; GRANT_FRAMEBUFFER) ----
-enum fb_op {
-    FB_OP_INFO = 0          /// -> out[0..3] = width,height,bpp,pitch
-    FB_OP_CLEAR = 1         /// color
-    FB_OP_FILL_RECT = 2     /// x,y,w,h,color
-    FB_OP_PUT_PIXEL = 3     /// x,y,color
-    FB_OP_DRAW_LINE = 4     /// x,y=(x0,y0) w,h=(x1,y1) color
-    FB_OP_DRAW_TEXT = 5     /// x,y,color(fg),color2(bg),text
-    /// Install a console font by NAME, from /System/Fonts/<text>.xfnt.
-    ///
-    /// A name, not a path, on purpose. The kernel composes the path and reads
-    /// the file itself, so there is no user buffer holding the font between
-    /// being validated and being installed - the same reason SYS_EXEC_PATH
-    /// reads the image rather than taking the caller's copy - and a capability
-    /// to draw on the screen does not become a capability to make the kernel
-    /// read an arbitrary path. Names carrying '/' or '.' are refused.
-    ///
-    /// The font is validated as an XFNT before anything is installed; a bad one
-    /// leaves the current font working. Returns 0, or E_INVALID_ARGS / E_NOT_FOUND.
-    FB_OP_SET_FONT = 6      /// text = font name, no path, no extension
-}
-struct fb_op_args {
-    op: u32
-    x: u32
-    y: u32
-    w: u32
-    h: u32
-    color: u32      /// 0x00RRGGBB (fg for text)
-    color2: u32     /// bg for DRAW_TEXT
-    text: u32       /// DRAW_TEXT: NUL-terminated
-    out: u32        /// INFO: caller buffer >= 4 u32
+/// ---- framebuffer (SYS_FB_INFO) ----
+struct fb_geometry {
+    width: u32
+    height: u32
+    bpp: u32        /// 16 or 32
+    pitch: u32      /// bytes per scanline
 }
 
 /// ---- capabilities (for spawn_args.caps) ----

@@ -307,7 +307,7 @@ fn file_err(what: *u8, rc: i32) -> i32 {
 //
 // Listing is plain directory reading - the kernel has no syscall for it and
 // does not need one, because the shell can already read a directory. Selecting
-// goes through SYS_FB_OP, which takes a NAME and composes the path itself.
+// goes through SYS_FB_SET_FONT, which takes a NAME and composes the path itself.
 //
 // The ".xfnt" is trimmed when listing so that what is printed is what you type.
 // The kernel refuses a name containing '.', deliberately, so "console_16.xfnt"

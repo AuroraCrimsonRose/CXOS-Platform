@@ -218,12 +218,46 @@ int syscall_file_op(uint32_t a) {
     return sys_file_op(a);
 }
 
-int syscall_fb_op(uint32_t a) {
-    if (!(thread_current_caps() & GRANT_FRAMEBUFFER)) {
-        klog_u32("GRANT", SEV_WARN, "fb_op DENIED for pid ", (uint32_t)thread_current_pid(), LOG_COLOR_VALUE, " (no GRANT_FRAMEBUFFER)");
-        return E_ACCESS_DENIED;
-    }
-    return sys_fb_op(a);
+/* The seven framebuffer calls share one gate, as the power calls do. */
+static int fb_granted(void) {
+    if (thread_current_caps() & GRANT_FRAMEBUFFER) return 1;
+    klog_u32("GRANT", SEV_WARN, "framebuffer DENIED for pid ", (uint32_t)thread_current_pid(), LOG_COLOR_VALUE, " (no GRANT_FRAMEBUFFER)");
+    return 0;
+}
+
+int syscall_fb_info(uint32_t g) {
+    if (!fb_granted()) return E_ACCESS_DENIED;
+    return sys_fb_info(g);
+}
+
+int syscall_fb_clear(uint32_t color) {
+    if (!fb_granted()) return E_ACCESS_DENIED;
+    return sys_fb_clear(color);
+}
+
+int syscall_fb_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color) {
+    if (!fb_granted()) return E_ACCESS_DENIED;
+    return sys_fb_fill_rect(x, y, w, h, color);
+}
+
+int syscall_fb_put_pixel(uint32_t x, uint32_t y, uint32_t color) {
+    if (!fb_granted()) return E_ACCESS_DENIED;
+    return sys_fb_put_pixel(x, y, color);
+}
+
+int syscall_fb_draw_line(uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1, uint32_t color) {
+    if (!fb_granted()) return E_ACCESS_DENIED;
+    return sys_fb_draw_line(x0, y0, x1, y1, color);
+}
+
+int syscall_fb_draw_text(uint32_t x, uint32_t y, uint32_t text, uint32_t fg, uint32_t bg) {
+    if (!fb_granted()) return E_ACCESS_DENIED;
+    return sys_fb_draw_text(x, y, text, fg, bg);
+}
+
+int syscall_fb_set_font(uint32_t name) {
+    if (!fb_granted()) return E_ACCESS_DENIED;
+    return sys_fb_set_font(name);
 }
 
 /* unprivileged: reading your own keyboard input */
@@ -859,7 +893,19 @@ int usermode_file_test(void) {
     step++;
     if (syscall_dispatch(SYS_FILE_OP,       0xC0001000u, 0, 0, 0, 0) != E_ACCESS_DENIED) goto done;
     step++;
-    if (syscall_dispatch(SYS_FB_OP,         0xC0001000u, 0, 0, 0, 0) != E_ACCESS_DENIED) goto done;
+    if (syscall_dispatch(SYS_FB_INFO,       0xC0001000u, 0, 0, 0, 0) != E_ACCESS_DENIED) goto done;
+    step++;
+    if (syscall_dispatch(SYS_FB_CLEAR,      0, 0, 0, 0, 0)           != E_ACCESS_DENIED) goto done;
+    step++;
+    if (syscall_dispatch(SYS_FB_FILL_RECT,  0, 0, 1, 1, 0)           != E_ACCESS_DENIED) goto done;
+    step++;
+    if (syscall_dispatch(SYS_FB_PUT_PIXEL,  0, 0, 0, 0, 0)           != E_ACCESS_DENIED) goto done;
+    step++;
+    if (syscall_dispatch(SYS_FB_DRAW_LINE,  0, 0, 1, 0, 0)           != E_ACCESS_DENIED) goto done;
+    step++;
+    if (syscall_dispatch(SYS_FB_DRAW_TEXT,  0, 0, 0xC0001000u, 0, 0) != E_ACCESS_DENIED) goto done;
+    step++;
+    if (syscall_dispatch(SYS_FB_SET_FONT,   0xC0001000u, 0, 0, 0, 0) != E_ACCESS_DENIED) goto done;
     step++;
     if (syscall_dispatch(SYS_NET_OP,        0xC0001000u, 0, 0, 0, 0) != E_ACCESS_DENIED) goto done;
     step++;
@@ -1085,6 +1131,133 @@ int usermode_power_input_test(void) {
 done:
     if (!ok) klog_u32("KTEST", SEV_ERR, "power and input syscall test failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
     thread_set_caps(me, save);
+    return ok;
+}
+
+/* ---- the framebuffer calls, through the dispatcher -------------------------
+ * Each call gets arguments that tell their order apart (x != y, w != h, a
+ * colour whose three channels differ), and what it drew is read back from the
+ * screen. The drawing lands in the bottom-right corner, saved first and put
+ * back after. SYS_FB_CLEAR's success path is not taken: it would wipe the boot
+ * log off the screen. Its gate is in the authorisation matrix with the other
+ * six, and SYS_FB_SET_FONT's name rules are the console font test's. With no
+ * framebuffer every call answers E_NOT_FOUND, and that is asserted instead.
+ */
+#define FBT_W    64
+#define FBT_H    32
+#define FBT_GEOM (TEST_CODE_VIRT + 0x000)
+#define FBT_TEXT (TEST_CODE_VIRT + 0x100)
+#define FBT_NAME (TEST_CODE_VIRT + 0x200)
+
+static uint32_t fbt_saved[FBT_H][FBT_W];
+
+int usermode_fb_test(void) {
+    int me = thread_current_id();
+    uint32_t save = thread_current_caps();
+    paddr_t phys = map_user_page(TEST_CODE_VIRT);
+    if (!phys) return 0;
+
+    int ok = 0, step = 0, saved = 0;
+    uint32_t x0 = 0, y0 = 0;
+    char *text = (char *)user_ptr(FBT_TEXT);
+    char *name = (char *)user_ptr(FBT_NAME);
+    text[0] = 'a'; text[1] = 'b'; text[2] = 'c'; text[3] = '\0';
+    name[0] = 'a'; name[1] = '/'; name[2] = 'b'; name[3] = '\0';
+    thread_set_caps(me, GRANT_FRAMEBUFFER);
+
+    if (!fb_active()) {
+        step++;
+        if (syscall_dispatch(SYS_FB_INFO, FBT_GEOM, 0, 0, 0, 0) != E_NOT_FOUND) goto done;
+        step++;
+        if (syscall_dispatch(SYS_FB_PUT_PIXEL, 0, 0, 0, 0, 0) != E_NOT_FOUND) goto done;
+        step++;
+        if (syscall_dispatch(SYS_FB_DRAW_TEXT, 0, 0, FBT_TEXT, 0, 0) != E_NOT_FOUND) goto done;
+        ok = 1;
+        goto done;
+    }
+
+    /* geometry, into a user structure; a kernel address is refused */
+    struct fb_geometry *g = (struct fb_geometry *)user_ptr(FBT_GEOM);
+    step++;
+    if (syscall_dispatch(SYS_FB_INFO, FBT_GEOM, 0, 0, 0, 0) != E_OK) goto done;
+    step++;
+    if (g->width != fb_width() || g->height != fb_height() ||
+        g->bpp != fb_bpp() || g->pitch != fb_pitch()) goto done;
+    step++;
+    if (syscall_dispatch(SYS_FB_INFO, 0xC0001000u, 0, 0, 0, 0) != E_BAD_ADDRESS) goto done;
+
+    step++;
+    if (fb_width() < FBT_W || fb_height() < FBT_H) goto done;
+    x0 = fb_width() - FBT_W;
+    y0 = fb_height() - FBT_H;
+    for (uint32_t y = 0; y < FBT_H; y++)
+        for (uint32_t x = 0; x < FBT_W; x++) fbt_saved[y][x] = fb_get_pixel(x0 + x, y0 + y);
+    saved = 1;
+
+    const uint32_t fg = 0x00C08040u, bg = 0x00204060u;
+    const uint32_t pfg = fb_rgb(0xC0, 0x80, 0x40), pbg = fb_rgb(0x20, 0x40, 0x60);
+
+    /* text: three cells of fg ink on bg, the glyph's ink the smaller part (so
+       fg and bg are not swapped), nothing past the third cell, and the count
+       of characters back. A kernel pointer is refused. */
+    uint32_t cw = fb_font_width(), ch = fb_font_height();
+    step++;
+    if (3 * cw >= FBT_W || ch > FBT_H) goto done;
+    fb_fill_rect(x0, y0, FBT_W, FBT_H, 0);
+    step++;
+    if (syscall_dispatch(SYS_FB_DRAW_TEXT, x0, y0, FBT_TEXT, fg, bg) != 3) goto done;
+    uint32_t nfg = 0, nbg = 0;
+    for (uint32_t y = 0; y < ch; y++) {
+        for (uint32_t x = 0; x < 3 * cw; x++) {
+            uint32_t p = fb_get_pixel(x0 + x, y0 + y);
+            if (p == pfg) nfg++;
+            else if (p == pbg) nbg++;
+        }
+    }
+    step++;
+    if (nfg + nbg != 3 * cw * ch || nfg == 0 || nfg >= nbg) goto done;
+    step++;
+    if (fb_get_pixel(x0 + 3 * cw, y0) != 0) goto done;
+    step++;
+    if (syscall_dispatch(SYS_FB_DRAW_TEXT, x0, y0, 0xC0001000u, fg, bg) != E_BAD_ADDRESS) goto done;
+
+    fb_fill_rect(x0, y0, FBT_W, FBT_H, 0);
+
+    /* a pixel at (3, 1), and none at (1, 3) */
+    step++;
+    if (syscall_dispatch(SYS_FB_PUT_PIXEL, x0 + 3, y0 + 1, fg, 0, 0) != E_OK) goto done;
+    step++;
+    if (fb_get_pixel(x0 + 3, y0 + 1) != pfg || fb_get_pixel(x0 + 1, y0 + 3) != 0) goto done;
+
+    /* a rectangle 4 wide and 2 high at (8, 2): its far corner in, one past
+       each edge out */
+    step++;
+    if (syscall_dispatch(SYS_FB_FILL_RECT, x0 + 8, y0 + 2, 4, 2, fg) != E_OK) goto done;
+    step++;
+    if (fb_get_pixel(x0 + 8, y0 + 2) != pfg || fb_get_pixel(x0 + 11, y0 + 3) != pfg) goto done;
+    step++;
+    if (fb_get_pixel(x0 + 12, y0 + 2) != 0 || fb_get_pixel(x0 + 8, y0 + 4) != 0) goto done;
+
+    /* a line from (16, 1) to (20, 1): both ends drawn, not the column down */
+    step++;
+    if (syscall_dispatch(SYS_FB_DRAW_LINE, x0 + 16, y0 + 1, x0 + 20, y0 + 1, fg) != E_OK) goto done;
+    step++;
+    if (fb_get_pixel(x0 + 16, y0 + 1) != pfg || fb_get_pixel(x0 + 20, y0 + 1) != pfg) goto done;
+    step++;
+    if (fb_get_pixel(x0 + 16, y0 + 5) != 0) goto done;
+
+    /* the font name reaches the name rules (which refuse this one) */
+    step++;
+    if (syscall_dispatch(SYS_FB_SET_FONT, FBT_NAME, 0, 0, 0, 0) != E_INVALID_ARGS) goto done;
+    ok = 1;
+
+done:
+    if (!ok) klog_u32("KTEST", SEV_ERR, "framebuffer syscall test failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    if (saved)
+        for (uint32_t y = 0; y < FBT_H; y++)
+            for (uint32_t x = 0; x < FBT_W; x++) fb_put_pixel(x0 + x, y0 + y, fbt_saved[y][x]);
+    thread_set_caps(me, save);
+    unmap_user_page(TEST_CODE_VIRT, phys);
     return ok;
 }
 

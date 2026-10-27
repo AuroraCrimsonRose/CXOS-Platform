@@ -33,7 +33,13 @@ int syscall_input_poll(void);                   /* SYS_INPUT_POLL */
 int syscall_console_write(uint32_t buf, uint32_t len); /* SYS_CONSOLE_WRITE */
 int syscall_log_read(uint32_t i, uint32_t e);   /* SYS_LOG_READ */
 int syscall_net_op(uint32_t a);                 /* SYS_NET_OP */
-int syscall_fb_op(uint32_t a);                  /* SYS_FB_OP */
+int syscall_fb_info(uint32_t g);                /* SYS_FB_INFO */
+int syscall_fb_clear(uint32_t color);           /* SYS_FB_CLEAR */
+int syscall_fb_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color); /* SYS_FB_FILL_RECT */
+int syscall_fb_put_pixel(uint32_t x, uint32_t y, uint32_t color); /* SYS_FB_PUT_PIXEL */
+int syscall_fb_draw_line(uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1, uint32_t color); /* SYS_FB_DRAW_LINE */
+int syscall_fb_draw_text(uint32_t x, uint32_t y, uint32_t text, uint32_t fg, uint32_t bg); /* SYS_FB_DRAW_TEXT */
+int syscall_fb_set_font(uint32_t name);         /* SYS_FB_SET_FONT */
 int syscall_file_op(uint32_t a);                /* SYS_FILE_OP */
 int syscall_spawn(uint32_t a);                  /* SYS_SPAWN */
 int syscall_exec_path(uint32_t path, uint32_t a); /* SYS_EXEC_PATH */
@@ -49,7 +55,7 @@ int syscall_power_sleep(uint32_t ms);           /* SYS_POWER_SLEEP */
  * before looking it up, and one that lands in a hole finds no decoder. */
 #define SYSCALL_ARGS            5
 #define SYSCALL_TABLE_SIZE      147
-#define SYSCALL_COUNT           30
+#define SYSCALL_COUNT           36
 
 /* A decoder takes the raw argument registers, gives each its declared type,
  * and calls the handler; a handler that returns nothing answers 0. */

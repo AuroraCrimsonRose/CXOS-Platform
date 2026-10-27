@@ -5,7 +5,7 @@
 //
 //   import "gfx.xfxn";
 //
-// A thin, typed wrapper over SYS_FB_OP. Every call needs GRANT_FRAMEBUFFER, which
+// A thin, typed wrapper over the SYS_FB_* calls. Every call needs GRANT_FRAMEBUFFER, which
 // is part of GRANT_OS_BASELINE - so the executive and the shell can draw, but a
 // capability-less app cannot (it gets E_ACCESS_DENIED and must go through a broker).
 //
@@ -30,44 +30,26 @@ fn rgb(r: u32, g: u32, b: u32) -> color {
     return ((r & 255) << 16) | ((g & 255) << 8) | (b & 255);
 }
 
-// ---- one shared args block per call site ----
-// (a local keeps this reentrant; the kernel copies the struct out immediately)
+// ---- drawing: one syscall each ----
 
 fn gfx_clear(c: color) -> i32 {
-    let a: fb_op_args;
-    a.op = FB_OP_CLEAR;  a.color = c;
-    a.x = 0; a.y = 0; a.w = 0; a.h = 0; a.color2 = 0;
-    return fb_op(&a);
+    return fb_clear(c);
 }
 
 fn gfx_fill_rect(x: u32, y: u32, w: u32, h: u32, c: color) -> i32 {
-    let a: fb_op_args;
-    a.op = FB_OP_FILL_RECT;
-    a.x = x; a.y = y; a.w = w; a.h = h; a.color = c; a.color2 = 0;
-    return fb_op(&a);
+    return fb_fill_rect(x, y, w, h, c);
 }
 
 fn gfx_pixel(x: u32, y: u32, c: color) -> i32 {
-    let a: fb_op_args;
-    a.op = FB_OP_PUT_PIXEL;
-    a.x = x; a.y = y; a.w = 0; a.h = 0; a.color = c; a.color2 = 0;
-    return fb_op(&a);
+    return fb_put_pixel(x, y, c);
 }
 
-// note: w,h carry the END point for a line (x,y)-(w,h)
 fn gfx_line(x0: u32, y0: u32, x1: u32, y1: u32, c: color) -> i32 {
-    let a: fb_op_args;
-    a.op = FB_OP_DRAW_LINE;
-    a.x = x0; a.y = y0; a.w = x1; a.h = y1; a.color = c; a.color2 = 0;
-    return fb_op(&a);
+    return fb_draw_line(x0, y0, x1, y1, c);
 }
 
 fn gfx_text(x: u32, y: u32, s: *u8, fg: color, bg: color) -> i32 {
-    let a: fb_op_args;
-    a.op = FB_OP_DRAW_TEXT;
-    a.x = x; a.y = y; a.w = 0; a.h = 0;
-    a.color = fg; a.color2 = bg; a.text = s as u32;
-    return fb_op(&a);
+    return fb_draw_text(x, y, s, fg, bg);
 }
 
 // ---- console font ----
@@ -79,33 +61,25 @@ fn gfx_text(x: u32, y: u32, s: *u8, fg: color, bg: color) -> i32 {
 // how many columns and rows fit the screen. The kernel clears on a successful
 // change, because what is already drawn is the old size.
 fn gfx_set_font(name: *u8) -> i32 {
-    let a: fb_op_args;
-    a.op = FB_OP_SET_FONT;
-    a.x = 0; a.y = 0; a.w = 0; a.h = 0;
-    a.color = 0; a.color2 = 0; a.text = name as u32;
-    return fb_op(&a);
+    return fb_set_font(name);
 }
 
 // ---- geometry ----
-// fills out[0..3] with width, height, bpp, pitch; returns 0 on success
-fn gfx_info(out: *u32) -> i32 {
-    let a: fb_op_args;
-    a.op = FB_OP_INFO;
-    a.x = 0; a.y = 0; a.w = 0; a.h = 0; a.color = 0; a.color2 = 0;
-    a.out = out as u32;
-    return fb_op(&a);
+// fills g with width, height, bpp, pitch; returns 0 on success
+fn gfx_info(g: *fb_geometry) -> i32 {
+    return fb_info(g);
 }
 
 fn gfx_width() -> u32 {
-    let info: [4]u32;
-    if (gfx_info(&info[0]) != 0) { return 0; }
-    return info[0];
+    let g: fb_geometry;
+    if (gfx_info(&g) != 0) { return 0; }
+    return g.width;
 }
 
 fn gfx_height() -> u32 {
-    let info: [4]u32;
-    if (gfx_info(&info[0]) != 0) { return 0; }
-    return info[1];
+    let g: fb_geometry;
+    if (gfx_info(&g) != 0) { return 0; }
+    return g.height;
 }
 
 // ---- a couple of conveniences ----

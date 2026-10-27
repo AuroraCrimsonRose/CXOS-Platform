@@ -5,7 +5,7 @@
 /*
  * SYS_NET_OP handler: the bridge between ring-3 and the network stack.
  *
- * Like SYS_FB_OP this is one syscall with an `op` selector rather than a family
+ * Like SYS_FILE_OP this is one syscall with an `op` selector rather than a family
  * of syscalls - it keeps the syscall table small and matches the struct-pointer
  * ABI used everywhere else.
  *

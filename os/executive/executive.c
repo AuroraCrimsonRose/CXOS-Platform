@@ -38,9 +38,6 @@ static inline int sys_ipc_reply(struct ipc_reply_args *a) {
 static inline void sys_yield(void) {
     __asm__ volatile ("int $0x80" : : "a"(SYS_YIELD) : "memory");
 }
-static inline int sys_fb_op(struct fb_op_args *a) {
-    int r; __asm__ volatile ("int $0x80" : "=a"(r) : "a"(SYS_FB_OP), "b"(a) : "memory"); return r;
-}
 
 void _start(void) {
     sys_write("CXK executive online (.xoex) - brokering\n");

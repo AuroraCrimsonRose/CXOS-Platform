@@ -102,6 +102,10 @@ int  usermode_vm_test(void);
    (see usermode.c). 1 = pass, 0 = fail. */
 int  usermode_power_input_test(void);
 
+/* The SYS_FB_* calls through the dispatcher, read back from the screen (see
+   usermode.c). 1 = pass, 0 = fail. */
+int  usermode_fb_test(void);
+
 /* The background console and SYS_LOG_READ (see usermode.c). 1 = pass. */
 int  usermode_log_test(void);
 

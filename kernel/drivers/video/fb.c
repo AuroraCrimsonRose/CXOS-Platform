@@ -110,6 +110,12 @@ void fb_put_pixel(uint32_t x, uint32_t y, uint32_t color) {
     else           *(uint16_t *)p = (uint16_t)color;
 }
 
+uint32_t fb_get_pixel(uint32_t x, uint32_t y) {
+    if (!active || x >= width || y >= height) return 0;
+    const uint8_t *p = fb + y * pitch + x * (bpp / 8);
+    return bpp == 32 ? *(const uint32_t *)p : *(const uint16_t *)p;
+}
+
 void fb_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color) {
     if (!active) return;
     uint32_t x1 = x + w, y1 = y + h;
@@ -233,7 +239,7 @@ void fb_draw_string(uint32_t x, uint32_t y, const char *s, uint32_t fg, uint32_t
 
 /* Length-bounded form, for strings whose terminator we do not trust: stops at
    the NUL or at `n` characters, whichever comes first. Use this for anything
-   that came from ring 3 - see the note on FB_OP_DRAW_TEXT in sys_fb_op. */
+   that came from ring 3 - see the note in sys_fb_draw_text. */
 void fb_draw_string_n(uint32_t x, uint32_t y, const char *s, uint32_t n,
                       uint32_t fg, uint32_t bg) {
     if (!active) return;
@@ -245,12 +251,12 @@ void fb_draw_string_n(uint32_t x, uint32_t y, const char *s, uint32_t n,
 }
 
 
-/* ---- SYS_FB_OP handler ----
+/* ---- the SYS_FB_* handlers ----
  * Draw on behalf of a GRANT_FRAMEBUFFER holder. Colors cross the ABI as canonical
  * 0x00RRGGBB and are converted here via fb_rgb to the active mode. */
 #include "../../cpu/usermode.h"   /* user_ptr_readable / user_ptr_writable */
-#include "../../../abi/cxk_abi.h" /* fb_op_args, FB_OP_*, E_* */
-#include "cxfs.h"                 /* FB_OP_SET_FONT reads the font itself */
+#include "../../../abi/cxk_abi.h" /* fb_geometry, E_* */
+#include "cxfs.h"                 /* SYS_FB_SET_FONT reads the font itself */
 #include "console.h"              /* the grid follows the font's cell */
 
 /* Staging for a font being loaded, sized to the largest file XFNT permits:
@@ -276,7 +282,7 @@ static const char *const font_dirs[] = {
 /* Find <name>.xfnt in the search path, read it, validate it, and install it.
  *
  * `name` is a bare name that has ALREADY been checked for path separators by
- * whoever accepted it from outside - sys_fb_op does that before calling here.
+ * whoever accepted it from outside - sys_fb_set_font does that before calling here.
  * Does not clear the console: the grid is recomputed, but what to do about the
  * glyphs already drawn is the caller's decision.
  *
@@ -345,84 +351,103 @@ static uint32_t fb_pack(uint32_t rgb) {
     return fb_rgb((uint8_t)(rgb >> 16), (uint8_t)(rgb >> 8), (uint8_t)rgb);
 }
 
-int sys_fb_op(uint32_t ua) {
-    struct fb_op_args a;
-    if (user_copy_in(&a, ua, sizeof a) != 0) return E_BAD_ADDRESS;
+/* Each answers E_NOT_FOUND with no framebuffer, before it looks at a pointer:
+   in VGA text mode there is nothing for any of them to do. */
+int sys_fb_info(uint32_t ug) {
     if (!fb_active()) return E_NOT_FOUND;
+    if (!user_ptr_writable(ug, sizeof(struct fb_geometry))) return E_BAD_ADDRESS;
+    struct fb_geometry *g = (struct fb_geometry *)user_ptr(ug);
+    g->width  = fb_width();
+    g->height = fb_height();
+    g->bpp    = fb_bpp();
+    g->pitch  = fb_pitch();
+    return 0;
+}
 
-    switch (a.op) {
-        case FB_OP_INFO: {
-            if (!user_ptr_writable(a.out, 4 * sizeof(uint32_t))) return E_BAD_ADDRESS;
-            ((uint32_t *)user_ptr(a.out))[0] = fb_width();
-            ((uint32_t *)user_ptr(a.out))[1] = fb_height();
-            ((uint32_t *)user_ptr(a.out))[2] = fb_bpp();
-            ((uint32_t *)user_ptr(a.out))[3] = fb_pitch();
-            return 0;
-        }
-        case FB_OP_CLEAR:     fb_clear(fb_pack(a.color)); return 0;
-        case FB_OP_FILL_RECT: fb_fill_rect(a.x, a.y, a.w, a.h, fb_pack(a.color)); return 0;
-        case FB_OP_PUT_PIXEL: fb_put_pixel(a.x, a.y, fb_pack(a.color)); return 0;
-        case FB_OP_DRAW_LINE: fb_draw_line((int)a.x, (int)a.y, (int)a.w, (int)a.h, fb_pack(a.color)); return 0;
-        case FB_OP_DRAW_TEXT: {
-            /* Scan for a length we have actually validated, then draw AT MOST that
-               many characters. Passing the bare pointer to fb_draw_string was a
-               kernel-mode out-of-bounds read: the scan stops when user_ptr_readable fails
-               at a page boundary, but fb_draw_string walks to its own NUL, so a
-               string filling a mapped page with no terminator - or any string of
-               0x1000 characters - ran straight off the end of the mapping. Since
-               n != 0 in that case, the E_BAD_ADDRESS check below does not catch it.
-               SYS_CONSOLE_WRITE has always done this correctly; this now matches it. */
-            uint32_t n = 0;
-            const char *p = user_ptr(a.text);
-            while (n < 0x1000 && user_ptr_readable(a.text + n, 1) && p[n]) n++;
-            if (n == 0 && !user_ptr_readable(a.text, 1)) return E_BAD_ADDRESS;
-            fb_draw_string_n(a.x, a.y, p, n, fb_pack(a.color), fb_pack(a.color2));
-            return (int)n;
-        }
-        case FB_OP_SET_FONT: {
-            /* A NAME, not a path. The kernel composes /System/Fonts/<name>.xfnt
-               and reads it itself, which is the SYS_EXEC_PATH shape: the bytes
-               validated are the bytes installed, with no caller-held buffer in
-               between, and GRANT_FRAMEBUFFER does not become a way to make the
-               kernel read an arbitrary file. */
-            char name[CXFS_NAME_LEN];
-            uint32_t n = 0;
-            for (;;) {
-                if (n >= sizeof name) return E_INVALID_ARGS;          /* no terminator in range */
-                if (!user_ptr_readable(a.text + n, 1)) return E_BAD_ADDRESS;
-                char c = ((const char *)user_ptr(a.text))[n];
-                if (c == '\0') break;
-                /* Everything that could leave /System/Fonts is refused here, so
-                   nothing downstream has to reason about traversal. '.' goes
-                   too: the extension is ours to add, and without it ".." never
-                   needs a special case. */
-                if (c == '/' || c == '\\' || c == '.') return E_INVALID_ARGS;
-                if ((unsigned char)c < 0x20 || (unsigned char)c == 0x7F) return E_INVALID_ARGS;
-                name[n++] = c;
-            }
-            if (n == 0) return E_INVALID_ARGS;
-            name[n] = '\0';
+int sys_fb_clear(uint32_t color) {
+    if (!fb_active()) return E_NOT_FOUND;
+    fb_clear(fb_pack(color));
+    return 0;
+}
 
-            /* Only the syscall clears, and only when the GRID changed.
-               fb_font_select is also what the self-tests use, and wiping the
-               boot log out from under them would be collateral.
+int sys_fb_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color) {
+    if (!fb_active()) return E_NOT_FOUND;
+    fb_fill_rect(x, y, w, h, fb_pack(color));
+    return 0;
+}
 
-               A different cell makes what is on screen garbage: the pixels no
-               longer line up with the rows the console believes it has, and the
-               honest response is to start again. A font with the SAME cell
-               leaves old text in old glyphs above the cursor, correctly placed
-               and perfectly readable, just in a different face - clearing for
-               that buys nothing and costs a boot log nobody can scroll back to.
-               Not hypothetical: the shell restores a saved font at startup, so
-               an unconditional clear meant every boot after the first `font`
-               command erased the boot log the moment the shell came up. */
-            uint32_t cw = font_cell_width();
-            uint32_t ch = font_cell_height();
-            int rc = fb_font_select(name);
-            if (rc != 0) return rc;
-            if (font_cell_width() != cw || font_cell_height() != ch) console_clear();
-            return 0;
-        }
-        default: return E_INVALID_ARGS;
+int sys_fb_put_pixel(uint32_t x, uint32_t y, uint32_t color) {
+    if (!fb_active()) return E_NOT_FOUND;
+    fb_put_pixel(x, y, fb_pack(color));
+    return 0;
+}
+
+int sys_fb_draw_line(uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1, uint32_t color) {
+    if (!fb_active()) return E_NOT_FOUND;
+    fb_draw_line((int)x0, (int)y0, (int)x1, (int)y1, fb_pack(color));
+    return 0;
+}
+
+int sys_fb_draw_text(uint32_t x, uint32_t y, uint32_t text, uint32_t fg, uint32_t bg) {
+    if (!fb_active()) return E_NOT_FOUND;
+    /* Scan for a length we have actually validated, then draw AT MOST that
+       many characters. Passing the bare pointer to fb_draw_string was a
+       kernel-mode out-of-bounds read: the scan stops when user_ptr_readable fails
+       at a page boundary, but fb_draw_string walks to its own NUL, so a
+       string filling a mapped page with no terminator - or any string of
+       0x1000 characters - ran straight off the end of the mapping. Since
+       n != 0 in that case, the E_BAD_ADDRESS check below does not catch it.
+       SYS_CONSOLE_WRITE has always done this correctly; this now matches it. */
+    uint32_t n = 0;
+    const char *p = user_ptr(text);
+    while (n < 0x1000 && user_ptr_readable(text + n, 1) && p[n]) n++;
+    if (n == 0 && !user_ptr_readable(text, 1)) return E_BAD_ADDRESS;
+    fb_draw_string_n(x, y, p, n, fb_pack(fg), fb_pack(bg));
+    return (int)n;
+}
+
+int sys_fb_set_font(uint32_t uname) {
+    if (!fb_active()) return E_NOT_FOUND;
+    /* A NAME, not a path. The kernel composes /System/Fonts/<name>.xfnt
+       and reads it itself, which is the SYS_EXEC_PATH shape: the bytes
+       validated are the bytes installed, with no caller-held buffer in
+       between, and GRANT_FRAMEBUFFER does not become a way to make the
+       kernel read an arbitrary file. */
+    char name[CXFS_NAME_LEN];
+    uint32_t n = 0;
+    for (;;) {
+        if (n >= sizeof name) return E_INVALID_ARGS;          /* no terminator in range */
+        if (!user_ptr_readable(uname + n, 1)) return E_BAD_ADDRESS;
+        char c = ((const char *)user_ptr(uname))[n];
+        if (c == '\0') break;
+        /* Everything that could leave /System/Fonts is refused here, so
+           nothing downstream has to reason about traversal. '.' goes
+           too: the extension is ours to add, and without it ".." never
+           needs a special case. */
+        if (c == '/' || c == '\\' || c == '.') return E_INVALID_ARGS;
+        if ((unsigned char)c < 0x20 || (unsigned char)c == 0x7F) return E_INVALID_ARGS;
+        name[n++] = c;
     }
+    if (n == 0) return E_INVALID_ARGS;
+    name[n] = '\0';
+
+    /* Only the syscall clears, and only when the GRID changed.
+       fb_font_select is also what the self-tests use, and wiping the
+       boot log out from under them would be collateral.
+
+       A different cell makes what is on screen garbage: the pixels no
+       longer line up with the rows the console believes it has, and the
+       honest response is to start again. A font with the SAME cell
+       leaves old text in old glyphs above the cursor, correctly placed
+       and perfectly readable, just in a different face - clearing for
+       that buys nothing and costs a boot log nobody can scroll back to.
+       Not hypothetical: the shell restores a saved font at startup, so
+       an unconditional clear meant every boot after the first `font`
+       command erased the boot log the moment the shell came up. */
+    uint32_t cw = font_cell_width();
+    uint32_t ch = font_cell_height();
+    int rc = fb_font_select(name);
+    if (rc != 0) return rc;
+    if (font_cell_width() != cw || font_cell_height() != ch) console_clear();
+    return 0;
 }

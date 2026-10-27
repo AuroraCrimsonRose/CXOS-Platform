@@ -27,7 +27,13 @@ static int decode_input_poll(const uint32_t *a) { (void)a; return syscall_input_
 static int decode_console_write(const uint32_t *a) { return syscall_console_write(a[0], a[1]); }
 static int decode_log_read(const uint32_t *a) { return syscall_log_read(a[0], a[1]); }
 static int decode_net_op(const uint32_t *a) { return syscall_net_op(a[0]); }
-static int decode_fb_op(const uint32_t *a) { return syscall_fb_op(a[0]); }
+static int decode_fb_info(const uint32_t *a) { return syscall_fb_info(a[0]); }
+static int decode_fb_clear(const uint32_t *a) { return syscall_fb_clear(a[0]); }
+static int decode_fb_fill_rect(const uint32_t *a) { return syscall_fb_fill_rect(a[0], a[1], a[2], a[3], a[4]); }
+static int decode_fb_put_pixel(const uint32_t *a) { return syscall_fb_put_pixel(a[0], a[1], a[2]); }
+static int decode_fb_draw_line(const uint32_t *a) { return syscall_fb_draw_line(a[0], a[1], a[2], a[3], a[4]); }
+static int decode_fb_draw_text(const uint32_t *a) { return syscall_fb_draw_text(a[0], a[1], a[2], a[3], a[4]); }
+static int decode_fb_set_font(const uint32_t *a) { return syscall_fb_set_font(a[0]); }
 static int decode_file_op(const uint32_t *a) { return syscall_file_op(a[0]); }
 static int decode_spawn(const uint32_t *a) { return syscall_spawn(a[0]); }
 static int decode_exec_path(const uint32_t *a) { return syscall_exec_path(a[0], a[1]); }
@@ -58,7 +64,13 @@ const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_INPUT_POLL] = decode_input_poll,
     [SYS_CONSOLE_WRITE] = decode_console_write,
     [SYS_LOG_READ] = decode_log_read,
-    [SYS_FB_OP] = decode_fb_op,
+    [SYS_FB_INFO] = decode_fb_info,
+    [SYS_FB_CLEAR] = decode_fb_clear,
+    [SYS_FB_FILL_RECT] = decode_fb_fill_rect,
+    [SYS_FB_PUT_PIXEL] = decode_fb_put_pixel,
+    [SYS_FB_DRAW_LINE] = decode_fb_draw_line,
+    [SYS_FB_DRAW_TEXT] = decode_fb_draw_text,
+    [SYS_FB_SET_FONT] = decode_fb_set_font,
     [SYS_NET_OP] = decode_net_op,
     [SYS_FILE_OP] = decode_file_op,
     [SYS_SPAWN] = decode_spawn,

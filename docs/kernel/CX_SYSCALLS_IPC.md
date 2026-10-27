@@ -13,11 +13,11 @@
 | Area | Today | Problem |
 |---|---|---|
 | Entry | `int 0x80`, a number and two arguments (`syscall_dispatch(num, a1, a2)`) | Slow on x86-64; two arguments force a structure for almost everything |
-| Shape | 30 numbers, three of them multiplexers (`SYS_FILE_OP`, `SYS_NET_OP`, `SYS_FB_OP`) with an `op` field inside a structure; memory, power and input were split in step 6a2c (§9.5) | One number hides 18 file operations, so tracing, recording and filtering see "a file call" and nothing more; each multiplexer re-implements dispatch |
+| Shape | 36 numbers, two of them multiplexers (`SYS_FILE_OP`, `SYS_NET_OP`) with an `op` field inside a structure; memory, power, input and the framebuffer were split in step 6a2c (§9.5) | One number hides 18 file operations, so tracing, recording and filtering see "a file call" and nothing more; each multiplexer re-implements dispatch |
 | Structures | Raw pointers and `int` inside shared structures | Layout changes with pointer size; every structure changes on x86-64 |
 | Widths | `ticks` in 32-bit milliseconds; file sizes and offsets 32-bit; timestamps 32-bit | Ticks wrap after 49 days; files stop at 4 GB; dates stop in 2106 |
 | Authority | `GRANT_*` bits on the process; handles are small `int`s with no rights | A handle carries no rights of its own; a stale handle number can name a new object |
-| Devices | Drawing (`FB_OP_DRAW_TEXT`), keyboard and mouse are syscalls; input needs no capability | The kernel draws pixels; any process can read another's keys |
+| Devices | Drawing (`SYS_FB_DRAW_TEXT`), keyboard and mouse are syscalls; input needs no capability | The kernel draws pixels; any process can read another's keys |
 | Arguments | A fixed page at `USER_ARGS_BASE` | An x86-32 address in the ABI |
 | Errors | 15 codes | No timeout, peer-closed, wrong-type or rights-denied distinction |
 | IPC | Synchronous, one page copied, one call in flight per endpoint; the executive defines messages informally | No handles in messages, no shared memory, no types |
@@ -218,7 +218,7 @@ The x86-32 kernel has a first step towards `log_write`: a process started with
 back (the shell's `log`). Once the executive runs, kernel lines below ERR stop
 going to the screen as well.
 
-**Retired:** `SYS_FB_OP` (the display server draws, into memory objects);
+**Retired:** the `SYS_FB_*` calls (the display server draws, into memory objects);
 `SYS_INPUT_READ`, `SYS_INPUT_POLL` and `SYS_MOUSE_READ` (the input driver sends events to the
 display server, which routes them to the focused window); `SYS_GETPID` and
 `SYS_GETUID` (`object_info` on the process handle, or the system page);
@@ -409,6 +409,14 @@ operations leave it.
   answers 0 when none waits. Every call has its plain wrapper now, so the
   prelude's `reboot`, `shutdown`, `sleep`, `input_read` and `input_poll` are
   generated; `reboot` and `shutdown` return the refusal rather than `void`.
+- **Framebuffer** (`CXK_ABI_VERSION` 7): `SYS_FB_OP` and `fb_op_args` go;
+  each op is its own number, its arguments in registers: `SYS_FB_INFO`
+  (0x40, `*fb_geometry` out), `SYS_FB_CLEAR` (0x41), `SYS_FB_FILL_RECT`
+  (0x42), `SYS_FB_PUT_PIXEL` (0x43), `SYS_FB_DRAW_LINE` (0x44),
+  `SYS_FB_DRAW_TEXT` (0x45, `x, y, text, fg, bg`, the characters drawn) and
+  `SYS_FB_SET_FONT` (0x46, a name). One `GRANT_FRAMEBUFFER` gate; each
+  answers `E_NOT_FOUND` with no framebuffer. `os/std/gfx.xfxn` calls the
+  generated wrappers.
 
 When the `.xfil` replaced the hand-written header, the header it generated
 matched the old one in every constant, structure and field type, and every

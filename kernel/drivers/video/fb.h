@@ -49,6 +49,8 @@ uint32_t fb_rgb(uint8_t r, uint8_t g, uint8_t b);
 
 /* Drawing primitives (color is a value from fb_rgb). */
 void fb_put_pixel(uint32_t x, uint32_t y, uint32_t color);
+/* The pixel at (x, y) as stored, in fb_rgb's format; 0 off the screen. */
+uint32_t fb_get_pixel(uint32_t x, uint32_t y);
 void fb_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color);
 void fb_clear(uint32_t color);
 
@@ -79,7 +81,7 @@ uint32_t fb_font_height(void);
 
 /* Install <name>.xfnt as the console font, searching /System/Fonts then
    /Shared/Fonts - system first, so a user-writable directory cannot shadow a
-   system font. `name` must already be known free of path separators; sys_fb_op
+   system font. `name` must already be known free of path separators; sys_fb_set_font
    checks that before calling. Recomputes the grid, does NOT clear the screen.
    Returns 0, E_NOT_FOUND (no such font) or E_INVALID_ARGS (found, but unusable). */
 int fb_font_select(const char *name);
@@ -93,7 +95,14 @@ void fb_draw_string(uint32_t x, uint32_t y, const char *s, uint32_t fg, uint32_t
 void fb_draw_string_n(uint32_t x, uint32_t y, const char *s, uint32_t n,
                       uint32_t fg, uint32_t bg);
 
-struct fb_op_args;
-int sys_fb_op(uint32_t ua);
+/* The SYS_FB_* handlers, called once the caller's GRANT_FRAMEBUFFER is checked
+   (cpu/usermode.c). Pointers are user addresses. */
+int sys_fb_info(uint32_t ug);
+int sys_fb_clear(uint32_t color);
+int sys_fb_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color);
+int sys_fb_put_pixel(uint32_t x, uint32_t y, uint32_t color);
+int sys_fb_draw_line(uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1, uint32_t color);
+int sys_fb_draw_text(uint32_t x, uint32_t y, uint32_t text, uint32_t fg, uint32_t bg);
+int sys_fb_set_font(uint32_t uname);
 
 #endif

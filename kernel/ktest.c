@@ -2493,7 +2493,7 @@ static int test_font_cell(void) {
  * anywhere along that - a converter that writes the wrong slot, a stage line
  * that drops the file, a reader that disagrees with the writer - lands here.
  *
- * The SYSCALL's success path is deliberately not exercised. FB_OP_SET_FONT
+ * The SYSCALL's success path is deliberately not exercised. SYS_FB_SET_FONT
  * clears the console on a successful change, because what is on screen is the
  * old cell, and wiping the boot log out from under the rest of the tests is a
  * poor trade for a case the shell's `font` command exercises directly. What IS
@@ -2560,7 +2560,6 @@ static int test_console_font_disk(void) {
             return 0;
         }
 
-        struct fb_op_args *args = (struct fb_op_args *)user_ptr(va);
         char *nm = (char *)user_ptr(va + 256);
 
         /* Each of these is a way out of the directory, or a way to confuse the
@@ -2573,12 +2572,7 @@ static int test_console_font_disk(void) {
             uint32_t k = 0;
             while (bad[i][k] && k < 200) { nm[k] = bad[i][k]; k++; }
             nm[k] = '\0';
-            args->op = FB_OP_SET_FONT;
-            args->x = args->y = args->w = args->h = 0;
-            args->color = args->color2 = 0;
-            args->text = user_addr(nm);
-            args->out = 0;
-            int rc = sys_fb_op(user_addr(args));
+            int rc = sys_fb_set_font(user_addr(nm));
             /* E_INVALID_ARGS specifically, NOT "some error". The distinction is the
                security property: E_INVALID_ARGS means the NAME RULES refused it,
                E_NOT_FOUND means the kernel built a path and went looking. Accepting
@@ -2597,8 +2591,7 @@ static int test_console_font_disk(void) {
         uint32_t k = 0;
         while (absent[k]) { nm[k] = absent[k]; k++; }
         nm[k] = '\0';
-        args->text = user_addr(nm);
-        ok = ok && (sys_fb_op(user_addr(args)) == E_NOT_FOUND);
+        ok = ok && (sys_fb_set_font(user_addr(nm)) == E_NOT_FOUND);
         ok = ok && !xfnt_active();
 
         /* ---- where the name length bound actually is ----
@@ -2618,12 +2611,10 @@ static int test_console_font_disk(void) {
         const char *n59 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
         k = 0; while (n58[k]) { nm[k] = n58[k]; k++; } nm[k] = '\0';
-        args->text = user_addr(nm);
-        ok = ok && (sys_fb_op(user_addr(args)) == E_NOT_FOUND);
+        ok = ok && (sys_fb_set_font(user_addr(nm)) == E_NOT_FOUND);
 
         k = 0; while (n59[k]) { nm[k] = n59[k]; k++; } nm[k] = '\0';
-        args->text = user_addr(nm);
-        ok = ok && (sys_fb_op(user_addr(args)) == E_INVALID_ARGS);
+        ok = ok && (sys_fb_set_font(user_addr(nm)) == E_INVALID_ARGS);
         ok = ok && !xfnt_active();
 
         /* ---- and a change that keeps the CELL does not clear the screen ----
@@ -2644,14 +2635,12 @@ static int test_console_font_disk(void) {
             uint32_t m = 0;
             while (same[m]) { nm[m] = same[m]; m++; }
             nm[m] = '\0';
-            args->op   = FB_OP_SET_FONT;
-            args->text = user_addr(nm);
 
             int c0 = 0, r0 = 0;
             console_cursor(&c0, &r0);
             ok = ok && (r0 > 0);
 
-            ok = ok && (sys_fb_op(user_addr(args)) == 0);
+            ok = ok && (sys_fb_set_font(user_addr(nm)) == 0);
             ok = ok && xfnt_active() && (xfnt_height() == 16);
 
             int c1 = 0, r1 = 0;
@@ -3299,6 +3288,7 @@ void ktest_run(void) {
     total++; passed += report("file syscalls (SYS_FILE_OP)",       usermode_file_test());
     total++; passed += report("memory syscalls (SYS_VM_*)",        usermode_vm_test());
     total++; passed += report("power and input syscalls",          usermode_power_input_test());
+    total++; passed += report("framebuffer syscalls (SYS_FB_*)",   usermode_fb_test());
     total++; passed += report("background output goes to the log", usermode_log_test());
     total++; passed += report("advisory locks follow the open file", usermode_flock_test());
     total++; passed += report("ipc endpoints refcounted + reclaimed", test_ipc_endpoint_lifetime());
