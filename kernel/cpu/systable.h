@@ -9,7 +9,7 @@
 
 #include <stdint.h>
 
-/* The handlers, one per syscall, named after it (SYS_FILE_OP: syscall_file_op).
+/* The handlers, one per syscall, named after it (SYS_FILE_READ: syscall_file_read).
  * Each is given its arguments as the interface declares them. A pointer arrives
  * as the user address it is, a uint32_t; the handler checks and copies it. */
 
@@ -49,7 +49,6 @@ int syscall_fb_put_pixel(uint32_t x, uint32_t y, uint32_t color); /* SYS_FB_PUT_
 int syscall_fb_draw_line(uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1, uint32_t color); /* SYS_FB_DRAW_LINE */
 int syscall_fb_draw_text(uint32_t x, uint32_t y, uint32_t text, uint32_t fg, uint32_t bg); /* SYS_FB_DRAW_TEXT */
 int syscall_fb_set_font(uint32_t name);         /* SYS_FB_SET_FONT */
-int syscall_file_op(uint32_t a);                /* SYS_FILE_OP */
 int syscall_spawn(uint32_t a);                  /* SYS_SPAWN */
 int syscall_exec_path(uint32_t path, uint32_t a); /* SYS_EXEC_PATH */
 int syscall_vm_map(uint32_t a);                 /* SYS_VM_MAP */
@@ -58,13 +57,31 @@ int syscall_vm_info(uint32_t u);                /* SYS_VM_INFO */
 int syscall_power_reboot(void);                 /* SYS_POWER_REBOOT */
 int syscall_power_shutdown(void);               /* SYS_POWER_SHUTDOWN */
 int syscall_power_sleep(uint32_t ms);           /* SYS_POWER_SLEEP */
+int syscall_file_open(uint32_t path, uint32_t flags); /* SYS_FILE_OPEN */
+int syscall_file_close(int32_t h);              /* SYS_FILE_CLOSE */
+int syscall_file_read(int32_t h, uint32_t buf, uint32_t n); /* SYS_FILE_READ */
+int syscall_file_write(int32_t h, uint32_t buf, uint32_t n); /* SYS_FILE_WRITE */
+int syscall_file_seek(int32_t h, int32_t off, uint32_t origin); /* SYS_FILE_SEEK */
+int syscall_file_tell(int32_t h);               /* SYS_FILE_TELL */
+int syscall_file_truncate(int32_t h, int32_t size); /* SYS_FILE_TRUNCATE */
+int syscall_file_stat(uint32_t path, uint32_t st); /* SYS_FILE_STAT */
+int syscall_file_fstat(int32_t h, uint32_t st); /* SYS_FILE_FSTAT */
+int syscall_file_readdir(uint32_t path, uint32_t index, uint32_t st); /* SYS_FILE_READDIR */
+int syscall_file_mkdir(uint32_t path);          /* SYS_FILE_MKDIR */
+int syscall_file_unlink(uint32_t path);         /* SYS_FILE_UNLINK */
+int syscall_file_rename(uint32_t path, uint32_t newname); /* SYS_FILE_RENAME */
+int syscall_file_chdir(uint32_t path);          /* SYS_FILE_CHDIR */
+int syscall_file_getcwd(uint32_t buf, uint32_t cap); /* SYS_FILE_GETCWD */
+int syscall_file_sync(void);                    /* SYS_FILE_SYNC */
+int syscall_file_lock(int32_t h, int32_t start, uint32_t len, uint32_t mode); /* SYS_FILE_LOCK */
+int syscall_file_unlock(int32_t h, int32_t start, uint32_t len); /* SYS_FILE_UNLOCK */
 
 /* Registers a syscall carries after its number, and the table's slots: one per
  * number up to the largest. syscall_dispatch refuses a number past the end
  * before looking it up, and one that lands in a hole finds no decoder. */
 #define SYSCALL_ARGS            5
-#define SYSCALL_TABLE_SIZE      147
-#define SYSCALL_COUNT           45
+#define SYSCALL_TABLE_SIZE      178
+#define SYSCALL_COUNT           62
 
 /* A decoder takes the raw argument registers, gives each its declared type,
  * and calls the handler; a handler that returns nothing answers 0. */

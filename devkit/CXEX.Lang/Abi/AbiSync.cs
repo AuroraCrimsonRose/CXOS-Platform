@@ -40,10 +40,10 @@ namespace CXEX.Lang.Abi;
 public static class AbiSync
 {
     /// <summary>Constant prefixes the prelude is expected to mirror, longest first so
-    /// <c>FILE_OP_</c> is not mistaken for a member of some shorter family.</summary>
+    /// <c>FOPEN_</c> is not mistaken for a member of some shorter family.</summary>
     private static readonly string[] Families =
     {
-        "FILE_OP_", "FOPEN_", "FSEEK_", "FTYPE_",
+        "FOPEN_", "FSEEK_", "FTYPE_",
         "MPROT_", "MMAP_", "MOBJ_", "SYS_", "GRANT_", "E_"
     };
 

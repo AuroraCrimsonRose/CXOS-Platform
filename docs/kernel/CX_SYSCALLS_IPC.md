@@ -13,7 +13,7 @@
 | Area | Today | Problem |
 |---|---|---|
 | Entry | `int 0x80`, a number and two arguments (`syscall_dispatch(num, a1, a2)`) | Slow on x86-64; two arguments force a structure for almost everything |
-| Shape | 45 numbers, one of them a multiplexer (`SYS_FILE_OP`) with an `op` field inside a structure; memory, power, input, the framebuffer and the network were split in step 6a2c (§9.5) | One number hides 18 file operations, so tracing, recording and filtering see "a file call" and nothing more; each multiplexer re-implements dispatch |
+| Shape | 62 numbers, one operation each: step 6a2c split every multiplexer, `SYS_FILE_OP` last (§9.5) | Solved: a number hid up to 18 operations, so tracing, recording and filtering saw "a file call" and nothing more, and each multiplexer re-implemented dispatch |
 | Structures | Raw pointers and `int` inside shared structures | Layout changes with pointer size; every structure changes on x86-64 |
 | Widths | `ticks` in 32-bit milliseconds; file sizes and offsets 32-bit; timestamps 32-bit | Ticks wrap after 49 days; files stop at 4 GB; dates stop in 2106 |
 | Authority | `GRANT_*` bits on the process; handles are small `int`s with no rights | A handle carries no rights of its own; a stale handle number can name a new object |
@@ -334,11 +334,11 @@ The ABI hash of §5 is this hash for the `kernel` library.
 
 The `kernel` domain is generated; the other domains, and `interface` blocks
 with their messages, are settled when IPC v3 needs them (Phase 1). The source
-is `abi/kernel.xfil` (`library cx.kernel`), which still describes today's ABI,
-multiplexers included; the rest of 6a2 reshapes it. `cxk abi generate` writes
+is `abi/kernel.xfil` (`library cx.kernel`), which describes the ABI as it
+stands (no multiplexers since 6a2c; 6a2d widens it). `cxk abi generate` writes
 `abi/cxk_abi.h` from it, and since 6a2a the kernel's dispatch side as well:
 `kernel/cpu/systable.h` (one handler prototype per syscall, named after it:
-`SYS_FILE_OP` is `syscall_file_op`) and `kernel/cpu/systable.c` (a decoder per
+`SYS_FILE_READ` is `syscall_file_read`) and `kernel/cpu/systable.c` (a decoder per
 syscall, giving each argument register its declared type, and the table,
 indexed by number). `syscall_dispatch` takes the number and all five argument
 registers from either gate, refuses a number past the table or in one of its
@@ -360,8 +360,8 @@ domain kernel
 // a comment that stays in the .xfil
 const NAME: u32 = 0x10u              /// trailing note; u32 or i32
 const BOTH: u32 = A | B              /// a literal, or an OR of earlier constants
-enum file_op {                       /// u32 constants; every value written out
-    FILE_OP_OPEN = 0
+enum mode {                          /// u32 constants; every value written out
+    MODE_A = 0
 }
 struct file_stat {                   /// u8..u64, i8..i64, char[N], T[N]
     id: u32
@@ -426,6 +426,18 @@ operations leave it.
   `SYS_NET_RECV` (0x59). One `GRANT_NET` gate. The `.xfil` now takes a pointer
   to an integer type (`*u32`) as well as to `u8` or a structure.
   `os/std/net.xfxn` keeps only its conveniences over the generated wrappers.
+- **Files** (`CXK_ABI_VERSION` 9): `SYS_FILE_OP`, `file_op_args` and
+  `FILE_OP_*` go. Eighteen calls did not fit 0x60-0x6F, so files move to a
+  32-number block, 0xA0-0xBF, in the old op order: `SYS_FILE_OPEN` (0xA0,
+  `path, flags`), `_CLOSE`, `_READ` and `_WRITE` (`h, buf, n`), `_SEEK` (`h,
+  off, origin`), `_TELL`, `_TRUNCATE` (`h, size`), `_STAT` (`path, *file_stat`),
+  `_FSTAT`, `_READDIR` (`path, index, *file_stat`), `_MKDIR`, `_UNLINK`,
+  `_RENAME` (`path, newname`), `_CHDIR`, `_GETCWD` (`buf, cap`), `_SYNC`,
+  `_LOCK` (`h, start, len, mode`) and `_UNLOCK` (0xB1, `h, start, len`). Every
+  argument fits in registers, so no structure is left. One `GRANT_DISK` gate.
+  The wrappers take the names `os/std/file.xfxn` had (`file_open`, `stat`,
+  `dir_entry`, `file_lock_range` ...), so no caller changed; the file keeps
+  only its conveniences. With this family the multiplexers are gone.
 
 When the `.xfil` replaced the hand-written header, the header it generated
 matched the old one in every constant, structure and field type, and every

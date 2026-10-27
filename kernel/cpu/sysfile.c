@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 /* /kernel/cpu/sysfile.c */
 /* Aurora Tejeda / CATX Systems */
-/* SYS_FILE_OP - see sysfile.h. */
+/* SYS_FILE_* - see sysfile.h. */
 
 #include "sysfile.h"
 #include "sched.h"
@@ -22,7 +22,7 @@
  *
  * An open file is a kernel object (KOBJ_FILE, object/kobj.h). Its lifetime is
  * its references': every handle holds one, and so does a file operation in
- * progress. Whether the process calls FILE_OP_CLOSE, calls SYS_HANDLE_CLOSE,
+ * progress. Whether the process calls SYS_FILE_CLOSE, calls SYS_HANDLE_CLOSE,
  * or exits and gets reaped, it goes back to its cache when the last one goes.
  *
  * What a handle may do is its RIGHTS (FOPEN_READ, FOPEN_WRITE), not the flags
@@ -67,14 +67,14 @@ static int of_match_fn(void *obj, void *ctx) {
  * still open would hand that open file to whatever is created next, another
  * user's file included. Every reference kernel defers the delete instead: a
  * Unix inode lives until its last reference, and NT marks the file
- * delete-pending until the last handle closes. CXK does the same. FILE_OP_UNLINK
+ * delete-pending until the last handle closes. CXK does the same. SYS_FILE_UNLINK
  * on an open file marks it doomed, which hides its name from every lookup at
  * once, and the entry is deleted when the last open file on it is released.
  *
  * The release can happen in the reaper, inside the scheduler with interrupts
  * off, which is no place for disk I/O. So the release only queues the id, and
- * the delete runs at the start of the next SYS_FILE_OP, from anyone, and right
- * after a FILE_OP_CLOSE. A crash before that leaves the file in place: the
+ * the delete runs at the start of the next file syscall, from anyone, and right
+ * after a SYS_FILE_CLOSE. A crash before that leaves the file in place: the
  * unlink simply did not happen, which is the safe direction to fail in.
  */
 static uint32_t graveyard[MAX_OPEN_FILES];
@@ -128,7 +128,7 @@ struct file_lock {
 };
 static struct file_lock locks[MAX_FILE_LOCKS];
 
-/* What a thread blocked in FILE_OP_LOCK is waiting for. The record lives on
+/* What a thread blocked in SYS_FILE_LOCK is waiting for. The record lives on
    that thread's own stack for as long as it waits, linked into `waiters`, so
    there is one per waiting thread and nothing sized by how many threads there
    could be. The deadlock check walks the list; a release wakes everyone on it.
@@ -233,7 +233,7 @@ static void lock_drop(const struct open_file *of, uint32_t start, uint32_t len) 
 
 /* Releasing the slot is the whole lifetime rule: its locks go with it, and a
    doomed file whose last open this was is queued for deletion. It runs when
-   the last reference goes, however the handles went - FILE_OP_CLOSE,
+   the last reference goes, however the handles went - SYS_FILE_CLOSE,
    SYS_HANDLE_CLOSE, or the reaper at exit. */
 static void of_destroy(struct kobj *o) {
     struct open_file *f = (struct open_file *)o;
@@ -387,18 +387,6 @@ static struct open_file *of_ref(int32_t h, uint32_t *rights) {
     return (struct open_file *)o;
 }
 
-/* The operations that act on an open file rather than on a path. */
-static int names_handle(uint32_t op) {
-    switch (op) {
-        case FILE_OP_CLOSE: case FILE_OP_READ:  case FILE_OP_WRITE:
-        case FILE_OP_SEEK:  case FILE_OP_TELL:  case FILE_OP_TRUNC:
-        case FILE_OP_FSTAT: case FILE_OP_LOCK:  case FILE_OP_UNLOCK:
-            return 1;
-        default:
-            return 0;
-    }
-}
-
 /* ---- readdir ---------------------------------------------------------------
  * cxfs_list_dir is callback-driven with no index, so indexed access is done by
  * counting matches and keeping the one asked for. Safe to hold in statics for
@@ -425,327 +413,399 @@ static int lookup(const char *path, uint32_t cwd) {
     return (r >= 0 && entry_doomed((uint32_t)r)) ? -1 : r;
 }
 
-/* ---- the syscall ---------------------------------------------------------- */
+/* ---- the syscalls ----------------------------------------------------------
+ * One function per syscall, each called after the GRANT_DISK check. Every one
+ * starts the same way: the volume must be mounted, and the delete of a file
+ * whose last handle went since the previous call runs first.
+ */
+static int fs_enter(void) {
+    if (!cxfs_is_mounted()) return E_IO;
+    bury_pending();
+    return 0;
+}
 
-/* One operation. `f` is the open file the handle names, held for the whole
-   operation, and `rights` that handle's rights; both are 0 for an operation
-   on a path. */
-static int file_op(struct file_op_args a, struct open_file *f, uint32_t rights) {
+/* The calls on an open file resolve the handle once, here, and hold the
+   reference until the operation returns (file_leave): a lock wait blocks, and
+   the file must not be freed under it, on this CPU or another. */
+static int file_enter(int32_t h, struct open_file **f, uint32_t *rights) {
+    int rc = fs_enter();
+    if (rc < 0) return rc;
+    if (!(*f = of_ref(h, rights))) return E_BAD_HANDLE;
+    return 0;
+}
+
+static int file_leave(struct open_file *f, int rc) {
+    kobj_unref(&f->hdr);
+    return rc;
+}
+
+int sys_file_open(uint32_t upath, uint32_t flags) {
     uint32_t cwd = thread_current_cwd();
     char path[FILE_PATH_MAX];
     int rc;
 
-    switch (a.op) {
+    if ((rc = fs_enter()) < 0) return rc;
+    if ((rc = copy_path_in(upath, path, sizeof path)) < 0) return rc;
+    if (!(flags & (FOPEN_READ | FOPEN_WRITE))) return E_INVALID_ARGS;
 
-        case FILE_OP_OPEN: {
-            if ((rc = copy_path_in(a.path, path, sizeof path)) < 0) return rc;
-            if (!(a.flags & (FOPEN_READ | FOPEN_WRITE))) return E_INVALID_ARGS;
+    int id = lookup(path, cwd);
 
-            int id = lookup(path, cwd);
-
-            if (id < 0) {
-                if (!(a.flags & FOPEN_CREATE)) return E_NOT_FOUND;
-                /* an unlinked file still open elsewhere holds its name until
-                   its last close, as a delete-pending file does on NT */
-                if (cxfs_resolve(path, cwd) >= 0) return E_ALREADY_EXISTS;
-                uint32_t parent;
-                char leaf[FILE_NAME_MAX];
-                if ((rc = resolve_parent(path, cwd, &parent, leaf, sizeof leaf)) < 0) return rc;
-                id = cxfs_create_entry(parent, leaf, CXFS_TYPE_FILE);
-                if (id < 0) return E_IO;
-            } else {
-                struct cxfs_entry e;
-                if (cxfs_read_entry((uint32_t)id, &e) != 0) return E_IO;
-                if (e.type == CXFS_TYPE_DIR) return E_IS_DIR;
-                if ((a.flags & FOPEN_TRUNC) && (a.flags & FOPEN_WRITE)) {
-                    rc = cxfs_truncate((uint32_t)id, 0);
-                    if (rc != CXFS_E_OK) return abi_err(rc);
-                }
-            }
-
-            /* Take the handle slot LAST. Everything above can fail, and a slot
-               claimed before a failure would be a handle leaked per failed
-               open - the sort of thing a program retrying in a loop turns into
-               an exhausted table. */
-            struct open_file *nf = of_alloc();
-            if (!nf) return E_NO_MEMORY;
-            nf->entry = (uint32_t)id;
-            nf->flags = a.flags;
-            nf->off   = 0;
-            if (a.flags & FOPEN_APPEND) {
-                struct cxfs_entry e;
-                if (cxfs_read_entry(nf->entry, &e) == 0) nf->off = (uint32_t)e.size;
-            }
-
-            int32_t h = htab_install(thread_htab(thread_current_id()), &nf->hdr,
-                                     (a.flags & (FOPEN_READ | FOPEN_WRITE)) | HRIGHT_DUPLICATE, 0);
-            /* The open's own reference goes either way: on success the handle
-               holds the file; on failure it goes back to its cache here. */
-            kobj_unref(&nf->hdr);
-            return h < 0 ? E_NO_RESOURCES : h;
+    if (id < 0) {
+        if (!(flags & FOPEN_CREATE)) return E_NOT_FOUND;
+        /* an unlinked file still open elsewhere holds its name until
+           its last close, as a delete-pending file does on NT */
+        if (cxfs_resolve(path, cwd) >= 0) return E_ALREADY_EXISTS;
+        uint32_t parent;
+        char leaf[FILE_NAME_MAX];
+        if ((rc = resolve_parent(path, cwd, &parent, leaf, sizeof leaf)) < 0) return rc;
+        id = cxfs_create_entry(parent, leaf, CXFS_TYPE_FILE);
+        if (id < 0) return E_IO;
+    } else {
+        struct cxfs_entry e;
+        if (cxfs_read_entry((uint32_t)id, &e) != 0) return E_IO;
+        if (e.type == CXFS_TYPE_DIR) return E_IS_DIR;
+        if ((flags & FOPEN_TRUNC) && (flags & FOPEN_WRITE)) {
+            rc = cxfs_truncate((uint32_t)id, 0);
+            if (rc != CXFS_E_OK) return abi_err(rc);
         }
-
-        case FILE_OP_CLOSE:
-            /* The file itself goes when sys_file_op drops its reference, and
-               the delete of an unlinked file runs after that. */
-            if (htab_close(thread_htab(thread_current_id()), a.handle) != 0) return E_BAD_HANDLE;
-            return E_OK;
-
-        case FILE_OP_READ: {
-            if (!(rights & FOPEN_READ)) return E_ACCESS_DENIED;
-            if (a.len == 0) return 0;
-            if (a.len > 0x7FFFFFFFu) return E_OUT_OF_RANGE;
-            if (!user_ptr_writable(a.data, a.len)) return E_BAD_ADDRESS;
-
-            rc = cxfs_read_at(f->entry, f->off, user_ptr(a.data), a.len);
-            if (rc < 0) return abi_err(rc);
-            f->off += (uint32_t)rc;
-            return rc;
-        }
-
-        case FILE_OP_WRITE: {
-            if (!(rights & FOPEN_WRITE)) return E_ACCESS_DENIED;
-            if (a.len == 0) return 0;
-            if (a.len > 0x7FFFFFFFu) return E_OUT_OF_RANGE;
-            if (!user_ptr_readable(a.data, a.len)) return E_BAD_ADDRESS;
-            /* the offset cap is the ABI's, so refuse rather than wrap */
-            if (f->off > 0x7FFFFFFFu - a.len) return E_OUT_OF_RANGE;
-
-            /* APPEND means "at the end as it is now", not "at the end as it was
-               when you opened it" - re-read the size each time, so two writers
-               appending to one file do not overwrite each other. */
-            if (f->flags & FOPEN_APPEND) {
-                struct cxfs_entry e;
-                if (cxfs_read_entry(f->entry, &e) != 0) return E_IO;
-                f->off = (uint32_t)e.size;
-            }
-
-            rc = cxfs_write_at(f->entry, f->off, user_ptr(a.data), a.len);
-            if (rc < 0) return abi_err(rc);
-            f->off += (uint32_t)rc;
-            return rc;
-        }
-
-        case FILE_OP_SEEK: {
-
-            struct cxfs_entry e;
-            if (cxfs_read_entry(f->entry, &e) != 0) return E_IO;
-            uint32_t size = (e.size > 0x7FFFFFFFull) ? 0x7FFFFFFFu : (uint32_t)e.size;
-
-            int64_t base;
-            switch (a.flags) {
-                case FSEEK_SET: base = 0;              break;
-                case FSEEK_CUR: base = (int64_t)f->off; break;
-                case FSEEK_END: base = (int64_t)size;  break;
-                default: return E_INVALID_ARGS;
-            }
-            int64_t pos = base + (int64_t)a.off;
-            if (pos < 0 || pos > 0x7FFFFFFF) return E_OUT_OF_RANGE;
-            /* Seeking past EOF is allowed and allocates nothing: the hole only
-               becomes real on the write that reaches it. */
-            f->off = (uint32_t)pos;
-            return (int)f->off;
-        }
-
-        case FILE_OP_TELL: {
-            return (int)f->off;
-        }
-
-        case FILE_OP_TRUNC: {
-            if (!(rights & FOPEN_WRITE)) return E_ACCESS_DENIED;
-            if (a.off < 0) return E_INVALID_ARGS;
-            return abi_err(cxfs_truncate(f->entry, (uint64_t)(uint32_t)a.off));
-        }
-
-        case FILE_OP_STAT:
-        case FILE_OP_FSTAT: {
-            uint32_t id;
-            if (a.op == FILE_OP_STAT) {
-                if ((rc = copy_path_in(a.path, path, sizeof path)) < 0) return rc;
-                int r = lookup(path, cwd);
-                if (r < 0) return E_NOT_FOUND;
-                id = (uint32_t)r;
-            } else {
-                id = f->entry;
-            }
-            if (!user_ptr_writable(a.data, sizeof(struct file_stat))) return E_BAD_ADDRESS;
-            struct cxfs_entry e;
-            if (cxfs_read_entry(id, &e) != 0) return E_IO;
-            fill_stat(&e, (struct file_stat *)user_ptr(a.data));
-            return E_OK;
-        }
-
-        case FILE_OP_READDIR: {
-            if ((rc = copy_path_in(a.path, path, sizeof path)) < 0) return rc;
-            if (!user_ptr_writable(a.data, sizeof(struct file_stat))) return E_BAD_ADDRESS;
-
-            int r = lookup(path, cwd);
-            if (r < 0) return E_NOT_FOUND;
-            struct cxfs_entry dir;
-            if (cxfs_read_entry((uint32_t)r, &dir) != 0) return E_IO;
-            if (dir.type != CXFS_TYPE_DIR) return E_NOT_DIR;
-
-            rd_want  = a.len;
-            rd_seen  = 0;
-            rd_found = 0;
-            cxfs_list_dir((uint32_t)r, rd_cb);
-            if (!rd_found) return 0;                 /* index past the end */
-            fill_stat(&rd_entry, (struct file_stat *)user_ptr(a.data));
-            return 1;
-        }
-
-        /* Commit what has been written to stable media.
-         *
-         * Takes no arguments and touches no handle: CXFS writes through, so
-         * there is nothing buffered in the filesystem to pick out - what this
-         * asks is that the DEVICE commit its cache, which is per-volume and
-         * not per-file. Returning E_IO when the device cannot confirm is the
-         * point; a caller told a write is durable when it is not is worse off
-         * than one told nothing. */
-        case FILE_OP_SYNC:
-            return (cxfs_sync() == 0) ? E_OK : E_IO;
-
-        /* Without FLOCK_WAIT a conflict is E_BUSY at once. With it the thread
-           sleeps until a release, then looks again, as Serenity's FlockBlocker
-           does - unless waiting could never end, which is E_DEADLOCK. A
-           conversion that conflicts leaves the lock already held unchanged. */
-        case FILE_OP_LOCK: {
-            uint32_t mode = a.flags & ~(uint32_t)FLOCK_WAIT;
-            if (mode != FLOCK_SHARED && mode != FLOCK_EXCLUSIVE) return E_INVALID_ARGS;
-            if (a.off < 0) return E_INVALID_ARGS;
-            uint32_t start = (uint32_t)a.off;
-
-            int me = thread_current_id();
-            while (lock_conflict(f, f->entry, start, a.len, mode, 0) >= 0) {
-                if (!(a.flags & FLOCK_WAIT)) return E_BUSY;
-                for (struct lock_wait *w = waiters; w; w = w->next) w->seen = 0;
-                if (lock_cycle(me, f, f->entry, start, a.len, mode)) return E_DEADLOCK;
-
-                struct lock_wait self = { .tid = me, .of = f, .entry = f->entry,
-                                          .start = start, .len = a.len, .mode = mode,
-                                          .next = waiters };
-                waiters = &self;
-                thread_wait();
-                struct lock_wait **pp = &waiters;
-                while (*pp != &self) pp = &(*pp)->next;
-                *pp = self.next;
-            }
-            return lock_apply(f, start, a.len, mode);
-        }
-
-        case FILE_OP_UNLOCK: {
-            if (a.off < 0) return E_INVALID_ARGS;
-            lock_drop(f, (uint32_t)a.off, a.len);
-            return E_OK;
-        }
-
-        case FILE_OP_MKDIR: {
-            if ((rc = copy_path_in(a.path, path, sizeof path)) < 0) return rc;
-            if (cxfs_resolve(path, cwd) >= 0) return E_ALREADY_EXISTS;
-            uint32_t parent;
-            char leaf[FILE_NAME_MAX];
-            if ((rc = resolve_parent(path, cwd, &parent, leaf, sizeof leaf)) < 0) return rc;
-            return (cxfs_create_entry(parent, leaf, CXFS_TYPE_DIR) < 0) ? E_IO : E_OK;
-        }
-
-        case FILE_OP_UNLINK: {
-            if ((rc = copy_path_in(a.path, path, sizeof path)) < 0) return rc;
-            int r = lookup(path, cwd);
-            if (r < 0) return E_NOT_FOUND;
-            if (r == 0) return E_INVALID_ARGS;                    /* never the root */
-
-            struct cxfs_entry e;
-            if (cxfs_read_entry((uint32_t)r, &e) != 0) return E_IO;
-
-            /* An unlink is a write to the entry, so it needs the entry's write
-               permission - cxfs_delete_entry does not check, because its other
-               caller is the kernel tidying up after itself. */
-            if (thread_current_uid() != 0) {
-                uint16_t need = (thread_current_uid() == e.owner_uid)
-                                ? CXFS_PERM_OW : CXFS_PERM_TW;
-                if (!(e.permissions & need)) return E_ACCESS_DENIED;
-            }
-            if (e.type == CXFS_TYPE_DIR && cxfs_count_children((uint32_t)r) > 0)
-                return E_INVALID_ARGS;                            /* must be empty */
-            if ((uint32_t)r == cwd) return E_INVALID_ARGS;         /* not your own cwd */
-
-            /* Still open somewhere: the name goes now, the entry at the last
-               close (see "unlinked while open" above). */
-            if (entry_open((uint32_t)r)) {
-                struct of_match m = { (uint32_t)r, 0, 1 };
-                ocache_walk(&of_cache, of_match_fn, &m);
-                return E_OK;
-            }
-            return (cxfs_delete_entry((uint32_t)r) == 0) ? E_OK : E_IO;
-        }
-
-        case FILE_OP_RENAME: {
-            if ((rc = copy_path_in(a.path, path, sizeof path)) < 0) return rc;
-            char newname[FILE_NAME_MAX];
-            if ((rc = copy_path_in(a.path2, newname, sizeof newname)) < 0) return rc;
-
-            if (names_self(path)) return E_INVALID_ARGS;   /* "." / ".." name a directory,
-                                                       not an entry within it */
-            int r = lookup(path, cwd);
-            if (r < 0) return E_NOT_FOUND;
-            if (r == 0) return E_INVALID_ARGS;
-
-            /* cxfs_rename deliberately does not check for collisions (its doc
-               says the caller does), so check here - otherwise two entries in
-               one directory share a name and lookups become order-dependent. */
-            struct cxfs_entry e;
-            if (cxfs_read_entry((uint32_t)r, &e) != 0) return E_IO;
-            int clash = cxfs_find_in_dir(e.parent_id, newname);
-            if (clash >= 0 && clash != r) return E_ALREADY_EXISTS;
-
-            return (cxfs_rename((uint32_t)r, newname) == 0) ? E_OK : E_INVALID_ARGS;
-        }
-
-        case FILE_OP_CHDIR: {
-            if ((rc = copy_path_in(a.path, path, sizeof path)) < 0) return rc;
-            int r = lookup(path, cwd);
-            if (r < 0) return E_NOT_FOUND;
-            struct cxfs_entry e;
-            if (cxfs_read_entry((uint32_t)r, &e) != 0) return E_IO;
-            if (e.type != CXFS_TYPE_DIR) return E_NOT_DIR;
-            thread_set_cwd(thread_current_id(), (uint32_t)r);
-            return E_OK;
-        }
-
-        case FILE_OP_GETCWD: {
-            if (a.len == 0) return E_BUFFER_TOO_SMALL;
-            if (a.len > FILE_PATH_MAX) a.len = FILE_PATH_MAX;
-            if (!user_ptr_writable(a.data, a.len)) return E_BAD_ADDRESS;
-            cxfs_path_of(cwd, path, (int)a.len);
-            uint32_t n = 0;
-            while (n + 1 < a.len && path[n]) n++;
-            memcpy(user_ptr(a.data), path, n);
-            ((char *)user_ptr(a.data))[n] = '\0';
-            return (int)n;
-        }
-
-        default:
-            return E_INVALID_ARGS;
     }
+
+    /* Take the handle slot LAST. Everything above can fail, and a slot
+       claimed before a failure would be a handle leaked per failed
+       open - the sort of thing a program retrying in a loop turns into
+       an exhausted table. */
+    struct open_file *nf = of_alloc();
+    if (!nf) return E_NO_MEMORY;
+    nf->entry = (uint32_t)id;
+    nf->flags = flags;
+    nf->off   = 0;
+    if (flags & FOPEN_APPEND) {
+        struct cxfs_entry e;
+        if (cxfs_read_entry(nf->entry, &e) == 0) nf->off = (uint32_t)e.size;
+    }
+
+    int32_t h = htab_install(thread_htab(thread_current_id()), &nf->hdr,
+                             (flags & (FOPEN_READ | FOPEN_WRITE)) | HRIGHT_DUPLICATE, 0);
+    /* The open's own reference goes either way: on success the handle
+       holds the file; on failure it goes back to its cache here. */
+    kobj_unref(&nf->hdr);
+    return h < 0 ? E_NO_RESOURCES : h;
 }
 
-int sys_file_op(uint32_t ua) {
-    struct file_op_args a;          /* copy in: never re-read user memory */
-    if (user_copy_in(&a, ua, sizeof a) != 0) return E_BAD_ADDRESS;
-
-    if (!cxfs_is_mounted()) return E_IO;
+int sys_file_close(int32_t h) {
+    struct open_file *f;
+    uint32_t rights;
+    int rc = file_enter(h, &f, &rights);
+    if (rc < 0) return rc;
+    /* The file itself goes when file_leave drops the last reference, and the
+       delete of an unlinked file runs after that. */
+    rc = (htab_close(thread_htab(thread_current_id()), h) != 0) ? E_BAD_HANDLE : E_OK;
+    file_leave(f, rc);
     bury_pending();
-
-    /* The handle is resolved once, here, and the reference held until the
-       operation returns: a lock wait blocks, and the file must not be freed
-       under it, on this CPU or another. */
-    struct open_file *f = NULL;
-    uint32_t rights = 0;
-    if (names_handle(a.op) && !(f = of_ref(a.handle, &rights))) return E_BAD_HANDLE;
-
-    int rc = file_op(a, f, rights);
-
-    if (f) kobj_unref(&f->hdr);
-    if (a.op == FILE_OP_CLOSE) bury_pending();   /* the last close of an unlinked file */
     return rc;
+}
+
+static int file_read(struct open_file *f, uint32_t rights, uint32_t buf, uint32_t n) {
+    if (!(rights & FOPEN_READ)) return E_ACCESS_DENIED;
+    if (n == 0) return 0;
+    if (n > 0x7FFFFFFFu) return E_OUT_OF_RANGE;
+    if (!user_ptr_writable(buf, n)) return E_BAD_ADDRESS;
+
+    int rc = cxfs_read_at(f->entry, f->off, user_ptr(buf), n);
+    if (rc < 0) return abi_err(rc);
+    f->off += (uint32_t)rc;
+    return rc;
+}
+
+int sys_file_read(int32_t h, uint32_t buf, uint32_t n) {
+    struct open_file *f;
+    uint32_t rights;
+    int rc = file_enter(h, &f, &rights);
+    return rc < 0 ? rc : file_leave(f, file_read(f, rights, buf, n));
+}
+
+static int file_write(struct open_file *f, uint32_t rights, uint32_t buf, uint32_t n) {
+    if (!(rights & FOPEN_WRITE)) return E_ACCESS_DENIED;
+    if (n == 0) return 0;
+    if (n > 0x7FFFFFFFu) return E_OUT_OF_RANGE;
+    if (!user_ptr_readable(buf, n)) return E_BAD_ADDRESS;
+    /* the offset cap is the ABI's, so refuse rather than wrap */
+    if (f->off > 0x7FFFFFFFu - n) return E_OUT_OF_RANGE;
+
+    /* APPEND means "at the end as it is now", not "at the end as it was
+       when you opened it" - re-read the size each time, so two writers
+       appending to one file do not overwrite each other. */
+    if (f->flags & FOPEN_APPEND) {
+        struct cxfs_entry e;
+        if (cxfs_read_entry(f->entry, &e) != 0) return E_IO;
+        f->off = (uint32_t)e.size;
+    }
+
+    int rc = cxfs_write_at(f->entry, f->off, user_ptr(buf), n);
+    if (rc < 0) return abi_err(rc);
+    f->off += (uint32_t)rc;
+    return rc;
+}
+
+int sys_file_write(int32_t h, uint32_t buf, uint32_t n) {
+    struct open_file *f;
+    uint32_t rights;
+    int rc = file_enter(h, &f, &rights);
+    return rc < 0 ? rc : file_leave(f, file_write(f, rights, buf, n));
+}
+
+static int file_seek(struct open_file *f, int32_t off, uint32_t origin) {
+    struct cxfs_entry e;
+    if (cxfs_read_entry(f->entry, &e) != 0) return E_IO;
+    uint32_t size = (e.size > 0x7FFFFFFFull) ? 0x7FFFFFFFu : (uint32_t)e.size;
+
+    int64_t base;
+    switch (origin) {
+        case FSEEK_SET: base = 0;              break;
+        case FSEEK_CUR: base = (int64_t)f->off; break;
+        case FSEEK_END: base = (int64_t)size;  break;
+        default: return E_INVALID_ARGS;
+    }
+    int64_t pos = base + (int64_t)off;
+    if (pos < 0 || pos > 0x7FFFFFFF) return E_OUT_OF_RANGE;
+    /* Seeking past EOF is allowed and allocates nothing: the hole only
+       becomes real on the write that reaches it. */
+    f->off = (uint32_t)pos;
+    return (int)f->off;
+}
+
+int sys_file_seek(int32_t h, int32_t off, uint32_t origin) {
+    struct open_file *f;
+    uint32_t rights;
+    int rc = file_enter(h, &f, &rights);
+    return rc < 0 ? rc : file_leave(f, file_seek(f, off, origin));
+}
+
+int sys_file_tell(int32_t h) {
+    struct open_file *f;
+    uint32_t rights;
+    int rc = file_enter(h, &f, &rights);
+    return rc < 0 ? rc : file_leave(f, (int)f->off);
+}
+
+static int file_truncate(struct open_file *f, uint32_t rights, int32_t size) {
+    if (!(rights & FOPEN_WRITE)) return E_ACCESS_DENIED;
+    if (size < 0) return E_INVALID_ARGS;
+    return abi_err(cxfs_truncate(f->entry, (uint64_t)(uint32_t)size));
+}
+
+int sys_file_truncate(int32_t h, int32_t size) {
+    struct open_file *f;
+    uint32_t rights;
+    int rc = file_enter(h, &f, &rights);
+    return rc < 0 ? rc : file_leave(f, file_truncate(f, rights, size));
+}
+
+/* STAT and FSTAT: entry `id` into the caller's file_stat at `st`. */
+static int stat_out(uint32_t id, uint32_t st) {
+    if (!user_ptr_writable(st, sizeof(struct file_stat))) return E_BAD_ADDRESS;
+    struct cxfs_entry e;
+    if (cxfs_read_entry(id, &e) != 0) return E_IO;
+    fill_stat(&e, (struct file_stat *)user_ptr(st));
+    return E_OK;
+}
+
+int sys_file_stat(uint32_t upath, uint32_t st) {
+    char path[FILE_PATH_MAX];
+    int rc;
+    if ((rc = fs_enter()) < 0) return rc;
+    if ((rc = copy_path_in(upath, path, sizeof path)) < 0) return rc;
+    int r = lookup(path, thread_current_cwd());
+    if (r < 0) return E_NOT_FOUND;
+    return stat_out((uint32_t)r, st);
+}
+
+int sys_file_fstat(int32_t h, uint32_t st) {
+    struct open_file *f;
+    uint32_t rights;
+    int rc = file_enter(h, &f, &rights);
+    return rc < 0 ? rc : file_leave(f, stat_out(f->entry, st));
+}
+
+int sys_file_readdir(uint32_t upath, uint32_t index, uint32_t st) {
+    char path[FILE_PATH_MAX];
+    int rc;
+    if ((rc = fs_enter()) < 0) return rc;
+    if ((rc = copy_path_in(upath, path, sizeof path)) < 0) return rc;
+    if (!user_ptr_writable(st, sizeof(struct file_stat))) return E_BAD_ADDRESS;
+
+    int r = lookup(path, thread_current_cwd());
+    if (r < 0) return E_NOT_FOUND;
+    struct cxfs_entry dir;
+    if (cxfs_read_entry((uint32_t)r, &dir) != 0) return E_IO;
+    if (dir.type != CXFS_TYPE_DIR) return E_NOT_DIR;
+
+    rd_want  = index;
+    rd_seen  = 0;
+    rd_found = 0;
+    cxfs_list_dir((uint32_t)r, rd_cb);
+    if (!rd_found) return 0;                 /* index past the end */
+    fill_stat(&rd_entry, (struct file_stat *)user_ptr(st));
+    return 1;
+}
+
+int sys_file_mkdir(uint32_t upath) {
+    uint32_t cwd = thread_current_cwd();
+    char path[FILE_PATH_MAX];
+    int rc;
+    if ((rc = fs_enter()) < 0) return rc;
+    if ((rc = copy_path_in(upath, path, sizeof path)) < 0) return rc;
+    if (cxfs_resolve(path, cwd) >= 0) return E_ALREADY_EXISTS;
+    uint32_t parent;
+    char leaf[FILE_NAME_MAX];
+    if ((rc = resolve_parent(path, cwd, &parent, leaf, sizeof leaf)) < 0) return rc;
+    return (cxfs_create_entry(parent, leaf, CXFS_TYPE_DIR) < 0) ? E_IO : E_OK;
+}
+
+int sys_file_unlink(uint32_t upath) {
+    uint32_t cwd = thread_current_cwd();
+    char path[FILE_PATH_MAX];
+    int rc;
+    if ((rc = fs_enter()) < 0) return rc;
+    if ((rc = copy_path_in(upath, path, sizeof path)) < 0) return rc;
+    int r = lookup(path, cwd);
+    if (r < 0) return E_NOT_FOUND;
+    if (r == 0) return E_INVALID_ARGS;                    /* never the root */
+
+    struct cxfs_entry e;
+    if (cxfs_read_entry((uint32_t)r, &e) != 0) return E_IO;
+
+    /* An unlink is a write to the entry, so it needs the entry's write
+       permission - cxfs_delete_entry does not check, because its other
+       caller is the kernel tidying up after itself. */
+    if (thread_current_uid() != 0) {
+        uint16_t need = (thread_current_uid() == e.owner_uid)
+                        ? CXFS_PERM_OW : CXFS_PERM_TW;
+        if (!(e.permissions & need)) return E_ACCESS_DENIED;
+    }
+    if (e.type == CXFS_TYPE_DIR && cxfs_count_children((uint32_t)r) > 0)
+        return E_INVALID_ARGS;                            /* must be empty */
+    if ((uint32_t)r == cwd) return E_INVALID_ARGS;         /* not your own cwd */
+
+    /* Still open somewhere: the name goes now, the entry at the last
+       close (see "unlinked while open" above). */
+    if (entry_open((uint32_t)r)) {
+        struct of_match m = { (uint32_t)r, 0, 1 };
+        ocache_walk(&of_cache, of_match_fn, &m);
+        return E_OK;
+    }
+    return (cxfs_delete_entry((uint32_t)r) == 0) ? E_OK : E_IO;
+}
+
+int sys_file_rename(uint32_t upath, uint32_t unewname) {
+    char path[FILE_PATH_MAX];
+    char newname[FILE_NAME_MAX];
+    int rc;
+    if ((rc = fs_enter()) < 0) return rc;
+    if ((rc = copy_path_in(upath, path, sizeof path)) < 0) return rc;
+    if ((rc = copy_path_in(unewname, newname, sizeof newname)) < 0) return rc;
+
+    if (names_self(path)) return E_INVALID_ARGS;   /* "." / ".." name a directory,
+                                               not an entry within it */
+    int r = lookup(path, thread_current_cwd());
+    if (r < 0) return E_NOT_FOUND;
+    if (r == 0) return E_INVALID_ARGS;
+
+    /* cxfs_rename deliberately does not check for collisions (its doc
+       says the caller does), so check here - otherwise two entries in
+       one directory share a name and lookups become order-dependent. */
+    struct cxfs_entry e;
+    if (cxfs_read_entry((uint32_t)r, &e) != 0) return E_IO;
+    int clash = cxfs_find_in_dir(e.parent_id, newname);
+    if (clash >= 0 && clash != r) return E_ALREADY_EXISTS;
+
+    return (cxfs_rename((uint32_t)r, newname) == 0) ? E_OK : E_INVALID_ARGS;
+}
+
+int sys_file_chdir(uint32_t upath) {
+    char path[FILE_PATH_MAX];
+    int rc;
+    if ((rc = fs_enter()) < 0) return rc;
+    if ((rc = copy_path_in(upath, path, sizeof path)) < 0) return rc;
+    int r = lookup(path, thread_current_cwd());
+    if (r < 0) return E_NOT_FOUND;
+    struct cxfs_entry e;
+    if (cxfs_read_entry((uint32_t)r, &e) != 0) return E_IO;
+    if (e.type != CXFS_TYPE_DIR) return E_NOT_DIR;
+    thread_set_cwd(thread_current_id(), (uint32_t)r);
+    return E_OK;
+}
+
+int sys_file_getcwd(uint32_t buf, uint32_t cap) {
+    char path[FILE_PATH_MAX];
+    int rc;
+    if ((rc = fs_enter()) < 0) return rc;
+    if (cap == 0) return E_BUFFER_TOO_SMALL;
+    if (cap > FILE_PATH_MAX) cap = FILE_PATH_MAX;
+    if (!user_ptr_writable(buf, cap)) return E_BAD_ADDRESS;
+    cxfs_path_of(thread_current_cwd(), path, (int)cap);
+    uint32_t n = 0;
+    while (n + 1 < cap && path[n]) n++;
+    memcpy(user_ptr(buf), path, n);
+    ((char *)user_ptr(buf))[n] = '\0';
+    return (int)n;
+}
+
+/* Commit what has been written to stable media.
+ *
+ * Takes no arguments and touches no handle: CXFS writes through, so
+ * there is nothing buffered in the filesystem to pick out - what this
+ * asks is that the DEVICE commit its cache, which is per-volume and
+ * not per-file. Returning E_IO when the device cannot confirm is the
+ * point; a caller told a write is durable when it is not is worse off
+ * than one told nothing. */
+int sys_file_sync(void) {
+    int rc = fs_enter();
+    if (rc < 0) return rc;
+    return (cxfs_sync() == 0) ? E_OK : E_IO;
+}
+
+/* Without FLOCK_WAIT a conflict is E_BUSY at once. With it the thread
+   sleeps until a release, then looks again, as Serenity's FlockBlocker
+   does - unless waiting could never end, which is E_DEADLOCK. A
+   conversion that conflicts leaves the lock already held unchanged. */
+static int file_lock(struct open_file *f, int32_t off, uint32_t len, uint32_t flags) {
+    uint32_t mode = flags & ~(uint32_t)FLOCK_WAIT;
+    if (mode != FLOCK_SHARED && mode != FLOCK_EXCLUSIVE) return E_INVALID_ARGS;
+    if (off < 0) return E_INVALID_ARGS;
+    uint32_t start = (uint32_t)off;
+
+    int me = thread_current_id();
+    while (lock_conflict(f, f->entry, start, len, mode, 0) >= 0) {
+        if (!(flags & FLOCK_WAIT)) return E_BUSY;
+        for (struct lock_wait *w = waiters; w; w = w->next) w->seen = 0;
+        if (lock_cycle(me, f, f->entry, start, len, mode)) return E_DEADLOCK;
+
+        struct lock_wait self = { .tid = me, .of = f, .entry = f->entry,
+                                  .start = start, .len = len, .mode = mode,
+                                  .next = waiters };
+        waiters = &self;
+        thread_wait();
+        struct lock_wait **pp = &waiters;
+        while (*pp != &self) pp = &(*pp)->next;
+        *pp = self.next;
+    }
+    return lock_apply(f, start, len, mode);
+}
+
+int sys_file_lock(int32_t h, int32_t start, uint32_t len, uint32_t mode) {
+    struct open_file *f;
+    uint32_t rights;
+    int rc = file_enter(h, &f, &rights);
+    return rc < 0 ? rc : file_leave(f, file_lock(f, start, len, mode));
+}
+
+int sys_file_unlock(int32_t h, int32_t start, uint32_t len) {
+    struct open_file *f;
+    uint32_t rights;
+    int rc = file_enter(h, &f, &rights);
+    if (rc < 0) return rc;
+    if (start < 0) return file_leave(f, E_INVALID_ARGS);
+    lock_drop(f, (uint32_t)start, len);
+    return file_leave(f, E_OK);
 }

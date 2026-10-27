@@ -34,7 +34,7 @@
  * line; bump both, and the DevKit's stamp, in the one commit that changes the
  * contract.
  */
-#define CXK_ABI_VERSION          8
+#define CXK_ABI_VERSION          9
 
 /*
  * ---- syscall numbers ----
@@ -147,9 +147,6 @@
  */
 #define SYS_FB_SET_FONT          0x46
 
-/* files 0x60-0x6F (privileged: GRANT_DISK) */
-#define SYS_FILE_OP              0x60           /* ebx = *file_op_args (GRANT_DISK) -> op-specific */
-
 /* process 0x70-0x7F (privileged) */
 #define SYS_SPAWN                0x70           /* ebx = *spawn_args (GRANT_SPAWN) -> pid */
 
@@ -172,6 +169,89 @@
 
 /* ebx = ms: idle the CPU (C1) that long, or until a key; 0 = until a key -> 0 */
 #define SYS_POWER_SLEEP          0x92
+
+/*
+ * files 0xA0-0xBF (privileged: GRANT_DISK). 32 numbers: the 18 calls did not
+ * fit 0x60-0x6F, which is free. Paths, offsets and handles: see "files" below.
+ * flags = FOPEN_*, one of FOPEN_READ / FOPEN_WRITE required -> a handle
+ */
+#define SYS_FILE_OPEN            0xA0
+#define SYS_FILE_CLOSE           0xA1
+
+/*
+ * -> bytes read, 0 at end of file. A short count is normal at the end, so a
+ * reader loops until it gets 0.
+ */
+#define SYS_FILE_READ            0xA2
+#define SYS_FILE_WRITE           0xA3           /* -> bytes written */
+
+/*
+ * origin = FSEEK_* -> the new offset. Past the end is allowed and allocates
+ * nothing until a write reaches it.
+ */
+#define SYS_FILE_SEEK            0xA4
+#define SYS_FILE_TELL            0xA5           /* -> the current offset */
+
+/* cut (or extend) the file to exactly size bytes; a negative size is refused */
+#define SYS_FILE_TRUNCATE        0xA6
+#define SYS_FILE_STAT            0xA7
+#define SYS_FILE_FSTAT           0xA8
+
+/*
+ * entry number index of the directory at path, into st -> 1 on a hit, 0 once
+ * the index is past the end
+ */
+#define SYS_FILE_READDIR         0xA9
+#define SYS_FILE_MKDIR           0xAA
+#define SYS_FILE_UNLINK          0xAB           /* a directory must be empty */
+
+/* newname is a bare name, not a path: the entry stays in its directory */
+#define SYS_FILE_RENAME          0xAC
+#define SYS_FILE_CHDIR           0xAD
+
+/* the working directory into buf, NUL-terminated -> its length */
+#define SYS_FILE_GETCWD          0xAE
+
+/*
+ * Commit everything written so far to stable media -> 0, or E_IO when the
+ * device cannot confirm it.
+ *
+ * Separate from WRITE on purpose: a sync per write costs a device cache
+ * flush on every byte, so it is the caller's decision - as fsync,
+ * FlushFileBuffers and VNOP_FSYNC all are. Anything that must survive a
+ * power cut writes, syncs, and only then treats the result as committed.
+ */
+#define SYS_FILE_SYNC            0xAF
+
+/*
+ * Advisory byte-range lock: len bytes from start (len 0 runs to the end of
+ * the file however it grows, so start 0 len 0 is the whole file), mode =
+ * FLOCK_SHARED or FLOCK_EXCLUSIVE, optionally | FLOCK_WAIT.
+ *
+ * A lock belongs to the OPEN FILE (the handle), not to the process and not
+ * to the file on disk - SerenityOS's model. Shared ranges overlap freely;
+ * an exclusive range overlaps nothing another open file holds, a second
+ * open in the same process included. A handle's own locks never conflict,
+ * so locking the same range again converts it. Closing the handle releases
+ * them all, however it goes (SYS_FILE_CLOSE, SYS_HANDLE_CLOSE, exit).
+ *
+ * A conflict is E_BUSY, or with FLOCK_WAIT the call sleeps until the
+ * conflicting locks are released - except when that could never happen (a
+ * conflicting lock is the caller's own, or its holder is waiting, directly
+ * or through others, on one of the caller's), which is E_DEADLOCK.
+ *
+ * Advisory: only another LOCK is refused. Opening, reading, writing and
+ * unlinking a locked file all still work, as they do on every Unix. Nothing
+ * is written to disk.
+ */
+#define SYS_FILE_LOCK            0xB0
+
+/*
+ * Drop this handle's locks lying wholly inside the range (start 0 len 0: all
+ * of them). Ranges are not split - unlock what was locked. E_OK even when
+ * nothing was held.
+ */
+#define SYS_FILE_UNLOCK          0xB1
 
 /*
  * ---- error codes (negative; returned in eax) ----
@@ -201,7 +281,7 @@
 #define E_NO_SPACE               (-21)          /* the volume is full */
 #define E_IO                     (-22)          /* disk or filesystem I/O failure */
 #define E_CORRUPT                (-23)          /* on-disk data failed a check */
-#define E_DEADLOCK               (-24)          /* waiting would never end (FILE_OP_LOCK) */
+#define E_DEADLOCK               (-24)          /* waiting would never end (SYS_FILE_LOCK) */
 #define E_PROTOCOL               (-25)          /* an IPC message did not match its interface */
 
 /*
@@ -518,7 +598,7 @@ struct vm_usage {
 };
 
 /*
- * ---- files (SYS_FILE_OP; GRANT_DISK) ----
+ * ---- files (SYS_FILE_*; GRANT_DISK) ----
  *
  * The filesystem as userspace sees it. CXFS itself is 64-bit throughout, but
  * X Native has no 64-bit integer type, so every offset and size crossing this
@@ -528,84 +608,26 @@ struct vm_usage {
  * 64-bit type in the language or an offset-hi field, and the cap is documented
  * here rather than silently truncating.
  *
- * A handle from FILE_OP_OPEN is an ordinary entry in the process's handle table
- * (abi sec 6), so SYS_HANDLE_CLOSE releases it as well as FILE_OP_CLOSE does,
+ * A handle from SYS_FILE_OPEN is an ordinary entry in the process's handle table
+ * (abi sec 6), so SYS_HANDLE_CLOSE releases it as well as SYS_FILE_CLOSE does,
  * and it is dropped with the rest of the table when the process exits.
  *
  * Paths are resolved against the process's cwd unless they start with '/'.
  */
-enum { /* file_op */
-    FILE_OP_OPEN = 0,                           /* path, flags=FOPEN_* -> handle */
-    FILE_OP_CLOSE = 1,                          /* handle */
-    FILE_OP_READ = 2,                           /* handle, data, len -> bytes read (0 at EOF) */
-    FILE_OP_WRITE = 3,                          /* handle, data, len -> bytes written */
-    FILE_OP_SEEK = 4,                           /* handle, off, flags=FSEEK_* -> the new offset */
-    FILE_OP_TELL = 5,                           /* handle -> the current offset */
-    FILE_OP_TRUNC = 6,                          /* handle, off = the new size */
-    FILE_OP_STAT = 7,                           /* path, data = *file_stat */
-    FILE_OP_FSTAT = 8,                          /* handle, data = *file_stat */
-    /*
-     * path = dir, len = index, data = *file_stat -> 1 on a hit, 0 once the
-     * index is past the end
-     */
-    FILE_OP_READDIR = 9,
-    FILE_OP_MKDIR = 10,                         /* path */
-    FILE_OP_UNLINK = 11,                        /* path (a directory must be empty) */
-    FILE_OP_RENAME = 12,                        /* path = existing, path2 = the new name */
-    FILE_OP_CHDIR = 13,                         /* path */
-    FILE_OP_GETCWD = 14,                        /* data = buffer, len = capacity -> length written */
-    /*
-     * Commit everything written so far to stable media. No arguments.
-     *
-     * Separate from WRITE on purpose: a sync per write costs a device cache
-     * flush on every byte, so it is the caller's decision - as fsync,
-     * FlushFileBuffers and VNOP_FSYNC all are. Anything that must survive a
-     * power cut writes, syncs, and only then treats the result as committed.
-     */
-    FILE_OP_SYNC = 15,
-    /*
-     * Advisory byte-range locks: handle, off = start, len = length (0 runs to
-     * the end of the file however it grows, so off 0 len 0 is the whole file),
-     * flags = FLOCK_SHARED or FLOCK_EXCLUSIVE, optionally | FLOCK_WAIT.
-     *
-     * A lock belongs to the OPEN FILE (the handle), not to the process and not
-     * to the file on disk - SerenityOS's model. Shared ranges overlap freely;
-     * an exclusive range overlaps nothing another open file holds, a second
-     * open in the same process included. A handle's own locks never conflict,
-     * so locking the same range again converts it. Closing the handle releases
-     * them all, however it goes (FILE_OP_CLOSE, SYS_HANDLE_CLOSE, exit).
-     *
-     * A conflict is E_BUSY, or with FLOCK_WAIT the call sleeps until the
-     * conflicting locks are released - except when that could never happen (a
-     * conflicting lock is the caller's own, or its holder is waiting, directly
-     * or through others, on one of the caller's), which is E_DEADLOCK.
-     *
-     * Advisory: only another LOCK is refused. Opening, reading, writing and
-     * unlinking a locked file all still work, as they do on every Unix. Nothing
-     * is written to disk.
-     */
-    FILE_OP_LOCK = 16,
-    /*
-     * handle, off, len: drop this handle's locks lying wholly inside the range
-     * (off 0 len 0: all of them). Ranges are not split - unlock what was
-     * locked. E_OK even when nothing was held.
-     */
-    FILE_OP_UNLOCK = 17,
-};
 
-/* FILE_OP_LOCK modes. Shared locks coexist; an exclusive lock excludes all. */
+/* SYS_FILE_LOCK modes. Shared locks coexist; an exclusive lock excludes all. */
 #define FLOCK_SHARED             1
 #define FLOCK_EXCLUSIVE          2
 #define FLOCK_WAIT               0x100          /* sleep until the lock can be had */
 
-/* FILE_OP_OPEN flags. One of FOPEN_READ / FOPEN_WRITE is required. */
+/* SYS_FILE_OPEN flags. One of FOPEN_READ / FOPEN_WRITE is required. */
 #define FOPEN_READ               0x01
 #define FOPEN_WRITE              0x02
 #define FOPEN_CREATE             0x04           /* create the file when it does not exist */
 #define FOPEN_TRUNC              0x08           /* cut an existing file to zero length on open */
 #define FOPEN_APPEND             0x10           /* every write goes to the current end of file */
 
-/* FILE_OP_SEEK origin */
+/* SYS_FILE_SEEK origin */
 #define FSEEK_SET                0
 #define FSEEK_CUR                1
 #define FSEEK_END                2
@@ -615,17 +637,6 @@ enum { /* file_op */
 #define FTYPE_DIR                2
 #define FILE_NAME_MAX            64             /* must equal CXFS_NAME_LEN */
 #define FILE_PATH_MAX            256            /* longest path a syscall will copy in */
-
-struct file_op_args {
-    uint32_t op;
-    int32_t handle;
-    uint32_t path;
-    uint32_t path2;                             /* RENAME: the new name */
-    uint32_t data;                              /* READ/WRITE buffer, or *file_stat */
-    uint32_t len;                               /* buffer length, or READDIR index */
-    int32_t off;                                /* SEEK offset (signed), TRUNC size */
-    uint32_t flags;                             /* FOPEN_* or FSEEK_* */
-};
 
 /*
  * Timestamps are unsigned epoch seconds truncated to 32 bits, which runs out in
@@ -704,7 +715,6 @@ CXK_ABI_STATIC_ASSERT(sizeof(struct fb_geometry) == 16, "ABI layout: fb_geometry
 CXK_ABI_STATIC_ASSERT(sizeof(struct net_ip_config) == 16, "ABI layout: net_ip_config");
 CXK_ABI_STATIC_ASSERT(sizeof(struct vm_map_args) == 32, "ABI layout: vm_map_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct vm_usage) == 8, "ABI layout: vm_usage");
-CXK_ABI_STATIC_ASSERT(sizeof(struct file_op_args) == 32, "ABI layout: file_op_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct file_stat) == 96, "ABI layout: file_stat");
 CXK_ABI_STATIC_ASSERT(sizeof(struct mouse_state) == 16, "ABI layout: mouse_state");
 CXK_ABI_STATIC_ASSERT(sizeof(struct log_entry) == 80, "ABI layout: log_entry");

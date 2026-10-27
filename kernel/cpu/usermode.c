@@ -210,12 +210,101 @@ int syscall_exec_path(uint32_t path, uint32_t a) {
     return sys_exec_path(path, a);
 }
 
-int syscall_file_op(uint32_t a) {
-    if (!(thread_current_caps() & GRANT_DISK)) {
-        klog_u32("GRANT", SEV_WARN, "file_op DENIED for pid ", (uint32_t)thread_current_pid(), LOG_COLOR_VALUE, " (no GRANT_DISK)");
-        return E_ACCESS_DENIED;
-    }
-    return sys_file_op(a);
+/* The eighteen file calls share one gate, as the network calls do. */
+static int disk_granted(void) {
+    if (thread_current_caps() & GRANT_DISK) return 1;
+    klog_u32("GRANT", SEV_WARN, "file DENIED for pid ", (uint32_t)thread_current_pid(), LOG_COLOR_VALUE, " (no GRANT_DISK)");
+    return 0;
+}
+
+int syscall_file_open(uint32_t path, uint32_t flags) {
+    if (!disk_granted()) return E_ACCESS_DENIED;
+    return sys_file_open(path, flags);
+}
+
+int syscall_file_close(int32_t h) {
+    if (!disk_granted()) return E_ACCESS_DENIED;
+    return sys_file_close(h);
+}
+
+int syscall_file_read(int32_t h, uint32_t buf, uint32_t n) {
+    if (!disk_granted()) return E_ACCESS_DENIED;
+    return sys_file_read(h, buf, n);
+}
+
+int syscall_file_write(int32_t h, uint32_t buf, uint32_t n) {
+    if (!disk_granted()) return E_ACCESS_DENIED;
+    return sys_file_write(h, buf, n);
+}
+
+int syscall_file_seek(int32_t h, int32_t off, uint32_t origin) {
+    if (!disk_granted()) return E_ACCESS_DENIED;
+    return sys_file_seek(h, off, origin);
+}
+
+int syscall_file_tell(int32_t h) {
+    if (!disk_granted()) return E_ACCESS_DENIED;
+    return sys_file_tell(h);
+}
+
+int syscall_file_truncate(int32_t h, int32_t size) {
+    if (!disk_granted()) return E_ACCESS_DENIED;
+    return sys_file_truncate(h, size);
+}
+
+int syscall_file_stat(uint32_t path, uint32_t st) {
+    if (!disk_granted()) return E_ACCESS_DENIED;
+    return sys_file_stat(path, st);
+}
+
+int syscall_file_fstat(int32_t h, uint32_t st) {
+    if (!disk_granted()) return E_ACCESS_DENIED;
+    return sys_file_fstat(h, st);
+}
+
+int syscall_file_readdir(uint32_t path, uint32_t index, uint32_t st) {
+    if (!disk_granted()) return E_ACCESS_DENIED;
+    return sys_file_readdir(path, index, st);
+}
+
+int syscall_file_mkdir(uint32_t path) {
+    if (!disk_granted()) return E_ACCESS_DENIED;
+    return sys_file_mkdir(path);
+}
+
+int syscall_file_unlink(uint32_t path) {
+    if (!disk_granted()) return E_ACCESS_DENIED;
+    return sys_file_unlink(path);
+}
+
+int syscall_file_rename(uint32_t path, uint32_t newname) {
+    if (!disk_granted()) return E_ACCESS_DENIED;
+    return sys_file_rename(path, newname);
+}
+
+int syscall_file_chdir(uint32_t path) {
+    if (!disk_granted()) return E_ACCESS_DENIED;
+    return sys_file_chdir(path);
+}
+
+int syscall_file_getcwd(uint32_t buf, uint32_t cap) {
+    if (!disk_granted()) return E_ACCESS_DENIED;
+    return sys_file_getcwd(buf, cap);
+}
+
+int syscall_file_sync(void) {
+    if (!disk_granted()) return E_ACCESS_DENIED;
+    return sys_file_sync();
+}
+
+int syscall_file_lock(int32_t h, int32_t start, uint32_t len, uint32_t mode) {
+    if (!disk_granted()) return E_ACCESS_DENIED;
+    return sys_file_lock(h, start, len, mode);
+}
+
+int syscall_file_unlock(int32_t h, int32_t start, uint32_t len) {
+    if (!disk_granted()) return E_ACCESS_DENIED;
+    return sys_file_unlock(h, start, len);
 }
 
 /* The seven framebuffer calls share one gate, as the power calls do. */
@@ -589,16 +678,15 @@ done:
 }
 
 /* ---- file syscall test -----------------------------------------------------
- * Drives SYS_FILE_OP the way ring 3 does, short of the int 0x80 gate itself
+ * Drives SYS_FILE_* the way ring 3 does, short of the int 0x80 gate itself
  * (which the other syscalls already prove). The point of doing it from here
  * rather than from ktest.c is map_user_page: the args and buffers have to live
  * in a user mapping or user_ptr_readable rejects them, which is exactly the
  * check that would otherwise go untested until a real program tripped it.
  *
- * Goes through syscall_dispatch rather than calling sys_file_op directly, so
+ * Goes through syscall_dispatch rather than calling sys_file_* directly, so
  * the GRANT_DISK gate is on the path too.
  */
-#define FT_ARGS  (TEST_CODE_VIRT + 0x000)
 #define FT_PATH  (TEST_CODE_VIRT + 0x100)
 #define FT_PATH2 (TEST_CODE_VIRT + 0x180)
 #define FT_DATA  (TEST_CODE_VIRT + 0x200)
@@ -648,18 +736,34 @@ static const char *ft_join(const char *pre, const char *leaf) {
     return ft_abs;
 }
 
-static int ft_call(uint32_t op, int handle, uint32_t path, uint32_t data,
+/* One SYS_FILE_* call, its arguments in the registers abi/kernel.xfil gives
+   them: the tests name every argument the same way for every call, and this
+   places them, so a handler reading the wrong register fails its test. RENAME's
+   new name is always FT_PATH2. */
+static int ft_call(uint32_t nr, int handle, uint32_t path, uint32_t data,
                    uint32_t len, int32_t off, uint32_t flags) {
-    struct file_op_args *a = (struct file_op_args *)FT_ARGS;
-    a->op     = op;
-    a->handle = handle;
-    a->path   = path;
-    a->path2  = FT_PATH2;
-    a->data   = data;
-    a->len    = len;
-    a->off    = off;
-    a->flags  = flags;
-    return syscall_dispatch(SYS_FILE_OP, FT_ARGS, 0, 0, 0, 0);
+    uint32_t h = (uint32_t)handle, o = (uint32_t)off;
+    switch (nr) {
+        case SYS_FILE_OPEN:     return syscall_dispatch(nr, path, flags, 0, 0, 0);
+        case SYS_FILE_CLOSE:
+        case SYS_FILE_TELL:     return syscall_dispatch(nr, h, 0, 0, 0, 0);
+        case SYS_FILE_READ:
+        case SYS_FILE_WRITE:    return syscall_dispatch(nr, h, data, len, 0, 0);
+        case SYS_FILE_SEEK:     return syscall_dispatch(nr, h, o, flags, 0, 0);
+        case SYS_FILE_TRUNCATE: return syscall_dispatch(nr, h, o, 0, 0, 0);
+        case SYS_FILE_STAT:     return syscall_dispatch(nr, path, data, 0, 0, 0);
+        case SYS_FILE_FSTAT:    return syscall_dispatch(nr, h, data, 0, 0, 0);
+        case SYS_FILE_READDIR:  return syscall_dispatch(nr, path, len, data, 0, 0);
+        case SYS_FILE_MKDIR:
+        case SYS_FILE_UNLINK:
+        case SYS_FILE_CHDIR:    return syscall_dispatch(nr, path, 0, 0, 0, 0);
+        case SYS_FILE_RENAME:   return syscall_dispatch(nr, path, FT_PATH2, 0, 0, 0);
+        case SYS_FILE_GETCWD:   return syscall_dispatch(nr, data, len, 0, 0, 0);
+        case SYS_FILE_SYNC:     return syscall_dispatch(nr, 0, 0, 0, 0, 0);
+        case SYS_FILE_LOCK:     return syscall_dispatch(nr, h, o, len, flags, 0);
+        case SYS_FILE_UNLOCK:   return syscall_dispatch(nr, h, o, len, 0, 0);
+        default:                return E_INTERNAL;      /* not a file call: a test bug */
+    }
 }
 
 int usermode_file_test(void) {
@@ -686,7 +790,7 @@ int usermode_file_test(void) {
 
     /* --- create, write, read back through one handle --- */
     ft_strp(FT_PATH, scratch, "/kt_sys.txt");
-    int h = ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0,
+    int h = ft_call(SYS_FILE_OPEN, 0, FT_PATH, 0, 0, 0,
                     FOPEN_READ | FOPEN_WRITE | FOPEN_CREATE | FOPEN_TRUNC);
     step++;
     if (h < 0) goto done;
@@ -695,9 +799,9 @@ int usermode_file_test(void) {
 
     ft_str(FT_DATA, "hello world");
     step++;
-    if (ft_call(FILE_OP_WRITE, h, 0, FT_DATA, 11, 0, 0) != 11) goto done;
+    if (ft_call(SYS_FILE_WRITE, h, 0, FT_DATA, 11, 0, 0) != 11) goto done;
     step++;
-    if (ft_call(FILE_OP_TELL,  h, 0, 0, 0, 0, 0) != 11) goto done;
+    if (ft_call(SYS_FILE_TELL,  h, 0, 0, 0, 0, 0) != 11) goto done;
 
     /* --- a duplicate narrowed to read cannot write, though the file was
        opened for both: the handle's rights decide, not the open flags. It
@@ -732,98 +836,119 @@ int usermode_file_test(void) {
     step++;
     if (oi_call(d, OBJINFO_BASIC, (uint32_t)ob - 1) != E_BUFFER_TOO_SMALL) goto done;
     step++;
-    if (ft_call(FILE_OP_WRITE, d, 0, FT_DATA, 1, 0, 0) != E_ACCESS_DENIED) goto done;
+    if (ft_call(SYS_FILE_WRITE, d, 0, FT_DATA, 1, 0, 0) != E_ACCESS_DENIED) goto done;
     step++;
-    if (ft_call(FILE_OP_TRUNC, d, 0, 0, 0, 0, 0) != E_ACCESS_DENIED) goto done;
+    if (ft_call(SYS_FILE_TRUNCATE, d, 0, 0, 0, 0, 0) != E_ACCESS_DENIED) goto done;
     step++;
-    if (ft_call(FILE_OP_TELL, d, 0, 0, 0, 0, 0) != 11) goto done;
+    if (ft_call(SYS_FILE_TELL, d, 0, 0, 0, 0, 0) != 11) goto done;
     step++;
     if (syscall_dispatch(SYS_HANDLE_CLOSE, (uint32_t)d, 0, 0, 0, 0) != E_OK) goto done;
     step++;
     if (sysfile_open_count() != base + 1) goto done;  /* h still holds it */
     step++;
-    if (ft_call(FILE_OP_TELL, d, 0, 0, 0, 0, 0) != E_BAD_HANDLE) goto done;
+    if (ft_call(SYS_FILE_TELL, d, 0, 0, 0, 0, 0) != E_BAD_HANDLE) goto done;
     step++;
     if (oi_call(d, OBJINFO_BASIC, sizeof(struct object_basic)) != E_BAD_HANDLE) goto done;
     step++;
-    if (ft_call(FILE_OP_TELL, h, 0, 0, 0, 0, 0) != 11) goto done;
+    if (ft_call(SYS_FILE_TELL, h, 0, 0, 0, 0, 0) != 11) goto done;
 
     step++;
-    if (ft_call(FILE_OP_SEEK, h, 0, 0, 0, 0, FSEEK_SET) != 0) goto done;
+    if (ft_call(SYS_FILE_SEEK, h, 0, 0, 0, 0, FSEEK_SET) != 0) goto done;
     for (int i = 0; i < 16; i++) data[i] = '?';
     step++;
-    if (ft_call(FILE_OP_READ, h, 0, FT_DATA, 11, 0, 0) != 11) goto done;
+    if (ft_call(SYS_FILE_READ, h, 0, FT_DATA, 11, 0, 0) != 11) goto done;
     step++;
     if (data[0] != 'h' || data[4] != 'o' || data[6] != 'w' || data[10] != 'd') goto done;
 
     /* seek from the end, and read the tail */
     step++;
-    if (ft_call(FILE_OP_SEEK, h, 0, 0, 0, -5, FSEEK_END) != 6) goto done;
+    if (ft_call(SYS_FILE_SEEK, h, 0, 0, 0, -5, FSEEK_END) != 6) goto done;
     step++;
-    if (ft_call(FILE_OP_READ, h, 0, FT_DATA, 5, 0, 0) != 5) goto done;
+    if (ft_call(SYS_FILE_READ, h, 0, FT_DATA, 5, 0, 0) != 5) goto done;
     step++;
     if (data[0] != 'w' || data[4] != 'd') goto done;
     /* and the read past the end that follows it comes back empty, not short */
     step++;
-    if (ft_call(FILE_OP_READ, h, 0, FT_DATA, 5, 0, 0) != 0) goto done;
+    if (ft_call(SYS_FILE_READ, h, 0, FT_DATA, 5, 0, 0) != 0) goto done;
 
     /* fstat agrees about the size */
     step++;
-    if (ft_call(FILE_OP_FSTAT, h, 0, FT_STAT, 0, 0, 0) != E_OK) goto done;
+    if (ft_call(SYS_FILE_FSTAT, h, 0, FT_STAT, 0, 0, 0) != E_OK) goto done;
     struct file_stat *st = (struct file_stat *)FT_STAT;
     step++;
     if (st->size != 11 || st->kind != FTYPE_FILE) goto done;
 
     step++;
-    if (ft_call(FILE_OP_CLOSE, h, 0, 0, 0, 0, 0) != E_OK) goto done;
+    if (ft_call(SYS_FILE_CLOSE, h, 0, 0, 0, 0, 0) != E_OK) goto done;
     step++;
     if (sysfile_open_count() != base) goto done;      /* the slot came back */
     step++;
-    if (ft_call(FILE_OP_READ, h, 0, FT_DATA, 4, 0, 0) != E_BAD_HANDLE) goto done;
+    if (ft_call(SYS_FILE_READ, h, 0, FT_DATA, 4, 0, 0) != E_BAD_HANDLE) goto done;
 
     /* --- append opens at the end, and does not clobber --- */
-    h = ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_WRITE | FOPEN_APPEND);
+    h = ft_call(SYS_FILE_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_WRITE | FOPEN_APPEND);
     step++;
     if (h < 0) goto done;
     ft_str(FT_DATA, "!!");
     step++;
-    if (ft_call(FILE_OP_WRITE, h, 0, FT_DATA, 2, 0, 0) != 2) goto done;
+    if (ft_call(SYS_FILE_WRITE, h, 0, FT_DATA, 2, 0, 0) != 2) goto done;
     step++;
-    if (ft_call(FILE_OP_CLOSE, h, 0, 0, 0, 0, 0) != E_OK) goto done;
+    if (ft_call(SYS_FILE_CLOSE, h, 0, 0, 0, 0, 0) != E_OK) goto done;
 
-    h = ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_READ);
+    h = ft_call(SYS_FILE_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_READ);
     step++;
     if (h < 0) goto done;
     step++;
-    if (ft_call(FILE_OP_READ, h, 0, FT_DATA, 32, 0, 0) != 13) goto done;
+    if (ft_call(SYS_FILE_READ, h, 0, FT_DATA, 32, 0, 0) != 13) goto done;
     step++;
     if (data[10] != 'd' || data[11] != '!' || data[12] != '!') goto done;
     /* a read-only handle must refuse a write */
     step++;
-    if (ft_call(FILE_OP_WRITE, h, 0, FT_DATA, 2, 0, 0) != E_ACCESS_DENIED) goto done;
+    if (ft_call(SYS_FILE_WRITE, h, 0, FT_DATA, 2, 0, 0) != E_ACCESS_DENIED) goto done;
     step++;
-    if (ft_call(FILE_OP_CLOSE, h, 0, 0, 0, 0, 0) != E_OK) goto done;
+    if (ft_call(SYS_FILE_CLOSE, h, 0, 0, 0, 0, 0) != E_OK) goto done;
+
+    /* --- truncate cuts to the size given, and refuses a negative one;
+       sync commits it --- */
+    h = ft_call(SYS_FILE_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_WRITE);
+    step++;
+    if (h < 0) goto done;
+    step++;
+    if (ft_call(SYS_FILE_TRUNCATE, h, 0, 0, 0, 5, 0) != E_OK) goto done;
+    step++;
+    if (ft_call(SYS_FILE_FSTAT, h, 0, FT_STAT, 0, 0, 0) != E_OK || st->size != 5) goto done;
+    step++;
+    if (ft_call(SYS_FILE_TRUNCATE, h, 0, 0, 0, -1, 0) != E_INVALID_ARGS) goto done;
+    /* and back out to 13, so exec_path below meets the file it always has */
+    step++;
+    if (ft_call(SYS_FILE_TRUNCATE, h, 0, 0, 0, 13, 0) != E_OK) goto done;
+    step++;
+    if (ft_call(SYS_FILE_FSTAT, h, 0, FT_STAT, 0, 0, 0) != E_OK || st->size != 13) goto done;
+    step++;
+    if (ft_call(SYS_FILE_CLOSE, h, 0, 0, 0, 0, 0) != E_OK) goto done;
+    step++;
+    if (ft_call(SYS_FILE_SYNC, 0, 0, 0, 0, 0, 0) != E_OK) goto done;
 
     /* --- a missing file is E_NOT_FOUND without FOPEN_CREATE --- */
     ft_strp(FT_PATH, scratch, "/kt_absent.txt");
     step++;
-    if (ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_READ) != E_NOT_FOUND) goto done;
+    if (ft_call(SYS_FILE_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_READ) != E_NOT_FOUND) goto done;
 
     /* --- a bad user pointer is caught, not dereferenced --- */
     ft_strp(FT_PATH, scratch, "/kt_sys.txt");
     step++;
-    if (ft_call(FILE_OP_STAT, 0, FT_PATH, 0xC0001000u, 0, 0, 0) != E_BAD_ADDRESS) goto done;
+    if (ft_call(SYS_FILE_STAT, 0, FT_PATH, 0xC0001000u, 0, 0, 0) != E_BAD_ADDRESS) goto done;
     step++;
-    if (ft_call(FILE_OP_OPEN, 0, 0xC0001000u, 0, 0, 0, FOPEN_READ) != E_BAD_ADDRESS) goto done;
+    if (ft_call(SYS_FILE_OPEN, 0, 0xC0001000u, 0, 0, 0, FOPEN_READ) != E_BAD_ADDRESS) goto done;
 
     /* --- directories, cwd, and relative paths --- */
     ft_strp(FT_PATH, scratch, "/kt_dir");
     step++;
-    if (ft_call(FILE_OP_MKDIR, 0, FT_PATH, 0, 0, 0, 0) != E_OK) goto done;
+    if (ft_call(SYS_FILE_MKDIR, 0, FT_PATH, 0, 0, 0, 0) != E_OK) goto done;
     step++;
-    if (ft_call(FILE_OP_MKDIR, 0, FT_PATH, 0, 0, 0, 0) != E_ALREADY_EXISTS) goto done;
+    if (ft_call(SYS_FILE_MKDIR, 0, FT_PATH, 0, 0, 0, 0) != E_ALREADY_EXISTS) goto done;
     step++;
-    if (ft_call(FILE_OP_CHDIR, 0, FT_PATH, 0, 0, 0, 0) != E_OK) goto done;
+    if (ft_call(SYS_FILE_CHDIR, 0, FT_PATH, 0, 0, 0, 0) != E_OK) goto done;
     /* Compare the whole path against what we chdir'd to, terminator included,
        rather than spot-checking a few indices: the index checks silently
        stopped meaning anything the moment the scratch directory moved. */
@@ -831,52 +956,52 @@ int usermode_file_test(void) {
     int wantlen = 0;
     while (want[wantlen]) wantlen++;
     step++;
-    if (ft_call(FILE_OP_GETCWD, 0, 0, FT_DATA, 64, 0, 0) != wantlen) goto done;
+    if (ft_call(SYS_FILE_GETCWD, 0, 0, FT_DATA, 64, 0, 0) != wantlen) goto done;
     step++;
     for (int i = 0; i <= wantlen; i++) if (data[i] != want[i]) goto done;
 
     /* a bare name now resolves inside the new cwd, not at the root */
     ft_str(FT_PATH, "inner.txt");
-    h = ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0,
+    h = ft_call(SYS_FILE_OPEN, 0, FT_PATH, 0, 0, 0,
                 FOPEN_WRITE | FOPEN_CREATE | FOPEN_TRUNC);
     step++;
     if (h < 0) goto done;
     step++;
-    if (ft_call(FILE_OP_CLOSE, h, 0, 0, 0, 0, 0) != E_OK) goto done;
+    if (ft_call(SYS_FILE_CLOSE, h, 0, 0, 0, 0, 0) != E_OK) goto done;
     step++;
     if (cxfs_resolve(ft_join(scratch, "/kt_dir/inner.txt"), 0) < 0) goto done;   /* it really landed there */
 
     /* readdir finds it, and stops rather than repeating past the end */
     ft_str(FT_PATH, ".");
     step++;
-    if (ft_call(FILE_OP_READDIR, 0, FT_PATH, FT_STAT, 0, 0, 0) != 1) goto done;
+    if (ft_call(SYS_FILE_READDIR, 0, FT_PATH, FT_STAT, 0, 0, 0) != 1) goto done;
     step++;
     if (st->name[0] != 'i' || st->kind != FTYPE_FILE) goto done;
     step++;
-    if (ft_call(FILE_OP_READDIR, 0, FT_PATH, FT_STAT, 1, 0, 0) != 0) goto done;
+    if (ft_call(SYS_FILE_READDIR, 0, FT_PATH, FT_STAT, 1, 0, 0) != 0) goto done;
 
     /* rename, then a non-empty directory refuses to be removed */
     ft_str(FT_PATH2, "renamed.txt");
     step++;
-    if (ft_call(FILE_OP_RENAME, 0, FT_PATH, 0, 0, 0, 0) == E_OK) goto done;  /* "." is not renameable */
+    if (ft_call(SYS_FILE_RENAME, 0, FT_PATH, 0, 0, 0, 0) == E_OK) goto done;  /* "." is not renameable */
     ft_str(FT_PATH, "inner.txt");
     step++;
-    if (ft_call(FILE_OP_RENAME, 0, FT_PATH, 0, 0, 0, 0) != E_OK) goto done;
+    if (ft_call(SYS_FILE_RENAME, 0, FT_PATH, 0, 0, 0, 0) != E_OK) goto done;
     step++;
     if (cxfs_resolve(ft_join(scratch, "/kt_dir/renamed.txt"), 0) < 0) goto done;
 
     ft_str(FT_PATH, "/");
     step++;
-    if (ft_call(FILE_OP_CHDIR, 0, FT_PATH, 0, 0, 0, 0) != E_OK) goto done;
+    if (ft_call(SYS_FILE_CHDIR, 0, FT_PATH, 0, 0, 0, 0) != E_OK) goto done;
     ft_strp(FT_PATH, scratch, "/kt_dir");
     step++;
-    if (ft_call(FILE_OP_UNLINK, 0, FT_PATH, 0, 0, 0, 0) != E_INVALID_ARGS) goto done;  /* not empty */
+    if (ft_call(SYS_FILE_UNLINK, 0, FT_PATH, 0, 0, 0, 0) != E_INVALID_ARGS) goto done;  /* not empty */
 
     /* --- GRANT_DISK really is the gate --- */
     thread_set_caps(me, 0);
     ft_strp(FT_PATH, scratch, "/kt_sys.txt");
     step++;
-    if (ft_call(FILE_OP_STAT, 0, FT_PATH, FT_STAT, 0, 0, 0) != E_ACCESS_DENIED) goto done;
+    if (ft_call(SYS_FILE_STAT, 0, FT_PATH, FT_STAT, 0, 0, 0) != E_ACCESS_DENIED) goto done;
     thread_set_caps(me, GRANT_DISK);
 
     /* --- exec_path refuses everything it should ---
@@ -940,7 +1065,41 @@ int usermode_file_test(void) {
     step++;
     if (syscall_dispatch(SYS_CONSOLE_WRITE, 0xC0001000u, 0, 0, 0, 0) != E_ACCESS_DENIED) goto done;
     step++;
-    if (syscall_dispatch(SYS_FILE_OP,       0xC0001000u, 0, 0, 0, 0) != E_ACCESS_DENIED) goto done;
+    if (syscall_dispatch(SYS_FILE_OPEN,     0xC0001000u, FOPEN_READ, 0, 0, 0) != E_ACCESS_DENIED) goto done;
+    step++;
+    if (syscall_dispatch(SYS_FILE_CLOSE,    0, 0, 0, 0, 0)           != E_ACCESS_DENIED) goto done;
+    step++;
+    if (syscall_dispatch(SYS_FILE_READ,     0, 0xC0001000u, 1, 0, 0) != E_ACCESS_DENIED) goto done;
+    step++;
+    if (syscall_dispatch(SYS_FILE_WRITE,    0, 0xC0001000u, 1, 0, 0) != E_ACCESS_DENIED) goto done;
+    step++;
+    if (syscall_dispatch(SYS_FILE_SEEK,     0, 0, FSEEK_SET, 0, 0)   != E_ACCESS_DENIED) goto done;
+    step++;
+    if (syscall_dispatch(SYS_FILE_TELL,     0, 0, 0, 0, 0)           != E_ACCESS_DENIED) goto done;
+    step++;
+    if (syscall_dispatch(SYS_FILE_TRUNCATE, 0, 0, 0, 0, 0)           != E_ACCESS_DENIED) goto done;
+    step++;
+    if (syscall_dispatch(SYS_FILE_STAT,     0xC0001000u, 0xC0001000u, 0, 0, 0) != E_ACCESS_DENIED) goto done;
+    step++;
+    if (syscall_dispatch(SYS_FILE_FSTAT,    0, 0xC0001000u, 0, 0, 0) != E_ACCESS_DENIED) goto done;
+    step++;
+    if (syscall_dispatch(SYS_FILE_READDIR,  0xC0001000u, 0, 0xC0001000u, 0, 0) != E_ACCESS_DENIED) goto done;
+    step++;
+    if (syscall_dispatch(SYS_FILE_MKDIR,    0xC0001000u, 0, 0, 0, 0) != E_ACCESS_DENIED) goto done;
+    step++;
+    if (syscall_dispatch(SYS_FILE_UNLINK,   0xC0001000u, 0, 0, 0, 0) != E_ACCESS_DENIED) goto done;
+    step++;
+    if (syscall_dispatch(SYS_FILE_RENAME,   0xC0001000u, 0xC0001000u, 0, 0, 0) != E_ACCESS_DENIED) goto done;
+    step++;
+    if (syscall_dispatch(SYS_FILE_CHDIR,    0xC0001000u, 0, 0, 0, 0) != E_ACCESS_DENIED) goto done;
+    step++;
+    if (syscall_dispatch(SYS_FILE_GETCWD,   0xC0001000u, 16, 0, 0, 0) != E_ACCESS_DENIED) goto done;
+    step++;
+    if (syscall_dispatch(SYS_FILE_SYNC,     0, 0, 0, 0, 0)           != E_ACCESS_DENIED) goto done;
+    step++;
+    if (syscall_dispatch(SYS_FILE_LOCK,     0, 0, 0, FLOCK_SHARED, 0) != E_ACCESS_DENIED) goto done;   /* no FLOCK_WAIT: ungated, it could not block */
+    step++;
+    if (syscall_dispatch(SYS_FILE_UNLOCK,   0, 0, 0, 0, 0)           != E_ACCESS_DENIED) goto done;
     step++;
     if (syscall_dispatch(SYS_FB_INFO,       0xC0001000u, 0, 0, 0, 0) != E_ACCESS_DENIED) goto done;
     step++;
@@ -1054,7 +1213,7 @@ int usermode_file_test(void) {
     thread_set_caps(me, GRANT_DISK);
 
     /* --- the reaper releases handles a process never closed --- */
-    h = ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_READ);
+    h = ft_call(SYS_FILE_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_READ);
     step++;
     if (h < 0) goto done;
     step++;
@@ -1450,7 +1609,7 @@ done:
 }
 
 /* ---- advisory file locks ---------------------------------------------------
- * FILE_OP_LOCK's contract, the parts a regression would break quietly:
+ * SYS_FILE_LOCK's contract, the parts a regression would break quietly:
  * - Shared locks coexist and exclusive ones do not. The lock belongs to the
  *   open file, so a second open in the same process conflicts like anyone's.
  * - Closing a handle releases its locks without an UNLOCK.
@@ -1465,33 +1624,35 @@ done:
  * - Unlinked while open: the name goes at once, the entry stays (and its id
  *   is not handed to the next file created) until the last close.
  *
- * The helper thread makes its calls from its own part of the test page, so a
- * preemption between the two threads cannot mix up their arguments.
+ * The helper thread opens a path in its own part of the test page, so the
+ * test thread rewriting FT_PATH cannot change what the helper opens.
  */
-#define FL_ARGS  (TEST_CODE_VIRT + 0x800)
 #define FL_PATH  (TEST_CODE_VIRT + 0x900)
 
 static volatile int fl_stage;      /* how far the helper has got */
 static volatile int fl_go;         /* set once its caps are in place */
 static volatile int fl_rc;         /* what its waiting lock returned */
 
-static int fl_call(uint32_t op, int handle, int32_t off, uint32_t len, uint32_t flags) {
-    struct file_op_args *a = (struct file_op_args *)FL_ARGS;
-    a->op = op; a->handle = handle; a->path = FL_PATH; a->path2 = 0;
-    a->data = 0; a->len = len; a->off = off; a->flags = flags;
-    return syscall_dispatch(SYS_FILE_OP, FL_ARGS, 0, 0, 0, 0);
+/* The helper's calls: OPEN of FL_PATH, LOCK and CLOSE (see ft_call). */
+static int fl_call(uint32_t nr, int handle, int32_t off, uint32_t len, uint32_t flags) {
+    switch (nr) {
+        case SYS_FILE_OPEN:  return syscall_dispatch(nr, FL_PATH, flags, 0, 0, 0);
+        case SYS_FILE_LOCK:  return syscall_dispatch(nr, (uint32_t)handle, (uint32_t)off, len, flags, 0);
+        case SYS_FILE_CLOSE: return syscall_dispatch(nr, (uint32_t)handle, 0, 0, 0, 0);
+        default:             return E_INTERNAL;
+    }
 }
 
 /* Holds [10,20), then waits for [0,10), which the test thread holds. */
 static void fl_helper(void) {
     while (!fl_go) yield();               /* may run before thread_set_caps */
-    int h = fl_call(FILE_OP_OPEN, 0, 0, 0, FOPEN_READ);
+    int h = fl_call(SYS_FILE_OPEN, 0, 0, 0, FOPEN_READ);
     if (h < 0) { fl_rc = h; fl_stage = -1; return; }
-    if (fl_call(FILE_OP_LOCK, h, 10, 10, FLOCK_EXCLUSIVE) != E_OK) { fl_stage = -2; return; }
+    if (fl_call(SYS_FILE_LOCK, h, 10, 10, FLOCK_EXCLUSIVE) != E_OK) { fl_stage = -2; return; }
     fl_stage = 1;
-    fl_rc = fl_call(FILE_OP_LOCK, h, 0, 10, FLOCK_EXCLUSIVE | FLOCK_WAIT);
+    fl_rc = fl_call(SYS_FILE_LOCK, h, 0, 10, FLOCK_EXCLUSIVE | FLOCK_WAIT);
     fl_stage = 2;
-    fl_call(FILE_OP_CLOSE, h, 0, 0, 0);
+    fl_call(SYS_FILE_CLOSE, h, 0, 0, 0);
     fl_stage = 3;
 }
 
@@ -1513,84 +1674,84 @@ int usermode_flock_test(void) {
     fl_go = 0;
     ft_strp(FT_PATH, scratch, "/kt_lock.txt");
 
-    a = ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_READ | FOPEN_WRITE | FOPEN_CREATE | FOPEN_TRUNC);
-    b = ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_READ);
+    a = ft_call(SYS_FILE_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_READ | FOPEN_WRITE | FOPEN_CREATE | FOPEN_TRUNC);
+    b = ft_call(SYS_FILE_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_READ);
     step++;                                                                       /* 1 */
     if (a < 0 || b < 0) goto done;
 
     /* --- whole file: shared with shared, exclusive with nothing --- */
     step++;
-    if (ft_call(FILE_OP_LOCK, a, 0, 0, 0, 0, FLOCK_SHARED) != E_OK) goto done;
+    if (ft_call(SYS_FILE_LOCK, a, 0, 0, 0, 0, FLOCK_SHARED) != E_OK) goto done;
     step++;
-    if (ft_call(FILE_OP_LOCK, b, 0, 0, 0, 0, FLOCK_SHARED) != E_OK) goto done;
+    if (ft_call(SYS_FILE_LOCK, b, 0, 0, 0, 0, FLOCK_SHARED) != E_OK) goto done;
     step++;                                                                       /* 4 */
-    if (ft_call(FILE_OP_LOCK, b, 0, 0, 0, 0, FLOCK_EXCLUSIVE) != E_BUSY) goto done;
+    if (ft_call(SYS_FILE_LOCK, b, 0, 0, 0, 0, FLOCK_EXCLUSIVE) != E_BUSY) goto done;
     /* a refused conversion keeps the lock it had: a still conflicts with b */
     step++;
-    if (ft_call(FILE_OP_LOCK, a, 0, 0, 0, 0, FLOCK_EXCLUSIVE) != E_BUSY) goto done;
+    if (ft_call(SYS_FILE_LOCK, a, 0, 0, 0, 0, FLOCK_EXCLUSIVE) != E_BUSY) goto done;
     step++;
-    if (ft_call(FILE_OP_UNLOCK, a, 0, 0, 0, 0, 0) != E_OK) goto done;
+    if (ft_call(SYS_FILE_UNLOCK, a, 0, 0, 0, 0, 0) != E_OK) goto done;
     step++;
-    if (ft_call(FILE_OP_LOCK, b, 0, 0, 0, 0, FLOCK_EXCLUSIVE) != E_OK) goto done;
+    if (ft_call(SYS_FILE_LOCK, b, 0, 0, 0, 0, FLOCK_EXCLUSIVE) != E_OK) goto done;
     step++;                                                                       /* 8 */
-    if (ft_call(FILE_OP_LOCK, a, 0, 0, 0, 0, FLOCK_SHARED) != E_BUSY) goto done;
+    if (ft_call(SYS_FILE_LOCK, a, 0, 0, 0, 0, FLOCK_SHARED) != E_BUSY) goto done;
     /* waiting on a lock this same process holds could never end */
     step++;
-    if (ft_call(FILE_OP_LOCK, a, 0, 0, 0, 0, FLOCK_SHARED | FLOCK_WAIT) != E_DEADLOCK) goto done;
+    if (ft_call(SYS_FILE_LOCK, a, 0, 0, 0, 0, FLOCK_SHARED | FLOCK_WAIT) != E_DEADLOCK) goto done;
 
     /* advisory: a write through another handle is not refused */
     ft_str(FT_DATA, "locked..............");
     step++;                                                                       /* 10 */
-    if (ft_call(FILE_OP_WRITE, a, 0, FT_DATA, 20, 0, 0) != 20) goto done;
+    if (ft_call(SYS_FILE_WRITE, a, 0, FT_DATA, 20, 0, 0) != 20) goto done;
 
     /* closing b, with no UNLOCK, releases its lock */
     step++;
-    if (ft_call(FILE_OP_CLOSE, b, 0, 0, 0, 0, 0) != E_OK) goto done;
+    if (ft_call(SYS_FILE_CLOSE, b, 0, 0, 0, 0, 0) != E_OK) goto done;
     closed = b;
     b = -1;
     step++;                                                                       /* 12 */
-    if (ft_call(FILE_OP_LOCK, a, 0, 0, 0, 0, FLOCK_EXCLUSIVE) != E_OK) goto done;
+    if (ft_call(SYS_FILE_LOCK, a, 0, 0, 0, 0, FLOCK_EXCLUSIVE) != E_OK) goto done;
 
     /* bad arguments */
     step++;
-    if (ft_call(FILE_OP_LOCK, a, 0, 0, 0, 0, 3) != E_INVALID_ARGS) goto done;
+    if (ft_call(SYS_FILE_LOCK, a, 0, 0, 0, 0, 3) != E_INVALID_ARGS) goto done;
     step++;
-    if (ft_call(FILE_OP_LOCK, a, 0, 0, 0, -1, FLOCK_SHARED) != E_INVALID_ARGS) goto done;
+    if (ft_call(SYS_FILE_LOCK, a, 0, 0, 0, -1, FLOCK_SHARED) != E_INVALID_ARGS) goto done;
     step++;                                                                       /* 15 */
-    if (ft_call(FILE_OP_LOCK, closed, 0, 0, 0, 0, FLOCK_SHARED) != E_BAD_HANDLE) goto done;
-    ft_call(FILE_OP_UNLOCK, a, 0, 0, 0, 0, 0);
+    if (ft_call(SYS_FILE_LOCK, closed, 0, 0, 0, 0, FLOCK_SHARED) != E_BAD_HANDLE) goto done;
+    ft_call(SYS_FILE_UNLOCK, a, 0, 0, 0, 0, 0);
 
     /* --- byte ranges --- */
-    b = ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_READ);
+    b = ft_call(SYS_FILE_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_READ);
     step++;
     if (b < 0) goto done;
     step++;
-    if (ft_call(FILE_OP_LOCK, a, 0, 0, 10, 0, FLOCK_EXCLUSIVE) != E_OK) goto done;
+    if (ft_call(SYS_FILE_LOCK, a, 0, 0, 10, 0, FLOCK_EXCLUSIVE) != E_OK) goto done;
     step++;                                                                       /* 18 */
-    if (ft_call(FILE_OP_LOCK, b, 0, 0, 10, 10, FLOCK_EXCLUSIVE) != E_OK) goto done;   /* disjoint */
+    if (ft_call(SYS_FILE_LOCK, b, 0, 0, 10, 10, FLOCK_EXCLUSIVE) != E_OK) goto done;   /* disjoint */
     step++;
-    if (ft_call(FILE_OP_LOCK, b, 0, 0, 2, 9, FLOCK_SHARED) != E_BUSY) goto done;     /* overlaps a */
+    if (ft_call(SYS_FILE_LOCK, b, 0, 0, 2, 9, FLOCK_SHARED) != E_BUSY) goto done;     /* overlaps a */
     /* an unlock inside a lock does not split it */
     step++;                                                                       /* 20 */
-    if (ft_call(FILE_OP_UNLOCK, a, 0, 0, 5, 0, 0) != E_OK) goto done;
+    if (ft_call(SYS_FILE_UNLOCK, a, 0, 0, 5, 0, 0) != E_OK) goto done;
     step++;
-    if (ft_call(FILE_OP_LOCK, b, 0, 0, 1, 0, FLOCK_SHARED) != E_BUSY) goto done;
+    if (ft_call(SYS_FILE_LOCK, b, 0, 0, 1, 0, FLOCK_SHARED) != E_BUSY) goto done;
     step++;
-    if (ft_call(FILE_OP_UNLOCK, a, 0, 0, 10, 0, 0) != E_OK) goto done;
+    if (ft_call(SYS_FILE_UNLOCK, a, 0, 0, 10, 0, 0) != E_OK) goto done;
     step++;                                                                       /* 23 */
-    if (ft_call(FILE_OP_LOCK, b, 0, 0, 1, 0, FLOCK_SHARED) != E_OK) goto done;
+    if (ft_call(SYS_FILE_LOCK, b, 0, 0, 1, 0, FLOCK_SHARED) != E_OK) goto done;
     /* len 0 runs to the end of the file, past anything written */
     step++;
-    if (ft_call(FILE_OP_LOCK, a, 0, 0, 0, 100, FLOCK_SHARED) != E_OK) goto done;
+    if (ft_call(SYS_FILE_LOCK, a, 0, 0, 0, 100, FLOCK_SHARED) != E_OK) goto done;
     step++;                                                                       /* 25 */
-    if (ft_call(FILE_OP_LOCK, b, 0, 0, 10, 5000, FLOCK_EXCLUSIVE) != E_BUSY) goto done;
-    ft_call(FILE_OP_UNLOCK, a, 0, 0, 0, 0, 0);
-    ft_call(FILE_OP_CLOSE, b, 0, 0, 0, 0, 0);
+    if (ft_call(SYS_FILE_LOCK, b, 0, 0, 10, 5000, FLOCK_EXCLUSIVE) != E_BUSY) goto done;
+    ft_call(SYS_FILE_UNLOCK, a, 0, 0, 0, 0, 0);
+    ft_call(SYS_FILE_CLOSE, b, 0, 0, 0, 0, 0);
     b = -1;
 
     /* --- FLOCK_WAIT sleeps, a deadlock cycle is refused, a release wakes --- */
     step++;                                                                       /* 26 */
-    if (ft_call(FILE_OP_LOCK, a, 0, 0, 10, 0, FLOCK_EXCLUSIVE) != E_OK) goto done;
+    if (ft_call(SYS_FILE_LOCK, a, 0, 0, 10, 0, FLOCK_EXCLUSIVE) != E_OK) goto done;
     ft_strp(FL_PATH, scratch, "/kt_lock.txt");
     fl_rc = 1;
     helper = thread_create("ktlock", fl_helper);
@@ -1605,9 +1766,9 @@ int usermode_flock_test(void) {
     /* the helper holds [10,20) and waits on our [0,10): our wait on [10,20)
        would close the cycle */
     step++;
-    if (ft_call(FILE_OP_LOCK, a, 0, 0, 10, 10, FLOCK_EXCLUSIVE | FLOCK_WAIT) != E_DEADLOCK) goto done;
+    if (ft_call(SYS_FILE_LOCK, a, 0, 0, 10, 10, FLOCK_EXCLUSIVE | FLOCK_WAIT) != E_DEADLOCK) goto done;
     step++;                                                                       /* 30 */
-    if (ft_call(FILE_OP_UNLOCK, a, 0, 0, 10, 0, 0) != E_OK) goto done;
+    if (ft_call(SYS_FILE_UNLOCK, a, 0, 0, 10, 0, 0) != E_OK) goto done;
     for (int i = 0; i < 50 && fl_stage < 3; i++) yield();
     step++;
     if (fl_stage != 3 || fl_rc != E_OK) goto done;
@@ -1619,28 +1780,28 @@ int usermode_flock_test(void) {
     e.reserved_9e[0] = 1;                                   /* lock_state */
     *(uint32_t *)&e.reserved_9e[2] = (uint32_t)me;          /* lock_owner_pid */
     if (cxfs_write_entry(&e) != 0) goto done;
-    w = ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_READ | FOPEN_WRITE);
+    w = ft_call(SYS_FILE_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_READ | FOPEN_WRITE);
     step++;
     if (w < 0) goto done;
     step++;                                                                       /* 34 */
-    if (ft_call(FILE_OP_WRITE, w, 0, FT_DATA, 6, 0, 0) != 6) goto done;
+    if (ft_call(SYS_FILE_WRITE, w, 0, FT_DATA, 6, 0, 0) != 6) goto done;
 
     /* --- unlinked while open: locked, still unlinkable, entry kept --- */
     step++;
-    if (ft_call(FILE_OP_LOCK, a, 0, 0, 0, 0, FLOCK_EXCLUSIVE) != E_OK) goto done;
+    if (ft_call(SYS_FILE_LOCK, a, 0, 0, 0, 0, FLOCK_EXCLUSIVE) != E_OK) goto done;
     step++;                                                                       /* 36 */
-    if (ft_call(FILE_OP_UNLINK, 0, FT_PATH, 0, 0, 0, 0) != E_OK) goto done;
+    if (ft_call(SYS_FILE_UNLINK, 0, FT_PATH, 0, 0, 0, 0) != E_OK) goto done;
     step++;
-    if (ft_call(FILE_OP_STAT, 0, FT_PATH, FT_STAT, 0, 0, 0) != E_NOT_FOUND) goto done;
+    if (ft_call(SYS_FILE_STAT, 0, FT_PATH, FT_STAT, 0, 0, 0) != E_NOT_FOUND) goto done;
     step++;                                                                       /* 38 */
-    if (ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_READ) != E_NOT_FOUND) goto done;
+    if (ft_call(SYS_FILE_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_READ) != E_NOT_FOUND) goto done;
     step++;
-    if (ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_WRITE | FOPEN_CREATE) != E_ALREADY_EXISTS) goto done;
+    if (ft_call(SYS_FILE_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_WRITE | FOPEN_CREATE) != E_ALREADY_EXISTS) goto done;
     /* the open handles still work */
     step++;                                                                       /* 40 */
-    if (ft_call(FILE_OP_SEEK, w, 0, 0, 0, 0, FSEEK_SET) != 0) goto done;
+    if (ft_call(SYS_FILE_SEEK, w, 0, 0, 0, 0, FSEEK_SET) != 0) goto done;
     step++;
-    if (ft_call(FILE_OP_READ, w, 0, FT_DATA, 6, 0, 0) != 6) goto done;
+    if (ft_call(SYS_FILE_READ, w, 0, FT_DATA, 6, 0, 0) != 6) goto done;
     /* exec_path resolves for itself, and must not find it either (it would
        otherwise reach the signature check: E_INVALID_ARGS, not E_NOT_FOUND) */
     {
@@ -1652,24 +1813,24 @@ int usermode_flock_test(void) {
     }
     /* and the id is not handed to the next file created */
     ft_strp(FT_PATH, scratch, "/kt_lock2.txt");
-    other = ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_WRITE | FOPEN_CREATE);
+    other = ft_call(SYS_FILE_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_WRITE | FOPEN_CREATE);
     step++;                                                                       /* 43 */
     if (other < 0) goto done;
-    ft_call(FILE_OP_CLOSE, other, 0, 0, 0, 0, 0);
+    ft_call(SYS_FILE_CLOSE, other, 0, 0, 0, 0, 0);
     step++;
     if (cxfs_resolve(ft_join(scratch, "/kt_lock2.txt"), 0) == id) goto done;
     /* the entry goes with the last close, not the first */
-    ft_call(FILE_OP_CLOSE, w, 0, 0, 0, 0, 0);
+    ft_call(SYS_FILE_CLOSE, w, 0, 0, 0, 0, 0);
     w = -1;
     step++;                                                                       /* 45 */
     if (cxfs_read_entry((uint32_t)id, &e) != 0 || e.type != CXFS_TYPE_FILE) goto done;
-    ft_call(FILE_OP_CLOSE, a, 0, 0, 0, 0, 0);
+    ft_call(SYS_FILE_CLOSE, a, 0, 0, 0, 0, 0);
     a = -1;
     step++;
     if (cxfs_read_entry((uint32_t)id, &e) == 0 && e.type != CXFS_TYPE_FREE) goto done;
     /* and the name is free again */
     ft_strp(FT_PATH, scratch, "/kt_lock.txt");
-    w = ft_call(FILE_OP_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_WRITE | FOPEN_CREATE);
+    w = ft_call(SYS_FILE_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_WRITE | FOPEN_CREATE);
     step++;                                                                       /* 47 */
     if (w < 0) goto done;
 
@@ -1680,7 +1841,7 @@ done:
     htab_close_all(thread_htab(me));
     /* a helper still waiting is woken by the release above; let it finish */
     for (int i = 0; i < 50 && fl_stage > 0 && fl_stage < 3; i++) yield();
-    ft_call(FILE_OP_SYNC, 0, 0, 0, 0, 0, 0);                /* runs any deferred delete */
+    ft_call(SYS_FILE_SYNC, 0, 0, 0, 0, 0, 0);                /* runs any deferred delete */
     if ((id = cxfs_resolve(ft_join(scratch, "/kt_lock.txt"), 0))  >= 0) cxfs_delete_entry((uint32_t)id);
     if ((id = cxfs_resolve(ft_join(scratch, "/kt_lock2.txt"), 0)) >= 0) cxfs_delete_entry((uint32_t)id);
     thread_set_caps(me, save);

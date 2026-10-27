@@ -336,6 +336,6 @@ int cxfs_count_children(uint32_t dir_id);
 int cxfs_delete_entry(uint32_t id);
 
 /* Advisory locks are not a filesystem feature: they belong to open files and
-   live in memory (kernel/cpu/sysfile.c, FILE_OP_LOCK). */
+   live in memory (kernel/cpu/sysfile.c, SYS_FILE_LOCK). */
 
 #endif

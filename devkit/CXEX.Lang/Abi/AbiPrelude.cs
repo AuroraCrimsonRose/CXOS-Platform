@@ -73,7 +73,7 @@ public static class AbiPrelude
 // never amplify. Previously userspace had to redeclare these locally, which
 // cxk check-abi reports as a third copy of the ABI with no link to the header.
 
-// ---- files (SYS_FILE_OP; GRANT_DISK) ----
+// ---- files (SYS_FILE_*; GRANT_DISK) ----
 // CXFS is 64-bit throughout; every offset and size here is 32-bit signed, which
 // caps what a user process can address at 2 GB. X DOES now have i64 and u64 -
 // that was the blocker and it is gone - so widening this is a deliberate ABI

@@ -290,7 +290,7 @@ fn cmd_shutdown(arg: *u8) -> void {
 
 // ---- file.xfxn: the filesystem ----
 // These are the first commands that touch the disk. Everything before them
-// worked inside the process; these go out through SYS_FILE_OP to CXFS, which
+// worked inside the process; these go out through the SYS_FILE_* calls to CXFS, which
 // needs GRANT_DISK - part of GRANT_OS_BASELINE, so the shell has it.
 
 // report a failed call and return 1, or return 0 when rc is fine

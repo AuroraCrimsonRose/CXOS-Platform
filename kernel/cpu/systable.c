@@ -43,7 +43,6 @@ static int decode_fb_put_pixel(const uint32_t *a) { return syscall_fb_put_pixel(
 static int decode_fb_draw_line(const uint32_t *a) { return syscall_fb_draw_line(a[0], a[1], a[2], a[3], a[4]); }
 static int decode_fb_draw_text(const uint32_t *a) { return syscall_fb_draw_text(a[0], a[1], a[2], a[3], a[4]); }
 static int decode_fb_set_font(const uint32_t *a) { return syscall_fb_set_font(a[0]); }
-static int decode_file_op(const uint32_t *a) { return syscall_file_op(a[0]); }
 static int decode_spawn(const uint32_t *a) { return syscall_spawn(a[0]); }
 static int decode_exec_path(const uint32_t *a) { return syscall_exec_path(a[0], a[1]); }
 static int decode_vm_map(const uint32_t *a) { return syscall_vm_map(a[0]); }
@@ -52,6 +51,24 @@ static int decode_vm_info(const uint32_t *a) { return syscall_vm_info(a[0]); }
 static int decode_power_reboot(const uint32_t *a) { (void)a; return syscall_power_reboot(); }
 static int decode_power_shutdown(const uint32_t *a) { (void)a; return syscall_power_shutdown(); }
 static int decode_power_sleep(const uint32_t *a) { return syscall_power_sleep(a[0]); }
+static int decode_file_open(const uint32_t *a) { return syscall_file_open(a[0], a[1]); }
+static int decode_file_close(const uint32_t *a) { return syscall_file_close((int32_t)a[0]); }
+static int decode_file_read(const uint32_t *a) { return syscall_file_read((int32_t)a[0], a[1], a[2]); }
+static int decode_file_write(const uint32_t *a) { return syscall_file_write((int32_t)a[0], a[1], a[2]); }
+static int decode_file_seek(const uint32_t *a) { return syscall_file_seek((int32_t)a[0], (int32_t)a[1], a[2]); }
+static int decode_file_tell(const uint32_t *a) { return syscall_file_tell((int32_t)a[0]); }
+static int decode_file_truncate(const uint32_t *a) { return syscall_file_truncate((int32_t)a[0], (int32_t)a[1]); }
+static int decode_file_stat(const uint32_t *a) { return syscall_file_stat(a[0], a[1]); }
+static int decode_file_fstat(const uint32_t *a) { return syscall_file_fstat((int32_t)a[0], a[1]); }
+static int decode_file_readdir(const uint32_t *a) { return syscall_file_readdir(a[0], a[1], a[2]); }
+static int decode_file_mkdir(const uint32_t *a) { return syscall_file_mkdir(a[0]); }
+static int decode_file_unlink(const uint32_t *a) { return syscall_file_unlink(a[0]); }
+static int decode_file_rename(const uint32_t *a) { return syscall_file_rename(a[0], a[1]); }
+static int decode_file_chdir(const uint32_t *a) { return syscall_file_chdir(a[0]); }
+static int decode_file_getcwd(const uint32_t *a) { return syscall_file_getcwd(a[0], a[1]); }
+static int decode_file_sync(const uint32_t *a) { (void)a; return syscall_file_sync(); }
+static int decode_file_lock(const uint32_t *a) { return syscall_file_lock((int32_t)a[0], (int32_t)a[1], a[2], a[3]); }
+static int decode_file_unlock(const uint32_t *a) { return syscall_file_unlock((int32_t)a[0], (int32_t)a[1], a[2]); }
 
 const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_EXIT] = decode_exit,
@@ -90,7 +107,6 @@ const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_NET_PING] = decode_net_ping,
     [SYS_NET_SEND] = decode_net_send,
     [SYS_NET_RECV] = decode_net_recv,
-    [SYS_FILE_OP] = decode_file_op,
     [SYS_SPAWN] = decode_spawn,
     [SYS_EXEC_PATH] = decode_exec_path,
     [SYS_VM_MAP] = decode_vm_map,
@@ -99,4 +115,22 @@ const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_POWER_REBOOT] = decode_power_reboot,
     [SYS_POWER_SHUTDOWN] = decode_power_shutdown,
     [SYS_POWER_SLEEP] = decode_power_sleep,
+    [SYS_FILE_OPEN] = decode_file_open,
+    [SYS_FILE_CLOSE] = decode_file_close,
+    [SYS_FILE_READ] = decode_file_read,
+    [SYS_FILE_WRITE] = decode_file_write,
+    [SYS_FILE_SEEK] = decode_file_seek,
+    [SYS_FILE_TELL] = decode_file_tell,
+    [SYS_FILE_TRUNCATE] = decode_file_truncate,
+    [SYS_FILE_STAT] = decode_file_stat,
+    [SYS_FILE_FSTAT] = decode_file_fstat,
+    [SYS_FILE_READDIR] = decode_file_readdir,
+    [SYS_FILE_MKDIR] = decode_file_mkdir,
+    [SYS_FILE_UNLINK] = decode_file_unlink,
+    [SYS_FILE_RENAME] = decode_file_rename,
+    [SYS_FILE_CHDIR] = decode_file_chdir,
+    [SYS_FILE_GETCWD] = decode_file_getcwd,
+    [SYS_FILE_SYNC] = decode_file_sync,
+    [SYS_FILE_LOCK] = decode_file_lock,
+    [SYS_FILE_UNLOCK] = decode_file_unlock,
 };

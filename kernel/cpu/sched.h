@@ -202,7 +202,7 @@ void     thread_unblock(int id);        /* make a blocked thread runnable again 
 /* Block until thread_unblock(). Unlike thread_block, safe when nothing else is
    runnable at the moment: it halts until an interrupt changes that, the way
    thread_sleep_ms does, instead of returning still blocked. For waits whose
-   waker is another thread that may itself be asleep (FILE_OP_LOCK). */
+   waker is another thread that may itself be asleep (SYS_FILE_LOCK). */
 void     thread_wait(void);
 
 /* Block the current thread for `ms` milliseconds, then return. Built on

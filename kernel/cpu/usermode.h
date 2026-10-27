@@ -89,7 +89,7 @@ uint32_t usercopy_faults_recovered(void);
 /* Called only from the page-fault handler, on a recovered fault. */
 void usercopy_note_recovered_fault(void);
 
-/* SYS_FILE_OP exercised over a real user mapping (see usermode.c).
+/* SYS_FILE_* exercised over a real user mapping (see usermode.c).
    1 = pass, 0 = fail. Lives here because it needs map_user_page. */
 int  usermode_file_test(void);
 int  usermode_flock_test(void);

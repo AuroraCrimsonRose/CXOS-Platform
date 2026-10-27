@@ -3285,7 +3285,7 @@ void ktest_run(void) {
     total++; passed += report("USB flush: when a stick is not asked", test_usb_flush_policy());
     total++; passed += report("crypto profile: one key shape only", test_crypto_profile());
     total++; passed += report("exec admission (dev / release)",   test_exec_admit());
-    total++; passed += report("file syscalls (SYS_FILE_OP)",       usermode_file_test());
+    total++; passed += report("file syscalls (SYS_FILE_*)",        usermode_file_test());
     total++; passed += report("memory syscalls (SYS_VM_*)",        usermode_vm_test());
     total++; passed += report("power and input syscalls",          usermode_power_input_test());
     total++; passed += report("framebuffer syscalls (SYS_FB_*)",   usermode_fb_test());

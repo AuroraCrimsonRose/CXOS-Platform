@@ -91,7 +91,7 @@ public sealed record XfilSyscall(string Name, long Number, string NumberText, IR
 {
     public XfilWrapper? Wrapper => WrapperName is null ? null : new XfilWrapper(WrapperName, Params, Returns);
 
-    /// <summary>The kernel function the dispatch table calls: <c>SYS_FILE_OP</c>'s is <c>syscall_file_op</c>.</summary>
+    /// <summary>The kernel function the dispatch table calls: <c>SYS_FILE_READ</c>'s is <c>syscall_file_read</c>.</summary>
     public string KernelHandler => "syscall_" + Name[4..].ToLowerInvariant();
 }
 

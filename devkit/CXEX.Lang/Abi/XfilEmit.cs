@@ -45,7 +45,7 @@ public static class XfilEmit
 
 #include <stdint.h>
 
-/* The handlers, one per syscall, named after it (SYS_FILE_OP: syscall_file_op).
+/* The handlers, one per syscall, named after it (SYS_FILE_READ: syscall_file_read).
  * Each is given its arguments as the interface declares them. A pointer arrives
  * as the user address it is, a uint32_t; the handler checks and copies it. */
 
