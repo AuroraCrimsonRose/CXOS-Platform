@@ -330,7 +330,7 @@ The ABI hash of §5 is this hash for the `kernel` library.
 - Supersedes the rule that `cxk_abi.h` and `AbiPrelude.cs` change in one
   commit: both are generated from the same file.
 
-### 9.5 As built (roadmap steps 6a1, 6a2a, 6a2b, 6a2c, 6a2d, 6a3a, 6a3b)
+### 9.5 As built (roadmap steps 6a1, 6a2a, 6a2b, 6a2c, 6a2d, 6a3a, 6a3b, 6a3c)
 
 The `kernel` domain is generated; the other domains, and `interface` blocks
 with their messages, are settled when IPC v3 needs them (Phase 1). The source
@@ -513,7 +513,33 @@ Step 6a3b puts every call through the system page of §8 (`CXK_ABI_VERSION`
   and keeps `int $0x80`: `--no-prelude` in both compilers turns it off.
 - **The C programs** (`executive.c`, `hello.c`) save `esi` in a naked
   `_start` and call `sysbase + n * SYSPAGE_STUB_SIZE`.
-- The gate still accepts `int 0x80` from anywhere; refusing it is 6a3c.
+- The gate still accepted `int 0x80` from anywhere until 6a3c.
+
+Step 6a3c makes the stubs the only way in (no ABI change).
+
+- **The check:** the gate's first step, before the call is counted or
+  dispatched, is `syscall_check_origin(num, ip)` (`kernel/cpu/usermode.c`).
+  `ip` is the return address the CPU recorded, the `int 0x80` frame's EIP
+  or the `rcx` that `syscall` loads, so ring 3 cannot forge it. It must be
+  `SYSPAGE_VIRT + num * SYSPAGE_STUB_SIZE + 7`, the `ret` after the trap in
+  that number's stub (`arch_syscall_stub_ret`), and the number is bounded by
+  the table first, so a product that wraps cannot name a real stub. A trap
+  from anywhere else is refused, and so is a jump into a stub's trap with
+  another number in `eax`.
+- **A refusal** ends the process the way a fault does: logged, noted for the
+  crash area, and back out of `enter_usermode` with `USERMODE_FAULTED`. It is
+  counted apart (`syscall_refused_count`), and it never reaches the recording
+  point or the trap witness.
+- **The kernel's own ring-3 helpers** (`process_create_ring3`,
+  `usermode_run_blob`) share the kernel's address space and run in it
+  several at once, so its system page is counted: the first to enter ring 3
+  maps it, the last to leave unmaps it, and the space's user half is empty
+  between runs, as x86-64 requires. A process with a space of its own maps its
+  own (`spawn.c`, the x86-64 arch tests). Every test routine calls through the
+  stubs and ends in `ud2`.
+- **Tests:** `usermode_syspage_test` runs a direct `SYS_EXIT`, a `SYS_GETPID`
+  through the `SYS_EXIT` stub's trap, and the same with `0x10000000`; each
+  must be refused, with nothing dispatched.
 
 When the `.xfil` replaced the hand-written header, the header it generated
 matched the old one in every constant, structure and field type, and every

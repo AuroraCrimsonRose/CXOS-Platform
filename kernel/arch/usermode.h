@@ -21,6 +21,11 @@ void arch_syscall_gate_init(void);
    through this architecture's gate and return to the caller. */
 void arch_syscall_stub(uint8_t *dst, uint32_t nr);
 
+/* The offset in a stub of the instruction after its trap: where a call made
+   through the stub returns to ring 3, and so the only return address the
+   gate accepts for that number (syscall_check_origin). */
+uint32_t arch_syscall_stub_ret(void);
+
 /* Run user code at `entry` on the user stack `user_sp`, with every register
    zero but the one that carries `sysbase`, the system page's base (esi on
    x86-32, rsi on x86-64; cxk_abi.h). The kernel's own return state is kept

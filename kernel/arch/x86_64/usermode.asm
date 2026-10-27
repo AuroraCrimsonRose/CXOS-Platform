@@ -36,6 +36,7 @@ global return_to_kernel
 global syscall64_entry
 global syscall_trapped
 extern syscall_dispatch     ; int syscall_dispatch(uint32_t num, uintptr_t a1, ..., uintptr_t a5)
+extern syscall_check_origin ; void syscall_check_origin(uint32_t num, uintptr_t ip)
 extern gdt64_tss            ; gdt.c
 
 ; ---------------------------------------------------------------------------
@@ -117,8 +118,6 @@ syscall64_entry:
     push r11                 ; user RFLAGS
     push rcx                 ; user RIP
 
-    lock inc dword [syscall_trapped]   ; a witness for the recording point
-
     ; The registers the C call may change, given back as they were. rbx, rbp
     ; and r12-r15 the call keeps itself.
     push rdi
@@ -128,6 +127,24 @@ syscall64_entry:
     push r9
     push r10
     sub rsp, 8               ; 9 pushes from a 16-byte RSP0: align the call
+
+    ; Only from the system page: the return RIP syscall left in rcx must be
+    ; the stub's for this number. A refusal leaves through return_to_kernel
+    ; and never comes back; an accepted call reloads rax, kept in the
+    ; alignment slot, and the arguments from their pushed copies.
+    mov [rsp], rax
+    mov edi, eax             ; num
+    mov rsi, rcx             ; ip
+    call syscall_check_origin
+    mov rax, [rsp]
+    mov r10, [rsp + 8]
+    mov r9,  [rsp + 16]
+    mov r8,  [rsp + 24]
+    mov rdx, [rsp + 32]
+    mov rsi, [rsp + 40]
+    mov rdi, [rsp + 48]
+
+    lock inc dword [syscall_trapped]   ; a witness for the recording point
 
     ; Ring 3's rdi, rsi, rdx, r10, r8 (CX_SYSCALLS_IPC.md §4) into the C
     ; call's rsi, rdx, rcx, r8, r9, all 64 bits of each (syscall_dispatch
@@ -195,8 +212,9 @@ usercopy_trampoline:
 section .bss
 alignb 8
 syscall64_user_rsp: resq 1
-; Traps taken through the syscall entry (syscall_trapped_count), counted
-; before C runs, so a test can tell a call that reached the recording point
+; Traps taken through the syscall entry and let through by
+; syscall_check_origin (syscall_trapped_count), counted before the
+; dispatcher runs, so a test can tell a call that reached the recording point
 ; from one that only reached the gate.
 syscall_trapped:    resd 1
 
@@ -207,15 +225,19 @@ syscall_trapped:    resd 1
 ; ---------------------------------------------------------------------------
 section .text
 
+; Every routine here calls the kernel through the system page, whose base
+; enter_usermode leaves in rsi: stub n at rsi + n * SYSPAGE_STUB (6a3c). Each
+; ends in ud2, so a stub that returns from SYS_EXIT ends it as a fault.
+
 ; Exits with CS | SS << 8 | IF << 16 | (a register not zero on entry) << 17:
 ; 0x11B23 when ring 3 runs at CPL 3 on the user segments with interrupts on,
-; and enter_usermode handed up nothing of the kernel's.
+; and enter_usermode handed up nothing of the kernel's. rsi is left out: it
+; is the system page's base, by the ABI.
 global user64_cpl_start, user64_cpl_end
 user64_cpl_start:
     or rax, rbx
     or rax, rcx
     or rax, rdx
-    or rax, rsi
     or rax, rdi
     or rax, rbp
     or rax, r8
@@ -241,16 +263,16 @@ user64_cpl_start:
     shl eax, 16
     or edi, eax
     or edi, r8d
-    mov eax, SYS_EXIT
-    syscall
-.hang:
-    jmp .hang
+    lea rax, [rsi + SYS_EXIT * SYSPAGE_STUB]
+    call rax
+    ud2
 user64_cpl_end:
 
 ; Fills every register syscall does not take with a pattern, calls SYS_YIELD
 ; and SYS_GETPID, and exits with mask << 16 | pid: mask bit n set for each
 ; pattern lost (0-11), for an r11 without IF (12), and for an rcx that is not
-; the return address (13).
+; the return address, the SYS_GETPID stub's ret at +7 (13). The system page's
+; base waits on the stack, since rsi is patterned.
 %macro KEEP 3                ; register, pattern, bit
     mov rcx, %2
     cmp %1, rcx
@@ -261,6 +283,7 @@ user64_cpl_end:
 
 global user64_regs_start, user64_regs_end
 user64_regs_start:
+    push rsi                 ; the system page
     mov rbx, 0x1111111111111111
     mov rbp, 0x2222222222222222
     mov rdx, 0x3333333333333333
@@ -273,11 +296,12 @@ user64_regs_start:
     mov r13, 0xAAAAAAAAAAAAAAAA
     mov r14, 0xBBBBBBBBBBBBBBBB
     mov r15, 0xCCCCCCCCCCCCCCCC
-    mov eax, SYS_YIELD
-    syscall
-    mov eax, SYS_GETPID
-    syscall
-.after:
+    mov rax, [rsp]
+    add rax, SYS_YIELD * SYSPAGE_STUB
+    call rax
+    mov rax, [rsp]
+    add rax, SYS_GETPID * SYSPAGE_STUB
+    call rax
     push rax                 ; the pid
     push rcx
     push r11
@@ -300,7 +324,8 @@ user64_regs_start:
     or eax, 1 << 12
 .if_ok:
     pop rcx
-    lea rdx, [.after]
+    mov rdx, [rsp + 8]       ; the system page, under the pid
+    lea rdx, [rdx + SYS_GETPID * SYSPAGE_STUB + 7]
     cmp rcx, rdx
     je .rcx_ok
     or eax, 1 << 13
@@ -309,25 +334,26 @@ user64_regs_start:
     shl eax, 16
     movzx edi, dx
     or edi, eax
-    mov eax, SYS_EXIT
-    syscall
-.hang:
-    jmp .hang
+    pop rax                  ; the system page
+    add rax, SYS_EXIT * SYSPAGE_STUB
+    call rax
+    ud2
 user64_regs_end:
 
 ; Writes its message, then tries 4 bytes at 0x80000000, which nothing maps,
 ; and exits with first result & 0xFFFF | (second & 0xFF) << 16.
 global user64_write_start, user64_write_end, user64_write_msg, user64_write_msg_end
 user64_write_start:
+    mov r13, rsi             ; the system page; rsi is the second argument
     lea rdi, [user64_write_msg]
     mov esi, user64_write_msg_end - user64_write_msg
-    mov eax, SYS_CONSOLE_WRITE
-    syscall
+    lea rax, [r13 + SYS_CONSOLE_WRITE * SYSPAGE_STUB]
+    call rax
     mov r12d, eax
     mov edi, 0x80000000
     mov esi, 4
-    mov eax, SYS_CONSOLE_WRITE
-    syscall
+    lea rax, [r13 + SYS_CONSOLE_WRITE * SYSPAGE_STUB]
+    call rax
     and eax, 0xFF
     shl eax, 16
     movzx edi, r12w
@@ -336,10 +362,9 @@ user64_write_start:
     mov rdx, 0xA3000000C0DE0003   ; from the recording point by t_ring3_write,
     mov r10, 0xA4000000C0DE0004   ; so every register the gate is meant to carry
     mov r8, 0xA5000000C0DE0005    ; is seen to arrive, its high half included
-    mov eax, SYS_EXIT
-    syscall
-.hang:
-    jmp .hang
+    lea rax, [r13 + SYS_EXIT * SYSPAGE_STUB]
+    call rax
+    ud2
 user64_write_msg:
     db "                      -> ring 3 SYS_CONSOLE_WRITE ok", 10
 user64_write_msg_end:
@@ -357,8 +382,9 @@ user64_read_start:
     mov rax, [rsp]
     mov al, [rax]
     mov edi, 1
-    mov eax, SYS_EXIT
-    syscall
+    lea rax, [rsi + SYS_EXIT * SYSPAGE_STUB]
+    call rax
+    ud2
 user64_read_end:
 
 ; Jumps to its own stack, which is no-execute.
@@ -373,8 +399,9 @@ user64_write_code_start:
     lea rax, [user64_write_code_start]
     mov byte [rax], 0xCC
     mov edi, 1
-    mov eax, SYS_EXIT
-    syscall
+    lea rax, [rsi + SYS_EXIT * SYSPAGE_STUB]
+    call rax
+    ud2
 user64_write_code_end:
 
 ; Pushes until the stack runs into the unmapped page below it.
@@ -397,8 +424,9 @@ user64_spin_start:
     mov edi, [rbx]
     test edi, edi
     jz .spin
-    mov eax, SYS_EXIT
-    syscall
+    lea rax, [rsi + SYS_EXIT * SYSPAGE_STUB]
+    call rax
+    ud2
 user64_spin_end:
 
 ; Packs ds, es, fs and gs one per byte, makes a SYS_YIELD (which switches
@@ -421,8 +449,8 @@ user64_spin_end:
 global user64_segs_start, user64_segs_end
 user64_segs_start:
     PACK_SEGS r12d, r12b
-    mov eax, SYS_YIELD
-    syscall
+    lea rax, [rsi + SYS_YIELD * SYSPAGE_STUB]
+    call rax
     PACK_SEGS r13d, r13b
     mov eax, cs
     mov edi, eax
@@ -433,10 +461,9 @@ user64_segs_start:
     je .same
     xor edi, edi
 .same:
-    mov eax, SYS_EXIT
-    syscall
-.hang:
-    jmp .hang
+    lea rax, [rsi + SYS_EXIT * SYSPAGE_STUB]
+    call rax
+    ud2
 user64_segs_end:
 
 ; ---------------------------------------------------------------------------
@@ -447,32 +474,33 @@ user64_segs_end:
 ; ---------------------------------------------------------------------------
 global user_blob_start, user_blob_end
 user_blob_start:
+    mov r12, rsi             ; the system page; rsi is the second argument
     mov edi, [rsp]
     xor esi, esi
-    mov eax, SYS_CONSOLE_WRITE
-    syscall
+    lea rax, [r12 + SYS_CONSOLE_WRITE * SYSPAGE_STUB]
+    call rax
     xor edi, edi
     mov esi, 0xC0DE0002      ; a2..a5 for test_sysrec, as in x86-32's user_blob
     mov edx, 0xC0DE0003
     mov r10d, 0xC0DE0004
     mov r8d, 0xC0DE0005
-    mov eax, SYS_EXIT
-    syscall
-.hang:
-    jmp .hang
+    lea rax, [r12 + SYS_EXIT * SYSPAGE_STUB]
+    call rax
+    ud2
 user_blob_end:
 
 ; user_blob_busy: writes its message, spins in ring 3 long enough for the tick
 ; to preempt it, three times over, then exits.
 global user_blob_busy_start, user_blob_busy_end
 user_blob_busy_start:
+    mov r14, rsi             ; the system page
     mov r12d, [rsp]          ; the message, kept across the calls
     mov r13d, 3
 .loop:
     mov edi, r12d
     xor esi, esi
-    mov eax, SYS_CONSOLE_WRITE
-    syscall
+    lea rax, [r14 + SYS_CONSOLE_WRITE * SYSPAGE_STUB]
+    call rax
     mov ecx, 0x02000000
 .spin:
     dec ecx
@@ -480,10 +508,9 @@ user_blob_busy_start:
     dec r13d
     jnz .loop
     xor edi, edi
-    mov eax, SYS_EXIT
-    syscall
-.hang:
-    jmp .hang
+    lea rax, [r14 + SYS_EXIT * SYSPAGE_STUB]
+    call rax
+    ud2
 user_blob_busy_end:
 
 ; user_sysp_call / user_sysp_write: x86-32's (arch/x86_32/usermode.asm), with
@@ -507,3 +534,34 @@ user_sysp_write_start:
     call rax
     ud2
 user_sysp_write_end:
+
+; user_sysp_direct / user_sysp_midstub: calls the kernel must refuse,
+; x86-32's (arch/x86_32/usermode.asm). The first traps SYS_EXIT(0) itself;
+; the second calls the syscall inside the SYS_EXIT stub with SYS_GETPID in
+; eax, so it returns into the SYS_EXIT slot with another number.
+global user_sysp_direct_start, user_sysp_direct_end
+user_sysp_direct_start:
+    xor edi, edi
+    mov eax, SYS_EXIT
+    syscall
+    ud2
+user_sysp_direct_end:
+
+global user_sysp_midstub_start, user_sysp_midstub_end
+user_sysp_midstub_start:
+    lea rcx, [rsi + SYS_EXIT * SYSPAGE_STUB + 5]   ; the stub's syscall
+    mov eax, SYS_GETPID
+    call rcx
+    ud2
+user_sysp_midstub_end:
+
+; user_sysp_wrap: the same jump with 0x10000000 in eax, whose number * 16
+; wraps to 0 in 32 bits: a check that multiplied before bounding the number
+; would take it for the SYS_EXIT stub's own call.
+global user_sysp_wrap_start, user_sysp_wrap_end
+user_sysp_wrap_start:
+    lea rcx, [rsi + SYS_EXIT * SYSPAGE_STUB + 5]
+    mov eax, 0x10000000
+    call rcx
+    ud2
+user_sysp_wrap_end:

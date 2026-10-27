@@ -40,6 +40,7 @@
 #include "caps.h"
 #include "sysrec.h"
 #include "usermode.h"
+#include "syspage.h"            /* SYSPAGE_VIRT, syspage_map */
 #include "arch/ktest_arch.h"
 #include "arch/usermode.h"
 
@@ -851,11 +852,12 @@ static void urun_thread(void) {
     for (uint32_t i = 0; i < u->len; i++) ((volatile uint8_t *)(uintptr_t)U_CODE)[i] = u->code[i];
     if (paging_map_user(U_CODE, c, VM_EXEC) != 0) return;
     if (u->shared && paging_map_user(U_SHARED, u->shared, VM_WRITE) != 0) return;
+    if (syspage_map(SYSPAGE_VIRT, NULL) != 0) return;   /* the calls go through it */
     *(volatile uint64_t *)(uintptr_t)U_SP = u->arg;
     u->code_pte  = entry_of(U_CODE);
     u->stack_pte = entry_of(U_STACK);
     u->set_up = 1;
-    u->rc = enter_usermode(U_CODE, U_SP, thread_current_usave(), 0);
+    u->rc = enter_usermode(U_CODE, U_SP, thread_current_usave(), SYSPAGE_VIRT);
     if (u->shared) paging_unmap(U_SHARED);   /* the test's frame, not the space's */
     u->done = 1;
 }

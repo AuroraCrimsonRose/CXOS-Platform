@@ -41,6 +41,8 @@ void arch_syscall_stub(uint8_t *dst, uint32_t nr) {
     dst[7] = 0xC3;                               /* ret */
 }
 
+uint32_t arch_syscall_stub_ret(void) { return 7; }   /* the ret */
+
 void arch_kernel_stack_set(uintptr_t top) { gdt64_set_rsp0(top); }
 
 uintptr_t arch_kernel_stack_default(void) { return gdt64_default_rsp0(); }

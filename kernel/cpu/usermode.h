@@ -29,8 +29,18 @@ void usermode_init(void);
 int syscall_dispatch(uint32_t num, uintptr_t a1, uintptr_t a2, uintptr_t a3,
                      uintptr_t a4, uintptr_t a5);
 
-/* Witnesses for the recording point, counted apart from it: traps taken at
-   int 0x80, and calls the dispatcher handled. */
+/* The gate's first step, before the call is counted or dispatched: `ip` is
+   where the trap returns to ring 3, which must be the return point of the
+   system page's stub for `num` (CX_SYSCALLS_IPC.md §4). A call from anywhere
+   else ends the process as a fault does, back out of enter_usermode with
+   USERMODE_FAULTED; then this does not return. */
+void syscall_check_origin(uint32_t num, uintptr_t ip);
+
+/* Calls syscall_check_origin refused since boot, for the self-tests. */
+uint32_t syscall_refused_count(void);
+
+/* Witnesses for the recording point, counted apart from it: traps the gate
+   let through (past syscall_check_origin), and calls the dispatcher handled. */
 uint32_t syscall_trapped_count(void);
 uint32_t syscall_dispatch_count(void);
 /* Validate a ring-3 buffer. Ask for the access you intend: the writable form
@@ -137,7 +147,8 @@ int usermode_test(void);
 int usermode_run_blob(const uint8_t *start, uint32_t len);
 
 /* The system page: a stub for each syscall and int3 elsewhere; ring 3 calls
-   through the base it is handed; a store to the page faults. 1 = pass. */
+   through the base it is handed; a store to the page faults; a call from
+   anywhere but its stub is refused. 1 = pass. */
 int usermode_syspage_test(void);
 
 /* Create a ring-3 PROCESS managed by the scheduler: a scheduler thread whose

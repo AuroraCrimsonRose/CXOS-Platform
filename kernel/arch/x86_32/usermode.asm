@@ -11,6 +11,7 @@ global syscall_stub
 global return_to_kernel
 global syscall_trapped
 extern syscall_dispatch     ; C: int syscall_dispatch(uint32_t num, uintptr_t a1, ..., uintptr_t a5); 32 bits each here
+extern syscall_check_origin ; C: void syscall_check_origin(uint32_t num, uintptr_t ip)
 
 ; ---------------------------------------------------------------------------
 ; int enter_usermode(uint32_t entry_eip, uint32_t user_esp, uint32_t *save_slot,
@@ -104,6 +105,19 @@ syscall_stub:
     mov fs, bp
     mov gs, bp
 
+    ; Only from the system page: the return EIP of the iret frame, above the
+    ; four selectors and pushad's eight registers, must be the stub's for
+    ; this number. A refusal leaves through return_to_kernel and never comes
+    ; back; an accepted call reloads the three registers the C call may
+    ; change from pushad's copies (edi at +0 ... edx +20, ecx +24, eax +28).
+    push dword [esp + 16 + 32]         ; ip
+    push eax                           ; num
+    call syscall_check_origin
+    add esp, 8
+    mov eax, [esp + 16 + 28]
+    mov ecx, [esp + 16 + 24]
+    mov edx, [esp + 16 + 20]
+
     lock inc dword [syscall_trapped]   ; a witness for the recording point
 
     push edi                 ; a5
@@ -188,9 +202,10 @@ usercopy_trampoline:
     ret
 
 section .bss
-; Traps taken through int 0x80 (C: syscall_trapped_count, usermode.h). Counted
-; here, before C runs, so the self-test can tell a call that reached the
-; recording point from one that only reached the gate.
+; Traps taken through int 0x80 and let through by syscall_check_origin (C:
+; syscall_trapped_count, usermode.h). Counted here, before the dispatcher
+; runs, so the self-test can tell a call that reached the recording point
+; from one that only reached the gate.
 syscall_trapped: resd 1
 ; (per-process ring-3 return state now lives in the process struct, passed to
 ;  enter_usermode/return_to_kernel as save_slot - no globals needed)
@@ -198,10 +213,12 @@ syscall_trapped: resd 1
 ; ---------------------------------------------------------------------------
 ; ---------------------------------------------------------------------------
 ; user_blob - a tiny ring-3 demo routine, copied into the user code page by the
-; kernel. Position-independent: it uses only `int 0x80` and reads its one
-; argument off the user stack (no relative calls/jumps that would break when
-; relocated). The kernel seeds the message pointer at the top of the user stack
-; before entry, so [esp] holds it on the first instruction.
+; kernel. Position-independent: it calls the kernel through the system page,
+; whose base enter_usermode leaves in esi (stub n at esi + n * 16,
+; SYSPAGE_STUB_SIZE), and reads its one argument off the user stack. The
+; kernel seeds the message pointer at the top of the user stack before entry,
+; so [esp] holds it on the first instruction. The base is kept in ebp, since
+; esi carries the fourth argument.
 ;
 ;   SYS_WRITE(ebx = msg)   then   SYS_EXIT(0)
 ; ---------------------------------------------------------------------------
@@ -209,19 +226,19 @@ section .text
 global user_blob_start
 global user_blob_end
 user_blob_start:
+    mov ebp, esi        ; the system page
     mov ebx, [esp]      ; arg1: msg pointer (seeded by kernel at top of user stack)
     xor ecx, ecx        ; arg2: length 0 = bounded NUL-scan
-    mov eax, 0x30       ; SYS_CONSOLE_WRITE
-    int 0x80
-    mov eax, 0          ; SYS_EXIT
+    lea eax, [ebp + 0x30 * 16]   ; SYS_CONSOLE_WRITE
+    call eax
     xor ebx, ebx
     mov ecx, 0xC0DE0002 ; a2..a5: unused by SYS_EXIT, and read back from the
     mov edx, 0xC0DE0003 ; recording point by test_sysrec, so every register
     mov esi, 0xC0DE0004 ; the gate is meant to carry is seen to arrive
     mov edi, 0xC0DE0005
-    int 0x80
-.hang:
-    jmp .hang           ; never reached (SYS_EXIT does not return to user)
+    lea eax, [ebp + 0x00 * 16]   ; SYS_EXIT
+    call eax
+    ud2                 ; never reached (SYS_EXIT does not return to user)
 user_blob_end:
 
 ; ---------------------------------------------------------------------------
@@ -229,18 +246,20 @@ user_blob_end:
 ; spins in a long busy loop (staying in ring 3 the whole time so the timer can
 ; PREEMPT it mid-execution), writes again, and exits. Used to demonstrate
 ; preemption during ring 3 (multiple of these interleave under the timer).
-; The message pointer is seeded at [esp] by the kernel.
+; The message pointer is seeded at [esp] by the kernel; the system page's
+; base, in esi at entry, is kept in ebp.
 ; ---------------------------------------------------------------------------
 global user_blob_busy_start
 global user_blob_busy_end
 user_blob_busy_start:
+    mov ebp, esi        ; the system page
     mov esi, [esp]      ; save msg pointer in esi (callee-ish; we control it)
     mov edi, 3          ; repeat count
 .loop:
     mov ebx, esi        ; arg1: msg
     xor ecx, ecx        ; arg2: NUL-scan
-    mov eax, 0x30       ; SYS_CONSOLE_WRITE
-    int 0x80
+    lea eax, [ebp + 0x30 * 16]   ; SYS_CONSOLE_WRITE
+    call eax
     ; busy work in RING 3 (preemptible): a big spin
     mov ecx, 0x02000000
 .spin:
@@ -248,24 +267,24 @@ user_blob_busy_start:
     jnz .spin
     dec edi
     jnz .loop
-    mov eax, 0          ; SYS_EXIT
     xor ebx, ebx
-    int 0x80
-.bhang:
-    jmp .bhang
+    lea eax, [ebp + 0x00 * 16]   ; SYS_EXIT
+    call eax
+    ud2
 user_blob_busy_end:
 
 ; ---------------------------------------------------------------------------
 ; user_blob_segs - makes one syscall, then exits with its four data segment
 ; selectors packed one per byte (gs fs es ds, high to low). After a syscall
 ; that hands them back, that is 0x23232323; a syscall that leaves the kernel's
-; in place gets them nulled by the iretd, and reads 0.
+; in place gets them nulled by the iretd, and reads 0. Both calls go through
+; the system page, at esi.
 ; ---------------------------------------------------------------------------
 global user_blob_segs_start
 global user_blob_segs_end
 user_blob_segs_start:
-    mov eax, 0x01       ; SYS_YIELD
-    int 0x80
+    lea eax, [esi + 0x01 * 16]   ; SYS_YIELD
+    call eax
     xor ebx, ebx
     mov ax, gs
     mov bl, al
@@ -278,10 +297,9 @@ user_blob_segs_start:
     shl ebx, 8
     mov ax, ds
     mov bl, al
-    xor eax, eax        ; SYS_EXIT(ebx)
-    int 0x80
-.shang:
-    jmp .shang
+    lea eax, [esi + 0x00 * 16]   ; SYS_EXIT(ebx)
+    call eax
+    ud2
 user_blob_segs_end:
 
 ; ---------------------------------------------------------------------------
@@ -309,3 +327,38 @@ user_sysp_write_start:
     call eax
     ud2
 user_sysp_write_end:
+
+; ---------------------------------------------------------------------------
+; user_sysp_direct / user_sysp_midstub - calls the kernel must refuse (step
+; 6a3c, usermode_syspage_test). user_sysp_direct traps SYS_EXIT(0) itself,
+; not through its stub. user_sysp_midstub puts SYS_GETPID in eax and calls
+; the int 0x80 inside the SYS_EXIT stub (offset 5, past its mov), so the
+; trap returns into the SYS_EXIT slot with another number. Refused, each
+; ends faulted; accepted, the first exits 0 and the second ends on ud2.
+; ---------------------------------------------------------------------------
+global user_sysp_direct_start, user_sysp_direct_end
+user_sysp_direct_start:
+    xor ebx, ebx
+    mov eax, 0x00                ; SYS_EXIT(0)
+    int 0x80
+    ud2
+user_sysp_direct_end:
+
+global user_sysp_midstub_start, user_sysp_midstub_end
+user_sysp_midstub_start:
+    lea ecx, [esi + 0x00 * 16 + 5]   ; the SYS_EXIT stub's int 0x80
+    mov eax, 0x02                ; SYS_GETPID
+    call ecx
+    ud2
+user_sysp_midstub_end:
+
+; user_sysp_wrap - the same jump with 0x10000000 in eax, whose number * 16
+; wraps to 0 in 32 bits: a check that multiplied before bounding the number
+; would take it for the SYS_EXIT stub's own call.
+global user_sysp_wrap_start, user_sysp_wrap_end
+user_sysp_wrap_start:
+    lea ecx, [esi + 0x00 * 16 + 5]
+    mov eax, 0x10000000
+    call ecx
+    ud2
+user_sysp_wrap_end:

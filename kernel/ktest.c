@@ -699,6 +699,11 @@ extern uint8_t user_blob_busy_start[];
 extern uint8_t user_blob_busy_end[];
 
 static int test_ring3_processes(void) {
+    /* Every helper must end by SYS_EXIT, not by a fault: they share the
+       kernel space's system page, and one that unmapped it under the others
+       would still let them all end. */
+    uint32_t faults0 = usermode_faults(), refused0 = syscall_refused_count();
+
     /* 3b: cooperative ring-3 processes */
     uint32_t blen = (uint32_t)(user_blob_end - user_blob_start);
     process_create_ring3("user1", user_blob_start, blen, "");
@@ -715,7 +720,8 @@ static int test_ring3_processes(void) {
     sched_preempt_disable();
     int preempt_ok = (sched_active_count() == 1);
 
-    return coop_ok && preempt_ok;
+    return coop_ok && preempt_ok && usermode_faults() == faults0
+        && syscall_refused_count() == refused0;
 }
 
 /* ---- identity: user can never be UID 0 (SYSTEM) ---- */

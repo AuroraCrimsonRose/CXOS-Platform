@@ -182,7 +182,10 @@ programs for it (step 6).
        `esi`/`rsi`, a per-process copy under the stack, images kept below
        `USER_IMAGE_END`; `--no-prelude` keeps `int $0x80` for the Linux host.
      - **6a3c** The kernel refuses a syscall whose return address is not the
-       stub for that number.
+       stub for that number. **Done 2026-10-27** (no ABI change,
+       `kernel/CX_SYSCALLS_IPC.md` §9.5): `syscall_check_origin` ahead of
+       dispatch, a refusal ends the process as a fault does, and the kernel's
+       ring-3 helpers share one counted system page in its space.
    - **6b** `usize` and `isize` (a type of their own, Aurora 2026-10-26: mixing
      them with `u32` or `u64` needs `as`, even where the widths agree), the
      typed IR, and an x86-64 back end on it in the C# compiler, System V

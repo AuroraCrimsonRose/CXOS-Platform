@@ -6,6 +6,7 @@
 
 #include "usermode.h"
 #include "arch/irq.h"        /* set_user_fault_hook, irq_frame_* */
+#include "arch/cpu_ops.h"    /* arch_irq_save, around the system page's count */
 #include "format.h"          /* fmt_hex, fmt_u32 */
 #include "diag/crashlog.h"   /* crashlog_note_fault, crashlog_save_faults */
 #include "arch/usermode.h"   /* enter_usermode, return_to_kernel, the gate */
@@ -26,7 +27,7 @@
 #include "sync/atomic.h"
 #include "sysrec.h"
 #include "systable.h"         /* the handlers, decoders and table (generated) */
-#include "syspage.h"          /* the stubs usermode_run_blob maps */
+#include "syspage.h"          /* the kernel space's system page, the origin check */
 #include "spawn.h"
 #include "sysfile.h"
 #include "cxfs.h"
@@ -529,6 +530,84 @@ int syscall_dispatch(uint32_t num, uintptr_t a1, uintptr_t a2, uintptr_t a3,
     return rc;
 }
 
+/* Only the system page calls the kernel (roadmap step 6a3c; Fuchsia's vDSO
+   rule, OpenBSD's pinsyscall). The return address is the CPU's, pushed by
+   int 0x80 or put in rcx by syscall, so ring 3 cannot forge it: a trap
+   anywhere but in a stub, or a jump into a stub's trap with another number
+   in eax, comes back to some other address. The number is bounded first, so
+   num * SYSPAGE_STUB_SIZE cannot wrap onto a real stub.
+   Every process's page is at SYSPAGE_VIRT today; when the loader picks the
+   address per process, this reads the process's. */
+static atomic_u32 refused;
+
+uint32_t syscall_refused_count(void) { return atomic_load(&refused); }
+
+void syscall_check_origin(uint32_t num, uintptr_t ip) {
+    if (num < SYSCALL_TABLE_SIZE &&
+        ip == SYSPAGE_VIRT + num * SYSPAGE_STUB_SIZE + arch_syscall_stub_ret())
+        return;
+
+    atomic_fetch_add(&refused, 1);
+    int pid = thread_current_pid();
+    klog_u32("USERMODE", SEV_ERR, "user process ", (uint32_t)pid, LOG_COLOR_VALUE,
+             " called the kernel from outside the system page");
+    char line[64];
+    size_t n = 0;
+    const char *sn = "syscall 0x", *at = " from 0x";
+    while (*sn) line[n++] = *sn++;
+    n += fmt_hex(line + n, num, 0, 0);
+    while (*at) line[n++] = *at++;
+    n += fmt_hex(line + n, (uint32_t)ip, 8, 0);
+    line[n] = 0;
+    klog_child(line);
+    klog_child("process terminated");
+
+    char rec[96];
+    size_t m = 0;
+    const char *name = thread_name(thread_current_id());
+    #define REC_PUT(s) do { const char *p_ = (s); while (*p_ && m < sizeof rec - 1) rec[m++] = *p_++; } while (0)
+    char num_s[12];
+    REC_PUT("pid ");
+    fmt_u32(num_s, (uint32_t)pid); REC_PUT(num_s);
+    if (name) { REC_PUT(" ("); REC_PUT(name); REC_PUT(")"); }
+    REC_PUT(" refused ");
+    REC_PUT(line);
+    #undef REC_PUT
+    rec[m] = 0;
+    crashlog_note_fault(rec);
+
+    return_to_kernel(USERMODE_FAULTED, thread_current_usave());   /* never returns */
+}
+
+/* The system page of the kernel's own space, for the ring-3 helpers and
+   tests that run in it (usermode_test, usermode_run_blob,
+   process_create_ring3): the gate takes a call only from a stub, so they
+   need one too. Several helpers run in the space at once, so it is counted:
+   the first to enter ring 3 maps it and the last to leave unmaps it, and
+   between runs the space's user half is empty again (x86-64's t_kernel_half
+   holds it to that). A process with a space of its own maps its own
+   (spawn.c). Interrupts are off around the count, so a helper preempted
+   between the count and the map cannot be overtaken by another. */
+static uint32_t ksys_users;
+static paddr_t  ksys_phys;
+
+static int ksyspage_get(void) {
+    uint32_t f = arch_irq_save();
+    int rc = ksys_users ? 0 : syspage_map(SYSPAGE_VIRT, &ksys_phys);
+    if (rc == 0) ksys_users++;
+    arch_irq_restore(f);
+    return rc;
+}
+
+static void ksyspage_put(void) {
+    uint32_t f = arch_irq_save();
+    if (--ksys_users == 0) {
+        unmap_user_page(SYSPAGE_VIRT, ksys_phys);
+        ksys_phys = 0;
+    }
+    arch_irq_restore(f);
+}
+
 /* the position-independent ring-3 routines (usermode.asm) */
 extern uint8_t user_blob_start[];
 extern uint8_t user_blob_end[];
@@ -580,7 +659,11 @@ int usermode_test(void) {
     uint32_t tsav = thread_current_caps();
     thread_set_caps(tme, GRANT_CONSOLE);
     /* enter ring 3; returns when the routine SYS_EXITs */
-    int rc = sealed ? enter_usermode(TEST_CODE_VIRT, ustack_top, thread_current_usave(), 0) : -1;
+    int rc = -1;
+    if (sealed && ksyspage_get() == 0) {
+        rc = enter_usermode(TEST_CODE_VIRT, ustack_top, thread_current_usave(), SYSPAGE_VIRT);
+        ksyspage_put();
+    }
     thread_set_caps(tme, tsav);
 
     /* reclaim the user pages */
@@ -601,15 +684,15 @@ int usermode_run_blob(const uint8_t *start, uint32_t len) {
     uint8_t *dst = (uint8_t *)TEST_CODE_VIRT;
     for (uint32_t i = 0; i < len; i++) dst[i] = start[i];
 
-    /* The blob starts as a process does: the system page mapped, its base
-       in the register the ABI names. */
-    paddr_t sys_phys = 0;
-    int rc = seal_user_code(TEST_CODE_VIRT, code_phys) != 0 ? -1
-           : syspage_map(SYSPAGE_VIRT, &sys_phys) != 0 ? -1
-           : enter_usermode(TEST_CODE_VIRT, TEST_STACK_VIRT + 0x1000 - 16,
+    /* The blob starts as a process does: the system page mapped (the kernel
+       space's, ksyspage_get), its base in the register the ABI names. */
+    int rc = -1;
+    if (seal_user_code(TEST_CODE_VIRT, code_phys) == 0 && ksyspage_get() == 0) {
+        rc = enter_usermode(TEST_CODE_VIRT, TEST_STACK_VIRT + 0x1000 - 16,
                             thread_current_usave(), SYSPAGE_VIRT);
+        ksyspage_put();
+    }
 
-    if (sys_phys) unmap_user_page(SYSPAGE_VIRT, sys_phys);
     unmap_user_page(TEST_CODE_VIRT, code_phys);
     unmap_user_page(TEST_STACK_VIRT, stack_phys);
     return rc;
@@ -648,6 +731,29 @@ int usermode_syspage_test(void) {
     rc = usermode_run_blob(user_sysp_write_start,
                            (uint32_t)(user_sysp_write_end - user_sysp_write_start));
     ok = ok && rc == USERMODE_FAULTED && usermode_faults() == faults + 1;
+
+    /* And the kernel takes a call from nowhere else (6a3c). A SYS_EXIT(0)
+       trapped directly from the blob, a SYS_GETPID made by jumping into the
+       SYS_EXIT stub's trap, and the same jump with a number whose * 16 wraps
+       to 0, are each refused: the process ends faulted, counted as a refusal
+       and not as a fault, and no call is dispatched. Accepted, the first
+       would exit 0; the others would return to the stub's ret and end on
+       the blob's ud2, a fault. */
+    extern uint8_t user_sysp_direct_start[], user_sysp_direct_end[];
+    extern uint8_t user_sysp_midstub_start[], user_sysp_midstub_end[];
+    extern uint8_t user_sysp_wrap_start[], user_sysp_wrap_end[];
+    const uint8_t *bad[3][2] = {
+        { user_sysp_direct_start,  user_sysp_direct_end },
+        { user_sysp_midstub_start, user_sysp_midstub_end },
+        { user_sysp_wrap_start,    user_sysp_wrap_end },
+    };
+    for (int i = 0; i < 3; i++) {
+        uint32_t r0 = syscall_refused_count(), f0 = usermode_faults();
+        uint32_t d0 = syscall_dispatch_count();
+        rc = usermode_run_blob(bad[i][0], (uint32_t)(bad[i][1] - bad[i][0]));
+        ok = ok && rc == USERMODE_FAULTED && syscall_refused_count() == r0 + 1
+                && usermode_faults() == f0 && syscall_dispatch_count() == d0;
+    }
     return ok;
 }
 
@@ -2103,7 +2209,10 @@ static void process_trampoline(void) {
     uint32_t ustack_top = s->stack_virt + 0x1000 - 16;
     *(uint32_t *)user_ptr(ustack_top) = user_addr(umsg);
 
-    if (sealed) enter_usermode(s->code_virt, ustack_top, thread_current_usave(), 0);
+    if (sealed && ksyspage_get() == 0) {
+        enter_usermode(s->code_virt, ustack_top, thread_current_usave(), SYSPAGE_VIRT);
+        ksyspage_put();
+    }
 
     /* user routine SYS_EXITed or faulted: save a fault noted on the way out
        (out of the exception now), reclaim its pages, leave the scheduler. */

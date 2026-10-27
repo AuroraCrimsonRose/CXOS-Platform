@@ -75,3 +75,5 @@ void arch_syscall_stub(uint8_t *dst, uint32_t nr) {
     dst[5] = 0xCD; dst[6] = 0x80;                /* int 0x80 */
     dst[7] = 0xC3;                               /* ret */
 }
+
+uint32_t arch_syscall_stub_ret(void) { return 7; }   /* the ret */
