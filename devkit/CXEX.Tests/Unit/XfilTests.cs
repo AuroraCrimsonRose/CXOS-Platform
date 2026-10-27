@@ -79,12 +79,14 @@ public class XfilTests
     [InlineData("syscall SYS_A = 1 fn a(p: *nothing) -> i32\n", "neither an integer type nor a structure")]
     [InlineData("syscall SYS_A = 1 fn a(a: u32, b: u32, c: u32, d: u32, e: u32, f: u32) -> i32\n", "at most 5")]
     [InlineData("syscall SYS_A = 1 fn a() -> u64\n", "returns i32 or void")]
-    [InlineData("syscall SYS_A = 1 fn a(x: u64) -> i32\n", "u32, i32 or a pointer")]
+    [InlineData("syscall SYS_A = 1 fn a(x: u8) -> i32\n", "u32, i32, u64, i64 or a pointer")]
+    [InlineData("syscall SYS_A = 1 fn a(a: u64, b: u64, c: i64) -> i32\n", "needs 6 argument registers on x86-32")]   // a pair each
+    [InlineData("syscall SYS_A = 1 fn a(a: u32, b: u32, c: u32, d: u32, e: u64) -> i32\n", "needs 6 argument registers")]
     [InlineData("syscall SYS_A = 1 fn a(x: u32, x: u32) -> i32\n", "declared twice")]
     [InlineData("syscall SYS_A = 1 fn a() -> i32\nsyscall SYS_B = 2 fn a() -> i32\n", "wrapper a is declared twice")]
     [InlineData("syscall SYS_A = 1 fn a(\n", "syscall NAME = number")]
     [InlineData("syscall SYS_A = 1\n", "every syscall declares its arguments")]                  // the table could not decode it
-    [InlineData("syscall SYS_A = 1 (x: u64) -> i32\n", "u32, i32 or a pointer")]                  // no wrapper, still checked
+    [InlineData("syscall SYS_A = 1 (x: u8) -> i32\n", "u32, i32, u64, i64 or a pointer")]            // no wrapper, still checked
     [InlineData("syscall SYS_A = 1 () -> i32\nsyscall SYS_B = 1 () -> i32\n", "which is SYS_A's")]  // one table slot, two handlers
     [InlineData("syscall SYS_A = 0x400 () -> i32\n", "up to 1023")]                               // a table that size is a mistake
     [InlineData("syscall SYSA = 1 () -> i32\n", "starts with SYS_")]                              // its handler is named after the rest
@@ -189,12 +191,39 @@ public class XfilTests
         Assert.Contains("#define SYSCALL_COUNT           3\n", h, StringComparison.Ordinal);
 
         // each register to its parameter in order, i32 converted; void answers 0
-        Assert.Contains("static int decode_file_op(const uint32_t *a) { return syscall_file_op(a[0], (int32_t)a[1], a[2], a[3], (int32_t)a[4]); }", c, StringComparison.Ordinal);
-        Assert.Contains("static int decode_exit(const uint32_t *a) { syscall_exit((int32_t)a[0]); return 0; }", c, StringComparison.Ordinal);
-        Assert.Contains("static int decode_power(const uint32_t *a) { (void)a; return syscall_power(); }", c, StringComparison.Ordinal);
+        Assert.Contains("static int decode_file_op(const uintptr_t *a) { return syscall_file_op((uint32_t)a[0], (int32_t)a[1], (uint32_t)a[2], (uint32_t)a[3], (int32_t)a[4]); }", c, StringComparison.Ordinal);
+        Assert.Contains("static int decode_exit(const uintptr_t *a) { syscall_exit((int32_t)a[0]); return 0; }", c, StringComparison.Ordinal);
+        Assert.Contains("static int decode_power(const uintptr_t *a) { (void)a; return syscall_power(); }", c, StringComparison.Ordinal);
 
         // slots by number, in number order
         Assert.Contains("    [SYS_EXIT] = decode_exit,\n    [SYS_POWER] = decode_power,\n    [SYS_FILE_OP] = decode_file_op,\n};", c, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
+    public void A_u64_argument_is_a_register_pair_on_x86_32_and_one_register_on_x86_64()
+    {
+        XfilFile f = Parse(
+            "syscall SYS_SEEK = 1 fn seek(h: i32, off: i64, origin: u32, pos: *u64) -> i32\n" +
+            "syscall SYS_RANGE = 2 fn range(h: i32, start: u64, len: u64) -> i32\n");
+        string h = XfilEmit.CTableHeader(f), c = XfilEmit.CTable(f), x = XfilEmit.XWrappers(f);
+
+        // the handler takes the whole value; the register width decides how it arrives
+        Assert.Contains("int syscall_seek(int32_t h, int64_t off, uint32_t origin, uint32_t pos);", h, StringComparison.Ordinal);
+        Assert.Contains("#if UINTPTR_MAX == 0xFFFFFFFFu\n#define SYSCALL_PAIRS           1\n#else\n#define SYSCALL_PAIRS           0\n#endif\n", h, StringComparison.Ordinal);
+
+        // x86-32 joins (low, high) and every later argument moves along one; x86-64 takes it whole
+        Assert.Contains(
+            "static int decode_seek(const uintptr_t *a) {\n#if SYSCALL_PAIRS\n" +
+            "    return syscall_seek((int32_t)a[0], (int64_t)((uint64_t)a[1] | (uint64_t)a[2] << 32), (uint32_t)a[3], (uint32_t)a[4]);\n" +
+            "#else\n    return syscall_seek((int32_t)a[0], (int64_t)a[1], (uint32_t)a[2], (uint32_t)a[3]);\n#endif\n}\n",
+            c, StringComparison.Ordinal);
+        Assert.Contains("syscall_range((int32_t)a[0], (uint64_t)((uint64_t)a[1] | (uint64_t)a[2] << 32), (uint64_t)((uint64_t)a[3] | (uint64_t)a[4] << 32));", c, StringComparison.Ordinal);
+        Assert.Contains("syscall_range((int32_t)a[0], (uint64_t)a[1], (uint64_t)a[2]);", c, StringComparison.Ordinal);
+
+        // the X wrapper (x86-32) splits it low first, in the order the decoder joins
+        Assert.Contains("return __syscall(SYS_SEEK, h as u32, off as u32, (off >> 32) as u32, origin, pos as u32); }\n", x, StringComparison.Ordinal);
+        Assert.Contains("return __syscall(SYS_RANGE, h as u32, start as u32, (start >> 32) as u32, len as u32, (len >> 32) as u32); }\n", x, StringComparison.Ordinal);
     }
 
     [Fact]

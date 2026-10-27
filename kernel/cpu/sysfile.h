@@ -12,7 +12,8 @@
  * cxk_abi.h and referenced by no syscall at all. This fills that slot.
  *
  * One function per syscall since roadmap step 6a2c (ABI 9), its arguments in
- * registers; until then one SYS_FILE_OP took a *file_op_args. Pointers arrive
+ * registers; until then one SYS_FILE_OP took a *file_op_args. Offsets, sizes
+ * and lock ranges are u64 since step 6a2d (ABI 10). Pointers arrive
  * as the user addresses they are, and each function checks and copies its own.
  *
  * An open file is a KOBJ_FILE object in the calling process's handle table, so
@@ -31,11 +32,11 @@
    comments in abi/kernel.xfil give each one's arguments and answer. */
 int sys_file_open(uint32_t path, uint32_t flags);
 int sys_file_close(int32_t h);
-int sys_file_read(int32_t h, uint32_t buf, uint32_t n);
-int sys_file_write(int32_t h, uint32_t buf, uint32_t n);
-int sys_file_seek(int32_t h, int32_t off, uint32_t origin);
-int sys_file_tell(int32_t h);
-int sys_file_truncate(int32_t h, int32_t size);
+int sys_file_read(int32_t h, uint32_t buf, uint64_t n);
+int sys_file_write(int32_t h, uint32_t buf, uint64_t n);
+int sys_file_seek(int32_t h, int64_t off, uint32_t origin, uint32_t pos);
+int sys_file_tell(int32_t h, uint32_t pos);
+int sys_file_truncate(int32_t h, uint64_t size);
 int sys_file_stat(uint32_t path, uint32_t st);
 int sys_file_fstat(int32_t h, uint32_t st);
 int sys_file_readdir(uint32_t path, uint32_t index, uint32_t st);
@@ -43,10 +44,10 @@ int sys_file_mkdir(uint32_t path);
 int sys_file_unlink(uint32_t path);
 int sys_file_rename(uint32_t path, uint32_t newname);
 int sys_file_chdir(uint32_t path);
-int sys_file_getcwd(uint32_t buf, uint32_t cap);
+int sys_file_getcwd(uint32_t buf, uint64_t cap);
 int sys_file_sync(void);
-int sys_file_lock(int32_t h, int32_t start, uint32_t len, uint32_t mode);
-int sys_file_unlock(int32_t h, int32_t start, uint32_t len);
+int sys_file_lock(int32_t h, uint32_t args);
+int sys_file_unlock(int32_t h, uint64_t start, uint64_t len);
 
 /* register the open-file object type; call once during init. */
 void sysfile_init(void);

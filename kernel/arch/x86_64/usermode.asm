@@ -8,8 +8,8 @@
 ; ring-3 routines the arch self-tests run (ktest_arch.c).
 ;
 ; The calling convention, until step 6 fixes it in the ABI: the number in
-; rax, the arguments in rdi and rsi (each 32 bits, as the ABI's are until
-; step 6), the result in rax. syscall itself takes rcx (the return RIP) and
+; rax, the arguments in rdi, rsi, rdx, r10 and r8, whole (a u64 is one
+; register here, step 6a2d), the result in rax. syscall itself takes rcx (the return RIP) and
 ; r11 (RFLAGS); every other register comes back as ring 3 left it.
 ;
 ; Uniprocessor: the syscall entry parks the user's RSP in one global for two
@@ -34,7 +34,7 @@ global enter_usermode
 global return_to_kernel
 global syscall64_entry
 global syscall_trapped
-extern syscall_dispatch     ; int syscall_dispatch(uint32_t num, uint32_t a1, ..., uint32_t a5)
+extern syscall_dispatch     ; int syscall_dispatch(uint32_t num, uintptr_t a1, ..., uintptr_t a5)
 extern gdt64_tss            ; gdt.c
 
 ; ---------------------------------------------------------------------------
@@ -127,12 +127,13 @@ syscall64_entry:
     sub rsp, 8               ; 9 pushes from a 16-byte RSP0: align the call
 
     ; Ring 3's rdi, rsi, rdx, r10, r8 (CX_SYSCALLS_IPC.md §4) into the C
-    ; call's esi, edx, ecx, r8d, r9d, each moved before its source is reused.
-    mov r9d, r8d             ; a5
-    mov r8d, r10d            ; a4
-    mov ecx, edx             ; a3
-    mov edx, esi             ; a2
-    mov esi, edi             ; a1
+    ; call's rsi, rdx, rcx, r8, r9, all 64 bits of each (syscall_dispatch
+    ; takes uintptr_t), each moved before its source is reused.
+    mov r9, r8               ; a5
+    mov r8, r10              ; a4
+    mov rcx, rdx             ; a3
+    mov rdx, rsi             ; a2
+    mov rsi, rdi             ; a1
     mov edi, eax             ; num
     call syscall_dispatch
     movsxd rax, eax          ; an error is negative in all 64 bits
@@ -328,10 +329,10 @@ user64_write_start:
     shl eax, 16
     movzx edi, r12w
     or edi, eax
-    mov esi, 0xC0DE0002      ; a2..a5: unused by SYS_EXIT, and read back from
-    mov edx, 0xC0DE0003      ; the recording point by t_ring3_write, so every
-    mov r10d, 0xC0DE0004     ; register the gate is meant to carry is seen to
-    mov r8d, 0xC0DE0005      ; arrive
+    mov rsi, 0xA2000000C0DE0002   ; a2..a5: unused by SYS_EXIT, and read back
+    mov rdx, 0xA3000000C0DE0003   ; from the recording point by t_ring3_write,
+    mov r10, 0xA4000000C0DE0004   ; so every register the gate is meant to carry
+    mov r8, 0xA5000000C0DE0005    ; is seen to arrive, its high half included
     mov eax, SYS_EXIT
     syscall
 .hang:

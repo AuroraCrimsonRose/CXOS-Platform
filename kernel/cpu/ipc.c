@@ -137,22 +137,25 @@ struct endpoint *ep_from_handle(int32_t h, uint32_t need_rights, uint32_t *grant
 static int call_on(struct endpoint *ep, const struct ipc_call_args *ap) {
     struct ipc_call_args a = *ap;
     if (a.req_len > sizeof ep->buf) return E_OUT_OF_RANGE;
+    /* No reply is longer than the buffer it is staged in, so a larger cap
+       promises room nothing will use; only what can be written is checked. */
+    uint32_t rcap = a.reply_cap > sizeof ep->buf ? (uint32_t)sizeof ep->buf : (uint32_t)a.reply_cap;
 
     /* An early reject, not the authority: the reply buffer is validated again
        at the copy-out below, which is the check that counts. This one is here
        so a caller that passes an unusable reply buffer is told now rather than
        after a whole round trip through the broker. Haiku keeps its up-front
        IS_USER_ADDRESS check for the same reason. */
-    if (a.reply_cap && !user_ptr_writable(a.reply, a.reply_cap)) return E_BAD_ADDRESS;
+    if (rcap && !user_ptr_writable(a.reply, rcap)) return E_BAD_ADDRESS;
 
     /* Before anything writes ep->buf: it still holds an in-flight
        transaction's message if one is live. */
     if (ep->caller_tid != -1) return E_BUSY;   /* single in-flight (v1) */
 
-    if (user_copy_in(ep->buf, a.req, a.req_len) != 0) return E_BAD_ADDRESS;
-    ep->msg_len    = a.req_len;
+    if (user_copy_in(ep->buf, a.req, (uint32_t)a.req_len) != 0) return E_BAD_ADDRESS;
+    ep->msg_len    = (uint32_t)a.req_len;
     ep->reply_ptr  = a.reply;
-    ep->reply_cap  = a.reply_cap;
+    ep->reply_cap  = rcap;
     ep->caller_tid = thread_current_id();
     ep->caller_pid = thread_current_pid();   /* what ipc_recv reports */
 
@@ -186,6 +189,7 @@ static int call_on(struct endpoint *ep, const struct ipc_call_args *ap) {
 int ipc_call(uint32_t ua) {
     struct ipc_call_args a;
     if (user_copy_in(&a, ua, sizeof a) != 0) return E_BAD_ADDRESS;
+    if (a.reserved != 0) return E_INVALID_ARGS;
 
     struct endpoint *ep = ep_from_handle(a.ep_handle, HRIGHT_SEND, NULL);
     if (!ep) return E_BAD_HANDLE;
@@ -198,9 +202,11 @@ int ipc_call(uint32_t ua) {
    owner's (executive's) address space. The reference is held as in ipc_call. */
 static int recv_on(struct endpoint *ep, const struct ipc_recv_args *ap) {
     struct ipc_recv_args a = *ap;
+    /* As in ipc_call, a cap past the staging buffer promises unused room. */
+    uint32_t cap = a.cap > sizeof ep->buf ? (uint32_t)sizeof ep->buf : (uint32_t)a.cap;
     /* Early rejects, as in ipc_call: both buffers are validated again at the
        copies below, which are the checks that count. */
-    if (a.cap && !user_ptr_writable(a.buf, a.cap)) return E_BAD_ADDRESS;
+    if (cap && !user_ptr_writable(a.buf, cap)) return E_BAD_ADDRESS;
     if (a.sender && !user_ptr_writable(a.sender, sizeof(int))) return E_BAD_ADDRESS;
 
     while (ep->caller_tid == -1) {     /* no request staged yet: wait */
@@ -215,7 +221,7 @@ static int recv_on(struct endpoint *ep, const struct ipc_recv_args *ap) {
        request body is read out of ep->buf, and releasing first allows the
        slot to be reclaimed and wiped underneath the copy. */
     uint32_t ml = ep->msg_len;
-    if (ml > a.cap) ml = a.cap;
+    if (ml > cap) ml = cap;
     int rc = user_copy_out(a.buf, ep->buf, ml);
 
     /* The sender's pid, written only if the body made it out. A failure here
@@ -231,6 +237,7 @@ static int recv_on(struct endpoint *ep, const struct ipc_recv_args *ap) {
 int ipc_recv(uint32_t ua) {
     struct ipc_recv_args a;
     if (user_copy_in(&a, ua, sizeof a) != 0) return E_BAD_ADDRESS;
+    if (a.reserved != 0) return E_INVALID_ARGS;
 
     struct endpoint *ep = ep_from_handle(a.ep_handle, HRIGHT_RECV, NULL);
     if (!ep) return E_BAD_HANDLE;
@@ -249,8 +256,8 @@ static int reply_on(struct endpoint *ep, const struct ipc_reply_args *ap) {
        and the caller still blocked, which is what it did before this change
        too: whether a failed reply should abort the transaction and wake the
        caller with an error is a behaviour decision, not a copy-safety one. */
-    if (user_copy_in(ep->buf, a.data, a.len) != 0) return E_BAD_ADDRESS;
-    ep->msg_len = a.len;
+    if (user_copy_in(ep->buf, a.data, (uint32_t)a.len) != 0) return E_BAD_ADDRESS;
+    ep->msg_len = (uint32_t)a.len;
 
     thread_unblock(ep->caller_tid);   /* caller resumes in ipc_call, copies reply */
     return 0;

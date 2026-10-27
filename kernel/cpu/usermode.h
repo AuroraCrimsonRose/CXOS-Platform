@@ -23,10 +23,11 @@
 void usermode_init(void);
 
 /* The syscall entry: runs one call through the recording point (sysrec.h)
-   and the generated table (systable.h), with the five argument registers.
-   syscall_stub calls it for ring 3; the self-tests call it directly. */
-int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2, uint32_t a3,
-                     uint32_t a4, uint32_t a5);
+   and the generated table (systable.h), with the five argument registers at
+   the machine's width (a u64 takes two on x86-32, systable.h). syscall_stub
+   calls it for ring 3; the self-tests call it directly. */
+int syscall_dispatch(uint32_t num, uintptr_t a1, uintptr_t a2, uintptr_t a3,
+                     uintptr_t a4, uintptr_t a5);
 
 /* Witnesses for the recording point, counted apart from it: traps taken at
    int 0x80, and calls the dispatcher handled. */

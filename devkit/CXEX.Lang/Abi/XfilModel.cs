@@ -75,7 +75,15 @@ public sealed record XfilField(string Name, XfilType Type, int Offset, XfilDoc D
 /// <summary>A structure crossing the boundary. Fields in order, offsets computed, no implicit padding (§5).</summary>
 public sealed record XfilStruct(string Name, IReadOnlyList<XfilField> Fields, int Size, XfilDoc Doc, int Line) : XfilItem(Doc, Line);
 
-public sealed record XfilParam(string Name, XfilType Type);
+/// <summary>A syscall argument: u32, i32, u64, i64 or a pointer.</summary>
+public sealed record XfilParam(string Name, XfilType Type)
+{
+    /// <summary>True for u64 and i64, which x86-32 carries as a register pair (low, high).</summary>
+    public bool Wide => Type is XfilInt { Size: 8 };
+
+    /// <summary>Argument registers this takes on x86-32; on x86-64 every argument takes one.</summary>
+    public int Registers32 => Wide ? 2 : 1;
+}
 
 /// <summary>The X wrapper a syscall is called through: <c>fn name(params) -> ret</c>. <see cref="Returns"/> is <c>i32</c> or <c>void</c>.</summary>
 public sealed record XfilWrapper(string Name, IReadOnlyList<XfilParam> Params, string Returns);

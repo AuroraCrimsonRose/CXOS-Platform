@@ -53,7 +53,7 @@ void _start(void) {
        as whatever was on the stack. The kernel validates args against
        args_len, so a stale pointer here is a spawn that fails with E_BAD_ADDRESS
        and a machine that boots to nothing. */
-    sa.args = 0; sa.args_len = 0;
+    sa.args = 0; sa.args_len = 0; sa.reserved = 0;
     int pid = sys_spawn(&sa);
     if (pid < 0) { sys_write("executive: spawn failed\n"); sys_exit(1); }
 
@@ -76,7 +76,7 @@ void _start(void) {
     svc.image = 0; svc.image_len = 0;
     svc.name = (uint32_t)"supervisor"; svc.broker_endpoint = -1;
     svc.caps = GRANT_OS_BASELINE | SPAWN_BACKGROUND;
-    svc.args = 0; svc.args_len = 0;
+    svc.args = 0; svc.args_len = 0; svc.reserved = 0;
     if (sys_exec_path("/System/Programs/supervisor.xsex", &svc) < 0)
         sys_write("executive: no service supervisor (/System/Programs/supervisor.xsex)\n");
 
@@ -84,6 +84,7 @@ void _start(void) {
     char buf[256]; int sender = 0;
     struct ipc_recv_args ra;
     ra.ep_handle = ep; ra.buf = (uint32_t)buf; ra.cap = sizeof buf; ra.sender = (uint32_t)&sender;
+    ra.reserved = 0;
     int n = sys_ipc_recv(&ra);          /* blocks until the app ipc_calls */
     if (n > 0) {
         if (n < (int)sizeof buf) buf[n] = 0;   /* NUL-terminate for the write */

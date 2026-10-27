@@ -8,8 +8,8 @@
 // generates. Comments starting `//` stay here; `///` comments are documentation
 // and are carried into the generated files.
 //
-// This is today's ABI, described unchanged (roadmap step 6a1). Step 6a2
-// reshapes it: one operation per syscall, fixed widths. Every syscall declares
+// Step 6a1 described the ABI unchanged; step 6a2 reshapes it: one operation per
+// syscall (6a2c), fixed widths (6a2d: sizes and offsets u64). Every syscall declares
 // its arguments, since the kernel's dispatch table (kernel/cpu/systable.c) is
 // generated from them too; `fn name` adds a plain X wrapper.
 
@@ -26,7 +26,9 @@ domain kernel
 ///   eax = syscall number   ebx,ecx,edx,esi,edi = args 1..5   -> int 0x80
 ///   result in eax: >= 0 success (call-specific), < 0 a negative error code.
 ///   all GP registers except eax are preserved across the call.
-///   64-bit values are passed by pointer to a struct, never split across regs.
+///   a u64 or i64 argument takes two registers on x86-32, low half first, and
+///   one on x86-64; sizes and offsets are u64 (docs/kernel/CX_SYSCALLS_IPC.md
+///   sec 5). A 64-bit result comes back through a pointer argument.
 
 /// The version of THIS contract: the syscall numbers, struct layouts and
 /// capability meanings below. It is stamped into every CXEX image's abi_version
@@ -38,7 +40,7 @@ domain kernel
 /// mismatch. Declared in versions.json as `cxex-abi` and checked against this
 /// line; bump both, and the DevKit's stamp, in the one commit that changes the
 /// contract.
-const CXK_ABI_VERSION: u32 = 9
+const CXK_ABI_VERSION: u32 = 10
 
 /// ---- syscall numbers ----
 /// lifecycle 0x00-0x0F (no capability required)
@@ -78,14 +80,16 @@ syscall SYS_INPUT_READ = 0x20 fn input_read() -> i32                   /// block
 syscall SYS_MOUSE_READ = 0x21 fn mouse_read(m: *mouse_state) -> i32     /// ebx = *mouse_state -> 1 if a mouse is present
 syscall SYS_INPUT_POLL = 0x22 fn input_poll() -> i32                   /// -> char, 0 if none waiting
 /// console 0x30-0x3F (privileged: GRANT_CONSOLE)
-syscall SYS_CONSOLE_WRITE = 0x30 fn console_write(buf: *u8, len: u32) -> i32   /// ebx = buf, ecx = len (0 = bounded NUL-scan)
+/// buf, len (0 = a NUL-scan of at most 4096 bytes); a len of 2^32 or more is
+/// E_OUT_OF_RANGE -> bytes written
+syscall SYS_CONSOLE_WRITE = 0x30 fn console_write(buf: *u8, len: u64) -> i32
 /// ebx = index (0 = oldest kept), ecx = *log_entry -> 1 filled, 0 past the newest
 syscall SYS_LOG_READ = 0x31 fn log_read(i: u32, e: *log_entry) -> i32
 /// network 0x50-0x5F (privileged: GRANT_NET). IPv4 addresses cross the ABI as
 /// a packed u32 in NETWORK byte order (a.b.c.d -> (a<<24)|(b<<16)|(c<<8)|d),
 /// so userspace needs no array type.
 syscall SYS_NET_STATUS = 0x50 fn net_status() -> i32                /// -> 1 if the interface is up, 0 if not
-syscall SYS_NET_MAC = 0x51 fn net_mac(buf: *u8, len: u32) -> i32    /// len >= 6 -> 6, the MAC in buf
+syscall SYS_NET_MAC = 0x51 fn net_mac(buf: *u8, len: u64) -> i32    /// len >= 6 -> 6, the MAC in buf
 syscall SYS_NET_GET_CONFIG = 0x52 fn net_get_config(c: *net_ip_config) -> i32   /// ebx = *net_ip_config -> 0, filled in
 /// Each stores the address as given, unchecked -> 0. SET_DNS sets the primary
 /// server and keeps the secondary.
@@ -98,8 +102,9 @@ syscall SYS_NET_SET_DNS = 0x56 fn net_set_dns(addr: u32) -> i32
 /// address that cannot answer: 0.0.0.0, the all-ones broadcast, and the local
 /// subnet's network and broadcast addresses.
 syscall SYS_NET_PING = 0x57 fn net_ping(dst: u32, seq: u32, rtt: *u32) -> i32
-syscall SYS_NET_SEND = 0x58 fn net_send(frame: *u8, len: u32) -> i32   /// a raw Ethernet frame, 1-1514 bytes
-syscall SYS_NET_RECV = 0x59 fn net_recv(buf: *u8, cap: u32) -> i32     /// -> bytes received, 0 if none waiting
+syscall SYS_NET_SEND = 0x58 fn net_send(frame: *u8, len: u64) -> i32   /// a raw Ethernet frame, 1-1514 bytes
+/// -> bytes received, 0 if none waiting; a cap past 65535 is taken as 65535
+syscall SYS_NET_RECV = 0x59 fn net_recv(buf: *u8, cap: u64) -> i32
 /// framebuffer 0x40-0x4F (privileged: GRANT_FRAMEBUFFER). Colours are 0x00RRGGBB;
 /// the kernel converts them to the active mode. Each answers E_NOT_FOUND when
 /// there is no framebuffer (VGA text mode).
@@ -130,8 +135,8 @@ syscall SYS_EXEC_PATH = 0x72 fn exec_path(path: *u8, a: *spawn_args) -> i32
 
 /// memory 0x80-0x8F (unprivileged, quota-bounded)
 syscall SYS_VM_MAP = 0x80 fn vm_map(a: *vm_map_args) -> i32     /// ebx = *vm_map_args -> 0, with addr and granted filled in
-/// ebx = addr, ecx = length (0 = the whole mapping) -> 0
-syscall SYS_VM_UNMAP = 0x81 fn vm_unmap(addr: u32, length: u32) -> i32
+/// addr, length (0 = the whole mapping) -> 0
+syscall SYS_VM_UNMAP = 0x81 fn vm_unmap(addr: u32, length: u64) -> i32
 syscall SYS_VM_INFO = 0x82 fn vm_info(u: *vm_usage) -> i32      /// ebx = *vm_usage -> 0, with quota and mapped filled in
 
 /// power 0x90-0x9F (privileged: GRANT_POWER). Each returns only if refused.
@@ -145,15 +150,16 @@ syscall SYS_POWER_SLEEP = 0x92 fn sleep(ms: u32) -> i32
 syscall SYS_FILE_OPEN = 0xA0 fn file_open(path: *u8, flags: u32) -> i32
 syscall SYS_FILE_CLOSE = 0xA1 fn file_close(h: i32) -> i32
 /// -> bytes read, 0 at end of file. A short count is normal at the end, so a
-/// reader loops until it gets 0.
-syscall SYS_FILE_READ = 0xA2 fn file_read(h: i32, buf: *u8, n: u32) -> i32
-syscall SYS_FILE_WRITE = 0xA3 fn file_write(h: i32, buf: *u8, n: u32) -> i32   /// -> bytes written
-/// origin = FSEEK_* -> the new offset. Past the end is allowed and allocates
-/// nothing until a write reaches it.
-syscall SYS_FILE_SEEK = 0xA4 fn file_seek(h: i32, off: i32, origin: u32) -> i32
-syscall SYS_FILE_TELL = 0xA5 fn file_tell(h: i32) -> i32       /// -> the current offset
-/// cut (or extend) the file to exactly size bytes; a negative size is refused
-syscall SYS_FILE_TRUNCATE = 0xA6 fn file_truncate(h: i32, size: i32) -> i32
+/// reader loops until it gets 0; a call moves at most 2^31 - 1 bytes.
+syscall SYS_FILE_READ = 0xA2 fn file_read(h: i32, buf: *u8, n: u64) -> i32
+syscall SYS_FILE_WRITE = 0xA3 fn file_write(h: i32, buf: *u8, n: u64) -> i32   /// -> bytes written
+/// origin = FSEEK_* -> 0, the new offset in *pos (pos may be 0). Past the end
+/// is allowed and allocates nothing until a write reaches it; before the start
+/// is E_OUT_OF_RANGE.
+syscall SYS_FILE_SEEK = 0xA4 fn file_seek(h: i32, off: i64, origin: u32, pos: *u64) -> i32
+syscall SYS_FILE_TELL = 0xA5 fn file_tell(h: i32, pos: *u64) -> i32   /// -> 0, the current offset in *pos
+/// cut (or extend) the file to exactly size bytes
+syscall SYS_FILE_TRUNCATE = 0xA6 fn file_truncate(h: i32, size: u64) -> i32
 syscall SYS_FILE_STAT = 0xA7 fn stat(path: *u8, st: *file_stat) -> i32
 syscall SYS_FILE_FSTAT = 0xA8 fn fstat(h: i32, st: *file_stat) -> i32
 /// entry number index of the directory at path, into st -> 1 on a hit, 0 once
@@ -165,7 +171,7 @@ syscall SYS_FILE_UNLINK = 0xAB fn unlink(path: *u8) -> i32     /// a directory m
 syscall SYS_FILE_RENAME = 0xAC fn rename(path: *u8, newname: *u8) -> i32
 syscall SYS_FILE_CHDIR = 0xAD fn chdir(path: *u8) -> i32
 /// the working directory into buf, NUL-terminated -> its length
-syscall SYS_FILE_GETCWD = 0xAE fn getcwd(buf: *u8, cap: u32) -> i32
+syscall SYS_FILE_GETCWD = 0xAE fn getcwd(buf: *u8, cap: u64) -> i32
 /// Commit everything written so far to stable media -> 0, or E_IO when the
 /// device cannot confirm it.
 ///
@@ -174,9 +180,11 @@ syscall SYS_FILE_GETCWD = 0xAE fn getcwd(buf: *u8, cap: u32) -> i32
 /// FlushFileBuffers and VNOP_FSYNC all are. Anything that must survive a
 /// power cut writes, syncs, and only then treats the result as committed.
 syscall SYS_FILE_SYNC = 0xAF fn file_sync() -> i32
-/// Advisory byte-range lock: len bytes from start (len 0 runs to the end of
-/// the file however it grows, so start 0 len 0 is the whole file), mode =
-/// FLOCK_SHARED or FLOCK_EXCLUSIVE, optionally | FLOCK_WAIT.
+/// Advisory byte-range lock, described by a file_lock_args: len bytes from
+/// start (len 0 runs to the end of the file however it grows, so start 0 len 0
+/// is the whole file), mode = FLOCK_SHARED or FLOCK_EXCLUSIVE, optionally |
+/// FLOCK_WAIT. A structure because two u64s and a mode are six registers on
+/// x86-32.
 ///
 /// A lock belongs to the OPEN FILE (the handle), not to the process and not
 /// to the file on disk - SerenityOS's model. Shared ranges overlap freely;
@@ -193,11 +201,11 @@ syscall SYS_FILE_SYNC = 0xAF fn file_sync() -> i32
 /// Advisory: only another LOCK is refused. Opening, reading, writing and
 /// unlinking a locked file all still work, as they do on every Unix. Nothing
 /// is written to disk.
-syscall SYS_FILE_LOCK = 0xB0 fn file_lock_range(h: i32, start: i32, len: u32, mode: u32) -> i32
+syscall SYS_FILE_LOCK = 0xB0 fn file_lock_raw(h: i32, a: *file_lock_args) -> i32
 /// Drop this handle's locks lying wholly inside the range (start 0 len 0: all
 /// of them). Ranges are not split - unlock what was locked. E_OK even when
 /// nothing was held.
-syscall SYS_FILE_UNLOCK = 0xB1 fn file_unlock_range(h: i32, start: i32, len: u32) -> i32
+syscall SYS_FILE_UNLOCK = 0xB1 fn file_unlock_range(h: i32, start: u64, len: u64) -> i32
 
 /// ---- error codes (negative; returned in eax) ----
 /// One list, shared by syscalls and services (docs/kernel/CX_SYSCALLS_IPC.md sec 6).
@@ -268,16 +276,19 @@ struct args_info {
 }
 
 /// ---- shared call structures ----
+/// The u64 fields come first in each, so none needs padding before it; padding
+/// at the end is a field named `reserved`, which must be 0 (E_INVALID_ARGS).
 struct spawn_args {
+    image_len: u64          /// bytes at image
+    args_len: u64           /// total bytes of the args blob, terminators included
     image: u32              /// the app's CXEX bytes (in the caller's space)
-    image_len: u32
     name: u32               /// optional; not dereferenced in v1
     broker_endpoint: i32    /// a RECV endpoint handle the caller owns
     /// requested caps for the child; kernel masks against the spawner's own
     /// caps (attenuation, never amplify). 0 = capability-less app.
     caps: u32
     args: u32               /// argc NUL-terminated strings back to back, or NULL
-    args_len: u32           /// total bytes of that blob, terminators included
+    reserved: u32
 }
 
 /// ---- clock and sleep (SYS_CLOCK, SYS_SLEEP; unprivileged) ----
@@ -322,10 +333,11 @@ const OBJ_TYPE_ENDPOINT: u32 = 1
 const OBJ_TYPE_FILE: u32 = 2
 
 struct object_info_args {
+    cap: u64        /// bytes at buf; smaller than the topic needs is E_BUFFER_TOO_SMALL
     handle: i32
     topic: u32      /// OBJINFO_*
     buf: u32        /// the topic's structure is written here
-    cap: u32        /// bytes at buf; smaller than the topic needs is E_BUFFER_TOO_SMALL
+    reserved: u32
 }
 struct object_basic {
     kind: u32           /// OBJ_TYPE_* (not `type`: an X keyword)
@@ -336,22 +348,24 @@ struct object_basic {
 }
 
 struct ipc_call_args {
+    req_len: u64
+    reply_cap: u64
     ep_handle: i32  /// a SEND endpoint handle (the broker channel)
     req: u32        /// request bytes
-    req_len: u32
     reply: u32      /// buffer the reply is copied into
-    reply_cap: u32
+    reserved: u32
 }
 struct ipc_recv_args {
+    cap: u64
     ep_handle: i32  /// a RECV endpoint handle (owner side)
     buf: u32        /// request copied here
-    cap: u32
     sender: u32     /// set to the caller's pid (may be 0)
+    reserved: u32
 }
 struct ipc_reply_args {
     ep_handle: i32  /// the RECV endpoint just received on
     data: u32       /// reply bytes
-    len: u32
+    len: u64
 }
 
 /// ---- framebuffer (SYS_FB_INFO) ----
@@ -442,8 +456,8 @@ struct net_ip_config {
 ///
 /// That only works if the offset is 64 bits from the first day. It is one field
 /// now and an ABI break later, so it is here now, before anything is written
-/// against it. It is carried as two 32-bit halves rather than a uint64_t so the
-/// struct's layout is beyond question on either side of the boundary.
+/// against it. Since ABI 10 it is one u64 (it was two 32-bit halves), placed
+/// where the layout needs no padding on either side of the boundary.
 ///
 /// WHAT COMES BACK. `addr` is where the mapping landed and `granted` is how
 /// many bytes it actually covers. Both are outputs, because both are the
@@ -491,32 +505,32 @@ const MMAP_MAX_BYTES: u32 = 0x04000000u
 const MMAP_MAX_REGIONS: u32 = 32
 
 struct vm_map_args {
+    offset: u64     /// offset into the object; 0 for MOBJ_ANON
+    length: u64     /// bytes wanted
+    granted: u64    /// out: bytes actually mapped (length, rounded up to a page)
     object: u32     /// MOBJ_* (MOBJ_ANON today)
-    offset_lo: u32  /// 64-bit offset into the object, low half
-    offset_hi: u32  /// ... and high half; both 0 for MOBJ_ANON
-    length: u32     /// bytes wanted
     /// in: a hint if MMAP_HINT; out: where it is
     addr: u32
-    granted: u32    /// out: bytes actually mapped (length, rounded up to a page)
     prot: u32       /// MPROT_*
     flags: u32      /// MMAP_*
 }
 
 /// SYS_VM_INFO: this process's memory account.
 struct vm_usage {
-    quota: u32      /// the ceiling, in bytes
-    mapped: u32     /// how much of it is in use
+    quota: u64      /// the ceiling, in bytes
+    mapped: u64     /// how much of it is in use
 }
 
 /// ---- files (SYS_FILE_*; GRANT_DISK) ----
 ///
-/// The filesystem as userspace sees it. CXFS itself is 64-bit throughout, but
-/// X Native has no 64-bit integer type, so every offset and size crossing this
-/// boundary is 32 bits and SIGNED: read/write return a byte count, seek returns
-/// the new offset, and a negative return is an E_* code. That caps a file a
-/// user process can address at INT32_MAX (2 GB). Raising it means either a
-/// 64-bit type in the language or an offset-hi field, and the cap is documented
-/// here rather than silently truncating.
+/// The filesystem as userspace sees it. Offsets, sizes and lock ranges are u64,
+/// as CXFS's own are (ABI 10; until then they were 32-bit and signed, which
+/// capped a file at 2 GB). An offset runs to 2^63 - 1, so a seek's signed
+/// arithmetic cannot wrap; CXFS itself refuses a file past 2^32 blocks long
+/// before that. read/write return a byte count in an i32, so one call moves at
+/// most 2^31 - 1 bytes, and a negative return is an E_* code. seek and tell
+/// give the offset back through a *u64, since a result register is 32 bits on
+/// x86-32.
 ///
 /// A handle from SYS_FILE_OPEN is an ordinary entry in the process's handle table
 /// (abi sec 6), so SYS_HANDLE_CLOSE releases it as well as SYS_FILE_CLOSE does,
@@ -548,19 +562,29 @@ const FTYPE_DIR: u32 = 2
 const FILE_NAME_MAX: u32 = 64        /// must equal CXFS_NAME_LEN
 const FILE_PATH_MAX: u32 = 256       /// longest path a syscall will copy in
 
+/// SYS_FILE_LOCK's range and mode.
+struct file_lock_args {
+    start: u64
+    len: u64        /// 0 = to the end of the file, however it grows
+    mode: u32       /// FLOCK_SHARED or FLOCK_EXCLUSIVE, optionally | FLOCK_WAIT
+    reserved: u32
+}
+
 /// Timestamps are unsigned epoch seconds truncated to 32 bits, which runs out in
-/// 2106; CXFS keeps the full 64 bits on disk.
+/// 2106; CXFS keeps the full 64 bits on disk. Time becomes i64 nanoseconds in
+/// its own step (docs/kernel/CX_SYSCALLS_IPC.md sec 5).
 struct file_stat {
     id: u32
     /// FTYPE_* ("type" is a reserved word in X, so the ABI side cannot call it
     /// that)
     kind: u32
-    size: u32
+    size: u64
     permissions: u32
     owner_uid: u32
     created: u32
     modified: u32
     accessed: u32
+    reserved: u32   /// 0
     name: char[FILE_NAME_MAX]
 }
 

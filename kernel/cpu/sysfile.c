@@ -31,10 +31,18 @@
  */
 #define MAX_OPEN_FILES 32
 
+/* Offsets, sizes and lock ranges are u64 in the ABI (since ABI 10). A position
+   stays at or below INT64_MAX, so a seek's signed arithmetic and start + len
+   both stay in range; CXFS refuses a file past 2^32 blocks well before it. A
+   read or write moves at most FILE_IO_MAX bytes, since its count comes back in
+   an i32; asking for more is a short count, as at the end of a file. */
+#define FILE_OFF_MAX ((uint64_t)INT64_MAX)
+#define FILE_IO_MAX  0x7FFFFFFFu
+
 struct open_file {
     struct kobj hdr;     /* first: the handle table holds &hdr */
     uint32_t entry;      /* CXFS manifest id */
-    uint32_t off;        /* current offset (see the INT32_MAX cap in the ABI) */
+    uint64_t off;        /* current offset, at most FILE_OFF_MAX */
     uint32_t flags;      /* FOPEN_* the file was opened with */
     int      owner;      /* the thread (process) whose handle this is */
     int      doomed;     /* unlinked while open: delete at the last close */
@@ -122,8 +130,8 @@ static void bury_pending(void) {
 struct file_lock {
     struct open_file *of;      /* NULL: slot free */
     uint32_t entry;
-    uint32_t start;
-    uint32_t len;
+    uint64_t start;
+    uint64_t len;
     uint32_t mode;             /* FLOCK_SHARED or FLOCK_EXCLUSIVE */
 };
 static struct file_lock locks[MAX_FILE_LOCKS];
@@ -139,7 +147,8 @@ struct lock_wait {
     int      tid;
     int      seen;          /* visited by the current deadlock walk */
     struct open_file *of;
-    uint32_t entry, start, len, mode;
+    uint32_t entry, mode;
+    uint64_t start, len;
     struct lock_wait *next;
 };
 static struct lock_wait *waiters;
@@ -150,16 +159,17 @@ static struct lock_wait *waiter_of(int tid) {
     return NULL;
 }
 
-static int ranges_overlap(uint32_t s1, uint32_t l1, uint32_t s2, uint32_t l2) {
-    uint64_t e1 = l1 ? (uint64_t)s1 + l1 : UINT64_MAX;
-    uint64_t e2 = l2 ? (uint64_t)s2 + l2 : UINT64_MAX;
+/* Starts and lengths are at most FILE_OFF_MAX, so start + len cannot wrap. */
+static int ranges_overlap(uint64_t s1, uint64_t l1, uint64_t s2, uint64_t l2) {
+    uint64_t e1 = l1 ? s1 + l1 : UINT64_MAX;
+    uint64_t e2 = l2 ? s2 + l2 : UINT64_MAX;
     return s1 < e2 && s2 < e1;
 }
 
 /* The first lock held by ANOTHER open file that this request collides with,
    starting the scan at `from`; -1 if none. */
-static int lock_conflict(const struct open_file *of, uint32_t entry, uint32_t start,
-                         uint32_t len, uint32_t mode, int from) {
+static int lock_conflict(const struct open_file *of, uint32_t entry, uint64_t start,
+                         uint64_t len, uint32_t mode, int from) {
     for (int i = from; i < MAX_FILE_LOCKS; i++) {
         const struct file_lock *l = &locks[i];
         if (!l->of || l->of == of || l->entry != entry) continue;
@@ -174,8 +184,8 @@ static int lock_conflict(const struct open_file *of, uint32_t entry, uint32_t st
    is itself waiting, directly or down a chain, on a lock `me` holds. Linux
    checks POSIX locks the same way and answers EDEADLK; Serenity does not check,
    and a program that gets it wrong hangs. */
-static int lock_cycle(int me, const struct open_file *of, uint32_t entry, uint32_t start,
-                      uint32_t len, uint32_t mode) {
+static int lock_cycle(int me, const struct open_file *of, uint32_t entry, uint64_t start,
+                      uint64_t len, uint32_t mode) {
     for (int i = lock_conflict(of, entry, start, len, mode, 0); i >= 0;
          i = lock_conflict(of, entry, start, len, mode, i + 1)) {
         int h = locks[i].of->owner;
@@ -193,7 +203,7 @@ static void lock_wake_all(void) {
 }
 
 /* Take or convert a lock. The caller has checked there is no conflict. */
-static int lock_apply(struct open_file *of, uint32_t start, uint32_t len, uint32_t mode) {
+static int lock_apply(struct open_file *of, uint64_t start, uint64_t len, uint32_t mode) {
     int free_slot = -1;
     for (int i = 0; i < MAX_FILE_LOCKS; i++) {
         struct file_lock *l = &locks[i];
@@ -217,13 +227,13 @@ static int lock_apply(struct open_file *of, uint32_t start, uint32_t len, uint32
 /* Drop this open file's locks that lie wholly inside [start, start+len). A
    lock that only partly overlaps is left alone: ranges are not split, which is
    also Serenity's rule, so unlock what was locked. (0, 0) drops them all. */
-static void lock_drop(const struct open_file *of, uint32_t start, uint32_t len) {
-    uint64_t end = len ? (uint64_t)start + len : UINT64_MAX;
+static void lock_drop(const struct open_file *of, uint64_t start, uint64_t len) {
+    uint64_t end = len ? start + len : UINT64_MAX;
     int any = 0;
     for (int i = 0; i < MAX_FILE_LOCKS; i++) {
         struct file_lock *l = &locks[i];
         if (l->of != of) continue;
-        uint64_t lend = l->len ? (uint64_t)l->start + l->len : UINT64_MAX;
+        uint64_t lend = l->len ? l->start + l->len : UINT64_MAX;
         if (l->start < start || lend > end) continue;
         l->of = NULL;
         any = 1;
@@ -362,13 +372,13 @@ static int names_self(const char *path) {
     return 0;
 }
 
-/* Fill a user-facing file_stat from a CXFS entry. 64-bit fields are truncated
-   to 32 on the way out - see the ABI note on the offset cap. */
+/* Fill a user-facing file_stat from a CXFS entry. The timestamps are truncated
+   to 32 bits on the way out (the ABI note on file_stat); the size is whole. */
 static void fill_stat(const struct cxfs_entry *e, struct file_stat *st) {
     memset(st, 0, sizeof *st);
     st->id          = e->id;
     st->kind        = (e->type == CXFS_TYPE_DIR) ? FTYPE_DIR : FTYPE_FILE;
-    st->size        = (e->size > 0x7FFFFFFFull) ? 0x7FFFFFFFu : (uint32_t)e->size;
+    st->size        = e->size;
     st->permissions = e->permissions;
     st->owner_uid   = e->owner_uid;
     st->created     = (uint32_t)e->created;
@@ -481,7 +491,7 @@ int sys_file_open(uint32_t upath, uint32_t flags) {
     nf->off   = 0;
     if (flags & FOPEN_APPEND) {
         struct cxfs_entry e;
-        if (cxfs_read_entry(nf->entry, &e) == 0) nf->off = (uint32_t)e.size;
+        if (cxfs_read_entry(nf->entry, &e) == 0) nf->off = e.size;
     }
 
     int32_t h = htab_install(thread_htab(thread_current_id()), &nf->hdr,
@@ -505,32 +515,32 @@ int sys_file_close(int32_t h) {
     return rc;
 }
 
-static int file_read(struct open_file *f, uint32_t rights, uint32_t buf, uint32_t n) {
+static int file_read(struct open_file *f, uint32_t rights, uint32_t buf, uint64_t n) {
     if (!(rights & FOPEN_READ)) return E_ACCESS_DENIED;
     if (n == 0) return 0;
-    if (n > 0x7FFFFFFFu) return E_OUT_OF_RANGE;
-    if (!user_ptr_writable(buf, n)) return E_BAD_ADDRESS;
+    if (n > FILE_IO_MAX) n = FILE_IO_MAX;   /* a short count is normal */
+    if (!user_ptr_writable(buf, (uint32_t)n)) return E_BAD_ADDRESS;
 
-    int rc = cxfs_read_at(f->entry, f->off, user_ptr(buf), n);
+    int rc = cxfs_read_at(f->entry, f->off, user_ptr(buf), (uint32_t)n);
     if (rc < 0) return abi_err(rc);
     f->off += (uint32_t)rc;
     return rc;
 }
 
-int sys_file_read(int32_t h, uint32_t buf, uint32_t n) {
+int sys_file_read(int32_t h, uint32_t buf, uint64_t n) {
     struct open_file *f;
     uint32_t rights;
     int rc = file_enter(h, &f, &rights);
     return rc < 0 ? rc : file_leave(f, file_read(f, rights, buf, n));
 }
 
-static int file_write(struct open_file *f, uint32_t rights, uint32_t buf, uint32_t n) {
+static int file_write(struct open_file *f, uint32_t rights, uint32_t buf, uint64_t n) {
     if (!(rights & FOPEN_WRITE)) return E_ACCESS_DENIED;
     if (n == 0) return 0;
-    if (n > 0x7FFFFFFFu) return E_OUT_OF_RANGE;
-    if (!user_ptr_readable(buf, n)) return E_BAD_ADDRESS;
-    /* the offset cap is the ABI's, so refuse rather than wrap */
-    if (f->off > 0x7FFFFFFFu - n) return E_OUT_OF_RANGE;
+    if (n > FILE_IO_MAX) n = FILE_IO_MAX;   /* a short count is normal */
+    if (!user_ptr_readable(buf, (uint32_t)n)) return E_BAD_ADDRESS;
+    /* refuse rather than wrap: no offset passes FILE_OFF_MAX */
+    if (f->off > FILE_OFF_MAX - n) return E_OUT_OF_RANGE;
 
     /* APPEND means "at the end as it is now", not "at the end as it was
        when you opened it" - re-read the size each time, so two writers
@@ -538,63 +548,69 @@ static int file_write(struct open_file *f, uint32_t rights, uint32_t buf, uint32
     if (f->flags & FOPEN_APPEND) {
         struct cxfs_entry e;
         if (cxfs_read_entry(f->entry, &e) != 0) return E_IO;
-        f->off = (uint32_t)e.size;
+        f->off = e.size;
+        if (f->off > FILE_OFF_MAX - n) return E_OUT_OF_RANGE;
     }
 
-    int rc = cxfs_write_at(f->entry, f->off, user_ptr(buf), n);
+    int rc = cxfs_write_at(f->entry, f->off, user_ptr(buf), (uint32_t)n);
     if (rc < 0) return abi_err(rc);
     f->off += (uint32_t)rc;
     return rc;
 }
 
-int sys_file_write(int32_t h, uint32_t buf, uint32_t n) {
+int sys_file_write(int32_t h, uint32_t buf, uint64_t n) {
     struct open_file *f;
     uint32_t rights;
     int rc = file_enter(h, &f, &rights);
     return rc < 0 ? rc : file_leave(f, file_write(f, rights, buf, n));
 }
 
-static int file_seek(struct open_file *f, int32_t off, uint32_t origin) {
+/* The new offset goes to *pos (a user address, 0 for none), checked before the
+   offset moves, so a bad pointer leaves the file where it was. */
+static int file_seek(struct open_file *f, int64_t off, uint32_t origin, uint32_t pos) {
+    if (pos && !user_ptr_writable(pos, sizeof(uint64_t))) return E_BAD_ADDRESS;
     struct cxfs_entry e;
     if (cxfs_read_entry(f->entry, &e) != 0) return E_IO;
-    uint32_t size = (e.size > 0x7FFFFFFFull) ? 0x7FFFFFFFu : (uint32_t)e.size;
 
     int64_t base;
     switch (origin) {
-        case FSEEK_SET: base = 0;              break;
-        case FSEEK_CUR: base = (int64_t)f->off; break;
-        case FSEEK_END: base = (int64_t)size;  break;
+        case FSEEK_SET: base = 0;                break;
+        case FSEEK_CUR: base = (int64_t)f->off;  break;
+        case FSEEK_END: base = (int64_t)e.size;  break;   /* CXFS: under 2^44 */
         default: return E_INVALID_ARGS;
     }
-    int64_t pos = base + (int64_t)off;
-    if (pos < 0 || pos > 0x7FFFFFFF) return E_OUT_OF_RANGE;
+    int64_t to;
+    if (__builtin_add_overflow(base, off, &to) || to < 0) return E_OUT_OF_RANGE;
     /* Seeking past EOF is allowed and allocates nothing: the hole only
        becomes real on the write that reaches it. */
-    f->off = (uint32_t)pos;
-    return (int)f->off;
+    f->off = (uint64_t)to;
+    if (pos) *(uint64_t *)user_ptr(pos) = f->off;
+    return E_OK;
 }
 
-int sys_file_seek(int32_t h, int32_t off, uint32_t origin) {
+int sys_file_seek(int32_t h, int64_t off, uint32_t origin, uint32_t pos) {
     struct open_file *f;
     uint32_t rights;
     int rc = file_enter(h, &f, &rights);
-    return rc < 0 ? rc : file_leave(f, file_seek(f, off, origin));
+    return rc < 0 ? rc : file_leave(f, file_seek(f, off, origin, pos));
 }
 
-int sys_file_tell(int32_t h) {
+int sys_file_tell(int32_t h, uint32_t pos) {
     struct open_file *f;
     uint32_t rights;
     int rc = file_enter(h, &f, &rights);
-    return rc < 0 ? rc : file_leave(f, (int)f->off);
+    if (rc < 0) return rc;
+    if (user_copy_out(pos, &f->off, sizeof f->off) != 0) return file_leave(f, E_BAD_ADDRESS);
+    return file_leave(f, E_OK);
 }
 
-static int file_truncate(struct open_file *f, uint32_t rights, int32_t size) {
+static int file_truncate(struct open_file *f, uint32_t rights, uint64_t size) {
     if (!(rights & FOPEN_WRITE)) return E_ACCESS_DENIED;
-    if (size < 0) return E_INVALID_ARGS;
-    return abi_err(cxfs_truncate(f->entry, (uint64_t)(uint32_t)size));
+    if (size > FILE_OFF_MAX) return E_OUT_OF_RANGE;
+    return abi_err(cxfs_truncate(f->entry, size));
 }
 
-int sys_file_truncate(int32_t h, int32_t size) {
+int sys_file_truncate(int32_t h, uint64_t size) {
     struct open_file *f;
     uint32_t rights;
     int rc = file_enter(h, &f, &rights);
@@ -736,13 +752,13 @@ int sys_file_chdir(uint32_t upath) {
     return E_OK;
 }
 
-int sys_file_getcwd(uint32_t buf, uint32_t cap) {
+int sys_file_getcwd(uint32_t buf, uint64_t cap) {
     char path[FILE_PATH_MAX];
     int rc;
     if ((rc = fs_enter()) < 0) return rc;
     if (cap == 0) return E_BUFFER_TOO_SMALL;
     if (cap > FILE_PATH_MAX) cap = FILE_PATH_MAX;
-    if (!user_ptr_writable(buf, cap)) return E_BAD_ADDRESS;
+    if (!user_ptr_writable(buf, (uint32_t)cap)) return E_BAD_ADDRESS;
     cxfs_path_of(thread_current_cwd(), path, (int)cap);
     uint32_t n = 0;
     while (n + 1 < cap && path[n]) n++;
@@ -769,11 +785,10 @@ int sys_file_sync(void) {
    sleeps until a release, then looks again, as Serenity's FlockBlocker
    does - unless waiting could never end, which is E_DEADLOCK. A
    conversion that conflicts leaves the lock already held unchanged. */
-static int file_lock(struct open_file *f, int32_t off, uint32_t len, uint32_t flags) {
+static int file_lock(struct open_file *f, uint64_t start, uint64_t len, uint32_t flags) {
     uint32_t mode = flags & ~(uint32_t)FLOCK_WAIT;
     if (mode != FLOCK_SHARED && mode != FLOCK_EXCLUSIVE) return E_INVALID_ARGS;
-    if (off < 0) return E_INVALID_ARGS;
-    uint32_t start = (uint32_t)off;
+    if (start > FILE_OFF_MAX || len > FILE_OFF_MAX) return E_OUT_OF_RANGE;
 
     int me = thread_current_id();
     while (lock_conflict(f, f->entry, start, len, mode, 0) >= 0) {
@@ -793,19 +808,25 @@ static int file_lock(struct open_file *f, int32_t off, uint32_t len, uint32_t fl
     return lock_apply(f, start, len, mode);
 }
 
-int sys_file_lock(int32_t h, int32_t start, uint32_t len, uint32_t mode) {
-    struct open_file *f;
-    uint32_t rights;
-    int rc = file_enter(h, &f, &rights);
-    return rc < 0 ? rc : file_leave(f, file_lock(f, start, len, mode));
-}
-
-int sys_file_unlock(int32_t h, int32_t start, uint32_t len) {
+/* The range and mode arrive in a struct file_lock_args: two u64s and a mode
+   are six registers on x86-32, one more than a syscall has. */
+int sys_file_lock(int32_t h, uint32_t args) {
     struct open_file *f;
     uint32_t rights;
     int rc = file_enter(h, &f, &rights);
     if (rc < 0) return rc;
-    if (start < 0) return file_leave(f, E_INVALID_ARGS);
-    lock_drop(f, (uint32_t)start, len);
+    struct file_lock_args a;
+    if (user_copy_in(&a, args, sizeof a) != 0) return file_leave(f, E_BAD_ADDRESS);
+    if (a.reserved != 0) return file_leave(f, E_INVALID_ARGS);
+    return file_leave(f, file_lock(f, a.start, a.len, a.mode));
+}
+
+int sys_file_unlock(int32_t h, uint64_t start, uint64_t len) {
+    struct open_file *f;
+    uint32_t rights;
+    int rc = file_enter(h, &f, &rights);
+    if (rc < 0) return rc;
+    if (start > FILE_OFF_MAX || len > FILE_OFF_MAX) return file_leave(f, E_OUT_OF_RANGE);
+    lock_drop(f, start, len);
     return file_leave(f, E_OK);
 }

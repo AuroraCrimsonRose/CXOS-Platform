@@ -15,7 +15,7 @@
 | Entry | `int 0x80`, a number and two arguments (`syscall_dispatch(num, a1, a2)`) | Slow on x86-64; two arguments force a structure for almost everything |
 | Shape | 62 numbers, one operation each: step 6a2c split every multiplexer, `SYS_FILE_OP` last (§9.5) | Solved: a number hid up to 18 operations, so tracing, recording and filtering saw "a file call" and nothing more, and each multiplexer re-implemented dispatch |
 | Structures | Raw pointers and `int` inside shared structures | Layout changes with pointer size; every structure changes on x86-64 |
-| Widths | `ticks` in 32-bit milliseconds; file sizes and offsets 32-bit; timestamps 32-bit | Ticks wrap after 49 days; files stop at 4 GB; dates stop in 2106 |
+| Widths | `ticks` in 32-bit milliseconds; timestamps 32-bit. Sizes and offsets are `u64` since step 6a2d (§9.5) | Ticks wrap after 49 days; dates stop in 2106. Solved for sizes: files stopped at 2 GB |
 | Authority | `GRANT_*` bits on the process; handles are small `int`s with no rights | A handle carries no rights of its own; a stale handle number can name a new object |
 | Devices | Drawing (`SYS_FB_DRAW_TEXT`), keyboard and mouse are syscalls; input needs no capability | The kernel draws pixels; any process can read another's keys |
 | Arguments | A fixed page at `USER_ARGS_BASE` | An x86-32 address in the ABI |
@@ -330,18 +330,18 @@ The ABI hash of §5 is this hash for the `kernel` library.
 - Supersedes the rule that `cxk_abi.h` and `AbiPrelude.cs` change in one
   commit: both are generated from the same file.
 
-### 9.5 As built (roadmap steps 6a1, 6a2a, 6a2b, 6a2c)
+### 9.5 As built (roadmap steps 6a1, 6a2a, 6a2b, 6a2c, 6a2d)
 
 The `kernel` domain is generated; the other domains, and `interface` blocks
 with their messages, are settled when IPC v3 needs them (Phase 1). The source
 is `abi/kernel.xfil` (`library cx.kernel`), which describes the ABI as it
-stands (no multiplexers since 6a2c; 6a2d widens it). `cxk abi generate` writes
+stands (no multiplexers since 6a2c; sizes and offsets `u64` since 6a2d). `cxk abi generate` writes
 `abi/cxk_abi.h` from it, and since 6a2a the kernel's dispatch side as well:
 `kernel/cpu/systable.h` (one handler prototype per syscall, named after it:
 `SYS_FILE_READ` is `syscall_file_read`) and `kernel/cpu/systable.c` (a decoder per
 syscall, giving each argument register its declared type, and the table,
 indexed by number). `syscall_dispatch` takes the number and all five argument
-registers from either gate, refuses a number past the table or in one of its
+registers from either gate at the register width (`uintptr_t`), refuses a number past the table or in one of its
 holes with `E_NOT_SUPPORTED`, and the recording point keeps the last entry's
 registers. `CXEX.Lang` embeds the `.xfil`, and the X prelude's constants,
 structures and plain syscall wrappers come from the embedded copy
@@ -380,11 +380,17 @@ syscall SYS_EXAMPLE = 0x3F0 (op: u32, ms: u32) -> i32   /// no plain wrapper
   inside or at the end; the header asserts every size it computed. A
   structure field is never a pointer.
 - Every syscall declares its arguments, since the dispatch table decodes
-  them; `fn name` adds a plain X wrapper. A syscall takes at most five
-  arguments, each `u32`, `i32` or a pointer (`*u8`, `*u32`, `*struct`), and returns
-  `i32` or `void`. Its name starts with `SYS_`, its number is its own and at
-  most `0x3FF`. A wrapper passes a `u32` as it is, anything else through
-  `as u32`; the kernel receives a pointer as a `uint32_t` user address. Wrappers come out in file order, and
+  them; `fn name` adds a plain X wrapper. An argument is `u32`, `i32`, `u64`,
+  `i64` or a pointer (`*u8`, `*u32`, `*u64`, `*struct`), and a syscall returns
+  `i32` or `void`. Arguments are counted in x86-32 registers, at most five: a
+  `u64` or `i64` takes two, low then high, so `(h, start: u64, len: u64)` fits
+  and three `u64`s do not. Its name starts with `SYS_`, its number is its own
+  and at most `0x3FF`. A wrapper passes a `u32` as it is, a `u64` as `x as u32,
+  (x >> 32) as u32` (X targets x86-32 alone until step 6b), anything else
+  through `as u32`. A decoder reads the registers as `uintptr_t` and casts each
+  to its parameter's C type; one with a wide parameter is written twice, `#if
+  SYSCALL_PAIRS` joining the pair on x86-32 and taking one register on x86-64.
+  The kernel receives a pointer as a `uint32_t` user address. Wrappers come out in file order, and
   since every prelude function is compiled into every program, so do the
   programs' bytes.
 - Every refusal names its line. Nothing is skipped: a generator that dropped
@@ -438,6 +444,35 @@ operations leave it.
   The wrappers take the names `os/std/file.xfxn` had (`file_open`, `stat`,
   `dir_entry`, `file_lock_range` ...), so no caller changed; the file keeps
   only its conveniences. With this family the multiplexers are gone.
+
+Step 6a2d (`CXK_ABI_VERSION` 10) makes every size and offset a `u64`; an
+address stays `u32` until step 6b, and so do counts, indices and times (time
+is a step of its own).
+
+- **Arguments:** `console_write`'s `len`, `net_mac`'s and `net_send`'s `len`,
+  `net_recv`'s `cap` (cut to 65535, more than any frame), `vm_unmap`'s
+  `length`, `file_read`/`file_write`'s `n`, `file_truncate`'s `size`,
+  `getcwd`'s `cap` and `file_unlock_range`'s `start, len`. A length past what
+  the call can take is `E_OUT_OF_RANGE`, never cut to its low half.
+- **Results:** a result is still an `i32`, so `file_seek` (`h, off: i64,
+  origin, *u64`) and `file_tell` (`h, *u64`) return `E_OK` and write the
+  position out; a bad pointer is refused before the offset moves. One read or
+  write moves at most 2 GB - 1 bytes (`n` is cut to that) because its count
+  is the result.
+- **`SYS_FILE_LOCK`** (`h, *file_lock_args`): `h`, two `u64`s and a mode are
+  six x86-32 registers, so the range goes in a structure. The generated wrapper
+  is `file_lock_raw`; `os/std/file.xfxn` keeps `file_lock_range(h, start, len,
+  mode)` over it.
+- **Structures:** every length field is `u64` and leads its structure, so
+  nothing is padded: `spawn_args` (`image_len`, `args_len`),
+  `object_info_args` (`cap`), `ipc_call_args` (`req_len`, `reply_cap`),
+  `ipc_recv_args` (`cap`), `ipc_reply_args` (`len`), `vm_map_args` (`offset`
+  as one `u64`, `length`, `granted`), `vm_usage` and `file_stat.size`. Where
+  the fields left a hole, a `reserved` field fills it, and a non-zero one is
+  `E_INVALID_ARGS`, so it can be given a meaning later.
+- **The kernel:** the 2 GB cap is gone. An open file's offset and its lock
+  ranges are `uint64_t`, bounded by `INT64_MAX`; a write past it, a seek
+  before 0 and a truncate or lock past it are `E_OUT_OF_RANGE`.
 
 When the `.xfil` replaced the hand-written header, the header it generated
 matched the old one in every constant, structure and field type, and every

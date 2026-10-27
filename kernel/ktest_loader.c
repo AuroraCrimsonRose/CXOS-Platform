@@ -521,12 +521,13 @@ int ktest_spawn_verifies_image(void) {
 
     struct spawn_args *a = (struct spawn_args *)SPV_ARGS_VA;
     a->image           = user_addr(img);
-    a->image_len       = (uint32_t)e.size;
+    a->image_len       = e.size;
     a->name            = 0;
     a->broker_endpoint = h;
     a->caps            = 0;                /* attenuated to nothing: caps are not the point */
     a->args            = 0;
     a->args_len        = 0;
+    a->reserved        = 0;
 
     /* ---- the controls ----
        Distinct codes for distinct causes, which is what stops this suite from
@@ -535,7 +536,23 @@ int ktest_spawn_verifies_image(void) {
        below is the signature check and not a malformed request. */
     a->image_len = 0;
     ok = (sys_spawn(user_addr(a)) == E_OUT_OF_RANGE);
-    a->image_len = (uint32_t)e.size;
+    a->image_len = e.size;
+    if (!ok) goto done;
+
+    /* u64 lengths (ABI 10) are compared whole: the low half alone is the
+       image's true size, and would pass */
+    a->image_len = (1ull << 32) + e.size;
+    ok = (sys_spawn(user_addr(a)) == E_OUT_OF_RANGE);
+    a->image_len = e.size;
+    if (!ok) goto done;
+    a->args_len = 1ull << 32;              /* with args 0: a length without a blob */
+    ok = (sys_spawn(user_addr(a)) == E_INVALID_ARGS);
+    a->args_len = 0;
+    if (!ok) goto done;
+
+    a->reserved = 1;                       /* padding must be 0 */
+    ok = (sys_spawn(user_addr(a)) == E_INVALID_ARGS);
+    a->reserved = 0;
     if (!ok) goto done;
 
     a->broker_endpoint = 9999;             /* no such handle */

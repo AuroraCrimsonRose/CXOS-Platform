@@ -41,6 +41,7 @@ void _start(void) {
     a.req_len   = slen(msg);
     a.reply     = reply;
     a.reply_cap = sizeof reply;
+    a.reserved  = 0;                 /* must be 0, or E_INVALID_ARGS */
     long rc = ipc_call(&a);          /* blocks; executive prints msg + replies */
     sys_exit(rc >= 0 ? 0 : 1);
 }

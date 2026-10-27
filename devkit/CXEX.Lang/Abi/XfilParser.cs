@@ -298,15 +298,19 @@ public static class XfilParser
                 if (!seen.Add(nt[0])) throw new XfilException(LineNo, $"{name}: parameter {nt[0]} is declared twice");
                 XfilType type = nt[1] switch
                 {
-                    "u32" or "i32" => new XfilInt(nt[1]),
+                    "u32" or "i32" or "u64" or "i64" => new XfilInt(nt[1]),
                     var p when p.StartsWith('*') && Name.IsMatch(p[1..]) => new XfilPointer(p[1..]),
                     _ => throw new XfilException(LineNo,
-                        $"{name}: parameter {nt[0]} is '{nt[1]}'; a register argument is u32, i32 or a pointer (*u8, *u32, *struct)"),
+                        $"{name}: parameter {nt[0]} is '{nt[1]}'; a register argument is u32, i32, u64, i64 or a pointer (*u8, *u32, *struct)"),
                 };
                 ps.Add(new XfilParam(nt[0], type));
             }
-            if (ps.Count > MaxSyscallArgs)
-                throw new XfilException(LineNo, $"{name} takes {ps.Count} arguments; a syscall carries at most {MaxSyscallArgs}");
+            // x86-32 has five argument registers and a u64 takes two of them;
+            // the narrowest machine sets the limit for every machine.
+            int regs = ps.Sum(p => p.Registers32);
+            if (regs > MaxSyscallArgs)
+                throw new XfilException(LineNo,
+                    $"{name} needs {regs} argument registers on x86-32 (a u64 or i64 takes two); a syscall carries at most {MaxSyscallArgs}");
             return (ps, ret);
         }
 

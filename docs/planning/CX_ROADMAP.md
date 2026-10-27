@@ -163,7 +163,10 @@ programs for it (step 6).
        0xA0-0xBF: eighteen calls did not fit 0x60-0x6F). **Done.**
      - **6a2d** Fixed widths: sizes and offsets `u64`. On x86-32 a `u64`
        argument takes a register pair (low, high), joined by the generated
-       decoder; on x86-64 it is one register.
+       decoder; on x86-64 it is one register. **Done 2026-10-26**
+       (`CXK_ABI_VERSION` 10, `kernel/CX_SYSCALLS_IPC.md` §9.5): the 2 GB
+       file cap is gone, seek and tell write the position through a `*u64`,
+       and `SYS_FILE_LOCK` takes a `file_lock_args`.
    - **6a3** The system page: the syscall stubs, the ABI hash recorded in the
      image and checked by the loader, and the kernel refusing a syscall from
      anywhere else.

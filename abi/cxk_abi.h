@@ -19,7 +19,9 @@
  *   eax = syscall number   ebx,ecx,edx,esi,edi = args 1..5   -> int 0x80
  *   result in eax: >= 0 success (call-specific), < 0 a negative error code.
  *   all GP registers except eax are preserved across the call.
- *   64-bit values are passed by pointer to a struct, never split across regs.
+ *   a u64 or i64 argument takes two registers on x86-32, low half first, and
+ *   one on x86-64; sizes and offsets are u64 (docs/kernel/CX_SYSCALLS_IPC.md
+ *   sec 5). A 64-bit result comes back through a pointer argument.
  */
 
 /*
@@ -34,7 +36,7 @@
  * line; bump both, and the DevKit's stamp, in the one commit that changes the
  * contract.
  */
-#define CXK_ABI_VERSION          9
+#define CXK_ABI_VERSION          10
 
 /*
  * ---- syscall numbers ----
@@ -84,8 +86,12 @@
 #define SYS_MOUSE_READ           0x21           /* ebx = *mouse_state -> 1 if a mouse is present */
 #define SYS_INPUT_POLL           0x22           /* -> char, 0 if none waiting */
 
-/* console 0x30-0x3F (privileged: GRANT_CONSOLE) */
-#define SYS_CONSOLE_WRITE        0x30           /* ebx = buf, ecx = len (0 = bounded NUL-scan) */
+/*
+ * console 0x30-0x3F (privileged: GRANT_CONSOLE)
+ * buf, len (0 = a NUL-scan of at most 4096 bytes); a len of 2^32 or more is
+ * E_OUT_OF_RANGE -> bytes written
+ */
+#define SYS_CONSOLE_WRITE        0x30
 
 /* ebx = index (0 = oldest kept), ecx = *log_entry -> 1 filled, 0 past the newest */
 #define SYS_LOG_READ             0x31
@@ -116,7 +122,9 @@
  */
 #define SYS_NET_PING             0x57
 #define SYS_NET_SEND             0x58           /* a raw Ethernet frame, 1-1514 bytes */
-#define SYS_NET_RECV             0x59           /* -> bytes received, 0 if none waiting */
+
+/* -> bytes received, 0 if none waiting; a cap past 65535 is taken as 65535 */
+#define SYS_NET_RECV             0x59
 
 /*
  * framebuffer 0x40-0x4F (privileged: GRANT_FRAMEBUFFER). Colours are 0x00RRGGBB;
@@ -159,7 +167,7 @@
 /* memory 0x80-0x8F (unprivileged, quota-bounded) */
 #define SYS_VM_MAP               0x80           /* ebx = *vm_map_args -> 0, with addr and granted filled in */
 
-/* ebx = addr, ecx = length (0 = the whole mapping) -> 0 */
+/* addr, length (0 = the whole mapping) -> 0 */
 #define SYS_VM_UNMAP             0x81
 #define SYS_VM_INFO              0x82           /* ebx = *vm_usage -> 0, with quota and mapped filled in */
 
@@ -180,19 +188,20 @@
 
 /*
  * -> bytes read, 0 at end of file. A short count is normal at the end, so a
- * reader loops until it gets 0.
+ * reader loops until it gets 0; a call moves at most 2^31 - 1 bytes.
  */
 #define SYS_FILE_READ            0xA2
 #define SYS_FILE_WRITE           0xA3           /* -> bytes written */
 
 /*
- * origin = FSEEK_* -> the new offset. Past the end is allowed and allocates
- * nothing until a write reaches it.
+ * origin = FSEEK_* -> 0, the new offset in *pos (pos may be 0). Past the end
+ * is allowed and allocates nothing until a write reaches it; before the start
+ * is E_OUT_OF_RANGE.
  */
 #define SYS_FILE_SEEK            0xA4
-#define SYS_FILE_TELL            0xA5           /* -> the current offset */
+#define SYS_FILE_TELL            0xA5           /* -> 0, the current offset in *pos */
 
-/* cut (or extend) the file to exactly size bytes; a negative size is refused */
+/* cut (or extend) the file to exactly size bytes */
 #define SYS_FILE_TRUNCATE        0xA6
 #define SYS_FILE_STAT            0xA7
 #define SYS_FILE_FSTAT           0xA8
@@ -224,9 +233,11 @@
 #define SYS_FILE_SYNC            0xAF
 
 /*
- * Advisory byte-range lock: len bytes from start (len 0 runs to the end of
- * the file however it grows, so start 0 len 0 is the whole file), mode =
- * FLOCK_SHARED or FLOCK_EXCLUSIVE, optionally | FLOCK_WAIT.
+ * Advisory byte-range lock, described by a file_lock_args: len bytes from
+ * start (len 0 runs to the end of the file however it grows, so start 0 len 0
+ * is the whole file), mode = FLOCK_SHARED or FLOCK_EXCLUSIVE, optionally |
+ * FLOCK_WAIT. A structure because two u64s and a mode are six registers on
+ * x86-32.
  *
  * A lock belongs to the OPEN FILE (the handle), not to the process and not
  * to the file on disk - SerenityOS's model. Shared ranges overlap freely;
@@ -329,10 +340,15 @@ struct args_info {
     int32_t broker;                             /* a SEND handle on the launcher's broker endpoint, or -1 */
 };
 
-/* ---- shared call structures ---- */
+/*
+ * ---- shared call structures ----
+ * The u64 fields come first in each, so none needs padding before it; padding
+ * at the end is a field named `reserved`, which must be 0 (E_INVALID_ARGS).
+ */
 struct spawn_args {
+    uint64_t image_len;                         /* bytes at image */
+    uint64_t args_len;                          /* total bytes of the args blob, terminators included */
     uint32_t image;                             /* the app's CXEX bytes (in the caller's space) */
-    uint32_t image_len;
     uint32_t name;                              /* optional; not dereferenced in v1 */
     int32_t broker_endpoint;                    /* a RECV endpoint handle the caller owns */
     /*
@@ -341,7 +357,7 @@ struct spawn_args {
      */
     uint32_t caps;
     uint32_t args;                              /* argc NUL-terminated strings back to back, or NULL */
-    uint32_t args_len;                          /* total bytes of that blob, terminators included */
+    uint32_t reserved;
 };
 
 /*
@@ -393,10 +409,11 @@ struct clock_info {
 #define OBJ_TYPE_FILE            2
 
 struct object_info_args {
+    uint64_t cap;                               /* bytes at buf; smaller than the topic needs is E_BUFFER_TOO_SMALL */
     int32_t handle;
     uint32_t topic;                             /* OBJINFO_* */
     uint32_t buf;                               /* the topic's structure is written here */
-    uint32_t cap;                               /* bytes at buf; smaller than the topic needs is E_BUFFER_TOO_SMALL */
+    uint32_t reserved;
 };
 
 struct object_basic {
@@ -408,24 +425,26 @@ struct object_basic {
 };
 
 struct ipc_call_args {
+    uint64_t req_len;
+    uint64_t reply_cap;
     int32_t ep_handle;                          /* a SEND endpoint handle (the broker channel) */
     uint32_t req;                               /* request bytes */
-    uint32_t req_len;
     uint32_t reply;                             /* buffer the reply is copied into */
-    uint32_t reply_cap;
+    uint32_t reserved;
 };
 
 struct ipc_recv_args {
+    uint64_t cap;
     int32_t ep_handle;                          /* a RECV endpoint handle (owner side) */
     uint32_t buf;                               /* request copied here */
-    uint32_t cap;
     uint32_t sender;                            /* set to the caller's pid (may be 0) */
+    uint32_t reserved;
 };
 
 struct ipc_reply_args {
     int32_t ep_handle;                          /* the RECV endpoint just received on */
     uint32_t data;                              /* reply bytes */
-    uint32_t len;
+    uint64_t len;
 };
 
 /* ---- framebuffer (SYS_FB_INFO) ---- */
@@ -528,8 +547,8 @@ struct net_ip_config {
  *
  * That only works if the offset is 64 bits from the first day. It is one field
  * now and an ABI break later, so it is here now, before anything is written
- * against it. It is carried as two 32-bit halves rather than a uint64_t so the
- * struct's layout is beyond question on either side of the boundary.
+ * against it. Since ABI 10 it is one u64 (it was two 32-bit halves), placed
+ * where the layout needs no padding on either side of the boundary.
  *
  * WHAT COMES BACK. `addr` is where the mapping landed and `granted` is how
  * many bytes it actually covers. Both are outputs, because both are the
@@ -580,33 +599,33 @@ struct net_ip_config {
 #define MMAP_MAX_REGIONS         32
 
 struct vm_map_args {
+    uint64_t offset;                            /* offset into the object; 0 for MOBJ_ANON */
+    uint64_t length;                            /* bytes wanted */
+    uint64_t granted;                           /* out: bytes actually mapped (length, rounded up to a page) */
     uint32_t object;                            /* MOBJ_* (MOBJ_ANON today) */
-    uint32_t offset_lo;                         /* 64-bit offset into the object, low half */
-    uint32_t offset_hi;                         /* ... and high half; both 0 for MOBJ_ANON */
-    uint32_t length;                            /* bytes wanted */
     /* in: a hint if MMAP_HINT; out: where it is */
     uint32_t addr;
-    uint32_t granted;                           /* out: bytes actually mapped (length, rounded up to a page) */
     uint32_t prot;                              /* MPROT_* */
     uint32_t flags;                             /* MMAP_* */
 };
 
 /* SYS_VM_INFO: this process's memory account. */
 struct vm_usage {
-    uint32_t quota;                             /* the ceiling, in bytes */
-    uint32_t mapped;                            /* how much of it is in use */
+    uint64_t quota;                             /* the ceiling, in bytes */
+    uint64_t mapped;                            /* how much of it is in use */
 };
 
 /*
  * ---- files (SYS_FILE_*; GRANT_DISK) ----
  *
- * The filesystem as userspace sees it. CXFS itself is 64-bit throughout, but
- * X Native has no 64-bit integer type, so every offset and size crossing this
- * boundary is 32 bits and SIGNED: read/write return a byte count, seek returns
- * the new offset, and a negative return is an E_* code. That caps a file a
- * user process can address at INT32_MAX (2 GB). Raising it means either a
- * 64-bit type in the language or an offset-hi field, and the cap is documented
- * here rather than silently truncating.
+ * The filesystem as userspace sees it. Offsets, sizes and lock ranges are u64,
+ * as CXFS's own are (ABI 10; until then they were 32-bit and signed, which
+ * capped a file at 2 GB). An offset runs to 2^63 - 1, so a seek's signed
+ * arithmetic cannot wrap; CXFS itself refuses a file past 2^32 blocks long
+ * before that. read/write return a byte count in an i32, so one call moves at
+ * most 2^31 - 1 bytes, and a negative return is an E_* code. seek and tell
+ * give the offset back through a *u64, since a result register is 32 bits on
+ * x86-32.
  *
  * A handle from SYS_FILE_OPEN is an ordinary entry in the process's handle table
  * (abi sec 6), so SYS_HANDLE_CLOSE releases it as well as SYS_FILE_CLOSE does,
@@ -638,9 +657,18 @@ struct vm_usage {
 #define FILE_NAME_MAX            64             /* must equal CXFS_NAME_LEN */
 #define FILE_PATH_MAX            256            /* longest path a syscall will copy in */
 
+/* SYS_FILE_LOCK's range and mode. */
+struct file_lock_args {
+    uint64_t start;
+    uint64_t len;                               /* 0 = to the end of the file, however it grows */
+    uint32_t mode;                              /* FLOCK_SHARED or FLOCK_EXCLUSIVE, optionally | FLOCK_WAIT */
+    uint32_t reserved;
+};
+
 /*
  * Timestamps are unsigned epoch seconds truncated to 32 bits, which runs out in
- * 2106; CXFS keeps the full 64 bits on disk.
+ * 2106; CXFS keeps the full 64 bits on disk. Time becomes i64 nanoseconds in
+ * its own step (docs/kernel/CX_SYSCALLS_IPC.md sec 5).
  */
 struct file_stat {
     uint32_t id;
@@ -649,12 +677,13 @@ struct file_stat {
      * that)
      */
     uint32_t kind;
-    uint32_t size;
+    uint64_t size;
     uint32_t permissions;
     uint32_t owner_uid;
     uint32_t created;
     uint32_t modified;
     uint32_t accessed;
+    uint32_t reserved;                          /* 0 */
     char name[FILE_NAME_MAX];
 };
 
@@ -704,18 +733,19 @@ struct log_entry {
 #endif
 
 CXK_ABI_STATIC_ASSERT(sizeof(struct args_info) == 12, "ABI layout: args_info");
-CXK_ABI_STATIC_ASSERT(sizeof(struct spawn_args) == 28, "ABI layout: spawn_args");
+CXK_ABI_STATIC_ASSERT(sizeof(struct spawn_args) == 40, "ABI layout: spawn_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct clock_info) == 8, "ABI layout: clock_info");
-CXK_ABI_STATIC_ASSERT(sizeof(struct object_info_args) == 16, "ABI layout: object_info_args");
+CXK_ABI_STATIC_ASSERT(sizeof(struct object_info_args) == 24, "ABI layout: object_info_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct object_basic) == 20, "ABI layout: object_basic");
-CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_call_args) == 20, "ABI layout: ipc_call_args");
-CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_recv_args) == 16, "ABI layout: ipc_recv_args");
-CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_reply_args) == 12, "ABI layout: ipc_reply_args");
+CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_call_args) == 32, "ABI layout: ipc_call_args");
+CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_recv_args) == 24, "ABI layout: ipc_recv_args");
+CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_reply_args) == 16, "ABI layout: ipc_reply_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct fb_geometry) == 16, "ABI layout: fb_geometry");
 CXK_ABI_STATIC_ASSERT(sizeof(struct net_ip_config) == 16, "ABI layout: net_ip_config");
-CXK_ABI_STATIC_ASSERT(sizeof(struct vm_map_args) == 32, "ABI layout: vm_map_args");
-CXK_ABI_STATIC_ASSERT(sizeof(struct vm_usage) == 8, "ABI layout: vm_usage");
-CXK_ABI_STATIC_ASSERT(sizeof(struct file_stat) == 96, "ABI layout: file_stat");
+CXK_ABI_STATIC_ASSERT(sizeof(struct vm_map_args) == 40, "ABI layout: vm_map_args");
+CXK_ABI_STATIC_ASSERT(sizeof(struct vm_usage) == 16, "ABI layout: vm_usage");
+CXK_ABI_STATIC_ASSERT(sizeof(struct file_lock_args) == 24, "ABI layout: file_lock_args");
+CXK_ABI_STATIC_ASSERT(sizeof(struct file_stat) == 104, "ABI layout: file_stat");
 CXK_ABI_STATIC_ASSERT(sizeof(struct mouse_state) == 16, "ABI layout: mouse_state");
 CXK_ABI_STATIC_ASSERT(sizeof(struct log_entry) == 80, "ABI layout: log_entry");
 

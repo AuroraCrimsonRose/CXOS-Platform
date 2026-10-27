@@ -51,8 +51,7 @@ struct vm_region {
     uint32_t len;        /* page-aligned length */
     uint32_t prot;       /* MPROT_* as requested */
     uint32_t object;     /* MOBJ_* this is a view of */
-    uint32_t off_lo;     /* 64-bit offset into that object */
-    uint32_t off_hi;
+    uint64_t off;        /* offset into that object */
 };
 
 struct vm_proc {
@@ -104,7 +103,7 @@ void vm_uncharge(int pid, uint32_t bytes);
    validated as readable and writable user pointers by the caller. Each returns
    E_OK or a negative E_*. */
 int vm_map(int pid, struct vm_map_args *a);
-int vm_unmap(int pid, uint32_t addr, uint32_t length);
+int vm_unmap(int pid, uint32_t addr, uint64_t length);
 int vm_info(int pid, struct vm_usage *u);
 
 #endif

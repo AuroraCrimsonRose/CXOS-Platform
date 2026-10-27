@@ -10,7 +10,7 @@ global enter_usermode
 global syscall_stub
 global return_to_kernel
 global syscall_trapped
-extern syscall_dispatch     ; C: int syscall_dispatch(uint32_t num, uint32_t a1, ..., uint32_t a5)
+extern syscall_dispatch     ; C: int syscall_dispatch(uint32_t num, uintptr_t a1, ..., uintptr_t a5); 32 bits each here
 
 ; ---------------------------------------------------------------------------
 ; int enter_usermode(uint32_t entry_eip, uint32_t user_esp, uint32_t *save_slot)

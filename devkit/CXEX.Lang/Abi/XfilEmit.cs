@@ -47,7 +47,9 @@ public static class XfilEmit
 
 /* The handlers, one per syscall, named after it (SYS_FILE_READ: syscall_file_read).
  * Each is given its arguments as the interface declares them. A pointer arrives
- * as the user address it is, a uint32_t; the handler checks and copies it. */
+ * as the user address it is, a uint32_t; the handler checks and copies it. A
+ * u64 or i64 arrives whole: x86-32 carries it in two registers, low then high,
+ * and its decoder joins them; x86-64 carries it in one. */
 
 
 """);
@@ -67,9 +69,17 @@ public static class XfilEmit
 #define SYSCALL_TABLE_SIZE      {size}
 #define SYSCALL_COUNT           {file.Syscalls.Count()}
 
+/* An argument register is as wide as the machine's: 32 bits on x86-32, where a
+ * u64 takes a register pair, and 64 on x86-64, where it takes one. */
+#if UINTPTR_MAX == 0xFFFFFFFFu
+#define SYSCALL_PAIRS           1
+#else
+#define SYSCALL_PAIRS           0
+#endif
+
 /* A decoder takes the raw argument registers, gives each its declared type,
  * and calls the handler; a handler that returns nothing answers 0. */
-typedef int (*syscall_decoder)(const uint32_t *args);
+typedef int (*syscall_decoder)(const uintptr_t *args);
 extern const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE];
 
 #endif
@@ -86,18 +96,46 @@ extern const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE];
         sb.Append("#include \"systable.h\"\n#include \"cxk_abi.h\"   /* the SYS_* numbers */\n\n");
         foreach (XfilSyscall s in file.Syscalls)
         {
-            string args = string.Join(", ", s.Params.Select((p, i) => p.Type is XfilInt { Name: "i32" } ? $"(int32_t)a[{i}]" : $"a[{i}]"));
-            string unused = s.Params.Count == 0 ? "(void)a; " : "";
-            string body = s.Returns == "void"
-                ? $"{unused}{s.KernelHandler}({args}); return 0;"
-                : $"{unused}return {s.KernelHandler}({args});";
-            sb.Append($"static int decode_{s.KernelHandler[8..]}(const uint32_t *a) {{ {body} }}\n");
+            string head = $"static int decode_{s.KernelHandler[8..]}(const uintptr_t *a)";
+            if (!s.Params.Any(p => p.Wide))
+            {
+                sb.Append($"{head} {{ {DecodeBody(s, pairs: false)} }}\n");
+                continue;
+            }
+            // The registers a u64 sits in differ by machine, and so does every
+            // index after it.
+            sb.Append($"{head} {{\n#if SYSCALL_PAIRS\n    {DecodeBody(s, pairs: true)}\n#else\n    {DecodeBody(s, pairs: false)}\n#endif\n}}\n");
         }
         sb.Append("\nconst syscall_decoder syscall_table[SYSCALL_TABLE_SIZE] = {\n");
         foreach (XfilSyscall s in file.Syscalls.OrderBy(s => s.Number))
             sb.Append($"    [{s.Name}] = decode_{s.KernelHandler[8..]},\n");
         sb.Append("};\n");
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// A decoder's statement: each argument register given its declared type. With
+    /// <paramref name="pairs"/> a u64 or i64 is joined from two registers, low
+    /// first; without, it is one.
+    /// </summary>
+    private static string DecodeBody(XfilSyscall s, bool pairs)
+    {
+        var args = new List<string>();
+        int r = 0;
+        foreach (XfilParam p in s.Params)
+        {
+            string type = p.Type is XfilInt i ? i.CType : "uint32_t";
+            if (p.Wide && pairs)
+            {
+                args.Add($"({type})((uint64_t)a[{r}] | (uint64_t)a[{r + 1}] << 32)");
+                r += 2;
+            }
+            else
+                args.Add($"({type})a[{r++}]");
+        }
+        string call = $"{s.KernelHandler}({string.Join(", ", args)})";
+        string unused = s.Params.Count == 0 ? "(void)a; " : "";
+        return s.Returns == "void" ? $"{unused}{call}; return 0;" : $"{unused}return {call};";
     }
 
     private static string CParam(XfilType t) => t switch
@@ -191,7 +229,9 @@ extern const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE];
     /// <summary>
     /// X's typed wrapper for each syscall that declares one, in file order: the
     /// number, then each argument as a u32 register (a u32 as it is, anything
-    /// else cast), padded to the five <c>__syscall</c> takes.
+    /// else cast; a u64 or i64 as two, low then high), padded to the five
+    /// <c>__syscall</c> takes. X targets x86-32 alone today; the x86-64 back end
+    /// (roadmap step 6b) passes a u64 in one register.
     /// </summary>
     public static string XWrappers(XfilFile file)
     {
@@ -200,7 +240,16 @@ extern const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE];
         {
             if (s.Wrapper is not { } w) continue;
             var args = new List<string> { s.Name };
-            args.AddRange(w.Params.Select(p => p.Type is XfilInt { Name: "u32" } ? p.Name : $"{p.Name} as u32"));
+            foreach (XfilParam p in w.Params)
+            {
+                if (p.Wide)
+                {
+                    args.Add($"{p.Name} as u32");
+                    args.Add($"({p.Name} >> 32) as u32");
+                }
+                else
+                    args.Add(p.Type is XfilInt { Name: "u32" } ? p.Name : $"{p.Name} as u32");
+            }
             while (args.Count < XfilParser.MaxSyscallArgs + 1) args.Add("0");
             string ps = string.Join(", ", w.Params.Select(p => $"{p.Name}: {XType(p.Type)}"));
             string call = $"__syscall({string.Join(", ", args)});";

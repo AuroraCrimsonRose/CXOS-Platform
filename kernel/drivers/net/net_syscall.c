@@ -34,7 +34,7 @@ int sys_net_status(void) {
     return netif_ready() ? 1 : 0;
 }
 
-int sys_net_mac(uint32_t buf, uint32_t len) {
+int sys_net_mac(uint32_t buf, uint64_t len) {
     if (len < 6) return E_BUFFER_TOO_SMALL;
     if (!user_ptr_writable(buf, 6)) return E_BAD_ADDRESS;
     const uint8_t *m = netif_mac();
@@ -121,14 +121,15 @@ int sys_net_ping(uint32_t addr, uint32_t seq, uint32_t urtt) {
     return r;                                      /* 1 = reply, 0 = timeout */
 }
 
-int sys_net_send(uint32_t frame, uint32_t len) {
+int sys_net_send(uint32_t frame, uint64_t len) {
     if (len == 0 || len > 1514) return E_OUT_OF_RANGE;
-    if (!user_ptr_readable(frame, len)) return E_BAD_ADDRESS;
+    if (!user_ptr_readable(frame, (uint32_t)len)) return E_BAD_ADDRESS;
     return netif_send(user_ptr(frame), (uint16_t)len);
 }
 
-int sys_net_recv(uint32_t buf, uint32_t cap) {
+int sys_net_recv(uint32_t buf, uint64_t cap) {
     if (cap == 0) return E_BUFFER_TOO_SMALL;
-    if (!user_ptr_writable(buf, cap)) return E_BAD_ADDRESS;
+    if (cap > 0xFFFF) cap = 0xFFFF;   /* more than any frame; the driver takes a u16 */
+    if (!user_ptr_writable(buf, (uint32_t)cap)) return E_BAD_ADDRESS;
     return netif_receive(user_ptr(buf), (uint16_t)cap);
 }

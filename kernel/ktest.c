@@ -1822,9 +1822,9 @@ static int vm_cycle(int pid) {
 
     /* Anonymous memory has no interior, so a non-zero offset is a caller error
        rather than something to ignore. Both halves of the 64-bit field. */
-    RESET_ARGS(); a.offset_lo = 4096;
+    RESET_ARGS(); a.offset = 4096;
     if (vm_map(pid, &a) != E_INVALID_ARGS)                 goto done;
-    RESET_ARGS(); a.offset_hi = 1;
+    RESET_ARGS(); a.offset = 1ull << 32;
     if (vm_map(pid, &a) != E_INVALID_ARGS)                 goto done;
 
     /* An object that does not exist yet is refused rather than treated as
@@ -1835,6 +1835,8 @@ static int vm_cycle(int pid) {
     RESET_ARGS(); a.length = 0;
     if (vm_map(pid, &a) != E_INVALID_ARGS)                 goto done;
     RESET_ARGS(); a.length = MMAP_MAX_BYTES + 1u;
+    if (vm_map(pid, &a) != E_OUT_OF_RANGE)                 goto done;
+    RESET_ARGS(); a.length = (1ull << 32) + 4096u;           /* the high half counts */
     if (vm_map(pid, &a) != E_OUT_OF_RANGE)                 goto done;
     RESET_ARGS(); a.prot = MPROT_NONE;
     if (vm_map(pid, &a) != E_INVALID_ARGS)                 goto done;

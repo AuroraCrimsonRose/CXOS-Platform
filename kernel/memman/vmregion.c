@@ -151,7 +151,7 @@ int vm_map(int pid, struct vm_map_args *a) {
     /* Anonymous memory has no interior to be at an offset into. Rejecting a
        non-zero offset keeps the field honest until there is an object it can
        mean something for, rather than silently ignoring what was asked. */
-    if (a->offset_lo || a->offset_hi)       return E_INVALID_ARGS;
+    if (a->offset)                          return E_INVALID_ARGS;
     if (a->length == 0)                     return E_INVALID_ARGS;
     if (a->length > MMAP_MAX_BYTES)         return E_OUT_OF_RANGE;
     if (a->prot & ~(MPROT_READ | MPROT_WRITE | MPROT_EXEC)) return E_INVALID_ARGS;
@@ -163,7 +163,7 @@ int vm_map(int pid, struct vm_map_args *a) {
     /* A mapping nothing may do anything with is a mistake, not a request. */
     if (!(a->prot & (MPROT_READ | MPROT_WRITE | MPROT_EXEC))) return E_INVALID_ARGS;
 
-    uint32_t len = page_up(a->length);
+    uint32_t len = page_up((uint32_t)a->length);                  /* at most MMAP_MAX_BYTES */
     if (len < a->length) return E_OUT_OF_RANGE;                   /* rounding wrapped */
     if (p->mapped + len < p->mapped) return E_OUT_OF_RANGE;
     if (p->mapped + len > p->quota)  return E_NO_MEMORY;
@@ -228,8 +228,7 @@ int vm_map(int pid, struct vm_map_args *a) {
     p->r[slot].len    = len;
     p->r[slot].prot   = a->prot;
     p->r[slot].object = a->object;
-    p->r[slot].off_lo = a->offset_lo;
-    p->r[slot].off_hi = a->offset_hi;
+    p->r[slot].off    = a->offset;
     p->mapped += len;
 
     a->addr    = base;
@@ -237,7 +236,7 @@ int vm_map(int pid, struct vm_map_args *a) {
     return E_OK;
 }
 
-int vm_unmap(int pid, uint32_t addr, uint32_t length) {
+int vm_unmap(int pid, uint32_t addr, uint64_t length) {
     if (!vp(pid) || !vp(pid)->live) return E_INVALID_ARGS;
     struct vm_proc *p = vp(pid);
 
@@ -248,7 +247,9 @@ int vm_unmap(int pid, uint32_t addr, uint32_t length) {
        such failure, and a caller wanting halves can ask for two mappings. */
     for (int i = 0; i < MMAP_MAX_REGIONS; i++) {
         if (p->r[i].base != addr) continue;
-        if (length && page_up(length) != p->r[i].len) return E_INVALID_ARGS;
+        /* compared whole: a length past 32 bits matches no mapping */
+        if (length && (length > MMAP_MAX_BYTES ||
+                       page_up((uint32_t)length) != p->r[i].len)) return E_INVALID_ARGS;
 
         undo(p->r[i].base, p->r[i].len);
         p->mapped -= p->r[i].len;

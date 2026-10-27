@@ -255,7 +255,7 @@ int proc_start(const void *image, uint32_t image_len, uint32_t caps,
 static int check_args(const struct spawn_args *a) {
     if (!a->args) return a->args_len ? E_INVALID_ARGS : E_OK;   /* length without a blob */
     if (a->args_len == 0 || a->args_len > USER_ARGS_MAX) return E_OUT_OF_RANGE;
-    if (!user_ptr_readable(a->args, a->args_len))    return E_BAD_ADDRESS;
+    if (!user_ptr_readable(a->args, (uint32_t)a->args_len)) return E_BAD_ADDRESS;
     if (((const char *)user_ptr(a->args))[a->args_len - 1] != '\0') return E_INVALID_ARGS;
     return E_OK;
 }
@@ -265,9 +265,10 @@ static int check_args(const struct spawn_args *a) {
 int sys_spawn(uint32_t ua) {
     struct spawn_args a;
     if (user_copy_in(&a, ua, sizeof a) != 0) return E_BAD_ADDRESS;
+    if (a.reserved != 0) return E_INVALID_ARGS;
 
     if (a.image_len == 0 || a.image_len > PROC_MAX_IMAGE) return E_OUT_OF_RANGE;
-    if (!user_ptr_readable(a.image, a.image_len))     return E_BAD_ADDRESS;
+    if (!user_ptr_readable(a.image, (uint32_t)a.image_len)) return E_BAD_ADDRESS;
 
     int arc = check_args(&a);
     if (arc != E_OK) return arc;
@@ -302,15 +303,15 @@ int sys_spawn(uint32_t ua) {
      * user_copy_in rather than a raw loop: the range is re-checked at the
      * instant of the copy and a fault during it is recoverable (§6). The
      * user_ptr_readable above is an early reject, not the authority. */
-    uint8_t *kimg = (uint8_t *)kmalloc(a.image_len);
+    uint8_t *kimg = (uint8_t *)kmalloc((size_t)a.image_len);
     if (!kimg) { ep_put(bep); return E_NO_MEMORY; }
-    if (user_copy_in(kimg, a.image, a.image_len) != 0) {
+    if (user_copy_in(kimg, a.image, (uint32_t)a.image_len) != 0) {
         kfree(kimg);
         ep_put(bep);
         return E_BAD_ADDRESS;
     }
 
-    int pid = cxex_exec_as(kimg, (size_t)a.image_len, granted, bep, bgrant, user_ptr(a.args), a.args_len);
+    int pid = cxex_exec_as(kimg, (size_t)a.image_len, granted, bep, bgrant, user_ptr(a.args), (uint32_t)a.args_len);
     kfree(kimg);        /* proc_start took its own copy for the new address space */
     ep_put(bep);        /* the child holds its own handle on it now */
 
@@ -357,6 +358,7 @@ int sys_spawn(uint32_t ua) {
 int sys_exec_path(uint32_t upath, uint32_t ua) {
     struct spawn_args a;
     if (user_copy_in(&a, ua, sizeof a) != 0) return E_BAD_ADDRESS;
+    if (a.reserved != 0) return E_INVALID_ARGS;
 
     int arc = check_args(&a);
     if (arc != E_OK) return arc;
@@ -421,7 +423,7 @@ int sys_exec_path(uint32_t upath, uint32_t ua) {
     /* Attenuation, exactly as SYS_SPAWN does it: a subset of your own set. */
     uint32_t granted = (a.caps & thread_current_caps()) | (a.caps & SPAWN_BACKGROUND);
 
-    int rc = cxex_exec_as(buf, (size_t)e.size, granted, bep, bgrant, user_ptr(a.args), a.args_len);
+    int rc = cxex_exec_as(buf, (size_t)e.size, granted, bep, bgrant, user_ptr(a.args), (uint32_t)a.args_len);
     kfree(buf);   /* proc_start took its own copy for the new address space */
     ep_put(bep);
 

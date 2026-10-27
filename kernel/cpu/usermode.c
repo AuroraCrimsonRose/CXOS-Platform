@@ -109,11 +109,15 @@ uint32_t syscall_trapped_count(void) { return atomic_load(&syscall_trapped); }
    each its arguments, and the table that finds them are generated from
    abi/kernel.xfil (systable.h, systable.c); what each one does is here. */
 
-int syscall_console_write(uint32_t buf, uint32_t len) {
+int syscall_console_write(uint32_t buf, uint64_t len64) {
     if (!(thread_current_caps() & GRANT_CONSOLE)) {
         klog_u32("GRANT", SEV_WARN, "console_write DENIED for pid ", (uint32_t)thread_current_pid(), LOG_COLOR_VALUE, " (no GRANT_CONSOLE)");
         return E_ACCESS_DENIED;
     }
+    /* No buffer reaches 4 GB on x86-32, and none worth printing does on x86-64:
+       refuse a length past 32 bits rather than print its low half. */
+    if (len64 > 0xFFFFFFFFu) return E_OUT_OF_RANGE;
+    uint32_t len = (uint32_t)len64;
     if (len == 0) {
         const char *p = (const char *)user_ptr(buf);
         while (len < 0x1000 && user_ptr_readable(buf + len, 1) && p[len]) len++;
@@ -227,27 +231,27 @@ int syscall_file_close(int32_t h) {
     return sys_file_close(h);
 }
 
-int syscall_file_read(int32_t h, uint32_t buf, uint32_t n) {
+int syscall_file_read(int32_t h, uint32_t buf, uint64_t n) {
     if (!disk_granted()) return E_ACCESS_DENIED;
     return sys_file_read(h, buf, n);
 }
 
-int syscall_file_write(int32_t h, uint32_t buf, uint32_t n) {
+int syscall_file_write(int32_t h, uint32_t buf, uint64_t n) {
     if (!disk_granted()) return E_ACCESS_DENIED;
     return sys_file_write(h, buf, n);
 }
 
-int syscall_file_seek(int32_t h, int32_t off, uint32_t origin) {
+int syscall_file_seek(int32_t h, int64_t off, uint32_t origin, uint32_t pos) {
     if (!disk_granted()) return E_ACCESS_DENIED;
-    return sys_file_seek(h, off, origin);
+    return sys_file_seek(h, off, origin, pos);
 }
 
-int syscall_file_tell(int32_t h) {
+int syscall_file_tell(int32_t h, uint32_t pos) {
     if (!disk_granted()) return E_ACCESS_DENIED;
-    return sys_file_tell(h);
+    return sys_file_tell(h, pos);
 }
 
-int syscall_file_truncate(int32_t h, int32_t size) {
+int syscall_file_truncate(int32_t h, uint64_t size) {
     if (!disk_granted()) return E_ACCESS_DENIED;
     return sys_file_truncate(h, size);
 }
@@ -287,7 +291,7 @@ int syscall_file_chdir(uint32_t path) {
     return sys_file_chdir(path);
 }
 
-int syscall_file_getcwd(uint32_t buf, uint32_t cap) {
+int syscall_file_getcwd(uint32_t buf, uint64_t cap) {
     if (!disk_granted()) return E_ACCESS_DENIED;
     return sys_file_getcwd(buf, cap);
 }
@@ -297,12 +301,12 @@ int syscall_file_sync(void) {
     return sys_file_sync();
 }
 
-int syscall_file_lock(int32_t h, int32_t start, uint32_t len, uint32_t mode) {
+int syscall_file_lock(int32_t h, uint32_t a) {
     if (!disk_granted()) return E_ACCESS_DENIED;
-    return sys_file_lock(h, start, len, mode);
+    return sys_file_lock(h, a);
 }
 
-int syscall_file_unlock(int32_t h, int32_t start, uint32_t len) {
+int syscall_file_unlock(int32_t h, uint64_t start, uint64_t len) {
     if (!disk_granted()) return E_ACCESS_DENIED;
     return sys_file_unlock(h, start, len);
 }
@@ -370,7 +374,7 @@ int syscall_net_status(void) {
     return sys_net_status();
 }
 
-int syscall_net_mac(uint32_t buf, uint32_t len) {
+int syscall_net_mac(uint32_t buf, uint64_t len) {
     if (!net_granted()) return E_ACCESS_DENIED;
     return sys_net_mac(buf, len);
 }
@@ -405,12 +409,12 @@ int syscall_net_ping(uint32_t dst, uint32_t seq, uint32_t rtt) {
     return sys_net_ping(dst, seq, rtt);
 }
 
-int syscall_net_send(uint32_t frame, uint32_t len) {
+int syscall_net_send(uint32_t frame, uint64_t len) {
     if (!net_granted()) return E_ACCESS_DENIED;
     return sys_net_send(frame, len);
 }
 
-int syscall_net_recv(uint32_t buf, uint32_t cap) {
+int syscall_net_recv(uint32_t buf, uint64_t cap) {
     if (!net_granted()) return E_ACCESS_DENIED;
     return sys_net_recv(buf, cap);
 }
@@ -462,7 +466,7 @@ int syscall_vm_map(uint32_t a) {
     return vm_map(thread_current_pid(), (struct vm_map_args *)user_ptr(a));
 }
 
-int syscall_vm_unmap(uint32_t addr, uint32_t length) {
+int syscall_vm_unmap(uint32_t addr, uint64_t length) {
     return vm_unmap(thread_current_pid(), addr, length);
 }
 
@@ -493,6 +497,7 @@ int syscall_object_info(uint32_t a) {
     /* Unprivileged: it describes only a handle the caller holds. */
     struct object_info_args oa;
     if (user_copy_in(&oa, a, sizeof oa) != 0) return E_BAD_ADDRESS;
+    if (oa.reserved != 0) return E_INVALID_ARGS;
     struct htab_info hi;
     struct kobj *o = htab_ref(thread_htab(thread_current_id()), oa.handle,
                               KOBJ_NONE, 0, &hi);
@@ -512,9 +517,9 @@ int syscall_object_info(uint32_t a) {
    with the five argument registers as ring 3 left them. Every call passes the
    recording point on its way in and on its way out (sysrec.h). A number past
    the table, or in one of its holes, is E_NOT_SUPPORTED. */
-int syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2, uint32_t a3,
-                     uint32_t a4, uint32_t a5) {
-    const uint32_t args[SYSCALL_ARGS] = { a1, a2, a3, a4, a5 };
+int syscall_dispatch(uint32_t num, uintptr_t a1, uintptr_t a2, uintptr_t a3,
+                     uintptr_t a4, uintptr_t a5) {
+    const uintptr_t args[SYSCALL_ARGS] = { a1, a2, a3, a4, a5 };
     sysrec_enter(num, args);
     atomic_fetch_add(&dispatched, 1);
     syscall_decoder d = num < SYSCALL_TABLE_SIZE ? syscall_table[num] : 0;
@@ -604,6 +609,23 @@ int usermode_run_blob(const uint8_t *start, uint32_t len) {
 }
 
 
+/* One call through the dispatcher, each argument in the registers the ABI
+   gives it: bit i of `wide` marks argument i a u64 or i64, which takes a pair
+   (low, high) on x86-32 and one register on x86-64 (systable.h). The tests
+   name arguments, not registers, so a decoder joining the wrong pair fails. */
+static int um_call(uint32_t nr, uint32_t wide, uint64_t a0, uint64_t a1,
+                   uint64_t a2, uint64_t a3, uint64_t a4) {
+    const uint64_t in[5] = { a0, a1, a2, a3, a4 };
+    uintptr_t r[SYSCALL_ARGS] = { 0 };
+    int n = 0;
+    for (int i = 0; i < 5 && n < SYSCALL_ARGS; i++) {
+        r[n++] = (uintptr_t)in[i];
+        if (SYSCALL_PAIRS && ((wide >> i) & 1u) && n < SYSCALL_ARGS)
+            r[n++] = (uintptr_t)(in[i] >> 32);
+    }
+    return syscall_dispatch(nr, r[0], r[1], r[2], r[3], r[4]);
+}
+
 /* ---- the background console and the log -----------------------------------
  * A SPAWN_BACKGROUND process's console writes become log entries tagged with
  * its pid, a line at a time, and leave the screen alone; SYS_LOG_READ hands
@@ -646,6 +668,9 @@ int usermode_log_test(void) {
     step = 3; if (slog_total() != t0 + 1) goto done;
     const struct slog_entry *e = slog_get(slog_count() - 1);
     step = 4; if (!lt_streq(e->system, tag, SLOG_SYS_W) || !lt_streq(e->event, "bg line", SLOG_EVT_W)) goto done;
+    /* a length past 4 GB is refused, not cut to its low half (12) */
+    step = 4; if (um_call(SYS_CONSOLE_WRITE, 1u << 1, user_addr(line), (1ull << 32) | 12u, 0, 0, 0) != E_OUT_OF_RANGE) goto done;
+    step = 4; if (slog_total() != t0 + 1) goto done;
 
     /* 5: what is left without a newline waits, and a flush records it */
     proc_out_flush(p);
@@ -693,14 +718,17 @@ done:
 #define FT_STAT  (TEST_CODE_VIRT + 0x400)
 #define FT_INFO  (TEST_CODE_VIRT + 0x600)
 #define FT_IARGS (TEST_CODE_VIRT + 0x680)
+#define FT_POS   (TEST_CODE_VIRT + 0x6C0)   /* SEEK and TELL's *u64 */
+#define FT_LARGS (TEST_CODE_VIRT + 0x6E0)   /* LOCK's file_lock_args */
 
 /* SYS_OBJECT_INFO on `h`, its answer at FT_INFO. */
-static int oi_call(int h, uint32_t topic, uint32_t cap) {
+static int oi_call(int h, uint32_t topic, uint64_t cap) {
     struct object_info_args *a = (struct object_info_args *)FT_IARGS;
-    a->handle = h;
-    a->topic  = topic;
-    a->buf    = FT_INFO;
-    a->cap    = cap;
+    a->handle   = h;
+    a->topic    = topic;
+    a->buf      = FT_INFO;
+    a->cap      = cap;
+    a->reserved = 0;
     return syscall_dispatch(SYS_OBJECT_INFO, FT_IARGS, 0, 0, 0, 0);
 }
 
@@ -739,32 +767,51 @@ static const char *ft_join(const char *pre, const char *leaf) {
 /* One SYS_FILE_* call, its arguments in the registers abi/kernel.xfil gives
    them: the tests name every argument the same way for every call, and this
    places them, so a handler reading the wrong register fails its test. RENAME's
-   new name is always FT_PATH2. */
+   new name is always FT_PATH2; SEEK and TELL's offset goes to FT_POS (ft_pos);
+   LOCK's range and mode go in a file_lock_args at FT_LARGS. */
 static int ft_call(uint32_t nr, int handle, uint32_t path, uint32_t data,
-                   uint32_t len, int32_t off, uint32_t flags) {
-    uint32_t h = (uint32_t)handle, o = (uint32_t)off;
+                   uint64_t len, int64_t off, uint32_t flags) {
+    uint64_t h = (uint32_t)handle, o = (uint64_t)off;
+    const uint32_t W1 = 1u << 1, W2 = 1u << 2;
     switch (nr) {
-        case SYS_FILE_OPEN:     return syscall_dispatch(nr, path, flags, 0, 0, 0);
-        case SYS_FILE_CLOSE:
-        case SYS_FILE_TELL:     return syscall_dispatch(nr, h, 0, 0, 0, 0);
+        case SYS_FILE_OPEN:     return um_call(nr, 0, path, flags, 0, 0, 0);
+        case SYS_FILE_CLOSE:    return um_call(nr, 0, h, 0, 0, 0, 0);
+        case SYS_FILE_TELL:
+            *(volatile uint64_t *)FT_POS = 0xDEADBEEFDEADBEEFull;   /* must be overwritten */
+            return um_call(nr, 0, h, FT_POS, 0, 0, 0);
         case SYS_FILE_READ:
-        case SYS_FILE_WRITE:    return syscall_dispatch(nr, h, data, len, 0, 0);
-        case SYS_FILE_SEEK:     return syscall_dispatch(nr, h, o, flags, 0, 0);
-        case SYS_FILE_TRUNCATE: return syscall_dispatch(nr, h, o, 0, 0, 0);
-        case SYS_FILE_STAT:     return syscall_dispatch(nr, path, data, 0, 0, 0);
-        case SYS_FILE_FSTAT:    return syscall_dispatch(nr, h, data, 0, 0, 0);
-        case SYS_FILE_READDIR:  return syscall_dispatch(nr, path, len, data, 0, 0);
+        case SYS_FILE_WRITE:    return um_call(nr, W2, h, data, len, 0, 0);
+        case SYS_FILE_SEEK:
+            *(volatile uint64_t *)FT_POS = 0xDEADBEEFDEADBEEFull;
+            return um_call(nr, W1, h, o, flags, FT_POS, 0);
+        case SYS_FILE_TRUNCATE: return um_call(nr, W1, h, o, 0, 0, 0);
+        case SYS_FILE_STAT:     return um_call(nr, 0, path, data, 0, 0, 0);
+        case SYS_FILE_FSTAT:    return um_call(nr, 0, h, data, 0, 0, 0);
+        case SYS_FILE_READDIR:  return um_call(nr, 0, path, len, data, 0, 0);
         case SYS_FILE_MKDIR:
         case SYS_FILE_UNLINK:
-        case SYS_FILE_CHDIR:    return syscall_dispatch(nr, path, 0, 0, 0, 0);
-        case SYS_FILE_RENAME:   return syscall_dispatch(nr, path, FT_PATH2, 0, 0, 0);
-        case SYS_FILE_GETCWD:   return syscall_dispatch(nr, data, len, 0, 0, 0);
-        case SYS_FILE_SYNC:     return syscall_dispatch(nr, 0, 0, 0, 0, 0);
-        case SYS_FILE_LOCK:     return syscall_dispatch(nr, h, o, len, flags, 0);
-        case SYS_FILE_UNLOCK:   return syscall_dispatch(nr, h, o, len, 0, 0);
+        case SYS_FILE_CHDIR:    return um_call(nr, 0, path, 0, 0, 0, 0);
+        case SYS_FILE_RENAME:   return um_call(nr, 0, path, FT_PATH2, 0, 0, 0);
+        case SYS_FILE_GETCWD:   return um_call(nr, W1, data, len, 0, 0, 0);
+        case SYS_FILE_SYNC:     return um_call(nr, 0, 0, 0, 0, 0, 0);
+        case SYS_FILE_LOCK: {
+            struct file_lock_args *a = (struct file_lock_args *)FT_LARGS;
+            a->start = o; a->len = len; a->mode = flags; a->reserved = 0;
+            return um_call(nr, 0, h, FT_LARGS, 0, 0, 0);
+        }
+        case SYS_FILE_UNLOCK:   return um_call(nr, W1 | W2, h, o, len, 0, 0);
         default:                return E_INTERNAL;      /* not a file call: a test bug */
     }
 }
+
+/* SEEK and TELL answer 0 and leave the offset at FT_POS: the offset, or the
+   error; any other success value is a failure of its own (E_INTERNAL). */
+static int64_t ft_pos(int rc) {
+    if (rc != E_OK) return rc < 0 ? rc : E_INTERNAL;
+    return (int64_t)*(volatile uint64_t *)FT_POS;
+}
+#define ft_tell(h)            ft_pos(ft_call(SYS_FILE_TELL, (h), 0, 0, 0, 0, 0))
+#define ft_seek(h, off, from) ft_pos(ft_call(SYS_FILE_SEEK, (h), 0, 0, 0, (off), (from)))
 
 int usermode_file_test(void) {
     if (!cxfs_is_mounted()) return 1;         /* nothing mounted - skip */
@@ -801,7 +848,7 @@ int usermode_file_test(void) {
     step++;
     if (ft_call(SYS_FILE_WRITE, h, 0, FT_DATA, 11, 0, 0) != 11) goto done;
     step++;
-    if (ft_call(SYS_FILE_TELL,  h, 0, 0, 0, 0, 0) != 11) goto done;
+    if (ft_tell(h) != 11) goto done;
 
     /* --- a duplicate narrowed to read cannot write, though the file was
        opened for both: the handle's rights decide, not the open flags. It
@@ -835,25 +882,50 @@ int usermode_file_test(void) {
     if (oi_call(d, 99, (uint32_t)ob) != E_INVALID_ARGS) goto done;
     step++;
     if (oi_call(d, OBJINFO_BASIC, (uint32_t)ob - 1) != E_BUFFER_TOO_SMALL) goto done;
+    /* a u64 cap (ABI 10) is compared whole: 2^32 is room enough, not 0 */
+    step++;
+    if (oi_call(d, OBJINFO_BASIC, 1ull << 32) != ob) goto done;
+    /* Padding is a field that must be 0, in each structure that has it; each
+       is checked before the handle, so a dead handle tells the two apart. */
+    struct object_info_args *oia = (struct object_info_args *)FT_IARGS;
+    oia->reserved = 1;
+    step++;
+    if (syscall_dispatch(SYS_OBJECT_INFO, FT_IARGS, 0, 0, 0, 0) != E_INVALID_ARGS) goto done;
+    struct ipc_call_args *ica = (struct ipc_call_args *)FT_IARGS;
+    ica->req_len = 0; ica->reply_cap = 0; ica->ep_handle = -1; ica->req = 0; ica->reply = 0;
+    ica->reserved = 0;
+    step++;
+    if (syscall_dispatch(SYS_IPC_CALL, FT_IARGS, 0, 0, 0, 0) != E_BAD_HANDLE) goto done;
+    ica->reserved = 1;
+    step++;
+    if (syscall_dispatch(SYS_IPC_CALL, FT_IARGS, 0, 0, 0, 0) != E_INVALID_ARGS) goto done;
+    struct ipc_recv_args *ira = (struct ipc_recv_args *)FT_IARGS;
+    ira->cap = 0; ira->ep_handle = -1; ira->buf = 0; ira->sender = 0;
+    ira->reserved = 0;
+    step++;
+    if (syscall_dispatch(SYS_IPC_RECV, FT_IARGS, 0, 0, 0, 0) != E_BAD_HANDLE) goto done;
+    ira->reserved = 1;
+    step++;
+    if (syscall_dispatch(SYS_IPC_RECV, FT_IARGS, 0, 0, 0, 0) != E_INVALID_ARGS) goto done;
     step++;
     if (ft_call(SYS_FILE_WRITE, d, 0, FT_DATA, 1, 0, 0) != E_ACCESS_DENIED) goto done;
     step++;
     if (ft_call(SYS_FILE_TRUNCATE, d, 0, 0, 0, 0, 0) != E_ACCESS_DENIED) goto done;
     step++;
-    if (ft_call(SYS_FILE_TELL, d, 0, 0, 0, 0, 0) != 11) goto done;
+    if (ft_tell(d) != 11) goto done;
     step++;
     if (syscall_dispatch(SYS_HANDLE_CLOSE, (uint32_t)d, 0, 0, 0, 0) != E_OK) goto done;
     step++;
     if (sysfile_open_count() != base + 1) goto done;  /* h still holds it */
     step++;
-    if (ft_call(SYS_FILE_TELL, d, 0, 0, 0, 0, 0) != E_BAD_HANDLE) goto done;
+    if (ft_tell(d) != E_BAD_HANDLE) goto done;
     step++;
     if (oi_call(d, OBJINFO_BASIC, sizeof(struct object_basic)) != E_BAD_HANDLE) goto done;
     step++;
-    if (ft_call(SYS_FILE_TELL, h, 0, 0, 0, 0, 0) != 11) goto done;
+    if (ft_tell(h) != 11) goto done;
 
     step++;
-    if (ft_call(SYS_FILE_SEEK, h, 0, 0, 0, 0, FSEEK_SET) != 0) goto done;
+    if (ft_seek(h, 0, FSEEK_SET) != 0) goto done;
     for (int i = 0; i < 16; i++) data[i] = '?';
     step++;
     if (ft_call(SYS_FILE_READ, h, 0, FT_DATA, 11, 0, 0) != 11) goto done;
@@ -862,7 +934,7 @@ int usermode_file_test(void) {
 
     /* seek from the end, and read the tail */
     step++;
-    if (ft_call(SYS_FILE_SEEK, h, 0, 0, 0, -5, FSEEK_END) != 6) goto done;
+    if (ft_seek(h, -5, FSEEK_END) != 6) goto done;
     step++;
     if (ft_call(SYS_FILE_READ, h, 0, FT_DATA, 5, 0, 0) != 5) goto done;
     step++;
@@ -870,6 +942,53 @@ int usermode_file_test(void) {
     /* and the read past the end that follows it comes back empty, not short */
     step++;
     if (ft_call(SYS_FILE_READ, h, 0, FT_DATA, 5, 0, 0) != 0) goto done;
+
+    /* --- u64 offsets and sizes (ABI 10). Each value has its high half set, so
+       a decoder that dropped or swapped a register pair answers differently.
+       5 GB is past anything 32 bits could hold; seeking there allocates
+       nothing, and nothing here grows the file. --- */
+    const uint64_t G5 = 5ull << 30;
+    step++;
+    if (ft_seek(h, (int64_t)G5, FSEEK_SET) != (int64_t)G5) goto done;
+    step++;
+    if (ft_tell(h) != (int64_t)G5) goto done;
+    /* a negative i64 joined whole: 5 GB - 4 GB is 1 GB */
+    step++;
+    if (ft_seek(h, -(int64_t)(1ull << 32), FSEEK_CUR) != (int64_t)(1ull << 30)) goto done;
+    /* before the start is refused, and the offset stays */
+    step++;
+    if (ft_seek(h, -(int64_t)G5, FSEEK_CUR) != E_OUT_OF_RANGE) goto done;
+    step++;
+    if (ft_tell(h) != (int64_t)(1ull << 30)) goto done;
+    /* a pos the kernel cannot write is refused before the offset moves */
+    step++;
+    if (um_call(SYS_FILE_SEEK, 1u << 1, (uint32_t)h, 0, FSEEK_SET, 0xC0001000u, 0) != E_BAD_ADDRESS) goto done;
+    step++;
+    if (ft_tell(h) != (int64_t)(1ull << 30)) goto done;
+    /* pos 0 is allowed: the offset moves and nothing is written */
+    step++;
+    if (um_call(SYS_FILE_SEEK, 1u << 1, (uint32_t)h, 6, FSEEK_SET, 0, 0) != E_OK) goto done;
+    step++;
+    if (ft_tell(h) != 6) goto done;
+    /* a count past 32 bits is not its low half: 2^32 + 5 reads at most
+       2^31 - 1 bytes, whose buffer is not mapped, rather than reading 5 */
+    step++;
+    if (ft_call(SYS_FILE_READ, h, 0, FT_DATA, (1ull << 32) + 5, 0, 0) != E_BAD_ADDRESS) goto done;
+    step++;
+    if (ft_call(SYS_FILE_WRITE, h, 0, FT_DATA, (1ull << 32) + 5, 0, 0) != E_BAD_ADDRESS) goto done;
+    step++;
+    if (ft_tell(h) != 6) goto done;
+    /* a write that would carry the offset past INT64_MAX is refused (the
+       store would refuse it too, but as E_INVALID_ARGS) */
+    step++;
+    if (ft_seek(h, INT64_MAX - 2, FSEEK_SET) != INT64_MAX - 2) goto done;
+    if (ft_call(SYS_FILE_WRITE, h, 0, FT_DATA, 5, 0, 0) != E_OUT_OF_RANGE) goto done;
+    /* a size past FILE_OFF_MAX, whose low half alone would be a fine size */
+    step++;
+    if (ft_call(SYS_FILE_TRUNCATE, h, 0, 0, 0, (int64_t)((1ull << 63) + 5), 0) != E_OUT_OF_RANGE) goto done;
+    step++;
+    if (ft_seek(h, 0, FSEEK_END) != 11) goto done;   /* back where the tests below expect */
+
 
     /* fstat agrees about the size */
     step++;
@@ -918,7 +1037,7 @@ int usermode_file_test(void) {
     step++;
     if (ft_call(SYS_FILE_FSTAT, h, 0, FT_STAT, 0, 0, 0) != E_OK || st->size != 5) goto done;
     step++;
-    if (ft_call(SYS_FILE_TRUNCATE, h, 0, 0, 0, -1, 0) != E_INVALID_ARGS) goto done;
+    if (ft_call(SYS_FILE_TRUNCATE, h, 0, 0, 0, -1, 0) != E_OUT_OF_RANGE) goto done;   /* 2^64 - 1 */
     /* and back out to 13, so exec_path below meets the file it always has */
     step++;
     if (ft_call(SYS_FILE_TRUNCATE, h, 0, 0, 0, 13, 0) != E_OK) goto done;
@@ -957,6 +1076,9 @@ int usermode_file_test(void) {
     while (want[wantlen]) wantlen++;
     step++;
     if (ft_call(SYS_FILE_GETCWD, 0, 0, FT_DATA, 64, 0, 0) != wantlen) goto done;
+    /* a cap of 2^32 is a large cap, not a cap of 0 */
+    step++;
+    if (ft_call(SYS_FILE_GETCWD, 0, 0, FT_DATA, 1ull << 32, 0, 0) != wantlen) goto done;
     step++;
     for (int i = 0; i <= wantlen; i++) if (data[i] != want[i]) goto done;
 
@@ -1013,7 +1135,7 @@ int usermode_file_test(void) {
     struct spawn_args *sa = (struct spawn_args *)FT_STAT;   /* reuse the page */
     sa->image = 0; sa->image_len = 0; sa->name = FT_PATH;
     sa->broker_endpoint = -1; sa->caps = 0;
-    sa->args = 0; sa->args_len = 0;
+    sa->args = 0; sa->args_len = 0; sa->reserved = 0;
 
     ft_strp(FT_PATH, scratch, "/kt_absent.xuex");
     step++;
@@ -1288,6 +1410,8 @@ int usermode_vm_test(void) {
     step++;
     if (syscall_dispatch(SYS_VM_UNMAP, addr, 2u * PAGE_SIZE, 0, 0, 0) != E_INVALID_ARGS) goto done;
     step++;
+    if (um_call(SYS_VM_UNMAP, 1u << 1, addr, (1ull << 32) | PAGE_SIZE, 0, 0, 0) != E_INVALID_ARGS) goto done;
+    step++;
     if (syscall_dispatch(SYS_VM_UNMAP, addr, PAGE_SIZE, 0, 0, 0) != E_OK) goto done;
     addr = 0;
     step++;
@@ -1527,6 +1651,8 @@ int usermode_net_test(void) {
     step++;
     if (syscall_dispatch(SYS_NET_MAC, 0xC0001000u, 6, 0, 0, 0) != E_BAD_ADDRESS) goto done;
     step++;
+    step++;
+    if (um_call(SYS_NET_MAC, 1u << 1, NT_MAC, 1ull << 32, 0, 0, 0) != 6) goto done;   /* not 0, too small */
     if (syscall_dispatch(SYS_NET_MAC, NT_MAC, 8, 0, 0, 0) != 6) goto done;
     const uint8_t *m = netif_mac();
     step++;
@@ -1582,6 +1708,8 @@ int usermode_net_test(void) {
     step++;
     if (syscall_dispatch(SYS_NET_SEND, NT_FRAME, 1515, 0, 0, 0) != E_OUT_OF_RANGE) goto done;
     step++;
+    if (um_call(SYS_NET_SEND, 1u << 1, NT_FRAME, (1ull << 32) | NT_FRAME_LEN, 0, 0, 0) != E_OUT_OF_RANGE) goto done;
+    step++;
     if (syscall_dispatch(SYS_NET_SEND, 0xC0001000u, NT_FRAME_LEN, 0, 0, 0) != E_BAD_ADDRESS) goto done;
     step++;
     if (ready && syscall_dispatch(SYS_NET_SEND, NT_FRAME, NT_FRAME_LEN, 0, 0, 0) != 0) goto done;
@@ -1590,6 +1718,10 @@ int usermode_net_test(void) {
        a frame or nothing, never more than it holds */
     step++;
     if (syscall_dispatch(SYS_NET_RECV, NT_RX, 0, 0, 0, 0) != E_BUFFER_TOO_SMALL) goto done;
+    step++;
+    /* cap 4 GB: its high half seen (a cap of 0 is too small) and clamped to
+       64 KB, which is more than the one page mapped here */
+    if (um_call(SYS_NET_RECV, 1u << 1, NT_RX, 1ull << 32, 0, 0, 0) != E_BAD_ADDRESS) goto done;
     step++;
     if (syscall_dispatch(SYS_NET_RECV, 0xC0001000u, NT_RX_CAP, 0, 0, 0) != E_BAD_ADDRESS) goto done;
     step++;
@@ -1628,16 +1760,21 @@ done:
  * test thread rewriting FT_PATH cannot change what the helper opens.
  */
 #define FL_PATH  (TEST_CODE_VIRT + 0x900)
+#define FL_LARGS (TEST_CODE_VIRT + 0x980)   /* the helper's own file_lock_args */
 
 static volatile int fl_stage;      /* how far the helper has got */
 static volatile int fl_go;         /* set once its caps are in place */
 static volatile int fl_rc;         /* what its waiting lock returned */
 
 /* The helper's calls: OPEN of FL_PATH, LOCK and CLOSE (see ft_call). */
-static int fl_call(uint32_t nr, int handle, int32_t off, uint32_t len, uint32_t flags) {
+static int fl_call(uint32_t nr, int handle, uint64_t off, uint64_t len, uint32_t flags) {
     switch (nr) {
         case SYS_FILE_OPEN:  return syscall_dispatch(nr, FL_PATH, flags, 0, 0, 0);
-        case SYS_FILE_LOCK:  return syscall_dispatch(nr, (uint32_t)handle, (uint32_t)off, len, flags, 0);
+        case SYS_FILE_LOCK: {
+            struct file_lock_args *a = (struct file_lock_args *)FL_LARGS;
+            a->start = off; a->len = len; a->mode = flags; a->reserved = 0;
+            return syscall_dispatch(nr, (uint32_t)handle, FL_LARGS, 0, 0, 0);
+        }
         case SYS_FILE_CLOSE: return syscall_dispatch(nr, (uint32_t)handle, 0, 0, 0, 0);
         default:             return E_INTERNAL;
     }
@@ -1716,7 +1853,7 @@ int usermode_flock_test(void) {
     step++;
     if (ft_call(SYS_FILE_LOCK, a, 0, 0, 0, 0, 3) != E_INVALID_ARGS) goto done;
     step++;
-    if (ft_call(SYS_FILE_LOCK, a, 0, 0, 0, -1, FLOCK_SHARED) != E_INVALID_ARGS) goto done;
+    if (ft_call(SYS_FILE_LOCK, a, 0, 0, 0, -1, FLOCK_SHARED) != E_OUT_OF_RANGE) goto done;   /* start 2^64 - 1 */
     step++;                                                                       /* 15 */
     if (ft_call(SYS_FILE_LOCK, closed, 0, 0, 0, 0, FLOCK_SHARED) != E_BAD_HANDLE) goto done;
     ft_call(SYS_FILE_UNLOCK, a, 0, 0, 0, 0, 0);
@@ -1799,7 +1936,7 @@ int usermode_flock_test(void) {
     if (ft_call(SYS_FILE_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_WRITE | FOPEN_CREATE) != E_ALREADY_EXISTS) goto done;
     /* the open handles still work */
     step++;                                                                       /* 40 */
-    if (ft_call(SYS_FILE_SEEK, w, 0, 0, 0, 0, FSEEK_SET) != 0) goto done;
+    if (ft_seek(w, 0, FSEEK_SET) != 0) goto done;
     step++;
     if (ft_call(SYS_FILE_READ, w, 0, FT_DATA, 6, 0, 0) != 6) goto done;
     /* exec_path resolves for itself, and must not find it either (it would
@@ -1808,7 +1945,10 @@ int usermode_flock_test(void) {
         struct spawn_args *sa = (struct spawn_args *)FT_STAT;
         sa->image = 0; sa->image_len = 0; sa->name = FT_PATH;
         sa->broker_endpoint = -1; sa->caps = 0; sa->args = 0; sa->args_len = 0;
+        sa->reserved = 1;                         /* padding must be 0, refused first */
         step++;                                                                   /* 42 */
+        if (sys_exec_path(FT_PATH, user_addr(sa)) != E_INVALID_ARGS) goto done;
+        sa->reserved = 0;
         if (sys_exec_path(FT_PATH, user_addr(sa)) != E_NOT_FOUND) goto done;
     }
     /* and the id is not handed to the next file created */
@@ -1833,6 +1973,36 @@ int usermode_flock_test(void) {
     w = ft_call(SYS_FILE_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_WRITE | FOPEN_CREATE);
     step++;                                                                       /* 47 */
     if (w < 0) goto done;
+
+    /* --- u64 ranges (ABI 10): a lock at 4 GB is not a lock at 0, through
+       LOCK's file_lock_args and UNLOCK's register pairs alike --- */
+    const uint64_t G4 = 1ull << 32;
+    int p = ft_call(SYS_FILE_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_READ);
+    int q = ft_call(SYS_FILE_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_READ);
+    step++;                                                                       /* 48 */
+    if (p < 0 || q < 0) goto done;
+    step++;
+    if (ft_call(SYS_FILE_LOCK, p, 0, 0, 10, (int64_t)G4, FLOCK_EXCLUSIVE) != E_OK) goto done;
+    step++;                                                                       /* 50 */
+    if (ft_call(SYS_FILE_LOCK, q, 0, 0, 10, 0, FLOCK_EXCLUSIVE) != E_OK) goto done;   /* disjoint */
+    step++;
+    if (ft_call(SYS_FILE_LOCK, q, 0, 0, 1, (int64_t)G4 + 5, FLOCK_SHARED) != E_BUSY) goto done;
+    step++;
+    if (ft_call(SYS_FILE_UNLOCK, q, 0, 0, 10, 0, 0) != E_OK) goto done;
+    step++;
+    if (ft_call(SYS_FILE_UNLOCK, p, 0, 0, 10, (int64_t)G4, 0) != E_OK) goto done;
+    step++;                                                                       /* 54 */
+    if (ft_call(SYS_FILE_LOCK, q, 0, 0, 10, (int64_t)G4, FLOCK_EXCLUSIVE) != E_OK) goto done;   /* p's is gone */
+    /* past FILE_OFF_MAX, in either half of the range */
+    step++;
+    if (ft_call(SYS_FILE_LOCK, p, 0, 0, 1ull << 63, 0, FLOCK_SHARED) != E_OUT_OF_RANGE) goto done;
+    step++;
+    if (ft_call(SYS_FILE_UNLOCK, p, 0, 0, 0, (int64_t)(1ull << 63), 0) != E_OUT_OF_RANGE) goto done;
+    /* file_lock_args' padding must be 0 */
+    struct file_lock_args *la = (struct file_lock_args *)FT_LARGS;
+    la->start = 0; la->len = 0; la->mode = FLOCK_SHARED; la->reserved = 1;
+    step++;                                                                       /* 57 */
+    if (syscall_dispatch(SYS_FILE_LOCK, (uint32_t)p, FT_LARGS, 0, 0, 0) != E_INVALID_ARGS) goto done;
 
     ok = 1;
 

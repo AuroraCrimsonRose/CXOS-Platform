@@ -10,6 +10,32 @@
 
 import "io.xfxn";
 
+// the same for a u64 (needs 21 bytes for a full one): file sizes and offsets
+fn u64_to_dec(buf: *u8, cap: u32, v: u64) -> u32 {
+    let tmp: [20]u8;
+    let n: u32 = 0;
+    let x: u64 = v;
+
+    if (x == 0) {
+        tmp[0] = 48;            // '0'
+        n = 1;
+    }
+    while (x > 0) {
+        tmp[n] = ((x % 10) as u8) + 48;
+        n = n + 1;
+        x = x / 10;
+    }
+
+    let i: u32 = 0;
+    while (i < n) {
+        if (i + 1 >= cap) { break; }
+        buf[i] = tmp[n - 1 - i];
+        i = i + 1;
+    }
+    buf[i] = 0;
+    return i;
+}
+
 // write `v` as decimal into buf (needs 11 bytes for a full u32); returns length
 fn u32_to_dec(buf: *u8, cap: u32, v: u32) -> u32 {
     let tmp: [12]u8;
@@ -98,6 +124,12 @@ fn dec_u32(s: *u8) -> u32 {
 fn print_u32(v: u32) -> void {
     let b: [12]u8;
     u32_to_dec(&b[0], sizeof b, v);
+    puts(&b[0]);
+}
+
+fn print_u64(v: u64) -> void {
+    let b: [21]u8;
+    u64_to_dec(&b[0], sizeof b, v);
     puts(&b[0]);
 }
 

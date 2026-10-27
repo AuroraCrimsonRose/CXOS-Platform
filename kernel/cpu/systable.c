@@ -7,68 +7,134 @@
 #include "systable.h"
 #include "cxk_abi.h"   /* the SYS_* numbers */
 
-static int decode_exit(const uint32_t *a) { syscall_exit((int32_t)a[0]); return 0; }
-static int decode_yield(const uint32_t *a) { (void)a; syscall_yield(); return 0; }
-static int decode_getpid(const uint32_t *a) { (void)a; return syscall_getpid(); }
-static int decode_getuid(const uint32_t *a) { (void)a; return syscall_getuid(); }
-static int decode_clock(const uint32_t *a) { return syscall_clock(a[0]); }
-static int decode_sleep(const uint32_t *a) { return syscall_sleep(a[0]); }
-static int decode_args(const uint32_t *a) { return syscall_args(a[0]); }
-static int decode_ipc_call(const uint32_t *a) { return syscall_ipc_call(a[0]); }
-static int decode_ipc_recv(const uint32_t *a) { return syscall_ipc_recv(a[0]); }
-static int decode_ipc_reply(const uint32_t *a) { return syscall_ipc_reply(a[0]); }
-static int decode_ep_create(const uint32_t *a) { (void)a; return syscall_ep_create(); }
-static int decode_handle_close(const uint32_t *a) { return syscall_handle_close((int32_t)a[0]); }
-static int decode_handle_duplicate(const uint32_t *a) { return syscall_handle_duplicate((int32_t)a[0], a[1]); }
-static int decode_object_info(const uint32_t *a) { return syscall_object_info(a[0]); }
-static int decode_input_read(const uint32_t *a) { (void)a; return syscall_input_read(); }
-static int decode_mouse_read(const uint32_t *a) { return syscall_mouse_read(a[0]); }
-static int decode_input_poll(const uint32_t *a) { (void)a; return syscall_input_poll(); }
-static int decode_console_write(const uint32_t *a) { return syscall_console_write(a[0], a[1]); }
-static int decode_log_read(const uint32_t *a) { return syscall_log_read(a[0], a[1]); }
-static int decode_net_status(const uint32_t *a) { (void)a; return syscall_net_status(); }
-static int decode_net_mac(const uint32_t *a) { return syscall_net_mac(a[0], a[1]); }
-static int decode_net_get_config(const uint32_t *a) { return syscall_net_get_config(a[0]); }
-static int decode_net_set_ip(const uint32_t *a) { return syscall_net_set_ip(a[0]); }
-static int decode_net_set_mask(const uint32_t *a) { return syscall_net_set_mask(a[0]); }
-static int decode_net_set_gateway(const uint32_t *a) { return syscall_net_set_gateway(a[0]); }
-static int decode_net_set_dns(const uint32_t *a) { return syscall_net_set_dns(a[0]); }
-static int decode_net_ping(const uint32_t *a) { return syscall_net_ping(a[0], a[1], a[2]); }
-static int decode_net_send(const uint32_t *a) { return syscall_net_send(a[0], a[1]); }
-static int decode_net_recv(const uint32_t *a) { return syscall_net_recv(a[0], a[1]); }
-static int decode_fb_info(const uint32_t *a) { return syscall_fb_info(a[0]); }
-static int decode_fb_clear(const uint32_t *a) { return syscall_fb_clear(a[0]); }
-static int decode_fb_fill_rect(const uint32_t *a) { return syscall_fb_fill_rect(a[0], a[1], a[2], a[3], a[4]); }
-static int decode_fb_put_pixel(const uint32_t *a) { return syscall_fb_put_pixel(a[0], a[1], a[2]); }
-static int decode_fb_draw_line(const uint32_t *a) { return syscall_fb_draw_line(a[0], a[1], a[2], a[3], a[4]); }
-static int decode_fb_draw_text(const uint32_t *a) { return syscall_fb_draw_text(a[0], a[1], a[2], a[3], a[4]); }
-static int decode_fb_set_font(const uint32_t *a) { return syscall_fb_set_font(a[0]); }
-static int decode_spawn(const uint32_t *a) { return syscall_spawn(a[0]); }
-static int decode_exec_path(const uint32_t *a) { return syscall_exec_path(a[0], a[1]); }
-static int decode_vm_map(const uint32_t *a) { return syscall_vm_map(a[0]); }
-static int decode_vm_unmap(const uint32_t *a) { return syscall_vm_unmap(a[0], a[1]); }
-static int decode_vm_info(const uint32_t *a) { return syscall_vm_info(a[0]); }
-static int decode_power_reboot(const uint32_t *a) { (void)a; return syscall_power_reboot(); }
-static int decode_power_shutdown(const uint32_t *a) { (void)a; return syscall_power_shutdown(); }
-static int decode_power_sleep(const uint32_t *a) { return syscall_power_sleep(a[0]); }
-static int decode_file_open(const uint32_t *a) { return syscall_file_open(a[0], a[1]); }
-static int decode_file_close(const uint32_t *a) { return syscall_file_close((int32_t)a[0]); }
-static int decode_file_read(const uint32_t *a) { return syscall_file_read((int32_t)a[0], a[1], a[2]); }
-static int decode_file_write(const uint32_t *a) { return syscall_file_write((int32_t)a[0], a[1], a[2]); }
-static int decode_file_seek(const uint32_t *a) { return syscall_file_seek((int32_t)a[0], (int32_t)a[1], a[2]); }
-static int decode_file_tell(const uint32_t *a) { return syscall_file_tell((int32_t)a[0]); }
-static int decode_file_truncate(const uint32_t *a) { return syscall_file_truncate((int32_t)a[0], (int32_t)a[1]); }
-static int decode_file_stat(const uint32_t *a) { return syscall_file_stat(a[0], a[1]); }
-static int decode_file_fstat(const uint32_t *a) { return syscall_file_fstat((int32_t)a[0], a[1]); }
-static int decode_file_readdir(const uint32_t *a) { return syscall_file_readdir(a[0], a[1], a[2]); }
-static int decode_file_mkdir(const uint32_t *a) { return syscall_file_mkdir(a[0]); }
-static int decode_file_unlink(const uint32_t *a) { return syscall_file_unlink(a[0]); }
-static int decode_file_rename(const uint32_t *a) { return syscall_file_rename(a[0], a[1]); }
-static int decode_file_chdir(const uint32_t *a) { return syscall_file_chdir(a[0]); }
-static int decode_file_getcwd(const uint32_t *a) { return syscall_file_getcwd(a[0], a[1]); }
-static int decode_file_sync(const uint32_t *a) { (void)a; return syscall_file_sync(); }
-static int decode_file_lock(const uint32_t *a) { return syscall_file_lock((int32_t)a[0], (int32_t)a[1], a[2], a[3]); }
-static int decode_file_unlock(const uint32_t *a) { return syscall_file_unlock((int32_t)a[0], (int32_t)a[1], a[2]); }
+static int decode_exit(const uintptr_t *a) { syscall_exit((int32_t)a[0]); return 0; }
+static int decode_yield(const uintptr_t *a) { (void)a; syscall_yield(); return 0; }
+static int decode_getpid(const uintptr_t *a) { (void)a; return syscall_getpid(); }
+static int decode_getuid(const uintptr_t *a) { (void)a; return syscall_getuid(); }
+static int decode_clock(const uintptr_t *a) { return syscall_clock((uint32_t)a[0]); }
+static int decode_sleep(const uintptr_t *a) { return syscall_sleep((uint32_t)a[0]); }
+static int decode_args(const uintptr_t *a) { return syscall_args((uint32_t)a[0]); }
+static int decode_ipc_call(const uintptr_t *a) { return syscall_ipc_call((uint32_t)a[0]); }
+static int decode_ipc_recv(const uintptr_t *a) { return syscall_ipc_recv((uint32_t)a[0]); }
+static int decode_ipc_reply(const uintptr_t *a) { return syscall_ipc_reply((uint32_t)a[0]); }
+static int decode_ep_create(const uintptr_t *a) { (void)a; return syscall_ep_create(); }
+static int decode_handle_close(const uintptr_t *a) { return syscall_handle_close((int32_t)a[0]); }
+static int decode_handle_duplicate(const uintptr_t *a) { return syscall_handle_duplicate((int32_t)a[0], (uint32_t)a[1]); }
+static int decode_object_info(const uintptr_t *a) { return syscall_object_info((uint32_t)a[0]); }
+static int decode_input_read(const uintptr_t *a) { (void)a; return syscall_input_read(); }
+static int decode_mouse_read(const uintptr_t *a) { return syscall_mouse_read((uint32_t)a[0]); }
+static int decode_input_poll(const uintptr_t *a) { (void)a; return syscall_input_poll(); }
+static int decode_console_write(const uintptr_t *a) {
+#if SYSCALL_PAIRS
+    return syscall_console_write((uint32_t)a[0], (uint64_t)((uint64_t)a[1] | (uint64_t)a[2] << 32));
+#else
+    return syscall_console_write((uint32_t)a[0], (uint64_t)a[1]);
+#endif
+}
+static int decode_log_read(const uintptr_t *a) { return syscall_log_read((uint32_t)a[0], (uint32_t)a[1]); }
+static int decode_net_status(const uintptr_t *a) { (void)a; return syscall_net_status(); }
+static int decode_net_mac(const uintptr_t *a) {
+#if SYSCALL_PAIRS
+    return syscall_net_mac((uint32_t)a[0], (uint64_t)((uint64_t)a[1] | (uint64_t)a[2] << 32));
+#else
+    return syscall_net_mac((uint32_t)a[0], (uint64_t)a[1]);
+#endif
+}
+static int decode_net_get_config(const uintptr_t *a) { return syscall_net_get_config((uint32_t)a[0]); }
+static int decode_net_set_ip(const uintptr_t *a) { return syscall_net_set_ip((uint32_t)a[0]); }
+static int decode_net_set_mask(const uintptr_t *a) { return syscall_net_set_mask((uint32_t)a[0]); }
+static int decode_net_set_gateway(const uintptr_t *a) { return syscall_net_set_gateway((uint32_t)a[0]); }
+static int decode_net_set_dns(const uintptr_t *a) { return syscall_net_set_dns((uint32_t)a[0]); }
+static int decode_net_ping(const uintptr_t *a) { return syscall_net_ping((uint32_t)a[0], (uint32_t)a[1], (uint32_t)a[2]); }
+static int decode_net_send(const uintptr_t *a) {
+#if SYSCALL_PAIRS
+    return syscall_net_send((uint32_t)a[0], (uint64_t)((uint64_t)a[1] | (uint64_t)a[2] << 32));
+#else
+    return syscall_net_send((uint32_t)a[0], (uint64_t)a[1]);
+#endif
+}
+static int decode_net_recv(const uintptr_t *a) {
+#if SYSCALL_PAIRS
+    return syscall_net_recv((uint32_t)a[0], (uint64_t)((uint64_t)a[1] | (uint64_t)a[2] << 32));
+#else
+    return syscall_net_recv((uint32_t)a[0], (uint64_t)a[1]);
+#endif
+}
+static int decode_fb_info(const uintptr_t *a) { return syscall_fb_info((uint32_t)a[0]); }
+static int decode_fb_clear(const uintptr_t *a) { return syscall_fb_clear((uint32_t)a[0]); }
+static int decode_fb_fill_rect(const uintptr_t *a) { return syscall_fb_fill_rect((uint32_t)a[0], (uint32_t)a[1], (uint32_t)a[2], (uint32_t)a[3], (uint32_t)a[4]); }
+static int decode_fb_put_pixel(const uintptr_t *a) { return syscall_fb_put_pixel((uint32_t)a[0], (uint32_t)a[1], (uint32_t)a[2]); }
+static int decode_fb_draw_line(const uintptr_t *a) { return syscall_fb_draw_line((uint32_t)a[0], (uint32_t)a[1], (uint32_t)a[2], (uint32_t)a[3], (uint32_t)a[4]); }
+static int decode_fb_draw_text(const uintptr_t *a) { return syscall_fb_draw_text((uint32_t)a[0], (uint32_t)a[1], (uint32_t)a[2], (uint32_t)a[3], (uint32_t)a[4]); }
+static int decode_fb_set_font(const uintptr_t *a) { return syscall_fb_set_font((uint32_t)a[0]); }
+static int decode_spawn(const uintptr_t *a) { return syscall_spawn((uint32_t)a[0]); }
+static int decode_exec_path(const uintptr_t *a) { return syscall_exec_path((uint32_t)a[0], (uint32_t)a[1]); }
+static int decode_vm_map(const uintptr_t *a) { return syscall_vm_map((uint32_t)a[0]); }
+static int decode_vm_unmap(const uintptr_t *a) {
+#if SYSCALL_PAIRS
+    return syscall_vm_unmap((uint32_t)a[0], (uint64_t)((uint64_t)a[1] | (uint64_t)a[2] << 32));
+#else
+    return syscall_vm_unmap((uint32_t)a[0], (uint64_t)a[1]);
+#endif
+}
+static int decode_vm_info(const uintptr_t *a) { return syscall_vm_info((uint32_t)a[0]); }
+static int decode_power_reboot(const uintptr_t *a) { (void)a; return syscall_power_reboot(); }
+static int decode_power_shutdown(const uintptr_t *a) { (void)a; return syscall_power_shutdown(); }
+static int decode_power_sleep(const uintptr_t *a) { return syscall_power_sleep((uint32_t)a[0]); }
+static int decode_file_open(const uintptr_t *a) { return syscall_file_open((uint32_t)a[0], (uint32_t)a[1]); }
+static int decode_file_close(const uintptr_t *a) { return syscall_file_close((int32_t)a[0]); }
+static int decode_file_read(const uintptr_t *a) {
+#if SYSCALL_PAIRS
+    return syscall_file_read((int32_t)a[0], (uint32_t)a[1], (uint64_t)((uint64_t)a[2] | (uint64_t)a[3] << 32));
+#else
+    return syscall_file_read((int32_t)a[0], (uint32_t)a[1], (uint64_t)a[2]);
+#endif
+}
+static int decode_file_write(const uintptr_t *a) {
+#if SYSCALL_PAIRS
+    return syscall_file_write((int32_t)a[0], (uint32_t)a[1], (uint64_t)((uint64_t)a[2] | (uint64_t)a[3] << 32));
+#else
+    return syscall_file_write((int32_t)a[0], (uint32_t)a[1], (uint64_t)a[2]);
+#endif
+}
+static int decode_file_seek(const uintptr_t *a) {
+#if SYSCALL_PAIRS
+    return syscall_file_seek((int32_t)a[0], (int64_t)((uint64_t)a[1] | (uint64_t)a[2] << 32), (uint32_t)a[3], (uint32_t)a[4]);
+#else
+    return syscall_file_seek((int32_t)a[0], (int64_t)a[1], (uint32_t)a[2], (uint32_t)a[3]);
+#endif
+}
+static int decode_file_tell(const uintptr_t *a) { return syscall_file_tell((int32_t)a[0], (uint32_t)a[1]); }
+static int decode_file_truncate(const uintptr_t *a) {
+#if SYSCALL_PAIRS
+    return syscall_file_truncate((int32_t)a[0], (uint64_t)((uint64_t)a[1] | (uint64_t)a[2] << 32));
+#else
+    return syscall_file_truncate((int32_t)a[0], (uint64_t)a[1]);
+#endif
+}
+static int decode_file_stat(const uintptr_t *a) { return syscall_file_stat((uint32_t)a[0], (uint32_t)a[1]); }
+static int decode_file_fstat(const uintptr_t *a) { return syscall_file_fstat((int32_t)a[0], (uint32_t)a[1]); }
+static int decode_file_readdir(const uintptr_t *a) { return syscall_file_readdir((uint32_t)a[0], (uint32_t)a[1], (uint32_t)a[2]); }
+static int decode_file_mkdir(const uintptr_t *a) { return syscall_file_mkdir((uint32_t)a[0]); }
+static int decode_file_unlink(const uintptr_t *a) { return syscall_file_unlink((uint32_t)a[0]); }
+static int decode_file_rename(const uintptr_t *a) { return syscall_file_rename((uint32_t)a[0], (uint32_t)a[1]); }
+static int decode_file_chdir(const uintptr_t *a) { return syscall_file_chdir((uint32_t)a[0]); }
+static int decode_file_getcwd(const uintptr_t *a) {
+#if SYSCALL_PAIRS
+    return syscall_file_getcwd((uint32_t)a[0], (uint64_t)((uint64_t)a[1] | (uint64_t)a[2] << 32));
+#else
+    return syscall_file_getcwd((uint32_t)a[0], (uint64_t)a[1]);
+#endif
+}
+static int decode_file_sync(const uintptr_t *a) { (void)a; return syscall_file_sync(); }
+static int decode_file_lock(const uintptr_t *a) { return syscall_file_lock((int32_t)a[0], (uint32_t)a[1]); }
+static int decode_file_unlock(const uintptr_t *a) {
+#if SYSCALL_PAIRS
+    return syscall_file_unlock((int32_t)a[0], (uint64_t)((uint64_t)a[1] | (uint64_t)a[2] << 32), (uint64_t)((uint64_t)a[3] | (uint64_t)a[4] << 32));
+#else
+    return syscall_file_unlock((int32_t)a[0], (uint64_t)a[1], (uint64_t)a[2]);
+#endif
+}
 
 const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_EXIT] = decode_exit,

@@ -8,16 +8,16 @@
 // Conveniences over the SYS_FILE_* calls on CXFS. The calls themselves are
 // the prelude's generated wrappers - file_open, file_close, file_read,
 // file_write, file_seek, file_tell, file_truncate, file_sync,
-// file_lock_range, file_unlock_range, stat, fstat, dir_entry, mkdir, unlink,
+// file_lock_raw, file_unlock_range, stat, fstat, dir_entry, mkdir, unlink,
 // rename, chdir and getcwd - documented in abi/kernel.xfil. They need
 // GRANT_DISK, which is part of GRANT_OS_BASELINE - the shell can use it, a
 // capability-less app cannot.
 //
 // A handle is a small non-negative integer; anything negative is an E_* code.
-// Offsets and sizes are 32-bit signed, so a file a program can address here
-// tops out at 2 GB, and the kernel refuses rather than wrapping. CXFS itself
-// is 64-bit underneath. X does have i64 now, so widening this is an ABI change
-// waiting to be made rather than a language limit.
+// Offsets and sizes are u64 (an offset to seek by is i64), so a file is not
+// capped at 2 GB. file_seek and file_tell hand the position back through a
+// *u64, since a result is an i32. One read or write moves at most 2 GB - 1:
+// its count is an i32, and a larger n is cut to that.
 //
 // Paths are relative to the process's working directory unless they start
 // with '/'. Every process starts in the root.
@@ -48,6 +48,18 @@ fn file_puts(h: i32, s: *u8) -> i32 { return file_write(h, s, strlen(s)); }
 
 // ---- advisory locks ----
 
+// A byte range: len 0 runs to the end of the file, however long it grows.
+// mode is FLOCK_SHARED or FLOCK_EXCLUSIVE; a conflict is E_BUSY, or with
+// | FLOCK_WAIT the call sleeps until the lock can be had. The call takes its range in a file_lock_args.
+fn file_lock_range(h: i32, start: u64, len: u64, mode: u32) -> i32 {
+    let a: file_lock_args;
+    a.start = start;
+    a.len = len;
+    a.mode = mode;
+    a.reserved = 0;
+    return file_lock_raw(h, &a);
+}
+
 // The whole file (file_lock_range with start 0, len 0). Locks belong to this
 // handle, and file_close releases them; so does exit.
 fn file_lock(h: i32, mode: u32) -> i32 { return file_lock_range(h, 0, 0, mode); }
@@ -65,11 +77,11 @@ fn file_exists(path: *u8) -> i32 {
 }
 
 // size in bytes, or a negative E_* code
-fn file_size(path: *u8) -> i32 {
+fn file_size(path: *u8) -> i64 {
     let st: file_stat;
     let rc: i32 = stat(path, &st);
-    if (rc != 0) { return rc; }
-    return st.size as i32;
+    if (rc != 0) { return rc as i64; }
+    return st.size as i64;
 }
 
 // ---- whole-file convenience ----

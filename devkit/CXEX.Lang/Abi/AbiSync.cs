@@ -472,7 +472,7 @@ public static class AbiSync
 
     /// <summary>
     /// The declared name in a C declarator: the trailing identifier once any array suffix
-    /// is dropped. Handles <c>uint32_t image_len</c>, <c>const void *image</c>,
+    /// is dropped. Handles <c>uint64_t image_len</c>, <c>const void *image</c>,
     /// <c>uint32_t *out</c> and the second half of <c>int32_t x, y</c>.
     /// </summary>
     internal static string LastIdentifier(string declarator)

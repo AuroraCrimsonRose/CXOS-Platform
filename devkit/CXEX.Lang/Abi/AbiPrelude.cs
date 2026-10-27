@@ -74,12 +74,11 @@ public static class AbiPrelude
 // cxk check-abi reports as a third copy of the ABI with no link to the header.
 
 // ---- files (SYS_FILE_*; GRANT_DISK) ----
-// CXFS is 64-bit throughout; every offset and size here is 32-bit signed, which
-// caps what a user process can address at 2 GB. X DOES now have i64 and u64 -
-// that was the blocker and it is gone - so widening this is a deliberate ABI
-// change rather than a language limit, and has not been made yet. read/write return a byte count, seek returns the new
-// offset, negative is an E_* code. A user process can therefore address a file
-// up to 2 GB. An open handle lives in the process handle table, so
+// CXFS is 64-bit throughout, and so is the ABI: offsets and sizes are u64 (a
+// seek offset is i64), each one a register pair on x86-32. A result is an i32,
+// so file_seek and file_tell hand the position back through a *u64, and one
+// read or write moves at most 2 GB - 1 bytes (a larger n is cut to that).
+// Negative is an E_* code. An open handle lives in the process handle table, so
 // handle_close() releases one just as file_close() does.
 
 // ---- memory (SYS_VM_MAP, SYS_VM_UNMAP, SYS_VM_INFO; unprivileged, bounded by a per-process quota) ----
@@ -147,7 +146,7 @@ fn broker_handle() -> i32 {
 fn mem_map(len: u32) -> u32 {
     let a: vm_map_args;
     a.object = MOBJ_ANON;
-    a.offset_lo = 0; a.offset_hi = 0;
+    a.offset = 0;
     a.length = len; a.addr = 0; a.granted = 0;
     a.prot = MPROT_READ | MPROT_WRITE; a.flags = 0;
     if (vm_map(&a) != E_OK) { return 0; }
@@ -163,12 +162,12 @@ fn mem_unmap(addr: u32, len: u32) -> i32 { return vm_unmap(addr, len); }
 fn mem_quota() -> u32 {
     let u: vm_usage;
     if (vm_info(&u) != E_OK) { return 0; }
-    return u.quota;
+    return u.quota as u32;     // a 32-bit process cannot hold 4 GB
 }
 fn mem_used() -> u32 {
     let u: vm_usage;
     if (vm_info(&u) != E_OK) { return 0; }
-    return u.mapped;
+    return u.mapped as u32;
 }
 
 // milliseconds since boot, for code that only wants to measure an interval

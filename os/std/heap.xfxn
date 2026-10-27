@@ -65,7 +65,7 @@ fn heap_grow(need: u32) -> u32 {
     if (vm_map(&a) != E_OK) { return 0; }
 
     let base: u32 = a.addr;
-    let total: u32 = a.granted;
+    let total: u32 = a.granted as u32;   // never past MMAP_MAX_BYTES
 
     heap_st(base, heap_arenas);          // arena.next
     heap_st(base + 4, total);            // arena.size

@@ -483,7 +483,7 @@ fn cmd_ls(arg: *u8) -> void {
     let st: file_stat;
     let i: u32 = 0;
     let files: u32 = 0;
-    let bytes: u32 = 0;
+    let bytes: u64 = 0;
 
     while (1 == 1) {
         let rc: i32 = dir_entry(arg, i, &st);
@@ -506,14 +506,14 @@ fn cmd_ls(arg: *u8) -> void {
     puts("  ");
     print_u32(files);
     puts(" entries, ");
-    print_u32(bytes);
+    print_u64(bytes);
     puts(" bytes\n");
 }
 
 // print v right-aligned in a field of `w`
-fn print_pad(v: u32, w: u32) -> u32 {
-    let tmp: [16]u8;
-    let n: u32 = u32_to_dec(&tmp[0], sizeof tmp, v);
+fn print_pad(v: u64, w: u32) -> u32 {
+    let tmp: [21]u8;
+    let n: u32 = u64_to_dec(&tmp[0], sizeof tmp, v);
     let pad: u32 = 0;
     while (pad + n < w) { putc(32); pad = pad + 1; }
     puts(&tmp[0]);
@@ -563,14 +563,15 @@ fn cmd_append(arg: *u8) -> void {
 
     let h: i32 = file_append(arg);
     if (file_err(arg, h) == 1) { return; }
-    let at: i32 = file_tell(h);
+    let at: u64 = 0;
+    file_tell(h, &at);
     let n: i32 = file_puts(h, text);
     file_close(h);
     if (file_err(arg, n) == 1) { return; }
 
     print_u32(n as u32);
     puts(" bytes at offset ");
-    print_u32(at as u32);
+    print_u64(at);
     newline();
 }
 
@@ -748,7 +749,7 @@ fn cmd_stat(arg: *u8) -> void {
     puts("kind  ");
     if (st.kind == FTYPE_DIR) { puts("directory"); } else { puts("file"); }
     newline();
-    puts("size  "); print_u32(st.size); puts(" bytes\n");
+    puts("size  "); print_u64(st.size); puts(" bytes\n");
     puts("owner "); print_u32(st.owner_uid); newline();
     puts("perms "); print_hex(st.permissions); newline();
     puts("id    "); print_u32(st.id); newline();
