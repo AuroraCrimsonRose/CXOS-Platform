@@ -31,6 +31,10 @@ public sealed record BootVerdict(BootOutcome Outcome, string Reason, int? TestsP
     /// </summary>
     private static readonly Regex Panic = new(@"\*\*\* KERNEL PANIC \*\*\*");
     private static readonly Regex ExecutiveUp = new(@"executive started", RegexOptions.IgnoreCase);
+    // spawn.c, when the executive's image is refused before ring 3. "Started" is
+    // logged only once it is loaded, so without this a refused executive would
+    // read as "not started yet" until the timeout.
+    private static readonly Regex ExecutiveRefused = new(@"executive refused at load", RegexOptions.IgnoreCase);
 
     /// <summary>
     /// Reads a serial log. A panic beats everything, including a summary
@@ -55,6 +59,8 @@ public sealed record BootVerdict(BootOutcome Outcome, string Reason, int? TestsP
             return new BootVerdict(BootOutcome.Inconclusive, "no self-test summary yet", null);
 
         int n = int.Parse(s.Groups[1].Value);
+        if (full && ExecutiveRefused.IsMatch(log))
+            return new BootVerdict(BootOutcome.Fail, $"self-tests: all {n} passed, but the executive was refused at load", n);
         if (full && !ExecutiveUp.IsMatch(log))
             return new BootVerdict(BootOutcome.Inconclusive, $"self-tests: all {n} passed, but the executive has not started", n);
 

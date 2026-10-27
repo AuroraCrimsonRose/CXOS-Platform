@@ -23,6 +23,7 @@
 #include "pmm.h"
 #include "vmregion.h"
 #include "heap.h"
+#include "cxex.h"               /* cxex_parse_header: is this the executive */
 #include "cxex_load.h"
 #include "exec.h"
 #include "launch.h"
@@ -115,12 +116,25 @@ static int build_args_page(const char *blob, uint32_t len) {
    Tying the release to the process instead of to a line here is what makes
    every exit, including ones not written yet, release it. */
 
+/* A way out before ring 3. For the executive it is said in so many words:
+   kmain only knows a pid was made, and `cxk verify-boot --full` fails on this
+   line rather than waiting out its timeout for a start that will not come. */
+static void not_started(int exec) {
+    if (exec) klog("EXEC", SEV_ERR, "executive refused at load");
+    thread_exit();
+}
+
 /* Runs on the new thread, in its own address space (the scheduler loaded its CR3
    before switching here). Places the image, builds a ring-3 stack, drops to user
    mode. Returns only when the process SYS_EXITs. */
 static void proc_trampoline(void) {
     int pid = thread_current_pid();
     struct proc_rec *r = thread_current_arg();
+
+    /* The executive is the one OS-tier image (.xoex, platform-signed only). */
+    struct cxex_header h;
+    int exec = cxex_parse_header(r->image, r->image_len, &h) == 0 &&
+               h.type_code == CXEX_TYPE_OS;
 
     uint32_t entry = 0;
     int lrc = cxex_load(r->image, r->image_len, &cxex_kernel_load_ops, &entry);
@@ -130,7 +144,7 @@ static void proc_trampoline(void) {
            a quota that has no room - and which one fired is the whole content of
            the message. */
         klog("PROC", SEV_ERR, cxex_load_strerror(lrc));
-        thread_exit();
+        not_started(exec);
     }
 
     /* The stack is the process's memory as much as the image is, so it comes out
@@ -138,15 +152,15 @@ static void proc_trampoline(void) {
        ceiling cannot cover a stack is refused having taken nothing. */
     if (vm_charge(pid, USER_STACK_PAGES * 0x1000u) != E_OK) {
         klog("PROC", SEV_ERR, "the memory quota has no room for a user stack");
-        thread_exit();
+        not_started(exec);
     }
     for (uint32_t i = 0; i < USER_STACK_PAGES; i++) {
         paddr_t p = pmm_alloc();
-        if (!p) { klog("PROC", SEV_ERR, "no stack memory"); thread_exit(); }
+        if (!p) { klog("PROC", SEV_ERR, "no stack memory"); not_started(exec); }
         if (paging_map_user(USER_STACK_TOP - (i + 1) * 0x1000u, p,
                             VM_WRITE) != 0) {
             klog("PROC", SEV_ERR, "user stack is not in the user half");
-            pmm_free(p); thread_exit();
+            pmm_free(p); not_started(exec);
         }
     }
     uint32_t ustack_top = USER_STACK_TOP - 16u;
@@ -155,16 +169,19 @@ static void proc_trampoline(void) {
        holding stack pages it will never use. */
     if (vm_charge(pid, 0x1000u) != E_OK) {
         klog("PROC", SEV_ERR, "the memory quota has no room for the argument page");
-        thread_exit();
+        not_started(exec);
     }
     if (build_args_page(r->args, r->args_len) != 0) {
         klog("PROC", SEV_ERR, "no memory for the argument page");
-        thread_exit();
+        not_started(exec);
     }
 
     kfree((void *)r->image); r->image = NULL;   /* image placed; heap copy done */
     if (r->args) { kfree((void *)r->args); r->args = NULL; }   /* and copied in */
 
+    /* Here, not where the pid was made: by now the image has passed every
+       load check (signature tier before, ABI hash, W^X, ranges, quota). */
+    if (exec) klog_u32("EXEC", SEV_OK, "executive started, pid ", (uint32_t)pid, LOG_COLOR_VALUE, "");
     enter_usermode(entry, ustack_top, thread_current_usave());
 
     /* SYS_EXIT, or a fault (usermode_fault returns here the same way, and a

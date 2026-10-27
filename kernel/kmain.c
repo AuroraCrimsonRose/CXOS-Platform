@@ -437,7 +437,7 @@ void kmain_late(void) {
         klog("EXEC", SEV_INFO, "launching /System/Boot.xoex");
         int xc = cxk_launch_executive("/System/Boot.xoex");
         if (xc >= 0) {
-            klog_u32("EXEC", SEV_OK,  "executive started, pid ", (uint32_t)xc, LOG_COLOR_VALUE, "");
+            klog_u32("EXEC", SEV_INFO, "executive launched, pid ", (uint32_t)xc, LOG_COLOR_VALUE, "");   /* "started" comes from spawn.c, once it is loaded */
             xc_started = 1;
         }
         else {

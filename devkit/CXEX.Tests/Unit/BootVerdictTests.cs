@@ -72,6 +72,22 @@ public class BootVerdictTests
 
     [Fact]
     [Trait(Categories.Key, Categories.Unit)]
+    public void An_executive_refused_at_load_fails_a_full_boot()
+    {
+        // The lines from a boot whose executive carried a wrong ABI hash
+        // (2026-10-26). kmain's "launched" is only a pid; it once said
+        // "started", and this boot passed.
+        const string log = "[EXEC    ] - [INFO] - executive launched, pid 1\n" +
+                           "[PROC    ] - [ERR ] - image was built against a different ABI definition (hash mismatch); rebuild it\n" +
+                           "[EXEC    ] - [ERR ] - executive refused at load\n";
+        var v = BootVerdict.Classify(Summary + log, full: true);
+        Assert.Equal(BootOutcome.Fail, v.Outcome);
+        Assert.Contains("refused at load", v.Reason);
+        Assert.Equal(BootOutcome.Pass, BootVerdict.Classify(Summary + log, full: false).Outcome);
+    }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
     public void Verification_boots_never_write_to_the_image()
     {
         // Booting a release image without -snapshot once broke its SHA256SUMS.
