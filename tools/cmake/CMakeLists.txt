@@ -192,6 +192,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/cpu/proc.c
     ${SRC_DIR}/kernel/cpu/ipc.c
     ${SRC_DIR}/kernel/cpu/spawn.c
+    ${SRC_DIR}/kernel/cpu/syspage.c
     ${SRC_DIR}/kernel/cpu/sysfile.c
     ${SRC_DIR}/kernel/object/kobj.c
     ${SRC_DIR}/kernel/object/htab.c

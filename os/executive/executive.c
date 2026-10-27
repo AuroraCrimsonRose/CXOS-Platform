@@ -13,33 +13,46 @@
 #include "cxk_abi.h"
 #include "app_image.h"   /* shell_xsex[], shell_xsex_len */
 
+/* Every call goes through the system page: the kernel hands _start its base
+   in esi, and the stub for syscall n is SYSPAGE_STUB_SIZE * n past it. The
+   stub puts n in eax itself and returns the result there (cxk_abi.h). */
+static uint32_t sysbase __attribute__((used));
+#define STUB(n) (sysbase + (n) * SYSPAGE_STUB_SIZE)
+
 static inline void sys_write(const char *s) {
-    __asm__ volatile ("int $0x80" : : "a"(SYS_CONSOLE_WRITE), "b"(s), "c"(0) : "memory");
+    int r; __asm__ volatile ("call *%1" : "=a"(r) : "r"(STUB(SYS_CONSOLE_WRITE)), "b"(s), "c"(0) : "memory");
 }
-static inline void sys_exit(int code) {
-    __asm__ volatile ("int $0x80" : : "a"(SYS_EXIT), "b"(code) : "memory");
+static inline __attribute__((noreturn)) void sys_exit(int code) {
+    int r; __asm__ volatile ("call *%1" : "=a"(r) : "r"(STUB(SYS_EXIT)), "b"(code) : "memory");
     for (;;) { }
 }
 static inline int sys_ep_create(void) {
-    int r; __asm__ volatile ("int $0x80" : "=a"(r) : "a"(SYS_EP_CREATE) : "memory"); return r;
+    int r; __asm__ volatile ("call *%1" : "=a"(r) : "r"(STUB(SYS_EP_CREATE)) : "memory"); return r;
 }
 static inline int sys_spawn(struct spawn_args *a) {
-    int r; __asm__ volatile ("int $0x80" : "=a"(r) : "a"(SYS_SPAWN), "b"(a) : "memory"); return r;
+    int r; __asm__ volatile ("call *%1" : "=a"(r) : "r"(STUB(SYS_SPAWN)), "b"(a) : "memory"); return r;
 }
 static inline int sys_exec_path(const char *p, struct spawn_args *a) {
-    int r; __asm__ volatile ("int $0x80" : "=a"(r) : "a"(SYS_EXEC_PATH), "b"(p), "c"(a) : "memory"); return r;
+    int r; __asm__ volatile ("call *%1" : "=a"(r) : "r"(STUB(SYS_EXEC_PATH)), "b"(p), "c"(a) : "memory"); return r;
 }
 static inline int sys_ipc_recv(struct ipc_recv_args *a) {
-    int r; __asm__ volatile ("int $0x80" : "=a"(r) : "a"(SYS_IPC_RECV), "b"(a) : "memory"); return r;
+    int r; __asm__ volatile ("call *%1" : "=a"(r) : "r"(STUB(SYS_IPC_RECV)), "b"(a) : "memory"); return r;
 }
 static inline int sys_ipc_reply(struct ipc_reply_args *a) {
-    int r; __asm__ volatile ("int $0x80" : "=a"(r) : "a"(SYS_IPC_REPLY), "b"(a) : "memory"); return r;
+    int r; __asm__ volatile ("call *%1" : "=a"(r) : "r"(STUB(SYS_IPC_REPLY)), "b"(a) : "memory"); return r;
 }
 static inline void sys_yield(void) {
-    __asm__ volatile ("int $0x80" : : "a"(SYS_YIELD) : "memory");
+    int r; __asm__ volatile ("call *%1" : "=a"(r) : "r"(STUB(SYS_YIELD)) : "memory");
 }
 
-void _start(void) {
+static void executive_main(void) __attribute__((used, noreturn));
+
+/* Keep the base before any C runs, since the compiler may use esi. */
+__attribute__((naked)) void _start(void) {
+    __asm__ ("mov %esi, sysbase\n\tjmp executive_main");
+}
+
+static void executive_main(void) {
     sys_write("CXK executive online (.xoex) - brokering\n");
 
     int ep = sys_ep_create();

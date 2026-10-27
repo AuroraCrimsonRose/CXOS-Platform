@@ -15,7 +15,7 @@
  * hash it was built against and the loader refuses one that differs, so a
  * program never runs against numbers or layouts it was not compiled for.
  */
-#define CXK_ABI_HASH { 0x61, 0x64, 0x85, 0xfd, 0x73, 0x04, 0xba, 0xb0, 0xd0, 0xf9, 0x1e, 0x5b, 0x70, 0xca, 0xeb, 0xae, 0x2d, 0xf8, 0xf4, 0x2a, 0x81, 0x5c, 0xdc, 0x26, 0xc5, 0x86, 0x5c, 0xb5, 0x99, 0xcf, 0x07, 0xcd }
+#define CXK_ABI_HASH { 0x09, 0x72, 0x9f, 0x3a, 0x7f, 0x12, 0x0b, 0xd8, 0x54, 0xb5, 0x6b, 0xed, 0x20, 0x90, 0x2e, 0x81, 0x32, 0xcd, 0x5a, 0x88, 0x00, 0x63, 0x2c, 0x10, 0x69, 0x85, 0xcd, 0xc8, 0xfd, 0x59, 0xa1, 0x2e }
 
 /*
  * CXK ABI v1 - the PUBLIC contract shared by the kernel, the .xoex executive,
@@ -44,7 +44,7 @@
  * line; bump both, and the DevKit's stamp, in the one commit that changes the
  * contract.
  */
-#define CXK_ABI_VERSION          10
+#define CXK_ABI_VERSION          11
 
 /*
  * ---- syscall numbers ----
@@ -336,6 +336,22 @@
 #define USER_ARGS_BASE           0xBFFFF000u    /* x86-32: the page just above the user stack */
 #define USER_ARGS_MAX            4096u          /* one page, header included */
 #define USER_ARGS_MAXC           64u            /* most arguments one program can be given */
+
+/*
+ * ---- the system page ----
+ * The kernel maps one read-only page of code into every process and hands
+ * its base to the program at entry: in esi on x86-32, rsi on x86-64 (the
+ * second argument register, as Fuchsia passes its vDSO). Where the page is
+ * is the kernel's choice, and a program never assumes it.
+ *
+ * The page holds one stub per syscall, SYSPAGE_STUB_SIZE bytes apart: the
+ * stub for number n starts at base + n * SYSPAGE_STUB_SIZE. A program loads
+ * the arguments as for the gate (ebx, ecx, edx, esi, edi; rdi, rsi, rdx,
+ * r10, r8 on x86-64) and calls the stub, which puts n in eax itself, enters
+ * the kernel and returns with the result in eax. A number with no syscall
+ * has no stub: its slot is int3 throughout, so calling it faults.
+ */
+#define SYSPAGE_STUB_SIZE        16u            /* bytes per stub; 256 of them fill the page */
 
 /*
  * What SYS_ARGS hands back: where this program's arguments are, and how many.

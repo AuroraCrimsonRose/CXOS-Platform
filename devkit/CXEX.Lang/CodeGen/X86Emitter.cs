@@ -13,7 +13,8 @@ namespace CXEX.Lang.CodeGen;
 /// which the build assembles+links (clang + ld.lld, i686-elf) to an ELF, then ElfParser/CXEXWriter
 /// package into a .xuex/.xsex/.xoex. Straightforward stack-machine codegen, cdecl ABI:
 /// args pushed right-to-left, result in eax, callee saves ebp. The __syscall
-/// intrinsic lowers to the CXK ABI register layout + int $0x80.
+/// intrinsic lowers to the CXK ABI register layout and a call to the system page's
+/// stub, or int $0x80 outside CXK (<see cref="SyscallPage"/>).
 /// </summary>
 public sealed class X86Emitter
 {
@@ -115,12 +116,27 @@ public sealed class X86Emitter
        preserved), so C can call it with an ordinary prototype. */
     public bool Library { get; init; }
 
+    /* Enter the kernel through the system page (CX_SYSCALLS_IPC.md §8): the
+       loader hands _start the page's base in esi, _start keeps it in
+       __cx_sysbase, and __syscall(n, ...) calls the stub at base + n * 16
+       (SYSPAGE_STUB_SIZE), which puts n in eax itself. On by default, which
+       is CXK; off for a program built without the prelude - the compiler's
+       Linux host layer, where __syscall is Linux's own int $0x80. */
+    public bool SyscallPage { get; init; } = true;
+    public const int SyscallStubShift = 4;   // log2 SYSPAGE_STUB_SIZE
+
     public string Emit(CompilationUnit unit)
     {
         _text.AppendLine(".text");
         if (!Library) _text.AppendLine(".globl _start");
         _data.AppendLine(".data");
         _bss.AppendLine(".bss");
+        if (SyscallPage && !Library)
+        {
+            _bss.AppendLine("    .align 4");
+            _bss.AppendLine("__cx_sysbase:");
+            _bss.AppendLine("    .zero 4");
+        }
         foreach (var d in unit.Decls)
         {
             if (d is FnDecl f && f.Body != null)
@@ -273,6 +289,7 @@ public sealed class X86Emitter
         var section = SectionOf(f);
         if (section != null) _text.AppendLine($".section {section},\"ax\",@progbits");   // allocated + executable
         Lbl(f.Name);
+        if (SyscallPage && !Library && f.Name == "_start") T("mov %esi, __cx_sysbase");   // before anything uses esi
         T("push %ebp");
         T("mov %esp, %ebp");
         if (locals > 0) T($"sub ${Align4(locals)}, %esp");
@@ -1935,7 +1952,8 @@ public sealed class X86Emitter
         }
     }
 
-    // __syscall(n, a1..a5) -> eax=n, ebx,ecx,edx,esi,edi = a1..a5 ; int $0x80
+    // __syscall(n, a1..a5) -> eax=n, ebx,ecx,edx,esi,edi = a1..a5 ; int $0x80,
+    // or through the system page: eax = __cx_sysbase + n*16 ; call *%eax
     private void EmitSyscall(CallExpr c)
     {
         // evaluate all args, push, then pop into the right registers
@@ -1945,6 +1963,9 @@ public sealed class X86Emitter
         for (int i = c.Args.Count - 1; i >= 0; i--) T($"pop {regs[i]}");
         // zero any unspecified arg registers
         for (int i = c.Args.Count; i < 6; i++) T($"xor {regs[i]}, {regs[i]}");
-        T("int $0x80");   // result already in eax
+        if (!SyscallPage) { T("int $0x80"); return; }   // result already in eax
+        T($"shl ${SyscallStubShift}, %eax");
+        T("add __cx_sysbase, %eax");
+        T("call *%eax");   // the stub returns the result in eax
     }
 }

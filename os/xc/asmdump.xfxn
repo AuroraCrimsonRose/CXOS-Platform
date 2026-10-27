@@ -35,6 +35,7 @@ fn xc_main() -> i32 {
         if (f.checked && dg_count(&f.dg) == 0) {
             let e: emitter;
             emit_init(&e, &f.s, o.object);
+            e.syspage = o.have_prelude;
             emit_program(&e, &f.decls, &asm);
             have = dg_count(&f.dg) == 0;
         }

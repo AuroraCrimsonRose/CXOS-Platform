@@ -27,6 +27,7 @@ default rel
 %define SYS_YIELD         0x01
 %define SYS_GETPID        0x02
 %define SYS_CONSOLE_WRITE 0x30
+%define SYSPAGE_STUB      16          ; SYSPAGE_STUB_SIZE
 
 section .text
 
@@ -38,7 +39,8 @@ extern syscall_dispatch     ; int syscall_dispatch(uint32_t num, uintptr_t a1, .
 extern gdt64_tss            ; gdt.c
 
 ; ---------------------------------------------------------------------------
-; int enter_usermode(uintptr_t entry, uintptr_t user_sp, uintptr_t *save_slot)
+; int enter_usermode(uintptr_t entry, uintptr_t user_sp, uintptr_t *save_slot,
+;                    uintptr_t sysbase)
 ;   save_slot[0] = the kernel RSP to come back to, [1] = the kernel's RFLAGS,
 ;   per thread (thread_current_usave), as on x86-32. Returns only through
 ;   return_to_kernel: SYS_EXIT, or a fault in ring 3.
@@ -62,12 +64,13 @@ enter_usermode:
     push USER_CODE_SEL       ; CS
     push rdi                 ; RIP
 
-    ; Nothing of the kernel's goes up: ring 3 starts with every register zero.
+    ; Nothing of the kernel's goes up: ring 3 starts with every register zero
+    ; but rsi, the system page's base (the fourth argument; cxk_abi.h).
     xor eax, eax
     xor ebx, ebx
+    mov rsi, rcx
     xor ecx, ecx
     xor edx, edx
-    xor esi, esi
     xor edi, edi
     xor ebp, ebp
     xor r8d, r8d
@@ -482,3 +485,25 @@ user_blob_busy_start:
 .hang:
     jmp .hang
 user_blob_busy_end:
+
+; user_sysp_call / user_sysp_write: x86-32's (arch/x86_32/usermode.asm), with
+; the base in rsi. It is kept in r12, since rsi is the second argument.
+global user_sysp_call_start, user_sysp_call_end
+user_sysp_call_start:
+    mov r12, rsi
+    lea rax, [r12 + SYS_GETPID * SYSPAGE_STUB]
+    call rax
+    lea edi, [eax + 0x100]
+    lea rax, [r12 + SYS_EXIT * SYSPAGE_STUB]
+    call rax
+    ud2                          ; a stub that returned ends it, as a fault
+user_sysp_call_end:
+
+global user_sysp_write_start, user_sysp_write_end
+user_sysp_write_start:
+    mov byte [rsi + 0xFFF], 0xC3
+    xor edi, edi
+    lea rax, [rsi + SYS_EXIT * SYSPAGE_STUB]
+    call rax
+    ud2
+user_sysp_write_end:

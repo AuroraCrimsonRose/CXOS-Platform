@@ -87,7 +87,7 @@ public class CompileCommand : Command<CompileCommand.Settings>
         AnsiConsole.MarkupLine($"[green]X:[/] analyzed {fileName} ({unit.Decls.Count} decls)");
 
         // 3. codegen -> asm
-        string asm = new X86Emitter(ctx, tc!.LocalTypes, diag) { Library = s.Object }.Emit(unit);
+        string asm = new X86Emitter(ctx, tc!.LocalTypes, diag) { Library = s.Object, SyscallPage = !s.NoPrelude }.Emit(unit);
 
         /* Codegen reports too, and its diagnostics were being thrown away: the
            only HasErrors check was above, before the emitter had run. Anything

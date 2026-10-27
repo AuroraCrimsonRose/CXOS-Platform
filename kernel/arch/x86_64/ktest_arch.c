@@ -855,7 +855,7 @@ static void urun_thread(void) {
     u->code_pte  = entry_of(U_CODE);
     u->stack_pte = entry_of(U_STACK);
     u->set_up = 1;
-    u->rc = enter_usermode(U_CODE, U_SP, thread_current_usave());
+    u->rc = enter_usermode(U_CODE, U_SP, thread_current_usave(), 0);
     if (u->shared) paging_unmap(U_SHARED);   /* the test's frame, not the space's */
     u->done = 1;
 }

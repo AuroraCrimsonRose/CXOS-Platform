@@ -16,10 +16,18 @@
    syscall_dispatch (cpu/usermode.h). */
 void arch_syscall_gate_init(void);
 
-/* Run user code at `entry` on the user stack `user_sp`. The kernel's own
-   return state is kept in save_slot (the thread's, thread_current_usave()).
-   Returns only when that code ends, with the value given to return_to_kernel. */
-int  enter_usermode(uintptr_t entry, uintptr_t user_sp, uintptr_t *save_slot);
+/* The stub for syscall `nr` in the system page (cpu/syspage.c): at most
+   SYSPAGE_STUB_SIZE bytes at `dst` that put nr in eax, enter the kernel
+   through this architecture's gate and return to the caller. */
+void arch_syscall_stub(uint8_t *dst, uint32_t nr);
+
+/* Run user code at `entry` on the user stack `user_sp`, with every register
+   zero but the one that carries `sysbase`, the system page's base (esi on
+   x86-32, rsi on x86-64; cxk_abi.h). The kernel's own return state is kept
+   in save_slot (the thread's, thread_current_usave()). Returns only when that
+   code ends, with the value given to return_to_kernel. */
+int  enter_usermode(uintptr_t entry, uintptr_t user_sp, uintptr_t *save_slot,
+                    uintptr_t sysbase);
 
 /* From inside a system call or a user fault: abandon the user code and return
    `retval` from the enter_usermode that started it. */

@@ -330,7 +330,7 @@ The ABI hash of §5 is this hash for the `kernel` library.
 - Supersedes the rule that `cxk_abi.h` and `AbiPrelude.cs` change in one
   commit: both are generated from the same file.
 
-### 9.5 As built (roadmap steps 6a1, 6a2a, 6a2b, 6a2c, 6a2d, 6a3a)
+### 9.5 As built (roadmap steps 6a1, 6a2a, 6a2b, 6a2c, 6a2d, 6a3a, 6a3b)
 
 The `kernel` domain is generated; the other domains, and `interface` blocks
 with their messages, are settled when IPC v3 needs them (Phase 1). The source
@@ -492,6 +492,28 @@ and any change to a name, number, type or field changes it.
   The same version over a different definition is `CXEX_LOAD_BAD_ABI_HASH`,
   so an ABI edited without a version bump is still refused. `abi_version`
   stays because a number is what an error message can show.
+
+Step 6a3b puts every call through the system page of §8 (`CXK_ABI_VERSION`
+11, which adds `SYSPAGE_STUB_SIZE`).
+
+- **The page:** one stub per syscall, 16 bytes apart; stub n is
+  `mov eax, n; int 0x80; ret` (`syscall` on x86-64), and a number with no
+  syscall is int3 throughout. Each process gets its own copy, mapped
+  read-only and executable and charged to its quota like the stack
+  (`kernel/cpu/syspage.c`). It sits under the stack's guard page,
+  `0xBFFBD000` today; the loader refuses an image section above
+  `USER_IMAGE_END` (`0xBFF00000`), so nothing is mapped over the stubs, the
+  stack or the arguments.
+- **Entry:** ring 3 starts with every register zero but the base: `esi` on
+  x86-32, `rsi` on x86-64 (x86-32 used to start with the kernel's registers).
+- **The compilers:** `_start` keeps the base in `__cx_sysbase` before its
+  prologue, and `__syscall(n, ...)` loads the arguments as before, then
+  `shl $4, %eax; add __cx_sysbase, %eax; call *%eax`. A program built
+  without the prelude is not a CXK program (the compiler's Linux host layer),
+  and keeps `int $0x80`: `--no-prelude` in both compilers turns it off.
+- **The C programs** (`executive.c`, `hello.c`) save `esi` in a naked
+  `_start` and call `sysbase + n * SYSPAGE_STUB_SIZE`.
+- The gate still accepts `int 0x80` from anywhere; refusing it is 6a3c.
 
 When the `.xfil` replaced the hand-written header, the header it generated
 matched the old one in every constant, structure and field type, and every

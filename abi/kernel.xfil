@@ -40,7 +40,7 @@ domain kernel
 /// mismatch. Declared in versions.json as `cxex-abi` and checked against this
 /// line; bump both, and the DevKit's stamp, in the one commit that changes the
 /// contract.
-const CXK_ABI_VERSION: u32 = 10
+const CXK_ABI_VERSION: u32 = 11
 
 /// ---- syscall numbers ----
 /// lifecycle 0x00-0x0F (no capability required)
@@ -265,6 +265,20 @@ const E_PROTOCOL: i32 = -25          /// an IPC message did not match its interf
 const USER_ARGS_BASE: u32 = 0xBFFFF000u  /// x86-32: the page just above the user stack
 const USER_ARGS_MAX: u32 = 4096u         /// one page, header included
 const USER_ARGS_MAXC: u32 = 64u          /// most arguments one program can be given
+
+/// ---- the system page ----
+/// The kernel maps one read-only page of code into every process and hands
+/// its base to the program at entry: in esi on x86-32, rsi on x86-64 (the
+/// second argument register, as Fuchsia passes its vDSO). Where the page is
+/// is the kernel's choice, and a program never assumes it.
+///
+/// The page holds one stub per syscall, SYSPAGE_STUB_SIZE bytes apart: the
+/// stub for number n starts at base + n * SYSPAGE_STUB_SIZE. A program loads
+/// the arguments as for the gate (ebx, ecx, edx, esi, edi; rdi, rsi, rdx,
+/// r10, r8 on x86-64) and calls the stub, which puts n in eax itself, enters
+/// the kernel and returns with the result in eax. A number with no syscall
+/// has no stub: its slot is int3 throughout, so calling it faults.
+const SYSPAGE_STUB_SIZE: u32 = 16u       /// bytes per stub; 256 of them fill the page
 
 /// What SYS_ARGS hands back: where this program's arguments are, and how many.
 /// `base` points at the argument page described above - the kernel's choice,

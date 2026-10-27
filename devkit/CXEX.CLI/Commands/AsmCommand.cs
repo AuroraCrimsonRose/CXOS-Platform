@@ -49,7 +49,7 @@ public class AsmCommand : Command<AsmCommand.Settings>
             string? asm = null;
             if (fe.Checker != null && !fe.Diag.HasErrors)
             {
-                asm = new X86Emitter(fe.Ctx, fe.Checker.LocalTypes, fe.Diag) { Library = s.Object }.Emit(fe.Unit);
+                asm = new X86Emitter(fe.Ctx, fe.Checker.LocalTypes, fe.Diag) { Library = s.Object, SyscallPage = !s.NoPrelude }.Emit(fe.Unit);
                 if (fe.Diag.HasErrors) asm = null;
             }
             var sb = new StringBuilder();

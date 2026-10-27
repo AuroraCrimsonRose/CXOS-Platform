@@ -255,4 +255,14 @@ public class XfilTests
         Assert.Equal(new[] { ("A", 1L, "u32"), ("SYS_X", 16L, "u32"), ("E0", 0L, "u32"), ("E1", 1L, "u32"), ("NEG", -1L, "i32") },
                      m.Constants.Select(c => (c.Name, c.Value, c.XType)));
     }
+
+    // The compilers call stub n at base + (n << SyscallStubShift); the kernel lays
+    // the stubs SYSPAGE_STUB_SIZE apart. The two are written in different places,
+    // so this is what keeps them one number (os/xc/emit.xfxn has the same shift).
+    [Fact]
+    public void The_emitters_stub_stride_is_the_ABIs()
+    {
+        AbiConstant c = AbiModel.Embedded.Constants.Single(k => k.Name == "SYSPAGE_STUB_SIZE");
+        Assert.Equal(c.Value, 1L << CXEX.Lang.CodeGen.X86Emitter.SyscallStubShift);
+    }
 }

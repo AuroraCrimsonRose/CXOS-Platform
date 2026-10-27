@@ -76,6 +76,7 @@ fn xc_main() -> i32 {
     let asm: buf = buf_new();
     let e: emitter;
     emit_init(&e, &f.s, o.object);
+    e.syspage = o.have_prelude;   // with no prelude, a host program: Linux's int $0x80
     emit_to(&e, h);
     emit_program(&e, &f.decls, &asm);
     xc_close(h);

@@ -67,3 +67,11 @@ void arch_syscall_gate_init(void) {
     /* int 0x80, DPL 3 so ring 3 can invoke it */
     idt_set_user_gate(0x80, (uint32_t)syscall_stub);
 }
+
+void arch_syscall_stub(uint8_t *dst, uint32_t nr) {
+    dst[0] = 0xB8;                               /* mov eax, nr */
+    dst[1] = (uint8_t)nr;         dst[2] = (uint8_t)(nr >> 8);
+    dst[3] = (uint8_t)(nr >> 16); dst[4] = (uint8_t)(nr >> 24);
+    dst[5] = 0xCD; dst[6] = 0x80;                /* int 0x80 */
+    dst[7] = 0xC3;                               /* ret */
+}

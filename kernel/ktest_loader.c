@@ -38,6 +38,9 @@
 #include "sched.h"
 #include "logging.h"
 #include "cxk_abi.h"
+#include "syspage.h"           /* SYSPAGE_VIRT */
+
+extern const struct cxex_load_ops cxex_kernel_load_ops;   /* cxex_loadk.c */
 
 
 /* ---- a CXEX image, built in a buffer ------------------------------------- */
@@ -201,6 +204,15 @@ int ktest_loader_adversarial(void) {
     wr32(SEC0_VADDR, USER_ADDR32_END - 0x1000);
     wr32(SEC0_MSIZE, 0x4000);
     ok = ok && refuses(CXEX_LOAD_BAD_RANGE);
+
+    /* The kernel's own binding keeps an image off the top of the user half,
+       where the stack, the arguments and the system page go: a section on the
+       system page would be mapped over its stubs. Refused in the first pass,
+       before anything is mapped or charged. */
+    img_valid();
+    wr32(SEC0_VADDR, SYSPAGE_VIRT);
+    ok = ok && cxex_load(g_img, (size_t)g_img_len, &cxex_kernel_load_ops, &entry)
+               == CXEX_LOAD_BAD_RANGE;
 
     /* virt_addr + mem_size wraps past the top of the address space. Computed in
        32 bits this lands back at a small address and looks like the user half. */

@@ -3162,7 +3162,7 @@ static void px_thread(void) {
     ((volatile uint8_t *)PX_CODE)[1] = 0x0B;
     if (paging_map_user(PX_CODE,  c, VM_EXEC) != 0) return;   /* W^X: now it runs */
     px_mine = 1;
-    px_rc   = enter_usermode(PX_CODE, PX_STACK + 0x1000u - 16u, thread_current_usave());
+    px_rc   = enter_usermode(PX_CODE, PX_STACK + 0x1000u - 16u, thread_current_usave(), 0);
     px_back = 1;
 }
 
@@ -3275,6 +3275,7 @@ void ktest_run(void) {
     total++; passed += report("a process that faults gives back everything", test_process_exit_releases());
     total++; passed += report("the cpu feature table is this cpu's",   ktest_arch_cpu_features());
     total++; passed += report("a syscall leaves ring 3 its segments",  ktest_arch_user_segments_kept());
+    total++; passed += report("syscalls through the system page",     usermode_syspage_test());
     total++; passed += report("cxex signature + tamper",           test_cxex_signature());
     total++; passed += report("disk: ATA LBA range refused",        test_disk_lba_range());
     total++; passed += report("cxex loader refuses bad images",    ktest_loader_adversarial());

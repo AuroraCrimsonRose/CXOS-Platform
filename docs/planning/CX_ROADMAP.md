@@ -177,7 +177,10 @@ programs for it (step 6).
      - **6a3b** The system page and its stubs, one per syscall. The loader
        maps it at an address it picks and passes the base in a register at
        entry (Fuchsia's vDSO); `__syscall` becomes an indirect call through
-       it, in both compilers and the C programs.
+       it, in both compilers and the C programs. **Done 2026-10-27**
+       (`CXK_ABI_VERSION` 11, `kernel/CX_SYSCALLS_IPC.md` §9.5): the base in
+       `esi`/`rsi`, a per-process copy under the stack, images kept below
+       `USER_IMAGE_END`; `--no-prelude` keeps `int $0x80` for the Linux host.
      - **6a3c** The kernel refuses a syscall whose return address is not the
        stub for that number.
    - **6b** `usize` and `isize` (a type of their own, Aurora 2026-10-26: mixing

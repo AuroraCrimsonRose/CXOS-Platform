@@ -13,11 +13,14 @@ global syscall_trapped
 extern syscall_dispatch     ; C: int syscall_dispatch(uint32_t num, uintptr_t a1, ..., uintptr_t a5); 32 bits each here
 
 ; ---------------------------------------------------------------------------
-; int enter_usermode(uint32_t entry_eip, uint32_t user_esp, uint32_t *save_slot)
+; int enter_usermode(uint32_t entry_eip, uint32_t user_esp, uint32_t *save_slot,
+;                    uint32_t sysbase)
 ;   save_slot points at a 2-word per-process area: [0]=saved kernel esp,
 ;   [1]=saved kernel eflags. Using per-process storage (instead of a global)
 ;   lets multiple ring-3 processes be in flight at once (preemption during
 ;   ring 3): each has its own return state.
+;   Ring 3 starts with every register zero but esi, which holds sysbase, the
+;   system page's base (cxk_abi.h). Nothing of the kernel's goes up.
 ;   Returns ONLY when user code invokes SYS_EXIT (via return_to_kernel).
 ; ---------------------------------------------------------------------------
 enter_usermode:
@@ -34,6 +37,7 @@ enter_usermode:
 
     mov eax, [esp + 20]      ; entry_eip
     mov ecx, [esp + 24]      ; user_esp
+    mov esi, [esp + 32]      ; sysbase, carried up to ring 3
 
     cli
     mov bx, 0x23             ; USER_DATA_SEL
@@ -50,6 +54,12 @@ enter_usermode:
     push edx                 ; EFLAGS
     push 0x1B                ; user CS
     push eax                 ; entry EIP
+    xor eax, eax
+    xor ebx, ebx
+    xor ecx, ecx
+    xor edx, edx
+    xor edi, edi
+    xor ebp, ebp
     iretd                    ; -> ring 3
 
 ; return_to_kernel(int retval, uint32_t *save_slot): restore the per-process
@@ -273,3 +283,29 @@ user_blob_segs_start:
 .shang:
     jmp .shang
 user_blob_segs_end:
+
+; ---------------------------------------------------------------------------
+; user_sysp_call / user_sysp_write - through the system page, whose base
+; enter_usermode leaves in esi. user_sysp_call calls the SYS_GETPID stub and
+; exits, through the SYS_EXIT stub, with the pid + 0x100. user_sysp_write
+; stores to the page, which must fault: it is never writable from ring 3.
+; Stub n is at esi + n * 16 (SYSPAGE_STUB_SIZE).
+; ---------------------------------------------------------------------------
+global user_sysp_call_start, user_sysp_call_end
+user_sysp_call_start:
+    lea eax, [esi + 0x02 * 16]   ; SYS_GETPID
+    call eax
+    lea ebx, [eax + 0x100]
+    lea eax, [esi + 0x00 * 16]   ; SYS_EXIT(ebx)
+    call eax
+    ud2                          ; a stub that returned ends it, as a fault
+user_sysp_call_end:
+
+global user_sysp_write_start, user_sysp_write_end
+user_sysp_write_start:
+    mov byte [esi + 0xFFF], 0xC3 ; an int3 slot: the exit stub stays whole
+    xor ebx, ebx
+    lea eax, [esi + 0x00 * 16]   ; SYS_EXIT(0): only if the store went through
+    call eax
+    ud2
+user_sysp_write_end:

@@ -18,6 +18,7 @@
 #include "arch/paging.h"
 #include "vmregion.h"
 #include "sched.h"
+#include "syspage.h"          /* USER_IMAGE_END */
 
 static void *k_get_page(void *ctx, uint64_t *out_phys) {
     (void)ctx;
@@ -60,7 +61,7 @@ static int k_charge(void *ctx, uint32_t pages) {
 
 const struct cxex_load_ops cxex_kernel_load_ops = {
     0,              /* ctx: current space for now */
-    USER_ADDR32_END, /* va_limit: the user half is everything below the kernel */
+    USER_IMAGE_END, /* va_limit: below the stack, arguments and system page (syspage.h) */
     k_get_page,
     k_map_page,
     k_charge

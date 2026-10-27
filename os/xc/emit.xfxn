@@ -34,6 +34,7 @@ struct emitter {
     label: u32,
     strings: smap,          // a string's bytes -> its number in .Lstr<n>
     library: bool,
+    syspage: bool,          // __syscall through the system page (X86Emitter.SyscallPage)
     gen: u32,               // which function a stamp belongs to
     frame_gen: list,        // per symbol: stamp, offset from ebp, type
     frame_off: list,
@@ -69,6 +70,7 @@ fn emit_init(e: *emitter, s: *sema, library: bool) -> void {
     e.label = 0;
     e.strings = smap_new();
     e.library = library;
+    e.syspage = true;
     e.gen = 0;
     e.frame_gen = list_new(); e.frame_off = list_new(); e.frame_ty = list_new();
     e.slot_gen = list_new(); e.slot_off = list_new();
@@ -295,6 +297,7 @@ fn emit_program(e: *emitter, decls: *list, out: *buf) -> void {
     if (!e.library) { buf_str(&e.text, ".globl _start\n"); }
     buf_str(&e.data, ".data\n");
     buf_str(&e.bss, ".bss\n");
+    if (e.syspage && !e.library) { buf_str(&e.bss, "    .align 4\n__cx_sysbase:\n    .zero 4\n"); }
     let i: u32 = 0;
     while (i < decls.len) {
         let d: u32 = decls.items[i];
@@ -645,6 +648,7 @@ fn emit_fn(e: *emitter, f: u32) -> void {
     let sec: u32 = section_of(e, f);
     if (sec != 0) { ts(e, ".section "); tname(e, sec); ts(e, ",\"ax\",@progbits"); te(e); }
     tname(e, f); ts(e, ":"); te(e);
+    if (e.syspage && !e.library && node_name_is(e.s, f, "_start")) { t(e, "mov %esi, __cx_sysbase"); }   // before anything uses esi
     t(e, "push %ebp");
     t(e, "mov %esp, %ebp");
     if (locals > 0) { t_imm(e, "sub $", align4(locals), ", %esp"); }
@@ -1753,7 +1757,8 @@ fn emit_call(e: *emitter, c: u32) -> void {
 
 global syscall_regs: [6]*u8 = ["%eax", "%ebx", "%ecx", "%edx", "%esi", "%edi"];
 
-// __syscall(n, a1..a5): eax = n, ebx ecx edx esi edi = the rest; int $0x80
+// __syscall(n, a1..a5): eax = n, ebx ecx edx esi edi = the rest; int $0x80,
+// or through the system page: eax = __cx_sysbase + n*16 ; call *%eax
 fn emit_syscall(e: *emitter, c: u32) -> void {
     let n: u32 = en_(e, c).count;
     let i: u32 = 0;
@@ -1762,5 +1767,8 @@ fn emit_syscall(e: *emitter, c: u32) -> void {
     while (i > 0) { i -= 1; tb(e); ts(e, "pop "); ts(e, syscall_regs[i]); te(e); }
     i = n;
     while (i < 6) { tb(e); ts(e, "xor "); ts(e, syscall_regs[i]); ts(e, ", "); ts(e, syscall_regs[i]); te(e); i += 1; }
-    t(e, "int $0x80");
+    if (!e.syspage) { t(e, "int $0x80"); return; }
+    t(e, "shl $4, %eax");   // SYSPAGE_STUB_SIZE, 16 (X86Emitter.SyscallStubShift)
+    t(e, "add __cx_sysbase, %eax");
+    t(e, "call *%eax");
 }

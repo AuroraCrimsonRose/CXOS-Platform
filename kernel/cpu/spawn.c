@@ -25,6 +25,7 @@
 #include "heap.h"
 #include "cxex.h"               /* cxex_parse_header: is this the executive */
 #include "cxex_load.h"
+#include "syspage.h"           /* SYSPAGE_VIRT, syspage_map */
 #include "exec.h"
 #include "launch.h"
 #include "cxfs.h"
@@ -39,6 +40,12 @@
    is never mapped, so running past it is a fault that ends the process, not a
    write into whatever lies beneath. */
 #define USER_STACK_PAGES  64u
+/* The top of the user half as syspage.h draws it: the system page below
+   the stack's guard page, and no image section above USER_IMAGE_END. */
+_Static_assert(USER_STACK_TOP == USER_ARGS_BASE, "the argument page sits on the stack");
+_Static_assert(SYSPAGE_VIRT + 0x2000u == USER_STACK_TOP - USER_STACK_PAGES * 0x1000u,
+               "one unmapped guard page between the stack and the system page");
+_Static_assert(USER_IMAGE_END < SYSPAGE_VIRT - 0x1000u, "images stay below the system page");
 #define PROC_MAX_IMAGE    (1u << 20)   /* 1 MiB cap on an image */
 
 /* The record proc_start hands the new thread (thread_set_arg) for its
@@ -176,13 +183,24 @@ static void proc_trampoline(void) {
         not_started(exec);
     }
 
+    /* Last, as the one page every program calls the kernel through: charged
+       like the others, and freed with the space like them. */
+    if (vm_charge(pid, 0x1000u) != E_OK) {
+        klog("PROC", SEV_ERR, "the memory quota has no room for the system page");
+        not_started(exec);
+    }
+    if (syspage_map(SYSPAGE_VIRT, NULL) != 0) {
+        klog("PROC", SEV_ERR, "no memory for the system page");
+        not_started(exec);
+    }
+
     kfree((void *)r->image); r->image = NULL;   /* image placed; heap copy done */
     if (r->args) { kfree((void *)r->args); r->args = NULL; }   /* and copied in */
 
     /* Here, not where the pid was made: by now the image has passed every
        load check (signature tier before, ABI hash, W^X, ranges, quota). */
     if (exec) klog_u32("EXEC", SEV_OK, "executive started, pid ", (uint32_t)pid, LOG_COLOR_VALUE, "");
-    enter_usermode(entry, ustack_top, thread_current_usave());
+    enter_usermode(entry, ustack_top, thread_current_usave(), SYSPAGE_VIRT);
 
     /* SYS_EXIT, or a fault (usermode_fault returns here the same way, and a
        fault it noted is saved now that this thread is out of the exception). */

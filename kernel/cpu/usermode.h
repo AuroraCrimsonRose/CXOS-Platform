@@ -131,9 +131,14 @@ uint32_t usermode_faults(void);
 int usermode_test(void);
 
 /* For the self-tests: copy `len` bytes of position-independent code to a
-   fresh user page, run it in ring 3 with an empty stack, and return the code
+   fresh user page, run it in ring 3 with an empty stack and the system page
+   mapped (its base in esi or rsi, as a process starts), and return the code
    it gives SYS_EXIT (or USERMODE_FAULTED); -1 when it could not be set up. */
 int usermode_run_blob(const uint8_t *start, uint32_t len);
+
+/* The system page: a stub for each syscall and int3 elsewhere; ring 3 calls
+   through the base it is handed; a store to the page faults. 1 = pass. */
+int usermode_syspage_test(void);
 
 /* Create a ring-3 PROCESS managed by the scheduler: a scheduler thread whose
    kernel-stack trampoline drops into ring 3 to run the given user routine, and

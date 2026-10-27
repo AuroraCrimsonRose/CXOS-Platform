@@ -26,6 +26,7 @@
 #include "sync/atomic.h"
 #include "sysrec.h"
 #include "systable.h"         /* the handlers, decoders and table (generated) */
+#include "syspage.h"          /* the stubs usermode_run_blob maps */
 #include "spawn.h"
 #include "sysfile.h"
 #include "cxfs.h"
@@ -579,7 +580,7 @@ int usermode_test(void) {
     uint32_t tsav = thread_current_caps();
     thread_set_caps(tme, GRANT_CONSOLE);
     /* enter ring 3; returns when the routine SYS_EXITs */
-    int rc = sealed ? enter_usermode(TEST_CODE_VIRT, ustack_top, thread_current_usave()) : -1;
+    int rc = sealed ? enter_usermode(TEST_CODE_VIRT, ustack_top, thread_current_usave(), 0) : -1;
     thread_set_caps(tme, tsav);
 
     /* reclaim the user pages */
@@ -600,12 +601,54 @@ int usermode_run_blob(const uint8_t *start, uint32_t len) {
     uint8_t *dst = (uint8_t *)TEST_CODE_VIRT;
     for (uint32_t i = 0; i < len; i++) dst[i] = start[i];
 
+    /* The blob starts as a process does: the system page mapped, its base
+       in the register the ABI names. */
+    paddr_t sys_phys = 0;
     int rc = seal_user_code(TEST_CODE_VIRT, code_phys) != 0 ? -1
-           : enter_usermode(TEST_CODE_VIRT, TEST_STACK_VIRT + 0x1000 - 16, thread_current_usave());
+           : syspage_map(SYSPAGE_VIRT, &sys_phys) != 0 ? -1
+           : enter_usermode(TEST_CODE_VIRT, TEST_STACK_VIRT + 0x1000 - 16,
+                            thread_current_usave(), SYSPAGE_VIRT);
 
+    if (sys_phys) unmap_user_page(SYSPAGE_VIRT, sys_phys);
     unmap_user_page(TEST_CODE_VIRT, code_phys);
     unmap_user_page(TEST_STACK_VIRT, stack_phys);
     return rc;
+}
+
+/* ---- the system page (roadmap step 6a3b) ---- */
+extern uint8_t user_sysp_call_start[],  user_sysp_call_end[];
+extern uint8_t user_sysp_write_start[], user_sysp_write_end[];
+
+static uint8_t sysp_probe[4096];
+
+int usermode_syspage_test(void) {
+    /* A stub in the slot of every syscall the table has, and int3 filling
+       every other slot and the rest of the page. */
+    syspage_fill(sysp_probe);
+    uint32_t stubs = 0;
+    int ok = 1;
+    for (uint32_t n = 0; n < 4096u / SYSPAGE_STUB_SIZE; n++) {
+        const uint8_t *slot = sysp_probe + n * SYSPAGE_STUB_SIZE;
+        uint32_t traps = 0;
+        for (uint32_t i = 0; i < SYSPAGE_STUB_SIZE; i++) traps += slot[i] == 0xCC;
+        int has = n < SYSCALL_TABLE_SIZE && syscall_table[n];
+        if (has) { stubs++; ok = ok && traps < SYSPAGE_STUB_SIZE; }
+        else     ok = ok && traps == SYSPAGE_STUB_SIZE;
+    }
+    ok = ok && stubs == SYSCALL_COUNT;
+
+    /* Ring 3 calls through the base it was handed: the SYS_GETPID stub gives
+       this thread's pid, the SYS_EXIT stub ends the routine with it. */
+    int rc = usermode_run_blob(user_sysp_call_start,
+                               (uint32_t)(user_sysp_call_end - user_sysp_call_start));
+    ok = ok && rc == thread_current_pid() + 0x100;
+
+    /* And the page is code, never data: a store to it faults. */
+    uint32_t faults = usermode_faults();
+    rc = usermode_run_blob(user_sysp_write_start,
+                           (uint32_t)(user_sysp_write_end - user_sysp_write_start));
+    ok = ok && rc == USERMODE_FAULTED && usermode_faults() == faults + 1;
+    return ok;
 }
 
 
@@ -2060,7 +2103,7 @@ static void process_trampoline(void) {
     uint32_t ustack_top = s->stack_virt + 0x1000 - 16;
     *(uint32_t *)user_ptr(ustack_top) = user_addr(umsg);
 
-    if (sealed) enter_usermode(s->code_virt, ustack_top, thread_current_usave());
+    if (sealed) enter_usermode(s->code_virt, ustack_top, thread_current_usave(), 0);
 
     /* user routine SYS_EXITed or faulted: save a fault noted on the way out
        (out of the exception now), reclaim its pages, leave the scheduler. */

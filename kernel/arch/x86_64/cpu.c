@@ -33,6 +33,14 @@ void arch_syscall_gate_init(void) {
     wrmsr(MSR_EFER, rdmsr(MSR_EFER) | EFER_SCE);
 }
 
+void arch_syscall_stub(uint8_t *dst, uint32_t nr) {
+    dst[0] = 0xB8;                               /* mov eax, nr */
+    dst[1] = (uint8_t)nr;         dst[2] = (uint8_t)(nr >> 8);
+    dst[3] = (uint8_t)(nr >> 16); dst[4] = (uint8_t)(nr >> 24);
+    dst[5] = 0x0F; dst[6] = 0x05;                /* syscall */
+    dst[7] = 0xC3;                               /* ret */
+}
+
 void arch_kernel_stack_set(uintptr_t top) { gdt64_set_rsp0(top); }
 
 uintptr_t arch_kernel_stack_default(void) { return gdt64_default_rsp0(); }
