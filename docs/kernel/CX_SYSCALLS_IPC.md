@@ -13,7 +13,7 @@
 | Area | Today | Problem |
 |---|---|---|
 | Entry | `int 0x80`, a number and two arguments (`syscall_dispatch(num, a1, a2)`) | Slow on x86-64; two arguments force a structure for almost everything |
-| Shape | 36 numbers, two of them multiplexers (`SYS_FILE_OP`, `SYS_NET_OP`) with an `op` field inside a structure; memory, power, input and the framebuffer were split in step 6a2c (§9.5) | One number hides 18 file operations, so tracing, recording and filtering see "a file call" and nothing more; each multiplexer re-implements dispatch |
+| Shape | 45 numbers, one of them a multiplexer (`SYS_FILE_OP`) with an `op` field inside a structure; memory, power, input, the framebuffer and the network were split in step 6a2c (§9.5) | One number hides 18 file operations, so tracing, recording and filtering see "a file call" and nothing more; each multiplexer re-implements dispatch |
 | Structures | Raw pointers and `int` inside shared structures | Layout changes with pointer size; every structure changes on x86-64 |
 | Widths | `ticks` in 32-bit milliseconds; file sizes and offsets 32-bit; timestamps 32-bit | Ticks wrap after 49 days; files stop at 4 GB; dates stop in 2106 |
 | Authority | `GRANT_*` bits on the process; handles are small `int`s with no rights | A handle carries no rights of its own; a stale handle number can name a new object |
@@ -381,7 +381,7 @@ syscall SYS_EXAMPLE = 0x3F0 (op: u32, ms: u32) -> i32   /// no plain wrapper
   structure field is never a pointer.
 - Every syscall declares its arguments, since the dispatch table decodes
   them; `fn name` adds a plain X wrapper. A syscall takes at most five
-  arguments, each `u32`, `i32` or a pointer (`*u8`, `*struct`), and returns
+  arguments, each `u32`, `i32` or a pointer (`*u8`, `*u32`, `*struct`), and returns
   `i32` or `void`. Its name starts with `SYS_`, its number is its own and at
   most `0x3FF`. A wrapper passes a `u32` as it is, anything else through
   `as u32`; the kernel receives a pointer as a `uint32_t` user address. Wrappers come out in file order, and
@@ -417,6 +417,15 @@ operations leave it.
   `SYS_FB_SET_FONT` (0x46, a name). One `GRANT_FRAMEBUFFER` gate; each
   answers `E_NOT_FOUND` with no framebuffer. `os/std/gfx.xfxn` calls the
   generated wrappers.
+- **Network** (`CXK_ABI_VERSION` 8): `SYS_NET_OP`, `net_op_args` and
+  `NET_OP_*` go. `SYS_NET_STATUS` (0x50), `SYS_NET_MAC` (0x51, `buf, len`),
+  `SYS_NET_GET_CONFIG` (0x52, `*net_ip_config` out, which replaces the u32[4]
+  buffer), one call per field for what `NET_OP_SET_IP`'s selector chose:
+  `SYS_NET_SET_IP`, `_MASK`, `_GATEWAY`, `_DNS` (0x53-0x56), then
+  `SYS_NET_PING` (0x57, `dst, seq, *rtt`), `SYS_NET_SEND` (0x58) and
+  `SYS_NET_RECV` (0x59). One `GRANT_NET` gate. The `.xfil` now takes a pointer
+  to an integer type (`*u32`) as well as to `u8` or a structure.
+  `os/std/net.xfxn` keeps only its conveniences over the generated wrappers.
 
 When the `.xfil` replaced the hand-written header, the header it generated
 matched the old one in every constant, structure and field type, and every

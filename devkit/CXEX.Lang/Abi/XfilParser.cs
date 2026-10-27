@@ -93,8 +93,8 @@ public static class XfilParser
 
             foreach (var s in _items.OfType<XfilSyscall>())
                 foreach (var p in s.Params)
-                    if (p.Type is XfilPointer { Pointee: var t } && t != "u8" && !_structs.Contains(t))
-                        throw new XfilException(s.Line, $"{s.WrapperName ?? s.Name}: parameter {p.Name} points at '{t}', which is not a structure in this file");
+                    if (p.Type is XfilPointer { Pointee: var t } && !XfilInt.Names.Contains(t) && !_structs.Contains(t))
+                        throw new XfilException(s.Line, $"{s.WrapperName ?? s.Name}: parameter {p.Name} points at '{t}', which is neither an integer type nor a structure in this file");
 
             return new XfilFile(version, library, domain, _items);
         }
@@ -301,7 +301,7 @@ public static class XfilParser
                     "u32" or "i32" => new XfilInt(nt[1]),
                     var p when p.StartsWith('*') && Name.IsMatch(p[1..]) => new XfilPointer(p[1..]),
                     _ => throw new XfilException(LineNo,
-                        $"{name}: parameter {nt[0]} is '{nt[1]}'; a register argument is u32, i32 or a pointer (*u8, *struct)"),
+                        $"{name}: parameter {nt[0]} is '{nt[1]}'; a register argument is u32, i32 or a pointer (*u8, *u32, *struct)"),
                 };
                 ps.Add(new XfilParam(nt[0], type));
             }

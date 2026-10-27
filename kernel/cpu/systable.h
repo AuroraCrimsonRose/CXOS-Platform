@@ -32,7 +32,16 @@ int syscall_mouse_read(uint32_t m);             /* SYS_MOUSE_READ */
 int syscall_input_poll(void);                   /* SYS_INPUT_POLL */
 int syscall_console_write(uint32_t buf, uint32_t len); /* SYS_CONSOLE_WRITE */
 int syscall_log_read(uint32_t i, uint32_t e);   /* SYS_LOG_READ */
-int syscall_net_op(uint32_t a);                 /* SYS_NET_OP */
+int syscall_net_status(void);                   /* SYS_NET_STATUS */
+int syscall_net_mac(uint32_t buf, uint32_t len); /* SYS_NET_MAC */
+int syscall_net_get_config(uint32_t c);         /* SYS_NET_GET_CONFIG */
+int syscall_net_set_ip(uint32_t addr);          /* SYS_NET_SET_IP */
+int syscall_net_set_mask(uint32_t addr);        /* SYS_NET_SET_MASK */
+int syscall_net_set_gateway(uint32_t addr);     /* SYS_NET_SET_GATEWAY */
+int syscall_net_set_dns(uint32_t addr);         /* SYS_NET_SET_DNS */
+int syscall_net_ping(uint32_t dst, uint32_t seq, uint32_t rtt); /* SYS_NET_PING */
+int syscall_net_send(uint32_t frame, uint32_t len); /* SYS_NET_SEND */
+int syscall_net_recv(uint32_t buf, uint32_t cap); /* SYS_NET_RECV */
 int syscall_fb_info(uint32_t g);                /* SYS_FB_INFO */
 int syscall_fb_clear(uint32_t color);           /* SYS_FB_CLEAR */
 int syscall_fb_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color); /* SYS_FB_FILL_RECT */
@@ -55,7 +64,7 @@ int syscall_power_sleep(uint32_t ms);           /* SYS_POWER_SLEEP */
  * before looking it up, and one that lands in a hole finds no decoder. */
 #define SYSCALL_ARGS            5
 #define SYSCALL_TABLE_SIZE      147
-#define SYSCALL_COUNT           36
+#define SYSCALL_COUNT           45
 
 /* A decoder takes the raw argument registers, gives each its declared type,
  * and calls the handler; a handler that returns nothing answers 0. */

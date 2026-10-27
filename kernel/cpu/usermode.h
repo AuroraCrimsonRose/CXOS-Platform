@@ -106,6 +106,10 @@ int  usermode_power_input_test(void);
    usermode.c). 1 = pass, 0 = fail. */
 int  usermode_fb_test(void);
 
+/* The SYS_NET_* calls through the dispatcher, the configuration read back and
+   put back (see usermode.c). 1 = pass, 0 = fail. */
+int  usermode_net_test(void);
+
 /* The background console and SYS_LOG_READ (see usermode.c). 1 = pass. */
 int  usermode_log_test(void);
 

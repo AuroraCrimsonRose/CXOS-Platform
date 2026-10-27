@@ -233,15 +233,15 @@ fn cmd_ifconfig(arg: *u8) -> void {
         return;
     }
     let mac: [8]u8;
-    net_mac(&mac[0]);
+    net_mac(&mac[0], 8);
     puts("  mac      "); print_mac(&mac[0]); newline();
 
-    let cfg: [4]u32;
-    net_config(&cfg[0]);
-    puts("  ip       "); print_ip(cfg[0]); newline();
-    puts("  mask     "); print_ip(cfg[1]); newline();
-    puts("  gateway  "); print_ip(cfg[2]); newline();
-    puts("  dns      "); print_ip(cfg[3]); newline();
+    let cfg: net_ip_config;
+    net_get_config(&cfg);
+    puts("  ip       "); print_ip(cfg.ip); newline();
+    puts("  mask     "); print_ip(cfg.mask); newline();
+    puts("  gateway  "); print_ip(cfg.gateway); newline();
+    puts("  dns      "); print_ip(cfg.dns); newline();
 }
 
 fn cmd_setip(arg: *u8) -> void {
@@ -272,7 +272,7 @@ fn cmd_ping(arg: *u8) -> void {
         }
         if (r == 0) { puts("  timeout"); }
         if (r < 0)  {
-            if (r == 0 - 2) { puts("  unreachable (broadcast/network address)"); }
+            if (r == E_INVALID_ARGS) { puts("  unreachable (broadcast/network address)"); }
             else { puts("  error "); print_u32((0 - r) as u32); }
         }
         newline();

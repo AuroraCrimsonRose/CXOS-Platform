@@ -27,11 +27,11 @@ namespace CXEX.Lang.Abi;
 ///
 /// <para><b>The family rule.</b> The prelude deliberately mirrors only part of the header:
 /// it carries <c>SYS_*</c> and <c>E_*</c>, but not
-/// <c>GRANT_*</c> or <c>NET_OP_*</c>. Demanding total parity would therefore report dozens of
+/// <c>GRANT_*</c>. Demanding total parity would therefore report dozens of
 /// false positives on day one and get ignored, which is worse than no check. So the rule is
 /// <i>if you mirror a family, mirror all of it</i>: a family with at least one member in the
 /// prelude must be complete, and a family with none is reported as information, not failure.
-/// The day someone adds a single <c>NET_OP_</c> constant, the rest become required.</para>
+/// The day someone adds a single <c>GRANT_</c> constant, the rest become required.</para>
 ///
 /// <para>Struct fields are compared by name and order, because that is the memory layout
 /// contract. A reordered struct still compiles on both sides and silently corrupts every
@@ -40,10 +40,10 @@ namespace CXEX.Lang.Abi;
 public static class AbiSync
 {
     /// <summary>Constant prefixes the prelude is expected to mirror, longest first so
-    /// <c>NET_OP_</c> is not mistaken for a member of some shorter family.</summary>
+    /// <c>FILE_OP_</c> is not mistaken for a member of some shorter family.</summary>
     private static readonly string[] Families =
     {
-        "FILE_OP_", "NET_OP_", "FOPEN_", "FSEEK_", "FTYPE_",
+        "FILE_OP_", "FOPEN_", "FSEEK_", "FTYPE_",
         "MPROT_", "MMAP_", "MOBJ_", "SYS_", "GRANT_", "E_"
     };
 
@@ -165,8 +165,7 @@ public static class AbiSync
             report.Add(AbiFindingKind.Info,
                 $"{fam.Key}* is not mirrored in the prelude ({fam.Value.Count} constant(s): " +
                 $"{string.Join(", ", fam.Value)}). Userspace that needs these has to redeclare " +
-                $"them - os/std/net.xfxn already redeclares NET_OP_* for exactly this reason, " +
-                $"which is a third copy of the ABI with no link back to the header.");
+                $"them, which is a third copy of the ABI with no link back to the header.");
         }
 
         if (unfamilied.Count > 0)

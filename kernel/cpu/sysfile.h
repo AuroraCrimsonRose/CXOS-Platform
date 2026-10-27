@@ -11,8 +11,8 @@
  * network, spawn and IPC but nothing for files. GRANT_DISK was defined in
  * cxk_abi.h and referenced by no syscall at all. This fills that slot.
  *
- * Everything here is one syscall taking a *file_op_args, matching the shape
- * SYS_NET_OP uses.
+ * Everything here is one syscall taking a *file_op_args, the shape every
+ * family had before roadmap step 6a2c split them (this one is next).
  *
  * An open file is a KOBJ_FILE object in the calling process's handle table, so
  * SYS_HANDLE_CLOSE releases one as readily as FILE_OP_CLOSE, and a process that

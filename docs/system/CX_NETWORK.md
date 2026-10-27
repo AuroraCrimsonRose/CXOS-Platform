@@ -11,10 +11,10 @@
 
 About 1,900 lines, all in the kernel: the `e1000` and `rtl8169` drivers,
 `netif`, ARP, IPv4 and ICMP. No UDP, TCP, DHCP, DNS or IPv6. Programs reach it
-through the `SYS_NET_OP` multiplexer:
+through the `SYS_NET_*` calls:
 
-- `NET_OP_SET_IP` sets the address by hand; there is no DHCP.
-- `NET_OP_SEND` and `NET_OP_RECV` move **raw Ethernet frames**. Any program
+- `SYS_NET_SET_IP` sets the address by hand; there is no DHCP.
+- `SYS_NET_SEND` and `SYS_NET_RECV` move **raw Ethernet frames**. Any program
   holding `GRANT_NET` can therefore read every frame on the machine and send
   frames claiming to be anyone. `GRANT_NET` is all or nothing.
 
@@ -78,7 +78,7 @@ NIC driver  ⇄  shared rings  ⇄  network service  ⇄  per-socket rings / IPC
 - **Dual stack from the start:** IPv4 and IPv6 in one code path, never two
   stacks.
 - **Today's code moves:** ARP, IPv4 and ICMP leave the kernel for the service;
-  the two drivers become user-space drivers. `SYS_NET_OP` is retired.
+  the two drivers become user-space drivers. The `SYS_NET_*` calls are retired.
 
 ## 4. Where CXOS aims to be better
 

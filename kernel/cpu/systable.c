@@ -26,7 +26,16 @@ static int decode_mouse_read(const uint32_t *a) { return syscall_mouse_read(a[0]
 static int decode_input_poll(const uint32_t *a) { (void)a; return syscall_input_poll(); }
 static int decode_console_write(const uint32_t *a) { return syscall_console_write(a[0], a[1]); }
 static int decode_log_read(const uint32_t *a) { return syscall_log_read(a[0], a[1]); }
-static int decode_net_op(const uint32_t *a) { return syscall_net_op(a[0]); }
+static int decode_net_status(const uint32_t *a) { (void)a; return syscall_net_status(); }
+static int decode_net_mac(const uint32_t *a) { return syscall_net_mac(a[0], a[1]); }
+static int decode_net_get_config(const uint32_t *a) { return syscall_net_get_config(a[0]); }
+static int decode_net_set_ip(const uint32_t *a) { return syscall_net_set_ip(a[0]); }
+static int decode_net_set_mask(const uint32_t *a) { return syscall_net_set_mask(a[0]); }
+static int decode_net_set_gateway(const uint32_t *a) { return syscall_net_set_gateway(a[0]); }
+static int decode_net_set_dns(const uint32_t *a) { return syscall_net_set_dns(a[0]); }
+static int decode_net_ping(const uint32_t *a) { return syscall_net_ping(a[0], a[1], a[2]); }
+static int decode_net_send(const uint32_t *a) { return syscall_net_send(a[0], a[1]); }
+static int decode_net_recv(const uint32_t *a) { return syscall_net_recv(a[0], a[1]); }
 static int decode_fb_info(const uint32_t *a) { return syscall_fb_info(a[0]); }
 static int decode_fb_clear(const uint32_t *a) { return syscall_fb_clear(a[0]); }
 static int decode_fb_fill_rect(const uint32_t *a) { return syscall_fb_fill_rect(a[0], a[1], a[2], a[3], a[4]); }
@@ -71,7 +80,16 @@ const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_FB_DRAW_LINE] = decode_fb_draw_line,
     [SYS_FB_DRAW_TEXT] = decode_fb_draw_text,
     [SYS_FB_SET_FONT] = decode_fb_set_font,
-    [SYS_NET_OP] = decode_net_op,
+    [SYS_NET_STATUS] = decode_net_status,
+    [SYS_NET_MAC] = decode_net_mac,
+    [SYS_NET_GET_CONFIG] = decode_net_get_config,
+    [SYS_NET_SET_IP] = decode_net_set_ip,
+    [SYS_NET_SET_MASK] = decode_net_set_mask,
+    [SYS_NET_SET_GATEWAY] = decode_net_set_gateway,
+    [SYS_NET_SET_DNS] = decode_net_set_dns,
+    [SYS_NET_PING] = decode_net_ping,
+    [SYS_NET_SEND] = decode_net_send,
+    [SYS_NET_RECV] = decode_net_recv,
     [SYS_FILE_OP] = decode_file_op,
     [SYS_SPAWN] = decode_spawn,
     [SYS_EXEC_PATH] = decode_exec_path,

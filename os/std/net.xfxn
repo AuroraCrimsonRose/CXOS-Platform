@@ -5,7 +5,7 @@
 //
 //   import "net.xfxn";
 //
-// Wraps SYS_NET_OP over the ported v4 stack (e1000 -> netif -> arp/ip/icmp).
+// Wraps the SYS_NET_* calls over the ported v4 stack (e1000 -> netif -> arp/ip/icmp).
 // Needs GRANT_NET, which is part of GRANT_OS_BASELINE - the shell can use it, a
 // capability-less app cannot.
 //
@@ -17,15 +17,10 @@ import "fmt.xfxn";
 
 type ipv4 = u32;
 
-// NET_OP_* come from the prelude, generated from abi/cxk_abi.h. This file
-// used to redeclare them: a third copy of the ABI, there only because the
-// hand-kept prelude had left the family out.
-
-// which field NET_OP_SET_IP writes
-const NET_FIELD_IP:      u32 = 0;
-const NET_FIELD_MASK:    u32 = 1;
-const NET_FIELD_GATEWAY: u32 = 2;
-const NET_FIELD_DNS:     u32 = 3;
+// The calls themselves are the prelude's, generated from abi/kernel.xfil:
+// net_status, net_mac(buf, len), net_get_config, net_set_ip, net_set_mask,
+// net_set_gateway, net_set_dns, net_ping(dst, seq, rtt_us), net_send and
+// net_recv. This file adds the conveniences over them.
 
 // build a packed address from four octets
 fn ip4(a: u32, b: u32, c: u32, d: u32) -> ipv4 {
@@ -42,66 +37,14 @@ fn ip4_octet(ip: ipv4, i: u32) -> u32 {
 // ---- queries ----
 
 fn net_up() -> i32 {
-    let a: net_op_args;
-    a.op = NET_OP_STATUS; a.ip = 0; a.len = 0;
-    return net_op(&a);
+    return net_status();
 }
 
-// fills a 6-byte buffer; returns 6 on success
-fn net_mac(buf: *u8) -> i32 {
-    let a: net_op_args;
-    a.op = NET_OP_MAC; a.ip = 0; a.data = buf as u32; a.len = 6;
-    return net_op(&a);
-}
-
-// fills out[0..3] with ip, mask, gateway, dns
-fn net_config(out: *u32) -> i32 {
-    let a: net_op_args;
-    a.op = NET_OP_GET_IP; a.ip = 0; a.len = 0; a.out = out as u32;
-    return net_op(&a);
-}
-
+// this host's address, 0 if it cannot be read
 fn net_ip() -> ipv4 {
-    let cfg: [4]u32;
-    if (net_config(&cfg[0]) != 0) { return 0; }
-    return cfg[0];
-}
-
-// ---- configuration ----
-
-fn net_set(field: u32, addr: ipv4) -> i32 {
-    let a: net_op_args;
-    a.op = NET_OP_SET_IP; a.ip = addr; a.len = field;
-    return net_op(&a);
-}
-
-fn net_set_ip(addr: ipv4)      -> i32 { return net_set(NET_FIELD_IP, addr); }
-fn net_set_mask(addr: ipv4)    -> i32 { return net_set(NET_FIELD_MASK, addr); }
-fn net_set_gateway(addr: ipv4) -> i32 { return net_set(NET_FIELD_GATEWAY, addr); }
-fn net_set_dns(addr: ipv4)     -> i32 { return net_set(NET_FIELD_DNS, addr); }
-
-// ---- icmp ----
-
-// returns 0 on reply (rtt written to *rtt_ms), negative on timeout/error
-fn net_ping(dst: ipv4, seq: u32, rtt_ms: *u32) -> i32 {
-    let a: net_op_args;
-    a.op = NET_OP_PING; a.ip = dst; a.len = seq; a.out = rtt_ms as u32;
-    return net_op(&a);
-}
-
-// ---- raw frames ----
-
-fn net_send(frame: *u8, len: u32) -> i32 {
-    let a: net_op_args;
-    a.op = NET_OP_SEND; a.ip = 0; a.data = frame as u32; a.len = len;
-    return net_op(&a);
-}
-
-// returns bytes received, 0 if nothing is waiting
-fn net_recv(buf: *u8, cap: u32) -> i32 {
-    let a: net_op_args;
-    a.op = NET_OP_RECV; a.ip = 0; a.data = buf as u32; a.len = cap;
-    return net_op(&a);
+    let c: net_ip_config;
+    if (net_get_config(&c) != 0) { return 0; }
+    return c.ip;
 }
 
 // ---- printing ----

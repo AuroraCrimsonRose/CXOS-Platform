@@ -38,7 +38,7 @@ domain kernel
 /// mismatch. Declared in versions.json as `cxex-abi` and checked against this
 /// line; bump both, and the DevKit's stamp, in the one commit that changes the
 /// contract.
-const CXK_ABI_VERSION: u32 = 7
+const CXK_ABI_VERSION: u32 = 8
 
 /// ---- syscall numbers ----
 /// lifecycle 0x00-0x0F (no capability required)
@@ -81,8 +81,25 @@ syscall SYS_INPUT_POLL = 0x22 fn input_poll() -> i32                   /// -> ch
 syscall SYS_CONSOLE_WRITE = 0x30 fn console_write(buf: *u8, len: u32) -> i32   /// ebx = buf, ecx = len (0 = bounded NUL-scan)
 /// ebx = index (0 = oldest kept), ecx = *log_entry -> 1 filled, 0 past the newest
 syscall SYS_LOG_READ = 0x31 fn log_read(i: u32, e: *log_entry) -> i32
-/// network 0x50-0x5F (privileged: GRANT_NET)
-syscall SYS_NET_OP = 0x50 fn net_op(a: *net_op_args) -> i32     /// ebx = *net_op_args (GRANT_NET) -> op-specific
+/// network 0x50-0x5F (privileged: GRANT_NET). IPv4 addresses cross the ABI as
+/// a packed u32 in NETWORK byte order (a.b.c.d -> (a<<24)|(b<<16)|(c<<8)|d),
+/// so userspace needs no array type.
+syscall SYS_NET_STATUS = 0x50 fn net_status() -> i32                /// -> 1 if the interface is up, 0 if not
+syscall SYS_NET_MAC = 0x51 fn net_mac(buf: *u8, len: u32) -> i32    /// len >= 6 -> 6, the MAC in buf
+syscall SYS_NET_GET_CONFIG = 0x52 fn net_get_config(c: *net_ip_config) -> i32   /// ebx = *net_ip_config -> 0, filled in
+/// Each stores the address as given, unchecked -> 0. SET_DNS sets the primary
+/// server and keeps the secondary.
+syscall SYS_NET_SET_IP = 0x53 fn net_set_ip(addr: u32) -> i32
+syscall SYS_NET_SET_MASK = 0x54 fn net_set_mask(addr: u32) -> i32
+syscall SYS_NET_SET_GATEWAY = 0x55 fn net_set_gateway(addr: u32) -> i32
+syscall SYS_NET_SET_DNS = 0x56 fn net_set_dns(addr: u32) -> i32
+/// One ICMP echo, waiting up to a second -> 1 on a reply (*rtt = the round
+/// trip in MICROSECONDS; rtt may be 0), 0 on a timeout. E_INVALID_ARGS for an
+/// address that cannot answer: 0.0.0.0, the all-ones broadcast, and the local
+/// subnet's network and broadcast addresses.
+syscall SYS_NET_PING = 0x57 fn net_ping(dst: u32, seq: u32, rtt: *u32) -> i32
+syscall SYS_NET_SEND = 0x58 fn net_send(frame: *u8, len: u32) -> i32   /// a raw Ethernet frame, 1-1514 bytes
+syscall SYS_NET_RECV = 0x59 fn net_recv(buf: *u8, cap: u32) -> i32     /// -> bytes received, 0 if none waiting
 /// framebuffer 0x40-0x4F (privileged: GRANT_FRAMEBUFFER). Colours are 0x00RRGGBB;
 /// the kernel converts them to the active mode. Each answers E_NOT_FOUND when
 /// there is no framebuffer (VGA text mode).
@@ -314,24 +331,13 @@ const GRANT_OS_BASELINE: u32 = GRANT_CONSOLE | GRANT_MEM | GRANT_DISK | GRANT_SP
 /// a background process cannot hand the screen to its own children.
 const SPAWN_BACKGROUND: u32 = 0x80000000u
 
-/// ---- network (SYS_NET_OP; GRANT_NET) ----
-/// IPv4 addresses cross the ABI as a packed u32 in NETWORK byte order
-/// (a.b.c.d -> (a<<24)|(b<<16)|(c<<8)|d) so userspace needs no array type.
-enum net_op {
-    NET_OP_STATUS = 0       /// -> 1 if the interface is up, 0 if not
-    NET_OP_MAC = 1          /// data = 6-byte buffer for the MAC
-    NET_OP_GET_IP = 2       /// -> out[0..3] = ip, mask, gateway, dns1
-    NET_OP_SET_IP = 3       /// ip = address, len selects which field (0=ip 1=mask 2=gw 3=dns)
-    NET_OP_PING = 4         /// ip = destination, len = sequence -> out[0] = rtt ms
-    NET_OP_SEND = 5         /// data/len = a raw Ethernet frame
-    NET_OP_RECV = 6         /// data/len = buffer -> bytes received, 0 if none
-}
-struct net_op_args {
-    op: u32
-    ip: u32         /// packed IPv4, network order
-    data: u32       /// frame or MAC buffer
-    len: u32        /// buffer length, or a small selector/sequence
-    out: u32        /// results (>= 4 u32 for GET_IP)
+/// ---- network (SYS_NET_GET_CONFIG) ----
+/// Each a packed IPv4 address, network order.
+struct net_ip_config {
+    ip: u32
+    mask: u32
+    gateway: u32
+    dns: u32        /// the primary server
 }
 
 /// ---- path execution (SYS_EXEC_PATH; GRANT_SPAWN) ----

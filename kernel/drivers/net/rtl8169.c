@@ -99,7 +99,7 @@ struct rtl_desc {
  * Same arrangement as e1000, and for the same reason: the NIC bus-masters from
  * PHYSICAL addresses, while the CPU must reach the very same structures from
  * ANY address space - including a ring-3 process's, because a shell `ping`
- * arrives here through SYS_NET_OP with CR3 pointing at the shell's directory.
+ * arrives here through SYS_NET_PING with CR3 pointing at the shell's directory.
  * An identity mapping would live only in the kernel's own directory and fault
  * the moment it was touched from a process. So the CPU uses a KERNEL-half
  * alias, which pd_init copies into every new directory.

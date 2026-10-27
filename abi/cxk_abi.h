@@ -34,7 +34,7 @@
  * line; bump both, and the DevKit's stamp, in the one commit that changes the
  * contract.
  */
-#define CXK_ABI_VERSION          7
+#define CXK_ABI_VERSION          8
 
 /*
  * ---- syscall numbers ----
@@ -90,8 +90,33 @@
 /* ebx = index (0 = oldest kept), ecx = *log_entry -> 1 filled, 0 past the newest */
 #define SYS_LOG_READ             0x31
 
-/* network 0x50-0x5F (privileged: GRANT_NET) */
-#define SYS_NET_OP               0x50           /* ebx = *net_op_args (GRANT_NET) -> op-specific */
+/*
+ * network 0x50-0x5F (privileged: GRANT_NET). IPv4 addresses cross the ABI as
+ * a packed u32 in NETWORK byte order (a.b.c.d -> (a<<24)|(b<<16)|(c<<8)|d),
+ * so userspace needs no array type.
+ */
+#define SYS_NET_STATUS           0x50           /* -> 1 if the interface is up, 0 if not */
+#define SYS_NET_MAC              0x51           /* len >= 6 -> 6, the MAC in buf */
+#define SYS_NET_GET_CONFIG       0x52           /* ebx = *net_ip_config -> 0, filled in */
+
+/*
+ * Each stores the address as given, unchecked -> 0. SET_DNS sets the primary
+ * server and keeps the secondary.
+ */
+#define SYS_NET_SET_IP           0x53
+#define SYS_NET_SET_MASK         0x54
+#define SYS_NET_SET_GATEWAY      0x55
+#define SYS_NET_SET_DNS          0x56
+
+/*
+ * One ICMP echo, waiting up to a second -> 1 on a reply (*rtt = the round
+ * trip in MICROSECONDS; rtt may be 0), 0 on a timeout. E_INVALID_ARGS for an
+ * address that cannot answer: 0.0.0.0, the all-ones broadcast, and the local
+ * subnet's network and broadcast addresses.
+ */
+#define SYS_NET_PING             0x57
+#define SYS_NET_SEND             0x58           /* a raw Ethernet frame, 1-1514 bytes */
+#define SYS_NET_RECV             0x59           /* -> bytes received, 0 if none waiting */
 
 /*
  * framebuffer 0x40-0x4F (privileged: GRANT_FRAMEBUFFER). Colours are 0x00RRGGBB;
@@ -365,26 +390,14 @@ struct fb_geometry {
 #define SPAWN_BACKGROUND         0x80000000u
 
 /*
- * ---- network (SYS_NET_OP; GRANT_NET) ----
- * IPv4 addresses cross the ABI as a packed u32 in NETWORK byte order
- * (a.b.c.d -> (a<<24)|(b<<16)|(c<<8)|d) so userspace needs no array type.
+ * ---- network (SYS_NET_GET_CONFIG) ----
+ * Each a packed IPv4 address, network order.
  */
-enum { /* net_op */
-    NET_OP_STATUS = 0,                          /* -> 1 if the interface is up, 0 if not */
-    NET_OP_MAC = 1,                             /* data = 6-byte buffer for the MAC */
-    NET_OP_GET_IP = 2,                          /* -> out[0..3] = ip, mask, gateway, dns1 */
-    NET_OP_SET_IP = 3,                          /* ip = address, len selects which field (0=ip 1=mask 2=gw 3=dns) */
-    NET_OP_PING = 4,                            /* ip = destination, len = sequence -> out[0] = rtt ms */
-    NET_OP_SEND = 5,                            /* data/len = a raw Ethernet frame */
-    NET_OP_RECV = 6,                            /* data/len = buffer -> bytes received, 0 if none */
-};
-
-struct net_op_args {
-    uint32_t op;
-    uint32_t ip;                                /* packed IPv4, network order */
-    uint32_t data;                              /* frame or MAC buffer */
-    uint32_t len;                               /* buffer length, or a small selector/sequence */
-    uint32_t out;                               /* results (>= 4 u32 for GET_IP) */
+struct net_ip_config {
+    uint32_t ip;
+    uint32_t mask;
+    uint32_t gateway;
+    uint32_t dns;                               /* the primary server */
 };
 
 /*
@@ -688,7 +701,7 @@ CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_call_args) == 20, "ABI layout: ipc_call_
 CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_recv_args) == 16, "ABI layout: ipc_recv_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_reply_args) == 12, "ABI layout: ipc_reply_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct fb_geometry) == 16, "ABI layout: fb_geometry");
-CXK_ABI_STATIC_ASSERT(sizeof(struct net_op_args) == 20, "ABI layout: net_op_args");
+CXK_ABI_STATIC_ASSERT(sizeof(struct net_ip_config) == 16, "ABI layout: net_ip_config");
 CXK_ABI_STATIC_ASSERT(sizeof(struct vm_map_args) == 32, "ABI layout: vm_map_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct vm_usage) == 8, "ABI layout: vm_usage");
 CXK_ABI_STATIC_ASSERT(sizeof(struct file_op_args) == 32, "ABI layout: file_op_args");

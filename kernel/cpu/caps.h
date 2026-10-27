@@ -37,7 +37,7 @@
      GRANT_CONSOLE      console_write
      GRANT_MEM          (reserved, not enforced) see the note below
      GRANT_DISK         block_read / block_write
-     GRANT_NET          SYS_NET_OP: interface config, ping, raw frames
+     GRANT_NET          SYS_NET_*: interface config, ping, raw frames
      GRANT_SPAWN        spawn
      GRANT_POWER        power (reboot/shutdown)
      GRANT_ENDPOINT     ep_create (may own an IPC endpoint -> broker)

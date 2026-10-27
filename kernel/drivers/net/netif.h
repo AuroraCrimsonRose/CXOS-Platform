@@ -57,8 +57,17 @@ int netif_parse_ip(const char *s, ip4_t out);
 /* format ip into "a.b.c.d" in buf (>=16 bytes) */
 void netif_ip_str(const ip4_t ip, char *buf);
 
-/* SYS_NET_OP handler (kernel/drivers/net/net_syscall.c) */
-struct net_op_args;
-int sys_net_op(uint32_t ua);
+/* SYS_NET_* handlers (kernel/drivers/net/net_syscall.c), behind the GRANT_NET
+   gate in cpu/usermode.c. Pointers are user addresses. */
+int sys_net_status(void);
+int sys_net_mac(uint32_t buf, uint32_t len);
+int sys_net_get_config(uint32_t c);
+int sys_net_set_ip(uint32_t addr);
+int sys_net_set_mask(uint32_t addr);
+int sys_net_set_gateway(uint32_t addr);
+int sys_net_set_dns(uint32_t addr);
+int sys_net_ping(uint32_t dst, uint32_t seq, uint32_t rtt);
+int sys_net_send(uint32_t frame, uint32_t len);
+int sys_net_recv(uint32_t buf, uint32_t cap);
 
 #endif

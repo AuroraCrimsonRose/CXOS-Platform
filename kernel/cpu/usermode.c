@@ -269,12 +269,61 @@ int syscall_input_poll(void) {
     return (int)(unsigned char)keyboard_getchar();   /* 0 if none waiting */
 }
 
-int syscall_net_op(uint32_t a) {
-    if (!(thread_current_caps() & GRANT_NET)) {
-        klog_u32("GRANT", SEV_WARN, "net DENIED for pid ", (uint32_t)thread_current_pid(), LOG_COLOR_VALUE, " (no GRANT_NET)");
-        return E_ACCESS_DENIED;
-    }
-    return sys_net_op(a);
+/* The ten network calls share one gate, as the framebuffer calls do. */
+static int net_granted(void) {
+    if (thread_current_caps() & GRANT_NET) return 1;
+    klog_u32("GRANT", SEV_WARN, "net DENIED for pid ", (uint32_t)thread_current_pid(), LOG_COLOR_VALUE, " (no GRANT_NET)");
+    return 0;
+}
+
+int syscall_net_status(void) {
+    if (!net_granted()) return E_ACCESS_DENIED;
+    return sys_net_status();
+}
+
+int syscall_net_mac(uint32_t buf, uint32_t len) {
+    if (!net_granted()) return E_ACCESS_DENIED;
+    return sys_net_mac(buf, len);
+}
+
+int syscall_net_get_config(uint32_t c) {
+    if (!net_granted()) return E_ACCESS_DENIED;
+    return sys_net_get_config(c);
+}
+
+int syscall_net_set_ip(uint32_t addr) {
+    if (!net_granted()) return E_ACCESS_DENIED;
+    return sys_net_set_ip(addr);
+}
+
+int syscall_net_set_mask(uint32_t addr) {
+    if (!net_granted()) return E_ACCESS_DENIED;
+    return sys_net_set_mask(addr);
+}
+
+int syscall_net_set_gateway(uint32_t addr) {
+    if (!net_granted()) return E_ACCESS_DENIED;
+    return sys_net_set_gateway(addr);
+}
+
+int syscall_net_set_dns(uint32_t addr) {
+    if (!net_granted()) return E_ACCESS_DENIED;
+    return sys_net_set_dns(addr);
+}
+
+int syscall_net_ping(uint32_t dst, uint32_t seq, uint32_t rtt) {
+    if (!net_granted()) return E_ACCESS_DENIED;
+    return sys_net_ping(dst, seq, rtt);
+}
+
+int syscall_net_send(uint32_t frame, uint32_t len) {
+    if (!net_granted()) return E_ACCESS_DENIED;
+    return sys_net_send(frame, len);
+}
+
+int syscall_net_recv(uint32_t buf, uint32_t cap) {
+    if (!net_granted()) return E_ACCESS_DENIED;
+    return sys_net_recv(buf, cap);
 }
 
 int syscall_mouse_read(uint32_t m) {
@@ -907,7 +956,25 @@ int usermode_file_test(void) {
     step++;
     if (syscall_dispatch(SYS_FB_SET_FONT,   0xC0001000u, 0, 0, 0, 0) != E_ACCESS_DENIED) goto done;
     step++;
-    if (syscall_dispatch(SYS_NET_OP,        0xC0001000u, 0, 0, 0, 0) != E_ACCESS_DENIED) goto done;
+    if (syscall_dispatch(SYS_NET_STATUS,    0, 0, 0, 0, 0)           != E_ACCESS_DENIED) goto done;
+    step++;
+    if (syscall_dispatch(SYS_NET_MAC,       0xC0001000u, 6, 0, 0, 0) != E_ACCESS_DENIED) goto done;
+    step++;
+    if (syscall_dispatch(SYS_NET_GET_CONFIG, 0xC0001000u, 0, 0, 0, 0) != E_ACCESS_DENIED) goto done;
+    step++;
+    if (syscall_dispatch(SYS_NET_SET_IP,    0, 0, 0, 0, 0)           != E_ACCESS_DENIED) goto done;
+    step++;
+    if (syscall_dispatch(SYS_NET_SET_MASK,  0, 0, 0, 0, 0)           != E_ACCESS_DENIED) goto done;
+    step++;
+    if (syscall_dispatch(SYS_NET_SET_GATEWAY, 0, 0, 0, 0, 0)         != E_ACCESS_DENIED) goto done;
+    step++;
+    if (syscall_dispatch(SYS_NET_SET_DNS,   0, 0, 0, 0, 0)           != E_ACCESS_DENIED) goto done;
+    step++;
+    if (syscall_dispatch(SYS_NET_PING,      0, 0, 0, 0, 0)           != E_ACCESS_DENIED) goto done;   /* 0.0.0.0: refused at once if the gate were missing, no timeout */
+    step++;
+    if (syscall_dispatch(SYS_NET_SEND,      0xC0001000u, 0, 0, 0, 0) != E_ACCESS_DENIED) goto done;
+    step++;
+    if (syscall_dispatch(SYS_NET_RECV,      0xC0001000u, 1, 0, 0, 0) != E_ACCESS_DENIED) goto done;
     step++;
     if (syscall_dispatch(SYS_POWER_REBOOT,   0, 0, 0, 0, 0)          != E_ACCESS_DENIED) goto done;
     step++;
@@ -1256,6 +1323,127 @@ done:
     if (saved)
         for (uint32_t y = 0; y < FBT_H; y++)
             for (uint32_t x = 0; x < FBT_W; x++) fb_put_pixel(x0 + x, y0 + y, fbt_saved[y][x]);
+    thread_set_caps(me, save);
+    unmap_user_page(TEST_CODE_VIRT, phys);
+    return ok;
+}
+
+/* ---- the network calls, through the dispatcher -----------------------------
+ * The four SET calls get four different addresses, read back through
+ * SYS_NET_GET_CONFIG and from the interface's own bytes (so a byte order that
+ * is wrong both ways round is caught too), and the configuration is put back
+ * after. PING is given only addresses it refuses at once, never one that waits
+ * out the second-long timeout; a swapped dst and seq would ping 0.0.0.1 and
+ * time out, which the test reads as a failure. SEND transmits one 60-byte
+ * broadcast frame of a local-experimental ethertype. With no interface up,
+ * PING's E_NOT_FOUND is asserted instead, and no frame is sent.
+ */
+#define NT_MAC   (TEST_CODE_VIRT + 0x000)
+#define NT_CFG   (TEST_CODE_VIRT + 0x040)
+#define NT_FRAME (TEST_CODE_VIRT + 0x100)
+#define NT_RX    (TEST_CODE_VIRT + 0x200)
+#define NT_FRAME_LEN 60
+#define NT_RX_CAP    64
+
+int usermode_net_test(void) {
+    int me = thread_current_id();
+    uint32_t save = thread_current_caps();
+    paddr_t phys = map_user_page(TEST_CODE_VIRT);
+    if (!phys) return 0;
+
+    int ok = 0, step = 0, changed = 0;
+    int ready = netif_ready();
+    struct net_config old = *netif_cfg();
+    thread_set_caps(me, GRANT_NET);
+
+    step++;
+    if (syscall_dispatch(SYS_NET_STATUS, 0, 0, 0, 0, 0) != (ready ? 1 : 0)) goto done;
+
+    /* the MAC: six bytes, the seventh untouched; a short buffer and a kernel
+       pointer refused */
+    uint8_t *mac = (uint8_t *)user_ptr(NT_MAC);
+    for (int i = 0; i < 8; i++) mac[i] = 0xEE;
+    step++;
+    if (syscall_dispatch(SYS_NET_MAC, NT_MAC, 5, 0, 0, 0) != E_BUFFER_TOO_SMALL) goto done;
+    step++;
+    if (syscall_dispatch(SYS_NET_MAC, 0xC0001000u, 6, 0, 0, 0) != E_BAD_ADDRESS) goto done;
+    step++;
+    if (syscall_dispatch(SYS_NET_MAC, NT_MAC, 8, 0, 0, 0) != 6) goto done;
+    const uint8_t *m = netif_mac();
+    step++;
+    for (int i = 0; i < 6; i++) if (mac[i] != m[i]) goto done;
+    if (mac[6] != 0xEE) goto done;
+
+    /* four fields, four addresses */
+    struct net_ip_config *c = (struct net_ip_config *)user_ptr(NT_CFG);
+    step++;
+    if (syscall_dispatch(SYS_NET_GET_CONFIG, 0xC0001000u, 0, 0, 0, 0) != E_BAD_ADDRESS) goto done;
+    changed = 1;
+    step++;
+    if (syscall_dispatch(SYS_NET_SET_IP,      0x0A010203u, 0, 0, 0, 0) != E_OK) goto done;   /* 10.1.2.3 */
+    if (syscall_dispatch(SYS_NET_SET_MASK,    0xFFFF0000u, 0, 0, 0, 0) != E_OK) goto done;
+    if (syscall_dispatch(SYS_NET_SET_GATEWAY, 0x0A01FFFEu, 0, 0, 0, 0) != E_OK) goto done;
+    if (syscall_dispatch(SYS_NET_SET_DNS,     0x08080404u, 0, 0, 0, 0) != E_OK) goto done;
+    step++;
+    if (syscall_dispatch(SYS_NET_GET_CONFIG, NT_CFG, 0, 0, 0, 0) != E_OK) goto done;
+    step++;
+    if (c->ip != 0x0A010203u || c->mask != 0xFFFF0000u ||
+        c->gateway != 0x0A01FFFEu || c->dns != 0x08080404u) goto done;
+    const struct net_config *now = netif_cfg();
+    step++;
+    if (now->ip[0] != 10 || now->ip[3] != 3 || now->mask[1] != 0xFF || now->mask[2] != 0) goto done;
+    step++;
+    for (int i = 0; i < 4; i++) if (now->dns2[i] != old.dns2[i]) goto done;   /* SET_DNS keeps the secondary */
+    netif_set_ip(old.ip); netif_set_mask(old.mask);
+    netif_set_gateway(old.gateway); netif_set_dns(old.dns1, old.dns2);
+    changed = 0;
+
+    /* ping: addresses refused before anything is sent */
+    if (ready) {
+        uint32_t ip = ((uint32_t)old.ip[0] << 24) | ((uint32_t)old.ip[1] << 16) |
+                      ((uint32_t)old.ip[2] << 8) | (uint32_t)old.ip[3];
+        uint32_t mask = ((uint32_t)old.mask[0] << 24) | ((uint32_t)old.mask[1] << 16) |
+                        ((uint32_t)old.mask[2] << 8) | (uint32_t)old.mask[3];
+        step++;
+        if (syscall_dispatch(SYS_NET_PING, 0xFFFFFFFFu, 1, 0, 0, 0) != E_INVALID_ARGS) goto done;
+        step++;
+        if (syscall_dispatch(SYS_NET_PING, ip | ~mask, 1, 0, 0, 0) != E_INVALID_ARGS) goto done;
+    } else {
+        step++;
+        if (syscall_dispatch(SYS_NET_PING, 0x0A000202u, 1, 0, 0, 0) != E_NOT_FOUND) goto done;
+    }
+
+    /* send: both sides of the length bound, a kernel pointer, then one frame */
+    uint8_t *f = (uint8_t *)user_ptr(NT_FRAME);
+    for (int i = 0; i < NT_FRAME_LEN; i++) f[i] = 0;
+    for (int i = 0; i < 6; i++) { f[i] = 0xFF; f[6 + i] = m[i]; }
+    f[12] = 0x88; f[13] = 0xB5;                    /* IEEE local experimental */
+    step++;
+    if (syscall_dispatch(SYS_NET_SEND, NT_FRAME, 0, 0, 0, 0) != E_OUT_OF_RANGE) goto done;
+    step++;
+    if (syscall_dispatch(SYS_NET_SEND, NT_FRAME, 1515, 0, 0, 0) != E_OUT_OF_RANGE) goto done;
+    step++;
+    if (syscall_dispatch(SYS_NET_SEND, 0xC0001000u, NT_FRAME_LEN, 0, 0, 0) != E_BAD_ADDRESS) goto done;
+    step++;
+    if (ready && syscall_dispatch(SYS_NET_SEND, NT_FRAME, NT_FRAME_LEN, 0, 0, 0) != 0) goto done;
+
+    /* receive: an empty buffer and a kernel pointer refused; a real one gets
+       a frame or nothing, never more than it holds */
+    step++;
+    if (syscall_dispatch(SYS_NET_RECV, NT_RX, 0, 0, 0, 0) != E_BUFFER_TOO_SMALL) goto done;
+    step++;
+    if (syscall_dispatch(SYS_NET_RECV, 0xC0001000u, NT_RX_CAP, 0, 0, 0) != E_BAD_ADDRESS) goto done;
+    step++;
+    int r = syscall_dispatch(SYS_NET_RECV, NT_RX, NT_RX_CAP, 0, 0, 0);
+    if (r < 0 || r > NT_RX_CAP) goto done;
+    ok = 1;
+
+done:
+    if (!ok) klog_u32("KTEST", SEV_ERR, "network syscall test failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    if (changed) {
+        netif_set_ip(old.ip); netif_set_mask(old.mask);
+        netif_set_gateway(old.gateway); netif_set_dns(old.dns1, old.dns2);
+    }
     thread_set_caps(me, save);
     unmap_user_page(TEST_CODE_VIRT, phys);
     return ok;

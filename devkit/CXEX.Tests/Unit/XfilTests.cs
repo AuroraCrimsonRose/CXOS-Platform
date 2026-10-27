@@ -76,7 +76,7 @@ public class XfilTests
 
     [Theory]
     [Trait(Categories.Key, Categories.Unit)]
-    [InlineData("syscall SYS_A = 1 fn a(p: *nothing) -> i32\n", "not a structure")]
+    [InlineData("syscall SYS_A = 1 fn a(p: *nothing) -> i32\n", "neither an integer type nor a structure")]
     [InlineData("syscall SYS_A = 1 fn a(a: u32, b: u32, c: u32, d: u32, e: u32, f: u32) -> i32\n", "at most 5")]
     [InlineData("syscall SYS_A = 1 fn a() -> u64\n", "returns i32 or void")]
     [InlineData("syscall SYS_A = 1 fn a(x: u64) -> i32\n", "u32, i32 or a pointer")]
@@ -176,7 +176,7 @@ public class XfilTests
     {
         XfilFile f = Parse(
             "struct s {\n    a: u32\n}\n" +
-            "syscall SYS_FILE_OP = 0x10 fn file_op(n: u32, h: i32, p: *s, b: *u8, last: i32) -> i32\n" +
+            "syscall SYS_FILE_OP = 0x10 fn file_op(n: u32, h: i32, p: *s, b: *u32, last: i32) -> i32\n" +
             "syscall SYS_EXIT = 2 fn exit(code: i32) -> void\n" +
             "syscall SYS_POWER = 0x05 () -> i32\n");
         string h = XfilEmit.CTableHeader(f), c = XfilEmit.CTable(f);
