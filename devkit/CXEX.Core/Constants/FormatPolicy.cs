@@ -6,7 +6,7 @@ namespace CXEX.Core.Constants;
 /// monotonic version (see <c>versions.json</c>).</summary>
 public enum CXFormat
 {
-    /// <summary>The CXEX executable container: 56-byte header, 28-byte section entries.</summary>
+    /// <summary>The CXEX executable container: 88-byte header (the ABI hash at 56), 28-byte section entries.</summary>
     Cxex,
     /// <summary>The syscall and capability contract in <c>abi/cxk_abi.h</c>.</summary>
     Abi,
@@ -73,7 +73,7 @@ public static class FormatPolicy
     /// </summary>
     private static readonly Dictionary<CXFormat, Support> Table = new()
     {
-        [CXFormat.Cxex] = new(Min: 1, Max: 1, Writes: 1),
+        [CXFormat.Cxex] = new(Min: 2, Max: 2, Writes: 2),
         [CXFormat.Abi]  = new(Min: 10, Max: 10, Writes: 10),
         [CXFormat.Cxbi] = new(Min: 2, Max: 2, Writes: 2),
         [CXFormat.Cxfs] = new(Min: 2, Max: 2, Writes: 2),

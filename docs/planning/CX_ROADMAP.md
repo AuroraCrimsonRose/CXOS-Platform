@@ -169,7 +169,17 @@ programs for it (step 6).
        and `SYS_FILE_LOCK` takes a `file_lock_args`.
    - **6a3** The system page: the syscall stubs, the ABI hash recorded in the
      image and checked by the loader, and the kernel refusing a syscall from
-     anywhere else.
+     anywhere else. Split in three (Aurora, 2026-10-26), each booting in full:
+     - **6a3a** The ABI hash: SHA-256 of `abi/kernel.xfil` without its
+       comments, all 32 bytes in the CXEX header (format 2, 88 bytes; the hash
+       at offset 56). `abi_version` stays as the readable number. The loader
+       refuses a different hash with `CXEX_LOAD_BAD_ABI_HASH`. **Done 2026-10-26.**
+     - **6a3b** The system page and its stubs, one per syscall. The loader
+       maps it at an address it picks and passes the base in a register at
+       entry (Fuchsia's vDSO); `__syscall` becomes an indirect call through
+       it, in both compilers and the C programs.
+     - **6a3c** The kernel refuses a syscall whose return address is not the
+       stub for that number.
    - **6b** `usize` and `isize` (a type of their own, Aurora 2026-10-26: mixing
      them with `u32` or `u64` needs `as`, even where the widths agree), the
      typed IR, and an x86-64 back end on it in the C# compiler, System V

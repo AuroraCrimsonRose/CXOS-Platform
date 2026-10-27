@@ -52,7 +52,31 @@ public static class XfilParser
     private static readonly Regex FieldDecl = new(@"^(?<name>\S+)\s*:\s*(?<type>.+)$", RegexOptions.CultureInvariant);
     private static readonly Regex ArrayType = new(@"^(?<elem>\w+)\[(?<len>[^\]]+)\]$", RegexOptions.CultureInvariant);
 
-    public static XfilFile Parse(string text) => new Reader(text).Read();
+    public static XfilFile Parse(string text) => new Reader(text).Read() with { Hash = Hash(text) };
+
+    /// <summary>The ABI hash of a <c>.xfil</c>: SHA-256 of its <see cref="CanonicalText"/>.</summary>
+    public static byte[] Hash(string text) =>
+        System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(CanonicalText(text)));
+
+    /// <summary>
+    /// What the ABI hash covers: the definition without its comments. Each line
+    /// loses everything from its first <c>//</c> (so <c>///</c> documentation
+    /// too), runs of whitespace become one space, and empty lines go; each line
+    /// that is left ends in <c>\n</c>. Rewording documentation or re-indenting
+    /// leaves the hash alone, so programs built before it still load; any change
+    /// to a name, number, type or field changes it.
+    /// </summary>
+    public static string CanonicalText(string text)
+    {
+        var sb = new System.Text.StringBuilder();
+        foreach (string raw in text.Split('\n'))
+        {
+            int c = raw.IndexOf("//", StringComparison.Ordinal);
+            string code = Regex.Replace(c >= 0 ? raw[..c] : raw, @"\s+", " ").Trim();
+            if (code.Length > 0) sb.Append(code).Append('\n');
+        }
+        return sb.ToString();
+    }
 
     private sealed class Reader
     {

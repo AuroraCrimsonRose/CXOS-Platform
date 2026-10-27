@@ -81,7 +81,8 @@ enum cxex_load_result {
     CXEX_LOAD_TOO_MANY    = -13,  /* more sections than the loader will consider */
     CXEX_LOAD_NO_COMPAT   = -14,  /* image declines to declare arch/ABI matching */
     CXEX_LOAD_BAD_ARCH    = -15,  /* image was built for another architecture */
-    CXEX_LOAD_BAD_ABI     = -16   /* image was built against another ABI contract */
+    CXEX_LOAD_BAD_ABI     = -16,  /* image was built against another ABI contract */
+    CXEX_LOAD_BAD_ABI_HASH = -17  /* same ABI version, a different definition (hash) */
 };
 
 /* Ceiling on how many pages one image may map, whoever is loading it. A real

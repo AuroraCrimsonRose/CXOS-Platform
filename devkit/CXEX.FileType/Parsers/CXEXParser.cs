@@ -10,7 +10,7 @@ namespace CXEX.FileType.Parsers;
 
 public static class CXEXParser
 {
-    public const int HEADER_SIZE = 56;
+    public const int HEADER_SIZE = CXEX.Core.Constants.CxexLayout.HeaderSize;
     public const int SECTION_SIZE = 28;
     public const int SIG_HDR_SIZE = 44;   // 4 magic + 2 + 2 + 32 fingerprint + 2 pubkey_len + 2 sig_len
 
@@ -39,7 +39,9 @@ public static class CXEXParser
             SectionOffset = MemoryPrimitives.ReadU16(data, 34),
             RelocOffset = MemoryPrimitives.ReadU32(data, 36),
             SignatureOffset = MemoryPrimitives.ReadU32(data, 40),
-            DependencyOffset = MemoryPrimitives.ReadU32(data, 44)
+            DependencyOffset = MemoryPrimitives.ReadU32(data, 44),
+            PhysBase = MemoryPrimitives.ReadU32(data, 48),
+            AbiHash = data.Slice(CXEX.Core.Constants.CxexLayout.AbiHashOffset, CXEX.Core.Constants.CxexLayout.AbiHashSize).ToArray()
         };
     }
 

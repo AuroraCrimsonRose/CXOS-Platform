@@ -19,7 +19,7 @@ static uint32_t rd32(const uint8_t *p) {
 /* HEADER field offsets (section 9.3), as CXEXWriter writes them:
    0 magic | 4 type | 6 fmt_ver | 8 arch | 10 abi | 12 flags | 16 entry |
    20 load_base | 24 image_min | 28 image_max | 32 sec_count | 34 sec_off |
-   36 reloc_off | 40 sig_off | 44 dep_off | 48 phys_base | 52 reserved(4) = 56
+   36 reloc_off | 40 sig_off | 44 dep_off | 48 phys_base | 52 reserved(4) | 56 abi_hash(32) = 88
 
    NOTE: offset 48 is phys_base, NOT reserved. boot/cxexload.asm depends on it
    (CXH_PHYS_BASE equ 48) to place a higher-half kernel while paging is off.
@@ -44,6 +44,8 @@ int cxex_parse_header(const uint8_t *file, size_t len, struct cxex_header *out) 
     out->signature_offset = rd32(file + 40);
     out->dependency_offset= rd32(file + 44);
     out->phys_base        = rd32(file + 48);
+    for (int i = 0; i < CXEX_ABI_HASH_SIZE; i++)
+        out->abi_hash[i] = file[CXEX_ABI_HASH_OFFSET + i];
 
     /* Refuse a container layout this kernel does not know, AFTER filling the
        struct so a caller that wants to report the offending version can.
@@ -58,11 +60,16 @@ int cxex_parse_header(const uint8_t *file, size_t len, struct cxex_header *out) 
 }
 
 int cxex_check_compat(const struct cxex_header *h,
-                      uint16_t my_arch, uint16_t my_abi) {
+                      uint16_t my_arch, uint16_t my_abi, const uint8_t *my_hash) {
     if ((h->flags & CXEX_FLAG_REQUIRE_ARCH_MATCH) && h->arch_target != my_arch)
         return -1;
     if ((h->flags & CXEX_FLAG_REQUIRE_ABI_MATCH) && h->abi_version != my_abi)
         return -2;
+    /* The version is a number someone bumps; the hash is the definition itself,
+       so an ABI edited without a bump is still caught. */
+    if (h->flags & CXEX_FLAG_REQUIRE_ABI_MATCH)
+        for (int i = 0; i < CXEX_ABI_HASH_SIZE; i++)
+            if (h->abi_hash[i] != my_hash[i]) return -3;
     return 0;
 }
 

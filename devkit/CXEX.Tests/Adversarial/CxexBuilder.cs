@@ -18,11 +18,11 @@ namespace CXEX.Tests.Adversarial;
 /// </summary>
 public sealed class CxexBuilder
 {
-    public const int HeaderSize = 56;
+    public const int HeaderSize = CxexLayout.HeaderSize;
     public const int SectionEntrySize = 28;
 
     public ushort TypeCode { get; set; } = 0x5545;   // 'UE', user-mode
-    public ushort FormatVersion { get; set; } = 1;
+    public ushort FormatVersion { get; set; } = (ushort)FormatPolicy.WriteVersion(CXFormat.Cxex);
     public ushort ArchTarget { get; set; } = 1;
     public ushort AbiVersion { get; set; } = 1;
     public uint Flags { get; set; } = 0;
@@ -34,13 +34,14 @@ public sealed class CxexBuilder
     /// <summary>Overrides e_section_count. Null means "however many sections there are".</summary>
     public ushort? SectionCountOverride { get; set; }
 
-    /// <summary>Overrides e_section_offset. Null means 56 (right after the header).</summary>
+    /// <summary>Overrides e_section_offset. Null means HeaderSize (right after the header).</summary>
     public ushort? SectionOffsetOverride { get; set; }
 
     public uint RelocOffset { get; set; } = 0;
     public uint SignatureOffset { get; set; } = 0;
     public uint DependencyOffset { get; set; } = 0;
     public uint PhysBase { get; set; } = 0;
+    public byte[] AbiHash { get; set; } = new byte[CxexLayout.AbiHashSize];
 
     public List<Section> Sections { get; } = new();
 
@@ -122,7 +123,7 @@ public sealed class CxexBuilder
         byte[] file = new byte[end];
         Span<byte> span = file;
 
-        // 56-byte CXEX header
+        // 88-byte CXEX header
         MemoryPrimitives.WriteU32(span, 0, 0x58455843);   // 'CXEX'
         MemoryPrimitives.WriteU16(span, 4, TypeCode);
         MemoryPrimitives.WriteU16(span, 6, FormatVersion);
@@ -134,12 +135,13 @@ public sealed class CxexBuilder
         MemoryPrimitives.WriteU32(span, 24, ImageMin);
         MemoryPrimitives.WriteU32(span, 28, ImageMax);
         MemoryPrimitives.WriteU16(span, 32, SectionCountOverride ?? (ushort)secCount);
-        MemoryPrimitives.WriteU16(span, 34, SectionOffsetOverride ?? 56);
+        MemoryPrimitives.WriteU16(span, 34, SectionOffsetOverride ?? HeaderSize);
         MemoryPrimitives.WriteU32(span, 36, RelocOffset);
         MemoryPrimitives.WriteU32(span, 40, SignatureOffset);
         MemoryPrimitives.WriteU32(span, 44, DependencyOffset);
         MemoryPrimitives.WriteU32(span, 48, PhysBase);
-        // bytes 52..55 are zero (default byte array)
+        // bytes 52..55 are zero (default byte array); the ABI hash at 56
+        AbiHash.AsSpan(0, Math.Min(AbiHash.Length, CxexLayout.AbiHashSize)).CopyTo(span.Slice(CxexLayout.AbiHashOffset));
 
         // Section table
         int secTablePos = SectionOffsetOverride ?? HeaderSize;

@@ -4,6 +4,7 @@ using CXEX.Build.Emitters;
 using CXEX.Build.Engines;
 using CXEX.Build.Parsers;
 using CXEX.Core.Constants;
+using CXEX.Lang.Abi;
 using CXEX.Crypto.Signing;
 using CXEX.Crypto.Trust;
 using CXEX.Tests.Adversarial;
@@ -62,7 +63,7 @@ public class DeterminismTests : IDisposable
     private static void Package(byte[] elf, string outPath)
     {
         var (entry, segments) = ElfParser.Parse(elf);
-        CXEXWriter.WriteExecutable(outPath, CXEXLayoutEngine.CreateLayout(entry, segments, CXFlags.TYPE_USER));
+        CXEXWriter.WriteExecutable(outPath, CXEXLayoutEngine.CreateLayout(entry, segments, CXFlags.TYPE_USER, AbiModel.EmbeddedFile.Hash));
     }
 
     [Fact]

@@ -106,6 +106,13 @@ public sealed record XfilSyscall(string Name, long Number, string NumberText, IR
 /// <summary>One parsed <c>.xfil</c> file: its header lines, then its items in file order.</summary>
 public sealed record XfilFile(int Version, string Library, string Domain, IReadOnlyList<XfilItem> Items)
 {
+    /// <summary>
+    /// The SHA-256 of the definition (<see cref="XfilParser.CanonicalText"/>): the
+    /// ABI hash every CXEX image records and the loader compares (§5, §9.2).
+    /// Empty for a file built in code rather than parsed.
+    /// </summary>
+    public byte[] Hash { get; init; } = Array.Empty<byte>();
+
     public IEnumerable<XfilSyscall> Syscalls => Items.OfType<XfilSyscall>();
     public IEnumerable<XfilStruct> Structs => Items.OfType<XfilStruct>();
 }

@@ -24,12 +24,13 @@ public static class CXEXLayoutEngine
     /// </summary>
     public const ushort AbiVersion = 10;
 
-    public static CxexMemoryLayout CreateLayout(uint entryPoint, IReadOnlyList<ElfSegment> loadSegments, ushort typeCode, ushort abiVersion = AbiVersion)
+    public static CxexMemoryLayout CreateLayout(uint entryPoint, IReadOnlyList<ElfSegment> loadSegments, ushort typeCode, byte[] abiHash, ushort abiVersion = AbiVersion)
     {
         var layout = new CxexMemoryLayout
         {
             TypeCode = typeCode,
             AbiVersion = abiVersion,
+            AbiHash = abiHash,
             EntryPoint = entryPoint,
             ImageMin = uint.MaxValue,
             ImageMax = 0,
@@ -78,10 +79,10 @@ public static class CXEXLayoutEngine
         layout.PhysBase = (uint)physBase;
         layout.LoadBase = layout.ImageMin;
 
-        // 2. Map file offsets (Header = 56 bytes, Section Entries = 28 bytes each).
+        // 2. Map file offsets (Header = 88 bytes, Section Entries = 28 bytes each).
         // Accumulated as long: a 32-bit cursor can wrap past the end of the image
         // and start handing out offsets that point back into the header.
-        long cursor = 56 + (long)loadSegments.Count * 28;
+        long cursor = CxexLayout.HeaderSize + (long)loadSegments.Count * CxexLayout.SectionSize;
 
         foreach (var seg in loadSegments)
         {

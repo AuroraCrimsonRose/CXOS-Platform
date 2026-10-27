@@ -21,7 +21,7 @@
 | Arguments | A fixed page at `USER_ARGS_BASE` | An x86-32 address in the ABI |
 | Errors | 15 codes | No timeout, peer-closed, wrong-type or rights-denied distinction |
 | IPC | Synchronous, one page copied, one call in flight per endpoint; the executive defines messages informally | No handles in messages, no shared memory, no types |
-| Definition | Since step 6a1, `abi/kernel.xfil`: `cxk_abi.h`, the X prelude's constants and structures, and its plain syscall wrappers are generated from it (§9.5). The prelude's helpers are by hand | The interface it describes is still this table's |
+| Definition | Since step 6a1, `abi/kernel.xfil`: `cxk_abi.h`, the X prelude's constants and structures, and its plain syscall wrappers are generated from it (§9.5). The prelude's helpers are by hand. Since 6a3a every image records the ABI hash and the loader compares it | The interface it describes is still this table's |
 
 The good parts stay: user copies that validate and recover from faults
 (`usermode.c`), capability attenuation at spawn, the broker model, and
@@ -330,7 +330,7 @@ The ABI hash of §5 is this hash for the `kernel` library.
 - Supersedes the rule that `cxk_abi.h` and `AbiPrelude.cs` change in one
   commit: both are generated from the same file.
 
-### 9.5 As built (roadmap steps 6a1, 6a2a, 6a2b, 6a2c, 6a2d)
+### 9.5 As built (roadmap steps 6a1, 6a2a, 6a2b, 6a2c, 6a2d, 6a3a)
 
 The `kernel` domain is generated; the other domains, and `interface` blocks
 with their messages, are settled when IPC v3 needs them (Phase 1). The source
@@ -473,6 +473,25 @@ is a step of its own).
 - **The kernel:** the 2 GB cap is gone. An open file's offset and its lock
   ranges are `uint64_t`, bounded by `INT64_MAX`; a write past it, a seek
   before 0 and a truncate or lock past it are `E_OUT_OF_RANGE`.
+
+Step 6a3a records the ABI hash of §5 in every image. The hash is SHA-256 of
+the `.xfil`'s definition: each line loses everything from its first `//`
+(documentation included), whitespace runs become one space, and empty lines
+go (`XfilParser.CanonicalText`). Rewording a comment leaves the hash alone,
+and any change to a name, number, type or field changes it.
+
+- **Generated:** `cxk abi generate` writes it into `cxk_abi.h` as
+  `CXK_ABI_HASH`, a 32-byte initializer. The DevKit stamps the hash of its
+  embedded `.xfil`, which `check-abi` already holds to the tree's.
+- **The container:** CXEX format 2. The header is 88 bytes: the 56 bytes of
+  fields as before (`phys_base` stays at 48 for the boot loader), then the
+  hash at offset 56. The section table follows at 88. The writer refuses a
+  layout without all 32 bytes.
+- **The loader:** with `REQUIRE_ABI_MATCH` (required since the loader first
+  checked compatibility), it compares `abi_version` first and then the hash.
+  The same version over a different definition is `CXEX_LOAD_BAD_ABI_HASH`,
+  so an ABI edited without a version bump is still refused. `abi_version`
+  stays because a number is what an error message can show.
 
 When the `.xfil` replaced the hand-written header, the header it generated
 matched the old one in every constant, structure and field type, and every

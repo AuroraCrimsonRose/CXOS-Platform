@@ -102,13 +102,16 @@ int cxex_load(const uint8_t *file, size_t len,
         !(h.flags & CXEX_FLAG_REQUIRE_ABI_MATCH))
         return CXEX_LOAD_NO_COMPAT;
 
-    switch (cxex_check_compat(&h, ARCH_CXEX_TARGET, CXK_ABI_VERSION)) {
+    static const uint8_t abi_hash[CXEX_ABI_HASH_SIZE] = CXK_ABI_HASH;
+
+    switch (cxex_check_compat(&h, ARCH_CXEX_TARGET, CXK_ABI_VERSION, abi_hash)) {
         case  0: break;
         case -1: return CXEX_LOAD_BAD_ARCH;
         case -2: return CXEX_LOAD_BAD_ABI;
-        /* cxex_check_compat has three outcomes today. A fourth would mean the
+        case -3: return CXEX_LOAD_BAD_ABI_HASH;
+        /* cxex_check_compat has four outcomes today. A fifth would mean the
            two files disagree about what it returns, and guessing which of the
-           two known refusals it meant is worse than refusing the image. */
+           three known refusals it meant is worse than refusing the image. */
         default: return CXEX_LOAD_BAD_FORMAT;
     }
 
@@ -253,6 +256,7 @@ const char *cxex_load_strerror(int r) {
         case CXEX_LOAD_NO_COMPAT:   return "image does not declare arch/ABI matching";
         case CXEX_LOAD_BAD_ARCH:    return "image was built for another architecture";
         case CXEX_LOAD_BAD_ABI:     return "image was built against another ABI version";
+        case CXEX_LOAD_BAD_ABI_HASH: return "image was built against a different ABI definition (hash mismatch); rebuild it";
         default:                    return "unknown error";
     }
 }

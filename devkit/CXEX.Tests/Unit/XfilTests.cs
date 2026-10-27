@@ -18,6 +18,26 @@ public class XfilTests
 
     private static XfilFile Parse(string body) => XfilParser.Parse(Head + body);
 
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
+    public void The_abi_hash_covers_the_definition_and_not_its_comments()
+    {
+        const string body = "/// a heading\n\nconst A: u32 = 1   /// note\nstruct s {\n    x: u32\n}\n";
+        byte[] hash = Parse(body).Hash;
+        Assert.Equal(32, hash.Length);
+
+        // Rewording, re-indenting, adding a comment or a blank line: same hash,
+        // so programs built before the edit still load.
+        Assert.Equal(hash, Parse("/// another heading\n// a comment\n\nconst  A: u32 = 1   /// other note\n\nstruct s {\n\tx: u32\n}\n\n").Hash);
+        Assert.Equal(hash, XfilParser.Parse((Head + body).Replace("\n", "\r\n")).Hash);
+
+        // Any change to a name, value, type or field order: a different hash.
+        Assert.NotEqual(hash, Parse(body.Replace("= 1", "= 2")).Hash);
+        Assert.NotEqual(hash, Parse(body.Replace("const A", "const B")).Hash);
+        Assert.NotEqual(hash, Parse(body.Replace("x: u32", "x: i32")).Hash);
+        Assert.NotEqual(hash, Parse(body.Replace("    x: u32\n", "    x: u32\n    y: u32\n")).Hash);
+    }
+
     [Theory]
     [Trait(Categories.Key, Categories.Unit)]
     [InlineData("xfil 2\nlibrary cx.kernel\ndomain kernel\n", "xfil 1")]                       // a version it cannot read

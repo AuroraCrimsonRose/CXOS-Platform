@@ -66,7 +66,9 @@
 #define CXEX_SEC_NOBITS (1u << 3)
 
 /* ---- sizes of the on-disk structures (explicit, not sizeof a struct) ---- */
-#define CXEX_HEADER_SIZE   56      /* section 9.3 */
+#define CXEX_HEADER_SIZE   88      /* section 9.3: 56 bytes of fields, then the ABI hash */
+#define CXEX_ABI_HASH_OFFSET 56    /* SHA-256 of the .xfil the image was built against */
+#define CXEX_ABI_HASH_SIZE   32
 #define CXEX_SECTION_SIZE  28      /* section 9.4: 8+4+4+4+4+4 */
 /* signature block (10.3): magic(4) sig_algo(2) hash_algo(2) fingerprint(32)
    sig_len(2) signature(sig_len). Fixed part before the signature = 42 bytes. */
@@ -90,7 +92,7 @@
    all - so the one side that an attacker actually reaches was the permissive
    one. Both sides validating independently is the rule this repository holds
    itself to (security review §11). Declared in versions.json as `cxex`. */
-#define CXEX_FORMAT_VERSION 1
+#define CXEX_FORMAT_VERSION 2
 
 #define CXSG_MAGIC0 'C'
 #define CXSG_MAGIC1 'X'
@@ -118,6 +120,7 @@ struct cxex_header {
                                    reads this at offset 48 to compute the
                                    virt->phys delta for the higher-half kernel.
                                    NOT reserved - do not zero it. */
+    uint8_t  abi_hash[CXEX_ABI_HASH_SIZE]; /* format 2: SHA-256 of the image's .xfil */
 };
 
 struct cxex_section {
@@ -146,13 +149,15 @@ struct cxex_sig {
 int cxex_parse_header(const uint8_t *file, size_t len, struct cxex_header *out);
 
 /* Check arch/abi compatibility against this kernel, honoring the REQUIRE_* flags.
-   Returns 0 if loadable here, -1 on an arch mismatch, -2 on an ABI mismatch.
+   Returns 0 if loadable here, -1 on an arch mismatch, -2 on an ABI version
+   mismatch, -3 when the version agrees and the ABI hash (my_hash, 32 bytes)
+   does not: the same number, a different definition.
 
    Gated on the flags, so an image declaring neither is compatible with
    everything by its own say-so. cxex_load therefore REQUIRES both before
    calling this, which is where that gap is closed - see the reasoning there. */
 int cxex_check_compat(const struct cxex_header *h,
-                      uint16_t my_arch, uint16_t my_abi);
+                      uint16_t my_arch, uint16_t my_abi, const uint8_t *my_hash);
 
 /* Read section table entry `i` (0-based). Returns 0 on success, negative on
    error (-1 index out of range, -2 entry runs past EOF). */

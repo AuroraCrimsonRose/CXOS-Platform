@@ -35,6 +35,17 @@ public class AbiGeneratorTests
 
     [Fact]
     [Trait(Categories.Key, Categories.Unit)]
+    public void The_header_and_every_image_carry_the_hash_of_the_xfil_on_disk()
+    {
+        // The kernel compares CXK_ABI_HASH; the DevKit stamps the embedded
+        // .xfil's. Both must be the hash of the file in the tree.
+        string hex = string.Join(", ", XfilParser.Hash(DiskXfil()).Select(b => $"0x{b:x2}"));
+        Assert.Contains($"#define CXK_ABI_HASH {{ {hex} }}", DiskHeader().Replace("\r\n", "\n"), StringComparison.Ordinal);
+        Assert.Equal(XfilParser.Hash(DiskXfil()), AbiModel.EmbeddedFile.Hash);
+    }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
     public void The_built_in_interface_is_the_one_on_disk()
     {
         // The DevKit embeds kernel.xfil at build time. If these differ, the test

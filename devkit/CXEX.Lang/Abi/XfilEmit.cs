@@ -164,6 +164,16 @@ extern const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE];
         sb.Append($" * Do not edit it: change {KernelSource} and regenerate. `cxk check-abi` fails while\n");
         sb.Append(" * this file differs from what the .xfil generates. */\n\n");
         sb.Append("#ifndef CXK_ABI_H\n#define CXK_ABI_H\n\n#include <stdint.h>\n");
+        if (file.Hash.Length > 0)
+        {
+            sb.Append("\n/*\n * The ABI hash: SHA-256 of ").Append(KernelSource).Append(" without its comments\n");
+            sb.Append(" * (docs/kernel/CX_SYSCALLS_IPC.md sec 5, 9.5). Every CXEX image records the\n");
+            sb.Append(" * hash it was built against and the loader refuses one that differs, so a\n");
+            sb.Append(" * program never runs against numbers or layouts it was not compiled for.\n */\n");
+            sb.Append("#define CXK_ABI_HASH { ")
+              .Append(string.Join(", ", file.Hash.Select(b => $"0x{b:x2}")))
+              .Append(" }\n");
+        }
 
         foreach (XfilItem item in file.Items)
         {

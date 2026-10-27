@@ -58,7 +58,7 @@ public class CxexLoadTests
     public void Truncated_or_non_cxex_input_is_rejected()
     {
         Rejects(Array.Empty<byte>(), "an empty file");
-        Rejects(new byte[32], "fewer bytes than a 56-byte header");
+        Rejects(new byte[32], "fewer bytes than an 88-byte header");
 
         byte[] img = CxexBuilder.Valid().Build();
         // Byte 0, not byte 1: the magic reads 'C','X','E','X', so overwriting
@@ -69,9 +69,15 @@ public class CxexLoadTests
 
     [Fact]
     [Trait(Categories.Key, Categories.Adversarial)]
-    public void Unsupported_format_version_is_rejected() =>
-        Rejects(CxexBuilder.Valid().With(b => b.FormatVersion = 2).Build(),
+    public void Unsupported_format_version_is_rejected()
+    {
+        // 1 is the 56-byte header from before the ABI hash: its section table
+        // starts where version 2 keeps the hash.
+        Rejects(CxexBuilder.Valid().With(b => b.FormatVersion = 1).Build(),
+            "format 1, whose header ends before the ABI hash");
+        Rejects(CxexBuilder.Valid().With(b => b.FormatVersion = 3).Build(),
             "a format version whose field offsets this cannot assume");
+    }
 
     [Fact]
     [Trait(Categories.Key, Categories.Adversarial)]
@@ -88,9 +94,13 @@ public class CxexLoadTests
 
     [Fact]
     [Trait(Categories.Key, Categories.Adversarial)]
-    public void Section_table_overlapping_the_header_is_rejected() =>
+    public void Section_table_overlapping_the_header_is_rejected()
+    {
         Rejects(CxexBuilder.Valid().With(b => b.SectionOffsetOverride = 8).Build(),
-            "a section table starting inside the 56-byte header");
+            "a section table starting inside the 88-byte header");
+        Rejects(CxexBuilder.Valid().With(b => b.SectionOffsetOverride = 56).Build(),
+            "a section table over the ABI hash, where format 1 put it");
+    }
 
     [Fact]
     [Trait(Categories.Key, Categories.Adversarial)]

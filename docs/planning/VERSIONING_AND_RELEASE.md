@@ -118,7 +118,7 @@ Minor and patch releases inherit their major's name; they do not get their own.
 
 | Format | Version | What it describes | Declared in |
 |---|---|---|---|
-| **CXEX** | 1 | The executable container: 56-byte header, 28-byte section entries | `kernel/lib/format/cxex.h` `CXEX_FORMAT_VERSION`, `CXEXExecutable.SupportedFormatVersion` |
+| **CXEX** | 2 | The executable container: 88-byte header (the ABI hash at 56 since 2), 28-byte section entries | `kernel/lib/format/cxex.h` `CXEX_FORMAT_VERSION`, `CXEXExecutable.SupportedFormatVersion` |
 | **ABI** | 2 | Syscall numbers, struct layouts, capability meanings. Stamped into every image's `abi_version`. | `abi/cxk_abi.h` `CXK_ABI_VERSION`, `CXEXLayoutEngine.AbiVersion` |
 | **CXBI** | 2 | The boot-information block stage 2 hands the kernel | `abi/cxk_boot.h` `CXBI_VERSION`, `boot/cxbi.asm` `CXBI_VERSION_VAL` |
 | **CXFS** | 2 | The filesystem on-disk layout | `kernel/drivers/storage/filesys/cxfs.h` `CXFS_VERSION` |

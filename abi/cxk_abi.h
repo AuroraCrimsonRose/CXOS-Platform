@@ -10,6 +10,14 @@
 #include <stdint.h>
 
 /*
+ * The ABI hash: SHA-256 of abi/kernel.xfil without its comments
+ * (docs/kernel/CX_SYSCALLS_IPC.md sec 5, 9.5). Every CXEX image records the
+ * hash it was built against and the loader refuses one that differs, so a
+ * program never runs against numbers or layouts it was not compiled for.
+ */
+#define CXK_ABI_HASH { 0x61, 0x64, 0x85, 0xfd, 0x73, 0x04, 0xba, 0xb0, 0xd0, 0xf9, 0x1e, 0x5b, 0x70, 0xca, 0xeb, 0xae, 0x2d, 0xf8, 0xf4, 0x2a, 0x81, 0x5c, 0xdc, 0x26, 0xc5, 0x86, 0x5c, 0xb5, 0x99, 0xcf, 0x07, 0xcd }
+
+/*
  * CXK ABI v1 - the PUBLIC contract shared by the kernel, the .xoex executive,
  * and .xuex apps (and, later, the X toolchain). Syscall numbers, error codes,
  * and shared call structures: kernel and user code compile against the SAME

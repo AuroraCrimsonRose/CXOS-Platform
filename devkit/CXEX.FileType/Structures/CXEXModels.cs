@@ -21,6 +21,9 @@ public class CXEXHeader
     public uint RelocOffset { get; set; }
     public uint SignatureOffset { get; set; }
     public uint DependencyOffset { get; set; }
+    public uint PhysBase { get; set; }
+    /// <summary>SHA-256 of the <c>.xfil</c> the image was built against (format 2, offset 56).</summary>
+    public byte[] AbiHash { get; set; } = Array.Empty<byte>();
 
     public bool IsSigned => (Flags & 0x04) != 0 && SignatureOffset != 0;
 }

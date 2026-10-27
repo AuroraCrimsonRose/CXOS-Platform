@@ -11,6 +11,8 @@ public class CxexMemoryLayout
     public ushort FormatVersion { get; set; } = (ushort)CXEX.Core.Constants.FormatPolicy.WriteVersion(CXEX.Core.Constants.CXFormat.Cxex);
     public ushort ArchTarget { get; set; } = 1;
     public ushort AbiVersion { get; set; } = 1;
+    /// <summary>SHA-256 of the <c>.xfil</c> the image was built against; the writer requires all 32 bytes.</summary>
+    public byte[] AbiHash { get; set; } = Array.Empty<byte>();
     public uint Flags { get; set; }
 
     public uint EntryPoint { get; set; }

@@ -72,7 +72,7 @@ static void img_valid(void) {
     g_img[0] = CXEX_MAGIC0; g_img[1] = CXEX_MAGIC1;
     g_img[2] = CXEX_MAGIC2; g_img[3] = CXEX_MAGIC3;
     wr16(4, 0x5545);                      /* type .xuex */
-    wr16(6, 1);                           /* format version */
+    wr16(6, CXEX_FORMAT_VERSION);         /* format version */
     wr16(8, ARCH_CXEX_TARGET);            /* arch: this kernel's */
     wr16(10, CXK_ABI_VERSION);            /* abi - the contract this kernel is */
     wr32(12, IMG_FLAGS);
@@ -83,6 +83,10 @@ static void img_valid(void) {
     wr16(32, 1);                          /* section count */
     wr16(34, CXEX_HEADER_SIZE);           /* section offset */
     wr32(40, 0);                          /* signature offset: unsigned */
+    {   /* the ABI hash: this kernel's */
+        static const uint8_t abi_hash[CXEX_ABI_HASH_SIZE] = CXK_ABI_HASH;
+        for (uint32_t i = 0; i < CXEX_ABI_HASH_SIZE; i++) g_img[CXEX_ABI_HASH_OFFSET + i] = abi_hash[i];
+    }
 
     uint32_t s = CXEX_HEADER_SIZE;
     g_img[s + 0] = '.'; g_img[s + 1] = 't'; g_img[s + 2] = 'e'; g_img[s + 3] = 'x';
@@ -280,6 +284,17 @@ int ktest_loader_adversarial(void) {
     img_valid();
     wr16(10, CXK_ABI_VERSION - 1);
     ok = ok && refuses(CXEX_LOAD_BAD_ABI);
+
+    /* The same version over a different definition: the hash is what catches
+       an ABI edited without a bump. Its first and its last byte, so a compare
+       that stops short of either end is seen. */
+    img_valid();
+    g_img[CXEX_ABI_HASH_OFFSET] ^= 1;
+    ok = ok && refuses(CXEX_LOAD_BAD_ABI_HASH);
+
+    img_valid();
+    g_img[CXEX_ABI_HASH_OFFSET + CXEX_ABI_HASH_SIZE - 1] ^= 0x80;
+    ok = ok && refuses(CXEX_LOAD_BAD_ABI_HASH);
 
     /* The other x86 is the case that matters: on x86-64 a signed x86-32 image
        was loaded and entered in long mode, its code read as 64-bit

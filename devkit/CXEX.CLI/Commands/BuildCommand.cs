@@ -9,6 +9,7 @@ using CXEX.Build.Parsers;
 using CXEX.Build.Engines;
 using CXEX.Build.Emitters;
 using CXEX.Core.Constants;
+using CXEX.Lang.Abi;
 
 namespace CXEX.CLI.Commands;
 
@@ -60,7 +61,7 @@ public class BuildCommand : Command<BuildCommand.Settings>
             {
                 byte[] elfData = File.ReadAllBytes(settings.InputPath);
                 var (entryPoint, segments) = ElfParser.Parse(elfData);
-                var layout = CXEXLayoutEngine.CreateLayout(entryPoint, segments, typeCode);
+                var layout = CXEXLayoutEngine.CreateLayout(entryPoint, segments, typeCode, AbiModel.EmbeddedFile.Hash);
                 CXEXWriter.WriteExecutable(settings.OutputPath, layout);
             });
 

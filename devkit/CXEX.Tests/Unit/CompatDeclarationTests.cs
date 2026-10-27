@@ -4,6 +4,7 @@ using System.Text.RegularExpressions;
 using CXEX.Build.Engines;
 using CXEX.Build.Parsers;
 using CXEX.Core.Constants;
+using CXEX.Lang.Abi;
 using Xunit;
 
 namespace CXEX.Tests.Unit;
@@ -45,7 +46,7 @@ public class CompatDeclarationTests
     [InlineData(CXFlags.TYPE_USER)]
     public void Every_image_type_asks_to_be_refused_on_a_mismatch(ushort typeCode)
     {
-        var layout = CXEXLayoutEngine.CreateLayout(0x00400000, new[] { Segment() }, typeCode);
+        var layout = CXEXLayoutEngine.CreateLayout(0x00400000, new[] { Segment() }, typeCode, AbiModel.EmbeddedFile.Hash);
 
         // Both, separately. One assertion over the pair would pass a writer
         // that set only one, and the kernel refuses on either being absent.
@@ -82,7 +83,7 @@ public class CompatDeclarationTests
         // AbiVersion rather than 0 - and 0 is the value a kernel would refuse
         // while the image looked, in every other respect, well formed.
         var layout = CXEXLayoutEngine.CreateLayout(0x00400000, new[] { Segment() },
-                                                   CXFlags.TYPE_USER);
+                                                   CXFlags.TYPE_USER, AbiModel.EmbeddedFile.Hash);
         Assert.Equal(CXEXLayoutEngine.AbiVersion, layout.AbiVersion);
         Assert.NotEqual(0, layout.AbiVersion);
     }

@@ -97,6 +97,7 @@ public sealed class AbiModel
     private static readonly HashSet<string> NotSurface = new(StringComparer.Ordinal)
     {
         "CXK_ABI_H",   // include guard
+        "CXK_ABI_HASH",   // the .xfil's SHA-256, a byte initializer: check-abi compares the header whole
     };
 
     private static readonly Regex Declaration = new(

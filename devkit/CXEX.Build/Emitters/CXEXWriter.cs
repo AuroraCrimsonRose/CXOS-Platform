@@ -20,12 +20,18 @@ public static class CXEXWriter
             throw new InvalidDataException(
                 $"{layout.Sections.Count} sections exceeds the 16-bit section_count field.");
 
-        // 1. Final file size: Header(56) + Sections(28 * count) + raw segment data.
+        // An image without the ABI hash it was built against is refused by every
+        // loader; better to refuse to write it than to ship one that cannot run.
+        if (layout.AbiHash.Length != CxexLayout.AbiHashSize)
+            throw new InvalidDataException(
+                $"the layout carries a {layout.AbiHash.Length}-byte ABI hash; the header holds {CxexLayout.AbiHashSize}.");
+
+        // 1. Final file size: Header(88) + Sections(28 * count) + raw segment data.
         // Summed in 64 bits. As uint this wrapped, and a wrapped total allocates a
         // buffer smaller than the data about to be written into it - so the first
         // section with a real offset either throws from inside Span.Slice or lands
         // somewhere it does not belong.
-        long totalSize = 56 + (long)layout.Sections.Count * 28;
+        long totalSize = CxexLayout.HeaderSize + (long)layout.Sections.Count * CxexLayout.SectionSize;
         foreach (var sec in layout.Sections)
         {
             if (sec.FileSize > 0 && sec.Payload.Length != sec.FileSize)
@@ -48,7 +54,7 @@ public static class CXEXWriter
         // Every section's bytes must lie in the image and after the section table.
         // This is also what keeps the signed range honest: the signature is appended
         // at the end, so data placed before it is data the signature covers.
-        long tableEnd = 56 + (long)layout.Sections.Count * 28;
+        long tableEnd = CxexLayout.HeaderSize + (long)layout.Sections.Count * CxexLayout.SectionSize;
         foreach (var sec in layout.Sections)
         {
             if (sec.FileSize == 0) continue;
@@ -63,7 +69,7 @@ public static class CXEXWriter
         byte[] fileData = new byte[totalSize];
         Span<byte> span = fileData;
 
-        // 2. Write the 56-byte CXEX Header
+        // 2. Write the 88-byte CXEX Header
         MemoryPrimitives.WriteU32(span, 0, 0x58455843); // 'CXEX'
         MemoryPrimitives.WriteU16(span, 4, layout.TypeCode);
         MemoryPrimitives.WriteU16(span, 6, layout.FormatVersion);
@@ -75,7 +81,7 @@ public static class CXEXWriter
         MemoryPrimitives.WriteU32(span, 24, layout.ImageMin);
         MemoryPrimitives.WriteU32(span, 28, layout.ImageMax);
         MemoryPrimitives.WriteU16(span, 32, (ushort)layout.Sections.Count);
-        MemoryPrimitives.WriteU16(span, 34, 56); // SectionOffset is always 56
+        MemoryPrimitives.WriteU16(span, 34, CxexLayout.HeaderSize); // SectionOffset: right after the header
         MemoryPrimitives.WriteU32(span, 36, 0); // RelocOffset
         MemoryPrimitives.WriteU32(span, 40, 0); // SignatureOffset
         MemoryPrimitives.WriteU32(span, 44, 0); // DependencyOffset
@@ -83,9 +89,12 @@ public static class CXEXWriter
         // phys_base at offset 48. boot/cxexload.asm (CXH_PHYS_BASE equ 48) uses this to
         // compute the virt->phys delta when placing a higher-half kernel with paging off.
         MemoryPrimitives.WriteU32(span, 48, layout.PhysBase);
+        // 52..55 reserved, zero. The ABI hash at 56: SHA-256 of the .xfil the
+        // program was compiled against, compared by the loader (CX_SYSCALLS_IPC.md §5).
+        layout.AbiHash.CopyTo(span.Slice(CxexLayout.AbiHashOffset, CxexLayout.AbiHashSize));
 
         // 3. Write Section Table and Segment Data
-        int secOffset = 56;
+        int secOffset = CxexLayout.HeaderSize;
         foreach (var sec in layout.Sections)
         {
             // Write 8-byte NUL-padded name. Names longer than 8 bytes are truncated

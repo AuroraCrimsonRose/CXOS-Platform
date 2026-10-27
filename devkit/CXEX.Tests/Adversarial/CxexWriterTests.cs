@@ -5,6 +5,7 @@ using CXEX.Build.Engines;
 using CXEX.Build.Layout;
 using CXEX.Build.Parsers;
 using CXEX.Core.Constants;
+using CXEX.Lang.Abi;
 using CXEX.FileType.Types;
 using Xunit;
 
@@ -43,13 +44,14 @@ public class CxexWriterTests : IDisposable
             ImageMax = 0x00400040,
             PhysBase = 0x00400000,
             Flags = CXFlags.FLAG_EXECUTABLE,
+            AbiHash = AbiModel.EmbeddedFile.Hash,
             Sections =
             {
                 new SectionLayout
                 {
                     Name = ".text",
                     VirtualAddress = 0x00400000,
-                    FileOffset = 56 + 28,
+                    FileOffset = CxexLayout.HeaderSize + CxexLayout.SectionSize,
                     FileSize = 64,
                     MemSize = 64,
                     Flags = CXFlags.SEC_READ | CXFlags.SEC_EXEC,
@@ -74,6 +76,23 @@ public class CxexWriterTests : IDisposable
         var only = Assert.Single(exe.Sections);
         Assert.Equal(".text", only.Name);
         Assert.Equal(64, exe.GetSectionData(".text").Length);
+        Assert.Equal(AbiModel.EmbeddedFile.Hash, exe.Header.AbiHash);
+    }
+
+    [Theory]
+    [Trait(Categories.Key, Categories.Adversarial)]
+    [InlineData(0)]
+    [InlineData(31)]
+    [InlineData(33)]
+    public void A_layout_without_a_whole_abi_hash_is_refused(int length)
+    {
+        // Every loader refuses an image whose hash is not its own; an image
+        // written with none would build, sign and stage, then never run.
+        CxexMemoryLayout layout = ValidLayout();
+        layout.AbiHash = new byte[length];
+
+        var ex = Assert.Throws<InvalidDataException>(() => CXEXWriter.WriteExecutable(Out("nohash.xuex"), layout));
+        Assert.Contains("ABI hash", ex.Message);
     }
 
     [Fact]
@@ -151,7 +170,7 @@ public class CxexWriterTests : IDisposable
         };
 
         Assert.Throws<InvalidDataException>(
-            () => CXEXLayoutEngine.CreateLayout(0x00400000, new[] { seg }, CXFlags.TYPE_USER));
+            () => CXEXLayoutEngine.CreateLayout(0x00400000, new[] { seg }, CXFlags.TYPE_USER, AbiModel.EmbeddedFile.Hash));
     }
 
     [Fact]
@@ -169,6 +188,6 @@ public class CxexWriterTests : IDisposable
         };
 
         Assert.Throws<InvalidDataException>(
-            () => CXEXLayoutEngine.CreateLayout(0xFFFF_F000, new[] { seg }, CXFlags.TYPE_USER));
+            () => CXEXLayoutEngine.CreateLayout(0xFFFF_F000, new[] { seg }, CXFlags.TYPE_USER, AbiModel.EmbeddedFile.Hash));
     }
 }

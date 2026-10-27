@@ -53,6 +53,7 @@ public class InspectCommand : Command<InspectCommand.Settings>
             AnsiConsole.MarkupLine($"  format_ver    {h.FormatVersion}");
             AnsiConsole.MarkupLine($"  arch          {h.ArchTarget}");
             AnsiConsole.MarkupLine($"  abi_ver       {h.AbiVersion}");
+            AnsiConsole.MarkupLine($"  abi_hash      {Convert.ToHexString(h.AbiHash).ToLowerInvariant()}");
             AnsiConsole.MarkupLine($"  flags         0x{h.Flags:X2}   [grey]{DescribeFlags(h.Flags)}[/]");
             AnsiConsole.MarkupLine($"  entry         0x{h.EntryPoint:X8}");
             AnsiConsole.MarkupLine($"  load_base     0x{h.LoadBase:X8}");

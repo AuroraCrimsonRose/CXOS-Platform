@@ -86,8 +86,8 @@
 
   "formats": {
     "cxex": {
-      "version": 1,
-      "what": "The CXEX executable container: the 56-byte header and the 28-byte section entries.",
+      "version": 2,
+      "what": "The CXEX executable container: the 88-byte header (the ABI hash at offset 56 since version 2) and the 28-byte section entries.",
       "field": "format_version, u16 at offset 6",
       "bump_when": "the header or the section table changes shape, in one commit on both sides",
       "checks": [
