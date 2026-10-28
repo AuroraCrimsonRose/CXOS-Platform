@@ -2949,18 +2949,6 @@ static int kc_refused(const char *doc, uint32_t want_at) {
     return c.max_threads == 999 && at == want_at && why && why[0];
 }
 
-#if !CXK_X_USERLAND
-/* No X here until step 6, so no reader: kernel.xkco is refused whole, the
-   good document as surely as a bad one, at offset 0 with a reason, and the
-   caller's values are never touched (arch/x86_64/xdata64.c). When X compiles
-   for this architecture the reader is linked and the test below runs. */
-static int test_kconfig(void) {
-    return kc_refused("// the kernel's limits\nkernel_stack_kib = 16\n", 0)
-        && kc_refused("max_threads = 6\n", 0)
-        && kc_refused("", 0)
-        && kc_refused("kernel_stack = 8\n", 0);
-}
-#else
 static int test_kconfig(void) {
     struct kconfig c;
     uint32_t at;
@@ -2993,7 +2981,6 @@ static int test_kconfig(void) {
         && kc_refused("max_threads = 8\nmax_threads = 9\n", 16)            /* given twice */
         && kc_refused("max_threads = 12\nkernel_stack_kib = 12\nbogus = 1\n", 39);  /* valid, then not */
 }
-#endif
 
 /* ---- the thread limit, and the stack size, are live settings ---- */
 static void kc_exit_thread(void) { }

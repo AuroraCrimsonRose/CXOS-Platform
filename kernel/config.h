@@ -91,10 +91,9 @@
 #endif
 
 /*
- * CXK_X_USERLAND is 0 where X programs cannot run: X compiles to x86-32 only
- * until roadmap step 6, so the x86-64 kernel (tools/cmake/CMakeLists.txt sets
- * it) boots to idle without the executive, and reads kernel.xkco through a
- * stand-in that refuses it (arch/x86_64/xdata64.c). Transitional: see
+ * CXK_X_USERLAND is 0 where X programs cannot run: the x86-64 disk carries no
+ * x86-64 programs yet, so that kernel (tools/cmake/CMakeLists.txt sets it)
+ * boots to idle without the executive. Transitional: see
  * docs/planning/TRANSITIONAL_CODE.md.
  */
 #ifndef CXK_X_USERLAND

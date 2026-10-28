@@ -448,6 +448,22 @@ foreach(src ${KERNEL_X_SRCS})
     )
     list(APPEND KERNEL_OBJS ${obj})
 endforeach()
+# The same for the x86-64 kernel (step 6d2). Its code is position-independent
+# by construction - every reference X64Emitter writes is RIP-relative - so it
+# links in the kernel's top 2 GiB as it does in a user program; it uses no SSE
+# and lowers RSP before touching a local, so no red zone.
+set(KERNEL64_X_OBJS "")
+foreach(src ${KERNEL_X_SRCS})
+    get_filename_component(name ${src} NAME_WE)
+    set(obj ${BUILD_DIR}/kx64_${name}.o)
+    add_custom_command(
+        OUTPUT ${obj}
+        COMMAND ${CXK} compile ${src} ${obj} --no-prelude --object --target x86_64
+        DEPENDS ${src} ${CXK}
+        COMMENT "X64 ${name}.xfxn (linked into the x86-64 kernel)"
+    )
+    list(APPEND KERNEL64_X_OBJS ${obj})
+endforeach()
 
 # ---- stage 1 (flat binary) ----
 add_custom_command(
@@ -845,13 +861,13 @@ add_dependencies(disk_image cxk_disk)
 # in the loader, come with it (docs/boot/CX_BOOT.md section 4).
 set(IMAGES64_DIR ${SRC_DIR}/dist/CXK_x86_64/images)
 set(KERNEL64_ELF ${BUILD_DIR}/kernel64.elf)
+set(KERNEL64_DISK_ELF ${BUILD_DIR}/kernel64.stripped.elf)   # what the disk carries
 set(DISK64_IMG   ${IMAGES64_DIR}/cxk_x86_64.img)
 set(LINKER64     ${SRC_DIR}/kernel/arch/x86_64/linker.ld)
 # The whole kernel since step 5f1: every generic source the 32-bit kernel
 # builds, taken from its list so the two cannot drift, less its architecture
 # and its bitmap page allocator (x86-64 has the page database), plus x86-64's
-# own. The X linked into the 32-bit kernel is not here: X compiles to x86-32
-# only until step 6, and xdata64.c stands in for it.
+# own, and the X linked into the kernel, compiled for x86-64 (KERNEL64_X_OBJS).
 set(KERNEL64_C_SRCS ${KERNEL_C_SRCS})
 list(FILTER KERNEL64_C_SRCS EXCLUDE REGEX "/kernel/arch/x86_32/|/kernel/memman/pmm\\.c$")
 list(APPEND KERNEL64_C_SRCS
@@ -862,7 +878,6 @@ list(APPEND KERNEL64_C_SRCS
     ${SRC_DIR}/kernel/arch/x86_64/ktest_arch.c
     ${SRC_DIR}/kernel/arch/x86_64/pagetable.c
     ${SRC_DIR}/kernel/arch/x86_64/paging.c
-    ${SRC_DIR}/kernel/arch/x86_64/xdata64.c
     ${SRC_DIR}/kernel/memman/buddy.c
     ${SRC_DIR}/kernel/memman/pagedb.c
 )
@@ -905,19 +920,30 @@ foreach(src ${KERNEL64_ASM_SRCS})
     )
     list(APPEND KERNEL64_OBJS ${obj})
 endforeach()
+list(APPEND KERNEL64_OBJS ${KERNEL64_X_OBJS})
 add_custom_command(
     OUTPUT ${KERNEL64_ELF}
     COMMAND ${CMAKE_LD} -m elf_x86_64 -nostdlib -T ${LINKER64} -o ${KERNEL64_ELF} ${KERNEL64_OBJS}
     DEPENDS ${KERNEL64_OBJS} ${LINKER64} ${ARCH_CHECK_STAMP}
     COMMENT "Linking the x86-64 kernel (top 2 GiB)"
 )
+# The disk carries the same link with no symbol table: stage 2 reads the whole
+# file into 512 KB of low memory (KERNEL_SECTORS in boot/stage2.asm) and
+# loads only the PT_LOAD segments, so the symbols cost budget and buy nothing
+# there. kernel64.elf keeps them, for a debugger or addr2line.
+add_custom_command(
+    OUTPUT ${KERNEL64_DISK_ELF}
+    COMMAND ${CMAKE_LD} -m elf_x86_64 -nostdlib --strip-all -T ${LINKER64} -o ${KERNEL64_DISK_ELF} ${KERNEL64_OBJS}
+    DEPENDS ${KERNEL64_OBJS} ${LINKER64} ${KERNEL64_ELF}
+    COMMENT "Linking the x86-64 kernel for the disk (no symbols)"
+)
 add_custom_command(
     OUTPUT ${DISK64_IMG}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${IMAGES64_DIR}
     COMMAND ${CXK} image --out ${DISK64_IMG} --size-mb 64 --boot-mb 8
-            --stage1 ${BOOT_BIN} --stage2 ${STAGE2_BIN} --kernel ${KERNEL64_ELF}
+            --stage1 ${BOOT_BIN} --stage2 ${STAGE2_BIN} --kernel ${KERNEL64_DISK_ELF}
             ${CXK_STAGED}
-    DEPENDS ${BOOT_BIN} ${STAGE2_BIN} ${KERNEL64_ELF} ${CXK}
+    DEPENDS ${BOOT_BIN} ${STAGE2_BIN} ${KERNEL64_DISK_ELF} ${CXK}
             ${CXK_DISK}   # built from the same staged files: rebuilt when one changes
     COMMENT "Building the x86-64 disk (stage 2 enters long mode; the system partition as on x86-32)"
 )
