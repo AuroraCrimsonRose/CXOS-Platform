@@ -205,9 +205,21 @@ programs for it (step 6).
        (`devkit/CXEX.Lang/CodeGen/X64Emitter.cs`, `cxk compile --target
        x86_64`).
    - **6c** `xc` gains the IR and the x86-64 back end; the differential tests
-     and the self-hosting fixed point hold on x86-64.
+     and the self-hosting fixed point hold on x86-64. In three steps, each a
+     green commit:
+     - **6c1** `xc` takes a target (`--target`; its pointer width and
+       alignment replace `PTR_BYTES`), lowers to the IR and dumps it:
+       `os/xc/ir.xfxn`, `irdump`, held to `cxk ir` on x86-32 and x86-64.
+       **Done 2026-10-28.**
+     - **6c2** `xc`'s x86-64 emitter on that IR, held to `cxk compile
+       --target x86_64`'s assembly.
+     - **6c3** `xc` runs as x86-64 (its host layer on `usize` and the
+       `syscall` instruction); the fixed point and `tests/lang/run` hold there.
    - **6d** The executive starts on x86-64 and the full boot passes; the
-     32-bit kernel and code generator are deleted.
+     32-bit kernel and the tree-walking x86-32 code generator are deleted.
+     **X stays cross-architecture:** the `x86_32` target stays in both front
+     ends and the IR, and an x86-32 back end on the IR (like `X64Emitter`)
+     can come back later without touching the language.
 
 **Done when.** Each step closes only when these hold, each proven by a
 sabotage that turns it red, on top of every existing self-test passing:

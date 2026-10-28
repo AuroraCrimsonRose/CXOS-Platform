@@ -61,11 +61,15 @@ fn is_arg(a: *u8, s: *u8) -> bool {
 }
 
 // The diagnostics of a front end, one `error file:line:col message` line each.
-fn dump_diags(f: *front, out: *buf) -> void {
+fn dump_diags(f: *front, out: *buf) -> void { dump_diags_from(f, out, 0xFFFFFFFF); }
+
+// The same, with "error ir: " for each diagnostic from number `later` on: what
+// the IR lowering reported after the front end, as `cxk ir` marks them.
+fn dump_diags_from(f: *front, out: *buf, later: u32) -> void {
     let i: u32 = 0;
     while (i < dg_count(&f.dg)) {
         let g: *diag = dg_at(&f.dg, i);
-        buf_str(out, "error ");
+        if (i >= later) { buf_str(out, "error ir: "); } else { buf_str(out, "error "); }
         if (g.file != 0xFFFFFFFF) {
             let sf: *srcfile = file_at(f, g.file);
             buf_append(out, &f.strs.data[sf.name], sf.nlen);
@@ -105,6 +109,10 @@ fn parse_opts(o: *opts) -> bool {
         }
         else if (is_arg(a, "-I") && i + 1 < xc_argc()) { i += 1; list_push(&o.incs, i); }
         else if (is_arg(a, "--std") && i + 1 < xc_argc()) { i += 1; o.std = i; }
+        else if (is_arg(a, "--target") && i + 1 < xc_argc()) {
+            i += 1;
+            if (!target_set(xc_arg(i))) { err_str("error: unknown target (x86_32 or x86_64)\n"); return false; }
+        }
         else { o.first = i; return true; }
         i += 1;
     }

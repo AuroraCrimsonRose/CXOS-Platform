@@ -1,0 +1,68 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// xc/irdump.xfxn - print the IR the X compiler lowers programs to.
+// Aurora Tejeda / CATX Systems
+//
+//   irdump [-s] [--target x86_32|x86_64] [--prelude FILE | --no-prelude] [-I DIR]... [--std DIR] PROGRAM...
+//
+// The same format as `cxk ir` in the DevKit (devkit/), so the lowering written in
+// X can be compared with the C# one, on either target. Each PROGRAM is lowered
+// on its own, with everything it imports. Per program:
+//
+//   == path
+//   error file:line:col message        every front-end diagnostic, in order
+//   error ir: file:line:col message    then the lowering's
+//   ...the module...                   if there were none: exactly what `cxk ir` prints
+//
+// -s prints a line per program instead: the error count and an FNV-1a hash of
+// everything after the `==` line.
+
+import "xc_sys.xfxn";
+import "ir.xfxn";
+import "dumputil.xfxn";
+
+fn xc_main() -> i32 {
+    let o: opts;
+    if (!parse_opts(&o)) { return 1; }
+    if (o.first == 0) { return 0; }
+    let out: buf = buf_new();
+    let i: u32 = o.first;
+    while (i < xc_argc()) {
+        let path: *u8 = xc_arg(i);
+        let f: front;
+        if (!analyze_with(&o, &f, path)) { err_str("irdump: out of memory, or a file could not be read\n"); return 2; }
+        let ir: buf = buf_new();
+        let have: bool = false;
+        let front_end: u32 = dg_count(&f.dg);
+        if (f.checked && front_end == 0) {
+            let l: irlow;
+            ir_init(&l, &f.s);
+            ir_program(&l, &f.decls, &ir);
+            have = dg_count(&f.dg) == 0;
+        }
+        let d: buf = buf_new();
+        dump_diags_from(&f, &d, front_end);
+        if (have) { buf_append(&d, ir.data, ir.len); }
+        if (o.sum) {
+            buf_str(&out, path);
+            buf_str(&out, ": ");
+            buf_u32(&out, dg_count(&f.dg));
+            buf_str(&out, " errors, ");
+            buf_u32(&out, ir.len);
+            buf_str(&out, " bytes, fnv1a ");
+            buf_hex32(&out, fnv1a(d.data, d.len));
+            buf_push(&out, '\n');
+        } else {
+            buf_str(&out, "== ");
+            buf_str(&out, path);
+            buf_push(&out, '\n');
+            buf_append(&out, d.data, d.len);
+        }
+        buf_free(&ir);
+        buf_free(&d);
+        out_buf(&out);
+        buf_clear(&out);
+        i += 1;
+    }
+    return 0;
+}

@@ -51,7 +51,8 @@ public static class ProgramDiffHarness
     /// <param name="prog">X program under test, e.g. "semadump".</param>
     /// <param name="verb">The matching `cxk` command, e.g. "sema".</param>
     /// <param name="counted">Output text whose occurrences are reported, as a sanity signal.</param>
-    public static void Compare(string prog, string verb, string counted)
+    /// <param name="extra">Options given to both sides before the rest, e.g. "--target", "x86_64".</param>
+    public static void Compare(string prog, string verb, string counted, params string[] extra)
     {
         string repo = Requires.Repo();
         string cxk = Requires.Cxk();
@@ -127,11 +128,12 @@ public static class ProgramDiffHarness
                     var chunk = files.Skip(k).Take(100).ToList();
 
                     var cArgs = new List<string> { verb };
+                    cArgs.AddRange(extra);
                     if (!pre) cArgs.Add("--no-prelude");
                     cArgs.AddRange(incs);
                     cArgs.AddRange(chunk);
 
-                    var xArgs = new List<string>();
+                    var xArgs = new List<string>(extra);
                     if (pre) { xArgs.Add("--prelude"); xArgs.Add(prelude); } else xArgs.Add("--no-prelude");
                     xArgs.AddRange(incs);
                     xArgs.AddRange(chunk);

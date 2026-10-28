@@ -19,4 +19,12 @@ public class SemaAsmDiffTests
     [Fact]
     public void Code_generator_in_X_agrees_with_the_C_sharp_generator() =>
         ProgramDiffHarness.Compare("asmdump", "asm", "\n.text\n");
+
+    [Fact]
+    public void IR_lowering_in_X_agrees_with_the_C_sharp_lowering_on_x86_32() =>
+        ProgramDiffHarness.Compare("irdump", "ir", "\nfn @", "--target", "x86_32");
+
+    [Fact]
+    public void IR_lowering_in_X_agrees_with_the_C_sharp_lowering_on_x86_64() =>
+        ProgramDiffHarness.Compare("irdump", "ir", "\nfn @", "--target", "x86_64");
 }

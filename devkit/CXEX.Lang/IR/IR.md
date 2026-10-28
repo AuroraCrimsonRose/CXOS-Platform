@@ -9,6 +9,12 @@ System V back end (`CodeGen/X64Emitter.cs`, step 6b3) reads it: `cxk compile
 --target x86_64` lowers, verifies and emits ELF64. The x86-32 emitter still
 works from the tree and is deleted with the 32-bit code (6d).
 
+The X compiler has the lowering too (step 6c1): `os/xc/ir.xfxn` is a port
+of `IrLowering.cs` and `IrPrinter.cs`, and its `irdump` is held to `cxk ir`,
+character for character, on both targets by the Differential tests
+(`SemaAsmDiffTests`). It has no verifier of its own: a module the C# verifier
+rejects prints differently, which the comparison catches.
+
 The lowering keeps the x86-32 emitter's meaning decision for decision, so the
 two can be held to each other. The places it departs, deliberately, are listed
 at the end.

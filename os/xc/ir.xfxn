@@ -1,0 +1,1527 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// xc/ir.xfxn - the typed IR, lowered from the checked tree, and its text.
+// Aurora Tejeda / CATX Systems
+//
+//   let l: irlow;
+//   ir_init(&l, &s);
+//   ir_program(&l, &decls, &out);   // the module as `cxk ir` prints it, into out
+//
+// Roadmap step 6c1: a port of IrLowering.cs and IrPrinter.cs in
+// devkit/CXEX.Lang/IR, held to them by `cxk ir` - the same text, character for
+// character, on x86-32 and x86-64 (sema's target_set). IR.md beside the C# is
+// the meaning of every instruction; this file only builds it.
+//
+// One function's IR is held at a time: it is lowered, pruned, printed and
+// dropped before the next, so the tables below are cleared, not freed. What
+// outlives a function - the strings, the globals' text - is kept in `irlow`.
+// Values, instructions and blocks are records in a buf, named by index.
+
+import "sema.xfxn";
+
+// IrType, in its order
+const IR_VOID: u32 = 0; const IR_BOOL: u32 = 1; const IR_I8: u32 = 2;   const IR_I16: u32 = 3;
+const IR_I32: u32 = 4;  const IR_I64: u32 = 5;  const IR_I128: u32 = 6; const IR_PTR: u32 = 7;
+global ir_type_names: [8]*u8 = ["void", "bool", "i8", "i16", "i32", "i64", "i128", "ptr"];
+global ir_type_enum: [8]*u8 = ["Void", "Bool", "I8", "I16", "I32", "I64", "I128", "Ptr"];   // in a message, as C# names them
+
+// BinOp's names, as a message spells them
+global bin_op_names: [18]*u8 = ["Add", "Sub", "Mul", "Div", "Mod", "Eq", "Ne", "Lt", "Le", "Gt", "Ge",
+                                "And", "Or", "BitAnd", "BitOr", "BitXor", "Shl", "Shr"];
+
+// IrBinOp, IrUnOp, IrCmp and IrConv, in their order
+const IB_ADD: u32 = 0;  const IB_SUB: u32 = 1;  const IB_MUL: u32 = 2;   const IB_SDIV: u32 = 3;  const IB_UDIV: u32 = 4;
+const IB_SREM: u32 = 5; const IB_UREM: u32 = 6; const IB_AND: u32 = 7;   const IB_OR: u32 = 8;    const IB_XOR: u32 = 9;
+const IB_SHL: u32 = 10; const IB_LSHR: u32 = 11; const IB_ASHR: u32 = 12;
+global ir_bin_names: [13]*u8 = ["add", "sub", "mul", "sdiv", "udiv", "srem", "urem", "and", "or", "xor", "shl", "lshr", "ashr"];
+const IU_NEG: u32 = 0;  const IU_NOT: u32 = 1;
+global ir_un_names: [2]*u8 = ["neg", "not"];
+const IC_EQ: u32 = 0;  const IC_NE: u32 = 1;  const IC_SLT: u32 = 2; const IC_SLE: u32 = 3; const IC_SGT: u32 = 4;
+const IC_SGE: u32 = 5; const IC_ULT: u32 = 6; const IC_ULE: u32 = 7; const IC_UGT: u32 = 8; const IC_UGE: u32 = 9;
+global ir_cmp_names: [10]*u8 = ["eq", "ne", "slt", "sle", "sgt", "sge", "ult", "ule", "ugt", "uge"];
+const IK_TRUNC: u32 = 0; const IK_ZEXT: u32 = 1; const IK_SEXT: u32 = 2; const IK_PTRTOINT: u32 = 3; const IK_INTTOPTR: u32 = 4;
+global ir_conv_names: [5]*u8 = ["trunc", "zext", "sext", "ptrtoint", "inttoptr"];
+
+// A value: a register (id), a constant (k), a symbol (a name in the parser's
+// text, id and len), a string (its number, id) or a stack slot (id).
+const IV_REG: u32 = 0; const IV_CONST: u32 = 1; const IV_SYM: u32 = 2; const IV_STR: u32 = 3; const IV_SLOT: u32 = 4;
+const IR_NONE: u32 = 0xFFFFFFFF;   // no value: C#'s null
+struct irval { kind: u32, ty: u32, id: u32, len: u32, k: u128 }
+
+// An instruction. dst is a value or IR_NONE; the rest by op:
+//   bin, un, cmp, conv: sub = the operation, a (and b) the operands
+//   load: a = the address        store: a = the value, b = the address
+//   copy: a = dst, b = src, n = bytes                  zero: a = dst, n = bytes
+//   ptradd: a = base, b = offset
+//   call: a = callee, b = the aggregate result's address or IR_NONE, n = its
+//         size; args/nargs = pairs (value, aggregate size) in irfn.args
+//   syscall: args/nargs = pairs (value, 0)
+const IO_BIN: u32 = 0;  const IO_UN: u32 = 1;   const IO_CMP: u32 = 2;   const IO_CONV: u32 = 3;
+const IO_LOAD: u32 = 4; const IO_STORE: u32 = 5; const IO_COPY: u32 = 6; const IO_ZERO: u32 = 7;
+const IO_PTRADD: u32 = 8; const IO_CALL: u32 = 9; const IO_SYSCALL: u32 = 10;
+struct irins { op: u32, sub: u32, dst: u32, a: u32, b: u32, n: u32, args: u32, nargs: u32 }
+
+// A block, in the order it started. Its instructions run from `first` to the
+// next block's first: only the newest block is ever written to. The
+// terminator:
+//   br: ta = block          brif: ta = cond, tb = then, tc = else
+//   switch: ta = value, tb = default; cases/ncases = pairs (constant, block) in irfn.args
+//   ret: ta = value or IR_NONE                ret agg: ta = src, tb = bytes
+// Block numbers are the ids NewBlock gave until prune renumbers them.
+const IT_NONE: u32 = 0; const IT_BR: u32 = 1; const IT_BRIF: u32 = 2; const IT_SWITCH: u32 = 3;
+const IT_RET: u32 = 4;  const IT_RETAGG: u32 = 5;
+struct irblk { id: u32, first: u32, term: u32, ta: u32, tb: u32, tc: u32, cases: u32, ncases: u32 }
+
+struct irslot { size: u32, align: u32, name: u32, nlen: u32 }   // nlen 0: a temporary
+struct irparam { name: u32, nlen: u32, ty: u32, agg: u32, reg: u32 }
+
+struct irfn {
+    decl: u32,          // the fn declaration: its name, its section
+    vals: buf,          // irval
+    ins: buf,           // irins
+    blks: buf,          // irblk
+    slots: buf,         // irslot
+    params: buf,        // irparam
+    args: list,         // calls' arguments and switches' cases, in pairs
+    nregs: u32,
+    nblocks: u32,
+    ret_ty: u32,        // the return: a value type, or with ret_agg > 0 an aggregate
+    ret_agg: u32,
+    is_extern: bool,
+}
+
+struct irlow {
+    s: *sema,
+    p: *parser,
+    f: irfn,
+    strings: smap,      // a string's bytes -> its number
+    strs: buf,          // the module's `string` lines
+    globals: buf,       // ... its `global` lines
+    fns: buf,           // ... and its functions
+    gen: u32,           // which function a variable's stamp belongs to
+    var_gen: list,      // per symbol: stamp, address (a value), type
+    var_addr: list,
+    var_ty: list,
+    cur_return: u32,    // the return type node
+    ret_slot: u32,      // the slot an aggregate return goes through, or IR_NONE
+    defer_items: list,  // deferred statements, block after block
+    defer_marks: list,  // where each open block's begin in defer_items
+    loop_top: list,     // enclosing loops: continue and break blocks, and how
+    loop_end: list,     // many defer lists were open when each began
+    loop_depth: list,
+    dfirst: bool,       // no data item written yet in this global
+}
+
+fn irval_size() -> u32 { let x: irval; return sizeof x; }
+fn irins_size() -> u32 { let x: irins; return sizeof x; }
+fn irblk_size() -> u32 { let x: irblk; return sizeof x; }
+fn irslot_size() -> u32 { let x: irslot; return sizeof x; }
+fn irparam_size() -> u32 { let x: irparam; return sizeof x; }
+
+fn ir_val(f: *irfn, i: u32) -> *irval { let a: *irval = f.vals.data as *irval; return &a[i]; }
+fn ir_ins(f: *irfn, i: u32) -> *irins { let a: *irins = f.ins.data as *irins; return &a[i]; }
+fn ir_blk(f: *irfn, i: u32) -> *irblk { let a: *irblk = f.blks.data as *irblk; return &a[i]; }
+fn ir_slot(f: *irfn, i: u32) -> *irslot { let a: *irslot = f.slots.data as *irslot; return &a[i]; }
+fn ir_param(f: *irfn, i: u32) -> *irparam { let a: *irparam = f.params.data as *irparam; return &a[i]; }
+fn ir_nins(f: *irfn) -> u32 { return f.ins.len / irins_size(); }
+fn ir_nblks(f: *irfn) -> u32 { return f.blks.len / irblk_size(); }
+fn ir_nslots(f: *irfn) -> u32 { return f.slots.len / irslot_size(); }
+fn ir_nparams(f: *irfn) -> u32 { return f.params.len / irparam_size(); }
+
+// ---- types ----
+
+fn ir_bits(t: u32) -> u32 {
+    if (t == IR_BOOL) { return 1; }
+    if (t == IR_I8) { return 8; }
+    if (t == IR_I16) { return 16; }
+    if (t == IR_I32) { return 32; }
+    if (t == IR_I64) { return 64; }
+    if (t == IR_I128) { return 128; }
+    if (t == IR_PTR) { return target_ptr * 8; }
+    return 0;
+}
+
+fn ir_is_int(t: u32) -> bool { return t >= IR_I8 && t <= IR_I128; }
+
+fn ir_int_of_bytes(n: u32) -> u32 {
+    if (n == 1) { return IR_I8; }
+    if (n == 2) { return IR_I16; }
+    if (n == 8) { return IR_I64; }
+    if (n == 16) { return IR_I128; }
+    return IR_I32;
+}
+
+// The integer as wide as a pointer: what usize and isize become, what
+// ptrtoint yields and what an offset or a syscall word is.
+fn ir_ptr_int() -> u32 { return ir_int_of_bytes(target_ptr); }
+
+fn ir_mask(bits: u32) -> u128 {
+    if (bits >= 128) { return ~(0 as u128); }
+    return ((1 as u128) << bits) - 1;
+}
+
+// ---- building values ----
+
+fn ir_add_val(f: *irfn, kind: u32, ty: u32, id: u32, len: u32, k: u128) -> u32 {
+    let n: u32 = f.vals.len / irval_size();
+    let v: irval = irval { kind: kind, ty: ty, id: id, len: len, k: k };
+    buf_append(&f.vals, (&v) as *u8, irval_size());
+    return n;
+}
+
+fn lw_reg(l: *irlow, ty: u32) -> u32 { let r: u32 = l.f.nregs; l.f.nregs += 1; return ir_add_val(&l.f, IV_REG, ty, r, 0, 0); }
+fn lw_k(l: *irlow, ty: u32, v: u128) -> u32 { return ir_add_val(&l.f, IV_CONST, ty, 0, 0, v & ir_mask(ir_bits(ty))); }
+fn lw_sym(l: *irlow, n: u32) -> u32 { let x: *node = node_at(l.p, n); return ir_add_val(&l.f, IV_SYM, IR_PTR, x.text, x.tlen, 0); }
+fn lw_slot_ref(l: *irlow, id: u32) -> u32 { return ir_add_val(&l.f, IV_SLOT, IR_PTR, id, 0, 0); }
+
+fn ir_is_const(f: *irfn, v: u32) -> bool { return ir_val(f, v).kind == IV_CONST; }
+fn ir_vty(f: *irfn, v: u32) -> u32 { return ir_val(f, v).ty; }
+
+// ---- the tree, as the lowering sees it ----
+
+fn ln(l: *irlow, n: u32) -> *node { return node_at(l.p, n); }
+fn llst(l: *irlow, n: u32, i: u32) -> u32 { return list_at(l.p, ln(l, n).list, i); }
+
+fn lw_ty(l: *irlow, x: u32) -> u32 {
+    let t: u32 = st_get(&l.s.types, x);
+    if (t == 0) { return l.s.t_i32; }
+    return t;
+}
+
+fn lw_x(l: *irlow, t: u32) -> u32 { return expand(l.s, t); }
+fn lw_kind(l: *irlow, t: u32) -> nk { return ln(l, lw_x(l, t)).kind; }
+// Bytes in memory, never a value: a struct, a sum type, an array.
+fn lw_is_agg(l: *irlow, t: u32) -> bool { return struct_of(l.s, t) != 0 || lw_kind(l, t) == nk.t_array; }
+// An integer past 32 bits: worked on at its own width, not promoted.
+fn lw_is_wide(l: *irlow, t: u32) -> bool { let x: *node = ln(l, lw_x(l, t)); return x.kind == nk.t_prim && prim_bytes(x.op) > 4; }
+fn lw_signed(l: *irlow, t: u32) -> bool { let x: *node = ln(l, lw_x(l, t)); return x.kind == nk.t_prim && prim_signed(x.op); }
+
+fn lw_scalar(l: *irlow, t: u32) -> u32 {
+    let x: *node = ln(l, lw_x(l, t));
+    if (x.kind == nk.t_prim) {
+        if (x.op == PRIM_BOOL) { return IR_BOOL; }
+        if (x.op == PRIM_VOID) { return IR_VOID; }
+        return ir_int_of_bytes(prim_bytes(x.op));
+    }
+    if (x.kind == nk.t_ptr || x.kind == nk.t_fn) { return IR_PTR; }
+    return IR_VOID;
+}
+
+// Where a sum type's payload starts, 4 bytes in on x86-32.
+fn lw_payload_offset(l: *irlow, sum: u32) -> u32 {
+    let e: u32 = enum_of(l.s, sum);
+    if (e == 0) { return 4; }
+    return payload_offset(l.s, e);
+}
+
+fn lw_sym_of(l: *irlow, n: u32) -> u32 { return st_get(&l.s.resolved, n); }   // symbol + 1, or 0
+
+// ---- variables, stamped per function ----
+
+fn lw_var_set(l: *irlow, sym1: u32, addr: u32, ty: u32) -> void {
+    st_set(&l.var_gen, sym1, l.gen);
+    st_set(&l.var_addr, sym1, addr);
+    st_set(&l.var_ty, sym1, ty);
+}
+fn lw_var_has(l: *irlow, sym1: u32) -> bool { return sym1 != 0 && st_get(&l.var_gen, sym1) == l.gen; }
+fn lw_var_addr(l: *irlow, sym1: u32) -> u32 { return st_get(&l.var_addr, sym1); }
+fn lw_var_ty(l: *irlow, sym1: u32) -> u32 { return st_get(&l.var_ty, sym1); }
+
+// ---- blocks and instructions ----
+
+fn lw_new_block(l: *irlow) -> u32 { let b: u32 = l.f.nblocks; l.f.nblocks += 1; return b; }
+
+fn lw_add_block(l: *irlow, id: u32) -> void {
+    let b: irblk = irblk { id: id, first: ir_nins(&l.f), term: IT_NONE, ta: 0, tb: 0, tc: 0, cases: 0, ncases: 0 };
+    buf_append(&l.f.blks, (&b) as *u8, irblk_size());
+}
+
+fn lw_cur(l: *irlow) -> *irblk { return ir_blk(&l.f, ir_nblks(&l.f) - 1); }
+
+/* Code after a jump or a return is unreachable but still lowered (it may
+   declare what later code names); it goes in a block of its own, which
+   pruning then drops. */
+fn lw_open(l: *irlow) -> void {
+    if (lw_cur(l).term == IT_NONE) { return; }
+    lw_add_block(l, lw_new_block(l));
+}
+
+fn lw_emit(l: *irlow, op: u32, sub: u32, dst: u32, a: u32, b: u32, n: u32, args: u32, nargs: u32) -> void {
+    lw_open(l);
+    let i: irins = irins { op: op, sub: sub, dst: dst, a: a, b: b, n: n, args: args, nargs: nargs };
+    buf_append(&l.f.ins, (&i) as *u8, irins_size());
+}
+
+fn lw_terminate(l: *irlow, term: u32, ta: u32, tb: u32, tc: u32) -> void {
+    lw_open(l);
+    let c: *irblk = lw_cur(l);
+    c.term = term; c.ta = ta; c.tb = tb; c.tc = tc;
+}
+
+fn lw_jump_to(l: *irlow, id: u32) -> void {
+    let c: *irblk = lw_cur(l);
+    if (c.term == IT_NONE) { c.term = IT_BR; c.ta = id; }
+}
+
+// Blocks join the function when they start, so the dump reads in source order.
+fn lw_start(l: *irlow, id: u32) -> void { lw_jump_to(l, id); lw_add_block(l, id); }
+
+fn lw_def(l: *irlow, ty: u32, op: u32, sub: u32, a: u32, b: u32) -> u32 {
+    let d: u32 = lw_reg(l, ty);
+    lw_emit(l, op, sub, d, a, b, 0, 0, 0);
+    return d;
+}
+
+fn lw_load(l: *irlow, ty: u32, addr: u32) -> u32 { return lw_def(l, ty, IO_LOAD, 0, addr, 0); }
+fn lw_store(l: *irlow, v: u32, addr: u32) -> void { lw_emit(l, IO_STORE, 0, IR_NONE, v, addr, 0, 0, 0); }
+
+fn lw_ptr_add(l: *irlow, b: u32, off: u32) -> u32 {
+    if (off == 0) { return b; }
+    let k: u32 = lw_k(l, ir_ptr_int(), off as u128);
+    return lw_def(l, IR_PTR, IO_PTRADD, 0, b, k);
+}
+
+fn lw_new_slot(l: *irlow, t: u32, name: u32, nlen: u32) -> u32 {
+    let size: u32 = size_of(l.s, t);
+    if (size < 1) { size = 1; }
+    let sl: irslot = irslot { size: size, align: align_of(l.s, t), name: name, nlen: nlen };
+    let id: u32 = ir_nslots(&l.f);
+    buf_append(&l.f.slots, (&sl) as *u8, irslot_size());
+    return lw_slot_ref(l, id);
+}
+
+fn lw_ret_slot(l: *irlow) -> u32 {
+    if (l.ret_slot == IR_NONE) { l.ret_slot = ir_val(&l.f, lw_new_slot(l, l.cur_return, 0, 0)).id; }
+    return lw_slot_ref(l, l.ret_slot);
+}
+
+fn lw_error(l: *irlow, msg: *u8, at: u32) -> void { err(l.s, msg, at); }
+
+// ---- the program ----
+
+fn ir_init(l: *irlow, s: *sema) -> void {
+    l.s = s;
+    l.p = s.p;
+    l.f.vals = buf_new(); l.f.ins = buf_new(); l.f.blks = buf_new(); l.f.slots = buf_new(); l.f.params = buf_new();
+    l.f.args = list_new();
+    l.strings = smap_new();
+    l.strs = buf_new();
+    l.globals = buf_new();
+    l.fns = buf_new();
+    l.gen = 0;
+    l.var_gen = list_new(); l.var_addr = list_new(); l.var_ty = list_new();
+    l.defer_items = list_new(); l.defer_marks = list_new();
+    l.loop_top = list_new(); l.loop_end = list_new(); l.loop_depth = list_new();
+    s.expand_enums = true;   // a plain enum is its backing integer from here on (SemaContext.ExpandEnums)
+}
+
+fn ir_program(l: *irlow, decls: *list, out: *buf) -> void {
+    let i: u32 = 0;
+    while (i < decls.len) {
+        let d: u32 = decls.items[i];
+        i += 1;
+        let k: nk = ln(l, d).kind;
+        if (k == nk.d_fn) {
+            if (ln(l, d).b != 0) { lw_fn(l, d); } else { lw_extern(l, d); }
+            ir_print_fn(l, &l.fns);
+        } else if (k == nk.d_global) { lw_global(l, d); }
+    }
+    buf_str(out, "module pointer ");
+    buf_u32(out, target_ptr);
+    buf_push(out, '\n');
+    buf_append(out, l.strs.data, l.strs.len);
+    buf_append(out, l.globals.data, l.globals.len);
+    buf_append(out, l.fns.data, l.fns.len);
+}
+
+fn lw_section(l: *irlow, d: u32) -> u32 {
+    let i: u32 = 0;
+    while (i < ln(l, d).nattrs) {
+        let a: u32 = list_at(l.p, ln(l, d).attrs, i);
+        if (node_name_is(l.s, a, "section") && ln(l, a).count == 1) {
+            let arg: u32 = llst(l, a, 0);
+            if (ln(l, arg).op == 0 && ln(l, ln(l, arg).a).kind == nk.e_str) { return ln(l, arg).a; }
+        }
+        i += 1;
+    }
+    return 0;
+}
+
+fn lw_reset(l: *irlow, d: u32) -> void {
+    l.f.decl = d;
+    l.f.vals.len = 0; l.f.ins.len = 0; l.f.blks.len = 0; l.f.slots.len = 0; l.f.params.len = 0;
+    l.f.args.len = 0;
+    l.f.nregs = 0;
+    l.f.nblocks = 0;
+    l.f.is_extern = false;
+}
+
+// A parameter or a return: a value type, or an aggregate of its bytes.
+fn lw_param_of(l: *irlow, t: u32, ty: *u32, agg: *u32) -> void {
+    if (lw_is_agg(l, t)) { ty[0] = IR_VOID; agg[0] = size_of(l.s, t); return; }
+    ty[0] = lw_scalar(l, t);
+    agg[0] = 0;
+}
+
+fn lw_add_param(l: *irlow, pm: u32, reg: u32) -> void {
+    let p: irparam = irparam { name: ln(l, pm).text, nlen: ln(l, pm).tlen, ty: 0, agg: 0, reg: reg };
+    lw_param_of(l, ln(l, pm).a, &p.ty, &p.agg);
+    buf_append(&l.f.params, (&p) as *u8, irparam_size());
+}
+
+fn lw_extern(l: *irlow, d: u32) -> void {
+    lw_reset(l, d);
+    l.f.is_extern = true;
+    let i: u32 = 0;
+    while (i < ln(l, d).count) { lw_add_param(l, llst(l, d, i), 0); i += 1; }
+    lw_param_of(l, ln(l, d).a, &l.f.ret_ty, &l.f.ret_agg);
+}
+
+fn lw_fn(l: *irlow, d: u32) -> void {
+    lw_reset(l, d);
+    l.gen += 1;
+    l.defer_items.len = 0; l.defer_marks.len = 0;
+    l.loop_top.len = 0; l.loop_end.len = 0; l.loop_depth.len = 0;
+    l.cur_return = ln(l, d).a;
+    l.ret_slot = IR_NONE;
+    lw_param_of(l, l.cur_return, &l.f.ret_ty, &l.f.ret_agg);
+    lw_add_block(l, lw_new_block(l));
+
+    /* A scalar parameter arrives in a register and lives in a slot, so it
+       can be assigned and have its address taken. An aggregate one arrives
+       as the address of the function's own copy, which is its storage
+       already. */
+    let pend_reg: list = list_new();
+    let pend_slot: list = list_new();
+    let i: u32 = 0;
+    while (i < ln(l, d).count) {
+        let pm: u32 = llst(l, d, i);
+        i += 1;
+        let pt: u32 = ln(l, pm).a;
+        let agg: bool = lw_is_agg(l, pt);
+        let rty: u32 = IR_PTR;
+        if (!agg) { rty = lw_scalar(l, pt); }
+        let reg: u32 = lw_reg(l, rty);
+        lw_add_param(l, pm, ir_val(&l.f, reg).id);
+        let home: u32 = reg;
+        if (!agg) {
+            home = lw_new_slot(l, pt, ln(l, pm).text, ln(l, pm).tlen);
+            list_push(&pend_reg, reg);
+            list_push(&pend_slot, home);
+        }
+        let sy: u32 = st_get(&l.s.letsym, pm);
+        if (sy != 0) { lw_var_set(l, sy, home, pt); }
+    }
+    i = 0;
+    while (i < pend_reg.len) { lw_store(l, pend_reg.items[i], pend_slot.items[i]); i += 1; }
+    list_free(&pend_reg);
+    list_free(&pend_slot);
+
+    let ls: list = list_new();
+    lw_collect_locals(l, ln(l, d).b, &ls);
+    i = 0;
+    while (i < ls.len) {
+        let lt: u32 = ls.items[i];
+        i += 1;
+        let ty: u32 = st_get(&l.s.localty, lt);
+        if (ty == 0) { ty = l.s.t_i32; }
+        let sl: u32 = lw_new_slot(l, ty, ln(l, lt).text, ln(l, lt).tlen);
+        let sy: u32 = st_get(&l.s.letsym, lt);
+        if (sy != 0) { lw_var_set(l, sy, sl, ty); }
+    }
+    list_free(&ls);
+
+    lw_block(l, ln(l, d).b);
+
+    /* Falling off the end. The emitter returns whatever eax holds; zero
+       here, so a back end has nothing undefined to reproduce. */
+    if (lw_cur(l).term == IT_NONE) {
+        if (l.f.ret_agg > 0) {
+            let rs: u32 = lw_ret_slot(l);
+            let c: *irblk = lw_cur(l);
+            c.term = IT_RETAGG; c.ta = rs; c.tb = l.f.ret_agg;
+        } else {
+            let v: u32 = IR_NONE;
+            if (l.f.ret_ty != IR_VOID) { v = lw_k(l, l.f.ret_ty, 0); }
+            let c: *irblk = lw_cur(l);
+            c.term = IT_RET; c.ta = v;
+        }
+    }
+    ir_prune(&l.f);
+}
+
+// ---- pruning: drop the blocks nothing reaches and number the rest in order ----
+
+fn ir_succ_count(f: *irfn, b: *irblk) -> u32 {
+    if (b.term == IT_BR) { return 1; }
+    if (b.term == IT_BRIF) { return 2; }
+    if (b.term == IT_SWITCH) { return 1 + b.ncases; }
+    return 0;
+}
+
+fn ir_succ(f: *irfn, b: *irblk, i: u32) -> u32 {
+    if (b.term == IT_BR) { return b.ta; }
+    if (b.term == IT_BRIF) { if (i == 0) { return b.tb; } return b.tc; }
+    if (i == 0) { return b.tb; }
+    return f.args.items[b.cases + (i - 1) * 2 + 1];
+}
+
+fn ir_set_succ(f: *irfn, b: *irblk, i: u32, v: u32) -> void {
+    if (b.term == IT_BR) { b.ta = v; return; }
+    if (b.term == IT_BRIF) { if (i == 0) { b.tb = v; } else { b.tc = v; } return; }
+    if (i == 0) { b.tb = v; return; }
+    f.args.items[b.cases + (i - 1) * 2 + 1] = v;
+}
+
+fn ir_prune(f: *irfn) -> void {
+    let n: u32 = ir_nblks(f);
+    // the record of each block number, and whether it is reached
+    let at: list = list_new();
+    let seen: list = list_new();
+    let i: u32 = 0;
+    while (i < f.nblocks) { list_push(&at, IR_NONE); i += 1; }
+    i = 0;
+    while (i < n) { at.items[ir_blk(f, i).id] = i; list_push(&seen, 0); i += 1; }
+    let work: list = list_new();
+    list_push(&work, 0);
+    while (work.len > 0) {
+        let r: u32 = list_pop(&work);
+        if (seen.items[r] != 0) { continue; }
+        seen.items[r] = 1;
+        let b: *irblk = ir_blk(f, r);
+        let k: u32 = 0;
+        while (k < ir_succ_count(f, b)) { list_push(&work, at.items[ir_succ(f, b, k)]); k += 1; }
+    }
+    // each kept block's new number, by its old one
+    let num: list = list_new();
+    i = 0;
+    while (i < f.nblocks) { list_push(&num, IR_NONE); i += 1; }
+    let kept: u32 = 0;
+    i = 0;
+    while (i < n) {
+        if (seen.items[i] != 0) { num.items[ir_blk(f, i).id] = kept; kept += 1; }
+        i += 1;
+    }
+    // renumber in place; a dropped block keeps its record, marked by id IR_NONE
+    i = 0;
+    while (i < n) {
+        let b: *irblk = ir_blk(f, i);
+        if (seen.items[i] == 0) { b.id = IR_NONE; }
+        else {
+            b.id = num.items[b.id];
+            let k: u32 = 0;
+            while (k < ir_succ_count(f, b)) { ir_set_succ(f, b, k, num.items[ir_succ(f, b, k)]); k += 1; }
+        }
+        i += 1;
+    }
+    list_free(&at);
+    list_free(&seen);
+    list_free(&work);
+    list_free(&num);
+}
+
+// The instructions of block record r run to the next record's first.
+fn ir_blk_end(f: *irfn, r: u32) -> u32 {
+    if (r + 1 < ir_nblks(f)) { return ir_blk(f, r + 1).first; }
+    return ir_nins(f);
+}
+
+// ---- locals, in the order the C# yields them ----
+
+fn lw_collect_locals(l: *irlow, b: u32, out: *list) -> void {
+    let i: u32 = 0;
+    while (i < ln(l, b).count) { lw_locals_in(l, llst(l, b, i), out); i += 1; }
+}
+
+fn lw_locals_in(l: *irlow, st: u32, out: *list) -> void {
+    let x: *node = ln(l, st);
+    switch (x.kind) {
+        case nk.s_let { list_push(out, st); }
+        case nk.s_block { lw_collect_locals(l, st, out); }
+        case nk.s_if { lw_collect_locals(l, x.b, out); if (ln(l, st).c != 0) { lw_collect_locals(l, ln(l, st).c, out); } }
+        case nk.s_while { lw_collect_locals(l, x.b, out); }
+        case nk.s_defer { lw_locals_in(l, x.a, out); }
+        case nk.s_switch {
+            let i: u32 = 0;
+            while (i < ln(l, st).count) {
+                let c: u32 = llst(l, st, i);
+                if (ln(l, c).op == 1) { list_push(out, c); }
+                lw_collect_locals(l, ln(l, c).a, out);
+                i += 1;
+            }
+            if (ln(l, st).b != 0) { lw_collect_locals(l, ln(l, st).b, out); }
+        }
+        else { }
+    }
+}
+
+// ---- globals ----
+
+fn lw_is_function_name(l: *irlow, x: u32) -> bool {
+    if (x == 0 || ln(l, x).kind != nk.e_name) { return false; }
+    let sy: u32 = lw_sym_of(l, x);
+    return sy != 0 && sym_at(l.s, sy - 1).kind == SK_FUNCTION;
+}
+
+fn g_str(l: *irlow, s: *u8) -> void { buf_str(&l.globals, s); }
+fn g_u32(l: *irlow, v: u32) -> void { buf_u32(&l.globals, v); }
+fn g_text(l: *irlow, at: u32, len: u32) -> void { buf_append(&l.globals, &l.p.text.data[at], len); }
+
+fn lw_item(l: *irlow) -> void { if (!l.dfirst) { g_str(l, ", "); } l.dfirst = false; }
+fn lw_data_zero(l: *irlow, n: u32) -> void { lw_item(l); g_str(l, "zero "); g_u32(l, n); }
+fn lw_data_bytes(l: *irlow, v: u128, n: u32) -> void {
+    lw_item(l);
+    g_str(l, "bytes ");
+    let i: u32 = 0;
+    while (i < n) {
+        if (i > 0) { g_str(l, " "); }
+        if (i < 16) { g_u32(l, ((v >> (i * 8)) as u32) & 0xFF); } else { g_str(l, "0"); }
+        i += 1;
+    }
+}
+fn lw_data_addr(l: *irlow, at: u32, len: u32) -> void { lw_item(l); g_str(l, "addr @"); g_text(l, at, len); }
+
+/* A global: zero, or its bytes. A literal, a string or a function name is laid
+   out piece by piece; anything else folds to a number written over the
+   global's size, low byte first. */
+fn lw_global(l: *irlow, g: u32) -> void {
+    let gt: u32 = ln(l, g).a;
+    let init: u32 = ln(l, g).b;
+    let size: u32 = size_of(l.s, gt);
+    g_str(l, "global @"); g_text(l, ln(l, g).text, ln(l, g).tlen);
+    g_str(l, " size "); g_u32(l, size);
+    g_str(l, " align "); g_u32(l, align_of(l.s, gt));
+    let sec: u32 = lw_section(l, g);
+    if (sec != 0) { g_str(l, " section \""); g_text(l, ln(l, sec).text, ln(l, sec).tlen); g_str(l, "\""); }
+    let ik: nk = nk.none;
+    if (init != 0) { ik = ln(l, init).kind; }
+    if (ik == nk.e_struct_lit || ik == nk.e_array_lit || ik == nk.e_str || lw_is_function_name(l, init)) {
+        g_str(l, " = { ");
+        l.dfirst = true;
+        lw_data(l, gt, init);
+        g_str(l, " }\n");
+        return;
+    }
+    let v: u128 = 0;
+    if (init != 0) { fold(l.s, init, &v); }
+    if (v == 0) { g_str(l, " zero\n"); return; }
+    g_str(l, " = { ");
+    l.dfirst = true;
+    lw_data_bytes(l, v, size);
+    g_str(l, " }\n");
+}
+
+// Exactly size_of(t) bytes for x: the emitter's EmitData.
+fn lw_data(l: *irlow, t: u32, x: u32) -> void {
+    let tx: u32 = lw_x(l, t);
+    let k: nk = ln(l, x).kind;
+    let sd: u32 = struct_of(l.s, tx);
+    if (k == nk.e_struct_lit && sd != 0) {
+        let pos: u32 = 0;
+        let i: u32 = 0;
+        while (i < ln(l, sd).count) {
+            let f: u32 = llst(l, sd, i);
+            i += 1;
+            let off: u32 = field_offset_of(l.s, sd, f);
+            if (off > pos) { lw_data_zero(l, off - pos); }
+            let fi: u32 = 0;
+            let j: u32 = 0;
+            while (j < ln(l, x).count) { if (node_name_eq(l.s, llst(l, x, j), f)) { fi = llst(l, x, j); break; } j += 1; }
+            if (fi != 0) { lw_data(l, ln(l, f).a, ln(l, fi).a); } else { lw_data_zero(l, size_of(l.s, ln(l, f).a)); }
+            pos = off + size_of(l.s, ln(l, f).a);
+        }
+        let whole: u32 = fields_size(l.s, ln(l, sd).list, ln(l, sd).count);
+        if (whole > pos) { lw_data_zero(l, whole - pos); }
+        return;
+    }
+    if (k == nk.e_array_lit && ln(l, tx).kind == nk.t_array) {
+        let i: u32 = 0;
+        while (i < ln(l, x).count) { lw_data(l, ln(l, tx).a, llst(l, x, i)); i += 1; }
+        let missing: i64 = ((ln(l, tx).value as u32) as i64) - (ln(l, x).count as i64);
+        if (missing > 0) { lw_data_zero(l, (missing as u32) * size_of(l.s, ln(l, tx).a)); }
+        return;
+    }
+    if (k == nk.e_str) {
+        lw_item(l);
+        g_str(l, "addr @str.");
+        g_u32(l, lw_intern(l, x));
+        return;
+    }
+    if (lw_is_function_name(l, x)) { lw_data_addr(l, ln(l, x).text, ln(l, x).tlen); return; }
+    let v: u128 = 0;
+    fold(l.s, x, &v);
+    lw_data_bytes(l, v, size_of(l.s, tx));
+}
+
+// ---- strings ----
+
+global ir_hex: *u8 = "0123456789abcdef";
+
+// A string's number, interned: one copy of each, NUL included.
+fn lw_intern(l: *irlow, sn: u32) -> u32 {
+    let at: u32 = ln(l, sn).text;
+    let len: u32 = ln(l, sn).tlen;
+    let k: u32 = smap_get(&l.strings, &l.p.text.data[at], len);
+    if (k != SMAP_NONE) { return k; }
+    k = l.strings.count;
+    smap_put(&l.strings, &l.p.text.data[at], len, k);
+    buf_str(&l.strs, "string @str.");
+    buf_u32(&l.strs, k);
+    buf_str(&l.strs, " = \"");
+    let i: u32 = 0;
+    while (i <= len) {
+        let c: u8 = 0;
+        if (i < len) { c = l.p.text.data[at + i]; }
+        if (c >= 0x20 && c < 0x7F && c != '"' && c != '\\') { buf_push(&l.strs, c); }
+        else {
+            buf_push(&l.strs, '\\');
+            buf_push(&l.strs, ir_hex[(c >> 4) as u32]);
+            buf_push(&l.strs, ir_hex[(c & 15) as u32]);
+        }
+        i += 1;
+    }
+    buf_str(&l.strs, "\"\n");
+    return k;
+}
+
+// ---- statements ----
+
+fn lw_block(l: *irlow, b: u32) -> void {
+    list_push(&l.defer_marks, l.defer_items.len);
+    let i: u32 = 0;
+    while (i < ln(l, b).count) { lw_stmt(l, llst(l, b, i)); i += 1; }
+    lw_run_defers(l, l.defer_marks.len - 1);
+    l.defer_items.len = list_pop(&l.defer_marks);
+}
+
+// Innermost block first, last-deferred first; each exit gets its own copy.
+fn lw_run_defers(l: *irlow, down_to: u32) -> void {
+    let i: u32 = l.defer_marks.len;
+    while (i > down_to) {
+        i -= 1;
+        // a copy: the bodies open blocks of their own
+        let start: u32 = l.defer_marks.items[i];
+        let end: u32 = l.defer_items.len;
+        if (i + 1 < l.defer_marks.len) { end = l.defer_marks.items[i + 1]; }
+        let pending: list = list_new();
+        let j: u32 = start;
+        while (j < end) { list_push(&pending, l.defer_items.items[j]); j += 1; }
+        j = pending.len;
+        while (j > 0) { j -= 1; lw_stmt(l, pending.items[j]); }
+        list_free(&pending);
+    }
+}
+
+fn lw_stmt(l: *irlow, st: u32) -> void {
+    let x: *node = ln(l, st);
+    switch (x.kind) {
+        case nk.s_block { lw_block(l, st); }
+        case nk.s_let {
+            let sy: u32 = st_get(&l.s.letsym, st);
+            if (x.b != 0 && lw_var_has(l, sy)) {
+                lw_store_at(l, AT_VALUE, lw_var_addr(l, sy), 0, lw_var_ty(l, sy), ln(l, st).b);
+            }
+        }
+        case nk.s_assign { lw_store_at(l, AT_ADDR_OF, x.a, 0, lw_ty(l, x.a), ln(l, st).b); }
+        case nk.s_expr { lw_rvalue(l, x.a); }
+        case nk.s_return { lw_return(l, st); }
+        case nk.s_defer { if (l.defer_marks.len > 0) { list_push(&l.defer_items, x.a); } }
+        case nk.s_switch { lw_switch(l, st); }
+        case nk.s_if {
+            let then: u32 = lw_new_block(l);
+            let end: u32 = lw_new_block(l);
+            let els: u32 = end;
+            if (x.c != 0) { els = lw_new_block(l); }
+            let c: u32 = lw_cond(l, ln(l, st).a);
+            lw_terminate(l, IT_BRIF, c, then, els);
+            lw_start(l, then); lw_block(l, ln(l, st).b); lw_jump_to(l, end);
+            if (ln(l, st).c != 0) { lw_start(l, els); lw_block(l, ln(l, st).c); }
+            lw_start(l, end);
+        }
+        case nk.s_while {
+            let top: u32 = lw_new_block(l);
+            let body: u32 = lw_new_block(l);
+            let end: u32 = lw_new_block(l);
+            lw_start(l, top);
+            let c: u32 = lw_cond(l, ln(l, st).a);
+            lw_terminate(l, IT_BRIF, c, body, end);
+            list_push(&l.loop_top, top); list_push(&l.loop_end, end); list_push(&l.loop_depth, l.defer_marks.len);
+            lw_start(l, body); lw_block(l, ln(l, st).b);
+            list_pop(&l.loop_top); list_pop(&l.loop_end); list_pop(&l.loop_depth);
+            lw_jump_to(l, top);
+            lw_start(l, end);
+        }
+        case nk.s_break, nk.s_continue {
+            let n: u32 = l.loop_top.len;
+            if (n > 0) {
+                lw_run_defers(l, l.loop_depth.items[n - 1]);
+                if (ln(l, st).kind == nk.s_break) { lw_terminate(l, IT_BR, l.loop_end.items[n - 1], 0, 0); }
+                else { lw_terminate(l, IT_BR, l.loop_top.items[n - 1], 0, 0); }
+            }
+        }
+        else { }
+    }
+}
+
+// Where lw_store_at stores: a value already made, the address of an
+// expression, or a value plus an offset. Each is made only after the value
+// stored, as the emitter orders them: an assignment's right side runs
+// before its target's address.
+const AT_VALUE: u32 = 0; const AT_ADDR_OF: u32 = 1; const AT_PLUS: u32 = 2;
+
+fn lw_where(l: *irlow, how: u32, a: u32, off: u32) -> u32 {
+    if (how == AT_ADDR_OF) { return lw_addr(l, a); }
+    if (how == AT_PLUS) { return lw_ptr_add(l, a, off); }
+    return a;
+}
+
+// Store e as a t at the place `how` names.
+fn lw_store_at(l: *irlow, how: u32, a: u32, off: u32, t: u32, e: u32) -> void {
+    if (lw_is_agg(l, t)) {
+        let src: u32 = lw_rvalue(l, e);
+        let dst: u32 = lw_where(l, how, a, off);
+        lw_emit(l, IO_COPY, 0, IR_NONE, dst, src, size_of(l.s, t), 0, 0);
+        return;
+    }
+    let v: u32 = lw_convert(l, lw_rvalue(l, e), lw_ty(l, e), t, e);
+    lw_store(l, v, lw_where(l, how, a, off));
+}
+
+/* The value is taken before the defers run - `return x` returns x as it
+   was - so an aggregate is copied out to the return slot first. */
+fn lw_return(l: *irlow, st: u32) -> void {
+    let rv: u32 = ln(l, st).a;
+    if (l.f.ret_agg > 0) {
+        let slot: u32 = lw_ret_slot(l);
+        if (rv != 0) { let src: u32 = lw_rvalue(l, rv); lw_emit(l, IO_COPY, 0, IR_NONE, slot, src, l.f.ret_agg, 0, 0); }
+        lw_run_defers(l, 0);
+        lw_terminate(l, IT_RETAGG, slot, l.f.ret_agg, 0);
+        return;
+    }
+    let v: u32 = IR_NONE;
+    if (rv != 0 && l.f.ret_ty != IR_VOID) { v = lw_convert(l, lw_rvalue(l, rv), lw_ty(l, rv), l.cur_return, st); }
+    else if (rv != 0) { lw_rvalue(l, rv); }
+    else if (l.f.ret_ty != IR_VOID) { v = lw_k(l, l.f.ret_ty, 0); }
+    lw_run_defers(l, 0);
+    lw_terminate(l, IT_RET, v, 0, 0);
+}
+
+fn lw_case_has(l: *irlow, start: u32, v: u128) -> bool {
+    let i: u32 = start;
+    while (i < l.f.args.len) { if (ir_val(&l.f, l.f.args.items[i]).k == v) { return true; } i += 2; }
+    return false;
+}
+
+/* The subject is evaluated once: a value, or for a sum type its address,
+   whose tag picks the case and whose payload (at its payload offset: 4
+   bytes in on x86-32) a binding points at. No fallthrough. */
+fn lw_switch(l: *irlow, sw: u32) -> void {
+    let st: u32 = lw_ty(l, ln(l, sw).a);
+    let sum: bool = is_sum(l.s, st);
+    let subj: u32 = lw_rvalue(l, ln(l, sw).a);
+    if (subj == IR_NONE) { subj = lw_k(l, IR_I32, 0); }
+    let key: u32 = subj;
+    let kt: u32 = IR_I32;
+    if (!sum) { kt = lw_scalar(l, st); }
+    if (sum) { key = lw_load(l, IR_I32, subj); }
+    else if (kt == IR_BOOL) { key = lw_conv(l, subj, IR_BOOL, false, IR_I32); kt = IR_I32; }
+    else if (!ir_is_int(kt)) {
+        eb(l.s); es(l.s, "cannot switch on "); es(l.s, ir_type_enum[kt]); ee(l.s, sw);
+        key = lw_k(l, IR_I32, 0);
+        kt = IR_I32;
+    }
+
+    let end: u32 = lw_new_block(l);
+    let els: u32 = end;
+    if (ln(l, sw).b != 0) { els = lw_new_block(l); }
+    let bodies: list = list_new();
+    // the cases go to the end of args as they are found; nothing else is
+    // added there until the terminator takes them
+    let cases: u32 = l.f.args.len;
+    let ci: u32 = 0;
+    while (ci < ln(l, sw).count) {
+        let c: u32 = llst(l, sw, ci);
+        ci += 1;
+        let body: u32 = lw_new_block(l);
+        list_push(&bodies, body);
+        let li: u32 = 0;
+        while (li < ln(l, c).count) {
+            let lb: u32 = llst(l, c, li);
+            li += 1;
+            let v: u128 = 0;
+            if (ln(l, lb).kind == nk.e_member && st_get(&l.s.eref_idx, lb) != 0) {
+                let idx: u32 = st_get(&l.s.eref_idx, lb) - 1;
+                if (sum) { v = idx as u128; } else { enum_value(l.s, st_get(&l.s.eref_enum, lb), idx, &v); }
+            } else if (!fold(l.s, lb, &v)) { continue; }
+            v &= ir_mask(ir_bits(kt));
+            if (!lw_case_has(l, cases, v)) {   // the first label wins, as in a compare chain
+                list_push(&l.f.args, lw_k(l, kt, v));
+                list_push(&l.f.args, body);
+            }
+        }
+    }
+    let ncases: u32 = (l.f.args.len - cases) / 2;
+    lw_terminate(l, IT_SWITCH, key, els, 0);
+    let cb: *irblk = lw_cur(l);
+    cb.cases = cases;
+    cb.ncases = ncases;
+
+    ci = 0;
+    while (ci < ln(l, sw).count) {
+        let c: u32 = llst(l, sw, ci);
+        lw_start(l, bodies.items[ci]);
+        ci += 1;
+        if (ln(l, c).op == 1) {
+            let bs: u32 = st_get(&l.s.letsym, c);
+            if (lw_var_has(l, bs)) {
+                let pa: u32 = lw_ptr_add(l, subj, lw_payload_offset(l, st));
+                lw_store(l, pa, lw_var_addr(l, bs));
+            }
+        }
+        lw_block(l, ln(l, c).a);
+        lw_jump_to(l, end);
+    }
+    if (ln(l, sw).b != 0) { lw_start(l, els); lw_block(l, ln(l, sw).b); }
+    lw_start(l, end);
+    list_free(&bodies);
+}
+
+fn lw_cond(l: *irlow, e: u32) -> u32 {
+    let v: u32 = lw_rvalue(l, e);
+    if (v == IR_NONE) { v = lw_k(l, IR_BOOL, 0); }
+    let t: u32 = lw_scalar(l, lw_ty(l, e));
+    if (t == IR_BOOL) { return v; }
+    return lw_conv(l, v, t, false, IR_BOOL);
+}
+
+// ---- conversions ----
+
+fn lw_convert(l: *irlow, v: u32, from: u32, to: u32, at: u32) -> u32 {
+    if (v == IR_NONE) { lw_error(l, "a void value is used", at); return lw_k(l, IR_I32, 0); }
+    if (lw_is_agg(l, to) || lw_is_agg(l, from)) { return v; }
+    let tt: u32 = lw_scalar(l, to);
+    if (tt == IR_VOID) { return v; }
+    return lw_conv(l, v, lw_scalar(l, from), lw_signed(l, from), tt);
+}
+
+/* Between two value types: an integer narrows by truncation and widens by
+   its own sign (C's rule, and the emitter's); a pointer goes through the
+   pointer-width integer; bool widens by zero, and becomes bool by comparing
+   with zero. A constant is converted here rather than with an instruction. */
+fn lw_conv(l: *irlow, v: u32, ft: u32, fsigned: bool, tt: u32) -> u32 {
+    if (ft == tt) { return v; }
+    let pi: u32 = ir_ptr_int();
+    if (ft == IR_PTR) {
+        let i: u32 = 0;
+        if (ir_is_const(&l.f, v)) { i = lw_k(l, pi, ir_val(&l.f, v).k); }
+        else { i = lw_def(l, pi, IO_CONV, IK_PTRTOINT, v, 0); }
+        return lw_conv(l, i, pi, false, tt);
+    }
+    if (tt == IR_PTR) {
+        let i: u32 = lw_conv(l, v, ft, fsigned, pi);
+        return lw_def(l, IR_PTR, IO_CONV, IK_INTTOPTR, i, 0);
+    }
+    if (tt == IR_BOOL) {
+        if (ir_is_const(&l.f, v)) {
+            if (ir_val(&l.f, v).k != 0) { return lw_k(l, IR_BOOL, 1); }
+            return lw_k(l, IR_BOOL, 0);
+        }
+        let z: u32 = lw_k(l, ft, 0);
+        return lw_def(l, IR_BOOL, IO_CMP, IC_NE, v, z);
+    }
+    if (ft == IR_VOID || tt == IR_VOID) { return v; }
+    let fb: u32 = ir_bits(ft);
+    let tb: u32 = ir_bits(tt);
+    let sext: bool = fsigned && ft != IR_BOOL;
+    if (ir_is_const(&l.f, v)) {
+        let x: u128 = ir_val(&l.f, v).k;
+        if (tb > fb && sext && ((x >> (fb - 1)) & 1) != 0) { x |= ir_mask(tb) & ~ir_mask(fb); }
+        return lw_k(l, tt, x);
+    }
+    let kind: u32 = IK_ZEXT;
+    if (tb < fb) { kind = IK_TRUNC; } else if (sext) { kind = IK_SEXT; }
+    return lw_def(l, tt, IO_CONV, kind, v, 0);
+}
+
+// ---- expressions: a value, or for an aggregate the address of its bytes; IR_NONE for void ----
+
+fn lw_rvalue(l: *irlow, e: u32) -> u32 {
+    let x: *node = ln(l, e);
+    switch (x.kind) {
+        case nk.e_int { return lw_k(l, lw_scalar(l, lw_ty(l, e)), ln(l, e).value); }
+        case nk.e_str { return ir_add_val(&l.f, IV_STR, IR_PTR, lw_intern(l, e), 0, 0); }
+        case nk.e_sizeof { return lw_k(l, lw_scalar(l, lw_ty(l, e)), size_of(l.s, lw_ty(l, x.a)) as u128); }   // not evaluated
+        case nk.e_bool { if (x.op == 1) { return lw_k(l, IR_BOOL, 1); } return lw_k(l, IR_BOOL, 0); }
+        case nk.e_name { return lw_name(l, e); }
+        case nk.e_binary { return lw_binary(l, e); }
+        case nk.e_unary { return lw_unary(l, e); }
+        case nk.e_call { return lw_call(l, e); }
+        case nk.e_cast { return lw_cast(l, e); }
+        case nk.e_struct_lit { return lw_struct_lit(l, e); }
+        case nk.e_array_lit { return lw_array_lit(l, e); }
+        case nk.e_member, nk.e_index {
+            if (x.kind == nk.e_member && st_get(&l.s.eref_idx, e) != 0) {
+                return lw_variant(l, st_get(&l.s.eref_enum, e), st_get(&l.s.eref_idx, e) - 1, lw_ty(l, e));
+            }
+            let t: u32 = lw_ty(l, e);
+            let a: u32 = lw_addr(l, e);
+            if (lw_is_agg(l, t)) { return a; }
+            return lw_load(l, lw_scalar(l, t), a);
+        }
+        else {
+            lw_error(l, "this expression cannot be lowered", e);
+            return lw_k(l, IR_I32, 0);
+        }
+    }
+    return lw_k(l, IR_I32, 0);
+}
+
+fn lw_name(l: *irlow, n: u32) -> u32 {
+    let sy: u32 = lw_sym_of(l, n);
+    if (sy == 0) {
+        eb(l.s); es(l.s, "'"); en(l.s, n); es(l.s, "' is not resolved"); ee(l.s, n);
+        return lw_k(l, IR_I32, 0);
+    }
+    let kind: u32 = sym_at(l.s, sy - 1).kind;
+    let decl: u32 = sym_at(l.s, sy - 1).decl;
+    if (kind == SK_CONST && decl != 0 && ln(l, decl).kind == nk.d_const) {
+        let v: u128 = 0;
+        if (fold(l.s, ln(l, decl).b, &v)) { return lw_k(l, lw_scalar(l, ln(l, decl).a), v); }   // cut to the constant's own type
+    }
+    if (kind == SK_FUNCTION) { return lw_sym(l, n); }
+    if (kind == SK_GLOBAL) {
+        let gt: u32 = sym_at(l.s, sy - 1).ty;
+        if (decl != 0 && ln(l, decl).kind == nk.d_global) { gt = ln(l, decl).a; }
+        if (lw_is_agg(l, gt)) { return lw_sym(l, n); }
+        let g: u32 = lw_sym(l, n);
+        return lw_load(l, lw_scalar(l, gt), g);
+    }
+    if (lw_var_has(l, sy)) {
+        let vt: u32 = lw_var_ty(l, sy);
+        if (lw_is_agg(l, vt)) { return lw_var_addr(l, sy); }
+        return lw_load(l, lw_scalar(l, vt), lw_var_addr(l, sy));
+    }
+    eb(l.s); es(l.s, "'"); en(l.s, n); es(l.s, "' has no storage"); ee(l.s, n);
+    return lw_k(l, IR_I32, 0);
+}
+
+// The address of an lvalue.
+fn lw_addr(l: *irlow, e: u32) -> u32 {
+    let x: *node = ln(l, e);
+    let k: nk = x.kind;
+    if (k == nk.e_name) {
+        let sy: u32 = lw_sym_of(l, e);
+        if (sy != 0) {
+            if (lw_var_has(l, sy)) { return lw_var_addr(l, sy); }
+            if (sym_at(l.s, sy - 1).kind == SK_GLOBAL) { return lw_sym(l, e); }
+        }
+    } else if (k == nk.e_unary && x.op == UN_DEREF) {
+        return lw_rvalue(l, x.a);
+    } else if (k == nk.e_member && st_get(&l.s.eref_idx, e) == 0) {
+        let tt: u32 = lw_ty(l, x.a);
+        let tx: u32 = lw_x(l, tt);
+        let via_ptr: bool = ln(l, tx).kind == nk.t_ptr;
+        let sd: u32 = 0;
+        if (via_ptr) { sd = struct_of(l.s, ln(l, tx).a); } else { sd = struct_of(l.s, tt); }
+        let b: u32 = 0;
+        if (via_ptr) { b = lw_rvalue(l, ln(l, e).a); } else { b = lw_addr(l, ln(l, e).a); }   // ps.f: the pointer's value; s.f: s's address
+        if (sd != 0) { return lw_ptr_add(l, b, field_offset_of(l.s, sd, e)); }
+        return b;
+    } else if (k == nk.e_index) {
+        let te: u32 = lw_x(l, lw_ty(l, x.a));
+        let tk: nk = ln(l, te).kind;
+        let es_: u32 = 4;
+        if (tk == nk.t_ptr || tk == nk.t_array) { es_ = size_of(l.s, ln(l, te).a); }
+        let b: u32 = 0;
+        if (tk == nk.t_array) { b = lw_addr(l, ln(l, e).a); } else { b = lw_rvalue(l, ln(l, e).a); }
+        let ix: u32 = ln(l, e).b;
+        let it: u32 = lw_ty(l, ix);
+        let iv: u32 = lw_rvalue(l, ix);
+        if (iv == IR_NONE) { iv = lw_k(l, IR_I32, 0); }
+        let pi: u32 = ir_ptr_int();
+        let i: u32 = lw_conv(l, iv, lw_scalar(l, it), lw_signed(l, it), pi);
+        let off: u32 = i;
+        if (es_ != 1) {
+            if (ir_is_const(&l.f, i)) { off = lw_k(l, pi, ir_val(&l.f, i).k * (es_ as u128)); }
+            else { let m: u32 = lw_k(l, pi, es_ as u128); off = lw_def(l, pi, IO_BIN, IB_MUL, i, m); }
+        }
+        if (ir_is_const(&l.f, off) && ir_val(&l.f, off).k == 0) { return b; }
+        return lw_def(l, IR_PTR, IO_PTRADD, 0, b, off);
+    }
+    /* A value that is its address - a call returning a struct, a literal - is
+       its own address, so `make().y` reads the call's result. */
+    if (lw_is_agg(l, lw_ty(l, e))) { return lw_rvalue(l, e); }
+    lw_error(l, "this expression has no address", e);
+    return lw_k(l, IR_PTR, 0);
+}
+
+fn lw_is_compare(op: u32) -> bool { return op >= BIN_EQ && op <= BIN_GE; }
+
+fn lw_bin_of(op: u32, sg: bool) -> u32 {
+    if (op == BIN_ADD) { return IB_ADD; }
+    if (op == BIN_SUB) { return IB_SUB; }
+    if (op == BIN_MUL) { return IB_MUL; }
+    if (op == BIN_DIV) { if (sg) { return IB_SDIV; } return IB_UDIV; }
+    if (op == BIN_MOD) { if (sg) { return IB_SREM; } return IB_UREM; }
+    if (op == BIN_BITAND) { return IB_AND; }
+    if (op == BIN_BITOR) { return IB_OR; }
+    if (op == BIN_BITXOR) { return IB_XOR; }
+    if (op == BIN_SHL) { return IB_SHL; }
+    if (sg) { return IB_ASHR; }
+    return IB_LSHR;
+}
+
+fn lw_cmp_of(op: u32, sg: bool) -> u32 {
+    if (op == BIN_EQ) { return IC_EQ; }
+    if (op == BIN_NE) { return IC_NE; }
+    let c: u32 = IC_ULT;
+    if (op == BIN_LE) { c = IC_ULE; } else if (op == BIN_GT) { c = IC_UGT; } else if (op == BIN_GE) { c = IC_UGE; }
+    if (sg) { return c - 4; }   // the signed codes are four before the unsigned
+    return c;
+}
+
+fn lw_unsigned_word(l: *irlow, t: u32) -> bool {
+    let x: *node = ln(l, lw_x(l, t));
+    if (x.kind == nk.t_ptr || x.kind == nk.t_fn) { return true; }
+    return x.kind == nk.t_prim && !prim_signed(x.op) && prim_bytes(x.op) == 4;
+}
+
+fn lw_binary(l: *irlow, b: u32) -> u32 {
+    let op: u32 = ln(l, b).op;
+    if (op == BIN_AND || op == BIN_OR) { return lw_short_circuit(l, b); }
+    let left: u32 = ln(l, b).a;
+    let right: u32 = ln(l, b).b;
+    let lt: u32 = lw_ty(l, left);
+    let rt: u32 = lw_ty(l, right);
+    let res: u32 = lw_ty(l, b);
+    let cmp: bool = lw_is_compare(op);
+    let shift: bool = op == BIN_SHL || op == BIN_SHR;
+
+    if (cmp && (lw_is_agg(l, lt) || lw_is_agg(l, rt))) {
+        eb(l.s); es(l.s, bin_op_names[op]); es(l.s, " on an aggregate cannot be lowered"); ee(l.s, b);
+        return lw_k(l, IR_BOOL, 0);
+    }
+
+    /* Past 32 bits: both operands at the wider type (a shift's count at the
+       left's), which also fixes the sign; the right one first. */
+    if (lw_is_wide(l, res) || (cmp && (lw_is_wide(l, lt) || lw_is_wide(l, rt)))) {
+        let wt: u32 = lt;
+        if (!shift && size_of(l.s, rt) > size_of(l.s, lt)) { wt = rt; }
+        let t: u32 = lw_scalar(l, wt);
+        let sg: bool = lw_signed(l, wt);
+        let r: u32 = lw_convert(l, lw_rvalue(l, right), rt, wt, b);
+        let lv: u32 = lw_convert(l, lw_rvalue(l, left), lt, wt, b);
+        if (cmp) { return lw_def(l, IR_BOOL, IO_CMP, lw_cmp_of(op, sg), lv, r); }
+        let v: u32 = lw_def(l, t, IO_BIN, lw_bin_of(op, sg), lv, r);
+        return lw_conv(l, v, t, sg, lw_scalar(l, res));
+    }
+
+    let rv: u32 = lw_rvalue(l, right);
+    if (rv == IR_NONE) { rv = lw_k(l, IR_I32, 0); }
+    let lv: u32 = lw_rvalue(l, left);
+    if (lv == IR_NONE) { lv = lw_k(l, IR_I32, 0); }
+    let ls: u32 = lw_scalar(l, lt);
+    let rs: u32 = lw_scalar(l, rt);
+
+    if (cmp) {
+        /* Same type: compare at it. Otherwise C's rule, the emitter's: both
+           widen to 32 bits by their own sign, and the comparison is unsigned
+           if either is an unsigned 32-bit value or an address. */
+        if (ls == rs && lw_signed(l, lt) == lw_signed(l, rt)) {
+            return lw_def(l, IR_BOOL, IO_CMP, lw_cmp_of(op, lw_signed(l, lt)), lv, rv);
+        }
+        let sg: bool = !(lw_unsigned_word(l, lt) || lw_unsigned_word(l, rt));
+        let l32: u32 = lw_conv(l, lv, ls, lw_signed(l, lt), IR_I32);
+        let r32: u32 = lw_conv(l, rv, rs, lw_signed(l, rt), IR_I32);
+        return lw_def(l, IR_BOOL, IO_CMP, lw_cmp_of(op, sg), l32, r32);
+    }
+
+    let rt0: u32 = lw_scalar(l, res);
+    if (op == BIN_ADD || op == BIN_SUB || op == BIN_MUL || op == BIN_BITAND || op == BIN_BITOR || op == BIN_BITXOR) {
+        /* The low bits of these depend only on the operands' low bits, so
+           working at the result's width is the same as working at 32 and
+           cutting back. */
+        let a: u32 = lw_conv(l, lv, ls, lw_signed(l, lt), rt0);
+        let c: u32 = lw_conv(l, rv, rs, lw_signed(l, rt), rt0);
+        return lw_def(l, rt0, IO_BIN, lw_bin_of(op, false), a, c);
+    }
+
+    /* Divide, remainder and shifts at 32 bits, each operand widened by its
+       own sign, the operation taking the LEFT operand's; then cut back. A
+       shift count is reduced modulo 32, as the CPU does. */
+    let ls32: bool = lw_signed(l, lt);
+    let a: u32 = lw_conv(l, lv, ls, ls32, IR_I32);
+    let c: u32 = lw_conv(l, rv, rs, lw_signed(l, rt), IR_I32);
+    let v32: u32 = lw_def(l, IR_I32, IO_BIN, lw_bin_of(op, ls32), a, c);
+    return lw_conv(l, v32, IR_I32, ls32, rt0);
+}
+
+/* `a && b`, `a || b`: b runs only when it decides. The result goes through a
+   slot, since a register is assigned once. */
+fn lw_short_circuit(l: *irlow, b: u32) -> u32 {
+    let slot: u32 = lw_new_slot(l, l.s.t_bool, 0, 0);
+    let lv: u32 = lw_cond(l, ln(l, b).a);
+    lw_store(l, lv, slot);
+    let rhs: u32 = lw_new_block(l);
+    let end: u32 = lw_new_block(l);
+    if (ln(l, b).op == BIN_AND) { lw_terminate(l, IT_BRIF, lv, rhs, end); } else { lw_terminate(l, IT_BRIF, lv, end, rhs); }
+    lw_start(l, rhs);
+    let rv: u32 = lw_cond(l, ln(l, b).b);
+    lw_store(l, rv, slot);
+    lw_start(l, end);
+    return lw_load(l, IR_BOOL, slot);
+}
+
+fn lw_unary(l: *irlow, u: u32) -> u32 {
+    let ut: u32 = lw_ty(l, u);
+    let op: u32 = ln(l, u).op;
+    let operand: u32 = ln(l, u).a;
+    if (op == UN_NEG || op == UN_BITNOT) {
+        let v: u32 = lw_convert(l, lw_rvalue(l, operand), lw_ty(l, operand), ut, u);
+        if (op == UN_NEG && ir_is_const(&l.f, v)) { return lw_k(l, ir_vty(&l.f, v), (0 as u128) - ir_val(&l.f, v).k); }
+        let uo: u32 = IU_NOT;
+        if (op == UN_NEG) { uo = IU_NEG; }
+        return lw_def(l, lw_scalar(l, ut), IO_UN, uo, v, 0);
+    }
+    if (op == UN_NOT) {
+        let v: u32 = lw_cond(l, operand);
+        let z: u32 = lw_k(l, IR_BOOL, 0);
+        return lw_def(l, IR_BOOL, IO_CMP, IC_EQ, v, z);
+    }
+    if (op == UN_DEREF) {
+        let p: u32 = lw_rvalue(l, operand);
+        if (p == IR_NONE) { p = lw_k(l, IR_PTR, 0); }
+        if (lw_is_agg(l, ut)) { return p; }
+        return lw_load(l, lw_scalar(l, ut), p);
+    }
+    if (op == UN_ADDR) { return lw_addr(l, operand); }
+    return IR_NONE;
+}
+
+/* `x as T`. Between value types, lw_conv's rules. `as bool` compares with
+   zero: the emitter left the whole register, so a bool could hold 300 until
+   it was stored and became 44 - not a meaning worth keeping. */
+fn lw_cast(l: *irlow, c: u32) -> u32 {
+    let to: u32 = lw_ty(l, c);
+    let from: u32 = lw_ty(l, ln(l, c).a);
+    let v: u32 = lw_rvalue(l, ln(l, c).a);
+    if (lw_is_agg(l, to) || lw_is_agg(l, from)) {
+        if (lw_is_agg(l, to) && lw_is_agg(l, from) && size_of(l.s, to) == size_of(l.s, from)) { return v; }
+        lw_error(l, "a cast to or from an aggregate cannot be lowered", c);
+        return v;
+    }
+    return lw_convert(l, v, from, to, c);
+}
+
+fn lw_callee_fn(l: *irlow, c: u32) -> u32 {
+    let callee: u32 = ln(l, c).a;
+    if (ln(l, callee).kind != nk.e_name) { return 0; }
+    let sy: u32 = lw_sym_of(l, callee);
+    if (sy == 0) { return 0; }
+    let d: u32 = sym_at(l.s, sy - 1).decl;
+    if (d != 0 && ln(l, d).kind == nk.d_fn) { return d; }
+    return 0;
+}
+
+fn lw_call(l: *irlow, c: u32) -> u32 {
+    let callee: u32 = ln(l, c).a;
+    if (ln(l, callee).kind == nk.e_name && node_name_is(l.s, callee, "__syscall")) { return lw_syscall(l, c); }
+    // the parameter types: a declaration's params, or a fn type's types
+    let fd: u32 = lw_callee_fn(l, c);
+    let plist: u32 = 0;
+    let pcount: u32 = 0;
+    if (fd != 0) { plist = ln(l, fd).list; pcount = ln(l, fd).count; }
+    else {
+        let ft: u32 = lw_x(l, lw_ty(l, callee));
+        if (ln(l, ft).kind == nk.t_fn) { plist = ln(l, ft).list; pcount = ln(l, ft).count; }
+    }
+    let rt: u32 = lw_ty(l, c);
+    let n: u32 = ln(l, c).count;
+    let vals: list = list_new();
+    let aggs: list = list_new();
+    let i: u32 = 0;
+    while (i < n) { list_push(&vals, 0); list_push(&aggs, 0); i += 1; }
+    i = n;
+    while (i > 0) {   // last to first, as cdecl pushes them
+        i -= 1;
+        let a: u32 = llst(l, c, i);
+        let pt: u32 = 0;
+        if (i < pcount) {
+            pt = list_at(l.p, plist, i);
+            if (fd != 0) { pt = ln(l, pt).a; }
+        } else { pt = lw_ty(l, a); }
+        if (lw_is_agg(l, pt)) { vals.items[i] = lw_rvalue(l, a); aggs.items[i] = size_of(l.s, pt); }
+        else { vals.items[i] = lw_convert(l, lw_rvalue(l, a), lw_ty(l, a), pt, a); }
+    }
+    /* Only a name that resolves to a function is a direct call; one holding a
+       function pointer is called through its value, which is evaluated after
+       the arguments. */
+    let fv: u32 = 0;
+    let sy: u32 = 0;
+    if (ln(l, callee).kind == nk.e_name) { sy = lw_sym_of(l, callee); }
+    if (sy != 0 && sym_at(l.s, sy - 1).kind == SK_FUNCTION) { fv = lw_sym(l, callee); }
+    else {
+        fv = lw_rvalue(l, callee);
+        if (fv == IR_NONE) { fv = lw_k(l, IR_PTR, 0); }
+    }
+    let args: u32 = l.f.args.len;
+    i = 0;
+    while (i < n) { list_push(&l.f.args, vals.items[i]); list_push(&l.f.args, aggs.items[i]); i += 1; }
+    list_free(&vals);
+    list_free(&aggs);
+
+    if (lw_is_agg(l, rt)) {
+        let slot: u32 = lw_new_slot(l, rt, 0, 0);
+        lw_emit(l, IO_CALL, 0, IR_NONE, fv, slot, size_of(l.s, rt), args, n);
+        return slot;
+    }
+    let t: u32 = lw_scalar(l, rt);
+    if (t == IR_VOID) { lw_emit(l, IO_CALL, 0, IR_NONE, fv, IR_NONE, 0, args, n); return IR_NONE; }
+    let d: u32 = lw_reg(l, t);
+    lw_emit(l, IO_CALL, 0, d, fv, IR_NONE, 0, args, n);
+    return d;
+}
+
+/* __syscall(n, a1..a5): first to last, each a pointer-width word. A wide
+   argument has no single word to be; the ABI splits one into a register pair
+   (CX_SYSCALLS_IPC.md section 9.5) and the program must do that itself. */
+fn lw_syscall(l: *irlow, c: u32) -> u32 {
+    let n: u32 = ln(l, c).count;
+    let words: list = list_new();
+    let i: u32 = 0;
+    while (i < n) {
+        let a: u32 = llst(l, c, i);
+        i += 1;
+        let t: u32 = lw_ty(l, a);
+        if (size_of(l.s, t) > target_ptr || lw_is_agg(l, t)) {
+            lw_error(l, "a __syscall argument wider than a pointer cannot be passed in one register", a);
+        }
+        let v: u32 = lw_rvalue(l, a);
+        if (v == IR_NONE) { v = lw_k(l, IR_I32, 0); }
+        list_push(&words, lw_conv(l, v, lw_scalar(l, t), lw_signed(l, t), ir_ptr_int()));
+    }
+    let args: u32 = l.f.args.len;
+    i = 0;
+    while (i < n) { list_push(&l.f.args, words.items[i]); list_push(&l.f.args, 0); i += 1; }
+    list_free(&words);
+    let d: u32 = lw_reg(l, lw_scalar(l, lw_ty(l, c)));
+    lw_emit(l, IO_SYSCALL, 0, d, 0, 0, 0, args, n);
+    return d;
+}
+
+/* A record literal, built field by field in a slot of its own; the slot's
+   address is the value. A sum variant's: the tag (its index), a zeroed
+   payload so copies are deterministic, then the fields after the tag. */
+fn lw_struct_lit(l: *irlow, sl: u32) -> u32 {
+    let slot: u32 = lw_new_slot(l, lw_ty(l, sl), 0, 0);
+    let tn: u32 = ln(l, sl).a;
+    if (ln(l, tn).kind == nk.e_member && st_get(&l.s.eref_idx, tn) != 0) {
+        let ed: u32 = st_get(&l.s.eref_enum, tn);
+        let idx: u32 = st_get(&l.s.eref_idx, tn) - 1;
+        let size: u32 = size_of(l.s, mk_named_of(l.s, ed));
+        let at: u32 = payload_offset(l.s, ed);
+        lw_store(l, lw_k(l, IR_I32, idx as u128), slot);
+        if (size > 4) { let z: u32 = lw_ptr_add(l, slot, 4); lw_emit(l, IO_ZERO, 0, IR_NONE, z, 0, size - 4, 0, 0); }
+        let v: u32 = variant_at(l.s, ed, idx);
+        let pn: u32 = text_join(l.s, ln(l, ed).text, ln(l, ed).tlen, ln(l, v).text, ln(l, v).tlen);
+        let pd: u32 = smap_get(&l.s.structs, txt(l.s, pn), ln(l, ed).tlen + 1 + ln(l, v).tlen);
+        if (pd != SMAP_NONE) {
+            let i: u32 = 0;
+            while (i < ln(l, sl).count) {
+                let fi: u32 = llst(l, sl, i);
+                i += 1;
+                let decl: u32 = field_named(l.s, pd, fi);
+                if (decl != 0) { lw_store_at(l, AT_PLUS, slot, at + field_offset_of(l.s, pd, fi), ln(l, decl).a, ln(l, fi).a); }
+            }
+        }
+        return slot;
+    }
+    let sd: u32 = struct_of(l.s, lw_ty(l, sl));
+    if (sd != 0) {
+        let i: u32 = 0;
+        while (i < ln(l, sl).count) {
+            let fi: u32 = llst(l, sl, i);
+            i += 1;
+            let decl: u32 = field_named(l.s, sd, fi);
+            if (decl != 0) { lw_store_at(l, AT_PLUS, slot, field_offset_of(l.s, sd, fi), ln(l, decl).a, ln(l, fi).a); }
+        }
+    }
+    return slot;
+}
+
+fn lw_array_lit(l: *irlow, al: u32) -> u32 {
+    let at: u32 = lw_ty(l, al);
+    let slot: u32 = lw_new_slot(l, at, 0, 0);
+    let ax: u32 = lw_x(l, at);
+    if (ln(l, ax).kind == nk.t_array) {
+        let es_: u32 = size_of(l.s, ln(l, ax).a);
+        let i: u32 = 0;
+        while (i < ln(l, al).count) { lw_store_at(l, AT_PLUS, slot, i * es_, ln(l, ax).a, llst(l, al, i)); i += 1; }
+    }
+    return slot;
+}
+
+/* `color.red` is its value; a sum type's field-less variant is a whole sum
+   value, built in a slot like a literal. */
+fn lw_variant(l: *irlow, ed: u32, index: u32, t: u32) -> u32 {
+    if (!enum_is_sum(l.s, ed)) {
+        let v: u128 = 0;
+        enum_value(l.s, ed, index, &v);
+        return lw_k(l, lw_scalar(l, t), v);
+    }
+    let size: u32 = size_of(l.s, mk_named_of(l.s, ed));
+    let slot: u32 = lw_new_slot(l, mk_named_of(l.s, ed), 0, 0);
+    lw_store(l, lw_k(l, IR_I32, index as u128), slot);
+    if (size > 4) { let z: u32 = lw_ptr_add(l, slot, 4); lw_emit(l, IO_ZERO, 0, IR_NONE, z, 0, size - 4, 0, 0); }
+    return slot;
+}
+
+// ---- the text (IrPrinter) ----
+
+fn ir_put_u128(b: *buf, v: u128) -> void {
+    let d: [40]u8;
+    let n: u32 = 0;
+    let x: u128 = v;
+    while (true) {
+        d[n] = '0' + (x % 10) as u8;
+        n += 1;
+        x /= 10;
+        if (x == 0) { break; }
+    }
+    while (n > 0) { n -= 1; buf_push(b, d[n]); }
+}
+
+fn ir_put_v(l: *irlow, b: *buf, v: u32) -> void {
+    let x: *irval = ir_val(&l.f, v);
+    if (x.kind == IV_REG) { buf_push(b, '%'); buf_u32(b, x.id); }
+    else if (x.kind == IV_CONST) { ir_put_u128(b, x.k); }
+    else if (x.kind == IV_SYM) { buf_push(b, '@'); buf_append(b, &l.p.text.data[x.id], x.len); }
+    else if (x.kind == IV_STR) { buf_str(b, "@str."); buf_u32(b, x.id); }
+    else { buf_push(b, '$'); buf_u32(b, x.id); }
+}
+
+// "type value"
+fn ir_put_tv(l: *irlow, b: *buf, v: u32) -> void { buf_str(b, ir_type_names[ir_vty(&l.f, v)]); buf_push(b, ' '); ir_put_v(l, b, v); }
+
+fn ir_put_dst(l: *irlow, b: *buf, d: u32) -> void { ir_put_v(l, b, d); buf_str(b, " = "); }
+
+fn ir_put_param(l: *irlow, b: *buf, ty: u32, agg: u32, name: u32, nlen: u32) -> void {
+    if (agg > 0) { buf_str(b, "agg "); buf_u32(b, agg); } else { buf_str(b, ir_type_names[ty]); }
+    if (nlen > 0) { buf_push(b, ' '); buf_append(b, &l.p.text.data[name], nlen); }
+}
+
+fn ir_put_ins(l: *irlow, b: *buf, i: *irins) -> void {
+    let op: u32 = i.op;
+    if (op == IO_BIN) {
+        ir_put_dst(l, b, i.dst); buf_str(b, ir_bin_names[i.sub]); buf_push(b, ' '); buf_str(b, ir_type_names[ir_vty(&l.f, i.dst)]);
+        buf_push(b, ' '); ir_put_v(l, b, i.a); buf_str(b, ", "); ir_put_v(l, b, i.b);
+    } else if (op == IO_UN) {
+        ir_put_dst(l, b, i.dst); buf_str(b, ir_un_names[i.sub]); buf_push(b, ' '); buf_str(b, ir_type_names[ir_vty(&l.f, i.dst)]);
+        buf_push(b, ' '); ir_put_v(l, b, i.a);
+    } else if (op == IO_CMP) {
+        ir_put_dst(l, b, i.dst); buf_str(b, "cmp "); buf_str(b, ir_cmp_names[i.sub]); buf_push(b, ' ');
+        buf_str(b, ir_type_names[ir_vty(&l.f, i.a)]); buf_push(b, ' '); ir_put_v(l, b, i.a); buf_str(b, ", "); ir_put_v(l, b, i.b);
+    } else if (op == IO_CONV) {
+        ir_put_dst(l, b, i.dst); buf_str(b, ir_conv_names[i.sub]); buf_push(b, ' '); ir_put_tv(l, b, i.a);
+        buf_str(b, " to "); buf_str(b, ir_type_names[ir_vty(&l.f, i.dst)]);
+    } else if (op == IO_LOAD) {
+        ir_put_dst(l, b, i.dst); buf_str(b, "load "); buf_str(b, ir_type_names[ir_vty(&l.f, i.dst)]); buf_str(b, ", "); ir_put_v(l, b, i.a);
+    } else if (op == IO_STORE) {
+        buf_str(b, "store "); ir_put_tv(l, b, i.a); buf_str(b, ", "); ir_put_v(l, b, i.b);
+    } else if (op == IO_COPY) {
+        buf_str(b, "copy "); ir_put_v(l, b, i.a); buf_str(b, ", "); ir_put_v(l, b, i.b); buf_str(b, ", "); buf_u32(b, i.n);
+    } else if (op == IO_ZERO) {
+        buf_str(b, "zero "); ir_put_v(l, b, i.a); buf_str(b, ", "); buf_u32(b, i.n);
+    } else if (op == IO_PTRADD) {
+        ir_put_dst(l, b, i.dst); buf_str(b, "ptradd "); ir_put_v(l, b, i.a); buf_str(b, ", "); ir_put_v(l, b, i.b);
+    } else if (op == IO_CALL) {
+        if (i.dst != IR_NONE) { ir_put_dst(l, b, i.dst); }
+        buf_str(b, "call "); ir_put_v(l, b, i.a); buf_push(b, '(');
+        let k: u32 = 0;
+        while (k < i.nargs) {
+            if (k > 0) { buf_str(b, ", "); }
+            let v: u32 = l.f.args.items[i.args + k * 2];
+            let agg: u32 = l.f.args.items[i.args + k * 2 + 1];
+            if (agg > 0) { buf_str(b, "agg "); buf_u32(b, agg); buf_push(b, ' '); ir_put_v(l, b, v); } else { ir_put_tv(l, b, v); }
+            k += 1;
+        }
+        buf_push(b, ')');
+        if (i.dst != IR_NONE) { buf_str(b, " -> "); buf_str(b, ir_type_names[ir_vty(&l.f, i.dst)]); }
+        else if (i.b != IR_NONE) { buf_str(b, " -> agg "); buf_u32(b, i.n); buf_push(b, ' '); ir_put_v(l, b, i.b); }
+    } else if (op == IO_SYSCALL) {
+        ir_put_dst(l, b, i.dst); buf_str(b, "syscall "); buf_str(b, ir_type_names[ir_vty(&l.f, i.dst)]); buf_str(b, " (");
+        let k: u32 = 0;
+        while (k < i.nargs) {
+            if (k > 0) { buf_str(b, ", "); }
+            ir_put_tv(l, b, l.f.args.items[i.args + k * 2]);
+            k += 1;
+        }
+        buf_push(b, ')');
+    }
+}
+
+fn ir_put_term(l: *irlow, b: *buf, k: *irblk) -> void {
+    if (k.term == IT_BR) { buf_str(b, "br b"); buf_u32(b, k.ta); }
+    else if (k.term == IT_BRIF) {
+        buf_str(b, "brif "); ir_put_v(l, b, k.ta); buf_str(b, ", b"); buf_u32(b, k.tb); buf_str(b, ", b"); buf_u32(b, k.tc);
+    } else if (k.term == IT_SWITCH) {
+        buf_str(b, "switch "); ir_put_tv(l, b, k.ta); buf_str(b, ", b"); buf_u32(b, k.tb); buf_str(b, " [");
+        let c: u32 = 0;
+        while (c < k.ncases) {
+            if (c > 0) { buf_str(b, ", "); }
+            ir_put_v(l, b, l.f.args.items[k.cases + c * 2]);
+            buf_str(b, ": b");
+            buf_u32(b, l.f.args.items[k.cases + c * 2 + 1]);
+            c += 1;
+        }
+        buf_push(b, ']');
+    } else if (k.term == IT_RET) {
+        buf_str(b, "ret");
+        if (k.ta != IR_NONE) { buf_push(b, ' '); ir_put_tv(l, b, k.ta); }
+    } else if (k.term == IT_RETAGG) {
+        buf_str(b, "ret agg "); buf_u32(b, k.tb); buf_push(b, ' '); ir_put_v(l, b, k.ta);
+    } else { buf_str(b, "<no terminator>"); }
+}
+
+fn ir_print_fn(l: *irlow, b: *buf) -> void {
+    let f: *irfn = &l.f;
+    let d: u32 = f.decl;
+    buf_push(b, '\n');
+    if (f.is_extern) { buf_str(b, "extern fn @"); } else { buf_str(b, "fn @"); }
+    buf_append(b, &l.p.text.data[ln(l, d).text], ln(l, d).tlen);
+    buf_push(b, '(');
+    let i: u32 = 0;
+    while (i < ir_nparams(f)) {
+        if (i > 0) { buf_str(b, ", "); }
+        let p: *irparam = ir_param(f, i);
+        ir_put_param(l, b, p.ty, p.agg, p.name, p.nlen);
+        if (!f.is_extern) { buf_str(b, " %"); buf_u32(b, p.reg); }
+        i += 1;
+    }
+    buf_str(b, ") -> ");
+    ir_put_param(l, b, f.ret_ty, f.ret_agg, 0, 0);
+    let sec: u32 = lw_section(l, d);
+    if (sec != 0) { buf_str(b, " section \""); buf_append(b, &l.p.text.data[ln(l, sec).text], ln(l, sec).tlen); buf_push(b, '"'); }
+    if (f.is_extern) { buf_push(b, '\n'); return; }
+    buf_str(b, " {\n");
+    i = 0;
+    while (i < ir_nslots(f)) {
+        let s: *irslot = ir_slot(f, i);
+        buf_str(b, "  slot $"); buf_u32(b, i); buf_push(b, ' '); buf_u32(b, s.size); buf_str(b, " align "); buf_u32(b, s.align);
+        if (s.nlen > 0) { buf_str(b, " ; "); buf_append(b, &l.p.text.data[s.name], s.nlen); }
+        buf_push(b, '\n');
+        i += 1;
+    }
+    let r: u32 = 0;
+    while (r < ir_nblks(f)) {
+        let k: *irblk = ir_blk(f, r);
+        if (k.id != IR_NONE) {
+            buf_push(b, 'b'); buf_u32(b, k.id); buf_str(b, ":\n");
+            let j: u32 = k.first;
+            while (j < ir_blk_end(f, r)) { buf_str(b, "  "); ir_put_ins(l, b, ir_ins(f, j)); buf_push(b, '\n'); j += 1; }
+            buf_str(b, "  "); ir_put_term(l, b, ir_blk(f, r)); buf_push(b, '\n');
+        }
+        r += 1;
+    }
+    buf_str(b, "}\n");
+}

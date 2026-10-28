@@ -53,6 +53,7 @@ struct sema {
     localty: list,      // per let (or binding case) node: the type it was given
     evaluating: list,   // per const decl: 1 while it is being folded
     sizing: list,       // names being sized, as text offset/length pairs
+    aligning: list,     // ... and being aligned
     cycle: bool,        // a type was met inside itself while sizing
     cycle_at: u32,
     cycle_len: u32,
@@ -101,15 +102,31 @@ fn mk_named(s: *sema, at: u32, len: u32) -> u32 {
 }
 fn mk_named_of(s: *sema, decl: u32) -> u32 { let d: *node = nd(s, decl); return mk_named(s, d.text, d.tlen); }
 
-// The width of a pointer, usize and isize: x86-32 until the target layer.
-const PTR_BYTES: u32 = 4;
+// The machine (C#: XTarget): how wide a pointer, usize and isize are, and the
+// most a field is aligned to. x86-32 unless target_set says otherwise, before
+// anything is resolved; the x86-32 emitter is only ever run on x86-32.
+global target_ptr: u32 = 4;
+global target_align: u32 = 4;
+
+fn target_is(name: *u8, word: *u8) -> bool {
+    let i: u32 = 0;
+    while (word[i] != 0) { if (name[i] != word[i]) { return false; } i += 1; }
+    return name[i] == 0;
+}
+
+// x86_32 or x86_64; false, and nothing changed, for any other name.
+fn target_set(name: *u8) -> bool {
+    if (target_is(name, "x86_32")) { target_ptr = 4; target_align = 4; return true; }
+    if (target_is(name, "x86_64")) { target_ptr = 8; target_align = 16; return true; }
+    return false;
+}
 
 fn prim_bytes(k: u32) -> u32 {
     if (k == PRIM_I8 || k == PRIM_U8 || k == PRIM_BOOL) { return 1; }
     if (k == PRIM_I16 || k == PRIM_U16) { return 2; }
     if (k == PRIM_I64 || k == PRIM_U64) { return 8; }
     if (k == PRIM_I128 || k == PRIM_U128) { return 16; }
-    if (k == PRIM_USIZE || k == PRIM_ISIZE) { return PTR_BYTES; }
+    if (k == PRIM_USIZE || k == PRIM_ISIZE) { return target_ptr; }
     if (k == PRIM_VOID) { return 0; }
     return 4;
 }
@@ -361,6 +378,7 @@ fn sema_init(s: *sema, p: *parser, dg: *diags) -> void {
     s.localty = list_new();
     s.evaluating = list_new();
     s.sizing = list_new();
+    s.aligning = list_new();
     s.cycle = false;
     s.cur_return = 0;
     s.loop_depth = 0;
@@ -519,20 +537,98 @@ fn declare_top(s: *sema, d: u32) -> void {
     if (!declare_global(s, sy)) { dup_top(s, d); }
 }
 
-// ---- sizes (only to lay out sum types) ----
-
-fn round4(n: u32) -> u32 { return (n + 3) & 0xFFFFFFFC; }
+// ---- layout (C#: SemaContext.SizeOf, AlignOf, LayOut) ----
+//
+// The one layout, which the IR lowering lays memory out by and the x86-32
+// emitter's own rule matches on x86-32. A field sits on its alignment (its
+// size, at least 4, at most target_align), a structure is as aligned as its
+// most aligned field and its size a multiple of that. On x86-32 every field
+// is on 4, as X has always been.
 
 // Sizes saturate at 0x7FFFFFFF rather than wrap, as the C# does; check_size
 // refuses anything that large.
 const SIZE_MAX: u32 = 0x7FFFFFFF;
 
-fn fields_size(s: *sema, list: u32, count: u32) -> u32 {
+fn round_up(n: u64, a: u32) -> u64 { return (n + (a as u64) - 1) & ~((a as u64) - 1); }
+
+// The offset of the field named as `upto` is (any node with that text), or
+// with upto 0 the size of the whole.
+fn lay_out(s: *sema, list: u32, count: u32, upto: u32) -> u32 {
     let o: u64 = 0;
     let i: u32 = 0;
-    while (i < count) { o += ((size_of(s, nd(s, list_at(s.p, list, i)).a) as u64) + 3) & 0xFFFFFFFFFFFFFFFC; i += 1; }
+    while (i < count) {
+        let f: u32 = list_at(s.p, list, i);
+        o = round_up(o, align_of(s, nd(s, f).a));
+        if (upto != 0 && node_name_eq(s, f, upto)) { return o as u32; }
+        o += size_of(s, nd(s, f).a) as u64;
+        if (o >= (SIZE_MAX as u64)) { return SIZE_MAX; }
+        i += 1;
+    }
+    if (upto != 0) { return 0; }
+    o = round_up(o, fields_align(s, list, count));
     if (o > (SIZE_MAX as u64)) { return SIZE_MAX; }
     return o as u32;
+}
+
+fn fields_size(s: *sema, list: u32, count: u32) -> u32 { return lay_out(s, list, count, 0); }
+
+// A field's offset in a struct decl; `name` is any node whose text is the field's name.
+fn field_offset_of(s: *sema, sd: u32, name: u32) -> u32 { return lay_out(s, nd(s, sd).list, nd(s, sd).count, name); }
+
+fn fields_align(s: *sema, list: u32, count: u32) -> u32 {
+    let a: u32 = 4;
+    let i: u32 = 0;
+    while (i < count) {
+        let f: u32 = align_of(s, nd(s, list_at(s.p, list, i)).a);
+        if (f > a) { a = f; }
+        i += 1;
+    }
+    return a;
+}
+
+// Where a sum type's payload starts: after the u32 tag, on the alignment of
+// its most aligned variant (4 on x86-32, so always 4 there).
+fn payload_offset(s: *sema, ed: u32) -> u32 {
+    let a: u32 = 4;
+    let i: u32 = 0;
+    while (i < nd(s, ed).count) {
+        let v: u32 = variant_at(s, ed, i);
+        if (nd(s, v).op == 1) {
+            let f: u32 = fields_align(s, nd(s, v).list, nd(s, v).count);
+            if (f > a) { a = f; }
+        }
+        i += 1;
+    }
+    return a;
+}
+
+fn align_of(s: *sema, t0: u32) -> u32 {
+    let t: u32 = expand(s, t0);
+    let x: *node = nd(s, t);
+    if (x.kind == nk.t_array) { return align_of(s, x.a); }
+    if (x.kind == nk.t_named) {
+        let sd: u32 = map_get_node(s, &s.structs, t);
+        let ed: u32 = map_get_node(s, &s.enums, t);
+        if (sd != SMAP_NONE || ed != SMAP_NONE) {
+            // met again while being aligned: a cycle, which size_of reports
+            let i: u32 = 0;
+            while (i < s.aligning.len) {
+                if (name_eq(s, s.aligning.items[i], s.aligning.items[i + 1], x.text, x.tlen)) { return 4; }
+                i += 2;
+            }
+            list_push(&s.aligning, x.text);
+            list_push(&s.aligning, x.tlen);
+            let r: u32 = 4;
+            if (sd != SMAP_NONE) { r = fields_align(s, nd(s, sd).list, nd(s, sd).count); }
+            else if (enum_is_sum(s, ed)) { r = payload_offset(s, ed); }   // a plain enum's backing is at most 32 bits
+            s.aligning.len -= 2;
+            return r;
+        }
+    }
+    let n: u32 = size_of(s, t);
+    if (n < 4) { return 4; }
+    if (n > target_align) { return target_align; }
+    return n;
 }
 
 fn size_of_named(s: *sema, t: u32) -> u32 {
@@ -543,23 +639,27 @@ fn size_of_named(s: *sema, t: u32) -> u32 {
         if (nd(s, ed).a != 0) { return size_of(s, nd(s, ed).a); }
         return 4;
     }
-    let max: u32 = 0;
+    let max: u64 = 0;
     let i: u32 = 0;
     while (i < nd(s, ed).count) {
         let v: u32 = variant_at(s, ed, i);
         if (nd(s, v).op == 1) {
-            let o: u32 = fields_size(s, nd(s, v).list, nd(s, v).count);
-            if (o > max) { max = o; if (max > SIZE_MAX - 4) { max = SIZE_MAX - 4; } }
+            let o: u64 = fields_size(s, nd(s, v).list, nd(s, v).count) as u64;
+            if (o > max) { max = o; }
         }
         i += 1;
     }
-    return 4 + max;
+    let p: u32 = payload_offset(s, ed);
+    let r: u64 = round_up((p as u64) + max, p);
+    if (r > (SIZE_MAX as u64)) { return SIZE_MAX; }
+    return r as u32;
 }
 
 fn size_of(s: *sema, t0: u32) -> u32 {
     let t: u32 = expand(s, t0);
     let x: *node = nd(s, t);
     if (x.kind == nk.t_prim) { return prim_bytes(x.op); }
+    if (x.kind == nk.t_ptr || x.kind == nk.t_fn) { return target_ptr; }
     if (x.kind == nk.t_array) {
         let r: u64 = (size_of(s, x.a) as u64) * ((nd(s, t).value as u32) as u64);
         if (r > (SIZE_MAX as u64)) { return SIZE_MAX; }
@@ -593,7 +693,8 @@ fn lay_out_sums(s: *sema) -> void {
         e += 1;
         if (!enum_is_sum(s, ed)) { continue; }
         s.cycle = false;
-        let body: u32 = size_of(s, mk_named_of(s, ed)) - 4;
+        let at: u32 = payload_offset(s, ed);
+        let body: u32 = size_of(s, mk_named_of(s, ed)) - at;
         if (s.cycle) {
             eb(s); es(s, "'"); en(s, ed); es(s, "' contains '"); dg_bytes(s.dg, txt(s, s.cycle_at), s.cycle_len);
             es(s, "' by value inside itself, so it has no size; use a pointer (*"); dg_bytes(s.dg, txt(s, s.cycle_at), s.cycle_len);
@@ -605,8 +706,12 @@ fn lay_out_sums(s: *sema) -> void {
         let tag_name: u32 = text_add(s, "$tag");
         let body_name: u32 = text_add(s, "$body");
         let tu: u32 = mk_prim(s, PRIM_U32);
-        let tb: u32 = mk_type(s, nk.t_array, 0, mk_prim(s, PRIM_U8));
-        nd(s, tb).value = body as u128;
+        // bytes, or where the payload needs more than 4 (a u64 or a pointer
+        // on x86-64) words that wide, so the body sits on it
+        let ek: u32 = PRIM_U8;
+        if (at == 8) { ek = PRIM_U64; } else if (at > 8) { ek = PRIM_U128; }
+        let tb: u32 = mk_type(s, nk.t_array, 0, mk_prim(s, ek));
+        if (at == 4) { nd(s, tb).value = body as u128; } else { nd(s, tb).value = (body / at) as u128; }
         let y: *node = nd(s, pt); y.text = tag_name; y.tlen = 4; y.a = tu;
         let z: *node = nd(s, pb); z.text = body_name; z.tlen = 5; z.a = tb;
         let mark: u32 = s.p.stk.len;
@@ -1523,7 +1628,12 @@ fn check_expr(s: *sema, e: u32) -> u32 {
         }
         case nk.e_index {
             let tt: u32 = check_expr(s, x.a);
-            expect_ty(s, check_expr(s, nd(s, e).b), s.t_i32, nd(s, e).b, "index");
+            /* An i32, or what converts to one - or a usize or isize, which is
+               as wide as the address on every target: on x86-64 it is 64
+               bits, and still the natural index. */
+            let it: u32 = check_expr(s, nd(s, e).b);
+            let ix: *node = nd(s, expand(s, it));
+            if (!(ix.kind == nk.t_prim && prim_is_size(ix.op))) { expect_ty(s, it, s.t_i32, nd(s, e).b, "index"); }
             if (!check_deref(s, tt, e)) { return set_ty(s, e, s.t_void); }
             let k: nk = nd(s, tt).kind;
             if (k == nk.t_ptr || k == nk.t_array) { return set_ty(s, e, nd(s, tt).a); }
