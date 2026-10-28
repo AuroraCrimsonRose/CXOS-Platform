@@ -216,6 +216,10 @@ programs for it (step 6).
        `asmdump --target x86_64` against `cxk asm --target x86_64`).
      - **6c3** `xc` runs as x86-64 (its host layer on `usize` and the
        `syscall` instruction); the fixed point and `tests/lang/run` hold there.
+       **Done 2026-10-28** (`xc --target x86_64`; Linux's numbers per target
+       in `os/xc/host/x86_32|x86_64/xc_linux.xfxn`; `SelfHostTests` on both
+       targets). The heap still hands out `u32` addresses, so the host layer
+       grants memory under 4 GB only; `std/heap` moves to `usize` with 6d.
    - **6d** The executive starts on x86-64 and the full boot passes; the
      32-bit kernel and the tree-walking x86-32 code generator are deleted.
      **X stays cross-architecture:** the `x86_32` target stays in both front

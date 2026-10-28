@@ -90,7 +90,7 @@ public class IrTests
         string os = Path.Combine(repo, "os");
         string tests = Path.Combine(repo, "devkit", "tests");
         string[] std = { "-I", Path.Combine(os, "std") };
-        string[] xc = { "-I", Path.Combine(os, "xc", "host"), "-I", Path.Combine(os, "xc"), "-I", Path.Combine(os, "std") };
+        string[] xc = CXEX.Tests.Differential.HostBuild.XcIncludes(os);
         var groups = new (IEnumerable<string> Files, string[] Args)[]
         {
             (Programs(Path.Combine(os, "apps")).Concat(Programs(Path.Combine(os, "std"))), std),

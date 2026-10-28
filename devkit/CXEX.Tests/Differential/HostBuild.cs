@@ -44,6 +44,27 @@ public static class HostBuild
         ".text\n.globl _start\n_start:\n    xorl %ebp, %ebp\n    call main\n    movl %eax, %edi\n" +
         "    movl $60, %eax\n    syscall\n";
 
+    /// <summary>
+    /// <see cref="ArgvStub"/> for x86-64 (roadmap step 6c3): argc and argv
+    /// go to main in rdi and rsi, as System V passes its first two arguments.
+    /// </summary>
+    public const string ArgvStub64 =
+        ".text\n.globl _start\n_start:\n    xorl %ebp, %ebp\n    movq (%rsp), %rdi\n    leaq 8(%rsp), %rsi\n" +
+        "    call main\n    movl %eax, %edi\n    movl $60, %eax\n    syscall\n";
+
+    /// <summary>
+    /// The include directories a build of one of <c>os/xc</c>'s programs for
+    /// the host takes: the target's Linux numbers ahead of the host layer
+    /// (<c>os/xc/host/xc_sys.xfxn</c>), then the compiler and the library.
+    /// </summary>
+    public static string[] XcIncludes(string osDir, string target = "x86_32") => new[]
+    {
+        "-I", Path.Combine(osDir, "xc", "host", target),
+        "-I", Path.Combine(osDir, "xc", "host"),
+        "-I", Path.Combine(osDir, "xc"),
+        "-I", Path.Combine(osDir, "std"),
+    };
+
     public static string HostCc =>
         Environment.GetEnvironmentVariable("CXOS_HOSTCC") is { Length: > 0 } cc ? cc : "clang";
 
@@ -116,9 +137,10 @@ public static class HostBuild
 
     /// <summary>
     /// <see cref="Link"/> for x86-64 assembly from <c>cxk compile --target
-    /// x86_64</c>, against <see cref="PlainStub64"/>.
+    /// x86_64</c>, against <see cref="PlainStub64"/> unless another stub is
+    /// given.
     /// </summary>
-    public static void Link64(string asmPath, string exePath, string workDir)
+    public static void Link64(string asmPath, string exePath, string workDir, string stub = PlainStub64)
     {
         string text = File.ReadAllText(asmPath);
         int at = text.IndexOf(".globl _start", StringComparison.Ordinal);
@@ -128,8 +150,8 @@ public static class HostBuild
         string hostAsm = exePath + ".host.s";
         File.WriteAllText(hostAsm, text);
 
-        string stubPath = Path.Combine(workDir, "stub64.s");
-        if (!File.Exists(stubPath)) File.WriteAllText(stubPath, PlainStub64);
+        string stubPath = Path.Combine(workDir, stub == ArgvStub64 ? "hstub64.s" : "stub64.s");
+        if (!File.Exists(stubPath)) File.WriteAllText(stubPath, stub);
 
         var r = Run(HostCc,
                     new[] { "-m64", "-nostdlib", "-static", "-o", exePath, hostAsm, stubPath },
@@ -149,10 +171,7 @@ public static class HostBuild
         {
             "compile", Path.Combine(osDir, "xc", prog + ".xfxn"), baseName + ".elf",
             "--no-prelude", "--emit-asm",
-            "-I", Path.Combine(osDir, "xc", "host"),
-            "-I", Path.Combine(osDir, "xc"),
-            "-I", Path.Combine(osDir, "std"),
-        }, repo);
+        }.Concat(XcIncludes(osDir)), repo);
 
         if (!File.Exists(baseName + ".s"))
             throw new InvalidOperationException($"{prog} did not compile:\n{r.All}");

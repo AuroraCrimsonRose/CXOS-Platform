@@ -42,7 +42,7 @@ struct front {
 }
 
 fn srcfile_size() -> u32 { let x: srcfile; return sizeof x; }
-fn file_at(f: *front, i: u32) -> *srcfile { return ((f.files.data as u32) + i * srcfile_size()) as *srcfile; }
+fn file_at(f: *front, i: u32) -> *srcfile { return ((f.files.data as usize) + ((i * srcfile_size()) as usize)) as *srcfile; }
 fn file_count(f: *front) -> u32 { return f.files.len / srcfile_size(); }
 
 fn front_init(f: *front) -> void {

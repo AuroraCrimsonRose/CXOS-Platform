@@ -71,12 +71,7 @@ public static class ProgramDiffHarness
         Assert.True(pr.ExitCode == 0, $"`cxk prelude` failed: {pr.All}");
 
         string[] std = { "-I", Path.Combine(osDir!, "std") };
-        string[] xc =
-        {
-            "-I", Path.Combine(osDir!, "xc", "host"),
-            "-I", Path.Combine(osDir!, "xc"),
-            "-I", Path.Combine(osDir!, "std"),
-        };
+        string[] xc = HostBuild.XcIncludes(osDir!);
 
         var corpus = new List<Entry>();
         foreach (string p in Sorted(Path.Combine(osDir!, "apps"), "*.xfxn")

@@ -7,8 +7,9 @@
 // and on the Linux host it is developed on, which is how it is tested - every
 // piece is compared against the C# compiler on the same input, thousands of
 // files at a time, without booting anything. This file is the host half. A
-// build picks it with `-I os/xc/host` and `--no-prelude`; the CXK half sits in
-// os/xc/cxk and uses the ordinary prelude and std/file.xfxn.
+// build picks it with `-I os/xc/host/<target> -I os/xc/host` and
+// `--no-prelude`; the CXK half sits in os/xc/cxk and uses the ordinary prelude
+// and std/file.xfxn.
 //
 // What it provides is small on purpose - read a file, write to stdout and
 // stderr, exit - plus the one thing std/heap.xfxn needs from below: vm_map,
@@ -16,19 +17,16 @@
 // std/buf.xfxn run here unchanged. Memory comes from brk, and like a CXK
 // mapping it arrives zeroed.
 //
-// These are Linux's i386 system calls through int 0x80 - the same instruction
-// CXK uses, with Linux's numbers. A static 32-bit binary runs them directly.
+// It runs as x86-32 or as x86-64. With no prelude, __syscall is Linux's own
+// entry - int $0x80 on x86-32, `syscall` on x86-64 - and xc_linux.xfxn, from
+// the target's directory, holds that entry's numbers. Addresses go to the
+// kernel as usize, so a pointer to the stack (argv, a local) arrives whole on
+// x86-64. The heap is the exception: std/heap.xfxn hands out addresses as u32,
+// so vm_map below grants memory under 4 GB only.
 
 import "buf.xfxn";
+import "xc_linux.xfxn";
 
-const LINUX_EXIT:  u32 = 1;
-const LINUX_READ:  u32 = 3;
-const LINUX_WRITE: u32 = 4;
-const LINUX_OPEN:  u32 = 5;
-const LINUX_CLOSE: u32 = 6;
-const LINUX_UNLINK: u32 = 10;
-const LINUX_BRK:   u32 = 45;
-const LINUX_GETCWD: u32 = 183;
 const LINUX_EISDIR: i32 = -21;
 
 // ---- what std/heap.xfxn expects of the prelude ----
@@ -42,14 +40,19 @@ struct vm_map_args { offset: u64, length: u64, granted: u64, object: u32, addr: 
 global host_mapped: u32 = 0;
 
 // No unmap: the heap never unmaps. Pages come off the end of the data segment,
-// so every grant follows the one before.
+// so every grant follows the one before. A static binary's break starts just
+// past its data, far under 4 GB; a grant that would end above 4 GB is refused
+// rather than handed to a heap that would truncate its address. (__syscall's
+// result is an i32, so a break already above 4 GB reads back short, and the
+// brk to `want` then fails the same way.)
 fn vm_map(a: *vm_map_args) -> i32 {
     let len: u32 = ((a.length as u32) + 4095) & 0xFFFFF000;
-    let cur: u32 = __syscall(LINUX_BRK, 0, 0, 0, 0, 0) as u32;
-    let want: u32 = cur + len;
-    let got: u32 = __syscall(LINUX_BRK, want, 0, 0, 0, 0) as u32;
+    let cur: usize = (__syscall(LINUX_BRK, 0, 0, 0, 0, 0) as u32) as usize;
+    let want: usize = cur + (len as usize);
+    if (want < cur || want > 0xFFFFFFFF) { return E_NO_MEMORY; }
+    let got: usize = (__syscall(LINUX_BRK, want, 0, 0, 0, 0) as u32) as usize;
     if (got < want) { return E_NO_MEMORY; }
-    a.addr = cur;
+    a.addr = cur as u32;
     a.granted = len;
     host_mapped += len;
     return E_OK;
@@ -76,10 +79,13 @@ fn xc_arg(i: u32) -> *u8 { return host_argv[i]; }
 
 fn sys_exit(code: i32) -> void { __syscall(LINUX_EXIT, code as u32, 0, 0, 0, 0); }
 
+// p + n, as the address the kernel is given
+fn host_at(p: *u8, n: u32) -> usize { return (p as usize) + (n as usize); }
+
 fn sys_write(fd: u32, p: *u8, n: u32) -> void {
     let done: u32 = 0;
     while (done < n) {
-        let w: i32 = __syscall(LINUX_WRITE, fd, (p as u32) + done, n - done, 0, 0);
+        let w: i32 = __syscall(LINUX_WRITE, fd, host_at(p, done), n - done, 0, 0);
         if (w <= 0) { return; }
         done += w as u32;
     }
@@ -92,12 +98,12 @@ fn err_str(s: *u8) -> void { let n: u32 = 0; while (s[n] != 0) { n += 1; } sys_w
 // The whole of a file, appended to `out`. False if it cannot be opened or
 // read, or memory runs out.
 fn read_file(path: *u8, out: *buf) -> bool {
-    let fd: i32 = __syscall(LINUX_OPEN, path as u32, 0, 0, 0, 0);   // O_RDONLY
+    let fd: i32 = __syscall(LINUX_OPEN, path, 0, 0, 0, 0);   // O_RDONLY
     if (fd < 0) { return false; }
     let ok: bool = true;
     while (true) {
         if (!buf_reserve(out, 65536)) { ok = false; break; }
-        let r: i32 = __syscall(LINUX_READ, fd as u32, (out.data as u32) + out.len, 65536, 0, 0);
+        let r: i32 = __syscall(LINUX_READ, fd as u32, host_at(out.data, out.len), 65536, 0, 0);
         if (r < 0) { ok = false; break; }
         if (r == 0) { break; }
         out.len += r as u32;
@@ -109,10 +115,10 @@ fn read_file(path: *u8, out: *buf) -> bool {
 // Is there a FILE at this path? A directory is not one, as for C#'s File.Exists:
 // it opens, but reading it fails with EISDIR.
 fn xc_exists(path: *u8) -> bool {
-    let fd: i32 = __syscall(LINUX_OPEN, path as u32, 0, 0, 0, 0);
+    let fd: i32 = __syscall(LINUX_OPEN, path, 0, 0, 0, 0);
     if (fd < 0) { return false; }
     let c: [4]u8;
-    let r: i32 = __syscall(LINUX_READ, fd as u32, (&c[0]) as u32, 1, 0, 0);
+    let r: i32 = __syscall(LINUX_READ, fd as u32, &c[0], 1, 0, 0);
     __syscall(LINUX_CLOSE, fd as u32, 0, 0, 0, 0);
     return r != LINUX_EISDIR;
 }
@@ -120,7 +126,7 @@ fn xc_exists(path: *u8) -> bool {
 // The working directory, appended to `out`.
 fn xc_cwd(out: *buf) -> bool {
     if (!buf_reserve(out, 4096)) { return false; }
-    let n: i32 = __syscall(LINUX_GETCWD, (out.data as u32) + out.len, 4096, 0, 0, 0);
+    let n: i32 = __syscall(LINUX_GETCWD, host_at(out.data, out.len), 4096, 0, 0, 0);
     if (n <= 0) { return false; }
     out.len += (n - 1) as u32;   // Linux counts the NUL
     return true;
@@ -128,11 +134,11 @@ fn xc_cwd(out: *buf) -> bool {
 
 // A whole file written from p[0..n], replacing any it had. False on failure.
 fn write_file(path: *u8, p: *u8, n: u32) -> bool {
-    let fd: i32 = __syscall(LINUX_OPEN, path as u32, 0x241, 420, 0, 0);   // O_WRONLY|O_CREAT|O_TRUNC, 0644
+    let fd: i32 = __syscall(LINUX_OPEN, path, 0x241, 420, 0, 0);   // O_WRONLY|O_CREAT|O_TRUNC, 0644
     if (fd < 0) { return false; }
     let done: u32 = 0;
     while (done < n) {
-        let w: i32 = __syscall(LINUX_WRITE, fd as u32, (p as u32) + done, n - done, 0, 0);
+        let w: i32 = __syscall(LINUX_WRITE, fd as u32, host_at(p, done), n - done, 0, 0);
         if (w <= 0) { break; }
         done += w as u32;
     }
@@ -141,15 +147,15 @@ fn write_file(path: *u8, p: *u8, n: u32) -> bool {
 }
 
 // A file written in pieces: created (replacing any), written to, closed.
-fn xc_create(path: *u8) -> i32 { return __syscall(LINUX_OPEN, path as u32, 0x241, 420, 0, 0); }
+fn xc_create(path: *u8) -> i32 { return __syscall(LINUX_OPEN, path, 0x241, 420, 0, 0); }
 fn xc_write(h: i32, p: *u8, n: u32) -> bool {
     let done: u32 = 0;
     while (done < n) {
-        let w: i32 = __syscall(LINUX_WRITE, h as u32, (p as u32) + done, n - done, 0, 0);
+        let w: i32 = __syscall(LINUX_WRITE, h as u32, host_at(p, done), n - done, 0, 0);
         if (w <= 0) { return false; }
         done += w as u32;
     }
     return true;
 }
 fn xc_close(h: i32) -> void { __syscall(LINUX_CLOSE, h as u32, 0, 0, 0, 0); }
-fn xc_remove(path: *u8) -> void { __syscall(LINUX_UNLINK, path as u32, 0, 0, 0, 0); }
+fn xc_remove(path: *u8) -> void { __syscall(LINUX_UNLINK, path, 0, 0, 0, 0); }

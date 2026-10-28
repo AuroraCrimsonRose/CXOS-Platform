@@ -106,7 +106,7 @@ public class X64BackEndTests
         string os = Path.Combine(repo, "os");
         string tests = Path.Combine(repo, "devkit", "tests");
         string[] std = { "-I", Path.Combine(os, "std") };
-        string[] xc = { "-I", Path.Combine(os, "xc", "host"), "-I", Path.Combine(os, "xc"), "-I", Path.Combine(os, "std"), "--no-prelude" };
+        string[] xc = CXEX.Tests.Differential.HostBuild.XcIncludes(os, "x86_64").Append("--no-prelude").ToArray();
         IEnumerable<string> In(string d) => Directory.Exists(d) ? Directory.GetFiles(d, "*.xfxn").OrderBy(p => p, StringComparer.Ordinal) : Array.Empty<string>();
         var programs = In(Path.Combine(os, "apps")).Concat(In(Path.Combine(os, "std"))).Select(p => (p, std))
             .Concat(In(Path.Combine(os, "xc")).Where(p => Path.GetFileNameWithoutExtension(p) is var n && (n == "xc" || n.EndsWith("dump", StringComparison.Ordinal))).Select(p => (p, xc)))

@@ -34,7 +34,7 @@ fn smap_new() -> smap { return smap { keys: buf_new(), ents: buf_new(), slots: l
 
 fn smap_free(m: *smap) -> void { buf_free(&m.keys); buf_free(&m.ents); list_free(&m.slots); }
 
-fn smap_ent_at(m: *smap, e: u32) -> *smap_ent { return ((m.ents.data as u32) + e * smap_ent_size()) as *smap_ent; }
+fn smap_ent_at(m: *smap, e: u32) -> *smap_ent { return ((m.ents.data as usize) + ((e * smap_ent_size()) as usize)) as *smap_ent; }
 fn smap_val(m: *smap, e: u32) -> u32 { return smap_ent_at(m, e).val; }
 fn smap_key(m: *smap, e: u32) -> *u8 { return &m.keys.data[smap_ent_at(m, e).at]; }
 fn smap_key_len(m: *smap, e: u32) -> u32 { return smap_ent_at(m, e).len; }

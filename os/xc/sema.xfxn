@@ -69,7 +69,7 @@ struct sema {
 }
 
 fn sym_size() -> u32 { let x: sym; return sizeof x; }
-fn sym_at(s: *sema, i: u32) -> *sym { return ((s.syms.data as u32) + i * sym_size()) as *sym; }
+fn sym_at(s: *sema, i: u32) -> *sym { return ((s.syms.data as usize) + ((i * sym_size()) as usize)) as *sym; }
 fn nd(s: *sema, n: u32) -> *node { return node_at(s.p, n); }
 fn txt(s: *sema, at: u32) -> *u8 { return &s.p.text.data[at]; }
 

@@ -31,10 +31,10 @@ fn memcpy(dst: *u8, src: *u8, n: u32) -> void {
 
 // copy n bytes, correct even when the regions overlap
 fn memmove(dst: *u8, src: *u8, n: u32) -> void {
-    if ((dst as u32) == (src as u32)) { return; }
+    if ((dst as usize) == (src as usize)) { return; }
 
     // dst above src: copy backwards so we read each byte before overwriting it
-    if ((dst as u32) > (src as u32)) {
+    if ((dst as usize) > (src as usize)) {
         let i: u32 = n;
         while (i > 0) {
             i = i - 1;

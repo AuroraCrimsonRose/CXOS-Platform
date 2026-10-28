@@ -28,7 +28,7 @@ fn diags_new() -> diags { return diags { recs: buf_new(), msgs: buf_new(), start
 fn diags_free(d: *diags) -> void { buf_free(&d.recs); buf_free(&d.msgs); }
 
 fn dg_count(d: *diags) -> u32 { return d.recs.len / diag_size(); }
-fn dg_at(d: *diags, i: u32) -> *diag { return ((d.recs.data as u32) + i * diag_size()) as *diag; }
+fn dg_at(d: *diags, i: u32) -> *diag { return ((d.recs.data as usize) + ((i * diag_size()) as usize)) as *diag; }
 
 fn dg_begin(d: *diags) -> void { d.start = d.msgs.len; }
 fn dg_str(d: *diags, s: *u8) -> void { if (!buf_str(&d.msgs, s)) { d.oom = true; } }

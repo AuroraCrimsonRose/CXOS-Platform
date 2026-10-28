@@ -129,7 +129,7 @@ fn lex_init(lx: *lexer, src: *u8, len: u32) -> void {
 }
 
 fn lex_count(lx: *lexer) -> u32 { return lx.toks.len / token_size(); }
-fn lex_tok(lx: *lexer, i: u32) -> *token { return ((lx.toks.data as u32) + i * token_size()) as *token; }
+fn lex_tok(lx: *lexer, i: u32) -> *token { return ((lx.toks.data as usize) + ((i * token_size()) as usize)) as *token; }
 
 fn lex_free(lx: *lexer) -> void { buf_free(&lx.toks); buf_free(&lx.strs); }
 
@@ -137,7 +137,7 @@ fn lex_free(lx: *lexer) -> void { buf_free(&lx.toks); buf_free(&lx.strs); }
 // lexer's words, at the token's start. Without this they are only counted.
 fn lex_report_to(lx: *lexer, dg: *diags, file: u32) -> void { lx.dg = dg; lx.file = file; }
 
-fn lx_reporting(lx: *lexer) -> bool { return (lx.dg as u32) != 0; }
+fn lx_reporting(lx: *lexer) -> bool { return (lx.dg as usize) != 0; }
 
 fn lx_err(lx: *lexer, msg: *u8, line: u32, col: u32) -> void {
     if (!lx_reporting(lx)) { return; }

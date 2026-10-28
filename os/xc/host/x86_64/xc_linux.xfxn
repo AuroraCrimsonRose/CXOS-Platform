@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// xc/host/x86_64/xc_linux.xfxn - Linux's x86-64 system call numbers.
+// Aurora Tejeda / CATX Systems
+//
+// xc_sys.xfxn's numbers for a 64-bit host build, which `--no-prelude`
+// compiles to the `syscall` instruction. A build puts this directory ahead of
+// os/xc/host (`-I os/xc/host/x86_64 -I os/xc/host`); x86_32/ holds the same
+// names.
+
+const LINUX_EXIT:  u32 = 60;
+const LINUX_READ:  u32 = 0;
+const LINUX_WRITE: u32 = 1;
+const LINUX_OPEN:  u32 = 2;
+const LINUX_CLOSE: u32 = 3;
+const LINUX_UNLINK: u32 = 87;
+const LINUX_BRK:   u32 = 12;
+const LINUX_GETCWD: u32 = 79;
