@@ -238,12 +238,14 @@ extern const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE];
 
     /// <summary>
     /// X's typed wrapper for each syscall that declares one, in file order: the
-    /// number, then each argument as a u32 register (a u32 as it is, anything
-    /// else cast; a u64 or i64 as two, low then high), padded to the five
-    /// <c>__syscall</c> takes. X targets x86-32 alone today; the x86-64 back end
-    /// (roadmap step 6b) passes a u64 in one register.
+    /// number, then each argument as a register, padded to the five
+    /// <c>__syscall</c> takes. With <paramref name="pairs"/> (x86-32) a register
+    /// is a u32: a u32 goes as it is, anything else is cast, and a u64 or i64
+    /// takes two, low then high. Without (x86-64, roadmap step 6d1a) a register
+    /// is 64 bits: a u64, an i64 and a pointer go whole, as the decoder's
+    /// <c>SYSCALL_PAIRS</c> 0 reads them.
     /// </summary>
-    public static string XWrappers(XfilFile file)
+    public static string XWrappers(XfilFile file, bool pairs = true)
     {
         var sb = new StringBuilder("// ---- typed syscall wrappers ----\n");
         foreach (XfilSyscall s in file.Syscalls)
@@ -252,11 +254,13 @@ extern const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE];
             var args = new List<string> { s.Name };
             foreach (XfilParam p in w.Params)
             {
-                if (p.Wide)
+                if (p.Wide && pairs)
                 {
                     args.Add($"{p.Name} as u32");
                     args.Add($"({p.Name} >> 32) as u32");
                 }
+                else if (p.Wide || (!pairs && p.Type is XfilPointer))
+                    args.Add(p.Name);
                 else
                     args.Add(p.Type is XfilInt { Name: "u32" } ? p.Name : $"{p.Name} as u32");
             }

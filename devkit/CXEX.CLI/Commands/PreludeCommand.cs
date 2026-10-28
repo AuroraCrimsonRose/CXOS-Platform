@@ -6,6 +6,7 @@ using System.IO;
 using System.Text;
 using System.Threading;
 using CXEX.Lang.Abi;
+using CXEX.Lang.Ast;
 using Spectre.Console.Cli;
 
 namespace CXEX.CLI.Commands;
@@ -22,11 +23,21 @@ public class PreludeCommand : Command<PreludeCommand.Settings>
         [CommandArgument(0, "[OUT]")]
         [Description("write it to this file instead of stdout")]
         public string? Out { get; set; }
+
+        [CommandOption("--target <TARGET>")]
+        [Description("x86_32 (the default) or x86_64: the syscall wrappers pass registers as that machine's are")]
+        public string Target { get; set; } = "x86_32";
     }
 
     protected override int Execute(CommandContext context, Settings settings, CancellationToken cancellationToken)
     {
-        var bytes = Encoding.UTF8.GetBytes(AbiPrelude.Generate());
+        var target = XTarget.Parse(settings.Target);
+        if (target == null)
+        {
+            Console.Error.WriteLine($"error: unknown target '{settings.Target}' (x86_32 or x86_64)");
+            return 1;
+        }
+        var bytes = Encoding.UTF8.GetBytes(AbiPrelude.Generate(target));
         if (settings.Out != null) { File.WriteAllBytes(settings.Out, bytes); return 0; }
         using var stdout = Console.OpenStandardOutput();
         stdout.Write(bytes, 0, bytes.Length);

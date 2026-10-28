@@ -385,9 +385,10 @@ syscall SYS_EXAMPLE = 0x3F0 (op: u32, ms: u32) -> i32   /// no plain wrapper
   `i32` or `void`. Arguments are counted in x86-32 registers, at most five: a
   `u64` or `i64` takes two, low then high, so `(h, start: u64, len: u64)` fits
   and three `u64`s do not. Its name starts with `SYS_`, its number is its own
-  and at most `0x3FF`. A wrapper passes a `u32` as it is, a `u64` as `x as u32,
-  (x >> 32) as u32` (X targets x86-32 alone until step 6b), anything else
-  through `as u32`. A decoder reads the registers as `uintptr_t` and casts each
+  and at most `0x3FF`. The prelude is generated per target (step 6d1a,
+  `cxk prelude --target`). On x86-32 a wrapper passes a `u32` as it is, a
+  `u64` as `x as u32, (x >> 32) as u32`, anything else through `as u32`; on
+  x86-64 a `u64`, an `i64` and a pointer go whole, anything else as on x86-32. A decoder reads the registers as `uintptr_t` and casts each
   to its parameter's C type; one with a wide parameter is written twice, `#if
   SYSCALL_PAIRS` joining the pair on x86-32 and taking one register on x86-64.
   The kernel receives a pointer as a `uint32_t` user address. Wrappers come out in file order, and

@@ -67,7 +67,7 @@ public static class ProgramDiffHarness
         string exe = HostBuild.BuildDumpProgram(cxk, repo, osDir!, prog, work.Path);
 
         string prelude = Path.Combine(work.Path, "prelude.xfxn");
-        var pr = HostBuild.Run(cxk, new[] { "prelude", prelude }, repo);
+        var pr = HostBuild.Run(cxk, new[] { "prelude", prelude }.Concat(TargetOf(extra)), repo);
         Assert.True(pr.ExitCode == 0, $"`cxk prelude` failed: {pr.All}");
 
         string[] std = { "-I", Path.Combine(osDir!, "std") };
@@ -159,6 +159,13 @@ public static class ProgramDiffHarness
         // and nothing diagnosed compared very little, however green it looks.
         Assert.True(programs > 0, "the comparison saw no programs at all, so it compared nothing.");
         Console.WriteLine($"{countedHits} with '{counted.Trim()}' of {programs} programs; {diagnostics} diagnostics");
+    }
+
+    /// <summary>The <c>--target</c> pair in <paramref name="extra"/>, if any: the prelude's wrappers depend on it.</summary>
+    private static IEnumerable<string> TargetOf(string[] extra)
+    {
+        int i = Array.IndexOf(extra, "--target");
+        return i >= 0 && i + 1 < extra.Length ? new[] { "--target", extra[i + 1] } : Array.Empty<string>();
     }
 
     private static IEnumerable<string> Sorted(string dir, string pattern) =>

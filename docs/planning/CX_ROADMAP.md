@@ -222,6 +222,21 @@ programs for it (step 6).
        grants memory under 4 GB only; `std/heap` moves to `usize` with 6d.
    - **6d** The executive starts on x86-64 and the full boot passes; the
      32-bit kernel and the tree-walking x86-32 code generator are deleted.
+     In steps, each a green commit:
+     - **6d1a** The prelude per target: on x86-64 a syscall wrapper passes a
+       pointer, a `u64` and an `i64` whole in one register (the decoder's
+       `SYSCALL_PAIRS` 0), where the x86-32 wrappers cut them to a `u32` or a
+       pair. `cxk prelude --target`; no ABI change, x86-32 byte-identical.
+     - **6d1b** `std/heap`, `std/buf` and `list` on `usize`; the
+       differential dump programs built for either target.
+     - **6d2** The executive on x86-64, the full boot passing.
+     - **6d3** The 32-bit kernel and the x86-32 emitter deleted.
+     **Not in 6d:** the ABI keeps user addresses as `u32` (`vm_map_args.addr`,
+     `spawn_args.image`, the IPC buffers, `vm_unmap`'s `addr`) and the kernel
+     decodes a pointer argument as `uint32_t`. Nothing truncates while the
+     x86-64 user half keeps x86-32's layout (images below `USER_IMAGE_END`,
+     mappings in `VM_MMAP_BASE..VM_MMAP_TOP`); widening them is an ABI step
+     of its own, before the user half grows past 4 GB.
      **X stays cross-architecture:** the `x86_32` target stays in both front
      ends and the IR, and an x86-32 back end on the IR (like `X64Emitter`)
      can come back later without touching the language.

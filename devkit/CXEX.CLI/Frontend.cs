@@ -30,7 +30,7 @@ public sealed class Frontend
     public static Frontend Analyze(string source, bool noPrelude, string[] includeDirs, XTarget target)
     {
         var f = new Frontend();
-        string prelude = noPrelude ? "" : AbiPrelude.Generate() + "\n";
+        string prelude = noPrelude ? "" : AbiPrelude.Generate(target) + "\n";
         string full = prelude + File.ReadAllText(source);
         f.FileName = Path.GetFileName(source);
 

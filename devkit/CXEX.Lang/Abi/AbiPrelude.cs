@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+using CXEX.Lang.Ast;
+
 namespace CXEX.Lang.Abi;
 
 /// <summary>
@@ -29,8 +31,14 @@ public static class AbiPrelude
 {
     public const string FileName = "abi.x";
 
-    /// <summary>The whole prelude: the generated declarations, the hand-written notes, the generated wrappers, the hand-written helpers.</summary>
-    public static string Generate() => Banner + AbiModel.Embedded.EmitX() + "\n" + Notes + XfilEmit.XWrappers(AbiModel.EmbeddedFile) + Helpers;
+    /// <summary>
+    /// The whole prelude: the generated declarations, the hand-written notes, the
+    /// generated wrappers, the hand-written helpers. Only the wrappers depend on
+    /// the target (<see cref="XfilEmit.XWrappers"/>); x86-32 when none is given.
+    /// </summary>
+    public static string Generate(XTarget? target = null) =>
+        Banner + AbiModel.Embedded.EmitX() + "\n" + Notes +
+        XfilEmit.XWrappers(AbiModel.EmbeddedFile, pairs: (target ?? XTarget.X86_32).PointerBytes == 4) + Helpers;
 
     private const string Banner = """
 // abi.x - the CXK ABI (abi/kernel.xfil) for X.

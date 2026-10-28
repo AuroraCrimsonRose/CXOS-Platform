@@ -127,4 +127,29 @@ public class X64BackEndTests
         }
         Assert.True(failures.Count == 0, $"{failures.Count} of {programs.Count} did not compile for x86-64:\n" + string.Join("\n\n", failures));
     }
+
+    /* The prelude `cxk` puts in front of a program compiled for x86-64 has
+       that machine's wrappers (roadmap step 6d1a): no syscall wrapper cuts a
+       pointer or a u64 to 32 bits, which the x86-32 ones do to fill a u32
+       register or a pair. Checked through `cxk ir`, so the target has to reach
+       the prelude from the command line. */
+    [Fact]
+    public void The_x86_64_prelude_passes_pointers_and_u64s_whole()
+    {
+        string repo = Requires.Repo();
+        string cxk = Requires.Cxk();
+        string os = Path.Combine(repo, "os");
+        var r = HostBuild.Run(cxk, new[] { "ir", Path.Combine(os, "apps", "hi.xfxn"), "--target", "x86_64", "-I", Path.Combine(os, "std") }, repo);
+        Assert.True(r.ExitCode == 0, r.All);
+
+        string[] wrappers = { "console_write", "file_read", "file_seek", "vm_map", "exec_path" };
+        foreach (string w in wrappers)
+        {
+            int at = r.StdOut.IndexOf($"fn @{w}(", StringComparison.Ordinal);
+            Assert.True(at >= 0, $"@{w} is not in the IR");
+            int end = r.StdOut.IndexOf("\n}", at, StringComparison.Ordinal);
+            string body = r.StdOut[at..end];
+            Assert.True(!body.Contains("trunc i64", StringComparison.Ordinal), $"@{w} cuts a 64-bit argument:\n{body}");
+        }
+    }
 }

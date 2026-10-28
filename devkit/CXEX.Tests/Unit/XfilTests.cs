@@ -194,6 +194,17 @@ public class XfilTests
 
     [Fact]
     [Trait(Categories.Key, Categories.Unit)]
+    public void On_x86_64_a_wrapper_passes_a_pointer_whole()
+    {
+        string x = XfilEmit.XWrappers(Parse(
+            "struct s {\n    a: u32\n}\n" +
+            "syscall SYS_A = 1 fn a(n: u32, h: i32, p: *s, b: *u8) -> i32\n"), pairs: false);
+        // `p as u32` would cut a 64-bit address to its low half
+        Assert.Contains("fn a(n: u32, h: i32, p: *s, b: *u8) -> i32 { return __syscall(SYS_A, n, h as u32, p, b, 0); }\n", x, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
     public void Every_syscall_gets_a_handler_prototype_a_decoder_and_a_table_slot()
     {
         XfilFile f = Parse(
@@ -244,6 +255,11 @@ public class XfilTests
         // the X wrapper (x86-32) splits it low first, in the order the decoder joins
         Assert.Contains("return __syscall(SYS_SEEK, h as u32, off as u32, (off >> 32) as u32, origin, pos as u32); }\n", x, StringComparison.Ordinal);
         Assert.Contains("return __syscall(SYS_RANGE, h as u32, start as u32, (start >> 32) as u32, len as u32, (len >> 32) as u32); }\n", x, StringComparison.Ordinal);
+
+        // the X wrapper (x86-64) passes it in one register, where SYSCALL_PAIRS 0 reads it
+        string x64 = XfilEmit.XWrappers(f, pairs: false);
+        Assert.Contains("return __syscall(SYS_SEEK, h as u32, off, origin, pos, 0); }\n", x64, StringComparison.Ordinal);
+        Assert.Contains("return __syscall(SYS_RANGE, h as u32, start, len, 0, 0); }\n", x64, StringComparison.Ordinal);
     }
 
     [Fact]
