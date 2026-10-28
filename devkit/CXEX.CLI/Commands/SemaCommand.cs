@@ -53,7 +53,7 @@ public class SemaCommand : Command<SemaCommand.Settings>
         using var stdout = Console.OpenStandardOutput();
         foreach (var path in s.Sources)
         {
-            var fe = Frontend.Analyze(path, s.NoPrelude, s.IncludeDirs);
+            var fe = Frontend.Analyze(path, s.NoPrelude, s.IncludeDirs, XTarget.X86_32);
             var d = new Dump(fe);
             d.Bytes("== " + path); d.Sb.Append('\n');
             foreach (var e in fe.Diag.Items)

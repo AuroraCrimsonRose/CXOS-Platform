@@ -33,29 +33,49 @@ public enum PrimKind { I8, I16, I32, I64, I128, U8, U16, U32, U64, U128, Bool, V
 /// <summary>Width of each primitive, in bytes. One place, so a new width is one row.</summary>
 public static class PrimWidth
 {
-    /// <summary>The width of a pointer, usize and isize: x86-32 today. The
-    /// x86-64 back end (roadmap step 6b3) makes this a property of the target.</summary>
-    public const int PointerBytes = 4;
-
-    public static int Bytes(PrimKind k) => k switch
+    /// <summary>The width of each primitive; usize and isize are as wide as
+    /// the target's pointer (<see cref="XTarget.PointerBytes"/>).</summary>
+    public static int Bytes(PrimKind k, int pointerBytes) => k switch
     {
         PrimKind.I8 or PrimKind.U8 or PrimKind.Bool => 1,
         PrimKind.I16 or PrimKind.U16 => 2,
         PrimKind.I64 or PrimKind.U64 => 8,
         PrimKind.I128 or PrimKind.U128 => 16,
-        PrimKind.USize or PrimKind.ISize => PointerBytes,
+        PrimKind.USize or PrimKind.ISize => pointerBytes,
         PrimKind.Void => 0,
         _ => 4,
     };
 
     /// <summary>True for a type that does not fit in one machine register.</summary>
-    public static bool IsWide(PrimKind k) => Bytes(k) > 4;
+    public static bool IsWide(PrimKind k, int pointerBytes) => Bytes(k, pointerBytes) > 4;
 
     public static bool IsSigned(PrimKind k) =>
         k is PrimKind.I8 or PrimKind.I16 or PrimKind.I32 or PrimKind.I64 or PrimKind.I128 or PrimKind.ISize;
 
     /// <summary>usize or isize: the pointer-sized integers, which mix with no other.</summary>
     public static bool IsSize(PrimKind k) => k is PrimKind.USize or PrimKind.ISize;
+}
+
+/// <summary>
+/// What the front end must know about the machine it compiles for: how wide a
+/// pointer (and usize) is, and the most a field is aligned to. A field is
+/// aligned to its own size, at least 4 (every field starts on a word, as it
+/// always has) and at most <see cref="MaxAlign"/>. On x86-32 that is 4 for
+/// everything, the layout X has always had; on x86-64 a u64 or a pointer sits
+/// on 8 and an i128 on 16, as System V lays out C, so a structure shared with
+/// C has one layout on both sides (roadmap step 6b3).
+/// </summary>
+public sealed record XTarget(string Name, int PointerBytes, int MaxAlign)
+{
+    public static readonly XTarget X86_32 = new("x86_32", 4, 4);
+    public static readonly XTarget X86_64 = new("x86_64", 8, 16);
+
+    public static XTarget? Parse(string name) => name switch
+    {
+        "x86_32" => X86_32,
+        "x86_64" => X86_64,
+        _ => null,
+    };
 }
 
 public sealed record PrimType(PrimKind Kind) : TypeRef;

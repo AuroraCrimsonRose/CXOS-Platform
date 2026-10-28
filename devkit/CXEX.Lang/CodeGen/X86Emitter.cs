@@ -124,6 +124,9 @@ public sealed class X86Emitter
        Linux host layer, where __syscall is Linux's own int $0x80. */
     public bool SyscallPage { get; init; } = true;
     public const int SyscallStubShift = 4;   // log2 SYSPAGE_STUB_SIZE
+    /* This emitter writes x86-32: a pointer and usize are 4 bytes, whatever
+       target the front end was given (CompileCommand refuses the mismatch). */
+    private const int PointerBytes = 4;
 
     public string Emit(CompilationUnit unit)
     {
@@ -169,7 +172,7 @@ public sealed class X86Emitter
        than the value - which is why the emitter needs no second value model
        and why a wider type later is a table row rather than a rewrite. */
     private bool IsWide(TypeRef t0) =>
-        _ctx.Expand(t0) is PrimType p && PrimWidth.IsWide(p.Kind);
+        _ctx.Expand(t0) is PrimType p && PrimWidth.IsWide(p.Kind, PointerBytes);
 
     private void LoadFrom(TypeRef t)
     {
@@ -220,7 +223,7 @@ public sealed class X86Emitter
 
     private int SizeOf(TypeRef t0) => _ctx.Expand(t0) switch
     {
-        PrimType p => PrimWidth.Bytes(p.Kind),
+        PrimType p => PrimWidth.Bytes(p.Kind, PointerBytes),
         PointerType => 4,
         FuncType => 4,                    // a function pointer is an address
         ArrayType a => SizeOf(a.Element) * a.Length,   /* NOT Align4: [N]u8 = N contiguous bytes */
@@ -984,7 +987,7 @@ public sealed class X86Emitter
     private void WrapTo(TypeRef t)
     {
         if (_ctx.Expand(t) is not PrimType p || p.Kind == PrimKind.Bool) return;
-        switch (PrimWidth.Bytes(p.Kind))
+        switch (PrimWidth.Bytes(p.Kind, PointerBytes))
         {
             case 1: T(PrimWidth.IsSigned(p.Kind) ? "movsbl %al, %eax" : "movzbl %al, %eax"); break;
             case 2: T(PrimWidth.IsSigned(p.Kind) ? "movswl %ax, %eax" : "movzwl %ax, %eax"); break;
@@ -1215,7 +1218,7 @@ public sealed class X86Emitter
     {
         var t = _ctx.Expand(t0);
         if (t is PointerType or FuncType) return true;          // an address has no sign
-        return t is PrimType p && !PrimWidth.IsSigned(p.Kind) && PrimWidth.Bytes(p.Kind) == 4;
+        return t is PrimType p && !PrimWidth.IsSigned(p.Kind) && PrimWidth.Bytes(p.Kind, PointerBytes) == 4;
     }
     private void Cmp(string setcc) { T("cmp %ecx, %eax"); T($"{setcc} %al"); T("movzbl %al, %eax"); }
 

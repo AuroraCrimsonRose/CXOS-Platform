@@ -45,7 +45,7 @@ public class AsmCommand : Command<AsmCommand.Settings>
         using var stdout = Console.OpenStandardOutput();
         foreach (var path in s.Sources)
         {
-            var fe = Frontend.Analyze(path, s.NoPrelude, s.IncludeDirs);
+            var fe = Frontend.Analyze(path, s.NoPrelude, s.IncludeDirs, CXEX.Lang.Ast.XTarget.X86_32);
             string? asm = null;
             if (fe.Checker != null && !fe.Diag.HasErrors)
             {

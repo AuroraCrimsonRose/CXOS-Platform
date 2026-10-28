@@ -15,6 +15,8 @@ public static class ClangTool
 {
     /// <summary>The target every CXK artifact is built for: 32-bit x86, bare metal, ELF.</summary>
     public const string Target = "i686-elf";
+    /// <summary>The same for x86-64 (roadmap step 6b3): the X back end on the IR.</summary>
+    public const string Target64 = "x86_64-elf";
 
     private static string Clang => Environment.GetEnvironmentVariable("CXK_CLANG") is { Length: > 0 } c ? c : "clang";
     private static string Lld   => Environment.GetEnvironmentVariable("CXK_LLD")   is { Length: > 0 } l ? l : "ld.lld";
@@ -28,14 +30,15 @@ public static class ClangTool
     public static ToolResult Compile(string sourceFile, string outputFile,
                                      IEnumerable<string>? includeDirs = null,
                                      IEnumerable<string>? extraFlags = null,
-                                     ToolRunOptions? options = null)
+                                     ToolRunOptions? options = null,
+                                     string target = Target)
     {
         var args = new List<string>
         {
             // Mandatory flags for freestanding CXK code. --target replaces GCC's
             // -m32: the triple already fixes the architecture, so passing both
             // is redundant.
-            $"--target={Target}", "-ffreestanding", "-fno-pic",
+            $"--target={target}", "-ffreestanding", "-fno-pic",
             "-fno-stack-protector", "-Wall", "-Wextra", "-c",
         };
 
@@ -62,9 +65,10 @@ public static class ClangTool
     public static ToolResult Link(IEnumerable<string> objectFiles, string outputFile,
                                   string linkerScript,
                                   IEnumerable<string>? extraFlags = null,
-                                  ToolRunOptions? options = null)
+                                  ToolRunOptions? options = null,
+                                  string emulation = "elf_i386")
     {
-        var args = new List<string> { "-m", "elf_i386", "-nostdlib", "-T", linkerScript };
+        var args = new List<string> { "-m", emulation, "-nostdlib", "-T", linkerScript };
 
         if (extraFlags is not null) args.AddRange(extraFlags);
 

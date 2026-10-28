@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// __syscall on x86-64 Linux, built without the prelude (step 6b3): the number
+// in rax, the arguments in rdi, rsi, rdx, r10 and r8, the result in rax.
+// PR_GET_THP_DISABLE (prctl 42) wants its four other arguments zero and
+// returns EINVAL (-22) otherwise, so each argument register is seen read.
+fn main() -> i32 {
+    if (__syscall(39) <= 0) { return 1; }                      // getpid
+    let ok: i32 = __syscall(157, 42, 0, 0, 0, 0);               // prctl
+    if (ok < 0) { return 2; }
+    if (__syscall(157, 42, 1, 0, 0, 0) != 0 - 22) { return 3; } // rsi
+    if (__syscall(157, 42, 0, 1, 0, 0) != 0 - 22) { return 4; } // rdx
+    if (__syscall(157, 42, 0, 0, 1, 0) != 0 - 22) { return 5; } // r10
+    if (__syscall(157, 42, 0, 0, 0, 1) != 0 - 22) { return 6; } // r8
+    if (__syscall(157, 0x7FFF_FFFF, 0, 0, 0, 0) != 0 - 22) { return 7; }   // rdi: no such option
+    return 0;
+}

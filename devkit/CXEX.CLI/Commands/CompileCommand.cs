@@ -6,6 +6,7 @@ using CXEX.Tools;
 using CXEX.Lang.Ast;
 using CXEX.Lang.CodeGen;
 using CXEX.Lang.Diagnostics;
+using CXEX.Lang.IR;
 using CXEX.Lang.Lexer;
 using CXEX.Lang.Parsing;
 using CXEX.Lang.Sema;
@@ -23,6 +24,8 @@ namespace CXEX.CLI.Commands;
 /// Compiles an X source file (.x) to an ELF, ready for `cxk build` to package as
 /// CXEX. Pipeline: [abi.x prelude] + source -> Lexer -> Parser -> Resolver ->
 /// TypeChecker -> X86Emitter (-> .s) -> clang assemble -> ld.lld link @0x400000.
+/// With --target x86_64: TypeChecker -> IrLowering -> IrVerifier -> X64Emitter
+/// (-> .s) -> clang assemble for x86_64-elf -> ld.lld elf_x86_64.
 /// </summary>
 public class CompileCommand : Command<CompileCommand.Settings>
 {
@@ -55,6 +58,10 @@ public class CompileCommand : Command<CompileCommand.Settings>
         [CommandOption("--object")]
         [Description("write a linkable object instead of a program: every function and global exported, no entry point, no link step. OUTPUT is the .o")]
         public bool Object { get; set; }
+
+        [CommandOption("--target <TARGET>")]
+        [Description("x86_32 (the default: the emitter, from the tree) or x86_64 (the System V back end on the IR, step 6b3)")]
+        public string Target { get; set; } = "x86_32";
     }
 
     protected override int Execute(CommandContext context, Settings s, CancellationToken ct)
@@ -65,8 +72,16 @@ public class CompileCommand : Command<CompileCommand.Settings>
             return 1;
         }
 
+        var target = XTarget.Parse(s.Target);
+        if (target == null)
+        {
+            AnsiConsole.MarkupLine($"[red]error:[/] unknown target '{Markup.Escape(s.Target)}' (x86_32 or x86_64)");
+            return 1;
+        }
+        bool x64 = target == XTarget.X86_64;
+
         // 1-2. the front end: prelude + source + imports, resolved and checked
-        var fe = Frontend.Analyze(s.Source, s.NoPrelude, s.IncludeDirs);
+        var fe = Frontend.Analyze(s.Source, s.NoPrelude, s.IncludeDirs, target);
         var diag = fe.Diag;
         var unit = fe.Unit;
         var ctx = fe.Ctx;
@@ -86,8 +101,25 @@ public class CompileCommand : Command<CompileCommand.Settings>
         }
         AnsiConsole.MarkupLine($"[green]X:[/] analyzed {fileName} ({unit.Decls.Count} decls)");
 
-        // 3. codegen -> asm
-        string asm = new X86Emitter(ctx, tc!.LocalTypes, diag) { Library = s.Object, SyscallPage = !s.NoPrelude }.Emit(unit);
+        // 3. codegen -> asm: x86-32 from the tree, x86-64 from the IR
+        string asm;
+        if (!x64)
+            asm = new X86Emitter(ctx, tc!.LocalTypes, diag) { Library = s.Object, SyscallPage = !s.NoPrelude }.Emit(unit);
+        else
+        {
+            var ir = new IrLowering(ctx, tc!.LocalTypes, diag).Lower(unit);
+            if (!diag.HasErrors)
+            {
+                var problems = IrVerifier.Verify(ir);
+                if (problems.Count > 0)
+                {
+                    foreach (var p in problems) Console.WriteLine($"error ir: {p}");
+                    AnsiConsole.MarkupLine($"[red]compilation failed[/] ({problems.Count} IR error(s))");
+                    return 1;
+                }
+            }
+            asm = diag.HasErrors ? "" : new X64Emitter(ir) { Library = s.Object, SyscallPage = !s.NoPrelude }.Emit();
+        }
 
         /* Codegen reports too, and its diagnostics were being thrown away: the
            only HasErrors check was above, before the emitter had run. Anything
@@ -109,7 +141,7 @@ public class CompileCommand : Command<CompileCommand.Settings>
         // 4a. an object stops at assembly: whatever links it supplies the rest
         if (s.Object)
         {
-            if (!CliTools.Report(ClangTool.Compile(asmPath, s.Output, options: CliTools.Options($"clang (assemble): {Path.GetFileName(asmPath)}"))))
+            if (!CliTools.Report(ClangTool.Compile(asmPath, s.Output, options: CliTools.Options($"clang (assemble): {Path.GetFileName(asmPath)}"), target: x64 ? ClangTool.Target64 : ClangTool.Target)))
             {
                 AnsiConsole.MarkupLine("[red]error:[/] assembling the emitted .s failed");
                 return 1;
@@ -121,14 +153,14 @@ public class CompileCommand : Command<CompileCommand.Settings>
 
         // 4. assemble + link via the cross toolchain
         string objPath = Path.ChangeExtension(s.Output, ".o");
-        if (!CliTools.Report(ClangTool.Compile(asmPath, objPath, options: CliTools.Options($"clang (assemble): {Path.GetFileName(asmPath)}"))))
+        if (!CliTools.Report(ClangTool.Compile(asmPath, objPath, options: CliTools.Options($"clang (assemble): {Path.GetFileName(asmPath)}"), target: x64 ? ClangTool.Target64 : ClangTool.Target)))
         {
             AnsiConsole.MarkupLine("[red]error:[/] assembling the emitted .s failed");
             return 1;
         }
 
         string ld = s.LinkerScript ?? WriteDefaultScript(s.Output);
-        if (!CliTools.Report(ClangTool.Link(new[] { objPath }, s.Output, ld, options: CliTools.Options($"ld.lld (link): {Path.GetFileName(s.Output)}"))))
+        if (!CliTools.Report(ClangTool.Link(new[] { objPath }, s.Output, ld, options: CliTools.Options($"ld.lld (link): {Path.GetFileName(s.Output)}"), emulation: x64 ? "elf_x86_64" : "elf_i386")))
         {
             AnsiConsole.MarkupLine("[red]error:[/] linking failed");
             return 1;

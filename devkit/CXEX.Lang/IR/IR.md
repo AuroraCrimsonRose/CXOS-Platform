@@ -4,8 +4,9 @@
 
 Roadmap step 6b2 (`docs/planning/CX_ROADMAP.md`, `docs/language/CX_X_PLAN.md`
 §2). The C# compiler lowers the checked tree to this IR (`IrLowering.cs`),
-`IrVerifier.cs` checks it, and `cxk ir <file.xfxn>` prints it. No back end
-reads it yet: the x86-64 System V one is step 6b3. The x86-32 emitter still
+`IrVerifier.cs` checks it, and `cxk ir <file.xfxn>` prints it. The x86-64
+System V back end (`CodeGen/X64Emitter.cs`, step 6b3) reads it: `cxk compile
+--target x86_64` lowers, verifies and emits ELF64. The x86-32 emitter still
 works from the tree and is deleted with the 32-bit code (6d).
 
 The lowering keeps the x86-32 emitter's meaning decision for decision, so the
@@ -127,10 +128,17 @@ re-derives them from the tree.
 - **`return x` takes the value before the defers run.** Each exit (end of a
   block, `return`, `break`, `continue`) runs its own copy of the defers it
   leaves, innermost first.
-- **A sum type** is a `u32` tag (the variant's index) and the payload after
-  it; a variant value zeroes the payload before writing its fields.
+- **Layout is the target's** (`XTarget`, `SemaContext.AlignOf`): a field is
+  aligned on its size clamped to 4 and the target's largest alignment (4 on
+  x86-32, 16 on x86-64), a struct on its widest field, and its size rounds up
+  to that. On x86-32 every field is on 4, as X has always been; on x86-64 a
+  `u64` or a pointer is on 8 and an `i128` on 16, as System V lays out C.
+  `module pointer` gives the pointer width; `usize` and `isize` follow it.
+- **A sum type** is a `u32` tag (the variant's index) and the payload at the
+  widest alignment of its variants' fields, at least 4; a variant value zeroes
+  the payload before writing its fields.
 - **A switch** evaluates its subject once (a sum type's by address); a binding
-  is the address 4 bytes into the subject.
+  is the address of the payload.
 - **Falling off the end** of a function returns zero (an aggregate: its
   return slot as it stands).
 
@@ -143,3 +151,26 @@ re-derives them from the tree.
 - Falling off the end returns zero, not whatever `eax` held.
 - A `__syscall` argument wider than a pointer is refused (the emitter passed
   its address); the ABI splits wide values into register pairs itself.
+
+## The x86-64 back end
+
+`X64Emitter.cs` spills everything: each value has a frame home of 8 bytes (16
+for `i128`), and an operation loads, works at its own width and stores. A
+value narrower than its home keeps unspecified upper bits. Calls follow System
+V AMD64: six integer registers, an `i128` in a register pair or on the stack
+on 16, an aggregate of up to 16 bytes in registers and a larger one in memory,
+a returned aggregate over 16 bytes through a hidden pointer. `i128` divide and
+remainder are the helpers `__cx_udivmod128` and `__cx_sdivmod128`; a zero
+divisor faults as the 32-bit one does. `__syscall` is `call *%rax` into the
+CXK syscall page (rax = base + n·16, arguments in rdi, rsi, rdx, r10, r8);
+with `--no-prelude`, on a Linux host, it is the `syscall` instruction.
+
+Not yet right, and known:
+
+- An `i8` or `i16` argument to C is not sign- or zero-extended (the IR is
+  signless); clang's callees assume it is.
+- A `u8` field is on 4 in X and on 1 in C, so a struct with one does not match
+  C's layout.
+- An aggregate aligned on 16 passed on the stack is aligned on only 8.
+- `_start`'s stack alignment and the syscall-page path run only when the
+  executive starts on x86-64 (6d); the tests use `--no-prelude`.

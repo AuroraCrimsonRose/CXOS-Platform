@@ -27,7 +27,7 @@ public sealed class Frontend
     public TypeChecker? Checker;   // null when an earlier error stopped it running
     public string FileName = "";
 
-    public static Frontend Analyze(string source, bool noPrelude, string[] includeDirs)
+    public static Frontend Analyze(string source, bool noPrelude, string[] includeDirs, XTarget target)
     {
         var f = new Frontend();
         string prelude = noPrelude ? "" : AbiPrelude.Generate() + "\n";
@@ -67,7 +67,7 @@ public sealed class Frontend
         }
 
         f.Unit = new CompilationUnit(merged);
-        f.Ctx = new Resolver(f.Diag).Resolve(f.Unit);
+        f.Ctx = new Resolver(f.Diag, target).Resolve(f.Unit);
         if (!f.Diag.HasErrors)
         {
             f.Checker = new TypeChecker(f.Ctx, f.Diag);

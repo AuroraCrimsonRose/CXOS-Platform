@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// Values whose upper bits matter: a narrow value in a wide register, the
+// second word of a record argument, the high half of a negated i128.
+struct two { a: u64, b: u64 }
+fn second(t: two) -> u64 { return t.b; }
+fn dirty() -> u64 {
+    let z: [64]u64;
+    let i: i32 = 0;
+    while (i < 64) { z[i] = 0xAAAA_AAAA_AAAA_AAAA; i += 1; }
+    return z[63];
+}
+fn main() -> i32 {
+    let a: i128 = 5;
+    let b: i128 = -a;
+    if (b as i64 != -5) { return 1; }
+    if ((b >> 64) as i64 != -1) { return 2; }   // the high half borrows
+    let w: i128 = (1 as i128) << 64;
+    let nw: i128 = -w;                           // low half zero: no borrow
+    if (nw as u64 != 0) { return 3; }
+    if ((nw >> 64) as i64 != -1) { return 4; }
+    let x: u64 = 0x1_0000_0005;
+    let y: u64 = (x as u32) as u64;              // the upper half is cut
+    if (y != 5) { return 5; }
+    let arr: [2]i32 = [0 - 8, 3];
+    if (arr[0] >> 1 != -4) { return 6; }         // a 32-bit arithmetic shift
+    let h: u64 = 0xFFFF_FFFF_0000_0010;
+    if ((h as u32) >> 4 != 1) { return 7; }      // a 32-bit logical shift
+    if (dirty() != 0xAAAA_AAAA_AAAA_AAAA) { return 8; }
+    if (second(two { a: 1, b: 2 }) != 2) { return 9; }   // both words arrive
+    return 0;
+}

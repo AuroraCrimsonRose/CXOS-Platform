@@ -25,7 +25,7 @@ public sealed class IrLowering
     private readonly SemaContext _ctx;
     private readonly IReadOnlyDictionary<LetStmt, TypeRef> _localTypes;
     private readonly DiagnosticBag _diag;
-    private readonly IrModule _m = new() { PointerBytes = PrimWidth.PointerBytes };
+    private readonly IrModule _m = new();
     private readonly Dictionary<string, string> _strings = new();
 
     private static readonly PrimType I32T = new(PrimKind.I32);
@@ -33,6 +33,7 @@ public sealed class IrLowering
     public IrLowering(SemaContext ctx, IReadOnlyDictionary<LetStmt, TypeRef> localTypes, DiagnosticBag diag)
     {
         _ctx = ctx; _localTypes = localTypes; _diag = diag;
+        _m.PointerBytes = ctx.Target.PointerBytes;
         _ctx.ExpandEnums = true;   // a plain enum is its backing integer from here on (SemaContext.ExpandEnums)
     }
 
@@ -46,35 +47,27 @@ public sealed class IrLowering
         return _m;
     }
 
-    // ---- types and layout (the emitter's: every field 4-aligned) ----
+    // ---- types and layout (SemaContext's: the target's pointer width and alignment) ----
     private TypeRef X(TypeRef t) => _ctx.Expand(t);
     private StructDecl? StructOf(TypeRef t0) => X(t0) is NamedType n && _ctx.Structs.TryGetValue(n.Name, out var s) ? s : null;
     /* Bytes in memory, never a value: a struct, a sum type, an array. */
     private bool IsAgg(TypeRef t) => StructOf(t) != null || X(t) is ArrayType;
     /* An integer past 32 bits: worked on at its own width, not promoted. */
-    private bool IsWide(TypeRef t) => X(t) is PrimType p && PrimWidth.Bytes(p.Kind) > 4;
+    private bool IsWide(TypeRef t) => X(t) is PrimType p && PrimWidth.Bytes(p.Kind, _m.PointerBytes) > 4;
     private bool Signed(TypeRef t) => X(t) is PrimType p && PrimWidth.IsSigned(p.Kind);
     private TypeRef TypeOf(Expr e) => _ctx.Types.TryGetValue(e, out var t) ? t : I32T;
 
-    private int SizeOf(TypeRef t0) => X(t0) switch
-    {
-        PrimType p => PrimWidth.Bytes(p.Kind),
-        PointerType or FuncType => _m.PointerBytes,
-        ArrayType a => SizeOf(a.Element) * a.Length,
-        NamedType n when _ctx.Structs.TryGetValue(n.Name, out var s) => StructSize(s),
-        _ => 4,
-    };
-    private static int Align4(int n) => (n + 3) & ~3;
-    private int StructSize(StructDecl s) { int o = 0; foreach (var f in s.Fields) o += Align4(SizeOf(f.Type)); return o; }
-    private int FieldOffset(StructDecl s, string field)
-    { int o = 0; foreach (var f in s.Fields) { if (f.Name == field) return o; o += Align4(SizeOf(f.Type)); } return 0; }
-    private const int Align = 4;
+    private int SizeOf(TypeRef t) => _ctx.SizeOf(t);
+    private int StructSize(StructDecl s) => _ctx.StructSize(s.Fields);
+    private int FieldOffset(StructDecl s, string field) => _ctx.FieldOffset(s, field);
+    /* Where a sum type's payload starts, 4 bytes in on x86-32. */
+    private int PayloadOffset(TypeRef sum) => X(sum) is NamedType n && _ctx.Enums.TryGetValue(n.Name, out var e) ? _ctx.PayloadOffset(e) : 4;
 
     private IrType Scalar(TypeRef t0) => X(t0) switch
     {
         PrimType { Kind: PrimKind.Bool } => IrType.Bool,
         PrimType { Kind: PrimKind.Void } => IrType.Void,
-        PrimType p => IrTypes.IntOfBytes(PrimWidth.Bytes(p.Kind)),
+        PrimType p => IrTypes.IntOfBytes(PrimWidth.Bytes(p.Kind, _m.PointerBytes)),
         PointerType or FuncType => IrType.Ptr,
         _ => IrType.Void,
     };
@@ -96,9 +89,9 @@ public sealed class IrLowering
 
     private IrReg NewReg(IrType t) => new(_nextReg++, t);
     private IrBlock NewBlock() => new() { Id = _nextBlock++ };
-    private IrSlotRef NewSlot(int size, string? name = null)
+    private IrSlotRef NewSlot(TypeRef t, string? name = null)
     {
-        var s = new IrSlot { Id = _fn.Slots.Count, Size = Math.Max(size, 1), Align = Align, Name = name };
+        var s = new IrSlot { Id = _fn.Slots.Count, Size = Math.Max(SizeOf(t), 1), Align = _ctx.AlignOf(t), Name = name };
         _fn.Slots.Add(s);
         return new IrSlotRef(s.Id);
     }
@@ -159,7 +152,7 @@ public sealed class IrLowering
             var reg = NewReg(ip.AggSize > 0 ? IrType.Ptr : ip.Type);
             _fn.ParamRegs.Add(reg);
             IrValue home = reg;
-            if (ip.AggSize == 0) { var s = NewSlot(SizeOf(p.Type), p.Name); pending.Add((reg, s)); home = s; }
+            if (ip.AggSize == 0) { var s = NewSlot(p.Type, p.Name); pending.Add((reg, s)); home = s; }
             if (_ctx.ParamSymbols.TryGetValue(p, out var ps)) _vars[ps] = (home, p.Type);
         }
         foreach (var (reg, slot) in pending) Emit(new IrStore(reg, slot));
@@ -167,7 +160,7 @@ public sealed class IrLowering
         foreach (var l in CollectLocals(f.Body!))
         {
             var ty = _localTypes.TryGetValue(l, out var t) ? t : I32T;
-            var s = NewSlot(SizeOf(ty), l.Name);
+            var s = NewSlot(ty, l.Name);
             if (_ctx.LetSymbols.TryGetValue(l, out var ls)) _vars[ls] = (s, ty);
         }
 
@@ -187,7 +180,7 @@ public sealed class IrLowering
 
     private IrSlotRef RetSlot()
     {
-        if (_retSlot == null) { var r = NewSlot(_fn.Return.AggSize); _retSlot = _fn.Slots[r.Id]; }
+        if (_retSlot == null) { var r = NewSlot(_curReturn); _retSlot = _fn.Slots[r.Id]; }
         return new IrSlotRef(_retSlot.Id);
     }
 
@@ -268,7 +261,7 @@ public sealed class IrLowering
        number written over the global's size, low byte first. */
     private IrGlobal LowerGlobal(GlobalDecl g)
     {
-        var gl = new IrGlobal { Name = g.Name, Size = SizeOf(g.Type), Align = Align, Section = SectionOf(g) };
+        var gl = new IrGlobal { Name = g.Name, Size = SizeOf(g.Type), Align = _ctx.AlignOf(g.Type), Section = SectionOf(g) };
         if (g.Init is StructLit or ArrayLit or StrLit || IsFunctionName(g.Init))
         {
             gl.Init = new List<IrData>();
@@ -430,8 +423,8 @@ public sealed class IrLowering
     }
 
     /* The subject is evaluated once: a value, or for a sum type its address,
-       whose tag picks the case and whose payload (4 bytes in) a binding
-       points at. No fallthrough. */
+       whose tag picks the case and whose payload (at PayloadOffset: 4 bytes
+       in on x86-32) a binding points at. No fallthrough. */
     private void LowerSwitch(SwitchStmt sw)
     {
         var st = TypeOf(sw.Subject);
@@ -471,7 +464,7 @@ public sealed class IrLowering
             var c = sw.Cases[i];
             StartBlock(bodies[i]);
             if (c.BindLet != null && _ctx.LetSymbols.TryGetValue(c.BindLet, out var bs) && _vars.TryGetValue(bs, out var b))
-                Emit(new IrStore(PtrAdd(subj, 4), b.Addr));
+                Emit(new IrStore(PtrAdd(subj, PayloadOffset(st)), b.Addr));
             LowerBlock(c.Body);
             JumpTo(end);
         }
@@ -689,7 +682,7 @@ public sealed class IrLowering
     {
         var t = X(t0);
         if (t is PointerType or FuncType) return true;
-        return t is PrimType p && !PrimWidth.IsSigned(p.Kind) && PrimWidth.Bytes(p.Kind) == 4;
+        return t is PrimType p && !PrimWidth.IsSigned(p.Kind) && PrimWidth.Bytes(p.Kind, _m.PointerBytes) == 4;
     }
 
     private static IrBinOp BinOf(BinOp op, bool signed) => op switch
@@ -722,7 +715,7 @@ public sealed class IrLowering
        through a slot, since a register is assigned once. */
     private IrValue LowerShortCircuit(BinaryExpr b)
     {
-        var slot = NewSlot(1);
+        var slot = NewSlot(new PrimType(PrimKind.Bool));
         var l = Cond(b.Left);
         Emit(new IrStore(l, slot));
         var rhs = NewBlock(); var end = NewBlock();
@@ -797,7 +790,7 @@ public sealed class IrLowering
 
         if (IsAgg(rt))
         {
-            var slot = NewSlot(SizeOf(rt));
+            var slot = NewSlot(rt);
             Emit(new IrCall(null, callee, args.ToList(), slot, SizeOf(rt)));
             return slot;
         }
@@ -834,18 +827,19 @@ public sealed class IrLowering
        payload so copies are deterministic, then the fields after the tag. */
     private IrValue LowerStructLit(StructLit sl)
     {
-        var slot = NewSlot(SizeOf(TypeOf(sl)));
+        var slot = NewSlot(TypeOf(sl));
         if (sl.TypeName is MemberExpr vm && _ctx.EnumRefs.TryGetValue(vm, out var er))
         {
             var en = er.Enum;
             int size = SizeOf(new NamedType(en.Name));
+            int at = _ctx.PayloadOffset(en);
             Emit(new IrStore(K(IrType.I32, (UInt128)er.Index), slot));
             if (size > 4) Emit(new IrZero(PtrAdd(slot, 4), size - 4));
             if (_ctx.Structs.TryGetValue(SemaContext.PayloadName(en.Name, en.Variants[er.Index].Name), out var pd))
                 foreach (var fi in sl.Fields)
                 {
                     var decl = pd.Fields.Find(f => f.Name == fi.Name);
-                    if (decl != null) StoreAt(() => PtrAdd(slot, 4 + FieldOffset(pd, fi.Name)), decl.Type, fi.Value);
+                    if (decl != null) StoreAt(() => PtrAdd(slot, at + FieldOffset(pd, fi.Name)), decl.Type, fi.Value);
                 }
             return slot;
         }
@@ -862,7 +856,7 @@ public sealed class IrLowering
     private IrValue LowerArrayLit(ArrayLit al)
     {
         var at = TypeOf(al);
-        var slot = NewSlot(SizeOf(at));
+        var slot = NewSlot(at);
         if (X(at) is ArrayType a)
         {
             int es = SizeOf(a.Element);
@@ -885,7 +879,7 @@ public sealed class IrLowering
             return K(Scalar(t), v);
         }
         int size = SizeOf(new NamedType(ed.Name));
-        var slot = NewSlot(size);
+        var slot = NewSlot(new NamedType(ed.Name));
         Emit(new IrStore(K(IrType.I32, (UInt128)index), slot));
         if (size > 4) Emit(new IrZero(PtrAdd(slot, 4), size - 4));
         return slot;

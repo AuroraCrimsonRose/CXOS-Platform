@@ -201,7 +201,9 @@ programs for it (step 6).
        tests; no back end on it yet. **Done 2026-10-28**
        (`devkit/CXEX.Lang/IR/IR.md`, `cxk ir`).
      - **6b3** The x86-64 System V back end on the IR, emitting ELF64, its
-       programs run on Linux in the CI container.
+       programs run on Linux in the CI container. **Done 2026-10-28**
+       (`devkit/CXEX.Lang/CodeGen/X64Emitter.cs`, `cxk compile --target
+       x86_64`).
    - **6c** `xc` gains the IR and the x86-64 back end; the differential tests
      and the self-hosting fixed point hold on x86-64.
    - **6d** The executive starts on x86-64 and the full boot passes; the

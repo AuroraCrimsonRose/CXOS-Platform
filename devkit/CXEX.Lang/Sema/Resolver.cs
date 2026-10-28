@@ -80,8 +80,15 @@ public sealed class SemaContext
         return t;
     }
 
-    /* Size in bytes, the same rule as the emitter's - needed here only to lay
-       out sum types, whose size is the tag plus the largest payload.
+    /* The machine: how wide a pointer is and the most a field is aligned to.
+       Set before resolving; x86-32 unless the compiler is told otherwise. */
+    public XTarget Target = XTarget.X86_32;
+
+    /* Size and alignment in bytes: the one layout, which the IR lowering lays
+       memory out by and the x86-32 emitter's own rule matches on x86-32. A
+       field sits on its alignment (XTarget: its size, at least 4, at most the
+       target's MaxAlign), a structure is as aligned as its most aligned field
+       and its size a multiple of that.
 
        A type that contains itself by value - directly, or through other
        types - has no size. Sizing it recursed until the compiler died of a
@@ -89,6 +96,7 @@ public sealed class SemaContext
        type met again while it is being sized now counts 0 and is remembered
        in SizeCycle, for the caller to report. */
     private readonly HashSet<string> _sizing = new();
+    private readonly HashSet<string> _aligning = new();
     public string? SizeCycle;
 
     /* Saturating: a size too large to count in an int comes back as
@@ -100,7 +108,8 @@ public sealed class SemaContext
         var t = Expand(t0);
         switch (t)
         {
-            case PrimType p: return PrimWidth.Bytes(p.Kind);
+            case PrimType p: return PrimWidth.Bytes(p.Kind, Target.PointerBytes);
+            case PointerType or FuncType: return Target.PointerBytes;
             case ArrayType a: return (int)Math.Min((long)SizeOf(a.Element) * a.Length, int.MaxValue);
             case NamedType n when Structs.ContainsKey(n.Name) || Enums.ContainsKey(n.Name):
                 if (!_sizing.Add(n.Name)) { SizeCycle ??= n.Name; return 0; }
@@ -110,20 +119,74 @@ public sealed class SemaContext
         }
     }
 
+    public int AlignOf(TypeRef t0)
+    {
+        var t = Expand(t0);
+        switch (t)
+        {
+            case ArrayType a: return AlignOf(a.Element);
+            case NamedType n when Structs.ContainsKey(n.Name) || Enums.ContainsKey(n.Name):
+                if (!_aligning.Add(n.Name)) return 4;   // a cycle: SizeOf reports it
+                try { return AlignOfNamed(n.Name); }
+                finally { _aligning.Remove(n.Name); }
+            default: return Math.Clamp(SizeOf(t), 4, Target.MaxAlign);
+        }
+    }
+
+    public int FieldOffset(StructDecl s, string field) => (int)LayOut(s.Fields, field);
+    public int StructSize(List<Param> fields) => (int)Math.Min(LayOut(fields, null), int.MaxValue);
+
+    /* Where a sum type's payload starts: after the u32 tag, on the alignment
+       of its most aligned variant (4 on x86-32, so always 4 there). */
+    public int PayloadOffset(EnumDecl e)
+    {
+        int a = 4;
+        foreach (var v in e.Variants)
+            if (v.Fields != null) a = Math.Max(a, AlignOfFields(v.Fields));
+        return a;
+    }
+
+    /* The offset of field upTo, or (upTo null) the size of the whole. */
+    private long LayOut(List<Param> fields, string? upTo)
+    {
+        long o = 0;
+        foreach (var f in fields)
+        {
+            int al = AlignOf(f.Type);
+            o = (o + al - 1) & ~(long)(al - 1);
+            if (f.Name == upTo) return o;
+            o += SizeOf(f.Type);
+            if (o >= int.MaxValue) return int.MaxValue;
+        }
+        if (upTo != null) return 0;
+        int sa = AlignOfFields(fields);
+        return (o + sa - 1) & ~(long)(sa - 1);
+    }
+
+    private int AlignOfFields(List<Param> fields)
+    {
+        int a = 4;
+        foreach (var f in fields) a = Math.Max(a, AlignOf(f.Type));
+        return a;
+    }
+
+    private int AlignOfNamed(string name)
+    {
+        if (Structs.TryGetValue(name, out var s)) return AlignOfFields(s.Fields);
+        var e = Enums[name];
+        return e.IsSum ? PayloadOffset(e) : 4;   // a plain enum's backing is at most 32 bits
+    }
+
     private int SizeOfNamed(string name)
     {
-        if (Structs.TryGetValue(name, out var s))
-        { long o = 0; foreach (var f in s.Fields) o += ((long)SizeOf(f.Type) + 3) & ~3L; return (int)Math.Min(o, int.MaxValue); }
+        if (Structs.TryGetValue(name, out var s)) return StructSize(s.Fields);
         var e = Enums[name];
         if (!e.IsSum) return e.Backing != null ? SizeOf(e.Backing) : 4;
-        int max = 0;
+        long max = 0;
         foreach (var v in e.Variants)
-            if (v.Fields != null)
-            {
-                long o = 0; foreach (var f in v.Fields) o += ((long)SizeOf(f.Type) + 3) & ~3L;
-                if (o > max) max = (int)Math.Min(o, int.MaxValue - 4);
-            }
-        return 4 + max;
+            if (v.Fields != null) max = Math.Max(max, StructSize(v.Fields));
+        long p = PayloadOffset(e);
+        return (int)Math.Min((p + max + p - 1) & ~(p - 1), int.MaxValue);
     }
 }
 
@@ -134,9 +197,9 @@ public sealed class SemaContext
 public sealed class Resolver
 {
     private readonly DiagnosticBag _diag;
-    private readonly SemaContext _ctx = new();
+    private readonly SemaContext _ctx;
 
-    public Resolver(DiagnosticBag diag) { _diag = diag; }
+    public Resolver(DiagnosticBag diag, XTarget target) { _diag = diag; _ctx = new SemaContext { Target = target }; }
 
     public SemaContext Resolve(CompilationUnit unit)
     {
@@ -214,7 +277,8 @@ public sealed class Resolver
         {
             if (!ed.IsSum) continue;
             _ctx.SizeCycle = null;
-            int body = _ctx.SizeOf(new NamedType(ed.Name)) - 4;
+            int at = _ctx.PayloadOffset(ed);
+            int body = _ctx.SizeOf(new NamedType(ed.Name)) - at;
             if (_ctx.SizeCycle != null)
             {
                 _diag.Error($"'{ed.Name}' contains '{_ctx.SizeCycle}' by value inside itself, so it has no size; use a pointer (*{_ctx.SizeCycle})", ed.Span);
@@ -223,7 +287,10 @@ public sealed class Resolver
             _ctx.Structs[ed.Name] = new StructDecl(ed.Name, new List<Param>
             {
                 new("$tag", new PrimType(PrimKind.U32)),
-                new("$body", new ArrayType(new PrimType(PrimKind.U8), body)),
+                /* bytes, or where the payload needs more than 4 (a u64 or a
+                   pointer on x86-64) words that wide, so the body sits on it */
+                new("$body", at == 4 ? new ArrayType(new PrimType(PrimKind.U8), body)
+                                     : new ArrayType(new PrimType(at == 8 ? PrimKind.U64 : PrimKind.U128), body / at)),
             }) { Span = ed.Span };
         }
     }

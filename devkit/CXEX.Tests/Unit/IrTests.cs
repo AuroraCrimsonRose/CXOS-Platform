@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+using CXEX.Lang.Ast;
 using CXEX.Lang.Diagnostics;
 using CXEX.Lang.IR;
 using CXEX.Lang.Lexer;
@@ -27,7 +28,7 @@ public class IrTests
         var diag = new DiagnosticBag();
         var toks = new Lexer(File.ReadAllText(path), Path.GetFileName(path), diag).Tokenize();
         var unit = new Parser(toks, diag).Parse();
-        var ctx = new Resolver(diag).Resolve(unit);
+        var ctx = new Resolver(diag, XTarget.X86_32).Resolve(unit);
         TypeChecker? tc = null;
         if (!diag.HasErrors) { tc = new TypeChecker(ctx, diag); tc.Check(unit); }
         IrModule? ir = null;

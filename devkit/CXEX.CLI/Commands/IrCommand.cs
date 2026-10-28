@@ -5,6 +5,7 @@ using System.ComponentModel;
 using System.IO;
 using System.Text;
 using System.Threading;
+using CXEX.Lang.Ast;
 using CXEX.Lang.IR;
 using Spectre.Console.Cli;
 
@@ -34,15 +35,21 @@ public class IrCommand : Command<IrCommand.Settings>
         [CommandOption("--no-prelude")]
         [Description("do not prepend the generated abi.x prelude")]
         public bool NoPrelude { get; set; }
+
+        [CommandOption("--target <TARGET>")]
+        [Description("x86_32 (the default) or x86_64: the pointer width and layout the IR is lowered for")]
+        public string Target { get; set; } = "x86_32";
     }
 
     protected override int Execute(CommandContext context, Settings s, CancellationToken cancellationToken)
     {
+        var target = XTarget.Parse(s.Target);
+        if (target == null) { Console.Error.WriteLine($"error: unknown target '{s.Target}' (x86_32 or x86_64)"); return 1; }
         using var stdout = Console.OpenStandardOutput();
         int bad = 0;
         foreach (var path in s.Sources)
         {
-            var fe = Frontend.Analyze(path, s.NoPrelude, s.IncludeDirs);
+            var fe = Frontend.Analyze(path, s.NoPrelude, s.IncludeDirs, target);
             IrModule? ir = null;
             int frontEnd = fe.Diag.Items.Count;   // what came after is the lowering's
             if (fe.Checker != null && !fe.Diag.HasErrors)

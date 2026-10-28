@@ -1,0 +1,54 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// Divide, remainder, shift and compare at 64 and 128 bits, signed and not:
+// the x86-32 emitter's long division, x86-64's divq and its i128 routine
+// (step 6b3), including divisors past 2^127, where the shifted remainder
+// carries out of 128 bits.
+fn main() -> i32 {
+    let m64: u64 = 0;
+    m64 -= 1;
+    if (m64 / 3 != 0x5555_5555_5555_5555) { return 1; }
+    if (m64 % 7 != 1) { return 2; }
+    let a: i64 = 0 - 100;
+    if (a / 7 != 0 - 14 || a % 7 != 0 - 2) { return 3; }
+    let b: i64 = 100;
+    let c: i64 = 0 - 7;
+    if (b / c != 0 - 14 || b % c != 2) { return 4; }
+    let hi: u64 = 0x8000_0000_0000_0000;
+    if (hi < 1 || hi / 2 != 0x4000_0000_0000_0000) { return 5; }
+
+    let m: u128 = 0;
+    m -= 1;
+    let f5: u128 = 0x5555_5555_5555_5555;
+    if (m / 3 != ((f5 << 64) | f5) || m % 3 != 0) { return 10; }
+    let top: u128 = 1u128 << 127;
+    if (m / top != 1 || m % top != top - 1) { return 11; }
+    let d: u128 = m - 5;
+    if (m / d != 1 || m % d != 5) { return 12; }
+    if (d / m != 0 || d % m != d) { return 13; }
+    let t: u128 = 1000000000000000;
+    let n: u128 = t * t;
+    if (n / t != t || n % t != 0 || (n + 12345) % t != 12345) { return 14; }
+    let p: u128 = 1000000007;
+    let q: u128 = (1u128 << 100) / p;
+    let r: u128 = (1u128 << 100) % p;
+    if (q * p + r != 1u128 << 100 || r >= p) { return 15; }
+
+    let st: i128 = 1000000000000000;
+    let sn: i128 = 0 - st * st;
+    if (sn / st != 0 - st || (sn - 7) % st != 0 - 7) { return 20; }
+    let s7: i128 = 7;
+    let s2: i128 = 2;
+    if (s7 / (0 - s2) != 0 - 3 || s7 % (0 - s2) != 1 || (0 - s7) % s2 != 0 - 1) { return 21; }
+    if (sn >= 1 || sn > st) { return 22; }
+    if (top <= 1 || (1u128 << 64) == 1) { return 23; }
+
+    let k: u32 = 70;
+    if ((1u128 << k) >> k != 1 || (1u128 << k) != (1u128 << 64) << 6) { return 30; }
+    if (top >> 64 != 1u128 << 63 || top >> 127 != 1) { return 31; }
+    let neg: i128 = 0 - (1i128 << 100);
+    if (neg >> 99 != 0 - 2 || neg >> 127 != 0 - 1) { return 32; }
+    let j: u32 = 64;
+    if ((neg >> j) != 0 - (1i128 << 36)) { return 33; }
+    return 0;
+}

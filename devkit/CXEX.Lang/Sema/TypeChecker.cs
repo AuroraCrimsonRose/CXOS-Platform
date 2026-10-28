@@ -118,9 +118,9 @@ public sealed class TypeChecker
             return;
         }
         var backing = ed.Backing ?? U32;
-        if (_ctx.Expand(backing) is not PrimType bp || !IsInt(backing) || PrimWidth.Bytes(bp.Kind) > 4)
+        if (_ctx.Expand(backing) is not PrimType bp || !IsInt(backing) || PrimWidth.Bytes(bp.Kind, _ctx.Target.PointerBytes) > 4)
         { _diag.Error($"an enum's backing type is an integer of at most 32 bits, not {Show(backing)}", ed.Span); return; }
-        int bits = PrimWidth.Bytes(bp.Kind) * 8;
+        int bits = PrimWidth.Bytes(bp.Kind, _ctx.Target.PointerBytes) * 8;
         bool sgn = PrimWidth.IsSigned(bp.Kind);
         var seen = new Dictionary<UInt128, string>();
         for (int i = 0; i < ed.Variants.Count; i++)
@@ -295,7 +295,7 @@ public sealed class TypeChecker
        binary expression is the wider. 0 for anything that is not a primitive,
        which cannot win the comparison and so keeps the left type. */
     private int IntWidth(TypeRef t0) =>
-        _ctx.Expand(t0) is PrimType p ? PrimWidth.Bytes(p.Kind) : 0;
+        _ctx.Expand(t0) is PrimType p ? PrimWidth.Bytes(p.Kind, _ctx.Target.PointerBytes) : 0;
 
     private bool IsBool(TypeRef t0) => _ctx.Expand(t0) is PrimType { Kind: PrimKind.Bool };
     private bool IsPtr(TypeRef t0) => _ctx.Expand(t0) is PointerType;
@@ -395,7 +395,7 @@ public sealed class TypeChecker
         if (Same(to, from)) return true;
         if (SizeMix(to, from)) return false;
         if (_ctx.Expand(to) is not PrimType tp || _ctx.Expand(from) is not PrimType fp) return false;
-        int wt = PrimWidth.Bytes(tp.Kind), wf = PrimWidth.Bytes(fp.Kind);
+        int wt = PrimWidth.Bytes(tp.Kind, _ctx.Target.PointerBytes), wf = PrimWidth.Bytes(fp.Kind, _ctx.Target.PointerBytes);
         bool st = PrimWidth.IsSigned(tp.Kind), sf = PrimWidth.IsSigned(fp.Kind);
         if (!sf) return st ? wt > wf : wt >= wf;
         return st && wt >= wf;
@@ -425,7 +425,7 @@ public sealed class TypeChecker
     private bool Fits(UInt128 v, TypeRef t)
     {
         if (_ctx.Expand(t) is not PrimType p) return false;
-        int bits = PrimWidth.Bytes(p.Kind) * 8;
+        int bits = PrimWidth.Bytes(p.Kind, _ctx.Target.PointerBytes) * 8;
         if (bits == 128) return true;
         Int128 sv = (Int128)v;
         if (PrimWidth.IsSigned(p.Kind))
@@ -696,7 +696,7 @@ public sealed class TypeChecker
                can be written at all. */
             case IntLit { Suffix: PrimKind sk } sl:
                 {
-                    int bits = PrimWidth.Bytes(sk) * 8;
+                    int bits = PrimWidth.Bytes(sk, _ctx.Target.PointerBytes) * 8;
                     bool signedK = PrimWidth.IsSigned(sk);
                     UInt128 max = signedK ? (UInt128.One << (bits - 1)) - 1
                                 : bits == 128 ? UInt128.MaxValue : (UInt128.One << bits) - 1;
@@ -752,7 +752,12 @@ public sealed class TypeChecker
             case IndexExpr ix:
                 {
                     var tt = CheckExpr(ix.Target);
-                    Expect(CheckExpr(ix.Index), I32, ix.Index.Span, "index");
+                    /* An i32, or what converts to one - or a usize or isize,
+                       which is as wide as the address on every target: on
+                       x86-64 it is 64 bits, and still the natural index. */
+                    var it = CheckExpr(ix.Index);
+                    if (!(_ctx.Expand(it) is PrimType ip && PrimWidth.IsSize(ip.Kind)))
+                        Expect(it, I32, ix.Index.Span, "index");
                     if (!CheckDeref(tt, ix.Span)) return Set(e, Void);
                     TypeRef elem = tt switch { PointerType p => p.Pointee, ArrayType a => a.Element, _ => null! };
                     if (elem == null) { _diag.Error($"cannot index {Show(tt)}", ix.Span); return Set(e, Void); }

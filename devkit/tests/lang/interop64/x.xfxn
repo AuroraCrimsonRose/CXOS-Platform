@@ -1,0 +1,51 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// The x86-64 back end against clang's System V AMD64, both ways (roadmap step
+// 6b3): arguments past the six registers, an i128 that does not fit in the
+// last register and the u64 after it that does, structures of up to 16 bytes
+// in registers and larger ones in memory, and a u64 field on 8.
+struct wide { a: u64, b: u32 }                  // 16 bytes: two eightbytes, in registers
+struct big  { a: u64, b: u32, c: u64, d: u32 }  // 32 bytes: in memory, c at 16
+extern fn c_many(a: u64, b: u64, c: u64, d: u64, e: u64, f: u64, g: u64, h: u64) -> u64;
+extern fn c_skip(a: u64, b: u128, c: u64, d: u64, f: u128, g: u64) -> u128;
+extern fn c_wide(w: wide, k: u32) -> wide;
+extern fn c_big(b: big, k: u64) -> big;
+extern fn c_after_big(b: big, x: u64, y: u64) -> u64;
+extern fn c_late(a: u64, b: u64, c: u64, d: u64, e: u64, f: u64, g: u64, h: u128) -> u128;
+extern fn c_next(p: *u32) -> *u32;
+extern fn c_not(b: bool) -> bool;
+
+fn x_many(a: u64, b: u64, c: u64, d: u64, e: u64, f: u64, g: u64, h: u64) -> u64 {
+    return a + b * 2 + c * 3 + d * 4 + e * 5 + f * 6 + g * 7 + h * 8;
+}
+fn x_skip(a: u64, b: u128, c: u64, d: u64, f: u128, g: u64) -> u128 {
+    return (a as u128) + b * 3 + ((c + d) as u128) + f * 5 + ((g as u128) << 64);
+}
+fn x_wide(w: wide, k: u32) -> wide { let r: wide; r.a = w.a + 1; r.b = w.b + k; return r; }
+fn x_big(b: big, k: u64) -> big {
+    let r: big; r.a = b.a + k; r.b = b.b + 1; r.c = b.c * 2; r.d = b.d + 2; return r;
+}
+fn x_after_big(b: big, x: u64, y: u64) -> u64 { return b.c + x * 10 + y * 100; }
+/* g goes on the stack at 0, so h, needing 16, goes at 16 and not 8 */
+fn x_late(a: u64, b: u64, c: u64, d: u64, e: u64, f: u64, g: u64, h: u128) -> u128 {
+    return ((a + b + c + d + e + f) as u128) + (g as u128) * 1000 + h;
+}
+
+fn x_calls_c() -> u32 {
+    if (c_many(1, 2, 3, 4, 5, 6, 7, 8) != 204) { return 1; }
+    let b: u128 = (2u128 << 64) | 3;
+    let f: u128 = (6u128 << 64) | 7;
+    if (c_skip(1, b, 4, 5, f, 8) != (44u128 << 64) + 54) { return 2; }
+    let w: wide; w.a = 0x100000000; w.b = 7;
+    let v: wide = c_wide(w, 5);
+    if (v.a != 0x100000002 || v.b != 17) { return 3; }
+    let g: big; g.a = 1; g.b = 2; g.c = 0x300000000; g.d = 4;
+    let h: big = c_big(g, 10);
+    if (h.a != 11 || h.b != 3 || h.c != 0x900000000 || h.d != 8) { return 4; }
+    if (c_after_big(g, 5, 6) != 0x300000000 + 50 + 600) { return 5; }
+    if (c_late(1, 2, 3, 4, 5, 6, 7, (9u128 << 64) | 5) != (9u128 << 64) + 7026) { return 8; }
+    let a: [2]u32 = [1, 2];
+    if (c_next(&a[0]) != &a[1]) { return 6; }
+    if (c_not(true) || !c_not(false)) { return 7; }
+    return 0;
+}

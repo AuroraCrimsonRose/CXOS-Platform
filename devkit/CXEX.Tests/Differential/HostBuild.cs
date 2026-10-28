@@ -35,6 +35,15 @@ public static class HostBuild
     public const string PlainStub =
         ".text\n.globl _start\n_start:\n    call main\n    mov %eax, %ebx\n    mov $1, %eax\n    int $0x80\n";
 
+    /// <summary>
+    /// The same for the x86-64 back end (roadmap step 6b3): the stack is
+    /// 16-aligned at <c>_start</c>, so <c>call main</c> enters main as System V
+    /// expects, and the exit is Linux x86-64's <c>syscall</c> 60.
+    /// </summary>
+    public const string PlainStub64 =
+        ".text\n.globl _start\n_start:\n    xorl %ebp, %ebp\n    call main\n    movl %eax, %edi\n" +
+        "    movl $60, %eax\n    syscall\n";
+
     public static string HostCc =>
         Environment.GetEnvironmentVariable("CXOS_HOSTCC") is { Length: > 0 } cc ? cc : "clang";
 
@@ -100,6 +109,30 @@ public static class HostBuild
 
         var r = Run(HostCc,
                     new[] { "-m32", "-nostdlib", "-static", "-o", exePath, hostAsm, stubPath },
+                    workDir);
+        if (r.ExitCode != 0)
+            throw new InvalidOperationException($"{HostCc} failed to link {Path.GetFileName(asmPath)}:\n{r.All}");
+    }
+
+    /// <summary>
+    /// <see cref="Link"/> for x86-64 assembly from <c>cxk compile --target
+    /// x86_64</c>, against <see cref="PlainStub64"/>.
+    /// </summary>
+    public static void Link64(string asmPath, string exePath, string workDir)
+    {
+        string text = File.ReadAllText(asmPath);
+        int at = text.IndexOf(".globl _start", StringComparison.Ordinal);
+        if (at >= 0)
+            text = string.Concat(text.AsSpan(0, at), ".globl main", text.AsSpan(at + ".globl _start".Length));
+
+        string hostAsm = exePath + ".host.s";
+        File.WriteAllText(hostAsm, text);
+
+        string stubPath = Path.Combine(workDir, "stub64.s");
+        if (!File.Exists(stubPath)) File.WriteAllText(stubPath, PlainStub64);
+
+        var r = Run(HostCc,
+                    new[] { "-m64", "-nostdlib", "-static", "-o", exePath, hostAsm, stubPath },
                     workDir);
         if (r.ExitCode != 0)
             throw new InvalidOperationException($"{HostCc} failed to link {Path.GetFileName(asmPath)}:\n{r.All}");
