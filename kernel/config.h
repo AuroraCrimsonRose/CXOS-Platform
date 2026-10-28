@@ -90,14 +90,4 @@
 #define CXK_KTEST_STACK_OVERFLOW 0
 #endif
 
-/*
- * CXK_X_USERLAND is 0 where X programs cannot run: the x86-64 disk carries no
- * x86-64 programs yet, so that kernel (tools/cmake/CMakeLists.txt sets it)
- * boots to idle without the executive. Transitional: see
- * docs/planning/TRANSITIONAL_CODE.md.
- */
-#ifndef CXK_X_USERLAND
-#define CXK_X_USERLAND 1
-#endif
-
 #endif

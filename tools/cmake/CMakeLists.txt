@@ -290,7 +290,7 @@ set(APP_BOOT_NAME shell)
 
 set(APP_ELF   ${BUILD_DIR}/${APP_BOOT_NAME}.elf)
 set(APP_XCEX  ${BUILD_DIR}/${APP_BOOT_NAME}.xsex)
-set(APP_IMAGE ${SRC_DIR}/os/executive/app_image.h)
+set(APP_IMAGE ${BUILD_DIR}/app_image.h)   # executive.c includes <app_image.h>: -I the target's directory
 
 # DISK_APP is the opposite of APP_BOOT: not embedded in the executive, but
 # staged onto the disk as a file and started with SYS_EXEC_PATH. It has to be
@@ -721,6 +721,7 @@ add_custom_command(
     COMMAND ${KCC} --target=${CXK_TARGET} -ffreestanding -fno-pic -fno-stack-protector -nostdlib
             -mno-sse -mno-sse2 -mno-mmx -mno-implicit-float
             -I${SRC_DIR}/abi
+            -I${BUILD_DIR}
             -fuse-ld=lld -Wl,-T,${EXEC_LD} -o ${EXEC_ELF} ${EXEC_C}
     DEPENDS ${EXEC_C} ${EXEC_LD} ${APP_IMAGE}
     COMMENT "CC+LD executive.c -> executive.elf (user-half .xoex bootstrap)"
@@ -765,8 +766,9 @@ else()
     set(XDCHECK COMMAND ${CMAKE_COMMAND} -E echo "  service descriptors and kernel.xkco NOT checked - cxk predates check-xdata")
 endif()
 
-# What the system partition holds: the same on both architectures' disks.
-set(CXK_STAGED
+# What the system partition holds: the same files on both architectures'
+# disks, each disk's programs (and the prelude xc reads) built for its own.
+set(CXK_STAGED_PROGRAMS
     --stage System/Boot.xoex=${EXEC_XOEX}
     --stage Shared/Programs/${DISK_APP_NAME}.xuex=${DISK_APP_XCEX}
     --stage System/Programs/supervisor.xsex=${SUPERVISOR_XCEX}
@@ -774,6 +776,10 @@ set(CXK_STAGED
     --stage Shared/Programs/astdump.xuex=${ASTDUMP_XUEX}
     --stage Shared/Programs/semadump.xuex=${SEMADUMP_XUEX}
     --stage Shared/Programs/xc.xuex=${XC_XUEX}
+    --stage Shared/Programs/setcheck.xuex=${SETTINGS_TEST_XUEX}
+    --stage Shared/Source/prelude.xfxn=${PRELUDE_XFXN}
+)
+set(CXK_STAGED_SHARED
     --stage System/Fonts/console_16.xfnt=${CONSOLE16_XFNT}
     --stage Shared/Source/xc.xfxn=${SRC_DIR}/os/xc/xc.xfxn
     --stage Shared/Source/front.xfxn=${SRC_DIR}/os/xc/front.xfxn
@@ -791,10 +797,8 @@ set(CXK_STAGED
     --stage Shared/Source/buf.xfxn=${SRC_DIR}/os/std/buf.xfxn
     --stage Shared/Source/heap.xfxn=${SRC_DIR}/os/std/heap.xfxn
     --stage Shared/Source/mem.xfxn=${SRC_DIR}/os/std/mem.xfxn
-    --stage Shared/Source/prelude.xfxn=${PRELUDE_XFXN}
     --stage System/Services/hello.xosv=${SRC_DIR}/os/services/hello.xosv
     --stage System/Services/setcheck.xosv=${SRC_DIR}/os/services/setcheck.xosv
-    --stage Shared/Programs/setcheck.xuex=${SETTINGS_TEST_XUEX}
     --stage System/Services/disabled.xosv=${SRC_DIR}/os/services/disabled.xosv
     --stage System/Services/heartbeat.xosv=${SRC_DIR}/os/services/heartbeat.xosv
     --stage System/Config/kernel.xkco=${KERNEL_XKCO}
@@ -807,7 +811,7 @@ add_custom_command(
     COMMAND ${CMAKE_COMMAND} -E make_directory ${IMAGES_DIR}
     COMMAND ${CXK} image --out ${CXK_DISK} --size-mb 64 --boot-mb 8
             --stage1 ${BOOT_BIN} --stage2 ${STAGE2_BIN} --kernel ${KERNEL_XKEX}
-            ${CXK_STAGED}
+            ${CXK_STAGED_PROGRAMS} ${CXK_STAGED_SHARED}
     DEPENDS ${BOOT_BIN} ${STAGE2_BIN} ${KERNEL_XKEX} ${EXEC_XOEX} ${DISK_APP_XCEX}
             ${SUPERVISOR_XCEX} ${TOKDUMP_XUEX} ${ASTDUMP_XUEX} ${SEMADUMP_XUEX} ${XC_XUEX}
             ${XC_SRCS} ${SRC_DIR}/os/std/buf.xfxn ${SRC_DIR}/os/std/heap.xfxn
@@ -893,7 +897,6 @@ set(K64CFLAGS --target=x86_64-elf -ffreestanding -fno-pic -fno-stack-protector
               -mcmodel=kernel -mno-red-zone
               -mno-sse -mno-sse2 -mno-mmx -mno-implicit-float
               -Wall -Wextra -Werror ${CXK_DEFS} -Wshorten-64-to-32
-              -DCXK_X_USERLAND=0   # X programs are x86-32 until step 6: no executive
               ${KERNEL_INCLUDES} -I${BUILD_DIR} -c)
 set(KERNEL64_OBJS "")
 foreach(src ${KERNEL64_C_SRCS})
@@ -937,13 +940,134 @@ add_custom_command(
     DEPENDS ${KERNEL64_OBJS} ${LINKER64} ${KERNEL64_ELF}
     COMMENT "Linking the x86-64 kernel for the disk (no symbols)"
 )
+# ---- the x86-64 programs (step 6d2) ----
+# Every program the 32-bit disk carries, built for x86-64: the X ones with
+# `cxk compile --target x86_64` (the System V back end on the IR), the
+# executive with clang for x86_64-elf, each packaged by `cxk build` (an ELF64
+# becomes a CXEX with arch_target 2) and signed as on x86-32. Linked at the
+# same user addresses, below 4 GB, which the ABI's u32 user addresses need
+# ("Not in 6d", docs/planning/CX_ROADMAP.md).
+set(BUILD64_DIR    ${BUILD_DIR}/x64)
+set(PACKAGES64_DIR ${SRC_DIR}/dist/CXK_x86_64/packages)
+file(MAKE_DIRECTORY ${BUILD64_DIR})
+
+# The sign step for one x86-64 artifact, as cxk_toolchain.cmake's are for
+# x86-32: one command naming the exact file. No parentheses or semicolons in
+# the messages (cxk_toolchain.cmake says why).
+function(cx_sign64 out file)
+    get_filename_component(name ${file} NAME)
+    if(SIGN)
+        set(${out} COMMAND ${CXK} sign ${file} ${SIGN_SK} ${SIGN_PK} PARENT_SCOPE)
+    elseif(DEV_UNSIGNED)
+        set(${out} COMMAND ${CMAKE_COMMAND} -E echo "  x86-64 ${name} UNSIGNED - runs on this development kernel only" PARENT_SCOPE)
+    else()
+        set(${out} COMMAND ${CMAKE_COMMAND} -E echo "  x86-64 ${name} UNSIGNED - the kernel WILL REFUSE it - configure -DSIGN=ON" PARENT_SCOPE)
+    endif()
+endfunction()
+
+# An X program for x86-64: <name>.xfxn -> ELF64 -> signed CXEX in
+# PACKAGES64_DIR. Sets <var> to the package's path. The remaining arguments
+# are the compile's include directories.
+function(cx_x_program64 var src type ext)
+    get_filename_component(name ${src} NAME_WE)
+    set(elf ${BUILD64_DIR}/${name}.elf)
+    set(pkg ${PACKAGES64_DIR}/${name}.${ext})
+    set(incs "")
+    foreach(dir ${ARGN})
+        list(APPEND incs -I ${dir})
+    endforeach()
+    add_custom_command(
+        OUTPUT ${elf}
+        COMMAND ${CXK} compile ${src} ${elf} --target x86_64 ${incs}
+        DEPENDS ${src} ${CXK} ${STD_SRCS} ${XC_SRCS}
+        COMMENT "X64 ${name}.xfxn -> ELF64"
+    )
+    cx_sign64(sign ${pkg})
+    add_custom_command(
+        OUTPUT ${pkg}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${PACKAGES64_DIR}
+        COMMAND ${CXK} build ${elf} ${pkg} --type ${type}
+        ${sign}
+        DEPENDS ${elf} ${CXK}
+        COMMENT "Packaging x86-64 ${name}.${ext} (CXEX, type ${type})"
+    )
+    set(${var} ${pkg} PARENT_SCOPE)
+endfunction()
+
+set(XC_INCS64 ${SRC_DIR}/os/xc/cxk ${SRC_DIR}/os/xc ${SRC_DIR}/os/std)
+cx_x_program64(SHELL64_XSEX      ${APP_BOOT}       system xsex ${SRC_DIR}/os/std)
+cx_x_program64(DISK_APP64_XUEX   ${DISK_APP}       user   xuex ${SRC_DIR}/os/std)
+cx_x_program64(SETCHECK64_XUEX   ${SETTINGS_TEST}  user   xuex ${SRC_DIR}/os/std)
+cx_x_program64(SUPERVISOR64_XSEX ${SUPERVISOR_SRC} system xsex ${SRC_DIR}/os/std)
+cx_x_program64(TOKDUMP64_XUEX    ${TOKDUMP_SRC}    user   xuex ${XC_INCS64})
+cx_x_program64(ASTDUMP64_XUEX    ${ASTDUMP_SRC}    user   xuex ${XC_INCS64})
+cx_x_program64(SEMADUMP64_XUEX   ${SEMADUMP_SRC}   user   xuex ${XC_INCS64})
+cx_x_program64(XC64_XUEX         ${XC_SRC}         user   xuex ${XC_INCS64})
+
+# The shell is embedded in the executive, signed first, as on x86-32.
+set(APP_IMAGE64 ${BUILD64_DIR}/app_image.h)
+add_custom_command(
+    OUTPUT ${APP_IMAGE64}
+    COMMAND ${CXK} embed ${SHELL64_XSEX} ${APP_IMAGE64} ${APP_BOOT_NAME}_xsex
+    DEPENDS ${SHELL64_XSEX} ${CXK}
+    COMMENT "Embedding x86-64 ${APP_BOOT_NAME}.xsex -> x64/app_image.h"
+)
+
+# No red zone: the executive's syscalls are inline `call`s, which push below
+# RSP (executive.c).
+set(EXEC64_ELF  ${BUILD64_DIR}/executive.elf)
+set(EXEC64_XOEX ${PACKAGES64_DIR}/executive.xoex)
+add_custom_command(
+    OUTPUT ${EXEC64_ELF}
+    COMMAND ${KCC} --target=x86_64-elf -ffreestanding -fno-pic -fno-stack-protector -nostdlib
+            -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -mno-implicit-float
+            -I${SRC_DIR}/abi
+            -I${BUILD64_DIR}
+            -fuse-ld=lld -Wl,-T,${EXEC_LD} -o ${EXEC64_ELF} ${EXEC_C}
+    DEPENDS ${EXEC_C} ${EXEC_LD} ${APP_IMAGE64}
+    COMMENT "CC+LD executive.c -> x64/executive.elf"
+)
+cx_sign64(EXEC64_SIGN ${EXEC64_XOEX})
+add_custom_command(
+    OUTPUT ${EXEC64_XOEX}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${PACKAGES64_DIR}
+    COMMAND ${CXK} build ${EXEC64_ELF} ${EXEC64_XOEX} --type os
+    ${EXEC64_SIGN}
+    DEPENDS ${EXEC64_ELF} ${CXK}
+    COMMENT "Converting x64/executive.elf -> x86-64 executive.xoex (CXEX, type os)"
+)
+
+# xc reads the prelude for the target it compiles for.
+set(PRELUDE64_XFXN ${BUILD64_DIR}/prelude.xfxn)
+add_custom_command(
+    OUTPUT ${PRELUDE64_XFXN}
+    COMMAND ${CXK} prelude ${PRELUDE64_XFXN} --target x86_64
+    DEPENDS ${CXK}
+    COMMENT "X64 prelude -> x64/prelude.xfxn"
+)
+
+set(CXK_STAGED64_PROGRAMS
+    --stage System/Boot.xoex=${EXEC64_XOEX}
+    --stage Shared/Programs/${DISK_APP_NAME}.xuex=${DISK_APP64_XUEX}
+    --stage System/Programs/supervisor.xsex=${SUPERVISOR64_XSEX}
+    --stage Shared/Programs/tokdump.xuex=${TOKDUMP64_XUEX}
+    --stage Shared/Programs/astdump.xuex=${ASTDUMP64_XUEX}
+    --stage Shared/Programs/semadump.xuex=${SEMADUMP64_XUEX}
+    --stage Shared/Programs/xc.xuex=${XC64_XUEX}
+    --stage Shared/Programs/setcheck.xuex=${SETCHECK64_XUEX}
+    --stage Shared/Source/prelude.xfxn=${PRELUDE64_XFXN}
+)
+set(CXK_STAGED64_DEPS ${EXEC64_XOEX} ${DISK_APP64_XUEX} ${SUPERVISOR64_XSEX} ${TOKDUMP64_XUEX}
+    ${ASTDUMP64_XUEX} ${SEMADUMP64_XUEX} ${XC64_XUEX} ${SETCHECK64_XUEX} ${PRELUDE64_XFXN})
+
 add_custom_command(
     OUTPUT ${DISK64_IMG}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${IMAGES64_DIR}
     COMMAND ${CXK} image --out ${DISK64_IMG} --size-mb 64 --boot-mb 8
             --stage1 ${BOOT_BIN} --stage2 ${STAGE2_BIN} --kernel ${KERNEL64_DISK_ELF}
-            ${CXK_STAGED}
+            ${CXK_STAGED64_PROGRAMS} ${CXK_STAGED_SHARED}
     DEPENDS ${BOOT_BIN} ${STAGE2_BIN} ${KERNEL64_DISK_ELF} ${CXK}
+            ${CXK_STAGED64_DEPS}
             ${CXK_DISK}   # built from the same staged files: rebuilt when one changes
     COMMENT "Building the x86-64 disk (stage 2 enters long mode; the system partition as on x86-32)"
 )

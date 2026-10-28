@@ -431,9 +431,7 @@ void kmain_late(void) {
     int xc_started = 0;
     /* capstone: start the signed executive as the root ring-3 process (its own
        address space + scheduler thread). It runs once we idle + yield below. */
-    if (launch_exec && !CXK_X_USERLAND)
-        klog("EXEC", SEV_INFO, "no executive: X programs are x86-32 until step 6");
-    else if (launch_exec) {
+    if (launch_exec) {
         klog("EXEC", SEV_INFO, "launching /System/Boot.xoex");
         int xc = cxk_launch_executive("/System/Boot.xoex");
         if (xc >= 0) {

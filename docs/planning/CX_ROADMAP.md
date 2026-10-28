@@ -236,7 +236,11 @@ programs for it (step 6).
        grant above 4 GB with `mremap`, so a pointer cut to 32 bits faults. Every
        Differential comparison runs with the dump program built as x86-32 and
        as x86-64.
-     - **6d2** The executive on x86-64, the full boot passing.
+     - **6d2** The executive on x86-64, the full boot passing. **Done
+       2026-10-28** in three commits: `cxk build` packages an ELF64 as arch 2
+       (6d2a), the X Data reader linked into the x86-64 kernel (6d2b), and
+       every program built for x86-64 and staged on its disk (6d2c). The
+       executive, shell, supervisor and services run as on x86-32.
      - **6d3** The 32-bit kernel and the x86-32 emitter deleted.
      **Not in 6d:** the ABI keeps user addresses as `u32` (`vm_map_args.addr`,
      `spawn_args.image`, the IPC buffers, `vm_unmap`'s `addr`) and the kernel

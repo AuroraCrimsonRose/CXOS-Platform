@@ -11,45 +11,63 @@
  */
 
 #include "cxk_abi.h"
-#include "app_image.h"   /* shell_xsex[], shell_xsex_len */
+#include <app_image.h>   /* shell_xsex[], shell_xsex_len: the build's, for this target */
 
 /* Every call goes through the system page: the kernel hands _start its base
-   in esi, and the stub for syscall n is SYSPAGE_STUB_SIZE * n past it. The
-   stub puts n in eax itself and returns the result there (cxk_abi.h). */
-static uint32_t sysbase __attribute__((used));
+   in esi (rsi on x86-64), and the stub for syscall n is SYSPAGE_STUB_SIZE * n
+   past it. The stub puts n in eax itself and returns the result there
+   (cxk_abi.h). */
+static uintptr_t sysbase __attribute__((used));
 #define STUB(n) (sysbase + (n) * SYSPAGE_STUB_SIZE)
 
-static inline void sys_write(const char *s) {
-    int r; __asm__ volatile ("call *%1" : "=a"(r) : "r"(STUB(SYS_CONSOLE_WRITE)), "b"(s), "c"(0) : "memory");
+#if defined(__x86_64__)
+/* Arguments in rdi and rsi (CX_SYSCALLS_IPC.md section 4). The stub's
+   `syscall` takes rcx and r11, and the kernel gives back every other
+   register. The `call` pushes below RSP, so this file is built with
+   -mno-red-zone (tools/cmake/CMakeLists.txt). */
+static inline int sys_call(uint32_t n, uintptr_t a1, uintptr_t a2) {
+    long r;
+    __asm__ volatile ("call *%1" : "=a"(r) : "r"(STUB(n)), "D"(a1), "S"(a2) : "rcx", "r11", "memory");
+    return (int)r;
 }
+#else
+/* Arguments in ebx and ecx. */
+static inline int sys_call(uint32_t n, uintptr_t a1, uintptr_t a2) {
+    int r;
+    __asm__ volatile ("call *%1" : "=a"(r) : "r"(STUB(n)), "b"(a1), "c"(a2) : "memory");
+    return r;
+}
+#endif
+
+static inline void sys_write(const char *s) { (void)sys_call(SYS_CONSOLE_WRITE, (uintptr_t)s, 0); }
 static inline __attribute__((noreturn)) void sys_exit(int code) {
-    int r; __asm__ volatile ("call *%1" : "=a"(r) : "r"(STUB(SYS_EXIT)), "b"(code) : "memory");
+    (void)sys_call(SYS_EXIT, (uintptr_t)code, 0);
     for (;;) { }
 }
-static inline int sys_ep_create(void) {
-    int r; __asm__ volatile ("call *%1" : "=a"(r) : "r"(STUB(SYS_EP_CREATE)) : "memory"); return r;
-}
-static inline int sys_spawn(struct spawn_args *a) {
-    int r; __asm__ volatile ("call *%1" : "=a"(r) : "r"(STUB(SYS_SPAWN)), "b"(a) : "memory"); return r;
-}
+static inline int sys_ep_create(void) { return sys_call(SYS_EP_CREATE, 0, 0); }
+static inline int sys_spawn(struct spawn_args *a) { return sys_call(SYS_SPAWN, (uintptr_t)a, 0); }
 static inline int sys_exec_path(const char *p, struct spawn_args *a) {
-    int r; __asm__ volatile ("call *%1" : "=a"(r) : "r"(STUB(SYS_EXEC_PATH)), "b"(p), "c"(a) : "memory"); return r;
+    return sys_call(SYS_EXEC_PATH, (uintptr_t)p, (uintptr_t)a);
 }
-static inline int sys_ipc_recv(struct ipc_recv_args *a) {
-    int r; __asm__ volatile ("call *%1" : "=a"(r) : "r"(STUB(SYS_IPC_RECV)), "b"(a) : "memory"); return r;
-}
-static inline int sys_ipc_reply(struct ipc_reply_args *a) {
-    int r; __asm__ volatile ("call *%1" : "=a"(r) : "r"(STUB(SYS_IPC_REPLY)), "b"(a) : "memory"); return r;
-}
-static inline void sys_yield(void) {
-    int r; __asm__ volatile ("call *%1" : "=a"(r) : "r"(STUB(SYS_YIELD)) : "memory");
-}
+static inline int sys_ipc_recv(struct ipc_recv_args *a) { return sys_call(SYS_IPC_RECV, (uintptr_t)a, 0); }
+static inline int sys_ipc_reply(struct ipc_reply_args *a) { return sys_call(SYS_IPC_REPLY, (uintptr_t)a, 0); }
+static inline void sys_yield(void) { (void)sys_call(SYS_YIELD, 0, 0); }
+
+/* The ABI's user addresses are u32 ("Not in 6d", CX_ROADMAP.md): this image,
+   its stack and its data all sit below 4 GB on both targets. */
+#define UADDR(p) ((uint32_t)(uintptr_t)(p))
 
 static void executive_main(void) __attribute__((used, noreturn));
 
-/* Keep the base before any C runs, since the compiler may use esi. */
+/* Keep the base before any C runs, since the compiler may use esi/rsi. On
+   x86-64 the kernel enters with RSP 16-aligned; a call leaves it 8 past that,
+   as executive_main expects of a function it was called into. */
 __attribute__((naked)) void _start(void) {
+#if defined(__x86_64__)
+    __asm__ ("mov %rsi, sysbase(%rip)\n\tand $-16, %rsp\n\tcall executive_main\n\tud2");
+#else
     __asm__ ("mov %esi, sysbase\n\tjmp executive_main");
+#endif
 }
 
 static void executive_main(void) {
@@ -59,8 +77,8 @@ static void executive_main(void) {
     if (ep < 0) { sys_write("executive: ep_create failed\n"); sys_exit(1); }
 
     struct spawn_args sa;
-    sa.image = (uint32_t)shell_xsex; sa.image_len = shell_xsex_len;
-    sa.name = (uint32_t)"shell";    sa.broker_endpoint = ep;
+    sa.image = UADDR(shell_xsex); sa.image_len = shell_xsex_len;
+    sa.name = UADDR("shell");    sa.broker_endpoint = ep;
     sa.caps = GRANT_OS_BASELINE;   /* privileged shell (attenuated to executive's caps) */
     /* No arguments for the shell - but say so rather than leaving the fields
        as whatever was on the stack. The kernel validates args against
@@ -87,7 +105,7 @@ static void executive_main(void) {
      * machine with no services - so this is a note, not a failure. */
     struct spawn_args svc;
     svc.image = 0; svc.image_len = 0;
-    svc.name = (uint32_t)"supervisor"; svc.broker_endpoint = -1;
+    svc.name = UADDR("supervisor"); svc.broker_endpoint = -1;
     svc.caps = GRANT_OS_BASELINE | SPAWN_BACKGROUND;
     svc.args = 0; svc.args_len = 0; svc.reserved = 0;
     if (sys_exec_path("/System/Programs/supervisor.xsex", &svc) < 0)
@@ -96,7 +114,7 @@ static void executive_main(void) {
     /* serve one request from the app */
     char buf[256]; int sender = 0;
     struct ipc_recv_args ra;
-    ra.ep_handle = ep; ra.buf = (uint32_t)buf; ra.cap = sizeof buf; ra.sender = (uint32_t)&sender;
+    ra.ep_handle = ep; ra.buf = UADDR(buf); ra.cap = sizeof buf; ra.sender = UADDR(&sender);
     ra.reserved = 0;
     int n = sys_ipc_recv(&ra);          /* blocks until the app ipc_calls */
     if (n > 0) {
@@ -105,7 +123,7 @@ static void executive_main(void) {
     }
 
     struct ipc_reply_args rp;
-    rp.ep_handle = ep; rp.data = (uint32_t)"ok"; rp.len = 2;
+    rp.ep_handle = ep; rp.data = UADDR("ok"); rp.len = 2;
     sys_ipc_reply(&rp);                  /* wake the app */
 
     sys_yield();                         /* let the app resume and exit */

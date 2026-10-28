@@ -53,7 +53,6 @@ interfaces and are not transitional.
 | `kernel/cpu/exec.c` unverified-image policy | Always refuses | An administrator's choice | User accounts exist |
 | `/Shared/Config` at 0777 | Any program with `GRANT_DISK` can write any program's settings | `/User/<name>` at 0700 | Users exist (`CX_FILESYSTEM_LAYOUT.md` rule 6) |
 | `kernel/arch/x86_64/early_con.c` | COM1, polled, for `idt.c`'s `kpanic` only: everything else logs through `logging.c` since step 5f1 | The panic path below, on the serial driver | It goes with `idt.c`'s `kpanic` |
-| `CXK_X_USERLAND` (`kernel/config.h`), 0 on x86-64 | No executive and no X program: kmain logs that it starts none | The executive, as on x86-32 | X compiles for x86-64 (roadmap step 6) |
 | `kernel/arch/x86_64/idt.c` `kpanic` | The banner, the reason and a halt, on COM1 | The panic screen, its stack trace and the crash log (`kernel/diag/`) | Those running on x86-64 |
 | `kernel/memman/pmm.c` | The 32-bit kernel's bitmap page allocator; its 4 MiB boot window cannot hold a page database | `memman/pagedb.c`, the page database and buddy allocator x86-64 uses | Roadmap step 6: the 32-bit kernel is deleted |
 
