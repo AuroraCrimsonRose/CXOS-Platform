@@ -1,0 +1,56 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// What the IR writes down that the run programs do not pin: the order
+// operands run in (the x86-32 emitter's), defers at every exit, and the
+// places the IR departs from the emitter on purpose (IR.md, last section).
+// Run by the IR interpreter only.
+global trace: u32 = 0;
+fn note(d: u32) -> u32 { trace = trace * 10 + d; return d; }
+fn add3(a: u32, b: u32, c: u32) -> u32 { return a + b + c; }
+fn early() -> u32 {
+    let r: u32 = 1;
+    defer trace = trace * 10 + 9;
+    defer r = 5;
+    defer trace = trace * 10 + 8;
+    return r;                                  // 1: taken before the defers
+}
+fn fall(x: u32) -> u32 { if (x == 0) { return 7; } }
+fn main() -> i32 {
+    trace = 0;
+    let x: u32 = note(1) + note(2);            // right operand first
+    if (trace != 21 || x != 3) { return 1; }
+    trace = 0;
+    let y: u32 = add3(note(1), note(2), note(3));   // arguments last to first
+    if (trace != 321 || y != 6) { return 2; }
+    let a: [3]u32 = [0, 0, 0];
+    trace = 0;
+    a[note(1)] = note(2);                      // the value before the target
+    if (trace != 21 || a[1] != 2) { return 3; }
+    trace = 0;
+    if (early() != 1 || trace != 89) { return 4; }   // last deferred first
+    let i: u32 = 0;
+    trace = 0;
+    while (true) { defer trace += 1; i += 1; if (i == 3) { break; } continue; }
+    if (trace != 3) { return 5; }              // break and continue run them too
+    let n: u32 = 256;
+    if (n as bool != true) { return 6; }       // as bool is != 0, not the low byte
+    if (fall(1) != 0) { return 7; }            // falling off the end returns zero
+    let w: u64 = 0xFFFF_FFFF_FFFF_FFFF;
+    let v: i64 = -1;
+    let big: u128 = (v as u128) + 0u128;
+    if (big != 0xFFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF) { return 8; }
+    if ((w as u128) >> 64 != 0) { return 9; }
+    let k: u8 = 200;
+    let j: i8 = -56;
+    if (k as i8 != j) { return 10; }
+    if ((k as u32) / 3 != 66) { return 11; }
+    if ((j as i32) / 3 != -18) { return 12; }
+    if ((j >> 1) != -28) { return 13; }
+    let m: i32 = -1;
+    if (!(m < 1)) { return 14; }               // same type: signed
+    let p: u32 = 0xFFFF_FFFF;
+    let q: i32 = 1;
+    if (p < q) { return 15; }                  // u32 against i32: unsigned, as in C
+    if (!(k > j)) { return 16; }               // u8 against i8: both widen, signed
+    return 0;
+}

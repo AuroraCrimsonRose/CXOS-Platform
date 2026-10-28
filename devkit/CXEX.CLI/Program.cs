@@ -90,6 +90,9 @@ app.Configure(config =>
     config.AddCommand<AsmCommand>("asm")
         .WithDescription("Prints the assembly `compile` generates for X programs (compared against the code generator written in X).");
 
+    config.AddCommand<IrCommand>("ir")
+        .WithDescription("Prints the typed IR X programs lower to, checked by the IR verifier (docs: devkit/CXEX.Lang/IR/IR.md).");
+
     config.AddCommand<PreludeCommand>("prelude")
         .WithDescription("Prints the ABI prelude that `compile` puts in front of every program.");
 

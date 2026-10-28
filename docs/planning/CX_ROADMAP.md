@@ -196,9 +196,10 @@ programs for it (step 6).
        with another integer type needs `as` (initialising, assigning,
        passing, returning, arithmetic, comparing), except a constant that
        fits and a shift count. Type only: no program moves to it yet, so
-       every program compiles to the same bytes.
+       every program compiles to the same bytes. **Done 2026-10-28.**
      - **6b2** The typed IR, lowered from the checked tree, with a dump and
-       tests; no back end on it yet.
+       tests; no back end on it yet. **Done 2026-10-28**
+       (`devkit/CXEX.Lang/IR/IR.md`, `cxk ir`).
      - **6b3** The x86-64 System V back end on the IR, emitting ELF64, its
        programs run on Linux in the CI container.
    - **6c** `xc` gains the IR and the x86-64 back end; the differential tests

@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// The IR's text, pinned: basic.ir is what `cxk ir --no-prelude` prints for
+// this file. A change to the lowering or the printer shows up here as a diff
+// to read, not as a silent change of meaning.
+struct pt { x: i32, y: i32 }
+enum shape { dot, box { w: u32, h: u32 } }
+extern fn ext(p: *u8) -> i32;
+global msg: *u8 = "hi\n";
+global table: [2]fn(u32) -> u32 = [twice, twice];
+global big: u64 = 0x1_0000_0002;
+fn twice(v: u32) -> u32 { return v << 1; }
+fn make(a: i32) -> pt { return pt { x: a, y: a + 1 }; }
+fn area(s: *shape) -> u32 {
+    switch (*s) { case shape.box(b) { return b.w * b.h; } case shape.dot { return 0; } }
+    return 0;
+}
+fn mix(a: u8, b: i64, c: bool, d: bool) -> i64 {
+    if (c && d) { return b / (a as i64); }
+    return (a as i64) - b;
+}
+fn sys(p: *u8) -> i32 { return __syscall(3, p, 4) + ext(p); }
+fn use(f: fn(u32) -> u32) -> i32 { let q: pt = make(2); return q.y + (f(3) as i32); }

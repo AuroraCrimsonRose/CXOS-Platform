@@ -64,6 +64,7 @@ Start with the roadmap.
 | Document | Covers |
 |---|---|
 | [language/CX_X_PLAN.md](language/CX_X_PLAN.md) | What X needs next, in order |
+| [../devkit/CXEX.Lang/IR/IR.md](../devkit/CXEX.Lang/IR/IR.md) | The typed IR: types, instructions, and the language rules the lowering decides |
 | [formats/CX_FILE_TYPES.md](formats/CX_FILE_TYPES.md) | File types: what changes from the x86-32 scheme |
 
 ## DevKit: `devkit/`
