@@ -47,7 +47,7 @@
 
 /* ---- arch ---- */
 #define CXEX_ARCH_X86_32 1u
-#define CXEX_ARCH_X86_64 2u   /* nothing writes it until X compiles for x86-64 (step 6) */
+#define CXEX_ARCH_X86_64 2u   /* `cxk build` stamps it on an ELF64 (step 6d2) */
 
 /* ---- header flags (section 9.6) ---- */
 #define CXEX_FLAG_EXECUTABLE         (1u << 0)

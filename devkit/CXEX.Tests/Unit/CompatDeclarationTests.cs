@@ -77,6 +77,38 @@ public class CompatDeclarationTests
 
     [Fact]
     [Trait(Categories.Key, Categories.Unit)]
+    public void The_arch_numbers_are_the_ones_the_kernel_compares()
+    {
+        // FLAG_REQUIRE_ARCH_MATCH makes these load-bearing as the ABI version is:
+        // stamp x86-64 with the wrong number and every x86-64 program is refused
+        // with CXEX_LOAD_BAD_ARCH.
+        string root = Requires.Repo();
+        string header = File.ReadAllText(Path.Combine(root, "kernel", "lib", "format", "cxex.h"));
+        foreach (var (name, value) in new[] { ("CXEX_ARCH_X86_32", CXFlags.ARCH_X86_32),
+                                              ("CXEX_ARCH_X86_64", CXFlags.ARCH_X86_64) })
+        {
+            Match m = Regex.Match(header, $@"^#define\s+{name}\s+(\d+)u?\b", RegexOptions.Multiline);
+            Assert.True(m.Success, $"{name} not found in kernel/lib/format/cxex.h");
+            Assert.Equal(ushort.Parse(m.Groups[1].Value), value);
+        }
+    }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
+    public void The_layout_carries_the_arch_it_is_given_and_refuses_any_other()
+    {
+        // x86-32 when unsaid, which is every caller that predates x86-64.
+        Assert.Equal(CXFlags.ARCH_X86_32, CXEXLayoutEngine.CreateLayout(0x00400000, new[] { Segment() },
+            CXFlags.TYPE_USER, AbiModel.EmbeddedFile.Hash).ArchTarget);
+        Assert.Equal(CXFlags.ARCH_X86_64, CXEXLayoutEngine.CreateLayout(0x00400000, new[] { Segment() },
+            CXFlags.TYPE_USER, AbiModel.EmbeddedFile.Hash, arch: CXFlags.ARCH_X86_64).ArchTarget);
+        foreach (ushort bad in new ushort[] { 0, 3, 0xFFFF })
+            Assert.Throws<InvalidDataException>(() => CXEXLayoutEngine.CreateLayout(0x00400000, new[] { Segment() },
+                CXFlags.TYPE_USER, AbiModel.EmbeddedFile.Hash, arch: bad));
+    }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
     public void An_unspecified_abi_version_is_the_current_contract_not_zero()
     {
         // The parameter has a default, so a caller that omits it stamps

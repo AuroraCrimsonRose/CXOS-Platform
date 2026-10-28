@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 using CXEX.Build.Parsers;
+using CXEX.Core.Constants;
 using Xunit;
 
 namespace CXEX.Tests.Adversarial;
@@ -35,7 +36,7 @@ public class ElfParserTests
     public void A_well_formed_elf_is_accepted()
     {
         // Without this the suite could pass by rejecting everything.
-        ElfImage img = ElfParser.Parse(Elf32Builder.Valid().Build());
+        ElfImage img = ElfParser.Parse(ElfBuilder.Valid().Build());
 
         Assert.Equal(0x00401000u, img.EntryPoint);
         ElfSegment only = Assert.Single(img.Segments);
@@ -48,8 +49,8 @@ public class ElfParserTests
     [Trait(Categories.Key, Categories.Adversarial)]
     public void Truncated_header_is_rejected()
     {
-        byte[] full = Elf32Builder.Valid().Build();
-        for (int len = 0; len < Elf32Builder.HeaderSize; len += 13)
+        byte[] full = ElfBuilder.Valid().Build();
+        for (int len = 0; len < ElfBuilder.HeaderSize; len += 13)
             Rejects(full.AsSpan(0, len).ToArray(), $"only {len} bytes of a 52-byte header");
     }
 
@@ -57,7 +58,7 @@ public class ElfParserTests
     [Trait(Categories.Key, Categories.Adversarial)]
     public void Bad_magic_is_rejected()
     {
-        byte[] elf = Elf32Builder.Valid().Build();
+        byte[] elf = ElfBuilder.Valid().Build();
         elf[1] = (byte)'X';
         Rejects(elf, "corrupted \\x7FELF magic");
     }
@@ -66,42 +67,42 @@ public class ElfParserTests
     [Trait(Categories.Key, Categories.Adversarial)]
     public void Wrong_class_or_endianness_is_rejected()
     {
-        Rejects(Elf32Builder.Valid().With(b => b.Class = 2).Build(), "ELFCLASS64");
-        Rejects(Elf32Builder.Valid().With(b => b.Data = 2).Build(), "big-endian ELF");
+        Rejects(ElfBuilder.Valid().With(b => b.Class = 2).Build(), "ELFCLASS64");
+        Rejects(ElfBuilder.Valid().With(b => b.Data = 2).Build(), "big-endian ELF");
     }
 
     [Fact]
     [Trait(Categories.Key, Categories.Adversarial)]
     public void Non_executable_elf_type_is_rejected()
     {
-        Rejects(Elf32Builder.Valid().With(b => b.Type = 1).Build(), "ET_REL, a relocatable object");
-        Rejects(Elf32Builder.Valid().With(b => b.Type = 3).Build(), "ET_DYN, a shared image");
+        Rejects(ElfBuilder.Valid().With(b => b.Type = 1).Build(), "ET_REL, a relocatable object");
+        Rejects(ElfBuilder.Valid().With(b => b.Type = 3).Build(), "ET_DYN, a shared image");
     }
 
     [Fact]
     [Trait(Categories.Key, Categories.Adversarial)]
     public void Wrong_machine_is_rejected() =>
-        Rejects(Elf32Builder.Valid().With(b => b.Machine = 62).Build(), "EM_X86_64, not EM_386");
+        Rejects(ElfBuilder.Valid().With(b => b.Machine = 62).Build(), "EM_X86_64, not EM_386");
 
     [Fact]
     [Trait(Categories.Key, Categories.Adversarial)]
     public void Invalid_program_header_size_is_rejected()
     {
-        Rejects(Elf32Builder.Valid().With(b => b.PhEntSize = 0).Build(), "e_phentsize 0");
-        Rejects(Elf32Builder.Valid().With(b => b.PhEntSize = 31).Build(), "e_phentsize below 32");
-        Rejects(Elf32Builder.Valid().With(b => b.PhEntSize = 56).Build(), "e_phentsize of an ELF64 header");
+        Rejects(ElfBuilder.Valid().With(b => b.PhEntSize = 0).Build(), "e_phentsize 0");
+        Rejects(ElfBuilder.Valid().With(b => b.PhEntSize = 31).Build(), "e_phentsize below 32");
+        Rejects(ElfBuilder.Valid().With(b => b.PhEntSize = 56).Build(), "e_phentsize of an ELF64 header");
     }
 
     [Fact]
     [Trait(Categories.Key, Categories.Adversarial)]
     public void Program_header_table_outside_the_file_is_rejected()
     {
-        Rejects(Elf32Builder.Valid().With(b => b.PhOff = 0x7FFF_0000).Build(),
+        Rejects(ElfBuilder.Valid().With(b => b.PhOff = 0x7FFF_0000).Build(),
             "e_phoff far past the end of the file");
 
         // The sum, not the base, is what leaves the file - the classic way a table
         // looks like it starts inside one.
-        Rejects(Elf32Builder.Valid().With(b => b.PhNumOverride = 4096).Build(),
+        Rejects(ElfBuilder.Valid().With(b => b.PhNumOverride = 4096).Build(),
             "e_phoff inside the file but the table running off the end");
     }
 
@@ -114,7 +115,7 @@ public class ElfParserTests
         // ending at the start of the file, and waves it through. The count stays
         // under the absurd-count cap on purpose, so this test can only pass by way
         // of the overflow check it is actually aimed at.
-        Rejects(Elf32Builder.Valid().With(b =>
+        Rejects(ElfBuilder.Valid().With(b =>
         {
             b.PhOff = 0xFFFF_FF00;
             b.PhNumOverride = 8;
@@ -124,7 +125,7 @@ public class ElfParserTests
     [Fact]
     [Trait(Categories.Key, Categories.Adversarial)]
     public void Absurd_segment_count_is_rejected() =>
-        Rejects(Elf32Builder.Valid().With(b => b.PhNumOverride = 0xFFFF).Build(),
+        Rejects(ElfBuilder.Valid().With(b => b.PhNumOverride = 0xFFFF).Build(),
             "65535 program headers");
 
     [Fact]
@@ -132,7 +133,7 @@ public class ElfParserTests
     public void Offset_plus_size_overflow_is_rejected()
     {
         // The original defect: both casts go negative at span.Slice((int)o,(int)n).
-        Rejects(Elf32Builder.Valid().WithSegment(0, p =>
+        Rejects(ElfBuilder.Valid().WithSegment(0, p =>
         {
             p.Offset = 0xFFFF_FFF0;
             p.FileSize = 0x1000;
@@ -144,7 +145,7 @@ public class ElfParserTests
     [Fact]
     [Trait(Categories.Key, Categories.Adversarial)]
     public void Segment_running_past_the_end_of_the_file_is_rejected() =>
-        Rejects(Elf32Builder.Valid().WithSegment(0, p =>
+        Rejects(ElfBuilder.Valid().WithSegment(0, p =>
         {
             p.FileSize = 0x10_0000;
             p.MemSize = 0x10_0000;
@@ -154,13 +155,13 @@ public class ElfParserTests
     [Fact]
     [Trait(Categories.Key, Categories.Adversarial)]
     public void Filesz_greater_than_memsz_is_rejected() =>
-        Rejects(Elf32Builder.Valid().WithSegment(0, p => p.MemSize = p.FileSize - 1).Build(),
+        Rejects(ElfBuilder.Valid().WithSegment(0, p => p.MemSize = p.FileSize - 1).Build(),
             "p_filesz greater than p_memsz");
 
     [Fact]
     [Trait(Categories.Key, Categories.Adversarial)]
     public void Virtual_address_overflow_is_rejected() =>
-        Rejects(Elf32Builder.Valid().WithSegment(0, p =>
+        Rejects(ElfBuilder.Valid().WithSegment(0, p =>
         {
             p.Vaddr = 0xFFFF_F000;
             p.MemSize = 0x8000;
@@ -170,11 +171,11 @@ public class ElfParserTests
     [Trait(Categories.Key, Categories.Adversarial)]
     public void Absurd_aggregate_memory_size_is_rejected()
     {
-        var b = Elf32Builder.Valid();
+        var b = ElfBuilder.Valid();
         // Each is individually plausible; together they claim 3 GB.
         for (int i = 0; i < 3; i++)
         {
-            b.Segments.Add(new Elf32Builder.Phdr
+            b.Segments.Add(new ElfBuilder.Phdr
             {
                 Offset = 0x1000,
                 Vaddr = (uint)(0x1000_0000 + i * 0x4000_0000L) & 0xFFFF_F000,
@@ -191,10 +192,10 @@ public class ElfParserTests
     [Trait(Categories.Key, Categories.Adversarial)]
     public void Invalid_alignment_is_rejected()
     {
-        Rejects(Elf32Builder.Valid().WithSegment(0, p => p.Align = 0x1800).Build(),
+        Rejects(ElfBuilder.Valid().WithSegment(0, p => p.Align = 0x1800).Build(),
             "p_align that is not a power of two");
 
-        Rejects(Elf32Builder.Valid().WithSegment(0, p => p.Vaddr += 1).Build(),
+        Rejects(ElfBuilder.Valid().WithSegment(0, p => p.Vaddr += 1).Build(),
             "p_vaddr and p_offset disagreeing modulo p_align");
     }
 
@@ -202,8 +203,8 @@ public class ElfParserTests
     [Trait(Categories.Key, Categories.Adversarial)]
     public void Overlapping_loadable_segments_are_rejected()
     {
-        var b = Elf32Builder.Valid();
-        b.Segments.Add(new Elf32Builder.Phdr
+        var b = ElfBuilder.Valid();
+        b.Segments.Add(new ElfBuilder.Phdr
         {
             Offset = 0x1000,
             Vaddr = b.Segments[0].Vaddr + 0x10,   // starts inside segment 0
@@ -219,11 +220,11 @@ public class ElfParserTests
     [Trait(Categories.Key, Categories.Adversarial)]
     public void Invalid_entry_point_is_rejected()
     {
-        Rejects(Elf32Builder.Valid().With(b => b.EntryPoint = 0xDEAD_B000).Build(),
+        Rejects(ElfBuilder.Valid().With(b => b.EntryPoint = 0xDEAD_B000).Build(),
             "an entry point in no segment at all");
 
         // Inside a mapped segment, but one that is not executable.
-        var b2 = Elf32Builder.Valid();
+        var b2 = ElfBuilder.Valid();
         b2.Segments[0].Flags = 0x6;               // R + W, no X
         Rejects(b2.Build(), "an entry point in a non-executable segment");
     }
@@ -231,6 +232,90 @@ public class ElfParserTests
     [Fact]
     [Trait(Categories.Key, Categories.Adversarial)]
     public void No_loadable_segments_is_rejected() =>
-        Rejects(Elf32Builder.Valid().WithSegment(0, p => p.Type = 4 /* PT_NOTE */).Build(),
+        Rejects(ElfBuilder.Valid().WithSegment(0, p => p.Type = 4 /* PT_NOTE */).Build(),
             "a file whose only program header is not PT_LOAD");
+
+    // ---- ELF64, for x86-64 (step 6d2) ----
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Adversarial)]
+    public void A_well_formed_elf64_is_accepted_as_x86_64()
+    {
+        ElfImage img = ElfParser.Parse(ElfBuilder.Valid64().Build());
+
+        Assert.Equal(CXFlags.ARCH_X86_64, img.Arch);
+        Assert.Equal(0x00401000u, img.EntryPoint);
+        ElfSegment only = Assert.Single(img.Segments);
+        Assert.Equal(0x00401000u, only.Vaddr);
+        Assert.Equal(0x1000u, only.Offset);
+        Assert.Equal(64u, only.FileSize);
+        Assert.Equal(0x1000u, only.Align);
+        Assert.Equal(64, only.Data.Length);
+        Assert.True(only.IsExecutable);          // p_flags sits at +4 in ELF64, not +24
+        Assert.False(only.IsWritable);
+    }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Adversarial)]
+    public void An_elf32_is_x86_32() =>
+        Assert.Equal(CXFlags.ARCH_X86_32, ElfParser.Parse(ElfBuilder.Valid().Build()).Arch);
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Adversarial)]
+    public void Elf64_class_and_machine_must_agree()
+    {
+        Rejects(ElfBuilder.Valid64().With(b => b.Machine = 3).Build(), "an ELF64 claiming EM_386");
+        Rejects(ElfBuilder.Valid64().With(b => b.Class = 1).Build(), "the ELF64 layout under ELFCLASS32");
+        Rejects(ElfBuilder.Valid64().With(b => b.Class = 3).Build(), "an EI_CLASS that is neither");
+    }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Adversarial)]
+    public void Truncated_elf64_header_is_rejected()
+    {
+        // Past the ELF32 header's 52 bytes, short of ELF64's 64: the case a
+        // single 52-byte length check would let through to read e_phnum at 56.
+        byte[] full = ElfBuilder.Valid64().Build();
+        for (int len = ElfBuilder.HeaderSize; len < ElfBuilder.HeaderSize64; len += 3)
+            Rejects(full.AsSpan(0, len).ToArray(), $"only {len} bytes of a 64-byte header");
+    }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Adversarial)]
+    public void Elf64_program_header_size_is_56()
+    {
+        Rejects(ElfBuilder.Valid64().With(b => b.PhEntSize = 32).Build(), "an ELF32 e_phentsize in an ELF64");
+        Rejects(ElfBuilder.Valid64().With(b => b.PhEntSize = 64).Build(), "e_phentsize 64");
+    }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Adversarial)]
+    public void Elf64_values_past_32_bits_are_refused_not_truncated()
+    {
+        // Each would truncate to something valid: the entry and the address to
+        // 0x00401000, the offset and the size to the real ones. A parser that
+        // cut them would package a program for an address it was not linked at.
+        Rejects(ElfBuilder.Valid64().With(b => b.EntryPoint += 1UL << 32).Build(), "e_entry above 4 GB");
+        Rejects(ElfBuilder.Valid64().With(b => b.PhOff += 1UL << 32).Build(), "e_phoff above 4 GB");
+        Rejects(ElfBuilder.Valid64().WithSegment(0, p => p.Vaddr += 1UL << 32).Build(), "p_vaddr above 4 GB");
+        Rejects(ElfBuilder.Valid64().WithSegment(0, p => p.Paddr += 1UL << 32).Build(), "p_paddr above 4 GB");
+        Rejects(ElfBuilder.Valid64().WithSegment(0, p => p.Offset += 1UL << 32).Build(), "p_offset above 4 GB");
+        Rejects(ElfBuilder.Valid64().WithSegment(0, p => p.FileSize += 1UL << 32).Build(), "p_filesz above 4 GB");
+        Rejects(ElfBuilder.Valid64().WithSegment(0, p => p.MemSize += 1UL << 32).Build(), "p_memsz above 4 GB");
+        Rejects(ElfBuilder.Valid64().WithSegment(0, p => p.Align += 1UL << 32).Build(), "p_align above 4 GB");
+    }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Adversarial)]
+    public void Elf64_takes_the_elf32_segment_checks()
+    {
+        // The same rules after the header: one of each kind is enough to show
+        // the ELF64 path reaches them.
+        Rejects(ElfBuilder.Valid64().WithSegment(0, p => p.MemSize = p.FileSize - 1).Build(),
+            "p_filesz greater than p_memsz");
+        Rejects(ElfBuilder.Valid64().WithSegment(0, p => { p.Vaddr = 0xFFFF_F000; p.MemSize = 0x8000; }).Build(),
+            "p_vaddr + p_memsz leaving the 32-bit address space");
+        Rejects(ElfBuilder.Valid64().WithSegment(0, p => p.Flags = 0x6).Build(),
+            "an entry point in a non-executable segment");
+    }
 }

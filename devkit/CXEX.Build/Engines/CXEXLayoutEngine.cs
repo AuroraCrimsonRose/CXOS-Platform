@@ -24,11 +24,16 @@ public static class CXEXLayoutEngine
     /// </summary>
     public const ushort AbiVersion = 11;
 
-    public static CxexMemoryLayout CreateLayout(uint entryPoint, IReadOnlyList<ElfSegment> loadSegments, ushort typeCode, byte[] abiHash, ushort abiVersion = AbiVersion)
+    public static CxexMemoryLayout CreateLayout(uint entryPoint, IReadOnlyList<ElfSegment> loadSegments, ushort typeCode, byte[] abiHash, ushort abiVersion = AbiVersion,
+                                                ushort arch = CXFlags.ARCH_X86_32)
     {
+        if (arch != CXFlags.ARCH_X86_32 && arch != CXFlags.ARCH_X86_64)
+            throw new InvalidDataException($"architecture {arch} is neither x86-32 (1) nor x86-64 (2).");
+
         var layout = new CxexMemoryLayout
         {
             TypeCode = typeCode,
+            ArchTarget = arch,
             AbiVersion = abiVersion,
             AbiHash = abiHash,
             EntryPoint = entryPoint,

@@ -6,7 +6,7 @@ namespace CXEX.Tests.Adversarial;
 
 /// <summary>
 /// Builds a well-formed GPT disk image in memory, so every adversarial case can
-/// be a single mutation of it - the shape <see cref="Elf32Builder"/> and
+/// be a single mutation of it - the shape <see cref="ElfBuilder"/> and
 /// <see cref="CxexBuilder"/> use, and for the same reason: a validator test
 /// whose cases are each malformed in several ways cannot tell you which check
 /// caught them.

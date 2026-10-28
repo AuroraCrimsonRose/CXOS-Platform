@@ -18,7 +18,7 @@ public class BuildCommand : Command<BuildCommand.Settings>
     public class Settings : CommandSettings
     {
         [CommandArgument(0, "<INPUT_ELF>")]
-        [Description("Path to the compiled 32-bit ELF file (e.g. kernel.elf)")]
+        [Description("Path to the linked ELF: ELF32 for x86-32, ELF64 for x86-64 (the CXEX's arch follows it)")]
         public string InputPath { get; set; } = string.Empty;
 
         [CommandArgument(1, "<OUTPUT_CXEX>")]
@@ -60,8 +60,9 @@ public class BuildCommand : Command<BuildCommand.Settings>
             .Start($"Compiling {settings.OutputPath}...", ctx =>
             {
                 byte[] elfData = File.ReadAllBytes(settings.InputPath);
-                var (entryPoint, segments) = ElfParser.Parse(elfData);
-                var layout = CXEXLayoutEngine.CreateLayout(entryPoint, segments, typeCode, AbiModel.EmbeddedFile.Hash);
+                var elf = ElfParser.Parse(elfData);
+                var layout = CXEXLayoutEngine.CreateLayout(elf.EntryPoint, elf.Segments, typeCode, AbiModel.EmbeddedFile.Hash,
+                                                           arch: elf.Arch);
                 CXEXWriter.WriteExecutable(settings.OutputPath, layout);
             });
 

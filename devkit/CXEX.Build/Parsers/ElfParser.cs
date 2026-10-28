@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using CXEX.Core.Constants;
 using CXEX.Core.Utilities;
 
 namespace CXEX.Build.Parsers;
@@ -42,10 +43,18 @@ public sealed class ElfImage
     /// <summary>The PT_LOAD segments, in file order. Never empty.</summary>
     public IReadOnlyList<ElfSegment> Segments { get; }
 
-    internal ElfImage(uint entryPoint, IReadOnlyList<ElfSegment> segments)
+    /// <summary>
+    /// The CXEX architecture the code is for (<see cref="CXFlags.ARCH_X86_32"/> or
+    /// <see cref="CXFlags.ARCH_X86_64"/>), from the ELF's class and machine, which
+    /// the parser has required to agree.
+    /// </summary>
+    public ushort Arch { get; }
+
+    internal ElfImage(uint entryPoint, IReadOnlyList<ElfSegment> segments, ushort arch)
     {
         EntryPoint = entryPoint;
         Segments = segments;
+        Arch = arch;
     }
 
     /// <summary>So existing call sites can keep destructuring the result.</summary>
@@ -57,8 +66,15 @@ public sealed class ElfImage
 }
 
 /// <summary>
-/// Reads a 32-bit little-endian ELF executable and validates it completely before
-/// returning anything (DevKit security review §1, engineering review §1).
+/// Reads a little-endian ELF executable, 32-bit for x86-32 or 64-bit for x86-64,
+/// and validates it completely before returning anything (DevKit security review
+/// §1, engineering review §1).
+///
+/// <para>An ELF64 is read into the same 32-bit fields as an ELF32, and any value
+/// that does not fit is refused: a CXEX carries 32-bit addresses, and the x86-64
+/// user half keeps x86-32's layout below 4 GB until an ABI step widens it
+/// (CX_ROADMAP.md, step 6d, "Not in 6d"). Past the header and the program
+/// headers the two classes take exactly the same checks.</para>
 ///
 /// <para>This used to check the magic, the class and the endianness, and nothing
 /// else - then slice the file with attacker-supplied offsets. A header claiming a
@@ -79,9 +95,14 @@ public static class ElfParser
 
     private const int Elf32HeaderSize = 52;
     private const int Elf32PhdrSize = 32;        // ELF32 program headers are exactly this; anything else is malformed
+    private const int Elf64HeaderSize = 64;
+    private const int Elf64PhdrSize = 56;
 
+    private const byte ELFCLASS32 = 1;
+    private const byte ELFCLASS64 = 2;
     private const ushort ET_EXEC = 2;
     private const ushort EM_386 = 3;
+    private const ushort EM_X86_64 = 62;
 
     /// <summary>
     /// A linked CXOS artifact has a handful of PT_LOADs - the kernel, the largest,
@@ -111,8 +132,13 @@ public static class ElfParser
         if (MemoryPrimitives.ReadU32(span, 0) != ELF_MAGIC)
             throw new InvalidDataException("not an ELF file: missing the \\x7FELF magic.");
 
-        if (span[4] != 1 || span[5] != 1)
-            throw new NotSupportedException("only 32-bit little-endian ELF is supported (EI_CLASS/EI_DATA).");
+        if ((span[4] != ELFCLASS32 && span[4] != ELFCLASS64) || span[5] != 1)
+            throw new NotSupportedException("only little-endian ELF32 or ELF64 is supported (EI_CLASS/EI_DATA).");
+        bool wide = span[4] == ELFCLASS64;
+
+        if (wide && span.Length < Elf64HeaderSize)
+            throw new InvalidDataException(
+                $"truncated ELF: {span.Length} bytes, but the ELF64 header alone is {Elf64HeaderSize}.");
 
         if (span[6] != 1)
             throw new InvalidDataException($"unsupported ELF ident version {span[6]}, expected 1.");
@@ -123,15 +149,21 @@ public static class ElfParser
                 $"ELF type {eType} is not ET_EXEC. CXEX packages fully linked executables, " +
                 "not relocatable objects or shared images.");
 
+        // The class and the machine must agree: an ELF32 for x86-64 or an ELF64
+        // for x86-32 is not something either toolchain writes.
         ushort eMachine = MemoryPrimitives.ReadU16(span, 18);
-        if (eMachine != EM_386)
-            throw new InvalidDataException($"ELF machine {eMachine} is not EM_386 (3).");
+        ushort wantMachine = wide ? EM_X86_64 : EM_386;
+        if (eMachine != wantMachine)
+            throw new InvalidDataException(
+                $"ELF machine {eMachine} is not {(wide ? "EM_X86_64 (62), for an ELF64" : "EM_386 (3), for an ELF32")}.");
+        ushort arch = wide ? CXFlags.ARCH_X86_64 : CXFlags.ARCH_X86_32;
 
         // ---- the program header table ----
-        uint entryPoint = MemoryPrimitives.ReadU32(span, 24);
-        uint phOff = MemoryPrimitives.ReadU32(span, 28);
-        ushort phEntSize = MemoryPrimitives.ReadU16(span, 42);
-        ushort phNum = MemoryPrimitives.ReadU16(span, 44);
+        uint entryPoint = wide ? Narrow(MemoryPrimitives.ReadU64(span, 24), "e_entry") : MemoryPrimitives.ReadU32(span, 24);
+        uint phOff = wide ? Narrow(MemoryPrimitives.ReadU64(span, 32), "e_phoff") : MemoryPrimitives.ReadU32(span, 28);
+        ushort phEntSize = MemoryPrimitives.ReadU16(span, wide ? 54 : 42);
+        ushort phNum = MemoryPrimitives.ReadU16(span, wide ? 56 : 44);
+        int phdrSize = wide ? Elf64PhdrSize : Elf32PhdrSize;
 
         if (phNum == 0)
             throw new InvalidDataException("ELF declares no program headers, so there is nothing to load.");
@@ -140,9 +172,9 @@ public static class ElfParser
             throw new InvalidDataException(
                 $"ELF declares {phNum} program headers, beyond the {MaxProgramHeaders} this accepts.");
 
-        if (phEntSize != Elf32PhdrSize)
+        if (phEntSize != phdrSize)
             throw new InvalidDataException(
-                $"e_phentsize is {phEntSize}; an ELF32 program header is exactly {Elf32PhdrSize} bytes.");
+                $"e_phentsize is {phEntSize}; an {(wide ? "ELF64" : "ELF32")} program header is exactly {phdrSize} bytes.");
 
         // 64-bit throughout: phOff and the product are both 32-bit quantities that
         // would wrap if added in 32 bits, which is how a table "inside" the file
@@ -163,16 +195,28 @@ public static class ElfParser
 
             if (MemoryPrimitives.ReadU32(span, ph) != PT_LOAD) continue;
 
-            var seg = new ElfSegment
-            {
-                Offset = MemoryPrimitives.ReadU32(span, ph + 4),
-                Vaddr = MemoryPrimitives.ReadU32(span, ph + 8),
-                Paddr = MemoryPrimitives.ReadU32(span, ph + 12),
-                FileSize = MemoryPrimitives.ReadU32(span, ph + 16),
-                MemSize = MemoryPrimitives.ReadU32(span, ph + 20),
-                Flags = MemoryPrimitives.ReadU32(span, ph + 24),
-                Align = MemoryPrimitives.ReadU32(span, ph + 28),
-            };
+            // ELF64 moves p_flags up beside p_type and widens the rest.
+            var seg = wide
+                ? new ElfSegment
+                {
+                    Flags = MemoryPrimitives.ReadU32(span, ph + 4),
+                    Offset = Narrow(MemoryPrimitives.ReadU64(span, ph + 8), $"segment {i}: p_offset"),
+                    Vaddr = Narrow(MemoryPrimitives.ReadU64(span, ph + 16), $"segment {i}: p_vaddr"),
+                    Paddr = Narrow(MemoryPrimitives.ReadU64(span, ph + 24), $"segment {i}: p_paddr"),
+                    FileSize = Narrow(MemoryPrimitives.ReadU64(span, ph + 32), $"segment {i}: p_filesz"),
+                    MemSize = Narrow(MemoryPrimitives.ReadU64(span, ph + 40), $"segment {i}: p_memsz"),
+                    Align = Narrow(MemoryPrimitives.ReadU64(span, ph + 48), $"segment {i}: p_align"),
+                }
+                : new ElfSegment
+                {
+                    Offset = MemoryPrimitives.ReadU32(span, ph + 4),
+                    Vaddr = MemoryPrimitives.ReadU32(span, ph + 8),
+                    Paddr = MemoryPrimitives.ReadU32(span, ph + 12),
+                    FileSize = MemoryPrimitives.ReadU32(span, ph + 16),
+                    MemSize = MemoryPrimitives.ReadU32(span, ph + 20),
+                    Flags = MemoryPrimitives.ReadU32(span, ph + 24),
+                    Align = MemoryPrimitives.ReadU32(span, ph + 28),
+                };
 
             // p_filesz > p_memsz would mean more bytes on disk than the segment
             // occupies in memory - the surplus has nowhere to go.
@@ -250,6 +294,14 @@ public static class ElfParser
             throw new InvalidDataException(
                 $"entry point 0x{entryPoint:X8} lies outside every executable PT_LOAD segment.");
 
-        return new ElfImage(entryPoint, segments);
+        return new ElfImage(entryPoint, segments, arch);
     }
+
+    /// <summary>An ELF64 field into the 32 bits a CXEX holds, or a refusal naming it.</summary>
+    private static uint Narrow(ulong value, string field) =>
+        value <= uint.MaxValue
+            ? (uint)value
+            : throw new InvalidDataException(
+                $"{field} is 0x{value:X16}, past the 32 bits a CXEX holds: an x86-64 program " +
+                "is linked below 4 GB until the ABI widens user addresses.");
 }

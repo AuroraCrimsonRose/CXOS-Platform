@@ -29,6 +29,10 @@ public static class CXFlags
     public const uint FLAG_REQUIRE_ABI_MATCH = 1 << 4;
     public const uint FLAG_REQUIRE_ARCH_MATCH = 1 << 5;
 
+    // Architecture targets (the header's arch_target; kernel/lib/format/cxex.h)
+    public const ushort ARCH_X86_32 = 1;
+    public const ushort ARCH_X86_64 = 2;
+
     // Section Flags (9.4)
     public const uint SEC_READ = 1 << 0;
     public const uint SEC_WRITE = 1 << 1;

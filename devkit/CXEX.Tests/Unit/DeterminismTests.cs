@@ -46,13 +46,13 @@ public class DeterminismTests : IDisposable
     {
         static byte[] Fill(int n, int seed) => Enumerable.Range(0, n).Select(i => (byte)(seed + i * 7)).ToArray();
 
-        var b = Elf32Builder.Valid(96);
-        b.Segments.Add(new Elf32Builder.Phdr
+        var b = ElfBuilder.Valid(96);
+        b.Segments.Add(new ElfBuilder.Phdr
         {
             Offset = 0x2000, Vaddr = 0x00402000, Paddr = 0x00402000,
             FileSize = 48, MemSize = 48, Flags = 0x4, Align = 0x1000, Payload = Fill(48, 0x11),
         });
-        b.Segments.Add(new Elf32Builder.Phdr
+        b.Segments.Add(new ElfBuilder.Phdr
         {
             Offset = 0x3000, Vaddr = 0x00403000, Paddr = 0x00403000,
             FileSize = 32, MemSize = 0x200, Flags = 0x6, Align = 0x1000, Payload = Fill(32, 0x40),
