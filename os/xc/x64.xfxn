@@ -1,0 +1,860 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// xc/x64.xfxn - the x86-64 back end: the IR to System V AMD64 assembly.
+// Aurora Tejeda / CATX Systems
+//
+//   let l: irlow;
+//   ir_init(&l, &s);                  // after target_set("x86_64")
+//   let e: x64e;
+//   x64_init(&e, &l, library);
+//   e.syspage = ...;
+//   x64_program(&e, &decls, &out);    // what `cxk compile --target x86_64` writes
+//
+// Roadmap step 6c2: a port of devkit/CXEX.Lang/CodeGen/X64Emitter.cs,
+// decision for decision, held to it by `cxk asm --target x86_64`. IR.md is
+// the meaning of every instruction; how each is chosen, and why, is in the
+// C#'s comments, which this file does not repeat.
+//
+// Every virtual register has a home in the frame, written once by the
+// instruction that defines it; every instruction loads its operands from
+// homes into scratch registers, works, and stores. The lowering holds one
+// function at a time (ir.xfxn), so each is emitted as soon as it is lowered.
+
+import "ir.xfxn";
+
+// Scratch registers, by number, at 8, 4, 2 and 1 bytes.
+const XR_AX: u32 = 0; const XR_CX: u32 = 1; const XR_DX: u32 = 2; const XR_SI: u32 = 3; const XR_DI: u32 = 4;
+const XR_R8: u32 = 5; const XR_R9: u32 = 6; const XR_R10: u32 = 7; const XR_R11: u32 = 8;
+global x6_r8: [9]*u8 = ["%rax", "%rcx", "%rdx", "%rsi", "%rdi", "%r8", "%r9", "%r10", "%r11"];
+global x6_r4: [9]*u8 = ["%eax", "%ecx", "%edx", "%esi", "%edi", "%r8d", "%r9d", "%r10d", "%r11d"];
+global x6_r2: [9]*u8 = ["%ax", "%cx", "%dx", "%si", "%di", "%r8w", "%r9w", "%r10w", "%r11w"];
+global x6_r1: [9]*u8 = ["%al", "%cl", "%dl", "%sil", "%dil", "%r8b", "%r9b", "%r10b", "%r11b"];
+
+// System V's six argument registers, and the syscall's five.
+global x6_arg_regs: [6]u32 = [4, 3, 2, 1, 5, 6];       // rdi rsi rdx rcx r8 r9
+global x6_sys_regs: [5]u32 = [4, 3, 2, 7, 5];          // rdi rsi rdx r10 r8
+const X6_NARGREGS: u32 = 6;
+const X6_STUB_SHIFT: u32 = 4;                           // log2 SYSPAGE_STUB_SIZE
+
+// IrCmp's condition codes, in its order.
+global x6_cc: [10]*u8 = ["e", "ne", "l", "le", "g", "ge", "b", "be", "a", "ae"];
+
+struct x64e {
+    l: *irlow,
+    library: bool,      // `compile --object`: everything exported, no entry point
+    syspage: bool,      // syscalls through the system page; off: Linux's `syscall`
+    fns: buf,           // the functions' text, as each is emitted
+    o: *buf,            // where text goes now
+    div128: bool,       // the i128 divide helpers are needed
+    locals: u32,        // .Lx labels so far
+    stop: bool,         // the lowering reported an error: emit nothing more
+    // the function being emitted; a frame offset is kept as its depth below rbp
+    home: list,         // per register number: its depth, 0 for none
+    slot: list,         // per slot: its depth
+    stage: u32,         // the call staging area
+    scratch: u32,       // 16 bytes
+    sret: u32,          // where the result pointer is kept
+    has_sret: bool,
+    // System V's assignment (x6_assign): its input and, per argument, its place
+    in_ty: list, in_agg: list,
+    a_reg: list, a_words: list, a_stack: list,
+    stack_bytes: u32,
+}
+
+fn x64_init(e: *x64e, l: *irlow, library: bool) -> void {
+    e.l = l;
+    e.library = library;
+    e.syspage = true;
+    e.fns = buf_new();
+    e.o = &e.fns;
+    e.div128 = false;
+    e.locals = 0;
+    e.stop = false;
+    e.home = list_new(); e.slot = list_new();
+    e.in_ty = list_new(); e.in_agg = list_new();
+    e.a_reg = list_new(); e.a_words = list_new(); e.a_stack = list_new();
+}
+
+// ---- text ----
+
+fn xl(e: *x64e, s: *u8) -> void { buf_str(e.o, s); buf_push(e.o, '\n'); }   // a line
+fn xt(e: *x64e, s: *u8) -> void { buf_str(e.o, "    "); xl(e, s); }        // an instruction
+fn xb(e: *x64e) -> void { buf_str(e.o, "    "); }                          // ... or one built in pieces
+fn xs(e: *x64e, s: *u8) -> void { buf_str(e.o, s); }
+fn xu(e: *x64e, v: u32) -> void { buf_u32(e.o, v); }
+fn xn(e: *x64e, v: i32) -> void {
+    if (v < 0) { buf_push(e.o, '-'); buf_u32(e.o, (0 - v) as u32); return; }
+    buf_u32(e.o, v as u32);
+}
+fn xe(e: *x64e) -> void { buf_push(e.o, '\n'); }
+fn xtext(e: *x64e, at: u32, len: u32) -> void { buf_append(e.o, &e.l.p.text.data[at], len); }
+
+// "before $v after"
+fn x_imm(e: *x64e, before: *u8, v: u32, after: *u8) -> void { xb(e); xs(e, before); xu(e, v); xs(e, after); xe(e); }
+
+// A register by width: x6_reg(XR_AX, 1) is %al.
+fn x6_reg(r: u32, bytes: u32) -> *u8 {
+    if (bytes == 1) { return x6_r1[r]; }
+    if (bytes == 2) { return x6_r2[r]; }
+    if (bytes == 4) { return x6_r4[r]; }
+    return x6_r8[r];
+}
+
+fn x6_suffix(bytes: u32) -> *u8 {
+    if (bytes == 1) { return "b"; }
+    if (bytes == 2) { return "w"; }
+    if (bytes == 4) { return "l"; }
+    return "q";
+}
+
+fn x6_bytes(t: u32) -> u32 {
+    if (t == IR_BOOL || t == IR_I8) { return 1; }
+    if (t == IR_I16) { return 2; }
+    if (t == IR_I32) { return 4; }
+    if (t == IR_I64 || t == IR_PTR) { return 8; }
+    if (t == IR_I128) { return 16; }
+    return 0;
+}
+
+fn x6_round(n: u32, a: u32) -> u32 { return (n + a - 1) / a * a; }
+
+fn x6_label(e: *x64e, block: u32) -> void {
+    let d: u32 = e.l.f.decl;
+    xs(e, ".L"); xtext(e, ln(e.l, d).text, ln(e.l, d).tlen); xs(e, ".b"); xu(e, block);
+}
+
+fn x6_new_local(e: *x64e) -> u32 { let n: u32 = e.locals; e.locals += 1; return n; }
+fn x6_local(e: *x64e, n: u32) -> void { xs(e, ".Lx"); xu(e, n); }
+
+// "off(%rbp)" for the frame offset plus - depth
+fn x6_frame(e: *x64e, depth: u32, plus: u32) -> void { xn(e, (plus as i32) - (depth as i32)); xs(e, "(%rbp)"); }
+
+// ---- operands ----
+
+fn x6_v(e: *x64e, v: u32) -> *irval { return ir_val(&e.l.f, v); }
+fn x6_ty(e: *x64e, v: u32) -> u32 { return ir_vty(&e.l.f, v); }
+
+// A register value's home, by the value or by its register number.
+fn x6_h(e: *x64e, v: u32, plus: u32) -> void { x6_hr(e, x6_v(e, v).id, plus); }
+fn x6_hr(e: *x64e, reg: u32, plus: u32) -> void { x6_frame(e, e.home.items[reg], plus); }
+
+fn x6_const(e: *x64e, k: u128, r: u32) -> void {
+    if (k == 0) { xb(e); xs(e, "xorl "); xs(e, x6_r4[r]); xs(e, ", "); xs(e, x6_r4[r]); xe(e); }
+    else if (k <= 0xFFFFFFFF) { xb(e); xs(e, "movl $"); ir_put_u128(e.o, k); xs(e, ", "); xs(e, x6_r4[r]); xe(e); }
+    else { xb(e); xs(e, "movabsq $"); ir_put_u128(e.o, k); xs(e, ", "); xs(e, x6_r8[r]); xe(e); }
+}
+
+// The low 64 bits of v into a register. Touches no other register.
+fn x6_get(e: *x64e, v: u32, r: u32) -> void {
+    let x: *irval = x6_v(e, v);
+    if (x.kind == IV_REG) { xb(e); xs(e, "movq "); x6_h(e, v, 0); xs(e, ", "); xs(e, x6_r8[r]); xe(e); }
+    else if (x.kind == IV_CONST) { x6_const(e, x.k & 0xFFFFFFFFFFFFFFFF, r); }
+    else if (x.kind == IV_SYM) { xb(e); xs(e, "leaq "); xtext(e, x.id, x.len); xs(e, "(%rip), "); xs(e, x6_r8[r]); xe(e); }
+    else if (x.kind == IV_STR) { xb(e); xs(e, "leaq str."); xu(e, x.id); xs(e, "(%rip), "); xs(e, x6_r8[r]); xe(e); }
+    else { xb(e); xs(e, "leaq "); x6_frame(e, e.slot.items[x.id], 0); xs(e, ", "); xs(e, x6_r8[r]); xe(e); }
+}
+
+// The high 64 bits of an i128 into a register.
+fn x6_get_hi(e: *x64e, v: u32, r: u32) -> void {
+    let x: *irval = x6_v(e, v);
+    if (x.kind == IV_REG && x.ty == IR_I128) { xb(e); xs(e, "movq "); x6_h(e, v, 8); xs(e, ", "); xs(e, x6_r8[r]); xe(e); }
+    else if (x.kind == IV_CONST) { x6_const(e, x.k >> 64, r); }
+    else { x6_const(e, 0, r); }
+}
+
+fn x6_put(e: *x64e, d: u32, r: u32) -> void { xb(e); xs(e, "movq "); xs(e, x6_r8[r]); xs(e, ", "); x6_h(e, d, 0); xe(e); }
+fn x6_put_hi(e: *x64e, d: u32, r: u32) -> void { xb(e); xs(e, "movq "); xs(e, x6_r8[r]); xs(e, ", "); x6_h(e, d, 8); xe(e); }
+fn x6_put_reg(e: *x64e, reg: u32, r: u32, plus: u32) -> void { xb(e); xs(e, "movq "); xs(e, x6_r8[r]); xs(e, ", "); x6_hr(e, reg, plus); xe(e); }
+
+// ---- the frame ----
+
+/* The System V assignment, one function for caller and callee, from in_ty
+   and in_agg: per argument a_reg (its first register, or IR_NONE for the
+   stack), a_words and a_stack (its offset into the argument area). */
+fn x6_assign(e: *x64e, sret: bool) -> void {
+    e.a_reg.len = 0; e.a_words.len = 0; e.a_stack.len = 0;
+    let reg: u32 = 0;
+    if (sret) { reg = 1; }
+    let stack: u32 = 0;
+    let i: u32 = 0;
+    while (i < e.in_ty.len) {
+        let t: u32 = e.in_ty.items[i];
+        let agg: u32 = e.in_agg.items[i];
+        i += 1;
+        let words: u32 = 1;
+        if (agg > 0) { words = (agg + 7) / 8; } else if (t == IR_I128) { words = 2; }
+        let size: u32 = words * 8;
+        if (agg > 0) { size = agg; }
+        list_push(&e.a_words, words);
+        if (agg <= 16 && reg + words <= X6_NARGREGS) {
+            list_push(&e.a_reg, reg);
+            list_push(&e.a_stack, 0);
+            reg += words;
+            continue;
+        }
+        if (agg == 0 && t == IR_I128) { stack = x6_round(stack, 16); } else { stack = x6_round(stack, 8); }
+        list_push(&e.a_reg, IR_NONE);
+        list_push(&e.a_stack, stack);
+        stack += x6_round(size, 8);
+    }
+    e.stack_bytes = x6_round(stack, 16);
+}
+
+fn x6_alloc(size: *u32, n: u32, align: u32) -> u32 { size[0] = x6_round(size[0] + n, align); return size[0]; }
+
+fn x6_home(e: *x64e, size: *u32, reg: u32, ty: u32) -> void {
+    if (e.home.items[reg] != 0) { return; }
+    if (ty == IR_I128) { e.home.items[reg] = x6_alloc(size, 16, 16); } else { e.home.items[reg] = x6_alloc(size, 8, 8); }
+}
+
+fn x6_fn(e: *x64e) -> void {
+    let l: *irlow = e.l;
+    let f: *irfn = &l.f;
+    let d: u32 = f.decl;
+    e.has_sret = f.ret_agg > 16;
+    let size: u32 = 0;
+
+    e.slot.len = 0;
+    let i: u32 = 0;
+    while (i < ir_nslots(f)) {
+        let s: *irslot = ir_slot(f, i);
+        let a: u32 = s.align;
+        if (a < 1) { a = 1; }
+        list_push(&e.slot, x6_alloc(&size, s.size, a));
+        i += 1;
+    }
+    e.home.len = 0;
+    i = 0;
+    while (i < f.nregs) { list_push(&e.home, 0); i += 1; }
+    let np: u32 = ir_nparams(f);
+    i = 0;
+    while (i < np) {
+        let p: *irparam = ir_param(f, i);
+        if (p.agg > 0) { x6_home(e, &size, p.reg, IR_PTR); } else { x6_home(e, &size, p.reg, p.ty); }
+        i += 1;
+    }
+    let r: u32 = 0;
+    while (r < ir_nblks(f)) {
+        if (ir_blk(f, r).id != IR_NONE) {
+            let j: u32 = ir_blk(f, r).first;
+            while (j < ir_blk_end(f, r)) {
+                let dst: u32 = ir_ins(f, j).dst;
+                if (dst != IR_NONE) { x6_home(e, &size, x6_v(e, dst).id, x6_ty(e, dst)); }
+                j += 1;
+            }
+        }
+        r += 1;
+    }
+    e.stage = x6_alloc(&size, 8 * X6_NARGREGS, 8);
+    e.scratch = x6_alloc(&size, 16, 16);
+    e.sret = x6_alloc(&size, 8, 8);
+
+    e.in_ty.len = 0; e.in_agg.len = 0;
+    i = 0;
+    while (i < np) { list_push(&e.in_ty, ir_param(f, i).ty); list_push(&e.in_agg, ir_param(f, i).agg); i += 1; }
+    x6_assign(e, e.has_sret);
+    let copies: list = list_new();
+    i = 0;
+    while (i < np) {
+        let c: u32 = 0;
+        if (ir_param(f, i).agg > 0 && e.a_reg.items[i] != IR_NONE) { c = x6_alloc(&size, e.a_words.items[i] * 8, 8); }
+        list_push(&copies, c);
+        i += 1;
+    }
+    let frame: u32 = x6_round(size, 16);
+
+    let sec: u32 = lw_section(l, d);
+    if (sec != 0) { xs(e, ".section "); xtext(e, ln(l, sec).text, ln(l, sec).tlen); xl(e, ",\"ax\",@progbits"); }
+    else { xl(e, ".text"); }
+    if (e.library) { xs(e, ".globl "); xtext(e, ln(l, d).text, ln(l, d).tlen); xe(e); }
+    xtext(e, ln(l, d).text, ln(l, d).tlen); xl(e, ":");
+    let entry: bool = !e.library && node_name_is(l.s, d, "_start");
+    if (entry && e.syspage) { xt(e, "movq %rsi, __cx_sysbase(%rip)"); }
+    xt(e, "pushq %rbp");
+    xt(e, "movq %rsp, %rbp");
+    if (frame > 0) { x_imm(e, "subq $", frame, ", %rsp"); }
+    if (entry) { xt(e, "andq $-16, %rsp"); }
+    if (e.has_sret) { xb(e); xs(e, "movq %rdi, "); x6_frame(e, e.sret, 0); xe(e); }
+
+    i = 0;
+    while (i < np) {
+        let p: *irparam = ir_param(f, i);
+        let reg: u32 = e.a_reg.items[i];
+        let words: u32 = e.a_words.items[i];
+        let stk: u32 = e.a_stack.items[i];
+        let pv: u32 = p.reg;   // its register number
+        if (p.agg > 0) {
+            if (reg != IR_NONE) {
+                let w: u32 = 0;
+                while (w < words) {
+                    xb(e); xs(e, "movq "); xs(e, x6_r8[x6_arg_regs[reg + w]]); xs(e, ", "); x6_frame(e, copies.items[i], 8 * w); xe(e);
+                    w += 1;
+                }
+                xb(e); xs(e, "leaq "); x6_frame(e, copies.items[i], 0); xs(e, ", %rax"); xe(e);
+            } else { x_imm(e, "leaq ", 16 + stk, "(%rbp), %rax"); }
+            x6_put_reg(e, pv, XR_AX, 0);
+            i += 1;
+            continue;
+        }
+        if (reg != IR_NONE) {
+            xb(e); xs(e, "movq "); xs(e, x6_r8[x6_arg_regs[reg]]); xs(e, ", "); x6_hr(e, pv, 0); xe(e);
+            if (words == 2) { xb(e); xs(e, "movq "); xs(e, x6_r8[x6_arg_regs[reg + 1]]); xs(e, ", "); x6_hr(e, pv, 8); xe(e); }
+        } else {
+            x_imm(e, "movq ", 16 + stk, "(%rbp), %rax");
+            x6_put_reg(e, pv, XR_AX, 0);
+            if (words == 2) { x_imm(e, "movq ", 16 + stk + 8, "(%rbp), %rax"); x6_put_reg(e, pv, XR_AX, 8); }
+        }
+        i += 1;
+    }
+    list_free(&copies);
+
+    r = 0;
+    while (r < ir_nblks(f)) {
+        let b: *irblk = ir_blk(f, r);
+        if (b.id != IR_NONE) {
+            x6_label(e, b.id); xl(e, ":");
+            let j: u32 = b.first;
+            while (j < ir_blk_end(f, r)) { x6_ins(e, ir_ins(f, j)); j += 1; }
+            // the next block that is kept, for falling through
+            let next: u32 = IR_NONE;
+            let q: u32 = r + 1;
+            while (q < ir_nblks(f)) { if (ir_blk(f, q).id != IR_NONE) { next = ir_blk(f, q).id; break; } q += 1; }
+            x6_term(e, ir_blk(f, r), next);
+        }
+        r += 1;
+    }
+}
+
+// ---- instructions ----
+
+fn x6_ins(e: *x64e, i: *irins) -> void {
+    let op: u32 = i.op;
+    if (op == IO_BIN) {
+        if (x6_ty(e, i.dst) == IR_I128) { x6_binary128(e, i); } else { x6_binary(e, i); }
+    } else if (op == IO_UN) { x6_unary(e, i); }
+    else if (op == IO_CMP) { x6_compare(e, i); }
+    else if (op == IO_CONV) { x6_convert(e, i); }
+    else if (op == IO_LOAD) {
+        x6_get(e, i.a, XR_CX);
+        let t: u32 = x6_ty(e, i.dst);
+        if (t == IR_BOOL || t == IR_I8) { xt(e, "movzbl (%rcx), %eax"); }
+        else if (t == IR_I16) { xt(e, "movzwl (%rcx), %eax"); }
+        else if (t == IR_I32) { xt(e, "movl (%rcx), %eax"); }
+        else { xt(e, "movq (%rcx), %rax"); }
+        x6_put(e, i.dst, XR_AX);
+        if (t == IR_I128) { xt(e, "movq 8(%rcx), %rax"); x6_put_hi(e, i.dst, XR_AX); }
+    } else if (op == IO_STORE) {
+        let t: u32 = x6_ty(e, i.a);
+        x6_get(e, i.b, XR_CX);
+        x6_get(e, i.a, XR_AX);
+        let n: u32 = x6_bytes(t);
+        if (n > 8) { n = 8; }
+        xb(e); xs(e, "mov"); xs(e, x6_suffix(n)); xs(e, " "); xs(e, x6_reg(XR_AX, n)); xs(e, ", (%rcx)"); xe(e);
+        if (t == IR_I128) { x6_get_hi(e, i.a, XR_AX); xt(e, "movq %rax, 8(%rcx)"); }
+    } else if (op == IO_COPY) {
+        x6_get(e, i.a, XR_DI);
+        x6_get(e, i.b, XR_SI);
+        x_imm(e, "movl $", i.n, ", %ecx");
+        xt(e, "rep movsb");
+    } else if (op == IO_ZERO) {
+        x6_get(e, i.a, XR_DI);
+        x_imm(e, "movl $", i.n, ", %ecx");
+        xt(e, "xorl %eax, %eax");
+        xt(e, "rep stosb");
+    } else if (op == IO_PTRADD) {
+        x6_get(e, i.a, XR_AX);
+        x6_get(e, i.b, XR_CX);
+        xt(e, "addq %rcx, %rax");
+        x6_put(e, i.dst, XR_AX);
+    } else if (op == IO_CALL) { x6_call(e, i); }
+    else if (op == IO_SYSCALL) { x6_syscall(e, i); }
+}
+
+// Widen the low n bytes of a register to 32 bits by the sign asked for.
+fn x6_extend(e: *x64e, r: u32, n: u32, signed: bool) -> void {
+    xb(e);
+    if (signed) { xs(e, "movs"); } else { xs(e, "movz"); }
+    if (n == 1) { xs(e, "bl "); } else { xs(e, "wl "); }
+    xs(e, x6_reg(r, n)); xs(e, ", "); xs(e, x6_reg(r, 4)); xe(e);
+}
+
+fn x6_binary(e: *x64e, b: *irins) -> void {
+    let n: u32 = x6_bytes(x6_ty(e, b.dst));
+    let op: u32 = b.sub;
+    x6_get(e, b.a, XR_AX);
+    x6_get(e, b.b, XR_CX);
+    if (op == IB_ADD) { xt(e, "addq %rcx, %rax"); }
+    else if (op == IB_SUB) { xt(e, "subq %rcx, %rax"); }
+    else if (op == IB_MUL) { xt(e, "imulq %rcx, %rax"); }
+    else if (op == IB_AND) { xt(e, "andq %rcx, %rax"); }
+    else if (op == IB_OR) { xt(e, "orq %rcx, %rax"); }
+    else if (op == IB_XOR) { xt(e, "xorq %rcx, %rax"); }
+    else if (op == IB_SDIV || op == IB_SREM || op == IB_UDIV || op == IB_UREM) {
+        let signed: bool = op == IB_SDIV || op == IB_SREM;
+        if (n == 8) {
+            if (signed) { xt(e, "cqto"); xt(e, "idivq %rcx"); } else { xt(e, "xorl %edx, %edx"); xt(e, "divq %rcx"); }
+        } else {
+            if (n < 4) { x6_extend(e, XR_AX, n, signed); x6_extend(e, XR_CX, n, signed); }
+            if (n < 4 && signed) {
+                let ok: u32 = x6_new_local(e);
+                xt(e, "cmpl $-1, %ecx");
+                xb(e); xs(e, "jne "); x6_local(e, ok); xe(e);
+                xb(e); xs(e, "cmpl $"); xn(e, 0 - ((1 << (n * 8 - 1)) as i32)); xs(e, ", %eax"); xe(e);
+                xb(e); xs(e, "jne "); x6_local(e, ok); xe(e);
+                xt(e, "ud2");
+                x6_local(e, ok); xl(e, ":");
+            }
+            if (signed) { xt(e, "cltd"); xt(e, "idivl %ecx"); } else { xt(e, "xorl %edx, %edx"); xt(e, "divl %ecx"); }
+        }
+        if (op == IB_SREM || op == IB_UREM) { xt(e, "movq %rdx, %rax"); }
+    } else if (op == IB_SHL || op == IB_LSHR || op == IB_ASHR) {
+        let name: *u8 = "sar";
+        if (op == IB_SHL) { name = "shl"; } else if (op == IB_LSHR) { name = "shr"; }
+        if (n == 8) { xb(e); xs(e, name); xs(e, "q %cl, %rax"); xe(e); }
+        else {
+            if (n < 4) {
+                x_imm(e, "andl $", n * 8 - 1, ", %ecx");
+                if (op != IB_SHL) { x6_extend(e, XR_AX, n, op == IB_ASHR); }
+            }
+            xb(e); xs(e, name); xs(e, "l %cl, %eax"); xe(e);
+        }
+    }
+    x6_put(e, b.dst, XR_AX);
+}
+
+fn x6_binary128(e: *x64e, b: *irins) -> void {
+    let op: u32 = b.sub;
+    x6_get(e, b.a, XR_AX); x6_get_hi(e, b.a, XR_DX);
+    x6_get(e, b.b, XR_CX); x6_get_hi(e, b.b, XR_SI);
+    if (op == IB_ADD) { xt(e, "addq %rcx, %rax"); xt(e, "adcq %rsi, %rdx"); }
+    else if (op == IB_SUB) { xt(e, "subq %rcx, %rax"); xt(e, "sbbq %rsi, %rdx"); }
+    else if (op == IB_AND) { xt(e, "andq %rcx, %rax"); xt(e, "andq %rsi, %rdx"); }
+    else if (op == IB_OR) { xt(e, "orq %rcx, %rax"); xt(e, "orq %rsi, %rdx"); }
+    else if (op == IB_XOR) { xt(e, "xorq %rcx, %rax"); xt(e, "xorq %rsi, %rdx"); }
+    else if (op == IB_MUL) {
+        xt(e, "movq %rdx, %r8");
+        xt(e, "imulq %rcx, %r8");
+        xt(e, "movq %rsi, %r9");
+        xt(e, "imulq %rax, %r9");
+        xt(e, "addq %r9, %r8");
+        xt(e, "mulq %rcx");
+        xt(e, "addq %r8, %rdx");
+    } else if (op == IB_SDIV || op == IB_SREM || op == IB_UDIV || op == IB_UREM) {
+        e.div128 = true;
+        if (op == IB_SDIV || op == IB_SREM) { xt(e, "call __cx_sdivmod128"); } else { xt(e, "call __cx_udivmod128"); }
+        if (op == IB_SREM || op == IB_UREM) { xt(e, "movq %r8, %rax"); xt(e, "movq %r9, %rdx"); }
+    } else if (op == IB_SHL || op == IB_LSHR || op == IB_ASHR) {
+        let done: u32 = x6_new_local(e);
+        xt(e, "andl $127, %ecx");
+        if (op == IB_SHL) {
+            xt(e, "shldq %cl, %rax, %rdx");
+            xt(e, "shlq %cl, %rax");
+            xt(e, "testb $64, %cl");
+            xb(e); xs(e, "je "); x6_local(e, done); xe(e);
+            xt(e, "movq %rax, %rdx");
+            xt(e, "xorl %eax, %eax");
+        } else {
+            let arith: bool = op == IB_ASHR;
+            xt(e, "shrdq %cl, %rdx, %rax");
+            if (arith) { xt(e, "sarq %cl, %rdx"); } else { xt(e, "shrq %cl, %rdx"); }
+            xt(e, "testb $64, %cl");
+            xb(e); xs(e, "je "); x6_local(e, done); xe(e);
+            xt(e, "movq %rdx, %rax");
+            if (arith) { xt(e, "sarq $63, %rdx"); } else { xt(e, "xorl %edx, %edx"); }
+        }
+        x6_local(e, done); xl(e, ":");
+    }
+    x6_put(e, b.dst, XR_AX);
+    x6_put_hi(e, b.dst, XR_DX);
+}
+
+fn x6_unary(e: *x64e, u: *irins) -> void {
+    x6_get(e, u.a, XR_AX);
+    if (x6_ty(e, u.dst) != IR_I128) {
+        if (u.sub == IU_NEG) { xt(e, "negq %rax"); } else { xt(e, "notq %rax"); }
+        x6_put(e, u.dst, XR_AX);
+        return;
+    }
+    x6_get_hi(e, u.a, XR_DX);
+    if (u.sub == IU_NEG) {
+        xt(e, "negq %rax");
+        xt(e, "adcq $0, %rdx");
+        xt(e, "negq %rdx");
+    } else { xt(e, "notq %rax"); xt(e, "notq %rdx"); }
+    x6_put(e, u.dst, XR_AX);
+    x6_put_hi(e, u.dst, XR_DX);
+}
+
+fn x6_compare(e: *x64e, c: *irins) -> void {
+    let t: u32 = x6_ty(e, c.a);
+    let cc: u32 = c.sub;
+    if (t != IR_I128) {
+        let n: u32 = x6_bytes(t);
+        x6_get(e, c.a, XR_AX);
+        x6_get(e, c.b, XR_CX);
+        xb(e); xs(e, "cmp"); xs(e, x6_suffix(n)); xs(e, " "); xs(e, x6_reg(XR_CX, n)); xs(e, ", "); xs(e, x6_reg(XR_AX, n)); xe(e);
+        xb(e); xs(e, "set"); xs(e, x6_cc[cc]); xs(e, " %al"); xe(e);
+    } else if (cc == IC_EQ || cc == IC_NE) {
+        x6_get(e, c.a, XR_AX); x6_get_hi(e, c.a, XR_DX);
+        x6_get(e, c.b, XR_CX); x6_get_hi(e, c.b, XR_SI);
+        xt(e, "xorq %rcx, %rax");
+        xt(e, "xorq %rsi, %rdx");
+        xt(e, "orq %rdx, %rax");
+        xb(e); xs(e, "set"); xs(e, x6_cc[cc]); xs(e, " %al"); xe(e);
+    } else {
+        let x: u32 = c.a;
+        let y: u32 = c.b;
+        if (cc == IC_SGT || cc == IC_SLE || cc == IC_UGT || cc == IC_ULE) { x = c.b; y = c.a; }
+        x6_get(e, x, XR_AX); x6_get_hi(e, x, XR_DX);
+        x6_get(e, y, XR_CX); x6_get_hi(e, y, XR_SI);
+        xt(e, "cmpq %rcx, %rax");
+        xt(e, "sbbq %rsi, %rdx");
+        if (cc == IC_SLT || cc == IC_SGT) { xt(e, "setl %al"); }
+        else if (cc == IC_SGE || cc == IC_SLE) { xt(e, "setge %al"); }
+        else if (cc == IC_ULT || cc == IC_UGT) { xt(e, "setb %al"); }
+        else { xt(e, "setae %al"); }
+    }
+    xt(e, "movzbl %al, %eax");
+    x6_put(e, c.dst, XR_AX);
+}
+
+fn x6_convert(e: *x64e, c: *irins) -> void {
+    let from: u32 = x6_ty(e, c.a);
+    let to: u32 = x6_ty(e, c.dst);
+    x6_get(e, c.a, XR_AX);
+    if (c.sub == IK_TRUNC) {
+        if (to == IR_BOOL) { xt(e, "andl $1, %eax"); }
+    } else if (c.sub == IK_ZEXT) {
+        if (from == IR_BOOL || from == IR_I8) { xt(e, "movzbl %al, %eax"); }
+        else if (from == IR_I16) { xt(e, "movzwl %ax, %eax"); }
+        else if (from == IR_I32) { xt(e, "movl %eax, %eax"); }
+        if (to == IR_I128) { x6_put(e, c.dst, XR_AX); x6_const(e, 0, XR_DX); x6_put_hi(e, c.dst, XR_DX); return; }
+    } else if (c.sub == IK_SEXT) {
+        if (from == IR_I8) { xt(e, "movsbq %al, %rax"); }
+        else if (from == IR_I16) { xt(e, "movswq %ax, %rax"); }
+        else if (from == IR_I32) { xt(e, "movslq %eax, %rax"); }
+        if (to == IR_I128) {
+            x6_put(e, c.dst, XR_AX);
+            xt(e, "movq %rax, %rdx");
+            xt(e, "sarq $63, %rdx");
+            x6_put_hi(e, c.dst, XR_DX);
+            return;
+        }
+    }
+    // ptrtoint and inttoptr: the same 64 bits
+    x6_put(e, c.dst, XR_AX);
+}
+
+// "off(%rbp)" for staging word w, or "off(%rsp)" for argument-area offset stk
+fn x6_arg_at(e: *x64e, reg: u32, stk: u32, plus: u32) -> void {
+    if (reg != IR_NONE) { x6_frame(e, e.stage, 8 * reg + plus); }
+    else { xu(e, stk + plus); xs(e, "(%rsp)"); }
+}
+
+fn x6_call(e: *x64e, c: *irins) -> void {
+    let f: *irfn = &e.l.f;
+    let agg: u32 = 0;
+    if (c.b != IR_NONE) { agg = c.n; }
+    let sret: bool = agg > 16;
+    e.in_ty.len = 0; e.in_agg.len = 0;
+    let k: u32 = 0;
+    while (k < c.nargs) {
+        list_push(&e.in_ty, x6_ty(e, f.args.items[c.args + k * 2]));
+        list_push(&e.in_agg, f.args.items[c.args + k * 2 + 1]);
+        k += 1;
+    }
+    x6_assign(e, sret);
+    let stack_bytes: u32 = e.stack_bytes;
+
+    if (stack_bytes > 0) { x_imm(e, "subq $", stack_bytes, ", %rsp"); }
+    let regs: u32 = 0;
+    if (sret) { regs = 1; }
+    k = 0;
+    while (k < c.nargs) {
+        let v: u32 = f.args.items[c.args + k * 2];
+        let a_agg: u32 = f.args.items[c.args + k * 2 + 1];
+        let reg: u32 = e.a_reg.items[k];
+        let stk: u32 = e.a_stack.items[k];
+        if (reg != IR_NONE && reg + e.a_words.items[k] > regs) { regs = reg + e.a_words.items[k]; }
+        if (a_agg > 0) {
+            x6_get(e, v, XR_SI);
+            xb(e); xs(e, "leaq "); x6_arg_at(e, reg, stk, 0); xs(e, ", %rdi"); xe(e);
+            x_imm(e, "movl $", a_agg, ", %ecx");
+            xt(e, "rep movsb");
+            k += 1;
+            continue;
+        }
+        x6_get(e, v, XR_AX);
+        xb(e); xs(e, "movq %rax, "); x6_arg_at(e, reg, stk, 0); xe(e);
+        if (e.a_words.items[k] == 2) {
+            x6_get_hi(e, v, XR_AX);
+            xb(e); xs(e, "movq %rax, "); x6_arg_at(e, reg, stk, 8); xe(e);
+        }
+        k += 1;
+    }
+    if (sret) { x6_get(e, c.b, XR_AX); xb(e); xs(e, "movq %rax, "); x6_frame(e, e.stage, 0); xe(e); }
+    let r: u32 = 0;
+    while (r < regs) { xb(e); xs(e, "movq "); x6_frame(e, e.stage, 8 * r); xs(e, ", "); xs(e, x6_r8[x6_arg_regs[r]]); xe(e); r += 1; }
+
+    let callee: *irval = x6_v(e, c.a);
+    if (callee.kind == IV_SYM) { xb(e); xs(e, "call "); xtext(e, callee.id, callee.len); xe(e); }
+    else { x6_get(e, c.a, XR_R11); xt(e, "call *%r11"); }
+    if (stack_bytes > 0) { x_imm(e, "addq $", stack_bytes, ", %rsp"); }
+
+    if (c.dst != IR_NONE) {
+        x6_put(e, c.dst, XR_AX);
+        if (x6_ty(e, c.dst) == IR_I128) { x6_put_hi(e, c.dst, XR_DX); }
+    } else if (agg > 0 && !sret) {
+        xb(e); xs(e, "movq %rax, "); x6_frame(e, e.scratch, 0); xe(e);
+        xb(e); xs(e, "movq %rdx, "); x6_frame(e, e.scratch, 8); xe(e);
+        x6_get(e, c.b, XR_DI);
+        xb(e); xs(e, "leaq "); x6_frame(e, e.scratch, 0); xs(e, ", %rsi"); xe(e);
+        x_imm(e, "movl $", agg, ", %ecx");
+        xt(e, "rep movsb");
+    }
+}
+
+fn x6_syscall(e: *x64e, s: *irins) -> void {
+    let f: *irfn = &e.l.f;
+    let i: u32 = 0;
+    while (i < 5) {
+        if (i + 1 < s.nargs) { x6_get(e, f.args.items[s.args + (i + 1) * 2], x6_sys_regs[i]); }
+        else { x6_const(e, 0, x6_sys_regs[i]); }
+        i += 1;
+    }
+    x6_get(e, f.args.items[s.args], XR_AX);
+    if (e.syspage) {
+        x_imm(e, "shlq $", X6_STUB_SHIFT, ", %rax");
+        xt(e, "addq __cx_sysbase(%rip), %rax");
+        xt(e, "call *%rax");
+    } else { xt(e, "syscall"); }
+    x6_put(e, s.dst, XR_AX);
+}
+
+// ---- terminators ----
+
+fn x6_jump(e: *x64e, op: *u8, block: u32) -> void { xb(e); xs(e, op); x6_label(e, block); xe(e); }
+
+fn x6_term(e: *x64e, b: *irblk, next: u32) -> void {
+    let f: *irfn = &e.l.f;
+    if (b.term == IT_BR) {
+        if (b.ta != next) { x6_jump(e, "jmp ", b.ta); }
+    } else if (b.term == IT_BRIF) {
+        x6_get(e, b.ta, XR_AX);
+        xt(e, "testb %al, %al");
+        x6_jump(e, "jne ", b.tb);
+        if (b.tc != next) { x6_jump(e, "jmp ", b.tc); }
+    } else if (b.term == IT_SWITCH) {
+        let ty: u32 = x6_ty(e, b.ta);
+        let n: u32 = x6_bytes(ty);
+        x6_get(e, b.ta, XR_AX);
+        if (ty == IR_I128) { x6_get_hi(e, b.ta, XR_DX); }
+        let c: u32 = 0;
+        while (c < b.ncases) {
+            let k: u128 = x6_v(e, f.args.items[b.cases + c * 2]).k;
+            let target: u32 = f.args.items[b.cases + c * 2 + 1];
+            c += 1;
+            x6_const(e, k & 0xFFFFFFFFFFFFFFFF, XR_CX);
+            if (ty != IR_I128) {
+                xb(e); xs(e, "cmp"); xs(e, x6_suffix(n)); xs(e, " "); xs(e, x6_reg(XR_CX, n)); xs(e, ", "); xs(e, x6_reg(XR_AX, n)); xe(e);
+                x6_jump(e, "je ", target);
+                continue;
+            }
+            let miss: u32 = x6_new_local(e);
+            x6_const(e, k >> 64, XR_SI);
+            xt(e, "cmpq %rcx, %rax");
+            xb(e); xs(e, "jne "); x6_local(e, miss); xe(e);
+            xt(e, "cmpq %rsi, %rdx");
+            x6_jump(e, "je ", target);
+            x6_local(e, miss); xl(e, ":");
+        }
+        if (b.tb != next) { x6_jump(e, "jmp ", b.tb); }
+    } else if (b.term == IT_RET) {
+        if (b.ta != IR_NONE) {
+            x6_get(e, b.ta, XR_AX);
+            if (x6_ty(e, b.ta) == IR_I128) { x6_get_hi(e, b.ta, XR_DX); }
+        }
+        xt(e, "leave");
+        xt(e, "ret");
+    } else if (b.term == IT_RETAGG) {
+        x6_get(e, b.ta, XR_SI);
+        if (e.has_sret) {
+            xb(e); xs(e, "movq "); x6_frame(e, e.sret, 0); xs(e, ", %rdi"); xe(e);
+            x_imm(e, "movl $", b.tb, ", %ecx");
+            xt(e, "rep movsb");
+            xb(e); xs(e, "movq "); x6_frame(e, e.sret, 0); xs(e, ", %rax"); xe(e);
+        } else {
+            xb(e); xs(e, "leaq "); x6_frame(e, e.scratch, 0); xs(e, ", %rdi"); xe(e);
+            x_imm(e, "movl $", b.tb, ", %ecx");
+            xt(e, "rep movsb");
+            xb(e); xs(e, "movq "); x6_frame(e, e.scratch, 0); xs(e, ", %rax"); xe(e);
+            xb(e); xs(e, "movq "); x6_frame(e, e.scratch, 8); xs(e, ", %rdx"); xe(e);
+        }
+        xt(e, "leave");
+        xt(e, "ret");
+    }
+}
+
+/* i128 divide and remainder, emitted once when used. Not System V: the
+   dividend comes in rdx:rax, the divisor in rsi:rcx; the quotient goes back
+   in rdx:rax and the remainder in r9:r8. */
+fn x6_div128(e: *x64e) -> void {
+    xl(e, ".text");
+    xl(e, "__cx_udivmod128:");
+    xt(e, "movq %rcx, %rdi");
+    xt(e, "orq %rsi, %rdi");
+    xt(e, "jnz 1f");
+    xt(e, "divl %edi");
+    xl(e, "1:");
+    xt(e, "xorl %r8d, %r8d");
+    xt(e, "xorl %r9d, %r9d");
+    xt(e, "movl $128, %r10d");
+    xl(e, "2:");
+    xt(e, "addq %rax, %rax");
+    xt(e, "adcq %rdx, %rdx");
+    xt(e, "adcq %r8, %r8");
+    xt(e, "adcq %r9, %r9");
+    xt(e, "movq %r8, %r11");
+    xt(e, "movq %r9, %rdi");
+    xt(e, "subq %rcx, %r11");
+    xt(e, "sbbq %rsi, %rdi");
+    xt(e, "jb 3f");
+    xt(e, "movq %r11, %r8");
+    xt(e, "movq %rdi, %r9");
+    xt(e, "orq $1, %rax");
+    xl(e, "3:");
+    xt(e, "decl %r10d");
+    xt(e, "jnz 2b");
+    xt(e, "ret");
+
+    xl(e, "__cx_sdivmod128:");
+    xt(e, "movq %rcx, %rdi");
+    xt(e, "andq %rsi, %rdi");
+    xt(e, "cmpq $-1, %rdi");
+    xt(e, "jne 1f");
+    xt(e, "testq %rax, %rax");
+    xt(e, "jne 1f");
+    xt(e, "movabsq $0x8000000000000000, %rdi");
+    xt(e, "cmpq %rdi, %rdx");
+    xt(e, "jne 1f");
+    xt(e, "ud2");
+    xl(e, "1:");
+    xt(e, "movq %rdx, %r10");
+    xt(e, "sarq $63, %r10");
+    xt(e, "movq %rsi, %r11");
+    xt(e, "sarq $63, %r11");
+    xt(e, "pushq %r10");
+    xt(e, "pushq %r11");
+    xt(e, "xorq %r10, %rax");
+    xt(e, "xorq %r10, %rdx");
+    xt(e, "subq %r10, %rax");
+    xt(e, "sbbq %r10, %rdx");
+    xt(e, "xorq %r11, %rcx");
+    xt(e, "xorq %r11, %rsi");
+    xt(e, "subq %r11, %rcx");
+    xt(e, "sbbq %r11, %rsi");
+    xt(e, "call __cx_udivmod128");
+    xt(e, "popq %r11");
+    xt(e, "popq %r10");
+    xt(e, "xorq %r10, %r11");
+    xt(e, "xorq %r11, %rax");
+    xt(e, "xorq %r11, %rdx");
+    xt(e, "subq %r11, %rax");
+    xt(e, "sbbq %r11, %rdx");
+    xt(e, "xorq %r10, %r8");
+    xt(e, "xorq %r10, %r9");
+    xt(e, "subq %r10, %r8");
+    xt(e, "sbbq %r10, %r9");
+    xt(e, "ret");
+}
+
+// ---- data ----
+
+// ".byte" lines, 16 bytes each.
+fn x6_bytes_at(e: *x64e, p: *u8, n: u32) -> void {
+    let i: u32 = 0;
+    while (i < n) {
+        xs(e, "    .byte ");
+        let j: u32 = i;
+        while (j < n && j < i + 16) {
+            if (j > i) { xs(e, ","); }
+            xu(e, p[j] as u32);
+            j += 1;
+        }
+        xe(e);
+        i += 16;
+    }
+}
+
+fn x6_global(e: *x64e, h: u32, last: u32) -> void {
+    let l: *irlow = e.l;
+    let g: *list = &l.gl;
+    let sec: u32 = g.items[h + 4];
+    let has: bool = g.items[h + 5] != 0;
+    if (sec != 0) { xs(e, ".section "); xtext(e, ln(l, sec).text, ln(l, sec).tlen); xl(e, ",\"aw\",@progbits"); }
+    else if (has) { xl(e, ".data"); } else { xl(e, ".bss"); }
+    xs(e, "    .balign "); xu(e, g.items[h + 3]); xe(e);
+    if (e.library) { xs(e, ".globl "); xtext(e, g.items[h], g.items[h + 1]); xe(e); }
+    xtext(e, g.items[h], g.items[h + 1]); xl(e, ":");
+    if (!has) { xs(e, "    .zero "); xu(e, g.items[h + 2]); xe(e); return; }
+    let it: u32 = g.items[h + 6];
+    while (it < last) {
+        let kind: u32 = l.gitems.items[it * 3];
+        let a: u32 = l.gitems.items[it * 3 + 1];
+        let b: u32 = l.gitems.items[it * 3 + 2];
+        if (kind == ID_BYTES) { x6_bytes_at(e, &l.gbytes.data[a], b); }
+        else if (kind == ID_ADDR) { xs(e, "    .quad "); xtext(e, a, b); xe(e); }
+        else if (kind == ID_STR) { xs(e, "    .quad str."); xu(e, a); xe(e); }
+        else { xs(e, "    .zero "); xu(e, a); xe(e); }
+        it += 1;
+    }
+}
+
+// ---- the module ----
+
+fn x64_program(e: *x64e, decls: *list, out: *buf) -> void {
+    let l: *irlow = e.l;
+    let i: u32 = 0;
+    while (i < decls.len) {
+        let d: u32 = decls.items[i];
+        i += 1;
+        if (!ir_lower_decl(l, d) || l.f.is_extern || e.stop) { continue; }
+        if (dg_count(l.s.dg) != 0) { e.stop = true; continue; }
+        x6_fn(e);
+    }
+    e.o = out;
+    xl(e, ".text");
+    if (!e.library) { xl(e, ".globl _start"); }
+    buf_append(out, e.fns.data, e.fns.len);
+    if (e.div128) { x6_div128(e); }
+
+    let n: u32 = l.gl.len / IG_STRIDE;
+    let g: u32 = 0;
+    while (g < n) {
+        let last: u32 = l.gitems.len / 3;
+        if (g + 1 < n) { last = l.gl.items[(g + 1) * IG_STRIDE + 6]; }
+        x6_global(e, g * IG_STRIDE, last);
+        g += 1;
+    }
+    let k: u32 = 0;
+    while (k < l.str_at.len) {
+        xl(e, ".data");
+        xs(e, "str."); xu(e, k); xl(e, ":");
+        let at: u32 = l.str_at.items[k];
+        let len: u32 = l.str_len.items[k];
+        // the bytes and the NUL, 16 to a line
+        let s: buf = buf_new();
+        buf_append(&s, &l.p.text.data[at], len);
+        buf_push(&s, 0);
+        x6_bytes_at(e, s.data, s.len);
+        buf_free(&s);
+        k += 1;
+    }
+    if (e.syspage && !e.library) {
+        xl(e, ".bss");
+        xl(e, "    .balign 8");
+        xl(e, "__cx_sysbase:");
+        xl(e, "    .zero 8");
+    }
+    buf_free(&e.fns);
+}

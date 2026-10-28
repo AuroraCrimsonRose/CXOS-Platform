@@ -212,7 +212,8 @@ programs for it (step 6).
        `os/xc/ir.xfxn`, `irdump`, held to `cxk ir` on x86-32 and x86-64.
        **Done 2026-10-28.**
      - **6c2** `xc`'s x86-64 emitter on that IR, held to `cxk compile
-       --target x86_64`'s assembly.
+       --target x86_64`'s assembly. **Done 2026-10-28** (`os/xc/x64.xfxn`,
+       `asmdump --target x86_64` against `cxk asm --target x86_64`).
      - **6c3** `xc` runs as x86-64 (its host layer on `usize` and the
        `syscall` instruction); the fixed point and `tests/lang/run` hold there.
    - **6d** The executive starts on x86-64 and the full boot passes; the

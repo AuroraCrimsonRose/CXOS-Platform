@@ -110,7 +110,21 @@ struct irlow {
     loop_end: list,     // many defer lists were open when each began
     loop_depth: list,
     dfirst: bool,       // no data item written yet in this global
+    // The same data as records, for a back end (x64.xfxn):
+    gl: list,           // per global, IG_STRIDE words (below)
+    gitems: list,       // its data items, 3 words each: ID_*, a, b
+    gbytes: buf,        // the bytes of the `bytes` items
+    str_at: list,       // per string number: its bytes in the parser's text,
+    str_len: list,      // and how many (the NUL is not there)
 }
+
+// A global's record in gl: name, name length, size, align, section (a string
+// node or 0), has data (else all zero), its first item in gitems.
+const IG_STRIDE: u32 = 7;
+// A data item: bytes (a = where in gbytes, b = how many), an address (a, b =
+// the symbol in the parser's text), a string's address (a = its number), zero
+// (a = how many).
+const ID_BYTES: u32 = 0; const ID_ADDR: u32 = 1; const ID_STR: u32 = 2; const ID_ZERO: u32 = 3;
 
 fn irval_size() -> u32 { let x: irval; return sizeof x; }
 fn irins_size() -> u32 { let x: irins; return sizeof x; }
@@ -312,19 +326,28 @@ fn ir_init(l: *irlow, s: *sema) -> void {
     l.var_gen = list_new(); l.var_addr = list_new(); l.var_ty = list_new();
     l.defer_items = list_new(); l.defer_marks = list_new();
     l.loop_top = list_new(); l.loop_end = list_new(); l.loop_depth = list_new();
+    l.gl = list_new(); l.gitems = list_new(); l.gbytes = buf_new();
+    l.str_at = list_new(); l.str_len = list_new();
     s.expand_enums = true;   // a plain enum is its backing integer from here on (SemaContext.ExpandEnums)
+}
+
+// One declaration: a function is lowered into l.f (true), a global into the
+// module's data.
+fn ir_lower_decl(l: *irlow, d: u32) -> bool {
+    let k: nk = ln(l, d).kind;
+    if (k == nk.d_fn) {
+        if (ln(l, d).b != 0) { lw_fn(l, d); } else { lw_extern(l, d); }
+        return true;
+    }
+    if (k == nk.d_global) { lw_global(l, d); }
+    return false;
 }
 
 fn ir_program(l: *irlow, decls: *list, out: *buf) -> void {
     let i: u32 = 0;
     while (i < decls.len) {
-        let d: u32 = decls.items[i];
+        if (ir_lower_decl(l, decls.items[i])) { ir_print_fn(l, &l.fns); }
         i += 1;
-        let k: nk = ln(l, d).kind;
-        if (k == nk.d_fn) {
-            if (ln(l, d).b != 0) { lw_fn(l, d); } else { lw_extern(l, d); }
-            ir_print_fn(l, &l.fns);
-        } else if (k == nk.d_global) { lw_global(l, d); }
     }
     buf_str(out, "module pointer ");
     buf_u32(out, target_ptr);
@@ -567,19 +590,26 @@ fn g_str(l: *irlow, s: *u8) -> void { buf_str(&l.globals, s); }
 fn g_u32(l: *irlow, v: u32) -> void { buf_u32(&l.globals, v); }
 fn g_text(l: *irlow, at: u32, len: u32) -> void { buf_append(&l.globals, &l.p.text.data[at], len); }
 
-fn lw_item(l: *irlow) -> void { if (!l.dfirst) { g_str(l, ", "); } l.dfirst = false; }
-fn lw_data_zero(l: *irlow, n: u32) -> void { lw_item(l); g_str(l, "zero "); g_u32(l, n); }
+fn lw_item(l: *irlow, kind: u32, a: u32, b: u32) -> void {
+    if (!l.dfirst) { g_str(l, ", "); }
+    l.dfirst = false;
+    list_push(&l.gitems, kind); list_push(&l.gitems, a); list_push(&l.gitems, b);
+}
+fn lw_data_zero(l: *irlow, n: u32) -> void { lw_item(l, ID_ZERO, n, 0); g_str(l, "zero "); g_u32(l, n); }
 fn lw_data_bytes(l: *irlow, v: u128, n: u32) -> void {
-    lw_item(l);
+    lw_item(l, ID_BYTES, l.gbytes.len, n);
     g_str(l, "bytes ");
     let i: u32 = 0;
     while (i < n) {
+        let c: u32 = 0;
+        if (i < 16) { c = ((v >> (i * 8)) as u32) & 0xFF; }
         if (i > 0) { g_str(l, " "); }
-        if (i < 16) { g_u32(l, ((v >> (i * 8)) as u32) & 0xFF); } else { g_str(l, "0"); }
+        g_u32(l, c);
+        buf_push(&l.gbytes, c as u8);
         i += 1;
     }
 }
-fn lw_data_addr(l: *irlow, at: u32, len: u32) -> void { lw_item(l); g_str(l, "addr @"); g_text(l, at, len); }
+fn lw_data_addr(l: *irlow, at: u32, len: u32) -> void { lw_item(l, ID_ADDR, at, len); g_str(l, "addr @"); g_text(l, at, len); }
 
 /* A global: zero, or its bytes. A literal, a string or a function name is laid
    out piece by piece; anything else folds to a number written over the
@@ -593,6 +623,9 @@ fn lw_global(l: *irlow, g: u32) -> void {
     g_str(l, " align "); g_u32(l, align_of(l.s, gt));
     let sec: u32 = lw_section(l, g);
     if (sec != 0) { g_str(l, " section \""); g_text(l, ln(l, sec).text, ln(l, sec).tlen); g_str(l, "\""); }
+    let h: u32 = l.gl.len;
+    list_push(&l.gl, ln(l, g).text); list_push(&l.gl, ln(l, g).tlen); list_push(&l.gl, size);
+    list_push(&l.gl, align_of(l.s, gt)); list_push(&l.gl, sec); list_push(&l.gl, 1); list_push(&l.gl, l.gitems.len / 3);
     let ik: nk = nk.none;
     if (init != 0) { ik = ln(l, init).kind; }
     if (ik == nk.e_struct_lit || ik == nk.e_array_lit || ik == nk.e_str || lw_is_function_name(l, init)) {
@@ -604,7 +637,7 @@ fn lw_global(l: *irlow, g: u32) -> void {
     }
     let v: u128 = 0;
     if (init != 0) { fold(l.s, init, &v); }
-    if (v == 0) { g_str(l, " zero\n"); return; }
+    if (v == 0) { g_str(l, " zero\n"); l.gl.items[h + 5] = 0; return; }
     g_str(l, " = { ");
     l.dfirst = true;
     lw_data_bytes(l, v, size);
@@ -642,9 +675,10 @@ fn lw_data(l: *irlow, t: u32, x: u32) -> void {
         return;
     }
     if (k == nk.e_str) {
-        lw_item(l);
+        let sn: u32 = lw_intern(l, x);
+        lw_item(l, ID_STR, sn, 0);
         g_str(l, "addr @str.");
-        g_u32(l, lw_intern(l, x));
+        g_u32(l, sn);
         return;
     }
     if (lw_is_function_name(l, x)) { lw_data_addr(l, ln(l, x).text, ln(l, x).tlen); return; }
@@ -665,6 +699,8 @@ fn lw_intern(l: *irlow, sn: u32) -> u32 {
     if (k != SMAP_NONE) { return k; }
     k = l.strings.count;
     smap_put(&l.strings, &l.p.text.data[at], len, k);
+    list_push(&l.str_at, at);
+    list_push(&l.str_len, len);
     buf_str(&l.strs, "string @str.");
     buf_u32(&l.strs, k);
     buf_str(&l.strs, " = \"");

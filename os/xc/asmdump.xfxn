@@ -3,14 +3,16 @@
 // xc/asmdump.xfxn - print the assembly the X compiler generates for programs.
 // Aurora Tejeda / CATX Systems
 //
-//   asmdump [-s] [--prelude FILE | --no-prelude] [-I DIR]... [--std DIR] [--object] PROGRAM...
+//   asmdump [-s] [--target x86_32|x86_64] [--prelude FILE | --no-prelude] [-I DIR]... [--std DIR] [--object] PROGRAM...
 //
 // The same format as `cxk asm` in the DevKit (devkit/), so the code generator written in
-// X can be compared with the C# one. Each PROGRAM is compiled on its own, with
-// everything it imports. Per program:
+// X can be compared with the C# one, on either target: x86_32 is emit.xfxn,
+// from the tree; x86_64 is x64.xfxn, from the IR. Each PROGRAM is compiled on
+// its own, with everything it imports. Per program:
 //
 //   == path
 //   error file:line:col message        every diagnostic, in the order reported
+//   error ir: file:line:col message    on x86_64, the lowering's after the front end's
 //   ...assembly...                     if there were none: exactly what `cxk compile` writes
 //
 // -s prints a line per program instead: the error count and an FNV-1a hash of
@@ -18,6 +20,7 @@
 
 import "xc_sys.xfxn";
 import "emit.xfxn";
+import "x64.xfxn";
 import "dumputil.xfxn";
 
 fn xc_main() -> i32 {
@@ -32,15 +35,25 @@ fn xc_main() -> i32 {
         if (!analyze_with(&o, &f, path)) { err_str("asmdump: out of memory, or a file could not be read\n"); return 2; }
         let asm: buf = buf_new();
         let have: bool = false;
-        if (f.checked && dg_count(&f.dg) == 0) {
+        let front_end: u32 = dg_count(&f.dg);
+        if (f.checked && front_end == 0 && target_ptr == 8) {
+            let l: irlow;
+            ir_init(&l, &f.s);
+            let x: x64e;
+            x64_init(&x, &l, o.object);
+            x.syspage = o.have_prelude;
+            x64_program(&x, &f.decls, &asm);
+            have = dg_count(&f.dg) == 0;
+        } else if (f.checked && front_end == 0) {
             let e: emitter;
             emit_init(&e, &f.s, o.object);
             e.syspage = o.have_prelude;
             emit_program(&e, &f.decls, &asm);
             have = dg_count(&f.dg) == 0;
+            front_end = 0xFFFFFFFF;   // the emitter's are plain errors, as `cxk asm` writes them
         }
         let d: buf = buf_new();
-        dump_diags(&f, &d);
+        dump_diags_from(&f, &d, front_end);
         if (have) { buf_append(&d, asm.data, asm.len); }
         if (o.sum) {
             buf_str(&out, path);
