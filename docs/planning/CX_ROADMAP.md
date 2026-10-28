@@ -241,6 +241,9 @@ programs for it (step 6).
        (6d2a), the X Data reader linked into the x86-64 kernel (6d2b), and
        every program built for x86-64 and staged on its disk (6d2c). The
        executive, shell, supervisor and services run as on x86-32.
+       Open: `verify-boot --full` passes once the executive is loaded, not
+       once it runs (a broken x86-64 syscall wrapper stays green); it
+       should also require the executive's banner or the shell's prompt.
      - **6d3** The 32-bit kernel and the x86-32 emitter deleted.
      **Not in 6d:** the ABI keeps user addresses as `u32` (`vm_map_args.addr`,
      `spawn_args.image`, the IPC buffers, `vm_unmap`'s `addr`) and the kernel
