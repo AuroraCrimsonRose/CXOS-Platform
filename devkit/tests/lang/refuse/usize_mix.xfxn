@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// usize and isize mix with no other integer without `as`, even where the
+// widths agree: a usize is a u32 here and a u64 on x86-64.
+fn take(n: usize) -> usize { return n; }
+fn give(n: usize) -> u32 { return n; }    // refused: usize to u32
+fn main() -> i32 {
+    let n: u32 = 7;
+    let w: u64 = 9;
+    let s: usize = n;       // refused: u32 to usize
+    let i: isize = s;       // refused: usize to isize
+    let b: u8 = 1;
+    let t: usize = b;       // refused: u8 to usize, though it cannot change the value
+    take(w);                // refused: u64 to usize
+    let k: usize = 5;       // fine: a constant that fits
+    k = k + 1;              // fine
+    k = n;                  // refused
+    k += n;                 // refused: compound assignment does not cross types
+    k += 2;                 // fine
+    let a: usize = k + n;   // refused: mixing in arithmetic
+    if (k == n) { return 1; }       // refused: mixing in a comparison
+    if (k < n) { return 2; }        // refused: mixing in an ordering
+    if (k < 10) { return 3; }       // fine
+    let x: usize = k << n;  // fine: a shift count is a count
+    let y: u32 = k as u32;  // fine: an explicit cast
+    let z: usize = 1usize;  // fine
+    let big: usize = 0x1_0000_0000usize;    // refused: 32 bits on this target
+    return 0;
+}

@@ -21,18 +21,29 @@ public abstract record TypeRef;
 /// operations: nobody adds two RSA moduli or orders two SHA digests by
 /// magnitude, they feed them to an algorithm. That is a library, and bignum.c
 /// already is one.
+///
+/// USize and ISize come last so the numbering of the others, which xc's
+/// PRIM_* constants mirror, stays put. They are as wide as a pointer, and a
+/// type of their own (Aurora, 2026-10-26): mixing them with any other integer
+/// needs `as`, even where the widths agree, so code that compiles for x86-32
+/// does not change meaning on x86-64.
 /// </summary>
-public enum PrimKind { I8, I16, I32, I64, I128, U8, U16, U32, U64, U128, Bool, Void }
+public enum PrimKind { I8, I16, I32, I64, I128, U8, U16, U32, U64, U128, Bool, Void, USize, ISize }
 
 /// <summary>Width of each primitive, in bytes. One place, so a new width is one row.</summary>
 public static class PrimWidth
 {
+    /// <summary>The width of a pointer, usize and isize: x86-32 today. The
+    /// x86-64 back end (roadmap step 6b3) makes this a property of the target.</summary>
+    public const int PointerBytes = 4;
+
     public static int Bytes(PrimKind k) => k switch
     {
         PrimKind.I8 or PrimKind.U8 or PrimKind.Bool => 1,
         PrimKind.I16 or PrimKind.U16 => 2,
         PrimKind.I64 or PrimKind.U64 => 8,
         PrimKind.I128 or PrimKind.U128 => 16,
+        PrimKind.USize or PrimKind.ISize => PointerBytes,
         PrimKind.Void => 0,
         _ => 4,
     };
@@ -41,7 +52,10 @@ public static class PrimWidth
     public static bool IsWide(PrimKind k) => Bytes(k) > 4;
 
     public static bool IsSigned(PrimKind k) =>
-        k is PrimKind.I8 or PrimKind.I16 or PrimKind.I32 or PrimKind.I64 or PrimKind.I128;
+        k is PrimKind.I8 or PrimKind.I16 or PrimKind.I32 or PrimKind.I64 or PrimKind.I128 or PrimKind.ISize;
+
+    /// <summary>usize or isize: the pointer-sized integers, which mix with no other.</summary>
+    public static bool IsSize(PrimKind k) => k is PrimKind.USize or PrimKind.ISize;
 }
 
 public sealed record PrimType(PrimKind Kind) : TypeRef;

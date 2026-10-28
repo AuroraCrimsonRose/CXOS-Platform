@@ -29,20 +29,20 @@ public static class ProgramDiffHarness
     private static readonly Regex Literal = new(@"^(\d\w*|0[xX]\w+|'.*')$", RegexOptions.Compiled);
 
     private static readonly string[] Types =
-        { "u8", "u16", "u32", "u64", "u128", "i8", "i16", "i32", "i64", "i128", "bool", "void" };
+        { "u8", "u16", "u32", "u64", "u128", "i8", "i16", "i32", "i64", "i128", "bool", "void", "usize", "isize" };
 
     private static readonly string[] Nums =
     {
         "0", "1", "2", "7", "31", "32", "63", "64", "127", "128", "255", "256", "65535",
         "0x7FFFFFFF", "0x80000000", "0xFFFFFFFF", "4294967296",
-        "1u8", "300u8", "1u64", "128i8", "1i128", "'a'", "'\\n'", "true", "false",
+        "1u8", "300u8", "1u64", "128i8", "1i128", "1usize", "0x100000000usize", "1isize", "'a'", "'\\n'", "true", "false",
     };
 
     private static readonly string[] Ops =
         { "+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>", "==", "!=", "<", ">", "<=", ">=", "&&", "||" };
 
     private static readonly string[] Casts =
-        { " as u8", " as u32", " as i32", " as u64", " as u128", " as i8", " as *u8", " as bool", " as *phys u8" };
+        { " as u8", " as u32", " as i32", " as u64", " as u128", " as i8", " as *u8", " as bool", " as *phys u8", " as usize", " as isize" };
 
     private static readonly string[] Unary = { "&", "*", "-", "!", "~" };
 

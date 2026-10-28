@@ -116,7 +116,7 @@ public sealed class Lexer
 
     /* The integer types a literal can be written as. */
     private static readonly string[] IntSuffixes =
-        { "u8", "u16", "u32", "u64", "u128", "i8", "i16", "i32", "i64", "i128" };
+        { "u8", "u16", "u32", "u64", "u128", "i8", "i16", "i32", "i64", "i128", "usize", "isize" };
 
     private Token Next()
     {

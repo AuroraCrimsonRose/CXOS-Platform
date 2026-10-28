@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// usize and isize as values: pointer-sized, so 32 bits on x86-32.
+type size = usize;
+global g: usize = 40;
+fn sum(a: *u32, n: usize) -> usize {
+    let t: usize = 0;
+    let i: usize = 0;
+    while (i < n) { t += a[i] as usize; i += 1; }
+    return t;
+}
+fn neg(v: isize) -> isize { return 0 - v; }
+fn main() -> i32 {
+    let a: [4]u32 = [1, 2, 3, 4];
+    if (sum(&a[0], 4) != 10) { return 1; }
+    let n: size = g + 2;                        // an alias is the same type
+    if (n != 42) { return 2; }
+    let m: usize = 0xFFFF_FFFFusize;
+    m += 1;                                      // wraps at the pointer width
+    if (m != 0) { return 3; }
+    let s: isize = neg(5);
+    if (s >= 0) { return 4; }                    // signed compare
+    if ((s >> 1) != -3) { return 5; }            // arithmetic shift
+    let w: u64 = (s as i64) as u64;
+    if (w != 0xFFFF_FFFF_FFFF_FFFB) { return 6; }   // sign-extends through i64
+    let p: *u32 = &a[2];
+    let q: usize = p as usize;                   // an address as a number
+    if ((q + 4) as *u32 != &a[3]) { return 7; }
+    let b: u8 = 200;
+    let c: usize = (b as usize) * 2;
+    if (c != 400) { return 8; }
+    return 0;
+}

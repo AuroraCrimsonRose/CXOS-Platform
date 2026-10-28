@@ -59,6 +59,16 @@ public class LangRunTests
             "u32 to i32 can change the value", "i8 to u32 can change the value",
             "compilation failed (4 error(s))",
         },
+        ["usize_mix.xfxn"] = new[]
+        {
+            "usize to u32 needs a cast, even where the widths agree: `as u32`",
+            "u32 to usize needs a cast, even where the widths agree: `as usize`",
+            "usize to isize needs a cast", "u8 to usize needs a cast", "u64 to usize needs a cast",
+            "cannot assign u32 to usize; u32 to usize needs a cast",
+            "mixing usize and u32 needs a cast, even where the widths agree: `as usize` or `as u32`",
+            "4294967296 does not fit in usize",
+            "compilation failed (11 error(s))",
+        },
     };
 
     [Fact]

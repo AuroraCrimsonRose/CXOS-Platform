@@ -346,8 +346,30 @@ public sealed class TypeChecker
         if (e != null && IsInt(to) && FreeConst(e, out var v)) return $"; {(Int128)v} does not fit in {Show(to)}";
         return NarrowHintOf(to, from);
     }
+    /* Two integers of different types, one of them usize or isize. Those mix
+       with nothing without `as` (Aurora, 2026-10-26), even where the widths
+       agree: a usize is a u32 on x86-32 and a u64 on x86-64, so letting it
+       pass for either would make the program mean something else on the
+       other target. A constant that fits is still a constant, and a shift
+       count is a count, not a term; the callers allow both. */
+    private bool SizeMix(TypeRef a0, TypeRef b0) =>
+        _ctx.Expand(a0) is PrimType a && _ctx.Expand(b0) is PrimType b && a.Kind != b.Kind &&
+        IsInt(a0) && IsInt(b0) && (PrimWidth.IsSize(a.Kind) || PrimWidth.IsSize(b.Kind));
+
+    /* A size mix in a binary operator, unless one side is a constant that fits
+       the other. */
+    private void CheckSizeMix(BinaryExpr b, TypeRef l, TypeRef r)
+    {
+        if (!SizeMix(l, r)) return;
+        if (FreeConst(b.Left, out var lv) && Fits(lv, r)) return;
+        if (FreeConst(b.Right, out var rv) && Fits(rv, l)) return;
+        _diag.Error($"mixing {Show(l)} and {Show(r)} needs a cast, even where the widths agree: " +
+                    $"`as {Show(l)}` or `as {Show(r)}`", b.Span);
+    }
+
     private string NarrowHintOf(TypeRef to, TypeRef from) =>
         !IsInt(to) || !IsInt(from) ? ""
+        : SizeMix(to, from) ? $"; {Show(from)} to {Show(to)} needs a cast, even where the widths agree: `as {Show(to)}`"
         : WideNarrowing(to, from) ? $"; narrowing needs a cast: `as {Show(to)}`"
         : $"; {Show(from)} to {Show(to)} can change the value, so it needs a cast: `as {Show(to)}`";
 
@@ -371,6 +393,7 @@ public sealed class TypeChecker
     private bool ValuePreserving(TypeRef to, TypeRef from)
     {
         if (Same(to, from)) return true;
+        if (SizeMix(to, from)) return false;
         if (_ctx.Expand(to) is not PrimType tp || _ctx.Expand(from) is not PrimType fp) return false;
         int wt = PrimWidth.Bytes(tp.Kind), wf = PrimWidth.Bytes(fp.Kind);
         bool st = PrimWidth.IsSigned(tp.Kind), sf = PrimWidth.IsSigned(fp.Kind);
@@ -605,7 +628,10 @@ public sealed class TypeChecker
                         /* The result narrows back into the target, as in C:
                            `b += 1` on a u8 is i32 arithmetic stored as a u8.
                            A WIDE result still needs `as` - see Assignable. */
-                        if (!(IsInt(tt) && IsInt(vt) && !WideNarrowing(tt, vt)) && !Assignable(tt, vt))
+                        /* Not across usize and another integer, though: that
+                           is a different type, not a narrower one. */
+                        bool sizeMix = SizeMix(tt, vt) && !(FreeConst(a.Value, out var cv) && Fits(cv, tt));
+                        if (sizeMix || (!(IsInt(tt) && IsInt(vt) && !WideNarrowing(tt, vt)) && !Assignable(tt, vt)))
                             _diag.Error($"cannot assign {Show(vt)} to {Show(tt)}{NarrowHint(tt, vt)}", a.Span);
                         break;
                     }
@@ -823,10 +849,12 @@ public sealed class TypeChecker
                 bool lc = FreeConst(b.Left, out var lv), rc = FreeConst(b.Right, out var rv);
                 if (lc && !rc && Fits(lv, r)) return r;
                 if (rc && !lc && Fits(rv, l)) return l;
+                CheckSizeMix(b, l, r);
                 return IntWidth(r) > IntWidth(l) ? r : l;
             case BinOp.Eq:
             case BinOp.Ne:
                 if (!(IsInt(l) && IsInt(r)) && !(Assignable(l, r) || Assignable(r, l))) _diag.Error($"cannot compare {Show(l)} and {Show(r)}", b.Span);
+                else if (IsInt(l) && IsInt(r)) CheckSizeMix(b, l, r);
                 /* A struct is its address, so == would compare WHERE two values
                    are, not what they hold. Refused, not quietly wrong. */
                 else if (StructOf(l) != null || _ctx.Expand(l) is ArrayType)
@@ -837,6 +865,7 @@ public sealed class TypeChecker
             case BinOp.Gt:
             case BinOp.Ge:
                 if (!IsInt(l) || !IsInt(r)) _diag.Error($"ordering on {Show(l)} and {Show(r)}", b.Span);
+                else CheckSizeMix(b, l, r);
                 return Bool;
             case BinOp.And:
             case BinOp.Or:

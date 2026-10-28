@@ -19,6 +19,7 @@ public sealed class Parser
     {
         "u8" => PrimKind.U8, "u16" => PrimKind.U16, "u32" => PrimKind.U32, "u64" => PrimKind.U64, "u128" => PrimKind.U128,
         "i8" => PrimKind.I8, "i16" => PrimKind.I16, "i32" => PrimKind.I32, "i64" => PrimKind.I64, "i128" => PrimKind.I128,
+        "usize" => PrimKind.USize, "isize" => PrimKind.ISize,
         "char" => PrimKind.U8,
         _ => null,
     };
@@ -313,6 +314,8 @@ public sealed class Parser
                 "u32" => new PrimType(PrimKind.U32),
                 "u64" => new PrimType(PrimKind.U64),
                 "u128" => new PrimType(PrimKind.U128),
+                "usize" => new PrimType(PrimKind.USize),
+                "isize" => new PrimType(PrimKind.ISize),
                 "bool" => new PrimType(PrimKind.Bool),
                 "void" => new PrimType(PrimKind.Void),
                 _ => new NamedType(t)

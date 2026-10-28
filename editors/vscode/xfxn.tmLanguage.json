@@ -61,7 +61,7 @@
     },
     "types": {
       "patterns": [
-        { "name": "entity.name.type.primitive.xfxn", "match": "\\b(i8|i16|i32|i64|i128|u8|u16|u32|u64|u128|bool|void)\\b" },
+        { "name": "entity.name.type.primitive.xfxn", "match": "\\b(i8|i16|i32|i64|i128|u8|u16|u32|u64|u128|usize|isize|bool|void)\\b" },
         {
           "comment": "address-space pointers: *user T, *phys T, *dma T (CX_X_CORE_LANG §2.2)",
           "match": "(\\*)\\s*(user|phys|dma)\\b",

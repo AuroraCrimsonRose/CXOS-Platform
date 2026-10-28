@@ -189,7 +189,18 @@ programs for it (step 6).
    - **6b** `usize` and `isize` (a type of their own, Aurora 2026-10-26: mixing
      them with `u32` or `u64` needs `as`, even where the widths agree), the
      typed IR, and an x86-64 back end on it in the C# compiler, System V
-     AMD64. The x86-32 emitter stays as it is until it is deleted.
+     AMD64. The x86-32 emitter stays as it is until it is deleted. Split in
+     three (Aurora, 2026-10-28):
+     - **6b1** `usize` and `isize` in both compilers' front ends (and as
+       literal suffixes), as wide as a pointer, 4 bytes on x86-32. Any mix
+       with another integer type needs `as` (initialising, assigning,
+       passing, returning, arithmetic, comparing), except a constant that
+       fits and a shift count. Type only: no program moves to it yet, so
+       every program compiles to the same bytes.
+     - **6b2** The typed IR, lowered from the checked tree, with a dump and
+       tests; no back end on it yet.
+     - **6b3** The x86-64 System V back end on the IR, emitting ELF64, its
+       programs run on Linux in the CI container.
    - **6c** `xc` gains the IR and the x86-64 back end; the differential tests
      and the self-hosting fixed point hold on x86-64.
    - **6d** The executive starts on x86-64 and the full boot passes; the

@@ -83,8 +83,8 @@ global keywords: [22]keyword = [
 
 // A literal's suffix: 0 for none, then these in order, then SFX_CHAR for a
 // character literal (typed u8, but converting like an unsuffixed constant).
-global suffixes: [10]*u8 = ["u8", "u16", "u32", "u64", "u128", "i8", "i16", "i32", "i64", "i128"];
-const SFX_CHAR: u32 = 11;
+global suffixes: [12]*u8 = ["u8", "u16", "u32", "u64", "u128", "i8", "i16", "i32", "i64", "i128", "usize", "isize"];
+const SFX_CHAR: u32 = 13;
 
 struct token {
     kind: tk,
@@ -343,7 +343,7 @@ fn lx_number(lx: *lexer, start: u32, line: u32, col: u32) -> bool {
         let s0: u32 = lx.pos;
         while (!lx_eof(lx) && is_ident(lx_cur(lx))) { lx_advance(lx); }
         let i: u32 = 0;
-        while (i < 10) {
+        while (i < 12) {
             if (lx_spells(lx, s0, lx.pos - s0, suffixes[i])) { sfx = i + 1; break; }
             i += 1;
         }
@@ -352,7 +352,7 @@ fn lx_number(lx: *lexer, start: u32, line: u32, col: u32) -> bool {
                 dg_begin(lx.dg);
                 dg_str(lx.dg, "'");
                 dg_bytes(lx.dg, &lx.src[s0], lx.pos - s0);
-                dg_str(lx.dg, "' is not an integer type; a literal suffix is one of u8, u16, u32, u64, u128, i8, i16, i32, i64, i128");
+                dg_str(lx.dg, "' is not an integer type; a literal suffix is one of u8, u16, u32, u64, u128, i8, i16, i32, i64, i128, usize, isize");
                 dg_end(lx.dg, lx.file, line, col);
             }
             return lx_push(lx, lx_token(lx, tk.error, start, line, col));

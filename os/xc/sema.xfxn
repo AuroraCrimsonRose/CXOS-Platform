@@ -101,15 +101,20 @@ fn mk_named(s: *sema, at: u32, len: u32) -> u32 {
 }
 fn mk_named_of(s: *sema, decl: u32) -> u32 { let d: *node = nd(s, decl); return mk_named(s, d.text, d.tlen); }
 
+// The width of a pointer, usize and isize: x86-32 until the target layer.
+const PTR_BYTES: u32 = 4;
+
 fn prim_bytes(k: u32) -> u32 {
     if (k == PRIM_I8 || k == PRIM_U8 || k == PRIM_BOOL) { return 1; }
     if (k == PRIM_I16 || k == PRIM_U16) { return 2; }
     if (k == PRIM_I64 || k == PRIM_U64) { return 8; }
     if (k == PRIM_I128 || k == PRIM_U128) { return 16; }
+    if (k == PRIM_USIZE || k == PRIM_ISIZE) { return PTR_BYTES; }
     if (k == PRIM_VOID) { return 0; }
     return 4;
 }
-fn prim_signed(k: u32) -> bool { return k <= PRIM_I128; }
+fn prim_signed(k: u32) -> bool { return k <= PRIM_I128 || k == PRIM_ISIZE; }
+fn prim_is_size(k: u32) -> bool { return k == PRIM_USIZE || k == PRIM_ISIZE; }
 
 fn is_kind(s: *sema, t: u32, k: nk) -> bool { return nd(s, t).kind == k; }
 fn is_void_raw(s: *sema, t: u32) -> bool { let x: *node = nd(s, t); return x.kind == nk.t_prim && x.op == PRIM_VOID; }
@@ -203,8 +208,18 @@ fn assignable(s: *sema, to: u32, from: u32) -> bool {
     return (is_int(s, to) && is_int(s, from) && !wide_narrowing(s, to, from)) || same(s, to, from);
 }
 
+// Two integers of different types, one of them usize or isize: those mix
+// with nothing without `as`, even where the widths agree (the C# SizeMix).
+fn size_mix(s: *sema, a: u32, b: u32) -> bool {
+    if (!is_int(s, a) || !is_int(s, b)) { return false; }
+    let x: *node = nd(s, expand(s, a));
+    let y: *node = nd(s, expand(s, b));
+    return x.op != y.op && (prim_is_size(x.op) || prim_is_size(y.op));
+}
+
 fn value_preserving(s: *sema, to: u32, from: u32) -> bool {
     if (same(s, to, from)) { return true; }
+    if (size_mix(s, to, from)) { return false; }
     let tp: *node = nd(s, expand(s, to));
     let fp: *node = nd(s, expand(s, from));
     if (tp.kind != nk.t_prim || fp.kind != nk.t_prim) { return false; }
@@ -307,6 +322,10 @@ fn et(s: *sema, t: u32) -> void {
 
 fn narrow_hint_of(s: *sema, to: u32, from: u32) -> void {
     if (!is_int(s, to) || !is_int(s, from)) { return; }
+    if (size_mix(s, to, from)) {
+        es(s, "; "); et(s, from); es(s, " to "); et(s, to); es(s, " needs a cast, even where the widths agree: `as "); et(s, to); es(s, "`");
+        return;
+    }
     if (wide_narrowing(s, to, from)) { es(s, "; narrowing needs a cast: `as "); et(s, to); es(s, "`"); return; }
     es(s, "; "); et(s, from); es(s, " to "); et(s, to); es(s, " can change the value, so it needs a cast: `as "); et(s, to); es(s, "`");
 }
@@ -1157,8 +1176,11 @@ fn check_stmt(s: *sema, st: u32) -> void {
                 if (contains_call(s, target)) {
                     err(s, "the target of a compound assignment contains a call, which would run twice; store the address in a local first", target);
                 }
-                // the result narrows back into the target, as in C - but not from a wide one
-                if (!(is_int(s, tt) && is_int(s, vt) && !wide_narrowing(s, tt, vt)) && !assignable(s, tt, vt)) {
+                // the result narrows back into the target, as in C - but not from a wide one,
+                // and not across usize and another integer, which is a different type
+                let cv: u128 = 0;
+                let mix: bool = size_mix(s, tt, vt) && !(free_const(s, value, &cv) && fits(s, cv, tt));
+                if (mix || (!(is_int(s, tt) && is_int(s, vt) && !wide_narrowing(s, tt, vt)) && !assignable(s, tt, vt))) {
                     eb(s); es(s, "cannot assign "); et(s, vt); es(s, " to "); et(s, tt); narrow_hint_of(s, tt, vt); ee(s, st);
                 }
                 return;
@@ -1426,6 +1448,8 @@ fn check_deref(s: *sema, t: u32, at: u32) -> bool {
 // The PrimKind a literal suffix names; a character literal is a u8.
 fn suffix_prim(sfx: u32) -> u32 {
     if (sfx == SFX_CHAR) { return PRIM_U8; }
+    if (sfx == 11) { return PRIM_USIZE; }
+    if (sfx == 12) { return PRIM_ISIZE; }
     if (sfx <= 5) { return PRIM_U8 + sfx - 1; }
     return PRIM_I8 + sfx - 6;
 }
@@ -1566,6 +1590,16 @@ fn check_shift_amount(s: *sema, b: u32, l: u32) -> void {
     ee(s, b);
 }
 
+// A size mix in a binary operator, unless one side is a constant that fits the other.
+fn check_size_mix(s: *sema, b: u32, l: u32, r: u32) -> void {
+    if (!size_mix(s, l, r)) { return; }
+    let v: u128 = 0;
+    if (free_const(s, nd(s, b).a, &v) && fits(s, v, r)) { return; }
+    if (free_const(s, nd(s, b).b, &v) && fits(s, v, l)) { return; }
+    eb(s); es(s, "mixing "); et(s, l); es(s, " and "); et(s, r); es(s, " needs a cast, even where the widths agree: `as ");
+    et(s, l); es(s, "` or `as "); et(s, r); es(s, "`"); ee(s, b);
+}
+
 fn check_binary(s: *sema, b: u32) -> u32 {
     let l: u32 = check_expr(s, nd(s, b).a);
     let r: u32 = check_expr(s, nd(s, b).b);
@@ -1583,12 +1617,15 @@ fn check_binary(s: *sema, b: u32) -> u32 {
         let rc: bool = free_const(s, nd(s, b).b, &rv);
         if (lc && !rc && fits(s, lv, r)) { return r; }
         if (rc && !lc && fits(s, rv, l)) { return l; }
+        check_size_mix(s, b, l, r);
         if (int_width(s, r) > int_width(s, l)) { return r; }
         return l;
     }
     if (op == BIN_EQ || op == BIN_NE) {
         if (!(is_int(s, l) && is_int(s, r)) && !(assignable(s, l, r) || assignable(s, r, l))) {
             eb(s); es(s, "cannot compare "); et(s, l); es(s, " and "); et(s, r); ee(s, b);
+        } else if (is_int(s, l) && is_int(s, r)) {
+            check_size_mix(s, b, l, r);
         } else if (struct_of(s, l) != 0 || nd(s, expand(s, l)).kind == nk.t_array) {
             // a struct is its address: == would compare where, not what
             eb(s); et(s, l); es(s, " cannot be compared with == or !=; compare the fields, or switch on a sum type"); ee(s, b);
@@ -1597,6 +1634,7 @@ fn check_binary(s: *sema, b: u32) -> u32 {
     }
     if (op >= BIN_LT && op <= BIN_GE) {
         if (!is_int(s, l) || !is_int(s, r)) { eb(s); es(s, "ordering on "); et(s, l); es(s, " and "); et(s, r); ee(s, b); }
+        else { check_size_mix(s, b, l, r); }
         return s.t_bool;
     }
     if (!is_bool(s, l) || !is_bool(s, r)) { err(s, "logical operator needs bools", b); }

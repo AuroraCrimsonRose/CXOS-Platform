@@ -99,7 +99,8 @@ const BIN_OR: u32 = 12;     const BIN_BITAND: u32 = 13; const BIN_BITOR: u32 = 1
 const BIN_SHL: u32 = 16;    const BIN_SHR: u32 = 17;
 
 const PRIM_VOID: u32 = 11;
-global prim_names: [12]*u8 = ["i8", "i16", "i32", "i64", "i128", "u8", "u16", "u32", "u64", "u128", "bool", "void"];
+const PRIM_USIZE: u32 = 12; const PRIM_ISIZE: u32 = 13;   // after void, as in the C# PrimKind
+global prim_names: [14]*u8 = ["i8", "i16", "i32", "i64", "i128", "u8", "u16", "u32", "u64", "u128", "bool", "void", "usize", "isize"];
 
 const SPACE_NORMAL: u32 = 0;  const SPACE_USER: u32 = 1;  const SPACE_PHYS: u32 = 2;  const SPACE_DMA: u32 = 3;
 
@@ -598,7 +599,7 @@ fn ps_type(p: *parser) -> u32 {
     if (ps_at(p, tk.identifier)) {
         let ti: u32 = ps_advance(p);
         let k: u32 = 0;
-        while (k < 12) {
+        while (k < 14) {
             if (ps_tok_is(p, ti, prim_names[k])) { return ps_prim(p, k); }
             k += 1;
         }
