@@ -6,7 +6,8 @@ namespace CXEX.Tests.Differential;
 
 /// <summary>
 /// The lexer and parser written in X, against the C# ones, token for token and
-/// node for node. Ports <c>devkit/tests/xc/lexdiff.py</c> and
+/// node for node, each built to run as x86-32 and as x86-64 (roadmap step
+/// 6d1b). Ports <c>devkit/tests/xc/lexdiff.py</c> and
 /// <c>parsediff.py</c> (HARDENING_PLAN D1).
 /// </summary>
 [Trait(Categories.Key, Categories.Differential)]
@@ -46,11 +47,15 @@ public class LexParseDiffTests
             })
             .ToArray();
 
-    [Fact]
-    public void Lexer_in_X_agrees_with_the_C_sharp_lexer() =>
-        XcDumpHarness.Compare("tokdump", "tokens", LexAlphabet, (20, 400), edits: 6);
+    [Theory]
+    [InlineData("x86_32")]
+    [InlineData("x86_64")]
+    public void Lexer_in_X_agrees_with_the_C_sharp_lexer(string host) =>
+        XcDumpHarness.Compare(host, "tokdump", "tokens", LexAlphabet, (20, 400), edits: 6);
 
-    [Fact]
-    public void Parser_in_X_agrees_with_the_C_sharp_parser() =>
-        XcDumpHarness.Compare("astdump", "ast", ParseAlphabet, (40, 3000), edits: 8, lineOps: true);
+    [Theory]
+    [InlineData("x86_32")]
+    [InlineData("x86_64")]
+    public void Parser_in_X_agrees_with_the_C_sharp_parser(string host) =>
+        XcDumpHarness.Compare(host, "astdump", "ast", ParseAlphabet, (40, 3000), edits: 8, lineOps: true);
 }

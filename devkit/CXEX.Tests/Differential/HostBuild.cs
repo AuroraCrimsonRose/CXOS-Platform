@@ -161,22 +161,27 @@ public static class HostBuild
     }
 
     /// <summary>
-    /// Compiles one of <c>os/xc</c>'s dump programs for the host and links it.
-    /// Returns the path to the runnable binary.
+    /// Compiles one of <c>os/xc</c>'s dump programs for the host and links it,
+    /// as an x86-32 or an x86-64 binary (roadmap step 6d1b). Returns the path
+    /// to the runnable binary. <paramref name="hostTarget"/> is what the dump
+    /// program runs as, not what it dumps: <c>--target</c> on its command line
+    /// chooses that.
     /// </summary>
-    public static string BuildDumpProgram(string cxk, string repo, string osDir, string prog, string workDir)
+    public static string BuildDumpProgram(string cxk, string repo, string osDir, string prog, string workDir,
+                                          string hostTarget = "x86_32")
     {
-        string baseName = Path.Combine(workDir, prog);
+        string baseName = Path.Combine(workDir, $"{prog}.{hostTarget}");
         var r = Run(cxk, new[]
         {
             "compile", Path.Combine(osDir, "xc", prog + ".xfxn"), baseName + ".elf",
-            "--no-prelude", "--emit-asm",
-        }.Concat(XcIncludes(osDir)), repo);
+            "--no-prelude", "--emit-asm", "--target", hostTarget,
+        }.Concat(XcIncludes(osDir, hostTarget)), repo);
 
         if (!File.Exists(baseName + ".s"))
-            throw new InvalidOperationException($"{prog} did not compile:\n{r.All}");
+            throw new InvalidOperationException($"{prog} did not compile for {hostTarget}:\n{r.All}");
 
-        Link(baseName + ".s", baseName, ArgvStub, workDir);
+        if (hostTarget == "x86_64") Link64(baseName + ".s", baseName, workDir, ArgvStub64);
+        else Link(baseName + ".s", baseName, ArgvStub, workDir);
         return baseName;
     }
 

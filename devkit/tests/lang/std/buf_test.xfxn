@@ -3,6 +3,12 @@
 import "buf.xfxn";
 
 fn main() -> i32 {
+    let arena: [262144]u8;
+    test_arena_at(&arena[0], 262144);
+    // where usize is 8 bytes, the arena must be above 4 GB, or nothing here
+    // tests that an address survives whole
+    let w: usize = 0;
+    if (sizeof w == 8 && ((&arena[0]) as u64) >> 32 == 0) { return 36; }
     let b: buf = buf_new();
     if (b.len != 0 || b.cap != 0) { return 1; }
     if (!buf_str(&b, "x = ")) { return 2; }
@@ -51,13 +57,24 @@ fn main() -> i32 {
     if (!list_set(&l, 5, 77) || list_get(&l, 5) != 77) { return 23; }
     if (list_set(&l, 1000, 1)) { return 24; }
     if (list_pop(&l) != 2997 || l.len != 999) { return 25; }
-    // pointers round-trip through a list
-    let p: *u8 = "pointer";
-    list_push(&l, p as u32);
-    let q: *u8 = list_pop(&l) as *u8;
-    if (q[3] != 'n') { return 26; }
     list_free(&l);
     if (l.len != 0 || l.cap != 0) { return 27; }
+
+    // plist: addresses round-trip whole, including ones above 4 GB (the
+    // buffers' own, on x86-64), through growth
+    let pl: plist = plist_new();
+    let s0: *u8 = "pointer";
+    if (!plist_push(&pl, s0 as usize)) { return 30; }
+    i = 0;
+    while (i < 100) { if (!plist_push(&pl, b.data as usize)) { return 31; } i += 1; }
+    if (pl.len != 101 || plist_get(&pl, 100) != b.data as usize || plist_get(&pl, 101) != 0) { return 32; }
+    let bp: *u8 = plist_pop(&pl) as *u8;
+    if (bp[0] != '0' || bp[2] != '4') { return 33; }
+    let s1: *u8 = plist_get(&pl, 0) as *u8;
+    if (s1[3] != 'n') { return 34; }
+    plist_free(&pl);
+    if (pl.len != 0 || pl.cap != 0) { return 35; }
+
     buf_free(&b);
     buf_free(&c);
     return 0;

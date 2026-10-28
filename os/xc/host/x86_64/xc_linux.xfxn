@@ -16,3 +16,8 @@ const LINUX_CLOSE: u32 = 3;
 const LINUX_UNLINK: u32 = 87;
 const LINUX_BRK:   u32 = 12;
 const LINUX_GETCWD: u32 = 79;
+const LINUX_MREMAP: u32 = 25;
+
+// Where vm_map moves the heap: 64 GB up, far from the image, the break and
+// the stack, so every heap address needs all 64 bits (xc_sys.xfxn).
+const HOST_HEAP_HIGH: usize = 0x1000000000;

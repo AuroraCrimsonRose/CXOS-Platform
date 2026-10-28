@@ -140,3 +140,22 @@ fn print_hex(v: u32) -> void {
     puts("0x");
     puts(&b[0]);
 }
+
+// print an address in hex with a 0x prefix, all of it on either target
+fn print_addr(v: usize) -> void {
+    let tmp: [16]u8;
+    let b: [17]u8;
+    let n: u32 = 0;
+    let x: u64 = v as u64;
+    while (n == 0 || x > 0) {
+        let d: u8 = (x % 16) as u8;
+        if (d < 10) { tmp[n] = d + 48; } else { tmp[n] = d - 10 + 97; }
+        n = n + 1;
+        x = x / 16;
+    }
+    let i: u32 = 0;
+    while (i < n) { b[i] = tmp[n - 1 - i]; i = i + 1; }
+    b[i] = 0;
+    puts("0x");
+    puts(&b[0]);
+}

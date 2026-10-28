@@ -30,13 +30,14 @@ public static class XcDumpHarness
         new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: false);
 
 
+    /// <param name="host">What the dump program runs as: "x86_32" or "x86_64" (roadmap step 6d1b).</param>
     /// <param name="prog">X program under test, e.g. "tokdump".</param>
     /// <param name="verb">`cxk` command printing the same format, e.g. "tokens".</param>
     /// <param name="alphabet">Fragments the mutator splices in.</param>
     /// <param name="window">Min/max slice of a real source to mutate.</param>
     /// <param name="edits">Upper bound on character edits per mutant.</param>
     /// <param name="lineOps">Also drop, double and swap whole lines.</param>
-    public static void Compare(string prog, string verb, string[] alphabet,
+    public static void Compare(string host, string prog, string verb, string[] alphabet,
                                (int Lo, int Hi) window, int edits, bool lineOps = false)
     {
         string repo = Requires.Repo();
@@ -49,7 +50,7 @@ public static class XcDumpHarness
             $"no CXOS checkout with os/xc/{prog}.xfxn was found. Set CXK_ROOT to the repository root.");
 
         using var work = new HostBuild.Workspace(prog);
-        string exe = HostBuild.BuildDumpProgram(cxk, repo, osDir!, prog, work.Path);
+        string exe = HostBuild.BuildDumpProgram(cxk, repo, osDir!, prog, work.Path, host);
         var rng = new Random(TestEnv.Seed);
 
         // ---- the corpus: every real source, then mutants of windows of them ----
@@ -89,7 +90,7 @@ public static class XcDumpHarness
                 var c = HostBuild.Run(cxk, new[] { verb }.Concat(chunk), repo, 600_000);
                 var x = HostBuild.Run(exe, chunk, work.Path, 600_000);
 
-                Assert.True(x.ExitCode == 0, $"{prog} exited {x.ExitCode}: {x.StdErr}");
+                Assert.True(x.ExitCode == 0, $"{prog} ({host}) exited {x.ExitCode}: {x.StdErr}");
 
                 string csharp = c.StdOut;
                 string xside = x.StdOut;
@@ -99,7 +100,7 @@ public static class XcDumpHarness
                     xside = ReplaceFirst(xside, "\n", "\nsabotage\n");
 
                 if (csharp != xside)
-                    Assert.Fail(Describe(label, csharp, xside));
+                    Assert.Fail(Describe($"{label}, {host}", csharp, xside));
             }
         }
     }

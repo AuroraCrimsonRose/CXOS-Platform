@@ -21,8 +21,8 @@
 // entry - int $0x80 on x86-32, `syscall` on x86-64 - and xc_linux.xfxn, from
 // the target's directory, holds that entry's numbers. Addresses go to the
 // kernel as usize, so a pointer to the stack (argv, a local) arrives whole on
-// x86-64. The heap is the exception: std/heap.xfxn hands out addresses as u32,
-// so vm_map below grants memory under 4 GB only.
+// x86-64, and so does every heap address: std/heap.xfxn hands them out as
+// usize, and on x86-64 vm_map below puts the heap above 4 GB on purpose.
 
 import "buf.xfxn";
 import "xc_linux.xfxn";
@@ -35,29 +35,48 @@ const E_NO_MEMORY: i32 = -8;
 const MPROT_READ:  u32 = 0x01;
 const MPROT_WRITE: u32 = 0x02;
 const MOBJ_ANON: u32 = 0;
-struct vm_map_args { offset: u64, length: u64, granted: u64, object: u32, addr: u32, prot: u32, flags: u32 }
+// `addr` is a usize here, where the prelude's is a u32 (the ABI keeps user
+// addresses at 32 bits until the user half grows past 4 GB); std/heap.xfxn
+// reads it `as usize`, which compiles against either.
+struct vm_map_args { offset: u64, length: u64, granted: u64, object: u32, addr: usize, prot: u32, flags: u32 }
+
+const MREMAP_MAYMOVE_FIXED: u32 = 3;
+const HOST_QUOTA: u32 = 0x40000000;
 
 global host_mapped: u32 = 0;
+global host_high: usize = HOST_HEAP_HIGH;   // where the next high grant goes
 
-// No unmap: the heap never unmaps. Pages come off the end of the data segment,
-// so every grant follows the one before. A static binary's break starts just
-// past its data, far under 4 GB; a grant that would end above 4 GB is refused
-// rather than handed to a heap that would truncate its address. (__syscall's
-// result is an i32, so a break already above 4 GB reads back short, and the
-// brk to `want` then fails the same way.)
+// No unmap: the heap never unmaps. Pages come off the end of the data segment.
+// A static binary's break starts just past its data, far under 4 GB, and on
+// x86-32 that is where they stay.
+//
+// On x86-64 each grant then moves up to HOST_HEAP_HIGH and beyond, one after
+// the other, with mremap (mmap takes six arguments and __syscall passes five).
+// So every address the heap hands out has bits above 32, and a pointer that
+// anything cuts to a u32 points at nothing: the run faults instead of reading
+// the wrong memory. __syscall's result is an i32, so the move is checked by
+// its low 32 bits; the quota keeps those clear of the error range.
 fn vm_map(a: *vm_map_args) -> i32 {
     let len: u32 = ((a.length as u32) + 4095) & 0xFFFFF000;
+    if (len == 0 || len > HOST_QUOTA - host_mapped) { return E_NO_MEMORY; }
     let cur: usize = (__syscall(LINUX_BRK, 0, 0, 0, 0, 0) as u32) as usize;
     let want: usize = cur + (len as usize);
     if (want < cur || want > 0xFFFFFFFF) { return E_NO_MEMORY; }
     let got: usize = (__syscall(LINUX_BRK, want, 0, 0, 0, 0) as u32) as usize;
     if (got < want) { return E_NO_MEMORY; }
-    a.addr = cur as u32;
+    let at: usize = cur;
+    if (host_high != 0) {
+        let r: i32 = __syscall(LINUX_MREMAP, cur, len, len, MREMAP_MAYMOVE_FIXED, host_high);
+        if ((r as u32) != (host_high as u32)) { return E_NO_MEMORY; }
+        at = host_high;
+        host_high = host_high + (len as usize);
+    }
+    a.addr = at;
     a.granted = len;
     host_mapped += len;
     return E_OK;
 }
-fn mem_quota() -> u32 { return 0x40000000; }
+fn mem_quota() -> u32 { return HOST_QUOTA; }
 fn mem_used() -> u32 { return host_mapped; }
 
 // ---- the compiler's platform interface ----

@@ -126,7 +126,7 @@ struct parser {
     lx: *lexer,
     i: u32,             // the current token
     ntok: u32,
-    nodes: list,        // the addresses of the node chunks; node 0 is no node
+    nodes: plist,       // the addresses of the node chunks; node 0 is no node
     nnodes: u32,
     lists: list,        // every node's children, list after list
     stk: list,          // the children of lists still being parsed
@@ -147,7 +147,7 @@ const NODE_CHUNK_SHIFT: u32 = 12;
 const NODE_CHUNK: u32 = 4096;
 
 fn node_at(p: *parser, i: u32) -> *node {
-    return (p.nodes.items[i >> NODE_CHUNK_SHIFT] + (i & (NODE_CHUNK - 1)) * node_size()) as *node;
+    return (p.nodes.items[i >> NODE_CHUNK_SHIFT] + ((i & (NODE_CHUNK - 1)) * node_size()) as usize) as *node;
 }
 fn list_at(p: *parser, start: u32, i: u32) -> u32 { return p.lists.items[start + i]; }
 fn node_count(p: *parser) -> u32 { return p.nnodes; }
@@ -155,7 +155,7 @@ fn node_count(p: *parser) -> u32 { return p.nnodes; }
 fn parse_free(p: *parser) -> void {
     let i: u32 = 0;
     while (i < p.nodes.len) { free(p.nodes.items[i]); i += 1; }
-    list_free(&p.nodes); list_free(&p.lists); list_free(&p.stk); buf_free(&p.text);
+    plist_free(&p.nodes); list_free(&p.lists); list_free(&p.stk); buf_free(&p.text);
 }
 
 // ---- building the tree ----
@@ -275,7 +275,7 @@ fn ps_expect(p: *parser, k: tk, what: *u8) -> u32 {
 // ---- program ----
 
 fn parse_init(p: *parser, dg: *diags) -> void {
-    p.nodes = list_new();
+    p.nodes = plist_new();
     p.nnodes = 0;
     p.lists = list_new();
     p.stk = list_new();
@@ -291,8 +291,8 @@ fn parse_init(p: *parser, dg: *diags) -> void {
 
 fn ps_add_node(p: *parser, n: *node) -> bool {
     if ((p.nnodes & (NODE_CHUNK - 1)) == 0) {
-        let c: u32 = alloc(NODE_CHUNK * node_size());
-        if (c == 0 || !list_push(&p.nodes, c)) { return false; }
+        let c: usize = alloc(NODE_CHUNK * node_size());
+        if (c == 0 || !plist_push(&p.nodes, c)) { return false; }
     }
     memcpy(node_at(p, p.nnodes) as *u8, n as *u8, node_size());
     p.nnodes += 1;

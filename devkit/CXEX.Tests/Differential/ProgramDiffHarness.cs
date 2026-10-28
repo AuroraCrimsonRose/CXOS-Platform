@@ -48,11 +48,12 @@ public static class ProgramDiffHarness
 
     private sealed record Entry(string Path, string[] Includes, bool WithPrelude);
 
+    /// <param name="host">What the dump program runs as: "x86_32" or "x86_64" (roadmap step 6d1b).</param>
     /// <param name="prog">X program under test, e.g. "semadump".</param>
     /// <param name="verb">The matching `cxk` command, e.g. "sema".</param>
     /// <param name="counted">Output text whose occurrences are reported, as a sanity signal.</param>
     /// <param name="extra">Options given to both sides before the rest, e.g. "--target", "x86_64".</param>
-    public static void Compare(string prog, string verb, string counted, params string[] extra)
+    public static void Compare(string host, string prog, string verb, string counted, params string[] extra)
     {
         string repo = Requires.Repo();
         string cxk = Requires.Cxk();
@@ -64,7 +65,7 @@ public static class ProgramDiffHarness
             $"no CXOS checkout with os/xc/{prog}.xfxn was found. Set CXK_ROOT to the repository root.");
 
         using var work = new HostBuild.Workspace(prog);
-        string exe = HostBuild.BuildDumpProgram(cxk, repo, osDir!, prog, work.Path);
+        string exe = HostBuild.BuildDumpProgram(cxk, repo, osDir!, prog, work.Path, host);
 
         string prelude = Path.Combine(work.Path, "prelude.xfxn");
         var pr = HostBuild.Run(cxk, new[] { "prelude", prelude }.Concat(TargetOf(extra)), repo);
@@ -136,7 +137,7 @@ public static class ProgramDiffHarness
                     var c = HostBuild.Run(cxk, cArgs, repo);
                     var x = HostBuild.Run(exe, xArgs, work.Path);
 
-                    Assert.True(x.ExitCode == 0, $"{prog} exited {x.ExitCode}: {x.StdErr}");
+                    Assert.True(x.ExitCode == 0, $"{prog} ({host}) exited {x.ExitCode}: {x.StdErr}");
 
                     string csharp = c.StdOut;
                     string xside = x.StdOut;
@@ -150,7 +151,7 @@ public static class ProgramDiffHarness
                     diagnostics += Count(csharp, "\nerror ");
 
                     if (csharp != xside)
-                        Assert.Fail(XcDumpHarness.Describe(label, csharp, xside));
+                        Assert.Fail(XcDumpHarness.Describe($"{label}, {host}", csharp, xside));
                 }
             }
         }

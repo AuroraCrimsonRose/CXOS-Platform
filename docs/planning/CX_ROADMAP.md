@@ -228,7 +228,14 @@ programs for it (step 6).
        `SYSCALL_PAIRS` 0), where the x86-32 wrappers cut them to a `u32` or a
        pair. `cxk prelude --target`; no ABI change, x86-32 byte-identical.
      - **6d1b** `std/heap`, `std/buf` and `list` on `usize`; the
-       differential dump programs built for either target.
+       differential dump programs built for either target. **Done
+       2026-10-28:** the heap hands out `usize` addresses (sizes stay `u32`;
+       the arena header is 16 bytes on x86-64). `list` stays a list of `u32`
+       values and a new `plist` holds addresses (Aurora, 2026-10-28: an index
+       list stays 4 bytes an item). xc's host `vm_map` on x86-64 moves each
+       grant above 4 GB with `mremap`, so a pointer cut to 32 bits faults. Every
+       Differential comparison runs with the dump program built as x86-32 and
+       as x86-64.
      - **6d2** The executive on x86-64, the full boot passing.
      - **6d3** The 32-bit kernel and the x86-32 emitter deleted.
      **Not in 6d:** the ABI keeps user addresses as `u32` (`vm_map_args.addr`,

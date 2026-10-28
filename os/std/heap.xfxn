@@ -20,6 +20,11 @@
 //
 //     [arena: next, size][hdr: size, free][payload...][hdr][payload...]
 //
+// Addresses are usize, as wide as a pointer on the target; sizes are u32 (an
+// arena is never past MMAP_MAX_BYTES). The arena header holds the next arena's
+// address, so it is 8 bytes on x86-32 and 16 on x86-64; a block header holds
+// only sizes and is 8 bytes on both.
+//
 // Adjacent-in-memory IS adjacent-in-list, which is what makes coalescing
 // possible at all: two neighbouring free blocks can be merged because walking
 // forward from one reaches the other. A free list of pointers alone could not
@@ -40,21 +45,35 @@ const HEAP_HDR:       u32 = 8;
 const HEAP_ALIGN:     u32 = 8;
 const HEAP_ARENA_MIN: u32 = 65536;
 
-global heap_arenas: u32;    // first arena, 0 until the first alloc
+// The header at the start of every arena. Padded to `next`'s alignment, so the
+// first block's payload is 8-aligned on either target.
+struct heap_arena { next: usize, size: u32 }
 
-fn heap_ld(p: u32) -> u32        { let q: *u32 = p as *u32; return q[0]; }
-fn heap_st(p: u32, v: u32) -> void { let q: *u32 = p as *u32; q[0] = v; }
+global heap_arenas: usize;  // first arena, 0 until the first alloc
+
+fn heap_ld(p: usize) -> u32        { let q: *u32 = p as *u32; return q[0]; }
+fn heap_st(p: usize, v: u32) -> void { let q: *u32 = p as *u32; q[0] = v; }
+fn heap_at(p: usize, n: u32) -> usize { return p + (n as usize); }
 
 fn heap_round(n: u32) -> u32 {
     return (n + HEAP_ALIGN - 1) & (0 - HEAP_ALIGN);
 }
 
+fn heap_arena_hdr() -> u32 { let a: heap_arena; return sizeof a; }
+fn heap_next(arena: usize) -> usize { let a: *heap_arena = arena as *heap_arena; return a.next; }
+fn heap_end(arena: usize) -> usize { let a: *heap_arena = arena as *heap_arena; return heap_at(arena, a.size); }
+fn heap_first(arena: usize) -> usize { return heap_at(arena, heap_arena_hdr()); }
+
+// The block after `b`, which may be the arena's end.
+fn heap_after(b: usize) -> usize { return heap_at(heap_at(b, HEAP_HDR), heap_ld(b)); }
+
 // Ask the kernel for another arena, at least `need` payload bytes' worth.
 // Returns its base, or 0. mem_map reports what it actually granted, which may
 // be more than was asked for, and the extra is taken into the arena rather
 // than wasted - it is already mapped and already charged to the quota.
-fn heap_grow(need: u32) -> u32 {
-    let want: u32 = need + HEAP_HDR + HEAP_HDR;
+fn heap_grow(need: u32) -> usize {
+    let ahdr: u32 = heap_arena_hdr();
+    let want: u32 = need + ahdr + HEAP_HDR;
     if (want < HEAP_ARENA_MIN) { want = HEAP_ARENA_MIN; }
 
     let a: vm_map_args;
@@ -64,16 +83,17 @@ fn heap_grow(need: u32) -> u32 {
     a.prot = MPROT_READ | MPROT_WRITE;
     if (vm_map(&a) != E_OK) { return 0; }
 
-    let base: u32 = a.addr;
+    let base: usize = a.addr as usize;
     let total: u32 = a.granted as u32;   // never past MMAP_MAX_BYTES
 
-    heap_st(base, heap_arenas);          // arena.next
-    heap_st(base + 4, total);            // arena.size
+    let h: *heap_arena = base as *heap_arena;
+    h.next = heap_arenas;
+    h.size = total;
     heap_arenas = base;
 
     // one free block covering everything after the two headers
-    let first: u32 = base + HEAP_HDR;
-    heap_st(first, total - HEAP_HDR - HEAP_HDR);
+    let first: usize = heap_first(base);
+    heap_st(first, total - ahdr - HEAP_HDR);
     heap_st(first + 4, 1);
     return base;
 }
@@ -82,21 +102,19 @@ fn heap_grow(need: u32) -> u32 {
 // Done on free rather than on alloc so that a program which frees everything
 // really does get its arena back as one block - otherwise a long alloc/free
 // cycle would shred it into unusable fragments that are individually free.
-fn heap_coalesce(arena: u32) -> void {
-    let end: u32 = arena + heap_ld(arena + 4);
-    let b: u32 = arena + HEAP_HDR;
+fn heap_coalesce(arena: usize) -> void {
+    let end: usize = heap_end(arena);
+    let b: usize = heap_first(arena);
     while (b < end) {
-        let size: u32 = heap_ld(b);
         if (heap_ld(b + 4) == 1) {
-            let n: u32 = b + HEAP_HDR + size;
+            let n: usize = heap_after(b);
             while (n < end) {
                 if (heap_ld(n + 4) != 1) { break; }
-                size = size + HEAP_HDR + heap_ld(n);
-                heap_st(b, size);
-                n = b + HEAP_HDR + size;
+                heap_st(b, heap_ld(b) + HEAP_HDR + heap_ld(n));
+                n = heap_after(b);
             }
         }
-        b = b + HEAP_HDR + heap_ld(b);
+        b = heap_after(b);
     }
 }
 
@@ -105,16 +123,16 @@ fn heap_coalesce(arena: u32) -> void {
 // The bytes are NOT zeroed: a fresh arena is (the kernel clears what it maps),
 // but a reused block holds whatever the last owner left. Use heap_zalloc when
 // that matters rather than assuming.
-fn alloc(n: u32) -> u32 {
+fn alloc(n: u32) -> usize {
     if (n == 0) { return 0; }
     let want: u32 = heap_round(n);
 
     let pass: u32 = 0;
     while (pass < 2) {
-        let arena: u32 = heap_arenas;
+        let arena: usize = heap_arenas;
         while (arena != 0) {
-            let end: u32 = arena + heap_ld(arena + 4);
-            let b: u32 = arena + HEAP_HDR;
+            let end: usize = heap_end(arena);
+            let b: usize = heap_first(arena);
             while (b < end) {
                 let size: u32 = heap_ld(b);
                 if (heap_ld(b + 4) == 1) {
@@ -124,18 +142,18 @@ fn alloc(n: u32) -> u32 {
                         // bytes creates a block that can never be allocated
                         // and can only be recovered by coalescing.
                         if (size >= want + HEAP_HDR + HEAP_ALIGN) {
-                            let tail: u32 = b + HEAP_HDR + want;
+                            let tail: usize = heap_at(heap_at(b, HEAP_HDR), want);
                             heap_st(tail, size - want - HEAP_HDR);
                             heap_st(tail + 4, 1);
                             heap_st(b, want);
                         }
                         heap_st(b + 4, 0);
-                        return b + HEAP_HDR;
+                        return heap_at(b, HEAP_HDR);
                     }
                 }
-                b = b + HEAP_HDR + heap_ld(b);
+                b = heap_after(b);
             }
-            arena = heap_ld(arena);
+            arena = heap_next(arena);
         }
         // Nothing fitted. Grow once, then look again - and only once, so a
         // kernel that cannot satisfy the request ends the loop instead of
@@ -147,50 +165,49 @@ fn alloc(n: u32) -> u32 {
 }
 
 // alloc + zero.
-fn zalloc(n: u32) -> u32 {
-    let p: u32 = alloc(n);
+fn zalloc(n: u32) -> usize {
+    let p: usize = alloc(n);
     if (p != 0) { memzero(p as *u8, heap_round(n)); }
     return p;
 }
 
 // Payload size of a live block - what alloc actually reserved, which may be
 // more than was asked for because of rounding.
-fn alloc_size(p: u32) -> u32 {
+fn alloc_size(p: usize) -> u32 {
     if (p == 0) { return 0; }
-    return heap_ld(p - HEAP_HDR);
+    return heap_ld(p - (HEAP_HDR as usize));
 }
 
 // Release a block. free(0) is a no-op, as everywhere else, so callers do not
 // have to guard. Freeing a pointer that did not come from alloc, or freeing
 // one twice, corrupts the heap and is not detected - this is a raw allocator.
-fn free(p: u32) -> void {
+fn free(p: usize) -> void {
     if (p == 0) { return; }
-    let b: u32 = p - HEAP_HDR;
+    let b: usize = p - (HEAP_HDR as usize);
     heap_st(b + 4, 1);
 
     // Find the arena this block belongs to, so the coalesce stays inside it.
     // Merging across an arena boundary would join two regions that are
     // separate mappings and need not be adjacent at all.
-    let arena: u32 = heap_arenas;
+    let arena: usize = heap_arenas;
     while (arena != 0) {
-        let end: u32 = arena + heap_ld(arena + 4);
         if (b > arena) {
-            if (b < end) { heap_coalesce(arena); return; }
+            if (b < heap_end(arena)) { heap_coalesce(arena); return; }
         }
-        arena = heap_ld(arena);
+        arena = heap_next(arena);
     }
 }
 
 // Resize a block, preserving its contents up to the smaller of the two sizes.
 // realloc(0, n) allocates; realloc(p, 0) frees and returns 0.
-fn realloc(p: u32, n: u32) -> u32 {
+fn realloc(p: usize, n: u32) -> usize {
     if (p == 0) { return alloc(n); }
     if (n == 0) { free(p); return 0; }
 
     let have: u32 = alloc_size(p);
     if (have >= heap_round(n)) { return p; }
 
-    let q: u32 = alloc(n);
+    let q: usize = alloc(n);
     if (q == 0) { return 0; }        // the original is still valid and still owned
     memcpy(q as *u8, p as *u8, have);
     free(p);
