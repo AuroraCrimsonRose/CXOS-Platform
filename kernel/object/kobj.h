@@ -42,10 +42,12 @@ enum kobj_type {
     KOBJ_PROCESS  = 4,   /* process (cpu/proc.c) */
     KOBJ_JOB      = 5,   /* job (cpu/job.c) */
     KOBJ_TIMER    = 6,   /* timer (object/ktimer.c) */
+    KOBJ_QUEUE    = 7,   /* queue (object/kqueue.c) */
     KOBJ_TYPE_MAX
 };
 
 struct kwaiter;   /* object/kwait.h */
+struct kqreg;     /* object/kqueue.h */
 
 struct kobj {
     uint16_t   type;      /* enum kobj_type */
@@ -55,6 +57,7 @@ struct kobj {
     atomic_u32 signals;   /* signalled state (object/kwait.h); the type's own bits */
     uint32_t   koid;      /* kernel id: unique for the life of the system, never 0 */
     struct kwaiter *waiters;   /* threads in kobj_wait on it (object/kwait.h) */
+    struct kqreg   *qregs;     /* queues' registrations on it (object/kqueue.h) */
 };
 
 struct kobj_ops {

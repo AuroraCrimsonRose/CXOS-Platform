@@ -128,6 +128,7 @@ int  usermode_kill_test(void);      /* SYS_PROCESS_KILL: each wait, the safe poi
 int  usermode_stop_test(void);      /* SYS_PROCESS_STOP: the notice, the deadline */
 int  usermode_job_test(void);       /* jobs: budgets, nesting, a kill of a job */
 int  usermode_timer_test(void);     /* the monotonic clock, timer objects, deadlines */
+int  usermode_queue_test(void);     /* queue objects: register once, wait for many */
 
 /* register the ring-3 fault handler so user faults kill the process, not the
    kernel. call once at boot after the scheduler is up. */

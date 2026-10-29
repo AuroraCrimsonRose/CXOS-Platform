@@ -3293,6 +3293,7 @@ void ktest_run(void) {
     total++; passed += report("process stop: asked, then ended at the deadline", usermode_stop_test());
     total++; passed += report("jobs: memory and thread budgets, nested, killed together", usermode_job_test());
     total++; passed += report("timers: absolute deadlines on the monotonic clock", usermode_timer_test());
+    total++; passed += report("queues: one-shot keys, re-armed, many objects", usermode_queue_test());
     total++; passed += report("ipc endpoints refcounted + reclaimed", test_ipc_endpoint_lifetime());
     total++; passed += report("object caches map and return pages", test_ocache_pages());
     total++; passed += report("two threads share one process",   test_proc_threads());

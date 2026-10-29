@@ -20,6 +20,7 @@
 #include "logging.h"
 #include "format.h"
 #include "object/ktimer.h"   /* ktimer_sys_init */
+#include "object/kqueue.h"   /* kqueue_sys_init */
 
 static struct ocache proc_cache;
 static struct idtab  pids;   /* pid -> process */
@@ -86,6 +87,7 @@ static const struct kobj_ops proc_ops = {
 void proc_sys_init(void) {
     job_sys_init();
     ktimer_sys_init();
+    kqueue_sys_init();
     if (ocache_init(&proc_cache, "process", sizeof(struct proc)) != 0 ||
         kobj_type_register(KOBJ_PROCESS, &proc_ops) != 0)
         kpanic("proc_sys_init: no process cache");

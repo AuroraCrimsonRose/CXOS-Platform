@@ -200,6 +200,30 @@ moves a tick (1 ms) at a time, and a deadline is met at the first tick at or
 after it. `u64` constants are new in the `.xfil` for `DEADLINE_NEVER`, held to
 2^63-1.
 
+*Queues, ABI 18 (Phase 1.2b):* the numbers 0x60-0x6F, unprivileged.
+`SYS_QUEUE_CREATE` gives a handle with `HRIGHT_WAIT`, `HRIGHT_REGISTER` and
+`HRIGHT_DUPLICATE`. `SYS_QUEUE_REGISTER(q, h, signals, key)` (`HRIGHT_REGISTER`
+on the queue, `HRIGHT_WAIT` on `h`, signals checked as `object_wait` checks
+them) adds a registration under a caller's `u64` key, armed. It is **one-shot**,
+as XNU's `EV_DISPATCH` knotes are: when one of its signals is set it becomes
+ready, once; `SYS_QUEUE_WAIT(q, *queue_event, count, deadline)` takes up to
+`count` ready keys (at most `QUEUE_EVENTS_MAX`, 16; a larger count is the
+array's size, not an error), oldest ready first, each with the object's signal
+word at that moment, and leaves them idle; `SYS_QUEUE_ARM(q, key)` arms one
+again. Arming and registering look at the signals as they are, so a signal set
+while a key was idle is not missed, and a key goes to one waiter, never to every
+thread waiting. `SYS_QUEUE_UNREGISTER(q, key)` removes one, ready or not. A
+registration holds its object as a handle does, until it is unregistered or the
+queue goes; the queue's `SIGNAL_QUEUE_READY` says a key is ready, so
+`object_wait` on a queue looks without taking. Refused: a key in use
+(`E_ALREADY_EXISTS`), an unknown key (`E_NOT_FOUND`), more than
+`QUEUE_REGISTER_MAX` (64, `E_NO_RESOURCES`), and a queue on a queue
+(`E_WRONG_TYPE`), which could hold itself. Each object keeps its registrations,
+and setting a signal readies the armed ones under the wait lock, so the tick
+(a timer firing) pays only for the registrations on that one object. Not yet:
+`queue_cancel` as a wake for another thread, user packets, and an edge-triggered
+form; none has a user.
+
 **Processes, threads and jobs:**
 `process_spawn(spec)` (§10), `process_exit(code)`, `process_stop(p, deadline)`,
 `process_kill(p)`, `thread_create(p, entry, stack, arg)`, `thread_exit`,

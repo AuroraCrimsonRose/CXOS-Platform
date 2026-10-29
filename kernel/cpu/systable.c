@@ -38,6 +38,35 @@ static int decode_timer_set(const uintptr_t *a) {
 #endif
 }
 static int decode_timer_cancel(const uintptr_t *a) { return syscall_timer_cancel((int32_t)a[0]); }
+static int decode_queue_create(const uintptr_t *a) { (void)a; return syscall_queue_create(); }
+static int decode_queue_register(const uintptr_t *a) {
+#if SYSCALL_PAIRS
+    return syscall_queue_register((int32_t)a[0], (int32_t)a[1], (uint32_t)a[2], (uint64_t)((uint64_t)a[3] | (uint64_t)a[4] << 32));
+#else
+    return syscall_queue_register((int32_t)a[0], (int32_t)a[1], (uint32_t)a[2], (uint64_t)a[3]);
+#endif
+}
+static int decode_queue_arm(const uintptr_t *a) {
+#if SYSCALL_PAIRS
+    return syscall_queue_arm((int32_t)a[0], (uint64_t)((uint64_t)a[1] | (uint64_t)a[2] << 32));
+#else
+    return syscall_queue_arm((int32_t)a[0], (uint64_t)a[1]);
+#endif
+}
+static int decode_queue_unregister(const uintptr_t *a) {
+#if SYSCALL_PAIRS
+    return syscall_queue_unregister((int32_t)a[0], (uint64_t)((uint64_t)a[1] | (uint64_t)a[2] << 32));
+#else
+    return syscall_queue_unregister((int32_t)a[0], (uint64_t)a[1]);
+#endif
+}
+static int decode_queue_wait(const uintptr_t *a) {
+#if SYSCALL_PAIRS
+    return syscall_queue_wait((int32_t)a[0], (uint64_t)a[1], (uint32_t)a[2], (uint64_t)((uint64_t)a[3] | (uint64_t)a[4] << 32));
+#else
+    return syscall_queue_wait((int32_t)a[0], (uint64_t)a[1], (uint32_t)a[2], (uint64_t)a[3]);
+#endif
+}
 static int decode_input_read(const uintptr_t *a) { (void)a; return syscall_input_read(); }
 static int decode_mouse_read(const uintptr_t *a) { return syscall_mouse_read((uint64_t)a[0]); }
 static int decode_input_poll(const uintptr_t *a) { (void)a; return syscall_input_poll(); }
@@ -201,6 +230,11 @@ const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_NET_PING] = decode_net_ping,
     [SYS_NET_SEND] = decode_net_send,
     [SYS_NET_RECV] = decode_net_recv,
+    [SYS_QUEUE_CREATE] = decode_queue_create,
+    [SYS_QUEUE_REGISTER] = decode_queue_register,
+    [SYS_QUEUE_ARM] = decode_queue_arm,
+    [SYS_QUEUE_UNREGISTER] = decode_queue_unregister,
+    [SYS_QUEUE_WAIT] = decode_queue_wait,
     [SYS_SPAWN] = decode_spawn,
     [SYS_PROCESS_KILL] = decode_process_kill,
     [SYS_EXEC_PATH] = decode_exec_path,

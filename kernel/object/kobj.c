@@ -37,6 +37,7 @@ int kobj_init(struct kobj *o, enum kobj_type t) {
     atomic_store(&o->handles, 0);
     atomic_store(&o->signals, 0);
     o->waiters = 0;
+    o->qregs   = 0;
     do o->koid = atomic_fetch_add(&next_koid, 1); while (o->koid == 0);   /* 0: none */
     atomic_fetch_add(&live[t], 1);
     return 0;

@@ -15,7 +15,7 @@
  * hash it was built against and the loader refuses one that differs, so a
  * program never runs against numbers or layouts it was not compiled for.
  */
-#define CXK_ABI_HASH { 0x43, 0x41, 0x2b, 0x68, 0x05, 0x5c, 0x53, 0x49, 0x6c, 0xe2, 0x49, 0x96, 0x44, 0x96, 0xc6, 0xae, 0x08, 0xe2, 0x5a, 0x03, 0xd4, 0x81, 0x8e, 0x84, 0xb4, 0x75, 0x66, 0xf0, 0xcf, 0xe4, 0xe1, 0x84 }
+#define CXK_ABI_HASH { 0xe3, 0xfc, 0xd5, 0x59, 0x75, 0xcf, 0x3b, 0x0a, 0x45, 0xdb, 0x25, 0x81, 0x92, 0x22, 0xb0, 0x93, 0x77, 0x7b, 0xd8, 0x77, 0xdd, 0x8a, 0x32, 0x14, 0x80, 0x7a, 0x83, 0x56, 0xaa, 0xbd, 0x53, 0x8a }
 
 /*
  * CXK ABI v1 - the PUBLIC contract shared by the kernel, the .xoex executive,
@@ -44,7 +44,7 @@
  * line; bump both, and the DevKit's stamp, in the one commit that changes the
  * contract.
  */
-#define CXK_ABI_VERSION          17
+#define CXK_ABI_VERSION          18
 
 /*
  * ---- syscall numbers ----
@@ -132,6 +132,9 @@
 #define HRIGHT_SET_LIMITS        0x8u           /* job: SYS_JOB_SET_LIMITS */
 #define HRIGHT_ARM               0x1u           /* timer: SYS_TIMER_SET, SYS_TIMER_CANCEL */
 
+/* queue: SYS_QUEUE_REGISTER, SYS_QUEUE_ARM, SYS_QUEUE_UNREGISTER */
+#define HRIGHT_REGISTER          0x1u
+
 /*
  * Generic rights, which mean the same on every type, count down from the top
  * bit; a type's own count up from the bottom. A handle without
@@ -163,11 +166,60 @@
 #define SIGNAL_TIMER_FIRED       0x1u
 
 /*
+ * queue: a key is ready. Cleared when a wait takes the last one, or the last
+ * ready one is unregistered.
+ */
+#define SIGNAL_QUEUE_READY       0x1u
+
+/*
  * A deadline that never comes (SYS_OBJECT_WAIT): a wait with no limit.
  * Deadlines are nanoseconds on the monotonic clock, so this is 292 years
  * after boot.
  */
 #define DEADLINE_NEVER           0x7FFFFFFFFFFFFFFFu
+
+/*
+ * queues 0x60-0x6F (unprivileged: the handles are the authority)
+ * A queue waits for many objects at once (docs/kernel/CX_KERNEL_PLAN.md
+ * section 5). Each registration names an object, the signals wanted from it
+ * and a key the caller chooses; when one of those signals is set, the key
+ * becomes ready, once. A wait returns the ready keys and nothing else, and a
+ * key does not come back until SYS_QUEUE_ARM re-arms it.
+ * -> a queue handle with HRIGHT_WAIT, HRIGHT_REGISTER and HRIGHT_DUPLICATE.
+ */
+#define SYS_QUEUE_CREATE         0x60
+
+/*
+ * ebx = queue handle (HRIGHT_REGISTER), ecx = the object's handle
+ * (HRIGHT_WAIT), edx = signals, esi = key -> 0. Registers it armed; a signal
+ * already set makes it ready at once. The registration holds the object as a
+ * handle does, until SYS_QUEUE_UNREGISTER or the queue goes. A key in use is
+ * E_ALREADY_EXISTS; a queue is not registered on a queue (E_WRONG_TYPE);
+ * past QUEUE_REGISTER_MAX is E_NO_RESOURCES.
+ */
+#define SYS_QUEUE_REGISTER       0x61
+
+/*
+ * ebx = queue handle (HRIGHT_REGISTER), ecx = key -> 0. Arms a registration
+ * whose key a wait returned; a signal already set makes it ready at once.
+ * One armed or ready already is left as it is. E_NOT_FOUND: no such key.
+ */
+#define SYS_QUEUE_ARM            0x62
+
+/*
+ * ebx = queue handle (HRIGHT_REGISTER), ecx = key -> 0. Removes it, ready
+ * or not, and lets go of its object. E_NOT_FOUND: no such key.
+ */
+#define SYS_QUEUE_UNREGISTER     0x63
+
+/*
+ * ebx = queue handle (HRIGHT_WAIT), ecx = *queue_event[count], edx = count
+ * (at least 1; at most QUEUE_EVENTS_MAX are written), esi = deadline as
+ * SYS_OBJECT_WAIT takes it -> the number of events written, oldest ready
+ * first, or E_TIMED_OUT. Each key returned is ready no longer and waits to be
+ * re-armed.
+ */
+#define SYS_QUEUE_WAIT           0x64
 
 /* input 0x20-0x2F (unprivileged: reading your own keystrokes) */
 #define SYS_INPUT_READ           0x20           /* block until a key -> char */
@@ -341,7 +393,7 @@
 
 /*
  * files 0xA0-0xBF (privileged: GRANT_DISK). 32 numbers: the 18 calls did not
- * fit 0x60-0x6F, which is free. Paths, offsets and handles: see "files" below.
+ * fit 0x60-0x6F, now the queues'. Paths, offsets and handles: see "files" below.
  * flags = FOPEN_*, one of FOPEN_READ / FOPEN_WRITE required -> a handle
  */
 #define SYS_FILE_OPEN            0xA0
@@ -602,6 +654,20 @@ struct clock_info {
 #define OBJ_TYPE_PROCESS         4              /* 3 is the kernel self-tests' own */
 #define OBJ_TYPE_JOB             5
 #define OBJ_TYPE_TIMER           6
+#define OBJ_TYPE_QUEUE           7
+
+/* Registrations one queue holds at most (SYS_QUEUE_REGISTER). */
+#define QUEUE_REGISTER_MAX       64
+
+/* Events one SYS_QUEUE_WAIT writes at most; a larger count is not refused. */
+#define QUEUE_EVENTS_MAX         16
+
+/* SYS_QUEUE_WAIT: one key that became ready. */
+struct queue_event {
+    uint64_t key;                               /* as registered */
+    uint32_t signals;                           /* the object's signals when the key became ready */
+    uint32_t reserved;                          /* 0 */
+};
 
 /* Jobs nest at most this deep below the kernel's own (SYS_JOB_CREATE). */
 #define JOB_DEPTH_MAX            8
@@ -1011,6 +1077,7 @@ struct log_entry {
 CXK_ABI_STATIC_ASSERT(sizeof(struct args_info) == 16, "ABI layout: args_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct spawn_args) == 56, "ABI layout: spawn_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct clock_info) == 8, "ABI layout: clock_info");
+CXK_ABI_STATIC_ASSERT(sizeof(struct queue_event) == 16, "ABI layout: queue_event");
 CXK_ABI_STATIC_ASSERT(sizeof(struct job_limits) == 16, "ABI layout: job_limits");
 CXK_ABI_STATIC_ASSERT(sizeof(struct job_info) == 40, "ABI layout: job_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct process_info) == 40, "ABI layout: process_info");

@@ -12,8 +12,9 @@
  * until a deadline on the monotonic clock (timer_now_ns); setting a signal
  * wakes every thread waiting on that object.
  *
- * The queue object of section 5 (register once, wait for many) builds on the
- * same word later; this is the one-handle wait it keeps.
+ * The queue object of section 5 (register once, wait for many; kqueue.h) builds
+ * on the same word: setting a signal also readies every queue registration
+ * armed for it, under the same lock.
  *
  * A waiter's record lives on its own kernel stack, linked into the object
  * while it waits. The caller of kobj_wait holds a reference on the object, so
@@ -47,6 +48,13 @@ void kobj_signal_clear(struct kobj *o, uint32_t bits);
    checked `want` against the type. */
 #define KWAIT_NEVER 0x7FFFFFFFFFFFFFFFull
 int kobj_wait(struct kobj *o, uint32_t want, uint64_t deadline, uint32_t *seen);
+
+/* The wait lock, for the queue (kqueue.c), whose lists the signal path walks.
+   Interrupts are off while it is held. The _locked calls need it held. */
+uint32_t kwait_lock(void);
+void     kwait_unlock(uint32_t f);
+void     kobj_signal_locked(struct kobj *o, uint32_t bits);
+void     kobj_signal_clear_locked(struct kobj *o, uint32_t bits);
 
 /* Threads waiting on `o` now, for the self-tests. */
 uint32_t kobj_waiters(struct kobj *o);

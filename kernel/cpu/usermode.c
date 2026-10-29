@@ -27,6 +27,7 @@
 #include "object/htab.h"
 #include "object/kwait.h"     /* kobj_wait, for SYS_OBJECT_WAIT */
 #include "object/ktimer.h"    /* SYS_TIMER_* */
+#include "object/kqueue.h"    /* SYS_QUEUE_* */
 #include "sync/atomic.h"
 #include "sysrec.h"
 #include "systable.h"         /* the handlers, decoders and table (generated) */
@@ -632,6 +633,84 @@ int syscall_timer_cancel(int32_t h) {
     ktimer_cancel(t);
     kobj_unref(&t->hdr);
     return E_OK;
+}
+
+int syscall_queue_create(void) {
+    /* Unprivileged: a queue is a handle, held to the handle table's limit,
+       and its registrations to QUEUE_REGISTER_MAX. */
+    struct kqueue *q = kqueue_create();
+    if (!q) return E_NO_MEMORY;
+    int32_t h = htab_install(thread_htab(thread_current_id()), &q->hdr,
+                             HRIGHT_WAIT | HRIGHT_REGISTER | HRIGHT_DUPLICATE, 0);
+    kobj_unref(&q->hdr);   /* the handle's reference keeps it; with no handle, it goes */
+    return h;
+}
+
+/* The queue behind `h`, with a reference, if the handle holds `right`. */
+static struct kqueue *queue_from_handle(int32_t h, uint32_t right, int *rc) {
+    struct htab_info hi;
+    struct kobj *o = htab_ref(thread_htab(thread_current_id()), h, KOBJ_NONE, 0, &hi);
+    if (!o) { *rc = E_BAD_HANDLE; return 0; }
+    *rc = o->type != KOBJ_QUEUE  ? E_WRONG_TYPE
+        : !(hi.rights & right)   ? E_ACCESS_DENIED : E_OK;
+    if (*rc != E_OK) { kobj_unref(o); return 0; }
+    return (struct kqueue *)o;
+}
+
+int syscall_queue_register(int32_t qh, int32_t h, uint32_t signals, uint64_t key) {
+    /* Unprivileged: the queue's HRIGHT_REGISTER and the object's HRIGHT_WAIT
+       are the authority. The object is checked as SYS_OBJECT_WAIT checks it. */
+    int rc;
+    struct kqueue *q = queue_from_handle(qh, HRIGHT_REGISTER, &rc);
+    if (!q) return rc;
+    struct htab_info hi;
+    struct kobj *o = htab_ref(thread_htab(thread_current_id()), h, KOBJ_NONE, 0, &hi);
+    if (!o) { kobj_unref(&q->hdr); return E_BAD_HANDLE; }
+    const struct kobj_ops *ops = kobj_type_ops((enum kobj_type)o->type);
+    rc = !(hi.rights & HRIGHT_WAIT)                       ? E_ACCESS_DENIED
+       : !ops->signals_valid                               ? E_NOT_SUPPORTED
+       : !signals || (signals & ~ops->signals_valid)       ? E_INVALID_ARGS
+       : kqueue_register(q, o, signals, key);
+    kobj_unref(o);
+    kobj_unref(&q->hdr);
+    return rc;
+}
+
+int syscall_queue_arm(int32_t qh, uint64_t key) {
+    int rc;
+    struct kqueue *q = queue_from_handle(qh, HRIGHT_REGISTER, &rc);
+    if (!q) return rc;
+    rc = kqueue_arm(q, key);
+    kobj_unref(&q->hdr);
+    return rc;
+}
+
+int syscall_queue_unregister(int32_t qh, uint64_t key) {
+    int rc;
+    struct kqueue *q = queue_from_handle(qh, HRIGHT_REGISTER, &rc);
+    if (!q) return rc;
+    rc = kqueue_unregister(q, key);
+    kobj_unref(&q->hdr);
+    return rc;
+}
+
+int syscall_queue_wait(int32_t qh, uint64_t events, uint32_t count, uint64_t deadline) {
+    /* Unprivileged: the queue's HRIGHT_WAIT is the authority. A count past
+       QUEUE_EVENTS_MAX is the size of the caller's array, not an error. */
+    if (!count) return E_INVALID_ARGS;
+    uint32_t n = count > QUEUE_EVENTS_MAX ? QUEUE_EVENTS_MAX : count;
+    if (!user_ptr_writable(events, (uint64_t)n * sizeof(struct queue_event))) return E_BAD_ADDRESS;
+    int rc;
+    struct kqueue *q = queue_from_handle(qh, HRIGHT_WAIT, &rc);
+    if (!q) return rc;
+    struct queue_event out[QUEUE_EVENTS_MAX];
+    rc = kqueue_wait(q, out, n, deadline);
+    kobj_unref(&q->hdr);
+    /* Written after the wait, through the copy that checks the range again:
+       the page may have been unmapped while this thread slept. The keys
+       taken are idle either way. */
+    if (rc > 0 && user_copy_out(events, out, (uint32_t)rc * (uint32_t)sizeof out[0]) != 0) return E_BAD_ADDRESS;
+    return rc;
 }
 
 int syscall_process_kill(int32_t h) {
@@ -3722,6 +3801,202 @@ done:
     if (u > 0)  htab_close(tab, u);
     if (d > 0)  htab_close(tab, d);
     if (eh > 0) htab_close(tab, eh);
+    unmap_user_page(TEST_CODE_VIRT, phys);
+    return ok;
+}
+
+/* ---- queue objects (Phase 1.2b) --------------------------------------------
+ * Through the dispatcher over a user mapping, with timers (signalled from the
+ * tick) and a job (from a syscall) as the objects waited for. Keys use their
+ * high halves, so a decoder that drops one fails. Nothing logs between taking
+ * a time and checking it. 1 = pass, 0 = fail. */
+#define QT_EV    (TEST_CODE_VIRT + 0x400)   /* QUEUE_EVENTS_MAX struct queue_event */
+#define QT_GUARD (QT_EV + QUEUE_EVENTS_MAX * sizeof(struct queue_event))   /* a u64 after it */
+
+static int qt_reg(int32_t q, int32_t h, uint32_t sig, uint64_t key) {
+    return um_call(SYS_QUEUE_REGISTER, 1u << 3, (uint32_t)q, (uint32_t)h, sig, key, 0);
+}
+static int qt_arm(int32_t q, uint64_t key) { return um_call(SYS_QUEUE_ARM, 1u << 1, (uint32_t)q, key, 0, 0, 0); }
+static int qt_unreg(int32_t q, uint64_t key) { return um_call(SYS_QUEUE_UNREGISTER, 1u << 1, (uint32_t)q, key, 0, 0, 0); }
+static int qt_wait(int32_t q, uint32_t n, uint64_t deadline) {
+    return um_call(SYS_QUEUE_WAIT, 1u << 3, (uint32_t)q, QT_EV, n, deadline, 0);
+}
+/* Is a key ready? SYS_OBJECT_WAIT on the queue only looks. */
+static int qt_ready(int32_t q) {
+    return syscall_dispatch(SYS_OBJECT_WAIT, (uint32_t)q, SIGNAL_QUEUE_READY, 0, 0, 0) == E_OK;
+}
+
+int usermode_queue_test(void) {
+    paddr_t phys = map_user_page(TEST_CODE_VIRT);
+    if (!phys) return 0;
+    struct htab *tab = thread_htab(thread_current_id());
+    volatile struct queue_event *ev = (volatile struct queue_event *)user_ptr(QT_EV);
+    volatile uint64_t *guard = (volatile uint64_t *)user_ptr(QT_GUARD);
+    uint32_t qlive0 = kobj_live(KOBJ_QUEUE), tlive0 = kobj_live(KOBJ_TIMER);
+    uint32_t regs0 = kqueue_reg_count(), armed0 = ktimer_armed_count(), jobs0 = job_live();
+    const uint64_t K1 = 0x1111222233334444ull, K2 = 0xAAAA0000BBBB0002ull, K3 = 0x300000000ull;
+    int32_t q = -1, t = -1, u = -1, v = -1, d = -1, eh = -1, j = -1;
+    int step = 0, ok = 0;
+
+    /* 1: a new queue, with the rights it is made with, and nothing ready */
+    q = syscall_dispatch(SYS_QUEUE_CREATE, 0, 0, 0, 0, 0);
+    struct object_info_args *oi = (struct object_info_args *)user_ptr(TT_IARGS);
+    struct object_basic *ob = (struct object_basic *)user_ptr(TT_INFO);
+    oi->cap = sizeof *ob; oi->buf = TT_INFO; oi->handle = q; oi->topic = OBJINFO_BASIC;
+    step = 1; if (q <= 0 || syscall_dispatch(SYS_OBJECT_INFO, TT_IARGS, 0, 0, 0, 0) != (int)sizeof *ob
+                  || ob->kind != OBJ_TYPE_QUEUE
+                  || ob->rights != (HRIGHT_WAIT | HRIGHT_REGISTER | HRIGHT_DUPLICATE)
+                  || kobj_live(KOBJ_QUEUE) != qlive0 + 1
+                  || qt_wait(q, 1, 0) != E_TIMED_OUT || qt_ready(q)) goto done;
+
+    /* 2: a registered timer's key comes back when it fires, not before, once,
+       with the signals it fired with; the wait blocked until then */
+    t = syscall_dispatch(SYS_TIMER_CREATE, 0, 0, 0, 0, 0);
+    u = syscall_dispatch(SYS_TIMER_CREATE, 0, 0, 0, 0, 0);
+    for (uint32_t i = 0; i < QUEUE_EVENTS_MAX; i++) { ev[i].key = ~0ull; ev[i].signals = ~0u; ev[i].reserved = ~0u; }
+    uint64_t dl = timer_now_ns() + TT_MS(30);
+    step = 2; if (t <= 0 || u <= 0 || qt_reg(q, t, SIGNAL_TIMER_FIRED, K1) != E_OK
+                  || kqueue_reg_count() != regs0 + 1
+                  || tt_set(t, dl) != E_OK || qt_wait(q, 4, 0) != E_TIMED_OUT
+                  || qt_wait(q, 4, dl + TT_MS(2000)) != 1 || timer_now_ns() < dl
+                  || ev[0].key != K1 || ev[0].signals != SIGNAL_TIMER_FIRED || ev[0].reserved != 0
+                  || ev[1].key != ~0ull || qt_ready(q)) goto done;
+
+    /* 3: one-shot: the timer fires again, and the key does not come back */
+    step = 3; if (tt_set(t, 0) != E_OK || qt_wait(q, 4, 0) != E_TIMED_OUT || qt_ready(q)) goto done;
+
+    /* 4: re-arming looks at the signal as it is: fired while idle, it is ready
+       at once; arming a ready key leaves it ready, once */
+    step = 4; if (qt_arm(q, K1) != E_OK || !qt_ready(q) || qt_arm(q, K1) != E_OK
+                  || qt_wait(q, 4, 0) != 1 || ev[0].key != K1
+                  || qt_wait(q, 4, 0) != E_TIMED_OUT) goto done;
+
+    /* 5: a signal set before registering makes the key ready at once */
+    tt_set(u, 0);
+    step = 5; if (qt_reg(q, u, SIGNAL_TIMER_FIRED, K2) != E_OK
+                  || qt_wait(q, 4, 0) != 1 || ev[0].key != K2) goto done;
+
+    /* 6: a wait returns only the keys that became ready: u at 20 ms comes back
+       alone, while t (40 ms) has not fired; then t */
+    uint64_t base = timer_now_ns();
+    tt_set(t, base + TT_MS(40));
+    tt_set(u, base + TT_MS(20));
+    step = 6; if (qt_arm(q, K1) != E_OK || qt_arm(q, K2) != E_OK
+                  || qt_wait(q, 4, base + TT_MS(2000)) != 1 || ev[0].key != K2
+                  || tt_look(t) != E_TIMED_OUT
+                  || qt_wait(q, 4, base + TT_MS(2000)) != 1 || ev[0].key != K1
+                  || timer_now_ns() < base + TT_MS(40)) goto done;
+
+    /* 7: keys ready together come back together, in the order they became
+       ready; a count of 1 takes one and leaves the other ready */
+    step = 7; if (qt_arm(q, K1) != E_OK || qt_arm(q, K2) != E_OK
+                  || qt_wait(q, 1, 0) != 1 || ev[0].key != K1 || !qt_ready(q)
+                  || qt_wait(q, 4, 0) != 1 || ev[0].key != K2 || qt_ready(q)
+                  || qt_arm(q, K2) != E_OK || qt_arm(q, K1) != E_OK
+                  || qt_wait(q, 4, 0) != 2 || ev[0].key != K2 || ev[1].key != K1) goto done;
+
+    /* 8: an armed key unregistered is not reported when its object fires */
+    base = timer_now_ns();
+    tt_set(t, base + TT_MS(20));
+    step = 8; if (qt_arm(q, K1) != E_OK || qt_unreg(q, K1) != E_OK
+                  || kqueue_reg_count() != regs0 + 1
+                  || qt_wait(q, 4, base + TT_MS(50)) != E_TIMED_OUT || tt_look(t) != E_OK) goto done;
+
+    /* 9: a ready key unregistered leaves the ready list, and the queue's
+       signal with it */
+    step = 9; if (qt_arm(q, K2) != E_OK || !qt_ready(q) || qt_unreg(q, K2) != E_OK
+                  || qt_ready(q) || qt_wait(q, 4, 0) != E_TIMED_OUT
+                  || kqueue_reg_count() != regs0) goto done;
+
+    /* 10: another type, signalled from a syscall: an empty job, killed */
+    j = jt_create(0, 0, 0, 0);
+    step = 10; if (j <= 0 || qt_reg(q, j, SIGNAL_JOB_ENDED, K3) != E_OK || qt_wait(q, 4, 0) != E_TIMED_OUT
+                   || jt_kill(j) != E_OK || qt_wait(q, 4, 0) != 1 || ev[0].key != K3
+                   || !(ev[0].signals & SIGNAL_JOB_ENDED) || qt_unreg(q, K3) != E_OK) goto done;
+    htab_close(tab, j); j = -1;
+
+    /* 11-13: refusals, each its own error, none leaving a registration */
+    step = 11; if (qt_reg(q, t, SIGNAL_TIMER_FIRED, K1) != E_OK   /* t fired: ready */
+                   || qt_reg(q, u, SIGNAL_TIMER_FIRED, K1) != E_ALREADY_EXISTS
+                   || qt_arm(q, K2) != E_NOT_FOUND || qt_unreg(q, K2) != E_NOT_FOUND
+                   || qt_reg(q, t, 0, K2) != E_INVALID_ARGS
+                   || qt_reg(q, t, SIGNAL_TIMER_FIRED << 1, K2) != E_INVALID_ARGS
+                   || qt_wait(q, 0, 0) != E_INVALID_ARGS
+                   || um_call(SYS_QUEUE_WAIT, 1u << 3, (uint32_t)q, USER_VLIMIT, 1, 0, 0) != E_BAD_ADDRESS
+                   || kqueue_reg_count() != regs0 + 1) goto done;
+    /* an endpoint has no signals, even on a handle that may wait */
+    eh = ep_create();
+    struct kobj *eo = eh > 0 ? htab_ref(tab, eh, KOBJ_ENDPOINT, 0, 0) : 0;
+    int32_t ew = eo ? htab_install(tab, eo, HRIGHT_WAIT, 0) : -1;
+    if (eo) kobj_unref(eo);
+    htab_close(tab, eh);
+    eh = ew;
+    step = 12; if (eh <= 0 || qt_reg(9999, t, SIGNAL_TIMER_FIRED, K2) != E_BAD_HANDLE
+                   || qt_reg(q, 9999, SIGNAL_TIMER_FIRED, K2) != E_BAD_HANDLE
+                   || qt_wait(9999, 1, 0) != E_BAD_HANDLE
+                   || qt_arm(t, K1) != E_WRONG_TYPE || qt_wait(t, 1, 0) != E_WRONG_TYPE
+                   || qt_reg(t, u, SIGNAL_TIMER_FIRED, K2) != E_WRONG_TYPE
+                   || qt_reg(q, q, SIGNAL_QUEUE_READY, K2) != E_WRONG_TYPE
+                   || qt_reg(q, eh, 1, K2) != E_NOT_SUPPORTED
+                   || kqueue_reg_count() != regs0 + 1) goto done;
+    /* each right is needed: REGISTER to register, arm, unregister; WAIT to
+       wait; the object's WAIT to register it */
+    d = syscall_dispatch(SYS_HANDLE_DUPLICATE, (uint32_t)q, HRIGHT_WAIT, 0, 0, 0);
+    step = 13; if (d <= 0 || qt_reg(d, u, SIGNAL_TIMER_FIRED, K2) != E_ACCESS_DENIED
+                   || qt_arm(d, K1) != E_ACCESS_DENIED || qt_unreg(d, K1) != E_ACCESS_DENIED
+                   || qt_wait(d, 1, 0) != 1 || ev[0].key != K1) goto done;
+    htab_close(tab, d);
+    d = syscall_dispatch(SYS_HANDLE_DUPLICATE, (uint32_t)q, HRIGHT_REGISTER, 0, 0, 0);
+    step = 14; if (d <= 0 || qt_arm(d, K1) != E_OK || qt_wait(d, 1, 0) != E_ACCESS_DENIED
+                   || qt_wait(q, 1, 0) != 1 || ev[0].key != K1) goto done;
+    htab_close(tab, d);
+    d = syscall_dispatch(SYS_HANDLE_DUPLICATE, (uint32_t)u, HRIGHT_ARM, 0, 0, 0);
+    step = 15; if (d <= 0 || qt_reg(q, d, SIGNAL_TIMER_FIRED, K2) != E_ACCESS_DENIED
+                   || kqueue_reg_count() != regs0 + 1) goto done;
+    htab_close(tab, d); d = -1;
+
+    /* 16: QUEUE_REGISTER_MAX registrations and no more; a count past
+       QUEUE_EVENTS_MAX takes that many, oldest first, and writes no further */
+    int filled = 1;
+    for (uint32_t i = 0; i + 1 < QUEUE_REGISTER_MAX; i++)   /* K1 is one */
+        if (qt_reg(q, t, SIGNAL_TIMER_FIRED, 100 + i) != E_OK) filled = 0;
+    *guard = 0x5A5A5A5A5A5A5A5Aull;
+    step = 16; if (!filled || qt_reg(q, u, SIGNAL_TIMER_FIRED, K2) != E_NO_RESOURCES
+                   || qt_wait(q, 100, 0) != (int)QUEUE_EVENTS_MAX
+                   || ev[0].key != 100 || ev[QUEUE_EVENTS_MAX - 1].key != 100 + QUEUE_EVENTS_MAX - 1
+                   || *guard != 0x5A5A5A5A5A5A5A5Aull || !qt_ready(q)) goto done;
+    for (uint32_t i = 0; i + 1 < QUEUE_REGISTER_MAX; i++)
+        if (qt_unreg(q, 100 + i) != E_OK) filled = 0;
+    step = 16; if (!filled || kqueue_reg_count() != regs0 + 1 || qt_ready(q)) goto done;
+
+    /* 17: a registration holds its object: a timer whose only handle is closed
+       still fires into the queue */
+    v = syscall_dispatch(SYS_TIMER_CREATE, 0, 0, 0, 0, 0);
+    dl = timer_now_ns() + TT_MS(20);
+    step = 17; if (v <= 0 || qt_reg(q, v, SIGNAL_TIMER_FIRED, K2) != E_OK || tt_set(v, dl) != E_OK) goto done;
+    htab_close(tab, v); v = -1;
+    step = 17; if (kobj_live(KOBJ_TIMER) != tlive0 + 3
+                   || qt_wait(q, 4, dl + TT_MS(2000)) != 1 || ev[0].key != K2 || timer_now_ns() < dl) goto done;
+
+    /* 18: the queue's last handle lets go of every object it held */
+    htab_close(tab, t); t = -1;
+    htab_close(tab, u); u = -1;
+    step = 18; if (kobj_live(KOBJ_TIMER) != tlive0 + 2) goto done;   /* K1 holds t, K2 v */
+    htab_close(tab, q); q = -1;
+    step = 18; if (kobj_live(KOBJ_QUEUE) != qlive0 || kobj_live(KOBJ_TIMER) != tlive0
+                   || kqueue_reg_count() != regs0 || ktimer_armed_count() != armed0
+                   || job_live() != jobs0) goto done;
+    ok = 1;
+
+done:
+    if (!ok) klog_u32("KTEST", SEV_ERR, "queue test failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    if (q > 0)  htab_close(tab, q);
+    if (t > 0)  htab_close(tab, t);
+    if (u > 0)  htab_close(tab, u);
+    if (v > 0)  htab_close(tab, v);
+    if (d > 0)  htab_close(tab, d);
+    if (eh > 0) htab_close(tab, eh);
+    if (j > 0)  htab_close(tab, j);
     unmap_user_page(TEST_CODE_VIRT, phys);
     return ok;
 }

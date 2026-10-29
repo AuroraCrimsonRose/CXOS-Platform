@@ -40,7 +40,7 @@ domain kernel
 /// mismatch. Declared in versions.json as `cxex-abi` and checked against this
 /// line; bump both, and the DevKit's stamp, in the one commit that changes the
 /// contract.
-const CXK_ABI_VERSION: u32 = 17
+const CXK_ABI_VERSION: u32 = 18
 
 /// ---- syscall numbers ----
 /// lifecycle 0x00-0x0F (no capability required)
@@ -100,6 +100,8 @@ const HRIGHT_STOP: u32 = 0x4u
 const HRIGHT_ASSIGN: u32 = 0x4u
 const HRIGHT_SET_LIMITS: u32 = 0x8u  /// job: SYS_JOB_SET_LIMITS
 const HRIGHT_ARM: u32 = 0x1u         /// timer: SYS_TIMER_SET, SYS_TIMER_CANCEL
+/// queue: SYS_QUEUE_REGISTER, SYS_QUEUE_ARM, SYS_QUEUE_UNREGISTER
+const HRIGHT_REGISTER: u32 = 0x1u
 /// Generic rights, which mean the same on every type, count down from the top
 /// bit; a type's own count up from the bottom. A handle without
 /// HRIGHT_DUPLICATE cannot be copied, and a copy has it only if asked for.
@@ -118,10 +120,42 @@ const SIGNAL_PROCESS_ENDED: u32 = 0x1u   /// process: its last thread has gone
 const SIGNAL_JOB_ENDED: u32 = 0x1u
 /// timer: its deadline has come. SYS_TIMER_SET and SYS_TIMER_CANCEL clear it.
 const SIGNAL_TIMER_FIRED: u32 = 0x1u
+/// queue: a key is ready. Cleared when a wait takes the last one, or the last
+/// ready one is unregistered.
+const SIGNAL_QUEUE_READY: u32 = 0x1u
 /// A deadline that never comes (SYS_OBJECT_WAIT): a wait with no limit.
 /// Deadlines are nanoseconds on the monotonic clock, so this is 292 years
 /// after boot.
 const DEADLINE_NEVER: u64 = 0x7FFFFFFFFFFFFFFFu
+
+/// queues 0x60-0x6F (unprivileged: the handles are the authority)
+/// A queue waits for many objects at once (docs/kernel/CX_KERNEL_PLAN.md
+/// section 5). Each registration names an object, the signals wanted from it
+/// and a key the caller chooses; when one of those signals is set, the key
+/// becomes ready, once. A wait returns the ready keys and nothing else, and a
+/// key does not come back until SYS_QUEUE_ARM re-arms it.
+/// -> a queue handle with HRIGHT_WAIT, HRIGHT_REGISTER and HRIGHT_DUPLICATE.
+syscall SYS_QUEUE_CREATE = 0x60 fn queue_create() -> i32
+/// ebx = queue handle (HRIGHT_REGISTER), ecx = the object's handle
+/// (HRIGHT_WAIT), edx = signals, esi = key -> 0. Registers it armed; a signal
+/// already set makes it ready at once. The registration holds the object as a
+/// handle does, until SYS_QUEUE_UNREGISTER or the queue goes. A key in use is
+/// E_ALREADY_EXISTS; a queue is not registered on a queue (E_WRONG_TYPE);
+/// past QUEUE_REGISTER_MAX is E_NO_RESOURCES.
+syscall SYS_QUEUE_REGISTER = 0x61 fn queue_register(q: i32, h: i32, signals: u32, key: u64) -> i32
+/// ebx = queue handle (HRIGHT_REGISTER), ecx = key -> 0. Arms a registration
+/// whose key a wait returned; a signal already set makes it ready at once.
+/// One armed or ready already is left as it is. E_NOT_FOUND: no such key.
+syscall SYS_QUEUE_ARM = 0x62 fn queue_arm(q: i32, key: u64) -> i32
+/// ebx = queue handle (HRIGHT_REGISTER), ecx = key -> 0. Removes it, ready
+/// or not, and lets go of its object. E_NOT_FOUND: no such key.
+syscall SYS_QUEUE_UNREGISTER = 0x63 fn queue_unregister(q: i32, key: u64) -> i32
+/// ebx = queue handle (HRIGHT_WAIT), ecx = *queue_event[count], edx = count
+/// (at least 1; at most QUEUE_EVENTS_MAX are written), esi = deadline as
+/// SYS_OBJECT_WAIT takes it -> the number of events written, oldest ready
+/// first, or E_TIMED_OUT. Each key returned is ready no longer and waits to be
+/// re-armed.
+syscall SYS_QUEUE_WAIT = 0x64 fn queue_wait(q: i32, events: *queue_event, count: u32, deadline: u64) -> i32
 
 /// input 0x20-0x2F (unprivileged: reading your own keystrokes)
 syscall SYS_INPUT_READ = 0x20 fn input_read() -> i32                   /// block until a key -> char
@@ -246,7 +280,7 @@ syscall SYS_POWER_SHUTDOWN = 0x91 fn shutdown() -> i32          /// ACPI S5 soft
 /// ebx = ms: idle the CPU (C1) that long, or until a key; 0 = until a key -> 0
 syscall SYS_POWER_SLEEP = 0x92 fn sleep(ms: u32) -> i32
 /// files 0xA0-0xBF (privileged: GRANT_DISK). 32 numbers: the 18 calls did not
-/// fit 0x60-0x6F, which is free. Paths, offsets and handles: see "files" below.
+/// fit 0x60-0x6F, now the queues'. Paths, offsets and handles: see "files" below.
 /// flags = FOPEN_*, one of FOPEN_READ / FOPEN_WRITE required -> a handle
 syscall SYS_FILE_OPEN = 0xA0 fn file_open(path: *u8, flags: u32) -> i32
 syscall SYS_FILE_CLOSE = 0xA1 fn file_close(h: i32) -> i32
@@ -462,6 +496,18 @@ const OBJ_TYPE_FILE: u32 = 2
 const OBJ_TYPE_PROCESS: u32 = 4      /// 3 is the kernel self-tests' own
 const OBJ_TYPE_JOB: u32 = 5
 const OBJ_TYPE_TIMER: u32 = 6
+const OBJ_TYPE_QUEUE: u32 = 7
+
+/// Registrations one queue holds at most (SYS_QUEUE_REGISTER).
+const QUEUE_REGISTER_MAX: u32 = 64
+/// Events one SYS_QUEUE_WAIT writes at most; a larger count is not refused.
+const QUEUE_EVENTS_MAX: u32 = 16
+/// SYS_QUEUE_WAIT: one key that became ready.
+struct queue_event {
+    key: u64            /// as registered
+    signals: u32        /// the object's signals when the key became ready
+    reserved: u32       /// 0
+}
 
 /// Jobs nest at most this deep below the kernel's own (SYS_JOB_CREATE).
 const JOB_DEPTH_MAX: u32 = 8
