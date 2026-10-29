@@ -28,7 +28,7 @@
 ; wire it from CMake as `nasm -DCXK_ENABLE_FB=<n>` AND `clang -DCXK_ENABLE_FB=<n>`
 ; from one CMake variable so both sides agree.
 
-; This file is %included into stage2 AFTER cxexload.asm, which leaves the
+; This file is %included into stage2 AFTER long.asm, which leaves the
 ; assembler in `bits 32`. set_vbe_mode runs in REAL MODE (called before the
 ; pmode switch), so it MUST be assembled as 16-bit - declare that explicitly
 ; here rather than relying on include order. (Without this, the 32-bit encoding

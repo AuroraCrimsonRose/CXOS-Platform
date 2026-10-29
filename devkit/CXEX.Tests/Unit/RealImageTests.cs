@@ -26,7 +26,7 @@ public class RealImageTests
     public void Every_packaged_image_loads_and_validates()
     {
         string root = Requires.Repo();
-        string packages = Path.Combine(root, "dist", "CXK_x86_32", "packages");
+        string packages = Path.Combine(root, "dist", "CXK_x86_64", "packages");
 
         if (!Directory.Exists(packages))
             Assert.Skip($"no packaged images at {packages}: run `cxk os build --dev` first.");

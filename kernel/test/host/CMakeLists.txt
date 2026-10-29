@@ -30,7 +30,6 @@ set(KERNEL_SOURCES
     ${KDIR}/memman/ocache.c
     ${KDIR}/memman/buddy.c
     ${KDIR}/arch/x86/cpufeat.c
-    ${KDIR}/arch/x86_32/pagetable.c
     ${KDIR}/arch/x86_64/pagetable.c
     ${KDIR}/drivers/iowin.c
     ${KDIR}/platform/pc/ps2kbd.c

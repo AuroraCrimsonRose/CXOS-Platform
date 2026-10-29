@@ -49,7 +49,7 @@ public class VerifyBootCommand : Command<VerifyBootCommand.Settings>
         public bool ForeignDisk { get; set; }
 
         [CommandOption("--arch")]
-        [Description("The kernel the image carries: x86_32 (default) or x86_64, which boots it on qemu-system-x86_64")]
+        [Description("The kernel the image carries: x86_64 (default), or x86_32 for an image from the retired 32-bit line, which boots it on qemu-system-i386")]
         public string? Arch { get; set; }
     }
 
@@ -74,7 +74,7 @@ public class VerifyBootCommand : Command<VerifyBootCommand.Settings>
             return 1;
         }
 
-        QemuArch arch = QemuArch.X86_32;
+        QemuArch arch = QemuArch.X86_64;
         if (settings.Arch is not null)
         {
             if (QemuTool.ParseArch(settings.Arch) is not QemuArch a)

@@ -3,14 +3,14 @@
 // xc/xc.xfxn - the X compiler, written in X.
 // Aurora Tejeda / CATX Systems
 //
-//   xc [--target x86_32|x86_64] [--prelude FILE | --no-prelude] [-I DIR]... [--std DIR] [--object] SOURCE [-o OUT]
+//   xc [--target x86_64|x86_32] [--prelude FILE | --no-prelude] [-I DIR]... [--std DIR] [--object] SOURCE [-o OUT]
 //
 // Compiles an X program - SOURCE, the prelude in front of it, everything it
-// imports - to assembly for the target (x86_32 unless --target says
+// imports - to assembly for the target (x86_64 unless --target says
 // otherwise), written to OUT (SOURCE with .s for .xfxn if none is given).
-// x86_32 is emit.xfxn, from the tree, written as it is generated; x86_64 is
-// x64.xfxn, from the IR, written once it is whole. What it writes is exactly
-// what `cxk compile [--target x86_64]` writes for the same program: the
+// x86_64 is x64.xfxn, from the IR, written once it is whole; x86_32 is
+// emit.xfxn, from the tree, written as it is generated. What it writes is
+// exactly what `cxk compile [--target x86_32]` writes for the same program: the
 // stages in os/xc are each held to their C# counterpart by a differential
 // test in devkit/CXEX.Tests/Differential. Assembling and
 // linking are still the cross toolchain's - stage 5 of the route to
@@ -79,9 +79,10 @@ fn xc_x64(o: *opts, f: *front, out: *u8) -> i32 {
 
 fn xc_main() -> i32 {
     let o: opts;
+    target_set("x86_64");   // the default; the dump programs keep sema.xfxn's x86_32 until step 6d3c
     if (!parse_opts(&o)) { return 2; }
     if (o.first == 0) {
-        err_str("usage: xc [--target x86_32|x86_64] [--prelude FILE | --no-prelude] [-I DIR]... [--std DIR] [--object] SOURCE [-o OUT]\n");
+        err_str("usage: xc [--target x86_64|x86_32] [--prelude FILE | --no-prelude] [-I DIR]... [--std DIR] [--object] SOURCE [-o OUT]\n");
         return 2;
     }
     let source: *u8 = xc_arg(o.first);

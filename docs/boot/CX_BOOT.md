@@ -8,8 +8,10 @@
 ## 1. Inherited
 
 - **BIOS:** `boot.asm` loads stage 2 from LBA 2 (32 sectors). Stage 2 enables
-  A20, gathers the E820 map, sets a VBE mode, and `cxexload.asm` places the
-  kernel's sections and jumps. Nothing checks the kernel's signature. Since
+  A20, gathers the E820 map, sets a VBE mode, and (since step 6d3b, which
+  deleted the 32-bit kernel and its CXEX path, `cxexload.asm`) `long.asm`
+  places the ELF64 kernel and enters long mode. Nothing checks the kernel's
+  signature. Since
   roadmap step 4a the kernel no longer reads its boot data from fixed
   addresses (§4 item 1).
 - **UEFI:** `boot/uefi/cxboot.c` is part 1 only: it gathers information into
@@ -79,14 +81,15 @@ One loader, two front ends (BIOS, UEFI), one shared core in C.
    self-test checks the poison, so nothing can go on reading them unnoticed.
 2. The shared C core and the BIOS front end into long mode, with the 64-bit
    kernel bring-up. **Long mode done 2026-10-24** (roadmap step 5b), still
-   in assembly: stage 2 dispatches on the kernel's magic, CXEX to the 32-bit
-   path as before and ELF to `boot/long.asm`, which refuses a CPU without
+   in assembly: stage 2 dispatched on the kernel's magic, CXEX to the 32-bit
+   path and ELF to `boot/long.asm` (since step 6d3b `long.asm` is the only
+   path, and checks the magic itself), which refuses a CPU without
    long mode or NX (on screen and on COM1), places each `PT_LOAD` segment
    (linked at `KERNEL_VBASE` + its physical address, nothing below 1 MiB or
    above 1 GiB), maps the first GiB at 0 and at `KERNEL_VBASE` with 2 MiB
    pages, sets `EFER.LME` and `NXE`, and enters the kernel with the CXBI
    address in RDI. The image is `dist/CXK_x86_64/images/cxk_x86_64.img`;
-   `cxk verify-boot --arch x86_64` boots it on `qemu-system-x86_64`. The C
+   `cxk verify-boot` boots it on `qemu-system-x86_64`. The C
    core is still to come.
 3. Signature check in the loader.
 4. UEFI part 2 on the shared core.

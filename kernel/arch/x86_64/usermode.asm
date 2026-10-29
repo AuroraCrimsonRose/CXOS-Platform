@@ -185,11 +185,16 @@ syscall64_entry:
 ; int user_copy_bytes(void *dst, const void *src, uint32_t len)
 ;   0 = copied, 1 = a page fault was taken and recovered from.
 ;
-; x86-32's usermode.asm explains the design. A fault anywhere between
-; usercopy_start and usercopy_end on a user address returns through
-; usercopy_trampoline instead (idt.c). Nothing is pushed here, so the landing
-; pad has nothing to undo: a same-ring fault resumes on the stack it left.
-; On a recovered fault the destination is partly written.
+; Everything between usercopy_start and usercopy_end is the recoverable
+; region: a fault there on a user address returns through usercopy_trampoline
+; instead (idt.c). There is no armed flag anywhere: recovery is a property of
+; *where the fault happened*, so it cannot be left switched on and swallow an
+; unrelated kernel fault. Redox does it this way (__usercopy_start/
+; __usercopy_end, src/memory/mod.rs); Haiku and Mach keep a per-thread
+; fault-handler slot that each copy arms and restores instead. Nothing is
+; pushed here, so the landing pad has nothing to undo: a same-ring fault
+; resumes on the stack it left. On a recovered fault the destination is
+; partly written; every caller returns E_BAD_ADDRESS and copies nothing more.
 ; ---------------------------------------------------------------------------
 global user_copy_bytes
 global usercopy_start
@@ -467,7 +472,7 @@ user64_segs_start:
 user64_segs_end:
 
 ; ---------------------------------------------------------------------------
-; usermode.c's ring-3 routines, as x86-32's (arch/x86_32/usermode.asm) in
+; usermode.c's ring-3 routines, as x86-32 had them in
 ; this convention. The kernel seeds a 32-bit message pointer at [rsp].
 ;
 ; user_blob: SYS_CONSOLE_WRITE(msg, 0 = bounded NUL-scan), then SYS_EXIT(0).
@@ -513,7 +518,7 @@ user_blob_busy_start:
     ud2
 user_blob_busy_end:
 
-; user_sysp_call / user_sysp_write: x86-32's (arch/x86_32/usermode.asm), with
+; user_sysp_call / user_sysp_write: as on x86-32, with
 ; the base in rsi. It is kept in r12, since rsi is the second argument.
 global user_sysp_call_start, user_sysp_call_end
 user_sysp_call_start:
@@ -536,7 +541,7 @@ user_sysp_write_start:
 user_sysp_write_end:
 
 ; user_sysp_direct / user_sysp_midstub: calls the kernel must refuse,
-; x86-32's (arch/x86_32/usermode.asm). The first traps SYS_EXIT(0) itself;
+; as on x86-32. The first traps SYS_EXIT(0) itself;
 ; the second calls the syscall inside the SYS_EXIT stub with SYS_GETPID in
 ; eax, so it returns into the SYS_EXIT slot with another number.
 global user_sysp_direct_start, user_sysp_direct_end

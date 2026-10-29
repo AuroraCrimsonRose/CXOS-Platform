@@ -308,7 +308,7 @@ The ABI hash of §5 is this hash for the `kernel` library.
   generator writes `.xfxn` stubs. The generated prelude, `abi.x` today, becomes
   `abi.xfxn`, which also fixes the naming inconsistency recorded in
   `devkit/CX_DEVKIT_DESIGN.md` §3.
-- **The kernel** (`kernel.xkex`, C) gets the C side of the `kernel` domain: the
+- **The kernel** (`kernel/`, C) gets the C side of the `kernel` domain: the
   dispatch table, argument structures and decoders. It never links a
   service's stubs.
 - **C# (the DevKit)** gets the constants, structures and the trace decoder.

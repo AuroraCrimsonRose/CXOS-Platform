@@ -52,8 +52,8 @@ and fixed on x86-32 is in
 Requirements, on every host:
 
 - **clang 23 or newer, and ld.lld.** The kernel is built with
-  `clang --target=i686-elf`; no cross-GCC. Clang 18 through 22 do not work for
-  this target. `tools/ci/Dockerfile` pins a known-good toolchain.
+  `clang --target=x86_64-elf`, and X's x86-32 target with `i686-elf`; no
+  cross-GCC. Clang 18 through 22 do not work for `i686-elf`. `tools/ci/Dockerfile` pins a known-good toolchain.
 - **CMake and Ninja.** No MSVC, no Developer Command Prompt.
 - **NASM** for the boot chain and the kernel's assembly.
 - **QEMU**, the only emulator CXOS targets.
@@ -73,12 +73,12 @@ Republish whenever the DevKit changes; `cxk check-abi` names a stale one.
 |---|---|
 | Build, signed with a test key | `cxk keygen tools/test` once, then `cxk os build --key test` |
 | Build a development kernel (runs unsigned programs; never ship it) | `cxk os build --dev` |
-| Run | `cxk run dist/CXK_x86_32/images/cxk_disk.img` |
-| Boot and check the self-tests | `cxk verify-boot dist/CXK_x86_32/images/cxk_disk.img --full` |
-| The same on a minimal and a full CPU model | add `--cpu pentium2,-apic`, then `--cpu max` |
+| Run | `cxk run dist/CXK_x86_64/images/cxk_x86_64.img` |
+| Boot and check the self-tests | `cxk verify-boot dist/CXK_x86_64/images/cxk_x86_64.img --full -t 300` |
+| The same on a full CPU model | add `--cpu max` (no minimal x86-64 model passes yet: with `--cpu qemu64,-apic` two APIC self-tests fail) |
 | The same booted from a USB stick, as the rig boots | add `--usb xhci` (or `ehci`, `ohci`) |
 | A machine's own drive with another CXOS on it, ahead of the image, comes out unchanged | add `--foreign-disk` |
-| A deliberate panic, and its crash log recovered by the next boot | `cxk verify-crashlog dist/CXK_x86_32/images/cxk_disk.img` |
+| A deliberate panic, and its crash log recovered by the next boot | `cxk verify-crashlog dist/CXK_x86_64/images/cxk_x86_64.img` (fails on x86-64 until its panic path writes the stack trace) |
 | The same on a USB stick, the panic landing mid-transfer | add `--usb xhci` (or `ehci`, `ohci`) |
 | Read the crash log a panic left on a disk image or stick | `cxk rig crashlog <image or disk5>` (a disk needs an administrator prompt) |
 | Read the system log the last boot saved (USB summary, supervisor output) | `cxk rig bootlog disk5 -o bootlog.txt` (administrator prompt) |

@@ -10,8 +10,8 @@ namespace CXEX.Tests.Adversarial;
 /// can state its case as one mutation of something known good.
 ///
 /// <para>Hand-written rather than taken from the build output on purpose: a test
-/// that reads <c>dist/CXK_x86_32/packages/kernel.xkex</c> only runs where the OS
-/// has been built, and silently changes meaning whenever the kernel does. These
+/// that reads <c>dist/CXK_x86_64/packages/hi.xuex</c> only runs where the OS
+/// has been built, and silently changes meaning whenever the program does. These
 /// bytes are fixed and
 /// run anywhere .NET does, which is what keeps the Adversarial category free of
 /// the Toolchain requirement.</para>

@@ -22,8 +22,8 @@ if(NOT DEFINED CXK)
     endif()
 endif()
 
-# ---- code-signing + executive + unified-disk pipeline ----
-option(SIGN "sign CXEX artifacts (.xkex/.xoex) with the kernel key" OFF)
+# ---- code signing ----
+option(SIGN "sign the CXEX programs with the key the kernel trusts" OFF)
 
 # A signed kernel that runs unsigned code is the one artifact this must never
 # produce: it looks official, and it trusts nothing. Refuse the combination at
@@ -67,66 +67,61 @@ add_custom_command(
     COMMENT "Embedding ${CXK_KEY}.xkpk as the kernel's root of trust"
 )
 
-# 4. Set the OS paths using the true SRC_DIR we just fixed in CMakeLists!
-set(EXEC_C    "${SRC_DIR}/os/executive/executive.c")
-set(EXEC_LD   "${SRC_DIR}/os/executive/executive.ld")
-set(EXEC_ELF  ${BUILD_DIR}/executive.elf)
-set(EXEC_XOEX ${PACKAGES_DIR}/executive.xoex)
-
-set(CXK_DISK  ${IMAGES_DIR}/cxk_disk.img)
-
-# per-artifact sign step
-if(SIGN)
-    if(NOT EXISTS ${SIGN_SK})
-        message(FATAL_ERROR "SIGN=ON but signing key missing: ${SIGN_SK}\n  run: tools/cxk.exe keygen tools/kernel")
-    endif()
-    # One variable per ARTIFACT, not per kind: each expands to a command naming
-    # the exact file it signs. Reusing ASIGN for a second program signs hi.xuex
-    # twice and leaves the other one unsigned, which shows up as a signature
-    # refusal at boot rather than as a build error.
-    set(KSIGN COMMAND ${CXK} sign ${KERNEL_XKEX} ${SIGN_SK} ${SIGN_PK})
-    set(XSIGN COMMAND ${CXK} sign ${EXEC_XOEX}   ${SIGN_SK} ${SIGN_PK})
-    # The boot shell is EMBEDDED in the executive rather than staged on disk,
-    # and used to be the one artifact nobody signed - trusted only because the
-    # executive around it was. SYS_SPAWN now verifies what it is handed, so the
-    # shell needs a signature of its own. Signed BEFORE `cxk embed` runs, so
-    # the byte array the executive carries is the signed image.
-    set(SHSIGN COMMAND ${CXK} sign ${APP_XCEX} ${SIGN_SK} ${SIGN_PK})
-    set(ASIGN COMMAND ${CXK} sign ${DISK_APP_XCEX} ${SIGN_SK} ${SIGN_PK})
-    set(SCSIGN COMMAND ${CXK} sign ${SETTINGS_TEST_XUEX} ${SIGN_SK} ${SIGN_PK})
-    set(VSIGN COMMAND ${CXK} sign ${SUPERVISOR_XCEX} ${SIGN_SK} ${SIGN_PK})
-    set(TSIGN COMMAND ${CXK} sign ${TOKDUMP_XUEX} ${SIGN_SK} ${SIGN_PK})
-    set(PSIGN COMMAND ${CXK} sign ${ASTDUMP_XUEX} ${SIGN_SK} ${SIGN_PK})
-    set(MSIGN COMMAND ${CXK} sign ${SEMADUMP_XUEX} ${SIGN_SK} ${SIGN_PK})
-    set(CSIGN COMMAND ${CXK} sign ${XC_XUEX} ${SIGN_SK} ${SIGN_PK})
-elseif(DEV_UNSIGNED)
-    # A development kernel runs these unsigned, so the release build's "WILL
-    # REFUSE" warnings below would be false here - and a false warning sends
-    # someone chasing a problem that does not exist. Same rule on the text:
-    # no parentheses, no semicolons.
-    set(KSIGN COMMAND ${CMAKE_COMMAND} -E echo "  kernel.xkex UNSIGNED - development kernel, never ship")
-    set(XSIGN COMMAND ${CMAKE_COMMAND} -E echo "  executive.xoex UNSIGNED - runs on this development kernel only")
-    set(SHSIGN COMMAND ${CMAKE_COMMAND} -E echo "  shell.xsex UNSIGNED - runs on this development kernel only")
-    set(ASIGN COMMAND ${CMAKE_COMMAND} -E echo "  hi.xuex UNSIGNED - runs on this development kernel only")
-    set(SCSIGN COMMAND ${CMAKE_COMMAND} -E echo "  setcheck.xuex UNSIGNED - runs on this development kernel only")
-    set(VSIGN COMMAND ${CMAKE_COMMAND} -E echo "  supervisor.xsex UNSIGNED - runs on this development kernel only")
-    set(TSIGN COMMAND ${CMAKE_COMMAND} -E echo "  tokdump.xuex UNSIGNED - runs on this development kernel only")
-    set(PSIGN COMMAND ${CMAKE_COMMAND} -E echo "  astdump.xuex UNSIGNED - runs on this development kernel only")
-    set(MSIGN COMMAND ${CMAKE_COMMAND} -E echo "  semadump.xuex UNSIGNED - runs on this development kernel only")
-    set(CSIGN COMMAND ${CMAKE_COMMAND} -E echo "  xc.xuex UNSIGNED - runs on this development kernel only")
-else()
-    # No parentheses OR semicolons in these messages: ${KSIGN}/${XSIGN} expand into a
-    # custom-command line, and under /bin/sh unquoted parens are a syntax error while a
-    # semicolon silently splits the command - the text after it just disappears. Both are
-    # harmless under cmd.exe, so the restriction costs nothing on Windows.
-    set(KSIGN COMMAND ${CMAKE_COMMAND} -E echo "  kernel.xkex UNSIGNED - configure -DSIGN=ON to sign")
-    set(XSIGN COMMAND ${CMAKE_COMMAND} -E echo "  executive.xoex UNSIGNED - the kernel WILL REFUSE to launch it - configure -DSIGN=ON")
-    set(SHSIGN COMMAND ${CMAKE_COMMAND} -E echo "  shell.xsex UNSIGNED - SYS_SPAWN WILL REFUSE it - configure -DSIGN=ON")
-    set(ASIGN COMMAND ${CMAKE_COMMAND} -E echo "  hi.xuex UNSIGNED - exec_path WILL REFUSE it - configure -DSIGN=ON")
-    set(SCSIGN COMMAND ${CMAKE_COMMAND} -E echo "  setcheck.xuex UNSIGNED - exec_path WILL REFUSE it - configure -DSIGN=ON")
-    set(VSIGN COMMAND ${CMAKE_COMMAND} -E echo "  supervisor.xsex UNSIGNED - the executive WILL REFUSE it - configure -DSIGN=ON")
-    set(TSIGN COMMAND ${CMAKE_COMMAND} -E echo "  tokdump.xuex UNSIGNED - exec_path WILL REFUSE it - configure -DSIGN=ON")
-    set(PSIGN COMMAND ${CMAKE_COMMAND} -E echo "  astdump.xuex UNSIGNED - exec_path WILL REFUSE it - configure -DSIGN=ON")
-    set(MSIGN COMMAND ${CMAKE_COMMAND} -E echo "  semadump.xuex UNSIGNED - exec_path WILL REFUSE it - configure -DSIGN=ON")
-    set(CSIGN COMMAND ${CMAKE_COMMAND} -E echo "  xc.xuex UNSIGNED - exec_path WILL REFUSE it - configure -DSIGN=ON")
+if(SIGN AND NOT EXISTS ${SIGN_SK})
+    message(FATAL_ERROR "SIGN=ON but signing key missing: ${SIGN_SK}\n  run: tools/cxk.exe keygen tools/kernel")
 endif()
+
+# 4. The sign step for one artifact: a command naming the exact file. One per
+# ARTIFACT, never per kind - a shared variable once signed hi.xuex twice and
+# left the next program unsigned, which showed up as a signature refusal at
+# boot rather than as a build error.
+#
+# No parentheses OR semicolons in the messages: they expand into a
+# custom-command line, and under /bin/sh unquoted parens are a syntax error
+# while a semicolon silently splits the command - the text after it just
+# disappears. Both are harmless under cmd.exe, so the rule costs nothing on
+# Windows. A development kernel runs these unsigned, so the release build's
+# "WILL REFUSE" would be false there - and a false warning sends someone
+# chasing a problem that does not exist.
+function(cx_sign out file)
+    get_filename_component(name ${file} NAME)
+    if(SIGN)
+        set(${out} COMMAND ${CXK} sign ${file} ${SIGN_SK} ${SIGN_PK} PARENT_SCOPE)
+    elseif(DEV_UNSIGNED)
+        set(${out} COMMAND ${CMAKE_COMMAND} -E echo "  ${name} UNSIGNED - runs on this development kernel only" PARENT_SCOPE)
+    else()
+        set(${out} COMMAND ${CMAKE_COMMAND} -E echo "  ${name} UNSIGNED - the kernel WILL REFUSE it - configure -DSIGN=ON" PARENT_SCOPE)
+    endif()
+endfunction()
+
+# 5. An X program: <name>.xfxn -> ELF64 -> signed CXEX in PACKAGES_DIR, with
+# `cxk compile --target x86_64` (the System V back end on the IR) and
+# `cxk build` (an ELF64 becomes a CXEX with arch_target 2). Sets <var> to the
+# package's path. The remaining arguments are the compile's include
+# directories. It depends on every X source it could import (STD_SRCS,
+# XC_SRCS), so a library edit rebuilds every program.
+function(cx_x_program var src type ext)
+    get_filename_component(name ${src} NAME_WE)
+    set(elf ${BUILD_DIR}/${name}.elf)
+    set(pkg ${PACKAGES_DIR}/${name}.${ext})
+    set(incs "")
+    foreach(dir ${ARGN})
+        list(APPEND incs -I ${dir})
+    endforeach()
+    add_custom_command(
+        OUTPUT ${elf}
+        COMMAND ${CXK} compile ${src} ${elf} --target x86_64 ${incs}
+        DEPENDS ${src} ${CXK} ${STD_SRCS} ${XC_SRCS}
+        COMMENT "X   ${name}.xfxn -> ELF64"
+    )
+    cx_sign(sign ${pkg})
+    add_custom_command(
+        OUTPUT ${pkg}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${PACKAGES_DIR}
+        COMMAND ${CXK} build ${elf} ${pkg} --type ${type}
+        ${sign}
+        DEPENDS ${elf} ${CXK}
+        COMMENT "Packaging ${name}.${ext} (CXEX, type ${type})"
+    )
+    set(${var} ${pkg} PARENT_SCOPE)
+endfunction()

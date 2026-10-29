@@ -25,8 +25,8 @@ public class PreludeCommand : Command<PreludeCommand.Settings>
         public string? Out { get; set; }
 
         [CommandOption("--target <TARGET>")]
-        [Description("x86_32 (the default) or x86_64: the syscall wrappers pass registers as that machine's are")]
-        public string Target { get; set; } = "x86_32";
+        [Description("x86_64 (the default) or x86_32: the syscall wrappers pass registers as that machine's are")]
+        public string Target { get; set; } = "x86_64";
     }
 
     protected override int Execute(CommandContext context, Settings settings, CancellationToken cancellationToken)

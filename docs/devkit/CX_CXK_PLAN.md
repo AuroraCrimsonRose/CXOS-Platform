@@ -22,7 +22,7 @@ What hurts:
 | **Loud output.** An OS build prints about 300 lines, four of which matter | Every session filters by hand; failures hide in the noise |
 | **Text-only results** | Scripts, the CI container and agents scrape prose |
 | **Sabotage by hand.** Every check must be seen to fail, done by editing a file, rebuilding, booting and undoing | Slow, easy to get wrong (undoing with `git checkout` has destroyed real fixes twice), and never re-run later |
-| **x86-32 assumptions:** `dist/CXK_x86_32/`, `qemu-system-i386`, RSA `keygen` | All change with the move |
+| **x86-32 assumptions:** `dist/CXK_x86_32/`, `qemu-system-i386`, RSA `keygen` | All change with the move. The first two went in roadmap step 6d3b: `dist/CXK_x86_64/` and `qemu-system-x86_64` are the defaults, and `--arch x86_32` boots a retired image |
 | **Nothing for the rig:** no way to write a USB stick, read a crash log, or symbolise an address | Real-hardware testing is manual |
 
 ## 2. How the others do it

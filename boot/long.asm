@@ -3,8 +3,7 @@
 ; /boot/long.asm  -  stage 2: load the x86-64 kernel and enter long mode
 ; Aurora Tejeda / CATX Systems
 ;
-; cxexload.asm comes here when the kernel image is an ELF file rather than a
-; CXEX one. Haiku's BIOS loader does the same from 32-bit protected mode
+; pmode.asm comes here once stage 2 is in 32-bit protected mode. Haiku's BIOS loader does the same from 32-bit protected mode
 ; (src/system/boot/platform/bios_ia32/long.cpp, long_start_kernel): check the
 ; CPU, place the ELF64 image, build page tables, set EFER.LME, turn paging on
 ; and jump through a 64-bit code segment.
@@ -17,11 +16,11 @@
 ; at 0x3000-0x6FFF; the kernel replaces them with its own (roadmap step 5c).
 ; EFER.NXE is set here, so the kernel's first tables can use NX.
 ;
-; The kernel is entered in 64-bit mode at e_entry with RDI (and RBX, as the
-; 32-bit kernel gets it) holding the physical address of the CXBI handover,
+; The kernel is entered in 64-bit mode at e_entry with RDI (and RBX) holding the physical address of the CXBI handover,
 ; RSP at 0x9F000, interrupts off. Anything this loader cannot place is
 ; refused with a message on screen and on COM1, never jumped to.
 
+KERNEL_SRC          equ 0x10000         ; where load_kernel placed the image (stage2.asm)
 ELF_MAGIC           equ 0x464C457F      ; 0x7F 'E' 'L' 'F' as a LE dword
 ELF_BUF_SIZE        equ KERNEL_SECTORS * 512   ; what load_kernel read (stage2.asm)
 
@@ -67,7 +66,7 @@ EFER_NXE            equ 1 << 11
 COM1                equ 0x3F8
 
 bits 32
-; elf64_load_and_jump - the ELF at CXEX_SRC is the x86-64 kernel. No return.
+; elf64_load_and_jump - the ELF at KERNEL_SRC is the x86-64 kernel. No return.
 elf64_load_and_jump:
     call long_serial_init
 
@@ -84,7 +83,9 @@ elf64_load_and_jump:
     jz .no_nx
 
     ; ---- the header
-    mov esi, CXEX_SRC
+    mov esi, KERNEL_SRC
+    cmp dword [esi], ELF_MAGIC
+    jne .bad_elf
     cmp byte [esi + E_CLASS], 2         ; ELFCLASS64
     jne .bad_elf
     cmp byte [esi + E_DATA], 1          ; little-endian
@@ -163,7 +164,7 @@ elf64_load_and_jump:
     push ecx
     push edi
     mov ebx, edi
-    mov esi, CXEX_SRC
+    mov esi, KERNEL_SRC
     add esi, [ebx + P_OFFSET]
     mov edi, eax
     mov ecx, [ebx + P_FILESZ]
@@ -245,7 +246,7 @@ long_entry:
     mov gs, ax
     mov ss, ax
     mov rsp, 0x9F000
-    mov rax, [abs CXEX_SRC + E_ENTRY]
+    mov rax, [abs KERNEL_SRC + E_ENTRY]
     mov edi, CXBI_ADDR                  ; zero-extends: RDI = the handover
     mov ebx, CXBI_ADDR
     jmp rax                             ; into the kernel; no return

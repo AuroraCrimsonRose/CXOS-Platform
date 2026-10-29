@@ -152,7 +152,7 @@ The restatements are held to it by `ToolchainPinTests`: the CI image's
 equal CMake's floor. Raise a floor in `versions.json` and those tests name the
 other places that have to follow.
 
-**Every build records what it ran with** in `dist/CXK_x86_32/toolchain.json`:
+**Every build records what it ran with** in `dist/CXK_x86_64/toolchain.json`:
 the `cxk` version with its commit, the host, the target, the signing mode, and
 each tool's version banner verbatim, because clang's banner carries the exact
 LLVM commit. It holds no timestamp, machine name or path, so two builds with the

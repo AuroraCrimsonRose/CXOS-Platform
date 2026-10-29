@@ -41,8 +41,7 @@ void    pmm_free_pages(paddr_t first_page, size_t count);
 
 /* N contiguous pages below 4 GB, for a device that addresses only 32 bits
    (the rig's OHCI controller is one; CX_KERNEL_PLAN section 9.3). Asking is
-   part of every DMA allocation. On x86-32 all memory the PMM holds is below
-   4 GB, so it is pmm_alloc_pages. */
+   part of every DMA allocation. */
 paddr_t pmm_alloc_pages_low(size_t count);
 
 /* 1 when the page is not the allocator's to give: handed out, or never

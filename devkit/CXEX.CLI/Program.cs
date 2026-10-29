@@ -45,9 +45,6 @@ app.Configure(config =>
     config.AddCommand<ImageCommand>("image")
         .WithDescription("Compiles stage1, stage2, the kernel, and the CXFS payload into a bootable XBPT disk image.");
 
-    config.AddCommand<RawImageCommand>("raw-image")
-        .WithDescription("Creates a flat, padded raw binary disk (replaces pad_boot.ps1).");
-
     // ---- run + inspect ----
     config.AddCommand<RunCommand>("run")
         .WithDescription("Boots a CXK disk image in QEMU (replaces run_qemu.bat).");

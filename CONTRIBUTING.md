@@ -92,7 +92,7 @@ A change is not finished because it compiles.
 ```
 dotnet build devkit/CXEX.slnx -c Release     # the DevKit
 cxk os build --dev                                  # the OS, development kernel
-cxk run dist/CXK_x86_32/images/cxk_disk.img         # boot it
+cxk run dist/CXK_x86_64/images/cxk_x86_64.img       # boot it
 ```
 
 Needs clang, ld.lld, NASM, CMake and Ninja on PATH. No i686-elf GCC, no NMake.

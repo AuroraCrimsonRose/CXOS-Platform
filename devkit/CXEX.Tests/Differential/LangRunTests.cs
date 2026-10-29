@@ -201,7 +201,7 @@ public class LangRunTests
     }
 
     private static ProcResult Compile(string cxk, string repo, string src, string outPath, params string[] extra) =>
-        HostBuild.Run(cxk, new[] { "compile", src, outPath, "--no-prelude" }.Concat(extra), repo);
+        HostBuild.Run(cxk, new[] { "compile", src, outPath, "--no-prelude", "--target", "x86_32" }.Concat(extra), repo);
 
     private static List<string> Sorted(string dir) =>
         Directory.Exists(dir)

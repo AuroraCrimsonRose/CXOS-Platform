@@ -16,7 +16,7 @@
     "  toolchain   - the external tools the build runs, each with the MINIMUM version",
     "                it is known to need and the evidence for that floor. `cxk os",
     "                build` refuses an older tool by name and records the exact",
-    "                versions it ran with in dist/CXK_x86_32/toolchain.json. A tool",
+    "                versions it ran with in dist/CXK_x86_64/toolchain.json. A tool",
     "                with no known floor has minimum null: recorded, not enforced.",
     "",
     "`checks` is what makes this file authoritative rather than decorative: each",

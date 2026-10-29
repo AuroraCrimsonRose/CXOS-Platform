@@ -207,11 +207,11 @@ public class OsBuildCommand : Command<OsBuildCommand.Settings>
 
         WriteToolchainRecord(root, toolchain, s.Dev ? "development, unsigned" : sign ? $"signed, tools/{keyName}.xksk" : "unsigned");
 
-        string packages = Path.Combine(root, "dist", "CXK_x86_32", "packages");
-        string image = Path.Combine(root, "dist", "CXK_x86_32", "images", "cxk_disk.img");
+        string packages = Path.Combine(root, "dist", "CXK_x86_64", "packages");
+        string image = Path.Combine(root, "dist", "CXK_x86_64", "images", "cxk_x86_64.img");
 
         AnsiConsole.Write(new Rule("[bold green]Done[/]").LeftJustified());
-        AnsiConsole.MarkupLine($"[grey]kernel:[/] {Path.Combine(packages, "kernel.xkex")}");
+        AnsiConsole.MarkupLine($"[grey]kernel:[/] {Path.Combine(buildDir, "kernel.elf")}");
         AnsiConsole.MarkupLine($"[grey]exec:[/]   {Path.Combine(packages, "executive.xoex")}");
         AnsiConsole.MarkupLine($"[grey]disk:[/]   {image}");
         AnsiConsole.MarkupLine($"[grey]run:[/]    cxk run {image}");
@@ -295,7 +295,7 @@ public class OsBuildCommand : Command<OsBuildCommand.Settings>
     /// </summary>
     private static void WriteToolchainRecord(string root, IReadOnlyList<ToolFinding> findings, string signing)
     {
-        string dir = Path.Combine(root, "dist", "CXK_x86_32");
+        string dir = Path.Combine(root, "dist", "CXK_x86_64");
         Directory.CreateDirectory(dir);
 
         string cxk = typeof(OsBuildCommand).Assembly
@@ -313,7 +313,7 @@ public class OsBuildCommand : Command<OsBuildCommand.Settings>
             w.WriteStartObject();
             w.WriteString("cxk", cxk);
             w.WriteString("host", System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier);
-            w.WriteString("target", "i686-elf");
+            w.WriteString("target", "x86_64-elf");
             w.WriteString("signing", signing);
             w.WriteStartObject("tools");
             foreach (var f in findings)

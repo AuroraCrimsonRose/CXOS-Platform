@@ -1,12 +1,10 @@
 ; SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 ; SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
-; /boot/pmode.asm  -  enter 32-bit protected mode (v5 stage 2)
+; /boot/pmode.asm  -  enter 32-bit protected mode (stage 2)
 ; Aurora Tejeda / CATX Systems
 ;
-; Ports v4's pmode switch. Difference for v5: there is no kernel to jump to yet,
-; so after entering protected mode we PROVE it (write to VGA) and halt. The
-; kernel-load + jump (and the kernel's own higher-half paging) come in later
-; increments. Stage 2's job ends at "clean flat 32-bit protected mode".
+; Real mode to flat 32-bit protected mode, proved by a mark on VGA; then the
+; handover is sealed and long.asm takes the kernel the rest of the way.
 
 ; enter_protected_mode - no return; execution continues at pmode_entry
 enter_protected_mode:
@@ -47,10 +45,8 @@ pmode_entry:
     ; the rest of the handover, then seal it (cxbi.asm)
     call cxbi_finish
 
-    ; parse the loaded .xkex, place its sections at their physical addresses,
-    ; and jump to the physical entry. The kernel's stub then sets up paging +
-    ; the higher half. (Replaces the old flat copy-blob-and-jump.)
-    call cxex_load_and_jump      ; no return on success
+    ; place the ELF64 kernel, enter long mode and jump to it (long.asm)
+    call elf64_load_and_jump     ; no return
 
     ; not reached
 .hang:

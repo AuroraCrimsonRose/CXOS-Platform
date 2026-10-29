@@ -3,8 +3,8 @@
 /* /kernel/kmain.c - v5 kernel C entry
  * Aurora Tejeda / CATX Systems
  *
- * Runs in the higher half. arch/x86_32/entry.asm has set up paging, mapped the kernel high,
- * switched to a higher-half stack, and zeroed BSS. kmain brings up the kernel
+ * Runs in the higher half. the loader (boot/long.asm) has set up paging and mapped the kernel high,
+ * zeroing BSS; arch/x86_64/entry.asm has switched to a higher-half stack. kmain brings up the kernel
  * subsystems in dependency order, then hands off to the self-tests (ktest.c).
  */
 
@@ -223,7 +223,7 @@ void kmain(uintptr_t cxbi_phys) {
     kstack_init();
     klog("KSTACK", SEV_OK, "guarded kernel stacks ready");
 
-    /* Leave the boot stack. arch/x86_32/entry.asm could only give kmain a stack in .bss,
+    /* Leave the boot stack. arch/x86_64/entry.asm could only give kmain a stack in .bss,
        with nothing below it, and kmain goes on to become thread 0 - the thread
        the self-tests and every file path run on. From here it runs on a guarded
        stack like every other thread, so an overflow is a panic naming "main"

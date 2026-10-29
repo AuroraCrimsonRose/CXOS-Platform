@@ -130,7 +130,7 @@ public static class BootVerifier
     /// <summary>The x86-64 verification boot's RAM: past 4 GB.</summary>
     public const int X86_64MemoryMb = 5120;
 
-    public static QemuConfig ConfigFor(string image, string serialLog, string? cpu = null, bool snapshot = true, UsbHost? usb = null, string? foreignDisk = null, QemuArch arch = QemuArch.X86_32) => new()
+    public static QemuConfig ConfigFor(string image, string serialLog, string? cpu = null, bool snapshot = true, UsbHost? usb = null, string? foreignDisk = null, QemuArch arch = QemuArch.X86_64) => new()
     {
         BootDisk = image,
         MachineType = "pc",
@@ -153,7 +153,7 @@ public static class BootVerifier
     /// time is up. Kills only the QEMU it started: killing by process name
     /// would take down any other emulator on the machine.
     /// </summary>
-    public static BootVerdict Run(string image, string serialLog, TimeSpan timeout, bool full, Action<string>? progress = null, string? cpu = null, UsbHost? usb = null, string? foreignDisk = null, QemuArch arch = QemuArch.X86_32)
+    public static BootVerdict Run(string image, string serialLog, TimeSpan timeout, bool full, Action<string>? progress = null, string? cpu = null, UsbHost? usb = null, string? foreignDisk = null, QemuArch arch = QemuArch.X86_64)
         => Run(image, serialLog, timeout, log => BootVerdict.Classify(log, full), progress, cpu, snapshot: true, usb, foreignDisk, arch);
 
     /// <summary>
@@ -163,7 +163,7 @@ public static class BootVerifier
     /// (<c>cxk verify-crashlog</c>). Only ever on a copy.
     /// </summary>
     public static BootVerdict Run(string image, string serialLog, TimeSpan timeout, Func<string, BootVerdict> classify,
-                                  Action<string>? progress, string? cpu, bool snapshot, UsbHost? usb = null, string? foreignDisk = null, QemuArch arch = QemuArch.X86_32)
+                                  Action<string>? progress, string? cpu, bool snapshot, UsbHost? usb = null, string? foreignDisk = null, QemuArch arch = QemuArch.X86_64)
     {
         if (File.Exists(serialLog)) File.Delete(serialLog);
 

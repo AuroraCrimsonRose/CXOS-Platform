@@ -40,6 +40,18 @@ interfaces and are not transitional.
 | `CXEX_FLAG_KERNEL_PRIV` (header bit 3) | Retired 2026-10-16, on Aurora's decision. Every kernel image set it and nothing read it, and a privilege bit an image sets on itself invites a future reader to trust it (DevKit security §4). Writers no longer set it and readers ignore it, so there is no format bump. The bit is reserved and never reused. The kernel image's bytes changed. `CompatDeclarationTests` fails if any image type sets it again. |
 | CXFS's on-disk advisory locks: `cxfs_lock`, `cxfs_unlock`, `cxfs_is_locked`, `CXFS_E_LOCKED`, `CXFS_FEAT_LOCKING`, and the entry fields `lock_state` / `lock_owner_pid` | Replaced 2026-10-16, on Aurora's decision, by advisory locks held by the open file in memory and released when its handle goes (`SYS_FILE_LOCK`/`SYS_FILE_UNLOCK`). That is SerenityOS's model, and Haiku, XNU and NT all agree that locks live off disk and end at close. The old ones could not be taken by any syscall. They were owned by a reused pid and kept across reboots, yet still **enforced** on writes and unlinks, so a crafted volume could refuse writes to its own entries. The entry bytes and feature bit 2 are reserved, not reused. The ktest "advisory locks follow the open file" covers the replacement, and it sets the old bytes to a live owner to show they are ignored. |
 
+## Removed with the 32-bit kernel (roadmap step 6d3b, 2026-10-28)
+
+| What | Why it could go |
+|---|---|
+| `kernel/arch/x86_32/` | The 32-bit kernel's architecture: entry, GDT, IDT, paging, context switch, ring 3. x86-64 is the system; every generic source already built for it. |
+| `kernel/memman/pmm.c` | The 32-bit kernel's bitmap page allocator. `memman/pagedb.c` implements `pmm.h` on x86-64. |
+| `boot/cxexload.asm` and stage 2's CXEX kernel path | Stage 2 enters long mode and loads only an ELF64 kernel (`boot/long.asm`, which now checks the ELF magic itself). |
+| `kernel.xkex`, the signed CXEX kernel | The 32-bit kernel's image. The x86-64 kernel is a plain ELF until CXEX for x86-64 and the loader's signature check land (below). |
+| `cxk_disk.img`, `cxk_x86_32.img`, `cxk raw-image` | The 32-bit disks. `dist/CXK_x86_64/images/cxk_x86_64.img` is the only image; `raw-image` built only the second one. |
+| The width check (`w64_*.ok`) | A syntax-only x86-64 pass over the generic code while the build was 32-bit. The kernel's own flags carry `-Wshorten-64-to-32 -Werror` now. |
+| `kernel/test/host/test_pagetable.c` | Tested the 32-bit page-table encoders, which are gone. `test_pagetable64.c` covers x86-64's. |
+
 ## Planned replacement
 
 | Where | Today | Replaced by | Trigger |
@@ -54,9 +66,7 @@ interfaces and are not transitional.
 | `/Shared/Config` at 0777 | Any program with `GRANT_DISK` can write any program's settings | `/User/<name>` at 0700 | Users exist (`CX_FILESYSTEM_LAYOUT.md` rule 6) |
 | `kernel/arch/x86_64/early_con.c` | COM1, polled, for `idt.c`'s `kpanic` only: everything else logs through `logging.c` since step 5f1 | The panic path below, on the serial driver | It goes with `idt.c`'s `kpanic` |
 | `kernel/arch/x86_64/idt.c` `kpanic` | The banner, the reason and a halt, on COM1 | The panic screen, its stack trace and the crash log (`kernel/diag/`) | Those running on x86-64 |
-| `kernel/memman/pmm.c` | The 32-bit kernel's bitmap page allocator; its 4 MiB boot window cannot hold a page database | `memman/pagedb.c`, the page database and buddy allocator x86-64 uses | Roadmap step 6: the 32-bit kernel is deleted |
-
-| The x86-64 kernel image as a plain ELF | Stage 2 loads it unsigned and unchecked, beside the 32-bit CXEX path | CXEX for x86-64, the signature check in the loader | `CX_BOOT.md` section 4 item 3 |
+| The x86-64 kernel image as a plain ELF | Stage 2 loads it unsigned and unchecked | CXEX for x86-64, the signature check in the loader | `CX_BOOT.md` section 4 item 3 |
 
 ## Test-only
 

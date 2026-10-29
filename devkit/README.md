@@ -43,7 +43,6 @@ cxk build       ELF -> CXEX (.xuex / .xoex / .xsex / .xkex / .xbex)
 cxk sign        attach a signature block to a CXEX artifact
 cxk embed       CXEX -> C byte array header (for kernel-embedded images)
 cxk image       build a bootable disk image
-cxk raw-image   build a raw disk image
 cxk run         launch an emulator against an image
 cxk inspect     dump CXEX / disk / CXFS structure
 cxk check       validation pass

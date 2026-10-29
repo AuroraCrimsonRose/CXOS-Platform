@@ -68,10 +68,10 @@ ENV DOTNET_NOLOGO=1 \
     DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 \
     NUGET_PACKAGES=/opt/nuget
 
-# The kernel is built with clang --target=i686-elf; CMake is pointed at the same
+# The kernel is built with clang --target=x86_64-elf; CMake is pointed at the same
 # tools cxk pre-flights for, so driving CMake directly in here behaves.
 ENV KCC=clang \
     CMAKE_LD=ld.lld \
-    CXK_TARGET=i686-elf
+    CXK_TARGET=x86_64-elf
 
 WORKDIR /src

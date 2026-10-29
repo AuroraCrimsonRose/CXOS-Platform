@@ -9,7 +9,7 @@
 #include "panic.h"
 
 /* Before paging_init the only physical memory the kernel can read is the low
-   window the entry stub maps at KERNEL_VBASE (arch/x86_32/entry.asm); the
+   window the entry stub maps at KERNEL_VBASE (boot/long.asm); the
    loader keeps the handover and its map inside it. */
 #define BOOT_WINDOW    0x400000u
 #define CXBI_MAX_MMAP  128u

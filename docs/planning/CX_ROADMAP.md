@@ -249,6 +249,12 @@ programs for it (step 6).
          x86-64 syscall wrapper stayed green). **Done 2026-10-28.**
        - **6d3b** The 32-bit kernel, its disk, its boot path and the x86-32
          program rules; x86-64 is the default architecture everywhere.
+         **Done 2026-10-28:** `kernel/arch/x86_32/`, `pmm.c`, stage 2's CXEX
+         path and both 32-bit images are gone; the build is one x86-64 build
+         (`cx_x_program`); `verify-boot`, `cxk compile`, `cxk prelude` and
+         `xc` default to x86-64. The dump verbs (`cxk asm`/`ir`/`sema` and
+         xc's dump programs) keep x86-32 as their default until 6d3c, since
+         the x86-32 emitter is their oracle pairing.
        - **6d3c** The tree-walking x86-32 code generators: `X86Emitter` and
          `xc`'s `emit.xfxn`, with xc's x86-32 host layer.
      **Not in 6d:** the ABI keeps user addresses as `u32` (`vm_map_args.addr`,

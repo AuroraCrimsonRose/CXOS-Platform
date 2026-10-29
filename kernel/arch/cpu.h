@@ -15,9 +15,7 @@
 /* The CXEX arch_target this kernel can run (lib/format/cxex.h). The loader
    refuses an image built for any other: an x86-32 image entered on x86-64
    would run its 32-bit code as 64-bit instructions (there is no compat mode). */
-#if defined(__i386__) || defined(CXK_HOST_TEST)
-#define ARCH_CXEX_TARGET 1u   /* CXEX_ARCH_X86_32 */
-#elif defined(__x86_64__)
+#if defined(__x86_64__) || defined(CXK_HOST_TEST)
 #define ARCH_CXEX_TARGET 2u   /* CXEX_ARCH_X86_64 */
 #else
 #error "kernel/arch/cpu.h: no CXEX arch_target for this architecture"

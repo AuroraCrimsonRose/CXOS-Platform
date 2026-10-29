@@ -162,11 +162,12 @@ public static class ProgramDiffHarness
         Console.WriteLine($"{countedHits} with '{counted.Trim()}' of {programs} programs; {diagnostics} diagnostics");
     }
 
-    /// <summary>The <c>--target</c> pair in <paramref name="extra"/>, if any: the prelude's wrappers depend on it.</summary>
+    /// <summary>The <c>--target</c> pair in <paramref name="extra"/>: the prelude's wrappers depend on it.
+    /// With none, x86_32, the dump verbs' default (<c>cxk prelude</c>'s is x86_64).</summary>
     private static IEnumerable<string> TargetOf(string[] extra)
     {
         int i = Array.IndexOf(extra, "--target");
-        return i >= 0 && i + 1 < extra.Length ? new[] { "--target", extra[i + 1] } : Array.Empty<string>();
+        return new[] { "--target", i >= 0 && i + 1 < extra.Length ? extra[i + 1] : "x86_32" };
     }
 
     private static IEnumerable<string> Sorted(string dir, string pattern) =>

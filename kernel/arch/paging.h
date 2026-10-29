@@ -5,8 +5,8 @@
 /*
  * Paging, as generic code sees it (docs/kernel/CX_KERNEL_PLAN.md section 2.2).
  * One interface, one implementation per architecture, as Haiku does
- * (src/system/kernel/arch/x86/paging/{32bit,pae,64bit}): kernel/arch/x86_32/
- * paging.c and addr_space.c, kernel/arch/x86_64/paging.c.
+ * (src/system/kernel/arch/x86/paging/{32bit,pae,64bit}): kernel/arch/x86_64/
+ * paging.c.
  *
  * A mapping is described by what it allows (VM_*), never by the bits of a page
  * table entry; the architecture encodes it. A page is always readable when
@@ -19,10 +19,8 @@
 
 #include <stdint.h>
 
-#if defined(__i386__) || defined(CXK_HOST_TEST)
-#include "arch/x86_32/paging_defs.h"   /* paddr_t, PAGE_SIZE, KERNEL_VBASE, USER_VLIMIT */
-#elif defined(__x86_64__)
-#include "arch/x86_64/paging_defs.h"
+#if defined(__x86_64__) || defined(CXK_HOST_TEST)
+#include "arch/x86_64/paging_defs.h"   /* paddr_t, PAGE_SIZE, KERNEL_VBASE, USER_VLIMIT */
 #else
 #error "kernel/arch/paging.h: no paging for this architecture"
 #endif

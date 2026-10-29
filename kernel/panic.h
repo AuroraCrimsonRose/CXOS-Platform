@@ -11,7 +11,7 @@
    halts. Never for a bad request, a missing device or a faulting process -
    those have lesser tiers
    (docs/x86_32/kernel/KERNEL_CONTRACTS.md section 1). The architecture
-   supplies it (arch/x86_32/idt.c), because the screen walks its stack. */
+   supplies it (arch/x86_64/idt.c), because the screen walks its stack. */
 __attribute__((noreturn)) void kpanic(const char *why);
 
 #endif

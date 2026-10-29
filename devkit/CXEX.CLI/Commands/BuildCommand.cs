@@ -22,7 +22,7 @@ public class BuildCommand : Command<BuildCommand.Settings>
         public string InputPath { get; set; } = string.Empty;
 
         [CommandArgument(1, "<OUTPUT_CXEX>")]
-        [Description("Path to write the CXEX binary (e.g. kernel.xkex)")]
+        [Description("Path to write the CXEX binary (e.g. hi.xuex)")]
         public string OutputPath { get; set; } = string.Empty;
 
         [CommandOption("-t|--type")]

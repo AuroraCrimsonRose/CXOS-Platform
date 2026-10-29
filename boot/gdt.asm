@@ -69,7 +69,6 @@ gdt_start:
 
     ; 64-bit code segment descriptor, for the jump into long mode (long.asm).
     ; Base and limit are ignored in 64-bit mode; what matters is L=1 with D=0.
-    ; The 32-bit kernel never loads it.
     gdt_code64:
         dw 0xFFFF           ; limit low 16 bits
         dw 0x0000           ; base  low 16 bits

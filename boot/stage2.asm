@@ -10,16 +10,12 @@
 ; ============================================================================
 ; /boot/stage2.asm - Stage 2
 ;
-; Increment 2: get the CPU into flat 32-bit protected mode.
-;   real mode -> enable A20 -> load boot GDT -> set CR0.PE -> 32-bit pmode.
-; Per design (b), stage 2 stops at "clean flat 32-bit protected mode"; the
-; kernel's own entry stub will later set up paging and map itself into the
-; higher half. Stage 2 does NOT do paging/higher-half or build the kernel's
-; real GDT/TSS (those are kernel-owned).
-;
-; The exception is the x86-64 kernel (roadmap step 5), an ELF image rather
-; than CXEX: long.asm places it, builds the minimal page tables long mode
-; cannot run without, and enters long mode. The kernel's GDT and TSS stay its own.
+; Gets the CPU from real mode to the x86-64 kernel:
+;   real mode -> enable A20 -> load boot GDT -> set CR0.PE -> 32-bit pmode
+;   -> long.asm: place the ELF64 kernel, build the minimal page tables long
+;   mode cannot run without, enter long mode and jump to it.
+; Stage 2 builds only those tables; the kernel replaces them with its own,
+; and its GDT and TSS are its own too.
 
 org 0x7E00              ; stage 1 loads us here
 bits 16
@@ -41,7 +37,7 @@ stage2_start:
     call gather_memory_map      ; mem.asm - MUST be before pmode (needs BIOS)
     call print_mem_count        ; show how many E820 entries we got
 
-    call load_kernel            ; read kernel image from disk to 0x100000 (BIOS)
+    call load_kernel            ; read the kernel image to 0x10000 (BIOS)
 
     ; LAST real-mode step: set a VBE linear-framebuffer graphics mode (needs BIOS
     ; int 10h, gone after the pmode switch). Self-gates on CXK_ENABLE_FB: when 0
@@ -58,8 +54,8 @@ stage2_start:
 
 ; ----------------------------------------------------------------------------
 ; load_kernel - read the kernel image from disk into a LOW buffer (real mode,
-; BIOS int 13h). The kernel is later copied up to physical 0x100000 by the
-; protected-mode code (32-bit addressing makes that trivial and avoids the
+; BIOS int 13h). long.asm later places its segments at their physical
+; addresses, from 1 MB up (32-bit addressing makes that trivial and avoids the
 ; fragile real-mode >1MB segment tricks). The kernel lives on disk right after
 ; stage 2: stage 1 = LBA 0, stage 2 = LBA 1..32, so the kernel starts at LBA 33.
 ; We load it to 0x10000 (linear), a free low buffer.
@@ -93,8 +89,8 @@ KERNEL_SECTORS   equ 1024           ; 512 KB of headroom for the kernel image.
                                     ; leaves a 60 KB gap before the stack. BIOS
                                     ; int13h can't read this in one call (~127
                                     ; sector limit), so load_kernel loops in
-                                    ; chunks. cxexload copies only each section's
-                                    ; real bytes, so over-reading empty tail
+                                    ; chunks. long.asm copies only each segment.s
+                                    ; file bytes, so over-reading empty tail
                                     ; sectors is harmless.
 KERNEL_CHUNK     equ 64             ; sectors per int13h call (<=127, BIOS-safe).
                                     ; 64*512 = 32 KB = 0x800 segment units/chunk.
@@ -318,7 +314,6 @@ msg_a20_fail db '[BOOT] A20 FAIL', 0
 %include "mem.asm"
 %include "gdt.asm"
 %include "pmode.asm"
-%include "cxexload.asm"
 %include "long.asm"
 %include "vbe.asm"
 

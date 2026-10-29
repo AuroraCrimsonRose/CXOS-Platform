@@ -53,7 +53,7 @@ public class QemuConfig
 
     /// <summary>Which kernel the image carries, so which QEMU boots it. Both
     /// are the same PC; the 64-bit one has a CPU that can enter long mode.</summary>
-    public QemuArch Arch { get; set; } = QemuArch.X86_32;
+    public QemuArch Arch { get; set; } = QemuArch.X86_64;
 }
 
 /// <summary>The CPU architectures CXK is built for (roadmap Phase 0 step 5).</summary>

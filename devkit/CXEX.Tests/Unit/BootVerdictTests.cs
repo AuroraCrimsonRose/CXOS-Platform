@@ -113,7 +113,7 @@ public class BootVerdictTests
     public void Verification_boots_never_write_to_the_image()
     {
         // Booting a release image without -snapshot once broke its SHA256SUMS.
-        var args = QemuTool.BuildArguments(BootVerifier.ConfigFor("cxk_disk.img", "serial.log"));
+        var args = QemuTool.BuildArguments(BootVerifier.ConfigFor("cxk_x86_64.img", "serial.log"));
         Assert.Contains("-snapshot", args);
         Assert.Contains("pc", args);   // q35 makes the ATA self-test vacuous
     }
@@ -124,9 +124,9 @@ public class BootVerdictTests
     {
         // QEMU's default model unless one is named; a named one as -cpu, so
         // the minimal and the full model boots really differ.
-        var plain = QemuTool.BuildArguments(BootVerifier.ConfigFor("cxk_disk.img", "serial.log"));
+        var plain = QemuTool.BuildArguments(BootVerifier.ConfigFor("cxk_x86_64.img", "serial.log"));
         Assert.DoesNotContain("-cpu", plain);
-        var args = QemuTool.BuildArguments(BootVerifier.ConfigFor("cxk_disk.img", "serial.log", "pentium"));
+        var args = QemuTool.BuildArguments(BootVerifier.ConfigFor("cxk_x86_64.img", "serial.log", "pentium"));
         int i = args.IndexOf("-cpu");
         Assert.True(i >= 0 && i + 1 < args.Count);
         Assert.Equal("pentium", args[i + 1]);
@@ -138,7 +138,7 @@ public class BootVerdictTests
     {
         // Headless QEMU's host timers are coarsened by Windows 11, which made
         // the cycle-counter self-test fail on a good tree (QemuConfig.ICountNoSleep).
-        var args = QemuTool.BuildArguments(BootVerifier.ConfigFor("cxk_disk.img", "serial.log"));
+        var args = QemuTool.BuildArguments(BootVerifier.ConfigFor("cxk_x86_64.img", "serial.log"));
         int i = args.IndexOf("-icount");
         Assert.True(i >= 0 && i + 1 < args.Count);
         Assert.Equal("shift=6,sleep=off", args[i + 1]);
@@ -153,7 +153,7 @@ public class BootVerdictTests
     {
         // As the rig boots: the stick is the only disk, so a crash log or a
         // self-test that passes has passed on USB, not on an IDE disk beside it.
-        var args = QemuTool.BuildArguments(BootVerifier.ConfigFor("cxk_disk.img", "serial.log", usb: host));
+        var args = QemuTool.BuildArguments(BootVerifier.ConfigFor("cxk_x86_64.img", "serial.log", usb: host));
         Assert.Contains("usb-storage,bus=usbhc.0,drive=cxkdisk,bootindex=0", args);
         // The stick's controller is not the first of its kind: a kernel that
         // drives only the first controller must fail this boot, as on the rig.
@@ -170,13 +170,13 @@ public class BootVerdictTests
     {
         // The kernel must meet it before its own disk, as a machine's drive,
         // and -snapshot must not hide a write to it.
-        var args = QemuTool.BuildArguments(BootVerifier.ConfigFor("cxk_disk.img", "serial.log", foreignDisk: "f.img"));
+        var args = QemuTool.BuildArguments(BootVerifier.ConfigFor("cxk_x86_64.img", "serial.log", foreignDisk: "f.img"));
         int foreign = args.IndexOf("format=raw,file=f.img,if=ide,index=0,snapshot=off");
         int boot = args.IndexOf("ide-hd,drive=cxkdisk,bus=ide.0,unit=1,bootindex=0");
         Assert.True(foreign >= 0 && boot > foreign);
         Assert.Contains("-snapshot", args);
 
-        var usb = QemuTool.BuildArguments(BootVerifier.ConfigFor("cxk_disk.img", "serial.log", usb: UsbHost.Xhci, foreignDisk: "f.img"));
+        var usb = QemuTool.BuildArguments(BootVerifier.ConfigFor("cxk_x86_64.img", "serial.log", usb: UsbHost.Xhci, foreignDisk: "f.img"));
         Assert.Contains("format=raw,file=f.img,if=ide,index=0,snapshot=off", usb);
         Assert.Contains("usb-storage,bus=usbhc.0,drive=cxkdisk,bootindex=0", usb);
     }
@@ -261,21 +261,21 @@ public class BootVerdictTests
 
     [Fact]
     [Trait(Categories.Key, Categories.Unit)]
-    public void The_x86_64_image_boots_on_the_64_bit_qemu_and_the_default_stays_32_bit()
+    public void The_default_boot_is_the_64_bit_qemu_and_x86_32_names_the_32_bit_one()
     {
-        // The default is the 32-bit kernel's QEMU: every existing verification
-        // boot keeps the CPU model it was green on.
-        string plain = QemuTool.CommandLine(BootVerifier.ConfigFor("cxk_disk.img", "serial.log"));
-        Assert.StartsWith("qemu-system-i386 ", plain);
-
-        string wide = QemuTool.CommandLine(BootVerifier.ConfigFor("cxk_x86_64.img", "serial.log", arch: QemuArch.X86_64));
-        Assert.StartsWith("qemu-system-x86_64 ", wide);
+        // The system is x86-64 (roadmap step 6d3b): a verification boot needs
+        // no --arch. x86_32 still boots an image from the retired 32-bit line.
+        string plain = QemuTool.CommandLine(BootVerifier.ConfigFor("cxk_x86_64.img", "serial.log"));
+        Assert.StartsWith("qemu-system-x86_64 ", plain);
         // RAM past 4 GB, so the page allocator's high zone exists
-        Assert.Contains($"-m {BootVerifier.X86_64MemoryMb}M ", wide);
+        Assert.Contains($"-m {BootVerifier.X86_64MemoryMb}M ", plain);
         Assert.True(BootVerifier.X86_64MemoryMb > 4096);
+
+        string narrow = QemuTool.CommandLine(BootVerifier.ConfigFor("cxk_x86_64.img", "serial.log", arch: QemuArch.X86_32));
+        Assert.StartsWith("qemu-system-i386 ", narrow);
         // the same verification boot otherwise: snapshot, headless, icount
-        Assert.Equal(plain.Replace("cxk_disk.img", "cxk_x86_64.img").Replace("-m 256M ", $"-m {BootVerifier.X86_64MemoryMb}M ")["qemu-system-i386".Length..],
-                     wide["qemu-system-x86_64".Length..]);
+        Assert.Equal(plain.Replace($"-m {BootVerifier.X86_64MemoryMb}M ", "-m 256M ")["qemu-system-x86_64".Length..],
+                     narrow["qemu-system-i386".Length..]);
     }
 
     [Fact]

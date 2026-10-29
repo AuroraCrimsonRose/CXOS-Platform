@@ -6,15 +6,17 @@
 #  Author: Aurora Tejeda / CATX Systems
 # ============================================================================
 #
-# v5 build - boot chain + higher-half kernel + X apps.
-#   stage 1 (boot.asm) -> stage 2 (a20/mem/gdt/pmode + CXEX load) ->
-#   kernel (higher-half at 0xC0100000) -> executive (.xoex) -> shell (.xsex)
+# The x86-64 system - boot chain + kernel + X programs on one disk.
+#   stage 1 (boot.asm) -> stage 2 (a20/mem/gdt/pmode, then long.asm: the ELF64
+#   kernel placed and long mode entered) -> kernel (top 2 GiB) ->
+#   executive (.xoex) -> shell (.xsex)
 #
 # Kernel sources are LISTS (KERNEL_C_SRCS / KERNEL_ASM_SRCS): to add a
 # subsystem, append its .c/.asm here - the compile+link rules are generated
-# automatically. Include dirs are in KERNEL_INCLUDES.
+# automatically. Include dirs are in KERNEL_INCLUDES. Programs are one
+# cx_x_program line each (cxk_toolchain.cmake).
 #
-# X apps build automatically: edit os/apps/shell.xfxn and a plain build
+# X programs build automatically: edit os/apps/shell.xfxn and a plain build
 # recompiles it, repackages the .xsex, regenerates app_image.h, relinks the
 # executive, and reimages the disk.
 
@@ -52,13 +54,13 @@ endif()
 
 # ---- toolchain (LLVM: clang + ld.lld, HARDENING_PLAN D5) ----
 # One toolchain on every host. clang cross-compiles by target triple, so there
-# is no i686-elf GCC to install and no per-host prefix or .exe suffix to guess:
+# is no cross GCC to install and no per-host prefix or .exe suffix to guess:
 # the defaults below are correct on Windows, Linux and macOS alike.
 #
 # Each is still overridable with -D, for a host carrying several LLVM versions
 # or one where they are not on PATH.
 if(NOT DEFINED CXK_TARGET)
-    set(CXK_TARGET "i686-elf")
+    set(CXK_TARGET "x86_64-elf")
 endif()
 if(NOT DEFINED CMAKE_ASM_NASM_COMPILER)
     set(CMAKE_ASM_NASM_COMPILER nasm)
@@ -74,9 +76,8 @@ endif()
 # Step out of tools/cmake to point to the actual CXK root directory
 get_filename_component(SRC_DIR "${CMAKE_SOURCE_DIR}/../.." ABSOLUTE)
 set(BUILD_DIR ${CMAKE_BINARY_DIR})
-set(IMAGES_DIR   ${SRC_DIR}/dist/CXK_x86_32/images)
-set(DIST_DIR     ${SRC_DIR}/dist/CXK_x86_32/packages)
-set(PACKAGES_DIR ${DIST_DIR})
+set(IMAGES_DIR   ${SRC_DIR}/dist/CXK_x86_64/images)
+set(PACKAGES_DIR ${SRC_DIR}/dist/CXK_x86_64/packages)
 
 # ---- kernel include directories (add new subsystem dirs here) ----
 set(KERNEL_INCLUDES
@@ -106,25 +107,6 @@ set(KERNEL_INCLUDES
     -I${SRC_DIR}/kernel/drivers/net
 )
 
-# freestanding kernel C flags
-#
-# -mno-sse/-sse2/-mmx/-implicit-float are NOT optional and must never be dropped.
-# clang --target=i686-elf defaults to an SSE2-capable CPU, where the i686-elf GCC
-# this replaced defaulted to plain i686. Left alone, clang uses XMM registers for
-# ordinary integer work - it emitted `movsd 0x40(%esp), %xmm0` in pmm_init purely
-# to move a 64-bit value. The kernel never sets CR4.OSFXSR, so the first such
-# instruction raises #UD, and the invalid-opcode panic then faults again inside
-# its own stack walker. The result is an early triple-fault-ish panic loop with
-# no obvious connection to the compiler.
-#
-# x87 stays ENABLED (no -mno-80387) for kernel/lib/math/kmath.c and arch/x86/fpu.c.
-# Neither is in the build today, deliberately: fpu.c explains that enabling FP
-# needs FPU state saved on context switch first. Leaving x87 on means wiring
-# them in is a source-list change, not a flags change.
-set(KCFLAGS --target=${CXK_TARGET} -ffreestanding -fno-pic -fno-stack-protector
-            -mno-sse -mno-sse2 -mno-mmx -mno-implicit-float
-            -Wall -Wextra ${CXK_DEFS} ${KERNEL_INCLUDES} -c)
-
 # ---- the kernel's own version, from the one registry ----
 # Read straight out of versions.json rather than copied here, so the kernel
 # cannot print a version the registry disagrees with - the banner used to be the
@@ -151,7 +133,33 @@ file(WRITE ${BUILD_DIR}/cxk_version.h
      "#ifndef CXK_VERSION_H\n#define CXK_VERSION_H\n"
      "#define CXK_VERSION_STR \"${CXK_KERNEL_VERSION}\"\n"
      "#endif\n")
-list(APPEND KCFLAGS -I${BUILD_DIR})
+
+# freestanding kernel C flags
+#
+# The kernel code model, and no red zone: interrupts land on the current stack
+# in ring 0, below RSP.
+#
+# -mno-sse/-sse2/-mmx/-implicit-float are NOT optional and must never be dropped.
+# Left alone, clang uses XMM registers for ordinary integer work - on x86-32 it
+# emitted `movsd 0x40(%esp), %xmm0` in pmm_init purely to move a 64-bit value.
+# The kernel saves no SIMD state on a context switch, so the first such
+# instruction would corrupt another thread's registers, or raise #UD where the
+# CPU has SSE switched off.
+#
+# -Wshorten-64-to-32 is an error: a pointer, a paddr_t or a size_t squeezed
+# through uint32_t truncates silently. It was a separate syntax-only pass over
+# the generic code while the 32-bit kernel was the build (roadmap Phase 0
+# step 5); it is simply the kernel's own flags now.
+#
+# x87 stays ENABLED (no -mno-80387) for kernel/lib/math/kmath.c and arch/x86/fpu.c.
+# Neither is in the build today, deliberately: fpu.c explains that enabling FP
+# needs FPU state saved on context switch first. Leaving x87 on means wiring
+# them in is a source-list change, not a flags change.
+set(KCFLAGS --target=${CXK_TARGET} -ffreestanding -fno-pic -fno-stack-protector
+            -mcmodel=kernel -mno-red-zone
+            -mno-sse -mno-sse2 -mno-mmx -mno-implicit-float
+            -Wall -Wextra -Werror -Wshorten-64-to-32 ${CXK_DEFS}
+            ${KERNEL_INCLUDES} -I${BUILD_DIR} -c)
 
 # ---- KERNEL C SOURCES (append new subsystems here) ----
 set(KERNEL_C_SRCS
@@ -161,17 +169,18 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/diag/crashlog.c
     ${SRC_DIR}/kernel/ktest.c
     ${SRC_DIR}/kernel/kconfig.c
-    ${SRC_DIR}/kernel/arch/x86_32/cpu.c
-    ${SRC_DIR}/kernel/arch/x86_32/ktest_arch.c
-    ${SRC_DIR}/kernel/arch/x86_32/gdt.c
-    ${SRC_DIR}/kernel/arch/x86_32/idt.c
+    ${SRC_DIR}/kernel/arch/x86_64/cpu.c
+    ${SRC_DIR}/kernel/arch/x86_64/early_con.c
+    ${SRC_DIR}/kernel/arch/x86_64/ktest_arch.c
+    ${SRC_DIR}/kernel/arch/x86_64/gdt.c
+    ${SRC_DIR}/kernel/arch/x86_64/idt.c
     ${SRC_DIR}/kernel/arch/x86/apic.c
     ${SRC_DIR}/kernel/arch/x86/cpufeat.c
     ${SRC_DIR}/kernel/arch/x86/ktest_x86.c
-    ${SRC_DIR}/kernel/memman/pmm.c
-    ${SRC_DIR}/kernel/arch/x86_32/paging.c
-    ${SRC_DIR}/kernel/arch/x86_32/pagetable.c
-    ${SRC_DIR}/kernel/arch/x86_32/addr_space.c
+    ${SRC_DIR}/kernel/arch/x86_64/paging.c
+    ${SRC_DIR}/kernel/arch/x86_64/pagetable.c
+    ${SRC_DIR}/kernel/memman/buddy.c
+    ${SRC_DIR}/kernel/memman/pagedb.c
     ${SRC_DIR}/kernel/memman/heap.c
     ${SRC_DIR}/kernel/memman/vmregion.c
     ${SRC_DIR}/kernel/memman/kstack.c
@@ -259,17 +268,16 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/ktest_fs.c
 )
 
-# ---- KERNEL ASM SOURCES (elf32 objects; append new ones here) ----
+# ---- KERNEL ASM SOURCES (elf64 objects; append new ones here) ----
 set(KERNEL_ASM_SRCS
-    ${SRC_DIR}/kernel/arch/x86_32/entry.asm
-    ${SRC_DIR}/kernel/arch/x86_32/gdt_flush.asm
-    ${SRC_DIR}/kernel/arch/x86_32/idt.asm
-    ${SRC_DIR}/kernel/arch/x86_32/switch.asm
-    ${SRC_DIR}/kernel/arch/x86_32/usermode.asm
+    ${SRC_DIR}/kernel/arch/x86_64/entry.asm
+    ${SRC_DIR}/kernel/arch/x86_64/isr.asm
+    ${SRC_DIR}/kernel/arch/x86_64/switch.asm
+    ${SRC_DIR}/kernel/arch/x86_64/usermode.asm
 )
 
 # ---- linker script ----
-set(LINKER ${SRC_DIR}/kernel/arch/x86_32/linker.ld)
+set(LINKER ${SRC_DIR}/kernel/arch/x86_64/linker.ld)
 
 # ---- boot sources ----
 set(BOOT_SRC   ${SRC_DIR}/boot/boot.asm)
@@ -279,72 +287,11 @@ set(STAGE2_SRC ${SRC_DIR}/boot/stage2.asm)
 set(BOOT_BIN    ${BUILD_DIR}/boot.bin)
 set(STAGE2_BIN  ${BUILD_DIR}/stage2.bin)
 set(KERNEL_ELF  ${BUILD_DIR}/kernel.elf)
-set(KERNEL_XKEX ${DIST_DIR}/kernel.xkex)
-set(DISK_IMG    ${IMAGES_DIR}/cxk_x86_32.img)
+set(KERNEL_DISK_ELF ${BUILD_DIR}/kernel.stripped.elf)   # what the disk carries
+set(CXK_DISK    ${IMAGES_DIR}/cxk_x86_64.img)
 
-# ---- X apps: .xfxn -> .elf -> .xsex -> embedded C header ----
-# APP_BOOT is the startup app: embedded into the executive and spawned at boot.
-# To swap shells, point APP_BOOT/APP_BOOT_NAME at a different .xfxn.
-set(APP_BOOT      ${SRC_DIR}/os/apps/shell.xfxn)
-set(APP_BOOT_NAME shell)
-
-set(APP_ELF   ${BUILD_DIR}/${APP_BOOT_NAME}.elf)
-set(APP_XCEX  ${BUILD_DIR}/${APP_BOOT_NAME}.xsex)
-set(APP_IMAGE ${BUILD_DIR}/app_image.h)   # executive.c includes <app_image.h>: -I the target's directory
-
-# DISK_APP is the opposite of APP_BOOT: not embedded in the executive, but
-# staged onto the disk as a file and started with SYS_EXEC_PATH. It has to be
-# SIGNED, because the kernel verifies what it loads from disk - an unsigned
-# .xuex sitting on disk is refused, which is the property worth having.
-set(DISK_APP      ${SRC_DIR}/os/apps/hi.xfxn)
-set(DISK_APP_NAME hi)
-
-# The settings protocol's self-test. X code, so ktest cannot reach it - it runs
-# as an ordinary ring-3 program at boot and prints a verdict line the serial log
-# captures, which is the same contract a ktest has.
-set(SETTINGS_TEST      ${SRC_DIR}/os/apps/setcheck.xfxn)
-set(SETTINGS_TEST_ELF  ${BUILD_DIR}/setcheck.elf)
-set(SETTINGS_TEST_XUEX ${PACKAGES_DIR}/setcheck.xuex)
-set(DISK_APP_ELF  ${BUILD_DIR}/${DISK_APP_NAME}.elf)
-set(DISK_APP_XCEX ${PACKAGES_DIR}/${DISK_APP_NAME}.xuex)
-
-# supervisor, the service supervisor. Staged and signed exactly like DISK_APP - the
-# executive starts it with SYS_EXEC_PATH, so the kernel verifies it on the way
-# in and an unsigned one is refused. That is the property worth having for the
-# process that decides what else gets to run.
-set(SUPERVISOR_SRC  ${SRC_DIR}/os/apps/supervisor.xfxn)
-set(SUPERVISOR_ELF  ${BUILD_DIR}/supervisor.elf)
-set(SUPERVISOR_XCEX ${PACKAGES_DIR}/supervisor.xsex)
-
-# tokdump, the token printer of the X compiler written in X (os/xc). Built with
-# the CXK platform file, staged with a copy of the lexer's own source to read,
-# so `run tokdump -s /Shared/Source/lex.xfxn` on CXK can be checked against the
-# same command on the host: the same counts and hash mean the same tokens.
-set(TOKDUMP_SRC  ${SRC_DIR}/os/xc/tokdump.xfxn)
-set(TOKDUMP_ELF  ${BUILD_DIR}/tokdump.elf)
-set(TOKDUMP_XUEX ${PACKAGES_DIR}/tokdump.xuex)
-# astdump, the same for its parser: `run +disk astdump -s /Shared/Source/parse.xfxn`.
-set(ASTDUMP_SRC  ${SRC_DIR}/os/xc/astdump.xfxn)
-set(ASTDUMP_ELF  ${BUILD_DIR}/astdump.elf)
-set(ASTDUMP_XUEX ${PACKAGES_DIR}/astdump.xuex)
-# semadump, the same for its type checker: staged with the compiler's own
-# sources and the prelude, so
-# `run +disk semadump -s --prelude /Shared/Source/prelude.xfxn /Shared/Source/sema.xfxn`
-# type checks the type checker on CXK.
-set(SEMADUMP_SRC  ${SRC_DIR}/os/xc/semadump.xfxn)
-set(SEMADUMP_ELF  ${BUILD_DIR}/semadump.elf)
-set(SEMADUMP_XUEX ${PACKAGES_DIR}/semadump.xuex)
-set(PRELUDE_XFXN  ${BUILD_DIR}/prelude.xfxn)   # what `cxk compile` puts in front of a program
-# xc, the X compiler written in X: X source to assembly. Staged with all of
-# its own source - the CXK platform file as xc_sys.xfxn - so that, in
-# /Shared/Source, `run +disk xc --prelude prelude.xfxn xc.xfxn` compiles the
-# compiler on CXK: the same assembly, byte for byte, as on the build machine.
-set(XC_SRC  ${SRC_DIR}/os/xc/xc.xfxn)
-set(XC_ELF  ${BUILD_DIR}/xc.elf)
-set(XC_XUEX ${PACKAGES_DIR}/xc.xuex)
-
-# Everything APP_BOOT can pull in with `import`, so editing any of it actually
-# rebuilds. This variable was referenced by the compile rule below but never
+# Everything a program can pull in with `import`, so editing any of it actually
+# rebuilds. This variable was once referenced by the compile rule but never
 # defined anywhere, and CMake expands an undefined variable to nothing - so the
 # rule effectively had no source dependencies beyond shell.xfxn itself. Editing
 # gui.xfxn, gfx.xfxn or cxos.xfxn produced a silently stale shell.elf, with the
@@ -360,17 +307,10 @@ set(XC_XUEX ${PACKAGES_DIR}/xc.xuex)
 file(GLOB STD_SRCS CONFIGURE_DEPENDS
      ${SRC_DIR}/os/std/*.xfxn
      ${SRC_DIR}/os/apps/*.xfxn)
-
-# the system executive (.xoex): os/executive/executive.c -> ELF -> CXEX (type os)
-set(EXEC_C    ${SRC_DIR}/os/executive/executive.c)
-set(EXEC_LD   ${SRC_DIR}/os/executive/executive.ld)
-set(EXEC_ELF  ${BUILD_DIR}/executive.elf)
-set(EXEC_XOEX ${PACKAGES_DIR}/executive.xoex)
+# The X compiler's own sources, which tokdump, astdump, semadump and xc import.
+file(GLOB XC_SRCS CONFIGURE_DEPENDS ${SRC_DIR}/os/xc/*.xfxn ${SRC_DIR}/os/xc/cxk/*.xfxn)
 
 include(${CMAKE_SOURCE_DIR}/cxk_toolchain.cmake)
-
-# the unified XBPT disk (boot + stage + system on one disk)
-set(CXK_DISK  ${IMAGES_DIR}/cxk_disk.img)
 
 # ---- generate compile rules for each kernel C source ----
 #
@@ -412,7 +352,7 @@ foreach(src ${KERNEL_ASM_SRCS})
     set(obj ${BUILD_DIR}/ka_${name}.o)
     add_custom_command(
         OUTPUT ${obj}
-        COMMAND ${CMAKE_ASM_NASM_COMPILER} -f elf32 ${src} -o ${obj}
+        COMMAND ${CMAKE_ASM_NASM_COMPILER} -f elf64 ${src} -o ${obj}
         DEPENDS ${src}
         COMMENT "ASM ${name}.asm"
     )
@@ -424,6 +364,11 @@ endforeach()
 # other kernel object; C calls it through a header (see kernel/lib/format/xdata.h).
 # The X Data reader is the first: the kernel reads its configuration with the
 # same code the supervisor uses, rather than a third implementation of it.
+#
+# Its code is position-independent by construction - every reference X64Emitter
+# writes is RIP-relative - so it links in the kernel's top 2 GiB as it does in a
+# user program; it uses no SSE and lowers RSP before touching a local, so no
+# red zone.
 #
 # Unlike the pre-flight checks this cannot be skipped on an older cxk - the
 # kernel will not link without it - so an older cxk is stopped here, at
@@ -442,27 +387,11 @@ foreach(src ${KERNEL_X_SRCS})
     set(obj ${BUILD_DIR}/kx_${name}.o)
     add_custom_command(
         OUTPUT ${obj}
-        COMMAND ${CXK} compile ${src} ${obj} --no-prelude --object
+        COMMAND ${CXK} compile ${src} ${obj} --no-prelude --object --target x86_64
         DEPENDS ${src} ${CXK}
         COMMENT "X   ${name}.xfxn (linked into the kernel)"
     )
     list(APPEND KERNEL_OBJS ${obj})
-endforeach()
-# The same for the x86-64 kernel (step 6d2). Its code is position-independent
-# by construction - every reference X64Emitter writes is RIP-relative - so it
-# links in the kernel's top 2 GiB as it does in a user program; it uses no SSE
-# and lowers RSP before touching a local, so no red zone.
-set(KERNEL64_X_OBJS "")
-foreach(src ${KERNEL_X_SRCS})
-    get_filename_component(name ${src} NAME_WE)
-    set(obj ${BUILD_DIR}/kx64_${name}.o)
-    add_custom_command(
-        OUTPUT ${obj}
-        COMMAND ${CXK} compile ${src} ${obj} --no-prelude --object --target x86_64
-        DEPENDS ${src} ${CXK}
-        COMMENT "X64 ${name}.xfxn (linked into the x86-64 kernel)"
-    )
-    list(APPEND KERNEL64_X_OBJS ${obj})
 endforeach()
 
 # ---- stage 1 (flat binary) ----
@@ -480,7 +409,7 @@ add_custom_command(
     DEPENDS ${STAGE2_SRC}
         ${SRC_DIR}/boot/a20.asm ${SRC_DIR}/boot/mem.asm ${SRC_DIR}/boot/cxbi.asm
         ${SRC_DIR}/boot/gdt.asm ${SRC_DIR}/boot/pmode.asm
-        ${SRC_DIR}/boot/cxexload.asm ${SRC_DIR}/boot/long.asm ${SRC_DIR}/boot/vbe.asm
+        ${SRC_DIR}/boot/long.asm ${SRC_DIR}/boot/vbe.asm
     COMMENT "Assembling stage 2 (stage2.asm + includes)"
 )
 
@@ -505,76 +434,25 @@ add_custom_command(
     COMMENT "Checking the architecture boundary"
 )
 
-# ---- generic code is width-clean (roadmap Phase 0 step 5) ----
-# Every kernel C source outside kernel/arch/ must also compile for x86-64,
-# warning-free, with -Wshorten-64-to-32 an error: a pointer, a paddr_t or a
-# size_t squeezed through uint32_t builds silently on x86-32 and truncates on
-# x86-64. Syntax only - no object is kept - so it costs one parse per file.
-# The kernel does not link until it passes, as with the boundary above.
-set(WIDTH_CHECK_FLAGS --target=x86_64-elf -ffreestanding -fno-pic -mcmodel=kernel
-            -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -mno-implicit-float
-            -Wall -Wextra -Wshorten-64-to-32 -Werror
-            ${CXK_DEFS} ${KERNEL_INCLUDES} -I${BUILD_DIR} -fsyntax-only)
-set(WIDTH_CHECK_STAMPS "")
-foreach(src ${KERNEL_C_SRCS})
-    if(src MATCHES "/kernel/arch/")
-        continue()
-    endif()
-    get_filename_component(name ${src} NAME_WE)
-    set(stamp ${BUILD_DIR}/w64_${name}.ok)
-    set(dep ${BUILD_DIR}/w64_${name}.d)
-    add_custom_command(
-        OUTPUT ${stamp}
-        COMMAND ${KCC} ${WIDTH_CHECK_FLAGS} -MD -MF ${dep} -MT ${stamp} ${src}
-        COMMAND ${CMAKE_COMMAND} -E touch ${stamp}
-        DEPENDS ${src}
-        DEPFILE ${dep}
-        COMMENT "W64 ${name}.c"
-    )
-    list(APPEND WIDTH_CHECK_STAMPS ${stamp})
-endforeach()
-
-# ---- link the kernel (higher-half) ----
+# ---- link the kernel (top 2 GiB) ----
 add_custom_command(
     OUTPUT ${KERNEL_ELF}
-    COMMAND ${CMAKE_LD} -m elf_i386 -T ${LINKER} -o ${KERNEL_ELF} ${KERNEL_OBJS}
-    DEPENDS ${KERNEL_OBJS} ${ARCH_CHECK_STAMP} ${WIDTH_CHECK_STAMPS}
-    COMMENT "Linking kernel (higher-half)"
+    COMMAND ${CMAKE_LD} -m elf_x86_64 -nostdlib -T ${LINKER} -o ${KERNEL_ELF} ${KERNEL_OBJS}
+    DEPENDS ${KERNEL_OBJS} ${LINKER} ${ARCH_CHECK_STAMP}
+    COMMENT "Linking the kernel (top 2 GiB)"
 )
-
-# ---- kernel.elf -> kernel.xkex (CXEX), signed when -DSIGN=ON ----
+# The disk carries the same link with no symbol table: stage 2 reads the whole
+# file into 512 KB of low memory (KERNEL_SECTORS in boot/stage2.asm) and
+# loads only the PT_LOAD segments, so the symbols cost budget and buy nothing
+# there. kernel.elf keeps them, for a debugger or addr2line.
+#
+# The kernel is an ELF image as it stands, unsigned: CXEX for x86-64, and the
+# signature check in the loader, come with it (docs/boot/CX_BOOT.md section 4).
 add_custom_command(
-    OUTPUT ${KERNEL_XKEX}
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${PACKAGES_DIR}
-    COMMAND ${CXK} build ${KERNEL_ELF} ${KERNEL_XKEX} --type kernel
-    ${KSIGN}
-    DEPENDS ${KERNEL_ELF} ${CXK}
-    COMMENT "Converting kernel.elf -> kernel.xkex (CXEX)"
-)
-
-# ---- X app: shell.xfxn -> shell.elf ----
-add_custom_command(
-    OUTPUT ${APP_ELF}
-    COMMAND ${CXK} compile ${APP_BOOT} ${APP_ELF} -I ${SRC_DIR}/os/std
-    DEPENDS ${APP_BOOT} ${CXK} ${STD_SRCS}
-    COMMENT "X   ${APP_BOOT_NAME}.xfxn -> ELF"
-)
-
-# ---- shell.elf -> shell.xsex (CXEX, type system) ----
-add_custom_command(
-    OUTPUT ${APP_XCEX}
-    COMMAND ${CXK} build ${APP_ELF} ${APP_XCEX} --type system
-    ${SHSIGN}
-    DEPENDS ${APP_ELF} ${CXK}
-    COMMENT "Packaging ${APP_BOOT_NAME}.xsex (CXEX, type system, signed then embedded)"
-)
-
-# ---- shell.xsex -> app_image.h (byte array the executive embeds) ----
-add_custom_command(
-    OUTPUT ${APP_IMAGE}
-    COMMAND ${CXK} embed ${APP_XCEX} ${APP_IMAGE} ${APP_BOOT_NAME}_xsex
-    DEPENDS ${APP_XCEX} ${CXK}
-    COMMENT "Embedding ${APP_BOOT_NAME}.xsex -> app_image.h"
+    OUTPUT ${KERNEL_DISK_ELF}
+    COMMAND ${CMAKE_LD} -m elf_x86_64 -nostdlib --strip-all -T ${LINKER} -o ${KERNEL_DISK_ELF} ${KERNEL_OBJS}
+    DEPENDS ${KERNEL_OBJS} ${LINKER} ${KERNEL_ELF}
+    COMMENT "Linking the kernel for the disk (no symbols)"
 )
 
 # ---- console font: Terminus (OFL-1.1) BDF -> .xfnt, staged to /System/Fonts ----
@@ -598,142 +476,93 @@ add_custom_command(
     COMMENT "FONT ter-u16n.bdf -> console_16.xfnt (CP437)"
 )
 
-# ---- disk app: hi.xfxn -> ELF -> signed .xuex (staged, not embedded) ----
+# ---- the X programs ----
+# APP_BOOT is the startup app: embedded into the executive and spawned at boot.
+# To swap shells, point APP_BOOT/APP_BOOT_NAME at a different .xfxn.
+#
+# Every other program is the opposite: staged onto the disk as a file and
+# started with SYS_EXEC_PATH. Each has to be SIGNED, because the kernel
+# verifies what it loads from disk - an unsigned program sitting on disk is
+# refused, which is the property worth having. Above all for the supervisor,
+# the process that decides what else gets to run.
+#
+# setcheck is the settings protocol's self-test. X code, so ktest cannot reach
+# it - it runs as an ordinary ring-3 program at boot and prints a verdict line
+# the serial log captures, which is the same contract a ktest has.
+#
+# tokdump, astdump and semadump are the X compiler's front end (os/xc), built
+# with the CXK platform file and staged with the compiler's own sources, so
+# `run tokdump -s /Shared/Source/lex.xfxn` on CXK can be checked against the
+# same command on the host: the same counts and hash mean the same tokens.
+# `run +disk semadump -s --prelude /Shared/Source/prelude.xfxn
+# /Shared/Source/sema.xfxn` type checks the type checker on CXK. xc is the
+# whole compiler, X source to assembly: in /Shared/Source,
+# `run +disk xc --prelude prelude.xfxn xc.xfxn` compiles the compiler on CXK.
+#
+# They are linked at user addresses below 4 GB, which the ABI's u32 user
+# addresses need ("Not in 6d", docs/planning/CX_ROADMAP.md).
+set(APP_BOOT      ${SRC_DIR}/os/apps/shell.xfxn)
+set(APP_BOOT_NAME shell)
+set(DISK_APP_NAME hi)
+set(XC_INCS ${SRC_DIR}/os/xc/cxk ${SRC_DIR}/os/xc ${SRC_DIR}/os/std)
+cx_x_program(SHELL_XSEX      ${APP_BOOT}                          system xsex ${SRC_DIR}/os/std)
+cx_x_program(DISK_APP_XUEX   ${SRC_DIR}/os/apps/hi.xfxn           user   xuex ${SRC_DIR}/os/std)
+cx_x_program(SETCHECK_XUEX   ${SRC_DIR}/os/apps/setcheck.xfxn     user   xuex ${SRC_DIR}/os/std)
+cx_x_program(SUPERVISOR_XSEX ${SRC_DIR}/os/apps/supervisor.xfxn   system xsex ${SRC_DIR}/os/std)
+cx_x_program(TOKDUMP_XUEX    ${SRC_DIR}/os/xc/tokdump.xfxn        user   xuex ${XC_INCS})
+cx_x_program(ASTDUMP_XUEX    ${SRC_DIR}/os/xc/astdump.xfxn        user   xuex ${XC_INCS})
+cx_x_program(SEMADUMP_XUEX   ${SRC_DIR}/os/xc/semadump.xfxn       user   xuex ${XC_INCS})
+cx_x_program(XC_XUEX         ${SRC_DIR}/os/xc/xc.xfxn             user   xuex ${XC_INCS})
+
+# ---- shell.xsex -> app_image.h (byte array the executive embeds) ----
+# The boot shell is EMBEDDED in the executive rather than staged on disk, and
+# used to be the one artifact nobody signed - trusted only because the
+# executive around it was. SYS_SPAWN now verifies what it is handed, so the
+# shell has a signature of its own, made before `cxk embed` runs: the byte
+# array the executive carries is the signed image.
+set(APP_IMAGE ${BUILD_DIR}/app_image.h)   # executive.c includes <app_image.h>: -I the target's directory
 add_custom_command(
-    OUTPUT ${DISK_APP_ELF}
-    COMMAND ${CXK} compile ${DISK_APP} ${DISK_APP_ELF} -I ${SRC_DIR}/os/std
-    DEPENDS ${DISK_APP} ${CXK} ${STD_SRCS}
-    COMMENT "X   ${DISK_APP_NAME}.xfxn -> ELF"
-)
-add_custom_command(
-    OUTPUT ${DISK_APP_XCEX}
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${PACKAGES_DIR}
-    COMMAND ${CXK} build ${DISK_APP_ELF} ${DISK_APP_XCEX} --type user
-    ${ASIGN}
-    DEPENDS ${DISK_APP_ELF} ${CXK}
-    COMMENT "Packaging ${DISK_APP_NAME}.xuex (CXEX, type user, staged to disk)"
+    OUTPUT ${APP_IMAGE}
+    COMMAND ${CXK} embed ${SHELL_XSEX} ${APP_IMAGE} ${APP_BOOT_NAME}_xsex
+    DEPENDS ${SHELL_XSEX} ${CXK}
+    COMMENT "Embedding ${APP_BOOT_NAME}.xsex -> app_image.h"
 )
 
-# ---- the settings protocol's self-test, built like any other disk program ----
-add_custom_command(
-    OUTPUT ${SETTINGS_TEST_ELF}
-    COMMAND ${CXK} compile ${SETTINGS_TEST} ${SETTINGS_TEST_ELF} -I ${SRC_DIR}/os/std
-    DEPENDS ${SETTINGS_TEST} ${CXK} ${STD_SRCS}
-    COMMENT "X   setcheck.xfxn -> ELF"
-)
-add_custom_command(
-    OUTPUT ${SETTINGS_TEST_XUEX}
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${PACKAGES_DIR}
-    COMMAND ${CXK} build ${SETTINGS_TEST_ELF} ${SETTINGS_TEST_XUEX} --type user
-    ${SCSIGN}
-    DEPENDS ${SETTINGS_TEST_ELF} ${CXK}
-    COMMENT "Packaging setcheck.xuex (CXEX, type user, staged to disk)"
-)
-
-# ---- supervisor: the service supervisor (staged + signed, like the disk app) ----
-add_custom_command(
-    OUTPUT ${SUPERVISOR_ELF}
-    COMMAND ${CXK} compile ${SUPERVISOR_SRC} ${SUPERVISOR_ELF} -I ${SRC_DIR}/os/std
-    DEPENDS ${SUPERVISOR_SRC} ${CXK} ${STD_SRCS}
-    COMMENT "X   supervisor.xfxn -> ELF"
-)
-add_custom_command(
-    OUTPUT ${SUPERVISOR_XCEX}
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${PACKAGES_DIR}
-    COMMAND ${CXK} build ${SUPERVISOR_ELF} ${SUPERVISOR_XCEX} --type system
-    ${VSIGN}
-    DEPENDS ${SUPERVISOR_ELF} ${CXK}
-    COMMENT "Packaging supervisor.xsex (CXEX, type system, staged to disk)"
-)
-
-# ---- tokdump, astdump, semadump: the X compiler's front end, on CXK (staged + signed, like the disk app) ----
-file(GLOB XC_SRCS CONFIGURE_DEPENDS ${SRC_DIR}/os/xc/*.xfxn ${SRC_DIR}/os/xc/cxk/*.xfxn)
-add_custom_command(
-    OUTPUT ${TOKDUMP_ELF}
-    COMMAND ${CXK} compile ${TOKDUMP_SRC} ${TOKDUMP_ELF}
-            -I ${SRC_DIR}/os/xc/cxk -I ${SRC_DIR}/os/xc -I ${SRC_DIR}/os/std
-    DEPENDS ${XC_SRCS} ${CXK} ${STD_SRCS}
-    COMMENT "X   tokdump.xfxn -> ELF"
-)
-add_custom_command(
-    OUTPUT ${TOKDUMP_XUEX}
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${PACKAGES_DIR}
-    COMMAND ${CXK} build ${TOKDUMP_ELF} ${TOKDUMP_XUEX} --type user
-    ${TSIGN}
-    DEPENDS ${TOKDUMP_ELF} ${CXK}
-    COMMENT "Packaging tokdump.xuex (CXEX, type user, staged to disk)"
-)
-add_custom_command(
-    OUTPUT ${ASTDUMP_ELF}
-    COMMAND ${CXK} compile ${ASTDUMP_SRC} ${ASTDUMP_ELF}
-            -I ${SRC_DIR}/os/xc/cxk -I ${SRC_DIR}/os/xc -I ${SRC_DIR}/os/std
-    DEPENDS ${XC_SRCS} ${CXK} ${STD_SRCS}
-    COMMENT "X   astdump.xfxn -> ELF"
-)
-add_custom_command(
-    OUTPUT ${ASTDUMP_XUEX}
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${PACKAGES_DIR}
-    COMMAND ${CXK} build ${ASTDUMP_ELF} ${ASTDUMP_XUEX} --type user
-    ${PSIGN}
-    DEPENDS ${ASTDUMP_ELF} ${CXK}
-    COMMENT "Packaging astdump.xuex (CXEX, type user, staged to disk)"
-)
-add_custom_command(
-    OUTPUT ${XC_ELF}
-    COMMAND ${CXK} compile ${XC_SRC} ${XC_ELF}
-            -I ${SRC_DIR}/os/xc/cxk -I ${SRC_DIR}/os/xc -I ${SRC_DIR}/os/std
-    DEPENDS ${XC_SRCS} ${CXK} ${STD_SRCS}
-    COMMENT "X   xc.xfxn -> ELF"
-)
-add_custom_command(
-    OUTPUT ${XC_XUEX}
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${PACKAGES_DIR}
-    COMMAND ${CXK} build ${XC_ELF} ${XC_XUEX} --type user
-    ${CSIGN}
-    DEPENDS ${XC_ELF} ${CXK}
-    COMMENT "Packaging xc.xuex (CXEX, type user, staged to disk)"
-)
-add_custom_command(
-    OUTPUT ${PRELUDE_XFXN}
-    COMMAND ${CXK} prelude ${PRELUDE_XFXN}
-    DEPENDS ${CXK}
-    COMMENT "X   prelude -> prelude.xfxn"
-)
-add_custom_command(
-    OUTPUT ${SEMADUMP_ELF}
-    COMMAND ${CXK} compile ${SEMADUMP_SRC} ${SEMADUMP_ELF}
-            -I ${SRC_DIR}/os/xc/cxk -I ${SRC_DIR}/os/xc -I ${SRC_DIR}/os/std
-    DEPENDS ${XC_SRCS} ${CXK} ${STD_SRCS}
-    COMMENT "X   semadump.xfxn -> ELF"
-)
-add_custom_command(
-    OUTPUT ${SEMADUMP_XUEX}
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${PACKAGES_DIR}
-    COMMAND ${CXK} build ${SEMADUMP_ELF} ${SEMADUMP_XUEX} --type user
-    ${MSIGN}
-    DEPENDS ${SEMADUMP_ELF} ${CXK}
-    COMMENT "Packaging semadump.xuex (CXEX, type user, staged to disk)"
-)
-
-# ---- executive.c -> executive.elf (user-half) -> executive.xoex (signed) ----
+# ---- executive.c -> executive.elf (user half) -> executive.xoex (signed) ----
+# No red zone: the executive's syscalls are inline `call`s, which push below
+# RSP (executive.c).
+set(EXEC_C    ${SRC_DIR}/os/executive/executive.c)
+set(EXEC_LD   ${SRC_DIR}/os/executive/executive.ld)
+set(EXEC_ELF  ${BUILD_DIR}/executive.elf)
+set(EXEC_XOEX ${PACKAGES_DIR}/executive.xoex)
 add_custom_command(
     OUTPUT ${EXEC_ELF}
     COMMAND ${KCC} --target=${CXK_TARGET} -ffreestanding -fno-pic -fno-stack-protector -nostdlib
-            -mno-sse -mno-sse2 -mno-mmx -mno-implicit-float
+            -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -mno-implicit-float
             -I${SRC_DIR}/abi
             -I${BUILD_DIR}
             -fuse-ld=lld -Wl,-T,${EXEC_LD} -o ${EXEC_ELF} ${EXEC_C}
     DEPENDS ${EXEC_C} ${EXEC_LD} ${APP_IMAGE}
     COMMENT "CC+LD executive.c -> executive.elf (user-half .xoex bootstrap)"
 )
-
+cx_sign(EXEC_SIGN ${EXEC_XOEX})
 add_custom_command(
     OUTPUT ${EXEC_XOEX}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${PACKAGES_DIR}
     COMMAND ${CXK} build ${EXEC_ELF} ${EXEC_XOEX} --type os
-    ${XSIGN}
+    ${EXEC_SIGN}
     DEPENDS ${EXEC_ELF} ${CXK}
     COMMENT "Converting executive.elf -> executive.xoex (CXEX, type os)"
+)
+
+# xc reads the prelude for the target it compiles for: what `cxk compile`
+# puts in front of a program.
+set(PRELUDE_XFXN ${BUILD_DIR}/prelude.xfxn)
+add_custom_command(
+    OUTPUT ${PRELUDE_XFXN}
+    COMMAND ${CXK} prelude ${PRELUDE_XFXN} --target x86_64
+    DEPENDS ${CXK}
+    COMMENT "X   prelude -> prelude.xfxn"
 )
 
 # ---- service descriptors: checked before they go on the disk ----
@@ -766,17 +595,16 @@ else()
     set(XDCHECK COMMAND ${CMAKE_COMMAND} -E echo "  service descriptors and kernel.xkco NOT checked - cxk predates check-xdata")
 endif()
 
-# What the system partition holds: the same files on both architectures'
-# disks, each disk's programs (and the prelude xc reads) built for its own.
+# What the system partition holds.
 set(CXK_STAGED_PROGRAMS
     --stage System/Boot.xoex=${EXEC_XOEX}
-    --stage Shared/Programs/${DISK_APP_NAME}.xuex=${DISK_APP_XCEX}
-    --stage System/Programs/supervisor.xsex=${SUPERVISOR_XCEX}
+    --stage Shared/Programs/${DISK_APP_NAME}.xuex=${DISK_APP_XUEX}
+    --stage System/Programs/supervisor.xsex=${SUPERVISOR_XSEX}
     --stage Shared/Programs/tokdump.xuex=${TOKDUMP_XUEX}
     --stage Shared/Programs/astdump.xuex=${ASTDUMP_XUEX}
     --stage Shared/Programs/semadump.xuex=${SEMADUMP_XUEX}
     --stage Shared/Programs/xc.xuex=${XC_XUEX}
-    --stage Shared/Programs/setcheck.xuex=${SETTINGS_TEST_XUEX}
+    --stage Shared/Programs/setcheck.xuex=${SETCHECK_XUEX}
     --stage Shared/Source/prelude.xfxn=${PRELUDE_XFXN}
 )
 set(CXK_STAGED_SHARED
@@ -804,277 +632,21 @@ set(CXK_STAGED_SHARED
     --stage System/Config/kernel.xkco=${KERNEL_XKCO}
 )
 
-# ---- unified disk: stage1 + XBPT + stage2 + BOOT/STAGE/SYSTEM partitions ----
+# ---- the disk: stage1 + XBPT + stage2 + BOOT/STAGE/SYSTEM partitions ----
 add_custom_command(
     OUTPUT ${CXK_DISK}
     ${XDCHECK}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${IMAGES_DIR}
     COMMAND ${CXK} image --out ${CXK_DISK} --size-mb 64 --boot-mb 8
-            --stage1 ${BOOT_BIN} --stage2 ${STAGE2_BIN} --kernel ${KERNEL_XKEX}
+            --stage1 ${BOOT_BIN} --stage2 ${STAGE2_BIN} --kernel ${KERNEL_DISK_ELF}
             ${CXK_STAGED_PROGRAMS} ${CXK_STAGED_SHARED}
-    DEPENDS ${BOOT_BIN} ${STAGE2_BIN} ${KERNEL_XKEX} ${EXEC_XOEX} ${DISK_APP_XCEX}
-            ${SUPERVISOR_XCEX} ${TOKDUMP_XUEX} ${ASTDUMP_XUEX} ${SEMADUMP_XUEX} ${XC_XUEX}
-            ${XC_SRCS} ${SRC_DIR}/os/std/buf.xfxn ${SRC_DIR}/os/std/heap.xfxn
-            ${SRC_DIR}/os/std/mem.xfxn ${PRELUDE_XFXN} ${STD_SRCS}
-            ${SERVICE_XOSV} ${KERNEL_XKCO} ${CONSOLE16_XFNT} ${SETTINGS_TEST_XUEX} ${CXK}
-    COMMENT "Building unified CXK disk (XBPT: boot + stage + system)"
+    DEPENDS ${BOOT_BIN} ${STAGE2_BIN} ${KERNEL_DISK_ELF} ${EXEC_XOEX} ${DISK_APP_XUEX}
+            ${SUPERVISOR_XSEX} ${TOKDUMP_XUEX} ${ASTDUMP_XUEX} ${SEMADUMP_XUEX} ${XC_XUEX}
+            ${SETCHECK_XUEX} ${PRELUDE_XFXN} ${XC_SRCS} ${STD_SRCS}
+            ${SERVICE_XOSV} ${KERNEL_XKCO} ${CONSOLE16_XFNT} ${CXK}
+    COMMENT "Building the CXK disk (XBPT: boot + stage + system)"
 )
 add_custom_target(cxk_disk ALL DEPENDS ${CXK_DISK})
-
-# ---- image: boot + stage2 + kernel ----
-add_custom_command(
-    OUTPUT ${DISK_IMG}
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${IMAGES_DIR}
-    COMMAND ${CMAKE_COMMAND} -E echo "Building boot image..."
-    COMMAND ${CXK} raw-image
-        --boot ${BOOT_BIN}
-        --stage2 ${STAGE2_BIN}
-        --kernel ${KERNEL_XKEX}
-        --out ${DISK_IMG}
-    DEPENDS ${BOOT_BIN} ${STAGE2_BIN} ${KERNEL_XKEX} ${CXK}
-    COMMENT "Imaging boot + stage 2 + kernel"
-)
-add_custom_target(disk_image ALL DEPENDS ${DISK_IMG})
-
-# cxk_disk and disk_image are both ALL targets and both consume the same
-# intermediates - every kernel object, the boot binaries, kernel.xkex. With the
-# Makefile generator CMake copies the rule for a shared custom-command output
-# into EVERY target that consumes it, so under -j the two targets run the same
-# compile concurrently and one links an object the other is still writing.
-#
-# That presents as a link failure against a symbol that is plainly in the source
-# - or, worse, as a kernel built from a half-written object that links fine.
-# A serial build always worked, which is what made it look like a code bug.
-#
-# Ordering the two targets means the second finds every intermediate already up
-# to date and skips it, so nothing is ever written twice at once. The file-level
-# DEPENDS above are all kept, so a changed source still forces a rebuild.
-add_dependencies(disk_image cxk_disk)
-
-# ---- the x86-64 kernel (roadmap Phase 0 step 5) ----
-# Its own image beside the 32-bit one, from the same stage 1 and stage 2:
-# stage 2 sees an ELF kernel rather than CXEX and enters long mode
-# (boot/long.asm). Built on every build so both boots stay green while the
-# 32-bit kernel is still the system. Step 5b brought the arch code (entry,
-# GDT, TSS, IDT, COM1); step 5c paging, the page database and the buddy
-# allocator, the first generic code; step 5d interrupts, the APICs, the tick,
-# the context switch and the scheduler, with the generic code they need; step
-# 5e ring 3 (syscall/sysret) and the user-pointer checks; step 5f1 kmain and
-# every driver, on the same staged disk as the 32-bit image.
-# The ELF is the image as it stands: CXEX for x86-64, and the signature check
-# in the loader, come with it (docs/boot/CX_BOOT.md section 4).
-set(IMAGES64_DIR ${SRC_DIR}/dist/CXK_x86_64/images)
-set(KERNEL64_ELF ${BUILD_DIR}/kernel64.elf)
-set(KERNEL64_DISK_ELF ${BUILD_DIR}/kernel64.stripped.elf)   # what the disk carries
-set(DISK64_IMG   ${IMAGES64_DIR}/cxk_x86_64.img)
-set(LINKER64     ${SRC_DIR}/kernel/arch/x86_64/linker.ld)
-# The whole kernel since step 5f1: every generic source the 32-bit kernel
-# builds, taken from its list so the two cannot drift, less its architecture
-# and its bitmap page allocator (x86-64 has the page database), plus x86-64's
-# own, and the X linked into the kernel, compiled for x86-64 (KERNEL64_X_OBJS).
-set(KERNEL64_C_SRCS ${KERNEL_C_SRCS})
-list(FILTER KERNEL64_C_SRCS EXCLUDE REGEX "/kernel/arch/x86_32/|/kernel/memman/pmm\\.c$")
-list(APPEND KERNEL64_C_SRCS
-    ${SRC_DIR}/kernel/arch/x86_64/cpu.c
-    ${SRC_DIR}/kernel/arch/x86_64/early_con.c
-    ${SRC_DIR}/kernel/arch/x86_64/gdt.c
-    ${SRC_DIR}/kernel/arch/x86_64/idt.c
-    ${SRC_DIR}/kernel/arch/x86_64/ktest_arch.c
-    ${SRC_DIR}/kernel/arch/x86_64/pagetable.c
-    ${SRC_DIR}/kernel/arch/x86_64/paging.c
-    ${SRC_DIR}/kernel/memman/buddy.c
-    ${SRC_DIR}/kernel/memman/pagedb.c
-)
-set(KERNEL64_ASM_SRCS
-    ${SRC_DIR}/kernel/arch/x86_64/entry.asm
-    ${SRC_DIR}/kernel/arch/x86_64/isr.asm
-    ${SRC_DIR}/kernel/arch/x86_64/switch.asm
-    ${SRC_DIR}/kernel/arch/x86_64/usermode.asm
-)
-# The kernel code model and no red zone: interrupts land on the current stack
-# in ring 0, below RSP. No SIMD, for the reason given at KCFLAGS.
-set(K64CFLAGS --target=x86_64-elf -ffreestanding -fno-pic -fno-stack-protector
-              -mcmodel=kernel -mno-red-zone
-              -mno-sse -mno-sse2 -mno-mmx -mno-implicit-float
-              -Wall -Wextra -Werror ${CXK_DEFS} -Wshorten-64-to-32
-              ${KERNEL_INCLUDES} -I${BUILD_DIR} -c)
-set(KERNEL64_OBJS "")
-foreach(src ${KERNEL64_C_SRCS})
-    get_filename_component(name ${src} NAME_WE)
-    set(obj ${BUILD_DIR}/k64_${name}.o)
-    set(dep ${BUILD_DIR}/k64_${name}.o.d)
-    add_custom_command(
-        OUTPUT ${obj}
-        COMMAND ${KCC} ${K64CFLAGS} -MD -MF ${dep} ${src} -o ${obj}
-        DEPENDS ${src}
-        DEPFILE ${dep}
-        COMMENT "CC64 ${name}.c"
-    )
-    list(APPEND KERNEL64_OBJS ${obj})
-endforeach()
-foreach(src ${KERNEL64_ASM_SRCS})
-    get_filename_component(name ${src} NAME_WE)
-    set(obj ${BUILD_DIR}/ka64_${name}.o)
-    add_custom_command(
-        OUTPUT ${obj}
-        COMMAND ${CMAKE_ASM_NASM_COMPILER} -f elf64 ${src} -o ${obj}
-        DEPENDS ${src}
-        COMMENT "ASM64 ${name}.asm"
-    )
-    list(APPEND KERNEL64_OBJS ${obj})
-endforeach()
-list(APPEND KERNEL64_OBJS ${KERNEL64_X_OBJS})
-add_custom_command(
-    OUTPUT ${KERNEL64_ELF}
-    COMMAND ${CMAKE_LD} -m elf_x86_64 -nostdlib -T ${LINKER64} -o ${KERNEL64_ELF} ${KERNEL64_OBJS}
-    DEPENDS ${KERNEL64_OBJS} ${LINKER64} ${ARCH_CHECK_STAMP}
-    COMMENT "Linking the x86-64 kernel (top 2 GiB)"
-)
-# The disk carries the same link with no symbol table: stage 2 reads the whole
-# file into 512 KB of low memory (KERNEL_SECTORS in boot/stage2.asm) and
-# loads only the PT_LOAD segments, so the symbols cost budget and buy nothing
-# there. kernel64.elf keeps them, for a debugger or addr2line.
-add_custom_command(
-    OUTPUT ${KERNEL64_DISK_ELF}
-    COMMAND ${CMAKE_LD} -m elf_x86_64 -nostdlib --strip-all -T ${LINKER64} -o ${KERNEL64_DISK_ELF} ${KERNEL64_OBJS}
-    DEPENDS ${KERNEL64_OBJS} ${LINKER64} ${KERNEL64_ELF}
-    COMMENT "Linking the x86-64 kernel for the disk (no symbols)"
-)
-# ---- the x86-64 programs (step 6d2) ----
-# Every program the 32-bit disk carries, built for x86-64: the X ones with
-# `cxk compile --target x86_64` (the System V back end on the IR), the
-# executive with clang for x86_64-elf, each packaged by `cxk build` (an ELF64
-# becomes a CXEX with arch_target 2) and signed as on x86-32. Linked at the
-# same user addresses, below 4 GB, which the ABI's u32 user addresses need
-# ("Not in 6d", docs/planning/CX_ROADMAP.md).
-set(BUILD64_DIR    ${BUILD_DIR}/x64)
-set(PACKAGES64_DIR ${SRC_DIR}/dist/CXK_x86_64/packages)
-file(MAKE_DIRECTORY ${BUILD64_DIR})
-
-# The sign step for one x86-64 artifact, as cxk_toolchain.cmake's are for
-# x86-32: one command naming the exact file. No parentheses or semicolons in
-# the messages (cxk_toolchain.cmake says why).
-function(cx_sign64 out file)
-    get_filename_component(name ${file} NAME)
-    if(SIGN)
-        set(${out} COMMAND ${CXK} sign ${file} ${SIGN_SK} ${SIGN_PK} PARENT_SCOPE)
-    elseif(DEV_UNSIGNED)
-        set(${out} COMMAND ${CMAKE_COMMAND} -E echo "  x86-64 ${name} UNSIGNED - runs on this development kernel only" PARENT_SCOPE)
-    else()
-        set(${out} COMMAND ${CMAKE_COMMAND} -E echo "  x86-64 ${name} UNSIGNED - the kernel WILL REFUSE it - configure -DSIGN=ON" PARENT_SCOPE)
-    endif()
-endfunction()
-
-# An X program for x86-64: <name>.xfxn -> ELF64 -> signed CXEX in
-# PACKAGES64_DIR. Sets <var> to the package's path. The remaining arguments
-# are the compile's include directories.
-function(cx_x_program64 var src type ext)
-    get_filename_component(name ${src} NAME_WE)
-    set(elf ${BUILD64_DIR}/${name}.elf)
-    set(pkg ${PACKAGES64_DIR}/${name}.${ext})
-    set(incs "")
-    foreach(dir ${ARGN})
-        list(APPEND incs -I ${dir})
-    endforeach()
-    add_custom_command(
-        OUTPUT ${elf}
-        COMMAND ${CXK} compile ${src} ${elf} --target x86_64 ${incs}
-        DEPENDS ${src} ${CXK} ${STD_SRCS} ${XC_SRCS}
-        COMMENT "X64 ${name}.xfxn -> ELF64"
-    )
-    cx_sign64(sign ${pkg})
-    add_custom_command(
-        OUTPUT ${pkg}
-        COMMAND ${CMAKE_COMMAND} -E make_directory ${PACKAGES64_DIR}
-        COMMAND ${CXK} build ${elf} ${pkg} --type ${type}
-        ${sign}
-        DEPENDS ${elf} ${CXK}
-        COMMENT "Packaging x86-64 ${name}.${ext} (CXEX, type ${type})"
-    )
-    set(${var} ${pkg} PARENT_SCOPE)
-endfunction()
-
-set(XC_INCS64 ${SRC_DIR}/os/xc/cxk ${SRC_DIR}/os/xc ${SRC_DIR}/os/std)
-cx_x_program64(SHELL64_XSEX      ${APP_BOOT}       system xsex ${SRC_DIR}/os/std)
-cx_x_program64(DISK_APP64_XUEX   ${DISK_APP}       user   xuex ${SRC_DIR}/os/std)
-cx_x_program64(SETCHECK64_XUEX   ${SETTINGS_TEST}  user   xuex ${SRC_DIR}/os/std)
-cx_x_program64(SUPERVISOR64_XSEX ${SUPERVISOR_SRC} system xsex ${SRC_DIR}/os/std)
-cx_x_program64(TOKDUMP64_XUEX    ${TOKDUMP_SRC}    user   xuex ${XC_INCS64})
-cx_x_program64(ASTDUMP64_XUEX    ${ASTDUMP_SRC}    user   xuex ${XC_INCS64})
-cx_x_program64(SEMADUMP64_XUEX   ${SEMADUMP_SRC}   user   xuex ${XC_INCS64})
-cx_x_program64(XC64_XUEX         ${XC_SRC}         user   xuex ${XC_INCS64})
-
-# The shell is embedded in the executive, signed first, as on x86-32.
-set(APP_IMAGE64 ${BUILD64_DIR}/app_image.h)
-add_custom_command(
-    OUTPUT ${APP_IMAGE64}
-    COMMAND ${CXK} embed ${SHELL64_XSEX} ${APP_IMAGE64} ${APP_BOOT_NAME}_xsex
-    DEPENDS ${SHELL64_XSEX} ${CXK}
-    COMMENT "Embedding x86-64 ${APP_BOOT_NAME}.xsex -> x64/app_image.h"
-)
-
-# No red zone: the executive's syscalls are inline `call`s, which push below
-# RSP (executive.c).
-set(EXEC64_ELF  ${BUILD64_DIR}/executive.elf)
-set(EXEC64_XOEX ${PACKAGES64_DIR}/executive.xoex)
-add_custom_command(
-    OUTPUT ${EXEC64_ELF}
-    COMMAND ${KCC} --target=x86_64-elf -ffreestanding -fno-pic -fno-stack-protector -nostdlib
-            -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -mno-implicit-float
-            -I${SRC_DIR}/abi
-            -I${BUILD64_DIR}
-            -fuse-ld=lld -Wl,-T,${EXEC_LD} -o ${EXEC64_ELF} ${EXEC_C}
-    DEPENDS ${EXEC_C} ${EXEC_LD} ${APP_IMAGE64}
-    COMMENT "CC+LD executive.c -> x64/executive.elf"
-)
-cx_sign64(EXEC64_SIGN ${EXEC64_XOEX})
-add_custom_command(
-    OUTPUT ${EXEC64_XOEX}
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${PACKAGES64_DIR}
-    COMMAND ${CXK} build ${EXEC64_ELF} ${EXEC64_XOEX} --type os
-    ${EXEC64_SIGN}
-    DEPENDS ${EXEC64_ELF} ${CXK}
-    COMMENT "Converting x64/executive.elf -> x86-64 executive.xoex (CXEX, type os)"
-)
-
-# xc reads the prelude for the target it compiles for.
-set(PRELUDE64_XFXN ${BUILD64_DIR}/prelude.xfxn)
-add_custom_command(
-    OUTPUT ${PRELUDE64_XFXN}
-    COMMAND ${CXK} prelude ${PRELUDE64_XFXN} --target x86_64
-    DEPENDS ${CXK}
-    COMMENT "X64 prelude -> x64/prelude.xfxn"
-)
-
-set(CXK_STAGED64_PROGRAMS
-    --stage System/Boot.xoex=${EXEC64_XOEX}
-    --stage Shared/Programs/${DISK_APP_NAME}.xuex=${DISK_APP64_XUEX}
-    --stage System/Programs/supervisor.xsex=${SUPERVISOR64_XSEX}
-    --stage Shared/Programs/tokdump.xuex=${TOKDUMP64_XUEX}
-    --stage Shared/Programs/astdump.xuex=${ASTDUMP64_XUEX}
-    --stage Shared/Programs/semadump.xuex=${SEMADUMP64_XUEX}
-    --stage Shared/Programs/xc.xuex=${XC64_XUEX}
-    --stage Shared/Programs/setcheck.xuex=${SETCHECK64_XUEX}
-    --stage Shared/Source/prelude.xfxn=${PRELUDE64_XFXN}
-)
-set(CXK_STAGED64_DEPS ${EXEC64_XOEX} ${DISK_APP64_XUEX} ${SUPERVISOR64_XSEX} ${TOKDUMP64_XUEX}
-    ${ASTDUMP64_XUEX} ${SEMADUMP64_XUEX} ${XC64_XUEX} ${SETCHECK64_XUEX} ${PRELUDE64_XFXN})
-
-add_custom_command(
-    OUTPUT ${DISK64_IMG}
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${IMAGES64_DIR}
-    COMMAND ${CXK} image --out ${DISK64_IMG} --size-mb 64 --boot-mb 8
-            --stage1 ${BOOT_BIN} --stage2 ${STAGE2_BIN} --kernel ${KERNEL64_DISK_ELF}
-            ${CXK_STAGED64_PROGRAMS} ${CXK_STAGED_SHARED}
-    DEPENDS ${BOOT_BIN} ${STAGE2_BIN} ${KERNEL64_DISK_ELF} ${CXK}
-            ${CXK_STAGED64_DEPS}
-            ${CXK_DISK}   # built from the same staged files: rebuilt when one changes
-    COMMENT "Building the x86-64 disk (stage 2 enters long mode; the system partition as on x86-32)"
-)
-add_custom_target(disk64_image ALL DEPENDS ${DISK64_IMG})
-# Shares stage 1 and stage 2 with the 32-bit images; ordered for the reason
-# given above.
-add_dependencies(disk64_image disk_image)
 
 # ---- convenience: build just the X app chain ----
 add_custom_target(apps DEPENDS ${APP_IMAGE})

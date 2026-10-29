@@ -25,21 +25,21 @@
         {
             "label": "Run QEMU",
             "type": "shell",
-            "command": "${workspaceFolder}/tools/cxk.exe run ${workspaceFolder}/dist/CXK_x86_32/images/cxk_disk.img",
+            "command": "${workspaceFolder}/tools/cxk.exe run ${workspaceFolder}/dist/CXK_x86_64/images/cxk_x86_64.img",
             "group": { "kind": "test", "isDefault": true },
             "problemMatcher": []
         },
         {
             "label": "Run QEMU (q35 / AHCI / e1000)",
             "type": "shell",
-            "command": "${workspaceFolder}/tools/cxk.exe run ${workspaceFolder}/dist/CXK_x86_32/images/cxk_disk.img --machine q35",
+            "command": "${workspaceFolder}/tools/cxk.exe run ${workspaceFolder}/dist/CXK_x86_64/images/cxk_x86_64.img --machine q35",
             "group": "test",
             "problemMatcher": []
         },
         {
             "label": "Run QEMU (serial log to boot.log)",
             "type": "shell",
-            "command": "${workspaceFolder}/tools/cxk.exe run ${workspaceFolder}/dist/CXK_x86_32/images/cxk_disk.img --machine pc --snapshot --headless --serial boot.log",
+            "command": "${workspaceFolder}/tools/cxk.exe run ${workspaceFolder}/dist/CXK_x86_64/images/cxk_x86_64.img --machine pc --snapshot --headless --serial boot.log",
             "group": "test",
             "problemMatcher": []
         }

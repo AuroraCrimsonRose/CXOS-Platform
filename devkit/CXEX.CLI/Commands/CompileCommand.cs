@@ -60,8 +60,8 @@ public class CompileCommand : Command<CompileCommand.Settings>
         public bool Object { get; set; }
 
         [CommandOption("--target <TARGET>")]
-        [Description("x86_32 (the default: the emitter, from the tree) or x86_64 (the System V back end on the IR, step 6b3)")]
-        public string Target { get; set; } = "x86_32";
+        [Description("x86_64 (the default: the System V back end on the IR) or x86_32 (the emitter, from the tree)")]
+        public string Target { get; set; } = "x86_64";
     }
 
     protected override int Execute(CommandContext context, Settings s, CancellationToken ct)

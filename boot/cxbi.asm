@@ -8,8 +8,8 @@
 ; loader left (docs/boot/CX_BOOT.md section 3.3, roadmap step 4). Real-mode
 ; code fills what only the BIOS can give - the memory map (mem.asm), the
 ; framebuffer (vbe.asm) - straight into it; cxbi_finish, in protected mode,
-; adds the rest and seals it with the magic. cxexload.asm puts its address in EBX
-; as it jumps to the kernel.
+; adds the rest and seals it with the magic. long.asm puts its address in RDI
+; (and RBX) as it jumps to the kernel.
 ;
 ; The addresses stage 2 used before CXBI, 0x500 (the E820 map) and 0x1C40 (the
 ; VBE mode), are filled with CXBI_POISON, so a kernel that still read them
