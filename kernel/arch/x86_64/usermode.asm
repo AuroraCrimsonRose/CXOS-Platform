@@ -26,6 +26,7 @@ default rel
 %define SYS_EXIT          0x00        ; cxk_abi.h
 %define SYS_YIELD         0x01
 %define SYS_GETPID        0x02
+%define SYS_SLEEP         0x05
 %define SYS_CONSOLE_WRITE 0x30
 %define SYSPAGE_STUB      16          ; SYSPAGE_STUB_SIZE
 
@@ -517,6 +518,21 @@ user_blob_busy_start:
     call rax
     ud2
 user_blob_busy_end:
+
+; user_blob_exit: sleeps 200 ms, long enough to be waited for, then exits with
+; -42: negative, so a code cut to its low byte or read unsigned shows
+; (usermode_process_test).
+global user_blob_exit_start, user_blob_exit_end
+user_blob_exit_start:
+    mov r12, rsi             ; the system page
+    mov edi, 200
+    lea rax, [r12 + SYS_SLEEP * SYSPAGE_STUB]
+    call rax
+    mov edi, -42
+    lea rax, [r12 + SYS_EXIT * SYSPAGE_STUB]
+    call rax
+    ud2
+user_blob_exit_end:
 
 ; user_sysp_call / user_sysp_write: as on x86-32, with
 ; the base in rsi. It is kept in r12, since rsi is the second argument.

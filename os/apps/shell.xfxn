@@ -691,9 +691,9 @@ fn cmd_run(arg: *u8) -> void {
     a.args            = (&run_argbuf[0]) as u64;
     a.args_len        = blob;
 
-    let pid: i32 = E_NOT_FOUND;
+    let ph: i32 = E_NOT_FOUND;
     if (strchr(name, 47) >= 0) {                             // '/' - a path
-        pid = exec_path(name, &a);
+        ph = exec_path(name, &a);
     } else {
         let d: u32 = 0;
         while (d < RUN_DIRS) {
@@ -701,12 +701,12 @@ fn cmd_run(arg: *u8) -> void {
             while (ext <= RUN_EXTS) {
                 let p: *u8 = run_candidate(run_dirs[d], name, ext);
                 a.name = p as u64;
-                pid = exec_path(p, &a);
+                ph = exec_path(p, &a);
                 // Only E_NOT_FOUND means "not here, keep looking". A file that
                 // exists but will not run - unsigned, a directory, not a CXEX
                 // - is the answer, and reporting it beats walking past it and
                 // saying the program does not exist.
-                if (pid != E_NOT_FOUND) { ext = RUN_EXTS + 1; d = RUN_DIRS; }
+                if (ph != E_NOT_FOUND) { ext = RUN_EXTS + 1; d = RUN_DIRS; }
                 else { ext = ext + 1; }
             }
             d = d + 1;
@@ -714,16 +714,21 @@ fn cmd_run(arg: *u8) -> void {
         a.name = name as u64;
     }
 
-    if (pid < 0) {
+    if (ph < 0) {
         puts(name);
         puts(": ");
         // E_ACCESS_DENIED here means the signature check refused it, not a file
         // permission problem - worth saying plainly, since an unsigned build
         // is by far the most likely cause.
-        if (pid == E_ACCESS_DENIED) { puts("not signed by a key this kernel trusts\n"); }
-        else { puts(file_strerror(pid)); newline(); }
+        if (ph == E_ACCESS_DENIED) { puts("not signed by a key this kernel trusts\n"); }
+        else { puts(file_strerror(ph)); newline(); }
         return;
     }
+    // A process handle. The shell does not wait for what it runs, so it keeps
+    // only the pid to show: a handle held here would keep the record of every
+    // program it ever started.
+    let pid: i32 = process_pid(ph);
+    handle_close(ph);
     puts("started pid ");
     print_u32(pid as u32);
     newline();

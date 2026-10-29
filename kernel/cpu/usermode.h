@@ -123,6 +123,7 @@ int  usermode_net_test(void);
 
 /* The background console and SYS_LOG_READ (see usermode.c). 1 = pass. */
 int  usermode_log_test(void);
+int  usermode_process_test(void);   /* process handles, SYS_OBJECT_WAIT, how it ended */
 
 /* register the ring-3 fault handler so user faults kill the process, not the
    kernel. call once at boot after the scheduler is up. */

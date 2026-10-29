@@ -11,6 +11,7 @@ _Static_assert(HTAB_E_ACCESS_DENIED == E_ACCESS_DENIED && HTAB_E_INVALID_ARGS ==
                HTAB_E_NO_RESOURCES == E_NO_RESOURCES && HTAB_E_BAD_HANDLE == E_BAD_HANDLE,
                "htab.h error values must be the ABI's");
 _Static_assert(HTAB_RIGHT_DUPLICATE == HRIGHT_DUPLICATE, "htab.h's duplicate right must be the ABI's");
+_Static_assert(HTAB_RIGHT_WAIT == HRIGHT_WAIT, "htab.h's wait right must be the ABI's");
 #endif
 
 /* Grant ids are system-wide, so a grant chain can cross processes. */

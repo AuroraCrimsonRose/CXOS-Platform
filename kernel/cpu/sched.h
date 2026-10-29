@@ -205,6 +205,17 @@ void     thread_unblock(int id);        /* make a blocked thread runnable again 
    waker is another thread that may itself be asleep (SYS_FILE_LOCK). */
 void     thread_wait(void);
 
+/* A block in two halves, for a waiter that checks a condition under a lock
+   and must not miss a wake between the check and the block (object/kwait.c).
+   thread_block_prepare, with interrupts off (the lock held): the current
+   thread is BLOCKED from here, and if `ms` is not 0 a timer wakes it that many
+   milliseconds on. A thread_unblock after this point is not lost, even one
+   that lands before thread_block_finish. Then let go of the lock and call
+   thread_block_finish, which returns once the thread is runnable again,
+   whoever woke it. */
+void     thread_block_prepare(uint32_t ms);
+void     thread_block_finish(void);
+
 /* Block the current thread for `ms` milliseconds, then return. Built on
    thread_block: the thread leaves the run queue entirely, so a sleeping
    process costs nothing but its memory - this is not a spin.

@@ -24,6 +24,7 @@
 #include "fb.h"
 #include "caps.h"
 #include "object/htab.h"
+#include "object/kwait.h"     /* kobj_wait, for SYS_OBJECT_WAIT */
 #include "sync/atomic.h"
 #include "sysrec.h"
 #include "systable.h"         /* the handlers, decoders and table (generated) */
@@ -155,6 +156,7 @@ int syscall_getpid(void) { return thread_current_pid(); }
 int syscall_getuid(void) { return (int)thread_current_uid(); }
 
 void syscall_exit(int32_t code) {
+    proc_note_exit(thread_proc(thread_current_id()), code);
     return_to_kernel((int)code, thread_current_usave());
 }
 
@@ -503,6 +505,28 @@ int syscall_object_info(uint64_t a) {
     struct kobj *o = htab_ref(thread_htab(thread_current_id()), oa.handle,
                               KOBJ_NONE, 0, &hi);
     if (!o) return E_BAD_HANDLE;
+    if (oa.topic == OBJINFO_PROCESS) {
+        /* Read while the handle's reference holds the record. */
+        struct proc *p = (struct proc *)o;
+        int rc = o->type != KOBJ_PROCESS          ? E_WRONG_TYPE
+               : !(hi.rights & HRIGHT_INSPECT)    ? E_ACCESS_DENIED
+               : oa.cap < sizeof(struct process_info) ? E_BUFFER_TOO_SMALL : E_OK;
+        struct process_info pi = { 0 };
+        if (rc == E_OK) {
+            /* How it ended only once it has: a note waits for the last thread. */
+            int done = (atomic_load(&o->signals) & SIGNAL_PROCESS_ENDED) != 0;
+            pi.pid    = (uint32_t)p->pid;
+            pi.ended  = done ? p->ended : PROC_RUNNING;
+            pi.code   = done ? p->end_code : 0;
+            pi.vector = done ? p->end_vector : 0;
+            pi.ip     = done ? p->end_ip : 0;
+            pi.addr   = done ? p->end_addr : 0;
+        }
+        kobj_unref(o);
+        if (rc != E_OK) return rc;
+        if (user_copy_out(oa.buf, &pi, sizeof pi) != 0) return E_BAD_ADDRESS;
+        return (int)sizeof pi;
+    }
     struct object_basic b = {
         .kind = o->type, .rights = hi.rights, .koid = o->koid,
         .grant = hi.grant, .parent_grant = hi.parent,
@@ -512,6 +536,27 @@ int syscall_object_info(uint64_t a) {
     if (oa.cap < sizeof b) return E_BUFFER_TOO_SMALL;
     if (user_copy_out(oa.buf, &b, sizeof b) != 0) return E_BAD_ADDRESS;
     return (int)sizeof b;
+}
+
+int syscall_object_wait(int32_t h, uint32_t signals, uint32_t timeout_ms, uint64_t seen) {
+    /* Unprivileged: the handle's HRIGHT_WAIT is the authority. */
+    if (timeout_ms != WAIT_FOREVER && timeout_ms > SLEEP_MAX_MS) return E_OUT_OF_RANGE;
+    if (seen && !user_ptr_writable(seen, sizeof(uint32_t))) return E_BAD_ADDRESS;
+    struct htab_info hi;
+    struct kobj *o = htab_ref(thread_htab(thread_current_id()), h, KOBJ_NONE, 0, &hi);
+    if (!o) return E_BAD_HANDLE;
+    const struct kobj_ops *ops = kobj_type_ops((enum kobj_type)o->type);
+    int rc = !(hi.rights & HRIGHT_WAIT)                 ? E_ACCESS_DENIED
+           : !ops->signals_valid                         ? E_NOT_SUPPORTED
+           : !signals || (signals & ~ops->signals_valid) ? E_INVALID_ARGS : E_OK;
+    if (rc != E_OK) { kobj_unref(o); return rc; }
+    uint32_t s = 0;
+    rc = kobj_wait(o, signals, timeout_ms, &s);
+    kobj_unref(o);
+    /* Written after the wait, through the copy that checks the range again:
+       the page may have been unmapped while this thread slept. */
+    if (seen && user_copy_out(seen, &s, sizeof s) != 0) return E_BAD_ADDRESS;
+    return rc;
 }
 
 /* Called from the system-call gate (arch/usermode.h), and by the self-tests,
@@ -575,6 +620,7 @@ void syscall_check_origin(uint32_t num, uintptr_t ip) {
     rec[m] = 0;
     crashlog_note_fault(rec);
 
+    proc_note_crash(thread_proc(thread_current_id()), PROC_VECTOR_REFUSED, ip, 0);
     return_to_kernel(USERMODE_FAULTED, thread_current_usave());   /* never returns */
 }
 
@@ -2369,9 +2415,148 @@ static void usermode_fault(struct registers *r) {
     rec[m] = 0;
     crashlog_note_fault(rec);
 
+    proc_note_crash(thread_proc(thread_current_id()), vector, (uint64_t)irq_frame_ip(r),
+                    vector == 14 ? (uint64_t)irq_fault_address() : 0);
     return_to_kernel(USERMODE_FAULTED, thread_current_usave());   /* never returns */
 }
 
 void usermode_register_fault_handler(void) {
     set_user_fault_hook(usermode_fault);
+}
+/* ---- process handles, waiting, how a process ended (Phase 1.1a) -----------
+ * Real ring-3 processes, each with a process handle in this thread's table
+ * made the way SYS_SPAWN makes one, driven through syscall_dispatch over a
+ * user mapping. One exits with -42 after a 200 ms sleep, one executes ud2, one
+ * is discarded before it runs. Then the records: alive while a handle is,
+ * gone with the last one. 1 = pass, 0 = fail. */
+extern uint8_t user_blob_exit_start[], user_blob_exit_end[];
+extern uint8_t user64_ud2_start[], user64_ud2_end[];
+
+#define PT_INFO  (TEST_CODE_VIRT + 0x100)   /* struct process_info / object_basic */
+#define PT_IARGS (TEST_CODE_VIRT + 0x200)   /* struct object_info_args */
+#define PT_SEEN  (TEST_CODE_VIRT + 0x300)   /* object_wait's *seen */
+
+/* A held helper process and the caller's handle on it, as proc_start does
+   it; *tid is its thread. The handle, or a negative error. */
+static int32_t pt_make(const uint8_t *start, const uint8_t *end, int *tid) {
+    *tid = process_prepare_ring3("pt", start, (uint32_t)(end - start), "");
+    if (*tid < 0) return E_NO_MEMORY;
+    int32_t h = htab_install(thread_htab(thread_current_id()), &thread_proc(*tid)->hdr,
+                             HRIGHT_WAIT | HRIGHT_INSPECT | HRIGHT_DUPLICATE, 0);
+    if (h < 0) thread_discard(*tid);
+    return h;
+}
+
+/* OBJINFO_PROCESS on `h` into PT_INFO: the call's result. */
+static int pt_info(int32_t h) {
+    struct object_info_args *oi = (struct object_info_args *)user_ptr(PT_IARGS);
+    oi->cap = sizeof(struct process_info);
+    oi->buf = PT_INFO;
+    oi->handle = h;
+    oi->topic = OBJINFO_PROCESS;
+    return syscall_dispatch(SYS_OBJECT_INFO, PT_IARGS, 0, 0, 0, 0);
+}
+
+static int pt_wait(int32_t h, uint32_t sig, uint32_t ms, uint64_t seen) {
+    return syscall_dispatch(SYS_OBJECT_WAIT, (uint32_t)h, sig, ms, seen, 0);
+}
+
+int usermode_process_test(void) {
+    paddr_t phys = map_user_page(TEST_CODE_VIRT);
+    if (!phys) return 0;
+    struct htab *tab = thread_htab(thread_current_id());
+    struct process_info *pi = (struct process_info *)user_ptr(PT_INFO);
+    volatile uint32_t *seen = (volatile uint32_t *)user_ptr(PT_SEEN);
+    uint32_t live0 = proc_live(), faults0 = usermode_faults();
+    int32_t h = -1, hc = -1, hn = -1, d = -1, eh = -1, ew = -1;
+    int tid = -1, tc = -1, tn = -1, pid = -1, step = 0, ok = 0;
+
+    /* 1-3: a handle on a running process, with the rights spawn gives */
+    h = pt_make(user_blob_exit_start, user_blob_exit_end, &tid);
+    step = 1; if (h <= 0) goto done;
+    pid = thread_pid(tid);
+    struct proc *p = thread_proc(tid);
+    thread_start(tid);
+    struct object_info_args *oi = (struct object_info_args *)user_ptr(PT_IARGS);
+    struct object_basic *ob = (struct object_basic *)user_ptr(PT_INFO);
+    oi->cap = sizeof *ob; oi->buf = PT_INFO; oi->handle = h; oi->topic = OBJINFO_BASIC;
+    step = 2; if (syscall_dispatch(SYS_OBJECT_INFO, PT_IARGS, 0, 0, 0, 0) != (int)sizeof *ob
+                  || ob->kind != OBJ_TYPE_PROCESS
+                  || ob->rights != (HRIGHT_WAIT | HRIGHT_INSPECT | HRIGHT_DUPLICATE)) goto done;
+    step = 3; if (pt_info(h) != (int)sizeof *pi || pi->pid != (uint32_t)pid
+                  || pi->ended != PROC_RUNNING) goto done;
+
+    /* 4-5: still running: a look, and a short wait, both time out, and the
+       short one did wait */
+    *seen = 0xFFFFFFFFu;
+    step = 4; if (pt_wait(h, SIGNAL_PROCESS_ENDED, 0, PT_SEEN) != E_TIMED_OUT || *seen != 0) goto done;
+    uint32_t t0 = timer_ticks();
+    step = 5; if (pt_wait(h, SIGNAL_PROCESS_ENDED, 20, 0) != E_TIMED_OUT
+                  || timer_ticks() - t0 < 20 || kobj_waiters(&p->hdr) != 0) goto done;
+
+    /* 6-10: refusals, each its own error */
+    step = 6; if (pt_wait(h, 0, 0, 0) != E_INVALID_ARGS) goto done;
+    step = 7; if (pt_wait(h, SIGNAL_PROCESS_ENDED << 1, 0, 0) != E_INVALID_ARGS) goto done;
+    step = 8; if (pt_wait(h, SIGNAL_PROCESS_ENDED, SLEEP_MAX_MS + 1, 0) != E_OUT_OF_RANGE) goto done;
+    step = 9; if (pt_wait(h, SIGNAL_PROCESS_ENDED, 0, USER_VLIMIT) != E_BAD_ADDRESS) goto done;
+    step = 10; if (pt_wait(9999, SIGNAL_PROCESS_ENDED, 0, 0) != E_BAD_HANDLE) goto done;
+
+    /* 11-12: each right is needed: no WAIT, no wait; no INSPECT, no info */
+    d = syscall_dispatch(SYS_HANDLE_DUPLICATE, (uint32_t)h, HRIGHT_INSPECT, 0, 0, 0);
+    step = 11; if (d <= 0 || pt_wait(d, SIGNAL_PROCESS_ENDED, 0, 0) != E_ACCESS_DENIED) goto done;
+    htab_close(tab, d);
+    d = syscall_dispatch(SYS_HANDLE_DUPLICATE, (uint32_t)h, HRIGHT_WAIT, 0, 0, 0);
+    step = 12; if (d <= 0 || pt_info(d) != E_ACCESS_DENIED) goto done;
+
+    /* 13-14: an endpoint is the wrong type for OBJINFO_PROCESS, and has no
+       signals to wait for even on a handle that may wait */
+    eh = ep_create();
+    step = 13; if (eh <= 0 || pt_info(eh) != E_WRONG_TYPE) goto done;
+    struct kobj *eo = htab_ref(tab, eh, KOBJ_ENDPOINT, 0, 0);
+    ew = eo ? htab_install(tab, eo, HRIGHT_WAIT, 0) : -1;
+    if (eo) kobj_unref(eo);
+    step = 14; if (ew <= 0 || pt_wait(ew, SIGNAL_PROCESS_ENDED, 0, 0) != E_NOT_SUPPORTED) goto done;
+
+    /* 15-16: waiting with no limit returns when it ends, and says how: SYS_EXIT
+       and its code, whole. The pid stays its own while the handle is open. */
+    *seen = 0;
+    step = 15; if (pt_wait(d, SIGNAL_PROCESS_ENDED, WAIT_FOREVER, PT_SEEN) != E_OK
+                   || *seen != SIGNAL_PROCESS_ENDED) goto done;
+    step = 16; if (pt_info(h) != (int)sizeof *pi || pi->ended != PROC_EXITED || pi->code != -42
+                   || pi->pid != (uint32_t)pid || proc_by_pid(pid) != p) goto done;
+
+    /* 17: a fault: crashed, with the vector and where */
+    hc = pt_make(user64_ud2_start, user64_ud2_end, &tc);
+    uint64_t code_at = R3_BASE + (uint64_t)tc * R3_SLOT_SIZE;
+    if (hc > 0) thread_start(tc);
+    step = 17; if (hc <= 0 || pt_wait(hc, SIGNAL_PROCESS_ENDED, 3000, 0) != E_OK || pt_info(hc) <= 0
+                   || pi->ended != PROC_CRASHED || pi->vector != 6 || pi->ip != code_at
+                   || usermode_faults() != faults0 + 1) goto done;
+
+    /* 18: one that never ran ended too, and says so */
+    hn = pt_make(user_blob_exit_start, user_blob_exit_end, &tn);
+    if (hn > 0) thread_discard(tn);
+    step = 18; if (hn <= 0 || pt_wait(hn, SIGNAL_PROCESS_ENDED, 0, 0) != E_OK || pt_info(hn) <= 0
+                   || pi->ended != PROC_NOT_STARTED) goto done;
+
+    /* 19: no zombies: each record goes with its last handle, and its pid */
+    htab_close(tab, h);  h = -1;
+    step = 19; if (proc_by_pid(pid) != p) goto done;   /* d still holds it */
+    htab_close(tab, d);  d = -1;
+    htab_close(tab, hc); hc = -1;
+    htab_close(tab, hn); hn = -1;
+    step = 19; if (proc_by_pid(pid) != 0 || proc_live() != live0) goto done;
+    ok = 1;
+
+done:
+    if (!ok) klog_u32("KTEST", SEV_ERR, "process handle test failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    /* A process still running is waited for, so none outlives the test. */
+    if (h > 0)  { pt_wait(h, SIGNAL_PROCESS_ENDED, 3000, 0);  htab_close(tab, h); }
+    if (hc > 0) { pt_wait(hc, SIGNAL_PROCESS_ENDED, 3000, 0); htab_close(tab, hc); }
+    if (hn > 0) htab_close(tab, hn);
+    if (d > 0)  htab_close(tab, d);
+    if (ew > 0) htab_close(tab, ew);
+    if (eh > 0) htab_close(tab, eh);
+    unmap_user_page(TEST_CODE_VIRT, phys);
+    return ok;
 }

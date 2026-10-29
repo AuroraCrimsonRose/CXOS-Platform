@@ -82,6 +82,7 @@ global sch_blen:   [8]u32;           // packed argv length, per entry
 global sch_grants: [8]u32;
 global sch_every:  [8]u32;           // seconds between runs
 global sch_next:   [8]u32;           // tick (ms since boot) this is next due
+global sch_proc:   [8]i32;           // a handle on its last run, or 0 (sch_running)
 
 // ---- descriptor parsing ----------------------------------------------------
 
@@ -181,7 +182,7 @@ fn svc_pack(src: *u8, args: *xd_val) -> i32 {
 // ---- running one program ---------------------------------------------------
 
 // Start `path` with an already-packed argv blob and the given authority.
-// Returns the pid, or a negative error.
+// Returns a handle on the process, or a negative error.
 fn svc_run(path: *u8, blob: *u8, blen: u32, grants: u32) -> i32 {
     let a: spawn_args;
     memzero((&a) as *u8, sizeof a);
@@ -273,10 +274,14 @@ fn svc_start(name: *u8) -> void {
     let blob: u32 = packed as u32;
 
     if (at_boot == 1) {
-        let pid: i32 = svc_run(&svc_exec[0], &svc_blob[0], blob, grants);
-        if (pid < 0) {
-            svc_fail(name, pid);
+        let ph: i32 = svc_run(&svc_exec[0], &svc_blob[0], blob, grants);
+        if (ph < 0) {
+            svc_fail(name, ph);
         } else {
+            // A service runs for the life of the system; nothing here waits
+            // for one, so only its pid is kept, to say.
+            let pid: i32 = process_pid(ph);
+            handle_close(ph);
             puts("supervisor: started ");
             puts(name);
             puts(" pid ");
@@ -327,12 +332,22 @@ fn svc_start(name: *u8) -> void {
 // after about 49 days. `now >= due` starts answering no for the next 49 days
 // the first time that happens; `(due - now) as i32 <= 0` does not care.
 //
-// What this does NOT do is notice that the previous run of a task is still
-// going. There is no way to ask - a pid is returned but nothing reports
-// whether it is still alive - so a task that runs longer than its interval
-// will be started again on top of itself. For the intervals worth setting by
-// hand that is not a real risk, and the honest fix is a "is this pid alive"
-// call rather than a guess here.
+// A task whose last run is still going is not started again on top of itself:
+// the supervisor keeps the handle on each task's last run and looks at it,
+// without waiting, when the task comes due. Skipped, it is due again an
+// interval later, like a run that could not start.
+
+// 1 if task i's last run has not ended. Once it has, the handle goes, and with
+// it the process's record.
+fn sch_running(i: u32) -> u32 {
+    if (sch_proc[i] == 0) { return 0; }
+    let seen: u32 = 0;
+    if (object_wait(sch_proc[i], SIGNAL_PROCESS_ENDED, 0, &seen) == E_TIMED_OUT) { return 1; }
+    handle_close(sch_proc[i]);
+    sch_proc[i] = 0;
+    return 0;
+}
+
 fn svc_loop() -> void {
     while (1 == 1) {
         let now: u32 = ticks_ms();
@@ -341,11 +356,19 @@ fn svc_loop() -> void {
         let i: u32 = 0;
         while (i < sch_n) {
             if (((sch_next[i] - now) as i32) <= 0) {
-                let rc: i32 = svc_run(&sch_exec[i * SCH_ESTRIDE],
-                                      &sch_blob[i * SCH_BSTRIDE],
-                                      sch_blen[i], sch_grants[i]);
-                if (rc < 0) { svc_fail(&sch_exec[i * SCH_ESTRIDE], rc); }
+                let rc: i32 = E_BUSY;
+                if (sch_running(i) == 0) {
+                    rc = svc_run(&sch_exec[i * SCH_ESTRIDE],
+                                 &sch_blob[i * SCH_BSTRIDE],
+                                 sch_blen[i], sch_grants[i]);
+                }
+                if (rc == E_BUSY) {
+                    puts("supervisor: ");
+                    puts(&sch_exec[i * SCH_ESTRIDE]);
+                    puts(" is still running from last time; skipped\n");
+                } else if (rc < 0) { svc_fail(&sch_exec[i * SCH_ESTRIDE], rc); }
                 else {
+                    sch_proc[i] = rc;
                     // The tick it actually ran at, not the tick it was due.
                     // For a scheduled task "when did this last happen" is the
                     // question, and the answer has to come from the clock

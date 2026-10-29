@@ -39,6 +39,8 @@
 #include "logging.h"
 #include "cxk_abi.h"
 #include "syspage.h"           /* SYSPAGE_VIRT */
+#include "systable.h"           /* syscall_object_wait, syscall_object_info */
+#include "proc.h"               /* proc_live */
 
 extern const struct cxex_load_ops cxex_kernel_load_ops;   /* cxex_loadk.c */
 
@@ -599,6 +601,21 @@ int ktest_spawn_verifies_image(void) {
     int rc = sys_spawn(user_addr(a));
     img[16] ^= 0xFF;
     ok = (rc == CXEX_EXEC_VERIFY_FAILED);
+    if (!ok) goto done;
+
+    /* ---- and the image as signed runs, as a process handle (ABI 13) ----
+       hi.xuex prints (refused: caps 0) and exits 0. Waited for through the
+       handle, it says so; closed, its record goes. */
+    uint32_t live0 = proc_live();
+    int32_t ph = sys_spawn(user_addr(a));
+    struct object_info_args *oi = (struct object_info_args *)(SPV_ARGS_VA + 0x100);
+    struct process_info *pi = (struct process_info *)(SPV_ARGS_VA + 0x200);
+    oi->cap = sizeof *pi; oi->buf = user_addr(pi); oi->handle = ph; oi->topic = OBJINFO_PROCESS;
+    ok = ph > 0 && syscall_object_wait(ph, SIGNAL_PROCESS_ENDED, 10000, 0) == E_OK
+         && syscall_object_info(user_addr(oi)) == (int)sizeof *pi
+         && pi->ended == PROC_EXITED && pi->code == 0;
+    if (ph > 0) htab_close(thread_htab(thread_current_id()), ph);
+    ok = ok && proc_live() == live0;
 
 done:
     if (h >= 0) htab_close(thread_htab(thread_current_id()), h);

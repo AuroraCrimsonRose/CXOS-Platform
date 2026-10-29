@@ -22,7 +22,7 @@ public static class CXEXLayoutEngine
     /// with CXEX_LOAD_BAD_ABI. Declared in versions.json as `cxex-abi`, checked
     /// against both sides, and tied to the header in CompatDeclarationTests.
     /// </summary>
-    public const ushort AbiVersion = 12;
+    public const ushort AbiVersion = 13;
 
     public static CxexMemoryLayout CreateLayout(uint entryPoint, IReadOnlyList<ElfSegment> loadSegments, ushort typeCode, byte[] abiHash, ushort abiVersion = AbiVersion,
                                                 ushort arch = CXFlags.ARCH_X86_32)

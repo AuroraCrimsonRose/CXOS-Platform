@@ -65,7 +65,8 @@
 /* Generic rights, the same on every type (the ABI's HRIGHT_DUPLICATE, checked
    in htab.c in the kernel build). */
 #define HTAB_RIGHT_DUPLICATE  0x80000000u
-#define HTAB_RIGHTS_GENERIC   HTAB_RIGHT_DUPLICATE
+#define HTAB_RIGHT_WAIT       0x40000000u
+#define HTAB_RIGHTS_GENERIC   (HTAB_RIGHT_DUPLICATE | HTAB_RIGHT_WAIT)
 
 struct htab_entry {
     struct kobj *obj;      /* 0: the slot is free */

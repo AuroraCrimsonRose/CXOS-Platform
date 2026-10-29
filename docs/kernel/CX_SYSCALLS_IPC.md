@@ -171,12 +171,30 @@ signals), `timer_create(clock, slack)`, `timer_set(t, deadline, period)`,
 `timer_cancel`, `clock_read(clock)` (normally served from the system page
 without entering the kernel).
 
+*First form, ABI 13:* `SYS_OBJECT_WAIT` is `object_wait(h, signals,
+timeout_ms, seen)`: a relative timeout in milliseconds (0 looks without
+waiting, `WAIT_FOREVER` has no limit) until item 2's timers give deadlines.
+It needs the generic `HRIGHT_WAIT`; a type with no signals refuses it
+(`E_NOT_SUPPORTED`), and a signal the type does not define is
+`E_INVALID_ARGS`. Signals are a word on every object (`kobj.signals`); the
+queue will read the same word.
+
 **Processes, threads and jobs:**
 `process_spawn(spec)` (§10), `process_exit(code)`, `process_stop(p, deadline)`,
 `process_kill(p)`, `thread_create(p, entry, stack, arg)`, `thread_exit`,
 `thread_set_priority`, `thread_yield`, `job_create(parent, limits)`,
 `job_set_limits`. A thread waits on a process, thread or job handle to learn
 how it ended (`kernel/CX_KERNEL_PLAN.md` §4).
+
+*First form, ABI 13:* `SYS_SPAWN` and `SYS_EXEC_PATH` return a process handle
+with `HRIGHT_WAIT`, `HRIGHT_INSPECT` and `HRIGHT_DUPLICATE`. It is signalled
+`SIGNAL_PROCESS_ENDED` by its last thread on the way out, after its handles
+close (not later by the reaper, which a lone waiter would wait for
+forever); `object_info` with
+`OBJINFO_PROCESS` (`HRIGHT_INSPECT`) gives the pid and how it ended
+(`PROC_EXITED` and the code, `PROC_CRASHED` with the vector, the instruction
+and a page fault's address, `PROC_NOT_STARTED`). The record, and its pid, go
+when it has ended and its last handle is closed.
 
 **Memory:**
 `mem_create(size, flags)`, `mem_read`, `mem_write`, `mem_set_size`,

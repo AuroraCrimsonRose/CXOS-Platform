@@ -310,7 +310,23 @@ Independent of the order above, and small enough to land whenever convenient:
 `kernel/CX_KERNEL_PLAN.md` §3–§7.
 
 1. Process handles: wait, stop, kill, inspect; detailed exit reasons; jobs with
-   memory and thread budgets.
+   memory and thread budgets. In four steps:
+   - **1.1a (ABI 13, 2026-10-29), done:** `spawn` and `exec_path` return a
+     process handle (`HRIGHT_WAIT`, `HRIGHT_INSPECT`, `HRIGHT_DUPLICATE`), not
+     a pid. `SYS_OBJECT_WAIT` waits on one handle's signals with a timeout
+     (`HRIGHT_WAIT` is generic; the deadline form and the queue come with
+     item 2). A process's last thread sets `SIGNAL_PROCESS_ENDED` on its
+     way out, and `OBJINFO_PROCESS` says how it ended: exited with a code,
+     crashed (vector, where, the page-fault address; a refused call is
+     `PROC_VECTOR_REFUSED`), or never started. No zombies: the record and
+     its pid go with the last handle. The supervisor uses it to skip a
+     scheduled task whose last run is still going.
+   - 1.1b: kill. A blocked thread (IPC call and receive, file lock, keyboard,
+     sleep, object wait) is woken and ended at the next safe point; the
+     reason records who.
+   - 1.1c: stop, through an endpoint the process registers, then kill after
+     a deadline.
+   - 1.1d: jobs with memory and thread budgets.
 2. The wait queue, and timers as handles (LAPIC timer and TSC).
 3. IPC: queued calls with reply tokens, badges, handle transfer, sealable
    memory objects, notifications, priority passed through calls. Memory

@@ -153,7 +153,8 @@ static void thread_free(struct thread *t) {
     if (t->arg_drop) t->arg_drop(t->arg);
     t->arg = 0;
     t->arg_drop = 0;
-    /* The last thread of a process to go closes its handles. */
+    /* One that never ran stops here; one that ran stopped in thread_exit. */
+    if (t->state != THREAD_EXITED) proc_thread_stopped(t->proc);
     proc_thread_gone(t->proc);
     t->proc  = 0;
     t->state = THREAD_UNUSED;
@@ -306,22 +307,33 @@ void thread_unblock(int id) {
  */
 uint32_t thread_sleep_ms(uint32_t ms) {
     if (!initialized || ms == 0) { yield(); return timer_ticks(); }
-
-    /* All three at once, with the timer held off. Set one at a time, a tick
-       landing between `sleeping` and `state` found a thread already due but
-       still RUNNING: it cleared `sleeping` and left the state alone, the
-       thread then blocked itself, and nothing would ever wake it. A 1 ms
-       sleep is due at the very next tick, so the window was real. */
     uint32_t f = irq_save();
-    self()->wake_tick = timer_ticks() + ms;
-    self()->sleeping  = 1;
-    self()->state     = THREAD_BLOCKED;
+    thread_block_prepare(ms);
     irq_restore(f);
+    thread_block_finish();
+    return timer_ticks();
+}
 
+void thread_block_prepare(uint32_t ms) {
+    if (!initialized) return;
+    /* All three at once, with the timer held off (the caller's job). Set one
+       at a time, a tick landing between `sleeping` and `state` found a thread
+       already due but still RUNNING: it cleared `sleeping` and left the state
+       alone, the thread then blocked itself, and nothing would ever wake it.
+       A 1 ms sleep is due at the very next tick, so the window was real. */
+    if (ms) {
+        self()->wake_tick = timer_ticks() + ms;
+        self()->sleeping  = 1;
+    }
+    self()->state = THREAD_BLOCKED;
+}
+
+void thread_block_finish(void) {
+    if (!initialized) return;
     for (;;) {
         yield();
-        if (!self()->sleeping) break;                /* the timer woke us */
-        if (self()->state != THREAD_BLOCKED) break;  /* something else did */
+        /* The timer or a thread_unblock made it READY, and yield ran it. */
+        if (self()->state != THREAD_BLOCKED) break;
 
         /* Still blocked and still here, which means yield found nothing else
            to run and declined to switch. We are the only thread awake, so wait
@@ -333,7 +345,6 @@ uint32_t thread_sleep_ms(uint32_t ms) {
 
     self()->sleeping = 0;
     self()->state    = THREAD_RUNNING;
-    return timer_ticks();
 }
 
 void sched_wake_sleepers(void) {
@@ -384,6 +395,9 @@ static void sched_reap(void) {
 
 void thread_exit(void) {
     irq_save();   /* never restored here: the next thread resumes with its own flags */
+    /* The last one out ends its process now and wakes the waiters: one may be
+       the only thread left to run, and it cannot wait for the reaper. */
+    if (self()->proc) proc_thread_stopped(self()->proc);
     self()->state = THREAD_EXITED;
     /* stack is freed later by sched_reap, running in another thread's context
        (we can't free the stack we're still standing on). */

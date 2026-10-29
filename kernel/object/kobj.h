@@ -43,19 +43,24 @@ enum kobj_type {
     KOBJ_TYPE_MAX
 };
 
+struct kwaiter;   /* object/kwait.h */
+
 struct kobj {
     uint16_t   type;      /* enum kobj_type */
     uint16_t   _pad;
     atomic_u32 refs;
     atomic_u32 handles;
-    atomic_u32 signals;   /* signalled state the wait queue reads (Phase 1) */
+    atomic_u32 signals;   /* signalled state (object/kwait.h); the type's own bits */
     uint32_t   koid;      /* kernel id: unique for the life of the system, never 0 */
+    struct kwaiter *waiters;   /* threads in kobj_wait on it (object/kwait.h) */
 };
 
 struct kobj_ops {
     const char *name;
     /* Rights that mean something for this type; a handle can carry no others. */
     uint32_t    rights_valid;
+    /* Signals it sets (object/kwait.h); 0: nothing to wait for. */
+    uint32_t    signals_valid;
     /* Optional: the last handle has closed. The object may still be referenced. */
     void      (*last_handle)(struct kobj *o);
     /* Required: the last reference has gone. Free the object. */

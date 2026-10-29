@@ -131,7 +131,7 @@ KH_TEST(htab_rights_only_shrink) {
 
     /* A right the type does not define cannot be put on a handle at all. */
     KH_CHECK_EQ(htab_install(&t, &o.hdr, 0x8u, 0), HTAB_E_ACCESS_DENIED);
-    KH_CHECK_EQ(htab_install(&t, &o.hdr, TOBJ_RIGHTS | 0x40000000u, 0), HTAB_E_ACCESS_DENIED);   /* no such generic right */
+    KH_CHECK_EQ(htab_install(&t, &o.hdr, TOBJ_RIGHTS | 0x20000000u, 0), HTAB_E_ACCESS_DENIED);   /* no such generic right (0x40000000 is HTAB_RIGHT_WAIT) */
     KH_CHECK_EQ(htab_count(&t), 0u);
     KH_CHECK_EQ(atomic_load(&o.hdr.handles), 0u);
 

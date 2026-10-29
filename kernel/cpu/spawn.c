@@ -215,7 +215,7 @@ static void proc_trampoline(void) {
    executive). Returns pid or -E_*. */
 int proc_start(const void *image, uint32_t image_len, uint32_t caps,
                struct endpoint *broker, uint32_t broker_grant,
-               const char *args, uint32_t args_len) {
+               const char *args, uint32_t args_len, int32_t *handle) {
     if (image_len == 0 || image_len > PROC_MAX_IMAGE) return E_OUT_OF_RANGE;
     if (args_len > USER_ARGS_MAX)                     return E_OUT_OF_RANGE;
     if (!args) args_len = 0;
@@ -271,6 +271,15 @@ int proc_start(const void *image, uint32_t image_len, uint32_t caps,
         int32_t bh = ep_install_handle(tid, broker, HRIGHT_SEND, broker_grant);
         if (bh < 0) klog_u32("PROC", SEV_WARN, "broker handle refused: ", (uint32_t)-bh, LOG_COLOR_VALUE, "");
         else        thread_set_broker(tid, bh);
+    }
+    /* The caller's handle on it, last, while the thread is still held: if
+       there is no room for it, the process is discarded before it has run,
+       not left running with nobody able to wait for it. */
+    if (handle) {
+        int32_t ph = htab_install(thread_htab(thread_current_id()), &thread_proc(tid)->hdr,
+                                  HRIGHT_WAIT | HRIGHT_INSPECT | HRIGHT_DUPLICATE, 0);
+        if (ph < 0) { thread_discard(tid); return ph; }
+        *handle = ph;
     }
     thread_start(tid);
     return pid;   /* the process, not its thread */
@@ -345,14 +354,15 @@ int sys_spawn(uint64_t ua) {
         return E_BAD_ADDRESS;
     }
 
-    int pid = cxex_exec_as(kimg, (size_t)a.image_len, granted, bep, bgrant, user_ptr(a.args), (uint32_t)a.args_len);
+    int32_t ph = 0;
+    int pid = cxex_exec_as(kimg, (size_t)a.image_len, granted, bep, bgrant, user_ptr(a.args), (uint32_t)a.args_len, &ph);
     kfree(kimg);        /* proc_start took its own copy for the new address space */
     ep_put(bep);        /* the child holds its own handle on it now */
 
-    if (pid >= 0)
-        klog_u32("SPAWN", SEV_OK, "pid ", (uint32_t)pid, LOG_COLOR_VALUE,
-                 (granted & ~SPAWN_BACKGROUND) ? " (privileged, ring 3)" : " (caps=0, ring 3)");
-    return pid;
+    if (pid < 0) return pid;
+    klog_u32("SPAWN", SEV_OK, "pid ", (uint32_t)pid, LOG_COLOR_VALUE,
+             (granted & ~SPAWN_BACKGROUND) ? " (privileged, ring 3)" : " (caps=0, ring 3)");
+    return ph;   /* the pid is OBJINFO_PROCESS */
 }
 /* ---- SYS_EXEC_PATH ---------------------------------------------------------
  * Run a program straight off the disk.
@@ -456,10 +466,14 @@ int sys_exec_path(uint64_t upath, uint64_t ua) {
     /* Attenuation, exactly as SYS_SPAWN does it: a subset of your own set. */
     uint32_t granted = (a.caps & thread_current_caps()) | (a.caps & SPAWN_BACKGROUND);
 
-    int rc = cxex_exec_as(buf, (size_t)e.size, granted, bep, bgrant, user_ptr(a.args), (uint32_t)a.args_len);
+    int32_t ph = 0;
+    int rc = cxex_exec_as(buf, (size_t)e.size, granted, bep, bgrant, user_ptr(a.args), (uint32_t)a.args_len, &ph);
     kfree(buf);   /* proc_start took its own copy for the new address space */
     ep_put(bep);
 
+    /* proc_start's own refusals are ABI errors already, below cxex_exec's
+       -1..-5: no room for the caller's process handle, no memory. */
+    if (rc == E_NO_RESOURCES || rc == E_NO_MEMORY) return rc;
     if (rc < 0) {
         /* cxex_exec_* has its own small error space; the one a caller most
            needs to tell apart is "this image is not signed by a key this
@@ -475,5 +489,5 @@ int sys_exec_path(uint64_t upath, uint64_t ua) {
 
     klog_u32("EXEC", SEV_OK, "pid ", (uint32_t)rc, LOG_COLOR_VALUE,
              (granted & ~SPAWN_BACKGROUND) ? " from disk (privileged, ring 3)" : " from disk (caps=0, ring 3)");
-    return rc;
+    return ph;   /* the pid is OBJINFO_PROCESS */
 }

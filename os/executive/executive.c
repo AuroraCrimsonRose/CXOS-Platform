@@ -84,8 +84,8 @@ static void executive_main(void) {
        args_len, so a stale pointer here is a spawn that fails with E_BAD_ADDRESS
        and a machine that boots to nothing. */
     sa.args = 0; sa.args_len = 0;
-    int pid = sys_spawn(&sa);
-    if (pid < 0) { sys_write("executive: spawn failed\n"); sys_exit(1); }
+    int shell = sys_spawn(&sa);   /* a process handle; it closes when this exits */
+    if (shell < 0) { sys_write("executive: spawn failed\n"); sys_exit(1); }
 
     /* Start the service supervisor. It is loaded from the disk rather than
        embedded here, so the kernel verifies its signature on the way in - the

@@ -15,7 +15,7 @@
  * hash it was built against and the loader refuses one that differs, so a
  * program never runs against numbers or layouts it was not compiled for.
  */
-#define CXK_ABI_HASH { 0xe5, 0xbf, 0x3f, 0xca, 0xcd, 0x40, 0xf0, 0xdd, 0x98, 0xd3, 0x67, 0x66, 0xeb, 0xaf, 0xb2, 0x06, 0x21, 0xb9, 0x94, 0x23, 0xdb, 0xc1, 0x45, 0x89, 0x60, 0x03, 0xdd, 0x93, 0xd5, 0x81, 0x79, 0x17 }
+#define CXK_ABI_HASH { 0xd7, 0x50, 0x35, 0xdd, 0x9c, 0x48, 0x90, 0x83, 0xcd, 0x22, 0xd6, 0x97, 0x3c, 0xf3, 0x90, 0x24, 0x7a, 0x9f, 0x40, 0x69, 0x2a, 0xea, 0xf3, 0x62, 0xea, 0x2d, 0x7d, 0x2d, 0xb6, 0x68, 0xb1, 0x5c }
 
 /*
  * CXK ABI v1 - the PUBLIC contract shared by the kernel, the .xoex executive,
@@ -44,7 +44,7 @@
  * line; bump both, and the DevKit's stamp, in the one commit that changes the
  * contract.
  */
-#define CXK_ABI_VERSION          12
+#define CXK_ABI_VERSION          13
 
 /*
  * ---- syscall numbers ----
@@ -70,6 +70,14 @@
 #define SYS_OBJECT_INFO          0x18           /* ebx = *object_info_args -> bytes written */
 
 /*
+ * ebx = handle (HRIGHT_WAIT), ecx = signals, edx = timeout in ms (0: look
+ * without waiting; WAIT_FOREVER; at most SLEEP_MAX_MS otherwise), esi = *u32
+ * for the object's signals as last seen, or 0 -> 0 once any of `signals` is
+ * set, or E_TIMED_OUT
+ */
+#define SYS_OBJECT_WAIT          0x19
+
+/*
  * ---- handles ----
  * A handle is a positive number, never 0 and never below 256, and a closed
  * handle's number is refused rather than naming whatever comes next. Its
@@ -82,12 +90,29 @@
 /* endpoint: ipc_recv and ipc_reply on it; file: FOPEN_READ, FOPEN_WRITE */
 #define HRIGHT_RECV              0x2u
 
+/* process: OBJINFO_PROCESS, how it is and how it ended */
+#define HRIGHT_INSPECT           0x1u
+
 /*
  * Generic rights, which mean the same on every type, count down from the top
  * bit; a type's own count up from the bottom. A handle without
  * HRIGHT_DUPLICATE cannot be copied, and a copy has it only if asked for.
  */
 #define HRIGHT_DUPLICATE         0x80000000u
+
+/*
+ * SYS_OBJECT_WAIT on it. Every type takes it; a type with no signals refuses
+ * the wait itself (E_NOT_SUPPORTED).
+ */
+#define HRIGHT_WAIT              0x40000000u
+
+/*
+ * ---- signals (SYS_OBJECT_WAIT) ----
+ * Each type defines its own, from the bottom bit, and asking for one it does
+ * not define is E_INVALID_ARGS. Once set, a signal named here stays set.
+ */
+#define SIGNAL_PROCESS_ENDED     0x1u           /* process: its last thread has gone */
+#define WAIT_FOREVER             0xFFFFFFFFu    /* timeout_ms: no limit */
 
 /* input 0x20-0x2F (unprivileged: reading your own keystrokes) */
 #define SYS_INPUT_READ           0x20           /* block until a key -> char */
@@ -163,12 +188,17 @@
  */
 #define SYS_FB_SET_FONT          0x46
 
-/* process 0x70-0x7F (privileged) */
-#define SYS_SPAWN                0x70           /* ebx = *spawn_args (GRANT_SPAWN) -> pid */
+/*
+ * process 0x70-0x7F (privileged)
+ * Both return a process handle with HRIGHT_WAIT, HRIGHT_INSPECT and
+ * HRIGHT_DUPLICATE, not a pid: the process is freed once it has ended and the
+ * last handle on it is closed, and nobody reaps it. Its pid is OBJINFO_PROCESS.
+ */
+#define SYS_SPAWN                0x70           /* ebx = *spawn_args (GRANT_SPAWN) -> process handle */
 
 /*
- * ebx = path, ecx = *spawn_args (GRANT_SPAWN) -> pid (image/image_len in the
- * struct are ignored)
+ * ebx = path, ecx = *spawn_args (GRANT_SPAWN) -> process handle (image/image_len
+ * in the struct are ignored)
  */
 #define SYS_EXEC_PATH            0x72
 
@@ -426,12 +456,43 @@ struct clock_info {
  */
 
 /*
- * SYS_OBJECT_INFO: what one of the caller's handles names. It needs no right
- * and no grant: it describes only what the caller already holds.
+ * SYS_OBJECT_INFO: what one of the caller's handles names. OBJINFO_BASIC
+ * needs no right and no grant: it describes only what the caller already
+ * holds. Any other topic needs the right it names.
  */
 #define OBJINFO_BASIC            1              /* -> struct object_basic */
+#define OBJINFO_PROCESS          2              /* a process (HRIGHT_INSPECT) -> struct process_info */
 #define OBJ_TYPE_ENDPOINT        1
 #define OBJ_TYPE_FILE            2
+#define OBJ_TYPE_PROCESS         4              /* 3 is the kernel self-tests' own */
+
+/* process_info.ended: how it ended, once SIGNAL_PROCESS_ENDED is set. */
+#define PROC_RUNNING             0              /* not ended */
+#define PROC_EXITED              1              /* SYS_EXIT; `code` is its argument */
+
+/*
+ * a CPU exception in ring 3, or a call from outside the system page;
+ * `vector`, `ip`, and for a page fault `addr`
+ */
+#define PROC_CRASHED             2
+
+/* it never reached ring 3: the loader refused the image, or no memory */
+#define PROC_NOT_STARTED         3
+
+struct process_info {
+    uint64_t ip;                                /* PROC_CRASHED: where */
+    uint64_t addr;                              /* PROC_CRASHED by a page fault: the address it touched */
+    uint32_t pid;                               /* for display; it names the process until the record goes */
+    uint32_t ended;                             /* PROC_* */
+    int32_t code;                               /* PROC_EXITED */
+    uint32_t vector;                            /* PROC_CRASHED: the exception, or PROC_VECTOR_REFUSED */
+};
+
+/*
+ * process_info.vector: not an exception but a system call from outside the
+ * system page, which ends the process the way a fault does
+ */
+#define PROC_VECTOR_REFUSED      256u
 
 struct object_info_args {
     uint64_t cap;                               /* bytes at buf; smaller than the topic needs is E_BUFFER_TOO_SMALL */
@@ -761,6 +822,7 @@ struct log_entry {
 CXK_ABI_STATIC_ASSERT(sizeof(struct args_info) == 16, "ABI layout: args_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct spawn_args) == 48, "ABI layout: spawn_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct clock_info) == 8, "ABI layout: clock_info");
+CXK_ABI_STATIC_ASSERT(sizeof(struct process_info) == 32, "ABI layout: process_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct object_info_args) == 24, "ABI layout: object_info_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct object_basic) == 20, "ABI layout: object_basic");
 CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_call_args) == 40, "ABI layout: ipc_call_args");

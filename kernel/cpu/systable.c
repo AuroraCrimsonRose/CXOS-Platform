@@ -21,6 +21,7 @@ static int decode_ep_create(const uintptr_t *a) { (void)a; return syscall_ep_cre
 static int decode_handle_close(const uintptr_t *a) { return syscall_handle_close((int32_t)a[0]); }
 static int decode_handle_duplicate(const uintptr_t *a) { return syscall_handle_duplicate((int32_t)a[0], (uint32_t)a[1]); }
 static int decode_object_info(const uintptr_t *a) { return syscall_object_info((uint64_t)a[0]); }
+static int decode_object_wait(const uintptr_t *a) { return syscall_object_wait((int32_t)a[0], (uint32_t)a[1], (uint32_t)a[2], (uint64_t)a[3]); }
 static int decode_input_read(const uintptr_t *a) { (void)a; return syscall_input_read(); }
 static int decode_mouse_read(const uintptr_t *a) { return syscall_mouse_read((uint64_t)a[0]); }
 static int decode_input_poll(const uintptr_t *a) { (void)a; return syscall_input_poll(); }
@@ -151,6 +152,7 @@ const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_HANDLE_CLOSE] = decode_handle_close,
     [SYS_HANDLE_DUPLICATE] = decode_handle_duplicate,
     [SYS_OBJECT_INFO] = decode_object_info,
+    [SYS_OBJECT_WAIT] = decode_object_wait,
     [SYS_INPUT_READ] = decode_input_read,
     [SYS_MOUSE_READ] = decode_mouse_read,
     [SYS_INPUT_POLL] = decode_input_poll,

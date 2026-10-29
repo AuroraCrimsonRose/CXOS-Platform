@@ -40,7 +40,7 @@ domain kernel
 /// mismatch. Declared in versions.json as `cxex-abi` and checked against this
 /// line; bump both, and the DevKit's stamp, in the one commit that changes the
 /// contract.
-const CXK_ABI_VERSION: u32 = 12
+const CXK_ABI_VERSION: u32 = 13
 
 /// ---- syscall numbers ----
 /// lifecycle 0x00-0x0F (no capability required)
@@ -60,6 +60,11 @@ syscall SYS_HANDLE_CLOSE = 0x16 fn handle_close(h: i32) -> i32          /// rele
 /// ebx = handle, ecx = rights (a subset of its own; needs HRIGHT_DUPLICATE) -> new handle
 syscall SYS_HANDLE_DUPLICATE = 0x17 fn handle_duplicate(h: i32, rights: u32) -> i32
 syscall SYS_OBJECT_INFO = 0x18 fn object_info(a: *object_info_args) -> i32   /// ebx = *object_info_args -> bytes written
+/// ebx = handle (HRIGHT_WAIT), ecx = signals, edx = timeout in ms (0: look
+/// without waiting; WAIT_FOREVER; at most SLEEP_MAX_MS otherwise), esi = *u32
+/// for the object's signals as last seen, or 0 -> 0 once any of `signals` is
+/// set, or E_TIMED_OUT
+syscall SYS_OBJECT_WAIT = 0x19 fn object_wait(h: i32, signals: u32, timeout_ms: u32, seen: *u32) -> i32
 
 /// ---- handles ----
 /// A handle is a positive number, never 0 and never below 256, and a closed
@@ -70,10 +75,21 @@ syscall SYS_OBJECT_INFO = 0x18 fn object_info(a: *object_info_args) -> i32   ///
 const HRIGHT_SEND: u32 = 0x1u        /// endpoint: ipc_call through it
 /// endpoint: ipc_recv and ipc_reply on it; file: FOPEN_READ, FOPEN_WRITE
 const HRIGHT_RECV: u32 = 0x2u
+/// process: OBJINFO_PROCESS, how it is and how it ended
+const HRIGHT_INSPECT: u32 = 0x1u
 /// Generic rights, which mean the same on every type, count down from the top
 /// bit; a type's own count up from the bottom. A handle without
 /// HRIGHT_DUPLICATE cannot be copied, and a copy has it only if asked for.
 const HRIGHT_DUPLICATE: u32 = 0x80000000u
+/// SYS_OBJECT_WAIT on it. Every type takes it; a type with no signals refuses
+/// the wait itself (E_NOT_SUPPORTED).
+const HRIGHT_WAIT: u32 = 0x40000000u
+
+/// ---- signals (SYS_OBJECT_WAIT) ----
+/// Each type defines its own, from the bottom bit, and asking for one it does
+/// not define is E_INVALID_ARGS. Once set, a signal named here stays set.
+const SIGNAL_PROCESS_ENDED: u32 = 0x1u   /// process: its last thread has gone
+const WAIT_FOREVER: u32 = 0xFFFFFFFFu    /// timeout_ms: no limit
 
 /// input 0x20-0x2F (unprivileged: reading your own keystrokes)
 syscall SYS_INPUT_READ = 0x20 fn input_read() -> i32                   /// block until a key -> char
@@ -128,9 +144,12 @@ syscall SYS_FB_DRAW_TEXT = 0x45 fn fb_draw_text(x: u32, y: u32, text: *u8, fg: u
 /// leaves the current font working. Returns 0, or E_INVALID_ARGS / E_NOT_FOUND.
 syscall SYS_FB_SET_FONT = 0x46 fn fb_set_font(name: *u8) -> i32
 /// process 0x70-0x7F (privileged)
-syscall SYS_SPAWN = 0x70 fn spawn(a: *spawn_args) -> i32        /// ebx = *spawn_args (GRANT_SPAWN) -> pid
-/// ebx = path, ecx = *spawn_args (GRANT_SPAWN) -> pid (image/image_len in the
-/// struct are ignored)
+/// Both return a process handle with HRIGHT_WAIT, HRIGHT_INSPECT and
+/// HRIGHT_DUPLICATE, not a pid: the process is freed once it has ended and the
+/// last handle on it is closed, and nobody reaps it. Its pid is OBJINFO_PROCESS.
+syscall SYS_SPAWN = 0x70 fn spawn(a: *spawn_args) -> i32        /// ebx = *spawn_args (GRANT_SPAWN) -> process handle
+/// ebx = path, ecx = *spawn_args (GRANT_SPAWN) -> process handle (image/image_len
+/// in the struct are ignored)
 syscall SYS_EXEC_PATH = 0x72 fn exec_path(path: *u8, a: *spawn_args) -> i32
 
 /// memory 0x80-0x8F (unprivileged, quota-bounded)
@@ -340,12 +359,36 @@ const SLEEP_MAX_MS: u32 = 3600000u   /// one hour
 /// Messages are bounded (<= one page) and copied through the kernel. The message
 /// schema is defined by the executive; the kernel just moves bytes.
 
-/// SYS_OBJECT_INFO: what one of the caller's handles names. It needs no right
-/// and no grant: it describes only what the caller already holds.
+/// SYS_OBJECT_INFO: what one of the caller's handles names. OBJINFO_BASIC
+/// needs no right and no grant: it describes only what the caller already
+/// holds. Any other topic needs the right it names.
 const OBJINFO_BASIC: u32 = 1         /// -> struct object_basic
+const OBJINFO_PROCESS: u32 = 2       /// a process (HRIGHT_INSPECT) -> struct process_info
 
 const OBJ_TYPE_ENDPOINT: u32 = 1
 const OBJ_TYPE_FILE: u32 = 2
+const OBJ_TYPE_PROCESS: u32 = 4      /// 3 is the kernel self-tests' own
+
+/// process_info.ended: how it ended, once SIGNAL_PROCESS_ENDED is set.
+const PROC_RUNNING: u32 = 0          /// not ended
+const PROC_EXITED: u32 = 1           /// SYS_EXIT; `code` is its argument
+/// a CPU exception in ring 3, or a call from outside the system page;
+/// `vector`, `ip`, and for a page fault `addr`
+const PROC_CRASHED: u32 = 2
+/// it never reached ring 3: the loader refused the image, or no memory
+const PROC_NOT_STARTED: u32 = 3
+
+struct process_info {
+    ip: u64             /// PROC_CRASHED: where
+    addr: u64           /// PROC_CRASHED by a page fault: the address it touched
+    pid: u32            /// for display; it names the process until the record goes
+    ended: u32          /// PROC_*
+    code: i32           /// PROC_EXITED
+    vector: u32         /// PROC_CRASHED: the exception, or PROC_VECTOR_REFUSED
+}
+/// process_info.vector: not an exception but a system call from outside the
+/// system page, which ends the process the way a fault does
+const PROC_VECTOR_REFUSED: u32 = 256u
 
 struct object_info_args {
     cap: u64        /// bytes at buf; smaller than the topic needs is E_BUFFER_TOO_SMALL

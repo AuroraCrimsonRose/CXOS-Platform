@@ -7,6 +7,8 @@
 #include "uid.h"
 #include "memman/ocache.h"
 #include "object/idtab.h"
+#include "object/kwait.h"
+#include "cxk_abi.h"
 #include "sync/spinlock.h"
 #include "panic.h"
 #include "arch/paging.h"
@@ -45,7 +47,8 @@ static void proc_destroy(struct kobj *o) {
 
 static const struct kobj_ops proc_ops = {
     .name         = "process",
-    .rights_valid = 0,              /* no process handles yet (plan section 4) */
+    .rights_valid  = HRIGHT_INSPECT,
+    .signals_valid = SIGNAL_PROCESS_ENDED,
     .destroy      = proc_destroy,
 };
 
@@ -82,21 +85,48 @@ struct proc *proc_create(const struct proc *parent) {
 void proc_thread_in(struct proc *p) {
     kobj_ref(&p->hdr);
     p->threads++;
+    p->running++;
+}
+
+/* On the way out of the last running thread itself, not later in the reaper:
+   a waiter may be the only other thread, and the reaper runs only once
+   something else is scheduled, so a wait for it waited forever. Interrupts
+   off (thread_exit, or thread_free for a thread that never ran). */
+void proc_thread_stopped(struct proc *p) {
+    if (--p->running != 0) return;
+    /* Every object belongs to its handles, so a process that ends mid-write
+       or with an endpoint open leaves nothing behind. */
+    proc_out_flush(p);
+    htab_close_all(&p->handles);
+    p->broker = -1;
+    /* Every way into ring 3 notes its way out; nothing noted, it never got
+       there. Signalled last, so a waiter that wakes finds every handle the
+       process held already closed. */
+    if (p->ended == PROC_RUNNING) p->ended = PROC_NOT_STARTED;
+    kobj_signal(&p->hdr, SIGNAL_PROCESS_ENDED);
 }
 
 void proc_thread_gone(struct proc *p) {
-    if (--p->threads == 0) {
-        /* Every object belongs to its handles, so a process that ends mid-write
-           or with an endpoint open leaves nothing behind. */
-        proc_out_flush(p);
-        htab_close_all(&p->handles);
-        p->broker = -1;
-        /* However the thread ended: SYS_EXIT, a fault, a failed start. Its
-           creator used to tear the space down on the way out of the
-           trampoline, so every way out that skipped that line leaked it. */
-        release_space(p);
-    }
+    /* However the thread ended: SYS_EXIT, a fault, a failed start. Its
+       creator used to tear the space down on the way out of the trampoline,
+       so every way out that skipped that line leaked it. Freed here, once no
+       thread can be standing in it. */
+    if (--p->threads == 0) release_space(p);
     kobj_unref(&p->hdr);
+}
+
+void proc_note_exit(struct proc *p, int32_t code) {
+    if (!p || p->ended != PROC_RUNNING) return;
+    p->ended    = PROC_EXITED;
+    p->end_code = code;
+}
+
+void proc_note_crash(struct proc *p, uint32_t vector, uint64_t ip, uint64_t addr) {
+    if (!p || p->ended != PROC_RUNNING) return;
+    p->ended      = PROC_CRASHED;
+    p->end_vector = vector;
+    p->end_ip     = ip;
+    p->end_addr   = addr;
 }
 
 void proc_put(struct proc *p) {

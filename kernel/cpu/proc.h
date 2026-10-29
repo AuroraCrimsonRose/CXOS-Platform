@@ -14,9 +14,10 @@
  * A process is a kernel object (KOBJ_PROCESS) from its own cache. Every
  * thread in it holds a reference. When the last of them is reaped, the process
  * closes every handle it holds, frees its address space and gives up its
- * reference; the record goes when the last reference does (later, process
- * handles will hold some, which is how a parent waits without zombies: plan
- * section 4).
+ * reference, notes how it ended and sets SIGNAL_PROCESS_ENDED. The record goes
+ * when the last reference does: a process handle (SYS_SPAWN, SYS_EXEC_PATH)
+ * holds one, which is how a parent waits without zombies and without reaping
+ * (plan section 4). The pid stays taken while the record lives.
  *
  * A pid names a process, not a thread. Thread ids and pids are allocated
  * separately, so a process keeps its pid whichever of its threads exits.
@@ -43,6 +44,7 @@ struct proc {
     struct kobj hdr;        /* first; KOBJ_PROCESS */
     int         pid;
     int         threads;    /* threads naming this process, exited-unreaped included */
+    int         running;    /* of those, the ones not yet through thread_exit */
     int         is_user;    /* runs ring-3 code: never uid 0 (thread_set_uid) */
     uint32_t    uid;        /* owning user; 0 = SYSTEM */
     uint32_t    cwd;        /* CXFS entry id of the working directory; 0 = root */
@@ -54,6 +56,12 @@ struct proc {
     int32_t     broker;     /* its SEND handle on its launcher's broker, or -1 */
     paddr_t     pd_phys;    /* its own page directory, freed with it; 0 = the kernel's */
     struct vm_proc vm;      /* its mappings and memory quota (memman/vmregion.h) */
+    /* How it ended (proc_note_end), read once SIGNAL_PROCESS_ENDED is set. */
+    uint32_t    ended;      /* PROC_*; PROC_RUNNING until noted */
+    int32_t     end_code;   /* PROC_EXITED */
+    uint32_t    end_vector; /* PROC_CRASHED */
+    uint64_t    end_ip;     /* PROC_CRASHED */
+    uint64_t    end_addr;   /* PROC_CRASHED by a page fault */
 };
 
 /* Register the type and make the cache. Once, before the first proc_create. */
@@ -65,10 +73,12 @@ void proc_sys_init(void);
    gives one to each thread. NULL if out of pids or memory. */
 struct proc *proc_create(const struct proc *parent);
 
-/* A thread now names `p` (a reference), or no longer does. When the last
-   thread is gone, every handle closes and the address space is freed; the
-   record follows its last reference. */
+/* A thread now names `p` (a reference), stops running, or no longer names it.
+   When the last thread stops, every handle closes and ENDED is signalled; when
+   the last is gone (reaped), the address space is freed; the record follows
+   its last reference. */
 void proc_thread_in(struct proc *p);
+void proc_thread_stopped(struct proc *p);
 void proc_thread_gone(struct proc *p);
 
 /* A background process's console output, collected into lines for the log:
@@ -77,6 +87,14 @@ void proc_thread_gone(struct proc *p);
    going calls it, so a final line without one is not lost. */
 void proc_out_write(struct proc *p, const char *s, uint32_t len);
 void proc_out_flush(struct proc *p);
+
+/* How `p` is ending, said by the way out it took: SYS_EXIT (PROC_EXITED and
+   the code), a ring-3 fault or a refused call (PROC_CRASHED, the vector, where
+   and, for a page fault, the address). The first one noted stands. A process
+   whose last thread goes with nothing noted never reached ring 3 and ended
+   PROC_NOT_STARTED. Waiters see it once the last thread has gone. */
+void proc_note_exit(struct proc *p, int32_t code);
+void proc_note_crash(struct proc *p, uint32_t vector, uint64_t ip, uint64_t addr);
 
 /* Drop a reference taken by proc_create (or kobj_ref). */
 void proc_put(struct proc *p);

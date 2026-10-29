@@ -148,6 +148,18 @@ fn broker_handle() -> i32 {
     return ai.broker;
 }
 
+// What spawn and exec_path return is a process handle, not a pid. Its pid, to
+// show a person, or a negative E_* code. Close the handle when done with it:
+// the process's record lasts until it has ended and nobody holds one.
+fn process_pid(h: i32) -> i32 {
+    let pi: process_info;
+    let a: object_info_args;
+    a.cap = sizeof pi; a.buf = (&pi) as u64; a.handle = h; a.topic = OBJINFO_PROCESS;
+    let rc: i32 = object_info(&a);
+    if (rc < 0) { return rc; }
+    return pi.pid as i32;
+}
+
 // Map `len` bytes of anonymous read/write memory. Returns the address, or 0.
 // The mapping is zero-filled - a frame off the free list may hold another
 // process's memory, so the kernel clears it before you ever see it.

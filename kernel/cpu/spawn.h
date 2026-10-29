@@ -17,18 +17,21 @@ struct endpoint;   /* cpu/ipc.h */
 /* create a ring-3 thread from a CXEX image readable in the current space.
    caps = its capabilities; broker = an endpoint to give it a SEND handle on,
    derived from broker_grant (or NULL for a root executive). args/args_len are the argument blob described in
-   cxk_abi.h, also read in the current space; pass NULL/0 for none. Returns pid,
+   cxk_abi.h, also read in the current space; pass NULL/0 for none. If `handle`
+   is given, the calling process gets a handle on the new one (HRIGHT_WAIT,
+   HRIGHT_INSPECT, HRIGHT_DUPLICATE) in *handle, or nothing starts. Returns pid,
    or a negative ABI error. */
 int proc_start(const void *image, uint32_t image_len, uint32_t caps,
                struct endpoint *broker, uint32_t broker_grant,
-               const char *args, uint32_t args_len);
+               const char *args, uint32_t args_len, int32_t *handle);
 
-/* SYS_SPAWN handler (called after the GRANT_SPAWN check). */
+/* SYS_SPAWN handler (called after the GRANT_SPAWN check). Returns a handle on
+   the new process, or a negative ABI error. */
 int sys_spawn(uint64_t ua);
 
 /* SYS_EXEC_PATH handler (called after the GRANT_SPAWN check). Reads the CXEX at
    `upath` from CXFS inside the kernel and runs it verified; the image fields of
-   *ua are ignored. Returns the new pid, or a negative ABI error. */
+   *ua are ignored. Returns a handle on the new process, or a negative ABI error. */
 int sys_exec_path(uint64_t upath, uint64_t ua);
 
 #endif
