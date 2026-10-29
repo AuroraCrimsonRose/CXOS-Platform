@@ -125,7 +125,7 @@ public class XDataDiffTests
             if (File.Exists(baseName + ".s")) File.Delete(baseName + ".s");
 
             var cr = HostBuild.Run(cxk,
-                new[] { "compile", xf, baseName + ".elf", "--no-prelude", "--emit-asm", "--target", "x86_32", "-I", std! }, repo);
+                new[] { "compile", xf, baseName + ".elf", "--no-prelude", "--emit-asm", "-I", std! }, repo);
 
             // `cxk compile` exits nonzero when it cannot assemble, which is not
             // this test's business: only the emitted .s matters, and it is
@@ -133,7 +133,7 @@ public class XDataDiffTests
             Assert.True(cr.StdOut.Contains("emitted", StringComparison.Ordinal),
                 $"X compile failed:\n{cr.All}");
 
-            HostBuild.Link(baseName + ".s", baseName + ".bin", HostBuild.PlainStub, work.Path);
+            HostBuild.Link(baseName + ".s", baseName + ".bin", work.Path);
             var x = HostBuild.Run(baseName + ".bin", Array.Empty<string>(), work.Path, 300_000);
 
             if (x.ExitCode != 0)

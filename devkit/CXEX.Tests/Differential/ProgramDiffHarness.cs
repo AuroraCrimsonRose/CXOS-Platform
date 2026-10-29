@@ -48,12 +48,11 @@ public static class ProgramDiffHarness
 
     private sealed record Entry(string Path, string[] Includes, bool WithPrelude);
 
-    /// <param name="host">What the dump program runs as: "x86_32" or "x86_64" (roadmap step 6d1b).</param>
     /// <param name="prog">X program under test, e.g. "semadump".</param>
     /// <param name="verb">The matching `cxk` command, e.g. "sema".</param>
     /// <param name="counted">Output text whose occurrences are reported, as a sanity signal.</param>
     /// <param name="extra">Options given to both sides before the rest, e.g. "--target", "x86_64".</param>
-    public static void Compare(string host, string prog, string verb, string counted, params string[] extra)
+    public static void Compare(string prog, string verb, string counted, params string[] extra)
     {
         string repo = Requires.Repo();
         string cxk = Requires.Cxk();
@@ -65,7 +64,7 @@ public static class ProgramDiffHarness
             $"no CXOS checkout with os/xc/{prog}.xfxn was found. Set CXK_ROOT to the repository root.");
 
         using var work = new HostBuild.Workspace(prog);
-        string exe = HostBuild.BuildDumpProgram(cxk, repo, osDir!, prog, work.Path, host);
+        string exe = HostBuild.BuildDumpProgram(cxk, repo, osDir!, prog, work.Path);
 
         string prelude = Path.Combine(work.Path, "prelude.xfxn");
         var pr = HostBuild.Run(cxk, new[] { "prelude", prelude }.Concat(TargetOf(extra)), repo);
@@ -137,7 +136,7 @@ public static class ProgramDiffHarness
                     var c = HostBuild.Run(cxk, cArgs, repo);
                     var x = HostBuild.Run(exe, xArgs, work.Path);
 
-                    Assert.True(x.ExitCode == 0, $"{prog} ({host}) exited {x.ExitCode}: {x.StdErr}");
+                    Assert.True(x.ExitCode == 0, $"{prog} exited {x.ExitCode}: {x.StdErr}");
 
                     string csharp = c.StdOut;
                     string xside = x.StdOut;
@@ -151,7 +150,7 @@ public static class ProgramDiffHarness
                     diagnostics += Count(csharp, "\nerror ");
 
                     if (csharp != xside)
-                        Assert.Fail(XcDumpHarness.Describe($"{label}, {host}", csharp, xside));
+                        Assert.Fail(XcDumpHarness.Describe(label, csharp, xside));
                 }
             }
         }
@@ -163,11 +162,11 @@ public static class ProgramDiffHarness
     }
 
     /// <summary>The <c>--target</c> pair in <paramref name="extra"/>: the prelude's wrappers depend on it.
-    /// With none, x86_32, the dump verbs' default (<c>cxk prelude</c>'s is x86_64).</summary>
+    /// With none, x86_64, the default of every verb.</summary>
     private static IEnumerable<string> TargetOf(string[] extra)
     {
         int i = Array.IndexOf(extra, "--target");
-        return new[] { "--target", i >= 0 && i + 1 < extra.Length ? extra[i + 1] : "x86_32" };
+        return new[] { "--target", i >= 0 && i + 1 < extra.Length ? extra[i + 1] : "x86_64" };
     }
 
     private static IEnumerable<string> Sorted(string dir, string pattern) =>

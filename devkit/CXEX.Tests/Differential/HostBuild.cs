@@ -14,52 +14,45 @@ public sealed record ProcResult(int ExitCode, string StdOut, string StdErr)
 /// <summary>
 /// Running X on the host, which is what every differential suite is built on.
 ///
-/// <para>The X compiler emits 32-bit assembly whose entry point is
+/// <para>The X compiler emits x86-64 assembly whose entry point is
 /// <c>_start</c>. To run it as an ordinary host process we rename that to
 /// <c>main</c> and link it against a stub that hands Linux's argc/argv over
-/// and exits through <c>int 0x80</c>. No VM and no CXK boot is involved — this
-/// is why the suites need an ELF host rather than merely a compiler.</para>
+/// and exits through <c>syscall</c> 60. No VM and no CXK boot is involved —
+/// this is why the suites need an ELF host rather than merely a compiler.
+/// (Until roadmap step 6d3c there was an x86-32 build of each as well.)</para>
 ///
 /// <para>The link uses <b>clang</b>, not gcc (HARDENING_PLAN D5). With
-/// <c>-nostdlib</c> no 32-bit libc is involved, so it needs no multilib.
+/// <c>-nostdlib</c> no libc is involved.
 /// <c>CXOS_HOSTCC</c> overrides it for a host that only has gcc.</para>
 /// </summary>
 public static class HostBuild
 {
-    /// <summary>Hands Linux's argc/argv to main, then exits with its return value.</summary>
-    public const string ArgvStub =
-        ".text\n.globl _start\n_start:\n    mov (%esp), %eax\n    lea 4(%esp), %ecx\n" +
-        "    push %ecx\n    push %eax\n    call main\n    mov %eax, %ebx\n    mov $1, %eax\n    int $0x80\n";
-
-    /// <summary>For programs that take no arguments.</summary>
-    public const string PlainStub =
-        ".text\n.globl _start\n_start:\n    call main\n    mov %eax, %ebx\n    mov $1, %eax\n    int $0x80\n";
-
     /// <summary>
-    /// The same for the x86-64 back end (roadmap step 6b3): the stack is
+    /// For programs that take no arguments (roadmap step 6b3): the stack is
     /// 16-aligned at <c>_start</c>, so <c>call main</c> enters main as System V
     /// expects, and the exit is Linux x86-64's <c>syscall</c> 60.
     /// </summary>
-    public const string PlainStub64 =
+    public const string PlainStub =
         ".text\n.globl _start\n_start:\n    xorl %ebp, %ebp\n    call main\n    movl %eax, %edi\n" +
         "    movl $60, %eax\n    syscall\n";
 
     /// <summary>
-    /// <see cref="ArgvStub"/> for x86-64 (roadmap step 6c3): argc and argv
-    /// go to main in rdi and rsi, as System V passes its first two arguments.
+    /// Hands Linux's argc/argv to main, then exits with its return value
+    /// (roadmap step 6c3): argc and argv go to main in rdi and rsi, as System
+    /// V passes its first two arguments.
     /// </summary>
-    public const string ArgvStub64 =
+    public const string ArgvStub =
         ".text\n.globl _start\n_start:\n    xorl %ebp, %ebp\n    movq (%rsp), %rdi\n    leaq 8(%rsp), %rsi\n" +
         "    call main\n    movl %eax, %edi\n    movl $60, %eax\n    syscall\n";
 
     /// <summary>
     /// The include directories a build of one of <c>os/xc</c>'s programs for
-    /// the host takes: the target's Linux numbers ahead of the host layer
+    /// the host takes: Linux's x86-64 numbers ahead of the host layer
     /// (<c>os/xc/host/xc_sys.xfxn</c>), then the compiler and the library.
     /// </summary>
-    public static string[] XcIncludes(string osDir, string target = "x86_32") => new[]
+    public static string[] XcIncludes(string osDir) => new[]
     {
-        "-I", Path.Combine(osDir, "xc", "host", target),
+        "-I", Path.Combine(osDir, "xc", "host", "x86_64"),
         "-I", Path.Combine(osDir, "xc", "host"),
         "-I", Path.Combine(osDir, "xc"),
         "-I", Path.Combine(osDir, "std"),
@@ -105,8 +98,9 @@ public static class HostBuild
     }
 
     /// <summary>
-    /// Links X assembly into a native 32-bit binary, renaming the entry point
-    /// from <c>_start</c> to <c>main</c> so the stub can call it.
+    /// Links X assembly from <c>cxk compile</c> into a native x86-64 binary,
+    /// against <see cref="PlainStub"/> unless another stub is given, renaming
+    /// the entry point from <c>_start</c> to <c>main</c> so the stub can call it.
     ///
     /// <para>The rename goes to a <c>.host.s</c> sidecar and <b>never touches
     /// <paramref name="asmPath"/></b>. That matters beyond tidiness: the
@@ -114,7 +108,7 @@ public static class HostBuild
     /// rewriting the file it is about to compare silently changes the thing
     /// under test.</para>
     /// </summary>
-    public static void Link(string asmPath, string exePath, string stub, string workDir)
+    public static void Link(string asmPath, string exePath, string workDir, string stub = PlainStub)
     {
         string text = File.ReadAllText(asmPath);
         int at = text.IndexOf(".globl _start", StringComparison.Ordinal);
@@ -124,33 +118,7 @@ public static class HostBuild
         string hostAsm = exePath + ".host.s";
         File.WriteAllText(hostAsm, text);
 
-        string stubPath = Path.Combine(workDir, ReferenceEquals(stub, ArgvStub) || stub == ArgvStub
-            ? "hstub.s" : "stub.s");
-        if (!File.Exists(stubPath)) File.WriteAllText(stubPath, stub);
-
-        var r = Run(HostCc,
-                    new[] { "-m32", "-nostdlib", "-static", "-o", exePath, hostAsm, stubPath },
-                    workDir);
-        if (r.ExitCode != 0)
-            throw new InvalidOperationException($"{HostCc} failed to link {Path.GetFileName(asmPath)}:\n{r.All}");
-    }
-
-    /// <summary>
-    /// <see cref="Link"/> for x86-64 assembly from <c>cxk compile --target
-    /// x86_64</c>, against <see cref="PlainStub64"/> unless another stub is
-    /// given.
-    /// </summary>
-    public static void Link64(string asmPath, string exePath, string workDir, string stub = PlainStub64)
-    {
-        string text = File.ReadAllText(asmPath);
-        int at = text.IndexOf(".globl _start", StringComparison.Ordinal);
-        if (at >= 0)
-            text = string.Concat(text.AsSpan(0, at), ".globl main", text.AsSpan(at + ".globl _start".Length));
-
-        string hostAsm = exePath + ".host.s";
-        File.WriteAllText(hostAsm, text);
-
-        string stubPath = Path.Combine(workDir, stub == ArgvStub64 ? "hstub64.s" : "stub64.s");
+        string stubPath = Path.Combine(workDir, stub == ArgvStub ? "hstub.s" : "stub.s");
         if (!File.Exists(stubPath)) File.WriteAllText(stubPath, stub);
 
         var r = Run(HostCc,
@@ -161,27 +129,23 @@ public static class HostBuild
     }
 
     /// <summary>
-    /// Compiles one of <c>os/xc</c>'s dump programs for the host and links it,
-    /// as an x86-32 or an x86-64 binary (roadmap step 6d1b). Returns the path
-    /// to the runnable binary. <paramref name="hostTarget"/> is what the dump
-    /// program runs as, not what it dumps: <c>--target</c> on its command line
-    /// chooses that.
+    /// Compiles one of <c>os/xc</c>'s dump programs for the host and links it
+    /// as an x86-64 binary. Returns the path to the runnable binary. What it
+    /// dumps for is a separate choice: <c>--target</c> on its command line.
     /// </summary>
-    public static string BuildDumpProgram(string cxk, string repo, string osDir, string prog, string workDir,
-                                          string hostTarget = "x86_32")
+    public static string BuildDumpProgram(string cxk, string repo, string osDir, string prog, string workDir)
     {
-        string baseName = Path.Combine(workDir, $"{prog}.{hostTarget}");
+        string baseName = Path.Combine(workDir, prog);
         var r = Run(cxk, new[]
         {
             "compile", Path.Combine(osDir, "xc", prog + ".xfxn"), baseName + ".elf",
-            "--no-prelude", "--emit-asm", "--target", hostTarget,
-        }.Concat(XcIncludes(osDir, hostTarget)), repo);
+            "--no-prelude", "--emit-asm",
+        }.Concat(XcIncludes(osDir)), repo);
 
         if (!File.Exists(baseName + ".s"))
-            throw new InvalidOperationException($"{prog} did not compile for {hostTarget}:\n{r.All}");
+            throw new InvalidOperationException($"{prog} did not compile:\n{r.All}");
 
-        if (hostTarget == "x86_64") Link64(baseName + ".s", baseName, workDir, ArgvStub64);
-        else Link(baseName + ".s", baseName, ArgvStub, workDir);
+        Link(baseName + ".s", baseName, workDir, ArgvStub);
         return baseName;
     }
 

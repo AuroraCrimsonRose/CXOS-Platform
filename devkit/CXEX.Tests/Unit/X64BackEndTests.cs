@@ -106,7 +106,7 @@ public class X64BackEndTests
         string os = Path.Combine(repo, "os");
         string tests = Path.Combine(repo, "devkit", "tests");
         string[] std = { "-I", Path.Combine(os, "std") };
-        string[] xc = CXEX.Tests.Differential.HostBuild.XcIncludes(os, "x86_64").Append("--no-prelude").ToArray();
+        string[] xc = CXEX.Tests.Differential.HostBuild.XcIncludes(os).Append("--no-prelude").ToArray();
         IEnumerable<string> In(string d) => Directory.Exists(d) ? Directory.GetFiles(d, "*.xfxn").OrderBy(p => p, StringComparer.Ordinal) : Array.Empty<string>();
         var programs = In(Path.Combine(os, "apps")).Concat(In(Path.Combine(os, "std"))).Select(p => (p, std))
             .Concat(In(Path.Combine(os, "xc")).Where(p => Path.GetFileNameWithoutExtension(p) is var n && (n == "xc" || n.EndsWith("dump", StringComparison.Ordinal))).Select(p => (p, xc)))
@@ -151,5 +151,34 @@ public class X64BackEndTests
             string body = r.StdOut[at..end];
             Assert.True(!body.Contains("trunc i64", StringComparison.Ordinal), $"@{w} cuts a 64-bit argument:\n{body}");
         }
+    }
+
+    /* x86_32 has no back end since roadmap step 6d3c: `compile` and `asm`
+       refuse it by name rather than emitting anything, and a dump verb with
+       no --target works for x86-64. `cxk ir` shows the default, since it
+       still lowers for both and the two print differently. */
+    [Fact]
+    public void X86_32_has_no_back_end_and_every_verb_defaults_to_x86_64()
+    {
+        string repo = Requires.Repo();
+        string cxk = Requires.Cxk();
+        string os = Path.Combine(repo, "os");
+        string hi = Path.Combine(os, "apps", "hi.xfxn");
+        string[] std = { "-I", Path.Combine(os, "std") };
+        using var work = new HostBuild.Workspace("x86_32-refused");
+
+        foreach (var cmd in new[] { new[] { "compile", hi, Path.Combine(work.Path, "hi.elf") }, new[] { "asm", hi } })
+        {
+            var r = HostBuild.Run(cxk, cmd.Concat(new[] { "--target", "x86_32" }).Concat(std), repo);
+            Assert.True(r.ExitCode == 1, $"`cxk {cmd[0]} --target x86_32` exited {r.ExitCode}:\n{r.All}");
+            Assert.Contains("no back end for x86_32", r.All, StringComparison.Ordinal);
+        }
+        Assert.False(File.Exists(Path.Combine(work.Path, "hi.s")), "`compile --target x86_32` wrote assembly");
+
+        string Ir(params string[] target) =>
+            HostBuild.Run(cxk, new[] { "ir", hi }.Concat(target).Concat(std), repo).StdOut;
+        string byDefault = Ir();
+        Assert.Equal(Ir("--target", "x86_64"), byDefault);
+        Assert.NotEqual(Ir("--target", "x86_32"), byDefault);
     }
 }

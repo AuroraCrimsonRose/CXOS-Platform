@@ -43,38 +43,31 @@ public class AsmCommand : Command<AsmCommand.Settings>
         public bool Object { get; set; }
 
         [CommandOption("--target <TARGET>")]
-        [Description("x86_32 (the default: the emitter, from the tree) or x86_64 (the System V back end on the IR)")]
-        public string Target { get; set; } = "x86_32";
+        [Description("x86_64, the System V back end on the IR (x86_32 has no back end since roadmap step 6d3c)")]
+        public string Target { get; set; } = "x86_64";
     }
 
     protected override int Execute(CommandContext context, Settings s, CancellationToken cancellationToken)
     {
         var target = XTarget.Parse(s.Target);
         if (target == null) { Console.Error.WriteLine($"error: unknown target '{s.Target}' (x86_32 or x86_64)"); return 1; }
+        if (target != XTarget.X86_64) { Console.Error.WriteLine("error: no back end for x86_32 (removed in roadmap step 6d3c)"); return 1; }
         using var stdout = Console.OpenStandardOutput();
         foreach (var path in s.Sources)
         {
             var fe = Frontend.Analyze(path, s.NoPrelude, s.IncludeDirs, target);
             string? asm = null;
-            int frontEnd = int.MaxValue;   // on x86-64, what came after is the lowering's, marked as `cxk ir` marks it
+            int frontEnd = int.MaxValue;   // what came after is the lowering's, marked as `cxk ir` marks it
             var problems = new List<string>();
             if (fe.Checker != null && !fe.Diag.HasErrors)
             {
-                if (target == XTarget.X86_64)
-                {
-                    /* As `compile --target x86_64`: lowered, verified, emitted.
-                       A module the verifier refuses has no assembly. */
-                    frontEnd = fe.Diag.Items.Count;
-                    var ir = new IrLowering(fe.Ctx, fe.Checker.LocalTypes, fe.Diag).Lower(fe.Unit);
-                    if (!fe.Diag.HasErrors) problems = IrVerifier.Verify(ir);
-                    if (!fe.Diag.HasErrors && problems.Count == 0)
-                        asm = new X64Emitter(ir) { Library = s.Object, SyscallPage = !s.NoPrelude }.Emit();
-                }
-                else
-                {
-                    asm = new X86Emitter(fe.Ctx, fe.Checker.LocalTypes, fe.Diag) { Library = s.Object, SyscallPage = !s.NoPrelude }.Emit(fe.Unit);
-                    if (fe.Diag.HasErrors) asm = null;
-                }
+                /* As `compile`: lowered, verified, emitted. A module the
+                   verifier refuses has no assembly. */
+                frontEnd = fe.Diag.Items.Count;
+                var ir = new IrLowering(fe.Ctx, fe.Checker.LocalTypes, fe.Diag).Lower(fe.Unit);
+                if (!fe.Diag.HasErrors) problems = IrVerifier.Verify(ir);
+                if (!fe.Diag.HasErrors && problems.Count == 0)
+                    asm = new X64Emitter(ir) { Library = s.Object, SyscallPage = !s.NoPrelude }.Emit();
             }
             var sb = new StringBuilder();
             foreach (var b in Encoding.UTF8.GetBytes("== " + path)) sb.Append((char)b);

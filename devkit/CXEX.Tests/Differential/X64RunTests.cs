@@ -7,10 +7,11 @@ namespace CXEX.Tests.Differential;
 /// <summary>
 /// The x86-64 back end (roadmap step 6b3), run: <c>cxk compile --target
 /// x86_64</c> lowers to the IR and writes System V AMD64 assembly, linked
-/// here into a 64-bit Linux process. The programs <see cref="LangRunTests"/>
-/// runs on x86-32 must return 0 on x86-64 too; X and C must call each other
-/// both ways, under clang's System V as well as through the corpus x86-32
-/// shares; and <c>std/buf</c> must work against its refusing allocator.
+/// here into a 64-bit Linux process. The programs in <c>tests/lang/run</c>
+/// must return 0; X and C must call each other both ways, through the shared
+/// <c>interop</c> corpus and under clang's System V; and <c>std/buf</c> must
+/// work against its refusing allocator. (<see cref="LangRunTests"/> ran the
+/// first three on x86-32 until roadmap step 6d3c.)
 /// </summary>
 [Trait(Categories.Key, Categories.Differential)]
 public class X64RunTests
@@ -35,7 +36,7 @@ public class X64RunTests
             var r = Compile(cxk, repo, src, baseName + ".elf", "--emit-asm");
             if (!File.Exists(baseName + ".s")) { failures.Add($"{name}: did not compile\n{r.All}"); continue; }
 
-            HostBuild.Link64(baseName + ".s", baseName + ".bin", work.Path);
+            HostBuild.Link(baseName + ".s", baseName + ".bin", work.Path);
             var x = HostBuild.Run(baseName + ".bin", Array.Empty<string>(), work.Path, 120_000);
             if (x.ExitCode != 0) failures.Add($"{name}: check {x.ExitCode} failed");
         }
@@ -45,7 +46,7 @@ public class X64RunTests
     }
 
     [Theory]
-    [InlineData("interop")]     // the corpus x86-32 runs too
+    [InlineData("interop")]     // the corpus x86-32 ran too, until 6d3c
     [InlineData("interop64")]   // System V: stack arguments, i128, aggregates in memory
     public void C_and_X_interoperate_on_x86_64(string corpus)
     {
@@ -61,7 +62,7 @@ public class X64RunTests
         Assert.True(File.Exists(xo), $"X did not compile:\n{r.All}");
 
         string stub = Path.Combine(work.Path, "stub64.s");
-        File.WriteAllText(stub, HostBuild.PlainStub64);
+        File.WriteAllText(stub, HostBuild.PlainStub);
         string exe = Path.Combine(work.Path, corpus + ".bin");
 
         var link = HostBuild.Run(HostBuild.HostCc, new[]
@@ -100,7 +101,7 @@ public class X64RunTests
         var r = Compile(cxk, repo, baseName + ".xfxn", baseName + ".elf", "--emit-asm");
         Assert.True(File.Exists(baseName + ".s"), $"std/buf did not compile:\n{r.All}");
 
-        HostBuild.Link64(baseName + ".s", baseName + ".bin", work.Path);
+        HostBuild.Link(baseName + ".s", baseName + ".bin", work.Path);
         var x = HostBuild.Run(baseName + ".bin", Array.Empty<string>(), work.Path, 120_000);
         Assert.True(x.ExitCode == 0, $"std/buf.xfxn on x86-64: check {x.ExitCode} failed");
     }

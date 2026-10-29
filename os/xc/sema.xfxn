@@ -103,10 +103,11 @@ fn mk_named(s: *sema, at: u32, len: u32) -> u32 {
 fn mk_named_of(s: *sema, decl: u32) -> u32 { let d: *node = nd(s, decl); return mk_named(s, d.text, d.tlen); }
 
 // The machine (C#: XTarget): how wide a pointer, usize and isize are, and the
-// most a field is aligned to. x86-32 unless target_set says otherwise, before
-// anything is resolved; the x86-32 emitter is only ever run on x86-32.
-global target_ptr: u32 = 4;
-global target_align: u32 = 4;
+// most a field is aligned to. x86-64 unless target_set says otherwise, before
+// anything is resolved. x86-32 has no back end since roadmap step 6d3c; the
+// front end and the IR lowering still work for it.
+global target_ptr: u32 = 8;
+global target_align: u32 = 16;
 
 fn target_is(name: *u8, word: *u8) -> bool {
     let i: u32 = 0;
@@ -539,8 +540,8 @@ fn declare_top(s: *sema, d: u32) -> void {
 
 // ---- layout (C#: SemaContext.SizeOf, AlignOf, LayOut) ----
 //
-// The one layout, which the IR lowering lays memory out by and the x86-32
-// emitter's own rule matches on x86-32. A field sits on its alignment (its
+// The one layout, which the IR lowering lays memory out by. A field sits on
+// its alignment (its
 // size, at least 4, at most target_align), a structure is as aligned as its
 // most aligned field and its size a multiple of that. On x86-32 every field
 // is on 4, as X has always been.

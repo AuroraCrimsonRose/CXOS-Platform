@@ -4,7 +4,7 @@ namespace CXEX.Tools;
 
 /// <summary>
 /// The LLVM cross toolchain: clang's integrated assembler and ld.lld, targeting
-/// i686-elf. Replaces the i686-elf GCC wrapper this used to be (HARDENING_PLAN
+/// x86_64-elf. Replaces the i686-elf GCC wrapper this used to be (HARDENING_PLAN
 /// D5) - one toolchain on every host, with no cross-GCC to install.
 ///
 /// Both tools are resolved by name off PATH. CXK_CLANG and CXK_LLD override
@@ -13,10 +13,9 @@ namespace CXEX.Tools;
 /// </summary>
 public static class ClangTool
 {
-    /// <summary>The target every CXK artifact is built for: 32-bit x86, bare metal, ELF.</summary>
-    public const string Target = "i686-elf";
-    /// <summary>The same for x86-64 (roadmap step 6b3): the X back end on the IR.</summary>
-    public const string Target64 = "x86_64-elf";
+    /// <summary>The target an X program is built for: x86-64, bare metal, ELF (i686-elf until
+    /// roadmap step 6d3c removed the x86-32 emitter).</summary>
+    public const string Target = "x86_64-elf";
 
     private static string Clang => Environment.GetEnvironmentVariable("CXK_CLANG") is { Length: > 0 } c ? c : "clang";
     private static string Lld   => Environment.GetEnvironmentVariable("CXK_LLD")   is { Length: > 0 } l ? l : "ld.lld";
@@ -58,7 +57,7 @@ public static class ClangTool
     ///
     /// ld.lld is called directly rather than through the clang driver: there is
     /// no C runtime to find and nothing to pull in from a sysroot, so the driver
-    /// would only add flags this has to cancel. -m elf_i386 is explicit because
+    /// would only add flags this has to cancel. -m elf_x86_64 is explicit because
     /// the emitted layout must not depend on lld inferring it from the first
     /// object it happens to read.
     /// </summary>
@@ -66,7 +65,7 @@ public static class ClangTool
                                   string linkerScript,
                                   IEnumerable<string>? extraFlags = null,
                                   ToolRunOptions? options = null,
-                                  string emulation = "elf_i386")
+                                  string emulation = "elf_x86_64")
     {
         var args = new List<string> { "-m", emulation, "-nostdlib", "-T", linkerScript };
 

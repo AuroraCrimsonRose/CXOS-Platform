@@ -274,11 +274,11 @@ public class XfilTests
 
     // The compilers call stub n at base + (n << SyscallStubShift); the kernel lays
     // the stubs SYSPAGE_STUB_SIZE apart. The two are written in different places,
-    // so this is what keeps them one number (os/xc/emit.xfxn has the same shift).
+    // so this is what keeps them one number (os/xc/x64.xfxn has the same shift).
     [Fact]
     public void The_emitters_stub_stride_is_the_ABIs()
     {
         AbiConstant c = AbiModel.Embedded.Constants.Single(k => k.Name == "SYSPAGE_STUB_SIZE");
-        Assert.Equal(c.Value, 1L << CXEX.Lang.CodeGen.X86Emitter.SyscallStubShift);
+        Assert.Equal(c.Value, 1L << CXEX.Lang.CodeGen.X64Emitter.SyscallStubShift);
     }
 }

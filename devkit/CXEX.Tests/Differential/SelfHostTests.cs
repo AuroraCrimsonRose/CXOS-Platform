@@ -21,18 +21,16 @@ namespace CXEX.Tests.Differential;
 /// two compilers drifting apart, the second catches a compiler that miscompiles
 /// itself into something that still runs.</para>
 ///
-/// <para>On each target (roadmap step 6c3): on x86_64 every stage is an
-/// x86-64 program - the C# compiler's x86-64 back end builds xc1, and xc1 and
-/// xc2 run as 64-bit Linux processes, compiling with xc's own x86-64 back
-/// end.</para>
+/// <para>Every stage is an x86-64 program (roadmap step 6c3): the C# compiler's
+/// x86-64 back end builds xc1, and xc1 and xc2 run as 64-bit Linux processes,
+/// compiling with xc's own x86-64 back end. The x86-32 run went with that
+/// back end in step 6d3c.</para>
 /// </summary>
 [Trait(Categories.Key, Categories.Differential)]
 public class SelfHostTests
 {
-    [Theory]
-    [InlineData("x86_32")]
-    [InlineData("x86_64")]
-    public void Xc_compiles_itself_to_a_fixed_point(string target)
+    [Fact]
+    public void Xc_compiles_itself_to_a_fixed_point()
     {
         string repo = Requires.Repo();
         string cxk = Requires.Cxk();
@@ -43,20 +41,16 @@ public class SelfHostTests
         Assert.SkipWhen(osDir is null,
             "no CXOS checkout with os/xc/xc.xfxn was found. Set CXK_ROOT to the repository root.");
 
-        using var work = new HostBuild.Workspace("selfhost-" + target);
+        using var work = new HostBuild.Workspace("selfhost");
         string src = Path.Combine(osDir!, "xc", "xc.xfxn");
-        string[] tgt = { "--target", target };
-        string[] inc = HostBuild.XcIncludes(osDir!, target);
-        bool x64 = target == "x86_64";
-        void Link(string s, string exe, bool argv) {
-            if (x64) HostBuild.Link64(s, exe, work.Path, argv ? HostBuild.ArgvStub64 : HostBuild.PlainStub64);
-            else HostBuild.Link(s, exe, argv ? HostBuild.ArgvStub : HostBuild.PlainStub, work.Path);
-        }
+        string[] inc = HostBuild.XcIncludes(osDir!);
+        void Link(string s, string exe, bool argv) =>
+            HostBuild.Link(s, exe, work.Path, argv ? HostBuild.ArgvStub : HostBuild.PlainStub);
 
         // ---- stage 1: the C# compiler builds xc ----
         string s1 = Path.Combine(work.Path, "xc1.s");
         var r = HostBuild.Run(cxk,
-            new[] { "compile", src, Path.Combine(work.Path, "xc1.elf"), "--no-prelude", "--emit-asm" }.Concat(tgt).Concat(inc),
+            new[] { "compile", src, Path.Combine(work.Path, "xc1.elf"), "--no-prelude", "--emit-asm" }.Concat(inc),
             repo);
         Assert.True(File.Exists(s1), $"stage 1 did not compile:\n{r.All}");
         string a1 = File.ReadAllText(s1);
@@ -64,13 +58,13 @@ public class SelfHostTests
 
         // ---- stage 2: xc1 builds xc ----
         string s2 = Path.Combine(work.Path, "xc2.s");
-        RunXc(Path.Combine(work.Path, "xc1"), tgt.Concat(inc).ToArray(), s2, src, work.Path);
+        RunXc(Path.Combine(work.Path, "xc1"), inc, s2, src, work.Path);
         string a2 = File.ReadAllText(s2);
         Link(s2, Path.Combine(work.Path, "xc2"), true);
 
         // ---- stage 3: xc2 builds xc ----
         string s3 = Path.Combine(work.Path, "xc3.s");
-        RunXc(Path.Combine(work.Path, "xc2"), tgt.Concat(inc).ToArray(), s3, src, work.Path);
+        RunXc(Path.Combine(work.Path, "xc2"), inc, s3, src, work.Path);
         string a3 = File.ReadAllText(s3);
 
         // All three are the compilers' own output: Link() renames the entry
@@ -94,7 +88,7 @@ public class SelfHostTests
             string baseName = Path.Combine(work.Path, name);
 
             var c = HostBuild.Run(Path.Combine(work.Path, "xc2"),
-                                  tgt.Concat(new[] { "--no-prelude", p, "-o", baseName + ".s" }), work.Path);
+                                  new[] { "--no-prelude", p, "-o", baseName + ".s" }, work.Path);
             if (c.ExitCode != 0 || !File.Exists(baseName + ".s"))
             {
                 failures.Add($"{name}: xc2 did not compile it\n{c.All}");
@@ -110,7 +104,7 @@ public class SelfHostTests
             $"{failures.Count} of {progs.Count} programs built by xc2 failed:\n  " +
             string.Join("\n  ", failures));
 
-        Console.WriteLine($"tests/lang/run compiled by xc2 for {target}: {progs.Count} of {progs.Count} run correctly");
+        Console.WriteLine($"tests/lang/run compiled by xc2: {progs.Count} of {progs.Count} run correctly");
     }
 
     private static void RunXc(string compiler, string[] inc, string outPath, string src, string workDir)

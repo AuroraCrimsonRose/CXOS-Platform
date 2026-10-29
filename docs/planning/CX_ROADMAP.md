@@ -256,7 +256,16 @@ programs for it (step 6).
          xc's dump programs) keep x86-32 as their default until 6d3c, since
          the x86-32 emitter is their oracle pairing.
        - **6d3c** The tree-walking x86-32 code generators: `X86Emitter` and
-         `xc`'s `emit.xfxn`, with xc's x86-32 host layer.
+         `xc`'s `emit.xfxn`, with xc's x86-32 host layer. **Done
+         2026-10-28** (Aurora chose to delete `emit.xfxn` with its oracle):
+         `cxk compile`/`asm`, `xc` and `asmdump` refuse `--target x86_32`;
+         every verb and dump program defaults to x86-64, including
+         `cxk sema`/`ir` and `semadump`/`irdump`; `ClangTool` targets
+         `x86_64-elf` only. The Differential suites run each dump program
+         as an x86-64 host only; the x86-32 asm comparison went with its
+         subject, the x86-32 IR comparison stays. `LangRunTests` keeps the
+         refusals (on x86-64); its run, interop and `std/buf` facts were
+         already in `X64RunTests`.
      **Not in 6d:** the ABI keeps user addresses as `u32` (`vm_map_args.addr`,
      `spawn_args.image`, the IPC buffers, `vm_unmap`'s `addr`) and the kernel
      decodes a pointer argument as `uint32_t`. Nothing truncates while the

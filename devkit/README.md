@@ -12,7 +12,7 @@
 
 The two things most people come looking for:
 
-- **`CXEX.Lang` — the X Native compiler.** A complete front-end and x86-32 back-end: lexer, parser, resolver, type checker, constant folder, and a GAS-syntax code generator. The entire CXK userland (shell, `std/`, GUI) is compiled by this.
+- **`CXEX.Lang` — the X Native compiler.** A complete front-end and x86-64 back-end: lexer, parser, resolver, type checker, constant folder, an IR, and a GAS-syntax System V code generator (the x86-32 one went in roadmap step 6d3c). The entire CXK userland (shell, `std/`, GUI) is compiled by this.
 - **`CXEX.CLI` — the `cxk` command.** Compiling, packaging, signing, disk imaging, inspection, and emulator launch.
 
 ### Project layout
@@ -106,8 +106,9 @@ wrong:
 foo.xfxn                          X Native source
   -> Lexer / Parser               AST
   -> Resolver / TypeChecker       typed AST  (ConstFold on the way)
-  -> X86Emitter                   foo.s      GAS (AT&T) assembly text
-  -> ClangTool.Compile            foo.o      assembled by clang --target=i686-elf
+  -> IrLowering / IrVerifier      the IR     (CXEX.Lang/IR/IR.md)
+  -> X64Emitter                   foo.s      GAS (AT&T) assembly text, System V AMD64
+  -> ClangTool.Compile            foo.o      assembled by clang --target=x86_64-elf
   -> ClangTool.Link               foo        ELF, linked by ld.lld against a generated linker script
   -> cxk build                    foo.xuex   CXEX-wrapped, signable
   -> cxk sign                     foo.xuex   signature block attached
@@ -242,7 +243,7 @@ answer, and refusing for the wrong reason would pass a looser test.
 ## Notes
 
 - Not a general-purpose IDE; built specifically for CX ecosystem development
-- i686 / 32-bit is the live target; other architectures are registry stubs
+- x86-64 is the live target (since roadmap step 6d3b; 6d3c removed the x86-32 code generator); other architectures are registry stubs
 - Contains experimental and unstable tooling
 - Long-term goal: X hosted on CXK, so the system can build its own software without a .NET host. See `docs/x86_32/language/CX_X_CORE_LANG.md` §10.
 

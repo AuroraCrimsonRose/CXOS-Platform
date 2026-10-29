@@ -611,7 +611,8 @@ set(CXK_STAGED_SHARED
     --stage System/Fonts/console_16.xfnt=${CONSOLE16_XFNT}
     --stage Shared/Source/xc.xfxn=${SRC_DIR}/os/xc/xc.xfxn
     --stage Shared/Source/front.xfxn=${SRC_DIR}/os/xc/front.xfxn
-    --stage Shared/Source/emit.xfxn=${SRC_DIR}/os/xc/emit.xfxn
+    --stage Shared/Source/ir.xfxn=${SRC_DIR}/os/xc/ir.xfxn
+    --stage Shared/Source/x64.xfxn=${SRC_DIR}/os/xc/x64.xfxn
     --stage Shared/Source/dumputil.xfxn=${SRC_DIR}/os/xc/dumputil.xfxn
     --stage Shared/Source/xc_sys.xfxn=${SRC_DIR}/os/xc/cxk/xc_sys.xfxn
     --stage Shared/Source/io.xfxn=${SRC_DIR}/os/std/io.xfxn

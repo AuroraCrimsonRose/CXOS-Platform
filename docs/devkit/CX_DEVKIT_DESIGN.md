@@ -11,7 +11,7 @@
 > are kept as the record of what was designed, not as plans.
 >
 > **Implementation status at a glance.** What exists today: the X Native compiler
-> (`CXEX.Lang` — lexer, parser, resolver, type checker, x86-32 emitter), the `cxk` CLI, CXEX packaging, host-side CXFS, disk/partition models, RSA+SHA-256 keygen and
+> (`CXEX.Lang` — lexer, parser, resolver, type checker, IR, x86-64 emitter), the `cxk` CLI, CXEX packaging, host-side CXFS, disk/partition models, RSA+SHA-256 keygen and
 > signing, and a working Studio shell. §11's bugs 1 and 2 are **fixed**. Four projects named
 > in §5 are **scaffolded but empty** (`CXEX.Font`, `CXEX.Text`, `CXEX.Tools`,
 > `CXEX.UI`). Phases 1 onward in §14 are open.
@@ -115,7 +115,7 @@ the final CXEX-headered, signable artifact.
 >
 > ```
 > foo.xfxn -> foo.s (GAS text) -> foo.o -> foo (ELF) -> foo.xuex
->             X86Emitter          clang + ld.lld          cxk build
+>             X64Emitter          clang + ld.lld          cxk build
 > ```
 >
 > The cross toolchain's **ELF** occupies the intermediate slot `XCXN` was specified for. That

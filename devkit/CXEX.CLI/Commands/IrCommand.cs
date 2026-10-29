@@ -37,8 +37,8 @@ public class IrCommand : Command<IrCommand.Settings>
         public bool NoPrelude { get; set; }
 
         [CommandOption("--target <TARGET>")]
-        [Description("x86_32 (the default) or x86_64: the pointer width and layout the IR is lowered for")]
-        public string Target { get; set; } = "x86_32";
+        [Description("x86_64 (the default) or x86_32: the pointer width and layout the IR is lowered for")]
+        public string Target { get; set; } = "x86_64";
     }
 
     protected override int Execute(CommandContext context, Settings s, CancellationToken cancellationToken)

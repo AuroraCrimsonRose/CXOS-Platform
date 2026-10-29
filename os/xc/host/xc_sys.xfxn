@@ -17,12 +17,12 @@
 // std/buf.xfxn run here unchanged. Memory comes from brk, and like a CXK
 // mapping it arrives zeroed.
 //
-// It runs as x86-32 or as x86-64. With no prelude, __syscall is Linux's own
-// entry - int $0x80 on x86-32, `syscall` on x86-64 - and xc_linux.xfxn, from
-// the target's directory, holds that entry's numbers. Addresses go to the
-// kernel as usize, so a pointer to the stack (argv, a local) arrives whole on
-// x86-64, and so does every heap address: std/heap.xfxn hands them out as
-// usize, and on x86-64 vm_map below puts the heap above 4 GB on purpose.
+// It runs as x86-64 (an x86-32 host went with that back end, roadmap step
+// 6d3c). With no prelude, __syscall is Linux's own `syscall` entry, and
+// xc_linux.xfxn, from the target's directory, holds its numbers. Addresses go
+// to the kernel as usize, so a pointer to the stack (argv, a local) arrives
+// whole, and so does every heap address: std/heap.xfxn hands them out as
+// usize, and vm_map below puts the heap above 4 GB on purpose.
 
 import "buf.xfxn";
 import "xc_linux.xfxn";
@@ -47,10 +47,9 @@ global host_mapped: u32 = 0;
 global host_high: usize = HOST_HEAP_HIGH;   // where the next high grant goes
 
 // No unmap: the heap never unmaps. Pages come off the end of the data segment.
-// A static binary's break starts just past its data, far under 4 GB, and on
-// x86-32 that is where they stay.
+// A static binary's break starts just past its data, far under 4 GB.
 //
-// On x86-64 each grant then moves up to HOST_HEAP_HIGH and beyond, one after
+// Each grant then moves up to HOST_HEAP_HIGH and beyond, one after
 // the other, with mremap (mmap takes six arguments and __syscall passes five).
 // So every address the heap hands out has bits above 32, and a pointer that
 // anything cuts to a u32 points at nothing: the run faults instead of reading
@@ -64,13 +63,10 @@ fn vm_map(a: *vm_map_args) -> i32 {
     if (want < cur || want > 0xFFFFFFFF) { return E_NO_MEMORY; }
     let got: usize = (__syscall(LINUX_BRK, want, 0, 0, 0, 0) as u32) as usize;
     if (got < want) { return E_NO_MEMORY; }
-    let at: usize = cur;
-    if (host_high != 0) {
-        let r: i32 = __syscall(LINUX_MREMAP, cur, len, len, MREMAP_MAYMOVE_FIXED, host_high);
-        if ((r as u32) != (host_high as u32)) { return E_NO_MEMORY; }
-        at = host_high;
-        host_high = host_high + (len as usize);
-    }
+    let r: i32 = __syscall(LINUX_MREMAP, cur, len, len, MREMAP_MAYMOVE_FIXED, host_high);
+    if ((r as u32) != (host_high as u32)) { return E_NO_MEMORY; }
+    let at: usize = host_high;
+    host_high = host_high + (len as usize);
     a.addr = at;
     a.granted = len;
     host_mapped += len;
@@ -164,17 +160,3 @@ fn write_file(path: *u8, p: *u8, n: u32) -> bool {
     __syscall(LINUX_CLOSE, fd as u32, 0, 0, 0, 0);
     return done == n;
 }
-
-// A file written in pieces: created (replacing any), written to, closed.
-fn xc_create(path: *u8) -> i32 { return __syscall(LINUX_OPEN, path, 0x241, 420, 0, 0); }
-fn xc_write(h: i32, p: *u8, n: u32) -> bool {
-    let done: u32 = 0;
-    while (done < n) {
-        let w: i32 = __syscall(LINUX_WRITE, h as u32, host_at(p, done), n - done, 0, 0);
-        if (w <= 0) { return false; }
-        done += w as u32;
-    }
-    return true;
-}
-fn xc_close(h: i32) -> void { __syscall(LINUX_CLOSE, h as u32, 0, 0, 0, 0); }
-fn xc_remove(path: *u8) -> void { __syscall(LINUX_UNLINK, path, 0, 0, 0, 0); }

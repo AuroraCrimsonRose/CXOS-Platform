@@ -5,10 +5,11 @@ using Xunit;
 namespace CXEX.Tests.Differential;
 
 /// <summary>
-/// The X language itself: programs that must run and return 0, programs the
-/// compiler must refuse with a specific message, C↔X interop, and
-/// <c>std/buf</c> against an allocator that needs no kernel. Port of
-/// <c>devkit/tests/lang/run.py</c> (HARDENING_PLAN D1).
+/// The X language itself: programs the compiler must refuse with a specific
+/// message. Port of <c>devkit/tests/lang/run.py</c> (HARDENING_PLAN D1). The
+/// programs that must run, C↔X interop and <c>std/buf</c> ran here on x86-32
+/// until roadmap step 6d3c; <see cref="X64RunTests"/> runs the same corpora on
+/// x86-64.
 ///
 /// <para><c>tests/lang/refuse</c> is the valuable half: every program in it
 /// once compiled and produced a wrong answer, so each is pinned to the
@@ -66,37 +67,10 @@ public class LangRunTests
             "usize to isize needs a cast", "u8 to usize needs a cast", "u64 to usize needs a cast",
             "cannot assign u32 to usize; u32 to usize needs a cast",
             "mixing usize and u32 needs a cast, even where the widths agree: `as usize` or `as u32`",
-            "4294967296 does not fit in usize",
+            "18446744073709551616 does not fit in usize",
             "compilation failed (11 error(s))",
         },
     };
-
-    [Fact]
-    public void Programs_that_must_run_all_return_zero()
-    {
-        var (repo, cxk, work, tests) = Setup();
-        using var _ = work;
-
-        var progs = Sorted(Path.Combine(tests, "lang", "run"));
-        Assert.SkipWhen(progs.Count == 0, "no programs in devkit/tests/lang/run.");
-
-        var failures = new List<string>();
-        foreach (string src in progs)
-        {
-            string name = Path.GetFileName(src);
-            string baseName = Path.Combine(work.Path, Path.GetFileNameWithoutExtension(src));
-
-            var r = Compile(cxk, repo, src, baseName + ".elf", "--emit-asm");
-            if (!File.Exists(baseName + ".s")) { failures.Add($"{name}: did not compile\n{r.All}"); continue; }
-
-            HostBuild.Link(baseName + ".s", baseName + ".bin", HostBuild.PlainStub, work.Path);
-            var x = HostBuild.Run(baseName + ".bin", Array.Empty<string>(), work.Path, 120_000);
-            if (x.ExitCode != 0) failures.Add($"{name}: check {x.ExitCode} failed");
-        }
-
-        Assert.True(failures.Count == 0,
-            $"{failures.Count} of {progs.Count} programs failed:\n  " + string.Join("\n  ", failures));
-    }
 
     [Fact]
     public void Programs_that_must_be_refused_are_refused_for_the_right_reason()
@@ -132,65 +106,6 @@ public class LangRunTests
             $"{failures.Count} of {progs.Count} refusals wrong:\n  " + string.Join("\n  ", failures));
     }
 
-    [Fact]
-    public void C_and_X_interoperate()
-    {
-        var (repo, cxk, work, tests) = Setup();
-        using var _ = work;
-
-        string xSrc = Path.Combine(tests, "lang", "interop", "x.xfxn");
-        string cSrc = Path.Combine(tests, "lang", "interop", "c.c");
-        Assert.SkipWhen(!File.Exists(xSrc) || !File.Exists(cSrc), "the interop corpus is not in this checkout.");
-
-        string xo = Path.Combine(work.Path, "x.o");
-        var r = Compile(cxk, repo, xSrc, xo, "--object");
-        Assert.True(File.Exists(xo), $"X did not compile:\n{r.All}");
-
-        string stub = Path.Combine(work.Path, "stub.s");
-        File.WriteAllText(stub, HostBuild.PlainStub);
-        string exe = Path.Combine(work.Path, "interop.bin");
-
-        var link = HostBuild.Run(HostBuild.HostCc, new[]
-        {
-            "-m32", "-O2", "-ffreestanding", "-fno-builtin", "-fno-pic", "-fno-stack-protector",
-            "-nostdlib", "-static", "-o", exe, cSrc, xo, stub,
-        }, work.Path);
-        Assert.True(link.ExitCode == 0, $"linking C with X failed:\n{link.All}");
-
-        var x = HostBuild.Run(exe, Array.Empty<string>(), work.Path, 120_000);
-        Assert.True(x.ExitCode == 0, $"interop (C <-> X): check {x.ExitCode} failed");
-    }
-
-    [Fact]
-    public void Std_buf_works_against_an_allocator_that_can_refuse()
-    {
-        var (repo, cxk, work, tests) = Setup();
-        using var _ = work;
-
-        string? stdDir = Path.Combine(repo, "os", "std");
-        if (!File.Exists(Path.Combine(stdDir, "buf.xfxn"))) stdDir = null;
-        Assert.SkipWhen(stdDir is null, "no CXOS checkout with os/std/buf.xfxn (set CXK_ROOT).");
-
-        string sd = Path.Combine(work.Path, "std");
-        Directory.CreateDirectory(sd);
-        foreach (string f in new[] { "buf.xfxn", "mem.xfxn" })
-            File.Copy(Path.Combine(stdDir!, f), Path.Combine(sd, f), overwrite: true);
-        foreach (string f in new[] { "heap.xfxn", "buf_test.xfxn" })
-        {
-            string from = Path.Combine(tests, "lang", "std", f);
-            Assert.SkipWhen(!File.Exists(from), $"the std corpus is not in this checkout ({f}).");
-            File.Copy(from, Path.Combine(sd, f), overwrite: true);
-        }
-
-        string baseName = Path.Combine(sd, "buf_test");
-        var r = Compile(cxk, repo, baseName + ".xfxn", baseName + ".elf", "--emit-asm");
-        Assert.True(File.Exists(baseName + ".s"), $"std/buf did not compile:\n{r.All}");
-
-        HostBuild.Link(baseName + ".s", baseName + ".bin", HostBuild.PlainStub, work.Path);
-        var x = HostBuild.Run(baseName + ".bin", Array.Empty<string>(), work.Path, 120_000);
-        Assert.True(x.ExitCode == 0, $"std/buf.xfxn: check {x.ExitCode} failed");
-    }
-
     private static (string Repo, string Cxk, HostBuild.Workspace Work, string Tests) Setup()
     {
         string repo = Requires.Repo();
@@ -201,7 +116,7 @@ public class LangRunTests
     }
 
     private static ProcResult Compile(string cxk, string repo, string src, string outPath, params string[] extra) =>
-        HostBuild.Run(cxk, new[] { "compile", src, outPath, "--no-prelude", "--target", "x86_32" }.Concat(extra), repo);
+        HostBuild.Run(cxk, new[] { "compile", src, outPath, "--no-prelude" }.Concat(extra), repo);
 
     private static List<string> Sorted(string dir) =>
         Directory.Exists(dir)

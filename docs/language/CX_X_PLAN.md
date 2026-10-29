@@ -24,8 +24,8 @@
   generator** in both, held to each other by the differential tests.
 - **Syscalls through `syscall`**, not `int 0x80`, on x86-64, and only through
   the system page's stubs (`kernel/CX_SYSCALLS_IPC.md` §4).
-- **An intermediate representation.** The x86-32 backend emits assembly
-  straight from the tree. A 64-bit backend is being written anyway, so it is
+- **An intermediate representation.** The x86-32 backend emitted assembly
+  straight from the tree (deleted in roadmap step 6d3c). A 64-bit backend is being written anyway, so it is
   written against a small typed IR, which becomes the target layer: x86-64
   now, ARM later, and a register allocator and simple optimisations on it
   instead of on assembly text.

@@ -3,29 +3,29 @@
 // xc/asmdump.xfxn - print the assembly the X compiler generates for programs.
 // Aurora Tejeda / CATX Systems
 //
-//   asmdump [-s] [--target x86_32|x86_64] [--prelude FILE | --no-prelude] [-I DIR]... [--std DIR] [--object] PROGRAM...
+//   asmdump [-s] [--target x86_64] [--prelude FILE | --no-prelude] [-I DIR]... [--std DIR] [--object] PROGRAM...
 //
 // The same format as `cxk asm` in the DevKit (devkit/), so the code generator written in
-// X can be compared with the C# one, on either target: x86_32 is emit.xfxn,
-// from the tree; x86_64 is x64.xfxn, from the IR. Each PROGRAM is compiled on
+// X (x64.xfxn, from the IR) can be compared with the C# one. x86_32 has no
+// back end since roadmap step 6d3c and is refused. Each PROGRAM is compiled on
 // its own, with everything it imports. Per program:
 //
 //   == path
 //   error file:line:col message        every diagnostic, in the order reported
-//   error ir: file:line:col message    on x86_64, the lowering's after the front end's
+//   error ir: file:line:col message    the lowering's, after the front end's
 //   ...assembly...                     if there were none: exactly what `cxk compile` writes
 //
 // -s prints a line per program instead: the error count and an FNV-1a hash of
 // everything after the `==` line.
 
 import "xc_sys.xfxn";
-import "emit.xfxn";
 import "x64.xfxn";
 import "dumputil.xfxn";
 
 fn xc_main() -> i32 {
     let o: opts;
     if (!parse_opts(&o)) { return 1; }
+    if (target_ptr != 8) { err_str("error: no back end for x86_32 (removed in roadmap step 6d3c)\n"); return 1; }
     if (o.first == 0) { return 0; }
     let out: buf = buf_new();
     let i: u32 = o.first;
@@ -36,7 +36,7 @@ fn xc_main() -> i32 {
         let asm: buf = buf_new();
         let have: bool = false;
         let front_end: u32 = dg_count(&f.dg);
-        if (f.checked && front_end == 0 && target_ptr == 8) {
+        if (f.checked && front_end == 0) {
             let l: irlow;
             ir_init(&l, &f.s);
             let x: x64e;
@@ -44,13 +44,6 @@ fn xc_main() -> i32 {
             x.syspage = o.have_prelude;
             x64_program(&x, &f.decls, &asm);
             have = dg_count(&f.dg) == 0;
-        } else if (f.checked && front_end == 0) {
-            let e: emitter;
-            emit_init(&e, &f.s, o.object);
-            e.syspage = o.have_prelude;
-            emit_program(&e, &f.decls, &asm);
-            have = dg_count(&f.dg) == 0;
-            front_end = 0xFFFFFFFF;   // the emitter's are plain errors, as `cxk asm` writes them
         }
         let d: buf = buf_new();
         dump_diags_from(&f, &d, front_end);

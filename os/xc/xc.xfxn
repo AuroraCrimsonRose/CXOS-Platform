@@ -3,14 +3,14 @@
 // xc/xc.xfxn - the X compiler, written in X.
 // Aurora Tejeda / CATX Systems
 //
-//   xc [--target x86_64|x86_32] [--prelude FILE | --no-prelude] [-I DIR]... [--std DIR] [--object] SOURCE [-o OUT]
+//   xc [--target x86_64] [--prelude FILE | --no-prelude] [-I DIR]... [--std DIR] [--object] SOURCE [-o OUT]
 //
 // Compiles an X program - SOURCE, the prelude in front of it, everything it
-// imports - to assembly for the target (x86_64 unless --target says
-// otherwise), written to OUT (SOURCE with .s for .xfxn if none is given).
-// x86_64 is x64.xfxn, from the IR, written once it is whole; x86_32 is
-// emit.xfxn, from the tree, written as it is generated. What it writes is
-// exactly what `cxk compile [--target x86_32]` writes for the same program: the
+// imports - to x86-64 assembly, written to OUT (SOURCE with .s for .xfxn if
+// none is given): x64.xfxn, from the IR, written once it is whole. x86_32 is
+// still a target the front end and the IR know, but it has no back end since
+// roadmap step 6d3c, so xc refuses it. What it writes is exactly what
+// `cxk compile` writes for the same program: the
 // stages in os/xc are each held to their C# counterpart by a differential
 // test in devkit/CXEX.Tests/Differential. Assembling and
 // linking are still the cross toolchain's - stage 5 of the route to
@@ -21,7 +21,6 @@
 // program, 2 for a file that could not be read or written.
 
 import "xc_sys.xfxn";
-import "emit.xfxn";
 import "x64.xfxn";
 import "dumputil.xfxn";
 
@@ -79,12 +78,12 @@ fn xc_x64(o: *opts, f: *front, out: *u8) -> i32 {
 
 fn xc_main() -> i32 {
     let o: opts;
-    target_set("x86_64");   // the default; the dump programs keep sema.xfxn's x86_32 until step 6d3c
     if (!parse_opts(&o)) { return 2; }
     if (o.first == 0) {
-        err_str("usage: xc [--target x86_64|x86_32] [--prelude FILE | --no-prelude] [-I DIR]... [--std DIR] [--object] SOURCE [-o OUT]\n");
+        err_str("usage: xc [--target x86_64] [--prelude FILE | --no-prelude] [-I DIR]... [--std DIR] [--object] SOURCE [-o OUT]\n");
         return 2;
     }
+    if (target_ptr != 8) { err_str("error: no back end for x86_32 (removed in roadmap step 6d3c)\n"); return 2; }
     let source: *u8 = xc_arg(o.first);
     let out: buf = buf_new();
     if (o.first + 2 < xc_argc() && is_arg(xc_arg(o.first + 1), "-o")) {
@@ -100,27 +99,5 @@ fn xc_main() -> i32 {
     let f: front;
     if (!analyze_with(&o, &f, source)) { err_str("xc: out of memory, or a file could not be read\n"); return 2; }
     if (!f.checked || dg_count(&f.dg) != 0) { print_diags(&f); return 1; }
-    if (target_ptr == 8) { return xc_x64(&o, &f, out.data); }
-    // written as it is generated; removed again if the program turns out to have errors
-    let h: i32 = xc_create(out.data);
-    if (h < 0) { err_str("xc: cannot write "); err_str(out.data); err_str("\n"); return 2; }
-    let asm: buf = buf_new();
-    let e: emitter;
-    emit_init(&e, &f.s, o.object);
-    e.syspage = o.have_prelude;   // with no prelude, a host program: Linux's int $0x80
-    emit_to(&e, h);
-    emit_program(&e, &f.decls, &asm);
-    xc_close(h);
-    if (dg_count(&f.dg) != 0) { xc_remove(out.data); print_diags(&f); return 1; }
-    if (!e.sink_ok) { err_str("xc: cannot write "); err_str(out.data); err_str("\n"); return 2; }
-    let msg: buf = buf_new();
-    buf_str(&msg, "xc: ");
-    buf_str(&msg, out.data);
-    buf_str(&msg, " (");
-    buf_u32(&msg, e.written);
-    buf_str(&msg, " bytes, fnv1a ");
-    buf_hex32(&msg, e.hash);
-    buf_str(&msg, ")\n");
-    out_buf(&msg);
-    return 0;
+    return xc_x64(&o, &f, out.data);
 }

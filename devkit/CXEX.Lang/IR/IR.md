@@ -5,9 +5,10 @@
 Roadmap step 6b2 (`docs/planning/CX_ROADMAP.md`, `docs/language/CX_X_PLAN.md`
 §2). The C# compiler lowers the checked tree to this IR (`IrLowering.cs`),
 `IrVerifier.cs` checks it, and `cxk ir <file.xfxn>` prints it. The x86-64
-System V back end (`CodeGen/X64Emitter.cs`, step 6b3) reads it: `cxk compile
---target x86_64` lowers, verifies and emits ELF64. The x86-32 emitter still
-works from the tree and is deleted with the 32-bit code (6d).
+System V back end (`CodeGen/X64Emitter.cs`, step 6b3) reads it: `cxk compile`
+lowers, verifies and emits ELF64. The x86-32 emitter, which worked from
+the tree, was deleted in step 6d3c; the lowering still takes `--target
+x86_32`, so an x86-32 back end on this IR can come later.
 
 The X compiler has the lowering too (step 6c1): `os/xc/ir.xfxn` is a port
 of `IrLowering.cs` and `IrPrinter.cs`, and its `irdump` is held to `cxk ir`,
@@ -15,14 +16,14 @@ character for character, on both targets by the Differential tests
 (`SemaAsmDiffTests`). It has no verifier of its own: a module the C# verifier
 rejects prints differently, which the comparison catches. It has the x86-64
 back end too (step 6c2): `os/xc/x64.xfxn` ports `X64Emitter.cs`, and
-`asmdump --target x86_64` is held to `cxk asm --target x86_64` (lowered,
-verified, emitted, as `compile --target x86_64` does) the same way. The
+`asmdump` is held to `cxk asm` (lowered, verified, emitted, as `compile`
+does) the same way. The
 lowering records each global's data and each string's bytes beside their text
 for it, so a back end never reads the printed IR.
 
-The lowering keeps the x86-32 emitter's meaning decision for decision, so the
-two can be held to each other. The places it departs, deliberately, are listed
-at the end.
+The lowering kept the x86-32 emitter's meaning decision for decision while
+the two were held to each other (until 6d3c). The places it departs,
+deliberately, are listed at the end.
 
 ## Types
 
@@ -183,7 +184,7 @@ Not yet right, and known:
 - A `u8` field is on 4 in X and on 1 in C, so a struct with one does not match
   C's layout.
 - An aggregate aligned on 16 passed on the stack is aligned on only 8.
-- The back ends' divide and shift paths for `i8` and `i16` (widen, mask the
+- The back end's divide and shift paths for `i8` and `i16` (widen, mask the
   count, the most-negative check) are never reached: the lowering works on
   those at 32 bits. Breaking them in `x64.xfxn` stays green; they are tested
   only once an IR producer emits narrow divides or shifts.
