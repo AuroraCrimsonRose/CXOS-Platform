@@ -241,10 +241,16 @@ programs for it (step 6).
        (6d2a), the X Data reader linked into the x86-64 kernel (6d2b), and
        every program built for x86-64 and staged on its disk (6d2c). The
        executive, shell, supervisor and services run as on x86-32.
-       Open: `verify-boot --full` passes once the executive is loaded, not
-       once it runs (a broken x86-64 syscall wrapper stays green); it
-       should also require the executive's banner or the shell's prompt.
-     - **6d3** The 32-bit kernel and the x86-32 emitter deleted.
+     - **6d3** The 32-bit kernel and the x86-32 emitter deleted, in three
+       commits:
+       - **6d3a** `verify-boot --full` requires the executive's banner and
+         the shell's prompt, both written from ring 3, not only the kernel's
+         "executive started" (logged once the image is loaded, so a broken
+         x86-64 syscall wrapper stayed green). **Done 2026-10-28.**
+       - **6d3b** The 32-bit kernel, its disk, its boot path and the x86-32
+         program rules; x86-64 is the default architecture everywhere.
+       - **6d3c** The tree-walking x86-32 code generators: `X86Emitter` and
+         `xc`'s `emit.xfxn`, with xc's x86-32 host layer.
      **Not in 6d:** the ABI keeps user addresses as `u32` (`vm_map_args.addr`,
      `spawn_args.image`, the IPC buffers, `vm_unmap`'s `addr`) and the kernel
      decodes a pointer argument as `uint32_t`. Nothing truncates while the

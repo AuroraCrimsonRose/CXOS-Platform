@@ -24,7 +24,7 @@ public class VerifyBootCommand : Command<VerifyBootCommand.Settings>
         public string ImagePath { get; set; } = string.Empty;
 
         [CommandOption("--full")]
-        [Description("Also wait for the executive to start, not just the kernel self-tests")]
+        [Description("Also wait for the executive's banner and the shell's prompt, not just the kernel self-tests")]
         public bool Full { get; set; }
 
         [CommandOption("-t|--timeout")]

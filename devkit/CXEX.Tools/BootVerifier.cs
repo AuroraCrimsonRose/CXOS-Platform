@@ -7,7 +7,7 @@ namespace CXEX.Tools;
 
 public enum BootOutcome
 {
-    /// <summary>The self-tests reported all passed (and, for a full boot, the executive started).</summary>
+    /// <summary>The self-tests reported all passed (and, for a full boot, the executive and the shell ran).</summary>
     Pass = 0,
     /// <summary>A panic, or the self-tests reported a failure.</summary>
     Fail = 1,
@@ -35,12 +35,19 @@ public sealed record BootVerdict(BootOutcome Outcome, string Reason, int? TestsP
     // logged only once it is loaded, so without this a refused executive would
     // read as "not started yet" until the timeout.
     private static readonly Regex ExecutiveRefused = new(@"executive refused at load", RegexOptions.IgnoreCase);
+    // "Started" is the kernel's word that the image loaded; these two are
+    // written from ring 3. The banner is executive.c's first syscall, the
+    // prompt the shell's (an X program the executive spawned). A broken
+    // syscall wrapper lost the banner while "started" stayed (2026-10-28).
+    private static readonly Regex ExecutiveBanner = new(@"CXK executive online");
+    private static readonly Regex ShellPrompt = new(@"cxk> ");
 
     /// <summary>
     /// Reads a serial log. A panic beats everything, including a summary
     /// printed before it: the verdict is about the whole log, so a later panic
     /// is not excused by an earlier pass. <paramref name="full"/> also requires
-    /// the executive to have started, which the self-test summary precedes.
+    /// the executive to have started, then its banner and the shell's prompt,
+    /// all of which the self-test summary precedes.
     /// </summary>
     public static BootVerdict Classify(string log, bool full)
     {
@@ -63,9 +70,13 @@ public sealed record BootVerdict(BootOutcome Outcome, string Reason, int? TestsP
             return new BootVerdict(BootOutcome.Fail, $"self-tests: all {n} passed, but the executive was refused at load", n);
         if (full && !ExecutiveUp.IsMatch(log))
             return new BootVerdict(BootOutcome.Inconclusive, $"self-tests: all {n} passed, but the executive has not started", n);
+        if (full && !ExecutiveBanner.IsMatch(log))
+            return new BootVerdict(BootOutcome.Inconclusive, $"self-tests: all {n} passed, the executive loaded, but its banner has not appeared", n);
+        if (full && !ShellPrompt.IsMatch(log))
+            return new BootVerdict(BootOutcome.Inconclusive, $"self-tests: all {n} passed, the executive ran, but the shell's prompt has not appeared", n);
 
         return new BootVerdict(BootOutcome.Pass, full
-            ? $"self-tests: all {n} passed, and the executive started"
+            ? $"self-tests: all {n} passed, and the executive and the shell ran"
             : $"self-tests: all {n} passed", n);
     }
 

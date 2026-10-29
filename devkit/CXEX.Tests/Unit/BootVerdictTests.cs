@@ -17,6 +17,8 @@ public class BootVerdictTests
     private const string Summary = "[KTEST   ] - [OK  ] - self-tests: all 45 passed\n";
     private const string Refusal = "-> signature check failed - unsigned, or signed by a key this kernel does not trust\n";
     private const string Executive = "[EXEC    ] - [OK  ] - executive started, pid 1\n";
+    private const string Banner = "CXK executive online (.xoex) - brokering\n";
+    private const string Prompt = "cxk> ";
     private const string Panic =
         "*** KERNEL PANIC ***\nInvariant violated: no esp0 stack for thread 0 (PROCESS_MODEL.md section 8)\n" +
         "Called from EIP: 0xC0100317\nSystem halted.";
@@ -67,7 +69,27 @@ public class BootVerdictTests
     public void A_full_boot_also_needs_the_executive()
     {
         Assert.Equal(BootOutcome.Inconclusive, BootVerdict.Classify(Summary, full: true).Outcome);
-        Assert.Equal(BootOutcome.Pass, BootVerdict.Classify(Summary + Executive, full: true).Outcome);
+        Assert.Equal(BootOutcome.Pass, BootVerdict.Classify(Summary + Executive + Banner + Prompt, full: true).Outcome);
+    }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
+    public void A_full_boot_needs_ring_3_output_not_just_a_loaded_executive()
+    {
+        // "Started" is logged once the image is loaded. A broken x86-64
+        // syscall wrapper (2026-10-28) lost the banner and still passed.
+        var loaded = BootVerdict.Classify(Summary + Executive, full: true);
+        Assert.Equal(BootOutcome.Inconclusive, loaded.Outcome);
+        Assert.Contains("banner", loaded.Reason);
+
+        var noShell = BootVerdict.Classify(Summary + Executive + Banner, full: true);
+        Assert.Equal(BootOutcome.Inconclusive, noShell.Outcome);
+        Assert.Contains("prompt", noShell.Reason);
+
+        // the prompt alone is not the executive's banner
+        Assert.Equal(BootOutcome.Inconclusive, BootVerdict.Classify(Summary + Executive + Prompt, full: true).Outcome);
+        // and none of it is needed when the boot is not a full one
+        Assert.Equal(BootOutcome.Pass, BootVerdict.Classify(Summary + Executive, full: false).Outcome);
     }
 
     [Fact]
