@@ -663,6 +663,34 @@ fn run_grant(word: *u8, n: u32) -> u32 {
     return 0;
 }
 
+// One line on how a waited-for program ended, from its process_info.
+fn run_report(name: *u8, pid: i32, rc: i32, pi: *process_info) -> void {
+    puts(name);
+    puts(" (pid ");
+    print_u32(pid as u32);
+    puts("): ");
+    if (rc < 0) { puts("could not wait: "); puts(file_strerror(rc)); newline(); return; }
+    if (pi.ended == PROC_EXITED) {
+        puts("exited ");
+        if (pi.code < 0) { puts("-"); print_u32((0 - pi.code) as u32); }
+        else { print_u32(pi.code as u32); }
+    } else if (pi.ended == PROC_CRASHED) {
+        if (pi.vector == PROC_VECTOR_REFUSED) { puts("ended: a system call from outside the system page"); }
+        else { puts("crashed, vector "); print_u32(pi.vector); }
+        puts(" at ");
+        print_addr(pi.ip as usize);
+        if (pi.vector == 14) { puts(", touching "); print_addr(pi.addr as usize); }
+    } else if (pi.ended == PROC_KILLED) {
+        puts("killed by pid ");
+        print_u32(pi.killer);
+    } else if (pi.ended == PROC_NOT_STARTED) {
+        puts("did not start");
+    } else {
+        puts("ended, how unknown");
+    }
+    newline();
+}
+
 fn cmd_run(arg: *u8) -> void {
     let caps: u32 = GRANT_CONSOLE;
     while (arg[0] == '+') {
@@ -674,7 +702,19 @@ fn cmd_run(arg: *u8) -> void {
         arg = &arg[1 + n];
         while (arg[0] == ' ') { arg = &arg[1]; }
     }
-    if (arg[0] == 0) { puts("usage: run [+disk] [+net] <path> [args...]\n"); return; }
+    // A trailing `&` - its own word - runs the program in the background:
+    // the shell reports the pid and is back at the prompt at once. Without
+    // it the shell waits, and the program has the console until it ends.
+    let bg: u32 = 0;
+    let e: u32 = strlen(arg);
+    while (e > 0 && arg[e - 1] == ' ') { e -= 1; }
+    if (e > 0 && arg[e - 1] == '&' && (e == 1 || arg[e - 2] == ' ')) {
+        bg = 1;
+        e -= 1;
+        while (e > 0 && arg[e - 1] == ' ') { e -= 1; }
+    }
+    arg[e] = 0;
+    if (arg[0] == 0) { puts("usage: run [+disk] [+net] <path> [args...] [&]\n"); return; }
 
     // The whole tail is packed at once, so the program's own name becomes
     // argv[0] exactly as the user typed it and the rest follow it. The packed
@@ -724,14 +764,32 @@ fn cmd_run(arg: *u8) -> void {
         else { puts(file_strerror(ph)); newline(); }
         return;
     }
-    // A process handle. The shell does not wait for what it runs, so it keeps
-    // only the pid to show: a handle held here would keep the record of every
-    // program it ever started.
+    // A process handle. In the background the shell keeps only the pid to
+    // show: a handle held here would keep the record of every program it ever
+    // started. Otherwise it waits for the end, says how it came, and closes.
     let pid: i32 = process_pid(ph);
+    if (bg != 0) {
+        handle_close(ph);
+        puts("started pid ");
+        print_u32(pid as u32);
+        newline();
+        return;
+    }
+    let seen: u32 = 0;
+    let rc: i32 = object_wait(ph, SIGNAL_PROCESS_ENDED, WAIT_FOREVER, &seen);
+    let pi: process_info;
+    memzero((&pi) as *u8, sizeof pi);
+    if (rc >= 0) {
+        let q: object_info_args;
+        memzero((&q) as *u8, sizeof q);
+        q.cap    = sizeof pi;
+        q.buf    = (&pi) as u64;
+        q.handle = ph;
+        q.topic  = OBJINFO_PROCESS;
+        rc = object_info(&q);
+    }
     handle_close(ph);
-    puts("started pid ");
-    print_u32(pid as u32);
-    newline();
+    run_report(name, pid, rc, &pi);
 }
 
 fn cmd_edit(arg: *u8) -> void {
@@ -800,7 +858,7 @@ fn _start() -> void {
     register("append", cmd_append, "add text to the end of a file");
     register("stat",   cmd_stat,   "show an entry's metadata");
     register("edit",   cmd_edit,   "full-screen text editor");
-    register("run",    cmd_run,    "run a signed program (searches /System and /Shared); +disk +net grant more");
+    register("run",    cmd_run,    "run a signed program and wait (searches /System and /Shared); +disk +net grant more; & to not wait");
     register("mkdir",  cmd_mkdir,  "create a directory");
     register("rm",     cmd_rm,     "delete a file or empty directory");
     register("mv",     cmd_mv,     "rename an entry");
