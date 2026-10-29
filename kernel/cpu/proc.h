@@ -40,6 +40,8 @@
    matches THREAD_LIMIT_MAX (cpu/sched.h). */
 #define PROC_PID_MAX 256
 
+struct endpoint;   /* cpu/ipc.h */
+
 struct proc {
     struct kobj hdr;        /* first; KOBJ_PROCESS */
     int         pid;
@@ -62,10 +64,20 @@ struct proc {
     uint32_t    end_vector; /* PROC_CRASHED */
     uint64_t    end_ip;     /* PROC_CRASHED */
     uint64_t    end_addr;   /* PROC_CRASHED by a page fault */
-    uint32_t    end_killer; /* PROC_KILLED: the pid that asked */
+    uint32_t    end_killer; /* PROC_KILLED, PROC_STOPPED: the pid that asked */
     /* Set by proc_kill: its threads leave at their next safe point, and none
        of them blocks again (cpu/sched.h, thread_killed). */
     int         killing;
+    /* Where it is asked to stop (SYS_PROCESS_STOP_ENDPOINT), with a reference
+       of its own, or NULL. Dropped when the last thread stops. */
+    struct endpoint *stop_ep;
+    /* A stop's deadline (proc_stop): on the armed list until it is due at
+       tick stop_due, when the process is ended PROC_STOPPED for stop_by, or
+       until the process ends first. */
+    int          stop_armed;
+    uint32_t     stop_due;
+    int          stop_by;
+    struct proc *stop_next;
 };
 
 /* Register the type and make the cache. Once, before the first proc_create. */
@@ -106,6 +118,24 @@ void proc_note_crash(struct proc *p, uint32_t vector, uint64_t ip, uint64_t addr
    E_CANCELED, then on the way to ring 3 (usermode_kill_point). Returns before
    any of them has gone. A process with no thread running is left as it is. */
 void proc_kill(struct proc *p, int killer);
+
+/* Ask `p` to end, for the process `by`, within `ms` (SYS_PROCESS_STOP): a
+   stop notice on its stop endpoint, and a deadline after which it is ended as
+   proc_kill would end it, noted PROC_STOPPED. A second stop moves the
+   deadline closer, never later. With no stop endpoint, or one nobody can
+   receive on, it is ended at once. A process that has ended is left as it
+   is. */
+void proc_stop(struct proc *p, int by, uint32_t ms);
+
+/* `p`'s stop endpoint is now `ep` (a reference is taken), or none if NULL. */
+void proc_set_stop_endpoint(struct proc *p, struct endpoint *ep);
+
+/* Every tick (drivers/char/timer.c): end each process whose stop deadline has
+   passed. Interrupt context. */
+void proc_stop_tick(void);
+
+/* Stop deadlines armed, for the self-tests. */
+uint32_t proc_stops_armed(void);
 
 /* Drop a reference taken by proc_create (or kobj_ref). */
 void proc_put(struct proc *p);

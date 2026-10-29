@@ -563,6 +563,33 @@ user_blob_call_start:
     ud2
 user_blob_call_end:
 
+; user_blob_calls: three system calls, each six qwords copied in just past the
+; blob as in user_blob_call, then SYS_EXIT with what the third returned (the
+; stop self-test, usermode_stop_test: register a stop endpoint, wait, receive).
+global user_blob_calls_start, user_blob_calls_end
+user_blob_calls_start:
+    mov r12, rsi             ; the system page
+    lea r13, [rel user_blob_calls_end]
+    mov r14d, 3
+.next:
+    mov eax, [r13]
+    mov rdi, [r13 + 8]
+    mov rsi, [r13 + 16]
+    mov rdx, [r13 + 24]
+    mov r10, [r13 + 32]
+    mov r8,  [r13 + 40]
+    imul eax, eax, SYSPAGE_STUB
+    add rax, r12
+    call rax
+    add r13, 48
+    dec r14d
+    jnz .next
+    mov edi, eax
+    lea rax, [r12 + SYS_EXIT * SYSPAGE_STUB]
+    call rax
+    ud2
+user_blob_calls_end:
+
 ; user_blob_loop: never calls the kernel; only an interrupt reaches it.
 global user_blob_loop_start, user_blob_loop_end
 user_blob_loop_start:

@@ -39,6 +39,11 @@ struct endpoint {
     int      taken;
     int      replied;
     int      caller_gone;
+    /* A stop notice waiting for ipc_recv (ep_post_stop), which takes it
+       before any call: who asked, and the deadline they gave. */
+    int      stop_pending;
+    uint32_t stop_by;
+    uint32_t stop_ms;
     uint8_t  buf[4096];     /* kernel bounce buffer for request + reply */
 };
 
@@ -97,6 +102,11 @@ void ep_put(struct endpoint *ep);
    derived from the grant `parent_grant`. Returns the handle, or a negative
    ABI error. */
 int32_t ep_install_handle(int tid, struct endpoint *ep, uint32_t rights, uint32_t parent_grant);
+
+/* Leave a stop notice on `ep` for the process `by`, which gave `ms`, and wake
+   its receiver (SYS_PROCESS_STOP). A later one replaces it. 0, or
+   E_PEER_CLOSED if the endpoint's last handle has gone: nobody can read it. */
+int ep_post_stop(struct endpoint *ep, int by, uint32_t ms);
 
 /* the synchronous rendezvous (each takes a user pointer to its args struct) */
 int ipc_call(uint64_t ua);    /* caller (app); blocks -> reply len */

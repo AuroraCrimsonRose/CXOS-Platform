@@ -579,6 +579,41 @@ int syscall_process_kill(int32_t h) {
     return rc;
 }
 
+int syscall_process_stop(int32_t h, uint32_t deadline_ms) {
+    /* Unprivileged: the handle's HRIGHT_STOP is the authority. */
+    if (deadline_ms > SLEEP_MAX_MS) return E_OUT_OF_RANGE;
+    struct htab_info hi;
+    struct kobj *o = htab_ref(thread_htab(thread_current_id()), h, KOBJ_NONE, 0, &hi);
+    if (!o) return E_BAD_HANDLE;
+    int rc = o->type != KOBJ_PROCESS     ? E_WRONG_TYPE
+           : !(hi.rights & HRIGHT_STOP)  ? E_ACCESS_DENIED : E_OK;
+    if (rc == E_OK) {
+        struct proc *p = (struct proc *)o;
+        if (p->running) {
+            klog_u32("USERMODE", SEV_INFO, "pid ", (uint32_t)p->pid, LOG_COLOR_VALUE, " asked to stop");
+            klog_child_u32("by pid ", (uint32_t)thread_current_pid(), LOG_COLOR_VALUE, "");
+        }
+        proc_stop(p, thread_current_pid(), deadline_ms);
+    }
+    kobj_unref(o);
+    return rc;
+}
+
+int syscall_process_stop_endpoint(int32_t h) {
+    /* Unprivileged: a process names one of its own receive endpoints. */
+    struct proc *me = thread_proc(thread_current_id());
+    if (!me) return E_INTERNAL;
+    if (h == 0) { proc_set_stop_endpoint(me, 0); return E_OK; }
+    struct htab_info hi;
+    struct kobj *o = htab_ref(thread_htab(thread_current_id()), h, KOBJ_NONE, 0, &hi);
+    if (!o) return E_BAD_HANDLE;
+    int rc = o->type != KOBJ_ENDPOINT    ? E_WRONG_TYPE
+           : !(hi.rights & HRIGHT_RECV)  ? E_ACCESS_DENIED : E_OK;
+    if (rc == E_OK) proc_set_stop_endpoint(me, (struct endpoint *)o);
+    kobj_unref(o);
+    return rc;
+}
+
 /* The gate's last step, and an interrupt's from ring 3 (the hook below).
    Nothing of the process's is held here: whatever the call took, it has let
    go of by now. */
@@ -2471,7 +2506,7 @@ static int32_t pt_make(const uint8_t *start, const uint8_t *end, int *tid) {
     *tid = process_prepare_ring3("pt", start, (uint32_t)(end - start), "");
     if (*tid < 0) return E_NO_MEMORY;
     int32_t h = htab_install(thread_htab(thread_current_id()), &thread_proc(*tid)->hdr,
-                             HRIGHT_WAIT | HRIGHT_INSPECT | HRIGHT_KILL | HRIGHT_DUPLICATE, 0);
+                             HRIGHT_WAIT | HRIGHT_INSPECT | HRIGHT_KILL | HRIGHT_STOP | HRIGHT_DUPLICATE, 0);
     if (h < 0) thread_discard(*tid);
     return h;
 }
@@ -2511,7 +2546,7 @@ int usermode_process_test(void) {
     oi->cap = sizeof *ob; oi->buf = PT_INFO; oi->handle = h; oi->topic = OBJINFO_BASIC;
     step = 2; if (syscall_dispatch(SYS_OBJECT_INFO, PT_IARGS, 0, 0, 0, 0) != (int)sizeof *ob
                   || ob->kind != OBJ_TYPE_PROCESS
-                  || ob->rights != (HRIGHT_WAIT | HRIGHT_INSPECT | HRIGHT_KILL | HRIGHT_DUPLICATE)) goto done;
+                  || ob->rights != (HRIGHT_WAIT | HRIGHT_INSPECT | HRIGHT_KILL | HRIGHT_STOP | HRIGHT_DUPLICATE)) goto done;
     step = 3; if (pt_info(h) != (int)sizeof *pi || pi->pid != (uint32_t)pid
                   || pi->ended != PROC_RUNNING) goto done;
 
@@ -2845,6 +2880,298 @@ done:
     if (cxfs_is_mounted() && (id = cxfs_resolve(ft_join(scratch, "/kt_kill.txt"), 0)) >= 0)
         cxfs_delete_entry((uint32_t)id);
     thread_set_caps(me, caps0);
+    unmap_user_page(TEST_CODE_VIRT, phys);
+    return ok;
+}
+
+/* ---- SYS_PROCESS_STOP (Phase 1.1c) ----
+ * Registering a stop endpoint and its refusals; a process that is receiving
+ * when asked, one that asks itself before it receives (so the notice waits
+ * for it, and the stopper is a real pid), one that ignores it until the
+ * deadline, a deadline brought closer and not put back, no endpoint and a
+ * dead one (ended at once), a kill while a stop is pending, and a reply after
+ * a notice, which answers nothing. 1 = pass. */
+extern uint8_t user_blob_calls_start[], user_blob_calls_end[];
+
+#define ST_NOTE   (TEST_CODE_VIRT + 0x680)   /* the victim's stop_notice */
+#define ST_SENDER (TEST_CODE_VIRT + 0x6C0)   /* and who it came from */
+#define ST_TBUF   (TEST_CODE_VIRT + 0x700)   /* the test thread's receive buffer */
+#define ST_TSEND  (TEST_CODE_VIRT + 0x740)   /* and its sender */
+
+/* user_blob_calls and its three calls, read when the victim starts. */
+static uint8_t  st_image[KT_BLOB_MAX + 3 * 6 * 8];
+static uint32_t st_len;
+
+static int32_t st_make(int *tid) {
+    st_len = (uint32_t)(user_blob_calls_end - user_blob_calls_start);
+    if (st_len > KT_BLOB_MAX) return E_INTERNAL;
+    for (uint32_t i = 0; i < st_len; i++) st_image[i] = user_blob_calls_start[i];
+    return pt_make(st_image, st_image + st_len + 3 * 6 * 8, tid);
+}
+
+/* Call `i` (0-2) of the three. */
+static void st_call(uint32_t i, uint64_t nr, uint64_t a1, uint64_t a2) {
+    const uint64_t q[6] = { nr, a1, a2, 0, 0, 0 };
+    const uint8_t *s = (const uint8_t *)q;
+    for (uint32_t k = 0; k < sizeof q; k++) st_image[st_len + i * sizeof q + k] = s[k];
+}
+
+static int st_stop(int32_t h, uint32_t ms) {
+    return syscall_dispatch(SYS_PROCESS_STOP, (uint32_t)h, ms, 0, 0, 0);
+}
+
+static int st_register(int32_t h) {
+    return syscall_dispatch(SYS_PROCESS_STOP_ENDPOINT, (uint32_t)h, 0, 0, 0, 0);
+}
+
+/* The test thread receives on `eh` with room for `cap` bytes. */
+static int st_recv(int32_t eh, uint64_t cap) {
+    struct ipc_recv_args *r = (struct ipc_recv_args *)user_ptr(KT_TARGS);
+    r->cap = cap; r->buf = ST_TBUF; r->sender = ST_TSEND; r->ep_handle = eh; r->reserved = 0;
+    return syscall_dispatch(SYS_IPC_RECV, KT_TARGS, 0, 0, 0, 0);
+}
+
+static int st_reply(int32_t eh) {
+    struct ipc_reply_args *r = (struct ipc_reply_args *)user_ptr(KT_TARGS);
+    r->data = KT_REQ; r->len = 1; r->ep_handle = eh; r->reserved = 0;
+    return syscall_dispatch(SYS_IPC_REPLY, KT_TARGS, 0, 0, 0, 0);
+}
+
+/* What the test thread just received is a stop notice from `by` giving `ms`. */
+static int st_is_notice(int rc, const void *buf, const void *sender, uint32_t by, uint32_t ms) {
+    const struct stop_notice *n = buf;
+    return rc == (int)sizeof *n && *(const int32_t *)sender == IPC_SENDER_KERNEL
+        && n->kind == NOTICE_STOP && n->stopper == by && n->deadline_ms == ms
+        && n->reserved == 0;
+}
+
+/* A victim that registers `v` (its handle on the endpoint) and then sleeps,
+   twice, for the longest sleep there is: it never receives. */
+static int32_t st_deaf(struct endpoint *ep, int *tid, int32_t *v) {
+    int32_t h = st_make(tid);
+    if (h <= 0) return h;
+    *v = ep_install_handle(*tid, ep, HRIGHT_RECV, 0);
+    if (*v <= 0) { thread_discard(*tid); return E_NO_RESOURCES; }
+    st_call(0, SYS_PROCESS_STOP_ENDPOINT, (uint32_t)*v, 0);
+    st_call(1, SYS_SLEEP, SLEEP_MAX_MS, 0);
+    st_call(2, SYS_SLEEP, SLEEP_MAX_MS, 0);
+    thread_start(*tid);
+    return h;
+}
+
+/* `h` ends as `how` says, for this thread's process, without running on in
+   ring 3. */
+static int st_ends(int32_t h, uint32_t how) {
+    struct process_info *pi = (struct process_info *)user_ptr(PT_INFO);
+    uint32_t faults = usermode_faults();
+    return pt_wait(h, SIGNAL_PROCESS_ENDED, 3000, 0) == E_OK && pt_info(h) == (int)sizeof *pi
+        && pi->ended == how && pi->killer == (uint32_t)thread_current_pid()
+        && pi->reserved == 0 && usermode_faults() == faults;
+}
+
+int usermode_stop_test(void) {
+    paddr_t phys = map_user_page(TEST_CODE_VIRT);
+    if (!phys) return 0;
+    int me = thread_current_id();
+    struct htab *tab = thread_htab(me);
+    struct proc *mine = thread_proc(me);
+    struct process_info *pi = (struct process_info *)user_ptr(PT_INFO);
+    struct stop_notice *note = (struct stop_notice *)user_ptr(ST_NOTE);
+    const void *tbuf = user_ptr(ST_TBUF), *tsend = user_ptr(ST_TSEND);
+    uint32_t live0 = proc_live(), faults0 = usermode_faults(), refused0 = syscall_refused_count();
+    int eps0 = ep_in_use_count();
+    struct endpoint *ep = 0, *ep2 = 0;
+    int32_t h = -1, ha = -1, v, eh = -1, e2 = -1, d = -1;
+    int tid = -1, tida = -1, step = 0, ok = 0;
+    uint32_t t0;
+
+    eh = ep_create();
+    ep = eh > 0 ? ep_from_handle(eh, HRIGHT_RECV, 0) : 0;
+
+    /* 1: registering, here for the test's own process: the refusals, then
+       one that takes, then none */
+    step = 1; if (!ep) goto done;
+    d = syscall_dispatch(SYS_HANDLE_DUPLICATE, (uint32_t)eh, HRIGHT_DUPLICATE, 0, 0, 0);
+    if (d <= 0 || st_register(d) != E_ACCESS_DENIED || st_register(9999) != E_BAD_HANDLE
+        || mine->stop_ep != 0) goto done;
+    if (st_register(eh) != E_OK || mine->stop_ep != ep) goto done;
+    if (st_register(0) != E_OK || mine->stop_ep != 0) goto done;
+    htab_close(tab, d); d = -1;
+
+    /* 2: the stop's refusals, on a victim not yet started */
+    h = st_make(&tid);
+    step = 2; if (h <= 0) goto done;
+    if (st_register(h) != E_WRONG_TYPE) goto done;
+    d = syscall_dispatch(SYS_HANDLE_DUPLICATE, (uint32_t)h, HRIGHT_WAIT | HRIGHT_INSPECT | HRIGHT_KILL, 0, 0, 0);
+    if (d <= 0 || st_stop(d, 10) != E_ACCESS_DENIED || st_stop(eh, 10) != E_WRONG_TYPE
+        || st_stop(9999, 10) != E_BAD_HANDLE || st_stop(h, SLEEP_MAX_MS + 1) != E_OUT_OF_RANGE
+        || proc_stops_armed() != 0) { thread_discard(tid); goto done; }
+    htab_close(tab, d); d = -1;
+
+    /* 3: receiving when asked: the notice wakes it, it exits with what the
+       receive returned, the deadline is disarmed */
+    v = ep_install_handle(tid, ep, HRIGHT_RECV, 0);
+    step = 3; if (v <= 0) { thread_discard(tid); goto done; }
+    struct ipc_recv_args *ra = (struct ipc_recv_args *)user_ptr(KT_ARGS);
+    ra->cap = sizeof *note; ra->buf = ST_NOTE; ra->sender = ST_SENDER; ra->ep_handle = v; ra->reserved = 0;
+    *(volatile int32_t *)user_ptr(ST_SENDER) = 0;
+    st_call(0, SYS_PROCESS_STOP_ENDPOINT, (uint32_t)v, 0);
+    st_call(1, SYS_SLEEP, 1, 0);
+    st_call(2, SYS_IPC_RECV, KT_ARGS, 0);
+    thread_start(tid);
+    if (pt_wait(h, SIGNAL_PROCESS_ENDED, 50, 0) != E_TIMED_OUT || !thread_is_blocked(tid)
+        || ep->recv_tid != tid) goto done;
+    t0 = timer_ticks();
+    if (st_stop(h, 3000) != E_OK || proc_stops_armed() != 1) goto done;
+    if (pt_wait(h, SIGNAL_PROCESS_ENDED, 3000, 0) != E_OK || timer_ticks() - t0 >= 1000
+        || pt_info(h) != (int)sizeof *pi || pi->ended != PROC_EXITED
+        || pi->code != (int)sizeof *note || pi->killer != 0
+        || !st_is_notice((int)sizeof *note, note, user_ptr(ST_SENDER), (uint32_t)thread_current_pid(), 3000)
+        || ep->stop_pending || proc_stops_armed() != 0) goto done;
+
+    /* 4: an ended process: 0, and how it ended stands */
+    step = 4; if (st_stop(h, 10) != E_OK || proc_stops_armed() != 0 || ep->stop_pending
+                  || pt_info(h) <= 0 || pi->ended != PROC_EXITED || pi->code != (int)sizeof *note) goto done;
+    htab_close(tab, h); h = -1;
+
+    /* 5: it asks itself before it receives: the notice waits on the
+       endpoint, and names the victim as the stopper */
+    h = st_make(&tid);
+    step = 5; if (h <= 0) goto done;
+    int vpid = thread_pid(tid);
+    v = ep_install_handle(tid, ep, HRIGHT_RECV, 0);
+    int32_t self = htab_install(thread_htab(tid), &thread_proc(tid)->hdr, HRIGHT_STOP, 0);
+    if (v <= 0 || self <= 0) { thread_discard(tid); goto done; }
+    ra->ep_handle = v;
+    st_call(0, SYS_PROCESS_STOP_ENDPOINT, (uint32_t)v, 0);
+    st_call(1, SYS_PROCESS_STOP, (uint32_t)self, 2000);
+    st_call(2, SYS_IPC_RECV, KT_ARGS, 0);
+    thread_start(tid);
+    if (pt_wait(h, SIGNAL_PROCESS_ENDED, 3000, 0) != E_OK || pt_info(h) <= 0
+        || pi->ended != PROC_EXITED || pi->code != (int)sizeof *note
+        || !st_is_notice((int)sizeof *note, note, user_ptr(ST_SENDER), (uint32_t)vpid, 2000)
+        || proc_stops_armed() != 0) goto done;
+    htab_close(tab, h); h = -1;
+
+    /* 6: it never receives: still there before the deadline, ended
+       PROC_STOPPED after it, and the notice is still on the endpoint */
+    h = st_deaf(ep, &tid, &v);
+    step = 6; if (h <= 0) goto done;
+    if (pt_wait(h, SIGNAL_PROCESS_ENDED, 50, 0) != E_TIMED_OUT || !thread_is_blocked(tid)) goto done;
+    t0 = timer_ticks();
+    if (st_stop(h, 300) != E_OK || pt_wait(h, SIGNAL_PROCESS_ENDED, 150, 0) != E_TIMED_OUT) goto done;
+    if (!st_ends(h, PROC_STOPPED) || timer_ticks() - t0 < 300
+        || usermode_faults() != faults0 || !ep->stop_pending || proc_stops_armed() != 0) goto done;
+    htab_close(tab, h); h = -1;
+
+    /* 7: a notice that does not fit stays; one that does is from the kernel */
+    step = 7; if (st_recv(eh, sizeof(struct stop_notice) - 1) != E_BUFFER_TOO_SMALL || !ep->stop_pending
+                  || !st_is_notice(st_recv(eh, sizeof(struct stop_notice)), tbuf, tsend,
+                                   (uint32_t)thread_current_pid(), 300)
+                  || ep->stop_pending || ep->taken) goto done;
+
+    /* 8: a second stop brings the deadline closer; a third does not put it
+       back */
+    h = st_deaf(ep, &tid, &v);
+    step = 8; if (h <= 0) goto done;
+    if (pt_wait(h, SIGNAL_PROCESS_ENDED, 50, 0) != E_TIMED_OUT) goto done;
+    /* Under -icount each stop's log lines cost virtual time, hundreds of
+       milliseconds. The closer deadline must outlast the third stop's, or it
+       has passed before that stop could put it back (a sabotage that let it
+       stayed green with 100 ms); and the clock starts after the stops. A
+       deadline put back to an hour would not end within st_ends' wait. */
+    if (st_stop(h, SLEEP_MAX_MS) != E_OK || proc_stops_armed() != 1
+        || st_stop(h, 1500) != E_OK || st_stop(h, SLEEP_MAX_MS) != E_OK
+        || proc_stops_armed() != 1) goto done;
+    t0 = timer_ticks();
+    if (!st_ends(h, PROC_STOPPED) || timer_ticks() - t0 >= 1500) goto done;
+    htab_close(tab, h); h = -1;
+    if (st_recv(eh, sizeof(struct stop_notice)) != (int)sizeof(struct stop_notice)) goto done;
+
+    /* 9: killed while a stop is pending: the kill's note, and no deadline
+       left armed on a process that has gone */
+    h = st_deaf(ep, &tid, &v);
+    step = 9; if (h <= 0) goto done;
+    if (pt_wait(h, SIGNAL_PROCESS_ENDED, 50, 0) != E_TIMED_OUT
+        || st_stop(h, SLEEP_MAX_MS) != E_OK || proc_stops_armed() != 1
+        || kt_kill_call(h) != E_OK || !st_ends(h, PROC_KILLED)
+        || proc_stops_armed() != 0) goto done;
+    htab_close(tab, h); h = -1;
+    if (st_recv(eh, sizeof(struct stop_notice)) != (int)sizeof(struct stop_notice)) goto done;
+
+    /* 10: nothing registered: ended at once, whatever the deadline */
+    h = st_make(&tid);
+    step = 10; if (h <= 0) goto done;
+    st_call(0, SYS_SLEEP, SLEEP_MAX_MS, 0);
+    st_call(1, SYS_SLEEP, SLEEP_MAX_MS, 0);
+    st_call(2, SYS_SLEEP, SLEEP_MAX_MS, 0);
+    thread_start(tid);
+    if (pt_wait(h, SIGNAL_PROCESS_ENDED, 50, 0) != E_TIMED_OUT) goto done;
+    t0 = timer_ticks();
+    if (st_stop(h, SLEEP_MAX_MS) != E_OK || proc_stops_armed() != 0
+        || !st_ends(h, PROC_STOPPED) || timer_ticks() - t0 >= 1000) goto done;
+    htab_close(tab, h); h = -1;
+
+    /* 11: registered, but every handle on that endpoint has closed: nobody
+       can receive the notice, so ended at once, and the registration's
+       reference goes with the process */
+    e2 = ep_create();
+    ep2 = e2 > 0 ? ep_from_handle(e2, HRIGHT_RECV, 0) : 0;
+    step = 11; if (!ep2) goto done;
+    h = st_deaf(ep2, &tid, &v);
+    if (h <= 0) goto done;
+    if (pt_wait(h, SIGNAL_PROCESS_ENDED, 50, 0) != E_TIMED_OUT
+        || thread_proc(tid)->stop_ep != ep2) goto done;
+    htab_close(thread_htab(tid), v);
+    htab_close(tab, e2); e2 = -1;
+    if (ep2->active) goto done;
+    ep_put(ep2); ep2 = 0;
+    t0 = timer_ticks();
+    if (st_stop(h, SLEEP_MAX_MS) != E_OK || proc_stops_armed() != 0
+        || !st_ends(h, PROC_STOPPED) || timer_ticks() - t0 >= 1000) goto done;
+    htab_close(tab, h); h = -1;
+    if (ep_in_use_count() != eps0 + 1) goto done;
+
+    /* 12-13: a notice ahead of a staged call: received first, and a reply
+       after it answers nothing - not the call behind it, which has not been
+       received. Then the call is received as usual. */
+    ha = kt_make(&tida);
+    step = 12; if (ha <= 0) goto done;
+    v = ep_install_handle(tida, ep, HRIGHT_SEND, 0);
+    if (v <= 0) { thread_discard(tida); goto done; }
+    struct ipc_call_args *ca = (struct ipc_call_args *)user_ptr(KT_ARGS);
+    *(volatile uint8_t *)user_ptr(KT_REQ) = 0x5A;
+    ca->req_len = 1; ca->reply_cap = 0; ca->req = KT_REQ; ca->reply = 0;
+    ca->ep_handle = v; ca->reserved = 0;
+    kt_call(SYS_IPC_CALL, KT_ARGS, 0, 0, 0, 0);
+    thread_start(tida);
+    if (pt_wait(ha, SIGNAL_PROCESS_ENDED, 50, 0) != E_TIMED_OUT || ep->caller_tid != tida
+        || st_reply(eh) != E_INVALID_ARGS || ep->replied || !thread_is_blocked(tida)) goto done;
+    if (ep_post_stop(ep, 77, 5) != 0
+        || !st_is_notice(st_recv(eh, 64), tbuf, tsend, 77, 5) || ep->taken
+        || st_reply(eh) != E_INVALID_ARGS || ep->replied || !thread_is_blocked(tida)) goto done;
+    step = 13; if (st_recv(eh, 64) != 1 || *(const uint8_t *)tbuf != 0x5A
+                   || *(const int32_t *)tsend != thread_pid(tida) || !ep->taken) goto done;
+    if (!kt_kill(ha, tida, 1) || st_reply(eh) != E_PEER_CLOSED) goto done;
+    htab_close(tab, ha); ha = -1;
+
+    /* 14: nothing left behind, and nothing ended any other way */
+    step = 14; if (proc_live() != live0 || usermode_faults() != faults0
+                   || syscall_refused_count() != refused0 || proc_stops_armed() != 0
+                   || ep_in_use_count() != eps0 + 1 || mine->stop_ep != 0) goto done;
+    ok = 1;
+
+done:
+    if (!ok) klog_u32("KTEST", SEV_ERR, "stop test failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    /* A victim still running is killed, so none outlives the test. */
+    if (h > 0)  { kt_kill_call(h);  pt_wait(h, SIGNAL_PROCESS_ENDED, 3000, 0);  htab_close(tab, h); }
+    if (ha > 0) { kt_kill_call(ha); pt_wait(ha, SIGNAL_PROCESS_ENDED, 3000, 0); htab_close(tab, ha); }
+    if (d > 0)  htab_close(tab, d);
+    if (mine) proc_set_stop_endpoint(mine, 0);
+    if (ep2) ep_put(ep2);
+    if (e2 > 0) htab_close(tab, e2);
+    if (ep) ep_put(ep);
+    if (eh > 0) htab_close(tab, eh);
     unmap_user_page(TEST_CODE_VIRT, phys);
     return ok;
 }

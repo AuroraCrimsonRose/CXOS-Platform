@@ -212,6 +212,22 @@ transaction stays until the reply, which gets `E_PEER_CLOSED`, so no later
 caller gets that reply instead of its own. Killing an ended process is 0 and
 changes nothing.
 
+*Stop, ABI 15:* a process names one of its receive endpoints with
+`SYS_PROCESS_STOP_ENDPOINT(h)` (`HRIGHT_RECV`; 0 for none; it lasts until the
+process ends). `SYS_PROCESS_STOP(h, deadline_ms)` needs `HRIGHT_STOP`, which
+spawn gives and which is meant to be handed out freely. It leaves a
+`stop_notice` (`NOTICE_STOP`, the stopper's pid, the deadline) on that
+endpoint, and the next `ipc_recv` there returns it ahead of any staged call,
+from sender `IPC_SENDER_KERNEL` (-1). A notice is not a call: nothing is taken,
+and `ipc_reply` after it is `E_INVALID_ARGS`. A process that exits in answer
+ends `PROC_EXITED` with its own code; one still running at the deadline is
+ended the way a kill ends it, noted `PROC_STOPPED` with the stopper's pid.
+With no endpoint registered, or one whose last handle has closed, nothing can
+ask it, and it is ended at once. A second stop moves the deadline closer,
+never later. Deadlines are checked on the tick, in milliseconds, until item 2's
+timers. Found on the way: `ipc_reply` answered a staged call that had not been
+received; it now needs one `ipc_recv` delivered and not yet answered.
+
 **Memory:**
 `mem_create(size, flags)`, `mem_read`, `mem_write`, `mem_set_size`,
 `mem_seal(m, seals)`, `vm_map(m, offset, len, prot, flags)`,

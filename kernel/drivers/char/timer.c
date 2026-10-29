@@ -7,6 +7,7 @@
 #include "sched.h"
 #include "timer.h"
 #include "keyboard.h"
+#include "proc.h"         /* proc_stop_tick */
 #include "arch/irq.h"
 #include "arch/cpu_ops.h"
 #include "platform/platform.h"   /* the tick's source */
@@ -20,6 +21,7 @@ static void timer_callback(struct registers *r) {
     ticks++;
     sched_tick();          /* preemptive scheduler (no-op unless enabled) */
     sched_wake_sleepers(); /* SYS_SLEEP: put expired sleepers back on the queue */
+    proc_stop_tick();      /* SYS_PROCESS_STOP: end those whose deadline passed */
     keyboard_tick();       /* wake a USB-HID reader; raises no bus traffic here */
 }
 

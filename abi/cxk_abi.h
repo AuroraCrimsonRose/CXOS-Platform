@@ -15,7 +15,7 @@
  * hash it was built against and the loader refuses one that differs, so a
  * program never runs against numbers or layouts it was not compiled for.
  */
-#define CXK_ABI_HASH { 0x9b, 0x1b, 0x31, 0xe2, 0x7a, 0x82, 0x50, 0x33, 0x11, 0x97, 0xbd, 0x6a, 0x04, 0xa6, 0xf6, 0xde, 0xea, 0x6e, 0xed, 0x06, 0xb8, 0x45, 0x0d, 0xa0, 0x02, 0xf3, 0x60, 0x41, 0xc7, 0x33, 0x10, 0xcf }
+#define CXK_ABI_HASH { 0xff, 0x91, 0x7b, 0x41, 0x5d, 0x65, 0x2a, 0x43, 0xda, 0xb8, 0x7f, 0x4e, 0x68, 0x91, 0xcd, 0xb8, 0x11, 0x44, 0x3c, 0xc3, 0x57, 0xcb, 0x03, 0xb4, 0x82, 0xd4, 0xb6, 0x38, 0xa5, 0x92, 0xf5, 0x6a }
 
 /*
  * CXK ABI v1 - the PUBLIC contract shared by the kernel, the .xoex executive,
@@ -44,7 +44,7 @@
  * line; bump both, and the DevKit's stamp, in the one commit that changes the
  * contract.
  */
-#define CXK_ABI_VERSION          14
+#define CXK_ABI_VERSION          15
 
 /*
  * ---- syscall numbers ----
@@ -93,6 +93,12 @@
 /* process: OBJINFO_PROCESS, how it is and how it ended */
 #define HRIGHT_INSPECT           0x1u
 #define HRIGHT_KILL              0x2u           /* process: SYS_PROCESS_KILL */
+
+/*
+ * process: SYS_PROCESS_STOP. Handed out freely, unlike HRIGHT_KILL: a stop
+ * asks first, and a program that answers it ends the way it chooses.
+ */
+#define HRIGHT_STOP              0x4u
 
 /*
  * Generic rights, which mean the same on every type, count down from the top
@@ -190,9 +196,9 @@
 #define SYS_FB_SET_FONT          0x46
 
 /*
- * process 0x70-0x7F (privileged, but for SYS_PROCESS_KILL)
- * Both return a process handle with HRIGHT_WAIT, HRIGHT_INSPECT, HRIGHT_KILL
- * and HRIGHT_DUPLICATE, not a pid: the process is freed once it has ended and
+ * process 0x70-0x7F (spawning is privileged; kill and stop need only the
+ * handle's right). Both return a process handle with HRIGHT_WAIT,
+ * HRIGHT_INSPECT, HRIGHT_KILL, HRIGHT_STOP and HRIGHT_DUPLICATE, not a pid: the process is freed once it has ended and
  * the last handle on it is closed, and nobody reaps it. Its pid is
  * OBJINFO_PROCESS.
  */
@@ -214,6 +220,28 @@
  * SIGNAL_PROCESS_ENDED.
  */
 #define SYS_PROCESS_KILL         0x71
+
+/*
+ * ebx = process handle (HRIGHT_STOP), ecx = deadline in ms (at most
+ * SLEEP_MAX_MS) -> 0. Asks the process to end: a stop_notice is left on the
+ * endpoint it registered (SYS_PROCESS_STOP_ENDPOINT), and if it has not
+ * ended when the deadline passes, it is ended as a kill would end it,
+ * PROC_STOPPED with the caller's pid. A process that answers by exiting
+ * ends PROC_EXITED with its own code. With no endpoint registered, or one
+ * whose last handle has closed, nothing can ask it, and it is ended at
+ * once. A second stop may bring the deadline closer, never later. A process
+ * that has ended already is 0 and unchanged. Returns before it has ended.
+ */
+#define SYS_PROCESS_STOP         0x73
+
+/*
+ * ebx = an endpoint handle with HRIGHT_RECV, or 0 for none -> 0. Where the
+ * caller's process is asked to stop: the next ipc_recv on it returns a
+ * stop_notice, from sender IPC_SENDER_KERNEL, before any call waiting
+ * there. It replaces any endpoint registered before and lasts until the
+ * process ends.
+ */
+#define SYS_PROCESS_STOP_ENDPOINT 0x74
 
 /* memory 0x80-0x8F (unprivileged, quota-bounded) */
 #define SYS_VM_MAP               0x80           /* ebx = *vm_map_args -> 0, with addr and granted filled in */
@@ -493,6 +521,12 @@ struct clock_info {
 #define PROC_NOT_STARTED         3
 #define PROC_KILLED              4              /* SYS_PROCESS_KILL; `killer` is who */
 
+/*
+ * SYS_PROCESS_STOP, whose deadline passed (or nothing could ask it); `killer`
+ * is who asked
+ */
+#define PROC_STOPPED             5
+
 struct process_info {
     uint64_t ip;                                /* PROC_CRASHED: where */
     uint64_t addr;                              /* PROC_CRASHED by a page fault: the address it touched */
@@ -500,7 +534,7 @@ struct process_info {
     uint32_t ended;                             /* PROC_* */
     int32_t code;                               /* PROC_EXITED */
     uint32_t vector;                            /* PROC_CRASHED: the exception, or PROC_VECTOR_REFUSED */
-    uint32_t killer;                            /* PROC_KILLED: the pid that asked, as it was then */
+    uint32_t killer;                            /* PROC_KILLED, PROC_STOPPED: the pid that asked, as it was then */
     uint32_t reserved;                          /* 0 */
 };
 
@@ -540,6 +574,26 @@ struct ipc_recv_args {
     uint64_t sender;                            /* where the caller's pid is written (an i32), or 0 */
     int32_t ep_handle;                          /* a RECV endpoint handle (owner side) */
     uint32_t reserved;
+};
+
+/*
+ * ipc_recv's sender for a message from the kernel itself, not a call: no pid
+ * is negative. There is no caller, so it takes no ipc_reply.
+ */
+#define IPC_SENDER_KERNEL        (-1)
+
+/* stop_notice.kind */
+#define NOTICE_STOP              1
+
+/*
+ * What ipc_recv delivers on a stop endpoint (SYS_PROCESS_STOP). A cap
+ * smaller than it is E_BUFFER_TOO_SMALL, and the notice stays.
+ */
+struct stop_notice {
+    uint32_t kind;                              /* NOTICE_STOP */
+    uint32_t stopper;                           /* the pid that asked */
+    uint32_t deadline_ms;                       /* how long it gave, from when it asked */
+    uint32_t reserved;                          /* 0 */
 };
 
 struct ipc_reply_args {
@@ -843,6 +897,7 @@ CXK_ABI_STATIC_ASSERT(sizeof(struct object_info_args) == 24, "ABI layout: object
 CXK_ABI_STATIC_ASSERT(sizeof(struct object_basic) == 20, "ABI layout: object_basic");
 CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_call_args) == 40, "ABI layout: ipc_call_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_recv_args) == 32, "ABI layout: ipc_recv_args");
+CXK_ABI_STATIC_ASSERT(sizeof(struct stop_notice) == 16, "ABI layout: stop_notice");
 CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_reply_args) == 24, "ABI layout: ipc_reply_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct fb_geometry) == 16, "ABI layout: fb_geometry");
 CXK_ABI_STATIC_ASSERT(sizeof(struct net_ip_config) == 16, "ABI layout: net_ip_config");

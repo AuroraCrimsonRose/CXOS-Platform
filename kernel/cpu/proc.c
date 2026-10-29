@@ -9,6 +9,8 @@
 #include "object/idtab.h"
 #include "object/kwait.h"
 #include "sched.h"          /* sched_wake_process */
+#include "ipc.h"            /* ep_post_stop */
+#include "timer.h"          /* stop deadlines */
 #include "arch/cpu_ops.h"   /* arch_irq_save */
 #include "cxk_abi.h"
 #include "sync/spinlock.h"
@@ -23,6 +25,19 @@ static struct idtab  pids;   /* pid -> process */
    proc_create is part way through growing the table. */
 static spinlock_t    pids_lock = SPINLOCK_INIT;
 static uint32_t      handle_limit = HTAB_LIMIT_DEFAULT;   /* kernel.xkco max_handles */
+/* Processes with a stop deadline armed, linked through stop_next. Changed
+   only with interrupts off, since the tick walks it. A process is unlinked
+   before its last thread is through (proc_thread_stopped), so the list never
+   holds a reference: nothing on it can be freed. */
+static struct proc  *stops;
+
+static void stop_unlink(struct proc *p) {
+    if (!p->stop_armed) return;
+    for (struct proc **pp = &stops; *pp; pp = &(*pp)->stop_next)
+        if (*pp == p) { *pp = p->stop_next; break; }
+    p->stop_next  = 0;
+    p->stop_armed = 0;
+}
 
 /* Its own address space, frames, page tables and directory, and the
    bookkeeping that describes them. Never while one of its threads can run in
@@ -49,7 +64,7 @@ static void proc_destroy(struct kobj *o) {
 
 static const struct kobj_ops proc_ops = {
     .name         = "process",
-    .rights_valid  = HRIGHT_INSPECT | HRIGHT_KILL,
+    .rights_valid  = HRIGHT_INSPECT | HRIGHT_KILL | HRIGHT_STOP,
     .signals_valid = SIGNAL_PROCESS_ENDED,
     .destroy      = proc_destroy,
 };
@@ -101,6 +116,9 @@ void proc_thread_stopped(struct proc *p) {
     proc_out_flush(p);
     htab_close_all(&p->handles);
     p->broker = -1;
+    /* Nobody is left to ask, or to force. */
+    stop_unlink(p);
+    if (p->stop_ep) { ep_put(p->stop_ep); p->stop_ep = 0; }
     /* Every way into ring 3 notes its way out; nothing noted, it never got
        there. Signalled last, so a waiter that wakes finds every handle the
        process held already closed. */
@@ -135,16 +153,75 @@ void proc_note_crash(struct proc *p, uint32_t vector, uint64_t ip, uint64_t addr
    thread_killed and then blocks does both with interrupts off too, so it
    either sees `killing` or is already BLOCKED and gets woken here. One that
    has ended was noted already (proc_thread_stopped) and has no threads left
-   to wake, so it is left as it was. */
-void proc_kill(struct proc *p, int killer) {
+   to wake, so it is left as it was. A stop's deadline ends a process the
+   same way, noted PROC_STOPPED. */
+static void proc_force(struct proc *p, uint32_t how, int by) {
     uint32_t f = arch_irq_save();
     if (p->ended == PROC_RUNNING) {
-        p->ended      = PROC_KILLED;
-        p->end_killer = (uint32_t)killer;
+        p->ended      = how;
+        p->end_killer = (uint32_t)by;
     }
     p->killing = 1;
     sched_wake_process(p);
     arch_irq_restore(f);
+}
+
+void proc_kill(struct proc *p, int killer) {
+    proc_force(p, PROC_KILLED, killer);
+}
+
+/* Interrupts off throughout: the process's own thread may be replacing its
+   stop endpoint, and the tick reads the armed list. */
+void proc_stop(struct proc *p, int by, uint32_t ms) {
+    uint32_t f = arch_irq_save();
+    if (p->running == 0) { arch_irq_restore(f); return; }
+    if (!p->stop_ep || ep_post_stop(p->stop_ep, by, ms) != 0) {
+        arch_irq_restore(f);
+        proc_force(p, PROC_STOPPED, by);
+        return;
+    }
+    uint32_t due = timer_ticks() + ms;
+    if (!p->stop_armed) {
+        p->stop_next  = stops;
+        stops         = p;
+        p->stop_armed = 1;
+        p->stop_due   = due;
+        p->stop_by    = by;
+    } else if (timer_tick_before(due, p->stop_due)) {
+        p->stop_due = due;
+        p->stop_by  = by;
+    }
+    arch_irq_restore(f);
+}
+
+void proc_set_stop_endpoint(struct proc *p, struct endpoint *ep) {
+    if (ep) kobj_ref(&ep->hdr);
+    uint32_t f = arch_irq_save();
+    struct endpoint *old = p->stop_ep;
+    p->stop_ep = ep;
+    arch_irq_restore(f);
+    if (old) ep_put(old);
+}
+
+void proc_stop_tick(void) {
+    uint32_t now = timer_ticks();
+    struct proc **pp = &stops;
+    while (*pp) {
+        struct proc *p = *pp;
+        if (!timer_tick_after(now, p->stop_due)) { pp = &p->stop_next; continue; }
+        *pp = p->stop_next;
+        p->stop_next  = 0;
+        p->stop_armed = 0;
+        proc_force(p, PROC_STOPPED, p->stop_by);
+    }
+}
+
+uint32_t proc_stops_armed(void) {
+    uint32_t n = 0;
+    uint32_t f = arch_irq_save();
+    for (struct proc *p = stops; p; p = p->stop_next) n++;
+    arch_irq_restore(f);
+    return n;
 }
 
 void proc_put(struct proc *p) {

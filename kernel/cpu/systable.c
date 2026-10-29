@@ -71,6 +71,8 @@ static int decode_fb_set_font(const uintptr_t *a) { return syscall_fb_set_font((
 static int decode_spawn(const uintptr_t *a) { return syscall_spawn((uint64_t)a[0]); }
 static int decode_exec_path(const uintptr_t *a) { return syscall_exec_path((uint64_t)a[0], (uint64_t)a[1]); }
 static int decode_process_kill(const uintptr_t *a) { return syscall_process_kill((int32_t)a[0]); }
+static int decode_process_stop(const uintptr_t *a) { return syscall_process_stop((int32_t)a[0], (uint32_t)a[1]); }
+static int decode_process_stop_endpoint(const uintptr_t *a) { return syscall_process_stop_endpoint((int32_t)a[0]); }
 static int decode_vm_map(const uintptr_t *a) { return syscall_vm_map((uint64_t)a[0]); }
 static int decode_vm_unmap(const uintptr_t *a) {
 #if SYSCALL_PAIRS
@@ -179,6 +181,8 @@ const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_SPAWN] = decode_spawn,
     [SYS_PROCESS_KILL] = decode_process_kill,
     [SYS_EXEC_PATH] = decode_exec_path,
+    [SYS_PROCESS_STOP] = decode_process_stop,
+    [SYS_PROCESS_STOP_ENDPOINT] = decode_process_stop_endpoint,
     [SYS_VM_MAP] = decode_vm_map,
     [SYS_VM_UNMAP] = decode_vm_unmap,
     [SYS_VM_INFO] = decode_vm_info,

@@ -98,6 +98,7 @@ int ep_create(void) {
     ep->taken        = 0;
     ep->replied      = 0;
     ep->caller_gone  = 0;
+    ep->stop_pending = 0;
 
     int32_t h = htab_install(thread_htab(thread_current_id()), &ep->hdr, HRIGHT_RECV | HRIGHT_DUPLICATE, 0);
     /* The creator's reference goes either way: on success the handle holds
@@ -221,7 +222,8 @@ static int recv_on(struct endpoint *ep, const struct ipc_recv_args *ap) {
     if (cap && !user_ptr_writable(a.buf, cap)) return E_BAD_ADDRESS;
     if (a.sender && !user_ptr_writable(a.sender, sizeof(int))) return E_BAD_ADDRESS;
 
-    while (ep->caller_tid == -1) {     /* no request staged yet: wait */
+    /* No request staged yet, and no notice: wait. */
+    while (ep->caller_tid == -1 && !ep->stop_pending) {
         ep->recv_tid = thread_current_id();
         thread_block();
 
@@ -232,6 +234,21 @@ static int recv_on(struct endpoint *ep, const struct ipc_recv_args *ap) {
             if (ep->recv_tid == thread_current_id()) ep->recv_tid = -1;
             return E_CANCELED;
         }
+    }
+
+    /* A stop notice goes first, or a busy server would never see it. It is
+       not a call: nothing is taken, a staged request stays for the next
+       receive, and there is nobody to reply to. It stays if it cannot be
+       delivered whole. */
+    if (ep->stop_pending) {
+        if (cap < sizeof(struct stop_notice)) return E_BUFFER_TOO_SMALL;
+        struct stop_notice n = { NOTICE_STOP, ep->stop_by, ep->stop_ms, 0 };
+        int32_t from = IPC_SENDER_KERNEL;
+        if (user_copy_out(a.buf, &n, sizeof n) != 0
+            || (a.sender && user_copy_out(a.sender, &from, sizeof from) != 0))
+            return E_BAD_ADDRESS;
+        ep->stop_pending = 0;
+        return (int)sizeof n;
     }
     ep->taken = 1;
 
@@ -264,10 +281,24 @@ int ipc_recv(uint64_t ua) {
     return rc;
 }
 
+int ep_post_stop(struct endpoint *ep, int by, uint32_t ms) {
+    if (!ep->active) return E_PEER_CLOSED;
+    ep->stop_by      = (uint32_t)by;
+    ep->stop_ms      = ms;
+    ep->stop_pending = 1;
+    if (ep->recv_tid != -1) { int t = ep->recv_tid; ep->recv_tid = -1; thread_unblock(t); }
+    return 0;
+}
+
 /* owner side: stage the reply + wake the blocked caller. */
 static int reply_on(struct endpoint *ep, const struct ipc_reply_args *ap) {
     struct ipc_reply_args a = *ap;
     if (ep->caller_tid == -1) return E_INVALID_ARGS;   /* nobody waiting */
+    /* Only a request ipc_recv delivered is answered, once. Before the stop
+       notice this was unchecked: a reply with a call staged but not yet
+       received answered it unread, and after a notice (which takes nothing)
+       it would answer the call still waiting behind it. */
+    if (!ep->taken || ep->replied) return E_INVALID_ARGS;
     /* Killed while this was being worked on: the transaction ends here, and
        the endpoint takes calls again. Its tid may name another thread by now. */
     if (ep->caller_gone) {

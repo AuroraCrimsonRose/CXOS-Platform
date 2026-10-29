@@ -125,6 +125,7 @@ int  usermode_net_test(void);
 int  usermode_log_test(void);
 int  usermode_process_test(void);   /* process handles, SYS_OBJECT_WAIT, how it ended */
 int  usermode_kill_test(void);      /* SYS_PROCESS_KILL: each wait, the safe points */
+int  usermode_stop_test(void);      /* SYS_PROCESS_STOP: the notice, the deadline */
 
 /* register the ring-3 fault handler so user faults kill the process, not the
    kernel. call once at boot after the scheduler is up. */

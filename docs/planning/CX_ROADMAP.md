@@ -326,8 +326,12 @@ Independent of the order above, and small enough to land whenever convenient:
      keyboard, sleep, object wait) is woken, and every thread ends at its
      next safe point: the syscall gate's way out, or an interrupt taken in
      ring 3. It ends `PROC_KILLED`, `killer` the pid that asked.
-   - 1.1c: stop, through an endpoint the process registers, then kill after
-     a deadline.
+   - **1.1c (ABI 15, 2026-10-29), done:** `SYS_PROCESS_STOP` on a handle
+     with `HRIGHT_STOP` (handed out freely) leaves a `stop_notice` on the
+     endpoint the process registered (`SYS_PROCESS_STOP_ENDPOINT`), which
+     `ipc_recv` returns ahead of any call; still running at the deadline, it
+     is ended as a kill ends it, `PROC_STOPPED`. Nothing registered, or
+     nobody left to receive: ended at once.
    - 1.1d: jobs with memory and thread budgets.
 2. The wait queue, and timers as handles (LAPIC timer and TSC).
 3. IPC: queued calls with reply tokens, badges, handle transfer, sealable
