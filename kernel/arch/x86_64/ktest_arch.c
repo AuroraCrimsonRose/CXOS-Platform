@@ -875,7 +875,7 @@ static void urun_init(struct urun *u, const uint8_t *start, const uint8_t *end, 
 static int urun_start(struct urun *u) {
     paddr_t space;
     if (addr_space_create(&space) != 0) return -1;
-    int id = thread_create_process("ring3", urun_thread);
+    int id = thread_create_process("ring3", urun_thread, 0);
     if (id < 0) { addr_space_release(space); return -1; }
     thread_mark_user(id);
     thread_set_space(id, space);   /* the process's from here */

@@ -41,6 +41,7 @@
 #define PROC_PID_MAX 256
 
 struct endpoint;   /* cpu/ipc.h */
+struct job;        /* cpu/job.h */
 
 struct proc {
     struct kobj hdr;        /* first; KOBJ_PROCESS */
@@ -58,6 +59,10 @@ struct proc {
     int32_t     broker;     /* its SEND handle on its launcher's broker, or -1 */
     paddr_t     pd_phys;    /* its own page directory, freed with it; 0 = the kernel's */
     struct vm_proc vm;      /* its mappings and memory quota (memman/vmregion.h) */
+    /* The job it is in, for its whole life (cpu/job.h), with a reference;
+       in_job until it has ended and left the job's count. */
+    struct job *job;
+    int         in_job;
     /* How it ended (proc_note_end), read once SIGNAL_PROCESS_ENDED is set. */
     uint32_t    ended;      /* PROC_*; PROC_RUNNING until noted */
     int32_t     end_code;   /* PROC_EXITED */
@@ -85,15 +90,19 @@ void proc_sys_init(void);
 
 /* A new process with no threads yet, inheriting uid and cwd from `parent`
    (SYSTEM and the root if NULL) and nothing else: no caps, no handles, the
-   kernel's address space. The caller holds the one reference; proc_thread_in
+   kernel's address space. It is in `job`, or if NULL in its parent's (the
+   root job without one). The caller holds the one reference; proc_thread_in
    gives one to each thread. NULL if out of pids or memory. */
-struct proc *proc_create(const struct proc *parent);
+struct proc *proc_create(const struct proc *parent, struct job *job);
 
 /* A thread now names `p` (a reference), stops running, or no longer names it.
-   When the last thread stops, every handle closes and ENDED is signalled; when
-   the last is gone (reaped), the address space is freed; the record follows
-   its last reference. */
-void proc_thread_in(struct proc *p);
+   Joining is charged to p's job (cpu/job.h) until the thread is gone, and
+   refused if the job has been killed (E_CANCELED) or has no thread to spare
+   (E_NO_RESOURCES); E_OK otherwise. When the last thread stops, every handle
+   closes, the job's count drops and ENDED is signalled; when the last is
+   gone (reaped), the address space is freed; the record follows its last
+   reference. */
+int  proc_thread_in(struct proc *p);
 void proc_thread_stopped(struct proc *p);
 void proc_thread_gone(struct proc *p);
 
@@ -118,6 +127,10 @@ void proc_note_crash(struct proc *p, uint32_t vector, uint64_t ip, uint64_t addr
    E_CANCELED, then on the way to ring 3 (usermode_kill_point). Returns before
    any of them has gone. A process with no thread running is left as it is. */
 void proc_kill(struct proc *p, int killer);
+
+/* proc_kill every process in `top` or a job below it that has not ended
+   (job_kill). */
+void proc_kill_within(struct job *top, int killer);
 
 /* Ask `p` to end, for the process `by`, within `ms` (SYS_PROCESS_STOP): a
    stop notice on its stop endpoint, and a deadline after which it is ended as

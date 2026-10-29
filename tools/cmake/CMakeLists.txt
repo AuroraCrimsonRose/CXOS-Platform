@@ -199,6 +199,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/cpu/sysrec.c
     ${SRC_DIR}/kernel/cpu/systable.c
     ${SRC_DIR}/kernel/cpu/proc.c
+    ${SRC_DIR}/kernel/cpu/job.c
     ${SRC_DIR}/kernel/cpu/ipc.c
     ${SRC_DIR}/kernel/cpu/spawn.c
     ${SRC_DIR}/kernel/cpu/syspage.c

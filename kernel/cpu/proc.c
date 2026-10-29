@@ -4,6 +4,7 @@
 /* Aurora Tejeda / CATX Systems */
 /* Processes: see proc.h. */
 #include "proc.h"
+#include "job.h"
 #include "uid.h"
 #include "memman/ocache.h"
 #include "object/idtab.h"
@@ -41,13 +42,22 @@ static void stop_unlink(struct proc *p) {
 
 /* Its own address space, frames, page tables and directory, and the
    bookkeeping that describes them. Never while one of its threads can run in
-   it: the last one is gone, or there never was one. */
+   it: the last one is gone, or there never was one. The bookkeeping goes
+   even for a process in the kernel's space, since it is what gives the job
+   back its charge. */
 static void release_space(struct proc *p) {
+    vm_proc_reset(p->pid);    /* bookkeeping only: the release frees the frames */
     paddr_t pd = p->pd_phys;
     if (!pd) return;
     p->pd_phys = 0;
-    vm_proc_reset(p->pid);    /* bookkeeping only: the release frees the frames */
     addr_space_release(pd);
+}
+
+/* Out of its job's count, once: when it ends, or here if it never did. */
+static void leave_job(struct proc *p) {
+    if (!p->in_job) return;
+    p->in_job = 0;
+    job_proc_out(p->job);
 }
 
 static void proc_destroy(struct kobj *o) {
@@ -56,10 +66,13 @@ static void proc_destroy(struct kobj *o) {
     htab_close_all(&p->handles);
     htab_destroy(&p->handles);
     release_space(p);
+    leave_job(p);
     uint32_t f = spin_lock(&pids_lock);
     if (idtab_get(&pids, p->pid) == p) idtab_take(&pids, p->pid);
     spin_unlock(&pids_lock, f);
+    struct job *j = p->job;
     ocache_free(&proc_cache, p);
+    job_put(j);
 }
 
 static const struct kobj_ops proc_ops = {
@@ -70,13 +83,14 @@ static const struct kobj_ops proc_ops = {
 };
 
 void proc_sys_init(void) {
+    job_sys_init();
     if (ocache_init(&proc_cache, "process", sizeof(struct proc)) != 0 ||
         kobj_type_register(KOBJ_PROCESS, &proc_ops) != 0)
         kpanic("proc_sys_init: no process cache");
     idtab_init(&pids, PROC_PID_MAX);
 }
 
-struct proc *proc_create(const struct proc *parent) {
+struct proc *proc_create(const struct proc *parent, struct job *job) {
     struct proc *p = ocache_alloc(&proc_cache);   /* zeroed */
     if (!p) return 0;
     uint32_t f = spin_lock(&pids_lock);
@@ -96,13 +110,24 @@ struct proc *proc_create(const struct proc *parent) {
     p->background = parent ? parent->background : 0;   /* never handed back */
     p->broker = -1;
     htab_init(&p->handles, handle_limit);
+    p->job    = job ? job : parent ? parent->job : job_root();
+    job_proc_in(p->job);
+    p->in_job = 1;
     return p;
 }
 
-void proc_thread_in(struct proc *p) {
-    kobj_ref(&p->hdr);
-    p->threads++;
-    p->running++;
+/* Interrupts off from the check to the count, so a job_kill either finds the
+   thread counted (and kills it) or closed the job before the check. */
+int proc_thread_in(struct proc *p) {
+    uint32_t f = arch_irq_save();
+    int rc = p->job->killed ? E_CANCELED : job_charge_thread(p->job);
+    if (rc == E_OK) {
+        kobj_ref(&p->hdr);
+        p->threads++;
+        p->running++;
+    }
+    arch_irq_restore(f);
+    return rc;
 }
 
 /* On the way out of the last running thread itself, not later in the reaper:
@@ -124,6 +149,9 @@ void proc_thread_stopped(struct proc *p) {
        process held already closed. */
     if (p->ended == PROC_RUNNING) p->ended = PROC_NOT_STARTED;
     kobj_signal(&p->hdr, SIGNAL_PROCESS_ENDED);
+    /* After its own signal: a job's waiter that wakes finds each process in
+       it ended too. */
+    leave_job(p);
 }
 
 void proc_thread_gone(struct proc *p) {
@@ -131,6 +159,7 @@ void proc_thread_gone(struct proc *p) {
        creator used to tear the space down on the way out of the trampoline,
        so every way out that skipped that line leaked it. Freed here, once no
        thread can be standing in it. */
+    job_uncharge_thread(p->job);
     if (--p->threads == 0) release_space(p);
     kobj_unref(&p->hdr);
 }
@@ -168,6 +197,18 @@ static void proc_force(struct proc *p, uint32_t how, int by) {
 
 void proc_kill(struct proc *p, int killer) {
     proc_force(p, PROC_KILLED, killer);
+}
+
+/* Every process not yet ended, not only the running ones: one being made has
+   no thread yet, and is noted killed now rather than missed (its first
+   thread is refused, the job being closed). */
+void proc_kill_within(struct job *top, int killer) {
+    uint32_t f = spin_lock(&pids_lock);
+    for (int pid = 0; pid < PROC_PID_MAX; pid++) {
+        struct proc *p = (struct proc *)idtab_get(&pids, pid);
+        if (p && p->in_job && job_within(p->job, top)) proc_force(p, PROC_KILLED, killer);
+    }
+    spin_unlock(&pids_lock, f);
 }
 
 /* Interrupts off throughout: the process's own thread may be replacing its

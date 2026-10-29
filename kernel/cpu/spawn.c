@@ -14,6 +14,7 @@
 #include "spawn.h"
 #include "sched.h"
 #include "proc.h"               /* ->background */
+#include "job.h"
 #include "ipc.h"
 #include "caps.h"
 #include "usermode.h"          /* user_ptr_readable / user_ptr_writable */
@@ -215,7 +216,8 @@ static void proc_trampoline(void) {
    executive). Returns pid or -E_*. */
 int proc_start(const void *image, uint32_t image_len, uint32_t caps,
                struct endpoint *broker, uint32_t broker_grant,
-               const char *args, uint32_t args_len, int32_t *handle) {
+               const char *args, uint32_t args_len, int32_t *handle,
+               struct job *job) {
     if (image_len == 0 || image_len > PROC_MAX_IMAGE) return E_OUT_OF_RANGE;
     if (args_len > USER_ARGS_MAX)                     return E_OUT_OF_RANGE;
     if (!args) args_len = 0;
@@ -241,8 +243,12 @@ int proc_start(const void *image, uint32_t image_len, uint32_t caps,
 
     /* Held until every record below is filled in: see thread_create_process. */
     struct proc_rec *rec = kmalloc(sizeof *rec);
-    int tid = rec ? thread_create_process("proc", proc_trampoline) : -1;
-    if (tid < 0) { kfree(rec); kfree(kimg); kfree(kargs); addr_space_release(space); return E_NO_MEMORY; }
+    int tid = rec ? thread_create_process("proc", proc_trampoline, job) : -1;
+    if (tid < 0) {
+        kfree(rec); kfree(kimg); kfree(kargs); addr_space_release(space);
+        /* The job's refusals say which; anything else was memory. */
+        return (tid == E_CANCELED || tid == E_NO_RESOURCES) ? tid : E_NO_MEMORY;
+    }
 
     rec->image     = kimg;
     rec->image_len = image_len;
@@ -304,6 +310,25 @@ static int check_args(const struct spawn_args *a) {
     return E_OK;
 }
 
+/* The job spawn_args names, with a reference in *out, or NULL in *out for 0
+   (the caller's own job). It needs HRIGHT_ASSIGN; one that has been killed is
+   refused here, the cheap place, and again by thread_create_process, the
+   place that cannot be raced. Returns E_OK or the error to hand back. */
+static int spawn_job(const struct spawn_args *a, struct job **out) {
+    *out = 0;
+    if (a->reserved) return E_INVALID_ARGS;
+    if (a->job == 0) return E_OK;
+    struct htab_info hi;
+    struct kobj *o = htab_ref(thread_htab(thread_current_id()), a->job, KOBJ_NONE, 0, &hi);
+    if (!o) return E_BAD_HANDLE;
+    int rc = o->type != KOBJ_JOB                ? E_WRONG_TYPE
+           : !(hi.rights & HRIGHT_ASSIGN)        ? E_ACCESS_DENIED
+           : ((struct job *)o)->killed           ? E_CANCELED : E_OK;
+    if (rc != E_OK) { kobj_unref(o); return rc; }
+    *out = (struct job *)o;
+    return E_OK;
+}
+
 /* SYS_SPAWN: an executive (GRANT_SPAWN) launches a capability-less app, brokered
    through one of its endpoints. */
 int sys_spawn(uint64_t ua) {
@@ -316,9 +341,13 @@ int sys_spawn(uint64_t ua) {
     int arc = check_args(&a);
     if (arc != E_OK) return arc;
 
+    struct job *job;
+    int jrc = spawn_job(&a, &job);
+    if (jrc != E_OK) return jrc;
+
     uint32_t bgrant = 0;
     struct endpoint *bep = ep_from_handle(a.broker_endpoint, HRIGHT_RECV, &bgrant);
-    if (!bep) return E_BAD_HANDLE;
+    if (!bep) { job_put(job); return E_BAD_HANDLE; }
 
     /* Attenuation: child gets requested caps masked by the spawner's own caps.
        Pass a subset of your authority, never amplify. App-spawner (caps=0) -> 0. */
@@ -347,17 +376,20 @@ int sys_spawn(uint64_t ua) {
      * instant of the copy and a fault during it is recoverable (§6). The
      * user_ptr_readable above is an early reject, not the authority. */
     uint8_t *kimg = (uint8_t *)kmalloc((size_t)a.image_len);
-    if (!kimg) { ep_put(bep); return E_NO_MEMORY; }
+    if (!kimg) { ep_put(bep); job_put(job); return E_NO_MEMORY; }
     if (user_copy_in(kimg, a.image, (uint32_t)a.image_len) != 0) {
         kfree(kimg);
         ep_put(bep);
+        job_put(job);
         return E_BAD_ADDRESS;
     }
 
     int32_t ph = 0;
-    int pid = cxex_exec_as(kimg, (size_t)a.image_len, granted, bep, bgrant, user_ptr(a.args), (uint32_t)a.args_len, &ph);
+    int pid = cxex_exec_as(kimg, (size_t)a.image_len, granted, bep, bgrant, user_ptr(a.args), (uint32_t)a.args_len, &ph,
+                           job);
     kfree(kimg);        /* proc_start took its own copy for the new address space */
     ep_put(bep);        /* the child holds its own handle on it now */
+    job_put(job);       /* and the child its own reference on the job */
 
     if (pid < 0) return pid;
     klog_u32("SPAWN", SEV_OK, "pid ", (uint32_t)pid, LOG_COLOR_VALUE,
@@ -448,18 +480,23 @@ int sys_exec_path(uint64_t upath, uint64_t ua) {
      * executive, not a RECV endpoint it owns, so requiring a broker here would
      * mean no shell could ever launch anything - it would first have to become
      * a broker and serve the child's IPC itself. */
+    struct job *job;
+    int jrc = spawn_job(&a, &job);
+    if (jrc != E_OK) return jrc;
+
     struct endpoint *bep = NULL;
     uint32_t bgrant = 0;
     if (a.broker_endpoint >= 0) {
         bep = ep_from_handle(a.broker_endpoint, HRIGHT_RECV, &bgrant);
-        if (!bep) return E_BAD_HANDLE;
+        if (!bep) { job_put(job); return E_BAD_HANDLE; }
     }
 
     uint8_t *buf = (uint8_t *)kmalloc((size_t)e.size);
-    if (!buf) { ep_put(bep); return E_NO_MEMORY; }
+    if (!buf) { ep_put(bep); job_put(job); return E_NO_MEMORY; }
     if (cxfs_read_file((uint32_t)id, buf, (uint32_t)e.size) != (int)e.size) {
         kfree(buf);
         ep_put(bep);
+        job_put(job);
         return E_IO;
     }
 
@@ -467,13 +504,16 @@ int sys_exec_path(uint64_t upath, uint64_t ua) {
     uint32_t granted = (a.caps & thread_current_caps()) | (a.caps & SPAWN_BACKGROUND);
 
     int32_t ph = 0;
-    int rc = cxex_exec_as(buf, (size_t)e.size, granted, bep, bgrant, user_ptr(a.args), (uint32_t)a.args_len, &ph);
+    int rc = cxex_exec_as(buf, (size_t)e.size, granted, bep, bgrant, user_ptr(a.args), (uint32_t)a.args_len, &ph,
+                          job);
     kfree(buf);   /* proc_start took its own copy for the new address space */
     ep_put(bep);
+    job_put(job);
 
     /* proc_start's own refusals are ABI errors already, below cxex_exec's
-       -1..-5: no room for the caller's process handle, no memory. */
-    if (rc == E_NO_RESOURCES || rc == E_NO_MEMORY) return rc;
+       -1..-5: no room for the caller's process handle, no memory, a job
+       that has been killed or has no thread to spare. */
+    if (rc == E_NO_RESOURCES || rc == E_NO_MEMORY || rc == E_CANCELED) return rc;
     if (rc < 0) {
         /* cxex_exec_* has its own small error space; the one a caller most
            needs to tell apart is "this image is not signed by a key this

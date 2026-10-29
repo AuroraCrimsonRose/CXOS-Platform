@@ -7,12 +7,20 @@
 #include "arch/paging.h"
 #include "pmm.h"
 #include "sched.h"
+#include "job.h"
 #include "logging.h"
 
 /* A process's records live in its process (cpu/proc.h); the pid names it. */
 static struct vm_proc *vp(int pid) {
     struct proc *p = proc_by_pid(pid);
     return p ? &p->vm : 0;
+}
+
+/* The job its pages are charged to as well (cpu/job.h). Every change to
+   `mapped` below changes the job's account by the same amount, so the job
+   holds exactly what its processes' accounts add up to. */
+static struct job *jb(int pid) {
+    return proc_by_pid(pid)->job;   /* vp(pid) was checked first */
 }
 
 static uint32_t page_up(uint32_t n) { return (n + PAGE_SIZE - 1u) & ~(PAGE_SIZE - 1u); }
@@ -82,6 +90,7 @@ static uint32_t vm_flags(uint32_t prot) {
 void vm_proc_init(int pid, uint32_t quota, int parent) {
     if (!vp(pid)) return;
     struct vm_proc *p = vp(pid);
+    if (p->live) job_uncharge_mem(jb(pid), p->mapped);   /* an account started over */
     for (int i = 0; i < MMAP_MAX_REGIONS; i++) p->r[i].base = 0;
     p->mapped = 0;
     p->live   = 1;
@@ -96,7 +105,8 @@ void vm_proc_reset(int pid) {
     if (!vp(pid)) return;
     /* Bookkeeping only. The frames are freed by addr_space_release(),
        which walks the whole user half; freeing them here as well would be a
-       double free. See the header. */
+       double free. See the header. The job's charge does go back here. */
+    if (vp(pid)->live) job_uncharge_mem(jb(pid), vp(pid)->mapped);
     vp(pid)->live   = 0;
     vp(pid)->quota  = 0;
     vp(pid)->mapped = 0;
@@ -120,6 +130,8 @@ int vm_charge(int pid, uint32_t bytes) {
     if (len < bytes)                 return E_OUT_OF_RANGE;
     if (p->mapped + len < p->mapped) return E_OUT_OF_RANGE;
     if (p->mapped + len > p->quota)  return E_NO_MEMORY;
+    int rc = job_charge_mem(jb(pid), len);
+    if (rc != E_OK) return rc;
 
     p->mapped += len;
     return E_OK;
@@ -132,7 +144,9 @@ void vm_uncharge(int pid, uint32_t bytes) {
     /* Clamped rather than allowed to go negative: an over-refund would hand a
        process a quota larger than it was given, which is worse than losing
        track of a page. */
-    p->mapped = (len > p->mapped) ? 0 : p->mapped - len;
+    if (len > p->mapped) len = p->mapped;
+    p->mapped -= len;
+    job_uncharge_mem(jb(pid), len);
 }
 
 /* Unmap and free the first `done` pages of a mapping that failed part way in.
@@ -145,6 +159,8 @@ static void undo(uint32_t base, uint32_t done) {
         if (phys) pmm_free(phys);
     }
 }
+
+static int vm_map_pages(struct vm_proc *p, struct vm_map_args *a, int slot, uint32_t len);
 
 int vm_map(int pid, struct vm_map_args *a) {
     if (!vp(pid) || !vp(pid)->live) return E_INVALID_ARGS;
@@ -176,6 +192,21 @@ int vm_map(int pid, struct vm_map_args *a) {
     for (int i = 0; i < MMAP_MAX_REGIONS; i++)
         if (!p->r[i].base) { slot = i; break; }
     if (slot < 0) return E_NO_RESOURCES;
+
+    /* The job's share is taken before the first frame, as the quota's is
+       checked, and given back on every way out below that maps nothing:
+       checking it here and charging it at the end would let another process
+       in the job take the room between the two. */
+    int rc = job_charge_mem(jb(pid), len);
+    if (rc != E_OK) return rc;
+    rc = vm_map_pages(p, a, slot, len);
+    if (rc != E_OK) job_uncharge_mem(jb(pid), len);
+    return rc;
+}
+
+/* vm_map's work once everything is charged: E_OK, or what to refuse with,
+   having mapped nothing. */
+static int vm_map_pages(struct vm_proc *p, struct vm_map_args *a, int slot, uint32_t len) {
 
     /* The hint is tried and then abandoned, never honoured half way. An
        unaligned or occupied hint falls back to placement rather than being
@@ -257,6 +288,7 @@ int vm_unmap(int pid, uint64_t addr, uint64_t length) {
 
         undo(p->r[i].base, p->r[i].len);
         p->mapped -= p->r[i].len;
+        job_uncharge_mem(jb(pid), p->r[i].len);
         p->r[i].base = 0;
         return E_OK;
     }

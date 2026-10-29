@@ -40,7 +40,7 @@ domain kernel
 /// mismatch. Declared in versions.json as `cxex-abi` and checked against this
 /// line; bump both, and the DevKit's stamp, in the one commit that changes the
 /// contract.
-const CXK_ABI_VERSION: u32 = 15
+const CXK_ABI_VERSION: u32 = 16
 
 /// ---- syscall numbers ----
 /// lifecycle 0x00-0x0F (no capability required)
@@ -75,12 +75,15 @@ syscall SYS_OBJECT_WAIT = 0x19 fn object_wait(h: i32, signals: u32, timeout_ms: 
 const HRIGHT_SEND: u32 = 0x1u        /// endpoint: ipc_call through it
 /// endpoint: ipc_recv and ipc_reply on it; file: FOPEN_READ, FOPEN_WRITE
 const HRIGHT_RECV: u32 = 0x2u
-/// process: OBJINFO_PROCESS, how it is and how it ended
+/// process: OBJINFO_PROCESS, how it is and how it ended; job: OBJINFO_JOB
 const HRIGHT_INSPECT: u32 = 0x1u
-const HRIGHT_KILL: u32 = 0x2u        /// process: SYS_PROCESS_KILL
+const HRIGHT_KILL: u32 = 0x2u        /// process: SYS_PROCESS_KILL; job: SYS_JOB_KILL
 /// process: SYS_PROCESS_STOP. Handed out freely, unlike HRIGHT_KILL: a stop
 /// asks first, and a program that answers it ends the way it chooses.
 const HRIGHT_STOP: u32 = 0x4u
+/// job: spawn a process into it (spawn_args.job), make a job under it
+const HRIGHT_ASSIGN: u32 = 0x4u
+const HRIGHT_SET_LIMITS: u32 = 0x8u  /// job: SYS_JOB_SET_LIMITS
 /// Generic rights, which mean the same on every type, count down from the top
 /// bit; a type's own count up from the bottom. A handle without
 /// HRIGHT_DUPLICATE cannot be copied, and a copy has it only if asked for.
@@ -93,6 +96,9 @@ const HRIGHT_WAIT: u32 = 0x40000000u
 /// Each type defines its own, from the bottom bit, and asking for one it does
 /// not define is E_INVALID_ARGS. Once set, a signal named here stays set.
 const SIGNAL_PROCESS_ENDED: u32 = 0x1u   /// process: its last thread has gone
+/// job: SYS_JOB_KILL reached it (on it or a job above it), and every
+/// process in it and below has ended
+const SIGNAL_JOB_ENDED: u32 = 0x1u
 const WAIT_FOREVER: u32 = 0xFFFFFFFFu    /// timeout_ms: no limit
 
 /// input 0x20-0x2F (unprivileged: reading your own keystrokes)
@@ -147,7 +153,7 @@ syscall SYS_FB_DRAW_TEXT = 0x45 fn fb_draw_text(x: u32, y: u32, text: *u8, fg: u
 /// The font is validated as an XFNT before anything is installed; a bad one
 /// leaves the current font working. Returns 0, or E_INVALID_ARGS / E_NOT_FOUND.
 syscall SYS_FB_SET_FONT = 0x46 fn fb_set_font(name: *u8) -> i32
-/// process 0x70-0x7F (spawning is privileged; kill and stop need only the
+/// process 0x70-0x7F (spawning is privileged; kill, stop and jobs need only the
 /// handle's right). Both return a process handle with HRIGHT_WAIT,
 /// HRIGHT_INSPECT, HRIGHT_KILL, HRIGHT_STOP and HRIGHT_DUPLICATE, not a pid: the process is freed once it has ended and
 /// the last handle on it is closed, and nobody reaps it. Its pid is
@@ -180,6 +186,31 @@ syscall SYS_PROCESS_STOP = 0x73 fn process_stop(h: i32, deadline_ms: u32) -> i32
 /// there. It replaces any endpoint registered before and lasts until the
 /// process ends.
 syscall SYS_PROCESS_STOP_ENDPOINT = 0x74 fn process_stop_endpoint(h: i32) -> i32
+/// Jobs: a group of processes under one memory and thread budget, ended
+/// together. Every process is in one, for life: the job its spawn named
+/// (spawn_args.job), or its spawner's. A charge is made to the job and every
+/// job above it, and refused if any would pass its limit (E_NO_MEMORY,
+/// E_NO_RESOURCES), so a job can never hold more than its parent allows.
+/// Memory is what SYS_VM_INFO counts for each process (its image, stack,
+/// argument and system pages, and its mappings), on top of the process's own
+/// quota; threads are its processes' threads until each is gone.
+///
+/// ebx = the parent: a job handle with HRIGHT_ASSIGN, or 0 for the caller's
+/// own job; ecx = *job_limits, or 0 for none of its own -> a handle on the new
+/// job with HRIGHT_WAIT, HRIGHT_INSPECT, HRIGHT_KILL, HRIGHT_ASSIGN,
+/// HRIGHT_SET_LIMITS and HRIGHT_DUPLICATE. No grant: a job only divides what
+/// its parent has. E_CANCELED under a killed job, E_OUT_OF_RANGE past
+/// JOB_DEPTH_MAX. A job lasts while a handle on it, a process in it or a job
+/// under it does.
+syscall SYS_JOB_CREATE = 0x75 fn job_create(parent: i32, limits: *job_limits) -> i32
+/// ebx = job handle (HRIGHT_SET_LIMITS), ecx = *job_limits -> 0. A limit
+/// below what is in use takes nothing back; it refuses the next charge.
+syscall SYS_JOB_SET_LIMITS = 0x76 fn job_set_limits(h: i32, limits: *job_limits) -> i32
+/// ebx = job handle (HRIGHT_KILL) -> 0. Ends every process in the job and
+/// below it as SYS_PROCESS_KILL would (PROC_KILLED, the caller's pid), and
+/// closes them all: no process or job is made in them again (E_CANCELED).
+/// Returns before they have ended: wait for SIGNAL_JOB_ENDED.
+syscall SYS_JOB_KILL = 0x77 fn job_kill(h: i32) -> i32
 
 /// memory 0x80-0x8F (unprivileged, quota-bounded)
 syscall SYS_VM_MAP = 0x80 fn vm_map(a: *vm_map_args) -> i32     /// ebx = *vm_map_args -> 0, with addr and granted filled in
@@ -352,6 +383,10 @@ struct spawn_args {
     /// requested caps for the child; kernel masks against the spawner's own
     /// caps (attenuation, never amplify). 0 = capability-less app.
     caps: u32
+    /// the job to run it in: a handle with HRIGHT_ASSIGN, or 0 for the
+    /// caller's own (SYS_JOB_CREATE)
+    job: i32
+    reserved: u32
 }
 
 /// ---- clock and sleep (SYS_CLOCK, SYS_SLEEP; unprivileged) ----
@@ -393,10 +428,31 @@ const SLEEP_MAX_MS: u32 = 3600000u   /// one hour
 /// holds. Any other topic needs the right it names.
 const OBJINFO_BASIC: u32 = 1         /// -> struct object_basic
 const OBJINFO_PROCESS: u32 = 2       /// a process (HRIGHT_INSPECT) -> struct process_info
+const OBJINFO_JOB: u32 = 3           /// a job (HRIGHT_INSPECT) -> struct job_info
 
 const OBJ_TYPE_ENDPOINT: u32 = 1
 const OBJ_TYPE_FILE: u32 = 2
 const OBJ_TYPE_PROCESS: u32 = 4      /// 3 is the kernel self-tests' own
+const OBJ_TYPE_JOB: u32 = 5
+
+/// Jobs nest at most this deep below the kernel's own (SYS_JOB_CREATE).
+const JOB_DEPTH_MAX: u32 = 8
+/// SYS_JOB_CREATE, SYS_JOB_SET_LIMITS. 0 is no limit of the job's own; a
+/// job above it may still have one.
+struct job_limits {
+    memory: u64         /// bytes
+    threads: u32
+    reserved: u32       /// 0
+}
+struct job_info {
+    memory_limit: u64
+    memory_used: u64    /// by its processes and the jobs below it
+    memory_peak: u64    /// the most memory_used has been
+    thread_limit: u32
+    threads: u32        /// in it and below
+    processes: u32      /// in it and below, not yet ended
+    killed: u32         /// 1 once SYS_JOB_KILL has reached it
+}
 
 /// process_info.ended: how it ended, once SIGNAL_PROCESS_ENDED is set.
 const PROC_RUNNING: u32 = 0          /// not ended

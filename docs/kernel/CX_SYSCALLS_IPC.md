@@ -228,6 +228,26 @@ never later. Deadlines are checked on the tick, in milliseconds, until item 2's
 timers. Found on the way: `ipc_reply` answered a staged call that had not been
 received; it now needs one `ipc_recv` delivered and not yet answered.
 
+*Jobs, ABI 16:* a job holds a group of processes under one memory and thread
+budget (NT's job objects, nested as in Fuchsia). The kernel's job is the root;
+every process is in exactly one, for life: the one `spawn_args.job` names
+(`HRIGHT_ASSIGN`; 0 for the spawner's own). `SYS_JOB_CREATE(parent, limits)`
+makes one below `parent` (`HRIGHT_ASSIGN`; 0 for the caller's job), at most
+`JOB_DEPTH_MAX` (8) below the root, and needs no grant: a job can only narrow
+what its parent already allows. `job_limits` gives bytes of committed memory
+and a count of threads, 0 for no limit of its own. A charge is checked against
+the job and every job above it and is taken from all of them or none:
+`vm_map` and the kernel's own charges past a limit are `E_NO_MEMORY`, and a
+thread past one makes spawn `E_NO_RESOURCES`. `SYS_JOB_SET_LIMITS`
+(`HRIGHT_SET_LIMITS`) may set a limit below what is in use; nothing is taken
+back, the next charge is refused. `SYS_OBJECT_INFO` with `OBJINFO_JOB`
+(`HRIGHT_INSPECT`) gives the limits, the use, the peak memory, the processes
+and whether it was killed. `SYS_JOB_KILL(h)` (`HRIGHT_KILL`) kills every
+process in the job and in the jobs below it, each ending `PROC_KILLED` with
+the killer's pid, and closes all of them: a job or a process made in one
+afterwards is `E_CANCELED`. `SIGNAL_JOB_ENDED` is set once a killed job holds
+no process. A job lives while a handle, a process or a job below it holds it.
+
 **Memory:**
 `mem_create(size, flags)`, `mem_read`, `mem_write`, `mem_set_size`,
 `mem_seal(m, seals)`, `vm_map(m, offset, len, prot, flags)`,

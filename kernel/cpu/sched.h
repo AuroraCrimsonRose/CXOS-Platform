@@ -94,8 +94,13 @@ int thread_create(const char *name, void (*entry)(void));
    the new thread could be scheduled before its creator had given it an esp0
    stack or its records: it entered ring 3 with the TSS still naming another
    thread's stack, and when that thread exited and its stack was freed, this
-   one was left with saved state on freed memory. Returns the id, or -1. */
-int  thread_create_process(const char *name, void (*entry)(void));
+   one was left with saved state on freed memory.
+
+   Its new process is in `job`, or with NULL in its creator's job. Returns
+   the id; E_CANCELED if that job has been killed, E_NO_RESOURCES if it has
+   no thread to spare (cpu/job.h); -1 otherwise. */
+struct job;
+int  thread_create_process(const char *name, void (*entry)(void), struct job *job);
 void thread_start(int id);     /* a held thread becomes runnable */
 
 /* Hand a HELD thread a record, and the function that frees it (NULL: nothing

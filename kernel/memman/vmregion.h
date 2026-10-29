@@ -70,10 +70,9 @@ void     vm_set_default_quota(uint32_t bytes);
    authority over memory attenuates down a spawn chain the way grants do.
    `parent` < 0 means there is none (the kernel-launched executive).
 
-   Honest limit: this bounds how much any ONE process may hold, not how much a
-   process and its descendants may hold together. A process that spawns without
-   end still exhausts RAM, more slowly. Fixing that needs a budget charged to a
-   whole subtree, which is a different and larger design. */
+   This bounds how much any ONE process may hold. What a group of processes
+   may hold together is its job's budget (cpu/job.h): every charge here is
+   also charged to the process's job and the jobs above it. */
 void vm_proc_init(int pid, uint32_t quota, int parent);
 
 /* Forget pid's regions. Call on exit AFTER addr_space_release(), which is

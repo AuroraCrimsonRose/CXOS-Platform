@@ -15,6 +15,7 @@
 #include "object/idtab.h"
 #include "memman/ocache.h"
 #include "panic.h"
+#include "cxk_abi.h"   /* E_OK: a job's refusal */
 
 
 static void sched_reap(void);   /* forward decl: used by yield, defined below */
@@ -98,29 +99,32 @@ void sched_init(void) {
     th(0)->stack_base = 0;   /* uses the existing kernel stack */
     /* the boot/kernel context is the machine (User 0): proc_create with no
        parent gives exactly that */
-    th(0)->proc  = proc_create(0);
+    th(0)->proc  = proc_create(0, 0);
     if (!th(0)->proc) return;   /* initialized stays 0: nothing schedules */
-    proc_thread_in(th(0)->proc);
+    proc_thread_in(th(0)->proc);   /* the root job: no limit to refuse it */
     proc_put(th(0)->proc);      /* the thread's reference is the one that counts */
     current = 0;
     initialized = 1;
 }
 
-static int thread_create_in(const char *name, void (*entry)(void), int held, struct proc *into);
+static int thread_create_in(const char *name, void (*entry)(void), int held, struct proc *into,
+                            struct job *job);
 
 int thread_create(const char *name, void (*entry)(void)) {
-    return thread_create_in(name, entry, 0, 0);
+    int t = thread_create_in(name, entry, 0, 0, 0);
+    return t < 0 ? -1 : t;
 }
 
 int thread_create_sibling(int id, const char *name, void (*entry)(void)) {
     struct proc *p = thread_proc(id);
     if (!p) return -1;
-    return thread_create_in(name, entry, 0, p);
+    int t = thread_create_in(name, entry, 0, p, 0);
+    return t < 0 ? -1 : t;
 }
 
-int thread_create_process(const char *name, void (*entry)(void)) {
-    int id = thread_create_in(name, entry, 1, 0);
-    if (id < 0) return -1;
+int thread_create_process(const char *name, void (*entry)(void), struct job *job) {
+    int id = thread_create_in(name, entry, 1, 0, job);
+    if (id < 0) return id;
     if (thread_alloc_kstack(id) != 0) { thread_discard(id); return -1; }
     return id;
 }
@@ -172,7 +176,8 @@ void thread_discard(int id) {
     irq_restore(f);
 }
 
-static int thread_create_in(const char *name, void (*entry)(void), int held, struct proc *into) {
+static int thread_create_in(const char *name, void (*entry)(void), int held, struct proc *into,
+                            struct job *job) {
     if (!initialized) return -1;
     if (threads_allocated() >= thread_limit) return -1;
 
@@ -190,19 +195,21 @@ static int thread_create_in(const char *name, void (*entry)(void), int held, str
     /* A guarded stack (memman/kstack.h): running off the bottom faults rather
        than overwriting the heap, which is what a kmalloc'd stack did. */
     /* Its process: the one it joins, or a new one that inherits the
-       creator's uid and cwd and nothing else. */
-    struct proc *p = into ? into : proc_create(self()->proc);
+       creator's uid and cwd and nothing else, in `job` or the creator's. */
+    struct proc *p = into ? into : proc_create(self()->proc, job);
     uintptr_t stack = 0;
     uintptr_t stack_top = p ? kstack_alloc(stack_bytes, slot, &stack) : 0;
-    if (!stack_top) {
+    /* Its job's say last: it may be killed, or have no thread to spare. */
+    int rc = stack_top ? proc_thread_in(p) : -1;
+    if (rc != E_OK) {
+        if (stack_top) kstack_free(stack);
         if (p && !into) proc_put(p);
         f = irq_save();
         idtab_take(&tids, slot);
         irq_restore(f);
         ocache_free(&thread_cache, t);
-        return -1;
+        return rc;
     }
-    proc_thread_in(p);
     if (!into) proc_put(p);   /* the new thread's reference keeps it */
 
     /* The new stack must look exactly like a thread that context_switch

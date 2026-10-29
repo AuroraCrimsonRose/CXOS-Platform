@@ -73,6 +73,9 @@ static int decode_exec_path(const uintptr_t *a) { return syscall_exec_path((uint
 static int decode_process_kill(const uintptr_t *a) { return syscall_process_kill((int32_t)a[0]); }
 static int decode_process_stop(const uintptr_t *a) { return syscall_process_stop((int32_t)a[0], (uint32_t)a[1]); }
 static int decode_process_stop_endpoint(const uintptr_t *a) { return syscall_process_stop_endpoint((int32_t)a[0]); }
+static int decode_job_create(const uintptr_t *a) { return syscall_job_create((int32_t)a[0], (uint64_t)a[1]); }
+static int decode_job_set_limits(const uintptr_t *a) { return syscall_job_set_limits((int32_t)a[0], (uint64_t)a[1]); }
+static int decode_job_kill(const uintptr_t *a) { return syscall_job_kill((int32_t)a[0]); }
 static int decode_vm_map(const uintptr_t *a) { return syscall_vm_map((uint64_t)a[0]); }
 static int decode_vm_unmap(const uintptr_t *a) {
 #if SYSCALL_PAIRS
@@ -183,6 +186,9 @@ const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_EXEC_PATH] = decode_exec_path,
     [SYS_PROCESS_STOP] = decode_process_stop,
     [SYS_PROCESS_STOP_ENDPOINT] = decode_process_stop_endpoint,
+    [SYS_JOB_CREATE] = decode_job_create,
+    [SYS_JOB_SET_LIMITS] = decode_job_set_limits,
+    [SYS_JOB_KILL] = decode_job_kill,
     [SYS_VM_MAP] = decode_vm_map,
     [SYS_VM_UNMAP] = decode_vm_unmap,
     [SYS_VM_INFO] = decode_vm_info,

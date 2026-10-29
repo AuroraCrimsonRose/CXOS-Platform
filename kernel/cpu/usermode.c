@@ -20,6 +20,7 @@
 #include "logging.h"
 #include "syslog.h"           /* slog_get, for SYS_LOG_READ */
 #include "proc.h"             /* ->background, proc_out_write */
+#include "job.h"
 #include "color.h"
 #include "fb.h"
 #include "caps.h"
@@ -528,6 +529,29 @@ int syscall_object_info(uint64_t a) {
         if (user_copy_out(oa.buf, &pi, sizeof pi) != 0) return E_BAD_ADDRESS;
         return (int)sizeof pi;
     }
+    if (oa.topic == OBJINFO_JOB) {
+        struct job *j = (struct job *)o;
+        int rc = o->type != KOBJ_JOB              ? E_WRONG_TYPE
+               : !(hi.rights & HRIGHT_INSPECT)    ? E_ACCESS_DENIED
+               : oa.cap < sizeof(struct job_info) ? E_BUFFER_TOO_SMALL : E_OK;
+        struct job_info ji = { 0 };
+        if (rc == E_OK) {
+            /* One moment's account: the counts change with interrupts off. */
+            uint32_t f = arch_irq_save();
+            ji.memory_limit = j->mem_limit;
+            ji.memory_used  = j->mem_used;
+            ji.memory_peak  = j->mem_peak;
+            ji.thread_limit = j->thread_limit;
+            ji.threads      = j->threads;
+            ji.processes    = j->procs;
+            ji.killed       = (uint32_t)j->killed;
+            arch_irq_restore(f);
+        }
+        kobj_unref(o);
+        if (rc != E_OK) return rc;
+        if (user_copy_out(oa.buf, &ji, sizeof ji) != 0) return E_BAD_ADDRESS;
+        return (int)sizeof ji;
+    }
     struct object_basic b = {
         .kind = o->type, .rights = hi.rights, .koid = o->koid,
         .grant = hi.grant, .parent_grant = hi.parent,
@@ -612,6 +636,74 @@ int syscall_process_stop_endpoint(int32_t h) {
     if (rc == E_OK) proc_set_stop_endpoint(me, (struct endpoint *)o);
     kobj_unref(o);
     return rc;
+}
+
+/* *limits from the caller, or none of the job's own for 0. */
+static int job_limits_in(uint64_t u, struct job_limits *l) {
+    l->memory = 0; l->threads = 0; l->reserved = 0;
+    if (!u) return E_OK;
+    if (user_copy_in(l, u, sizeof *l) != 0) return E_BAD_ADDRESS;
+    return l->reserved ? E_INVALID_ARGS : E_OK;
+}
+
+/* The job `h` names, with a reference, if it has `right`; else NULL and *rc. */
+static struct job *job_from_handle(int32_t h, uint32_t right, int *rc) {
+    struct htab_info hi;
+    struct kobj *o = htab_ref(thread_htab(thread_current_id()), h, KOBJ_NONE, 0, &hi);
+    *rc = !o                       ? E_BAD_HANDLE
+        : o->type != KOBJ_JOB      ? E_WRONG_TYPE
+        : !(hi.rights & right)     ? E_ACCESS_DENIED : E_OK;
+    if (*rc == E_OK) return (struct job *)o;
+    if (o) kobj_unref(o);
+    return 0;
+}
+
+int syscall_job_create(int32_t parent, uint64_t limits) {
+    /* Unprivileged: a job only divides what its parent has. */
+    struct job_limits l;
+    int rc = job_limits_in(limits, &l);
+    if (rc != E_OK) return rc;
+    struct job *top;
+    if (parent == 0) {
+        struct proc *me = thread_proc(thread_current_id());
+        if (!me) return E_INTERNAL;
+        top = me->job;
+        kobj_ref(&top->hdr);
+    } else if (!(top = job_from_handle(parent, HRIGHT_ASSIGN, &rc))) {
+        return rc;
+    }
+    struct job *j = job_create(top, l.memory, l.threads, &rc);
+    job_put(top);   /* the new job holds its own on its parent */
+    if (!j) return rc;
+    int32_t h = htab_install(thread_htab(thread_current_id()), &j->hdr,
+                             HRIGHT_WAIT | HRIGHT_INSPECT | HRIGHT_KILL | HRIGHT_ASSIGN
+                             | HRIGHT_SET_LIMITS | HRIGHT_DUPLICATE, 0);
+    job_put(j);     /* the handle's reference keeps it; with no handle, it goes */
+    return h;
+}
+
+int syscall_job_set_limits(int32_t h, uint64_t limits) {
+    /* Unprivileged: the handle's HRIGHT_SET_LIMITS is the authority. */
+    struct job_limits l;
+    int rc = job_limits_in(limits, &l);
+    if (rc != E_OK) return rc;
+    struct job *j = job_from_handle(h, HRIGHT_SET_LIMITS, &rc);
+    if (!j) return rc;
+    job_set_limits(j, l.memory, l.threads);
+    job_put(j);
+    return E_OK;
+}
+
+int syscall_job_kill(int32_t h) {
+    /* Unprivileged: the handle's HRIGHT_KILL is the authority. */
+    int rc;
+    struct job *j = job_from_handle(h, HRIGHT_KILL, &rc);
+    if (!j) return rc;
+    if (!j->killed)
+        klog_u32("USERMODE", SEV_INFO, "job killed by pid ", (uint32_t)thread_current_pid(), LOG_COLOR_VALUE, "");
+    job_kill(j, thread_current_pid());
+    job_put(j);
+    return E_OK;
 }
 
 /* The gate's last step, and an interrupt's from ring 3 (the hook below).
@@ -935,7 +1027,7 @@ int usermode_log_test(void) {
     step = 5; if (slog_total() != t0 + 2 || !lt_streq(e->event, "half", SLOG_EVT_W)) goto done;
 
     /* 6: a child inherits it, asked for or not */
-    struct proc *c = proc_create(p);
+    struct proc *c = proc_create(p, 0);
     int inherited = c && c->background;
     if (c) proc_put(c);
     step = 6; if (!inherited) goto done;
@@ -1403,6 +1495,7 @@ int usermode_file_test(void) {
     sa->image = 0; sa->image_len = 0; sa->name = FT_PATH;
     sa->broker_endpoint = -1; sa->caps = 0;
     sa->args = 0; sa->args_len = 0;
+    sa->job = 0; sa->reserved = 0;
 
     ft_strp(FT_PATH, scratch, "/kt_absent.xuex");
     step++;
@@ -2233,6 +2326,7 @@ int usermode_flock_test(void) {
         struct spawn_args *sa = (struct spawn_args *)FT_STAT;
         sa->image = 0; sa->image_len = 0; sa->name = FT_PATH;
         sa->broker_endpoint = -1; sa->caps = 0;
+        sa->job = 0; sa->reserved = 0;
         /* the arguments are checked before the path: FT_PATH's own string as
            the blob, 4 GB up, is unmapped (ABI 12) - cut to 32 bits it would be
            a good blob, and the call would go on to E_NOT_FOUND */
@@ -2368,12 +2462,14 @@ static void process_trampoline(void) {
 }
 
 /* Everything but starting it, so a caller can finish configuring the process
-   (its uid, say) before it can run. See thread_create_process. */
+   (its uid, say) before it can run. See thread_create_process: in `job`, or
+   with NULL the creator's, whose refusal (E_CANCELED, E_NO_RESOURCES) is
+   returned as it is. */
 static int process_prepare_ring3(const char *name,
                                  const void *blob, uint32_t blob_len,
-                                 const char *msg) {
-    int pid = thread_create_process(name, process_trampoline);
-    if (pid < 0) return -1;
+                                 const char *msg, struct job *job) {
+    int pid = thread_create_process(name, process_trampoline, job);
+    if (pid < 0) return pid;
     struct ring3_setup *s = (pid < R3_SLOTS) ? kmalloc(sizeof *s) : 0;
     if (!s) { thread_discard(pid); return -1; }
     s->blob       = blob;
@@ -2393,7 +2489,7 @@ static int process_prepare_ring3(const char *name,
 int process_create_ring3(const char *name,
                          const void *blob, uint32_t blob_len,
                          const char *msg) {
-    int pid = process_prepare_ring3(name, blob, blob_len, msg);
+    int pid = process_prepare_ring3(name, blob, blob_len, msg, 0);
     if (pid < 0) return -1;
     /* runs as SYSTEM: this is the kernel launching a ring-3 helper as the
        machine identity. To launch on behalf of a human user, use
@@ -2407,7 +2503,7 @@ int process_create_ring3(const char *name,
    (SYSTEM) is rejected. Returns the pid, or -1 (incl. if uid == SYSTEM). */
 int process_create_ring3_as_user(const char *name, const void *blob, uint32_t blob_len, const char *msg, uint32_t uid) {
     if (!uid_is_user(uid)) return -1;   /* user can never be UID 0 / invalid */
-    int pid = process_prepare_ring3(name, blob, blob_len, msg);
+    int pid = process_prepare_ring3(name, blob, blob_len, msg, 0);
     if (pid < 0) return -1;
     /* pid is already marked is_user by process_prepare_ring3, so thread_set_uid's
        guard would block UID 0 here too - but uid is validated >= 1 above. Set
@@ -2500,15 +2596,20 @@ extern uint8_t user64_ud2_start[], user64_ud2_end[];
 #define PT_IARGS (TEST_CODE_VIRT + 0x200)   /* struct object_info_args */
 #define PT_SEEN  (TEST_CODE_VIRT + 0x300)   /* object_wait's *seen */
 
-/* A held helper process and the caller's handle on it, as proc_start does
-   it; *tid is its thread. The handle, or a negative error. */
-static int32_t pt_make(const uint8_t *start, const uint8_t *end, int *tid) {
-    *tid = process_prepare_ring3("pt", start, (uint32_t)(end - start), "");
-    if (*tid < 0) return E_NO_MEMORY;
+/* A held helper process in `job` (NULL: this thread's) and the caller's
+   handle on it, as proc_start does it; *tid is its thread. The handle, or a
+   negative error: the job's own refusal, if it made one. */
+static int32_t pt_make_in(const uint8_t *start, const uint8_t *end, int *tid, struct job *job) {
+    *tid = process_prepare_ring3("pt", start, (uint32_t)(end - start), "", job);
+    if (*tid < 0) return *tid == -1 ? E_NO_MEMORY : *tid;
     int32_t h = htab_install(thread_htab(thread_current_id()), &thread_proc(*tid)->hdr,
                              HRIGHT_WAIT | HRIGHT_INSPECT | HRIGHT_KILL | HRIGHT_STOP | HRIGHT_DUPLICATE, 0);
     if (h < 0) thread_discard(*tid);
     return h;
+}
+
+static int32_t pt_make(const uint8_t *start, const uint8_t *end, int *tid) {
+    return pt_make_in(start, end, tid, 0);
 }
 
 /* OBJINFO_PROCESS on `h` into PT_INFO: the call's result. */
@@ -3172,6 +3273,269 @@ done:
     if (e2 > 0) htab_close(tab, e2);
     if (ep) ep_put(ep);
     if (eh > 0) htab_close(tab, eh);
+    unmap_user_page(TEST_CODE_VIRT, phys);
+    return ok;
+}
+
+/* ---- jobs (Phase 1.1d) ----
+ * Jobs made through SYS_JOB_CREATE by this thread, whose process is in the
+ * kernel's job, with processes in them made the way spawn makes them. Memory
+ * charged through vm_charge for a held process and through SYS_VM_MAP and
+ * SYS_VM_UNMAP from ring 3; threads counted as processes are made; limits held
+ * down a nested job, and changed; a kill of a job reaching a process below
+ * it; the refusals; and how long a job lasts. 1 = pass. */
+#define JT_LIM  (TEST_CODE_VIRT + 0x800)   /* struct job_limits */
+#define JT_INFO (TEST_CODE_VIRT + 0x840)   /* struct job_info */
+#define JT_MAP  (TEST_CODE_VIRT + 0x880)   /* the ring-3 victim's first vm_map_args */
+#define JT_MAP2 (TEST_CODE_VIRT + 0x8C0)   /* and its second */
+
+static int jt_create(int32_t parent, uint64_t mem, uint32_t threads, uint32_t reserved) {
+    struct job_limits *l = (struct job_limits *)user_ptr(JT_LIM);
+    l->memory = mem; l->threads = threads; l->reserved = reserved;
+    return syscall_dispatch(SYS_JOB_CREATE, (uint32_t)parent, JT_LIM, 0, 0, 0);
+}
+
+static int jt_limits(int32_t h, uint64_t mem, uint32_t threads, uint32_t reserved) {
+    struct job_limits *l = (struct job_limits *)user_ptr(JT_LIM);
+    l->memory = mem; l->threads = threads; l->reserved = reserved;
+    return syscall_dispatch(SYS_JOB_SET_LIMITS, (uint32_t)h, JT_LIM, 0, 0, 0);
+}
+
+static int jt_kill(int32_t h) {
+    return syscall_dispatch(SYS_JOB_KILL, (uint32_t)h, 0, 0, 0, 0);
+}
+
+static int32_t jt_dup(int32_t h, uint32_t rights) {
+    return syscall_dispatch(SYS_HANDLE_DUPLICATE, (uint32_t)h, rights, 0, 0, 0);
+}
+
+/* OBJINFO_JOB (or `topic`) on `h` into JT_INFO, with room for `cap`. */
+static int jt_info_as(int32_t h, uint32_t topic, uint64_t cap) {
+    struct object_info_args *oi = (struct object_info_args *)user_ptr(PT_IARGS);
+    oi->cap = cap; oi->buf = JT_INFO; oi->handle = h; oi->topic = topic;
+    return syscall_dispatch(SYS_OBJECT_INFO, PT_IARGS, 0, 0, 0, 0);
+}
+
+static int jt_info(int32_t h) {
+    return jt_info_as(h, OBJINFO_JOB, sizeof(struct job_info));
+}
+
+/* `h`'s job holds `used` bytes, `threads` threads and `procs` processes. */
+static int jt_is(int32_t h, uint64_t used, uint32_t threads, uint32_t procs) {
+    const struct job_info *ji = (const struct job_info *)user_ptr(JT_INFO);
+    return jt_info(h) == (int)sizeof *ji && ji->memory_used == used
+        && ji->threads == threads && ji->processes == procs;
+}
+
+/* The job `h` names; the handle's reference keeps it. */
+static struct job *jt_job(int32_t h) {
+    struct kobj *o = htab_ref(thread_htab(thread_current_id()), h, KOBJ_JOB, 0, 0);
+    if (o) kobj_unref(o);
+    return (struct job *)o;
+}
+
+/* A held process in `j` with a memory account, which never runs. */
+static int32_t jt_held(struct job *j, int *tid) {
+    int32_t h = pt_make_in(user_blob_exit_start, user_blob_exit_end, tid, j);
+    if (h > 0) vm_proc_init(thread_pid(*tid), vm_default_quota(), -1);
+    return h;
+}
+
+/* A held process in `j` that sleeps for the longest sleep there is. */
+static int32_t jt_sleeper(struct job *j, int *tid) {
+    kt_len = (uint32_t)(user_blob_call_end - user_blob_call_start);
+    if (kt_len > KT_BLOB_MAX) return E_INTERNAL;
+    for (uint32_t i = 0; i < kt_len; i++) kt_image[i] = user_blob_call_start[i];
+    kt_call(SYS_SLEEP, SLEEP_MAX_MS, 0, 0, 0, 0);
+    return pt_make_in(kt_image, kt_image + kt_len + 6 * 8, tid, j);
+}
+
+/* A held process in `j` that maps a page, unmaps it, then asks for two and
+   exits with what that returned. */
+static int32_t jt_mapper(struct job *j, int *tid) {
+    struct vm_map_args *m = (struct vm_map_args *)user_ptr(JT_MAP);
+    struct vm_map_args *m2 = (struct vm_map_args *)user_ptr(JT_MAP2);
+    m->offset = 0; m->length = PAGE_SIZE; m->granted = 0; m->addr = 0;
+    m->object = MOBJ_ANON; m->prot = MPROT_READ | MPROT_WRITE; m->flags = 0; m->reserved = 0;
+    *m2 = *m;
+    m2->length = 2u * PAGE_SIZE;
+    st_len = (uint32_t)(user_blob_calls_end - user_blob_calls_start);
+    if (st_len > KT_BLOB_MAX) return E_INTERNAL;
+    for (uint32_t i = 0; i < st_len; i++) st_image[i] = user_blob_calls_start[i];
+    st_call(0, SYS_VM_MAP, JT_MAP, 0);
+    st_call(1, SYS_VM_UNMAP, VM_MMAP_BASE, PAGE_SIZE);
+    st_call(2, SYS_VM_MAP, JT_MAP2, 0);
+    int32_t h = pt_make_in(st_image, st_image + st_len + 3 * 6 * 8, tid, j);
+    if (h > 0) vm_proc_init(thread_pid(*tid), vm_default_quota(), -1);
+    return h;
+}
+
+int usermode_job_test(void) {
+    paddr_t phys = map_user_page(TEST_CODE_VIRT);
+    if (!phys) return 0;
+    struct htab *tab = thread_htab(thread_current_id());
+    struct process_info *pi = (struct process_info *)user_ptr(PT_INFO);
+    struct job_info *ji = (struct job_info *)user_ptr(JT_INFO);
+    struct object_basic *ob = (struct object_basic *)user_ptr(JT_INFO);
+    const uint32_t P = PAGE_SIZE;
+    const uint32_t all = HRIGHT_WAIT | HRIGHT_INSPECT | HRIGHT_KILL | HRIGHT_ASSIGN
+                       | HRIGHT_SET_LIMITS | HRIGHT_DUPLICATE;
+    uint32_t live0 = proc_live(), jobs0 = job_live();
+    uint32_t faults0 = usermode_faults(), refused0 = syscall_refused_count();
+    int32_t j = -1, c = -1, k = -1, e = -1, d = -1, h = -1, h2 = -1;
+    int32_t chain[JOB_DEPTH_MAX];
+    int tid = -1, tid2 = -1, step = 0, ok = 0, vpid;
+    for (uint32_t n = 0; n < JOB_DEPTH_MAX; n++) chain[n] = -1;
+
+    /* 1: making one: the refusals, then one with limits, its rights, its
+       account; the rights each call needs */
+    step = 1; if (jt_create(9999, 0, 0, 0) != E_BAD_HANDLE || jt_create(0, 0, 0, 1) != E_INVALID_ARGS
+                  || syscall_dispatch(SYS_JOB_CREATE, 0, 8, 0, 0, 0) != E_BAD_ADDRESS
+                  || job_live() != jobs0) goto done;
+    j = jt_create(0, 2u * P, 2, 0);
+    if (j <= 0 || job_live() != jobs0 + 1) goto done;
+    if (jt_info_as(j, OBJINFO_BASIC, sizeof *ob) != (int)sizeof *ob
+        || ob->kind != OBJ_TYPE_JOB || ob->rights != all) goto done;
+    if (jt_info(j) != (int)sizeof *ji || ji->memory_limit != 2u * P || ji->thread_limit != 2
+        || ji->memory_used || ji->memory_peak || ji->threads || ji->processes || ji->killed
+        || jt_info_as(j, OBJINFO_JOB, sizeof *ji - 1) != E_BUFFER_TOO_SMALL) goto done;
+    d = jt_dup(j, HRIGHT_KILL);
+    if (d <= 0 || jt_info(d) != E_ACCESS_DENIED || jt_create(d, 0, 0, 0) != E_ACCESS_DENIED
+        || jt_limits(d, 0, 0, 0) != E_ACCESS_DENIED) goto done;
+    htab_close(tab, d);
+    d = jt_dup(j, HRIGHT_INSPECT);
+    if (d <= 0 || jt_kill(d) != E_ACCESS_DENIED || jt_info(j) <= 0 || ji->killed) goto done;
+    htab_close(tab, d); d = -1;
+
+    /* 2: nested JOB_DEPTH_MAX deep below the kernel's and no deeper; each
+       holds its parent, so a handle closed in the middle frees nothing */
+    int32_t at = j;
+    for (uint32_t n = 0; n + 1 < JOB_DEPTH_MAX; n++) {
+        chain[n] = jt_create(at, 0, 0, 0);
+        step = 2; if (chain[n] <= 0) goto done;
+        at = chain[n];
+    }
+    if (jt_create(at, 0, 0, 0) != E_OUT_OF_RANGE || job_live() != jobs0 + JOB_DEPTH_MAX) goto done;
+    htab_close(tab, chain[0]); chain[0] = -1;
+    if (job_live() != jobs0 + JOB_DEPTH_MAX) goto done;
+    for (uint32_t n = 1; n + 1 < JOB_DEPTH_MAX; n++) { htab_close(tab, chain[n]); chain[n] = -1; }
+    if (job_live() != jobs0 + 1) goto done;
+
+    /* 3: memory through vm_charge, for a process in it: to the limit and not
+       past it, a refusal leaving both accounts as they were; an uncharge; a
+       limit lowered below the use (nothing taken back, the next charge
+       refused); the process's end giving back what it held */
+    h = jt_held(jt_job(j), &tid);
+    step = 3; if (h <= 0 || !jt_is(j, 0, 1, 1)) goto done;
+    vpid = thread_pid(tid);
+    struct vm_proc *vm = &thread_proc(tid)->vm;
+    if (vm_charge(vpid, P) != E_OK || !jt_is(j, P, 1, 1)) goto done;
+    if (vm_charge(vpid, 2u * P) != E_NO_MEMORY || vm->mapped != P || !jt_is(j, P, 1, 1)) goto done;
+    if (vm_charge(vpid, P) != E_OK || !jt_is(j, 2u * P, 1, 1) || ji->memory_peak != 2u * P) goto done;
+    vm_uncharge(vpid, P);
+    if (!jt_is(j, P, 1, 1) || ji->memory_peak != 2u * P) goto done;
+    if (jt_limits(j, 1, 2, 0) != E_OK || !jt_is(j, P, 1, 1) || ji->memory_limit != 1
+        || vm_charge(vpid, P) != E_NO_MEMORY || vm->mapped != P) goto done;
+    if (jt_limits(j, 2u * P, 2, 1) != E_INVALID_ARGS || jt_limits(h, 0, 0, 0) != E_WRONG_TYPE
+        || jt_info(h) != E_WRONG_TYPE || jt_kill(h) != E_WRONG_TYPE
+        || jt_limits(j, 2u * P, 2, 0) != E_OK) goto done;
+    thread_discard(tid); tid = -1;
+    if (!jt_is(j, 0, 0, 0)) goto done;
+    htab_close(tab, h); h = -1;
+
+    /* 4: a job below it with no limits of its own is held to j's, memory and
+       threads both, and both accounts count what is in it */
+    c = jt_create(j, 0, 0, 0);
+    h = c > 0 ? jt_held(jt_job(c), &tid) : -1;
+    step = 4; if (h <= 0) goto done;
+    vpid = thread_pid(tid);
+    if (vm_charge(vpid, 3u * P) != E_NO_MEMORY || vm_charge(vpid, 2u * P) != E_OK
+        || !jt_is(c, 2u * P, 1, 1) || !jt_is(j, 2u * P, 1, 1)) goto done;
+    if (jt_limits(j, 2u * P, 1, 0) != E_OK) goto done;
+    h2 = jt_held(jt_job(c), &tid2);
+    if (h2 != E_NO_RESOURCES || !jt_is(c, 2u * P, 1, 1) || !jt_is(j, 2u * P, 1, 1)) goto done;
+    tid2 = -1;
+    if (jt_limits(j, 2u * P, 2, 0) != E_OK) goto done;
+    h2 = jt_held(jt_job(c), &tid2);
+    if (h2 <= 0 || !jt_is(c, 2u * P, 2, 2) || !jt_is(j, 2u * P, 2, 2)) goto done;
+    thread_discard(tid);  tid = -1;
+    thread_discard(tid2); tid2 = -1;
+    if (!jt_is(c, 0, 0, 0) || !jt_is(j, 0, 0, 0)) goto done;
+    htab_close(tab, h);  h = -1;
+    htab_close(tab, h2); h2 = -1;
+
+    /* 5: from ring 3, in a job of one page: a page mapped, unmapped, then two
+       refused; nothing left mapped, and the job's peak was that one page */
+    k = jt_create(0, P, 0, 0);
+    h = k > 0 ? jt_mapper(jt_job(k), &tid) : -1;
+    step = 5; if (h <= 0) goto done;
+    thread_start(tid); tid = -1;
+    if (pt_wait(h, SIGNAL_PROCESS_ENDED, 3000, 0) != E_OK || pt_info(h) != (int)sizeof *pi
+        || pi->ended != PROC_EXITED || pi->code != E_NO_MEMORY) goto done;
+    if (jt_info(k) != (int)sizeof *ji || ji->memory_used != 0 || ji->memory_peak != P
+        || ji->processes != 0 || paging_get_phys(VM_MMAP_BASE) != 0) goto done;
+    htab_close(tab, h); h = -1;
+
+    /* 6: a kill of j reaches a process in it and one in c, each ended killed
+       by this thread's process; j and c are signalled ENDED and closed to new
+       jobs and processes; a second kill changes nothing */
+    h  = jt_sleeper(jt_job(j), &tid);
+    h2 = jt_sleeper(jt_job(c), &tid2);
+    step = 6; if (h <= 0 || h2 <= 0) goto done;
+    thread_start(tid);  tid = -1;
+    thread_start(tid2); tid2 = -1;
+    if (pt_wait(h, SIGNAL_PROCESS_ENDED, 50, 0) != E_TIMED_OUT
+        || pt_wait(j, SIGNAL_JOB_ENDED, 0, 0) != E_TIMED_OUT || !jt_is(j, 0, 2, 2)
+        || jt_kill(9999) != E_BAD_HANDLE) goto done;
+    if (jt_kill(j) != E_OK || !st_ends(h, PROC_KILLED) || !st_ends(h2, PROC_KILLED)) goto done;
+    if (pt_wait(j, SIGNAL_JOB_ENDED, 3000, 0) != E_OK || pt_wait(c, SIGNAL_JOB_ENDED, 3000, 0) != E_OK
+        || jt_info(j) != (int)sizeof *ji || ji->killed != 1 || ji->processes != 0
+        || jt_info(c) != (int)sizeof *ji || ji->killed != 1) goto done;
+    if (jt_create(j, 0, 0, 0) != E_CANCELED || jt_create(c, 0, 0, 0) != E_CANCELED
+        || jt_held(jt_job(c), &tid) != E_CANCELED) goto done;
+    tid = -1;
+    if (jt_kill(j) != E_OK || pt_info(h) <= 0 || pi->ended != PROC_KILLED) goto done;
+    htab_close(tab, h);  h = -1;
+    htab_close(tab, h2); h2 = -1;
+
+    /* 7: an empty job, killed, is ended at once */
+    step = 7; if (jt_kill(k) != E_OK || pt_wait(k, SIGNAL_JOB_ENDED, 0, 0) != E_OK) goto done;
+
+    /* 8: a job outlives its last handle while a process is in it, and goes
+       with that process's record */
+    e = jt_create(0, 0, 0, 0);
+    h = e > 0 ? jt_held(jt_job(e), &tid) : -1;
+    step = 8; if (h <= 0) goto done;
+    uint32_t jobs1 = job_live();
+    htab_close(tab, e); e = -1;
+    if (job_live() != jobs1) goto done;
+    thread_discard(tid); tid = -1;
+    if (job_live() != jobs1) goto done;
+    htab_close(tab, h); h = -1;
+    if (job_live() != jobs1 - 1) goto done;
+
+    /* 9: nothing left behind, and nothing ended any other way */
+    htab_close(tab, k); k = -1;
+    htab_close(tab, c); c = -1;
+    htab_close(tab, j); j = -1;
+    step = 9; if (job_live() != jobs0 || proc_live() != live0 || usermode_faults() != faults0
+                  || syscall_refused_count() != refused0) goto done;
+    ok = 1;
+
+done:
+    if (!ok) klog_u32("KTEST", SEV_ERR, "job test failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    /* Held ones are discarded; one still running is killed, so none outlives
+       the test. */
+    if (tid >= 0)  thread_discard(tid);
+    if (tid2 >= 0) thread_discard(tid2);
+    if (h > 0)  { kt_kill_call(h);  pt_wait(h, SIGNAL_PROCESS_ENDED, 3000, 0);  htab_close(tab, h); }
+    if (h2 > 0) { kt_kill_call(h2); pt_wait(h2, SIGNAL_PROCESS_ENDED, 3000, 0); htab_close(tab, h2); }
+    for (uint32_t n = 0; n < JOB_DEPTH_MAX; n++) if (chain[n] > 0) htab_close(tab, chain[n]);
+    if (d > 0) htab_close(tab, d);
+    if (e > 0) htab_close(tab, e);
+    if (k > 0) htab_close(tab, k);
+    if (c > 0) htab_close(tab, c);
+    if (j > 0) htab_close(tab, j);
     unmap_user_page(TEST_CODE_VIRT, phys);
     return ok;
 }

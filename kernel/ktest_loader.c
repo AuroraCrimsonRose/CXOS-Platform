@@ -496,6 +496,79 @@ int ktest_user_ptr_writability(void) {
 #define SPV_IMG_VA    (SPV_ARGS_VA + 0x1000u) /* user pages for the image */
 #define SPV_MAX_PAGES 16                       /* 64KB of image is plenty for hi.xuex */
 
+/* OBJINFO_JOB or OBJINFO_PROCESS on `h`, through `oi`, into the page after
+   the spawn_args at `at`: the call's result. */
+static int spv_info(struct object_info_args *oi, int32_t h, uint32_t topic, void *at, uint32_t cap) {
+    oi->cap = cap; oi->buf = user_addr(at); oi->handle = h; oi->topic = topic;
+    return syscall_object_info(user_addr(oi));
+}
+
+/* hi.xuex, as `a` describes it, spawned into a job of this thread's: with
+   too little memory for it, it is refused at load and the job holds nothing
+   after; with room, it runs, its pages counted while it did and given back.
+   Then the refusals: a reserved field, a handle that is no job or lacks
+   HRIGHT_ASSIGN, a killed job. 0 = pass, else the step that failed. */
+static int spv_in_job(struct spawn_args *a, struct object_info_args *oi) {
+    struct process_info *pi = (struct process_info *)(SPV_ARGS_VA + 0x200);
+    struct job_info     *ji = (struct job_info *)(SPV_ARGS_VA + 0x400);
+    struct job_limits   *jl = (struct job_limits *)(SPV_ARGS_VA + 0x500);
+    struct htab *tab = thread_htab(thread_current_id());
+    int32_t jh = -1, ph = -1, d = -1;
+    int step;
+
+    /* 1: one page: not even the image fits */
+    jl->memory = PAGE_SIZE; jl->threads = 0; jl->reserved = 0;
+    jh = syscall_job_create(0, user_addr(jl));
+    a->job = jh;
+    ph = jh > 0 ? sys_spawn(user_addr(a)) : -1;
+    step = 1; if (ph <= 0 || syscall_object_wait(ph, SIGNAL_PROCESS_ENDED, 10000, 0) != E_OK
+                  || spv_info(oi, ph, OBJINFO_PROCESS, pi, sizeof *pi) != (int)sizeof *pi
+                  || pi->ended != PROC_NOT_STARTED) goto done;
+    htab_close(tab, ph); ph = -1;
+    step = 2; if (spv_info(oi, jh, OBJINFO_JOB, ji, sizeof *ji) != (int)sizeof *ji
+                  || ji->memory_limit != PAGE_SIZE || ji->memory_used != 0
+                  || ji->memory_peak > PAGE_SIZE || ji->threads != 0 || ji->processes != 0
+                  || ji->killed != 0) goto done;
+
+    /* 3: four megabytes: it runs and exits 0, and gives back what it held */
+    jl->memory = 4u * 1024u * 1024u;
+    step = 3; if (syscall_job_set_limits(jh, user_addr(jl)) != E_OK) goto done;
+    ph = sys_spawn(user_addr(a));
+    if (ph <= 0 || syscall_object_wait(ph, SIGNAL_PROCESS_ENDED, 10000, 0) != E_OK
+        || spv_info(oi, ph, OBJINFO_PROCESS, pi, sizeof *pi) != (int)sizeof *pi
+        || pi->ended != PROC_EXITED || pi->code != 0) goto done;
+    htab_close(tab, ph); ph = -1;
+    step = 4; if (spv_info(oi, jh, OBJINFO_JOB, ji, sizeof *ji) != (int)sizeof *ji
+                  || ji->memory_used != 0 || ji->memory_peak <= PAGE_SIZE
+                  || ji->memory_peak > jl->memory || ji->threads != 0 || ji->processes != 0) goto done;
+
+    /* 5: the refusals, before anything is read */
+    a->reserved = 1;
+    step = 5; if (sys_spawn(user_addr(a)) != E_INVALID_ARGS) goto done;
+    a->reserved = 0;
+    a->job = 9999;
+    if (sys_spawn(user_addr(a)) != E_BAD_HANDLE) goto done;
+    a->job = a->broker_endpoint;
+    if (sys_spawn(user_addr(a)) != E_WRONG_TYPE) goto done;
+    d = syscall_handle_duplicate(jh, HRIGHT_INSPECT | HRIGHT_KILL);
+    a->job = d;
+    if (d <= 0 || sys_spawn(user_addr(a)) != E_ACCESS_DENIED) goto done;
+
+    /* 6: killed, it takes nothing more */
+    a->job = jh;
+    step = 6; if (syscall_job_kill(jh) != E_OK || sys_spawn(user_addr(a)) != E_CANCELED
+                  || syscall_object_wait(jh, SIGNAL_JOB_ENDED, 0, 0) != E_OK) goto done;
+    step = 0;
+
+done:
+    a->job = 0;
+    a->reserved = 0;
+    if (ph > 0) htab_close(tab, ph);
+    if (d > 0)  htab_close(tab, d);
+    if (jh > 0) htab_close(tab, jh);
+    return step;
+}
+
 int ktest_spawn_verifies_image(void) {
     if (!cxfs_is_mounted()) return 1;                 /* nothing mounted - skip */
 
@@ -556,6 +629,8 @@ int ktest_spawn_verifies_image(void) {
     a->caps            = 0;                /* attenuated to nothing: caps are not the point */
     a->args            = 0;
     a->args_len        = 0;
+    a->job             = 0;                /* this thread's own job */
+    a->reserved        = 0;
 
     /* ---- the controls ----
        Distinct codes for distinct causes, which is what stops this suite from
@@ -622,6 +697,16 @@ int ktest_spawn_verifies_image(void) {
          && ob->rights == (HRIGHT_WAIT | HRIGHT_INSPECT | HRIGHT_KILL | HRIGHT_STOP | HRIGHT_DUPLICATE);
     if (ph > 0) htab_close(thread_htab(thread_current_id()), ph);
     ok = ok && proc_live() == live0;
+
+    /* ---- and in a job (ABI 16) ---- */
+    if (ok) {
+        int step = spv_in_job(a, oi);
+        if (step) {
+            klog_u32("KTEST", SEV_ERR, "spawn into a job failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+            ok = 0;
+        }
+        ok = ok && proc_live() == live0;
+    }
 
 done:
     if (h >= 0) htab_close(thread_htab(thread_current_id()), h);

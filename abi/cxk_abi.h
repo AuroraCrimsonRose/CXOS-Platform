@@ -15,7 +15,7 @@
  * hash it was built against and the loader refuses one that differs, so a
  * program never runs against numbers or layouts it was not compiled for.
  */
-#define CXK_ABI_HASH { 0xff, 0x91, 0x7b, 0x41, 0x5d, 0x65, 0x2a, 0x43, 0xda, 0xb8, 0x7f, 0x4e, 0x68, 0x91, 0xcd, 0xb8, 0x11, 0x44, 0x3c, 0xc3, 0x57, 0xcb, 0x03, 0xb4, 0x82, 0xd4, 0xb6, 0x38, 0xa5, 0x92, 0xf5, 0x6a }
+#define CXK_ABI_HASH { 0xe2, 0x8d, 0xbe, 0xb4, 0xe7, 0x93, 0x75, 0x4f, 0x63, 0x45, 0x12, 0x9a, 0xb4, 0x06, 0xb3, 0x53, 0x80, 0x07, 0xf2, 0xe1, 0xe4, 0x12, 0xd8, 0x33, 0xcd, 0xe8, 0x69, 0x3e, 0x4f, 0x14, 0x52, 0xd2 }
 
 /*
  * CXK ABI v1 - the PUBLIC contract shared by the kernel, the .xoex executive,
@@ -44,7 +44,7 @@
  * line; bump both, and the DevKit's stamp, in the one commit that changes the
  * contract.
  */
-#define CXK_ABI_VERSION          15
+#define CXK_ABI_VERSION          16
 
 /*
  * ---- syscall numbers ----
@@ -90,15 +90,19 @@
 /* endpoint: ipc_recv and ipc_reply on it; file: FOPEN_READ, FOPEN_WRITE */
 #define HRIGHT_RECV              0x2u
 
-/* process: OBJINFO_PROCESS, how it is and how it ended */
+/* process: OBJINFO_PROCESS, how it is and how it ended; job: OBJINFO_JOB */
 #define HRIGHT_INSPECT           0x1u
-#define HRIGHT_KILL              0x2u           /* process: SYS_PROCESS_KILL */
+#define HRIGHT_KILL              0x2u           /* process: SYS_PROCESS_KILL; job: SYS_JOB_KILL */
 
 /*
  * process: SYS_PROCESS_STOP. Handed out freely, unlike HRIGHT_KILL: a stop
  * asks first, and a program that answers it ends the way it chooses.
  */
 #define HRIGHT_STOP              0x4u
+
+/* job: spawn a process into it (spawn_args.job), make a job under it */
+#define HRIGHT_ASSIGN            0x4u
+#define HRIGHT_SET_LIMITS        0x8u           /* job: SYS_JOB_SET_LIMITS */
 
 /*
  * Generic rights, which mean the same on every type, count down from the top
@@ -119,6 +123,12 @@
  * not define is E_INVALID_ARGS. Once set, a signal named here stays set.
  */
 #define SIGNAL_PROCESS_ENDED     0x1u           /* process: its last thread has gone */
+
+/*
+ * job: SYS_JOB_KILL reached it (on it or a job above it), and every
+ * process in it and below has ended
+ */
+#define SIGNAL_JOB_ENDED         0x1u
 #define WAIT_FOREVER             0xFFFFFFFFu    /* timeout_ms: no limit */
 
 /* input 0x20-0x2F (unprivileged: reading your own keystrokes) */
@@ -196,7 +206,7 @@
 #define SYS_FB_SET_FONT          0x46
 
 /*
- * process 0x70-0x7F (spawning is privileged; kill and stop need only the
+ * process 0x70-0x7F (spawning is privileged; kill, stop and jobs need only the
  * handle's right). Both return a process handle with HRIGHT_WAIT,
  * HRIGHT_INSPECT, HRIGHT_KILL, HRIGHT_STOP and HRIGHT_DUPLICATE, not a pid: the process is freed once it has ended and
  * the last handle on it is closed, and nobody reaps it. Its pid is
@@ -242,6 +252,40 @@
  * process ends.
  */
 #define SYS_PROCESS_STOP_ENDPOINT 0x74
+
+/*
+ * Jobs: a group of processes under one memory and thread budget, ended
+ * together. Every process is in one, for life: the job its spawn named
+ * (spawn_args.job), or its spawner's. A charge is made to the job and every
+ * job above it, and refused if any would pass its limit (E_NO_MEMORY,
+ * E_NO_RESOURCES), so a job can never hold more than its parent allows.
+ * Memory is what SYS_VM_INFO counts for each process (its image, stack,
+ * argument and system pages, and its mappings), on top of the process's own
+ * quota; threads are its processes' threads until each is gone.
+ *
+ * ebx = the parent: a job handle with HRIGHT_ASSIGN, or 0 for the caller's
+ * own job; ecx = *job_limits, or 0 for none of its own -> a handle on the new
+ * job with HRIGHT_WAIT, HRIGHT_INSPECT, HRIGHT_KILL, HRIGHT_ASSIGN,
+ * HRIGHT_SET_LIMITS and HRIGHT_DUPLICATE. No grant: a job only divides what
+ * its parent has. E_CANCELED under a killed job, E_OUT_OF_RANGE past
+ * JOB_DEPTH_MAX. A job lasts while a handle on it, a process in it or a job
+ * under it does.
+ */
+#define SYS_JOB_CREATE           0x75
+
+/*
+ * ebx = job handle (HRIGHT_SET_LIMITS), ecx = *job_limits -> 0. A limit
+ * below what is in use takes nothing back; it refuses the next charge.
+ */
+#define SYS_JOB_SET_LIMITS       0x76
+
+/*
+ * ebx = job handle (HRIGHT_KILL) -> 0. Ends every process in the job and
+ * below it as SYS_PROCESS_KILL would (PROC_KILLED, the caller's pid), and
+ * closes them all: no process or job is made in them again (E_CANCELED).
+ * Returns before they have ended: wait for SIGNAL_JOB_ENDED.
+ */
+#define SYS_JOB_KILL             0x77
 
 /* memory 0x80-0x8F (unprivileged, quota-bounded) */
 #define SYS_VM_MAP               0x80           /* ebx = *vm_map_args -> 0, with addr and granted filled in */
@@ -454,6 +498,12 @@ struct spawn_args {
      * caps (attenuation, never amplify). 0 = capability-less app.
      */
     uint32_t caps;
+    /*
+     * the job to run it in: a handle with HRIGHT_ASSIGN, or 0 for the
+     * caller's own (SYS_JOB_CREATE)
+     */
+    int32_t job;
+    uint32_t reserved;
 };
 
 /*
@@ -503,9 +553,34 @@ struct clock_info {
  */
 #define OBJINFO_BASIC            1              /* -> struct object_basic */
 #define OBJINFO_PROCESS          2              /* a process (HRIGHT_INSPECT) -> struct process_info */
+#define OBJINFO_JOB              3              /* a job (HRIGHT_INSPECT) -> struct job_info */
 #define OBJ_TYPE_ENDPOINT        1
 #define OBJ_TYPE_FILE            2
 #define OBJ_TYPE_PROCESS         4              /* 3 is the kernel self-tests' own */
+#define OBJ_TYPE_JOB             5
+
+/* Jobs nest at most this deep below the kernel's own (SYS_JOB_CREATE). */
+#define JOB_DEPTH_MAX            8
+
+/*
+ * SYS_JOB_CREATE, SYS_JOB_SET_LIMITS. 0 is no limit of the job's own; a
+ * job above it may still have one.
+ */
+struct job_limits {
+    uint64_t memory;                            /* bytes */
+    uint32_t threads;
+    uint32_t reserved;                          /* 0 */
+};
+
+struct job_info {
+    uint64_t memory_limit;
+    uint64_t memory_used;                       /* by its processes and the jobs below it */
+    uint64_t memory_peak;                       /* the most memory_used has been */
+    uint32_t thread_limit;
+    uint32_t threads;                           /* in it and below */
+    uint32_t processes;                         /* in it and below, not yet ended */
+    uint32_t killed;                            /* 1 once SYS_JOB_KILL has reached it */
+};
 
 /* process_info.ended: how it ended, once SIGNAL_PROCESS_ENDED is set. */
 #define PROC_RUNNING             0              /* not ended */
@@ -890,8 +965,10 @@ struct log_entry {
 #endif
 
 CXK_ABI_STATIC_ASSERT(sizeof(struct args_info) == 16, "ABI layout: args_info");
-CXK_ABI_STATIC_ASSERT(sizeof(struct spawn_args) == 48, "ABI layout: spawn_args");
+CXK_ABI_STATIC_ASSERT(sizeof(struct spawn_args) == 56, "ABI layout: spawn_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct clock_info) == 8, "ABI layout: clock_info");
+CXK_ABI_STATIC_ASSERT(sizeof(struct job_limits) == 16, "ABI layout: job_limits");
+CXK_ABI_STATIC_ASSERT(sizeof(struct job_info) == 40, "ABI layout: job_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct process_info) == 40, "ABI layout: process_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct object_info_args) == 24, "ABI layout: object_info_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct object_basic) == 20, "ABI layout: object_basic");

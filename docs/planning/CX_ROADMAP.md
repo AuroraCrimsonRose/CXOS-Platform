@@ -332,7 +332,13 @@ Independent of the order above, and small enough to land whenever convenient:
      `ipc_recv` returns ahead of any call; still running at the deadline, it
      is ended as a kill ends it, `PROC_STOPPED`. Nothing registered, or
      nobody left to receive: ended at once.
-   - 1.1d: jobs with memory and thread budgets.
+   - **1.1d (ABI 16, 2026-10-29), done:** jobs. `SYS_JOB_CREATE` nests one
+     below another (at most 8 deep); `spawn_args.job` puts a process in one
+     (`HRIGHT_ASSIGN`). Committed memory and threads are charged to the job
+     and every job above it, all or none, so a subtree of processes is held
+     to one budget; `SYS_JOB_SET_LIMITS` changes it, `OBJINFO_JOB` reads it,
+     and `SYS_JOB_KILL` ends every process below and closes the subtree
+     (`SIGNAL_JOB_ENDED` when the last is gone).
 2. The wait queue, and timers as handles (LAPIC timer and TSC).
 3. IPC: queued calls with reply tokens, badges, handle transfer, sealable
    memory objects, notifications, priority passed through calls. Memory

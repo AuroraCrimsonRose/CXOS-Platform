@@ -138,7 +138,7 @@ static int test_proc_threads(void) {
 
     paddr_t space;
     if (addr_space_create(&space) != 0) return 0;
-    int first = thread_create_process("pt-first", pt_first);
+    int first = thread_create_process("pt-first", pt_first, 0);
     if (first < 0) { addr_space_release(space); return 0; }
     thread_set_space(first, space);   /* the process's from here */
     int sib = thread_create_sibling(first, "pt-sibling", pt_sibling);
@@ -1936,7 +1936,7 @@ done:
  * mapping is released, placement produces the same addresses again, so a full
  * unmap really does return the space rather than merely forgetting it. */
 static int test_vmregion(void) {
-    struct proc *scratch = proc_create(0);
+    struct proc *scratch = proc_create(0, 0);
     if (!scratch) return 0;
     const int pid = scratch->pid;
 
@@ -2159,7 +2159,7 @@ static void lifecycle_counter_thread(void) {
 }
 
 static int test_lifecycle_sequences(void) {
-    struct proc *scratch = proc_create(0);   /* see test_vmregion */
+    struct proc *scratch = proc_create(0, 0);   /* see test_vmregion */
     if (!scratch) return 0;
     const int pid = scratch->pid;
     int ok = 1;
@@ -3171,7 +3171,7 @@ static int test_process_exit_releases(void) {
     int ok = 0;
     paddr_t space;
     if (addr_space_create(&space) == 0) {
-        int id = thread_create_process("pexit", px_thread);
+        int id = thread_create_process("pexit", px_thread, 0);
         if (id < 0) addr_space_release(space);
         else {
             px_pd = space;
@@ -3291,6 +3291,7 @@ void ktest_run(void) {
     total++; passed += report("process handles: wait, how it ended", usermode_process_test());
     total++; passed += report("process kill: every wait, both safe points", usermode_kill_test());
     total++; passed += report("process stop: asked, then ended at the deadline", usermode_stop_test());
+    total++; passed += report("jobs: memory and thread budgets, nested, killed together", usermode_job_test());
     total++; passed += report("ipc endpoints refcounted + reclaimed", test_ipc_endpoint_lifetime());
     total++; passed += report("object caches map and return pages", test_ocache_pages());
     total++; passed += report("two threads share one process",   test_proc_threads());
