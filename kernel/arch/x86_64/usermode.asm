@@ -473,14 +473,14 @@ user64_segs_end:
 
 ; ---------------------------------------------------------------------------
 ; usermode.c's ring-3 routines, as x86-32 had them in
-; this convention. The kernel seeds a 32-bit message pointer at [rsp].
+; this convention. The kernel seeds a 64-bit message pointer at [rsp] (ABI 12).
 ;
 ; user_blob: SYS_CONSOLE_WRITE(msg, 0 = bounded NUL-scan), then SYS_EXIT(0).
 ; ---------------------------------------------------------------------------
 global user_blob_start, user_blob_end
 user_blob_start:
     mov r12, rsi             ; the system page; rsi is the second argument
-    mov edi, [rsp]
+    mov rdi, [rsp]
     xor esi, esi
     lea rax, [r12 + SYS_CONSOLE_WRITE * SYSPAGE_STUB]
     call rax
@@ -499,10 +499,10 @@ user_blob_end:
 global user_blob_busy_start, user_blob_busy_end
 user_blob_busy_start:
     mov r14, rsi             ; the system page
-    mov r12d, [rsp]          ; the message, kept across the calls
+    mov r12, [rsp]           ; the message, kept across the calls
     mov r13d, 3
 .loop:
-    mov edi, r12d
+    mov rdi, r12
     xor esi, esi
     lea rax, [r14 + SYS_CONSOLE_WRITE * SYSPAGE_STUB]
     call rax

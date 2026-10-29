@@ -15,7 +15,7 @@
  * hash it was built against and the loader refuses one that differs, so a
  * program never runs against numbers or layouts it was not compiled for.
  */
-#define CXK_ABI_HASH { 0x09, 0x72, 0x9f, 0x3a, 0x7f, 0x12, 0x0b, 0xd8, 0x54, 0xb5, 0x6b, 0xed, 0x20, 0x90, 0x2e, 0x81, 0x32, 0xcd, 0x5a, 0x88, 0x00, 0x63, 0x2c, 0x10, 0x69, 0x85, 0xcd, 0xc8, 0xfd, 0x59, 0xa1, 0x2e }
+#define CXK_ABI_HASH { 0xe5, 0xbf, 0x3f, 0xca, 0xcd, 0x40, 0xf0, 0xdd, 0x98, 0xd3, 0x67, 0x66, 0xeb, 0xaf, 0xb2, 0x06, 0x21, 0xb9, 0x94, 0x23, 0xdb, 0xc1, 0x45, 0x89, 0x60, 0x03, 0xdd, 0x93, 0xd5, 0x81, 0x79, 0x17 }
 
 /*
  * CXK ABI v1 - the PUBLIC contract shared by the kernel, the .xoex executive,
@@ -44,7 +44,7 @@
  * line; bump both, and the DevKit's stamp, in the one commit that changes the
  * contract.
  */
-#define CXK_ABI_VERSION          11
+#define CXK_ABI_VERSION          12
 
 /*
  * ---- syscall numbers ----
@@ -359,8 +359,8 @@
  * not a constant the program is expected to know.
  */
 struct args_info {
+    uint64_t base;                              /* address of the argument page in THIS process */
     uint32_t count;                             /* argc */
-    uint32_t base;                              /* address of the argument page in THIS process */
     int32_t broker;                             /* a SEND handle on the launcher's broker endpoint, or -1 */
 };
 
@@ -368,20 +368,21 @@ struct args_info {
  * ---- shared call structures ----
  * The u64 fields come first in each, so none needs padding before it; padding
  * at the end is a field named `reserved`, which must be 0 (E_INVALID_ARGS).
+ * A user address is a u64 on every target (ABI 12; until then a u32, which
+ * held only while the user half kept x86-32's layout below 4 GB).
  */
 struct spawn_args {
     uint64_t image_len;                         /* bytes at image */
     uint64_t args_len;                          /* total bytes of the args blob, terminators included */
-    uint32_t image;                             /* the app's CXEX bytes (in the caller's space) */
-    uint32_t name;                              /* optional; not dereferenced in v1 */
+    uint64_t image;                             /* the app's CXEX bytes (in the caller's space) */
+    uint64_t name;                              /* optional; not dereferenced in v1 */
+    uint64_t args;                              /* argc NUL-terminated strings back to back, or NULL */
     int32_t broker_endpoint;                    /* a RECV endpoint handle the caller owns */
     /*
      * requested caps for the child; kernel masks against the spawner's own
      * caps (attenuation, never amplify). 0 = capability-less app.
      */
     uint32_t caps;
-    uint32_t args;                              /* argc NUL-terminated strings back to back, or NULL */
-    uint32_t reserved;
 };
 
 /*
@@ -434,10 +435,9 @@ struct clock_info {
 
 struct object_info_args {
     uint64_t cap;                               /* bytes at buf; smaller than the topic needs is E_BUFFER_TOO_SMALL */
+    uint64_t buf;                               /* the topic's structure is written here */
     int32_t handle;
     uint32_t topic;                             /* OBJINFO_* */
-    uint32_t buf;                               /* the topic's structure is written here */
-    uint32_t reserved;
 };
 
 struct object_basic {
@@ -451,24 +451,25 @@ struct object_basic {
 struct ipc_call_args {
     uint64_t req_len;
     uint64_t reply_cap;
+    uint64_t req;                               /* request bytes */
+    uint64_t reply;                             /* buffer the reply is copied into */
     int32_t ep_handle;                          /* a SEND endpoint handle (the broker channel) */
-    uint32_t req;                               /* request bytes */
-    uint32_t reply;                             /* buffer the reply is copied into */
     uint32_t reserved;
 };
 
 struct ipc_recv_args {
     uint64_t cap;
+    uint64_t buf;                               /* request copied here */
+    uint64_t sender;                            /* where the caller's pid is written (an i32), or 0 */
     int32_t ep_handle;                          /* a RECV endpoint handle (owner side) */
-    uint32_t buf;                               /* request copied here */
-    uint32_t sender;                            /* set to the caller's pid (may be 0) */
     uint32_t reserved;
 };
 
 struct ipc_reply_args {
-    int32_t ep_handle;                          /* the RECV endpoint just received on */
-    uint32_t data;                              /* reply bytes */
+    uint64_t data;                              /* reply bytes */
     uint64_t len;
+    int32_t ep_handle;                          /* the RECV endpoint just received on */
+    uint32_t reserved;
 };
 
 /* ---- framebuffer (SYS_FB_INFO) ---- */
@@ -626,11 +627,12 @@ struct vm_map_args {
     uint64_t offset;                            /* offset into the object; 0 for MOBJ_ANON */
     uint64_t length;                            /* bytes wanted */
     uint64_t granted;                           /* out: bytes actually mapped (length, rounded up to a page) */
-    uint32_t object;                            /* MOBJ_* (MOBJ_ANON today) */
     /* in: a hint if MMAP_HINT; out: where it is */
-    uint32_t addr;
+    uint64_t addr;
+    uint32_t object;                            /* MOBJ_* (MOBJ_ANON today) */
     uint32_t prot;                              /* MPROT_* */
     uint32_t flags;                             /* MMAP_* */
+    uint32_t reserved;
 };
 
 /* SYS_VM_INFO: this process's memory account. */
@@ -756,17 +758,17 @@ struct log_entry {
   #define CXK_ABI_STATIC_ASSERT(c, m) typedef char cxk_abi_assert_##__LINE__[(c) ? 1 : -1]
 #endif
 
-CXK_ABI_STATIC_ASSERT(sizeof(struct args_info) == 12, "ABI layout: args_info");
-CXK_ABI_STATIC_ASSERT(sizeof(struct spawn_args) == 40, "ABI layout: spawn_args");
+CXK_ABI_STATIC_ASSERT(sizeof(struct args_info) == 16, "ABI layout: args_info");
+CXK_ABI_STATIC_ASSERT(sizeof(struct spawn_args) == 48, "ABI layout: spawn_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct clock_info) == 8, "ABI layout: clock_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct object_info_args) == 24, "ABI layout: object_info_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct object_basic) == 20, "ABI layout: object_basic");
-CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_call_args) == 32, "ABI layout: ipc_call_args");
-CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_recv_args) == 24, "ABI layout: ipc_recv_args");
-CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_reply_args) == 16, "ABI layout: ipc_reply_args");
+CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_call_args) == 40, "ABI layout: ipc_call_args");
+CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_recv_args) == 32, "ABI layout: ipc_recv_args");
+CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_reply_args) == 24, "ABI layout: ipc_reply_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct fb_geometry) == 16, "ABI layout: fb_geometry");
 CXK_ABI_STATIC_ASSERT(sizeof(struct net_ip_config) == 16, "ABI layout: net_ip_config");
-CXK_ABI_STATIC_ASSERT(sizeof(struct vm_map_args) == 40, "ABI layout: vm_map_args");
+CXK_ABI_STATIC_ASSERT(sizeof(struct vm_map_args) == 48, "ABI layout: vm_map_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct vm_usage) == 16, "ABI layout: vm_usage");
 CXK_ABI_STATIC_ASSERT(sizeof(struct file_lock_args) == 24, "ABI layout: file_lock_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct file_stat) == 104, "ABI layout: file_stat");

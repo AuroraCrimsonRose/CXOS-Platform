@@ -353,7 +353,7 @@ static uint32_t fb_pack(uint32_t rgb) {
 
 /* Each answers E_NOT_FOUND with no framebuffer, before it looks at a pointer:
    in VGA text mode there is nothing for any of them to do. */
-int sys_fb_info(uint32_t ug) {
+int sys_fb_info(uint64_t ug) {
     if (!fb_active()) return E_NOT_FOUND;
     if (!user_ptr_writable(ug, sizeof(struct fb_geometry))) return E_BAD_ADDRESS;
     struct fb_geometry *g = (struct fb_geometry *)user_ptr(ug);
@@ -388,7 +388,7 @@ int sys_fb_draw_line(uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1, uint32_
     return 0;
 }
 
-int sys_fb_draw_text(uint32_t x, uint32_t y, uint32_t text, uint32_t fg, uint32_t bg) {
+int sys_fb_draw_text(uint32_t x, uint32_t y, uint64_t text, uint32_t fg, uint32_t bg) {
     if (!fb_active()) return E_NOT_FOUND;
     /* Scan for a length we have actually validated, then draw AT MOST that
        many characters. Passing the bare pointer to fb_draw_string was a
@@ -406,7 +406,7 @@ int sys_fb_draw_text(uint32_t x, uint32_t y, uint32_t text, uint32_t fg, uint32_
     return (int)n;
 }
 
-int sys_fb_set_font(uint32_t uname) {
+int sys_fb_set_font(uint64_t uname) {
     if (!fb_active()) return E_NOT_FOUND;
     /* A NAME, not a path. The kernel composes /System/Fonts/<name>.xfnt
        and reads it itself, which is the SYS_EXEC_PATH shape: the bytes

@@ -151,20 +151,20 @@ fn broker_handle() -> i32 {
 // Map `len` bytes of anonymous read/write memory. Returns the address, or 0.
 // The mapping is zero-filled - a frame off the free list may hold another
 // process's memory, so the kernel clears it before you ever see it.
-fn mem_map(len: u32) -> u32 {
+fn mem_map(len: u32) -> usize {
     let a: vm_map_args;
     a.object = MOBJ_ANON;
     a.offset = 0;
     a.length = len; a.addr = 0; a.granted = 0;
-    a.prot = MPROT_READ | MPROT_WRITE; a.flags = 0;
+    a.prot = MPROT_READ | MPROT_WRITE; a.flags = 0; a.reserved = 0;
     if (vm_map(&a) != E_OK) { return 0; }
-    return a.addr;
+    return a.addr as usize;
 }
 
 // Release a whole mapping, by the address mem_map returned. Whole or not at
 // all: a partial release would have to split the region in two, which could
 // fail for want of a slot while trying to give memory BACK.
-fn mem_unmap(addr: u32, len: u32) -> i32 { return vm_unmap(addr, len); }
+fn mem_unmap(addr: usize, len: u32) -> i32 { return vm_unmap(addr as u64, len); }
 
 // How many bytes this process may hold at once, and how many it holds now.
 fn mem_quota() -> u32 {

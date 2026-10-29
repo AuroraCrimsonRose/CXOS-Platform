@@ -25,10 +25,11 @@
 #error "kernel/arch/paging.h: no paging for this architecture"
 #endif
 
-/* The end of the user half as a 32-bit user address can name it: the ABI
-   carries user addresses as uint32_t (abi/cxk_abi.h) until roadmap step 6
-   widens them. USER_VLIMIT itself on x86-32; the last page below 4 GB on
-   x86-64. */
+/* The end of the user half as a 32-bit address can name it: the last page
+   below 4 GB on x86-64. Syscalls take whole 64-bit user addresses (ABI 12) and
+   check them against USER_VLIMIT; what is still 32-bit is a CXEX section's
+   virtual address (the image format), which the loader's tests bound with
+   this. */
 #define USER_ADDR32_END \
     ((uint32_t)(USER_VLIMIT <= 0xFFFFF000ull ? USER_VLIMIT : 0xFFFFF000ull))
 

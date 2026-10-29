@@ -185,10 +185,10 @@ fn svc_pack(src: *u8, args: *xd_val) -> i32 {
 fn svc_run(path: *u8, blob: *u8, blen: u32, grants: u32) -> i32 {
     let a: spawn_args;
     memzero((&a) as *u8, sizeof a);
-    a.name            = path as u32;
+    a.name            = path as u64;
     a.broker_endpoint = 0 - 1;
     a.caps            = grants;
-    a.args            = blob as u32;
+    a.args            = blob as u64;
     a.args_len        = blen;
     return exec_path(path, &a);
 }

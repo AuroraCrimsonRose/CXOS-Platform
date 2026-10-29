@@ -456,8 +456,8 @@ int ktest_user_ptr_writability(void) {
     ok = ok && user_ptr_writable(va, 64) == 1;
 
     /* A buffer straddling the kernel boundary is refused either way. */
-    ok = ok && user_ptr_readable(USER_ADDR32_END - 8, 64) == 0;
-    ok = ok && user_ptr_writable(USER_ADDR32_END - 8, 64) == 0;
+    ok = ok && user_ptr_readable(USER_VLIMIT - 8, 64) == 0;
+    ok = ok && user_ptr_writable(USER_VLIMIT - 8, 64) == 0;
 
     paging_unmap(va);
     pmm_free(frame);
@@ -554,7 +554,6 @@ int ktest_spawn_verifies_image(void) {
     a->caps            = 0;                /* attenuated to nothing: caps are not the point */
     a->args            = 0;
     a->args_len        = 0;
-    a->reserved        = 0;
 
     /* ---- the controls ----
        Distinct codes for distinct causes, which is what stops this suite from
@@ -577,9 +576,11 @@ int ktest_spawn_verifies_image(void) {
     a->args_len = 0;
     if (!ok) goto done;
 
-    a->reserved = 1;                       /* padding must be 0 */
-    ok = (sys_spawn(user_addr(a)) == E_INVALID_ARGS);
-    a->reserved = 0;
+    /* a user address is compared whole too (ABI 12): the image 4 GB up is
+       unmapped, and its low half alone is the image, which would pass */
+    a->image = user_addr(img) + (1ull << 32);
+    ok = (sys_spawn(user_addr(a)) == E_BAD_ADDRESS);
+    a->image = user_addr(img);
     if (!ok) goto done;
 
     a->broker_endpoint = 9999;             /* no such handle */
@@ -587,7 +588,7 @@ int ktest_spawn_verifies_image(void) {
     a->broker_endpoint = h;
     if (!ok) goto done;
 
-    a->image = USER_ADDR32_END;    /* past the user half: not a user pointer */
+    a->image = USER_VLIMIT;        /* past the user half: not a user pointer */
     ok = (sys_spawn(user_addr(a)) == E_BAD_ADDRESS);
     a->image = user_addr(img);
     if (!ok) goto done;

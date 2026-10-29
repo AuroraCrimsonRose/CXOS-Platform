@@ -306,7 +306,7 @@ static int abi_err(int cxfs_rc) {
    Validates one page at a time rather than one byte at a time: user_ptr_readable
    walks page tables, so per-byte would be a page-table walk per character.
    Returns the length, or a negative E_* code. */
-static int copy_path_in(uint32_t addr, char *dst, uint32_t cap) {
+static int copy_path_in(uint64_t addr, char *dst, uint32_t cap) {
     if (!addr) return E_BAD_ADDRESS;
     for (uint32_t i = 0; i < cap; i++) {
         if (i == 0 || (((addr + i) & 0xFFFu) == 0)) {       /* new page */
@@ -449,7 +449,7 @@ static int file_leave(struct open_file *f, int rc) {
     return rc;
 }
 
-int sys_file_open(uint32_t upath, uint32_t flags) {
+int sys_file_open(uint64_t upath, uint32_t flags) {
     uint32_t cwd = thread_current_cwd();
     char path[FILE_PATH_MAX];
     int rc;
@@ -515,7 +515,7 @@ int sys_file_close(int32_t h) {
     return rc;
 }
 
-static int file_read(struct open_file *f, uint32_t rights, uint32_t buf, uint64_t n) {
+static int file_read(struct open_file *f, uint32_t rights, uint64_t buf, uint64_t n) {
     if (!(rights & FOPEN_READ)) return E_ACCESS_DENIED;
     if (n == 0) return 0;
     if (n > FILE_IO_MAX) n = FILE_IO_MAX;   /* a short count is normal */
@@ -527,14 +527,14 @@ static int file_read(struct open_file *f, uint32_t rights, uint32_t buf, uint64_
     return rc;
 }
 
-int sys_file_read(int32_t h, uint32_t buf, uint64_t n) {
+int sys_file_read(int32_t h, uint64_t buf, uint64_t n) {
     struct open_file *f;
     uint32_t rights;
     int rc = file_enter(h, &f, &rights);
     return rc < 0 ? rc : file_leave(f, file_read(f, rights, buf, n));
 }
 
-static int file_write(struct open_file *f, uint32_t rights, uint32_t buf, uint64_t n) {
+static int file_write(struct open_file *f, uint32_t rights, uint64_t buf, uint64_t n) {
     if (!(rights & FOPEN_WRITE)) return E_ACCESS_DENIED;
     if (n == 0) return 0;
     if (n > FILE_IO_MAX) n = FILE_IO_MAX;   /* a short count is normal */
@@ -558,7 +558,7 @@ static int file_write(struct open_file *f, uint32_t rights, uint32_t buf, uint64
     return rc;
 }
 
-int sys_file_write(int32_t h, uint32_t buf, uint64_t n) {
+int sys_file_write(int32_t h, uint64_t buf, uint64_t n) {
     struct open_file *f;
     uint32_t rights;
     int rc = file_enter(h, &f, &rights);
@@ -567,7 +567,7 @@ int sys_file_write(int32_t h, uint32_t buf, uint64_t n) {
 
 /* The new offset goes to *pos (a user address, 0 for none), checked before the
    offset moves, so a bad pointer leaves the file where it was. */
-static int file_seek(struct open_file *f, int64_t off, uint32_t origin, uint32_t pos) {
+static int file_seek(struct open_file *f, int64_t off, uint32_t origin, uint64_t pos) {
     if (pos && !user_ptr_writable(pos, sizeof(uint64_t))) return E_BAD_ADDRESS;
     struct cxfs_entry e;
     if (cxfs_read_entry(f->entry, &e) != 0) return E_IO;
@@ -588,14 +588,14 @@ static int file_seek(struct open_file *f, int64_t off, uint32_t origin, uint32_t
     return E_OK;
 }
 
-int sys_file_seek(int32_t h, int64_t off, uint32_t origin, uint32_t pos) {
+int sys_file_seek(int32_t h, int64_t off, uint32_t origin, uint64_t pos) {
     struct open_file *f;
     uint32_t rights;
     int rc = file_enter(h, &f, &rights);
     return rc < 0 ? rc : file_leave(f, file_seek(f, off, origin, pos));
 }
 
-int sys_file_tell(int32_t h, uint32_t pos) {
+int sys_file_tell(int32_t h, uint64_t pos) {
     struct open_file *f;
     uint32_t rights;
     int rc = file_enter(h, &f, &rights);
@@ -618,7 +618,7 @@ int sys_file_truncate(int32_t h, uint64_t size) {
 }
 
 /* STAT and FSTAT: entry `id` into the caller's file_stat at `st`. */
-static int stat_out(uint32_t id, uint32_t st) {
+static int stat_out(uint32_t id, uint64_t st) {
     if (!user_ptr_writable(st, sizeof(struct file_stat))) return E_BAD_ADDRESS;
     struct cxfs_entry e;
     if (cxfs_read_entry(id, &e) != 0) return E_IO;
@@ -626,7 +626,7 @@ static int stat_out(uint32_t id, uint32_t st) {
     return E_OK;
 }
 
-int sys_file_stat(uint32_t upath, uint32_t st) {
+int sys_file_stat(uint64_t upath, uint64_t st) {
     char path[FILE_PATH_MAX];
     int rc;
     if ((rc = fs_enter()) < 0) return rc;
@@ -636,14 +636,14 @@ int sys_file_stat(uint32_t upath, uint32_t st) {
     return stat_out((uint32_t)r, st);
 }
 
-int sys_file_fstat(int32_t h, uint32_t st) {
+int sys_file_fstat(int32_t h, uint64_t st) {
     struct open_file *f;
     uint32_t rights;
     int rc = file_enter(h, &f, &rights);
     return rc < 0 ? rc : file_leave(f, stat_out(f->entry, st));
 }
 
-int sys_file_readdir(uint32_t upath, uint32_t index, uint32_t st) {
+int sys_file_readdir(uint64_t upath, uint32_t index, uint64_t st) {
     char path[FILE_PATH_MAX];
     int rc;
     if ((rc = fs_enter()) < 0) return rc;
@@ -665,7 +665,7 @@ int sys_file_readdir(uint32_t upath, uint32_t index, uint32_t st) {
     return 1;
 }
 
-int sys_file_mkdir(uint32_t upath) {
+int sys_file_mkdir(uint64_t upath) {
     uint32_t cwd = thread_current_cwd();
     char path[FILE_PATH_MAX];
     int rc;
@@ -678,7 +678,7 @@ int sys_file_mkdir(uint32_t upath) {
     return (cxfs_create_entry(parent, leaf, CXFS_TYPE_DIR) < 0) ? E_IO : E_OK;
 }
 
-int sys_file_unlink(uint32_t upath) {
+int sys_file_unlink(uint64_t upath) {
     uint32_t cwd = thread_current_cwd();
     char path[FILE_PATH_MAX];
     int rc;
@@ -713,7 +713,7 @@ int sys_file_unlink(uint32_t upath) {
     return (cxfs_delete_entry((uint32_t)r) == 0) ? E_OK : E_IO;
 }
 
-int sys_file_rename(uint32_t upath, uint32_t unewname) {
+int sys_file_rename(uint64_t upath, uint64_t unewname) {
     char path[FILE_PATH_MAX];
     char newname[FILE_NAME_MAX];
     int rc;
@@ -738,7 +738,7 @@ int sys_file_rename(uint32_t upath, uint32_t unewname) {
     return (cxfs_rename((uint32_t)r, newname) == 0) ? E_OK : E_INVALID_ARGS;
 }
 
-int sys_file_chdir(uint32_t upath) {
+int sys_file_chdir(uint64_t upath) {
     char path[FILE_PATH_MAX];
     int rc;
     if ((rc = fs_enter()) < 0) return rc;
@@ -752,7 +752,7 @@ int sys_file_chdir(uint32_t upath) {
     return E_OK;
 }
 
-int sys_file_getcwd(uint32_t buf, uint64_t cap) {
+int sys_file_getcwd(uint64_t buf, uint64_t cap) {
     char path[FILE_PATH_MAX];
     int rc;
     if ((rc = fs_enter()) < 0) return rc;
@@ -810,7 +810,7 @@ static int file_lock(struct open_file *f, uint64_t start, uint64_t len, uint32_t
 
 /* The range and mode arrive in a struct file_lock_args: two u64s and a mode
    are six registers on x86-32, one more than a syscall has. */
-int sys_file_lock(int32_t h, uint32_t args) {
+int sys_file_lock(int32_t h, uint64_t args) {
     struct open_file *f;
     uint32_t rights;
     int rc = file_enter(h, &f, &rights);

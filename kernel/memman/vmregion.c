@@ -27,13 +27,16 @@ static int overlaps(uint32_t a, uint32_t alen, uint32_t b, uint32_t blen) {
     return a < b + blen && b < a + alen;
 }
 
-/* Is [addr, addr+len) inside the mmap window and clear of every live region? */
-static int range_free(struct vm_proc *p, uint32_t addr, uint32_t len) {
+/* Is [addr, addr+len) inside the mmap window and clear of every live region?
+   `addr` is a whole user address (ABI 12): it is compared at full width before
+   anything narrows it, so a hint past 4 GB is refused rather than cut down to
+   one inside the window. */
+static int range_free(struct vm_proc *p, uint64_t addr, uint32_t len) {
     if (addr < VM_MMAP_BASE) return 0;
     if (addr + len < addr)   return 0;              /* wrapped */
     if (addr + len > VM_MMAP_TOP) return 0;
     for (int i = 0; i < MMAP_MAX_REGIONS; i++)
-        if (p->r[i].base && overlaps(addr, len, p->r[i].base, p->r[i].len))
+        if (p->r[i].base && overlaps((uint32_t)addr, len, p->r[i].base, p->r[i].len))
             return 0;
     return 1;
 }
@@ -148,6 +151,7 @@ int vm_map(int pid, struct vm_map_args *a) {
     struct vm_proc *p = vp(pid);
 
     if (a->object != MOBJ_ANON)             return E_INVALID_ARGS;
+    if (a->reserved)                        return E_INVALID_ARGS;
     /* Anonymous memory has no interior to be at an offset into. Rejecting a
        non-zero offset keeps the field honest until there is an object it can
        mean something for, rather than silently ignoring what was asked. */
@@ -182,7 +186,7 @@ int vm_map(int pid, struct vm_map_args *a) {
     uint32_t base = 0;
     if ((a->flags & MMAP_HINT) && (a->addr & (PAGE_SIZE - 1u)) == 0 &&
         a->addr && range_free(p, a->addr, len))
-        base = a->addr;
+        base = (uint32_t)a->addr;                   /* inside the window: range_free */
     if (!base) base = place(p, len);
     if (!base) return E_NO_RESOURCES;
 
@@ -236,7 +240,7 @@ int vm_map(int pid, struct vm_map_args *a) {
     return E_OK;
 }
 
-int vm_unmap(int pid, uint32_t addr, uint64_t length) {
+int vm_unmap(int pid, uint64_t addr, uint64_t length) {
     if (!vp(pid) || !vp(pid)->live) return E_INVALID_ARGS;
     struct vm_proc *p = vp(pid);
 

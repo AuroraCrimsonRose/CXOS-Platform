@@ -35,9 +35,9 @@ const E_NO_MEMORY: i32 = -8;
 const MPROT_READ:  u32 = 0x01;
 const MPROT_WRITE: u32 = 0x02;
 const MOBJ_ANON: u32 = 0;
-// `addr` is a usize here, where the prelude's is a u32 (the ABI keeps user
-// addresses at 32 bits until the user half grows past 4 GB); std/heap.xfxn
-// reads it `as usize`, which compiles against either.
+// `addr` is a usize here, where the prelude's is a u64 (user addresses are
+// 64 bits on every target since ABI 12); std/heap.xfxn reads it `as usize`,
+// which compiles against either.
 struct vm_map_args { offset: u64, length: u64, granted: u64, object: u32, addr: usize, prot: u32, flags: u32 }
 
 const MREMAP_MAYMOVE_FIXED: u32 = 3;

@@ -339,10 +339,10 @@ static int test_user_copy_validation(void) {
     ok = ok && (user_copy_in((void *)src, 0, 0) == 0);
 
     /* A buffer straddling the kernel boundary is refused by both. */
-    ok = ok && (user_copy_out(USER_ADDR32_END - 4, src, 8) == E_BAD_ADDRESS);
+    ok = ok && (user_copy_out(USER_VLIMIT - 4, src, 8) == E_BAD_ADDRESS);
     {
         uint8_t dst[8] = { 0 };
-        ok = ok && (user_copy_in(dst, USER_ADDR32_END - 4, 8) == E_BAD_ADDRESS);
+        ok = ok && (user_copy_in(dst, USER_VLIMIT - 4, 8) == E_BAD_ADDRESS);
     }
 
 done:
@@ -1798,7 +1798,7 @@ static int vm_cycle(int pid) {
     if (a.granted != PAGE_SIZE)        goto done;
     if (a.addr < VM_MMAP_BASE)         goto done;
     if (a.addr & (PAGE_SIZE - 1u))     goto done;
-    uint32_t first = a.addr;
+    uint64_t first = a.addr;
 
     /* Readable, writable, and zero - a frame off the free list may hold
        another process's memory, so anything non-zero here is a disclosure. */
@@ -1812,7 +1812,7 @@ static int vm_cycle(int pid) {
     if (vm_map(pid, &a) != E_OK)                       goto done;
     if (a.granted != 8192)                             goto done;
     if (a.addr < first + PAGE_SIZE && a.addr + 8192 > first) goto done;
-    uint32_t second = a.addr;
+    uint64_t second = a.addr;
 
     /* INFO must account for exactly what was handed out. */
     if (vm_info(pid, &u) != E_OK)                   goto done;
@@ -1859,14 +1859,14 @@ static int vm_cycle(int pid) {
     RESET_ARGS(); a.flags = MMAP_HINT; a.addr = VM_MMAP_BASE + 0x01000000u;
     if (vm_map(pid, &a) != E_OK)                            goto done;
     if (a.addr != VM_MMAP_BASE + 0x01000000u)               goto done;
-    uint32_t hinted = a.addr;
+    uint64_t hinted = a.addr;
 
     /* An occupied hint is declined, not honoured and not failed: the caller
        still gets memory, and `addr` tells it the truth about where. */
     RESET_ARGS(); a.flags = MMAP_HINT; a.addr = hinted;
     if (vm_map(pid, &a) != E_OK)                    goto done;
     if (a.addr == hinted)                           goto done;
-    uint32_t declined = a.addr;
+    uint64_t declined = a.addr;
 
     /* Unmapping something never mapped is an error, not a silent success. */
     if (vm_unmap(pid, VM_MMAP_BASE - PAGE_SIZE, PAGE_SIZE) != E_NOT_FOUND) goto done;
@@ -2173,7 +2173,7 @@ static int test_lifecycle_sequences(void) {
     a.length = PAGE_SIZE; a.prot = MPROT_READ | MPROT_WRITE;
 
     if (vm_map(pid, &a) != E_OK) { ok = 0; goto done_vm; }
-    uint32_t va = a.addr;
+    uint64_t va = a.addr;
 
     /* reachable while mapped, by both the check and the hardware */
     if (!user_ptr_writable(va, PAGE_SIZE)) { ok = 0; goto done_vm; }
@@ -2193,7 +2193,7 @@ static int test_lifecycle_sequences(void) {
     a.object = MOBJ_ANON;
     a.length = PAGE_SIZE; a.prot = MPROT_READ;
     if (vm_map(pid, &a) != E_OK) { ok = 0; goto done_vm; }
-    uint32_t ro = a.addr;
+    uint64_t ro = a.addr;
 
     if (!user_ptr_readable(ro, PAGE_SIZE)) { ok = 0; goto done_vm; }
     if (user_ptr_writable(ro, 1))          { ok = 0; goto done_vm; }

@@ -47,7 +47,7 @@ public static class XfilEmit
 
 /* The handlers, one per syscall, named after it (SYS_FILE_READ: syscall_file_read).
  * Each is given its arguments as the interface declares them. A pointer arrives
- * as the user address it is, a uint32_t; the handler checks and copies it. A
+ * as the user address it is, a uint64_t; the handler checks and copies it. A
  * u64 or i64 arrives whole: x86-32 carries it in two registers, low then high,
  * and its decoder joins them; x86-64 carries it in one. */
 
@@ -124,7 +124,7 @@ extern const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE];
         int r = 0;
         foreach (XfilParam p in s.Params)
         {
-            string type = p.Type is XfilInt i ? i.CType : "uint32_t";
+            string type = p.Type is XfilInt i ? i.CType : "uint64_t";
             if (p.Wide && pairs)
             {
                 args.Add($"({type})((uint64_t)a[{r}] | (uint64_t)a[{r + 1}] << 32)");
@@ -141,7 +141,7 @@ extern const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE];
     private static string CParam(XfilType t) => t switch
     {
         XfilInt i => i.CType,
-        XfilPointer => "uint32_t",
+        XfilPointer => "uint64_t",
         _ => throw new InvalidOperationException($"no C parameter type for {t}"),
     };
 

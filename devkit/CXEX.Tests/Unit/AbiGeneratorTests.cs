@@ -140,9 +140,9 @@ public class AbiGeneratorTests
         AbiStruct S(string n) => Assert.Single(model.Structs, s => s.Name == n);
         string T(string s, string f) => Assert.Single(S(s).Fields, x => x.Name == f).XType;
 
-        Assert.Equal("u32", T("spawn_args", "image"));        // a user address, uint32_t until step 6
+        Assert.Equal("u64", T("spawn_args", "image"));        // a user address, uint64_t since ABI 12
         Assert.Equal("i32", T("spawn_args", "broker_endpoint")); // int
-        Assert.Equal("u32", T("ipc_recv_args", "sender"));
+        Assert.Equal("u64", T("ipc_recv_args", "sender"));    // an address too (ABI 12)
         Assert.Equal("[64]u8", T("file_stat", "name"));       // char[FILE_NAME_MAX]
         Assert.Equal(new[] { "x", "y", "buttons", "seq" },    // int32_t x, y; - one declaration, two fields
                      S("mouse_state").Fields.Select(f => f.Name));
@@ -153,8 +153,8 @@ public class AbiGeneratorTests
     [Trait(Categories.Key, Categories.Unit)]
     public void C_pointer_types_map_to_x_pointers()
     {
-        // The disk header has no pointer field today (user addresses are
-        // uint32_t until step 6 widens them), so the mapping is held here.
+        // The disk header has no pointer field (user addresses are uint64_t,
+        // never pointer types: CX_SYSCALLS_IPC.md sec 5), so the mapping is held here.
         var model = AbiModel.Parse("struct p { const void *a; int *b; uint32_t *c; char *d; };\n");
         string T(string f) => Assert.Single(Assert.Single(model.Structs).Fields, x => x.Name == f).XType;
         Assert.Equal("*u8", T("a"));

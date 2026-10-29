@@ -30,23 +30,23 @@
 
 /* The SYS_FILE_* handlers, each called after the GRANT_DISK check; the ABI
    comments in abi/kernel.xfil give each one's arguments and answer. */
-int sys_file_open(uint32_t path, uint32_t flags);
+int sys_file_open(uint64_t path, uint32_t flags);
 int sys_file_close(int32_t h);
-int sys_file_read(int32_t h, uint32_t buf, uint64_t n);
-int sys_file_write(int32_t h, uint32_t buf, uint64_t n);
-int sys_file_seek(int32_t h, int64_t off, uint32_t origin, uint32_t pos);
-int sys_file_tell(int32_t h, uint32_t pos);
+int sys_file_read(int32_t h, uint64_t buf, uint64_t n);
+int sys_file_write(int32_t h, uint64_t buf, uint64_t n);
+int sys_file_seek(int32_t h, int64_t off, uint32_t origin, uint64_t pos);
+int sys_file_tell(int32_t h, uint64_t pos);
 int sys_file_truncate(int32_t h, uint64_t size);
-int sys_file_stat(uint32_t path, uint32_t st);
-int sys_file_fstat(int32_t h, uint32_t st);
-int sys_file_readdir(uint32_t path, uint32_t index, uint32_t st);
-int sys_file_mkdir(uint32_t path);
-int sys_file_unlink(uint32_t path);
-int sys_file_rename(uint32_t path, uint32_t newname);
-int sys_file_chdir(uint32_t path);
-int sys_file_getcwd(uint32_t buf, uint64_t cap);
+int sys_file_stat(uint64_t path, uint64_t st);
+int sys_file_fstat(int32_t h, uint64_t st);
+int sys_file_readdir(uint64_t path, uint32_t index, uint64_t st);
+int sys_file_mkdir(uint64_t path);
+int sys_file_unlink(uint64_t path);
+int sys_file_rename(uint64_t path, uint64_t newname);
+int sys_file_chdir(uint64_t path);
+int sys_file_getcwd(uint64_t buf, uint64_t cap);
 int sys_file_sync(void);
-int sys_file_lock(int32_t h, uint32_t args);
+int sys_file_lock(int32_t h, uint64_t args);
 int sys_file_unlock(int32_t h, uint64_t start, uint64_t len);
 
 /* register the open-file object type; call once during init. */

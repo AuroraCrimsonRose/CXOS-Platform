@@ -60,14 +60,14 @@ void netif_ip_str(const ip4_t ip, char *buf);
 /* SYS_NET_* handlers (kernel/drivers/net/net_syscall.c), behind the GRANT_NET
    gate in cpu/usermode.c. Pointers are user addresses. */
 int sys_net_status(void);
-int sys_net_mac(uint32_t buf, uint64_t len);
-int sys_net_get_config(uint32_t c);
+int sys_net_mac(uint64_t buf, uint64_t len);
+int sys_net_get_config(uint64_t c);
 int sys_net_set_ip(uint32_t addr);
 int sys_net_set_mask(uint32_t addr);
 int sys_net_set_gateway(uint32_t addr);
 int sys_net_set_dns(uint32_t addr);
-int sys_net_ping(uint32_t dst, uint32_t seq, uint32_t rtt);
-int sys_net_send(uint32_t frame, uint64_t len);
-int sys_net_recv(uint32_t buf, uint64_t cap);
+int sys_net_ping(uint32_t dst, uint32_t seq, uint64_t rtt);
+int sys_net_send(uint64_t frame, uint64_t len);
+int sys_net_recv(uint64_t buf, uint64_t cap);
 
 #endif

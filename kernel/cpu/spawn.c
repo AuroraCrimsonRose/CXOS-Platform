@@ -297,10 +297,9 @@ static int check_args(const struct spawn_args *a) {
 
 /* SYS_SPAWN: an executive (GRANT_SPAWN) launches a capability-less app, brokered
    through one of its endpoints. */
-int sys_spawn(uint32_t ua) {
+int sys_spawn(uint64_t ua) {
     struct spawn_args a;
     if (user_copy_in(&a, ua, sizeof a) != 0) return E_BAD_ADDRESS;
-    if (a.reserved != 0) return E_INVALID_ARGS;
 
     if (a.image_len == 0 || a.image_len > PROC_MAX_IMAGE) return E_OUT_OF_RANGE;
     if (!user_ptr_readable(a.image, (uint32_t)a.image_len)) return E_BAD_ADDRESS;
@@ -390,10 +389,9 @@ int sys_spawn(uint32_t ua) {
  * executive rather than sitting on the disk where it could be replaced. Two
  * routes to ring 3, both verified, neither trusting the caller's buffer.
  */
-int sys_exec_path(uint32_t upath, uint32_t ua) {
+int sys_exec_path(uint64_t upath, uint64_t ua) {
     struct spawn_args a;
     if (user_copy_in(&a, ua, sizeof a) != 0) return E_BAD_ADDRESS;
-    if (a.reserved != 0) return E_INVALID_ARGS;
 
     int arc = check_args(&a);
     if (arc != E_OK) return arc;
@@ -401,7 +399,7 @@ int sys_exec_path(uint32_t upath, uint32_t ua) {
     /* copy the path in a page at a time; user_ptr_readable walks page tables, so
        per-byte would be a page-table walk per character */
     char path[FILE_PATH_MAX];
-    uint32_t addr = upath;
+    uint64_t addr = upath;
     if (!addr) return E_BAD_ADDRESS;
     uint32_t n = 0;
     for (;;) {

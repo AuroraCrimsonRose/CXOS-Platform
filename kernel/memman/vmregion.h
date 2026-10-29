@@ -103,7 +103,7 @@ void vm_uncharge(int pid, uint32_t bytes);
    validated as readable and writable user pointers by the caller. Each returns
    E_OK or a negative E_*. */
 int vm_map(int pid, struct vm_map_args *a);
-int vm_unmap(int pid, uint32_t addr, uint64_t length);
+int vm_unmap(int pid, uint64_t addr, uint64_t length);
 int vm_info(int pid, struct vm_usage *u);
 
 #endif

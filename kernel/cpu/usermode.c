@@ -111,7 +111,7 @@ uint32_t syscall_trapped_count(void) { return atomic_load(&syscall_trapped); }
    each its arguments, and the table that finds them are generated from
    abi/kernel.xfil (systable.h, systable.c); what each one does is here. */
 
-int syscall_console_write(uint32_t buf, uint64_t len64) {
+int syscall_console_write(uint64_t buf, uint64_t len64) {
     if (!(thread_current_caps() & GRANT_CONSOLE)) {
         klog_u32("GRANT", SEV_WARN, "console_write DENIED for pid ", (uint32_t)thread_current_pid(), LOG_COLOR_VALUE, " (no GRANT_CONSOLE)");
         return E_ACCESS_DENIED;
@@ -135,7 +135,7 @@ int syscall_console_write(uint32_t buf, uint64_t len64) {
     return (int)len;
 }
 
-int syscall_log_read(uint32_t i, uint32_t e) {
+int syscall_log_read(uint32_t i, uint64_t e) {
     /* GRANT_CONSOLE: the log holds what every process printed in the
        background, and what the kernel said about all of them. */
     if (!(thread_current_caps() & GRANT_CONSOLE)) return E_ACCESS_DENIED;
@@ -160,7 +160,7 @@ void syscall_exit(int32_t code) {
 
 void syscall_yield(void) { yield(); }
 
-int syscall_clock(uint32_t c) {
+int syscall_clock(uint64_t c) {
     /* Unprivileged: the time of day is not authority. A process that
        could not read it would simply count its own loop iterations. */
     if (!user_ptr_writable(c, sizeof(struct clock_info))) return E_BAD_ADDRESS;
@@ -177,7 +177,7 @@ int syscall_clock(uint32_t c) {
     return E_OK;
 }
 
-int syscall_args(uint32_t a) {
+int syscall_args(uint64_t a) {
     /* Unprivileged: a program asking where its own arguments are.
        This exists so USER_ARGS_BASE does not have to be compiled into
        every program - the address is a 32-bit x86 fact, and a userland
@@ -206,12 +206,12 @@ int syscall_sleep(uint32_t ms) {
     return E_OK;
 }
 
-int syscall_spawn(uint32_t a) {
+int syscall_spawn(uint64_t a) {
     if (!(thread_current_caps() & GRANT_SPAWN)) return E_ACCESS_DENIED;
     return sys_spawn(a);
 }
 
-int syscall_exec_path(uint32_t path, uint32_t a) {
+int syscall_exec_path(uint64_t path, uint64_t a) {
     if (!(thread_current_caps() & GRANT_SPAWN)) return E_ACCESS_DENIED;
     return sys_exec_path(path, a);
 }
@@ -223,7 +223,7 @@ static int disk_granted(void) {
     return 0;
 }
 
-int syscall_file_open(uint32_t path, uint32_t flags) {
+int syscall_file_open(uint64_t path, uint32_t flags) {
     if (!disk_granted()) return E_ACCESS_DENIED;
     return sys_file_open(path, flags);
 }
@@ -233,22 +233,22 @@ int syscall_file_close(int32_t h) {
     return sys_file_close(h);
 }
 
-int syscall_file_read(int32_t h, uint32_t buf, uint64_t n) {
+int syscall_file_read(int32_t h, uint64_t buf, uint64_t n) {
     if (!disk_granted()) return E_ACCESS_DENIED;
     return sys_file_read(h, buf, n);
 }
 
-int syscall_file_write(int32_t h, uint32_t buf, uint64_t n) {
+int syscall_file_write(int32_t h, uint64_t buf, uint64_t n) {
     if (!disk_granted()) return E_ACCESS_DENIED;
     return sys_file_write(h, buf, n);
 }
 
-int syscall_file_seek(int32_t h, int64_t off, uint32_t origin, uint32_t pos) {
+int syscall_file_seek(int32_t h, int64_t off, uint32_t origin, uint64_t pos) {
     if (!disk_granted()) return E_ACCESS_DENIED;
     return sys_file_seek(h, off, origin, pos);
 }
 
-int syscall_file_tell(int32_t h, uint32_t pos) {
+int syscall_file_tell(int32_t h, uint64_t pos) {
     if (!disk_granted()) return E_ACCESS_DENIED;
     return sys_file_tell(h, pos);
 }
@@ -258,42 +258,42 @@ int syscall_file_truncate(int32_t h, uint64_t size) {
     return sys_file_truncate(h, size);
 }
 
-int syscall_file_stat(uint32_t path, uint32_t st) {
+int syscall_file_stat(uint64_t path, uint64_t st) {
     if (!disk_granted()) return E_ACCESS_DENIED;
     return sys_file_stat(path, st);
 }
 
-int syscall_file_fstat(int32_t h, uint32_t st) {
+int syscall_file_fstat(int32_t h, uint64_t st) {
     if (!disk_granted()) return E_ACCESS_DENIED;
     return sys_file_fstat(h, st);
 }
 
-int syscall_file_readdir(uint32_t path, uint32_t index, uint32_t st) {
+int syscall_file_readdir(uint64_t path, uint32_t index, uint64_t st) {
     if (!disk_granted()) return E_ACCESS_DENIED;
     return sys_file_readdir(path, index, st);
 }
 
-int syscall_file_mkdir(uint32_t path) {
+int syscall_file_mkdir(uint64_t path) {
     if (!disk_granted()) return E_ACCESS_DENIED;
     return sys_file_mkdir(path);
 }
 
-int syscall_file_unlink(uint32_t path) {
+int syscall_file_unlink(uint64_t path) {
     if (!disk_granted()) return E_ACCESS_DENIED;
     return sys_file_unlink(path);
 }
 
-int syscall_file_rename(uint32_t path, uint32_t newname) {
+int syscall_file_rename(uint64_t path, uint64_t newname) {
     if (!disk_granted()) return E_ACCESS_DENIED;
     return sys_file_rename(path, newname);
 }
 
-int syscall_file_chdir(uint32_t path) {
+int syscall_file_chdir(uint64_t path) {
     if (!disk_granted()) return E_ACCESS_DENIED;
     return sys_file_chdir(path);
 }
 
-int syscall_file_getcwd(uint32_t buf, uint64_t cap) {
+int syscall_file_getcwd(uint64_t buf, uint64_t cap) {
     if (!disk_granted()) return E_ACCESS_DENIED;
     return sys_file_getcwd(buf, cap);
 }
@@ -303,7 +303,7 @@ int syscall_file_sync(void) {
     return sys_file_sync();
 }
 
-int syscall_file_lock(int32_t h, uint32_t a) {
+int syscall_file_lock(int32_t h, uint64_t a) {
     if (!disk_granted()) return E_ACCESS_DENIED;
     return sys_file_lock(h, a);
 }
@@ -320,7 +320,7 @@ static int fb_granted(void) {
     return 0;
 }
 
-int syscall_fb_info(uint32_t g) {
+int syscall_fb_info(uint64_t g) {
     if (!fb_granted()) return E_ACCESS_DENIED;
     return sys_fb_info(g);
 }
@@ -345,12 +345,12 @@ int syscall_fb_draw_line(uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1, uin
     return sys_fb_draw_line(x0, y0, x1, y1, color);
 }
 
-int syscall_fb_draw_text(uint32_t x, uint32_t y, uint32_t text, uint32_t fg, uint32_t bg) {
+int syscall_fb_draw_text(uint32_t x, uint32_t y, uint64_t text, uint32_t fg, uint32_t bg) {
     if (!fb_granted()) return E_ACCESS_DENIED;
     return sys_fb_draw_text(x, y, text, fg, bg);
 }
 
-int syscall_fb_set_font(uint32_t name) {
+int syscall_fb_set_font(uint64_t name) {
     if (!fb_granted()) return E_ACCESS_DENIED;
     return sys_fb_set_font(name);
 }
@@ -376,12 +376,12 @@ int syscall_net_status(void) {
     return sys_net_status();
 }
 
-int syscall_net_mac(uint32_t buf, uint64_t len) {
+int syscall_net_mac(uint64_t buf, uint64_t len) {
     if (!net_granted()) return E_ACCESS_DENIED;
     return sys_net_mac(buf, len);
 }
 
-int syscall_net_get_config(uint32_t c) {
+int syscall_net_get_config(uint64_t c) {
     if (!net_granted()) return E_ACCESS_DENIED;
     return sys_net_get_config(c);
 }
@@ -406,22 +406,22 @@ int syscall_net_set_dns(uint32_t addr) {
     return sys_net_set_dns(addr);
 }
 
-int syscall_net_ping(uint32_t dst, uint32_t seq, uint32_t rtt) {
+int syscall_net_ping(uint32_t dst, uint32_t seq, uint64_t rtt) {
     if (!net_granted()) return E_ACCESS_DENIED;
     return sys_net_ping(dst, seq, rtt);
 }
 
-int syscall_net_send(uint32_t frame, uint64_t len) {
+int syscall_net_send(uint64_t frame, uint64_t len) {
     if (!net_granted()) return E_ACCESS_DENIED;
     return sys_net_send(frame, len);
 }
 
-int syscall_net_recv(uint32_t buf, uint64_t cap) {
+int syscall_net_recv(uint64_t buf, uint64_t cap) {
     if (!net_granted()) return E_ACCESS_DENIED;
     return sys_net_recv(buf, cap);
 }
 
-int syscall_mouse_read(uint32_t m) {
+int syscall_mouse_read(uint64_t m) {
     /* unprivileged, same reasoning as keyboard input: a process reading
        the pointer it is already being shown */
     struct mouse_state *ms = (struct mouse_state *)user_ptr(m);
@@ -463,23 +463,23 @@ int syscall_power_sleep(uint32_t ms) {
    run. What bounds them is the per-process quota inside vm_map, not a grant
    bit every program would have to hold. The quota is the process's, so each
    passes the caller's pid. */
-int syscall_vm_map(uint32_t a) {
+int syscall_vm_map(uint64_t a) {
     if (!user_ptr_writable(a, sizeof(struct vm_map_args))) return E_BAD_ADDRESS;
     return vm_map(thread_current_pid(), (struct vm_map_args *)user_ptr(a));
 }
 
-int syscall_vm_unmap(uint32_t addr, uint64_t length) {
+int syscall_vm_unmap(uint64_t addr, uint64_t length) {
     return vm_unmap(thread_current_pid(), addr, length);
 }
 
-int syscall_vm_info(uint32_t u) {
+int syscall_vm_info(uint64_t u) {
     if (!user_ptr_writable(u, sizeof(struct vm_usage))) return E_BAD_ADDRESS;
     return vm_info(thread_current_pid(), (struct vm_usage *)user_ptr(u));
 }
 
-int syscall_ipc_call(uint32_t a)  { return ipc_call(a); }
-int syscall_ipc_recv(uint32_t a)  { return ipc_recv(a); }
-int syscall_ipc_reply(uint32_t a) { return ipc_reply(a); }
+int syscall_ipc_call(uint64_t a)  { return ipc_call(a); }
+int syscall_ipc_recv(uint64_t a)  { return ipc_recv(a); }
+int syscall_ipc_reply(uint64_t a) { return ipc_reply(a); }
 
 int syscall_ep_create(void) {
     if (!(thread_current_caps() & GRANT_ENDPOINT)) return E_ACCESS_DENIED;
@@ -495,11 +495,10 @@ int syscall_handle_duplicate(int32_t h, uint32_t rights) {
     return htab_dup(thread_htab(thread_current_id()), h, rights);
 }
 
-int syscall_object_info(uint32_t a) {
+int syscall_object_info(uint64_t a) {
     /* Unprivileged: it describes only a handle the caller holds. */
     struct object_info_args oa;
     if (user_copy_in(&oa, a, sizeof oa) != 0) return E_BAD_ADDRESS;
-    if (oa.reserved != 0) return E_INVALID_ARGS;
     struct htab_info hi;
     struct kobj *o = htab_ref(thread_htab(thread_current_id()), oa.handle,
                               KOBJ_NONE, 0, &hi);
@@ -511,7 +510,7 @@ int syscall_object_info(uint32_t a) {
     kobj_unref(o);
     if (oa.topic != OBJINFO_BASIC) return E_INVALID_ARGS;
     if (oa.cap < sizeof b) return E_BUFFER_TOO_SMALL;
-    if (user_copy_out((uint32_t)oa.buf, &b, sizeof b) != 0) return E_BAD_ADDRESS;
+    if (user_copy_out(oa.buf, &b, sizeof b) != 0) return E_BAD_ADDRESS;
     return (int)sizeof b;
 }
 
@@ -650,8 +649,8 @@ int usermode_test(void) {
     int sealed = seal_user_code(TEST_CODE_VIRT, code_phys) == 0;
 
     /* seed the message pointer at the top of the user stack ([esp] on entry) */
-    uint32_t ustack_top = TEST_STACK_VIRT + 0x1000 - 16;
-    *(uint32_t *)user_ptr(ustack_top) = user_addr(umsg);
+    uint64_t ustack_top = TEST_STACK_VIRT + 0x1000 - 16;
+    *(uint64_t *)user_ptr(ustack_top) = user_addr(umsg);
 
     /* dev test runs as a SYSTEM ring-3 helper: grant it console so the gated
        SYS_WRITE works (restored after). */
@@ -877,7 +876,6 @@ static int oi_call(int h, uint32_t topic, uint64_t cap) {
     a->topic    = topic;
     a->buf      = FT_INFO;
     a->cap      = cap;
-    a->reserved = 0;
     return syscall_dispatch(SYS_OBJECT_INFO, FT_IARGS, 0, 0, 0, 0);
 }
 
@@ -1034,12 +1032,15 @@ int usermode_file_test(void) {
     /* a u64 cap (ABI 10) is compared whole: 2^32 is room enough, not 0 */
     step++;
     if (oi_call(d, OBJINFO_BASIC, 1ull << 32) != ob) goto done;
+    /* A user address is 64 bits (ABI 12) and is checked whole: FT_INFO plus
+       4 GB is unmapped, and refused - cut to 32 bits it would be FT_INFO, and
+       the answer would land there. */
+    struct object_info_args *oia = (struct object_info_args *)FT_IARGS;
+    oia->buf = FT_INFO + (1ull << 32);
+    step++;
+    if (syscall_dispatch(SYS_OBJECT_INFO, FT_IARGS, 0, 0, 0, 0) != E_BAD_ADDRESS) goto done;
     /* Padding is a field that must be 0, in each structure that has it; each
        is checked before the handle, so a dead handle tells the two apart. */
-    struct object_info_args *oia = (struct object_info_args *)FT_IARGS;
-    oia->reserved = 1;
-    step++;
-    if (syscall_dispatch(SYS_OBJECT_INFO, FT_IARGS, 0, 0, 0, 0) != E_INVALID_ARGS) goto done;
     struct ipc_call_args *ica = (struct ipc_call_args *)FT_IARGS;
     ica->req_len = 0; ica->reply_cap = 0; ica->ep_handle = -1; ica->req = 0; ica->reply = 0;
     ica->reserved = 0;
@@ -1056,6 +1057,14 @@ int usermode_file_test(void) {
     ira->reserved = 1;
     step++;
     if (syscall_dispatch(SYS_IPC_RECV, FT_IARGS, 0, 0, 0, 0) != E_INVALID_ARGS) goto done;
+    struct ipc_reply_args *ipa = (struct ipc_reply_args *)FT_IARGS;
+    ipa->data = 0; ipa->len = 0; ipa->ep_handle = -1;
+    ipa->reserved = 0;
+    step++;
+    if (syscall_dispatch(SYS_IPC_REPLY, FT_IARGS, 0, 0, 0, 0) != E_BAD_HANDLE) goto done;
+    ipa->reserved = 1;
+    step++;
+    if (syscall_dispatch(SYS_IPC_REPLY, FT_IARGS, 0, 0, 0, 0) != E_INVALID_ARGS) goto done;
     step++;
     if (ft_call(SYS_FILE_WRITE, d, 0, FT_DATA, 1, 0, 0) != E_ACCESS_DENIED) goto done;
     step++;
@@ -1284,7 +1293,7 @@ int usermode_file_test(void) {
     struct spawn_args *sa = (struct spawn_args *)FT_STAT;   /* reuse the page */
     sa->image = 0; sa->image_len = 0; sa->name = FT_PATH;
     sa->broker_endpoint = -1; sa->caps = 0;
-    sa->args = 0; sa->args_len = 0; sa->reserved = 0;
+    sa->args = 0; sa->args_len = 0;
 
     ft_strp(FT_PATH, scratch, "/kt_absent.xuex");
     step++;
@@ -1530,7 +1539,7 @@ int usermode_vm_test(void) {
     vm_proc_init(pid, vm_default_quota(), -1);
 
     int ok = 0, step = 0;
-    uint32_t addr = 0;
+    uint64_t addr = 0;
     struct vm_map_args *a = (struct vm_map_args *)user_ptr(VT_ARGS);
     struct vm_usage    *u = (struct vm_usage *)user_ptr(VT_USAGE);
 
@@ -1565,6 +1574,27 @@ int usermode_vm_test(void) {
     addr = 0;
     step++;
     if (syscall_dispatch(SYS_VM_INFO, VT_USAGE, 0, 0, 0, 0) != E_OK || u->mapped != 0) goto done;
+
+    /* padding must be 0 */
+    a->reserved = 1;
+    step++;
+    if (syscall_dispatch(SYS_VM_MAP, VT_ARGS, 0, 0, 0, 0) != E_INVALID_ARGS) goto done;
+    a->reserved = 0;
+
+    /* A hint is a whole address (ABI 12): one 4 GB above a free page in the
+       window is outside it, so placement chooses. Cut to 32 bits it would be
+       that free page, and honoured. */
+    a->flags = MMAP_HINT;
+    a->addr  = VM_MMAP_BASE + 0x100000ull + (1ull << 32);
+    step++;
+    if (syscall_dispatch(SYS_VM_MAP, VT_ARGS, 0, 0, 0, 0) != E_OK) goto done;
+    addr = a->addr;
+    step++;
+    if (addr == VM_MMAP_BASE + 0x100000ull || addr < VM_MMAP_BASE || addr >= VM_MMAP_TOP) goto done;
+    step++;
+    if (syscall_dispatch(SYS_VM_UNMAP, addr, 0, 0, 0, 0) != E_OK) goto done;
+    addr = 0;
+    a->flags = 0;
 
     /* a pointer into the kernel is refused, not written through */
     step++;
@@ -2093,11 +2123,16 @@ int usermode_flock_test(void) {
     {
         struct spawn_args *sa = (struct spawn_args *)FT_STAT;
         sa->image = 0; sa->image_len = 0; sa->name = FT_PATH;
-        sa->broker_endpoint = -1; sa->caps = 0; sa->args = 0; sa->args_len = 0;
-        sa->reserved = 1;                         /* padding must be 0, refused first */
+        sa->broker_endpoint = -1; sa->caps = 0;
+        /* the arguments are checked before the path: FT_PATH's own string as
+           the blob, 4 GB up, is unmapped (ABI 12) - cut to 32 bits it would be
+           a good blob, and the call would go on to E_NOT_FOUND */
+        uint32_t pl = 0;
+        while (((const char *)user_ptr(FT_PATH))[pl]) pl++;
+        sa->args = FT_PATH + (1ull << 32); sa->args_len = pl + 1;
         step++;                                                                   /* 42 */
-        if (sys_exec_path(FT_PATH, user_addr(sa)) != E_INVALID_ARGS) goto done;
-        sa->reserved = 0;
+        if (sys_exec_path(FT_PATH, user_addr(sa)) != E_BAD_ADDRESS) goto done;
+        sa->args = 0; sa->args_len = 0;
         if (sys_exec_path(FT_PATH, user_addr(sa)) != E_NOT_FOUND) goto done;
     }
     /* and the id is not handed to the next file created */
@@ -2206,8 +2241,8 @@ static void process_trampoline(void) {
     umsg[i] = '\0';
     int sealed = seal_user_code(s->code_virt, s->code_phys) == 0;
 
-    uint32_t ustack_top = s->stack_virt + 0x1000 - 16;
-    *(uint32_t *)user_ptr(ustack_top) = user_addr(umsg);
+    uint64_t ustack_top = s->stack_virt + 0x1000 - 16;
+    *(uint64_t *)user_ptr(ustack_top) = user_addr(umsg);
 
     if (sealed && ksyspage_get() == 0) {
         enter_usermode(s->code_virt, ustack_top, thread_current_usave(), SYSPAGE_VIRT);

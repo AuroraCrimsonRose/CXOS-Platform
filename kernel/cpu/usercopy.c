@@ -17,20 +17,20 @@
 
 /* Shared body. `need_write` decides which question is actually being asked of
    the page tables - see user_ptr_readable / user_ptr_writable below. */
-static int user_ptr_span(uint32_t ptr, uint32_t len, int need_write) {
+static int user_ptr_span(uint64_t ptr, uint64_t len, int need_write) {
     if (len == 0) len = 1;
     if (ptr + len < ptr)            return 0;   /* wrap/overflow */
-    if (ptr + len > USER_ADDR32_END) return 0;  /* must lie entirely in the user half */
+    if (ptr + len > USER_VLIMIT)    return 0;   /* must lie entirely in the user half */
     /* every page the buffer spans must be present + ring-3 accessible in the
        caller's active address space (its CR3 is live during this syscall). */
-    for (uint32_t p = ptr & ~0xFFFu; p < ptr + len; p += 0x1000) {
-        if (need_write ? !paging_is_user_writable(p) : !paging_is_user(p)) return 0;
+    for (uint64_t p = ptr & ~0xFFFull; p < ptr + len; p += 0x1000) {
+        if (need_write ? !paging_is_user_writable((uintptr_t)p) : !paging_is_user((uintptr_t)p)) return 0;
     }
     return 1;
 }
 
 /* A buffer the kernel will only READ from. */
-int user_ptr_readable(uint32_t ptr, uint32_t len) { return user_ptr_span(ptr, len, 0); }
+int user_ptr_readable(uint64_t ptr, uint64_t len) { return user_ptr_span(ptr, len, 0); }
 
 /* A buffer the kernel will WRITE to.
  *
@@ -46,7 +46,7 @@ int user_ptr_readable(uint32_t ptr, uint32_t len) { return user_ptr_span(ptr, le
  * call site has to say which access it means, and a new one cannot default to
  * the weaker check by forgetting.
  */
-int user_ptr_writable(uint32_t ptr, uint32_t len) { return user_ptr_span(ptr, len, 1); }
+int user_ptr_writable(uint64_t ptr, uint64_t len) { return user_ptr_span(ptr, len, 1); }
 
 /* ---- copying across the ring boundary (security review §6) ---------------
  *
@@ -100,14 +100,14 @@ static uint32_t recovered_faults = 0;
 uint32_t usercopy_faults_recovered(void)  { return recovered_faults; }
 void     usercopy_note_recovered_fault(void) { recovered_faults++; }
 
-int user_copy_out(uint32_t udst, const void *ksrc, uint32_t len) {
+int user_copy_out(uint64_t udst, const void *ksrc, uint32_t len) {
     if (len == 0) return 0;
     if (!user_ptr_writable(udst, len)) return E_BAD_ADDRESS;
     if (user_copy_bytes(user_ptr(udst), ksrc, len) != 0) return E_BAD_ADDRESS;
     return 0;
 }
 
-int user_copy_in(void *kdst, uint32_t usrc, uint32_t len) {
+int user_copy_in(void *kdst, uint64_t usrc, uint32_t len) {
     if (len == 0) return 0;
     if (!user_ptr_readable(usrc, len)) return E_BAD_ADDRESS;
     if (user_copy_bytes(kdst, user_ptr(usrc), len) != 0) return E_BAD_ADDRESS;

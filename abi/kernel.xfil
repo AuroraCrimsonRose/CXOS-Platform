@@ -40,7 +40,7 @@ domain kernel
 /// mismatch. Declared in versions.json as `cxex-abi` and checked against this
 /// line; bump both, and the DevKit's stamp, in the one commit that changes the
 /// contract.
-const CXK_ABI_VERSION: u32 = 11
+const CXK_ABI_VERSION: u32 = 12
 
 /// ---- syscall numbers ----
 /// lifecycle 0x00-0x0F (no capability required)
@@ -136,7 +136,7 @@ syscall SYS_EXEC_PATH = 0x72 fn exec_path(path: *u8, a: *spawn_args) -> i32
 /// memory 0x80-0x8F (unprivileged, quota-bounded)
 syscall SYS_VM_MAP = 0x80 fn vm_map(a: *vm_map_args) -> i32     /// ebx = *vm_map_args -> 0, with addr and granted filled in
 /// addr, length (0 = the whole mapping) -> 0
-syscall SYS_VM_UNMAP = 0x81 fn vm_unmap(addr: u32, length: u64) -> i32
+syscall SYS_VM_UNMAP = 0x81 fn vm_unmap(addr: u64, length: u64) -> i32
 syscall SYS_VM_INFO = 0x82 fn vm_info(u: *vm_usage) -> i32      /// ebx = *vm_usage -> 0, with quota and mapped filled in
 
 /// power 0x90-0x9F (privileged: GRANT_POWER). Each returns only if refused.
@@ -284,25 +284,26 @@ const SYSPAGE_STUB_SIZE: u32 = 16u       /// bytes per stub; 256 of them fill th
 /// `base` points at the argument page described above - the kernel's choice,
 /// not a constant the program is expected to know.
 struct args_info {
+    base: u64       /// address of the argument page in THIS process
     count: u32      /// argc
-    base: u32       /// address of the argument page in THIS process
     broker: i32     /// a SEND handle on the launcher's broker endpoint, or -1
 }
 
 /// ---- shared call structures ----
 /// The u64 fields come first in each, so none needs padding before it; padding
 /// at the end is a field named `reserved`, which must be 0 (E_INVALID_ARGS).
+/// A user address is a u64 on every target (ABI 12; until then a u32, which
+/// held only while the user half kept x86-32's layout below 4 GB).
 struct spawn_args {
     image_len: u64          /// bytes at image
     args_len: u64           /// total bytes of the args blob, terminators included
-    image: u32              /// the app's CXEX bytes (in the caller's space)
-    name: u32               /// optional; not dereferenced in v1
+    image: u64              /// the app's CXEX bytes (in the caller's space)
+    name: u64               /// optional; not dereferenced in v1
+    args: u64               /// argc NUL-terminated strings back to back, or NULL
     broker_endpoint: i32    /// a RECV endpoint handle the caller owns
     /// requested caps for the child; kernel masks against the spawner's own
     /// caps (attenuation, never amplify). 0 = capability-less app.
     caps: u32
-    args: u32               /// argc NUL-terminated strings back to back, or NULL
-    reserved: u32
 }
 
 /// ---- clock and sleep (SYS_CLOCK, SYS_SLEEP; unprivileged) ----
@@ -348,10 +349,9 @@ const OBJ_TYPE_FILE: u32 = 2
 
 struct object_info_args {
     cap: u64        /// bytes at buf; smaller than the topic needs is E_BUFFER_TOO_SMALL
+    buf: u64        /// the topic's structure is written here
     handle: i32
     topic: u32      /// OBJINFO_*
-    buf: u32        /// the topic's structure is written here
-    reserved: u32
 }
 struct object_basic {
     kind: u32           /// OBJ_TYPE_* (not `type`: an X keyword)
@@ -364,22 +364,23 @@ struct object_basic {
 struct ipc_call_args {
     req_len: u64
     reply_cap: u64
+    req: u64        /// request bytes
+    reply: u64      /// buffer the reply is copied into
     ep_handle: i32  /// a SEND endpoint handle (the broker channel)
-    req: u32        /// request bytes
-    reply: u32      /// buffer the reply is copied into
     reserved: u32
 }
 struct ipc_recv_args {
     cap: u64
+    buf: u64        /// request copied here
+    sender: u64     /// where the caller's pid is written (an i32), or 0
     ep_handle: i32  /// a RECV endpoint handle (owner side)
-    buf: u32        /// request copied here
-    sender: u32     /// set to the caller's pid (may be 0)
     reserved: u32
 }
 struct ipc_reply_args {
-    ep_handle: i32  /// the RECV endpoint just received on
-    data: u32       /// reply bytes
+    data: u64       /// reply bytes
     len: u64
+    ep_handle: i32  /// the RECV endpoint just received on
+    reserved: u32
 }
 
 /// ---- framebuffer (SYS_FB_INFO) ----
@@ -522,11 +523,12 @@ struct vm_map_args {
     offset: u64     /// offset into the object; 0 for MOBJ_ANON
     length: u64     /// bytes wanted
     granted: u64    /// out: bytes actually mapped (length, rounded up to a page)
-    object: u32     /// MOBJ_* (MOBJ_ANON today)
     /// in: a hint if MMAP_HINT; out: where it is
-    addr: u32
+    addr: u64
+    object: u32     /// MOBJ_* (MOBJ_ANON today)
     prot: u32       /// MPROT_*
     flags: u32      /// MMAP_*
+    reserved: u32
 }
 
 /// SYS_VM_INFO: this process's memory account.

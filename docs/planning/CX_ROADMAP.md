@@ -271,7 +271,13 @@ programs for it (step 6).
      decodes a pointer argument as `uint32_t`. Nothing truncates while the
      x86-64 user half keeps x86-32's layout (images below `USER_IMAGE_END`,
      mappings in `VM_MMAP_BASE..VM_MMAP_TOP`); widening them is an ABI step
-     of its own, before the user half grows past 4 GB.
+     of its own, before the user half grows past 4 GB. **Done in ABI 12
+     (2026-10-28), as Phase 1's first step:** every user address in a
+     structure or argument is a `u64`, the kernel checks it whole against
+     `USER_VLIMIT`, and a hint or buffer 4 GB above a valid one is refused
+     rather than cut down to it. `ipc_recv_args.sender` turned out to be an
+     address too. Still 32-bit: a CXEX section's virtual address (the image
+     format) and the user layout itself, which stays below 4 GB.
      **X stays cross-architecture:** the `x86_32` target stays in both front
      ends and the IR, and an x86-32 back end on the IR (like `X64Emitter`)
      can come back later without touching the language.

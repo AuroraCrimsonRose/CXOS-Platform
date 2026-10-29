@@ -53,9 +53,8 @@ static inline int sys_ipc_recv(struct ipc_recv_args *a) { return sys_call(SYS_IP
 static inline int sys_ipc_reply(struct ipc_reply_args *a) { return sys_call(SYS_IPC_REPLY, (uintptr_t)a, 0); }
 static inline void sys_yield(void) { (void)sys_call(SYS_YIELD, 0, 0); }
 
-/* The ABI's user addresses are u32 ("Not in 6d", CX_ROADMAP.md): this image,
-   its stack and its data all sit below 4 GB on both targets. */
-#define UADDR(p) ((uint32_t)(uintptr_t)(p))
+/* A user address crosses the ABI as a u64 on every target (ABI 12). */
+#define UADDR(p) ((uint64_t)(uintptr_t)(p))
 
 static void executive_main(void) __attribute__((used, noreturn));
 
@@ -84,7 +83,7 @@ static void executive_main(void) {
        as whatever was on the stack. The kernel validates args against
        args_len, so a stale pointer here is a spawn that fails with E_BAD_ADDRESS
        and a machine that boots to nothing. */
-    sa.args = 0; sa.args_len = 0; sa.reserved = 0;
+    sa.args = 0; sa.args_len = 0;
     int pid = sys_spawn(&sa);
     if (pid < 0) { sys_write("executive: spawn failed\n"); sys_exit(1); }
 
@@ -107,7 +106,7 @@ static void executive_main(void) {
     svc.image = 0; svc.image_len = 0;
     svc.name = UADDR("supervisor"); svc.broker_endpoint = -1;
     svc.caps = GRANT_OS_BASELINE | SPAWN_BACKGROUND;
-    svc.args = 0; svc.args_len = 0; svc.reserved = 0;
+    svc.args = 0; svc.args_len = 0;
     if (sys_exec_path("/System/Programs/supervisor.xsex", &svc) < 0)
         sys_write("executive: no service supervisor (/System/Programs/supervisor.xsex)\n");
 
@@ -123,7 +122,7 @@ static void executive_main(void) {
     }
 
     struct ipc_reply_args rp;
-    rp.ep_handle = ep; rp.data = UADDR("ok"); rp.len = 2;
+    rp.ep_handle = ep; rp.data = UADDR("ok"); rp.len = 2; rp.reserved = 0;
     sys_ipc_reply(&rp);                  /* wake the app */
 
     sys_yield();                         /* let the app resume and exit */

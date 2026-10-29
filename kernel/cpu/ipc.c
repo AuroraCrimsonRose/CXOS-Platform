@@ -186,7 +186,7 @@ static int call_on(struct endpoint *ep, const struct ipc_call_args *ap) {
     return rc != 0 ? E_BAD_ADDRESS : (int)rl;
 }
 
-int ipc_call(uint32_t ua) {
+int ipc_call(uint64_t ua) {
     struct ipc_call_args a;
     if (user_copy_in(&a, ua, sizeof a) != 0) return E_BAD_ADDRESS;
     if (a.reserved != 0) return E_INVALID_ARGS;
@@ -234,7 +234,7 @@ static int recv_on(struct endpoint *ep, const struct ipc_recv_args *ap) {
     return rc != 0 ? E_BAD_ADDRESS : (int)ml;
 }
 
-int ipc_recv(uint32_t ua) {
+int ipc_recv(uint64_t ua) {
     struct ipc_recv_args a;
     if (user_copy_in(&a, ua, sizeof a) != 0) return E_BAD_ADDRESS;
     if (a.reserved != 0) return E_INVALID_ARGS;
@@ -263,9 +263,10 @@ static int reply_on(struct endpoint *ep, const struct ipc_reply_args *ap) {
     return 0;
 }
 
-int ipc_reply(uint32_t ua) {
+int ipc_reply(uint64_t ua) {
     struct ipc_reply_args a;
     if (user_copy_in(&a, ua, sizeof a) != 0) return E_BAD_ADDRESS;
+    if (a.reserved != 0) return E_INVALID_ARGS;
 
     struct endpoint *ep = ep_from_handle(a.ep_handle, HRIGHT_RECV, NULL);
     if (!ep) return E_BAD_HANDLE;

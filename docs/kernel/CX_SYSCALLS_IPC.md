@@ -391,7 +391,7 @@ syscall SYS_EXAMPLE = 0x3F0 (op: u32, ms: u32) -> i32   /// no plain wrapper
   x86-64 a `u64`, an `i64` and a pointer go whole, anything else as on x86-32. A decoder reads the registers as `uintptr_t` and casts each
   to its parameter's C type; one with a wide parameter is written twice, `#if
   SYSCALL_PAIRS` joining the pair on x86-32 and taking one register on x86-64.
-  The kernel receives a pointer as a `uint32_t` user address. Wrappers come out in file order, and
+  The kernel receives a pointer as a `uint64_t` user address on every target (ABI 12). Wrappers come out in file order, and
   since every prelude function is compiled into every program, so do the
   programs' bytes.
 - Every refusal names its line. Nothing is skipped: a generator that dropped

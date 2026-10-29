@@ -214,15 +214,15 @@ public class XfilTests
             "syscall SYS_POWER = 0x05 () -> i32\n");
         string h = XfilEmit.CTableHeader(f), c = XfilEmit.CTable(f);
 
-        // the handler is named after the syscall, not its wrapper; pointers are user addresses
-        Assert.Contains("int syscall_file_op(uint32_t n, int32_t h, uint32_t p, uint32_t b, int32_t last);", h, StringComparison.Ordinal);
+        // the handler is named after the syscall, not its wrapper; pointers are user addresses, 64 bits on every target
+        Assert.Contains("int syscall_file_op(uint32_t n, int32_t h, uint64_t p, uint64_t b, int32_t last);", h, StringComparison.Ordinal);
         Assert.Contains("void syscall_exit(int32_t code);", h, StringComparison.Ordinal);
         Assert.Contains("int syscall_power(void);", h, StringComparison.Ordinal);   // no wrapper, still a handler
         Assert.Contains("#define SYSCALL_TABLE_SIZE      17\n", h, StringComparison.Ordinal);
         Assert.Contains("#define SYSCALL_COUNT           3\n", h, StringComparison.Ordinal);
 
         // each register to its parameter in order, i32 converted; void answers 0
-        Assert.Contains("static int decode_file_op(const uintptr_t *a) { return syscall_file_op((uint32_t)a[0], (int32_t)a[1], (uint32_t)a[2], (uint32_t)a[3], (int32_t)a[4]); }", c, StringComparison.Ordinal);
+        Assert.Contains("static int decode_file_op(const uintptr_t *a) { return syscall_file_op((uint32_t)a[0], (int32_t)a[1], (uint64_t)a[2], (uint64_t)a[3], (int32_t)a[4]); }", c, StringComparison.Ordinal);
         Assert.Contains("static int decode_exit(const uintptr_t *a) { syscall_exit((int32_t)a[0]); return 0; }", c, StringComparison.Ordinal);
         Assert.Contains("static int decode_power(const uintptr_t *a) { (void)a; return syscall_power(); }", c, StringComparison.Ordinal);
 
@@ -240,14 +240,14 @@ public class XfilTests
         string h = XfilEmit.CTableHeader(f), c = XfilEmit.CTable(f), x = XfilEmit.XWrappers(f);
 
         // the handler takes the whole value; the register width decides how it arrives
-        Assert.Contains("int syscall_seek(int32_t h, int64_t off, uint32_t origin, uint32_t pos);", h, StringComparison.Ordinal);
+        Assert.Contains("int syscall_seek(int32_t h, int64_t off, uint32_t origin, uint64_t pos);", h, StringComparison.Ordinal);
         Assert.Contains("#if UINTPTR_MAX == 0xFFFFFFFFu\n#define SYSCALL_PAIRS           1\n#else\n#define SYSCALL_PAIRS           0\n#endif\n", h, StringComparison.Ordinal);
 
         // x86-32 joins (low, high) and every later argument moves along one; x86-64 takes it whole
         Assert.Contains(
             "static int decode_seek(const uintptr_t *a) {\n#if SYSCALL_PAIRS\n" +
-            "    return syscall_seek((int32_t)a[0], (int64_t)((uint64_t)a[1] | (uint64_t)a[2] << 32), (uint32_t)a[3], (uint32_t)a[4]);\n" +
-            "#else\n    return syscall_seek((int32_t)a[0], (int64_t)a[1], (uint32_t)a[2], (uint32_t)a[3]);\n#endif\n}\n",
+            "    return syscall_seek((int32_t)a[0], (int64_t)((uint64_t)a[1] | (uint64_t)a[2] << 32), (uint32_t)a[3], (uint64_t)a[4]);\n" +
+            "#else\n    return syscall_seek((int32_t)a[0], (int64_t)a[1], (uint32_t)a[2], (uint64_t)a[3]);\n#endif\n}\n",
             c, StringComparison.Ordinal);
         Assert.Contains("syscall_range((int32_t)a[0], (uint64_t)((uint64_t)a[1] | (uint64_t)a[2] << 32), (uint64_t)((uint64_t)a[3] | (uint64_t)a[4] << 32));", c, StringComparison.Ordinal);
         Assert.Contains("syscall_range((int32_t)a[0], (uint64_t)a[1], (uint64_t)a[2]);", c, StringComparison.Ordinal);

@@ -97,12 +97,12 @@ void fb_draw_string_n(uint32_t x, uint32_t y, const char *s, uint32_t n,
 
 /* The SYS_FB_* handlers, called once the caller's GRANT_FRAMEBUFFER is checked
    (cpu/usermode.c). Pointers are user addresses. */
-int sys_fb_info(uint32_t ug);
+int sys_fb_info(uint64_t ug);
 int sys_fb_clear(uint32_t color);
 int sys_fb_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color);
 int sys_fb_put_pixel(uint32_t x, uint32_t y, uint32_t color);
 int sys_fb_draw_line(uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1, uint32_t color);
-int sys_fb_draw_text(uint32_t x, uint32_t y, uint32_t text, uint32_t fg, uint32_t bg);
-int sys_fb_set_font(uint32_t uname);
+int sys_fb_draw_text(uint32_t x, uint32_t y, uint64_t text, uint32_t fg, uint32_t bg);
+int sys_fb_set_font(uint64_t uname);
 
 #endif
