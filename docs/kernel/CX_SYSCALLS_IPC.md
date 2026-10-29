@@ -512,8 +512,8 @@ Step 6a3b puts every call through the system page of §8 (`CXK_ABI_VERSION`
   `shl $4, %eax; add __cx_sysbase, %eax; call *%eax`. A program built
   without the prelude is not a CXK program (the compiler's Linux host layer),
   and keeps `int $0x80`: `--no-prelude` in both compilers turns it off.
-- **The C programs** (`executive.c`, `hello.c`) save `esi` in a naked
-  `_start` and call `sysbase + n * SYSPAGE_STUB_SIZE`.
+- **The C program** (`executive.c`) saves `esi` in a naked
+  `_start` and calls `sysbase + n * SYSPAGE_STUB_SIZE`.
 - The gate still accepted `int 0x80` from anywhere until 6a3c.
 
 Step 6a3c makes the stubs the only way in (no ABI change).
