@@ -12,9 +12,7 @@
 
 _Static_assert(KWAIT_NEVER == DEADLINE_NEVER, "kwait.h's never must be the ABI's");
 
-/* The longest one block may sleep (thread_block_prepare takes ms); a longer
-   wait blocks again for what is left. */
-#define BLOCK_MAX_MS SLEEP_MAX_MS
+_Static_assert(KWAIT_NEVER == TIMER_NEVER, "kwait.h's never must be the clock's");
 
 static spinlock_t wait_lock = SPINLOCK_INIT;
 
@@ -50,22 +48,16 @@ int kobj_wait(struct kobj *o, uint32_t want, uint64_t deadline, uint32_t *seen) 
     uint32_t s = atomic_load(&o->signals);
     int killed = 0;   /* woken by proc_kill (cpu/sched.h), or not blocked by it */
     while (!(s & want)) {
-        uint32_t ms = 0;
-        if (deadline != KWAIT_NEVER) {
-            uint64_t now = timer_now_ns();
-            if (now >= deadline) break;   /* the time is up */
-            /* Rounded up, so the block never ends before the deadline; >= 1,
-               since 0 would be forever. */
-            uint64_t left = (deadline - now + TIMER_NS_PER_TICK - 1) / TIMER_NS_PER_TICK;
-            ms = left > BLOCK_MAX_MS ? BLOCK_MAX_MS : (uint32_t)left;
-        }
+        /* The block ends at the deadline itself, on the same clock, so the
+           time is up the first time this looks after it. */
+        if (deadline < KWAIT_NEVER && timer_now_ns() >= deadline) break;
         /* In the list and BLOCKED before the lock goes, so a signal set from
            here on finds this thread and wakes it, even one set before it has
            switched away. Woken early (another bit, or nothing), it looks again
            with what is left of the time. */
         me.next = o->waiters;
         o->waiters = &me;
-        thread_block_prepare(ms);
+        thread_block_prepare_until(deadline < KWAIT_NEVER ? deadline : TIMER_NEVER);
         spin_unlock(&wait_lock, f);
         thread_block_finish();
         f = spin_lock(&wait_lock);

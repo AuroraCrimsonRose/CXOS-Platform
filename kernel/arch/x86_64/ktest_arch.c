@@ -43,6 +43,10 @@
 #include "syspage.h"            /* SYSPAGE_VIRT, syspage_map */
 #include "arch/ktest_arch.h"
 #include "arch/usermode.h"
+#include "arch/evtimer.h"        /* arch_cycles_constant */
+#include "object/ktimer.h"
+#include "object/kwait.h"
+#include "cxk_abi.h"            /* SIGNAL_TIMER_FIRED, E_TIMED_OUT */
 
 #define EFER_LME    (1ull << 8)
 #define EFER_LMA    (1ull << 10)
@@ -621,14 +625,166 @@ static int ticks_advance(uint32_t n) {
     return 0;
 }
 
-static int t_ticks(void) { return ticks_advance(5); }
+/* The event source interrupting, n times: the TSC clock advances without it,
+   so ticks_advance alone no longer says the interrupt comes. Each wait asks
+   for one 1 ms out, as a deadline would (the PIT's come anyway). Bounded by
+   the clock and by a count, should the clock be the tick and the tick dead. */
+static int events_come(uint32_t n) {
+    if (!arch_irqs_enabled()) return 0;
+    uint64_t e0 = timer_events(), t0 = timer_now_ns();
+    for (uint32_t i = 0; i < 10000000u; i++) {
+        if (timer_events() - e0 >= n) return 1;
+        if (timer_now_ns() - t0 > 100 * TIMER_NS_PER_TICK) return 0;
+        timer_deadline_hint(timer_now_ns() + TIMER_NS_PER_TICK);
+        arch_cpu_relax();
+    }
+    return 0;
+}
+
+static int t_ticks(void) { return ticks_advance(5) && events_come(5); }
 
 /* irq_controller_init took over: the 8259 is masked outright, the I/O APIC
-   routes the tick, and its EOI goes to the local APIC - an EOI sent to the
-   wrong controller stops the tick after the first one. */
+   routes the PIT's tick, and its EOI goes to the local APIC - an EOI sent to
+   the wrong controller stops the tick after the first one. The PIT is the
+   fallback once the local APIC's timer is the source, so it is put back for
+   the test. */
 static int t_io_apic(void) {
-    return lapic_active() && apic_active() && pic_get_masks() == 0xFFFF &&
-           ticks_advance(5);
+    if (!(lapic_active() && apic_active() && pic_get_masks() == 0xFFFF)) return 0;
+    int back = timer_use_pit_for_test(1);
+    uint64_t p0 = timer_pit_ticks();
+    int ok = timer_source() == TIMER_SOURCE_PIT && events_come(5) &&
+             timer_pit_ticks() - p0 >= 5;
+    if (back) timer_use_pit_for_test(0);
+    return ok;
+}
+
+/* The fallback runs the same expiries: a sleep on the PIT, as t_sleep. */
+static int t_sleep(void);
+static int t_pit_sleep(void) {
+    if (!timer_use_pit_for_test(1)) {
+        klog("KTEST", SEV_WARN, "PIT fallback untested: it is the source already");
+        return t_sleep();
+    }
+    int ok = timer_source() == TIMER_SOURCE_PIT && t_sleep();
+    timer_use_pit_for_test(0);
+    return ok;
+}
+
+/* The clock is the TSC once it can be: it moves between interrupts, in steps
+   far finer than the tick, and never back. A CPU whose counter could not be
+   a clock leaves the tick, and says so. */
+static int t_clock_tsc(void) {
+    if (!timer_clock_is_tsc()) {
+        if (arch_cycles_constant()) return 0;
+        klog("KTEST", SEV_WARN, "TSC clock untested: no usable TSC");
+        return 1;
+    }
+    if (timer_tsc_hz() < 1000000ull) return 0;
+    uint32_t f = arch_irq_save();   /* no interrupt can move it: the TSC must */
+    uint64_t a = timer_now_ns();
+    int fine = 0;
+    for (int i = 0; i < 10000; i++) {
+        uint64_t b = timer_now_ns();
+        if (b < a) { arch_irq_restore(f); return 0; }
+        if (b > a && b - a < TIMER_NS_PER_TICK / 10) fine = 1;
+        a = b;
+    }
+    arch_irq_restore(f);
+    return fine;
+}
+
+/* The local APIC's timer took over from the PIT, and the PIT is quiet:
+   masked, not merely ignored. */
+static int t_apic_source(void) {
+    if (!lapic_active() || !timer_clock_is_tsc()) {
+        klog("KTEST", SEV_WARN, "APIC timer untested: no local APIC or TSC clock");
+        return timer_source() == TIMER_SOURCE_PIT;
+    }
+    if (timer_source() != TIMER_SOURCE_APIC || timer_evtimer_hz() < 100000ull) return 0;
+    uint64_t p0 = timer_pit_ticks();
+    thread_sleep_ms(20);
+    return timer_pit_ticks() == p0;
+}
+
+/* Idle without a fixed tick: a 100 ms sleep with nothing else due is a few
+   interrupts, not the PIT's hundred. Others asleep may add theirs (the
+   bound leaves them 20). */
+static int t_idle_quiet(void) {
+    if (timer_source() != TIMER_SOURCE_APIC) {
+        klog("KTEST", SEV_WARN, "tickless idle untested: the PIT is the source");
+        return 1;
+    }
+    uint64_t e0 = timer_events();
+    thread_sleep_ms(100);
+    uint64_t n = timer_events() - e0;
+    return n >= 1 && n <= 20;
+}
+
+/* A deadline is met when it comes, not at the next millisecond. Eight
+   deadlines a ms apart plus 125 us more each, alternately a timer object
+   firing and a wait timing out at its deadline: on a 1 ms tick their
+   lateness spreads over most of a millisecond, at the APIC's deadline it is
+   the same wake cost each time. The cost itself is no measure here: the
+   verification boot's -icount shift=6 makes every instruction 64 virtual
+   ns, so the interrupt-to-thread path alone is some 300 us; the bound on
+   it is only below a tick. */
+static int t_deadline_precise(void) {
+    if (timer_source() != TIMER_SOURCE_APIC) {
+        klog("KTEST", SEV_WARN, "deadline precision untested: the PIT is the source");
+        return 1;
+    }
+    const uint64_t us = 1000;
+    struct ktimer *t = ktimer_create(0);
+    if (!t) return 0;
+    uint64_t lo = TIMER_NEVER, hi = 0;
+    int ok = 1;
+    for (uint64_t i = 0; i < 8 && ok; i++) {
+        uint64_t dl = timer_now_ns() + 1500 * us + i * 125 * us;
+        int rc, want;
+        if (i & 1) {          /* fired and not re-armed: the wait times out */
+            ktimer_cancel(t);
+            rc = kobj_wait(&t->hdr, SIGNAL_TIMER_FIRED, dl, 0);
+            want = E_TIMED_OUT;
+        } else {
+            ktimer_set(t, dl);
+            rc = kobj_wait(&t->hdr, SIGNAL_TIMER_FIRED, KWAIT_NEVER, 0);
+            want = E_OK;
+        }
+        uint64_t at = timer_now_ns();
+        ok = rc == want && at >= dl && at - dl < 1000 * us;
+        if (ok && at - dl < lo) lo = at - dl;
+        if (ok && at - dl > hi) hi = at - dl;
+    }
+    kobj_unref(&t->hdr);
+    if (ok) klog_u32("KTEST", SEV_INFO, "deadline lateness spread, us: ",
+                     (uint32_t)((hi - lo) / us), LOG_COLOR_VALUE, "");
+    return ok && hi - lo < 250 * us;
+}
+
+/* Slack: a timer due at 8 ms that may wait 5 fires with one due at 10, not
+   at its own deadline and not at its latest; one interrupt serves both. */
+static int t_slack(void) {
+    if (timer_source() != TIMER_SOURCE_APIC) {
+        klog("KTEST", SEV_WARN, "slack untested: the PIT is the source");
+        return 1;
+    }
+    const uint64_t ms = TIMER_NS_PER_TICK;
+    struct ktimer *a = ktimer_create(0), *b = ktimer_create(5 * ms);
+    int ok = a && b;
+    if (ok) {
+        uint64_t now = timer_now_ns();
+        ktimer_set(a, now + 10 * ms);
+        ktimer_set(b, now + 8 * ms);
+        uint32_t seen = 0;
+        int rc = kobj_wait(&b->hdr, SIGNAL_TIMER_FIRED, KWAIT_NEVER, 0);
+        uint64_t at = timer_now_ns();
+        rc = rc == E_OK ? kobj_wait(&a->hdr, SIGNAL_TIMER_FIRED, 0, &seen) : rc;
+        ok = rc == E_OK && (seen & SIGNAL_TIMER_FIRED) &&
+             at >= now + 10 * ms && at < now + 11 * ms;
+    }
+    if (a) kobj_unref(&a->hdr);
+    if (b) kobj_unref(&b->hdr);
+    return ok;
 }
 
 /* A tick is a millisecond by a clock the PIT does not drive (ktest.c's
@@ -1149,10 +1305,16 @@ static const struct ktest_arch_case cases[] = {
     { "the user half's last page is never mapped",     t_user_top_page },
     { "kmalloc: small from the caches, large from the list", t_heap },
     { "thread 0 runs on a guarded kernel stack",        t_main_stack_guarded },
-    { "the PIT ticks with interrupts on",               t_ticks },
-    { "the I/O APIC routes the tick; the 8259 is masked", t_io_apic },
+    { "the tick's source interrupts with interrupts on", t_ticks },
+    { "the I/O APIC routes the PIT's tick; the 8259 is masked", t_io_apic },
     { "100 ticks are 100 ms of the ACPI PM timer",      t_tick_rate },
     { "a 50 ms sleep is 50 to 100 ticks",               t_sleep },
+    { "on the PIT fallback too",                        t_pit_sleep },
+    { "the clock is the TSC: finer than a tick, never back", t_clock_tsc },
+    { "the local APIC timer is the source; the PIT is masked", t_apic_source },
+    { "an idle 100 ms sleep is a few interrupts, not 100", t_idle_quiet },
+    { "deadlines are met at their time, not at a tick", t_deadline_precise },
+    { "slack: a timer fires at a later one's interrupt",    t_slack },
     { "two threads that yield both run to the end",     t_coop },
     { "a switch keeps rbx and r12-r15",                 t_switch_keeps_registers },
     { "a new thread starts with interrupts on",         t_new_thread_irqs_on },

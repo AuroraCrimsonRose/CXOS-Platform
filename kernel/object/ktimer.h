@@ -13,6 +13,12 @@
  * periodic waiter re-arms for the next deadline it wants, which keeps the
  * period its own and drift out of the kernel.
  *
+ * A timer's slack (fixed when it is made) lets it fire up to that much after
+ * its deadline: the event timer is set for the earliest latest time among
+ * them, and whatever interrupt comes fires every timer whose deadline it has
+ * reached, so timers near each other share one (Linux's hrtimer soft and
+ * hard expiry; Windows' tolerable delay). Slack 0 fires at the deadline.
+ *
  * The armed timers are one list in deadline order, so the tick looks only at
  * its head. The list holds no reference: a timer leaves it when it fires,
  * when it is cancelled or re-armed, and when it is destroyed (with its last
@@ -28,15 +34,17 @@
 struct ktimer {
     struct kobj    hdr;        /* first; KOBJ_TIMER */
     uint64_t       deadline;   /* while armed */
+    uint64_t       slack;      /* ns it may fire late by */
     struct ktimer *next;       /* in the armed list, in deadline order */
     uint8_t        armed;
 };
 
 void ktimer_sys_init(void);
 
-/* A new timer, disarmed, with one reference for the caller (who installs a
-   handle and drops it). 0 when out of memory. */
-struct ktimer *ktimer_create(void);
+/* A new timer, disarmed, that may fire up to `slack` ns after a deadline,
+   with one reference for the caller (who installs a handle and drops it). 0
+   when out of memory. */
+struct ktimer *ktimer_create(uint64_t slack);
 
 /* Arm `t` for `deadline` (nanoseconds on timer_now_ns) in place of any it had,
    clearing SIGNAL_TIMER_FIRED; a deadline already passed fires it now. */
@@ -45,9 +53,13 @@ void ktimer_set(struct ktimer *t, uint64_t deadline);
 /* Disarm `t` and clear SIGNAL_TIMER_FIRED. */
 void ktimer_cancel(struct ktimer *t);
 
-/* From the tick, interrupts off: fire every armed timer whose deadline has
-   come. */
-void ktimer_tick(void);
+/* From the tick, interrupts off: fire every armed timer whose deadline is at
+   or before `now`. */
+void ktimer_tick(uint64_t now);
+
+/* The earliest latest time of an armed timer (deadline plus slack), or
+   TIMER_NEVER: what the event timer is set for on their account. */
+uint64_t ktimer_next_due(void);
 
 /* Timers armed now, for the self-tests. */
 uint32_t ktimer_armed_count(void);

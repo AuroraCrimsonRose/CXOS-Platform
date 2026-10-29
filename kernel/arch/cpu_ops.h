@@ -32,6 +32,7 @@
  * arch_cpu_halt_forever()  interrupts off and stop; never returns
  * arch_cycles32()          low 32 bits of a counter that advances with the
  *                          clock (wraps in seconds; compare by difference)
+ * arch_cycles64()          the whole counter (wraps in centuries)
  */
 
 #if defined(CXK_HOST_TEST)
@@ -45,6 +46,7 @@ static inline void     arch_cpu_halt(void)          { }
 static inline void     arch_cpu_idle(void)          { }
 static inline void     arch_cpu_idle_irqs_off(void) { }
 static inline uint32_t arch_cycles32(void)          { return 0; }
+static inline uint64_t arch_cycles64(void)          { return 0; }
 __attribute__((noreturn)) static inline void arch_cpu_halt_forever(void) { for (;;) { } }
 #elif defined(__i386__) || defined(__x86_64__)
 #include "arch/x86/cpu_ops.h"

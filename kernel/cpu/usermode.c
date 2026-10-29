@@ -594,9 +594,11 @@ int syscall_object_wait(int32_t h, uint32_t signals, uint64_t deadline, uint64_t
     return rc;
 }
 
-int syscall_timer_create(void) {
-    /* Unprivileged: a timer is a handle, held to the handle table's limit. */
-    struct ktimer *t = ktimer_create();
+int syscall_timer_create(uint64_t slack) {
+    /* Unprivileged: a timer is a handle, held to the handle table's limit.
+       Any slack: a deadline and its slack past DEADLINE_NEVER are held to it
+       (ktimer.c), and a late timer delays only its own waiters. */
+    struct ktimer *t = ktimer_create(slack);
     if (!t) return E_NO_MEMORY;
     int32_t h = htab_install(thread_htab(thread_current_id()), &t->hdr,
                              HRIGHT_WAIT | HRIGHT_ARM | HRIGHT_DUPLICATE, 0);
@@ -3707,10 +3709,12 @@ int usermode_timer_test(void) {
     int32_t t = -1, u = -1, d = -1, eh = -1;
     int step = 0, ok = 0;
 
-    /* 1-2: the clock: whole ticks in ns, never back, and it measures a sleep */
+    /* 1-2: the clock: the kernel's own, read between two reads of it (to the
+       TSC's grain since 1.2c, not whole ticks), and it measures a sleep */
     *now = 1;
+    uint64_t k0 = timer_now_ns();
     step = 1; if (syscall_dispatch(SYS_CLOCK_MONOTONIC, TT_NOW, 0, 0, 0, 0) != E_OK
-                  || *now == 1 || *now % TIMER_NS_PER_TICK != 0
+                  || *now == 1 || *now < k0
                   || *now > timer_now_ns()
                   || syscall_dispatch(SYS_CLOCK_MONOTONIC, USER_VLIMIT, 0, 0, 0, 0) != E_BAD_ADDRESS) goto done;
     uint64_t c0 = *now;

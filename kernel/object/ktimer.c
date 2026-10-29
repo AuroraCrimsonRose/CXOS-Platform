@@ -12,6 +12,7 @@
 #include "panic.h"
 
 _Static_assert(KOBJ_TIMER == OBJ_TYPE_TIMER, "object_basic.kind is the kernel type");
+_Static_assert(TIMER_NEVER == DEADLINE_NEVER, "the clock's never is the ABI's");
 
 static struct ocache  timer_cache;
 static spinlock_t     armed_lock = SPINLOCK_INIT;
@@ -49,14 +50,22 @@ void ktimer_sys_init(void) {
         kpanic("ktimer_sys_init: no timer cache");
 }
 
-struct ktimer *ktimer_create(void) {
+struct ktimer *ktimer_create(uint64_t slack) {
     struct ktimer *t = ocache_alloc(&timer_cache);   /* zeroed: disarmed */
     if (!t) return 0;
     if (kobj_init(&t->hdr, KOBJ_TIMER) != 0) { ocache_free(&timer_cache, t); return 0; }
+    t->slack = slack;
     return t;
 }
 
+/* The latest `t` may fire: its deadline and slack, held below never. */
+static uint64_t latest(const struct ktimer *t) {
+    uint64_t l = t->deadline + t->slack;
+    return l < t->deadline || l > TIMER_NEVER ? TIMER_NEVER : l;
+}
+
 void ktimer_set(struct ktimer *t, uint64_t deadline) {
+    uint64_t hint = TIMER_NEVER;
     uint32_t f = spin_lock(&armed_lock);
     disarm(t);
     kobj_signal_clear(&t->hdr, SIGNAL_TIMER_FIRED);
@@ -71,8 +80,10 @@ void ktimer_set(struct ktimer *t, uint64_t deadline) {
         t->next     = *pp;
         t->armed    = 1;
         *pp         = t;
+        hint        = latest(t);
     }
     spin_unlock(&armed_lock, f);
+    if (hint < TIMER_NEVER) timer_deadline_hint(hint);
 }
 
 void ktimer_cancel(struct ktimer *t) {
@@ -82,12 +93,27 @@ void ktimer_cancel(struct ktimer *t) {
     spin_unlock(&armed_lock, f);
 }
 
-void ktimer_tick(void) {
-    /* Every millisecond: nothing armed costs one load, not the lock. A list
-       armed as this reads it is looked at again on the next tick. */
+uint64_t ktimer_next_due(void) {
+    uint64_t d = TIMER_NEVER;
+    if (!__atomic_load_n(&armed, __ATOMIC_RELAXED)) return d;
+    uint32_t f = spin_lock(&armed_lock);
+    /* In deadline order, and a latest time is never before its deadline:
+       past a deadline at or after the best so far, nothing can beat it. */
+    for (struct ktimer *t = armed; t && t->deadline < d; t = t->next) {
+        uint64_t l = latest(t);
+        if (l < d) d = l;
+    }
+    spin_unlock(&armed_lock, f);
+    return d;
+}
+
+void ktimer_tick(uint64_t now) {
+    /* Nothing armed costs one load, not the lock. A timer armed as this
+       reads it asked for an interrupt of its own (timer_deadline_hint). */
     if (!__atomic_load_n(&armed, __ATOMIC_RELAXED)) return;
     uint32_t f = spin_lock(&armed_lock);
-    uint64_t now = timer_now_ns();
+    /* By deadline, not latest time: whatever interrupt comes, every timer
+       whose deadline it has reached fires with it. That is the slack. */
     while (armed && armed->deadline <= now) {
         struct ktimer *t = armed;
         armed    = t->next;

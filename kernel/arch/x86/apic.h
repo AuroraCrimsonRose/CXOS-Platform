@@ -42,5 +42,11 @@ void lapic_eoi(void);
 
 uint32_t lapic_id(void);      /* this CPU's local APIC id - MSI destination */
 
+/* The local APIC timer's vector, the first past the MSI pool (idt.h), and its
+   interrupt, which the IDT's dispatch calls before the EOI. The timer itself
+   is arch/evtimer.h's. */
+#define LAPIC_TIMER_VECTOR 56
+void lapic_timer_interrupt(struct registers *r);
+
 
 #endif

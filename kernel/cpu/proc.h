@@ -77,10 +77,10 @@ struct proc {
        of its own, or NULL. Dropped when the last thread stops. */
     struct endpoint *stop_ep;
     /* A stop's deadline (proc_stop): on the armed list until it is due at
-       tick stop_due, when the process is ended PROC_STOPPED for stop_by, or
-       until the process ends first. */
+       stop_due on timer_now_ns, when the process is ended PROC_STOPPED for
+       stop_by, or until the process ends first. */
     int          stop_armed;
-    uint32_t     stop_due;
+    uint64_t     stop_due;
     int          stop_by;
     struct proc *stop_next;
 };
@@ -143,9 +143,11 @@ void proc_stop(struct proc *p, int by, uint32_t ms);
 /* `p`'s stop endpoint is now `ep` (a reference is taken), or none if NULL. */
 void proc_set_stop_endpoint(struct proc *p, struct endpoint *ep);
 
-/* Every tick (drivers/char/timer.c): end each process whose stop deadline has
-   passed. Interrupt context. */
-void proc_stop_tick(void);
+/* From the timer interrupt (drivers/char/timer.c): end each process whose
+   stop deadline is at or before `now`. proc_stop_next_due is the earliest
+   armed, or TIMER_NEVER. Interrupts off, both. */
+void     proc_stop_tick(uint64_t now);
+uint64_t proc_stop_next_due(void);
 
 /* Stop deadlines armed, for the self-tests. */
 uint32_t proc_stops_armed(void);

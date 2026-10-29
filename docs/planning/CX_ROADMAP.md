@@ -351,9 +351,11 @@ Independent of the order above, and small enough to land whenever convenient:
      `SYS_QUEUE_REGISTER` a handle with a key once, one-shot and re-armed by
      `SYS_QUEUE_ARM`; `SYS_QUEUE_WAIT` returns only the keys that became ready,
      until a deadline; `SYS_QUEUE_UNREGISTER`. Calls 0x60-0x6F.
-   - **1.2c:** the LAPIC timer programmed for the next deadline instead of a
-     fixed tick, and the clock from the TSC; the PIT stays the fallback.
-     Timer slack comes with it.
+   - **1.2c (ABI 19, 2026-10-29), done:** the LAPIC timer programmed for the
+     next deadline instead of a fixed tick, and the clock from the TSC; the
+     PIT stays the fallback. Timer slack comes with it:
+     `SYS_TIMER_CREATE(slack)` (`docs/kernel/CX_SYSCALLS_IPC.md`). Idle sleeps
+     until something is due. Not yet: the clock on the system page (`CX_SYSCALLS_IPC.md` §8).
 3. IPC: queued calls with reply tokens, badges, handle transfer, sealable
    memory objects, notifications, priority passed through calls. Memory
    objects with pages on first touch, the region tree, and strict commit

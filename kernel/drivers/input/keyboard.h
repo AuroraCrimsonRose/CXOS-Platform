@@ -16,12 +16,9 @@ char keyboard_getchar(void);
    can tell them apart. Safe from an interrupt handler. */
 void keyboard_inject(unsigned char c);
 
-/* Called from the timer IRQ. A USB keyboard raises no IRQ1, so a thread parked
-   in keyboard_getchar_blocking() would wait for an interrupt that never comes.
-   This wakes it periodically so it re-polls the HID endpoint instead. */
-void keyboard_tick(void);
-
-/* block until a character is available, then return it */
+/* block until a character is available, then return it. A USB keyboard
+   raises no IRQ 1, so with a HID device the wait also ends every 10 ms to
+   poll it. */
 char keyboard_getchar_blocking(void);
 
 /* Special (non-ASCII) key codes returned by keyboard_getchar(). These are

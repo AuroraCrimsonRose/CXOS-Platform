@@ -9,7 +9,8 @@
 #include <stdint.h>
 #include "keyboard.h"
 #include "usb_hid.h"
-#include "../../cpu/sched.h"   /* thread_block / thread_unblock */
+#include "../../cpu/sched.h"   /* thread_block_prepare / thread_unblock */
+#include "arch/cpu_ops.h"
 
 #define KBD_BUF_SIZE 128
 static volatile unsigned char kbuf[KBD_BUF_SIZE];
@@ -34,23 +35,11 @@ static void kbuf_push(unsigned char c) {
 
 void keyboard_inject(unsigned char c) { kbuf_push(c); }
 
-/* How often to wake a blocked reader to re-poll USB, in timer ticks. The PIT
-   runs at 1000 Hz, so 10 is 100 Hz - far more than a keyboard needs and cheap
-   enough to be invisible. */
-#define KBD_USB_POLL_TICKS 10
-static unsigned usb_poll_div = 0;
-
-void keyboard_tick(void) {
-    /* Nothing to do without a USB HID device: the PS/2 path wakes its own
-       waiter from IRQ1 and needs none of this. */
-    if (!usb_hid_present()) return;
-    if (kwaiter < 0) return;
-    if (++usb_poll_div < KBD_USB_POLL_TICKS) return;
-    usb_poll_div = 0;
-    /* ONLY a wake. The USB transfer runs in the woken thread's own context -
-       doing it here would put bus traffic inside an interrupt handler. */
-    thread_unblock(kwaiter);
-}
+/* How long a blocked reader sleeps before it polls USB again: 100 Hz, far
+   more than a keyboard needs and cheap enough to be invisible. A deadline of
+   its own rather than a count of ticks, since without a fixed tick there is
+   nothing to count. */
+#define KBD_USB_POLL_MS 10
 
 char keyboard_getchar(void) {
     /* Service USB HID here rather than from a timer: these transfers sleep, so
@@ -75,8 +64,17 @@ char keyboard_getchar_blocking(void) {
         char c = keyboard_getchar();
         if (c != 0) return c;
 
+        /* Descheduled until a key arrives and wakes us, with interrupts held
+           off from the look at the buffer to the block so a key landing
+           between them is not slept through. With a USB HID device it also
+           wakes to poll: the transfer runs here, in this thread, never in
+           an interrupt handler. */
+        uint32_t f = arch_irq_save();
         kwaiter = thread_current_id();
-        thread_block();          /* descheduled until a key arrives and wakes us */
+        int empty = (ktail == khead);
+        if (empty) thread_block_prepare(usb_hid_present() ? KBD_USB_POLL_MS : 0);
+        arch_irq_restore(f);
+        if (empty) thread_block_finish();
         kwaiter = -1;
         if (thread_killed()) return 0;   /* no key: the thread ends on its way out */
     }

@@ -15,7 +15,7 @@
  * hash it was built against and the loader refuses one that differs, so a
  * program never runs against numbers or layouts it was not compiled for.
  */
-#define CXK_ABI_HASH { 0xe3, 0xfc, 0xd5, 0x59, 0x75, 0xcf, 0x3b, 0x0a, 0x45, 0xdb, 0x25, 0x81, 0x92, 0x22, 0xb0, 0x93, 0x77, 0x7b, 0xd8, 0x77, 0xdd, 0x8a, 0x32, 0x14, 0x80, 0x7a, 0x83, 0x56, 0xaa, 0xbd, 0x53, 0x8a }
+#define CXK_ABI_HASH { 0x0f, 0xde, 0x3a, 0x80, 0xfe, 0x36, 0x3a, 0x34, 0xca, 0xfe, 0xe5, 0xc9, 0xc0, 0xa2, 0x90, 0x0c, 0xb2, 0x60, 0x8a, 0x4b, 0x69, 0xc8, 0x50, 0x29, 0x7c, 0x43, 0x92, 0xe7, 0x1d, 0x5b, 0xfe, 0xfe }
 
 /*
  * CXK ABI v1 - the PUBLIC contract shared by the kernel, the .xoex executive,
@@ -44,7 +44,7 @@
  * line; bump both, and the DevKit's stamp, in the one commit that changes the
  * contract.
  */
-#define CXK_ABI_VERSION          18
+#define CXK_ABI_VERSION          19
 
 /*
  * ---- syscall numbers ----
@@ -84,9 +84,11 @@
 #define SYS_OBJECT_WAIT          0x19
 
 /*
- * -> a timer handle with HRIGHT_WAIT, HRIGHT_ARM and HRIGHT_DUPLICATE. A
- * timer fires once at a deadline on the monotonic clock: SIGNAL_TIMER_FIRED.
- * It starts disarmed, and lasts while a handle on it or a wait on it does.
+ * ebx = slack in ns -> a timer handle with HRIGHT_WAIT, HRIGHT_ARM and
+ * HRIGHT_DUPLICATE. A timer fires once at a deadline on the monotonic clock:
+ * SIGNAL_TIMER_FIRED, at the deadline or up to `slack` after it, with
+ * whatever else is due then (0: at the deadline). It starts disarmed, and
+ * lasts while a handle on it or a wait on it does.
  */
 #define SYS_TIMER_CREATE         0x1A
 

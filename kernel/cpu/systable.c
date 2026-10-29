@@ -29,7 +29,13 @@ static int decode_object_wait(const uintptr_t *a) {
     return syscall_object_wait((int32_t)a[0], (uint32_t)a[1], (uint64_t)a[2], (uint64_t)a[3]);
 #endif
 }
-static int decode_timer_create(const uintptr_t *a) { (void)a; return syscall_timer_create(); }
+static int decode_timer_create(const uintptr_t *a) {
+#if SYSCALL_PAIRS
+    return syscall_timer_create((uint64_t)((uint64_t)a[0] | (uint64_t)a[1] << 32));
+#else
+    return syscall_timer_create((uint64_t)a[0]);
+#endif
+}
 static int decode_timer_set(const uintptr_t *a) {
 #if SYSCALL_PAIRS
     return syscall_timer_set((int32_t)a[0], (uint64_t)((uint64_t)a[1] | (uint64_t)a[2] << 32));

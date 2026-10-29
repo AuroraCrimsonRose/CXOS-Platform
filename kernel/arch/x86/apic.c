@@ -5,6 +5,7 @@
 /* Local APIC + I/O APIC. See apic.h for what this replaces and what it does not. */
 
 #include "apic.h"
+#include "arch/evtimer.h"
 #include "arch/x86/cpufeat.h"
 #include "platform/pc/pic.h"
 #include "arch/x86/msr.h"
@@ -325,4 +326,47 @@ int irq_controller_init(void) {
     klog_u32("APIC", SEV_OK, "I/O APIC online, redirection entries: ",
              ioapic_entries, LOG_COLOR_VALUE, "");
     return 1;
+}
+
+/* ---- arch/evtimer.h: the TSC and the local APIC's timer ------------------
+ *
+ * One-shot mode, divided by 16: the count runs down at the APIC's clock over
+ * 16 and interrupts once at zero. timer.c measures that rate against the
+ * clock. 16 is a compromise between reach and grain: on QEMU's 1 GHz APIC
+ * clock a step is 16 ns and the longest count 68 s; at the 100-200 MHz of a
+ * real bus, 80-160 ns and minutes. TSC-deadline mode would program the time
+ * itself, but the rig's Piledriver does not have it (AMD never shipped it),
+ * so the count is the one path. */
+#define LAPIC_LVT_TIMER   0x320
+#define LAPIC_TIMER_INIT  0x380
+#define LAPIC_TIMER_CUR   0x390
+#define LAPIC_TIMER_DIV   0x3E0
+#define TIMER_DIV_16      0x3
+
+static irq_handler_t lapic_timer_fn;
+
+int arch_cycles_constant(void) {
+    if (!cpu_has(CPU_TSC)) return 0;
+    return cpu_has(CPU_INVTSC) ? 2 : 1;
+}
+
+int arch_evtimer_init(irq_handler_t on_fire) {
+    if (!lapic_up) return -1;
+    lapic_timer_fn = on_fire;
+    lapic_wr(LAPIC_TIMER_INIT, 0);
+    lapic_wr(LAPIC_TIMER_DIV, TIMER_DIV_16);
+    lapic_wr(LAPIC_LVT_TIMER, LAPIC_TIMER_VECTOR);   /* one-shot, unmasked */
+    return 0;
+}
+
+void arch_evtimer_start(uint32_t count) {
+    if (lapic_up) lapic_wr(LAPIC_TIMER_INIT, count);
+}
+
+uint32_t arch_evtimer_left(void) {
+    return lapic_up ? lapic_rd(LAPIC_TIMER_CUR) : 0;
+}
+
+void lapic_timer_interrupt(struct registers *r) {
+    if (lapic_timer_fn) lapic_timer_fn(r);
 }

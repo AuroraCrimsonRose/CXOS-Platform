@@ -31,7 +31,7 @@ int syscall_handle_close(int32_t h);            /* SYS_HANDLE_CLOSE */
 int syscall_handle_duplicate(int32_t h, uint32_t rights); /* SYS_HANDLE_DUPLICATE */
 int syscall_object_info(uint64_t a);            /* SYS_OBJECT_INFO */
 int syscall_object_wait(int32_t h, uint32_t signals, uint64_t deadline, uint64_t seen); /* SYS_OBJECT_WAIT */
-int syscall_timer_create(void);                 /* SYS_TIMER_CREATE */
+int syscall_timer_create(uint64_t slack);       /* SYS_TIMER_CREATE */
 int syscall_timer_set(int32_t h, uint64_t deadline); /* SYS_TIMER_SET */
 int syscall_timer_cancel(int32_t h);            /* SYS_TIMER_CANCEL */
 int syscall_queue_create(void);                 /* SYS_QUEUE_CREATE */

@@ -206,7 +206,8 @@ call), and in `idt.c` and `isr.asm` the legacy IRQs at 32-47, the MSI pool at
 48-55, a spurious-vector gate that only returns, and the dispatch in x86-32's
 order: handler, EOI to whichever controller delivered it, then the deferred
 preemption point. The tick stays the 1000 Hz PIT (Aurora, 2026-10-24); a
-deadline-programmed LAPIC timer is a later change of its own. `boot64.c` runs
+deadline-programmed LAPIC timer is a later change of its own (it came in
+roadmap Phase 1.2c, with the TSC clock). `boot64.c` runs
 kmain's order up to `irq_controller_init`, thread 0 on a guarded stack, and
 twelve more self-tests (39 in all): the heap, the guard below thread 0's stack,
 the tick, the I/O APIC routing it with the 8259 masked, 100 ticks against the

@@ -28,6 +28,7 @@
 #include "arch/cpu.h"
 #include "arch/cpu_ops.h"
 #include "arch/irq.h"
+#include "arch/evtimer.h"   /* arch_cycles_constant: the clock's log line */
 #include "panic.h"
 #include "pmm.h"
 #include "arch/paging.h"
@@ -286,10 +287,16 @@ void kmain_late(void) {
     arch_irq_enable();                    /* enable interrupts: timer can fire */
     klog("TIMER", SEV_OK, "online (1000 Hz), interrupts enabled");
 
-    /* calibrate the cycle counter against the tick so RTTs can be reported in
-       microseconds rather than whole 1 ms ticks */
+    /* calibrate the cycle counter against the tick; from here it is the
+       monotonic clock (timer.h), when it can be one */
     timer_calibrate_tsc();
     klog_u32("TIMER", SEV_OK, "TSC calibrated, MHz: ", timer_tsc_mhz(), LOG_COLOR_VALUE, "");
+    if (timer_clock_is_tsc())
+        klog("TIMER", SEV_OK, arch_cycles_constant() == 2
+             ? "the clock is the TSC (invariant)"
+             : "the clock is the TSC (not marked invariant)");
+    else
+        klog("TIMER", SEV_WARN, "no usable TSC: the clock stays the 1 ms tick");
 
     /* The pointer is clamped to the display so userspace gets an absolute
        position it can use directly; fb_width/fb_height return 0 in text mode,
@@ -338,6 +345,15 @@ void kmain_late(void) {
        machine booting - which is why the status is dropped on purpose: there
        is no failure here that is not already a working fallback. */
     (void)irq_controller_init();
+
+    /* The local APIC's timer, set for each deadline, instead of the PIT's
+       1000 Hz: it needs the local APIC above and the TSC clock. Declines to
+       the PIT, which still works, so the status only picks the log line. */
+    if (timer_start_deadlines())
+        klog_u32("TIMER", SEV_OK, "local APIC timer set per deadline, kHz: ",
+                 (uint32_t)(timer_evtimer_hz() / 1000u), LOG_COLOR_VALUE, "");
+    else
+        klog("TIMER", SEV_INFO, "the PIT stays the tick (1000 Hz)");
 
     /* network: whichever NIC is on the bus (polled). netif_init() returns 0 if
        none is. It logs which driver bound, so this line no longer names one -
@@ -488,6 +504,11 @@ void kmain_late(void) {
             usb_poll();
             usb_at = timer_ticks();
         }
-        arch_cpu_halt();
+        /* Until an interrupt, or the next USB poll at the latest: without a
+           fixed tick nothing else would wake this loop for it. The log's
+           save is looked at on every wake, and the poll's is the shorter. */
+        uint32_t since = timer_since(usb_at);
+        uint32_t left  = since < USB_POLL_MS ? USB_POLL_MS - since : 0;
+        timer_halt_until(timer_now_ns() + (uint64_t)left * TIMER_NS_PER_TICK);
     }
 }

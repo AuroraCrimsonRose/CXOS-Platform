@@ -57,4 +57,10 @@ static inline uint32_t arch_cycles32(void) {
     return lo;
 }
 
+static inline uint64_t arch_cycles64(void) {
+    uint32_t lo, hi;
+    __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi));
+    return (uint64_t)hi << 32 | lo;
+}
+
 #endif

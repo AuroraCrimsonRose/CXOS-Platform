@@ -65,11 +65,9 @@ struct thread {
     uintptr_t u_saved_flags;
     uintptr_t kstack_top;      /* top of this process's esp0 stack -> TSS esp0 */
     uintptr_t kstack_base;     /* guarded esp0 stack base, from kstack_alloc (freed on exit) */
-    /* Timed sleep. `wake_tick` is the timer tick this thread becomes runnable
-       again; `sleeping` says the field means anything, because tick 0 is a
-       real tick and a wrapped counter makes "0 = not sleeping" a lie roughly
-       every 49 days. */
-    uint32_t  wake_tick;
+    /* Timed sleep. `wake_ns` is the time on timer_now_ns this thread becomes
+       runnable again; `sleeping` says the field means anything. */
+    uint64_t  wake_ns;
     int       sleeping;
     void    (*entry)(void);    /* what thread_launch calls */
     /* What its creator handed it (thread_set_arg): a record the entry reads,
@@ -129,7 +127,7 @@ int sched_active_count(void);
 
 /* ---- preemption (Checkpoint 2) ----
  * When enabled, the timer interrupt calls sched_tick(), which preempts the
- * running thread (an involuntary yield) every `quantum` ticks. Enable only
+ * running thread (an involuntary yield) every `quantum` milliseconds. Enable only
  * around a contained test for now - not system-wide.
  */
 void sched_preempt_enable(uint32_t quantum_ticks);
@@ -137,7 +135,17 @@ void sched_preempt_disable(void);
 
 /* called from the timer IRQ; performs a preemptive switch when it's time.
    safe to call always - does nothing unless preemption is enabled. */
-void sched_tick(void);
+void sched_tick(uint64_t now);
+
+/* For the event timer (drivers/char/timer.c), interrupts off: the earliest a
+   sleeper is due, and the slice's end if `running` (a halted CPU has no
+   slice to end); TIMER_NEVER for nothing. sched_slice_restart starts a whole
+   slice when the CPU comes back from a halt. */
+uint64_t sched_next_due(int running);
+void     sched_slice_restart(uint64_t now);
+
+/* A thread other than the current one is READY. */
+int      sched_others_ready(void);
 
 /* called from the IRQ handler AFTER the EOI; performs a deferred preemptive
    switch if one is due. */
@@ -233,6 +241,8 @@ void     thread_wait(void);
    thread_block_finish, which returns once the thread is runnable again,
    whoever woke it. */
 void     thread_block_prepare(uint32_t ms);
+/* The same with an absolute deadline on timer_now_ns (TIMER_NEVER: none). */
+void     thread_block_prepare_until(uint64_t deadline);
 void     thread_block_finish(void);
 
 /* Block the current thread for `ms` milliseconds, then return. Built on
@@ -245,9 +255,9 @@ void     thread_block_finish(void);
    can check and sleep again. */
 uint32_t thread_sleep_ms(uint32_t ms);
 
-/* Called from the timer interrupt once per tick: wake any thread whose sleep
-   has expired. Only flips state to READY, never switches, so it is safe in an
+/* Called from the timer interrupt: wake any thread whose sleep is due by
+   `now`. Only flips state to READY, never switches, so it is safe in an
    interrupt handler - the same contract thread_unblock keeps. */
-void     sched_wake_sleepers(void);
+void     sched_wake_sleepers(uint64_t now);
 
 #endif

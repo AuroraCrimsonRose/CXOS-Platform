@@ -3,9 +3,10 @@
 ; /kernel/arch/x86_64/isr.asm  -  the exception and interrupt entry stubs
 ; Aurora Tejeda / CATX Systems
 ;
-; One stub per vector 0-55: the exceptions 0-31, the legacy IRQs 32-47 and
-; the MSI pool 48-55 (idt.h). Each makes the frame uniform - a zero
-; where the CPU pushes no error code, then the vector - saves the general
+; One stub per vector 0-56: the exceptions 0-31, the legacy IRQs 32-47,
+; the MSI pool 48-55 and the local APIC timer at 56 (idt.h, apic.h). Each
+; makes the frame uniform - a zero where the CPU pushes no error code, then
+; the vector - saves the general
 ; registers and calls idt64_dispatch(struct registers *). Whatever the
 ; handler leaves in the frame is what iretq resumes, RIP and RSP included.
 ; The layout is struct registers in idt.h; keep the two in step.
@@ -70,7 +71,7 @@ ISR_ERR   30
 ISR_NOERR 31
 
 %assign i 32
-%rep 24
+%rep 25
 isr %+ i:
     push 0
     push i
@@ -123,7 +124,7 @@ section .rodata
 global isr64_stubs
 isr64_stubs:
 %assign i 0
-%rep 56
+%rep 57
     dq isr %+ i
 %assign i i + 1
 %endrep

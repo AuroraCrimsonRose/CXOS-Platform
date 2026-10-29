@@ -28,6 +28,12 @@ void platform_init(void);
 /* Start the periodic tick: on_tick runs `hz` times a second, as an interrupt. */
 void platform_tick_start(uint32_t hz, irq_handler_t on_tick);
 
+/* Hold the tick's interrupt back, or let it through again, the counting
+   untouched: while the CPU's own timer is the source (drivers/char/timer.c)
+   the platform's stays masked as its fallback. */
+void platform_tick_stop(void);
+void platform_tick_resume(void);
+
 /* Start the built-in keyboard and mouse, reporting through keyboard.h and
    mouse.h, and log what was found. Needs interrupts on. */
 void platform_input_init(void);

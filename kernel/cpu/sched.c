@@ -320,6 +320,16 @@ int thread_is_blocked(int id) {
     return t && t->state == THREAD_BLOCKED;
 }
 
+/* Halt while this thread is still blocked and nothing else can run, both
+   seen with interrupts off: a wake landing after a look with them on would
+   be slept through until the next deadline, which without a fixed tick may
+   be a long way off (timer_idle). */
+static void idle_while_blocked(void) {
+    uint32_t f = irq_save();
+    if (self()->state == THREAD_BLOCKED && next_runnable() == current) timer_idle();
+    irq_restore(f);
+}
+
 void thread_wait(void) {
     if (!initialized) return;
     if (!block_unless_killed()) return;
@@ -327,8 +337,8 @@ void thread_wait(void) {
         yield();
         if (self()->state != THREAD_BLOCKED) break;  /* woken */
         /* yield found nothing else runnable and stayed: wait for an interrupt
-           (a timer tick that wakes a sleeping lock holder) instead of spinning */
-        arch_cpu_idle();
+           (a timer that wakes a sleeping lock holder) instead of spinning */
+        idle_while_blocked();
     }
     self()->state = THREAD_RUNNING;
 }
@@ -353,6 +363,11 @@ uint32_t thread_sleep_ms(uint32_t ms) {
 }
 
 void thread_block_prepare(uint32_t ms) {
+    thread_block_prepare_until(ms ? timer_now_ns() + (uint64_t)ms * TIMER_NS_PER_TICK
+                                  : TIMER_NEVER);
+}
+
+void thread_block_prepare_until(uint64_t deadline) {
     if (!initialized) return;
     /* All three at once, with the timer held off (the caller's job). Set one
        at a time, a tick landing between `sleeping` and `state` found a thread
@@ -362,11 +377,12 @@ void thread_block_prepare(uint32_t ms) {
        Not at all for a thread being killed: thread_block_finish then
        returns at once. */
     if (killing(self())) return;
-    if (ms) {
-        self()->wake_tick = timer_ticks() + ms;
-        self()->sleeping  = 1;
+    if (deadline < TIMER_NEVER) {
+        self()->wake_ns  = deadline;
+        self()->sleeping = 1;
     }
     self()->state = THREAD_BLOCKED;
+    if (deadline < TIMER_NEVER) timer_deadline_hint(deadline);
 }
 
 void thread_block_finish(void) {
@@ -378,28 +394,31 @@ void thread_block_finish(void) {
 
         /* Still blocked and still here, which means yield found nothing else
            to run and declined to switch. We are the only thread awake, so wait
-           for the interrupt that will advance the clock instead of spinning on
-           it - the timer is at most one tick away. Halting rather than
-           spinning is the difference between an idle machine and a hot one. */
-        arch_cpu_idle();
+           for the interrupt that will wake us (or someone) instead of
+           spinning on it: the event timer is set for the next deadline.
+           Halting rather than spinning is the difference between an idle
+           machine and a hot one. */
+        idle_while_blocked();
     }
 
     self()->sleeping = 0;
     self()->state    = THREAD_RUNNING;
 }
 
-void sched_wake_sleepers(void) {
+void sched_wake_sleepers(uint64_t now) {
     if (!initialized) return;
-    uint32_t now = timer_ticks();
     for (uint32_t i = 0; i < tids.cap; i++) {
         struct thread *t = th((int)i);
         if (!t || !t->sleeping) continue;
-        /* Wrap-safe: a plain `now >= wake_tick` would stop waking anything for
-           49 days the first time the counter wrapped. */
-        if (!timer_tick_after(now, t->wake_tick)) continue;
+        /* On the 64-bit clock, which does not wrap: compared plainly. */
+        if (t->wake_ns > now) continue;
         t->sleeping = 0;
         if (t->state == THREAD_BLOCKED) t->state = THREAD_READY;
     }
+}
+
+int sched_others_ready(void) {
+    return initialized && next_runnable() != current;
 }
 
 void yield(void) {
@@ -451,7 +470,7 @@ void thread_exit(void) {
        thread reaps it, which cannot happen before we switch away. */
     int next = next_runnable();
     while (next == current) {
-        arch_cpu_idle_irqs_off();
+        timer_idle();
         next = next_runnable();
     }
     th(next)->state = THREAD_RUNNING;
@@ -474,14 +493,15 @@ int sched_active_count(void) {
 
 /* ---- preemption (Checkpoint 2) ---- */
 static volatile int      preempt_on = 0;
-static volatile uint32_t preempt_quantum = 10;   /* ticks between switches */
-static volatile uint32_t preempt_counter = 0;
+static volatile uint64_t slice_ns = 10 * TIMER_NS_PER_TICK;   /* between switches */
+static volatile uint64_t slice_end = 0;          /* on timer_now_ns */
 static volatile int      in_switch = 0;          /* reentrancy guard */
 
 void sched_preempt_enable(uint32_t quantum_ticks) {
-    preempt_quantum = quantum_ticks ? quantum_ticks : 1;
-    preempt_counter = 0;
+    slice_ns = (uint64_t)(quantum_ticks ? quantum_ticks : 1) * TIMER_NS_PER_TICK;
+    slice_end = timer_now_ns() + slice_ns;
     preempt_on = 1;
+    timer_deadline_hint(slice_end);
 }
 
 void sched_preempt_disable(void) {
@@ -489,17 +509,35 @@ void sched_preempt_disable(void) {
 }
 
 /* called from the timer IRQ (BEFORE the EOI). Flags that a preemptive switch is
-   due every `quantum` ticks; the actual switch is deferred to
+   due once the slice has run out; the actual switch is deferred to
    sched_preempt_point(), which the IRQ handler calls AFTER the EOI. Deferring
-   past the EOI keeps the PIC delivering further ticks so preemption continues. */
+   past the EOI keeps the controller delivering further interrupts so
+   preemption continues. */
 static volatile int need_resched = 0;
 
-void sched_tick(void) {
+void sched_tick(uint64_t now) {
     if (!preempt_on || !initialized) return;
+    if (now < slice_end) return;
+    /* A new slice even mid-switch, so the end is never left in the past for
+       the event timer to be set for again at once. */
+    slice_end = now + slice_ns;
     if (in_switch) return;                 /* don't preempt mid-switch */
-    if (++preempt_counter < preempt_quantum) return;
-    preempt_counter = 0;
     need_resched = 1;   /* the actual switch happens after EOI (sched_preempt_point) */
+}
+
+void sched_slice_restart(uint64_t now) {
+    slice_end = now + slice_ns;
+}
+
+uint64_t sched_next_due(int running) {
+    uint64_t d = TIMER_NEVER;
+    if (!initialized) return d;
+    if (running && preempt_on) d = slice_end;
+    for (uint32_t i = 0; i < tids.cap; i++) {
+        struct thread *t = th((int)i);
+        if (t && t->sleeping && t->wake_ns < d) d = t->wake_ns;
+    }
+    return d;
 }
 
 /* called from the IRQ handler AFTER pic_send_eoi. Performs the deferred

@@ -192,13 +192,27 @@ signal and arms it in place of any deadline it had; a passed one fires at once,
 and `DEADLINE_NEVER` is `E_INVALID_ARGS`. `SYS_TIMER_CANCEL(t)` disarms and
 clears. It lasts while a handle or a wait on it does, so a thread still
 waiting when another closes the last handle is still woken. The timer's signal is the first that
-can be cleared. Not yet: a choice of clock (there is one), slack, and a
+can be cleared. Not yet: a choice of clock (there is one) and a
 period. A periodic waiter re-arms for the deadline it wants next, so drift
-stays its own decision. Slack waits for item 2's programmed LAPIC deadline (1.2c),
-the point where coalescing wakeups would save anything. Until then the clock
-moves a tick (1 ms) at a time, and a deadline is met at the first tick at or
-after it. `u64` constants are new in the `.xfil` for `DEADLINE_NEVER`, held to
-2^63-1.
+stays its own decision. `u64` constants are new in the `.xfil` for
+`DEADLINE_NEVER`, held to 2^63-1.
+
+*Deadlines met at their time, ABI 19 (Phase 1.2c):* the clock is the TSC,
+calibrated against the PIT at boot and scaled to nanoseconds by a multiply and
+a shift (`lib/time/clockscale.h`), carried on from the tick count so it never
+steps back; without a TSC it stays the 1 ms tick. The local APIC's timer, one
+shot, is programmed for the earliest thing due: the running thread's slice,
+the first sleeper, the first timer, a stopping process's grace. An idle CPU
+drops its slice and so sleeps until something is due, up to a second at a
+time, with the PIT masked. A deadline is met when it comes, not at the next
+millisecond. Without a local APIC, or a TSC to calibrate its timer against,
+the 1000 Hz PIT stays the source and deadlines go back to its ticks.
+`SYS_TIMER_CREATE(slack)` takes the nanoseconds a timer may fire after its
+deadline (Linux's hrtimer soft and hard expiry): the hardware is set for the
+earliest latest time among the armed timers, and when it fires every timer
+whose deadline has come fires with it, so timers near each other cost one
+interrupt. Slack 0 is exact; a deadline plus slack past `DEADLINE_NEVER` is
+held there.
 
 *Queues, ABI 18 (Phase 1.2b):* the numbers 0x60-0x6F, unprivileged.
 `SYS_QUEUE_CREATE` gives a handle with `HRIGHT_WAIT`, `HRIGHT_REGISTER` and

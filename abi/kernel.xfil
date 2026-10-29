@@ -40,7 +40,7 @@ domain kernel
 /// mismatch. Declared in versions.json as `cxex-abi` and checked against this
 /// line; bump both, and the DevKit's stamp, in the one commit that changes the
 /// contract.
-const CXK_ABI_VERSION: u32 = 18
+const CXK_ABI_VERSION: u32 = 19
 
 /// ---- syscall numbers ----
 /// lifecycle 0x00-0x0F (no capability required)
@@ -68,10 +68,12 @@ syscall SYS_OBJECT_INFO = 0x18 fn object_info(a: *object_info_args) -> i32   ///
 /// only looks; DEADLINE_NEVER, or later, has none), esi = *u32 for the object's signals
 /// as last seen, or 0 -> 0 once any of `signals` is set, or E_TIMED_OUT
 syscall SYS_OBJECT_WAIT = 0x19 fn object_wait(h: i32, signals: u32, deadline: u64, seen: *u32) -> i32
-/// -> a timer handle with HRIGHT_WAIT, HRIGHT_ARM and HRIGHT_DUPLICATE. A
-/// timer fires once at a deadline on the monotonic clock: SIGNAL_TIMER_FIRED.
-/// It starts disarmed, and lasts while a handle on it or a wait on it does.
-syscall SYS_TIMER_CREATE = 0x1A fn timer_create() -> i32
+/// ebx = slack in ns -> a timer handle with HRIGHT_WAIT, HRIGHT_ARM and
+/// HRIGHT_DUPLICATE. A timer fires once at a deadline on the monotonic clock:
+/// SIGNAL_TIMER_FIRED, at the deadline or up to `slack` after it, with
+/// whatever else is due then (0: at the deadline). It starts disarmed, and
+/// lasts while a handle on it or a wait on it does.
+syscall SYS_TIMER_CREATE = 0x1A fn timer_create(slack: u64) -> i32
 /// ebx = timer handle (HRIGHT_ARM), ecx = deadline -> 0. Clears
 /// SIGNAL_TIMER_FIRED and arms it for `deadline`, in place of any deadline it
 /// had; one already passed fires it at once. DEADLINE_NEVER or later is

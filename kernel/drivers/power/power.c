@@ -54,12 +54,18 @@ void power_shutdown(void) {
 /* C1 idle: halt the CPU until an interrupt. If ms > 0, idle for ~ms
    milliseconds (waking early on a keypress); if ms == 0, idle until a key. */
 static void c1_idle(uint32_t ms) {
-    uint32_t start = timer_ticks();    /* 1 tick = 1 ms */
+    uint64_t start = timer_now_ns();
     for (;;) {
         char c = keyboard_getchar();
         if (c != 0) break;             /* any key wakes/cancels */
-        if (ms > 0 && (timer_ticks() - start) >= ms) break;
-        arch_cpu_halt();               /* sleep until next interrupt (>=1ms: the tick) */
+        uint64_t now = timer_now_ns();
+        if (ms > 0 && now - start >= (uint64_t)ms * TIMER_NS_PER_TICK) break;
+        /* Until a keystroke's interrupt, or the end; at most 10 ms, since
+           keyboard_getchar polls a USB keyboard, which raises none. */
+        uint64_t due = now + 10 * TIMER_NS_PER_TICK;
+        if (ms > 0 && start + (uint64_t)ms * TIMER_NS_PER_TICK < due)
+            due = start + (uint64_t)ms * TIMER_NS_PER_TICK;
+        timer_halt_until(due);
     }
 }
 

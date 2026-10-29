@@ -225,18 +225,19 @@ void proc_stop(struct proc *p, int by, uint32_t ms) {
         proc_force(p, PROC_STOPPED, by);
         return;
     }
-    uint32_t due = timer_ticks() + ms;
+    uint64_t due = timer_now_ns() + (uint64_t)ms * TIMER_NS_PER_TICK;
     if (!p->stop_armed) {
         p->stop_next  = stops;
         stops         = p;
         p->stop_armed = 1;
         p->stop_due   = due;
         p->stop_by    = by;
-    } else if (timer_tick_before(due, p->stop_due)) {
+    } else if (due < p->stop_due) {
         p->stop_due = due;
         p->stop_by  = by;
     }
     arch_irq_restore(f);
+    timer_deadline_hint(due);
 }
 
 void proc_set_stop_endpoint(struct proc *p, struct endpoint *ep) {
@@ -248,12 +249,18 @@ void proc_set_stop_endpoint(struct proc *p, struct endpoint *ep) {
     if (old) ep_put(old);
 }
 
-void proc_stop_tick(void) {
-    uint32_t now = timer_ticks();
+uint64_t proc_stop_next_due(void) {
+    uint64_t d = TIMER_NEVER;
+    for (struct proc *p = stops; p; p = p->stop_next)
+        if (p->stop_due < d) d = p->stop_due;
+    return d;
+}
+
+void proc_stop_tick(uint64_t now) {
     struct proc **pp = &stops;
     while (*pp) {
         struct proc *p = *pp;
-        if (!timer_tick_after(now, p->stop_due)) { pp = &p->stop_next; continue; }
+        if (p->stop_due > now) { pp = &p->stop_next; continue; }
         *pp = p->stop_next;
         p->stop_next  = 0;
         p->stop_armed = 0;

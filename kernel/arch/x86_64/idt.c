@@ -49,7 +49,9 @@ struct idt_ptr64 {
 #define VEC_PAGE_FAULT    14
 #define VEC_MACHINE_CHECK 18
 
-#define STUB_COUNT        (MSI_VECTOR_BASE + MSI_VECTOR_COUNT)
+#define STUB_COUNT        (LAPIC_TIMER_VECTOR + 1)
+_Static_assert(LAPIC_TIMER_VECTOR == MSI_VECTOR_BASE + MSI_VECTOR_COUNT,
+               "the local APIC timer's stub follows the MSI pool's (isr.asm)");
 
 extern const uint64_t isr64_stubs[STUB_COUNT];  /* isr.asm */
 extern void isr64_spurious(void);
@@ -239,6 +241,15 @@ static inline void irq_eoi(uint64_t vector) {
 }
 
 static void irq_dispatch(struct registers *r) {
+    if (r->vector == LAPIC_TIMER_VECTOR) {
+        /* The tick's, when the local APIC's timer gives it (timer.c): its
+           EOI is the local APIC's whoever routes the IRQs, and it is a
+           preemption point as IRQ 0 is. */
+        lapic_timer_interrupt(r);
+        lapic_eoi();
+        sched_preempt_point();
+        return;
+    }
     if (r->vector >= MSI_VECTOR_BASE) {
         /* An MSI still takes an EOI, at the local APIC that delivered it. */
         irq_handler_t h = msi_routines[r->vector - MSI_VECTOR_BASE];
