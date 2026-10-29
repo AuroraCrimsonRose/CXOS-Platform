@@ -14,6 +14,7 @@ static int decode_getuid(const uintptr_t *a) { (void)a; return syscall_getuid();
 static int decode_clock(const uintptr_t *a) { return syscall_clock((uint64_t)a[0]); }
 static int decode_sleep(const uintptr_t *a) { return syscall_sleep((uint32_t)a[0]); }
 static int decode_args(const uintptr_t *a) { return syscall_args((uint64_t)a[0]); }
+static int decode_clock_monotonic(const uintptr_t *a) { return syscall_clock_monotonic((uint64_t)a[0]); }
 static int decode_ipc_call(const uintptr_t *a) { return syscall_ipc_call((uint64_t)a[0]); }
 static int decode_ipc_recv(const uintptr_t *a) { return syscall_ipc_recv((uint64_t)a[0]); }
 static int decode_ipc_reply(const uintptr_t *a) { return syscall_ipc_reply((uint64_t)a[0]); }
@@ -21,7 +22,22 @@ static int decode_ep_create(const uintptr_t *a) { (void)a; return syscall_ep_cre
 static int decode_handle_close(const uintptr_t *a) { return syscall_handle_close((int32_t)a[0]); }
 static int decode_handle_duplicate(const uintptr_t *a) { return syscall_handle_duplicate((int32_t)a[0], (uint32_t)a[1]); }
 static int decode_object_info(const uintptr_t *a) { return syscall_object_info((uint64_t)a[0]); }
-static int decode_object_wait(const uintptr_t *a) { return syscall_object_wait((int32_t)a[0], (uint32_t)a[1], (uint32_t)a[2], (uint64_t)a[3]); }
+static int decode_object_wait(const uintptr_t *a) {
+#if SYSCALL_PAIRS
+    return syscall_object_wait((int32_t)a[0], (uint32_t)a[1], (uint64_t)((uint64_t)a[2] | (uint64_t)a[3] << 32), (uint64_t)a[4]);
+#else
+    return syscall_object_wait((int32_t)a[0], (uint32_t)a[1], (uint64_t)a[2], (uint64_t)a[3]);
+#endif
+}
+static int decode_timer_create(const uintptr_t *a) { (void)a; return syscall_timer_create(); }
+static int decode_timer_set(const uintptr_t *a) {
+#if SYSCALL_PAIRS
+    return syscall_timer_set((int32_t)a[0], (uint64_t)((uint64_t)a[1] | (uint64_t)a[2] << 32));
+#else
+    return syscall_timer_set((int32_t)a[0], (uint64_t)a[1]);
+#endif
+}
+static int decode_timer_cancel(const uintptr_t *a) { return syscall_timer_cancel((int32_t)a[0]); }
 static int decode_input_read(const uintptr_t *a) { (void)a; return syscall_input_read(); }
 static int decode_mouse_read(const uintptr_t *a) { return syscall_mouse_read((uint64_t)a[0]); }
 static int decode_input_poll(const uintptr_t *a) { (void)a; return syscall_input_poll(); }
@@ -151,6 +167,7 @@ const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_CLOCK] = decode_clock,
     [SYS_SLEEP] = decode_sleep,
     [SYS_ARGS] = decode_args,
+    [SYS_CLOCK_MONOTONIC] = decode_clock_monotonic,
     [SYS_IPC_CALL] = decode_ipc_call,
     [SYS_IPC_RECV] = decode_ipc_recv,
     [SYS_IPC_REPLY] = decode_ipc_reply,
@@ -159,6 +176,9 @@ const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_HANDLE_DUPLICATE] = decode_handle_duplicate,
     [SYS_OBJECT_INFO] = decode_object_info,
     [SYS_OBJECT_WAIT] = decode_object_wait,
+    [SYS_TIMER_CREATE] = decode_timer_create,
+    [SYS_TIMER_SET] = decode_timer_set,
+    [SYS_TIMER_CANCEL] = decode_timer_cancel,
     [SYS_INPUT_READ] = decode_input_read,
     [SYS_MOUSE_READ] = decode_mouse_read,
     [SYS_INPUT_POLL] = decode_input_poll,

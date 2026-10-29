@@ -26,6 +26,7 @@
 #include "caps.h"
 #include "object/htab.h"
 #include "object/kwait.h"     /* kobj_wait, for SYS_OBJECT_WAIT */
+#include "object/ktimer.h"    /* SYS_TIMER_* */
 #include "sync/atomic.h"
 #include "sysrec.h"
 #include "systable.h"         /* the handlers, decoders and table (generated) */
@@ -190,6 +191,13 @@ int syscall_args(uint64_t a) {
     ai->base  = USER_ARGS_BASE;
     ai->count = *(const uint32_t *)user_ptr(USER_ARGS_BASE);
     ai->broker = thread_broker(thread_current_id());
+    return E_OK;
+}
+
+int syscall_clock_monotonic(uint64_t now) {
+    /* Unprivileged, as SYS_CLOCK is: the time since boot is not authority. */
+    uint64_t t = timer_now_ns();
+    if (user_copy_out(now, &t, sizeof t) != 0) return E_BAD_ADDRESS;
     return E_OK;
 }
 
@@ -563,9 +571,10 @@ int syscall_object_info(uint64_t a) {
     return (int)sizeof b;
 }
 
-int syscall_object_wait(int32_t h, uint32_t signals, uint32_t timeout_ms, uint64_t seen) {
-    /* Unprivileged: the handle's HRIGHT_WAIT is the authority. */
-    if (timeout_ms != WAIT_FOREVER && timeout_ms > SLEEP_MAX_MS) return E_OUT_OF_RANGE;
+int syscall_object_wait(int32_t h, uint32_t signals, uint64_t deadline, uint64_t seen) {
+    /* Unprivileged: the handle's HRIGHT_WAIT is the authority. Any deadline
+       is accepted: a far one costs nothing a wait with none does not
+       (kobj_wait blocks in pieces), so one past DEADLINE_NEVER is as good. */
     if (seen && !user_ptr_writable(seen, sizeof(uint32_t))) return E_BAD_ADDRESS;
     struct htab_info hi;
     struct kobj *o = htab_ref(thread_htab(thread_current_id()), h, KOBJ_NONE, 0, &hi);
@@ -576,12 +585,53 @@ int syscall_object_wait(int32_t h, uint32_t signals, uint32_t timeout_ms, uint64
            : !signals || (signals & ~ops->signals_valid) ? E_INVALID_ARGS : E_OK;
     if (rc != E_OK) { kobj_unref(o); return rc; }
     uint32_t s = 0;
-    rc = kobj_wait(o, signals, timeout_ms, &s);
+    rc = kobj_wait(o, signals, deadline, &s);
     kobj_unref(o);
     /* Written after the wait, through the copy that checks the range again:
        the page may have been unmapped while this thread slept. */
     if (seen && user_copy_out(seen, &s, sizeof s) != 0) return E_BAD_ADDRESS;
     return rc;
+}
+
+int syscall_timer_create(void) {
+    /* Unprivileged: a timer is a handle, held to the handle table's limit. */
+    struct ktimer *t = ktimer_create();
+    if (!t) return E_NO_MEMORY;
+    int32_t h = htab_install(thread_htab(thread_current_id()), &t->hdr,
+                             HRIGHT_WAIT | HRIGHT_ARM | HRIGHT_DUPLICATE, 0);
+    kobj_unref(&t->hdr);   /* the handle's reference keeps it; with no handle, it goes */
+    return h;
+}
+
+/* The timer behind `h`, with a reference, if the handle may arm it. */
+static struct ktimer *timer_from_handle(int32_t h, int *rc) {
+    struct htab_info hi;
+    struct kobj *o = htab_ref(thread_htab(thread_current_id()), h, KOBJ_NONE, 0, &hi);
+    if (!o) { *rc = E_BAD_HANDLE; return 0; }
+    *rc = o->type != KOBJ_TIMER     ? E_WRONG_TYPE
+        : !(hi.rights & HRIGHT_ARM) ? E_ACCESS_DENIED : E_OK;
+    if (*rc != E_OK) { kobj_unref(o); return 0; }
+    return (struct ktimer *)o;
+}
+
+int syscall_timer_set(int32_t h, uint64_t deadline) {
+    /* Unprivileged: the handle's HRIGHT_ARM is the authority. */
+    if (deadline >= DEADLINE_NEVER) return E_INVALID_ARGS;   /* cancel it instead */
+    int rc;
+    struct ktimer *t = timer_from_handle(h, &rc);
+    if (!t) return rc;
+    ktimer_set(t, deadline);
+    kobj_unref(&t->hdr);
+    return E_OK;
+}
+
+int syscall_timer_cancel(int32_t h) {
+    int rc;
+    struct ktimer *t = timer_from_handle(h, &rc);
+    if (!t) return rc;
+    ktimer_cancel(t);
+    kobj_unref(&t->hdr);
+    return E_OK;
 }
 
 int syscall_process_kill(int32_t h) {
@@ -2622,8 +2672,12 @@ static int pt_info(int32_t h) {
     return syscall_dispatch(SYS_OBJECT_INFO, PT_IARGS, 0, 0, 0, 0);
 }
 
+/* SYS_OBJECT_WAIT `ms` from now: 0 only looks, PT_FOREVER has no deadline. */
+#define PT_FOREVER 0xFFFFFFFFu
 static int pt_wait(int32_t h, uint32_t sig, uint32_t ms, uint64_t seen) {
-    return syscall_dispatch(SYS_OBJECT_WAIT, (uint32_t)h, sig, ms, seen, 0);
+    uint64_t deadline = ms == PT_FOREVER ? DEADLINE_NEVER
+                      : ms == 0          ? 0 : timer_now_ns() + (uint64_t)ms * TIMER_NS_PER_TICK;
+    return syscall_dispatch(SYS_OBJECT_WAIT, (uint32_t)h, sig, deadline, seen, 0);
 }
 
 int usermode_process_test(void) {
@@ -2662,7 +2716,12 @@ int usermode_process_test(void) {
     /* 6-10: refusals, each its own error */
     step = 6; if (pt_wait(h, 0, 0, 0) != E_INVALID_ARGS) goto done;
     step = 7; if (pt_wait(h, SIGNAL_PROCESS_ENDED << 1, 0, 0) != E_INVALID_ARGS) goto done;
-    step = 8; if (pt_wait(h, SIGNAL_PROCESS_ENDED, SLEEP_MAX_MS + 1, 0) != E_OUT_OF_RANGE) goto done;
+    /* 8: a deadline already passed, not only 0, just looks (one tick
+       ago: a wait for it would be one tick long) */
+    uint64_t past = timer_now_ns() - TIMER_NS_PER_TICK;
+    t0 = timer_ticks();
+    step = 8; if (syscall_dispatch(SYS_OBJECT_WAIT, (uint32_t)h, SIGNAL_PROCESS_ENDED, past, 0, 0) != E_TIMED_OUT
+                  || timer_ticks() - t0 > 1) goto done;
     step = 9; if (pt_wait(h, SIGNAL_PROCESS_ENDED, 0, USER_VLIMIT) != E_BAD_ADDRESS) goto done;
     step = 10; if (pt_wait(9999, SIGNAL_PROCESS_ENDED, 0, 0) != E_BAD_HANDLE) goto done;
 
@@ -2685,7 +2744,7 @@ int usermode_process_test(void) {
     /* 15-16: waiting with no limit returns when it ends, and says how: SYS_EXIT
        and its code, whole. The pid stays its own while the handle is open. */
     *seen = 0;
-    step = 15; if (pt_wait(d, SIGNAL_PROCESS_ENDED, WAIT_FOREVER, PT_SEEN) != E_OK
+    step = 15; if (pt_wait(d, SIGNAL_PROCESS_ENDED, PT_FOREVER, PT_SEEN) != E_OK
                    || *seen != SIGNAL_PROCESS_ENDED) goto done;
     step = 16; if (pt_info(h) != (int)sizeof *pi || pi->ended != PROC_EXITED || pi->code != -42
                    || pi->pid != (uint32_t)pid || proc_by_pid(pid) != p) goto done;
@@ -2812,7 +2871,7 @@ int usermode_kill_test(void) {
     p = thread_proc(tid);
     v = htab_install(thread_htab(tid), &p->hdr, HRIGHT_WAIT, 0);
     if (v <= 0) { thread_discard(tid); goto done; }
-    kt_call(SYS_OBJECT_WAIT, (uint32_t)v, SIGNAL_PROCESS_ENDED, WAIT_FOREVER, 0, 0);
+    kt_call(SYS_OBJECT_WAIT, (uint32_t)v, SIGNAL_PROCESS_ENDED, DEADLINE_NEVER, 0, 0);
     thread_start(tid);
     if (!kt_kill(h, tid, 1) || kobj_waiters(&p->hdr) != 0) goto done;
     htab_close(tab, h); h = -1;
@@ -3536,6 +3595,133 @@ done:
     if (k > 0) htab_close(tab, k);
     if (c > 0) htab_close(tab, c);
     if (j > 0) htab_close(tab, j);
+    unmap_user_page(TEST_CODE_VIRT, phys);
+    return ok;
+}
+
+/* ---- the monotonic clock and timer objects (Phase 1.2a) --------------------
+ * Through syscall_dispatch over a user mapping, as a program makes the calls.
+ * Nothing logs between taking a time and checking it: under -icount a log
+ * line costs hundreds of virtual ms. 1 = pass, 0 = fail. */
+#define TT_NOW   (TEST_CODE_VIRT + 0x100)   /* SYS_CLOCK_MONOTONIC's *u64 */
+#define TT_INFO  (TEST_CODE_VIRT + 0x200)   /* struct object_basic */
+#define TT_IARGS (TEST_CODE_VIRT + 0x300)   /* struct object_info_args */
+#define TT_SEEN  (TEST_CODE_VIRT + 0x400)
+#define TT_MS(n) ((uint64_t)(n) * TIMER_NS_PER_TICK)
+
+static int tt_wait(int32_t h, uint64_t deadline) {
+    return syscall_dispatch(SYS_OBJECT_WAIT, (uint32_t)h, SIGNAL_TIMER_FIRED, deadline, 0, 0);
+}
+static int tt_look(int32_t h) { return tt_wait(h, 0); }
+static int tt_set(int32_t h, uint64_t deadline) {
+    return syscall_dispatch(SYS_TIMER_SET, (uint32_t)h, deadline, 0, 0, 0);
+}
+static int tt_cancel(int32_t h) { return syscall_dispatch(SYS_TIMER_CANCEL, (uint32_t)h, 0, 0, 0, 0); }
+
+int usermode_timer_test(void) {
+    paddr_t phys = map_user_page(TEST_CODE_VIRT);
+    if (!phys) return 0;
+    struct htab *tab = thread_htab(thread_current_id());
+    volatile uint64_t *now = (volatile uint64_t *)user_ptr(TT_NOW);
+    volatile uint32_t *seen = (volatile uint32_t *)user_ptr(TT_SEEN);
+    uint32_t live0 = kobj_live(KOBJ_TIMER), armed0 = ktimer_armed_count();
+    int32_t t = -1, u = -1, d = -1, eh = -1;
+    int step = 0, ok = 0;
+
+    /* 1-2: the clock: whole ticks in ns, never back, and it measures a sleep */
+    *now = 1;
+    step = 1; if (syscall_dispatch(SYS_CLOCK_MONOTONIC, TT_NOW, 0, 0, 0, 0) != E_OK
+                  || *now == 1 || *now % TIMER_NS_PER_TICK != 0
+                  || *now > timer_now_ns()
+                  || syscall_dispatch(SYS_CLOCK_MONOTONIC, USER_VLIMIT, 0, 0, 0, 0) != E_BAD_ADDRESS) goto done;
+    uint64_t c0 = *now;
+    syscall_dispatch(SYS_SLEEP, 20, 0, 0, 0, 0);
+    syscall_dispatch(SYS_CLOCK_MONOTONIC, TT_NOW, 0, 0, 0, 0);
+    step = 2; if (*now < c0 + TT_MS(20)) goto done;
+
+    /* 3-4: a new timer, with the rights it is made with; disarmed, unfired */
+    t = syscall_dispatch(SYS_TIMER_CREATE, 0, 0, 0, 0, 0);
+    struct object_info_args *oi = (struct object_info_args *)user_ptr(TT_IARGS);
+    struct object_basic *ob = (struct object_basic *)user_ptr(TT_INFO);
+    oi->cap = sizeof *ob; oi->buf = TT_INFO; oi->handle = t; oi->topic = OBJINFO_BASIC;
+    step = 3; if (t <= 0 || syscall_dispatch(SYS_OBJECT_INFO, TT_IARGS, 0, 0, 0, 0) != (int)sizeof *ob
+                  || ob->kind != OBJ_TYPE_TIMER
+                  || ob->rights != (HRIGHT_WAIT | HRIGHT_ARM | HRIGHT_DUPLICATE)
+                  || kobj_live(KOBJ_TIMER) != live0 + 1) goto done;
+    *seen = 0xFFFFFFFFu;
+    step = 4; if (syscall_dispatch(SYS_OBJECT_WAIT, (uint32_t)t, SIGNAL_TIMER_FIRED, 0, TT_SEEN, 0) != E_TIMED_OUT
+                  || *seen != 0 || ktimer_armed_count() != armed0) goto done;
+
+    /* 5: a deadline already passed fires it at once, and arms nothing */
+    step = 5; if (tt_set(t, timer_now_ns()) != E_OK || tt_look(t) != E_OK
+                  || ktimer_armed_count() != armed0) goto done;
+
+    /* 6: arming again clears the signal; it fires at the deadline, not
+       before, and leaves the list */
+    uint64_t dl = timer_now_ns() + TT_MS(30);
+    step = 6; if (tt_set(t, dl) != E_OK || tt_look(t) != E_TIMED_OUT
+                  || ktimer_armed_count() != armed0 + 1
+                  || tt_wait(t, DEADLINE_NEVER) != E_OK || timer_now_ns() < dl
+                  || timer_now_ns() > dl + TT_MS(200)
+                  || ktimer_armed_count() != armed0) goto done;
+
+    /* 7: a new deadline replaces the old: armed for 20 ms, then for 60, it
+       has not fired at 40 */
+    uint64_t base = timer_now_ns();
+    tt_set(t, base + TT_MS(20));
+    step = 7; if (tt_set(t, base + TT_MS(60)) != E_OK || ktimer_armed_count() != armed0 + 1
+                  || tt_wait(t, base + TT_MS(40)) != E_TIMED_OUT
+                  || tt_wait(t, DEADLINE_NEVER) != E_OK || timer_now_ns() < base + TT_MS(60)) goto done;
+
+    /* 8-9: cancel disarms (nothing at its deadline) and clears a fired one */
+    base = timer_now_ns();
+    step = 8; if (tt_set(t, base + TT_MS(20)) != E_OK || tt_cancel(t) != E_OK
+                  || ktimer_armed_count() != armed0
+                  || tt_wait(t, base + TT_MS(50)) != E_TIMED_OUT) goto done;
+    step = 9; if (tt_set(t, 0) != E_OK || tt_look(t) != E_OK
+                  || tt_cancel(t) != E_OK || tt_look(t) != E_TIMED_OUT) goto done;
+
+    /* 10: two timers fire in deadline order, not the order armed */
+    u = syscall_dispatch(SYS_TIMER_CREATE, 0, 0, 0, 0, 0);
+    base = timer_now_ns();
+    step = 10; if (u <= 0 || tt_set(t, base + TT_MS(40)) != E_OK || tt_set(u, base + TT_MS(20)) != E_OK
+                   || ktimer_armed_count() != armed0 + 2
+                   || tt_wait(u, DEADLINE_NEVER) != E_OK || tt_look(t) != E_TIMED_OUT
+                   || tt_wait(t, DEADLINE_NEVER) != E_OK || timer_now_ns() < base + TT_MS(40)) goto done;
+
+    /* 11-14: refusals, each its own error */
+    step = 11; if (tt_set(t, DEADLINE_NEVER) != E_INVALID_ARGS
+                   || tt_set(t, DEADLINE_NEVER + 1) != E_INVALID_ARGS
+                   || syscall_dispatch(SYS_OBJECT_WAIT, (uint32_t)t, SIGNAL_TIMER_FIRED << 1, 0, 0, 0) != E_INVALID_ARGS
+                   || ktimer_armed_count() != armed0) goto done;
+    step = 12; if (tt_set(9999, 0) != E_BAD_HANDLE || tt_cancel(9999) != E_BAD_HANDLE) goto done;
+    eh = ep_create();
+    step = 13; if (eh <= 0 || tt_set(eh, 0) != E_WRONG_TYPE || tt_cancel(eh) != E_WRONG_TYPE) goto done;
+    /* each right is needed: no ARM, no set or cancel; no WAIT, no wait */
+    d = syscall_dispatch(SYS_HANDLE_DUPLICATE, (uint32_t)t, HRIGHT_WAIT, 0, 0, 0);
+    step = 14; if (d <= 0 || tt_set(d, 0) != E_ACCESS_DENIED || tt_cancel(d) != E_ACCESS_DENIED
+                   || tt_look(t) != E_OK) goto done;   /* fired at step 10, and set refused */
+    htab_close(tab, d);
+    d = syscall_dispatch(SYS_HANDLE_DUPLICATE, (uint32_t)t, HRIGHT_ARM | HRIGHT_DUPLICATE, 0, 0, 0);
+    step = 15; if (d <= 0 || tt_look(d) != E_ACCESS_DENIED || tt_set(d, 0) != E_OK) goto done;
+
+    /* 16-17: a timer stays armed while any handle is open, and is disarmed and
+       freed with the last */
+    step = 16; if (tt_set(t, timer_now_ns() + TT_MS(10000)) != E_OK
+                   || ktimer_armed_count() != armed0 + 1) goto done;
+    htab_close(tab, t); t = -1;
+    step = 16; if (ktimer_armed_count() != armed0 + 1) goto done;   /* d still holds it */
+    htab_close(tab, d); d = -1;
+    htab_close(tab, u); u = -1;
+    step = 17; if (ktimer_armed_count() != armed0 || kobj_live(KOBJ_TIMER) != live0) goto done;
+    ok = 1;
+
+done:
+    if (!ok) klog_u32("KTEST", SEV_ERR, "timer test failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    if (t > 0)  htab_close(tab, t);
+    if (u > 0)  htab_close(tab, u);
+    if (d > 0)  htab_close(tab, d);
+    if (eh > 0) htab_close(tab, eh);
     unmap_user_page(TEST_CODE_VIRT, phys);
     return ok;
 }

@@ -41,6 +41,7 @@ enum kobj_type {
     KOBJ_TEST     = 3,   /* the self-tests' own type; nothing else creates one */
     KOBJ_PROCESS  = 4,   /* process (cpu/proc.c) */
     KOBJ_JOB      = 5,   /* job (cpu/job.c) */
+    KOBJ_TIMER    = 6,   /* timer (object/ktimer.c) */
     KOBJ_TYPE_MAX
 };
 

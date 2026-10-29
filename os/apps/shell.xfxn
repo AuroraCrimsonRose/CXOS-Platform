@@ -776,7 +776,7 @@ fn cmd_run(arg: *u8) -> void {
         return;
     }
     let seen: u32 = 0;
-    let rc: i32 = object_wait(ph, SIGNAL_PROCESS_ENDED, WAIT_FOREVER, &seen);
+    let rc: i32 = object_wait(ph, SIGNAL_PROCESS_ENDED, DEADLINE_NEVER, &seen);
     let pi: process_info;
     memzero((&pi) as *u8, sizeof pi);
     if (rc >= 0) {

@@ -339,7 +339,19 @@ Independent of the order above, and small enough to land whenever convenient:
      to one budget; `SYS_JOB_SET_LIMITS` changes it, `OBJINFO_JOB` reads it,
      and `SYS_JOB_KILL` ends every process below and closes the subtree
      (`SIGNAL_JOB_ENDED` when the last is gone).
-2. The wait queue, and timers as handles (LAPIC timer and TSC).
+2. The wait queue, and timers as handles (LAPIC timer and TSC). In three steps:
+   - **1.2a (ABI 17, 2026-10-29), done:** the monotonic clock in nanoseconds
+     (`SYS_CLOCK_MONOTONIC`); `SYS_OBJECT_WAIT` takes an absolute deadline on
+     it (`DEADLINE_NEVER` for none); timer objects (`SYS_TIMER_CREATE`,
+     `SYS_TIMER_SET`, `SYS_TIMER_CANCEL`) fire once at a deadline,
+     `SIGNAL_TIMER_FIRED`, from one deadline-ordered list the tick looks at
+     the head of. Still on the 1 ms PIT tick.
+   - **1.2b:** the queue object (`docs/kernel/CX_KERNEL_PLAN.md` §5):
+     register a handle with a key once, one-shot and re-armed; a wait returns
+     only the keys that became ready, until a deadline.
+   - **1.2c:** the LAPIC timer programmed for the next deadline instead of a
+     fixed tick, and the clock from the TSC; the PIT stays the fallback.
+     Timer slack comes with it.
 3. IPC: queued calls with reply tokens, badges, handle transfer, sealable
    memory objects, notifications, priority passed through calls. Memory
    objects with pages on first touch, the region tree, and strict commit

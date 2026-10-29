@@ -60,7 +60,9 @@ public class XfilTests
     [InlineData("const A: u32 = 0x100000000\n", "does not fit in u32")]
     [InlineData("const A: u32 = -1\n", "does not fit in u32")]
     [InlineData("const A: i32 = 0x80000000\n", "does not fit in i32")]
-    [InlineData("const A: u64 = 1\n", "u32 or i32")]
+    [InlineData("const A: i64 = 1\n", "u32, i32 or u64")]
+    [InlineData("const A: u64 = 0x8000000000000000\n", "too large")]                              // a u64 stops at 2^63-1
+    [InlineData("const A: u64 = -1\n", "does not fit in u64")]
     [InlineData("const A: u32 = B | 1\n", "cannot evaluate 'B'")]                                 // only earlier constants
     [InlineData("const A: u32 = 1 << 3\n", "cannot evaluate")]                                    // only OR
     [InlineData("const A: u32 = -1 | 2\n", "cannot be ORed")]
@@ -270,6 +272,21 @@ public class XfilTests
             "const A: u32 = 1\nsyscall SYS_X = 0x10 () -> void\nenum e {\n    E0 = 0\n    E1 = 1\n}\nconst NEG: i32 = -1\n"));
         Assert.Equal(new[] { ("A", 1L, "u32"), ("SYS_X", 16L, "u32"), ("E0", 0L, "u32"), ("E1", 1L, "u32"), ("NEG", -1L, "i32") },
                      m.Constants.Select(c => (c.Name, c.Value, c.XType)));
+    }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
+    public void A_u64_constant_is_u64_in_the_header_the_model_and_the_header_read_back()
+    {
+        XfilFile f = Parse("const NEVER: u64 = 0x7FFFFFFFFFFFFFFFu\nconst SMALL: u64 = 5\n");
+        string h = XfilEmit.CHeader(f);
+        Assert.Matches(@"#define NEVER\s+0x7FFFFFFFFFFFFFFFu\n", h);
+        Assert.Equal(new[] { ("NEVER", long.MaxValue, "u64"), ("SMALL", 5L, "u64") },
+                     XfilEmit.Model(f).Constants.Select(c => (c.Name, c.Value, c.XType)));
+        // check-abi reads the header back: a value past 32 bits is u64 there too
+        AbiConstant back = AbiModel.Parse(h).Constants.Single(c => c.Name == "NEVER");
+        Assert.Equal((long.MaxValue, "u64"), (back.Value, back.XType));
+        Assert.Contains("const NEVER: u64", XfilEmit.Model(f).EmitX(), StringComparison.Ordinal);
     }
 
     // The compilers call stub n at base + (n << SyscallStubShift); the kernel lays

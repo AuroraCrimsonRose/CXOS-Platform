@@ -40,6 +40,7 @@
 #include "cxk_abi.h"
 #include "syspage.h"           /* SYSPAGE_VIRT */
 #include "systable.h"           /* syscall_object_wait, syscall_object_info */
+#include "timer.h"              /* timer_now_ns: a wait's deadline */
 #include "proc.h"               /* proc_live */
 
 extern const struct cxex_load_ops cxex_kernel_load_ops;   /* cxex_loadk.c */
@@ -521,7 +522,7 @@ static int spv_in_job(struct spawn_args *a, struct object_info_args *oi) {
     jh = syscall_job_create(0, user_addr(jl));
     a->job = jh;
     ph = jh > 0 ? sys_spawn(user_addr(a)) : -1;
-    step = 1; if (ph <= 0 || syscall_object_wait(ph, SIGNAL_PROCESS_ENDED, 10000, 0) != E_OK
+    step = 1; if (ph <= 0 || syscall_object_wait(ph, SIGNAL_PROCESS_ENDED, timer_now_ns() + 10000 * TIMER_NS_PER_TICK, 0) != E_OK
                   || spv_info(oi, ph, OBJINFO_PROCESS, pi, sizeof *pi) != (int)sizeof *pi
                   || pi->ended != PROC_NOT_STARTED) goto done;
     htab_close(tab, ph); ph = -1;
@@ -534,7 +535,7 @@ static int spv_in_job(struct spawn_args *a, struct object_info_args *oi) {
     jl->memory = 4u * 1024u * 1024u;
     step = 3; if (syscall_job_set_limits(jh, user_addr(jl)) != E_OK) goto done;
     ph = sys_spawn(user_addr(a));
-    if (ph <= 0 || syscall_object_wait(ph, SIGNAL_PROCESS_ENDED, 10000, 0) != E_OK
+    if (ph <= 0 || syscall_object_wait(ph, SIGNAL_PROCESS_ENDED, timer_now_ns() + 10000 * TIMER_NS_PER_TICK, 0) != E_OK
         || spv_info(oi, ph, OBJINFO_PROCESS, pi, sizeof *pi) != (int)sizeof *pi
         || pi->ended != PROC_EXITED || pi->code != 0) goto done;
     htab_close(tab, ph); ph = -1;
@@ -686,7 +687,7 @@ int ktest_spawn_verifies_image(void) {
     struct object_info_args *oi = (struct object_info_args *)(SPV_ARGS_VA + 0x100);
     struct process_info *pi = (struct process_info *)(SPV_ARGS_VA + 0x200);
     oi->cap = sizeof *pi; oi->buf = user_addr(pi); oi->handle = ph; oi->topic = OBJINFO_PROCESS;
-    ok = ph > 0 && syscall_object_wait(ph, SIGNAL_PROCESS_ENDED, 10000, 0) == E_OK
+    ok = ph > 0 && syscall_object_wait(ph, SIGNAL_PROCESS_ENDED, timer_now_ns() + 10000 * TIMER_NS_PER_TICK, 0) == E_OK
          && syscall_object_info(user_addr(oi)) == (int)sizeof *pi
          && pi->ended == PROC_EXITED && pi->code == 0;
     /* With the rights the ABI promises a spawner (ABI 14 adds HRIGHT_KILL,

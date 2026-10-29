@@ -53,6 +53,15 @@ static inline uint32_t timer_since(uint32_t start) {
     return timer_ticks() - start;
 }
 
+/* ---- the monotonic clock (SYS_CLOCK_MONOTONIC) ----
+ * Nanoseconds since timer_init, 64 bits: it never wraps (292 years to 2^63),
+ * so a deadline on it is compared plainly. It counts the same tick as
+ * timer_ticks(), from its own 64-bit counter: on x86-64 that is a plain load,
+ * which is what kept the 32-bit one above. Every deadline (kobj_wait, the
+ * timer objects) is a time on this clock. */
+#define TIMER_NS_PER_TICK 1000000ull
+uint64_t timer_now_ns(void);
+
 /* Busy-wait for the given number of milliseconds. */
 void timer_sleep(uint32_t ms);
 

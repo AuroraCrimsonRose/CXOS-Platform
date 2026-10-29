@@ -12,9 +12,10 @@ public sealed record AbiConstant(string Name, long Value, string? DeclaredXType 
     /// <summary>
     /// The X type it is declared with: the <c>.xfil</c>'s, or for one read from a
     /// C header, signed for error codes (negative) and unsigned for everything
-    /// else (numbers, flags, op selectors, sizes).
+    /// else (numbers, flags, op selectors, sizes), u64 past 32 bits.
     /// </summary>
-    public string XType => DeclaredXType ?? (Name.StartsWith("E_", StringComparison.Ordinal) || Value < 0 ? "i32" : "u32");
+    public string XType => DeclaredXType ?? (Name.StartsWith("E_", StringComparison.Ordinal) || Value < 0 ? "i32"
+                                             : Value > uint.MaxValue ? "u64" : "u32");
 }
 
 /// <summary>One field of an ABI structure, with its C type and the X type it maps to.</summary>

@@ -8,6 +8,7 @@
 #include "timer.h"
 #include "keyboard.h"
 #include "proc.h"         /* proc_stop_tick */
+#include "object/ktimer.h"
 #include "arch/irq.h"
 #include "arch/cpu_ops.h"
 #include "platform/platform.h"   /* the tick's source */
@@ -15,18 +16,25 @@
 #define TIMER_HZ      1000u            /* 1000 Hz -> ~1 ms per tick */
 
 static volatile uint32_t ticks = 0;
+static volatile uint64_t ticks64 = 0;   /* the monotonic clock; never set for a test */
 
 static void timer_callback(struct registers *r) {
     (void)r;
     ticks++;
+    ticks64++;
     sched_tick();          /* preemptive scheduler (no-op unless enabled) */
     sched_wake_sleepers(); /* SYS_SLEEP: put expired sleepers back on the queue */
+    ktimer_tick();         /* timer objects: fire those whose deadline has come */
     proc_stop_tick();      /* SYS_PROCESS_STOP: end those whose deadline passed */
     keyboard_tick();       /* wake a USB-HID reader; raises no bus traffic here */
 }
 
 uint32_t timer_ticks(void) {
     return ticks;
+}
+
+uint64_t timer_now_ns(void) {
+    return ticks64 * TIMER_NS_PER_TICK;
 }
 
 void timer_sleep(uint32_t ms) {

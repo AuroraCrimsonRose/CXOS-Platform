@@ -179,6 +179,27 @@ It needs the generic `HRIGHT_WAIT`; a type with no signals refuses it
 `E_INVALID_ARGS`. Signals are a word on every object (`kobj.signals`); the
 queue will read the same word.
 
+*Deadlines and timers, ABI 17 (Phase 1.2a):* `SYS_CLOCK_MONOTONIC(*u64)`
+reads the monotonic clock, nanoseconds since boot. `object_wait`'s third
+argument is now an absolute **deadline** on it: one already passed (0 among
+them) only looks, and `DEADLINE_NEVER` (2^63-1, the top of the `i64` range
+above, 292 years) or anything later has none. A deadline is any value, with no
+`SLEEP_MAX_MS` cap: a far one costs nothing a wait with none does not. A
+**timer** (`SYS_TIMER_CREATE`, a handle with `HRIGHT_WAIT`, `HRIGHT_ARM` and
+`HRIGHT_DUPLICATE`, unprivileged) fires once at a deadline and sets
+`SIGNAL_TIMER_FIRED`. `SYS_TIMER_SET(t, deadline)` (`HRIGHT_ARM`) clears the
+signal and arms it in place of any deadline it had; a passed one fires at once,
+and `DEADLINE_NEVER` is `E_INVALID_ARGS`. `SYS_TIMER_CANCEL(t)` disarms and
+clears. It lasts while a handle or a wait on it does, so a thread still
+waiting when another closes the last handle is still woken. The timer's signal is the first that
+can be cleared. Not yet: a choice of clock (there is one), slack, and a
+period. A periodic waiter re-arms for the deadline it wants next, so drift
+stays its own decision. Slack waits for item 2's programmed LAPIC deadline (1.2c),
+the point where coalescing wakeups would save anything. Until then the clock
+moves a tick (1 ms) at a time, and a deadline is met at the first tick at or
+after it. `u64` constants are new in the `.xfil` for `DEADLINE_NEVER`, held to
+2^63-1.
+
 **Processes, threads and jobs:**
 `process_spawn(spec)` (§10), `process_exit(code)`, `process_stop(p, deadline)`,
 `process_kill(p)`, `thread_create(p, entry, stack, arg)`, `thread_exit`,
@@ -428,7 +449,7 @@ domain kernel
 
 /// documentation, carried into the generated files
 // a comment that stays in the .xfil
-const NAME: u32 = 0x10u              /// trailing note; u32 or i32
+const NAME: u32 = 0x10u              /// trailing note; u32, i32 or u64 (to 2^63-1)
 const BOTH: u32 = A | B              /// a literal, or an OR of earlier constants
 enum mode {                          /// u32 constants; every value written out
     MODE_A = 0

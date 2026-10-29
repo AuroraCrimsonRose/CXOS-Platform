@@ -674,7 +674,7 @@ static int test_sysrec(void) {
  * point. A number past the end must be refused before it indexes the table:
  * 0xFFFFFFFF would otherwise read four gigabytes beyond it. */
 static int test_syscall_table(void) {
-    static const uint32_t unknown[] = { 0x07, 0x7F, SYSCALL_TABLE_SIZE, 0xFFFFFFFFu };
+    static const uint32_t unknown[] = { 0x08, 0x7F, SYSCALL_TABLE_SIZE, 0xFFFFFFFFu };
     for (uint32_t i = 0; i < sizeof unknown / sizeof unknown[0]; i++) {
         struct sysrec_stats s0, s1;
         sysrec_snapshot(&s0);
@@ -3292,6 +3292,7 @@ void ktest_run(void) {
     total++; passed += report("process kill: every wait, both safe points", usermode_kill_test());
     total++; passed += report("process stop: asked, then ended at the deadline", usermode_stop_test());
     total++; passed += report("jobs: memory and thread budgets, nested, killed together", usermode_job_test());
+    total++; passed += report("timers: absolute deadlines on the monotonic clock", usermode_timer_test());
     total++; passed += report("ipc endpoints refcounted + reclaimed", test_ipc_endpoint_lifetime());
     total++; passed += report("object caches map and return pages", test_ocache_pages());
     total++; passed += report("two threads share one process",   test_proc_threads());

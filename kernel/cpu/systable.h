@@ -22,6 +22,7 @@ int syscall_getuid(void);                       /* SYS_GETUID */
 int syscall_clock(uint64_t c);                  /* SYS_CLOCK */
 int syscall_sleep(uint32_t ms);                 /* SYS_SLEEP */
 int syscall_args(uint64_t a);                   /* SYS_ARGS */
+int syscall_clock_monotonic(uint64_t now);      /* SYS_CLOCK_MONOTONIC */
 int syscall_ipc_call(uint64_t a);               /* SYS_IPC_CALL */
 int syscall_ipc_recv(uint64_t a);               /* SYS_IPC_RECV */
 int syscall_ipc_reply(uint64_t a);              /* SYS_IPC_REPLY */
@@ -29,7 +30,10 @@ int syscall_ep_create(void);                    /* SYS_EP_CREATE */
 int syscall_handle_close(int32_t h);            /* SYS_HANDLE_CLOSE */
 int syscall_handle_duplicate(int32_t h, uint32_t rights); /* SYS_HANDLE_DUPLICATE */
 int syscall_object_info(uint64_t a);            /* SYS_OBJECT_INFO */
-int syscall_object_wait(int32_t h, uint32_t signals, uint32_t timeout_ms, uint64_t seen); /* SYS_OBJECT_WAIT */
+int syscall_object_wait(int32_t h, uint32_t signals, uint64_t deadline, uint64_t seen); /* SYS_OBJECT_WAIT */
+int syscall_timer_create(void);                 /* SYS_TIMER_CREATE */
+int syscall_timer_set(int32_t h, uint64_t deadline); /* SYS_TIMER_SET */
+int syscall_timer_cancel(int32_t h);            /* SYS_TIMER_CANCEL */
 int syscall_input_read(void);                   /* SYS_INPUT_READ */
 int syscall_mouse_read(uint64_t m);             /* SYS_MOUSE_READ */
 int syscall_input_poll(void);                   /* SYS_INPUT_POLL */
@@ -90,7 +94,7 @@ int syscall_file_unlock(int32_t h, uint64_t start, uint64_t len); /* SYS_FILE_UN
  * before looking it up, and one that lands in a hole finds no decoder. */
 #define SYSCALL_ARGS            5
 #define SYSCALL_TABLE_SIZE      178
-#define SYSCALL_COUNT           69
+#define SYSCALL_COUNT           73
 
 /* An argument register is as wide as the machine's: 32 bits on x86-32, where a
  * u64 takes a register pair, and 64 on x86-64, where it takes one. */

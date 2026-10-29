@@ -40,7 +40,7 @@ domain kernel
 /// mismatch. Declared in versions.json as `cxex-abi` and checked against this
 /// line; bump both, and the DevKit's stamp, in the one commit that changes the
 /// contract.
-const CXK_ABI_VERSION: u32 = 16
+const CXK_ABI_VERSION: u32 = 17
 
 /// ---- syscall numbers ----
 /// lifecycle 0x00-0x0F (no capability required)
@@ -51,6 +51,9 @@ syscall SYS_GETUID = 0x03 fn getuid() -> i32                    /// -> caller ow
 syscall SYS_CLOCK = 0x04 fn clock_read(c: *clock_info) -> i32   /// ebx = *clock_info -> 0, or -E_*
 syscall SYS_SLEEP = 0x05 fn sleep_ms(ms: u32) -> i32            /// ebx = ms; blocks this thread, then returns 0
 syscall SYS_ARGS = 0x06 fn args_read(a: *args_info) -> i32      /// ebx = *args_info -> 0, or -E_*
+/// ebx = *u64 -> 0, with the monotonic clock in it: nanoseconds since boot.
+/// It never goes back and never jumps; every deadline is a time on it.
+syscall SYS_CLOCK_MONOTONIC = 0x07 fn clock_monotonic(now: *u64) -> i32
 /// IPC + handles 0x10-0x1F
 syscall SYS_IPC_CALL = 0x10 fn ipc_call(a: *ipc_call_args) -> i32       /// ebx = *ipc_call_args -> reply length (blocks)
 syscall SYS_IPC_RECV = 0x11 fn ipc_recv(a: *ipc_recv_args) -> i32       /// ebx = *ipc_recv_args -> request length (blocks)
@@ -60,11 +63,23 @@ syscall SYS_HANDLE_CLOSE = 0x16 fn handle_close(h: i32) -> i32          /// rele
 /// ebx = handle, ecx = rights (a subset of its own; needs HRIGHT_DUPLICATE) -> new handle
 syscall SYS_HANDLE_DUPLICATE = 0x17 fn handle_duplicate(h: i32, rights: u32) -> i32
 syscall SYS_OBJECT_INFO = 0x18 fn object_info(a: *object_info_args) -> i32   /// ebx = *object_info_args -> bytes written
-/// ebx = handle (HRIGHT_WAIT), ecx = signals, edx = timeout in ms (0: look
-/// without waiting; WAIT_FOREVER; at most SLEEP_MAX_MS otherwise), esi = *u32
-/// for the object's signals as last seen, or 0 -> 0 once any of `signals` is
-/// set, or E_TIMED_OUT
-syscall SYS_OBJECT_WAIT = 0x19 fn object_wait(h: i32, signals: u32, timeout_ms: u32, seen: *u32) -> i32
+/// ebx = handle (HRIGHT_WAIT), ecx = signals, edx = deadline on the
+/// monotonic clock (SYS_CLOCK_MONOTONIC; one already passed, 0 among them,
+/// only looks; DEADLINE_NEVER, or later, has none), esi = *u32 for the object's signals
+/// as last seen, or 0 -> 0 once any of `signals` is set, or E_TIMED_OUT
+syscall SYS_OBJECT_WAIT = 0x19 fn object_wait(h: i32, signals: u32, deadline: u64, seen: *u32) -> i32
+/// -> a timer handle with HRIGHT_WAIT, HRIGHT_ARM and HRIGHT_DUPLICATE. A
+/// timer fires once at a deadline on the monotonic clock: SIGNAL_TIMER_FIRED.
+/// It starts disarmed, and lasts while a handle on it or a wait on it does.
+syscall SYS_TIMER_CREATE = 0x1A fn timer_create() -> i32
+/// ebx = timer handle (HRIGHT_ARM), ecx = deadline -> 0. Clears
+/// SIGNAL_TIMER_FIRED and arms it for `deadline`, in place of any deadline it
+/// had; one already passed fires it at once. DEADLINE_NEVER or later is
+/// E_INVALID_ARGS: cancel it instead.
+syscall SYS_TIMER_SET = 0x1B fn timer_set(h: i32, deadline: u64) -> i32
+/// ebx = timer handle (HRIGHT_ARM) -> 0. Disarms it and clears
+/// SIGNAL_TIMER_FIRED.
+syscall SYS_TIMER_CANCEL = 0x1C fn timer_cancel(h: i32) -> i32
 
 /// ---- handles ----
 /// A handle is a positive number, never 0 and never below 256, and a closed
@@ -84,6 +99,7 @@ const HRIGHT_STOP: u32 = 0x4u
 /// job: spawn a process into it (spawn_args.job), make a job under it
 const HRIGHT_ASSIGN: u32 = 0x4u
 const HRIGHT_SET_LIMITS: u32 = 0x8u  /// job: SYS_JOB_SET_LIMITS
+const HRIGHT_ARM: u32 = 0x1u         /// timer: SYS_TIMER_SET, SYS_TIMER_CANCEL
 /// Generic rights, which mean the same on every type, count down from the top
 /// bit; a type's own count up from the bottom. A handle without
 /// HRIGHT_DUPLICATE cannot be copied, and a copy has it only if asked for.
@@ -94,12 +110,18 @@ const HRIGHT_WAIT: u32 = 0x40000000u
 
 /// ---- signals (SYS_OBJECT_WAIT) ----
 /// Each type defines its own, from the bottom bit, and asking for one it does
-/// not define is E_INVALID_ARGS. Once set, a signal named here stays set.
+/// not define is E_INVALID_ARGS. Once set, a signal named here stays set,
+/// except where its type says what clears it.
 const SIGNAL_PROCESS_ENDED: u32 = 0x1u   /// process: its last thread has gone
 /// job: SYS_JOB_KILL reached it (on it or a job above it), and every
 /// process in it and below has ended
 const SIGNAL_JOB_ENDED: u32 = 0x1u
-const WAIT_FOREVER: u32 = 0xFFFFFFFFu    /// timeout_ms: no limit
+/// timer: its deadline has come. SYS_TIMER_SET and SYS_TIMER_CANCEL clear it.
+const SIGNAL_TIMER_FIRED: u32 = 0x1u
+/// A deadline that never comes (SYS_OBJECT_WAIT): a wait with no limit.
+/// Deadlines are nanoseconds on the monotonic clock, so this is 292 years
+/// after boot.
+const DEADLINE_NEVER: u64 = 0x7FFFFFFFFFFFFFFFu
 
 /// input 0x20-0x2F (unprivileged: reading your own keystrokes)
 syscall SYS_INPUT_READ = 0x20 fn input_read() -> i32                   /// block until a key -> char
@@ -409,6 +431,11 @@ struct spawn_args {
 ///
 /// A scheduler wants both: `ticks` to decide that 30 seconds have passed, and
 /// `epoch` to record when something ran.
+///
+/// SYS_CLOCK_MONOTONIC reads the clock `ticks` comes from in nanoseconds and
+/// 64 bits, which never wrap; every deadline (SYS_OBJECT_WAIT, SYS_TIMER_SET)
+/// is a time on it. It advances one tick at a time today: a deadline is met at
+/// the first tick at or after it.
 struct clock_info {
     ticks: u32      /// ms since boot, monotonic; wraps after ~49 days
     epoch: u32      /// seconds since 1970 from the RTC, or 0 if unavailable
@@ -434,6 +461,7 @@ const OBJ_TYPE_ENDPOINT: u32 = 1
 const OBJ_TYPE_FILE: u32 = 2
 const OBJ_TYPE_PROCESS: u32 = 4      /// 3 is the kernel self-tests' own
 const OBJ_TYPE_JOB: u32 = 5
+const OBJ_TYPE_TIMER: u32 = 6
 
 /// Jobs nest at most this deep below the kernel's own (SYS_JOB_CREATE).
 const JOB_DEPTH_MAX: u32 = 8

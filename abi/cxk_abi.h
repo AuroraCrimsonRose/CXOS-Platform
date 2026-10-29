@@ -15,7 +15,7 @@
  * hash it was built against and the loader refuses one that differs, so a
  * program never runs against numbers or layouts it was not compiled for.
  */
-#define CXK_ABI_HASH { 0xe2, 0x8d, 0xbe, 0xb4, 0xe7, 0x93, 0x75, 0x4f, 0x63, 0x45, 0x12, 0x9a, 0xb4, 0x06, 0xb3, 0x53, 0x80, 0x07, 0xf2, 0xe1, 0xe4, 0x12, 0xd8, 0x33, 0xcd, 0xe8, 0x69, 0x3e, 0x4f, 0x14, 0x52, 0xd2 }
+#define CXK_ABI_HASH { 0x43, 0x41, 0x2b, 0x68, 0x05, 0x5c, 0x53, 0x49, 0x6c, 0xe2, 0x49, 0x96, 0x44, 0x96, 0xc6, 0xae, 0x08, 0xe2, 0x5a, 0x03, 0xd4, 0x81, 0x8e, 0x84, 0xb4, 0x75, 0x66, 0xf0, 0xcf, 0xe4, 0xe1, 0x84 }
 
 /*
  * CXK ABI v1 - the PUBLIC contract shared by the kernel, the .xoex executive,
@@ -44,7 +44,7 @@
  * line; bump both, and the DevKit's stamp, in the one commit that changes the
  * contract.
  */
-#define CXK_ABI_VERSION          16
+#define CXK_ABI_VERSION          17
 
 /*
  * ---- syscall numbers ----
@@ -58,6 +58,12 @@
 #define SYS_SLEEP                0x05           /* ebx = ms; blocks this thread, then returns 0 */
 #define SYS_ARGS                 0x06           /* ebx = *args_info -> 0, or -E_* */
 
+/*
+ * ebx = *u64 -> 0, with the monotonic clock in it: nanoseconds since boot.
+ * It never goes back and never jumps; every deadline is a time on it.
+ */
+#define SYS_CLOCK_MONOTONIC      0x07
+
 /* IPC + handles 0x10-0x1F */
 #define SYS_IPC_CALL             0x10           /* ebx = *ipc_call_args -> reply length (blocks) */
 #define SYS_IPC_RECV             0x11           /* ebx = *ipc_recv_args -> request length (blocks) */
@@ -70,12 +76,33 @@
 #define SYS_OBJECT_INFO          0x18           /* ebx = *object_info_args -> bytes written */
 
 /*
- * ebx = handle (HRIGHT_WAIT), ecx = signals, edx = timeout in ms (0: look
- * without waiting; WAIT_FOREVER; at most SLEEP_MAX_MS otherwise), esi = *u32
- * for the object's signals as last seen, or 0 -> 0 once any of `signals` is
- * set, or E_TIMED_OUT
+ * ebx = handle (HRIGHT_WAIT), ecx = signals, edx = deadline on the
+ * monotonic clock (SYS_CLOCK_MONOTONIC; one already passed, 0 among them,
+ * only looks; DEADLINE_NEVER, or later, has none), esi = *u32 for the object's signals
+ * as last seen, or 0 -> 0 once any of `signals` is set, or E_TIMED_OUT
  */
 #define SYS_OBJECT_WAIT          0x19
+
+/*
+ * -> a timer handle with HRIGHT_WAIT, HRIGHT_ARM and HRIGHT_DUPLICATE. A
+ * timer fires once at a deadline on the monotonic clock: SIGNAL_TIMER_FIRED.
+ * It starts disarmed, and lasts while a handle on it or a wait on it does.
+ */
+#define SYS_TIMER_CREATE         0x1A
+
+/*
+ * ebx = timer handle (HRIGHT_ARM), ecx = deadline -> 0. Clears
+ * SIGNAL_TIMER_FIRED and arms it for `deadline`, in place of any deadline it
+ * had; one already passed fires it at once. DEADLINE_NEVER or later is
+ * E_INVALID_ARGS: cancel it instead.
+ */
+#define SYS_TIMER_SET            0x1B
+
+/*
+ * ebx = timer handle (HRIGHT_ARM) -> 0. Disarms it and clears
+ * SIGNAL_TIMER_FIRED.
+ */
+#define SYS_TIMER_CANCEL         0x1C
 
 /*
  * ---- handles ----
@@ -103,6 +130,7 @@
 /* job: spawn a process into it (spawn_args.job), make a job under it */
 #define HRIGHT_ASSIGN            0x4u
 #define HRIGHT_SET_LIMITS        0x8u           /* job: SYS_JOB_SET_LIMITS */
+#define HRIGHT_ARM               0x1u           /* timer: SYS_TIMER_SET, SYS_TIMER_CANCEL */
 
 /*
  * Generic rights, which mean the same on every type, count down from the top
@@ -120,7 +148,8 @@
 /*
  * ---- signals (SYS_OBJECT_WAIT) ----
  * Each type defines its own, from the bottom bit, and asking for one it does
- * not define is E_INVALID_ARGS. Once set, a signal named here stays set.
+ * not define is E_INVALID_ARGS. Once set, a signal named here stays set,
+ * except where its type says what clears it.
  */
 #define SIGNAL_PROCESS_ENDED     0x1u           /* process: its last thread has gone */
 
@@ -129,7 +158,16 @@
  * process in it and below has ended
  */
 #define SIGNAL_JOB_ENDED         0x1u
-#define WAIT_FOREVER             0xFFFFFFFFu    /* timeout_ms: no limit */
+
+/* timer: its deadline has come. SYS_TIMER_SET and SYS_TIMER_CANCEL clear it. */
+#define SIGNAL_TIMER_FIRED       0x1u
+
+/*
+ * A deadline that never comes (SYS_OBJECT_WAIT): a wait with no limit.
+ * Deadlines are nanoseconds on the monotonic clock, so this is 292 years
+ * after boot.
+ */
+#define DEADLINE_NEVER           0x7FFFFFFFFFFFFFFFu
 
 /* input 0x20-0x2F (unprivileged: reading your own keystrokes) */
 #define SYS_INPUT_READ           0x20           /* block until a key -> char */
@@ -527,6 +565,11 @@ struct spawn_args {
  *
  * A scheduler wants both: `ticks` to decide that 30 seconds have passed, and
  * `epoch` to record when something ran.
+ *
+ * SYS_CLOCK_MONOTONIC reads the clock `ticks` comes from in nanoseconds and
+ * 64 bits, which never wrap; every deadline (SYS_OBJECT_WAIT, SYS_TIMER_SET)
+ * is a time on it. It advances one tick at a time today: a deadline is met at
+ * the first tick at or after it.
  */
 struct clock_info {
     uint32_t ticks;                             /* ms since boot, monotonic; wraps after ~49 days */
@@ -558,6 +601,7 @@ struct clock_info {
 #define OBJ_TYPE_FILE            2
 #define OBJ_TYPE_PROCESS         4              /* 3 is the kernel self-tests' own */
 #define OBJ_TYPE_JOB             5
+#define OBJ_TYPE_TIMER           6
 
 /* Jobs nest at most this deep below the kernel's own (SYS_JOB_CREATE). */
 #define JOB_DEPTH_MAX            8

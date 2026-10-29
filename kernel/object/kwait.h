@@ -9,7 +9,8 @@
  * Every object has a signal word (kobj.signals). Its type says which bits it
  * sets (kobj_ops.signals_valid): a process sets SIGNAL_PROCESS_ENDED when its
  * last thread goes. A thread waits on one object for any of a set of signals,
- * with a timeout; setting a signal wakes every thread waiting on that object.
+ * until a deadline on the monotonic clock (timer_now_ns); setting a signal
+ * wakes every thread waiting on that object.
  *
  * The queue object of section 5 (register once, wait for many) builds on the
  * same word later; this is the one-handle wait it keeps.
@@ -31,16 +32,21 @@ struct kwaiter {
 };
 
 /* Set `bits` in o's signals and wake every thread waiting on it. Safe with
-   interrupts off (the reaper calls it). */
+   interrupts off (the reaper and the tick call it). */
 void kobj_signal(struct kobj *o, uint32_t bits);
 
-/* Wait until any of `want` is set in o's signals. `timeout_ms` 0 only looks;
-   KWAIT_FOREVER has no limit. Returns 0 if one is set, E_TIMED_OUT, or
-   E_CANCELED when the caller's process is being killed; either way *seen (if
-   given) is the signal word as last read. The caller holds a
-   reference on `o` and has checked `want` against the type. */
-#define KWAIT_FOREVER 0xFFFFFFFFu
-int kobj_wait(struct kobj *o, uint32_t want, uint32_t timeout_ms, uint32_t *seen);
+/* Clear `bits` in o's signals, for a type whose signal can be taken back (a
+   timer re-armed). Wakes nobody. Safe with interrupts off. */
+void kobj_signal_clear(struct kobj *o, uint32_t bits);
+
+/* Wait until any of `want` is set in o's signals, or until `deadline`
+   (nanoseconds on timer_now_ns): one already passed only looks, KWAIT_NEVER
+   has none. Returns 0 if one is set, E_TIMED_OUT, or E_CANCELED when the
+   caller's process is being killed; either way *seen (if given) is the
+   signal word as last read. The caller holds a reference on `o` and has
+   checked `want` against the type. */
+#define KWAIT_NEVER 0x7FFFFFFFFFFFFFFFull
+int kobj_wait(struct kobj *o, uint32_t want, uint64_t deadline, uint32_t *seen);
 
 /* Threads waiting on `o` now, for the self-tests. */
 uint32_t kobj_waiters(struct kobj *o);

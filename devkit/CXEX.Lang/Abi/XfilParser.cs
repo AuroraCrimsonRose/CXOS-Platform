@@ -351,9 +351,9 @@ public static class XfilParser
             _constTypes[name] = type;
         }
 
-        private XfilInt ConstantType(string t) => t is "u32" or "i32"
+        private XfilInt ConstantType(string t) => t is "u32" or "i32" or "u64"
             ? new XfilInt(t)
-            : throw new XfilException(LineNo, $"a constant is u32 or i32, not '{t}'");
+            : throw new XfilException(LineNo, $"a constant is u32, i32 or u64, not '{t}'");
 
         private XfilType FieldType(string owner, string t, int no)
         {
@@ -401,7 +401,10 @@ public static class XfilParser
                     throw new XfilException(LineNo,
                         $"{name}: cannot evaluate '{term}'. A value is a number or an OR of earlier constants.");
             }
-            (long lo, long hi) = type.Signed ? (int.MinValue, (long)int.MaxValue) : (0L, (long)uint.MaxValue);
+            // A u64 holds what a long does, 2^63-1 at most: as far as a deadline in
+            // nanoseconds needs to go (292 years).
+            (long lo, long hi) = type.Name == "u64" ? (0L, long.MaxValue)
+                               : type.Signed ? (int.MinValue, (long)int.MaxValue) : (0L, (long)uint.MaxValue);
             if (v < lo || v > hi) throw new XfilException(LineNo, $"{name}: {v} does not fit in {type.Name}");
 
             string text = terms.Length > 1 ? "(" + string.Join(" | ", terms) + ")"

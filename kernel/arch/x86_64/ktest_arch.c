@@ -741,10 +741,13 @@ static int t_new_thread_irqs_on(void) {
 }
 
 /* ktest.c's test_sched_preempt: two threads that never yield both finish,
-   only because the tick switches between them. */
+   only because the tick switches between them (this thread spins without
+   yielding). A million iterations each take about a third of the 5000-tick
+   bound under -icount; three million took 5020 ticks once the tick did a
+   little more work (1.2a's timers), so the bound was the test. */
 static volatile uint32_t pre_a, pre_b;
-static void pre_thread_a(void) { for (uint32_t i = 0; i < 3000000u; i++) pre_a = i; }
-static void pre_thread_b(void) { for (uint32_t i = 0; i < 3000000u; i++) pre_b = i; }
+static void pre_thread_a(void) { for (uint32_t i = 0; i < 1000000u; i++) pre_a = i; }
+static void pre_thread_b(void) { for (uint32_t i = 0; i < 1000000u; i++) pre_b = i; }
 
 static int t_preempt(void) {
     pre_a = pre_b = 0;
