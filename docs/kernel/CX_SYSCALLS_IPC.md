@@ -20,7 +20,7 @@
 | Devices | Drawing (`SYS_FB_DRAW_TEXT`), keyboard and mouse are syscalls; input needs no capability | The kernel draws pixels; any process can read another's keys |
 | Arguments | A fixed page at `USER_ARGS_BASE` | An x86-32 address in the ABI |
 | Errors | 15 codes | No timeout, peer-closed, wrong-type or rights-denied distinction |
-| IPC | Calls queue with reply tokens and badges, up to 64 KiB each way (ABI 20, §7); the executive defines messages informally | No handles in messages, no shared memory, no types |
+| IPC | Calls queue with reply tokens and badges, up to 64 KiB and 16 handles each way (ABI 21, §7); the executive defines messages informally | No notifications, no shared memory, no types |
 | Definition | Since step 6a1, `abi/kernel.xfil`: `cxk_abi.h`, the X prelude's constants and structures, and its plain syscall wrappers are generated from it (§9.5). The prelude's helpers are by hand. Since 6a3a every image records the ABI hash and the loader compares it | The interface it describes is still this table's |
 
 The good parts stay: user copies that validate and recover from faults
@@ -344,6 +344,30 @@ queued call and every later one the same way. A killed caller's queued call
 leaves the queue; a taken one is answered into nothing (`E_PEER_CLOSED` to
 the server). A stop notice comes first, as before, from `IPC_SENDER_KERNEL`
 with no token.
+
+*Handles in messages, ABI 21 (Phase 1.3b):* a request and a reply each carry
+up to `IPC_HANDLES_MAX` (16) handles, named by an array of `ipc_handle`
+(`handle`, `op`, `rights`, `reserved` 0). `IPC_HANDLE_MOVE` takes the handle
+out of the sender's table with its grant; `IPC_HANDLE_COPY` needs
+`HRIGHT_DUPLICATE` and makes a new grant whose parent is the source's.
+`rights` is a subset of the handle's (`IPC_RIGHTS_SAME` keeps them); rights
+only shrink. Every entry is checked before any is taken, and a refusal
+leaves every handle where it was: a bad handle is `E_BAD_HANDLE`, a growing
+right or a copy without duplicate `E_ACCESS_DENIED`, an op that is neither or
+a handle named twice `E_INVALID_ARGS`, more than 16 `E_OUT_OF_RANGE`, a
+nonzero `reserved` `E_INVALID_ARGS` (all before the endpoint or token is
+looked up). The endpoint or token the message goes through cannot travel in
+it, and nor can an open file (its locks name the thread that opened it):
+`E_NOT_SUPPORTED`. A handle in flight keeps its object's handle count, so
+`last_handle` does not fire on the way. `ipc_call_args` names the request's
+handles (`handles`, `handle_count`) and where the reply's land
+(`reply_handles`, `reply_handle_cap`); `SYS_IPC_RECV` takes `handles` and
+`handle_cap`, and `ipc_msg_info` tells both counts. More handles than
+`handle_cap` is `E_BUFFER_TOO_SMALL`, like bytes, and the call stays first; a
+reply with more than `reply_handle_cap` is `E_BUFFER_TOO_SMALL` and keeps the
+token. The received handles and the token land together, or the call is
+requeued (`E_NO_RESOURCES`). A call that fails after queuing (`E_PEER_CLOSED`,
+a killed caller) closes the handles it carried.
 
 **Streams and files:**
 `pipe_create(size)`, `io_read(h, buf, offset)`, `io_write(h, buf, offset)`
@@ -726,7 +750,8 @@ generalised.
   straight from the sender's buffer into the receiver's; otherwise into a
   kernel buffer charged to the sender's job.
 - **Handles move** by default; a copy needs the duplicate right, and rights
-  can only shrink in transit (XNU `ipc_kmsg_copyin_port_descriptor`).
+  can only shrink in transit (XNU `ipc_kmsg_copyin_port_descriptor`). Built
+  (ABI 21, §7).
 - **Reply tokens, badges, several calls in flight, priority passed through
   calls:** as in `kernel/CX_KERNEL_PLAN.md` §6. The first three are built
   (ABI 20, §7).

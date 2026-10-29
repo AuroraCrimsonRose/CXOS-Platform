@@ -380,8 +380,16 @@ Independent of the order above, and small enough to land whenever convenient:
      `cxk verify-hyperv` boots the image in a Hyper-V Generation 1 VM (AMI
      BIOS, IDE, COM1 to a pipe) and judges it as `verify-boot` does. The rig
      stays the final word.
-   - **1.3b:** handles in messages: moved, or copied with rights that only
-     shrink, up to 16.
+   - **1.3b (ABI 21, 2026-10-29), done:** handles in messages: a request
+     and a reply each carry up to 16, moved (keeping their grant) or copied
+     (`HRIGHT_DUPLICATE`, a new grant derived from the source's) with rights
+     that only shrink. Every entry is checked before any is taken, so a
+     refusal moves nothing; the handles received and the reply token land
+     together or the call is requeued. A handle in flight keeps its
+     object's handle count. Neither the endpoint or token a message goes
+     through nor an open file can travel (`E_NOT_SUPPORTED`; a file's locks
+     name the thread that opened it). Queued calls that fail close what
+     they carried (`docs/kernel/CX_SYSCALLS_IPC.md` §7).
    - **1.3c:** notifications.
    - **1.3d:** memory objects: pages on first touch, the region tree, strict
      commit.

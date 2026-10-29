@@ -40,7 +40,7 @@ domain kernel
 /// mismatch. Declared in versions.json as `cxex-abi` and checked against this
 /// line; bump both, and the DevKit's stamp, in the one commit that changes the
 /// contract.
-const CXK_ABI_VERSION: u32 = 20
+const CXK_ABI_VERSION: u32 = 21
 
 /// ---- syscall numbers ----
 /// lifecycle 0x00-0x0F (no capability required)
@@ -59,15 +59,24 @@ syscall SYS_CLOCK_MONOTONIC = 0x07 fn clock_monotonic(now: *u64) -> i32
 /// reply's length, once the server answers. Calls queue on the endpoint, oldest
 /// first. E_PEER_CLOSED: the endpoint's last receive handle closed, or the
 /// call's reply token closed unanswered. E_CANCELED: the caller is being killed.
+/// The request's handles (ipc_handle) leave the caller's table when the call
+/// is queued, all of them, or none if the call is refused; a queued call that
+/// then fails closes them. The reply's handles land in the caller's table and
+/// their values in reply_handles, then 0s; E_NO_RESOURCES if the table has no
+/// room for them all (the reply is lost).
 syscall SYS_IPC_CALL = 0x10 fn ipc_call(a: *ipc_call_args) -> i32
 /// ebx = *ipc_recv_args -> the message's length, once one waits: the oldest
 /// call, or a kernel notice first. A call comes with a reply token in
-/// ipc_msg_info.reply. A message longer than `cap` is E_BUFFER_TOO_SMALL and
-/// stays, with its length in ipc_msg_info.len.
+/// ipc_msg_info.reply, and its handles in the receiver's table, their values
+/// at `handles`. A message longer than `cap`, or with more handles than
+/// `handle_cap`, is E_BUFFER_TOO_SMALL and stays, with its length and handle
+/// count in ipc_msg_info. E_NO_RESOURCES: no room in the table; it stays.
 syscall SYS_IPC_RECV = 0x11 fn ipc_recv(a: *ipc_recv_args) -> i32
 /// ebx = *ipc_reply_args -> 0, and the token is closed. E_PEER_CLOSED: the
-/// caller has gone; the token is closed too. A reply longer than the caller's
-/// ipc_msg_info.reply_cap is E_BUFFER_TOO_SMALL, and the token stays.
+/// caller has gone; the token is closed too, and the handles stay. A reply
+/// longer than the caller's ipc_msg_info.reply_cap, or with more handles than
+/// its reply_handles, is E_BUFFER_TOO_SMALL, and the token stays. A reply
+/// refused for its handles moves none of them and keeps the token.
 syscall SYS_IPC_REPLY = 0x12 fn ipc_reply(a: *ipc_reply_args) -> i32
 syscall SYS_EP_CREATE = 0x13 fn ep_create() -> i32                      /// create an endpoint -> RECV handle (GRANT_ENDPOINT)
 /// ebx = an endpoint handle (HRIGHT_RECV), ecx = badge, edx = rights (a
@@ -599,20 +608,48 @@ struct object_basic {
     parent_grant: u32   /// the grant it was derived from; 0 = none
 }
 
+/// Handles a message carries, beside its bytes, never inside them: a request
+/// or a reply takes at most IPC_HANDLES_MAX. Each is moved, or copied, which
+/// needs HRIGHT_DUPLICATE; either way its rights can only shrink (XNU
+/// ipc_kmsg_copyin_port_descriptor). A moved handle keeps its grant id; a copy
+/// gets a new one, derived from it. All are checked before any is taken: one
+/// bad entry refuses the message and leaves every handle where it was.
+/// E_NOT_SUPPORTED: a type that does not travel (an open file, until its locks
+/// have an owner that can), or the endpoint or reply token the message goes
+/// through, which cannot carry itself (Zircon refuses a channel written into
+/// itself). A handle named twice is E_INVALID_ARGS.
+const IPC_HANDLES_MAX: u32 = 16
+const IPC_HANDLE_MOVE: u32 = 1       /// the handle leaves the sender's table
+const IPC_HANDLE_COPY: u32 = 2       /// the sender keeps it; needs HRIGHT_DUPLICATE
+/// ipc_handle.rights: the handle's own rights, unchanged. No type defines
+/// every bit, so it cannot be a real set.
+const IPC_RIGHTS_SAME: u32 = 0xFFFFFFFFu
+struct ipc_handle {
+    handle: i32
+    op: u32         /// IPC_HANDLE_MOVE or IPC_HANDLE_COPY
+    rights: u32     /// a subset of the handle's, or IPC_RIGHTS_SAME
+    reserved: u32   /// 0
+}
+
 struct ipc_call_args {
     req_len: u64
     reply_cap: u64
     req: u64        /// request bytes
     reply: u64      /// buffer the reply is copied into
+    handles: u64    /// ipc_handle[handle_count], sent with the request
+    reply_handles: u64  /// i32[reply_handle_cap]: the reply's handles, then 0s
     ep_handle: i32  /// a send handle (HRIGHT_SEND), as the broker channel is
+    handle_count: u32   /// at most IPC_HANDLES_MAX
+    reply_handle_cap: u32   /// past IPC_HANDLES_MAX is taken as IPC_HANDLES_MAX
     reserved: u32
 }
 struct ipc_recv_args {
     cap: u64
     buf: u64        /// the message is copied here
     info: u64       /// where an ipc_msg_info is written; never 0
+    handles: u64    /// i32[handle_cap]: the message's handles are written here
     ep_handle: i32  /// an endpoint handle (HRIGHT_RECV)
-    reserved: u32
+    handle_cap: u32 /// past IPC_HANDLES_MAX is taken as IPC_HANDLES_MAX
 }
 /// What ipc_recv says about the message beside its bytes.
 struct ipc_msg_info {
@@ -621,6 +658,8 @@ struct ipc_msg_info {
     reply_cap: u64  /// the longest reply the caller takes; 0 for a notice
     sender: i32     /// the caller's pid, informational; IPC_SENDER_KERNEL for a notice
     reply: i32      /// the call's reply token (HRIGHT_REPLY); 0 for a notice, or when it did not fit
+    handles: u32    /// the handles it carries, also when they did not fit
+    reply_handles: u32  /// the most handles the caller takes back in the reply
 }
 /// ipc_msg_info.sender for a message from the kernel itself, not a call: no
 /// pid is negative. There is no caller, so it takes no ipc_reply.
@@ -638,8 +677,9 @@ struct stop_notice {
 struct ipc_reply_args {
     data: u64       /// reply bytes
     len: u64
+    handles: u64    /// ipc_handle[handle_count], sent with the reply
     token: i32      /// the call's reply token, from ipc_msg_info.reply
-    reserved: u32
+    handle_count: u32   /// at most ipc_msg_info.reply_handles
 }
 
 /// ---- framebuffer (SYS_FB_INFO) ----

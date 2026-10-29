@@ -36,6 +36,7 @@ static const struct kobj_ops job_ops = {
     .name          = "job",
     .rights_valid  = HRIGHT_INSPECT | HRIGHT_KILL | HRIGHT_ASSIGN | HRIGHT_SET_LIMITS,
     .signals_valid = SIGNAL_JOB_ENDED,
+    .transfer      = 1,
     .destroy       = job_destroy,
 };
 

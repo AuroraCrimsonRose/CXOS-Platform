@@ -35,7 +35,15 @@
  * A call's bytes, request and then reply, sit in a kernel buffer the size of
  * the larger of the two, charged to the caller's job until the token goes.
  * One lock (ipc_lock in ipc.c) covers every endpoint's queue and every
- * token's state; it is taken before the wait lock, never after.
+ * token's state; it is taken before the wait lock, never after, and before a
+ * handle table's lock (htab_take), whose holders run no hooks.
+ *
+ * Handles travel beside the bytes (roadmap 1.3b), up to IPC_HANDLES_MAX each
+ * way: taken from the sender's table all or none, under ipc_lock as the call
+ * is queued or the reply finished, and landed in the receiver's all or none.
+ * In between they are transits in the call (object/htab.h), and a call that
+ * ends unread closes them. A message never carries the endpoint or token it
+ * goes through: an endpoint holding its own receive handle could never close.
  */
 
 #ifndef IPC_H
@@ -43,6 +51,7 @@
 
 #include "cxk_abi.h"
 #include "object/kobj.h"
+#include "object/htab.h"
 #include <stdint.h>
 
 struct job;
@@ -70,6 +79,11 @@ struct ipc_call {
     uint32_t         size;        /* of buf */
     uint8_t         *buf;         /* the request, then the reply; freed with the token */
     struct job      *job;         /* charged `size` bytes; a reference */
+    /* Handles in transit, like buf: the request's until ipc_recv lands them,
+       then the reply's until the caller does. Dropped with the call. */
+    uint32_t         nh;
+    uint32_t         reply_hcap;  /* the most the caller takes back */
+    struct htab_transit h[IPC_HANDLES_MAX];
 };
 
 struct endpoint {

@@ -130,6 +130,7 @@ int  usermode_job_test(void);       /* jobs: budgets, nesting, a kill of a job *
 int  usermode_timer_test(void);     /* the monotonic clock, timer objects, deadlines */
 int  usermode_queue_test(void);     /* queue objects: register once, wait for many */
 int  usermode_ipc_test(void);       /* queued calls, reply tokens, badges */
+int  usermode_ipc_handles_test(void);   /* handles in messages: moved, copied, refused */
 
 /* register the ring-3 fault handler so user faults kill the process, not the
    kernel. call once at boot after the scheduler is up. */

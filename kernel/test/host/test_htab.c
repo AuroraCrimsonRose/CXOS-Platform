@@ -499,3 +499,199 @@ KH_TEST(htab_growth_failure_refuses_and_keeps) {
     kobj_unref(&o.hdr);
     KH_CHECK_EQ(o.destroy_runs, 1);
 }
+
+/* ---- handles in messages: htab_take, htab_land, htab_transit_drop ---- */
+
+/* A type whose handles do not travel: the host tests' stand-in for an open
+   file. KOBJ_JOB is not registered on the host otherwise. */
+static void nt_destroy(struct kobj *o) { ((struct tobj *)o)->destroy_runs++; }
+static const struct kobj_ops nt_ops = { .name = "stays", .rights_valid = TOBJ_RIGHTS, .destroy = nt_destroy };
+
+static uint32_t grant_of(struct htab *t, int32_t h, uint32_t *parent) {
+    struct htab_info i;
+    struct kobj *r = htab_ref(t, h, KOBJ_NONE, 0, &i);
+    if (!r) return 0;
+    kobj_unref(r);
+    if (parent) *parent = i.parent;
+    return i.grant;
+}
+
+KH_TEST(htab_take_checks_every_entry_before_taking_any) {
+    struct htab t;
+    struct tobj o, s;
+    htab_init(&t, T_SMALL);
+    new_tobj(&o);
+    if (!kobj_type_ops(KOBJ_JOB)) kobj_type_register(KOBJ_JOB, &nt_ops);
+    memset(&s, 0, sizeof s);
+    KH_CHECK(kobj_init(&s.hdr, KOBJ_JOB) == 0);
+
+    int32_t a = htab_install(&t, &o.hdr, TOBJ_R1 | TOBJ_R2 | HTAB_RIGHT_DUPLICATE, 0);
+    int32_t b = htab_install(&t, &o.hdr, TOBJ_R1, 0);              /* no duplicate right */
+    int32_t c = htab_install(&t, &s.hdr, TOBJ_R1 | HTAB_RIGHT_DUPLICATE, 0);
+    KH_CHECK(a > 0 && b > 0 && c > 0);
+    uint32_t ga = grant_of(&t, a, 0);
+    struct htab_transit x[3];
+    memset(x, 0, sizeof x);
+
+    /* Each refusal names one bad entry after a good move of `a`. */
+    const struct { struct htab_send bad; int want; } rf[] = {
+        { { 9999, HTAB_MOVE, HTAB_RIGHTS_SAME },  HTAB_E_BAD_HANDLE },
+        { { b,    HTAB_COPY, HTAB_RIGHTS_SAME },  HTAB_E_ACCESS_DENIED },   /* a copy needs the right */
+        { { b,    HTAB_MOVE, TOBJ_R1 | TOBJ_R2 }, HTAB_E_ACCESS_DENIED },   /* rights that grow */
+        { { a,    HTAB_COPY, TOBJ_R1 },           HTAB_E_INVALID_ARGS },    /* named twice */
+        { { b,    0,         HTAB_RIGHTS_SAME },  HTAB_E_INVALID_ARGS },
+        { { b,    3,         HTAB_RIGHTS_SAME },  HTAB_E_INVALID_ARGS },
+        { { c,    HTAB_MOVE, HTAB_RIGHTS_SAME },  HTAB_E_NOT_SUPPORTED },   /* does not travel */
+    };
+    for (unsigned k = 0; k < sizeof rf / sizeof rf[0]; k++) {
+        struct htab_send sv[2] = { { a, HTAB_MOVE, HTAB_RIGHTS_SAME }, rf[k].bad };
+        KH_CHECK_EQ(htab_take(&t, sv, 2, 0, x), rf[k].want);
+        KH_CHECK(x[0].obj == 0);
+        KH_CHECK_EQ(grant_of(&t, a, 0), ga);                       /* a is where it was */
+        KH_CHECK_EQ(htab_count(&t), 3u);
+    }
+    /* The object the message goes through cannot be in it. */
+    struct htab_send self = { b, HTAB_MOVE, HTAB_RIGHTS_SAME };
+    KH_CHECK_EQ(htab_take(&t, &self, 1, &o.hdr, x), HTAB_E_NOT_SUPPORTED);
+    KH_CHECK_EQ(htab_count(&t), 3u);
+    KH_CHECK_EQ(atomic_load(&o.hdr.handles), 2u);
+    KH_CHECK_EQ(o.last_handle_runs, 0);
+
+    htab_close_all(&t);
+    htab_destroy(&t);
+    kobj_unref(&o.hdr);
+    kobj_unref(&s.hdr);
+    KH_CHECK_EQ(o.destroy_runs, 1);
+    KH_CHECK_EQ(s.destroy_runs, 1);
+}
+
+KH_TEST(htab_a_moved_handle_keeps_its_grant_and_a_copy_derives_one) {
+    struct htab t, u;
+    struct tobj o;
+    htab_init(&t, T_SMALL);
+    htab_init(&u, T_SMALL);
+    new_tobj(&o);
+    int32_t a = htab_install(&t, &o.hdr, TOBJ_R1 | TOBJ_R2 | HTAB_RIGHT_DUPLICATE, 0);
+    uint32_t pa = 0, ga = grant_of(&t, a, &pa);
+
+    struct htab_send sv[2] = { { a, HTAB_COPY, TOBJ_R2 }, { a, HTAB_MOVE, TOBJ_R1 } };
+    struct htab_transit x[2];
+    /* A move and a copy of one handle in one message is one handle named twice. */
+    KH_CHECK_EQ(htab_take(&t, sv, 2, 0, x), HTAB_E_INVALID_ARGS);
+    KH_CHECK_EQ(htab_take(&t, sv, 1, 0, x), 0);                  /* the copy */
+    KH_CHECK_EQ(atomic_load(&o.hdr.handles), 2u);                 /* it holds a count in transit */
+    KH_CHECK_EQ(htab_take(&t, &sv[1], 1, 0, &x[1]), 0);           /* the move, with fewer rights */
+    KH_CHECK_EQ(htab_count(&t), 0u);
+    KH_CHECK(htab_ref(&t, a, KOBJ_NONE, 0, 0) == 0);              /* its number is dead */
+    KH_CHECK_EQ(atomic_load(&o.hdr.handles), 2u);
+    KH_CHECK_EQ(o.last_handle_runs, 0);                           /* in nobody's table, still alive */
+    KH_CHECK_EQ(x[1].grant, ga);
+    KH_CHECK_EQ(x[0].parent, ga);
+    KH_CHECK(x[0].grant != 0 && x[0].grant != ga);
+
+    int32_t v[2];
+    KH_CHECK_EQ(htab_land(&u, x, 2, v), 0);
+    KH_CHECK(x[0].obj == 0 && x[1].obj == 0);
+    KH_CHECK_EQ(atomic_load(&o.hdr.handles), 2u);                 /* the counts came along */
+    uint32_t p0 = 0, p1 = 0;
+    KH_CHECK_EQ(grant_of(&u, v[1], &p1), ga);
+    KH_CHECK_EQ(p1, pa);
+    KH_CHECK(grant_of(&u, v[0], &p0) != ga);
+    KH_CHECK_EQ(p0, ga);
+    struct htab_info i;
+    struct kobj *r = htab_ref(&u, v[0], KOBJ_TEST, 0, &i);
+    KH_CHECK(r == &o.hdr && i.rights == TOBJ_R2);
+    if (r) kobj_unref(r);
+    r = htab_ref(&u, v[1], KOBJ_TEST, 0, &i);
+    KH_CHECK(r == &o.hdr && i.rights == TOBJ_R1);
+    if (r) kobj_unref(r);
+
+    /* HTAB_RIGHTS_SAME keeps them; a copy of a handle without the duplicate
+       right is refused here too */
+    struct htab_send back = { v[1], HTAB_MOVE, HTAB_RIGHTS_SAME };
+    KH_CHECK_EQ(htab_take(&u, &back, 1, 0, x), 0);
+    KH_CHECK_EQ(x[0].rights, TOBJ_R1);
+    struct htab_send cp = { v[0], HTAB_COPY, HTAB_RIGHTS_SAME };
+    KH_CHECK_EQ(htab_take(&u, &cp, 1, 0, &x[1]), HTAB_E_ACCESS_DENIED);
+    htab_transit_drop(x, 1);
+    KH_CHECK(x[0].obj == 0);
+    KH_CHECK_EQ(atomic_load(&o.hdr.handles), 1u);
+    KH_CHECK_EQ(o.last_handle_runs, 0);
+
+    htab_close_all(&u);
+    KH_CHECK_EQ(o.last_handle_runs, 1);
+    htab_destroy(&t);
+    htab_destroy(&u);
+    kobj_unref(&o.hdr);
+    KH_CHECK_EQ(o.destroy_runs, 1);
+}
+
+KH_TEST(htab_land_places_all_or_none) {
+    struct htab t, u, w;
+    struct tobj o;
+    htab_init(&t, T_SMALL);
+    htab_init(&u, T_SMALL);
+    htab_init(&w, T_SMALL);
+    new_tobj(&o);
+    for (int i = 0; i < T_SMALL - 1; i++) KH_CHECK(htab_install(&u, &o.hdr, TOBJ_R1, 0) > 0);
+    int32_t a = htab_install(&t, &o.hdr, TOBJ_R1, 0);
+    int32_t b = htab_install(&t, &o.hdr, TOBJ_R2, 0);
+    struct htab_send sv[2] = { { a, HTAB_MOVE, HTAB_RIGHTS_SAME }, { b, HTAB_MOVE, HTAB_RIGHTS_SAME } };
+    struct htab_transit x[3];
+    KH_CHECK_EQ(htab_take(&t, sv, 2, 0, x), 0);
+    uint32_t handles = atomic_load(&o.hdr.handles);
+
+    /* one slot left: two do not fit, and neither is placed */
+    int32_t v[3] = { 0, 0, 0 };
+    KH_CHECK_EQ(htab_land(&u, x, 2, v), HTAB_E_NO_RESOURCES);
+    KH_CHECK_EQ(htab_count(&u), (uint32_t)T_SMALL - 1);
+    KH_CHECK(x[0].obj == &o.hdr && x[1].obj == &o.hdr);
+    KH_CHECK_EQ(atomic_load(&o.hdr.handles), handles);
+
+    /* a new handle (grant 0) beside them: counted only when it lands */
+    x[2] = (struct htab_transit){ &o.hdr, TOBJ_R3, 0, 0 };
+    htab_close_all(&u);
+    KH_CHECK_EQ(atomic_load(&o.hdr.handles), 2u);
+    KH_CHECK_EQ(htab_land(&u, x, 3, v), 0);
+    KH_CHECK_EQ(htab_count(&u), 3u);
+    KH_CHECK_EQ(atomic_load(&o.hdr.handles), 3u);
+    KH_CHECK(grant_of(&u, v[2], 0) != 0);
+
+    /* growth that cannot get memory refuses the lot */
+    struct htab_send one = { v[0], HTAB_MOVE, HTAB_RIGHTS_SAME };
+    KH_CHECK_EQ(htab_take(&u, &one, 1, 0, x), 0);
+    fail_allocs = 1;
+    KH_CHECK_EQ(htab_land(&w, x, 1, v), HTAB_E_NO_RESOURCES);
+    fail_allocs = 0;
+    KH_CHECK(x[0].obj == &o.hdr);
+    KH_CHECK_EQ(htab_land(&w, x, 1, v), 0);
+
+    htab_close_all(&u);
+    htab_close_all(&w);
+    htab_destroy(&t);
+    htab_destroy(&u);
+    htab_destroy(&w);
+    KH_CHECK_EQ(o.last_handle_runs, 1);
+    kobj_unref(&o.hdr);
+    KH_CHECK_EQ(o.destroy_runs, 1);
+}
+
+KH_TEST(htab_a_dropped_transit_is_a_close) {
+    struct htab t;
+    struct tobj o;
+    htab_init(&t, T_SMALL);
+    new_tobj(&o);
+    int32_t a = htab_install(&t, &o.hdr, TOBJ_R1, 0);
+    struct htab_send sv = { a, HTAB_MOVE, HTAB_RIGHTS_SAME };
+    struct htab_transit x[2];
+    KH_CHECK_EQ(htab_take(&t, &sv, 1, 0, x), 0);
+    x[1] = (struct htab_transit){ &o.hdr, TOBJ_R1, 0, 0 };        /* never counted: skipped */
+    htab_transit_drop(x, 2);
+    KH_CHECK_EQ(atomic_load(&o.hdr.handles), 0u);
+    KH_CHECK_EQ(o.last_handle_runs, 1);
+    htab_transit_drop(x, 2);                                        /* again: nothing left */
+    KH_CHECK_EQ(o.last_handle_runs, 1);
+    htab_destroy(&t);
+    kobj_unref(&o.hdr);
+    KH_CHECK_EQ(o.destroy_runs, 1);
+}

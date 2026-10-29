@@ -68,6 +68,9 @@ struct kobj_ops {
     uint32_t    rights_valid;
     /* Signals it sets (object/kwait.h); 0: nothing to wait for. */
     uint32_t    signals_valid;
+    /* Its handles may travel in IPC messages (htab_take). 0 for a type with
+       state tied to the process that opened it. */
+    int         transfer;
     /* Optional: the last handle has closed. The object may still be referenced. */
     void      (*last_handle)(struct kobj *o);
     /* Required: the last reference has gone. Free the object. */

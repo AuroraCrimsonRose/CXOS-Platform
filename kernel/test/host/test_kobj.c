@@ -21,7 +21,7 @@ static void t_last_handle(struct kobj *o) { ((struct tobj *)o)->last_handle_runs
 static void t_destroy(struct kobj *o)     { ((struct tobj *)o)->destroy_runs++; }
 
 static const struct kobj_ops test_ops = {
-    .name = "test", .rights_valid = TOBJ_RIGHTS, .last_handle = t_last_handle, .destroy = t_destroy,
+    .name = "test", .rights_valid = TOBJ_RIGHTS, .transfer = 1, .last_handle = t_last_handle, .destroy = t_destroy,
 };
 
 void tobj_type(void) {

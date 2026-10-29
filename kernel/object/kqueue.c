@@ -92,6 +92,7 @@ static const struct kobj_ops queue_ops = {
     .name          = "queue",
     .rights_valid  = HRIGHT_REGISTER,
     .signals_valid = SIGNAL_QUEUE_READY,
+    .transfer      = 1,
     .destroy       = queue_destroy,
 };
 

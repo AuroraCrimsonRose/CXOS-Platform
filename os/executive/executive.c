@@ -117,14 +117,15 @@ static void executive_main(void) {
     struct ipc_msg_info info;
     struct ipc_recv_args ra;
     ra.ep_handle = ep; ra.buf = UADDR(buf); ra.cap = sizeof buf - 1; ra.info = UADDR(&info);
-    ra.reserved = 0;
+    ra.handles = 0; ra.handle_cap = 0;
     int n = sys_ipc_recv(&ra);          /* blocks until the app ipc_calls */
     if (n >= 0) {
         buf[n] = 0;                      /* NUL-terminate for the write */
         sys_write(buf);                  /* print the app's message FOR it */
 
         struct ipc_reply_args rp;
-        rp.token = info.reply; rp.data = UADDR("ok"); rp.len = 2; rp.reserved = 0;
+        rp.token = info.reply; rp.data = UADDR("ok"); rp.len = 2;
+        rp.handles = 0; rp.handle_count = 0;
         sys_ipc_reply(&rp);              /* wake the app */
     }
 

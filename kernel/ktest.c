@@ -3306,6 +3306,7 @@ void ktest_run(void) {
     total++; passed += report("timers: absolute deadlines on the monotonic clock", usermode_timer_test());
     total++; passed += report("queues: one-shot keys, re-armed, many objects", usermode_queue_test());
     total++; passed += report("ipc: queued calls, reply tokens, badges", usermode_ipc_test());
+    total++; passed += report("ipc: handles in messages", usermode_ipc_handles_test());
     total++; passed += report("ipc endpoints refcounted + reclaimed", test_ipc_endpoint_lifetime());
     total++; passed += report("object caches map and return pages", test_ocache_pages());
     total++; passed += report("two threads share one process",   test_proc_threads());

@@ -15,7 +15,7 @@
  * hash it was built against and the loader refuses one that differs, so a
  * program never runs against numbers or layouts it was not compiled for.
  */
-#define CXK_ABI_HASH { 0x2b, 0x9d, 0x64, 0x88, 0xd6, 0x2a, 0x47, 0x81, 0x13, 0x97, 0x47, 0x01, 0x5a, 0x7e, 0x38, 0x7d, 0x05, 0xb4, 0x08, 0x78, 0xc7, 0x41, 0x6d, 0xc9, 0x20, 0x6a, 0xa7, 0xb5, 0x00, 0xee, 0x08, 0xd2 }
+#define CXK_ABI_HASH { 0x4d, 0xb6, 0x68, 0x67, 0x29, 0x07, 0xe2, 0x22, 0xcc, 0x58, 0x20, 0x4f, 0x12, 0x78, 0x83, 0x6d, 0xbc, 0x26, 0xc3, 0x19, 0x8f, 0x93, 0x02, 0xf8, 0xcf, 0x1b, 0x9b, 0x97, 0x18, 0x93, 0xa0, 0xd1 }
 
 /*
  * CXK ABI v1 - the PUBLIC contract shared by the kernel, the .xoex executive,
@@ -44,7 +44,7 @@
  * line; bump both, and the DevKit's stamp, in the one commit that changes the
  * contract.
  */
-#define CXK_ABI_VERSION          20
+#define CXK_ABI_VERSION          21
 
 /*
  * ---- syscall numbers ----
@@ -70,21 +70,30 @@
  * reply's length, once the server answers. Calls queue on the endpoint, oldest
  * first. E_PEER_CLOSED: the endpoint's last receive handle closed, or the
  * call's reply token closed unanswered. E_CANCELED: the caller is being killed.
+ * The request's handles (ipc_handle) leave the caller's table when the call
+ * is queued, all of them, or none if the call is refused; a queued call that
+ * then fails closes them. The reply's handles land in the caller's table and
+ * their values in reply_handles, then 0s; E_NO_RESOURCES if the table has no
+ * room for them all (the reply is lost).
  */
 #define SYS_IPC_CALL             0x10
 
 /*
  * ebx = *ipc_recv_args -> the message's length, once one waits: the oldest
  * call, or a kernel notice first. A call comes with a reply token in
- * ipc_msg_info.reply. A message longer than `cap` is E_BUFFER_TOO_SMALL and
- * stays, with its length in ipc_msg_info.len.
+ * ipc_msg_info.reply, and its handles in the receiver's table, their values
+ * at `handles`. A message longer than `cap`, or with more handles than
+ * `handle_cap`, is E_BUFFER_TOO_SMALL and stays, with its length and handle
+ * count in ipc_msg_info. E_NO_RESOURCES: no room in the table; it stays.
  */
 #define SYS_IPC_RECV             0x11
 
 /*
  * ebx = *ipc_reply_args -> 0, and the token is closed. E_PEER_CLOSED: the
- * caller has gone; the token is closed too. A reply longer than the caller's
- * ipc_msg_info.reply_cap is E_BUFFER_TOO_SMALL, and the token stays.
+ * caller has gone; the token is closed too, and the handles stay. A reply
+ * longer than the caller's ipc_msg_info.reply_cap, or with more handles than
+ * its reply_handles, is E_BUFFER_TOO_SMALL, and the token stays. A reply
+ * refused for its handles moves none of them and keeps the token.
  */
 #define SYS_IPC_REPLY            0x12
 #define SYS_EP_CREATE            0x13           /* create an endpoint -> RECV handle (GRANT_ENDPOINT) */
@@ -791,12 +800,45 @@ struct object_basic {
     uint32_t parent_grant;                      /* the grant it was derived from; 0 = none */
 };
 
+/*
+ * Handles a message carries, beside its bytes, never inside them: a request
+ * or a reply takes at most IPC_HANDLES_MAX. Each is moved, or copied, which
+ * needs HRIGHT_DUPLICATE; either way its rights can only shrink (XNU
+ * ipc_kmsg_copyin_port_descriptor). A moved handle keeps its grant id; a copy
+ * gets a new one, derived from it. All are checked before any is taken: one
+ * bad entry refuses the message and leaves every handle where it was.
+ * E_NOT_SUPPORTED: a type that does not travel (an open file, until its locks
+ * have an owner that can), or the endpoint or reply token the message goes
+ * through, which cannot carry itself (Zircon refuses a channel written into
+ * itself). A handle named twice is E_INVALID_ARGS.
+ */
+#define IPC_HANDLES_MAX          16
+#define IPC_HANDLE_MOVE          1              /* the handle leaves the sender's table */
+#define IPC_HANDLE_COPY          2              /* the sender keeps it; needs HRIGHT_DUPLICATE */
+
+/*
+ * ipc_handle.rights: the handle's own rights, unchanged. No type defines
+ * every bit, so it cannot be a real set.
+ */
+#define IPC_RIGHTS_SAME          0xFFFFFFFFu
+
+struct ipc_handle {
+    int32_t handle;
+    uint32_t op;                                /* IPC_HANDLE_MOVE or IPC_HANDLE_COPY */
+    uint32_t rights;                            /* a subset of the handle's, or IPC_RIGHTS_SAME */
+    uint32_t reserved;                          /* 0 */
+};
+
 struct ipc_call_args {
     uint64_t req_len;
     uint64_t reply_cap;
     uint64_t req;                               /* request bytes */
     uint64_t reply;                             /* buffer the reply is copied into */
+    uint64_t handles;                           /* ipc_handle[handle_count], sent with the request */
+    uint64_t reply_handles;                     /* i32[reply_handle_cap]: the reply's handles, then 0s */
     int32_t ep_handle;                          /* a send handle (HRIGHT_SEND), as the broker channel is */
+    uint32_t handle_count;                      /* at most IPC_HANDLES_MAX */
+    uint32_t reply_handle_cap;                  /* past IPC_HANDLES_MAX is taken as IPC_HANDLES_MAX */
     uint32_t reserved;
 };
 
@@ -804,8 +846,9 @@ struct ipc_recv_args {
     uint64_t cap;
     uint64_t buf;                               /* the message is copied here */
     uint64_t info;                              /* where an ipc_msg_info is written; never 0 */
+    uint64_t handles;                           /* i32[handle_cap]: the message's handles are written here */
     int32_t ep_handle;                          /* an endpoint handle (HRIGHT_RECV) */
-    uint32_t reserved;
+    uint32_t handle_cap;                        /* past IPC_HANDLES_MAX is taken as IPC_HANDLES_MAX */
 };
 
 /* What ipc_recv says about the message beside its bytes. */
@@ -815,6 +858,8 @@ struct ipc_msg_info {
     uint64_t reply_cap;                         /* the longest reply the caller takes; 0 for a notice */
     int32_t sender;                             /* the caller's pid, informational; IPC_SENDER_KERNEL for a notice */
     int32_t reply;                              /* the call's reply token (HRIGHT_REPLY); 0 for a notice, or when it did not fit */
+    uint32_t handles;                           /* the handles it carries, also when they did not fit */
+    uint32_t reply_handles;                     /* the most handles the caller takes back in the reply */
 };
 
 /*
@@ -840,8 +885,9 @@ struct stop_notice {
 struct ipc_reply_args {
     uint64_t data;                              /* reply bytes */
     uint64_t len;
+    uint64_t handles;                           /* ipc_handle[handle_count], sent with the reply */
     int32_t token;                              /* the call's reply token, from ipc_msg_info.reply */
-    uint32_t reserved;
+    uint32_t handle_count;                      /* at most ipc_msg_info.reply_handles */
 };
 
 /* ---- framebuffer (SYS_FB_INFO) ---- */
@@ -1139,11 +1185,12 @@ CXK_ABI_STATIC_ASSERT(sizeof(struct job_info) == 40, "ABI layout: job_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct process_info) == 40, "ABI layout: process_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct object_info_args) == 24, "ABI layout: object_info_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct object_basic) == 20, "ABI layout: object_basic");
-CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_call_args) == 40, "ABI layout: ipc_call_args");
-CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_recv_args) == 32, "ABI layout: ipc_recv_args");
-CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_msg_info) == 32, "ABI layout: ipc_msg_info");
+CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_handle) == 16, "ABI layout: ipc_handle");
+CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_call_args) == 64, "ABI layout: ipc_call_args");
+CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_recv_args) == 40, "ABI layout: ipc_recv_args");
+CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_msg_info) == 40, "ABI layout: ipc_msg_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct stop_notice) == 16, "ABI layout: stop_notice");
-CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_reply_args) == 24, "ABI layout: ipc_reply_args");
+CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_reply_args) == 32, "ABI layout: ipc_reply_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct fb_geometry) == 16, "ABI layout: fb_geometry");
 CXK_ABI_STATIC_ASSERT(sizeof(struct net_ip_config) == 16, "ABI layout: net_ip_config");
 CXK_ABI_STATIC_ASSERT(sizeof(struct vm_map_args) == 48, "ABI layout: vm_map_args");

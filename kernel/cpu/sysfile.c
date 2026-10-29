@@ -258,6 +258,9 @@ static void of_destroy(struct kobj *o) {
 static const struct kobj_ops file_ops = {
     .name         = "file",
     .rights_valid = FOPEN_READ | FOPEN_WRITE,
+    /* Not yet: its locks name the thread that opened it (lock_cycle), and
+       whether a lock belongs to the thread or the process is undecided. */
+    .transfer     = 0,
     .destroy      = of_destroy,
 };
 

@@ -81,6 +81,7 @@ static const struct kobj_ops proc_ops = {
     .name         = "process",
     .rights_valid  = HRIGHT_INSPECT | HRIGHT_KILL | HRIGHT_STOP,
     .signals_valid = SIGNAL_PROCESS_ENDED,
+    .transfer     = 1,
     .destroy      = proc_destroy,
 };
 

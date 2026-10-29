@@ -110,6 +110,7 @@ static void call_last_handle(struct kobj *o) {
    another process. */
 static void call_free(struct kobj *o) {
     struct ipc_call *c = (struct ipc_call *)o;
+    htab_transit_drop(c->h, c->nh);   /* a message nobody will read */
     if (c->buf) {
         for (uint32_t i = 0; i < c->size; i++) c->buf[i] = 0;
         kfree(c->buf);
@@ -125,6 +126,7 @@ static const struct kobj_ops ep_ops = {
     .name          = "endpoint",
     .rights_valid  = HRIGHT_RECV,
     .signals_valid = SIGNAL_EP_READABLE,
+    .transfer      = 1,
     .last_handle   = ep_last_handle,
     .destroy       = ep_free,
 };
@@ -132,12 +134,14 @@ static const struct kobj_ops ep_ops = {
 static const struct kobj_ops send_ops = {
     .name         = "send",
     .rights_valid = HRIGHT_SEND,
+    .transfer     = 1,
     .destroy      = send_free,
 };
 
 static const struct kobj_ops call_ops = {
     .name         = "reply",
     .rights_valid = HRIGHT_REPLY,
+    .transfer     = 1,
     .last_handle  = call_last_handle,
     .destroy      = call_free,
 };
@@ -273,13 +277,17 @@ static struct ipc_call *call_new(uint32_t req_len, uint32_t rcap, int *rc) {
    copy the reply out. Runs in the caller's address space (its CR3 is live).
    The caller's references, on its send handle (and through it the endpoint)
    and on the call, are held across the block. */
-static int call_on(struct ep_send *s, const struct ipc_call_args *ap) {
+static int call_on(struct ep_send *s, const struct ipc_call_args *ap,
+                   const struct htab_send *hs, uint32_t nh) {
     struct ipc_call_args a = *ap;
     struct endpoint *ep = s->ep;
+    struct htab *t = thread_htab(thread_current_id());
     if (a.req_len > IPC_MSG_MAX) return E_OUT_OF_RANGE;
     /* No reply is longer than IPC_MSG_MAX, so a larger cap promises room
-       nothing will use; only what can be written is checked. */
+       nothing will use; only what can be written is checked. The same for
+       handles. */
     uint32_t rcap = a.reply_cap > IPC_MSG_MAX ? IPC_MSG_MAX : (uint32_t)a.reply_cap;
+    uint32_t rhcap = a.reply_handle_cap > IPC_HANDLES_MAX ? IPC_HANDLES_MAX : a.reply_handle_cap;
 
     /* An early reject, not the authority: the reply buffer is validated again
        at the copy-out below, which is the check that counts. This one is here
@@ -287,6 +295,7 @@ static int call_on(struct ep_send *s, const struct ipc_call_args *ap) {
        after a whole round trip through the server. Haiku keeps its up-front
        IS_USER_ADDRESS check for the same reason. */
     if (rcap && !user_ptr_writable(a.reply, rcap)) return E_BAD_ADDRESS;
+    if (rhcap && !user_ptr_writable(a.reply_handles, rhcap * sizeof(int32_t))) return E_BAD_ADDRESS;
     if (!ep->active) return E_PEER_CLOSED;
 
     int rc = E_OK;
@@ -297,12 +306,24 @@ static int call_on(struct ep_send *s, const struct ipc_call_args *ap) {
         return E_BAD_ADDRESS;
     }
     c->badge = s->badge;
+    c->reply_hcap = rhcap;
 
     uint32_t f = spin_lock(&ipc_lock);
     if (!ep->active) {                 /* the server went while this was copied */
         spin_unlock(&ipc_lock, f);
         kobj_unref(&c->hdr);
         return E_PEER_CLOSED;
+    }
+    /* The handles go as the call is queued, under the same lock, so a call
+       refused leaves them all where they were. */
+    if (nh) {
+        rc = htab_take(t, hs, nh, &ep->hdr, c->h);
+        if (rc != 0) {
+            spin_unlock(&ipc_lock, f);
+            kobj_unref(&c->hdr);
+            return rc;
+        }
+        c->nh = nh;
     }
     c->ep = ep;
     if (ep->tail) ep->tail->next = c; else ep->head = c;
@@ -336,22 +357,55 @@ static int call_on(struct ep_send *s, const struct ipc_call_args *ap) {
     }
     spin_unlock(&ipc_lock, f);
 
-    /* DONE is final, and the server's part of buf ended with it. */
+    /* DONE is final, and the server's part of buf and h ended with it. A
+       reply's handles land after its bytes are out; ones that cannot are
+       dropped with the call. */
     rc = c->result;
     if (rc > 0 && user_copy_out(a.reply, c->buf, (uint32_t)rc) != 0) rc = E_BAD_ADDRESS;
+    if (rc >= 0 && rhcap) {
+        int32_t v[IPC_HANDLES_MAX] = { 0 };
+        uint32_t n = c->nh;
+        if (n && htab_land(t, c->h, n, v) != 0) {
+            rc = E_NO_RESOURCES;
+        } else {
+            c->nh = 0;
+            if (user_copy_out(a.reply_handles, v, rhcap * sizeof v[0]) != 0) {
+                for (uint32_t i = 0; i < n; i++) htab_close(t, v[i]);
+                rc = E_BAD_ADDRESS;
+            }
+        }
+    }
     kobj_unref(&c->hdr);
     return rc;
+}
+
+/* Read `n` ipc_handle entries from user `ua` into `s`. Checked before the
+   handle the call names, as the reserved fields are. */
+static int handles_in(uint64_t ua, uint32_t n, struct htab_send *s) {
+    if (n > IPC_HANDLES_MAX) return E_OUT_OF_RANGE;
+    struct ipc_handle d[IPC_HANDLES_MAX];
+    if (n && user_copy_in(d, ua, n * (uint32_t)sizeof d[0]) != 0) return E_BAD_ADDRESS;
+    for (uint32_t i = 0; i < n; i++) {
+        if (d[i].reserved != 0) return E_INVALID_ARGS;
+        s[i].h      = d[i].handle;
+        s[i].op     = d[i].op;
+        s[i].rights = d[i].rights;
+    }
+    return 0;
 }
 
 int ipc_call(uint64_t ua) {
     struct ipc_call_args a;
     if (user_copy_in(&a, ua, sizeof a) != 0) return E_BAD_ADDRESS;
     if (a.reserved != 0) return E_INVALID_ARGS;
+    struct htab_send hs[IPC_HANDLES_MAX];
+    int rc = handles_in(a.handles, a.handle_count, hs);
+    if (rc != 0) return rc;
 
     struct kobj *o = htab_ref(thread_htab(thread_current_id()), a.ep_handle, KOBJ_SEND,
                               HRIGHT_SEND, 0);
     if (!o) return E_BAD_HANDLE;
-    int rc = call_on((struct ep_send *)o, &a);
+    rc = call_on((struct ep_send *)o, &a, hs, a.handle_count);
     kobj_unref(o);
     return rc;
 }
@@ -363,9 +417,11 @@ static int recv_on(struct endpoint *ep, const struct ipc_recv_args *ap) {
     struct htab *t = thread_htab(thread_current_id());
     /* As in ipc_call, a cap past the largest message promises unused room. */
     uint32_t cap = a.cap > IPC_MSG_MAX ? IPC_MSG_MAX : (uint32_t)a.cap;
-    /* Early rejects, as in ipc_call: both buffers are validated again at the
+    uint32_t hcap = a.handle_cap > IPC_HANDLES_MAX ? IPC_HANDLES_MAX : a.handle_cap;
+    /* Early rejects, as in ipc_call: the buffers are validated again at the
        copies below, which are the checks that count. */
     if (cap && !user_ptr_writable(a.buf, cap)) return E_BAD_ADDRESS;
+    if (hcap && !user_ptr_writable(a.handles, hcap * sizeof(int32_t))) return E_BAD_ADDRESS;
     if (!user_ptr_writable(a.info, sizeof(struct ipc_msg_info))) return E_BAD_ADDRESS;
 
     struct ipc_msg_info info = { 0 };
@@ -406,8 +462,10 @@ static int recv_on(struct endpoint *ep, const struct ipc_recv_args *ap) {
     info.len       = c->req_len;
     info.reply_cap = c->reply_cap;
     info.sender    = c->caller_pid;
+    info.handles   = c->nh;
+    info.reply_handles = c->reply_hcap;
     /* One that does not fit stays at the head, for a receive with room. */
-    if (c->req_len > cap) {
+    if (c->req_len > cap || c->nh > hcap) {
         spin_unlock(&ipc_lock, f);
         return user_copy_out(a.info, &info, sizeof info) != 0 ? E_BAD_ADDRESS : E_BUFFER_TOO_SMALL;
     }
@@ -417,8 +475,18 @@ static int recv_on(struct endpoint *ep, const struct ipc_recv_args *ap) {
     kobj_ref(&c->hdr);   /* until the token is installed: the caller may leave */
     spin_unlock(&ipc_lock, f);
 
-    /* No room for the token: the call goes back to the head, as it was. */
-    int32_t tok = htab_install(t, &c->hdr, HRIGHT_REPLY, 0);
+    /* The handles and the token land together. No room for them all: the
+       call goes back to the head, as it was, handles and all. */
+    struct htab_transit x[IPC_HANDLES_MAX + 1];
+    int32_t v[IPC_HANDLES_MAX + 1];
+    uint32_t nh = c->nh;
+    for (uint32_t i = 0; i < nh; i++) x[i] = c->h[i];
+    x[nh] = (struct htab_transit){ &c->hdr, HRIGHT_REPLY, 0, 0 };   /* a new handle */
+    int32_t tok = E_NO_RESOURCES;
+    if (htab_land(t, x, nh + 1, v) == 0) {
+        c->nh = 0;
+        tok = v[nh];
+    }
     if (tok < 0) {
         f = spin_lock(&ipc_lock);
         if (c->caller_gone) {
@@ -445,16 +513,17 @@ static int recv_on(struct endpoint *ep, const struct ipc_recv_args *ap) {
        Haiku's _user_read_port_etc: the token is closed, and the caller is
        told E_PEER_CLOSED. The up-front checks are what keep that narrow. */
     int rc = (c->req_len && user_copy_out(a.buf, c->buf, c->req_len) != 0)
+          || (nh && user_copy_out(a.handles, v, nh * (uint32_t)sizeof v[0]) != 0)
           || user_copy_out(a.info, &info, sizeof info) != 0 ? E_BAD_ADDRESS : (int)c->req_len;
     kobj_unref(&c->hdr);
-    if (rc < 0) htab_close(t, tok);
+    /* The handles are the server's now, but it cannot know their values. */
+    if (rc < 0) for (uint32_t i = 0; i <= nh; i++) htab_close(t, v[i]);
     return rc;
 }
 
 int ipc_recv(uint64_t ua) {
     struct ipc_recv_args a;
     if (user_copy_in(&a, ua, sizeof a) != 0) return E_BAD_ADDRESS;
-    if (a.reserved != 0) return E_INVALID_ARGS;
 
     struct endpoint *ep = ep_from_handle(a.ep_handle, HRIGHT_RECV, NULL);
     if (!ep) return E_BAD_HANDLE;
@@ -475,7 +544,8 @@ int ep_post_stop(struct endpoint *ep, int by, uint32_t ms) {
 }
 
 /* Server side: answer the call behind token `tok` and close the token. */
-static int reply_on(struct ipc_call *c, int32_t tok, const struct ipc_reply_args *ap) {
+static int reply_on(struct ipc_call *c, int32_t tok, const struct ipc_reply_args *ap,
+                    const struct htab_send *hs, uint32_t nh) {
     struct ipc_reply_args a = *ap;
     struct htab *t = thread_htab(thread_current_id());
 
@@ -489,7 +559,7 @@ static int reply_on(struct ipc_call *c, int32_t tok, const struct ipc_reply_args
         htab_close(t, tok);
         return E_PEER_CLOSED;
     }
-    if (a.len > c->reply_cap) { spin_unlock(&ipc_lock, f); return E_BUFFER_TOO_SMALL; }
+    if (a.len > c->reply_cap || nh > c->reply_hcap) { spin_unlock(&ipc_lock, f); return E_BUFFER_TOO_SMALL; }
     c->state = IPC_REPLYING;
     spin_unlock(&ipc_lock, f);
 
@@ -498,13 +568,20 @@ static int reply_on(struct ipc_call *c, int32_t tok, const struct ipc_reply_args
     int bad = a.len && user_copy_in(c->buf, a.data, (uint32_t)a.len) != 0;
 
     f = spin_lock(&ipc_lock);
-    int rc = E_OK;
-    if (bad) {
+    int rc = E_OK, keep = 0;
+    /* The handles go last, as the call ends, under the lock: a reply refused
+       for one of them keeps them all, and its token. */
+    if (!bad && !c->caller_gone && nh) {
+        rc = htab_take(t, hs, nh, &c->hdr, c->h);
+        if (rc == 0) c->nh = nh;
+    }
+    if (bad || rc != 0) {
         /* Back to taken, unless another thread closed the token meanwhile:
            its last_handle hook passed over a call being answered. */
         c->state = IPC_TAKEN;
         if (atomic_load(&c->hdr.handles) == 0) call_finish(c, E_PEER_CLOSED);
-        rc = E_BAD_ADDRESS;
+        if (bad) rc = E_BAD_ADDRESS;
+        keep = 1;
     } else if (c->caller_gone) {
         c->state = IPC_DONE;
         rc = E_PEER_CLOSED;
@@ -512,19 +589,21 @@ static int reply_on(struct ipc_call *c, int32_t tok, const struct ipc_reply_args
         call_finish(c, (int32_t)a.len);   /* the caller resumes in ipc_call, copies it out */
     }
     spin_unlock(&ipc_lock, f);
-    if (rc != E_BAD_ADDRESS) htab_close(t, tok);
+    if (!keep) htab_close(t, tok);
     return rc;
 }
 
 int ipc_reply(uint64_t ua) {
     struct ipc_reply_args a;
     if (user_copy_in(&a, ua, sizeof a) != 0) return E_BAD_ADDRESS;
-    if (a.reserved != 0) return E_INVALID_ARGS;
+    struct htab_send hs[IPC_HANDLES_MAX];
+    int rc = handles_in(a.handles, a.handle_count, hs);
+    if (rc != 0) return rc;
 
     struct kobj *o = htab_ref(thread_htab(thread_current_id()), a.token, KOBJ_REPLY,
                               HRIGHT_REPLY, 0);
     if (!o) return E_BAD_HANDLE;
-    int rc = reply_on((struct ipc_call *)o, a.token, &a);
+    rc = reply_on((struct ipc_call *)o, a.token, &a, hs, a.handle_count);
     kobj_unref(o);
     return rc;
 }

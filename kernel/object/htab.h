@@ -117,6 +117,55 @@ struct kobj *htab_ref(struct htab *t, int32_t h, enum kobj_type type, uint32_t n
    HTAB_RIGHT_DUPLICATE, or one of `rights`) or HTAB_E_NO_RESOURCES. */
 int32_t htab_dup(struct htab *t, int32_t h, uint32_t rights);
 
+/*
+ * HANDLES IN MESSAGES (cpu/ipc.c, roadmap 1.3b). A handle on its way from
+ * one table to another is a transit: the object with a handle count of its
+ * own, so its last_handle hook cannot run while nobody's table holds it. A
+ * moved handle carries its grant id and parent with it; a copy is a new
+ * handle, with a new grant derived from the source's.
+ */
+#define HTAB_E_NOT_SUPPORTED  (-2)
+#define HTAB_MOVE             1u
+#define HTAB_COPY             2u
+#define HTAB_RIGHTS_SAME      0xFFFFFFFFu   /* the source's rights */
+
+struct htab_send {         /* one handle a message asks to carry */
+    int32_t  h;
+    uint32_t op;           /* HTAB_MOVE or HTAB_COPY */
+    uint32_t rights;       /* a subset of h's, or HTAB_RIGHTS_SAME */
+};
+
+struct htab_transit {
+    struct kobj *obj;      /* holds a handle count; 0 once landed or dropped */
+    uint32_t     rights;
+    uint32_t     grant;    /* 0: a new handle, counted only when it lands */
+    uint32_t     parent;
+};
+
+/* Take the `n` handles of `s` out of `t` into `out`, all or none: every entry
+   is checked under the lock before any is taken. Returns 0, or
+   HTAB_E_BAD_HANDLE, HTAB_E_ACCESS_DENIED (rights that grow, or a copy
+   without HTAB_RIGHT_DUPLICATE), HTAB_E_INVALID_ARGS (an unknown op, or one
+   handle named twice) or HTAB_E_NOT_SUPPORTED (a type whose ops do not allow
+   transfer, or the object `self`, which the message travels through). A
+   move empties its slot as a close does but runs no hook; a copy opens a
+   handle. No hook runs, so the caller may hold a lock taken before this
+   table's. */
+int htab_take(struct htab *t, const struct htab_send *s, uint32_t n, const struct kobj *self,
+              struct htab_transit *out);
+
+/* Place the `n` transits of `x` in `t`, all or none, and write their values
+   to `out`. A transit with grant 0 is a new handle (opened here, with a new
+   grant); any other keeps its grant, parent and handle count. Each placed
+   transit's obj becomes 0. Returns 0, or HTAB_E_NO_RESOURCES with nothing
+   placed. Allocates (to grow): call it with no lock held. */
+int htab_land(struct htab *t, struct htab_transit *x, uint32_t n, int32_t *out);
+
+/* Close the handles still in transit in `x` (obj != 0): a message that
+   will never be read; a new one (grant 0) holds no count and is skipped.
+   Hooks run: no lock may be held. */
+void htab_transit_drop(struct htab_transit *x, uint32_t n);
+
 /* Close `h`. Returns 0, or HTAB_E_BAD_HANDLE if it names nothing. */
 int htab_close(struct htab *t, int32_t h);
 

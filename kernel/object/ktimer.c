@@ -41,6 +41,7 @@ static const struct kobj_ops timer_ops = {
     .name          = "timer",
     .rights_valid  = HRIGHT_ARM,
     .signals_valid = SIGNAL_TIMER_FIRED,
+    .transfer      = 1,
     .destroy       = timer_destroy,
 };
 
