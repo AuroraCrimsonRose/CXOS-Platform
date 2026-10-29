@@ -20,6 +20,10 @@
 org 0x7E00              ; stage 1 loads us here
 bits 16
 
+%ifndef CXK_TEST_HOSTILE_BIOS
+%define CXK_TEST_HOSTILE_BIOS 0
+%endif
+
 stage2_start:
     mov [boot_drive_s2], dl     ; stage 1 left the boot drive in DL
     xor ax, ax
@@ -37,7 +41,7 @@ stage2_start:
     call gather_memory_map      ; mem.asm - MUST be before pmode (needs BIOS)
     call print_mem_count        ; show how many E820 entries we got
 
-    call load_kernel            ; read the kernel image to 0x10000 (BIOS)
+    call load_kernel            ; read the kernel image to 16 MB (BIOS + unreal mode)
 
     ; LAST real-mode step: set a VBE linear-framebuffer graphics mode (needs BIOS
     ; int 10h, gone after the pmode switch). Self-gates on CXK_ENABLE_FB: when 0
@@ -53,61 +57,55 @@ stage2_start:
     jmp halt
 
 ; ----------------------------------------------------------------------------
-; load_kernel - read the kernel image from disk into a LOW buffer (real mode,
-; BIOS int 13h). long.asm later places its segments at their physical
-; addresses, from 1 MB up (32-bit addressing makes that trivial and avoids the
-; fragile real-mode >1MB segment tricks). The kernel lives on disk right after
-; stage 2: stage 1 = LBA 0, stage 2 = LBA 1..32, so the kernel starts at LBA 33.
-; We load it to 0x10000 (linear), a free low buffer.
-KERNEL_LOAD_LOW  equ 0x10000        ; temp buffer (segment 0x1000:0x0000)
-KERNEL_DEST_HIGH equ 0x100000       ; final physical location (1 MB)
-KERNEL_SECTORS   equ 1088           ; 544 KB of headroom for the kernel image.
+; load_kernel - read the kernel image from the BOOT partition and gather it at
+; 16 MB (real mode, BIOS int 13h). long.asm later places its segments at their
+; physical addresses, from 1 MB up, below the gathered image.
+;
+; int 13h can only write below 1 MB, so each chunk lands in a 32 KB bounce
+; buffer at 0x10000 and is copied up from there in unreal mode: FS carries a
+; 4 GB limit while the CPU stays in real mode with the BIOS usable. That limit
+; lives in the descriptor cache, and a BIOS may reload it - firmware whose disk
+; code passes through protected mode can leave 64 KB limits behind, Intel and
+; AMD boards alike - so unreal_enter runs again after EVERY int 13h, not once.
+; CXK_TEST_HOSTILE_BIOS builds a stage 2 that plays that BIOS.
+;
+; Until 1.3a' the whole image sat below 1 MB, from 0x10000 to the pmode stack at
+; 0x9F000; 544 KB was the most that held, and the kernel had reached 517 KB.
+KERNEL_LOAD_LOW  equ 0x10000        ; int 13h's bounce buffer (0x1000:0x0000)
+KERNEL_LOAD_HIGH equ 0x1000000      ; where the image is gathered: 16 MB, checked
+                                    ; against the E820 map before the first read
+KERNEL_SECTORS   equ 8192           ; 4 MB: the most stage 2 will read.
                                     ;
-                                    ; THIS IS A HARD CAP, NOT A HINT. The loop
-                                    ; below reads exactly this many sectors; a
-                                    ; kernel larger than it is silently truncated
-                                    ; and the tail of .text is never loaded. There
-                                    ; is no check at run time - the machine simply
-                                    ; executes whatever was left there.
-                                    ;
-                                    ; It was 512 sectors (256 KB) with a comment
-                                    ; saying "Kernel is ~50KB now: 5x room." That
-                                    ; stopped being true: the kernel reached
-                                    ; 260533 bytes, 99.4% of the budget, and the
-                                    ; next few KB of code anyone added pushed it
-                                    ; over. The symptom was one self-test failing
-                                    ; - kconfig, because the X Data object is
-                                    ; linked last and so is the first thing off
-                                    ; the end - which points nowhere near here.
-                                    ; cxk now refuses to build an image that
-                                    ; exceeds this, so it cannot happen quietly
-                                    ; again; keep the two in step.
-                                    ;
-                                    ; Must fit in LOW memory: the 0x10000 buffer
-                                    ; lives below 1MB with the pmode stack at
-                                    ; 0x9F000, so 544 KB ends at 0x98000 and
-                                    ; leaves a 28 KB gap before the stack.
-                                    ; 1088 is the last multiple of KERNEL_CHUNK
-                                    ; that clears the stack: the next raise
-                                    ; moves the load above 1 MB instead. BIOS
-                                    ; int13h can't read this in one call (~127
-                                    ; sector limit), so load_kernel loops in
-                                    ; chunks. long.asm copies only each segment.s
-                                    ; file bytes, so over-reading empty tail
-                                    ; sectors is harmless.
+                                    ; The image writer patches the kernel's real
+                                    ; size into kernel_sectors below and refuses a
+                                    ; kernel larger than this budget
+                                    ; (Stage2KernelSectorBudget in
+                                    ; XBPTImageWriter.cs; a DevKit test holds the
+                                    ; two equal). The budget was once a silent hard
+                                    ; cap: a kernel past it lost the tail of its
+                                    ; image and the only symptom was one unrelated
+                                    ; self-test failing.
 KERNEL_CHUNK     equ 64             ; sectors per int13h call (<=127, BIOS-safe).
-                                    ; 64*512 = 32 KB = 0x800 segment units/chunk.
-KERNEL_CHUNKS    equ (KERNEL_SECTORS / KERNEL_CHUNK)   ; 1088/64 = 17
+CHUNK_BYTES      equ KERNEL_CHUNK * 512                ; 32 KB
 
 load_kernel:
     call find_boot_partition        ; read XBPT, point dap_kernel at the BOOT
                                     ; partition's start LBA (overrides the
                                     ; default below)
-    push es
-    push cx
-    mov cx, KERNEL_CHUNKS           ; number of chunks to read
+    ; whole chunks covering the kernel; a count outside the budget is refused
+    mov eax, [kernel_sectors]
+    test eax, eax
+    jz .kbig
+    cmp eax, KERNEL_SECTORS
+    ja .kbig
+    add eax, KERNEL_CHUNK - 1
+    shr eax, 6                      ; / KERNEL_CHUNK
+    mov [kernel_chunks], ax
+    shl eax, 15                     ; * CHUNK_BYTES
+    mov [kernel_read_bytes], eax    ; long.asm bounds the ELF by this
+    call check_high_buffer          ; [16 MB, + read bytes) is usable RAM
+    mov dword [kernel_dest], KERNEL_LOAD_HIGH
 .next_chunk:
-    push cx
     mov word [dap_kernel + 2], KERNEL_CHUNK  ; re-arm count (some BIOSes write
                                              ; back the actual-read count here)
     mov ah, 0x42
@@ -115,22 +113,35 @@ load_kernel:
     mov si, dap_kernel
     int 0x13
     jc .kerr
-    pop cx
+%if CXK_TEST_HOSTILE_BIOS
+    call hostile_bios_limits        ; test builds: the BIOS reset FS's limit
+%endif
+    call unreal_enter               ; after every int 13h (see above)
 
-    ; advance the DAP for the next chunk:
-    ;   dest segment += 0x800  (64 sectors * 512 = 32 KB = 0x800 paragraphs)
-    ;   start LBA     += 64
-    add word [dap_kernel + 6], 0x800        ; dest segment field (offset 6)
+    ; copy the chunk up: FS has base 0 and a 4 GB limit
+    mov esi, KERNEL_LOAD_LOW
+    mov edi, [kernel_dest]
+    mov ecx, CHUNK_BYTES / 4
+.copy:
+    mov eax, [fs:esi]
+    mov [fs:edi], eax
+    add esi, 4
+    add edi, 4
+    dec ecx
+    jnz .copy
+    mov [kernel_dest], edi
+
     add dword [dap_kernel + 8], KERNEL_CHUNK ; LBA low dword (offset 8)
     adc dword [dap_kernel + 12], 0           ; carry into LBA high dword
-
-    loop .next_chunk                ; cx-- ; jump if cx != 0
-
-    pop cx
-    pop es
+    dec word [kernel_chunks]
+    jnz .next_chunk
     ret
 .kerr:
     mov si, msg_kerr
+    call print_string
+    jmp halt
+.kbig:
+    mov si, msg_kbig
     call print_string
     jmp halt
 
@@ -139,13 +150,114 @@ dap_kernel:
     db 0x00
     dw KERNEL_CHUNK             ; sectors per read (one chunk)
     dw 0x0000                   ; dest offset
-    dw 0x1000                   ; dest segment -> 0x10000 linear (advances per chunk)
+    dw 0x1000                   ; dest segment -> 0x10000, the bounce buffer
     dq 33                       ; start LBA - DEFAULT only; find_boot_partition
                                 ; overwrites this with the BOOT partition's
                                 ; start_lba read from the XBPT at LBA 1.
 
+; The kernel's size in sectors. The image writer finds the 'TNSK' marker and
+; patches the dword after it (XBPTImageWriter.PatchStage2KernelSectors); an
+; unpatched stage 2 reads the whole budget.
+                  db 'TNSK'
+kernel_sectors    dd KERNEL_SECTORS
+kernel_chunks     dw 0
+kernel_read_bytes dd 0                  ; what load_kernel gathered at 16 MB
+kernel_dest       dd 0
+
 boot_drive_s2 db 0
 msg_kerr db '[BOOT] KERNEL READ ERROR', 0
+msg_kbig db '[BOOT] KERNEL SIZE OUTSIDE THE LOADER BUDGET', 0
+msg_khigh db '[BOOT] NO USABLE RAM AT 16 MB FOR THE KERNEL IMAGE', 0
+
+; ----------------------------------------------------------------------------
+; check_high_buffer - halt unless one usable E820 entry covers
+; [KERNEL_LOAD_HIGH, KERNEL_LOAD_HIGH + kernel_read_bytes). Real mode, after
+; gather_memory_map, while the CXBI map still holds the raw E820 types.
+check_high_buffer:
+    pushad
+    mov cx, [CXBI_ADDR + CXBI_O_MMAP_COUNT]
+    mov si, CXBI_MMAP
+    mov ebx, KERNEL_LOAD_HIGH
+    add ebx, [kernel_read_bytes]        ; the end wanted, below 4 GB
+.next:
+    test cx, cx
+    jz .none
+    cmp dword [si + 16], 1              ; E820 type 1: usable
+    jne .skip
+    cmp dword [si + 4], 0               ; base below 4 GB ...
+    jne .skip
+    cmp dword [si], KERNEL_LOAD_HIGH    ; ... and at or below 16 MB
+    ja .skip
+    mov eax, [si]
+    xor edx, edx
+    add eax, [si + 8]                   ; end = base + length, 64-bit
+    adc edx, [si + 12]
+    jnz .ok                             ; ends past 4 GB
+    cmp eax, ebx
+    jae .ok
+.skip:
+    add si, E820_ENTRY_SIZE
+    dec cx
+    jmp .next
+.ok:
+    popad
+    ret
+.none:
+    mov si, msg_khigh
+    call print_string
+    jmp halt
+
+; ----------------------------------------------------------------------------
+; unreal_enter - FS and GS get base 0 and a 4 GB limit while the CPU stays in
+; real mode: protected mode for long enough to load them from the boot GDT's
+; flat data descriptor, then back. Real-mode loads of FS and GS change only the
+; base, so the limit stays until something reloads it in protected mode.
+unreal_enter:
+    push bx
+    mov bx, GDT_DATA
+    call load_fs_gs_limit
+    pop bx
+    ret
+
+; load_fs_gs_limit - BX = a boot GDT data selector. FS and GS take its limit,
+; and base 0. Interrupts are off across the switch (an interrupt in protected
+; mode would go through an IDT that is not there), then as they were.
+load_fs_gs_limit:
+    pushf
+    push eax
+    cli
+    lgdt [gdt_descriptor]
+    mov eax, cr0
+    or al, 1
+    mov cr0, eax
+    jmp short .pm                       ; flush the prefetch queue
+.pm:
+    mov fs, bx
+    mov gs, bx
+    and al, 0xFE
+    mov cr0, eax
+    jmp short .rm
+.rm:
+    xor ax, ax
+    mov fs, ax
+    mov gs, ax
+    pop eax
+    popf
+    ret
+
+%if CXK_TEST_HOSTILE_BIOS
+; hostile_bios_limits - TEST BUILDS ONLY (cxk_flags.cmake). Leaves FS and GS
+; with 64 KB limits after an int 13h, as a BIOS whose disk code passes through
+; protected mode may. The boot must still pass: unreal_enter after every int
+; 13h is what makes it. With unreal mode entered only once, the first copy
+; above 64 KB faults and the boot never reaches the kernel.
+hostile_bios_limits:
+    push bx
+    mov bx, GDT_DATA16
+    call load_fs_gs_limit
+    pop bx
+    ret
+%endif
 
 ; ----------------------------------------------------------------------------
 ; find_boot_partition - read the XBPT table (LBA 1) and point dap_kernel at the

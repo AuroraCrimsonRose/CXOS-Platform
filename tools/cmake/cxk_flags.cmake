@@ -35,4 +35,7 @@ set(CXK_FLAGS
                             #     that thread - which proves the guard page and the double-fault task
                             #     work. A reset or a hang instead means they do not. Test builds only.
                             # 2 = the same on thread 0's own stack; the panic must name "main".
+    CXK_TEST_HOSTILE_BIOS=0 # 1 = stage 2 plays a hostile BIOS: after every int 13h it leaves FS and
+                            #     GS with 64 KB limits. The boot MUST still pass, because stage 2
+                            #     re-enters unreal mode after each call. Test builds only.
 )

@@ -10,8 +10,10 @@
 - **BIOS:** `boot.asm` loads stage 2 from LBA 2 (32 sectors). Stage 2 enables
   A20, gathers the E820 map, sets a VBE mode, and (since step 6d3b, which
   deleted the 32-bit kernel and its CXEX path, `cxexload.asm`) `long.asm`
-  places the ELF64 kernel and enters long mode. Nothing checks the kernel's
-  signature. Since
+  places the ELF64 kernel and enters long mode. Since step 1.3a′ the kernel
+  image is gathered at 16 MB (each `int 13h` chunk copied up from a 32 KB
+  buffer at 0x10000 in unreal mode, re-entered after every call), within a
+  4 MB budget. Nothing checks the kernel's signature. Since
   roadmap step 4a the kernel no longer reads its boot data from fixed
   addresses (§4 item 1).
 - **UEFI:** `boot/uefi/cxboot.c` is part 1 only: it gathers information into

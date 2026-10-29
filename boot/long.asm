@@ -20,9 +20,8 @@
 ; RSP at 0x9F000, interrupts off. Anything this loader cannot place is
 ; refused with a message on screen and on COM1, never jumped to.
 
-KERNEL_SRC          equ 0x10000         ; where load_kernel placed the image (stage2.asm)
+KERNEL_SRC          equ KERNEL_LOAD_HIGH ; where load_kernel gathered the image (stage2.asm)
 ELF_MAGIC           equ 0x464C457F      ; 0x7F 'E' 'L' 'F' as a LE dword
-ELF_BUF_SIZE        equ KERNEL_SECTORS * 512   ; what load_kernel read (stage2.asm)
 
 ; ELF64 header offsets
 E_CLASS             equ 4
@@ -100,7 +99,7 @@ elf64_load_and_jump:
     jne .bad_elf
     cmp dword [esi + E_ENTRY], KERNEL_VBASE_LO + KERNEL_PHYS_MIN
     jb .bad_elf
-    cmp dword [esi + E_ENTRY], KERNEL_VBASE_LO + LOW_MAP_END
+    cmp dword [esi + E_ENTRY], KERNEL_VBASE_LO + KERNEL_SRC
     jae .bad_elf
     cmp dword [esi + E_PHOFF + 4], 0
     jne .bad_elf
@@ -111,7 +110,7 @@ elf64_load_and_jump:
     imul eax, eax, PHDR_SIZE
     add eax, [esi + E_PHOFF]
     jc .bad_elf
-    cmp eax, ELF_BUF_SIZE
+    cmp eax, [kernel_read_bytes]
     ja .bad_elf
     mov edi, esi
     add edi, [esi + E_PHOFF]            ; edi -> first program header
@@ -133,14 +132,15 @@ elf64_load_and_jump:
     cmp dword [edi + P_MEMSZ + 4], 0
     jne .bad_seg
 
-    ; KERNEL_PHYS_MIN <= paddr, paddr + memsz <= LOW_MAP_END
+    ; KERNEL_PHYS_MIN <= paddr, paddr + memsz <= KERNEL_SRC: below the image
+    ; being copied from (and so inside the 1 GiB both maps cover)
     mov eax, [edi + P_PADDR]
     cmp eax, KERNEL_PHYS_MIN
     jb .bad_seg
     mov edx, eax
     add edx, [edi + P_MEMSZ]
     jc .bad_seg
-    cmp edx, LOW_MAP_END
+    cmp edx, KERNEL_SRC
     ja .bad_seg
 
     ; vaddr == KERNEL_VBASE + paddr: the only map the loader builds
@@ -157,7 +157,7 @@ elf64_load_and_jump:
     ja .bad_seg
     add edx, [edi + P_OFFSET]
     jc .bad_seg
-    cmp edx, ELF_BUF_SIZE
+    cmp edx, [kernel_read_bytes]
     ja .bad_seg
 
     ; copy the file bytes to paddr, zero the rest up to memsz

@@ -10,6 +10,7 @@ GDT_NULL        equ 0x00    ; null descriptor
 GDT_CODE        equ 0x08    ; code segment
 GDT_DATA        equ 0x10    ; data segment
 GDT_CODE64      equ 0x18    ; 64-bit code segment (long.asm only)
+GDT_DATA16      equ 0x20    ; 64 KB data segment (CXK_TEST_HOSTILE_BIOS only)
 
 ; GDT table
 gdt_start:
@@ -80,6 +81,18 @@ gdt_start:
                             ;   L=1  64-bit
                             ;   limit high = 0xF
         db 0x00             ; base high 8 bits
+
+%if CXK_TEST_HOSTILE_BIOS
+    ; 16-bit data segment with a 64 KB limit: what a hostile BIOS leaves in FS
+    ; and GS after int 13h (stage2.asm hostile_bios_limits). Test builds only.
+    gdt_data16:
+        dw 0xFFFF           ; limit 64 KB
+        dw 0x0000
+        db 0x00
+        db 0x92             ; present, ring 0, data, writable
+        db 0x00             ; G=0 byte granularity, B=0
+        db 0x00
+%endif
 
 gdt_end:
 

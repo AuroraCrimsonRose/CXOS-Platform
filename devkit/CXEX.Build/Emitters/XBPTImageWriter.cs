@@ -42,7 +42,7 @@ public static class XBPTImageWriter
                 Put(part.StartLba, kernel);
 
                 // CRITICAL FIX: Patch the KSNT marker in Stage 2 with the kernel sector count
-                PatchStage2KernelSectors(diskImage, map.Stage2Lba, kernel.Length);
+                PatchStage2KernelSectors(diskImage, map.Stage2Lba, kernel.Length, part.SectorCount);
             }
             else if (part.Label == "STAGE" && stagedFiles.Count > 0)
             {
@@ -137,20 +137,24 @@ public static class XBPTImageWriter
     }
 
     /// <summary>
-    /// How many sectors stage 2 actually reads: <c>KERNEL_SECTORS</c> in
-    /// boot/stage2.asm. It is a hard cap, not a hint — the read loop reads exactly
-    /// this many, and a larger kernel simply has its tail left on disk.
+    /// The most sectors stage 2 will read: <c>KERNEL_SECTORS</c> in
+    /// boot/stage2.asm, 4 MB gathered at 16 MB (step 1.3a'). The writer patches
+    /// the kernel's real size into stage 2 and refuses a kernel past this budget;
+    /// <c>Stage2BudgetTests</c> holds the two constants equal.
     ///
-    /// <para>Keep the two in step. The constant was 512 for a long time with a
-    /// comment reading "Kernel is ~50KB now: 5x room"; the kernel reached 99.4% of
-    /// it, and the next few KB anyone added silently truncated <c>.text</c>. The
-    /// only symptom was one self-test failing — the X Data object is linked last,
-    /// so it is the first thing to fall off the end — which points nowhere near
-    /// the boot loader.</para>
+    /// <para>The budget was once a silent hard cap: the kernel reached 99.4% of
+    /// it, and the next few KB anyone added cut off the tail of its image. The only
+    /// symptom was one self-test failing - the X Data object is linked last, so it
+    /// is the first thing to fall off the end - which points nowhere near the boot
+    /// loader.</para>
     /// </summary>
-    private const int Stage2KernelSectorBudget = 1088;   // 544 KB
+    public const int Stage2KernelSectorBudget = 8192;   // 4 MB
 
-    private static void PatchStage2KernelSectors(byte[] diskImage, ulong stage2Lba, int kernelByteSize)
+    /// <summary>Sectors per int 13h call in stage 2 (<c>KERNEL_CHUNK</c>): it reads whole chunks.</summary>
+    public const int Stage2KernelChunk = 64;
+
+    private static void PatchStage2KernelSectors(byte[] diskImage, ulong stage2Lba, int kernelByteSize,
+                                                 ulong bootPartitionSectors)
     {
         int kernelSectors = (int)Math.Ceiling((double)kernelByteSize / 512);
 
@@ -161,8 +165,14 @@ public static class XBPTImageWriter
             throw new InvalidDataException(
                 $"the kernel is {kernelByteSize} bytes ({kernelSectors} sectors), beyond the " +
                 $"{Stage2KernelSectorBudget} sectors stage 2 reads ({Stage2KernelSectorBudget * 512} bytes). " +
-                "Raise KERNEL_SECTORS in boot/stage2.asm and Stage2KernelSectorBudget here together, " +
-                "keeping the load buffer at 0x10000 clear of the protected-mode stack at 0x9F000.");
+                "Raise KERNEL_SECTORS in boot/stage2.asm and Stage2KernelSectorBudget here together; " +
+                "the image is gathered at 16 MB and the kernel's segments must end below it.");
+
+        // Stage 2 reads whole chunks, which must not run off the BOOT partition.
+        ulong readSectors = (ulong)((kernelSectors + Stage2KernelChunk - 1) / Stage2KernelChunk * Stage2KernelChunk);
+        if (readSectors > bootPartitionSectors)
+            throw new InvalidDataException(
+                $"stage 2 reads {readSectors} sectors for the kernel, but the BOOT partition holds {bootPartitionSectors}.");
 
         int searchStart = (int)(stage2Lba * 512);
         int searchEnd = searchStart + (16 * 512);

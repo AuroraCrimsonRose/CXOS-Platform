@@ -369,6 +369,17 @@ Independent of the order above, and small enough to land whenever convenient:
      buffer is charged to the caller's job. A closed endpoint fails every
      queued call, a closed token fails its caller, and a killed caller's
      queued call leaves the queue (`docs/kernel/CX_SYSCALLS_IPC.md`).
+   - **1.3a′ (2026-10-29), done:** stage 2 gathers the kernel at 16 MB, not
+     below 1 MB: 32 KB `int 13h` chunks land at 0x10000 and are copied up in
+     unreal mode, re-entered after every `int 13h` (a BIOS may reset FS's
+     limit). The 16 MB buffer is checked against E820 and the kernel's
+     segments must end below it. The budget is 4 MB (`KERNEL_SECTORS`, held
+     equal to the image writer's by a DevKit test); the writer patches the
+     kernel's real size into stage 2, so it reads only that. The
+     `CXK_TEST_HOSTILE_BIOS` build plays a BIOS that leaves 64 KB limits.
+     `cxk verify-hyperv` boots the image in a Hyper-V Generation 1 VM (AMI
+     BIOS, IDE, COM1 to a pipe) and judges it as `verify-boot` does. The rig
+     stays the final word.
    - **1.3b:** handles in messages: moved, or copied with rights that only
      shrink, up to 16.
    - **1.3c:** notifications.
