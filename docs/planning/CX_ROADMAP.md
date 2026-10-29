@@ -359,7 +359,23 @@ Independent of the order above, and small enough to land whenever convenient:
 3. IPC: queued calls with reply tokens, badges, handle transfer, sealable
    memory objects, notifications, priority passed through calls. Memory
    objects with pages on first touch, the region tree, and strict commit
-   (`kernel/CX_KERNEL_PLAN.md` §9.4).
+   (`kernel/CX_KERNEL_PLAN.md` §9.4). In six steps:
+   - **1.3a (ABI 20, 2026-10-29), done:** calls queue on the endpoint in
+     order (`SIGNAL_EP_READABLE` while one waits). `SYS_IPC_RECV` hands back
+     an `ipc_msg_info` (badge, length, reply capacity, sender) and a reply
+     token, a handle with `HRIGHT_REPLY` that `SYS_IPC_REPLY` answers, in any
+     order. Callers hold send handles (`OBJ_TYPE_SEND`), which
+     `SYS_EP_MINT` makes with a badge and rights that only shrink. A call's
+     buffer is charged to the caller's job. A closed endpoint fails every
+     queued call, a closed token fails its caller, and a killed caller's
+     queued call leaves the queue (`docs/kernel/CX_SYSCALLS_IPC.md`).
+   - **1.3b:** handles in messages: moved, or copied with rights that only
+     shrink, up to 16.
+   - **1.3c:** notifications.
+   - **1.3d:** memory objects: pages on first touch, the region tree, strict
+     commit.
+   - **1.3e:** sealing, and memory objects in IPC.
+   - **1.3f:** priority passed through calls.
 4. Pipes and explicit handle passing at spawn; the shell runs from disk.
 5. User threads, futex (owner in the futex word), thread-local storage.
 6. SMP readiness: spinlocks that save interrupt state, per-CPU data, a lock

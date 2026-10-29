@@ -270,11 +270,11 @@ int proc_start(const void *image, uint32_t image_len, uint32_t caps,
     vm_proc_init(pid, vm_default_quota(), thread_current_pid());
 
     if (broker) {
-        /* The child's handle is a reference on the broker's endpoint, which
-           has to outlive every one of them (see the lifetime note in
-           cpu/ipc.h). Its number is whatever the table gives, so the child
+        /* The child's send handle, unbadged, holds a reference on the
+           broker's endpoint, which has to outlive every one of them (see the
+           lifetime note in cpu/ipc.h). Its number is whatever the table gives, so the child
            asks for it with SYS_ARGS rather than assuming one. */
-        int32_t bh = ep_install_handle(tid, broker, HRIGHT_SEND, broker_grant);
+        int32_t bh = ep_install_send(tid, broker, 0, HRIGHT_SEND, broker_grant);
         if (bh < 0) klog_u32("PROC", SEV_WARN, "broker handle refused: ", (uint32_t)-bh, LOG_COLOR_VALUE, "");
         else        thread_set_broker(tid, bh);
     }

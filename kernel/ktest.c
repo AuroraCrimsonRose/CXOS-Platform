@@ -221,48 +221,59 @@ static int test_ipc_endpoint_lifetime(void) {
     if (ep_from_handle(stale, 0, NULL) != NULL) return 0;
     if (htab_close(t, stale) != E_BAD_HANDLE) return 0;
 
-    /* 3. a second handle is a second reference: the first close must not
-       free. It records the grant it came from. */
+    /* 3. a send handle is a handle on its own object, which holds a
+       reference on the endpoint but no handle. It records the grant it came
+       from. */
     uint32_t grant = 0;
+    uint32_t sends = kobj_live(KOBJ_SEND);
     ep = ep_from_handle(h, HRIGHT_RECV, &grant);
     if (!ep || grant == 0) return 0;
 
-    int h2 = ep_install_handle(me, ep, HRIGHT_SEND | HRIGHT_DUPLICATE, grant);
+    int h2 = ep_install_send(me, ep, 0, HRIGHT_SEND | HRIGHT_DUPLICATE, grant);
     if (h2 < 0) { ep_put(ep); return 0; }
-    if (ep_refs(ep) != 3 || ep_handles(ep) != 2) { ep_put(ep); return 0; }
-    ep_put(ep);
+    if (ep_refs(ep) != 3 || ep_handles(ep) != 1 || kobj_live(KOBJ_SEND) != sends + 1) { ep_put(ep); return 0; }
 
     struct htab_info info;
-    struct kobj *o = htab_ref(t, h2, KOBJ_ENDPOINT, 0, &info);
-    if (!o) return 0;
+    struct kobj *o = htab_ref(t, h2, KOBJ_SEND, 0, &info);
+    if (!o) { ep_put(ep); return 0; }
     kobj_unref(o);
-    if (info.parent != grant || info.grant == grant || info.rights != (HRIGHT_SEND | HRIGHT_DUPLICATE)) return 0;
+    if (info.parent != grant || info.grant == grant || info.rights != (HRIGHT_SEND | HRIGHT_DUPLICATE)) { ep_put(ep); return 0; }
 
-    if (htab_close(t, h) != 0) return 0;
-    if (!ep_is_cached(ep) || !ep->active) return 0;   /* must still be alive */
-    if (ep_refs(ep) != 1 || ep_handles(ep) != 1) return 0;
-    if (ep_in_use_count() != baseline + 1) return 0;
-
-    /* 4. rights only shrink: the SEND handle cannot become a RECV one, and
-       no handle can carry a right endpoints do not define. */
-    if (htab_dup(t, h2, HRIGHT_RECV) != E_ACCESS_DENIED) return 0;
-    if (htab_dup(t, h2, HRIGHT_SEND | HRIGHT_RECV) != E_ACCESS_DENIED) return 0;
-    if (ep_from_handle(h2, HRIGHT_RECV, NULL) != NULL) return 0;
-    if (ep_install_handle(me, ep, 0x80u, grant) != E_ACCESS_DENIED) return 0;
+    /* 4. rights only shrink: the send handle cannot become a receive one,
+       no handle can carry a right its type does not define, and a send
+       handle is for sending. */
+    int bad = htab_dup(t, h2, HRIGHT_RECV) != E_ACCESS_DENIED
+           || htab_dup(t, h2, HRIGHT_SEND | HRIGHT_RECV) != E_ACCESS_DENIED
+           || ep_from_handle(h2, HRIGHT_RECV, NULL) != NULL
+           || ep_install_handle(me, ep, 0x80u, grant) != E_ACCESS_DENIED
+           || ep_install_send(me, ep, 0, HRIGHT_SEND | HRIGHT_RECV, grant) != E_ACCESS_DENIED
+           || ep_install_send(me, ep, 0, HRIGHT_DUPLICATE, grant) != E_ACCESS_DENIED
+           || kobj_live(KOBJ_SEND) != sends + 1;
+    ep_put(ep);
+    if (bad) return 0;
     int h3 = htab_dup(t, h2, HRIGHT_SEND);
     if (h3 < 0) return 0;
-    if (ep_handles(ep) != 2) return 0;
+    if (ep_handles(ep) != 1 || kobj_live(KOBJ_SEND) != sends + 1) return 0;   /* the same send object */
     if (htab_dup(t, h3, HRIGHT_SEND) != E_ACCESS_DENIED) return 0;   /* h3 was not given the duplicate right */
     if (htab_close(t, h3) != 0) return 0;
 
-    /* 5. the last handle frees it, and the stale handle is a dead name. */
+    /* 5. closing the receive handle closes the endpoint, the server gone,
+       while the send handle keeps the slot: no new handle on it. */
+    if (htab_close(t, h) != 0) return 0;
+    if (!ep_is_cached(ep) || ep->active) return 0;
+    if (ep_refs(ep) != 1 || ep_handles(ep) != 0) return 0;
+    if (ep_in_use_count() != baseline + 1) return 0;
+    if (ep_install_send(me, ep, 0, HRIGHT_SEND, grant) != E_BAD_HANDLE
+        || ep_install_handle(me, ep, HRIGHT_RECV, grant) != E_BAD_HANDLE) return 0;
+
+    /* 6. the last send handle frees it, and the stale handle is a dead name. */
     if (htab_close(t, h2) != 0) return 0;
     if (ep_in_use_count() != baseline) return 0;
     if (ep_is_cached(ep)) return 0;                   /* back in its cache; not read, it may be unmapped */
-    if (ep_from_handle(h2, HRIGHT_SEND, NULL) != NULL) return 0;
-    if (kobj_live(KOBJ_ENDPOINT) != live) return 0;
+    if (htab_ref(t, h2, KOBJ_SEND, 0, 0) != NULL) return 0;
+    if (kobj_live(KOBJ_ENDPOINT) != live || kobj_live(KOBJ_SEND) != sends) return 0;
 
-    /* 6. the per-process quota holds, and releases. */
+    /* 7. the per-process quota holds, and releases. */
     int hs[MAX_ENDPOINTS_PER_PROC];
     int made = 0;
     for (int i = 0; i < MAX_ENDPOINTS_PER_PROC; i++) {
@@ -3294,6 +3305,7 @@ void ktest_run(void) {
     total++; passed += report("jobs: memory and thread budgets, nested, killed together", usermode_job_test());
     total++; passed += report("timers: absolute deadlines on the monotonic clock", usermode_timer_test());
     total++; passed += report("queues: one-shot keys, re-armed, many objects", usermode_queue_test());
+    total++; passed += report("ipc: queued calls, reply tokens, badges", usermode_ipc_test());
     total++; passed += report("ipc endpoints refcounted + reclaimed", test_ipc_endpoint_lifetime());
     total++; passed += report("object caches map and return pages", test_ocache_pages());
     total++; passed += report("two threads share one process",   test_proc_threads());

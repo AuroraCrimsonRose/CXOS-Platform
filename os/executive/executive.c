@@ -113,19 +113,20 @@ static void executive_main(void) {
         sys_write("executive: no service supervisor (/System/Programs/supervisor.xsex)\n");
 
     /* serve one request from the app */
-    char buf[256]; int sender = 0;
+    char buf[256];
+    struct ipc_msg_info info;
     struct ipc_recv_args ra;
-    ra.ep_handle = ep; ra.buf = UADDR(buf); ra.cap = sizeof buf; ra.sender = UADDR(&sender);
+    ra.ep_handle = ep; ra.buf = UADDR(buf); ra.cap = sizeof buf - 1; ra.info = UADDR(&info);
     ra.reserved = 0;
     int n = sys_ipc_recv(&ra);          /* blocks until the app ipc_calls */
-    if (n > 0) {
-        if (n < (int)sizeof buf) buf[n] = 0;   /* NUL-terminate for the write */
+    if (n >= 0) {
+        buf[n] = 0;                      /* NUL-terminate for the write */
         sys_write(buf);                  /* print the app's message FOR it */
-    }
 
-    struct ipc_reply_args rp;
-    rp.ep_handle = ep; rp.data = UADDR("ok"); rp.len = 2; rp.reserved = 0;
-    sys_ipc_reply(&rp);                  /* wake the app */
+        struct ipc_reply_args rp;
+        rp.token = info.reply; rp.data = UADDR("ok"); rp.len = 2; rp.reserved = 0;
+        sys_ipc_reply(&rp);              /* wake the app */
+    }
 
     sys_yield();                         /* let the app resume and exit */
     sys_write("CXK executive: served the app, shutting down\n");

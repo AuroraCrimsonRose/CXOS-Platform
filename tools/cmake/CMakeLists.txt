@@ -446,7 +446,7 @@ add_custom_command(
     COMMENT "Linking the kernel (top 2 GiB)"
 )
 # The disk carries the same link with no symbol table: stage 2 reads the whole
-# file into 512 KB of low memory (KERNEL_SECTORS in boot/stage2.asm) and
+# file into 544 KB of low memory (KERNEL_SECTORS in boot/stage2.asm) and
 # loads only the PT_LOAD segments, so the symbols cost budget and buy nothing
 # there. kernel.elf keeps them, for a debugger or addr2line.
 #

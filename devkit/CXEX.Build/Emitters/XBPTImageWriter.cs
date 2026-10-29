@@ -148,7 +148,7 @@ public static class XBPTImageWriter
     /// so it is the first thing to fall off the end — which points nowhere near
     /// the boot loader.</para>
     /// </summary>
-    private const int Stage2KernelSectorBudget = 1024;   // 512 KB
+    private const int Stage2KernelSectorBudget = 1088;   // 544 KB
 
     private static void PatchStage2KernelSectors(byte[] diskImage, ulong stage2Lba, int kernelByteSize)
     {

@@ -3,12 +3,39 @@
 /* /kernel/cpu/ipc.h */
 /* Aurora Tejeda / CATX Systems */
 /*
- * ABI v1 - IPC endpoints + synchronous rendezvous (docs/CXK_ABI_v1 sec 8).
+ * IPC: endpoints, send handles with badges, queued calls with reply tokens
+ * (roadmap step 1.3a; docs/kernel/CX_KERNEL_PLAN.md section 6).
  *
- * Single in-flight per endpoint: an app ipc_calls (blocks), the owning executive
- * ipc_recvs the request, does the work with its own caps, and ipc_replies, which
- * wakes the caller. Request and reply both move through the kernel-side `buf`
- * (the heap is shared into every space), so each side copies in its own CR3.
+ * Three object types:
+ *
+ *   endpoint     what a server receives on. Only receive handles name it
+ *                (HRIGHT_RECV), so its last handle going is the server going.
+ *   send handle  what a client calls through: the endpoint and a badge its
+ *                minter chose (SYS_EP_MINT; spawn's broker handle has 0). A
+ *                server tells its clients apart by the badge, which a client
+ *                can neither forge nor change: it is in the kernel's object,
+ *                not the message (seL4 badged endpoint capabilities).
+ *   reply token  one call, from the moment it is made until it is answered.
+ *                It waits on the endpoint's queue, oldest first; ipc_recv takes
+ *                it off and gives the server a handle on it, which ipc_reply
+ *                answers once and closes (seL4 reply objects, Mach send-once
+ *                rights). A server holds as many as it likes and answers them
+ *                in any order.
+ *
+ * Every way a call can end:
+ *
+ *   answered        ipc_reply: the caller copies the reply out.
+ *   token closed    the server closed it unanswered, or ended: E_PEER_CLOSED.
+ *   server gone     the endpoint's last receive handle closed: every queued
+ *                   call fails E_PEER_CLOSED, and a new one is refused. Calls
+ *                   already taken stay with their tokens.
+ *   caller killed   a queued call is withdrawn; a taken one is marked, and its
+ *                   reply finds the caller gone (E_PEER_CLOSED to the server).
+ *
+ * A call's bytes, request and then reply, sit in a kernel buffer the size of
+ * the larger of the two, charged to the caller's job until the token goes.
+ * One lock (ipc_lock in ipc.c) covers every endpoint's queue and every
+ * token's state; it is taken before the wait lock, never after.
  */
 
 #ifndef IPC_H
@@ -18,59 +45,73 @@
 #include "object/kobj.h"
 #include <stdint.h>
 
+struct job;
+
+/* Where a call is. Only the lock holder moves it, and DONE is final. */
+enum ipc_state {
+    IPC_QUEUED   = 0,   /* on the endpoint's queue, not yet received */
+    IPC_TAKEN    = 1,   /* received: the server holds its token */
+    IPC_REPLYING = 2,   /* a reply is being copied in; nothing else may touch buf */
+    IPC_DONE     = 3,   /* result set; the caller may read it */
+};
+
+struct ipc_call {
+    struct kobj      hdr;         /* first; KOBJ_REPLY */
+    struct ipc_call *next;        /* on the endpoint's queue while QUEUED */
+    struct endpoint *ep;          /* the endpoint it was made on, while QUEUED */
+    enum ipc_state   state;
+    int              caller_tid;
+    int              caller_pid;  /* what ipc_recv reports */
+    int              caller_gone; /* the caller has left; nobody reads the result */
+    int32_t          result;      /* DONE: the reply's length, or a negative error */
+    uint64_t         badge;
+    uint32_t         req_len;
+    uint32_t         reply_cap;
+    uint32_t         size;        /* of buf */
+    uint8_t         *buf;         /* the request, then the reply; freed with the token */
+    struct job      *job;         /* charged `size` bytes; a reference */
+};
+
 struct endpoint {
-    struct kobj hdr;        /* first: the handle table holds &hdr */
-    int      active;        /* not yet logically destroyed (see below) */
-    int      owner_pid;     /* the process that created it (its quota); a pid */
-    int      recv_tid;      /* the thread blocked in ipc_recv on it, or -1 */
-    int      caller_tid;    /* the thread blocked in ipc_call on it, or -1 */
-    int      caller_pid;    /* and its process, which ipc_recv reports */
-    uint64_t reply_ptr;     /* caller's reply buffer (in the caller's space) */
-    uint32_t reply_cap;     /* caller's reply buffer size */
-                            /* These two are the authority for the copy-out in
-                               ipc_call, re-validated there rather than
-                               trusted from before the block (review §6). */
-    uint32_t msg_len;       /* bytes currently staged in buf (request, then reply) */
-    /* Where the transaction is, for a caller killed in the middle of it:
-       `taken` once ipc_recv has delivered the request, `replied` once
-       ipc_reply has staged the answer, `caller_gone` once the caller has left
-       a taken request unanswered. caller_tid stays set until the reply, so
-       no new call is answered with the old one's reply. */
-    int      taken;
-    int      replied;
-    int      caller_gone;
+    struct kobj      hdr;         /* first: the handle table holds &hdr */
+    int              active;      /* a receive handle is left (see below) */
+    int              owner_pid;   /* the process that created it (its quota); a pid */
+    struct ipc_call *head;        /* queued calls, oldest first */
+    struct ipc_call *tail;
+    uint32_t         queued;
     /* A stop notice waiting for ipc_recv (ep_post_stop), which takes it
        before any call: who asked, and the deadline they gave. */
-    int      stop_pending;
-    uint32_t stop_by;
-    uint32_t stop_ms;
-    uint8_t  buf[4096];     /* kernel bounce buffer for request + reply */
+    int              stop_pending;
+    uint32_t         stop_by;
+    uint32_t         stop_ms;
+};
+
+struct ep_send {
+    struct kobj      hdr;         /* first; KOBJ_SEND */
+    struct endpoint *ep;          /* a reference */
+    uint64_t         badge;
 };
 
 /*
  * Lifetime (security review §7, engineering §10).
  *
  * An endpoint outlives any one handle to it: ep_create installs a RECV handle
- * for the owner, and every spawned process gets a SEND handle to the broker's
- * endpoint (cpu/spawn.c). Freeing on the first close would therefore be a
- * use-after-free, not merely early.
+ * for the owner, every send handle holds a reference, and so does every
+ * ipc_* operation, from its lookup until it returns, across the part where
+ * it can block. Freeing on the first close would be a use-after-free.
  *
  * So lifetime is the kernel object's two counts (object/kobj.h), and
  * destruction is two-phase - the shape Haiku's ports and Mach's ip_active /
  * ip_references both use:
  *
- *   refs    every handle holds one, and so does every ipc_* operation, from
- *           its lookup until it returns, across the part where it can block.
- *           The endpoint returns to its cache when this reaches zero,
- *           and not before.
- *   active  cleared by the last *handle* going (the type's last_handle hook).
- *           The slot may still be alive, because a blocked thread holds a
- *           reference, but it is closed for business: every entry point
- *           refuses, and anyone already blocked on it is woken to find that
- *           out rather than waiting forever.
- *
- * Keeping the two separate is the point. One counter cannot express "nobody
- * can reach this any more, but a thread is still standing on it".
+ *   refs    the endpoint returns to its cache when this reaches zero, and
+ *           not before.
+ *   active  cleared by the last *receive handle* going (the type's
+ *           last_handle hook; send handles are handles on another object).
+ *           The slot may still be alive, because a send handle or a blocked
+ *           thread holds a reference, but it is closed for business: every
+ *           entry point refuses, and anyone already blocked on it is woken to
+ *           find that out rather than waiting forever.
  */
 
 /* Per-process cap, on top of the global pool (security review §7). Without it
@@ -78,7 +119,7 @@ struct endpoint {
    which is the denial a global limit alone does not prevent. */
 #define MAX_ENDPOINTS_PER_PROC 8
 
-/* Register the endpoint type. Called once during boot. */
+/* Register the three types. Called once during boot. */
 void ipc_init(void);
 
 /* Endpoints currently allocated. For the self-tests, which assert that a
@@ -86,31 +127,41 @@ void ipc_init(void);
 int ep_in_use_count(void);
 /* Is `ep` a live object of the endpoint cache? For the self-tests. */
 int ep_is_cached(const struct endpoint *ep);
+/* Calls queued on `ep` now, for the self-tests. */
+uint32_t ep_queued(const struct endpoint *ep);
 
 /* ep_create: allocate an endpoint owned by the caller + install a RECV handle.
    Returns the handle, or a negative ABI error. (GRANT_ENDPOINT, checked by
    the dispatcher.) */
 int ep_create(void);
 
-/* Resolve one of the caller's handles to its endpoint, requiring
-   `need_rights`. The endpoint comes back with a reference the caller must
-   drop with ep_put. `grant`, if given, receives the handle's grant id. */
+/* Resolve one of the caller's endpoint handles, requiring `need_rights`. The
+   endpoint comes back with a reference the caller must drop with ep_put.
+   `grant`, if given, receives the handle's grant id. */
 struct endpoint *ep_from_handle(int32_t h, uint32_t need_rights, uint32_t *grant);
 void ep_put(struct endpoint *ep);
 
-/* Give the process of thread `tid` a handle on an existing, active endpoint,
-   derived from the grant `parent_grant`. Returns the handle, or a negative
-   ABI error. */
+/* Give the process of thread `tid` a further handle on an existing, active
+   endpoint, derived from the grant `parent_grant`: `rights` from HRIGHT_RECV,
+   HRIGHT_WAIT, HRIGHT_DUPLICATE. Returns the handle, or a negative ABI error. */
 int32_t ep_install_handle(int tid, struct endpoint *ep, uint32_t rights, uint32_t parent_grant);
+
+/* Give it a send handle on `ep` carrying `badge`, with `rights` (HRIGHT_SEND,
+   and HRIGHT_DUPLICATE if asked). Returns the handle, or a negative ABI
+   error: E_BAD_HANDLE for an endpoint whose server has gone. */
+int32_t ep_install_send(int tid, struct endpoint *ep, uint64_t badge, uint32_t rights, uint32_t parent_grant);
+
+/* SYS_EP_MINT: a send handle on the caller's endpoint `h` (HRIGHT_RECV). */
+int ep_mint(int32_t h, uint64_t badge, uint32_t rights);
 
 /* Leave a stop notice on `ep` for the process `by`, which gave `ms`, and wake
    its receiver (SYS_PROCESS_STOP). A later one replaces it. 0, or
    E_PEER_CLOSED if the endpoint's last handle has gone: nobody can read it. */
 int ep_post_stop(struct endpoint *ep, int by, uint32_t ms);
 
-/* the synchronous rendezvous (each takes a user pointer to its args struct) */
-int ipc_call(uint64_t ua);    /* caller (app); blocks -> reply len */
-int ipc_recv(uint64_t ua);    /* owner (executive); blocks -> req len */
-int ipc_reply(uint64_t ua);  /* owner; wakes the caller -> 0 */
+/* The calls (each takes a user pointer to its args struct). */
+int ipc_call(uint64_t ua);    /* client; blocks -> reply length */
+int ipc_recv(uint64_t ua);    /* server; blocks -> message length */
+int ipc_reply(uint64_t ua);   /* server; answers a token -> 0 */
 
 #endif

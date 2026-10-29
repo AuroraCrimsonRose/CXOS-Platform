@@ -498,6 +498,10 @@ int syscall_ep_create(void) {
     return ep_create();
 }
 
+/* Unprivileged: it needs the endpoint's receive handle, which only its
+   creator holds unless it gave one away. */
+int syscall_ep_mint(int32_t h, uint64_t badge, uint32_t rights) { return ep_mint(h, badge, rights); }
+
 int syscall_handle_close(int32_t h) {
     return htab_close(thread_htab(thread_current_id()), h);
 }
@@ -1382,7 +1386,7 @@ int usermode_file_test(void) {
     step++;
     if (syscall_dispatch(SYS_IPC_CALL, FT_IARGS, 0, 0, 0, 0) != E_INVALID_ARGS) goto done;
     struct ipc_recv_args *ira = (struct ipc_recv_args *)FT_IARGS;
-    ira->cap = 0; ira->ep_handle = -1; ira->buf = 0; ira->sender = 0;
+    ira->cap = 0; ira->ep_handle = -1; ira->buf = 0; ira->info = 0;
     ira->reserved = 0;
     step++;
     if (syscall_dispatch(SYS_IPC_RECV, FT_IARGS, 0, 0, 0, 0) != E_BAD_HANDLE) goto done;
@@ -1390,7 +1394,7 @@ int usermode_file_test(void) {
     step++;
     if (syscall_dispatch(SYS_IPC_RECV, FT_IARGS, 0, 0, 0, 0) != E_INVALID_ARGS) goto done;
     struct ipc_reply_args *ipa = (struct ipc_reply_args *)FT_IARGS;
-    ipa->data = 0; ipa->len = 0; ipa->ep_handle = -1;
+    ipa->data = 0; ipa->len = 0; ipa->token = -1;
     ipa->reserved = 0;
     step++;
     if (syscall_dispatch(SYS_IPC_REPLY, FT_IARGS, 0, 0, 0, 0) != E_BAD_HANDLE) goto done;
@@ -2813,13 +2817,15 @@ int usermode_process_test(void) {
     d = syscall_dispatch(SYS_HANDLE_DUPLICATE, (uint32_t)h, HRIGHT_WAIT, 0, 0, 0);
     step = 12; if (d <= 0 || pt_info(d) != E_ACCESS_DENIED) goto done;
 
-    /* 13-14: an endpoint is the wrong type for OBJINFO_PROCESS, and has no
-       signals to wait for even on a handle that may wait */
+    /* 13-14: an endpoint is the wrong type for OBJINFO_PROCESS, and a send
+       handle has no signals to wait for even on a handle that may wait */
     eh = ep_create();
     step = 13; if (eh <= 0 || pt_info(eh) != E_WRONG_TYPE) goto done;
-    struct kobj *eo = htab_ref(tab, eh, KOBJ_ENDPOINT, 0, 0);
+    int32_t sh = ep_mint(eh, 0, HRIGHT_SEND);
+    struct kobj *eo = sh > 0 ? htab_ref(tab, sh, KOBJ_SEND, 0, 0) : 0;
     ew = eo ? htab_install(tab, eo, HRIGHT_WAIT, 0) : -1;
     if (eo) kobj_unref(eo);
+    if (sh > 0) htab_close(tab, sh);
     step = 14; if (ew <= 0 || pt_wait(ew, SIGNAL_PROCESS_ENDED, 0, 0) != E_NOT_SUPPORTED) goto done;
 
     /* 15-16: waiting with no limit returns when it ends, and says how: SYS_EXIT
@@ -2882,6 +2888,9 @@ extern uint8_t user_blob_loop_start[], user_blob_loop_end[];
 #define KT_LARGS (TEST_CODE_VIRT + 0x500)   /* the victim's file_lock_args */
 #define KT_REQ   (TEST_CODE_VIRT + 0x580)   /* one request byte */
 #define KT_PATH  (TEST_CODE_VIRT + 0x600)
+#define KT_INFO  (TEST_CODE_VIRT + 0x780)   /* the victim's ipc_msg_info */
+#define KT_TINFO (TEST_CODE_VIRT + 0x7A0)   /* the test thread's */
+#define KT_TBUF  (TEST_CODE_VIRT + 0x7C0)   /* and its receive buffer */
 
 #define KT_BLOB_MAX 96
 /* user_blob_call and the call it makes: read when the victim starts, so one
@@ -2957,7 +2966,7 @@ int usermode_kill_test(void) {
     if (!kt_kill(h, tid, 1) || kobj_waiters(&p->hdr) != 0) goto done;
     htab_close(tab, h); h = -1;
 
-    /* 3: receiving, and no longer named the endpoint's receiver */
+    /* 3: receiving, and no longer waiting on the endpoint */
     eh = ep_create();
     ep = eh > 0 ? ep_from_handle(eh, HRIGHT_RECV, 0) : 0;
     h = ep ? kt_make(&tid) : -1;
@@ -2965,45 +2974,50 @@ int usermode_kill_test(void) {
     v = ep_install_handle(tid, ep, HRIGHT_RECV, 0);
     if (v <= 0) { thread_discard(tid); goto done; }
     struct ipc_recv_args *ra = (struct ipc_recv_args *)user_ptr(KT_ARGS);
-    ra->cap = 0; ra->buf = 0; ra->sender = 0; ra->ep_handle = v; ra->reserved = 0;
+    ra->cap = 0; ra->buf = 0; ra->info = KT_INFO; ra->ep_handle = v; ra->reserved = 0;
     kt_call(SYS_IPC_RECV, KT_ARGS, 0, 0, 0, 0);
     thread_start(tid);
-    if (!kt_kill(h, tid, 1) || ep->recv_tid != -1) goto done;
+    if (!kt_kill(h, tid, 1) || kobj_waiters(&ep->hdr) != 0) goto done;
     htab_close(tab, h); h = -1;
 
-    /* 4: calling, before anyone took the request: it is withdrawn */
+    /* 4: calling, before anyone took the request: it is withdrawn, and its
+       token with it */
     struct ipc_call_args *ca = (struct ipc_call_args *)user_ptr(KT_ARGS);
     *(volatile uint8_t *)user_ptr(KT_REQ) = 0x5A;
+    uint32_t calls0 = kobj_live(KOBJ_REPLY);
     h = kt_make(&tid);
     step = 4; if (h <= 0) goto done;
-    v = ep_install_handle(tid, ep, HRIGHT_SEND, 0);
+    v = ep_install_send(tid, ep, 0, HRIGHT_SEND, 0);
     if (v <= 0) { thread_discard(tid); goto done; }
     ca->req_len = 1; ca->reply_cap = 0; ca->req = KT_REQ; ca->reply = 0;
     ca->ep_handle = v; ca->reserved = 0;
     kt_call(SYS_IPC_CALL, KT_ARGS, 0, 0, 0, 0);
     thread_start(tid);
-    if (!kt_kill(h, tid, 1) || ep->caller_tid != -1) goto done;
+    if (!kt_kill(h, tid, 1) || ep_queued(ep) != 0 || kobj_live(KOBJ_REPLY) != calls0
+        || syscall_dispatch(SYS_OBJECT_WAIT, (uint32_t)eh, SIGNAL_EP_READABLE, 0, 0, 0) != E_TIMED_OUT) goto done;
     htab_close(tab, h); h = -1;
 
-    /* 5-6: calling, with the request taken: the transaction stays until the
-       reply, which finds the caller gone, and then the endpoint is free */
+    /* 5-6: calling, with the request taken: the call stays with its token
+       until the reply, which finds the caller gone and closes the token */
     h = kt_make(&tid);
     step = 5; if (h <= 0) goto done;
-    v = ep_install_handle(tid, ep, HRIGHT_SEND, 0);
+    v = ep_install_send(tid, ep, 0, HRIGHT_SEND, 0);
     if (v <= 0) { thread_discard(tid); goto done; }
     ca->ep_handle = v;
     kt_call(SYS_IPC_CALL, KT_ARGS, 0, 0, 0, 0);
     thread_start(tid);
     struct ipc_recv_args *tr = (struct ipc_recv_args *)user_ptr(KT_TARGS);
-    tr->cap = 0; tr->buf = 0; tr->sender = 0; tr->ep_handle = eh; tr->reserved = 0;
+    struct ipc_msg_info *ti = (struct ipc_msg_info *)user_ptr(KT_TINFO);
+    tr->cap = 1; tr->buf = KT_TBUF; tr->info = KT_TINFO; tr->ep_handle = eh; tr->reserved = 0;
     if (pt_wait(h, SIGNAL_PROCESS_ENDED, 50, 0) != E_TIMED_OUT
-        || syscall_dispatch(SYS_IPC_RECV, KT_TARGS, 0, 0, 0, 0) != 0) goto done;
-    if (!kt_kill(h, tid, 1) || ep->caller_tid == -1 || !ep->caller_gone) goto done;
+        || syscall_dispatch(SYS_IPC_RECV, KT_TARGS, 0, 0, 0, 0) != 1 || ti->reply <= 0) goto done;
+    int32_t tok = ti->reply;
+    if (!kt_kill(h, tid, 1) || kobj_live(KOBJ_REPLY) != calls0 + 1) goto done;
     struct ipc_reply_args *rp = (struct ipc_reply_args *)user_ptr(KT_TARGS);
-    rp->data = KT_REQ; rp->len = 1; rp->ep_handle = eh; rp->reserved = 0;
+    rp->data = KT_REQ; rp->len = 0; rp->token = tok; rp->reserved = 0;
     step = 6; if (syscall_dispatch(SYS_IPC_REPLY, KT_TARGS, 0, 0, 0, 0) != E_PEER_CLOSED
-                  || ep->caller_tid != -1 || ep->caller_gone
-                  || syscall_dispatch(SYS_IPC_REPLY, KT_TARGS, 0, 0, 0, 0) != E_INVALID_ARGS) goto done;
+                  || kobj_live(KOBJ_REPLY) != calls0
+                  || syscall_dispatch(SYS_IPC_REPLY, KT_TARGS, 0, 0, 0, 0) != E_BAD_HANDLE) goto done;
     htab_close(tab, h); h = -1;
 
     /* 7: reading the keyboard */
@@ -3168,20 +3182,25 @@ static int st_register(int32_t h) {
 /* The test thread receives on `eh` with room for `cap` bytes. */
 static int st_recv(int32_t eh, uint64_t cap) {
     struct ipc_recv_args *r = (struct ipc_recv_args *)user_ptr(KT_TARGS);
-    r->cap = cap; r->buf = ST_TBUF; r->sender = ST_TSEND; r->ep_handle = eh; r->reserved = 0;
+    r->cap = cap; r->buf = ST_TBUF; r->info = ST_TSEND; r->ep_handle = eh; r->reserved = 0;
     return syscall_dispatch(SYS_IPC_RECV, KT_TARGS, 0, 0, 0, 0);
 }
 
-static int st_reply(int32_t eh) {
+/* It answers the call behind the token it last received. */
+static int st_reply(void) {
     struct ipc_reply_args *r = (struct ipc_reply_args *)user_ptr(KT_TARGS);
-    r->data = KT_REQ; r->len = 1; r->ep_handle = eh; r->reserved = 0;
+    int32_t tok = ((const struct ipc_msg_info *)user_ptr(ST_TSEND))->reply;
+    r->data = KT_REQ; r->len = 0; r->token = tok; r->reserved = 0;
     return syscall_dispatch(SYS_IPC_REPLY, KT_TARGS, 0, 0, 0, 0);
 }
 
-/* What the test thread just received is a stop notice from `by` giving `ms`. */
-static int st_is_notice(int rc, const void *buf, const void *sender, uint32_t by, uint32_t ms) {
+/* What was just received is a stop notice from `by` giving `ms`: from the
+   kernel, with no badge and no token. */
+static int st_is_notice(int rc, const void *buf, const void *info, uint32_t by, uint32_t ms) {
     const struct stop_notice *n = buf;
-    return rc == (int)sizeof *n && *(const int32_t *)sender == IPC_SENDER_KERNEL
+    const struct ipc_msg_info *i = info;
+    return rc == (int)sizeof *n && i->sender == IPC_SENDER_KERNEL && i->reply == 0
+        && i->badge == 0 && i->len == sizeof *n && i->reply_cap == 0
         && n->kind == NOTICE_STOP && n->stopper == by && n->deadline_ms == ms
         && n->reserved == 0;
 }
@@ -3254,14 +3273,14 @@ int usermode_stop_test(void) {
     v = ep_install_handle(tid, ep, HRIGHT_RECV, 0);
     step = 3; if (v <= 0) { thread_discard(tid); goto done; }
     struct ipc_recv_args *ra = (struct ipc_recv_args *)user_ptr(KT_ARGS);
-    ra->cap = sizeof *note; ra->buf = ST_NOTE; ra->sender = ST_SENDER; ra->ep_handle = v; ra->reserved = 0;
-    *(volatile int32_t *)user_ptr(ST_SENDER) = 0;
+    ra->cap = sizeof *note; ra->buf = ST_NOTE; ra->info = ST_SENDER; ra->ep_handle = v; ra->reserved = 0;
+    ((volatile struct ipc_msg_info *)user_ptr(ST_SENDER))->sender = 0;
     st_call(0, SYS_PROCESS_STOP_ENDPOINT, (uint32_t)v, 0);
     st_call(1, SYS_SLEEP, 1, 0);
     st_call(2, SYS_IPC_RECV, KT_ARGS, 0);
     thread_start(tid);
     if (pt_wait(h, SIGNAL_PROCESS_ENDED, 50, 0) != E_TIMED_OUT || !thread_is_blocked(tid)
-        || ep->recv_tid != tid) goto done;
+        || kobj_waiters(&ep->hdr) != 1) goto done;
     t0 = timer_ticks();
     if (st_stop(h, 3000) != E_OK || proc_stops_armed() != 1) goto done;
     if (pt_wait(h, SIGNAL_PROCESS_ENDED, 3000, 0) != E_OK || timer_ticks() - t0 >= 1000
@@ -3309,7 +3328,7 @@ int usermode_stop_test(void) {
     step = 7; if (st_recv(eh, sizeof(struct stop_notice) - 1) != E_BUFFER_TOO_SMALL || !ep->stop_pending
                   || !st_is_notice(st_recv(eh, sizeof(struct stop_notice)), tbuf, tsend,
                                    (uint32_t)thread_current_pid(), 300)
-                  || ep->stop_pending || ep->taken) goto done;
+                  || ep->stop_pending || ep_queued(ep) != 0) goto done;
 
     /* 8: a second stop brings the deadline closer; a third does not put it
        back */
@@ -3373,27 +3392,30 @@ int usermode_stop_test(void) {
     htab_close(tab, h); h = -1;
     if (ep_in_use_count() != eps0 + 1) goto done;
 
-    /* 12-13: a notice ahead of a staged call: received first, and a reply
-       after it answers nothing - not the call behind it, which has not been
-       received. Then the call is received as usual. */
+    /* 12-13: a notice ahead of a queued call: received first, with no token
+       to answer, and the call stays queued behind it. Then the call is
+       received as usual, and a reply after its caller is killed finds it
+       gone. */
     ha = kt_make(&tida);
     step = 12; if (ha <= 0) goto done;
-    v = ep_install_handle(tida, ep, HRIGHT_SEND, 0);
+    v = ep_install_send(tida, ep, 0, HRIGHT_SEND, 0);
     if (v <= 0) { thread_discard(tida); goto done; }
     struct ipc_call_args *ca = (struct ipc_call_args *)user_ptr(KT_ARGS);
+    const struct ipc_msg_info *ti = tsend;
     *(volatile uint8_t *)user_ptr(KT_REQ) = 0x5A;
     ca->req_len = 1; ca->reply_cap = 0; ca->req = KT_REQ; ca->reply = 0;
     ca->ep_handle = v; ca->reserved = 0;
     kt_call(SYS_IPC_CALL, KT_ARGS, 0, 0, 0, 0);
     thread_start(tida);
-    if (pt_wait(ha, SIGNAL_PROCESS_ENDED, 50, 0) != E_TIMED_OUT || ep->caller_tid != tida
-        || st_reply(eh) != E_INVALID_ARGS || ep->replied || !thread_is_blocked(tida)) goto done;
+    if (pt_wait(ha, SIGNAL_PROCESS_ENDED, 50, 0) != E_TIMED_OUT || ep_queued(ep) != 1
+        || !thread_is_blocked(tida)) goto done;
     if (ep_post_stop(ep, 77, 5) != 0
-        || !st_is_notice(st_recv(eh, 64), tbuf, tsend, 77, 5) || ep->taken
-        || st_reply(eh) != E_INVALID_ARGS || ep->replied || !thread_is_blocked(tida)) goto done;
+        || !st_is_notice(st_recv(eh, 64), tbuf, tsend, 77, 5) || ep_queued(ep) != 1
+        || st_reply() != E_BAD_HANDLE || !thread_is_blocked(tida)) goto done;
     step = 13; if (st_recv(eh, 64) != 1 || *(const uint8_t *)tbuf != 0x5A
-                   || *(const int32_t *)tsend != thread_pid(tida) || !ep->taken) goto done;
-    if (!kt_kill(ha, tida, 1) || st_reply(eh) != E_PEER_CLOSED) goto done;
+                   || ti->sender != thread_pid(tida) || ti->reply <= 0 || ti->badge != 0
+                   || ti->len != 1 || ti->reply_cap != 0 || ep_queued(ep) != 0) goto done;
+    if (!kt_kill(ha, tida, 1) || st_reply() != E_PEER_CLOSED) goto done;
     htab_close(tab, ha); ha = -1;
 
     /* 14: nothing left behind, and nothing ended any other way */
@@ -3928,11 +3950,13 @@ int usermode_queue_test(void) {
                    || qt_wait(q, 0, 0) != E_INVALID_ARGS
                    || um_call(SYS_QUEUE_WAIT, 1u << 3, (uint32_t)q, USER_VLIMIT, 1, 0, 0) != E_BAD_ADDRESS
                    || kqueue_reg_count() != regs0 + 1) goto done;
-    /* an endpoint has no signals, even on a handle that may wait */
+    /* a send handle has no signals, even on a handle that may wait */
     eh = ep_create();
-    struct kobj *eo = eh > 0 ? htab_ref(tab, eh, KOBJ_ENDPOINT, 0, 0) : 0;
+    int32_t sh = eh > 0 ? ep_mint(eh, 0, HRIGHT_SEND) : -1;
+    struct kobj *eo = sh > 0 ? htab_ref(tab, sh, KOBJ_SEND, 0, 0) : 0;
     int32_t ew = eo ? htab_install(tab, eo, HRIGHT_WAIT, 0) : -1;
     if (eo) kobj_unref(eo);
+    if (sh > 0) htab_close(tab, sh);
     htab_close(tab, eh);
     eh = ew;
     step = 12; if (eh <= 0 || qt_reg(9999, t, SIGNAL_TIMER_FIRED, K2) != E_BAD_HANDLE
@@ -4001,6 +4025,299 @@ done:
     if (d > 0)  htab_close(tab, d);
     if (eh > 0) htab_close(tab, eh);
     if (j > 0)  htab_close(tab, j);
+    unmap_user_page(TEST_CODE_VIRT, phys);
+    return ok;
+}
+
+/* ---- IPC (Phase 1.3a) ----
+ * The test thread is the server, on an endpoint of its own; callers are
+ * ring-3 processes running user_blob_calls: two yields, then SYS_IPC_CALL
+ * with their own arguments, exiting with what it returned. Minting and its
+ * refusals; calls queued oldest first with their badges; a message that does
+ * not fit stays; replies in any order, one each; a reply too long or unreadable
+ * keeps its token; a token closed unanswered, and an endpoint whose server
+ * has gone, fail their callers; a call's bytes are charged to its caller's
+ * job; a queue wakes for a call; nothing is left behind. 1 = pass. */
+#define IT_ARGS(i)  (TEST_CODE_VIRT + 0xA00 + (i) * 0x40)   /* caller i's ipc_call_args */
+#define IT_REQ(i)   (TEST_CODE_VIRT + 0xB00 + (i) * 0x10)   /* its request */
+#define IT_REPLY(i) (TEST_CODE_VIRT + 0xC00 + (i) * 0x40)   /* its reply buffer */
+#define IT_RCAP     8                                       /* the reply it takes */
+#define IT_BIG      (TEST_CODE_VIRT + 0x400)                /* a reply buffer of 0x400 */
+#define IT_TARGS    (TEST_CODE_VIRT + 0xE00)   /* the test thread's recv and reply args */
+#define IT_TINFO    (TEST_CODE_VIRT + 0xE40)   /* its ipc_msg_info */
+#define IT_TBUF     (TEST_CODE_VIRT + 0xE80)   /* its receive buffer, 64 bytes */
+#define IT_DATA     (TEST_CODE_VIRT + 0xF00)   /* its reply bytes */
+
+/* A caller, `i` of the slots, in `j` (NULL: this thread's), calling through
+   `send` if given (an ep_send, installed as it is) or else a new send handle
+   on `ep` with `badge`: `req_len` bytes of IT_REQ(i), a reply of up to `rcap`
+   into `reply`. Started at once if `start`. The process handle, or <= 0. */
+static int32_t it_caller(struct endpoint *ep, struct kobj *send, uint64_t badge, uint32_t i,
+                         uint64_t req_len, uint64_t reply, uint64_t rcap,
+                         struct job *j, int start, int *tid) {
+    st_len = (uint32_t)(user_blob_calls_end - user_blob_calls_start);
+    if (st_len > KT_BLOB_MAX) return E_INTERNAL;
+    for (uint32_t k = 0; k < st_len; k++) st_image[k] = user_blob_calls_start[k];
+    int32_t h = pt_make_in(st_image, st_image + st_len + 3 * 6 * 8, tid, j);
+    if (h <= 0) return h;
+    int32_t v = send ? htab_install(thread_htab(*tid), send, HRIGHT_SEND, 0)
+                     : ep_install_send(*tid, ep, badge, HRIGHT_SEND, 0);
+    if (v <= 0) {
+        thread_discard(*tid);
+        htab_close(thread_htab(thread_current_id()), h);
+        return E_NO_RESOURCES;
+    }
+    struct ipc_call_args *a = (struct ipc_call_args *)user_ptr(IT_ARGS(i));
+    a->req_len = req_len; a->reply_cap = rcap; a->req = IT_REQ(i); a->reply = reply;
+    a->ep_handle = v; a->reserved = 0;
+    st_call(0, SYS_YIELD, 0, 0);
+    st_call(1, SYS_YIELD, 0, 0);
+    st_call(2, SYS_IPC_CALL, IT_ARGS(i), 0);
+    if (start) thread_start(*tid);
+    return h;
+}
+
+/* `n` calls are queued on `ep`, within a second. */
+static int it_queued(struct endpoint *ep, uint32_t n) {
+    for (int k = 0; k < 100; k++) {
+        if (ep_queued(ep) == n) return 1;
+        (void)thread_sleep_ms(10);
+    }
+    return 0;
+}
+
+/* `h` exits with `code`, the result of its call. */
+static int it_ends(int32_t h, int32_t code) {
+    struct process_info *pi = (struct process_info *)user_ptr(PT_INFO);
+    return pt_wait(h, SIGNAL_PROCESS_ENDED, 3000, 0) == E_OK && pt_info(h) == (int)sizeof *pi
+        && pi->ended == PROC_EXITED && pi->code == code;
+}
+
+static int it_recv(int32_t eh, uint64_t cap) {
+    struct ipc_recv_args *r = (struct ipc_recv_args *)user_ptr(IT_TARGS);
+    r->cap = cap; r->buf = IT_TBUF; r->info = IT_TINFO; r->ep_handle = eh; r->reserved = 0;
+    return syscall_dispatch(SYS_IPC_RECV, IT_TARGS, 0, 0, 0, 0);
+}
+
+static int it_reply(int32_t tok, uint64_t data, uint64_t len) {
+    struct ipc_reply_args *r = (struct ipc_reply_args *)user_ptr(IT_TARGS);
+    r->data = data; r->len = len; r->token = tok; r->reserved = 0;
+    return syscall_dispatch(SYS_IPC_REPLY, IT_TARGS, 0, 0, 0, 0);
+}
+
+static int it_mint(int32_t h, uint64_t badge, uint32_t rights) {
+    return um_call(SYS_EP_MINT, 1u << 1, (uint32_t)h, badge, rights, 0, 0);
+}
+
+/* SYS_OBJECT_WAIT only looks: is a call or a notice waiting? */
+static int it_readable(int32_t eh) {
+    return syscall_dispatch(SYS_OBJECT_WAIT, (uint32_t)eh, SIGNAL_EP_READABLE, 0, 0, 0) == E_OK;
+}
+
+/* OBJINFO_BASIC on `h` says `kind` and `rights`. */
+static int it_basic(int32_t h, uint32_t kind, uint32_t rights) {
+    const struct object_basic *ob = (const struct object_basic *)user_ptr(JT_INFO);
+    return jt_info_as(h, OBJINFO_BASIC, sizeof *ob) == (int)sizeof *ob
+        && ob->kind == kind && ob->rights == rights;
+}
+
+int usermode_ipc_test(void) {
+    paddr_t phys = map_user_page(TEST_CODE_VIRT);
+    if (!phys) return 0;
+    struct htab *tab = thread_htab(thread_current_id());
+    const struct ipc_msg_info *ti = (const struct ipc_msg_info *)user_ptr(IT_TINFO);
+    const uint8_t *tbuf = (const uint8_t *)user_ptr(IT_TBUF);
+    volatile uint8_t *data = (volatile uint8_t *)user_ptr(IT_DATA);
+    volatile struct queue_event *ev = (volatile struct queue_event *)user_ptr(QT_EV);
+    uint32_t live0 = proc_live(), faults0 = usermode_faults(), refused0 = syscall_refused_count();
+    uint32_t sends0 = kobj_live(KOBJ_SEND), calls0 = kobj_live(KOBJ_REPLY), jobs0 = job_live();
+    int eps0 = ep_in_use_count();
+    struct endpoint *ep = 0, *ep2 = 0;
+    struct kobj *s7o = 0;
+    int32_t eh = -1, e2 = -1, s7 = -1, d = -1, t = -1, q = -1, j = -1, tok = -1, tokb = -1;
+    int32_t ha = -1, hb = -1, hc = -1, hd = -1, he = -1;
+    int tida = -1, tidb = -1, tidc = -1, tidd = -1, tide = -1, step = 0, ok = 0;
+    struct job *jb;
+    struct ipc_call_args *ca = (struct ipc_call_args *)user_ptr(IT_ARGS(5));
+
+    eh = ep_create();
+    ep = eh > 0 ? ep_from_handle(eh, HRIGHT_RECV, 0) : 0;
+
+    /* 1: minting: the refusals, then a badged send handle with the rights
+       asked for, and nothing waiting on the endpoint yet */
+    step = 1; if (!ep || !it_basic(eh, OBJ_TYPE_ENDPOINT, HRIGHT_RECV | HRIGHT_WAIT | HRIGHT_DUPLICATE)
+                  || it_readable(eh)) goto done;
+    t = syscall_dispatch(SYS_TIMER_CREATE, 0, 0, 0, 0, 0);
+    d = syscall_dispatch(SYS_HANDLE_DUPLICATE, (uint32_t)eh, HRIGHT_WAIT, 0, 0, 0);
+    if (t <= 0 || d <= 0
+        || it_mint(9999, 7, HRIGHT_SEND) != E_BAD_HANDLE
+        || it_mint(t, 7, HRIGHT_SEND) != E_WRONG_TYPE
+        || it_mint(d, 7, HRIGHT_SEND) != E_ACCESS_DENIED
+        || it_mint(eh, 7, 0) != E_ACCESS_DENIED
+        || it_mint(eh, 7, HRIGHT_DUPLICATE) != E_ACCESS_DENIED
+        || it_mint(eh, 7, HRIGHT_SEND | HRIGHT_RECV) != E_ACCESS_DENIED
+        || it_mint(eh, 7, HRIGHT_SEND | HRIGHT_WAIT) != E_ACCESS_DENIED
+        || kobj_live(KOBJ_SEND) != sends0) goto done;
+    s7 = it_mint(eh, 0x7777000000000007ull, HRIGHT_SEND | HRIGHT_DUPLICATE);
+    s7o = s7 > 0 ? htab_ref(tab, s7, KOBJ_SEND, 0, 0) : 0;
+    if (!s7o || ((struct ep_send *)s7o)->badge != 0x7777000000000007ull
+        || !it_basic(s7, OBJ_TYPE_SEND, HRIGHT_SEND | HRIGHT_DUPLICATE)
+        || it_mint(s7, 7, HRIGHT_SEND) != E_WRONG_TYPE
+        || kobj_live(KOBJ_SEND) != sends0 + 1) goto done;
+
+    /* 2: refusals before anything queues: too long, and each handle the
+       wrong kind for its call */
+    ca->req_len = IPC_MSG_MAX + 1; ca->reply_cap = 0; ca->req = IT_REQ(5); ca->reply = 0;
+    ca->ep_handle = s7; ca->reserved = 0;
+    step = 2; if (syscall_dispatch(SYS_IPC_CALL, IT_ARGS(5), 0, 0, 0, 0) != E_OUT_OF_RANGE) goto done;
+    ca->req_len = 0; ca->ep_handle = eh;
+    if (syscall_dispatch(SYS_IPC_CALL, IT_ARGS(5), 0, 0, 0, 0) != E_BAD_HANDLE
+        || it_recv(s7, 64) != E_BAD_HANDLE || it_reply(eh, IT_DATA, 0) != E_BAD_HANDLE
+        || it_reply(s7, IT_DATA, 0) != E_BAD_HANDLE) goto done;
+    {
+        struct ipc_recv_args *r = (struct ipc_recv_args *)user_ptr(IT_TARGS);
+        r->cap = 64; r->buf = IT_TBUF; r->info = 0; r->ep_handle = eh; r->reserved = 0;
+        if (syscall_dispatch(SYS_IPC_RECV, IT_TARGS, 0, 0, 0, 0) != E_BAD_ADDRESS) goto done;
+    }
+    if (ep_queued(ep) != 0 || kobj_live(KOBJ_REPLY) != calls0) goto done;
+
+    /* 3: two callers, queued in the order they called: A through the minted
+       handle, B with badge 9. The endpoint is readable. */
+    *(volatile uint8_t *)user_ptr(IT_REQ(0)) = 'A';
+    ((volatile uint8_t *)user_ptr(IT_REQ(1)))[0] = 'B';
+    ((volatile uint8_t *)user_ptr(IT_REQ(1)))[1] = 'b';
+    ha = it_caller(ep, s7o, 0, 0, 1, IT_REPLY(0), IT_RCAP, 0, 1, &tida);
+    step = 3; if (ha <= 0 || !it_queued(ep, 1) || !it_readable(eh)) goto done;
+    hb = it_caller(ep, 0, 9, 1, 2, IT_REPLY(1), IT_RCAP, 0, 1, &tidb);
+    if (hb <= 0 || !it_queued(ep, 2) || kobj_live(KOBJ_REPLY) != calls0 + 2
+        || !thread_is_blocked(tida) || !thread_is_blocked(tidb)) goto done;
+
+    /* 4: no room for A's byte: told its length, given no token, and A
+       stays first */
+    step = 4; if (it_recv(eh, 0) != E_BUFFER_TOO_SMALL || ti->len != 1 || ti->reply != 0
+                  || ti->badge != 0x7777000000000007ull || ep_queued(ep) != 2) goto done;
+
+    /* 5-6: received in order, each with its badge, its caller, the reply
+       it takes and a token of its own that cannot be copied; then nothing
+       is waiting */
+    step = 5; if (it_recv(eh, 64) != 1 || tbuf[0] != 'A' || ti->badge != 0x7777000000000007ull
+                  || ti->sender != thread_pid(tida) || ti->len != 1 || ti->reply_cap != IT_RCAP
+                  || ti->reply <= 0 || ep_queued(ep) != 1 || !it_readable(eh)) goto done;
+    tok = ti->reply;
+    if (!it_basic(tok, OBJ_TYPE_REPLY, HRIGHT_REPLY)
+        || syscall_dispatch(SYS_HANDLE_DUPLICATE, (uint32_t)tok, HRIGHT_REPLY, 0, 0, 0) != E_ACCESS_DENIED) goto done;
+    step = 6; if (it_recv(eh, 64) != 2 || tbuf[0] != 'B' || tbuf[1] != 'b' || ti->badge != 9
+                  || ti->sender != thread_pid(tidb) || ti->reply <= 0 || ti->reply == tok
+                  || ep_queued(ep) != 0 || it_readable(eh)) goto done;
+    tokb = ti->reply;
+
+    /* 7: B answered first, while A waits; its token is spent */
+    data[0] = 'x'; data[1] = 'y'; data[2] = 'z';
+    step = 7; if (it_reply(tokb, IT_DATA, 3) != E_OK || !it_ends(hb, 3)) goto done;
+    {
+        const uint8_t *rb = (const uint8_t *)user_ptr(IT_REPLY(1));
+        if (rb[0] != 'x' || rb[1] != 'y' || rb[2] != 'z') goto done;
+    }
+    if (it_reply(tokb, IT_DATA, 3) != E_BAD_HANDLE || !thread_is_blocked(tida)) goto done;
+    tokb = -1;
+
+    /* 8: A's reply: too long for it, then unreadable, each keeping the
+       token; then one that fits */
+    step = 8; if (it_reply(tok, IT_DATA, IT_RCAP + 1) != E_BUFFER_TOO_SMALL
+                  || it_reply(tok, USER_VLIMIT, 2) != E_BAD_ADDRESS
+                  || !thread_is_blocked(tida) || kobj_live(KOBJ_REPLY) != calls0 + 1) goto done;
+    data[0] = 'o'; data[1] = 'k';
+    if (it_reply(tok, IT_DATA, 2) != E_OK || !it_ends(ha, 2)
+        || ((const uint8_t *)user_ptr(IT_REPLY(0)))[1] != 'k') goto done;
+    tok = -1;
+    if (kobj_live(KOBJ_REPLY) != calls0) goto done;
+
+    /* 9: a token closed unanswered fails its caller */
+    hc = it_caller(ep, 0, 0, 2, 0, IT_REPLY(2), IT_RCAP, 0, 1, &tidc);
+    step = 9; if (hc <= 0 || !it_queued(ep, 1) || it_recv(eh, 64) != 0 || ti->reply <= 0
+                  || ti->badge != 0) goto done;
+    if (htab_close(tab, ti->reply) != E_OK || !it_ends(hc, E_PEER_CLOSED)
+        || kobj_live(KOBJ_REPLY) != calls0) goto done;
+    htab_close(tab, hc); hc = -1;
+
+    /* 10: the server goes: a queued call fails, a later one is refused,
+       and the send handles keep only the slot */
+    e2 = ep_create();
+    ep2 = e2 > 0 ? ep_from_handle(e2, HRIGHT_RECV, 0) : 0;
+    step = 10; if (!ep2) goto done;
+    hd = it_caller(ep2, 0, 0, 3, 0, IT_REPLY(3), IT_RCAP, 0, 1, &tidd);
+    if (hd <= 0 || !it_queued(ep2, 1)) goto done;
+    he = it_caller(ep2, 0, 0, 4, 0, IT_REPLY(4), IT_RCAP, 0, 0, &tide);
+    if (he <= 0) goto done;
+    htab_close(tab, e2); e2 = -1;
+    if (ep2->active || ep_queued(ep2) != 0 || !it_ends(hd, E_PEER_CLOSED)) goto done;
+    thread_start(tide);
+    if (!it_ends(he, E_PEER_CLOSED) || kobj_live(KOBJ_REPLY) != calls0) goto done;
+    ep_put(ep2); ep2 = 0;
+
+    /* 11: a call's bytes are charged to its caller's job while it lasts,
+       and one past the job's budget is refused */
+    j = jt_create(0, 0x100, 0, 0);
+    jb = j > 0 ? jt_job(j) : 0;
+    step = 11; if (!jb || jb->mem_used != 0) goto done;
+    hc = it_caller(ep, 0, 0, 2, 1, IT_BIG, 0x200, jb, 1, &tidc);
+    if (hc <= 0 || !it_ends(hc, E_NO_MEMORY) || jb->mem_used != 0 || ep_queued(ep) != 0) goto done;
+    htab_close(tab, hc); hc = -1;
+    hc = it_caller(ep, 0, 0, 2, 1, IT_BIG, 0x80, jb, 1, &tidc);
+    if (hc <= 0 || !it_queued(ep, 1) || jb->mem_used != 0x80
+        || it_recv(eh, 64) != 1 || ti->reply_cap != 0x80) goto done;
+    if (it_reply(ti->reply, IT_DATA, 0) != E_OK || !it_ends(hc, 0) || jb->mem_used != 0) goto done;
+    htab_close(tab, hc); hc = -1;
+
+    /* 12: a queue registered for the endpoint is woken by a call */
+    q = syscall_dispatch(SYS_QUEUE_CREATE, 0, 0, 0, 0, 0);
+    step = 12; if (q <= 0 || qt_reg(q, eh, SIGNAL_EP_READABLE, 0x1234) != E_OK) goto done;
+    hc = it_caller(ep, 0, 0, 2, 0, IT_REPLY(2), IT_RCAP, 0, 1, &tidc);
+    if (hc <= 0 || qt_wait(q, 1, timer_now_ns() + 2000ull * TIMER_NS_PER_TICK) != 1
+        || ev[0].key != 0x1234 || !(ev[0].signals & SIGNAL_EP_READABLE)
+        || it_recv(eh, 64) != 0 || it_reply(ti->reply, IT_DATA, 0) != E_OK || !it_ends(hc, 0)) goto done;
+    htab_close(tab, q); q = -1;
+
+    /* 13: nothing left behind, and nothing ended any other way */
+    htab_close(tab, ha); ha = -1;
+    htab_close(tab, hb); hb = -1;
+    htab_close(tab, hc); hc = -1;
+    htab_close(tab, hd); hd = -1;
+    htab_close(tab, he); he = -1;
+    htab_close(tab, j); j = -1;
+    kobj_unref(s7o); s7o = 0;
+    htab_close(tab, s7); s7 = -1;
+    step = 13; if (proc_live() != live0 || usermode_faults() != faults0
+                   || syscall_refused_count() != refused0 || kobj_live(KOBJ_SEND) != sends0
+                   || kobj_live(KOBJ_REPLY) != calls0 || ep_in_use_count() != eps0 + 1
+                   || job_live() != jobs0) goto done;
+    ok = 1;
+
+done:
+    if (!ok) klog_u32("KTEST", SEV_ERR, "ipc test failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    /* A caller still there is killed, so none outlives the test. */
+    {
+        int32_t hs[5] = { ha, hb, hc, hd, he };
+        for (int k = 0; k < 5; k++) {
+            if (hs[k] <= 0) continue;
+            kt_kill_call(hs[k]);
+            pt_wait(hs[k], SIGNAL_PROCESS_ENDED, 3000, 0);
+            htab_close(tab, hs[k]);
+        }
+    }
+    (void)tidd; (void)tide;
+    if (tok > 0)  htab_close(tab, tok);
+    if (tokb > 0) htab_close(tab, tokb);
+    if (s7o) kobj_unref(s7o);
+    if (s7 > 0) htab_close(tab, s7);
+    if (d > 0)  htab_close(tab, d);
+    if (t > 0)  htab_close(tab, t);
+    if (q > 0)  htab_close(tab, q);
+    if (j > 0)  htab_close(tab, j);
+    if (ep2) ep_put(ep2);
+    if (e2 > 0) htab_close(tab, e2);
+    if (ep) ep_put(ep);
+    if (eh > 0) htab_close(tab, eh);
     unmap_user_page(TEST_CODE_VIRT, phys);
     return ok;
 }

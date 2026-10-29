@@ -19,6 +19,13 @@ static int decode_ipc_call(const uintptr_t *a) { return syscall_ipc_call((uint64
 static int decode_ipc_recv(const uintptr_t *a) { return syscall_ipc_recv((uint64_t)a[0]); }
 static int decode_ipc_reply(const uintptr_t *a) { return syscall_ipc_reply((uint64_t)a[0]); }
 static int decode_ep_create(const uintptr_t *a) { (void)a; return syscall_ep_create(); }
+static int decode_ep_mint(const uintptr_t *a) {
+#if SYSCALL_PAIRS
+    return syscall_ep_mint((int32_t)a[0], (uint64_t)((uint64_t)a[1] | (uint64_t)a[2] << 32), (uint32_t)a[3]);
+#else
+    return syscall_ep_mint((int32_t)a[0], (uint64_t)a[1], (uint32_t)a[2]);
+#endif
+}
 static int decode_handle_close(const uintptr_t *a) { return syscall_handle_close((int32_t)a[0]); }
 static int decode_handle_duplicate(const uintptr_t *a) { return syscall_handle_duplicate((int32_t)a[0], (uint32_t)a[1]); }
 static int decode_object_info(const uintptr_t *a) { return syscall_object_info((uint64_t)a[0]); }
@@ -207,6 +214,7 @@ const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_IPC_RECV] = decode_ipc_recv,
     [SYS_IPC_REPLY] = decode_ipc_reply,
     [SYS_EP_CREATE] = decode_ep_create,
+    [SYS_EP_MINT] = decode_ep_mint,
     [SYS_HANDLE_CLOSE] = decode_handle_close,
     [SYS_HANDLE_DUPLICATE] = decode_handle_duplicate,
     [SYS_OBJECT_INFO] = decode_object_info,

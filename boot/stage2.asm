@@ -61,7 +61,7 @@ stage2_start:
 ; We load it to 0x10000 (linear), a free low buffer.
 KERNEL_LOAD_LOW  equ 0x10000        ; temp buffer (segment 0x1000:0x0000)
 KERNEL_DEST_HIGH equ 0x100000       ; final physical location (1 MB)
-KERNEL_SECTORS   equ 1024           ; 512 KB of headroom for the kernel image.
+KERNEL_SECTORS   equ 1088           ; 544 KB of headroom for the kernel image.
                                     ;
                                     ; THIS IS A HARD CAP, NOT A HINT. The loop
                                     ; below reads exactly this many sectors; a
@@ -85,8 +85,11 @@ KERNEL_SECTORS   equ 1024           ; 512 KB of headroom for the kernel image.
                                     ;
                                     ; Must fit in LOW memory: the 0x10000 buffer
                                     ; lives below 1MB with the pmode stack at
-                                    ; 0x9F000, so 512 KB ends at 0x90000 and
-                                    ; leaves a 60 KB gap before the stack. BIOS
+                                    ; 0x9F000, so 544 KB ends at 0x98000 and
+                                    ; leaves a 28 KB gap before the stack.
+                                    ; 1088 is the last multiple of KERNEL_CHUNK
+                                    ; that clears the stack: the next raise
+                                    ; moves the load above 1 MB instead. BIOS
                                     ; int13h can't read this in one call (~127
                                     ; sector limit), so load_kernel loops in
                                     ; chunks. long.asm copies only each segment.s
@@ -94,7 +97,7 @@ KERNEL_SECTORS   equ 1024           ; 512 KB of headroom for the kernel image.
                                     ; sectors is harmless.
 KERNEL_CHUNK     equ 64             ; sectors per int13h call (<=127, BIOS-safe).
                                     ; 64*512 = 32 KB = 0x800 segment units/chunk.
-KERNEL_CHUNKS    equ (KERNEL_SECTORS / KERNEL_CHUNK)   ; 1024/64 = 16
+KERNEL_CHUNKS    equ (KERNEL_SECTORS / KERNEL_CHUNK)   ; 1088/64 = 17
 
 load_kernel:
     call find_boot_partition        ; read XBPT, point dap_kernel at the BOOT

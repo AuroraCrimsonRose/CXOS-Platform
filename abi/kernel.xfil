@@ -40,7 +40,7 @@ domain kernel
 /// mismatch. Declared in versions.json as `cxex-abi` and checked against this
 /// line; bump both, and the DevKit's stamp, in the one commit that changes the
 /// contract.
-const CXK_ABI_VERSION: u32 = 19
+const CXK_ABI_VERSION: u32 = 20
 
 /// ---- syscall numbers ----
 /// lifecycle 0x00-0x0F (no capability required)
@@ -55,10 +55,26 @@ syscall SYS_ARGS = 0x06 fn args_read(a: *args_info) -> i32      /// ebx = *args_
 /// It never goes back and never jumps; every deadline is a time on it.
 syscall SYS_CLOCK_MONOTONIC = 0x07 fn clock_monotonic(now: *u64) -> i32
 /// IPC + handles 0x10-0x1F
-syscall SYS_IPC_CALL = 0x10 fn ipc_call(a: *ipc_call_args) -> i32       /// ebx = *ipc_call_args -> reply length (blocks)
-syscall SYS_IPC_RECV = 0x11 fn ipc_recv(a: *ipc_recv_args) -> i32       /// ebx = *ipc_recv_args -> request length (blocks)
-syscall SYS_IPC_REPLY = 0x12 fn ipc_reply(a: *ipc_reply_args) -> i32    /// ebx = *ipc_reply_args -> 0
+/// ebx = *ipc_call_args, whose handle is a send handle (HRIGHT_SEND) -> the
+/// reply's length, once the server answers. Calls queue on the endpoint, oldest
+/// first. E_PEER_CLOSED: the endpoint's last receive handle closed, or the
+/// call's reply token closed unanswered. E_CANCELED: the caller is being killed.
+syscall SYS_IPC_CALL = 0x10 fn ipc_call(a: *ipc_call_args) -> i32
+/// ebx = *ipc_recv_args -> the message's length, once one waits: the oldest
+/// call, or a kernel notice first. A call comes with a reply token in
+/// ipc_msg_info.reply. A message longer than `cap` is E_BUFFER_TOO_SMALL and
+/// stays, with its length in ipc_msg_info.len.
+syscall SYS_IPC_RECV = 0x11 fn ipc_recv(a: *ipc_recv_args) -> i32
+/// ebx = *ipc_reply_args -> 0, and the token is closed. E_PEER_CLOSED: the
+/// caller has gone; the token is closed too. A reply longer than the caller's
+/// ipc_msg_info.reply_cap is E_BUFFER_TOO_SMALL, and the token stays.
+syscall SYS_IPC_REPLY = 0x12 fn ipc_reply(a: *ipc_reply_args) -> i32
 syscall SYS_EP_CREATE = 0x13 fn ep_create() -> i32                      /// create an endpoint -> RECV handle (GRANT_ENDPOINT)
+/// ebx = an endpoint handle (HRIGHT_RECV), ecx = badge, edx = rights (a
+/// subset of HRIGHT_SEND | HRIGHT_DUPLICATE, HRIGHT_SEND among them) -> a send
+/// handle whose calls arrive with that badge (ipc_msg_info.badge). A copy of
+/// it keeps the badge.
+syscall SYS_EP_MINT = 0x14 fn ep_mint(h: i32, badge: u64, rights: u32) -> i32
 syscall SYS_HANDLE_CLOSE = 0x16 fn handle_close(h: i32) -> i32          /// release a handle
 /// ebx = handle, ecx = rights (a subset of its own; needs HRIGHT_DUPLICATE) -> new handle
 syscall SYS_HANDLE_DUPLICATE = 0x17 fn handle_duplicate(h: i32, rights: u32) -> i32
@@ -89,9 +105,12 @@ syscall SYS_TIMER_CANCEL = 0x1C fn timer_cancel(h: i32) -> i32
 /// rights say what its holder may do with the object, and they only shrink:
 /// SYS_HANDLE_DUPLICATE can drop rights, never add one. Each object type
 /// defines its own (kernel/object/htab.h).
-const HRIGHT_SEND: u32 = 0x1u        /// endpoint: ipc_call through it
-/// endpoint: ipc_recv and ipc_reply on it; file: FOPEN_READ, FOPEN_WRITE
+const HRIGHT_SEND: u32 = 0x1u        /// send handle: ipc_call through it
+/// endpoint: ipc_recv on it, SYS_EP_MINT from it; file: FOPEN_READ, FOPEN_WRITE
 const HRIGHT_RECV: u32 = 0x2u
+/// reply token: ipc_reply through it. The only right a token has: it cannot
+/// be copied, so a call is answered once.
+const HRIGHT_REPLY: u32 = 0x1u
 /// process: OBJINFO_PROCESS, how it is and how it ended; job: OBJINFO_JOB
 const HRIGHT_INSPECT: u32 = 0x1u
 const HRIGHT_KILL: u32 = 0x2u        /// process: SYS_PROCESS_KILL; job: SYS_JOB_KILL
@@ -125,6 +144,10 @@ const SIGNAL_TIMER_FIRED: u32 = 0x1u
 /// queue: a key is ready. Cleared when a wait takes the last one, or the last
 /// ready one is unregistered.
 const SIGNAL_QUEUE_READY: u32 = 0x1u
+/// endpoint: a call or a kernel notice waits for ipc_recv, or the endpoint
+/// has closed (ipc_recv then fails at once). Cleared when the last is
+/// received or withdrawn.
+const SIGNAL_EP_READABLE: u32 = 0x1u
 /// A deadline that never comes (SYS_OBJECT_WAIT): a wait with no limit.
 /// Deadlines are nanoseconds on the monotonic clock, so this is 292 years
 /// after boot.
@@ -482,9 +505,12 @@ struct clock_info {
 /// needs to wait longer than an hour in a single call.
 const SLEEP_MAX_MS: u32 = 3600000u   /// one hour
 
-/// IPC is synchronous: ipc_call blocks the caller until the owner ipc_replies.
-/// Messages are bounded (<= one page) and copied through the kernel. The message
-/// schema is defined by the executive; the kernel just moves bytes.
+/// IPC: ipc_call blocks the caller until the server answers its reply token,
+/// in whatever order the server answers its calls. A message or a reply is at
+/// most IPC_MSG_MAX bytes, copied through a kernel buffer charged to the
+/// caller's job while the call lasts. The message schema is the interface's;
+/// the kernel just moves bytes.
+const IPC_MSG_MAX: u32 = 65536
 
 /// SYS_OBJECT_INFO: what one of the caller's handles names. OBJINFO_BASIC
 /// needs no right and no grant: it describes only what the caller already
@@ -499,6 +525,8 @@ const OBJ_TYPE_PROCESS: u32 = 4      /// 3 is the kernel self-tests' own
 const OBJ_TYPE_JOB: u32 = 5
 const OBJ_TYPE_TIMER: u32 = 6
 const OBJ_TYPE_QUEUE: u32 = 7
+const OBJ_TYPE_SEND: u32 = 8         /// a send handle's object: an endpoint and a badge
+const OBJ_TYPE_REPLY: u32 = 9        /// a reply token
 
 /// Registrations one queue holds at most (SYS_QUEUE_REGISTER).
 const QUEUE_REGISTER_MAX: u32 = 64
@@ -576,18 +604,26 @@ struct ipc_call_args {
     reply_cap: u64
     req: u64        /// request bytes
     reply: u64      /// buffer the reply is copied into
-    ep_handle: i32  /// a SEND endpoint handle (the broker channel)
+    ep_handle: i32  /// a send handle (HRIGHT_SEND), as the broker channel is
     reserved: u32
 }
 struct ipc_recv_args {
     cap: u64
-    buf: u64        /// request copied here
-    sender: u64     /// where the caller's pid is written (an i32), or 0
-    ep_handle: i32  /// a RECV endpoint handle (owner side)
+    buf: u64        /// the message is copied here
+    info: u64       /// where an ipc_msg_info is written; never 0
+    ep_handle: i32  /// an endpoint handle (HRIGHT_RECV)
     reserved: u32
 }
-/// ipc_recv's sender for a message from the kernel itself, not a call: no pid
-/// is negative. There is no caller, so it takes no ipc_reply.
+/// What ipc_recv says about the message beside its bytes.
+struct ipc_msg_info {
+    badge: u64      /// the badge of the send handle it came through; 0 for a notice
+    len: u64        /// its length, also when it did not fit
+    reply_cap: u64  /// the longest reply the caller takes; 0 for a notice
+    sender: i32     /// the caller's pid, informational; IPC_SENDER_KERNEL for a notice
+    reply: i32      /// the call's reply token (HRIGHT_REPLY); 0 for a notice, or when it did not fit
+}
+/// ipc_msg_info.sender for a message from the kernel itself, not a call: no
+/// pid is negative. There is no caller, so it takes no ipc_reply.
 const IPC_SENDER_KERNEL: i32 = -1
 /// stop_notice.kind
 const NOTICE_STOP: u32 = 1
@@ -602,7 +638,7 @@ struct stop_notice {
 struct ipc_reply_args {
     data: u64       /// reply bytes
     len: u64
-    ep_handle: i32  /// the RECV endpoint just received on
+    token: i32      /// the call's reply token, from ipc_msg_info.reply
     reserved: u32
 }
 

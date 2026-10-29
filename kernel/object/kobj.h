@@ -43,6 +43,8 @@ enum kobj_type {
     KOBJ_JOB      = 5,   /* job (cpu/job.c) */
     KOBJ_TIMER    = 6,   /* timer (object/ktimer.c) */
     KOBJ_QUEUE    = 7,   /* queue (object/kqueue.c) */
+    KOBJ_SEND     = 8,   /* send handle: an endpoint and a badge (cpu/ipc.c) */
+    KOBJ_REPLY    = 9,   /* reply token: one call (cpu/ipc.c) */
     KOBJ_TYPE_MAX
 };
 

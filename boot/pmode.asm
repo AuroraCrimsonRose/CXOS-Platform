@@ -34,7 +34,7 @@ pmode_entry:
     mov ss, ax
     mov esp, 0x9F000             ; 32-bit stack just below video RAM (0xA0000).
                                  ; Kept clear of the kernel load buffer, which
-                                 ; ends at 0x50000 (256KB from 0x10000).
+                                 ; ends at 0x98000 (544 KB from 0x10000).
 
     ; now that DS is flat (4GB limit), the VGA marker write is safe. If this
     ; bright-white 'P' appears at the top-right, 32-bit mode is fully live.

@@ -27,6 +27,7 @@ int syscall_ipc_call(uint64_t a);               /* SYS_IPC_CALL */
 int syscall_ipc_recv(uint64_t a);               /* SYS_IPC_RECV */
 int syscall_ipc_reply(uint64_t a);              /* SYS_IPC_REPLY */
 int syscall_ep_create(void);                    /* SYS_EP_CREATE */
+int syscall_ep_mint(int32_t h, uint64_t badge, uint32_t rights); /* SYS_EP_MINT */
 int syscall_handle_close(int32_t h);            /* SYS_HANDLE_CLOSE */
 int syscall_handle_duplicate(int32_t h, uint32_t rights); /* SYS_HANDLE_DUPLICATE */
 int syscall_object_info(uint64_t a);            /* SYS_OBJECT_INFO */
@@ -99,7 +100,7 @@ int syscall_file_unlock(int32_t h, uint64_t start, uint64_t len); /* SYS_FILE_UN
  * before looking it up, and one that lands in a hole finds no decoder. */
 #define SYSCALL_ARGS            5
 #define SYSCALL_TABLE_SIZE      178
-#define SYSCALL_COUNT           78
+#define SYSCALL_COUNT           79
 
 /* An argument register is as wide as the machine's: 32 bits on x86-32, where a
  * u64 takes a register pair, and 64 on x86-64, where it takes one. */

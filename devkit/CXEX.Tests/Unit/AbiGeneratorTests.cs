@@ -142,7 +142,7 @@ public class AbiGeneratorTests
 
         Assert.Equal("u64", T("spawn_args", "image"));        // a user address, uint64_t since ABI 12
         Assert.Equal("i32", T("spawn_args", "broker_endpoint")); // int
-        Assert.Equal("u64", T("ipc_recv_args", "sender"));    // an address too (ABI 12)
+        Assert.Equal("u64", T("ipc_recv_args", "info"));      // an address too (ABI 12; `sender` until ABI 20)
         Assert.Equal("[64]u8", T("file_stat", "name"));       // char[FILE_NAME_MAX]
         Assert.Equal(new[] { "x", "y", "buttons", "seq" },    // int32_t x, y; - one declaration, two fields
                      S("mouse_state").Fields.Select(f => f.Name));

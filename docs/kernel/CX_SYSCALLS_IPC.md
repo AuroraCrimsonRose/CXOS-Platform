@@ -20,7 +20,7 @@
 | Devices | Drawing (`SYS_FB_DRAW_TEXT`), keyboard and mouse are syscalls; input needs no capability | The kernel draws pixels; any process can read another's keys |
 | Arguments | A fixed page at `USER_ARGS_BASE` | An x86-32 address in the ABI |
 | Errors | 15 codes | No timeout, peer-closed, wrong-type or rights-denied distinction |
-| IPC | Synchronous, one page copied, one call in flight per endpoint; the executive defines messages informally | No handles in messages, no shared memory, no types |
+| IPC | Calls queue with reply tokens and badges, up to 64 KiB each way (ABI 20, §7); the executive defines messages informally | No handles in messages, no shared memory, no types |
 | Definition | Since step 6a1, `abi/kernel.xfil`: `cxk_abi.h`, the X prelude's constants and structures, and its plain syscall wrappers are generated from it (§9.5). The prelude's helpers are by hand. Since 6a3a every image records the ABI hash and the loader compares it | The interface it describes is still this table's |
 
 The good parts stay: user copies that validate and recover from faults
@@ -322,6 +322,28 @@ no process. A job lives while a handle, a process or a job below it holds it.
 `ipc_send(send, msg, handles)` (one way), `ipc_receive(recv, buf, handles,
 deadline)` (returns a reply token and the badge), `ipc_reply(token, msg,
 handles)`.
+
+*Queued calls, ABI 20 (Phase 1.3a):* `SYS_EP_CREATE` gives the receive handle
+(`HRIGHT_RECV`, `HRIGHT_WAIT`, `HRIGHT_DUPLICATE`). Callers hold **send
+handles**, their own object (`OBJ_TYPE_SEND`), which keep the endpoint but no
+handle on it: `SYS_EP_MINT(h, badge, rights)` (`HRIGHT_RECV`) makes one, with
+rights from `HRIGHT_SEND | HRIGHT_DUPLICATE` only, and spawn gives the child
+one with badge 0 for its broker. `SYS_IPC_CALL` (`HRIGHT_SEND`; anything else is
+`E_BAD_HANDLE`) queues the call in order, up to `IPC_MSG_MAX` (64 KiB) each
+way; its buffer, the larger of request and reply capacity, is charged to the
+caller's job (`E_NO_MEMORY` past the limit). `SIGNAL_EP_READABLE` is set while
+a call or a stop notice waits, and when the endpoint closes. `SYS_IPC_RECV`
+fills an `ipc_msg_info` (badge, length, reply capacity, sender pid, reply
+token) and gives the token, a handle with `HRIGHT_REPLY` (`OBJ_TYPE_REPLY`). A
+call longer than the buffer is `E_BUFFER_TOO_SMALL` with the info filled and
+no token; it stays first. `SYS_IPC_REPLY(token)` answers in any order and
+closes the token; a reply past the capacity is `E_BUFFER_TOO_SMALL` and a bad
+buffer `E_BAD_ADDRESS`, both keeping the token. Closing a token unanswered
+fails its caller with `E_PEER_CLOSED`; closing the receive handle fails every
+queued call and every later one the same way. A killed caller's queued call
+leaves the queue; a taken one is answered into nothing (`E_PEER_CLOSED` to
+the server). A stop notice comes first, as before, from `IPC_SENDER_KERNEL`
+with no token.
 
 **Streams and files:**
 `pipe_create(size)`, `io_read(h, buf, offset)`, `io_write(h, buf, offset)`
@@ -706,7 +728,8 @@ generalised.
 - **Handles move** by default; a copy needs the duplicate right, and rights
   can only shrink in transit (XNU `ipc_kmsg_copyin_port_descriptor`).
 - **Reply tokens, badges, several calls in flight, priority passed through
-  calls:** as in `kernel/CX_KERNEL_PLAN.md` §6.
+  calls:** as in `kernel/CX_KERNEL_PLAN.md` §6. The first three are built
+  (ABI 20, §7).
 - **Transport errors are syscall results** (`E_PEER_CLOSED`, `E_TIMED_OUT`);
   **application errors are part of the reply type** (`result<T, E>`).
 - **Events** (`event closed()` above) are one-way messages from server to
