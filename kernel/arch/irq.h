@@ -49,6 +49,11 @@ uint32_t irq_msi_data(uint8_t vector);
    process can be ended. */
 void set_user_fault_hook(void (*hook)(struct registers *));
 
+/* An interrupt taken in user mode calls this once it has been handled (and
+   any switch it caused has come back), just before the return to user mode:
+   the safe point where a process being killed leaves. */
+void set_user_irq_return_hook(void (*hook)(void));
+
 /* Which exception or interrupt a frame records, for a log line. */
 uint32_t irq_frame_vector(const struct registers *r);
 

@@ -272,19 +272,50 @@ void thread_set_space(int id, paddr_t pd_phys) {
     if (p) p->pd_phys = pd_phys;
 }
 
+static inline int killing(const struct thread *t) { return t->proc && t->proc->killing; }
+
+/* BLOCKED unless its process is being killed, with interrupts off from the
+   check to the state, as proc_kill holds them from `killing` to the wakes: a
+   switch between the two would let a kill find this thread still RUNNING,
+   wake nobody, and leave it blocked for good once it got back. */
+static int block_unless_killed(void) {
+    uint32_t f = irq_save();
+    int go = !killing(self());
+    if (go) self()->state = THREAD_BLOCKED;
+    irq_restore(f);
+    return go;
+}
+
 /* Block the current thread (e.g. waiting on an IPC reply) and switch away.
    Returns once thread_unblock() has made it runnable and it is scheduled
-   again. Callers must ensure another thread is runnable (the IPC rendezvous
-   always unblocks its counterpart before blocking). */
+   again. It used to be a bare yield, which said its callers must leave
+   another thread runnable. An IPC receiver with no caller does not: yield
+   came straight back, the receive loop blocked again, and with interrupts
+   off for the call no tick could wake anyone - a machine whose only other
+   thread slept hung (seen in 1.1b's kill test). thread_wait idles instead. */
 void thread_block(void) {
-    if (!initialized) return;
-    self()->state = THREAD_BLOCKED;
-    yield();   /* yield leaves a BLOCKED thread alone; picks another */
+    thread_wait();
+}
+
+int thread_killed(void) { return initialized && killing(self()); }
+
+void sched_wake_process(struct proc *p) {
+    for (uint32_t i = 0; i < tids.cap; i++) {
+        struct thread *t = th((int)i);
+        if (!t || t->proc != p || t->state != THREAD_BLOCKED) continue;
+        t->sleeping = 0;
+        t->state    = THREAD_READY;
+    }
+}
+
+int thread_is_blocked(int id) {
+    struct thread *t = live(id);
+    return t && t->state == THREAD_BLOCKED;
 }
 
 void thread_wait(void) {
     if (!initialized) return;
-    self()->state = THREAD_BLOCKED;
+    if (!block_unless_killed()) return;
     for (;;) {
         yield();
         if (self()->state != THREAD_BLOCKED) break;  /* woken */
@@ -320,7 +351,10 @@ void thread_block_prepare(uint32_t ms) {
        at a time, a tick landing between `sleeping` and `state` found a thread
        already due but still RUNNING: it cleared `sleeping` and left the state
        alone, the thread then blocked itself, and nothing would ever wake it.
-       A 1 ms sleep is due at the very next tick, so the window was real. */
+       A 1 ms sleep is due at the very next tick, so the window was real.
+       Not at all for a thread being killed: thread_block_finish then
+       returns at once. */
+    if (killing(self())) return;
     if (ms) {
         self()->wake_tick = timer_ticks() + ms;
         self()->sleeping  = 1;

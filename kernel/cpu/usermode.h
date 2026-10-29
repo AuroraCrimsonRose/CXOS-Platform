@@ -124,6 +124,7 @@ int  usermode_net_test(void);
 /* The background console and SYS_LOG_READ (see usermode.c). 1 = pass. */
 int  usermode_log_test(void);
 int  usermode_process_test(void);   /* process handles, SYS_OBJECT_WAIT, how it ended */
+int  usermode_kill_test(void);      /* SYS_PROCESS_KILL: each wait, the safe points */
 
 /* register the ring-3 fault handler so user faults kill the process, not the
    kernel. call once at boot after the scheduler is up. */
@@ -133,6 +134,13 @@ void usermode_register_fault_handler(void);
    SYS_EXIT. A SYS_EXIT can pass the same number; usermode_faults() tells them
    apart. */
 #define USERMODE_FAULTED E_BAD_ADDRESS
+/* And when its process was killed (proc_kill). */
+#define USERMODE_KILLED  E_CANCELED
+
+/* A safe point: if the current thread's process is being killed, back out of
+   enter_usermode with USERMODE_KILLED, and this does not return. The syscall
+   gate calls it on its way out, and so does an interrupt taken in ring 3. */
+void usermode_kill_point(void);
 
 /* Ring-3 faults taken since boot, for the self-tests. */
 uint32_t usermode_faults(void);

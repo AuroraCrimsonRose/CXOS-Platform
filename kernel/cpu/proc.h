@@ -62,6 +62,10 @@ struct proc {
     uint32_t    end_vector; /* PROC_CRASHED */
     uint64_t    end_ip;     /* PROC_CRASHED */
     uint64_t    end_addr;   /* PROC_CRASHED by a page fault */
+    uint32_t    end_killer; /* PROC_KILLED: the pid that asked */
+    /* Set by proc_kill: its threads leave at their next safe point, and none
+       of them blocks again (cpu/sched.h, thread_killed). */
+    int         killing;
 };
 
 /* Register the type and make the cache. Once, before the first proc_create. */
@@ -95,6 +99,13 @@ void proc_out_flush(struct proc *p);
    PROC_NOT_STARTED. Waiters see it once the last thread has gone. */
 void proc_note_exit(struct proc *p, int32_t code);
 void proc_note_crash(struct proc *p, uint32_t vector, uint64_t ip, uint64_t addr);
+
+/* End `p` for the process `killer` (SYS_PROCESS_KILL). Noted PROC_KILLED at
+   once, so a way out noted later loses; then every thread that is blocked is
+   woken, and each leaves at its next safe point: back out of the wait with
+   E_CANCELED, then on the way to ring 3 (usermode_kill_point). Returns before
+   any of them has gone. A process with no thread running is left as it is. */
+void proc_kill(struct proc *p, int killer);
 
 /* Drop a reference taken by proc_create (or kobj_ref). */
 void proc_put(struct proc *p);

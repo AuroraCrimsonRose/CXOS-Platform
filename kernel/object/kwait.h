@@ -35,8 +35,9 @@ struct kwaiter {
 void kobj_signal(struct kobj *o, uint32_t bits);
 
 /* Wait until any of `want` is set in o's signals. `timeout_ms` 0 only looks;
-   KWAIT_FOREVER has no limit. Returns 0 if one is set, or E_TIMED_OUT; either
-   way *seen (if given) is the signal word as last read. The caller holds a
+   KWAIT_FOREVER has no limit. Returns 0 if one is set, E_TIMED_OUT, or
+   E_CANCELED when the caller's process is being killed; either way *seen (if
+   given) is the signal word as last read. The caller holds a
    reference on `o` and has checked `want` against the type. */
 #define KWAIT_FOREVER 0xFFFFFFFFu
 int kobj_wait(struct kobj *o, uint32_t want, uint32_t timeout_ms, uint32_t *seen);

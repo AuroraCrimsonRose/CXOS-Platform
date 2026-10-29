@@ -15,7 +15,7 @@
  * hash it was built against and the loader refuses one that differs, so a
  * program never runs against numbers or layouts it was not compiled for.
  */
-#define CXK_ABI_HASH { 0xd7, 0x50, 0x35, 0xdd, 0x9c, 0x48, 0x90, 0x83, 0xcd, 0x22, 0xd6, 0x97, 0x3c, 0xf3, 0x90, 0x24, 0x7a, 0x9f, 0x40, 0x69, 0x2a, 0xea, 0xf3, 0x62, 0xea, 0x2d, 0x7d, 0x2d, 0xb6, 0x68, 0xb1, 0x5c }
+#define CXK_ABI_HASH { 0x9b, 0x1b, 0x31, 0xe2, 0x7a, 0x82, 0x50, 0x33, 0x11, 0x97, 0xbd, 0x6a, 0x04, 0xa6, 0xf6, 0xde, 0xea, 0x6e, 0xed, 0x06, 0xb8, 0x45, 0x0d, 0xa0, 0x02, 0xf3, 0x60, 0x41, 0xc7, 0x33, 0x10, 0xcf }
 
 /*
  * CXK ABI v1 - the PUBLIC contract shared by the kernel, the .xoex executive,
@@ -44,7 +44,7 @@
  * line; bump both, and the DevKit's stamp, in the one commit that changes the
  * contract.
  */
-#define CXK_ABI_VERSION          13
+#define CXK_ABI_VERSION          14
 
 /*
  * ---- syscall numbers ----
@@ -92,6 +92,7 @@
 
 /* process: OBJINFO_PROCESS, how it is and how it ended */
 #define HRIGHT_INSPECT           0x1u
+#define HRIGHT_KILL              0x2u           /* process: SYS_PROCESS_KILL */
 
 /*
  * Generic rights, which mean the same on every type, count down from the top
@@ -189,10 +190,11 @@
 #define SYS_FB_SET_FONT          0x46
 
 /*
- * process 0x70-0x7F (privileged)
- * Both return a process handle with HRIGHT_WAIT, HRIGHT_INSPECT and
- * HRIGHT_DUPLICATE, not a pid: the process is freed once it has ended and the
- * last handle on it is closed, and nobody reaps it. Its pid is OBJINFO_PROCESS.
+ * process 0x70-0x7F (privileged, but for SYS_PROCESS_KILL)
+ * Both return a process handle with HRIGHT_WAIT, HRIGHT_INSPECT, HRIGHT_KILL
+ * and HRIGHT_DUPLICATE, not a pid: the process is freed once it has ended and
+ * the last handle on it is closed, and nobody reaps it. Its pid is
+ * OBJINFO_PROCESS.
  */
 #define SYS_SPAWN                0x70           /* ebx = *spawn_args (GRANT_SPAWN) -> process handle */
 
@@ -201,6 +203,17 @@
  * in the struct are ignored)
  */
 #define SYS_EXEC_PATH            0x72
+
+/*
+ * ebx = process handle (HRIGHT_KILL; the right is the authority, no grant is
+ * needed) -> 0. Each of its threads ends at its next safe point: on its way
+ * back to ring 3, or woken from any wait (an IPC call or receive, a file
+ * lock, the keyboard, a sleep, an object wait). It ends PROC_KILLED, with the
+ * caller's pid, unless it had already noted another way out. A process that
+ * has ended already is 0 and unchanged. Returns before it has ended: wait for
+ * SIGNAL_PROCESS_ENDED.
+ */
+#define SYS_PROCESS_KILL         0x71
 
 /* memory 0x80-0x8F (unprivileged, quota-bounded) */
 #define SYS_VM_MAP               0x80           /* ebx = *vm_map_args -> 0, with addr and granted filled in */
@@ -478,6 +491,7 @@ struct clock_info {
 
 /* it never reached ring 3: the loader refused the image, or no memory */
 #define PROC_NOT_STARTED         3
+#define PROC_KILLED              4              /* SYS_PROCESS_KILL; `killer` is who */
 
 struct process_info {
     uint64_t ip;                                /* PROC_CRASHED: where */
@@ -486,6 +500,8 @@ struct process_info {
     uint32_t ended;                             /* PROC_* */
     int32_t code;                               /* PROC_EXITED */
     uint32_t vector;                            /* PROC_CRASHED: the exception, or PROC_VECTOR_REFUSED */
+    uint32_t killer;                            /* PROC_KILLED: the pid that asked, as it was then */
+    uint32_t reserved;                          /* 0 */
 };
 
 /*
@@ -822,7 +838,7 @@ struct log_entry {
 CXK_ABI_STATIC_ASSERT(sizeof(struct args_info) == 16, "ABI layout: args_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct spawn_args) == 48, "ABI layout: spawn_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct clock_info) == 8, "ABI layout: clock_info");
-CXK_ABI_STATIC_ASSERT(sizeof(struct process_info) == 32, "ABI layout: process_info");
+CXK_ABI_STATIC_ASSERT(sizeof(struct process_info) == 40, "ABI layout: process_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct object_info_args) == 24, "ABI layout: object_info_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct object_basic) == 20, "ABI layout: object_basic");
 CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_call_args) == 40, "ABI layout: ipc_call_args");

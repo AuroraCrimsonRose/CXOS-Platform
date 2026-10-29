@@ -38,6 +38,7 @@ global syscall64_entry
 global syscall_trapped
 extern syscall_dispatch     ; int syscall_dispatch(uint32_t num, uintptr_t a1, ..., uintptr_t a5)
 extern syscall_check_origin ; void syscall_check_origin(uint32_t num, uintptr_t ip)
+extern usermode_kill_point  ; void usermode_kill_point(void)
 extern gdt64_tss            ; gdt.c
 
 ; ---------------------------------------------------------------------------
@@ -160,6 +161,12 @@ syscall64_entry:
     movsxd rax, eax          ; an error is negative in all 64 bits
 
     cli                      ; a call that blocked can come back with IF set
+    ; The safe point on the way out: a process being killed leaves through
+    ; return_to_kernel here, with nothing of its own held. The result waits in
+    ; the alignment slot, which keeps the call aligned as dispatch's was.
+    mov [rsp], rax
+    call usermode_kill_point
+    mov rax, [rsp]
     add rsp, 8
     pop r10
     pop r9
@@ -533,6 +540,35 @@ user_blob_exit_start:
     call rax
     ud2
 user_blob_exit_end:
+
+; user_blob_call: one system call, which must never come back. The number and
+; the five arguments are six qwords copied in just past the blob (the kill
+; self-test, usermode_kill_test, puts a process in each kind of wait with it),
+; read RIP-relative so the copy finds its own. A kill noted PROC_KILLED before
+; the process left, so its note cannot show a thread that ran on in ring 3
+; past its safe point; the ud2 it would reach can (usermode_faults).
+global user_blob_call_start, user_blob_call_end
+user_blob_call_start:
+    mov r12, rsi             ; the system page
+    lea rbx, [rel user_blob_call_end]
+    mov eax, [rbx]
+    mov rdi, [rbx + 8]
+    mov rsi, [rbx + 16]
+    mov rdx, [rbx + 24]
+    mov r10, [rbx + 32]
+    mov r8,  [rbx + 40]
+    imul eax, eax, SYSPAGE_STUB
+    add rax, r12
+    call rax
+    ud2
+user_blob_call_end:
+
+; user_blob_loop: never calls the kernel; only an interrupt reaches it.
+global user_blob_loop_start, user_blob_loop_end
+user_blob_loop_start:
+    pause
+    jmp user_blob_loop_start
+user_blob_loop_end:
 
 ; user_sysp_call / user_sysp_write: as on x86-32, with
 ; the base in rsi. It is kept in r12, since rsi is the second argument.

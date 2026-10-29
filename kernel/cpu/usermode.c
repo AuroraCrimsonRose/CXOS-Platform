@@ -521,6 +521,7 @@ int syscall_object_info(uint64_t a) {
             pi.vector = done ? p->end_vector : 0;
             pi.ip     = done ? p->end_ip : 0;
             pi.addr   = done ? p->end_addr : 0;
+            pi.killer = done ? p->end_killer : 0;
         }
         kobj_unref(o);
         if (rc != E_OK) return rc;
@@ -557,6 +558,33 @@ int syscall_object_wait(int32_t h, uint32_t signals, uint32_t timeout_ms, uint64
        the page may have been unmapped while this thread slept. */
     if (seen && user_copy_out(seen, &s, sizeof s) != 0) return E_BAD_ADDRESS;
     return rc;
+}
+
+int syscall_process_kill(int32_t h) {
+    /* Unprivileged: the handle's HRIGHT_KILL is the authority. */
+    struct htab_info hi;
+    struct kobj *o = htab_ref(thread_htab(thread_current_id()), h, KOBJ_NONE, 0, &hi);
+    if (!o) return E_BAD_HANDLE;
+    int rc = o->type != KOBJ_PROCESS     ? E_WRONG_TYPE
+           : !(hi.rights & HRIGHT_KILL)  ? E_ACCESS_DENIED : E_OK;
+    if (rc == E_OK) {
+        struct proc *p = (struct proc *)o;
+        if (p->running) {
+            klog_u32("USERMODE", SEV_INFO, "pid ", (uint32_t)p->pid, LOG_COLOR_VALUE, " killed");
+            klog_child_u32("by pid ", (uint32_t)thread_current_pid(), LOG_COLOR_VALUE, "");
+        }
+        proc_kill(p, thread_current_pid());
+    }
+    kobj_unref(o);
+    return rc;
+}
+
+/* The gate's last step, and an interrupt's from ring 3 (the hook below).
+   Nothing of the process's is held here: whatever the call took, it has let
+   go of by now. */
+void usermode_kill_point(void) {
+    if (thread_killed())
+        return_to_kernel(USERMODE_KILLED, thread_current_usave());   /* never returns */
 }
 
 /* Called from the system-call gate (arch/usermode.h), and by the self-tests,
@@ -2422,6 +2450,7 @@ static void usermode_fault(struct registers *r) {
 
 void usermode_register_fault_handler(void) {
     set_user_fault_hook(usermode_fault);
+    set_user_irq_return_hook(usermode_kill_point);
 }
 /* ---- process handles, waiting, how a process ended (Phase 1.1a) -----------
  * Real ring-3 processes, each with a process handle in this thread's table
@@ -2442,7 +2471,7 @@ static int32_t pt_make(const uint8_t *start, const uint8_t *end, int *tid) {
     *tid = process_prepare_ring3("pt", start, (uint32_t)(end - start), "");
     if (*tid < 0) return E_NO_MEMORY;
     int32_t h = htab_install(thread_htab(thread_current_id()), &thread_proc(*tid)->hdr,
-                             HRIGHT_WAIT | HRIGHT_INSPECT | HRIGHT_DUPLICATE, 0);
+                             HRIGHT_WAIT | HRIGHT_INSPECT | HRIGHT_KILL | HRIGHT_DUPLICATE, 0);
     if (h < 0) thread_discard(*tid);
     return h;
 }
@@ -2482,7 +2511,7 @@ int usermode_process_test(void) {
     oi->cap = sizeof *ob; oi->buf = PT_INFO; oi->handle = h; oi->topic = OBJINFO_BASIC;
     step = 2; if (syscall_dispatch(SYS_OBJECT_INFO, PT_IARGS, 0, 0, 0, 0) != (int)sizeof *ob
                   || ob->kind != OBJ_TYPE_PROCESS
-                  || ob->rights != (HRIGHT_WAIT | HRIGHT_INSPECT | HRIGHT_DUPLICATE)) goto done;
+                  || ob->rights != (HRIGHT_WAIT | HRIGHT_INSPECT | HRIGHT_KILL | HRIGHT_DUPLICATE)) goto done;
     step = 3; if (pt_info(h) != (int)sizeof *pi || pi->pid != (uint32_t)pid
                   || pi->ended != PROC_RUNNING) goto done;
 
@@ -2557,6 +2586,265 @@ done:
     if (d > 0)  htab_close(tab, d);
     if (ew > 0) htab_close(tab, ew);
     if (eh > 0) htab_close(tab, eh);
+    unmap_user_page(TEST_CODE_VIRT, phys);
+    return ok;
+}
+
+/* ---- SYS_PROCESS_KILL (Phase 1.1b) ----
+ * A ring-3 process in each kind of wait, killed: asleep, in an object wait,
+ * receiving, calling before and after the receiver took the request, reading
+ * the keyboard, waiting for a file lock. Then one spinning in ring 3 with
+ * preemption on, whose safe point is an interrupt, and one that kills itself,
+ * whose safe point is the gate. Each ends PROC_KILLED with the killer's pid
+ * well inside the bound, and leaves nothing registered in the wait it was in.
+ * Then the refusals, and a kill of a process that has ended. 1 = pass. */
+extern uint8_t user_blob_call_start[], user_blob_call_end[];
+extern uint8_t user_blob_loop_start[], user_blob_loop_end[];
+
+#define KT_ARGS  (TEST_CODE_VIRT + 0x400)   /* the victim's ipc args */
+#define KT_TARGS (TEST_CODE_VIRT + 0x480)   /* the test thread's ipc and lock args */
+#define KT_LARGS (TEST_CODE_VIRT + 0x500)   /* the victim's file_lock_args */
+#define KT_REQ   (TEST_CODE_VIRT + 0x580)   /* one request byte */
+#define KT_PATH  (TEST_CODE_VIRT + 0x600)
+
+#define KT_BLOB_MAX 96
+/* user_blob_call and the call it makes: read when the victim starts, so one
+   victim at a time. */
+static uint8_t  kt_image[KT_BLOB_MAX + 6 * 8];
+static uint32_t kt_len;
+
+/* A held victim running user_blob_call, and the test's handle on it. */
+static int32_t kt_make(int *tid) {
+    kt_len = (uint32_t)(user_blob_call_end - user_blob_call_start);
+    if (kt_len > KT_BLOB_MAX) return E_INTERNAL;
+    for (uint32_t i = 0; i < kt_len; i++) kt_image[i] = user_blob_call_start[i];
+    return pt_make(kt_image, kt_image + kt_len + 6 * 8, tid);
+}
+
+/* The call it will make. */
+static void kt_call(uint64_t nr, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    const uint64_t q[6] = { nr, a1, a2, a3, a4, a5 };
+    const uint8_t *s = (const uint8_t *)q;
+    for (uint32_t i = 0; i < sizeof q; i++) kt_image[kt_len + i] = s[i];
+}
+
+static int kt_kill_call(int32_t h) {
+    return syscall_dispatch(SYS_PROCESS_KILL, (uint32_t)h, 0, 0, 0, 0);
+}
+
+/* A started victim is still there (blocked, if `blocked`), the kill is taken,
+   and it ends killed by this thread's process, without running on in ring 3
+   (user_blob_call's ud2 would be a fault). 1 = so. */
+static int kt_kill(int32_t h, int tid, int blocked) {
+    struct process_info *pi = (struct process_info *)user_ptr(PT_INFO);
+    uint32_t faults = usermode_faults();
+    if (pt_wait(h, SIGNAL_PROCESS_ENDED, 50, 0) != E_TIMED_OUT) return 0;
+    if (blocked && !thread_is_blocked(tid)) return 0;
+    if (kt_kill_call(h) != E_OK) return 0;
+    if (pt_wait(h, SIGNAL_PROCESS_ENDED, 3000, 0) != E_OK) return 0;
+    return pt_info(h) == (int)sizeof *pi && pi->ended == PROC_KILLED
+        && pi->killer == (uint32_t)thread_current_pid() && pi->reserved == 0
+        && usermode_faults() == faults;
+}
+
+int usermode_kill_test(void) {
+    paddr_t phys = map_user_page(TEST_CODE_VIRT);
+    if (!phys) return 0;
+    int me = thread_current_id();
+    struct htab *tab = thread_htab(me);
+    struct process_info *pi = (struct process_info *)user_ptr(PT_INFO);
+    uint32_t live0 = proc_live(), faults0 = usermode_faults(), refused0 = syscall_refused_count();
+    uint32_t caps0 = thread_current_caps();
+    struct endpoint *ep = 0;
+    int32_t h = -1, v, eh = -1, d = -1, fa = -1, fb = -1;
+    int tid = -1, step = 0, ok = 0, preempt = 0, of0 = 0, id;
+    const char *scratch = "";
+    struct proc *p;
+
+    /* 1: asleep for the longest sleep there is */
+    h = kt_make(&tid);
+    step = 1; if (h <= 0) goto done;
+    kt_call(SYS_SLEEP, SLEEP_MAX_MS, 0, 0, 0, 0);
+    thread_start(tid);
+    if (!kt_kill(h, tid, 1)) goto done;
+    htab_close(tab, h); h = -1;
+
+    /* 2: waiting on an object (its own process, which cannot end meanwhile),
+       and off its waiter list after */
+    h = kt_make(&tid);
+    step = 2; if (h <= 0) goto done;
+    p = thread_proc(tid);
+    v = htab_install(thread_htab(tid), &p->hdr, HRIGHT_WAIT, 0);
+    if (v <= 0) { thread_discard(tid); goto done; }
+    kt_call(SYS_OBJECT_WAIT, (uint32_t)v, SIGNAL_PROCESS_ENDED, WAIT_FOREVER, 0, 0);
+    thread_start(tid);
+    if (!kt_kill(h, tid, 1) || kobj_waiters(&p->hdr) != 0) goto done;
+    htab_close(tab, h); h = -1;
+
+    /* 3: receiving, and no longer named the endpoint's receiver */
+    eh = ep_create();
+    ep = eh > 0 ? ep_from_handle(eh, HRIGHT_RECV, 0) : 0;
+    h = ep ? kt_make(&tid) : -1;
+    step = 3; if (h <= 0) goto done;
+    v = ep_install_handle(tid, ep, HRIGHT_RECV, 0);
+    if (v <= 0) { thread_discard(tid); goto done; }
+    struct ipc_recv_args *ra = (struct ipc_recv_args *)user_ptr(KT_ARGS);
+    ra->cap = 0; ra->buf = 0; ra->sender = 0; ra->ep_handle = v; ra->reserved = 0;
+    kt_call(SYS_IPC_RECV, KT_ARGS, 0, 0, 0, 0);
+    thread_start(tid);
+    if (!kt_kill(h, tid, 1) || ep->recv_tid != -1) goto done;
+    htab_close(tab, h); h = -1;
+
+    /* 4: calling, before anyone took the request: it is withdrawn */
+    struct ipc_call_args *ca = (struct ipc_call_args *)user_ptr(KT_ARGS);
+    *(volatile uint8_t *)user_ptr(KT_REQ) = 0x5A;
+    h = kt_make(&tid);
+    step = 4; if (h <= 0) goto done;
+    v = ep_install_handle(tid, ep, HRIGHT_SEND, 0);
+    if (v <= 0) { thread_discard(tid); goto done; }
+    ca->req_len = 1; ca->reply_cap = 0; ca->req = KT_REQ; ca->reply = 0;
+    ca->ep_handle = v; ca->reserved = 0;
+    kt_call(SYS_IPC_CALL, KT_ARGS, 0, 0, 0, 0);
+    thread_start(tid);
+    if (!kt_kill(h, tid, 1) || ep->caller_tid != -1) goto done;
+    htab_close(tab, h); h = -1;
+
+    /* 5-6: calling, with the request taken: the transaction stays until the
+       reply, which finds the caller gone, and then the endpoint is free */
+    h = kt_make(&tid);
+    step = 5; if (h <= 0) goto done;
+    v = ep_install_handle(tid, ep, HRIGHT_SEND, 0);
+    if (v <= 0) { thread_discard(tid); goto done; }
+    ca->ep_handle = v;
+    kt_call(SYS_IPC_CALL, KT_ARGS, 0, 0, 0, 0);
+    thread_start(tid);
+    struct ipc_recv_args *tr = (struct ipc_recv_args *)user_ptr(KT_TARGS);
+    tr->cap = 0; tr->buf = 0; tr->sender = 0; tr->ep_handle = eh; tr->reserved = 0;
+    if (pt_wait(h, SIGNAL_PROCESS_ENDED, 50, 0) != E_TIMED_OUT
+        || syscall_dispatch(SYS_IPC_RECV, KT_TARGS, 0, 0, 0, 0) != 0) goto done;
+    if (!kt_kill(h, tid, 1) || ep->caller_tid == -1 || !ep->caller_gone) goto done;
+    struct ipc_reply_args *rp = (struct ipc_reply_args *)user_ptr(KT_TARGS);
+    rp->data = KT_REQ; rp->len = 1; rp->ep_handle = eh; rp->reserved = 0;
+    step = 6; if (syscall_dispatch(SYS_IPC_REPLY, KT_TARGS, 0, 0, 0, 0) != E_PEER_CLOSED
+                  || ep->caller_tid != -1 || ep->caller_gone
+                  || syscall_dispatch(SYS_IPC_REPLY, KT_TARGS, 0, 0, 0, 0) != E_INVALID_ARGS) goto done;
+    htab_close(tab, h); h = -1;
+
+    /* 7: reading the keyboard */
+    h = kt_make(&tid);
+    step = 7; if (h <= 0) goto done;
+    kt_call(SYS_INPUT_READ, 0, 0, 0, 0, 0);
+    thread_start(tid);
+    if (!kt_kill(h, tid, 1)) goto done;
+    htab_close(tab, h); h = -1;
+
+    /* 8-9: waiting for a file lock another open file holds: off the wait
+       list, and its open file closed with it */
+    if (cxfs_is_mounted()) {
+        thread_set_caps(me, GRANT_DISK);
+        scratch = (cxfs_resolve("/Temp", 0) >= 0) ? "/Temp" : "";
+        ft_strp(KT_PATH, scratch, "/kt_kill.txt");
+        of0 = sysfile_open_count();
+        fa = syscall_dispatch(SYS_FILE_OPEN, KT_PATH, FOPEN_READ | FOPEN_WRITE | FOPEN_CREATE | FOPEN_TRUNC, 0, 0, 0);
+        fb = syscall_dispatch(SYS_FILE_OPEN, KT_PATH, FOPEN_READ, 0, 0, 0);
+        struct file_lock_args *la = (struct file_lock_args *)user_ptr(KT_TARGS);
+        la->start = 0; la->len = 0; la->mode = FLOCK_EXCLUSIVE; la->reserved = 0;
+        step = 8; if (fa <= 0 || fb <= 0
+                      || syscall_dispatch(SYS_FILE_LOCK, (uint32_t)fa, KT_TARGS, 0, 0, 0) != E_OK) goto done;
+        h = kt_make(&tid);
+        if (h <= 0) goto done;
+        struct htab_info fi;
+        struct kobj *fo = htab_ref(tab, fb, KOBJ_FILE, 0, &fi);
+        v = fo ? htab_install(thread_htab(tid), fo, fi.rights, 0) : -1;
+        if (fo) kobj_unref(fo);
+        if (v <= 0) { thread_discard(tid); goto done; }
+        htab_close(tab, fb); fb = -1;
+        thread_set_caps(tid, GRANT_DISK);
+        struct file_lock_args *vl = (struct file_lock_args *)user_ptr(KT_LARGS);
+        vl->start = 0; vl->len = 0; vl->mode = FLOCK_EXCLUSIVE | FLOCK_WAIT; vl->reserved = 0;
+        kt_call(SYS_FILE_LOCK, (uint32_t)v, KT_LARGS, 0, 0, 0);
+        thread_start(tid);
+        if (!kt_kill(h, tid, 1) || sysfile_lock_waiting() != 0) goto done;
+        step = 9; if (sysfile_open_count() != of0 + 1) goto done;
+        htab_close(tab, h); h = -1;
+    }
+
+    /* 10: spinning in ring 3, preemption on: an interrupt is the safe point */
+    h = pt_make(user_blob_loop_start, user_blob_loop_end, &tid);
+    step = 10; if (h <= 0) goto done;
+    sched_preempt_enable(5); preempt = 1;
+    thread_start(tid);
+    if (!kt_kill(h, tid, 0)) goto done;
+    sched_preempt_disable(); preempt = 0;
+    htab_close(tab, h); h = -1;
+
+    /* 11: one that kills itself leaves at the gate, its own pid the killer */
+    h = kt_make(&tid);
+    step = 11; if (h <= 0) goto done;
+    int vpid = thread_pid(tid);
+    v = htab_install(thread_htab(tid), &thread_proc(tid)->hdr, HRIGHT_KILL, 0);
+    if (v <= 0) { thread_discard(tid); goto done; }
+    kt_call(SYS_PROCESS_KILL, (uint32_t)v, 0, 0, 0, 0);
+    thread_start(tid);
+    if (pt_wait(h, SIGNAL_PROCESS_ENDED, 3000, 0) != E_OK || pt_info(h) <= 0
+        || pi->ended != PROC_KILLED || pi->killer != (uint32_t)vpid
+        || usermode_faults() != faults0) goto done;
+    htab_close(tab, h); h = -1;
+
+    /* 12-14: the refusals: no HRIGHT_KILL, not a process, no handle */
+    h = pt_make(user_blob_exit_start, user_blob_exit_end, &tid);
+    step = 12; if (h <= 0) goto done;
+    thread_start(tid);
+    d = syscall_dispatch(SYS_HANDLE_DUPLICATE, (uint32_t)h, HRIGHT_WAIT | HRIGHT_INSPECT, 0, 0, 0);
+    if (d <= 0 || kt_kill_call(d) != E_ACCESS_DENIED) goto done;
+    step = 13; if (kt_kill_call(eh) != E_WRONG_TYPE) goto done;
+    step = 14; if (kt_kill_call(9999) != E_BAD_HANDLE) goto done;
+
+    /* 15: a process that has ended: 0, and how it ended stands */
+    step = 15; if (pt_wait(h, SIGNAL_PROCESS_ENDED, 3000, 0) != E_OK || kt_kill_call(h) != E_OK
+                   || pt_info(h) <= 0 || pi->ended != PROC_EXITED || pi->code != -42
+                   || pi->killer != 0) goto done;
+    htab_close(tab, d); d = -1;
+    htab_close(tab, h); h = -1;
+
+    /* 16-17: killed before it started, then a wait: the kill's wakes are long
+       past, so it must not block at all - a sleep (thread_block_prepare) and
+       the keyboard (thread_block) */
+    h = kt_make(&tid);
+    step = 16; if (h <= 0) goto done;
+    kt_call(SYS_SLEEP, SLEEP_MAX_MS, 0, 0, 0, 0);
+    if (kt_kill_call(h) != E_OK) { thread_discard(tid); goto done; }
+    thread_start(tid);
+    if (pt_wait(h, SIGNAL_PROCESS_ENDED, 3000, 0) != E_OK || pt_info(h) <= 0
+        || pi->ended != PROC_KILLED || usermode_faults() != faults0) goto done;
+    htab_close(tab, h); h = -1;
+    h = kt_make(&tid);
+    step = 17; if (h <= 0) goto done;
+    kt_call(SYS_INPUT_READ, 0, 0, 0, 0, 0);
+    if (kt_kill_call(h) != E_OK) { thread_discard(tid); goto done; }
+    thread_start(tid);
+    if (pt_wait(h, SIGNAL_PROCESS_ENDED, 3000, 0) != E_OK || pt_info(h) <= 0
+        || pi->ended != PROC_KILLED || usermode_faults() != faults0) goto done;
+    htab_close(tab, h); h = -1;
+
+    /* 18: nothing left behind, and nothing ended any other way */
+    step = 18; if (proc_live() != live0 || usermode_faults() != faults0
+                   || syscall_refused_count() != refused0) goto done;
+    ok = 1;
+
+done:
+    if (preempt) sched_preempt_disable();
+    if (!ok) klog_u32("KTEST", SEV_ERR, "kill test failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    /* A victim still running is killed, so none outlives the test. */
+    if (h > 0) { kt_kill_call(h); pt_wait(h, SIGNAL_PROCESS_ENDED, 3000, 0); htab_close(tab, h); }
+    if (d > 0)  htab_close(tab, d);
+    if (fa > 0) htab_close(tab, fa);
+    if (fb > 0) htab_close(tab, fb);
+    if (ep) ep_put(ep);
+    if (eh > 0) htab_close(tab, eh);
+    if (cxfs_is_mounted() && (id = cxfs_resolve(ft_join(scratch, "/kt_kill.txt"), 0)) >= 0)
+        cxfs_delete_entry((uint32_t)id);
+    thread_set_caps(me, caps0);
     unmap_user_page(TEST_CODE_VIRT, phys);
     return ok;
 }

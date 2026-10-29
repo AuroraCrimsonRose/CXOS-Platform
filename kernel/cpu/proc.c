@@ -8,6 +8,8 @@
 #include "memman/ocache.h"
 #include "object/idtab.h"
 #include "object/kwait.h"
+#include "sched.h"          /* sched_wake_process */
+#include "arch/cpu_ops.h"   /* arch_irq_save */
 #include "cxk_abi.h"
 #include "sync/spinlock.h"
 #include "panic.h"
@@ -47,7 +49,7 @@ static void proc_destroy(struct kobj *o) {
 
 static const struct kobj_ops proc_ops = {
     .name         = "process",
-    .rights_valid  = HRIGHT_INSPECT,
+    .rights_valid  = HRIGHT_INSPECT | HRIGHT_KILL,
     .signals_valid = SIGNAL_PROCESS_ENDED,
     .destroy      = proc_destroy,
 };
@@ -127,6 +129,22 @@ void proc_note_crash(struct proc *p, uint32_t vector, uint64_t ip, uint64_t addr
     p->end_vector = vector;
     p->end_ip     = ip;
     p->end_addr   = addr;
+}
+
+/* Interrupts off from the note to the last wake: a thread that checks
+   thread_killed and then blocks does both with interrupts off too, so it
+   either sees `killing` or is already BLOCKED and gets woken here. One that
+   has ended was noted already (proc_thread_stopped) and has no threads left
+   to wake, so it is left as it was. */
+void proc_kill(struct proc *p, int killer) {
+    uint32_t f = arch_irq_save();
+    if (p->ended == PROC_RUNNING) {
+        p->ended      = PROC_KILLED;
+        p->end_killer = (uint32_t)killer;
+    }
+    p->killing = 1;
+    sched_wake_process(p);
+    arch_irq_restore(f);
 }
 
 void proc_put(struct proc *p) {

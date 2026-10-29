@@ -37,7 +37,7 @@ static void ep_last_handle(struct kobj *o) {
         ep->recv_tid = -1;
         thread_unblock(t);
     }
-    if (ep->caller_tid != -1)
+    if (ep->caller_tid != -1 && !ep->caller_gone)
         thread_unblock(ep->caller_tid);
 }
 
@@ -95,6 +95,9 @@ int ep_create(void) {
     ep->reply_ptr    = 0;
     ep->reply_cap    = 0;
     ep->msg_len      = 0;
+    ep->taken        = 0;
+    ep->replied      = 0;
+    ep->caller_gone  = 0;
 
     int32_t h = htab_install(thread_htab(thread_current_id()), &ep->hdr, HRIGHT_RECV | HRIGHT_DUPLICATE, 0);
     /* The creator's reference goes either way: on success the handle holds
@@ -158,6 +161,7 @@ static int call_on(struct endpoint *ep, const struct ipc_call_args *ap) {
     ep->reply_cap  = rcap;
     ep->caller_tid = thread_current_id();
     ep->caller_pid = thread_current_pid();   /* what ipc_recv reports */
+    ep->taken = ep->replied = ep->caller_gone = 0;
 
     if (ep->recv_tid != -1) { int t = ep->recv_tid; ep->recv_tid = -1; thread_unblock(t); }
 
@@ -168,6 +172,14 @@ static int call_on(struct endpoint *ep, const struct ipc_call_args *ap) {
     if (!ep->active) {
         ep->caller_tid = -1;
         return E_PEER_CLOSED;
+    }
+    /* Nor does a kill. A request nobody has taken is withdrawn; one the
+       receiver is working on stays, and its reply finds the caller gone
+       (reply_on). One already answered is copied out as usual. */
+    if (thread_killed() && !ep->replied) {
+        if (ep->taken) ep->caller_gone = 1;
+        else           ep->caller_tid  = -1;
+        return E_CANCELED;
     }
 
     /* The copy-out, re-validated against the endpoint's own record of the
@@ -215,7 +227,13 @@ static int recv_on(struct endpoint *ep, const struct ipc_recv_args *ap) {
 
         /* A last-handle close wakes us with no caller staged. */
         if (!ep->active) return E_CANCELED;
+        /* So does a kill, which leaves this thread named as the receiver. */
+        if (thread_killed()) {
+            if (ep->recv_tid == thread_current_id()) ep->recv_tid = -1;
+            return E_CANCELED;
+        }
     }
+    ep->taken = 1;
 
     /* The reference is held across the copies, not dropped before them: the
        request body is read out of ep->buf, and releasing first allows the
@@ -250,6 +268,13 @@ int ipc_recv(uint64_t ua) {
 static int reply_on(struct endpoint *ep, const struct ipc_reply_args *ap) {
     struct ipc_reply_args a = *ap;
     if (ep->caller_tid == -1) return E_INVALID_ARGS;   /* nobody waiting */
+    /* Killed while this was being worked on: the transaction ends here, and
+       the endpoint takes calls again. Its tid may name another thread by now. */
+    if (ep->caller_gone) {
+        ep->caller_tid  = -1;
+        ep->caller_gone = 0;
+        return E_PEER_CLOSED;
+    }
     if (a.len > sizeof ep->buf) return E_OUT_OF_RANGE;
 
     /* Read in the owner's space. A failure leaves ep->buf partially written
@@ -258,6 +283,7 @@ static int reply_on(struct endpoint *ep, const struct ipc_reply_args *ap) {
        caller with an error is a behaviour decision, not a copy-safety one. */
     if (user_copy_in(ep->buf, a.data, (uint32_t)a.len) != 0) return E_BAD_ADDRESS;
     ep->msg_len = (uint32_t)a.len;
+    ep->replied = 1;
 
     thread_unblock(ep->caller_tid);   /* caller resumes in ipc_call, copies reply */
     return 0;

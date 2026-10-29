@@ -31,6 +31,14 @@ struct endpoint {
                                ipc_call, re-validated there rather than
                                trusted from before the block (review §6). */
     uint32_t msg_len;       /* bytes currently staged in buf (request, then reply) */
+    /* Where the transaction is, for a caller killed in the middle of it:
+       `taken` once ipc_recv has delivered the request, `replied` once
+       ipc_reply has staged the answer, `caller_gone` once the caller has left
+       a taken request unanswered. caller_tid stays set until the reply, so
+       no new call is answered with the old one's reply. */
+    int      taken;
+    int      replied;
+    int      caller_gone;
     uint8_t  buf[4096];     /* kernel bounce buffer for request + reply */
 };
 

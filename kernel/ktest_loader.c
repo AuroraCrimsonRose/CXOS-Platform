@@ -614,6 +614,11 @@ int ktest_spawn_verifies_image(void) {
     ok = ph > 0 && syscall_object_wait(ph, SIGNAL_PROCESS_ENDED, 10000, 0) == E_OK
          && syscall_object_info(user_addr(oi)) == (int)sizeof *pi
          && pi->ended == PROC_EXITED && pi->code == 0;
+    /* With the rights the ABI promises a spawner (ABI 14 adds HRIGHT_KILL). */
+    struct object_basic *ob = (struct object_basic *)(SPV_ARGS_VA + 0x300);
+    oi->cap = sizeof *ob; oi->buf = user_addr(ob); oi->topic = OBJINFO_BASIC;
+    ok = ok && syscall_object_info(user_addr(oi)) == (int)sizeof *ob
+         && ob->rights == (HRIGHT_WAIT | HRIGHT_INSPECT | HRIGHT_KILL | HRIGHT_DUPLICATE);
     if (ph > 0) htab_close(thread_htab(thread_current_id()), ph);
     ok = ok && proc_live() == live0;
 

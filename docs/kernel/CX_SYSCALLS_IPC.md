@@ -196,6 +196,22 @@ forever); `object_info` with
 and a page fault's address, `PROC_NOT_STARTED`). The record, and its pid, go
 when it has ended and its last handle is closed.
 
+*Kill, ABI 14:* `SYS_PROCESS_KILL(h)` needs `HRIGHT_KILL` on the handle (spawn
+gives it) and no grant. It notes `PROC_KILLED` with the caller's pid
+(`process_info.killer`) at once, so a later way out does not replace it, and
+returns before the process has gone; wait for `SIGNAL_PROCESS_ENDED`. Each
+thread leaves at a safe point, never from the middle of a call: on the way
+back to ring 3 from a syscall (the gate's last step) or from an interrupt
+taken in ring 3, which reaches a thread spinning there. A thread that is
+blocked is woken. The scheduler's waits do not block a thread whose process is
+being killed, and each wait site undoes what it registered and returns
+`E_CANCELED`: the IPC receiver slot, the keyboard waiter, the file-lock wait
+list, the object's waiter list; a sleep just ends early. An IPC call killed
+before the receiver took the request withdraws it. Killed after, the
+transaction stays until the reply, which gets `E_PEER_CLOSED`, so no later
+caller gets that reply instead of its own. Killing an ended process is 0 and
+changes nothing.
+
 **Memory:**
 `mem_create(size, flags)`, `mem_read`, `mem_write`, `mem_set_size`,
 `mem_seal(m, seals)`, `vm_map(m, offset, len, prot, flags)`,

@@ -274,6 +274,12 @@ int sysfile_open_count(void) {
     return (int)ocache_live(&of_cache);
 }
 
+int sysfile_lock_waiting(void) {
+    int n = 0;
+    for (struct lock_wait *w = waiters; w; w = w->next) n++;
+    return n;
+}
+
 /* ---- error translation -----------------------------------------------------
  * CXFS has its own error space (CXFS_E_*, cxfs.h) and the ABI has another
  * (E_*, cxk_abi.h). They meet here and nowhere else, so a change to either one
@@ -804,6 +810,7 @@ static int file_lock(struct open_file *f, uint64_t start, uint64_t len, uint32_t
         struct lock_wait **pp = &waiters;
         while (*pp != &self) pp = &(*pp)->next;
         *pp = self.next;
+        if (thread_killed()) return E_CANCELED;
     }
     return lock_apply(f, start, len, mode);
 }

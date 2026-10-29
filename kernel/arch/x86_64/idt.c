@@ -192,6 +192,7 @@ static irq_handler_t irq_routines[16];
    line behind it. */
 static irq_handler_t msi_routines[MSI_VECTOR_COUNT];
 static void (*user_fault_hook)(struct registers *);
+static void (*user_irq_return_hook)(void);
 
 void irq_install_handler(int irq, irq_handler_t handler) {
     if (irq >= 0 && irq < 16) irq_routines[irq] = handler;
@@ -217,6 +218,7 @@ void irq_free_msi_vector(int vector) {
 }
 
 void set_user_fault_hook(void (*hook)(struct registers *)) { user_fault_hook = hook; }
+void set_user_irq_return_hook(void (*hook)(void)) { user_irq_return_hook = hook; }
 
 uint32_t  irq_frame_vector(const struct registers *r) { return (uint32_t)r->vector; }
 uintptr_t irq_frame_ip(const struct registers *r)     { return (uintptr_t)r->rip; }
@@ -277,6 +279,9 @@ void idt64_dispatch(struct registers *f);
 void idt64_dispatch(struct registers *f) {
     if (f->vector >= IRQ_VECTOR_BASE) {
         irq_dispatch(f);
+        /* A preemption out of ring 3 has come back by now; a thread killed
+           meanwhile leaves here rather than running on in ring 3. */
+        if ((f->cs & 3) && user_irq_return_hook) user_irq_return_hook();
         return;
     }
 

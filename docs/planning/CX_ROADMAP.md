@@ -321,9 +321,11 @@ Independent of the order above, and small enough to land whenever convenient:
      `PROC_VECTOR_REFUSED`), or never started. No zombies: the record and
      its pid go with the last handle. The supervisor uses it to skip a
      scheduled task whose last run is still going.
-   - 1.1b: kill. A blocked thread (IPC call and receive, file lock, keyboard,
-     sleep, object wait) is woken and ended at the next safe point; the
-     reason records who.
+   - **1.1b (ABI 14, 2026-10-29), done:** `SYS_PROCESS_KILL` on a handle with
+     `HRIGHT_KILL`. A blocked thread (IPC call and receive, file lock,
+     keyboard, sleep, object wait) is woken, and every thread ends at its
+     next safe point: the syscall gate's way out, or an interrupt taken in
+     ring 3. It ends `PROC_KILLED`, `killer` the pid that asked.
    - 1.1c: stop, through an endpoint the process registers, then kill after
      a deadline.
    - 1.1d: jobs with memory and thread budgets.

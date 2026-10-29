@@ -3289,6 +3289,7 @@ void ktest_run(void) {
     total++; passed += report("background output goes to the log", usermode_log_test());
     total++; passed += report("advisory locks follow the open file", usermode_flock_test());
     total++; passed += report("process handles: wait, how it ended", usermode_process_test());
+    total++; passed += report("process kill: every wait, both safe points", usermode_kill_test());
     total++; passed += report("ipc endpoints refcounted + reclaimed", test_ipc_endpoint_lifetime());
     total++; passed += report("object caches map and return pages", test_ocache_pages());
     total++; passed += report("two threads share one process",   test_proc_threads());

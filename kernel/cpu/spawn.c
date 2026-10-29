@@ -277,7 +277,7 @@ int proc_start(const void *image, uint32_t image_len, uint32_t caps,
        not left running with nobody able to wait for it. */
     if (handle) {
         int32_t ph = htab_install(thread_htab(thread_current_id()), &thread_proc(tid)->hdr,
-                                  HRIGHT_WAIT | HRIGHT_INSPECT | HRIGHT_DUPLICATE, 0);
+                                  HRIGHT_WAIT | HRIGHT_INSPECT | HRIGHT_KILL | HRIGHT_DUPLICATE, 0);
         if (ph < 0) { thread_discard(tid); return ph; }
         *handle = ph;
     }

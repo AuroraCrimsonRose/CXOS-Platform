@@ -70,6 +70,7 @@ static int decode_fb_draw_text(const uintptr_t *a) { return syscall_fb_draw_text
 static int decode_fb_set_font(const uintptr_t *a) { return syscall_fb_set_font((uint64_t)a[0]); }
 static int decode_spawn(const uintptr_t *a) { return syscall_spawn((uint64_t)a[0]); }
 static int decode_exec_path(const uintptr_t *a) { return syscall_exec_path((uint64_t)a[0], (uint64_t)a[1]); }
+static int decode_process_kill(const uintptr_t *a) { return syscall_process_kill((int32_t)a[0]); }
 static int decode_vm_map(const uintptr_t *a) { return syscall_vm_map((uint64_t)a[0]); }
 static int decode_vm_unmap(const uintptr_t *a) {
 #if SYSCALL_PAIRS
@@ -176,6 +177,7 @@ const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_NET_SEND] = decode_net_send,
     [SYS_NET_RECV] = decode_net_recv,
     [SYS_SPAWN] = decode_spawn,
+    [SYS_PROCESS_KILL] = decode_process_kill,
     [SYS_EXEC_PATH] = decode_exec_path,
     [SYS_VM_MAP] = decode_vm_map,
     [SYS_VM_UNMAP] = decode_vm_unmap,

@@ -26,6 +26,7 @@ int kobj_wait(struct kobj *o, uint32_t want, uint32_t timeout_ms, uint32_t *seen
     struct kwaiter me = { .tid = thread_current_id(), .next = 0 };
     uint32_t f = spin_lock(&wait_lock);
     uint32_t s = atomic_load(&o->signals);
+    int killed = 0;   /* woken by proc_kill (cpu/sched.h), or not blocked by it */
     while (!(s & want)) {
         uint32_t ms = 0;
         if (timeout_ms != KWAIT_FOREVER) {
@@ -47,10 +48,11 @@ int kobj_wait(struct kobj *o, uint32_t want, uint32_t timeout_ms, uint32_t *seen
         while (*pp != &me) pp = &(*pp)->next;
         *pp = me.next;
         s = atomic_load(&o->signals);
+        if (!(s & want) && thread_killed()) { killed = 1; break; }
     }
     spin_unlock(&wait_lock, f);
     if (seen) *seen = s;
-    return (s & want) ? E_OK : E_TIMED_OUT;
+    return (s & want) ? E_OK : killed ? E_CANCELED : E_TIMED_OUT;
 }
 
 uint32_t kobj_waiters(struct kobj *o) {

@@ -78,6 +78,7 @@ char keyboard_getchar_blocking(void) {
         kwaiter = thread_current_id();
         thread_block();          /* descheduled until a key arrives and wakes us */
         kwaiter = -1;
+        if (thread_killed()) return 0;   /* no key: the thread ends on its way out */
     }
 }
 

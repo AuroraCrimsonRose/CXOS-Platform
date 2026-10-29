@@ -196,13 +196,27 @@ int32_t  thread_broker(int id);
 void     thread_set_broker(int id, int32_t h);
 void     thread_set_caps(int id, uint32_t caps);
 void     thread_set_space(int id, paddr_t pd_phys);   /* CR3 to load when this thread runs */
+/* Every wait below can be cut short by a kill (proc_kill): it wakes each
+   blocked thread of the process, and none of these blocks a thread whose
+   process is being killed - it returns at once. So a caller checks
+   thread_killed() when one returns, undoes whatever it registered for the
+   wait (a waiter slot, a list entry) and gives up with E_CANCELED; the
+   thread then ends on its way back to ring 3. */
 void     thread_block(void);            /* block the current thread (IPC wait) + yield */
 void     thread_unblock(int id);        /* make a blocked thread runnable again */
 
-/* Block until thread_unblock(). Unlike thread_block, safe when nothing else is
-   runnable at the moment: it halts until an interrupt changes that, the way
-   thread_sleep_ms does, instead of returning still blocked. For waits whose
-   waker is another thread that may itself be asleep (SYS_FILE_LOCK). */
+/* The current thread's process is being killed (proc_kill). */
+int      thread_killed(void);
+/* Make every BLOCKED thread of `p` runnable, as thread_unblock does, its
+   sleep included. Interrupts off (proc_kill). */
+void     sched_wake_process(struct proc *p);
+/* Thread `id` is BLOCKED, for the self-tests. */
+int      thread_is_blocked(int id);
+
+/* Block until thread_unblock(). Safe when nothing else is runnable at the
+   moment: it halts until an interrupt changes that, the way thread_sleep_ms
+   does, instead of returning still blocked. thread_block is this too, since
+   1.1b; the two names are its callers' (IPC and the keyboard, file locks). */
 void     thread_wait(void);
 
 /* A block in two halves, for a waiter that checks a condition under a lock
@@ -221,7 +235,7 @@ void     thread_block_finish(void);
    process costs nothing but its memory - this is not a spin.
 
    `ms` of 0 is a yield. The caller may wake EARLY if something else unblocks
-   it (an IPC reply, a keystroke), which is why this returns the tick it
+   it (an IPC reply, a keystroke, a kill), which is why this returns the tick it
    actually woke at rather than nothing: a caller that must not be cut short
    can check and sleep again. */
 uint32_t thread_sleep_ms(uint32_t ms);
