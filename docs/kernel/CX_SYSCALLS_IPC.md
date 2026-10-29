@@ -357,8 +357,13 @@ right or a copy without duplicate `E_ACCESS_DENIED`, an op that is neither or
 a handle named twice `E_INVALID_ARGS`, more than 16 `E_OUT_OF_RANGE`, a
 nonzero `reserved` `E_INVALID_ARGS` (all before the endpoint or token is
 looked up). The endpoint or token the message goes through cannot travel in
-it, and nor can an open file (its locks name the thread that opened it):
-`E_NOT_SUPPORTED`. A handle in flight keeps its object's handle count, so
+it: `E_NOT_SUPPORTED`. Every other type travels. An open file takes its
+locks along, since they belong to the open file (as XNU's OFD locks and
+Haiku's flock do), and whoever holds it can unlock them. Each lock remembers
+the thread that took it only for the `E_DEADLOCK` check; once the file's
+handle travels that is unknown and the check passes over the lock, so a
+cycle through it hangs instead of being refused (XNU `kern_lockf.c`).
+A handle in flight keeps its object's handle count, so
 `last_handle` does not fire on the way. `ipc_call_args` names the request's
 handles (`handles`, `handle_count`) and where the reply's land
 (`reply_handles`, `reply_handle_cap`); `SYS_IPC_RECV` takes `handles` and

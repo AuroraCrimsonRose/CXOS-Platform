@@ -44,7 +44,6 @@ struct open_file {
     uint32_t entry;      /* CXFS manifest id */
     uint64_t off;        /* current offset, at most FILE_OFF_MAX */
     uint32_t flags;      /* FOPEN_* the file was opened with */
-    int      owner;      /* the thread (process) whose handle this is */
     int      doomed;     /* unlinked while open: delete at the last close */
 };
 
@@ -55,7 +54,6 @@ static struct open_file *of_alloc(void) {
     struct open_file *f = ocache_alloc(&of_cache);   /* zeroed */
     if (!f) return NULL;
     if (kobj_init(&f->hdr, KOBJ_FILE) != 0) { ocache_free(&of_cache, f); return NULL; }
-    f->owner = thread_current_id();
     return f;
 }
 
@@ -118,6 +116,13 @@ static void bury_pending(void) {
  * held by another open file. An open file's own locks never conflict with
  * each other, so re-locking a range converts it.
  *
+ * Owned by the open file, not a thread or a process: an open file's handle can
+ * travel in a message (1.3b'), and whoever holds it then holds its locks and
+ * can unlock them, as with XNU's OFD locks and Haiku's flock. Each lock also
+ * remembers the thread that took it, only for the deadlock check; once the
+ * handle travels that is unknown (XNU kern_lockf.c: a lock is "confined" to
+ * one thread until its file is shared), and the check passes over it.
+ *
  * Unlike the CXFS locks this replaces, nothing is on disk: a pid is a reused
  * thread slot, a lock written to disk survives a reboot, and a removable
  * volume's lock state would be whatever its author wanted.
@@ -133,8 +138,14 @@ struct file_lock {
     uint64_t start;
     uint64_t len;
     uint32_t mode;             /* FLOCK_SHARED or FLOCK_EXCLUSIVE */
+    int      taker;            /* the thread that took it; TAKER_UNKNOWN once
+                                  its handle has travelled, for good (XNU does
+                                  not confine a shared lock again either) */
 };
 static struct file_lock locks[MAX_FILE_LOCKS];
+
+/* Not a thread id: thread 0 is the boot thread. */
+#define TAKER_UNKNOWN (-1)
 
 /* What a thread blocked in SYS_FILE_LOCK is waiting for. The record lives on
    that thread's own stack for as long as it waits, linked into `waiters`, so
@@ -183,12 +194,16 @@ static int lock_conflict(const struct open_file *of, uint32_t entry, uint64_t st
    of a conflicting lock is `me` (a second open file in the same process), or
    is itself waiting, directly or down a chain, on a lock `me` holds. Linux
    checks POSIX locks the same way and answers EDEADLK; Serenity does not check,
-   and a program that gets it wrong hangs. */
+   and a program that gets it wrong hangs. A lock whose taker is unknown ends
+   that chain: whoever holds its handle now could be anyone, so the check
+   cannot tell and says no, as XNU's does for a lock that is not confined.
+   TAKER_UNKNOWN is never `me` and no waiter's tid, so it needs no case of
+   its own. A real cycle through it hangs, never a false E_DEADLOCK. */
 static int lock_cycle(int me, const struct open_file *of, uint32_t entry, uint64_t start,
                       uint64_t len, uint32_t mode) {
     for (int i = lock_conflict(of, entry, start, len, mode, 0); i >= 0;
          i = lock_conflict(of, entry, start, len, mode, i + 1)) {
-        int h = locks[i].of->owner;
+        int h = locks[i].taker;
         if (h == me) return 1;
         struct lock_wait *w = waiter_of(h);
         if (!w || w->seen) continue;
@@ -221,7 +236,15 @@ static int lock_apply(struct open_file *of, uint64_t start, uint64_t len, uint32
     locks[free_slot].start = start;
     locks[free_slot].len   = len;
     locks[free_slot].mode  = mode;
+    locks[free_slot].taker = thread_current_id();
     return E_OK;
+}
+
+/* Its handle is on the way to someone else: who holds each of its locks is
+   no longer known. Under the sender's handle-table lock, so it only writes. */
+static void of_travel(struct kobj *o) {
+    for (int i = 0; i < MAX_FILE_LOCKS; i++)
+        if (locks[i].of == (struct open_file *)o) locks[i].taker = TAKER_UNKNOWN;
 }
 
 /* Drop this open file's locks that lie wholly inside [start, start+len). A
@@ -258,9 +281,9 @@ static void of_destroy(struct kobj *o) {
 static const struct kobj_ops file_ops = {
     .name         = "file",
     .rights_valid = FOPEN_READ | FOPEN_WRITE,
-    /* Not yet: its locks name the thread that opened it (lock_cycle), and
-       whether a lock belongs to the thread or the process is undecided. */
-    .transfer     = 0,
+    /* Its locks go with it (above). */
+    .transfer     = 1,
+    .travel       = of_travel,
     .destroy      = of_destroy,
 };
 

@@ -71,6 +71,10 @@ struct kobj_ops {
     /* Its handles may travel in IPC messages (htab_take). 0 for a type with
        state tied to the process that opened it. */
     int         transfer;
+    /* Optional: a handle on it has been taken to travel, moved or copied
+       (htab_take, under the sender's table lock, after every entry passed).
+       State that names the thread holding the handle stops naming it here. */
+    void      (*travel)(struct kobj *o);
     /* Optional: the last handle has closed. The object may still be referenced. */
     void      (*last_handle)(struct kobj *o);
     /* Required: the last reference has gone. Free the object. */

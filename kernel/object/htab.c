@@ -178,6 +178,8 @@ int htab_take(struct htab *t, const struct htab_send *s, uint32_t n, const struc
     }
     for (uint32_t i = 0; i < n && r == 0; i++) {
         struct htab_entry *e = entry_of(t, s[i].h);
+        const struct kobj_ops *ops = kobj_type_ops((enum kobj_type)e->obj->type);
+        if (ops->travel) ops->travel(e->obj);
         out[i].obj    = e->obj;
         out[i].rights = s[i].rights == HTAB_RIGHTS_SAME ? e->rights : s[i].rights;
         if (s[i].op == HTAB_COPY) {

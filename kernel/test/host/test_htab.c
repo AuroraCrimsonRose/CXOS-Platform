@@ -549,6 +549,7 @@ KH_TEST(htab_take_checks_every_entry_before_taking_any) {
         KH_CHECK(x[0].obj == 0);
         KH_CHECK_EQ(grant_of(&t, a, 0), ga);                       /* a is where it was */
         KH_CHECK_EQ(htab_count(&t), 3u);
+        KH_CHECK_EQ(o.travel_runs, 0);                             /* nor told it went */
     }
     /* The object the message goes through cannot be in it. */
     struct htab_send self = { b, HTAB_MOVE, HTAB_RIGHTS_SAME };
@@ -578,9 +579,12 @@ KH_TEST(htab_a_moved_handle_keeps_its_grant_and_a_copy_derives_one) {
     struct htab_transit x[2];
     /* A move and a copy of one handle in one message is one handle named twice. */
     KH_CHECK_EQ(htab_take(&t, sv, 2, 0, x), HTAB_E_INVALID_ARGS);
+    KH_CHECK_EQ(o.travel_runs, 0);
     KH_CHECK_EQ(htab_take(&t, sv, 1, 0, x), 0);                  /* the copy */
     KH_CHECK_EQ(atomic_load(&o.hdr.handles), 2u);                 /* it holds a count in transit */
+    KH_CHECK_EQ(o.travel_runs, 1);                                /* a copy travels too */
     KH_CHECK_EQ(htab_take(&t, &sv[1], 1, 0, &x[1]), 0);           /* the move, with fewer rights */
+    KH_CHECK_EQ(o.travel_runs, 2);
     KH_CHECK_EQ(htab_count(&t), 0u);
     KH_CHECK(htab_ref(&t, a, KOBJ_NONE, 0, 0) == 0);              /* its number is dead */
     KH_CHECK_EQ(atomic_load(&o.hdr.handles), 2u);

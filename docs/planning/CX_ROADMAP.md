@@ -386,10 +386,15 @@ Independent of the order above, and small enough to land whenever convenient:
      that only shrink. Every entry is checked before any is taken, so a
      refusal moves nothing; the handles received and the reply token land
      together or the call is requeued. A handle in flight keeps its
-     object's handle count. Neither the endpoint or token a message goes
-     through nor an open file can travel (`E_NOT_SUPPORTED`; a file's locks
-     name the thread that opened it). Queued calls that fail close what
+     object's handle count. The endpoint or token a message goes through
+     cannot travel (`E_NOT_SUPPORTED`). Queued calls that fail close what
      they carried (`docs/kernel/CX_SYSCALLS_IPC.md` §7).
+   - **1.3b′ (2026-10-29), done:** open files travel. Their locks stay
+     owned by the open file (XNU OFD locks, Serenity, Haiku flock; not NT's
+     file and process), so the receiver can unlock them. Each lock keeps
+     the thread that took it for the deadlock check, made unknown when the
+     handle travels (`kobj_ops.travel`); the check passes over an unknown
+     taker, so no false `E_DEADLOCK`, and a real cycle through it hangs.
    - **1.3c:** notifications.
    - **1.3d:** memory objects: pages on first touch, the region tree, strict
      commit.

@@ -4408,6 +4408,31 @@ static int ht_names(struct htab *t, int32_t h, struct kobj *o, uint32_t rights,
 
 static uint32_t ht_handles(struct kobj *o) { return atomic_load(&o->handles); }
 
+/* The receiver of a moved open file (1.3b'): a kernel thread in its own
+   process, holding a receive handle on the endpoint. It takes the call,
+   waits until the test thread is asleep on the file's lock, unlocks it
+   through the handle it received, then closes that and replies with no
+   bytes. Its waits are bounded, so a test thread that never sleeps (a false
+   E_DEADLOCK) still gets its call answered. */
+static volatile int    hf_go, hf_stage, hf_waited, hf_unlock;
+static volatile int32_t hf_eh;
+
+static void hf_helper(void) {
+    while (!hf_go) yield();
+    const struct ipc_msg_info *ti = (const struct ipc_msg_info *)user_ptr(IT_TINFO);
+    const int32_t *th = (const int32_t *)user_ptr(HT_TH);
+    if (ht_recv(hf_eh, 1) != 0 || ti->handles != 1 || ti->reply <= 0) { hf_stage = -1; return; }
+    int32_t f = th[0], tok = ti->reply;
+    hf_stage = 1;
+    for (int i = 0; i < 200 && sysfile_lock_waiting() == 0; i++) yield();
+    hf_waited = sysfile_lock_waiting();
+    hf_unlock = syscall_dispatch(SYS_FILE_UNLOCK, (uint32_t)f, 0, 0, 0, 0);
+    hf_stage = 2;
+    syscall_dispatch(SYS_FILE_CLOSE, (uint32_t)f, 0, 0, 0, 0);
+    ht_reply(tok, 0, 0);
+    hf_stage = 3;
+}
+
 int usermode_ipc_handles_test(void) {
     paddr_t phys = map_user_page(TEST_CODE_VIRT);
     if (!phys) return 0;
@@ -4423,8 +4448,9 @@ int usermode_ipc_handles_test(void) {
     int files0 = sysfile_open_count();
     uint32_t caps0 = thread_current_caps();
     struct kobj *o1 = 0, *o2 = 0, *fo = 0;
-    int32_t eh = -1, e2 = -1, t1 = -1, t2 = -1, tok = -1, ha = -1, hb = -1, th0 = -1, th1 = -1, fh = -1;
+    int32_t eh = -1, e2 = -1, t1 = -1, t2 = -1, tok = -1, ha = -1, hb = -1, th0 = -1, th1 = -1, fh = -1, fb = -1;
     int32_t hv[2];
+    int hf_tid = -1;
     uint32_t g0 = 0, g1 = 0, gt2 = 0, g = 0, p = 0;
     int tida = -1, tidb = -1, step = 0, ok = 0;
     const uint32_t ALL = HRIGHT_WAIT | HRIGHT_ARM | HRIGHT_DUPLICATE;
@@ -4435,9 +4461,9 @@ int usermode_ipc_handles_test(void) {
     t2 = syscall_dispatch(SYS_TIMER_CREATE, 0, 0, 0, 0, 0);
     o1 = t1 > 0 ? htab_ref(tab, t1, KOBJ_TIMER, 0, 0) : 0;
     o2 = t2 > 0 ? htab_ref(tab, t2, KOBJ_TIMER, 0, 0) : 0;
-    /* 1: an open file does not travel (sysfile.c); the IPC types do */
+    /* 1: an open file travels, its locks with it (sysfile.c); so do the IPC types */
     step = 1; if (!ep || !o1 || !o2 || !ht_names(tab, t2, o2, ALL, &gt2, 0)
-                  || kobj_type_ops(KOBJ_FILE)->transfer || !kobj_type_ops(KOBJ_ENDPOINT)->transfer
+                  || !kobj_type_ops(KOBJ_FILE)->transfer || !kobj_type_ops(KOBJ_ENDPOINT)->transfer
                   || !kobj_type_ops(KOBJ_SEND)->transfer || !kobj_type_ops(KOBJ_REPLY)->transfer) goto done;
 
     /* 2-8: refusals, each its caller's result, with nothing queued: a dead
@@ -4470,7 +4496,12 @@ int usermode_ipc_handles_test(void) {
         ht_go(tida, 0, 1);
         if (!it_ends(ha, E_NOT_SUPPORTED) || ep_queued(ep) != 0) goto done;
         htab_close(tab, ha); ha = -1;
-        /* ...nor an open file: step 1's flag, applied */
+        /* 71-76: an open file travels, and its locks go with it (1.3b').
+           This thread locks the whole file, gives the caller the only other
+           handle, closes its own and lets the caller move that one. The lock
+           still stands; waiting for it through a second open is no
+           E_DEADLOCK, though this thread took it, since who holds the file
+           is now someone else; the receiver unlocks it and the wait ends. */
         if (cxfs_is_mounted()) {
             const char *scratch = (cxfs_resolve("/Temp", 0) >= 0) ? "/Temp" : "";
             struct htab_info fi;
@@ -4478,18 +4509,36 @@ int usermode_ipc_handles_test(void) {
             thread_set_caps(thread_current_id(), GRANT_DISK);
             fh = ft_call(SYS_FILE_OPEN, 0, FT_PATH, 0, 0, 0,
                          FOPEN_READ | FOPEN_WRITE | FOPEN_CREATE | FOPEN_TRUNC);
+            fb = ft_call(SYS_FILE_OPEN, 0, FT_PATH, 0, 0, 0, FOPEN_READ);
+            int lrc = fh >= 0 ? ft_call(SYS_FILE_LOCK, fh, 0, 0, 0, 0, FLOCK_EXCLUSIVE) : fh;
             thread_set_caps(thread_current_id(), caps0);
             fo = fh >= 0 ? htab_ref(tab, fh, KOBJ_FILE, 0, &fi) : 0;
-            if (!fo) goto done;
+            step = 71; if (!fo || fb < 0 || lrc != E_OK) goto done;
             struct kobj *fobjs[1] = { fo };
             ha = ht_caller(ep, 0, fobjs, &fi.rights, 1, hv, &tida);
-            if (ha <= 0) goto done;
+            step = 72; if (ha <= 0) goto done;
+            htab_close(tab, fh); fh = -1;
             ht_desc(HT_CDESC(0), 0, hv[0], IPC_HANDLE_MOVE, IPC_RIGHTS_SAME);
             ht_go(tida, 0, 1);
-            if (!it_ends(ha, E_NOT_SUPPORTED) || ep_queued(ep) != 0) goto done;
+            step = 73; if (!it_queued(ep, 1) || ht_handles(fo) != 1) goto done;
+            hf_go = 0; hf_stage = 0; hf_waited = 0; hf_unlock = 1;
+            hf_tid = thread_create("kthf", hf_helper);
+            step = 74; if (hf_tid < 0) goto done;
+            thread_set_caps(hf_tid, GRANT_DISK);
+            hf_eh = ep_install_handle(hf_tid, ep, HRIGHT_RECV, 0);
+            if (hf_eh <= 0) goto done;
+            hf_go = 1;
+            thread_set_caps(thread_current_id(), GRANT_DISK);
+            lrc = ft_call(SYS_FILE_LOCK, fb, 0, 0, 0, 0, FLOCK_EXCLUSIVE | FLOCK_WAIT);
+            thread_set_caps(thread_current_id(), caps0);
+            step = 75; if (lrc != E_OK) goto done;
+            for (int i = 0; i < 200 && thread_is_alive(hf_tid); i++) yield();
+            step = 76; if (hf_stage != 3 || hf_waited != 1 || hf_unlock != E_OK
+                           || thread_is_alive(hf_tid) || !it_ends(ha, 0) || ep_queued(ep) != 0) goto done;
+            hf_tid = -1;
             htab_close(tab, ha); ha = -1;
             kobj_unref(fo); fo = 0;
-            htab_close(tab, fh); fh = -1;
+            htab_close(tab, fb); fb = -1;
             ft_strp(FT_PATH, scratch, "/kt_ht.txt");      /* it_ends wrote PT_INFO over it */
             thread_set_caps(thread_current_id(), GRANT_DISK);
             int rc = ft_call(SYS_FILE_UNLINK, 0, FT_PATH, 0, 0, 0, 0);
@@ -4632,6 +4681,8 @@ int usermode_ipc_handles_test(void) {
 
 done:
     if (!ok) klog_u32("KTEST", SEV_ERR, "ipc handles test failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    hf_go = 1;                         /* a helper left behind answers and ends */
+    for (int i = 0; hf_tid >= 0 && i < 400 && thread_is_alive(hf_tid); i++) yield();
     {
         int32_t hs[2] = { ha, hb };
         for (int k = 0; k < 2; k++) {
@@ -4648,6 +4699,7 @@ done:
     if (o2) kobj_unref(o2);
     if (fo) kobj_unref(fo);
     if (fh >= 0) htab_close(tab, fh);
+    if (fb >= 0) htab_close(tab, fb);
     if (t1 > 0) htab_close(tab, t1);
     if (t2 > 0) htab_close(tab, t2);
     if (ep2) ep_put(ep2);

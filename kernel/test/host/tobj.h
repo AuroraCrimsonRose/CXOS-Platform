@@ -21,6 +21,7 @@ struct tobj {
     struct kobj hdr;
     int         last_handle_runs;
     int         destroy_runs;
+    int         travel_runs;      /* kobj_ops.travel: taken to travel */
 };
 
 /* Register KOBJ_TEST if no test has yet. */

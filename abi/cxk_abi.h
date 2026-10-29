@@ -807,10 +807,10 @@ struct object_basic {
  * ipc_kmsg_copyin_port_descriptor). A moved handle keeps its grant id; a copy
  * gets a new one, derived from it. All are checked before any is taken: one
  * bad entry refuses the message and leaves every handle where it was.
- * E_NOT_SUPPORTED: a type that does not travel (an open file, until its locks
- * have an owner that can), or the endpoint or reply token the message goes
- * through, which cannot carry itself (Zircon refuses a channel written into
- * itself). A handle named twice is E_INVALID_ARGS.
+ * E_NOT_SUPPORTED: the endpoint or reply token the message goes through,
+ * which cannot carry itself (Zircon refuses a channel written into itself).
+ * Every type travels; an open file takes its locks along (they belong to the
+ * open file, not a thread). A handle named twice is E_INVALID_ARGS.
  */
 #define IPC_HANDLES_MAX          16
 #define IPC_HANDLE_MOVE          1              /* the handle leaves the sender's table */
