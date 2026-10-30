@@ -15,7 +15,7 @@
  * hash it was built against and the loader refuses one that differs, so a
  * program never runs against numbers or layouts it was not compiled for.
  */
-#define CXK_ABI_HASH { 0x2f, 0x0d, 0x6a, 0xdc, 0xd9, 0xc4, 0x7e, 0x1b, 0x78, 0x8d, 0x1b, 0x64, 0x41, 0x21, 0xd2, 0xd5, 0x7f, 0xaf, 0x77, 0x9e, 0x3a, 0xa0, 0x52, 0x01, 0x76, 0xcc, 0x7a, 0xc4, 0x90, 0x14, 0x57, 0x53 }
+#define CXK_ABI_HASH { 0x1a, 0x0b, 0xa1, 0xe7, 0xca, 0x20, 0x8f, 0xa6, 0xe1, 0xdd, 0x80, 0x5c, 0x03, 0xd8, 0x53, 0xb5, 0x58, 0xd3, 0xfe, 0x6e, 0x93, 0x09, 0x4f, 0xe1, 0x7c, 0x4b, 0x36, 0x44, 0x52, 0x8b, 0x2b, 0x34 }
 
 /*
  * CXK ABI v1 - the PUBLIC contract shared by the kernel, the .xoex executive,
@@ -44,7 +44,7 @@
  * line; bump both, and the DevKit's stamp, in the one commit that changes the
  * contract.
  */
-#define CXK_ABI_VERSION          26
+#define CXK_ABI_VERSION          27
 
 /*
  * ---- syscall numbers ----
@@ -78,6 +78,13 @@
  * it runs at: higher while it serves a call from a thread above it.
  */
 #define SYS_THREAD_PRIORITY      0x09
+
+/*
+ * ebx = slot -> the handle its launcher put in that slot (spawn_args.handles),
+ * as it was placed at the start; closing it does not clear the slot.
+ * E_NOT_FOUND: nothing was put there. E_OUT_OF_RANGE: SPAWN_HANDLES_MAX or more.
+ */
+#define SYS_ARGS_HANDLE          0x0A
 
 /*
  * IPC + handles 0x10-0x1F
@@ -758,6 +765,7 @@ struct spawn_args {
     uint64_t image;                             /* the app's CXEX bytes (in the caller's space) */
     uint64_t name;                              /* optional; not dereferenced in v1 */
     uint64_t args;                              /* argc NUL-terminated strings back to back, or NULL */
+    uint64_t handles;                           /* spawn_handle[handle_count], or 0 with a count of 0 */
     int32_t broker_endpoint;                    /* a RECV endpoint handle the caller owns */
     /*
      * requested caps for the child; kernel masks against the spawner's own
@@ -769,7 +777,33 @@ struct spawn_args {
      * caller's own (SYS_JOB_CREATE)
      */
     int32_t job;
-    uint32_t reserved;
+    uint32_t handle_count;                      /* at most SPAWN_HANDLES_MAX */
+};
+
+/*
+ * ---- handles named at spawn ----
+ * A child holds the handles its launcher names and no others: nothing is
+ * inherited (XNU's posix_spawn file actions under POSIX_SPAWN_CLOEXEC_DEFAULT,
+ * bsd/kern/kern_exec.c exec_handle_file_actions). Each entry is moved or
+ * copied exactly as in an IPC message (ipc_handle), and goes in a slot, the
+ * number the child asks for with SYS_ARGS_HANDLE, as PSFA_DUP2 names the
+ * child's descriptor. The list is read and its slots checked before
+ * anything else; the handles are taken only once the image has been
+ * verified and the process made, so a refused spawn leaves every one where
+ * it was. A slot named twice is E_INVALID_ARGS, one past the last
+ * E_OUT_OF_RANGE, and so is a count past SPAWN_HANDLES_MAX; a bad handle,
+ * op or right is refused as ipc_call refuses it.
+ */
+#define SPAWN_HANDLES_MAX        16
+#define ARGS_STDIN               0              /* the slot of standard input */
+#define ARGS_STDOUT              1              /* standard output */
+#define ARGS_STDERR              2              /* standard error */
+
+struct spawn_handle {
+    int32_t handle;
+    uint32_t op;                                /* IPC_HANDLE_MOVE or IPC_HANDLE_COPY */
+    uint32_t rights;                            /* a subset of the handle's, or IPC_RIGHTS_SAME */
+    uint32_t slot;                              /* below SPAWN_HANDLES_MAX; one handle per slot */
 };
 
 /*
@@ -1357,7 +1391,8 @@ struct log_entry {
 #endif
 
 CXK_ABI_STATIC_ASSERT(sizeof(struct args_info) == 16, "ABI layout: args_info");
-CXK_ABI_STATIC_ASSERT(sizeof(struct spawn_args) == 56, "ABI layout: spawn_args");
+CXK_ABI_STATIC_ASSERT(sizeof(struct spawn_args) == 64, "ABI layout: spawn_args");
+CXK_ABI_STATIC_ASSERT(sizeof(struct spawn_handle) == 16, "ABI layout: spawn_handle");
 CXK_ABI_STATIC_ASSERT(sizeof(struct clock_info) == 8, "ABI layout: clock_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct queue_event) == 16, "ABI layout: queue_event");
 CXK_ABI_STATIC_ASSERT(sizeof(struct job_limits) == 16, "ABI layout: job_limits");

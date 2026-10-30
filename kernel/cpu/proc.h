@@ -30,6 +30,7 @@
 #define CXK_PROC_H
 
 #include <stdint.h>
+#include "cxk_abi.h"          /* SPAWN_HANDLES_MAX */
 #include "object/kobj.h"
 #include "object/htab.h"
 #include "memman/vmregion.h"
@@ -57,6 +58,7 @@ struct proc {
     char        outbuf[48]; /* one log line in the making (SLOG_EVT_W) */
     struct htab handles;
     int32_t     broker;     /* its SEND handle on its launcher's broker, or -1 */
+    int32_t     start[SPAWN_HANDLES_MAX];   /* by slot, the handles its launcher named (SYS_ARGS_HANDLE); -1 none */
     paddr_t     pd_phys;    /* its own page directory, freed with it; 0 = the kernel's */
     struct vm_proc vm;      /* its mappings and memory quota (memman/vmregion.h) */
     /* The job it is in, for its whole life (cpu/job.h), with a reference;

@@ -40,7 +40,7 @@ domain kernel
 /// mismatch. Declared in versions.json as `cxex-abi` and checked against this
 /// line; bump both, and the DevKit's stamp, in the one commit that changes the
 /// contract.
-const CXK_ABI_VERSION: u32 = 26
+const CXK_ABI_VERSION: u32 = 27
 
 /// ---- syscall numbers ----
 /// lifecycle 0x00-0x0F (no capability required)
@@ -63,6 +63,10 @@ syscall SYS_THREAD_SET_PRIORITY = 0x08 fn thread_set_priority(level: u32) -> i32
 /// -> the calling thread's own priority in bits 0-7, and in bits 8-15 the one
 /// it runs at: higher while it serves a call from a thread above it.
 syscall SYS_THREAD_PRIORITY = 0x09 fn thread_priority() -> i32
+/// ebx = slot -> the handle its launcher put in that slot (spawn_args.handles),
+/// as it was placed at the start; closing it does not clear the slot.
+/// E_NOT_FOUND: nothing was put there. E_OUT_OF_RANGE: SPAWN_HANDLES_MAX or more.
+syscall SYS_ARGS_HANDLE = 0x0A fn args_handle(slot: u32) -> i32
 /// IPC + handles 0x10-0x1F
 /// ebx = *ipc_call_args, whose handle is a send handle (HRIGHT_SEND) -> the
 /// reply's length, once the server answers. Calls queue on the endpoint, oldest
@@ -550,6 +554,7 @@ struct spawn_args {
     image: u64              /// the app's CXEX bytes (in the caller's space)
     name: u64               /// optional; not dereferenced in v1
     args: u64               /// argc NUL-terminated strings back to back, or NULL
+    handles: u64            /// spawn_handle[handle_count], or 0 with a count of 0
     broker_endpoint: i32    /// a RECV endpoint handle the caller owns
     /// requested caps for the child; kernel masks against the spawner's own
     /// caps (attenuation, never amplify). 0 = capability-less app.
@@ -557,7 +562,30 @@ struct spawn_args {
     /// the job to run it in: a handle with HRIGHT_ASSIGN, or 0 for the
     /// caller's own (SYS_JOB_CREATE)
     job: i32
-    reserved: u32
+    handle_count: u32       /// at most SPAWN_HANDLES_MAX
+}
+
+/// ---- handles named at spawn ----
+/// A child holds the handles its launcher names and no others: nothing is
+/// inherited (XNU's posix_spawn file actions under POSIX_SPAWN_CLOEXEC_DEFAULT,
+/// bsd/kern/kern_exec.c exec_handle_file_actions). Each entry is moved or
+/// copied exactly as in an IPC message (ipc_handle), and goes in a slot, the
+/// number the child asks for with SYS_ARGS_HANDLE, as PSFA_DUP2 names the
+/// child's descriptor. The list is read and its slots checked before
+/// anything else; the handles are taken only once the image has been
+/// verified and the process made, so a refused spawn leaves every one where
+/// it was. A slot named twice is E_INVALID_ARGS, one past the last
+/// E_OUT_OF_RANGE, and so is a count past SPAWN_HANDLES_MAX; a bad handle,
+/// op or right is refused as ipc_call refuses it.
+const SPAWN_HANDLES_MAX: u32 = 16
+const ARGS_STDIN: u32 = 0            /// the slot of standard input
+const ARGS_STDOUT: u32 = 1           /// standard output
+const ARGS_STDERR: u32 = 2           /// standard error
+struct spawn_handle {
+    handle: i32
+    op: u32         /// IPC_HANDLE_MOVE or IPC_HANDLE_COPY
+    rights: u32     /// a subset of the handle's, or IPC_RIGHTS_SAME
+    slot: u32       /// below SPAWN_HANDLES_MAX; one handle per slot
 }
 
 /// ---- clock and sleep (SYS_CLOCK, SYS_SLEEP; unprivileged) ----

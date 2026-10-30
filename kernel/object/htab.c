@@ -158,12 +158,9 @@ int32_t htab_dup(struct htab *t, int32_t h, uint32_t rights) {
     }
 }
 
-int htab_take(struct htab *t, const struct htab_send *s, uint32_t n, const struct kobj *self,
-              struct htab_transit *out) {
-    if (!t) return HTAB_E_BAD_HANDLE;
-    uint32_t f = spin_lock(&t->lock);
+/* htab_take's checks, with t->lock held. */
+static int check_send(struct htab *t, const struct htab_send *s, uint32_t n, const struct kobj *self) {
     int r = 0;
-    /* Every entry first: nothing is taken until all of them pass. */
     for (uint32_t i = 0; i < n && r == 0; i++) {
         struct htab_entry *e = entry_of(t, s[i].h);
         const struct kobj_ops *ops = e ? kobj_type_ops((enum kobj_type)e->obj->type) : 0;
@@ -176,6 +173,23 @@ int htab_take(struct htab *t, const struct htab_send *s, uint32_t n, const struc
         for (uint32_t k = 0; k < i && r == 0; k++)
             if (s[k].h == s[i].h) r = HTAB_E_INVALID_ARGS;
     }
+    return r;
+}
+
+int htab_check(struct htab *t, const struct htab_send *s, uint32_t n, const struct kobj *self) {
+    if (!t) return HTAB_E_BAD_HANDLE;
+    uint32_t f = spin_lock(&t->lock);
+    int r = check_send(t, s, n, self);
+    spin_unlock(&t->lock, f);
+    return r;
+}
+
+int htab_take(struct htab *t, const struct htab_send *s, uint32_t n, const struct kobj *self,
+              struct htab_transit *out) {
+    if (!t) return HTAB_E_BAD_HANDLE;
+    uint32_t f = spin_lock(&t->lock);
+    /* Every entry first: nothing is taken until all of them pass. */
+    int r = check_send(t, s, n, self);
     for (uint32_t i = 0; i < n && r == 0; i++) {
         struct htab_entry *e = entry_of(t, s[i].h);
         const struct kobj_ops *ops = kobj_type_ops((enum kobj_type)e->obj->type);

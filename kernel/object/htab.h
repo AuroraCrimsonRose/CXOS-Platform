@@ -154,6 +154,11 @@ struct htab_transit {
 int htab_take(struct htab *t, const struct htab_send *s, uint32_t n, const struct kobj *self,
               struct htab_transit *out);
 
+/* htab_take's checks alone, taking nothing: what it would refuse now, for a
+   caller that must answer before it can take (SYS_SPAWN checks the list,
+   then verifies the image). The take checks again, under the same lock. */
+int htab_check(struct htab *t, const struct htab_send *s, uint32_t n, const struct kobj *self);
+
 /* Place the `n` transits of `x` in `t`, all or none, and write their values
    to `out`. A transit with grant 0 is a new handle (opened here, with a new
    grant); any other keeps its grant, parent and handle count. Each placed

@@ -84,7 +84,8 @@ static void executive_main(void) {
        args_len, so a stale pointer here is a spawn that fails with E_BAD_ADDRESS
        and a machine that boots to nothing. */
     sa.args = 0; sa.args_len = 0;
-    sa.job = 0; sa.reserved = 0;   /* its own job: the kernel's */
+    sa.job = 0;                    /* its own job: the kernel's */
+    sa.handles = 0; sa.handle_count = 0;   /* none named: it holds only its broker */
     int shell = sys_spawn(&sa);   /* a process handle; it closes when this exits */
     if (shell < 0) { sys_write("executive: spawn failed\n"); sys_exit(1); }
 
@@ -108,7 +109,8 @@ static void executive_main(void) {
     svc.name = UADDR("supervisor"); svc.broker_endpoint = -1;
     svc.caps = GRANT_OS_BASELINE | SPAWN_BACKGROUND;
     svc.args = 0; svc.args_len = 0;
-    svc.job = 0; svc.reserved = 0;
+    svc.job = 0;
+    svc.handles = 0; svc.handle_count = 0;
     if (sys_exec_path("/System/Programs/supervisor.xsex", &svc) < 0)
         sys_write("executive: no service supervisor (/System/Programs/supervisor.xsex)\n");
 

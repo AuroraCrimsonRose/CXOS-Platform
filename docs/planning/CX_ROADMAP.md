@@ -433,11 +433,16 @@ Independent of the order above, and small enough to land whenever convenient:
      a write of up to `PIPE_ATOMIC` bytes goes in whole, and with no reader
      is `E_PEER_CLOSED`, not a signal. Readable, writable and peer-closed
      signals for the queue (`docs/kernel/CX_SYSCALLS_IPC.md` §7).
-   - **1.4b:** handles named at spawn: `spawn_args` lists handles, moved or
-     copied as in a message (XNU `posix_spawn` file actions with
-     `POSIX_SPAWN_CLOEXEC_DEFAULT`, not NT's or Haiku's inherit-by-flag),
-     and the child finds standard input, output and error among them; the
-     X library writes to its output handle when it has one.
+   - **1.4b (ABI 27, 2026-10-29), done:** handles named at spawn.
+     `spawn_args` lists up to 16 `spawn_handle` entries, each moved or
+     copied as in a message into a numbered slot (XNU `posix_spawn` file
+     actions with `POSIX_SPAWN_CLOEXEC_DEFAULT`, `PSFA_DUP2` naming the
+     descriptor; not NT's or Haiku's inherit-by-flag), and the child starts
+     with those and no others. It asks for a slot with `SYS_ARGS_HANDLE`;
+     0-2 are standard input, output and error. The list is checked before
+     the image and taken after it, so a refused spawn takes nothing. The X
+     library's `puts`, `write` and `putc` write to the output handle when
+     there is one (`docs/kernel/CX_SYSCALLS_IPC.md` §7).
    - **1.4c:** the shell from disk, signed and verified like the
      supervisor, and the executive's embedded copy gone; `run` passes the
      shell's streams, and `a | b` joins two programs with a pipe.

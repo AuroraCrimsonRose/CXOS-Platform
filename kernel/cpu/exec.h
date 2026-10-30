@@ -41,10 +41,12 @@ int cxex_exec(const uint8_t *file, size_t len);
  *
  * The verification is identical either way: the signature is what says the
  * image may run at all, never what it may do. The process is in `job`, or
- * with NULL in the caller's. */
+ * with NULL in the caller's, and starts with the handles `hs` names (NULL:
+ * none), taken from the caller only once the image has passed. */
+struct spawn_hset;
 int cxex_exec_as(const uint8_t *file, size_t len, uint32_t caps, struct endpoint *broker,
                  uint32_t broker_grant, const char *args, uint32_t args_len, int32_t *handle,
-                 struct job *job);
+                 const struct spawn_hset *hs, struct job *job);
 
 /* Turn a keyvault_trust_of result into the trust an image is admitted at, or a
    negative refusal. Identity on a release kernel; a DEV_UNSIGNED build also

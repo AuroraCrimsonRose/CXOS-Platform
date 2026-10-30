@@ -121,6 +121,7 @@ struct proc *proc_create(const struct proc *parent, struct job *job) {
     p->cwd    = parent ? parent->cwd : 0;
     p->background = parent ? parent->background : 0;   /* never handed back */
     p->broker = -1;
+    for (uint32_t i = 0; i < SPAWN_HANDLES_MAX; i++) p->start[i] = -1;
     htab_init(&p->handles, handle_limit);
     p->job    = job ? job : parent ? parent->job : job_root();
     job_proc_in(p->job);
@@ -153,6 +154,7 @@ void proc_thread_stopped(struct proc *p) {
     proc_out_flush(p);
     htab_close_all(&p->handles);
     p->broker = -1;
+    for (uint32_t i = 0; i < SPAWN_HANDLES_MAX; i++) p->start[i] = -1;
     /* Nobody is left to ask, or to force. */
     stop_unlink(p);
     if (p->stop_ep) { ep_put(p->stop_ep); p->stop_ep = 0; }

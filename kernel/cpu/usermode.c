@@ -218,6 +218,16 @@ int syscall_args(uint64_t a) {
     return E_OK;
 }
 
+int syscall_args_handle(uint32_t slot) {
+    /* Unprivileged: the handle its launcher put in `slot`, as proc_start
+       recorded it. A lookup, not a take: the table, not this record, says
+       whether the handle is still open. */
+    if (slot >= SPAWN_HANDLES_MAX) return E_OUT_OF_RANGE;
+    struct proc *p = thread_proc(thread_current_id());
+    int32_t h = p ? p->start[slot] : -1;
+    return h < 0 ? E_NOT_FOUND : h;
+}
+
 int syscall_clock_monotonic(uint64_t now) {
     /* Unprivileged, as SYS_CLOCK is: the time since boot is not authority. */
     uint64_t t = timer_now_ns();
@@ -1845,7 +1855,7 @@ int usermode_file_test(void) {
     sa->image = 0; sa->image_len = 0; sa->name = FT_PATH;
     sa->broker_endpoint = -1; sa->caps = 0;
     sa->args = 0; sa->args_len = 0;
-    sa->job = 0; sa->reserved = 0;
+    sa->job = 0; sa->handles = 0; sa->handle_count = 0;
 
     ft_strp(FT_PATH, scratch, "/kt_absent.xuex");
     step++;
@@ -2676,7 +2686,7 @@ int usermode_flock_test(void) {
         struct spawn_args *sa = (struct spawn_args *)FT_STAT;
         sa->image = 0; sa->image_len = 0; sa->name = FT_PATH;
         sa->broker_endpoint = -1; sa->caps = 0;
-        sa->job = 0; sa->reserved = 0;
+        sa->job = 0; sa->handles = 0; sa->handle_count = 0;
         /* the arguments are checked before the path: FT_PATH's own string as
            the blob, 4 GB up, is unmapped (ABI 12) - cut to 32 bits it would be
            a good blob, and the call would go on to E_NOT_FOUND */

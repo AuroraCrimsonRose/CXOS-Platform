@@ -217,7 +217,7 @@ static void proc_trampoline(void) {
 int proc_start(const void *image, uint32_t image_len, uint32_t caps,
                struct endpoint *broker, uint32_t broker_grant,
                const char *args, uint32_t args_len, int32_t *handle,
-               struct job *job) {
+               const struct spawn_hset *hs, struct job *job) {
     if (image_len == 0 || image_len > PROC_MAX_IMAGE) return E_OUT_OF_RANGE;
     if (args_len > USER_ARGS_MAX)                     return E_OUT_OF_RANGE;
     if (!args) args_len = 0;
@@ -278,15 +278,39 @@ int proc_start(const void *image, uint32_t image_len, uint32_t caps,
         if (bh < 0) klog_u32("PROC", SEV_WARN, "broker handle refused: ", (uint32_t)-bh, LOG_COLOR_VALUE, "");
         else        thread_set_broker(tid, bh);
     }
-    /* The caller's handle on it, last, while the thread is still held: if
-       there is no room for it, the process is discarded before it has run,
-       not left running with nobody able to wait for it. */
+    /* The caller's handle on it, while the thread is still held: if there
+       is no room for it, the process is discarded before it has run, not
+       left running with nobody able to wait for it. */
+    struct htab *mine = thread_htab(thread_current_id());
+    int32_t ph = -1;
     if (handle) {
-        int32_t ph = htab_install(thread_htab(thread_current_id()), &thread_proc(tid)->hdr,
-                                  HRIGHT_WAIT | HRIGHT_INSPECT | HRIGHT_KILL | HRIGHT_STOP | HRIGHT_DUPLICATE, 0);
+        ph = htab_install(mine, &thread_proc(tid)->hdr,
+                          HRIGHT_WAIT | HRIGHT_INSPECT | HRIGHT_KILL | HRIGHT_STOP | HRIGHT_DUPLICATE, 0);
         if (ph < 0) { thread_discard(tid); return ph; }
-        *handle = ph;
     }
+    /* The named handles, last of all: nothing after this can refuse, so a
+       spawn that fails anywhere leaves them in the caller's table. The take
+       checks the list again under the table's lock (the syscall checked it
+       before the image was read). Landing in the child's fresh table fails
+       only for memory, and then the moved ones are closed with the child. */
+    if (hs && hs->n) {
+        struct htab_transit x[SPAWN_HANDLES_MAX];
+        int32_t v[SPAWN_HANDLES_MAX];
+        int rc = htab_take(mine, hs->s, hs->n, 0, x);
+        if (rc == 0 && htab_land(thread_htab(tid), x, hs->n, v) != 0) {
+            htab_transit_drop(x, hs->n);
+            rc = E_NO_RESOURCES;
+        }
+        if (rc != 0) {
+            if (ph >= 0) htab_close(mine, ph);
+            thread_discard(tid);
+            return rc;
+        }
+        struct proc *p = thread_proc(tid);
+        for (uint32_t i = 0; i < hs->n; i++)
+            if (hs->slot[i] < SPAWN_HANDLES_MAX) p->start[hs->slot[i]] = v[i];
+    }
+    if (handle) *handle = ph;
     thread_start(tid);
     return pid;   /* the process, not its thread */
 }
@@ -316,7 +340,6 @@ static int check_args(const struct spawn_args *a) {
    place that cannot be raced. Returns E_OK or the error to hand back. */
 static int spawn_job(const struct spawn_args *a, struct job **out) {
     *out = 0;
-    if (a->reserved) return E_INVALID_ARGS;
     if (a->job == 0) return E_OK;
     struct htab_info hi;
     struct kobj *o = htab_ref(thread_htab(thread_current_id()), a->job, KOBJ_NONE, 0, &hi);
@@ -327,6 +350,30 @@ static int spawn_job(const struct spawn_args *a, struct job **out) {
     if (rc != E_OK) { kobj_unref(o); return rc; }
     *out = (struct job *)o;
     return E_OK;
+}
+
+/* Read the handles spawn_args names into `hs` and check them, before the
+   image is read: the count, each slot (below SPAWN_HANDLES_MAX, one handle
+   each), then the handles as htab_take will, taking nothing. proc_start
+   takes them once the image has passed. Returns E_OK or the error. */
+static int spawn_handles_in(const struct spawn_args *a, struct spawn_hset *hs) {
+    hs->n = 0;
+    if (a->handle_count > SPAWN_HANDLES_MAX) return E_OUT_OF_RANGE;
+    uint32_t n = a->handle_count;
+    if (n == 0) return E_OK;
+    struct spawn_handle d[SPAWN_HANDLES_MAX];
+    if (user_copy_in(d, a->handles, n * (uint32_t)sizeof d[0]) != 0) return E_BAD_ADDRESS;
+    for (uint32_t i = 0; i < n; i++) {
+        if (d[i].slot >= SPAWN_HANDLES_MAX) return E_OUT_OF_RANGE;
+        for (uint32_t k = 0; k < i; k++)
+            if (d[k].slot == d[i].slot) return E_INVALID_ARGS;
+        hs->s[i].h      = d[i].handle;
+        hs->s[i].op     = d[i].op;
+        hs->s[i].rights = d[i].rights;
+        hs->slot[i]     = d[i].slot;
+    }
+    hs->n = n;
+    return htab_check(thread_htab(thread_current_id()), hs->s, n, 0);
 }
 
 /* SYS_SPAWN: an executive (GRANT_SPAWN) launches a capability-less app, brokered
@@ -340,6 +387,10 @@ int sys_spawn(uint64_t ua) {
 
     int arc = check_args(&a);
     if (arc != E_OK) return arc;
+
+    struct spawn_hset hs;
+    int hrc = spawn_handles_in(&a, &hs);
+    if (hrc != E_OK) return hrc;
 
     struct job *job;
     int jrc = spawn_job(&a, &job);
@@ -386,7 +437,7 @@ int sys_spawn(uint64_t ua) {
 
     int32_t ph = 0;
     int pid = cxex_exec_as(kimg, (size_t)a.image_len, granted, bep, bgrant, user_ptr(a.args), (uint32_t)a.args_len, &ph,
-                           job);
+                           &hs, job);
     kfree(kimg);        /* proc_start took its own copy for the new address space */
     ep_put(bep);        /* the child holds its own handle on it now */
     job_put(job);       /* and the child its own reference on the job */
@@ -437,6 +488,10 @@ int sys_exec_path(uint64_t upath, uint64_t ua) {
 
     int arc = check_args(&a);
     if (arc != E_OK) return arc;
+
+    struct spawn_hset hs;
+    int hrc = spawn_handles_in(&a, &hs);
+    if (hrc != E_OK) return hrc;
 
     /* copy the path in a page at a time; user_ptr_readable walks page tables, so
        per-byte would be a page-table walk per character */
@@ -505,7 +560,7 @@ int sys_exec_path(uint64_t upath, uint64_t ua) {
 
     int32_t ph = 0;
     int rc = cxex_exec_as(buf, (size_t)e.size, granted, bep, bgrant, user_ptr(a.args), (uint32_t)a.args_len, &ph,
-                          job);
+                          &hs, job);
     kfree(buf);   /* proc_start took its own copy for the new address space */
     ep_put(bep);
     job_put(job);

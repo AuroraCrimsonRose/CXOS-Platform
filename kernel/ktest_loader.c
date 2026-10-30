@@ -507,7 +507,7 @@ static int spv_info(struct object_info_args *oi, int32_t h, uint32_t topic, void
 /* hi.xuex, as `a` describes it, spawned into a job of this thread's: with
    too little memory for it, it is refused at load and the job holds nothing
    after; with room, it runs, its pages counted while it did and given back.
-   Then the refusals: a reserved field, a handle that is no job or lacks
+   Then the refusals: a handle that is no job or lacks
    HRIGHT_ASSIGN, a killed job. 0 = pass, else the step that failed. */
 static int spv_in_job(struct spawn_args *a, struct object_info_args *oi) {
     struct process_info *pi = (struct process_info *)(SPV_ARGS_VA + 0x200);
@@ -544,11 +544,8 @@ static int spv_in_job(struct spawn_args *a, struct object_info_args *oi) {
                   || ji->memory_peak > jl->memory || ji->threads != 0 || ji->processes != 0) goto done;
 
     /* 5: the refusals, before anything is read */
-    a->reserved = 1;
-    step = 5; if (sys_spawn(user_addr(a)) != E_INVALID_ARGS) goto done;
-    a->reserved = 0;
     a->job = 9999;
-    if (sys_spawn(user_addr(a)) != E_BAD_HANDLE) goto done;
+    step = 5; if (sys_spawn(user_addr(a)) != E_BAD_HANDLE) goto done;
     a->job = a->broker_endpoint;
     if (sys_spawn(user_addr(a)) != E_WRONG_TYPE) goto done;
     d = syscall_handle_duplicate(jh, HRIGHT_INSPECT | HRIGHT_KILL);
@@ -563,10 +560,105 @@ static int spv_in_job(struct spawn_args *a, struct object_info_args *oi) {
 
 done:
     a->job = 0;
-    a->reserved = 0;
     if (ph > 0) htab_close(tab, ph);
     if (d > 0)  htab_close(tab, d);
     if (jh > 0) htab_close(tab, jh);
+    return step;
+}
+
+/* 1 if `h` is a live handle in this thread's table (OBJINFO_BASIC answers). */
+static int spv_live(struct object_info_args *oi, int32_t h) {
+    return spv_info(oi, h, OBJINFO_BASIC, (void *)(SPV_ARGS_VA + 0x300),
+                    sizeof(struct object_basic)) == (int)sizeof(struct object_basic);
+}
+
+/* hi.xuex with handles named (ABI 27): a pipe's write end moved into slot
+   ARGS_STDOUT, which the X library writes to in place of the console. With
+   caps 0 the console refuses it, so its greeting in the pipe is the child
+   finding the slot. First the refusals, each taking nothing: a count, a slot
+   past the last or named twice, a bad handle, a copy without
+   HRIGHT_DUPLICATE, rights that grow, an unreadable list, and a tampered
+   image. 0 = pass, else the step that failed. */
+static int spv_handles(struct spawn_args *a, struct object_info_args *oi, uint8_t *img) {
+    struct process_info *pi = (struct process_info *)(SPV_ARGS_VA + 0x200);
+    int32_t *ends = (int32_t *)(SPV_ARGS_VA + 0x600);
+    struct spawn_handle *sh = (struct spawn_handle *)(SPV_ARGS_VA + 0x700);
+    char *buf = (char *)(SPV_ARGS_VA + 0x900);
+    static const char hello[] = "hi - loaded from disk";
+    struct htab *tab = thread_htab(thread_current_id());
+    int32_t ph = -1, d = -1;
+    ends[0] = ends[1] = -1;
+    int step;
+
+    /* 1: this thread was named nothing; one past the last slot is no slot */
+    step = 1; if (syscall_args_handle(ARGS_STDIN) != E_NOT_FOUND
+                  || syscall_args_handle(SPAWN_HANDLES_MAX - 1) != E_NOT_FOUND
+                  || syscall_args_handle(SPAWN_HANDLES_MAX) != E_OUT_OF_RANGE) goto done;
+    step = 2; if (syscall_pipe_create(0, user_addr(ends)) != E_OK) goto done;
+
+    /* 3: one entry too many. Zeroed, they name slot 0 twice, so a count let
+       through would be E_INVALID_ARGS instead. */
+    for (uint32_t i = 0; i <= SPAWN_HANDLES_MAX; i++)
+        sh[i] = (struct spawn_handle){ 0, 0, 0, 0 };
+    a->handles = user_addr(sh);
+    a->handle_count = SPAWN_HANDLES_MAX + 1;
+    step = 3; if (sys_spawn(user_addr(a)) != E_OUT_OF_RANGE) goto done;
+
+    /* 4-9: the write end moved in entry 0 throughout */
+    sh[0] = (struct spawn_handle){ ends[1], IPC_HANDLE_MOVE, IPC_RIGHTS_SAME, SPAWN_HANDLES_MAX };
+    a->handle_count = 1;
+    step = 4; if (sys_spawn(user_addr(a)) != E_OUT_OF_RANGE) goto done;
+    sh[0].slot = ARGS_STDOUT;
+    sh[1] = (struct spawn_handle){ ends[0], IPC_HANDLE_COPY, IPC_RIGHTS_SAME, ARGS_STDOUT };
+    a->handle_count = 2;
+    step = 5; if (sys_spawn(user_addr(a)) != E_INVALID_ARGS) goto done;
+    /* 6: checked before the image: a tampered one does not get to answer */
+    sh[1].slot   = ARGS_STDIN;
+    sh[1].handle = 9999;
+    img[16] ^= 0xFF;
+    int brc = sys_spawn(user_addr(a));
+    img[16] ^= 0xFF;
+    step = 6; if (brc != E_BAD_HANDLE) goto done;
+    d = syscall_handle_duplicate(ends[0], HRIGHT_READ | HRIGHT_WAIT);
+    sh[1].handle = d;
+    step = 7; if (d <= 0 || sys_spawn(user_addr(a)) != E_ACCESS_DENIED) goto done;
+    sh[1].handle = ends[0];
+    sh[1].rights = HRIGHT_READ | HRIGHT_WRITE;
+    step = 8; if (sys_spawn(user_addr(a)) != E_ACCESS_DENIED) goto done;
+    sh[1].rights = HRIGHT_READ | HRIGHT_WAIT;
+    a->handles = USER_VLIMIT;
+    step = 9; if (sys_spawn(user_addr(a)) != E_BAD_ADDRESS) goto done;
+    a->handles = user_addr(sh);
+
+    /* 10: a list that passes, on an image that does not */
+    img[16] ^= 0xFF;
+    int rc = sys_spawn(user_addr(a));
+    img[16] ^= 0xFF;
+    step = 10; if (rc != CXEX_EXEC_VERIFY_FAILED) goto done;
+    step = 11; if (!spv_live(oi, ends[0]) || !spv_live(oi, ends[1])) goto done;
+
+    /* 12: it runs and exits 0; the moved write end has left this table, the
+       copied read end has not */
+    ph = sys_spawn(user_addr(a));
+    step = 12; if (ph <= 0 || syscall_object_wait(ph, SIGNAL_PROCESS_ENDED, timer_now_ns() + 10000 * TIMER_NS_PER_TICK, 0) != E_OK
+                   || spv_info(oi, ph, OBJINFO_PROCESS, pi, sizeof *pi) != (int)sizeof *pi
+                   || pi->ended != PROC_EXITED || pi->code != 0) goto done;
+    step = 13; if (spv_live(oi, ends[1]) || !spv_live(oi, ends[0])) goto done;
+
+    /* 14: what it printed is in the pipe; then 0, the write end closed with it */
+    int n = syscall_file_read(ends[0], user_addr(buf), 255);
+    step = 14; if (n < (int)sizeof hello - 1) goto done;
+    for (uint32_t i = 0; i < sizeof hello - 1; i++) if (buf[i] != hello[i]) goto done;
+    step = 15; if (syscall_file_read(ends[0], user_addr(buf), 255) != 0) goto done;
+    step = 0;
+
+done:
+    a->handles = 0;
+    a->handle_count = 0;
+    if (ph > 0) htab_close(tab, ph);
+    if (d > 0)  htab_close(tab, d);
+    if (ends[0] > 0) htab_close(tab, ends[0]);
+    if (step != 0 && ends[1] > 0) htab_close(tab, ends[1]);   /* moved on a pass */
     return step;
 }
 
@@ -631,7 +723,8 @@ int ktest_spawn_verifies_image(void) {
     a->args            = 0;
     a->args_len        = 0;
     a->job             = 0;                /* this thread's own job */
-    a->reserved        = 0;
+    a->handles         = 0;
+    a->handle_count    = 0;
 
     /* ---- the controls ----
        Distinct codes for distinct causes, which is what stops this suite from
@@ -704,6 +797,16 @@ int ktest_spawn_verifies_image(void) {
         int step = spv_in_job(a, oi);
         if (step) {
             klog_u32("KTEST", SEV_ERR, "spawn into a job failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+            ok = 0;
+        }
+        ok = ok && proc_live() == live0;
+    }
+
+    /* ---- with handles named (ABI 27) ---- */
+    if (ok) {
+        int step = spv_handles(a, oi, img);
+        if (step) {
+            klog_u32("KTEST", SEV_ERR, "spawn with handles failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
             ok = 0;
         }
         ok = ok && proc_live() == live0;

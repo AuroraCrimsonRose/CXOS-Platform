@@ -17,19 +17,54 @@ const KEY_TAB:       i32 = 9;
 const KEY_ESC:       i32 = 27;
 
 // ---- output ----
+//
+// Output goes to the handle the launcher put in slot ARGS_STDOUT
+// (SYS_ARGS_HANDLE) when it put one there: a pipe's write end or a file,
+// written with SYS_FILE_WRITE, which needs no grant. A program given none
+// writes to the console.
 
-// write a NUL-terminated string (len 0 makes the kernel scan for the NUL)
-fn puts(s: *u8) -> void { console_write(s, 0); }
+global io_out:   i32;   // the output handle, once io_known is 1
+global io_known: i32;   // 0: not asked yet; 1: one was given; 2: none
+
+fn io_stdout() -> i32 {
+    if (io_known == 0) {
+        let h: i32 = args_handle(ARGS_STDOUT);
+        if (h >= 0) { io_out = h; io_known = 1; } else { io_known = 2; }
+    }
+    if (io_known == 1) { return io_out; }
+    return 0 - 1;
+}
+
+// n bytes to the output. A pipe takes what it has room for, so the rest
+// follows until it is all gone; a write that fails ends it (a reader that
+// has gone is E_PEER_CLOSED, and the bytes have nowhere to go).
+fn io_emit(s: *u8, n: u32) -> void {
+    let h: i32 = io_stdout();
+    if (h < 0) { console_write(s, n); return; }
+    let done: u32 = 0;
+    while (done < n) {
+        let w: i32 = file_write(h, &s[done], n - done);
+        if (w <= 0) { return; }
+        done = done + (w as u32);
+    }
+}
+
+// write a NUL-terminated string
+fn puts(s: *u8) -> void {
+    let n: u32 = 0;
+    while (s[n] != 0) { n = n + 1; }
+    if (n > 0) { io_emit(s, n); }
+}
 
 // write exactly n bytes, NULs included
-fn write(s: *u8, n: u32) -> void { console_write(s, n); }
+fn write(s: *u8, n: u32) -> void { if (n > 0) { io_emit(s, n); } }
 
 // write a single character
 fn putc(c: u8) -> void {
     let b: [2]u8;
     b[0] = c;
     b[1] = 0;
-    console_write(&b[0], 1);
+    io_emit(&b[0], 1);
 }
 
 fn newline() -> void { puts("\n"); }

@@ -479,6 +479,32 @@ reader has gone (XNU `pipe_select` asks the same `PIPE_BUF` of room), and
 generated name (`CreatePipe`, `base/win32/client/pipe.c`); here it has no
 name at all, so only a handle reaches it. Both ends travel in messages.
 
+**Handles named at spawn, as built (1.4b, ABI 27):** `spawn_args.handles`
+lists up to `SPAWN_HANDLES_MAX` (16) `spawn_handle` entries, each an
+`ipc_handle` with a slot in place of its reserved word, and the child starts
+with those and no others. NT inherits every handle marked `OBJ_INHERIT`
+(`ObInitProcess`, `base/ntos/ob/obinit.c`, through `ExDupHandleTable`) and
+Haiku every descriptor not marked close-on-exec (`vfs_exec_io_context`,
+`src/system/kernel/fs/vfs.cpp`): both make a handle's reach depend on a flag
+set somewhere else, long before. XNU's `posix_spawn` file actions with
+`POSIX_SPAWN_CLOEXEC_DEFAULT` name each one instead, and `PSFA_DUP2` says
+which descriptor it becomes in the child (`exec_handle_file_actions`,
+`bsd/kern/kern_exec.c`); Fuchsia's `processargs` tags each handle in the
+start message (from memory: not indexed). Here the slot is that number, and
+the child asks for it with `SYS_ARGS_HANDLE(slot)`, which answers the
+handle placed there or `E_NOT_FOUND`. Slots 0-2 are `ARGS_STDIN`,
+`ARGS_STDOUT` and `ARGS_STDERR`; the X library's `puts`, `write` and `putc`
+write to the `ARGS_STDOUT` handle when there is one, the console otherwise.
+Each entry is moved or copied as in a message (`htab_take`'s checks and
+codes), with two of its own: a slot past the last, or a count past 16, is
+`E_OUT_OF_RANGE`, and a slot named twice `E_INVALID_ARGS`. The list is read
+and checked before the image is (`htab_check`, taking nothing); the handles
+are taken in `proc_start`, after verification and after the caller's
+process handle is placed, so any refusal leaves every one in the caller's
+table. Only running out of memory to grow the child's table, after the
+take, closes the moved ones with the child. The argument page stays; §10's
+start message replaces both later.
+
 **Streams and files:**
 `pipe_create(size)`, `io_read(h, buf, offset)`, `io_write(h, buf, offset)`
 (pipes ignore the offset), `io_seek`, `fs_open_at(dir, path, flags, rights)`,
