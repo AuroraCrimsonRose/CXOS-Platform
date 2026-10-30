@@ -408,7 +408,13 @@ Independent of the order above, and small enough to land whenever convenient:
      commit: the whole size is charged to the job and reserved in the page
      allocator, so running out is `E_NO_MEMORY` from the call. Regions are
      in an AVL tree (256 per process); mappings borrow the object's pages.
-   - **1.3e:** sealing, and memory objects in IPC.
+   - **1.3e (ABI 24, 2026-10-29), done:** sealing, and memory objects in
+     IPC. A memory object's handle travels like any other, its commit still
+     charged to the job that made it. `SYS_MEM_SEAL` (`HRIGHT_SEAL`) adds
+     seals that bind every holder (Linux memfd): `MEM_SEAL_WRITE` means no
+     writable mapping, refused with `E_BUSY` while one stands (the object
+     counts them), and `MEM_SEAL_SEAL` ends the adding. A receiver reads
+     them in `mem_info.seals`, so it can trust bytes it has checked.
    - **1.3f:** priority passed through calls.
 4. Pipes and explicit handle passing at spawn; the shell runs from disk.
 5. User threads, futex (owner in the futex word), thread-local storage.

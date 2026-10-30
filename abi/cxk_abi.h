@@ -15,7 +15,7 @@
  * hash it was built against and the loader refuses one that differs, so a
  * program never runs against numbers or layouts it was not compiled for.
  */
-#define CXK_ABI_HASH { 0xb1, 0xd4, 0x1d, 0xab, 0x61, 0xa9, 0x97, 0x4d, 0xa9, 0xf5, 0x84, 0x9e, 0x39, 0xaf, 0xfb, 0x7f, 0xe9, 0x91, 0xba, 0xb5, 0x33, 0x78, 0xc9, 0xde, 0xb8, 0x31, 0x80, 0x3f, 0x22, 0x89, 0xac, 0x79 }
+#define CXK_ABI_HASH { 0xd8, 0xee, 0x90, 0xd0, 0xf2, 0x6d, 0x30, 0x3d, 0x77, 0xb4, 0x39, 0x43, 0xc6, 0xf5, 0x7d, 0xdc, 0x45, 0x34, 0x06, 0xf0, 0x9e, 0xfb, 0xd5, 0x79, 0xc5, 0xfa, 0x00, 0xeb, 0x10, 0xd2, 0x11, 0xa9 }
 
 /*
  * CXK ABI v1 - the PUBLIC contract shared by the kernel, the .xoex executive,
@@ -44,7 +44,7 @@
  * line; bump both, and the DevKit's stamp, in the one commit that changes the
  * contract.
  */
-#define CXK_ABI_VERSION          23
+#define CXK_ABI_VERSION          24
 
 /*
  * ---- syscall numbers ----
@@ -225,6 +225,9 @@
 #define HRIGHT_MAP               0x2u
 #define HRIGHT_MAP_WRITE         0x4u
 #define HRIGHT_MAP_EXEC          0x8u
+
+/* memory object: SYS_MEM_SEAL */
+#define HRIGHT_SEAL              0x10u
 
 /*
  * Generic rights, which mean the same on every type, count down from the top
@@ -488,11 +491,19 @@
 /*
  * ebx/ecx = size in bytes (1 to MMAP_MAX_BYTES, rounded up to a page), edx =
  * flags (0) -> a memory object handle with HRIGHT_MAP, HRIGHT_MAP_WRITE,
- * HRIGHT_MAP_EXEC, HRIGHT_INSPECT and HRIGHT_DUPLICATE. Its pages are zero
+ * HRIGHT_MAP_EXEC, HRIGHT_SEAL, HRIGHT_INSPECT and HRIGHT_DUPLICATE. Its pages are zero
  * and arrive on first touch; all of them are committed now, charged to the
  * caller's job (E_NO_MEMORY past its limit or past what memory can promise).
  */
 #define SYS_MEM_CREATE           0x83
+
+/*
+ * ebx = memory object handle (HRIGHT_SEAL), ecx = seals (MEM_SEAL_*, not 0)
+ * -> 0, the seals added for every holder and never taken off. E_BUSY for
+ * MEM_SEAL_WRITE while a writable mapping of it exists; E_ACCESS_DENIED once
+ * it has MEM_SEAL_SEAL. A receiver reads them with OBJINFO_MEM.
+ */
+#define SYS_MEM_SEAL             0x84
 
 /* power 0x90-0x9F (privileged: GRANT_POWER). Each returns only if refused. */
 #define SYS_POWER_REBOOT         0x90
@@ -801,10 +812,15 @@ struct job_limits {
     uint32_t reserved;                          /* 0 */
 };
 
-/* OBJINFO_MEM: a memory object's size, and how much of it has been touched. */
+/*
+ * OBJINFO_MEM: a memory object's size, how much of it has been touched, and
+ * its seals.
+ */
 struct mem_info {
     uint64_t size;                              /* bytes, a whole number of pages; all of it committed */
     uint64_t resident;                          /* bytes of it that hold a page now */
+    uint32_t seals;                             /* MEM_SEAL_* */
+    uint32_t reserved;                          /* 0 */
 };
 
 struct job_info {
@@ -1053,6 +1069,11 @@ struct net_ip_config {
  * overcommit and no OOM killer. An object lives while a handle or a mapping
  * holds it, and its pages go with it.
  *
+ * SHARING (ABI 24). An object's handle travels in IPC messages, and its
+ * commit stays charged to the job that made it. A receiver that must trust
+ * the bytes not to change asks OBJINFO_MEM for MEM_SEAL_WRITE: the sender
+ * unmaps its writable views and seals the object (SYS_MEM_SEAL) first.
+ *
  * WHAT A MAPPING IS ADDRESSED BY: an object, a 64-bit OFFSET into it (a whole
  * number of pages, and 0 for a new anonymous one), and a LENGTH that must fit
  * inside it. The offset is 64 bits so that an object larger than the window
@@ -1091,6 +1112,14 @@ struct net_ip_config {
  * mapping and gone with it.
  */
 #define MOBJ_ANON                0
+
+/*
+ * SYS_MEM_SEAL, mem_info.seals. A seal binds every holder of the object, its
+ * creator too, so a receiver that finds MEM_SEAL_WRITE knows nobody can
+ * change the bytes after it has checked them (Linux memfd seals).
+ */
+#define MEM_SEAL_WRITE           0x01           /* no writable mapping, now or later */
+#define MEM_SEAL_SEAL            0x02           /* no more seals */
 
 /*
  * The largest single mapping, and the largest memory object, a process may
@@ -1245,7 +1274,7 @@ CXK_ABI_STATIC_ASSERT(sizeof(struct spawn_args) == 56, "ABI layout: spawn_args")
 CXK_ABI_STATIC_ASSERT(sizeof(struct clock_info) == 8, "ABI layout: clock_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct queue_event) == 16, "ABI layout: queue_event");
 CXK_ABI_STATIC_ASSERT(sizeof(struct job_limits) == 16, "ABI layout: job_limits");
-CXK_ABI_STATIC_ASSERT(sizeof(struct mem_info) == 16, "ABI layout: mem_info");
+CXK_ABI_STATIC_ASSERT(sizeof(struct mem_info) == 24, "ABI layout: mem_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct job_info) == 40, "ABI layout: job_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct process_info) == 40, "ABI layout: process_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct object_info_args) == 24, "ABI layout: object_info_args");

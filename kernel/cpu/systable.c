@@ -166,6 +166,7 @@ static int decode_mem_create(const uintptr_t *a) {
     return syscall_mem_create((uint64_t)a[0], (uint32_t)a[1]);
 #endif
 }
+static int decode_mem_seal(const uintptr_t *a) { return syscall_mem_seal((int32_t)a[0], (uint32_t)a[1]); }
 static int decode_power_reboot(const uintptr_t *a) { (void)a; return syscall_power_reboot(); }
 static int decode_power_shutdown(const uintptr_t *a) { (void)a; return syscall_power_shutdown(); }
 static int decode_power_sleep(const uintptr_t *a) { return syscall_power_sleep((uint32_t)a[0]); }
@@ -288,6 +289,7 @@ const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_VM_UNMAP] = decode_vm_unmap,
     [SYS_VM_INFO] = decode_vm_info,
     [SYS_MEM_CREATE] = decode_mem_create,
+    [SYS_MEM_SEAL] = decode_mem_seal,
     [SYS_POWER_REBOOT] = decode_power_reboot,
     [SYS_POWER_SHUTDOWN] = decode_power_shutdown,
     [SYS_POWER_SLEEP] = decode_power_sleep,

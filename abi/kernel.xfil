@@ -40,7 +40,7 @@ domain kernel
 /// mismatch. Declared in versions.json as `cxex-abi` and checked against this
 /// line; bump both, and the DevKit's stamp, in the one commit that changes the
 /// contract.
-const CXK_ABI_VERSION: u32 = 23
+const CXK_ABI_VERSION: u32 = 24
 
 /// ---- syscall numbers ----
 /// lifecycle 0x00-0x0F (no capability required)
@@ -161,6 +161,8 @@ const HRIGHT_REGISTER: u32 = 0x1u
 const HRIGHT_MAP: u32 = 0x2u
 const HRIGHT_MAP_WRITE: u32 = 0x4u
 const HRIGHT_MAP_EXEC: u32 = 0x8u
+/// memory object: SYS_MEM_SEAL
+const HRIGHT_SEAL: u32 = 0x10u
 /// Generic rights, which mean the same on every type, count down from the top
 /// bit; a type's own count up from the bottom. A handle without
 /// HRIGHT_DUPLICATE cannot be copied, and a copy has it only if asked for.
@@ -340,10 +342,15 @@ syscall SYS_VM_UNMAP = 0x81 fn vm_unmap(addr: u64, length: u64) -> i32
 syscall SYS_VM_INFO = 0x82 fn vm_info(u: *vm_usage) -> i32      /// ebx = *vm_usage -> 0, with quota and mapped filled in
 /// ebx/ecx = size in bytes (1 to MMAP_MAX_BYTES, rounded up to a page), edx =
 /// flags (0) -> a memory object handle with HRIGHT_MAP, HRIGHT_MAP_WRITE,
-/// HRIGHT_MAP_EXEC, HRIGHT_INSPECT and HRIGHT_DUPLICATE. Its pages are zero
+/// HRIGHT_MAP_EXEC, HRIGHT_SEAL, HRIGHT_INSPECT and HRIGHT_DUPLICATE. Its pages are zero
 /// and arrive on first touch; all of them are committed now, charged to the
 /// caller's job (E_NO_MEMORY past its limit or past what memory can promise).
 syscall SYS_MEM_CREATE = 0x83 fn mem_create(size: u64, flags: u32) -> i32
+/// ebx = memory object handle (HRIGHT_SEAL), ecx = seals (MEM_SEAL_*, not 0)
+/// -> 0, the seals added for every holder and never taken off. E_BUSY for
+/// MEM_SEAL_WRITE while a writable mapping of it exists; E_ACCESS_DENIED once
+/// it has MEM_SEAL_SEAL. A receiver reads them with OBJINFO_MEM.
+syscall SYS_MEM_SEAL = 0x84 fn mem_seal(h: i32, seals: u32) -> i32
 
 /// power 0x90-0x9F (privileged: GRANT_POWER). Each returns only if refused.
 syscall SYS_POWER_REBOOT = 0x90 fn reboot() -> i32
@@ -598,10 +605,13 @@ struct job_limits {
     threads: u32
     reserved: u32       /// 0
 }
-/// OBJINFO_MEM: a memory object's size, and how much of it has been touched.
+/// OBJINFO_MEM: a memory object's size, how much of it has been touched, and
+/// its seals.
 struct mem_info {
     size: u64       /// bytes, a whole number of pages; all of it committed
     resident: u64   /// bytes of it that hold a page now
+    seals: u32      /// MEM_SEAL_*
+    reserved: u32   /// 0
 }
 struct job_info {
     memory_limit: u64
@@ -810,6 +820,11 @@ struct net_ip_config {
 /// overcommit and no OOM killer. An object lives while a handle or a mapping
 /// holds it, and its pages go with it.
 ///
+/// SHARING (ABI 24). An object's handle travels in IPC messages, and its
+/// commit stays charged to the job that made it. A receiver that must trust
+/// the bytes not to change asks OBJINFO_MEM for MEM_SEAL_WRITE: the sender
+/// unmaps its writable views and seals the object (SYS_MEM_SEAL) first.
+///
 /// WHAT A MAPPING IS ADDRESSED BY: an object, a 64-bit OFFSET into it (a whole
 /// number of pages, and 0 for a new anonymous one), and a LENGTH that must fit
 /// inside it. The offset is 64 bits so that an object larger than the window
@@ -845,6 +860,12 @@ const MMAP_HINT: u32 = 0x01      /// try `addr` first; the kernel may place else
 /// vm_map_args.object: 0 asks for a new anonymous memory object, made for the
 /// mapping and gone with it.
 const MOBJ_ANON: u32 = 0
+
+/// SYS_MEM_SEAL, mem_info.seals. A seal binds every holder of the object, its
+/// creator too, so a receiver that finds MEM_SEAL_WRITE knows nobody can
+/// change the bytes after it has checked them (Linux memfd seals).
+const MEM_SEAL_WRITE: u32 = 0x01  /// no writable mapping, now or later
+const MEM_SEAL_SEAL: u32 = 0x02   /// no more seals
 
 /// The largest single mapping, and the largest memory object, a process may
 /// ask for. A bound rather than a limit of the design, far above anything that

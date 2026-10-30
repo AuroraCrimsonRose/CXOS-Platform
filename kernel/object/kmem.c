@@ -31,10 +31,10 @@ static void mem_destroy(struct kobj *o) {
 
 static const struct kobj_ops mem_ops = {
     .name         = "memory",
-    .rights_valid = HRIGHT_INSPECT | HRIGHT_MAP | HRIGHT_MAP_WRITE | HRIGHT_MAP_EXEC,
-    /* travels with 1.3e, with sealing: until then a receiver could not
-       trust what another process can still write */
-    .transfer     = 0,
+    .rights_valid = HRIGHT_INSPECT | HRIGHT_MAP | HRIGHT_MAP_WRITE | HRIGHT_MAP_EXEC |
+                    HRIGHT_SEAL,
+    /* a receiver that must trust the bytes checks for MEM_SEAL_WRITE */
+    .transfer     = 1,
     .destroy      = mem_destroy,
 };
 
@@ -66,6 +66,8 @@ struct kmem *kmem_create(uint32_t npages, struct job *job, int *rc) {
     m->lock     = (spinlock_t)SPINLOCK_INIT;
     m->npages   = npages;
     m->resident = 0;
+    m->writers  = 0;
+    m->seals    = 0;
     kobj_ref(&job->hdr);
     m->job      = job;
     *rc = E_OK;
@@ -108,4 +110,35 @@ uint32_t kmem_resident(struct kmem *m) {
     uint32_t n = m->resident;
     spin_unlock(&m->lock, f);
     return n;
+}
+
+int kmem_writer_add(struct kmem *m) {
+    uint32_t f = spin_lock(&m->lock);
+    int rc = (m->seals & MEM_SEAL_WRITE) ? E_ACCESS_DENIED : E_OK;
+    if (rc == E_OK) m->writers++;
+    spin_unlock(&m->lock, f);
+    return rc;
+}
+
+void kmem_writer_drop(struct kmem *m) {
+    uint32_t f = spin_lock(&m->lock);
+    if (!m->writers) kpanic("kmem_writer_drop: no writer counted");
+    m->writers--;
+    spin_unlock(&m->lock, f);
+}
+
+int kmem_seal(struct kmem *m, uint32_t seals) {
+    uint32_t f = spin_lock(&m->lock);
+    int rc = (m->seals & MEM_SEAL_SEAL)                ? E_ACCESS_DENIED
+           : ((seals & MEM_SEAL_WRITE) && m->writers) ? E_BUSY : E_OK;
+    if (rc == E_OK) m->seals |= seals;
+    spin_unlock(&m->lock, f);
+    return rc;
+}
+
+uint32_t kmem_seals(struct kmem *m) {
+    uint32_t f = spin_lock(&m->lock);
+    uint32_t s = m->seals;
+    spin_unlock(&m->lock, f);
+    return s;
 }

@@ -22,8 +22,17 @@
  * object's own last reference frees them.
  *
  * The page array is under the object's lock, so a fault and the object's
- * other users (two mappings, 1.3e's other processes) see each page appear
+ * other users (two mappings, other processes) see each page appear
  * once.
+ *
+ * SEALS (1.3e). An object travels in IPC messages, so a receiver may share it
+ * with a process it does not trust. A seal binds every holder: MEM_SEAL_WRITE
+ * means no writable mapping exists or can be made, and since a mapping is
+ * the only way into the pages (a kernel copy goes through the caller's
+ * mapping and its protection), the bytes are fixed. The writable mappings are
+ * counted under the lock, so a seal and a new mapping cannot both win (Linux
+ * memfd's F_SEAL_WRITE, which is refused while a shared writable mapping
+ * exists).
  */
 #ifndef CXK_KMEM_H
 #define CXK_KMEM_H
@@ -37,9 +46,11 @@ struct job;
 
 struct kmem {
     struct kobj  hdr;        /* first; KOBJ_MEM */
-    spinlock_t   lock;       /* pages and resident */
+    spinlock_t   lock;       /* pages and resident, writers and seals */
     uint32_t     npages;     /* its size; never 0 */
     uint32_t     resident;   /* pages taken so far */
+    uint32_t     writers;    /* writable mappings of it now */
+    uint32_t     seals;      /* MEM_SEAL_*; only ever added */
     paddr_t     *pages;      /* npages entries, 0 until touched (kmalloc) */
     struct job  *job;        /* charged npages pages; a reference */
 };
@@ -61,5 +72,18 @@ paddr_t kmem_page_if_resident(struct kmem *m, uint32_t index);
 
 /* Pages it holds now. */
 uint32_t kmem_resident(struct kmem *m);
+
+/* A writable mapping of it is being made: E_ACCESS_DENIED if it is sealed
+   against writing, else E_OK and counted until kmem_writer_drop. */
+int  kmem_writer_add(struct kmem *m);
+void kmem_writer_drop(struct kmem *m);
+
+/* Add `seals` (MEM_SEAL_*, checked by the caller). E_ACCESS_DENIED once it
+   has MEM_SEAL_SEAL, E_BUSY for MEM_SEAL_WRITE while a writer is counted;
+   nothing is added unless all of it is. */
+int kmem_seal(struct kmem *m, uint32_t seals);
+
+/* Its seals now. */
+uint32_t kmem_seals(struct kmem *m);
 
 #endif

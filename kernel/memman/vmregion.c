@@ -73,6 +73,14 @@ static void unmap_region(paddr_t space, struct vm_region *r) {
             paging_unmap_in(space, (uintptr_t)(r->node.base + at));
 }
 
+/* A region out of its tree and its pages unmapped: what it held on its
+   object goes, the writer it counted first. */
+static void region_free(struct vm_region *r) {
+    if (r->prot & MPROT_WRITE) kmem_writer_drop(r->mem);
+    kobj_unref(&r->mem->hdr);
+    ocache_free(&region_cache, r);
+}
+
 void vm_proc_init(int pid, uint32_t quota, int parent) {
     if (!vp(pid)) return;
     struct vm_proc *p = vp(pid);
@@ -101,8 +109,7 @@ void vm_proc_reset(int pid) {
             vmtree_remove(&p->root, &r->node);
             spin_unlock(&p->lock, f);
             unmap_region(space, r);
-            kobj_unref(&r->mem->hdr);
-            ocache_free(&region_cache, r);
+            region_free(r);
         }
         job_uncharge_mem(jb(pid), p->charged);
     }
@@ -198,9 +205,17 @@ int vm_map_object(int pid, struct vm_map_args *a, struct kmem *m, uint32_t right
     int rc;
     if (m) kobj_ref(&m->hdr);
     else if (!(m = kmem_create(len / PAGE_SIZE, jb(pid), &rc))) return rc;
+    /* A writable view is counted on the object until it goes, so a seal
+       against writing waits for none to be left (kmem.h). */
+    int writer = (a->prot & MPROT_WRITE) != 0;
+    if (writer && (rc = kmem_writer_add(m)) != E_OK) { kobj_unref(&m->hdr); return rc; }
 
     struct vm_region *r = ocache_alloc(&region_cache);
-    if (!r) { kobj_unref(&m->hdr); return E_NO_MEMORY; }
+    if (!r) {
+        if (writer) kmem_writer_drop(m);
+        kobj_unref(&m->hdr);
+        return E_NO_MEMORY;
+    }
     r->prot = a->prot;
     r->mem  = m;
     r->off  = a->offset;
@@ -225,6 +240,7 @@ int vm_map_object(int pid, struct vm_map_args *a, struct kmem *m, uint32_t right
     spin_unlock(&p->lock, f);
     if (!base) {
         ocache_free(&region_cache, r);
+        if (writer) kmem_writer_drop(m);
         kobj_unref(&m->hdr);
         return E_NO_RESOURCES;
     }
@@ -259,8 +275,7 @@ int vm_unmap(int pid, uint64_t addr, uint64_t length) {
 
     /* Out of the tree first, so no fault maps a page back in behind us. */
     unmap_region(space_of(pid), r);
-    kobj_unref(&r->mem->hdr);
-    ocache_free(&region_cache, r);
+    region_free(r);
     return E_OK;
 }
 

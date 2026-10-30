@@ -504,9 +504,22 @@ int syscall_mem_create(uint64_t size, uint32_t flags) {
     if (!m) return rc;
     int32_t h = htab_install(thread_htab(thread_current_id()), &m->hdr,
                              HRIGHT_MAP | HRIGHT_MAP_WRITE | HRIGHT_MAP_EXEC |
-                             HRIGHT_INSPECT | HRIGHT_DUPLICATE, 0);
+                             HRIGHT_SEAL | HRIGHT_INSPECT | HRIGHT_DUPLICATE, 0);
     kobj_unref(&m->hdr);   /* the handle's reference keeps it; with no handle, it goes */
     return h;
+}
+
+int syscall_mem_seal(int32_t h, uint32_t seals) {
+    /* Unprivileged: the right is the authority, and a seal only takes away. */
+    if (!seals || (seals & ~(MEM_SEAL_WRITE | MEM_SEAL_SEAL))) return E_INVALID_ARGS;
+    struct htab_info hi;
+    struct kobj *o = htab_ref(thread_htab(thread_current_id()), h, KOBJ_NONE, 0, &hi);
+    if (!o) return E_BAD_HANDLE;
+    int rc = o->type != KOBJ_MEM         ? E_WRONG_TYPE
+           : !(hi.rights & HRIGHT_SEAL)  ? E_ACCESS_DENIED
+           : kmem_seal((struct kmem *)o, seals);
+    kobj_unref(o);
+    return rc;
 }
 
 int syscall_vm_unmap(uint64_t addr, uint64_t length) {
@@ -603,6 +616,7 @@ int syscall_object_info(uint64_t a) {
         if (rc == E_OK) {
             mi.size     = (uint64_t)m->npages * PAGE_SIZE;
             mi.resident = (uint64_t)kmem_resident(m) * PAGE_SIZE;
+            mi.seals    = kmem_seals(m);
         }
         kobj_unref(o);
         if (rc != E_OK) return rc;
@@ -4336,8 +4350,9 @@ done:
  * pages of a mapping arrive on the first touch: here through the
  * user-pointer checks, and from ring 3 in two real processes, one that reads
  * and stores and one that stores into a read-only view. Strict commit is
- * checked against a job's limit and against what memory can promise.
- * 1 = pass, 0 = fail. */
+ * checked against a job's limit and against what memory can promise. Seals
+ * (1.3e) bind every handle, and wait for the last writable view, including
+ * one a process held until it ended. 1 = pass, 0 = fail. */
 extern uint8_t user_blob_touch_start[], user_blob_touch_end[];
 
 #define MT_ARGS  (TEST_CODE_VIRT + 0x000)   /* struct vm_map_args */
@@ -4350,6 +4365,9 @@ static uint64_t mt_addrs[MMAP_MAX_REGIONS];
 
 static int mt_create(uint64_t size, uint32_t flags) {
     return um_call(SYS_MEM_CREATE, 1u << 0, size, flags, 0, 0, 0);
+}
+static int mt_seal(int32_t h, uint32_t seals) {
+    return syscall_dispatch(SYS_MEM_SEAL, (uint32_t)h, seals, 0, 0, 0);
 }
 /* object_info on `h` for `topic` into MT_INFO, `cap` bytes: the call's result. */
 static int mt_info(int32_t h, uint32_t topic, uint32_t cap) {
@@ -4402,10 +4420,11 @@ int usermode_mem_test(void) {
     const struct mem_info *mi = (const struct mem_info *)user_ptr(MT_INFO);
     struct process_info *pi = (struct process_info *)user_ptr(PT_INFO);
     const uint32_t P = PAGE_SIZE;
-    const uint32_t all = HRIGHT_MAP | HRIGHT_MAP_WRITE | HRIGHT_MAP_EXEC | HRIGHT_INSPECT | HRIGHT_DUPLICATE;
+    const uint32_t all = HRIGHT_MAP | HRIGHT_MAP_WRITE | HRIGHT_MAP_EXEC | HRIGHT_SEAL |
+                         HRIGHT_INSPECT | HRIGHT_DUPLICATE;
     uint32_t live0 = kobj_live(KOBJ_MEM), res0 = pmm_reserved_count();
     uint32_t faults0 = usermode_faults();
-    int32_t m = -1, d = -1, t = -1, h = -1;
+    int32_t m = -1, d = -1, t = -1, h = -1, s = -1, sd = -1;
     struct kmem *mo = 0;
     struct job *j = 0;
     uint64_t addr = 0, addr2 = 0, val = MT_VALUE, got = 0;
@@ -4483,6 +4502,40 @@ int usermode_mem_test(void) {
     if (syscall_dispatch(SYS_VM_UNMAP, addr2, 0, 0, 0, 0) != E_OK) goto done;
     addr2 = 0;
 
+    /* 25-29: seals (1.3e). Refusals first, each its own error; a seal
+       against writing is refused while a writable view stands, and adds
+       nothing; then it binds every handle, and MEM_SEAL_SEAL ends the adding */
+    s = mt_create(P, 0);
+    sd = s > 0 ? syscall_dispatch(SYS_HANDLE_DUPLICATE, (uint32_t)s, all & ~HRIGHT_SEAL, 0, 0, 0) : -1;
+    step = 25; if (s <= 0 || sd <= 0 || mt_seal(s, 0) != E_INVALID_ARGS || mt_seal(s, 4) != E_INVALID_ARGS
+                   || mt_seal(9999, MEM_SEAL_WRITE) != E_BAD_HANDLE
+                   || mt_seal(t, MEM_SEAL_WRITE) != E_WRONG_TYPE
+                   || mt_seal(sd, MEM_SEAL_WRITE) != E_ACCESS_DENIED
+                   || mt_info(s, OBJINFO_MEM, sizeof *mi) != (int)sizeof *mi || mi->seals != 0) goto done;
+    step = 26; if (mt_map(s, 0, P, MPROT_READ | MPROT_WRITE) != E_OK) goto done;
+    addr = a->addr;
+    if (mt_map(s, 0, P, MPROT_READ) != E_OK) goto done;
+    addr2 = a->addr;
+    if (mt_seal(s, MEM_SEAL_WRITE) != E_BUSY || mt_seal(s, MEM_SEAL_WRITE | MEM_SEAL_SEAL) != E_BUSY
+        || mt_info(s, OBJINFO_MEM, sizeof *mi) != (int)sizeof *mi || mi->seals != 0) goto done;
+    step = 27; if (syscall_dispatch(SYS_VM_UNMAP, addr, 0, 0, 0, 0) != E_OK) goto done;
+    addr = 0;
+    if (mt_seal(s, MEM_SEAL_WRITE) != E_OK
+        || mt_info(s, OBJINFO_MEM, sizeof *mi) != (int)sizeof *mi || mi->seals != MEM_SEAL_WRITE) goto done;
+    /* 28: no writable view through any handle; reading and running stay */
+    step = 28; if (mt_map(s, 0, P, MPROT_READ | MPROT_WRITE) != E_ACCESS_DENIED
+                   || mt_map(sd, 0, P, MPROT_READ | MPROT_WRITE) != E_ACCESS_DENIED
+                   || mt_map(s, 0, P, MPROT_READ | MPROT_EXEC) != E_OK
+                   || syscall_dispatch(SYS_VM_UNMAP, a->addr, 0, 0, 0, 0) != E_OK) goto done;
+    step = 29; if (mt_seal(s, MEM_SEAL_WRITE) != E_OK || mt_seal(s, MEM_SEAL_SEAL) != E_OK
+                   || mt_seal(s, MEM_SEAL_WRITE) != E_ACCESS_DENIED
+                   || mt_info(s, OBJINFO_MEM, sizeof *mi) != (int)sizeof *mi
+                   || mi->seals != (MEM_SEAL_WRITE | MEM_SEAL_SEAL)) goto done;
+    if (syscall_dispatch(SYS_VM_UNMAP, addr2, 0, 0, 0, 0) != E_OK) goto done;
+    addr2 = 0;
+    htab_close(tab, sd); sd = -1;
+    htab_close(tab, s); s = -1;
+
     /* 13: commit past a job's limit is refused at once and charges nothing */
     j = job_create(job_root(), 2u * P, 0, &rc);
     step = 13; if (!j) goto done;
@@ -4526,13 +4579,13 @@ int usermode_mem_test(void) {
     /* 17-18: from ring 3: the first touch of page 0 is a read, and finds it
        zero; the store holds; the page outlives the process, in the object */
     h = mt_toucher(mo, MPROT_READ | MPROT_WRITE, 0, &tid, &addr);
-    step = 17; if (h <= 0) goto done;
+    step = 17; if (h <= 0 || mo->writers != 1) goto done;
     thread_start(tid); tid = -1;
     step = 18; if (pt_wait(h, SIGNAL_PROCESS_ENDED, PT_FOREVER, 0) != E_OK || pt_info(h) != (int)sizeof *pi
                    || pi->ended != PROC_EXITED || pi->code != 0) goto done;
     htab_close(tab, h); h = -1;
     page0 = kmem_page_if_resident(mo, 0);
-    step = 19; if (!page0 || kmem_resident(mo) != 2 || !pmm_page_in_use(page0)
+    step = 19; if (!page0 || kmem_resident(mo) != 2|| mo->writers != 0 || !pmm_page_in_use(page0)
                    || *(volatile uint64_t *)((uint8_t *)paging_temp_map(page0) + 8) != MT_VALUE) goto done;
 
     /* 20: a store as the first touch of a read-only view is the process's
@@ -4575,6 +4628,8 @@ done:
     if (mo) kobj_unref(&mo->hdr);
     if (j) job_put(j);
     if (m > 0) htab_close(tab, m);
+    if (sd > 0) htab_close(tab, sd);
+    if (s > 0) htab_close(tab, s);
     if (d > 0) htab_close(tab, d);
     if (t > 0) htab_close(tab, t);
     vm_proc_reset(pid);
@@ -4885,7 +4940,8 @@ done:
  * handle with fewer rights and copies another, and a receive with no room for
  * them leaves both in transit; the reply's refusals keep its token and its
  * handles; a reply moves one back with its grant intact; a call that fails or
- * is withdrawn closes what it carried. 1 = pass. */
+ * is withdrawn closes what it carried; a sealed memory object travels and its
+ * receiver sees the seals (1.3e). 1 = pass. */
 #define HT_DESC     (TEST_CODE_VIRT + 0x300)               /* this thread's ipc_handle[8] */
 #define HT_CDESC(i) (TEST_CODE_VIRT + 0x380 + (i) * 0x20)  /* caller i's, two each */
 #define HT_RH(i)    (TEST_CODE_VIRT + 0x900 + (i) * 0x40)  /* caller i's reply handles */
@@ -4986,6 +5042,8 @@ int usermode_ipc_handles_test(void) {
     volatile uint8_t *data = (volatile uint8_t *)user_ptr(IT_DATA);
     uint32_t live0 = proc_live(), faults0 = usermode_faults(), refused0 = syscall_refused_count();
     uint32_t calls0 = kobj_live(KOBJ_REPLY), timers0 = kobj_live(KOBJ_TIMER);
+    uint32_t mems0 = kobj_live(KOBJ_MEM);
+    struct kmem *mb = 0;
     int eps0 = ep_in_use_count();
     struct endpoint *ep = 0, *ep2 = 0;
     int files0 = sysfile_open_count();
@@ -5210,6 +5268,32 @@ int usermode_ipc_handles_test(void) {
         || ep_queued(ep) != 0 || ht_handles(o1) != 1) goto done;
     htab_close(tab, hb); hb = -1;
 
+    /* 77-78: a memory object travels (1.3e), with fewer rights, and its
+       receiver reads the seals that let it trust the bytes */
+    {
+        int mrc;
+        mb = kmem_create(1, thread_proc(thread_current_id())->job, &mrc);
+        step = 77; if (!mb || kmem_seal(mb, MEM_SEAL_WRITE | MEM_SEAL_SEAL) != E_OK) goto done;
+        struct kobj *objs[1] = { &mb->hdr };
+        const uint32_t rights[1] = { HRIGHT_MAP | HRIGHT_MAP_EXEC | HRIGHT_INSPECT };
+        ha = ht_caller(ep, 0, objs, rights, 1, hv, &tida);
+        if (ha <= 0) goto done;
+        ht_desc(HT_CDESC(0), 0, hv[0], IPC_HANDLE_MOVE, HRIGHT_MAP | HRIGHT_INSPECT);
+        ht_go(tida, 0, 1);
+        const struct mem_info *mi = (const struct mem_info *)user_ptr(JT_INFO);
+        step = 78; if (!it_queued(ep, 1) || ht_recv(eh, 1) != 0 || ti->handles != 1 || ti->reply <= 0) goto done;
+        tok = ti->reply; th0 = th[0];
+        if (!ht_names(tab, th0, &mb->hdr, HRIGHT_MAP | HRIGHT_INSPECT, 0, 0)
+            || jt_info_as(th0, OBJINFO_MEM, sizeof *mi) != (int)sizeof *mi
+            || mi->seals != (MEM_SEAL_WRITE | MEM_SEAL_SEAL) || mi->size != PAGE_SIZE
+            || ht_reply(tok, 0, 0) != E_OK) goto done;
+        tok = -1;
+        if (!it_ends(ha, E_OK) || ht_handles(&mb->hdr) != 1) goto done;
+        htab_close(tab, ha); ha = -1;
+        htab_close(tab, th0); th0 = -1;
+        kobj_unref(&mb->hdr); mb = 0;
+    }
+
     /* 17: nothing left behind */
     htab_close(tab, th1); th1 = -1;
     kobj_unref(o1); o1 = 0;
@@ -5218,7 +5302,8 @@ int usermode_ipc_handles_test(void) {
     htab_close(tab, t2); t2 = -1;
     step = 17; if (proc_live() != live0 || usermode_faults() != faults0
                    || syscall_refused_count() != refused0 || kobj_live(KOBJ_REPLY) != calls0
-                   || kobj_live(KOBJ_TIMER) != timers0 || ep_in_use_count() != eps0 + 1
+                   || kobj_live(KOBJ_TIMER) != timers0 || kobj_live(KOBJ_MEM) != mems0
+                   || ep_in_use_count() != eps0 + 1
                    || sysfile_open_count() != files0) goto done;
     ok = 1;
 
@@ -5241,6 +5326,7 @@ done:
     if (o1) kobj_unref(o1);
     if (o2) kobj_unref(o2);
     if (fo) kobj_unref(fo);
+    if (mb) kobj_unref(&mb->hdr);
     if (fh >= 0) htab_close(tab, fh);
     if (fb >= 0) htab_close(tab, fb);
     if (t1 > 0) htab_close(tab, t1);

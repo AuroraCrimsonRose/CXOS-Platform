@@ -78,6 +78,7 @@ int syscall_vm_map(uint64_t a);                 /* SYS_VM_MAP */
 int syscall_vm_unmap(uint64_t addr, uint64_t length); /* SYS_VM_UNMAP */
 int syscall_vm_info(uint64_t u);                /* SYS_VM_INFO */
 int syscall_mem_create(uint64_t size, uint32_t flags); /* SYS_MEM_CREATE */
+int syscall_mem_seal(int32_t h, uint32_t seals); /* SYS_MEM_SEAL */
 int syscall_power_reboot(void);                 /* SYS_POWER_REBOOT */
 int syscall_power_shutdown(void);               /* SYS_POWER_SHUTDOWN */
 int syscall_power_sleep(uint32_t ms);           /* SYS_POWER_SLEEP */
@@ -105,7 +106,7 @@ int syscall_file_unlock(int32_t h, uint64_t start, uint64_t len); /* SYS_FILE_UN
  * before looking it up, and one that lands in a hole finds no decoder. */
 #define SYSCALL_ARGS            5
 #define SYSCALL_TABLE_SIZE      178
-#define SYSCALL_COUNT           84
+#define SYSCALL_COUNT           85
 
 /* An argument register is as wide as the machine's: 32 bits on x86-32, where a
  * u64 takes a register pair, and 64 on x86-64, where it takes one. */

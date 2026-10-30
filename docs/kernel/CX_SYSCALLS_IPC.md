@@ -20,7 +20,7 @@
 | Devices | Drawing (`SYS_FB_DRAW_TEXT`), keyboard and mouse are syscalls; input needs no capability | The kernel draws pixels; any process can read another's keys |
 | Arguments | A fixed page at `USER_ARGS_BASE` | An x86-32 address in the ABI |
 | Errors | 15 codes | No timeout, peer-closed, wrong-type or rights-denied distinction |
-| IPC | Calls queue with reply tokens and badges, up to 64 KiB and 16 handles each way (ABI 21, §7); notifications with minted signallers (ABI 22); memory objects, mapped on first touch (ABI 23); the executive defines messages informally | Memory objects do not travel yet; no types |
+| IPC | Calls queue with reply tokens and badges, up to 64 KiB and 16 handles each way (ABI 21, §7); notifications with minted signallers (ABI 22); memory objects, mapped on first touch (ABI 23), sealed and travelling (ABI 24); the executive defines messages informally | No types |
 | Definition | Since step 6a1, `abi/kernel.xfil`: `cxk_abi.h`, the X prelude's constants and structures, and its plain syscall wrappers are generated from it (§9.5). The prelude's helpers are by hand. Since 6a3a every image records the ABI hash and the loader compares it | The interface it describes is still this table's |
 
 The good parts stay: user copies that validate and recover from faults
@@ -408,7 +408,29 @@ running out is `E_NO_MEMORY` from `mem_create` or `vm_map`, never a fault
 later; 256 pages stay back for the kernel. The object keeps its pages until
 its last handle and mapping go. `OBJINFO_MEM` (`HRIGHT_INSPECT`) gives a
 `mem_info`: the size and the bytes resident. Regions are in an AVL tree, and
-`MMAP_MAX_REGIONS` is 256. Not yet: objects in messages and sealing (1.3e).
+`MMAP_MAX_REGIONS` is 256.
+
+*Sealing, and memory objects in messages, ABI 24 (Phase 1.3e):* a memory
+object's handle travels in messages, moved or copied with rights that only
+shrink, and its commit stays charged to the job that made it. A receiver that
+shares it with a process it does not trust needs to know the bytes will not
+change after it has checked them, so an object can be **sealed**, as Linux
+memfd's are.
+`SYS_MEM_SEAL(h, seals)` needs `HRIGHT_SEAL`, which `SYS_MEM_CREATE` gives;
+a seal binds every holder, the creator too, and is never taken off.
+`MEM_SEAL_WRITE`: no writable mapping, now or later. The object counts its
+writable mappings, so the seal is `E_BUSY` while one stands (unmap it, or let
+the process that held it end), and once it is set a writable `SYS_VM_MAP` is
+`E_ACCESS_DENIED` through any handle; reading and executable views stay. A
+mapping is the only way into the pages (a kernel copy honours the caller's
+mapping's protection), so the bytes are fixed. `MEM_SEAL_SEAL`: no more
+seals; any later `SYS_MEM_SEAL` is `E_ACCESS_DENIED`. A refusal adds nothing.
+Seals 0 or an unknown bit are `E_INVALID_ARGS`, before the handle is looked
+up. `mem_info` gains `seals` (and `reserved`, 0), so the usual order is:
+the sender fills a writable view, unmaps it, seals `WRITE | SEAL`, and moves
+a handle with `HRIGHT_MAP | HRIGHT_INSPECT`; the receiver checks
+`OBJINFO_MEM` before it reads. Not yet: seals on size (sizes are fixed
+today), and a copy-on-write snapshot in place of a seal.
 
 **Streams and files:**
 `pipe_create(size)`, `io_read(h, buf, offset)`, `io_write(h, buf, offset)`
