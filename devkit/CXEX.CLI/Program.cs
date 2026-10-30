@@ -99,6 +99,17 @@ app.Configure(config =>
     config.AddCommand<CheckXDataCommand>("check-xdata")
         .WithDescription("Validates X Data documents (service descriptors), with the same rules as the X reader.");
 
+    // ---- every test, and every sabotage (roadmap 1.5d3) ----
+    config.AddBranch("test", test =>
+    {
+        test.SetDescription("Runs the tests and the sabotages that show they can fail.");
+
+        test.AddCommand<TestAllCommand>("all")
+            .WithDescription("Builds and boots the OS in each variant, runs dotnet test (DevKit and kernel host tests), then the container's Differential run, into one summary.");
+        test.AddCommand<TestSabotageCommand>("sabotage")
+            .WithDescription("For each sabotage in a file: apply, build, boot, restore, and judge by which self-tests went red.");
+    });
+
     // ---- the real machine ----
     config.AddBranch("rig", rig =>
     {

@@ -330,7 +330,7 @@ public class OsBuildCommand : Command<OsBuildCommand.Settings>
     /// for the build and the ABI header together. Both, not either: a lone tools/
     /// directory is common enough to match the wrong tree.
     /// </summary>
-    private static string? ResolveRoot(string? explicitRoot)
+    internal static string? ResolveRoot(string? explicitRoot)
     {
         if (explicitRoot is { Length: > 0 })
         {

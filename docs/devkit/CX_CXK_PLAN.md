@@ -52,7 +52,7 @@ Noun first, verb second:
 | Group | Commands |
 |---|---|
 | `cxk os` | `build`, `run`, `verify`, `image`, `clean` |
-| `cxk test` | `host`, `boot`, `diff` (in the container), `sabotage`, `fuzz`, `all` |
+| `cxk test` | `host`, `boot`, `diff` (in the container), `sabotage`, `fuzz`, `all` (`all` and `sabotage` built in 1.5d3, §3.4) |
 | `cxk x` | `compile`, `check`, `fmt`, `test`, `lsp`; the internals (`tokens`, `ast`, `sema`, `asm`) under `cxk x debug` |
 | `cxk xfil` | `gen`, `check` (the interface generator, `kernel/CX_SYSCALLS_IPC.md` §9) |
 | `cxk key` | `gen` (Ed25519), `list`, `revoke`, `rotate` |
@@ -80,18 +80,80 @@ The old names stay as aliases for one release, then go.
 
 ### 3.4 Sabotage as a command
 
-The rule that every check is seen to fail becomes a tool:
+The rule that every check is seen to fail becomes a tool. **Built in 1.5d3**
+(`devkit/CXEX.Tools/Sabotage.cs`, `TreeGuard.cs`; the command
+`TestSabotageCommand.cs`):
 
-- Each check registers its sabotage in `tests/sabotage/` (a small patch and the
-  tests that must turn red).
-- `cxk test sabotage <name>` applies the patch in a scratch copy of the tree,
-  builds, runs, checks that **exactly** the named tests failed, and never
-  touches the working tree. `cxk test sabotage --all` re-proves every check,
-  so a test that quietly stopped testing anything is caught later, not only on
-  the day it was written.
+- Each step records its sabotages in `tests/sabotage/<step>.sab`: the edits
+  and the self-tests that must turn red.
+- `cxk test sabotage <file>` first builds and boots the tree as it is (the
+  baseline must pass, or nothing can be judged), then for each sabotage, or
+  each group of them: applies the edits, runs `os build`, boots with
+  `verify-boot --full --json`, restores, and judges by the `@ktest` results.
+  `--all` runs every file, so a test that quietly stopped testing anything is
+  caught later, not only on the day it was written. `--dry-run` applies and
+  restores without building; `--only a,b` picks sabotages.
+- **Verdicts:** CAUGHT (red at every test it named, and nothing red that no
+  sabotage in the run named), GREEN (the boot passed: nothing covers it), RED
+  ELSEWHERE (red, but not where it said, or also somewhere unexplained),
+  INCONCLUSIVE, NOT APPLIED (an edit's text did not occur exactly once),
+  BUILD FAILED (a failed build, or one that left an old image or kernel: never
+  read as red). Exit 0 only if every sabotage was caught; 2 when the tool
+  could not judge (baseline red, restore failed, the tree changed).
+- **In the working tree, not a copy.** The plan was a scratch copy; but the
+  build reads gitignored inputs (the signing keys, `tools/cxk.exe`, the CMake
+  cache), and a copy either duplicates those or builds something else, and
+  rebuilds from nothing each time. Instead each file is backed up once per
+  run (two edits to one file restore the original), under
+  `build/sabotage/backup/` with a manifest written before the file changes,
+  so a run that dies is restored by the next one; each restore checks the
+  file's hash, and the tree's state as git sees it is compared after every
+  run. **Edit nothing in the tree while it runs**: the comparison stops it.
 
-This is mutation testing aimed at the checks that matter
-(`safety/CX_SAFETY.md` §4, item 4).
+The file format, one block per sabotage; text between the markers is taken
+exactly as written, with no escapes (C's `||`, `~` and `#` each broke a
+hand-written matrix's delimiter):
+
+```
+# a comment
+[sync-owner]
+expect = x: sync: a mutex's word is its owner @ step 21
+group = d2
+edit = os/std/sync.xfxn
+<<<
+    if ((__atomic_load(&m.w) & ~FUTEX_WAITERS) != me) { return E_ACCESS_DENIED; }
+===
+    if (me == 0xFFFF_FFFF) { return E_ACCESS_DENIED; }
+>>>
+```
+
+- `expect = <test>` names a self-test as the `@ktest` line does; `@ <text>`
+  also requires one of its logged lines to contain the text (its step); a
+  trailing `*` matches a prefix (`x: *` for the tests a stopped runner
+  reports "not run"). At least one per sabotage.
+- `expect = hang`: the sabotage removes a wakeup or a deadlock refusal, so
+  being caught means the boot hangs (INCONCLUSIVE). Booted alone, never in a
+  group.
+- `group = <g>`: shares one build and boot with the rest of the group. Only
+  for sabotages that land in different tests (CLAUDE.md, efficiency 5).
+- `boot = <args>`: more `verify-boot` arguments (`--cpu max`).
+- `edit = <path>`, then `<<<`, the old text, `===`, the new, `>>>`: any
+  number per sabotage, applied in order.
+
+It judges boots only: a sabotage of the X compiler is judged by the
+container's Differential run, still by hand. This is mutation testing aimed
+at the checks that matter (`safety/CX_SAFETY.md` §4, item 4).
+
+### 3.4.1 `cxk test all`
+
+Built in 1.5d3 (`TestAllCommand.cs`): `os build --key test`, then
+`verify-boot --full --json` plain and with `--cpu max`, then `dotnet test`
+on the solution (the DevKit's tests, and the kernel host tests inside it,
+read from its TRX file, not the console), then the container's Differential
+run (HANDOFF's command, TRX again). One after another, never two at once.
+Each step is PASS, FAIL or SKIPPED (docker missing, a toolchain missing,
+`--skip`); a skip is never a pass. Summary: `build/test-all/summary.json`.
+Exit 0 only when every step ran and passed, 1 when any failed, else 2.
 
 ### 3.5 Flakes and replay
 
@@ -152,7 +214,7 @@ real machine as QEMU gets.
 | When | Work |
 |---|---|
 | Now | The launcher that is never stale; `--version` with the tree hash; `cxk doctor` |
-| Phase 0 | Quiet output and `--json`; `cxk test sabotage`; `--repeat`; `--record`/`--replay` |
+| Phase 0 | Quiet output and `--json`; `cxk test sabotage` (done, 1.5d3); `--repeat`; `--record`/`--replay` |
 | Phase 0.5 | x86-64 targets, `--cpu` and `--machine rig`, `cxk rig usb`, `crashlog`, `symbolize` |
 | Phase 0.6 | `cxk xfil`; `cxk key` with Ed25519; the grouped commands |
 | Later | `cxk x fmt`, `test`, `lsp`; the build cache; `cxk` on CXOS |

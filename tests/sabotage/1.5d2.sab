@@ -1,0 +1,37 @@
+# Phase 1.5d2's sabotages (commit 5b4430d), run by `cxk test sabotage`.
+# Each must turn red exactly the self-test named, at the step named.
+# Format: docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage".
+
+[sync-owner]
+# unlock no longer checks that the caller owns the mutex
+expect = x: sync: a mutex's word is its owner @ step 21
+group = d2
+edit = os/std/sync.xfxn
+<<<
+    if ((__atomic_load(&m.w) & ~FUTEX_WAITERS) != me) { return E_ACCESS_DENIED; }
+===
+    if (me == 0xFFFF_FFFF) { return E_ACCESS_DENIED; }
+>>>
+
+[thread-name-empty]
+# the kernel takes an empty thread name
+expect = x: threads: names refused and set @ step 23
+group = d2
+edit = kernel/cpu/usermode.c
+<<<
+if (i == 0) return E_INVALID_ARGS;
+===
+if (i == 0 && name == 1) return E_INVALID_ARGS;
+>>>
+
+[runner-no-end]
+# the runner never writes its end line
+expect = x tests: the runner ran cleanly @ step 4
+group = d2
+edit = os/std/test.xfxn
+<<<
+    test_line(&p[0], 3);
+    exit(0);
+===
+    exit(0);
+>>>

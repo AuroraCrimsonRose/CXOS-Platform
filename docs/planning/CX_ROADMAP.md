@@ -532,12 +532,20 @@ Independent of the order above, and small enough to land whenever convenient:
        worker's SYS_EXIT, a crash, the first thread ending first, a futex
        waiter's process ending) stays in those programs. Self-tests 168.
        No ABI change.
-     - **1.5d3:** `cxk test all` (host tests, the container Differential
-       run, the boot variants) writing one summary; and `cxk test
-       sabotage`, which owns the backup, restore, pattern counts and tree
-       checks every step's hand-written matrix script has got wrong at
-       least once, and judges a sabotage by which `@ktest` results went red
-       (`safety/CX_SAFETY.md` §7).
+     - **1.5d3 (2026-10-30), done:** `cxk test all` (the OS built and
+       booted plain and `--cpu max`, `dotnet test` with the kernel host
+       tests, the container's Differential run, each read from JSON or TRX,
+       one summary; a skipped step is never a pass) and `cxk test sabotage
+       <file>|--all`, which owns the backup, restore, pattern counts and
+       tree checks every step's hand-written matrix script got wrong at
+       least once, refuses to judge against a red baseline or a failed or
+       stale build, and judges a sabotage by which `@ktest` results went
+       red, and at which step (`devkit/CX_CXK_PLAN.md` §3.4). Sabotages are
+       recorded in `tests/sabotage/<step>.sab`; 1.5d2's three are the
+       first, re-run by the command with the hand-run verdicts. In the
+       working tree with crash-safe backups, not a scratch copy as first
+       planned (the build reads gitignored keys and caches). From 1.6 on,
+       each step's sabotages go in a `.sab` file instead of a script.
 
    Order from here (Aurora, 2026-10-30, after an outside review: kernel
    correctness work stays ahead of the display server and is not traded
