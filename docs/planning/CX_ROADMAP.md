@@ -454,6 +454,22 @@ Independent of the order above, and small enough to land whenever convenient:
      shell holds neither. `upper` is the first filter. No ABI change
      (`docs/kernel/CX_SYSCALLS_IPC.md` §7).
 5. User threads, futex (owner in the futex word), thread-local storage.
+   Split, in order:
+   - **1.5a (2026-10-30), done:** user threads. `SYS_THREAD_CREATE` starts
+     a thread with a kernel-made stack (a guard page below it, charged to
+     the job, given back before its handle signals) and returns a thread
+     handle; join is a wait on it. `SYS_THREAD_EXIT` ends one thread, the
+     last one's code ending the process; `SYS_EXIT` and a fault end every
+     thread. X gains `std/thread.xfxn` (spawn, join, exit) and
+     `std/time.xfxn`. ABI 28 (`docs/kernel/CX_SYSCALLS_IPC.md` §7).
+   - **1.5b:** futex keyed by memory object and offset, the owner's thread
+     id in the word; X mutex, once and condition variable, and the X
+     library made thread-safe.
+   - **1.5c:** thread-local storage through `FS_BASE` (wrmsr on switch: the
+     FX-8350 has no FSGSBASE), thread names, per-thread CPU time.
+   - **After 1.5b:** a ring-3 X test runner: one boot runs many X tests as
+     threads, with join deadlines catching hangs, so userland tests stop
+     needing a kernel self-test each.
 6. SMP readiness: spinlocks that save interrupt state, per-CPU data, a lock
    order checker in debug builds, the slab allocator. Then SMP on 8 cores.
 

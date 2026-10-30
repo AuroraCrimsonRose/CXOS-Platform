@@ -26,6 +26,8 @@ int syscall_clock_monotonic(uint64_t now);      /* SYS_CLOCK_MONOTONIC */
 int syscall_thread_set_priority(uint32_t level); /* SYS_THREAD_SET_PRIORITY */
 int syscall_thread_priority(void);              /* SYS_THREAD_PRIORITY */
 int syscall_args_handle(uint32_t slot);         /* SYS_ARGS_HANDLE */
+int syscall_thread_create(uint64_t a);          /* SYS_THREAD_CREATE */
+void syscall_thread_exit(int32_t code);         /* SYS_THREAD_EXIT */
 int syscall_ipc_call(uint64_t a);               /* SYS_IPC_CALL */
 int syscall_ipc_recv(uint64_t a);               /* SYS_IPC_RECV */
 int syscall_ipc_reply(uint64_t a);              /* SYS_IPC_REPLY */
@@ -110,7 +112,7 @@ int syscall_pipe_create(uint32_t size, uint64_t ends); /* SYS_PIPE_CREATE */
  * before looking it up, and one that lands in a hole finds no decoder. */
 #define SYSCALL_ARGS            5
 #define SYSCALL_TABLE_SIZE      193
-#define SYSCALL_COUNT           89
+#define SYSCALL_COUNT           91
 
 /* An argument register is as wide as the machine's: 32 bits on x86-32, where a
  * u64 takes a register pair, and 64 on x86-64, where it takes one. */

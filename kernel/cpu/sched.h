@@ -84,6 +84,11 @@ struct thread {
     uint8_t   prio;
     /* The call it is blocked in, for ipc.c's priority chain; under ipc_lock. */
     struct ipc_call *in_call;
+    /* What its handles name (object/kthread.h), a reference; 0 for a thread
+       nothing made a handle for. Ended in thread_exit. */
+    struct kthread *obj;
+    /* It ended itself, through SYS_THREAD_EXIT, with exit_code. */
+    uint8_t   self_exit;
 };
 
 /* initialize the scheduler (registers the currently-running code as thread 0). */
@@ -188,6 +193,23 @@ int          thread_current_pid(void);
    the process's handle table, address space, caps, uid and cwd. Kernel mode
    only for now: it gets no esp0 stack. Returns its thread id, or -1. */
 int thread_create_sibling(int id, const char *name, void (*entry)(void));
+
+/* A further RING-3 thread in the current thread's process (SYS_THREAD_CREATE):
+   HELD, with its esp0 stack, as thread_create_process makes one, so the
+   caller fills in its record (thread_set_arg, thread_set_obj) and only then
+   lets it go (thread_start). Returns its id; E_CANCELED if the job has been
+   killed, E_NO_RESOURCES if it has no thread to spare; -1 otherwise. */
+int thread_create_user(const char *name, void (*entry)(void));
+
+/* Give a HELD thread the object its handles name; it takes a reference of
+   its own. */
+struct kthread;
+void thread_set_obj(int id, struct kthread *k);
+
+/* The calling thread is ending itself (SYS_THREAD_EXIT) with `code`: its
+   object says THR_EXITED, and if it is the last of its process to end, the
+   process ends PROC_EXITED with that code. */
+void thread_note_self_exit(int32_t code);
 /* a live thread's name, or 0 (for panic reports) */
 const char *thread_name(int id);
 int thread_is_alive(int id);

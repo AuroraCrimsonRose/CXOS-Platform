@@ -18,6 +18,7 @@
 #include "cxk_abi.h"   /* E_OK: a job's refusal; PRIO_* */
 #include "job.h"       /* job_prio_ceiling */
 #include "ipc.h"       /* ipc_thread_exit */
+#include "object/kthread.h"   /* kthread_end: a thread's handles */
 
 
 static void sched_reap(void);   /* forward decl: used by yield, defined below */
@@ -132,6 +133,27 @@ int thread_create_process(const char *name, void (*entry)(void), struct job *job
     return id;
 }
 
+int thread_create_user(const char *name, void (*entry)(void)) {
+    if (!initialized || !self()->proc) return -1;
+    int id = thread_create_in(name, entry, 1, self()->proc, 0);
+    if (id < 0) return id;
+    if (thread_alloc_kstack(id) != 0) { thread_discard(id); return -1; }
+    return id;
+}
+
+void thread_set_obj(int id, struct kthread *k) {
+    struct thread *t = th(id);
+    if (id <= 0 || !t || t->state != THREAD_HELD || t->obj) return;
+    kobj_ref(&k->hdr);
+    t->obj = k;
+}
+
+void thread_note_self_exit(int32_t code) {
+    if (!initialized) return;
+    self()->self_exit = 1;
+    self()->exit_code = code;
+}
+
 void thread_start(int id) {
     struct thread *t = th(id);
     /* No outrank_check: only thread context starts a thread, and a higher one
@@ -163,6 +185,13 @@ static void thread_free(struct thread *t) {
     if (t->arg_drop) t->arg_drop(t->arg);
     t->arg = 0;
     t->arg_drop = 0;
+    /* A thread that never ran ends here, with its process (it had no say). */
+    if (t->obj) {
+        kthread_end(t->obj, THR_WITH_PROCESS, 0);
+        kobj_unref(&t->obj->hdr);
+        t->obj = 0;
+    }
+    t->self_exit = 0;
     /* One that never ran stops here; one that ran stopped in thread_exit. */
     if (t->state != THREAD_EXITED) proc_thread_stopped(t->proc);
     proc_thread_gone(t->proc);
@@ -243,6 +272,8 @@ static int thread_create_in(const char *name, void (*entry)(void), int held, str
     t->base        = (uint8_t)(ceil < PRIO_NORMAL ? ceil : PRIO_NORMAL);
     t->prio        = t->base;
     t->in_call     = 0;
+    t->obj         = 0;
+    t->self_exit   = 0;
     /* Last: from here the timer may run it. */
     __atomic_store_n(&t->state, held ? THREAD_HELD : THREAD_READY, __ATOMIC_RELEASE);
     return slot;
@@ -537,6 +568,17 @@ void thread_exit(void) {
     irq_save();   /* never restored here: the next thread resumes with its own flags */
     /* Calls it received stop lifting it, before its id can be reused. */
     ipc_thread_exit(current);
+    struct thread *me = self();
+    /* The last of a process's threads to end by SYS_THREAD_EXIT ends it with
+       its code; one before it leaves the rest running. Counted here, with
+       interrupts off, not in the call: two threads ending at once both saw
+       the other still running there. A process already ended another way
+       keeps that (proc_note_exit takes only the first). */
+    if (me->proc && me->self_exit && me->proc->running == 1)
+        proc_note_exit(me->proc, me->exit_code);
+    /* Its handles first, then its process's: a waiter on the process finds
+       every thread of it ended. */
+    if (me->obj) kthread_end(me->obj, me->self_exit ? THR_EXITED : THR_WITH_PROCESS, me->exit_code);
     /* The last one out ends its process now and wakes the waiters: one may be
        the only thread left to run, and it cannot wait for the reaper. */
     if (self()->proc) proc_thread_stopped(self()->proc);

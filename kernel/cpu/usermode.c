@@ -30,6 +30,7 @@
 #include "object/knotify.h"   /* SYS_NOTIFY_* */
 #include "object/kmem.h"      /* SYS_MEM_CREATE */
 #include "object/kpipe.h"     /* SYS_PIPE_CREATE, pipe reads and writes */
+#include "object/kthread.h"   /* OBJINFO_THREAD */
 #include "object/kqueue.h"    /* SYS_QUEUE_* */
 #include "sync/atomic.h"
 #include "sysrec.h"
@@ -162,7 +163,16 @@ int syscall_getpid(void) { return thread_current_pid(); }
 int syscall_getuid(void) { return (int)thread_current_uid(); }
 
 void syscall_exit(int32_t code) {
+    /* The whole process: its other threads end at their next safe point. */
     proc_note_exit(thread_proc(thread_current_id()), code);
+    proc_end_threads(thread_proc(thread_current_id()), thread_current_pid());
+    return_to_kernel((int)code, thread_current_usave());
+}
+
+void syscall_thread_exit(int32_t code) {
+    /* This thread only; uthread.c's trampoline (or the process's own, for
+       its first thread) takes it from there to thread_exit. */
+    thread_note_self_exit(code);
     return_to_kernel((int)code, thread_current_usave());
 }
 
@@ -701,6 +711,25 @@ int syscall_object_info(uint64_t a) {
         if (user_copy_out(oa.buf, &mi, sizeof mi) != 0) return E_BAD_ADDRESS;
         return (int)sizeof mi;
     }
+    if (oa.topic == OBJINFO_THREAD) {
+        struct kthread *k = (struct kthread *)o;
+        int rc = o->type != KOBJ_THREAD              ? E_WRONG_TYPE
+               : !(hi.rights & HRIGHT_INSPECT)       ? E_ACCESS_DENIED
+               : oa.cap < sizeof(struct thread_info) ? E_BUFFER_TOO_SMALL : E_OK;
+        struct thread_info ti = { 0 };
+        if (rc == E_OK) {
+            /* Both set with the signal, under the wait lock (kthread_end). */
+            uint32_t f = kwait_lock();
+            ti.tid   = (uint32_t)k->tid;
+            ti.ended = k->ended;
+            ti.code  = k->code;
+            kwait_unlock(f);
+        }
+        kobj_unref(o);
+        if (rc != E_OK) return rc;
+        if (user_copy_out(oa.buf, &ti, sizeof ti) != 0) return E_BAD_ADDRESS;
+        return (int)sizeof ti;
+    }
     struct object_basic b = {
         .kind = o->type, .rights = hi.rights, .koid = o->koid,
         .grant = hi.grant, .parent_grant = hi.parent,
@@ -1127,6 +1156,7 @@ void syscall_check_origin(uint32_t num, uintptr_t ip) {
     crashlog_note_fault(rec);
 
     proc_note_crash(thread_proc(thread_current_id()), PROC_VECTOR_REFUSED, ip, 0);
+    proc_end_threads(thread_proc(thread_current_id()), pid);
     return_to_kernel(USERMODE_FAULTED, thread_current_usave());   /* never returns */
 }
 
@@ -2936,6 +2966,7 @@ static void usermode_fault(struct registers *r) {
 
     proc_note_crash(thread_proc(thread_current_id()), vector, (uint64_t)irq_frame_ip(r),
                     vector == 14 ? (uint64_t)irq_fault_address() : 0);
+    proc_end_threads(thread_proc(thread_current_id()), pid);
     return_to_kernel(USERMODE_FAULTED, thread_current_usave());   /* never returns */
 }
 

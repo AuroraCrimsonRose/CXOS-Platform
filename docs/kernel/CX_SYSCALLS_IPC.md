@@ -519,6 +519,28 @@ if the right never started. Programs start left to right; the first that
 will not start ends the line, its handles still the shell's, which closes
 them.
 
+**User threads, as built (1.5a, ABI 28):** `SYS_THREAD_CREATE(args)` starts
+a thread in the caller's process at `args.entry`, with `arg0` in rdi and
+`arg1` in rsi, and returns a thread handle (`HRIGHT_WAIT | HRIGHT_INSPECT |
+HRIGHT_DUPLICATE`). The kernel makes its stack: `stack_size` bytes (0 is
+`THREAD_USTACK_DEFAULT`, 64 KB; 16 KB to 1 MB, rounded to a page), an
+anonymous memory object charged to the job like `vm_map`'s, mapped in the
+mmap window with a guard page below it that is no page of the object, so
+running off the end is a page fault (Haiku `create_thread_user_stack`).
+`vm_unmap` refuses a stack (`E_ACCESS_DENIED`); it goes when its thread
+ends, before the thread's handle is signalled, so a joiner sees the memory
+back. Joining is a wait: `SIGNAL_THREAD_ENDED`, then `object_info`
+`OBJINFO_THREAD` gives `tid`, `ended` (`THR_EXITED`, or `THR_WITH_PROCESS`
+for a thread taken down with its process) and the code. `SYS_THREAD_EXIT`
+ends one thread; the last thread out ends the process with its code.
+`SYS_EXIT`, and a fault in any thread, end the whole process: each other
+thread leaves at its next safe point, and the first note (exit or crash)
+is the process's end. The X library has `thread_spawn(f, arg, stack)`,
+`thread_join(h, deadline, &code)` and `thread_exit` (`os/std/thread.xfxn`),
+and `time_now_ns`, `time_deadline_ms`, `time_sleep_ms` (`os/std/time.xfxn`);
+the rest of the library is not thread-safe until the futex (1.5b).
+Thread-local storage, names and CPU time are 1.5c.
+
 **Streams and files:**
 `pipe_create(size)`, `io_read(h, buf, offset)`, `io_write(h, buf, offset)`
 (pipes ignore the offset), `io_seek`, `fs_open_at(dir, path, flags, rights)`,

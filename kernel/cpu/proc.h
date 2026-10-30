@@ -130,6 +130,12 @@ void proc_note_crash(struct proc *p, uint32_t vector, uint64_t ip, uint64_t addr
    any of them has gone. A process with no thread running is left as it is. */
 void proc_kill(struct proc *p, int killer);
 
+/* After a note: one thread's SYS_EXIT or fault ends the whole process, so
+   every other thread of it leaves the way proc_kill makes them, the note
+   standing (pid `by`, the process itself, is the killer only if nothing was
+   noted). Nothing for a process that does not run ring-3 code. */
+void proc_end_threads(struct proc *p, int by);
+
 /* proc_kill every process in `top` or a job below it that has not ended
    (job_kill). */
 void proc_kill_within(struct job *top, int killer);

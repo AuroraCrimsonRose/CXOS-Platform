@@ -1,0 +1,168 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// threads.xfxn - user threads, from ring 3 (roadmap 1.5a).
+// Aurora Tejeda / CATX Systems
+//
+// The kernel's self-test (ktest_loader.c, ktest_threads) runs it three times
+// and reads how each process ended:
+//
+//   threads         the calls: refusals, workers joined with their codes,
+//                   stacks given back; then the first thread ends itself
+//                   while a worker runs on, and the process ends with the
+//                   worker's code, 0. Any failure is exit(step).
+//   threads exit    a worker calls SYS_EXIT while the first thread waits
+//                   with no deadline: the process ends PROC_EXITED 42.
+//   threads crash   a worker runs off its stack while the first thread
+//                   waits: the guard page faults, and the process ends
+//                   PROC_CRASHED by a page fault.
+
+import "thread.xfxn";
+import "time.xfxn";
+
+global results: [4]u64;
+
+// arg's triangle number, kept where the first thread can check it
+fn worker(arg: u64) -> i32 {
+    let sum: u64 = 0;
+    let i: u64 = 1;
+    while (i <= arg) { sum = sum + i; i = i + 1; }
+    results[(arg / 10) as i32] = sum;
+    return (arg as i32) + 100;
+}
+
+fn sleeper(arg: u64) -> i32 {
+    while (1 == 1) { sleep_ms(1000); }
+    return 0;
+}
+
+fn exiter(arg: u64) -> i32 {
+    sleep_ms(20);
+    exit(42);
+    return 0;
+}
+
+// Each call holds a page of its own, so the stack runs out in a few calls.
+fn deep(n: u64) -> u64 {
+    let pad: [512]u64;
+    pad[0] = n;
+    pad[511] = n;
+    return deep(n + 1) + pad[0] + pad[511];
+}
+
+fn runaway(arg: u64) -> i32 { return deep(arg) as i32; }
+
+global nap_sp: u64;
+
+fn napper(arg: u64) -> i32 {
+    let here: u64 = 1;
+    nap_sp = (&here) as u64;
+    sleep_ms(300);
+    return 5;
+}
+
+// outlives the first thread, then ends the process with its own code
+fn last(arg: u64) -> i32 {
+    sleep_ms(50);
+    return 0;
+}
+
+fn mapped() -> u64 {
+    let u: vm_usage;
+    vm_info(&u);
+    return u.mapped as u64;
+}
+
+fn args_first() -> *u8 {
+    let ai: args_info;
+    if (args_read(&ai) != 0 || ai.count == 0) { return 0 as *u8; }
+    let page: *u32 = ai.base as *u32;
+    return (ai.base + (page[1] as u64)) as *u8;
+}
+
+fn is(s: *u8, w: *u8) -> i32 {
+    if (s == (0 as *u8)) { return 0; }
+    let i: u32 = 0;
+    while (w[i] != 0) { if (s[i] != w[i]) { return 0; } i = i + 1; }
+    if (s[i] != 0) { return 0; }
+    return 1;
+}
+
+fn basic() -> void {
+    let a: thread_create_args;
+    a.entry = thread_main as u64; a.arg0 = worker as u64; a.arg1 = 3;
+    a.stack_size = 0; a.flags = 1; a.reserved = 0;
+    // 1-4: refusals, each taking nothing
+    if (thread_create(&a) != E_INVALID_ARGS) { exit(1); }
+    a.flags = 0; a.reserved = 1;
+    if (thread_create(&a) != E_INVALID_ARGS) { exit(2); }
+    a.reserved = 0; a.stack_size = 4096;
+    if (thread_create(&a) != E_OUT_OF_RANGE) { exit(3); }
+    a.stack_size = 0; a.entry = 0;
+    if (thread_create(&a) != E_INVALID_ARGS) { exit(4); }
+
+    // 5-8: three workers at once, each joined with its code and its result
+    let m0: u64 = mapped();
+    let h: [3]i32;
+    let i: u32 = 0;
+    while (i < 3) {
+        h[i] = thread_spawn(worker, (i + 1) as u64 * 10, 0);
+        if (h[i] <= 0) { exit(5); }
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 3) {
+        let code: i32 = 0;
+        if (thread_join(h[i], time_deadline_ms(10000), &code) != 0) { exit(6); }
+        if (code != ((i + 1) * 10 + 100) as i32) { exit(7); }
+        i = i + 1;
+    }
+    if (results[1] != 55 || results[2] != 210 || results[3] != 465) { exit(8); }
+    // 9: every stack given back before its thread's end was signalled
+    if (mapped() != m0) { exit(9); }
+
+    // 10-14: a stack is a mapping of its size while its thread lives; a join
+    // whose deadline passes first leaves the handle to join again
+    let n: i32 = thread_spawn(napper, 0, 0);
+    if (n <= 0 || mapped() != m0 + (THREAD_USTACK_DEFAULT as u64)) { exit(10); }
+    let code: i32 = 0;
+    if (thread_join(n, time_deadline_ms(10), &code) != E_TIMED_OUT) { exit(11); }
+    // 12: a thread stack is not the program's to unmap: walk down from the
+    // napper's stack to the region's base, which refuses
+    while (nap_sp == 0) { sleep_ms(1); }
+    let pg: u64 = (nap_sp / 4096) * 4096;
+    let k: u32 = 0;
+    let r: i32 = E_NOT_FOUND;
+    while (k < 18 && r == E_NOT_FOUND) { r = vm_unmap(pg - (k as u64) * 4096, 4096); k = k + 1; }
+    if (r != E_ACCESS_DENIED) { exit(12); }
+    if (thread_join(n, time_deadline_ms(10000), &code) != 0 || code != 5) { exit(13); }
+    if (mapped() != m0) { exit(14); }
+
+    // 15: the first thread ends itself with a worker still running: the
+    // process lives on, and ends with the last thread's code, 0, not 99
+    let l: i32 = thread_spawn(last, 0, 0);
+    if (l <= 0) { exit(15); }
+    thread_exit(99);
+}
+
+fn _start() -> void {
+    let mode: *u8 = args_first();
+    if (is(mode, "exit") == 1) {
+        let s: i32 = thread_spawn(sleeper, 0, 0);
+        let e: i32 = thread_spawn(exiter, 0, 0);
+        if (s <= 0 || e <= 0) { exit(1); }
+        let code: i32 = 0;
+        thread_join(s, DEADLINE_NEVER, &code);
+        exit(2);   // never: exiter's SYS_EXIT ended this thread too
+    }
+    if (is(mode, "crash") == 1) {
+        let r: i32 = thread_spawn(runaway, 0, THREAD_USTACK_MIN as u64);
+        if (r <= 0) { exit(1); }
+        let code: i32 = 0;
+        thread_join(r, DEADLINE_NEVER, &code);
+        // never: the fault ended this thread too. Had it not, the crash
+        // would still be the process's end (the first note wins), so stay
+        // alive instead and let the self-test's deadline see it.
+        while (1 == 1) { sleep_ms(1000); }
+    }
+    basic();
+}

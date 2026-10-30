@@ -33,6 +33,7 @@ default rel
 section .text
 
 global enter_usermode
+global enter_usermode_thread
 global return_to_kernel
 global syscall64_entry
 global syscall_trapped
@@ -48,7 +49,17 @@ extern gdt64_tss            ; gdt.c
 ;   per thread (thread_current_usave), as on x86-32. Returns only through
 ;   return_to_kernel: SYS_EXIT, or a fault in ring 3.
 ; ---------------------------------------------------------------------------
+; int enter_usermode_thread(uintptr_t entry, uintptr_t user_sp,
+;                           uintptr_t *save_slot, uintptr_t a0, uintptr_t a1)
+;   The same for a thread SYS_THREAD_CREATE made: rdi = a0, rsi = a1.
+; ---------------------------------------------------------------------------
+enter_usermode_thread:
+    xchg rcx, r8             ; rcx = a1 (for rsi), r8 = a0 (for rdi)
+    jmp enter_common
+
 enter_usermode:
+    xor r8d, r8d             ; rdi starts 0; rcx is already the base (for rsi)
+enter_common:
     push rbp
     push rbx
     push r12
@@ -68,13 +79,14 @@ enter_usermode:
     push rdi                 ; RIP
 
     ; Nothing of the kernel's goes up: ring 3 starts with every register zero
-    ; but rsi, the system page's base (the fourth argument; cxk_abi.h).
+    ; but rsi, the system page's base (the fourth argument; cxk_abi.h), or
+    ; for a new thread rdi and rsi, its two arguments.
     xor eax, eax
     xor ebx, ebx
     mov rsi, rcx
+    mov rdi, r8
     xor ecx, ecx
     xor edx, edx
-    xor edi, edi
     xor ebp, ebp
     xor r8d, r8d
     xor r9d, r9d

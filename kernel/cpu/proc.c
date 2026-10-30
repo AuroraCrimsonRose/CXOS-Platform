@@ -23,6 +23,7 @@
 #include "object/kqueue.h"   /* kqueue_sys_init */
 #include "object/knotify.h"  /* knotify_sys_init */
 #include "object/kpipe.h"    /* kpipe_sys_init */
+#include "object/kthread.h"  /* kthread_sys_init */
 #include "object/kmem.h"     /* kmem_sys_init */
 
 static struct ocache proc_cache;
@@ -94,6 +95,7 @@ void proc_sys_init(void) {
     kqueue_sys_init();
     knotify_sys_init();
     kpipe_sys_init();
+    kthread_sys_init();
     kmem_sys_init();
     vm_sys_init();
     if (ocache_init(&proc_cache, "process", sizeof(struct proc)) != 0 ||
@@ -211,6 +213,13 @@ static void proc_force(struct proc *p, uint32_t how, int by) {
 
 void proc_kill(struct proc *p, int killer) {
     proc_force(p, PROC_KILLED, killer);
+}
+
+void proc_end_threads(struct proc *p, int by) {
+    /* Only a process that runs ring-3 code: the self-tests run their ring-3
+       blobs on threads of the kernel's own process, which must go on. Its
+       end is noted already, so this only ends the threads. */
+    if (p && p->is_user) proc_force(p, PROC_KILLED, by);
 }
 
 /* Every process not yet ended, not only the running ones: one being made has

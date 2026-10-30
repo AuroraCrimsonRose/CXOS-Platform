@@ -40,11 +40,14 @@ domain kernel
 /// mismatch. Declared in versions.json as `cxex-abi` and checked against this
 /// line; bump both, and the DevKit's stamp, in the one commit that changes the
 /// contract.
-const CXK_ABI_VERSION: u32 = 27
+const CXK_ABI_VERSION: u32 = 28
 
 /// ---- syscall numbers ----
 /// lifecycle 0x00-0x0F (no capability required)
-syscall SYS_EXIT = 0x00 fn exit(code: i32) -> void              /// ebx = exit code; does not return
+/// ebx = exit code; does not return. Ends the process: each of its threads
+/// ends at its next safe point, as SYS_PROCESS_KILL would end them, and the
+/// process ends PROC_EXITED with this code. SYS_THREAD_EXIT ends one thread.
+syscall SYS_EXIT = 0x00 fn exit(code: i32) -> void
 syscall SYS_YIELD = 0x01 fn yield_() -> void                    /// cooperatively yield the CPU
 syscall SYS_GETPID = 0x02 fn getpid() -> i32                    /// -> caller pid
 syscall SYS_GETUID = 0x03 fn getuid() -> i32                    /// -> caller owning uid (0 = SYSTEM)
@@ -67,6 +70,23 @@ syscall SYS_THREAD_PRIORITY = 0x09 fn thread_priority() -> i32
 /// as it was placed at the start; closing it does not clear the slot.
 /// E_NOT_FOUND: nothing was put there. E_OUT_OF_RANGE: SPAWN_HANDLES_MAX or more.
 syscall SYS_ARGS_HANDLE = 0x0A fn args_handle(slot: u32) -> i32
+/// ebx = *thread_create_args -> a thread handle with HRIGHT_WAIT,
+/// HRIGHT_INSPECT and HRIGHT_DUPLICATE. A new thread in the caller's process,
+/// at PRIO_NORMAL (or its job's ceiling), starting at `entry` with arg0 in
+/// rdi and arg1 in rsi, on a stack the kernel maps for it: stack_size bytes
+/// above an unmapped guard page, charged like a mapping, which the thread
+/// cannot unmap and which goes when the thread ends. rsp starts 8 below the
+/// top, where a return address would be, and that word is 0: an entry that
+/// returns faults, so a thread ends with SYS_THREAD_EXIT. Unprivileged; the
+/// job's thread limit and the memory quota are the bounds.
+/// E_INVALID_ARGS: flags or reserved not 0, or an entry outside the user half.
+/// E_OUT_OF_RANGE: a stack size outside THREAD_USTACK_MIN to _MAX.
+/// E_NO_RESOURCES: no thread to spare. E_NO_MEMORY: no room for the stack.
+syscall SYS_THREAD_CREATE = 0x0B fn thread_create(a: *thread_create_args) -> i32
+/// ebx = exit code; does not return. Ends the calling thread: its handles see
+/// SIGNAL_THREAD_ENDED, with THR_EXITED and this code. The last thread of a
+/// process to end this way ends it PROC_EXITED with its code.
+syscall SYS_THREAD_EXIT = 0x0C fn thread_exit(code: i32) -> void
 /// IPC + handles 0x10-0x1F
 /// ebx = *ipc_call_args, whose handle is a send handle (HRIGHT_SEND) -> the
 /// reply's length, once the server answers. Calls queue on the endpoint, oldest
@@ -157,7 +177,8 @@ const HRIGHT_SIGNAL: u32 = 0x1u
 /// reply token: ipc_reply through it. The only right a token has: it cannot
 /// be copied, so a call is answered once.
 const HRIGHT_REPLY: u32 = 0x1u
-/// process: OBJINFO_PROCESS, how it is and how it ended; job: OBJINFO_JOB
+/// process: OBJINFO_PROCESS, how it is and how it ended; job: OBJINFO_JOB;
+/// thread: OBJINFO_THREAD
 const HRIGHT_INSPECT: u32 = 0x1u
 const HRIGHT_KILL: u32 = 0x2u        /// process: SYS_PROCESS_KILL; job: SYS_JOB_KILL
 /// process: SYS_PROCESS_STOP. Handed out freely, unlike HRIGHT_KILL: a stop
@@ -216,6 +237,8 @@ const SIGNAL_PIPE_READABLE: u32 = 0x1u
 const SIGNAL_PIPE_WRITABLE: u32 = 0x2u
 /// pipe, either end: the other end's last handle has closed
 const SIGNAL_PIPE_PEER_CLOSED: u32 = 0x4u
+/// thread: it has ended, by SYS_THREAD_EXIT or with its process
+const SIGNAL_THREAD_ENDED: u32 = 0x1u
 /// A deadline that never comes (SYS_OBJECT_WAIT): a wait with no limit.
 /// Deadlines are nanoseconds on the monotonic clock, so this is 292 years
 /// after boot.
@@ -637,6 +660,7 @@ const OBJINFO_BASIC: u32 = 1         /// -> struct object_basic
 const OBJINFO_PROCESS: u32 = 2       /// a process (HRIGHT_INSPECT) -> struct process_info
 const OBJINFO_JOB: u32 = 3           /// a job (HRIGHT_INSPECT) -> struct job_info
 const OBJINFO_MEM: u32 = 4           /// a memory object (HRIGHT_INSPECT) -> struct mem_info
+const OBJINFO_THREAD: u32 = 5        /// a thread (HRIGHT_INSPECT) -> struct thread_info
 
 const OBJ_TYPE_ENDPOINT: u32 = 1
 const OBJ_TYPE_FILE: u32 = 2
@@ -650,6 +674,7 @@ const OBJ_TYPE_NOTIFY: u32 = 10      /// a notification
 const OBJ_TYPE_SIGNALLER: u32 = 11   /// a signaller: a notification and the bits it may set
 const OBJ_TYPE_MEM: u32 = 12         /// a memory object
 const OBJ_TYPE_PIPE: u32 = 13        /// a pipe end, read or write
+const OBJ_TYPE_THREAD: u32 = 14      /// a thread (SYS_THREAD_CREATE)
 
 /// Pipe sizes (SYS_PIPE_CREATE). A write of PIPE_ATOMIC bytes or fewer goes
 /// into the pipe whole, never split around another writer's (POSIX PIPE_BUF).
@@ -690,6 +715,32 @@ const PRIO_BACKGROUND: u32 = 2      /// background is 1-3
 const PRIO_NORMAL: u32 = 8          /// normal is 4-11; a new thread's level
 const PRIO_REALTIME: u32 = 12       /// real-time is 12-15: GRANT_REALTIME
 const PRIO_MAX: u32 = 15
+
+/// ---- user threads (SYS_THREAD_CREATE) ----
+/// A thread's stack, in bytes; a size is rounded up to a page.
+const THREAD_USTACK_DEFAULT: u32 = 65536
+const THREAD_USTACK_MIN: u32 = 16384
+const THREAD_USTACK_MAX: u32 = 1048576
+struct thread_create_args {
+    entry: u64          /// where it starts, in the caller's image
+    arg0: u64           /// in rdi
+    arg1: u64           /// in rsi
+    stack_size: u64     /// 0 is THREAD_USTACK_DEFAULT
+    flags: u32          /// 0
+    reserved: u32       /// 0
+}
+/// thread_info.ended: how it ended, once SIGNAL_THREAD_ENDED is set.
+const THR_RUNNING: u32 = 0           /// not ended
+const THR_EXITED: u32 = 1            /// SYS_THREAD_EXIT; `code` is its argument
+/// with its process: SYS_EXIT, a crash or a kill, in any of its threads
+/// (process_info says which)
+const THR_WITH_PROCESS: u32 = 2
+struct thread_info {
+    tid: u32            /// for display; names the thread until it is reaped
+    ended: u32          /// THR_*
+    code: i32           /// THR_EXITED
+    reserved: u32       /// 0
+}
 /// OBJINFO_MEM: a memory object's size, how much of it has been touched, and
 /// its seals.
 struct mem_info {

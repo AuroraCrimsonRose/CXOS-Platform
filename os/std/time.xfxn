@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// std/time.xfxn - the monotonic clock, deadlines and sleeping for CXK X.
+// Aurora Tejeda / CATX Systems
+//
+//   import "time.xfxn";
+//
+// Wraps SYS_CLOCK_MONOTONIC and SYS_SLEEP. The clock counts nanoseconds since
+// boot; it never goes back and never jumps, and every deadline the kernel
+// takes (SYS_OBJECT_WAIT, SYS_TIMER_SET, SYS_QUEUE_WAIT) is a time on it.
+// The time of day is a different clock (SYS_CLOCK), for showing, not timing.
+
+const NS_PER_US: u64 = 1000;
+const NS_PER_MS: u64 = 1000000;
+const NS_PER_S:  u64 = 1000000000;
+
+// nanoseconds since boot
+fn time_now_ns() -> u64 {
+    let t: u64 = 0;
+    clock_monotonic(&t);
+    return t;
+}
+
+fn time_now_ms() -> u64 { return time_now_ns() / NS_PER_MS; }
+
+// nanoseconds since `start`, an earlier time_now_ns()
+fn time_since_ns(start: u64) -> u64 { return time_now_ns() - start; }
+
+// The deadline `ms` milliseconds from now, for a wait. One too far to say
+// is DEADLINE_NEVER, never a time that wrapped round into the past.
+fn time_deadline_ms(ms: u64) -> u64 {
+    let now: u64 = time_now_ns();
+    if (ms >= (DEADLINE_NEVER - now) / NS_PER_MS) { return DEADLINE_NEVER; }
+    return now + ms * NS_PER_MS;
+}
+
+// block this thread for `ms` milliseconds; the others run on
+fn time_sleep_ms(ms: u32) -> void { sleep_ms(ms); }

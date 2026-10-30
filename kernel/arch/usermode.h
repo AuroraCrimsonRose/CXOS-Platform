@@ -34,6 +34,13 @@ uint32_t arch_syscall_stub_ret(void);
 int  enter_usermode(uintptr_t entry, uintptr_t user_sp, uintptr_t *save_slot,
                     uintptr_t sysbase);
 
+/* The same for a thread SYS_THREAD_CREATE made in a running process: every
+   register zero but the two that carry its arguments, a0 and a1 (rdi and
+   rsi on x86-64, the first two of the calling convention). The process
+   keeps the system page's base itself. */
+int  enter_usermode_thread(uintptr_t entry, uintptr_t user_sp, uintptr_t *save_slot,
+                           uintptr_t a0, uintptr_t a1);
+
 /* From inside a system call or a user fault: abandon the user code and return
    `retval` from the enter_usermode that started it. */
 void return_to_kernel(int retval, uintptr_t *save_slot);

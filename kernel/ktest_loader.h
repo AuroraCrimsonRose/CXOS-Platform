@@ -32,4 +32,8 @@ int ktest_spawn_verifies_image(void);
    ends it. */
 int ktest_shell_pipeline(void);
 
+/* /Shared/Programs/threads.xuex, three ways: user threads from ring 3 (1.5a).
+   1 = pass (or nothing staged), 0 = fail. */
+int ktest_threads(void);
+
 #endif

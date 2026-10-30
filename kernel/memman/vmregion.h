@@ -63,6 +63,11 @@ struct vm_region {
     uint32_t       prot;   /* MPROT_* as requested */
     struct kmem   *mem;    /* what this is a view of; a reference */
     uint64_t       off;    /* offset into it, page-aligned */
+    /* A thread's stack (vm_map_stack): its lowest `guard` bytes are no
+       page of the object, so running off the bottom faults, and only the
+       kernel unmaps it. 0 and 0 for every other region. */
+    uint32_t       guard;
+    uint32_t       stack;
 };
 
 /* One process's mappings and quota. It lives in the process (cpu/proc.h);
@@ -129,6 +134,21 @@ int vm_map_object(int pid, struct vm_map_args *a, struct kmem *m, uint32_t right
 int vm_map(int pid, struct vm_map_args *a);
 int vm_unmap(int pid, uint64_t addr, uint64_t length);
 int vm_info(int pid, struct vm_usage *u);
+
+/* A user thread's stack (SYS_THREAD_CREATE; Haiku create_thread_user_stack):
+   `len` bytes, page-aligned, of a new anonymous object, placed like a
+   mapping with one unmapped guard page below it in the same region, so no
+   other mapping can land there. Charged as a mapping of `len` (the guard
+   costs address space, not memory). *base is the region's base, the guard's;
+   *top is the stack's top. SYS_VM_UNMAP refuses it (E_ACCESS_DENIED): the
+   thread on it would fault where it stands. E_OK, E_NO_MEMORY,
+   E_NO_RESOURCES. */
+int vm_map_stack(int pid, uint32_t len, uint64_t *base, uint64_t *top);
+
+/* The stack vm_map_stack placed at `base` goes: unmapped, its object
+   dropped, its charge given back. E_NOT_FOUND if there is none there, which
+   is not an error once the process's whole account has been reset. */
+int vm_unmap_stack(int pid, uint64_t base);
 
 /* A first touch: the page holding `addr` is in one of pid's regions, the
    access (`write`, `exec`) is one the region allows, and the page is now

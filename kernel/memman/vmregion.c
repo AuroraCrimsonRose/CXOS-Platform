@@ -68,8 +68,8 @@ static uint32_t vm_flags(uint32_t prot) {
    been mapped, so the others are passed over. */
 static void unmap_region(paddr_t space, struct vm_region *r) {
     uint32_t first = (uint32_t)(r->off / PAGE_SIZE);
-    for (uint64_t at = 0; at < r->node.len; at += PAGE_SIZE)
-        if (kmem_page_if_resident(r->mem, first + (uint32_t)(at / PAGE_SIZE)))
+    for (uint64_t at = r->guard; at < r->node.len; at += PAGE_SIZE)
+        if (kmem_page_if_resident(r->mem, first + (uint32_t)((at - r->guard) / PAGE_SIZE)))
             paging_unmap_in(space, (uintptr_t)(r->node.base + at));
 }
 
@@ -262,6 +262,7 @@ int vm_unmap(int pid, uint64_t addr, uint64_t length) {
     uint32_t f = spin_lock(&p->lock);
     struct vm_region *r = (struct vm_region *)vmtree_find(p->root, addr);
     if (!r || r->node.base != addr) { spin_unlock(&p->lock, f); return E_NOT_FOUND; }
+    if (r->stack)                   { spin_unlock(&p->lock, f); return E_ACCESS_DENIED; }
     /* compared whole: a length past 32 bits matches no mapping */
     if (length && (length > MMAP_MAX_BYTES ||
                    page_up((uint32_t)length) != r->node.len)) {
@@ -274,6 +275,58 @@ int vm_unmap(int pid, uint64_t addr, uint64_t length) {
     spin_unlock(&p->lock, f);
 
     /* Out of the tree first, so no fault maps a page back in behind us. */
+    unmap_region(space_of(pid), r);
+    region_free(r);
+    return E_OK;
+}
+
+int vm_map_stack(int pid, uint32_t len, uint64_t *base, uint64_t *top) {
+    if (!vp(pid) || !vp(pid)->live) return E_INVALID_ARGS;
+    struct vm_proc *p = vp(pid);
+    if (len == 0 || (len & (PAGE_SIZE - 1u)) || len > MMAP_MAX_BYTES) return E_INVALID_ARGS;
+    if (p->mapped + len < p->mapped || p->mapped + len > p->quota) return E_NO_MEMORY;
+    if (p->count >= MMAP_MAX_REGIONS) return E_NO_RESOURCES;
+
+    /* As vm_map_object's anonymous case: the object and its commit first,
+       so a refusal has taken nothing. */
+    int rc;
+    struct kmem *m = kmem_create(len / PAGE_SIZE, jb(pid), &rc);
+    if (!m) return rc;
+    if ((rc = kmem_writer_add(m)) != E_OK) { kobj_unref(&m->hdr); return rc; }
+    struct vm_region *r = ocache_alloc(&region_cache);
+    if (!r) { kmem_writer_drop(m); kobj_unref(&m->hdr); return E_NO_MEMORY; }
+    r->prot     = MPROT_READ | MPROT_WRITE;
+    r->mem      = m;
+    r->off      = 0;
+    r->guard    = PAGE_SIZE;
+    r->stack    = 1;
+    r->node.len = (uint64_t)len + PAGE_SIZE;
+
+    uint32_t f = spin_lock(&p->lock);
+    uint64_t at = vmtree_first_fit(p->root, VM_MMAP_BASE, VM_MMAP_TOP, (uint32_t)r->node.len);
+    if (at) {
+        r->node.base = at;
+        if (vmtree_insert(&p->root, &r->node) != 0) kpanic("vm_map_stack: placed on a region");
+        p->count++;
+        p->mapped += len;
+    }
+    spin_unlock(&p->lock, f);
+    if (!at) { region_free(r); return E_NO_RESOURCES; }
+    *base = at;
+    *top  = at + r->node.len;
+    return E_OK;
+}
+
+int vm_unmap_stack(int pid, uint64_t base) {
+    if (!vp(pid) || !vp(pid)->live) return E_NOT_FOUND;
+    struct vm_proc *p = vp(pid);
+    uint32_t f = spin_lock(&p->lock);
+    struct vm_region *r = (struct vm_region *)vmtree_find(p->root, base);
+    if (!r || r->node.base != base || !r->stack) { spin_unlock(&p->lock, f); return E_NOT_FOUND; }
+    vmtree_remove(&p->root, &r->node);
+    p->count--;
+    p->mapped -= (uint32_t)(r->node.len - r->guard);
+    spin_unlock(&p->lock, f);
     unmap_region(space_of(pid), r);
     region_free(r);
     return E_OK;
@@ -295,9 +348,12 @@ int vm_fault(int pid, uint64_t addr, int write, int exec) {
        finding it and mapping its page. */
     uint32_t f = spin_lock(&p->lock);
     struct vm_region *r = (struct vm_region *)vmtree_find(p->root, addr);
+    /* A stack's guard is in its region and is no page of it: a touch there
+       is the thread's fault. */
+    if (r && addr < r->node.base + r->guard) r = 0;
     if (r && !(write && !(r->prot & MPROT_WRITE)) && !(exec && !(r->prot & MPROT_EXEC))) {
         uint64_t page = addr & ~(uint64_t)(PAGE_SIZE - 1u);
-        uint32_t index = (uint32_t)((r->off + (page - r->node.base)) / PAGE_SIZE);
+        uint32_t index = (uint32_t)((r->off + (page - r->node.base - r->guard)) / PAGE_SIZE);
         paddr_t phys = kmem_page(r->mem, index);
         ok = paging_map_user_in(space_of(pid), (uintptr_t)page, phys, vm_flags(r->prot)) == 0;
     }

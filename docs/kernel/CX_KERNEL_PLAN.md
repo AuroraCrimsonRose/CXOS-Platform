@@ -24,7 +24,7 @@ What it lacks, and what this plan answers:
 | No way to learn a child's exit, or to kill | `sched.c` stores an exit code nothing returns | §4 |
 | One thing waited on at a time | input, one endpoint, or sleep | §5 |
 | Narrow IPC | Since roadmap step 1.3a, calls queue with reply tokens and badges, up to 64 KiB each way (ABI 20); since 1.3b they carry up to 16 handles each way, moved or copied with rights that only shrink (ABI 21). since 1.3c notifications, bits that combine, with signallers minted for chosen bits (ABI 22). Still no shared memory | §6 |
-| No user threads, no futex | Pipes built in 1.4a (ABI 26); handles named at spawn in 1.4b (ABI 27) | §7 |
+| No user threads, no futex | Pipes built in 1.4a (ABI 26); handles named at spawn in 1.4b (ABI 27); user threads with guarded stacks in 1.5a (ABI 28); futex 1.5b, TLS 1.5c | §7 |
 | x86 code mixed with generic code | Step 3b moved the GDT, IDT, TSS, context switch, entry stub and linker script to `kernel/arch/x86_32/`, and the local APIC and port primitives to `kernel/arch/x86/`. Step 3c put paging behind `arch/paging.h`. Step 3d put every port access behind I/O windows (`drivers/iowin.h`) and moved the legacy PC devices to `kernel/platform/pc/`. Step 3e moved the last CPU-specific code out of generic files (the interrupt flag, halting, the cycle counter, the stack switch, the reset, the syscall gate, the register frame, MSI addresses, the self-tests that read the CPU's tables) and added the check: the kernel build refuses inline assembly, assembly sources, CPU intrinsics and `arch/<name>/` includes anywhere outside `kernel/arch/` (`tools/cmake/check_arch_boundary.cmake`). Step 3f put the PC's fixed devices behind `platform/platform.h` (the tick, the reset and poweroff lines, the wall clock, the boot text screen, the built-in keyboard and mouse; implemented in `platform/pc/platform.c`), moved the PS/2 self-test to `platform/pc/ktest_pc.c`, extended the check to refuse `platform/<name>/` includes outside `kernel/arch/` and `kernel/platform/`, and moved every memory-mapped driver onto windows: AHCI, e1000, RTL8169, OHCI, EHCI, xHCI (four windows, refused if one lies outside the mapped BAR), the local and I/O APICs, and the MSI-X table entry. **Done 2026-10-18.** | §2.2 |
 | Boot data at fixed addresses | Read from `cxk_boot_info` since step 4a: stage 2 fills it and passes it in EBX, `kernel/boot/cxbi.c` checks and copies it, and the PMM, framebuffer and ACPI read nothing else. The loader poisons its old addresses and a self-test checks the poison. **Done 2026-10-18.** | `boot/CX_BOOT.md` §4 |
 | Uniprocessor locking | critical sections switch interrupts off | §8 |
@@ -392,11 +392,11 @@ Synchronous call and reply stays the fast path (L4, QNX). Added:
   returns an error, not a signal (built in 1.4a: `CX_SYSCALLS_IPC.md` §7). Standard
   input, output and error are handles that `spawn` is told to pass (built in
   1.4b: slots 0-2 of `spawn_args.handles`, `SYS_ARGS_HANDLE`).
-- **User threads** with thread handles (join is a wait). **Futex** keyed by
+- **User threads** with thread handles (join is a wait), with guarded user
+  stacks (built in 1.5a: `CX_SYSCALLS_IPC.md` §7). **Futex** keyed by
   memory object and offset, so it works across shared memory; the futex word
   holds the owner's thread id by convention, which keeps priority inheritance
-  possible later. **Thread-local storage** through `FS_BASE`. Guarded user
-  stacks. Thread names and CPU time for the Process Manager.
+  possible later. **Thread-local storage** through `FS_BASE`. Thread names and CPU time for the Process Manager.
 
 ## 8. The kernel base
 

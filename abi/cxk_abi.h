@@ -15,7 +15,7 @@
  * hash it was built against and the loader refuses one that differs, so a
  * program never runs against numbers or layouts it was not compiled for.
  */
-#define CXK_ABI_HASH { 0x1a, 0x0b, 0xa1, 0xe7, 0xca, 0x20, 0x8f, 0xa6, 0xe1, 0xdd, 0x80, 0x5c, 0x03, 0xd8, 0x53, 0xb5, 0x58, 0xd3, 0xfe, 0x6e, 0x93, 0x09, 0x4f, 0xe1, 0x7c, 0x4b, 0x36, 0x44, 0x52, 0x8b, 0x2b, 0x34 }
+#define CXK_ABI_HASH { 0xfe, 0x55, 0x06, 0xf4, 0xc8, 0xe7, 0xf8, 0xbf, 0x25, 0xac, 0x98, 0x88, 0x3d, 0xde, 0x11, 0xa8, 0xb0, 0x9c, 0xc0, 0x88, 0xae, 0x74, 0x85, 0x6c, 0x9e, 0x8b, 0xfb, 0xba, 0xdd, 0x11, 0x36, 0x92 }
 
 /*
  * CXK ABI v1 - the PUBLIC contract shared by the kernel, the .xoex executive,
@@ -44,13 +44,16 @@
  * line; bump both, and the DevKit's stamp, in the one commit that changes the
  * contract.
  */
-#define CXK_ABI_VERSION          27
+#define CXK_ABI_VERSION          28
 
 /*
  * ---- syscall numbers ----
  * lifecycle 0x00-0x0F (no capability required)
+ * ebx = exit code; does not return. Ends the process: each of its threads
+ * ends at its next safe point, as SYS_PROCESS_KILL would end them, and the
+ * process ends PROC_EXITED with this code. SYS_THREAD_EXIT ends one thread.
  */
-#define SYS_EXIT                 0x00           /* ebx = exit code; does not return */
+#define SYS_EXIT                 0x00
 #define SYS_YIELD                0x01           /* cooperatively yield the CPU */
 #define SYS_GETPID               0x02           /* -> caller pid */
 #define SYS_GETUID               0x03           /* -> caller owning uid (0 = SYSTEM) */
@@ -85,6 +88,29 @@
  * E_NOT_FOUND: nothing was put there. E_OUT_OF_RANGE: SPAWN_HANDLES_MAX or more.
  */
 #define SYS_ARGS_HANDLE          0x0A
+
+/*
+ * ebx = *thread_create_args -> a thread handle with HRIGHT_WAIT,
+ * HRIGHT_INSPECT and HRIGHT_DUPLICATE. A new thread in the caller's process,
+ * at PRIO_NORMAL (or its job's ceiling), starting at `entry` with arg0 in
+ * rdi and arg1 in rsi, on a stack the kernel maps for it: stack_size bytes
+ * above an unmapped guard page, charged like a mapping, which the thread
+ * cannot unmap and which goes when the thread ends. rsp starts 8 below the
+ * top, where a return address would be, and that word is 0: an entry that
+ * returns faults, so a thread ends with SYS_THREAD_EXIT. Unprivileged; the
+ * job's thread limit and the memory quota are the bounds.
+ * E_INVALID_ARGS: flags or reserved not 0, or an entry outside the user half.
+ * E_OUT_OF_RANGE: a stack size outside THREAD_USTACK_MIN to _MAX.
+ * E_NO_RESOURCES: no thread to spare. E_NO_MEMORY: no room for the stack.
+ */
+#define SYS_THREAD_CREATE        0x0B
+
+/*
+ * ebx = exit code; does not return. Ends the calling thread: its handles see
+ * SIGNAL_THREAD_ENDED, with THR_EXITED and this code. The last thread of a
+ * process to end this way ends it PROC_EXITED with its code.
+ */
+#define SYS_THREAD_EXIT          0x0C
 
 /*
  * IPC + handles 0x10-0x1F
@@ -222,7 +248,10 @@
  */
 #define HRIGHT_REPLY             0x1u
 
-/* process: OBJINFO_PROCESS, how it is and how it ended; job: OBJINFO_JOB */
+/*
+ * process: OBJINFO_PROCESS, how it is and how it ended; job: OBJINFO_JOB;
+ * thread: OBJINFO_THREAD
+ */
 #define HRIGHT_INSPECT           0x1u
 #define HRIGHT_KILL              0x2u           /* process: SYS_PROCESS_KILL; job: SYS_JOB_KILL */
 
@@ -319,6 +348,9 @@
 
 /* pipe, either end: the other end's last handle has closed */
 #define SIGNAL_PIPE_PEER_CLOSED  0x4u
+
+/* thread: it has ended, by SYS_THREAD_EXIT or with its process */
+#define SIGNAL_THREAD_ENDED      0x1u
 
 /*
  * A deadline that never comes (SYS_OBJECT_WAIT): a wait with no limit.
@@ -863,6 +895,7 @@ struct clock_info {
 #define OBJINFO_PROCESS          2              /* a process (HRIGHT_INSPECT) -> struct process_info */
 #define OBJINFO_JOB              3              /* a job (HRIGHT_INSPECT) -> struct job_info */
 #define OBJINFO_MEM              4              /* a memory object (HRIGHT_INSPECT) -> struct mem_info */
+#define OBJINFO_THREAD           5              /* a thread (HRIGHT_INSPECT) -> struct thread_info */
 #define OBJ_TYPE_ENDPOINT        1
 #define OBJ_TYPE_FILE            2
 #define OBJ_TYPE_PROCESS         4              /* 3 is the kernel self-tests' own */
@@ -875,6 +908,7 @@ struct clock_info {
 #define OBJ_TYPE_SIGNALLER       11             /* a signaller: a notification and the bits it may set */
 #define OBJ_TYPE_MEM             12             /* a memory object */
 #define OBJ_TYPE_PIPE            13             /* a pipe end, read or write */
+#define OBJ_TYPE_THREAD          14             /* a thread (SYS_THREAD_CREATE) */
 
 /*
  * Pipe sizes (SYS_PIPE_CREATE). A write of PIPE_ATOMIC bytes or fewer goes
@@ -927,6 +961,40 @@ struct job_limits {
 #define PRIO_NORMAL              8              /* normal is 4-11; a new thread's level */
 #define PRIO_REALTIME            12             /* real-time is 12-15: GRANT_REALTIME */
 #define PRIO_MAX                 15
+
+/*
+ * ---- user threads (SYS_THREAD_CREATE) ----
+ * A thread's stack, in bytes; a size is rounded up to a page.
+ */
+#define THREAD_USTACK_DEFAULT    65536
+#define THREAD_USTACK_MIN        16384
+#define THREAD_USTACK_MAX        1048576
+
+struct thread_create_args {
+    uint64_t entry;                             /* where it starts, in the caller's image */
+    uint64_t arg0;                              /* in rdi */
+    uint64_t arg1;                              /* in rsi */
+    uint64_t stack_size;                        /* 0 is THREAD_USTACK_DEFAULT */
+    uint32_t flags;                             /* 0 */
+    uint32_t reserved;                          /* 0 */
+};
+
+/* thread_info.ended: how it ended, once SIGNAL_THREAD_ENDED is set. */
+#define THR_RUNNING              0              /* not ended */
+#define THR_EXITED               1              /* SYS_THREAD_EXIT; `code` is its argument */
+
+/*
+ * with its process: SYS_EXIT, a crash or a kill, in any of its threads
+ * (process_info says which)
+ */
+#define THR_WITH_PROCESS         2
+
+struct thread_info {
+    uint32_t tid;                               /* for display; names the thread until it is reaped */
+    uint32_t ended;                             /* THR_* */
+    int32_t code;                               /* THR_EXITED */
+    uint32_t reserved;                          /* 0 */
+};
 
 /*
  * OBJINFO_MEM: a memory object's size, how much of it has been touched, and
@@ -1396,6 +1464,8 @@ CXK_ABI_STATIC_ASSERT(sizeof(struct spawn_handle) == 16, "ABI layout: spawn_hand
 CXK_ABI_STATIC_ASSERT(sizeof(struct clock_info) == 8, "ABI layout: clock_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct queue_event) == 16, "ABI layout: queue_event");
 CXK_ABI_STATIC_ASSERT(sizeof(struct job_limits) == 16, "ABI layout: job_limits");
+CXK_ABI_STATIC_ASSERT(sizeof(struct thread_create_args) == 40, "ABI layout: thread_create_args");
+CXK_ABI_STATIC_ASSERT(sizeof(struct thread_info) == 16, "ABI layout: thread_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct mem_info) == 24, "ABI layout: mem_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct job_info) == 48, "ABI layout: job_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct process_info) == 40, "ABI layout: process_info");

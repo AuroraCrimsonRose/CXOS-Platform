@@ -1,0 +1,59 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// std/thread.xfxn - threads for CXK X.
+// Aurora Tejeda / CATX Systems
+//
+//   import "thread.xfxn";
+//
+// Wraps SYS_THREAD_CREATE and SYS_THREAD_EXIT. A thread runs a function of
+// one u64 in the same process, on a stack the kernel maps for it with a
+// guard page below, and what the function returns is its exit code. Its
+// handle is how it is joined: a wait for SIGNAL_THREAD_ENDED.
+//
+// The library is not yet safe to call from two threads at once (the heap
+// and the output buffer have no lock until the futex, roadmap 1.5b): give
+// each thread its own memory, and print from one.
+
+type thread_fn = fn(u64) -> i32;
+
+// What every thread runs first: the function and its argument arrive as
+// SYS_THREAD_CREATE's arg0 and arg1. A function that returned to the kernel's
+// 0 would fault, so its return is the thread's SYS_THREAD_EXIT.
+fn thread_main(f: thread_fn, arg: u64) -> void {
+    thread_exit(f(arg));
+}
+
+// A new thread running f(arg), with a stack of `stack` bytes (0 for the
+// default, THREAD_USTACK_DEFAULT) -> its handle, or -E_*.
+fn thread_spawn(f: thread_fn, arg: u64, stack: u64) -> i32 {
+    let a: thread_create_args;
+    a.entry      = thread_main as u64;
+    a.arg0       = f as u64;
+    a.arg1       = arg;
+    a.stack_size = stack;
+    a.flags      = 0;
+    a.reserved   = 0;
+    return thread_create(&a);
+}
+
+// Wait for thread `h` to end, until `deadline` on the monotonic clock
+// (DEADLINE_NEVER for no limit; time.xfxn's time_deadline_ms). -> 0 with
+// *code its exit code, and the handle closed; E_TIMED_OUT, with the handle
+// still open, if it is still running. A thread that ended with its process
+// is never joined: the joiner went with it.
+fn thread_join(h: i32, deadline: u64, code: *i32) -> i32 {
+    let seen: u32 = 0;
+    let rc: i32 = object_wait(h, SIGNAL_THREAD_ENDED, deadline, &seen);
+    if (rc != 0) { return rc; }
+    let ti: thread_info;
+    let q: object_info_args;
+    q.cap    = sizeof ti;
+    q.buf    = (&ti) as u64;
+    q.handle = h;
+    q.topic  = OBJINFO_THREAD;
+    rc = object_info(&q);
+    if (rc < 0) { return rc; }
+    *code = ti.code;
+    handle_close(h);
+    return 0;
+}
