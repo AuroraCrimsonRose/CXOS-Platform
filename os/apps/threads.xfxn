@@ -3,14 +3,13 @@
 // threads.xfxn - user threads, from ring 3 (roadmap 1.5a).
 // Aurora Tejeda / CATX Systems
 //
-// The kernel's self-test (ktest_loader.c, ktest_threads) runs it three times
-// and reads how each process ended:
+// What only a process's end can show. The calls themselves are tested by
+// xtest.xfxn (1.5d2). The kernel's self-test (ktest_loader.c, ktest_threads)
+// runs it three times and reads how each process ended:
 //
-//   threads         the calls: refusals, workers joined with their codes,
-//                   stacks given back; thread-local blocks, names and
-//                   CPU time (1.5c2); then the first thread ends itself
-//                   while a worker runs on, and the process ends with the
-//                   worker's code, 0. Any failure is exit(step).
+//   threads         the first thread ends itself while a worker runs on,
+//                   and the process ends with the worker's code, 0, not
+//                   the first thread's 99.
 //   threads exit    a worker calls SYS_EXIT while the first thread waits
 //                   with no deadline: the process ends PROC_EXITED 42.
 //   threads crash   a worker runs off its stack while the first thread
@@ -19,18 +18,6 @@
 
 import "thread.xfxn";
 import "time.xfxn";
-import "string.xfxn";
-
-global results: [4]u64;
-
-// arg's triangle number, kept where the first thread can check it
-fn worker(arg: u64) -> i32 {
-    let sum: u64 = 0;
-    let i: u64 = 1;
-    while (i <= arg) { sum = sum + i; i = i + 1; }
-    results[(arg / 10) as i32] = sum;
-    return (arg as i32) + 100;
-}
 
 fn sleeper(arg: u64) -> i32 {
     while (1 == 1) { sleep_ms(1000); }
@@ -53,25 +40,10 @@ fn deep(n: u64) -> u64 {
 
 fn runaway(arg: u64) -> i32 { return deep(arg) as i32; }
 
-global nap_sp: u64;
-
-fn napper(arg: u64) -> i32 {
-    let here: u64 = 1;
-    nap_sp = (&here) as u64;
-    sleep_ms(300);
-    return 5;
-}
-
 // outlives the first thread, then ends the process with its own code
 fn last(arg: u64) -> i32 {
     sleep_ms(50);
     return 0;
-}
-
-fn mapped() -> u64 {
-    let u: vm_usage;
-    vm_info(&u);
-    return u.mapped as u64;
 }
 
 fn args_first() -> *u8 {
@@ -87,203 +59,6 @@ fn is(s: *u8, w: *u8) -> i32 {
     while (w[i] != 0) { if (s[i] != w[i]) { return 0; } i = i + 1; }
     if (s[i] != 0) { return 0; }
     return 1;
-}
-
-// ---- thread-local storage, names, CPU time (roadmap 1.5c2) ----
-
-const NONCANONICAL: u64 = 0x0000800000000000;   // the first past the user half
-const KERNEL_HALF:  u64 = 0xFFFF800000001000;
-
-global tls_seen: [4]u64;    // each worker's block, as it found it
-global tls_go: u32;         // the workers start switching once all are up
-
-// Each finds its own block in FS, made for it and named by its own word,
-// holding its own id; and still finds it after every switch to a sibling
-// with another. -> 0, or what went wrong.
-fn tls_worker(arg: u64) -> i32 {
-    let b: *tls_block = __tls_base() as *tls_block;
-    if (b.self != tls_addr(b)) { return 1; }
-    if (b.tid != thread_id() as u32 || tls_tid() != b.tid) { return 2; }
-    if (tls_addr(b) == tls_addr(&tls_first)) { return 3; }
-    tls_seen[arg as i32] = tls_addr(b) as u64;
-    __atomic_add(&tls_go, 1);
-    while (__atomic_load(&tls_go) < 3) { yield_(); }
-    let i: u32 = 0;
-    while (i < 50) {
-        yield_();
-        if (__tls_base() != tls_addr(b)) { return 4; }
-        i = i + 1;
-    }
-    return 0;
-}
-
-global spin_named: u32;
-global spin_stop: u32;
-// 31 bytes: the longest name there is room for
-fn long_name() -> *u8 { return "spinner-abcdefghijklmnopqrstuvw"; }
-
-// Runs on the CPU for 30 ms of the clock, then names itself and waits to be
-// looked at.
-fn spinner(arg: u64) -> i32 {
-    let end: u64 = time_deadline_ms(30);
-    let now: u64 = 0;
-    clock_monotonic(&now);
-    while (now < end) { clock_monotonic(&now); }
-    if (thread_set_name(long_name()) != 0) { return 1; }
-    __atomic_store(&spin_named, 1);
-    while (__atomic_load(&spin_stop) == 0) { sleep_ms(1); }
-    return 0;
-}
-
-fn napper2(arg: u64) -> i32 {
-    sleep_ms(100);
-    return 0;
-}
-
-// -> the bytes written, or -E_*
-fn info(h: i32, ti: *thread_info) -> i32 {
-    let q: object_info_args;
-    let size: thread_info;
-    q.cap    = sizeof size;
-    q.buf    = ti as u64;
-    q.handle = h;
-    q.topic  = OBJINFO_THREAD;
-    return object_info(&q);
-}
-
-const MS: u64 = 1000000;
-
-fn tls_checks() -> void {
-    let first: usize = tls_addr(tls_self());
-    if (first != tls_addr(&tls_first) || __tls_base() != first) { exit(16); }
-    // 17-19: bases outside the user half refused, at create and by the set
-    // call, and the base unchanged by a refusal
-    let a: thread_create_args;
-    a.entry = thread_main as u64; a.arg0 = tls_worker as u64; a.arg1 = 0;
-    a.stack_size = 0; a.flags = 0; a.reserved = 0; a.tls = NONCANONICAL;
-    if (thread_create(&a) != E_INVALID_ARGS) { exit(17); }
-    a.tls = KERNEL_HALF;
-    if (thread_create(&a) != E_INVALID_ARGS) { exit(17); }
-    if (thread_set_tls(NONCANONICAL) != E_INVALID_ARGS) { exit(18); }
-    if (thread_set_tls(KERNEL_HALF) != E_INVALID_ARGS) { exit(18); }
-    if (__tls_base() != first) { exit(19); }
-
-    // 20-22: three workers, each in its own block across 50 switches; this
-    // thread finds its own after waiting on them
-    let h: [3]i32;
-    let i: u32 = 0;
-    while (i < 3) {
-        h[i] = thread_spawn(tls_worker, i as u64, 0);
-        if (h[i] <= 0) { exit(20); }
-        i = i + 1;
-    }
-    i = 0;
-    while (i < 3) {
-        let code: i32 = -1;
-        if (thread_join(h[i], time_deadline_ms(10000), &code) != 0) { exit(21); }
-        if (code != 0) { exit(30 + code); }
-        i = i + 1;
-    }
-    if (tls_seen[0] == tls_seen[1] || tls_seen[1] == tls_seen[2] || tls_seen[0] == tls_seen[2]) { exit(22); }
-    if (__tls_base() != first || tls_tid() != thread_id() as u32) { exit(22); }
-
-    // 23: names refused: empty, no NUL within THREAD_NAME_MAX, unreadable
-    let nm: [33]u8;
-    let k: u32 = 0;
-    while (k < 33) { nm[k] = 120; k = k + 1; }
-    nm[32] = 0;
-    if (thread_set_name("") != E_INVALID_ARGS) { exit(23); }
-    if (thread_set_name(&nm[0]) != E_INVALID_ARGS) { exit(23); }
-    if (thread_set_name(KERNEL_HALF as *u8) != E_BAD_ADDRESS) { exit(23); }
-    nm[31] = 0;   // 31 and a NUL: taken
-    if (thread_set_name(&nm[0]) != 0) { exit(23); }
-
-    // 24-26: a thread that ran 30 ms is charged that much and named as it
-    // named itself, while it runs and after it ends
-    let ti: thread_info;
-    let s: i32 = thread_spawn(spinner, 0, 0);
-    if (s <= 0) { exit(24); }
-    while (__atomic_load(&spin_named) == 0) { sleep_ms(1); }
-    if (info(s, &ti) < 0 || ti.ended != THR_RUNNING) { exit(24); }
-    if (ti.cpu_ns < 20 * MS || streq(&ti.name[0], long_name()) != 1) { exit(25); }
-    let ran: u64 = ti.cpu_ns;
-    __atomic_store(&spin_stop, 1);
-    let seen: u32 = 0;
-    if (object_wait(s, SIGNAL_THREAD_ENDED, time_deadline_ms(10000), &seen) != 0) { exit(26); }
-    if (info(s, &ti) < 0 || ti.ended != THR_EXITED || ti.cpu_ns < ran) { exit(26); }
-    if (streq(&ti.name[0], long_name()) != 1 || ti.name[31] != 0) { exit(26); }
-    handle_close(s);
-
-    // 27: one that slept 100 ms is charged next to nothing, and is called
-    // what every new thread is
-    let n: i32 = thread_spawn(napper2, 0, 0);
-    if (n <= 0) { exit(27); }
-    if (object_wait(n, SIGNAL_THREAD_ENDED, time_deadline_ms(10000), &seen) != 0) { exit(27); }
-    if (info(n, &ti) < 0 || ti.cpu_ns >= 20 * MS || ti.cpu_ns == 0) { exit(27); }
-    if (streq(&ti.name[0], "thread") != 1) { exit(27); }
-    handle_close(n);
-}
-
-fn basic() -> void {
-    let a: thread_create_args;
-    a.entry = thread_main as u64; a.arg0 = worker as u64; a.arg1 = 3;
-    a.stack_size = 0; a.flags = 1; a.reserved = 0; a.tls = 0;
-    // 1-4: refusals, each taking nothing
-    if (thread_create(&a) != E_INVALID_ARGS) { exit(1); }
-    a.flags = 0; a.reserved = 1;
-    if (thread_create(&a) != E_INVALID_ARGS) { exit(2); }
-    a.reserved = 0; a.stack_size = 4096;
-    if (thread_create(&a) != E_OUT_OF_RANGE) { exit(3); }
-    a.stack_size = 0; a.entry = 0;
-    if (thread_create(&a) != E_INVALID_ARGS) { exit(4); }
-
-    // 5-8: three workers at once, each joined with its code and its result
-    let m0: u64 = mapped();
-    let h: [3]i32;
-    let i: u32 = 0;
-    while (i < 3) {
-        h[i] = thread_spawn(worker, (i + 1) as u64 * 10, 0);
-        if (h[i] <= 0) { exit(5); }
-        i = i + 1;
-    }
-    i = 0;
-    while (i < 3) {
-        let code: i32 = 0;
-        if (thread_join(h[i], time_deadline_ms(10000), &code) != 0) { exit(6); }
-        if (code != ((i + 1) * 10 + 100) as i32) { exit(7); }
-        i = i + 1;
-    }
-    if (results[1] != 55 || results[2] != 210 || results[3] != 465) { exit(8); }
-    // 9: every stack given back before its thread's end was signalled
-    if (mapped() != m0) { exit(9); }
-
-    // 10-14: a stack is a mapping of its size while its thread lives; a join
-    // whose deadline passes first leaves the handle to join again
-    // (and its block, a page)
-    let n: i32 = thread_spawn(napper, 0, 0);
-    if (n <= 0 || mapped() != m0 + (THREAD_USTACK_DEFAULT as u64) + (THREAD_BLOCK_BYTES as u64)) { exit(10); }
-    let code: i32 = 0;
-    if (thread_join(n, time_deadline_ms(10), &code) != E_TIMED_OUT) { exit(11); }
-    // 12: a thread stack is not the program's to unmap: walk down from the
-    // napper's stack to the region's base, which refuses
-    while (nap_sp == 0) { sleep_ms(1); }
-    let pg: u64 = (nap_sp / 4096) * 4096;
-    let k: u32 = 0;
-    let r: i32 = E_NOT_FOUND;
-    while (k < 18 && r == E_NOT_FOUND) { r = vm_unmap(pg - (k as u64) * 4096, 4096); k = k + 1; }
-    if (r != E_ACCESS_DENIED) { exit(12); }
-    if (thread_join(n, time_deadline_ms(10000), &code) != 0 || code != 5) { exit(13); }
-    if (mapped() != m0) { exit(14); }
-
-    tls_checks();
-    // every block given back too
-    if (mapped() != m0) { exit(28); }
-
-    // 15: the first thread ends itself with a worker still running: the
-    // process lives on, and ends with the last thread's code, 0, not 99
-    let l: i32 = thread_spawn(last, 0, 0);
-    if (l <= 0) { exit(15); }
-    thread_exit(99);
 }
 
 fn _start() -> void {
@@ -306,5 +81,9 @@ fn _start() -> void {
         // alive instead and let the self-test's deadline see it.
         while (1 == 1) { sleep_ms(1000); }
     }
-    basic();
+    // the first thread ends itself with a worker still running: the process
+    // lives on, and ends with the last thread's code, 0, not 99
+    let l: i32 = thread_spawn(last, 0, 0);
+    if (l <= 0) { exit(15); }
+    thread_exit(99);
 }

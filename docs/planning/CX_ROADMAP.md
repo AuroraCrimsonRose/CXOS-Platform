@@ -510,10 +510,28 @@ Independent of the order above, and small enough to land whenever convenient:
        no end line), names failed tests in its reason, and `--json` prints
        the verdict and every result, a failed one with the lines it logged.
        No ABI change.
-     - **1.5d2:** a ring-3 X test runner: one boot runs many X tests as
-       threads, with join deadlines catching hangs, each test reported as a
-       self-test of its own, so userland tests stop needing a kernel
-       self-test each.
+     - **1.5d2 (2026-10-30), done:** a ring-3 X test runner,
+       `os/std/test.xfxn`, and the X tests, `os/apps/xtest.xfxn`. Each test
+       is a thread function (0 a pass, else the step it failed at) run on a
+       thread of its own and joined with a deadline: a hang fails at its
+       deadline and stops the run (the hung thread may hold the heap's or
+       the output's lock, and no thread can be ended from outside); a fault
+       ends the process, failing the test it was in. The runner first names
+       every test, then runs them, writing `@xtest case|start|result|end`
+       lines to its output pipe with SYS_FILE_WRITE directly (no lock, no
+       heap). The kernel's `ktest_xtests` reports each result as a self-test
+       of its own (`x: <name>`), each test left without one as failed in its
+       place, so a red boot has the same tests as a green one, and then
+       "the runner ran cleanly" (exit 0, every line in order, nothing left
+       behind); its 600 s deadline backs up the runner's. Serenity prints a
+       START line per test for the same reason (`run-tests.cpp`,
+       `do_run_single_test`); XNU forks a child per test
+       (`tests/vm/vm_allocation.c`, `child_test_passed`), which keeps a crash
+       to its test: CXK has no fork. threads.xfxn's and futex.xfxn's plain
+       checks moved in as 17 tests; what only a process's end shows (a
+       worker's SYS_EXIT, a crash, the first thread ending first, a futex
+       waiter's process ending) stays in those programs. Self-tests 168.
+       No ABI change.
      - **1.5d3:** `cxk test all` (host tests, the container Differential
        run, the boot variants) writing one summary; and `cxk test
        sabotage`, which owns the backup, restore, pattern counts and tree

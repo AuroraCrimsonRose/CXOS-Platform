@@ -36,8 +36,13 @@ int ktest_shell_pipeline(void);
    1 = pass (or nothing staged), 0 = fail. */
 int ktest_threads(void);
 
-/* /Shared/Programs/futex.xuex, twice: futexes and std/sync.xfxn from ring 3
-   (1.5b2). 1 = pass (or nothing staged), 0 = fail. */
+/* /Shared/Programs/futex.xuex: a futex waiter's process ends, and the waiter
+   goes with it (1.5b2). 1 = pass (or nothing staged), 0 = fail. */
 int ktest_futex(void);
+
+/* /Shared/Programs/xtest.xuex: the X tests (1.5d2), each passed to `report`
+   as a self-test of its own, then "x tests: the runner ran cleanly".
+   -> how many passed; *total how many were reported (0 if nothing staged). */
+int ktest_xtests(int (*report)(const char *, int), int *total);
 
 #endif

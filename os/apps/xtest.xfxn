@@ -1,0 +1,584 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// xtest.xfxn - the X tests, run from ring 3 (roadmap 1.5d2).
+// Aurora Tejeda / CATX Systems
+//
+// The kernel's self-test (ktest_loader.c, ktest_xtests) runs it once with a
+// pipe for its output and reports each test below as a self-test of its own
+// (std/test.xfxn has the lines and the rules). A test returns 0, or the step
+// it failed at.
+//
+// What a test can only show by how its process ends stays a program of its
+// own, run by a self-test that reads the end: threads.xfxn (a worker's
+// SYS_EXIT, a crash, the first thread ending first), futex.xfxn (a waiter's
+// process ends).
+
+import "test.xfxn";
+import "thread.xfxn";
+import "time.xfxn";
+import "sync.xfxn";
+import "heap.xfxn";
+import "io.xfxn";
+import "string.xfxn";
+
+const MS: u64 = 1000000;
+
+fn mapped() -> u64 {
+    let u: vm_usage;
+    vm_info(&u);
+    return u.mapped as u64;
+}
+
+// -> the bytes written, or -E_*
+fn info(h: i32, ti: *thread_info) -> i32 {
+    let q: object_info_args;
+    let size: thread_info;
+    q.cap    = sizeof size;
+    q.buf    = ti as u64;
+    q.handle = h;
+    q.topic  = OBJINFO_THREAD;
+    return object_info(&q);
+}
+
+fn join(h: i32) -> i32 {
+    let code: i32 = 0 - 1000;
+    if (thread_join(h, time_deadline_ms(30000), &code) != 0) { return 0 - 1000; }
+    return code;
+}
+
+// ==================== threads (roadmap 1.5a, 1.5c2) ====================
+
+global results: [4]u64;
+
+// arg's triangle number, kept where the test can check it
+fn worker(arg: u64) -> i32 {
+    let sum: u64 = 0;
+    let i: u64 = 1;
+    while (i <= arg) { sum = sum + i; i = i + 1; }
+    results[(arg / 10) as i32] = sum;
+    return (arg as i32) + 100;
+}
+
+// 1-4: refusals, each taking nothing
+fn t_create_refused(arg: u64) -> i32 {
+    let a: thread_create_args;
+    a.entry = thread_main as u64; a.arg0 = worker as u64; a.arg1 = 3;
+    a.stack_size = 0; a.flags = 1; a.reserved = 0; a.tls = 0;
+    if (thread_create(&a) != E_INVALID_ARGS) { return 1; }
+    a.flags = 0; a.reserved = 1;
+    if (thread_create(&a) != E_INVALID_ARGS) { return 2; }
+    a.reserved = 0; a.stack_size = 4096;
+    if (thread_create(&a) != E_OUT_OF_RANGE) { return 3; }
+    a.stack_size = 0; a.entry = 0;
+    if (thread_create(&a) != E_INVALID_ARGS) { return 4; }
+    return 0;
+}
+
+// 5-9: three workers at once, each joined with its code and its result, and
+// every stack given back before its thread's end was signalled
+fn t_workers_joined(arg: u64) -> i32 {
+    let m0: u64 = mapped();
+    let h: [3]i32;
+    let i: u32 = 0;
+    while (i < 3) {
+        h[i] = thread_spawn(worker, (i + 1) as u64 * 10, 0);
+        if (h[i] <= 0) { return 5; }
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 3) {
+        let code: i32 = 0;
+        if (thread_join(h[i], time_deadline_ms(10000), &code) != 0) { return 6; }
+        if (code != ((i + 1) * 10 + 100) as i32) { return 7; }
+        i = i + 1;
+    }
+    if (results[1] != 55 || results[2] != 210 || results[3] != 465) { return 8; }
+    if (mapped() != m0) { return 9; }
+    return 0;
+}
+
+global nap_sp: u64;
+
+fn napper(arg: u64) -> i32 {
+    let here: u64 = 1;
+    nap_sp = (&here) as u64;
+    sleep_ms(300);
+    return 5;
+}
+
+// 10-14: a stack is a mapping of its size while its thread lives (and its
+// block, a page); a join whose deadline passes first leaves the handle to
+// join again; a thread stack is not the program's to unmap
+fn t_stacks_and_join_deadline(arg: u64) -> i32 {
+    let m0: u64 = mapped();
+    let n: i32 = thread_spawn(napper, 0, 0);
+    if (n <= 0 || mapped() != m0 + (THREAD_USTACK_DEFAULT as u64) + (THREAD_BLOCK_BYTES as u64)) { return 10; }
+    let code: i32 = 0;
+    if (thread_join(n, time_deadline_ms(10), &code) != E_TIMED_OUT) { return 11; }
+    // walk down from the napper's stack to the region's base, which refuses
+    while (nap_sp == 0) { sleep_ms(1); }
+    let pg: u64 = (nap_sp / 4096) * 4096;
+    let k: u32 = 0;
+    let r: i32 = E_NOT_FOUND;
+    while (k < 18 && r == E_NOT_FOUND) { r = vm_unmap(pg - (k as u64) * 4096, 4096); k = k + 1; }
+    if (r != E_ACCESS_DENIED) { return 12; }
+    if (thread_join(n, time_deadline_ms(10000), &code) != 0 || code != 5) { return 13; }
+    if (mapped() != m0) { return 14; }
+    return 0;
+}
+
+const NONCANONICAL: u64 = 0x0000800000000000;   // the first past the user half
+const KERNEL_HALF:  u64 = 0xFFFF800000001000;
+
+global tls_seen: [4]u64;    // each worker's block, as it found it
+global tls_go: u32;         // the workers start switching once all are up
+
+// Each finds its own block in FS, made for it and named by its own word,
+// holding its own id; and still finds it after every switch to a sibling
+// with another. -> 0, or what went wrong.
+fn tls_worker(arg: u64) -> i32 {
+    let b: *tls_block = __tls_base() as *tls_block;
+    if (b.self != tls_addr(b)) { return 1; }
+    if (b.tid != thread_id() as u32 || tls_tid() != b.tid) { return 2; }
+    if (tls_addr(b) == tls_addr(&tls_first)) { return 3; }
+    tls_seen[arg as i32] = tls_addr(b) as u64;
+    __atomic_add(&tls_go, 1);
+    while (__atomic_load(&tls_go) < 3) { yield_(); }
+    let i: u32 = 0;
+    while (i < 50) {
+        yield_();
+        if (__tls_base() != tls_addr(b)) { return 4; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// 16-22, 28: the test's own block is its own (not the first thread's);
+// bases outside the user half refused; three workers each in their own
+// block; every block given back
+fn t_tls_blocks(arg: u64) -> i32 {
+    let m0: u64 = mapped();
+    let mine: usize = tls_addr(tls_self());
+    if (mine != __tls_base() || mine == tls_addr(&tls_first)) { return 16; }
+    // 17-19: refused at create and by the set call, the base unchanged
+    let a: thread_create_args;
+    a.entry = thread_main as u64; a.arg0 = tls_worker as u64; a.arg1 = 0;
+    a.stack_size = 0; a.flags = 0; a.reserved = 0; a.tls = NONCANONICAL;
+    if (thread_create(&a) != E_INVALID_ARGS) { return 17; }
+    a.tls = KERNEL_HALF;
+    if (thread_create(&a) != E_INVALID_ARGS) { return 17; }
+    if (thread_set_tls(NONCANONICAL) != E_INVALID_ARGS) { return 18; }
+    if (thread_set_tls(KERNEL_HALF) != E_INVALID_ARGS) { return 18; }
+    if (__tls_base() != mine) { return 19; }
+
+    // 20-22: three workers, each in its own block across 50 switches; this
+    // thread finds its own after waiting on them
+    let h: [3]i32;
+    let i: u32 = 0;
+    while (i < 3) {
+        h[i] = thread_spawn(tls_worker, i as u64, 0);
+        if (h[i] <= 0) { return 20; }
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 3) {
+        let code: i32 = -1;
+        if (thread_join(h[i], time_deadline_ms(10000), &code) != 0) { return 21; }
+        if (code != 0) { return 30 + code; }
+        i = i + 1;
+    }
+    if (tls_seen[0] == tls_seen[1] || tls_seen[1] == tls_seen[2] || tls_seen[0] == tls_seen[2]) { return 22; }
+    if (__tls_base() != mine || tls_tid() != thread_id() as u32) { return 22; }
+    if (mapped() != m0) { return 28; }
+    return 0;
+}
+
+// 23: names refused: empty, no NUL within THREAD_NAME_MAX, unreadable; 31
+// bytes and a NUL taken
+fn t_names(arg: u64) -> i32 {
+    let nm: [33]u8;
+    let k: u32 = 0;
+    while (k < 33) { nm[k] = 120; k = k + 1; }
+    nm[32] = 0;
+    if (thread_set_name("") != E_INVALID_ARGS) { return 23; }
+    if (thread_set_name(&nm[0]) != E_INVALID_ARGS) { return 23; }
+    if (thread_set_name(KERNEL_HALF as *u8) != E_BAD_ADDRESS) { return 23; }
+    nm[31] = 0;
+    if (thread_set_name(&nm[0]) != 0) { return 23; }
+    return 0;
+}
+
+global spin_named: u32;
+global spin_stop: u32;
+// 31 bytes: the longest name there is room for
+fn long_name() -> *u8 { return "spinner-abcdefghijklmnopqrstuvw"; }
+
+// Runs on the CPU for 30 ms of the clock, then names itself and waits to be
+// looked at.
+fn spinner(arg: u64) -> i32 {
+    let end: u64 = time_deadline_ms(30);
+    let now: u64 = 0;
+    clock_monotonic(&now);
+    while (now < end) { clock_monotonic(&now); }
+    if (thread_set_name(long_name()) != 0) { return 1; }
+    __atomic_store(&spin_named, 1);
+    while (__atomic_load(&spin_stop) == 0) { sleep_ms(1); }
+    return 0;
+}
+
+fn napper2(arg: u64) -> i32 {
+    sleep_ms(100);
+    return 0;
+}
+
+// 24-27: a thread that ran 30 ms is charged that much and named as it named
+// itself, while it runs and after it ends; one that slept 100 ms is charged
+// next to nothing, and is called what every new thread is
+fn t_cpu_time_and_names(arg: u64) -> i32 {
+    let ti: thread_info;
+    let s: i32 = thread_spawn(spinner, 0, 0);
+    if (s <= 0) { return 24; }
+    while (__atomic_load(&spin_named) == 0) { sleep_ms(1); }
+    if (info(s, &ti) < 0 || ti.ended != THR_RUNNING) { return 24; }
+    if (ti.cpu_ns < 20 * MS || streq(&ti.name[0], long_name()) != 1) { return 25; }
+    let ran: u64 = ti.cpu_ns;
+    __atomic_store(&spin_stop, 1);
+    let seen: u32 = 0;
+    if (object_wait(s, SIGNAL_THREAD_ENDED, time_deadline_ms(10000), &seen) != 0) { return 26; }
+    if (info(s, &ti) < 0 || ti.ended != THR_EXITED || ti.cpu_ns < ran) { return 26; }
+    if (streq(&ti.name[0], long_name()) != 1 || ti.name[31] != 0) { return 26; }
+    handle_close(s);
+
+    let n: i32 = thread_spawn(napper2, 0, 0);
+    if (n <= 0) { return 27; }
+    if (object_wait(n, SIGNAL_THREAD_ENDED, time_deadline_ms(10000), &seen) != 0) { return 27; }
+    if (info(n, &ti) < 0 || ti.cpu_ns >= 20 * MS || ti.cpu_ns == 0) { return 27; }
+    if (streq(&ti.name[0], "thread") != 1) { return 27; }
+    handle_close(n);
+    return 0;
+}
+
+// ==================== futexes (roadmap 1.5b2) ====================
+
+global word:  u32;   // a word of the image: keyed by the process and its address
+global other: u32;   // another one, which no one waits on
+
+// wait on the word at arg while it is 0 -> futex_wait's answer
+fn waiter(arg: u64) -> i32 {
+    return futex_wait(arg as *u32, 0, time_deadline_ms(20000));
+}
+
+// wake one waiter on w once one is there, checking no wake on `other`
+// reaches it -> 1, or 0 if none came
+fn wake_one(w: *u32) -> i32 {
+    let until: u64 = time_deadline_ms(20000);
+    while (time_now_ns() < until) {
+        if (futex_wake(&other, FUTEX_WAKE_ALL) != 0) { return 0; }
+        let n: i32 = futex_wake(w, 1);
+        if (n != 0) { return n; }
+        sleep_ms(1);
+    }
+    return 0;
+}
+
+// 1-8: refusals, the cases that do not wait, and a deadline that comes
+// first, not before its time
+fn f_refusals(arg: u64) -> i32 {
+    let addr: u64 = (&word) as u64;
+    if (futex_wait((addr + 2) as *u32, 0xFFFF_FFFF, DEADLINE_NEVER) != E_INVALID_ARGS) { return 1; }
+    if (futex_wake((addr + 1) as *u32, 1) != E_INVALID_ARGS) { return 2; }
+    if (futex_wait(0xFFFF_8000_0000_0000 as *u32, 0, DEADLINE_NEVER) != E_BAD_ADDRESS) { return 3; }
+    if (futex_wake(0 as *u32, 1) != E_BAD_ADDRESS) { return 4; }
+    word = 7;
+    if (futex_wait(&word, 6, DEADLINE_NEVER) != E_SHOULD_WAIT) { return 5; }
+    word = 0;
+    if (futex_wake(&word, FUTEX_WAKE_ALL) != 0) { return 6; }
+    let t0: u64 = time_now_ns();
+    if (futex_wait(&word, 0, time_deadline_ms(30)) != E_TIMED_OUT) { return 7; }
+    if (time_since_ns(t0) < 30 * NS_PER_MS) { return 7; }
+    // one already passed only looks
+    if (futex_wait(&word, 0, 0) != E_TIMED_OUT) { return 8; }
+    return 0;
+}
+
+// 9-10: a waiter woken by a wake on its word, which says it woke one
+fn f_wake_one(arg: u64) -> i32 {
+    word = 0;
+    let h: i32 = thread_spawn(waiter, (&word) as u64, 0);
+    if (h <= 0) { return 9; }
+    if (wake_one(&word) != 1) { return 9; }
+    if (join(h) != 0) { return 10; }
+    return 0;
+}
+
+// 11-13: three waiters; a wake of two wakes two, and the third is still
+// there for the next
+fn f_wake_two(arg: u64) -> i32 {
+    word = 0;
+    let w: [3]i32;
+    let i: u32 = 0;
+    while (i < 3) { w[i] = thread_spawn(waiter, (&word) as u64, 0); if (w[i] <= 0) { return 11; } i = i + 1; }
+    let n: i32 = 0;
+    let until: u64 = time_deadline_ms(20000);
+    while (n < 2 && time_now_ns() < until) { n = n + futex_wake(&word, (2 - n) as u32); sleep_ms(1); }
+    if (n != 2) { return 12; }
+    if (wake_one(&word) != 1) { return 13; }
+    i = 0;
+    while (i < 3) { if (join(w[i]) != 0) { return 13; } i = i + 1; }
+    return 0;
+}
+
+// 14-16: one memory object mapped at two addresses is one word: a wait
+// through one is woken through the other
+fn f_one_object_two_maps(arg: u64) -> i32 {
+    let m: i32 = mem_create(4096, 0);
+    if (m <= 0) { return 14; }
+    let a: vm_map_args;
+    a.offset = 0; a.length = 4096; a.object = m as u32;
+    a.prot = MPROT_READ | MPROT_WRITE; a.flags = 0; a.reserved = 0; a.addr = 0;
+    if (vm_map(&a) != 0) { return 14; }
+    let one: u64 = a.addr;
+    a.addr = 0;
+    if (vm_map(&a) != 0 || a.addr == one) { return 14; }
+    let two: u64 = a.addr;
+    let p1: *u32 = (one + 64) as *u32;
+    let p2: *u32 = (two + 64) as *u32;
+    p1[0] = 5;
+    if (p2[0] != 5) { return 15; }
+    p1[0] = 0;
+    let h: i32 = thread_spawn(waiter, one + 64, 0);
+    if (h <= 0) { return 15; }
+    if (wake_one(p2) != 1) { return 16; }
+    if (join(h) != 0) { return 16; }
+    vm_unmap(one, 0);
+    vm_unmap(two, 0);
+    handle_close(m);
+    return 0;
+}
+
+// ==================== std/sync.xfxn (roadmap 1.5b2) ====================
+
+const WORKERS: u32 = 4;
+const ROUNDS:  u32 = 200;
+const ITEMS:   u32 = 50;
+
+global lock:  mutex;
+global counter: u32;
+global ids: [4]u32;
+
+global cv:   cond;
+global cvm:  mutex;
+global slot_full: u32;
+global slot_val:  u32;
+
+global once_o: once;
+global once_count: u32;
+
+// 20-22: a mutex's word is its owner; only the owner unlocks it
+fn s_mutex_owner(arg: u64) -> i32 {
+    let me: u32 = thread_id() as u32;
+    if (me == 0 || (me & FUTEX_WAITERS) != 0) { return 20; }
+    if (mutex_unlock(&lock) != E_ACCESS_DENIED) { return 21; }
+    if (mutex_trylock(&lock) != 0 || lock.w != me) { return 22; }
+    if (mutex_trylock(&lock) != E_SHOULD_WAIT) { return 22; }
+    if (mutex_unlock(&lock) != 0 || lock.w != 0) { return 22; }
+    return 0;
+}
+
+// ROUNDS turns of the counter, read and written around a yield, so a lock
+// that let two in would lose counts; then the heap, from every worker at once
+fn bumper(arg: u64) -> i32 {
+    let me: u32 = thread_id() as u32;
+    ids[arg as u32] = me;
+    let i: u32 = 0;
+    while (i < ROUNDS) {
+        mutex_lock(&lock);
+        if ((__atomic_load(&lock.w) & ~FUTEX_WAITERS) != me) { return 1; }
+        let v: u32 = counter;
+        yield_();
+        counter = v + 1;
+        if (mutex_unlock(&lock) != 0) { return 2; }
+        i = i + 1;
+    }
+    let blocks: [64]usize;
+    let round: u32 = 0;
+    while (round < 40) {
+        let k: u32 = 0;
+        while (k < 64) {
+            let size: u32 = 8 + ((k + round + (arg as u32)) % 7) * 24;
+            blocks[k] = alloc(size);
+            if (blocks[k] == 0) { return 3; }
+            memset(blocks[k] as *u8, (me & 0xFF) as u8, size);
+            k = k + 1;
+        }
+        yield_();
+        k = 0;
+        while (k < 64) {
+            let b: *u8 = blocks[k] as *u8;
+            let size: u32 = 8 + ((k + round + (arg as u32)) % 7) * 24;
+            let j: u32 = 0;
+            while (j < size) { if (b[j] != (me & 0xFF) as u8) { return 4; } j = j + 1; }
+            free(blocks[k]);
+            k = k + 1;
+        }
+        round = round + 1;
+    }
+    return 0;
+}
+
+// 23-26: four threads through one mutex, and through the heap; each its own
+// id, none the test's
+fn s_mutex_contended(arg: u64) -> i32 {
+    let me: u32 = thread_id() as u32;
+    let h: [4]i32;
+    let i: u32 = 0;
+    while (i < WORKERS) { h[i] = thread_spawn(bumper, i as u64, 0); if (h[i] <= 0) { return 23; } i = i + 1; }
+    i = 0;
+    while (i < WORKERS) {
+        let c: i32 = join(h[i]);
+        if (c != 0) { return 24 * 10 + c; }
+        i = i + 1;
+    }
+    if (counter != WORKERS * ROUNDS) { return 25; }
+    i = 0;
+    while (i < WORKERS) {
+        if (ids[i] == 0 || ids[i] == me) { return 26; }
+        let j: u32 = i + 1;
+        while (j < WORKERS) { if (ids[i] == ids[j]) { return 26; } j = j + 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn producer(arg: u64) -> i32 {
+    let i: u32 = 1;
+    while (i <= ITEMS) {
+        mutex_lock(&cvm);
+        while (slot_full == 1) { cond_wait(&cv, &cvm); }
+        slot_val = i;
+        slot_full = 1;
+        cond_broadcast(&cv);
+        mutex_unlock(&cvm);
+        i = i + 1;
+    }
+    return 0;
+}
+
+// 27-28: a condition variable carries ITEMS through one slot
+fn s_cond_carries(arg: u64) -> i32 {
+    let p: i32 = thread_spawn(producer, 0, 0);
+    if (p <= 0) { return 27; }
+    let sum: u32 = 0;
+    let got: u32 = 0;
+    while (got < ITEMS) {
+        mutex_lock(&cvm);
+        while (slot_full == 0) { cond_wait(&cv, &cvm); }
+        sum = sum + slot_val;
+        slot_full = 0;
+        cond_broadcast(&cv);
+        mutex_unlock(&cvm);
+        got = got + 1;
+    }
+    if (join(p) != 0 || sum != ITEMS * (ITEMS + 1) / 2) { return 28; }
+    return 0;
+}
+
+// 29: a timed wait with no signal ends at its deadline, holding the lock
+fn s_cond_deadline(arg: u64) -> i32 {
+    mutex_lock(&cvm);
+    let c2: cond;
+    c2.seq = 0;
+    if (cond_wait_until(&c2, &cvm, time_deadline_ms(20)) != E_TIMED_OUT) { return 29; }
+    if (mutex_unlock(&cvm) != 0) { return 29; }
+    return 0;
+}
+
+fn once_body() -> void {
+    sleep_ms(30);
+    __atomic_add(&once_count, 1);
+}
+
+fn once_user(arg: u64) -> i32 {
+    once_run(&once_o, once_body);
+    if (__atomic_load(&once_count) != 1) { return 1; }
+    return 0;
+}
+
+// 30-31: once runs its function once, and every caller returns after it
+fn s_once(arg: u64) -> i32 {
+    let h: [3]i32;
+    let i: u32 = 0;
+    while (i < 3) { h[i] = thread_spawn(once_user, 0, 0); if (h[i] <= 0) { return 30; } i = i + 1; }
+    once_run(&once_o, once_body);
+    if (once_count != 1) { return 31; }
+    i = 0;
+    while (i < 3) { if (join(h[i]) != 0) { return 31; } i = i + 1; }
+    if (once_count != 1) { return 31; }
+    return 0;
+}
+
+fn allocer(arg: u64) -> i32 {
+    let p: usize = alloc(64);
+    if (p == 0) { return 1; }
+    free(p);
+    return 0;
+}
+
+fn printer(arg: u64) -> i32 {
+    newline();
+    return 0;
+}
+
+// Hold m, start f: it must still be running 50 ms on, asleep on m (its
+// word marked FUTEX_WAITERS), and end once m is let go -> 0, or 1 / 2.
+fn holds_off(m: *mutex, f: thread_fn) -> i32 {
+    mutex_lock(m);
+    let h: i32 = thread_spawn(f, 0, 0);
+    if (h <= 0) { mutex_unlock(m); return 1; }
+    let code: i32 = 0;
+    let rc: i32 = thread_join(h, time_deadline_ms(50), &code);
+    let waited: u32 = __atomic_load(&m.w) & FUTEX_WAITERS;
+    mutex_unlock(m);
+    if (rc != E_TIMED_OUT || waited == 0) { join(h); return 1; }
+    if (join(h) != 0) { return 2; }
+    return 0;
+}
+
+// 32-33: alloc takes the heap's lock. On one CPU a race inside alloc is a
+// few instructions wide and the heap stress above seldom reaches it, so
+// hold the lock here and see a thread wait on it.
+fn s_heap_locked(arg: u64) -> i32 {
+    let r: i32 = holds_off(&heap_mu, allocer);
+    if (r != 0) { return 31 + r; }
+    return 0;
+}
+
+// 34-35: and the output takes its own
+fn s_output_locked(arg: u64) -> i32 {
+    let r: i32 = holds_off(&io_mu, printer);
+    if (r != 0) { return 33 + r; }
+    return 0;
+}
+
+// The names are what the boot reports, after "x: ".
+fn all() -> void {
+    test_run("threads: create refusals",               t_create_refused,           30000);
+    test_run("threads: workers joined with codes",     t_workers_joined,           30000);
+    test_run("threads: stacks, a join's deadline",     t_stacks_and_join_deadline, 30000);
+    test_run("threads: a block each in FS",            t_tls_blocks,               30000);
+    test_run("threads: names refused and set",         t_names,                    30000);
+    test_run("threads: cpu time and names",            t_cpu_time_and_names,       30000);
+    test_run("futex: refusals, waits that end at once", f_refusals,                30000);
+    test_run("futex: a wake wakes its waiter",         f_wake_one,                 30000);
+    test_run("futex: a wake of two wakes two",         f_wake_two,                 30000);
+    test_run("futex: one object mapped twice",         f_one_object_two_maps,      30000);
+    test_run("sync: a mutex's word is its owner",      s_mutex_owner,              30000);
+    test_run("sync: four threads, a mutex, the heap",  s_mutex_contended,          60000);
+    test_run("sync: a cond carries items",             s_cond_carries,             30000);
+    test_run("sync: a timed cond wait ends",           s_cond_deadline,            30000);
+    test_run("sync: once runs once",                   s_once,                     30000);
+    test_run("sync: alloc takes the heap lock",        s_heap_locked,              30000);
+    test_run("sync: output takes its lock",            s_output_locked,            30000);
+}
+
+fn _start() -> void { test_main(all); }

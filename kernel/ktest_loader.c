@@ -947,11 +947,10 @@ done:
 }
 
 /*
- * /Shared/Programs/threads.xuex (roadmap 1.5a), run three times from disk;
- * the program checks the calls from ring 3 and its process's end is the
- * verdict:
- *   threads         exits 0 (any step it failed is its code), through its
- *                   last worker: the first thread ended itself with 99
+ * /Shared/Programs/threads.xuex (roadmap 1.5a), run three times from disk,
+ * for what only a process's end shows (the calls are xtest.xuex's, below):
+ *   threads         exits 0 through its last worker: the first thread
+ *                   ended itself with 99
  *   threads exit    a worker's SYS_EXIT ends it PROC_EXITED 42, its first
  *                   thread blocked in a join with no deadline
  *   threads crash   a worker runs into its stack's guard page: PROC_CRASHED,
@@ -998,8 +997,8 @@ int ktest_threads(void) {
     for (uint32_t i = 0; i < sizeof prog; i++) path[i] = prog[i];
     int step;
 
-    /* 1: every check passed, and the process ended with its last thread's
-       code: 0, not the first thread's 99 */
+    /* 1: the process ended with its last thread's code: 0, not the first
+       thread's 99 */
     uint32_t f0 = usermode_faults();
     step = 1; if (!tht_run(a, oi, pi, path, args, "", 0)) goto done;
     if (pi->ended != PROC_EXITED || pi->code != 0) {
@@ -1031,12 +1030,10 @@ done:
 }
 
 /*
- * /Shared/Programs/futex.xuex (roadmap 1.5b2), run twice from disk; the
- * program checks the calls and std/sync.xfxn from ring 3, and its process's
- * end is the verdict:
- *   futex           exits 0, or the step it failed at
- *   futex exit      SYS_EXIT with a worker waiting on a word: PROC_EXITED 43,
- *                   and the waiter gone from the futex queues with its thread
+ * /Shared/Programs/futex.xuex (roadmap 1.5b2), run once from disk: SYS_EXIT
+ * with a worker waiting on a word ends it PROC_EXITED 43, and the waiter is
+ * gone from the futex queues with its thread. The calls and std/sync.xfxn
+ * are xtest.xuex's (below).
  */
 int ktest_futex(void) {
     if (!cxfs_is_mounted()) return 1;                                 /* nothing mounted - skip */
@@ -1057,22 +1054,12 @@ int ktest_futex(void) {
     for (uint32_t i = 0; i < sizeof prog; i++) path[i] = prog[i];
     int step;
 
-    /* 1: every check passed */
+    /* 1-2: a waiter's process ends: it leaves the queue */
     uint32_t f0 = usermode_faults();
     uint32_t w0 = futex_waiting();
-    step = 1; if (!tht_run(a, oi, pi, path, args, "", 0)) goto done;
-    if (pi->ended != PROC_EXITED || pi->code != 0) {
-        klog_u32("KTEST", SEV_ERR, "futex: ended ", pi->ended, LOG_COLOR_VALUE, "");
-        klog_u32("KTEST", SEV_ERR, "futex: code ", (uint32_t)pi->code, LOG_COLOR_VALUE, "");
-        goto done;
-    }
-    step = 2; if (usermode_faults() != f0 || futex_waiting() != w0) goto done;
-
-    /* 3: a waiter's process ends: it leaves the queue */
-    static const char exit_arg[] = "exit";
-    step = 3; if (!tht_run(a, oi, pi, path, args, exit_arg, sizeof exit_arg)
+    step = 1; if (!tht_run(a, oi, pi, path, args, "", 0)
                   || pi->ended != PROC_EXITED || pi->code != 43) goto done;
-    step = 4; if (futex_waiting() != w0 || usermode_faults() != f0) goto done;
+    step = 2; if (futex_waiting() != w0 || usermode_faults() != f0) goto done;
     step = 0;
 
 done:
@@ -1082,4 +1069,249 @@ done:
     paging_unmap(SHP_VA);
     pmm_free(frame);
     return step == 0;
+}
+
+/*
+ * /Shared/Programs/xtest.xuex (roadmap 1.5d2): the X tests, each reported as
+ * a self-test of its own. The runner (os/std/test.xfxn) writes tagged lines
+ * to the pipe in its ARGS_STDOUT:
+ *   @xtest case <i> <name>, for every test before any runs
+ *   @xtest start <i>, before test i runs
+ *   @xtest result <i> pass|fail|hung <code>
+ *   @xtest end <passed> <total>
+ * Each result is reported as it arrives, "x: <name>". A test that never got
+ * one (the process crashed in it, or the run stopped at a hang before it)
+ * is reported failed at the end, in its place, so a red boot has the same
+ * tests as a green one. Then one more: the runner ran by the rules and
+ * ended cleanly - exit 0, no fault, no futex waiter or process left behind.
+ * Lines that are not "@xtest" are the tests' own output, and ignored.
+ * The program is not trusted to be well formed: a line out of order or
+ * malformed fails that last test, never the kernel.
+ * The deadline is long for the disk under icount (1.4c); each test has its
+ * own, kept by the runner, well inside it.
+ */
+
+#define XT_MAX     64                 /* tests one run may name */
+#define XT_NAME    47                 /* bytes of a name kept (test.xfxn's TEST_NAME_MAX) */
+#define XT_LINE    160
+
+struct xt_run {
+    int (*report)(const char *, int);
+    int total, passed;
+    uint32_t cases;                   /* named so far */
+    uint32_t next;                    /* the next test whose result is due */
+    int32_t  started;                 /* the test running, or -1 */
+    int      ended;                   /* an end line, agreeing, was read */
+    int      bad;                     /* a line broke the rules */
+    char     line[XT_LINE];
+    uint32_t len;
+    int      overlong;
+};
+
+static char xt_names[XT_MAX][3 + XT_NAME + 1];   /* "x: " + name + NUL */
+
+/* A field holding only decimal digits -> its value, or -1. */
+static int64_t xt_num(const char *s) {
+    if (!*s) return -1;
+    int64_t v = 0;
+    for (; *s; s++) {
+        if (*s < '0' || *s > '9' || v > 100000000) return -1;
+        v = v * 10 + (*s - '0');
+    }
+    return v;
+}
+
+static int xt_is(const char *a, const char *b) {
+    while (*a && *a == *b) { a++; b++; }
+    return *a == *b;
+}
+
+static void xt_bad(struct xt_run *r, const char *why) {
+    if (!r->bad) klog("KTEST", SEV_ERR, why);
+    r->bad = 1;
+}
+
+/* One whole line, NUL-terminated in r->line. */
+static void xt_line(struct xt_run *r) {
+    static const char tag[] = "@xtest\t";
+    for (uint32_t i = 0; i < sizeof tag - 1; i++)
+        if (r->line[i] != tag[i]) return;                 /* the tests' own output */
+    char *f[5];
+    uint32_t n = 0;
+    char *p = r->line + sizeof tag - 1;
+    f[n++] = p;
+    for (; *p; p++)
+        if (*p == '\t') {
+            if (n == 5) { xt_bad(r, "x tests: a line with too many fields"); return; }
+            *p = 0; f[n++] = p + 1;
+        }
+    int64_t i = n > 1 ? xt_num(f[1]) : -1;
+
+    if (xt_is(f[0], "case") && n == 3) {
+        if (i != (int64_t)r->cases || r->cases == XT_MAX || r->next || r->started >= 0)
+            { xt_bad(r, "x tests: a case out of order"); return; }
+        char *d = xt_names[r->cases];
+        d[0] = 'x'; d[1] = ':'; d[2] = ' ';
+        uint32_t k = 0;
+        for (; f[2][k] && k < XT_NAME; k++) {
+            char c = f[2][k];
+            d[3 + k] = (c >= 0x20 && c < 0x7F) ? c : '?';
+        }
+        d[3 + k] = 0;
+        if (k == 0) { xt_bad(r, "x tests: a case with no name"); return; }
+        r->cases++;
+    } else if (xt_is(f[0], "start") && n == 2) {
+        if (i != (int64_t)r->next || i >= (int64_t)r->cases || r->started >= 0)
+            { xt_bad(r, "x tests: a start out of order"); return; }
+        r->started = (int32_t)i;
+    } else if (xt_is(f[0], "result") && n == 4) {
+        if (i < 0 || i != r->started) { xt_bad(r, "x tests: a result out of order"); return; }
+        int ok = xt_is(f[2], "pass") && xt_is(f[3], "0");
+        if (!ok) {
+            klog("KTEST", SEV_ERR, xt_names[i]);
+            if (xt_is(f[2], "hung")) {
+                klog("KTEST", SEV_ERR, "  hung: still running at its deadline");
+            } else {
+                int64_t c = xt_num(f[3]);
+                if (c >= 0) klog_u32("KTEST", SEV_ERR, "  failed at step ", (uint32_t)c, LOG_COLOR_VALUE, "");
+                else        klog("KTEST", SEV_ERR, "  failed: a negative code (-E_*), or none");
+            }
+        }
+        r->total++;
+        r->passed += r->report(xt_names[i], ok);
+        r->next++;
+        r->started = -1;
+    } else if (xt_is(f[0], "end") && n == 3) {
+        int64_t passed = xt_num(f[1]), total = xt_num(f[2]);
+        if (r->started >= 0 || r->next != r->cases || total != (int64_t)r->cases
+            || passed != (int64_t)r->passed || r->ended)
+            { xt_bad(r, "x tests: an end line that disagrees"); return; }
+        r->ended = 1;
+    } else {
+        xt_bad(r, "x tests: a line it does not know");
+    }
+}
+
+/* n bytes of output, split into lines. */
+static void xt_feed(struct xt_run *r, const char *b, uint32_t n) {
+    for (uint32_t k = 0; k < n; k++) {
+        char c = b[k];
+        if (c == '\n') {
+            r->line[r->len] = 0;
+            if (r->overlong) {
+                if (r->line[0] == '@') xt_bad(r, "x tests: a line too long");
+            } else {
+                xt_line(r);
+            }
+            r->len = 0; r->overlong = 0;
+        } else if (r->len < XT_LINE - 1) {
+            r->line[r->len++] = c;
+        } else {
+            r->overlong = 1;
+        }
+    }
+}
+
+int ktest_xtests(int (*report)(const char *, int), int *total) {
+    *total = 0;
+    if (!cxfs_is_mounted()) return 0;                                 /* nothing mounted - skip */
+    if (cxfs_resolve("/Shared/Programs/xtest.xuex", 0) < 0) return 0;  /* nothing staged - skip */
+
+    static struct xt_run r;
+    r = (struct xt_run){ .report = report, .started = -1 };
+    paddr_t frame = pmm_alloc();
+    if (!frame) { *total = 1; return report("x tests: the runner ran cleanly", 0); }
+    if (paging_map_user(SHP_VA, frame, VM_WRITE) != 0) {
+        pmm_free(frame);
+        *total = 1;
+        return report("x tests: the runner ran cleanly", 0);
+    }
+
+    struct spawn_args *a        = (struct spawn_args *)SHP_VA;
+    struct object_info_args *oi = (struct object_info_args *)(SHP_VA + 0x100);
+    struct process_info *pi     = (struct process_info *)(SHP_VA + 0x200);
+    char *path                  = (char *)(SHP_VA + 0x300);
+    int32_t *out                = (int32_t *)(SHP_VA + 0x388);
+    struct spawn_handle *sh     = (struct spawn_handle *)(SHP_VA + 0x390);
+    char *buf                   = (char *)(SHP_VA + 0x800);
+    static const char prog[] = "/Shared/Programs/xtest.xuex";
+    struct htab *tab = thread_htab(thread_current_id());
+    uint32_t caps = thread_current_caps();
+    thread_set_caps(thread_current_id(), GRANT_SPAWN);
+    for (uint32_t i = 0; i < sizeof prog; i++) path[i] = prog[i];
+    out[0] = out[1] = -1;
+    int32_t ph = -1;
+    uint32_t f0 = usermode_faults(), w0 = futex_waiting(), live0 = proc_live();
+    uint32_t ended = 0, code = 0, vector = 0;          /* how the runner ended, once known */
+    int step;
+
+    /* 1: started, with a pipe's write end for its output */
+    step = 1; if (syscall_pipe_create(0, user_addr(out)) != E_OK) goto done;
+    sh[0] = (struct spawn_handle){ out[1], IPC_HANDLE_MOVE, IPC_RIGHTS_SAME, ARGS_STDOUT };
+    a->image = 0; a->image_len = 0; a->name = user_addr(path);
+    a->broker_endpoint = -1; a->caps = 0; a->args = 0; a->args_len = 0; a->job = 0;
+    a->handles = user_addr(sh); a->handle_count = 1;
+    ph = syscall_exec_path(user_addr(path), user_addr(a));
+    if (ph <= 0) {
+        klog_u32("KTEST", SEV_ERR, "x tests: the runner's start refused, code -", (uint32_t)-ph, LOG_COLOR_VALUE, "");
+        goto done;
+    }
+    out[1] = -1;                                       /* the runner's now */
+
+    /* 2: its lines until every writer has gone, each result reported */
+    uint64_t deadline = timer_now_ns() + 600000 * TIMER_NS_PER_TICK;
+    step = 2;
+    for (;;) {
+        if (syscall_object_wait(out[0], SIGNAL_PIPE_READABLE | SIGNAL_PIPE_PEER_CLOSED, deadline, 0) != E_OK) goto done;
+        int n = syscall_file_read(out[0], user_addr(buf), 0x800);
+        if (n < 0) goto done;
+        if (n == 0) break;
+        xt_feed(&r, buf, (uint32_t)n);
+    }
+
+    /* 3: the runner ended, exit 0 (200: it stopped at a hang). How it ended
+       is logged below, after the tests it left without a result, so a
+       --json reader finds it under the runner's own result. */
+    step = 3; if (syscall_object_wait(ph, SIGNAL_PROCESS_ENDED, deadline, 0) != E_OK
+                  || spv_info(oi, ph, OBJINFO_PROCESS, pi, sizeof *pi) != (int)sizeof *pi) goto done;
+    ended = pi->ended; code = (uint32_t)pi->code; vector = pi->vector;
+    if (ended != PROC_EXITED || code != 0) goto done;
+    /* 4: by the rules: some tests, every one with a result, an end line */
+    step = 4; if (r.bad || !r.ended || r.cases == 0) goto done;
+    step = 0;
+
+done:
+    if (step != 0 && ph > 0) (void)syscall_process_kill(ph);
+    if (ph > 0) {
+        (void)syscall_object_wait(ph, SIGNAL_PROCESS_ENDED, timer_now_ns() + 10000 * TIMER_NS_PER_TICK, 0);
+        htab_close(tab, ph);
+    }
+    for (int i = 0; i < 2; i++)
+        if (out[i] > 0) htab_close(tab, out[i]);
+    thread_set_caps(thread_current_id(), caps);
+    paging_unmap(SHP_VA);
+    pmm_free(frame);
+
+    /* the tests with no result, in their places */
+    for (uint32_t i = r.next; i < r.cases; i++) {
+        klog("KTEST", SEV_ERR, xt_names[i]);
+        klog("KTEST", SEV_ERR, (int32_t)i == r.started ? "  no result: the run ended in it"
+                                                       : "  not run: the run ended before it");
+        r.total++;
+        r.passed += report(xt_names[i], 0);
+    }
+    /* 5: nothing left behind */
+    if (step == 0 && (usermode_faults() != f0 || futex_waiting() != w0 || proc_live() != live0)) step = 5;
+    if (step != 0)
+        klog_u32("KTEST", SEV_ERR, "x tests: the runner failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    if (step == 3 && ended) {
+        klog_u32("KTEST", SEV_ERR, "x tests: the runner ended ", ended, LOG_COLOR_VALUE, "");
+        klog_u32("KTEST", SEV_ERR, "x tests: code (200: stopped at a hang) ", code, LOG_COLOR_VALUE, "");
+        if (ended == PROC_CRASHED)
+            klog_u32("KTEST", SEV_ERR, "x tests: crashed, vector ", vector, LOG_COLOR_VALUE, "");
+    }
+    r.total++;
+    r.passed += report("x tests: the runner ran cleanly", step == 0);
+    *total = r.total;
+    return r.passed;
 }

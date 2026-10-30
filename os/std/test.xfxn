@@ -1,0 +1,144 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// std/test.xfxn - a test runner for X programs (roadmap 1.5d2).
+// Aurora Tejeda / CATX Systems
+// Threads: the first thread runs the tests, each on a thread of its own.
+//
+//   import "test.xfxn";
+//
+//   fn all() -> void {
+//       test_run("threads: create refusals", t_refusals, 10000);
+//       ...
+//   }
+//   fn _start() -> void { test_main(all); }
+//
+// A test is a thread function: 0 is a pass, anything else a failure, by
+// convention the step it failed at. test_main calls `all` twice: once to
+// name every test, once to run them in that order. Each runs on a thread of
+// its own, joined with a deadline, so a test that hangs fails at its
+// deadline instead of hanging the run. The run stops there: the hung thread
+// may hold a lock the rest need (the heap's, the output's), and nothing can
+// end one thread from outside it. A test that faults ends the process (a
+// fault ends every thread), so it fails and the rest do not run.
+//
+// Results go to the output (ARGS_STDOUT, else the console) as tagged,
+// tab-separated lines, like the kernel's @ktest ones (ktest.c):
+//   @xtest  case    <index> <name>          every test, before any runs
+//   @xtest  start   <index>                 before it runs: a crash names it
+//   @xtest  result  <index> pass|fail|hung  <code>
+//   @xtest  end     <passed> <total>        after the last
+// The kernel's self-test (ktest_loader.c, ktest_xtests) reports each as a
+// self-test of its own, and a test with no result as failed. The lines are
+// written with SYS_FILE_WRITE directly, never through io.xfxn's lock or the
+// heap: after a hang either may be held for good.
+//
+// Serenity's run-tests prints a START line before each test for the same
+// reason (run-tests.cpp, do_run_single_test); XNU's vm_allocation forks a
+// child per test (vm_allocation.c, child_test_passed), which keeps a crash to
+// its test. CXK has no fork, so a crash here ends the run.
+
+import "thread.xfxn";
+import "time.xfxn";
+import "fmt.xfxn";
+
+const TEST_EXIT_HUNG: i32 = 200;   // the run stopped at a test that hung
+const TEST_NAME_MAX:  u32 = 47;    // bytes of a name the kernel keeps
+
+global test_listing: u32;   // 1 while `all` is only naming its tests
+global test_index:   u32;
+global test_passed:  u32;
+global test_out:     i32;   // the output handle, or -1 for the console
+
+// One line: "@xtest", then each part after a tab, then a newline.
+fn test_line(parts: *u64, n: u32) -> void {
+    let b: [128]u8;
+    let at: u32 = 0;
+    let tag: *u8 = "@xtest";
+    while (tag[at] != 0) { b[at] = tag[at]; at = at + 1; }
+    let i: u32 = 0;
+    while (i < n) {
+        let s: *u8 = parts[i] as *u8;
+        if (at < 126) { b[at] = 9; at = at + 1; }
+        let k: u32 = 0;
+        while (s[k] != 0 && at < 126) { b[at] = s[k]; at = at + 1; k = k + 1; }
+        i = i + 1;
+    }
+    b[at] = 10;
+    at = at + 1;
+    if (test_out < 0) { console_write(&b[0], at as u64); return; }
+    let done: u32 = 0;
+    while (done < at) {
+        let w: i32 = file_write(test_out, &b[done], (at - done) as u64);
+        if (w <= 0) { return; }
+        done = done + (w as u32);
+    }
+}
+
+// Run f with a deadline of `ms`, as the next test, called `name`. While
+// test_main is only listing, name it instead.
+fn test_run(name: *u8, f: thread_fn, ms: u32) -> void {
+    let idx: [12]u8;
+    u32_to_dec(&idx[0], 12, test_index);
+    test_index = test_index + 1;
+    let p: [4]u64;
+    p[1] = (&idx[0]) as u64;
+    if (test_listing == 1) {
+        p[0] = "case" as u64;
+        p[2] = name as u64;
+        test_line(&p[0], 3);
+        return;
+    }
+    p[0] = "start" as u64;
+    test_line(&p[0], 2);
+
+    let code: i32 = 0;
+    let verdict: *u8 = "pass";
+    let h: i32 = thread_spawn(f, 0, 0);
+    if (h <= 0) {
+        code = h;                       // could not start it: -E_*
+        verdict = "fail";
+    }
+    if (h > 0) {
+        let rc: i32 = thread_join(h, time_deadline_ms(ms as u64), &code);
+        if (rc == E_TIMED_OUT) { verdict = "hung"; code = 0; }
+        if (rc != E_TIMED_OUT && rc != 0) { verdict = "fail"; code = rc; }
+        if (rc == 0 && code != 0) { verdict = "fail"; }
+    }
+    let c: [12]u8;
+    if (code < 0) {
+        c[0] = 45;                      // '-'
+        u32_to_dec(&c[1], 11, (0 - code) as u32);
+    }
+    if (code >= 0) { u32_to_dec(&c[0], 12, code as u32); }
+    p[0] = "result" as u64;
+    p[2] = verdict as u64;
+    p[3] = (&c[0]) as u64;
+    test_line(&p[0], 4);
+    if (code == 0 && h > 0 && verdict[0] == 112) { test_passed = test_passed + 1; }   // 'p'
+    if (verdict[0] == 104) { exit(TEST_EXIT_HUNG); }                                // 'h'
+}
+
+// Name every test `all` runs, run each, and end the process: 0 once every
+// test has run, whatever their verdicts (each is reported on its own line).
+fn test_main(all: fn() -> void) -> void {
+    test_out = args_handle(ARGS_STDOUT);
+    if (test_out < 0) { test_out = 0 - 1; }
+    test_listing = 1;
+    test_index = 0;
+    all();
+    let total: u32 = test_index;
+    test_listing = 0;
+    test_index = 0;
+    test_passed = 0;
+    all();
+    let a: [12]u8;
+    let t: [12]u8;
+    u32_to_dec(&a[0], 12, test_passed);
+    u32_to_dec(&t[0], 12, total);
+    let p: [3]u64;
+    p[0] = "end" as u64;
+    p[1] = (&a[0]) as u64;
+    p[2] = (&t[0]) as u64;
+    test_line(&p[0], 3);
+    exit(0);
+}
