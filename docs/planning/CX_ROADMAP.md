@@ -423,7 +423,24 @@ Independent of the order above, and small enough to land whenever convenient:
      of the calls it holds and of those queued on its endpoint, passed down
      chains of calls (XNU turnstiles), and the lift goes with the reply,
      the token, the caller or the endpoint.
-4. Pipes and explicit handle passing at spawn; the shell runs from disk.
+4. Pipes and explicit handle passing at spawn; the shell runs from disk. In
+   three steps:
+   - **1.4a (ABI 26, 2026-10-29), done:** pipes. `SYS_PIPE_CREATE` makes a
+     read end and a write end over one ring charged to the caller's job (XNU's
+     pipe pair); `SYS_FILE_READ` and `SYS_FILE_WRITE` take either, with the
+     handle's `HRIGHT_READ` or `HRIGHT_WRITE` as the authority, no
+     `GRANT_DISK`. A read returns what is there, 0 once the writer has gone;
+     a write of up to `PIPE_ATOMIC` bytes goes in whole, and with no reader
+     is `E_PEER_CLOSED`, not a signal. Readable, writable and peer-closed
+     signals for the queue (`docs/kernel/CX_SYSCALLS_IPC.md` §7).
+   - **1.4b:** handles named at spawn: `spawn_args` lists handles, moved or
+     copied as in a message (XNU `posix_spawn` file actions with
+     `POSIX_SPAWN_CLOEXEC_DEFAULT`, not NT's or Haiku's inherit-by-flag),
+     and the child finds standard input, output and error among them; the
+     X library writes to its output handle when it has one.
+   - **1.4c:** the shell from disk, signed and verified like the
+     supervisor, and the executive's embedded copy gone; `run` passes the
+     shell's streams, and `a | b` joins two programs with a pipe.
 5. User threads, futex (owner in the futex word), thread-local storage.
 6. SMP readiness: spinlocks that save interrupt state, per-CPU data, a lock
    order checker in debug builds, the slab allocator. Then SMP on 8 cores.

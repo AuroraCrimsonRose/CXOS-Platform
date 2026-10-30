@@ -29,6 +29,7 @@
 #include "object/ktimer.h"    /* SYS_TIMER_* */
 #include "object/knotify.h"   /* SYS_NOTIFY_* */
 #include "object/kmem.h"      /* SYS_MEM_CREATE */
+#include "object/kpipe.h"     /* SYS_PIPE_CREATE, pipe reads and writes */
 #include "object/kqueue.h"    /* SYS_QUEUE_* */
 #include "sync/atomic.h"
 #include "sysrec.h"
@@ -267,12 +268,33 @@ int syscall_file_close(int32_t h) {
     return sys_file_close(h);
 }
 
+/* READ and WRITE on a pipe end: the handle's right is the authority, so the
+   disk gate is not asked. 1 with *rc set when `h` is a pipe end; 0 (nothing
+   done) for anything else, which the file path then judges. */
+static int pipe_io(int32_t h, uint64_t buf, uint64_t n, int write, int *rc) {
+    struct htab_info hi;
+    struct kobj *o = htab_ref(thread_htab(thread_current_id()), h, KOBJ_PIPE, 0, &hi);
+    if (!o) return 0;
+    struct kpipe_end *e = (struct kpipe_end *)o;
+    if (n > 0x7FFFFFFFu) n = 0x7FFFFFFFu;   /* the count comes back in an i32: a short one is normal */
+    *rc = !(hi.rights & (write ? HRIGHT_WRITE : HRIGHT_READ))   ? E_ACCESS_DENIED
+        : n == 0                                                ? 0
+        : write ? (!user_ptr_readable(buf, n) ? E_BAD_ADDRESS : kpipe_write(e, buf, (uint32_t)n))
+        :         (!user_ptr_writable(buf, n) ? E_BAD_ADDRESS : kpipe_read(e, buf, (uint32_t)n));
+    kobj_unref(o);   /* a blocked read or write held the end until here */
+    return 1;
+}
+
 int syscall_file_read(int32_t h, uint64_t buf, uint64_t n) {
+    int rc;
+    if (pipe_io(h, buf, n, 0, &rc)) return rc;
     if (!disk_granted()) return E_ACCESS_DENIED;
     return sys_file_read(h, buf, n);
 }
 
 int syscall_file_write(int32_t h, uint64_t buf, uint64_t n) {
+    int rc;
+    if (pipe_io(h, buf, n, 1, &rc)) return rc;
     if (!disk_granted()) return E_ACCESS_DENIED;
     return sys_file_write(h, buf, n);
 }
@@ -509,6 +531,31 @@ int syscall_vm_map(uint64_t a) {
     int rc = o->type != KOBJ_MEM ? E_WRONG_TYPE
            : vm_map_object(thread_current_pid(), va, (struct kmem *)o, hi.rights);
     kobj_unref(o);   /* a mapping holds its own reference */
+    return rc;
+}
+
+int syscall_pipe_create(uint32_t size, uint64_t ends) {
+    /* Unprivileged: the ring is charged to the caller's job, which is the
+       bound, and its handles are all the authority there is over it. */
+    if (size == 0) size = PIPE_SIZE_DEFAULT;
+    if (size < PIPE_SIZE_MIN || size > PIPE_SIZE_MAX) return E_OUT_OF_RANGE;
+    if (!user_ptr_writable(ends, 2 * sizeof(int32_t))) return E_BAD_ADDRESS;
+    struct htab *tab = thread_htab(thread_current_id());
+    int rc;
+    struct kpipe *p = kpipe_create(size, thread_proc(thread_current_id())->job, &rc);
+    if (!p) return rc;
+    int32_t h[2];
+    h[0] = htab_install(tab, &p->rd.hdr, HRIGHT_READ | HRIGHT_WAIT | HRIGHT_DUPLICATE, 0);
+    h[1] = h[0] < 0 ? h[0] : htab_install(tab, &p->wr.hdr, HRIGHT_WRITE | HRIGHT_WAIT | HRIGHT_DUPLICATE, 0);
+    rc = h[1] < 0 ? h[1] : user_copy_out(ends, h, sizeof h) != 0 ? E_BAD_ADDRESS : E_OK;
+    /* Both handles or neither: a caller that never learnt them could not
+       close them. Each end goes with its last reference. */
+    if (rc != E_OK) {
+        if (h[0] > 0) htab_close(tab, h[0]);
+        if (h[1] > 0) htab_close(tab, h[1]);
+    }
+    kobj_unref(&p->rd.hdr);
+    kobj_unref(&p->wr.hdr);
     return rc;
 }
 
@@ -4364,6 +4411,195 @@ done:
     if (s > 0) htab_close(tab, s);
     if (d > 0) htab_close(tab, d);
     if (t > 0) htab_close(tab, t);
+    unmap_user_page(TEST_CODE_VIRT, phys);
+    return ok;
+}
+
+/* ---- pipes (Phase 1.4a) ----------------------------------------------------
+ * Through the dispatcher over a user mapping, with the test thread holding no
+ * GRANT_DISK: a pipe's handles are the authority for SYS_FILE_READ and
+ * SYS_FILE_WRITE on it. A helper thread closes the other end while this one
+ * is blocked on a read or a write, which is the wake a closed end exists
+ * for. 1 = pass, 0 = fail. */
+#define PT_ENDS  (TEST_CODE_VIRT + 0x000)   /* SYS_PIPE_CREATE's i32[2] */
+#define PT_INFO  (TEST_CODE_VIRT + 0x100)   /* struct object_basic */
+#define PT_IARGS (TEST_CODE_VIRT + 0x200)   /* struct object_info_args */
+#define PT_SRC   (TEST_CODE_VIRT + 0x400)   /* 1024 bytes written */
+#define PT_DST   (TEST_CODE_VIRT + 0x800)   /* 2048 bytes read */
+
+static volatile int     pt_go, pt_stage, pt_main;
+static volatile int32_t pt_close;           /* the handle the helper closes */
+static struct htab *volatile pt_tab;
+
+static int pt_create(uint32_t size, int32_t *rd, int32_t *wr) {
+    volatile int32_t *ends = (volatile int32_t *)user_ptr(PT_ENDS);
+    ends[0] = ends[1] = -1;
+    int rc = syscall_dispatch(SYS_PIPE_CREATE, size, PT_ENDS, 0, 0, 0);
+    *rd = ends[0]; *wr = ends[1];
+    return rc;
+}
+static int pt_read(int32_t h, uint32_t off, uint64_t n) {
+    return syscall_dispatch(SYS_FILE_READ, (uint32_t)h, PT_DST + off, (uintptr_t)n, 0, 0);
+}
+static int pt_write(int32_t h, uint32_t off, uint64_t n) {
+    return syscall_dispatch(SYS_FILE_WRITE, (uint32_t)h, PT_SRC + off, (uintptr_t)n, 0, 0);
+}
+/* Whether `h` has `sig` set now. */
+static int pt_set(int32_t h, uint32_t sig) {
+    return syscall_dispatch(SYS_OBJECT_WAIT, (uint32_t)h, sig, 0, 0, 0) == E_OK;
+}
+static int pt_basic(int32_t h, uint32_t rights) {
+    struct object_info_args *oi = (struct object_info_args *)user_ptr(PT_IARGS);
+    const struct object_basic *ob = (const struct object_basic *)user_ptr(PT_INFO);
+    oi->cap = sizeof *ob; oi->buf = PT_INFO; oi->handle = h; oi->topic = OBJINFO_BASIC;
+    return syscall_dispatch(SYS_OBJECT_INFO, PT_IARGS, 0, 0, 0, 0) == (int)sizeof *ob
+        && ob->kind == OBJ_TYPE_PIPE && ob->rights == rights;
+}
+/* The bytes read at PT_DST + off are the pattern from `from` on. */
+static int pt_pattern(uint32_t off, uint32_t n, uint32_t from) {
+    const volatile uint8_t *d = (const volatile uint8_t *)user_ptr(PT_DST + off);
+    for (uint32_t i = 0; i < n; i++)
+        if (d[i] != (uint8_t)((from + i) * 7u + 3u)) return 0;
+    return 1;
+}
+
+/* Closes pt_close once the test thread is blocked (or gives up waiting for
+   that and closes it anyway, so the test cannot hang on it). */
+static void pt_helper(void) {
+    while (!pt_go) yield();
+    for (int i = 0; i < 500 && !thread_is_blocked(pt_main); i++) yield();
+    pt_stage = thread_is_blocked(pt_main) ? 1 : -1;
+    htab_close(pt_tab, pt_close);
+    pt_stage = pt_stage == 1 ? 2 : -2;
+}
+
+/* Run the helper against `h` while the test thread does `blocked`; 1 if the
+   helper saw it blocked and finished. */
+static int pt_helper_start(int32_t h) {
+    pt_go = 0; pt_stage = 0; pt_main = thread_current_id(); pt_close = h;
+    if (thread_create("ktpipe", pt_helper) < 0) return 0;
+    pt_go = 1;
+    return 1;
+}
+static int pt_helper_done(void) {
+    for (int i = 0; i < 1000 && pt_stage < 2 && pt_stage > -2; i++) yield();
+    return pt_stage == 2;
+}
+
+int usermode_pipe_test(void) {
+    paddr_t phys = map_user_page(TEST_CODE_VIRT);
+    if (!phys) return 0;
+    int me = thread_current_id();
+    struct htab *tab = thread_htab(me);
+    struct job *job = thread_proc(me)->job;
+    uint32_t caps0 = thread_current_caps();
+    uint32_t live0 = kobj_live(KOBJ_PIPE);
+    uint64_t used0 = job->mem_used;
+    volatile uint8_t *src = (volatile uint8_t *)user_ptr(PT_SRC);
+    volatile uint8_t *dst = (volatile uint8_t *)user_ptr(PT_DST);
+    for (uint32_t i = 0; i < 1024; i++) src[i] = (uint8_t)(i * 7u + 3u);
+    int32_t ar = -1, aw = -1, br = -1, bw = -1, d = -1;
+    struct kpipe *bp = 0;
+    int step = 0, ok = 0, rc;
+    thread_set_caps(me, caps0 & ~GRANT_DISK);
+    pt_go = 0;
+    pt_tab = tab;
+
+    /* 1: refusals make nothing: a size out of range either side, ends the
+       caller cannot write */
+    step = 1; if (pt_create(PIPE_SIZE_MIN - 1, &ar, &aw) != E_OUT_OF_RANGE
+                  || pt_create(PIPE_SIZE_MAX + 1, &ar, &aw) != E_OUT_OF_RANGE
+                  || syscall_dispatch(SYS_PIPE_CREATE, 0, USER_VLIMIT - 4, 0, 0, 0) != E_BAD_ADDRESS
+                  || kobj_live(KOBJ_PIPE) != live0 || job->mem_used != used0) goto done;
+    ar = aw = -1;
+
+    /* 2: a pipe of the default size: two ends with their rights, the ring
+       charged to the job; empty, so readable no, writable yes */
+    step = 2; if (pt_create(0, &ar, &aw) != E_OK || ar <= 0 || aw <= 0
+                  || !pt_basic(ar, HRIGHT_READ | HRIGHT_WAIT | HRIGHT_DUPLICATE)
+                  || !pt_basic(aw, HRIGHT_WRITE | HRIGHT_WAIT | HRIGHT_DUPLICATE)
+                  || kobj_live(KOBJ_PIPE) != live0 + 2 || job->mem_used != used0 + PIPE_SIZE_DEFAULT
+                  || pt_set(ar, SIGNAL_PIPE_READABLE) || !pt_set(aw, SIGNAL_PIPE_WRITABLE)
+                  || pt_set(ar, SIGNAL_PIPE_PEER_CLOSED) || pt_set(aw, SIGNAL_PIPE_PEER_CLOSED)) goto done;
+
+    /* 3: bytes written are read back in order, without GRANT_DISK; a read
+       takes what is there, no more, and the ring is readable while it holds
+       any */
+    step = 3; if (pt_write(aw, 0, 5) != 5 || !pt_set(ar, SIGNAL_PIPE_READABLE)
+                  || pt_read(ar, 0, 64) != 5 || !pt_pattern(0, 5, 0)
+                  || pt_set(ar, SIGNAL_PIPE_READABLE)) goto done;
+    /* 4: each end does only its own half: no read on the write end, no write
+       on the read end, nothing on a copy without the right; 0 bytes is 0.
+       A byte waits throughout, so a read let through takes it rather than
+       blocking on an empty pipe, and the one byte is all there is after. */
+    d = syscall_dispatch(SYS_HANDLE_DUPLICATE, (uint32_t)ar, HRIGHT_WAIT, 0, 0, 0);
+    step = 4; if (d <= 0 || pt_write(aw, 0, 1) != 1
+                  || pt_read(aw, 0, 1) != E_ACCESS_DENIED || pt_write(ar, 0, 1) != E_ACCESS_DENIED
+                  || pt_read(d, 0, 1) != E_ACCESS_DENIED || pt_write(aw, 0, 0) != 0
+                  || pt_read(ar, 0, 64) != 1 || !pt_pattern(0, 1, 0)
+                  || pt_set(ar, SIGNAL_PIPE_READABLE)) goto done;
+    htab_close(tab, d); d = -1;
+    /* 5: a bad buffer takes nothing out and puts nothing in */
+    step = 5; if (pt_write(aw, 0, 3) != 3
+                  || syscall_dispatch(SYS_FILE_READ, (uint32_t)ar, USER_VLIMIT - 1, 2, 0, 0) != E_BAD_ADDRESS
+                  || syscall_dispatch(SYS_FILE_WRITE, (uint32_t)aw, USER_VLIMIT - 1, 2, 0, 0) != E_BAD_ADDRESS
+                  || pt_read(ar, 0, 64) != 3 || !pt_pattern(0, 3, 0)) goto done;
+
+    /* 6-7: a small pipe filled to the brim is not writable; reading makes
+       room, a write wraps round the ring's end, and the bytes come back in
+       the order they went in */
+    step = 6; if (pt_create(1024, &br, &bw) != E_OK || br <= 0 || bw <= 0
+                  || pt_write(bw, 0, 1024) != 1024 || pt_set(bw, SIGNAL_PIPE_WRITABLE)
+                  || pt_read(br, 0, 600) != 600 || !pt_pattern(0, 600, 0)
+                  || !pt_set(bw, SIGNAL_PIPE_WRITABLE)) goto done;
+    step = 7; if (pt_write(bw, 0, 600) != 600 || pt_read(br, 0, 2048) != 1024
+                  || !pt_pattern(0, 424, 600) || !pt_pattern(424, 600, 0)
+                  || pt_set(br, SIGNAL_PIPE_READABLE)) goto done;
+
+    /* 8: a write of PIPE_ATOMIC bytes or fewer waits for room for all of it,
+       never putting part: with 324 bytes free, 400 block, and when the
+       reader goes the write fails having put none of them */
+    bp = ((struct kpipe_end *)htab_ref(tab, bw, KOBJ_PIPE, 0, 0))->p;   /* the write end's reference */
+    step = 8; if (pt_write(bw, 0, 700) != 700 || pt_set(bw, SIGNAL_PIPE_WRITABLE)
+                  || !pt_helper_start(br)) goto done;
+    rc = pt_write(bw, 0, 400);
+    br = -1;   /* the helper closed it */
+    step = 9; if (!pt_helper_done() || rc != E_PEER_CLOSED || kpipe_count(bp) != 700
+                  || !pt_set(bw, SIGNAL_PIPE_PEER_CLOSED) || !pt_set(bw, SIGNAL_PIPE_WRITABLE)
+                  || pt_write(bw, 0, 1) != E_PEER_CLOSED) goto done;
+
+    /* 10: a reader blocked on an empty pipe wakes when the writer goes, to
+       the end of the stream, and stays there */
+    step = 10; if (!pt_helper_start(aw)) goto done;
+    rc = pt_read(ar, 0, 64);
+    aw = -1;
+    step = 11; if (!pt_helper_done() || rc != 0 || !pt_set(ar, SIGNAL_PIPE_PEER_CLOSED)
+                   || !pt_set(ar, SIGNAL_PIPE_READABLE) || pt_read(ar, 0, 64) != 0) goto done;
+    htab_close(tab, ar); ar = -1;
+
+    /* 12: bytes written before the writer went are still read, then the end */
+    for (uint32_t i = 0; i < 16; i++) dst[i] = 0;
+    step = 12; if (pt_create(PIPE_SIZE_MIN, &ar, &aw) != E_OK || pt_write(aw, 0, 9) != 9) goto done;
+    htab_close(tab, aw); aw = -1;
+    step = 13; if (pt_read(ar, 0, 64) != 9 || !pt_pattern(0, 9, 0) || pt_read(ar, 0, 64) != 0) goto done;
+    htab_close(tab, ar); ar = -1;
+
+    /* 14: the last handles gone, both pipes are, and their charge with them */
+    kobj_unref(&bp->wr.hdr); bp = 0;
+    htab_close(tab, bw); bw = -1;
+    step = 14; if (kobj_live(KOBJ_PIPE) != live0 || job->mem_used != used0) goto done;
+    ok = 1;
+
+done:
+    if (!ok) klog_u32("KTEST", SEV_ERR, "pipe test failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    if (pt_go) pt_helper_done();   /* a helper still running finishes first */
+    if (bp) kobj_unref(&bp->wr.hdr);
+    if (ar > 0) htab_close(tab, ar);
+    if (aw > 0) htab_close(tab, aw);
+    if (br > 0) htab_close(tab, br);
+    if (bw > 0) htab_close(tab, bw);
+    if (d > 0)  htab_close(tab, d);
+    thread_set_caps(me, caps0);
     unmap_user_page(TEST_CODE_VIRT, phys);
     return ok;
 }

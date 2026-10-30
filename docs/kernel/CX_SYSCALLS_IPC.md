@@ -457,6 +457,28 @@ is killed or the endpoint's last receive handle closes. Not yet: a lift
 does not move with a token handed to another thread, and threads that call
 each other in a ring keep each other lifted until one replies.
 
+**Pipes, as built (1.4a, ABI 26):** `SYS_PIPE_CREATE(size, ends)` makes a
+read end (`HRIGHT_READ`) and a write end (`HRIGHT_WRITE`), two objects of
+`OBJ_TYPE_PIPE` over one ring of 512 bytes to 64 KiB (4 KiB by default)
+charged to the caller's job: XNU's pipe pair (`bsd/kern/sys_pipe.c`), each
+end counting its own handles. Bytes move through `SYS_FILE_READ` and
+`SYS_FILE_WRITE`, which take a pipe end without `GRANT_DISK`: the handle's
+right is the authority, and `HRIGHT_READ`/`HRIGHT_WRITE` are the bits a
+file's `FOPEN_READ`/`FOPEN_WRITE` already are. A read returns what is there
+and blocks only on an empty pipe; 0 is the end of the stream, once the
+write end's last handle has gone. A write blocks until every byte is in,
+and one of `PIPE_ATOMIC` (512) bytes or fewer goes in whole (POSIX
+`PIPE_BUF`, 512 in XNU's `syslimits.h`; Haiku `VFS_FIFO_ATOMIC_WRITE_SIZE`).
+With no reader left it is `E_PEER_CLOSED` (after some bytes, their count),
+never a signal: XNU `pipe_write` and Serenity `FIFO::write` return `EPIPE`,
+and Haiku's `fifo.cpp` sends `SIGPIPE` as well. Signals let a queue user
+read or write without blocking: `SIGNAL_PIPE_READABLE` while bytes wait or
+the writer has gone, `SIGNAL_PIPE_WRITABLE` while 512 bytes fit or the
+reader has gone (XNU `pipe_select` asks the same `PIPE_BUF` of room), and
+`SIGNAL_PIPE_PEER_CLOSED`. NT makes an anonymous pipe a named pipe with a
+generated name (`CreatePipe`, `base/win32/client/pipe.c`); here it has no
+name at all, so only a handle reaches it. Both ends travel in messages.
+
 **Streams and files:**
 `pipe_create(size)`, `io_read(h, buf, offset)`, `io_write(h, buf, offset)`
 (pipes ignore the offset), `io_seek`, `fs_open_at(dir, path, flags, rights)`,

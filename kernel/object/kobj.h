@@ -48,6 +48,7 @@ enum kobj_type {
     KOBJ_NOTIFY   = 10,  /* notification: bits that combine (object/knotify.c) */
     KOBJ_SIGNALLER = 11, /* signaller: a notification and the bits it may set */
     KOBJ_MEM      = 12,  /* memory object: pages on first touch (object/kmem.c) */
+    KOBJ_PIPE     = 13,  /* pipe end: half of a ring of bytes (object/kpipe.c) */
     KOBJ_TYPE_MAX
 };
 

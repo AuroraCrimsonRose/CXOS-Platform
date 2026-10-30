@@ -15,7 +15,7 @@
  * hash it was built against and the loader refuses one that differs, so a
  * program never runs against numbers or layouts it was not compiled for.
  */
-#define CXK_ABI_HASH { 0x92, 0x0a, 0xcc, 0xd6, 0xb1, 0x53, 0xab, 0x46, 0x33, 0xe1, 0x13, 0x01, 0x83, 0xc1, 0xd2, 0xbd, 0x3b, 0xb9, 0x31, 0xca, 0xf6, 0x2a, 0xb3, 0x78, 0x2a, 0x5c, 0xaa, 0x45, 0xf1, 0x96, 0xfc, 0x00 }
+#define CXK_ABI_HASH { 0x2f, 0x0d, 0x6a, 0xdc, 0xd9, 0xc4, 0x7e, 0x1b, 0x78, 0x8d, 0x1b, 0x64, 0x41, 0x21, 0xd2, 0xd5, 0x7f, 0xaf, 0x77, 0x9e, 0x3a, 0xa0, 0x52, 0x01, 0x76, 0xcc, 0x7a, 0xc4, 0x90, 0x14, 0x57, 0x53 }
 
 /*
  * CXK ABI v1 - the PUBLIC contract shared by the kernel, the .xoex executive,
@@ -44,7 +44,7 @@
  * line; bump both, and the DevKit's stamp, in the one commit that changes the
  * contract.
  */
-#define CXK_ABI_VERSION          25
+#define CXK_ABI_VERSION          26
 
 /*
  * ---- syscall numbers ----
@@ -245,6 +245,14 @@
 #define HRIGHT_SEAL              0x10u
 
 /*
+ * pipe: SYS_FILE_READ on its read end, SYS_FILE_WRITE on its write end. The
+ * bits are FOPEN_READ's and FOPEN_WRITE's, which a file's handle carries as
+ * its rights, so one check serves both kinds of stream.
+ */
+#define HRIGHT_READ              0x1u
+#define HRIGHT_WRITE             0x2u
+
+/*
  * Generic rights, which mean the same on every type, count down from the top
  * bit; a type's own count up from the bottom. A handle without
  * HRIGHT_DUPLICATE cannot be copied, and a copy has it only if asked for.
@@ -289,6 +297,21 @@
 
 /* notification: a bit is set. SYS_NOTIFY_TAKE clears it. */
 #define SIGNAL_NOTIFY_PENDING    0x1u
+
+/*
+ * pipe, read end: bytes wait, or the write end has gone (a read then gives
+ * 0). Cleared when a read empties the ring.
+ */
+#define SIGNAL_PIPE_READABLE     0x1u
+
+/*
+ * pipe, write end: PIPE_ATOMIC bytes fit, or the read end has gone (a write
+ * then fails at once). Cleared when a write leaves less room.
+ */
+#define SIGNAL_PIPE_WRITABLE     0x2u
+
+/* pipe, either end: the other end's last handle has closed */
+#define SIGNAL_PIPE_PEER_CLOSED  0x4u
 
 /*
  * A deadline that never comes (SYS_OBJECT_WAIT): a wait with no limit.
@@ -538,6 +561,12 @@
 /*
  * -> bytes read, 0 at end of file. A short count is normal at the end, so a
  * reader loops until it gets 0; a call moves at most 2^31 - 1 bytes.
+ *
+ * READ and WRITE take a pipe end too (SYS_PIPE_CREATE), and then need no
+ * GRANT_DISK: the handle's HRIGHT_READ or HRIGHT_WRITE is the authority. A
+ * pipe read blocks while the pipe is empty and returns what is there; 0 is
+ * the end of the stream. A pipe write blocks until every byte is in;
+ * E_PEER_CLOSED once the read end has gone (after some bytes, their count).
  */
 #define SYS_FILE_READ            0xA2
 #define SYS_FILE_WRITE           0xA3           /* -> bytes written */
@@ -612,6 +641,17 @@
  * nothing was held.
  */
 #define SYS_FILE_UNLOCK          0xB1
+
+/*
+ * pipes 0xC0-0xCF (unprivileged: the handles are the authority; the ring is
+ * charged to the caller's job). Bytes move through SYS_FILE_READ and
+ * SYS_FILE_WRITE, so a program reads a pipe as it reads a file.
+ * ebx = size in bytes (0: PIPE_SIZE_DEFAULT; else PIPE_SIZE_MIN to
+ * PIPE_SIZE_MAX, E_OUT_OF_RANGE), ecx = *i32[2] -> 0, the read end's handle
+ * in [0] (HRIGHT_READ) and the write end's in [1] (HRIGHT_WRITE), each with
+ * HRIGHT_WAIT and HRIGHT_DUPLICATE. Nothing is made unless both are written.
+ */
+#define SYS_PIPE_CREATE          0xC0
 
 /*
  * ---- error codes (negative; returned in eax) ----
@@ -800,6 +840,16 @@ struct clock_info {
 #define OBJ_TYPE_NOTIFY          10             /* a notification */
 #define OBJ_TYPE_SIGNALLER       11             /* a signaller: a notification and the bits it may set */
 #define OBJ_TYPE_MEM             12             /* a memory object */
+#define OBJ_TYPE_PIPE            13             /* a pipe end, read or write */
+
+/*
+ * Pipe sizes (SYS_PIPE_CREATE). A write of PIPE_ATOMIC bytes or fewer goes
+ * into the pipe whole, never split around another writer's (POSIX PIPE_BUF).
+ */
+#define PIPE_ATOMIC              512
+#define PIPE_SIZE_DEFAULT        4096
+#define PIPE_SIZE_MIN            512
+#define PIPE_SIZE_MAX            65536
 
 /* Registrations one queue holds at most (SYS_QUEUE_REGISTER). */
 #define QUEUE_REGISTER_MAX       64

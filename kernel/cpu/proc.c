@@ -22,6 +22,7 @@
 #include "object/ktimer.h"   /* ktimer_sys_init */
 #include "object/kqueue.h"   /* kqueue_sys_init */
 #include "object/knotify.h"  /* knotify_sys_init */
+#include "object/kpipe.h"    /* kpipe_sys_init */
 #include "object/kmem.h"     /* kmem_sys_init */
 
 static struct ocache proc_cache;
@@ -92,6 +93,7 @@ void proc_sys_init(void) {
     ktimer_sys_init();
     kqueue_sys_init();
     knotify_sys_init();
+    kpipe_sys_init();
     kmem_sys_init();
     vm_sys_init();
     if (ocache_init(&proc_cache, "process", sizeof(struct proc)) != 0 ||

@@ -226,6 +226,7 @@ static int decode_file_unlock(const uintptr_t *a) {
     return syscall_file_unlock((int32_t)a[0], (uint64_t)a[1], (uint64_t)a[2]);
 #endif
 }
+static int decode_pipe_create(const uintptr_t *a) { return syscall_pipe_create((uint32_t)a[0], (uint64_t)a[1]); }
 
 const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_EXIT] = decode_exit,
@@ -315,4 +316,5 @@ const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_FILE_SYNC] = decode_file_sync,
     [SYS_FILE_LOCK] = decode_file_lock,
     [SYS_FILE_UNLOCK] = decode_file_unlock,
+    [SYS_PIPE_CREATE] = decode_pipe_create,
 };

@@ -209,6 +209,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/object/kwait.c
     ${SRC_DIR}/kernel/object/ktimer.c
     ${SRC_DIR}/kernel/object/knotify.c
+    ${SRC_DIR}/kernel/object/kpipe.c
     ${SRC_DIR}/kernel/object/kmem.c
     ${SRC_DIR}/kernel/object/kqueue.c
     ${SRC_DIR}/kernel/object/htab.c

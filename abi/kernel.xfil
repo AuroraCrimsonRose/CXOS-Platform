@@ -40,7 +40,7 @@ domain kernel
 /// mismatch. Declared in versions.json as `cxex-abi` and checked against this
 /// line; bump both, and the DevKit's stamp, in the one commit that changes the
 /// contract.
-const CXK_ABI_VERSION: u32 = 25
+const CXK_ABI_VERSION: u32 = 26
 
 /// ---- syscall numbers ----
 /// lifecycle 0x00-0x0F (no capability required)
@@ -172,6 +172,11 @@ const HRIGHT_MAP_WRITE: u32 = 0x4u
 const HRIGHT_MAP_EXEC: u32 = 0x8u
 /// memory object: SYS_MEM_SEAL
 const HRIGHT_SEAL: u32 = 0x10u
+/// pipe: SYS_FILE_READ on its read end, SYS_FILE_WRITE on its write end. The
+/// bits are FOPEN_READ's and FOPEN_WRITE's, which a file's handle carries as
+/// its rights, so one check serves both kinds of stream.
+const HRIGHT_READ: u32 = 0x1u
+const HRIGHT_WRITE: u32 = 0x2u
 /// Generic rights, which mean the same on every type, count down from the top
 /// bit; a type's own count up from the bottom. A handle without
 /// HRIGHT_DUPLICATE cannot be copied, and a copy has it only if asked for.
@@ -199,6 +204,14 @@ const SIGNAL_QUEUE_READY: u32 = 0x1u
 const SIGNAL_EP_READABLE: u32 = 0x1u
 /// notification: a bit is set. SYS_NOTIFY_TAKE clears it.
 const SIGNAL_NOTIFY_PENDING: u32 = 0x1u
+/// pipe, read end: bytes wait, or the write end has gone (a read then gives
+/// 0). Cleared when a read empties the ring.
+const SIGNAL_PIPE_READABLE: u32 = 0x1u
+/// pipe, write end: PIPE_ATOMIC bytes fit, or the read end has gone (a write
+/// then fails at once). Cleared when a write leaves less room.
+const SIGNAL_PIPE_WRITABLE: u32 = 0x2u
+/// pipe, either end: the other end's last handle has closed
+const SIGNAL_PIPE_PEER_CLOSED: u32 = 0x4u
 /// A deadline that never comes (SYS_OBJECT_WAIT): a wait with no limit.
 /// Deadlines are nanoseconds on the monotonic clock, so this is 292 years
 /// after boot.
@@ -373,6 +386,12 @@ syscall SYS_FILE_OPEN = 0xA0 fn file_open(path: *u8, flags: u32) -> i32
 syscall SYS_FILE_CLOSE = 0xA1 fn file_close(h: i32) -> i32
 /// -> bytes read, 0 at end of file. A short count is normal at the end, so a
 /// reader loops until it gets 0; a call moves at most 2^31 - 1 bytes.
+///
+/// READ and WRITE take a pipe end too (SYS_PIPE_CREATE), and then need no
+/// GRANT_DISK: the handle's HRIGHT_READ or HRIGHT_WRITE is the authority. A
+/// pipe read blocks while the pipe is empty and returns what is there; 0 is
+/// the end of the stream. A pipe write blocks until every byte is in;
+/// E_PEER_CLOSED once the read end has gone (after some bytes, their count).
 syscall SYS_FILE_READ = 0xA2 fn file_read(h: i32, buf: *u8, n: u64) -> i32
 syscall SYS_FILE_WRITE = 0xA3 fn file_write(h: i32, buf: *u8, n: u64) -> i32   /// -> bytes written
 /// origin = FSEEK_* -> 0, the new offset in *pos (pos may be 0). Past the end
@@ -428,6 +447,15 @@ syscall SYS_FILE_LOCK = 0xB0 fn file_lock_raw(h: i32, a: *file_lock_args) -> i32
 /// of them). Ranges are not split - unlock what was locked. E_OK even when
 /// nothing was held.
 syscall SYS_FILE_UNLOCK = 0xB1 fn file_unlock_range(h: i32, start: u64, len: u64) -> i32
+
+/// pipes 0xC0-0xCF (unprivileged: the handles are the authority; the ring is
+/// charged to the caller's job). Bytes move through SYS_FILE_READ and
+/// SYS_FILE_WRITE, so a program reads a pipe as it reads a file.
+/// ebx = size in bytes (0: PIPE_SIZE_DEFAULT; else PIPE_SIZE_MIN to
+/// PIPE_SIZE_MAX, E_OUT_OF_RANGE), ecx = *i32[2] -> 0, the read end's handle
+/// in [0] (HRIGHT_READ) and the write end's in [1] (HRIGHT_WRITE), each with
+/// HRIGHT_WAIT and HRIGHT_DUPLICATE. Nothing is made unless both are written.
+syscall SYS_PIPE_CREATE = 0xC0 fn pipe_create(size: u32, ends: *i32) -> i32
 
 /// ---- error codes (negative; returned in eax) ----
 /// One list, shared by syscalls and services (docs/kernel/CX_SYSCALLS_IPC.md sec 6).
@@ -593,6 +621,14 @@ const OBJ_TYPE_REPLY: u32 = 9        /// a reply token
 const OBJ_TYPE_NOTIFY: u32 = 10      /// a notification
 const OBJ_TYPE_SIGNALLER: u32 = 11   /// a signaller: a notification and the bits it may set
 const OBJ_TYPE_MEM: u32 = 12         /// a memory object
+const OBJ_TYPE_PIPE: u32 = 13        /// a pipe end, read or write
+
+/// Pipe sizes (SYS_PIPE_CREATE). A write of PIPE_ATOMIC bytes or fewer goes
+/// into the pipe whole, never split around another writer's (POSIX PIPE_BUF).
+const PIPE_ATOMIC: u32 = 512
+const PIPE_SIZE_DEFAULT: u32 = 4096
+const PIPE_SIZE_MIN: u32 = 512
+const PIPE_SIZE_MAX: u32 = 65536
 
 /// Registrations one queue holds at most (SYS_QUEUE_REGISTER).
 const QUEUE_REGISTER_MAX: u32 = 64
