@@ -203,6 +203,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/cpu/ipc.c
     ${SRC_DIR}/kernel/cpu/spawn.c
     ${SRC_DIR}/kernel/cpu/uthread.c
+    ${SRC_DIR}/kernel/cpu/futex.c
     ${SRC_DIR}/kernel/cpu/syspage.c
     ${SRC_DIR}/kernel/cpu/sysfile.c
     ${SRC_DIR}/kernel/object/kobj.c
@@ -515,6 +516,7 @@ cx_x_program(DISK_APP_XUEX   ${SRC_DIR}/os/apps/hi.xfxn           user   xuex ${
 cx_x_program(SETCHECK_XUEX   ${SRC_DIR}/os/apps/setcheck.xfxn     user   xuex ${SRC_DIR}/os/std)
 cx_x_program(UPPER_XUEX      ${SRC_DIR}/os/apps/upper.xfxn        user   xuex ${SRC_DIR}/os/std)
 cx_x_program(THREADS_XUEX    ${SRC_DIR}/os/apps/threads.xfxn      user   xuex ${SRC_DIR}/os/std)
+cx_x_program(FUTEX_XUEX      ${SRC_DIR}/os/apps/futex.xfxn        user   xuex ${SRC_DIR}/os/std)
 cx_x_program(SUPERVISOR_XSEX ${SRC_DIR}/os/apps/supervisor.xfxn   system xsex ${SRC_DIR}/os/std)
 cx_x_program(TOKDUMP_XUEX    ${SRC_DIR}/os/xc/tokdump.xfxn        user   xuex ${XC_INCS})
 cx_x_program(ASTDUMP_XUEX    ${SRC_DIR}/os/xc/astdump.xfxn        user   xuex ${XC_INCS})
@@ -595,6 +597,7 @@ set(CXK_STAGED_PROGRAMS
     --stage System/Programs/shell.xsex=${SHELL_XSEX}
     --stage Shared/Programs/upper.xuex=${UPPER_XUEX}
     --stage Shared/Programs/threads.xuex=${THREADS_XUEX}
+    --stage Shared/Programs/futex.xuex=${FUTEX_XUEX}
     --stage Shared/Programs/tokdump.xuex=${TOKDUMP_XUEX}
     --stage Shared/Programs/astdump.xuex=${ASTDUMP_XUEX}
     --stage Shared/Programs/semadump.xuex=${SEMADUMP_XUEX}
@@ -638,11 +641,11 @@ add_custom_command(
             ${CXK_STAGED_PROGRAMS} ${CXK_STAGED_SHARED}
     DEPENDS ${BOOT_BIN} ${STAGE2_BIN} ${KERNEL_DISK_ELF} ${EXEC_XOEX} ${DISK_APP_XUEX}
             ${SUPERVISOR_XSEX} ${TOKDUMP_XUEX} ${ASTDUMP_XUEX} ${SEMADUMP_XUEX} ${XC_XUEX}
-            ${SETCHECK_XUEX} ${SHELL_XSEX} ${UPPER_XUEX} ${THREADS_XUEX} ${PRELUDE_XFXN} ${XC_SRCS} ${STD_SRCS}
+            ${SETCHECK_XUEX} ${SHELL_XSEX} ${UPPER_XUEX} ${THREADS_XUEX} ${FUTEX_XUEX} ${PRELUDE_XFXN} ${XC_SRCS} ${STD_SRCS}
             ${SERVICE_XOSV} ${KERNEL_XKCO} ${CONSOLE16_XFNT} ${CXK}
     COMMENT "Building the CXK disk (XBPT: boot + stage + system)"
 )
 add_custom_target(cxk_disk ALL DEPENDS ${CXK_DISK})
 
 # ---- convenience: build just the X app chain ----
-add_custom_target(apps DEPENDS ${SHELL_XSEX} ${UPPER_XUEX} ${THREADS_XUEX})
+add_custom_target(apps DEPENDS ${SHELL_XSEX} ${UPPER_XUEX} ${THREADS_XUEX} ${FUTEX_XUEX})

@@ -1,0 +1,133 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// std/sync.xfxn - mutexes, once and condition variables for CXK X.
+// Aurora Tejeda / CATX Systems
+//
+//   import "sync.xfxn";
+//
+// Built on a 4-byte word and SYS_FUTEX_WAIT / SYS_FUTEX_WAKE (roadmap 1.5b2).
+// An uncontended lock or unlock is one compare-and-swap and SYS_THREAD_ID; the
+// kernel is asked to sleep or wake only when a thread has to wait. Each kind
+// starts all zero, so a global or a zalloc'd one is ready as it stands.
+//
+// A MUTEX's word is 0 when free, or its owner's thread id, with FUTEX_WAITERS
+// set once another thread may be asleep on it (XNU's ulock; Drepper's
+// "Futexes Are Tricky", mutex2). A waiter sets the bit before it sleeps, and
+// an unlock that finds it set wakes one. A thread that was woken takes the
+// lock with the bit set, since it cannot know it was the last. The owner in
+// the word says who holds it: an unlock by anyone else is refused, and a
+// debugger can name the holder. Not recursive: a thread that locks a mutex it
+// holds waits for itself forever. A thread that ends holding one leaves it
+// held.
+//
+// Until thread-local storage (1.5c) a thread learns its id from the kernel,
+// so lock and unlock each make one SYS_THREAD_ID call.
+
+struct mutex { w: u32 }
+struct once  { w: u32 }
+struct cond  { seq: u32 }
+
+type once_fn = fn() -> void;
+
+// once.w
+const ONCE_NEW:     u32 = 0;
+const ONCE_RUNNING: u32 = 1;   // its function is running
+const ONCE_WAITED:  u32 = 2;   // and another thread is waiting for it
+const ONCE_DONE:    u32 = 3;
+
+// 1 once thread_spawn has started a second thread in this process. The
+// library's own locks (sync_lib_lock) are taken only from then on, so a
+// program with one thread pays nothing for them. Set by the only thread
+// there is, outside every library call, so no lock is half taken when it
+// changes.
+global sync_threaded: u32;
+
+fn mutex_trylock(m: *mutex) -> i32 {
+    if (__atomic_cas(&m.w, 0, thread_id() as u32) == 0) { return 0; }
+    return E_SHOULD_WAIT;
+}
+
+fn mutex_lock(m: *mutex) -> void {
+    let me: u32 = thread_id() as u32;
+    if (__atomic_cas(&m.w, 0, me) == 0) { return; }
+    while (1 == 1) {
+        let v: u32 = __atomic_load(&m.w);
+        if (v == 0) {
+            if (__atomic_cas(&m.w, 0, me | FUTEX_WAITERS) == 0) { return; }
+            continue;
+        }
+        if ((v & FUTEX_WAITERS) == 0) {
+            if (__atomic_cas(&m.w, v, v | FUTEX_WAITERS) != v) { continue; }
+            v = v | FUTEX_WAITERS;
+        }
+        // E_SHOULD_WAIT: it changed since the load; look again
+        futex_wait(&m.w, v, DEADLINE_NEVER);
+    }
+}
+
+// -> 0, or E_ACCESS_DENIED (and nothing changes) if this thread does not
+// hold it.
+fn mutex_unlock(m: *mutex) -> i32 {
+    let me: u32 = thread_id() as u32;
+    if ((__atomic_load(&m.w) & ~FUTEX_WAITERS) != me) { return E_ACCESS_DENIED; }
+    if ((__atomic_xchg(&m.w, 0) & FUTEX_WAITERS) != 0) { futex_wake(&m.w, 1); }
+    return 0;
+}
+
+// Run f once, however many threads call this for the same `o`; each returns
+// once f has returned.
+fn once_run(o: *once, f: once_fn) -> void {
+    if (__atomic_load(&o.w) == ONCE_DONE) { return; }
+    if (__atomic_cas(&o.w, ONCE_NEW, ONCE_RUNNING) == ONCE_NEW) {
+        f();
+        if (__atomic_xchg(&o.w, ONCE_DONE) == ONCE_WAITED) { futex_wake(&o.w, FUTEX_WAKE_ALL); }
+        return;
+    }
+    while (1 == 1) {
+        let v: u32 = __atomic_load(&o.w);
+        if (v == ONCE_DONE) { return; }
+        if (v == ONCE_RUNNING) {
+            if (__atomic_cas(&o.w, ONCE_RUNNING, ONCE_WAITED) != ONCE_RUNNING) { continue; }
+        }
+        futex_wait(&o.w, ONCE_WAITED, DEADLINE_NEVER);
+    }
+}
+
+// Let go of m, which this thread holds, wait for a signal on c or `deadline`
+// on the monotonic clock (DEADLINE_NEVER: none), and take m again -> 0, or
+// E_TIMED_OUT. As everywhere, a wait can end with nothing signalled: check
+// the condition again, in a loop.
+fn cond_wait_until(c: *cond, m: *mutex, deadline: u64) -> i32 {
+    // read before the unlock, so a signal after the unlock changes it and the
+    // wait does not sleep through that signal
+    let s: u32 = __atomic_load(&c.seq);
+    mutex_unlock(m);
+    let rc: i32 = futex_wait(&c.seq, s, deadline);
+    mutex_lock(m);
+    if (rc == E_TIMED_OUT) { return E_TIMED_OUT; }
+    return 0;
+}
+
+fn cond_wait(c: *cond, m: *mutex) -> void { cond_wait_until(c, m, DEADLINE_NEVER); }
+
+// wake one thread waiting on c
+fn cond_signal(c: *cond) -> void {
+    __atomic_add(&c.seq, 1);
+    futex_wake(&c.seq, 1);
+}
+
+// wake every thread waiting on c
+fn cond_broadcast(c: *cond) -> void {
+    __atomic_add(&c.seq, 1);
+    futex_wake(&c.seq, FUTEX_WAKE_ALL);
+}
+
+// The library's own locks (the heap, the output): a mutex once the process
+// has a second thread, nothing before.
+fn sync_lib_lock(m: *mutex) -> void {
+    if (__atomic_load(&sync_threaded) != 0) { mutex_lock(m); }
+}
+
+fn sync_lib_unlock(m: *mutex) -> void {
+    if (__atomic_load(&sync_threaded) != 0) { mutex_unlock(m); }
+}

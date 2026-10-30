@@ -10,9 +10,13 @@
 // guard page below, and what the function returns is its exit code. Its
 // handle is how it is joined: a wait for SIGNAL_THREAD_ENDED.
 //
-// The library is not yet safe to call from two threads at once (the heap
-// and the output buffer have no lock until the futex, roadmap 1.5b): give
-// each thread its own memory, and print from one.
+// From the first thread_spawn on, the heap and the output take a lock
+// (sync.xfxn's sync_lib_lock), so any thread may allocate and print. Input
+// and the rest of the library keep no lock: read input from one thread.
+// sync.xfxn has the mutexes, once and condition variables to share
+// anything else with.
+
+import "sync.xfxn";
 
 type thread_fn = fn(u64) -> i32;
 
@@ -33,6 +37,8 @@ fn thread_spawn(f: thread_fn, arg: u64, stack: u64) -> i32 {
     a.stack_size = stack;
     a.flags      = 0;
     a.reserved   = 0;
+    // before the thread exists, and from outside every lock (sync_threaded)
+    __atomic_store(&sync_threaded, 1);
     return thread_create(&a);
 }
 

@@ -541,6 +541,33 @@ and `time_now_ns`, `time_deadline_ms`, `time_sleep_ms` (`os/std/time.xfxn`);
 the rest of the library is not thread-safe until the futex (1.5b).
 Thread-local storage, names and CPU time are 1.5c.
 
+**Futexes, as built (1.5b2, ABI 29):** `SYS_FUTEX_WAIT(word, expected,
+deadline)` blocks while the 4-byte aligned `word` holds `expected`, until a
+`SYS_FUTEX_WAKE(word, count)` on the same word, the deadline, or the
+process's end (`E_OK`, `E_TIMED_OUT`, `E_CANCELED`); a word holding
+something else is `E_SHOULD_WAIT` at once. The check and the queueing are
+one step under the futex lock, `kobj_wait`'s pattern, so no wake falls
+between them. A wake returns how many it woke, oldest first
+(`FUTEX_WAKE_ALL` for every one), and takes each off the queue itself, so
+a waiter whose deadline came at the same moment still returns `E_OK`. A
+word is keyed by what holds it, not its address (`kernel/cpu/futex.c`): in
+one of the process's mappings, by the memory object and the offset in it,
+so two mappings of one object, in one process or two, are one word
+(Serenity `get_futex_key`, XNU `ULK_XPROC`), with the waiter holding a
+reference to the object; anywhere else (the image, the first thread's
+stack), by the pid and the address (XNU `ULK_UADDR`). `SYS_THREAD_ID`
+returns the caller's thread id, never 0 and below `FUTEX_WAITERS`. The
+kernel gives the word no meaning; `os/std/sync.xfxn` does: a mutex word is
+0 or its owner's id with `FUTEX_WAITERS` once a thread may sleep on it
+(XNU's ulock; Drepper's mutex2), so only the owner unlocks it and priority
+inheritance stays possible; `once_run`, and condition variables on a
+sequence word (`cond_wait`, `cond_wait_until`, `cond_signal`,
+`cond_broadcast`). From the first `thread_spawn`, the heap and the output
+take a library lock; a program with one thread pays nothing for it. Until
+thread-local storage (1.5c), lock and unlock each ask the kernel for the
+thread's id. Not done: robust mutexes (a thread that ends holding one
+leaves it held), priority inheritance, requeue.
+
 **Streams and files:**
 `pipe_create(size)`, `io_read(h, buf, offset)`, `io_write(h, buf, offset)`
 (pipes ignore the offset), `io_seek`, `fs_open_at(dir, path, flags, rights)`,

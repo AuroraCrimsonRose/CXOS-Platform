@@ -75,6 +75,19 @@ fn vm_map(a: *vm_map_args) -> i32 {
 fn mem_quota() -> u32 { return HOST_QUOTA; }
 fn mem_used() -> u32 { return host_mapped; }
 
+// ---- what std/sync.xfxn (through std/heap.xfxn) expects of the prelude ----
+// The compiler runs on one thread and never calls thread_spawn, so the
+// heap's lock is never taken and none of these is reached.
+const E_ACCESS_DENIED: i32 = -7;
+const E_SHOULD_WAIT:   i32 = -15;
+const E_TIMED_OUT:     i32 = -12;
+const DEADLINE_NEVER: u64 = 0x7FFFFFFFFFFFFFFF;
+const FUTEX_WAKE_ALL: u32 = 0xFFFFFFFF;
+const FUTEX_WAITERS:  u32 = 0x80000000;
+fn thread_id() -> i32 { return 1; }
+fn futex_wait(word: *u32, expected: u32, deadline: u64) -> i32 { return E_SHOULD_WAIT; }
+fn futex_wake(word: *u32, count: u32) -> i32 { return 0; }
+
 // ---- the compiler's platform interface ----
 //
 // Both platform files provide the same functions: the program starts in

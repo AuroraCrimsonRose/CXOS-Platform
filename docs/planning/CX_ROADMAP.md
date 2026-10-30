@@ -471,12 +471,14 @@ Independent of the order above, and small enough to land whenever convenient:
        programs `tests/lang/run/atomics.xfxn` and
        `tests/lang/refuse/atomics.xfxn` hold the Differential facts to them
        (`docs/language/CX_X_PLAN.md` §4). No ABI change.
-     - **1.5b2:** futex keyed by memory object and offset (by process and
-       address for a word outside any mapping: Serenity `get_futex_key`,
-       XNU `ULK_UADDR`/`ULK_XPROC`), the owner's thread id in the word;
-       `SYS_THREAD_ID`, `SYS_FUTEX_WAIT`, `SYS_FUTEX_WAKE` (0x0D-0x0F); X
-       mutex, once and condition variable, and the X library made
-       thread-safe.
+     - **1.5b2 (2026-10-30), done:** futex keyed by memory object and
+       offset (by process and address for a word outside any mapping:
+       Serenity `get_futex_key`, XNU `ULK_UADDR`/`ULK_XPROC`), the owner's
+       thread id in the word; `SYS_THREAD_ID`, `SYS_FUTEX_WAIT`,
+       `SYS_FUTEX_WAKE` (0x0D-0x0F); X mutex, once and condition variable
+       (`std/sync.xfxn`), and the heap and the output locked once a second
+       thread starts. Input and the rest of the library stay one thread's.
+       ABI 29 (`docs/kernel/CX_SYSCALLS_IPC.md` §7).
    - **1.5c:** thread-local storage through `FS_BASE` (wrmsr on switch: the
      FX-8350 has no FSGSBASE), thread names, per-thread CPU time.
    - **After 1.5b:** a ring-3 X test runner: one boot runs many X tests as

@@ -37,6 +37,7 @@
 // above it - and a wrong allocator is discovered much later than a slow one.
 
 import "mem.xfxn";
+import "sync.xfxn";
 
 // Every payload starts 8-byte aligned, so a header is 8 bytes and an arena
 // begins on a page. Nothing here assumes a page is 4096: mem_map reports what
@@ -50,6 +51,9 @@ const HEAP_ARENA_MIN: u32 = 65536;
 struct heap_arena { next: usize, size: u32 }
 
 global heap_arenas: usize;  // first arena, 0 until the first alloc
+// Held by alloc and free once the process has a second thread
+// (sync_lib_lock): every arena and block header is under it.
+global heap_mu: mutex;
 
 fn heap_ld(p: usize) -> u32        { let q: *u32 = p as *u32; return q[0]; }
 fn heap_st(p: usize, v: u32) -> void { let q: *u32 = p as *u32; q[0] = v; }
@@ -125,6 +129,14 @@ fn heap_coalesce(arena: usize) -> void {
 // that matters rather than assuming.
 fn alloc(n: u32) -> usize {
     if (n == 0) { return 0; }
+    sync_lib_lock(&heap_mu);
+    let p: usize = heap_alloc_in(n);
+    sync_lib_unlock(&heap_mu);
+    return p;
+}
+
+// alloc's work, with heap_mu held
+fn heap_alloc_in(n: u32) -> usize {
     let want: u32 = heap_round(n);
 
     let pass: u32 = 0;
@@ -183,6 +195,13 @@ fn alloc_size(p: usize) -> u32 {
 // one twice, corrupts the heap and is not detected - this is a raw allocator.
 fn free(p: usize) -> void {
     if (p == 0) { return; }
+    sync_lib_lock(&heap_mu);
+    heap_free_in(p);
+    sync_lib_unlock(&heap_mu);
+}
+
+// free's work, with heap_mu held
+fn heap_free_in(p: usize) -> void {
     let b: usize = p - (HEAP_HDR as usize);
     heap_st(b + 4, 1);
 

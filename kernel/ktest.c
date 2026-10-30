@@ -714,7 +714,7 @@ static int test_sysrec(void) {
  * point. A number past the end must be refused before it indexes the table:
  * 0xFFFFFFFF would otherwise read four gigabytes beyond it. */
 static int test_syscall_table(void) {
-    static const uint32_t unknown[] = { 0x0F, 0x7F, SYSCALL_TABLE_SIZE, 0xFFFFFFFFu };
+    static const uint32_t unknown[] = { 0x23, 0x7F, SYSCALL_TABLE_SIZE, 0xFFFFFFFFu };
     for (uint32_t i = 0; i < sizeof unknown / sizeof unknown[0]; i++) {
         struct sysrec_stats s0, s1;
         sysrec_snapshot(&s0);
@@ -3324,6 +3324,7 @@ void ktest_run(void) {
     total++; passed += report("SYS_SPAWN verifies its image",      ktest_spawn_verifies_image());
     total++; passed += report("the shell from disk, through pipes", ktest_shell_pipeline());
     total++; passed += report("user threads, from disk", ktest_threads());
+    total++; passed += report("futexes and std/sync, from disk", ktest_futex());
     total++; passed += report("xfnt: loadable font validated",     test_xfnt());
     total++; passed += report("variable font cell size",           test_font_cell());
     total++; passed += report("console font staged on disk",       test_console_font_disk());

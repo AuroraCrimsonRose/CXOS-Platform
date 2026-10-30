@@ -36,6 +36,7 @@
 #include "exec.h"
 #include "ipc.h"
 #include "sched.h"
+#include "futex.h"             /* futex_waiting */
 #include "logging.h"
 #include "cxk_abi.h"
 #include "syspage.h"           /* SYSPAGE_VIRT */
@@ -967,7 +968,7 @@ static int tht_run(struct spawn_args *a, struct object_info_args *oi, struct pro
     a->handles = 0; a->handle_count = 0;
     int32_t ph = syscall_exec_path(user_addr(path), user_addr(a));
     if (ph <= 0) {
-        klog_u32("KTEST", SEV_ERR, "threads.xuex refused, code -", (uint32_t)-ph, LOG_COLOR_VALUE, "");
+        klog_u32("KTEST", SEV_ERR, "program from disk refused, code -", (uint32_t)-ph, LOG_COLOR_VALUE, "");
         return 0;
     }
     uint64_t deadline = timer_now_ns() + 300000 * TIMER_NS_PER_TICK;
@@ -1023,6 +1024,60 @@ int ktest_threads(void) {
 done:
     if (step != 0)
         klog_u32("KTEST", SEV_ERR, "user threads failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    thread_set_caps(thread_current_id(), caps);
+    paging_unmap(SHP_VA);
+    pmm_free(frame);
+    return step == 0;
+}
+
+/*
+ * /Shared/Programs/futex.xuex (roadmap 1.5b2), run twice from disk; the
+ * program checks the calls and std/sync.xfxn from ring 3, and its process's
+ * end is the verdict:
+ *   futex           exits 0, or the step it failed at
+ *   futex exit      SYS_EXIT with a worker waiting on a word: PROC_EXITED 43,
+ *                   and the waiter gone from the futex queues with its thread
+ */
+int ktest_futex(void) {
+    if (!cxfs_is_mounted()) return 1;                                 /* nothing mounted - skip */
+    if (cxfs_resolve("/Shared/Programs/futex.xuex", 0) < 0) return 1;  /* nothing staged - skip */
+
+    paddr_t frame = pmm_alloc();
+    if (!frame) return 0;
+    if (paging_map_user(SHP_VA, frame, VM_WRITE) != 0) { pmm_free(frame); return 0; }
+
+    struct spawn_args *a        = (struct spawn_args *)SHP_VA;
+    struct object_info_args *oi = (struct object_info_args *)(SHP_VA + 0x100);
+    struct process_info *pi     = (struct process_info *)(SHP_VA + 0x200);
+    char *path                  = (char *)(SHP_VA + 0x300);
+    char *args                  = (char *)(SHP_VA + 0x400);
+    static const char prog[] = "/Shared/Programs/futex.xuex";
+    uint32_t caps = thread_current_caps();
+    thread_set_caps(thread_current_id(), GRANT_SPAWN);
+    for (uint32_t i = 0; i < sizeof prog; i++) path[i] = prog[i];
+    int step;
+
+    /* 1: every check passed */
+    uint32_t f0 = usermode_faults();
+    uint32_t w0 = futex_waiting();
+    step = 1; if (!tht_run(a, oi, pi, path, args, "", 0)) goto done;
+    if (pi->ended != PROC_EXITED || pi->code != 0) {
+        klog_u32("KTEST", SEV_ERR, "futex: ended ", pi->ended, LOG_COLOR_VALUE, "");
+        klog_u32("KTEST", SEV_ERR, "futex: code ", (uint32_t)pi->code, LOG_COLOR_VALUE, "");
+        goto done;
+    }
+    step = 2; if (usermode_faults() != f0 || futex_waiting() != w0) goto done;
+
+    /* 3: a waiter's process ends: it leaves the queue */
+    static const char exit_arg[] = "exit";
+    step = 3; if (!tht_run(a, oi, pi, path, args, exit_arg, sizeof exit_arg)
+                  || pi->ended != PROC_EXITED || pi->code != 43) goto done;
+    step = 4; if (futex_waiting() != w0 || usermode_faults() != f0) goto done;
+    step = 0;
+
+done:
+    if (step != 0)
+        klog_u32("KTEST", SEV_ERR, "futex failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
     thread_set_caps(thread_current_id(), caps);
     paging_unmap(SHP_VA);
     pmm_free(frame);

@@ -332,6 +332,22 @@ int vm_unmap_stack(int pid, uint64_t base) {
     return E_OK;
 }
 
+int vm_futex_key(int pid, uint64_t addr, struct kmem **mem, uint64_t *off) {
+    if (!vp(pid) || !vp(pid)->live) return 0;
+    struct vm_proc *p = vp(pid);
+    uint32_t f = spin_lock(&p->lock);
+    struct vm_region *r = (struct vm_region *)vmtree_find(p->root, addr);
+    /* A stack's guard is no byte of its object (vm_fault). */
+    if (r && addr < r->node.base + r->guard) r = 0;
+    if (r) {
+        *mem = r->mem;
+        *off = r->off + (addr - r->node.base - r->guard);
+        kobj_ref(&r->mem->hdr);   /* taken under the lock: an unmap cannot drop it first */
+    }
+    spin_unlock(&p->lock, f);
+    return r != 0;
+}
+
 int vm_info(int pid, struct vm_usage *u) {
     if (!vp(pid) || !vp(pid)->live) return E_INVALID_ARGS;
     u->quota  = vp(pid)->quota;

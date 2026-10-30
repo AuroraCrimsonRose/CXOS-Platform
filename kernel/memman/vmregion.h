@@ -150,6 +150,13 @@ int vm_map_stack(int pid, uint32_t len, uint64_t *base, uint64_t *top);
    is not an error once the process's whole account has been reset. */
 int vm_unmap_stack(int pid, uint64_t base);
 
+/* Where a futex word lives (sync/futex.c; Serenity get_futex_key): 1, with
+   *mem the memory object of the region holding `addr` and *off the word's
+   byte offset in it, if one of pid's regions holds it; the caller then owns
+   a reference to *mem. 0, and nothing taken, if none does (the image, the
+   first thread's stack, a stack's guard), and then the word is pid's own. */
+int vm_futex_key(int pid, uint64_t addr, struct kmem **mem, uint64_t *off);
+
 /* A first touch: the page holding `addr` is in one of pid's regions, the
    access (`write`, `exec`) is one the region allows, and the page is now
    mapped in pid's space. 1 if so; 0, with nothing mapped, if not, and then

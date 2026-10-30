@@ -9,6 +9,11 @@
 // input is unprivileged (a process reading its own keystrokes).
 //
 // Key codes worth naming: Enter is 10, Backspace 8, Ctrl+C 3.
+//
+// Output may come from any thread (each call goes out whole); input is read
+// by one.
+
+import "sync.xfxn";
 
 const KEY_ENTER:     i32 = 10;
 const KEY_BACKSPACE: i32 = 8;
@@ -25,6 +30,7 @@ const KEY_ESC:       i32 = 27;
 
 global io_out:   i32;   // the output handle, once io_known is 1
 global io_known: i32;   // 0: not asked yet; 1: one was given; 2: none
+global io_mu:    mutex; // the output, and io_out and io_known with it
 
 fn io_stdout() -> i32 {
     if (io_known == 0) {
@@ -38,15 +44,22 @@ fn io_stdout() -> i32 {
 // n bytes to the output. A pipe takes what it has room for, so the rest
 // follows until it is all gone; a write that fails ends it (a reader that
 // has gone is E_PEER_CLOSED, and the bytes have nowhere to go).
+// Under io_mu once there are threads, so one call's bytes go out whole and
+// in order, never split around another thread's.
 fn io_emit(s: *u8, n: u32) -> void {
+    sync_lib_lock(&io_mu);
     let h: i32 = io_stdout();
-    if (h < 0) { console_write(s, n); return; }
-    let done: u32 = 0;
-    while (done < n) {
-        let w: i32 = file_write(h, &s[done], n - done);
-        if (w <= 0) { return; }
-        done = done + (w as u32);
+    if (h < 0) {
+        console_write(s, n);
+    } else {
+        let done: u32 = 0;
+        while (done < n) {
+            let w: i32 = file_write(h, &s[done], n - done);
+            if (w <= 0) { break; }
+            done = done + (w as u32);
+        }
     }
+    sync_lib_unlock(&io_mu);
 }
 
 // write a NUL-terminated string

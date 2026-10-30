@@ -36,4 +36,8 @@ int ktest_shell_pipeline(void);
    1 = pass (or nothing staged), 0 = fail. */
 int ktest_threads(void);
 
+/* /Shared/Programs/futex.xuex, twice: futexes and std/sync.xfxn from ring 3
+   (1.5b2). 1 = pass (or nothing staged), 0 = fail. */
+int ktest_futex(void);
+
 #endif

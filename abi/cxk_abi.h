@@ -15,7 +15,7 @@
  * hash it was built against and the loader refuses one that differs, so a
  * program never runs against numbers or layouts it was not compiled for.
  */
-#define CXK_ABI_HASH { 0xfe, 0x55, 0x06, 0xf4, 0xc8, 0xe7, 0xf8, 0xbf, 0x25, 0xac, 0x98, 0x88, 0x3d, 0xde, 0x11, 0xa8, 0xb0, 0x9c, 0xc0, 0x88, 0xae, 0x74, 0x85, 0x6c, 0x9e, 0x8b, 0xfb, 0xba, 0xdd, 0x11, 0x36, 0x92 }
+#define CXK_ABI_HASH { 0x83, 0x16, 0xa8, 0x69, 0x04, 0x39, 0xf6, 0x5f, 0x77, 0xec, 0x55, 0x4a, 0x8a, 0x0f, 0xf4, 0xce, 0xfe, 0x5d, 0x12, 0xd2, 0x46, 0x8b, 0x8f, 0xd1, 0xfc, 0x56, 0xf2, 0xc3, 0x48, 0xbe, 0xa9, 0x62 }
 
 /*
  * CXK ABI v1 - the PUBLIC contract shared by the kernel, the .xoex executive,
@@ -44,7 +44,7 @@
  * line; bump both, and the DevKit's stamp, in the one commit that changes the
  * contract.
  */
-#define CXK_ABI_VERSION          28
+#define CXK_ABI_VERSION          29
 
 /*
  * ---- syscall numbers ----
@@ -111,6 +111,35 @@
  * process to end this way ends it PROC_EXITED with its code.
  */
 #define SYS_THREAD_EXIT          0x0C
+
+/*
+ * -> the calling thread's id: never 0, below 0x80000000 (FUTEX_WAITERS),
+ * and no other live thread's. A lock word holds its owner's (std/sync.xfxn).
+ * An id is reused once its thread has gone.
+ */
+#define SYS_THREAD_ID            0x0D
+
+/*
+ * ebx = a 4-byte aligned word of the caller's memory, ecx = the value it is
+ * expected to hold, edx = a deadline on the monotonic clock (DEADLINE_NEVER:
+ * none) -> 0 once SYS_FUTEX_WAKE on the same word wakes this thread, if the
+ * word held `expected` when looked at; checking it and waiting are one step,
+ * so a wake after the check is not missed. The same word is the same
+ * memory: two mappings of one memory object, in one process or two, name one
+ * word; a word in no mapping (the image, the first thread's stack) is the
+ * process's own. Unprivileged: the word is the caller's.
+ * E_SHOULD_WAIT: it held something else. E_TIMED_OUT: the deadline came.
+ * E_CANCELED: the process is ending. E_INVALID_ARGS: not 4-byte aligned.
+ * E_BAD_ADDRESS: not readable memory of the caller's.
+ */
+#define SYS_FUTEX_WAIT           0x0E
+
+/*
+ * ebx = the word, ecx = how many to wake at most (FUTEX_WAKE_ALL: every
+ * one) -> how many were woken, oldest waiter first; 0 if none waits. Errors
+ * as SYS_FUTEX_WAIT's.
+ */
+#define SYS_FUTEX_WAKE           0x0F
 
 /*
  * IPC + handles 0x10-0x1F
@@ -995,6 +1024,19 @@ struct thread_info {
     int32_t code;                               /* THR_EXITED */
     uint32_t reserved;                          /* 0 */
 };
+
+/*
+ * ---- futexes (SYS_FUTEX_WAIT, SYS_FUTEX_WAKE) ----
+ * SYS_FUTEX_WAKE's count for every waiter.
+ */
+#define FUTEX_WAKE_ALL           0xFFFFFFFFu
+
+/*
+ * A lock word holds its owner's SYS_THREAD_ID, with this bit set once a
+ * thread may be waiting on it (std/sync.xfxn; XNU's ulock, Linux's
+ * FUTEX_WAITERS). The kernel reads only whether the word is `expected`.
+ */
+#define FUTEX_WAITERS            0x80000000u
 
 /*
  * OBJINFO_MEM: a memory object's size, how much of it has been touched, and

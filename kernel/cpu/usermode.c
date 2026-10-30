@@ -31,6 +31,7 @@
 #include "object/kmem.h"      /* SYS_MEM_CREATE */
 #include "object/kpipe.h"     /* SYS_PIPE_CREATE, pipe reads and writes */
 #include "object/kthread.h"   /* OBJINFO_THREAD */
+#include "futex.h"             /* SYS_FUTEX_* */
 #include "object/kqueue.h"    /* SYS_QUEUE_* */
 #include "sync/atomic.h"
 #include "sysrec.h"
@@ -175,6 +176,17 @@ void syscall_thread_exit(int32_t code) {
     thread_note_self_exit(code);
     return_to_kernel((int)code, thread_current_usave());
 }
+
+/* The scheduler's slot: 0 is the boot thread, which never runs ring 3. */
+_Static_assert(THREAD_LIMIT_MAX < FUTEX_WAITERS, "a thread id must leave FUTEX_WAITERS clear");
+int syscall_thread_id(void) { return thread_current_id(); }
+
+/* Unprivileged: the word is the caller's own memory (cpu/futex.c). */
+int syscall_futex_wait(uint64_t word, uint32_t expected, uint64_t deadline) {
+    return futex_wait(word, expected, deadline);
+}
+
+int syscall_futex_wake(uint64_t word, uint32_t count) { return futex_wake(word, count); }
 
 void syscall_yield(void) { yield(); }
 
