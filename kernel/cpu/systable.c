@@ -51,6 +51,22 @@ static int decode_timer_set(const uintptr_t *a) {
 #endif
 }
 static int decode_timer_cancel(const uintptr_t *a) { return syscall_timer_cancel((int32_t)a[0]); }
+static int decode_notify_create(const uintptr_t *a) { (void)a; return syscall_notify_create(); }
+static int decode_notify_mint(const uintptr_t *a) {
+#if SYSCALL_PAIRS
+    return syscall_notify_mint((int32_t)a[0], (uint64_t)((uint64_t)a[1] | (uint64_t)a[2] << 32), (uint32_t)a[3]);
+#else
+    return syscall_notify_mint((int32_t)a[0], (uint64_t)a[1], (uint32_t)a[2]);
+#endif
+}
+static int decode_notify_signal(const uintptr_t *a) {
+#if SYSCALL_PAIRS
+    return syscall_notify_signal((int32_t)a[0], (uint64_t)((uint64_t)a[1] | (uint64_t)a[2] << 32));
+#else
+    return syscall_notify_signal((int32_t)a[0], (uint64_t)a[1]);
+#endif
+}
+static int decode_notify_take(const uintptr_t *a) { return syscall_notify_take((int32_t)a[0], (uint64_t)a[1]); }
 static int decode_queue_create(const uintptr_t *a) { (void)a; return syscall_queue_create(); }
 static int decode_queue_register(const uintptr_t *a) {
 #if SYSCALL_PAIRS
@@ -215,6 +231,7 @@ const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_IPC_REPLY] = decode_ipc_reply,
     [SYS_EP_CREATE] = decode_ep_create,
     [SYS_EP_MINT] = decode_ep_mint,
+    [SYS_NOTIFY_CREATE] = decode_notify_create,
     [SYS_HANDLE_CLOSE] = decode_handle_close,
     [SYS_HANDLE_DUPLICATE] = decode_handle_duplicate,
     [SYS_OBJECT_INFO] = decode_object_info,
@@ -222,6 +239,9 @@ const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_TIMER_CREATE] = decode_timer_create,
     [SYS_TIMER_SET] = decode_timer_set,
     [SYS_TIMER_CANCEL] = decode_timer_cancel,
+    [SYS_NOTIFY_MINT] = decode_notify_mint,
+    [SYS_NOTIFY_SIGNAL] = decode_notify_signal,
+    [SYS_NOTIFY_TAKE] = decode_notify_take,
     [SYS_INPUT_READ] = decode_input_read,
     [SYS_MOUSE_READ] = decode_mouse_read,
     [SYS_INPUT_POLL] = decode_input_poll,

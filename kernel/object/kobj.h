@@ -45,6 +45,8 @@ enum kobj_type {
     KOBJ_QUEUE    = 7,   /* queue (object/kqueue.c) */
     KOBJ_SEND     = 8,   /* send handle: an endpoint and a badge (cpu/ipc.c) */
     KOBJ_REPLY    = 9,   /* reply token: one call (cpu/ipc.c) */
+    KOBJ_NOTIFY   = 10,  /* notification: bits that combine (object/knotify.c) */
+    KOBJ_SIGNALLER = 11, /* signaller: a notification and the bits it may set */
     KOBJ_TYPE_MAX
 };
 

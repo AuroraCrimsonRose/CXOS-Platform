@@ -20,7 +20,7 @@
 | Devices | Drawing (`SYS_FB_DRAW_TEXT`), keyboard and mouse are syscalls; input needs no capability | The kernel draws pixels; any process can read another's keys |
 | Arguments | A fixed page at `USER_ARGS_BASE` | An x86-32 address in the ABI |
 | Errors | 15 codes | No timeout, peer-closed, wrong-type or rights-denied distinction |
-| IPC | Calls queue with reply tokens and badges, up to 64 KiB and 16 handles each way (ABI 21, §7); the executive defines messages informally | No notifications, no shared memory, no types |
+| IPC | Calls queue with reply tokens and badges, up to 64 KiB and 16 handles each way (ABI 21, §7); notifications with minted signallers (ABI 22); the executive defines messages informally | No shared memory, no types |
 | Definition | Since step 6a1, `abi/kernel.xfil`: `cxk_abi.h`, the X prelude's constants and structures, and its plain syscall wrappers are generated from it (§9.5). The prelude's helpers are by hand. Since 6a3a every image records the ABI hash and the loader compares it | The interface it describes is still this table's |
 
 The good parts stay: user copies that validate and recover from faults
@@ -373,6 +373,25 @@ reply with more than `reply_handle_cap` is `E_BUFFER_TOO_SMALL` and keeps the
 token. The received handles and the token land together, or the call is
 requeued (`E_NO_RESOURCES`). A call that fails after queuing (`E_PEER_CLOSED`,
 a killed caller) closes the handles it carried.
+
+*Notifications, ABI 22 (Phase 1.3c):* a notification is a 64-bit word
+(`OBJ_TYPE_NOTIFY`, seL4's notification objects). `SYS_NOTIFY_SIGNAL(h, bits)`
+ORs bits into it, so signals before a take combine and a signaller never
+blocks or fills anything up; `SIGNAL_NOTIFY_PENDING` is set while any bit is,
+and a thread waits for it as for any signal, with `object_wait` or a queue.
+`SYS_NOTIFY_TAKE(h, *u64)` (`HRIGHT_RECV`) hands the word back and clears it
+and the signal together, under the wait lock; it does not wait, and a bad
+address takes nothing. `SYS_NOTIFY_CREATE` gives `HRIGHT_WAIT`,
+`HRIGHT_SIGNAL`, `HRIGHT_RECV` and `HRIGHT_DUPLICATE`, unprivileged. The owner
+gives away **signallers** (`OBJ_TYPE_SIGNALLER`): `SYS_NOTIFY_MINT(h, bits,
+rights)` (`HRIGHT_RECV`; rights from `HRIGHT_SIGNAL | HRIGHT_DUPLICATE`) makes
+one that may set those bits and no others (`E_ACCESS_DENIED`), so a server
+that gives each client its own bit knows who signalled, as seL4's badged
+capabilities tell it. A signaller holds the notification but no handle on it,
+as a send handle holds its endpoint: once the notification's last handle
+closes, a signal is `E_PEER_CLOSED`. Both travel in messages. Bits 0 is
+`E_INVALID_ARGS` everywhere. Not yet: a take of some bits only, and a signal
+from an interrupt (drivers, Phase 2), which the wait lock already allows.
 
 **Streams and files:**
 `pipe_create(size)`, `io_read(h, buf, offset)`, `io_write(h, buf, offset)`

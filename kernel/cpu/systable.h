@@ -35,6 +35,10 @@ int syscall_object_wait(int32_t h, uint32_t signals, uint64_t deadline, uint64_t
 int syscall_timer_create(uint64_t slack);       /* SYS_TIMER_CREATE */
 int syscall_timer_set(int32_t h, uint64_t deadline); /* SYS_TIMER_SET */
 int syscall_timer_cancel(int32_t h);            /* SYS_TIMER_CANCEL */
+int syscall_notify_create(void);                /* SYS_NOTIFY_CREATE */
+int syscall_notify_mint(int32_t h, uint64_t bits, uint32_t rights); /* SYS_NOTIFY_MINT */
+int syscall_notify_signal(int32_t h, uint64_t bits); /* SYS_NOTIFY_SIGNAL */
+int syscall_notify_take(int32_t h, uint64_t bits); /* SYS_NOTIFY_TAKE */
 int syscall_queue_create(void);                 /* SYS_QUEUE_CREATE */
 int syscall_queue_register(int32_t q, int32_t h, uint32_t signals, uint64_t key); /* SYS_QUEUE_REGISTER */
 int syscall_queue_arm(int32_t q, uint64_t key); /* SYS_QUEUE_ARM */
@@ -100,7 +104,7 @@ int syscall_file_unlock(int32_t h, uint64_t start, uint64_t len); /* SYS_FILE_UN
  * before looking it up, and one that lands in a hole finds no decoder. */
 #define SYSCALL_ARGS            5
 #define SYSCALL_TABLE_SIZE      178
-#define SYSCALL_COUNT           79
+#define SYSCALL_COUNT           83
 
 /* An argument register is as wide as the machine's: 32 bits on x86-32, where a
  * u64 takes a register pair, and 64 on x86-64, where it takes one. */

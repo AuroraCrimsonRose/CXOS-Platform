@@ -395,7 +395,12 @@ Independent of the order above, and small enough to land whenever convenient:
      the thread that took it for the deadlock check, made unknown when the
      handle travels (`kobj_ops.travel`); the check passes over an unknown
      taker, so no false `E_DEADLOCK`, and a real cycle through it hangs.
-   - **1.3c:** notifications.
+   - **1.3c (ABI 22, 2026-10-29), done:** notifications: a 64-bit word that
+     `SYS_NOTIFY_SIGNAL` ORs bits into and `SYS_NOTIFY_TAKE` reads and
+     clears, `SIGNAL_NOTIFY_PENDING` while any bit is set, so it is waited
+     for through `object_wait` or a queue (seL4). Signallers, minted with
+     `SYS_NOTIFY_MINT`, set only their own bits; once the notification's
+     last handle closes they get `E_PEER_CLOSED`.
    - **1.3d:** memory objects: pages on first touch, the region tree, strict
      commit.
    - **1.3e:** sealing, and memory objects in IPC.

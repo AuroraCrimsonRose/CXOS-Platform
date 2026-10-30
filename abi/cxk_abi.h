@@ -15,7 +15,7 @@
  * hash it was built against and the loader refuses one that differs, so a
  * program never runs against numbers or layouts it was not compiled for.
  */
-#define CXK_ABI_HASH { 0x4d, 0xb6, 0x68, 0x67, 0x29, 0x07, 0xe2, 0x22, 0xcc, 0x58, 0x20, 0x4f, 0x12, 0x78, 0x83, 0x6d, 0xbc, 0x26, 0xc3, 0x19, 0x8f, 0x93, 0x02, 0xf8, 0xcf, 0x1b, 0x9b, 0x97, 0x18, 0x93, 0xa0, 0xd1 }
+#define CXK_ABI_HASH { 0xff, 0x0f, 0x86, 0x1b, 0xb6, 0x58, 0x23, 0x7e, 0x19, 0x99, 0x0d, 0xf5, 0xbc, 0x12, 0x49, 0xe3, 0x6d, 0x23, 0x2a, 0xf4, 0x95, 0x6f, 0x0a, 0x9e, 0x7f, 0xd1, 0xa8, 0x55, 0x61, 0x7d, 0xec, 0xe8 }
 
 /*
  * CXK ABI v1 - the PUBLIC contract shared by the kernel, the .xoex executive,
@@ -44,7 +44,7 @@
  * line; bump both, and the DevKit's stamp, in the one commit that changes the
  * contract.
  */
-#define CXK_ABI_VERSION          21
+#define CXK_ABI_VERSION          22
 
 /*
  * ---- syscall numbers ----
@@ -143,6 +143,39 @@
 #define SYS_TIMER_CANCEL         0x1C
 
 /*
+ * Notifications: a 64-bit word that signals OR into, so signals before a
+ * take combine and a signaller never blocks. SIGNAL_NOTIFY_PENDING is set
+ * while any bit is; wait for it with SYS_OBJECT_WAIT or a queue.
+ * -> a notification handle with HRIGHT_WAIT, HRIGHT_SIGNAL, HRIGHT_RECV and
+ * HRIGHT_DUPLICATE, no bits set. Unprivileged.
+ */
+#define SYS_NOTIFY_CREATE        0x15
+
+/*
+ * ebx = notification handle (HRIGHT_RECV), ecx = bits (not 0), edx = rights
+ * (a subset of HRIGHT_SIGNAL | HRIGHT_DUPLICATE, HRIGHT_SIGNAL among them)
+ * -> a signaller handle that can set those bits and no others. A copy of it
+ * keeps them. It holds the notification but no handle on it.
+ */
+#define SYS_NOTIFY_MINT          0x1D
+
+/*
+ * ebx = a notification or signaller handle (HRIGHT_SIGNAL), ecx = bits (not
+ * 0) -> 0. ORs them into the word and sets SIGNAL_NOTIFY_PENDING. A
+ * signaller may set only its own bits (E_ACCESS_DENIED). E_PEER_CLOSED: the
+ * notification's last handle has closed, so nobody can take them.
+ */
+#define SYS_NOTIFY_SIGNAL        0x1E
+
+/*
+ * ebx = notification handle (HRIGHT_RECV), ecx = *u64 -> 0, with the bits
+ * set since the last take in it (0 if none); the word and
+ * SIGNAL_NOTIFY_PENDING are cleared. Does not wait. A bad address takes
+ * nothing (E_BAD_ADDRESS).
+ */
+#define SYS_NOTIFY_TAKE          0x1F
+
+/*
  * ---- handles ----
  * A handle is a positive number, never 0 and never below 256, and a closed
  * handle's number is refused rather than naming whatever comes next. Its
@@ -152,8 +185,14 @@
  */
 #define HRIGHT_SEND              0x1u           /* send handle: ipc_call through it */
 
-/* endpoint: ipc_recv on it, SYS_EP_MINT from it; file: FOPEN_READ, FOPEN_WRITE */
+/*
+ * endpoint: ipc_recv on it, SYS_EP_MINT from it; file: FOPEN_READ, FOPEN_WRITE;
+ * notification: SYS_NOTIFY_TAKE, SYS_NOTIFY_MINT
+ */
 #define HRIGHT_RECV              0x2u
+
+/* notification and signaller: SYS_NOTIFY_SIGNAL */
+#define HRIGHT_SIGNAL            0x1u
 
 /*
  * reply token: ipc_reply through it. The only right a token has: it cannot
@@ -221,6 +260,9 @@
  * received or withdrawn.
  */
 #define SIGNAL_EP_READABLE       0x1u
+
+/* notification: a bit is set. SYS_NOTIFY_TAKE clears it. */
+#define SIGNAL_NOTIFY_PENDING    0x1u
 
 /*
  * A deadline that never comes (SYS_OBJECT_WAIT): a wait with no limit.
@@ -711,6 +753,8 @@ struct clock_info {
 #define OBJ_TYPE_QUEUE           7
 #define OBJ_TYPE_SEND            8              /* a send handle's object: an endpoint and a badge */
 #define OBJ_TYPE_REPLY           9              /* a reply token */
+#define OBJ_TYPE_NOTIFY          10             /* a notification */
+#define OBJ_TYPE_SIGNALLER       11             /* a signaller: a notification and the bits it may set */
 
 /* Registrations one queue holds at most (SYS_QUEUE_REGISTER). */
 #define QUEUE_REGISTER_MAX       64

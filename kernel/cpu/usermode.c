@@ -27,6 +27,7 @@
 #include "object/htab.h"
 #include "object/kwait.h"     /* kobj_wait, for SYS_OBJECT_WAIT */
 #include "object/ktimer.h"    /* SYS_TIMER_* */
+#include "object/knotify.h"   /* SYS_NOTIFY_* */
 #include "object/kqueue.h"    /* SYS_QUEUE_* */
 #include "sync/atomic.h"
 #include "sysrec.h"
@@ -639,6 +640,83 @@ int syscall_timer_cancel(int32_t h) {
     ktimer_cancel(t);
     kobj_unref(&t->hdr);
     return E_OK;
+}
+
+int syscall_notify_create(void) {
+    /* Unprivileged, as a timer is: a handle, held to the table's limit. */
+    struct knotify *n = knotify_create();
+    if (!n) return E_NO_MEMORY;
+    int32_t h = htab_install(thread_htab(thread_current_id()), &n->hdr,
+                             HRIGHT_WAIT | HRIGHT_SIGNAL | HRIGHT_RECV | HRIGHT_DUPLICATE, 0);
+    kobj_unref(&n->hdr);   /* the handle's reference keeps it; with no handle, it goes */
+    return h;
+}
+
+/* The notification behind `h`, with a reference, if the handle holds `need`. */
+static struct knotify *notify_from_handle(int32_t h, uint32_t need, struct htab_info *hi, int *rc) {
+    struct kobj *o = htab_ref(thread_htab(thread_current_id()), h, KOBJ_NONE, 0, hi);
+    if (!o) { *rc = E_BAD_HANDLE; return 0; }
+    *rc = o->type != KOBJ_NOTIFY     ? E_WRONG_TYPE
+        : (hi->rights & need) != need ? E_ACCESS_DENIED : E_OK;
+    if (*rc != E_OK) { kobj_unref(o); return 0; }
+    return (struct knotify *)o;
+}
+
+int syscall_notify_mint(int32_t h, uint64_t bits, uint32_t rights) {
+    struct htab_info hi;
+    int rc;
+    struct knotify *n = notify_from_handle(h, HRIGHT_RECV, &hi, &rc);
+    if (!n) return rc;
+    if (!bits) rc = E_INVALID_ARGS;
+    else if (!(rights & HRIGHT_SIGNAL) || (rights & ~(HRIGHT_SIGNAL | HRIGHT_DUPLICATE)))
+        rc = E_ACCESS_DENIED;
+    if (rc == E_OK) {
+        struct ksignaller *s = ksignaller_create(n, bits);
+        if (!s) rc = E_NO_MEMORY;
+        else {
+            /* Derived from the notification's grant, as a minted send handle
+               is from its endpoint's. */
+            rc = htab_install(thread_htab(thread_current_id()), &s->hdr, rights, hi.grant);
+            kobj_unref(&s->hdr);
+        }
+    }
+    kobj_unref(&n->hdr);
+    return rc;
+}
+
+int syscall_notify_signal(int32_t h, uint64_t bits) {
+    /* Unprivileged: HRIGHT_SIGNAL is the authority, and a signaller's bits
+       are the limit of it. */
+    struct htab_info hi;
+    struct kobj *o = htab_ref(thread_htab(thread_current_id()), h, KOBJ_NONE, 0, &hi);
+    if (!o) return E_BAD_HANDLE;
+    struct knotify *n = o->type == KOBJ_NOTIFY    ? (struct knotify *)o
+                      : o->type == KOBJ_SIGNALLER ? ((struct ksignaller *)o)->n : 0;
+    int rc = !n                                ? E_WRONG_TYPE
+           : !(hi.rights & HRIGHT_SIGNAL)      ? E_ACCESS_DENIED
+           : !bits                             ? E_INVALID_ARGS
+           : o->type == KOBJ_SIGNALLER && (bits & ~((struct ksignaller *)o)->bits)
+                                               ? E_ACCESS_DENIED
+           : knotify_signal(n, bits);
+    kobj_unref(o);   /* a signaller's reference keeps `n` until here */
+    return rc;
+}
+
+int syscall_notify_take(int32_t h, uint64_t bits) {
+    struct htab_info hi;
+    int rc;
+    struct knotify *n = notify_from_handle(h, HRIGHT_RECV, &hi, &rc);
+    if (!n) return rc;
+    uint64_t w = knotify_take(n);
+    if (user_copy_out(bits, &w, sizeof w) != 0) {
+        /* Nothing taken: the bits go back, with whatever came since. If
+           another thread closed the last handle meanwhile, nobody could take
+           them anyway. */
+        if (w) knotify_signal(n, w);
+        rc = E_BAD_ADDRESS;
+    }
+    kobj_unref(&n->hdr);
+    return rc;
 }
 
 int syscall_queue_create(void) {
@@ -4036,6 +4114,169 @@ done:
     if (d > 0)  htab_close(tab, d);
     if (eh > 0) htab_close(tab, eh);
     if (j > 0)  htab_close(tab, j);
+    unmap_user_page(TEST_CODE_VIRT, phys);
+    return ok;
+}
+
+/* ---- notifications (Phase 1.3c) --------------------------------------------
+ * Through the dispatcher over a user mapping. Bits use the word's high half,
+ * so a decoder that drops it fails. A helper thread signals the notification
+ * (through the kernel: it has a handle table of its own) while this one is
+ * blocked, which is the wake a signal exists for. 1 = pass, 0 = fail. */
+#define NT_BITS  (TEST_CODE_VIRT + 0x100)   /* SYS_NOTIFY_TAKE's *u64 */
+#define NT_INFO  (TEST_CODE_VIRT + 0x200)   /* struct object_basic */
+#define NT_IARGS (TEST_CODE_VIRT + 0x300)   /* struct object_info_args */
+#define NT_HIGH  (1ull << 63)
+
+static volatile int     nt_go, nt_stage, nt_rc, nt_main;
+static struct knotify *volatile nt_obj;   /* a reference: the helper has its own handle table */
+
+static int nt_mint(int32_t n, uint64_t bits, uint32_t rights) {
+    return um_call(SYS_NOTIFY_MINT, 1u << 1, (uint32_t)n, bits, rights, 0, 0);
+}
+static int nt_signal(int32_t h, uint64_t bits) {
+    return um_call(SYS_NOTIFY_SIGNAL, 1u << 1, (uint32_t)h, bits, 0, 0, 0);
+}
+static int nt_take(int32_t n) { return syscall_dispatch(SYS_NOTIFY_TAKE, (uint32_t)n, NT_BITS, 0, 0, 0); }
+static int nt_look(int32_t n) {
+    return syscall_dispatch(SYS_OBJECT_WAIT, (uint32_t)n, SIGNAL_NOTIFY_PENDING, 0, 0, 0);
+}
+/* The kind and rights object_info gives for `h`. */
+static int nt_basic(int32_t h, uint32_t kind, uint32_t rights) {
+    struct object_info_args *oi = (struct object_info_args *)user_ptr(NT_IARGS);
+    const struct object_basic *ob = (const struct object_basic *)user_ptr(NT_INFO);
+    oi->cap = sizeof *ob; oi->buf = NT_INFO; oi->handle = h; oi->topic = OBJINFO_BASIC;
+    return syscall_dispatch(SYS_OBJECT_INFO, NT_IARGS, 0, 0, 0, 0) == (int)sizeof *ob
+        && ob->kind == kind && ob->rights == rights;
+}
+
+/* Signals once the test thread is blocked on the notification (or gives up
+   waiting for that and signals anyway, so the test cannot hang on it). */
+static void nt_helper(void) {
+    while (!nt_go) yield();
+    for (int i = 0; i < 500 && !thread_is_blocked(nt_main); i++) yield();
+    nt_stage = thread_is_blocked(nt_main) ? 1 : -1;
+    nt_rc = knotify_signal(nt_obj, NT_HIGH);
+    nt_stage = nt_stage == 1 ? 2 : -2;
+}
+
+int usermode_notify_test(void) {
+    paddr_t phys = map_user_page(TEST_CODE_VIRT);
+    if (!phys) return 0;
+    struct htab *tab = thread_htab(thread_current_id());
+    volatile uint64_t *bits = (volatile uint64_t *)user_ptr(NT_BITS);
+    uint32_t nlive0 = kobj_live(KOBJ_NOTIFY), slive0 = kobj_live(KOBJ_SIGNALLER);
+    uint32_t regs0 = kqueue_reg_count();
+    int32_t n = -1, s = -1, d = -1, q = -1, t = -1;
+    int tid = -1, step = 0, ok = 0;
+
+    /* 1-2: a new notification, with the rights it is made with; nothing set,
+       and a take finds nothing */
+    n = syscall_dispatch(SYS_NOTIFY_CREATE, 0, 0, 0, 0, 0);
+    step = 1; if (n <= 0 || !nt_basic(n, OBJ_TYPE_NOTIFY, HRIGHT_WAIT | HRIGHT_SIGNAL | HRIGHT_RECV | HRIGHT_DUPLICATE)
+                  || kobj_live(KOBJ_NOTIFY) != nlive0 + 1 || nt_look(n) != E_TIMED_OUT) goto done;
+    *bits = 0xA5A5A5A5A5A5A5A5ull;
+    step = 2; if (nt_take(n) != E_OK || *bits != 0) goto done;
+
+    /* 3: a signal sets PENDING; a take hands back every bit, high half too,
+       and clears the word and the signal */
+    step = 3; if (nt_signal(n, 1) != E_OK || nt_signal(n, NT_HIGH) != E_OK || nt_look(n) != E_OK
+                  || nt_take(n) != E_OK || *bits != (NT_HIGH | 1) || nt_look(n) != E_TIMED_OUT
+                  || nt_take(n) != E_OK || *bits != 0) goto done;
+
+    /* 4: signals before a take combine: three of one bit and one of another
+       are two bits */
+    nt_signal(n, 2); nt_signal(n, 2); nt_signal(n, 2);
+    step = 4; if (nt_signal(n, 4) != E_OK || nt_take(n) != E_OK || *bits != 6) goto done;
+
+    /* 5-6: a signaller sets its own bits and no others; a refused signal sets
+       nothing */
+    s = nt_mint(n, 0x10 | (1ull << 40), HRIGHT_SIGNAL | HRIGHT_DUPLICATE);
+    step = 5; if (s <= 0 || !nt_basic(s, OBJ_TYPE_SIGNALLER, HRIGHT_SIGNAL | HRIGHT_DUPLICATE)
+                  || kobj_live(KOBJ_SIGNALLER) != slive0 + 1
+                  || nt_signal(s, 1ull << 40) != E_OK || nt_signal(s, 0x10) != E_OK
+                  || nt_take(n) != E_OK || *bits != (0x10 | (1ull << 40))) goto done;
+    step = 6; if (nt_signal(s, 0x20) != E_ACCESS_DENIED || nt_signal(s, 0x10 | 0x20) != E_ACCESS_DENIED
+                  || nt_signal(s, NT_HIGH) != E_ACCESS_DENIED || nt_look(n) != E_TIMED_OUT) goto done;
+
+    /* 7-9: refusals, each its own error */
+    t = syscall_dispatch(SYS_TIMER_CREATE, 0, 0, 0, 0, 0);
+    step = 7; if (t <= 0 || nt_mint(n, 0, HRIGHT_SIGNAL) != E_INVALID_ARGS
+                  || nt_mint(n, 1, HRIGHT_DUPLICATE) != E_ACCESS_DENIED
+                  || nt_mint(n, 1, HRIGHT_SIGNAL | HRIGHT_RECV) != E_ACCESS_DENIED
+                  || nt_mint(n, 1, HRIGHT_SIGNAL | HRIGHT_WAIT) != E_ACCESS_DENIED
+                  || nt_mint(s, 1, HRIGHT_SIGNAL) != E_WRONG_TYPE || nt_mint(t, 1, HRIGHT_SIGNAL) != E_WRONG_TYPE
+                  || nt_mint(9999, 1, HRIGHT_SIGNAL) != E_BAD_HANDLE
+                  || kobj_live(KOBJ_SIGNALLER) != slive0 + 1) goto done;
+    step = 8; if (nt_signal(n, 0) != E_INVALID_ARGS || nt_signal(s, 0) != E_INVALID_ARGS
+                  || nt_signal(t, 1) != E_WRONG_TYPE || nt_signal(9999, 1) != E_BAD_HANDLE
+                  || nt_take(s) != E_WRONG_TYPE || nt_take(t) != E_WRONG_TYPE || nt_take(9999) != E_BAD_HANDLE
+                  || syscall_dispatch(SYS_OBJECT_WAIT, (uint32_t)s, SIGNAL_NOTIFY_PENDING, 0, 0, 0) != E_ACCESS_DENIED
+                  || syscall_dispatch(SYS_OBJECT_WAIT, (uint32_t)n, SIGNAL_NOTIFY_PENDING << 1, 0, 0, 0) != E_INVALID_ARGS
+                  || nt_look(n) != E_TIMED_OUT) goto done;
+    /* each right is needed: no SIGNAL, no signal; no RECV, no take or mint */
+    d = syscall_dispatch(SYS_HANDLE_DUPLICATE, (uint32_t)n, HRIGHT_WAIT | HRIGHT_RECV, 0, 0, 0);
+    step = 9; if (d <= 0 || nt_signal(d, 1) != E_ACCESS_DENIED || nt_look(n) != E_TIMED_OUT) goto done;
+    htab_close(tab, d);
+    d = syscall_dispatch(SYS_HANDLE_DUPLICATE, (uint32_t)n, HRIGHT_WAIT | HRIGHT_SIGNAL, 0, 0, 0);
+    step = 10; if (d <= 0 || nt_signal(d, 8) != E_OK || nt_take(d) != E_ACCESS_DENIED
+                   || nt_mint(d, 1, HRIGHT_SIGNAL) != E_ACCESS_DENIED || nt_look(n) != E_OK) goto done;
+    htab_close(tab, d); d = -1;
+    /* a signaller without SIGNAL (a copy made with DUPLICATE alone) signals nothing */
+    d = syscall_dispatch(SYS_HANDLE_DUPLICATE, (uint32_t)s, HRIGHT_DUPLICATE, 0, 0, 0);
+    step = 11; if (d <= 0 || nt_signal(d, 0x10) != E_ACCESS_DENIED) goto done;
+    htab_close(tab, d); d = -1;
+
+    /* 12: a take into a bad address takes nothing: the bits stay */
+    step = 12; if (syscall_dispatch(SYS_NOTIFY_TAKE, (uint32_t)n, USER_VLIMIT, 0, 0, 0) != E_BAD_ADDRESS
+                   || nt_look(n) != E_OK || nt_take(n) != E_OK || *bits != 8) goto done;
+
+    /* 13: through a queue: a signal readies the key, with PENDING */
+    q = syscall_dispatch(SYS_QUEUE_CREATE, 0, 0, 0, 0, 0);
+    const struct queue_event *ev = (const struct queue_event *)user_ptr(QT_EV);
+    step = 13; if (q <= 0 || qt_reg(q, n, SIGNAL_NOTIFY_PENDING, 0xC0DE000000000013ull) != E_OK
+                   || qt_wait(q, 1, 0) != E_TIMED_OUT || nt_signal(s, 0x10) != E_OK
+                   || qt_wait(q, 1, 0) != 1 || ev[0].key != 0xC0DE000000000013ull
+                   || ev[0].signals != SIGNAL_NOTIFY_PENDING
+                   || nt_take(n) != E_OK || *bits != 0x10) goto done;
+
+    /* 14: a signal from another thread wakes this one, blocked on it */
+    nt_go = 0; nt_stage = 0; nt_rc = 1; nt_main = thread_current_id();
+    nt_obj = (struct knotify *)htab_ref(tab, n, KOBJ_NOTIFY, 0, 0);
+    step = 14; if (!nt_obj) goto done;
+    tid = thread_create("ktnotify", nt_helper);
+    if (tid < 0) { kobj_unref(&nt_obj->hdr); goto done; }
+    nt_go = 1;
+    int wrc = syscall_dispatch(SYS_OBJECT_WAIT, (uint32_t)n, SIGNAL_NOTIFY_PENDING,
+                               timer_now_ns() + 2000ull * TIMER_NS_PER_TICK, 0, 0);
+    for (int i = 0; i < 200 && nt_stage < 2 && nt_stage > -2; i++) yield();
+    tid = -1;   /* it has run to its end, or will without us */
+    if (nt_stage == 2 || nt_stage == -2) kobj_unref(&nt_obj->hdr);   /* else it may still use it: a leak, and red */
+    step = 15; if (wrc != E_OK || nt_stage != 2 || nt_rc != E_OK
+                   || nt_take(n) != E_OK || *bits != NT_HIGH) goto done;
+
+    /* 16-17: the notification lasts while a handle on it does; after the last
+       closes, a signaller's signal is E_PEER_CLOSED, and the signaller still
+       holds the object until it goes too */
+    d = syscall_dispatch(SYS_HANDLE_DUPLICATE, (uint32_t)n, HRIGHT_WAIT, 0, 0, 0);
+    htab_close(tab, q); q = -1;
+    htab_close(tab, n); n = -1;
+    step = 16; if (d <= 0 || nt_signal(s, 0x10) != E_OK) goto done;
+    htab_close(tab, d); d = -1;
+    step = 17; if (nt_signal(s, 0x10) != E_PEER_CLOSED || kobj_live(KOBJ_NOTIFY) != nlive0 + 1) goto done;
+    htab_close(tab, s); s = -1;
+    step = 18; if (kobj_live(KOBJ_NOTIFY) != nlive0 || kobj_live(KOBJ_SIGNALLER) != slive0
+                   || kqueue_reg_count() != regs0) goto done;
+    ok = 1;
+
+done:
+    if (!ok) klog_u32("KTEST", SEV_ERR, "notify test failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    if (tid >= 0) { nt_go = 1; for (int i = 0; i < 1000 && nt_stage < 2 && nt_stage > -2; i++) yield(); }
+    if (q > 0) htab_close(tab, q);
+    if (n > 0) htab_close(tab, n);
+    if (s > 0) htab_close(tab, s);
+    if (d > 0) htab_close(tab, d);
+    if (t > 0) htab_close(tab, t);
     unmap_user_page(TEST_CODE_VIRT, phys);
     return ok;
 }
