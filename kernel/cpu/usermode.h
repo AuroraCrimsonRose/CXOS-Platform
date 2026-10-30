@@ -133,6 +133,7 @@ int  usermode_notify_test(void);    /* notifications: bits that combine, signall
 int  usermode_mem_test(void);       /* memory objects: first touch, strict commit */
 int  usermode_ipc_test(void);       /* queued calls, reply tokens, badges */
 int  usermode_ipc_handles_test(void);   /* handles in messages: moved, copied, refused */
+int  usermode_prio_test(void);          /* priorities, and priority through calls */
 
 /* register the ring-3 fault handler so user faults kill the process, not the
    kernel. call once at boot after the scheduler is up. */

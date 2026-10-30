@@ -518,7 +518,7 @@ static int spv_in_job(struct spawn_args *a, struct object_info_args *oi) {
     int step;
 
     /* 1: one page: not even the image fits */
-    jl->memory = PAGE_SIZE; jl->threads = 0; jl->reserved = 0;
+    jl->memory = PAGE_SIZE; jl->threads = 0; jl->priority = 0;
     jh = syscall_job_create(0, user_addr(jl));
     a->job = jh;
     ph = jh > 0 ? sys_spawn(user_addr(a)) : -1;

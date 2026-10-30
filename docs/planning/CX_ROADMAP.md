@@ -415,7 +415,14 @@ Independent of the order above, and small enough to land whenever convenient:
      writable mapping, refused with `E_BUSY` while one stands (the object
      counts them), and `MEM_SEAL_SEAL` ends the adding. A receiver reads
      them in `mem_info.seals`, so it can trust bytes it has checked.
-   - **1.3f:** priority passed through calls.
+   - **1.3f (ABI 25, 2026-10-29), done:** priority passed through calls.
+     Threads have levels 1-15 in three classes (background, normal,
+     real-time behind `GRANT_REALTIME`); the highest ready level runs,
+     round-robin within it. `SYS_THREAD_SET_PRIORITY` sets a thread's own,
+     capped by `job_limits.priority`. A server runs at least at the level
+     of the calls it holds and of those queued on its endpoint, passed down
+     chains of calls (XNU turnstiles), and the lift goes with the reply,
+     the token, the caller or the endpoint.
 4. Pipes and explicit handle passing at spawn; the shell runs from disk.
 5. User threads, futex (owner in the futex word), thread-local storage.
 6. SMP readiness: spinlocks that save interrupt state, per-CPU data, a lock

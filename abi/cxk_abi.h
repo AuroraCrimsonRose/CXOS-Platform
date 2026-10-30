@@ -15,7 +15,7 @@
  * hash it was built against and the loader refuses one that differs, so a
  * program never runs against numbers or layouts it was not compiled for.
  */
-#define CXK_ABI_HASH { 0xd8, 0xee, 0x90, 0xd0, 0xf2, 0x6d, 0x30, 0x3d, 0x77, 0xb4, 0x39, 0x43, 0xc6, 0xf5, 0x7d, 0xdc, 0x45, 0x34, 0x06, 0xf0, 0x9e, 0xfb, 0xd5, 0x79, 0xc5, 0xfa, 0x00, 0xeb, 0x10, 0xd2, 0x11, 0xa9 }
+#define CXK_ABI_HASH { 0x92, 0x0a, 0xcc, 0xd6, 0xb1, 0x53, 0xab, 0x46, 0x33, 0xe1, 0x13, 0x01, 0x83, 0xc1, 0xd2, 0xbd, 0x3b, 0xb9, 0x31, 0xca, 0xf6, 0x2a, 0xb3, 0x78, 0x2a, 0x5c, 0xaa, 0x45, 0xf1, 0x96, 0xfc, 0x00 }
 
 /*
  * CXK ABI v1 - the PUBLIC contract shared by the kernel, the .xoex executive,
@@ -44,7 +44,7 @@
  * line; bump both, and the DevKit's stamp, in the one commit that changes the
  * contract.
  */
-#define CXK_ABI_VERSION          24
+#define CXK_ABI_VERSION          25
 
 /*
  * ---- syscall numbers ----
@@ -63,6 +63,21 @@
  * It never goes back and never jumps; every deadline is a time on it.
  */
 #define SYS_CLOCK_MONOTONIC      0x07
+
+/*
+ * ebx = level -> 0. The calling thread's own priority (PRIO_*). It runs at
+ * that, or higher while it serves a call from a thread above it. Lowering is
+ * never refused. E_OUT_OF_RANGE: not PRIO_MIN to PRIO_MAX. E_ACCESS_DENIED:
+ * above its job's ceiling (job_limits.priority), or PRIO_REALTIME and up
+ * without GRANT_REALTIME.
+ */
+#define SYS_THREAD_SET_PRIORITY  0x08
+
+/*
+ * -> the calling thread's own priority in bits 0-7, and in bits 8-15 the one
+ * it runs at: higher while it serves a call from a thread above it.
+ */
+#define SYS_THREAD_PRIORITY      0x09
 
 /*
  * IPC + handles 0x10-0x1F
@@ -809,8 +824,25 @@ struct queue_event {
 struct job_limits {
     uint64_t memory;                            /* bytes */
     uint32_t threads;
-    uint32_t reserved;                          /* 0 */
+    /*
+     * the highest priority its threads may set themselves (PRIO_*); a
+     * thread made in it starts no higher. Takes nothing back.
+     */
+    uint32_t priority;
 };
+
+/*
+ * ---- thread priority (SYS_THREAD_SET_PRIORITY) ----
+ * The highest level with a thread ready runs; threads at one level take
+ * turns. A thread serving a call runs at least at its caller's level, and so
+ * on down a chain of calls; a call still queued lifts the threads answering
+ * that endpoint's other calls. 0 is no thread's level.
+ */
+#define PRIO_MIN                 1
+#define PRIO_BACKGROUND          2              /* background is 1-3 */
+#define PRIO_NORMAL              8              /* normal is 4-11; a new thread's level */
+#define PRIO_REALTIME            12             /* real-time is 12-15: GRANT_REALTIME */
+#define PRIO_MAX                 15
 
 /*
  * OBJINFO_MEM: a memory object's size, how much of it has been touched, and
@@ -831,6 +863,8 @@ struct job_info {
     uint32_t threads;                           /* in it and below */
     uint32_t processes;                         /* in it and below, not yet ended */
     uint32_t killed;                            /* 1 once SYS_JOB_KILL has reached it */
+    uint32_t priority_limit;                    /* its own job_limits.priority */
+    uint32_t reserved;                          /* 0 */
 };
 
 /* process_info.ended: how it ended, once SIGNAL_PROCESS_ENDED is set. */
@@ -1005,7 +1039,10 @@ struct fb_geometry {
 #define GRANT_ENDPOINT           0x0040u
 #define GRANT_IOPORT             0x0080u
 #define GRANT_FRAMEBUFFER        0x0100u
-#define GRANT_OS_BASELINE        (GRANT_CONSOLE | GRANT_MEM | GRANT_DISK | GRANT_SPAWN | GRANT_POWER | GRANT_ENDPOINT | GRANT_FRAMEBUFFER | GRANT_NET)
+
+/* SYS_THREAD_SET_PRIORITY to PRIO_REALTIME and up */
+#define GRANT_REALTIME           0x0200u
+#define GRANT_OS_BASELINE        (GRANT_CONSOLE | GRANT_MEM | GRANT_DISK | GRANT_SPAWN | GRANT_POWER | GRANT_ENDPOINT | GRANT_FRAMEBUFFER | GRANT_NET | GRANT_REALTIME)
 
 /*
  * Not a grant: a restriction, carried in spawn_args.caps's top bit. The child's
@@ -1275,7 +1312,7 @@ CXK_ABI_STATIC_ASSERT(sizeof(struct clock_info) == 8, "ABI layout: clock_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct queue_event) == 16, "ABI layout: queue_event");
 CXK_ABI_STATIC_ASSERT(sizeof(struct job_limits) == 16, "ABI layout: job_limits");
 CXK_ABI_STATIC_ASSERT(sizeof(struct mem_info) == 24, "ABI layout: mem_info");
-CXK_ABI_STATIC_ASSERT(sizeof(struct job_info) == 40, "ABI layout: job_info");
+CXK_ABI_STATIC_ASSERT(sizeof(struct job_info) == 48, "ABI layout: job_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct process_info) == 40, "ABI layout: process_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct object_info_args) == 24, "ABI layout: object_info_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct object_basic) == 20, "ABI layout: object_basic");

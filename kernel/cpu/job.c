@@ -51,7 +51,8 @@ void job_sys_init(void) {
 
 struct job *job_root(void) { return root; }
 
-struct job *job_create(struct job *parent, uint64_t mem_limit, uint32_t thread_limit, int *rc) {
+struct job *job_create(struct job *parent, uint64_t mem_limit, uint32_t thread_limit,
+                       uint32_t prio_limit, int *rc) {
     if (parent->depth + 1u > JOB_DEPTH_MAX) { *rc = E_OUT_OF_RANGE; return 0; }
     struct job *j = ocache_alloc(&job_cache);   /* zeroed */
     if (!j || kobj_init(&j->hdr, KOBJ_JOB) != 0) {
@@ -62,6 +63,7 @@ struct job *job_create(struct job *parent, uint64_t mem_limit, uint32_t thread_l
     j->depth        = parent->depth + 1u;
     j->mem_limit    = mem_limit;
     j->thread_limit = thread_limit;
+    j->prio_limit   = prio_limit;
     /* Checked and linked in one step, so a kill cannot land between them and
        miss it. */
     uint32_t f = arch_irq_save();
@@ -80,11 +82,21 @@ struct job *job_create(struct job *parent, uint64_t mem_limit, uint32_t thread_l
     return j;
 }
 
-void job_set_limits(struct job *j, uint64_t mem_limit, uint32_t thread_limit) {
+void job_set_limits(struct job *j, uint64_t mem_limit, uint32_t thread_limit, uint32_t prio_limit) {
     uint32_t f = arch_irq_save();
     j->mem_limit    = mem_limit;
     j->thread_limit = thread_limit;
+    j->prio_limit   = prio_limit;
     arch_irq_restore(f);
+}
+
+uint32_t job_prio_ceiling(const struct job *j) {
+    uint32_t c = PRIO_MAX;
+    uint32_t f = arch_irq_save();
+    for (const struct job *a = j; a; a = a->parent)
+        if (a->prio_limit && a->prio_limit < c) c = a->prio_limit;
+    arch_irq_restore(f);
+    return c;
 }
 
 int job_charge_mem(struct job *j, uint64_t bytes) {

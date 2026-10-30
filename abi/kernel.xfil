@@ -40,7 +40,7 @@ domain kernel
 /// mismatch. Declared in versions.json as `cxex-abi` and checked against this
 /// line; bump both, and the DevKit's stamp, in the one commit that changes the
 /// contract.
-const CXK_ABI_VERSION: u32 = 24
+const CXK_ABI_VERSION: u32 = 25
 
 /// ---- syscall numbers ----
 /// lifecycle 0x00-0x0F (no capability required)
@@ -54,6 +54,15 @@ syscall SYS_ARGS = 0x06 fn args_read(a: *args_info) -> i32      /// ebx = *args_
 /// ebx = *u64 -> 0, with the monotonic clock in it: nanoseconds since boot.
 /// It never goes back and never jumps; every deadline is a time on it.
 syscall SYS_CLOCK_MONOTONIC = 0x07 fn clock_monotonic(now: *u64) -> i32
+/// ebx = level -> 0. The calling thread's own priority (PRIO_*). It runs at
+/// that, or higher while it serves a call from a thread above it. Lowering is
+/// never refused. E_OUT_OF_RANGE: not PRIO_MIN to PRIO_MAX. E_ACCESS_DENIED:
+/// above its job's ceiling (job_limits.priority), or PRIO_REALTIME and up
+/// without GRANT_REALTIME.
+syscall SYS_THREAD_SET_PRIORITY = 0x08 fn thread_set_priority(level: u32) -> i32
+/// -> the calling thread's own priority in bits 0-7, and in bits 8-15 the one
+/// it runs at: higher while it serves a call from a thread above it.
+syscall SYS_THREAD_PRIORITY = 0x09 fn thread_priority() -> i32
 /// IPC + handles 0x10-0x1F
 /// ebx = *ipc_call_args, whose handle is a send handle (HRIGHT_SEND) -> the
 /// reply's length, once the server answers. Calls queue on the endpoint, oldest
@@ -603,8 +612,20 @@ const JOB_DEPTH_MAX: u32 = 8
 struct job_limits {
     memory: u64         /// bytes
     threads: u32
-    reserved: u32       /// 0
+    /// the highest priority its threads may set themselves (PRIO_*); a
+    /// thread made in it starts no higher. Takes nothing back.
+    priority: u32
 }
+/// ---- thread priority (SYS_THREAD_SET_PRIORITY) ----
+/// The highest level with a thread ready runs; threads at one level take
+/// turns. A thread serving a call runs at least at its caller's level, and so
+/// on down a chain of calls; a call still queued lifts the threads answering
+/// that endpoint's other calls. 0 is no thread's level.
+const PRIO_MIN: u32 = 1
+const PRIO_BACKGROUND: u32 = 2      /// background is 1-3
+const PRIO_NORMAL: u32 = 8          /// normal is 4-11; a new thread's level
+const PRIO_REALTIME: u32 = 12       /// real-time is 12-15: GRANT_REALTIME
+const PRIO_MAX: u32 = 15
 /// OBJINFO_MEM: a memory object's size, how much of it has been touched, and
 /// its seals.
 struct mem_info {
@@ -621,6 +642,8 @@ struct job_info {
     threads: u32        /// in it and below
     processes: u32      /// in it and below, not yet ended
     killed: u32         /// 1 once SYS_JOB_KILL has reached it
+    priority_limit: u32 /// its own job_limits.priority
+    reserved: u32       /// 0
 }
 
 /// process_info.ended: how it ended, once SIGNAL_PROCESS_ENDED is set.
@@ -763,7 +786,9 @@ const GRANT_POWER: u32 = 0x0020u
 const GRANT_ENDPOINT: u32 = 0x0040u
 const GRANT_IOPORT: u32 = 0x0080u
 const GRANT_FRAMEBUFFER: u32 = 0x0100u
-const GRANT_OS_BASELINE: u32 = GRANT_CONSOLE | GRANT_MEM | GRANT_DISK | GRANT_SPAWN | GRANT_POWER | GRANT_ENDPOINT | GRANT_FRAMEBUFFER | GRANT_NET
+/// SYS_THREAD_SET_PRIORITY to PRIO_REALTIME and up
+const GRANT_REALTIME: u32 = 0x0200u
+const GRANT_OS_BASELINE: u32 = GRANT_CONSOLE | GRANT_MEM | GRANT_DISK | GRANT_SPAWN | GRANT_POWER | GRANT_ENDPOINT | GRANT_FRAMEBUFFER | GRANT_NET | GRANT_REALTIME
 
 /// Not a grant: a restriction, carried in spawn_args.caps's top bit. The child's
 /// SYS_CONSOLE_WRITE goes to the kernel log, a line at a time, instead of the

@@ -120,14 +120,14 @@ public class AbiGeneratorTests
         // GRANT_* was a family the hand-kept prelude never mirrored (NET_OP_*, the
         // other, left the ABI in step 6a2c). The four unfamilied constants were
         // never compared at all.
-        Assert.Equal(10, model.Constants.Count(c => c.Name.StartsWith("GRANT_", StringComparison.Ordinal)));
+        Assert.Equal(11, model.Constants.Count(c => c.Name.StartsWith("GRANT_", StringComparison.Ordinal)));
         foreach (string name in new[] { "CXK_ABI_VERSION", "USER_ARGS_BASE", "USER_ARGS_MAX", "USER_ARGS_MAXC" })
             Assert.NotNull(model.Constant(name));
 
         // An OR-expression of earlier constants is evaluated, not skipped.
         long expected = 0;
         foreach (string g in new[] { "GRANT_CONSOLE", "GRANT_MEM", "GRANT_DISK", "GRANT_SPAWN", "GRANT_POWER",
-                                     "GRANT_ENDPOINT", "GRANT_FRAMEBUFFER", "GRANT_NET" })
+                                     "GRANT_ENDPOINT", "GRANT_FRAMEBUFFER", "GRANT_NET", "GRANT_REALTIME" })
             expected |= model.Constant(g)!.Value;
         Assert.Equal(expected, model.Constant("GRANT_OS_BASELINE")!.Value);
     }

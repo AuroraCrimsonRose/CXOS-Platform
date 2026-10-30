@@ -167,6 +167,26 @@ void syscall_exit(int32_t code) {
 
 void syscall_yield(void) { yield(); }
 
+/* Unprivileged within limits: a thread may always go lower, and up to its
+   job's ceiling; real-time is GRANT_REALTIME's, since a thread there that
+   never blocks starves everything below it. */
+int syscall_thread_set_priority(uint32_t level) {
+    int me = thread_current_id();
+    if (level < PRIO_MIN || level > PRIO_MAX) return E_OUT_OF_RANGE;
+    if (level > thread_base(me)) {
+        struct proc *p = thread_proc(me);
+        if (level >= PRIO_REALTIME && !(thread_current_caps() & GRANT_REALTIME)) return E_ACCESS_DENIED;
+        if (!p || level > job_prio_ceiling(p->job)) return E_ACCESS_DENIED;
+    }
+    ipc_set_base(me, level);
+    return E_OK;
+}
+
+int syscall_thread_priority(void) {
+    int me = thread_current_id();
+    return (int)(thread_base(me) | thread_prio(me) << 8);
+}
+
 int syscall_clock(uint64_t c) {
     /* Unprivileged: the time of day is not authority. A process that
        could not read it would simply count its own loop iterations. */
@@ -600,6 +620,7 @@ int syscall_object_info(uint64_t a) {
             ji.threads      = j->threads;
             ji.processes    = j->procs;
             ji.killed       = (uint32_t)j->killed;
+            ji.priority_limit = j->prio_limit;
             arch_irq_restore(f);
         }
         kobj_unref(o);
@@ -910,10 +931,10 @@ int syscall_process_stop_endpoint(int32_t h) {
 
 /* *limits from the caller, or none of the job's own for 0. */
 static int job_limits_in(uint64_t u, struct job_limits *l) {
-    l->memory = 0; l->threads = 0; l->reserved = 0;
+    l->memory = 0; l->threads = 0; l->priority = 0;
     if (!u) return E_OK;
     if (user_copy_in(l, u, sizeof *l) != 0) return E_BAD_ADDRESS;
-    return l->reserved ? E_INVALID_ARGS : E_OK;
+    return l->priority > PRIO_MAX ? E_OUT_OF_RANGE : E_OK;
 }
 
 /* The job `h` names, with a reference, if it has `right`; else NULL and *rc. */
@@ -942,7 +963,7 @@ int syscall_job_create(int32_t parent, uint64_t limits) {
     } else if (!(top = job_from_handle(parent, HRIGHT_ASSIGN, &rc))) {
         return rc;
     }
-    struct job *j = job_create(top, l.memory, l.threads, &rc);
+    struct job *j = job_create(top, l.memory, l.threads, l.priority, &rc);
     job_put(top);   /* the new job holds its own on its parent */
     if (!j) return rc;
     int32_t h = htab_install(thread_htab(thread_current_id()), &j->hdr,
@@ -959,7 +980,7 @@ int syscall_job_set_limits(int32_t h, uint64_t limits) {
     if (rc != E_OK) return rc;
     struct job *j = job_from_handle(h, HRIGHT_SET_LIMITS, &rc);
     if (!j) return rc;
-    job_set_limits(j, l.memory, l.threads);
+    job_set_limits(j, l.memory, l.threads, l.priority);
     job_put(j);
     return E_OK;
 }
@@ -996,6 +1017,9 @@ int syscall_dispatch(uint32_t num, uintptr_t a1, uintptr_t a2, uintptr_t a3,
     syscall_decoder d = num < SYSCALL_TABLE_SIZE ? syscall_table[num] : 0;
     int rc = d ? d(args) : E_NOT_SUPPORTED;
     sysrec_exit(num, rc);
+    /* A call that woke or lifted a thread above this one (a reply, a lower
+       priority of its own) lets it run now rather than at the slice's end. */
+    sched_yield_if_outranked();
     return rc;
 }
 
@@ -3603,15 +3627,15 @@ done:
 #define JT_MAP  (TEST_CODE_VIRT + 0x880)   /* the ring-3 victim's first vm_map_args */
 #define JT_MAP2 (TEST_CODE_VIRT + 0x8C0)   /* and its second */
 
-static int jt_create(int32_t parent, uint64_t mem, uint32_t threads, uint32_t reserved) {
+static int jt_create(int32_t parent, uint64_t mem, uint32_t threads, uint32_t prio) {
     struct job_limits *l = (struct job_limits *)user_ptr(JT_LIM);
-    l->memory = mem; l->threads = threads; l->reserved = reserved;
+    l->memory = mem; l->threads = threads; l->priority = prio;
     return syscall_dispatch(SYS_JOB_CREATE, (uint32_t)parent, JT_LIM, 0, 0, 0);
 }
 
-static int jt_limits(int32_t h, uint64_t mem, uint32_t threads, uint32_t reserved) {
+static int jt_limits(int32_t h, uint64_t mem, uint32_t threads, uint32_t prio) {
     struct job_limits *l = (struct job_limits *)user_ptr(JT_LIM);
-    l->memory = mem; l->threads = threads; l->reserved = reserved;
+    l->memory = mem; l->threads = threads; l->priority = prio;
     return syscall_dispatch(SYS_JOB_SET_LIMITS, (uint32_t)h, JT_LIM, 0, 0, 0);
 }
 
@@ -3703,7 +3727,7 @@ int usermode_job_test(void) {
 
     /* 1: making one: the refusals, then one with limits, its rights, its
        account; the rights each call needs */
-    step = 1; if (jt_create(9999, 0, 0, 0) != E_BAD_HANDLE || jt_create(0, 0, 0, 1) != E_INVALID_ARGS
+    step = 1; if (jt_create(9999, 0, 0, 0) != E_BAD_HANDLE || jt_create(0, 0, 0, PRIO_MAX + 1) != E_OUT_OF_RANGE
                   || syscall_dispatch(SYS_JOB_CREATE, 0, 8, 0, 0, 0) != E_BAD_ADDRESS
                   || job_live() != jobs0) goto done;
     j = jt_create(0, 2u * P, 2, 0);
@@ -3750,7 +3774,7 @@ int usermode_job_test(void) {
     if (!jt_is(j, P, 1, 1) || ji->memory_peak != 2u * P) goto done;
     if (jt_limits(j, 1, 2, 0) != E_OK || !jt_is(j, P, 1, 1) || ji->memory_limit != 1
         || vm_charge(vpid, P) != E_NO_MEMORY || vm->mapped != P) goto done;
-    if (jt_limits(j, 2u * P, 2, 1) != E_INVALID_ARGS || jt_limits(h, 0, 0, 0) != E_WRONG_TYPE
+    if (jt_limits(j, 2u * P, 2, PRIO_MAX + 1) != E_OUT_OF_RANGE || jt_limits(h, 0, 0, 0) != E_WRONG_TYPE
         || jt_info(h) != E_WRONG_TYPE || jt_kill(h) != E_WRONG_TYPE
         || jt_limits(j, 2u * P, 2, 0) != E_OK) goto done;
     thread_discard(tid); tid = -1;
@@ -4537,7 +4561,7 @@ int usermode_mem_test(void) {
     htab_close(tab, s); s = -1;
 
     /* 13: commit past a job's limit is refused at once and charges nothing */
-    j = job_create(job_root(), 2u * P, 0, &rc);
+    j = job_create(job_root(), 2u * P, 0, 0, &rc);
     step = 13; if (!j) goto done;
     struct kmem *k = kmem_create(3, j, &rc);
     if (k || rc != E_NO_MEMORY || j->mem_used != 0 || pmm_reserved_count() != res0 + 2) goto done;
@@ -5335,6 +5359,292 @@ done:
     if (e2 > 0) htab_close(tab, e2);
     if (ep) ep_put(ep);
     if (eh > 0) htab_close(tab, eh);
+    unmap_user_page(TEST_CODE_VIRT, phys);
+    return ok;
+}
+
+/* ---- Priority through calls (Phase 1.3f) ----
+ * The test thread is the server again, at PRIO_NORMAL, and each caller is
+ * given its level while it is held. The syscall's refusals and a job's
+ * ceiling; a caller above the test thread runs as soon as it is started or
+ * answered, and one below waits; a call queued on an endpoint lifts the
+ * threads answering its other calls, and a taken one the thread that took
+ * it; a reply, a kill and the endpoint closing take the lift off; along a
+ * chain, a middle server passes its caller's level on, and a change to it
+ * follows. 1 = pass. */
+#define PR_MRECV (TEST_CODE_VIRT + 0x800)   /* the middle server's ipc_recv_args */
+#define PR_MINFO (TEST_CODE_VIRT + 0x840)   /* its ipc_msg_info */
+#define PR_MBUF  (TEST_CODE_VIRT + 0x880)   /* its receive buffer, 64 bytes */
+#define PR_MCALL (TEST_CODE_VIRT + 0x900)   /* its ipc_call_args */
+
+/* The test thread's own level and the one it runs at, as the syscall says. */
+static int pr_is(uint32_t base, uint32_t prio) {
+    return syscall_dispatch(SYS_THREAD_PRIORITY, 0, 0, 0, 0, 0) == (int)(base | prio << 8);
+}
+
+static int pr_set(uint32_t level) {
+    return syscall_dispatch(SYS_THREAD_SET_PRIORITY, level, 0, 0, 0, 0);
+}
+
+/* A caller as it_caller makes one, in slot `i` with a byte of IT_REQ(i),
+   given `level` while held and then started. The process handle, or <= 0.
+   The blob is copied when a process first runs: one below the test thread
+   must have run before the next is made. */
+static int32_t pr_caller(struct endpoint *ep, uint32_t i, uint32_t level, int *tid) {
+    int32_t h = it_caller(ep, 0, 0, i, 1, IT_REPLY(i), IT_RCAP, 0, 0, tid);
+    if (h <= 0) return h;
+    ipc_set_base(*tid, level);
+    thread_start(*tid);
+    return h;
+}
+
+/* A held process in `j` whose third call is SYS_THREAD_SET_PRIORITY(level),
+   exiting with what that returned. The process handle, or <= 0. */
+static int32_t pr_setter(struct job *j, uint32_t level, int *tid) {
+    st_len = (uint32_t)(user_blob_calls_end - user_blob_calls_start);
+    if (st_len > KT_BLOB_MAX) return E_INTERNAL;
+    for (uint32_t k = 0; k < st_len; k++) st_image[k] = user_blob_calls_start[k];
+    int32_t h = pt_make_in(st_image, st_image + st_len + 3 * 6 * 8, tid, j);
+    if (h <= 0) return h;
+    st_call(0, SYS_YIELD, 0, 0);
+    st_call(1, SYS_YIELD, 0, 0);
+    st_call(2, SYS_THREAD_SET_PRIORITY, level, 0);
+    return h;
+}
+
+/* The middle of a chain, at `level`: it receives one call on `ep1`, calls
+   `ep2` with that call's first byte, and exits 0 once it is answered; the
+   call it took is left unanswered. Started. The process handle, or <= 0. */
+static int32_t pr_middle(struct endpoint *ep1, struct endpoint *ep2, uint32_t level, int *tid) {
+    st_len = (uint32_t)(user_blob_calls_end - user_blob_calls_start);
+    if (st_len > KT_BLOB_MAX) return E_INTERNAL;
+    for (uint32_t k = 0; k < st_len; k++) st_image[k] = user_blob_calls_start[k];
+    int32_t h = pt_make_in(st_image, st_image + st_len + 3 * 6 * 8, tid, 0);
+    if (h <= 0) return h;
+    int32_t r = ep_install_handle(*tid, ep1, HRIGHT_RECV, 0);
+    int32_t s = ep_install_send(*tid, ep2, 0, HRIGHT_SEND, 0);
+    if (r <= 0 || s <= 0) {
+        thread_discard(*tid);
+        htab_close(thread_htab(thread_current_id()), h);
+        return E_NO_RESOURCES;
+    }
+    struct ipc_recv_args *ra = (struct ipc_recv_args *)user_ptr(PR_MRECV);
+    ra->cap = 64; ra->buf = PR_MBUF; ra->info = PR_MINFO; ra->ep_handle = r;
+    ra->handles = 0; ra->handle_cap = 0;
+    struct ipc_call_args *ca = (struct ipc_call_args *)user_ptr(PR_MCALL);
+    ca->req_len = 1; ca->reply_cap = 0; ca->req = PR_MBUF; ca->reply = 0;
+    ca->ep_handle = s; ca->reserved = 0;
+    ca->handles = 0; ca->handle_count = 0; ca->reply_handles = 0; ca->reply_handle_cap = 0;
+    st_call(0, SYS_IPC_RECV, PR_MRECV, 0);
+    st_call(1, SYS_IPC_CALL, PR_MCALL, 0);
+    st_call(2, SYS_YIELD, 0, 0);
+    ipc_set_base(*tid, level);
+    thread_start(*tid);
+    return h;
+}
+
+/* It raises itself: raising a READY thread asks for a switch (outrank_check),
+   and that request, left standing, would hide whether the wake asks too. */
+static volatile uint64_t pr_woke_ns;
+static volatile int pr_asleep;
+static void pr_sleeper(void) {
+    ipc_set_base(thread_current_id(), PRIO_NORMAL + 2);
+    pr_asleep = 1;
+    thread_sleep_ms(20);
+    pr_woke_ns = timer_now_ns();
+}
+
+int usermode_prio_test(void) {
+    paddr_t phys = map_user_page(TEST_CODE_VIRT);
+    if (!phys) return 0;
+    int me = thread_current_id();
+    struct htab *tab = thread_htab(me);
+    const struct ipc_msg_info *ti = (const struct ipc_msg_info *)user_ptr(IT_TINFO);
+    uint32_t caps0 = thread_current_caps(), base0 = thread_base(me);
+    uint32_t live0 = proc_live(), faults0 = usermode_faults(), refused0 = syscall_refused_count();
+    uint32_t calls0 = kobj_live(KOBJ_REPLY), jobs0 = job_live();
+    int eps0 = ep_in_use_count();
+    struct endpoint *ep = 0, *ep2 = 0;
+    struct job *jb = 0;
+    int32_t eh = -1, e2 = -1, ha = -1, hb = -1, tok = -1, tokb = -1;
+    int tida = -1, tidb = -1, step = 0, ok = 0, rc = 0;
+
+    /* 1: the syscall: out of range either side; real-time only with
+       GRANT_REALTIME, the level below it without; lowering always */
+    step = 1; if (base0 != PRIO_NORMAL || !pr_is(PRIO_NORMAL, PRIO_NORMAL)
+                  || pr_set(0) != E_OUT_OF_RANGE || pr_set(PRIO_MAX + 1) != E_OUT_OF_RANGE) goto done;
+    thread_set_caps(me, caps0 & ~GRANT_REALTIME);
+    if (pr_set(PRIO_REALTIME) != E_ACCESS_DENIED || !pr_is(PRIO_NORMAL, PRIO_NORMAL)
+        || pr_set(PRIO_REALTIME - 1) != E_OK || !pr_is(PRIO_REALTIME - 1, PRIO_REALTIME - 1)
+        || pr_set(PRIO_MIN) != E_OK || !pr_is(PRIO_MIN, PRIO_MIN)) goto done;
+    thread_set_caps(me, caps0 | GRANT_REALTIME);
+    if (pr_set(PRIO_MAX) != E_OK || !pr_is(PRIO_MAX, PRIO_MAX)) goto done;
+    thread_set_caps(me, caps0 & ~GRANT_REALTIME);
+    if (pr_set(PRIO_NORMAL) != E_OK || !pr_is(PRIO_NORMAL, PRIO_NORMAL)) goto done;
+
+    /* 2: a job's ceiling: a thread made in it starts there, may set itself
+       to it, and is refused the level above */
+    jb = job_create(job_root(), 0, 0, PRIO_NORMAL - 3, &rc);
+    step = 2; if (!jb) goto done;
+    ha = pr_setter(jb, PRIO_NORMAL - 2, &tida);
+    if (ha <= 0 || thread_base(tida) != PRIO_NORMAL - 3 || thread_prio(tida) != PRIO_NORMAL - 3) goto done;
+    thread_start(tida);
+    if (!it_ends(ha, E_ACCESS_DENIED)) goto done;
+    htab_close(tab, ha); ha = -1;
+    hb = pr_setter(jb, PRIO_NORMAL - 3, &tidb);
+    if (hb <= 0) goto done;
+    thread_start(tidb);
+    if (!it_ends(hb, E_OK)) goto done;
+    htab_close(tab, hb); hb = -1;
+
+    /* 3: a caller below the test thread waits while it runs; queued, it
+       lifts nobody, since nobody answers the endpoint yet */
+    eh = ep_create();
+    ep = eh > 0 ? ep_from_handle(eh, HRIGHT_RECV, 0) : 0;
+    step = 3; if (!ep) goto done;
+    *(volatile uint8_t *)user_ptr(IT_REQ(0)) = 'L';
+    ha = pr_caller(ep, 0, PRIO_NORMAL - 4, &tida);
+    if (ha <= 0) goto done;
+    yield(); yield();
+    if (ep_queued(ep) != 0 || !it_queued(ep, 1) || !pr_is(PRIO_NORMAL, PRIO_NORMAL)) goto done;
+
+    /* 4: one above runs at once: queued by the time a syscall returns */
+    *(volatile uint8_t *)user_ptr(IT_REQ(1)) = 'H';
+    hb = pr_caller(ep, 1, PRIO_REALTIME + 1, &tidb);
+    step = 4; if (hb <= 0) goto done;
+    (void)syscall_dispatch(SYS_GETPID, 0, 0, 0, 0, 0);
+    if (ep_queued(ep) != 2 || !pr_is(PRIO_NORMAL, PRIO_NORMAL)) goto done;
+
+    /* 5: answering L's call, the test thread is lifted by H's queued one */
+    step = 5; if (it_recv(eh, 64) != 1 || ti->sender != thread_pid(tida) || (tok = ti->reply) <= 0
+                  || !pr_is(PRIO_NORMAL, PRIO_REALTIME + 1)) goto done;
+
+    /* 6: and by H's taken one; the reply takes it off, and H, above, has
+       ended by the time the reply returns */
+    step = 6; if (it_recv(eh, 64) != 1 || ti->sender != thread_pid(tidb) || (tokb = ti->reply) <= 0
+                  || !pr_is(PRIO_NORMAL, PRIO_REALTIME + 1)) goto done;
+    if (it_reply(tokb, IT_DATA, 0) != E_OK) goto done;
+    tokb = -1;
+    if (!pr_is(PRIO_NORMAL, PRIO_NORMAL) || pt_wait(hb, SIGNAL_PROCESS_ENDED, 0, 0) != E_OK
+        || !it_ends(hb, 0)) goto done;
+    htab_close(tab, hb); hb = -1;
+
+    /* 7: a queued caller killed lifts nobody */
+    hb = pr_caller(ep, 1, PRIO_MAX, &tidb);
+    step = 7; if (hb <= 0 || !it_queued(ep, 1) || !pr_is(PRIO_NORMAL, PRIO_MAX)) goto done;
+    if (kt_kill_call(hb) != E_OK || pt_wait(hb, SIGNAL_PROCESS_ENDED, 3000, 0) != E_OK
+        || ep_queued(ep) != 0 || !pr_is(PRIO_NORMAL, PRIO_NORMAL)) goto done;
+    htab_close(tab, hb); hb = -1;
+
+    /* 8: nor does a caller killed whose call is taken, its token still held */
+    hb = pr_caller(ep, 1, PRIO_MAX, &tidb);
+    step = 8; if (hb <= 0 || !it_queued(ep, 1) || it_recv(eh, 64) != 1 || (tokb = ti->reply) <= 0
+                  || !pr_is(PRIO_NORMAL, PRIO_MAX)) goto done;
+    if (kt_kill_call(hb) != E_OK || pt_wait(hb, SIGNAL_PROCESS_ENDED, 3000, 0) != E_OK
+        || !pr_is(PRIO_NORMAL, PRIO_NORMAL)) goto done;
+    htab_close(tab, tokb); tokb = -1;
+    htab_close(tab, hb); hb = -1;
+
+    /* 9: the endpoint closing fails a queued caller, and its lift goes; the
+       call already taken is still answered */
+    hb = pr_caller(ep, 1, PRIO_MAX, &tidb);
+    step = 9; if (hb <= 0 || !it_queued(ep, 1) || !pr_is(PRIO_NORMAL, PRIO_MAX)) goto done;
+    htab_close(tab, eh); eh = -1;
+    if (!it_ends(hb, E_PEER_CLOSED) || !pr_is(PRIO_NORMAL, PRIO_NORMAL)
+        || it_reply(tok, IT_DATA, 0) != E_OK || !it_ends(ha, 0)) goto done;
+    tok = -1;
+    htab_close(tab, ha); ha = -1;
+    htab_close(tab, hb); hb = -1;
+    ep_put(ep); ep = 0;
+
+    /* 10: a chain: M (below the test thread) receives on one endpoint and
+       calls the test thread's other */
+    eh = ep_create();
+    ep = eh > 0 ? ep_from_handle(eh, HRIGHT_RECV, 0) : 0;
+    e2 = ep_create();
+    ep2 = e2 > 0 ? ep_from_handle(e2, HRIGHT_RECV, 0) : 0;
+    step = 10; if (!ep || !ep2) goto done;
+    ha = pr_middle(ep, ep2, PRIO_NORMAL - 4, &tida);
+    if (ha <= 0) goto done;
+    for (int k = 0; k < 100 && !thread_is_blocked(tida); k++) (void)thread_sleep_ms(10);
+    if (!thread_is_blocked(tida)) goto done;
+
+    /* 11: H calls M, which runs at H's level, and calls on */
+    *(volatile uint8_t *)user_ptr(IT_REQ(1)) = 'C';
+    hb = pr_caller(ep, 1, PRIO_REALTIME, &tidb);
+    step = 11; if (hb <= 0 || !it_queued(ep2, 1) || thread_prio(tida) != PRIO_REALTIME
+                   || !pr_is(PRIO_NORMAL, PRIO_NORMAL)) goto done;
+
+    /* 12: answering M's call, the test thread runs at H's level */
+    step = 12; if (it_recv(e2, 64) != 1 || ti->sender != thread_pid(tida) || (tok = ti->reply) <= 0
+                   || *(const uint8_t *)user_ptr(IT_TBUF) != 'C'
+                   || !pr_is(PRIO_NORMAL, PRIO_REALTIME)) goto done;
+
+    /* 13: H's level, raised and lowered, follows the chain down */
+    ipc_set_base(tidb, PRIO_MAX);
+    step = 13; if (thread_prio(tida) != PRIO_MAX || !pr_is(PRIO_NORMAL, PRIO_MAX)) goto done;
+    ipc_set_base(tidb, PRIO_NORMAL - 3);
+    if (thread_prio(tida) != PRIO_NORMAL - 3 || !pr_is(PRIO_NORMAL, PRIO_NORMAL)) goto done;
+
+    /* 14: H killed: M is back at its own level, the test thread at its */
+    ipc_set_base(tidb, PRIO_REALTIME);
+    step = 14; if (!pr_is(PRIO_NORMAL, PRIO_REALTIME) || kt_kill_call(hb) != E_OK
+                   || pt_wait(hb, SIGNAL_PROCESS_ENDED, 3000, 0) != E_OK
+                   || thread_prio(tida) != PRIO_NORMAL - 4 || !pr_is(PRIO_NORMAL, PRIO_NORMAL)) goto done;
+
+    /* 15: M answered ends */
+    step = 15; if (it_reply(tok, IT_DATA, 0) != E_OK || !it_ends(ha, 0)) goto done;
+    tok = -1;
+
+    /* 16: nothing left behind, nothing lifted */
+    htab_close(tab, ha); ha = -1;
+    htab_close(tab, hb); hb = -1;
+    htab_close(tab, eh); eh = -1;
+    htab_close(tab, e2); e2 = -1;
+    ep_put(ep); ep = 0;
+    ep_put(ep2); ep2 = 0;
+    job_put(jb); jb = 0;
+    /* 16: a higher thread woken by the timer runs at once, not at the slice's
+       end: a kernel thread two above sleeps, and this one spins with
+       preemption on and a 500 ms slice, making no call that could yield */
+    pr_woke_ns = 0;
+    pr_asleep = 0;
+    int ts = thread_create("pr_sleep", pr_sleeper);
+    for (int i = 0; i < 20 && ts > 0 && !pr_asleep; i++) yield();
+    uint64_t t0 = timer_now_ns();
+    sched_preempt_enable(500);
+    while (!pr_woke_ns && timer_now_ns() - t0 < 400ull * TIMER_NS_PER_TICK) arch_cpu_relax();
+    sched_preempt_disable();
+    uint64_t woke = pr_woke_ns;
+    for (int i = 0; i < 50 && !pr_woke_ns; i++) yield();
+    step = 16; if (ts <= 0 || !woke || woke - t0 > 150ull * TIMER_NS_PER_TICK) goto done;
+
+    step = 17; if (ipc_serving_count() != 0 || proc_live() != live0 || usermode_faults() != faults0
+                   || syscall_refused_count() != refused0 || kobj_live(KOBJ_REPLY) != calls0
+                   || job_live() != jobs0 || ep_in_use_count() != eps0
+                   || !pr_is(PRIO_NORMAL, PRIO_NORMAL)) goto done;
+    ok = 1;
+
+done:
+    if (!ok) klog_u32("KTEST", SEV_ERR, "priority test failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    if (tok > 0) htab_close(tab, tok);
+    if (tokb > 0) htab_close(tab, tokb);
+    {
+        int32_t hs[2] = { ha, hb };
+        for (int k = 0; k < 2; k++) {
+            if (hs[k] <= 0) continue;
+            kt_kill_call(hs[k]);
+            pt_wait(hs[k], SIGNAL_PROCESS_ENDED, 3000, 0);
+            htab_close(tab, hs[k]);
+        }
+    }
+    if (ep2) ep_put(ep2);
+    if (e2 > 0) htab_close(tab, e2);
+    if (ep) ep_put(ep);
+    if (eh > 0) htab_close(tab, eh);
+    if (jb) job_put(jb);
+    thread_set_caps(me, caps0);
+    ipc_set_base(me, base0);
     unmap_user_page(TEST_CODE_VIRT, phys);
     return ok;
 }

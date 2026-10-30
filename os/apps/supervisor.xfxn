@@ -146,7 +146,8 @@ fn svc_grants(name: *u8, src: *u8, list: *xd_val, out: *u32) -> i32 {
         else { if (xd_sym_is(src, &it, "mem") == 1)        { g = g | GRANT_MEM; }
         else { if (xd_sym_is(src, &it, "framebuffer") == 1) { g = g | GRANT_FRAMEBUFFER; }
         else { if (xd_sym_is(src, &it, "spawn") == 1)      { g = g | GRANT_SPAWN; }
-        else { known = 0; } } } } } }
+        else { if (xd_sym_is(src, &it, "realtime") == 1)   { g = g | GRANT_REALTIME; }
+        else { known = 0; } } } } } } }
         if (known == 0) {
             svc_warn(name);
             puts("line ");

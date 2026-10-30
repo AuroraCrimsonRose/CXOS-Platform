@@ -51,6 +51,7 @@ struct job {
     uint64_t    mem_used;     /* in it and below */
     uint64_t    mem_peak;     /* the most mem_used has been */
     uint32_t    thread_limit; /* 0 = none of its own */
+    uint32_t    prio_limit;   /* the highest level a thread sets itself to; 0 = none of its own */
     uint32_t    threads;      /* in it and below */
     uint32_t    procs;        /* processes in it and below that have not ended */
     int         killed;       /* job_kill reached it: nothing joins it again */
@@ -65,11 +66,16 @@ struct job *job_root(void);
 /* A new job under `parent`, with these limits (0 = none of its own). The
    caller holds the one reference. Returns NULL with *rc set: E_CANCELED if
    the parent has been killed, E_OUT_OF_RANGE past JOB_DEPTH_MAX, E_NO_MEMORY. */
-struct job *job_create(struct job *parent, uint64_t mem_limit, uint32_t thread_limit, int *rc);
+struct job *job_create(struct job *parent, uint64_t mem_limit, uint32_t thread_limit,
+                       uint32_t prio_limit, int *rc);
 
 /* New limits. Ones below what is in use refuse the next charge, and take
-   nothing back. */
-void job_set_limits(struct job *j, uint64_t mem_limit, uint32_t thread_limit);
+   nothing back: a lower priority limit leaves threads where they are. */
+void job_set_limits(struct job *j, uint64_t mem_limit, uint32_t thread_limit, uint32_t prio_limit);
+
+/* The highest priority a thread in `j` may set itself to: the lowest limit
+   of `j` and the jobs above it, PRIO_MAX if none has one. */
+uint32_t job_prio_ceiling(const struct job *j);
 
 /* Charge `j` and every job above it, or none of them: E_OK, or E_NO_MEMORY /
    E_NO_RESOURCES if one would pass its limit. The uncharges give back what a

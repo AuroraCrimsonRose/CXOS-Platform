@@ -15,7 +15,9 @@
 #include "object/idtab.h"
 #include "memman/ocache.h"
 #include "panic.h"
-#include "cxk_abi.h"   /* E_OK: a job's refusal */
+#include "cxk_abi.h"   /* E_OK: a job's refusal; PRIO_* */
+#include "job.h"       /* job_prio_ceiling */
+#include "ipc.h"       /* ipc_thread_exit */
 
 
 static void sched_reap(void);   /* forward decl: used by yield, defined below */
@@ -96,6 +98,7 @@ void sched_init(void) {
        the first switch away from it (context_switch saves into &th(0)->esp). */
     th(0)->state = THREAD_RUNNING;
     th(0)->name  = "main";
+    th(0)->base  = th(0)->prio = PRIO_NORMAL;
     th(0)->stack_base = 0;   /* uses the existing kernel stack */
     /* the boot/kernel context is the machine (User 0): proc_create with no
        parent gives exactly that */
@@ -131,6 +134,9 @@ int thread_create_process(const char *name, void (*entry)(void), struct job *job
 
 void thread_start(int id) {
     struct thread *t = th(id);
+    /* No outrank_check: only thread context starts a thread, and a higher one
+       runs when the starter next yields (ring 3: the syscall gate's
+       sched_yield_if_outranked). need_resched acts at an interrupt. */
     if (id > 0 && t && t->state == THREAD_HELD) t->state = THREAD_READY;
 }
 
@@ -231,20 +237,41 @@ static int thread_create_in(const char *name, void (*entry)(void), int held, str
     t->entry       = entry;
     t->arg         = 0;
     t->arg_drop    = 0;
+    /* PRIO_NORMAL, or lower in a job whose ceiling is: SYS_THREAD_SET_PRIORITY
+       could not raise it back past that. */
+    uint32_t ceil = job_prio_ceiling(p->job);
+    t->base        = (uint8_t)(ceil < PRIO_NORMAL ? ceil : PRIO_NORMAL);
+    t->prio        = t->base;
+    t->in_call     = 0;
     /* Last: from here the timer may run it. */
     __atomic_store_n(&t->state, held ? THREAD_HELD : THREAD_READY, __ATOMIC_RELEASE);
     return slot;
 }
 
-/* pick the next READY/RUNNING thread after `current` (round-robin). */
+/* Pick the READY/RUNNING thread at the highest priority, the first after
+   `current` among those at it: round-robin within a level, and `current`
+   (last in the scan) only if no other at its level is ready. A scan of every
+   thread, as before priorities; the thread limit keeps it short until
+   per-CPU run queues (roadmap 1.6). */
 static int next_runnable(void) {
-    int cap = (int)tids.cap;
+    int cap = (int)tids.cap, best = current, top = -1;
     for (int n = 1; n <= cap; n++) {
         struct thread *t = th((current + n) % cap);
-        if (t && (t->state == THREAD_READY || t->state == THREAD_RUNNING))
-            return t->id;
+        if (t && (t->state == THREAD_READY || t->state == THREAD_RUNNING) && (int)t->prio > top) {
+            top  = t->prio;
+            best = t->id;
+        }
     }
-    return current;   /* nobody else: keep running current */
+    return best;   /* nobody: keep running current */
+}
+
+/* A switch is due at the next preemption point (sched_preempt_point). */
+static volatile int need_resched = 0;
+
+/* `t` was just made READY or raised: if it outranks the running thread, it
+   should not wait out the slice. */
+static void outrank_check(const struct thread *t) {
+    if (t->state == THREAD_READY && t->prio > self()->prio) need_resched = 1;
 }
 
 /* Point the stack the CPU takes on entry from ring 3 (arch/cpu.h; the TSS on
@@ -345,7 +372,10 @@ void thread_wait(void) {
 
 void thread_unblock(int id) {
     struct thread *t = th(id);
-    if (t && t->state == THREAD_BLOCKED) t->state = THREAD_READY;
+    if (t && t->state == THREAD_BLOCKED) {
+        t->state = THREAD_READY;
+        outrank_check(t);
+    }
 }
 
 /* ---- timed sleep ----
@@ -413,17 +443,67 @@ void sched_wake_sleepers(uint64_t now) {
         /* On the 64-bit clock, which does not wrap: compared plainly. */
         if (t->wake_ns > now) continue;
         t->sleeping = 0;
-        if (t->state == THREAD_BLOCKED) t->state = THREAD_READY;
+        if (t->state == THREAD_BLOCKED) {
+            t->state = THREAD_READY;
+            outrank_check(t);
+        }
     }
 }
 
+/* At any level: next_runnable would keep a higher current thread, and the
+   timer asks this before halting a CPU that a lower one is waiting for. */
 int sched_others_ready(void) {
-    return initialized && next_runnable() != current;
+    if (!initialized) return 0;
+    for (uint32_t i = 0; i < tids.cap; i++) {
+        struct thread *t = th((int)i);
+        if (t && (int)i != current && t->state == THREAD_READY) return 1;
+    }
+    return 0;
+}
+
+uint32_t thread_base(int id) { struct thread *t = live(id); return t ? t->base : 0; }
+uint32_t thread_prio(int id) { struct thread *t = live(id); return t ? t->prio : 0; }
+
+void thread_set_base(int id, uint32_t level) {
+    struct thread *t = live(id);
+    if (t) t->base = (uint8_t)level;
+}
+
+void thread_set_prio(int id, uint32_t level) {
+    struct thread *t = live(id);
+    if (!t) return;
+    uint32_t f = irq_save();
+    t->prio = (uint8_t)level;
+    outrank_check(t);
+    irq_restore(f);
+}
+
+struct ipc_call *thread_in_call(int id) { struct thread *t = live(id); return t ? t->in_call : 0; }
+
+void thread_set_in_call(int id, struct ipc_call *c) {
+    struct thread *t = live(id);
+    if (t) t->in_call = c;
+}
+
+void sched_yield_if_outranked(void) {
+    if (!initialized) return;
+    uint32_t f = irq_save();
+    int go = 0;
+    for (uint32_t i = 0; i < tids.cap && !go; i++) {
+        struct thread *t = th((int)i);
+        go = t && (int)i != current && t->state == THREAD_READY && t->prio > self()->prio;
+    }
+    irq_restore(f);
+    if (go) yield();
 }
 
 void yield(void) {
     if (!initialized) return;
     uint32_t flags = irq_save();
+    /* This pick answers any switch asked for (outrank_check, the slice); left
+       standing, the request would preempt whoever runs at the next interrupt,
+       for nothing, and hide whether that interrupt's own wake asks for one. */
+    need_resched = 0;
     int prev = current;
     int next = next_runnable();
     if (next == prev) { irq_restore(flags); return; }   /* only one runnable thread */
@@ -455,6 +535,8 @@ static void sched_reap(void) {
 
 void thread_exit(void) {
     irq_save();   /* never restored here: the next thread resumes with its own flags */
+    /* Calls it received stop lifting it, before its id can be reused. */
+    ipc_thread_exit(current);
     /* The last one out ends its process now and wakes the waiters: one may be
        the only thread left to run, and it cannot wait for the reaper. */
     if (self()->proc) proc_thread_stopped(self()->proc);
@@ -512,9 +594,8 @@ void sched_preempt_disable(void) {
    due once the slice has run out; the actual switch is deferred to
    sched_preempt_point(), which the IRQ handler calls AFTER the EOI. Deferring
    past the EOI keeps the controller delivering further interrupts so
-   preemption continues. */
-static volatile int need_resched = 0;
-
+   preemption continues. (need_resched is above, with outrank_check: a wake
+   of a higher thread asks for the same switch.) */
 void sched_tick(uint64_t now) {
     if (!preempt_on || !initialized) return;
     if (now < slice_end) return;

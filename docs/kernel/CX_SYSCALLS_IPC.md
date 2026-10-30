@@ -20,7 +20,7 @@
 | Devices | Drawing (`SYS_FB_DRAW_TEXT`), keyboard and mouse are syscalls; input needs no capability | The kernel draws pixels; any process can read another's keys |
 | Arguments | A fixed page at `USER_ARGS_BASE` | An x86-32 address in the ABI |
 | Errors | 15 codes | No timeout, peer-closed, wrong-type or rights-denied distinction |
-| IPC | Calls queue with reply tokens and badges, up to 64 KiB and 16 handles each way (ABI 21, §7); notifications with minted signallers (ABI 22); memory objects, mapped on first touch (ABI 23), sealed and travelling (ABI 24); the executive defines messages informally | No types |
+| IPC | Calls queue with reply tokens and badges, up to 64 KiB and 16 handles each way (ABI 21, §7); notifications with minted signallers (ABI 22); memory objects, mapped on first touch (ABI 23), sealed and travelling (ABI 24); priority passed through calls (ABI 25); the executive defines messages informally | No types |
 | Definition | Since step 6a1, `abi/kernel.xfil`: `cxk_abi.h`, the X prelude's constants and structures, and its plain syscall wrappers are generated from it (§9.5). The prelude's helpers are by hand. Since 6a3a every image records the ABI hash and the loader compares it | The interface it describes is still this table's |
 
 The good parts stay: user copies that validate and recover from faults
@@ -432,6 +432,31 @@ a handle with `HRIGHT_MAP | HRIGHT_INSPECT`; the receiver checks
 `OBJINFO_MEM` before it reads. Not yet: seals on size (sizes are fixed
 today), and a copy-on-write snapshot in place of a seal.
 
+*Priority through calls, ABI 25 (Phase 1.3f):* threads have a level from
+`PRIO_MIN` (1) to `PRIO_MAX` (15) in three classes: background (1-3), normal
+(4-11, `PRIO_NORMAL` = 8 for a new thread) and real-time (12-15). The
+scheduler runs the highest ready level, round-robin within it; a thread
+made ready above the one running takes over at the next syscall's return
+or, from an interrupt (a timer's wake, the keyboard), at once.
+`SYS_THREAD_SET_PRIORITY(level)` sets the caller's own level: lowering is
+never refused; out of range is `E_OUT_OF_RANGE`; above its job's ceiling, or
+real-time without `GRANT_REALTIME` (in the OS baseline; the supervisor's
+`"realtime"`), is `E_ACCESS_DENIED`. The ceiling is `job_limits.priority`,
+the lowest one set up the chain (0: none of its own), shown in
+`job_info.priority_limit`; a thread made in a job below `PRIO_NORMAL` starts
+at its ceiling. `SYS_THREAD_PRIORITY()` gives the thread's own level in bits
+0-7 and the level it runs at in bits 8-15. They differ while it serves a
+call: a thread that holds a reply token runs at least at its caller's
+level, and one whose endpoint has calls queued at least at the highest of
+theirs (receive handles are shared, so every thread that has taken a call
+from that endpoint is lifted). It is transitive: a server blocked calling
+another server passes its level on, to a depth of 16 (XNU turnstiles,
+`turnstile_update_inheritor_priority_chain`; NT's LPC gives only a wake
+boost). The lift goes when the reply is sent, the token closes, the caller
+is killed or the endpoint's last receive handle closes. Not yet: a lift
+does not move with a token handed to another thread, and threads that call
+each other in a ring keep each other lifted until one replies.
+
 **Streams and files:**
 `pipe_create(size)`, `io_read(h, buf, offset)`, `io_write(h, buf, offset)`
 (pipes ignore the offset), `io_seek`, `fs_open_at(dir, path, flags, rights)`,
@@ -816,8 +841,8 @@ generalised.
   can only shrink in transit (XNU `ipc_kmsg_copyin_port_descriptor`). Built
   (ABI 21, §7).
 - **Reply tokens, badges, several calls in flight, priority passed through
-  calls:** as in `kernel/CX_KERNEL_PLAN.md` §6. The first three are built
-  (ABI 20, §7).
+  calls:** as in `kernel/CX_KERNEL_PLAN.md` §6. All four are built
+  (ABI 20; priority, ABI 25; §7).
 - **Transport errors are syscall results** (`E_PEER_CLOSED`, `E_TIMED_OUT`);
   **application errors are part of the reply type** (`result<T, E>`).
 - **Events** (`event closed()` above) are one-way messages from server to

@@ -21,6 +21,8 @@
 #include <stdint.h>
 #include "proc.h"
 
+struct ipc_call;
+
 /* How many threads may be alive is a runtime LIMIT, set from
    /System/Config/kernel.xkco (kconfig.h): policy, not a constant. Thread
    records come from a cache and their ids from a table that grows
@@ -75,6 +77,13 @@ struct thread {
        thread that dies early (a ring-3 fault) leaks nothing of it. */
     void     *arg;
     void    (*arg_drop)(void *arg);
+    /* Priority (PRIO_*, cxk_abi.h). `base` is its own (thread_set_base);
+       `prio` is what the scheduler runs it at: base, or higher while it
+       serves a call from a thread above it (cpu/ipc.c sets it). */
+    uint8_t   base;
+    uint8_t   prio;
+    /* The call it is blocked in, for ipc.c's priority chain; under ipc_lock. */
+    struct ipc_call *in_call;
 };
 
 /* initialize the scheduler (registers the currently-running code as thread 0). */
@@ -144,8 +153,22 @@ void sched_tick(uint64_t now);
 uint64_t sched_next_due(int running);
 void     sched_slice_restart(uint64_t now);
 
-/* A thread other than the current one is READY. */
+/* A thread other than the current one is READY, at any priority. */
 int      sched_others_ready(void);
+
+/* Priority. The highest level with a thread ready runs; threads at one
+   level take turns. A thread starts at PRIO_NORMAL, or its job's ceiling if
+   that is lower. thread_set_prio is ipc.c's (the level it runs at, never
+   below base); a READY thread raised above the running one is switched to
+   at the next preemption point. sched_yield_if_outranked switches now if a
+   READY thread is above the current one: the syscall gate's way out. */
+uint32_t thread_base(int id);
+uint32_t thread_prio(int id);
+void     thread_set_base(int id, uint32_t level);
+void     thread_set_prio(int id, uint32_t level);
+struct ipc_call *thread_in_call(int id);
+void     thread_set_in_call(int id, struct ipc_call *c);
+void     sched_yield_if_outranked(void);
 
 /* called from the IRQ handler AFTER the EOI; performs a deferred preemptive
    switch if one is due. */

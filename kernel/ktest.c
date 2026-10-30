@@ -714,7 +714,7 @@ static int test_sysrec(void) {
  * point. A number past the end must be refused before it indexes the table:
  * 0xFFFFFFFF would otherwise read four gigabytes beyond it. */
 static int test_syscall_table(void) {
-    static const uint32_t unknown[] = { 0x08, 0x7F, SYSCALL_TABLE_SIZE, 0xFFFFFFFFu };
+    static const uint32_t unknown[] = { 0x0A, 0x7F, SYSCALL_TABLE_SIZE, 0xFFFFFFFFu };
     for (uint32_t i = 0; i < sizeof unknown / sizeof unknown[0]; i++) {
         struct sysrec_stats s0, s1;
         sysrec_snapshot(&s0);
@@ -3346,6 +3346,7 @@ void ktest_run(void) {
     total++; passed += report("memory objects: first touch, strict commit", usermode_mem_test());
     total++; passed += report("ipc: queued calls, reply tokens, badges", usermode_ipc_test());
     total++; passed += report("ipc: handles in messages", usermode_ipc_handles_test());
+    total++; passed += report("ipc: priority through calls", usermode_prio_test());
     total++; passed += report("ipc endpoints refcounted + reclaimed", test_ipc_endpoint_lifetime());
     total++; passed += report("object caches map and return pages", test_ocache_pages());
     total++; passed += report("two threads share one process",   test_proc_threads());

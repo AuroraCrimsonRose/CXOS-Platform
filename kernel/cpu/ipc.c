@@ -56,11 +56,128 @@ static void ep_unlink(struct endpoint *ep, struct ipc_call *c) {
     c->ep   = 0;
 }
 
+/* ---- Priority through calls (1.3f) ----
+ *
+ * A thread serving a call runs at least at its caller's priority, so a
+ * caller is not held up behind threads that rank between it and the server
+ * (XNU's turnstiles, osfmk/kern/turnstile.c; seL4 MCS lends the caller's
+ * scheduling context instead, from memory). A thread runs at the highest of
+ *
+ *   its own level (thread_base);
+ *   for each call it took and still answers for, the caller's level;
+ *   and that of each call still queued on the endpoint that call came from,
+ *
+ * the last so that a busy server is lifted by the calls waiting behind it,
+ * as XNU's send turnstile pushes on the port's receiver
+ * (ipc_port_send_update_inheritor, osfmk/ipc/ipc_port.c). A thread waiting
+ * in a call passes on what it runs at: to the thread that took the call, or
+ * while it is queued to the threads answering that endpoint. prio_update
+ * follows the chain until a level stops changing (XNU
+ * turnstile_update_inheritor_priority_chain), PRIO_CHAIN_MAX deep at most.
+ * Threads that call each other in a ring keep each other lifted; they are
+ * deadlocked anyway.
+ *
+ * The thread that took a call answers for it: a token passed to another
+ * thread or process leaves the lift where it was. A reply, a token closed,
+ * the caller killed, or the server thread ending take it off.
+ *
+ * All under ipc_lock. `serving` lists the calls with a server; there are
+ * few, so finding a thread's is a walk (a list per thread can come with SMP).
+ */
+#define PRIO_CHAIN_MAX 16
+
+static struct ipc_call *serving;
+
+static uint32_t max_u32(uint32_t a, uint32_t b) { return a > b ? a : b; }
+
+/* The highest level among the callers queued on `ep`. */
+static uint32_t ep_queue_prio(const struct endpoint *ep) {
+    uint32_t p = 0;
+    for (const struct ipc_call *q = ep->head; q; q = q->next)
+        if (!q->caller_gone) p = max_u32(p, thread_prio(q->caller_tid));
+    return p;
+}
+
+static void ep_prio_changed(const struct endpoint *ep, int depth);
+
+/* Run `tid` at what its calls ask for, and pass a change on. */
+static void prio_update(int tid, int depth) {
+    if (tid < 0 || depth >= PRIO_CHAIN_MAX || !thread_base(tid)) return;
+    uint32_t want = thread_base(tid);
+    for (const struct ipc_call *c = serving; c; c = c->serve_next) {
+        if (c->server_tid != tid) continue;
+        if (!c->caller_gone) want = max_u32(want, thread_prio(c->caller_tid));
+        if (c->from) want = max_u32(want, ep_queue_prio(c->from));
+    }
+    if (want == thread_prio(tid)) return;
+    thread_set_prio(tid, want);
+    const struct ipc_call *in = thread_in_call(tid);
+    if (!in) return;
+    if (in->server_tid >= 0) prio_update(in->server_tid, depth + 1);
+    else if (in->ep)         ep_prio_changed(in->ep, depth + 1);
+}
+
+/* `ep`'s queue changed: every thread answering one of its calls. */
+static void ep_prio_changed(const struct endpoint *ep, int depth) {
+    for (const struct ipc_call *c = serving; c; c = c->serve_next)
+        if (c->from == ep) prio_update(c->server_tid, depth);
+}
+
+/* The current thread took `c` from `ep`, and answers for it. */
+static void call_serve(struct ipc_call *c, struct endpoint *ep) {
+    c->server_tid = thread_current_id();
+    c->from       = ep;
+    c->serve_next = serving;
+    serving       = c;
+    ep_prio_changed(ep, 0);   /* its server gains the caller; the others lose it */
+}
+
+/* `c` no longer lifts its server: answered, closed, or put back. */
+static void call_unserve(struct ipc_call *c) {
+    if (c->server_tid < 0) return;
+    for (struct ipc_call **pp = &serving; *pp; pp = &(*pp)->serve_next)
+        if (*pp == c) { *pp = c->serve_next; break; }
+    int tid = c->server_tid;
+    c->server_tid = -1;
+    c->from       = 0;
+    c->serve_next = 0;
+    prio_update(tid, 0);
+}
+
+void ipc_set_base(int tid, uint32_t level) {
+    uint32_t f = spin_lock(&ipc_lock);
+    thread_set_base(tid, level);
+    prio_update(tid, 0);
+    spin_unlock(&ipc_lock, f);
+}
+
+uint32_t ipc_serving_count(void) {
+    uint32_t n = 0;
+    uint32_t f = spin_lock(&ipc_lock);
+    for (const struct ipc_call *c = serving; c; c = c->serve_next) n++;
+    spin_unlock(&ipc_lock, f);
+    return n;
+}
+
+void ipc_thread_exit(int tid) {
+    uint32_t f = spin_lock(&ipc_lock);
+    for (struct ipc_call **pp = &serving; *pp; ) {
+        struct ipc_call *c = *pp;
+        if (c->server_tid != tid) { pp = &c->serve_next; continue; }
+        *pp = c->serve_next;
+        c->server_tid = -1;
+        c->from       = 0;
+        c->serve_next = 0;
+    }
+    spin_unlock(&ipc_lock, f);
+}
+
 /* ipc_lock held. End `c` with `result` and wake its caller, if it is still
    there to read it. */
 static void call_finish(struct ipc_call *c, int32_t result) {
     c->state  = IPC_DONE;
     c->result = result;
+    call_unserve(c);
     if (!c->caller_gone) thread_unblock(c->caller_tid);
 }
 
@@ -77,6 +194,10 @@ static void ep_last_handle(struct kobj *o) {
             ep_unlink(ep, c);
             call_finish(c, E_PEER_CLOSED);
         }
+        /* Calls taken from it stay with their servers, but its queue is
+           gone, and it may be freed before they are answered. */
+        for (struct ipc_call *c = serving; c; c = c->serve_next)
+            if (c->from == ep) { c->from = 0; prio_update(c->server_tid, 0); }
         ep->stop_pending = 0;
         /* Set, not cleared: a receive on it returns at once, with an error. */
         kobj_signal(&ep->hdr, SIGNAL_EP_READABLE);
@@ -260,6 +381,7 @@ static struct ipc_call *call_new(uint32_t req_len, uint32_t rcap, int *rc) {
     c->reply_cap = rcap;
     c->caller_tid = thread_current_id();
     c->caller_pid = thread_current_pid();
+    c->server_tid = -1;
     if (c->size) {
         struct proc *p = thread_proc(c->caller_tid);
         struct job *j = p ? p->job : job_root();
@@ -330,6 +452,10 @@ static int call_on(struct ep_send *s, const struct ipc_call_args *ap,
     ep->tail = c;
     ep->queued++;
     ep_readable_update(ep);
+    /* The caller's level reaches whoever answers the endpoint, and goes on
+       reaching them while it waits (prio_update follows in_call). */
+    thread_set_in_call(thread_current_id(), c);
+    ep_prio_changed(ep, 0);
 
     /* BLOCKED before the lock goes, so a reply from here on is not lost. */
     while (c->state != IPC_DONE) {
@@ -339,10 +465,12 @@ static int call_on(struct ep_send *s, const struct ipc_call_args *ap,
         f = spin_lock(&ipc_lock);
         if (c->state != IPC_DONE && thread_killed()) break;
     }
+    thread_set_in_call(thread_current_id(), 0);
 
     /* Killed. A call nobody has taken is withdrawn; one the server is working
        on stays with its token, and the reply finds the caller gone. One
-       already answered was copied out as usual. */
+       already answered was copied out as usual. Either way it lifts nobody
+       from here. */
     if (c->state != IPC_DONE) {
         c->caller_gone = 1;
         if (c->state == IPC_QUEUED) {
@@ -350,6 +478,9 @@ static int call_on(struct ep_send *s, const struct ipc_call_args *ap,
             ep_readable_update(ep);
             c->state  = IPC_DONE;
             c->result = E_CANCELED;
+            ep_prio_changed(ep, 0);
+        } else {
+            prio_update(c->server_tid, 0);
         }
         spin_unlock(&ipc_lock, f);
         kobj_unref(&c->hdr);
@@ -472,6 +603,7 @@ static int recv_on(struct endpoint *ep, const struct ipc_recv_args *ap) {
     ep_unlink(ep, c);
     ep_readable_update(ep);
     c->state = IPC_TAKEN;
+    call_serve(c, ep);
     kobj_ref(&c->hdr);   /* until the token is installed: the caller may leave */
     spin_unlock(&ipc_lock, f);
 
@@ -489,6 +621,7 @@ static int recv_on(struct endpoint *ep, const struct ipc_recv_args *ap) {
     }
     if (tok < 0) {
         f = spin_lock(&ipc_lock);
+        call_unserve(c);
         if (c->caller_gone) {
             c->state = IPC_DONE;
         } else if (!ep->active) {
@@ -501,6 +634,7 @@ static int recv_on(struct endpoint *ep, const struct ipc_recv_args *ap) {
             if (!ep->tail) ep->tail = c;
             ep->queued++;
             ep_readable_update(ep);
+            ep_prio_changed(ep, 0);
         }
         spin_unlock(&ipc_lock, f);
         kobj_unref(&c->hdr);
@@ -555,6 +689,7 @@ static int reply_on(struct ipc_call *c, int32_t tok, const struct ipc_reply_args
     /* Killed while this was being worked on: the call ends here. */
     if (c->caller_gone) {
         c->state = IPC_DONE;
+        call_unserve(c);
         spin_unlock(&ipc_lock, f);
         htab_close(t, tok);
         return E_PEER_CLOSED;
@@ -584,6 +719,7 @@ static int reply_on(struct ipc_call *c, int32_t tok, const struct ipc_reply_args
         keep = 1;
     } else if (c->caller_gone) {
         c->state = IPC_DONE;
+        call_unserve(c);
         rc = E_PEER_CLOSED;
     } else {
         call_finish(c, (int32_t)a.len);   /* the caller resumes in ipc_call, copies it out */

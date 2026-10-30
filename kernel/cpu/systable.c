@@ -15,6 +15,8 @@ static int decode_clock(const uintptr_t *a) { return syscall_clock((uint64_t)a[0
 static int decode_sleep(const uintptr_t *a) { return syscall_sleep((uint32_t)a[0]); }
 static int decode_args(const uintptr_t *a) { return syscall_args((uint64_t)a[0]); }
 static int decode_clock_monotonic(const uintptr_t *a) { return syscall_clock_monotonic((uint64_t)a[0]); }
+static int decode_thread_set_priority(const uintptr_t *a) { return syscall_thread_set_priority((uint32_t)a[0]); }
+static int decode_thread_priority(const uintptr_t *a) { (void)a; return syscall_thread_priority(); }
 static int decode_ipc_call(const uintptr_t *a) { return syscall_ipc_call((uint64_t)a[0]); }
 static int decode_ipc_recv(const uintptr_t *a) { return syscall_ipc_recv((uint64_t)a[0]); }
 static int decode_ipc_reply(const uintptr_t *a) { return syscall_ipc_reply((uint64_t)a[0]); }
@@ -234,6 +236,8 @@ const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_SLEEP] = decode_sleep,
     [SYS_ARGS] = decode_args,
     [SYS_CLOCK_MONOTONIC] = decode_clock_monotonic,
+    [SYS_THREAD_SET_PRIORITY] = decode_thread_set_priority,
+    [SYS_THREAD_PRIORITY] = decode_thread_priority,
     [SYS_IPC_CALL] = decode_ipc_call,
     [SYS_IPC_RECV] = decode_ipc_recv,
     [SYS_IPC_REPLY] = decode_ipc_reply,

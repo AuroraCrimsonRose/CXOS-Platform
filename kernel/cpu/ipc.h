@@ -84,6 +84,12 @@ struct ipc_call {
     uint32_t         nh;
     uint32_t         reply_hcap;  /* the most the caller takes back */
     struct htab_transit h[IPC_HANDLES_MAX];
+    /* Priority (ipc.c): the thread that took it and answers for it, -1 for
+       none; the endpoint it was taken from, until that closes; and the list
+       of calls that have a server. */
+    int              server_tid;
+    struct endpoint *from;
+    struct ipc_call *serve_next;
 };
 
 struct endpoint {
@@ -177,5 +183,13 @@ int ep_post_stop(struct endpoint *ep, int by, uint32_t ms);
 int ipc_call(uint64_t ua);    /* client; blocks -> reply length */
 int ipc_recv(uint64_t ua);    /* server; blocks -> message length */
 int ipc_reply(uint64_t ua);   /* server; answers a token -> 0 */
+
+/* Priority through calls (ipc.c). ipc_set_base gives thread `tid` its own
+   level and passes the change down any chain of calls it is in; the checks
+   on who may are the caller's. ipc_thread_exit: the calls `tid` took stop
+   lifting it (thread_exit, before the id can be reused). */
+void ipc_set_base(int tid, uint32_t level);
+void ipc_thread_exit(int tid);
+uint32_t ipc_serving_count(void);   /* calls that lift a server, for the self-tests */
 
 #endif
