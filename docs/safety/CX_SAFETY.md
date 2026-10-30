@@ -186,11 +186,21 @@ today; nothing depends on GitHub Actions.
 
 ## 7. Order
 
-| When | Work |
+Re-planned 2026-10-30 after an outside review. The first version of this
+table put the host runner, CsCheck, the first libFuzzer targets and
+`cxk test sabotage` at "Now", and TLA+, CBMC and the syscall fuzzer in
+Phase 0. Only the host runner (§3.7) happened; Phase 0 closed without the
+rest. Each item now has a roadmap step (`planning/CX_ROADMAP.md`, Phase 1),
+so it cannot slip without the slip being visible there.
+
+| Step | Work |
 |---|---|
-| Now | The host test runner for kernel C (§3.7); CsCheck in the host tests; the first libFuzzer targets (CXEX, GPT, X Data) on the host; `cxk test sabotage` |
-| Phase 0 | TLA+ for handle lifetime; CBMC harnesses for rights, generations, user pointers; KASAN-style checker and UBSan in debug kernels; mitigation self-tests |
-| Phase 0.6 | The generated syscall fuzzer; random X programs against both compilers |
-| Phase 1 | TLA+ for IPC, the wait queue, futex, stop and kill; HACL\* replaces the RSA verifier; mutation testing in the container |
+| 1.5d | The ring-3 X test runner; one structured line per self-test and `cxk verify-boot --json`; `cxk test all` (host tests, container Differential, boot variants) writing one summary; `cxk test sabotage` owning backup, restore, pattern counts, tree checks and "a failed build is not a verdict" |
+| 1.6 | Test hooks in test builds: race points (a named point where a test can park a thread or deliver a kill or close), fail-the-Nth-allocation in `kmalloc`, `ocache_alloc`, `pmm_alloc`, `kstack_alloc` and `vm_map`, and live counts (each object cache, free pages, handles, mapped bytes, job charge) compared before and after. Sweeps over each syscall's failure paths; resource limits driven to both sides of the bound; the HANDOFF "untested" lists cleared |
+| 1.7 | The kernel RNG (ChaCha20, Fortuna-style pools); seeded chaos (random yields at race points), reproducible from a printed seed |
+| 1.8 | The hardware report: E820 map, ACPI tables and checksums, MADT and APIC IDs, PCI devices, CPUID, TSC and PM-timer calibration, in a fixed form to serial and the USB crash log; a `cxk` command diffs QEMU, Hyper-V and the rig. Before SMP, which relies on the MADT |
+| 1.9 | SMP readiness, SMP, then the 1.6 race-point tests as the SMP stress suite (`-smp 8` under MTTCG, Hyper-V for real parallelism) |
+| Ongoing, one item per step where it fits | libFuzzer targets on the host under ASan and UBSan (CXFS superblock and directories first, since attaching a disk is the attack; then CXEX, CXBI, packets), corpora in the tree, each crash a regression test; the ABI layout cross-check (C and X each print `sizeof`/`offsetof` for every ABI struct, compared); random X programs against both compilers and the IR interpreter; CsCheck in the host tests; the generated syscall fuzzer once 1.7 is in |
+| Before Phase 2 | TLA+ for IPC, the wait queue, futex, stop and kill; CBMC harnesses for rights, generations and user pointers; KASAN-style checker in debug kernels; mutation testing in the container |
 | Phase 3 | The crash-consistency harness and the CXFS v3 commit model |
-| Later | Frama-C proofs where CBMC's bounds are not enough; X contracts proved by SMT |
+| Later | HACL\* replaces the RSA verifier; Frama-C proofs where CBMC's bounds are not enough; X contracts proved by SMT |

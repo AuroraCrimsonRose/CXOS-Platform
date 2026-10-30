@@ -22,6 +22,7 @@ order, and every decision with its reason.
 | **x86-64 is the primary target, and comes first.** | The test rig is a 64-bit CPU with 8 GB (`hardware/CX_TARGET_HARDWARE.md`). Everything built for 32-bit before the move gets ported afterwards, so the move goes ahead of the IPC, display and driver work. |
 | **PAE is not a separate step.** | Long mode includes NX and the four-level page tables that PAE was a stepping stone to. |
 | **ARM is deferred until after the ecosystem phase.** | Nothing on the near path needs it, and the rig is x86. |
+| **X and the ABI are designed for x86-64, AArch64 and RV64 now** (Aurora, 2026-10-30); a 32-bit port may follow, by choice. Each new X primitive is defined for every target, with what it lowers to on each (`language/CX_X_PLAN.md` §8); the ABI has no target-sized types. | The ports are later, but a primitive designed for x86 alone is found wrong only when a port starts, and x86's strong ordering hides missing barriers from every test run on it. |
 | **x86-32 is retired.** The `x86_32_DEV` and `x86_32_RELEASE` branches stay as the reference. On this branch the 32-bit kernel and code generator are the working baseline only until their 64-bit replacements pass the full boot (Phase 0.6), then they are deleted. | The rig is 64-bit and ARM is far off; two x86 targets would double every kernel test for no user. A 32-bit port later starts from the reference branches. |
 | **Built for any x86-64 CPU; features are detected at boot.** | The rig is the first test machine, not the target. Nothing is compiled for Piledriver: the kernel reads CPUID once at boot and every optional feature is used only where it exists (`kernel/CX_KERNEL_PLAN.md` §2.3). |
 | **The kernel lives in the top half of the address space, with all physical memory mapped there.** | What every modern 64-bit kernel does; with 8 GB nothing needs mapping on demand (`kernel/CX_KERNEL_PLAN.md` §2.4). |
@@ -497,11 +498,53 @@ Independent of the order above, and small enough to land whenever convenient:
        first thread's a global, a spawned thread's a page it gives back), and
        `std/sync.xfxn` reads the thread id from it. ABI 30
        (`docs/kernel/CX_SYSCALLS_IPC.md` §7).
-   - **After 1.5b:** a ring-3 X test runner: one boot runs many X tests as
+   - **1.5d:** a ring-3 X test runner: one boot runs many X tests as
      threads, with join deadlines catching hangs, so userland tests stop
-     needing a kernel self-test each.
-6. SMP readiness: spinlocks that save interrupt state, per-CPU data, a lock
-   order checker in debug builds, the slab allocator. Then SMP on 8 cores.
+     needing a kernel self-test each. With it, results a machine can read:
+     one structured line per self-test, `cxk verify-boot --json`, and
+     `cxk test all` (host tests, the container Differential run, the boot
+     variants) writing one summary; and `cxk test sabotage`, which owns
+     the backup, restore, pattern counts and tree checks every step's
+     hand-written matrix script has got wrong at least once
+     (`safety/CX_SAFETY.md` §7).
+
+   Order from here (Aurora, 2026-10-30, after an outside review: kernel
+   correctness work stays ahead of the display server and is not traded
+   for it):
+6. Concurrency and failure testing. Test hooks in test builds: race
+   points (a thread parked, or a kill or close delivered, at a named
+   point), failing the Nth allocation (`kmalloc`, `ocache_alloc`,
+   `pmm_alloc`, `kstack_alloc`, `vm_map`), and live counts (each object
+   cache, free pages, handles, mapped bytes, the job's charge) compared
+   before and after. Then sweeps of every syscall's failure paths, resource
+   limits driven to both sides of the bound, and the futex, process-ending,
+   IPC and object-lifetime races that HANDOFF lists as untested.
+7. Input authority and kernel randomness. A grant on `SYS_INPUT_READ`,
+   `SYS_INPUT_POLL` and `SYS_MOUSE_READ` until the display server routes
+   input. A ChaCha20 generator with Fortuna-style pools, fed by RDSEED or
+   RDRAND where present, the TSC at every interrupt, timing jitter at boot,
+   and a seed file on the boot disk rewritten at each boot; never blocking
+   after boot. It also seeds the chaos mode of 6 (random yields at race
+   points, reproducible from a printed seed) and the syscall fuzzer.
+8. The hardware report: the memory map, ACPI tables and their checksums,
+   MADT and APIC IDs, PCI devices, CPUID, and the clock calibrations, in a
+   fixed form to serial and the USB crash log; a `cxk` command compares
+   QEMU, Hyper-V and the rig. Before 9, because SMP bring-up trusts the
+   MADT.
+9. SMP readiness: a lock order table and a checker in debug builds,
+   per-CPU data, spinlocks that save interrupt state, the slab allocator.
+   Physical memory is reached only through the direct map's helpers, never
+   by adding `DIRECT_MAP_BASE` by hand, so a 32-bit port can swap in
+   temporary mappings. Then SMP on 8 cores, then the race tests of 6 as
+   the SMP stress suite (`-smp 8` under QEMU's multi-threaded TCG, Hyper-V
+   for real parallelism).
+10. A documentation pass: the README and `safety/CX_SAFETY.md` §1 brought
+    up to the branch as it stands.
+
+Alongside, one item per step where it fits (`safety/CX_SAFETY.md` §7):
+host fuzz targets (CXFS first, then CXEX, CXBI and packets), the ABI
+layout cross-check, random X programs against both compilers, and the X
+language work in `language/CX_X_PLAN.md`.
 
 ### Phase 2: the GUI foundation
 
