@@ -2,12 +2,14 @@
 // SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 // std/sync.xfxn - mutexes, once and condition variables for CXK X.
 // Aurora Tejeda / CATX Systems
+// Threads: any thread; that is what it is for.
 //
 //   import "sync.xfxn";
 //
 // Built on a 4-byte word and SYS_FUTEX_WAIT / SYS_FUTEX_WAKE (roadmap 1.5b2).
-// An uncontended lock or unlock is one compare-and-swap and SYS_THREAD_ID; the
-// kernel is asked to sleep or wake only when a thread has to wait. Each kind
+// An uncontended lock or unlock is one compare-and-swap, with the thread's id
+// read from its block (tls.xfxn); the kernel is asked to sleep or wake only
+// when a thread has to wait. Each kind
 // starts all zero, so a global or a zalloc'd one is ready as it stands.
 //
 // A MUTEX's word is 0 when free, or its owner's thread id, with FUTEX_WAITERS
@@ -19,9 +21,8 @@
 // debugger can name the holder. Not recursive: a thread that locks a mutex it
 // holds waits for itself forever. A thread that ends holding one leaves it
 // held.
-//
-// Until thread-local storage (1.5c) a thread learns its id from the kernel,
-// so lock and unlock each make one SYS_THREAD_ID call.
+
+import "tls.xfxn";
 
 struct mutex { w: u32 }
 struct once  { w: u32 }
@@ -43,12 +44,12 @@ const ONCE_DONE:    u32 = 3;
 global sync_threaded: u32;
 
 fn mutex_trylock(m: *mutex) -> i32 {
-    if (__atomic_cas(&m.w, 0, thread_id() as u32) == 0) { return 0; }
+    if (__atomic_cas(&m.w, 0, tls_tid()) == 0) { return 0; }
     return E_SHOULD_WAIT;
 }
 
 fn mutex_lock(m: *mutex) -> void {
-    let me: u32 = thread_id() as u32;
+    let me: u32 = tls_tid();
     if (__atomic_cas(&m.w, 0, me) == 0) { return; }
     while (1 == 1) {
         let v: u32 = __atomic_load(&m.w);
@@ -68,7 +69,7 @@ fn mutex_lock(m: *mutex) -> void {
 // -> 0, or E_ACCESS_DENIED (and nothing changes) if this thread does not
 // hold it.
 fn mutex_unlock(m: *mutex) -> i32 {
-    let me: u32 = thread_id() as u32;
+    let me: u32 = tls_tid();
     if ((__atomic_load(&m.w) & ~FUTEX_WAITERS) != me) { return E_ACCESS_DENIED; }
     if ((__atomic_xchg(&m.w, 0) & FUTEX_WAITERS) != 0) { futex_wake(&m.w, 1); }
     return 0;

@@ -15,7 +15,7 @@
  * hash it was built against and the loader refuses one that differs, so a
  * program never runs against numbers or layouts it was not compiled for.
  */
-#define CXK_ABI_HASH { 0x83, 0x16, 0xa8, 0x69, 0x04, 0x39, 0xf6, 0x5f, 0x77, 0xec, 0x55, 0x4a, 0x8a, 0x0f, 0xf4, 0xce, 0xfe, 0x5d, 0x12, 0xd2, 0x46, 0x8b, 0x8f, 0xd1, 0xfc, 0x56, 0xf2, 0xc3, 0x48, 0xbe, 0xa9, 0x62 }
+#define CXK_ABI_HASH { 0x5c, 0x03, 0xc9, 0xe4, 0xe2, 0xd5, 0x01, 0xe1, 0x4a, 0x90, 0xd3, 0xdc, 0x02, 0xd4, 0xa1, 0x28, 0x44, 0xc3, 0xb5, 0xf9, 0xdb, 0x7e, 0x7d, 0xf0, 0xeb, 0xdf, 0x87, 0x2f, 0x0a, 0x5f, 0x56, 0x09 }
 
 /*
  * CXK ABI v1 - the PUBLIC contract shared by the kernel, the .xoex executive,
@@ -44,7 +44,7 @@
  * line; bump both, and the DevKit's stamp, in the one commit that changes the
  * contract.
  */
-#define CXK_ABI_VERSION          29
+#define CXK_ABI_VERSION          30
 
 /*
  * ---- syscall numbers ----
@@ -98,8 +98,10 @@
  * cannot unmap and which goes when the thread ends. rsp starts 8 below the
  * top, where a return address would be, and that word is 0: an entry that
  * returns faults, so a thread ends with SYS_THREAD_EXIT. Unprivileged; the
- * job's thread limit and the memory quota are the bounds.
- * E_INVALID_ARGS: flags or reserved not 0, or an entry outside the user half.
+ * job's thread limit and the memory quota are the bounds. It runs with
+ * `tls` as its FS base from its first instruction (SYS_THREAD_SET_TLS).
+ * E_INVALID_ARGS: flags or reserved not 0, or an entry or a tls outside the
+ * user half.
  * E_OUT_OF_RANGE: a stack size outside THREAD_USTACK_MIN to _MAX.
  * E_NO_RESOURCES: no thread to spare. E_NO_MEMORY: no room for the stack.
  */
@@ -722,6 +724,26 @@
 #define SYS_PIPE_CREATE          0xC0
 
 /*
+ * threads 0xD0-0xDF (unprivileged: each acts on the calling thread only)
+ * ebx = base -> 0. The calling thread's FS base from now on: the block its
+ * thread-local storage reads through %fs (X's __tls_base reads %fs:0, which
+ * the block keeps pointing at itself). The kernel holds it per thread and
+ * never reads the block; userland makes it. 0 is none. A thread starts with
+ * SYS_THREAD_CREATE's `tls`, a program's first thread with none.
+ * E_INVALID_ARGS: outside the user half (a kernel or non-canonical address).
+ */
+#define SYS_THREAD_SET_TLS       0xD0
+
+/*
+ * ebx = a NUL-terminated name -> 0. Names the calling thread, as panic
+ * reports and OBJINFO_THREAD show it. A program's first thread starts as
+ * "proc", a SYS_THREAD_CREATE thread as "thread".
+ * E_INVALID_ARGS: empty, or no NUL within THREAD_NAME_MAX bytes.
+ * E_BAD_ADDRESS: not readable memory of the caller's.
+ */
+#define SYS_THREAD_SET_NAME      0xD1
+
+/*
  * ---- error codes (negative; returned in eax) ----
  * One list, shared by syscalls and services (docs/kernel/CX_SYSCALLS_IPC.md sec 6).
  */
@@ -1004,6 +1026,7 @@ struct thread_create_args {
     uint64_t arg0;                              /* in rdi */
     uint64_t arg1;                              /* in rsi */
     uint64_t stack_size;                        /* 0 is THREAD_USTACK_DEFAULT */
+    uint64_t tls;                               /* its FS base, the block %fs:0 reads; 0 for none */
     uint32_t flags;                             /* 0 */
     uint32_t reserved;                          /* 0 */
 };
@@ -1018,11 +1041,21 @@ struct thread_create_args {
  */
 #define THR_WITH_PROCESS         2
 
+/* A thread's name, NUL included (SYS_THREAD_SET_NAME). */
+#define THREAD_NAME_MAX          32
+
 struct thread_info {
     uint32_t tid;                               /* for display; names the thread until it is reaped */
     uint32_t ended;                             /* THR_* */
     int32_t code;                               /* THR_EXITED */
     uint32_t reserved;                          /* 0 */
+    /*
+     * nanoseconds it has run on a CPU, on the monotonic clock: kernel time
+     * on its behalf included, and interrupts that arrived while it ran.
+     * Final once it has ended.
+     */
+    uint64_t cpu_ns;
+    char name[THREAD_NAME_MAX];                 /* NUL-terminated; as it was when it ended */
 };
 
 /*
@@ -1506,8 +1539,8 @@ CXK_ABI_STATIC_ASSERT(sizeof(struct spawn_handle) == 16, "ABI layout: spawn_hand
 CXK_ABI_STATIC_ASSERT(sizeof(struct clock_info) == 8, "ABI layout: clock_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct queue_event) == 16, "ABI layout: queue_event");
 CXK_ABI_STATIC_ASSERT(sizeof(struct job_limits) == 16, "ABI layout: job_limits");
-CXK_ABI_STATIC_ASSERT(sizeof(struct thread_create_args) == 40, "ABI layout: thread_create_args");
-CXK_ABI_STATIC_ASSERT(sizeof(struct thread_info) == 16, "ABI layout: thread_info");
+CXK_ABI_STATIC_ASSERT(sizeof(struct thread_create_args) == 48, "ABI layout: thread_create_args");
+CXK_ABI_STATIC_ASSERT(sizeof(struct thread_info) == 56, "ABI layout: thread_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct mem_info) == 24, "ABI layout: mem_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct job_info) == 48, "ABI layout: job_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct process_info) == 40, "ABI layout: process_info");

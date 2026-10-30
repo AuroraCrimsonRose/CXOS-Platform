@@ -181,6 +181,35 @@ void syscall_thread_exit(int32_t code) {
 _Static_assert(THREAD_LIMIT_MAX < FUTEX_WAITERS, "a thread id must leave FUTEX_WAITERS clear");
 int syscall_thread_id(void) { return thread_current_id(); }
 
+/* The block itself is userland's (Aurora, 2026-10-30): the kernel holds the
+   base and loads it on every switch (sched.c's switch_to), as Serenity's
+   archctl and XNU's thread_set_tsd_base do. A base outside the user half is
+   refused where XNU zeroes it: a caller that asked for one is told. The
+   check is what keeps a non-canonical value from the wrmsr, which would
+   #GP in the kernel. */
+int syscall_thread_set_tls(uint64_t base) {
+    if (base >= USER_VLIMIT) return E_INVALID_ARGS;
+    thread_set_tls(thread_current_id(), base);
+    return E_OK;
+}
+
+/* The calling thread only, as XNU's pthread_setname_np: naming a sibling
+   (Haiku's rename_thread, within one team) waits for a use. */
+int syscall_thread_set_name(uint64_t name) {
+    /* A byte at a time through the recoverable copy: the name may end just
+       before an unmapped page, so a whole-buffer copy would refuse it. */
+    char buf[THREAD_NAME_MAX];
+    for (uint32_t i = 0; i < THREAD_NAME_MAX; i++) {
+        if (user_copy_in(&buf[i], name + i, 1) != 0) return E_BAD_ADDRESS;
+        if (buf[i] == 0) {
+            if (i == 0) return E_INVALID_ARGS;
+            thread_set_own_name(buf);
+            return E_OK;
+        }
+    }
+    return E_INVALID_ARGS;   /* no NUL within THREAD_NAME_MAX */
+}
+
 /* Unprivileged: the word is the caller's own memory (cpu/futex.c). */
 int syscall_futex_wait(uint64_t word, uint32_t expected, uint64_t deadline) {
     return futex_wait(word, expected, deadline);
@@ -730,11 +759,20 @@ int syscall_object_info(uint64_t a) {
                : oa.cap < sizeof(struct thread_info) ? E_BUFFER_TOO_SMALL : E_OK;
         struct thread_info ti = { 0 };
         if (rc == E_OK) {
-            /* Both set with the signal, under the wait lock (kthread_end). */
+            /* All set with the signal, under the wait lock (kthread_end).
+               Before that the thread has not passed kthread_end, so it
+               cannot have been reaped and k->tid still names it. */
             uint32_t f = kwait_lock();
             ti.tid   = (uint32_t)k->tid;
             ti.ended = k->ended;
             ti.code  = k->code;
+            if (k->ended == THR_RUNNING) {
+                ti.cpu_ns = thread_cpu_ns(k->tid);
+                thread_name_copy(k->tid, ti.name);
+            } else {
+                ti.cpu_ns = k->cpu_ns;
+                for (uint32_t i = 0; i < THREAD_NAME_MAX; i++) ti.name[i] = k->name[i];
+            }
             kwait_unlock(f);
         }
         kobj_unref(o);

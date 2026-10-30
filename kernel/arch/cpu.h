@@ -37,6 +37,12 @@ uintptr_t arch_kernel_stack_default(void);
 /* The stack an interrupt from user mode would switch to right now. */
 uintptr_t arch_kernel_stack_current(void);
 
+/* The base user mode's thread-local block is read through (FS on x86-64),
+   and what it is right now. The scheduler sets it on every switch to the
+   incoming thread's own; the caller has checked it is a user address. */
+void     arch_tls_base_set(uint64_t base);
+uint64_t arch_tls_base_current(void);
+
 /* Switch threads: save the running thread's callee-saved state on its own
    stack and its stack pointer in *old_sp, then resume the thread whose saved
    stack pointer is new_sp. Returns when something switches back. */

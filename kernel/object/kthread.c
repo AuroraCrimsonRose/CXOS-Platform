@@ -39,14 +39,18 @@ struct kthread *kthread_create(int tid) {
     return k;
 }
 
-void kthread_end(struct kthread *k, uint32_t how, int32_t code) {
+void kthread_end(struct kthread *k, uint32_t how, int32_t code, uint64_t cpu_ns, const char *name) {
     /* Under the wait lock, as the signal is set: a waiter that wakes on it
        reads how it ended, never THR_RUNNING. */
     uint32_t f = kwait_lock();
     int first = k->ended == THR_RUNNING;
     if (first) {
-        k->ended = how;
-        k->code  = code;
+        k->ended  = how;
+        k->code   = code;
+        k->cpu_ns = cpu_ns;
+        uint32_t i = 0;
+        for (; name && i + 1u < THREAD_NAME_MAX && name[i]; i++) k->name[i] = name[i];
+        k->name[i] = 0;
     }
     kwait_unlock(f);
     if (first) kobj_signal(&k->hdr, SIGNAL_THREAD_ENDED);

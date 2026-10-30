@@ -85,6 +85,7 @@ const DEADLINE_NEVER: u64 = 0x7FFFFFFFFFFFFFFF;
 const FUTEX_WAKE_ALL: u32 = 0xFFFFFFFF;
 const FUTEX_WAITERS:  u32 = 0x80000000;
 fn thread_id() -> i32 { return 1; }
+fn thread_set_tls(base: u64) -> i32 { return 0; }
 fn futex_wait(word: *u32, expected: u32, deadline: u64) -> i32 { return E_SHOULD_WAIT; }
 fn futex_wake(word: *u32, count: u32) -> i32 { return 0; }
 

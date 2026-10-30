@@ -488,10 +488,15 @@ Independent of the order above, and small enough to land whenever convenient:
        `os/xc`. `tests/x64/run/tls.xfxn` sets FS with `arch_prctl` on the
        Linux host; `tests/x64/run` joins the Differential and self-host
        corpora (`docs/language/CX_X_PLAN.md` §4). No ABI change.
-     - **1.5c2:** FS_BASE per thread (wrmsr on switch), set at
-       `SYS_THREAD_CREATE` and by a set call for the first thread; thread
-       names; per-thread CPU time; `std/sync.xfxn` caches the thread id in
-       the block instead of calling `SYS_THREAD_ID`.
+     - **1.5c2 (2026-10-30), done:** FS_BASE per thread, written on every
+       switch; set by `SYS_THREAD_CREATE`'s `tls` and `SYS_THREAD_SET_TLS`
+       (0xD0), a base outside the user half refused; `SYS_THREAD_SET_NAME`
+       (0xD1) for the calling thread; CPU time charged at each switch
+       (Serenity's way, not WRK's tick sampling); `OBJINFO_THREAD` gains
+       `cpu_ns` and `name`. X: `std/tls.xfxn` (a block per thread, the
+       first thread's a global, a spawned thread's a page it gives back), and
+       `std/sync.xfxn` reads the thread id from it. ABI 30
+       (`docs/kernel/CX_SYSCALLS_IPC.md` §7).
    - **After 1.5b:** a ring-3 X test runner: one boot runs many X tests as
      threads, with join deadlines catching hangs, so userland tests stop
      needing a kernel self-test each.

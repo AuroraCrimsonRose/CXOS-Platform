@@ -89,6 +89,15 @@ struct thread {
     struct kthread *obj;
     /* It ended itself, through SYS_THREAD_EXIT, with exit_code. */
     uint8_t   self_exit;
+    /* Its FS base in ring 3 (SYS_THREAD_SET_TLS): loaded on every switch to
+       it. 0 for none, and for every kernel thread. */
+    uint64_t  tls_base;
+    /* CPU time: what it has run before, in ns, and when it last started
+       running, on timer_now_ns (switch_to charges the difference). */
+    uint64_t  cpu_ns;
+    uint64_t  run_since;
+    /* `name` points here once ring 3 has named it (SYS_THREAD_SET_NAME). */
+    char      own_name[THREAD_NAME_MAX];
 };
 
 /* initialize the scheduler (registers the currently-running code as thread 0). */
@@ -212,6 +221,21 @@ void thread_set_obj(int id, struct kthread *k);
 void thread_note_self_exit(int32_t code);
 /* a live thread's name, or 0 (for panic reports) */
 const char *thread_name(int id);
+
+/* The FS base thread `id` runs ring 3 with (SYS_THREAD_SET_TLS): set on a
+   HELD thread before it starts, or on the calling thread, where it takes
+   effect at once. The caller has checked it is a user address. */
+void     thread_set_tls(int id, uint64_t base);
+uint64_t thread_tls(int id);
+/* Name the calling thread: `name` (NUL-terminated, shorter than
+   THREAD_NAME_MAX) is copied. */
+void     thread_set_own_name(const char *name);
+/* The CPU time thread `id` has had, in ns, the running slice included; 0 for
+   no such thread. Into `name` (THREAD_NAME_MAX bytes), its name. Interrupts
+   off, or a lock that keeps the thread from being reaped (OBJINFO_THREAD
+   holds the wait lock, which thread_exit's kthread_end takes). */
+uint64_t thread_cpu_ns(int id);
+void     thread_name_copy(int id, char *name);
 int thread_is_alive(int id);
 
 /* mark a thread as a user (ring-3) process. */

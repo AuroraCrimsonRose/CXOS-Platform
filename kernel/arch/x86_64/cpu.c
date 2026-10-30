@@ -49,6 +49,15 @@ uintptr_t arch_kernel_stack_default(void) { return gdt64_default_rsp0(); }
 
 uintptr_t arch_kernel_stack_current(void) { return gdt64_rsp0(); }
 
+/* FS_BASE by MSR: the FX-8350 has no FSGSBASE. Written on every switch, not
+   only when it differs from the last value written, because ring 3 can change
+   it behind the kernel's back: loading a selector into FS sets the base from
+   the descriptor (XNU's machine_thread_set_tsd_base reads the MSR back for
+   the same reason). The kernel itself never uses FS. */
+void arch_tls_base_set(uint64_t base) { wrmsr(MSR_FS_BASE, base); }
+
+uint64_t arch_tls_base_current(void) { return rdmsr(MSR_FS_BASE); }
+
 void arch_run_on_stack(uintptr_t top, void (*fn)(void)) {
     /* Fixed registers, as on x86-32: the compiler may hand out rbp, which the
        xor clears before the call reads it. `top` is 16-byte aligned, so fn is

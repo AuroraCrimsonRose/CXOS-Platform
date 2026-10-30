@@ -22,12 +22,17 @@
 
 #include <stdint.h>
 #include "object/kobj.h"
+#include "cxk_abi.h"      /* THREAD_NAME_MAX */
 
 struct kthread {
     struct kobj hdr;     /* first; KOBJ_THREAD */
     int         tid;     /* the scheduler's id while it lives */
     uint32_t    ended;   /* THR_*; THR_RUNNING until kthread_end */
     int32_t     code;    /* THR_EXITED */
+    /* What it had run and was called when it ended (OBJINFO_THREAD reads
+       the live thread's own until then). */
+    uint64_t    cpu_ns;
+    char        name[THREAD_NAME_MAX];
 };
 
 /* Register the type and its cache. Once, at boot. */
@@ -37,8 +42,9 @@ void kthread_sys_init(void);
    no memory. */
 struct kthread *kthread_create(int tid);
 
-/* It has ended, `how` (THR_EXITED, THR_WITH_PROCESS), with `code`: noted and
-   SIGNAL_THREAD_ENDED set. Only the first call counts. */
-void kthread_end(struct kthread *k, uint32_t how, int32_t code);
+/* It has ended, `how` (THR_EXITED, THR_WITH_PROCESS), with `code`, having
+   run `cpu_ns` and named `name` (copied, cut to THREAD_NAME_MAX - 1): noted
+   and SIGNAL_THREAD_ENDED set. Only the first call counts. */
+void kthread_end(struct kthread *k, uint32_t how, int32_t code, uint64_t cpu_ns, const char *name);
 
 #endif

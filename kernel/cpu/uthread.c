@@ -72,6 +72,9 @@ int syscall_thread_create(uint64_t a) {
     if (user_copy_in(&ta, a, sizeof ta) != 0) return E_BAD_ADDRESS;
     if (ta.flags || ta.reserved)                     return E_INVALID_ARGS;
     if (ta.entry == 0 || ta.entry >= USER_VLIMIT)    return E_INVALID_ARGS;
+    /* As SYS_THREAD_SET_TLS: a base wrmsr would refuse (#GP, in the kernel)
+       never reaches the switch. */
+    if (ta.tls >= USER_VLIMIT)                       return E_INVALID_ARGS;
     uint64_t size = ta.stack_size ? ta.stack_size : THREAD_USTACK_DEFAULT;
     if (size < THREAD_USTACK_MIN || size > THREAD_USTACK_MAX) return E_OUT_OF_RANGE;
     uint32_t len = ((uint32_t)size + PAGE_SIZE - 1u) & ~(PAGE_SIZE - 1u);
@@ -96,6 +99,7 @@ int syscall_thread_create(uint64_t a) {
         return id == -1 ? E_NO_RESOURCES : id;
     }
     k->tid = id;
+    thread_set_tls(id, ta.tls);            /* before it can run: none of its code runs without */
     thread_set_arg(id, r, uthread_drop);   /* the record's from here */
     thread_set_obj(id, k);
 

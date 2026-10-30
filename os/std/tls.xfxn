@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// std/tls.xfxn - each thread's own block, for CXK X.
+// Aurora Tejeda / CATX Systems
+// Threads: each thread reads its own block; only the first thread's is set
+//   lazily, before a second exists.
+//
+//   import "tls.xfxn";
+//
+// Thread-local storage (roadmap 1.5c). A thread's block is reached through
+// FS: __tls_base() reads the word at %fs:0, and the block's first word holds
+// the block's own address (the x86-64 ELF convention), since the FX-8350 has
+// no FSGSBASE to read the base itself. The kernel only holds each thread's
+// base and loads it as the thread runs (SYS_THREAD_SET_TLS, and
+// SYS_THREAD_CREATE's tls); the block is this library's.
+//
+// The first thread's block is a global, set the first time anything asks for
+// it (tls_self). thread_spawn asks before it starts a second thread, so the
+// first thread never races another to set it. Each thread_spawn thread gets
+// a block of its own from its creator, in place before its first
+// instruction, and gives it back as it ends (thread.xfxn). A thread made with
+// the prelude's thread_create directly and no tls has no block: tls_self
+// there faults.
+
+struct tls_block {
+    self: usize,     // its own address: what %fs:0 reads
+    tid: u32,        // SYS_THREAD_ID, asked once
+    reserved: u32
+}
+
+global tls_first: tls_block;
+// 1 once the first thread's block is set. Set by that thread before any
+// other exists, so a thread that finds it 0 is the first.
+global tls_ready: u32;
+
+fn tls_addr(b: *tls_block) -> usize { return b as usize; }
+
+fn tls_first_init() -> void {
+    tls_first.self = tls_addr(&tls_first);
+    tls_first.tid  = thread_id() as u32;
+    thread_set_tls(tls_first.self as u64);
+    __atomic_store(&tls_ready, 1);
+}
+
+// The calling thread's block.
+fn tls_self() -> *tls_block {
+    if (__atomic_load(&tls_ready) == 0) { tls_first_init(); }
+    return __tls_base() as *tls_block;
+}
+
+// The calling thread's id (SYS_THREAD_ID), from its block: no kernel call.
+fn tls_tid() -> u32 { return tls_self().tid; }

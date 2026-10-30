@@ -933,6 +933,37 @@ static int t_rsp0_follows_thread(void) {
            arch_kernel_stack_current() == mine && sched_active_count() == 1;
 }
 
+/* FS_BASE, the same way (roadmap 1.5c2): two threads set bases of their own
+   and take turns with this one, and after every switch back each finds the
+   MSR holding its own, this one its own (none). The two bases are user
+   addresses at both ends of the half: nothing here reads through them. */
+static volatile int fsb_bad, fsb_done;
+static void fsb_run(uint64_t mine) {
+    thread_set_tls(thread_current_id(), mine);
+    for (int i = 0; i < 4; i++) {
+        yield();
+        if (arch_tls_base_current() != mine) fsb_bad++;
+    }
+    fsb_done++;
+}
+static void fsb_low(void)  { fsb_run(0x0000000000001000ull); }
+static void fsb_high(void) { fsb_run(USER_VLIMIT - 0x1000u); }
+
+static int t_tls_follows_thread(void) {
+    int me = thread_current_id();
+    uint64_t mine = thread_tls(me);
+    fsb_bad = fsb_done = 0;
+    if (thread_create("fsb_low", fsb_low) < 0) return 0;
+    if (thread_create("fsb_high", fsb_high) < 0) return 0;
+    for (int i = 0; i < 32 && fsb_done < 2; i++) {
+        yield();
+        if (arch_tls_base_current() != mine) fsb_bad++;
+    }
+    settle();
+    return fsb_done == 2 && fsb_bad == 0 && arch_tls_base_current() == mine &&
+           sched_active_count() == 1;
+}
+
 /* The MSI pool: a vector from it reaches the handler it was given, a freed
    one reaches nothing, and the slot is handed out again. The vector is raised
    with int, which is how a device's write arrives at the IDT. */
@@ -1320,6 +1351,7 @@ static const struct ktest_arch_case cases[] = {
     { "a new thread starts with interrupts on",         t_new_thread_irqs_on },
     { "the tick preempts threads that never yield",     t_preempt },
     { "RSP0 follows the running thread",                t_rsp0_follows_thread },
+    { "FS_BASE follows the running thread",             t_tls_follows_thread },
     { "an MSI vector reaches its handler, then nothing", t_msi_pool },
     { "syscall: EFER.SCE, STAR, LSTAR, FMASK; sysret's selectors", t_syscall_msrs },
     { "ring 3 starts at CPL 3, registers clear; SYS_EXIT", t_ring3_cpl },

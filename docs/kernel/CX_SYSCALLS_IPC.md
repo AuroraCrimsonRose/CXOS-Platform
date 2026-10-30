@@ -563,10 +563,39 @@ kernel gives the word no meaning; `os/std/sync.xfxn` does: a mutex word is
 inheritance stays possible; `once_run`, and condition variables on a
 sequence word (`cond_wait`, `cond_wait_until`, `cond_signal`,
 `cond_broadcast`). From the first `thread_spawn`, the heap and the output
-take a library lock; a program with one thread pays nothing for it. Until
-thread-local storage (1.5c), lock and unlock each ask the kernel for the
-thread's id. Not done: robust mutexes (a thread that ends holding one
-leaves it held), priority inheritance, requeue.
+take a library lock; a program with one thread pays nothing for it. Lock
+and unlock read the thread's id from its thread-local block (1.5c2). Not
+done: robust mutexes (a thread that ends holding one leaves it held),
+priority inheritance, requeue.
+
+**Thread-local storage, names and CPU time, as built (1.5c2, ABI 30):**
+the kernel holds each thread's FS base and loads it on every switch
+(`switch_to` in `kernel/cpu/sched.c`, the one path the three switch sites
+share, with `IA32_FS_BASE` written each time: ring 3 can change the base
+behind the kernel's back by loading FS); it never reads the block, which is
+userland's (Serenity `sys$archctl` and `tls_pointer` in `sys$create_thread`;
+XNU `thread_set_tsd_base`). `SYS_THREAD_CREATE`'s `tls` is the new thread's
+base from its first instruction, and `SYS_THREAD_SET_TLS(base)` sets the
+caller's own (0xD0; a program's first thread starts with none). A base
+outside the user half is `E_INVALID_ARGS` in both, where XNU's
+`machine_thread_set_tsd_base` silently zeroes a non-canonical one; the
+check is what keeps the value from a `wrmsr` that would fault in the kernel.
+`SYS_THREAD_SET_NAME(name)` (0xD1) names the calling thread only, as XNU's
+`pthread_setname_np` does (Haiku's `rename_thread` names any thread of the
+team): up to `THREAD_NAME_MAX` - 1 bytes, NUL-terminated; empty, or no NUL
+within `THREAD_NAME_MAX`, is `E_INVALID_ARGS`. A first thread is "proc", a
+`SYS_THREAD_CREATE` one "thread". CPU time is charged at the switch from
+the monotonic clock, as Serenity's `Thread::update_time_scheduled` does,
+not sampled per tick as WRK's `KeUpdateRunTime`: a thread that blocks
+within every tick is charged what it ran. One total, kernel time on the
+thread's behalf and interrupts that arrived while it ran included (no
+user/kernel split yet). `OBJINFO_THREAD` adds `cpu_ns` and `name`, read
+from the live thread until it ends and from what the thread object kept
+then. In X (`os/std/tls.xfxn`), a block's first word is its own address,
+so `__tls_base()` finds it, and the second the thread's id, asked once; the
+first thread's block is a global set at first use, and each `thread_spawn`
+thread's is a page its creator maps, which the thread unmaps as it ends
+(`thread_end`, which returning from the thread's function goes through).
 
 **Streams and files:**
 `pipe_create(size)`, `io_read(h, buf, offset)`, `io_write(h, buf, offset)`

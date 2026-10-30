@@ -2,6 +2,8 @@
 // SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 // std/file.xfxn - files and directories for CXK X.
 // Aurora Tejeda / CATX Systems
+// Threads: any thread. Each call is one system call; threads sharing a handle
+//   share its position.
 //
 //   import "file.xfxn";
 //

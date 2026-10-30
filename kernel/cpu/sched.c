@@ -39,6 +39,7 @@ static inline struct thread *live(int id) {
     struct thread *t = th(id);
     return (t && t->state != THREAD_UNUSED) ? t : 0;
 }
+static uint64_t cpu_ns_of(const struct thread *t);
 static int initialized = 0;
 
 /* Interrupts off across a switch. yield() and thread_exit() used to run with
@@ -187,7 +188,7 @@ static void thread_free(struct thread *t) {
     t->arg_drop = 0;
     /* A thread that never ran ends here, with its process (it had no say). */
     if (t->obj) {
-        kthread_end(t->obj, THR_WITH_PROCESS, 0);
+        kthread_end(t->obj, THR_WITH_PROCESS, 0, t->cpu_ns, t->name);
         kobj_unref(&t->obj->hdr);
         t->obj = 0;
     }
@@ -274,6 +275,9 @@ static int thread_create_in(const char *name, void (*entry)(void), int held, str
     t->in_call     = 0;
     t->obj         = 0;
     t->self_exit   = 0;
+    t->tls_base    = 0;
+    t->cpu_ns      = 0;
+    t->run_since   = 0;
     /* Last: from here the timer may run it. */
     __atomic_store_n(&t->state, held ? THREAD_HELD : THREAD_READY, __ATOMIC_RELEASE);
     return slot;
@@ -332,6 +336,41 @@ static void update_address_space(void) {
     addr_space_switch(mine ? mine : addr_space_kernel());
 }
 
+/* `next` runs from here, in place of the current thread: everything a switch
+   changes but the stack, which context_switch does after. The three switch
+   sites (yield, sched_preempt_point, thread_exit) all come through here, so
+   a thread never runs with another's esp0, address space or FS base.
+   Interrupts off.
+
+   CPU time is charged here, by the clock, as Serenity's
+   Thread::update_time_scheduled does, rather than sampled a tick at a time
+   (WRK's KeUpdateRunTime): a thread that blocks inside every tick is
+   charged what it ran, not nothing. Interrupts are charged to whoever they
+   arrived on. */
+static void switch_to(int next) {
+    uint64_t now = timer_now_ns();
+    struct thread *prev = self();
+    if (now > prev->run_since) prev->cpu_ns += now - prev->run_since;
+    th(next)->run_since = now;
+    th(next)->state = THREAD_RUNNING;
+    current = next;
+    update_kernel_stack();
+    update_address_space();
+    arch_tls_base_set(self()->tls_base);
+}
+
+/* Halt (timer_idle) with nothing to run, on the current thread's stack but
+   not on its time: it is blocked, or ending, and a halt in its name would
+   charge a thread that sleeps the whole of its sleep. There is no idle
+   thread to give the time to (WRK's), so it is no one's. */
+static void idle_uncharged(void) {
+    struct thread *t = self();
+    uint64_t now = timer_now_ns();
+    if (now > t->run_since) t->cpu_ns += now - t->run_since;
+    timer_idle();
+    t->run_since = timer_now_ns();
+}
+
 void thread_set_space(int id, paddr_t pd_phys) {
     struct proc *p = thread_proc(id);
     if (p) p->pd_phys = pd_phys;
@@ -384,7 +423,7 @@ int thread_is_blocked(int id) {
    be a long way off (timer_idle). */
 static void idle_while_blocked(void) {
     uint32_t f = irq_save();
-    if (self()->state == THREAD_BLOCKED && next_runnable() == current) timer_idle();
+    if (self()->state == THREAD_BLOCKED && next_runnable() == current) idle_uncharged();
     irq_restore(f);
 }
 
@@ -540,10 +579,7 @@ void yield(void) {
     if (next == prev) { irq_restore(flags); return; }   /* only one runnable thread */
 
     if (th(prev)->state == THREAD_RUNNING) th(prev)->state = THREAD_READY;
-    th(next)->state = THREAD_RUNNING;
-    current = next;
-    update_kernel_stack();
-    update_address_space();
+    switch_to(next);
 
     context_switch(&th(prev)->esp, th(next)->esp);
     /* when we resume here later, we're `prev` again, now running */
@@ -578,7 +614,8 @@ void thread_exit(void) {
         proc_note_exit(me->proc, me->exit_code);
     /* Its handles first, then its process's: a waiter on the process finds
        every thread of it ended. */
-    if (me->obj) kthread_end(me->obj, me->self_exit ? THR_EXITED : THR_WITH_PROCESS, me->exit_code);
+    if (me->obj) kthread_end(me->obj, me->self_exit ? THR_EXITED : THR_WITH_PROCESS, me->exit_code,
+                             cpu_ns_of(me), me->name);
     /* The last one out ends its process now and wakes the waiters: one may be
        the only thread left to run, and it cannot wait for the reaper. */
     if (self()->proc) proc_thread_stopped(self()->proc);
@@ -594,13 +631,10 @@ void thread_exit(void) {
        thread reaps it, which cannot happen before we switch away. */
     int next = next_runnable();
     while (next == current) {
-        timer_idle();
+        idle_uncharged();
         next = next_runnable();
     }
-    th(next)->state = THREAD_RUNNING;
-    current = next;
-    update_kernel_stack();
-    update_address_space();
+    switch_to(next);
     uintptr_t dummy;
     context_switch(&dummy, th(next)->esp);   /* save into dummy (discarded) */
     /* never reached */
@@ -678,10 +712,7 @@ void sched_preempt_point(void) {
 
     in_switch = 1;
     if (th(prev)->state == THREAD_RUNNING) th(prev)->state = THREAD_READY;
-    th(next)->state = THREAD_RUNNING;
-    current = next;
-    update_kernel_stack();
-    update_address_space();
+    switch_to(next);
     in_switch = 0;
     context_switch(&th(prev)->esp, th(next)->esp);
     /* resumed as `prev` later */
@@ -708,6 +739,52 @@ const char *thread_name(int id) {
     struct thread *t = live(id);
     return t ? t->name : 0;
 }
+
+void thread_set_tls(int id, uint64_t base) {
+    struct thread *t = live(id);
+    if (!t) return;
+    uint32_t f = irq_save();
+    t->tls_base = base;
+    if (id == current) arch_tls_base_set(base);
+    irq_restore(f);
+}
+
+uint64_t thread_tls(int id) {
+    struct thread *t = live(id);
+    return t ? t->tls_base : 0;
+}
+
+void thread_set_own_name(const char *name) {
+    struct thread *t = self();
+    uint32_t i = 0;
+    for (; i + 1u < THREAD_NAME_MAX && name[i]; i++) t->own_name[i] = name[i];
+    t->own_name[i] = 0;
+    t->name = t->own_name;
+}
+
+static uint64_t cpu_ns_of(const struct thread *t) {
+    uint64_t ns = t->cpu_ns;
+    if (t->id == current) {
+        uint64_t now = timer_now_ns();
+        if (now > t->run_since) ns += now - t->run_since;
+    }
+    return ns;
+}
+
+uint64_t thread_cpu_ns(int id) {
+    struct thread *t = live(id);
+    return t ? cpu_ns_of(t) : 0;
+}
+
+/* Into `out`, THREAD_NAME_MAX bytes: t's name, cut short and NUL-terminated. */
+static void name_into(const struct thread *t, char *out) {
+    uint32_t i = 0;
+    const char *n = t && t->name ? t->name : "";
+    for (; i + 1u < THREAD_NAME_MAX && n[i]; i++) out[i] = n[i];
+    while (i < THREAD_NAME_MAX) out[i++] = 0;
+}
+
+void thread_name_copy(int id, char *name) { name_into(live(id), name); }
 
 /* is thread `id` a live (non-exited, allocated) thread? Used for stale-lock
    detection: an advisory lock owned by a dead pid is ignorable. */

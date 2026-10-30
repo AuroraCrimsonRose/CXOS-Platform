@@ -36,6 +36,7 @@
 #define MSR_STAR      0xC0000081u
 #define MSR_LSTAR     0xC0000082u
 #define MSR_FMASK     0xC0000084u
+#define MSR_FS_BASE   0xC0000100u   /* ring 3's thread-local block (arch_tls_base_set) */
 #define EFER_SCE      (1ull << 0)
 #define STAR_VALUE    (((uint64_t)(USER_DATA_SEL - 8) << 48) | ((uint64_t)GDT64_KCODE << 32))
 #define FMASK_VALUE   0x47700ull     /* TF IF DF IOPL NT AC */

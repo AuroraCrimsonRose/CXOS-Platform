@@ -239,6 +239,14 @@ static int decode_file_unlock(const uintptr_t *a) {
 #endif
 }
 static int decode_pipe_create(const uintptr_t *a) { return syscall_pipe_create((uint32_t)a[0], (uint64_t)a[1]); }
+static int decode_thread_set_tls(const uintptr_t *a) {
+#if SYSCALL_PAIRS
+    return syscall_thread_set_tls((uint64_t)((uint64_t)a[0] | (uint64_t)a[1] << 32));
+#else
+    return syscall_thread_set_tls((uint64_t)a[0]);
+#endif
+}
+static int decode_thread_set_name(const uintptr_t *a) { return syscall_thread_set_name((uint64_t)a[0]); }
 
 const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_EXIT] = decode_exit,
@@ -335,4 +343,6 @@ const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_FILE_LOCK] = decode_file_lock,
     [SYS_FILE_UNLOCK] = decode_file_unlock,
     [SYS_PIPE_CREATE] = decode_pipe_create,
+    [SYS_THREAD_SET_TLS] = decode_thread_set_tls,
+    [SYS_THREAD_SET_NAME] = decode_thread_set_name,
 };

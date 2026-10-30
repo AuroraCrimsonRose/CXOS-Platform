@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
 // std/thread.xfxn - threads for CXK X.
 // Aurora Tejeda / CATX Systems
+// Threads: any thread may spawn, join and end threads.
 //
 //   import "thread.xfxn";
 //
@@ -15,31 +16,65 @@
 // and the rest of the library keep no lock: read input from one thread.
 // sync.xfxn has the mutexes, once and condition variables to share
 // anything else with.
+//
+// Each thread has a block of its own (tls.xfxn), a page its creator maps and
+// the kernel puts in FS before the thread's first instruction. The thread
+// gives it back as it ends: by returning from its function, or by calling
+// thread_end. The prelude's thread_exit called directly leaves the page
+// mapped until the process ends.
 
 import "sync.xfxn";
+import "mem.xfxn";
 
 type thread_fn = fn(u64) -> i32;
 
+const THREAD_BLOCK_BYTES: u32 = 4096;   // a page: the least a mapping is
+
+// End the calling thread with `code`, giving its block back first. After the
+// unmap nothing reads through FS: thread_exit is the kernel call alone.
+fn thread_end(code: i32) -> void {
+    let b: *tls_block = __tls_base() as *tls_block;
+    vm_unmap(b.self as u64, 0);
+    thread_exit(code);
+}
+
 // What every thread runs first: the function and its argument arrive as
-// SYS_THREAD_CREATE's arg0 and arg1. A function that returned to the kernel's
-// 0 would fault, so its return is the thread's SYS_THREAD_EXIT.
+// SYS_THREAD_CREATE's arg0 and arg1, its block is already in FS. A function
+// that returned to the kernel's 0 would fault, so its return ends the thread.
 fn thread_main(f: thread_fn, arg: u64) -> void {
-    thread_exit(f(arg));
+    let b: *tls_block = __tls_base() as *tls_block;
+    b.tid = thread_id() as u32;
+    thread_end(f(arg));
 }
 
 // A new thread running f(arg), with a stack of `stack` bytes (0 for the
 // default, THREAD_USTACK_DEFAULT) -> its handle, or -E_*.
 fn thread_spawn(f: thread_fn, arg: u64, stack: u64) -> i32 {
+    // the first thread's block, while it is the only thread
+    tls_self();
+    let m: vm_map_args;
+    memzero((&m) as *u8, sizeof m);
+    m.object = MOBJ_ANON;
+    m.length = THREAD_BLOCK_BYTES;
+    m.prot   = MPROT_READ | MPROT_WRITE;
+    let rc: i32 = vm_map(&m);
+    if (rc != E_OK) { return rc; }
+    let b: *tls_block = (m.addr as usize) as *tls_block;
+    b.self = m.addr as usize;
+
     let a: thread_create_args;
     a.entry      = thread_main as u64;
     a.arg0       = f as u64;
     a.arg1       = arg;
     a.stack_size = stack;
+    a.tls        = m.addr;
     a.flags      = 0;
     a.reserved   = 0;
     // before the thread exists, and from outside every lock (sync_threaded)
     __atomic_store(&sync_threaded, 1);
-    return thread_create(&a);
+    let h: i32 = thread_create(&a);
+    if (h < 0) { vm_unmap(m.addr, 0); }
+    return h;
 }
 
 // Wait for thread `h` to end, until `deadline` on the monotonic clock
