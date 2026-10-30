@@ -237,7 +237,7 @@ public sealed class X64Emitter
     {
         IrBinary x => x.Dst, IrUnary x => x.Dst, IrCompare x => x.Dst, IrConvert x => x.Dst,
         IrLoad x => x.Dst, IrPtrAdd x => x.Dst, IrCall x => x.Dst, IrSyscall x => x.Dst,
-        IrAtomic x => x.Dst,
+        IrAtomic x => x.Dst, IrTlsBase x => x.Dst,
         _ => null,
     };
 
@@ -361,6 +361,9 @@ public sealed class X64Emitter
             case IrCall c: Call(c); break;
             case IrSyscall s: Syscall(s); break;
             case IrAtomic a: Atomic(a); break;
+            /* The word at FS_BASE + 0, the block's address of itself: one
+               load, with no FSGSBASE (rdfsbase) on the FX-8350. */
+            case IrTlsBase t: T("movq %fs:0, %rax"); Put(t.Dst, "rax"); break;
             default: throw new InvalidOperationException($"the x86-64 back end has no rule for {i.GetType().Name}");
         }
     }

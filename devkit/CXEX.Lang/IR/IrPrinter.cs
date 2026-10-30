@@ -116,6 +116,7 @@ public static class IrPrinter
         IrCall c => Call(c),
         IrSyscall s => $"%{s.Dst.Id} = syscall {IrTypes.Name(s.Dst.Type)} ({string.Join(", ", s.Args.Select(TV))})",
         IrAtomic a => Atomic(a),
+        IrTlsBase t => $"%{t.Dst.Id} = tlsbase {IrTypes.Name(t.Dst.Type)}",
         _ => "?",
     };
 

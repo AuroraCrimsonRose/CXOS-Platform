@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// __tls_base() (roadmap 1.5c1) on x86-64 Linux, built without the prelude:
+// FS_BASE is set here with arch_prctl (158; ARCH_SET_FS 0x1002, ARCH_GET_FS
+// 0x1003), as CXK sets it per thread. The intrinsic reads the word at %fs:0,
+// not FS_BASE itself, so a block whose first word names another block gives
+// that other block: the self-pointer is userland's to keep.
+struct tcb { self: usize, tid: u32, pad: u8, val: u64 }
+global a: tcb = tcb { self: 0, tid: 0, pad: 0, val: 0 };
+global b: tcb = tcb { self: 0, tid: 0, pad: 0, val: 0 };
+global c: tcb = tcb { self: 0, tid: 0, pad: 0, val: 0 };
+
+fn set_fs(t: *tcb) -> i32 { return __syscall(158, 0x1002, t); }
+fn addr(t: *tcb) -> usize { return t as usize; }
+
+// through a call, so the base is read where the block was not named
+fn bump() -> u64 {
+    let t: *tcb = __tls_base() as *tcb;
+    t.val += 1;
+    return t.val;
+}
+
+fn main() -> i32 {
+    a.self = addr(&a);
+    b.self = addr(&b);
+    c.self = addr(&a);                  // c names a, not itself
+    if (set_fs(&a) != 0) { return 1; }
+    let fs: usize = 0;
+    if (__syscall(158, 0x1003, &fs) != 0 || fs != addr(&a)) { return 2; }
+    if (__tls_base() != addr(&a)) { return 3; }
+    let t: *tcb = __tls_base() as *tcb;
+    t.tid = 7;
+    t.val = 0xFFFF_FFFF;
+    if (a.tid != 7 || bump() != 0x1_0000_0000 || a.val != 0x1_0000_0000) { return 4; }
+
+    if (set_fs(&b) != 0) { return 5; }     // another thread's block, as a switch makes it
+    if (__tls_base() != addr(&b)) { return 6; }
+    if (bump() != 1 || b.val != 1 || a.val != 0x1_0000_0000) { return 7; }
+
+    if (set_fs(&c) != 0) { return 8; }     // FS names c; its word names a
+    if (__tls_base() != addr(&a)) { return 9; }
+    // a block on the stack, above 4 GB on x86-64 Linux: all 64 bits come back
+    let s: tcb = tcb { self: 0, tid: 0, pad: 0, val: 0 };
+    s.self = addr(&s);
+    if (set_fs(&s) != 0) { return 10; }
+    let wide: u64 = __tls_base() as u64;
+    if (wide >> 32 == 0) { return 11; }    // the test needs a high address
+    if (wide != addr(&s) as u64 || bump() != 1 || s.val != 1) { return 12; }
+    return 0;
+}

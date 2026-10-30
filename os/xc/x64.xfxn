@@ -369,6 +369,9 @@ fn x6_ins(e: *x64e, i: *irins) -> void {
     } else if (op == IO_CALL) { x6_call(e, i); }
     else if (op == IO_SYSCALL) { x6_syscall(e, i); }
     else if (op == IO_ATOMIC) { x6_atomic(e, i); }
+    // The word at FS_BASE + 0, the block's address of itself: one load, with
+    // no FSGSBASE (rdfsbase) on the FX-8350.
+    else if (op == IO_TLSBASE) { xt(e, "movq %fs:0, %rax"); x6_put(e, i.dst, XR_AX); }
 }
 
 /* Sequentially consistent on x86-64 (the mapping C11 compilers use): a load

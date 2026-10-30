@@ -65,6 +65,7 @@ struct sema {
     t_u32: u32,
     t_bool: u32,
     t_void: u32,
+    t_usize: u32,
     expand_enums: bool, // set by the emitter: a plain enum is its backing integer
 }
 
@@ -171,7 +172,10 @@ fn atomic_arity(op1: u32) -> u32 {
     if (op1 == 5) { return 3; }
     return 2;
 }
-fn is_intrinsic(s: *sema, n: u32) -> bool { return node_name_is(s, n, "__syscall") || atomic_op(s, n) != 0; }
+// __tls_base() -> usize, the thread-local block (C#'s Intrinsics.cs, 1.5c1)
+fn is_intrinsic(s: *sema, n: u32) -> bool {
+    return node_name_is(s, n, "__syscall") || node_name_is(s, n, "__tls_base") || atomic_op(s, n) != 0;
+}
 
 fn map_get_node(s: *sema, m: *smap, n: u32) -> u32 { let x: *node = nd(s, n); return smap_get(m, txt(s, x.text), x.tlen); }
 
@@ -407,6 +411,7 @@ fn sema_init(s: *sema, p: *parser, dg: *diags) -> void {
     s.t_u32 = mk_prim(s, PRIM_U32);
     s.t_bool = mk_prim(s, PRIM_BOOL);
     s.t_void = mk_prim(s, PRIM_VOID);
+    s.t_usize = mk_prim(s, PRIM_USIZE);
     s.cur_return = s.t_void;
     s.expand_enums = false;
 }
@@ -1844,6 +1849,12 @@ fn check_call(s: *sema, c: u32) -> u32 {
         return s.t_i32;
     }
     if (nd(s, callee).kind == nk.e_name && atomic_op(s, callee) != 0) { return check_atomic(s, c, callee, atomic_op(s, callee)); }
+    if (nd(s, callee).kind == nk.e_name && node_name_is(s, callee, "__tls_base")) {
+        if (n != 0) { eb(s); es(s, "'__tls_base' expects 0 args, got "); eu(s, n); ee(s, c); }
+        let i: u32 = 0;
+        while (i < n) { check_expr(s, list_at(s.p, nd(s, c).list, i)); i += 1; }
+        return s.t_usize;
+    }
     let ct: u32 = check_expr(s, callee);
     if (nd(s, callee).kind == nk.e_name) {
         let sy: u32 = st_get(&s.resolved, callee);

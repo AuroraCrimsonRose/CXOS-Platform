@@ -168,6 +168,7 @@ public sealed class IrInterpreter
                             break;
                         }
                     case IrSyscall: throw new Trap("system call");
+                    case IrTlsBase: throw new Trap("thread-local base");
                     case IrAtomic at:
                         {
                             /* One thread: atomic is ordinary, and the old value is the result. */

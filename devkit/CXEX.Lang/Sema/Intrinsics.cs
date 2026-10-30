@@ -17,10 +17,17 @@ namespace CXEX.Lang.Sema;
  *   __atomic_xchg(p, v)         *p = v
  *   __atomic_add(p, v)          *p = *p + v, wrapping
  *   __atomic_cas(p, e, n)       *p = n if *p == e; it worked if the result is e
+ *
+ * __tls_base() (roadmap 1.5c1) is the calling thread's thread-local block, a
+ * usize to turn into a pointer with `as`. It reads the word at %fs:0, so the
+ * block's first word must hold the block's own address: the x86-64 ELF
+ * convention, which needs no FSGSBASE (the FX-8350 has none). The kernel
+ * holds FS_BASE per thread; userland makes the block and stores the word.
  */
 public static class Intrinsics
 {
     public const string Syscall = "__syscall";
+    public const string TlsBase = "__tls_base";
 
     /* The operation an atomic's name stands for, or null. */
     public static IrAtomicOp? Atomic(string name) => name switch
@@ -41,5 +48,5 @@ public static class Intrinsics
         _ => 2,
     };
 
-    public static bool IsIntrinsic(string name) => name == Syscall || Atomic(name) != null;
+    public static bool IsIntrinsic(string name) => name == Syscall || name == TlsBase || Atomic(name) != null;
 }

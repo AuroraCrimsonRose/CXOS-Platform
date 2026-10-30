@@ -181,6 +181,15 @@ public class IrTests
             "atomic operand");
 
     [Fact]
+    public void A_pointer_wide_tlsbase_passes() =>
+        Assert.Empty(IrVerifier.Verify(One(f => Block(f, new IrRet(R0), new IrTlsBase(R0)))));
+
+    [Fact]
+    public void Verifier_refuses_a_tlsbase_of_another_width() =>
+        Refused(One(f => Block(f, new IrRet(I(0)), new IrTlsBase(new IrReg(0, IrType.I64)))),
+            "tlsbase result must be i32");
+
+    [Fact]
     public void Verifier_refuses_a_block_without_a_terminator() =>
         Refused(One(f => Block(f, null)), "no terminator");
 

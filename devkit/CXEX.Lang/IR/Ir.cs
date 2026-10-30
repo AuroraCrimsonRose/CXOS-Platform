@@ -130,6 +130,11 @@ public sealed record IrSyscall(IrReg Dst, List<IrValue> Args) : IrInstr;
 /// </summary>
 public sealed record IrAtomic(IrReg? Dst, IrAtomicOp Op, IrType Type, IrValue Addr, IrValue? A = null, IrValue? B = null) : IrInstr;
 public enum IrAtomicOp { Load, Store, Xchg, Add, Cas }
+/// <summary>
+/// The calling thread's thread-local block: the pointer-width word at the start
+/// of it, which holds its own address (Sema/Intrinsics.cs, <c>__tls_base</c>).
+/// </summary>
+public sealed record IrTlsBase(IrReg Dst) : IrInstr;
 
 // ---- terminators ----
 public abstract record IrTerm;

@@ -58,6 +58,13 @@
   nothing). Intrinsics by name, as `__syscall` is
   (`devkit/CXEX.Lang/Sema/Intrinsics.cs`). Weaker orderings wait for a need
   (and for SMP, which makes them measurable).
+- **Thread-local storage:** built in 1.5c1 as one intrinsic, `__tls_base()`,
+  a `usize` naming the calling thread's block (`as *T` to use it). It reads
+  the word at `%fs:0`, which the block keeps pointing at itself (the x86-64
+  ELF convention; the FX-8350 has no FSGSBASE to read FS_BASE directly).
+  The kernel switches FS_BASE per thread and userland makes the block
+  (1.5c2). No `thread_local` storage class: the library lays its block out
+  as a record.
 - **Effect attributes** `@isr`, `@nosleep`, `@noalloc`.
 - **Namespaces and `pub`:** before packages.
 - **Generics**, at compile time as Zig does, keeping lowering predictable.

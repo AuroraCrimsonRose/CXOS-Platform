@@ -82,6 +82,9 @@ public static class ProgramDiffHarness
         foreach (string dir in SortedDirs(Path.Combine(repo, "devkit", "tests", "lang")))
             foreach (string p in Sorted(dir, "*.xfxn"))
                 corpus.Add(new Entry(p, Array.Empty<string>(), false));
+        // what only x86-64 Linux runs (__syscall, __tls_base): compared too
+        foreach (string p in Sorted(Path.Combine(repo, "devkit", "tests", "x64", "run"), "*.xfxn"))
+            corpus.Add(new Entry(p, Array.Empty<string>(), false));
 
         Assert.SkipWhen(corpus.Count == 0, "no X programs found to compare.");
 

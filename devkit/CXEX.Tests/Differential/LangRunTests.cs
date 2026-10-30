@@ -79,6 +79,14 @@ public class LangRunTests
             "cannot initialize 'x' of type u32 from void",
             "compilation failed (6 error(s))",
         },
+        ["tls.xfxn"] = new[]
+        {
+            "'__tls_base' expects 0 args, got 1",
+            "cannot initialize 'b' of type u32 from usize; usize to u32 needs a cast",
+            "cannot initialize 'c' of type u64 from usize; usize to u64 needs a cast",
+            "cannot initialize 'p' of type *u8 from usize",
+            "compilation failed (4 error(s))",
+        },
     };
 
     [Fact]

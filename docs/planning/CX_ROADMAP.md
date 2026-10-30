@@ -479,8 +479,19 @@ Independent of the order above, and small enough to land whenever convenient:
        (`std/sync.xfxn`), and the heap and the output locked once a second
        thread starts. Input and the rest of the library stay one thread's.
        ABI 29 (`docs/kernel/CX_SYSCALLS_IPC.md` §7).
-   - **1.5c:** thread-local storage through `FS_BASE` (wrmsr on switch: the
-     FX-8350 has no FSGSBASE), thread names, per-thread CPU time.
+   - **1.5c**, in two (Aurora, 2026-10-30: X could not read through FS;
+     userland makes each thread's block, the kernel only holds and switches
+     FS_BASE, as Serenity's `archctl` and XNU's `thread_set_tsd_base` do):
+     - **1.5c1 (2026-10-30), done:** `__tls_base()` in X, a `usize` read
+       from `%fs:0`, the block's word naming itself (no FSGSBASE on the
+       FX-8350); one IR instruction (`tlsbase`), in the C# compiler and
+       `os/xc`. `tests/x64/run/tls.xfxn` sets FS with `arch_prctl` on the
+       Linux host; `tests/x64/run` joins the Differential and self-host
+       corpora (`docs/language/CX_X_PLAN.md` §4). No ABI change.
+     - **1.5c2:** FS_BASE per thread (wrmsr on switch), set at
+       `SYS_THREAD_CREATE` and by a set call for the first thread; thread
+       names; per-thread CPU time; `std/sync.xfxn` caches the thread id in
+       the block instead of calling `SYS_THREAD_ID`.
    - **After 1.5b:** a ring-3 X test runner: one boot runs many X tests as
      threads, with join deadlines catching hangs, so userland tests stop
      needing a kernel self-test each.

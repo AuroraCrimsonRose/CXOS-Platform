@@ -773,6 +773,7 @@ public sealed class IrLowering
     {
         if (c.Callee is NameExpr { Name: "__syscall" }) return LowerSyscall(c);
         if (c.Callee is NameExpr { Name: var an } && Intrinsics.Atomic(an) is IrAtomicOp aop) return LowerAtomic(c, aop);
+        if (c.Callee is NameExpr { Name: Intrinsics.TlsBase }) return Def(Scalar(TypeOf(c)), d => new IrTlsBase(d));
         var ptypes = ParamTypesOf(c);
         var rt = TypeOf(c);
         var args = new IrArg[c.Args.Count];

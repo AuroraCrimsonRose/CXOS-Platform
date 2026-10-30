@@ -104,6 +104,7 @@ a slot (`; name` says whose); temporaries' slots have no name. Blocks are
 | `call f(...)` | No result. |
 | `%d = syscall T (I n, I a1, ...)` | System call `n` with up to five pointer-width words; the target decides the mechanism (the system page on CXK). |
 | `%d = atomic op T [a, [b,]] p` | Atomic `load`, `store` (no result), `xchg`, `add` or `cas` (a = expected, b = new) on the T-sized integer at `p`, T `i32` or `i64`, sequentially consistent; the result is the old value. From the `__atomic_*` intrinsics (`Sema/Intrinsics.cs`). |
+| `%d = tlsbase T` | The calling thread's thread-local block, T the pointer-width integer: the word at its start, which holds its own address. From `__tls_base()`. |
 
 ## Terminators
 
@@ -178,7 +179,9 @@ divisor faults as the 32-bit one does. `__syscall` is `call *%rax` into the
 CXK syscall page (rax = base + n·16, arguments in rdi, rsi, rdx, r10, r8);
 with `--no-prelude`, on a Linux host, it is the `syscall` instruction.
 An atomic load is a `mov`; a store or `xchg` is `xchg` (locked by itself),
-`add` is `lock xadd` and `cas` is `lock cmpxchg`.
+`add` is `lock xadd` and `cas` is `lock cmpxchg`. `tlsbase` is
+`movq %fs:0, %rax`: the word at the start of the thread's block, its own
+address.
 
 Not yet right, and known:
 

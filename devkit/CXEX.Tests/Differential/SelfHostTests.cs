@@ -78,6 +78,8 @@ public class SelfHostTests
         var progs = Directory
             .EnumerateFiles(Path.Combine(repo, "devkit", "tests", "lang", "run"), "*.xfxn")
             .OrderBy(p => p, StringComparer.Ordinal)
+            .Concat(Directory.EnumerateFiles(Path.Combine(repo, "devkit", "tests", "x64", "run"), "*.xfxn")
+                .OrderBy(p => p, StringComparer.Ordinal))
             .ToList();
         Assert.SkipWhen(progs.Count == 0, "no programs in devkit/tests/lang/run to run.");
 

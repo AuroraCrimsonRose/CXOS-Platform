@@ -59,9 +59,11 @@ struct irval { kind: u32, ty: u32, id: u32, len: u32, k: u128 }
 //   atomic: sub = ATOMIC_*, a = the address, b = the operand and n = cas's
 //           new value (each IR_NONE when absent), nargs = the IR type; dst
 //           is the old value, IR_NONE for a store
+//   tlsbase: dst only, the thread-local block's address (__tls_base)
 const IO_BIN: u32 = 0;  const IO_UN: u32 = 1;   const IO_CMP: u32 = 2;   const IO_CONV: u32 = 3;
 const IO_LOAD: u32 = 4; const IO_STORE: u32 = 5; const IO_COPY: u32 = 6; const IO_ZERO: u32 = 7;
 const IO_PTRADD: u32 = 8; const IO_CALL: u32 = 9; const IO_SYSCALL: u32 = 10; const IO_ATOMIC: u32 = 11;
+const IO_TLSBASE: u32 = 12;
 // C#'s IrAtomicOp; sema.xfxn's atomic_op is one more than these
 const ATOMIC_LOAD: u32 = 0; const ATOMIC_STORE: u32 = 1; const ATOMIC_XCHG: u32 = 2;
 const ATOMIC_ADD: u32 = 3;  const ATOMIC_CAS: u32 = 4;
@@ -1270,6 +1272,11 @@ fn lw_call(l: *irlow, c: u32) -> u32 {
     let callee: u32 = ln(l, c).a;
     if (ln(l, callee).kind == nk.e_name && node_name_is(l.s, callee, "__syscall")) { return lw_syscall(l, c); }
     if (ln(l, callee).kind == nk.e_name && atomic_op(l.s, callee) != 0) { return lw_atomic(l, c, atomic_op(l.s, callee) - 1); }
+    if (ln(l, callee).kind == nk.e_name && node_name_is(l.s, callee, "__tls_base")) {
+        let d: u32 = lw_reg(l, lw_scalar(l, lw_ty(l, c)));
+        lw_emit(l, IO_TLSBASE, 0, d, 0, 0, 0, 0, 0);
+        return d;
+    }
     // the parameter types: a declaration's params, or a fn type's types
     let fd: u32 = lw_callee_fn(l, c);
     let plist: u32 = 0;
@@ -1527,6 +1534,8 @@ fn ir_put_ins(l: *irlow, b: *buf, i: *irins) -> void {
             k += 1;
         }
         buf_push(b, ')');
+    } else if (op == IO_TLSBASE) {
+        ir_put_dst(l, b, i.dst); buf_str(b, "tlsbase "); buf_str(b, ir_type_names[ir_vty(&l.f, i.dst)]);
     } else if (op == IO_ATOMIC) {
         // `%d = atomic cas i32 %e, %n, %p`: the operands, then the address
         if (i.dst != IR_NONE) { ir_put_dst(l, b, i.dst); }

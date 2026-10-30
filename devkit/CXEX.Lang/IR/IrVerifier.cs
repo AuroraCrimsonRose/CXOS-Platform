@@ -109,7 +109,7 @@ public static class IrVerifier
         {
             IrBinary x => x.Dst, IrUnary x => x.Dst, IrCompare x => x.Dst, IrConvert x => x.Dst,
             IrLoad x => x.Dst, IrPtrAdd x => x.Dst, IrCall x => x.Dst, IrSyscall x => x.Dst,
-            IrAtomic x => x.Dst,
+            IrAtomic x => x.Dst, IrTlsBase x => x.Dst,
             _ => null,
         };
 
@@ -275,6 +275,9 @@ public static class IrVerifier
                     if (s.Args.Count < 1 || s.Args.Count > 6) Err($"syscall with {s.Args.Count} words");
                     foreach (var a in s.Args) Want(a, _m.PtrInt, idom, "syscall word");
                     if (!IrTypes.IsInt(s.Dst.Type)) Err("syscall result must be an integer");
+                    break;
+                case IrTlsBase t:
+                    if (t.Dst.Type != _m.PtrInt) Err($"tlsbase result must be {IrTypes.Name(_m.PtrInt)}");
                     break;
                 case IrAtomic a:
                     {

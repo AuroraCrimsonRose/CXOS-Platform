@@ -25,6 +25,7 @@ public sealed class TypeChecker
     private static readonly PrimType U32 = new(PrimKind.U32);
     private static readonly PrimType Bool = new(PrimKind.Bool);
     private static readonly PrimType Void = new(PrimKind.Void);
+    private static readonly PrimType USize = new(PrimKind.USize);
 
     public TypeChecker(SemaContext ctx, DiagnosticBag diag)
     { _ctx = ctx; _diag = diag; _fold = new ConstFold(ctx, diag); }
@@ -937,6 +938,13 @@ public sealed class TypeChecker
         }
         if (c.Callee is NameExpr { Name: var an } && Intrinsics.Atomic(an) is IrAtomicOp aop)
             return CheckAtomic(c, an, aop);
+        // __tls_base() -> usize: the thread-local block (Intrinsics.cs)
+        if (c.Callee is NameExpr { Name: Intrinsics.TlsBase })
+        {
+            if (c.Args.Count != 0) _diag.Error($"'{Intrinsics.TlsBase}' expects 0 args, got {c.Args.Count}", c.Span);
+            foreach (var a in c.Args) CheckExpr(a);
+            return USize;
+        }
 
         var ct = CheckExpr(c.Callee);
         if (c.Callee is NameExpr nm && _ctx.Resolved.TryGetValue(nm, out var sym) && sym.Decl is FnDecl fn)

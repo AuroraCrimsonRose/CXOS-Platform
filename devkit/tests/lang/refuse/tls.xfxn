@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// __tls_base() (roadmap 1.5c1) takes nothing and is a usize: an argument is
+// refused, and so is using it as a narrower or other integer without a cast.
+fn main() -> i32 {
+    let a: usize = __tls_base(1);
+    let b: u32 = __tls_base();
+    let c: u64 = __tls_base();
+    let p: *u8 = __tls_base();
+    return 0;
+}
