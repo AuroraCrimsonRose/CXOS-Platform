@@ -1,0 +1,30 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// upper.xfxn - copies its input to its output, letters in upper case.
+// Aurora Tejeda / CATX Systems
+//
+// A filter, for the right of a pipe: `run hi | upper`. It reads the handle
+// its launcher put in ARGS_STDIN until that input ends, so started with none
+// (nothing to its left) it would read keystrokes forever; it says so and
+// stops instead.
+
+import "io.xfxn";
+
+fn _start() -> void {
+    if (io_stdin() < 0) {
+        puts("upper: no input - use it after a |, as in: run hi | upper\n");
+        exit(1);
+    }
+    let out: [64]u8;
+    let n: u32 = 0;
+    while (1 == 1) {
+        let c: i32 = getkey();
+        if (c < 0) { break; }
+        if (c >= 97 && c <= 122) { c = c - 32; }          // 'a'..'z'
+        out[n] = c as u8;
+        n = n + 1;
+        if (n == sizeof out || c == 10) { write(&out[0], n); n = 0; }
+    }
+    write(&out[0], n);
+    exit(0);
+}

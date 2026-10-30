@@ -443,9 +443,16 @@ Independent of the order above, and small enough to land whenever convenient:
      the image and taken after it, so a refused spawn takes nothing. The X
      library's `puts`, `write` and `putc` write to the output handle when
      there is one (`docs/kernel/CX_SYSCALLS_IPC.md` §7).
-   - **1.4c:** the shell from disk, signed and verified like the
-     supervisor, and the executive's embedded copy gone; `run` passes the
-     shell's streams, and `a | b` joins two programs with a pipe.
+   - **1.4c (2026-10-30), done:** the shell from disk. The executive starts
+     `/System/Programs/shell.xsex` with `SYS_EXEC_PATH`, so the kernel
+     verifies its signature like the supervisor's, and its embedded copy
+     (`app_image.h`) is gone. The X library reads standard input from the
+     `ARGS_STDIN` handle when there is one (no echo; its end ends
+     `read_line`), so a shell given a pipe runs it as a script and exits at
+     its end. `run` copies the shell's slots 0-2 into each program, and
+     `run a | b` (up to four) moves a pipe's ends between neighbours, so the
+     shell holds neither. `upper` is the first filter. No ABI change
+     (`docs/kernel/CX_SYSCALLS_IPC.md` §7).
 5. User threads, futex (owner in the futex word), thread-local storage.
 6. SMP readiness: spinlocks that save interrupt state, per-CPU data, a lock
    order checker in debug builds, the slab allocator. Then SMP on 8 cores.

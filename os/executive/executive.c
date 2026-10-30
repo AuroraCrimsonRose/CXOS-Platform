@@ -11,7 +11,6 @@
  */
 
 #include "cxk_abi.h"
-#include <app_image.h>   /* shell_xsex[], shell_xsex_len: the build's, for this target */
 
 /* Every call goes through the system page: the kernel hands _start its base
    in esi (rsi on x86-64), and the stub for syscall n is SYSPAGE_STUB_SIZE * n
@@ -45,7 +44,6 @@ static inline __attribute__((noreturn)) void sys_exit(int code) {
     for (;;) { }
 }
 static inline int sys_ep_create(void) { return sys_call(SYS_EP_CREATE, 0, 0); }
-static inline int sys_spawn(struct spawn_args *a) { return sys_call(SYS_SPAWN, (uintptr_t)a, 0); }
 static inline int sys_exec_path(const char *p, struct spawn_args *a) {
     return sys_call(SYS_EXEC_PATH, (uintptr_t)p, (uintptr_t)a);
 }
@@ -75,8 +73,12 @@ static void executive_main(void) {
     int ep = sys_ep_create();
     if (ep < 0) { sys_write("executive: ep_create failed\n"); sys_exit(1); }
 
+    /* The shell is a file like any other program: the kernel reads
+       /System/Programs/shell.xsex and verifies its signature, so nothing in
+       this executive vouches for it. It used to be a byte array compiled in
+       here, trusted because the executive around it was. */
     struct spawn_args sa;
-    sa.image = UADDR(shell_xsex); sa.image_len = shell_xsex_len;
+    sa.image = 0; sa.image_len = 0;
     sa.name = UADDR("shell");    sa.broker_endpoint = ep;
     sa.caps = GRANT_OS_BASELINE;   /* privileged shell (attenuated to executive's caps) */
     /* No arguments for the shell - but say so rather than leaving the fields
@@ -86,11 +88,11 @@ static void executive_main(void) {
     sa.args = 0; sa.args_len = 0;
     sa.job = 0;                    /* its own job: the kernel's */
     sa.handles = 0; sa.handle_count = 0;   /* none named: it holds only its broker */
-    int shell = sys_spawn(&sa);   /* a process handle; it closes when this exits */
-    if (shell < 0) { sys_write("executive: spawn failed\n"); sys_exit(1); }
+    int shell = sys_exec_path("/System/Programs/shell.xsex", &sa);   /* a process handle; it closes when this exits */
+    if (shell < 0) { sys_write("executive: no shell (/System/Programs/shell.xsex)\n"); sys_exit(1); }
 
-    /* Start the service supervisor. It is loaded from the disk rather than
-       embedded here, so the kernel verifies its signature on the way in - the
+    /* Start the service supervisor. Like the shell it is loaded from the
+       disk, so the kernel verifies its signature on the way in - the
        process that decides what else gets to run is exactly the one that
        should have to prove who it is.
      *

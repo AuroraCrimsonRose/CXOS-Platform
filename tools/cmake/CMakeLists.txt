@@ -17,8 +17,7 @@
 # cx_x_program line each (cxk_toolchain.cmake).
 #
 # X programs build automatically: edit os/apps/shell.xfxn and a plain build
-# recompiles it, repackages the .xsex, regenerates app_image.h, relinks the
-# executive, and reimages the disk.
+# recompiles it, re-signs the .xsex and reimages the disk.
 
 cmake_minimum_required(VERSION 3.19)   # string(JSON ...) reads versions.json
 project(CXK ASM_NASM)
@@ -485,11 +484,9 @@ add_custom_command(
 )
 
 # ---- the X programs ----
-# APP_BOOT is the startup app: embedded into the executive and spawned at boot.
-# To swap shells, point APP_BOOT/APP_BOOT_NAME at a different .xfxn.
-#
-# Every other program is the opposite: staged onto the disk as a file and
-# started with SYS_EXEC_PATH. Each has to be SIGNED, because the kernel
+# Every program is staged onto the disk as a file and started with
+# SYS_EXEC_PATH, the shell too: the executive starts
+# /System/Programs/shell.xsex. Each has to be SIGNED, because the kernel
 # verifies what it loads from disk - an unsigned program sitting on disk is
 # refused, which is the property worth having. Above all for the supervisor,
 # the process that decides what else gets to run.
@@ -509,32 +506,17 @@ add_custom_command(
 #
 # They are linked at user addresses below 4 GB, which the ABI's u32 user
 # addresses need ("Not in 6d", docs/planning/CX_ROADMAP.md).
-set(APP_BOOT      ${SRC_DIR}/os/apps/shell.xfxn)
-set(APP_BOOT_NAME shell)
 set(DISK_APP_NAME hi)
 set(XC_INCS ${SRC_DIR}/os/xc/cxk ${SRC_DIR}/os/xc ${SRC_DIR}/os/std)
-cx_x_program(SHELL_XSEX      ${APP_BOOT}                          system xsex ${SRC_DIR}/os/std)
+cx_x_program(SHELL_XSEX      ${SRC_DIR}/os/apps/shell.xfxn        system xsex ${SRC_DIR}/os/std)
 cx_x_program(DISK_APP_XUEX   ${SRC_DIR}/os/apps/hi.xfxn           user   xuex ${SRC_DIR}/os/std)
 cx_x_program(SETCHECK_XUEX   ${SRC_DIR}/os/apps/setcheck.xfxn     user   xuex ${SRC_DIR}/os/std)
+cx_x_program(UPPER_XUEX      ${SRC_DIR}/os/apps/upper.xfxn        user   xuex ${SRC_DIR}/os/std)
 cx_x_program(SUPERVISOR_XSEX ${SRC_DIR}/os/apps/supervisor.xfxn   system xsex ${SRC_DIR}/os/std)
 cx_x_program(TOKDUMP_XUEX    ${SRC_DIR}/os/xc/tokdump.xfxn        user   xuex ${XC_INCS})
 cx_x_program(ASTDUMP_XUEX    ${SRC_DIR}/os/xc/astdump.xfxn        user   xuex ${XC_INCS})
 cx_x_program(SEMADUMP_XUEX   ${SRC_DIR}/os/xc/semadump.xfxn       user   xuex ${XC_INCS})
 cx_x_program(XC_XUEX         ${SRC_DIR}/os/xc/xc.xfxn             user   xuex ${XC_INCS})
-
-# ---- shell.xsex -> app_image.h (byte array the executive embeds) ----
-# The boot shell is EMBEDDED in the executive rather than staged on disk, and
-# used to be the one artifact nobody signed - trusted only because the
-# executive around it was. SYS_SPAWN now verifies what it is handed, so the
-# shell has a signature of its own, made before `cxk embed` runs: the byte
-# array the executive carries is the signed image.
-set(APP_IMAGE ${BUILD_DIR}/app_image.h)   # executive.c includes <app_image.h>: -I the target's directory
-add_custom_command(
-    OUTPUT ${APP_IMAGE}
-    COMMAND ${CXK} embed ${SHELL_XSEX} ${APP_IMAGE} ${APP_BOOT_NAME}_xsex
-    DEPENDS ${SHELL_XSEX} ${CXK}
-    COMMENT "Embedding ${APP_BOOT_NAME}.xsex -> app_image.h"
-)
 
 # ---- executive.c -> executive.elf (user half) -> executive.xoex (signed) ----
 # No red zone: the executive's syscalls are inline `call`s, which push below
@@ -548,9 +530,8 @@ add_custom_command(
     COMMAND ${KCC} --target=${CXK_TARGET} -ffreestanding -fno-pic -fno-stack-protector -nostdlib
             -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -mno-implicit-float
             -I${SRC_DIR}/abi
-            -I${BUILD_DIR}
             -fuse-ld=lld -Wl,-T,${EXEC_LD} -o ${EXEC_ELF} ${EXEC_C}
-    DEPENDS ${EXEC_C} ${EXEC_LD} ${APP_IMAGE}
+    DEPENDS ${EXEC_C} ${EXEC_LD}
     COMMENT "CC+LD executive.c -> executive.elf (user-half .xoex bootstrap)"
 )
 cx_sign(EXEC_SIGN ${EXEC_XOEX})
@@ -608,6 +589,8 @@ set(CXK_STAGED_PROGRAMS
     --stage System/Boot.xoex=${EXEC_XOEX}
     --stage Shared/Programs/${DISK_APP_NAME}.xuex=${DISK_APP_XUEX}
     --stage System/Programs/supervisor.xsex=${SUPERVISOR_XSEX}
+    --stage System/Programs/shell.xsex=${SHELL_XSEX}
+    --stage Shared/Programs/upper.xuex=${UPPER_XUEX}
     --stage Shared/Programs/tokdump.xuex=${TOKDUMP_XUEX}
     --stage Shared/Programs/astdump.xuex=${ASTDUMP_XUEX}
     --stage Shared/Programs/semadump.xuex=${SEMADUMP_XUEX}
@@ -651,11 +634,11 @@ add_custom_command(
             ${CXK_STAGED_PROGRAMS} ${CXK_STAGED_SHARED}
     DEPENDS ${BOOT_BIN} ${STAGE2_BIN} ${KERNEL_DISK_ELF} ${EXEC_XOEX} ${DISK_APP_XUEX}
             ${SUPERVISOR_XSEX} ${TOKDUMP_XUEX} ${ASTDUMP_XUEX} ${SEMADUMP_XUEX} ${XC_XUEX}
-            ${SETCHECK_XUEX} ${PRELUDE_XFXN} ${XC_SRCS} ${STD_SRCS}
+            ${SETCHECK_XUEX} ${SHELL_XSEX} ${UPPER_XUEX} ${PRELUDE_XFXN} ${XC_SRCS} ${STD_SRCS}
             ${SERVICE_XOSV} ${KERNEL_XKCO} ${CONSOLE16_XFNT} ${CXK}
     COMMENT "Building the CXK disk (XBPT: boot + stage + system)"
 )
 add_custom_target(cxk_disk ALL DEPENDS ${CXK_DISK})
 
 # ---- convenience: build just the X app chain ----
-add_custom_target(apps DEPENDS ${APP_IMAGE})
+add_custom_target(apps DEPENDS ${SHELL_XSEX} ${UPPER_XUEX})

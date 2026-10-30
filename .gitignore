@@ -33,7 +33,6 @@ boot/uefi/sbkeys/
 /build/
 /dist/
 /iso/
-os/executive/app_image.h
 # trusted_key.c is generated into build/ from tools/<key>.xkpk by the build
 # itself now, so there is nothing to ignore in the source tree. The .h beside
 # it IS tracked: it is two extern declarations and carries no key material.

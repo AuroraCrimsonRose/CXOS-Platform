@@ -478,9 +478,10 @@ int sys_spawn(uint64_t ua) {
  * caller can no longer touch.
  *
  * This syscall still earns its place: it reads the file, so a caller does not
- * need the whole image in its own memory, and the shell stays EMBEDDED in the
- * executive rather than sitting on the disk where it could be replaced. Two
- * routes to ring 3, both verified, neither trusting the caller's buffer.
+ * need the whole image in its own memory. Every program starts through it
+ * now, the shell too (1.4c): a file on the disk can be replaced, but not
+ * by one this kernel will run unless it is signed. Two routes to ring 3,
+ * both verified, neither trusting the caller's buffer.
  */
 int sys_exec_path(uint64_t upath, uint64_t ua) {
     struct spawn_args a;

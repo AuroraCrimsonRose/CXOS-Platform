@@ -70,9 +70,39 @@ fn putc(c: u8) -> void {
 fn newline() -> void { puts("\n"); }
 
 // ---- input ----
+//
+// Input comes from the handle in slot ARGS_STDIN when the launcher put one
+// there (a pipe's read end, a file), a byte at a time with SYS_FILE_READ; a
+// program given none reads keystrokes. A handle's input ends: the first read
+// that returns 0 or fails, after which getkey answers -1 and input_ended 1.
+// Keystrokes never end.
 
-// block until a key is pressed; returns its code
-fn getkey() -> i32 { return input_read(); }
+global io_in:       i32;   // the input handle, once io_in_known is 1
+global io_in_known: i32;   // 0: not asked yet; 1: one was given; 2: none
+global io_in_ended: u32;
+
+fn io_stdin() -> i32 {
+    if (io_in_known == 0) {
+        let h: i32 = args_handle(ARGS_STDIN);
+        if (h >= 0) { io_in = h; io_in_known = 1; } else { io_in_known = 2; }
+    }
+    if (io_in_known == 1) { return io_in; }
+    return 0 - 1;
+}
+
+// block until a key is pressed, or the next byte of the input handle;
+// returns its code, or -1 once that input has ended
+fn getkey() -> i32 {
+    let h: i32 = io_stdin();
+    if (h < 0) { return input_read(); }
+    if (io_in_ended != 0) { return 0 - 1; }
+    let b: [1]u8;
+    if (file_read(h, &b[0], 1) != 1) { io_in_ended = 1; return 0 - 1; }
+    return b[0] as i32;
+}
+
+// 1 once the input handle has nothing more to give
+fn input_ended() -> u32 { return io_in_ended; }
 
 // return a key if one is waiting, else 0 - never blocks
 fn poll_key() -> i32 { return input_poll(); }
@@ -80,32 +110,36 @@ fn poll_key() -> i32 { return input_poll(); }
 // ---- line editing ----
 
 // Read a line into caller storage, echoing as it goes. Handles Backspace.
-// Stops at Enter or when the buffer is full. Returns the length (excluding the
-// NUL terminator, which is always written).
+// Stops at Enter, the end of the input, or when the buffer is full. Returns
+// the length (excluding the NUL terminator, which is always written).
+// Only keystrokes are echoed: a line from an input handle is not the
+// user's typing, and the output may be that same pipe's other end.
 fn read_line(buf: *u8, cap: u32) -> u32 {
     let n: u32 = 0;
+    let keys: u32 = 0;
+    if (io_stdin() < 0) { keys = 1; }
 
     while (1 == 1) {
         if (n + 1 >= cap) { break; }
 
         let c: i32 = getkey();
-        if (c == KEY_ENTER) { break; }
+        if (c < 0 || c == KEY_ENTER) { break; }
 
         if (c == KEY_BACKSPACE) {
             if (n > 0) {
                 n = n - 1;
-                puts("\b \b");        // erase the character on screen
+                if (keys != 0) { puts("\b \b"); }   // erase the character on screen
             }
             continue;
         }
 
         buf[n] = c as u8;
         n = n + 1;
-        putc(c as u8);                // echo
+        if (keys != 0) { putc(c as u8); }         // echo
     }
 
     buf[n] = 0;
-    newline();
+    if (keys != 0) { newline(); }
     return n;
 }
 

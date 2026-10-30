@@ -56,7 +56,7 @@ unless asked.
 public half, is tracked. A private key in a commit is a security incident even if
 the branch is deleted, because the object stays reachable.
 
-**Never commit build output.** `build/`, `dist/`, `os/executive/app_image.h`,
+**Never commit build output.** `build/`, `dist/`,
 `bin/`, `obj/`. Anything a build writes belongs in `.gitignore`.
 
 **ABI and version changes are one commit.** A syscall or struct added to

@@ -487,10 +487,8 @@ int ktest_user_ptr_writability(void) {
  * which a --dev build admits deliberately - so this does not quietly become
  * vacuous in the configuration that ships.
  *
- * The positive direction is not asserted here, because a valid image would
- * actually start a process. It is covered at boot instead: the executive
- * spawns the shell through this same syscall, so a sys_spawn that refused
- * valid signed images would never reach "boot complete".
+ * The positive direction is asserted too, last: the image as signed starts
+ * and exits 0.
  * ==================================================================== */
 
 #define SPV_ARGS_VA   0x00900000u             /* user page for the spawn_args */
@@ -819,4 +817,130 @@ done:
         pmm_free(frames[i]);
     }
     return ok;
+}
+
+/* ====================================================================
+ * The shell from the disk, driven through its streams (1.4c)
+ * ====================================================================
+ * /System/Programs/shell.xsex started as a launcher would script it: a pipe
+ * holding two lines in ARGS_STDIN, a pipe's write end in ARGS_STDOUT.
+ *   run hi           hi writes to the shell's output, its slot 1 copied
+ *   run hi | upper   hi's output reaches upper through a pipe the shell made
+ * Then the input ends, and so does the shell, with exit 0. The shell holds
+ * only GRANT_SPAWN (SYS_EXEC_PATH needs it, for this thread too) and its
+ * programs nothing, so the console refuses them all: each byte checked here
+ * came through the pipes. A shell that never ends is killed at the deadline,
+ * so a broken one is red at its step, not a hung boot.
+ * The deadline is long because the disk is slow in virtual time: verify-boot
+ * runs QEMU with -icount shift=6,sleep=off, every instruction 64 ns, and the
+ * ATA driver polls. Loading the shell, hi twice and upper took 246 s of it
+ * (measured); 60 s ran out before the first line was done. A hang that
+ * idles reaches the deadline at once, since the clock jumps to it.
+ * ==================================================================== */
+
+#define SHP_VA   0x00900000u                  /* one user page, as above */
+#define SHP_BUF  0x800u                       /* what is kept of the output */
+
+/* How many times `s` occurs in the n bytes at `out`. */
+static uint32_t shp_count(const char *out, uint32_t n, const char *s) {
+    uint32_t k = 0, len = 0;
+    while (s[len]) len++;
+    for (uint32_t i = 0; i + len <= n; i++) {
+        uint32_t j = 0;
+        while (j < len && out[i + j] == s[j]) j++;
+        if (j == len) k++;
+    }
+    return k;
+}
+
+int ktest_shell_pipeline(void) {
+    if (!cxfs_is_mounted()) return 1;                               /* nothing mounted - skip */
+    if (cxfs_resolve("/System/Programs/shell.xsex", 0) < 0) return 1;   /* nothing staged - skip */
+
+    paddr_t frame = pmm_alloc();
+    if (!frame) return 0;
+    if (paging_map_user(SHP_VA, frame, VM_WRITE) != 0) { pmm_free(frame); return 0; }
+
+    struct spawn_args *a           = (struct spawn_args *)SHP_VA;
+    struct object_info_args *oi    = (struct object_info_args *)(SHP_VA + 0x100);
+    struct process_info *pi        = (struct process_info *)(SHP_VA + 0x200);
+    char *path                     = (char *)(SHP_VA + 0x300);
+    int32_t *in                    = (int32_t *)(SHP_VA + 0x380);
+    int32_t *out                   = (int32_t *)(SHP_VA + 0x388);
+    struct spawn_handle *sh        = (struct spawn_handle *)(SHP_VA + 0x390);
+    char *script                   = (char *)(SHP_VA + 0x400);
+    char *buf                      = (char *)(SHP_VA + 0x800);
+    static const char shell[] = "/System/Programs/shell.xsex";
+    static const char lines[] = "run hi\nrun hi | upper\n";
+    struct htab *tab = thread_htab(thread_current_id());
+    int32_t ph = -1;
+    uint32_t got = 0;
+    in[0] = in[1] = out[0] = out[1] = -1;
+    uint32_t caps = thread_current_caps();
+    thread_set_caps(thread_current_id(), GRANT_SPAWN);
+    int step;
+
+    for (uint32_t i = 0; i < sizeof shell; i++) path[i] = shell[i];
+    for (uint32_t i = 0; i < sizeof lines; i++) script[i] = lines[i];
+
+    /* 1: the input written whole and its writer closed, so it ends */
+    step = 1; if (syscall_pipe_create(0, user_addr(in)) != E_OK || syscall_pipe_create(0, user_addr(out)) != E_OK
+                  || syscall_file_write(in[1], user_addr(script), sizeof lines - 1) != (int)sizeof lines - 1) goto done;
+    htab_close(tab, in[1]); in[1] = -1;
+
+    /* 2: started, with the two ends moved in */
+    sh[0] = (struct spawn_handle){ in[0],  IPC_HANDLE_MOVE, IPC_RIGHTS_SAME, ARGS_STDIN };
+    sh[1] = (struct spawn_handle){ out[1], IPC_HANDLE_MOVE, IPC_RIGHTS_SAME, ARGS_STDOUT };
+    a->image = 0; a->image_len = 0; a->name = user_addr(path);
+    a->broker_endpoint = -1; a->caps = GRANT_SPAWN; a->args = 0; a->args_len = 0; a->job = 0;
+    a->handles = user_addr(sh); a->handle_count = 2;
+    ph = syscall_exec_path(user_addr(path), user_addr(a));
+    step = 2;
+    if (ph <= 0) {
+        klog_u32("KTEST", SEV_ERR, "the shell's start refused, code -", (uint32_t)-ph, LOG_COLOR_VALUE, "");
+        goto done;
+    }
+    in[0] = out[1] = -1;                          /* the shell's now */
+
+    /* 3: its output until every writer has gone (the shell, and the copies
+       it gave hi and upper), kept up to SHP_BUF bytes */
+    uint64_t deadline = timer_now_ns() + 600000 * TIMER_NS_PER_TICK;
+    step = 3;
+    for (;;) {
+        if (syscall_object_wait(out[0], SIGNAL_PIPE_READABLE | SIGNAL_PIPE_PEER_CLOSED, deadline, 0) != E_OK) goto done;
+        uint32_t room = SHP_BUF - got;
+        int n = syscall_file_read(out[0], user_addr(room ? buf + got : buf), room ? room : SHP_BUF);
+        if (n < 0) goto done;
+        if (n == 0) break;
+        if (room) got += (uint32_t)n;
+    }
+
+    /* 4: the shell ended at the end of its input, exit 0 */
+    step = 4; if (syscall_object_wait(ph, SIGNAL_PROCESS_ENDED, deadline, 0) != E_OK
+                  || spv_info(oi, ph, OBJINFO_PROCESS, pi, sizeof *pi) != (int)sizeof *pi
+                  || pi->ended != PROC_EXITED || pi->code != 0) goto done;
+    /* 5: `run hi`: hi wrote to the shell's output */
+    step = 5; if (shp_count(buf, got, "hi - loaded from disk") != 1) goto done;
+    /* 6: `run hi | upper`: through upper, and only through it */
+    step = 6; if (shp_count(buf, got, "HI - LOADED FROM DISK") != 1) goto done;
+    /* 7: three programs reported, each exit 0 */
+    step = 7; if (shp_count(buf, got, "): exited 0") != 3 || shp_count(buf, got, "upper (pid ") != 1) goto done;
+    /* 8: lines from a pipe are not echoed: they are not typing */
+    step = 8; if (shp_count(buf, got, "run hi") != 0) goto done;
+    step = 0;
+
+done:
+    if (step != 0) {
+        klog_u32("KTEST", SEV_ERR, "shell through its streams failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+        if (ph > 0) (void)syscall_process_kill(ph);
+    }
+    if (ph > 0) htab_close(tab, ph);
+    for (int i = 0; i < 2; i++) {
+        if (in[i] > 0)  htab_close(tab, in[i]);
+        if (out[i] > 0) htab_close(tab, out[i]);
+    }
+    thread_set_caps(thread_current_id(), caps);
+    paging_unmap(SHP_VA);
+    pmm_free(frame);
+    return step == 0;
 }

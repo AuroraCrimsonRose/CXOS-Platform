@@ -3322,6 +3322,7 @@ void ktest_run(void) {
     total++; passed += report("cxex loader refuses bad images",    ktest_loader_adversarial());
     total++; passed += report("user pointer writability",          ktest_user_ptr_writability());
     total++; passed += report("SYS_SPAWN verifies its image",      ktest_spawn_verifies_image());
+    total++; passed += report("the shell from disk, through pipes", ktest_shell_pipeline());
     total++; passed += report("xfnt: loadable font validated",     test_xfnt());
     total++; passed += report("variable font cell size",           test_font_cell());
     total++; passed += report("console font staged on disk",       test_console_font_disk());

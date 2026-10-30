@@ -27,4 +27,9 @@ int ktest_user_ptr_writability(void);
    the pre-fix call to proc_start left every self-test green. */
 int ktest_spawn_verifies_image(void);
 
+/* The shell from the disk, run with pipes for its input and output: `run`
+   passes its streams, `a | b` joins two programs, and the end of its input
+   ends it. */
+int ktest_shell_pipeline(void);
+
 #endif

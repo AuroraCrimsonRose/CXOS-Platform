@@ -51,6 +51,16 @@ global run_buf:  [160]u8;
 const RUN_ARGC:  u32 = 512;
 global run_argbuf: [512]u8;
 
+// One `run` line's programs, joined by pipes: each one's words, its name
+// (RUN_NAME bytes apiece) and process handle, and the handles named for the
+// one being started (standard input, output and error).
+const RUN_STAGES: u32 = 4;
+const RUN_NAME:   u32 = 32;
+global run_seg:   [4]*u8;
+global run_names: [128]u8;
+global run_ph:    [4]i32;
+global run_sh:    [3]spawn_handle;
+
 fn register(name: *u8, f: cmd_fn, desc: *u8) -> void {
     if (cmd_n >= MAX_CMDS) { return; }
     cmd_names[cmd_n] = name;
@@ -691,37 +701,51 @@ fn run_report(name: *u8, pid: i32, rc: i32, pi: *process_info) -> void {
     newline();
 }
 
-fn cmd_run(arg: *u8) -> void {
+// Put handle h into the next entry of run_sh for the child's slot, moved;
+// h < 0 means the shell's own handle in that slot, copied, so a child
+// writes where the shell writes. A slot the shell has nothing in is left
+// empty, and the child reads keys and writes to the console. Returns the
+// new count.
+fn run_slot(hn: u32, slot: u32, h: i32) -> u32 {
+    let op: u32 = IPC_HANDLE_MOVE;
+    if (h < 0) { h = args_handle(slot); op = IPC_HANDLE_COPY; }
+    if (h < 0) { return hn; }
+    run_sh[hn].handle = h;
+    run_sh[hn].op     = op;
+    run_sh[hn].rights = IPC_RIGHTS_SAME;
+    run_sh[hn].slot   = slot;
+    return hn + 1;
+}
+
+// Find and start one program of a `run` line: `arg` is its words, its own
+// grants first. inh and outh are moved into its standard input and output
+// (a pipe's ends), or are -1 for the shell's own. Its name is kept in
+// run_names for the report. Returns a process handle, or an error once it
+// has said why; a refused start takes none of the handles.
+fn run_start(arg: *u8, stage: u32, inh: i32, outh: i32) -> i32 {
     let caps: u32 = GRANT_CONSOLE;
     while (arg[0] == '+') {
         let n: u32 = 0;
         while (arg[1 + n] != 0 && arg[1 + n] != ' ') { n += 1; }
         let g: u32 = run_grant(&arg[1], n);
-        if (g == 0) { puts("run: unknown grant (one of +disk, +net)\n"); return; }
+        if (g == 0) { puts("run: unknown grant (one of +disk, +net)\n"); return E_INVALID_ARGS; }
         caps |= g;
         arg = &arg[1 + n];
         while (arg[0] == ' ') { arg = &arg[1]; }
     }
-    // A trailing `&` - its own word - runs the program in the background:
-    // the shell reports the pid and is back at the prompt at once. Without
-    // it the shell waits, and the program has the console until it ends.
-    let bg: u32 = 0;
-    let e: u32 = strlen(arg);
-    while (e > 0 && arg[e - 1] == ' ') { e -= 1; }
-    if (e > 0 && arg[e - 1] == '&' && (e == 1 || arg[e - 2] == ' ')) {
-        bg = 1;
-        e -= 1;
-        while (e > 0 && arg[e - 1] == ' ') { e -= 1; }
-    }
-    arg[e] = 0;
-    if (arg[0] == 0) { puts("usage: run [+disk] [+net] <path> [args...] [&]\n"); return; }
+    if (arg[0] == 0) { puts("run: a grant needs a program after it\n"); return E_INVALID_ARGS; }
 
     // The whole tail is packed at once, so the program's own name becomes
     // argv[0] exactly as the user typed it and the rest follow it. The packed
     // first string is then the name to look up - no second pass to find it.
     let blob: u32 = run_pack_args(arg);
-    if (blob == 0) { puts("run: command line too long\n"); return; }
+    if (blob == 0) { puts("run: command line too long\n"); return E_OUT_OF_RANGE; }
     let name: *u8 = &run_argbuf[0];
+    strcopy(&run_names[stage * RUN_NAME], name, RUN_NAME);
+
+    let hn: u32 = run_slot(0, ARGS_STDIN, inh);
+    hn = run_slot(hn, ARGS_STDOUT, outh);
+    hn = run_slot(hn, ARGS_STDERR, 0 - 1);
 
     let a: spawn_args;
     memzero((&a) as *u8, sizeof a);
@@ -730,6 +754,8 @@ fn cmd_run(arg: *u8) -> void {
     a.caps            = caps;
     a.args            = (&run_argbuf[0]) as u64;
     a.args_len        = blob;
+    a.handles         = (&run_sh[0]) as u64;
+    a.handle_count    = hn;
 
     let ph: i32 = E_NOT_FOUND;
     if (strchr(name, 47) >= 0) {                             // '/' - a path
@@ -751,7 +777,6 @@ fn cmd_run(arg: *u8) -> void {
             }
             d = d + 1;
         }
-        a.name = name as u64;
     }
 
     if (ph < 0) {
@@ -762,19 +787,13 @@ fn cmd_run(arg: *u8) -> void {
         // is by far the most likely cause.
         if (ph == E_ACCESS_DENIED) { puts("not signed by a key this kernel trusts\n"); }
         else { puts(file_strerror(ph)); newline(); }
-        return;
     }
-    // A process handle. In the background the shell keeps only the pid to
-    // show: a handle held here would keep the record of every program it ever
-    // started. Otherwise it waits for the end, says how it came, and closes.
+    return ph;
+}
+
+// Wait for a started program to end, say how it came, and close its handle.
+fn run_wait(ph: i32, name: *u8) -> void {
     let pid: i32 = process_pid(ph);
-    if (bg != 0) {
-        handle_close(ph);
-        puts("started pid ");
-        print_u32(pid as u32);
-        newline();
-        return;
-    }
     let seen: u32 = 0;
     let rc: i32 = object_wait(ph, SIGNAL_PROCESS_ENDED, DEADLINE_NEVER, &seen);
     let pi: process_info;
@@ -790,6 +809,93 @@ fn cmd_run(arg: *u8) -> void {
     }
     handle_close(ph);
     run_report(name, pid, rc, &pi);
+}
+
+// `run a | b`: each program's output is the next one's input, through a pipe
+// whose ends are moved into them, so the shell holds neither and b sees the
+// end of its input when a has gone. The first reads the shell's input and the
+// last writes to the shell's output (their slots copied, when the shell has
+// them), and all of them the shell's error output. Started left to right; a
+// program that will not start ends the line there, and the ones already
+// running see their pipe's reader gone.
+fn cmd_run(arg: *u8) -> void {
+    // A trailing `&` - its own word - runs the line in the background:
+    // the shell reports the pids and is back at the prompt at once. Without
+    // it the shell waits, and the programs have the console until they end.
+    let bg: u32 = 0;
+    let e: u32 = strlen(arg);
+    while (e > 0 && arg[e - 1] == ' ') { e -= 1; }
+    if (e > 0 && arg[e - 1] == '&' && (e == 1 || arg[e - 2] == ' ')) {
+        bg = 1;
+        e -= 1;
+        while (e > 0 && arg[e - 1] == ' ') { e -= 1; }
+    }
+    arg[e] = 0;
+    if (arg[0] == 0) { puts("usage: run [+disk] [+net] <path> [args...] [| ...] [&]\n"); return; }
+
+    // Cut the line at each '|', then trim each program's words.
+    let k: u32 = 1;
+    run_seg[0] = arg;
+    let i: u32 = 0;
+    while (arg[i] != 0) {
+        if (arg[i] == '|') {
+            if (k == RUN_STAGES) { puts("run: at most 4 programs in a pipeline\n"); return; }
+            arg[i] = 0;
+            run_seg[k] = &arg[i + 1];
+            k += 1;
+        }
+        i += 1;
+    }
+    let s: u32 = 0;
+    while (s < k) {
+        let p: *u8 = run_seg[s];
+        while (p[0] == ' ') { p = &p[1]; }
+        let n: u32 = strlen(p);
+        while (n > 0 && p[n - 1] == ' ') { n -= 1; }
+        p[n] = 0;
+        if (n == 0) { puts("run: a pipeline needs a program on each side of |\n"); return; }
+        run_seg[s] = p;
+        s += 1;
+    }
+
+    let started: u32 = 0;
+    let prev: i32 = 0 - 1;               // the read end the next program gets
+    s = 0;
+    while (s < k) {
+        let ends: [2]i32;
+        ends[0] = 0 - 1;
+        ends[1] = 0 - 1;
+        if (s + 1 < k) {
+            let prc: i32 = pipe_create(0, &ends[0]);
+            if (prc < 0) { puts("run: no pipe: "); puts(file_strerror(prc)); newline(); break; }
+        }
+        let ph: i32 = run_start(run_seg[s], s, prev, ends[1]);
+        if (ph < 0) {
+            if (ends[0] >= 0) { handle_close(ends[0]); }
+            if (ends[1] >= 0) { handle_close(ends[1]); }
+            break;
+        }
+        prev = ends[0];                  // the old one and ends[1] went with it
+        run_ph[started] = ph;
+        started += 1;
+        s += 1;
+    }
+    if (prev >= 0) { handle_close(prev); }   // its reader never started
+
+    // In the background the shell keeps only the pids to show: a handle held
+    // here would keep the record of every program it ever started.
+    s = 0;
+    while (s < started) {
+        if (bg != 0) {
+            puts("started pid ");
+            print_u32(process_pid(run_ph[s]) as u32);
+            newline();
+            handle_close(run_ph[s]);
+        } else {
+            run_wait(run_ph[s], &run_names[s * RUN_NAME]);
+        }
+        s += 1;
+    }
 }
 
 fn cmd_edit(arg: *u8) -> void {
@@ -858,7 +964,7 @@ fn _start() -> void {
     register("append", cmd_append, "add text to the end of a file");
     register("stat",   cmd_stat,   "show an entry's metadata");
     register("edit",   cmd_edit,   "full-screen text editor");
-    register("run",    cmd_run,    "run a signed program and wait (searches /System and /Shared); +disk +net grant more; & to not wait");
+    register("run",    cmd_run,    "run a signed program and wait (searches /System and /Shared); +disk +net grant more; a | b pipes; & to not wait");
     register("mkdir",  cmd_mkdir,  "create a directory");
     register("rm",     cmd_rm,     "delete a file or empty directory");
     register("mv",     cmd_mv,     "rename an entry");
@@ -876,7 +982,10 @@ fn _start() -> void {
 
     while (1 == 1) {
         puts("cxk> ");
-        read_line(&line[0], sizeof line);
+        let got: u32 = read_line(&line[0], sizeof line);
+        // Lines from an input handle (`shell < script`, a test's pipe): the
+        // shell ends with them.
+        if (got == 0 && input_ended() != 0) { exit(0); }
 
         let arg: *u8 = split_arg(&line[0]);
         if (line[0] == 0) { continue; }          // blank line

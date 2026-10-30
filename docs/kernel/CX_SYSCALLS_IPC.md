@@ -505,6 +505,20 @@ table. Only running out of memory to grow the child's table, after the
 take, closes the moved ones with the child. The argument page stays; §10's
 start message replaces both later.
 
+**Streams in the shell, as built (1.4c):** the shell is a file,
+`/System/Programs/shell.xsex`, started by the executive with
+`SYS_EXEC_PATH` and verified like any other. The X library reads input from
+the `ARGS_STDIN` handle when there is one, a byte at a time, with no echo,
+and the first read that returns 0 ends it; without one it reads keys. `run`
+names the shell's own slots 0-2 for each program it starts, copied, so a
+program writes where the shell writes. `run a | b` makes a pipe for each
+`|`, moves its write end into the left program's slot 1 and its read end
+into the right one's slot 0, and keeps neither: the right program sees the
+end of its input when the left has gone, and the left gets `E_PEER_CLOSED`
+if the right never started. Programs start left to right; the first that
+will not start ends the line, its handles still the shell's, which closes
+them.
+
 **Streams and files:**
 `pipe_create(size)`, `io_read(h, buf, offset)`, `io_write(h, buf, offset)`
 (pipes ignore the offset), `io_seek`, `fs_open_at(dir, path, flags, rights)`,
