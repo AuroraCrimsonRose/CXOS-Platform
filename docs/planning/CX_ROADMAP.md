@@ -401,8 +401,13 @@ Independent of the order above, and small enough to land whenever convenient:
      for through `object_wait` or a queue (seL4). Signallers, minted with
      `SYS_NOTIFY_MINT`, set only their own bits; once the notification's
      last handle closes they get `E_PEER_CLOSED`.
-   - **1.3d:** memory objects: pages on first touch, the region tree, strict
-     commit.
+   - **1.3d (ABI 23, 2026-10-29), done:** memory objects: `SYS_MEM_CREATE`
+     makes one, `SYS_VM_MAP` maps a view of it (or `MOBJ_ANON`), and pages
+     arrive on the first touch, through the page fault or a kernel copy's
+     pointer check (Serenity `AnonymousVMObject`, Haiku `VMCache`). Strict
+     commit: the whole size is charged to the job and reserved in the page
+     allocator, so running out is `E_NO_MEMORY` from the call. Regions are
+     in an AVL tree (256 per process); mappings borrow the object's pages.
    - **1.3e:** sealing, and memory objects in IPC.
    - **1.3f:** priority passed through calls.
 4. Pipes and explicit handle passing at spawn; the shell runs from disk.

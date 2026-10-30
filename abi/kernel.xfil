@@ -40,7 +40,7 @@ domain kernel
 /// mismatch. Declared in versions.json as `cxex-abi` and checked against this
 /// line; bump both, and the DevKit's stamp, in the one commit that changes the
 /// contract.
-const CXK_ABI_VERSION: u32 = 22
+const CXK_ABI_VERSION: u32 = 23
 
 /// ---- syscall numbers ----
 /// lifecycle 0x00-0x0F (no capability required)
@@ -156,6 +156,11 @@ const HRIGHT_SET_LIMITS: u32 = 0x8u  /// job: SYS_JOB_SET_LIMITS
 const HRIGHT_ARM: u32 = 0x1u         /// timer: SYS_TIMER_SET, SYS_TIMER_CANCEL
 /// queue: SYS_QUEUE_REGISTER, SYS_QUEUE_ARM, SYS_QUEUE_UNREGISTER
 const HRIGHT_REGISTER: u32 = 0x1u
+/// memory object: SYS_VM_MAP it readable; with HRIGHT_MAP_WRITE writable, with
+/// HRIGHT_MAP_EXEC executable. OBJINFO_MEM is HRIGHT_INSPECT (0x1).
+const HRIGHT_MAP: u32 = 0x2u
+const HRIGHT_MAP_WRITE: u32 = 0x4u
+const HRIGHT_MAP_EXEC: u32 = 0x8u
 /// Generic rights, which mean the same on every type, count down from the top
 /// bit; a type's own count up from the bottom. A handle without
 /// HRIGHT_DUPLICATE cannot be copied, and a copy has it only if asked for.
@@ -333,6 +338,12 @@ syscall SYS_VM_MAP = 0x80 fn vm_map(a: *vm_map_args) -> i32     /// ebx = *vm_ma
 /// addr, length (0 = the whole mapping) -> 0
 syscall SYS_VM_UNMAP = 0x81 fn vm_unmap(addr: u64, length: u64) -> i32
 syscall SYS_VM_INFO = 0x82 fn vm_info(u: *vm_usage) -> i32      /// ebx = *vm_usage -> 0, with quota and mapped filled in
+/// ebx/ecx = size in bytes (1 to MMAP_MAX_BYTES, rounded up to a page), edx =
+/// flags (0) -> a memory object handle with HRIGHT_MAP, HRIGHT_MAP_WRITE,
+/// HRIGHT_MAP_EXEC, HRIGHT_INSPECT and HRIGHT_DUPLICATE. Its pages are zero
+/// and arrive on first touch; all of them are committed now, charged to the
+/// caller's job (E_NO_MEMORY past its limit or past what memory can promise).
+syscall SYS_MEM_CREATE = 0x83 fn mem_create(size: u64, flags: u32) -> i32
 
 /// power 0x90-0x9F (privileged: GRANT_POWER). Each returns only if refused.
 syscall SYS_POWER_REBOOT = 0x90 fn reboot() -> i32
@@ -553,6 +564,7 @@ const IPC_MSG_MAX: u32 = 65536
 const OBJINFO_BASIC: u32 = 1         /// -> struct object_basic
 const OBJINFO_PROCESS: u32 = 2       /// a process (HRIGHT_INSPECT) -> struct process_info
 const OBJINFO_JOB: u32 = 3           /// a job (HRIGHT_INSPECT) -> struct job_info
+const OBJINFO_MEM: u32 = 4           /// a memory object (HRIGHT_INSPECT) -> struct mem_info
 
 const OBJ_TYPE_ENDPOINT: u32 = 1
 const OBJ_TYPE_FILE: u32 = 2
@@ -564,6 +576,7 @@ const OBJ_TYPE_SEND: u32 = 8         /// a send handle's object: an endpoint and
 const OBJ_TYPE_REPLY: u32 = 9        /// a reply token
 const OBJ_TYPE_NOTIFY: u32 = 10      /// a notification
 const OBJ_TYPE_SIGNALLER: u32 = 11   /// a signaller: a notification and the bits it may set
+const OBJ_TYPE_MEM: u32 = 12         /// a memory object
 
 /// Registrations one queue holds at most (SYS_QUEUE_REGISTER).
 const QUEUE_REGISTER_MAX: u32 = 64
@@ -584,6 +597,11 @@ struct job_limits {
     memory: u64         /// bytes
     threads: u32
     reserved: u32       /// 0
+}
+/// OBJINFO_MEM: a memory object's size, and how much of it has been touched.
+struct mem_info {
+    size: u64       /// bytes, a whole number of pages; all of it committed
+    resident: u64   /// bytes of it that hold a page now
 }
 struct job_info {
     memory_limit: u64
@@ -770,7 +788,7 @@ struct net_ip_config {
 /// Caps are attenuated against the caller's own set, as with SYS_SPAWN: you may
 /// pass a subset of your authority and never amplify.
 
-/// ---- memory (SYS_VM_MAP, SYS_VM_UNMAP, SYS_VM_INFO; unprivileged, bounded by a per-process quota) ----
+/// ---- memory (SYS_VM_*, SYS_MEM_CREATE; unprivileged, bounded by a per-process quota and the job) ----
 ///
 /// Ask for memory, give it back. This is the only way a ring-3 process obtains
 /// storage beyond its image and its stack.
@@ -778,35 +796,31 @@ struct net_ip_config {
 /// It is UNPRIVILEGED and deliberately not behind a grant. A capability every
 /// program must hold is not a capability, it is noise - and denying a process
 /// the ability to allocate does not make it safe, it makes it broken. The
-/// containment is a per-process QUOTA instead: a byte ceiling on how much may
-/// be mapped at once, attenuated on spawn exactly as grants are, so a child can
-/// never be given a larger ceiling than its parent holds.
+/// containment is a per-process QUOTA on how much may be mapped at once,
+/// attenuated on spawn exactly as grants are, and the job's memory budget,
+/// which every memory object's commit is charged to.
 ///
-/// WHAT A MAPPING IS ADDRESSED BY. A request names an OBJECT, a 64-bit OFFSET
-/// into it, and a LENGTH. Today the only object is MOBJ_ANON - anonymous
-/// zero-filled memory - and the offset must be 0, so the shape looks like
-/// overkill. It is not, and the reason is the one thing a 32-bit pointer can
-/// never do:
+/// MEMORY OBJECTS (ABI 23). Memory is held by objects; a mapping is a view of
+/// one. SYS_MEM_CREATE makes one and returns its handle; `object` 0 in
+/// vm_map_args makes a new one for that mapping alone. An object's pages are
+/// zero and arrive on FIRST TOUCH, through the page fault, but all of them are
+/// COMMITTED when it is made (strict commit): its size is charged to the job
+/// and that many physical pages are set aside, so running out is E_NO_MEMORY
+/// from the call that asked, never a fault with nothing behind it. There is no
+/// overcommit and no OOM killer. An object lives while a handle or a mapping
+/// holds it, and its pages go with it.
 ///
-///   A pointer here is 32 bits and the kernel occupies 0xC0000000 upward, so a
-///   process sees under 3 GB of flat address space. No single pointer will ever
-///   reach past that; that is the hardware, not a policy. But an OBJECT larger
-///   than 4 GB is perfectly reachable, by mapping a WINDOW of it at a time and
-///   moving the window - the object is addressed by a 64-bit offset, and only
-///   the window is addressed by a pointer. A file, a device aperture, or shared
-///   memory can all be larger than the space that views them.
-///
-/// That only works if the offset is 64 bits from the first day. It is one field
-/// now and an ABI break later, so it is here now, before anything is written
-/// against it. Since ABI 10 it is one u64 (it was two 32-bit halves), placed
-/// where the layout needs no padding on either side of the boundary.
+/// WHAT A MAPPING IS ADDRESSED BY: an object, a 64-bit OFFSET into it (a whole
+/// number of pages, and 0 for a new anonymous one), and a LENGTH that must fit
+/// inside it. The offset is 64 bits so that an object larger than the window
+/// that views it - a file, a device aperture, shared memory - can be mapped a
+/// window at a time.
 ///
 /// WHAT COMES BACK. `addr` is where the mapping landed and `granted` is how
 /// many bytes it actually covers. Both are outputs, because both are the
 /// kernel's to decide: hardware maps in PAGES, and a page is 4 KB here, 16 KB
 /// or 64 KB elsewhere. A caller asking in bytes and being TOLD what it got
-/// never has to know the page size, which is the whole reason this is a
-/// syscall and not a constant.
+/// never has to know the page size.
 ///
 /// `addr` is also an INPUT when MMAP_HINT is set - a suggested address the
 /// kernel may decline. That is what makes a moving window cheap: unmap and
@@ -814,45 +828,40 @@ struct net_ip_config {
 /// and not a demand because a process that could dictate its own layout could
 /// ask to land on top of something it does not own.
 ///
-/// PROTECTION, AND AN HONEST LIMIT. `prot` is explicit, and MPROT_WRITE with
-/// MPROT_EXEC together is REFUSED. Read-only is genuinely enforced: a page
-/// mapped without MPROT_WRITE faults on a store.
-///
-///   Execute is NOT enforced, and cannot be here. A 32-bit non-PAE page table
-///   entry has no no-execute bit - there is nowhere to put "not executable" -
-///   so every readable page is also executable whatever this field says. The
-///   refusal of WRITE|EXEC is therefore a DISCIPLINE today and becomes a
-///   hardware guarantee when this kernel gains PAE or moves to 64-bit, where
-///   the bit exists. It is enforced now so that nothing is ever written that
-///   would break when it starts being real.
+/// PROTECTION. `prot` is explicit, and MPROT_WRITE with MPROT_EXEC together is
+/// REFUSED. A page mapped without MPROT_WRITE faults on a store, and one
+/// without MPROT_EXEC on an instruction fetch (the no-execute bit). Mapping an
+/// object needs HRIGHT_MAP, and HRIGHT_MAP_WRITE or HRIGHT_MAP_EXEC for those.
+
 /// vm_map_args.prot - what the mapping may be used for.
 const MPROT_NONE: u32 = 0x00
 const MPROT_READ: u32 = 0x01
 const MPROT_WRITE: u32 = 0x02
-const MPROT_EXEC: u32 = 0x04     /// accepted and recorded; see the honest limit above
+const MPROT_EXEC: u32 = 0x04
 
 /// vm_map_args.flags
 const MMAP_HINT: u32 = 0x01      /// try `addr` first; the kernel may place elsewhere
 
-/// vm_map_args.object - what the mapping is a view OF.
-const MOBJ_ANON: u32 = 0         /// anonymous zero-filled memory; offset must be 0
+/// vm_map_args.object: 0 asks for a new anonymous memory object, made for the
+/// mapping and gone with it.
+const MOBJ_ANON: u32 = 0
 
-/// The largest single mapping a process may ask for. A bound rather than a
-/// limit of the design: it keeps one bad length from walking the region list
-/// off the end of the user half, and it is far above anything that has a
-/// reason to exist yet. 64 MiB.
+/// The largest single mapping, and the largest memory object, a process may
+/// ask for. A bound rather than a limit of the design, far above anything that
+/// has a reason to exist yet. 64 MiB.
 const MMAP_MAX_BYTES: u32 = 0x04000000u
 
-/// How many separate mappings one process may hold at once.
-const MMAP_MAX_REGIONS: u32 = 32
+/// How many separate mappings one process may hold at once (a balanced tree
+/// since ABI 23; it was a fixed array of 32).
+const MMAP_MAX_REGIONS: u32 = 256
 
 struct vm_map_args {
-    offset: u64     /// offset into the object; 0 for MOBJ_ANON
+    offset: u64     /// into the object, a whole number of pages; 0 for MOBJ_ANON
     length: u64     /// bytes wanted
     granted: u64    /// out: bytes actually mapped (length, rounded up to a page)
     /// in: a hint if MMAP_HINT; out: where it is
     addr: u64
-    object: u32     /// MOBJ_* (MOBJ_ANON today)
+    object: u32     /// a memory object handle (HRIGHT_MAP), or MOBJ_ANON
     prot: u32       /// MPROT_*
     flags: u32      /// MMAP_*
     reserved: u32

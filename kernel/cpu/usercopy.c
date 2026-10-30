@@ -9,6 +9,8 @@
 
 #include "usermode.h"
 #include "arch/paging.h"
+#include "memman/vmregion.h"   /* vm_fault */
+#include "sched.h"              /* thread_current_pid */
 
 /* ---- syscall pointer validation -------------------------------------------
  * With a privilege boundary in place, the kernel must not blindly dereference
@@ -17,14 +19,22 @@
 
 /* Shared body. `need_write` decides which question is actually being asked of
    the page tables - see user_ptr_readable / user_ptr_writable below. */
+static int page_ok(uint64_t p, int need_write) {
+    return need_write ? paging_is_user_writable((uintptr_t)p) : paging_is_user((uintptr_t)p);
+}
+
 static int user_ptr_span(uint64_t ptr, uint64_t len, int need_write) {
     if (len == 0) len = 1;
     if (ptr + len < ptr)            return 0;   /* wrap/overflow */
     if (ptr + len > USER_VLIMIT)    return 0;   /* must lie entirely in the user half */
     /* every page the buffer spans must be present + ring-3 accessible in the
-       caller's active address space (its CR3 is live during this syscall). */
+       caller's active address space (its CR3 is live during this syscall). A
+       page of a mapping not yet touched is touched here (vm_fault), so the
+       kernel may dereference what it checked; one the mapping does not allow
+       this access to stays refused. */
     for (uint64_t p = ptr & ~0xFFFull; p < ptr + len; p += 0x1000) {
-        if (need_write ? !paging_is_user_writable((uintptr_t)p) : !paging_is_user((uintptr_t)p)) return 0;
+        if (page_ok(p, need_write)) continue;
+        if (!vm_fault(thread_current_pid(), p, need_write, 0) || !page_ok(p, need_write)) return 0;
     }
     return 1;
 }

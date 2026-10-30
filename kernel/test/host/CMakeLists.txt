@@ -29,6 +29,7 @@ set(KERNEL_SOURCES
     ${KDIR}/object/idtab.c
     ${KDIR}/memman/ocache.c
     ${KDIR}/memman/buddy.c
+    ${KDIR}/memman/vmtree.c
     ${KDIR}/arch/x86/cpufeat.c
     ${KDIR}/arch/x86_64/pagetable.c
     ${KDIR}/drivers/iowin.c

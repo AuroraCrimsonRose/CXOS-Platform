@@ -29,6 +29,7 @@
 #define PTE64_PWT       (1ull << 3)
 #define PTE64_PCD       (1ull << 4)    /* with PWT: uncached, whatever the MTRRs say */
 #define PTE64_LARGE     (1ull << 7)    /* PS: at the PD level, a 2 MiB page */
+#define PTE64_BORROWED  (1ull << 9)    /* available to software: VM_BORROWED */
 #define PTE64_NX        (1ull << 63)   /* needs EFER.NXE, which the loader sets */
 #define PTE64_ADDR      0x000FFFFFFFFFF000ull
 #define PTE64_ADDR_2M   0x000FFFFFFFE00000ull

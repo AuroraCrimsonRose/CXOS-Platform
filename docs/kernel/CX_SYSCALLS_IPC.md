@@ -20,7 +20,7 @@
 | Devices | Drawing (`SYS_FB_DRAW_TEXT`), keyboard and mouse are syscalls; input needs no capability | The kernel draws pixels; any process can read another's keys |
 | Arguments | A fixed page at `USER_ARGS_BASE` | An x86-32 address in the ABI |
 | Errors | 15 codes | No timeout, peer-closed, wrong-type or rights-denied distinction |
-| IPC | Calls queue with reply tokens and badges, up to 64 KiB and 16 handles each way (ABI 21, §7); notifications with minted signallers (ABI 22); the executive defines messages informally | No shared memory, no types |
+| IPC | Calls queue with reply tokens and badges, up to 64 KiB and 16 handles each way (ABI 21, §7); notifications with minted signallers (ABI 22); memory objects, mapped on first touch (ABI 23); the executive defines messages informally | Memory objects do not travel yet; no types |
 | Definition | Since step 6a1, `abi/kernel.xfil`: `cxk_abi.h`, the X prelude's constants and structures, and its plain syscall wrappers are generated from it (§9.5). The prelude's helpers are by hand. Since 6a3a every image records the ABI hash and the loader compares it | The interface it describes is still this table's |
 
 The good parts stay: user copies that validate and recover from faults
@@ -392,6 +392,23 @@ as a send handle holds its endpoint: once the notification's last handle
 closes, a signal is `E_PEER_CLOSED`. Both travel in messages. Bits 0 is
 `E_INVALID_ARGS` everywhere. Not yet: a take of some bits only, and a signal
 from an interrupt (drivers, Phase 2), which the wait lock already allows.
+
+*Memory objects, ABI 23 (Phase 1.3d):* a memory object (`OBJ_TYPE_MEM`)
+owns pages, and a mapping is a view of one. `SYS_MEM_CREATE(size, flags)`
+gives `HRIGHT_MAP`, `HRIGHT_MAP_WRITE`, `HRIGHT_MAP_EXEC`, `HRIGHT_INSPECT`
+and `HRIGHT_DUPLICATE`; flags are 0. `SYS_VM_MAP`'s `object` is now such a
+handle (`HRIGHT_MAP`, plus `HRIGHT_MAP_WRITE` or `HRIGHT_MAP_EXEC` for those
+protections, else `E_ACCESS_DENIED`) with a page-aligned offset whose end
+lies inside it (`E_OUT_OF_RANGE`), or `MOBJ_ANON` for a new object of the
+mapping's own. Nothing is mapped at first: each page arrives on its first
+touch, from ring 3 through the page fault, or from a kernel copy through the
+pointer check, and is zeroed then. **Strict commit:** creating an object
+charges its whole size to the job and reserves that many physical pages, so
+running out is `E_NO_MEMORY` from `mem_create` or `vm_map`, never a fault
+later; 256 pages stay back for the kernel. The object keeps its pages until
+its last handle and mapping go. `OBJINFO_MEM` (`HRIGHT_INSPECT`) gives a
+`mem_info`: the size and the bytes resident. Regions are in an AVL tree, and
+`MMAP_MAX_REGIONS` is 256. Not yet: objects in messages and sealing (1.3e).
 
 **Streams and files:**
 `pipe_create(size)`, `io_read(h, buf, offset)`, `io_write(h, buf, offset)`

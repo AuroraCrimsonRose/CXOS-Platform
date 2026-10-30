@@ -460,8 +460,9 @@ Redox, XNU and NT.
 - **Strict commit.** Mapping memory reserves its pages up front; running out
   is a clean error from the call that asked. There is no overcommit and no OOM
   killer (NT and Serenity; Haiku's `vm_page_reserve_pages` does the same inside
-  the kernel). Commit is charged to the process's job budget (§4), which
-  replaces `vm_charge`.
+  the kernel). Commit is charged to the process's job budget (§4). (Done in
+  1.3d; `vm_charge` stays for the image and stack, which are not objects
+  yet, and charges the job too.)
 - **Copy-on-write waits.** CXOS has no `fork`, where other systems need it
   most; it arrives with snapshots and file mappings.
 
@@ -481,5 +482,5 @@ Redox, XNU and NT.
 |---|---|
 | Phase 0.1, with the object model | Object caches by type; the new `kmalloc` |
 | Phase 0.5, with the 64-bit kernel | Page database, buddy allocator with the below-4 GB zone, direct map, kernel top level at boot (**done in step 5c** for x86-64; PCID, global pages and 1 GiB pages wait) |
-| Phase 1, with IPC and SMP | Memory objects, pages on first touch, the region tree, strict commit, background zeroing, per-CPU caches |
+| Phase 1, with IPC and SMP | Memory objects, pages on first touch, the region tree, strict commit (**done in 1.3d**); background zeroing, per-CPU caches |
 | Later | Swapping to disk, memory compression (XNU), NUMA |

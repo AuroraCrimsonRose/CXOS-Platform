@@ -149,10 +149,17 @@ void pmm_init(void) {
 
 /* ---- pmm.h ------------------------------------------------------------------- */
 
+/* Pages pmm_reserve has set aside and pmm_alloc_reserved not yet taken;
+   under the lock. Never more than the free pages. */
+static uint32_t reserved;
+
 static paddr_t alloc_run(size_t count, int low_only) {
     unsigned order = buddy_order_for(count > 0xFFFFFFFFu ? 0 : (uint32_t)count);
     if (order >= BUDDY_ORDERS) return 0;
     uint32_t f = spin_lock(&lock);
+    /* the whole block counts, though the rest of it goes back below: it is
+       off the free list for that moment */
+    if (buddy_free_count(&b) < reserved + (1u << order)) { spin_unlock(&lock, f); return 0; }
     uint32_t pfn = buddy_alloc(&b, order, low_only);
     /* a run that is not a power of two gives the rest of its block back */
     if (pfn != BUDDY_NONE && count < (1u << order))
@@ -196,6 +203,34 @@ void pmm_free_pages(paddr_t first_page, size_t count) {
 uint32_t pmm_total_pages(void) { return b.managed; }
 uint32_t pmm_free_count(void)  { return buddy_free_count(&b); }
 uint32_t pmm_used_pages(void)  { return b.managed - buddy_free_count(&b); }
+
+int pmm_reserve(uint32_t count) {
+    uint32_t f = spin_lock(&lock);
+    uint64_t want = (uint64_t)reserved + count + PMM_COMMIT_MARGIN;
+    int ok = want <= buddy_free_count(&b);
+    if (ok) reserved += count;
+    spin_unlock(&lock, f);
+    return ok ? 0 : -1;
+}
+
+void pmm_unreserve(uint32_t count) {
+    uint32_t f = spin_lock(&lock);
+    if (count > reserved) kpanic("pmm_unreserve: more than was reserved");
+    reserved -= count;
+    spin_unlock(&lock, f);
+}
+
+paddr_t pmm_alloc_reserved(void) {
+    uint32_t f = spin_lock(&lock);
+    if (!reserved) kpanic("pmm_alloc_reserved: nothing reserved");
+    uint32_t pfn = buddy_alloc(&b, 0, 0);
+    if (pfn == BUDDY_NONE) kpanic("pmm_alloc_reserved: a reserved page is gone");
+    reserved--;
+    spin_unlock(&lock, f);
+    return (paddr_t)pfn * PAGE_SIZE;
+}
+
+uint32_t pmm_reserved_count(void) { return reserved; }
 
 void pagedb_database(paddr_t *start, uint64_t *bytes)    { *start = db_start; *bytes = db_bytes; }
 void pagedb_boot_tables(paddr_t *start, uint64_t *bytes) { *start = boot_start; *bytes = boot_next - boot_start; }

@@ -16,6 +16,7 @@ KH_TEST(pagetable64_pte_is_what_was_asked) {
             if (vm & VM_WRITE)     want |= PTE64_WRITE;
             if (!(vm & VM_EXEC))   want |= PTE64_NX;
             if (vm & VM_UNCACHED)  want |= PTE64_PCD | PTE64_PWT;
+            if (vm & VM_BORROWED)  want |= PTE64_BORROWED;
             if (user)              want |= PTE64_USER;
             KH_CHECK_EQ(pte64_encode(0x0000123456789000ull, vm, user), want);
         }

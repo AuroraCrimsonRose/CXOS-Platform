@@ -203,21 +203,28 @@ volatile void *paging_map_phys(paddr_t phys, uint32_t len, uint32_t vm) {
    return to USER_VLIMIT, which is not canonical, and sysretq to a
    non-canonical RIP faults in ring 0 on Intel, on the user's stack
    (usermode.asm). Linux leaves the same page out of TASK_SIZE_MAX. */
-int paging_map_user(uintptr_t virt, paddr_t phys, uint32_t vm) {
+int paging_map_user_in(paddr_t root, uintptr_t virt, paddr_t phys, uint32_t vm) {
     if (virt >= USER_VLIMIT - PAGE_SIZE || (vm & ~VM_ALL)) return -1;
-    uint64_t *e = walk(addr_space_current(), virt, 1, 1);
+    uint64_t *e = walk(root, virt, 1, 1);
     if (!e) return -1;
     *e = pte64_encode(phys, vm, 1);
-    invlpg(virt);
+    /* another space's entries are not in the TLB: a switch to it flushes */
+    if (root == addr_space_current()) invlpg(virt);
     return 0;
 }
 
-void paging_unmap(uintptr_t virt) {
-    uint64_t *e = walk(addr_space_current(), virt, 0, 0);
+int paging_map_user(uintptr_t virt, paddr_t phys, uint32_t vm) {
+    return paging_map_user_in(addr_space_current(), virt, phys, vm);
+}
+
+void paging_unmap_in(paddr_t root, uintptr_t virt) {
+    uint64_t *e = walk(root, virt, 0, 0);
     if (!e) return;
     *e = 0;
-    invlpg(virt);
+    if (root == addr_space_current()) invlpg(virt);
 }
+
+void paging_unmap(uintptr_t virt) { paging_unmap_in(addr_space_current(), virt); }
 
 /* The leaf entry mapping `virt` in the active space, and the size it maps; 0
    if none. Every level must carry `need`, since the CPU takes the strictest
@@ -286,7 +293,8 @@ static void free_tree(paddr_t table, unsigned level) {
     for (unsigned i = 0; i < PT64_ENTRIES; i++) {
         uint64_t e = t[i];
         if (!(e & PTE64_PRESENT)) continue;
-        if (level == 3)                pmm_free(e & PTE64_ADDR);
+        /* a memory object's page is the object's to free (VM_BORROWED) */
+        if (level == 3) { if (!(e & PTE64_BORROWED)) pmm_free(e & PTE64_ADDR); }
         else if (!(e & PTE64_LARGE))   free_tree(e & PTE64_ADDR, level + 1);
     }
     pmm_free(table);

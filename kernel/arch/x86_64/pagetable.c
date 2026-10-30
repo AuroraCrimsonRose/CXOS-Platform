@@ -11,6 +11,7 @@ static uint64_t leaf_bits(uint32_t vm) {
     if (vm & VM_WRITE)     e |= PTE64_WRITE;
     if (!(vm & VM_EXEC))   e |= PTE64_NX;
     if (vm & VM_UNCACHED)  e |= PTE64_PCD | PTE64_PWT;
+    if (vm & VM_BORROWED)  e |= PTE64_BORROWED;
     return e;
 }
 

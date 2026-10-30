@@ -15,7 +15,7 @@
  * hash it was built against and the loader refuses one that differs, so a
  * program never runs against numbers or layouts it was not compiled for.
  */
-#define CXK_ABI_HASH { 0xff, 0x0f, 0x86, 0x1b, 0xb6, 0x58, 0x23, 0x7e, 0x19, 0x99, 0x0d, 0xf5, 0xbc, 0x12, 0x49, 0xe3, 0x6d, 0x23, 0x2a, 0xf4, 0x95, 0x6f, 0x0a, 0x9e, 0x7f, 0xd1, 0xa8, 0x55, 0x61, 0x7d, 0xec, 0xe8 }
+#define CXK_ABI_HASH { 0xb1, 0xd4, 0x1d, 0xab, 0x61, 0xa9, 0x97, 0x4d, 0xa9, 0xf5, 0x84, 0x9e, 0x39, 0xaf, 0xfb, 0x7f, 0xe9, 0x91, 0xba, 0xb5, 0x33, 0x78, 0xc9, 0xde, 0xb8, 0x31, 0x80, 0x3f, 0x22, 0x89, 0xac, 0x79 }
 
 /*
  * CXK ABI v1 - the PUBLIC contract shared by the kernel, the .xoex executive,
@@ -44,7 +44,7 @@
  * line; bump both, and the DevKit's stamp, in the one commit that changes the
  * contract.
  */
-#define CXK_ABI_VERSION          22
+#define CXK_ABI_VERSION          23
 
 /*
  * ---- syscall numbers ----
@@ -217,6 +217,14 @@
 
 /* queue: SYS_QUEUE_REGISTER, SYS_QUEUE_ARM, SYS_QUEUE_UNREGISTER */
 #define HRIGHT_REGISTER          0x1u
+
+/*
+ * memory object: SYS_VM_MAP it readable; with HRIGHT_MAP_WRITE writable, with
+ * HRIGHT_MAP_EXEC executable. OBJINFO_MEM is HRIGHT_INSPECT (0x1).
+ */
+#define HRIGHT_MAP               0x2u
+#define HRIGHT_MAP_WRITE         0x4u
+#define HRIGHT_MAP_EXEC          0x8u
 
 /*
  * Generic rights, which mean the same on every type, count down from the top
@@ -476,6 +484,15 @@
 /* addr, length (0 = the whole mapping) -> 0 */
 #define SYS_VM_UNMAP             0x81
 #define SYS_VM_INFO              0x82           /* ebx = *vm_usage -> 0, with quota and mapped filled in */
+
+/*
+ * ebx/ecx = size in bytes (1 to MMAP_MAX_BYTES, rounded up to a page), edx =
+ * flags (0) -> a memory object handle with HRIGHT_MAP, HRIGHT_MAP_WRITE,
+ * HRIGHT_MAP_EXEC, HRIGHT_INSPECT and HRIGHT_DUPLICATE. Its pages are zero
+ * and arrive on first touch; all of them are committed now, charged to the
+ * caller's job (E_NO_MEMORY past its limit or past what memory can promise).
+ */
+#define SYS_MEM_CREATE           0x83
 
 /* power 0x90-0x9F (privileged: GRANT_POWER). Each returns only if refused. */
 #define SYS_POWER_REBOOT         0x90
@@ -745,6 +762,7 @@ struct clock_info {
 #define OBJINFO_BASIC            1              /* -> struct object_basic */
 #define OBJINFO_PROCESS          2              /* a process (HRIGHT_INSPECT) -> struct process_info */
 #define OBJINFO_JOB              3              /* a job (HRIGHT_INSPECT) -> struct job_info */
+#define OBJINFO_MEM              4              /* a memory object (HRIGHT_INSPECT) -> struct mem_info */
 #define OBJ_TYPE_ENDPOINT        1
 #define OBJ_TYPE_FILE            2
 #define OBJ_TYPE_PROCESS         4              /* 3 is the kernel self-tests' own */
@@ -755,6 +773,7 @@ struct clock_info {
 #define OBJ_TYPE_REPLY           9              /* a reply token */
 #define OBJ_TYPE_NOTIFY          10             /* a notification */
 #define OBJ_TYPE_SIGNALLER       11             /* a signaller: a notification and the bits it may set */
+#define OBJ_TYPE_MEM             12             /* a memory object */
 
 /* Registrations one queue holds at most (SYS_QUEUE_REGISTER). */
 #define QUEUE_REGISTER_MAX       64
@@ -780,6 +799,12 @@ struct job_limits {
     uint64_t memory;                            /* bytes */
     uint32_t threads;
     uint32_t reserved;                          /* 0 */
+};
+
+/* OBJINFO_MEM: a memory object's size, and how much of it has been touched. */
+struct mem_info {
+    uint64_t size;                              /* bytes, a whole number of pages; all of it committed */
+    uint64_t resident;                          /* bytes of it that hold a page now */
 };
 
 struct job_info {
@@ -1006,7 +1031,7 @@ struct net_ip_config {
  */
 
 /*
- * ---- memory (SYS_VM_MAP, SYS_VM_UNMAP, SYS_VM_INFO; unprivileged, bounded by a per-process quota) ----
+ * ---- memory (SYS_VM_*, SYS_MEM_CREATE; unprivileged, bounded by a per-process quota and the job) ----
  *
  * Ask for memory, give it back. This is the only way a ring-3 process obtains
  * storage beyond its image and its stack.
@@ -1014,35 +1039,31 @@ struct net_ip_config {
  * It is UNPRIVILEGED and deliberately not behind a grant. A capability every
  * program must hold is not a capability, it is noise - and denying a process
  * the ability to allocate does not make it safe, it makes it broken. The
- * containment is a per-process QUOTA instead: a byte ceiling on how much may
- * be mapped at once, attenuated on spawn exactly as grants are, so a child can
- * never be given a larger ceiling than its parent holds.
+ * containment is a per-process QUOTA on how much may be mapped at once,
+ * attenuated on spawn exactly as grants are, and the job's memory budget,
+ * which every memory object's commit is charged to.
  *
- * WHAT A MAPPING IS ADDRESSED BY. A request names an OBJECT, a 64-bit OFFSET
- * into it, and a LENGTH. Today the only object is MOBJ_ANON - anonymous
- * zero-filled memory - and the offset must be 0, so the shape looks like
- * overkill. It is not, and the reason is the one thing a 32-bit pointer can
- * never do:
+ * MEMORY OBJECTS (ABI 23). Memory is held by objects; a mapping is a view of
+ * one. SYS_MEM_CREATE makes one and returns its handle; `object` 0 in
+ * vm_map_args makes a new one for that mapping alone. An object's pages are
+ * zero and arrive on FIRST TOUCH, through the page fault, but all of them are
+ * COMMITTED when it is made (strict commit): its size is charged to the job
+ * and that many physical pages are set aside, so running out is E_NO_MEMORY
+ * from the call that asked, never a fault with nothing behind it. There is no
+ * overcommit and no OOM killer. An object lives while a handle or a mapping
+ * holds it, and its pages go with it.
  *
- *   A pointer here is 32 bits and the kernel occupies 0xC0000000 upward, so a
- *   process sees under 3 GB of flat address space. No single pointer will ever
- *   reach past that; that is the hardware, not a policy. But an OBJECT larger
- *   than 4 GB is perfectly reachable, by mapping a WINDOW of it at a time and
- *   moving the window - the object is addressed by a 64-bit offset, and only
- *   the window is addressed by a pointer. A file, a device aperture, or shared
- *   memory can all be larger than the space that views them.
- *
- * That only works if the offset is 64 bits from the first day. It is one field
- * now and an ABI break later, so it is here now, before anything is written
- * against it. Since ABI 10 it is one u64 (it was two 32-bit halves), placed
- * where the layout needs no padding on either side of the boundary.
+ * WHAT A MAPPING IS ADDRESSED BY: an object, a 64-bit OFFSET into it (a whole
+ * number of pages, and 0 for a new anonymous one), and a LENGTH that must fit
+ * inside it. The offset is 64 bits so that an object larger than the window
+ * that views it - a file, a device aperture, shared memory - can be mapped a
+ * window at a time.
  *
  * WHAT COMES BACK. `addr` is where the mapping landed and `granted` is how
  * many bytes it actually covers. Both are outputs, because both are the
  * kernel's to decide: hardware maps in PAGES, and a page is 4 KB here, 16 KB
  * or 64 KB elsewhere. A caller asking in bytes and being TOLD what it got
- * never has to know the page size, which is the whole reason this is a
- * syscall and not a constant.
+ * never has to know the page size.
  *
  * `addr` is also an INPUT when MMAP_HINT is set - a suggested address the
  * kernel may decline. That is what makes a moving window cheap: unmap and
@@ -1050,48 +1071,47 @@ struct net_ip_config {
  * and not a demand because a process that could dictate its own layout could
  * ask to land on top of something it does not own.
  *
- * PROTECTION, AND AN HONEST LIMIT. `prot` is explicit, and MPROT_WRITE with
- * MPROT_EXEC together is REFUSED. Read-only is genuinely enforced: a page
- * mapped without MPROT_WRITE faults on a store.
- *
- *   Execute is NOT enforced, and cannot be here. A 32-bit non-PAE page table
- *   entry has no no-execute bit - there is nowhere to put "not executable" -
- *   so every readable page is also executable whatever this field says. The
- *   refusal of WRITE|EXEC is therefore a DISCIPLINE today and becomes a
- *   hardware guarantee when this kernel gains PAE or moves to 64-bit, where
- *   the bit exists. It is enforced now so that nothing is ever written that
- *   would break when it starts being real.
- * vm_map_args.prot - what the mapping may be used for.
+ * PROTECTION. `prot` is explicit, and MPROT_WRITE with MPROT_EXEC together is
+ * REFUSED. A page mapped without MPROT_WRITE faults on a store, and one
+ * without MPROT_EXEC on an instruction fetch (the no-execute bit). Mapping an
+ * object needs HRIGHT_MAP, and HRIGHT_MAP_WRITE or HRIGHT_MAP_EXEC for those.
  */
+
+/* vm_map_args.prot - what the mapping may be used for. */
 #define MPROT_NONE               0x00
 #define MPROT_READ               0x01
 #define MPROT_WRITE              0x02
-#define MPROT_EXEC               0x04           /* accepted and recorded; see the honest limit above */
+#define MPROT_EXEC               0x04
 
 /* vm_map_args.flags */
 #define MMAP_HINT                0x01           /* try `addr` first; the kernel may place elsewhere */
 
-/* vm_map_args.object - what the mapping is a view OF. */
-#define MOBJ_ANON                0              /* anonymous zero-filled memory; offset must be 0 */
+/*
+ * vm_map_args.object: 0 asks for a new anonymous memory object, made for the
+ * mapping and gone with it.
+ */
+#define MOBJ_ANON                0
 
 /*
- * The largest single mapping a process may ask for. A bound rather than a
- * limit of the design: it keeps one bad length from walking the region list
- * off the end of the user half, and it is far above anything that has a
- * reason to exist yet. 64 MiB.
+ * The largest single mapping, and the largest memory object, a process may
+ * ask for. A bound rather than a limit of the design, far above anything that
+ * has a reason to exist yet. 64 MiB.
  */
 #define MMAP_MAX_BYTES           0x04000000u
 
-/* How many separate mappings one process may hold at once. */
-#define MMAP_MAX_REGIONS         32
+/*
+ * How many separate mappings one process may hold at once (a balanced tree
+ * since ABI 23; it was a fixed array of 32).
+ */
+#define MMAP_MAX_REGIONS         256
 
 struct vm_map_args {
-    uint64_t offset;                            /* offset into the object; 0 for MOBJ_ANON */
+    uint64_t offset;                            /* into the object, a whole number of pages; 0 for MOBJ_ANON */
     uint64_t length;                            /* bytes wanted */
     uint64_t granted;                           /* out: bytes actually mapped (length, rounded up to a page) */
     /* in: a hint if MMAP_HINT; out: where it is */
     uint64_t addr;
-    uint32_t object;                            /* MOBJ_* (MOBJ_ANON today) */
+    uint32_t object;                            /* a memory object handle (HRIGHT_MAP), or MOBJ_ANON */
     uint32_t prot;                              /* MPROT_* */
     uint32_t flags;                             /* MMAP_* */
     uint32_t reserved;
@@ -1225,6 +1245,7 @@ CXK_ABI_STATIC_ASSERT(sizeof(struct spawn_args) == 56, "ABI layout: spawn_args")
 CXK_ABI_STATIC_ASSERT(sizeof(struct clock_info) == 8, "ABI layout: clock_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct queue_event) == 16, "ABI layout: queue_event");
 CXK_ABI_STATIC_ASSERT(sizeof(struct job_limits) == 16, "ABI layout: job_limits");
+CXK_ABI_STATIC_ASSERT(sizeof(struct mem_info) == 16, "ABI layout: mem_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct job_info) == 40, "ABI layout: job_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct process_info) == 40, "ABI layout: process_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct object_info_args) == 24, "ABI layout: object_info_args");

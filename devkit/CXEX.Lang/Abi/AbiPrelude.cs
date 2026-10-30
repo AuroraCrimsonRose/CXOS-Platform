@@ -95,10 +95,12 @@ public static class AbiPrelude
 // allocate is broken rather than contained. A per-process byte quota bounds it
 // instead, attenuated on spawn the way grants are.
 //
-// A request names an object, a 64-bit offset into it and a length. Only
-// MOBJ_ANON exists today and its offset must be 0 - but the offset is 64-bit
-// from the start because that is what lets an object LARGER than the address
-// space be read through a moving window later. A pointer here is 32 bits and
+// A request names an object, a 64-bit offset into it and a length: a memory
+// object's handle (mem_create), or MOBJ_ANON for a new one of the mapping's
+// own, whose offset must be 0. The offset is 64-bit because that is what lets
+// an object LARGER than the address space be read through a moving window.
+// Pages arrive on the first touch; the commit was taken when the object was
+// made, so a touch never fails for want of memory. A pointer here is 32 bits and
 // always will be; an object does not have to be.
 //
 // `addr` and `granted` come back because both are the kernel's to decide:

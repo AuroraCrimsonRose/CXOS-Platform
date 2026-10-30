@@ -38,7 +38,9 @@
 #define VM_EXEC      0x2u   /* honoured where the MMU can refuse execution: not
                                32-bit x86 without PAE, where every page runs */
 #define VM_UNCACHED  0x4u   /* device registers only - see below */
-#define VM_ALL       (VM_WRITE | VM_EXEC | VM_UNCACHED)
+#define VM_BORROWED  0x8u   /* the frame belongs to a memory object (object/kmem.h):
+                               tearing the address space down leaves it */
+#define VM_ALL       (VM_WRITE | VM_EXEC | VM_UNCACHED | VM_BORROWED)
 
 /* ---- when VM_UNCACHED is and is not wanted ----------------------------------
  * It belongs on DEVICE REGISTER windows and essentially nowhere else.
@@ -99,6 +101,12 @@ volatile void *paging_map_phys(paddr_t phys, uint32_t len, uint32_t vm);
 
 /* Remove the mapping of one page in the active space. */
 void paging_unmap(uintptr_t virt);
+
+/* paging_map_user and paging_unmap in the space `root`, active or not: the
+   memory object mappings of a process, unmapped by whichever thread ends it
+   (memman/vmregion.c). */
+int  paging_map_user_in(paddr_t root, uintptr_t virt, paddr_t phys, uint32_t vm);
+void paging_unmap_in(paddr_t root, uintptr_t virt);
 
 /* The physical address `virt` maps to in the active space, or 0 if unmapped. */
 paddr_t paging_get_phys(uintptr_t virt);

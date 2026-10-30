@@ -54,4 +54,24 @@ uint32_t pmm_total_pages(void);
 uint32_t pmm_used_pages(void);
 uint32_t pmm_free_count(void);
 
+/* Strict commit (docs/kernel/CX_KERNEL_PLAN.md section 9.4). A memory object
+   promises its pages when it is made and takes them on first touch, so the
+   promise is kept here: pmm_reserve sets `count` free pages aside, and every
+   other allocation is refused rather than take one of them. Running out is
+   then an error from the call that asked to commit, never a fault with no
+   page to give (Serenity's commit_physical_pages, Haiku's
+   vm_page_reserve_pages).
+
+   pmm_reserve: 0, or -1 when fewer than `count` unreserved pages would be
+   left above PMM_COMMIT_MARGIN, which stays for the kernel's own
+   allocations (the page tables a first touch may need among them).
+   pmm_unreserve gives back what was set aside and not taken.
+   pmm_alloc_reserved takes one reserved page; it cannot fail while one is
+   reserved, so running out is a panic. */
+#define PMM_COMMIT_MARGIN 256u   /* pages: 1 MiB */
+int      pmm_reserve(uint32_t count);
+void     pmm_unreserve(uint32_t count);
+paddr_t  pmm_alloc_reserved(void);
+uint32_t pmm_reserved_count(void);
+
 #endif

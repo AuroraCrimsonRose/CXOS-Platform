@@ -183,6 +183,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/memman/pagedb.c
     ${SRC_DIR}/kernel/memman/heap.c
     ${SRC_DIR}/kernel/memman/vmregion.c
+    ${SRC_DIR}/kernel/memman/vmtree.c
     ${SRC_DIR}/kernel/memman/kstack.c
     ${SRC_DIR}/kernel/memman/dma.c
     ${SRC_DIR}/kernel/lib/time/datetime.c
@@ -208,6 +209,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/object/kwait.c
     ${SRC_DIR}/kernel/object/ktimer.c
     ${SRC_DIR}/kernel/object/knotify.c
+    ${SRC_DIR}/kernel/object/kmem.c
     ${SRC_DIR}/kernel/object/kqueue.c
     ${SRC_DIR}/kernel/object/htab.c
     ${SRC_DIR}/kernel/memman/ocache.c

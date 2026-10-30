@@ -28,6 +28,7 @@
 #include "object/kwait.h"     /* kobj_wait, for SYS_OBJECT_WAIT */
 #include "object/ktimer.h"    /* SYS_TIMER_* */
 #include "object/knotify.h"   /* SYS_NOTIFY_* */
+#include "object/kmem.h"      /* SYS_MEM_CREATE */
 #include "object/kqueue.h"    /* SYS_QUEUE_* */
 #include "sync/atomic.h"
 #include "sysrec.h"
@@ -478,7 +479,34 @@ int syscall_power_sleep(uint32_t ms) {
    passes the caller's pid. */
 int syscall_vm_map(uint64_t a) {
     if (!user_ptr_writable(a, sizeof(struct vm_map_args))) return E_BAD_ADDRESS;
-    return vm_map(thread_current_pid(), (struct vm_map_args *)user_ptr(a));
+    struct vm_map_args *va = (struct vm_map_args *)user_ptr(a);
+    if (va->object == MOBJ_ANON) return vm_map(thread_current_pid(), va);
+    /* A memory object: the handle's rights decide what the view may do. */
+    struct htab_info hi;
+    struct kobj *o = htab_ref(thread_htab(thread_current_id()), (int32_t)va->object,
+                              KOBJ_NONE, 0, &hi);
+    if (!o) return E_BAD_HANDLE;
+    int rc = o->type != KOBJ_MEM ? E_WRONG_TYPE
+           : vm_map_object(thread_current_pid(), va, (struct kmem *)o, hi.rights);
+    kobj_unref(o);   /* a mapping holds its own reference */
+    return rc;
+}
+
+int syscall_mem_create(uint64_t size, uint32_t flags) {
+    /* Unprivileged, as SYS_VM_MAP is: what bounds it is the commit, charged
+       to the caller's job, and the memory there is to promise. */
+    if (flags)                 return E_INVALID_ARGS;
+    if (size == 0)             return E_INVALID_ARGS;
+    if (size > MMAP_MAX_BYTES) return E_OUT_OF_RANGE;
+    int rc;
+    struct kmem *m = kmem_create((uint32_t)((size + PAGE_SIZE - 1u) / PAGE_SIZE),
+                                 thread_proc(thread_current_id())->job, &rc);
+    if (!m) return rc;
+    int32_t h = htab_install(thread_htab(thread_current_id()), &m->hdr,
+                             HRIGHT_MAP | HRIGHT_MAP_WRITE | HRIGHT_MAP_EXEC |
+                             HRIGHT_INSPECT | HRIGHT_DUPLICATE, 0);
+    kobj_unref(&m->hdr);   /* the handle's reference keeps it; with no handle, it goes */
+    return h;
 }
 
 int syscall_vm_unmap(uint64_t addr, uint64_t length) {
@@ -565,6 +593,21 @@ int syscall_object_info(uint64_t a) {
         if (rc != E_OK) return rc;
         if (user_copy_out(oa.buf, &ji, sizeof ji) != 0) return E_BAD_ADDRESS;
         return (int)sizeof ji;
+    }
+    if (oa.topic == OBJINFO_MEM) {
+        struct kmem *m = (struct kmem *)o;
+        int rc = o->type != KOBJ_MEM              ? E_WRONG_TYPE
+               : !(hi.rights & HRIGHT_INSPECT)    ? E_ACCESS_DENIED
+               : oa.cap < sizeof(struct mem_info) ? E_BUFFER_TOO_SMALL : E_OK;
+        struct mem_info mi = { 0 };
+        if (rc == E_OK) {
+            mi.size     = (uint64_t)m->npages * PAGE_SIZE;
+            mi.resident = (uint64_t)kmem_resident(m) * PAGE_SIZE;
+        }
+        kobj_unref(o);
+        if (rc != E_OK) return rc;
+        if (user_copy_out(oa.buf, &mi, sizeof mi) != 0) return E_BAD_ADDRESS;
+        return (int)sizeof mi;
     }
     struct object_basic b = {
         .kind = o->type, .rights = hi.rights, .koid = o->koid,
@@ -2801,8 +2844,14 @@ static void usermode_fault(struct registers *r) {
     return_to_kernel(USERMODE_FAULTED, thread_current_usave());   /* never returns */
 }
 
+/* A first touch of one of the current process's mappings (memman/vmregion.h). */
+static int usermode_demand_fault(uintptr_t addr, int write, int exec) {
+    return vm_fault(thread_current_pid(), addr, write, exec);
+}
+
 void usermode_register_fault_handler(void) {
     set_user_fault_hook(usermode_fault);
+    set_demand_fault_hook(usermode_demand_fault);
     set_user_irq_return_hook(usermode_kill_point);
 }
 /* ---- process handles, waiting, how a process ended (Phase 1.1a) -----------
@@ -4278,6 +4327,259 @@ done:
     if (d > 0) htab_close(tab, d);
     if (t > 0) htab_close(tab, t);
     unmap_user_page(TEST_CODE_VIRT, phys);
+    return ok;
+}
+
+/* ---- memory objects (Phase 1.3d) -------------------------------------------
+ * Through the dispatcher over a user mapping, with the test thread given a
+ * memory account for the length of the test (as usermode_vm_test does). The
+ * pages of a mapping arrive on the first touch: here through the
+ * user-pointer checks, and from ring 3 in two real processes, one that reads
+ * and stores and one that stores into a read-only view. Strict commit is
+ * checked against a job's limit and against what memory can promise.
+ * 1 = pass, 0 = fail. */
+extern uint8_t user_blob_touch_start[], user_blob_touch_end[];
+
+#define MT_ARGS  (TEST_CODE_VIRT + 0x000)   /* struct vm_map_args */
+#define MT_INFO  (TEST_CODE_VIRT + 0x100)   /* struct object_basic / mem_info / process_info */
+#define MT_IARGS (TEST_CODE_VIRT + 0x200)   /* struct object_info_args */
+#define MT_VALUE 0x1122334455667788ull
+
+static uint8_t  mt_image[KT_BLOB_MAX + 3 * 8];
+static uint64_t mt_addrs[MMAP_MAX_REGIONS];
+
+static int mt_create(uint64_t size, uint32_t flags) {
+    return um_call(SYS_MEM_CREATE, 1u << 0, size, flags, 0, 0, 0);
+}
+/* object_info on `h` for `topic` into MT_INFO, `cap` bytes: the call's result. */
+static int mt_info(int32_t h, uint32_t topic, uint32_t cap) {
+    struct object_info_args *oi = (struct object_info_args *)user_ptr(MT_IARGS);
+    oi->cap = cap; oi->buf = MT_INFO; oi->handle = h; oi->topic = topic;
+    return syscall_dispatch(SYS_OBJECT_INFO, MT_IARGS, 0, 0, 0, 0);
+}
+/* SYS_VM_MAP of `obj` at `offset`, `length` bytes: the call's result; the
+   address is in MT_ARGS. */
+static int mt_map(int32_t obj, uint64_t offset, uint64_t length, uint32_t prot) {
+    struct vm_map_args *a = (struct vm_map_args *)user_ptr(MT_ARGS);
+    a->offset = offset; a->length = length; a->granted = 0; a->addr = 0;
+    a->object = (uint32_t)obj; a->prot = prot; a->flags = 0; a->reserved = 0;
+    return syscall_dispatch(SYS_VM_MAP, MT_ARGS, 0, 0, 0, 0);
+}
+/* A held process running user_blob_touch in `mode` on byte 8 of page 0 of
+   `m`, mapped for it with `prot` at the window's first page (*addr): its
+   handle. The image is copied when the process is made, so the address is
+   fixed before, by a hint its new, empty account always honours. */
+static int32_t mt_toucher(struct kmem *m, uint32_t prot, uint64_t mode, int *tid, uint64_t *addr) {
+    uint32_t len = (uint32_t)(user_blob_touch_end - user_blob_touch_start);
+    if (len > KT_BLOB_MAX) return E_INTERNAL;
+    uint64_t q[3] = { VM_MMAP_BASE + 8u, MT_VALUE, mode };
+    for (uint32_t i = 0; i < len; i++) mt_image[i] = user_blob_touch_start[i];
+    for (uint32_t i = 0; i < sizeof q; i++) mt_image[len + i] = ((const uint8_t *)q)[i];
+    int32_t h = pt_make_in(mt_image, mt_image + len + sizeof q, tid, 0);
+    if (h <= 0) return h;
+    int vpid = thread_pid(*tid);
+    vm_proc_init(vpid, vm_default_quota(), -1);
+    struct vm_map_args a = { .length = PAGE_SIZE, .prot = prot, .flags = MMAP_HINT, .addr = VM_MMAP_BASE };
+    if (vm_map_object(vpid, &a, m, HRIGHT_MAP | HRIGHT_MAP_WRITE) != E_OK || a.addr != VM_MMAP_BASE) {
+        thread_discard(*tid);
+        *tid = -1;
+        htab_close(thread_htab(thread_current_id()), h);
+        return E_INTERNAL;
+    }
+    *addr = a.addr;
+    return h;
+}
+
+int usermode_mem_test(void) {
+    int pid = thread_current_pid();
+    if (vm_quota_of(pid)) return 0;      /* an account here would be clobbered */
+    paddr_t phys = map_user_page(TEST_CODE_VIRT);
+    if (!phys) return 0;
+    vm_proc_init(pid, vm_default_quota(), -1);
+    struct htab *tab = thread_htab(thread_current_id());
+    struct vm_map_args *a = (struct vm_map_args *)user_ptr(MT_ARGS);
+    const struct object_basic *ob = (const struct object_basic *)user_ptr(MT_INFO);
+    const struct mem_info *mi = (const struct mem_info *)user_ptr(MT_INFO);
+    struct process_info *pi = (struct process_info *)user_ptr(PT_INFO);
+    const uint32_t P = PAGE_SIZE;
+    const uint32_t all = HRIGHT_MAP | HRIGHT_MAP_WRITE | HRIGHT_MAP_EXEC | HRIGHT_INSPECT | HRIGHT_DUPLICATE;
+    uint32_t live0 = kobj_live(KOBJ_MEM), res0 = pmm_reserved_count();
+    uint32_t faults0 = usermode_faults();
+    int32_t m = -1, d = -1, t = -1, h = -1;
+    struct kmem *mo = 0;
+    struct job *j = 0;
+    uint64_t addr = 0, addr2 = 0, val = MT_VALUE, got = 0;
+    paddr_t page0 = 0;
+    uint32_t nmaps = 0;
+    int tid = -1, step = 0, ok = 0, rc;
+
+    /* 1: refusals make nothing; then an object of 3 pages less a bit, with
+       the rights it is made with */
+    step = 1; if (mt_create(0, 0) != E_INVALID_ARGS || mt_create(P, 1) != E_INVALID_ARGS
+                  || mt_create(MMAP_MAX_BYTES + 1ull, 0) != E_OUT_OF_RANGE
+                  || mt_create((1ull << 32) | P, 0) != E_OUT_OF_RANGE
+                  || kobj_live(KOBJ_MEM) != live0 || pmm_reserved_count() != res0) goto done;
+    m = mt_create(3u * P - 100u, 0);
+    step = 2; if (m <= 0 || mt_info(m, OBJINFO_BASIC, sizeof *ob) != (int)sizeof *ob
+                  || ob->kind != OBJ_TYPE_MEM || ob->rights != all
+                  || kobj_live(KOBJ_MEM) != live0 + 1) goto done;
+
+    /* 3: committed whole and nothing resident: three pages reserved */
+    step = 3; if (mt_info(m, OBJINFO_MEM, sizeof *mi) != (int)sizeof *mi
+                  || mi->size != 3u * P || mi->resident != 0
+                  || pmm_reserved_count() != res0 + 3) goto done;
+    t = syscall_dispatch(SYS_TIMER_CREATE, 0, 0, 0, 0, 0);
+    d = syscall_dispatch(SYS_HANDLE_DUPLICATE, (uint32_t)m, HRIGHT_MAP, 0, 0, 0);
+    step = 4; if (t <= 0 || d <= 0 || mt_info(m, OBJINFO_MEM, sizeof *mi - 1) != E_BUFFER_TOO_SMALL
+                  || mt_info(t, OBJINFO_MEM, sizeof *mi) != E_WRONG_TYPE
+                  || mt_info(d, OBJINFO_MEM, sizeof *mi) != E_ACCESS_DENIED) goto done;
+
+    /* 5-6: mapping refusals, each its own error: the handle, the offset,
+       the end past the object's (at 64 bits), then each right */
+    step = 5; if (mt_map(9999, 0, P, MPROT_READ) != E_BAD_HANDLE
+                  || mt_map(t, 0, P, MPROT_READ) != E_WRONG_TYPE
+                  || mt_map(m, P + 1, P, MPROT_READ) != E_INVALID_ARGS
+                  || mt_map(m, P, 3u * P, MPROT_READ) != E_OUT_OF_RANGE
+                  || mt_map(m, 3u * P, 1, MPROT_READ) != E_OUT_OF_RANGE
+                  || mt_map(m, 1ull << 63, P, MPROT_READ) != E_OUT_OF_RANGE
+                  || mt_map(m, 0, 4u * P, MPROT_READ) != E_OUT_OF_RANGE) goto done;
+    step = 6; if (mt_map(d, 0, P, MPROT_READ | MPROT_WRITE) != E_ACCESS_DENIED
+                  || mt_map(d, 0, P, MPROT_READ | MPROT_EXEC) != E_ACCESS_DENIED
+                  || mt_map(d, 0, P, MPROT_READ) != E_OK
+                  || syscall_dispatch(SYS_VM_UNMAP, a->addr, 0, 0, 0, 0) != E_OK) goto done;
+    htab_close(tab, d);
+    d = syscall_dispatch(SYS_HANDLE_DUPLICATE, (uint32_t)m, HRIGHT_INSPECT | HRIGHT_MAP_WRITE, 0, 0, 0);
+    step = 7; if (d <= 0 || mt_map(d, 0, P, MPROT_READ | MPROT_WRITE) != E_ACCESS_DENIED) goto done;
+    htab_close(tab, d); d = -1;
+
+    /* 8-9: a view of pages 1-2: nothing mapped until touched; a copy into
+       page 2 touches it, through the check in front of the copy, and only it */
+    step = 8; if (mt_map(m, P, 2u * P, MPROT_READ | MPROT_WRITE) != E_OK || a->granted != 2u * P) goto done;
+    addr = a->addr;
+    if (paging_get_phys((uintptr_t)addr) || paging_get_phys((uintptr_t)(addr + P))) goto done;
+    mo = (struct kmem *)htab_ref(tab, m, KOBJ_MEM, 0, 0);
+    step = 9; if (!mo || user_copy_out(addr + P + 8, &val, 8) != 0 || kmem_resident(mo) != 1
+                  || !kmem_page_if_resident(mo, 2) || kmem_page_if_resident(mo, 1)
+                  || paging_get_phys((uintptr_t)(addr + P)) != kmem_page_if_resident(mo, 2)
+                  || paging_get_phys((uintptr_t)addr) != 0
+                  || pmm_reserved_count() != res0 + 2
+                  || *(volatile uint64_t *)((uint8_t *)paging_temp_map(kmem_page_if_resident(mo, 2)) + 8) != MT_VALUE)
+        goto done;
+    step = 10; if (mt_info(m, OBJINFO_MEM, sizeof *mi) != (int)sizeof *mi || mi->resident != P) goto done;
+
+    /* 11: a second, read-only view of the whole object sees the same page;
+       a write check on it touches nothing */
+    step = 11; if (mt_map(m, 0, 3u * P, MPROT_READ) != E_OK) goto done;
+    addr2 = a->addr;
+    if (user_copy_in(&got, addr2 + 2u * P + 8, 8) != 0 || got != MT_VALUE
+        || user_ptr_writable(addr2, 1) || paging_get_phys((uintptr_t)addr2) != 0
+        || kmem_resident(mo) != 1) goto done;
+
+    /* 12: unmapping takes the page out of the view, not out of the object */
+    step = 12; if (syscall_dispatch(SYS_VM_UNMAP, addr, 0, 0, 0, 0) != E_OK
+                   || paging_get_phys((uintptr_t)(addr + P)) != 0 || kmem_resident(mo) != 1
+                   || user_ptr_readable(addr + P, 1)) goto done;
+    addr = 0;
+    if (syscall_dispatch(SYS_VM_UNMAP, addr2, 0, 0, 0, 0) != E_OK) goto done;
+    addr2 = 0;
+
+    /* 13: commit past a job's limit is refused at once and charges nothing */
+    j = job_create(job_root(), 2u * P, 0, &rc);
+    step = 13; if (!j) goto done;
+    struct kmem *k = kmem_create(3, j, &rc);
+    if (k || rc != E_NO_MEMORY || j->mem_used != 0 || pmm_reserved_count() != res0 + 2) goto done;
+    k = kmem_create(2, j, &rc);
+    if (!k || j->mem_used != 2u * P || pmm_reserved_count() != res0 + 4) goto done;
+    kobj_unref(&k->hdr);
+    step = 14; if (j->mem_used != 0 || pmm_reserved_count() != res0 + 2) goto done;
+
+    /* 15: and past what memory can promise: the margin stays, and once the
+       rest is promised an allocation that would take a promised page is
+       refused, and so is a new object. Interrupts off: nothing else may
+       allocate while the pages are spoken for. */
+    {
+        paddr_t run = pmm_alloc_pages(512);
+        step = 15; if (!run) goto done;
+        pmm_free_pages(run, 512);
+        uint32_t f = arch_irq_save();
+        uint32_t avail = pmm_free_count() - PMM_COMMIT_MARGIN - pmm_reserved_count();
+        int over = pmm_reserve(avail + 1), fit = -1;
+        paddr_t taken = 0;
+        int made = 0;
+        if (over != 0) {
+            fit = pmm_reserve(avail);
+            if (fit == 0) {
+                taken = pmm_alloc_pages(512);
+                made = mt_create(P, 0);
+                pmm_unreserve(avail);
+            }
+        } else {
+            pmm_unreserve(avail + 1);   /* wrongly granted: give it back, then fail */
+        }
+        arch_irq_restore(f);
+        if (taken) pmm_free_pages(taken, 512);
+        if (made > 0) htab_close(tab, made);
+        step = 16; if (over != -1 || fit != 0 || taken || made != E_NO_MEMORY
+                       || pmm_reserved_count() != res0 + 2) goto done;
+    }
+
+    /* 17-18: from ring 3: the first touch of page 0 is a read, and finds it
+       zero; the store holds; the page outlives the process, in the object */
+    h = mt_toucher(mo, MPROT_READ | MPROT_WRITE, 0, &tid, &addr);
+    step = 17; if (h <= 0) goto done;
+    thread_start(tid); tid = -1;
+    step = 18; if (pt_wait(h, SIGNAL_PROCESS_ENDED, PT_FOREVER, 0) != E_OK || pt_info(h) != (int)sizeof *pi
+                   || pi->ended != PROC_EXITED || pi->code != 0) goto done;
+    htab_close(tab, h); h = -1;
+    page0 = kmem_page_if_resident(mo, 0);
+    step = 19; if (!page0 || kmem_resident(mo) != 2 || !pmm_page_in_use(page0)
+                   || *(volatile uint64_t *)((uint8_t *)paging_temp_map(page0) + 8) != MT_VALUE) goto done;
+
+    /* 20: a store as the first touch of a read-only view is the process's
+       fault, at that address, and maps nothing */
+    h = mt_toucher(mo, MPROT_READ, 1, &tid, &addr);
+    step = 20; if (h <= 0) goto done;
+    thread_start(tid); tid = -1;
+    step = 21; if (pt_wait(h, SIGNAL_PROCESS_ENDED, PT_FOREVER, 0) != E_OK || pt_info(h) != (int)sizeof *pi
+                   || pi->ended != PROC_CRASHED || pi->vector != 14 || pi->addr != addr + 8
+                   || usermode_faults() != faults0 + 1 || kmem_resident(mo) != 2) goto done;
+    htab_close(tab, h); h = -1;
+    addr = 0;
+
+    /* 22: the last handle frees the object, its pages and what it still had
+       reserved */
+    kobj_unref(&mo->hdr); mo = 0;
+    htab_close(tab, m); m = -1;
+    step = 22; if (kobj_live(KOBJ_MEM) != live0 || pmm_page_in_use(page0)
+                   || pmm_reserved_count() != res0) goto done;
+
+    /* 23: as many regions as a process may hold, and not one more */
+    struct vm_map_args v = { .length = 1, .prot = MPROT_READ };
+    step = 23;
+    for (nmaps = 0; nmaps < MMAP_MAX_REGIONS; nmaps++) {
+        v.addr = 0;
+        if (vm_map(pid, &v) != E_OK) goto done;
+        mt_addrs[nmaps] = v.addr;
+    }
+    v.addr = 0;
+    step = 24; if (vm_map(pid, &v) != E_NO_RESOURCES) goto done;
+    ok = 1;
+
+done:
+    if (!ok) klog_u32("KTEST", SEV_ERR, "memory object test failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    while (nmaps) vm_unmap(pid, mt_addrs[--nmaps], 0);
+    if (tid >= 0) thread_discard(tid);
+    if (h > 0) htab_close(tab, h);
+    if (addr) vm_unmap(pid, addr, 0);
+    if (addr2) vm_unmap(pid, addr2, 0);
+    if (mo) kobj_unref(&mo->hdr);
+    if (j) job_put(j);
+    if (m > 0) htab_close(tab, m);
+    if (d > 0) htab_close(tab, d);
+    if (t > 0) htab_close(tab, t);
+    vm_proc_reset(pid);
+    unmap_user_page(TEST_CODE_VIRT, phys);
+    if (ok && kobj_live(KOBJ_MEM) != live0) ok = 0;
     return ok;
 }
 

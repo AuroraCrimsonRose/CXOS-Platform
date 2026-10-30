@@ -590,6 +590,34 @@ user_blob_calls_start:
     ud2
 user_blob_calls_end:
 
+; user_blob_touch: touches a page of a memory object mapping from ring 3 (the
+; memory self-test, usermode_mem_test). Three qwords are copied in just past
+; it: the address, a value, and a mode. Mode 0 reads the address first (its
+; first touch is a read), stores the value, reads it back, and exits with what
+; the first read found, or 0x7BAD if the store did not hold. Any other mode
+; stores first. A fault ends it instead.
+global user_blob_touch_start, user_blob_touch_end
+user_blob_touch_start:
+    mov r12, rsi             ; the system page
+    lea rbx, [rel user_blob_touch_end]
+    mov rcx, [rbx]
+    mov rdx, [rbx + 8]
+    xor r13d, r13d
+    cmp qword [rbx + 16], 0
+    jne .store
+    mov r13, [rcx]
+.store:
+    mov [rcx], rdx
+    mov edi, 0x7BAD
+    cmp [rcx], rdx
+    jne .out
+    mov edi, r13d
+.out:
+    lea rax, [r12 + SYS_EXIT * SYSPAGE_STUB]
+    call rax
+    ud2
+user_blob_touch_end:
+
 ; user_blob_loop: never calls the kernel; only an interrupt reaches it.
 global user_blob_loop_start, user_blob_loop_end
 user_blob_loop_start:

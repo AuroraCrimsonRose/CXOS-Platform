@@ -22,6 +22,7 @@
 #include "object/ktimer.h"   /* ktimer_sys_init */
 #include "object/kqueue.h"   /* kqueue_sys_init */
 #include "object/knotify.h"  /* knotify_sys_init */
+#include "object/kmem.h"     /* kmem_sys_init */
 
 static struct ocache proc_cache;
 static struct idtab  pids;   /* pid -> process */
@@ -49,7 +50,7 @@ static void stop_unlink(struct proc *p) {
    even for a process in the kernel's space, since it is what gives the job
    back its charge. */
 static void release_space(struct proc *p) {
-    vm_proc_reset(p->pid);    /* bookkeeping only: the release frees the frames */
+    vm_proc_reset(p->pid);    /* unmaps its regions while the space is there */
     paddr_t pd = p->pd_phys;
     if (!pd) return;
     p->pd_phys = 0;
@@ -91,6 +92,8 @@ void proc_sys_init(void) {
     ktimer_sys_init();
     kqueue_sys_init();
     knotify_sys_init();
+    kmem_sys_init();
+    vm_sys_init();
     if (ocache_init(&proc_cache, "process", sizeof(struct proc)) != 0 ||
         kobj_type_register(KOBJ_PROCESS, &proc_ops) != 0)
         kpanic("proc_sys_init: no process cache");

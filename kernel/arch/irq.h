@@ -54,6 +54,11 @@ void set_user_fault_hook(void (*hook)(struct registers *));
    the safe point where a process being killed leaves. */
 void set_user_irq_return_hook(void (*hook)(void));
 
+/* A page fault on a user page that was not present, from ring 3 or from a
+   user copy, asks this hook first: nonzero if it mapped the page (a first
+   touch, memman/vmregion.h's vm_fault), and the instruction runs again. */
+void set_demand_fault_hook(int (*hook)(uintptr_t addr, int write, int exec));
+
 /* Which exception or interrupt a frame records, for a log line. */
 uint32_t irq_frame_vector(const struct registers *r);
 

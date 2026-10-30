@@ -5,10 +5,19 @@
 
 #include "vmregion.h"
 #include "arch/paging.h"
-#include "pmm.h"
+#include "memman/ocache.h"
+#include "object/kmem.h"
 #include "sched.h"
 #include "job.h"
+#include "panic.h"
 #include "logging.h"
+
+static struct ocache region_cache;
+
+void vm_sys_init(void) {
+    if (ocache_init(&region_cache, "vmregion", sizeof(struct vm_region)) != 0)
+        kpanic("vm_sys_init: no region cache");
+}
 
 /* A process's records live in its process (cpu/proc.h); the pid names it. */
 static struct vm_proc *vp(int pid) {
@@ -16,11 +25,18 @@ static struct vm_proc *vp(int pid) {
     return p ? &p->vm : 0;
 }
 
-/* The job its pages are charged to as well (cpu/job.h). Every change to
-   `mapped` below changes the job's account by the same amount, so the job
-   holds exactly what its processes' accounts add up to. */
+/* The job its image and stack pages are charged to as well (cpu/job.h): every
+   change to `charged` below changes the job's account by the same amount. A
+   mapping's pages are charged to the job by their memory object instead. */
 static struct job *jb(int pid) {
     return proc_by_pid(pid)->job;   /* vp(pid) was checked first */
+}
+
+/* The space pid's regions are mapped in: its own, or the kernel's for a
+   process that has none (the self-tests' scratch processes). */
+static paddr_t space_of(int pid) {
+    struct proc *p = proc_by_pid(pid);
+    return p->pd_phys ? p->pd_phys : addr_space_kernel();
 }
 
 static uint32_t page_up(uint32_t n) { return (n + PAGE_SIZE - 1u) & ~(PAGE_SIZE - 1u); }
@@ -29,71 +45,44 @@ static uint32_t default_quota = VM_DEFAULT_QUOTA;
 uint32_t vm_default_quota(void) { return default_quota; }
 void     vm_set_default_quota(uint32_t bytes) { if (bytes) default_quota = bytes; }
 
-/* Do [a, a+alen) and [b, b+blen) share a byte? Written with the ends compared
-   rather than the starts so a zero-length range never counts as overlapping. */
-static int overlaps(uint32_t a, uint32_t alen, uint32_t b, uint32_t blen) {
-    return a < b + blen && b < a + alen;
-}
-
-/* Is [addr, addr+len) inside the mmap window and clear of every live region?
-   `addr` is a whole user address (ABI 12): it is compared at full width before
-   anything narrows it, so a hint past 4 GB is refused rather than cut down to
-   one inside the window. */
+/* Is [addr, addr+len) inside the mmap window and clear of every region?
+   `addr` is a whole user address (ABI 12): it is compared at full width, so a
+   hint past 4 GB is refused rather than cut down to one inside the window. */
 static int range_free(struct vm_proc *p, uint64_t addr, uint32_t len) {
     if (addr < VM_MMAP_BASE) return 0;
     if (addr + len < addr)   return 0;              /* wrapped */
     if (addr + len > VM_MMAP_TOP) return 0;
-    for (int i = 0; i < MMAP_MAX_REGIONS; i++)
-        if (p->r[i].base && overlaps((uint32_t)addr, len, p->r[i].base, p->r[i].len))
-            return 0;
-    return 1;
-}
-
-/* Lowest free address in the window that fits `len`, or 0 if the window is too
-   fragmented to hold it.
-
-   First fit, restarted: whenever the candidate collides with a region, it moves
-   to that region's end and the scan begins again. Each restart clears at least
-   one region permanently, so the loop cannot run more times than there are
-   regions - which is why a bound of MMAP_MAX_REGIONS + 1 is a proof rather
-   than a guess. */
-static uint32_t place(struct vm_proc *p, uint32_t len) {
-    uint32_t at = VM_MMAP_BASE;
-    for (int guard = 0; guard <= MMAP_MAX_REGIONS; guard++) {
-        if (at + len < at || at + len > VM_MMAP_TOP) return 0;
-        int moved = 0;
-        for (int i = 0; i < MMAP_MAX_REGIONS; i++) {
-            if (!p->r[i].base) continue;
-            if (overlaps(at, len, p->r[i].base, p->r[i].len)) {
-                at = p->r[i].base + p->r[i].len;
-                moved = 1;
-                break;
-            }
-        }
-        if (!moved) return at;
-    }
-    return 0;
+    return vmtree_overlap(p->root, addr, len) == 0;
 }
 
 /* Mapping flags for a requested protection; paging_map_user makes them ring
-   3. MPROT_EXEC passes through as VM_EXEC, which the architecture enforces
-   where its MMU can: a 32-bit non-PAE page table has no no-execute bit, so
-   there every mapped page is executable whatever was asked for. The request
-   is recorded in the region either way. */
+   3. Every page of a region is its object's, so VM_BORROWED. */
 static uint32_t vm_flags(uint32_t prot) {
-    uint32_t f = 0;
+    uint32_t f = VM_BORROWED;
     if (prot & MPROT_WRITE) f |= VM_WRITE;
     if (prot & MPROT_EXEC)  f |= VM_EXEC;
     return f;
 }
 
+/* Unmap a region's pages from `space`. Only pages its object holds can have
+   been mapped, so the others are passed over. */
+static void unmap_region(paddr_t space, struct vm_region *r) {
+    uint32_t first = (uint32_t)(r->off / PAGE_SIZE);
+    for (uint64_t at = 0; at < r->node.len; at += PAGE_SIZE)
+        if (kmem_page_if_resident(r->mem, first + (uint32_t)(at / PAGE_SIZE)))
+            paging_unmap_in(space, (uintptr_t)(r->node.base + at));
+}
+
 void vm_proc_init(int pid, uint32_t quota, int parent) {
     if (!vp(pid)) return;
     struct vm_proc *p = vp(pid);
-    if (p->live) job_uncharge_mem(jb(pid), p->mapped);   /* an account started over */
-    for (int i = 0; i < MMAP_MAX_REGIONS; i++) p->r[i].base = 0;
-    p->mapped = 0;
-    p->live   = 1;
+    if (p->live) vm_proc_reset(pid);   /* an account started over */
+    p->lock    = (spinlock_t)SPINLOCK_INIT;
+    p->root    = 0;
+    p->count   = 0;
+    p->mapped  = 0;
+    p->charged = 0;
+    p->live    = 1;
 
     if (quota == 0 || quota > default_quota) quota = default_quota;
     if (vp(parent) && vp(parent)->live && quota > vp(parent)->quota)
@@ -103,14 +92,25 @@ void vm_proc_init(int pid, uint32_t quota, int parent) {
 
 void vm_proc_reset(int pid) {
     if (!vp(pid)) return;
-    /* Bookkeeping only. The frames are freed by addr_space_release(),
-       which walks the whole user half; freeing them here as well would be a
-       double free. See the header. The job's charge does go back here. */
-    if (vp(pid)->live) job_uncharge_mem(jb(pid), vp(pid)->mapped);
-    vp(pid)->live   = 0;
-    vp(pid)->quota  = 0;
-    vp(pid)->mapped = 0;
-    for (int i = 0; i < MMAP_MAX_REGIONS; i++) vp(pid)->r[i].base = 0;
+    struct vm_proc *p = vp(pid);
+    if (p->live) {
+        paddr_t space = space_of(pid);
+        while (p->root) {
+            struct vm_region *r = (struct vm_region *)p->root;
+            uint32_t f = spin_lock(&p->lock);
+            vmtree_remove(&p->root, &r->node);
+            spin_unlock(&p->lock, f);
+            unmap_region(space, r);
+            kobj_unref(&r->mem->hdr);
+            ocache_free(&region_cache, r);
+        }
+        job_uncharge_mem(jb(pid), p->charged);
+    }
+    p->live    = 0;
+    p->quota   = 0;
+    p->mapped  = 0;
+    p->charged = 0;
+    p->count   = 0;
 }
 
 uint32_t vm_quota_of(int pid) {
@@ -133,7 +133,8 @@ int vm_charge(int pid, uint32_t bytes) {
     int rc = job_charge_mem(jb(pid), len);
     if (rc != E_OK) return rc;
 
-    p->mapped += len;
+    p->mapped  += len;
+    p->charged += len;
     return E_OK;
 }
 
@@ -144,127 +145,89 @@ void vm_uncharge(int pid, uint32_t bytes) {
     /* Clamped rather than allowed to go negative: an over-refund would hand a
        process a quota larger than it was given, which is worse than losing
        track of a page. */
-    if (len > p->mapped) len = p->mapped;
-    p->mapped -= len;
+    if (len > p->charged) len = p->charged;
+    p->mapped  -= len;
+    p->charged -= len;
     job_uncharge_mem(jb(pid), len);
 }
 
-/* Unmap and free the first `done` pages of a mapping that failed part way in.
-   A half-built mapping must leave nothing behind: the caller gets an error and
-   must be able to treat it as though it had never asked. */
-static void undo(uint32_t base, uint32_t done) {
-    for (uint32_t i = 0; i < done; i += PAGE_SIZE) {
-        paddr_t phys = paging_get_phys(base + i);
-        paging_unmap(base + i);
-        if (phys) pmm_free(phys);
-    }
-}
+int vm_map(int pid, struct vm_map_args *a) { return vm_map_object(pid, a, 0, 0); }
 
-static int vm_map_pages(struct vm_proc *p, struct vm_map_args *a, int slot, uint32_t len);
-
-int vm_map(int pid, struct vm_map_args *a) {
+int vm_map_object(int pid, struct vm_map_args *a, struct kmem *m, uint32_t rights) {
     if (!vp(pid) || !vp(pid)->live) return E_INVALID_ARGS;
     struct vm_proc *p = vp(pid);
 
-    if (a->object != MOBJ_ANON)             return E_INVALID_ARGS;
+    /* With no object given, a->object must ask for a new one: a number here
+       names no handle the kernel looked up. */
+    if (!m && a->object != MOBJ_ANON)       return E_INVALID_ARGS;
     if (a->reserved)                        return E_INVALID_ARGS;
-    /* Anonymous memory has no interior to be at an offset into. Rejecting a
-       non-zero offset keeps the field honest until there is an object it can
-       mean something for, rather than silently ignoring what was asked. */
-    if (a->offset)                          return E_INVALID_ARGS;
     if (a->length == 0)                     return E_INVALID_ARGS;
     if (a->length > MMAP_MAX_BYTES)         return E_OUT_OF_RANGE;
     if (a->prot & ~(MPROT_READ | MPROT_WRITE | MPROT_EXEC)) return E_INVALID_ARGS;
     if (a->flags & ~MMAP_HINT)              return E_INVALID_ARGS;
     /* Refused rather than quietly downgraded, so nothing is ever written that
-       depends on it being allowed. The ABI explains why this is discipline
-       today and enforcement later. */
+       depends on it being allowed. */
     if ((a->prot & MPROT_WRITE) && (a->prot & MPROT_EXEC)) return E_INVALID_ARGS;
     /* A mapping nothing may do anything with is a mistake, not a request. */
     if (!(a->prot & (MPROT_READ | MPROT_WRITE | MPROT_EXEC))) return E_INVALID_ARGS;
 
     uint32_t len = page_up((uint32_t)a->length);                  /* at most MMAP_MAX_BYTES */
     if (len < a->length) return E_OUT_OF_RANGE;                   /* rounding wrapped */
+
+    if (!m) {
+        /* A new object has no interior to be at an offset into. */
+        if (a->offset) return E_INVALID_ARGS;
+    } else {
+        /* A view inside the object, on a page boundary, that the handle
+           allows. The end is compared at 64 bits: an offset near 2^64 does
+           not wrap round to fit. */
+        if (a->offset & (PAGE_SIZE - 1u))                         return E_INVALID_ARGS;
+        uint64_t size = (uint64_t)m->npages * PAGE_SIZE;
+        if (a->offset > size || len > size - a->offset)           return E_OUT_OF_RANGE;
+        if (!(rights & HRIGHT_MAP))                               return E_ACCESS_DENIED;
+        if ((a->prot & MPROT_WRITE) && !(rights & HRIGHT_MAP_WRITE)) return E_ACCESS_DENIED;
+        if ((a->prot & MPROT_EXEC)  && !(rights & HRIGHT_MAP_EXEC))  return E_ACCESS_DENIED;
+    }
+
     if (p->mapped + len < p->mapped) return E_OUT_OF_RANGE;
     if (p->mapped + len > p->quota)  return E_NO_MEMORY;
+    if (p->count >= MMAP_MAX_REGIONS) return E_NO_RESOURCES;
 
-    int slot = -1;
-    for (int i = 0; i < MMAP_MAX_REGIONS; i++)
-        if (!p->r[i].base) { slot = i; break; }
-    if (slot < 0) return E_NO_RESOURCES;
+    /* The object, and its commit, before the region: a refusal here has
+       taken nothing (kmem_create gives back what it charged). */
+    int rc;
+    if (m) kobj_ref(&m->hdr);
+    else if (!(m = kmem_create(len / PAGE_SIZE, jb(pid), &rc))) return rc;
 
-    /* The job's share is taken before the first frame, as the quota's is
-       checked, and given back on every way out below that maps nothing:
-       checking it here and charging it at the end would let another process
-       in the job take the room between the two. */
-    int rc = job_charge_mem(jb(pid), len);
-    if (rc != E_OK) return rc;
-    rc = vm_map_pages(p, a, slot, len);
-    if (rc != E_OK) job_uncharge_mem(jb(pid), len);
-    return rc;
-}
-
-/* vm_map's work once everything is charged: E_OK, or what to refuse with,
-   having mapped nothing. */
-static int vm_map_pages(struct vm_proc *p, struct vm_map_args *a, int slot, uint32_t len) {
+    struct vm_region *r = ocache_alloc(&region_cache);
+    if (!r) { kobj_unref(&m->hdr); return E_NO_MEMORY; }
+    r->prot = a->prot;
+    r->mem  = m;
+    r->off  = a->offset;
+    r->node.len = len;
 
     /* The hint is tried and then abandoned, never honoured half way. An
        unaligned or occupied hint falls back to placement rather than being
-       rounded into something the caller did not ask for - a window that moved
-       is more useful than one that silently landed elsewhere and still claims
-       to be where it was asked for, because `addr` reports the truth either
-       way. */
-    uint32_t base = 0;
+       rounded into something the caller did not ask for - `addr` reports
+       the truth either way. */
+    uint32_t f = spin_lock(&p->lock);
+    uint64_t base = 0;
     if ((a->flags & MMAP_HINT) && (a->addr & (PAGE_SIZE - 1u)) == 0 &&
         a->addr && range_free(p, a->addr, len))
-        base = (uint32_t)a->addr;                   /* inside the window: range_free */
-    if (!base) base = place(p, len);
-    if (!base) return E_NO_RESOURCES;
-
-    uint32_t flags = vm_flags(a->prot);
-    for (uint32_t off = 0; off < len; off += PAGE_SIZE) {
-        paddr_t frame = pmm_alloc();
-        if (!frame) { undo(base, off); return E_NO_MEMORY; }
-
-        /* Mapped writable first so the zeroing below can happen through this
-           very mapping, then set to the protection that was asked for. The
-           zeroing is not tidiness: a frame just off the free list may hold
-           another process's memory, and handing that to a caller would leak
-           whatever it was. */
-        /* Unreachable unless the range check above let a kernel address through,
-           but it unwinds the same way the allocation failure does: returning
-           without undo() would leave the pages already mapped in this loop
-           stranded in the address space with nothing owning them. */
-        if (paging_map_user(base + off, frame, VM_WRITE) != 0) {
-            pmm_free(frame);
-            undo(base, off);
-            return E_INVALID_ARGS;
-        }
-        uint32_t *z = (uint32_t *)(uintptr_t)(base + off);
-        for (uint32_t i = 0; i < PAGE_SIZE / 4u; i++) z[i] = 0;
-
-        /* The re-protect is checked for the same reason the mapping above is,
-           and the consequence of not checking it is worse: the page is
-           writable at this point, so a dropped failure hands the caller write
-           access to a region it asked to be read-only - and on x86-32 without
-           PAE there is no execute bit, so a writable page is also executable,
-           which is the W^X combination the loader refuses by name. It cannot
-           fail in practice, because the page table the first call allocated is
-           the one this call reuses; that is a fact about the callee, which is
-           exactly the kind of reasoning a caller should not be doing. */
-        if (flags != VM_WRITE &&
-            paging_map_user(base + off, frame, flags) != 0) {
-            undo(base, off + PAGE_SIZE);   /* this page is mapped: unwind it too */
-            return E_INVALID_ARGS;
-        }
+        base = a->addr;
+    if (!base) base = vmtree_first_fit(p->root, VM_MMAP_BASE, VM_MMAP_TOP, len);
+    if (base) {
+        r->node.base = base;
+        if (vmtree_insert(&p->root, &r->node) != 0) kpanic("vm_map: placed on a region");
+        p->count++;
+        p->mapped += len;
     }
-
-    p->r[slot].base   = base;
-    p->r[slot].len    = len;
-    p->r[slot].prot   = a->prot;
-    p->r[slot].object = a->object;
-    p->r[slot].off    = a->offset;
-    p->mapped += len;
+    spin_unlock(&p->lock, f);
+    if (!base) {
+        ocache_free(&region_cache, r);
+        kobj_unref(&m->hdr);
+        return E_NO_RESOURCES;
+    }
 
     a->addr    = base;
     a->granted = len;
@@ -276,23 +239,29 @@ int vm_unmap(int pid, uint64_t addr, uint64_t length) {
     struct vm_proc *p = vp(pid);
 
     /* A mapping is released whole or not at all. Partial release would mean
-       splitting a region into two, which needs a free slot to put the second
-       half in - so the call could fail for lack of a slot while trying to give
-       memory BACK, which is the wrong way round. Whole-region unmap has no
-       such failure, and a caller wanting halves can ask for two mappings. */
-    for (int i = 0; i < MMAP_MAX_REGIONS; i++) {
-        if (p->r[i].base != addr) continue;
-        /* compared whole: a length past 32 bits matches no mapping */
-        if (length && (length > MMAP_MAX_BYTES ||
-                       page_up((uint32_t)length) != p->r[i].len)) return E_INVALID_ARGS;
-
-        undo(p->r[i].base, p->r[i].len);
-        p->mapped -= p->r[i].len;
-        job_uncharge_mem(jb(pid), p->r[i].len);
-        p->r[i].base = 0;
-        return E_OK;
+       splitting a region into two, which needs a second record - so the call
+       could fail for lack of memory while trying to give memory BACK, which
+       is the wrong way round. A caller wanting halves can ask for two
+       mappings. */
+    uint32_t f = spin_lock(&p->lock);
+    struct vm_region *r = (struct vm_region *)vmtree_find(p->root, addr);
+    if (!r || r->node.base != addr) { spin_unlock(&p->lock, f); return E_NOT_FOUND; }
+    /* compared whole: a length past 32 bits matches no mapping */
+    if (length && (length > MMAP_MAX_BYTES ||
+                   page_up((uint32_t)length) != r->node.len)) {
+        spin_unlock(&p->lock, f);
+        return E_INVALID_ARGS;
     }
-    return E_NOT_FOUND;
+    vmtree_remove(&p->root, &r->node);
+    p->count--;
+    p->mapped -= (uint32_t)r->node.len;
+    spin_unlock(&p->lock, f);
+
+    /* Out of the tree first, so no fault maps a page back in behind us. */
+    unmap_region(space_of(pid), r);
+    kobj_unref(&r->mem->hdr);
+    ocache_free(&region_cache, r);
+    return E_OK;
 }
 
 int vm_info(int pid, struct vm_usage *u) {
@@ -300,4 +269,23 @@ int vm_info(int pid, struct vm_usage *u) {
     u->quota  = vp(pid)->quota;
     u->mapped = vp(pid)->mapped;
     return E_OK;
+}
+
+int vm_fault(int pid, uint64_t addr, int write, int exec) {
+    if (!vp(pid) || !vp(pid)->live || addr >= USER_VLIMIT) return 0;
+    struct vm_proc *p = vp(pid);
+    int ok = 0;
+
+    /* Under the lock to the end, so the region cannot be unmapped between
+       finding it and mapping its page. */
+    uint32_t f = spin_lock(&p->lock);
+    struct vm_region *r = (struct vm_region *)vmtree_find(p->root, addr);
+    if (r && !(write && !(r->prot & MPROT_WRITE)) && !(exec && !(r->prot & MPROT_EXEC))) {
+        uint64_t page = addr & ~(uint64_t)(PAGE_SIZE - 1u);
+        uint32_t index = (uint32_t)((r->off + (page - r->node.base)) / PAGE_SIZE);
+        paddr_t phys = kmem_page(r->mem, index);
+        ok = paging_map_user_in(space_of(pid), (uintptr_t)page, phys, vm_flags(r->prot)) == 0;
+    }
+    spin_unlock(&p->lock, f);
+    return ok;
 }

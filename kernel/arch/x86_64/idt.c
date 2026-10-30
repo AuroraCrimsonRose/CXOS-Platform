@@ -195,6 +195,7 @@ static irq_handler_t irq_routines[16];
 static irq_handler_t msi_routines[MSI_VECTOR_COUNT];
 static void (*user_fault_hook)(struct registers *);
 static void (*user_irq_return_hook)(void);
+static int  (*demand_fault_hook)(uintptr_t addr, int write, int exec);
 
 void irq_install_handler(int irq, irq_handler_t handler) {
     if (irq >= 0 && irq < 16) irq_routines[irq] = handler;
@@ -221,6 +222,7 @@ void irq_free_msi_vector(int vector) {
 
 void set_user_fault_hook(void (*hook)(struct registers *)) { user_fault_hook = hook; }
 void set_user_irq_return_hook(void (*hook)(void)) { user_irq_return_hook = hook; }
+void set_demand_fault_hook(int (*hook)(uintptr_t, int, int)) { demand_fault_hook = hook; }
 
 uint32_t  irq_frame_vector(const struct registers *r) { return (uint32_t)r->vector; }
 uintptr_t irq_frame_ip(const struct registers *r)     { return (uintptr_t)r->rip; }
@@ -272,6 +274,23 @@ static void irq_dispatch(struct registers *r) {
    and user_copy_out/in make that E_BAD_ADDRESS. The same four conditions as
    x86-32's idt.c, for the same reason: recovery is a property of where the
    fault happened, with no flag that could be left armed. */
+/* A page that was not present, at a user address, touched from ring 3 or from
+   inside user_copy_bytes: its first touch, if a region holds it (memman/
+   vmregion.h), and the faulting instruction runs again. Anywhere else in the
+   kernel a missing user page is a bug, as before: the checks in front of a
+   dereference fault the pages in (cpu/usercopy.c). */
+static int demand_fault(struct registers *f) {
+    if (f->vector != VEC_PAGE_FAULT || !demand_fault_hook) return 0;
+    if (f->error & 0x1) return 0;          /* present: a protection fault */
+    uint64_t cr2;
+    __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
+    if (cr2 >= USER_VLIMIT) return 0;
+    if (!(f->cs & 3) &&
+        (f->rip < (uint64_t)(uintptr_t)usercopy_start ||
+         f->rip >= (uint64_t)(uintptr_t)usercopy_end)) return 0;
+    return demand_fault_hook((uintptr_t)cr2, (f->error & 0x2) != 0, (f->error & 0x10) != 0);
+}
+
 static int recover_user_copy_fault(struct registers *f) {
     if (f->vector != VEC_PAGE_FAULT) return 0;
     uint64_t cr2;
@@ -295,6 +314,9 @@ void idt64_dispatch(struct registers *f) {
         if ((f->cs & 3) && user_irq_return_hook) user_irq_return_hook();
         return;
     }
+
+    /* A first touch is not a fault at all. */
+    if (demand_fault(f)) return;
 
     /* Before the probe and the panic: a recovered fault leaves no trace. */
     if (recover_user_copy_fault(f)) return;

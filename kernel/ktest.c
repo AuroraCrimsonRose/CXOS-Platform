@@ -513,6 +513,35 @@ static int test_iowin(void) {
 /* ---- paging: map a scratch frame, write+read it back; and the refusals of
    arch/paging.h: a kernel mapping is not reachable from ring 3, a user mapping
    cannot name kernel memory, and a flag that is not VM_* maps nothing. ---- */
+/* How many pages releasing a new space gives back, the space holding one page
+   at `virt` mapped with `extra`: its tables, and the page unless it is
+   VM_BORROWED, which belongs to someone else (a memory object) and outlives
+   the space. The page goes in *frame, for its owner to free once the count
+   shows the release did not; -1 (and 0 there) if out of memory. */
+static int released_pages(uintptr_t virt, uint32_t extra, paddr_t *frame) {
+    paddr_t space;
+    *frame = pmm_alloc();
+    if (!*frame) return -1;
+    if (addr_space_create(&space) != 0) { pmm_free(*frame); *frame = 0; return -1; }
+    if (paging_map_user_in(space, virt, *frame, VM_WRITE | extra) != 0) {
+        addr_space_release(space); pmm_free(*frame); *frame = 0; return -1;
+    }
+    uint32_t free0 = pmm_free_count();
+    addr_space_release(space);
+    return (int)(pmm_free_count() - free0);
+}
+
+/* A borrowed page outlives the space it was mapped in: releasing a space
+   with one gives back exactly one page fewer than with a page it owns. */
+static int borrowed_outlives_space(uintptr_t virt) {
+    paddr_t owned_frame, borrowed_frame;
+    int owned    = released_pages(virt, 0, &owned_frame);
+    int borrowed = released_pages(virt, VM_BORROWED, &borrowed_frame);
+    int kept = owned >= 0 && borrowed >= 0 && borrowed == owned - 1;
+    if (kept) pmm_free(borrowed_frame);   /* still its owner's, so freed once */
+    return kept;
+}
+
 static int test_paging(void) {
     uintptr_t test_virt = KVA_KTEST_SCRATCH;   /* kernel half, mapped by nothing else */
     uintptr_t user_virt = 0x3F000000;          /* user half, unused by the kernel space */
@@ -534,7 +563,7 @@ static int test_paging(void) {
     paging_unmap(test_virt);   /* whichever of these a broken pager made */
     paging_unmap(user_virt);
     pmm_free(frame);
-    return ok;
+    return borrowed_outlives_space(user_virt) && ok;
 }
 
 /* ---- heap: alloc three blocks, verify no cross-corruption, free+reuse ---- */
@@ -1811,6 +1840,10 @@ static int vm_cycle(int pid) {
     if (a.addr & (PAGE_SIZE - 1u))     goto done;
     uint64_t first = a.addr;
 
+    /* Nothing is mapped until the first touch, which for a process that is
+       not the current one is vm_fault's to make (memman/vmregion.h). */
+    if (paging_get_phys((uintptr_t)first) != 0)   goto done;
+    if (!vm_fault(pid, first, 1, 0))              goto done;
     /* Readable, writable, and zero - a frame off the free list may hold
        another process's memory, so anything non-zero here is a disclosure. */
     volatile uint8_t *m = (volatile uint8_t *)user_ptr(first);
@@ -2186,6 +2219,8 @@ static int test_lifecycle_sequences(void) {
     if (vm_map(pid, &a) != E_OK) { ok = 0; goto done_vm; }
     uint64_t va = a.addr;
 
+    /* touched for the scratch process; a fault would ask the current one */
+    if (!vm_fault(pid, va, 1, 0)) { ok = 0; goto done_vm; }
     /* reachable while mapped, by both the check and the hardware */
     if (!user_ptr_writable(va, PAGE_SIZE)) { ok = 0; goto done_vm; }
     *(volatile uint8_t *)user_ptr(va) = 0xC7;
@@ -2205,6 +2240,8 @@ static int test_lifecycle_sequences(void) {
     a.length = PAGE_SIZE; a.prot = MPROT_READ;
     if (vm_map(pid, &a) != E_OK) { ok = 0; goto done_vm; }
     uint64_t ro = a.addr;
+    if (vm_fault(pid, ro, 1, 0))  { ok = 0; goto done_vm; }   /* a store may not map it */
+    if (!vm_fault(pid, ro, 0, 0)) { ok = 0; goto done_vm; }
 
     if (!user_ptr_readable(ro, PAGE_SIZE)) { ok = 0; goto done_vm; }
     if (user_ptr_writable(ro, 1))          { ok = 0; goto done_vm; }
@@ -3306,6 +3343,7 @@ void ktest_run(void) {
     total++; passed += report("timers: absolute deadlines on the monotonic clock", usermode_timer_test());
     total++; passed += report("queues: one-shot keys, re-armed, many objects", usermode_queue_test());
     total++; passed += report("notifications: bits that combine, signallers", usermode_notify_test());
+    total++; passed += report("memory objects: first touch, strict commit", usermode_mem_test());
     total++; passed += report("ipc: queued calls, reply tokens, badges", usermode_ipc_test());
     total++; passed += report("ipc: handles in messages", usermode_ipc_handles_test());
     total++; passed += report("ipc endpoints refcounted + reclaimed", test_ipc_endpoint_lifetime());
