@@ -51,26 +51,43 @@ public class VerifyBootCommand : Command<VerifyBootCommand.Settings>
         [CommandOption("--arch")]
         [Description("The kernel the image carries: x86_64 (default), or x86_32 for an image from the retired 32-bit line, which boots it on qemu-system-i386")]
         public string? Arch { get; set; }
+
+        [CommandOption("--json")]
+        [Description("Print the verdict and every self-test's result (the kernel's @ktest lines) as one JSON object, and nothing else. Exit codes are unchanged")]
+        public bool Json { get; set; }
+    }
+
+    // With --json, stdout is the JSON object alone: errors go to stderr, and
+    // the progress lines nowhere.
+    private static void Error(Settings settings, string message)
+    {
+        if (settings.Json) Console.Error.WriteLine("error: " + Markup.Remove(message));
+        else AnsiConsole.MarkupLine("[red]error:[/] " + message);
+    }
+
+    private static void Say(Settings settings, string markup)
+    {
+        if (!settings.Json) AnsiConsole.MarkupLine(markup);
     }
 
     protected override int Execute(CommandContext context, Settings settings, CancellationToken cancellationToken)
     {
         if (!File.Exists(settings.ImagePath))
         {
-            AnsiConsole.MarkupLine($"[red]error:[/] disk image not found: '{Markup.Escape(settings.ImagePath)}'");
+            Error(settings, $"disk image not found: '{Markup.Escape(settings.ImagePath)}'");
             return 1;
         }
 
         if (settings.Cpu is { Length: > 0 } c && (c[0] == '-' || !c.All(ch => char.IsAsciiLetterOrDigit(ch) || "_-.,+=".Contains(ch))))
         {
-            AnsiConsole.MarkupLine($"[red]error:[/] not a CPU model: '{Markup.Escape(c)}'");
+            Error(settings, $"not a CPU model: '{Markup.Escape(c)}'");
             return 1;
         }
 
         UsbHost? usb = null;
         if (settings.Usb is not null && (usb = QemuTool.ParseUsbHost(settings.Usb)) is null)
         {
-            AnsiConsole.MarkupLine($"[red]error:[/] --usb takes xhci, ehci or ohci, not '{Markup.Escape(settings.Usb)}'");
+            Error(settings, $"--usb takes xhci, ehci or ohci, not '{Markup.Escape(settings.Usb)}'");
             return 1;
         }
 
@@ -79,7 +96,7 @@ public class VerifyBootCommand : Command<VerifyBootCommand.Settings>
         {
             if (QemuTool.ParseArch(settings.Arch) is not QemuArch a)
             {
-                AnsiConsole.MarkupLine($"[red]error:[/] --arch takes x86_32 or x86_64, not '{Markup.Escape(settings.Arch)}'");
+                Error(settings, $"--arch takes x86_32 or x86_64, not '{Markup.Escape(settings.Arch)}'");
                 return 1;
             }
             arch = a;
@@ -89,18 +106,18 @@ public class VerifyBootCommand : Command<VerifyBootCommand.Settings>
         string? foreign = settings.ForeignDisk ? settings.ImagePath + ".foreign.img" : null;
         byte[]? foreignHash = foreign is null ? null : CXEX.Tools.ForeignDisk.Create(foreign, File.ReadAllBytes(settings.ImagePath));
         long foreignSize = foreign is null ? 0 : new FileInfo(foreign).Length;
-        AnsiConsole.MarkupLine($"[grey]booting[/] {Markup.Escape(settings.ImagePath)} [grey](snapshot, serial -> {Markup.Escape(log)})[/]");
-        AnsiConsole.MarkupLine($"[grey]{Markup.Escape(QemuTool.CommandLine(BootVerifier.ConfigFor(settings.ImagePath, log, settings.Cpu, usb: usb, foreignDisk: foreign, arch: arch)))}[/]");
+        Say(settings, $"[grey]booting[/] {Markup.Escape(settings.ImagePath)} [grey](snapshot, serial -> {Markup.Escape(log)})[/]");
+        Say(settings, $"[grey]{Markup.Escape(QemuTool.CommandLine(BootVerifier.ConfigFor(settings.ImagePath, log, settings.Cpu, usb: usb, foreignDisk: foreign, arch: arch)))}[/]");
 
         BootVerdict v;
         try
         {
             v = BootVerifier.Run(settings.ImagePath, log, TimeSpan.FromSeconds(settings.TimeoutSeconds), settings.Full,
-                                 line => AnsiConsole.MarkupLine($"[grey]{Markup.Escape(line)}[/]"), settings.Cpu, usb, foreign, arch);
+                                 line => Say(settings, $"[grey]{Markup.Escape(line)}[/]"), settings.Cpu, usb, foreign, arch);
         }
         catch (System.ComponentModel.Win32Exception ex)
         {
-            AnsiConsole.MarkupLine($"[red]error:[/] could not start {QemuTool.ExecutableFor(arch)}: {Markup.Escape(ex.Message)}");
+            Error(settings, $"could not start {QemuTool.ExecutableFor(arch)}: {Markup.Escape(ex.Message)}");
             if (foreign is not null) DeleteQuietly(foreign);   // nothing ran, so nothing to keep
             return 1;
         }
@@ -125,6 +142,13 @@ public class VerifyBootCommand : Command<VerifyBootCommand.Settings>
             }
         }
 
+        if (settings.Json)
+        {
+            var tests = SelfTestReport.Parse(File.Exists(log) ? ReadShared(log) : "");
+            Console.Out.WriteLine(SelfTestReport.Json(v, tests, settings.ImagePath, log, settings.Full, settings.Cpu));
+            return (int)v.Outcome;
+        }
+
         switch (v.Outcome)
         {
             case BootOutcome.Pass:
@@ -139,6 +163,14 @@ public class VerifyBootCommand : Command<VerifyBootCommand.Settings>
                 AnsiConsole.MarkupLine($"[grey]  full log: {Markup.Escape(log)}[/]");
                 return 2;
         }
+    }
+
+    // The QEMU that wrote the log may not have let go of it yet.
+    private static string ReadShared(string path)
+    {
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        using var r = new StreamReader(fs);
+        return r.ReadToEnd();
     }
 
     // A 32 MB scratch file left behind is untidy, not a reason to lose the verdict.

@@ -71,7 +71,10 @@ The old names stay as aliases for one release, then go.
   goes to `build/logs/`. `--verbose` restores everything.
 - **`--json` on every checking command** (`verify`, `check`, `test`, `inspect`):
   one result object, stable field names, so the container, scripts and agents
-  read results instead of scraping them.
+  read results instead of scraping them. First built: `verify-boot --json`
+  (roadmap 1.5d1), the verdict and every self-test's result read from the
+  kernel's `@ktest` lines; stdout carries the object alone, errors go to
+  stderr.
 - **One exit-code meaning everywhere:** 0 pass, 1 fail, 2 inconclusive, 3 the
   tool itself could not run.
 

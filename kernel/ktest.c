@@ -35,6 +35,8 @@
 #include "string.h"
 #include "pci.h"
 #include "timer.h"
+#include "serial.h"
+#include "format.h"
 #include "cxex_verify.h"
 #include "cxex.h"
 #include "keyvault.h"
@@ -68,13 +70,67 @@
 #include "diag/crashrec.h"
 
 
+/* ---- results a machine reads (roadmap 1.5d) ----
+ * One line per self-test on the serial port only, beside the human log:
+ *   @ktest<TAB>begin
+ *   @ktest<TAB>result<TAB>index<TAB>pass|fail<TAB>ms<TAB>name
+ *   @ktest<TAB>end<TAB>passed<TAB>total
+ * Tagged and tab-separated like XNU's ktest_emit.c ("[KTEST]\tTESTBEGIN\t..."),
+ * so `cxk verify-boot` reads each test's verdict, not just the summary. Never
+ * on the screen, and never wrapped: serial_puts, not the console. Each line is
+ * written with interrupts off, so a preempted klog can't split it; it starts
+ * with a newline of its own in case it lands after half of one, and a reader
+ * matches "@ktest" anywhere in a line. The ms are the virtual clock's (icount)
+ * since the last line: tests run back to back, so that is the test's time. */
+static uint32_t kt_index;
+static uint64_t kt_last_ns;
+
+static void kt_line(const char *const *parts, unsigned n) {
+    uint32_t f = arch_irq_save();
+    serial_puts("\r\n@ktest");
+    for (unsigned i = 0; i < n; i++) { serial_putc('\t'); serial_puts(parts[i]); }
+    serial_puts("\r\n");
+    arch_irq_restore(f);
+}
+
+static void kt_u32(char *b, uint32_t v) { b[fmt_u32(b, v)] = 0; }
+
+static void kt_begin(void) {
+    static const char *const p[] = { "begin" };
+    kt_index = 0;
+    kt_last_ns = timer_now_ns();
+    kt_line(p, 1);
+}
+
+static void kt_result(const char *name, int ok) {
+    uint64_t now = timer_now_ns();
+    uint64_t ms = (now - kt_last_ns) / 1000000u;
+    kt_last_ns = now;
+    char idx[12], dur[12];
+    kt_u32(idx, kt_index++);
+    kt_u32(dur, ms > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)ms);
+    const char *p[] = { "result", idx, ok ? "pass" : "fail", dur, name };
+    kt_line(p, 5);
+}
+
+static void kt_end(int passed, int total) {
+    char a[12], b[12];
+    kt_u32(a, (uint32_t)passed);
+    kt_u32(b, (uint32_t)total);
+    const char *p[] = { "end", a, b };
+    kt_line(p, 3);
+}
+
 /* concise pass/fail reporter */
 /* Report a test result. Stays SILENT on success - only failures are printed,
    so a clean boot is quiet and any problem stands out. Returns 1 if passed,
-   0 if failed, so ktest_run can tally a summary. */
+   0 if failed, so ktest_run can tally a summary. Every result, either way,
+   also goes to serial as an @ktest line (above). */
 static int report(const char *name, int ok) {
+    ok = ok != 0;
     if (!ok)
         klog("KTEST", SEV_FAIL, name);
+    kt_result(name, ok);
 
     return ok;
 }
@@ -3258,6 +3314,7 @@ void ktest_run(void) {
 
     /* each test: total++, and passed += its pass/fail. report() prints only on
        failure, so the only per-test output is failures. */
+    kt_begin();
 
     /* the architecture's own first (arch/ktest_arch.h): some state what boot
        left, such as a kernel space with nothing in its user half, which the
@@ -3359,6 +3416,7 @@ void ktest_run(void) {
     total++; passed += report("CR0.WP: kernel obeys read-only",     test_cr0_write_protect());
 
     /* single summary line: green if all passed, red if any failed. */
+    kt_end(passed, total);
     if (passed == total) {
         klog_u32("KTEST", SEV_OK, "self-tests: all ",
                         (uint32_t)total,

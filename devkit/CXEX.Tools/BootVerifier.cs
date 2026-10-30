@@ -47,9 +47,12 @@ public sealed record BootVerdict(BootOutcome Outcome, string Reason, int? TestsP
     /// printed before it: the verdict is about the whole log, so a later panic
     /// is not excused by an earlier pass. <paramref name="full"/> also requires
     /// the executive to have started, then its banner and the shell's prompt,
-    /// all of which the self-test summary precedes.
+    /// all of which the self-test summary precedes. With
+    /// <paramref name="results"/> (every x86-64 kernel since 1.5d), a summary
+    /// also needs the per-test <c>@ktest</c> lines behind it, agreeing with it
+    /// (<see cref="SelfTestReport"/>): a summary alone fails.
     /// </summary>
-    public static BootVerdict Classify(string log, bool full)
+    public static BootVerdict Classify(string log, bool full, bool results = true)
     {
         var panic = Panic.Match(log);
         if (panic.Success)
@@ -59,13 +62,20 @@ public sealed record BootVerdict(BootOutcome Outcome, string Reason, int? TestsP
             return new BootVerdict(BootOutcome.Fail, "kernel panic: " + tail.Replace("\r", "").Trim(), null);
         }
         if (TestsFailed.IsMatch(log))
-            return new BootVerdict(BootOutcome.Fail, "the self-tests reported a failure", null);
+        {
+            var failed = results ? SelfTestReport.Parse(log).Results.Where(r => !r.Passed).Select(r => r.Name).ToList() : [];
+            return new BootVerdict(BootOutcome.Fail, failed.Count == 0
+                ? "the self-tests reported a failure"
+                : "the self-tests reported a failure: " + string.Join("; ", failed), null);
+        }
 
         var s = Summary.Match(log);
         if (!s.Success)
             return new BootVerdict(BootOutcome.Inconclusive, "no self-test summary yet", null);
 
         int n = int.Parse(s.Groups[1].Value);
+        if (results && SelfTestReport.Parse(log).DisagreesWith(n) is string wrong)
+            return new BootVerdict(BootOutcome.Fail, $"self-tests: all {n} passed, but {wrong}", n);
         if (full && ExecutiveRefused.IsMatch(log))
             return new BootVerdict(BootOutcome.Fail, $"self-tests: all {n} passed, but the executive was refused at load", n);
         if (full && !ExecutiveUp.IsMatch(log))
@@ -154,7 +164,7 @@ public static class BootVerifier
     /// would take down any other emulator on the machine.
     /// </summary>
     public static BootVerdict Run(string image, string serialLog, TimeSpan timeout, bool full, Action<string>? progress = null, string? cpu = null, UsbHost? usb = null, string? foreignDisk = null, QemuArch arch = QemuArch.X86_64)
-        => Run(image, serialLog, timeout, log => BootVerdict.Classify(log, full), progress, cpu, snapshot: true, usb, foreignDisk, arch);
+        => Run(image, serialLog, timeout, log => BootVerdict.Classify(log, full, results: arch == QemuArch.X86_64), progress, cpu, snapshot: true, usb, foreignDisk, arch);
 
     /// <summary>
     /// The same boot with the verdict decided by <paramref name="classify"/>,

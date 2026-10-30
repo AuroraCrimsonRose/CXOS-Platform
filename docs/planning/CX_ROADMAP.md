@@ -498,15 +498,28 @@ Independent of the order above, and small enough to land whenever convenient:
        first thread's a global, a spawned thread's a page it gives back), and
        `std/sync.xfxn` reads the thread id from it. ABI 30
        (`docs/kernel/CX_SYSCALLS_IPC.md` §7).
-   - **1.5d:** a ring-3 X test runner: one boot runs many X tests as
-     threads, with join deadlines catching hangs, so userland tests stop
-     needing a kernel self-test each. With it, results a machine can read:
-     one structured line per self-test, `cxk verify-boot --json`, and
-     `cxk test all` (host tests, the container Differential run, the boot
-     variants) writing one summary; and `cxk test sabotage`, which owns
-     the backup, restore, pattern counts and tree checks every step's
-     hand-written matrix script has got wrong at least once
-     (`safety/CX_SAFETY.md` §7).
+   - **1.5d**, in three (the results a machine reads come first, so the
+     runner's tests report through them):
+     - **1.5d1 (2026-10-30), done:** one structured line per self-test,
+       on serial only and never wrapped: `@ktest begin`, then
+       `@ktest result <index> pass|fail <ms> <name>` for each, then
+       `@ktest end <passed> <total>`, tab-separated (XNU's tagged lines,
+       `osfmk/tests/ktest_emit.c`; Serenity's LibTest prints a line per
+       case too, `TestSuite::run`). `cxk verify-boot` fails a summary the
+       lines don't agree with (a result missing, misnumbered or failed,
+       no end line), names failed tests in its reason, and `--json` prints
+       the verdict and every result, a failed one with the lines it logged.
+       No ABI change.
+     - **1.5d2:** a ring-3 X test runner: one boot runs many X tests as
+       threads, with join deadlines catching hangs, each test reported as a
+       self-test of its own, so userland tests stop needing a kernel
+       self-test each.
+     - **1.5d3:** `cxk test all` (host tests, the container Differential
+       run, the boot variants) writing one summary; and `cxk test
+       sabotage`, which owns the backup, restore, pattern counts and tree
+       checks every step's hand-written matrix script has got wrong at
+       least once, and judges a sabotage by which `@ktest` results went red
+       (`safety/CX_SAFETY.md` §7).
 
    Order from here (Aurora, 2026-10-30, after an outside review: kernel
    correctness work stays ahead of the display server and is not traded

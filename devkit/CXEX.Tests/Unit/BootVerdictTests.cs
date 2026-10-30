@@ -14,7 +14,20 @@ namespace CXEX.Tests.Unit;
 /// </summary>
 public class BootVerdictTests
 {
-    private const string Summary = "[KTEST   ] - [OK  ] - self-tests: all 45 passed\n";
+    private const string SummaryLine = "[KTEST   ] - [OK  ] - self-tests: all 45 passed\n";
+    // since 1.5d a summary needs the per-test lines behind it (SelfTestReport)
+    private static readonly string Summary = Results(45, failAt: -1) + SummaryLine;
+
+    /// <summary>The @ktest lines kernel/ktest.c writes for n tests, one failing at failAt.</summary>
+    private static string Results(int n, int failAt, int endPassed = -1)
+    {
+        var s = new System.Text.StringBuilder("\r\n@ktest\tbegin\r\n");
+        for (int i = 0; i < n; i++)
+            s.Append($"\r\n@ktest\tresult\t{i}\t{(i == failAt ? "fail" : "pass")}\t{i % 7}\ttest number {i}\r\n");
+        int passed = endPassed >= 0 ? endPassed : (failAt >= 0 ? n - 1 : n);
+        s.Append($"\r\n@ktest\tend\t{passed}\t{n}\r\n");
+        return s.ToString();
+    }
     private const string Refusal = "-> signature check failed - unsigned, or signed by a key this kernel does not trust\n";
     private const string Executive = "[EXEC    ] - [OK  ] - executive started, pid 1\n";
     private const string Banner = "CXK executive online (.xoex) - brokering\n";
@@ -55,6 +68,86 @@ public class BootVerdictTests
     public void The_self_tests_deliberate_refusals_are_not_failures()
     {
         Assert.Equal(BootOutcome.Inconclusive, BootVerdict.Classify(Refusal, full: false).Outcome);
+    }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
+    public void A_summary_without_its_per_test_lines_fails()
+    {
+        // 1.5d: the summary is checked against the @ktest lines, so a kernel
+        // that stopped writing them, or wrote them wrong, cannot pass
+        var bare = BootVerdict.Classify(SummaryLine, full: false);
+        Assert.Equal(BootOutcome.Fail, bare.Outcome);
+        Assert.Contains("missing", bare.Reason);
+
+        string noEnd = Results(45, -1).Replace("\r\n@ktest\tend\t45\t45\r\n", "");
+        Assert.Contains("no end line", BootVerdict.Classify(noEnd + SummaryLine, full: false).Reason);
+
+        var fewer = BootVerdict.Classify(Results(44, -1) + SummaryLine, full: false);
+        Assert.Equal(BootOutcome.Fail, fewer.Outcome);
+        Assert.Contains("44 of 44", fewer.Reason);
+
+        // an end line that agrees, over results one of which failed
+        var hidden = BootVerdict.Classify(Results(45, 3, endPassed: 45) + SummaryLine, full: false);
+        Assert.Equal(BootOutcome.Fail, hidden.Outcome);
+        Assert.Contains("test number 3", hidden.Reason);
+
+        string skipped = Results(45, -1).Replace("\tresult\t7\t", "\tresult\t8\t");
+        Assert.Contains("result 7 is numbered 8", BootVerdict.Classify(skipped + SummaryLine, full: false).Reason);
+
+        // a retired x86-32 image never wrote them
+        Assert.Equal(BootOutcome.Pass, BootVerdict.Classify(SummaryLine, full: false, results: false).Outcome);
+    }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
+    public void A_failed_self_test_is_named_with_what_it_logged()
+    {
+        const string log =
+            "\r\n@ktest\tbegin\r\n" +
+            "\r\n@ktest\tresult\t0\tpass\t1\tpaging maps\r\n" +
+            "[KTEST   ] - [ERR ] - futex: ended 1\r\n" +
+            "[KTEST   ] - [INFO] - not a problem\r\n" +
+            "[KTEST   ] - [ERR ] - futex failed at step 1\r\n" +
+            "[KTEST   ] - [FAIL] - futexes and std/sync, from disk\r\n" +
+            // a line another thread was halfway through when the result came
+            "[PROC    ] - [INFO] - half a li\r\n@ktest\tresult\t1\tfail\t5040\tfutexes and std/sync, from disk\r\nne\r\n" +
+            "\r\n@ktest\tresult\t2\tpass\t0\tCR0.WP\r\n" +
+            "\r\n@ktest\tend\t2\t3\r\n" +
+            "[KTEST   ] - [FAIL] - self-tests failed: 1 failure(s)\r\n";
+        var v = BootVerdict.Classify(log, full: false);
+        Assert.Equal(BootOutcome.Fail, v.Outcome);
+        Assert.EndsWith("futexes and std/sync, from disk", v.Reason);
+
+        var r = SelfTestReport.Parse(log);
+        Assert.Equal(3, r.Results.Count);
+        Assert.Equal(1, r.Failed);
+        var f = r.Results[1];
+        Assert.False(f.Passed);
+        Assert.Equal(5040, f.Ms);
+        Assert.Equal(["futex: ended 1", "futex failed at step 1"], f.Detail);
+        Assert.Empty(r.Results[0].Detail);
+        Assert.Equal((2, 3), (r.EndPassed, r.EndTotal));
+    }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
+    public void The_json_report_carries_every_result()
+    {
+        var log = Results(3, failAt: 1) + "[KTEST   ] - [FAIL] - self-tests failed: 1 failure(s)\n";
+        var v = BootVerdict.Classify(log, full: false);
+        using var doc = System.Text.Json.JsonDocument.Parse(
+            SelfTestReport.Json(v, SelfTestReport.Parse(log), "a.img", "a.log", full: false, cpu: null));
+        var root = doc.RootElement;
+        Assert.Equal("fail", root.GetProperty("outcome").GetString());
+        Assert.Equal(1, root.GetProperty("exitCode").GetInt32());
+        var t = root.GetProperty("selfTests");
+        Assert.Equal(3, t.GetProperty("total").GetInt32());
+        Assert.Equal(1, t.GetProperty("failed").GetInt32());
+        var results = t.GetProperty("results");
+        Assert.Equal(3, results.GetArrayLength());
+        Assert.False(results[1].GetProperty("passed").GetBoolean());
+        Assert.Equal("test number 1", results[1].GetProperty("name").GetString());
     }
 
     [Fact]
