@@ -371,7 +371,7 @@ public sealed class Resolver
         switch (e)
         {
             case NameExpr n:
-                if (n.Name == "__syscall") break;           // intrinsic, handled in TypeChecker
+                if (Intrinsics.IsIntrinsic(n.Name)) break;  // intrinsic, handled in TypeChecker
                 var sym = scope.Lookup(n.Name);
                 if (sym == null) _diag.Error($"undefined name '{n.Name}'", n.Span);
                 else _ctx.Resolved[n] = sym;

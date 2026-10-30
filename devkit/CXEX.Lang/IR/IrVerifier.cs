@@ -109,6 +109,7 @@ public static class IrVerifier
         {
             IrBinary x => x.Dst, IrUnary x => x.Dst, IrCompare x => x.Dst, IrConvert x => x.Dst,
             IrLoad x => x.Dst, IrPtrAdd x => x.Dst, IrCall x => x.Dst, IrSyscall x => x.Dst,
+            IrAtomic x => x.Dst,
             _ => null,
         };
 
@@ -275,6 +276,19 @@ public static class IrVerifier
                     foreach (var a in s.Args) Want(a, _m.PtrInt, idom, "syscall word");
                     if (!IrTypes.IsInt(s.Dst.Type)) Err("syscall result must be an integer");
                     break;
+                case IrAtomic a:
+                    {
+                        if (a.Type is not (IrType.I32 or IrType.I64)) Err($"atomic on {IrTypes.Name(a.Type)}");
+                        Want(a.Addr, IrType.Ptr, idom, "atomic address");
+                        int want = a.Op switch { IrAtomicOp.Load => 0, IrAtomicOp.Cas => 2, _ => 1 };
+                        int have = (a.A != null ? 1 : 0) + (a.B != null ? 1 : 0);
+                        if (have != want || (a.A == null && a.B != null)) Err($"atomic {a.Op} with {have} operands");
+                        if (a.A != null) Want(a.A, a.Type, idom, "atomic operand");
+                        if (a.B != null) Want(a.B, a.Type, idom, "atomic operand");
+                        if ((a.Dst == null) != (a.Op == IrAtomicOp.Store)) Err($"atomic {a.Op} result");
+                        else if (a.Dst != null && a.Dst.Type != a.Type) Err("atomic result must be its type");
+                        break;
+                    }
                 default: Err("unknown instruction"); break;
             }
         }

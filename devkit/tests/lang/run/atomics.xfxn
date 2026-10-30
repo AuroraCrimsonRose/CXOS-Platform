@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// The atomics (roadmap 1.5b1) on one thread: each returns the value that was
+// there before and leaves the new one, at 4 and 8 bytes, signed and not, in a
+// global, a local, a record field and an array element.
+struct lockword { pad: u8, w: u32, big: u64 }
+global g32: u32 = 7;
+global g64: i64 = -2;
+fn main() -> i32 {
+    if (__atomic_load(&g32) != 7) { return 1; }
+    __atomic_store(&g32, 9);
+    if (g32 != 9) { return 2; }
+    if (__atomic_xchg(&g32, 11) != 9 || g32 != 11) { return 3; }
+    if (__atomic_add(&g32, 0xFFFF_FFFF) != 11 || g32 != 10) { return 4; }  // wraps: minus one
+    if (__atomic_cas(&g32, 3, 4) != 10 || g32 != 10) { return 5; }        // fails, leaves it
+    if (__atomic_cas(&g32, 10, 0xFFFF_FFF0) != 10 || g32 != 0xFFFF_FFF0) { return 6; }
+    // a failed cas's old value, widened: no stray upper bits
+    let old: u64 = __atomic_cas(&g32, 1, 2) as u64;
+    if (old != 0xFFFF_FFF0) { return 7; }
+    let ok: u64 = __atomic_cas(&g32, 0xFFFF_FFF0, 5) as u64;
+    if (ok != 0xFFFF_FFF0 || g32 != 5) { return 8; }
+
+    if (__atomic_add(&g64, 5) != -2 || g64 != 3) { return 9; }
+    if (__atomic_cas(&g64, 3, 0x1_0000_0000) != 3 || g64 != 0x1_0000_0000) { return 10; }
+    if (__atomic_load(&g64) != 0x1_0000_0000) { return 11; }
+
+    let l: lockword = lockword { pad: 1, w: 0, big: 0 };
+    if (__atomic_cas(&l.w, 0, 42) != 0 || l.w != 42 || l.pad != 1) { return 12; }
+    __atomic_store(&l.big, 0xFFFF_FFFF_FFFF_FFFF);
+    if (__atomic_add(&l.big, 1) != 0xFFFF_FFFF_FFFF_FFFF || l.big != 0) { return 13; }
+
+    let a: [3]i32 = [1, 2, 3];
+    if (__atomic_xchg(&a[1], -5) != 2 || a[1] != -5 || a[0] != 1 || a[2] != 3) { return 14; }
+    let x: i32 = 100;
+    if (__atomic_add(&x, -1) != 100 || x != 99) { return 15; }
+    let p: *i32 = &x;
+    if (__atomic_load(p) != 99) { return 16; }
+    return 0;
+}

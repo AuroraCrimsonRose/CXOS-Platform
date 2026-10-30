@@ -3,6 +3,7 @@
 ﻿using System.Collections.Generic;
 using CXEX.Lang.Ast;
 using CXEX.Lang.Diagnostics;
+using CXEX.Lang.IR;
 
 namespace CXEX.Lang.Sema;
 
@@ -720,7 +721,7 @@ public sealed class TypeChecker
             case BoolLit: return Set(e, Bool);
 
             case NameExpr n:
-                if (n.Name == "__syscall") return Set(e, I32); // intrinsic callee placeholder
+                if (Intrinsics.IsIntrinsic(n.Name)) return Set(e, I32); // intrinsic callee placeholder
                 return Set(e, _ctx.Resolved.TryGetValue(n, out var sym) ? sym.Type : Void);
 
             case CallExpr c: return Set(e, CheckCall(c));
@@ -897,6 +898,33 @@ public sealed class TypeChecker
         _diag.Error($"shift of {amt} is outside 0..{width - 1} for {Show(l)}{hint}", b.Span);
     }
 
+    /* An atomic (Intrinsics.cs): the first argument points at a 4- or 8-byte
+       integer in ordinary memory, the rest are assigned to that integer's
+       type, and the result is it (a store's is void). */
+    private TypeRef CheckAtomic(CallExpr c, string name, IrAtomicOp op)
+    {
+        int arity = Intrinsics.Arity(op);
+        if (c.Args.Count != arity) _diag.Error($"'{name}' expects {arity} args, got {c.Args.Count}", c.Span);
+        TypeRef? elem = null;
+        if (c.Args.Count > 0)
+        {
+            var pt = CheckExpr(c.Args[0]);
+            if (_ctx.Expand(pt) is PointerType { Space: AddrSpace.Normal } p && IsInt(p.Pointee) && IntWidth(p.Pointee) is 4 or 8)
+                elem = p.Pointee;
+            else
+                _diag.Error($"'{name}' needs a pointer to a 4- or 8-byte integer, not {Show(pt)}", c.Args[0].Span);
+        }
+        for (int i = 1; i < c.Args.Count; i++)
+        {
+            if (elem == null) { CheckExpr(c.Args[i]); continue; }
+            var at = CheckInit(c.Args[i], elem);
+            if (!Convertible(elem, c.Args[i], at))
+                _diag.Error($"arg {i + 1} to '{name}': {Show(at)} not assignable to {Show(elem)}{NarrowHint(elem, at, c.Args[i])}", c.Args[i].Span);
+        }
+        if (op == IrAtomicOp.Store) return Void;
+        return elem ?? I32;
+    }
+
     private TypeRef CheckCall(CallExpr c)
     {
         // __syscall intrinsic: __syscall(n, a1..a5) -> i32
@@ -907,6 +935,8 @@ public sealed class TypeChecker
             foreach (var a in c.Args) { var at = CheckExpr(a); if (!IsInt(at) && !IsPtr(at)) _diag.Error("__syscall args must be integer/pointer", a.Span); }
             return I32;
         }
+        if (c.Callee is NameExpr { Name: var an } && Intrinsics.Atomic(an) is IrAtomicOp aop)
+            return CheckAtomic(c, an, aop);
 
         var ct = CheckExpr(c.Callee);
         if (c.Callee is NameExpr nm && _ctx.Resolved.TryGetValue(nm, out var sym) && sym.Decl is FnDecl fn)

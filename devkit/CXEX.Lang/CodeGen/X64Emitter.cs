@@ -237,6 +237,7 @@ public sealed class X64Emitter
     {
         IrBinary x => x.Dst, IrUnary x => x.Dst, IrCompare x => x.Dst, IrConvert x => x.Dst,
         IrLoad x => x.Dst, IrPtrAdd x => x.Dst, IrCall x => x.Dst, IrSyscall x => x.Dst,
+        IrAtomic x => x.Dst,
         _ => null,
     };
 
@@ -359,6 +360,7 @@ public sealed class X64Emitter
 
             case IrCall c: Call(c); break;
             case IrSyscall s: Syscall(s); break;
+            case IrAtomic a: Atomic(a); break;
             default: throw new InvalidOperationException($"the x86-64 back end has no rule for {i.GetType().Name}");
         }
     }
@@ -662,6 +664,30 @@ public sealed class X64Emitter
             T($"movl ${agg}, %ecx");
             T("rep movsb");
         }
+    }
+
+    /* Sequentially consistent on x86-64 (the mapping C11 compilers use): a
+       load is a plain mov, and everything that writes is a locked
+       instruction - xchg with memory locks by itself - so no load or store
+       moves across it. A cmpxchg that succeeds leaves rax as it was, the
+       expected value; no reader of a 4-byte value trusts the upper half of
+       its home (a zext clears it), so that needs nothing. */
+    private void Atomic(IrAtomic a)
+    {
+        int n = Bytes(a.Type);
+        string s = Suffix(n);
+        Get(a.Addr, "rcx");
+        if (a.A != null) Get(a.A, "rax");
+        if (a.B != null) Get(a.B, "rdx");
+        switch (a.Op)
+        {
+            case IrAtomicOp.Load: T($"mov{s} (%rcx), {R("rax", n)}"); break;
+            case IrAtomicOp.Store:
+            case IrAtomicOp.Xchg: T($"xchg{s} {R("rax", n)}, (%rcx)"); break;
+            case IrAtomicOp.Add: T($"lock xadd{s} {R("rax", n)}, (%rcx)"); break;
+            case IrAtomicOp.Cas: T($"lock cmpxchg{s} {R("rdx", n)}, (%rcx)"); break;
+        }
+        if (a.Dst != null) Put(a.Dst, "rax");
     }
 
     private void Syscall(IrSyscall s)

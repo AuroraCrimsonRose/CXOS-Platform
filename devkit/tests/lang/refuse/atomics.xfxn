@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// The atomics work on a 4- or 8-byte integer through a pointer, with operands
+// of that integer's type.
+fn main() -> i32 {
+    let b: u8 = 0;
+    let w: u32 = 0;
+    let q: u64 = 1;
+    let n: i32 = 0;
+    __atomic_add(&b, 1);           // 1 byte
+    __atomic_load(w);              // not a pointer
+    __atomic_store(&w, q);         // u64 into u32
+    __atomic_cas(&w, 1);           // cas takes three
+    __atomic_load(&w, 1);          // load takes one
+    let x: u32 = __atomic_store(&w, 1);   // a store has no value
+    return n;
+}

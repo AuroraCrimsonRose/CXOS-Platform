@@ -462,9 +462,21 @@ Independent of the order above, and small enough to land whenever convenient:
      last one's code ending the process; `SYS_EXIT` and a fault end every
      thread. X gains `std/thread.xfxn` (spawn, join, exit) and
      `std/time.xfxn`. ABI 28 (`docs/kernel/CX_SYSCALLS_IPC.md` §7).
-   - **1.5b:** futex keyed by memory object and offset, the owner's thread
-     id in the word; X mutex, once and condition variable, and the X
-     library made thread-safe.
+   - **1.5b**, in two (Aurora, 2026-10-30: X had no atomics, and a ring-3
+     mutex needs compare-and-swap):
+     - **1.5b1 (2026-10-30), done:** atomic intrinsics in X
+       (`__atomic_load`/`_store`/`_xchg`/`_add`/`_cas` on a 4- or 8-byte
+       integer through a pointer, sequentially consistent), one IR
+       instruction (`atomic`), in the C# compiler and `os/xc`; the corpus
+       programs `tests/lang/run/atomics.xfxn` and
+       `tests/lang/refuse/atomics.xfxn` hold the Differential facts to them
+       (`docs/language/CX_X_PLAN.md` §4). No ABI change.
+     - **1.5b2:** futex keyed by memory object and offset (by process and
+       address for a word outside any mapping: Serenity `get_futex_key`,
+       XNU `ULK_UADDR`/`ULK_XPROC`), the owner's thread id in the word;
+       `SYS_THREAD_ID`, `SYS_FUTEX_WAIT`, `SYS_FUTEX_WAKE` (0x0D-0x0F); X
+       mutex, once and condition variable, and the X library made
+       thread-safe.
    - **1.5c:** thread-local storage through `FS_BASE` (wrmsr on switch: the
      FX-8350 has no FSGSBASE), thread names, per-thread CPU time.
    - **After 1.5b:** a ring-3 X test runner: one boot runs many X tests as

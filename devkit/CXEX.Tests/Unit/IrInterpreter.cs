@@ -168,6 +168,23 @@ public sealed class IrInterpreter
                             break;
                         }
                     case IrSyscall: throw new Trap("system call");
+                    case IrAtomic at:
+                        {
+                            /* One thread: atomic is ordinary, and the old value is the result. */
+                            uint addr = P(at.Addr);
+                            int n = IrTypes.Bytes(at.Type, 4);
+                            var old = Read(addr, n);
+                            UInt128? nw = at.Op switch
+                            {
+                                IrAtomicOp.Store or IrAtomicOp.Xchg => Val(at.A!),
+                                IrAtomicOp.Add => Mask(at.Type, old + Val(at.A!)),
+                                IrAtomicOp.Cas => old == Val(at.A!) ? Val(at.B!) : null,
+                                _ => null,
+                            };
+                            if (nw is UInt128 w) Write(addr, n, w);
+                            if (at.Dst != null) regs[at.Dst.Id] = old;
+                            break;
+                        }
                     default: throw new Trap("instruction");
                 }
             }

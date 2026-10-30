@@ -123,6 +123,13 @@ public sealed record IrArg(IrValue Value, int AggSize = 0);
 public sealed record IrCall(IrReg? Dst, IrValue Callee, List<IrArg> Args, IrValue? AggDst = null, int AggSize = 0) : IrInstr;
 /// <summary>A system call: Args[0] is the number, then up to five arguments, every one a pointer-width integer.</summary>
 public sealed record IrSyscall(IrReg Dst, List<IrValue> Args) : IrInstr;
+/// <summary>
+/// An atomic access to the Type-sized integer at Addr, sequentially consistent.
+/// Load has no operand; Store, Xchg and Add take A; Cas takes A (expected) and
+/// B (new). Dst is the old value, null for Store.
+/// </summary>
+public sealed record IrAtomic(IrReg? Dst, IrAtomicOp Op, IrType Type, IrValue Addr, IrValue? A = null, IrValue? B = null) : IrInstr;
+public enum IrAtomicOp { Load, Store, Xchg, Add, Cas }
 
 // ---- terminators ----
 public abstract record IrTerm;

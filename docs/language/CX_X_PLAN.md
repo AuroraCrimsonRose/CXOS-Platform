@@ -51,7 +51,13 @@
 
 - **Floats and SIMD:** compositor, audio mixing, spring animations, the layout
   engine. The rig has AVX and FMA.
-- **Atomics with memory ordering:** threads and futex.
+- **Atomics with memory ordering:** threads and futex. Built in 1.5b1,
+  sequentially consistent only: `__atomic_load(p)`, `__atomic_store(p, v)`,
+  `__atomic_xchg(p, v)`, `__atomic_add(p, v)`, `__atomic_cas(p, e, n)` on a
+  pointer to a 4- or 8-byte integer, each returning the old value (a store
+  nothing). Intrinsics by name, as `__syscall` is
+  (`devkit/CXEX.Lang/Sema/Intrinsics.cs`). Weaker orderings wait for a need
+  (and for SMP, which makes them measurable).
 - **Effect attributes** `@isr`, `@nosleep`, `@noalloc`.
 - **Namespaces and `pub`:** before packages.
 - **Generics**, at compile time as Zig does, keeping lowering predictable.

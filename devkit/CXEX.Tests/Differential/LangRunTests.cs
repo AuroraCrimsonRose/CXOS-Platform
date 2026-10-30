@@ -70,6 +70,15 @@ public class LangRunTests
             "18446744073709551616 does not fit in usize",
             "compilation failed (11 error(s))",
         },
+        ["atomics.xfxn"] = new[]
+        {
+            "'__atomic_add' needs a pointer to a 4- or 8-byte integer, not *u8",
+            "'__atomic_load' needs a pointer to a 4- or 8-byte integer, not u32",
+            "arg 2 to '__atomic_store': u64 not assignable to u32",
+            "'__atomic_cas' expects 3 args, got 2", "'__atomic_load' expects 1 args, got 2",
+            "cannot initialize 'x' of type u32 from void",
+            "compilation failed (6 error(s))",
+        },
     };
 
     [Fact]

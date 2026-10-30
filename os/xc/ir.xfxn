@@ -56,9 +56,16 @@ struct irval { kind: u32, ty: u32, id: u32, len: u32, k: u128 }
 //   call: a = callee, b = the aggregate result's address or IR_NONE, n = its
 //         size; args/nargs = pairs (value, aggregate size) in irfn.args
 //   syscall: args/nargs = pairs (value, 0)
+//   atomic: sub = ATOMIC_*, a = the address, b = the operand and n = cas's
+//           new value (each IR_NONE when absent), nargs = the IR type; dst
+//           is the old value, IR_NONE for a store
 const IO_BIN: u32 = 0;  const IO_UN: u32 = 1;   const IO_CMP: u32 = 2;   const IO_CONV: u32 = 3;
 const IO_LOAD: u32 = 4; const IO_STORE: u32 = 5; const IO_COPY: u32 = 6; const IO_ZERO: u32 = 7;
-const IO_PTRADD: u32 = 8; const IO_CALL: u32 = 9; const IO_SYSCALL: u32 = 10;
+const IO_PTRADD: u32 = 8; const IO_CALL: u32 = 9; const IO_SYSCALL: u32 = 10; const IO_ATOMIC: u32 = 11;
+// C#'s IrAtomicOp; sema.xfxn's atomic_op is one more than these
+const ATOMIC_LOAD: u32 = 0; const ATOMIC_STORE: u32 = 1; const ATOMIC_XCHG: u32 = 2;
+const ATOMIC_ADD: u32 = 3;  const ATOMIC_CAS: u32 = 4;
+global ir_atomic_names: [5]*u8 = ["load", "store", "xchg", "add", "cas"];
 struct irins { op: u32, sub: u32, dst: u32, a: u32, b: u32, n: u32, args: u32, nargs: u32 }
 
 // A block, in the order it started. Its instructions run from `first` to the
@@ -1262,6 +1269,7 @@ fn lw_callee_fn(l: *irlow, c: u32) -> u32 {
 fn lw_call(l: *irlow, c: u32) -> u32 {
     let callee: u32 = ln(l, c).a;
     if (ln(l, callee).kind == nk.e_name && node_name_is(l.s, callee, "__syscall")) { return lw_syscall(l, c); }
+    if (ln(l, callee).kind == nk.e_name && atomic_op(l.s, callee) != 0) { return lw_atomic(l, c, atomic_op(l.s, callee) - 1); }
     // the parameter types: a declaration's params, or a fn type's types
     let fd: u32 = lw_callee_fn(l, c);
     let plist: u32 = 0;
@@ -1342,6 +1350,32 @@ fn lw_syscall(l: *irlow, c: u32) -> u32 {
     list_free(&words);
     let d: u32 = lw_reg(l, lw_scalar(l, lw_ty(l, c)));
     lw_emit(l, IO_SYSCALL, 0, d, 0, 0, 0, args, n);
+    return d;
+}
+
+/* An atomic (sema.xfxn's check_atomic): the pointer, then the operands, first
+   to last, each converted to the type pointed at. */
+fn lw_atomic(l: *irlow, c: u32, op: u32) -> u32 {
+    let a0: u32 = llst(l, c, 0);
+    let pt: u32 = lw_ty(l, a0);
+    let elem: u32 = pt;
+    if (lw_kind(l, pt) == nk.t_ptr) { elem = ln(l, lw_x(l, pt)).a; }
+    let t: u32 = lw_scalar(l, elem);
+    let addr: u32 = lw_rvalue(l, a0);
+    if (addr == IR_NONE) { addr = lw_k(l, IR_PTR, 0); }
+    let ops: [2]u32 = [IR_NONE, IR_NONE];
+    let i: u32 = 1;
+    while (i < ln(l, c).count && i < 3) {
+        let a: u32 = llst(l, c, i);
+        ops[i - 1] = lw_convert(l, lw_rvalue(l, a), lw_ty(l, a), elem, a);
+        i += 1;
+    }
+    if (op == ATOMIC_STORE) {
+        lw_emit(l, IO_ATOMIC, op, IR_NONE, addr, ops[0], IR_NONE, 0, t);
+        return IR_NONE;
+    }
+    let d: u32 = lw_reg(l, t);
+    lw_emit(l, IO_ATOMIC, op, d, addr, ops[0], ops[1], 0, t);
     return d;
 }
 
@@ -1493,6 +1527,13 @@ fn ir_put_ins(l: *irlow, b: *buf, i: *irins) -> void {
             k += 1;
         }
         buf_push(b, ')');
+    } else if (op == IO_ATOMIC) {
+        // `%d = atomic cas i32 %e, %n, %p`: the operands, then the address
+        if (i.dst != IR_NONE) { ir_put_dst(l, b, i.dst); }
+        buf_str(b, "atomic "); buf_str(b, ir_atomic_names[i.sub]); buf_push(b, ' '); buf_str(b, ir_type_names[i.nargs]); buf_push(b, ' ');
+        if (i.b != IR_NONE) { ir_put_v(l, b, i.b); buf_str(b, ", "); }
+        if (i.n != IR_NONE) { ir_put_v(l, b, i.n); buf_str(b, ", "); }
+        ir_put_v(l, b, i.a);
     }
 }
 

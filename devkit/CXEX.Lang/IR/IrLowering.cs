@@ -772,6 +772,7 @@ public sealed class IrLowering
     private IrValue? LowerCall(CallExpr c)
     {
         if (c.Callee is NameExpr { Name: "__syscall" }) return LowerSyscall(c);
+        if (c.Callee is NameExpr { Name: var an } && Intrinsics.Atomic(an) is IrAtomicOp aop) return LowerAtomic(c, aop);
         var ptypes = ParamTypesOf(c);
         var rt = TypeOf(c);
         var args = new IrArg[c.Args.Count];
@@ -820,6 +821,21 @@ public sealed class IrLowering
             words.Add(Conv(RValue(a) ?? K(IrType.I32, 0), Scalar(t), Signed(t), _m.PtrInt));
         }
         return Def(Scalar(TypeOf(c)), d => new IrSyscall(d, words));
+    }
+
+    /* An atomic (Sema/Intrinsics.cs): the pointer, then the operands, first
+       to last, each converted to the type pointed at. */
+    private IrValue? LowerAtomic(CallExpr c, IrAtomicOp op)
+    {
+        var elem = X(TypeOf(c.Args[0])) is PointerType p ? p.Pointee : TypeOf(c.Args[0]);
+        var t = Scalar(elem);
+        var addr = RValue(c.Args[0]) ?? K(IrType.Ptr, 0);
+        var ops = new List<IrValue>();
+        for (int i = 1; i < c.Args.Count; i++)
+            ops.Add(Convert(RValue(c.Args[i]), TypeOf(c.Args[i]), elem, c.Args[i].Span));
+        IrValue? a = ops.Count > 0 ? ops[0] : null, b = ops.Count > 1 ? ops[1] : null;
+        if (op == IrAtomicOp.Store) { Emit(new IrAtomic(null, op, t, addr, a)); return null; }
+        return Def(t, d => new IrAtomic(d, op, t, addr, a, b));
     }
 
     /* A record literal, built field by field in a slot of its own; the slot's

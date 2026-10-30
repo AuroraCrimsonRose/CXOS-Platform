@@ -103,6 +103,7 @@ a slot (`; name` says whose); temporaries' slots have no name. Blocks are
 | `call f(...) -> agg N dst` | The aggregate result is written to the N bytes at `dst`. |
 | `call f(...)` | No result. |
 | `%d = syscall T (I n, I a1, ...)` | System call `n` with up to five pointer-width words; the target decides the mechanism (the system page on CXK). |
+| `%d = atomic op T [a, [b,]] p` | Atomic `load`, `store` (no result), `xchg`, `add` or `cas` (a = expected, b = new) on the T-sized integer at `p`, T `i32` or `i64`, sequentially consistent; the result is the old value. From the `__atomic_*` intrinsics (`Sema/Intrinsics.cs`). |
 
 ## Terminators
 
@@ -134,8 +135,8 @@ re-derives them from the tree.
   `as bool` is `!= 0`.
 - **Evaluation order is the emitter's:** a binary operator's right operand
   before its left, an assignment's value before its target's address, call
-  arguments last to first and then an indirect callee, `__syscall` arguments
-  first to last, a record literal's fields as written, an index's base before
+  arguments last to first and then an indirect callee, `__syscall` and atomic
+  arguments first to last, a record literal's fields as written, an index's base before
   the index.
 - **`return x` takes the value before the defers run.** Each exit (end of a
   block, `return`, `break`, `continue`) runs its own copy of the defers it
@@ -176,6 +177,8 @@ remainder are the helpers `__cx_udivmod128` and `__cx_sdivmod128`; a zero
 divisor faults as the 32-bit one does. `__syscall` is `call *%rax` into the
 CXK syscall page (rax = base + n·16, arguments in rdi, rsi, rdx, r10, r8);
 with `--no-prelude`, on a Linux host, it is the `syscall` instruction.
+An atomic load is a `mov`; a store or `xchg` is `xchg` (locked by itself),
+`add` is `lock xadd` and `cas` is `lock cmpxchg`.
 
 Not yet right, and known:
 

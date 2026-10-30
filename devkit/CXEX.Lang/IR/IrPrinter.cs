@@ -115,8 +115,20 @@ public static class IrPrinter
         IrPtrAdd p => $"%{p.Dst.Id} = ptradd {V(p.Base)}, {V(p.Offset)}",
         IrCall c => Call(c),
         IrSyscall s => $"%{s.Dst.Id} = syscall {IrTypes.Name(s.Dst.Type)} ({string.Join(", ", s.Args.Select(TV))})",
+        IrAtomic a => Atomic(a),
         _ => "?",
     };
+
+    /* `%d = atomic cas i32 %e, %n, %p`: the operands, then the address, as
+       a store puts them; a store has no result. */
+    private static string Atomic(IrAtomic a)
+    {
+        string ops = "";
+        if (a.A != null) ops += V(a.A) + ", ";
+        if (a.B != null) ops += V(a.B) + ", ";
+        string body = $"atomic {Lower(a.Op)} {IrTypes.Name(a.Type)} {ops}{V(a.Addr)}";
+        return a.Dst != null ? $"%{a.Dst.Id} = {body}" : body;
+    }
 
     private static string Call(IrCall c)
     {

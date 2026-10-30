@@ -155,6 +155,24 @@ fn node_name_is(s: *sema, n: u32, word: *u8) -> bool {
     return word[x.tlen] == 0;
 }
 
+// The atomics (C#'s Sema/Intrinsics.cs, roadmap 1.5b1): a name node's
+// operation plus one, the IR's ATOMIC_* (ir.xfxn) after it, or 0 for any
+// other name.
+fn atomic_op(s: *sema, n: u32) -> u32 {
+    if (node_name_is(s, n, "__atomic_load"))  { return 1; }
+    if (node_name_is(s, n, "__atomic_store")) { return 2; }
+    if (node_name_is(s, n, "__atomic_xchg"))  { return 3; }
+    if (node_name_is(s, n, "__atomic_add"))   { return 4; }
+    if (node_name_is(s, n, "__atomic_cas"))   { return 5; }
+    return 0;
+}
+fn atomic_arity(op1: u32) -> u32 {
+    if (op1 == 1) { return 1; }
+    if (op1 == 5) { return 3; }
+    return 2;
+}
+fn is_intrinsic(s: *sema, n: u32) -> bool { return node_name_is(s, n, "__syscall") || atomic_op(s, n) != 0; }
+
 fn map_get_node(s: *sema, m: *smap, n: u32) -> u32 { let x: *node = nd(s, n); return smap_get(m, txt(s, x.text), x.tlen); }
 
 // An alias followed to what it names - transparent, as in C#. Guarded
@@ -781,7 +799,7 @@ fn resolve_expr(s: *sema, e: u32) -> void {
     let x: *node = nd(s, e);
     switch (x.kind) {
         case nk.e_name {
-            if (node_name_is(s, e, "__syscall")) { return; }   // the intrinsic; see check_call
+            if (is_intrinsic(s, e)) { return; }   // an intrinsic; see check_call
             let sy: u32 = lookup(s, x.text, x.tlen);
             if (sy == 0) { eb(s); es(s, "undefined name '"); en(s, e); es(s, "'"); ee(s, e); }
             else { st_set(&s.resolved, e, sy); }
@@ -1595,7 +1613,7 @@ fn check_expr(s: *sema, e: u32) -> u32 {
         case nk.e_sizeof { check_expr(s, x.a); return set_ty(s, e, s.t_u32); }
         case nk.e_bool { return set_ty(s, e, s.t_bool); }
         case nk.e_name {
-            if (node_name_is(s, e, "__syscall")) { return set_ty(s, e, s.t_i32); }
+            if (is_intrinsic(s, e)) { return set_ty(s, e, s.t_i32); }
             let sy: u32 = st_get(&s.resolved, e);
             if (sy == 0) { return set_ty(s, e, s.t_void); }
             return set_ty(s, e, sym_at(s, sy - 1).ty);
@@ -1770,6 +1788,46 @@ fn check_args(s: *sema, c: u32, params: u32, nparams: u32, fn_decl: u32) -> void
     }
 }
 
+/* An atomic: the first argument points at a 4- or 8-byte integer in ordinary
+   memory, the rest are assigned to that integer's type, and the result is it
+   (a store's is void). */
+fn check_atomic(s: *sema, c: u32, callee: u32, op1: u32) -> u32 {
+    let n: u32 = nd(s, c).count;
+    let arity: u32 = atomic_arity(op1);
+    if (n != arity) {
+        eb(s); es(s, "'"); en(s, callee); es(s, "' expects "); eu(s, arity); es(s, " args, got "); eu(s, n); ee(s, c);
+    }
+    let elem: u32 = 0;
+    if (n > 0) {
+        let a0: u32 = list_at(s.p, nd(s, c).list, 0);
+        let pt: u32 = check_expr(s, a0);
+        let px: *node = nd(s, expand(s, pt));
+        if (px.kind == nk.t_ptr && px.op == SPACE_NORMAL && is_int(s, px.a) && (int_width(s, px.a) == 4 || int_width(s, px.a) == 8)) {
+            elem = px.a;
+        } else {
+            eb(s); es(s, "'"); en(s, callee); es(s, "' needs a pointer to a 4- or 8-byte integer, not "); et(s, pt); ee(s, a0);
+        }
+    }
+    let i: u32 = 1;
+    while (i < n) {
+        let a: u32 = list_at(s.p, nd(s, c).list, i);
+        if (elem == 0) { check_expr(s, a); }
+        else {
+            let at: u32 = check_init(s, a, elem);
+            if (!convertible(s, elem, a, at)) {
+                let hv: u128 = 0;
+                let have: bool = narrow_hint(s, elem, at, a, &hv);
+                eb(s); es(s, "arg "); eu(s, i + 1); es(s, " to '"); en(s, callee); es(s, "': ");
+                et(s, at); es(s, " not assignable to "); et(s, elem); put_narrow_hint(s, elem, at, have, hv); ee(s, a);
+            }
+        }
+        i += 1;
+    }
+    if (op1 == 2) { return s.t_void; }
+    if (elem == 0) { return s.t_i32; }
+    return elem;
+}
+
 fn check_call(s: *sema, c: u32) -> u32 {
     let callee: u32 = nd(s, c).a;
     let n: u32 = nd(s, c).count;
@@ -1785,6 +1843,7 @@ fn check_call(s: *sema, c: u32) -> u32 {
         }
         return s.t_i32;
     }
+    if (nd(s, callee).kind == nk.e_name && atomic_op(s, callee) != 0) { return check_atomic(s, c, callee, atomic_op(s, callee)); }
     let ct: u32 = check_expr(s, callee);
     if (nd(s, callee).kind == nk.e_name) {
         let sy: u32 = st_get(&s.resolved, callee);

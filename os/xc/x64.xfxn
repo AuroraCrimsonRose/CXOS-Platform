@@ -368,6 +368,30 @@ fn x6_ins(e: *x64e, i: *irins) -> void {
         x6_put(e, i.dst, XR_AX);
     } else if (op == IO_CALL) { x6_call(e, i); }
     else if (op == IO_SYSCALL) { x6_syscall(e, i); }
+    else if (op == IO_ATOMIC) { x6_atomic(e, i); }
+}
+
+/* Sequentially consistent on x86-64 (the mapping C11 compilers use): a load
+   is a plain mov, and everything that writes is a locked instruction - xchg
+   with memory locks by itself - so no load or store moves across it. A
+   cmpxchg that succeeds leaves rax as it was, the expected value; no reader
+   of a 4-byte value trusts the upper half of its home (a zext clears it),
+   so that needs nothing. */
+fn x6_atomic(e: *x64e, i: *irins) -> void {
+    let n: u32 = x6_bytes(i.nargs);
+    x6_get(e, i.a, XR_CX);
+    if (i.b != IR_NONE) { x6_get(e, i.b, XR_AX); }
+    if (i.n != IR_NONE) { x6_get(e, i.n, XR_DX); }
+    if (i.sub == ATOMIC_LOAD) {
+        xb(e); xs(e, "mov"); xs(e, x6_suffix(n)); xs(e, " (%rcx), "); xs(e, x6_reg(XR_AX, n)); xe(e);
+    } else if (i.sub == ATOMIC_STORE || i.sub == ATOMIC_XCHG) {
+        xb(e); xs(e, "xchg"); xs(e, x6_suffix(n)); xs(e, " "); xs(e, x6_reg(XR_AX, n)); xs(e, ", (%rcx)"); xe(e);
+    } else if (i.sub == ATOMIC_ADD) {
+        xb(e); xs(e, "lock xadd"); xs(e, x6_suffix(n)); xs(e, " "); xs(e, x6_reg(XR_AX, n)); xs(e, ", (%rcx)"); xe(e);
+    } else {
+        xb(e); xs(e, "lock cmpxchg"); xs(e, x6_suffix(n)); xs(e, " "); xs(e, x6_reg(XR_DX, n)); xs(e, ", (%rcx)"); xe(e);
+    }
+    if (i.dst != IR_NONE) { x6_put(e, i.dst, XR_AX); }
 }
 
 // Widen the low n bytes of a register to 32 bits by the sign asked for.

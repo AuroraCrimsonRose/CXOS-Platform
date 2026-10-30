@@ -152,6 +152,34 @@ public class IrTests
             Block(f, new IrRet(I(0)));
         })));
 
+    private static readonly IrConst P0 = new(IrType.Ptr, 0);
+
+    [Fact]
+    public void A_well_formed_atomic_passes() =>
+        Assert.Empty(IrVerifier.Verify(One(f => Block(f, new IrRet(R0),
+            new IrAtomic(null, IrAtomicOp.Store, IrType.I32, P0, I(1)),
+            new IrAtomic(R0, IrAtomicOp.Cas, IrType.I32, P0, I(1), I(2))))));
+
+    [Fact]
+    public void Verifier_refuses_an_atomic_on_a_narrow_type() =>
+        Refused(One(f => Block(f, new IrRet(I(0)), new IrAtomic(new IrReg(0, IrType.I8), IrAtomicOp.Load, IrType.I8, P0))),
+            "atomic on i8");
+
+    [Fact]
+    public void Verifier_refuses_a_cas_without_its_new_value() =>
+        Refused(One(f => Block(f, new IrRet(R0), new IrAtomic(R0, IrAtomicOp.Cas, IrType.I32, P0, I(1)))),
+            "atomic Cas with 1 operands");
+
+    [Fact]
+    public void Verifier_refuses_an_atomic_store_with_a_result() =>
+        Refused(One(f => Block(f, new IrRet(R0), new IrAtomic(R0, IrAtomicOp.Store, IrType.I32, P0, I(1)))),
+            "atomic Store result");
+
+    [Fact]
+    public void Verifier_refuses_an_atomic_operand_of_another_type() =>
+        Refused(One(f => Block(f, new IrRet(R0), new IrAtomic(R0, IrAtomicOp.Add, IrType.I32, P0, new IrConst(IrType.I64, 1)))),
+            "atomic operand");
+
     [Fact]
     public void Verifier_refuses_a_block_without_a_terminator() =>
         Refused(One(f => Block(f, null)), "no terminator");
