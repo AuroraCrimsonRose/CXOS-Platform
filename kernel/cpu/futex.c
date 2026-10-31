@@ -37,6 +37,7 @@
 #include "object/kmem.h"
 #include "sync/spinlock.h"
 #include "drivers/char/timer.h"
+#include "diag/testhook.h"
 #include "cxk_abi.h"
 
 struct futex_key {
@@ -90,6 +91,7 @@ int futex_wait(uint64_t uaddr, uint32_t expected, uint64_t deadline) {
     struct futex_waiter me = { .next = 0, .tid = thread_current_id(), .woken = 0 };
     key_of(uaddr, &me.key);
     if (deadline > TIMER_NEVER) deadline = TIMER_NEVER;
+    race_point(RP_FUTEX_READ);
 
     uint32_t f = spin_lock(&futex_lock);
     uint32_t v;
@@ -107,6 +109,7 @@ int futex_wait(uint64_t uaddr, uint32_t expected, uint64_t deadline) {
             thread_block_prepare_until(deadline);
             spin_unlock(&futex_lock, f);
             thread_block_finish();
+            race_point(RP_FUTEX_WOKEN);
             f = spin_lock(&futex_lock);
             if (me.woken) break;
             if (thread_killed()) { rc = E_CANCELED; break; }

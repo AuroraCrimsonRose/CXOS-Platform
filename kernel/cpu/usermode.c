@@ -3032,6 +3032,24 @@ int process_create_ring3(const char *name,
     return pid;
 }
 
+/* user_blob_calls and its three calls, read when the process starts: one
+   such process at a time. */
+static uint8_t uc_image[USER_MSG_OFF];
+
+struct proc *usermode_calls_process(const struct um_call3 *calls, int *tid) {
+    extern uint8_t user_blob_calls_start[], user_blob_calls_end[];
+    uint32_t blen = (uint32_t)(user_blob_calls_end - user_blob_calls_start);
+    if (!calls || !tid || blen + sizeof *calls > sizeof uc_image) return 0;
+    for (uint32_t i = 0; i < blen; i++) uc_image[i] = user_blob_calls_start[i];
+    const uint8_t *cs = (const uint8_t *)calls;
+    for (uint32_t i = 0; i < sizeof *calls; i++) uc_image[blen + i] = cs[i];
+    *tid = process_prepare_ring3("calls", uc_image, blen + (uint32_t)sizeof *calls, "", 0);
+    if (*tid < 0) return 0;
+    struct proc *p = thread_proc(*tid);
+    kobj_ref(&p->hdr);
+    return p;
+}
+
 /* Launch a ring-3 process owned by a specific user. Enforces the core identity
    invariant: a user is ALWAYS UID >= 1 - launching a user process as UID 0
    (SYSTEM) is rejected. Returns the pid, or -1 (incl. if uid == SYSTEM). */

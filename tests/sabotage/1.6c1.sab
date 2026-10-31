@@ -1,0 +1,73 @@
+# Phase 1.6c1's sabotages, run by `cxk test sabotage`.
+# Each must turn red exactly the self-tests named, at the step named.
+# Format: docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage".
+
+# ---- a word unmapped between its fault-in and its read ----
+
+[unmapped-read-ignored]
+# the read under futex_lock fails and the wait goes on with whatever the
+# word was; with a deadline it answers at once or at the deadline
+expect = futex: a word unmapped after its fault-in @ not E_BAD_ADDRESS
+group = g1
+edit = kernel/cpu/futex.c
+<<<
+    if (user_copy_bytes(&v, user_ptr(uaddr), sizeof v) != 0) rc = E_BAD_ADDRESS;
+===
+    if (user_copy_bytes(&v, user_ptr(uaddr), sizeof v) != 0 && 0) rc = E_BAD_ADDRESS;
+>>>
+
+[unmapped-key-leaks]
+# a wait refused at the read keeps its reference on the memory object
+expect = futex: a word unmapped after its fault-in @ left something behind
+group = g3
+edit = kernel/cpu/futex.c
+<<<
+    spin_unlock(&futex_lock, f);
+    key_drop(&me.key);
+    return rc;
+===
+    spin_unlock(&futex_lock, f);
+    if (rc != E_BAD_ADDRESS) key_drop(&me.key);
+    return rc;
+>>>
+
+# ---- a wake as the deadline comes ----
+
+[deadline-time-wins]
+# a waiter woken after its deadline came reports the deadline: the wake
+# counted it, and the lock's wake is lost on it
+expect = futex: a wake as the deadline comes @ woken waiter not E_OK
+group = g1
+edit = kernel/cpu/futex.c
+<<<
+        if (me.woken) rc = E_OK;
+===
+        if (me.woken) rc = timer_now_ns() >= deadline ? E_TIMED_OUT : E_OK;
+>>>
+
+# ---- one word, two processes ----
+
+[shared-key-has-pid]
+# a word in a mapping is keyed by its process too: two mappings in one
+# process still meet, two processes never do
+expect = futex: one word through two processes @ no waiter through the other mapping
+group = g1
+edit = kernel/cpu/futex.c
+<<<
+    if (vm_futex_key(pid, uaddr, &k->mem, &k->at)) { k->pid = -1; return; }
+===
+    if (vm_futex_key(pid, uaddr, &k->mem, &k->at)) { k->pid = pid; return; }
+>>>
+
+[shared-key-by-address]
+# every word is keyed by its process and address, mapped or not: two
+# mappings in one process no longer meet either (the X test's step 16)
+expect = futex: one word through two processes @ no waiter through the other mapping
+expect = x: futex: one object mapped twice @ step 16
+group = g2
+edit = kernel/cpu/futex.c
+<<<
+    if (vm_futex_key(pid, uaddr, &k->mem, &k->at)) { k->pid = -1; return; }
+===
+    if (0 && vm_futex_key(pid, uaddr, &k->mem, &k->at)) { k->pid = -1; return; }
+>>>

@@ -24,6 +24,8 @@ _Static_assert(KOBJ_TYPE_MAX <= 16, "live_counts.types holds every object type")
 
 #if CXK_TEST_HOOKS
 
+volatile uint32_t spin_held;   /* sync/spinlock.h */
+
 /* ---- failing the Nth allocation ----
    Armed and read by one thread, the arming one; the other threads only read
    fault_armed and fault_tid, which change while no call of the arming
@@ -82,7 +84,7 @@ void race_point_slow(enum race_point p) {
     if (++r->arrivals != r->nth) return;
     /* Once per arming: no other thread can take it after this one. */
     race_armed_mask &= ~(1u << p);
-    if (!arch_irqs_enabled()) kpanic("race point reached with interrupts off");
+    if (spin_held) kpanic("race point reached holding a spinlock");
 
     if (r->act == RACE_CALL) { r->fn(r->ctx); return; }
     r->parked = me + 1;

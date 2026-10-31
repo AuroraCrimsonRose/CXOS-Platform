@@ -25,6 +25,21 @@
 
 #include <stdint.h>
 #include "arch/cpu_ops.h"
+#ifndef CXK_HOST_TEST
+#include "config.h"
+#endif
+
+/* With the test hooks built in, how many spinlocks are held: a race point
+   reached holding one would park the lock with it (diag/testhook.h).
+   Interrupts being off is no sign of one, since a syscall's whole body
+   runs with them off. One count for the machine, which is one CPU's until
+   SMP gives each CPU its own. */
+#if CXK_TEST_HOOKS && !defined(CXK_HOST_TEST)
+extern volatile uint32_t spin_held;
+#define SPIN_HELD_ADD(n) (spin_held += (n))
+#else
+#define SPIN_HELD_ADD(n) ((void)0)
+#endif
 
 typedef struct { volatile uint32_t locked; } spinlock_t;
 
@@ -39,10 +54,12 @@ static inline uint32_t spin_lock(spinlock_t *l) {
     uint32_t f = spin_irq_save();
     while (__atomic_exchange_n(&l->locked, 1u, __ATOMIC_ACQUIRE))
         while (__atomic_load_n(&l->locked, __ATOMIC_RELAXED)) spin_relax();
+    SPIN_HELD_ADD(1u);
     return f;
 }
 
 static inline void spin_unlock(spinlock_t *l, uint32_t f) {
+    SPIN_HELD_ADD((uint32_t)-1);
     __atomic_store_n(&l->locked, 0u, __ATOMIC_RELEASE);
     spin_irq_restore(f);
 }

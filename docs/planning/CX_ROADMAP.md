@@ -570,8 +570,9 @@ Independent of the order above, and small enough to land whenever convenient:
      and a job their handles, mapped bytes and charges; `live_diff` names
      each count that moved. Race points: a named place where the Nth
      arrival of one thread (or any) is parked until the test releases it,
-     or calls the test's function there, once per arming; one reached with
-     interrupts off is a panic. XNU names its injection points as stages
+     or calls the test's function there, once per arming; one reached
+     holding a spinlock is a panic (1.6c1; at first, one reached with
+     interrupts off). XNU names its injection points as stages
      with one armed at a time (`osfmk/kern/upsi.h`,
      `check_for_failure_injection` in `osfmk/kern/debug.c`); Serenity reads
      its heap's numbers in one call (`Kernel/Heap/kmalloc.cpp`,
@@ -624,7 +625,37 @@ Independent of the order above, and small enough to land whenever convenient:
      thread and 64 KB buffers; the X runner holds no endpoint grant).
      Self-tests 178. Sabotages: `tests/sabotage/1.6b.sab`. No ABI change.
    - **1.6c:** race points in the kernel and the races HANDOFF lists as
-     untested (futex, process ending, IPC, object lifetime).
+     untested, in three, one area each: 1.6c1 futex, 1.6c2 IPC, 1.6c3
+     process ending and object lifetime.
+   - **1.6c1 (2026-10-30), done:** the futex races. Two race points in
+     `futex_wait`: `RP_FUTEX_READ` (the word faulted in and keyed, not yet
+     read) and `RP_FUTEX_WOKEN` (the block over, the lock not yet
+     retaken). Three self-tests in `kernel/ktest_races.c`, the wait made
+     from ring 3: a word unmapped at the first point answers E_BAD_ADDRESS,
+     leaves no waiter and drops the key's reference on the memory object
+     (live counts); a waiter whose deadline has come, woken at the second
+     point, answers E_OK and the wake counts it; one memory object mapped
+     in two processes at different addresses is one word, and another
+     object at the same offset is not. XNU's ulock settles a wake against
+     a timeout with one wait result under the waitq lock
+     (`bsd/kern/sys_ulock.c`, `wait_result_to_return_code`); its
+     `tests/ulock.c` (`test_waiter_with_timeout`) tests a plain timeout
+     only. Race points no longer need interrupts on: a syscall's whole
+     body runs with them off (FMASK clears IF), so 1.6a's check panicked
+     at the first point inside a syscall. It now panics only when a
+     spinlock is held (`spin_held`, counted in `sync/spinlock.h` when the
+     hooks are built in). The ring-3 test helpers share the kernel's
+     address space (only spawn gives a process its own), so the
+     cross-process test keeps the two mappings apart by address
+     (MMAP_HINT); the key is the object, never the address. Self-tests
+     181. Sabotages: `tests/sabotage/1.6c1.sab`, 5 of 5. No ABI change.
+   - **1.6c2:** IPC: a reply racing its token's close, a kill in
+     SYS_QUEUE_WAIT, two threads racing one key, the endpoint close's
+     `from` detach, `ipc_thread_exit`, and IPC_MSG_MAX accepted (left by
+     1.6b).
+   - **1.6c3:** process ending and object lifetime: a take refused after
+     the check, `proc_end_threads` on a refused vector, a kill in a pipe
+     wait.
 7. Input authority and kernel randomness. A grant on `SYS_INPUT_READ`,
    `SYS_INPUT_POLL` and `SYS_MOUSE_READ` until the display server routes
    input. A ChaCha20 generator with Fortuna-style pools, fed by RDSEED or

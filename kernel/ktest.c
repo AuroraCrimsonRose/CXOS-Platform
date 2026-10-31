@@ -45,6 +45,7 @@
 #include "ktest_fs.h"
 #include "ktest_hooks.h"
 #include "ktest_sweeps.h"
+#include "ktest_races.h"
 #include "xfnt.h"
 #include "font.h"
 #include "fb.h"
@@ -3419,6 +3420,9 @@ void ktest_run(void) {
     total++; passed += report("every allocation of six creations fails cleanly", ktest_alloc_sweeps());
     total++; passed += report("every syscall from ring 3: refusals take nothing", ktest_syscall_census());
     total++; passed += report("every allocation of 13 syscalls fails cleanly", ktest_syscall_sweeps());
+    total++; passed += report("futex: a word unmapped after its fault-in", ktest_futex_unmapped());
+    total++; passed += report("futex: a wake as the deadline comes", ktest_futex_deadline());
+    total++; passed += report("futex: one word through two processes", ktest_futex_shared());
     total++; passed += report("two threads share one process",   test_proc_threads());
     total++; passed += report("user copies validated at the copy",  test_user_copy_validation());
     total++; passed += report("user copy faults are recoverable",   test_user_copy_fault_recovery());

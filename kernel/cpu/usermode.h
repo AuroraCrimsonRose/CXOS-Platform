@@ -180,6 +180,15 @@ struct um_call3 { uint64_t c[3][6]; };
 int usermode_run_calls(const struct um_call3 *calls, void *data, uint32_t len,
                        uint32_t fault_sites, uint32_t fault_nth);
 
+/* The same three calls made by a held ring-3 process of its own, in this
+   thread's job (in the kernel's address space, as every ring-3 helper is;
+   its mappings are its own). Returns the process with a reference for the
+   caller (proc_put), and its thread in *tid, for thread_start; NULL when it
+   could not be made. It ends with what the third call returned. One such
+   process at a time: its image is read when it starts. */
+struct proc;
+struct proc *usermode_calls_process(const struct um_call3 *calls, int *tid);
+
 /* The system page: a stub for each syscall and int3 elsewhere; ring 3 calls
    through the base it is handed; a store to the page faults; a call from
    anywhere but its stub is refused. 1 = pass. */

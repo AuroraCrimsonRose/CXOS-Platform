@@ -23,8 +23,10 @@
  *   Race points. A named place in kernel code where a test can park the
  *   thread that reaches it (the test then acts, and releases it) or have that
  *   thread call a function of the test's (a close, a kill) right there. A
- *   point fires once per arming. It must be reached with interrupts on: a
- *   point under a spinlock would park the lock with it, and is a panic.
+ *   point fires once per arming. It must be reached holding no spinlock: a
+ *   point under one would park the lock with it, and is a panic
+ *   (spin_held, sync/spinlock.h). Interrupts may be off, as they are for a
+ *   syscall's whole body; a park yields, and each thread keeps its own.
  *
  * XNU names its injection points the same way, as stages with one armed at
  * a time (osfmk/kern/upsi.h, check_for_failure_injection in debug.c), there
@@ -107,6 +109,8 @@ uint32_t live_diff(const struct live_counts *before, const struct live_counts *a
 
 enum race_point {
     RP_SELFTEST = 0,           /* reached only by the hooks' own self-test */
+    RP_FUTEX_READ,             /* futex_wait: the word faulted in and keyed, not yet read */
+    RP_FUTEX_WOKEN,            /* futex_wait: its block over, futex_lock not yet retaken */
     RP_COUNT
 };
 
