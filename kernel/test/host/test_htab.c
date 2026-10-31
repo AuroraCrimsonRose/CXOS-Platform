@@ -480,8 +480,8 @@ KH_TEST(htab_growth_failure_refuses_and_keeps) {
 
     uint32_t refs = atomic_load(&o.hdr.refs);
     fail_allocs = 1;
-    KH_CHECK_EQ(htab_install(&t, &o.hdr, TOBJ_R1, 0), HTAB_E_NO_RESOURCES);
-    KH_CHECK_EQ(htab_dup(&t, h[0], TOBJ_R1), HTAB_E_NO_RESOURCES);
+    KH_CHECK_EQ(htab_install(&t, &o.hdr, TOBJ_R1, 0), HTAB_E_NO_MEMORY);
+    KH_CHECK_EQ(htab_dup(&t, h[0], TOBJ_R1), HTAB_E_NO_MEMORY);
     fail_allocs = 0;
     KH_CHECK_EQ(atomic_load(&o.hdr.refs), refs);
     KH_CHECK_EQ(t.cap, (uint32_t)HTAB_FIRST_SLOTS);
@@ -665,7 +665,7 @@ KH_TEST(htab_land_places_all_or_none) {
     struct htab_send one = { v[0], HTAB_MOVE, HTAB_RIGHTS_SAME };
     KH_CHECK_EQ(htab_take(&u, &one, 1, 0, x), 0);
     fail_allocs = 1;
-    KH_CHECK_EQ(htab_land(&w, x, 1, v), HTAB_E_NO_RESOURCES);
+    KH_CHECK_EQ(htab_land(&w, x, 1, v), HTAB_E_NO_MEMORY);
     fail_allocs = 0;
     KH_CHECK(x[0].obj == &o.hdr);
     KH_CHECK_EQ(htab_land(&w, x, 1, v), 0);

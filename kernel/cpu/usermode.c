@@ -9,6 +9,7 @@
 #include "arch/cpu_ops.h"    /* arch_irq_save, around the system page's count */
 #include "format.h"          /* fmt_hex, fmt_u32 */
 #include "diag/crashlog.h"   /* crashlog_note_fault, crashlog_save_faults */
+#include "diag/testhook.h"   /* fault_arm, around usermode_run_calls's ring 3 */
 #include "arch/usermode.h"   /* enter_usermode, return_to_kernel, the gate */
 #include "sched.h"
 #include "uid.h"
@@ -1329,6 +1330,44 @@ int usermode_run_blob(const uint8_t *start, uint32_t len) {
     return rc;
 }
 
+/* user_blob_calls and its three calls copied in just past it, the data in
+   the stack page's low half (the blob's stack is a few words at the top). */
+_Static_assert(USERMODE_DATA_VIRT == TEST_STACK_VIRT, "the data sits in the stack page");
+int usermode_run_calls(const struct um_call3 *calls, void *data, uint32_t len,
+                       uint32_t fault_sites, uint32_t fault_nth) {
+    extern uint8_t user_blob_calls_start[], user_blob_calls_end[];
+    uint32_t blen = (uint32_t)(user_blob_calls_end - user_blob_calls_start);
+    if (!calls || len > USERMODE_DATA_MAX || (len && !data)) return -1;
+    if (blen + sizeof *calls > USER_MSG_OFF) return -1;
+    paddr_t code_phys  = map_user_page(TEST_CODE_VIRT);
+    paddr_t stack_phys = map_user_page(TEST_STACK_VIRT);
+    if (!code_phys || !stack_phys) {
+        if (code_phys)  unmap_user_page(TEST_CODE_VIRT, code_phys);
+        if (stack_phys) unmap_user_page(TEST_STACK_VIRT, stack_phys);
+        return -1;
+    }
+    uint8_t *dst = (uint8_t *)TEST_CODE_VIRT;
+    for (uint32_t i = 0; i < blen; i++) dst[i] = user_blob_calls_start[i];
+    const uint8_t *cs = (const uint8_t *)calls;
+    for (uint32_t i = 0; i < sizeof *calls; i++) dst[blen + i] = cs[i];
+    uint8_t *ud = (uint8_t *)USERMODE_DATA_VIRT;
+    for (uint32_t i = 0; i < len; i++) ud[i] = ((const uint8_t *)data)[i];
+
+    int rc = -1;
+    if (seal_user_code(TEST_CODE_VIRT, code_phys) == 0 && ksyspage_get() == 0) {
+        if (fault_nth) fault_arm(fault_sites, fault_nth);
+        rc = enter_usermode(TEST_CODE_VIRT, TEST_STACK_VIRT + 0x1000 - 16,
+                            thread_current_usave(), SYSPAGE_VIRT);
+        if (fault_nth) fault_disarm();
+        ksyspage_put();
+    }
+
+    for (uint32_t i = 0; i < len; i++) ((uint8_t *)data)[i] = ud[i];
+    unmap_user_page(TEST_CODE_VIRT, code_phys);
+    unmap_user_page(TEST_STACK_VIRT, stack_phys);
+    return rc;
+}
+
 /* ---- the system page (roadmap step 6a3b) ---- */
 extern uint8_t user_sysp_call_start[],  user_sysp_call_end[];
 extern uint8_t user_sysp_write_start[], user_sysp_write_end[];
@@ -2125,6 +2164,61 @@ int usermode_file_test(void) {
     sa->args = 0; sa->args_len = 4;                       /* a length with no blob */
     step++;
     if (sys_exec_path(FT_PATH, user_addr(sa)) != E_INVALID_ARGS) goto done;
+
+    /* Both sides of what the argument page holds (1.6b): USER_ARGS_MAXC
+       arguments and no more, and a blob that fills the page with its count
+       and offsets and no more. Until 1.6b only the length was checked, and
+       each refused one here was spawned with no arguments at all. Accepted
+       is past check_args, to the file it cannot run (E_ACCESS_DENIED). The
+       blob is a page of its own, past the stack's. */
+    {
+        const uint32_t blob = TEST_CODE_VIRT + 0x2000;
+        paddr_t bp = map_user_page(blob);
+        int bad = !bp;
+        char *b = (char *)user_ptr(blob);
+        for (uint32_t i = 0; !bad && i < 4096; i++) b[i] = (char)((i & 1) ? 0 : 'a');
+        sa->args = blob;
+        sa->args_len = 2 * USER_ARGS_MAXC;                /* "a\0" * 64 */
+        if (!bad && sys_exec_path(FT_PATH, user_addr(sa)) != E_ACCESS_DENIED) bad = 1;
+        sa->args_len = 2 * (USER_ARGS_MAXC + 1);          /* 65 */
+        if (!bad && sys_exec_path(FT_PATH, user_addr(sa)) != E_OUT_OF_RANGE) bad = 2;
+        /* one argument: 4 + 4 + len bytes */
+        for (uint32_t i = 0; !bad && i < 4096; i++) b[i] = 'a';
+        if (!bad) b[USER_ARGS_MAX - 9] = 0;
+        sa->args_len = USER_ARGS_MAX - 8;
+        if (!bad && sys_exec_path(FT_PATH, user_addr(sa)) != E_ACCESS_DENIED) bad = 3;
+        if (!bad) { b[USER_ARGS_MAX - 9] = 'a'; b[USER_ARGS_MAX - 8] = 0; }
+        sa->args_len = USER_ARGS_MAX - 7;
+        if (!bad && sys_exec_path(FT_PATH, user_addr(sa)) != E_OUT_OF_RANGE) bad = 4;
+
+        /* And the path bounds, both sides (1.6b): a path of FILE_PATH_MAX - 1
+           bytes is read whole (no "q" at the root: E_NOT_FOUND), one with
+           no terminator inside FILE_PATH_MAX is refused; a leaf of
+           FILE_NAME_MAX - 1 bytes is made, one byte more is refused. */
+        if (!bad) {
+            b[0] = '/';
+            for (uint32_t i = 1; i < FILE_PATH_MAX; i++) b[i] = (i & 1) ? 'q' : '/';
+            b[FILE_PATH_MAX - 2] = 'q';               /* no trailing slash */
+            b[FILE_PATH_MAX - 1] = 0;
+            if (ft_call(SYS_FILE_STAT, 0, blob, FT_STAT, 0, 0, 0) != E_NOT_FOUND) bad = 5;
+            b[FILE_PATH_MAX - 1] = 'q'; b[FILE_PATH_MAX] = 0;
+            if (!bad && ft_call(SYS_FILE_STAT, 0, blob, FT_STAT, 0, 0, 0) != E_OUT_OF_RANGE) bad = 6;
+        }
+        if (!bad) {
+            uint32_t n = 0;
+            for (const char *p = scratch; *p; p++) b[n++] = *p;
+            b[n++] = '/';
+            for (uint32_t i = 0; i < FILE_NAME_MAX; i++) b[n + i] = 'n';
+            b[n + FILE_NAME_MAX] = 0;
+            if (ft_call(SYS_FILE_MKDIR, 0, blob, 0, 0, 0, 0) != E_OUT_OF_RANGE) bad = 7;
+            b[n + FILE_NAME_MAX - 1] = 0;
+            if (!bad && ft_call(SYS_FILE_MKDIR, 0, blob, 0, 0, 0, 0) != E_OK) bad = 8;
+            if (!bad && ft_call(SYS_FILE_UNLINK, 0, blob, 0, 0, 0, 0) != E_OK) bad = 9;
+        }
+        if (bp) unmap_user_page(blob, bp);
+        step++;
+        if (bad) goto done;
+    }
 
     sa->args = 0; sa->args_len = 0;
 

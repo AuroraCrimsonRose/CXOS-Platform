@@ -44,6 +44,7 @@
 #include "ktest_net.h"
 #include "ktest_fs.h"
 #include "ktest_hooks.h"
+#include "ktest_sweeps.h"
 #include "xfnt.h"
 #include "font.h"
 #include "fb.h"
@@ -3416,6 +3417,8 @@ void ktest_run(void) {
     total++; passed += report("hooks: live counts see what comes and goes", ktest_live_counts());
     total++; passed += report("hooks: race points call and park", ktest_race_points());
     total++; passed += report("every allocation of six creations fails cleanly", ktest_alloc_sweeps());
+    total++; passed += report("every syscall from ring 3: refusals take nothing", ktest_syscall_census());
+    total++; passed += report("every allocation of 13 syscalls fails cleanly", ktest_syscall_sweeps());
     total++; passed += report("two threads share one process",   test_proc_threads());
     total++; passed += report("user copies validated at the copy",  test_user_copy_validation());
     total++; passed += report("user copy faults are recoverable",   test_user_copy_fault_recovery());

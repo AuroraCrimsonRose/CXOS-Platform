@@ -9,6 +9,7 @@
 #include "cxk_abi.h"
 _Static_assert(HTAB_E_ACCESS_DENIED == E_ACCESS_DENIED && HTAB_E_INVALID_ARGS == E_INVALID_ARGS &&
                HTAB_E_NO_RESOURCES == E_NO_RESOURCES && HTAB_E_BAD_HANDLE == E_BAD_HANDLE &&
+               HTAB_E_NO_MEMORY == E_NO_MEMORY &&
                HTAB_E_NOT_SUPPORTED == E_NOT_SUPPORTED,
                "htab.h error values must be the ABI's");
 _Static_assert(HTAB_RIGHT_DUPLICATE == HRIGHT_DUPLICATE, "htab.h's duplicate right must be the ABI's");
@@ -65,7 +66,9 @@ static int32_t place(struct htab *t, struct kobj *o, uint32_t rights, uint32_t p
 /* Double the array (or make the first), never past t->max. Called WITHOUT
    the lock, which is held only to copy and publish: the allocator is not
    called with it held. 0 when the table has more room than it had (here or
-   by another caller meanwhile), HTAB_E_NO_RESOURCES when it cannot. */
+   by another caller meanwhile), HTAB_E_NO_RESOURCES when it is at its limit,
+   HTAB_E_NO_MEMORY when the larger array cannot be had (1.6b: that was
+   NO_RESOURCES too, which named a full table when memory ran out). */
 static int grow(struct htab *t) {
     uint32_t f = spin_lock(&t->lock);
     uint32_t cap = t->cap;
@@ -75,7 +78,7 @@ static int grow(struct htab *t) {
     if (want > t->max) want = t->max;
     if (want <= cap) return HTAB_E_NO_RESOURCES;
     struct htab_entry *n = (struct htab_entry *)htab_mem_alloc(want * (uint32_t)sizeof *n);
-    if (!n) return HTAB_E_NO_RESOURCES;
+    if (!n) return HTAB_E_NO_MEMORY;
 
     struct htab_entry *spare = n;
     f = spin_lock(&t->lock);
@@ -123,7 +126,9 @@ int32_t htab_install(struct htab *t, struct kobj *o, uint32_t rights, uint32_t p
         uint32_t f = spin_lock(&t->lock);
         int32_t h = place(t, o, rights, parent_grant);
         spin_unlock(&t->lock, f);
-        if (h != HTAB_E_NO_RESOURCES || grow(t) != 0) return h;
+        if (h != HTAB_E_NO_RESOURCES) return h;
+        int g = grow(t);
+        if (g != 0) return g;
     }
 }
 
@@ -154,7 +159,9 @@ int32_t htab_dup(struct htab *t, int32_t h, uint32_t rights) {
         else if (rights & ~e->rights)      r = HTAB_E_ACCESS_DENIED;   /* rights only shrink */
         else                               r = place(t, e->obj, rights, e->grant);
         spin_unlock(&t->lock, f);
-        if (r != HTAB_E_NO_RESOURCES || grow(t) != 0) return r;
+        if (r != HTAB_E_NO_RESOURCES) return r;
+        int g = grow(t);
+        if (g != 0) return g;
     }
 }
 
@@ -242,7 +249,8 @@ int htab_land(struct htab *t, struct htab_transit *x, uint32_t n, int32_t *out) 
             return 0;
         }
         spin_unlock(&t->lock, f);
-        if (grow(t) != 0) return HTAB_E_NO_RESOURCES;
+        int g = grow(t);
+        if (g != 0) return g;
     }
 }
 

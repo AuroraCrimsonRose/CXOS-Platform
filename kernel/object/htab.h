@@ -59,7 +59,8 @@
    host tests cannot include it; htab.c checks these agree in the kernel build. */
 #define HTAB_E_ACCESS_DENIED  (-7)
 #define HTAB_E_INVALID_ARGS   (-3)
-#define HTAB_E_NO_RESOURCES   (-9)
+#define HTAB_E_NO_RESOURCES   (-9)   /* the table is at its limit */
+#define HTAB_E_NO_MEMORY      (-8)   /* it could not grow: no memory for the array */
 #define HTAB_E_BAD_HANDLE     (-5)
 
 /* Generic rights, the same on every type (the ABI's HRIGHT_DUPLICATE, checked
@@ -101,7 +102,7 @@ void htab_destroy(struct htab *t);
    a handle on an object the caller just made). The handle holds its own
    reference; the caller's is untouched. Returns the handle value (> 0), or
    HTAB_E_INVALID_ARGS (no object, or its type is not registered), HTAB_E_ACCESS_DENIED (a right the type
-   does not define) or HTAB_E_NO_RESOURCES (the table is at its limit, or could
+   does not define) or HTAB_E_NO_RESOURCES (the table is at its limit) or HTAB_E_NO_MEMORY (it could
    not grow). */
 int32_t htab_install(struct htab *t, struct kobj *o, uint32_t rights, uint32_t parent_grant);
 
@@ -114,7 +115,7 @@ struct kobj *htab_ref(struct htab *t, int32_t h, enum kobj_type type, uint32_t n
 /* A second handle in the same table on the same object, with `rights`, which
    must be a subset of the source's. Its parent grant is the source's grant.
    Returns the new value, or HTAB_E_BAD_HANDLE, HTAB_E_ACCESS_DENIED (the source lacks
-   HTAB_RIGHT_DUPLICATE, or one of `rights`) or HTAB_E_NO_RESOURCES. */
+   HTAB_RIGHT_DUPLICATE, or one of `rights`), HTAB_E_NO_RESOURCES or HTAB_E_NO_MEMORY. */
 int32_t htab_dup(struct htab *t, int32_t h, uint32_t rights);
 
 /*
@@ -162,7 +163,7 @@ int htab_check(struct htab *t, const struct htab_send *s, uint32_t n, const stru
 /* Place the `n` transits of `x` in `t`, all or none, and write their values
    to `out`. A transit with grant 0 is a new handle (opened here, with a new
    grant); any other keeps its grant, parent and handle count. Each placed
-   transit's obj becomes 0. Returns 0, or HTAB_E_NO_RESOURCES with nothing
+   transit's obj becomes 0. Returns 0, or HTAB_E_NO_RESOURCES or HTAB_E_NO_MEMORY with nothing
    placed. Allocates (to grow): call it with no lock held. */
 int htab_land(struct htab *t, struct htab_transit *x, uint32_t n, int32_t *out);
 

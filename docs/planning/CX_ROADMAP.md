@@ -586,8 +586,43 @@ Independent of the order above, and small enough to land whenever convenient:
      15 of 15 caught, three of them leaks planted in unwind paths (a pipe's
      job charge, a mapping's memory object, a kernel stack's pages). No ABI
      change.
-   - **1.6b:** sweeps of every syscall's failure paths from ring 3, and
-     resource limits driven to both sides of the bound.
+   - **1.6b (2026-10-30), done:** the syscall failure sweeps from ring 3,
+     and limits on both sides. `usermode_run_calls` makes three calls from
+     ring 3 on the test thread, through the system page's stubs and the
+     gate as a process does, with a data page the calls point into and
+     `fault_arm` covering ring 3 only (the arming is per thread, so it
+     crosses the gate with the thread). Two self-tests in
+     `kernel/ktest_sweeps.c`: a census of every syscall in the table but
+     six (EXIT, THREAD_EXIT, INPUT_READ, the power calls), each with every
+     argument 0 and every argument hostile (a kernel address, a huge u32, a
+     negative handle), holding no grant, unarmed and then with its first
+     allocation failed: none answers E_INTERNAL or faults, a refusal
+     reaches no allocation and refuses the same armed, a failed allocation
+     answers E_NO_MEMORY, nothing is left behind, and the count called is
+     the table's; and sweeps of 13 syscalls that make a handle, a
+     registration or a mapping (pipe, endpoint and its mint, notification
+     and its mint, timer, queue and a registration, job, memory object,
+     anonymous and object mappings, file open), every allocation failed in
+     turn as 1.6a's sweeps do. HANDLE_DUPLICATE allocates only when the
+     table grows, and THREAD_CREATE is refused to a kernel process, so
+     neither is swept here. Limits: four X tests (a pipe of PIPE_SIZE_MAX
+     takes that many bytes; a memory object of MMAP_MAX_BYTES; thread
+     stacks MIN - 1, MAX and MAX + 1; a process's handles to the refusal,
+     one more after a close), and in the file test the argument page
+     (USER_ARGS_MAXC and one more, a blob filling the page with its header
+     and one byte more), FILE_PATH_MAX and FILE_NAME_MAX each side. **Bug
+     fixed:** spawn checked only the blob's length, so 65 arguments, or a
+     blob that fit the page without its header, were spawned with no
+     arguments at all (`build_args_page` drops what does not fit, and its
+     comment said the callers made that unreachable); `args_fit` now
+     refuses them in `check_args` and `proc_start` (E_OUT_OF_RANGE).
+     **Changed, asked:** a handle table whose growth cannot get memory now
+     answers E_NO_MEMORY (`HTAB_E_NO_MEMORY`, from `grow` through install,
+     dup and land); a full table still answers E_NO_RESOURCES. Before,
+     `htab_install` answered NO_RESOURCES whatever `grow` said, and IPC and
+     file open remapped any failure to it. Left for 1.6c: IPC_MSG_MAX accepted (it needs a caller
+     thread and 64 KB buffers; the X runner holds no endpoint grant).
+     Self-tests 178. Sabotages: `tests/sabotage/1.6b.sab`. No ABI change.
    - **1.6c:** race points in the kernel and the races HANDOFF lists as
      untested (futex, process ending, IPC, object lifetime).
 7. Input authority and kernel randomness. A grant on `SYS_INPUT_READ`,

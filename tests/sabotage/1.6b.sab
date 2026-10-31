@@ -1,0 +1,174 @@
+# Phase 1.6b's sabotages, run by `cxk test sabotage`.
+# Each must turn red exactly the self-tests named, at the step named.
+# Format: docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage".
+
+# ---- the census: every syscall from ring 3 ----
+
+[census-refusal-allocates]
+# SYS_MEM_CREATE allocates before its first refusal: the census's zero
+# arguments reach it (size 0); its sweep sees an allocation that fails and
+# a create that goes on regardless
+expect = every syscall from ring 3: refusals take nothing @ a refusal reached an allocation
+expect = every allocation of 13 syscalls fails cleanly @ sweep r3: mem_create
+edit = kernel/cpu/usermode.c
+<<<
+    if (flags)                 return E_INVALID_ARGS;
+===
+    kfree(kmalloc(16));
+    if (flags)                 return E_INVALID_ARGS;
+>>>
+
+[census-refusal-leaks]
+# SYS_FUTEX_WAKE leaks a block on every call, refusals included
+expect = every syscall from ring 3: refusals take nothing @ left something behind
+group = c1
+edit = kernel/cpu/usermode.c
+<<<
+int syscall_futex_wake(uint64_t word, uint32_t count) { return futex_wake(word, count); }
+===
+int syscall_futex_wake(uint64_t word, uint32_t count) { (void)kmalloc(16); return futex_wake(word, count); }
+>>>
+
+[census-internal]
+# SYS_VM_INFO answers a NULL pointer with E_INTERNAL
+expect = every syscall from ring 3: refusals take nothing @ E_INTERNAL
+edit = kernel/cpu/usermode.c
+<<<
+int syscall_vm_info(uint64_t u) {
+===
+int syscall_vm_info(uint64_t u) {
+    if (!u) return E_INTERNAL;
+>>>
+
+[census-skips-one]
+# the census leaves out a syscall it should call
+expect = every syscall from ring 3: refusals take nothing @ did not call every syscall
+group = c2
+edit = kernel/ktest_sweeps.c
+<<<
+    return nr == SYS_EXIT || nr == SYS_THREAD_EXIT
+===
+    return nr == SYS_YIELD || nr == SYS_EXIT || nr == SYS_THREAD_EXIT
+>>>
+
+# ---- the ring-3 allocation sweeps ----
+
+[sweep-pipe-wrong-error]
+# a pipe that could not be made answers E_NO_RESOURCES
+expect = every allocation of 13 syscalls fails cleanly @ sweep r3: pipe_create: a failed allocation
+group = c1
+edit = kernel/cpu/usermode.c
+<<<
+    struct kpipe *p = kpipe_create(size, thread_proc(thread_current_id())->job, &rc);
+    if (!p) return rc;
+===
+    struct kpipe *p = kpipe_create(size, thread_proc(thread_current_id())->job, &rc);
+    if (!p) return E_NO_RESOURCES;
+>>>
+
+[sweep-map-wrong-error]
+# a mapping whose region could not be had answers E_NO_RESOURCES (1.6a's
+# own mapping sweep takes any refusal, so only the ring-3 one sees it)
+expect = every allocation of 13 syscalls fails cleanly @ sweep r3: vm_map, anonymous
+edit = kernel/memman/vmregion.c
+<<<
+        kobj_unref(&m->hdr);
+        return E_NO_MEMORY;
+    }
+    r->prot = a->prot;
+===
+        kobj_unref(&m->hdr);
+        return E_NO_RESOURCES;
+    }
+    r->prot = a->prot;
+>>>
+
+[sweep-unarmed]
+# usermode_run_calls never arms: every sweep reaches no allocation, and
+# the census's armed runs fail none
+expect = every allocation of 13 syscalls fails cleanly @ no allocation was reached
+expect = every syscall from ring 3: refusals take nothing @ no first allocation was failed
+edit = kernel/cpu/usermode.c
+<<<
+        if (fault_nth) fault_arm(fault_sites, fault_nth);
+===
+        (void)fault_sites;
+>>>
+
+# ---- limits, both sides ----
+
+[args-count-unchecked]
+# 65 arguments are taken again (and spawned with none)
+expect = file syscalls (SYS_FILE_*)
+group = c2
+edit = kernel/cpu/spawn.c
+<<<
+    if (!args_fit((const char *)user_ptr(a->args), (uint32_t)a->args_len)) return E_OUT_OF_RANGE;
+===
+>>>
+
+[path-cap-short]
+# a path of FILE_PATH_MAX - 1 bytes is refused
+expect = file syscalls (SYS_FILE_*)
+edit = kernel/cpu/sysfile.c
+<<<
+    for (uint32_t i = 0; i < cap; i++) {
+===
+    for (uint32_t i = 0; i + 1 < cap; i++) {
+>>>
+
+[leaf-short]
+# a leaf of FILE_NAME_MAX - 1 bytes is refused
+expect = file syscalls (SYS_FILE_*)
+edit = kernel/cpu/sysfile.c
+<<<
+    if (leaflen >= leafcap) return E_OUT_OF_RANGE;
+===
+    if (leaflen + 1 >= leafcap) return E_OUT_OF_RANGE;
+>>>
+
+[pipe-max-refused]
+# a pipe of PIPE_SIZE_MAX is refused
+expect = x: limits: a pipe of PIPE_SIZE_MAX @ step 37
+group = c3
+edit = kernel/cpu/usermode.c
+<<<
+    if (size < PIPE_SIZE_MIN || size > PIPE_SIZE_MAX) return E_OUT_OF_RANGE;
+===
+    if (size < PIPE_SIZE_MIN || size >= PIPE_SIZE_MAX) return E_OUT_OF_RANGE;
+>>>
+
+[mem-max-refused]
+# a memory object of MMAP_MAX_BYTES is refused
+expect = x: limits: a memory object of the most @ step 40
+group = c1
+edit = kernel/cpu/usermode.c
+<<<
+    if (size > MMAP_MAX_BYTES) return E_OUT_OF_RANGE;
+===
+    if (size >= MMAP_MAX_BYTES) return E_OUT_OF_RANGE;
+>>>
+
+[ustack-max-refused]
+# a thread stack of THREAD_USTACK_MAX is refused
+expect = x: limits: thread stacks, both ends @ step 42
+group = c2
+edit = kernel/cpu/uthread.c
+<<<
+    if (size < THREAD_USTACK_MIN || size > THREAD_USTACK_MAX) return E_OUT_OF_RANGE;
+===
+    if (size < THREAD_USTACK_MIN || size >= THREAD_USTACK_MAX) return E_OUT_OF_RANGE;
+>>>
+
+[handles-full-wrong-error]
+# a full handle table answers E_NO_MEMORY (unseen until 1.6b passed grow's
+# answer on: htab_install answered NO_RESOURCES whatever grow said)
+expect = x: limits: a process's handles @ step 44
+expect = a handle table grows to its limit and is freed
+group = c3
+edit = kernel/object/htab.c
+<<<
+    if (want <= cap) return HTAB_E_NO_RESOURCES;
+===
+    if (want <= cap) return E_NO_MEMORY;
+>>>

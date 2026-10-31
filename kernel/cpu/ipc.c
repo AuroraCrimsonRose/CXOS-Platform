@@ -312,7 +312,7 @@ int ep_create(void) {
        the endpoint; on failure this was the only reference, and it goes back
        to its cache here. */
     kobj_unref(&ep->hdr);
-    return h < 0 ? E_NO_RESOURCES : h;
+    return h;   /* htab_install answers in the ABI's codes */
 }
 
 int32_t ep_install_handle(int tid, struct endpoint *ep, uint32_t rights, uint32_t parent_grant) {

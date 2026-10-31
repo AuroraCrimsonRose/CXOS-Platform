@@ -531,7 +531,7 @@ int sys_file_open(uint64_t upath, uint32_t flags) {
     /* The open's own reference goes either way: on success the handle
        holds the file; on failure it goes back to its cache here. */
     kobj_unref(&nf->hdr);
-    return h < 0 ? E_NO_RESOURCES : h;
+    return h;   /* htab_install answers in the ABI's codes */
 }
 
 int sys_file_close(int32_t h) {

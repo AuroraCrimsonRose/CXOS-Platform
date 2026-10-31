@@ -80,9 +80,20 @@ extern const struct cxex_load_ops cxex_kernel_load_ops;   /* cxex_loadk.c */
  * page has room for after the offset table - is dropped rather than truncated
  * into something half-valid. A program cannot tell a dropped tail from an
  * argument it was never given, and a silently shortened string is worse than
- * a missing one. The caller-side checks in sys_spawn and sys_exec_path reject
- * an oversized blob up front, so reaching this is a kernel bug, not a user
- * one. Returns 0 on success, negative if the page could not be mapped. */
+ * a missing one. proc_start refuses such a blob up front (args_fit), so
+ * reaching this is a kernel bug, not a user one: until 1.6b it checked only
+ * the length, and 65 one-byte arguments, or a page-long blob, were spawned
+ * with none. Returns 0 on success, negative if the page could not be
+ * mapped. */
+/* Whether build_args_page can lay `blob` out whole: at most USER_ARGS_MAXC
+   strings, and the count, an offset per string and the strings within the
+   page (USER_ARGS_MAX, "header included"). */
+static int args_fit(const char *blob, uint32_t len) {
+    uint32_t argc = 0;
+    for (uint32_t i = 0; i < len; i++) if (blob[i] == '\0') argc++;
+    return argc <= USER_ARGS_MAXC && 4u + 4u * argc + len <= USER_ARGS_MAX;
+}
+
 static int build_args_page(const char *blob, uint32_t len) {
     paddr_t frame = pmm_alloc();
     if (!frame) return -1;
@@ -221,6 +232,7 @@ int proc_start(const void *image, uint32_t image_len, uint32_t caps,
     if (image_len == 0 || image_len > PROC_MAX_IMAGE) return E_OUT_OF_RANGE;
     if (args_len > USER_ARGS_MAX)                     return E_OUT_OF_RANGE;
     if (!args) args_len = 0;
+    if (args_len && !args_fit(args, args_len))        return E_OUT_OF_RANGE;
 
     uint8_t *kimg = (uint8_t *)kmalloc(image_len);
     if (!kimg) return E_NO_MEMORY;
@@ -331,6 +343,7 @@ static int check_args(const struct spawn_args *a) {
     if (a->args_len == 0 || a->args_len > USER_ARGS_MAX) return E_OUT_OF_RANGE;
     if (!user_ptr_readable(a->args, (uint32_t)a->args_len)) return E_BAD_ADDRESS;
     if (((const char *)user_ptr(a->args))[a->args_len - 1] != '\0') return E_INVALID_ARGS;
+    if (!args_fit((const char *)user_ptr(a->args), (uint32_t)a->args_len)) return E_OUT_OF_RANGE;
     return E_OK;
 }
 

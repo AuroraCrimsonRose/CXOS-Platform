@@ -165,6 +165,21 @@ int usermode_test(void);
    it gives SYS_EXIT (or USERMODE_FAULTED); -1 when it could not be set up. */
 int usermode_run_blob(const uint8_t *start, uint32_t len);
 
+/* Three syscalls made from ring 3 by this thread, as a process makes them
+   (the stub in the system page, the arguments in the ABI's registers), for
+   the failure sweeps (roadmap 1.6b). Each call is its number and five
+   arguments. `data` (at most USERMODE_DATA_MAX bytes) is copied to
+   USERMODE_DATA_VIRT, a user page the calls can point into, before ring 3
+   runs, and back after. With `fault_nth` nonzero, fault_arm(fault_sites,
+   fault_nth) covers ring 3 and nothing of the setting up. Returns what the
+   third call returned (or USERMODE_FAULTED; usermode_faults() tells them
+   apart), -1 when it could not be set up. */
+#define USERMODE_DATA_VIRT  0x00801000u   /* the low half of the stack page */
+#define USERMODE_DATA_MAX   0x800u
+struct um_call3 { uint64_t c[3][6]; };
+int usermode_run_calls(const struct um_call3 *calls, void *data, uint32_t len,
+                       uint32_t fault_sites, uint32_t fault_nth);
+
 /* The system page: a stub for each syscall and int3 elsewhere; ring 3 calls
    through the base it is handed; a store to the page faults; a call from
    anywhere but its stub is refused. 1 = pass. */

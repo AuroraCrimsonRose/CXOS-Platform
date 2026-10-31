@@ -560,6 +560,85 @@ fn s_output_locked(arg: u64) -> i32 {
     return 0;
 }
 
+// ==================== limits, both sides (roadmap 1.6b) ====================
+// Each bound the ABI names, at the bound and one past it. The refusals
+// were tested before; what is new is the accepted side.
+
+// 36-38: a pipe of PIPE_SIZE_MAX is made, and takes that much with no
+// reader (a write blocks until every byte is in, so one that did not fit
+// would never return); one byte more is refused
+fn l_pipe_max(arg: u64) -> i32 {
+    let ends: [2]i32;
+    ends[0] = 0 - 1; ends[1] = 0 - 1;
+    if (pipe_create(PIPE_SIZE_MAX + 1, &ends[0]) != E_OUT_OF_RANGE) { return 36; }
+    if (pipe_create(PIPE_SIZE_MAX, &ends[0]) != 0) { return 37; }
+    let p: usize = alloc(PIPE_SIZE_MAX);
+    let r: i32 = 0 - 1;
+    if (p != 0) { r = file_write(ends[1], p as *u8, PIPE_SIZE_MAX as u64); free(p); }
+    handle_close(ends[0]);
+    handle_close(ends[1]);
+    if (r != PIPE_SIZE_MAX as i32) { return 38; }
+    return 0;
+}
+
+// 39-40: a memory object of MMAP_MAX_BYTES is made (its commit charged and
+// given back), one byte more is refused
+fn l_mem_max(arg: u64) -> i32 {
+    if (mem_create((MMAP_MAX_BYTES as u64) + 1, 0) != E_OUT_OF_RANGE) { return 39; }
+    let m: i32 = mem_create(MMAP_MAX_BYTES as u64, 0);
+    if (m <= 0) { return 40; }
+    handle_close(m);
+    return 0;
+}
+
+// 41-43: a thread's stack of THREAD_USTACK_MIN - 1 bytes is refused, of
+// THREAD_USTACK_MAX made (a mapping of that size while it lives), of one
+// byte more refused; nothing is left mapped
+fn l_ustack(arg: u64) -> i32 {
+    let m0: u64 = mapped();
+    if (thread_spawn(napper2, 0, (THREAD_USTACK_MIN as u64) - 1) != E_OUT_OF_RANGE) { return 41; }
+    if (thread_spawn(napper2, 0, (THREAD_USTACK_MAX as u64) + 1) != E_OUT_OF_RANGE) { return 41; }
+    let h: i32 = thread_spawn(napper2, 0, THREAD_USTACK_MAX as u64);
+    if (h <= 0) { return 42; }
+    let big: u64 = mapped();
+    if (join(h) != 0) { return 42; }
+    if (big != m0 + (THREAD_USTACK_MAX as u64) + (THREAD_BLOCK_BYTES as u64)) { return 43; }
+    if (mapped() != m0) { return 43; }
+    return 0;
+}
+
+// 44-46: a process's handles to its limit: duplicates are made until one
+// is refused with E_NO_RESOURCES; after a close one more is made, and
+// refused again past it; every one is closed. The limit is the kernel's
+// (kernel.xkco max_handles), so the count is not known here: at least the
+// 1000 the default 1024 leaves a program this small.
+global hl_h: [1100]i32;
+
+fn l_handles(arg: u64) -> i32 {
+    let m: i32 = mem_create(4096, 0);
+    if (m <= 0) { return 44; }
+    let n: u32 = 0;
+    let r: i32 = 0;
+    while (n < 1100) {
+        r = handle_duplicate(m, HRIGHT_INSPECT);
+        if (r <= 0) { break; }
+        hl_h[n] = r;
+        n = n + 1;
+    }
+    let ok: i32 = 0;
+    if (r != E_NO_RESOURCES || n < 1000) { ok = 44; }
+    if (ok == 0) {
+        handle_close(hl_h[n - 1]);
+        hl_h[n - 1] = handle_duplicate(m, HRIGHT_INSPECT);
+        if (hl_h[n - 1] <= 0) { ok = 45; }
+        else if (handle_duplicate(m, HRIGHT_INSPECT) != E_NO_RESOURCES) { ok = 46; }
+    }
+    let i: u32 = 0;
+    while (i < n) { if (hl_h[i] > 0) { handle_close(hl_h[i]); } i = i + 1; }
+    handle_close(m);
+    return ok;
+}
+
 // The names are what the boot reports, after "x: ".
 fn all() -> void {
     test_run("threads: create refusals",               t_create_refused,           30000);
@@ -579,6 +658,10 @@ fn all() -> void {
     test_run("sync: once runs once",                   s_once,                     30000);
     test_run("sync: alloc takes the heap lock",        s_heap_locked,              30000);
     test_run("sync: output takes its lock",            s_output_locked,            30000);
+    test_run("limits: a pipe of PIPE_SIZE_MAX",        l_pipe_max,                 30000);
+    test_run("limits: a memory object of the most",    l_mem_max,                  30000);
+    test_run("limits: thread stacks, both ends",       l_ustack,                   30000);
+    test_run("limits: a process's handles",            l_handles,                  60000);
 }
 
 fn _start() -> void { test_main(all); }
