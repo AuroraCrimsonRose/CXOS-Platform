@@ -1,0 +1,166 @@
+# Phase 1.6c2's sabotages, run by `cxk test sabotage`.
+# Each must turn red exactly the self-tests named, at the step named.
+# Format: docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage".
+
+# ---- a token closed as its reply is read ----
+
+[reply-after-close-lost]
+# a reply whose token was closed meanwhile is dropped: the caller is told
+# E_PEER_CLOSED though its reply was read whole
+expect = ipc: a token closed as its reply is read @ caller lost the reply
+group = g1
+edit = kernel/cpu/ipc.c
+<<<
+        call_finish(c, (int32_t)a.len);   /* the caller resumes in ipc_call, copies it out */
+===
+        call_finish(c, atomic_load(&c->hdr.handles) ? (int32_t)a.len : E_PEER_CLOSED);
+>>>
+
+[bad-reply-after-close-waits]
+# a reply that fails after its token closed goes back to taken, and
+# nothing holds the call: its caller waits for good
+expect = ipc: a token closed as its reply is read @ caller left waiting
+group = g2
+edit = kernel/cpu/ipc.c
+<<<
+        if (atomic_load(&c->hdr.handles) == 0) call_finish(c, E_PEER_CLOSED);
+===
+        if (atomic_load(&c->hdr.handles) == 0 && 0) call_finish(c, E_PEER_CLOSED);
+>>>
+
+# ---- IPC_MSG_MAX each way ----
+
+[call-max-refused]
+expect = ipc: IPC_MSG_MAX each way @ the largest call refused
+group = g3
+edit = kernel/cpu/ipc.c
+<<<
+    if (a.req_len > IPC_MSG_MAX) return E_OUT_OF_RANGE;
+===
+    if (a.req_len >= IPC_MSG_MAX) return E_OUT_OF_RANGE;
+>>>
+
+[recv-cap-short]
+# a receive cap is clamped one byte below the largest message
+expect = ipc: IPC_MSG_MAX each way @ largest receive refused
+group = g4
+edit = kernel/cpu/ipc.c
+<<<
+    uint32_t cap = a.cap > IPC_MSG_MAX ? IPC_MSG_MAX : (uint32_t)a.cap;
+===
+    uint32_t cap = a.cap >= IPC_MSG_MAX ? IPC_MSG_MAX - 1 : (uint32_t)a.cap;
+>>>
+
+[reply-cap-short]
+# a reply cap is clamped one byte below the largest reply
+expect = ipc: IPC_MSG_MAX each way @ reply_cap not the max
+group = g5
+edit = kernel/cpu/ipc.c
+<<<
+    uint32_t rcap = a.reply_cap > IPC_MSG_MAX ? IPC_MSG_MAX : (uint32_t)a.reply_cap;
+===
+    uint32_t rcap = a.reply_cap >= IPC_MSG_MAX ? IPC_MSG_MAX - 1 : (uint32_t)a.reply_cap;
+>>>
+
+[recv-one-short-taken]
+# a message one byte longer than the receive's room is delivered
+expect = ipc: IPC_MSG_MAX each way @ a byte short taken
+expect = ipc: queued calls, reply tokens, badges @ ipc test failed at step 4
+expect = ipc: priority through calls @ priority test failed at step 17
+group = g6
+edit = kernel/cpu/ipc.c
+<<<
+    if (c->req_len > cap || c->nh > hcap) {
+===
+    if (c->req_len > cap + 1 || c->nh > hcap) {
+>>>
+
+[reply-max-refused]
+expect = ipc: IPC_MSG_MAX each way @ largest reply refused
+expect = ipc: priority through calls @ priority test failed at step 15
+group = g7
+edit = kernel/cpu/ipc.c
+<<<
+    if (a.len > c->reply_cap || nh > c->reply_hcap) { spin_unlock(&ipc_lock, f); return E_BUFFER_TOO_SMALL; }
+===
+    if (a.len >= c->reply_cap || nh > c->reply_hcap) { spin_unlock(&ipc_lock, f); return E_BUFFER_TOO_SMALL; }
+>>>
+
+[reply-one-long-taken]
+# a reply one byte past the caller's cap is not refused for its length
+# (the byte past the server's buffer is unmapped: it fails as unreadable)
+expect = ipc: IPC_MSG_MAX each way @ a reply too long taken
+expect = ipc: queued calls, reply tokens, badges @ ipc test failed at step 8
+group = g8
+edit = kernel/cpu/ipc.c
+<<<
+    if (a.len > c->reply_cap || nh > c->reply_hcap) { spin_unlock(&ipc_lock, f); return E_BUFFER_TOO_SMALL; }
+===
+    if (a.len > c->reply_cap + 1 || nh > c->reply_hcap) { spin_unlock(&ipc_lock, f); return E_BUFFER_TOO_SMALL; }
+>>>
+
+# ---- an endpoint closed under a call it gave out ----
+
+[from-not-detached]
+# the lift is recomputed but the taken call keeps naming the endpoint,
+# which is freed with it
+expect = ipc: an endpoint closed under its call @ the call names its endpoint
+group = g1
+edit = kernel/cpu/ipc.c
+<<<
+            if (c->from == ep) { c->from = 0; prio_update(c->server_tid, 0); }
+===
+            if (c->from == ep) { prio_update(c->server_tid, 0); }
+>>>
+
+# ---- a server thread ends with a call ----
+
+[thread-exit-keeps-serving]
+# a thread's end leaves the calls it took naming it as their server
+expect = ipc: a server thread ends with a call @ a gone thread serves
+group = g3
+edit = kernel/cpu/ipc.c
+<<<
+        if (c->server_tid != tid) { pp = &c->serve_next; continue; }
+===
+        if (c->server_tid != tid || 1) { pp = &c->serve_next; continue; }
+>>>
+
+# ---- queues ----
+
+[queue-empty-wake-returns]
+# a waiter that finds the events taken returns 0 instead of waiting on
+expect = queue: an event taken as a waiter wakes @ not E_TIMED_OUT
+group = g4
+edit = kernel/object/kqueue.c
+<<<
+        if (got) return (int)got;
+===
+        return (int)got;
+>>>
+
+[queue-kill-ignored]
+# the wait goes on after a kill (until its deadline)
+expect = queue: a waiter killed in the wait @ blocked waiter stayed
+group = g5
+edit = kernel/object/kqueue.c
+<<<
+        if (rc != E_OK) return rc;
+===
+        if (rc != E_OK && rc != E_CANCELED) return rc;
+>>>
+
+[kill-before-block-blocks]
+# a thread killed before it blocks blocks anyway, until its deadline or a
+# wake (alone: a kill elsewhere could hang); the kill test sees it too
+expect = queue: a waiter killed in the wait @ woken waiter stayed
+expect = process kill: every wait, both safe points @ kill test failed at step 16
+group = g9
+edit = kernel/cpu/sched.c
+<<<
+    if (killing(self())) return;
+    if (deadline < TIMER_NEVER) {
+===
+    if (0 && killing(self())) return;
+    if (deadline < TIMER_NEVER) {
+>>>

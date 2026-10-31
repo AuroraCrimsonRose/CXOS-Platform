@@ -649,10 +649,32 @@ Independent of the order above, and small enough to land whenever convenient:
      cross-process test keeps the two mappings apart by address
      (MMAP_HINT); the key is the object, never the address. Self-tests
      181. Sabotages: `tests/sabotage/1.6c1.sab`, 5 of 5. No ABI change.
-   - **1.6c2:** IPC: a reply racing its token's close, a kill in
-     SYS_QUEUE_WAIT, two threads racing one key, the endpoint close's
-     `from` detach, `ipc_thread_exit`, and IPC_MSG_MAX accepted (left by
-     1.6b).
+   - **1.6c2 (2026-10-31), done:** IPC and queues. Two race points:
+     `RP_IPC_REPLY_COPY` (a reply REPLYING, its bytes not yet read) and
+     `RP_QUEUE_WOKEN` (a queue waiter woken, the wait lock not yet taken).
+     Six self-tests in `kernel/ktest_races.c`, callers from ring 3 and the
+     test thread serving: a token closed by another thread as the reply
+     reads its bytes (a readable reply still reaches the caller; an
+     unreadable one fails it with E_PEER_CLOSED, not a wait for good);
+     IPC_MSG_MAX each way, a byte short and a byte long refused on each
+     side; an endpoint closed and freed under a call it gave out (the call
+     stops naming it, and a new endpoint, maybe in its slot, lifts nobody
+     through it); a server thread that passed its token on ends (the call
+     no longer names it as server, the token still answers); a queue's only
+     event taken by another waiter between a waiter's wake and its look (it
+     waits again and times out, never returns 0 events: "two threads racing
+     one key" read as two waiters for one ready key); and a queue waiter
+     killed while blocked, and killed while parked at the point, each
+     leaving at once rather than at its deadline. XNU resumes a kevent wait
+     with its wait result, THREAD_INTERRUPTED becoming EINTR
+     (`bsd/kern/kern_event.c`, `kqueue_scan_continue`); Serenity marks a
+     blocker interrupted by death (`Kernel/Tasks/Thread.h`,
+     `set_interrupted_by_death`); Haiku's ports allow 256 KB
+     (`PORT_MAX_MESSAGE_SIZE`, `src/system/kernel/port.cpp`).
+     `usermode_calls_set` fills in a handle installed in a held helper
+     process's table. Self-tests 187. Sabotages: `tests/sabotage/1.6c2.sab`,
+     13 of 13 (four of them also red in the older IPC, priority and kill
+     tests, which cover the same bounds). No ABI change.
    - **1.6c3:** process ending and object lifetime: a take refused after
      the check, `proc_end_threads` on a refused vector, a kill in a pipe
      wait.

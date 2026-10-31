@@ -3423,6 +3423,12 @@ void ktest_run(void) {
     total++; passed += report("futex: a word unmapped after its fault-in", ktest_futex_unmapped());
     total++; passed += report("futex: a wake as the deadline comes", ktest_futex_deadline());
     total++; passed += report("futex: one word through two processes", ktest_futex_shared());
+    total++; passed += report("ipc: a token closed as its reply is read", ktest_ipc_reply_close());
+    total++; passed += report("ipc: IPC_MSG_MAX each way", ktest_ipc_msg_max());
+    total++; passed += report("ipc: an endpoint closed under its call", ktest_ipc_from_detach());
+    total++; passed += report("ipc: a server thread ends with a call", ktest_ipc_thread_exit());
+    total++; passed += report("queue: an event taken as a waiter wakes", ktest_queue_taken());
+    total++; passed += report("queue: a waiter killed in the wait", ktest_queue_kill());
     total++; passed += report("two threads share one process",   test_proc_threads());
     total++; passed += report("user copies validated at the copy",  test_user_copy_validation());
     total++; passed += report("user copy faults are recoverable",   test_user_copy_fault_recovery());

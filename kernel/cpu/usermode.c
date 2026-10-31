@@ -3050,6 +3050,14 @@ struct proc *usermode_calls_process(const struct um_call3 *calls, int *tid) {
     return p;
 }
 
+void usermode_calls_set(uint32_t k, uint32_t arg, uint64_t v) {
+    extern uint8_t user_blob_calls_start[], user_blob_calls_end[];
+    uint32_t blen = (uint32_t)(user_blob_calls_end - user_blob_calls_start);
+    if (k >= 3 || arg < 1 || arg > 5) return;
+    uint8_t *at = uc_image + blen + (k * 6 + arg) * sizeof(uint64_t);
+    for (uint32_t i = 0; i < sizeof v; i++) at[i] = (uint8_t)(v >> (8 * i));
+}
+
 /* Launch a ring-3 process owned by a specific user. Enforces the core identity
    invariant: a user is ALWAYS UID >= 1 - launching a user process as UID 0
    (SYSTEM) is rejected. Returns the pid, or -1 (incl. if uid == SYSTEM). */

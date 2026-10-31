@@ -15,6 +15,7 @@
 #include "usermode.h"   /* user_ptr_readable / user_ptr_writable */
 #include "memman/ocache.h"
 #include "memman/heap.h"
+#include "diag/testhook.h"
 #include "panic.h"
 #include <stddef.h>
 
@@ -697,6 +698,7 @@ static int reply_on(struct ipc_call *c, int32_t tok, const struct ipc_reply_args
     if (a.len > c->reply_cap || nh > c->reply_hcap) { spin_unlock(&ipc_lock, f); return E_BUFFER_TOO_SMALL; }
     c->state = IPC_REPLYING;
     spin_unlock(&ipc_lock, f);
+    race_point(RP_IPC_REPLY_COPY);   /* the token may be closed from here on */
 
     /* Read in the server's space, with buf its own until the state moves on.
        A failure leaves the call taken, for another try or a close. */

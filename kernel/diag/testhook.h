@@ -111,6 +111,8 @@ enum race_point {
     RP_SELFTEST = 0,           /* reached only by the hooks' own self-test */
     RP_FUTEX_READ,             /* futex_wait: the word faulted in and keyed, not yet read */
     RP_FUTEX_WOKEN,            /* futex_wait: its block over, futex_lock not yet retaken */
+    RP_IPC_REPLY_COPY,         /* reply_on: the call REPLYING, its bytes not yet read */
+    RP_QUEUE_WOKEN,            /* kqueue_wait: the queue seen ready, the wait lock not yet taken */
     RP_COUNT
 };
 

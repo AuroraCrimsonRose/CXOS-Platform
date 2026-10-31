@@ -7,6 +7,7 @@
 #include "object/kwait.h"
 #include "memman/ocache.h"
 #include "sync/atomic.h"
+#include "diag/testhook.h"
 #include "panic.h"
 
 _Static_assert(KOBJ_QUEUE == OBJ_TYPE_QUEUE, "object_basic.kind is the kernel type");
@@ -164,6 +165,7 @@ int kqueue_wait(struct kqueue *q, struct queue_event *out, uint32_t n, uint64_t 
     for (;;) {
         int rc = kobj_wait(&q->hdr, SIGNAL_QUEUE_READY, deadline, 0);
         if (rc != E_OK) return rc;
+        race_point(RP_QUEUE_WOKEN);   /* another waiter may take the events here */
         uint32_t got = 0;
         uint32_t f = kwait_lock();
         while (got < n && q->ready) {
