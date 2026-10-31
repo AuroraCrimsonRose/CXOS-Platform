@@ -90,4 +90,14 @@
 #define CXK_KTEST_STACK_OVERFLOW 0
 #endif
 
+/*
+ * CXK_TEST_HOOKS, when 1, builds in the self-tests' hooks (diag/testhook.h):
+ * failing the Nth allocation, race points, live counts. Unarmed, each costs a
+ * load and a branch. 0 compiles them out, and the self-tests that need them
+ * fail rather than skip. See tools/cmake/cxk_flags.cmake.
+ */
+#ifndef CXK_TEST_HOOKS
+#define CXK_TEST_HOOKS 1
+#endif
+
 #endif

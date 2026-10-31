@@ -8,6 +8,7 @@
 #include "arch/paging.h"
 #include "pmm.h"
 #include "memman/ocache.h"   /* OCACHE_WINDOW_BASE: where the heap must stop */
+#include "diag/testhook.h"
 
 /* Each block (free or allocated) is preceded by this header. The heap is a
    singly-linked list walked in address order via `next`. */
@@ -124,6 +125,7 @@ static void split_block(block_t *b, size_t size) {
 
 void *kmalloc(size_t size) {
     if (size == 0) return 0;
+    if (fault_hit(FAULT_KMALLOC)) return 0;
     int k = class_of(size);
     if (k >= 0) return ocache_alloc(&classes[k]);   /* zeroed */
     size = ALIGN8(size);

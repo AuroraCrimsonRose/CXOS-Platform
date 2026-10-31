@@ -557,7 +557,39 @@ Independent of the order above, and small enough to land whenever convenient:
    cache, free pages, handles, mapped bytes, the job's charge) compared
    before and after. Then sweeps of every syscall's failure paths, resource
    limits driven to both sides of the bound, and the futex, process-ending,
-   IPC and object-lifetime races that HANDOFF lists as untested.
+   IPC and object-lifetime races that HANDOFF lists as untested. In three,
+   as 1.5d was (each later part is built with the tools of the one before):
+   - **1.6a (2026-10-30), done:** the hooks, `kernel/diag/testhook.h`,
+     behind `CXK_TEST_HOOKS` (on; 0 compiles them out and their self-tests
+     fail, never skip). Failing the Nth allocation at a set of the five
+     sites, counted for the arming thread only, so a timer or helper
+     allocating meanwhile neither takes the failure nor moves N. Live
+     counts: one snapshot of free and reserved pages, heap bytes and
+     blocks, kernel stacks, threads, processes, jobs, every object type,
+     every object cache (now on one list, `ocache_each`), and for a process
+     and a job their handles, mapped bytes and charges; `live_diff` names
+     each count that moved. Race points: a named place where the Nth
+     arrival of one thread (or any) is parked until the test releases it,
+     or calls the test's function there, once per arming; one reached with
+     interrupts off is a panic. XNU names its injection points as stages
+     with one armed at a time (`osfmk/kern/upsi.h`,
+     `check_for_failure_injection` in `osfmk/kern/debug.c`); Serenity reads
+     its heap's numbers in one call (`Kernel/Heap/kmalloc.cpp`,
+     `get_kmalloc_stats`); a search of WRK-v1.2 and Haiku's kernel found no
+     fault injection; fail-the-Nth is Linux's `fail_nth`, from memory. Four
+     self-tests (172): each hook against its own rules, and the first
+     sweeps, failing in turn every allocation of a pipe, a memory object, a
+     job, a process, a held thread and a mapping (4, 5, 1, 1, 8 and 8
+     allocations): each run refuses and leaves every live count as it was,
+     and a sweep that reaches no allocation fails. Real race points arrive
+     with the tests that use them (1.6c). Sabotages: `tests/sabotage/1.6a.sab`,
+     15 of 15 caught, three of them leaks planted in unwind paths (a pipe's
+     job charge, a mapping's memory object, a kernel stack's pages). No ABI
+     change.
+   - **1.6b:** sweeps of every syscall's failure paths from ring 3, and
+     resource limits driven to both sides of the bound.
+   - **1.6c:** race points in the kernel and the races HANDOFF lists as
+     untested (futex, process ending, IPC, object lifetime).
 7. Input authority and kernel randomness. A grant on `SYS_INPUT_READ`,
    `SYS_INPUT_POLL` and `SYS_MOUSE_READ` until the display server routes
    input. A ChaCha20 generator with Fortuna-style pools, fed by RDSEED or

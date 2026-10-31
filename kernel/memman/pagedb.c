@@ -23,6 +23,7 @@
 #include "boot/cxbi.h"
 #include "sync/spinlock.h"
 #include "panic.h"
+#include "diag/testhook.h"
 
 #define LOW_ZONE_END_PFN  0x100000u              /* 4 GB */
 #define LOW_MEMORY_END    0x100000ull            /* the first MiB */
@@ -154,6 +155,7 @@ void pmm_init(void) {
 static uint32_t reserved;
 
 static paddr_t alloc_run(size_t count, int low_only) {
+    if (fault_hit(FAULT_PMM)) return 0;
     unsigned order = buddy_order_for(count > 0xFFFFFFFFu ? 0 : (uint32_t)count);
     if (order >= BUDDY_ORDERS) return 0;
     uint32_t f = spin_lock(&lock);

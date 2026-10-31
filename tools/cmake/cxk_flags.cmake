@@ -38,4 +38,7 @@ set(CXK_FLAGS
     CXK_TEST_HOSTILE_BIOS=0 # 1 = stage 2 plays a hostile BIOS: after every int 13h it leaves FS and
                             #     GS with 64 KB limits. The boot MUST still pass, because stage 2
                             #     re-enters unreal mode after each call. Test builds only.
+    CXK_TEST_HOOKS=1        # 1 = the self-tests' hooks (kernel/diag/testhook.h): fail the Nth
+                            #     allocation, race points, live counts. Unarmed, a load and a branch.
+                            # 0 = compiled out; the self-tests that use them then FAIL, never skip.
 )

@@ -1,0 +1,164 @@
+# Phase 1.6a's sabotages, run by `cxk test sabotage`.
+# Each must turn red exactly the self-test named, at the step named.
+# Format: docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage".
+
+# ---- the hooks themselves ----
+
+[fault-any-thread]
+# every thread's allocations count, not only the arming thread's
+expect = hooks: the Nth allocation fails, armed thread only @ step 14
+edit = kernel/diag/testhook.c
+<<<
+    if (!(fault_sites & site) || thread_current_id() != fault_tid) return 0;
+===
+    if (!(fault_sites & site) || ((void)fault_tid, 0)) return 0;
+>>>
+
+[fault-off-by-one]
+# the call after the Nth fails
+expect = hooks: the Nth allocation fails, armed thread only @ step 2
+group = g1
+edit = kernel/diag/testhook.c
+<<<
+    if (++fault_calls != fault_nth) return 0;
+===
+    if (fault_calls++ != fault_nth) return 0;
+>>>
+
+[fault-every-site]
+# a site that was not armed counts too (kmalloc's own ocache_alloc then
+# counts, so the first step's count of two calls is already wrong)
+expect = hooks: the Nth allocation fails, armed thread only @ step 2
+edit = kernel/diag/testhook.c
+<<<
+    if (!(fault_sites & site) || thread_current_id()
+===
+    if (!(fault_sites | site) || thread_current_id()
+>>>
+
+[site-kmalloc]
+# kmalloc has no hook
+expect = hooks: the Nth allocation fails, armed thread only @ step 2
+edit = kernel/memman/heap.c
+<<<
+    if (fault_hit(FAULT_KMALLOC)) return 0;
+===
+>>>
+
+[site-ocache]
+# ocache_alloc has no hook (job_create allocates only from a cache, so its
+# sweep then reaches no allocation, and says so)
+expect = hooks: the Nth allocation fails, armed thread only @ step 5
+expect = every allocation of six creations fails cleanly @ sweep: job
+edit = kernel/memman/ocache.c
+<<<
+    if (fault_hit(FAULT_OCACHE)) return 0;
+===
+>>>
+
+[site-pmm]
+# the page allocator has no hook
+expect = hooks: the Nth allocation fails, armed thread only @ step 6
+edit = kernel/memman/pagedb.c
+<<<
+    if (fault_hit(FAULT_PMM)) return 0;
+===
+>>>
+
+[site-kstack]
+# kstack_alloc has no hook
+expect = hooks: the Nth allocation fails, armed thread only @ step 9
+edit = kernel/memman/kstack.c
+<<<
+    if (fault_hit(FAULT_KSTACK)) return 0;
+===
+>>>
+
+[site-vmmap]
+# vm_map has no hook
+expect = hooks: the Nth allocation fails, armed thread only @ step 11
+edit = kernel/memman/vmregion.c
+<<<
+    if (fault_hit(FAULT_VMMAP)) return E_NO_MEMORY;
+===
+>>>
+
+[live-no-pages]
+# the live counts do not count free pages
+expect = hooks: live counts see what comes and goes @ step 6
+group = g1
+edit = kernel/diag/testhook.c
+<<<
+    s->pages_free     = pmm_free_count();
+===
+    s->pages_free     = 0;
+>>>
+
+[race-not-once]
+# a race point stays armed after it fires
+expect = hooks: race points call and park @ step 4
+group = g1
+edit = kernel/diag/testhook.c
+<<<
+    /* Once per arming: no other thread can take it after this one. */
+    race_armed_mask &= ~(1u << p);
+===
+    /* Once per arming: no other thread can take it after this one. */
+>>>
+
+[race-any-thread]
+# a race point armed for one thread takes any thread
+expect = hooks: race points call and park @ step 7
+group = g2
+edit = kernel/diag/testhook.c
+<<<
+    if (r->tid >= 0 && r->tid != me) return;
+===
+    if (r->tid >= 0 && r->tid == me + 100000) return;
+>>>
+
+[race-no-park]
+# a parked thread does not wait for its release
+expect = hooks: race points call and park
+edit = kernel/diag/testhook.c
+<<<
+    while (!r->go) yield();
+===
+    if (!r->go) yield();
+>>>
+
+# ---- the sweeps: an unwind that leaks must be caught ----
+
+[sweep-pipe-charge]
+# a pipe whose ring could not be had keeps its job charge
+expect = every allocation of six creations fails cleanly @ sweep: pipe
+group = g1
+edit = kernel/object/kpipe.c
+<<<
+    if (!p->ring) { job_uncharge_mem(job, size); ocache_free
+===
+    if (!p->ring) { ocache_free
+>>>
+
+[sweep-map-object]
+# a mapping whose region could not be had keeps its memory object
+expect = every allocation of six creations fails cleanly @ sweep: mapping
+group = g2
+edit = kernel/memman/vmregion.c
+<<<
+        if (writer) kmem_writer_drop(m);
+        kobj_unref(&m->hdr);
+        return E_NO_MEMORY;
+===
+        if (writer) kmem_writer_drop(m);
+        return E_NO_MEMORY;
+>>>
+
+[sweep-kstack-undo]
+# a kernel stack that could not get all its pages keeps the ones it got
+expect = every allocation of six creations fails cleanly @ sweep: held thread
+edit = kernel/memman/kstack.c
+<<<
+                pmm_free(paging_get_phys(v) & ~(paddr_t)0xFFF);
+===
+>>>

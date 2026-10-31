@@ -11,6 +11,7 @@
 #include "job.h"
 #include "panic.h"
 #include "logging.h"
+#include "diag/testhook.h"
 
 static struct ocache region_cache;
 
@@ -199,6 +200,7 @@ int vm_map_object(int pid, struct vm_map_args *a, struct kmem *m, uint32_t right
     if (p->mapped + len < p->mapped) return E_OUT_OF_RANGE;
     if (p->mapped + len > p->quota)  return E_NO_MEMORY;
     if (p->count >= MMAP_MAX_REGIONS) return E_NO_RESOURCES;
+    if (fault_hit(FAULT_VMMAP)) return E_NO_MEMORY;
 
     /* The object, and its commit, before the region: a refusal here has
        taken nothing (kmem_create gives back what it charged). */

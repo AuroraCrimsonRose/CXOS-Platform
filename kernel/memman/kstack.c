@@ -7,6 +7,7 @@
 #include "kstack.h"
 #include "arch/paging.h"
 #include "pmm.h"
+#include "diag/testhook.h"
 
 struct kstack_slot {
     uintptr_t base;   /* lowest mapped address; 0 = slot free */
@@ -36,6 +37,7 @@ void kstack_init(void) {
 uintptr_t kstack_alloc(uint32_t bytes, int owner, uintptr_t *base_out) {
     uint32_t pages = (bytes + PAGE_SIZE - 1) / PAGE_SIZE;
     if (pages == 0 || pages >= KSTACK_SLOT_SIZE / PAGE_SIZE) return 0;   /* keep a guard */
+    if (fault_hit(FAULT_KSTACK)) return 0;
 
     uint32_t i = 0;
     while (i < KSTACK_SLOTS && slots[i].base) i++;

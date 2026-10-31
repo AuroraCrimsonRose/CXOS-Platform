@@ -66,6 +66,7 @@ struct ocache {
     int32_t     full;
     uint32_t    live;       /* objects handed out */
     uint32_t    slabs;      /* slabs mapped */
+    struct ocache *all_next; /* every cache made, for ocache_each */
 };
 
 /* Set up a cache for objects of `size` bytes. Returns 0, or -1 if an object
@@ -80,6 +81,12 @@ void  ocache_free(struct ocache *c, void *obj);
 
 uint32_t ocache_live(struct ocache *c);
 uint32_t ocache_slabs(struct ocache *c);
+
+/* Call fn on every cache made, in the order made, until it returns nonzero.
+   Caches are never torn down, so the list only grows: a cache must outlive
+   the kernel (static), which is why the host build keeps no list. */
+void ocache_each(int (*fn)(struct ocache *c, void *ctx), void *ctx);
+const char *ocache_name(const struct ocache *c);
 
 /* Is `p` the start of a live object of `c`? */
 int   ocache_owns(struct ocache *c, const void *p);

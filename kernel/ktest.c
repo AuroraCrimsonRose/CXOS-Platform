@@ -43,6 +43,7 @@
 #include "ktest_loader.h"
 #include "ktest_net.h"
 #include "ktest_fs.h"
+#include "ktest_hooks.h"
 #include "xfnt.h"
 #include "font.h"
 #include "fb.h"
@@ -3411,6 +3412,10 @@ void ktest_run(void) {
     total++; passed += report("ipc: priority through calls", usermode_prio_test());
     total++; passed += report("ipc endpoints refcounted + reclaimed", test_ipc_endpoint_lifetime());
     total++; passed += report("object caches map and return pages", test_ocache_pages());
+    total++; passed += report("hooks: the Nth allocation fails, armed thread only", ktest_fault_nth());
+    total++; passed += report("hooks: live counts see what comes and goes", ktest_live_counts());
+    total++; passed += report("hooks: race points call and park", ktest_race_points());
+    total++; passed += report("every allocation of six creations fails cleanly", ktest_alloc_sweeps());
     total++; passed += report("two threads share one process",   test_proc_threads());
     total++; passed += report("user copies validated at the copy",  test_user_copy_validation());
     total++; passed += report("user copy faults are recoverable",   test_user_copy_fault_recovery());

@@ -166,6 +166,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/boot/cxbi.c
     ${SRC_DIR}/kernel/diag/crashrec.c
     ${SRC_DIR}/kernel/diag/crashlog.c
+    ${SRC_DIR}/kernel/diag/testhook.c
     ${SRC_DIR}/kernel/ktest.c
     ${SRC_DIR}/kernel/kconfig.c
     ${SRC_DIR}/kernel/arch/x86_64/cpu.c
@@ -276,6 +277,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/ktest_loader.c
     ${SRC_DIR}/kernel/ktest_net.c
     ${SRC_DIR}/kernel/ktest_fs.c
+    ${SRC_DIR}/kernel/ktest_hooks.c
 )
 
 # ---- KERNEL ASM SOURCES (elf64 objects; append new ones here) ----

@@ -4,6 +4,7 @@
 /* Aurora Tejeda / CATX Systems */
 /* Object caches: see ocache.h. */
 #include "memman/ocache.h"
+#include "diag/testhook.h"
 
 /* One record per span of the window, found from an object's address alone.
    This table is the "records away from the data" of ocache.h. */
@@ -18,6 +19,7 @@ struct slab_rec {
 static struct slab_rec recs[OCACHE_SLOTS];
 static spinlock_t      slots_lock = SPINLOCK_INIT;
 static uint32_t        slot_hint;
+static struct ocache  *all_caches;   /* under slots_lock; ocache_each */
 
 static uintptr_t slot_va(int32_t s) {
     return ocache_window() + (uintptr_t)s * OCACHE_SPAN;
@@ -97,8 +99,27 @@ int ocache_init(struct ocache *c, const char *name, uint32_t size) {
     c->full     = -1;
     c->live     = 0;
     c->slabs    = 0;
+
+    /* Every cache on one list, in the order made, for the live counts
+       (diag/testhook.h). Made again, a cache keeps its place. The kernel's
+       caches are static and live for ever; the host tests make theirs on
+       the stack, so there the list would keep dead ones, and is not kept. */
+#ifndef CXK_HOST_TEST
+    uint32_t f = spin_lock(&slots_lock);
+    struct ocache **at = &all_caches;
+    while (*at && *at != c) at = &(*at)->all_next;
+    if (!*at) { c->all_next = 0; *at = c; }
+    spin_unlock(&slots_lock, f);
+#endif
     return 0;
 }
+
+void ocache_each(int (*fn)(struct ocache *c, void *ctx), void *ctx) {
+    for (struct ocache *c = all_caches; c; c = c->all_next)
+        if (fn(c, ctx)) return;
+}
+
+const char *ocache_name(const struct ocache *c) { return c->name; }
 
 /* A new slab for `c`, on its partial list. Called with c->lock held. */
 static int32_t slab_new(struct ocache *c) {
@@ -117,6 +138,7 @@ static int32_t slab_new(struct ocache *c) {
 }
 
 void *ocache_alloc(struct ocache *c) {
+    if (fault_hit(FAULT_OCACHE)) return 0;
     uint32_t f = spin_lock(&c->lock);
     int32_t s = c->partial;
     if (s < 0) s = slab_new(c);
