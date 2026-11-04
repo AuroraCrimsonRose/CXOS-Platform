@@ -48,6 +48,7 @@ Start with the roadmap.
 | Document | Covers |
 |---|---|
 | [CX_SECURITY.md](security/CX_SECURITY.md) | What is protected, from whom, the layers that do it, the gaps on the rig, the order |
+| [CX_RANDOM.md](security/CX_RANDOM.md) | The kernel's random numbers: sources and their credit, Fortuna pools, ChaCha20 output, no fallback seed |
 
 ## System: `system/`
 

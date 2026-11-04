@@ -597,6 +597,14 @@ first thread's block is a global set at first use, and each `thread_spawn`
 thread's is a page its creator maps, which the thread unmaps as it ends
 (`thread_end`, which returning from the thread's function goes through).
 
+**Randomness, as built (1.7b, ABI 32):** `SYS_RANDOM_READ(buf, len)`
+(0xE0, the range 0xE0-0xEF) needs no grant and never blocks: up to
+`RANDOM_READ_MAX` (256) bytes of the kernel's generator, or
+`E_SHOULD_WAIT` with nothing written while it is unseeded, where Linux's
+`getrandom` would block until it is. A program that must have bytes
+retries; none may treat a refusal as "use something else". The generator,
+its sources and why there is no fallback: `security/CX_RANDOM.md`.
+
 **Streams and files:**
 `pipe_create(size)`, `io_read(h, buf, offset)`, `io_write(h, buf, offset)`
 (pipes ignore the offset), `io_seek`, `fs_open_at(dir, path, flags, rights)`,

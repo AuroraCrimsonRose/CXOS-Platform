@@ -15,7 +15,7 @@
  * hash it was built against and the loader refuses one that differs, so a
  * program never runs against numbers or layouts it was not compiled for.
  */
-#define CXK_ABI_HASH { 0x52, 0x49, 0x6a, 0x45, 0x32, 0x14, 0x2f, 0x2a, 0x91, 0x78, 0xcb, 0x70, 0xb0, 0xb0, 0x45, 0xaf, 0xa5, 0x3c, 0x5d, 0xd9, 0x82, 0xa2, 0x4a, 0x5b, 0x85, 0x99, 0x35, 0x6c, 0xec, 0x9e, 0x41, 0x37 }
+#define CXK_ABI_HASH { 0x3f, 0x2f, 0xec, 0xee, 0xbb, 0xec, 0x10, 0x5c, 0x34, 0xb0, 0x11, 0x43, 0x41, 0x8c, 0xff, 0x47, 0x83, 0x13, 0x20, 0x1b, 0x36, 0x0c, 0xf0, 0x5b, 0x25, 0x45, 0x45, 0x7f, 0x0e, 0x75, 0x1c, 0x50 }
 
 /*
  * CXK ABI v1 - the PUBLIC contract shared by the kernel, the .xoex executive,
@@ -44,7 +44,7 @@
  * line; bump both, and the DevKit's stamp, in the one commit that changes the
  * contract.
  */
-#define CXK_ABI_VERSION          31
+#define CXK_ABI_VERSION          32
 
 /*
  * ---- syscall numbers ----
@@ -747,6 +747,18 @@
 #define SYS_THREAD_SET_NAME      0xD1
 
 /*
+ * randomness 0xE0-0xEF (unprivileged)
+ * ebx = buf, ecx = len -> len, that many bytes from the kernel's generator
+ * (ChaCha20, rekeyed after every read, reseeded from Fortuna pools of
+ * interrupt timing). Never blocks. E_SHOULD_WAIT, nothing written, until the
+ * generator has been seeded from 256 credited bits (RDSEED or RDRAND, timing
+ * jitter at boot, interrupt timing after): there is no fallback seed.
+ * 0 for len 0. E_OUT_OF_RANGE: len past RANDOM_READ_MAX.
+ * E_BAD_ADDRESS: not writable memory of the caller's.
+ */
+#define SYS_RANDOM_READ          0xE0
+
+/*
  * ---- error codes (negative; returned in eax) ----
  * One list, shared by syscalls and services (docs/kernel/CX_SYSCALLS_IPC.md sec 6).
  */
@@ -1046,6 +1058,9 @@ struct thread_create_args {
 
 /* A thread's name, NUL included (SYS_THREAD_SET_NAME). */
 #define THREAD_NAME_MAX          32
+
+/* The most one SYS_RANDOM_READ returns; read again for more. */
+#define RANDOM_READ_MAX          256
 
 struct thread_info {
     uint32_t tid;                               /* for display; names the thread until it is reaped */

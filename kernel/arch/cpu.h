@@ -43,6 +43,13 @@ uintptr_t arch_kernel_stack_current(void);
 void     arch_tls_base_set(uint64_t base);
 uint64_t arch_tls_base_current(void);
 
+/* The CPU's own random number generator, for the kernel's seed (random.h):
+   whether it has one, and one 64-bit word of it: 1 and *v, or 0 when it
+   has none or ran dry for the moment. On x86, RDSEED's conditioned seed
+   where present, else RDRAND's output. */
+int arch_cpu_has_random(void);
+int arch_cpu_random(uint64_t *v);
+
 /* Switch threads: save the running thread's callee-saved state on its own
    stack and its stack pointer in *old_sp, then resume the thread whose saved
    stack pointer is new_sp. Returns when something switches back. */

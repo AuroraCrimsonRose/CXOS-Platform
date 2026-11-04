@@ -40,7 +40,7 @@ domain kernel
 /// mismatch. Declared in versions.json as `cxex-abi` and checked against this
 /// line; bump both, and the DevKit's stamp, in the one commit that changes the
 /// contract.
-const CXK_ABI_VERSION: u32 = 31
+const CXK_ABI_VERSION: u32 = 32
 
 /// ---- syscall numbers ----
 /// lifecycle 0x00-0x0F (no capability required)
@@ -522,6 +522,16 @@ syscall SYS_THREAD_SET_TLS = 0xD0 fn thread_set_tls(base: u64) -> i32
 /// E_BAD_ADDRESS: not readable memory of the caller's.
 syscall SYS_THREAD_SET_NAME = 0xD1 fn thread_set_name(name: *u8) -> i32
 
+/// randomness 0xE0-0xEF (unprivileged)
+/// ebx = buf, ecx = len -> len, that many bytes from the kernel's generator
+/// (ChaCha20, rekeyed after every read, reseeded from Fortuna pools of
+/// interrupt timing). Never blocks. E_SHOULD_WAIT, nothing written, until the
+/// generator has been seeded from 256 credited bits (RDSEED or RDRAND, timing
+/// jitter at boot, interrupt timing after): there is no fallback seed.
+/// 0 for len 0. E_OUT_OF_RANGE: len past RANDOM_READ_MAX.
+/// E_BAD_ADDRESS: not writable memory of the caller's.
+syscall SYS_RANDOM_READ = 0xE0 fn random_read(buf: *u8, len: u64) -> i32
+
 /// ---- error codes (negative; returned in eax) ----
 /// One list, shared by syscalls and services (docs/kernel/CX_SYSCALLS_IPC.md sec 6).
 const E_OK: i32 = 0
@@ -776,6 +786,8 @@ const THR_EXITED: u32 = 1            /// SYS_THREAD_EXIT; `code` is its argument
 const THR_WITH_PROCESS: u32 = 2
 /// A thread's name, NUL included (SYS_THREAD_SET_NAME).
 const THREAD_NAME_MAX: u32 = 32
+/// The most one SYS_RANDOM_READ returns; read again for more.
+const RANDOM_READ_MAX: u32 = 256
 struct thread_info {
     tid: u32            /// for display; names the thread until it is reaped
     ended: u32          /// THR_*

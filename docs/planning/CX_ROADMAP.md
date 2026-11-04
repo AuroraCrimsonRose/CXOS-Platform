@@ -740,6 +740,29 @@ Independent of the order above, and small enough to land whenever convenient:
      Untested: the shell's policy (which `run` program gets the grant) has
      no boot test; the shell-streams test runs it with GRANT_SPAWN only.
      Self-tests 189. Sabotages: `tests/sabotage/1.7a.sab`, 5 of 5.
+   - **1.7b (2026-11-04), done:** `SYS_RANDOM_READ` (0xE0, ABI 32,
+     unprivileged, at most RANDOM_READ_MAX = 256 bytes a call). Fortuna
+     with 32 SHA-256 pools over a ChaCha20 generator (RFC 8439) with fast
+     key erasure (`kernel/lib/crypto/`); one boot hash seeds it at 256
+     credited bits, and until then the call answers E_SHOULD_WAIT and
+     writes nothing: no fallback seed. Sources: RDSEED/RDRAND (64 bits a
+     plausible word), boot jitter (1 bit a sample whose first three
+     differences are all at least 16 cycles), and every interrupt, which
+     stores {TSC, vector} in a 128-entry ring hashed in on the next
+     request (XNU's split: nothing is hashed in the IRQ path). The loader's
+     `rng_seed` is mixed in uncredited. Design: `docs/security/
+     CX_RANDOM.md`. **Found on the way:** the timer is deadline-based, so
+     an idle 20 ms gives one interrupt, not twenty; and QEMU's `-icount`
+     still credits the jitter loop 256 bits, so default verification boots
+     are seeded but replayable (the doc says so). Tests: 7 host tests (RFC
+     vectors, the reseed schedule, the 256-bit rule, key erasure, the
+     pool-0 and interval rules, the estimator, the CPU-word check), each
+     seen red under a hand sabotage (14, listed in the commit); 4 boot
+     tests (the cipher as built, interrupt samples reaching the pools, the
+     call from ring 3 against a held generator, the boot seed's CPU
+     credit under `--cpu max`); an X test (steps 47-51). Untested: what
+     the rig's jitter earns (no RDRAND there) until it boots on the rig.
+     Self-tests 194. Sabotages: `tests/sabotage/1.7b.sab`, 9 of 9.
 8. The hardware report: the memory map, ACPI tables and their checksums,
    MADT and APIC IDs, PCI devices, CPUID, and the clock calibrations, in a
    fixed form to serial and the USB crash log; a `cxk` command compares

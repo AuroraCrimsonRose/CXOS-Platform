@@ -46,6 +46,7 @@
 #include "ktest_hooks.h"
 #include "ktest_sweeps.h"
 #include "ktest_races.h"
+#include "ktest_random.h"
 #include "xfnt.h"
 #include "font.h"
 #include "fb.h"
@@ -3431,6 +3432,10 @@ void ktest_run(void) {
     total++; passed += report("queue: a waiter killed in the wait", ktest_queue_kill());
     total++; passed += report("proc: a refused vector ends every thread", ktest_proc_refused_vector());
     total++; passed += report("pipe: a reader and a writer killed in the wait", ktest_pipe_kill());
+    total++; passed += report("random: chacha20 gives RFC 8439's block", ktest_random_chacha());
+    total++; passed += report("random: interrupts sampled, then hashed in", ktest_random_interrupts());
+    total++; passed += report("random: random_read from ring 3", ktest_random_syscall());
+    total++; passed += report("random: the boot seed counts the CPU's words", ktest_random_boot_seed());
     total++; passed += report("two threads share one process",   test_proc_threads());
     total++; passed += report("user copies validated at the copy",  test_user_copy_validation());
     total++; passed += report("user copy faults are recoverable",   test_user_copy_fault_recovery());

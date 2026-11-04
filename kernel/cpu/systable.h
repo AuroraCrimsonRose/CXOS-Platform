@@ -111,13 +111,14 @@ int syscall_file_unlock(int32_t h, uint64_t start, uint64_t len); /* SYS_FILE_UN
 int syscall_pipe_create(uint32_t size, uint64_t ends); /* SYS_PIPE_CREATE */
 int syscall_thread_set_tls(uint64_t base);      /* SYS_THREAD_SET_TLS */
 int syscall_thread_set_name(uint64_t name);     /* SYS_THREAD_SET_NAME */
+int syscall_random_read(uint64_t buf, uint64_t len); /* SYS_RANDOM_READ */
 
 /* Registers a syscall carries after its number, and the table's slots: one per
  * number up to the largest. syscall_dispatch refuses a number past the end
  * before looking it up, and one that lands in a hole finds no decoder. */
 #define SYSCALL_ARGS            5
-#define SYSCALL_TABLE_SIZE      210
-#define SYSCALL_COUNT           96
+#define SYSCALL_TABLE_SIZE      225
+#define SYSCALL_COUNT           97
 
 /* An argument register is as wide as the machine's: 32 bits on x86-32, where a
  * u64 takes a register pair, and 64 on x86-64, where it takes one. */

@@ -44,6 +44,7 @@
 #include "format.h"
 #include "sched.h"
 #include "timer.h"
+#include "random.h"
 #include "power.h"
 #include "netif.h"
 #include "usb.h"
@@ -297,6 +298,10 @@ void kmain_late(void) {
              : "the clock is the TSC (not marked invariant)");
     else
         klog("TIMER", SEV_WARN, "no usable TSC: the clock stays the 1 ms tick");
+
+    /* The generator's boot seed: after the TSC, which its jitter reads, and
+       with interrupts on, whose timing it samples (random.h). */
+    random_init();
 
     /* The pointer is clamped to the display so userspace gets an absolute
        position it can use directly; fb_width/fb_height return 0 in text mode,

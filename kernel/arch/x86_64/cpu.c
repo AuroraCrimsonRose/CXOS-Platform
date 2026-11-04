@@ -96,3 +96,18 @@ void arch_cpu_reset(void) {
     __asm__ volatile ("cli; lidt %0; int $0x03" : : "m"(null_idt));
     arch_cpu_halt_forever();
 }
+
+int arch_cpu_has_random(void) { return cpu_has(CPU_RDSEED) || cpu_has(CPU_RDRAND); }
+
+int arch_cpu_random(uint64_t *v) {
+    uint8_t ok = 0;
+    if (cpu_has(CPU_RDSEED)) {
+        __asm__ volatile ("rdseed %0; setc %1" : "=r"(*v), "=qm"(ok) : : "cc");
+        if (ok) return 1;
+    }
+    if (cpu_has(CPU_RDRAND)) {
+        __asm__ volatile ("rdrand %0; setc %1" : "=r"(*v), "=qm"(ok) : : "cc");
+        if (ok) return 1;
+    }
+    return 0;
+}

@@ -1,0 +1,120 @@
+# Phase 1.7b's sabotages, run by `cxk test sabotage`.
+# Each must turn red exactly the self-tests named, at the step named.
+# Format: docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage".
+# The generator's own rules (fortuna.c, chacha20.c) are host tests; their
+# sabotages were run by hand (the commit lists them). These are the parts
+# only a boot reaches.
+
+# ---- the interrupt path ----
+
+[irq-not-sampled]
+expect = random: interrupts sampled, then hashed in @ interrupt samples in 20 ms: 0
+group = g1
+edit = kernel/arch/x86_64/idt.c
+<<<
+    random_irq_sample((uint32_t)r->vector);
+===
+    (void)r;
+>>>
+
+[ring-never-drained]
+# the ring fills and stays full: every later sample is dropped
+expect = random: interrupts sampled, then hashed in @ interrupt samples in 20 ms: 0
+group = g2
+edit = kernel/drivers/char/random.c
+<<<
+        fortuna_add(&gen, &ring[i], sizeof ring[i], b);
+    }
+    ring_n = 0;
+===
+        fortuna_add(&gen, &ring[i], sizeof ring[i], b);
+    }
+>>>
+
+# ---- the cipher as the kernel is built ----
+
+[chacha-rotation]
+expect = random: chacha20 gives RFC 8439's block @ not RFC 8439's block
+group = g2
+edit = kernel/lib/crypto/chacha20.c
+<<<
+    a += b; d ^= a; d = rotl(d, 8);          \
+===
+    a += b; d ^= a; d = rotl(d, 9);          \
+>>>
+
+# ---- SYS_RANDOM_READ ----
+
+[unseeded-generates]
+# no refusal before the seed: a fixed key's bytes go out
+expect = random: random_read from ring 3 @ failed at step 1
+group = g1
+edit = kernel/lib/crypto/fortuna.c
+<<<
+    if (!f->seeded) return -1;
+    if (f->pool0_bytes
+===
+    if (f->pool0_bytes
+>>>
+
+[zero-length-asks]
+# only an unseeded generator refuses 0 bytes, so the X test (seeded, as
+# every verification boot is) cannot see it
+expect = random: random_read from ring 3 @ failed at step 3
+group = g3
+edit = kernel/drivers/char/random.c
+<<<
+    if (len == 0) return 0;
+===
+>>>
+
+[one-past-the-limit]
+# the limit one higher (and the buffer with it, so nothing overflows)
+expect = random: random_read from ring 3 @ failed at step 4
+expect = x: random: random_read @ step 48
+group = g4
+edit = kernel/drivers/char/random.c
+<<<
+    if (len > RANDOM_READ_MAX) return E_OUT_OF_RANGE;
+    if (len == 0) return 0;
+    uint8_t k[RANDOM_READ_MAX];
+===
+    if (len > RANDOM_READ_MAX + 1u) return E_OUT_OF_RANGE;
+    if (len == 0) return 0;
+    uint8_t k[RANDOM_READ_MAX + 1u];
+>>>
+
+[copy-result-ignored]
+expect = random: random_read from ring 3 @ failed at step 9
+group = g5
+edit = kernel/drivers/char/random.c
+<<<
+    if (rc == 0) rc = user_copy_out(buf, k, (uint32_t)len) == 0 ? (int)len : E_BAD_ADDRESS;
+===
+    if (rc == 0) { (void)user_copy_out(buf, k, (uint32_t)len); rc = (int)len; }
+>>>
+
+[hold-not-released]
+# the boot's (seeded) generator is lost to the test's unseeded one
+expect = random: random_read from ring 3 @ failed at step 10
+group = g6
+edit = kernel/drivers/char/random.c
+<<<
+    gen = saved;
+    held = 0;
+===
+    held = 0;
+>>>
+
+# ---- the boot seed (judged where the CPU has RDRAND/RDSEED) ----
+
+[cpu-words-half-credit]
+expect = random: the boot seed counts the CPU's words @ CPU words credited only
+group = gmax
+boot = --cpu max
+edit = kernel/drivers/char/random.c
+<<<
+        uint32_t b = rng_word_plausible(v, prev) ? 64 : 0;
+===
+        uint32_t b = rng_word_plausible(v, prev) ? 32 : 0;
+>>>

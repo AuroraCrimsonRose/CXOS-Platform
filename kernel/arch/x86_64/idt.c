@@ -21,6 +21,7 @@
 #include "usermode.h"          /* usercopy_start, usercopy_end, usercopy_trampoline */
 #include "paging_defs.h"       /* USER_VLIMIT, KERNEL_VBASE */
 #include "fb.h"                /* the panic screen */
+#include "random.h"            /* random_irq_sample */
 #include "platform/pc/speaker.h"
 #include "diag/crashlog.h"     /* the panic's record on the CRASH partition */
 
@@ -243,6 +244,9 @@ static inline void irq_eoi(uint64_t vector) {
 }
 
 static void irq_dispatch(struct registers *r) {
+    /* The cycle counter at every interrupt, stored for the generator to hash
+       later: a store, never a hash, here (random.h). */
+    random_irq_sample((uint32_t)r->vector);
     if (r->vector == LAPIC_TIMER_VECTOR) {
         /* The tick's, when the local APIC's timer gives it (timer.c): its
            EOI is the local APIC's whoever routes the IRQs, and it is a

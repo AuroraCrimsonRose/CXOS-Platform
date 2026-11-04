@@ -76,11 +76,12 @@ range.
   need it, control-flow integrity later (CET where present).
 - **Type-segregated heap** (`kernel/CX_KERNEL_PLAN.md` §9.2), so a
   use-after-free cannot be reused as a different type.
-- **A random number generator.** The kernel has no entropy source today, yet
-  KASLR, the stack protector, TCP sequence numbers and keys all need one.
-  Seeded from the loader (`cxk_boot_info.rng_seed`), RDRAND/RDSEED where
-  present, and interrupt timing; a ChaCha20-based generator; `random_read`
-  for programs.
+- **A random number generator.** Built in 1.7b (`CX_RANDOM.md`): Fortuna
+  pools over ChaCha20, seeded from RDSEED/RDRAND where present, boot
+  jitter and interrupt timing (the loader's `rng_seed` mixed in
+  uncredited), with no fallback seed; `random_read` for programs. Still to
+  come (1.7c): the seed file on the boot disk. KASLR, the stack protector,
+  TCP sequence numbers and keys draw on it as they arrive.
 - **A syscall fuzzer generated from `.xfil`.** The interface definition knows
   every call's arguments, types and handle rights, so the fuzzer is generated,
   not written (as syzkaller is driven by syscall descriptions). Run on every

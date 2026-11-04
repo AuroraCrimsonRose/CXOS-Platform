@@ -195,6 +195,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/cpu/sched.c
     ${SRC_DIR}/kernel/cpu/uid.c
     ${SRC_DIR}/kernel/drivers/char/timer.c
+    ${SRC_DIR}/kernel/drivers/char/random.c
     ${SRC_DIR}/kernel/cpu/usermode.c
     ${SRC_DIR}/kernel/cpu/usercopy.c
     ${SRC_DIR}/kernel/cpu/sysrec.c
@@ -253,6 +254,8 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/drivers/storage/partition/partition.c
     ${SRC_DIR}/kernel/drivers/storage/install.c
     ${SRC_DIR}/kernel/lib/crypto/sha256.c
+    ${SRC_DIR}/kernel/lib/crypto/chacha20.c
+    ${SRC_DIR}/kernel/lib/crypto/fortuna.c
     ${SRC_DIR}/kernel/lib/crypto/bignum.c
     ${SRC_DIR}/kernel/lib/crypto/rsa.c
     ${SRC_DIR}/kernel/lib/format/cxex.c
@@ -280,6 +283,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/ktest_hooks.c
     ${SRC_DIR}/kernel/ktest_sweeps.c
     ${SRC_DIR}/kernel/ktest_races.c
+    ${SRC_DIR}/kernel/ktest_random.c
 )
 
 # ---- KERNEL ASM SOURCES (elf64 objects; append new ones here) ----

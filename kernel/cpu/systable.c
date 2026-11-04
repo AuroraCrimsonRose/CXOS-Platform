@@ -247,6 +247,13 @@ static int decode_thread_set_tls(const uintptr_t *a) {
 #endif
 }
 static int decode_thread_set_name(const uintptr_t *a) { return syscall_thread_set_name((uint64_t)a[0]); }
+static int decode_random_read(const uintptr_t *a) {
+#if SYSCALL_PAIRS
+    return syscall_random_read((uint64_t)a[0], (uint64_t)((uint64_t)a[1] | (uint64_t)a[2] << 32));
+#else
+    return syscall_random_read((uint64_t)a[0], (uint64_t)a[1]);
+#endif
+}
 
 const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_EXIT] = decode_exit,
@@ -345,4 +352,5 @@ const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_PIPE_CREATE] = decode_pipe_create,
     [SYS_THREAD_SET_TLS] = decode_thread_set_tls,
     [SYS_THREAD_SET_NAME] = decode_thread_set_name,
+    [SYS_RANDOM_READ] = decode_random_read,
 };
