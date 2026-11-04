@@ -694,6 +694,50 @@ done:
     return step;
 }
 
+/* One spawn of hi.xuex asking for `ask`, waited for; the grants its
+   process held, read from the record its handle keeps, or ~0 if it did
+   not run and end. */
+static uint32_t spv_caps(struct spawn_args *a, struct object_info_args *oi, uint32_t ask) {
+    struct htab *tab = thread_htab(thread_current_id());
+    a->caps = ask;
+    int32_t ph = sys_spawn(user_addr(a));
+    a->caps = 0;
+    if (ph <= 0) return ~0u;
+    uint32_t held = ~0u;
+    struct kobj *o = 0;
+    if (syscall_object_wait(ph, SIGNAL_PROCESS_ENDED, timer_now_ns() + 10000 * TIMER_NS_PER_TICK, 0) == E_OK
+        && spv_live(oi, ph)
+        && (o = htab_ref(tab, ph, KOBJ_PROCESS, 0, 0)) != 0)
+        held = ((struct proc *)o)->caps;          /* hdr is first */
+    if (o) kobj_unref(o);
+    htab_close(tab, ph);
+    return held;
+}
+
+/* GRANT_INPUT (1.7a): a child asked for it keeps it; a background one loses
+   it, background asked for or inherited from its parent, the rest of what it
+   asked for kept. The spawner holds the grants, so attenuation is not what
+   drops it. 0 = pass, else the step that failed. */
+static int spv_input(struct spawn_args *a, struct object_info_args *oi) {
+    int me = thread_current_id();
+    struct proc *p = thread_proc(me);
+    uint32_t save = thread_current_caps();
+    int was_bg = p->background;
+    int step;
+    thread_set_caps(me, GRANT_INPUT | GRANT_CONSOLE);
+
+    step = 1; if (spv_caps(a, oi, GRANT_INPUT | GRANT_CONSOLE) != (GRANT_INPUT | GRANT_CONSOLE)) goto done;
+    step = 2; if (spv_caps(a, oi, GRANT_INPUT | GRANT_CONSOLE | SPAWN_BACKGROUND) != GRANT_CONSOLE) goto done;
+    p->background = 1;                            /* as the supervisor is */
+    step = 3; if (spv_caps(a, oi, GRANT_INPUT | GRANT_CONSOLE) != GRANT_CONSOLE) goto done;
+    step = 0;
+
+done:
+    p->background = was_bg;
+    thread_set_caps(me, save);
+    return step;
+}
+
 int ktest_spawn_verifies_image(void) {
     if (!cxfs_is_mounted()) return 1;                 /* nothing mounted - skip */
 
@@ -839,6 +883,16 @@ int ktest_spawn_verifies_image(void) {
         int step = spv_handles(a, oi, img);
         if (step) {
             klog_u32("KTEST", SEV_ERR, "spawn with handles failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+            ok = 0;
+        }
+        ok = ok && proc_live() == live0;
+    }
+
+    /* ---- the keyboard's grant, foreground and background (1.7a) ---- */
+    if (ok) {
+        int step = spv_input(a, oi);
+        if (step) {
+            klog_u32("KTEST", SEV_ERR, "spawn input grant failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
             ok = 0;
         }
         ok = ok && proc_live() == live0;

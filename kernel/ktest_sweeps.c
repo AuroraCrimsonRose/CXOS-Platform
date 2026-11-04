@@ -66,9 +66,9 @@ static void sw_fail(const char *test, const char *why, uint32_t nr, uint32_t n, 
 
 #define HOSTILE 0xFFFF8000DEAD0FF0ull
 
-/* Not called: these end the caller (EXIT, THREAD_EXIT), wait for a key
-   that never comes (INPUT_READ), or act on the machine if their grant check
-   broke (the power calls, whose refusals usermode.c's tests show). */
+/* Not called: these end the caller (EXIT, THREAD_EXIT), or, if their grant
+   check broke, wait for a key that never comes (INPUT_READ) or act on the
+   machine (the power calls); usermode.c's tests show those refusals. */
 static int census_skipped(uint32_t nr) {
     return nr == SYS_EXIT || nr == SYS_THREAD_EXIT || nr == SYS_INPUT_READ
         || nr == SYS_POWER_REBOOT || nr == SYS_POWER_SHUTDOWN || nr == SYS_POWER_SLEEP;

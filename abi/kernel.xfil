@@ -40,7 +40,7 @@ domain kernel
 /// mismatch. Declared in versions.json as `cxex-abi` and checked against this
 /// line; bump both, and the DevKit's stamp, in the one commit that changes the
 /// contract.
-const CXK_ABI_VERSION: u32 = 30
+const CXK_ABI_VERSION: u32 = 31
 
 /// ---- syscall numbers ----
 /// lifecycle 0x00-0x0F (no capability required)
@@ -295,7 +295,8 @@ syscall SYS_QUEUE_UNREGISTER = 0x63 fn queue_unregister(q: i32, key: u64) -> i32
 /// re-armed.
 syscall SYS_QUEUE_WAIT = 0x64 fn queue_wait(q: i32, events: *queue_event, count: u32, deadline: u64) -> i32
 
-/// input 0x20-0x2F (unprivileged: reading your own keystrokes)
+/// input 0x20-0x2F (privileged: GRANT_INPUT, until the display server routes
+/// input to the focused window)
 syscall SYS_INPUT_READ = 0x20 fn input_read() -> i32                   /// block until a key -> char
 syscall SYS_MOUSE_READ = 0x21 fn mouse_read(m: *mouse_state) -> i32     /// ebx = *mouse_state -> 1 if a mouse is present
 syscall SYS_INPUT_POLL = 0x22 fn input_poll() -> i32                   /// -> char, 0 if none waiting
@@ -956,13 +957,17 @@ const GRANT_IOPORT: u32 = 0x0080u
 const GRANT_FRAMEBUFFER: u32 = 0x0100u
 /// SYS_THREAD_SET_PRIORITY to PRIO_REALTIME and up
 const GRANT_REALTIME: u32 = 0x0200u
-const GRANT_OS_BASELINE: u32 = GRANT_CONSOLE | GRANT_MEM | GRANT_DISK | GRANT_SPAWN | GRANT_POWER | GRANT_ENDPOINT | GRANT_FRAMEBUFFER | GRANT_NET | GRANT_REALTIME
+/// SYS_INPUT_READ, SYS_INPUT_POLL, SYS_MOUSE_READ: the keyboard and the pointer.
+/// Never held by a background process: the kernel drops it from one at spawn
+const GRANT_INPUT: u32 = 0x0400u
+const GRANT_OS_BASELINE: u32 = GRANT_CONSOLE | GRANT_MEM | GRANT_DISK | GRANT_SPAWN | GRANT_POWER | GRANT_ENDPOINT | GRANT_FRAMEBUFFER | GRANT_NET | GRANT_REALTIME | GRANT_INPUT
 
 /// Not a grant: a restriction, carried in spawn_args.caps's top bit. The child's
 /// SYS_CONSOLE_WRITE goes to the kernel log, a line at a time, instead of the
 /// screen - the supervisor and its services, which would otherwise print over
 /// the shell. Every process the child starts inherits it, asked for or not, so
-/// a background process cannot hand the screen to its own children.
+/// a background process cannot hand the screen to its own children. Nor the
+/// keyboard: a process started with it, or inheriting it, never holds GRANT_INPUT.
 const SPAWN_BACKGROUND: u32 = 0x80000000u
 
 /// ---- network (SYS_NET_GET_CONFIG) ----

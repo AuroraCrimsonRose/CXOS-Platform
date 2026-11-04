@@ -109,8 +109,10 @@ nothing (`x86_32/formats/CX_KEY_FORMAT.md`). Added:
 - Input reaches only the focused window; screen capture and overlays need a
   capability (`system/CX_DISPLAY.md`).
 - Jobs bound memory, threads and disk (`kernel/CX_KERNEL_PLAN.md` §4).
-- The **input hole** (`SYS_INPUT_READ`, `SYS_INPUT_POLL`, `SYS_MOUSE_READ` need no capability)
-  is closed early, independently of everything else.
+- The **input hole** (`SYS_INPUT_READ`, `SYS_INPUT_POLL`, `SYS_MOUSE_READ` needed no capability)
+  is closed: they need `GRANT_INPUT`, which the kernel drops from every
+  background process and the shell gives only to the program reading its keys
+  (roadmap 1.7a). Focus routing is the display server's.
 
 ### 3.5 Memory safety
 
@@ -206,7 +208,7 @@ kernel page must fault, and so on).
 
 | When | Work |
 |---|---|
-| Now, independent | Close the input hole; the stack protector; the kernel random number generator |
+| Now, independent | Close the input hole (done: `GRANT_INPUT`, roadmap 1.7a); the stack protector; the kernel random number generator |
 | Phase 0 | Handles with rights and the grant chain; type-segregated heap; the loader verifies the kernel; NX, W^X, KASLR, SMEP/SMAP where present; mitigation self-tests |
 | Phase 0.6 | The system page (syscalls only from it); the ABI hash; the generated syscall fuzzer |
 | Phase 1 | Jobs and budgets; `GRANT_DISK` and `GRANT_IOPORT` become handles; Ed25519, revocation and key generations |

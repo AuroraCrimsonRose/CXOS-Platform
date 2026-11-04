@@ -541,7 +541,7 @@ add_custom_command(
             -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -mno-implicit-float
             -I${SRC_DIR}/abi
             -fuse-ld=lld -Wl,-T,${EXEC_LD} -o ${EXEC_ELF} ${EXEC_C}
-    DEPENDS ${EXEC_C} ${EXEC_LD}
+    DEPENDS ${EXEC_C} ${EXEC_LD} ${SRC_DIR}/abi/cxk_abi.h
     COMMENT "CC+LD executive.c -> executive.elf (user-half .xoex bootstrap)"
 )
 cx_sign(EXEC_SIGN ${EXEC_XOEX})

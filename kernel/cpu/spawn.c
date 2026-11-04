@@ -271,9 +271,13 @@ int proc_start(const void *image, uint32_t image_len, uint32_t caps,
 
     thread_mark_user(tid);
     thread_set_space(tid, space);   /* now the process's: loaded for it, freed with it */
-    /* SPAWN_BACKGROUND rides in the caps word but is not a grant. */
-    thread_set_caps(tid, caps & ~SPAWN_BACKGROUND);
+    /* SPAWN_BACKGROUND rides in the caps word but is not a grant. A process
+       in the background, asked for or inherited from its parent (proc.c),
+       never holds GRANT_INPUT: the keys are for what the user is looking at. */
     if (caps & SPAWN_BACKGROUND) thread_proc(tid)->background = 1;
+    uint32_t held = caps & ~SPAWN_BACKGROUND;
+    if (thread_proc(tid)->background) held &= ~GRANT_INPUT;
+    thread_set_caps(tid, held);
 
     /* Memory authority attenuates down the spawn chain the same way grants do.
        The parent is whoever is running this call: the kernel for the executive

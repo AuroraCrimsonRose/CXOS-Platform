@@ -46,6 +46,8 @@
                         now; split to a display-server tier later)
      GRANT_REALTIME     SYS_THREAD_SET_PRIORITY to PRIO_REALTIME and up: a
                         thread there that never blocks starves the rest
+     GRANT_INPUT        SYS_INPUT_READ / SYS_INPUT_POLL / SYS_MOUSE_READ;
+                        dropped from every background process at spawn
      GRANT_OS_BASELINE  a broker executive's baseline authority
 
    GRANT_MEM is NOT ENFORCED, and that is deliberate rather than missing. The

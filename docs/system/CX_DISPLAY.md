@@ -16,9 +16,11 @@
 - **The window code runs inside one program.** `os/std/gui.xfxn` has a layer
   compositor with damage rectangles, used by whichever program holds
   `GRANT_FRAMEBUFFER`; two such programs draw over each other.
-- **Any program can read the keyboard and mouse.** `SYS_INPUT_READ`,
-  `SYS_INPUT_POLL` and `SYS_MOUSE_READ` need no capability. Fixed early, before the display server
-  (roadmap Phase 0).
+- **One grant decides who reads the keyboard and mouse.** `SYS_INPUT_READ`,
+  `SYS_INPUT_POLL` and `SYS_MOUSE_READ` need `GRANT_INPUT` (roadmap 1.7a): the
+  shell holds it and hands it to the program of a foreground `run` line that
+  reads its keys; a background process never holds it. Until the display
+  server routes input to the focused window, whoever holds it reads every key.
 
 ## 2. How the others do it
 

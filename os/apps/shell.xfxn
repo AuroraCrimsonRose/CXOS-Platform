@@ -4,7 +4,8 @@
 // Aurora Tejeda / CATX Systems
 //
 // A privileged OS-level executable (GRANT_OS_BASELINE): reads input, writes the
-// console, draws, and reboots directly.
+// console, draws, and reboots directly. It hands GRANT_INPUT on only to the
+// program of a foreground `run` line that reads its keys.
 //
 // Commands are a DISPATCH TABLE of function pointers rather than an if/else
 // chain - adding one is a single register() call. Each command also demonstrates
@@ -720,10 +721,16 @@ fn run_slot(hn: u32, slot: u32, h: i32) -> u32 {
 // Find and start one program of a `run` line: `arg` is its words, its own
 // grants first. inh and outh are moved into its standard input and output
 // (a pipe's ends), or are -1 for the shell's own. Its name is kept in
-// run_names for the report. Returns a process handle, or an error once it
-// has said why; a refused start takes none of the handles.
-fn run_start(arg: *u8, stage: u32, inh: i32, outh: i32) -> i32 {
+// run_names for the report. bg is 1 for a line run in the background.
+// Returns a process handle, or an error once it has said why; a refused
+// start takes none of the handles.
+fn run_start(arg: *u8, stage: u32, inh: i32, outh: i32, bg: u32) -> i32 {
     let caps: u32 = GRANT_CONSOLE;
+    // The keys go to the one program that reads them: the first of a line
+    // the shell waits for, when the shell has no input handle to give it
+    // (run_slot leaves the slot empty). The rest read pipes, and a line in
+    // the background must not take keys meant for the prompt.
+    if (inh < 0 && bg == 0 && args_handle(ARGS_STDIN) < 0) { caps |= GRANT_INPUT; }
     while (arg[0] == '+') {
         let n: u32 = 0;
         while (arg[1 + n] != 0 && arg[1 + n] != ' ') { n += 1; }
@@ -869,7 +876,7 @@ fn cmd_run(arg: *u8) -> void {
             let prc: i32 = pipe_create(0, &ends[0]);
             if (prc < 0) { puts("run: no pipe: "); puts(file_strerror(prc)); newline(); break; }
         }
-        let ph: i32 = run_start(run_seg[s], s, prev, ends[1]);
+        let ph: i32 = run_start(run_seg[s], s, prev, ends[1], bg);
         if (ph < 0) {
             if (ends[0] >= 0) { handle_close(ends[0]); }
             if (ends[1] >= 0) { handle_close(ends[1]); }

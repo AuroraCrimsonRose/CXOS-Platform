@@ -41,6 +41,12 @@ public sealed record BootVerdict(BootOutcome Outcome, string Reason, int? TestsP
     // syscall wrapper lost the banner while "started" stayed (2026-10-28).
     private static readonly Regex ExecutiveBanner = new(@"CXK executive online");
     private static readonly Regex ShellPrompt = new(@"cxk> ");
+    // usermode.c's grant gates: "<what> DENIED for pid N (no GRANT_X)". The
+    // executive and what it starts hold what they use, so an idle boot logs
+    // none after "executive started". A shell built against an old baseline
+    // printed its prompt, was refused the keyboard and prompted again, for
+    // good, and the prompt alone passed (1.7a).
+    private static readonly Regex GrantDenied = new(@"(\w+) DENIED for pid (\d+)");
 
     /// <summary>
     /// Reads a serial log. A panic beats everything, including a summary
@@ -82,6 +88,8 @@ public sealed record BootVerdict(BootOutcome Outcome, string Reason, int? TestsP
             return new BootVerdict(BootOutcome.Inconclusive, $"self-tests: all {n} passed, but the executive has not started", n);
         if (full && !ExecutiveBanner.IsMatch(log))
             return new BootVerdict(BootOutcome.Inconclusive, $"self-tests: all {n} passed, the executive loaded, but its banner has not appeared", n);
+        if (full && GrantDenied.Match(log, ExecutiveUp.Match(log).Index) is { Success: true } denied)
+            return new BootVerdict(BootOutcome.Fail, $"self-tests: all {n} passed, but after the executive started, {denied.Groups[1].Value} was refused to pid {denied.Groups[2].Value}", n);
         if (full && !ShellPrompt.IsMatch(log))
             return new BootVerdict(BootOutcome.Inconclusive, $"self-tests: all {n} passed, the executive ran, but the shell's prompt has not appeared", n);
 
@@ -203,6 +211,13 @@ public static class BootVerifier
                 Thread.Sleep(500);
                 string log = ReadShared(serialLog);
                 verdict = classify(log);
+                // A pass is read once more a second later: what the prompt
+                // is followed by (a refusal, a panic) lands just after it.
+                if (verdict.Outcome == BootOutcome.Pass)
+                {
+                    Thread.Sleep(1000);
+                    verdict = classify(ReadShared(serialLog));
+                }
                 if (verdict.Outcome != BootOutcome.Inconclusive) break;
                 if (qemu.HasExited)
                 {

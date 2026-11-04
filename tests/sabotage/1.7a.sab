@@ -1,0 +1,66 @@
+# Phase 1.7a's sabotages, run by `cxk test sabotage`.
+# Each must turn red exactly the self-tests named, at the step named.
+# Format: docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage".
+
+# ---- the gate on the three input calls ----
+
+[read-ungated]
+# a key is waiting, so an ungated read returns it rather than blocking
+expect = power and input syscalls @ failed at step 2
+group = g1
+edit = kernel/cpu/usermode.c
+<<<
+    if (!input_granted()) return E_ACCESS_DENIED;
+    return (int)(unsigned char)keyboard_getchar_blocking();
+===
+    return (int)(unsigned char)keyboard_getchar_blocking();
+>>>
+
+[poll-ungated]
+expect = power and input syscalls @ failed at step 1
+group = g2
+edit = kernel/cpu/usermode.c
+<<<
+    if (!input_granted()) return E_ACCESS_DENIED;
+    return (int)(unsigned char)keyboard_getchar();   /* 0 if none waiting */
+===
+    return (int)(unsigned char)keyboard_getchar();   /* 0 if none waiting */
+>>>
+
+[mouse-gate-after-pointer]
+# the gate moved below the address check: an unwritable pointer answers
+# E_BAD_ADDRESS to a caller without the grant
+expect = power and input syscalls @ failed at step 3
+group = g3
+edit = kernel/cpu/usermode.c
+<<<
+    if (!input_granted()) return E_ACCESS_DENIED;
+    struct mouse_state *ms = (struct mouse_state *)user_ptr(m);
+    if (!user_ptr_writable(m, sizeof *ms)) return E_BAD_ADDRESS;
+===
+    struct mouse_state *ms = (struct mouse_state *)user_ptr(m);
+    if (!user_ptr_writable(m, sizeof *ms)) return E_BAD_ADDRESS;
+    if (!input_granted()) return E_ACCESS_DENIED;
+>>>
+
+# ---- dropped from every background process (proc_start) ----
+
+[background-keeps-input]
+expect = SYS_SPAWN verifies its image @ input grant failed at step 2
+group = g1
+edit = kernel/cpu/spawn.c
+<<<
+    if (thread_proc(tid)->background) held &= ~GRANT_INPUT;
+===
+>>>
+
+[inherited-background-keeps-input]
+# only a background asked for drops it: a child of the supervisor keeps it
+expect = SYS_SPAWN verifies its image @ input grant failed at step 3
+group = g2
+edit = kernel/cpu/spawn.c
+<<<
+    if (thread_proc(tid)->background) held &= ~GRANT_INPUT;
+===
+    if (caps & SPAWN_BACKGROUND) held &= ~GRANT_INPUT;
+>>>

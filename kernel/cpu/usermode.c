@@ -473,12 +473,24 @@ int syscall_fb_set_font(uint64_t name) {
     return sys_fb_set_font(name);
 }
 
-/* unprivileged: reading your own keyboard input */
+/* The three input calls share one gate. There is one keyboard and one
+   pointer, and nothing yet says which process the user is talking to, so
+   holding GRANT_INPUT is that: the shell, and the one program of a `run`
+   line it hands the keys to. A background process never holds it (spawn.c).
+   Checked before anything is read, so a refused poll consumes no key. */
+static int input_granted(void) {
+    if (thread_current_caps() & GRANT_INPUT) return 1;
+    klog_u32("GRANT", SEV_WARN, "input DENIED for pid ", (uint32_t)thread_current_pid(), LOG_COLOR_VALUE, " (no GRANT_INPUT)");
+    return 0;
+}
+
 int syscall_input_read(void) {
+    if (!input_granted()) return E_ACCESS_DENIED;
     return (int)(unsigned char)keyboard_getchar_blocking();
 }
 
 int syscall_input_poll(void) {
+    if (!input_granted()) return E_ACCESS_DENIED;
     return (int)(unsigned char)keyboard_getchar();   /* 0 if none waiting */
 }
 
@@ -540,8 +552,8 @@ int syscall_net_recv(uint64_t buf, uint64_t cap) {
 }
 
 int syscall_mouse_read(uint64_t m) {
-    /* unprivileged, same reasoning as keyboard input: a process reading
-       the pointer it is already being shown */
+    /* the keyboard's gate: the pointer is input too */
+    if (!input_granted()) return E_ACCESS_DENIED;
     struct mouse_state *ms = (struct mouse_state *)user_ptr(m);
     if (!user_ptr_writable(m, sizeof *ms)) return E_BAD_ADDRESS;
     ms->x       = mouse_x();
@@ -2350,18 +2362,36 @@ done:
 
 /* ---- the input and power calls, through the dispatcher ---------------------
  * Keys are injected into the kernel's buffer, so the blocking read has one
- * waiting and returns at once. The input calls run with no grants at all,
- * which is their contract today (the input hole, until the input service
- * replaces them). Reboot and shutdown cannot be run from here; their gate is in
- * the authorisation matrix, with SYS_POWER_SLEEP's. Sleep is run for real.
+ * waiting and returns at once. The input calls need GRANT_INPUT (1.7a):
+ * without it each is refused before it reads anything, so a key waiting
+ * stays for the holder, and the blocking read does not block. Reboot and
+ * shutdown cannot be run from here; their gate is in the authorisation
+ * matrix, with SYS_POWER_SLEEP's. Sleep is run for real.
  */
 int usermode_power_input_test(void) {
     int me = thread_current_id();
     uint32_t save = thread_current_caps();
     int ok = 0, step = 0;
 
-    thread_set_caps(me, 0);
+    thread_set_caps(me, GRANT_INPUT);
     for (int i = 0; i < 256 && syscall_dispatch(SYS_INPUT_POLL, 0, 0, 0, 0, 0) != 0; i++) { }
+
+    /* no grant (every other one held): all three refused, the key left, and
+       the pointer refused before its address is looked at (0 would be
+       E_BAD_ADDRESS) */
+    thread_set_caps(me, GRANT_OS_BASELINE & ~GRANT_INPUT);
+    keyboard_inject('k');
+    step++;
+    if (syscall_dispatch(SYS_INPUT_POLL, 0, 0, 0, 0, 0) != E_ACCESS_DENIED) goto done;
+    step++;
+    if (syscall_dispatch(SYS_INPUT_READ, 0, 0, 0, 0, 0) != E_ACCESS_DENIED) goto done;
+    step++;
+    if (syscall_dispatch(SYS_MOUSE_READ, 0, 0, 0, 0, 0) != E_ACCESS_DENIED) goto done;
+    thread_set_caps(me, GRANT_INPUT);
+    step++;
+    if (syscall_dispatch(SYS_MOUSE_READ, 0, 0, 0, 0, 0) != E_BAD_ADDRESS) goto done;
+    step++;
+    if (syscall_dispatch(SYS_INPUT_POLL, 0, 0, 0, 0, 0) != 'k') goto done;
 
     /* poll: nothing waiting is 0, then a key, then 0 again: one key, read once */
     step++;
@@ -2395,6 +2425,10 @@ int usermode_power_input_test(void) {
 
 done:
     if (!ok) klog_u32("KTEST", SEV_ERR, "power and input syscall test failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    /* a key left by a failed step would be read by the kill test's
+       keyboard victim, which must block */
+    thread_set_caps(me, GRANT_INPUT);
+    for (int i = 0; i < 256 && syscall_dispatch(SYS_INPUT_POLL, 0, 0, 0, 0, 0) != 0; i++) { }
     thread_set_caps(me, save);
     return ok;
 }
@@ -3456,6 +3490,7 @@ int usermode_kill_test(void) {
     /* 7: reading the keyboard */
     h = kt_make(&tid);
     step = 7; if (h <= 0) goto done;
+    thread_set_caps(tid, GRANT_INPUT);   /* or it is refused, not blocked */
     kt_call(SYS_INPUT_READ, 0, 0, 0, 0, 0);
     thread_start(tid);
     if (!kt_kill(h, tid, 1)) goto done;
@@ -3543,6 +3578,7 @@ int usermode_kill_test(void) {
     htab_close(tab, h); h = -1;
     h = kt_make(&tid);
     step = 17; if (h <= 0) goto done;
+    thread_set_caps(tid, GRANT_INPUT);   /* or it is refused, not blocked */
     kt_call(SYS_INPUT_READ, 0, 0, 0, 0, 0);
     if (kt_kill_call(h) != E_OK) { thread_discard(tid); goto done; }
     thread_start(tid);

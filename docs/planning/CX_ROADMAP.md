@@ -299,7 +299,8 @@ sabotage that turns it red, on top of every existing self-test passing:
 Independent of the order above, and small enough to land whenever convenient:
 
 - **Close the input hole:** `SYS_INPUT_READ`, `SYS_INPUT_POLL` and `SYS_MOUSE_READ`
-  need no capability today, so any process can read keystrokes meant for another.
+  needed no capability, so any process could read keystrokes meant for another.
+  Done in Phase 1 step 7 (1.7a, `GRANT_INPUT`).
 - A kernel random number generator: there is none today, and KASLR, the
   stack protector, TCP and keys all need one (`security/CX_SECURITY.md` §3.2).
 - Stack protector on, seeded from it.
@@ -706,6 +707,39 @@ Independent of the order above, and small enough to land whenever convenient:
    and a seed file on the boot disk rewritten at each boot; never blocking
    after boot. It also seeds the chaos mode of 6 (random yields at race
    points, reproducible from a printed seed) and the syscall fuzzer.
+   In three: 1.7a the input grant (ABI 31); 1.7b the generator, its
+   sources and `SYS_RANDOM_READ` (the rig's FX-8350 has neither RDRAND nor
+   RDSEED, so the TSC samples and the seed file carry it there; no
+   deterministic fallback, unlike Serenity's RTC one in
+   `Kernel/Security/Random.cpp`); 1.7c the seed file and seeded chaos.
+   - **1.7a (2026-11-04), done:** `GRANT_INPUT` (0x0400, in
+     GRANT_OS_BASELINE) gates the three input calls, checked before
+     anything is read, so a refused poll consumes no key and a refused
+     read does not block; the pointer is refused before its address is
+     looked at. `proc_start` drops it from every background process,
+     SPAWN_BACKGROUND asked for or inherited, so the supervisor and its
+     services cannot read the keyboard. The shell gives it only to the
+     first program of a foreground `run` line, and only when the shell
+     has no input handle of its own to pass (the child would read keys);
+     pipe-fed programs and `&` lines get none. Tests: the input test now
+     runs refused with every other grant held, then granted; the spawn
+     suite spawns hi.xuex asking for it in the foreground, with
+     SPAWN_BACKGROUND, and from a background parent, and reads the grants
+     each process held; the two kill-in-keyboard-wait tests give their
+     victim the grant (refused, it would not block). The census still
+     skips INPUT_READ: with its gate broken it would wait for good, not
+     go red. Until the display server routes input, whoever holds the
+     grant reads every key. **Found on the way:** the executive's CMake
+     rule did not depend on `cxk_abi.h`, so it kept the old baseline while
+     `cxk build` stamped it ABI 31; the shell it started was refused the
+     keyboard and re-prompted for good, and `verify-boot --full` passed on
+     the prompt. Fixed (the dependency), and a full boot now fails on any
+     grant refused after the executive starts, read again a second after
+     a pass. The input test also drains the keyboard on every exit: a key
+     left by a failed step turned the kill test's keyboard wait red.
+     Untested: the shell's policy (which `run` program gets the grant) has
+     no boot test; the shell-streams test runs it with GRANT_SPAWN only.
+     Self-tests 189. Sabotages: `tests/sabotage/1.7a.sab`, 5 of 5.
 8. The hardware report: the memory map, ACPI tables and their checksums,
    MADT and APIC IDs, PCI devices, CPUID, and the clock calibrations, in a
    fixed form to serial and the USB crash log; a `cxk` command compares

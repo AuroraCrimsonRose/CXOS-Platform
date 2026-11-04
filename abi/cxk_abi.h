@@ -15,7 +15,7 @@
  * hash it was built against and the loader refuses one that differs, so a
  * program never runs against numbers or layouts it was not compiled for.
  */
-#define CXK_ABI_HASH { 0x5c, 0x03, 0xc9, 0xe4, 0xe2, 0xd5, 0x01, 0xe1, 0x4a, 0x90, 0xd3, 0xdc, 0x02, 0xd4, 0xa1, 0x28, 0x44, 0xc3, 0xb5, 0xf9, 0xdb, 0x7e, 0x7d, 0xf0, 0xeb, 0xdf, 0x87, 0x2f, 0x0a, 0x5f, 0x56, 0x09 }
+#define CXK_ABI_HASH { 0x52, 0x49, 0x6a, 0x45, 0x32, 0x14, 0x2f, 0x2a, 0x91, 0x78, 0xcb, 0x70, 0xb0, 0xb0, 0x45, 0xaf, 0xa5, 0x3c, 0x5d, 0xd9, 0x82, 0xa2, 0x4a, 0x5b, 0x85, 0x99, 0x35, 0x6c, 0xec, 0x9e, 0x41, 0x37 }
 
 /*
  * CXK ABI v1 - the PUBLIC contract shared by the kernel, the .xoex executive,
@@ -44,7 +44,7 @@
  * line; bump both, and the DevKit's stamp, in the one commit that changes the
  * contract.
  */
-#define CXK_ABI_VERSION          30
+#define CXK_ABI_VERSION          31
 
 /*
  * ---- syscall numbers ----
@@ -433,7 +433,10 @@
  */
 #define SYS_QUEUE_WAIT           0x64
 
-/* input 0x20-0x2F (unprivileged: reading your own keystrokes) */
+/*
+ * input 0x20-0x2F (privileged: GRANT_INPUT, until the display server routes
+ * input to the focused window)
+ */
 #define SYS_INPUT_READ           0x20           /* block until a key -> char */
 #define SYS_MOUSE_READ           0x21           /* ebx = *mouse_state -> 1 if a mouse is present */
 #define SYS_INPUT_POLL           0x22           /* -> char, 0 if none waiting */
@@ -1269,14 +1272,21 @@ struct fb_geometry {
 
 /* SYS_THREAD_SET_PRIORITY to PRIO_REALTIME and up */
 #define GRANT_REALTIME           0x0200u
-#define GRANT_OS_BASELINE        (GRANT_CONSOLE | GRANT_MEM | GRANT_DISK | GRANT_SPAWN | GRANT_POWER | GRANT_ENDPOINT | GRANT_FRAMEBUFFER | GRANT_NET | GRANT_REALTIME)
+
+/*
+ * SYS_INPUT_READ, SYS_INPUT_POLL, SYS_MOUSE_READ: the keyboard and the pointer.
+ * Never held by a background process: the kernel drops it from one at spawn
+ */
+#define GRANT_INPUT              0x0400u
+#define GRANT_OS_BASELINE        (GRANT_CONSOLE | GRANT_MEM | GRANT_DISK | GRANT_SPAWN | GRANT_POWER | GRANT_ENDPOINT | GRANT_FRAMEBUFFER | GRANT_NET | GRANT_REALTIME | GRANT_INPUT)
 
 /*
  * Not a grant: a restriction, carried in spawn_args.caps's top bit. The child's
  * SYS_CONSOLE_WRITE goes to the kernel log, a line at a time, instead of the
  * screen - the supervisor and its services, which would otherwise print over
  * the shell. Every process the child starts inherits it, asked for or not, so
- * a background process cannot hand the screen to its own children.
+ * a background process cannot hand the screen to its own children. Nor the
+ * keyboard: a process started with it, or inheriting it, never holds GRANT_INPUT.
  */
 #define SPAWN_BACKGROUND         0x80000000u
 

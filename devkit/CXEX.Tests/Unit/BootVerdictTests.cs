@@ -187,6 +187,24 @@ public class BootVerdictTests
 
     [Fact]
     [Trait(Categories.Key, Categories.Unit)]
+    public void A_grant_refused_after_the_executive_started_fails_a_full_boot()
+    {
+        // 1.7a: a shell built against an old baseline printed its prompt,
+        // was refused the keyboard and prompted again, for good.
+        const string denied = "[GRANT   ] - [WARN] - input DENIED for pid 2 (no GRANT_INPUT)\n";
+        var refused = BootVerdict.Classify(Summary + Executive + Banner + Prompt + denied + Prompt, full: true);
+        Assert.Equal(BootOutcome.Fail, refused.Outcome);
+        Assert.Contains("input was refused to pid 2", refused.Reason);
+
+        // the self-tests' own refusals, before the executive, are theirs
+        string tests = Results(45, failAt: -1) + denied + SummaryLine;
+        Assert.Equal(BootOutcome.Pass, BootVerdict.Classify(tests + Executive + Banner + Prompt, full: true).Outcome);
+        // and a boot that is not a full one does not look
+        Assert.Equal(BootOutcome.Pass, BootVerdict.Classify(Summary + Executive + denied, full: false).Outcome);
+    }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
     public void An_executive_refused_at_load_fails_a_full_boot()
     {
         // The lines from a boot whose executive carried a wrong ABI hash
