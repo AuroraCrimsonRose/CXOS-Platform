@@ -43,6 +43,7 @@
 #include "systable.h"           /* syscall_object_wait, syscall_object_info */
 #include "timer.h"              /* timer_now_ns: a wait's deadline */
 #include "proc.h"               /* proc_live */
+#include "diag/testhook.h"      /* race_arm at RP_SPAWN_TAKE, live_take */
 
 extern const struct cxex_load_ops cxex_kernel_load_ops;   /* cxex_loadk.c */
 
@@ -571,13 +572,22 @@ static int spv_live(struct object_info_args *oi, int32_t h) {
                     sizeof(struct object_basic)) == (int)sizeof(struct object_basic);
 }
 
+/* Another thread of the caller, closing a named handle between the
+   syscall's check and proc_start's take. */
+static int32_t spv_victim;
+static void spv_close(void *ctx) {
+    (void)ctx;
+    htab_close(thread_htab(thread_current_id()), spv_victim);
+}
+
 /* hi.xuex with handles named (ABI 27): a pipe's write end moved into slot
    ARGS_STDOUT, which the X library writes to in place of the console. With
    caps 0 the console refuses it, so its greeting in the pipe is the child
    finding the slot. First the refusals, each taking nothing: a count, a slot
    past the last or named twice, a bad handle, a copy without
    HRIGHT_DUPLICATE, rights that grow, an unreadable list, and a tampered
-   image. 0 = pass, else the step that failed. */
+   image; then one closed after the syscall's check, before the take
+   (1.6c3). 0 = pass, else the step that failed. */
 static int spv_handles(struct spawn_args *a, struct object_info_args *oi, uint8_t *img) {
     struct process_info *pi = (struct process_info *)(SPV_ARGS_VA + 0x200);
     int32_t *ends = (int32_t *)(SPV_ARGS_VA + 0x600);
@@ -587,6 +597,7 @@ static int spv_handles(struct spawn_args *a, struct object_info_args *oi, uint8_
     struct htab *tab = thread_htab(thread_current_id());
     int32_t ph = -1, d = -1;
     ends[0] = ends[1] = -1;
+    spv_victim = -1;
     int step;
 
     /* 1: this thread was named nothing; one past the last slot is no slot */
@@ -636,26 +647,48 @@ static int spv_handles(struct spawn_args *a, struct object_info_args *oi, uint8_
     step = 10; if (rc != CXEX_EXEC_VERIFY_FAILED) goto done;
     step = 11; if (!spv_live(oi, ends[0]) || !spv_live(oi, ends[1])) goto done;
 
-    /* 12: it runs and exits 0; the moved write end has left this table, the
+    /* 12-13: the copied entry's handle closed after the check, before the
+       take (RP_SPAWN_TAKE): refused E_BAD_HANDLE, and nothing taken - the
+       moved write end is still here - nor a child or a process handle left;
+       every live count as before the copy was made */
+    struct live_counts lc0, lc1;
+    live_take(&lc0, thread_current_pid(), 0);
+    spv_victim = syscall_handle_duplicate(ends[0], HRIGHT_READ | HRIGHT_WAIT | HRIGHT_DUPLICATE);
+    sh[1].handle = spv_victim;
+    step = 12; if (spv_victim <= 0
+                   || race_arm(RP_SPAWN_TAKE, thread_current_id(), 1, RACE_CALL, spv_close, 0) != 0) goto done;
+    rc = sys_spawn(user_addr(a));
+    uint32_t arrived = race_arrivals(RP_SPAWN_TAKE);
+    race_release(RP_SPAWN_TAKE);
+    sh[1].handle = ends[0];
+    if (!arrived) { klog("KTEST", SEV_FAIL, "spawn take: point not reached"); goto done; }
+    if (rc != E_BAD_HANDLE) { klog("KTEST", SEV_FAIL, "spawn take: not E_BAD_HANDLE"); goto done; }
+    step = 13; if (!spv_live(oi, ends[1])) { klog("KTEST", SEV_FAIL, "spawn take: a handle was taken"); goto done; }
+    live_take(&lc1, thread_current_pid(), 0);
+    if (live_diff(&lc0, &lc1, 1) != 0) { klog("KTEST", SEV_FAIL, "spawn take: left something"); goto done; }
+
+    /* 14: it runs and exits 0; the moved write end has left this table, the
        copied read end has not */
     ph = sys_spawn(user_addr(a));
-    step = 12; if (ph <= 0 || syscall_object_wait(ph, SIGNAL_PROCESS_ENDED, timer_now_ns() + 10000 * TIMER_NS_PER_TICK, 0) != E_OK
+    step = 14; if (ph <= 0 || syscall_object_wait(ph, SIGNAL_PROCESS_ENDED, timer_now_ns() + 10000 * TIMER_NS_PER_TICK, 0) != E_OK
                    || spv_info(oi, ph, OBJINFO_PROCESS, pi, sizeof *pi) != (int)sizeof *pi
                    || pi->ended != PROC_EXITED || pi->code != 0) goto done;
-    step = 13; if (spv_live(oi, ends[1]) || !spv_live(oi, ends[0])) goto done;
+    step = 15; if (spv_live(oi, ends[1]) || !spv_live(oi, ends[0])) goto done;
 
-    /* 14: what it printed is in the pipe; then 0, the write end closed with it */
+    /* 16: what it printed is in the pipe; then 0, the write end closed with it */
     int n = syscall_file_read(ends[0], user_addr(buf), 255);
-    step = 14; if (n < (int)sizeof hello - 1) goto done;
+    step = 16; if (n < (int)sizeof hello - 1) goto done;
     for (uint32_t i = 0; i < sizeof hello - 1; i++) if (buf[i] != hello[i]) goto done;
-    step = 15; if (syscall_file_read(ends[0], user_addr(buf), 255) != 0) goto done;
+    step = 17; if (syscall_file_read(ends[0], user_addr(buf), 255) != 0) goto done;
     step = 0;
 
 done:
+    race_release(RP_SPAWN_TAKE);
     a->handles = 0;
     a->handle_count = 0;
     if (ph > 0) htab_close(tab, ph);
     if (d > 0)  htab_close(tab, d);
+    if (spv_victim > 0) htab_close(tab, spv_victim);   /* not closed if the point was not reached */
     if (ends[0] > 0) htab_close(tab, ends[0]);
     if (step != 0 && ends[1] > 0) htab_close(tab, ends[1]);   /* moved on a pass */
     return step;

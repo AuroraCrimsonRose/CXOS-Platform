@@ -17,6 +17,7 @@
 #include "vmregion.h"
 #include "futex.h"
 #include "ipc.h"
+#include "syspage.h"
 #include "logging.h"
 #include "object/kobj.h"
 #include "object/kmem.h"
@@ -813,5 +814,167 @@ int ktest_queue_kill(void) {
     why = ir_end(&s, why, "queue kill: the waiters never went");
     qk_end(&k);
     if (!why && kqueue_reg_count() != regs0) why = "queue kill: left a registration";
+    return rc_report(why);
+}
+
+/* ==== process ending (1.6c3) ==== */
+
+/* ---- a refused vector in one thread ends the others ----
+   A held ring-3 process whose first thread, raised above PRIO_NORMAL,
+   makes a second thread and then blocks receiving. The second thread
+   starts on the syscall instruction inside the SYS_GETPID stub with eax 0
+   (SYS_EXIT), a call from where no stub for it is: refused. It runs only
+   once the first has blocked, being outranked, so the refusal finds a
+   thread blocked in a wait; it must end with the process, noted as the
+   refusal, not left waiting for good. */
+
+#define RV_TCA     (IR_BASE + 0x280u)   /* the first thread's thread_create_args */
+#define RV_LEVEL   (PRIO_NORMAL + 1u)   /* above the new thread, so it blocks first */
+#define RV_REFUSED (SYSPAGE_VIRT + SYS_GETPID * SYSPAGE_STUB_SIZE + 5u)   /* the stub's syscall */
+_Static_assert(SYS_EXIT == 0, "a new thread's eax 0 calls SYS_EXIT, which this stub is not");
+
+static const char *refused_steps(struct ir *s, struct endpoint *ep) {
+    struct um_call3 c;
+    rc_set(c.c[0], SYS_THREAD_CREATE, RV_TCA, 0, 0);
+    rc_set(c.c[1], SYS_THREAD_ID, 0, 0, 0);
+    rc_set(c.c[2], SYS_IPC_RECV, IR_HRECV, 0, 0);
+    s->p[0] = usermode_calls_process(&c, &s->tid[0]);
+    if (!s->p[0]) return "refused vector: setup process";
+    vm_proc_init(thread_pid(s->tid[0]), vm_default_quota(), -1);   /* the new thread's stack */
+    int32_t v = ep_install_handle(s->tid[0], ep, HRIGHT_RECV, 0);
+    if (v <= 0) { thread_discard(s->tid[0]); return "refused vector: setup handle"; }
+
+    struct thread_create_args *ta = (struct thread_create_args *)user_ptr(RV_TCA);
+    uint8_t *b = (uint8_t *)ta;
+    for (uint32_t i = 0; i < sizeof *ta; i++) b[i] = 0;
+    ta->entry = RV_REFUSED;
+    ta->stack_size = THREAD_USTACK_MIN;
+    struct ipc_recv_args *r = (struct ipc_recv_args *)user_ptr(IR_HRECV);
+    r->cap = 0; r->buf = 0; r->info = IR_HINFO; r->handles = 0;
+    r->ep_handle = v; r->handle_cap = 0;
+
+    uint32_t refused0 = syscall_refused_count(), faults0 = usermode_faults();
+    ipc_set_base(s->tid[0], RV_LEVEL);
+    thread_start(s->tid[0]);
+    if (!ir_gone(s->p[0], 3000)) return "refused vector: the others stayed";
+    if (s->p[0]->ended != PROC_CRASHED || s->p[0]->end_vector != PROC_VECTOR_REFUSED)
+        return "refused vector: not ended by the refusal";
+    if (syscall_refused_count() != refused0 + 1) return "refused vector: not one refusal";
+    if (usermode_faults() != faults0) return "refused vector: a fault";
+    if (kobj_waiters(&ep->hdr) != 0) return "refused vector: left a waiter";
+    return 0;
+}
+
+int ktest_proc_refused_vector(void) {
+    struct ir s;
+    int32_t eh = -1;
+    struct endpoint *ep = 0;
+    const char *why = ir_begin(&s) ? 0 : "refused vector: setup map";
+    if (!why) {
+        eh = ep_create();
+        ep = eh > 0 ? ep_from_handle(eh, HRIGHT_RECV, 0) : 0;
+        if (!ep) why = "refused vector: setup endpoint";
+    }
+    if (!why) why = refused_steps(&s, ep);
+    why = ir_end(&s, why, "refused vector: the process never went");
+    if (ep) ep_put(ep);
+    if (eh > 0) htab_close(thread_htab(thread_current_id()), eh);
+    return rc_report(why);
+}
+
+/* ---- a kill in a pipe wait ----
+   A ring-3 process holding the only handle on one end of a pipe, blocked
+   on it: reading an empty pipe, then writing a full one. Killed, it leaves
+   the wait at once, and its end closes with it: the other end, the test
+   thread's, is told (PEER_CLOSED), a write there is refused, and a read
+   there gets the bytes that were in the pipe, none of the killed write's,
+   then the end of the stream. */
+
+#define PK_ENDS   (IR_BASE + 0x300u)   /* SYS_PIPE_CREATE's two handles */
+#define PK_WRITE  16u                  /* the blocked write's bytes, at IR_DATA */
+
+static uint8_t pk_byte(uint32_t i) { return (uint8_t)(i * 11 + 3); }
+
+/* A ring-3 process making `nr` on the end `o` (installed with `rights`)
+   with `len` bytes at `buf`, made and held. */
+static struct proc *pk_victim(struct kobj *o, uint32_t rights, uint64_t nr, uint64_t buf,
+                              uint64_t len, int *tid) {
+    struct um_call3 c;
+    rc_set(c.c[0], SYS_THREAD_ID, 0, 0, 0);
+    rc_set(c.c[1], SYS_THREAD_ID, 0, 0, 0);
+    rc_set(c.c[2], nr, 0, buf, len);
+    struct proc *p = usermode_calls_process(&c, tid);
+    if (!p) return 0;
+    int32_t v = htab_install(thread_htab(*tid), o, rights, 0);
+    if (v <= 0) { thread_discard(*tid); proc_put(p); return 0; }
+    usermode_calls_set(2, 1, (uint32_t)v);
+    return p;
+}
+
+/* A new pipe of PIPE_SIZE_MIN; the end the victim takes (`write`) moved to
+   it, so its handle is the only one. The test keeps `*o`, a reference on
+   that end, and its handle `*keep` on the other. */
+static const char *pk_round(struct ir *s, int i, int write, struct kobj **o, int32_t *keep) {
+    struct htab *tab = thread_htab(thread_current_id());
+    int32_t *ends = (int32_t *)user_ptr(PK_ENDS);
+    if (syscall_pipe_create(PIPE_SIZE_MIN, PK_ENDS) != E_OK) return "pipe kill: setup pipe";
+    *keep = ends[!write];
+    struct htab_info hi;
+    *o = htab_ref(tab, ends[write], KOBJ_PIPE, 0, &hi);
+    if (!*o) { htab_close(tab, ends[write]); return "pipe kill: setup ref"; }
+    if (write) {   /* full, so the write waits */
+        uint8_t *d = (uint8_t *)user_ptr(IR_BIGA);
+        for (uint32_t k = 0; k < PIPE_SIZE_MIN; k++) d[k] = pk_byte(k);
+        if (syscall_file_write(ends[1], IR_BIGA, PIPE_SIZE_MIN) != (int)PIPE_SIZE_MIN) {
+            htab_close(tab, ends[write]);
+            return "pipe kill: setup fill";
+        }
+    }
+    s->p[i] = write ? pk_victim(*o, hi.rights, SYS_FILE_WRITE, IR_DATA, PK_WRITE, &s->tid[i])
+                    : pk_victim(*o, hi.rights, SYS_FILE_READ, IR_BUF, 16, &s->tid[i]);
+    htab_close(tab, ends[write]);
+    if (!s->p[i]) return "pipe kill: setup victim";
+    thread_start(s->tid[i]);
+    uint64_t end = timer_now_ns() + 1500 * MS;
+    while (kobj_waiters(*o) != 1 && timer_now_ns() < end) yield();
+    if (kobj_waiters(*o) != 1) return "pipe kill: setup the wait";
+    proc_kill(s->p[i], s->pid);
+    uint64_t t0 = timer_now_ns(), t1 = ir_gone(s->p[i], 15000);
+    if (!t1 || t1 - t0 > QK_PROMPT) return write ? "pipe kill: blocked writer stayed" : "pipe kill: blocked reader stayed";
+    if (kobj_waiters(*o) != 0) return "pipe kill: left a waiter";
+    if (syscall_object_wait(*keep, SIGNAL_PIPE_PEER_CLOSED, 0, 0) != E_OK)
+        return write ? "pipe kill: writer's end not closed" : "pipe kill: reader's end not closed";
+    return 0;
+}
+
+static const char *pipe_kill_steps(struct ir *s, struct kobj **o, int32_t *keep) {
+    const char *why = pk_round(s, 0, 0, &o[0], &keep[0]);
+    if (why) return why;
+    if (syscall_file_write(keep[0], IR_DATA, 1) != E_PEER_CLOSED) return "pipe kill: write after reader not refused";
+
+    why = pk_round(s, 1, 1, &o[1], &keep[1]);
+    if (why) return why;
+    uint8_t *d = (uint8_t *)user_ptr(IR_BIGB);
+    if (syscall_file_read(keep[1], IR_BIGB, PIPE_SIZE_MIN + PK_WRITE) != (int)PIPE_SIZE_MIN)
+        return "pipe kill: not the bytes before the write";
+    for (uint32_t k = 0; k < PIPE_SIZE_MIN; k++)
+        if (d[k] != pk_byte(k)) return "pipe kill: not the bytes before the write";
+    if (syscall_file_read(keep[1], IR_BIGB, 1) != 0) return "pipe kill: no end of stream";
+    return 0;
+}
+
+int ktest_pipe_kill(void) {
+    struct ir s;
+    struct kobj *o[2] = { 0, 0 };
+    int32_t keep[2] = { -1, -1 };
+    uint32_t pipes0 = kobj_live(KOBJ_PIPE);
+    const char *why = ir_begin(&s) ? 0 : "pipe kill: setup map";
+    if (!why) why = pipe_kill_steps(&s, o, keep);
+    why = ir_end(&s, why, "pipe kill: the victims never went");
+    for (int i = 0; i < 2; i++) {
+        if (o[i]) kobj_unref(o[i]);
+        if (keep[i] > 0) htab_close(thread_htab(thread_current_id()), keep[i]);
+    }
+    if (!why && kobj_live(KOBJ_PIPE) != pipes0) why = "pipe kill: left a pipe";
     return rc_report(why);
 }

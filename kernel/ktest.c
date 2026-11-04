@@ -3429,6 +3429,8 @@ void ktest_run(void) {
     total++; passed += report("ipc: a server thread ends with a call", ktest_ipc_thread_exit());
     total++; passed += report("queue: an event taken as a waiter wakes", ktest_queue_taken());
     total++; passed += report("queue: a waiter killed in the wait", ktest_queue_kill());
+    total++; passed += report("proc: a refused vector ends every thread", ktest_proc_refused_vector());
+    total++; passed += report("pipe: a reader and a writer killed in the wait", ktest_pipe_kill());
     total++; passed += report("two threads share one process",   test_proc_threads());
     total++; passed += report("user copies validated at the copy",  test_user_copy_validation());
     total++; passed += report("user copy faults are recoverable",   test_user_copy_fault_recovery());

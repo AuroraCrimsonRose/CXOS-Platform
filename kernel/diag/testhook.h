@@ -113,6 +113,7 @@ enum race_point {
     RP_FUTEX_WOKEN,            /* futex_wait: its block over, futex_lock not yet retaken */
     RP_IPC_REPLY_COPY,         /* reply_on: the call REPLYING, its bytes not yet read */
     RP_QUEUE_WOKEN,            /* kqueue_wait: the queue seen ready, the wait lock not yet taken */
+    RP_SPAWN_TAKE,             /* proc_start: the named handles checked by the syscall, not yet taken */
     RP_COUNT
 };
 

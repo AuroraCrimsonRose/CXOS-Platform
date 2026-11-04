@@ -54,4 +54,15 @@ int ktest_queue_taken(void);
    deadline, and leaves no waiter. */
 int ktest_queue_kill(void);
 
+/* A refused vector (a call from outside the system page) in one thread of
+   a process, while another thread of it is blocked receiving: the process
+   ends, noted as the refusal, and the blocked thread with it. */
+int ktest_proc_refused_vector(void);
+
+/* A process blocked reading an empty pipe, then one blocked writing a full
+   one, each holding the only handle on its end, killed: each leaves at
+   once, and the other end learns its end closed; the reader's write is
+   refused, the writer's read gets what was there and then the end. */
+int ktest_pipe_kill(void);
+
 #endif

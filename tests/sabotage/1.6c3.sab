@@ -1,0 +1,101 @@
+# Phase 1.6c3's sabotages, run by `cxk test sabotage`.
+# Each must turn red exactly the self-tests named, at the step named.
+# Format: docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage".
+
+# ---- a take refused after the check (RP_SPAWN_TAKE) ----
+
+[take-refused-keeps-handle]
+# the caller's handle on the discarded child is left in its table
+expect = SYS_SPAWN verifies its image @ spawn take: left something
+group = g1
+edit = kernel/cpu/spawn.c
+<<<
+            if (ph >= 0) htab_close(mine, ph);
+            thread_discard(tid);
+===
+            thread_discard(tid);
+>>>
+
+[take-refused-keeps-child]
+# the child, held and never started, is not discarded; it lives on, so the
+# endpoint test's global counts after it are off too
+expect = SYS_SPAWN verifies its image @ spawn take: left something
+expect = ipc endpoints refcounted + reclaimed
+group = g2
+edit = kernel/cpu/spawn.c
+<<<
+            if (ph >= 0) htab_close(mine, ph);
+            thread_discard(tid);
+            return rc;
+===
+            if (ph >= 0) htab_close(mine, ph);
+            return rc;
+>>>
+
+[take-point-after]
+# the point placed after the take: the test must see it was not reached
+# where it closes the handle (the take then succeeds and the spawn runs)
+expect = SYS_SPAWN verifies its image @ spawn take: not E_BAD_HANDLE
+group = g3
+edit = kernel/cpu/spawn.c
+<<<
+        race_point(RP_SPAWN_TAKE);   /* another thread of the caller may close one here */
+        int rc = htab_take(mine, hs->s, hs->n, 0, x);
+===
+        int rc = htab_take(mine, hs->s, hs->n, 0, x);
+        race_point(RP_SPAWN_TAKE);   /* another thread of the caller may close one here */
+>>>
+
+# ---- proc_end_threads on a refused vector ----
+
+[refused-ends-one-thread]
+# a refused vector ends only the thread that made it
+expect = proc: a refused vector ends every thread @ the others stayed
+group = g1
+edit = kernel/cpu/usermode.c
+<<<
+    proc_note_crash(thread_proc(thread_current_id()), PROC_VECTOR_REFUSED, ip, 0);
+    proc_end_threads(thread_proc(thread_current_id()), pid);
+===
+    proc_note_crash(thread_proc(thread_current_id()), PROC_VECTOR_REFUSED, ip, 0);
+>>>
+
+[refused-noted-after-end]
+# the threads ended before the refusal is noted: the end reads as a kill
+expect = proc: a refused vector ends every thread @ not ended by the refusal
+group = g3
+edit = kernel/cpu/usermode.c
+<<<
+    proc_note_crash(thread_proc(thread_current_id()), PROC_VECTOR_REFUSED, ip, 0);
+    proc_end_threads(thread_proc(thread_current_id()), pid);
+===
+    proc_end_threads(thread_proc(thread_current_id()), pid);
+    proc_note_crash(thread_proc(thread_current_id()), PROC_VECTOR_REFUSED, ip, 0);
+>>>
+
+# ---- a kill in a pipe wait ----
+
+[pipe-read-ignores-kill]
+# a reader whose wait was cancelled waits again, and is cancelled again, for
+# good: it spins in the kernel, never leaving, and outlives the test, so the
+# next test that counts threads is off too (it is not a hang: the wait lets
+# the others run)
+expect = pipe: a reader and a writer killed in the wait @ blocked reader stayed
+expect = two threads share one process
+edit = kernel/object/kpipe.c
+<<<
+            if (rc != 0) return rc;
+===
+            if (rc != 0) continue;
+>>>
+
+[pipe-write-ignores-kill]
+# the same for a writer
+expect = pipe: a reader and a writer killed in the wait @ blocked writer stayed
+expect = two threads share one process
+edit = kernel/object/kpipe.c
+<<<
+                if (rc != 0) { done += put; return done ? (int)done : rc; }
+===
+                if (rc != 0 && rc != E_CANCELED) { done += put; return done ? (int)done : rc; }
+>>>

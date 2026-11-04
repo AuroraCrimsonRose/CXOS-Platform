@@ -32,6 +32,7 @@
 #include "cxfs.h"
 #include "logging.h"
 #include "diag/crashlog.h"     /* crashlog_save_faults */
+#include "diag/testhook.h"     /* race_point */
 #include <stddef.h>
 
 #define USER_STACK_TOP    0xBFFFF000u
@@ -308,6 +309,7 @@ int proc_start(const void *image, uint32_t image_len, uint32_t caps,
     if (hs && hs->n) {
         struct htab_transit x[SPAWN_HANDLES_MAX];
         int32_t v[SPAWN_HANDLES_MAX];
+        race_point(RP_SPAWN_TAKE);   /* another thread of the caller may close one here */
         int rc = htab_take(mine, hs->s, hs->n, 0, x);
         if (rc == 0 && htab_land(thread_htab(tid), x, hs->n, v) != 0) {
             htab_transit_drop(x, hs->n);

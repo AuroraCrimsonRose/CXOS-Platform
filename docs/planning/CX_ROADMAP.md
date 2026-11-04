@@ -675,9 +675,30 @@ Independent of the order above, and small enough to land whenever convenient:
      process's table. Self-tests 187. Sabotages: `tests/sabotage/1.6c2.sab`,
      13 of 13 (four of them also red in the older IPC, priority and kill
      tests, which cover the same bounds). No ABI change.
-   - **1.6c3:** process ending and object lifetime: a take refused after
-     the check, `proc_end_threads` on a refused vector, a kill in a pipe
-     wait.
+   - **1.6c3 (2026-11-04), done:** process ending and object lifetime.
+     One race point, `RP_SPAWN_TAKE` in `proc_start` (the named handles
+     checked by the syscall, not yet taken). Two steps of the spawn test
+     (`spv_handles` in `kernel/ktest_loader.c`): a named handle closed at
+     the point, as another thread of the caller would, refuses the spawn
+     with E_BAD_HANDLE, takes nothing (the moved handle stays), and leaves
+     every live count as before the handle was made (no child, no process
+     handle). Two self-tests in `kernel/ktest_races.c`: a refused vector
+     in one thread of a process while another is blocked receiving (the
+     refusing thread is made by SYS_THREAD_CREATE at the syscall
+     instruction inside the SYS_GETPID stub, eax 0; its creator, raised
+     above it, blocks first): the process ends PROC_CRASHED by
+     PROC_VECTOR_REFUSED and the blocked thread with it; and a process
+     holding the only handle on one end of a pipe, blocked reading an empty
+     pipe and then writing a full one, killed: each leaves at once, the
+     other end is told PEER_CLOSED, a write there is refused, and a read
+     gets the bytes there were, none of the killed write's, then the end.
+     Serenity notes the crash before ending the threads, the order the
+     refusal keeps (`Kernel/Tasks/Process.cpp`, `Process::crash`, then
+     `die()`). Self-tests 189. Sabotages: `tests/sabotage/1.6c3.sab`, 7 of
+     7; two that leak (a child, a spinning pipe waiter) also redden the
+     next test that counts globally, named as such. Not covered: SYS_PIPE_CREATE's
+     cleanup when the ends cannot be written after the pointer check (left
+     by 1.4a; now reachable with a race point). No ABI change.
 7. Input authority and kernel randomness. A grant on `SYS_INPUT_READ`,
    `SYS_INPUT_POLL` and `SYS_MOUSE_READ` until the display server routes
    input. A ChaCha20 generator with Fortuna-style pools, fed by RDSEED or
