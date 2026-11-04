@@ -58,6 +58,9 @@ app.Configure(config =>
     config.AddCommand<VerifyCrashlogCommand>("verify-crashlog")
         .WithDescription("Boots a copy of an image twice: the first panics on request and must save its crash log, the second must recover it to /System/crash.log and clear the area.");
 
+    config.AddCommand<VerifySeedCommand>("verify-seed")
+        .WithDescription("Boots a copy of an image twice: the first must leave a random seed in the crash area, the second must credit it and leave another.");
+
     config.AddCommand<InspectCommand>("inspect")
         .WithDescription("Dumps a CXEX image's header, sections, and signature (replaces cxkdump.py).");
 

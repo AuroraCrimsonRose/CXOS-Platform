@@ -19,6 +19,7 @@
 #include "logging.h"
 #include "color.h"
 #include "panic.h"
+#include "arch/cpu_ops.h"      /* arch_irq_save */
 
 _Static_assert(KOBJ_TYPE_MAX <= 16, "live_counts.types holds every object type");
 
@@ -73,23 +74,78 @@ struct race {
     volatile int go;         /* race_release: the parked thread goes on */
 };
 
-volatile uint32_t race_armed_mask;
+volatile uint32_t race_armed_mask, race_chaos_mask;
 static struct race races[RP_COUNT];
 
-void race_point_slow(enum race_point p) {
-    if ((unsigned)p >= RP_COUNT) return;
+/* The armed action, if this arrival is the one it waits for: 1 if it acted. */
+static int race_fire(enum race_point p) {
     struct race *r = &races[p];
     int me = thread_current_id();
-    if (r->tid >= 0 && r->tid != me) return;
-    if (++r->arrivals != r->nth) return;
+    if (r->tid >= 0 && r->tid != me) return 0;
+    if (++r->arrivals != r->nth) return 0;
     /* Once per arming: no other thread can take it after this one. */
     race_armed_mask &= ~(1u << p);
     if (spin_held) kpanic("race point reached holding a spinlock");
 
-    if (r->act == RACE_CALL) { r->fn(r->ctx); return; }
+    if (r->act == RACE_CALL) { r->fn(r->ctx); return 1; }
     r->parked = me + 1;
     while (!r->go) yield();
     r->parked = 0;
+    return 1;
+}
+
+static uint64_t chaos_state;
+static uint32_t chaos_rate, chaos_n[RP_COUNT];
+static uint32_t boot_seed, boot_rate;
+
+/* A draw, and the yields it asks for. The draw and the count with
+   interrupts off: two threads taking turns here take the sequence's next
+   numbers in turn, never the same one. */
+static void chaos_at(enum race_point p) {
+    if (spin_held) kpanic("race point reached holding a spinlock");
+    uint32_t f = arch_irq_save();
+    uint64_t x = chaos_draw(&chaos_state);
+    uint32_t n = (uint32_t)(x % 1000u) < chaos_rate ? 1u + (uint32_t)((x >> 32) % 3u) : 0;
+    chaos_n[p] += n;
+    arch_irq_restore(f);
+    for (uint32_t i = 0; i < n; i++) yield();
+}
+
+void race_point_slow(enum race_point p) {
+    if ((unsigned)p >= RP_COUNT) return;
+    if ((race_armed_mask & (1u << p)) && race_fire(p)) return;
+    if (race_chaos_mask & (1u << p)) chaos_at(p);
+}
+
+int chaos_arm(uint32_t seed, uint32_t points, uint32_t permille) {
+    if (!points || (points & ~RP_ALL) || !permille || permille > 1000) return -1;
+    uint32_t f = arch_irq_save();
+    race_chaos_mask = 0;
+    chaos_state = seed;
+    chaos_rate = permille;
+    for (uint32_t i = 0; i < RP_COUNT; i++) chaos_n[i] = 0;
+    race_chaos_mask = points;
+    arch_irq_restore(f);
+    return 0;
+}
+
+void chaos_disarm(void) { race_chaos_mask = 0; }
+
+uint32_t chaos_yields(enum race_point p) {
+    return (unsigned)p < RP_COUNT ? chaos_n[p] : 0;
+}
+
+int chaos_configure(uint32_t seed, uint32_t permille) {
+    if (permille > 1000) return -1;
+    boot_seed = seed;
+    boot_rate = permille;
+    chaos_restore();
+    return 0;
+}
+
+void chaos_restore(void) {
+    if (boot_rate) (void)chaos_arm(boot_seed, RP_ALL, boot_rate);
+    else chaos_disarm();
 }
 
 int race_arm(enum race_point p, int tid, uint32_t nth, enum race_action act,
@@ -138,6 +194,15 @@ int  race_arm(enum race_point p, int tid, uint32_t nth, enum race_action act,
 int  race_wait_parked(enum race_point p, uint32_t ms) { (void)p; (void)ms; return -1; }
 void race_release(enum race_point p) { (void)p; }
 uint32_t race_arrivals(enum race_point p) { (void)p; return 0; }
+int      chaos_arm(uint32_t seed, uint32_t points, uint32_t permille) {
+    (void)seed; (void)points; (void)permille; return -1;
+}
+void     chaos_disarm(void) {}
+uint32_t chaos_yields(enum race_point p) { (void)p; return 0; }
+int      chaos_configure(uint32_t seed, uint32_t permille) {
+    (void)seed; return permille ? -1 : 0;
+}
+void     chaos_restore(void) {}
 
 #endif
 

@@ -34,6 +34,8 @@ struct kconfig {
     uint32_t max_threads;
     uint32_t max_handles;
     uint32_t memory_quota;       /* bytes */
+    uint32_t chaos_permille;     /* yields in a thousand race-point arrivals; 0 none */
+    uint32_t chaos_seed;         /* the chaos sequence's seed; 0: from the generator */
 };
 
 /* the built-in values, used for anything the file does not set */

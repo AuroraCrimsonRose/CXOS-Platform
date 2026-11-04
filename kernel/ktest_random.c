@@ -16,6 +16,11 @@
 #include "arch/cpu.h"
 #include "lib/crypto/chacha20.h"
 #include "lib/crypto/fortuna.h"
+#include "diag/crashlog.h"
+#include "diag/crashrec.h"
+#include "diag/testhook.h"
+#include "disk.h"
+#include "sched.h"              /* thread_current_id */
 
 /* The reason first: the line `cxk test sabotage` reads as the step. */
 static int rn_fail(const char *what, uint32_t step) {
@@ -140,8 +145,115 @@ int ktest_random_syscall(void) {
     return 1;
 }
 
+/* ---- the seed file ---- */
+
+static uint8_t  sf_rec[2 * XCRL_SECTOR];    /* header, then the seed's sector */
+static uint8_t  sf_disk;
+static uint64_t sf_lba;
+
+/* The record for `s` in sf_rec, written raw: what a last boot left. */
+static int sf_put(const uint8_t *s, int damaged) {
+    for (uint32_t i = 0; i < sizeof sf_rec; i++) sf_rec[i] = 0;
+    for (uint32_t i = 0; i < XCRL_SEED_LEN; i++) sf_rec[XCRL_SECTOR + i] = s[i];
+    xcrl_seal(sf_rec, XCRL_KIND_SEED, (const char *)sf_rec + XCRL_SECTOR, XCRL_SEED_LEN);
+    if (damaged) sf_rec[XCRL_SECTOR + 5] ^= 0x10;
+    return disk_write(sf_disk, sf_lba + XCRL_SEED_LBA, 2, sf_rec) == DISK_OK
+        && disk_flush(sf_disk) == DISK_OK;
+}
+
+/* At RP_SEED_WRITTEN: the old record back, as a disk that dropped the
+   rewrite would still hold it. */
+static void sf_drop(void *ctx) {
+    (void)ctx;
+    (void)disk_write(sf_disk, sf_lba + XCRL_SEED_LBA, 2, sf_rec);
+}
+
+static uint32_t sf_steps(void) {
+    static uint8_t s[XCRL_SEED_LEN], got[XCRL_SEED_LEN], want[XCRL_SEED_LEN + 32], out[32];
+    static struct fortuna g;
+    struct random_stats a, b;
+    if (crashlog_area(&sf_disk, &sf_lba, 0) != 0) return 1;
+    for (uint32_t i = 0; i < XCRL_SEED_LEN; i++) s[i] = (uint8_t)(i * 37u + 11u);
+
+    /* ---- unseeded, the rewrite read back: credited in full; the file
+       ends holding the generator's first bytes, and the generator goes on
+       from there ---- */
+    if (!sf_put(s, 0)) return 2;
+    random_test_hold(0);
+    random_stats(&a);
+    uint32_t bits = random_seed_file_load();
+    int seeded = random_seeded();
+    int rc = random_bytes(out, 32);
+    random_stats(&b);
+    random_test_release();
+    if (bits != FORTUNA_SEED_BITS || !seeded || rc != 0) return 3;
+    if (b.file_bits - a.file_bits != FORTUNA_SEED_BITS) return 4;
+    fortuna_init(&g);
+    fortuna_add(&g, s, XCRL_SEED_LEN, FORTUNA_SEED_BITS);
+    if (fortuna_generate(&g, want, XCRL_SEED_LEN, 0) || fortuna_generate(&g, want + XCRL_SEED_LEN, 32, 0)) return 5;
+    if (crashlog_seed_read(got) != CRASHLOG_SEED_OK) return 6;
+    for (uint32_t i = 0; i < XCRL_SEED_LEN; i++) if (got[i] != want[i]) return 7;
+    for (uint32_t i = 0; i < 32; i++) if (out[i] != want[XCRL_SEED_LEN + i]) return 8;
+
+    /* ---- unseeded, the rewrite dropped by the disk: not credited ---- */
+    if (!sf_put(s, 0)) return 9;
+    if (race_arm(RP_SEED_WRITTEN, thread_current_id(), 1, RACE_CALL, sf_drop, 0) != 0) return 10;
+    random_test_hold(0);
+    random_stats(&a);
+    bits = random_seed_file_load();
+    seeded = random_seeded();
+    rc = random_bytes(out, 32);
+    random_stats(&b);
+    random_test_release();
+    race_release(RP_SEED_WRITTEN);
+    if (race_arrivals(RP_SEED_WRITTEN) != 1) return 10;
+    if (bits || seeded || rc != E_SHOULD_WAIT || b.file_bits != a.file_bits) return 11;
+    if (crashlog_seed_read(got) != CRASHLOG_SEED_OK) return 12;
+    for (uint32_t i = 0; i < XCRL_SEED_LEN; i++) if (got[i] != s[i]) return 12;
+
+    /* ---- a damaged record: nothing credited; unseeded, nothing written ---- */
+    if (!sf_put(s, 1)) return 13;
+    random_test_hold(0);
+    bits = random_seed_file_load();
+    seeded = random_seeded();
+    random_test_release();
+    if (bits || seeded) return 14;
+    if (crashlog_seed_read(got) != CRASHLOG_SEED_BAD) return 15;
+
+    /* ---- seeded: the file takes the generator's bytes before the seed
+       counts ---- */
+    if (!sf_put(s, 0)) return 16;
+    random_test_hold(SEED);
+    bits = random_seed_file_load();
+    random_test_release();
+    uint64_t seed = SEED;
+    fortuna_init(&g);
+    fortuna_add(&g, &seed, sizeof seed, FORTUNA_SEED_BITS);
+    if (fortuna_generate(&g, want, XCRL_SEED_LEN, 0)) return 17;
+    if (bits != FORTUNA_SEED_BITS) return 18;
+    if (crashlog_seed_read(got) != CRASHLOG_SEED_OK) return 19;
+    for (uint32_t i = 0; i < XCRL_SEED_LEN; i++) if (got[i] != want[i]) return 20;
+    return 0;
+}
+
+int ktest_random_seed_file(void) {
+#if !CXK_ALLOW_DISK_WRITE
+    klog("KTEST", SEV_INFO, "random: no seed file, this build writes to no disk");
+    return 1;
+#else
+    uint32_t step = sf_steps();
+    race_release(RP_SEED_WRITTEN);
+    /* The next boot's seed from the real generator, not a test's. */
+    int w = random_seed_file_save();
+    if (!step && w != CRASHLOG_SEED_OK && w != E_SHOULD_WAIT) step = 21;
+    if (step) return rn_fail("random: seed file failed at step ", step);
+    return 1;
+#endif
+}
+
 #else
 int ktest_random_syscall(void) { return 1; }
+int ktest_random_seed_file(void) { return 1; }
 #endif
 
 int ktest_random_boot_seed(void) {

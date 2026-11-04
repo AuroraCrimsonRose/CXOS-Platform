@@ -40,11 +40,24 @@ int random_bytes(void *out, uint32_t len);
 
 int random_seeded(void);
 
+/* The seed file (diag/crashlog.h, in the crash partition). Once a boot,
+   after the disks: random_seed_file_load reads the seed the last boot left,
+   rewrites the file, and credits the seed (FORTUNA_SEED_BITS) only when the
+   rewrite reads back; otherwise it is mixed in uncredited. Returns the bits
+   credited. random_seed_file_save writes the generator's next bytes there:
+   CRASHLOG_SEED_OK, E_SHOULD_WAIT unseeded, or the write's error.
+   random_seed_file_refresh saves only if the file still wants the
+   generator's bytes and the generator is seeded (kmain's loop). */
+uint32_t random_seed_file_load(void);
+int      random_seed_file_save(void);
+void     random_seed_file_refresh(void);
+
 struct random_stats {
     uint32_t seeded;
     uint32_t cpu_bits;        /* credited at boot from RDSEED / RDRAND */
     uint32_t jitter_bits;     /* credited at boot from the jitter loop */
     uint32_t irq_bits;        /* credited from interrupts, before seeding */
+    uint32_t file_bits;       /* credited from the seed file */
     uint32_t taken;           /* interrupt samples stored */
     uint32_t dropped;         /* ... and dropped, the ring full */
     uint32_t pending;         /* stored and not yet hashed in */

@@ -14,6 +14,7 @@
 #include "config.h"
 #include "format.h"
 #include "arch/cpu_ops.h"
+#include "diag/testhook.h"   /* race_point */
 
 #define CRASH_FILE "/System/crash.log"
 #define FAULT_FILE "/System/faults.log"
@@ -179,9 +180,10 @@ void crashlog_boot(void) {
             test_requested = 1;
             klog("CRASHLOG", SEV_WARN, "a crash-log test asked this boot to panic");
         }
-    } else if (st == XCRL_VALID && kind == XCRL_KIND_BOOTLOG) {
-        /* Never written here: its text would not fit the recovery buffer. */
-        klog("CRASHLOG", SEV_WARN, "crash area held a boot log at the record's place; cleared");
+    } else if (st == XCRL_VALID && (kind == XCRL_KIND_BOOTLOG || kind == XCRL_KIND_SEED)) {
+        /* Never written here: a boot log's text would not fit the recovery
+           buffer, and a seed copied to /System/crash.log would be readable. */
+        klog("CRASHLOG", SEV_WARN, "crash area held a boot log or seed at the record's place; cleared");
         (void)crashlog_clear();
     } else if (st == XCRL_VALID) {
         recover(kind, len);
@@ -400,6 +402,68 @@ int crashlog_save_bootlog(void) {
     if (r == DISK_OK) r = disk_flush(area_disk);
     if (r == DISK_OK) bootlog_saved_total = total;
     arch_irq_restore(f);
+    return r;
+}
+
+/* ---- the seed file ----------------------------------------------------------
+ * Its own buffers: the seed must not pass through the panic's text buffer,
+ * and a boot-log save may run between a read and a write here. Each is
+ * cleared after use, so a later dump of kernel memory finds no seed in them. */
+static uint8_t seed_hdr[XCRL_SECTOR], seed_text[XCRL_SECTOR];
+static uint8_t back_hdr[XCRL_SECTOR], back_text[XCRL_SECTOR];
+
+static void wipe(uint8_t *p) {
+    for (uint32_t i = 0; i < XCRL_SECTOR; i++) ((volatile uint8_t *)p)[i] = 0;
+}
+
+static int seed_rd(uint8_t *h, uint8_t *t) {
+    uint32_t f = arch_irq_save();
+    int r = disk_read(area_disk, area_lba + XCRL_SEED_LBA, 1, h);
+    if (r == DISK_OK) r = disk_read(area_disk, area_lba + XCRL_SEED_LBA + 1, 1, t);
+    arch_irq_restore(f);
+    return r;
+}
+
+int crashlog_seed_read(uint8_t *out) {
+    if (!have_area || area_sectors <= XCRL_SEED_LBA + 1) return DISK_ERR_NO_DEVICE;
+    int r = seed_rd(seed_hdr, seed_text);
+    if (r != DISK_OK) return r;
+    uint16_t kind = 0;
+    int st = xcrl_check_header(seed_hdr, &kind, 0);
+    if (st == XCRL_EMPTY) r = CRASHLOG_SEED_NONE;
+    else if (st != XCRL_VALID || kind != XCRL_KIND_SEED
+             || xcrl_check_text(seed_hdr, (const char *)seed_text, XCRL_SEED_LEN) != XCRL_VALID)
+        r = CRASHLOG_SEED_BAD;
+    else {
+        for (uint32_t i = 0; i < XCRL_SEED_LEN; i++) out[i] = seed_text[i];
+        r = CRASHLOG_SEED_OK;
+    }
+    wipe(seed_text);
+    return r;
+}
+
+int crashlog_seed_write(const uint8_t *seed) {
+    if (!have_area || area_sectors <= XCRL_SEED_LBA + 1) return DISK_ERR_NO_DEVICE;
+    for (uint32_t i = 0; i < XCRL_SECTOR; i++) seed_text[i] = i < XCRL_SEED_LEN ? seed[i] : 0;
+    xcrl_seal(seed_hdr, XCRL_KIND_SEED, (const char *)seed_text, XCRL_SEED_LEN);
+
+    /* Text first, header last, as the other records: a write cut short
+       leaves a header whose CRC fails, never the old seed passing as new. */
+    uint32_t f = arch_irq_save();
+    int r = disk_write(area_disk, area_lba + XCRL_SEED_LBA + 1, 1, seed_text);
+    if (r == DISK_OK) r = disk_write(area_disk, area_lba + XCRL_SEED_LBA, 1, seed_hdr);
+    if (r == DISK_OK) r = disk_flush(area_disk);
+    arch_irq_restore(f);
+
+    race_point(RP_SEED_WRITTEN);
+    if (r == DISK_OK) r = seed_rd(back_hdr, back_text);
+    if (r == DISK_OK) {
+        r = CRASHLOG_SEED_OK;
+        for (uint32_t i = 0; i < XCRL_SECTOR; i++)
+            if (back_hdr[i] != seed_hdr[i] || back_text[i] != seed_text[i]) r = CRASHLOG_SEED_NOT_KEPT;
+    }
+    wipe(seed_text);
+    wipe(back_text);
     return r;
 }
 

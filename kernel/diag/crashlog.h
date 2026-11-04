@@ -69,6 +69,22 @@ int crashlog_area(uint8_t *disk, uint64_t *lba, uint64_t *sectors);
 int crashlog_save_bootlog(void);
 int crashlog_bootlog_stale(void);
 
+/* The random generator's seed file (crashrec.h, XCRL_SEED_LBA), for
+   drivers/char/random.c. crashlog_seed_read: CRASHLOG_SEED_OK with the
+   XCRL_SEED_LEN bytes in `out`, CRASHLOG_SEED_NONE (never written),
+   CRASHLOG_SEED_BAD (a record that is not a whole seed), or the disk error.
+   crashlog_seed_write: writes `seed` (text, then header, then a flush, each
+   with interrupts off), reads both sectors back, and answers CRASHLOG_SEED_OK
+   only when they are what was written; CRASHLOG_SEED_NOT_KEPT when they are
+   not (a disk that drops writes), or the disk error. The read-back sees what
+   the disk says it holds: a drive whose cache lies is not caught. */
+#define CRASHLOG_SEED_OK        0
+#define CRASHLOG_SEED_NONE      1
+#define CRASHLOG_SEED_BAD       2
+#define CRASHLOG_SEED_NOT_KEPT  3
+int crashlog_seed_read(uint8_t *out);
+int crashlog_seed_write(const uint8_t *seed);
+
 /* Write a record of `kind` with `len` bytes of `text` to the area: the text,
    then the header, then a flush. A disk_err code. `text` must hold whole
    sectors (zero past `len`). Shared by the panic and the self-test, so the

@@ -24,6 +24,12 @@ int ktest_live_counts(void);
    was armed for, until released. */
 int ktest_race_points(void);
 
+/* Chaos: its yields are the documented sequence's, from the seed alone
+   (the same seed the same, another other); at 1000 every arrival yields
+   and another thread runs; a point not chosen never yields; an armed race
+   point still fires once; bad arguments refused; the boot's chaos back. */
+int ktest_chaos(void);
+
 /* Failing each allocation in turn of pipe, memory object, job, process,
    held thread and mapping creation: each run refuses cleanly and leaves
    every live count as it was. */

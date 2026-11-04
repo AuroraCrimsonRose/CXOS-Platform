@@ -15,6 +15,10 @@
 #include "arch/cpu.h"         /* arch_cpu_random */
 #include "boot/cxbi.h"         /* the loader's rng_seed */
 #include "lib/crypto/fortuna.h"
+#include "lib/crypto/sha256.h"
+#include "diag/crashlog.h"     /* the seed file */
+#include "diag/crashrec.h"     /* XCRL_SEED_LEN */
+#include "disk.h"              /* DISK_ERR_NO_DEVICE */
 
 #define RING          128      /* samples between drains; more are dropped */
 #define JITTER_MAX    8192     /* boot loop rounds at most */
@@ -30,7 +34,8 @@ static uint32_t taken, dropped;
 static spinlock_t lock = SPINLOCK_INIT;
 static struct fortuna gen;
 static struct jitter_est irq_est;
-static uint32_t cpu_bits, jitter_bits, irq_bits;
+static uint32_t cpu_bits, jitter_bits, irq_bits, file_bits;
+static int file_stale;         /* the seed file wants the generator's bytes, once seeded */
 
 void random_irq_sample(uint32_t vector) {
     uint32_t n = ring_n;
@@ -153,6 +158,7 @@ void random_stats(struct random_stats *s) {
     s->cpu_bits = cpu_bits;
     s->jitter_bits = jitter_bits;
     s->irq_bits = irq_bits;
+    s->file_bits = file_bits;
     s->taken = taken;
     s->dropped = dropped;
     s->pending = ring_n;
@@ -172,10 +178,108 @@ int syscall_random_read(uint64_t buf, uint64_t len) {
     return rc;
 }
 
+/* ---- the seed file ----
+   Read once a boot, after the disks (crashlog.c keeps it in the crash
+   partition). The seed is credited only after the file has been rewritten
+   and the rewrite read back: a stick that drops writes would otherwise hand
+   every boot the same seed, credited in full each time. */
+
+static void wipe(uint8_t *p, uint32_t n) {
+    for (uint32_t i = 0; i < n; i++) ((volatile uint8_t *)p)[i] = 0;
+}
+
+/* What replaces a seed before the generator is seeded: SHA-256 of a label,
+   a counter and the seed, so the file never holds the same seed twice and
+   the new one does not give back the old. Rewritten from the generator once
+   it is seeded (file_stale). */
+static void next_from(uint8_t next[XCRL_SEED_LEN], const uint8_t old[XCRL_SEED_LEN]) {
+    static const char label[] = "CXOS seed file, next";
+    for (uint8_t k = 0; k < XCRL_SEED_LEN / SHA256_DIGEST_SIZE; k++) {
+        struct sha256_ctx c;
+        sha256_init(&c);
+        sha256_update(&c, label, sizeof label);
+        sha256_update(&c, &k, 1);
+        sha256_update(&c, old, XCRL_SEED_LEN);
+        sha256_final(&c, next + k * SHA256_DIGEST_SIZE);
+        wipe((uint8_t *)&c, sizeof c);
+    }
+}
+
+int random_seed_file_save(void) {
+    static uint8_t next[XCRL_SEED_LEN];
+    if (random_bytes(next, XCRL_SEED_LEN) != 0) { file_stale = 1; return E_SHOULD_WAIT; }
+    int w = crashlog_seed_write(next);
+    wipe(next, sizeof next);
+    file_stale = w != CRASHLOG_SEED_OK;
+    return w;
+}
+
+void random_seed_file_refresh(void) {
+    if (file_stale && random_seeded()) (void)random_seed_file_save();
+}
+
+/* A self-test's loads run against a held generator and log nothing: the
+   boot's own lines are the ones `cxk verify-seed` reads. */
+static int seed_quiet(void) {
 #if CXK_TEST_HOOKS
+    return held;
+#else
+    return 0;
+#endif
+}
+
+uint32_t random_seed_file_load(void) {
+    static uint8_t old[XCRL_SEED_LEN], next[XCRL_SEED_LEN];
+    int r = crashlog_seed_read(old);
+    if (r == DISK_ERR_NO_DEVICE) {
+        if (!seed_quiet()) klog("RANDOM", SEV_INFO, "no crash area: no seed file");
+        return 0;
+    }
+    if (r != CRASHLOG_SEED_OK) {
+        int w = random_seed_file_save();
+        if (seed_quiet()) return 0;
+        if (r == CRASHLOG_SEED_BAD) klog("RANDOM", SEV_WARN, "seed file damaged: not used");
+        else if (r != CRASHLOG_SEED_NONE)
+            klog_u32("RANDOM", SEV_WARN, "seed file unreadable, disk error ", (uint32_t)-r, LOG_COLOR_VALUE, "");
+        if (w == CRASHLOG_SEED_OK) klog("RANDOM", SEV_OK, "seed file written for the next boot");
+        else klog("RANDOM", SEV_WARN, "no seed file for the next boot yet: written once seeded");
+        return 0;
+    }
+
+    /* The file is rewritten before the seed counts: from the generator if
+       it is seeded already, else from the seed itself. */
+    int fresh = random_bytes(next, XCRL_SEED_LEN) == 0;
+    if (!fresh) next_from(next, old);
+    int w = crashlog_seed_write(next);
+    uint32_t bits = w == CRASHLOG_SEED_OK ? FORTUNA_SEED_BITS : 0;
+
+    uint32_t f = spin_lock(&lock);
+    drain();
+    fortuna_add(&gen, old, XCRL_SEED_LEN, bits);
+    file_bits += bits;
+    spin_unlock(&lock, f);
+    wipe(old, sizeof old);
+    wipe(next, sizeof next);
+
+    file_stale = !fresh || w != CRASHLOG_SEED_OK;
+    if (bits) random_seed_file_refresh();
+    if (seed_quiet()) return bits;
+    if (bits) {
+        klog_u32("RANDOM", SEV_OK, "seed file read back rewritten, credited bits ", bits, LOG_COLOR_VALUE, "");
+    } else {
+        klog_u32("RANDOM", SEV_WARN, "seed file not credited: its rewrite failed, ", (uint32_t)(w < 0 ? -w : w), LOG_COLOR_VALUE, "");
+        klog_child("mixed in uncredited (a disk that drops writes replays it)");
+    }
+    return bits;
+}
+
+#if CXK_TEST_HOOKS
+static uint32_t saved_file_bits;
+
 void random_test_hold(uint64_t seed) {
     uint32_t f = spin_lock(&lock);
     saved = gen;
+    saved_file_bits = file_bits;   /* a test's credits are not the boot's */
     held = 1;
     fortuna_init(&gen);
     if (seed) fortuna_add(&gen, &seed, sizeof seed, FORTUNA_SEED_BITS);
@@ -185,6 +289,7 @@ void random_test_hold(uint64_t seed) {
 void random_test_release(void) {
     uint32_t f = spin_lock(&lock);
     gen = saved;
+    file_bits = saved_file_bits;
     held = 0;
     for (uint32_t i = 0; i < sizeof saved; i++) ((volatile uint8_t *)&saved)[i] = 0;
     spin_unlock(&lock, f);

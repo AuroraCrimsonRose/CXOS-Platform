@@ -28,6 +28,14 @@
  *   (spin_held, sync/spinlock.h). Interrupts may be off, as they are for a
  *   syscall's whole body; a park yields, and each thread keeps its own.
  *
+ *   Chaos (roadmap 1.7c). While armed, every arrival at a chosen set of
+ *   race points draws from a small generator seeded with a 32-bit number
+ *   and, so many times in a thousand, yields one to three times there, so
+ *   other threads run where the point stands. The draws are a function of
+ *   the seed alone (chaos_draw), and the seed is printed: a run that went
+ *   red replays its decisions from that number. Not the kernel's random
+ *   numbers (random.h): fast, replayable, and for nothing secret.
+ *
  * XNU names its injection points the same way, as stages with one armed at
  * a time (osfmk/kern/upsi.h, check_for_failure_injection in debug.c), there
  * to panic or hang at boot rather than to test a path. Serenity reads its
@@ -114,8 +122,10 @@ enum race_point {
     RP_IPC_REPLY_COPY,         /* reply_on: the call REPLYING, its bytes not yet read */
     RP_QUEUE_WOKEN,            /* kqueue_wait: the queue seen ready, the wait lock not yet taken */
     RP_SPAWN_TAKE,             /* proc_start: the named handles checked by the syscall, not yet taken */
+    RP_SEED_WRITTEN,           /* crashlog_seed_write: the seed written and flushed, not yet read back */
     RP_COUNT
 };
+#define RP_ALL ((1u << RP_COUNT) - 1u)
 
 enum race_action {
     RACE_PARK = 1,             /* the thread waits there until race_release */
@@ -123,11 +133,11 @@ enum race_action {
 };
 
 #if CXK_TEST_HOOKS && !defined(CXK_HOST_TEST)
-extern volatile uint32_t race_armed_mask;
+extern volatile uint32_t race_armed_mask, race_chaos_mask;
 void race_point_slow(enum race_point p);
 /* In kernel code, at the named place. */
 static inline void race_point(enum race_point p) {
-    if (race_armed_mask & (1u << p)) race_point_slow(p);
+    if ((race_armed_mask | race_chaos_mask) & (1u << p)) race_point_slow(p);
 }
 #else
 static inline void race_point(enum race_point p) { (void)p; }
@@ -143,5 +153,32 @@ int  race_wait_parked(enum race_point p, uint32_t ms);
 void race_release(enum race_point p);
 /* Arrivals at `p` since it was armed. */
 uint32_t race_arrivals(enum race_point p);
+
+/* ---- chaos ---- */
+
+/* The next draw of a chaos generator whose state is *s (splitmix64), for
+   the hooks and for a test's own copy of the sequence. Arrival k draws the
+   k-th number; it yields when the number mod 1000 is below the rate, and
+   then 1 + (number >> 32) % 3 times. */
+static inline uint64_t chaos_draw(uint64_t *s) {
+    uint64_t z = (*s += 0x9E3779B97F4A7C15ull);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    return z ^ (z >> 31);
+}
+
+/* Arm chaos at the points in `points` (bits of enum race_point, RP_ALL for
+   every one) at `permille` (1 to 1000) yields in a thousand arrivals, from
+   `seed`; replaces any chaos armed before, and starts its sequence over.
+   -1 if the hooks are not built in or the arguments are bad. */
+int      chaos_arm(uint32_t seed, uint32_t points, uint32_t permille);
+void     chaos_disarm(void);
+/* Yields chaos made at `p` since it was armed. */
+uint32_t chaos_yields(enum race_point p);
+/* The boot's own chaos, from kernel.xkco (kconfig.c): arms it, and is
+   remembered, so a test that arms its own puts it back with chaos_restore
+   (the same seed, its sequence from the start). permille 0: none. */
+int      chaos_configure(uint32_t seed, uint32_t permille);
+void     chaos_restore(void);
 
 #endif

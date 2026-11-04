@@ -13,15 +13,22 @@
 #include "logging.h"
 #include "color.h"
 #include "format.h"
+#include "random.h"
+#include "diag/testhook.h"     /* chaos_configure */
+#include "arch/cpu_ops.h"      /* arch_cycles32 */
 
 #define KIB 1024u
 #define MIB (1024u * 1024u)
+
+static void chaos_boot(const struct kconfig *c);
 
 void kconfig_defaults(struct kconfig *out) {
     out->kernel_stack = THREAD_STACK_DEFAULT;
     out->max_threads  = THREAD_LIMIT_DEFAULT;
     out->max_handles  = HTAB_LIMIT_DEFAULT;
     out->memory_quota = VM_DEFAULT_QUOTA;
+    out->chaos_permille = 0;
+    out->chaos_seed   = 0;
 }
 
 /* One integer setting: read it, range-check it, or say why not. */
@@ -64,6 +71,12 @@ int kconfig_parse(const char *s, uint32_t len, struct kconfig *out,
         } else if (xd_sym_is(s, &k, "memory_quota_mib")) {
             if (setting(s, &v, 1, 64, &n, why, "memory_quota_mib must be 1 to 64") < 0) return -1;
             c.memory_quota = n * MIB;
+        } else if (xd_sym_is(s, &k, "chaos_permille")) {
+            if (setting(s, &v, 0, 1000, &n, why, "chaos_permille must be 0 to 1000") < 0) return -1;
+            c.chaos_permille = n;
+        } else if (xd_sym_is(s, &k, "chaos_seed")) {
+            if (setting(s, &v, 0, 0xFFFFFFFFu, &n, why, "chaos_seed must fit 32 bits") < 0) return -1;
+            c.chaos_seed = n;
         } else {
             *err_at = k.at;
             *why = "unknown key";
@@ -130,4 +143,37 @@ void kconfig_load(void) {
     klog_child_u32("max threads: ", c.max_threads, LOG_COLOR_VALUE, "");
     klog_child_u32("max handles: ", c.max_handles, LOG_COLOR_VALUE, "");
     klog_child_u32("memory quota MiB: ", c.memory_quota / MIB, LOG_COLOR_VALUE, "");
+    chaos_boot(&c);
+}
+
+/* Seeded yields at every race point for the rest of the boot (testhook.h),
+   when the file asks for them. The seed is printed, so a red run replays:
+   put it in the file as chaos_seed. Taken from the generator when the file
+   gives none; chaos is no secret, so an unseeded generator's place is
+   taken by the cycle counter, and the line says so. */
+static void chaos_boot(const struct kconfig *c) {
+    if (!c->chaos_permille) return;
+    uint32_t seed = c->chaos_seed;
+    const char *from = "kernel.xkco";
+    if (!seed) {
+        from = "the generator";
+        if (random_bytes(&seed, sizeof seed) != 0) { seed = arch_cycles32(); from = "the cycle counter (unseeded)"; }
+        if (!seed) seed = 1;
+    }
+    if (chaos_configure(seed, c->chaos_permille) != 0) {
+        klog("CHAOS", SEV_WARN, "chaos asked for, but this kernel has no test hooks");
+        return;
+    }
+    char line[64];
+    uint32_t p = 0;
+    const char *pre = "seed 0x";
+    while (*pre) line[p++] = *pre++;
+    p += (uint32_t)fmt_hex(line + p, seed, 8, 1);
+    pre = ", from ";
+    while (*pre) line[p++] = *pre++;
+    while (*from && p < sizeof line - 1) line[p++] = *from++;
+    line[p] = 0;
+    klog_u32("CHAOS", SEV_WARN, "on at every race point, yields per thousand ", c->chaos_permille, LOG_COLOR_VALUE, "");
+    klog_child(line);
+    klog_child("replay: that seed as chaos_seed in kernel.xkco");
 }

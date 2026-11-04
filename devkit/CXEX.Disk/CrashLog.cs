@@ -47,6 +47,11 @@ public static class CrashLog
     /// <summary>Where the system log starts in the crash partition, and its cap (XCRL_BOOTLOG_LBA, XCRL_BOOTLOG_MAX).</summary>
     public const int BootLogLba = 64;
     public const int BootLogMax = 256 * 512;
+    /// <summary>The random generator's seed for the next boot (XCRL_KIND_SEED, XCRL_SEED_LBA,
+    /// XCRL_SEED_LEN): a header, then the seed in the sector after it.</summary>
+    public const ushort KindSeed = 5;
+    public const int SeedLba = 48;
+    public const int SeedLen = 64;
     public const int Sector = 512;
     public const int TextMax = 32 * Sector;
     public const int Sectors = 1 + TextMax / Sector;
@@ -163,6 +168,24 @@ public static class CrashLog
         uint crc = Crc32(Crc32(0, h.AsSpan(0, 12)), text);
         if (crc != BitConverter.ToUInt32(h, 12)) return new(CrashAreaState.Invalid, "system log torn: the CRC does not match (the machine was switched off mid-save?)");
         return new(CrashAreaState.Record, $"system log, {len} bytes", Encoding.ASCII.GetString(text));
+    }
+
+    /// <summary>The seed a boot left for the next one, or null when there is no whole,
+    /// sealed seed record at <see cref="SeedLba"/>.</summary>
+    public static byte[]? ReadSeed(Stream disk)
+    {
+        var area = FindArea(disk);
+        if (area is null || area.Value.Sectors <= SeedLba + 1) return null;
+        var h = new byte[Sector];
+        var t = new byte[Sector];
+        disk.Seek((area.Value.Lba + SeedLba) * Sector, SeekOrigin.Begin);
+        disk.ReadExactly(h);
+        disk.ReadExactly(t);
+        if (BitConverter.ToUInt32(h, 0) != Magic || BitConverter.ToUInt16(h, 4) != XcrlVersion
+            || BitConverter.ToUInt16(h, 6) != KindSeed || BitConverter.ToUInt32(h, 8) != SeedLen) return null;
+        var seed = t.AsSpan(0, SeedLen);
+        if (Crc32(Crc32(0, h.AsSpan(0, 12)), seed) != BitConverter.ToUInt32(h, 12)) return null;
+        return seed.ToArray();
     }
 
     /// <summary>Ask the next boot of this disk to panic on purpose (the kernel clears it first).</summary>

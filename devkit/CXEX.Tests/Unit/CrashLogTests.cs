@@ -259,4 +259,24 @@ public class CrashLogTests
         img.WriteByte((byte)'X');
         Assert.Equal(CrashAreaState.Invalid, CrashLog.ReadBootLog(img).State);
     }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
+    public void A_seed_reads_back_only_whole_and_sealed()
+    {
+        using var img = Image();
+        Assert.Null(CrashLog.ReadSeed(img));
+
+        var seed = new byte[CrashLog.SeedLen];
+        for (int i = 0; i < seed.Length; i++) seed[i] = (byte)(i * 37 + 11);
+        img.Seek((4096L + CrashLog.SeedLba) * 512, SeekOrigin.Begin);
+        img.Write(CrashLog.Seal(CrashLog.KindSeed, seed));
+        img.Write(seed);
+        Assert.Equal(seed, CrashLog.ReadSeed(img));
+        Assert.Equal(CrashAreaState.Empty, CrashLog.Read(img).State);   // not the crash record's place
+
+        img.Seek((4096L + CrashLog.SeedLba + 1) * 512 + 7, SeekOrigin.Begin);
+        img.WriteByte(0xFF);
+        Assert.Null(CrashLog.ReadSeed(img));
+    }
 }

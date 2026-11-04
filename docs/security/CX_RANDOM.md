@@ -3,8 +3,8 @@
 
 The kernel's random number generator: what feeds it, how it turns that into
 bytes, when it refuses, and what it can and cannot promise on each machine.
-Built in roadmap step 1.7b (ABI 32); the seed file and seeded chaos at race
-points follow in 1.7c. `CX_SECURITY.md` §3.2 lists what needs it: the stack
+Built in roadmap step 1.7b (ABI 32); the seed file (§5) and seeded chaos at
+race points (§8) in 1.7c. `CX_SECURITY.md` §3.2 lists what needs it: the stack
 protector, KASLR, network sequence numbers, keys, and the syscall fuzzer.
 
 ## 1. Shape
@@ -69,6 +69,7 @@ same idea in the other order.
 | RDSEED, else RDRAND: 4 words, 10 tries each | boot | 64 bits a plausible word |
 | Jitter: the TSC after each of up to 8192 rounds of data-dependent reads and writes over a page | boot, interrupts on | at most 1 bit a round |
 | The TSC at every interrupt | always | at most 1 bit a sample, until seeded |
+| The seed file the last boot left (§5) | boot, after the disks | 256 bits, once its rewrite reads back |
 
 A CPU word is plausible when it is not 0, not all ones, and not the word
 before it: some AMD parts returned all ones from RDRAND after a resume while
@@ -89,7 +90,8 @@ few cycles earns nothing.
 - **The rig (FX-8350):** no RDRAND or RDSEED (Piledriver predates both on AMD; roadmap step 7). The
   boot jitter and the interrupt timing carry it; how many bits the jitter
   loop earns there is unmeasured until the hardware report (roadmap step 8).
-  The seed file (1.7c) makes the next boot start seeded.
+  The seed file (§5) makes every boot after the first start seeded, once
+  the disks are up.
 - **QEMU with `-icount`** (every verification boot): the cycle counter is a
   function of the instruction count. The jitter loop still earns its 256
   bits there (measured on the first boot: `jitter bits 256` with the default
@@ -105,7 +107,60 @@ No estimator can tell a deterministic stream that wanders from a random
 one: credit is a lower bound on what the machine is believed to offer, not
 a measurement.
 
-## 5. The interface
+## 5. The seed file
+
+The rig has neither RDRAND nor RDSEED, and an idle machine gives few
+interrupt samples, so a boot there may wait a long time to be seeded. Each
+boot therefore leaves 64 bytes for the next: a record in the crash
+partition (`kernel/diag/crashrec.h`: kind `XCRL_KIND_SEED` at sector 48, a
+header and one sector, sealed with the crash records' CRC). Raw sectors,
+not a file on CXFS: the area is found before the system volume is mounted,
+no program can read it (there is no raw-disk call), and the panic and boot
+log already write it the same way, text first and header last.
+
+At boot, after `crashlog_boot` and before the self-tests
+(`random_seed_file_load`):
+
+1. Read the record. None, or a damaged one: nothing is credited, and the
+   generator's bytes are written for the next boot if it is seeded already.
+2. Rewrite the record **before** the seed counts: with the generator's next
+   bytes if it is seeded, else with SHA-256 of a label, a counter and the
+   seed, so the file never holds the same seed twice and the new one does
+   not give back the old.
+3. Read both sectors back. Only if they are what was written is the seed
+   mixed in with 256 bits of credit; otherwise it is mixed in uncredited.
+4. If the rewrite came from the seed itself and the generator is now
+   seeded, write the generator's bytes over it. A boot that was not seeded
+   at all tries again from kmain's idle loop, as often as the boot log.
+
+The read-back is the point of step 3: a USB stick that takes writes and
+drops them would otherwise hand every boot the same seed, credited in full
+each time. The read sees what the disk says it holds; a drive whose cache
+answers for it is not caught. Linux's `systemd-random-seed` makes the same
+rule (credit only after the file is rewritten; from memory, not indexed).
+XNU takes its seed from the loader (`PE_get_random_seed`,
+`pexpert/gen/pe_gen.c`: the `random-seed` property of `/chosen`, zeroed
+after the copy, all zeros counting as none); Serenity mixes the TSC,
+RDRAND and RDSEED and two multiboot addresses into one word in the
+prekernel (`generate_secure_seed`, `Kernel/Prekernel/Random.cpp`) and keeps
+nothing between boots; Haiku's random driver takes bytes written to it
+(`random_write`, `src/add-ons/kernel/bus_managers/random/driver.cpp`).
+
+What the seed file cannot fix:
+
+- **A copied disk.** Two sticks written from one image after a boot share
+  its seed. A fresh image carries none (`cxk os build` leaves the area
+  zeroed), so this needs a copy of a used stick.
+- **A disk read between boots.** Whoever reads the stick knows the next
+  boot's seed; the boot is then only as strong as its other sources. The
+  seed costs nothing against that reader and helps against everyone else.
+- **VM snapshots** (`-snapshot`, Hyper-V checkpoints) replay the same seed
+  into each run. Verification boots start from an image with no seed, so
+  they are not credited one; `cxk verify-seed` boots a writable copy
+  twice and checks that the second credits the seed the first left, and
+  leaves another.
+
+## 6. The interface
 
 - Kernel: `random_bytes(out, len)` (0 or `E_SHOULD_WAIT`), `random_seeded()`,
   `random_stats()` (`kernel/drivers/char/random.h`). Not from an interrupt
@@ -116,7 +171,7 @@ a measurement.
   bytes made for an unwritable buffer are discarded, never reused).
   `CX_SYSCALLS_IPC.md` has the call among the others.
 
-## 6. Tests
+## 7. Tests
 
 Host (`kernel/test/host/test_random.c`): RFC 8439 §2.3.2 and A.1 #1; the
 reseed schedule; nothing before 256 credited bits, and never from uncredited
@@ -136,10 +191,43 @@ them and none where it does not (judged under `--cpu max`). X
 outcomes. Sabotages: `tests/sabotage/1.7b.sab`; the host-tested rules were
 each broken by hand and seen red (the commit lists them).
 
-## 7. Not yet
+The seed file (`ktest_random_seed_file`, against a held generator and the
+real crash area): a seed whose rewrite reads back is credited 256 bits, and
+the file ends holding exactly the first bytes of a generator seeded the
+same way, the generator going on from there; a rewrite the disk drops (the
+race point `RP_SEED_WRITTEN` puts the old record back) is not credited and
+the generator stays unseeded; a damaged record is neither credited nor
+replaced while unseeded; seeded, the file takes the generator's bytes. The
+real generator's bytes are left in the file after. Host
+(`test_crashrec.c`): a seed record is exactly 64 bytes. Across boots:
+`cxk verify-seed`. Sabotages: `tests/sabotage/1.7c.sab`.
 
-- The seed file on the boot disk, rewritten at each boot, and seeded chaos
-  at race points: 1.7c.
+## 8. Chaos at race points
+
+The race points of step 6 (`kernel/diag/testhook.h`) take a second use:
+while chaos is armed, each arrival at a chosen point draws from a
+splitmix64 sequence seeded with a 32-bit number and, so many times in a
+thousand, yields one to three times there, so other threads run in the
+middle of the operation. The draws depend on the seed alone, and the boot
+prints it, so a run that went red replays its decisions. Asked for in
+`/System/Config/kernel.xkco` (`chaos_permille`, 0 to 1000, off by
+default; `chaos_seed`, 0 for one from this generator), it is armed at every
+point before the self-tests and stays for the boot. Not this generator's
+bytes: chaos wants speed and replay, and nothing in it is secret.
+Needs `CXK_TEST_HOOKS`.
+
+Replay is exact only where the arrivals come in the same order, which
+`-icount` boots give and real hardware does not; on the rig the seed
+names the decisions, not the interleaving. Test (`ktest_chaos`): the
+yields match the documented rule for a fixed seed, the same seed gives the
+same ones and another seed others, 1000 yields at every arrival and lets
+another thread run each time, a point not chosen never yields, an armed
+race point still fires once, bad arguments are refused.
+
+## 9. Not yet
+
+- A `cxk` switch for a chaos boot: today it is an edit of `kernel.xkco` and
+  a rebuild.
 - Per-CPU sample rings: SMP (step 9).
 - A periodic drain: samples reach the pools only when someone asks for
   bytes, so a long quiet spell keeps only the ring's first 128.

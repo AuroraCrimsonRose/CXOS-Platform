@@ -329,6 +329,106 @@ int ktest_race_points(void) {
     return step == 0;
 }
 
+/* ---- chaos ---- */
+
+#define CH_SEED 0xC4A05EEDu
+
+/* `n` arrivals at RP_SELFTEST under chaos(seed, permille): the yields each
+   made, and their total; 0xFFFFFFFF if arming was refused. */
+static uint32_t ch_pattern(uint32_t seed, uint32_t permille, uint8_t *y, uint32_t n) {
+    if (chaos_arm(seed, 1u << RP_SELFTEST, permille) != 0) return 0xFFFFFFFFu;
+    uint32_t total = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t before = chaos_yields(RP_SELFTEST);
+        race_point(RP_SELFTEST);
+        y[i] = (uint8_t)(chaos_yields(RP_SELFTEST) - before);
+        total += y[i];
+    }
+    chaos_disarm();
+    return total;
+}
+
+static volatile int ch_stop, ch_runs;
+
+/* Runs once each time it is given the CPU. */
+static void ch_helper(void) {
+    while (!ch_stop) { ch_runs++; yield(); }
+}
+
+static int chaos_steps(void) {
+    static uint8_t a[256], b[256];
+
+    /* the decisions are the documented sequence's, from the seed alone */
+    uint32_t ta = ch_pattern(CH_SEED, 500, a, 256);
+    if (ta == 0xFFFFFFFFu) return 1;
+    uint64_t s = CH_SEED;
+    uint32_t yes = 0;
+    for (uint32_t i = 0; i < 256; i++) {
+        uint64_t x = chaos_draw(&s);
+        uint32_t want = (uint32_t)(x % 1000u) < 500 ? 1u + (uint32_t)((x >> 32) % 3u) : 0;
+        if (a[i] != want) return 2;
+        yes += want != 0;
+    }
+    /* about half: a fixed seed, so this is the sequence, not luck */
+    if (yes < 64 || yes > 192) return 3;
+
+    /* the same seed again: the same decisions; another seed: others */
+    if (ch_pattern(CH_SEED, 500, b, 256) != ta) return 4;
+    for (uint32_t i = 0; i < 256; i++) if (a[i] != b[i]) return 5;
+    (void)ch_pattern(CH_SEED + 1, 500, b, 256);
+    uint32_t same = 0;
+    for (uint32_t i = 0; i < 256; i++) same += a[i] == b[i];
+    if (same == 256) return 6;
+
+    /* 1000: every arrival yields; a point not chosen: none */
+    (void)ch_pattern(1, 1000, a, 64);
+    for (uint32_t i = 0; i < 64; i++) if (!a[i]) return 7;
+    if (chaos_arm(1, 1u << RP_FUTEX_READ, 1000) != 0) return 8;
+    race_point(RP_SELFTEST);
+    uint32_t stray = chaos_yields(RP_SELFTEST);
+    chaos_disarm();
+    if (stray) return 8;
+
+    /* a yield is a yield: a helper that runs once a turn ran at each */
+    ch_stop = 0; ch_runs = 0;
+    int h = thread_create("hook-chaos", ch_helper);
+    if (h < 0) return 9;
+    hk_pause(5);
+    if (chaos_arm(1, 1u << RP_SELFTEST, 1000) != 0) { ch_stop = 1; return 10; }
+    int runs0 = ch_runs;
+    for (int i = 0; i < 32; i++) race_point(RP_SELFTEST);
+    int runs = ch_runs - runs0;
+    chaos_disarm();
+    ch_stop = 1;
+    if (runs < 32) return 10;
+
+    /* an armed race point still fires under chaos, and only once */
+    rp_calls = 0;
+    if (chaos_arm(7, 1u << RP_SELFTEST, 1000) != 0) return 11;
+    if (race_arm(RP_SELFTEST, thread_current_id(), 1, RACE_CALL, rp_call, (void *)&rp_calls) != 0) return 11;
+    race_point(RP_SELFTEST);
+    race_point(RP_SELFTEST);
+    chaos_disarm();
+    if (rp_calls != 1) return 12;
+
+    /* bad arguments are refused */
+    if (chaos_arm(1, 0, 500) == 0) return 13;
+    if (chaos_arm(1, 1u << RP_COUNT, 500) == 0) return 14;
+    if (chaos_arm(1, RP_ALL, 0) == 0 || chaos_arm(1, RP_ALL, 1001) == 0) return 15;
+    return 0;
+}
+
+int ktest_chaos(void) {
+    uint32_t threads0 = sched_thread_count();
+    int step = chaos_steps();
+    ch_stop = 1;
+    race_release(RP_SELFTEST);
+    chaos_restore();            /* the boot's own chaos, if kernel.xkco asked */
+    if (!hk_settle(threads0) && !step) step = 16;
+    if (step) klog_u32("KTEST", SEV_FAIL, "chaos: step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    return step == 0;
+}
+
 /* ---- the sweeps ----
    Each operation makes something and undoes it, returning 0, or undoes
    what it made and returns nonzero when a step was refused. The sweep fails

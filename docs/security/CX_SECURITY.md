@@ -79,8 +79,9 @@ range.
 - **A random number generator.** Built in 1.7b (`CX_RANDOM.md`): Fortuna
   pools over ChaCha20, seeded from RDSEED/RDRAND where present, boot
   jitter and interrupt timing (the loader's `rng_seed` mixed in
-  uncredited), with no fallback seed; `random_read` for programs. Still to
-  come (1.7c): the seed file on the boot disk. KASLR, the stack protector,
+  uncredited), with no fallback seed; `random_read` for programs; and (1.7c)
+  a seed file in the crash partition, credited only once its rewrite
+  reads back. KASLR, the stack protector,
   TCP sequence numbers and keys draw on it as they arrive.
 - **A syscall fuzzer generated from `.xfil`.** The interface definition knows
   every call's arguments, types and handle rights, so the fuzzer is generated,

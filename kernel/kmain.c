@@ -426,6 +426,11 @@ void kmain_late(void) {
        area themselves. */
     crashlog_boot();
 
+    /* The seed the last boot left, in the crash area: credited once its
+       rewrite reads back (random.h). Before the self-tests, which use the
+       generator and the area. */
+    (void)random_seed_file_load();
+
     /* run the kernel self-tests (ktest.c) first - they create + reap their own
        ring-3 threads, so let them finish before starting the executive. */
     ktest_run();
@@ -495,7 +500,7 @@ void kmain_late(void) {
     else if (bl != DISK_ERR_NO_DEVICE)
         klog_u32("CRASHLOG", SEV_WARN, "system log not saved, disk error ", (uint32_t)-bl, LOG_COLOR_VALUE, "");
     uint32_t bl_at = timer_ticks();
-    uint32_t usb_at = bl_at;
+    uint32_t usb_at = bl_at, rf_at = bl_at;
 
     for (;;) {
         yield();                       /* let the executive + its apps run */
@@ -504,6 +509,14 @@ void kmain_late(void) {
             (void)crashlog_save_bootlog();
             usb_unlock(k);
             bl_at = timer_ticks();
+        }
+        /* The seed file, if the boot could not give it the generator's
+           bytes (unseeded then): as often as the log, and a no-op after. */
+        if (timer_since(rf_at) >= BOOTLOG_SAVE_MS) {
+            int k = usb_lock();
+            random_seed_file_refresh();
+            usb_unlock(k);
+            rf_at = timer_ticks();
         }
         if (timer_since(usb_at) >= USB_POLL_MS) {
             usb_poll();

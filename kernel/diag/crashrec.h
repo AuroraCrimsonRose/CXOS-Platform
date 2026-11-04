@@ -52,6 +52,14 @@
 #define XCRL_BOOTLOG_LBA    64u
 #define XCRL_BOOTLOG_MAX    (256u * XCRL_SECTOR)           /* 128 KB */
 
+/* The random generator's seed for the next boot (drivers/char/random.c),
+   between the crash record and the boot log: a header at XCRL_SEED_LBA and
+   XCRL_SEED_LEN bytes in the sector after it. Read and rewritten at every
+   boot; credited only once the rewrite reads back (crashlog_seed_write). */
+#define XCRL_KIND_SEED      5u
+#define XCRL_SEED_LBA       48u
+#define XCRL_SEED_LEN       64u
+
 /* The most text a record of this kind may carry. */
 uint32_t xcrl_max_len(uint16_t kind);
 

@@ -763,6 +763,31 @@ Independent of the order above, and small enough to land whenever convenient:
      credit under `--cpu max`); an X test (steps 47-51). Untested: what
      the rig's jitter earns (no RDRAND there) until it boots on the rig.
      Self-tests 194. Sabotages: `tests/sabotage/1.7b.sab`, 9 of 9.
+   - **1.7c (2026-11-04), done:** the seed file, 64 bytes in the crash
+     partition (an XCRL record of kind 5 at sector 48, CRC-sealed).
+     Read once a boot after the disks; rewritten before it counts (from
+     the generator if seeded, else SHA-256 of a label, a counter and the
+     old seed), and credited 256 bits only once the rewrite reads back
+     byte for byte, so a disk that drops writes never replays a credited
+     seed. Rewritten from the generator once seeded (the idle loop's
+     refresh). The loader's `rng_seed` stays uncredited. Chaos at race
+     points: `chaos_permille`/`chaos_seed` in `kernel.xkco` make every
+     race point yield 1-3 times at that rate, from a splitmix64 sequence
+     whose 32-bit seed the boot prints for replay. Design: `docs/
+     security/CX_RANDOM.md` §5, §8 (XNU `PE_get_random_seed`, Serenity
+     `generate_secure_seed`, Haiku `random_write`). **Found on the way:**
+     a self-test's loads against a held generator logged the boot's
+     credit line, so the cross-boot check read a credit that never
+     happened; those loads are now quiet. Tests: 2 boot tests (the seed
+     file against a dropping disk and a damaged record, chaos replay from
+     its seed and its interplay with an armed point), kconfig checks, a
+     host test (the record length), a DevKit test, and `cxk verify-seed`
+     (two boots of a copy: the second credits the first's seed and leaves
+     another; red with the load removed from kmain). Untested: a disk
+     error mid-rewrite (only a dropped write is), the rig's real seed,
+     the chaos seed's cycle-counter fallback, a build without disk
+     writes. Self-tests 196. Sabotages: `tests/sabotage/1.7c.sab`, 10 of
+     10. No ABI change.
 8. The hardware report: the memory map, ACPI tables and their checksums,
    MADT and APIC IDs, PCI devices, CPUID, and the clock calibrations, in a
    fixed form to serial and the USB crash log; a `cxk` command compares

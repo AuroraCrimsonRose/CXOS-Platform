@@ -3074,8 +3074,14 @@ static int test_kconfig(void) {
     if (c.max_threads != 6 || c.kernel_stack != d.kernel_stack || c.memory_quota != d.memory_quota
         || c.max_handles != d.max_handles) return 0;
     if (kconfig_parse("", 0, &c, &at, &why) != 0 || c.max_threads != d.max_threads) return 0;
+    if (d.chaos_permille != 0 || c.chaos_permille != 0) return 0;     /* chaos is off unless asked */
+    const char *chaos = "chaos_permille = 1000\nchaos_seed = 0xFFFFFFFF\n";
+    if (kconfig_parse(chaos, kc_len(chaos), &c, &at, &why) != 0
+        || c.chaos_permille != 1000 || c.chaos_seed != 0xFFFFFFFFu) return 0;
 
-    return kc_refused("kernel_stack = 8\n", 0)                             /* unknown key */
+    return kc_refused("chaos_permille = 1001\n", 17)
+        && kc_refused("chaos_seed = 0x100000000\n", 13)
+        && kc_refused("kernel_stack = 8\n", 0)                            /* unknown key */
         && kc_refused("max_threads = 12\nmax_thread = 12\n", 17)          /* misspelt */
         && kc_refused("max_threads = 257\n", 14)                           /* out of range */
         && kc_refused("max_threads = 3\n", 14)
@@ -3418,6 +3424,7 @@ void ktest_run(void) {
     total++; passed += report("hooks: the Nth allocation fails, armed thread only", ktest_fault_nth());
     total++; passed += report("hooks: live counts see what comes and goes", ktest_live_counts());
     total++; passed += report("hooks: race points call and park", ktest_race_points());
+    total++; passed += report("hooks: chaos yields replay from their seed", ktest_chaos());
     total++; passed += report("every allocation of six creations fails cleanly", ktest_alloc_sweeps());
     total++; passed += report("every syscall from ring 3: refusals take nothing", ktest_syscall_census());
     total++; passed += report("every allocation of 13 syscalls fails cleanly", ktest_syscall_sweeps());
@@ -3436,6 +3443,7 @@ void ktest_run(void) {
     total++; passed += report("random: interrupts sampled, then hashed in", ktest_random_interrupts());
     total++; passed += report("random: random_read from ring 3", ktest_random_syscall());
     total++; passed += report("random: the boot seed counts the CPU's words", ktest_random_boot_seed());
+    total++; passed += report("random: the seed file counts once read back", ktest_random_seed_file());
     total++; passed += report("two threads share one process",   test_proc_threads());
     total++; passed += report("user copies validated at the copy",  test_user_copy_validation());
     total++; passed += report("user copy faults are recoverable",   test_user_copy_fault_recovery());

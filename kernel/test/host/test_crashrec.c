@@ -91,3 +91,23 @@ KH_TEST(xcrl_boot_log_has_its_own_cap) {
     memcpy(bad, hdr, sizeof bad); bad[8] = 1; bad[10] = 0x02;        /* 128 KB + 1 */
     KH_CHECK_EQ(xcrl_check_header(bad, 0, 0), XCRL_BAD_LEN);
 }
+
+KH_TEST(xcrl_seed_is_exactly_its_length) {
+    uint8_t seed[XCRL_SEED_LEN + 8];
+    memset(seed, 0x5A, sizeof seed);
+    uint8_t hdr[XCRL_SECTOR]; uint32_t len = 0; uint16_t kind = 0;
+    xcrl_seal(hdr, XCRL_KIND_SEED, (const char *)seed, sizeof seed);    /* cut to its length */
+    KH_CHECK_EQ(xcrl_check_header(hdr, &kind, &len), XCRL_VALID);
+    KH_CHECK_EQ(kind, XCRL_KIND_SEED);
+    KH_CHECK_EQ(len, XCRL_SEED_LEN);
+    KH_CHECK_EQ(xcrl_check_text(hdr, (const char *)seed, len), XCRL_VALID);
+
+    /* a seed shorter or longer than a whole one is no seed */
+    uint8_t bad[XCRL_SECTOR];
+    memcpy(bad, hdr, sizeof bad); bad[8] = XCRL_SEED_LEN - 1;
+    KH_CHECK_EQ(xcrl_check_header(bad, 0, 0), XCRL_BAD_LEN);
+    memcpy(bad, hdr, sizeof bad); bad[8] = XCRL_SEED_LEN + 1;
+    KH_CHECK_EQ(xcrl_check_header(bad, 0, 0), XCRL_BAD_LEN);
+    memcpy(bad, hdr, sizeof bad); bad[8] = 0;
+    KH_CHECK_EQ(xcrl_check_header(bad, 0, 0), XCRL_BAD_LEN);
+}

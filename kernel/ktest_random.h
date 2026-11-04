@@ -27,6 +27,13 @@ int ktest_random_interrupts(void);
    back afterwards. */
 int ktest_random_syscall(void);
 
+/* The seed file (crash area): a seed whose rewrite reads back is credited
+   in full and the file ends with the generator's bytes; one whose rewrite
+   the disk drops (RP_SEED_WRITTEN) is not credited; a damaged one neither,
+   and is left alone unseeded; seeded, the file takes the generator's bytes.
+   Leaves the real generator's seed in the file. */
+int ktest_random_seed_file(void);
+
 /* A CPU with RDSEED or RDRAND seeded the generator at boot from its words
    (256 bits or more credited); one with neither credited none. */
 int ktest_random_boot_seed(void);

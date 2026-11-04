@@ -27,6 +27,7 @@ uint32_t xcrl_crc32(uint32_t crc, const void *data, uint32_t len) {
 }
 
 uint32_t xcrl_max_len(uint16_t kind) {
+    if (kind == XCRL_KIND_SEED) return XCRL_SEED_LEN;
     return kind == XCRL_KIND_BOOTLOG ? XCRL_BOOTLOG_MAX : XCRL_TEXT_MAX;
 }
 
@@ -49,8 +50,9 @@ int xcrl_check_header(const uint8_t hdr[XCRL_SECTOR], uint16_t *kind, uint32_t *
     uint32_t n   = rd32(hdr + 8);
     if (ver != XCRL_VERSION) return XCRL_BAD_VER;
     if (k != XCRL_KIND_CRASH && k != XCRL_KIND_REQUEST && k != XCRL_KIND_FAULT
-        && k != XCRL_KIND_BOOTLOG) return XCRL_BAD_KIND;
-    if (n > xcrl_max_len(k) || (k == XCRL_KIND_REQUEST && n != 0)) return XCRL_BAD_LEN;
+        && k != XCRL_KIND_BOOTLOG && k != XCRL_KIND_SEED) return XCRL_BAD_KIND;
+    if (n > xcrl_max_len(k) || (k == XCRL_KIND_REQUEST && n != 0)
+        || (k == XCRL_KIND_SEED && n != XCRL_SEED_LEN)) return XCRL_BAD_LEN;
     if (kind) *kind = k;
     if (len)  *len = n;
     return XCRL_VALID;

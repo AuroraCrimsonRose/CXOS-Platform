@@ -1,0 +1,129 @@
+# Phase 1.7c's sabotages, run by `cxk test sabotage`.
+# Each must turn red exactly the self-tests named, at the step named.
+# Format: docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage".
+# The seed record's length rule is a host test (test_crashrec.c); the
+# end-to-end carry from one boot to the next is `cxk verify-seed`'s
+# second boot, sabotaged by hand (the commit says how).
+
+# ---- the seed file: credited only once its rewrite reads back ----
+
+[credit-unchecked]
+# the seed counts whatever the rewrite did
+expect = random: the seed file counts once read back @ failed at step 11
+group = g1
+edit = kernel/drivers/char/random.c
+<<<
+    uint32_t bits = w == CRASHLOG_SEED_OK ? FORTUNA_SEED_BITS : 0;
+===
+    uint32_t bits = FORTUNA_SEED_BITS;
+>>>
+
+[readback-unchecked]
+# the rewrite is read back but not compared: a disk that drops writes passes
+expect = random: the seed file counts once read back @ failed at step 11
+group = g2
+edit = kernel/diag/crashlog.c
+<<<
+        r = CRASHLOG_SEED_OK;
+        for (uint32_t i = 0; i < XCRL_SECTOR; i++)
+            if (back_hdr[i] != seed_hdr[i] || back_text[i] != seed_text[i]) r = CRASHLOG_SEED_NOT_KEPT;
+===
+        r = CRASHLOG_SEED_OK;
+>>>
+
+[not-rewritten]
+# the seed is credited without the file being rewritten first; with the
+# dropping disk, the credit (step 11) shows, as the later save does write
+expect = random: the seed file counts once read back @ failed at step 11
+group = g6
+edit = kernel/drivers/char/random.c
+<<<
+    int w = crashlog_seed_write(next);
+    uint32_t bits
+===
+    int w = CRASHLOG_SEED_OK;
+    uint32_t bits
+>>>
+
+[damaged-credited]
+# a record whose text fails its CRC is taken as a seed
+expect = random: the seed file counts once read back @ failed at step 14
+group = g4
+edit = kernel/diag/crashlog.c
+<<<
+    else if (st != XCRL_VALID || kind != XCRL_KIND_SEED
+             || xcrl_check_text(seed_hdr, (const char *)seed_text, XCRL_SEED_LEN) != XCRL_VALID)
+===
+    else if (st != XCRL_VALID || kind != XCRL_KIND_SEED)
+>>>
+
+# ---- chaos at race points ----
+
+[chaos-no-yield]
+# the draws are counted but nothing yields
+expect = hooks: chaos yields replay from their seed @ chaos: step 10
+group = g1
+edit = kernel/diag/testhook.c
+<<<
+    for (uint32_t i = 0; i < n; i++) yield();
+}
+===
+}
+>>>
+
+[chaos-other-sequence]
+# the decisions no longer follow chaos_draw's documented rule
+expect = hooks: chaos yields replay from their seed @ chaos: step 2
+group = g2
+edit = kernel/diag/testhook.c
+<<<
+    uint32_t n = (uint32_t)(x % 1000u) < chaos_rate ? 1u + (uint32_t)((x >> 32) % 3u) : 0;
+===
+    uint32_t n = (uint32_t)(x % 999u) < chaos_rate ? 1u + (uint32_t)((x >> 32) % 3u) : 0;
+>>>
+
+[chaos-hides-armed]
+# chaos takes the arrival and an armed race point never fires
+expect = hooks: chaos yields replay from their seed @ chaos: step 12
+group = g3
+edit = kernel/diag/testhook.c
+<<<
+    if ((race_armed_mask & (1u << p)) && race_fire(p)) return;
+===
+    if (race_chaos_mask & (1u << p)) { chaos_at(p); return; }
+    if ((race_armed_mask & (1u << p)) && race_fire(p)) return;
+>>>
+
+[chaos-every-point]
+# the points asked for are ignored: every point yields
+expect = hooks: chaos yields replay from their seed @ chaos: step 8
+group = g4
+edit = kernel/diag/testhook.c
+<<<
+    race_chaos_mask = points;
+===
+    race_chaos_mask = RP_ALL;
+>>>
+
+[chaos-rate-zero]
+# a rate of 0 is taken
+expect = hooks: chaos yields replay from their seed @ chaos: step 15
+group = g5
+edit = kernel/diag/testhook.c
+<<<
+    if (!points || (points & ~RP_ALL) || !permille || permille > 1000) return -1;
+===
+    if (!points || (points & ~RP_ALL) || permille > 1000) return -1;
+>>>
+
+# ---- kernel.xkco ----
+
+[chaos-permille-range]
+expect = kernel config (X Data, linked X)
+group = g5
+edit = kernel/kconfig.c
+<<<
+            if (setting(s, &v, 0, 1000, &n, why, "chaos_permille must be 0 to 1000") < 0) return -1;
+===
+            if (setting(s, &v, 0, 1001, &n, why, "chaos_permille must be 0 to 1000") < 0) return -1;
+>>>
