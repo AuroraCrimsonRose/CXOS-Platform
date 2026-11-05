@@ -830,6 +830,28 @@ Independent of the order above, and small enough to land whenever convenient:
      Sabotages: 18 of 18, by hand (DevKit-only; the table in the commit).
      Untested: the stick itself, any report but QEMU's. Seen: TCG without
      `-icount` puts the two TSC rates 30% apart. No kernel or ABI change.
+   - **1.8c (2026-11-04), done:** Hyper-V's report put the TSC at 59.8 GHz
+     by the tick and 3.80 GHz by the PM timer; the tick was wrong, since
+     the VM delivers about 60 of its interrupts a second for the 1000
+     asked, and the TSC was measured over 50 of them. Now the TSC's rate
+     is what the hypervisor states (Hyper-V's frequency MSR, where CPUID
+     grants it; XNU `tsc_init`), else the PIT's count polled on channel 2
+     (Haiku `calculate_cpu_conversion_factor`), else the tick as before.
+     The report gains `tsc-by`, `tsc-pit-hz`, `tick-hz`, `tick-irq-hz` and
+     Hyper-V's leaves to 0x40000006; `cxk hw show` notes the PIT against
+     the PM timer and interrupts more than 10% off. Seen: Hyper-V's PIT
+     runs 0.82-1.12% slow (stated rate, PM timer and a round 12.5 MHz APIC
+     timer agree). Hyper-V now passes all 198 self-tests. Tests: the
+     report test (the PIT measured, the clock not by the tick), a new
+     boot test (a stated rate is the clock's), DevKit `HwDiffTests`.
+     Sabotages: `tests/sabotage/1.8c.sab` 2 of 2; by hand under Hyper-V
+     the stated rate ignored and channel 2's gate left shut (green under
+     QEMU, which ignores the gate), both red; 4 DevKit ones by hand. A dead
+     count is given up after 1000 still samples (5 million took minutes
+     under Hyper-V). Untested: the two-window retry, the rig. Found, not fixed:
+     `serial_putc` drops bytes when Hyper-V's COM1 pipe stalls past its
+     spin limit (2-7 `@ktest` lines cut per boot, already at 1.8b), so
+     `verify-hyperv` still fails on the line count. No ABI change.
 9. SMP readiness: a lock order table and a checker in debug builds,
    per-CPU data, spinlocks that save interrupt state, the slab allocator.
    Physical memory is reached only through the direct map's helpers, never

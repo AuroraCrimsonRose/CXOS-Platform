@@ -288,10 +288,19 @@ void kmain_late(void) {
     arch_irq_enable();                    /* enable interrupts: timer can fire */
     klog("TIMER", SEV_OK, "online (1000 Hz), interrupts enabled");
 
-    /* calibrate the cycle counter against the tick; from here it is the
-       monotonic clock (timer.h), when it can be one */
+    /* calibrate the cycle counter against the PIT's count, polled; from here
+       it is the monotonic clock (timer.h), when it can be one */
     timer_calibrate_tsc();
     klog_u32("TIMER", SEV_OK, "TSC calibrated, MHz: ", timer_tsc_mhz(), LOG_COLOR_VALUE, "");
+    klog_child(timer_tsc_by()[0] == 'h' ? "as the hypervisor states it"
+               : timer_tsc_by()[0] == 'p' ? "by the PIT's count" : "by the tick's interrupts");
+    {   /* a host that delivers the tick late or merges it: seen, not fixed (the
+           clock does not count ticks once it is the TSC) */
+        uint64_t irq = timer_tick_irq_hz();
+        if (irq && (irq < TIMER_TICK_HZ - TIMER_TICK_HZ / 10 || irq > TIMER_TICK_HZ + TIMER_TICK_HZ / 10))
+            klog_u32("TIMER", SEV_WARN, "tick interrupts came, a second: ", (uint32_t)irq,
+                     LOG_COLOR_VALUE, " (1000 asked)");
+    }
     if (timer_clock_is_tsc())
         klog("TIMER", SEV_OK, arch_cycles_constant() == 2
              ? "the clock is the TSC (invariant)"

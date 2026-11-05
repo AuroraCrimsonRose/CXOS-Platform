@@ -34,6 +34,11 @@ public static class HwDiff
     /// bound the kernel's own TSC check uses (ktest_platform_hw_report).</summary>
     public const double DefaultRateTolerance = 0.01;
 
+    /// <summary>How far the tick's interrupt rate may be from another's, or from the rate
+    /// asked: 10%. The kernel counts them across its ~100 ms calibration, so one more or
+    /// fewer is already 1%; a host that merges them (Hyper-V, 1.8c) is out by far more.</summary>
+    public const double TickTolerance = 0.10;
+
     private static readonly string[] PciFields =
         ["vendor", "device", "class", "subclass", "prog-if", "header", "subvendor", "subdevice",
          "irq-line", "irq-pin", "bar0", "bar1", "bar2", "bar3", "bar4", "bar5"];
@@ -163,6 +168,7 @@ public static class HwDiff
                 if (!ulong.TryParse(a, out ulong ra) || !ulong.TryParse(b, out ulong rb) || ra == 0 || rb == 0)
                     return (false, "measured in one report only");
                 double off = Math.Abs((double)ra - rb) / Math.Max(ra, rb);
+                if (f.Key == "clock tick-irq-hz") tol = Math.Max(tol, TickTolerance);
                 return off <= tol
                     ? (true, $"a measured rate, {Percent(off)} apart")
                     : (false, $"a measured rate, {Percent(off)} apart (over {Percent(tol)})");
@@ -200,13 +206,14 @@ public static class HwDiff
     /// What one report says is wrong with its own machine, without a second to
     /// compare it with: a cut report, a checksum that fails, a table not read,
     /// a MADT entry skipped, memory entries dropped, a full PCI table, and the
-    /// TSC measured against the tick and against the PM timer disagreeing.
+    /// TSC as the clock has it and as the PM timer measures it disagreeing, and
+    /// the tick's interrupts coming at a rate other than the one asked.
     /// </summary>
     public static IReadOnlyList<string> Notes(HwReport r, double rateTolerance = DefaultRateTolerance)
     {
         var notes = new List<string>();
         if (r.Truncated) notes.Add("the report was cut: it ran out of room in the kernel");
-        string? tick = null, pm = null;
+        string? clock = null, by = null, pitRate = null, pm = null, asked = null, came = null;
         foreach (var f in Facts(r))
         {
             string V(string name) => f.Fields.FirstOrDefault(x => x.Name == name).Value ?? "-";
@@ -231,19 +238,40 @@ public static class HwDiff
                 case "pcisum" when V("functions") == V("max"):
                     notes.Add($"the PCI table is full ({V("max")}): functions past it are missing");
                     break;
-                case "clock" when f.Key == "clock tsc-tick-hz": tick = V("value"); break;
+                case "clock" when f.Key == "clock tsc-hz": clock = V("value"); break;
+                case "clock" when f.Key == "clock tsc-by": by = V("value"); break;
+                case "clock" when f.Key == "clock tsc-pit-hz": pitRate = V("value"); break;
                 case "clock" when f.Key == "clock tsc-pm-hz": pm = V("value"); break;
+                case "clock" when f.Key == "clock tick-hz": asked = V("value"); break;
+                case "clock" when f.Key == "clock tick-irq-hz": came = V("value"); break;
             }
         }
-        if (tick is not null && pm is not null)
+        if (clock is not null && pm is not null)
         {
             if (pm == "-") notes.Add("the TSC was not measured against the PM timer");
-            else if (ulong.TryParse(tick, out ulong t) && ulong.TryParse(pm, out ulong p) && t > 0 && p > 0)
+            else if (ulong.TryParse(pm, out ulong p) && p > 0)
             {
-                double off = Math.Abs((double)t - p) / Math.Max(t, p);
-                if (off > rateTolerance)
-                    notes.Add($"the TSC by the tick ({t} Hz) and by the PM timer ({p} Hz) are {Percent(off)} apart: one clock is wrong");
+                string how = by switch
+                {
+                    "hv" => "as the hypervisor states it", "pit" => "by the PIT's count",
+                    "tick" => "by the tick's interrupts", _ => "by an unknown clock",
+                };
+                var rates = new List<(string How, string? Value)> { (how, clock) };
+                if (by != "pit") rates.Add(("by the PIT's count", pitRate));
+                foreach (var (h, v) in rates)
+                {
+                    if (!ulong.TryParse(v, out ulong t) || t == 0) continue;
+                    double off = Math.Abs((double)t - p) / Math.Max(t, p);
+                    if (off > rateTolerance)
+                        notes.Add($"the TSC {h} ({t} Hz) and by the PM timer ({p} Hz) are {Percent(off)} apart: one clock is wrong");
+                }
             }
+        }
+        if (ulong.TryParse(asked, out ulong ask) && ulong.TryParse(came, out ulong got) && ask > 0)
+        {
+            double off = Math.Abs((double)got - ask) / ask;
+            if (off > TickTolerance)
+                notes.Add($"the tick's interrupts came {got} a second for the {ask} asked: late, merged or dropped (the clock does not count them once it is the TSC)");
         }
         return notes;
     }

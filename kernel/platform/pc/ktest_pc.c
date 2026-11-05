@@ -135,7 +135,7 @@ int ktest_platform_hw_report(void) {
     if (hw_count(t, len, "boot", 0) != 1 || hw_count(t, len, "cpu", 0) != 1
         || hw_count(t, len, "hypervisor", 0) != 1 || hw_count(t, len, "cpuid", 0) < 2
         || hw_count(t, len, "memsum", 0) != 1 || hw_count(t, len, "pcisum", 0) != 1
-        || hw_count(t, len, "apic", 0) != 1 || hw_count(t, len, "clock", 0) != 6)
+        || hw_count(t, len, "apic", 0) != 1 || hw_count(t, len, "clock", 0) != 10)
         return hw_fail("hwr: a section is missing or doubled");
     if (hw_count(t, len, "mem", 0) != cxbi_mmap_count())
         return hw_fail("hwr: mem lines are not the loader's map");
@@ -165,14 +165,21 @@ int ktest_platform_hw_report(void) {
             if (hw_back[i] != t[i]) return hw_fail("hwr: the saved record differs");
     }
 
+    /* A PC has a PIT: no rate from its polled count means the measurement
+       failed, and a TSC taken over the tick's interrupts is a host's
+       delivery rate, not the counter's (1.8c). */
+    if (timer_tsc_hz() && !timer_tsc_pit_hz())
+        return hw_fail("hwr: the PIT's count measured no TSC rate");
+    if (timer_tsc_hz() && timer_tsc_by()[0] == 't')
+        return hw_fail("hwr: the TSC was measured by the tick");
     uint32_t pm;
-    uint64_t by_pm = hwreport_tsc_pm_hz(), by_tick = timer_tsc_hz();
-    if (acpi_pm_timer_read(&pm) == 0 && by_tick) {
+    uint64_t by_pm = hwreport_tsc_pm_hz(), by_clock = timer_tsc_hz();
+    if (acpi_pm_timer_read(&pm) == 0 && by_clock) {
         if (!by_pm) return hw_fail("hwr: the PM timer measured no TSC rate");
-        uint64_t d = by_pm > by_tick ? by_pm - by_tick : by_tick - by_pm;
-        if (d > by_tick / 100) {
-            klog_u32("KTEST", SEV_FAIL, "hwr: TSC by tick and by PM timer differ, MHz ",
-                     (uint32_t)(by_tick / 1000000u), LOG_COLOR_VALUE, " by the tick");
+        uint64_t d = by_pm > by_clock ? by_pm - by_clock : by_clock - by_pm;
+        if (d > by_clock / 100) {
+            klog_u32("KTEST", SEV_FAIL, "hwr: TSC by clock and by PM timer differ, MHz ",
+                     (uint32_t)(by_clock / 1000000u), LOG_COLOR_VALUE, " the clock's");
             klog_child_u32("by the PM timer, MHz: ", (uint32_t)(by_pm / 1000000u), LOG_COLOR_VALUE, "");
             return 0;
         }

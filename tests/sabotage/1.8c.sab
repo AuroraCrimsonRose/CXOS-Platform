@@ -1,0 +1,37 @@
+# Phase 1.8c's sabotages, run by `cxk test sabotage`.
+# Each must turn red exactly the self-tests named, at the reason named.
+# Format: docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage".
+# Every one lands in the one self-test, so none share a boot.
+# These are judged under QEMU, where the tick's interrupts come on time, so
+# measuring by them is wrong only in what the report says. The Hyper-V case
+# (merged interrupts, the TSC at 59.8 GHz) is the commit's before and after
+# boot under `cxk verify-hyperv`, and the stated rate's sabotage
+# (arch_cycles_stated_hz returning 0) is booted there by hand: QEMU states
+# none. DevKit sabotages are by hand too (the commit).
+
+# ---- the TSC is measured by the PIT's count, polled ----
+
+[tsc-by-ticks]
+# the polled measurement is passed over for the old one over 50 interrupts
+expect = hardware report: checked, counted, saved @ hwr: the TSC was measured by the tick
+edit = kernel/drivers/char/timer.c
+<<<
+    if (!hz) { hz = tsc_pit_hz; by = "pit"; }
+===
+    if (!hz) { hz = 0; by = "pit"; }
+>>>
+
+# Not here: channel 2's gate left shut (`(b & ~2u) | 1u` -> `b & ~3u`).
+# QEMU's PIT counts in mode 0 with the gate low, so it stays green under
+# QEMU; under Hyper-V it is red at "hwr: the PIT's count measured no TSC
+# rate" (booted by hand, 1.8c).
+
+[pit-rate-10pc-high]
+# the polled rate is 10% high: inside the tick tests' fifth, outside the 1%
+expect = hardware report: checked, counted, saved @ hwr: TSC by clock and by PM timer differ
+edit = kernel/platform/pc/pit.c
+<<<
+    return (c1 - c0) * PIT_BASE_FREQ / gone;
+===
+    return (c1 - c0) * PIT_BASE_FREQ / gone * 11u / 10u;
+>>>

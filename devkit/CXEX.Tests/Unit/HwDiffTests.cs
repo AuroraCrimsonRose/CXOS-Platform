@@ -42,7 +42,11 @@ public class HwDiffTests
         "@hw\tpci\t00:03.0\t8086\t100e\t02\t00\t00\t00\t1af4\t1100\t0b\t01\tfebc0000\t0000c001\t00000000\t00000000\t00000000\t00000000",
         "@hw\tpcisum\t2\t256",
         "@hw\tclock\tsource\ttsc",
-        "@hw\tclock\ttsc-tick-hz\t999847680",
+        "@hw\tclock\ttsc-hz\t999847680",
+        "@hw\tclock\ttsc-by\tpit",
+        "@hw\tclock\ttsc-pit-hz\t999847680",
+        "@hw\tclock\ttick-hz\t1000",
+        "@hw\tclock\ttick-irq-hz\t1000",
         "@hw\tclock\tpmtimer\t0608\t24",
         "@hw\tclock\ttsc-pm-hz\t999994936",
     ];
@@ -101,7 +105,8 @@ public class HwDiffTests
     [InlineData("@hw\tmadt\tioapic", "@hw\tmadt\tioapic\t00\tfec01000\t00000000", "addr")]
     [InlineData("@hw\tpci\t00:03.0", "@hw\tpci\t00:03.0\t8086\t100e\t02\t00\t00\t00\t1af4\t1100\t0a\t01\tfeb00000\t0000c001\t00000000\t00000000\t00000000\t00000000", "irq-line")]
     [InlineData("@hw\tcpuid\t40000000", "@hw\tcpuid\t40000000\t00\t40000001\t4b4d564b\t564b4d56\t0000004d", "ebx")]
-    [InlineData("@hw\tclock\ttsc-tick-hz", "@hw\tclock\ttsc-tick-hz\t1005000000", "value")]
+    [InlineData("@hw\tclock\ttsc-hz", "@hw\tclock\ttsc-hz\t1005000000", "value")]
+    [InlineData("@hw\tclock\ttick-irq-hz", "@hw\tclock\ttick-irq-hz\t950", "value")]
     public void What_the_firmware_chooses_and_the_hypervisor_says_about_itself_is_expected(string starts, string line, string field)
     {
         var d = HwDiff.Compare(Report(Qemu), With((starts, line)));
@@ -154,6 +159,13 @@ public class HwDiffTests
         Assert.Contains("over 1%", rate.Why);
         Assert.True(One(HwDiff.Compare(Report(Qemu), With(("@hw\tclock\ttsc-pm-hz", "@hw\tclock\ttsc-pm-hz\t2000000000")), 0.6)).Expected);
 
+        var merged = One(HwDiff.Compare(Report(Qemu), With(("@hw\tclock\ttick-irq-hz", "@hw\tclock\ttick-irq-hz\t64"))));
+        Assert.False(merged.Expected);
+        Assert.Contains("over 10%", merged.Why);
+        var how = One(HwDiff.Compare(Report(Qemu), With(("@hw\tclock\ttsc-by", "@hw\tclock\ttsc-by\ttick"))));
+        Assert.Equal(("clock tsc-by", "pit", "tick"), (how.Key, how.A, how.B));
+        Assert.False(how.Expected);
+
         var cpus = HwDiff.Compare(Report(Qemu), Report(Qemu.Append("@hw\tmadt\tcpu\t01\t01\t00000001")));
         var extra = One(cpus);
         Assert.Equal(("madt cpu 01", null, null), (extra.Key, extra.Field, extra.A));
@@ -181,7 +193,24 @@ public class HwDiffTests
     {
         string Note(params (string, string?)[] e) => Assert.Single(HwDiff.Notes(With(e)));
 
+        Assert.Contains("by the PIT's count (999847680 Hz) and by the PM timer (59742000000 Hz)",
+                        Note(("@hw\tclock\ttsc-pm-hz", "@hw\tclock\ttsc-pm-hz\t59742000000")));
         Assert.Contains("one clock is wrong", Note(("@hw\tclock\ttsc-pm-hz", "@hw\tclock\ttsc-pm-hz\t59742000000")));
+        Assert.Contains("by the tick's interrupts", Note(("@hw\tclock\ttsc-pm-hz", "@hw\tclock\ttsc-pm-hz\t59742000000"),
+                                                          ("@hw\tclock\ttsc-by", "@hw\tclock\ttsc-by\ttick"),
+                                                          ("@hw\tclock\ttsc-pit-hz", "@hw\tclock\ttsc-pit-hz\t-")));
+        // Hyper-V (1.8c): the clock as stated agrees with the PM timer; the PIT's count is 1.1% low
+        Assert.Contains("by the PIT's count (988000000 Hz) and by the PM timer",
+                        Note(("@hw\tclock\ttsc-by", "@hw\tclock\ttsc-by\thv"),
+                             ("@hw\tclock\ttsc-hz", "@hw\tclock\ttsc-hz\t999994936"),
+                             ("@hw\tclock\ttsc-pit-hz", "@hw\tclock\ttsc-pit-hz\t988000000")));
+        Assert.Empty(HwDiff.Notes(With(("@hw\tclock\ttsc-by", "@hw\tclock\ttsc-by\thv"))));
+        Assert.Contains("as the hypervisor states it (2000000000 Hz)",
+                        Note(("@hw\tclock\ttsc-by", "@hw\tclock\ttsc-by\thv"),
+                             ("@hw\tclock\ttsc-hz", "@hw\tclock\ttsc-hz\t2000000000")));
+        Assert.Contains("came 64 a second for the 1000 asked", Note(("@hw\tclock\ttick-irq-hz", "@hw\tclock\ttick-irq-hz\t64")));
+        Assert.Empty(HwDiff.Notes(With(("@hw\tclock\ttick-irq-hz", "@hw\tclock\ttick-irq-hz\t950"))));
+        Assert.Empty(HwDiff.Notes(With(("@hw\tclock\ttick-irq-hz", "@hw\tclock\ttick-irq-hz\t-"))));
         Assert.Empty(HwDiff.Notes(With(("@hw\tclock\ttsc-pm-hz", "@hw\tclock\ttsc-pm-hz\t1005000000"))));
         Assert.Contains("not measured", Note(("@hw\tclock\ttsc-pm-hz", "@hw\tclock\ttsc-pm-hz\t-")));
         Assert.Contains("acpi rsdt SSDT #2 at 00000000bffe2500 is short",

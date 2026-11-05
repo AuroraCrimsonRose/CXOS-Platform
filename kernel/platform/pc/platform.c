@@ -29,6 +29,8 @@ void platform_tick_start(uint32_t hz, irq_handler_t on_tick) {
 void platform_tick_stop(void)   { irq_mask(0); }
 void platform_tick_resume(void) { irq_unmask(0); }
 
+uint64_t platform_cycles_hz(void) { return pit_cycles_hz(); }
+
 void platform_input_init(void) {
     ps2kbd_init();
     klog("INPUT", SEV_OK, "PS/2 keyboard online (IRQ1)");

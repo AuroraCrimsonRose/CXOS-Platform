@@ -44,6 +44,7 @@
 #include "arch/ktest_arch.h"
 #include "arch/usermode.h"
 #include "arch/evtimer.h"        /* arch_cycles_constant */
+#include "arch/x86/cpufeat.h"    /* cpuid_read: Hyper-V's grant, read here */
 #include "object/ktimer.h"
 #include "object/kwait.h"
 #include "cxk_abi.h"            /* SIGNAL_TIMER_FIRED, E_TIMED_OUT */
@@ -668,6 +669,33 @@ static int t_pit_sleep(void) {
     int ok = timer_source() == TIMER_SOURCE_PIT && t_sleep();
     timer_use_pit_for_test(0);
     return ok;
+}
+
+/* Where Hyper-V grants its frequency MSRs (CPUID 0x40000003: EAX bit 11,
+   EDX bit 8), the clock runs at the rate it states, not the PIT's emulated
+   count, which ran 0.85-1.1% slow there (1.8c): either side of the report's
+   1% bound, so that bound cannot be what holds it. The grant is read from
+   CPUID here, not through arch_cycles_stated_hz, so a broken one cannot
+   excuse itself. Anywhere else there is nothing to hold. */
+static int t_stated_tsc_rate(void) {
+    uint32_t r[4];
+    cpuid_read(1, 0, r);
+    int hv = (r[2] & (1u << 31)) != 0;
+    if (hv) {
+        cpuid_read(0x40000000u, 0, r);
+        hv = r[0] >= 0x40000003u && r[1] == 0x7263694du && r[2] == 0x666f736fu
+             && r[3] == 0x76482074u;                      /* "Microsoft Hv" */
+    }
+    if (hv) { cpuid_read(0x40000001u, 0, r); hv = r[0] == 0x31237648u; }   /* "Hv#1" */
+    if (hv) { cpuid_read(0x40000003u, 0, r); hv = (r[0] & (1u << 11)) && (r[3] & (1u << 8)); }
+    if (!hv) return 1;
+    uint64_t stated = rdmsr(0x40000022u);
+    if (timer_tsc_by()[0] != 'h' || timer_tsc_hz() != stated) {
+        klog_u32("KTEST", SEV_FAIL, "the clock is not Hyper-V's stated rate, MHz: ",
+                 (uint32_t)(timer_tsc_hz() / 1000000u), LOG_COLOR_VALUE, "");
+        return 0;
+    }
+    return 1;
 }
 
 /* The clock is the TSC once it can be: it moves between interrupts, in steps
@@ -1342,6 +1370,7 @@ static const struct ktest_arch_case cases[] = {
     { "a 50 ms sleep is 50 to 100 ticks",               t_sleep },
     { "on the PIT fallback too",                        t_pit_sleep },
     { "the clock is the TSC: finer than a tick, never back", t_clock_tsc },
+    { "a TSC rate Hyper-V states is the clock's",       t_stated_tsc_rate },
     { "the local APIC timer is the source; the PIT is masked", t_apic_source },
     { "an idle 100 ms sleep is a few interrupts, not 100", t_idle_quiet },
     { "deadlines are met at their time, not at a tick", t_deadline_precise },

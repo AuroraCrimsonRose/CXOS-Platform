@@ -15,7 +15,7 @@
 #include "lib/time/clockscale.h"
 #include "platform/platform.h"   /* the PIT's tick */
 
-#define TIMER_HZ      1000u            /* 1000 Hz -> ~1 ms per tick */
+#define TIMER_HZ      TIMER_TICK_HZ    /* 1000 Hz -> ~1 ms per tick */
 #define NS_PER_SEC    1000000000ull
 
 /* The longest the event timer is left set for. Every deadline asks for its
@@ -194,22 +194,46 @@ void timer_init(void) {
 }
 
 /* ---- the TSC ----
- * Measured against the tick: 50 of them, from a tick's edge. The PIT's
- * millisecond is its divisor's (1193 of 1193182 Hz, 0.015% short), and the
- * TSC clock inherits it, so the clock keeps the rate it had. */
-void timer_calibrate_tsc(void) {
-    if (!arch_cycles_constant() || !arch_irqs_enabled()) return;
+ * The rate a hypervisor states (arch_cycles_stated_hz) when one does; else
+ * measured against a clock the platform reads (platform_cycles_hz: the PIT's
+ * count, polled), never against the tick's interrupts: Hyper-V delivered
+ * about 60 of them a second for the 1000 asked, and 50 "milliseconds" of them
+ * put the TSC at 59.8 GHz (1.8c). The PIT is measured either way, for the
+ * report, and the tick counted across it gives the rate interrupts really
+ * came at (timer_tick_irq_hz). Only when the platform has no such clock is
+ * the TSC measured over 50 ticks, from a tick's edge. */
+static uint64_t tsc_by_ticks(void) {
     uint64_t t0 = ticks64;
     while (ticks64 == t0) { }                /* align to a tick edge */
 
     uint64_t c0    = arch_cycles64();
     uint64_t start = ticks64;
     while (ticks64 - start < 50) { }         /* 50 ms window */
-    uint64_t cycles = arch_cycles64() - c0;
+    return (arch_cycles64() - c0) * (TIMER_HZ / 50);
+}
 
-    uint64_t hz = cycles * (TIMER_HZ / 50);
+static const char *tsc_by = "-";
+static uint64_t tsc_pit_hz = 0;
+static uint64_t tick_irq_hz = 0;
+
+void timer_calibrate_tsc(void) {
+    if (!arch_cycles_constant() || !arch_irqs_enabled()) return;
+    uint64_t k0 = ticks64, c0 = arch_cycles64();
+    uint64_t pit = platform_cycles_hz();
+    uint64_t k1 = ticks64, c1 = arch_cycles64();
+    if (pit && c1 > c0) {
+        tsc_pit_hz  = pit;
+        tick_irq_hz = ((k1 - k0) * pit + (c1 - c0) / 2) / (c1 - c0);
+    }
+
+    uint64_t hz = arch_cycles_stated_hz();
+    const char *by = "hv";
+    if (!hz) { hz = tsc_pit_hz; by = "pit"; }
+    if (!hz) { hz = tsc_by_ticks(); by = "tick"; }
+
     uint64_t f  = clock_scale_factor(hz, NS_PER_SEC);
     if (hz < 1000000ull || f == 0) return;   /* stays on the tick */
+    tsc_by = by;
     tsc_hz = hz;
     tsc_per_us = (uint32_t)(hz / 1000000ull);
 
@@ -231,6 +255,9 @@ uint32_t timer_us_since(uint32_t start) {
 
 uint32_t timer_tsc_mhz(void) { return tsc_per_us; }
 uint64_t timer_tsc_hz(void)  { return tsc_hz; }
+const char *timer_tsc_by(void) { return tsc_by; }
+uint64_t timer_tsc_pit_hz(void) { return tsc_pit_hz; }
+uint64_t timer_tick_irq_hz(void) { return tick_irq_hz; }
 int      timer_clock_is_tsc(void) { return clock_tsc; }
 
 /* ---- the local APIC's timer ----

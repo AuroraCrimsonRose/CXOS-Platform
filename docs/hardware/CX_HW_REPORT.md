@@ -3,8 +3,9 @@
 
 > **Status: 1.8a done (2026-11-04): the kernel builds the report, prints it
 > to serial and saves it to the crash area. 1.8b done (2026-11-04): `cxk hw
-> show`, `hw diff` and `rig hwreport` (§5). 1.8c (Hyper-V's clock read
-> through it) is next** (`planning/CX_ROADMAP.md`, Phase 1 step 8).
+> show`, `hw diff` and `rig hwreport` (§5). 1.8c done (2026-11-04):
+> Hyper-V's clock read through it, and fixed (§6)** (`planning/CX_ROADMAP.md`,
+> Phase 1 step 8).
 
 Before SMP trusts the MADT (step 9), and before the rig is trusted at all,
 CXK has to say what each machine it boots on told it, in a form two machines
@@ -24,7 +25,7 @@ report is how a difference between them is seen rather than guessed at.
 | `acpi` | the RSDP and both of its checksums; every table the RSDT, the XSDT and the FADT name, with its checksum judged | the firmware, walked again |
 | `madt` | the MADT entry by entry | the firmware |
 | `pci`, `pcisum` | every function: ids, class, header, subsystem, interrupt line and pin, the six BARs raw | `drivers/bus/pci.c`'s table |
-| `clock` | the clock source; whether the TSC is invariant; the TSC's rate measured against the tick and against the ACPI PM timer; the APIC timer's rate; the PM timer's port and width | `drivers/char/timer.c`, then a 50 ms measurement |
+| `clock` | the clock source; whether the TSC is invariant; the TSC's rate the clock uses and where it came from (`hv` stated, `pit` polled, `tick`); the PIT's own measure of it; the tick's rate asked and the interrupts that came; the APIC timer's rate; the PM timer's port and width; the TSC against the ACPI PM timer | `drivers/char/timer.c`, then a 50 ms measurement |
 
 The tables are read again rather than taken from `drivers/power/acpi.c`,
 which reads only the RSDT and judges no table's checksum. What the kernel
@@ -94,7 +95,10 @@ the kernel's `hw_check` in C#).
   checks; each section is there once; its `mem` and `pci` lines are the
   loader's map and the bus's functions; an RSDP, FADT and (with the I/O APIC
   up) a MADT naming a CPU; the crash area's copy reads back byte for byte;
-  the TSC by the tick and by the PM timer agree within 1%.
+  the PIT's count measured a rate, the clock's did not come from the tick,
+  and the clock's rate and the PM timer's agree within 1%. `ktest_arch.c`
+  (`t_stated_tsc_rate`): where Hyper-V's CPUID grants its frequency MSRs,
+  the clock is the rate it states (1.8c).
 - DevKit (`BootVerdictTests`): `verify-boot` fails a missing, torn or
   unended report, reads one interleaved with other lines, and judges as the
   kernel does.
@@ -165,7 +169,49 @@ timer 89 MHz against 62 MHz under `-icount`. TCG's clocks follow the host
 there, so it says nothing about the kernel yet; 1.8c reads Hyper-V's the
 same way.
 
-## 6. Next
+## 6. What Hyper-V's report said (1.8c)
 
-- **1.8c:** Hyper-V's TSC calibrates to 59742 MHz (HANDOFF): the report's
-  two TSC rates say which clock is wrong there.
+Before: the TSC at 59.8 GHz by the tick and 3.80 GHz by the PM timer, 93.6%
+apart. The tick was wrong. It counted interrupts, and the Gen 1 VM delivers
+about **60 a second for the 1000 asked** (the host's pace; a Windows host's
+default is 64). `timer_calibrate_tsc` measured the TSC over 50 of them, so
+every "millisecond" was 15.7 of them; the APIC timer, measured against that
+clock, inherited the error. Two PM-timer tests and the report's 1% check
+were red.
+
+Now the TSC's rate comes from, in order:
+
+1. **What the hypervisor states**: Hyper-V's `HV_X64_MSR_TSC_FREQUENCY`
+   (0x40000022), read only where CPUID 0x40000003 grants it (EAX bit 11,
+   EDX bit 8; `arch_cycles_stated_hz`, `arch/x86/apic.c`). XNU's `tsc_init`
+   (`osfmk/i386/tsc.c`) takes a VMM's stated rate over a measurement the
+   same way; Linux reads this MSR under the same two bits (from memory).
+2. **The PIT's count, polled** (`pit_cycles_hz`, `platform/pc/pit.c`):
+   channel 2 in mode 0, the count latched and the TSC read with interrupts
+   off in each sample, two 50 ms windows that must agree within 1%, as
+   Haiku's `calculate_cpu_conversion_factor` (`arch_timer.cpp`) does.
+   Serenity's `TSC::calibrate` uses interrupts only to bound the window and
+   its source's raw counter to measure it. No interrupt is counted.
+3. **The tick's interrupts**, only when the PIT's count gave nothing.
+
+The PIT is measured whatever is used (`tsc-pit-hz`), and the tick counted
+across it gives `tick-irq-hz`. On Hyper-V: stated 3800.03 MHz, PM timer
+3800.02 MHz, APIC timer 12.4998 MHz (a round 12.5), PIT **0.82-1.12% low**
+across five boots. So the emulated PIT is the clock that is off there,
+either side of the 1% bound, which is why a stated rate has a test of its
+own. `cxk hw show` notes both: the PIT's rate against the PM timer's, and
+interrupts that came more than 10% off the rate asked.
+
+Channel 2's gate matters off QEMU: left shut, the count still moved under
+QEMU, whose PIT ignores the gate in mode 0, but under Hyper-V it held and
+the report test went red. That boot also showed a dead count must be given
+up by stillness, not a total: 5 million samples, each three port accesses
+that exit to the host, took minutes; now 1000 samples on one value end it.
+
+**Untested:** the two-window agreement, since no boot has had a stall
+inside a window; the gate and the PIT on the rig.
+
+## 7. Next
+
+- The rig's report, read off the stick with `rig hwreport`, then `hw diff`
+  against QEMU's and Hyper-V's before step 9 trusts its MADT.

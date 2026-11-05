@@ -23,4 +23,10 @@ void pit_start_periodic(uint32_t hz, irq_handler_t on_tick);
    speaker.c opens the gate. */
 void pit_channel2_square(uint32_t hz);
 
+/* The cycle counter's rate, measured against channel 2's count polled (no
+   interrupt is counted): two ~50 ms windows that agree within 1%. 0 when the
+   count does not move or no two windows agree. Port B's gate and speaker bits
+   are put back as they were. */
+uint64_t pit_cycles_hz(void);
+
 #endif

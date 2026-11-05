@@ -45,12 +45,12 @@ KH_TEST(hwfmt_round_trip) {
     struct hw_out o;
     hw_open(&o, buf, sizeof buf);
     hw_line(&o, "cpu"); hw_s(&o, "AuthenticAMD"); hw_x(&o, 0x15, 2); hw_done(&o);
-    hw_line(&o, "clock"); hw_s(&o, "tsc-tick-hz"); hw_u(&o, 4013000000ull); hw_done(&o);
+    hw_line(&o, "clock"); hw_s(&o, "tsc-hz"); hw_u(&o, 4013000000ull); hw_done(&o);
     uint32_t len = hw_close(&o);
     KH_CHECK_EQ(hw_check(buf, len), HWR_OK);
     KH_CHECK(has_line(buf, len, "@hw\tbegin\t1"));
     KH_CHECK(has_line(buf, len, "@hw\tcpu\tAuthenticAMD\t15"));
-    KH_CHECK(has_line(buf, len, "@hw\tclock\ttsc-tick-hz\t4013000000"));
+    KH_CHECK(has_line(buf, len, "@hw\tclock\ttsc-hz\t4013000000"));
     char end[64];
     snprintf(end, sizeof end, "@hw\tend\t3\t%08x", xcrl_crc32(0, buf, len - 19));
     KH_CHECK(has_line(buf, len, end));

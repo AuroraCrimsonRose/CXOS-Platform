@@ -1299,11 +1299,13 @@ static int test_clock_sleep(void) {
 
 /* ---- a tick is a millisecond, measured by a clock the PIT does not drive ----
  *
- * test_clock_sleep compares the tick with itself, and the TSC is calibrated
- * from it, so a timer programmed at the wrong rate passes both: left at the
- * BIOS's 18.2 Hz, every "millisecond" is 55. The ACPI PM timer runs from its
- * own crystal. 100 ticks must be 100 ms of it, within a fifth: QEMU delivers
- * timer interrupts late under load, and a wrong divisor is out by far more. */
+ * test_clock_sleep compares the tick with itself. Once the TSC is the clock a
+ * tick is its millisecond, so this holds the TSC's calibration (the PIT's
+ * count, polled) to the ACPI PM timer, which runs from its own crystal; before
+ * 1.8c the TSC was calibrated over the tick's interrupts, and Hyper-V's
+ * merged ones made every "millisecond" 15.7 of them. 100 ticks must be 100 ms
+ * of the PM timer, within a fifth: QEMU delivers timer interrupts late under
+ * load, and a wrong calibration is out by far more. */
 static int test_tick_rate(void) {
     uint32_t p0, p1;
     if (acpi_pm_timer_read(&p0) != 0) {

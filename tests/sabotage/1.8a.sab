@@ -101,7 +101,7 @@ edit = kernel/diag/crashlog.c
 
 [pm-rate-doubled]
 # the PM-timer rate is wrong by a factor of two: the 1% bound must see it
-expect = hardware report: checked, counted, saved @ hwr: TSC by tick and by PM timer differ
+expect = hardware report: checked, counted, saved @ hwr: TSC by clock and by PM timer differ
 edit = kernel/platform/pc/hwreport.c
 <<<
     return (c1 - c0) * ACPI_PM_TIMER_HZ / ticks;

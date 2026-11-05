@@ -14,7 +14,8 @@
  * A clock and an event source, chosen separately at boot:
  *
  *   the clock    the PIT's tick counted in milliseconds until
- *                timer_calibrate_tsc measures the TSC, then the TSC scaled
+ *                timer_calibrate_tsc measures the TSC (against the PIT's
+ *                count, polled, never its interrupts), then the TSC scaled
  *                to nanoseconds, carried on from the tick clock's value so it
  *                never goes back. A CPU with no TSC keeps the tick.
  *   the source   the PIT's 1000 Hz interrupt until timer_start_deadlines
@@ -146,6 +147,10 @@ uint32_t timer_tsc32(void);           /* raw cycle counter (low 32 bits) */
 uint32_t timer_us_since(uint32_t start_tsc);
 uint32_t timer_tsc_mhz(void);         /* cycles per microsecond, 0 if uncalibrated */
 uint64_t timer_tsc_hz(void);          /* cycles per second, 0 if uncalibrated */
+const char *timer_tsc_by(void);       /* where it came from: "hv" (stated), "pit" (polled), "tick", "-" */
+uint64_t timer_tsc_pit_hz(void);      /* the PIT's count's measure of it, used or not; 0 none */
+uint64_t timer_tick_irq_hz(void);     /* tick interrupts a second while it was measured; 0 unknown */
+#define  TIMER_TICK_HZ 1000u          /* the rate the tick is asked for */
 int      timer_clock_is_tsc(void);
 
 /* ---- the event source ----

@@ -21,6 +21,11 @@
    2, at one rate whatever the CPU does (invariant: P-states, halts). */
 int arch_cycles_constant(void);
 
+/* The cycle counter's rate as a hypervisor states it, 0 when nothing does:
+   Hyper-V's frequency MSR, where it is granted. Measuring needs an emulated
+   clock the hypervisor may get wrong; this is its own word (1.8c). */
+uint64_t arch_cycles_stated_hz(void);
+
 /* Ready the timer, stopped, with `on_fire` called from its interrupt (before
    the EOI, as an IRQ handler is). -1 when the CPU has none to offer. */
 int arch_evtimer_init(irq_handler_t on_fire);

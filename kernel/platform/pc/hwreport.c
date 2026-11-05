@@ -237,7 +237,15 @@ static uint64_t measure_tsc_pm(void) {
 static void clock_lines(struct hw_out *o) {
     hw_line(o, "clock"); hw_s(o, "source"); hw_s(o, timer_clock_is_tsc() ? "tsc" : "tick"); hw_done(o);
     hw_line(o, "clock"); hw_s(o, "invariant"); hw_u(o, (uint64_t)arch_cycles_constant()); hw_done(o);
-    hw_line(o, "clock"); hw_s(o, "tsc-tick-hz"); hw_u(o, timer_tsc_hz()); hw_done(o);
+    hw_line(o, "clock"); hw_s(o, "tsc-hz"); hw_u(o, timer_tsc_hz()); hw_done(o);
+    hw_line(o, "clock"); hw_s(o, "tsc-by"); hw_s(o, timer_tsc_by()); hw_done(o);
+    hw_line(o, "clock"); hw_s(o, "tsc-pit-hz");
+    if (timer_tsc_pit_hz()) hw_u(o, timer_tsc_pit_hz()); else hw_s(o, "-");
+    hw_done(o);
+    hw_line(o, "clock"); hw_s(o, "tick-hz"); hw_u(o, TIMER_TICK_HZ); hw_done(o);
+    hw_line(o, "clock"); hw_s(o, "tick-irq-hz");
+    if (timer_tick_irq_hz()) hw_u(o, timer_tick_irq_hz()); else hw_s(o, "-");
+    hw_done(o);
     hw_line(o, "clock"); hw_s(o, "evtimer-hz"); hw_u(o, timer_evtimer_hz()); hw_done(o);
 
     hw_line(o, "clock");

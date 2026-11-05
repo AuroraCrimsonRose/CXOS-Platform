@@ -350,6 +350,32 @@ int arch_cycles_constant(void) {
     return cpu_has(CPU_INVTSC) ? 2 : 1;
 }
 
+/* Hyper-V's HV_X64_MSR_TSC_FREQUENCY (0x40000022), read only where CPUID
+   0x40000003 grants it: EAX bit 11 (AccessFrequencyMsrs) and EDX bit 8 (the
+   frequency MSRs are there). Linux's ms_hyperv_init_platform checks the same
+   two bits before taking it (from memory: Linux is not an indexed tree).
+   XNU's tsc_init (osfmk/i386/tsc.c) takes a hypervisor's stated rate over a
+   measurement the same way, from leaf 0x40000010, which Hyper-V lacks. */
+#define HV_SIG_EBX  0x7263694du    /* "Micr" */
+#define HV_SIG_ECX  0x666f736fu    /* "osof" */
+#define HV_SIG_EDX  0x76482074u    /* "t Hv" */
+#define HV_IFACE    0x31237648u    /* "Hv#1" */
+#define HV_MSR_TSC_FREQUENCY 0x40000022u
+
+uint64_t arch_cycles_stated_hz(void) {
+    uint32_t r[4];
+    cpuid_read(1, 0, r);
+    if (!(r[2] & (1u << 31))) return 0;              /* no hypervisor */
+    cpuid_read(0x40000000u, 0, r);
+    if (r[0] < 0x40000003u || r[1] != HV_SIG_EBX || r[2] != HV_SIG_ECX || r[3] != HV_SIG_EDX)
+        return 0;
+    cpuid_read(0x40000001u, 0, r);
+    if (r[0] != HV_IFACE) return 0;
+    cpuid_read(0x40000003u, 0, r);
+    if (!(r[0] & (1u << 11)) || !(r[3] & (1u << 8))) return 0;
+    return rdmsr(HV_MSR_TSC_FREQUENCY);
+}
+
 int arch_evtimer_init(irq_handler_t on_fire) {
     if (!lapic_up) return -1;
     lapic_timer_fn = on_fire;

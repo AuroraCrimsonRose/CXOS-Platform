@@ -55,7 +55,11 @@ void arch_hw_report(struct hw_out *o) {
         hw_x(o, h[0], 8);
         hw_done(o);
         cpuid_line(o, 0x40000000u, 0);
-        if (h[0] >= 0x40000001u) cpuid_line(o, 0x40000001u, 0);
+        /* to 0x40000006: Hyper-V's version, features (which grant its
+           frequency MSRs, 1.8c), recommendations, limits and hardware
+           features; another hypervisor's are reported as they come */
+        for (uint32_t l = 0x40000001u; l <= h[0] && l <= 0x40000006u; l++)
+            cpuid_line(o, l, 0);
     } else {
         hw_s(o, "-");
         hw_done(o);

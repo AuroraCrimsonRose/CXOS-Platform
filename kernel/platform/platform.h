@@ -34,6 +34,11 @@ void platform_tick_start(uint32_t hz, irq_handler_t on_tick);
 void platform_tick_stop(void);
 void platform_tick_resume(void);
 
+/* The cycle counter's rate, measured against a platform clock that is read,
+   not counted in interrupts (a host may deliver the tick late or merge it);
+   0 when there is none that works. Interrupts on or off. */
+uint64_t platform_cycles_hz(void);
+
 /* Start the built-in keyboard and mouse, reporting through keyboard.h and
    mouse.h, and log what was found. Needs interrupts on. */
 void platform_input_init(void);
