@@ -48,7 +48,8 @@ enum thread_state {
     THREAD_RUNNING,
     THREAD_BLOCKED,    /* waiting on IPC; not runnable until unblocked */
     THREAD_HELD,       /* created but not yet started (thread_create_process) */
-    THREAD_EXITED
+    THREAD_EXITED,
+    THREAD_REAPING     /* EXITED, taken by a reaper: its resources are going back */
 };
 
 struct thread {

@@ -12,8 +12,11 @@
 ; register here, step 6a2d), the result in rax. syscall itself takes rcx (the return RIP) and
 ; r11 (RFLAGS); every other register comes back as ring 3 left it.
 ;
-; Uniprocessor: the syscall entry parks the user's RSP in one global for two
-; instructions. With SMP it moves to per-CPU data reached through swapgs.
+; In the kernel GS is this CPU's own data (cpu/percpu.h); in ring 3 it is ring
+; 3's. Every way in from ring 3 swaps the two with swapgs and every way out
+; swaps them back: the syscall entry and sysret here, enter_usermode's iretq,
+; and the interrupt stubs (isr.asm). The syscall entry parks ring 3's RSP in
+; that data for two instructions, then takes the running thread's stack from it.
 
 bits 64
 default rel
@@ -21,7 +24,8 @@ default rel
 %define USER_DATA_SEL  0x1B           ; gdt.h
 %define USER_CODE_SEL  0x23
 %define KERNEL_DATA    0x10
-%define TSS64_RSP0_OFFSET 4
+%define CPU_KSTACK    8               ; cpu/percpu.h
+%define CPU_USER_RSP  16
 
 %define SYS_EXIT          0x00        ; cxk_abi.h
 %define SYS_YIELD         0x01
@@ -40,7 +44,6 @@ global syscall_trapped
 extern syscall_dispatch     ; int syscall_dispatch(uint32_t num, uintptr_t a1, ..., uintptr_t a5)
 extern syscall_check_origin ; void syscall_check_origin(uint32_t num, uintptr_t ip)
 extern usermode_kill_point  ; void usermode_kill_point(void)
-extern gdt64_tss            ; gdt.c
 
 ; ---------------------------------------------------------------------------
 ; int enter_usermode(uintptr_t entry, uintptr_t user_sp, uintptr_t *save_slot,
@@ -96,6 +99,7 @@ enter_common:
     xor r13d, r13d
     xor r14d, r14d
     xor r15d, r15d
+    swapgs                   ; ring 3's GS base; the CPU's waits in the MSR
     iretq                    ; -> ring 3
 
 ; return_to_kernel(int retval, uintptr_t *save_slot): back onto the stack
@@ -118,17 +122,20 @@ return_to_kernel:
 ; ---------------------------------------------------------------------------
 ; syscall64_entry - LSTAR. The CPU has put the return RIP in rcx and RFLAGS in
 ; r11, loaded the kernel's CS and SS from STAR, and cleared what FMASK names
-; (IF, TF, DF, AC, NT, IOPL; cpu.c). RSP is still ring 3's, so the first two
-; instructions move to RSP0 before anything is pushed. An NMI, #DB or #MC
-; between them runs on its own IST stack (gdt.h); nothing else can arrive.
+; (IF, TF, DF, AC, NT, IOPL; cpu.c). RSP and GS are still ring 3's, so the
+; first instructions take the CPU's GS and move to the running thread's stack
+; before anything is pushed. An NMI, #DB or #MC among them runs on its own IST
+; stack (gdt.h) and finds out from the GS MSR, not from CS, whose GS it has
+; (isr.asm); nothing else can arrive.
 ;
 ; Like x86-32's int 0x80 gate, the call runs with interrupts off, and a call
 ; that blocks switches away from here and comes back the same way.
 ; ---------------------------------------------------------------------------
 syscall64_entry:
-    mov [syscall64_user_rsp], rsp
-    mov rsp, [gdt64_tss + TSS64_RSP0_OFFSET]
-    push qword [syscall64_user_rsp]
+    swapgs                          ; the CPU's own data (cpu/percpu.h)
+    mov [gs:CPU_USER_RSP], rsp
+    mov rsp, [gs:CPU_KSTACK]        ; the running thread's (arch_kernel_stack_set)
+    push qword [gs:CPU_USER_RSP]
     push r11                 ; user RFLAGS
     push rcx                 ; user RIP
 
@@ -199,6 +206,7 @@ syscall64_entry:
                              ; never maps the user half's last page
     pop r11                  ; user RFLAGS
     pop rsp                  ; user RSP
+    swapgs                   ; ring 3's GS base back
     o64 sysret
 
 ; ---------------------------------------------------------------------------
@@ -236,7 +244,6 @@ usercopy_trampoline:
 
 section .bss
 alignb 8
-syscall64_user_rsp: resq 1
 ; Traps taken through the syscall entry and let through by
 ; syscall_check_origin (syscall_trapped_count), counted before the
 ; dispatcher runs, so a test can tell a call that reached the recording point

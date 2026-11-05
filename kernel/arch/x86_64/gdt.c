@@ -22,7 +22,6 @@ struct tss64 {
 } __attribute__((packed));
 
 _Static_assert(sizeof(struct tss64) == 104, "the 64-bit TSS is 104 bytes");
-_Static_assert(offsetof(struct tss64, rsp) == TSS64_RSP0_OFFSET, "usermode.asm reads RSP0 here");
 
 struct gdt_ptr64 {
     uint16_t limit;

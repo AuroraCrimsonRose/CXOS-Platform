@@ -1,0 +1,236 @@
+# Phase 1.9b's sabotages, run by `cxk test sabotage`.
+# Each must turn red exactly the self-tests named, at the reason named.
+# Format: docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage".
+# Each sched entry lands in the one self-test, so none share a boot.
+# Sabotaged by hand, as each makes every boot panic rather than a test go
+# red: a new thread launched still holding the sched lock, a switch without
+# it, and the swapgs dropped from the syscall exit or the interrupt exit.
+# The commit lists what each did.
+
+# ---- the per-CPU base (GS) ----
+
+[paranoid-never-swaps]
+# an IST vector trusts that GS is the kernel's
+expect = GS is this CPU's; the IST vectors swap it in @ cpu local: step 12
+edit = kernel/arch/x86_64/isr.asm
+<<<
+    js .gs_kernel
+    swapgs
+===
+    jmp .gs_kernel
+    swapgs
+>>>
+
+[paranoid-always-swaps]
+# an IST vector swaps whatever GS holds
+expect = GS is this CPU's; the IST vectors swap it in @ cpu local: step 10
+edit = kernel/arch/x86_64/isr.asm
+<<<
+    js .gs_kernel
+    swapgs
+===
+    swapgs
+>>>
+
+[kstack-not-per-cpu]
+# the syscall entry's stack is left where boot put it
+expect = GS is this CPU's; the IST vectors swap it in @ cpu local: step 5
+edit = kernel/arch/x86_64/cpu.c
+<<<
+    cpu_this()->kstack = top;
+===
+    (void)cpu_this;
+>>>
+
+# ---- the sched lock: each entry takes it ----
+
+[unblock-unlocked]
+expect = hooks: the scheduler takes its lock @ sched lock: step 2
+edit = kernel/cpu/sched.c
+<<<
+void thread_unblock(int id) {
+    uint32_t f = spin_lock(&sched_lock);
+    struct thread *t = th(id);
+    if (t && t->state == THREAD_BLOCKED) {
+        t->state = THREAD_READY;
+        outrank_check(t);
+    }
+    spin_unlock(&sched_lock, f);
+===
+void thread_unblock(int id) {
+    uint32_t f = irq_save();
+    struct thread *t = th(id);
+    if (t && t->state == THREAD_BLOCKED) {
+        t->state = THREAD_READY;
+        outrank_check(t);
+    }
+    irq_restore(f);
+>>>
+
+[start-unlocked]
+expect = hooks: the scheduler takes its lock @ sched lock: step 3
+edit = kernel/cpu/sched.c
+<<<
+void thread_start(int id) {
+    uint32_t f = spin_lock(&sched_lock);
+===
+void thread_start(int id) {
+    uint32_t f = irq_save();
+>>>
+edit = kernel/cpu/sched.c
+<<<
+    if (id > 0 && t && t->state == THREAD_HELD) t->state = THREAD_READY;
+    spin_unlock(&sched_lock, f);
+===
+    if (id > 0 && t && t->state == THREAD_HELD) t->state = THREAD_READY;
+    irq_restore(f);
+>>>
+
+[wake-process-unlocked]
+expect = hooks: the scheduler takes its lock @ sched lock: step 4
+edit = kernel/cpu/sched.c
+<<<
+void sched_wake_process(struct proc *p) {
+    uint32_t f = spin_lock(&sched_lock);
+    for (uint32_t i = 0; i < tids.cap; i++) {
+        struct thread *t = th((int)i);
+        if (!t || t->proc != p || t->state != THREAD_BLOCKED) continue;
+        t->sleeping = 0;
+        t->state    = THREAD_READY;
+    }
+    spin_unlock(&sched_lock, f);
+===
+void sched_wake_process(struct proc *p) {
+    uint32_t f = irq_save();
+    for (uint32_t i = 0; i < tids.cap; i++) {
+        struct thread *t = th((int)i);
+        if (!t || t->proc != p || t->state != THREAD_BLOCKED) continue;
+        t->sleeping = 0;
+        t->state    = THREAD_READY;
+    }
+    irq_restore(f);
+>>>
+
+[wake-sleepers-unlocked]
+expect = hooks: the scheduler takes its lock @ sched lock: step 5
+edit = kernel/cpu/sched.c
+<<<
+    if (!initialized) return;
+    uint32_t f = spin_lock(&sched_lock);
+    for (uint32_t i = 0; i < tids.cap; i++) {
+        struct thread *t = th((int)i);
+        if (!t || !t->sleeping) continue;
+===
+    if (!initialized) return;
+    uint32_t f = irq_save();
+    for (uint32_t i = 0; i < tids.cap; i++) {
+        struct thread *t = th((int)i);
+        if (!t || !t->sleeping) continue;
+>>>
+edit = kernel/cpu/sched.c
+<<<
+            outrank_check(t);
+        }
+    }
+    spin_unlock(&sched_lock, f);
+}
+===
+            outrank_check(t);
+        }
+    }
+    irq_restore(f);
+}
+>>>
+
+[others-ready-unlocked]
+expect = hooks: the scheduler takes its lock @ sched lock: step 6
+edit = kernel/cpu/sched.c
+<<<
+    int any = 0;
+    uint32_t f = spin_lock(&sched_lock);
+===
+    int any = 0;
+    uint32_t f = irq_save();
+>>>
+edit = kernel/cpu/sched.c
+<<<
+        any = t && (int)i != current && t->state == THREAD_READY;
+    }
+    spin_unlock(&sched_lock, f);
+===
+        any = t && (int)i != current && t->state == THREAD_READY;
+    }
+    irq_restore(f);
+>>>
+
+[next-due-unlocked]
+expect = hooks: the scheduler takes its lock @ sched lock: step 7
+edit = kernel/cpu/sched.c
+<<<
+    if (running && preempt_on) d = slice_end;
+    uint32_t f = spin_lock(&sched_lock);
+    for (uint32_t i = 0; i < tids.cap; i++) {
+        struct thread *t = th((int)i);
+        if (t && t->sleeping && t->wake_ns < d) d = t->wake_ns;
+    }
+    spin_unlock(&sched_lock, f);
+===
+    if (running && preempt_on) d = slice_end;
+    uint32_t f = irq_save();
+    for (uint32_t i = 0; i < tids.cap; i++) {
+        struct thread *t = th((int)i);
+        if (t && t->sleeping && t->wake_ns < d) d = t->wake_ns;
+    }
+    irq_restore(f);
+>>>
+
+[active-count-unlocked]
+expect = hooks: the scheduler takes its lock @ sched lock: step 8
+edit = kernel/cpu/sched.c
+<<<
+    int c = 0;
+    uint32_t f = spin_lock(&sched_lock);
+    for (uint32_t i = 0; i < tids.cap; i++) {
+        struct thread *t = th((int)i);
+        if (t && (t->state == THREAD_READY || t->state == THREAD_RUNNING)) c++;
+    }
+    spin_unlock(&sched_lock, f);
+===
+    int c = 0;
+    uint32_t f = irq_save();
+    for (uint32_t i = 0; i < tids.cap; i++) {
+        struct thread *t = th((int)i);
+        if (t && (t->state == THREAD_READY || t->state == THREAD_RUNNING)) c++;
+    }
+    irq_restore(f);
+>>>
+
+[set-prio-unlocked]
+expect = hooks: the scheduler takes its lock @ sched lock: step 9
+edit = kernel/cpu/sched.c
+<<<
+    uint32_t f = spin_lock(&sched_lock);
+    t->prio = (uint8_t)level;
+    outrank_check(t);
+    spin_unlock(&sched_lock, f);
+===
+    uint32_t f = irq_save();
+    t->prio = (uint8_t)level;
+    outrank_check(t);
+    irq_restore(f);
+>>>
+
+[set-tls-unlocked]
+expect = hooks: the scheduler takes its lock @ sched lock: step 10
+edit = kernel/cpu/sched.c
+<<<
+    uint32_t f = spin_lock(&sched_lock);
+    t->tls_base = base;
+    if (id == current) arch_tls_base_set(base);
+    spin_unlock(&sched_lock, f);
+===
+    uint32_t f = irq_save();
+    t->tls_base = base;
+    if (id == current) arch_tls_base_set(base);
+    irq_restore(f);
+>>>

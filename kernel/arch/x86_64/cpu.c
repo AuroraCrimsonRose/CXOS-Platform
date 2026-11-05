@@ -15,9 +15,20 @@
 #include "idt.h"
 #include "pat.h"
 #include "logging.h"
+#include "cpu/percpu.h"
+
+/* The CPU's own data behind GS (cpu/percpu.h), and ring 3's base, which
+   swapgs swaps in, 0. Loading a selector into GS zeroes the base, so this
+   comes after gdt64_init's segment loads, as entry.asm's came before them. */
+static void cpu_local_bind(struct cpu *c) {
+    wrmsr(MSR_GS_BASE, (uint64_t)(uintptr_t)c);
+    wrmsr(MSR_KERNEL_GS_BASE, 0);
+}
 
 void arch_cpu_init(void) {
     gdt64_init();
+    cpu_local_bind(&cpu_boot);
+    arch_kernel_stack_set(arch_kernel_stack_default());
     klog("GDT", SEV_OK, "GDT + TSS installed (double fault on IST 1)");
     idt64_init();
     klog("IDT", SEV_OK, "installed (exceptions, IRQs 0-15, MSI pool)");
@@ -58,7 +69,12 @@ void arch_syscall_stub(uint8_t *dst, uint32_t nr) {
 
 uint32_t arch_syscall_stub_ret(void) { return 7; }   /* the ret */
 
-void arch_kernel_stack_set(uintptr_t top) { gdt64_set_rsp0(top); }
+/* Both places the CPU takes it from: the TSS for an interrupt from ring 3,
+   the CPU's own data for the syscall entry, which has no hardware switch. */
+void arch_kernel_stack_set(uintptr_t top) {
+    gdt64_set_rsp0(top);
+    cpu_this()->kstack = top;
+}
 
 uintptr_t arch_kernel_stack_default(void) { return gdt64_default_rsp0(); }
 
@@ -90,11 +106,13 @@ uintptr_t arch_thread_frame(uintptr_t stack_top, void (*launch)(void)) {
        [r15][r14][r13][r12][rbp][rbx][rflags][return], restored with the
        mirror pops, popfq and ret. Above the return sits a zero where launch's
        own return address would be: launch then starts with RSP 8 below a
-       multiple of 16, as after a call, and a stack trace ends there. */
+       multiple of 16, as after a call, and a stack trace ends there.
+       Interrupts off: the thread that switches here holds the scheduler's
+       lock, which launch gives back before it turns them on (sched.c). */
     uint64_t *sp = (uint64_t *)(stack_top & ~(uintptr_t)15);
     *(--sp) = 0;                          /* launch's return address: none */
     *(--sp) = (uint64_t)(uintptr_t)launch;/* context_switch's ret target */
-    *(--sp) = 0x202;                      /* rflags: IF set, reserved bit 1 */
+    *(--sp) = 0x002;                      /* rflags: IF clear, reserved bit 1 */
     *(--sp) = 0;                          /* rbx */
     *(--sp) = 0;                          /* rbp */
     *(--sp) = 0;                          /* r12 */

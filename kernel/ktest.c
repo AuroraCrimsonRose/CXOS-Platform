@@ -3510,6 +3510,7 @@ void ktest_run(void) {
     total++; passed += report("hooks: race points call and park", ktest_race_points());
     total++; passed += report("hooks: chaos yields replay from their seed", ktest_chaos());
     total++; passed += report("hooks: the lock order is checked",  ktest_lock_order());
+    total++; passed += report("hooks: the scheduler takes its lock", ktest_sched_lock());
     total++; passed += report("every allocation of six creations fails cleanly", ktest_alloc_sweeps());
     total++; passed += report("every syscall from ring 3: refusals take nothing", ktest_syscall_census());
     total++; passed += report("every allocation of 13 syscalls fails cleanly", ktest_syscall_sweeps());

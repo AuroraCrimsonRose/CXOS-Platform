@@ -37,6 +37,11 @@
 #define MSR_LSTAR     0xC0000082u
 #define MSR_FMASK     0xC0000084u
 #define MSR_FS_BASE   0xC0000100u   /* ring 3's thread-local block (arch_tls_base_set) */
+/* GS: in the kernel this CPU's struct cpu (cpu/percpu.h), in ring 3 ring 3's.
+   swapgs exchanges the two on every way in and out (usermode.asm, isr.asm);
+   entry.asm and arch_cpu_init bind the boot CPU's. */
+#define MSR_GS_BASE        0xC0000101u
+#define MSR_KERNEL_GS_BASE 0xC0000102u   /* the base swapgs swaps in */
 #define EFER_SCE      (1ull << 0)
 #define STAR_VALUE    (((uint64_t)(USER_DATA_SEL - 8) << 48) | ((uint64_t)GDT64_KCODE << 32))
 #define FMASK_VALUE   0x47700ull     /* TF IF DF IOPL NT AC */
@@ -50,9 +55,6 @@
 #define IST_NMI           2
 #define IST_DEBUG         3
 #define IST_MACHINE_CHECK 4
-
-/* Where the TSS keeps RSP0, for the syscall entry (usermode.asm). */
-#define TSS64_RSP0_OFFSET 4
 
 void gdt64_init(void);
 

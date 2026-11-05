@@ -20,12 +20,11 @@
 #include "color.h"
 #include "panic.h"
 #include "arch/cpu_ops.h"      /* arch_irq_save */
+#include "cpu/percpu.h"         /* cpu_spin_held */
 
 _Static_assert(KOBJ_TYPE_MAX <= 16, "live_counts.types holds every object type");
 
 #if CXK_TEST_HOOKS
-
-volatile uint32_t spin_held;   /* sync/spinlock.h */
 
 /* ---- failing the Nth allocation ----
    Armed and read by one thread, the arming one; the other threads only read
@@ -85,7 +84,7 @@ static int race_fire(enum race_point p) {
     if (++r->arrivals != r->nth) return 0;
     /* Once per arming: no other thread can take it after this one. */
     race_armed_mask &= ~(1u << p);
-    if (spin_held) kpanic("race point reached holding a spinlock");
+    if (cpu_spin_held()) kpanic("race point reached holding a spinlock");
 
     if (r->act == RACE_CALL) { r->fn(r->ctx); return 1; }
     r->parked = me + 1;
@@ -102,7 +101,7 @@ static uint32_t boot_seed, boot_rate;
    interrupts off: two threads taking turns here take the sequence's next
    numbers in turn, never the same one. */
 static void chaos_at(enum race_point p) {
-    if (spin_held) kpanic("race point reached holding a spinlock");
+    if (cpu_spin_held()) kpanic("race point reached holding a spinlock");
     uint32_t f = arch_irq_save();
     uint64_t x = chaos_draw(&chaos_state);
     uint32_t n = (uint32_t)(x % 1000u) < chaos_rate ? 1u + (uint32_t)((x >> 32) % 3u) : 0;

@@ -24,6 +24,7 @@
 #include "object/kpipe.h"
 #include "sync/spinlock.h"
 #include "sync/lockorder.h"
+#include "cpu/percpu.h"
 
 static struct ocache hk_cache;
 
@@ -585,7 +586,9 @@ static spinlock_t lk_dma    = SPINLOCK_INIT(LR_DMA);
 static spinlock_t lk_dma2   = SPINLOCK_INIT(LR_DMA);
 static spinlock_t lk_none   = SPINLOCK_INIT(LR_NONE);
 static spinlock_t lk_heap   = SPINLOCK_INIT(LR_HEAP);
-static spinlock_t lk_switch = SPINLOCK_INIT(LR_PAGEDB);
+/* Below sched, so the yield that switches with it held takes the sched lock
+   in order and the switch is the only failure. */
+static spinlock_t lk_switch = SPINLOCK_INIT(LR_IPC);
 static volatile int lk_ran;
 
 static void lk_helper(void) { lk_ran = 1; }
@@ -692,6 +695,71 @@ int ktest_lock_order(void) {
     if (step) klog_u32("KTEST", SEV_FAIL, "lock order: step ", (uint32_t)step, LOG_COLOR_VALUE, "");
     return step == 0;
 }
+/* ---- the sched lock (cpu/sched.c, 1.9b) ----
+   Each entry that touches the scheduler's state takes sched_lock: under
+   lk_heap (ranked after sched) that taking is one out-of-order failure. A
+   thread switched to finds the lock given back and nothing held. */
+static volatile int      sl_ran;
+static volatile uint32_t sl_depth, sl_spins;
+static void sl_helper(void) {
+    sl_depth = lockorder_depth();
+    sl_spins = cpu_spin_held();
+    sl_ran = 1;
+}
+static uint32_t sl_dummy_proc;   /* only compared, never read */
+static void sl_op_unblock(void *a)  { (void)a; thread_unblock(thread_current_id()); }
+static void sl_op_start(void *a)    { (void)a; thread_start(thread_current_id()); }
+static void sl_op_wake(void *a)     { (void)a; sched_wake_process((struct proc *)&sl_dummy_proc); }
+static void sl_op_sleepers(void *a) { (void)a; sched_wake_sleepers(0); }
+static void sl_op_others(void *a)   { (void)a; (void)sched_others_ready(); }
+static void sl_op_due(void *a)      { (void)a; (void)sched_next_due(1); }
+static void sl_op_active(void *a)   { (void)a; (void)sched_active_count(); }
+static void sl_op_prio(void *a) {
+    (void)a;
+    int me = thread_current_id();
+    thread_set_prio(me, thread_prio(me));
+}
+static void sl_op_tls(void *a) {
+    (void)a;
+    int me = thread_current_id();
+    thread_set_tls(me, thread_tls(me));
+}
+
+static int sched_lock_steps(void) {
+    static void (*const ops[])(void *) = {
+        sl_op_unblock, sl_op_start, sl_op_wake, sl_op_sleepers, sl_op_others,
+        sl_op_due, sl_op_active, sl_op_prio, sl_op_tls,
+    };
+    uint32_t n = 0, code;
+    if (lockorder_depth() != 0) return 1;
+    for (uint32_t i = 0; i < sizeof ops / sizeof ops[0]; i++) {
+        code = lk_under_heap(ops[i], 0, &n);
+        if (code != LO_ORDER || n != 1) return 2 + (int)i;   /* 2..10 */
+    }
+    if (lockorder_depth() != 0) return 11;
+
+    /* a new thread starts with the lock given back */
+    sl_ran = 0; sl_depth = sl_spins = 0xFFFFFFFFu;
+    if (thread_create("sched-lock", sl_helper) < 0) return 12;
+    yield();
+    if (!hk_wait(&sl_ran, 2000)) return 13;
+    if (sl_depth != 0) return 14;
+    if (sl_spins != 0) return 15;
+    /* and so does the one switched back to */
+    if (lockorder_depth() != 0) return 16;
+    if (cpu_spin_held() != 0) return 17;
+    return 0;
+}
+
+int ktest_sched_lock(void) {
+    uint32_t threads0 = sched_thread_count();
+    int step = sched_lock_steps();
+    lockorder_test_disarm(0);
+    if (!hk_settle(threads0) && !step) step = 18;
+    if (step) klog_u32("KTEST", SEV_FAIL, "sched lock: step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    return step == 0;
+}
 #else
 int ktest_lock_order(void) { return 0; }   /* no checker built in: fails, never skips */
+int ktest_sched_lock(void) { return 0; }
 #endif

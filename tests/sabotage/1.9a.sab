@@ -44,7 +44,7 @@ edit = kernel/sync/lockorder.c
 expect = hooks: the lock order is checked @ lock order: step 3
 edit = kernel/sync/lockorder.c
 <<<
-    seen[top] |= 1u << rank;
+    __atomic_fetch_or(&seen[top], 1u << rank, __ATOMIC_RELAXED);
 ===
     (void)top; (void)seen;
 >>>
@@ -65,7 +65,7 @@ edit = kernel/sync/lockorder.c
 expect = hooks: the lock order is checked @ lock order: step 13
 edit = kernel/cpu/sched.c
 <<<
-    lockorder_assert_none("thread switch holding");
+    lockorder_assert_switch(&sched_lock, "thread switch holding");
 ===
     (void)lockorder_depth();
 >>>

@@ -16,8 +16,10 @@
  *
  * Built in with the test hooks (CXK_LOCK_CHECK follows CXK_TEST_HOOKS).
  * Taking a lock out of order, releasing one not held, holding more than
- * LOCKORDER_DEPTH, or switching threads with one held is a panic naming the
- * locks and where each was taken. The check runs before the spin, so an
+ * LOCKORDER_DEPTH, or switching threads with any held but the scheduler's
+ * (which goes across the switch, and must) is a panic naming the
+ * locks and where each was taken. What is held is each CPU's own
+ * (struct cpu, cpu/percpu.h). The check runs before the spin, so an
  * inversion is caught on the first run that nests the two, not only on the
  * run that deadlocks. Every pair that does nest is recorded
  * (lockorder_seen), so a self-test can show the checker saw it.
@@ -43,7 +45,8 @@ enum lock_rank {
     LR_PIDS,           /* cpu/proc.c pids_lock        > ocache, ocache-slots, pagedb */
     LR_KMEM,           /* object/kmem.c, per object   > pagedb */
     LR_KTIMER,         /* object/ktimer.c armed_lock  > kwait */
-    LR_KWAIT,          /* object/kwait.c wait_lock */
+    LR_KWAIT,          /* object/kwait.c wait_lock     > sched */
+    LR_SCHED,          /* cpu/sched.c sched_lock, held across a switch */
     LR_RANDOM,         /* drivers/char/random.c */
     LR_HEAP,           /* memman/heap.c heap_lock     > pagedb */
     LR_OCACHE,         /* memman/ocache.c, per cache  > ocache-slots, pagedb */
@@ -69,7 +72,8 @@ enum {
     LO_ORDER,         /* a held lock's rank is not lower */
     LO_DEPTH,         /* the list is full */
     LO_NOT_HELD,      /* released but not in the list */
-    LO_SWITCH,        /* a thread switch with a lock held (kernel only) */
+    LO_SWITCH,        /* a thread switch with a lock held but the sched lock (kernel only) */
+    LO_SWITCH_UNLOCKED, /* a thread switch without the sched lock (kernel only) */
 };
 
 /* The pure part. lockorder_take checks and, if all is well, adds the lock
@@ -87,11 +91,15 @@ int lockorder_give(struct lockorder_held *h, const void *lock);
 #endif
 #if CXK_LOCK_CHECK
 /* Bit j of lockorder_seen[i]: rank j was taken while i was the highest rank
-   held. One machine's record (one CPU's until SMP). */
+   held, on any CPU: one record for the machine, set atomically. */
 extern uint32_t lockorder_seen[LR_COUNT];
 void lockorder_acquire(const void *lock, uint32_t rank, uintptr_t at);
 void lockorder_release(const void *lock);
 void lockorder_assert_none(const char *where);   /* panics if any is held */
+/* At a thread switch: the sched lock, held across it, and nothing else.
+   Armed, a failure leaves only the sched lock listed, for the thread
+   switched to to give back. */
+void lockorder_assert_switch(const void *sched_lock, const char *where);
 uint32_t lockorder_depth(void);
 void lockorder_stop(void);                       /* the panic path: check no more */
 void lockorder_report(void);                     /* the seen pairs, to the log */

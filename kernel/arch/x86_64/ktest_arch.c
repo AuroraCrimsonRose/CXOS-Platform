@@ -47,6 +47,7 @@
 #include "arch/usermode.h"
 #include "arch/evtimer.h"        /* arch_cycles_constant */
 #include "arch/x86/cpufeat.h"    /* cpuid_read: Hyper-V's grant, read here */
+#include "cpu/percpu.h"
 #include "object/ktimer.h"
 #include "object/kwait.h"
 #include "cxk_abi.h"            /* SIGNAL_TIMER_FIRED, E_TIMED_OUT */
@@ -97,6 +98,7 @@ static volatile struct {
     uint64_t resume_rsp;        /* 0 = leave RSP alone */
     int      hits;
     uint64_t error, rip, frame;
+    uint64_t gs;                /* GS_BASE as the handler ran: the kernel's, swapped in */
 } expect;
 
 static int probe(struct registers *f) {
@@ -105,6 +107,7 @@ static int probe(struct registers *f) {
     expect.error = f->error;
     expect.rip   = f->rip;
     expect.frame = (uint64_t)(uintptr_t)f;
+    expect.gs    = rdmsr(MSR_GS_BASE);
     if (expect.resume_rip) f->rip = expect.resume_rip;
     if (expect.resume_rsp) f->rsp = expect.resume_rsp;
     return 1;
@@ -115,7 +118,7 @@ static void arm(uint64_t vector) {
     expect.resume_rip = 0;
     expect.resume_rsp = 0;
     expect.hits = 0;
-    expect.error = expect.rip = expect.frame = ~0ull;
+    expect.error = expect.rip = expect.frame = expect.gs = ~0ull;
     idt64_set_probe(probe);
 }
 
@@ -1343,6 +1346,77 @@ static int t_user_top_page(void) {
     return ok;
 }
 
+/* ---- the CPU's own data (cpu/percpu.h, 1.9b) ---- */
+
+/* `int vec` with ring 3's GS base swapped in, as an NMI, #DB or #MC that
+   lands in the syscall entry before its swapgs would find it: returns GS_BASE
+   once the handler is back, which must be ring 3's again. Interrupts are off
+   throughout: an ordinary one here trusts CS and would run on ring 3's base. */
+static uint64_t int_with_user_gs(uint64_t vec) {
+    uint32_t lo, hi;
+    uint32_t f = arch_irq_save();
+    arm(vec);
+    switch (vec) {
+#define INT_USER_GS(n) \
+    case n: __asm__ volatile ("swapgs\n\tint $" #n "\n\trdmsr\n\tswapgs" \
+                              : "=a"(lo), "=d"(hi) : "c"(MSR_GS_BASE) : "memory"); break;
+    INT_USER_GS(1)
+    INT_USER_GS(2)
+    INT_USER_GS(18)
+#undef INT_USER_GS
+    default: lo = hi = 0xFFFFFFFFu;
+    }
+    disarm();
+    arch_irq_restore(f);
+    return (uint64_t)hi << 32 | lo;
+}
+
+static volatile int      cl_ran;
+static volatile int32_t  cl_seen;
+static void cl_thread(void) { cl_seen = cpu_thread(); cl_ran = thread_current_id(); }
+
+/* Returns the step that failed (logged), or 0. */
+static int cpu_local_steps(void) {
+    struct cpu *me = cpu_this();
+    if ((uint64_t)(uintptr_t)me != rdmsr(MSR_GS_BASE) || me != &cpu_boot) return 1;
+    if (me->self != me) return 2;
+    if (rdmsr(MSR_KERNEL_GS_BASE) >> 63) return 3;   /* ring 3's: the low half */
+    if (cpu_thread() != thread_current_id()) return 4;
+    if (me->kstack != arch_kernel_stack_current()) return 5;
+
+    /* the running thread follows a switch */
+    cl_ran = 0; cl_seen = -1;
+    int id = thread_create("cpu-local", cl_thread);
+    if (id < 0) return 6;
+    settle();
+    if (cl_ran != id || cl_seen != id) return 7;
+    if (cpu_thread() != thread_current_id()) return 8;
+    if (me->kstack != arch_kernel_stack_current()) return 9;
+
+    /* an IST vector from the kernel: no swap, the kernel's base throughout */
+    arm(VEC_DEBUG);
+    __asm__ volatile ("int $1" ::: "memory");
+    disarm();
+    if (expect.hits != 1 || expect.gs != (uint64_t)(uintptr_t)me) return 10;
+    if (rdmsr(MSR_GS_BASE) != (uint64_t)(uintptr_t)me) return 11;
+
+    /* and with ring 3's base in: swapped in for the handler, back after */
+    static const uint64_t vecs[] = { VEC_DEBUG, VEC_NMI, VEC_MACHINE_CHECK };
+    for (int i = 0; i < 3; i++) {
+        uint64_t after = int_with_user_gs(vecs[i]);
+        if (expect.hits != 1 || expect.gs != (uint64_t)(uintptr_t)me) return 12 + 2 * i;
+        if (after >> 63) return 13 + 2 * i;   /* 12..17 */
+    }
+    if (rdmsr(MSR_GS_BASE) != (uint64_t)(uintptr_t)me) return 18;
+    return 0;
+}
+
+static int t_cpu_local(void) {
+    int step = cpu_local_steps();
+    if (step) klog_u32("KTEST", SEV_FAIL, "cpu local: step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    return step == 0;
+}
+
 /* ---- arch/ktest_arch.h ---- */
 
 /* The double fault's IST stack (t_idt checks the gate names it): the wiring
@@ -1416,6 +1490,7 @@ static const struct ktest_arch_case cases[] = {
     { "the tick preempts threads that never yield",     t_preempt },
     { "RSP0 follows the running thread",                t_rsp0_follows_thread },
     { "FS_BASE follows the running thread",             t_tls_follows_thread },
+    { "GS is this CPU's; the IST vectors swap it in",   t_cpu_local },
     { "an MSI vector reaches its handler, then nothing", t_msi_pool },
     { "syscall: EFER.SCE, STAR, LSTAR, FMASK; sysret's selectors", t_syscall_msrs },
     { "ring 3 starts at CPL 3, registers clear; SYS_EXIT", t_ring3_cpl },

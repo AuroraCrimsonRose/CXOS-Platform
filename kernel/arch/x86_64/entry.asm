@@ -8,18 +8,36 @@
 ; physical address of the CXBI handover. The loader zeroed .bss as the tail of
 ; its segment, so nothing here needs to. Move to the kernel's own stack, which
 ; is in the top 2 GiB like the rest of the image, and call kmain (kernel/kmain.c), as x86-32 does.
+;
+; Before kmain, the GS base is bound to the boot CPU's own data (cpu/percpu.h),
+; so the first spinlock or thread id finds it rather than whatever the loader
+; left. arch_cpu_init binds it again after the GDT's segment loads, which zero
+; it. The base swapgs swaps in (ring 3's) starts at 0.
 
 bits 64
 default rel
 
+%define MSR_GS_BASE        0xC0000101   ; gdt.h
+%define MSR_KERNEL_GS_BASE 0xC0000102
+
 section .text.entry
 global _start
 extern kmain
+extern cpu_boot
 
 _start:
     cli
     lea rsp, [boot_stack_top]
     xor ebp, ebp                    ; the end of every stack walk
+    lea rax, [cpu_boot]
+    mov rdx, rax
+    shr rdx, 32
+    mov ecx, MSR_GS_BASE
+    wrmsr
+    xor eax, eax
+    xor edx, edx
+    mov ecx, MSR_KERNEL_GS_BASE
+    wrmsr
     call kmain                      ; RDI is still the CXBI address
 .hang:
     cli

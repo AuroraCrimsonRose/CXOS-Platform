@@ -15,6 +15,7 @@ static const char *const names[LR_COUNT] = {
     [LR_KMEM]         = "kmem",
     [LR_KTIMER]       = "ktimer",
     [LR_KWAIT]        = "kwait",
+    [LR_SCHED]        = "sched",
     [LR_RANDOM]       = "random",
     [LR_OCACHE]       = "ocache",
     [LR_OCACHE_SLOTS] = "ocache-slots",
@@ -40,7 +41,7 @@ int lockorder_take(struct lockorder_held *h, uint32_t seen[LR_COUNT],
     h->e[h->n].rank = rank;
     h->e[h->n].at   = at;
     h->n++;
-    seen[top] |= 1u << rank;
+    __atomic_fetch_or(&seen[top], 1u << rank, __ATOMIC_RELAXED);
     return LO_OK;
 }
 
@@ -60,9 +61,12 @@ _Static_assert(LR_COUNT <= 32, "lockorder_seen holds a rank per bit");
 #include "panic.h"
 #include "lib/string/format.h"
 #include "lib/string/logging.h"
+#include "cpu/percpu.h"
 
 uint32_t lockorder_seen[LR_COUNT];
-static struct lockorder_held held;   /* this CPU's; per CPU at 1.9b */
+/* What this CPU holds: its own (struct cpu), read with interrupts off,
+   which every caller has (spin_lock, a switch). */
+#define held (cpu_this()->locks)
 static volatile int stopped;
 
 /* Armed by a self-test: a failure is counted instead of a panic. */
@@ -138,6 +142,26 @@ void lockorder_assert_none(const char *where) {
     if (stopped || held.n == 0) return;
     fail(LO_SWITCH, where, held.e[0].rank, held.e[0].at);
     held.n = 0;   /* armed: the next thread starts with nothing held */
+}
+
+void lockorder_assert_switch(const void *sched_lock, const char *where) {
+    if (stopped) return;
+    uint32_t mine = held.n, other = held.n;
+    for (uint32_t i = 0; i < held.n; i++) {
+        if (held.e[i].lock == sched_lock) mine = i;
+        else if (other == held.n) other = i;
+    }
+    if (mine == held.n) {
+        fail(LO_SWITCH_UNLOCKED, "thread switch without", LR_SCHED,
+             (uintptr_t)__builtin_return_address(0));
+        return;
+    }
+    if (other == held.n) return;
+    fail(LO_SWITCH, where, held.e[other].rank, held.e[other].at);
+    /* Armed: the sched lock alone stays listed, for the next thread to give
+       back; the rest are dropped, as lockorder_assert_none drops them. */
+    held.e[0] = held.e[mine];
+    held.n = 1;
 }
 
 /* One line per outer rank that nested anything: "ipc > htab kwait". */

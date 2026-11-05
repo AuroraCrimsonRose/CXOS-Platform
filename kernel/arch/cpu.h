@@ -26,7 +26,8 @@
    interrupts are enabled. */
 void arch_cpu_init(void);
 
-/* The stack the CPU switches to when an interrupt arrives from user mode.
+/* The stack the CPU switches to when an interrupt or a syscall arrives from
+   user mode (on x86-64 the TSS's RSP0 and the CPU's own data, cpu/percpu.h).
    The scheduler sets it on every switch to the incoming thread's own. */
 void arch_kernel_stack_set(uintptr_t top);
 
@@ -57,7 +58,8 @@ void context_switch(uintptr_t *old_sp, uintptr_t new_sp);
 
 /* Lay out a new thread's first frame at the top of its kernel stack, as
    context_switch leaves a thread it switched away from, so the first switch
-   to it calls `launch` with interrupts enabled. Returns the saved stack
+   to it calls `launch` with interrupts disabled (the switcher holds the
+   scheduler's lock; launch gives it back, then enables them). Returns the saved stack
    pointer to give context_switch. */
 uintptr_t arch_thread_frame(uintptr_t stack_top, void (*launch)(void));
 

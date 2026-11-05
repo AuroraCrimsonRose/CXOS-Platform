@@ -950,6 +950,38 @@ Independent of the order above, and small enough to land whenever convenient:
      with a real nesting and of an unranked lock each panic the boot with
      the checker's message. Untested: paths no boot reaches. Self-tests
      202. Sabotages: `tests/sabotage/1.9a.sab`, 9 of 9. No ABI change.
+   - **1.9b (2026-11-05), done:** each CPU's own data is a `struct cpu`
+     (`kernel/cpu/percpu.h`: self, the syscall stack, the parked user RSP,
+     the running thread, `spin_held`, the checker's held list), found
+     through the GS base, which holds `cpu_boot` from before `kmain`
+     (WRK `KPCR` Self, XNU `cpu_data` `cpu_this`). Ring 3's base is
+     always 0 (no FSGSBASE, so nothing per thread to keep): `swapgs` is the
+     syscall entry's first instruction and comes before `sysret` and
+     `enter_usermode`'s `iretq`; `isr_common` swaps when the frame's CS is
+     ring 3. #DB, NMI, #DF and #MC, which can land anywhere (the syscall
+     entry's first instruction included), read GS_BASE and swap only if
+     its top bit is clear, as XNU's `idt64_debug` does. The syscall entry's
+     stack and the parked RSP moved off the TSS and a global into the
+     struct. The scheduler's interrupts-off sections are `sched_lock`
+     (`LR_SCHED`, after `kwait`), held across `context_switch` and given
+     back by the thread switched to (or `thread_launch`, which then
+     enables interrupts), as Serenity's `g_scheduler_lock` is; `switch_to`
+     asserts it, and only it, is held. The reaper claims an exited thread
+     under the lock (`THREAD_REAPING`) and frees it outside, idling gives
+     the lock back before the halt, and the timer never calls in holding
+     it. Design: `docs/kernel/CX_LOCK_ORDER.md` §2a. Tests: a boot test
+     that nine scheduler entries take the lock and a new thread and the
+     one switched back to find nothing held; an arch test of GS, the
+     running thread and the syscall stack across a switch, and of the IST
+     vectors' swap with ring 3's base in and without. Hand sabotages (each
+     panics every boot): a thread launched holding the lock, a switch
+     without it, the `swapgs` dropped from the syscall exit and from the
+     interrupt exit. Untested: `sched_yield_if_outranked` and
+     `thread_block_prepare_until` taking the lock; the early releases
+     (one CPU cannot contend). Left for 1.9e: lockless per-thread reads,
+     a reaper that checks a thread is off every CPU, IPIs to end a halt.
+     Self-tests 204. Sabotages: `tests/sabotage/1.9b.sab`, 12 of 12. No
+     ABI change.
 10. A documentation pass: the README and `safety/CX_SAFETY.md` §1 brought
     up to the branch as it stands.
 

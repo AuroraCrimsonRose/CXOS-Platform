@@ -19,7 +19,9 @@
 #include "job.h"       /* job_prio_ceiling */
 #include "ipc.h"       /* ipc_thread_exit */
 #include "object/kthread.h"   /* kthread_end: a thread's handles */
-#include "sync/lockorder.h"   /* no lock held across a switch */
+#include "sync/spinlock.h"   /* sched_lock */
+#include "sync/lockorder.h"  /* no lock but sched_lock across a switch */
+#include "percpu.h"          /* the running thread is the CPU's */
 
 
 static void sched_reap(void);   /* forward decl: used by yield, defined below */
@@ -30,7 +32,11 @@ static void sched_reap(void);   /* forward decl: used by yield, defined below */
    is configuration (sched_configure) and not the size of an array. */
 static struct ocache thread_cache;
 static struct idtab  tids;
-static int current = 0;       /* id of the running thread */
+
+/* The id of the running thread: the CPU's own (percpu.h, 1.9b), read in one
+   load, so a thread moved between CPUs mid-read never sees another's.
+   Written only by switch_to and sched_init, under sched_lock. */
+#define current cpu_thread()
 
 static inline struct thread *th(int id) { return (struct thread *)idtab_get(&tids, id); }
 static inline struct thread *self(void) { return th(current); }
@@ -43,8 +49,26 @@ static inline struct thread *live(int id) {
 static uint64_t cpu_ns_of(const struct thread *t);
 static int initialized = 0;
 
-/* Interrupts off across a switch. yield() and thread_exit() used to run with
-   them on, and a timer tick landing after `current = next` but before
+/* The scheduler's lock (1.9b; sync/lockorder.h LR_SCHED, after kwait, whose
+   wakes come here). It took the place of the interrupts-off sections, which
+   were the whole of the guard on one CPU and are none on two. It guards
+   every thread's state, the id table and the run order, and it is held
+   ACROSS a switch: taken by the thread that switches out, given back by the
+   one that switches in where it resumes (yield, sched_preempt_point) or,
+   the first time it runs, in thread_launch. Given back any earlier, a
+   second CPU could pick the outgoing thread and run it on the stack it is
+   still standing on. Serenity's g_scheduler_lock goes across the switch
+   the same way (Kernel/Tasks/Scheduler.cpp, leave_on_first_switch).
+   switch_to checks it is held, and nothing else is.
+
+   Nothing is taken under it but what the lock order puts after it: a
+   thread's resources go back after the reaper has let it go (sched_reap),
+   since their locks (kwait, pids) rank before it. A halt gives it back
+   first, with interrupts kept off (sched_unlock_irqs_off), since the tick
+   that ends the halt takes it.
+
+   Interrupts off across a switch, which the lock keeps. yield() and
+   thread_exit() used to run with them on, and a timer tick landing after `current = next` but before
    context_switch ran the preemption path with `current` already naming the NEW
    thread while the CPU was still on the OLD thread's stack: it saved the old
    stack pointer as the new thread's context. The old thread was often exiting,
@@ -57,8 +81,14 @@ static int initialized = 0;
    Saved and restored rather than cli/sti: the flags context_switch pushes are
    the ones a thread resumes with, and a caller that already had interrupts
    off must get them back off. */
+static spinlock_t sched_lock = SPINLOCK_INIT(LR_SCHED);
+
 static inline uint32_t irq_save(void)          { return arch_irq_save(); }
 static inline void     irq_restore(uint32_t f) { arch_irq_restore(f); }
+
+/* Give sched_lock back and leave interrupts off, whatever the taker had:
+   a halt or a reap must not be cut into by the tick that wants the lock. */
+static inline void sched_unlock_irqs_off(void) { spin_unlock(&sched_lock, irq_save()); }
 
 static uint32_t thread_limit = THREAD_LIMIT_DEFAULT;
 static uint32_t stack_bytes  = THREAD_STACK_DEFAULT;
@@ -82,8 +112,13 @@ uint32_t sched_thread_limit(void) { return thread_limit; }
 uint32_t sched_thread_count(void) { return threads_allocated(); }
 uint32_t sched_stack_bytes(void)  { return stack_bytes; }
 
-/* trampoline: the first thing a new thread runs. calls its entry, then exits. */
+/* trampoline: the first thing a new thread runs. The thread that switched
+   here holds sched_lock, with interrupts off (arch_thread_frame): it is
+   given back, then interrupts go on, as every thread starts. Then its
+   entry, then exit. */
 static void thread_launch(void) {
+    sched_unlock_irqs_off();
+    arch_irq_enable();
     void (*entry)(void) = self()->entry;
     if (entry) entry();
     thread_exit();
@@ -109,7 +144,7 @@ void sched_init(void) {
     if (!th(0)->proc) return;   /* initialized stays 0: nothing schedules */
     proc_thread_in(th(0)->proc);   /* the root job: no limit to refuse it */
     proc_put(th(0)->proc);      /* the thread's reference is the one that counts */
-    current = 0;
+    cpu_this()->thread = 0;
     initialized = 1;
 }
 
@@ -157,11 +192,13 @@ void thread_note_self_exit(int32_t code) {
 }
 
 void thread_start(int id) {
+    uint32_t f = spin_lock(&sched_lock);
     struct thread *t = th(id);
     /* No outrank_check: only thread context starts a thread, and a higher one
        runs when the starter next yields (ring 3: the syscall gate's
        sched_yield_if_outranked). need_resched acts at an interrupt. */
     if (id > 0 && t && t->state == THREAD_HELD) t->state = THREAD_READY;
+    spin_unlock(&sched_lock, f);
 }
 
 int thread_set_arg(int id, void *arg, void (*drop)(void *arg)) {
@@ -195,16 +232,21 @@ static void thread_free(struct thread *t) {
     }
     t->self_exit = 0;
     /* One that never ran stops here; one that ran stopped in thread_exit. */
-    if (t->state != THREAD_EXITED) proc_thread_stopped(t->proc);
+    if (t->state == THREAD_HELD) proc_thread_stopped(t->proc);
     proc_thread_gone(t->proc);
     t->proc  = 0;
+    /* Out of the table under the lock, which every walk of it holds; the
+       record goes back after, when nothing can find it. */
+    uint32_t f = spin_lock(&sched_lock);
     t->state = THREAD_UNUSED;
     idtab_take(&tids, t->id);
+    spin_unlock(&sched_lock, f);
     ocache_free(&thread_cache, t);
 }
 
 /* Never ran, so nothing is standing on its stacks: free them here rather than
-   leave it to the reaper, which only collects EXITED threads. */
+   leave it to the reaper, which only collects EXITED threads. With
+   interrupts off, as the reaper's free is. */
 void thread_discard(int id) {
     struct thread *t = th(id);
     if (id <= 0 || !t || t->state != THREAD_HELD) return;
@@ -223,9 +265,9 @@ static int thread_create_in(const char *name, void (*entry)(void), int held, str
        keeps its id until it is reaped, so its stacks are never clobbered. */
     struct thread *t = ocache_alloc(&thread_cache);
     if (!t) return -1;
-    uint32_t f = irq_save();
+    uint32_t f = spin_lock(&sched_lock);
     int slot = idtab_alloc(&tids, t, 1);
-    irq_restore(f);
+    spin_unlock(&sched_lock, f);
     if (slot < 0) { ocache_free(&thread_cache, t); return -1; }
     t->id = slot;
 
@@ -241,9 +283,9 @@ static int thread_create_in(const char *name, void (*entry)(void), int held, str
     if (rc != E_OK) {
         if (stack_top) kstack_free(stack);
         if (p && !into) proc_put(p);
-        f = irq_save();
+        f = spin_lock(&sched_lock);
         idtab_take(&tids, slot);
-        irq_restore(f);
+        spin_unlock(&sched_lock, f);
         ocache_free(&thread_cache, t);
         return rc;
     }
@@ -279,8 +321,10 @@ static int thread_create_in(const char *name, void (*entry)(void), int held, str
     t->tls_base    = 0;
     t->cpu_ns      = 0;
     t->run_since   = 0;
-    /* Last: from here the timer may run it. */
-    __atomic_store_n(&t->state, held ? THREAD_HELD : THREAD_READY, __ATOMIC_RELEASE);
+    /* Last, under the lock: from here the timer, or another CPU, may run it. */
+    f = spin_lock(&sched_lock);
+    t->state = held ? THREAD_HELD : THREAD_READY;
+    spin_unlock(&sched_lock, f);
     return slot;
 }
 
@@ -288,7 +332,7 @@ static int thread_create_in(const char *name, void (*entry)(void), int held, str
    `current` among those at it: round-robin within a level, and `current`
    (last in the scan) only if no other at its level is ready. A scan of every
    thread, as before priorities; the thread limit keeps it short until
-   per-CPU run queues (roadmap 1.6). */
+   per-CPU run queues (roadmap 1.9e). sched_lock held. */
 static int next_runnable(void) {
     int cap = (int)tids.cap, best = current, top = -1;
     for (int n = 1; n <= cap; n++) {
@@ -305,7 +349,7 @@ static int next_runnable(void) {
 static volatile int need_resched = 0;
 
 /* `t` was just made READY or raised: if it outranks the running thread, it
-   should not wait out the slice. */
+   should not wait out the slice. sched_lock held. */
 static void outrank_check(const struct thread *t) {
     if (t->state == THREAD_READY && t->prio > self()->prio) need_resched = 1;
 }
@@ -341,7 +385,7 @@ static void update_address_space(void) {
    changes but the stack, which context_switch does after. The three switch
    sites (yield, sched_preempt_point, thread_exit) all come through here, so
    a thread never runs with another's esp0, address space or FS base.
-   Interrupts off.
+   sched_lock held, and nothing else (it alone goes across the switch).
 
    CPU time is charged here, by the clock, as Serenity's
    Thread::update_time_scheduled does, rather than sampled a tick at a time
@@ -350,15 +394,16 @@ static void update_address_space(void) {
    arrived on. */
 static void switch_to(int next) {
 #if CXK_LOCK_CHECK
-    /* A spinlock is the CPU's, never carried into another thread. */
-    lockorder_assert_none("thread switch holding");
+    /* A spinlock is the CPU's, never carried into another thread: all but
+       this one, which the thread switched to gives back. */
+    lockorder_assert_switch(&sched_lock, "thread switch holding");
 #endif
     uint64_t now = timer_now_ns();
     struct thread *prev = self();
     if (now > prev->run_since) prev->cpu_ns += now - prev->run_since;
     th(next)->run_since = now;
     th(next)->state = THREAD_RUNNING;
-    current = next;
+    cpu_this()->thread = next;
     update_kernel_stack();
     update_address_space();
     arch_tls_base_set(self()->tls_base);
@@ -383,15 +428,15 @@ void thread_set_space(int id, paddr_t pd_phys) {
 
 static inline int killing(const struct thread *t) { return t->proc && t->proc->killing; }
 
-/* BLOCKED unless its process is being killed, with interrupts off from the
-   check to the state, as proc_kill holds them from `killing` to the wakes: a
-   switch between the two would let a kill find this thread still RUNNING,
-   wake nobody, and leave it blocked for good once it got back. */
+/* BLOCKED unless its process is being killed, under sched_lock from the
+   check to the state, as proc_kill wakes under it after setting `killing`:
+   a kill between the two would find this thread still RUNNING, wake
+   nobody, and leave it blocked for good once it got back. */
 static int block_unless_killed(void) {
-    uint32_t f = irq_save();
+    uint32_t f = spin_lock(&sched_lock);
     int go = !killing(self());
     if (go) self()->state = THREAD_BLOCKED;
-    irq_restore(f);
+    spin_unlock(&sched_lock, f);
     return go;
 }
 
@@ -409,12 +454,14 @@ void thread_block(void) {
 int thread_killed(void) { return initialized && killing(self()); }
 
 void sched_wake_process(struct proc *p) {
+    uint32_t f = spin_lock(&sched_lock);
     for (uint32_t i = 0; i < tids.cap; i++) {
         struct thread *t = th((int)i);
         if (!t || t->proc != p || t->state != THREAD_BLOCKED) continue;
         t->sleeping = 0;
         t->state    = THREAD_READY;
     }
+    spin_unlock(&sched_lock, f);
 }
 
 int thread_is_blocked(int id) {
@@ -425,11 +472,24 @@ int thread_is_blocked(int id) {
 /* Halt while this thread is still blocked and nothing else can run, both
    seen with interrupts off: a wake landing after a look with them on would
    be slept through until the next deadline, which without a fixed tick may
-   be a long way off (timer_idle). */
+   be a long way off (timer_idle). The look is under sched_lock, given back
+   before the halt with interrupts still off: the tick that wakes takes it.
+   (A wake from another CPU will need an IPI to end the halt: 1.9e.) */
 static void idle_while_blocked(void) {
     uint32_t f = irq_save();
-    if (self()->state == THREAD_BLOCKED && next_runnable() == current) idle_uncharged();
+    spin_lock(&sched_lock);
+    int idle = self()->state == THREAD_BLOCKED && next_runnable() == current;
+    sched_unlock_irqs_off();
+    if (idle) idle_uncharged();
     irq_restore(f);
+}
+
+/* RUNNING again, once woken and back. */
+static void running_again(void) {
+    uint32_t f = spin_lock(&sched_lock);
+    self()->sleeping = 0;
+    self()->state    = THREAD_RUNNING;
+    spin_unlock(&sched_lock, f);
 }
 
 void thread_wait(void) {
@@ -442,15 +502,17 @@ void thread_wait(void) {
            (a timer that wakes a sleeping lock holder) instead of spinning */
         idle_while_blocked();
     }
-    self()->state = THREAD_RUNNING;
+    running_again();
 }
 
 void thread_unblock(int id) {
+    uint32_t f = spin_lock(&sched_lock);
     struct thread *t = th(id);
     if (t && t->state == THREAD_BLOCKED) {
         t->state = THREAD_READY;
         outrank_check(t);
     }
+    spin_unlock(&sched_lock, f);
 }
 
 /* ---- timed sleep ----
@@ -460,9 +522,7 @@ void thread_unblock(int id) {
  */
 uint32_t thread_sleep_ms(uint32_t ms) {
     if (!initialized || ms == 0) { yield(); return timer_ticks(); }
-    uint32_t f = irq_save();
     thread_block_prepare(ms);
-    irq_restore(f);
     thread_block_finish();
     return timer_ticks();
 }
@@ -474,20 +534,23 @@ void thread_block_prepare(uint32_t ms) {
 
 void thread_block_prepare_until(uint64_t deadline) {
     if (!initialized) return;
-    /* All three at once, with the timer held off (the caller's job). Set one
-       at a time, a tick landing between `sleeping` and `state` found a thread
+    /* All three at once, under sched_lock, which the tick's wake takes too.
+       Set one at a time, a tick landing between `sleeping` and `state` found a thread
        already due but still RUNNING: it cleared `sleeping` and left the state
        alone, the thread then blocked itself, and nothing would ever wake it.
        A 1 ms sleep is due at the very next tick, so the window was real.
        Not at all for a thread being killed: thread_block_finish then
-       returns at once. */
-    if (killing(self())) return;
-    if (deadline < TIMER_NEVER) {
-        self()->wake_ns  = deadline;
-        self()->sleeping = 1;
+       returns at once. The timer's hint takes no lock. */
+    uint32_t f = spin_lock(&sched_lock);
+    if (!killing(self())) {
+        if (deadline < TIMER_NEVER) {
+            self()->wake_ns  = deadline;
+            self()->sleeping = 1;
+        }
+        self()->state = THREAD_BLOCKED;
+        if (deadline < TIMER_NEVER) timer_deadline_hint(deadline);
     }
-    self()->state = THREAD_BLOCKED;
-    if (deadline < TIMER_NEVER) timer_deadline_hint(deadline);
+    spin_unlock(&sched_lock, f);
 }
 
 void thread_block_finish(void) {
@@ -505,13 +568,12 @@ void thread_block_finish(void) {
            machine and a hot one. */
         idle_while_blocked();
     }
-
-    self()->sleeping = 0;
-    self()->state    = THREAD_RUNNING;
+    running_again();
 }
 
 void sched_wake_sleepers(uint64_t now) {
     if (!initialized) return;
+    uint32_t f = spin_lock(&sched_lock);
     for (uint32_t i = 0; i < tids.cap; i++) {
         struct thread *t = th((int)i);
         if (!t || !t->sleeping) continue;
@@ -523,17 +585,21 @@ void sched_wake_sleepers(uint64_t now) {
             outrank_check(t);
         }
     }
+    spin_unlock(&sched_lock, f);
 }
 
 /* At any level: next_runnable would keep a higher current thread, and the
    timer asks this before halting a CPU that a lower one is waiting for. */
 int sched_others_ready(void) {
     if (!initialized) return 0;
-    for (uint32_t i = 0; i < tids.cap; i++) {
+    int any = 0;
+    uint32_t f = spin_lock(&sched_lock);
+    for (uint32_t i = 0; i < tids.cap && !any; i++) {
         struct thread *t = th((int)i);
-        if (t && (int)i != current && t->state == THREAD_READY) return 1;
+        any = t && (int)i != current && t->state == THREAD_READY;
     }
-    return 0;
+    spin_unlock(&sched_lock, f);
+    return any;
 }
 
 uint32_t thread_base(int id) { struct thread *t = live(id); return t ? t->base : 0; }
@@ -547,10 +613,10 @@ void thread_set_base(int id, uint32_t level) {
 void thread_set_prio(int id, uint32_t level) {
     struct thread *t = live(id);
     if (!t) return;
-    uint32_t f = irq_save();
+    uint32_t f = spin_lock(&sched_lock);
     t->prio = (uint8_t)level;
     outrank_check(t);
-    irq_restore(f);
+    spin_unlock(&sched_lock, f);
 }
 
 struct ipc_call *thread_in_call(int id) { struct thread *t = live(id); return t ? t->in_call : 0; }
@@ -562,46 +628,62 @@ void thread_set_in_call(int id, struct ipc_call *c) {
 
 void sched_yield_if_outranked(void) {
     if (!initialized) return;
-    uint32_t f = irq_save();
+    uint32_t f = spin_lock(&sched_lock);
     int go = 0;
     for (uint32_t i = 0; i < tids.cap && !go; i++) {
         struct thread *t = th((int)i);
         go = t && (int)i != current && t->state == THREAD_READY && t->prio > self()->prio;
     }
-    irq_restore(f);
+    spin_unlock(&sched_lock, f);
     if (go) yield();
 }
 
 void yield(void) {
     if (!initialized) return;
-    uint32_t flags = irq_save();
+    uint32_t flags = spin_lock(&sched_lock);
     /* This pick answers any switch asked for (outrank_check, the slice); left
        standing, the request would preempt whoever runs at the next interrupt,
        for nothing, and hide whether that interrupt's own wake asks for one. */
     need_resched = 0;
     int prev = current;
     int next = next_runnable();
-    if (next == prev) { irq_restore(flags); return; }   /* only one runnable thread */
+    if (next == prev) { spin_unlock(&sched_lock, flags); return; }   /* only one runnable thread */
 
     if (th(prev)->state == THREAD_RUNNING) th(prev)->state = THREAD_READY;
     switch_to(next);
 
     context_switch(&th(prev)->esp, th(next)->esp);
-    /* when we resume here later, we're `prev` again, now running */
-    sched_reap();   /* reclaim any threads that exited while we were away -
-                       still with interrupts off, so two reapers never race */
+    /* When we resume here later we're `prev` again, now running, and the
+       thread that switched to us took sched_lock: ours to give back. */
+    sched_unlock_irqs_off();
+    sched_reap();   /* reclaim any threads that exited while we were away,
+                       still with interrupts off, as their frees always ran */
     irq_restore(flags);
 }
 
 /* ---- reaper: reclaim the stacks of exited threads ----
    A thread can't free its own stack (it's running on it), so thread_exit marks
    the slot EXITED and leaves the stack pointers in place. The reaper runs from
-   a DIFFERENT thread's context (after a switch) and frees them safely. */
+   a DIFFERENT thread's context (after a switch) and frees them safely. An
+   EXITED thread gives sched_lock up only by its last switch, or to idle
+   while it is still the CPU's current thread, which the reaper skips. (With
+   several CPUs, "current" must become "on any CPU": 1.9e.) Each is taken
+   under the lock (REAPING, so no second reaper takes it too) and freed
+   after it, its resources' locks ranking before sched's. */
 static void sched_reap(void) {
-    for (uint32_t i = 1; i < tids.cap; i++) {
-        struct thread *t = th((int)i);
-        if (t && t->state == THREAD_EXITED && (int)i != current)
-            thread_free(t);   /* its id is reusable */
+    for (;;) {
+        struct thread *dead = 0;
+        uint32_t f = spin_lock(&sched_lock);
+        for (uint32_t i = 1; i < tids.cap && !dead; i++) {
+            struct thread *t = th((int)i);
+            if (t && t->state == THREAD_EXITED && (int)i != current) {
+                t->state = THREAD_REAPING;
+                dead = t;
+            }
+        }
+        spin_unlock(&sched_lock, f);
+        if (!dead) return;
+        thread_free(dead);   /* its id is reusable */
     }
 }
 
@@ -624,6 +706,9 @@ void thread_exit(void) {
     /* The last one out ends its process now and wakes the waiters: one may be
        the only thread left to run, and it cannot wait for the reaper. */
     if (self()->proc) proc_thread_stopped(self()->proc);
+    /* Its locks were all taken and given back above; sched_lock now, given
+       back by the thread switched to (its flags here, off, are no one's). */
+    spin_lock(&sched_lock);
     self()->state = THREAD_EXITED;
     /* stack is freed later by sched_reap, running in another thread's context
        (we can't free the stack we're still standing on). */
@@ -632,11 +717,14 @@ void thread_exit(void) {
        reason to switch to ourselves: our saved esp is from the last time we
        were switched out, and resuming it ran stale context on the stack we
        are leaving. Idle on this stack until an interrupt makes a thread
-       runnable (a sleeper's timer, a keystroke). It stays ours until another
-       thread reaps it, which cannot happen before we switch away. */
+       runnable (a sleeper's timer, a keystroke), with sched_lock given back
+       for the halt. It stays ours until another thread reaps it, which
+       cannot happen before we switch away: the reaper skips the current. */
     int next = next_runnable();
     while (next == current) {
+        sched_unlock_irqs_off();
         idle_uncharged();
+        spin_lock(&sched_lock);
         next = next_runnable();
     }
     switch_to(next);
@@ -647,10 +735,12 @@ void thread_exit(void) {
 
 int sched_active_count(void) {
     int c = 0;
+    uint32_t f = spin_lock(&sched_lock);
     for (uint32_t i = 0; i < tids.cap; i++) {
         struct thread *t = th((int)i);
         if (t && (t->state == THREAD_READY || t->state == THREAD_RUNNING)) c++;
     }
+    spin_unlock(&sched_lock, f);
     return c;
 }
 
@@ -695,10 +785,12 @@ uint64_t sched_next_due(int running) {
     uint64_t d = TIMER_NEVER;
     if (!initialized) return d;
     if (running && preempt_on) d = slice_end;
+    uint32_t f = spin_lock(&sched_lock);
     for (uint32_t i = 0; i < tids.cap; i++) {
         struct thread *t = th((int)i);
         if (t && t->sleeping && t->wake_ns < d) d = t->wake_ns;
     }
+    spin_unlock(&sched_lock, f);
     return d;
 }
 
@@ -711,16 +803,18 @@ void sched_preempt_point(void) {
     need_resched = 0;
     if (!preempt_on || !initialized || in_switch) return;
 
+    uint32_t f = spin_lock(&sched_lock);
     int prev = current;
     int next = next_runnable();
-    if (next == prev) return;
+    if (next == prev) { spin_unlock(&sched_lock, f); return; }
 
     in_switch = 1;
     if (th(prev)->state == THREAD_RUNNING) th(prev)->state = THREAD_READY;
     switch_to(next);
     in_switch = 0;
     context_switch(&th(prev)->esp, th(next)->esp);
-    /* resumed as `prev` later */
+    /* resumed as `prev` later, the lock handed over by whoever switched here */
+    spin_unlock(&sched_lock, f);
     sched_reap();   /* reclaim threads that exited while we were away */
 }
 
@@ -748,10 +842,10 @@ const char *thread_name(int id) {
 void thread_set_tls(int id, uint64_t base) {
     struct thread *t = live(id);
     if (!t) return;
-    uint32_t f = irq_save();
+    uint32_t f = spin_lock(&sched_lock);
     t->tls_base = base;
     if (id == current) arch_tls_base_set(base);
-    irq_restore(f);
+    spin_unlock(&sched_lock, f);
 }
 
 uint64_t thread_tls(int id) {

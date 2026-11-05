@@ -27,14 +27,14 @@
 #include "arch/cpu_ops.h"
 #include "sync/lockorder.h"   /* config.h too, outside the host tests */
 
-/* With the test hooks built in, how many spinlocks are held: a race point
-   reached holding one would park the lock with it (diag/testhook.h).
+/* With the test hooks built in, how many spinlocks this CPU holds: a race
+   point reached holding one would park the lock with it (diag/testhook.h).
    Interrupts being off is no sign of one, since a syscall's whole body
-   runs with them off. One count for the machine, which is one CPU's until
-   SMP gives each CPU its own. */
+   runs with them off. The CPU's own count (cpu/percpu.h), counted with
+   interrupts off, so the thread cannot move between the CPU and the add. */
 #if CXK_TEST_HOOKS && !defined(CXK_HOST_TEST)
-extern volatile uint32_t spin_held;
-#define SPIN_HELD_ADD(n) (spin_held += (n))
+#include "cpu/percpu.h"
+#define SPIN_HELD_ADD(n) (cpu_this()->spin_held += (n))
 #else
 #define SPIN_HELD_ADD(n) ((void)0)
 #endif

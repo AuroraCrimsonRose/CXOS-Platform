@@ -63,4 +63,21 @@ static inline uint64_t arch_cycles64(void) {
     return (uint64_t)hi << 32 | lo;
 }
 
+/* This CPU's own data (cpu/percpu.h), through the GS base: its first word is
+   its address. Volatile, so a read is never carried across a switch, after
+   which the thread may be on another CPU. */
+static inline void *arch_cpu_self(void) {
+    void *c;
+    __asm__ volatile ("mov %%gs:0, %0" : "=r"(c));
+    return c;
+}
+
+/* One 32-bit field of it, in one instruction: no switch can land between
+   finding the CPU and reading the field. */
+static inline uint32_t arch_cpu_local_u32(uint32_t off) {
+    uint32_t v;
+    __asm__ volatile ("movl %%gs:(%1), %0" : "=r"(v) : "r"((uintptr_t)off));
+    return v;
+}
+
 #endif

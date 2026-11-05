@@ -40,5 +40,6 @@ int ktest_alloc_sweeps(void);
    held and a thread switch holding one are each caught; the heap's large
    path (alloc, free, the count) takes the heap lock. */
 int ktest_lock_order(void);
+int ktest_sched_lock(void);
 
 #endif

@@ -196,6 +196,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/lib/string/logging.c
     ${SRC_DIR}/kernel/lib/string/syslog.c
     ${SRC_DIR}/kernel/cpu/sched.c
+    ${SRC_DIR}/kernel/cpu/percpu.c
     ${SRC_DIR}/kernel/cpu/uid.c
     ${SRC_DIR}/kernel/drivers/char/timer.c
     ${SRC_DIR}/kernel/drivers/char/random.c
