@@ -6,6 +6,7 @@
 
 #include "serial.h"
 #include "drivers/iowin.h"
+#include "arch/cpu_ops.h"      /* arch_cycles64 */
 
 #if CXK_ENABLE_SERIAL
 
@@ -109,17 +110,26 @@ int serial_active(void)
     return active;
 }
 
+/* Cycles spent waiting for the transmitter, for console_log_time: at 115200
+   baud a UART that is there takes about 87 us a byte, cable or not. */
+static uint64_t wait_cycles;
+
 void serial_putc(char c)
 {
     int spins = TX_SPIN_LIMIT;
 
     if (!active) return;
 
+    uint64_t t0 = arch_cycles64();
     while ((iowin_read8(&com1, REG_LSR) & LSR_THRE) == 0) {
-        if (--spins == 0) return;               /* drop the byte, keep booting */
+        if (--spins == 0) break;                /* drop the byte, keep booting */
     }
+    wait_cycles += arch_cycles64() - t0;
+    if (spins == 0) return;
     iowin_write8(&com1, REG_DATA, (uint8_t)c);
 }
+
+uint64_t serial_wait_cycles(void) { return wait_cycles; }
 
 void serial_puts(const char *s)
 {
@@ -132,6 +142,7 @@ void serial_puts(const char *s)
 void serial_init(void)            { }
 int  serial_active(void)          { return 0; }
 void serial_putc(char c)          { (void)c; }
+uint64_t serial_wait_cycles(void) { return 0; }
 void serial_puts(const char *s)   { (void)s; }
 
 #endif

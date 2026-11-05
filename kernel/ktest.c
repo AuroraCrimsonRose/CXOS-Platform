@@ -2444,6 +2444,85 @@ static void xf_good(uint8_t *f) {
     f[XFNT_HEADER_SIZE + 3 * XF_H] = 0x5A;
 }
 
+/* ---- 1.8d: the framebuffer's copy in RAM (drivers/video/fb.c) ----
+ * Drawing goes to the copy and then to the screen, and nothing reads the
+ * screen. Shown by writing the screen alone (fb_test_screen_poke): a read
+ * gives the copy's pixel, and a scroll over the poked row rewrites the screen
+ * from the copy. In the bottom-right corner, put back as it was. */
+#define FBC_W 64u
+#define FBC_H 48u
+static uint32_t fbc_saved[FBC_H][FBC_W];
+
+static int fbc_fail(const char *why) {
+    klog("KTEST", SEV_FAIL, why);
+    return 0;
+}
+
+static int fbc_body(uint32_t x0, uint32_t y0) {
+    uint32_t cw = fb_font_width(), ch = fb_font_height();
+    const uint32_t a = fb_rgb(0x20, 0x40, 0x60), b = fb_rgb(0xF0, 0x10, 0x10);
+    const uint32_t c = fb_rgb(0x10, 0xF0, 0x10), d = fb_rgb(0x10, 0x10, 0xF0);
+
+    fb_fill_rect(x0, y0, FBC_W, FBC_H, a);
+    if (fb_test_disagree(x0, y0, FBC_W, FBC_H) != 0 ||
+        fb_test_screen_pixel(x0 + FBC_W - 1, y0 + FBC_H - 1) != a)
+        return fbc_fail("fbc: a fill did not reach the screen");
+
+    fb_test_screen_poke(x0 + 1, y0 + 1, b);
+    if (fb_get_pixel(x0 + 1, y0 + 1) != a)
+        return fbc_fail("fbc: a read came from the screen, not the copy");
+
+    /* the poked pixel sits a text row down, where the scroll takes it from;
+       a pixel drawn there properly must arrive a row up */
+    fb_test_screen_poke(x0 + 2, y0 + ch + 1, b);
+    fb_put_pixel(x0 + 5, y0 + ch + 3, d);
+    fb_scroll_rect(x0, y0, FBC_W, FBC_H, ch, c);
+    if (fb_test_screen_pixel(x0 + 2, y0 + 1) != a || fb_test_screen_pixel(x0 + 1, y0 + 1) != a)
+        return fbc_fail("fbc: a scroll moved the screen's pixels, not the copy's");
+    if (fb_get_pixel(x0 + 5, y0 + 3) != d || fb_test_screen_pixel(x0 + 5, y0 + 3) != d)
+        return fbc_fail("fbc: a scroll did not move the rows up");
+    if (fb_get_pixel(x0, y0 + FBC_H - 1) != c || fb_get_pixel(x0 + FBC_W - 1, y0 + FBC_H - ch) != c)
+        return fbc_fail("fbc: a scroll did not fill the rows it freed");
+    if (fb_test_disagree(x0, y0, FBC_W, FBC_H) != 0)
+        return fbc_fail("fbc: a scroll left the screen and the copy apart");
+
+    fb_draw_char(x0, y0, 'W', d, a);
+    uint32_t ink = 0;
+    for (uint32_t y = 0; y < ch; y++)
+        for (uint32_t x = 0; x < cw; x++)
+            if (fb_test_screen_pixel(x0 + x, y0 + y) == d) ink++;
+    if (fb_test_disagree(x0, y0, cw, ch) != 0 || ink == 0)
+        return fbc_fail("fbc: a glyph did not reach the screen");
+
+    fb_put_pixel(x0 + 10, y0 + 10, b);
+    if (fb_test_screen_pixel(x0 + 10, y0 + 10) != b)
+        return fbc_fail("fbc: a pixel did not reach the screen");
+    return 1;
+}
+
+static int test_fb_copy(void) {
+    if (!fb_active()) return 1;
+    if (!fb_test_has_copy()) return fbc_fail("fbc: no copy of the screen in RAM");
+    uint32_t w = fb_width(), h = fb_height();
+    if (w < FBC_W || h < FBC_H || 3 * fb_font_height() > FBC_H || 11 > FBC_W - fb_font_width())
+        return fbc_fail("fbc: the screen is smaller than the test's corner");
+    /* everything the boot drew so far: the console, the logo */
+    if (fb_test_disagree(0, 0, w, h) != 0)
+        return fbc_fail("fbc: the screen and the copy disagree after boot");
+    if (console_fb_cycles() == 0)
+        return fbc_fail("fbc: the console's drawing time was not counted");
+
+    uint32_t x0 = w - FBC_W, y0 = h - FBC_H;
+    for (uint32_t y = 0; y < FBC_H; y++)
+        for (uint32_t x = 0; x < FBC_W; x++) fbc_saved[y][x] = fb_get_pixel(x0 + x, y0 + y);
+    int ok = fbc_body(x0, y0);
+    for (uint32_t y = 0; y < FBC_H; y++)
+        for (uint32_t x = 0; x < FBC_W; x++) fb_put_pixel(x0 + x, y0 + y, fbc_saved[y][x]);
+    if (ok && fb_test_disagree(0, 0, w, h) != 0)
+        return fbc_fail("fbc: the screen and the copy disagree after the test");
+    return ok;
+}
+
 static int test_xfnt(void) {
     uint8_t f[XF_LEN];
     int ok = 1;
@@ -3407,6 +3486,7 @@ void ktest_run(void) {
     total++; passed += report("memory syscalls (SYS_VM_*)",        usermode_vm_test());
     total++; passed += report("power and input syscalls",          usermode_power_input_test());
     total++; passed += report("framebuffer syscalls (SYS_FB_*)",   usermode_fb_test());
+    total++; passed += report("framebuffer: drawn in a copy, the screen only written", test_fb_copy());
     total++; passed += report("network syscalls (SYS_NET_*)",       usermode_net_test());
     total++; passed += report("background output goes to the log", usermode_log_test());
     total++; passed += report("advisory locks follow the open file", usermode_flock_test());

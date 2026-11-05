@@ -1,0 +1,160 @@
+# Phase 1.8d's sabotages, run by `cxk test sabotage`.
+# Each must turn red exactly the self-tests named, at the reason named.
+# Format: docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage".
+# Every one lands in one self-test, so none share a boot.
+# Judged under QEMU, whose screen is host RAM: it shows whether drawing goes
+# to the copy and the screen and reads only the copy, not how fast the rig
+# is. The rig's before and after are its boot log's "time spent on output"
+# lines. The page-table encoding is host-tested too (test_pagetable64.c).
+
+# ---- the page attribute table (arch/x86_64/pat.h) ----
+
+[pat-not-written]
+# the table is left as the firmware had it, and called ready
+expect = PAT: entry 4 write-combining, entries 0-3 as at power-on
+edit = kernel/arch/x86_64/cpu.c
+<<<
+    wrmsr(MSR_PAT, PAT_CXK);
+===
+    (void)PAT_CXK;
+>>>
+
+[pat-entry-3-not-uncached]
+# entry 3, which PCD and PWT name for VM_UNCACHED, becomes UC- instead of UC
+expect = PAT: entry 4 write-combining, entries 0-3 as at power-on
+edit = kernel/arch/x86_64/pat.h
+<<<
+                          ((uint64_t)PAT_TYPE_WC << (PAT_WC_ENTRY * 8)))
+===
+                          ((uint64_t)PAT_TYPE_WC << (PAT_WC_ENTRY * 8)) | (0x07ull << 24))
+>>>
+
+[wc-bit-not-encoded]
+# a VM_WC page gets no PAT bit: plain write-back
+expect = a VM_WC page is PAT entry 4; the screen is mapped so
+edit = kernel/arch/x86_64/pagetable.c
+<<<
+           (wc(vm) ? PTE64_PAT : 0);
+===
+           (wc(vm) ? 0 : 0);
+>>>
+
+[wc-always-dropped]
+# paging_map_kernel drops VM_WC even with the table ready
+expect = a VM_WC page is PAT entry 4; the screen is mapped so
+edit = kernel/arch/x86_64/paging.c
+<<<
+    if (!pat_wc_ready()) vm &= ~VM_WC;
+===
+    vm &= ~VM_WC;
+>>>
+
+[screen-not-wc]
+# the framebuffer is mapped write-back, as before 1.8d
+expect = a VM_WC page is PAT entry 4; the screen is mapped so
+edit = kernel/drivers/video/fb.c
+<<<
+                   VM_WRITE | VM_WC);
+===
+                   VM_WRITE);
+>>>
+
+# ---- the copy in RAM (drivers/video/fb.c) ----
+
+[no-copy]
+# the copy is never used: drawing goes to the screen, as before 1.8d
+expect = framebuffer: drawn in a copy, the screen only written @ fbc: no copy of the screen in RAM
+edit = kernel/drivers/video/fb.c
+<<<
+    back = (uint8_t *)(uintptr_t)FB_COPY_BASE;
+===
+    return;
+>>>
+
+[read-from-screen]
+# fb_get_pixel reads the screen
+expect = framebuffer: drawn in a copy, the screen only written @ fbc: a read came from the screen
+edit = kernel/drivers/video/fb.c
+<<<
+    return load(back, x, y);
+===
+    return load(fb, x, y);
+>>>
+
+[scroll-reads-screen]
+# the scroll takes its rows from the screen: the slow read the copy removed
+expect = framebuffer: drawn in a copy, the screen only written @ fbc: a scroll moved the screen's pixels
+edit = kernel/drivers/video/fb.c
+<<<
+                 back + (y + r + dy) * pitch + x * bb, w * bb);
+===
+                 fb + (y + r + dy) * pitch + x * bb, w * bb);
+>>>
+
+[scroll-not-flushed]
+# a scroll moves the copy and never writes the screen
+expect = framebuffer: drawn in a copy, the screen only written @ fbc: the screen and the copy disagree after boot
+edit = kernel/drivers/video/fb.c
+<<<
+    fill_back(x, y + move_rows, w, dy, bg);
+    flush(x, y, w, h);
+===
+    fill_back(x, y + move_rows, w, dy, bg);
+>>>
+
+[glyph-not-flushed]
+# a glyph is drawn in the copy only. Not seen "after boot": every log line
+# ends in a newline, whose scroll writes the whole viewport from the copy,
+# so the boot's own glyphs reach the screen anyway (first run: red there)
+expect = framebuffer: drawn in a copy, the screen only written @ fbc: a glyph did not reach the screen
+edit = kernel/drivers/video/fb.c
+<<<
+            store(back, x + col, y + row, (bits & (0x80u >> col)) ? fg : bg);
+    }
+    flush(x, y, w, h);
+===
+            store(back, x + col, y + row, (bits & (0x80u >> col)) ? fg : bg);
+    }
+>>>
+
+[fill-not-flushed]
+# a fill reaches the copy only (the logo is fills)
+expect = framebuffer: drawn in a copy, the screen only written @ fbc: the screen and the copy disagree after boot
+edit = kernel/drivers/video/fb.c
+<<<
+    fill_back(x, y, w, h, color);
+    flush(x, y, w, h);
+===
+    fill_back(x, y, w, h, color);
+>>>
+
+[pixel-copy-only]
+# a pixel reaches the copy only (the SYS_FB_* test puts its corner back so)
+expect = framebuffer: drawn in a copy, the screen only written @ fbc: the screen and the copy disagree after boot
+edit = kernel/drivers/video/fb.c
+<<<
+    if (back != fb) store(fb, x, y, color);
+===
+    (void)0;
+>>>
+
+[flush-one-row-short]
+# the screen is written a row short of each rectangle
+expect = framebuffer: drawn in a copy, the screen only written @ fbc: the screen and the copy disagree after boot
+edit = kernel/drivers/video/fb.c
+<<<
+    for (uint32_t r = 0; r < h; r++, off += pitch)
+===
+    for (uint32_t r = 1; r < h; r++, off += pitch)
+>>>
+
+# ---- the console's time, for the rig's boot log ----
+
+[draw-time-not-counted]
+expect = framebuffer: drawn in a copy, the screen only written @ fbc: the console's drawing time
+edit = kernel/drivers/char/console.c
+<<<
+uint64_t console_fb_cycles(void)  { return fb_cycles; }
+===
+uint64_t console_fb_cycles(void)  { return 0 * fb_cycles; }
+>>>

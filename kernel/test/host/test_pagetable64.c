@@ -17,6 +17,7 @@ KH_TEST(pagetable64_pte_is_what_was_asked) {
             if (!(vm & VM_EXEC))   want |= PTE64_NX;
             if (vm & VM_UNCACHED)  want |= PTE64_PCD | PTE64_PWT;
             if (vm & VM_BORROWED)  want |= PTE64_BORROWED;
+            if ((vm & VM_WC) && !(vm & VM_UNCACHED)) want |= PTE64_PAT;
             if (user)              want |= PTE64_USER;
             KH_CHECK_EQ(pte64_encode(0x0000123456789000ull, vm, user), want);
         }
@@ -41,11 +42,27 @@ KH_TEST(pagetable64_address_bits_stay_address) {
     KH_CHECK_EQ(pte64_table(0x00400FFFull, 0), 0x00400000ull | PTE64_PRESENT | PTE64_WRITE);
 }
 
-/* A large entry is a leaf with the same meaning, plus PS. */
+/* A large entry is a leaf with the same meaning, plus PS; the PAT bit, which
+   a 4 KiB entry keeps where PS is, moves to bit 12. */
 KH_TEST(pagetable64_large_is_a_leaf) {
-    for (uint32_t vm = 0; vm <= VM_ALL; vm++)
-        KH_CHECK_EQ(pde64_large(0x40000000ull, vm),
-                    pte64_encode(0x40000000ull, vm, 0) | PTE64_LARGE);
+    for (uint32_t vm = 0; vm <= VM_ALL; vm++) {
+        uint64_t small = pte64_encode(0x40000000ull, vm, 0);
+        uint64_t want = (small & ~PTE64_PAT) | PTE64_LARGE |
+                        ((small & PTE64_PAT) ? PTE64_PAT_LARGE : 0);
+        KH_CHECK_EQ(pde64_large(0x40000000ull, vm), want);
+    }
+}
+
+/* Write-combining is PAT entry 4: the PAT bit with PCD and PWT clear; asked
+   with VM_UNCACHED it is uncached, entry 3, as before. */
+KH_TEST(pagetable64_wc_is_pat_entry_4) {
+    uint64_t e = pte64_encode(0x1000u, VM_WRITE | VM_WC, 0);
+    KH_CHECK_EQ(e & (PTE64_PAT | PTE64_PCD | PTE64_PWT), PTE64_PAT);
+    e = pte64_encode(0x1000u, VM_WRITE | VM_WC | VM_UNCACHED, 0);
+    KH_CHECK_EQ(e & (PTE64_PAT | PTE64_PCD | PTE64_PWT), PTE64_PCD | PTE64_PWT);
+    e = pde64_large(0x200000u, VM_WC);
+    KH_CHECK_EQ(e & (PTE64_PAT_LARGE | PTE64_PCD | PTE64_PWT | PTE64_LARGE),
+                PTE64_PAT_LARGE | PTE64_LARGE);
 }
 
 /* A table entry restricts nothing the leaf allows: writable and executable,

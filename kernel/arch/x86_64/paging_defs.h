@@ -49,6 +49,7 @@ typedef uint64_t paddr_t;
 #define KVA_XHCI_DMA     0xFFFFE18004000000ull   /* controller i: + i * 0x20000 */
 #define KVA_OHCI_DMA     0xFFFFE18005000000ull   /* controller i: + i * 0x10000 */
 #define KVA_FRAMEBUFFER  0xFFFFE20000000000ull
+#define KVA_FB_COPY      0xFFFFE24000000000ull   /* fb.c's copy of the screen, in RAM */
 #define KVA_KTEST_SCRATCH 0xFFFFE28000000000ull  /* one page the arch self-tests map */
 
 

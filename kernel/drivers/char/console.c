@@ -20,6 +20,7 @@
 #include "color.h"
 #include "format.h"
 #include "serial.h"
+#include "arch/cpu_ops.h"   /* arch_cycles64 */
 
 #define TAB_WIDTH 4
 
@@ -44,12 +45,18 @@ static uint32_t pal_fb(uint8_t idx) {
     return fb_rgb((uint8_t)(c >> 16), (uint8_t)(c >> 8), (uint8_t)c);
 }
 
+/* TSC cycles the framebuffer took to draw cells and to scroll, and the
+   scrolls: console_log_time says them, for the rig (fb.c). */
+static uint64_t fb_cycles, fb_scrolls;
+
 static void be_put_cell(int x, int y, char c, uint8_t a) {
     if (use_fb) {
+        uint64_t t0 = arch_cycles64();
         uint32_t fg = pal_fb(a & 0x0F);
         uint32_t bg = pal_fb((a >> 4) & 0x0F);
         fb_draw_char(vp_x + (uint32_t)x * fb_font_width(),
                      vp_y + (uint32_t)y * fb_font_height(), c, fg, bg);
+        fb_cycles += arch_cycles64() - t0;
     } else {
         platform_text_put(x, y, c, a);
     }
@@ -66,7 +73,10 @@ static void be_clear(uint8_t a) {
 /* scroll the text area up one row, clearing the new bottom row to `a`'s bg */
 static void be_scroll_one(uint8_t a) {
     if (use_fb) {
+        uint64_t t0 = arch_cycles64();
         fb_scroll_rect(vp_x, vp_y, vp_w, vp_h, fb_font_height(), pal_fb((a >> 4) & 0x0F));
+        fb_cycles += arch_cycles64() - t0;
+        fb_scrolls++;
     } else {
         platform_text_scroll(a);
     }
@@ -273,3 +283,5 @@ void console_get_cursor(int *x, int *y) {
     if (x) *x = cx;
     if (y) *y = cy;
 }
+uint64_t console_fb_cycles(void)  { return fb_cycles; }
+uint64_t console_fb_scrolls(void) { return fb_scrolls; }

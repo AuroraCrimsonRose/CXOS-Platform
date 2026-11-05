@@ -22,6 +22,7 @@
  */
 
 #include "arch/x86_64/pagetable.h"
+#include "arch/x86_64/pat.h"
 #include "boot/cxbi.h"
 #include "memman/pagedb.h"
 #include "pmm.h"
@@ -178,6 +179,7 @@ void paging_map_kernel(uintptr_t virt, paddr_t phys, uint32_t vm) {
         return;
     }
     if (!in_kernel_regions(virt)) kpanic("paging_map_kernel: outside the kernel's mappable regions");
+    if (!pat_wc_ready()) vm &= ~VM_WC;   /* entry 4 is still write-back, or there is no table */
     uint64_t *e = walk(addr_space_current(), virt, 1, 0);
     if (!e) return;   /* out of memory: the page stays unmapped */
     *e = pte64_encode(phys, vm, 0);

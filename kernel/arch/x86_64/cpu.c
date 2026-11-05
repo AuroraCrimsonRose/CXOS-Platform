@@ -13,6 +13,7 @@
 #include "arch/x86/cpufeat.h"
 #include "gdt.h"
 #include "idt.h"
+#include "pat.h"
 #include "logging.h"
 
 void arch_cpu_init(void) {
@@ -22,7 +23,21 @@ void arch_cpu_init(void) {
     klog("IDT", SEV_OK, "installed (exceptions, IRQs 0-15, MSI pool)");
     /* Before anything that might ask what the CPU has. */
     cpufeat_init();
+    /* Before any page is mapped write-combining: the framebuffer's (fb.c). */
+    pat_init();
+    if (pat_wc_ready()) klog("PAT", SEV_OK, "entry 4 is write-combining");
+    else                klog("PAT", SEV_WARN, "no page attribute table: the framebuffer stays cached by the MTRRs");
 }
+
+static int pat_ready;
+
+void pat_init(void) {
+    if (!cpu_has(CPU_PAT)) return;
+    wrmsr(MSR_PAT, PAT_CXK);
+    pat_ready = 1;
+}
+
+int pat_wc_ready(void) { return pat_ready; }
 
 extern void syscall64_entry(void);   /* usermode.asm */
 

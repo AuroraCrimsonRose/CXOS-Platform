@@ -15,12 +15,17 @@ static uint64_t leaf_bits(uint32_t vm) {
     return e;
 }
 
+/* VM_WC: the PAT bit, which sits at a different place in a large entry */
+static int wc(uint32_t vm) { return (vm & VM_WC) && !(vm & VM_UNCACHED); }
+
 uint64_t pte64_encode(uint64_t phys, uint32_t vm, int user) {
-    return (phys & PTE64_ADDR) | leaf_bits(vm) | (user ? PTE64_USER : 0);
+    return (phys & PTE64_ADDR) | leaf_bits(vm) | (user ? PTE64_USER : 0) |
+           (wc(vm) ? PTE64_PAT : 0);
 }
 
 uint64_t pde64_large(uint64_t phys, uint32_t vm) {
-    return (phys & PTE64_ADDR_2M) | leaf_bits(vm) | PTE64_LARGE;
+    return (phys & PTE64_ADDR_2M) | leaf_bits(vm) | PTE64_LARGE |
+           (wc(vm) ? PTE64_PAT_LARGE : 0);
 }
 
 uint64_t pte64_table(uint64_t table_phys, int user) {

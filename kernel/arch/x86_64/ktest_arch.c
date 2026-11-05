@@ -20,6 +20,8 @@
 #include "gdt.h"
 #include "idt.h"
 #include "pagetable.h"
+#include "pat.h"
+#include "fb.h"                 /* fb_test_screen_virt: the screen is VM_WC */
 #include "arch/x86/msr.h"
 #include "boot/cxbi.h"
 #include "memman/pagedb.h"
@@ -576,6 +578,37 @@ static int t_map_phys(void) {
     uint32_t version = *(volatile uint32_t *)b & 0xFFu;
     return version >= 0x10 && version <= 0x15 &&
            paging_map_phys(PHYS_WINDOW_SIZE, 1, 0) == 0;
+}
+
+/* ---- 1.8d: write-combining for the framebuffer (pat.h) ---- */
+
+/* Entry 4 is write-combining and entries 0-3 are as the CPU starts them, so
+   PCD and PWT still mean what VM_UNCACHED needs (entry 3 uncached). */
+static int t_pat(void) {
+    if (!cpu_has(CPU_PAT)) return !pat_wc_ready();
+    uint64_t pat = rdmsr(MSR_PAT);
+    return pat_wc_ready() && pat == 0x0007040100070406ull;   /* PAT_CXK, spelled out */
+}
+
+/* A VM_WC page is entry 4 (the PAT bit, PCD and PWT clear) and holds what is
+   written through it once fenced; and the screen is mapped so (fb.c). */
+static int t_wc_pages(void) {
+    if (!pat_wc_ready()) return 1;
+    paddr_t p = pmm_alloc();
+    if (!p) return 0;
+    paging_map_kernel(SCRATCH_VA, p, VM_WRITE | VM_WC);
+    uint64_t e = entry_of(SCRATCH_VA);
+    int ok = (e & (PTE64_PAT | PTE64_PCD | PTE64_PWT)) == PTE64_PAT;
+    *(volatile uint64_t *)(uintptr_t)SCRATCH_VA = 0x5743574357435743ull;
+    __asm__ volatile ("sfence" ::: "memory");
+    ok = ok && *(volatile uint64_t *)(uintptr_t)(DIRECT_MAP_BASE + p) == 0x5743574357435743ull;
+    paging_unmap(SCRATCH_VA);
+    pmm_free(p);
+    if (fb_active()) {
+        e = entry_of(fb_test_screen_virt());
+        ok = ok && (e & (PTE64_PAT | PTE64_PCD | PTE64_PWT)) == PTE64_PAT;
+    }
+    return ok;
 }
 
 /* ---- step 5d: the heap, interrupts, the timer, threads ---- */
@@ -1361,6 +1394,8 @@ static const struct ktest_arch_case cases[] = {
     { "a user mapping cannot name the kernel half",     t_user_map_refuses_kernel },
     { "a new address space shares the kernel, frees all", t_address_space },
     { "device registers map once, uncached, and answer", t_map_phys },
+    { "PAT: entry 4 write-combining, entries 0-3 as at power-on", t_pat },
+    { "a VM_WC page is PAT entry 4; the screen is mapped so", t_wc_pages },
     { "the user half's last page is never mapped",     t_user_top_page },
     { "kmalloc: small from the caches, large from the list", t_heap },
     { "thread 0 runs on a guarded kernel stack",        t_main_stack_guarded },

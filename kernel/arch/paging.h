@@ -40,7 +40,10 @@
 #define VM_UNCACHED  0x4u   /* device registers only - see below */
 #define VM_BORROWED  0x8u   /* the frame belongs to a memory object (object/kmem.h):
                                tearing the address space down leaves it */
-#define VM_ALL       (VM_WRITE | VM_EXEC | VM_UNCACHED | VM_BORROWED)
+#define VM_WC        0x10u  /* write-combining: the framebuffer only - see below.
+                               Plain caching where the CPU cannot; VM_UNCACHED
+                               wins when both are asked */
+#define VM_ALL       (VM_WRITE | VM_EXEC | VM_UNCACHED | VM_BORROWED | VM_WC)
 
 /* ---- when VM_UNCACHED is and is not wanted ----------------------------------
  * It belongs on DEVICE REGISTER windows and essentially nowhere else.
@@ -58,9 +61,11 @@
  *         uncached would be a large, pointless slowdown.
  *
  *   NO  - the linear framebuffer. Uncached writes to a framebuffer are brutal;
- *         every pixel becomes a bus transaction. Write-back is wrong in theory
- *         and much better in practice. What it actually wants is
- *         write-combining, which needs PAT or an MTRR - see the note in fb.c.
+ *         every pixel becomes a bus transaction. It gets VM_WC. Write-back
+ *         in the page table is not enough: the rig's firmware marks the PCI
+ *         hole, where the W5000's framebuffer sits, uncached in its MTRRs,
+ *         and the MTRR's uncached wins over the page's write-back. Only a
+ *         write-combining page type (PAT) wins over it (fb.c).
  *
  *   NO  - ACPI tables and other firmware structures. They are ordinary RAM that
  *         happens to be reserved.

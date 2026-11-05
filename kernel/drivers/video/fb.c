@@ -8,6 +8,7 @@
 #include "font.h"
 #include "arch/paging.h"
 #include "boot/cxbi.h"
+#include "pmm.h"
 
 /* Kernel-virtual window the LFB is mapped into, placed with the rest of the
    kernel half in arch/<arch>/paging_defs.h.
@@ -17,8 +18,35 @@
    its top rows). */
 #define FB_VIRT_BASE     KVA_FRAMEBUFFER
 
+/* ---- the copy in RAM -------------------------------------------------------
+ * Every drawing call draws into `back`, a copy of the screen in RAM laid out
+ * as the screen is (same pitch), then writes the rectangle it changed to the
+ * screen. Nothing reads the screen: a scroll moves the copy's rows and
+ * rewrites the screen from it, and fb_get_pixel reads the copy.
+ *
+ * Why: on the rig (FX-8350, W5000) the framebuffer sits in the PCI hole,
+ * which the firmware's MTRRs mark uncached. Each read of it is a PCIe round
+ * trip of about a microsecond, and fb_scroll_rect used to read the whole
+ * console viewport back on every line printed: the boot took minutes to
+ * reach the prompt. Writes are posted, and with the screen mapped VM_WC
+ * (PAT entry 4, which wins over the MTRR) they go out combined. Under QEMU
+ * the screen is host RAM and none of this shows.
+ *
+ * XNU keeps a copy too, of the console's cells rather than its pixels, and
+ * repaints only the cells a scroll changed (osfmk/console/video_console.c,
+ * gc_scroll_up); Serenity and Haiku move the rows in the framebuffer itself
+ * (Kernel/Devices/GPU/Console/GenericFramebufferConsole.cpp, scroll_up;
+ * src/system/kernel/debug/frame_buffer_console.cpp, console_blit). A pixel
+ * copy covers every caller (the console, the logo, the panic screen, the
+ * SYS_FB_* calls) at one place.
+ *
+ * When no copy can be had, `back` is the screen and the writes to it are
+ * skipped: the old behaviour, slow on the rig but right. */
+#define FB_COPY_BASE     KVA_FB_COPY
+
 static int       active = 0;
-static uint8_t  *fb = 0;        /* framebuffer base (VIRTUAL, mapped) */
+static uint8_t  *fb = 0;        /* the screen (VIRTUAL, mapped) */
+static uint8_t  *back = 0;      /* where drawing happens: the copy, or fb if none */
 static uint32_t  fb_phys = 0;   /* physical base (informational) */
 static uint32_t  width = 0;
 static uint32_t  height = 0;
@@ -38,6 +66,60 @@ static int layout_ok(const struct cxk_boot_info *b) {
                b->fb_green_bits == 6 && b->fb_green_shift == 5 &&
                b->fb_blue_bits == 5 && b->fb_blue_shift == 0;
     return 0;
+}
+
+/* Copy n bytes forward, in the widest words both ends allow. The scrolls'
+   rows never overlap, and a write to the screen should be as few and as
+   wide as it can be. */
+static void copy_fwd(uint8_t *d, const uint8_t *s, uint32_t n) {
+    uint32_t i = 0;
+    if ((((uintptr_t)d | (uintptr_t)s) & 7u) == 0) {
+        for (; i + 8 <= n; i += 8) *(uint64_t *)(d + i) = *(const uint64_t *)(s + i);
+    } else if ((((uintptr_t)d | (uintptr_t)s) & 3u) == 0) {
+        for (; i + 4 <= n; i += 4) *(uint32_t *)(d + i) = *(const uint32_t *)(s + i);
+    }
+    for (; i < n; i++) d[i] = s[i];
+}
+
+/* Clip (x, y, w, h) to the screen; 0 if nothing is left. */
+static int clip(uint32_t *x, uint32_t *y, uint32_t *w, uint32_t *h) {
+    if (*x >= width || *y >= height || *w == 0 || *h == 0) return 0;
+    if (*w > width - *x)  *w = width - *x;
+    if (*h > height - *y) *h = height - *y;
+    return 1;
+}
+
+/* Write the copy's rectangle to the screen, row by row. */
+static void flush(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+    if (back == fb || !clip(&x, &y, &w, &h)) return;
+    uint32_t bb = bpp / 8, off = y * pitch + x * bb;
+    for (uint32_t r = 0; r < h; r++, off += pitch)
+        copy_fwd(fb + off, back + off, w * bb);
+}
+
+/* The copy: pages of RAM at FB_COPY_BASE, one by one, so no contiguous run is
+   needed. Cleared, and the screen with it, so the two agree from here on. On
+   any failure the pages go back and drawing goes to the screen itself. */
+static void copy_init(uint32_t bytes) {
+    uint32_t pages = (bytes + 0xFFFu) >> 12;
+    back = fb;
+    for (uint32_t i = 0; i < pages; i++) {
+        paddr_t p = pmm_alloc();
+        if (p) paging_map_kernel(FB_COPY_BASE + ((uintptr_t)i << 12), p, VM_WRITE);
+        if (!p || paging_get_phys(FB_COPY_BASE + ((uintptr_t)i << 12)) != p) {
+            if (p) pmm_free(p);
+            while (i--) {
+                uintptr_t v = FB_COPY_BASE + ((uintptr_t)i << 12);
+                pmm_free(paging_get_phys(v));
+                paging_unmap(v);
+            }
+            return;
+        }
+    }
+    back = (uint8_t *)(uintptr_t)FB_COPY_BASE;
+    uint64_t *q = (uint64_t *)back;
+    for (uint32_t i = 0; i < (pages << 12) / 8; i++) q[i] = 0;
+    flush(0, 0, width, height);
 }
 
 int fb_init(void) {
@@ -62,8 +144,8 @@ int fb_init(void) {
        tables cover, so it must be mapped explicitly. The driver owns this
        mapping (like heap.c owns its window) rather than leaning on paging_init,
        which in v5 only adopts the boot PD + installs recursion.
-       Mapped supervisor + writable; plain WB caching for now (write-combining
-       via PAT/MTRR is a later performance pass). */
+       Mapped supervisor + writable, write-combining (VM_WC; arch/paging.h):
+       nothing reads it, so the writes may be merged and reordered. */
     uint32_t map_phys = fb_phys & ~0xFFFu;            /* page-align (LFB BARs already are) */
     uint32_t off      = fb_phys - map_phys;           /* normally 0 */
     uint32_t bytes    = pitch * height + off;
@@ -71,10 +153,11 @@ int fb_init(void) {
     for (uint32_t i = 0; i < pages; i++) {
         paging_map_kernel(FB_VIRT_BASE + (i << 12),
                    map_phys     + (i << 12),
-                   VM_WRITE);
+                   VM_WRITE | VM_WC);
     }
     fb = (uint8_t *)(uintptr_t)(FB_VIRT_BASE + off);
 
+    copy_init(pitch * height);
     active = 1;
     return 0;
 }
@@ -103,34 +186,47 @@ uint32_t fb_rgb(uint8_t r, uint8_t g, uint8_t b) {
     }
 }
 
-void fb_put_pixel(uint32_t x, uint32_t y, uint32_t color) {
-    if (!active || x >= width || y >= height) return;
-    uint8_t *p = fb + y * pitch + x * (bpp / 8);
+static void store(uint8_t *base, uint32_t x, uint32_t y, uint32_t color) {
+    uint8_t *p = base + y * pitch + x * (bpp / 8);
     if (bpp == 32) *(uint32_t *)p = color;
     else           *(uint16_t *)p = (uint16_t)color;
 }
 
-uint32_t fb_get_pixel(uint32_t x, uint32_t y) {
-    if (!active || x >= width || y >= height) return 0;
-    const uint8_t *p = fb + y * pitch + x * (bpp / 8);
+static uint32_t load(const uint8_t *base, uint32_t x, uint32_t y) {
+    const uint8_t *p = base + y * pitch + x * (bpp / 8);
     return bpp == 32 ? *(const uint32_t *)p : *(const uint16_t *)p;
 }
 
-void fb_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color) {
-    if (!active) return;
-    uint32_t x1 = x + w, y1 = y + h;
-    if (x1 > width)  x1 = width;
-    if (y1 > height) y1 = height;
-    for (uint32_t yy = y; yy < y1; yy++) {
-        uint8_t *row = fb + yy * pitch + x * (bpp / 8);
+void fb_put_pixel(uint32_t x, uint32_t y, uint32_t color) {
+    if (!active || x >= width || y >= height) return;
+    store(back, x, y, color);
+    if (back != fb) store(fb, x, y, color);
+}
+
+/* From the copy: the screen is never read (above). */
+uint32_t fb_get_pixel(uint32_t x, uint32_t y) {
+    if (!active || x >= width || y >= height) return 0;
+    return load(back, x, y);
+}
+
+/* Fill the copy's rectangle, without writing the screen. */
+static void fill_back(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color) {
+    for (uint32_t yy = y; yy < y + h; yy++) {
+        uint8_t *row = back + yy * pitch + x * (bpp / 8);
         if (bpp == 32) {
             uint32_t *p = (uint32_t *)row;
-            for (uint32_t xx = x; xx < x1; xx++) *p++ = color;
+            for (uint32_t i = 0; i < w; i++) *p++ = color;
         } else {
             uint16_t *p = (uint16_t *)row;
-            for (uint32_t xx = x; xx < x1; xx++) *p++ = (uint16_t)color;
+            for (uint32_t i = 0; i < w; i++) *p++ = (uint16_t)color;
         }
     }
+}
+
+void fb_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color) {
+    if (!active || !clip(&x, &y, &w, &h)) return;
+    fill_back(x, y, w, h, color);
+    flush(x, y, w, h);
 }
 
 void fb_clear(uint32_t color) { fb_fill_rect(0, 0, width, height, color); }
@@ -152,57 +248,22 @@ void fb_draw_line(int x0, int y0, int x1, int y1, uint32_t color) {
     }
 }
 
-/* Scroll the whole framebuffer up by `pixels` rows (fast bulk copy in dwords),
-   filling the newly-exposed bottom strip with `bg`. The surviving region is
-   contiguous, so it copies as one block - far cheaper than re-rendering, which
-   matters since framebuffer memory is slow. */
-void fb_scroll_up(uint32_t pixels, uint32_t bg) {
-    if (!active || pixels == 0 || pixels >= height) { fb_clear(bg); return; }
-
-    uint32_t moved_rows = height - pixels;
-    uint8_t *dst = fb;
-    uint8_t *src = fb + (uint32_t)pixels * pitch;
-    uint32_t total  = moved_rows * pitch;     /* bytes to move */
-    uint32_t dwords = total >> 2;
-    uint32_t tail   = total & 3;
-
-    uint32_t *d32 = (uint32_t *)dst;
-    uint32_t *s32 = (uint32_t *)src;
-    for (uint32_t i = 0; i < dwords; i++) d32[i] = s32[i];
-    if (tail) {
-        uint8_t *db = dst + (dwords << 2);
-        uint8_t *sb = src + (dwords << 2);
-        for (uint32_t i = 0; i < tail; i++) db[i] = sb[i];
-    }
-    fb_fill_rect(0, moved_rows, width, pixels, bg);
-}
-
 /* Scroll only a sub-rectangle up by `dy` pixels, filling the exposed bottom
-   `dy` rows with `bg`. Unlike fb_scroll_up the surviving region isn't contiguous
-   in memory (each text row is a slice of a wider scanline), so we copy row by
-   row. Used by the framebuffer console to scroll its viewport without disturbing
+   `dy` rows with `bg`: the copy's rows move, a row at a time (each text row
+   is a slice of a wider scanline), then the screen is written from it. Used by the framebuffer console to scroll its viewport without disturbing
    anything beside it (e.g. the boot logo in the other half of the screen). */
 void fb_scroll_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
                     uint32_t dy, uint32_t bg) {
-    if (!active || w == 0 || h == 0 || dy == 0) return;
+    if (!active || !clip(&x, &y, &w, &h) || dy == 0) return;
     if (dy >= h) { fb_fill_rect(x, y, w, h, bg); return; }
 
     uint32_t bb        = bpp / 8;
-    uint32_t row_bytes = w * bb;
     uint32_t move_rows = h - dy;
-    for (uint32_t r = 0; r < move_rows; r++) {
-        uint8_t *dst = fb + (y + r)      * pitch + x * bb;
-        uint8_t *src = fb + (y + r + dy) * pitch + x * bb;   /* lower row, no overlap */
-        uint32_t dwords = row_bytes >> 2;
-        uint32_t tail   = row_bytes & 3;
-        uint32_t *d = (uint32_t *)dst, *s = (uint32_t *)src;
-        for (uint32_t i = 0; i < dwords; i++) d[i] = s[i];
-        if (tail) {
-            uint8_t *db = dst + (dwords << 2), *sb = src + (dwords << 2);
-            for (uint32_t i = 0; i < tail; i++) db[i] = sb[i];
-        }
-    }
-    fb_fill_rect(x, y + move_rows, w, dy, bg);
+    for (uint32_t r = 0; r < move_rows; r++)
+        copy_fwd(back + (y + r) * pitch + x * bb,
+                 back + (y + r + dy) * pitch + x * bb, w * bb);   /* lower row, no overlap */
+    fill_back(x, y + move_rows, w, dy, bg);
+    flush(x, y, w, h);
 }
 
 uint32_t fb_font_width(void)  { return font_cell_width(); }
@@ -211,21 +272,46 @@ uint32_t fb_font_height(void) { return font_cell_height(); }
 /* Draw one glyph of the active font. Each font byte is a row of up to 8 pixels;
    bit 0x80 is the leftmost. A font narrower than 8 uses the high bits, which is
    the order `cxk font build` packs them in, so a 6-wide cell needs no special
-   case here. */
+   case here. Drawn into the copy, then the cell written to the screen a row
+   at a time. */
 void fb_draw_char(uint32_t x, uint32_t y, char c, uint32_t fg, uint32_t bg) {
     if (!active) return;
     const uint8_t *glyph = font_glyph((unsigned char)c);
     if (!glyph) return;
-    uint32_t cw = font_cell_width();
-    uint32_t chh = font_cell_height();
-    for (uint32_t row = 0; row < chh; row++) {
+    uint32_t cw = font_cell_width(), chh = font_cell_height();
+    uint32_t w = cw, h = chh;
+    if (!clip(&x, &y, &w, &h)) return;
+    for (uint32_t row = 0; row < h; row++) {
         uint8_t bits = glyph[row];
-        for (uint32_t col = 0; col < cw; col++) {
-            uint32_t color = (bits & (0x80u >> col)) ? fg : bg;
-            fb_put_pixel(x + col, y + row, color);
-        }
+        for (uint32_t col = 0; col < w; col++)
+            store(back, x + col, y + row, (bits & (0x80u >> col)) ? fg : bg);
     }
+    flush(x, y, w, h);
 }
+
+#if CXK_TEST_HOOKS
+int fb_test_has_copy(void) { return active && back != fb; }
+
+uint32_t fb_test_screen_pixel(uint32_t x, uint32_t y) {
+    if (!active || x >= width || y >= height) return 0;
+    return load(fb, x, y);
+}
+
+void fb_test_screen_poke(uint32_t x, uint32_t y, uint32_t color) {
+    if (active && x < width && y < height) store(fb, x, y, color);
+}
+
+uintptr_t fb_test_screen_virt(void) { return (uintptr_t)fb; }
+
+uint32_t fb_test_disagree(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+    uint32_t n = 0;
+    if (!active || !clip(&x, &y, &w, &h)) return 0;
+    for (uint32_t yy = y; yy < y + h; yy++)
+        for (uint32_t xx = x; xx < x + w; xx++)
+            if (load(fb, xx, yy) != load(back, xx, yy)) n++;
+    return n;
+}
+#endif
 
 void fb_draw_string(uint32_t x, uint32_t y, const char *s, uint32_t fg, uint32_t bg) {
     if (!active) return;

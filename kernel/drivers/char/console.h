@@ -81,4 +81,10 @@ void console_newline(void);
 void console_set_cursor(int x, int y);
 void console_get_cursor(int *x, int *y);
 
+/* What the framebuffer has cost since boot: TSC cycles spent drawing cells
+   and scrolling, and the scrolls. kmain logs them before the executive starts,
+   so the rig's boot log says where the time went. */
+uint64_t console_fb_cycles(void);
+uint64_t console_fb_scrolls(void);
+
 #endif

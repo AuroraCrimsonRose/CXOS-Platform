@@ -29,6 +29,8 @@
 #define PTE64_PWT       (1ull << 3)
 #define PTE64_PCD       (1ull << 4)    /* with PWT: uncached, whatever the MTRRs say */
 #define PTE64_LARGE     (1ull << 7)    /* PS: at the PD level, a 2 MiB page */
+#define PTE64_PAT       (1ull << 7)    /* in a 4 KiB entry: PAT entry 4 (pat.h), with PCD and PWT clear */
+#define PTE64_PAT_LARGE (1ull << 12)   /* the same bit in a 2 MiB entry */
 #define PTE64_BORROWED  (1ull << 9)    /* available to software: VM_BORROWED */
 #define PTE64_NX        (1ull << 63)   /* needs EFER.NXE, which the loader sets */
 #define PTE64_ADDR      0x000FFFFFFFFFF000ull
@@ -45,8 +47,8 @@
 #define PAGE_2M         0x200000ull
 
 /* The 4 KiB entry for `phys` with what `vm` (VM_*) allows. Present always;
-   no-execute unless VM_EXEC; uncached (PCD and PWT) with VM_UNCACHED; ring 3
-   only when `user`. Bits of `phys` outside the address field are dropped. */
+   no-execute unless VM_EXEC; uncached (PCD and PWT) with VM_UNCACHED, else
+   write-combining (PAT) with VM_WC; ring 3 only when `user`. Bits of `phys` outside the address field are dropped. */
 uint64_t pte64_encode(uint64_t phys, uint32_t vm, int user);
 
 /* The 2 MiB entry for `phys`, as above, never reachable from ring 3. */

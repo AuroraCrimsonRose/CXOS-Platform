@@ -183,6 +183,20 @@ static void cx_text_logo(void) {
     console_clear();
 }
 
+/* Where output time went so far, for a machine with no serial port to watch:
+   the rig's boot log carries it to the stick (cxk rig bootlog). */
+static uint32_t cycles_ms(uint64_t cycles) {
+    uint64_t hz = timer_tsc_hz();
+    return hz ? (uint32_t)(cycles / (hz / 1000u ? hz / 1000u : 1u)) : 0;
+}
+
+static void console_log_time(void) {
+    klog("CONSOLE", SEV_INFO, "time spent on output since boot");
+    klog_child_u32("framebuffer drawing (ms): ", cycles_ms(console_fb_cycles()), LOG_COLOR_VALUE, "");
+    klog_child_u32("framebuffer scrolls: ", (uint32_t)console_fb_scrolls(), LOG_COLOR_VALUE, "");
+    klog_child_u32("serial waits (ms): ", cycles_ms(serial_wait_cycles()), LOG_COLOR_VALUE, "");
+}
+
 void kmain_late(void) __attribute__((noreturn, used));
 
 /* `cxbi_phys` is the loader's handover (boot/cxbi.h), passed by the entry
@@ -460,6 +474,8 @@ void kmain_late(void) {
     /* From here a user process that faults is saved to the crash area; the
        self-tests' faults, before this, are deliberate. */
     crashlog_faults_arm(1);
+
+    console_log_time();
 
 #ifdef CXK_DEV_UNSIGNED
     /* Said at every boot, in the log, just before anything unsigned could run:

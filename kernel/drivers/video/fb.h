@@ -25,6 +25,7 @@
 #define FB_H
 
 #include <stdint.h>
+#include "config.h"
 
 /* Try to initialize from the bootloader's VBE info and map the framebuffer.
    Must be called AFTER paging + PMM are up (it maps the LFB via paging_map).
@@ -56,10 +57,6 @@ void fb_clear(uint32_t color);
 
 /* Line between two points (Bresenham, integer). */
 void fb_draw_line(int x0, int y0, int x1, int y1, uint32_t color);
-
-/* Scroll the framebuffer up by `pixels` rows, filling the bottom with `bg`.
-   Used by the console for fast scrolling instead of a full re-render. */
-void fb_scroll_up(uint32_t pixels, uint32_t bg);
 
 /* Scroll a sub-rectangle up by `dy` pixels, filling the bottom with `bg`.
    Lets the console scroll its own region without touching the rest of the
@@ -104,5 +101,16 @@ int sys_fb_put_pixel(uint32_t x, uint32_t y, uint32_t color);
 int sys_fb_draw_line(uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1, uint32_t color);
 int sys_fb_draw_text(uint32_t x, uint32_t y, uint64_t text, uint32_t fg, uint32_t bg);
 int sys_fb_set_font(uint64_t uname);
+
+#if CXK_TEST_HOOKS
+/* The self-tests' view past the copy in RAM (fb.c): whether there is one,
+   the screen itself read and written alone, where it is mapped, and how many
+   pixels of a rectangle the screen and the copy disagree on. */
+int       fb_test_has_copy(void);
+uint32_t  fb_test_screen_pixel(uint32_t x, uint32_t y);
+void      fb_test_screen_poke(uint32_t x, uint32_t y, uint32_t color);
+uintptr_t fb_test_screen_virt(void);
+uint32_t  fb_test_disagree(uint32_t x, uint32_t y, uint32_t w, uint32_t h);
+#endif
 
 #endif

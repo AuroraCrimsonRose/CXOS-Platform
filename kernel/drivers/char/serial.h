@@ -39,4 +39,7 @@ void serial_putc(char c);
 /* Write a NUL-terminated string, byte for byte. */
 void serial_puts(const char *s);
 
+/* TSC cycles serial_putc has spent waiting for the transmitter since boot. */
+uint64_t serial_wait_cycles(void);
+
 #endif

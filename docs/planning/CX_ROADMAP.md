@@ -794,7 +794,10 @@ Independent of the order above, and small enough to land whenever convenient:
    QEMU, Hyper-V and the rig. Before 9, because SMP bring-up trusts the
    MADT. Split as 1.7 was: **1.8a** the kernel builds the report, **1.8b**
    `cxk` shows and diffs reports and reads one off the rig's stick,
-   **1.8c** Hyper-V's TSC calibration (59742 MHz) read through it.
+   **1.8c** Hyper-V's TSC calibration (59742 MHz) read through it,
+   **1.8d** the rig's slow console, found on its first boot with the
+   report, **1.8e** the rig's report read and diffed against QEMU's and
+   Hyper-V's.
    - **1.8a (2026-11-04), done:** `@hw` lines, tab-separated, from
      `@hw begin 1` to an end line holding the count and CRC-32 of the
      lines before it (`kernel/diag/hwfmt.c`, pure); a report that runs out
@@ -857,6 +860,34 @@ Independent of the order above, and small enough to land whenever convenient:
      outstanding; `verify-hyperv` passes, 198/198. Test:
      `HyperVBootTests` (a write after 1.6 s of quiet reaches the log), red
      with the old reader.
+   - **1.8d (2026-11-05), done:** the rig took minutes to reach the
+     prompt. Its framebuffer (the W5000's, at 0xD0000000) sits in the PCI
+     hole, which its firmware's MTRRs mark uncached, and `fb_scroll_rect`
+     read the console's whole viewport back over PCIe on every line, about
+     a microsecond a word. Now `fb.c` draws everything into a copy of the
+     screen in RAM and writes only the rectangle it changed to the screen;
+     a scroll moves the copy's rows, `fb_get_pixel` reads the copy, and
+     nothing reads the screen (XNU keeps a cell copy, `gc_scroll_up`;
+     Serenity and Haiku move rows in the framebuffer). The screen is mapped
+     write-combining: `VM_WC`, the PAT bit on PAT entry 4, which
+     `pat_init` sets (the whole table written: entries 0-3 as at power-on,
+     so PCD and PWT keep their meaning; entry 4 as Serenity and Haiku,
+     XNU takes 6). A glyph is drawn into the copy a row at a time, not a
+     call per pixel. `fb_scroll_up` (no callers) is gone. The boot log
+     says the output's cost before the executive starts: on the rig 2316
+     ms of drawing for 664 scrolls and 0 ms of serial waits, the whole
+     boot. Tests: 2 arch tests (the PAT MSR exact; a VM_WC page is entry
+     4 and holds what is written once fenced, and the screen is so
+     mapped), a boot test (the screen and the copy agree after boot and
+     after it; writing the screen alone shows reads and scrolls come from
+     the copy; fills, glyphs and pixels reach the screen; the console's
+     time counted), host tests (the PAT bit in 4 KiB and 2 MiB entries,
+     VM_UNCACHED winning). Self-tests 201. Sabotages:
+     `tests/sabotage/1.8d.sab`, 14 of 14 (one expectation corrected: a
+     glyph left unflushed is not seen "after boot", since each log line's
+     scroll rewrites the viewport). Untested: a CPU with no PAT, an AP's
+     table (SMP calls `pat_init` on each), a copy that cannot be had. No
+     ABI change.
 9. SMP readiness: a lock order table and a checker in debug builds,
    per-CPU data, spinlocks that save interrupt state, the slab allocator.
    Physical memory is reached only through the direct map's helpers, never
