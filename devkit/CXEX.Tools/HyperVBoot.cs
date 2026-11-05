@@ -115,7 +115,7 @@ public static class HyperVBoot
     }
 
     /// <summary>Copies the pipe into the log and classifies it until a verdict or the timeout.</summary>
-    private static BootVerdict Watch(string pipe, string serialLog, TimeSpan timeout, bool full)
+    public static BootVerdict Watch(string pipe, string serialLog, TimeSpan timeout, bool full)
     {
         var clock = Stopwatch.StartNew();
         using var log = new FileStream(serialLog, FileMode.Create, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
@@ -126,9 +126,14 @@ public static class HyperVBoot
         var text = new System.Text.StringBuilder();
         var buf = new byte[4096];
         BootVerdict verdict = new(BootOutcome.Inconclusive, "the VM produced no serial output", null);
+        // One read outstanding at a time, kept across quiet waits: a read given
+        // up on still completes, into buf, and its bytes were lost when a new
+        // one was started in its place (the head of the line after each long
+        // silent self-test, 1.8c).
+        Task<int>? read = null;
         while (clock.Elapsed < timeout)
         {
-            var read = client.ReadAsync(buf, 0, buf.Length);
+            read ??= client.ReadAsync(buf, 0, buf.Length);
             if (!read.Wait(500))
             {
                 // nothing new; the VM may have stopped writing for good
@@ -136,6 +141,7 @@ public static class HyperVBoot
                 continue;
             }
             int n = read.Result;
+            read = null;
             if (n == 0) { verdict = verdict with { Reason = "the VM closed COM1 before a verdict: " + verdict.Reason }; break; }
             log.Write(buf, 0, n);
             log.Flush();

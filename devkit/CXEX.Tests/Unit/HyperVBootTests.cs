@@ -16,6 +16,35 @@ public class HyperVBootTests
 
     [Fact]
     [Trait(Categories.Key, Categories.Unit)]
+    public void Serial_written_after_a_quiet_spell_reaches_the_log()
+    {
+        // A long self-test is silent for seconds; what COM1 sends after it must
+        // not be lost to a read the watcher gave up waiting on (1.8c: the
+        // head of a line went missing after each one).
+        string pipe = "cxk-test-" + Guid.NewGuid().ToString("N");
+        string log = Path.Combine(Path.GetTempPath(), pipe + ".log");
+        using var server = new System.IO.Pipes.NamedPipeServerStream(pipe, System.IO.Pipes.PipeDirection.Out);
+        var writer = Task.Run(() =>
+        {
+            server.WaitForConnection();
+            server.Write("@ktest\tbegin\n"u8);
+            server.Flush();
+            Thread.Sleep(1600);                 // three of the watcher's 500 ms waits
+            server.Write("@ktest\tresult\t0\tpass\t1\tafter the quiet\n"u8);
+            server.Flush();
+            server.Disconnect();
+        });
+        try
+        {
+            HyperVBoot.Watch(pipe, log, TimeSpan.FromSeconds(20), full: false);
+            writer.Wait();
+            Assert.Equal("@ktest\tbegin\n@ktest\tresult\t0\tpass\t1\tafter the quiet\n", File.ReadAllText(log));
+        }
+        finally { File.Delete(log); }
+    }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
     public void A_vm_name_is_safe_in_a_script()
     {
         string name = HyperVBoot.NewVmName();

@@ -848,10 +848,15 @@ Independent of the order above, and small enough to land whenever convenient:
      the stated rate ignored and channel 2's gate left shut (green under
      QEMU, which ignores the gate), both red; 4 DevKit ones by hand. A dead
      count is given up after 1000 still samples (5 million took minutes
-     under Hyper-V). Untested: the two-window retry, the rig. Found, not fixed:
-     `serial_putc` drops bytes when Hyper-V's COM1 pipe stalls past its
-     spin limit (2-7 `@ktest` lines cut per boot, already at 1.8b), so
-     `verify-hyperv` still fails on the line count. No ABI change.
+     under Hyper-V). Untested: the two-window retry, the rig. No ABI change.
+     Then the lines Hyper-V's boots lost (2-7 `@ktest` lines cut per boot,
+     already at 1.8b): not the kernel's `serial_putc` but `cxk
+     verify-hyperv`'s pipe reader, which started a new read after each
+     500 ms quiet wait and lost what the one given up on received, the head
+     of the line after each long self-test. One read is now kept
+     outstanding; `verify-hyperv` passes, 198/198. Test:
+     `HyperVBootTests` (a write after 1.6 s of quiet reaches the log), red
+     with the old reader.
 9. SMP readiness: a lock order table and a checker in debug builds,
    per-CPU data, spinlocks that save interrupt state, the slab allocator.
    Physical memory is reached only through the direct map's helpers, never
