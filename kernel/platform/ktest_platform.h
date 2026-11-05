@@ -10,5 +10,9 @@
 
 /* The built-in keyboard and mouse reach the kernel's input buffers. */
 int ktest_platform_input(void);
+/* The hardware report this boot built (platform.h) checks, counts what the
+   kernel found, reads back from the crash area, and its two measurements of
+   the TSC agree within 1%. */
+int ktest_platform_hw_report(void);
 
 #endif

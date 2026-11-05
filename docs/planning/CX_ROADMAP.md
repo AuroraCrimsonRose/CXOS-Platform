@@ -792,7 +792,30 @@ Independent of the order above, and small enough to land whenever convenient:
    MADT and APIC IDs, PCI devices, CPUID, and the clock calibrations, in a
    fixed form to serial and the USB crash log; a `cxk` command compares
    QEMU, Hyper-V and the rig. Before 9, because SMP bring-up trusts the
-   MADT.
+   MADT. Split as 1.7 was: **1.8a** the kernel builds the report, **1.8b**
+   `cxk` shows and diffs reports and reads one off the rig's stick,
+   **1.8c** Hyper-V's TSC calibration (59742 MHz) read through it.
+   - **1.8a (2026-11-04), done:** `@hw` lines, tab-separated, from
+     `@hw begin 1` to an end line holding the count and CRC-32 of the
+     lines before it (`kernel/diag/hwfmt.c`, pure); a report that runs out
+     of its 64 KB says `@hw truncated`. Sections: boot, cpu and raw CPUID
+     leaves, the hypervisor's leaves, the APIC state, every memory-map
+     entry, the RSDP and every table the RSDT, XSDT and FADT name with its
+     checksum judged, the MADT entry by entry, every PCI function with its
+     BARs, and the clocks with the TSC measured again against the ACPI PM
+     timer. Printed to serial before the self-tests and saved as XCRL
+     record kind 6 at crash-area sector 384. A bad checksum is reported,
+     not refused (Haiku `acpi_check_rsdt`, Serenity `validate_table`, not
+     NT5's `ACPI_BIOS_ERROR`); deciding that waits for the rig's report.
+     `verify-boot` fails a passing boot whose serial holds no whole
+     report. Design: `docs/hardware/CX_HW_REPORT.md`. Tests: a boot test
+     (the report checks, its sections, mem and pci lines against the
+     loader and the bus, RSDP, FADT and MADT present, the crash copy reads
+     back, the TSC by tick and by PM timer within 1%), 7 host tests, 2
+     DevKit tests; `verify-boot`'s check red by hand (the report kept off
+     serial). Untested: a bad table, a cut report and an x2APIC MADT on a
+     machine (host only); a 32-bit PM timer; UEFI; the rig. Self-tests
+     197. Sabotages: `tests/sabotage/1.8a.sab`, 10 of 10. No ABI change.
 9. SMP readiness: a lock order table and a checker in debug builds,
    per-CPU data, spinlocks that save interrupt state, the slab allocator.
    Physical memory is reached only through the direct map's helpers, never

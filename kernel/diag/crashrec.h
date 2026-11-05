@@ -60,6 +60,13 @@
 #define XCRL_SEED_LBA       48u
 #define XCRL_SEED_LEN       64u
 
+/* The hardware report (diag/hwreport.h), past the boot log: a header at
+   XCRL_HWREPORT_LBA and the report's `@hw` lines after it. Written once a
+   boot; `cxk rig hwreport` reads it from a machine with no serial port. */
+#define XCRL_KIND_HWREPORT  6u
+#define XCRL_HWREPORT_LBA   384u
+#define XCRL_HWREPORT_MAX   (128u * XCRL_SECTOR)           /* 64 KB */
+
 /* The most text a record of this kind may carry. */
 uint32_t xcrl_max_len(uint16_t kind);
 

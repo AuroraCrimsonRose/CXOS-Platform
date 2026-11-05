@@ -38,6 +38,12 @@ void platform_tick_resume(void);
    mouse.h, and log what was found. Needs interrupts on. */
 void platform_input_init(void);
 
+/* The hardware report (roadmap 1.8, docs/hardware/CX_HW_REPORT.md): what the
+   machine says it is, in a fixed form, to serial and the crash area. Once,
+   after the buses, the interrupt controllers, the clocks and the crash area
+   are up, and before the self-tests. */
+void platform_hw_report(void);
+
 /* Reset the machine through the platform's reset line. Returns if it had no
    effect, so the caller can try the processor's own reset. */
 void platform_reset(void);

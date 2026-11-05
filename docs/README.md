@@ -22,6 +22,7 @@ Start with the roadmap.
 | Document | Covers |
 |---|---|
 | [CX_TARGET_HARDWARE.md](hardware/CX_TARGET_HARDWARE.md) | The test rig, and what it decides |
+| [CX_HW_REPORT.md](hardware/CX_HW_REPORT.md) | The hardware report: what each machine told CXK, in a form two can be compared by |
 
 ## Kernel: `kernel/`
 

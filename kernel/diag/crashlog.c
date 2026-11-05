@@ -470,3 +470,50 @@ int crashlog_seed_write(const uint8_t *seed) {
 int crashlog_bootlog_stale(void) {
     return have_area && slog_total() != bootlog_saved_total;
 }
+
+/* ---- the hardware report ----------------------------------------------------
+ * Its header and text at XCRL_HWREPORT_LBA (crashrec.h), written once a boot
+ * by platform/pc/hwreport.c. Interrupts off for the writes, as the other
+ * saves: no other transfer can start in the middle of one. */
+static uint8_t hw_hdr[XCRL_SECTOR];
+
+static int hw_room(uint32_t secs) {
+    return have_area && area_sectors > XCRL_HWREPORT_LBA + secs;
+}
+
+int crashlog_hwreport_write(const char *t, uint32_t len) {
+    if (len > XCRL_HWREPORT_MAX) return DISK_ERR_PARAMS;
+    uint32_t secs = (len + XCRL_SECTOR - 1) / XCRL_SECTOR;
+    if (!hw_room(secs)) return DISK_ERR_NO_DEVICE;
+    uint32_t f = arch_irq_save();
+    int r = DISK_OK;
+    if (secs) r = disk_write(area_disk, area_lba + XCRL_HWREPORT_LBA + 1, secs, t);
+    if (r == DISK_OK) {
+        xcrl_seal(hw_hdr, XCRL_KIND_HWREPORT, t, len);
+        r = disk_write(area_disk, area_lba + XCRL_HWREPORT_LBA, 1, hw_hdr);
+    }
+    if (r == DISK_OK) r = disk_flush(area_disk);
+    arch_irq_restore(f);
+    return r;
+}
+
+int crashlog_hwreport_read(char *buf, uint32_t cap, uint32_t *len) {
+    if (!hw_room(1)) return DISK_ERR_NO_DEVICE;
+    uint32_t f = arch_irq_save();
+    int r = disk_read(area_disk, area_lba + XCRL_HWREPORT_LBA, 1, hw_hdr);
+    arch_irq_restore(f);
+    if (r != DISK_OK) return r;
+    uint16_t kind = 0;
+    uint32_t n = 0;
+    if (xcrl_check_header(hw_hdr, &kind, &n) != XCRL_VALID || kind != XCRL_KIND_HWREPORT)
+        return CRASHLOG_HW_BAD;
+    uint32_t secs = (n + XCRL_SECTOR - 1) / XCRL_SECTOR;
+    if (secs * XCRL_SECTOR > cap || !hw_room(secs)) return CRASHLOG_HW_BAD;
+    f = arch_irq_save();
+    if (secs) r = disk_read(area_disk, area_lba + XCRL_HWREPORT_LBA + 1, secs, buf);
+    arch_irq_restore(f);
+    if (r != DISK_OK) return r;
+    if (xcrl_check_text(hw_hdr, buf, n) != XCRL_VALID) return CRASHLOG_HW_BAD;
+    *len = n;
+    return DISK_OK;
+}

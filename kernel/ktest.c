@@ -3365,6 +3365,7 @@ void ktest_run(void) {
     total++; passed += report("disk writes reach only the CXOS disk", test_disk_write_guard());
     total++; passed += report("xHCI scratchpad pages are whole and returned", test_xhci_scratchpad());
     total++; passed += report("PS/2 keyboard and mouse reach the kernel", ktest_platform_input());
+    total++; passed += report("hardware report: checked, counted, saved", ktest_platform_hw_report());
     total++; passed += report("memory mappings (SYS_VM_*)",     test_vmregion());
     total++; passed += report("lifecycles: unmap, exit, resched", test_lifecycle_sequences());
     total++; passed += report("bounded strings: cap, truncation", test_bounded_strings());

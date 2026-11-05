@@ -431,6 +431,11 @@ void kmain_late(void) {
        generator and the area. */
     (void)random_seed_file_load();
 
+    /* The hardware report (platform.h): after ACPI, the interrupt
+       controllers, PCI and the clocks, which it reports, and the crash area,
+       where it is saved; before the self-tests, which change what it reads. */
+    platform_hw_report();
+
     /* run the kernel self-tests (ktest.c) first - they create + reap their own
        ring-3 threads, so let them finish before starting the executive. */
     ktest_run();

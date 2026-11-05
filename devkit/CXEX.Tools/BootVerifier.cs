@@ -82,6 +82,10 @@ public sealed record BootVerdict(BootOutcome Outcome, string Reason, int? TestsP
         int n = int.Parse(s.Groups[1].Value);
         if (results && SelfTestReport.Parse(log).DisagreesWith(n) is string wrong)
             return new BootVerdict(BootOutcome.Fail, $"self-tests: all {n} passed, but {wrong}", n);
+        // The hardware report precedes the self-tests (kmain), so a summary
+        // without a whole one behind it means the serial copy was lost or torn.
+        if (results && HwProblem(log) is string hw)
+            return new BootVerdict(BootOutcome.Fail, $"self-tests: all {n} passed, but {hw}", n);
         if (full && ExecutiveRefused.IsMatch(log))
             return new BootVerdict(BootOutcome.Fail, $"self-tests: all {n} passed, but the executive was refused at load", n);
         if (full && !ExecutiveUp.IsMatch(log))
@@ -96,6 +100,14 @@ public sealed record BootVerdict(BootOutcome Outcome, string Reason, int? TestsP
         return new BootVerdict(BootOutcome.Pass, full
             ? $"self-tests: all {n} passed, and the executive and the shell ran"
             : $"self-tests: all {n} passed", n);
+    }
+
+    /// <summary>Null when the log holds a whole hardware report (<see cref="HwReport"/>); otherwise what is wrong.</summary>
+    private static string? HwProblem(string log)
+    {
+        string? text = HwReport.TextFromSerial(log);
+        if (text is null) return "the hardware report is missing";
+        return HwReport.Check(text) is string wrong ? "the hardware report is damaged: " + wrong : null;
     }
 
     /// <summary>The kpanic reason a crash-log test request leads to (kernel/kmain.c).</summary>

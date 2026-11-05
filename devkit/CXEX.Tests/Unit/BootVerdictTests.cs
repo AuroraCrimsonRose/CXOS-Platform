@@ -15,8 +15,17 @@ namespace CXEX.Tests.Unit;
 public class BootVerdictTests
 {
     private const string SummaryLine = "[KTEST   ] - [OK  ] - self-tests: all 45 passed\n";
-    // since 1.5d a summary needs the per-test lines behind it (SelfTestReport)
-    private static readonly string Summary = Results(45, failAt: -1) + SummaryLine;
+
+    /// <summary>A hardware report as kernel/platform/pc/hwreport.c prints it: CR LF around each line.</summary>
+    private static string Serial(string text) =>
+        string.Concat(text.TrimEnd('\n').Split('\n').Select(l => "\r\n" + l + "\r\n"));
+    private static readonly string HwText = HwReport.Seal(["@hw\tboot\tbios\t00000000\t00000000000f5a10", "@hw\tpcisum\t6\t256"]);
+    private static readonly string Hw = Serial(HwText);
+
+    // since 1.5d a summary needs the per-test lines behind it (SelfTestReport),
+    // and since 1.8a the hardware report before them (HwReport); after Hw,
+    // since static fields are set in the order written
+    private static readonly string Summary = Hw + Results(45, failAt: -1) + SummaryLine;
 
     /// <summary>The @ktest lines kernel/ktest.c writes for n tests, one failing at failAt.</summary>
     private static string Results(int n, int failAt, int endPassed = -1)
@@ -197,7 +206,7 @@ public class BootVerdictTests
         Assert.Contains("input was refused to pid 2", refused.Reason);
 
         // the self-tests' own refusals, before the executive, are theirs
-        string tests = Results(45, failAt: -1) + denied + SummaryLine;
+        string tests = Hw + Results(45, failAt: -1) + denied + SummaryLine;
         Assert.Equal(BootOutcome.Pass, BootVerdict.Classify(tests + Executive + Banner + Prompt, full: true).Outcome);
         // and a boot that is not a full one does not look
         Assert.Equal(BootOutcome.Pass, BootVerdict.Classify(Summary + Executive + denied, full: false).Outcome);
@@ -399,5 +408,56 @@ public class BootVerdictTests
         Assert.Null(QemuTool.ParseArch("i386"));
         Assert.Null(QemuTool.ParseArch(""));
         Assert.Null(QemuTool.ParseArch(null));
+    }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
+    public void A_summary_without_a_whole_hardware_report_fails()
+    {
+        string rest = Results(45, failAt: -1) + SummaryLine;
+        var missing = BootVerdict.Classify(rest, full: false);
+        Assert.Equal(BootOutcome.Fail, missing.Outcome);
+        Assert.Contains("hardware report is missing", missing.Reason);
+
+        var torn = BootVerdict.Classify(Hw.Replace("pcisum\t6", "pcisum\t7") + rest, full: false);
+        Assert.Equal(BootOutcome.Fail, torn.Outcome);
+        Assert.Contains("hardware report is damaged: its CRC", torn.Reason);
+
+        var noEnd = BootVerdict.Classify(Hw[..Hw.IndexOf("@hw\tend", StringComparison.Ordinal)] + rest, full: false);
+        Assert.Equal(BootOutcome.Fail, noEnd.Outcome);
+        Assert.Contains("does not end with an end line", noEnd.Reason);
+
+        // a report that came out with another line half written before each of its own
+        string interleaved = Hw.Replace("\r\n@hw", "\r\n[NET     ] - [OK  ] - onl@hw");
+        Assert.Equal(BootOutcome.Pass, BootVerdict.Classify(interleaved + rest, full: false).Outcome);
+        // an x86-32 log (results off) is not asked for one
+        Assert.Equal(BootOutcome.Pass, BootVerdict.Classify(SummaryLine, full: false, results: false).Outcome);
+    }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
+    public void The_hardware_report_is_checked_as_the_kernel_checks_it()
+    {
+        Assert.Null(HwReport.Check(HwText));
+        var r = HwReport.Parse(HwText);
+        Assert.Equal(["bios", "00000000", "00000000000f5a10"], r.Section("boot").Single().Fields);
+        Assert.False(r.Truncated);
+
+        // the kernel's refusals (kernel/test/host/test_hwfmt.c), one each
+        Assert.Contains("does not start", HwReport.Check(HwText.Replace("begin\t1", "begin\t2")));
+        Assert.Contains("no newline", HwReport.Check(HwText[..^1]));
+        Assert.Contains("not an @hw line", HwReport.Check(HwText.Replace("@hw\tboot", "@hw\tbo\rot")));
+        Assert.Contains("not an @hw line", HwReport.Check(HwText + "junk\n"));
+        Assert.Contains("end line", HwReport.Check(HwText + "@hw\tx\n"));
+        string recount = HwReport.Seal(["@hw\tboot\tbios\t00000000\t00000000000f5a10"]).Replace("\tend\t2\t", "\tend\t3\t");
+        Assert.Contains("counts 3 lines, but 2", HwReport.Check(recount));
+        Assert.Throws<FormatException>(() => HwReport.Parse(HwText.Replace("bios", "uefi")));
+
+        // the CRC is xcrl_crc32's, the check value of CRC-32/ISO-HDLC
+        Assert.Equal(0xCBF43926u, HwReport.Crc32("123456789"u8));
+
+        // on serial: the last begin wins (a report printed twice), the end ends it
+        Assert.Equal(HwText, HwReport.TextFromSerial(Serial(HwText.Replace("bios", "uefi")) + "noise\n" + Hw + "\r\n@hw\tstray\r\n"));
+        Assert.Null(HwReport.TextFromSerial("no report here\n"));
     }
 }

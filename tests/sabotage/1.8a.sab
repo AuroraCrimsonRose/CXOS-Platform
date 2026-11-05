@@ -1,0 +1,120 @@
+# Phase 1.8a's sabotages, run by `cxk test sabotage`.
+# Each must turn red exactly the self-tests named, at the reason named.
+# Format: docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage".
+# Every one lands in the one self-test, so none share a boot.
+# The form's own rules (the checker, the cleaned fields, table and RSDP
+# checksums, the MADT walk) are host tests (test_hwfmt.c); verify-boot's
+# refusal of a boot with no report on serial is sabotaged by hand (the
+# commit says how), since a sabotage here is judged by the self-tests.
+
+# ---- the report says what the machine has ----
+
+[pci-line-dropped]
+# the first PCI function is left out
+expect = hardware report: checked, counted, saved @ hwr: pci lines are not the bus's functions
+edit = kernel/platform/pc/hwreport.c
+<<<
+        const struct pci_device *d = pci_get(i);
+        if (!d) continue;
+===
+        const struct pci_device *d = pci_get(i);
+        if (!d || i == 0) continue;
+>>>
+
+[mem-line-dropped]
+# the loader's first map entry is left out
+expect = hardware report: checked, counted, saved @ hwr: mem lines are not the loader's map
+edit = kernel/platform/pc/hwreport.c
+<<<
+    for (uint32_t i = 0; i < n; i++) {
+        const struct cxk_mmap_entry *e = cxbi_mmap(i);
+===
+    for (uint32_t i = 1; i < n; i++) {
+        const struct cxk_mmap_entry *e = cxbi_mmap(i);
+>>>
+
+[clock-line-dropped]
+# a section comes up short
+expect = hardware report: checked, counted, saved @ hwr: a section is missing or doubled
+edit = kernel/platform/pc/hwreport.c
+<<<
+    hw_line(o, "clock"); hw_s(o, "evtimer-hz"); hw_u(o, timer_evtimer_hz()); hw_done(o);
+===
+>>>
+
+[rsdp-not-reported]
+expect = hardware report: checked, counted, saved @ hwr: no RSDP line
+edit = kernel/platform/pc/hwreport.c
+<<<
+    hw_rsdp(o, at, r);
+===
+>>>
+
+[madt-not-reported]
+# the APIC is up, so SMP (step 9) would trust a MADT the report never showed
+expect = hardware report: checked, counted, saved @ hwr: the APIC is up but no MADT
+edit = kernel/platform/pc/hwreport.c
+<<<
+    if (madt) hw_madt(o, madt, madt_len);
+===
+    if (0) hw_madt(o, madt, madt_len);
+>>>
+
+[madt-cpus-lost]
+# the MADT's processor entries are written under another name
+expect = hardware report: checked, counted, saved @ hwr: the MADT names no CPU
+edit = kernel/diag/hwfmt.c
+<<<
+            hw_s(o, "cpu"); hw_x(o, e[2], 2);
+===
+            hw_s(o, "cpx"); hw_x(o, e[2], 2);
+>>>
+
+# ---- the report is whole ----
+
+[end-crc-wrong]
+# the end line's CRC leaves out the last byte
+expect = hardware report: checked, counted, saved @ hwr: the report fails its own check
+edit = kernel/diag/hwfmt.c
+<<<
+    uint32_t crc = xcrl_crc32(0, o->buf, o->len);
+===
+    uint32_t crc = xcrl_crc32(0, o->buf, o->len - 1);
+>>>
+
+# ---- the crash area's copy ----
+
+[record-not-written]
+# the write claims success and writes nothing
+expect = hardware report: checked, counted, saved @ hwr: the saved record
+edit = kernel/diag/crashlog.c
+<<<
+    int r = DISK_OK;
+    if (secs) r = disk_write(area_disk, area_lba + XCRL_HWREPORT_LBA + 1, secs, t);
+    if (r == DISK_OK) {
+===
+    int r = DISK_OK;
+    if (0) {
+>>>
+
+# ---- the clocks agree ----
+
+[pm-rate-doubled]
+# the PM-timer rate is wrong by a factor of two: the 1% bound must see it
+expect = hardware report: checked, counted, saved @ hwr: TSC by tick and by PM timer differ
+edit = kernel/platform/pc/hwreport.c
+<<<
+    return (c1 - c0) * ACPI_PM_TIMER_HZ / ticks;
+===
+    return (c1 - c0) * ACPI_PM_TIMER_HZ / (ticks / 2);
+>>>
+
+[pm-rate-none]
+# the measurement gives up on a timer that runs
+expect = hardware report: checked, counted, saved @ hwr: the PM timer measured no TSC rate
+edit = kernel/platform/pc/hwreport.c
+<<<
+    return (c1 - c0) * ACPI_PM_TIMER_HZ / ticks;
+===
+    (void)c0; (void)c1; return 0;
+>>>

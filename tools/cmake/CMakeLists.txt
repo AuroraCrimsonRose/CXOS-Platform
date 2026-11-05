@@ -165,6 +165,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/kmain.c
     ${SRC_DIR}/kernel/boot/cxbi.c
     ${SRC_DIR}/kernel/diag/crashrec.c
+    ${SRC_DIR}/kernel/diag/hwfmt.c
     ${SRC_DIR}/kernel/diag/crashlog.c
     ${SRC_DIR}/kernel/diag/testhook.c
     ${SRC_DIR}/kernel/ktest.c
@@ -176,6 +177,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/arch/x86_64/idt.c
     ${SRC_DIR}/kernel/arch/x86/apic.c
     ${SRC_DIR}/kernel/arch/x86/cpufeat.c
+    ${SRC_DIR}/kernel/arch/x86/cpureport.c
     ${SRC_DIR}/kernel/arch/x86/ktest_x86.c
     ${SRC_DIR}/kernel/arch/x86_64/paging.c
     ${SRC_DIR}/kernel/arch/x86_64/pagetable.c
@@ -245,6 +247,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/platform/pc/vga.c
     ${SRC_DIR}/kernel/platform/pc/emupower.c
     ${SRC_DIR}/kernel/platform/pc/platform.c
+    ${SRC_DIR}/kernel/platform/pc/hwreport.c
     ${SRC_DIR}/kernel/platform/pc/ktest_pc.c
     ${SRC_DIR}/kernel/drivers/bus/pci.c
     ${SRC_DIR}/kernel/drivers/storage/hardware/ata.c

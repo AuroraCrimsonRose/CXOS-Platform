@@ -84,6 +84,14 @@ int crashlog_bootlog_stale(void);
 #define CRASHLOG_SEED_NOT_KEPT  3
 int crashlog_seed_read(uint8_t *out);
 int crashlog_seed_write(const uint8_t *seed);
+/* The hardware report (crashrec.h, XCRL_HWREPORT_LBA; platform/pc/hwreport.h).
+   write: `len` bytes of `text`, which holds whole sectors (zero past `len`):
+   text, header, flush, interrupts off. read: the record back into `buf` (cap
+   bytes, whole sectors), its length in *len; CRASHLOG_HW_BAD for no record, a
+   damaged one or one that does not fit. Both answer DISK_OK or a disk error. */
+#define CRASHLOG_HW_BAD         4
+int crashlog_hwreport_write(const char *text, uint32_t len);
+int crashlog_hwreport_read(char *buf, uint32_t cap, uint32_t *len);
 
 /* Write a record of `kind` with `len` bytes of `text` to the area: the text,
    then the header, then a flush. A disk_err code. `text` must hold whole
