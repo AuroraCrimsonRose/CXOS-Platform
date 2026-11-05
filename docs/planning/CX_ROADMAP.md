@@ -888,6 +888,20 @@ Independent of the order above, and small enough to land whenever convenient:
      scroll rewrites the viewport). Untested: a CPU with no PAT, an AP's
      table (SMP calls `pat_init` on each), a copy that cannot be had. No
      ABI change.
+   - **1.8e (2026-11-05), done:** the rig's report (`rig hwreport`) diffed
+     against QEMU's default CPU, `--cpu Opteron_G5` and Hyper-V's: 145,
+     140 and 133 findings, most of them a different machine's PCI
+     functions, CPUs and ACPI firmware names. Written up in
+     `hardware/CX_HW_REPORT.md` §7. For step 9: the rig's APIC IDs are
+     `0x10`-`0x17` (16 more entries disabled), the I/O APIC is `0x18`, and
+     CPUID leaf 1 says the BSP is 0 when it is `0x10`, so APs are started
+     by the MADT's IDs and none is assumed. IRQ 9 is level, active low,
+     which `route_irq` honours. ACPI 1.0 (RSDT only), every checksum ok,
+     no IVRS. The TSC is invariant, 4.000 GHz by the PIT and the 32-bit PM
+     timer alike. Nothing in the kernel was wrong for it. `hw diff` fixed:
+     bare metal's `hypervisor -` made the VM's max-leaf a finding;
+     `HwDiffTests` covers it, seen red first. Untested: the rig's AHCI,
+     OHCI, EHCI and RTL8168 parts under their drivers. No ABI change.
 9. SMP readiness: a lock order table and a checker in debug builds,
    per-CPU data, spinlocks that save interrupt state, the slab allocator.
    Physical memory is reached only through the direct map's helpers, never

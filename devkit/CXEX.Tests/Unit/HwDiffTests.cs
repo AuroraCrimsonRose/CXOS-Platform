@@ -185,6 +185,13 @@ public class HwDiffTests
         var d = HwDiff.Compare(Report(Qemu), bare);
         Assert.Equal(2, d.Count);
         Assert.All(d, x => Assert.True(x.Expected, x.Key));
+
+        // what bare metal prints: "hypervisor -", a signature and no max-leaf
+        // (the rig's report, 1.8e: max-leaf was a finding)
+        bare = With(("@hw\thypervisor", "@hw\thypervisor\t-"), ("@hw\tcpuid\t40000000", null));
+        d = HwDiff.Compare(Report(Qemu), bare);
+        Assert.Equal(3, d.Count);
+        Assert.All(d, x => Assert.True(x.Expected, x.Key + " " + x.Field));
     }
 
     [Fact]

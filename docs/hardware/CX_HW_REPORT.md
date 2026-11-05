@@ -4,8 +4,9 @@
 > **Status: 1.8a done (2026-11-04): the kernel builds the report, prints it
 > to serial and saves it to the crash area. 1.8b done (2026-11-04): `cxk hw
 > show`, `hw diff` and `rig hwreport` (§5). 1.8c done (2026-11-04):
-> Hyper-V's clock read through it, and fixed (§6)** (`planning/CX_ROADMAP.md`,
-> Phase 1 step 8).
+> Hyper-V's clock read through it, and fixed (§6). 1.8e done (2026-11-05):
+> the rig's report read and diffed against QEMU's and Hyper-V's (§7)**
+> (`planning/CX_ROADMAP.md`, Phase 1 step 8).
 
 Before SMP trusts the MADT (step 9), and before the rig is trusted at all,
 CXK has to say what each machine it boots on told it, in a form two machines
@@ -211,7 +212,70 @@ that exit to the host, took minutes; now 1000 samples on one value end it.
 **Untested:** the two-window agreement, since no boot has had a stall
 inside a window; the gate and the PIT on the rig.
 
-## 7. Next
+## 7. What the rig's report said (1.8e)
 
-- The rig's report, read off the stick with `rig hwreport`, then `hw diff`
-  against QEMU's and Hyper-V's before step 9 trusts its MADT.
+Read off the stick with `rig hwreport` (twice, a session apart: the same
+but for the clocks, which agree to 0.001%), then `hw diff` against three
+boots of the same image: QEMU's default CPU, QEMU `--cpu Opteron_G5` (the
+nearest model to the rig's Piledriver), and Hyper-V. Findings: 145, 140 and
+133. Most are what a different machine is: its PCI functions (34-45), its
+MADT's CPUs (28-32), and each ACPI table's firmware identity (`oem`,
+`oem-table`, `oem-rev`; about 20 a pair). What the kernel has to take from
+them:
+
+- **APIC IDs do not start at 0.** The BSP's local APIC ID is `0x10`; the
+  MADT lists 8 enabled CPUs at `0x10`-`0x17` (UIDs 1-8) and 16 disabled
+  entries at `0x88`-`0x97` (flags 0); the I/O APIC is ID `0x18` at
+  `fec00000`, GSI base 0. CPUID leaf 1's initial APIC ID says **0**, not
+  `0x10`. Step 9 starts APs by the MADT's IDs, skips an entry without the
+  enabled bit, and never takes an ID from CPUID or assumes the BSP is 0.
+  Today: `lapic_id()` reads the register, MSI is aimed by it, the I/O APIC
+  ID is never used, and `parse_madt` reads no CPU entries, so nothing yet
+  assumes otherwise.
+- **Interrupt overrides:** IRQ 0 → GSI 2 (flags 0) and IRQ 9 level,
+  active **low** (`000f`; QEMU's are active high, `000d`). `route_irq`
+  honours both bits. QEMU's overrides for 5, 10 and 11 are not on the rig.
+- **ACPI 1.0:** RSDP revision 0, RSDT only, AMI firmware (`ACPIAM`). Every
+  table's checksum is `ok`; the FACS is `nosum`, which is right, since it has
+  none. Tables: FACP, APIC, MCFG, HPET, OEMB, DSDT; no SSDT, no IVRS (no
+  IOMMU). What to do with a bad table still has no rig evidence.
+- **Clocks:** the TSC at 4.000 GHz by the PIT and by the PM timer, 0.002%
+  apart; **invariant** (`80000007` EDX bit 8, `invariant 2`), which no VM
+  here reports. The PM timer is 32 bits wide at `0808`, the first 32-bit one
+  seen working (QEMU's is 24 bits at `0608`, Hyper-V's at `0408`). The tick
+  comes at 1000 Hz, as asked; the APIC timer at 12.5 MHz.
+- **Memory:** 10 E820 entries, 3.98 GiB usable (3.25 below 4 GiB, 752 MiB
+  above), and the PCI hole from `0xD0000000`, which holds the framebuffer
+  (1.8d). The CPU has 48 physical address bits (QEMU's models, 40); the page
+  tables take 52, so nothing changes.
+- **SMBIOS 0** is the BIOS path, not the rig: only the UEFI stub looks for
+  it, and QEMU's BIOS boots say 0 too.
+- **PCI:** 27 functions. SB950 SATA in AHCI mode (00:11.0), IDE (00:14.1),
+  3 OHCI and 2 EHCI (no xHCI), HD Audio (00:14.2), the W5000 (01:00.0, a
+  64-bit prefetchable BAR at `0xD0000000`) and its HDMI audio, an Intel
+  AX210 (02:00.0) and an RTL8168 (03:00.0). The tree has drivers for the
+  AHCI, OHCI, EHCI and RTL8168 parts; not for the AX210 or HD Audio. The
+  report does not say whether they came up: that is the boot log's.
+- **CPUID against Opteron_G5:** the rig adds MONITOR, HTT, APERF/MPERF,
+  BMI1, the invariant TSC, and in `80000001` SVM, XOP, FMA4, TBM, TOPOEXT
+  and the rest of family 15h's extras. The kernel tests none of them but
+  the TSC's.
+- **The console** (1.8d): minutes to the prompt before; after, 2316 ms of
+  drawing for 664 scrolls and 0 ms of serial waits for the whole boot.
+  Hyper-V's for comparison: 190 ms drawing, 853 ms serial waits (an
+  emulated UART that holds THRE).
+
+**`hw diff` fixed on the way:** bare metal prints `hypervisor -`, one field
+to a VM's two, and the second came out a finding ("a field in one report
+only") though the hypervisor's section is expected either way (§5). The
+hypervisor's rule is now judged first; `HwDiffTests` covers the line as
+bare metal prints it, seen red before the fix. The ACPI identity fields
+stay findings, as §5 has them.
+
+**Untested:** whether the drivers named above work on the rig's parts;
+the 16 disabled MADT entries, until step 9 reads them.
+
+## 8. Next
+
+- Step 9 (SMP) reads the MADT's CPU entries, with the rig's IDs above as
+  its test case.

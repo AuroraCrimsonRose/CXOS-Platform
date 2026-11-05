@@ -150,8 +150,9 @@ public static class HwDiff
 
     private static (bool Expected, string Why) Judge(HwFact f, string name, string? a, string? b, int index, double tol)
     {
-        if (a is null || b is null) return (false, "a field in one report only");
+        // first: bare metal's "hypervisor -" has fewer fields than a VM's line
         if (IsHypervisor(f)) return (true, "the hypervisor's own leaves");
+        if (a is null || b is null) return (false, "a field in one report only");
         switch (f.Section)
         {
             case "boot" when name == "smbios":
