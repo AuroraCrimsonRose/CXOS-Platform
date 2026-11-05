@@ -31,7 +31,7 @@ static struct sample ring[RING];
 static volatile uint32_t ring_n;
 static uint32_t taken, dropped;
 
-static spinlock_t lock = SPINLOCK_INIT;
+static spinlock_t lock = SPINLOCK_INIT(LR_RANDOM);
 static struct fortuna gen;
 static struct jitter_est irq_est;
 static uint32_t cpu_bits, jitter_bits, irq_bits, file_bits;

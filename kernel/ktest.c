@@ -72,6 +72,7 @@
 #include "rtl8169.h"
 #include "ahci.h"
 #include "diag/crashrec.h"
+#include "sync/lockorder.h"
 
 
 /* ---- results a machine reads (roadmap 1.5d) ----
@@ -3508,6 +3509,7 @@ void ktest_run(void) {
     total++; passed += report("hooks: live counts see what comes and goes", ktest_live_counts());
     total++; passed += report("hooks: race points call and park", ktest_race_points());
     total++; passed += report("hooks: chaos yields replay from their seed", ktest_chaos());
+    total++; passed += report("hooks: the lock order is checked",  ktest_lock_order());
     total++; passed += report("every allocation of six creations fails cleanly", ktest_alloc_sweeps());
     total++; passed += report("every syscall from ring 3: refusals take nothing", ktest_syscall_census());
     total++; passed += report("every allocation of 13 syscalls fails cleanly", ktest_syscall_sweeps());
@@ -3532,6 +3534,9 @@ void ktest_run(void) {
     total++; passed += report("user copy faults are recoverable",   test_user_copy_fault_recovery());
     total++; passed += report("CR0.WP: kernel obeys read-only",     test_cr0_write_protect());
 
+#if CXK_LOCK_CHECK
+    lockorder_report();   /* which locks nested under which, as the tests ran */
+#endif
     /* single summary line: green if all passed, red if any failed. */
     kt_end(passed, total);
     if (passed == total) {

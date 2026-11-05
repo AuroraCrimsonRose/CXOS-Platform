@@ -29,7 +29,7 @@ _Static_assert(sizeof(struct endpoint) <= OCACHE_SPAN, "an endpoint must fit a s
 static struct ocache ep_cache, send_cache, call_cache;
 
 /* Every endpoint's queue, every call's state. Taken before the wait lock. */
-static spinlock_t ipc_lock = SPINLOCK_INIT;
+static spinlock_t ipc_lock = SPINLOCK_INIT(LR_IPC);
 
 int ep_in_use_count(void) { return (int)ocache_live(&ep_cache); }
 

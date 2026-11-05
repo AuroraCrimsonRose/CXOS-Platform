@@ -86,7 +86,7 @@ void vm_proc_init(int pid, uint32_t quota, int parent) {
     if (!vp(pid)) return;
     struct vm_proc *p = vp(pid);
     if (p->live) vm_proc_reset(pid);   /* an account started over */
-    p->lock    = (spinlock_t)SPINLOCK_INIT;
+    spin_init(&p->lock, LR_VMREGION);
     p->root    = 0;
     p->count   = 0;
     p->mapped  = 0;

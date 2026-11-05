@@ -63,7 +63,7 @@ struct kmem *kmem_create(uint32_t npages, struct job *job, int *rc) {
         goto no_object;
     }
     memset(m->pages, 0, (size_t)npages * sizeof(paddr_t));
-    m->lock     = (spinlock_t)SPINLOCK_INIT;
+    spin_init(&m->lock, LR_KMEM);
     m->npages   = npages;
     m->resident = 0;
     m->writers  = 0;

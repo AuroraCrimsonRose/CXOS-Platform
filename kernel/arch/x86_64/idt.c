@@ -24,6 +24,7 @@
 #include "random.h"            /* random_irq_sample */
 #include "platform/pc/speaker.h"
 #include "diag/crashlog.h"     /* the panic's record on the CRASH partition */
+#include "sync/lockorder.h"    /* lockorder_stop */
 
 struct idt_gate64 {
     uint16_t offset_low;
@@ -167,6 +168,9 @@ static void reg(const char *name, uint64_t v) {
 }
 
 static void panic_begin(void) {
+#if CXK_LOCK_CHECK
+    lockorder_stop();   /* the crash path takes locks in whatever state it finds */
+#endif
     speaker_panic_tone();
     panic_pos = 0;
     if (fb_active()) fb_clear(fb_rgb(0xAA, 0, 0));

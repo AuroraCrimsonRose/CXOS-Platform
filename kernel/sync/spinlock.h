@@ -25,9 +25,7 @@
 
 #include <stdint.h>
 #include "arch/cpu_ops.h"
-#ifndef CXK_HOST_TEST
-#include "config.h"
-#endif
+#include "sync/lockorder.h"   /* config.h too, outside the host tests */
 
 /* With the test hooks built in, how many spinlocks are held: a race point
    reached holding one would park the lock with it (diag/testhook.h).
@@ -41,17 +39,38 @@ extern volatile uint32_t spin_held;
 #define SPIN_HELD_ADD(n) ((void)0)
 #endif
 
-typedef struct { volatile uint32_t locked; } spinlock_t;
+/* Every lock has a rank, its place in the lock order (sync/lockorder.h);
+   with CXK_LOCK_CHECK, taking one out of that order panics. */
+typedef struct { volatile uint32_t locked; uint32_t rank; } spinlock_t;
 
-#define SPINLOCK_INIT { 0 }
+#define SPINLOCK_INIT(rank) { 0, (rank) }
+
+static inline void spin_init(spinlock_t *l, uint32_t rank) {
+    l->locked = 0;
+    l->rank   = rank;
+}
+
+#if !defined(CXK_HOST_TEST) && CXK_LOCK_CHECK
+/* Where the lock is taken: an address in the function the lock call is
+   inlined into, which is what the panic message should name. */
+#define SPIN_HERE() ({ __label__ here_; here_: (uintptr_t)&&here_; })
+#define SPIN_CHECK_TAKE(l)  lockorder_acquire((l), (l)->rank, SPIN_HERE())
+#define SPIN_CHECK_GIVE(l)  lockorder_release(l)
+#else
+#define SPIN_CHECK_TAKE(l)  ((void)0)
+#define SPIN_CHECK_GIVE(l)  ((void)0)
+#endif
 
 static inline uint32_t spin_irq_save(void)          { return arch_irq_save(); }
 static inline void     spin_irq_restore(uint32_t f) { arch_irq_restore(f); }
 static inline void     spin_relax(void)             { arch_cpu_relax(); }
 
-/* Take the lock with interrupts off. Returns the flags to give back. */
+/* Take the lock with interrupts off. Returns the flags to give back. The
+   order is checked before the spin, so an inversion panics on the first
+   run that nests the two, not only on the run that deadlocks. */
 static inline uint32_t spin_lock(spinlock_t *l) {
     uint32_t f = spin_irq_save();
+    SPIN_CHECK_TAKE(l);
     while (__atomic_exchange_n(&l->locked, 1u, __ATOMIC_ACQUIRE))
         while (__atomic_load_n(&l->locked, __ATOMIC_RELAXED)) spin_relax();
     SPIN_HELD_ADD(1u);
@@ -60,6 +79,7 @@ static inline uint32_t spin_lock(spinlock_t *l) {
 
 static inline void spin_unlock(spinlock_t *l, uint32_t f) {
     SPIN_HELD_ADD((uint32_t)-1);
+    SPIN_CHECK_GIVE(l);
     __atomic_store_n(&l->locked, 0u, __ATOMIC_RELEASE);
     spin_irq_restore(f);
 }

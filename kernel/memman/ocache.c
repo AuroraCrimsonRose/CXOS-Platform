@@ -17,7 +17,7 @@ struct slab_rec {
 };
 
 static struct slab_rec recs[OCACHE_SLOTS];
-static spinlock_t      slots_lock = SPINLOCK_INIT;
+static spinlock_t      slots_lock = SPINLOCK_INIT(LR_OCACHE_SLOTS);
 static uint32_t        slot_hint;
 static struct ocache  *all_caches;   /* under slots_lock; ocache_each */
 
@@ -94,7 +94,7 @@ int ocache_init(struct ocache *c, const char *name, uint32_t size) {
     c->size     = sz;
     c->pages    = best_p;
     c->per_slab = best_n;
-    c->lock     = (spinlock_t)SPINLOCK_INIT;
+    spin_init(&c->lock, LR_OCACHE);
     c->partial  = -1;
     c->full     = -1;
     c->live     = 0;

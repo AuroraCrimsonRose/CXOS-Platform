@@ -55,7 +55,7 @@ struct futex_waiter {
 
 #define FUTEX_BUCKETS 64u
 
-static spinlock_t futex_lock = SPINLOCK_INIT;
+static spinlock_t futex_lock = SPINLOCK_INIT(LR_FUTEX);
 static struct futex_waiter *buckets[FUTEX_BUCKETS];   /* each oldest first */
 static uint32_t waiting;
 

@@ -11,7 +11,7 @@
 
 static struct dma_region regions[DMA_MAX_REGIONS];
 static unsigned          nregions;
-static spinlock_t        lock = SPINLOCK_INIT;
+static spinlock_t        lock = SPINLOCK_INIT(LR_DMA);
 
 void *dma_alloc(uint32_t pages, uintptr_t vbase, uint32_t *phys, const char *name) {
     if (pages == 0) return 0;

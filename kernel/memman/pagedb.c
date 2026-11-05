@@ -32,7 +32,7 @@
 extern uint8_t __kernel_end[];                   /* the linker's, virtual */
 
 static struct buddy b;
-static spinlock_t   lock = SPINLOCK_INIT;
+static spinlock_t   lock = SPINLOCK_INIT(LR_PAGEDB);
 static int          ready;
 
 static uint64_t boot_start, boot_next, boot_end;   /* pmm_boot_alloc's range */

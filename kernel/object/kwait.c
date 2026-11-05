@@ -14,7 +14,7 @@ _Static_assert(KWAIT_NEVER == DEADLINE_NEVER, "kwait.h's never must be the ABI's
 
 _Static_assert(KWAIT_NEVER == TIMER_NEVER, "kwait.h's never must be the clock's");
 
-static spinlock_t wait_lock = SPINLOCK_INIT;
+static spinlock_t wait_lock = SPINLOCK_INIT(LR_KWAIT);
 
 uint32_t kwait_lock(void)          { return spin_lock(&wait_lock); }
 void     kwait_unlock(uint32_t f)  { spin_unlock(&wait_lock, f); }

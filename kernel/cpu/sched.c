@@ -19,6 +19,7 @@
 #include "job.h"       /* job_prio_ceiling */
 #include "ipc.h"       /* ipc_thread_exit */
 #include "object/kthread.h"   /* kthread_end: a thread's handles */
+#include "sync/lockorder.h"   /* no lock held across a switch */
 
 
 static void sched_reap(void);   /* forward decl: used by yield, defined below */
@@ -348,6 +349,10 @@ static void update_address_space(void) {
    charged what it ran, not nothing. Interrupts are charged to whoever they
    arrived on. */
 static void switch_to(int next) {
+#if CXK_LOCK_CHECK
+    /* A spinlock is the CPU's, never carried into another thread. */
+    lockorder_assert_none("thread switch holding");
+#endif
     uint64_t now = timer_now_ns();
     struct thread *prev = self();
     if (now > prev->run_since) prev->cpu_ns += now - prev->run_since;

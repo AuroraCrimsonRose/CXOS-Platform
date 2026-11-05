@@ -22,6 +22,8 @@
 #include "object/kobj.h"
 #include "object/kmem.h"
 #include "object/kpipe.h"
+#include "sync/spinlock.h"
+#include "sync/lockorder.h"
 
 static struct ocache hk_cache;
 
@@ -571,3 +573,125 @@ int ktest_alloc_sweeps(void) {
     sweep_pid = -1;
     return ok;
 }
+
+#if CXK_LOCK_CHECK
+
+/* ---- the lock order (sync/lockorder.h, 1.9a) ----
+   Locks of their own, ranked as real ones, so nothing else contends; the
+   checker is armed around each failure, so a failure is counted rather than
+   a panic. */
+static spinlock_t lk_random = SPINLOCK_INIT(LR_RANDOM);
+static spinlock_t lk_dma    = SPINLOCK_INIT(LR_DMA);
+static spinlock_t lk_dma2   = SPINLOCK_INIT(LR_DMA);
+static spinlock_t lk_none   = SPINLOCK_INIT(LR_NONE);
+static spinlock_t lk_heap   = SPINLOCK_INIT(LR_HEAP);
+static spinlock_t lk_switch = SPINLOCK_INIT(LR_PAGEDB);
+static volatile int lk_ran;
+
+static void lk_helper(void) { lk_ran = 1; }
+
+/* What the armed checker counted while `l` (rank LR_HEAP) was held and
+   `op` ran: a heap path that takes the heap lock is a same-rank nesting. */
+static uint32_t lk_under_heap(void (*op)(void *), void *arg, uint32_t *count) {
+    lockorder_test_arm();
+    uint32_t f = spin_lock(&lk_heap);
+    op(arg);
+    spin_unlock(&lk_heap, f);
+    return lockorder_test_disarm(count);
+}
+static void *lk_block;
+static void lk_op_alloc(void *a) { (void)a; lk_block = kmalloc(8192); }
+static void lk_op_free(void *a)  { (void)a; kfree(lk_block); }
+static void lk_op_live(void *a)  { *(volatile uint32_t *)a = heap_allocs_live(); }
+
+static int lock_steps(void) {
+    uint32_t n = 0, code, f, g;
+    if (lockorder_depth() != 0) return 1;
+
+    /* in order: listed while held, the pair recorded, the list empty after.
+       random never nests anything itself, so the pair is this test's. */
+    uint32_t saved = lockorder_seen[LR_RANDOM];
+    lockorder_seen[LR_RANDOM] &= ~(1u << LR_DMA);
+    f = spin_lock(&lk_random);
+    g = spin_lock(&lk_dma);
+    uint32_t mid = lockorder_depth();
+    spin_unlock(&lk_dma, g);
+    spin_unlock(&lk_random, f);
+    uint32_t pair = lockorder_seen[LR_RANDOM] & (1u << LR_DMA);
+    lockorder_seen[LR_RANDOM] = saved;
+    if (mid != 2) return 2;
+    if (!pair) return 3;
+    if (lockorder_depth() != 0) return 4;
+
+    /* the other way round: one failure, out of order, and no pair kept */
+    saved = lockorder_seen[LR_DMA];
+    lockorder_test_arm();
+    f = spin_lock(&lk_dma);
+    g = spin_lock(&lk_random);
+    spin_unlock(&lk_random, g);
+    spin_unlock(&lk_dma, f);
+    code = lockorder_test_disarm(&n);
+    if (code != LO_ORDER || n != 1) return 5;
+    if (lockorder_seen[LR_DMA] != saved) return 6;
+    if (lockorder_depth() != 0) return 7;
+
+    /* two of one rank are never held together */
+    lockorder_test_arm();
+    f = spin_lock(&lk_dma);
+    g = spin_lock(&lk_dma2);
+    spin_unlock(&lk_dma2, g);
+    spin_unlock(&lk_dma, f);
+    code = lockorder_test_disarm(&n);
+    if (code != LO_ORDER || n != 1) return 8;
+
+    /* a lock made without a rank: refused, so its release is not held */
+    lockorder_test_arm();
+    f = spin_lock(&lk_none);
+    spin_unlock(&lk_none, f);
+    code = lockorder_test_disarm(&n);
+    if (code != LO_UNRANKED || n != 2) return 9;
+
+    /* a release of a lock never taken (the checker's half of spin_unlock:
+       the whole of it would also take spin_held below zero) */
+    lockorder_test_arm();
+    lockorder_release(&lk_dma);
+    code = lockorder_test_disarm(&n);
+    if (code != LO_NOT_HELD || n != 1) return 10;
+    if (lockorder_depth() != 0) return 11;
+
+    /* a thread switch holding one: the switch counts, and (armed) empties
+       the list, so the release after is a second failure */
+    lk_ran = 0;
+    if (thread_create("lock-switch", lk_helper) < 0) return 12;
+    lockorder_test_arm();
+    f = spin_lock(&lk_switch);
+    yield();
+    spin_unlock(&lk_switch, f);
+    code = lockorder_test_disarm(&n);
+    if (code != LO_SWITCH || n != 2) return 13;
+    if (!hk_wait(&lk_ran, 2000)) return 14;
+
+    /* the heap's large path takes the heap lock: alloc, free, the count */
+    volatile uint32_t live = 0;
+    code = lk_under_heap(lk_op_alloc, 0, &n);
+    if (!lk_block) return 15;
+    if (code != LO_ORDER || n != 1) { kfree(lk_block); return 16; }
+    code = lk_under_heap(lk_op_free, 0, &n);
+    if (code != LO_ORDER || n != 1) return 17;
+    code = lk_under_heap(lk_op_live, (void *)&live, &n);
+    if (code != LO_ORDER || n != 1 || live == 0) return 18;
+    if (lockorder_depth() != 0) return 19;
+    return 0;
+}
+
+int ktest_lock_order(void) {
+    uint32_t threads0 = sched_thread_count();
+    int step = lock_steps();
+    lockorder_test_disarm(0);
+    if (!hk_settle(threads0) && !step) step = 20;
+    if (step) klog_u32("KTEST", SEV_FAIL, "lock order: step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    return step == 0;
+}
+#else
+int ktest_lock_order(void) { return 0; }   /* no checker built in: fails, never skips */
+#endif

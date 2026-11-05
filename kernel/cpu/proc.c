@@ -30,7 +30,7 @@ static struct ocache proc_cache;
 static struct idtab  pids;   /* pid -> process */
 /* The reaper frees a process with interrupts off, possibly while a preempted
    proc_create is part way through growing the table. */
-static spinlock_t    pids_lock = SPINLOCK_INIT;
+static spinlock_t    pids_lock = SPINLOCK_INIT(LR_PIDS);
 static uint32_t      handle_limit = HTAB_LIMIT_DEFAULT;   /* kernel.xkco max_handles */
 /* Processes with a stop deadline armed, linked through stop_next. Changed
    only with interrupts off, since the tick walks it. A process is unlinked

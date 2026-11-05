@@ -39,6 +39,7 @@ set(KERNEL_SOURCES
     ${KDIR}/lib/math/kmath.c
     ${KDIR}/diag/crashrec.c
     ${KDIR}/diag/hwfmt.c
+    ${KDIR}/sync/lockorder.c
 )
 
 file(GLOB TEST_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/test_*.c)

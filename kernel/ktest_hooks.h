@@ -35,4 +35,10 @@ int ktest_chaos(void);
    every live count as it was. */
 int ktest_alloc_sweeps(void);
 
+/* The lock order (1.9a): locks taken in order are listed and their pair
+   recorded; out of order, two of one rank, an unranked lock, a release not
+   held and a thread switch holding one are each caught; the heap's large
+   path (alloc, free, the count) takes the heap lock. */
+int ktest_lock_order(void);
+
 #endif

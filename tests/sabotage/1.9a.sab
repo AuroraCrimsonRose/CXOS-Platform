@@ -1,0 +1,131 @@
+# Phase 1.9a's sabotages, run by `cxk test sabotage`.
+# Each must turn red exactly the self-tests named, at the reason named.
+# Format: docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage".
+# Every one lands in the one self-test, so none share a boot.
+# The checker's pure part has host tests (test_lockorder.c), sabotaged by
+# hand. So are the sabotages that make every boot panic rather than a test
+# go red (a lock left unranked, the table put out of step with a real
+# nesting, the bookkeeping of take or give dropped): the commit lists them.
+
+# ---- the check ----
+
+[same-rank-allowed]
+# two locks of one rank may be held together
+expect = hooks: the lock order is checked @ lock order: step 8
+edit = kernel/sync/lockorder.c
+<<<
+        if (h->e[i].rank >= rank) { *who = i; return LO_ORDER; }
+===
+        if (h->e[i].rank > rank) { *who = i; return LO_ORDER; }
+>>>
+
+[order-not-checked]
+# any lock may be taken under any other
+expect = hooks: the lock order is checked @ lock order: step 5
+edit = kernel/sync/lockorder.c
+<<<
+        if (h->e[i].rank >= rank) { *who = i; return LO_ORDER; }
+===
+        if (h->e[i].rank >= rank && rank == LR_NONE) { *who = i; return LO_ORDER; }
+>>>
+
+[unranked-allowed]
+# a lock made without a rank is taken like any other
+expect = hooks: the lock order is checked @ lock order: step 9
+edit = kernel/sync/lockorder.c
+<<<
+    if (rank == LR_NONE || rank >= LR_COUNT) return LO_UNRANKED;
+===
+    if (rank >= LR_COUNT) return LO_UNRANKED;
+>>>
+
+[pair-not-recorded]
+# a nesting is allowed but not recorded
+expect = hooks: the lock order is checked @ lock order: step 3
+edit = kernel/sync/lockorder.c
+<<<
+    seen[top] |= 1u << rank;
+===
+    (void)top; (void)seen;
+>>>
+
+[release-not-held-ignored]
+# a release of a lock not held passes
+expect = hooks: the lock order is checked @ lock order: step 9
+edit = kernel/sync/lockorder.c
+<<<
+    if (lockorder_give(&held, lock) != LO_OK)
+        fail(LO_NOT_HELD, "released, not held:", LR_NONE, (uintptr_t)lock);
+===
+    (void)lockorder_give(&held, lock);
+>>>
+
+[switch-not-checked]
+# a thread switch with a lock held passes
+expect = hooks: the lock order is checked @ lock order: step 13
+edit = kernel/cpu/sched.c
+<<<
+    lockorder_assert_none("thread switch holding");
+===
+    (void)lockorder_depth();
+>>>
+
+# ---- the heap's lock ----
+
+[heap-alloc-unlocked]
+# the large path's list walk and grow take no lock
+expect = hooks: the lock order is checked @ lock order: step 16
+edit = kernel/memman/heap.c
+<<<
+    size = ALIGN8(size);
+    uint32_t f = spin_lock(&heap_lock);
+===
+    size = ALIGN8(size);
+    uint32_t f = spin_irq_save();
+>>>
+edit = kernel/memman/heap.c
+<<<
+    spin_unlock(&heap_lock, f);
+    return b ? (uint8_t *)b + BLOCK_HEADER_SIZE : 0;
+===
+    spin_irq_restore(f);
+    return b ? (uint8_t *)b + BLOCK_HEADER_SIZE : 0;
+>>>
+
+[heap-free-unlocked]
+# a large block's free and coalescing take no lock
+expect = hooks: the lock order is checked @ lock order: step 17
+edit = kernel/memman/heap.c
+<<<
+    block_t *b = (block_t *)((uint8_t *)ptr - BLOCK_HEADER_SIZE);
+    uint32_t f = spin_lock(&heap_lock);
+===
+    block_t *b = (block_t *)((uint8_t *)ptr - BLOCK_HEADER_SIZE);
+    uint32_t f = spin_irq_save();
+>>>
+edit = kernel/memman/heap.c
+<<<
+            cur = cur->next;
+        }
+    }
+    spin_unlock(&heap_lock, f);
+===
+            cur = cur->next;
+        }
+    }
+    spin_irq_restore(f);
+>>>
+
+[heap-count-unlocked]
+# the live count walks the list unlocked
+expect = hooks: the lock order is checked @ lock order: step 18
+edit = kernel/memman/heap.c
+<<<
+    uint32_t f = spin_lock(&heap_lock);
+    for (block_t *b = head; b; b = b->next) if (!b->free) n++;
+    spin_unlock(&heap_lock, f);
+===
+    uint32_t f = spin_irq_save();
+    for (block_t *b = head; b; b = b->next) if (!b->free) n++;
+    spin_irq_restore(f);
+>>>

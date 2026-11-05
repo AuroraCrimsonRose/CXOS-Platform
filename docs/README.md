@@ -31,6 +31,7 @@ Start with the roadmap.
 | [CX_KERNEL_PLAN.md](kernel/CX_KERNEL_PLAN.md) | The kernel base, objects and handles, processes and threads, waiting, IPC, scheduling |
 | [CX_SYSCALLS_IPC.md](kernel/CX_SYSCALLS_IPC.md) | Syscalls, calling convention, ABI rules, errors, the system page, `.xfil`, IPC messages |
 | [CX_DRIVERS.md](kernel/CX_DRIVERS.md) | The device tree, matching, user-space drivers, device classes |
+| [CX_LOCK_ORDER.md](kernel/CX_LOCK_ORDER.md) | Every spinlock's rank, the order read off a boot, the checker |
 
 ## Boot: `boot/`
 

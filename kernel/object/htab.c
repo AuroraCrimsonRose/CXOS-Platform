@@ -101,7 +101,7 @@ static int grow(struct htab *t) {
 }
 
 void htab_init(struct htab *t, uint32_t max) {
-    t->lock.locked = 0;
+    spin_init(&t->lock, LR_HTAB);
     t->e   = 0;
     t->cap = 0;
     t->max = max > HTAB_MAX_SLOTS ? HTAB_MAX_SLOTS : max;

@@ -168,6 +168,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/diag/hwfmt.c
     ${SRC_DIR}/kernel/diag/crashlog.c
     ${SRC_DIR}/kernel/diag/testhook.c
+    ${SRC_DIR}/kernel/sync/lockorder.c
     ${SRC_DIR}/kernel/ktest.c
     ${SRC_DIR}/kernel/kconfig.c
     ${SRC_DIR}/kernel/arch/x86_64/cpu.c

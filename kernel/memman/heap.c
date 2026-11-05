@@ -9,6 +9,7 @@
 #include "pmm.h"
 #include "memman/ocache.h"   /* OCACHE_WINDOW_BASE: where the heap must stop */
 #include "diag/testhook.h"
+#include "sync/spinlock.h"
 
 /* Each block (free or allocated) is preceded by this header. The heap is a
    singly-linked list walked in address order via `next`. */
@@ -27,6 +28,11 @@ typedef struct block {
    mapping fresh PMM frames into it via the (recursive) paging layer. Block
    pointers are VIRTUAL addresses in this window. */
 #define HEAP_VIRT_BASE  KVA_HEAP       /* arch/<arch>/paging_defs.h */
+
+/* The list, its counts and the window's next address. Taken by the large
+   path only (the size classes have their caches' locks); held across the
+   frames' allocation and mapping, which take pagedb's, ranked after it. */
+static spinlock_t heap_lock = SPINLOCK_INIT(LR_HEAP);
 
 static block_t *head = 0;
 static uint32_t total_bytes = 0;
@@ -129,26 +135,20 @@ void *kmalloc(size_t size) {
     int k = class_of(size);
     if (k >= 0) return ocache_alloc(&classes[k]);   /* zeroed */
     size = ALIGN8(size);
+    uint32_t f = spin_lock(&heap_lock);
 
-    /* first-fit: walk the list for a free block big enough */
+    /* first-fit: walk the list for a free block big enough; if nothing
+       fits, grow the heap and use the new block */
     block_t *b = head;
-    while (b) {
-        if (b->free && b->size >= size) {
-            split_block(b, size);
-            b->free = 0;
-            used_bytes += b->size;
-            return (uint8_t *)b + BLOCK_HEADER_SIZE;
-        }
-        b = b->next;
+    while (b && !(b->free && b->size >= size)) b = b->next;
+    if (!b) b = heap_grow(size);
+    if (b) {
+        split_block(b, size);
+        b->free = 0;
+        used_bytes += b->size;
     }
-
-    /* nothing fit - grow the heap and use the new block */
-    b = heap_grow(size);
-    if (!b) return 0;
-    split_block(b, size);
-    b->free = 0;
-    used_bytes += b->size;
-    return (uint8_t *)b + BLOCK_HEADER_SIZE;
+    spin_unlock(&heap_lock, f);
+    return b ? (uint8_t *)b + BLOCK_HEADER_SIZE : 0;
 }
 
 /* merge `b` with its immediate next neighbor if both are free and adjacent */
@@ -173,17 +173,20 @@ void kfree(void *ptr) {
     }
 
     block_t *b = (block_t *)((uint8_t *)ptr - BLOCK_HEADER_SIZE);
-    if (b->free) return;          /* double-free guard */
-    b->free = 1;
-    used_bytes -= b->size;
+    uint32_t f = spin_lock(&heap_lock);
+    if (!b->free) {               /* double-free guard */
+        b->free = 1;
+        used_bytes -= b->size;
 
-    /* coalesce forward, and also try from head to merge a preceding block */
-    coalesce(b);
-    block_t *cur = head;
-    while (cur && cur->next) {
-        if (cur->free) coalesce(cur);
-        cur = cur->next;
+        /* coalesce forward, and also try from head to merge a preceding block */
+        coalesce(b);
+        block_t *cur = head;
+        while (cur && cur->next) {
+            if (cur->free) coalesce(cur);
+            cur = cur->next;
+        }
     }
+    spin_unlock(&heap_lock, f);
 }
 
 uint32_t heap_bytes_used(void) { return used_bytes; }
@@ -192,6 +195,8 @@ uint32_t heap_bytes_free(void) { return total_bytes - used_bytes; }
 uint32_t heap_allocs_live(void) {
     uint32_t n = 0;
     for (int i = 0; i < KM_CLASSES; i++) n += ocache_live(&classes[i]);
+    uint32_t f = spin_lock(&heap_lock);
     for (block_t *b = head; b; b = b->next) if (!b->free) n++;
+    spin_unlock(&heap_lock, f);
     return n;
 }

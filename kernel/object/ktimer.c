@@ -15,7 +15,7 @@ _Static_assert(KOBJ_TIMER == OBJ_TYPE_TIMER, "object_basic.kind is the kernel ty
 _Static_assert(TIMER_NEVER == DEADLINE_NEVER, "the clock's never is the ABI's");
 
 static struct ocache  timer_cache;
-static spinlock_t     armed_lock = SPINLOCK_INIT;
+static spinlock_t     armed_lock = SPINLOCK_INIT(LR_KTIMER);
 static struct ktimer *armed;   /* earliest deadline first */
 
 /* armed_lock held. */

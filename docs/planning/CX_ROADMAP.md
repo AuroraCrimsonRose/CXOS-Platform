@@ -908,7 +908,48 @@ Independent of the order above, and small enough to land whenever convenient:
    by adding `DIRECT_MAP_BASE` by hand, so a 32-bit port can swap in
    temporary mappings. Then SMP on 8 cores, then the race tests of 6 as
    the SMP stress suite (`-smp 8` under QEMU's multi-threaded TCG, Hyper-V
-   for real parallelism).
+   for real parallelism). Spinlocks already save the interrupt state
+   (`sync/spinlock.h`, since step 0) and `ocache` is already a slab
+   allocator, so those two become a check that they are used everywhere
+   rather than new code. Split as 1.7 and 1.8 were:
+   **1.9a** the lock order: every spinlock given a rank from one table,
+   a checker in test-hook builds that panics on a lock taken out of order
+   (Serenity `Kernel/Locking/LockRank.h`, WRK's numbered queued locks in
+   `ntkeapi.h`), the order read off a boot rather than guessed, and the
+   heap's large-block path, which takes no lock today, given one;
+   **1.9b** per-CPU data (GS base, `swapgs` on entry, the current thread,
+   the syscall stack, `spin_held` and the checker's held list per CPU) and
+   the scheduler's interrupts-off sections turned into a sched lock placed
+   in the order; **1.9c** physical memory only through the direct map's
+   helpers, and every allocation path on `ocache` or the locked heap;
+   **1.9d** the APs started by the MADT's APIC IDs (never CPUID's), each
+   with its GDT, TSS, IDT, `pat_init` and LAPIC timer, parked idle;
+   **1.9e** the scheduler on every CPU: run queues, IPIs, TLB shootdown;
+   **1.9f** the race tests of 6 as the SMP stress suite (`-smp 8` under
+   multi-threaded TCG, Hyper-V), then the rig.
+   - **1.9a (2026-11-05), done:** every spinlock carries a rank
+     (`kernel/sync/lockorder.h`, 14 classes), given where it is made
+     (`SPINLOCK_INIT(LR_x)`, `spin_init`); with `CXK_LOCK_CHECK` (on with
+     the test hooks) `spin_lock` checks before it spins that every lock
+     held ranks lower, and a lock taken out of order, two of one rank, an
+     unranked lock, more than 8 held, a release not held or a thread
+     switch holding one panics naming each lock and where it was taken.
+     The order was read off a boot (a build that recorded every held/taken
+     pair with no check), not guessed: two guesses were wrong (`pids` under
+     `vmregion`, the cache registry under a cache). Each boot prints the
+     pairs it saw (`[LOCKS]`). The heap's large path (over 2 KiB: the
+     first-fit list and `heap_grow`) took no lock at all; it has
+     `heap_lock` now. Design: `docs/kernel/CX_LOCK_ORDER.md` (Serenity
+     `LockRank.h`, WRK `KSPIN_LOCK_QUEUE_NUMBER`, XNU `add_held_rwlock`).
+     Not yet in the order: the scheduler's interrupts-off sections (1.9b).
+     Tests: 6 host tests, each seen red under hand sabotage (8, in the
+     commit); a boot test (in order, each failure caught with the checker
+     armed, and the heap's alloc, free and count each shown taking the
+     heap lock); every test-hook boot is the wide test, and passed with
+     the executive and the shell. Hand sabotages of the table out of step
+     with a real nesting and of an unranked lock each panic the boot with
+     the checker's message. Untested: paths no boot reaches. Self-tests
+     202. Sabotages: `tests/sabotage/1.9a.sab`, 9 of 9. No ABI change.
 10. A documentation pass: the README and `safety/CX_SAFETY.md` §1 brought
     up to the branch as it stands.
 
