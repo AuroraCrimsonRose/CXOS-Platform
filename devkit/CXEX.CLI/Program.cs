@@ -126,6 +126,19 @@ app.Configure(config =>
             .WithDescription("Lists this machine's disks, to find the stick's number (disk5). Needs no elevation.");
         rig.AddCommand<RigDumpCommand>("dump")
             .WithDescription("Copies a disk's CXOS part into an image file, read-only, for the image tools.");
+        rig.AddCommand<RigHwreportCommand>("hwreport")
+            .WithDescription("Prints (or -o saves) the hardware report the last boot left in a disk's CRASH partition. Needs an elevated prompt for a disk.");
+    });
+
+    // ---- the hardware report (roadmap 1.8b) ----
+    config.AddBranch("hw", hw =>
+    {
+        hw.SetDescription("Reads and compares the kernel's hardware reports (docs/hardware/CX_HW_REPORT.md).");
+
+        hw.AddCommand<HwShowCommand>("show")
+            .WithDescription("Prints a report from a serial log, a saved report or a disk, each field by name, and what it says is wrong.");
+        hw.AddCommand<HwDiffCommand>("diff")
+            .WithDescription("Compares two reports fact by fact: expected differences (firmware-chosen addresses, hypervisor leaves, rates within 1%) apart from findings. Exit 1 on a finding.");
     });
 
     // ---- bitmap fonts ----

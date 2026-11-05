@@ -816,6 +816,20 @@ Independent of the order above, and small enough to land whenever convenient:
      serial). Untested: a bad table, a cut report and an x2APIC MADT on a
      machine (host only); a 32-bit PM timer; UEFI; the rig. Self-tests
      197. Sabotages: `tests/sabotage/1.8a.sab`, 10 of 10. No ABI change.
+   - **1.8b (2026-11-04), done:** `cxk rig hwreport <disk>` reads XCRL
+     kind 6 off an image or the stick (`CrashLog.ReadHwReport`); `cxk hw
+     show <source>` names every field and notes what a report says is
+     wrong with its own machine (bad checksums, cut, dropped, the two TSC
+     rates over 1% apart); `cxk hw diff a b` compares fact by fact (a PCI
+     function by address, a table by signature, a MADT CPU by UID) and
+     judges each difference expected (firmware-chosen addresses, BARs with
+     the same type bits, interrupt lines, the hypervisor's leaves, rates
+     within 1%) or a finding; exit 1 on a finding. Design:
+     `docs/hardware/CX_HW_REPORT.md` §5. Tests: 10 DevKit tests (`cxk` end
+     to end among them); a booted copy's record matched its serial copy.
+     Sabotages: 18 of 18, by hand (DevKit-only; the table in the commit).
+     Untested: the stick itself, any report but QEMU's. Seen: TCG without
+     `-icount` puts the two TSC rates 30% apart. No kernel or ABI change.
 9. SMP readiness: a lock order table and a checker in debug builds,
    per-CPU data, spinlocks that save interrupt state, the slab allocator.
    Physical memory is reached only through the direct map's helpers, never

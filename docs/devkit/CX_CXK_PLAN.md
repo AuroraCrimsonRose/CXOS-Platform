@@ -184,7 +184,9 @@ real machine as QEMU gets.
   administrator prompt. Whole disks are opened read-only and read in whole
   sectors (`CXEX.Disk/RawDisk.cs`). `cxk rig bootlog <disk>` reads the system log a boot
   saves in the same CRASH partition (sector 64 on, kind 4, rewritten while the
-  machine idles), for a machine with no serial port or framebuffer. `cxk rig dump <disk> <out.img>` copies a
+  machine idles), for a machine with no serial port or framebuffer. `cxk rig hwreport <disk>` (1.8b) reads the
+  hardware report the last boot saved there (sector 384, kind 6), which
+  `cxk hw show` and `cxk hw diff` read too (`hardware/CX_HW_REPORT.md` §5). `cxk rig dump <disk> <out.img>` copies a
   disk's CXOS part, as far as its XBPT table reaches, into an image file for
   the other tools. `cxk verify-crashlog <image>`
   boots a copy twice, the first asked to panic (through a request record it

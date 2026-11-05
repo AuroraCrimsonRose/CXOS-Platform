@@ -2,9 +2,9 @@
 ### CX Design Spec: Aurora Tejeda / CATX Systems
 
 > **Status: 1.8a done (2026-11-04): the kernel builds the report, prints it
-> to serial and saves it to the crash area. 1.8b (`cxk` reads, shows and
-> diffs reports) and 1.8c (Hyper-V's clock read through it) are next**
-> (`planning/CX_ROADMAP.md`, Phase 1 step 8).
+> to serial and saves it to the crash area. 1.8b done (2026-11-04): `cxk hw
+> show`, `hw diff` and `rig hwreport` (§5). 1.8c (Hyper-V's clock read
+> through it) is next** (`planning/CX_ROADMAP.md`, Phase 1 step 8).
 
 Before SMP trusts the MADT (step 9), and before the rig is trusted at all,
 CXK has to say what each machine it boots on told it, in a form two machines
@@ -106,11 +106,66 @@ and an x2APIC MADT are seen on the host only, since QEMU gives none of them;
 a 32-bit PM timer and a machine with no RSDP are not seen at all. The UEFI
 path and the rig have never made a report.
 
-## 5. Next
+## 5. Reading reports: `cxk hw`
 
-- **1.8b:** `cxk hw show <log|image>` and `cxk hw diff a b`, which knows the
-  differences that are expected (addresses the firmware chooses, the
-  hypervisor leaves) from the ones that are findings; `cxk rig hwreport`
-  reads the record off the stick.
+Built in 1.8b (`devkit/CXEX.Tools/HwDiff.cs`, pure;
+`devkit/CXEX.CLI/Commands/HwCommands.cs`; the record reader
+`CrashLog.ReadHwReport` in `devkit/CXEX.Disk/CrashLog.cs`).
+
+- A source is a serial log or a saved report (its `@hw` lines, as
+  `HwReport.TextFromSerial` finds them), or a disk whose CRASH partition
+  holds one: an image file, or the stick (`disk5`, read-only, elevated). A
+  file with an XBPT table and a CRASH partition is read as a disk; anything
+  else as text. A report that fails `HwReport.Check` is refused.
+- **`cxk rig hwreport <disk> [-o file]`** reads kind 6 at sector 384, checks
+  the record's CRC and then the report's own end line, and prints it or
+  writes the bare text, which `hw show` and `hw diff` read. Exit 0, 1 on a
+  damaged record or report, 2 when none is saved.
+- **`cxk hw show <source> [-s section] [--raw]`** prints each line as a
+  *fact*: a key naming what it is about, then its fields by name
+  (`pci 00:03.0  vendor=8086  device=100e ...`), then **notes**, what one
+  report says is wrong with its own machine: a cut report, an RSDP or table
+  checksum that is not `ok`, a table `short`, `unchecked` or `unmapped`, a
+  MADT entry skipped, memory-map entries dropped, a full PCI table, and the
+  TSC measured by the tick and by the PM timer more than 1% apart (1.8c's
+  Hyper-V case).
+- **`cxk hw diff <a> <b> [--all] [--rate-tolerance %]`** compares facts by
+  key, not lines by position: a PCI function by its address, a table by
+  `via` and signature (a second SSDT is `#2`), a MADT CPU by its UID, an
+  override by bus and source, a CPUID leaf by leaf and subleaf. Each
+  difference is **expected** or a **finding**. Expected: addresses the
+  firmware chooses (the RSDP, the RSDT and XSDT pointers, every table,
+  SMBIOS, the local and I/O APIC), a BAR that moved with its type bits
+  unchanged (a 64-bit BAR's high dword is all address), a PCI interrupt
+  line, the hypervisor's own section and leaves `0x4000xxxx` (present or
+  not), and a measured rate within the tolerance (1%). Everything else is a
+  finding, a field this tool has no name for included; a CPUID finding says
+  which bits. Exit 0 when nothing is a finding, 1 on one, 2 when a report
+  could not be read. `--all` lists the expected ones too.
+
+The judgement is this tool's, from what each field is; no reference tree
+was queried for it, since none compares two machines' reports.
+
+**Tests:** `HwDiffTests` (10, DevKit): naming and numbering; a report
+against itself; each expected kind; BAR type bits and the high half; each
+kind of finding and the tolerance; a VM against bare metal; every note; the
+record read from its own sectors, torn and misplaced ones refused, its
+places checked against `crashrec.h`; and `cxk` end to end (a report off an
+image file, a serial log with CR LF and noise, exit codes, `-s`, `--raw`, a
+whole record holding a damaged report). Sabotages: 18 of 18 caught, by hand
+(the `.sab` runner judges boots only); the table is in the commit. Also run
+by hand: a copy of the image booted, its record read with `rig hwreport`,
+no difference from the same boot's serial copy, and `--raw` byte for byte.
+**Untested:** reading the stick itself (`disk5`), and any report but
+QEMU's.
+
+Seen on the way: QEMU TCG booted **without** `-icount` measures the TSC at
+5.42 GHz by the tick and 3.80 GHz by the PM timer, 30% apart, and the APIC
+timer 89 MHz against 62 MHz under `-icount`. TCG's clocks follow the host
+there, so it says nothing about the kernel yet; 1.8c reads Hyper-V's the
+same way.
+
+## 6. Next
+
 - **1.8c:** Hyper-V's TSC calibrates to 59742 MHz (HANDOFF): the report's
   two TSC rates say which clock is wrong there.

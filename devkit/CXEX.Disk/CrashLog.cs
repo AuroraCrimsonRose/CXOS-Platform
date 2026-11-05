@@ -52,6 +52,12 @@ public static class CrashLog
     public const ushort KindSeed = 5;
     public const int SeedLba = 48;
     public const int SeedLen = 64;
+    /// <summary>The hardware report a boot writes (XCRL_KIND_HWREPORT, XCRL_HWREPORT_LBA,
+    /// XCRL_HWREPORT_MAX; docs/hardware/CX_HW_REPORT.md): the report's text, as on serial
+    /// without the CRs.</summary>
+    public const ushort KindHwReport = 6;
+    public const int HwReportLba = 384;
+    public const int HwReportMax = 128 * 512;
     public const int Sector = 512;
     public const int TextMax = 32 * Sector;
     public const int Sectors = 1 + TextMax / Sector;
@@ -76,7 +82,7 @@ public static class CrashLog
     /// <summary>The 512-byte header for <paramref name="text"/>.</summary>
     public static byte[] Seal(ushort kind, ReadOnlySpan<byte> text)
     {
-        int max = kind == KindBootLog ? BootLogMax : TextMax;
+        int max = kind switch { KindBootLog => BootLogMax, KindHwReport => HwReportMax, _ => TextMax };
         if (text.Length > max) throw new ArgumentException($"a record of kind {kind} holds at most {max} bytes");
         var h = new byte[Sector];
         BitConverter.TryWriteBytes(h.AsSpan(0), Magic);
@@ -141,33 +147,49 @@ public static class CrashLog
     /// to this one. Record and FaultRecord are never the answer; Record means a
     /// whole boot log.
     /// </summary>
-    public static CrashAreaReading ReadBootLog(Stream disk)
+    public static CrashAreaReading ReadBootLog(Stream disk) =>
+        ReadTextAt(disk, BootLogLba, KindBootLog, BootLogMax, "system log",
+                   "no system log saved: the disk has not finished a boot with this kernel");
+
+    /// <summary>
+    /// The hardware report the last boot saved at <see cref="HwReportLba"/>
+    /// (XCRL_KIND_HWREPORT): how the rig's report, which may never reach a
+    /// serial port, gets to this machine. Record means a whole XCRL record; the
+    /// text inside it is checked by <c>HwReport.Check</c>, not here.
+    /// </summary>
+    public static CrashAreaReading ReadHwReport(Stream disk) =>
+        ReadTextAt(disk, HwReportLba, KindHwReport, HwReportMax, "hardware report",
+                   "no hardware report saved: the disk has not booted a kernel that writes one (1.8a on)");
+
+    /// <summary>A record of one kind at <paramref name="lba"/> in the crash
+    /// partition, past the crash record: the header, then its text.</summary>
+    private static CrashAreaReading ReadTextAt(Stream disk, int lba, ushort want, int max, string what, string empty)
     {
         var area = FindArea(disk);
         if (area is null) return new(CrashAreaState.NoArea, "no XBPT table with a CRASH partition");
-        if (area.Value.Sectors <= BootLogLba + 1) return new(CrashAreaState.Invalid, $"the CRASH partition is {area.Value.Sectors} sectors, too short for a system log");
+        if (area.Value.Sectors <= lba + 1) return new(CrashAreaState.Invalid, $"the CRASH partition is {area.Value.Sectors} sectors, too short for a {what}");
 
         var h = new byte[Sector];
-        disk.Seek((area.Value.Lba + BootLogLba) * Sector, SeekOrigin.Begin);
+        disk.Seek((area.Value.Lba + lba) * Sector, SeekOrigin.Begin);
         disk.ReadExactly(h);
 
-        if (BitConverter.ToUInt32(h, 0) != Magic) return new(CrashAreaState.Empty, "no system log saved: the disk has not finished a boot with this kernel");
+        if (BitConverter.ToUInt32(h, 0) != Magic) return new(CrashAreaState.Empty, empty);
         ushort ver = BitConverter.ToUInt16(h, 4), kind = BitConverter.ToUInt16(h, 6);
         uint len = BitConverter.ToUInt32(h, 8);
         if (ver != XcrlVersion) return new(CrashAreaState.Invalid, $"record version {ver}; this cxk reads {XcrlVersion}");
-        if (kind != KindBootLog) return new(CrashAreaState.Invalid, $"record of kind {kind} where the system log goes");
-        long room = (area.Value.Sectors - BootLogLba - 1) * Sector;
-        if (len > BootLogMax || len > room) return new(CrashAreaState.Invalid, $"record length {len} out of range");
+        if (kind != want) return new(CrashAreaState.Invalid, $"record of kind {kind} where the {what} goes");
+        long room = (area.Value.Sectors - lba - 1) * Sector;
+        if (len > max || len > room) return new(CrashAreaState.Invalid, $"record length {len} out of range");
 
         var text = new byte[len];
         if (len > 0)
         {
-            disk.Seek((area.Value.Lba + BootLogLba + 1) * Sector, SeekOrigin.Begin);
+            disk.Seek((area.Value.Lba + lba + 1) * Sector, SeekOrigin.Begin);
             disk.ReadExactly(text);
         }
         uint crc = Crc32(Crc32(0, h.AsSpan(0, 12)), text);
-        if (crc != BitConverter.ToUInt32(h, 12)) return new(CrashAreaState.Invalid, "system log torn: the CRC does not match (the machine was switched off mid-save?)");
-        return new(CrashAreaState.Record, $"system log, {len} bytes", Encoding.ASCII.GetString(text));
+        if (crc != BitConverter.ToUInt32(h, 12)) return new(CrashAreaState.Invalid, $"{what} torn: the CRC does not match (the machine was switched off mid-save?)");
+        return new(CrashAreaState.Record, $"{what}, {len} bytes", Encoding.ASCII.GetString(text));
     }
 
     /// <summary>The seed a boot left for the next one, or null when there is no whole,
