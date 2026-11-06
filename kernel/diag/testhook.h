@@ -85,6 +85,31 @@ uint32_t fault_disarm(void);
 /* Did the armed call fail (since the last fault_arm)? */
 int      fault_fired(void);
 
+/* ---- a user page gone between the check and the copy (1.9e4) ----
+   While armed, a copy of the arming thread's that touches the armed page
+   fails as the hardware's recovery makes it fail when the page is unmapped
+   after the range check passed. The page stays mapped, so a syscall that
+   reads or writes it where it lies, instead of through the copy, succeeds:
+   the test sees that as a wrong answer rather than the boot as a panic. */
+
+#if CXK_TEST_HOOKS && !defined(CXK_HOST_TEST)
+extern volatile int ucopy_gone_armed;
+int ucopy_gone_slow(uint64_t uaddr, uint64_t len);
+/* In a copy, after the range check: 1 if it is to fail. */
+static inline int ucopy_gone(uint64_t uaddr, uint64_t len) {
+    return ucopy_gone_armed ? ucopy_gone_slow(uaddr, len) : 0;
+}
+#else
+static inline int ucopy_gone(uint64_t uaddr, uint64_t len) { (void)uaddr; (void)len; return 0; }
+#endif
+
+/* Copies touching the page at `page` fail. -1 if the hooks are not built in. */
+int      ucopy_gone_arm(uint64_t page);
+/* Stop. Returns the copies failed. */
+uint32_t ucopy_gone_disarm(void);
+/* The copies failed since the arming. */
+uint32_t ucopy_gone_hits(void);
+
 /* ---- live counts ---- */
 
 #define LIVE_CACHES 32

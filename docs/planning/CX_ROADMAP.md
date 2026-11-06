@@ -1138,11 +1138,37 @@ Independent of the order above, and small enough to land whenever convenient:
      right, and its clock moves with its offset. Self-tests 230
      (4 CPUs, 1 CPU, `--cpu max`). Sabotages: `tests/sabotage/1.9e3.sab`,
      7 of 7. No ABI change.
-   - **1.9e4**: every user read and write through a recoverable copy
-     (`user_copy_in`/`out`, which `user_copy_bytes`'s fault recovery
-     covers), the 148 direct reads after a check gone; then a process's
-     threads made for any CPU (`THREAD_ON_BOOT_CPU` gone), and the 11
-     tests that assumed one CPU made to hold on four.
+   - **1.9e4 split** (2026-11-06): of the 148 direct reads, about 30 were
+     syscalls' and the rest the tests' own setup; but with the copies in,
+     the threads still could not leave the boot CPU, because much of the
+     kernel is still kept to one CPU by turning interrupts off: the
+     process table's counts and stop list (`proc.c`), the jobs (`job.c`),
+     the keyboard's buffer and its one waiter, the framebuffer against the
+     console, a background process's output, and the network stack, which
+     yields while it polls. **1.9e4a** is the copies and a build rule that
+     keeps them; **1.9e4b** locks those, then lets the threads move, with
+     the 11 tests as its list.
+   - **1.9e4a (2026-11-06), done:** no syscall reads or writes user memory
+     where it lies. Every one copies through `user_copy_in`/`out`, a
+     string through `user_copy_str` (a page at a time, so a string ending
+     before an unmapped page is whole) and the futex's word through
+     `user_fetch_u32`; file and network data cross through a kernel bounce
+     buffer, and an argument struct is read once and used from the copy
+     (vm_map, spawn's arguments and blob, exec's). `user_ptr` is private to
+     `usercopy.c`; the tests reach their own user pages through
+     `diag/ktest_umem.h`, which `check_arch_boundary.cmake` allows only in
+     the tests (a planted call in `futex.c` stops the build). Test
+     (`usermode_copies_test`): each converted call is handed a mapped page
+     that `ucopy_gone` (`testhook.h`) makes every copy fail on, as the
+     hardware's recovery does once the page is unmapped after the check,
+     and must refuse it, through the copy, leaving the page as it was.
+     Self-tests 231 (4 CPUs, 1 CPU, `--cpu max`). Sabotages:
+     `tests/sabotage/1.9e4a.sab`, 13 of 13 (and two by hand, each a panic
+     in an earlier test). No ABI change.
+   - **1.9e4b**: the locks above (input, proc, job, framebuffer, a
+     process's output, the network stack); then a process's threads made
+     for any CPU (`THREAD_ON_BOOT_CPU` gone), and the 11 tests that
+     assumed one CPU made to hold on four.
 10. A documentation pass: the README and `safety/CX_SAFETY.md` §1 brought
     up to the branch as it stands.
 

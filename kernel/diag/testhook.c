@@ -61,6 +61,37 @@ uint32_t fault_disarm(void) {
 
 int fault_fired(void) { return fault_did; }
 
+/* ---- a user page gone between the check and the copy ----
+   The same discipline as the fault: armed and disarmed by one thread. */
+volatile int             ucopy_gone_armed;
+static volatile int      ucopy_gone_tid;
+static volatile uint64_t ucopy_gone_page;
+static volatile uint32_t ucopy_gone_count;
+
+int ucopy_gone_slow(uint64_t uaddr, uint64_t len) {
+    if (thread_current_id() != ucopy_gone_tid || len == 0) return 0;
+    uint64_t first = uaddr & ~0xFFFull, last = (uaddr + len - 1) & ~0xFFFull;
+    if (ucopy_gone_page < first || ucopy_gone_page > last) return 0;
+    ucopy_gone_count++;
+    return 1;
+}
+
+int ucopy_gone_arm(uint64_t page) {
+    ucopy_gone_armed = 0;
+    ucopy_gone_tid   = thread_current_id();
+    ucopy_gone_page  = page & ~0xFFFull;
+    ucopy_gone_count = 0;
+    ucopy_gone_armed = 1;
+    return 0;
+}
+
+uint32_t ucopy_gone_disarm(void) {
+    ucopy_gone_armed = 0;
+    return ucopy_gone_count;
+}
+
+uint32_t ucopy_gone_hits(void) { return ucopy_gone_count; }
+
 /* ---- race points ---- */
 
 struct race {
@@ -186,6 +217,9 @@ uint32_t race_arrivals(enum race_point p) {
 int      fault_arm(uint32_t sites, uint32_t nth) { (void)sites; (void)nth; return -1; }
 uint32_t fault_disarm(void) { return 0; }
 int      fault_fired(void)  { return 0; }
+int      ucopy_gone_arm(uint64_t page) { (void)page; return -1; }
+uint32_t ucopy_gone_disarm(void) { return 0; }
+uint32_t ucopy_gone_hits(void)   { return 0; }
 int  race_arm(enum race_point p, int tid, uint32_t nth, enum race_action act,
               void (*fn)(void *ctx), void *ctx) {
     (void)p; (void)tid; (void)nth; (void)act; (void)fn; (void)ctx; return -1;

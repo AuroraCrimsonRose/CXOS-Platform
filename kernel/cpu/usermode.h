@@ -49,11 +49,14 @@ uint32_t syscall_dispatch_count(void);
 int  user_ptr_readable(uint64_t ptr, uint64_t len);
 int  user_ptr_writable(uint64_t ptr, uint64_t len);
 
-/* A user address (the ABI carries them as uint64_t, never as C pointers) as a
-   pointer the kernel may dereference: only after user_ptr_readable or
-   user_ptr_writable said yes for the whole span. Prefer the copies below. */
-static inline void *user_ptr(uint64_t uaddr) { return (void *)(uintptr_t)uaddr; }
-/* The reverse, for the self-tests that build a call in a user-half buffer. */
+/* No syscall dereferences a user address (1.9e4). A check is a snapshot: a
+   sibling thread on another CPU can unmap the range between it and the read,
+   and only a copy below recovers from that fault. The checks above are early
+   refusals; the copies are the authority. The self-tests that set up a test
+   thread's own pages from ring 0 use diag/ktest_umem.h, which the build
+   refuses outside them (tools/cmake/check_arch_boundary.cmake). */
+/* A kernel pointer as a user address, for the self-tests that build a call
+   in a user-half buffer. */
 static inline uint64_t user_addr(const void *p) { return (uint64_t)(uintptr_t)p; }
 
 /* Copy across the ring boundary (security review §6).
@@ -71,6 +74,16 @@ static inline uint64_t user_addr(const void *p) { return (uint64_t)(uintptr_t)p;
  */
 int  user_copy_out(uint64_t udst, const void *ksrc, uint32_t len);
 int  user_copy_in(void *kdst, uint64_t usrc, uint32_t len);
+
+/* A NUL-terminated string in from `usrc`, at most `cap` bytes with its NUL,
+   a page at a time (a string that ends before an unmapped page never touches
+   it). Returns its length, E_BAD_ADDRESS, or E_OUT_OF_RANGE for no NUL
+   inside `cap`. */
+int  user_copy_str(char *kdst, uint64_t usrc, uint32_t cap);
+
+/* One aligned word, recoverably, with no page-table walk in front: for the
+   futex, which reads it under its own lock. 0, or E_BAD_ADDRESS. */
+int  user_fetch_u32(uint64_t uaddr, uint32_t *v);
 
 /* The primitive behind both, in usermode.asm: 0 = copied, 1 = faulted and
    recovered. It does NOT validate - it is exported for the self-test, which
@@ -108,6 +121,7 @@ int  usermode_flock_test(void);
 /* SYS_VM_MAP, SYS_VM_UNMAP and SYS_VM_INFO through the dispatcher, over a
    real user mapping (see usermode.c). 1 = pass, 0 = fail. */
 int  usermode_vm_test(void);
+int  usermode_copies_test(void);   /* every user read and write through the copy (1.9e4) */
 
 /* SYS_INPUT_READ, SYS_INPUT_POLL and SYS_POWER_SLEEP through the dispatcher
    (see usermode.c). 1 = pass, 0 = fail. */

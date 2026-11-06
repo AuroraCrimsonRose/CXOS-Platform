@@ -7,7 +7,8 @@
 #include "sysfile.h"
 #include "sched.h"
 #include "object/htab.h"
-#include "usermode.h"       /* user_ptr_readable / user_ptr_writable */
+#include "usermode.h"       /* user_ptr_writable, user_copy_in/out/str */
+#include "heap.h"           /* the bounce buffer */
 #include "cxfs.h"
 #include "disk.h"           /* the storage lock */
 #include "sync/spinlock.h"
@@ -382,22 +383,18 @@ static int abi_err(int cxfs_rc) {
 
 /* ---- copying from ring 3 --------------------------------------------------- */
 
-/* Copy a NUL-terminated path in from user memory, bounded by `cap`.
-   Validates one page at a time rather than one byte at a time: user_ptr_readable
-   walks page tables, so per-byte would be a page-table walk per character.
-   Returns the length, or a negative E_* code. */
+/* Copy a NUL-terminated path in from user memory, bounded by `cap`, a page at
+   a time (user_copy_str). Returns the length, or a negative E_* code:
+   E_OUT_OF_RANGE for no terminator inside cap bytes. */
 static int copy_path_in(uint64_t addr, char *dst, uint32_t cap) {
-    if (!addr) return E_BAD_ADDRESS;
-    for (uint32_t i = 0; i < cap; i++) {
-        if (i == 0 || (((addr + i) & 0xFFFu) == 0)) {       /* new page */
-            if (!user_ptr_readable(addr + i, 1)) return E_BAD_ADDRESS;
-        }
-        char c = ((const char *)user_ptr(addr))[i];
-        dst[i] = c;
-        if (!c) return (int)i;
-    }
-    return E_OUT_OF_RANGE;   /* no terminator inside cap bytes */
+    return user_copy_str(dst, addr, cap);
 }
+
+/* File data crosses through a kernel buffer of at most this much (1.9e4):
+   CXFS never touches user memory, so a page a sibling thread unmaps
+   mid-transfer is an E_BAD_ADDRESS from the copy, not a fault inside the
+   file system with the storage lock held. */
+#define FILE_BOUNCE 16384u
 
 /* Resolve everything but the last component of `path`, so a create knows which
    directory to create in and under what name. Returns 0, or a negative E_*. */
@@ -603,10 +600,25 @@ static int file_read(struct open_file *f, uint32_t rights, uint64_t buf, uint64_
     if (n > FILE_IO_MAX) n = FILE_IO_MAX;   /* a short count is normal */
     if (!user_ptr_writable(buf, (uint32_t)n)) return E_BAD_ADDRESS;
 
-    int rc = cxfs_read_at(f->entry, f->off, user_ptr(buf), (uint32_t)n);
-    if (rc < 0) return abi_err(rc);
-    f->off += (uint32_t)rc;
-    return rc;
+    /* A piece at a time through the bounce buffer; the offset moves by what
+       reached the caller, and a later piece's failure returns what did. */
+    uint32_t want = (uint32_t)n, cap = want < FILE_BOUNCE ? want : FILE_BOUNCE;
+    uint8_t *k = (uint8_t *)kmalloc(cap);
+    if (!k) return E_NO_MEMORY;
+    uint32_t done = 0;
+    int rc = 0;
+    while (done < want) {
+        uint32_t m = want - done < cap ? want - done : cap;
+        rc = cxfs_read_at(f->entry, f->off, k, m);
+        if (rc < 0) { rc = abi_err(rc); break; }
+        if (rc == 0) break;                                   /* the end of the file */
+        if (user_copy_out(buf + done, k, (uint32_t)rc) != 0) { rc = E_BAD_ADDRESS; break; }
+        f->off += (uint32_t)rc;
+        done += (uint32_t)rc;
+        if ((uint32_t)rc < m) break;                          /* the end of the file */
+    }
+    kfree(k);
+    return done ? (int)done : rc < 0 ? rc : 0;
 }
 
 int sys_file_read(int32_t h, uint64_t buf, uint64_t n) {
@@ -635,10 +647,23 @@ static int file_write(struct open_file *f, uint32_t rights, uint64_t buf, uint64
         if (f->off > FILE_OFF_MAX - n) return E_OUT_OF_RANGE;
     }
 
-    int rc = cxfs_write_at(f->entry, f->off, user_ptr(buf), (uint32_t)n);
-    if (rc < 0) return abi_err(rc);
-    f->off += (uint32_t)rc;
-    return rc;
+    /* A piece at a time through the bounce buffer, as file_read. */
+    uint32_t want = (uint32_t)n, cap = want < FILE_BOUNCE ? want : FILE_BOUNCE;
+    uint8_t *k = (uint8_t *)kmalloc(cap);
+    if (!k) return E_NO_MEMORY;
+    uint32_t done = 0;
+    int rc = 0;
+    while (done < want) {
+        uint32_t m = want - done < cap ? want - done : cap;
+        if (user_copy_in(k, buf + done, m) != 0) { rc = E_BAD_ADDRESS; break; }
+        rc = cxfs_write_at(f->entry, f->off, k, m);
+        if (rc < 0) { rc = abi_err(rc); break; }
+        f->off += (uint32_t)rc;
+        done += (uint32_t)rc;
+        if ((uint32_t)rc < m) break;                          /* the volume is full */
+    }
+    kfree(k);
+    return done ? (int)done : rc;
 }
 
 int sys_file_write(int32_t h, uint64_t buf, uint64_t n) {
@@ -667,8 +692,11 @@ static int file_seek(struct open_file *f, int64_t off, uint32_t origin, uint64_t
     if (__builtin_add_overflow(base, off, &to) || to < 0) return E_OUT_OF_RANGE;
     /* Seeking past EOF is allowed and allocates nothing: the hole only
        becomes real on the write that reaches it. */
-    f->off = (uint64_t)to;
-    if (pos) *(uint64_t *)user_ptr(pos) = f->off;
+    /* The answer first: a page unmapped since the check leaves the file
+       where it was, as a bad pointer always has. */
+    uint64_t np = (uint64_t)to;
+    if (pos && user_copy_out(pos, &np, sizeof np) != 0) return E_BAD_ADDRESS;
+    f->off = np;
     return E_OK;
 }
 
@@ -709,8 +737,9 @@ static int stat_out(uint32_t id, uint64_t st) {
     if (!user_ptr_writable(st, sizeof(struct file_stat))) return E_BAD_ADDRESS;
     struct cxfs_entry e;
     if (cxfs_read_entry(id, &e) != 0) return E_IO;
-    fill_stat(&e, (struct file_stat *)user_ptr(st));
-    return E_OK;
+    struct file_stat s = { 0 };
+    fill_stat(&e, &s);
+    return user_copy_out(st, &s, sizeof s) == 0 ? E_OK : E_BAD_ADDRESS;
 }
 
 int sys_file_stat(uint64_t upath, uint64_t st) {
@@ -751,8 +780,9 @@ int sys_file_readdir(uint64_t upath, uint32_t index, uint64_t st) {
     rd_found = 0;
     cxfs_list_dir((uint32_t)r, rd_cb);
     if (!rd_found) return 0;                 /* index past the end */
-    fill_stat(&rd_entry, (struct file_stat *)user_ptr(st));
-    return 1;
+    struct file_stat s = { 0 };
+    fill_stat(&rd_entry, &s);
+    return user_copy_out(st, &s, sizeof s) == 0 ? 1 : E_BAD_ADDRESS;
 }
 
 int sys_file_mkdir(uint64_t upath) {
@@ -861,9 +891,8 @@ int sys_file_getcwd(uint64_t buf, uint64_t cap) {
     cxfs_path_of(thread_current_cwd(), path, (int)cap);
     uint32_t n = 0;
     while (n + 1 < cap && path[n]) n++;
-    memcpy(user_ptr(buf), path, n);
-    ((char *)user_ptr(buf))[n] = '\0';
-    return (int)n;
+    path[n] = '\0';
+    return user_copy_out(buf, path, n + 1) == 0 ? (int)n : E_BAD_ADDRESS;
 }
 
 /* Commit what has been written to stable media.

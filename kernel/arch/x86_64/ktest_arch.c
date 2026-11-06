@@ -42,6 +42,7 @@
 #include "caps.h"
 #include "sysrec.h"
 #include "usermode.h"
+#include "diag/ktest_umem.h"   /* ktest_umem: a test thread's own user pages */
 #include "syspage.h"            /* SYSPAGE_VIRT, syspage_map */
 #include "arch/ktest_arch.h"
 #include "arch/usermode.h"
@@ -1302,8 +1303,8 @@ static int t_usercopy(void) {
     ok = ok && user_copy_in(buf, U_STACK, sizeof buf) == E_BAD_ADDRESS &&
                user_copy_out(U_CODE, buf, sizeof buf) == E_BAD_ADDRESS &&
                usercopy_faults_recovered() == r0;
-    ok = ok && user_copy_bytes(user_ptr(U_CODE), buf, sizeof buf) == 1 &&
-               user_copy_bytes(buf, user_ptr(U_STACK), sizeof buf) == 1 &&
+    ok = ok && user_copy_bytes(ktest_umem(U_CODE), buf, sizeof buf) == 1 &&
+               user_copy_bytes(buf, ktest_umem(U_STACK), sizeof buf) == 1 &&
                usercopy_faults_recovered() == r0 + 2;
     ok = ok && user_copy_in(buf, U_CODE, sizeof buf) == 0 &&
                usercopy_faults_recovered() == r0 + 2;

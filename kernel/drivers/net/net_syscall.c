@@ -13,8 +13,13 @@
 
 #include "netif.h"
 #include "icmp.h"
-#include "../../cpu/usermode.h"    /* user_ptr_readable / user_ptr_writable */
+#include "../../cpu/usermode.h"    /* user_ptr_readable / user_ptr_writable, the copies */
 #include "../../../abi/cxk_abi.h"  /* net_ip_config, E_* */
+#include "heap.h"                  /* the frame's bounce buffer */
+
+/* A frame crosses through a kernel buffer this size: the NIC's receive
+   buffer (e1000's RX_BUF_SIZE), more than any frame it delivers. */
+#define NET_BOUNCE 2048u
 
 /* packed u32 (network order) -> ip4_t */
 static void unpack_ip(uint32_t v, ip4_t out) {
@@ -37,22 +42,19 @@ int sys_net_status(void) {
 int sys_net_mac(uint64_t buf, uint64_t len) {
     if (len < 6) return E_BUFFER_TOO_SMALL;
     if (!user_ptr_writable(buf, 6)) return E_BAD_ADDRESS;
-    const uint8_t *m = netif_mac();
-    uint8_t *dst = (uint8_t *)user_ptr(buf);
-    for (int i = 0; i < 6; i++) dst[i] = m[i];
-    return 6;
+    return user_copy_out(buf, netif_mac(), 6) == 0 ? 6 : E_BAD_ADDRESS;
 }
 
 int sys_net_get_config(uint64_t uc) {
     if (!user_ptr_writable(uc, sizeof(struct net_ip_config))) return E_BAD_ADDRESS;
     const struct net_config *c = netif_cfg();
     if (!c) return E_NOT_FOUND;
-    struct net_ip_config *out = (struct net_ip_config *)user_ptr(uc);
-    out->ip      = pack_ip(c->ip);
-    out->mask    = pack_ip(c->mask);
-    out->gateway = pack_ip(c->gateway);
-    out->dns     = pack_ip(c->dns1);
-    return 0;
+    struct net_ip_config out = { 0 };
+    out.ip      = pack_ip(c->ip);
+    out.mask    = pack_ip(c->mask);
+    out.gateway = pack_ip(c->gateway);
+    out.dns     = pack_ip(c->dns1);
+    return user_copy_out(uc, &out, sizeof out) == 0 ? 0 : E_BAD_ADDRESS;
 }
 
 int sys_net_set_ip(uint32_t addr) {
@@ -115,8 +117,8 @@ int sys_net_ping(uint32_t addr, uint32_t seq, uint64_t urtt) {
        believed it, so every timeout was reported as a 0 ms reply.) */
     int r = icmp_ping(dst, (uint16_t)seq, &rtt);   /* rtt in microseconds */
     if (urtt) {
-        if (!user_ptr_writable(urtt, sizeof(uint32_t))) return E_BAD_ADDRESS;
-        *(uint32_t *)user_ptr(urtt) = r ? rtt : 0;     /* rtt is only valid on success */
+        uint32_t out = r ? rtt : 0;                    /* rtt is only valid on success */
+        if (user_copy_out(urtt, &out, sizeof out) != 0) return E_BAD_ADDRESS;
     }
     return r;                                      /* 1 = reply, 0 = timeout */
 }
@@ -124,12 +126,26 @@ int sys_net_ping(uint32_t addr, uint32_t seq, uint64_t urtt) {
 int sys_net_send(uint64_t frame, uint64_t len) {
     if (len == 0 || len > 1514) return E_OUT_OF_RANGE;
     if (!user_ptr_readable(frame, (uint32_t)len)) return E_BAD_ADDRESS;
-    return netif_send(user_ptr(frame), (uint16_t)len);
+    /* Copied in first (1.9e4): the driver never reads user memory. */
+    uint8_t *k = (uint8_t *)kmalloc(NET_BOUNCE);
+    if (!k) return E_NO_MEMORY;
+    int rc = user_copy_in(k, frame, (uint32_t)len) != 0 ? E_BAD_ADDRESS
+           : netif_send(k, (uint16_t)len);
+    kfree(k);
+    return rc;
 }
 
 int sys_net_recv(uint64_t buf, uint64_t cap) {
     if (cap == 0) return E_BUFFER_TOO_SMALL;
     if (cap > 0xFFFF) cap = 0xFFFF;   /* more than any frame; the driver takes a u16 */
     if (!user_ptr_writable(buf, (uint32_t)cap)) return E_BAD_ADDRESS;
-    return netif_receive(user_ptr(buf), (uint16_t)cap);
+    /* Into the kernel, then out (1.9e4); the bounce holds any frame. A
+       frame taken off the ring and not delivered is lost, as one the caller
+       had no room for always was. */
+    uint8_t *k = (uint8_t *)kmalloc(NET_BOUNCE);
+    if (!k) return E_NO_MEMORY;
+    int rc = netif_receive(k, (uint16_t)(cap < NET_BOUNCE ? cap : NET_BOUNCE));
+    if (rc > 0 && user_copy_out(buf, k, (uint32_t)rc) != 0) rc = E_BAD_ADDRESS;
+    kfree(k);
+    return rc;
 }

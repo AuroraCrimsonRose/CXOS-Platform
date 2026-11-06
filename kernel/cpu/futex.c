@@ -32,7 +32,7 @@
  */
 #include "futex.h"
 #include "sched.h"
-#include "usermode.h"          /* user_ptr_readable, user_copy_bytes */
+#include "usermode.h"          /* user_ptr_readable, user_fetch_u32 */
 #include "vmregion.h"          /* vm_futex_key */
 #include "object/kmem.h"
 #include "sync/spinlock.h"
@@ -95,7 +95,7 @@ int futex_wait(uint64_t uaddr, uint32_t expected, uint64_t deadline) {
 
     uint32_t f = spin_lock(&futex_lock);
     uint32_t v;
-    if (user_copy_bytes(&v, user_ptr(uaddr), sizeof v) != 0) rc = E_BAD_ADDRESS;
+    if (user_fetch_u32(uaddr, &v) != 0)                     rc = E_BAD_ADDRESS;
     else if (v != expected)                                     rc = E_SHOULD_WAIT;
     else {
         struct futex_waiter **pp = bucket(&me.key);

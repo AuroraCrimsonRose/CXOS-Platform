@@ -11,6 +11,7 @@
 #include "arch/paging.h"
 #include "memman/vmregion.h"   /* vm_fault */
 #include "sched.h"              /* thread_current_pid */
+#include "diag/testhook.h"      /* ucopy_gone */
 
 /* ---- syscall pointer validation -------------------------------------------
  * With a privilege boundary in place, the kernel must not blindly dereference
@@ -107,12 +108,18 @@ int user_ptr_writable(uint64_t ptr, uint64_t len) { return user_ptr_span(ptr, le
    knows about faults, this file knows what a user copy is. */
 static uint32_t recovered_faults = 0;
 
-uint32_t usercopy_faults_recovered(void)  { return recovered_faults; }
-void     usercopy_note_recovered_fault(void) { recovered_faults++; }
+/* Atomic: a fault can be recovered on every CPU at once. */
+uint32_t usercopy_faults_recovered(void)  { return __atomic_load_n(&recovered_faults, __ATOMIC_RELAXED); }
+void     usercopy_note_recovered_fault(void) { __atomic_fetch_add(&recovered_faults, 1u, __ATOMIC_RELAXED); }
+
+/* The one place a user address becomes a pointer (usermode.h, 1.9e4): only
+   for user_copy_bytes, which recovers if it stopped being mapped. */
+static inline void *user_ptr(uint64_t uaddr) { return (void *)(uintptr_t)uaddr; }
 
 int user_copy_out(uint64_t udst, const void *ksrc, uint32_t len) {
     if (len == 0) return 0;
     if (!user_ptr_writable(udst, len)) return E_BAD_ADDRESS;
+    if (ucopy_gone(udst, len)) return E_BAD_ADDRESS;   /* a test's page gone since the check */
     if (user_copy_bytes(user_ptr(udst), ksrc, len) != 0) return E_BAD_ADDRESS;
     return 0;
 }
@@ -120,6 +127,28 @@ int user_copy_out(uint64_t udst, const void *ksrc, uint32_t len) {
 int user_copy_in(void *kdst, uint64_t usrc, uint32_t len) {
     if (len == 0) return 0;
     if (!user_ptr_readable(usrc, len)) return E_BAD_ADDRESS;
+    if (ucopy_gone(usrc, len)) return E_BAD_ADDRESS;
     if (user_copy_bytes(kdst, user_ptr(usrc), len) != 0) return E_BAD_ADDRESS;
     return 0;
+}
+
+int user_copy_str(char *kdst, uint64_t usrc, uint32_t cap) {
+    if (!usrc) return E_BAD_ADDRESS;
+    for (uint32_t n = 0; n < cap; ) {
+        /* To the end of this page at most: the next one may not be mapped,
+           and a string that ends first must not need it. */
+        uint32_t chunk = 0x1000u - (uint32_t)((usrc + n) & 0xFFFu);
+        if (chunk > cap - n) chunk = cap - n;
+        if (user_copy_in(kdst + n, usrc + n, chunk) != 0) return E_BAD_ADDRESS;
+        for (uint32_t i = 0; i < chunk; i++)
+            if (!kdst[n + i]) return (int)(n + i);
+        n += chunk;
+    }
+    return E_OUT_OF_RANGE;
+}
+
+int user_fetch_u32(uint64_t uaddr, uint32_t *v) {
+    if ((uaddr & 3u) || uaddr >= USER_VLIMIT) return E_BAD_ADDRESS;
+    if (ucopy_gone(uaddr, sizeof *v)) return E_BAD_ADDRESS;
+    return user_copy_bytes(v, user_ptr(uaddr), sizeof *v) != 0 ? E_BAD_ADDRESS : 0;
 }

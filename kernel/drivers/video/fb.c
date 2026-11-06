@@ -441,12 +441,12 @@ static uint32_t fb_pack(uint32_t rgb) {
 int sys_fb_info(uint64_t ug) {
     if (!fb_active()) return E_NOT_FOUND;
     if (!user_ptr_writable(ug, sizeof(struct fb_geometry))) return E_BAD_ADDRESS;
-    struct fb_geometry *g = (struct fb_geometry *)user_ptr(ug);
-    g->width  = fb_width();
-    g->height = fb_height();
-    g->bpp    = fb_bpp();
-    g->pitch  = fb_pitch();
-    return 0;
+    struct fb_geometry g = { 0 };
+    g.width  = fb_width();
+    g.height = fb_height();
+    g.bpp    = fb_bpp();
+    g.pitch  = fb_pitch();
+    return user_copy_out(ug, &g, sizeof g) == 0 ? 0 : E_BAD_ADDRESS;
 }
 
 int sys_fb_clear(uint32_t color) {
@@ -482,12 +482,26 @@ int sys_fb_draw_text(uint32_t x, uint32_t y, uint64_t text, uint32_t fg, uint32_
        string filling a mapped page with no terminator - or any string of
        0x1000 characters - ran straight off the end of the mapping. Since
        n != 0 in that case, the E_BAD_ADDRESS check below does not catch it.
-       SYS_CONSOLE_WRITE has always done this correctly; this now matches it. */
+       SYS_CONSOLE_WRITE has always done this correctly; this now matches it.
+       Drawn from a copy (1.9e4), a piece at a time, each ending at its
+       page's end: a page that is not there ends the text, as the scan did,
+       and the page after a NUL is never needed. */
+    char piece[256];
     uint32_t n = 0;
-    const char *p = user_ptr(text);
-    while (n < 0x1000 && user_ptr_readable(text + n, 1) && p[n]) n++;
-    if (n == 0 && !user_ptr_readable(text, 1)) return E_BAD_ADDRESS;
-    fb_draw_string_n(x, y, p, n, fb_pack(fg), fb_pack(bg));
+    while (n < 0x1000) {
+        uint32_t room = 0x1000u - (uint32_t)((text + n) & 0xFFFu);
+        uint32_t m = room < sizeof piece ? room : (uint32_t)sizeof piece;
+        if (m > 0x1000u - n) m = 0x1000u - n;
+        if (user_copy_in(piece, text + n, m) != 0) {
+            if (n == 0) return E_BAD_ADDRESS;
+            break;
+        }
+        uint32_t k = 0;
+        while (k < m && piece[k]) k++;
+        fb_draw_string_n(x + n * font_cell_width(), y, piece, k, fb_pack(fg), fb_pack(bg));
+        n += k;
+        if (k < m) break;                    /* the NUL */
+    }
     return (int)n;
 }
 
@@ -499,22 +513,19 @@ int sys_fb_set_font(uint64_t uname) {
        between, and GRANT_FRAMEBUFFER does not become a way to make the
        kernel read an arbitrary file. */
     char name[CXFS_NAME_LEN];
-    uint32_t n = 0;
-    for (;;) {
-        if (n >= sizeof name) return E_INVALID_ARGS;          /* no terminator in range */
-        if (!user_ptr_readable(uname + n, 1)) return E_BAD_ADDRESS;
-        char c = ((const char *)user_ptr(uname))[n];
-        if (c == '\0') break;
+    int len = user_copy_str(name, uname, sizeof name);      /* checked on the copy (1.9e4) */
+    if (len == E_OUT_OF_RANGE) return E_INVALID_ARGS;       /* no terminator in range */
+    if (len < 0) return len;
+    for (uint32_t n = 0; n < (uint32_t)len; n++) {
+        char c = name[n];
         /* Everything that could leave /System/Fonts is refused here, so
            nothing downstream has to reason about traversal. '.' goes
            too: the extension is ours to add, and without it ".." never
            needs a special case. */
         if (c == '/' || c == '\\' || c == '.') return E_INVALID_ARGS;
         if ((unsigned char)c < 0x20 || (unsigned char)c == 0x7F) return E_INVALID_ARGS;
-        name[n++] = c;
     }
-    if (n == 0) return E_INVALID_ARGS;
-    name[n] = '\0';
+    if (len == 0) return E_INVALID_ARGS;
 
     /* Only the syscall clears, and only when the GRID changed.
        fb_font_select is also what the self-tests use, and wiping the

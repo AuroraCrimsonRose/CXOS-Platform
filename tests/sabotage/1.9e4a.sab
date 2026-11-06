@@ -1,0 +1,167 @@
+# Phase 1.9e4a's sabotages, run by `cxk test sabotage`.
+# Each must turn red exactly the self-tests named, at the reason named.
+# Format: docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage".
+# Each puts one syscall back to reading or writing user memory where it
+# lies, by a cast the build's user_ptr rule cannot see, and must be caught
+# by usermode_copies_test at that call's step: the page it is handed is
+# mapped, so the raw access succeeds where the copy is made to fail. All
+# land in the one test, so each boots alone. The last two take the hook
+# out of the copies, to show the test is not passing by itself.
+# By hand, not here: the build rule (check_arch_boundary.cmake) stopping a
+# planted user_ptr() call in futex.c (a build failure, not a red test).
+# And two that panic an earlier test before this one runs (run here first,
+# RED ELSEWHERE on the panic): spawn's handle list read raw, which
+# ktest_loader.c's USER_VLIMIT list turns into a #GP in "SYS_SPAWN verifies
+# its image"; exec's path read raw, which usermode_file_test's kernel
+# pointer turns into a #PF. The commit says what each did.
+
+# ---- usermode.c ----
+
+[console-raw]
+# the console reads the caller's text where it lies
+expect = syscalls use user memory only through the copy @ user copy test failed at step 2
+edit = kernel/cpu/usermode.c
+<<<
+        if (user_copy_in(piece, buf + done, n) != 0) return done ? (int)done : -1;
+===
+        __builtin_memcpy(piece, (const void *)(uintptr_t)(buf + done), n);
+>>>
+
+[clock-raw]
+# the clock writes its answer where it lies
+expect = syscalls use user memory only through the copy @ user copy test failed at step 4
+edit = kernel/cpu/usermode.c
+<<<
+    return user_copy_out(c, &ci, sizeof ci) == 0 ? E_OK : E_BAD_ADDRESS;
+===
+    *(struct clock_info *)(uintptr_t)c = ci;
+    return E_OK;
+>>>
+
+[vm-map-raw]
+# vm_map reads its arguments where they lie
+expect = syscalls use user memory only through the copy @ user copy test failed at step 7
+edit = kernel/cpu/usermode.c
+<<<
+    if (user_copy_in(&va, a, sizeof va) != 0) return E_BAD_ADDRESS;
+===
+    va = *(const struct vm_map_args *)(uintptr_t)a;
+>>>
+
+# ---- futex.c ----
+
+[futex-raw]
+# the futex reads its word where it lies
+expect = syscalls use user memory only through the copy @ user copy test failed at step 9
+edit = kernel/cpu/futex.c
+<<<
+    if (user_fetch_u32(uaddr, &v) != 0)                     rc = E_BAD_ADDRESS;
+    else if (v != expected)                                     rc = E_SHOULD_WAIT;
+===
+    v = *(volatile const uint32_t *)(uintptr_t)uaddr;
+    if (v != expected)                                          rc = E_SHOULD_WAIT;
+>>>
+
+# ---- spawn.c ----
+
+[spawn-blob-raw]
+# spawn reads the argument blob where it lies
+expect = syscalls use user memory only through the copy @ user copy test failed at step 11
+edit = kernel/cpu/spawn.c
+<<<
+    int rc = user_copy_in(k, a->args, (uint32_t)a->args_len) != 0 ? E_BAD_ADDRESS
+===
+    int rc = (__builtin_memcpy(k, (const void *)(uintptr_t)a->args, (size_t)a->args_len), 0) ? E_BAD_ADDRESS
+>>>
+
+# ---- sysfile.c ----
+
+[file-read-raw]
+# a file's data is written where the caller's buffer lies
+expect = syscalls use user memory only through the copy @ user copy test failed at step 18
+edit = kernel/cpu/sysfile.c
+<<<
+        if (user_copy_out(buf + done, k, (uint32_t)rc) != 0) { rc = E_BAD_ADDRESS; break; }
+===
+        __builtin_memcpy((void *)(uintptr_t)(buf + done), k, (uint32_t)rc);
+>>>
+
+[file-seek-raw]
+# seek writes the new offset where it lies
+expect = syscalls use user memory only through the copy @ user copy test failed at step 20
+edit = kernel/cpu/sysfile.c
+<<<
+    if (pos && user_copy_out(pos, &np, sizeof np) != 0) return E_BAD_ADDRESS;
+===
+    if (pos) *(uint64_t *)(uintptr_t)pos = np;
+>>>
+
+[file-stat-raw]
+# stat writes its answer where it lies
+expect = syscalls use user memory only through the copy @ user copy test failed at step 22
+edit = kernel/cpu/sysfile.c
+<<<
+    return user_copy_out(st, &s, sizeof s) == 0 ? E_OK : E_BAD_ADDRESS;
+===
+    *(struct file_stat *)(uintptr_t)st = s;
+    return E_OK;
+>>>
+
+# ---- net_syscall.c ----
+
+[net-send-raw]
+# a frame is sent from where it lies
+expect = syscalls use user memory only through the copy @ user copy test failed at step 29
+edit = kernel/drivers/net/net_syscall.c
+<<<
+    int rc = user_copy_in(k, frame, (uint32_t)len) != 0 ? E_BAD_ADDRESS
+===
+    int rc = (__builtin_memcpy(k, (const void *)(uintptr_t)frame, (size_t)len), 0) ? E_BAD_ADDRESS
+>>>
+
+# ---- fb.c ----
+
+[fb-text-raw]
+# the framebuffer draws text from where it lies
+expect = syscalls use user memory only through the copy @ user copy test failed at step 31
+edit = kernel/drivers/video/fb.c
+<<<
+        if (user_copy_in(piece, text + n, m) != 0) {
+            if (n == 0) return E_BAD_ADDRESS;
+            break;
+        }
+===
+        __builtin_memcpy(piece, (const void *)(uintptr_t)(text + n), m);
+>>>
+
+[fb-font-raw]
+# the font's name is read where it lies
+expect = syscalls use user memory only through the copy @ user copy test failed at step 32
+edit = kernel/drivers/video/fb.c
+<<<
+    int len = user_copy_str(name, uname, sizeof name);      /* checked on the copy (1.9e4) */
+===
+    int len = 0;
+    while (len < (int)sizeof name - 1 && (name[len] = ((const char *)(uintptr_t)uname)[len])) len++;
+    name[len] = '\0';
+>>>
+
+# ---- the hook itself (usercopy.c) ----
+
+[hook-out-gone]
+# a copy out no longer fails on the armed page: the calls succeed
+expect = syscalls use user memory only through the copy @ user copy test failed at step 4
+edit = kernel/cpu/usercopy.c
+<<<
+    if (ucopy_gone(udst, len)) return E_BAD_ADDRESS;   /* a test's page gone since the check */
+===
+>>>
+
+[hook-in-gone]
+# a copy in no longer fails on the armed page
+expect = syscalls use user memory only through the copy @ user copy test failed at step 2
+edit = kernel/cpu/usercopy.c
+<<<
+    if (ucopy_gone(usrc, len)) return E_BAD_ADDRESS;
+===
+>>>

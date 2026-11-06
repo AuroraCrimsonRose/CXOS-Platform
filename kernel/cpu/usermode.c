@@ -131,30 +131,43 @@ int syscall_console_write(uint64_t buf, uint64_t len64) {
        refuse a length past 32 bits rather than print its low half. */
     if (len64 > 0xFFFFFFFFu) return E_OUT_OF_RANGE;
     uint32_t len = (uint32_t)len64;
-    if (len == 0) {
-        const char *p = (const char *)user_ptr(buf);
-        while (len < 0x1000 && user_ptr_readable(buf + len, 1) && p[len]) len++;
-    }
-    if (!user_ptr_readable(buf, len ? len : 1)) return -1;
-    const char *s = (const char *)user_ptr(buf);
+    /* Length 0: up to a NUL, at most a page, ending early at a page that is
+       not there (with something before it). */
+    int scan = len == 0;
+    if (scan) len = 0x1000;
+    else if (!user_ptr_readable(buf, len)) return -1;
 
     /* A background process (SPAWN_BACKGROUND, the supervisor and its
        services) writes to the log, so it never prints over the shell. */
     struct proc *p = thread_proc(thread_current_id());
-    if (p && p->background) { proc_out_write(p, s, len); return (int)len; }
-    /* Each piece copied in first, then written under the log lock (console.h)
-       so no other CPU's line lands inside it: a fault on the user's page
-       takes locks ranked before the log's. */
+    int background = p && p->background;
+    /* Each piece copied in first (1.9e4: never read where it lies), then
+       written under the log lock (console.h) so no other CPU's line lands
+       inside it: a fault on the user's page takes locks ranked before the
+       log's. A scan's piece stops at its page's end, so the page after a
+       NUL is never needed. */
     char piece[256];
-    for (uint32_t done = 0; done < len; ) {
+    uint32_t done = 0;
+    while (done < len) {
         uint32_t n = len - done < sizeof piece ? len - done : (uint32_t)sizeof piece;
+        if (scan) {
+            uint32_t room = 0x1000u - (uint32_t)((buf + done) & 0xFFFu);
+            if (n > room) n = room;
+        }
         if (user_copy_in(piece, buf + done, n) != 0) return done ? (int)done : -1;
-        log_lock();
-        for (uint32_t i = 0; i < n; i++) console_putc(piece[i]);
-        log_unlock();
+        if (scan) {
+            for (uint32_t i = 0; i < n; i++)
+                if (!piece[i]) { n = i; len = done + i; break; }
+        }
+        if (background) proc_out_write(p, piece, n);
+        else {
+            log_lock();
+            for (uint32_t i = 0; i < n; i++) console_putc(piece[i]);
+            log_unlock();
+        }
         done += n;
     }
-    return (int)len;
+    return (int)done;
 }
 
 int syscall_log_read(uint32_t i, uint64_t e) {
@@ -263,17 +276,17 @@ int syscall_clock(uint64_t c) {
     /* Unprivileged: the time of day is not authority. A process that
        could not read it would simply count its own loop iterations. */
     if (!user_ptr_writable(c, sizeof(struct clock_info))) return E_BAD_ADDRESS;
-    struct clock_info *ci = (struct clock_info *)user_ptr(c);
-    ci->ticks = timer_ticks();
+    struct clock_info ci = { 0 };
+    ci.ticks = timer_ticks();
 
     /* epoch 0 means "no usable RTC", which the ABI documents, so a
        caller that needs a real date can tell. Deriving it here rather
        than handing over the clock's raw fields keeps its format (BCD and
        century, on a PC) on this side of the boundary. */
     struct datetime dt;
-    ci->epoch = platform_wallclock(&dt) == 0
-              ? (uint32_t)datetime_to_epoch(&dt) : 0;
-    return E_OK;
+    ci.epoch = platform_wallclock(&dt) == 0
+             ? (uint32_t)datetime_to_epoch(&dt) : 0;
+    return user_copy_out(c, &ci, sizeof ci) == 0 ? E_OK : E_BAD_ADDRESS;
 }
 
 int syscall_args(uint64_t a) {
@@ -282,11 +295,12 @@ int syscall_args(uint64_t a) {
        every program - the address is a 32-bit x86 fact, and a userland
        that knew it would have to be ported alongside the kernel. */
     if (!user_ptr_writable(a, sizeof(struct args_info))) return E_BAD_ADDRESS;
-    struct args_info *ai = (struct args_info *)user_ptr(a);
-    ai->base  = USER_ARGS_BASE;
-    ai->count = *(const uint32_t *)user_ptr(USER_ARGS_BASE);
-    ai->broker = thread_broker(thread_current_id());
-    return E_OK;
+    struct args_info ai = { 0 };
+    ai.base  = USER_ARGS_BASE;
+    /* The count from the args page, which the process could have unmapped. */
+    if (user_copy_in(&ai.count, USER_ARGS_BASE, sizeof ai.count) != 0) return E_BAD_ADDRESS;
+    ai.broker = thread_broker(thread_current_id());
+    return user_copy_out(a, &ai, sizeof ai) == 0 ? E_OK : E_BAD_ADDRESS;
 }
 
 int syscall_args_handle(uint32_t slot) {
@@ -573,12 +587,13 @@ int syscall_net_recv(uint64_t buf, uint64_t cap) {
 int syscall_mouse_read(uint64_t m) {
     /* the keyboard's gate: the pointer is input too */
     if (!input_granted()) return E_ACCESS_DENIED;
-    struct mouse_state *ms = (struct mouse_state *)user_ptr(m);
-    if (!user_ptr_writable(m, sizeof *ms)) return E_BAD_ADDRESS;
-    ms->x       = mouse_x();
-    ms->y       = mouse_y();
-    ms->buttons = mouse_buttons();
-    ms->seq     = mouse_seq();
+    struct mouse_state ms = { 0 };
+    if (!user_ptr_writable(m, sizeof ms)) return E_BAD_ADDRESS;
+    ms.x       = mouse_x();
+    ms.y       = mouse_y();
+    ms.buttons = mouse_buttons();
+    ms.seq     = mouse_seq();
+    if (user_copy_out(m, &ms, sizeof ms) != 0) return E_BAD_ADDRESS;
     return mouse_present() ? 1 : 0;
 }
 
@@ -614,17 +629,30 @@ int syscall_power_sleep(uint32_t ms) {
    passes the caller's pid. */
 int syscall_vm_map(uint64_t a) {
     if (!user_ptr_writable(a, sizeof(struct vm_map_args))) return E_BAD_ADDRESS;
-    struct vm_map_args *va = (struct vm_map_args *)user_ptr(a);
-    if (va->object == MOBJ_ANON) return vm_map(thread_current_pid(), va);
-    /* A memory object: the handle's rights decide what the view may do. */
-    struct htab_info hi;
-    struct kobj *o = htab_ref(thread_htab(thread_current_id()), (int32_t)va->object,
-                              KOBJ_NONE, 0, &hi);
-    if (!o) return E_BAD_HANDLE;
-    int rc = o->type != KOBJ_MEM ? E_WRONG_TYPE
-           : vm_map_object(thread_current_pid(), va, (struct kmem *)o, hi.rights);
-    kobj_unref(o);   /* a mapping holds its own reference */
-    return rc;
+    /* Read once (1.9e4): checked and used from the copy, so a sibling thread
+       cannot change a field between vm_map's check and its use. */
+    struct vm_map_args va;
+    if (user_copy_in(&va, a, sizeof va) != 0) return E_BAD_ADDRESS;
+    int pid = thread_current_pid();
+    int rc;
+    if (va.object == MOBJ_ANON) rc = vm_map(pid, &va);
+    else {
+        /* A memory object: the handle's rights decide what the view may do. */
+        struct htab_info hi;
+        struct kobj *o = htab_ref(thread_htab(thread_current_id()), (int32_t)va.object,
+                                  KOBJ_NONE, 0, &hi);
+        if (!o) return E_BAD_HANDLE;
+        rc = o->type != KOBJ_MEM ? E_WRONG_TYPE
+           : vm_map_object(pid, &va, (struct kmem *)o, hi.rights);
+        kobj_unref(o);   /* a mapping holds its own reference */
+    }
+    if (rc != E_OK) return rc;
+    /* A mapping the caller can never learn the address of is undone. */
+    if (user_copy_out(a, &va, sizeof va) != 0) {
+        vm_unmap(pid, va.addr, va.granted);
+        return E_BAD_ADDRESS;
+    }
+    return E_OK;
 }
 
 int syscall_pipe_create(uint32_t size, uint64_t ends) {
@@ -688,7 +716,10 @@ int syscall_vm_unmap(uint64_t addr, uint64_t length) {
 
 int syscall_vm_info(uint64_t u) {
     if (!user_ptr_writable(u, sizeof(struct vm_usage))) return E_BAD_ADDRESS;
-    return vm_info(thread_current_pid(), (struct vm_usage *)user_ptr(u));
+    struct vm_usage vu = { 0 };
+    int rc = vm_info(thread_current_pid(), &vu);
+    if (rc != E_OK) return rc;
+    return user_copy_out(u, &vu, sizeof vu) == 0 ? E_OK : E_BAD_ADDRESS;
 }
 
 int syscall_ipc_call(uint64_t a)  { return ipc_call(a); }
@@ -1288,6 +1319,11 @@ void usermode_init(void) {
     ipc_init();       /* registers the endpoint object type */
 }
 
+/* Every syscall is above this line; the ring-3 self-tests below set up their
+   own user pages from ring 0, with nothing else in the space. Included here,
+   not at the top, so no syscall can reach it (diag/ktest_umem.h). */
+#include "diag/ktest_umem.h"
+
 /* ---- Checkpoint 3a: the minimal single-process ring-3 round-trip ---- */
 int usermode_test(void) {
     /* back the code + stack pages with real pmm frames, mapped user-accessible */
@@ -1306,7 +1342,7 @@ int usermode_test(void) {
     for (uint32_t i = 0; i < len; i++) dst[i] = user_blob_start[i];
 
     /* place the message just after the routine, in the user-accessible page */
-    char *umsg = (char *)user_ptr(TEST_CODE_VIRT + USER_MSG_OFF);
+    char *umsg = (char *)ktest_umem(TEST_CODE_VIRT + USER_MSG_OFF);
     uint32_t i = 0;
     for (; user_msg[i] && i < 0x100; i++) umsg[i] = user_msg[i];
     umsg[i] = '\0';
@@ -1314,7 +1350,7 @@ int usermode_test(void) {
 
     /* seed the message pointer at the top of the user stack ([esp] on entry) */
     uint64_t ustack_top = TEST_STACK_VIRT + 0x1000 - 16;
-    *(uint64_t *)user_ptr(ustack_top) = user_addr(umsg);
+    *(uint64_t *)ktest_umem(ustack_top) = user_addr(umsg);
 
     /* dev test runs as a SYSTEM ring-3 helper: grant it console so the gated
        SYS_WRITE works (restored after). */
@@ -1582,7 +1618,7 @@ static int oi_call(int h, uint32_t topic, uint64_t cap) {
 }
 
 static void ft_str(uint32_t at, const char *s) {
-    char *d = (char *)user_ptr(at);
+    char *d = (char *)ktest_umem(at);
     int i = 0;
     while (s[i] && i < 0x7F) { d[i] = s[i]; i++; }
     d[i] = '\0';
@@ -1597,7 +1633,7 @@ static void ft_str(uint32_t at, const char *s) {
    syscall path, ft_join into a kernel buffer for the cxfs_* checks. ft_join
    returns its one static buffer, so use it once per statement. */
 static void ft_strp(uint32_t at, const char *pre, const char *leaf) {
-    char *d = (char *)user_ptr(at);
+    char *d = (char *)ktest_umem(at);
     int i = 0;
     while (*pre  && i < 0x7F) d[i++] = *pre++;
     while (*leaf && i < 0x7F) d[i++] = *leaf++;
@@ -2206,7 +2242,7 @@ int usermode_file_test(void) {
         const uint32_t blob = TEST_CODE_VIRT + 0x2000;
         paddr_t bp = map_user_page(blob);
         int bad = !bp;
-        char *b = (char *)user_ptr(blob);
+        char *b = (char *)ktest_umem(blob);
         for (uint32_t i = 0; !bad && i < 4096; i++) b[i] = (char)((i & 1) ? 0 : 'a');
         sa->args = blob;
         sa->args_len = 2 * USER_ARGS_MAXC;                /* "a\0" * 64 */
@@ -2307,8 +2343,8 @@ int usermode_vm_test(void) {
 
     int ok = 0, step = 0;
     uint64_t addr = 0;
-    struct vm_map_args *a = (struct vm_map_args *)user_ptr(VT_ARGS);
-    struct vm_usage    *u = (struct vm_usage *)user_ptr(VT_USAGE);
+    struct vm_map_args *a = (struct vm_map_args *)ktest_umem(VT_ARGS);
+    struct vm_usage    *u = (struct vm_usage *)ktest_umem(VT_USAGE);
 
     step++;
     if (vm_quota_of(pid) != vm_default_quota()) goto done;
@@ -2376,6 +2412,179 @@ done:
     if (addr) vm_unmap(pid, addr, 0);
     vm_proc_reset(pid);
     unmap_user_page(TEST_CODE_VIRT, phys);
+    return ok;
+}
+
+/* ---- every syscall reads and writes through the copy (1.9e4) --------------
+ * A sibling thread may unmap a page between a syscall's range check and its
+ * use, so the use must be the recoverable copy, never the user's memory where
+ * it lies. Each call below is handed the page UC_GONE, which really is
+ * mapped and passes the check, while ucopy_gone makes every copy touching it
+ * fail as the hardware's recovery makes it fail. A call must answer
+ * E_BAD_ADDRESS (console_write: -1), must have tried the copy (the hook's
+ * count rose), and must leave the page as it was. A call that reads or writes
+ * the page itself succeeds there instead, and fails here. That the copy
+ * really recovers from an unmapped page is usermode_test's. */
+#define UC_GOOD  (TEST_CODE_VIRT + 0x0000)   /* the calls' own arguments */
+#define UC_PATH  (UC_GOOD + 0x100)
+#define UC_SARGS (UC_GOOD + 0x200)          /* spawn_args */
+#define UC_DATA  (UC_GOOD + 0x400)
+#define UC_POS   (UC_GOOD + 0x600)
+#define UC_GONE  (TEST_CODE_VIRT + 0x1000)  /* the page gone since the check */
+#define UC_FILL  0xA5u
+
+static uint32_t uc_hits;
+
+/* The call answered `want` and went through the copy to get it. */
+static int uc_refused(int rc, int want) {
+    uint32_t h = ucopy_gone_hits();
+    int ok = rc == want && h > uc_hits;
+    uc_hits = h;
+    return ok;
+}
+
+int usermode_copies_test(void) {
+    int      me   = thread_current_id();
+    int      pid  = thread_current_pid();
+    uint32_t save = thread_current_caps();
+    paddr_t good = map_user_page(UC_GOOD);
+    if (!good) return 0;
+    paddr_t gone = map_user_page(UC_GONE);
+    if (!gone) { unmap_user_page(UC_GOOD, good); return 0; }
+    /* SYS_ARGS reads the count from the args page first */
+    paddr_t argp = paging_get_phys(USER_ARGS_BASE) ? 0 : map_user_page(USER_ARGS_BASE);
+    int vm_mine = !vm_quota_of(pid);
+    if (vm_mine) vm_proc_init(pid, vm_default_quota(), -1);
+
+    uint8_t *g = (uint8_t *)ktest_umem(UC_GONE);
+    for (uint32_t i = 0; i < PAGE_SIZE; i++) g[i] = UC_FILL;
+    for (uint32_t i = 0; i < PAGE_SIZE; i++) ((uint8_t *)ktest_umem(UC_GOOD))[i] = 0;
+    thread_set_caps(me, GRANT_CONSOLE | GRANT_INPUT | GRANT_SPAWN | GRANT_DISK |
+                        GRANT_NET | GRANT_FRAMEBUFFER);
+
+    int ok = 0, step = 0, h = -1, made = 0;
+    const char *scratch = "";
+    step++;
+    if (ucopy_gone_arm(UC_GONE) != 0) goto done;
+    uc_hits = 0;
+
+    /* the console, with a length and as a string */
+    step++;
+    if (!uc_refused(um_call(SYS_CONSOLE_WRITE, 1u << 1, UC_GONE, 4, 0, 0, 0), -1)) goto done;
+    step++;
+    if (!uc_refused(um_call(SYS_CONSOLE_WRITE, 1u << 1, UC_GONE, 0, 0, 0, 0), -1)) goto done;
+
+    /* the small answers */
+    step++;
+    if (!uc_refused(syscall_dispatch(SYS_CLOCK, UC_GONE, 0, 0, 0, 0), E_BAD_ADDRESS)) goto done;
+    step++;
+    if (!uc_refused(syscall_dispatch(SYS_ARGS, UC_GONE, 0, 0, 0, 0), E_BAD_ADDRESS)) goto done;
+    step++;
+    if (!uc_refused(syscall_dispatch(SYS_MOUSE_READ, UC_GONE, 0, 0, 0, 0), E_BAD_ADDRESS)) goto done;
+
+    /* memory: the arguments in, the usage out */
+    step++;
+    if (!uc_refused(syscall_dispatch(SYS_VM_MAP, UC_GONE, 0, 0, 0, 0), E_BAD_ADDRESS)) goto done;
+    step++;
+    if (!uc_refused(syscall_dispatch(SYS_VM_INFO, UC_GONE, 0, 0, 0, 0), E_BAD_ADDRESS)) goto done;
+
+    /* the futex's word: read as the fill, it would not match 0 and return */
+    step++;
+    if (!uc_refused(um_call(SYS_FUTEX_WAIT, 1u << 2, UC_GONE, 0, 0, 0, 0), E_BAD_ADDRESS)) goto done;
+
+    /* spawn: the arguments, their blob, the handles; exec's path */
+    struct spawn_args *sa = (struct spawn_args *)ktest_umem(UC_SARGS);
+    step++;
+    if (!uc_refused(syscall_dispatch(SYS_SPAWN, UC_GONE, 0, 0, 0, 0), E_BAD_ADDRESS)) goto done;
+    sa->image = UC_DATA; sa->image_len = 16;
+    sa->args  = UC_GONE; sa->args_len  = 8;
+    sa->broker_endpoint = -1;
+    step++;
+    if (!uc_refused(syscall_dispatch(SYS_SPAWN, UC_SARGS, 0, 0, 0, 0), E_BAD_ADDRESS)) goto done;
+    sa->args = 0; sa->args_len = 0;
+    sa->handles = UC_GONE; sa->handle_count = 1;
+    step++;
+    if (!uc_refused(syscall_dispatch(SYS_SPAWN, UC_SARGS, 0, 0, 0, 0), E_BAD_ADDRESS)) goto done;
+    sa->handles = 0; sa->handle_count = 0;
+    ft_strp(UC_PATH, "", "/kt_uc.xuex");
+    step++;
+    if (!uc_refused(syscall_dispatch(SYS_EXEC_PATH, UC_PATH, UC_GONE, 0, 0, 0), E_BAD_ADDRESS)) goto done;
+    step++;
+    if (!uc_refused(syscall_dispatch(SYS_EXEC_PATH, UC_GONE, UC_SARGS, 0, 0, 0), E_BAD_ADDRESS)) goto done;
+
+    /* files: data both ways, the offset, the answers, the path */
+    if (cxfs_is_mounted()) {
+        scratch = (cxfs_resolve("/Temp", 0) >= 0) ? "/Temp" : "";
+        ft_strp(UC_PATH, scratch, "/kt_uc.txt");
+        h = um_call(SYS_FILE_OPEN, 0, UC_PATH, FOPEN_READ | FOPEN_WRITE | FOPEN_CREATE | FOPEN_TRUNC, 0, 0, 0);
+        step++;
+        if (h < 0) goto done;
+        made = 1;
+        step++;
+        if (um_call(SYS_FILE_WRITE, 1u << 2, (uint32_t)h, UC_DATA, 8, 0, 0) != 8) goto done;
+        step++;
+        if (um_call(SYS_FILE_SEEK, 1u << 1, (uint32_t)h, 0, FSEEK_SET, 0, 0) != E_OK) goto done;
+        step++;
+        if (!uc_refused(um_call(SYS_FILE_READ, 1u << 2, (uint32_t)h, UC_GONE, 8, 0, 0), E_BAD_ADDRESS)) goto done;
+        step++;
+        if (!uc_refused(um_call(SYS_FILE_WRITE, 1u << 2, (uint32_t)h, UC_GONE, 8, 0, 0), E_BAD_ADDRESS)) goto done;
+        step++;
+        if (!uc_refused(um_call(SYS_FILE_SEEK, 1u << 1, (uint32_t)h, 4, FSEEK_SET, UC_GONE, 0), E_BAD_ADDRESS)) goto done;
+        /* none of the three moved the offset */
+        *(volatile uint64_t *)ktest_umem(UC_POS) = 0xDEADBEEFull;
+        step++;
+        if (um_call(SYS_FILE_TELL, 0, (uint32_t)h, UC_POS, 0, 0, 0) != E_OK ||
+            *(volatile uint64_t *)ktest_umem(UC_POS) != 0) goto done;
+        step++;
+        if (!uc_refused(syscall_dispatch(SYS_FILE_STAT, UC_PATH, UC_GONE, 0, 0, 0), E_BAD_ADDRESS)) goto done;
+        step++;
+        if (!uc_refused(syscall_dispatch(SYS_FILE_STAT, UC_GONE, UC_DATA, 0, 0, 0), E_BAD_ADDRESS)) goto done;
+        step++;
+        if (!uc_refused(syscall_dispatch(SYS_FILE_FSTAT, (uint32_t)h, UC_GONE, 0, 0, 0), E_BAD_ADDRESS)) goto done;
+        ft_strp(UC_PATH, scratch[0] ? scratch : "/", "");
+        step++;
+        if (!uc_refused(syscall_dispatch(SYS_FILE_READDIR, UC_PATH, 0, UC_GONE, 0, 0), E_BAD_ADDRESS)) goto done;
+        step++;
+        if (!uc_refused(um_call(SYS_FILE_GETCWD, 1u << 1, UC_GONE, 64, 0, 0, 0), E_BAD_ADDRESS)) goto done;
+    }
+
+    /* the network: the address and configuration out, a frame in */
+    step++;
+    if (!uc_refused(um_call(SYS_NET_MAC, 1u << 1, UC_GONE, 6, 0, 0, 0), E_BAD_ADDRESS)) goto done;
+    step++;
+    if (netif_cfg() &&
+        !uc_refused(syscall_dispatch(SYS_NET_GET_CONFIG, UC_GONE, 0, 0, 0, 0), E_BAD_ADDRESS)) goto done;
+    step++;
+    if (!uc_refused(um_call(SYS_NET_SEND, 1u << 1, UC_GONE, 60, 0, 0, 0), E_BAD_ADDRESS)) goto done;
+
+    /* the framebuffer: its geometry out, a string and a font name in */
+    if (fb_active()) {
+        step++;
+        if (!uc_refused(syscall_dispatch(SYS_FB_INFO, UC_GONE, 0, 0, 0, 0), E_BAD_ADDRESS)) goto done;
+        step++;
+        if (!uc_refused(syscall_dispatch(SYS_FB_DRAW_TEXT, 0, 0, UC_GONE, 0xFFFFFFu, 0), E_BAD_ADDRESS)) goto done;
+        step++;
+        if (!uc_refused(syscall_dispatch(SYS_FB_SET_FONT, UC_GONE, 0, 0, 0, 0), E_BAD_ADDRESS)) goto done;
+    }
+
+    /* and the page is as it was */
+    step++;
+    for (uint32_t i = 0; i < PAGE_SIZE; i++) if (g[i] != UC_FILL) goto done;
+    ok = 1;
+
+done:
+    ucopy_gone_disarm();
+    if (!ok) klog_u32("KTEST", SEV_ERR, "user copy test failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    if (h >= 0) um_call(SYS_FILE_CLOSE, 0, (uint32_t)h, 0, 0, 0, 0);
+    if (made) {
+        ft_strp(UC_PATH, scratch, "/kt_uc.txt");
+        syscall_dispatch(SYS_FILE_UNLINK, UC_PATH, 0, 0, 0, 0);
+    }
+    thread_set_caps(me, save);
+    if (vm_mine) vm_proc_reset(pid);
+    if (argp) unmap_user_page(USER_ARGS_BASE, argp);
+    unmap_user_page(UC_GONE, gone);
+    unmap_user_page(UC_GOOD, good);
     return ok;
 }
 
@@ -2477,8 +2686,8 @@ int usermode_fb_test(void) {
 
     int ok = 0, step = 0, saved = 0;
     uint32_t x0 = 0, y0 = 0;
-    char *text = (char *)user_ptr(FBT_TEXT);
-    char *name = (char *)user_ptr(FBT_NAME);
+    char *text = (char *)ktest_umem(FBT_TEXT);
+    char *name = (char *)ktest_umem(FBT_NAME);
     text[0] = 'a'; text[1] = 'b'; text[2] = 'c'; text[3] = '\0';
     name[0] = 'a'; name[1] = '/'; name[2] = 'b'; name[3] = '\0';
     thread_set_caps(me, GRANT_FRAMEBUFFER);
@@ -2495,7 +2704,7 @@ int usermode_fb_test(void) {
     }
 
     /* geometry, into a user structure; a kernel address is refused */
-    struct fb_geometry *g = (struct fb_geometry *)user_ptr(FBT_GEOM);
+    struct fb_geometry *g = (struct fb_geometry *)ktest_umem(FBT_GEOM);
     step++;
     if (syscall_dispatch(SYS_FB_INFO, FBT_GEOM, 0, 0, 0, 0) != E_OK) goto done;
     step++;
@@ -2612,7 +2821,7 @@ int usermode_net_test(void) {
 
     /* the MAC: six bytes, the seventh untouched; a short buffer and a kernel
        pointer refused */
-    uint8_t *mac = (uint8_t *)user_ptr(NT_MAC);
+    uint8_t *mac = (uint8_t *)ktest_umem(NT_MAC);
     for (int i = 0; i < 8; i++) mac[i] = 0xEE;
     step++;
     if (syscall_dispatch(SYS_NET_MAC, NT_MAC, 5, 0, 0, 0) != E_BUFFER_TOO_SMALL) goto done;
@@ -2628,7 +2837,7 @@ int usermode_net_test(void) {
     if (mac[6] != 0xEE) goto done;
 
     /* four fields, four addresses */
-    struct net_ip_config *c = (struct net_ip_config *)user_ptr(NT_CFG);
+    struct net_ip_config *c = (struct net_ip_config *)ktest_umem(NT_CFG);
     step++;
     if (syscall_dispatch(SYS_NET_GET_CONFIG, 0xC0001000u, 0, 0, 0, 0) != E_BAD_ADDRESS) goto done;
     changed = 1;
@@ -2667,7 +2876,7 @@ int usermode_net_test(void) {
     }
 
     /* send: both sides of the length bound, a kernel pointer, then one frame */
-    uint8_t *f = (uint8_t *)user_ptr(NT_FRAME);
+    uint8_t *f = (uint8_t *)ktest_umem(NT_FRAME);
     for (int i = 0; i < NT_FRAME_LEN; i++) f[i] = 0;
     for (int i = 0; i < 6; i++) { f[i] = 0xFF; f[6 + i] = m[i]; }
     f[12] = 0x88; f[13] = 0xB5;                    /* IEEE local experimental */
@@ -2918,7 +3127,7 @@ int usermode_flock_test(void) {
            the blob, 4 GB up, is unmapped (ABI 12) - cut to 32 bits it would be
            a good blob, and the call would go on to E_NOT_FOUND */
         uint32_t pl = 0;
-        while (((const char *)user_ptr(FT_PATH))[pl]) pl++;
+        while (((const char *)ktest_umem(FT_PATH))[pl]) pl++;
         sa->args = FT_PATH + (1ull << 32); sa->args_len = pl + 1;
         step++;                                                                   /* 42 */
         if (sys_exec_path(FT_PATH, user_addr(sa)) != E_BAD_ADDRESS) goto done;
@@ -3042,18 +3251,18 @@ static void process_trampoline(void) {
 
     uint32_t len = s->blob_len;
     if (len == 0 || len > USER_MSG_OFF) len = USER_MSG_OFF;
-    uint8_t *dst = (uint8_t *)user_ptr(s->code_virt);
+    uint8_t *dst = (uint8_t *)ktest_umem(s->code_virt);
     const uint8_t *src = (const uint8_t *)s->blob;
     for (uint32_t i = 0; i < len; i++) dst[i] = src[i];
 
-    char *umsg = (char *)user_ptr(s->code_virt + USER_MSG_OFF);
+    char *umsg = (char *)ktest_umem(s->code_virt + USER_MSG_OFF);
     uint32_t i = 0;
     if (s->msg) { for (; s->msg[i] && i < 0x100; i++) umsg[i] = s->msg[i]; }
     umsg[i] = '\0';
     int sealed = seal_user_code(s->code_virt, s->code_phys) == 0;
 
     uint64_t ustack_top = s->stack_virt + 0x1000 - 16;
-    *(uint64_t *)user_ptr(ustack_top) = user_addr(umsg);
+    *(uint64_t *)ktest_umem(ustack_top) = user_addr(umsg);
 
     if (sealed && ksyspage_get() == 0) {
         enter_usermode(s->code_virt, ustack_top, thread_current_usave(), SYSPAGE_VIRT);
@@ -3255,7 +3464,7 @@ static int32_t pt_make(const uint8_t *start, const uint8_t *end, int *tid) {
 
 /* OBJINFO_PROCESS on `h` into PT_INFO: the call's result. */
 static int pt_info(int32_t h) {
-    struct object_info_args *oi = (struct object_info_args *)user_ptr(PT_IARGS);
+    struct object_info_args *oi = (struct object_info_args *)ktest_umem(PT_IARGS);
     oi->cap = sizeof(struct process_info);
     oi->buf = PT_INFO;
     oi->handle = h;
@@ -3275,8 +3484,8 @@ int usermode_process_test(void) {
     paddr_t phys = map_user_page(TEST_CODE_VIRT);
     if (!phys) return 0;
     struct htab *tab = thread_htab(thread_current_id());
-    struct process_info *pi = (struct process_info *)user_ptr(PT_INFO);
-    volatile uint32_t *seen = (volatile uint32_t *)user_ptr(PT_SEEN);
+    struct process_info *pi = (struct process_info *)ktest_umem(PT_INFO);
+    volatile uint32_t *seen = (volatile uint32_t *)ktest_umem(PT_SEEN);
     uint32_t live0 = proc_live(), faults0 = usermode_faults();
     int32_t h = -1, hc = -1, hn = -1, d = -1, eh = -1, ew = -1;
     int tid = -1, tc = -1, tn = -1, pid = -1, step = 0, ok = 0;
@@ -3287,8 +3496,8 @@ int usermode_process_test(void) {
     pid = thread_pid(tid);
     struct proc *p = thread_proc(tid);
     thread_start(tid);
-    struct object_info_args *oi = (struct object_info_args *)user_ptr(PT_IARGS);
-    struct object_basic *ob = (struct object_basic *)user_ptr(PT_INFO);
+    struct object_info_args *oi = (struct object_info_args *)ktest_umem(PT_IARGS);
+    struct object_basic *ob = (struct object_basic *)ktest_umem(PT_INFO);
     oi->cap = sizeof *ob; oi->buf = PT_INFO; oi->handle = h; oi->topic = OBJINFO_BASIC;
     step = 2; if (syscall_dispatch(SYS_OBJECT_INFO, PT_IARGS, 0, 0, 0, 0) != (int)sizeof *ob
                   || ob->kind != OBJ_TYPE_PROCESS
@@ -3427,7 +3636,7 @@ static int kt_kill_call(int32_t h) {
    and it ends killed by this thread's process, without running on in ring 3
    (user_blob_call's ud2 would be a fault). 1 = so. */
 static int kt_kill(int32_t h, int tid, int blocked) {
-    struct process_info *pi = (struct process_info *)user_ptr(PT_INFO);
+    struct process_info *pi = (struct process_info *)ktest_umem(PT_INFO);
     uint32_t faults = usermode_faults();
     if (pt_wait(h, SIGNAL_PROCESS_ENDED, 50, 0) != E_TIMED_OUT) return 0;
     if (blocked && !thread_is_blocked(tid)) return 0;
@@ -3443,7 +3652,7 @@ int usermode_kill_test(void) {
     if (!phys) return 0;
     int me = thread_current_id();
     struct htab *tab = thread_htab(me);
-    struct process_info *pi = (struct process_info *)user_ptr(PT_INFO);
+    struct process_info *pi = (struct process_info *)ktest_umem(PT_INFO);
     uint32_t live0 = proc_live(), faults0 = usermode_faults(), refused0 = syscall_refused_count();
     uint32_t caps0 = thread_current_caps();
     struct endpoint *ep = 0;
@@ -3479,7 +3688,7 @@ int usermode_kill_test(void) {
     step = 3; if (h <= 0) goto done;
     v = ep_install_handle(tid, ep, HRIGHT_RECV, 0);
     if (v <= 0) { thread_discard(tid); goto done; }
-    struct ipc_recv_args *ra = (struct ipc_recv_args *)user_ptr(KT_ARGS);
+    struct ipc_recv_args *ra = (struct ipc_recv_args *)ktest_umem(KT_ARGS);
     ra->cap = 0; ra->buf = 0; ra->info = KT_INFO; ra->ep_handle = v; ra->handles = 0; ra->handle_cap = 0;
     kt_call(SYS_IPC_RECV, KT_ARGS, 0, 0, 0, 0);
     thread_start(tid);
@@ -3488,8 +3697,8 @@ int usermode_kill_test(void) {
 
     /* 4: calling, before anyone took the request: it is withdrawn, and its
        token with it */
-    struct ipc_call_args *ca = (struct ipc_call_args *)user_ptr(KT_ARGS);
-    *(volatile uint8_t *)user_ptr(KT_REQ) = 0x5A;
+    struct ipc_call_args *ca = (struct ipc_call_args *)ktest_umem(KT_ARGS);
+    *(volatile uint8_t *)ktest_umem(KT_REQ) = 0x5A;
     uint32_t calls0 = kobj_live(KOBJ_REPLY);
     h = kt_make(&tid);
     step = 4; if (h <= 0) goto done;
@@ -3513,14 +3722,14 @@ int usermode_kill_test(void) {
     ca->ep_handle = v;
     kt_call(SYS_IPC_CALL, KT_ARGS, 0, 0, 0, 0);
     thread_start(tid);
-    struct ipc_recv_args *tr = (struct ipc_recv_args *)user_ptr(KT_TARGS);
-    struct ipc_msg_info *ti = (struct ipc_msg_info *)user_ptr(KT_TINFO);
+    struct ipc_recv_args *tr = (struct ipc_recv_args *)ktest_umem(KT_TARGS);
+    struct ipc_msg_info *ti = (struct ipc_msg_info *)ktest_umem(KT_TINFO);
     tr->cap = 1; tr->buf = KT_TBUF; tr->info = KT_TINFO; tr->ep_handle = eh; tr->handles = 0; tr->handle_cap = 0;
     if (pt_wait(h, SIGNAL_PROCESS_ENDED, 50, 0) != E_TIMED_OUT
         || syscall_dispatch(SYS_IPC_RECV, KT_TARGS, 0, 0, 0, 0) != 1 || ti->reply <= 0) goto done;
     int32_t tok = ti->reply;
     if (!kt_kill(h, tid, 1) || kobj_live(KOBJ_REPLY) != calls0 + 1) goto done;
-    struct ipc_reply_args *rp = (struct ipc_reply_args *)user_ptr(KT_TARGS);
+    struct ipc_reply_args *rp = (struct ipc_reply_args *)ktest_umem(KT_TARGS);
     rp->data = KT_REQ; rp->len = 0; rp->token = tok; rp->handles = 0; rp->handle_count = 0;
     step = 6; if (syscall_dispatch(SYS_IPC_REPLY, KT_TARGS, 0, 0, 0, 0) != E_PEER_CLOSED
                   || kobj_live(KOBJ_REPLY) != calls0
@@ -3545,7 +3754,7 @@ int usermode_kill_test(void) {
         of0 = sysfile_open_count();
         fa = syscall_dispatch(SYS_FILE_OPEN, KT_PATH, FOPEN_READ | FOPEN_WRITE | FOPEN_CREATE | FOPEN_TRUNC, 0, 0, 0);
         fb = syscall_dispatch(SYS_FILE_OPEN, KT_PATH, FOPEN_READ, 0, 0, 0);
-        struct file_lock_args *la = (struct file_lock_args *)user_ptr(KT_TARGS);
+        struct file_lock_args *la = (struct file_lock_args *)ktest_umem(KT_TARGS);
         la->start = 0; la->len = 0; la->mode = FLOCK_EXCLUSIVE; la->reserved = 0;
         step = 8; if (fa <= 0 || fb <= 0
                       || syscall_dispatch(SYS_FILE_LOCK, (uint32_t)fa, KT_TARGS, 0, 0, 0) != E_OK) goto done;
@@ -3558,7 +3767,7 @@ int usermode_kill_test(void) {
         if (v <= 0) { thread_discard(tid); goto done; }
         htab_close(tab, fb); fb = -1;
         thread_set_caps(tid, GRANT_DISK);
-        struct file_lock_args *vl = (struct file_lock_args *)user_ptr(KT_LARGS);
+        struct file_lock_args *vl = (struct file_lock_args *)ktest_umem(KT_LARGS);
         vl->start = 0; vl->len = 0; vl->mode = FLOCK_EXCLUSIVE | FLOCK_WAIT; vl->reserved = 0;
         kt_call(SYS_FILE_LOCK, (uint32_t)v, KT_LARGS, 0, 0, 0);
         thread_start(tid);
@@ -3690,15 +3899,15 @@ static int st_register(int32_t h) {
 
 /* The test thread receives on `eh` with room for `cap` bytes. */
 static int st_recv(int32_t eh, uint64_t cap) {
-    struct ipc_recv_args *r = (struct ipc_recv_args *)user_ptr(KT_TARGS);
+    struct ipc_recv_args *r = (struct ipc_recv_args *)ktest_umem(KT_TARGS);
     r->cap = cap; r->buf = ST_TBUF; r->info = ST_TSEND; r->ep_handle = eh; r->handles = 0; r->handle_cap = 0;
     return syscall_dispatch(SYS_IPC_RECV, KT_TARGS, 0, 0, 0, 0);
 }
 
 /* It answers the call behind the token it last received. */
 static int st_reply(void) {
-    struct ipc_reply_args *r = (struct ipc_reply_args *)user_ptr(KT_TARGS);
-    int32_t tok = ((const struct ipc_msg_info *)user_ptr(ST_TSEND))->reply;
+    struct ipc_reply_args *r = (struct ipc_reply_args *)ktest_umem(KT_TARGS);
+    int32_t tok = ((const struct ipc_msg_info *)ktest_umem(ST_TSEND))->reply;
     r->data = KT_REQ; r->len = 0; r->token = tok; r->handles = 0; r->handle_count = 0;
     return syscall_dispatch(SYS_IPC_REPLY, KT_TARGS, 0, 0, 0, 0);
 }
@@ -3731,7 +3940,7 @@ static int32_t st_deaf(struct endpoint *ep, int *tid, int32_t *v) {
 /* `h` ends as `how` says, for this thread's process, without running on in
    ring 3. */
 static int st_ends(int32_t h, uint32_t how) {
-    struct process_info *pi = (struct process_info *)user_ptr(PT_INFO);
+    struct process_info *pi = (struct process_info *)ktest_umem(PT_INFO);
     uint32_t faults = usermode_faults();
     return pt_wait(h, SIGNAL_PROCESS_ENDED, 3000, 0) == E_OK && pt_info(h) == (int)sizeof *pi
         && pi->ended == how && pi->killer == (uint32_t)thread_current_pid()
@@ -3744,9 +3953,9 @@ int usermode_stop_test(void) {
     int me = thread_current_id();
     struct htab *tab = thread_htab(me);
     struct proc *mine = thread_proc(me);
-    struct process_info *pi = (struct process_info *)user_ptr(PT_INFO);
-    struct stop_notice *note = (struct stop_notice *)user_ptr(ST_NOTE);
-    const void *tbuf = user_ptr(ST_TBUF), *tsend = user_ptr(ST_TSEND);
+    struct process_info *pi = (struct process_info *)ktest_umem(PT_INFO);
+    struct stop_notice *note = (struct stop_notice *)ktest_umem(ST_NOTE);
+    const void *tbuf = ktest_umem(ST_TBUF), *tsend = ktest_umem(ST_TSEND);
     uint32_t live0 = proc_live(), faults0 = usermode_faults(), refused0 = syscall_refused_count();
     int eps0 = ep_in_use_count();
     struct endpoint *ep = 0, *ep2 = 0;
@@ -3781,9 +3990,9 @@ int usermode_stop_test(void) {
        receive returned, the deadline is disarmed */
     v = ep_install_handle(tid, ep, HRIGHT_RECV, 0);
     step = 3; if (v <= 0) { thread_discard(tid); goto done; }
-    struct ipc_recv_args *ra = (struct ipc_recv_args *)user_ptr(KT_ARGS);
+    struct ipc_recv_args *ra = (struct ipc_recv_args *)ktest_umem(KT_ARGS);
     ra->cap = sizeof *note; ra->buf = ST_NOTE; ra->info = ST_SENDER; ra->ep_handle = v; ra->handles = 0; ra->handle_cap = 0;
-    ((volatile struct ipc_msg_info *)user_ptr(ST_SENDER))->sender = 0;
+    ((volatile struct ipc_msg_info *)ktest_umem(ST_SENDER))->sender = 0;
     st_call(0, SYS_PROCESS_STOP_ENDPOINT, (uint32_t)v, 0);
     st_call(1, SYS_SLEEP, 1, 0);
     st_call(2, SYS_IPC_RECV, KT_ARGS, 0);
@@ -3795,7 +4004,7 @@ int usermode_stop_test(void) {
     if (pt_wait(h, SIGNAL_PROCESS_ENDED, 3000, 0) != E_OK || timer_ticks() - t0 >= 1000
         || pt_info(h) != (int)sizeof *pi || pi->ended != PROC_EXITED
         || pi->code != (int)sizeof *note || pi->killer != 0
-        || !st_is_notice((int)sizeof *note, note, user_ptr(ST_SENDER), (uint32_t)thread_current_pid(), 3000)
+        || !st_is_notice((int)sizeof *note, note, ktest_umem(ST_SENDER), (uint32_t)thread_current_pid(), 3000)
         || ep->stop_pending || proc_stops_armed() != 0) goto done;
 
     /* 4: an ended process: 0, and how it ended stands */
@@ -3818,7 +4027,7 @@ int usermode_stop_test(void) {
     thread_start(tid);
     if (pt_wait(h, SIGNAL_PROCESS_ENDED, 3000, 0) != E_OK || pt_info(h) <= 0
         || pi->ended != PROC_EXITED || pi->code != (int)sizeof *note
-        || !st_is_notice((int)sizeof *note, note, user_ptr(ST_SENDER), (uint32_t)vpid, 2000)
+        || !st_is_notice((int)sizeof *note, note, ktest_umem(ST_SENDER), (uint32_t)vpid, 2000)
         || proc_stops_armed() != 0) goto done;
     htab_close(tab, h); h = -1;
 
@@ -3909,9 +4118,9 @@ int usermode_stop_test(void) {
     step = 12; if (ha <= 0) goto done;
     v = ep_install_send(tida, ep, 0, HRIGHT_SEND, 0);
     if (v <= 0) { thread_discard(tida); goto done; }
-    struct ipc_call_args *ca = (struct ipc_call_args *)user_ptr(KT_ARGS);
+    struct ipc_call_args *ca = (struct ipc_call_args *)ktest_umem(KT_ARGS);
     const struct ipc_msg_info *ti = tsend;
-    *(volatile uint8_t *)user_ptr(KT_REQ) = 0x5A;
+    *(volatile uint8_t *)ktest_umem(KT_REQ) = 0x5A;
     ca->req_len = 1; ca->reply_cap = 0; ca->req = KT_REQ; ca->reply = 0;
     ca->ep_handle = v; ca->reserved = 0;
     ca->handles = 0; ca->handle_count = 0; ca->reply_handles = 0; ca->reply_handle_cap = 0;
@@ -3962,13 +4171,13 @@ done:
 #define JT_MAP2 (TEST_CODE_VIRT + 0x8C0)   /* and its second */
 
 static int jt_create(int32_t parent, uint64_t mem, uint32_t threads, uint32_t prio) {
-    struct job_limits *l = (struct job_limits *)user_ptr(JT_LIM);
+    struct job_limits *l = (struct job_limits *)ktest_umem(JT_LIM);
     l->memory = mem; l->threads = threads; l->priority = prio;
     return syscall_dispatch(SYS_JOB_CREATE, (uint32_t)parent, JT_LIM, 0, 0, 0);
 }
 
 static int jt_limits(int32_t h, uint64_t mem, uint32_t threads, uint32_t prio) {
-    struct job_limits *l = (struct job_limits *)user_ptr(JT_LIM);
+    struct job_limits *l = (struct job_limits *)ktest_umem(JT_LIM);
     l->memory = mem; l->threads = threads; l->priority = prio;
     return syscall_dispatch(SYS_JOB_SET_LIMITS, (uint32_t)h, JT_LIM, 0, 0, 0);
 }
@@ -3983,7 +4192,7 @@ static int32_t jt_dup(int32_t h, uint32_t rights) {
 
 /* OBJINFO_JOB (or `topic`) on `h` into JT_INFO, with room for `cap`. */
 static int jt_info_as(int32_t h, uint32_t topic, uint64_t cap) {
-    struct object_info_args *oi = (struct object_info_args *)user_ptr(PT_IARGS);
+    struct object_info_args *oi = (struct object_info_args *)ktest_umem(PT_IARGS);
     oi->cap = cap; oi->buf = JT_INFO; oi->handle = h; oi->topic = topic;
     return syscall_dispatch(SYS_OBJECT_INFO, PT_IARGS, 0, 0, 0, 0);
 }
@@ -3994,7 +4203,7 @@ static int jt_info(int32_t h) {
 
 /* `h`'s job holds `used` bytes, `threads` threads and `procs` processes. */
 static int jt_is(int32_t h, uint64_t used, uint32_t threads, uint32_t procs) {
-    const struct job_info *ji = (const struct job_info *)user_ptr(JT_INFO);
+    const struct job_info *ji = (const struct job_info *)ktest_umem(JT_INFO);
     return jt_info(h) == (int)sizeof *ji && ji->memory_used == used
         && ji->threads == threads && ji->processes == procs;
 }
@@ -4025,8 +4234,8 @@ static int32_t jt_sleeper(struct job *j, int *tid) {
 /* A held process in `j` that maps a page, unmaps it, then asks for two and
    exits with what that returned. */
 static int32_t jt_mapper(struct job *j, int *tid) {
-    struct vm_map_args *m = (struct vm_map_args *)user_ptr(JT_MAP);
-    struct vm_map_args *m2 = (struct vm_map_args *)user_ptr(JT_MAP2);
+    struct vm_map_args *m = (struct vm_map_args *)ktest_umem(JT_MAP);
+    struct vm_map_args *m2 = (struct vm_map_args *)ktest_umem(JT_MAP2);
     m->offset = 0; m->length = PAGE_SIZE; m->granted = 0; m->addr = 0;
     m->object = MOBJ_ANON; m->prot = MPROT_READ | MPROT_WRITE; m->flags = 0; m->reserved = 0;
     *m2 = *m;
@@ -4046,9 +4255,9 @@ int usermode_job_test(void) {
     paddr_t phys = map_user_page(TEST_CODE_VIRT);
     if (!phys) return 0;
     struct htab *tab = thread_htab(thread_current_id());
-    struct process_info *pi = (struct process_info *)user_ptr(PT_INFO);
-    struct job_info *ji = (struct job_info *)user_ptr(JT_INFO);
-    struct object_basic *ob = (struct object_basic *)user_ptr(JT_INFO);
+    struct process_info *pi = (struct process_info *)ktest_umem(PT_INFO);
+    struct job_info *ji = (struct job_info *)ktest_umem(JT_INFO);
+    struct object_basic *ob = (struct object_basic *)ktest_umem(JT_INFO);
     const uint32_t P = PAGE_SIZE;
     const uint32_t all = HRIGHT_WAIT | HRIGHT_INSPECT | HRIGHT_KILL | HRIGHT_ASSIGN
                        | HRIGHT_SET_LIMITS | HRIGHT_DUPLICATE;
@@ -4235,8 +4444,8 @@ int usermode_timer_test(void) {
     paddr_t phys = map_user_page(TEST_CODE_VIRT);
     if (!phys) return 0;
     struct htab *tab = thread_htab(thread_current_id());
-    volatile uint64_t *now = (volatile uint64_t *)user_ptr(TT_NOW);
-    volatile uint32_t *seen = (volatile uint32_t *)user_ptr(TT_SEEN);
+    volatile uint64_t *now = (volatile uint64_t *)ktest_umem(TT_NOW);
+    volatile uint32_t *seen = (volatile uint32_t *)ktest_umem(TT_SEEN);
     uint32_t live0 = kobj_live(KOBJ_TIMER), armed0 = ktimer_armed_count();
     int32_t t = -1, u = -1, d = -1, eh = -1;
     int step = 0, ok = 0;
@@ -4256,8 +4465,8 @@ int usermode_timer_test(void) {
 
     /* 3-4: a new timer, with the rights it is made with; disarmed, unfired */
     t = syscall_dispatch(SYS_TIMER_CREATE, 0, 0, 0, 0, 0);
-    struct object_info_args *oi = (struct object_info_args *)user_ptr(TT_IARGS);
-    struct object_basic *ob = (struct object_basic *)user_ptr(TT_INFO);
+    struct object_info_args *oi = (struct object_info_args *)ktest_umem(TT_IARGS);
+    struct object_basic *ob = (struct object_basic *)ktest_umem(TT_INFO);
     oi->cap = sizeof *ob; oi->buf = TT_INFO; oi->handle = t; oi->topic = OBJINFO_BASIC;
     step = 3; if (t <= 0 || syscall_dispatch(SYS_OBJECT_INFO, TT_IARGS, 0, 0, 0, 0) != (int)sizeof *ob
                   || ob->kind != OBJ_TYPE_TIMER
@@ -4366,8 +4575,8 @@ int usermode_queue_test(void) {
     paddr_t phys = map_user_page(TEST_CODE_VIRT);
     if (!phys) return 0;
     struct htab *tab = thread_htab(thread_current_id());
-    volatile struct queue_event *ev = (volatile struct queue_event *)user_ptr(QT_EV);
-    volatile uint64_t *guard = (volatile uint64_t *)user_ptr(QT_GUARD);
+    volatile struct queue_event *ev = (volatile struct queue_event *)ktest_umem(QT_EV);
+    volatile uint64_t *guard = (volatile uint64_t *)ktest_umem(QT_GUARD);
     uint32_t qlive0 = kobj_live(KOBJ_QUEUE), tlive0 = kobj_live(KOBJ_TIMER);
     uint32_t regs0 = kqueue_reg_count(), armed0 = ktimer_armed_count(), jobs0 = job_live();
     const uint64_t K1 = 0x1111222233334444ull, K2 = 0xAAAA0000BBBB0002ull, K3 = 0x300000000ull;
@@ -4376,8 +4585,8 @@ int usermode_queue_test(void) {
 
     /* 1: a new queue, with the rights it is made with, and nothing ready */
     q = syscall_dispatch(SYS_QUEUE_CREATE, 0, 0, 0, 0, 0);
-    struct object_info_args *oi = (struct object_info_args *)user_ptr(TT_IARGS);
-    struct object_basic *ob = (struct object_basic *)user_ptr(TT_INFO);
+    struct object_info_args *oi = (struct object_info_args *)ktest_umem(TT_IARGS);
+    struct object_basic *ob = (struct object_basic *)ktest_umem(TT_INFO);
     oi->cap = sizeof *ob; oi->buf = TT_INFO; oi->handle = q; oi->topic = OBJINFO_BASIC;
     step = 1; if (q <= 0 || syscall_dispatch(SYS_OBJECT_INFO, TT_IARGS, 0, 0, 0, 0) != (int)sizeof *ob
                   || ob->kind != OBJ_TYPE_QUEUE
@@ -4564,8 +4773,8 @@ static int nt_look(int32_t n) {
 }
 /* The kind and rights object_info gives for `h`. */
 static int nt_basic(int32_t h, uint32_t kind, uint32_t rights) {
-    struct object_info_args *oi = (struct object_info_args *)user_ptr(NT_IARGS);
-    const struct object_basic *ob = (const struct object_basic *)user_ptr(NT_INFO);
+    struct object_info_args *oi = (struct object_info_args *)ktest_umem(NT_IARGS);
+    const struct object_basic *ob = (const struct object_basic *)ktest_umem(NT_INFO);
     oi->cap = sizeof *ob; oi->buf = NT_INFO; oi->handle = h; oi->topic = OBJINFO_BASIC;
     return syscall_dispatch(SYS_OBJECT_INFO, NT_IARGS, 0, 0, 0, 0) == (int)sizeof *ob
         && ob->kind == kind && ob->rights == rights;
@@ -4585,7 +4794,7 @@ int usermode_notify_test(void) {
     paddr_t phys = map_user_page(TEST_CODE_VIRT);
     if (!phys) return 0;
     struct htab *tab = thread_htab(thread_current_id());
-    volatile uint64_t *bits = (volatile uint64_t *)user_ptr(NT_BITS);
+    volatile uint64_t *bits = (volatile uint64_t *)ktest_umem(NT_BITS);
     uint32_t nlive0 = kobj_live(KOBJ_NOTIFY), slive0 = kobj_live(KOBJ_SIGNALLER);
     uint32_t regs0 = kqueue_reg_count();
     int32_t n = -1, s = -1, d = -1, q = -1, t = -1;
@@ -4654,7 +4863,7 @@ int usermode_notify_test(void) {
 
     /* 13: through a queue: a signal readies the key, with PENDING */
     q = syscall_dispatch(SYS_QUEUE_CREATE, 0, 0, 0, 0, 0);
-    const struct queue_event *ev = (const struct queue_event *)user_ptr(QT_EV);
+    const struct queue_event *ev = (const struct queue_event *)ktest_umem(QT_EV);
     step = 13; if (q <= 0 || qt_reg(q, n, SIGNAL_NOTIFY_PENDING, 0xC0DE000000000013ull) != E_OK
                    || qt_wait(q, 1, 0) != E_TIMED_OUT || nt_signal(s, 0x10) != E_OK
                    || qt_wait(q, 1, 0) != 1 || ev[0].key != 0xC0DE000000000013ull
@@ -4719,7 +4928,7 @@ static volatile int32_t pt_close;           /* the handle the helper closes */
 static struct htab *volatile pt_tab;
 
 static int pt_create(uint32_t size, int32_t *rd, int32_t *wr) {
-    volatile int32_t *ends = (volatile int32_t *)user_ptr(PT_ENDS);
+    volatile int32_t *ends = (volatile int32_t *)ktest_umem(PT_ENDS);
     ends[0] = ends[1] = -1;
     int rc = syscall_dispatch(SYS_PIPE_CREATE, size, PT_ENDS, 0, 0, 0);
     *rd = ends[0]; *wr = ends[1];
@@ -4736,15 +4945,15 @@ static int pt_set(int32_t h, uint32_t sig) {
     return syscall_dispatch(SYS_OBJECT_WAIT, (uint32_t)h, sig, 0, 0, 0) == E_OK;
 }
 static int pt_basic(int32_t h, uint32_t rights) {
-    struct object_info_args *oi = (struct object_info_args *)user_ptr(PT_IARGS);
-    const struct object_basic *ob = (const struct object_basic *)user_ptr(PT_INFO);
+    struct object_info_args *oi = (struct object_info_args *)ktest_umem(PT_IARGS);
+    const struct object_basic *ob = (const struct object_basic *)ktest_umem(PT_INFO);
     oi->cap = sizeof *ob; oi->buf = PT_INFO; oi->handle = h; oi->topic = OBJINFO_BASIC;
     return syscall_dispatch(SYS_OBJECT_INFO, PT_IARGS, 0, 0, 0, 0) == (int)sizeof *ob
         && ob->kind == OBJ_TYPE_PIPE && ob->rights == rights;
 }
 /* The bytes read at PT_DST + off are the pattern from `from` on. */
 static int pt_pattern(uint32_t off, uint32_t n, uint32_t from) {
-    const volatile uint8_t *d = (const volatile uint8_t *)user_ptr(PT_DST + off);
+    const volatile uint8_t *d = (const volatile uint8_t *)ktest_umem(PT_DST + off);
     for (uint32_t i = 0; i < n; i++)
         if (d[i] != (uint8_t)((from + i) * 7u + 3u)) return 0;
     return 1;
@@ -4782,8 +4991,8 @@ int usermode_pipe_test(void) {
     uint32_t caps0 = thread_current_caps();
     uint32_t live0 = kobj_live(KOBJ_PIPE);
     uint64_t used0 = job->mem_used;
-    volatile uint8_t *src = (volatile uint8_t *)user_ptr(PT_SRC);
-    volatile uint8_t *dst = (volatile uint8_t *)user_ptr(PT_DST);
+    volatile uint8_t *src = (volatile uint8_t *)ktest_umem(PT_SRC);
+    volatile uint8_t *dst = (volatile uint8_t *)ktest_umem(PT_DST);
     for (uint32_t i = 0; i < 1024; i++) src[i] = (uint8_t)(i * 7u + 3u);
     int32_t ar = -1, aw = -1, br = -1, bw = -1, d = -1;
     struct kpipe *bp = 0;
@@ -4926,14 +5135,14 @@ static int mt_seal(int32_t h, uint32_t seals) {
 }
 /* object_info on `h` for `topic` into MT_INFO, `cap` bytes: the call's result. */
 static int mt_info(int32_t h, uint32_t topic, uint32_t cap) {
-    struct object_info_args *oi = (struct object_info_args *)user_ptr(MT_IARGS);
+    struct object_info_args *oi = (struct object_info_args *)ktest_umem(MT_IARGS);
     oi->cap = cap; oi->buf = MT_INFO; oi->handle = h; oi->topic = topic;
     return syscall_dispatch(SYS_OBJECT_INFO, MT_IARGS, 0, 0, 0, 0);
 }
 /* SYS_VM_MAP of `obj` at `offset`, `length` bytes: the call's result; the
    address is in MT_ARGS. */
 static int mt_map(int32_t obj, uint64_t offset, uint64_t length, uint32_t prot) {
-    struct vm_map_args *a = (struct vm_map_args *)user_ptr(MT_ARGS);
+    struct vm_map_args *a = (struct vm_map_args *)ktest_umem(MT_ARGS);
     a->offset = offset; a->length = length; a->granted = 0; a->addr = 0;
     a->object = (uint32_t)obj; a->prot = prot; a->flags = 0; a->reserved = 0;
     return syscall_dispatch(SYS_VM_MAP, MT_ARGS, 0, 0, 0, 0);
@@ -4970,10 +5179,10 @@ int usermode_mem_test(void) {
     if (!phys) return 0;
     vm_proc_init(pid, vm_default_quota(), -1);
     struct htab *tab = thread_htab(thread_current_id());
-    struct vm_map_args *a = (struct vm_map_args *)user_ptr(MT_ARGS);
-    const struct object_basic *ob = (const struct object_basic *)user_ptr(MT_INFO);
-    const struct mem_info *mi = (const struct mem_info *)user_ptr(MT_INFO);
-    struct process_info *pi = (struct process_info *)user_ptr(PT_INFO);
+    struct vm_map_args *a = (struct vm_map_args *)ktest_umem(MT_ARGS);
+    const struct object_basic *ob = (const struct object_basic *)ktest_umem(MT_INFO);
+    const struct mem_info *mi = (const struct mem_info *)ktest_umem(MT_INFO);
+    struct process_info *pi = (struct process_info *)ktest_umem(PT_INFO);
     const uint32_t P = PAGE_SIZE;
     const uint32_t all = HRIGHT_MAP | HRIGHT_MAP_WRITE | HRIGHT_MAP_EXEC | HRIGHT_SEAL |
                          HRIGHT_INSPECT | HRIGHT_DUPLICATE;
@@ -5231,7 +5440,7 @@ static int32_t it_caller(struct endpoint *ep, struct kobj *send, uint64_t badge,
         htab_close(thread_htab(thread_current_id()), h);
         return E_NO_RESOURCES;
     }
-    struct ipc_call_args *a = (struct ipc_call_args *)user_ptr(IT_ARGS(i));
+    struct ipc_call_args *a = (struct ipc_call_args *)ktest_umem(IT_ARGS(i));
     a->req_len = req_len; a->reply_cap = rcap; a->req = IT_REQ(i); a->reply = reply;
     a->ep_handle = v; a->reserved = 0;
     a->handles = 0; a->handle_count = 0; a->reply_handles = 0; a->reply_handle_cap = 0;
@@ -5253,19 +5462,19 @@ static int it_queued(struct endpoint *ep, uint32_t n) {
 
 /* `h` exits with `code`, the result of its call. */
 static int it_ends(int32_t h, int32_t code) {
-    struct process_info *pi = (struct process_info *)user_ptr(PT_INFO);
+    struct process_info *pi = (struct process_info *)ktest_umem(PT_INFO);
     return pt_wait(h, SIGNAL_PROCESS_ENDED, 3000, 0) == E_OK && pt_info(h) == (int)sizeof *pi
         && pi->ended == PROC_EXITED && pi->code == code;
 }
 
 static int it_recv(int32_t eh, uint64_t cap) {
-    struct ipc_recv_args *r = (struct ipc_recv_args *)user_ptr(IT_TARGS);
+    struct ipc_recv_args *r = (struct ipc_recv_args *)ktest_umem(IT_TARGS);
     r->cap = cap; r->buf = IT_TBUF; r->info = IT_TINFO; r->ep_handle = eh; r->handles = 0; r->handle_cap = 0;
     return syscall_dispatch(SYS_IPC_RECV, IT_TARGS, 0, 0, 0, 0);
 }
 
 static int it_reply(int32_t tok, uint64_t data, uint64_t len) {
-    struct ipc_reply_args *r = (struct ipc_reply_args *)user_ptr(IT_TARGS);
+    struct ipc_reply_args *r = (struct ipc_reply_args *)ktest_umem(IT_TARGS);
     r->data = data; r->len = len; r->token = tok; r->handles = 0; r->handle_count = 0;
     return syscall_dispatch(SYS_IPC_REPLY, IT_TARGS, 0, 0, 0, 0);
 }
@@ -5281,7 +5490,7 @@ static int it_readable(int32_t eh) {
 
 /* OBJINFO_BASIC on `h` says `kind` and `rights`. */
 static int it_basic(int32_t h, uint32_t kind, uint32_t rights) {
-    const struct object_basic *ob = (const struct object_basic *)user_ptr(JT_INFO);
+    const struct object_basic *ob = (const struct object_basic *)ktest_umem(JT_INFO);
     return jt_info_as(h, OBJINFO_BASIC, sizeof *ob) == (int)sizeof *ob
         && ob->kind == kind && ob->rights == rights;
 }
@@ -5290,10 +5499,10 @@ int usermode_ipc_test(void) {
     paddr_t phys = map_user_page(TEST_CODE_VIRT);
     if (!phys) return 0;
     struct htab *tab = thread_htab(thread_current_id());
-    const struct ipc_msg_info *ti = (const struct ipc_msg_info *)user_ptr(IT_TINFO);
-    const uint8_t *tbuf = (const uint8_t *)user_ptr(IT_TBUF);
-    volatile uint8_t *data = (volatile uint8_t *)user_ptr(IT_DATA);
-    volatile struct queue_event *ev = (volatile struct queue_event *)user_ptr(QT_EV);
+    const struct ipc_msg_info *ti = (const struct ipc_msg_info *)ktest_umem(IT_TINFO);
+    const uint8_t *tbuf = (const uint8_t *)ktest_umem(IT_TBUF);
+    volatile uint8_t *data = (volatile uint8_t *)ktest_umem(IT_DATA);
+    volatile struct queue_event *ev = (volatile struct queue_event *)ktest_umem(QT_EV);
     uint32_t live0 = proc_live(), faults0 = usermode_faults(), refused0 = syscall_refused_count();
     uint32_t sends0 = kobj_live(KOBJ_SEND), calls0 = kobj_live(KOBJ_REPLY), jobs0 = job_live();
     int eps0 = ep_in_use_count();
@@ -5303,7 +5512,7 @@ int usermode_ipc_test(void) {
     int32_t ha = -1, hb = -1, hc = -1, hd = -1, he = -1;
     int tida = -1, tidb = -1, tidc = -1, tidd = -1, tide = -1, step = 0, ok = 0;
     struct job *jb;
-    struct ipc_call_args *ca = (struct ipc_call_args *)user_ptr(IT_ARGS(5));
+    struct ipc_call_args *ca = (struct ipc_call_args *)ktest_umem(IT_ARGS(5));
 
     eh = ep_create();
     ep = eh > 0 ? ep_from_handle(eh, HRIGHT_RECV, 0) : 0;
@@ -5341,7 +5550,7 @@ int usermode_ipc_test(void) {
         || it_recv(s7, 64) != E_BAD_HANDLE || it_reply(eh, IT_DATA, 0) != E_BAD_HANDLE
         || it_reply(s7, IT_DATA, 0) != E_BAD_HANDLE) goto done;
     {
-        struct ipc_recv_args *r = (struct ipc_recv_args *)user_ptr(IT_TARGS);
+        struct ipc_recv_args *r = (struct ipc_recv_args *)ktest_umem(IT_TARGS);
         r->cap = 64; r->buf = IT_TBUF; r->info = 0; r->ep_handle = eh; r->handles = 0; r->handle_cap = 0;
         if (syscall_dispatch(SYS_IPC_RECV, IT_TARGS, 0, 0, 0, 0) != E_BAD_ADDRESS) goto done;
     }
@@ -5349,9 +5558,9 @@ int usermode_ipc_test(void) {
 
     /* 3: two callers, queued in the order they called: A through the minted
        handle, B with badge 9. The endpoint is readable. */
-    *(volatile uint8_t *)user_ptr(IT_REQ(0)) = 'A';
-    ((volatile uint8_t *)user_ptr(IT_REQ(1)))[0] = 'B';
-    ((volatile uint8_t *)user_ptr(IT_REQ(1)))[1] = 'b';
+    *(volatile uint8_t *)ktest_umem(IT_REQ(0)) = 'A';
+    ((volatile uint8_t *)ktest_umem(IT_REQ(1)))[0] = 'B';
+    ((volatile uint8_t *)ktest_umem(IT_REQ(1)))[1] = 'b';
     ha = it_caller(ep, s7o, 0, 0, 1, IT_REPLY(0), IT_RCAP, 0, 1, &tida);
     step = 3; if (ha <= 0 || !it_queued(ep, 1) || !it_readable(eh)) goto done;
     hb = it_caller(ep, 0, 9, 1, 2, IT_REPLY(1), IT_RCAP, 0, 1, &tidb);
@@ -5381,7 +5590,7 @@ int usermode_ipc_test(void) {
     data[0] = 'x'; data[1] = 'y'; data[2] = 'z';
     step = 7; if (it_reply(tokb, IT_DATA, 3) != E_OK || !it_ends(hb, 3)) goto done;
     {
-        const uint8_t *rb = (const uint8_t *)user_ptr(IT_REPLY(1));
+        const uint8_t *rb = (const uint8_t *)ktest_umem(IT_REPLY(1));
         if (rb[0] != 'x' || rb[1] != 'y' || rb[2] != 'z') goto done;
     }
     if (it_reply(tokb, IT_DATA, 3) != E_BAD_HANDLE || !thread_is_blocked(tida)) goto done;
@@ -5394,7 +5603,7 @@ int usermode_ipc_test(void) {
                   || !thread_is_blocked(tida) || kobj_live(KOBJ_REPLY) != calls0 + 1) goto done;
     data[0] = 'o'; data[1] = 'k';
     if (it_reply(tok, IT_DATA, 2) != E_OK || !it_ends(ha, 2)
-        || ((const uint8_t *)user_ptr(IT_REPLY(0)))[1] != 'k') goto done;
+        || ((const uint8_t *)ktest_umem(IT_REPLY(0)))[1] != 'k') goto done;
     tok = -1;
     if (kobj_live(KOBJ_REPLY) != calls0) goto done;
 
@@ -5504,7 +5713,7 @@ done:
 #define HT_RHCAP    3
 
 static void ht_desc(uint64_t at, uint32_t k, int32_t h, uint32_t op, uint32_t rights) {
-    struct ipc_handle *d = (struct ipc_handle *)user_ptr(at) + k;
+    struct ipc_handle *d = (struct ipc_handle *)ktest_umem(at) + k;
     d->handle = h; d->op = op; d->rights = rights; d->reserved = 0;
 }
 
@@ -5524,25 +5733,25 @@ static int32_t ht_caller(struct endpoint *ep, uint32_t i, struct kobj **objs, co
             return E_NO_RESOURCES;
         }
     }
-    struct ipc_call_args *a = (struct ipc_call_args *)user_ptr(IT_ARGS(i));
+    struct ipc_call_args *a = (struct ipc_call_args *)ktest_umem(IT_ARGS(i));
     a->handles = HT_CDESC(i); a->reply_handles = HT_RH(i); a->reply_handle_cap = HT_RHCAP;
     return h;
 }
 
 static void ht_go(int tid, uint32_t i, uint32_t ndesc) {
-    ((struct ipc_call_args *)user_ptr(IT_ARGS(i)))->handle_count = ndesc;
+    ((struct ipc_call_args *)ktest_umem(IT_ARGS(i)))->handle_count = ndesc;
     thread_start(tid);
 }
 
 static int ht_recv(int32_t eh, uint32_t hcap) {
-    struct ipc_recv_args *r = (struct ipc_recv_args *)user_ptr(IT_TARGS);
+    struct ipc_recv_args *r = (struct ipc_recv_args *)ktest_umem(IT_TARGS);
     r->cap = 64; r->buf = IT_TBUF; r->info = IT_TINFO; r->handles = HT_TH;
     r->ep_handle = eh; r->handle_cap = hcap;
     return syscall_dispatch(SYS_IPC_RECV, IT_TARGS, 0, 0, 0, 0);
 }
 
 static int ht_reply(int32_t tok, uint64_t len, uint32_t n) {
-    struct ipc_reply_args *r = (struct ipc_reply_args *)user_ptr(IT_TARGS);
+    struct ipc_reply_args *r = (struct ipc_reply_args *)ktest_umem(IT_TARGS);
     r->data = IT_DATA; r->len = len; r->handles = HT_DESC; r->token = tok; r->handle_count = n;
     return syscall_dispatch(SYS_IPC_REPLY, IT_TARGS, 0, 0, 0, 0);
 }
@@ -5573,8 +5782,8 @@ static volatile int32_t hf_eh;
 
 static void hf_helper(void) {
     while (!hf_go) yield();
-    const struct ipc_msg_info *ti = (const struct ipc_msg_info *)user_ptr(IT_TINFO);
-    const int32_t *th = (const int32_t *)user_ptr(HT_TH);
+    const struct ipc_msg_info *ti = (const struct ipc_msg_info *)ktest_umem(IT_TINFO);
+    const int32_t *th = (const int32_t *)ktest_umem(HT_TH);
     if (ht_recv(hf_eh, 1) != 0 || ti->handles != 1 || ti->reply <= 0) { hf_stage = -1; return; }
     int32_t f = th[0], tok = ti->reply;
     hf_stage = 1;
@@ -5591,10 +5800,10 @@ int usermode_ipc_handles_test(void) {
     paddr_t phys = map_user_page(TEST_CODE_VIRT);
     if (!phys) return 0;
     struct htab *tab = thread_htab(thread_current_id());
-    const struct ipc_msg_info *ti = (const struct ipc_msg_info *)user_ptr(IT_TINFO);
-    const int32_t *th = (const int32_t *)user_ptr(HT_TH);
-    volatile int32_t *rh = (volatile int32_t *)user_ptr(HT_RH(0));
-    volatile uint8_t *data = (volatile uint8_t *)user_ptr(IT_DATA);
+    const struct ipc_msg_info *ti = (const struct ipc_msg_info *)ktest_umem(IT_TINFO);
+    const int32_t *th = (const int32_t *)ktest_umem(HT_TH);
+    volatile int32_t *rh = (volatile int32_t *)ktest_umem(HT_RH(0));
+    volatile uint8_t *data = (volatile uint8_t *)ktest_umem(IT_DATA);
     uint32_t live0 = proc_live(), faults0 = usermode_faults(), refused0 = syscall_refused_count();
     uint32_t calls0 = kobj_live(KOBJ_REPLY), timers0 = kobj_live(KOBJ_TIMER);
     uint32_t mems0 = kobj_live(KOBJ_MEM);
@@ -5703,7 +5912,7 @@ int usermode_ipc_handles_test(void) {
         }
         ha = ht_caller(ep, 0, objs, rights, 1, hv, &tida);
         step = 8; if (ha <= 0) goto done;
-        ((struct ipc_call_args *)user_ptr(IT_ARGS(0)))->handles = USER_VLIMIT;
+        ((struct ipc_call_args *)ktest_umem(IT_ARGS(0)))->handles = USER_VLIMIT;
         ht_go(tida, 0, 1);
         if (!it_ends(ha, E_BAD_ADDRESS)) goto done;
         htab_close(tab, ha); ha = -1;
@@ -5786,7 +5995,7 @@ int usermode_ipc_handles_test(void) {
     tok = -1;
     for (int k = 0; k < 100 && rh[2] == -1; k++) (void)thread_sleep_ms(10);
     if (rh[0] <= 0 || rh[1] <= 0 || rh[2] != 0 || ht_names(tab, th0, o1, HRIGHT_WAIT, 0, 0)
-        || ((const uint8_t *)user_ptr(IT_REPLY(0)))[0] != 'h'
+        || ((const uint8_t *)ktest_umem(IT_REPLY(0)))[0] != 'h'
         || !ht_names(thread_htab(tida), rh[0], o1, HRIGHT_WAIT, &g, 0) || g != g0
         || !ht_names(thread_htab(tida), rh[1], o2, HRIGHT_WAIT, 0, &p) || p != gt2) goto done;
     th0 = -1;
@@ -5835,7 +6044,7 @@ int usermode_ipc_handles_test(void) {
         if (ha <= 0) goto done;
         ht_desc(HT_CDESC(0), 0, hv[0], IPC_HANDLE_MOVE, HRIGHT_MAP | HRIGHT_INSPECT);
         ht_go(tida, 0, 1);
-        const struct mem_info *mi = (const struct mem_info *)user_ptr(JT_INFO);
+        const struct mem_info *mi = (const struct mem_info *)ktest_umem(JT_INFO);
         step = 78; if (!it_queued(ep, 1) || ht_recv(eh, 1) != 0 || ti->handles != 1 || ti->reply <= 0) goto done;
         tok = ti->reply; th0 = th[0];
         if (!ht_names(tab, th0, &mb->hdr, HRIGHT_MAP | HRIGHT_INSPECT, 0, 0)
@@ -5959,10 +6168,10 @@ static int32_t pr_middle(struct endpoint *ep1, struct endpoint *ep2, uint32_t le
         htab_close(thread_htab(thread_current_id()), h);
         return E_NO_RESOURCES;
     }
-    struct ipc_recv_args *ra = (struct ipc_recv_args *)user_ptr(PR_MRECV);
+    struct ipc_recv_args *ra = (struct ipc_recv_args *)ktest_umem(PR_MRECV);
     ra->cap = 64; ra->buf = PR_MBUF; ra->info = PR_MINFO; ra->ep_handle = r;
     ra->handles = 0; ra->handle_cap = 0;
-    struct ipc_call_args *ca = (struct ipc_call_args *)user_ptr(PR_MCALL);
+    struct ipc_call_args *ca = (struct ipc_call_args *)ktest_umem(PR_MCALL);
     ca->req_len = 1; ca->reply_cap = 0; ca->req = PR_MBUF; ca->reply = 0;
     ca->ep_handle = s; ca->reserved = 0;
     ca->handles = 0; ca->handle_count = 0; ca->reply_handles = 0; ca->reply_handle_cap = 0;
@@ -5990,7 +6199,7 @@ int usermode_prio_test(void) {
     if (!phys) return 0;
     int me = thread_current_id();
     struct htab *tab = thread_htab(me);
-    const struct ipc_msg_info *ti = (const struct ipc_msg_info *)user_ptr(IT_TINFO);
+    const struct ipc_msg_info *ti = (const struct ipc_msg_info *)ktest_umem(IT_TINFO);
     uint32_t caps0 = thread_current_caps(), base0 = thread_base(me);
     uint32_t live0 = proc_live(), faults0 = usermode_faults(), refused0 = syscall_refused_count();
     uint32_t calls0 = kobj_live(KOBJ_REPLY), jobs0 = job_live();
@@ -6033,14 +6242,14 @@ int usermode_prio_test(void) {
     eh = ep_create();
     ep = eh > 0 ? ep_from_handle(eh, HRIGHT_RECV, 0) : 0;
     step = 3; if (!ep) goto done;
-    *(volatile uint8_t *)user_ptr(IT_REQ(0)) = 'L';
+    *(volatile uint8_t *)ktest_umem(IT_REQ(0)) = 'L';
     ha = pr_caller(ep, 0, PRIO_NORMAL - 4, &tida);
     if (ha <= 0) goto done;
     yield(); yield();
     if (ep_queued(ep) != 0 || !it_queued(ep, 1) || !pr_is(PRIO_NORMAL, PRIO_NORMAL)) goto done;
 
     /* 4: one above runs at once: queued by the time a syscall returns */
-    *(volatile uint8_t *)user_ptr(IT_REQ(1)) = 'H';
+    *(volatile uint8_t *)ktest_umem(IT_REQ(1)) = 'H';
     hb = pr_caller(ep, 1, PRIO_REALTIME + 1, &tidb);
     step = 4; if (hb <= 0) goto done;
     (void)syscall_dispatch(SYS_GETPID, 0, 0, 0, 0, 0);
@@ -6101,14 +6310,14 @@ int usermode_prio_test(void) {
     if (!thread_is_blocked(tida)) goto done;
 
     /* 11: H calls M, which runs at H's level, and calls on */
-    *(volatile uint8_t *)user_ptr(IT_REQ(1)) = 'C';
+    *(volatile uint8_t *)ktest_umem(IT_REQ(1)) = 'C';
     hb = pr_caller(ep, 1, PRIO_REALTIME, &tidb);
     step = 11; if (hb <= 0 || !it_queued(ep2, 1) || thread_prio(tida) != PRIO_REALTIME
                    || !pr_is(PRIO_NORMAL, PRIO_NORMAL)) goto done;
 
     /* 12: answering M's call, the test thread runs at H's level */
     step = 12; if (it_recv(e2, 64) != 1 || ti->sender != thread_pid(tida) || (tok = ti->reply) <= 0
-                   || *(const uint8_t *)user_ptr(IT_TBUF) != 'C'
+                   || *(const uint8_t *)ktest_umem(IT_TBUF) != 'C'
                    || !pr_is(PRIO_NORMAL, PRIO_REALTIME)) goto done;
 
     /* 13: H's level, raised and lowered, follows the chain down */

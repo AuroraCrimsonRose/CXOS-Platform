@@ -26,6 +26,7 @@
 #include "ipc.h"
 #include "object/htab.h"
 #include "usermode.h"
+#include "diag/ktest_umem.h"   /* ktest_umem: a test thread's own user pages */
 #include "sysrec.h"
 #include "memman/ocache.h"
 #include "uid.h"
@@ -371,7 +372,7 @@ static int test_user_copy_validation(void) {
     paddr_t frame = pmm_alloc();
     if (!frame) return 0;
 
-    volatile uint8_t *p = (volatile uint8_t *)user_ptr(va);
+    volatile uint8_t *p = (volatile uint8_t *)ktest_umem(va);
     int ok = 1;
 
     /* Writable: the copy must succeed and the bytes must actually land. A test
@@ -447,12 +448,12 @@ static int test_user_copy_fault_recovery(void) {
 
     uint32_t faults_before = usercopy_faults_recovered();
 
-    if (user_copy_bytes(user_ptr(va), src, 8) != 1) return 0;   /* faulted, recovered */
+    if (user_copy_bytes(ktest_umem(va), src, 8) != 1) return 0;   /* faulted, recovered */
 
     /* Reading from it is recoverable in the same way. */
     {
         uint8_t dst[8] = { 0 };
-        if (user_copy_bytes(dst, user_ptr(va), 8) != 1) return 0;
+        if (user_copy_bytes(dst, ktest_umem(va), 8) != 1) return 0;
     }
 
     /* Exactly two faults, not none and not a storm: the recovery really fired,
@@ -499,7 +500,7 @@ static int test_cr0_write_protect(void) {
     if (!frame) return 0;
 
     int ok = 1;
-    volatile uint8_t *p = (volatile uint8_t *)user_ptr(va);
+    volatile uint8_t *p = (volatile uint8_t *)ktest_umem(va);
 
     /* Seed while it is still writable, then take the write permission away. */
     if (paging_map_user(va, frame, VM_WRITE) != 0) { ok = 0; goto done; }
@@ -509,7 +510,7 @@ static int test_cr0_write_protect(void) {
     {
         uint32_t faults_before = usercopy_faults_recovered();
         /* Before WP this returned 0 and the bytes changed. */
-        ok = ok && (user_copy_bytes(user_ptr(va), src, 8) == 1);
+        ok = ok && (user_copy_bytes(ktest_umem(va), src, 8) == 1);
         ok = ok && (usercopy_faults_recovered() == faults_before + 1);
         for (int i = 0; i < 8; i++) ok = ok && (p[i] == 0xAA);
     }
@@ -519,7 +520,7 @@ static int test_cr0_write_protect(void) {
     if (paging_map_user(va, frame, VM_WRITE) != 0) { ok = 0; goto done; }
     {
         uint32_t faults_before = usercopy_faults_recovered();
-        ok = ok && (user_copy_bytes(user_ptr(va), src, 8) == 0);
+        ok = ok && (user_copy_bytes(ktest_umem(va), src, 8) == 0);
         ok = ok && (usercopy_faults_recovered() == faults_before);
         for (int i = 0; i < 8; i++) ok = ok && (p[i] == src[i]);
     }
@@ -1910,7 +1911,7 @@ static int vm_cycle(int pid) {
     if (!vm_fault(pid, first, 1, 0))              goto done;
     /* Readable, writable, and zero - a frame off the free list may hold
        another process's memory, so anything non-zero here is a disclosure. */
-    volatile uint8_t *m = (volatile uint8_t *)user_ptr(first);
+    volatile uint8_t *m = (volatile uint8_t *)ktest_umem(first);
     for (uint32_t i = 0; i < PAGE_SIZE; i++) if (m[i] != 0) goto done;
     m[0] = 0xA5; m[PAGE_SIZE - 1] = 0x5A;
     if (m[0] != 0xA5 || m[PAGE_SIZE - 1] != 0x5A) goto done;
@@ -2287,8 +2288,8 @@ static int test_lifecycle_sequences(void) {
     if (!vm_fault(pid, va, 1, 0)) { ok = 0; goto done_vm; }
     /* reachable while mapped, by both the check and the hardware */
     if (!user_ptr_writable(va, PAGE_SIZE)) { ok = 0; goto done_vm; }
-    *(volatile uint8_t *)user_ptr(va) = 0xC7;
-    if (*(volatile uint8_t *)user_ptr(va) != 0xC7)   { ok = 0; goto done_vm; }
+    *(volatile uint8_t *)ktest_umem(va) = 0xC7;
+    if (*(volatile uint8_t *)ktest_umem(va) != 0xC7)   { ok = 0; goto done_vm; }
 
     /* ---- 1b. the protection that was asked for is the protection applied ----
        Nothing asserted this before, which made a whole class of failure
@@ -2313,7 +2314,7 @@ static int test_lifecycle_sequences(void) {
     /* and the hardware agrees, because CR0.WP is set */
     uint32_t ro_faults = usercopy_faults_recovered();
     uint8_t  one = 0x5C;
-    if (user_copy_bytes(user_ptr(ro), &one, 1) == 0)                { ok = 0; goto done_vm; }
+    if (user_copy_bytes(ktest_umem(ro), &one, 1) == 0)                { ok = 0; goto done_vm; }
     if (usercopy_faults_recovered() != ro_faults + 1)             { ok = 0; goto done_vm; }
     if (vm_unmap(pid, ro, PAGE_SIZE) != E_OK)                     { ok = 0; goto done_vm; }
 
@@ -2329,7 +2330,7 @@ static int test_lifecycle_sequences(void) {
 
     uint32_t faults_before = usercopy_faults_recovered();
     uint8_t  sink = 0;
-    if (user_copy_bytes(&sink, user_ptr(va), 1) == 0) { ok = 0; goto done_vm; }
+    if (user_copy_bytes(&sink, ktest_umem(va), 1) == 0) { ok = 0; goto done_vm; }
     if (usercopy_faults_recovered() != faults_before + 1) { ok = 0; goto done_vm; }
 
 done_vm:
@@ -2759,7 +2760,7 @@ static int test_console_font_disk(void) {
             return 0;
         }
 
-        char *nm = (char *)user_ptr(va + 256);
+        char *nm = (char *)ktest_umem(va + 256);
 
         /* Each of these is a way out of the directory, or a way to confuse the
            path the kernel builds. The '.' rule is what makes ".." need no case
@@ -3486,6 +3487,7 @@ void ktest_run(void) {
     total++; passed += report("exec admission (dev / release)",   test_exec_admit());
     total++; passed += report("file syscalls (SYS_FILE_*)",        usermode_file_test());
     total++; passed += report("memory syscalls (SYS_VM_*)",        usermode_vm_test());
+    total++; passed += report("syscalls use user memory only through the copy", usermode_copies_test());
     total++; passed += report("power and input syscalls",          usermode_power_input_test());
     total++; passed += report("framebuffer syscalls (SYS_FB_*)",   usermode_fb_test());
     total++; passed += report("framebuffer: drawn in a copy, the screen only written", test_fb_copy());

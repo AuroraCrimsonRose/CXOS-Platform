@@ -9,6 +9,7 @@
 #include "ktest_races.h"
 #include "diag/testhook.h"
 #include "usermode.h"
+#include "diag/ktest_umem.h"   /* ktest_umem: a test thread's own user pages */
 #include "systable.h"
 #include "sched.h"
 #include "proc.h"
@@ -354,7 +355,7 @@ static struct proc *ir_caller(struct endpoint *ep, uint32_t i, uint64_t req, uin
     if (!p) return 0;
     int32_t v = ep_install_send(*tid, ep, 0, HRIGHT_SEND, 0);
     if (v <= 0) { thread_discard(*tid); proc_put(p); return 0; }
-    struct ipc_call_args *a = (struct ipc_call_args *)user_ptr(IR_CALL(i));
+    struct ipc_call_args *a = (struct ipc_call_args *)ktest_umem(IR_CALL(i));
     uint8_t *b = (uint8_t *)a;
     for (uint32_t k = 0; k < sizeof *a; k++) b[k] = 0;
     a->req_len = req_len; a->reply_cap = rcap; a->req = req; a->reply = reply;
@@ -386,14 +387,14 @@ static uint64_t ir_gone(struct proc *p, uint32_t ms) {
 }
 
 static int ir_recv(int32_t eh, uint64_t buf, uint64_t cap) {
-    struct ipc_recv_args *r = (struct ipc_recv_args *)user_ptr(IR_RECV);
+    struct ipc_recv_args *r = (struct ipc_recv_args *)ktest_umem(IR_RECV);
     r->cap = cap; r->buf = buf; r->info = IR_INFO; r->handles = 0;
     r->ep_handle = eh; r->handle_cap = 0;
     return syscall_dispatch(SYS_IPC_RECV, IR_RECV, 0, 0, 0, 0);
 }
 
 static int ir_reply(int32_t tok, uint64_t data, uint64_t len) {
-    struct ipc_reply_args *r = (struct ipc_reply_args *)user_ptr(IR_RARGS);
+    struct ipc_reply_args *r = (struct ipc_reply_args *)ktest_umem(IR_RARGS);
     r->data = data; r->len = len; r->handles = 0; r->token = tok; r->handle_count = 0;
     return syscall_dispatch(SYS_IPC_REPLY, IR_RARGS, 0, 0, 0, 0);
 }
@@ -415,7 +416,7 @@ static void rp_close(void *ctx) {
    `data`, with the token closed at the point. */
 static const char *rp_round(struct ir *s, int32_t eh, struct endpoint *ep, int i,
                             uint64_t data, int *rc) {
-    const struct ipc_msg_info *in = (const struct ipc_msg_info *)user_ptr(IR_INFO);
+    const struct ipc_msg_info *in = (const struct ipc_msg_info *)ktest_umem(IR_INFO);
     s->p[i] = ir_caller(ep, (uint32_t)i, IR_REQ(i), 1, IR_REPLY(i), 8, 0, &s->tid[i]);
     if (!s->p[i] || !ir_queued(ep, 1)) return "reply close: setup caller";
     if (ir_recv(eh, IR_BUF, 64) != 1 || in->reply <= 0) return "reply close: setup recv";
@@ -433,7 +434,7 @@ static const char *rp_round(struct ir *s, int32_t eh, struct endpoint *ep, int i
 }
 
 static const char *reply_close_steps(struct ir *s, int32_t eh, struct endpoint *ep) {
-    uint8_t *data = (uint8_t *)user_ptr(IR_DATA);
+    uint8_t *data = (uint8_t *)ktest_umem(IR_DATA);
     data[0] = 'r'; data[1] = 'e'; data[2] = 'p';
     int rc = 0;
 
@@ -442,7 +443,7 @@ static const char *reply_close_steps(struct ir *s, int32_t eh, struct endpoint *
     if (why) return why;
     if (rc != E_OK) return "reply close: reply not E_OK";
     if (!ir_ends(s->p[0], PROC_EXITED, 3, 1500)) return "reply close: caller lost the reply";
-    const uint8_t *rb = (const uint8_t *)user_ptr(IR_REPLY(0));
+    const uint8_t *rb = (const uint8_t *)ktest_umem(IR_REPLY(0));
     if (rb[0] != 'r' || rb[2] != 'p') return "reply close: reply bytes wrong";
 
     /* unreadable as its token closes: nobody holds the call any more, so
@@ -485,8 +486,8 @@ static uint8_t mm_req(uint32_t i)   { return (uint8_t)(i * 7 + 1); }
 static uint8_t mm_reply(uint32_t i) { return (uint8_t)(i * 13 + 5); }
 
 static const char *msg_max_steps(struct ir *s, int32_t eh, struct endpoint *ep, int32_t *tok) {
-    const struct ipc_msg_info *in = (const struct ipc_msg_info *)user_ptr(IR_INFO);
-    uint8_t *a = (uint8_t *)user_ptr(IR_BIGA), *b = (uint8_t *)user_ptr(IR_BIGB);
+    const struct ipc_msg_info *in = (const struct ipc_msg_info *)ktest_umem(IR_INFO);
+    uint8_t *a = (uint8_t *)ktest_umem(IR_BIGA), *b = (uint8_t *)ktest_umem(IR_BIGB);
     for (uint32_t i = 0; i < IPC_MSG_MAX; i++) a[i] = mm_req(i);
     s->p[0] = ir_caller(ep, 0, IR_BIGA, IPC_MSG_MAX, IR_BIGA, IPC_MSG_MAX, 0, &s->tid[0]);
     if (!s->p[0]) return "msg max: setup caller";
@@ -540,7 +541,7 @@ int ktest_ipc_msg_max(void) {
 static const char *detach_steps(struct ir *s, int32_t *eh, struct endpoint **ep,
                                 int32_t *tok, struct kobj **co, int eps0) {
     struct htab *tab = thread_htab(thread_current_id());
-    const struct ipc_msg_info *in = (const struct ipc_msg_info *)user_ptr(IR_INFO);
+    const struct ipc_msg_info *in = (const struct ipc_msg_info *)ktest_umem(IR_INFO);
 
     /* A's call, taken here; A killed while it is answered */
     s->p[0] = ir_caller(*ep, 0, IR_REQ(0), 1, IR_REPLY(0), 8, 0, &s->tid[0]);
@@ -603,8 +604,8 @@ static struct htab     *tx_to;
 
 static void tx_server(void) {
     while (!tx_go) yield();
-    struct ipc_recv_args *r = (struct ipc_recv_args *)user_ptr(IR_HRECV);
-    const struct ipc_msg_info *in = (const struct ipc_msg_info *)user_ptr(IR_HINFO);
+    struct ipc_recv_args *r = (struct ipc_recv_args *)ktest_umem(IR_HRECV);
+    const struct ipc_msg_info *in = (const struct ipc_msg_info *)ktest_umem(IR_HINFO);
     struct htab *mine = thread_htab(thread_current_id());
     r->cap = 0; r->buf = 0; r->info = IR_HINFO; r->handles = 0;
     r->ep_handle = tx_eh; r->handle_cap = 0;
@@ -844,12 +845,12 @@ static const char *refused_steps(struct ir *s, struct endpoint *ep) {
     int32_t v = ep_install_handle(s->tid[0], ep, HRIGHT_RECV, 0);
     if (v <= 0) { thread_discard(s->tid[0]); return "refused vector: setup handle"; }
 
-    struct thread_create_args *ta = (struct thread_create_args *)user_ptr(RV_TCA);
+    struct thread_create_args *ta = (struct thread_create_args *)ktest_umem(RV_TCA);
     uint8_t *b = (uint8_t *)ta;
     for (uint32_t i = 0; i < sizeof *ta; i++) b[i] = 0;
     ta->entry = RV_REFUSED;
     ta->stack_size = THREAD_USTACK_MIN;
-    struct ipc_recv_args *r = (struct ipc_recv_args *)user_ptr(IR_HRECV);
+    struct ipc_recv_args *r = (struct ipc_recv_args *)ktest_umem(IR_HRECV);
     r->cap = 0; r->buf = 0; r->info = IR_HINFO; r->handles = 0;
     r->ep_handle = v; r->handle_cap = 0;
 
@@ -916,14 +917,14 @@ static struct proc *pk_victim(struct kobj *o, uint32_t rights, uint64_t nr, uint
    that end, and its handle `*keep` on the other. */
 static const char *pk_round(struct ir *s, int i, int write, struct kobj **o, int32_t *keep) {
     struct htab *tab = thread_htab(thread_current_id());
-    int32_t *ends = (int32_t *)user_ptr(PK_ENDS);
+    int32_t *ends = (int32_t *)ktest_umem(PK_ENDS);
     if (syscall_pipe_create(PIPE_SIZE_MIN, PK_ENDS) != E_OK) return "pipe kill: setup pipe";
     *keep = ends[!write];
     struct htab_info hi;
     *o = htab_ref(tab, ends[write], KOBJ_PIPE, 0, &hi);
     if (!*o) { htab_close(tab, ends[write]); return "pipe kill: setup ref"; }
     if (write) {   /* full, so the write waits */
-        uint8_t *d = (uint8_t *)user_ptr(IR_BIGA);
+        uint8_t *d = (uint8_t *)ktest_umem(IR_BIGA);
         for (uint32_t k = 0; k < PIPE_SIZE_MIN; k++) d[k] = pk_byte(k);
         if (syscall_file_write(ends[1], IR_BIGA, PIPE_SIZE_MIN) != (int)PIPE_SIZE_MIN) {
             htab_close(tab, ends[write]);
@@ -954,7 +955,7 @@ static const char *pipe_kill_steps(struct ir *s, struct kobj **o, int32_t *keep)
 
     why = pk_round(s, 1, 1, &o[1], &keep[1]);
     if (why) return why;
-    uint8_t *d = (uint8_t *)user_ptr(IR_BIGB);
+    uint8_t *d = (uint8_t *)ktest_umem(IR_BIGB);
     if (syscall_file_read(keep[1], IR_BIGB, PIPE_SIZE_MIN + PK_WRITE) != (int)PIPE_SIZE_MIN)
         return "pipe kill: not the bytes before the write";
     for (uint32_t k = 0; k < PIPE_SIZE_MIN; k++)

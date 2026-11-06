@@ -336,7 +336,7 @@ int proc_start(const void *image, uint32_t image_len, uint32_t caps,
     return pid;   /* the process, not its thread */
 }
 
-/* Check a caller-supplied argument blob before anything copies it.
+/* Copy a caller-supplied argument blob in, and check the copy.
  *
  * Both launch syscalls take the same two fields, and both must refuse the same
  * things: a length with no pointer, a pointer the caller cannot actually read,
@@ -346,13 +346,24 @@ int proc_start(const void *image, uint32_t image_len, uint32_t caps,
  * off the end of what was copied. Rejecting it here means the page builder can
  * trust its input.
  *
- * Returns E_OK, or the error to hand back to the caller. */
-static int check_args(const struct spawn_args *a) {
+ * The checks run on the kernel's copy, and the copy is what is launched with
+ * (1.9e4): checked where it lay, a sibling thread could rewrite the blob
+ * between the check and proc_start's copy, or unmap it under either.
+ *
+ * Returns E_OK with the copy in *out (NULL for no blob; the caller kfrees it),
+ * or the error to hand back to the caller. */
+static int args_in(const struct spawn_args *a, char **out) {
+    *out = 0;
     if (!a->args) return a->args_len ? E_INVALID_ARGS : E_OK;   /* length without a blob */
     if (a->args_len == 0 || a->args_len > USER_ARGS_MAX) return E_OUT_OF_RANGE;
     if (!user_ptr_readable(a->args, (uint32_t)a->args_len)) return E_BAD_ADDRESS;
-    if (((const char *)user_ptr(a->args))[a->args_len - 1] != '\0') return E_INVALID_ARGS;
-    if (!args_fit((const char *)user_ptr(a->args), (uint32_t)a->args_len)) return E_OUT_OF_RANGE;
+    char *k = (char *)kmalloc((size_t)a->args_len);
+    if (!k) return E_NO_MEMORY;
+    int rc = user_copy_in(k, a->args, (uint32_t)a->args_len) != 0 ? E_BAD_ADDRESS
+           : k[a->args_len - 1] != '\0'                          ? E_INVALID_ARGS
+           : !args_fit(k, (uint32_t)a->args_len)                 ? E_OUT_OF_RANGE : E_OK;
+    if (rc != E_OK) { kfree(k); return rc; }
+    *out = k;
     return E_OK;
 }
 
@@ -400,6 +411,8 @@ static int spawn_handles_in(const struct spawn_args *a, struct spawn_hset *hs) {
 
 /* SYS_SPAWN: an executive (GRANT_SPAWN) launches a capability-less app, brokered
    through one of its endpoints. */
+static int spawn_with(struct spawn_args a, const char *kargs);
+
 int sys_spawn(uint64_t ua) {
     struct spawn_args a;
     if (user_copy_in(&a, ua, sizeof a) != 0) return E_BAD_ADDRESS;
@@ -407,9 +420,16 @@ int sys_spawn(uint64_t ua) {
     if (a.image_len == 0 || a.image_len > PROC_MAX_IMAGE) return E_OUT_OF_RANGE;
     if (!user_ptr_readable(a.image, (uint32_t)a.image_len)) return E_BAD_ADDRESS;
 
-    int arc = check_args(&a);
-    if (arc != E_OK) return arc;
+    char *kargs;
+    int rc = args_in(&a, &kargs);
+    if (rc != E_OK) return rc;
+    rc = spawn_with(a, kargs);
+    kfree(kargs);
+    return rc;
+}
 
+/* The rest of SYS_SPAWN, with the spawn_args and the argument blob copied in. */
+static int spawn_with(struct spawn_args a, const char *kargs) {
     struct spawn_hset hs;
     int hrc = spawn_handles_in(&a, &hs);
     if (hrc != E_OK) return hrc;
@@ -458,7 +478,7 @@ int sys_spawn(uint64_t ua) {
     }
 
     int32_t ph = 0;
-    int pid = cxex_exec_as(kimg, (size_t)a.image_len, granted, bep, bgrant, user_ptr(a.args), (uint32_t)a.args_len, &ph,
+    int pid = cxex_exec_as(kimg, (size_t)a.image_len, granted, bep, bgrant, kargs, kargs ? (uint32_t)a.args_len : 0u, &ph,
                            &hs, job);
     kfree(kimg);        /* proc_start took its own copy for the new address space */
     ep_put(bep);        /* the child holds its own handle on it now */
@@ -505,32 +525,31 @@ int sys_spawn(uint64_t ua) {
  * by one this kernel will run unless it is signed. Two routes to ring 3,
  * both verified, neither trusting the caller's buffer.
  */
+static int exec_path_with(uint64_t upath, struct spawn_args a, const char *kargs);
+
 int sys_exec_path(uint64_t upath, uint64_t ua) {
     struct spawn_args a;
     if (user_copy_in(&a, ua, sizeof a) != 0) return E_BAD_ADDRESS;
 
-    int arc = check_args(&a);
-    if (arc != E_OK) return arc;
+    char *kargs;
+    int rc = args_in(&a, &kargs);
+    if (rc != E_OK) return rc;
+    rc = exec_path_with(upath, a, kargs);
+    kfree(kargs);
+    return rc;
+}
 
+/* The rest of SYS_EXEC_PATH, with the spawn_args and the argument blob
+   copied in. */
+static int exec_path_with(uint64_t upath, struct spawn_args a, const char *kargs) {
     struct spawn_hset hs;
     int hrc = spawn_handles_in(&a, &hs);
     if (hrc != E_OK) return hrc;
 
-    /* copy the path in a page at a time; user_ptr_readable walks page tables, so
-       per-byte would be a page-table walk per character */
+    /* copied in a page at a time (user_copy_str) */
     char path[FILE_PATH_MAX];
-    uint64_t addr = upath;
-    if (!addr) return E_BAD_ADDRESS;
-    uint32_t n = 0;
-    for (;;) {
-        if (n >= sizeof path) return E_OUT_OF_RANGE;
-        if (n == 0 || (((addr + n) & 0xFFFu) == 0)) {
-            if (!user_ptr_readable(addr + n, 1)) return E_BAD_ADDRESS;
-        }
-        path[n] = ((const char *)user_ptr(addr))[n];
-        if (!path[n]) break;
-        n++;
-    }
+    int n = user_copy_str(path, upath, sizeof path);
+    if (n < 0) return n;
 
     if (!cxfs_is_mounted()) return E_IO;
 
@@ -582,7 +601,7 @@ int sys_exec_path(uint64_t upath, uint64_t ua) {
     uint32_t granted = (a.caps & thread_current_caps()) | (a.caps & SPAWN_BACKGROUND);
 
     int32_t ph = 0;
-    int rc = cxex_exec_as(buf, (size_t)e.size, granted, bep, bgrant, user_ptr(a.args), (uint32_t)a.args_len, &ph,
+    int rc = cxex_exec_as(buf, (size_t)e.size, granted, bep, bgrant, kargs, kargs ? (uint32_t)a.args_len : 0u, &ph,
                           &hs, job);
     kfree(buf);   /* proc_start took its own copy for the new address space */
     ep_put(bep);

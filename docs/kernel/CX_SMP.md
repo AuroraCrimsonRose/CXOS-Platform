@@ -8,8 +8,9 @@
 > with its own idle thread (§4a, 1.9e2)** (`planning/CX_ROADMAP.md`, Phase 1
 > step 9); and the file system layer, logging and the CMOS clock are
 > locked, the reaper runs on every CPU and the TSC agrees (§4b, 1.9e3).
-> 1.9e4 moves user memory to recoverable copies, and then a process's
-> threads leave the boot CPU.
+> User memory is read and written only through recoverable copies
+> (1.9e4a); 1.9e4b locks what interrupts still keep to one CPU, and then a
+> process's threads leave the boot CPU.
 
 The rig is an FX-8350: eight cores, of which the kernel used one until
 1.9d started the other seven and left them idle, so that 1.9e changed the
@@ -317,10 +318,15 @@ right.
 user range (`user_ptr_readable` and the rest) and then reads it directly:
 148 such reads, most in `usermode.c`. A sibling thread on another CPU can
 unmap the range between the check and the read, and the kernel faults;
-only `user_copy_bytes` recovers from a fault. 1.9e4 moves them to
-recoverable copies. Run with every thread free to move, this step's boot
-failed 11 tests, most of them tests that assume one CPU's ordering
-(yield loops): 1.9e4's list.
+only `user_copy_bytes` recovers from a fault. 1.9e4a moved them to
+recoverable copies (about 30 were syscalls'; the rest were the tests' own
+setup, now `diag/ktest_umem.h`), and the build refuses `user_ptr` outside
+`usercopy.c`. What still keeps the threads home is what interrupts-off
+alone serializes: the process table's counts and stop list, the jobs, the
+keyboard's buffer and waiter, the framebuffer against the console, a
+background process's output, and the network stack (1.9e4b). Run with
+every thread free to move, 1.9e3's boot failed 11 tests, most of them
+tests that assume one CPU's ordering (yield loops): 1.9e4b's list.
 
 ## 5. Tests
 
@@ -412,8 +418,14 @@ cannot redden the tests after it:
 
 - A run queue per CPU, and a balancer (§4a): when a profile says the
   scan costs (1.9f).
-- A process's threads on the APs: once user memory is read through
-  recoverable copies (1.9e4, §4b).
+- A process's threads on the APs: once proc, jobs, input, the
+  framebuffer and the network stack are locked (1.9e4b, §4b).
+- The futex reads its word with `futex_lock` held, so a fault on that
+  page is demand-mapped under a spinlock (as the direct read before 1.9e4a
+  was). Unverified whether that path can sleep; if it can, read under the
+  lock without faulting and, on a fault, drop the lock, touch the page and
+  retry (Linux's `futex_wait_setup`, from memory, not indexed). 1.9e4b's
+  lock audit.
 - `thread_proc`'s process outlives the lock it was read under: a thread's
   process is held by the thread, so it holds for any caller that knows
   the thread lives, which is every caller today; nothing checks it.

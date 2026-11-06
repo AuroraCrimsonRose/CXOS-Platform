@@ -31,6 +31,10 @@
 # code reaches the machine's fixed devices through kernel/platform/*.h. The
 # architecture may (x86 interrupts arrive through the PC's 8259).
 #
+# In every file, kernel/arch/ too, user memory goes through the recoverable
+# copies (roadmap 1.9e4): user_ptr() only in cpu/usercopy.c, the self-tests'
+# ktest_umem() only in ktest*.c and cpu/usermode.c.
+#
 # A match is reported with its file and the offending line. Text in comments
 # counts too; that is rare enough to be reworded when it happens.
 
@@ -86,6 +90,38 @@ foreach(f ${sources})
         endforeach()
     endforeach()
 endforeach()
+
+# User memory (roadmap 1.9e4), checked in every file, kernel/arch/ too: no
+# syscall dereferences a user address, since a sibling thread on another CPU
+# can unmap it between a check and the read. user_ptr() lives only in
+# cpu/usercopy.c, behind the recoverable copies; ktest_umem() is the
+# self-tests' own view of their pages, allowed only in ktest*.c and
+# cpu/usermode.c (which includes it below its last syscall).
+set(uptr_re  "(^|[^A-Za-z0-9_])user_ptr[ \t]*[(]")
+set(umem_re  "(^|[^A-Za-z0-9_])ktest_umem[ \t]*[(]")
+set(found_umem "")
+foreach(f ${sources})
+    file(RELATIVE_PATH rel "${KDIR}" "${f}")
+    get_filename_component(base "${f}" NAME)
+    if(NOT rel STREQUAL "cpu/usercopy.c")
+        file(STRINGS "${f}" hits REGEX "${uptr_re}")
+        foreach(h ${hits})
+            string(STRIP "${h}" h)
+            string(APPEND found_umem "\n  kernel/${rel}: a user address as a pointer outside cpu/usercopy.c: ${h}")
+        endforeach()
+    endif()
+    if(NOT base MATCHES "^ktest" AND NOT rel STREQUAL "cpu/usermode.c" AND NOT rel STREQUAL "diag/ktest_umem.h")
+        file(STRINGS "${f}" hits REGEX "${umem_re}")
+        foreach(h ${hits})
+            string(STRIP "${h}" h)
+            string(APPEND found_umem "\n  kernel/${rel}: the self-tests' user-page view outside them: ${h}")
+        endforeach()
+    endif()
+endforeach()
+if(found_umem)
+    message(FATAL_ERROR "User memory read or written where it lies (CX_ROADMAP.md 1.9e4):${found_umem}\n"
+                        "Go through user_copy_in, user_copy_out or user_copy_str (cpu/usermode.h).")
+endif()
 
 if(found)
     message(FATAL_ERROR "CPU- or platform-specific code in a generic file (CX_ROADMAP.md step 3):${found}\n"
