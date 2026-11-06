@@ -1,15 +1,15 @@
 # The other CPUs
 ### CX Design Spec: Aurora Tejeda / CATX Systems
 
-> **Status: 1.9e1 done (2026-11-06): every CPU the MADT lists as enabled is
+> **Status: 1.9e2 done (2026-11-06): every CPU the MADT lists as enabled is
 > started by the APIC ID it lists, sets up its own tables, per-CPU data and
-> local APIC, and parks (1.9d); a changed mapping is shot down on every CPU
-> that could hold it (§4, 1.9e1). None runs a thread yet**
-> (`planning/CX_ROADMAP.md`, Phase 1 step 9). 1.9e2 puts the scheduler on
-> them.
+> local APIC (1.9d); a changed mapping is shot down on every CPU that could
+> hold it (§4, 1.9e1); and every CPU runs threads, from one scheduler, each
+> with its own idle thread (§4a, 1.9e2)** (`planning/CX_ROADMAP.md`, Phase 1
+> step 9). 1.9e3 locks what lets a process's threads leave the boot CPU.
 
-The rig is an FX-8350: eight cores, of which the kernel has used one. This
-step starts the other seven and leaves them idle, so that 1.9e changes the
+The rig is an FX-8350: eight cores, of which the kernel used one until
+1.9d started the other seven and left them idle, so that 1.9e changed the
 scheduler and nothing else. Code: `kernel/arch/smp.h` (the interface),
 `kernel/arch/x86_64/smp.c` and `smp_tramp.asm`, `kernel/arch/x86/madt.c`
 (which CPUs), `kernel/cpu/percpu.h` (each CPU's `struct cpu`).
@@ -91,23 +91,25 @@ accepted, the spurious vector, and the timer divided by 16 on its vector
 but stopped and masked. The feature table is the boot CPU's: the rig's
 cores are one die.
 
-## 3. Parked
+## 3. Parked, then idle
 
-A parked AP sits in `sti; hlt` with nothing routed to it: the I/O APIC
-and every MSI name the boot CPU. It wakes for one thing, the wake IPI
-(vector 57, `SMP_IPI_VECTOR`), which `smp_call` sends after leaving a
-function in its mailbox (`struct cpu`'s `call`). The check of the mailbox
-and the halt are one step: interrupts are off from the check to
+An AP parks only until its idle thread first runs (1.9e2, §4a); from then
+on its halt is that thread's, in `smp_idle_wait`, with nothing routed to
+it: the I/O APIC and every MSI name the boot CPU. It wakes for the IPI on
+vector 57 (`SMP_IPI_VECTOR`): a call left in its mailbox (`smp_call`,
+`struct cpu`'s `call`), a shootdown, or a thread handed to it. The look
+and the halt are one step: interrupts are off from the look to
 `sti; hlt`, and `sti` holds them off for one instruction more, so an IPI
-sent after the check ends the halt rather than being lost before it.
+sent after the look ends the halt rather than being lost before it.
 
-Any interrupt an AP takes goes through `irq_dispatch`'s first branch:
+An interrupt an AP takes goes through `irq_dispatch`'s first branch:
 counted (`irqs`, and the timer's separately), acknowledged at its own local
-APIC, and nothing else: no tick, no preemption, no sample for the random
-generator. That branch is what 1.9e replaces.
+APIC, then its timer's slice check (`sched_cpu_tick`) and the preemption
+point. No tick and no sample for the random generator: those stay the
+boot CPU's.
 
-A function run by `smp_call` runs with interrupts off and may not block,
-take a lock or log. In 1.9d only the self-tests call it.
+A function run by `smp_call` runs in the AP's idle thread with interrupts
+off, and may not block, take a lock or log. Only the self-tests call it.
 
 ## 4. TLB shootdown (1.9e1)
 
@@ -184,6 +186,81 @@ a mapping its owner believes gone. The timeout is 10 s, because a
 syscall's body runs with interrupts off (1.6c) and serves only when it
 spins. XNU panics the same way after `LockTimeOut`.
 
+## 4a. Threads on every CPU (1.9e2)
+
+Every CPU runs threads, from one scheduler under the one `sched_lock`
+(`cpu/sched.c`; the lock is CX_LOCK_ORDER.md §2a's).
+
+**One order, not a queue per CPU.** `next_runnable` scans every thread for
+the highest priority that may run on the calling CPU, round-robin within
+a level, as before. A thread may run on a CPU if its `affinity` mask has
+that CPU's bit, and it is either the one the CPU is running or ready and
+on no CPU (`on_cpu`, the CPU's index plus one, 0 for none). The roadmap
+said per-CPU run queues; this is Serenity's shape instead, one set of
+ready queues behind one lock for every processor (`g_ready_queues`,
+`Kernel/Tasks/Scheduler.cpp`), where Haiku keeps a run queue per CPU and
+core (`scheduler_thread.h`, `ThreadData::Enqueue`) and WRK one per
+processor (`KiSelectNextThread`, `base/ntos/ke/thredsup.c`). A scan under
+the thread limit is short, and per-CPU queues need a balancer and
+migration; they wait for a profile of the SMP stress suite (1.9f).
+
+**An idle thread per CPU** (`sched_cpu_prepare`), WRK's `Prcb->IdleThread`
+(`KiSelectNextThread` falls back to it). It is outside the id table and
+the thread count (id `THREAD_IDLE_ID` plus the CPU's index), pinned to
+its CPU, and is what the CPU runs when nothing else may. Its loop picks
+under the lock, switches to what it found, or else gives the lock back
+with interrupts still off and halts: the boot CPU by `timer_idle`, an AP
+by `smp_idle_wait`, which first runs a call left in the mailbox and marks
+the CPU idle for the shootdown (§4). Before 1.9e2 a thread with nothing
+to switch to halted on its own stack; with a second CPU that stack could
+be woken and run there while the first still stood on it. An idle thread
+is never switched from inside an interrupt: an idle CPU's interrupt path
+touches no thread record before its wake has flushed (§4).
+
+**Handing a thread a CPU** (`kick`): a thread made ready or raised goes to
+a CPU it may use that is idle, or else the one running the lowest thread
+below it; none, and it waits its turn. That CPU's `need_resched` is set,
+and if it is another CPU it gets the IPI (vector 57), once per ask: the
+exchange that sets the flag says whether one is already on its way. This
+is Haiku's `enqueue` (`scheduler.cpp`: `atomic_get_and_set` on
+`invoke_scheduler`, then `smp_send_ici`), and Serenity's waking of an idle
+processor (`smp_wake_n_idle_processors`, `Arch/x86_64/Processor.cpp`). The
+IPI ends an idle CPU's halt, or reaches the busy CPU's preemption point
+after the EOI. A thread switched out still ready is offered to the other
+CPUs the same way, so one moved by `thread_set_affinity` reaches its new
+CPU even if that one is halted.
+
+**Where threads run.** A thread is made for the boot CPU, as before
+(`THREAD_ON_BOOT_CPU`); `thread_create_on` makes one for a mask, and
+`thread_set_affinity` changes it. Only the self-tests ask for an AP so far:
+the file system layer and logging are not locked until 1.9e3, so a
+process's threads stay on the boot CPU until then.
+
+**The reaper** frees only a thread on no CPU, and runs on the boot CPU
+only, since a free can end a process and close its handles through the
+file system layer (1.9e3). The `on_cpu` check is also implied by the
+handoff (an exited thread's CPU clears it in its last switch, before the
+lock comes back), and is kept as the reaper's own rule.
+
+**Time.** The event timer and every expiry stay the boot CPU's. A deadline
+made on an AP (`timer_deadline_hint`) is forwarded: the earliest is kept
+for the boot CPU, which gets an IPI and sets its timer for it
+(`timer_hints_take`, in its vector-57 branch). An AP's time slice is its
+own local timer (`timer_local_arm`), set when a thread is switched to and
+stopped for its idle thread or with preemption off; under the PIT there
+are no AP slices. Each CPU has its own slice end, `need_resched` and
+switch-in-progress flag (`struct cpu`).
+
+**Shootdowns against an interrupts-off body.** A syscall's body and a
+driver's bounded wait run with interrupts off (1.6c); a shootdown sent by
+an AP waited out such a wait up to its timeout. The bounded wait's spin
+(`timer_timeout_expired`) and `timer_sleep`'s busy loop now serve
+requests, as `spin_lock`'s spin already did.
+
+**Reading a thread.** A thread finds its own record through `struct cpu`'s
+`cur` (one GS load); another's only under the lock (§2a of the lock order:
+the id table can grow, and free its old array, on another CPU).
+
 ## 5. Tests
 
 Host (`test_madt.c`): the rig's MADT shape, QEMU's gapped one, x2APIC
@@ -199,7 +276,7 @@ Boot (`ktest_arch.c`), each reading the AP's state on the AP:
   enabled with the timer masked;
 - an AP's own timer interrupts it twice (the second only if the first was
   acknowledged), counted on that CPU and never on the boot CPU;
-- a parked AP halts: 50 ms with nothing asked wakes it never, a call wakes
+- an idle AP halts: 50 ms with nothing asked wakes it never, a call wakes
   it exactly once by one interrupt; calls to the boot CPU, past the last
   CPU and of no function are refused.
 
@@ -226,19 +303,49 @@ show a stale entry and a fresh one:
   interrupts off from before the call, on a lock only that AP frees once
   its shootdown ends, finishes.
 
+The scheduler on every CPU (1.9e2). Each test that makes threads waits
+for them to be reaped, ending every AP's halt with a call each 100 ms
+until they are, so a failed test's thread left ready on a halted AP
+cannot redden the tests after it:
+
+- an AP's shootdown aimed at the boot CPU while it polls with interrupts
+  off, in a driver's bounded wait (`timer_timeout_expired`), finishes and
+  is served;
+- each CPU has its idle thread: pinned, outside the id table, the count
+  and `thread_set_affinity`; each AP runs its own, and the boot CPU runs
+  the test's thread;
+- a thread made as before runs on the boot CPU, even while the boot CPU
+  is busy and the APs are idle; one made for each AP runs there; one for
+  no CPU there is is refused;
+- a thread blocked on an idle AP, woken from the boot CPU, runs within
+  100 ms, by a resched IPI and a wake of that AP;
+- a 20 ms sleep on an AP ends between 20 and 80 ms, while the boot CPU
+  spins and sets its timer for nothing of its own;
+- two threads on one AP that never yield both run, by its own timer's
+  slice;
+- a thread raised above the one a busy AP runs takes it within 100 ms,
+  with a slice of a second;
+- a running thread whose affinity moves from AP 1 to AP 2 runs on AP 2
+  within 100 ms;
+- a thread two CPUs may run, woken while still on its CPU, is not taken
+  by the other (the one test of the `on_cpu` check, §4a);
+- the getters on another thread take the scheduler's lock (ktest_hooks).
+
 ## 6. Not done here
 
-- Threads on the APs: per-CPU run queues, an idle thread per CPU, the
-  IPI that ends another CPU's halt for a wake, a reaper that checks a
-  thread is off every CPU: 1.9e2.
+- A run queue per CPU, and a balancer (§4a): when a profile says the
+  scan costs (1.9f).
+- A process's threads on the APs, and the reaper on every CPU: once the
+  file system layer and logging are locked (1.9e3).
+- `thread_proc`'s process outlives the lock it was read under: a thread's
+  process is held by the thread, so it holds for any caller that knows
+  the thread lives, which is every caller today; nothing checks it.
+- An AP has no time slice under the PIT (no local timer is calibrated
+  then): its threads run until they block or yield.
 - Shootdowns are one page at a time: `vm_unmap` of a long region sends
   one per resident page to each CPU running the space. A range (Haiku
   collects a translation map's pages and flushes once, `Flush`) when
   ring 3 runs on several CPUs.
-- A shootdown sent by an AP waits on a CPU whose syscall body runs with
-  interrupts off, up to the panic's 10 s. A disk read's busy-poll under
-  `-icount` can last longer (1.4c). This is 1.9e2's to settle, since only
-  then does an AP change mappings outside the self-tests.
 - Untested: the fence pairs (no test can make the ordering go wrong under
   TCG), `kstack_free`'s new order (a stale use after the free would fault
   on the AP inside a call), `icr_send`'s interrupts-off section, and the

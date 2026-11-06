@@ -32,6 +32,7 @@
 #include "timer.h"
 #include "logging.h"
 #include "string.h"
+#include "sched.h"        /* 1.9e2: each AP's idle thread */
 
 #define AP_IDLE_STACK    16384u
 #define AP_RSP0_STACK    8192u
@@ -159,27 +160,26 @@ uint32_t smp_tlb_shootdown(uint64_t root, uintptr_t va, uint32_t pages, uint64_t
 
 /* ---- on the AP ----------------------------------------------------------- */
 
-/* Halted with interrupts on until something is asked of it. The check and
-   the halt are one step: interrupts are off from the check to `sti; hlt`,
-   and sti holds them off for one more instruction, so a wake IPI sent after
-   the check is taken in the halt and ends it, never lost before it. Idle
-   from just before the halt to tlb_wake: a shootdown meanwhile marks it
-   stale rather than waking it. */
-static __attribute__((noreturn)) void park(struct cpu *c) {
-    for (;;) {
-        arch_irq_disable();
-        tlb_wake(c);
-        void (*fn)(void *) = __atomic_load_n(&c->call, __ATOMIC_ACQUIRE);
-        if (fn) {
-            fn(c->call_arg);
-            __atomic_store_n(&c->call, (void (*)(void *))0, __ATOMIC_RELAXED);
-            __atomic_fetch_add(&c->calls_done, 1, __ATOMIC_RELEASE);
-            continue;
-        }
-        __atomic_store_n(&c->idle, 1u, __ATOMIC_RELAXED);
-        arch_cpu_idle();          /* sti; hlt */
-        c->wakes++;
+/* The idle thread's halt (1.9e2; it was the park loop of 1.9d). Entered
+   with interrupts off from the scheduler's look on: a call left meanwhile
+   is run; otherwise idle, then `sti; hlt; cli`, and sti holds interrupts off
+   for one more instruction, so an IPI sent after the look (a call, a
+   thread handed to this CPU) is taken in the halt and ends it, never lost
+   before it. Idle from just before the halt to tlb_wake: a shootdown
+   meanwhile marks it stale rather than waking it. */
+void smp_idle_wait(void) {
+    struct cpu *c = cpu_this();
+    void (*fn)(void *) = __atomic_load_n(&c->call, __ATOMIC_ACQUIRE);
+    if (fn) {
+        fn(c->call_arg);
+        __atomic_store_n(&c->call, (void (*)(void *))0, __ATOMIC_RELAXED);
+        __atomic_fetch_add(&c->calls_done, 1, __ATOMIC_RELEASE);
+        return;
     }
+    __atomic_store_n(&c->idle, 1u, __ATOMIC_RELAXED);
+    arch_cpu_idle_irqs_off();     /* sti; hlt; cli */
+    c->wakes++;
+    tlb_wake(c);
 }
 
 void smp_ap_entry(struct cpu *c);
@@ -189,7 +189,12 @@ void smp_ap_entry(struct cpu *c) {
     if (arch_cpu_init_ap(c, s->ist_base, s->rsp0_top)) arch_cpu_halt_forever();
     lapic_ap_init();
     __atomic_store_n(&c->state, CPU_PARKED, __ATOMIC_RELEASE);
-    park(c);
+    /* Until the boot CPU has counted it in, no shootdown asks it: then
+       everything it may hold is flushed, and it runs threads (1.9e2). */
+    while (cpu_at(c->index) != c) arch_cpu_relax();
+    tlb_flush_local(0, 0);
+    __atomic_store_n(&c->state, CPU_RUNNING, __ATOMIC_RELEASE);
+    sched_cpu_enter();
 }
 
 void smp_ap_interrupt(uint32_t vector) {
@@ -197,6 +202,11 @@ void smp_ap_interrupt(uint32_t vector) {
     c->irqs++;
     if (vector == LAPIC_TIMER_VECTOR) timer_hits[c->index]++;
     if (vector == SMP_IPI_VECTOR) smp_serve();
+}
+
+void smp_kick(unsigned index) {
+    struct cpu *c = cpu_at(index);
+    if (c && c != cpu_this()) (void)lapic_send_fixed(c->hw_id, SMP_IPI_VECTOR);
 }
 
 /* ---- on the boot CPU ----------------------------------------------------- */
@@ -328,7 +338,14 @@ unsigned arch_smp_start(void) {
         struct cpu *c = cpu_next_slot();
         if (!c) { klog("SMP", SEV_WARN, "more CPUs listed than CPU_MAX: the rest stay off"); break; }
         c->hw_id = list[i].apic_id;
+        /* Its idle thread first: the AP is that thread from its first
+           instruction (sched.h). */
+        if (sched_cpu_prepare(c) != 0) {
+            klog_u32("SMP", SEV_WARN, "no idle thread for the CPU at APIC ID ", c->hw_id, LOG_COLOR_VALUE, "");
+            continue;
+        }
         if (start_one(c) == 0) cpu_join(c);
+        else sched_cpu_unprepare(c);
     }
 
     addr_space_release(boot_root);
@@ -348,7 +365,8 @@ static uint32_t call_done_before[CPU_MAX];
 
 int smp_call_start(unsigned index, void (*fn)(void *), void *arg) {
     struct cpu *c = cpu_at(index);
-    if (!c || c == &cpu_boot || !parked(c) || !fn) return -1;
+    if (!c || c == &cpu_boot || __atomic_load_n(&c->state, __ATOMIC_ACQUIRE) != CPU_RUNNING || !fn)
+        return -1;
     if (__atomic_load_n(&c->call, __ATOMIC_ACQUIRE)) return -1;   /* one still pending */
     call_done_before[index] = __atomic_load_n(&c->calls_done, __ATOMIC_ACQUIRE);
     c->call_arg = arg;

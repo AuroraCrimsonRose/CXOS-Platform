@@ -28,6 +28,7 @@
 #include "cpu/percpu.h"        /* cpu_this, cpu_boot */
 #include "smp.h"               /* smp_ap_interrupt */
 #include "arch/smp.h"          /* smp_serve */
+#include "timer.h"             /* timer_hints_take (1.9e2) */
 
 struct idt_gate64 {
     uint16_t offset_low;
@@ -259,20 +260,26 @@ static inline void irq_eoi(uint64_t vector) {
 }
 
 static void irq_dispatch(struct registers *r) {
-    /* An AP runs no thread and has nothing routed to it until 1.9e: what it
-       takes (its wake IPI, its timer under test) is counted, acknowledged at
-       its own local APIC, and goes no further: no tick, no preemption, no
-       sample for the generator, which the boot CPU alone feeds. */
+    /* An AP has nothing routed to it: what it takes is its IPI (a
+       shootdown, a call, a thread handed to it) and its own timer (1.9e2:
+       its slice), each counted and acknowledged at its own local APIC, then
+       a preemption point. No tick and no sample for the generator: the
+       boot CPU alone keeps time and feeds it. */
     if (cpu_this() != &cpu_boot) {
         smp_ap_interrupt((uint32_t)r->vector);
         lapic_eoi();
+        if (r->vector == LAPIC_TIMER_VECTOR) sched_cpu_tick();
+        sched_preempt_point();
         return;
     }
-    /* 1.9e1: an AP's shootdown, aimed at the boot CPU. Its own branch: past
+    /* 1.9e1: an AP's shootdown, aimed at the boot CPU; 1.9e2: a thread
+       handed to it, or a deadline an AP set (timer.c). Its own branch: past
        the MSI pool, which the branch below would index beyond its end. */
     if (r->vector == SMP_IPI_VECTOR) {
         smp_serve();
+        timer_hints_take();
         lapic_eoi();
+        sched_preempt_point();
         return;
     }
     /* The cycle counter at every interrupt, stored for the generator to hash

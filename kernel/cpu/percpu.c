@@ -15,6 +15,7 @@ _Static_assert(offsetof(struct cpu, kstack)   == CPU_KSTACK,   "the syscall entr
 _Static_assert(offsetof(struct cpu, user_rsp) == CPU_USER_RSP, "the syscall entry parks it here");
 _Static_assert(offsetof(struct cpu, thread)   == CPU_THREAD,   "cpu_thread reads it here");
 _Static_assert(offsetof(struct cpu, spin_held) == CPU_SPIN_HELD, "cpu_spin_held reads it here");
+_Static_assert(offsetof(struct cpu, cur)      == CPU_CUR,      "cpu_thread_rec reads it here");
 
 /* The application processors' (1.9d), handed out in index order. */
 static struct cpu  cpu_ap[CPU_MAX - 1];

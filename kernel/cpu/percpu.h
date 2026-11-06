@@ -31,6 +31,8 @@
 #include "sync/lockorder.h"
 #include "memman/physmap.h"
 
+struct thread;
+
 struct cpu {
     struct cpu *self;          /* CPU_SELF: what the base register points at */
     uintptr_t   kstack;        /* CPU_KSTACK: the syscall entry's stack, the
@@ -40,6 +42,9 @@ struct cpu {
     uint32_t    index;         /* 0 for the boot CPU */
     int32_t     thread;        /* CPU_THREAD: the running thread's id (sched.c) */
     volatile uint32_t spin_held;   /* CPU_SPIN_HELD: spinlocks held (sync/spinlock.h, test hooks) */
+    struct thread *cur;        /* CPU_CUR (1.9e2): the running thread's record, so
+                                  the running thread finds itself without the id
+                                  table, which another CPU may be growing */
     struct lockorder_held locks;   /* what this CPU holds (sync/lockorder.c) */
     struct physmap_open   phys;    /* what this CPU has mapped (memman/physmap.c) */
     /* 1.9d: which CPU this is to the interrupt controller, and the parked
@@ -68,6 +73,16 @@ struct cpu {
     } tlb_out;
     volatile uint32_t tlb_served;  /* requests it served, interrupted or spinning */
     volatile uint32_t tlb_woke_stale;  /* wakes that flushed for a skipped request */
+    /* 1.9e2: the scheduler on this CPU (cpu/sched.c). Its idle thread, run
+       when nothing else may; a switch asked for at its next preemption point
+       (set by any CPU under sched_lock, with the IPI that ends a halt); the
+       switch under way; when the running thread's slice ends; the IPIs it
+       was sent for a switch. */
+    struct thread    *idle_thread;
+    volatile uint32_t need_resched;
+    volatile uint32_t in_switch;
+    volatile uint64_t slice_end;
+    volatile uint32_t resched_ipis;
 };
 
 #define CPU_MAX      16        /* the rig has 8; Hyper-V is given up to 16 */
@@ -81,6 +96,7 @@ struct cpu {
 #define CPU_USER_RSP 16
 #define CPU_THREAD   28
 #define CPU_SPIN_HELD 32
+#define CPU_CUR      40
 
 extern struct cpu cpu_boot;
 
@@ -101,6 +117,8 @@ static inline struct cpu *cpu_this(void) { return (struct cpu *)arch_cpu_self();
 /* The running thread's id, in one load (see above). */
 static inline int cpu_thread(void) { return (int)arch_cpu_local_u32(CPU_THREAD); }
 
+/* The running thread's record, the same way (1.9e2). */
+static inline struct thread *cpu_thread_rec(void) { return (struct thread *)arch_cpu_local_ptr(CPU_CUR); }
 /* How many spinlocks this CPU holds, the same way: a thread that holds none
    may move CPUs mid-read, one that holds one cannot. */
 static inline uint32_t cpu_spin_held(void) { return arch_cpu_local_u32(CPU_SPIN_HELD); }

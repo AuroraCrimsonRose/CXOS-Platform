@@ -14,6 +14,8 @@
 #include "arch/evtimer.h"
 #include "lib/time/clockscale.h"
 #include "platform/platform.h"   /* the PIT's tick */
+#include "cpu/percpu.h"          /* 1.9e2: an AP's hints go to the boot CPU */
+#include "arch/smp.h"
 
 #define TIMER_HZ      TIMER_TICK_HZ    /* 1000 Hz -> ~1 ms per tick */
 #define NS_PER_SEC    1000000000ull
@@ -114,10 +116,44 @@ static void apic_fire(struct registers *r) {
     program();
 }
 
+/* The earliest hint an AP has left for the boot CPU (1.9e2). */
+static volatile uint64_t remote_due = TIMER_NEVER;
+
 void timer_deadline_hint(uint64_t due) {
     uint32_t f = arch_irq_save();
-    if (ev_source == TIMER_SOURCE_APIC && due < ev_due) arm(due);
+    if (ev_source == TIMER_SOURCE_APIC) {
+        if (cpu_this() == &cpu_boot) {
+            if (due < ev_due) arm(due);
+        } else {
+            /* arm() would set this AP's timer and the boot CPU's ev_due: left
+               for the boot CPU instead, the earliest kept. */
+            uint64_t old = __atomic_load_n(&remote_due, __ATOMIC_RELAXED);
+            while (due < old && !__atomic_compare_exchange_n(&remote_due, &old, due, 0,
+                                                             __ATOMIC_RELEASE, __ATOMIC_RELAXED)) { }
+            if (due < old) smp_kick(0);
+        }
+    }
     arch_irq_restore(f);
+}
+
+void timer_hints_take(void) {
+    uint64_t due = __atomic_exchange_n(&remote_due, TIMER_NEVER, __ATOMIC_ACQUIRE);
+    if (ev_source == TIMER_SOURCE_APIC && due < ev_due) arm(due);
+}
+
+void timer_local_arm(uint64_t due) {
+    if (ev_source != TIMER_SOURCE_APIC) return;
+    uint64_t now = timer_now_ns();
+    uint64_t dt = due > now ? due - now : 0;
+    if (dt < EV_MIN_NS) dt = EV_MIN_NS;
+    if (dt > EV_MAX_NS) dt = EV_MAX_NS;
+    uint64_t steps = clock_scale(dt, steps_per_ns) + 1;
+    if (steps > 0xFFFFFFFFull) steps = 0xFFFFFFFFull;
+    arch_evtimer_local((uint32_t)steps);
+}
+
+void timer_local_stop(void) {
+    if (ev_source == TIMER_SOURCE_APIC) arch_evtimer_local(0);
 }
 
 void timer_idle(void) {
@@ -148,7 +184,10 @@ void timer_sleep(uint32_t ms) {
     if (!arch_irqs_enabled()) {
         volatile uint32_t x = 0;
         /* rough busy-delay: ~ a few hundred thousand iterations per ms */
-        for (uint32_t i = 0; i < ms * 200000u; i++) x += i;
+        for (uint32_t i = 0; i < ms * 200000u; i++) {
+            x += i;
+            if (!(i & 1023u)) smp_serve();   /* a spin serves shootdowns */
+        }
         return;
     }
     /* On the 64-bit clock, which does not wrap: timer_ticks_set_for_test
@@ -183,7 +222,11 @@ int timer_timeout_expired(struct timeout *to) {
            with DISK_ERR_TIMEOUT before the hardware was even asked. */
         return timer_tick_after(timer_ticks(), to->deadline) ? 1 : 0;
     }
-    /* spin mode: each call burns one unit of budget */
+    /* spin mode: each call burns one unit of budget. Interrupts are off, so
+       a shootdown from another CPU (arch/smp.h) is served here, as every
+       spin serves one: a disk's busy-poll inside a syscall body otherwise
+       held the sender for as long as the poll ran (1.9e2). */
+    smp_serve();
     if (to->spins_left == 0) return 1;
     to->spins_left--;
     return 0;

@@ -96,6 +96,16 @@ uint64_t timer_now_ns(void);
    timer object armed); any interrupts state. */
 void timer_deadline_hint(uint64_t due);
 
+/* 1.9e2: the event timer is the boot CPU's, as is every expiry. A hint
+   given on an AP is left for it (the earliest of them) with an IPI, and
+   timer_hints_take, the boot CPU's IPI branch, sets the timer for it.
+   timer_local_arm sets the calling AP's own timer for `due`, its time slice
+   (cpu/sched.c), and timer_local_stop stops it; both do nothing while the
+   boot CPU's timer is not the local APIC's (the PIT: no AP slices). */
+void timer_hints_take(void);
+void timer_local_arm(uint64_t due);
+void timer_local_stop(void);
+
 /* Wait for an interrupt with nothing to run, interrupts off: the event timer
    is set for the next deadline alone (no time slice to end), and once an
    interrupt comes the slice starts again. Returns with interrupts off. The

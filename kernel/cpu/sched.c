@@ -23,9 +23,12 @@
 #include "sync/lockorder.h"  /* no lock but sched_lock across a switch */
 #include "memman/physmap.h"  /* nor a mapped frame */
 #include "percpu.h"          /* the running thread is the CPU's */
+#include "arch/smp.h"        /* 1.9e2: the IPI that hands a CPU a thread */
 
 
 static void sched_reap(void);   /* forward decl: used by yield, defined below */
+struct thread;
+static void kick(struct thread *t, int this_cpu_too);   /* 1.9e2: hand a ready thread a CPU */
 
 /* Every thread is a record from its own cache, named by an id from `tids`.
    The id is the index the old fixed array had: small, lowest free first,
@@ -39,8 +42,14 @@ static struct idtab  tids;
    Written only by switch_to and sched_init, under sched_lock. */
 #define current cpu_thread()
 
+/* Another thread's record: under sched_lock only (1.9e2). The table grows
+   under the lock, freeing its old array, and a record goes back once it is
+   out of the table; read without the lock, either can go from under the
+   reader on another CPU. */
 static inline struct thread *th(int id) { return (struct thread *)idtab_get(&tids, id); }
-static inline struct thread *self(void) { return th(current); }
+/* The running thread's own, which nothing frees while it runs, through the
+   CPU's pointer in one load (percpu.h): never through the table. */
+static inline struct thread *self(void) { return cpu_thread_rec(); }
 
 /* A live thread (allocated, exited-unreaped included), or NULL. */
 static inline struct thread *live(int id) {
@@ -91,6 +100,20 @@ static inline void     irq_restore(uint32_t f) { arch_irq_restore(f); }
    a halt or a reap must not be cut into by the tick that wants the lock. */
 static inline void sched_unlock_irqs_off(void) { spin_unlock(&sched_lock, irq_save()); }
 
+/* A thread's record for reading or writing one of its fields (1.9e2: the
+   per-thread reads 1.9b left without the lock). The running thread's own
+   needs no lock; any other is found under sched_lock, held until
+   look_done, so it is neither freed nor its table moved meanwhile. What a
+   field points at (its process) outlives the call only as long as the
+   thread does: the caller's to know. */
+#define LOOK_SELF 0xFFFFFFFFu   /* no flags word is all ones: no lock taken */
+static struct thread *look(int id, uint32_t *f) {
+    if (id == current) { *f = LOOK_SELF; return self(); }
+    *f = spin_lock(&sched_lock);
+    return live(id);
+}
+static inline void look_done(uint32_t f) { if (f != LOOK_SELF) spin_unlock(&sched_lock, f); }
+
 static uint32_t thread_limit = THREAD_LIMIT_DEFAULT;
 static uint32_t stack_bytes  = THREAD_STACK_DEFAULT;
 
@@ -125,6 +148,47 @@ static void thread_launch(void) {
     thread_exit();
 }
 
+static __attribute__((noreturn)) void idle_loop(void);
+
+/* CPU `c`'s idle thread (1.9e2): a record from the thread cache, outside the
+   id table, so no walk of threads, count or limit sees it, its id past
+   every thread's. The boot CPU's has a stack of its own and starts at
+   idle_loop on its first switch; an AP's is the context the AP starts in,
+   which sched_cpu_enter turns into it. WRK's KiSelectNextThread picks a
+   processor's idle thread when nothing is ready (ke/thredsup.c), as
+   Serenity's pull_next_runnable_thread does (Kernel/Tasks/Scheduler.cpp);
+   before it, a CPU with nothing to run halted on whatever thread had just
+   blocked, which on two CPUs is a thread another CPU may wake and run on
+   the stack this one is standing on. */
+#define IDLE_STACK_BYTES 8192u
+int sched_cpu_prepare(struct cpu *c) {
+    struct thread *t = ocache_alloc(&thread_cache);   /* zeroed */
+    if (!t) return -1;
+    t->id = THREAD_IDLE_ID + (int)c->index;
+    if (c == &cpu_boot) {
+        uintptr_t base = 0, top = kstack_alloc(IDLE_STACK_BYTES, t->id, &base);
+        if (!top) { ocache_free(&thread_cache, t); return -1; }
+        t->stack_base = base;
+        t->esp = arch_thread_frame(top, thread_launch);
+    }
+    t->name     = "idle";
+    t->entry    = idle_loop;
+    t->state    = THREAD_READY;
+    t->idle     = 1;
+    t->affinity = 1u << c->index;
+    c->idle_thread = t;
+    if (c != &cpu_boot) { c->cur = t; c->thread = t->id; }   /* from its first instruction */
+    return 0;
+}
+
+void sched_cpu_unprepare(struct cpu *c) {
+    struct thread *t = c->idle_thread;
+    if (!t || c == &cpu_boot) return;
+    c->idle_thread = 0;
+    c->cur = 0;
+    ocache_free(&thread_cache, t);
+}
+
 void sched_init(void) {
     if (ocache_init(&thread_cache, "thread", sizeof(struct thread)) != 0)
         kpanic("sched_init: no thread cache");
@@ -139,6 +203,10 @@ void sched_init(void) {
     th(0)->name  = "main";
     th(0)->base  = th(0)->prio = PRIO_NORMAL;
     th(0)->stack_base = 0;   /* uses the existing kernel stack */
+    th(0)->affinity   = THREAD_ON_BOOT_CPU;
+    th(0)->on_cpu     = 1;
+    cpu_boot.cur      = th(0);
+    if (sched_cpu_prepare(&cpu_boot) != 0) kpanic("sched_init: no idle thread");
     /* the boot/kernel context is the machine (User 0): proc_create with no
        parent gives exactly that */
     th(0)->proc  = proc_create(0, 0);
@@ -155,6 +223,15 @@ static int thread_create_in(const char *name, void (*entry)(void), int held, str
 int thread_create(const char *name, void (*entry)(void)) {
     int t = thread_create_in(name, entry, 0, 0, 0);
     return t < 0 ? -1 : t;
+}
+
+/* HELD until its CPUs are set, so no CPU outside them ever picks it. */
+int thread_create_on(const char *name, void (*entry)(void), uint32_t mask) {
+    int t = thread_create_in(name, entry, 1, 0, 0);
+    if (t < 0) return -1;
+    if (thread_set_affinity(t, mask) != 0) { thread_discard(t); return -1; }
+    thread_start(t);
+    return t;
 }
 
 int thread_create_sibling(int id, const char *name, void (*entry)(void)) {
@@ -180,10 +257,13 @@ int thread_create_user(const char *name, void (*entry)(void)) {
 }
 
 void thread_set_obj(int id, struct kthread *k) {
-    struct thread *t = th(id);
-    if (id <= 0 || !t || t->state != THREAD_HELD || t->obj) return;
-    kobj_ref(&k->hdr);
-    t->obj = k;
+    uint32_t f;
+    struct thread *t = look(id, &f);
+    if (id > 0 && t && t->state == THREAD_HELD && !t->obj) {
+        kobj_ref(&k->hdr);
+        t->obj = k;
+    }
+    look_done(f);
 }
 
 void thread_note_self_exit(int32_t code) {
@@ -195,19 +275,28 @@ void thread_note_self_exit(int32_t code) {
 void thread_start(int id) {
     uint32_t f = spin_lock(&sched_lock);
     struct thread *t = th(id);
-    /* No outrank_check: only thread context starts a thread, and a higher one
-       runs when the starter next yields (ring 3: the syscall gate's
-       sched_yield_if_outranked). need_resched acts at an interrupt. */
-    if (id > 0 && t && t->state == THREAD_HELD) t->state = THREAD_READY;
+    /* Not this CPU's need_resched: only thread context starts a thread, and
+       a higher one runs when the starter next yields (ring 3: the syscall
+       gate's sched_yield_if_outranked). need_resched acts at an interrupt.
+       Another CPU, idle or running something lower, is handed it. */
+    if (id > 0 && t && t->state == THREAD_HELD) {
+        t->state = THREAD_READY;
+        kick(t, 0);
+    }
     spin_unlock(&sched_lock, f);
 }
 
 int thread_set_arg(int id, void *arg, void (*drop)(void *arg)) {
-    struct thread *t = th(id);
-    if (id <= 0 || !t || t->state != THREAD_HELD) return -1;
-    t->arg      = arg;
-    t->arg_drop = drop;
-    return 0;
+    uint32_t f;
+    struct thread *t = look(id, &f);
+    int rc = -1;
+    if (id > 0 && t && t->state == THREAD_HELD) {
+        t->arg      = arg;
+        t->arg_drop = drop;
+        rc = 0;
+    }
+    look_done(f);
+    return rc;
 }
 
 void *thread_current_arg(void) {
@@ -249,9 +338,13 @@ static void thread_free(struct thread *t) {
    leave it to the reaper, which only collects EXITED threads. With
    interrupts off, as the reaper's free is. */
 void thread_discard(int id) {
-    struct thread *t = th(id);
-    if (id <= 0 || !t || t->state != THREAD_HELD) return;
-    uint32_t f = irq_save();
+    uint32_t f;
+    struct thread *t = look(id, &f);
+    int held = id > 0 && t && t->state == THREAD_HELD;
+    look_done(f);
+    /* Only its creator frees a HELD thread, so it is still there below. */
+    if (!held) return;
+    f = irq_save();
     thread_free(t);
     irq_restore(f);
 }
@@ -322,37 +415,85 @@ static int thread_create_in(const char *name, void (*entry)(void), int held, str
     t->tls_base    = 0;
     t->cpu_ns      = 0;
     t->run_since   = 0;
+    t->affinity    = THREAD_ON_BOOT_CPU;   /* until 1.9e3: sched.h */
+    t->on_cpu      = 0;
+    t->idle        = 0;
     /* Last, under the lock: from here the timer, or another CPU, may run it. */
     f = spin_lock(&sched_lock);
     t->state = held ? THREAD_HELD : THREAD_READY;
+    if (!held) kick(t, 0);
     spin_unlock(&sched_lock, f);
     return slot;
 }
 
-/* Pick the READY/RUNNING thread at the highest priority, the first after
-   `current` among those at it: round-robin within a level, and `current`
-   (last in the scan) only if no other at its level is ready. A scan of every
-   thread, as before priorities; the thread limit keeps it short until
-   per-CPU run queues (roadmap 1.9e). sched_lock held. */
-static int next_runnable(void) {
-    int cap = (int)tids.cap, best = current, top = -1;
-    for (int n = 1; n <= cap; n++) {
-        struct thread *t = th((current + n) % cap);
-        if (t && (t->state == THREAD_READY || t->state == THREAD_RUNNING) && (int)t->prio > top) {
-            top  = t->prio;
-            best = t->id;
-        }
-    }
-    return best;   /* nobody: keep running current */
+/* May `t` run here, now? READY, on no CPU, and this CPU in its affinity; the
+   running thread itself while it is still runnable. sched_lock held. A
+   READY thread can still be on a CPU: one woken between marking itself
+   BLOCKED and switching away (thread_wait) is READY on its own CPU until
+   that CPU's next pick, and another CPU running it there would run it twice
+   on one stack. Serenity marks a thread active for the same reason
+   (Scheduler::pull_next_runnable_thread). */
+static int runnable_here(const struct thread *t, const struct cpu *c) {
+    if (!(t->affinity & (1u << c->index))) return 0;
+    if (t == c->cur) return t->state == THREAD_READY || t->state == THREAD_RUNNING;
+    return t->state == THREAD_READY && !t->on_cpu;
 }
 
-/* A switch is due at the next preemption point (sched_preempt_point). */
-static volatile int need_resched = 0;
+/* What this CPU runs next: the runnable thread at the highest priority, the
+   first after the running one among those at it: round-robin within a
+   level, and the running one (last in the scan) only if no other at its
+   level is ready; this CPU's idle thread if none. One order for every CPU
+   under the one lock, as Serenity's ready queues are, rather than a queue
+   per CPU (Haiku's CPUEntry, WRK's per-processor ready lists): a scan of
+   every thread, short under the thread limit, until a profile of the SMP
+   stress suite (1.9f) says otherwise. sched_lock held. */
+static struct thread *next_runnable(void) {
+    struct cpu *c = cpu_this();
+    struct thread *best = 0;
+    int cap = (int)tids.cap, top = -1;
+    int from = c->cur->idle ? cap - 1 : c->cur->id;   /* idle: from the first */
+    for (int n = 1; n <= cap; n++) {
+        struct thread *t = th((from + n) % cap);
+        if (t && runnable_here(t, c) && (int)t->prio > top) {
+            top  = t->prio;
+            best = t;
+        }
+    }
+    return best ? best : c->idle_thread;
+}
 
-/* `t` was just made READY or raised: if it outranks the running thread, it
-   should not wait out the slice. sched_lock held. */
-static void outrank_check(const struct thread *t) {
-    if (t->state == THREAD_READY && t->prio > self()->prio) need_resched = 1;
+/* Ask CPU `c` for a switch at its next preemption point, or its idle loop's
+   next look; and if it is another CPU, the IPI that ends its halt or
+   interrupts its thread. Once per ask: a CPU already asked has an IPI on
+   its way (Haiku's invoke_scheduler, scheduler.cpp enqueue). */
+static void resched(struct cpu *c) {
+    if (__atomic_exchange_n(&c->need_resched, 1u, __ATOMIC_ACQ_REL)) return;
+    if (c != cpu_this()) {
+        c->resched_ipis++;
+        smp_kick(c->index);
+    }
+}
+
+/* `t` was just made READY or raised: hand it a CPU that may run it and
+   should, at once rather than at the end of a slice: one idle, or else the
+   one running the lowest thread below it. None: it waits its turn. This
+   CPU is asked only with `this_cpu_too`, as thread_start never asked it.
+   Serenity wakes an idle processor the same way
+   (smp_wake_n_idle_processors, Arch/x86_64/Processor.cpp); Haiku hands a
+   thread to the CPU whose running priority is lowest (enqueue). sched_lock
+   held, so each CPU's running thread holds still. */
+static void kick(struct thread *t, int this_cpu_too) {
+    if (t->state != THREAD_READY || t->on_cpu) return;
+    struct cpu *me = cpu_this(), *pick = 0;
+    int low = t->prio;
+    for (unsigned i = 0; i < cpu_count(); i++) {
+        struct cpu *c = cpu_at(i);
+        if (!(t->affinity & (1u << i)) || !c->cur) continue;
+        if (c == me && !this_cpu_too) continue;
+        if (c->cur == c->idle_thread) { pick = c; break; }
+        if ((int)c->cur->prio < low) { low = c->cur->prio; pick = c; }
+    }
+    if (pick) resched(pick);
 }
 
 /* Point the stack the CPU takes on entry from ring 3 (arch/cpu.h; the TSS on
@@ -393,7 +534,9 @@ static void update_address_space(void) {
    (WRK's KeUpdateRunTime): a thread that blocks inside every tick is
    charged what it ran, not nothing. Interrupts are charged to whoever they
    arrived on. */
-static void switch_to(int next) {
+static void slice_begin(struct cpu *c, const struct thread *next, uint64_t now);
+
+static void switch_to(struct thread *next) {
 #if CXK_LOCK_CHECK
     /* A spinlock is the CPU's, never carried into another thread: all but
        this one, which the thread switched to gives back. */
@@ -401,27 +544,73 @@ static void switch_to(int next) {
 #endif
     /* So is a frame mapped through memman/physmap.h, in every build. */
     phys_assert_none("thread switch with a frame mapped:");
+    struct cpu *c = cpu_this();
     uint64_t now = timer_now_ns();
     struct thread *prev = self();
     if (now > prev->run_since) prev->cpu_ns += now - prev->run_since;
-    th(next)->run_since = now;
-    th(next)->state = THREAD_RUNNING;
-    cpu_this()->thread = next;
+    /* Off this CPU, and the next on it: both seen by another CPU only once
+       the thread switched to gives sched_lock back, after the stack has
+       changed (1.9e2). */
+    prev->on_cpu = 0;
+    next->on_cpu = c->index + 1;
+    /* Switched out still ready (a slice, an outranking wake, an affinity it
+       no longer meets here): another CPU it may use may be idle. That CPU
+       takes it only once the lock comes back, after its stack is saved. */
+    if (prev->state == THREAD_READY && !prev->idle) kick(prev, 0);
+    next->run_since = now;
+    next->state = THREAD_RUNNING;
+    c->cur    = next;
+    c->thread = next->id;
     update_kernel_stack();
     update_address_space();
     arch_tls_base_set(self()->tls_base);
+    slice_begin(c, next, now);
 }
 
-/* Halt (timer_idle) with nothing to run, on the current thread's stack but
-   not on its time: it is blocked, or ending, and a halt in its name would
-   charge a thread that sleeps the whole of its sleep. There is no idle
-   thread to give the time to (WRK's), so it is no one's. */
-static void idle_uncharged(void) {
-    struct thread *t = self();
-    uint64_t now = timer_now_ns();
-    if (now > t->run_since) t->cpu_ns += now - t->run_since;
-    timer_idle();
-    t->run_since = timer_now_ns();
+/* ---- each CPU's idle thread (1.9e2) ----
+ * Runs when nothing else may run on its CPU: picks again whenever it wakes,
+ * and halts until an interrupt when there is still nothing. Halting is the
+ * boot CPU's timer_idle, which sets the event timer for the next deadline,
+ * or an AP's smp_idle_wait (arch/smp.h), which runs a call left for it and
+ * marks the CPU idle for the TLB shootdown. Both are entered with
+ * interrupts off from the look on: a thread handed to this CPU after the
+ * look comes with an IPI, which is then taken in the halt and ends it.
+ * Idle time is the idle thread's (cpu_ns), WRK's rule, where before it was
+ * no one's. Exited threads are reaped here too, on the boot CPU. */
+static __attribute__((noreturn)) void idle_loop(void) {
+    struct cpu *c = cpu_this();   /* an idle thread never moves */
+    struct thread *me = c->idle_thread;
+    for (;;) {
+        arch_irq_disable();
+        sched_reap();
+        spin_lock(&sched_lock);
+        __atomic_store_n(&c->need_resched, 0u, __ATOMIC_RELAXED);
+        struct thread *next = next_runnable();
+        if (next != me) {
+            switch_to(next);
+            context_switch(&me->esp, next->esp);
+            sched_unlock_irqs_off();   /* handed over by whoever switched back */
+            continue;
+        }
+        sched_unlock_irqs_off();
+        if (c == &cpu_boot) timer_idle();
+        else                smp_idle_wait();
+    }
+}
+
+void sched_cpu_enter(void) {
+    struct cpu *c = cpu_this();
+    struct thread *me = c->idle_thread;
+    arch_irq_disable();
+    spin_lock(&sched_lock);
+    me->on_cpu    = c->index + 1;
+    me->state     = THREAD_RUNNING;
+    me->run_since = timer_now_ns();
+    update_kernel_stack();
+    update_address_space();
+    arch_tls_base_set(0);
+    sched_unlock_irqs_off();
+    idle_loop();
 }
 
 void thread_set_space(int id, paddr_t pd_phys) {
@@ -463,28 +652,17 @@ void sched_wake_process(struct proc *p) {
         if (!t || t->proc != p || t->state != THREAD_BLOCKED) continue;
         t->sleeping = 0;
         t->state    = THREAD_READY;
+        kick(t, 0);
     }
     spin_unlock(&sched_lock, f);
 }
 
 int thread_is_blocked(int id) {
-    struct thread *t = live(id);
-    return t && t->state == THREAD_BLOCKED;
-}
-
-/* Halt while this thread is still blocked and nothing else can run, both
-   seen with interrupts off: a wake landing after a look with them on would
-   be slept through until the next deadline, which without a fixed tick may
-   be a long way off (timer_idle). The look is under sched_lock, given back
-   before the halt with interrupts still off: the tick that wakes takes it.
-   (A wake from another CPU will need an IPI to end the halt: 1.9e.) */
-static void idle_while_blocked(void) {
-    uint32_t f = irq_save();
-    spin_lock(&sched_lock);
-    int idle = self()->state == THREAD_BLOCKED && next_runnable() == current;
-    sched_unlock_irqs_off();
-    if (idle) idle_uncharged();
-    irq_restore(f);
+    uint32_t f;
+    struct thread *t = look(id, &f);
+    int blocked = t && t->state == THREAD_BLOCKED;
+    look_done(f);
+    return blocked;
 }
 
 /* RUNNING again, once woken and back. */
@@ -495,16 +673,14 @@ static void running_again(void) {
     spin_unlock(&sched_lock, f);
 }
 
+/* A BLOCKED thread's yield always switches away, to the idle thread if
+   nothing else (1.9e2), and comes back here once woken and picked. It used
+   to stay when nothing else could run and halt on its own stack, which on
+   two CPUs let another CPU wake it and run it on that same stack. */
 void thread_wait(void) {
     if (!initialized) return;
     if (!block_unless_killed()) return;
-    for (;;) {
-        yield();
-        if (self()->state != THREAD_BLOCKED) break;  /* woken */
-        /* yield found nothing else runnable and stayed: wait for an interrupt
-           (a timer that wakes a sleeping lock holder) instead of spinning */
-        idle_while_blocked();
-    }
+    while (self()->state == THREAD_BLOCKED) yield();
     running_again();
 }
 
@@ -513,7 +689,7 @@ void thread_unblock(int id) {
     struct thread *t = th(id);
     if (t && t->state == THREAD_BLOCKED) {
         t->state = THREAD_READY;
-        outrank_check(t);
+        kick(t, 1);
     }
     spin_unlock(&sched_lock, f);
 }
@@ -556,21 +732,13 @@ void thread_block_prepare_until(uint64_t deadline) {
     spin_unlock(&sched_lock, f);
 }
 
+/* As thread_wait: the timer or a thread_unblock makes it READY, and the
+   yield that switched it away comes back. With nothing else to run, its
+   CPU's idle thread halts until then, the event timer set for the next
+   deadline: an idle machine, not a hot one. */
 void thread_block_finish(void) {
     if (!initialized) return;
-    for (;;) {
-        yield();
-        /* The timer or a thread_unblock made it READY, and yield ran it. */
-        if (self()->state != THREAD_BLOCKED) break;
-
-        /* Still blocked and still here, which means yield found nothing else
-           to run and declined to switch. We are the only thread awake, so wait
-           for the interrupt that will wake us (or someone) instead of
-           spinning on it: the event timer is set for the next deadline.
-           Halting rather than spinning is the difference between an idle
-           machine and a hot one. */
-        idle_while_blocked();
-    }
+    while (self()->state == THREAD_BLOCKED) yield();
     running_again();
 }
 
@@ -585,57 +753,84 @@ void sched_wake_sleepers(uint64_t now) {
         t->sleeping = 0;
         if (t->state == THREAD_BLOCKED) {
             t->state = THREAD_READY;
-            outrank_check(t);
+            kick(t, 1);
         }
     }
     spin_unlock(&sched_lock, f);
 }
 
-/* At any level: next_runnable would keep a higher current thread, and the
-   timer asks this before halting a CPU that a lower one is waiting for. */
+/* At any level, that this CPU could run: next_runnable would keep a higher
+   current thread, and the timer asks this before halting a CPU that a
+   lower one is waiting for. */
 int sched_others_ready(void) {
     if (!initialized) return 0;
     int any = 0;
     uint32_t f = spin_lock(&sched_lock);
+    struct cpu *c = cpu_this();
     for (uint32_t i = 0; i < tids.cap && !any; i++) {
         struct thread *t = th((int)i);
-        any = t && (int)i != current && t->state == THREAD_READY;
+        any = t && t != c->cur && runnable_here(t, c);
     }
     spin_unlock(&sched_lock, f);
     return any;
 }
 
-uint32_t thread_base(int id) { struct thread *t = live(id); return t ? t->base : 0; }
-uint32_t thread_prio(int id) { struct thread *t = live(id); return t ? t->prio : 0; }
+uint32_t thread_base(int id) {
+    uint32_t f;
+    struct thread *t = look(id, &f);
+    uint32_t v = t ? t->base : 0;
+    look_done(f);
+    return v;
+}
+
+uint32_t thread_prio(int id) {
+    uint32_t f;
+    struct thread *t = look(id, &f);
+    uint32_t v = t ? t->prio : 0;
+    look_done(f);
+    return v;
+}
 
 void thread_set_base(int id, uint32_t level) {
-    struct thread *t = live(id);
+    uint32_t f;
+    struct thread *t = look(id, &f);
     if (t) t->base = (uint8_t)level;
+    look_done(f);
 }
 
 void thread_set_prio(int id, uint32_t level) {
-    struct thread *t = live(id);
-    if (!t) return;
     uint32_t f = spin_lock(&sched_lock);
-    t->prio = (uint8_t)level;
-    outrank_check(t);
+    struct thread *t = live(id);
+    if (t) {
+        t->prio = (uint8_t)level;
+        kick(t, 1);
+    }
     spin_unlock(&sched_lock, f);
 }
 
-struct ipc_call *thread_in_call(int id) { struct thread *t = live(id); return t ? t->in_call : 0; }
+struct ipc_call *thread_in_call(int id) {
+    uint32_t f;
+    struct thread *t = look(id, &f);
+    struct ipc_call *c = t ? t->in_call : 0;
+    look_done(f);
+    return c;
+}
 
 void thread_set_in_call(int id, struct ipc_call *c) {
-    struct thread *t = live(id);
+    uint32_t f;
+    struct thread *t = look(id, &f);
     if (t) t->in_call = c;
+    look_done(f);
 }
 
 void sched_yield_if_outranked(void) {
     if (!initialized) return;
     uint32_t f = spin_lock(&sched_lock);
+    struct cpu *c = cpu_this();
     int go = 0;
     for (uint32_t i = 0; i < tids.cap && !go; i++) {
         struct thread *t = th((int)i);
-        go = t && (int)i != current && t->state == THREAD_READY && t->prio > self()->prio;
+        go = t && t != c->cur && runnable_here(t, c) && t->prio > self()->prio;
     }
     spin_unlock(&sched_lock, f);
     if (go) yield();
@@ -644,18 +839,18 @@ void sched_yield_if_outranked(void) {
 void yield(void) {
     if (!initialized) return;
     uint32_t flags = spin_lock(&sched_lock);
-    /* This pick answers any switch asked for (outrank_check, the slice); left
+    /* This pick answers any switch asked for (kick, the slice); left
        standing, the request would preempt whoever runs at the next interrupt,
        for nothing, and hide whether that interrupt's own wake asks for one. */
-    need_resched = 0;
-    int prev = current;
-    int next = next_runnable();
+    __atomic_store_n(&cpu_this()->need_resched, 0u, __ATOMIC_RELAXED);
+    struct thread *prev = self();
+    struct thread *next = next_runnable();
     if (next == prev) { spin_unlock(&sched_lock, flags); return; }   /* only one runnable thread */
 
-    if (th(prev)->state == THREAD_RUNNING) th(prev)->state = THREAD_READY;
+    if (prev->state == THREAD_RUNNING) prev->state = THREAD_READY;
     switch_to(next);
 
-    context_switch(&th(prev)->esp, th(next)->esp);
+    context_switch(&prev->esp, next->esp);
     /* When we resume here later we're `prev` again, now running, and the
        thread that switched to us took sched_lock: ours to give back. */
     sched_unlock_irqs_off();
@@ -668,18 +863,26 @@ void yield(void) {
    A thread can't free its own stack (it's running on it), so thread_exit marks
    the slot EXITED and leaves the stack pointers in place. The reaper runs from
    a DIFFERENT thread's context (after a switch) and frees them safely. An
-   EXITED thread gives sched_lock up only by its last switch, or to idle
-   while it is still the CPU's current thread, which the reaper skips. (With
-   several CPUs, "current" must become "on any CPU": 1.9e.) Each is taken
-   under the lock (REAPING, so no second reaper takes it too) and freed
-   after it, its resources' locks ranking before sched's. */
+   EXITED thread gives sched_lock up only by its last switch (1.9e2: no
+   CPU halts on an exiting thread's stack any more; its idle thread does),
+   and the switch clears its on_cpu before the lock goes: a thread still on
+   any CPU is skipped all the same, as the reaper's own rule rather than a
+   consequence of the handoff. Each is taken under the lock (REAPING, so no
+   second reaper takes it too) and freed after it, its resources' locks
+   ranking before sched's.
+
+   On the boot CPU only, until 1.9e3: freeing a thread can end its process,
+   whose handles close through the file system layer, which is not yet
+   locked. An AP's exited threads wait for the boot CPU's next switch or
+   wake. */
 static void sched_reap(void) {
+    if (cpu_this() != &cpu_boot) return;
     for (;;) {
         struct thread *dead = 0;
         uint32_t f = spin_lock(&sched_lock);
         for (uint32_t i = 1; i < tids.cap && !dead; i++) {
             struct thread *t = th((int)i);
-            if (t && t->state == THREAD_EXITED && (int)i != current) {
+            if (t && t->state == THREAD_EXITED && !t->on_cpu) {
                 t->state = THREAD_REAPING;
                 dead = t;
             }
@@ -716,24 +919,16 @@ void thread_exit(void) {
     /* stack is freed later by sched_reap, running in another thread's context
        (we can't free the stack we're still standing on). */
 
-    /* Nothing else runnable - every other thread blocked or asleep - is not a
-       reason to switch to ourselves: our saved esp is from the last time we
-       were switched out, and resuming it ran stale context on the stack we
-       are leaving. Idle on this stack until an interrupt makes a thread
-       runnable (a sleeper's timer, a keystroke), with sched_lock given back
-       for the halt. It stays ours until another thread reaps it, which
-       cannot happen before we switch away: the reaper skips the current. */
-    int next = next_runnable();
-    while (next == current) {
-        sched_unlock_irqs_off();
-        idle_uncharged();
-        spin_lock(&sched_lock);
-        next = next_runnable();
-    }
+    /* Never itself: an EXITED thread is not runnable, so with every other
+       thread blocked or asleep the pick is this CPU's idle thread (1.9e2).
+       It used to idle on this stack with the lock given back, which a
+       second CPU could not tell from a thread switched out. */
+    struct thread *next = next_runnable();
     switch_to(next);
     uintptr_t dummy;
-    context_switch(&dummy, th(next)->esp);   /* save into dummy (discarded) */
+    context_switch(&dummy, next->esp);   /* save into dummy (discarded) */
     /* never reached */
+    for (;;) { }
 }
 
 int sched_active_count(void) {
@@ -748,20 +943,47 @@ int sched_active_count(void) {
 }
 
 /* ---- preemption (Checkpoint 2) ---- */
+/* Preemption is on or off for every CPU at once; the slice, the switch
+   asked for and the switch under way are each CPU's own (struct cpu,
+   1.9e2). The boot CPU's slice runs from the event timer as before; an
+   AP's from its own local timer, set when a thread is switched to and
+   stopped when its idle thread is (slice_begin). */
 static volatile int      preempt_on = 0;
 static volatile uint64_t slice_ns = 10 * TIMER_NS_PER_TICK;   /* between switches */
-static volatile uint64_t slice_end = 0;          /* on timer_now_ns */
-static volatile int      in_switch = 0;          /* reentrancy guard */
 
 void sched_preempt_enable(uint32_t quantum_ticks) {
     slice_ns = (uint64_t)(quantum_ticks ? quantum_ticks : 1) * TIMER_NS_PER_TICK;
-    slice_end = timer_now_ns() + slice_ns;
+    cpu_boot.slice_end = timer_now_ns() + slice_ns;
     preempt_on = 1;
-    timer_deadline_hint(slice_end);
+    timer_deadline_hint(cpu_boot.slice_end);
 }
 
 void sched_preempt_disable(void) {
     preempt_on = 0;
+}
+
+/* An AP's slice, from the switch to `next` (sched_lock held): its own timer
+   for the end, or stopped for its idle thread and with preemption off. The
+   boot CPU's goes on as the event timer has it. */
+static void slice_begin(struct cpu *c, const struct thread *next, uint64_t now) {
+    if (c == &cpu_boot) return;
+    if (next->idle || !preempt_on) { timer_local_stop(); return; }
+    c->slice_end = now + slice_ns;
+    timer_local_arm(c->slice_end);
+}
+
+/* An AP's own timer (idt.c, its interrupt branch): the slice is over, or it
+   came early and is set again for the rest. Touches only this CPU's struct
+   while its idle thread runs: an idle CPU's interrupt path reads nothing
+   that may have moved (arch/smp.h). */
+void sched_cpu_tick(void) {
+    struct cpu *c = cpu_this();
+    if (c->cur == c->idle_thread || !preempt_on) return;
+    uint64_t now = timer_now_ns();
+    if (now < c->slice_end) { timer_local_arm(c->slice_end); return; }
+    c->slice_end = now + slice_ns;
+    if (!c->in_switch) __atomic_store_n(&c->need_resched, 1u, __ATOMIC_RELAXED);
+    timer_local_arm(c->slice_end);
 }
 
 /* called from the timer IRQ (BEFORE the EOI). Flags that a preemptive switch is
@@ -772,22 +994,23 @@ void sched_preempt_disable(void) {
    of a higher thread asks for the same switch.) */
 void sched_tick(uint64_t now) {
     if (!preempt_on || !initialized) return;
-    if (now < slice_end) return;
+    if (now < cpu_boot.slice_end) return;
     /* A new slice even mid-switch, so the end is never left in the past for
        the event timer to be set for again at once. */
-    slice_end = now + slice_ns;
-    if (in_switch) return;                 /* don't preempt mid-switch */
-    need_resched = 1;   /* the actual switch happens after EOI (sched_preempt_point) */
+    cpu_boot.slice_end = now + slice_ns;
+    if (cpu_boot.in_switch) return;        /* don't preempt mid-switch */
+    /* the actual switch happens after EOI (sched_preempt_point) */
+    __atomic_store_n(&cpu_boot.need_resched, 1u, __ATOMIC_RELAXED);
 }
 
 void sched_slice_restart(uint64_t now) {
-    slice_end = now + slice_ns;
+    cpu_boot.slice_end = now + slice_ns;
 }
 
 uint64_t sched_next_due(int running) {
     uint64_t d = TIMER_NEVER;
     if (!initialized) return d;
-    if (running && preempt_on) d = slice_end;
+    if (running && preempt_on) d = cpu_boot.slice_end;
     uint32_t f = spin_lock(&sched_lock);
     for (uint32_t i = 0; i < tids.cap; i++) {
         struct thread *t = th((int)i);
@@ -802,20 +1025,25 @@ uint64_t sched_next_due(int running) {
    switching before would leave the PIC's in-service bit set, so no further
    timer ticks would arrive and preemption would stall after one switch. */
 void sched_preempt_point(void) {
-    if (!need_resched) return;
-    need_resched = 0;
-    if (!preempt_on || !initialized || in_switch) return;
+    struct cpu *c = cpu_this();
+    if (!__atomic_load_n(&c->need_resched, __ATOMIC_RELAXED)) return;
+    /* An idle thread is never switched from inside an interrupt: its loop
+       picks once the halt the interrupt ended returns (idle_loop), and an
+       idle CPU's interrupt path touches no thread record (sched_cpu_tick). */
+    if (c->cur == c->idle_thread) return;
+    __atomic_store_n(&c->need_resched, 0u, __ATOMIC_RELAXED);
+    if (!preempt_on || !initialized || c->in_switch) return;
 
     uint32_t f = spin_lock(&sched_lock);
-    int prev = current;
-    int next = next_runnable();
+    struct thread *prev = self();
+    struct thread *next = next_runnable();
     if (next == prev) { spin_unlock(&sched_lock, f); return; }
 
-    in_switch = 1;
-    if (th(prev)->state == THREAD_RUNNING) th(prev)->state = THREAD_READY;
+    c->in_switch = 1;
+    if (prev->state == THREAD_RUNNING) prev->state = THREAD_READY;
     switch_to(next);
-    in_switch = 0;
-    context_switch(&th(prev)->esp, th(next)->esp);
+    c->in_switch = 0;
+    context_switch(&prev->esp, next->esp);
     /* resumed as `prev` later, the lock handed over by whoever switched here */
     spin_unlock(&sched_lock, f);
     sched_reap();   /* reclaim threads that exited while we were away */
@@ -824,8 +1052,46 @@ void sched_preempt_point(void) {
 int thread_current_id(void) { return current; }
 
 struct proc *thread_proc(int id) {
+    uint32_t f;
+    struct thread *t = look(id, &f);
+    struct proc *p = t ? t->proc : 0;
+    look_done(f);
+    return p;
+}
+
+int thread_set_affinity(int id, uint32_t mask) {
+    uint32_t online = cpu_count() >= 32 ? 0xFFFFFFFFu : (1u << cpu_count()) - 1u;
+    mask &= online;
+    if (!mask) return -1;
+    uint32_t f = spin_lock(&sched_lock);
     struct thread *t = live(id);
-    return t ? t->proc : 0;
+    int rc = -1;
+    if (t && !t->idle) {
+        t->affinity = mask;
+        rc = 0;
+        /* On a CPU it may no longer use: that CPU picks again at its next
+           preemption point. Ready: a CPU it may now use may be idle. */
+        if (t->on_cpu && !(mask & (1u << (t->on_cpu - 1)))) resched(cpu_at(t->on_cpu - 1));
+        else kick(t, 1);
+    }
+    spin_unlock(&sched_lock, f);
+    return rc;
+}
+
+uint32_t thread_affinity(int id) {
+    uint32_t f;
+    struct thread *t = look(id, &f);
+    uint32_t m = t ? t->affinity : 0;
+    look_done(f);
+    return m;
+}
+
+int thread_cpu(int id) {
+    uint32_t f;
+    struct thread *t = look(id, &f);
+    int c = t ? (int)t->on_cpu - 1 : -1;
+    look_done(f);
+    return c;
 }
 
 int thread_pid(int id) {
@@ -838,22 +1104,29 @@ int thread_current_pid(void) {
 }
 
 const char *thread_name(int id) {
-    struct thread *t = live(id);
-    return t ? t->name : 0;
+    uint32_t f;
+    struct thread *t = look(id, &f);
+    const char *n = t ? t->name : 0;
+    look_done(f);
+    return n;
 }
 
 void thread_set_tls(int id, uint64_t base) {
-    struct thread *t = live(id);
-    if (!t) return;
     uint32_t f = spin_lock(&sched_lock);
-    t->tls_base = base;
-    if (id == current) arch_tls_base_set(base);
+    struct thread *t = id == current ? self() : live(id);
+    if (t) {
+        t->tls_base = base;
+        if (id == current) arch_tls_base_set(base);
+    }
     spin_unlock(&sched_lock, f);
 }
 
 uint64_t thread_tls(int id) {
-    struct thread *t = live(id);
-    return t ? t->tls_base : 0;
+    uint32_t f;
+    struct thread *t = look(id, &f);
+    uint64_t v = t ? t->tls_base : 0;
+    look_done(f);
+    return v;
 }
 
 void thread_set_own_name(const char *name) {
@@ -864,9 +1137,10 @@ void thread_set_own_name(const char *name) {
     t->name = t->own_name;
 }
 
+/* Its slice so far too while it is on a CPU, this one or another (1.9e2). */
 static uint64_t cpu_ns_of(const struct thread *t) {
     uint64_t ns = t->cpu_ns;
-    if (t->id == current) {
+    if (t->on_cpu) {
         uint64_t now = timer_now_ns();
         if (now > t->run_since) ns += now - t->run_since;
     }
@@ -874,8 +1148,11 @@ static uint64_t cpu_ns_of(const struct thread *t) {
 }
 
 uint64_t thread_cpu_ns(int id) {
-    struct thread *t = live(id);
-    return t ? cpu_ns_of(t) : 0;
+    uint32_t f;
+    struct thread *t = look(id, &f);
+    uint64_t ns = t ? cpu_ns_of(t) : 0;
+    look_done(f);
+    return ns;
 }
 
 /* Into `out`, THREAD_NAME_MAX bytes: t's name, cut short and NUL-terminated. */
@@ -886,14 +1163,19 @@ static void name_into(const struct thread *t, char *out) {
     while (i < THREAD_NAME_MAX) out[i++] = 0;
 }
 
-void thread_name_copy(int id, char *name) { name_into(live(id), name); }
+void thread_name_copy(int id, char *name) {
+    uint32_t f;
+    name_into(look(id, &f), name);
+    look_done(f);
+}
 
 /* is thread `id` a live (non-exited, allocated) thread? Used for stale-lock
    detection: an advisory lock owned by a dead pid is ignorable. */
 int thread_is_alive(int id) {
-    struct thread *t = th(id);
-    if (!t) return 0;
-    enum thread_state st = t->state;
+    uint32_t f;
+    struct thread *t = look(id, &f);
+    enum thread_state st = t ? t->state : THREAD_UNUSED;
+    look_done(f);
     return (st == THREAD_READY || st == THREAD_RUNNING);
 }
 
@@ -907,8 +1189,10 @@ uintptr_t *thread_current_usave(void) {
 }
 
 void thread_set_kstack_top(int id, uintptr_t top) {
-    struct thread *t = live(id);
+    uint32_t f;
+    struct thread *t = look(id, &f);
     if (t) t->kstack_top = top;
+    look_done(f);
 }
 
 uintptr_t thread_current_kstack_top(void) {
@@ -921,15 +1205,24 @@ uintptr_t thread_current_kstack_top(void) {
    interrupt frame never collides with the trampoline's saved frame on the main
    kernel stack. Returns 0 on success, -1 on alloc failure. */
 int thread_alloc_kstack(int id) {
-    if (!live(id)) return -1;   /* thread 0 (the executive via
-                                                     cxex_exec) DOES need an esp0:
-                                                     it runs ring-3 code + makes
-                                                     syscalls while apps coexist. */
+    /* Any live thread: thread 0 (the executive via cxex_exec) DOES need an
+       esp0: it runs ring-3 code + makes syscalls while apps coexist. */
+    uint32_t f;
+    int there = look(id, &f) != 0;
+    look_done(f);
+    if (!there) return -1;
+    /* The stack outside the lock (kstack's ranks after sched's, but a
+       mapping's shootdown waits on other CPUs); stored under it. */
     uintptr_t k;
     uintptr_t top = kstack_alloc(stack_bytes, id, &k);
     if (!top) return -1;
-    th(id)->kstack_base = k;
-    th(id)->kstack_top  = top - 16;   /* 16-byte slack at top */
+    struct thread *t = look(id, &f);
+    if (t) {
+        t->kstack_base = k;
+        t->kstack_top  = top - 16;   /* 16-byte slack at top */
+    }
+    look_done(f);
+    if (!t) { kstack_free(k); return -1; }
     return 0;
 }
 

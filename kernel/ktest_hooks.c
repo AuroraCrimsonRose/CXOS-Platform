@@ -727,30 +727,42 @@ static void sl_op_tls(void *a) {
     int me = thread_current_id();
     thread_set_tls(me, thread_tls(me));
 }
+/* Another thread's record is read under the lock (1.9e2): the id table it
+   is found through can be moved by a thread made on another CPU. */
+static int sl_other(void) { return thread_current_id() ? 0 : 1; }
+static void sl_op_proc_of(void *a)  { (void)a; (void)thread_proc(sl_other()); }
+static void sl_op_prio_of(void *a)  { (void)a; (void)thread_prio(sl_other()); }
+static void sl_op_ns_of(void *a)    { (void)a; (void)thread_cpu_ns(sl_other()); }
+static void sl_op_alive(void *a)    { (void)a; (void)thread_is_alive(sl_other()); }
+static void sl_op_name_of(void *a)  { (void)a; char n[THREAD_NAME_MAX]; thread_name_copy(sl_other(), n); }
+static void sl_op_affinity(void *a) { (void)a; (void)thread_affinity(sl_other()); }
+static void sl_op_cpu_of(void *a)   { (void)a; (void)thread_cpu(sl_other()); }
 
 static int sched_lock_steps(void) {
     static void (*const ops[])(void *) = {
         sl_op_unblock, sl_op_start, sl_op_wake, sl_op_sleepers, sl_op_others,
         sl_op_due, sl_op_active, sl_op_prio, sl_op_tls,
+        sl_op_proc_of, sl_op_prio_of, sl_op_ns_of, sl_op_alive, sl_op_name_of,
+        sl_op_affinity, sl_op_cpu_of,
     };
     uint32_t n = 0, code;
     if (lockorder_depth() != 0) return 1;
     for (uint32_t i = 0; i < sizeof ops / sizeof ops[0]; i++) {
         code = lk_under_heap(ops[i], 0, &n);
-        if (code != LO_ORDER || n != 1) return 2 + (int)i;   /* 2..10 */
+        if (code != LO_ORDER || n != 1) return 2 + (int)i;   /* 2..17 */
     }
-    if (lockorder_depth() != 0) return 11;
+    if (lockorder_depth() != 0) return 18;
 
     /* a new thread starts with the lock given back */
     sl_ran = 0; sl_depth = sl_spins = 0xFFFFFFFFu;
-    if (thread_create("sched-lock", sl_helper) < 0) return 12;
+    if (thread_create("sched-lock", sl_helper) < 0) return 19;
     yield();
-    if (!hk_wait(&sl_ran, 2000)) return 13;
-    if (sl_depth != 0) return 14;
-    if (sl_spins != 0) return 15;
+    if (!hk_wait(&sl_ran, 2000)) return 20;
+    if (sl_depth != 0) return 21;
+    if (sl_spins != 0) return 22;
     /* and so does the one switched back to */
-    if (lockorder_depth() != 0) return 16;
-    if (cpu_spin_held() != 0) return 17;
+    if (lockorder_depth() != 0) return 23;
+    if (cpu_spin_held() != 0) return 24;
     return 0;
 }
 
@@ -758,7 +770,7 @@ int ktest_sched_lock(void) {
     uint32_t threads0 = sched_thread_count();
     int step = sched_lock_steps();
     lockorder_test_disarm(0);
-    if (!hk_settle(threads0) && !step) step = 18;
+    if (!hk_settle(threads0) && !step) step = 25;
     if (step) klog_u32("KTEST", SEV_FAIL, "sched lock: step ", (uint32_t)step, LOG_COLOR_VALUE, "");
     return step == 0;
 }

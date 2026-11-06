@@ -401,6 +401,12 @@ uint32_t arch_evtimer_left(void) {
     return lapic_up ? lapic_rd(LAPIC_TIMER_CUR) : 0;
 }
 
+/* Divided by 16 as the boot CPU's (lapic_ap_init), so the boot CPU's rate
+   is every CPU's: the rig's cores share one bus clock. */
+void arch_evtimer_local(uint32_t count) {
+    if (lapic_up) lapic_timer_oneshot(count, count != 0);
+}
+
 void lapic_timer_interrupt(struct registers *r) {
     if (lapic_timer_fn) lapic_timer_fn(r);
 }

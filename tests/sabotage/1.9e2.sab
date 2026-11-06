@@ -1,0 +1,124 @@
+# Phase 1.9e2's sabotages, run by `cxk test sabotage`.
+# Each must turn red exactly the self-tests named, at the reason named.
+# Format: docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage".
+# The verification boot's four CPUs (BootVerifier.X86_64Smp) are what the
+# affinity test needs (three or more). A group's sabotages land in
+# different tests.
+# By hand, not here: runnable_here without its on_cpu check, which lets a
+# second CPU start a thread still on its own: the boot panics (an exception
+# at RIP 0) in "a thread woken before it is off its CPU stays there", the
+# only test with a thread two CPUs may run; before that test, it was green;
+# the reaper without its on_cpu check, which the lock's handoff already covers
+# (CX_SMP.md §4a); and every thread made for any CPU, red at "a thread runs
+# on the boot CPU, or the AP it is for" (step 1) and at some 25 tests of the
+# subsystems still unlocked until 1.9e3, which no exact list can name.
+# The commit says what each did.
+
+# ---- handing a thread a CPU (sched.c) ----
+
+[resched-no-ipi]
+# a CPU asked to pick again is never interrupted for it
+expect = a thread runs on the boot CPU, or the AP it is for @ sched placement: step 2
+expect = a wake from the boot CPU ends an idle AP's halt @ sched wake: step
+expect = a sleep on an AP ends at its time @ sched ap sleep: step
+expect = an AP's own timer ends a thread's slice @ sched ap slice: step
+expect = a thread raised takes a busy AP at once @ sched outrank: step
+expect = an affinity changed moves a running thread @ sched affinity: step
+expect = a thread woken before it is off its CPU stays there @ sched ready on cpu: step 2
+group = solo-ipi
+edit = kernel/cpu/sched.c
+<<<
+        c->resched_ipis++;
+        smp_kick(c->index);
+===
+        c->resched_ipis++;
+>>>
+
+[kick-no-lower]
+# a ready thread is handed only an idle CPU, never one running a lower thread
+expect = a thread raised takes a busy AP at once @ sched outrank: step 1
+# and on the boot CPU, where a raised wake preempts the caller
+expect = ipc: priority through calls @ priority test failed at step 16
+group = a
+edit = kernel/cpu/sched.c
+<<<
+        if ((int)c->cur->prio < low) { low = c->cur->prio; pick = c; }
+===
+        (void)low;
+>>>
+
+[switched-out-not-offered]
+# a thread switched out still ready waits for its old CPU's next pick
+expect = an affinity changed moves a running thread @ sched affinity: step 1
+group = a
+edit = kernel/cpu/sched.c
+<<<
+    if (prev->state == THREAD_READY && !prev->idle) kick(prev, 0);
+===
+>>>
+
+[affinity-no-resched]
+# an affinity changed away from a thread's CPU does not ask that CPU to pick
+expect = an affinity changed moves a running thread @ sched affinity: step 1
+group = b
+edit = kernel/cpu/sched.c
+<<<
+        if (t->on_cpu && !(mask & (1u << (t->on_cpu - 1)))) resched(cpu_at(t->on_cpu - 1));
+        else kick(t, 1);
+===
+        if (!t->on_cpu) kick(t, 1);
+>>>
+
+[look-no-lock]
+# another thread's record is read without the lock
+expect = hooks: the scheduler takes its lock @ sched lock: step 11
+group = b
+edit = kernel/cpu/sched.c
+<<<
+    if (id == current) { *f = LOOK_SELF; return self(); }
+    *f = spin_lock(&sched_lock);
+    return live(id);
+===
+    if (id == current) { *f = LOOK_SELF; return self(); }
+    *f = LOOK_SELF;
+    return live(id);
+>>>
+
+# ---- time on an AP (sched.c, timer.c) ----
+
+[no-ap-slice]
+# an AP's thread is switched to without its own timer set for the slice
+expect = an AP's own timer ends a thread's slice @ sched ap slice: step 1
+group = b
+edit = kernel/cpu/sched.c
+<<<
+    c->slice_end = now + slice_ns;
+    timer_local_arm(c->slice_end);
+}
+===
+    c->slice_end = now + slice_ns;
+}
+>>>
+
+[hint-not-forwarded]
+# a deadline made on an AP is dropped, not left for the boot CPU
+expect = a sleep on an AP ends at its time @ sched ap sleep: step
+group = a
+edit = kernel/drivers/char/timer.c
+<<<
+            if (due < old) smp_kick(0);
+===
+            if (due < old) __atomic_store_n(&remote_due, old, __ATOMIC_RELAXED);
+>>>
+
+[poll-no-serve]
+# an interrupts-off bounded wait answers no shootdown
+expect = an interrupts-off poll answers an AP's shootdown @ tlb poll: step
+group = b
+edit = kernel/drivers/char/timer.c
+<<<
+    smp_serve();
+    if (to->spins_left == 0) return 1;
+===
+    if (to->spins_left == 0) return 1;
+>>>

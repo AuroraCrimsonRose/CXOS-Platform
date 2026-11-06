@@ -80,4 +80,11 @@ static inline uint32_t arch_cpu_local_u32(uint32_t off) {
     return v;
 }
 
+/* A pointer-sized one, the same way (1.9e2: the running thread's record). */
+static inline void *arch_cpu_local_ptr(uint32_t off) {
+    void *v;
+    __asm__ volatile ("mov %%gs:(%1), %0" : "=r"(v) : "r"((uintptr_t)off));
+    return v;
+}
+
 #endif

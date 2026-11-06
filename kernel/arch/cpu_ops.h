@@ -35,6 +35,7 @@
  * arch_cycles64()          the whole counter (wraps in centuries)
  * arch_cpu_self()          this CPU's struct cpu (cpu/percpu.h)
  * arch_cpu_local_u32(off)  the 32-bit field at `off` in it, in one load
+ * arch_cpu_local_ptr(off)  the pointer at `off` in it, in one load
  */
 
 #if defined(CXK_HOST_TEST)
@@ -51,6 +52,7 @@ static inline uint32_t arch_cycles32(void)          { return 0; }
 static inline uint64_t arch_cycles64(void)          { return 0; }
 static inline void    *arch_cpu_self(void)          { return 0; }
 static inline uint32_t arch_cpu_local_u32(uint32_t o) { (void)o; return 0; }
+static inline void    *arch_cpu_local_ptr(uint32_t o) { (void)o; return 0; }
 __attribute__((noreturn)) static inline void arch_cpu_halt_forever(void) { for (;;) { } }
 #elif defined(__i386__) || defined(__x86_64__)
 #include "arch/x86/cpu_ops.h"

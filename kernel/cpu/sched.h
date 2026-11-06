@@ -99,7 +99,22 @@ struct thread {
     uint64_t  run_since;
     /* `name` points here once ring 3 has named it (SYS_THREAD_SET_NAME). */
     char      own_name[THREAD_NAME_MAX];
+    /* 1.9e2: the CPUs it may run on, a bit per index (THREAD_ON_BOOT_CPU
+       unless given more); the CPU it is on, index + 1, 0 when on none (set
+       by the switch to it, cleared by the switch away, both under
+       sched_lock, which goes across the switch); a CPU's idle thread. */
+    uint32_t  affinity;
+    uint32_t  on_cpu;
+    uint8_t   idle;
 };
+
+/* Until the file system layer is locked (1.9e3), every thread runs on the
+   boot CPU unless it is given more (thread_set_affinity): syscall bodies,
+   the file system and logging still count on one CPU. */
+#define THREAD_ON_BOOT_CPU    1u
+#define THREAD_ON_ANY_CPU     0xFFFFFFFFu
+/* Idle threads are named past every thread id, and no table holds them. */
+#define THREAD_IDLE_ID        THREAD_LIMIT_MAX
 
 /* initialize the scheduler (registers the currently-running code as thread 0). */
 void sched_init(void);
@@ -188,6 +203,34 @@ void     sched_yield_if_outranked(void);
 /* called from the IRQ handler AFTER the EOI; performs a deferred preemptive
    switch if one is due. */
 void sched_preempt_point(void);
+
+/* ---- every CPU (1.9e2) ----
+ * One run order under sched_lock for every CPU, as Serenity's ready queues
+ * are; each CPU picks the highest thread it may run (its affinity) that no
+ * other CPU is running, or its idle thread. A thread made ready that an
+ * idle CPU, or one running something lower, may run is handed to it: that
+ * CPU's need_resched, and the IPI that ends its halt.
+ *
+ * sched_cpu_prepare makes CPU `c`'s idle thread, on the boot CPU before
+ * `c` starts (sched_init makes the boot CPU's); sched_cpu_unprepare frees it
+ * again if `c` never started. sched_cpu_enter is the AP's last step: its
+ * starting context becomes its idle thread, and never returns.
+ * sched_cpu_tick is an AP's own timer: its slice. */
+struct cpu;
+int  sched_cpu_prepare(struct cpu *c);
+void sched_cpu_unprepare(struct cpu *c);
+__attribute__((noreturn)) void sched_cpu_enter(void);
+void sched_cpu_tick(void);
+
+/* The CPUs a thread may run on, a bit per CPU index, limited to those
+   running; -1 if none of them is, or no such thread. One running on a CPU
+   it may no longer use leaves at that CPU's next preemption point. */
+int      thread_set_affinity(int id, uint32_t mask);
+uint32_t thread_affinity(int id);
+/* The CPU index it is running on, or -1. */
+int      thread_cpu(int id);
+/* Made like thread_create, but runnable only on `mask`'s CPUs from the start. */
+int      thread_create_on(const char *name, void (*entry)(void), uint32_t mask);
 
 /* the id of the currently running thread. Not a pid: see thread_pid. */
 int thread_current_id(void);

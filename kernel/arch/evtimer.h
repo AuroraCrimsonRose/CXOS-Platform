@@ -37,4 +37,8 @@ void arch_evtimer_start(uint32_t count);
 /* Steps left of the count running, 0 once it has fired or stopped. */
 uint32_t arch_evtimer_left(void);
 
+/* The calling CPU's own timer, at the boot CPU's rate (1.9e2: an AP's time
+   slice): once after `count` steps, unmasked; 0 stops and masks it. */
+void arch_evtimer_local(uint32_t count);
+
 #endif

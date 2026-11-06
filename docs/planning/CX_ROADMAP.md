@@ -1075,6 +1075,40 @@ Independent of the order above, and small enough to land whenever convenient:
      withdrawal after a timeout. Self-tests 215 (4 CPUs, 1 CPU,
      `--cpu max`). Sabotages: `tests/sabotage/1.9e1.sab`, 9 of 9. No ABI
      change.
+   - **1.9e2 (2026-11-06), done:** the scheduler on every CPU, under the
+     one `sched_lock`. One order rather than a run queue per CPU
+     (Serenity's `g_ready_queues`; per-CPU queues and a balancer wait for
+     1.9f's profile): `next_runnable` picks the highest thread whose
+     `affinity` has this CPU and that is on no other (`on_cpu`). An idle
+     thread per CPU (WRK's `Prcb->IdleThread`), outside the id table and
+     the count, halts with interrupts off from the look on: no thread
+     halts on its own stack any more. A thread made ready or raised is
+     handed an idle CPU, or the one running the lowest thread below it,
+     by `need_resched` and one IPI per ask (Haiku's `enqueue`); one
+     switched out still ready is offered the same way. Threads are made
+     for the boot CPU until 1.9e3 locks the file system layer;
+     `thread_create_on` and `thread_set_affinity` place one elsewhere.
+     The reaper frees only a thread on no CPU, on the boot CPU. A
+     deadline made on an AP is forwarded to the boot CPU's event timer;
+     an AP's slice is its own local timer (none under the PIT). A thread
+     finds itself through `struct cpu`'s `cur`; another's record is read
+     under the lock (`look`). The interrupts-off bounded wait and
+     `timer_sleep`'s busy loop serve shootdowns, which settles 1.9e1's
+     open interrupts-off case. Design: `docs/kernel/CX_SMP.md` §4a,
+     `CX_LOCK_ORDER.md` §2a. Tests: each CPU's idle thread; placement on
+     the boot CPU or the AP asked for; a wake from the boot CPU ends an
+     idle AP's halt by IPI; a sleep on an AP ends at its time; an AP's
+     timer ends a slice; a raised thread takes a busy AP at once; an
+     affinity change moves a running thread; an interrupts-off poll
+     answers an AP's shootdown; the getters on another thread take the
+     lock; a thread two CPUs may run, woken while still on its CPU, is not
+     taken by the other. Hand sabotages: `runnable_here` without its
+     `on_cpu` check panics in that last test (green before it existed);
+     every thread made for any CPU reddens placement and some 25 tests of
+     the subsystems 1.9e3 locks; the reaper's `on_cpu` check is covered
+     by the handoff. Self-tests 224
+     (4 CPUs, 1 CPU, `--cpu max`). Sabotages: `tests/sabotage/1.9e2.sab`,
+     8 of 8. No ABI change.
 10. A documentation pass: the README and `safety/CX_SAFETY.md` §1 brought
     up to the branch as it stands.
 

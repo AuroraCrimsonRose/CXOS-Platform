@@ -3,15 +3,15 @@
 /* /kernel/arch/smp.h */
 /* Aurora Tejeda / CATX Systems */
 /*
- * The other CPUs (1.9d): started and parked, running nothing yet; and
- * (1.9e1) the interrupts between CPUs and the TLB shootdown.
+ * The other CPUs (1.9d): started, each with its own tables; (1.9e1) the
+ * interrupts between CPUs and the TLB shootdown; and (1.9e2) the idle wait
+ * and the IPI that hand a CPU a thread.
  *
  * arch_smp_start starts every CPU the firmware lists as usable, one at a
  * time, by the ID it lists it under, and each sets up its own tables,
- * per-CPU data and interrupt controller, then parks: halted, interrupts on,
- * woken only by smp_call's IPI. It joins cpu_count() once parked
- * (cpu/percpu.h). A CPU that never answers is put back to sleep and left
- * out. Running threads on them is 1.9e2. Design: docs/kernel/CX_SMP.md.
+ * per-CPU data and interrupt controller, parks until it is in cpu_count()
+ * (cpu/percpu.h), then runs its idle thread (cpu/sched.c). A CPU that never
+ * answers is put back to sleep and left out. Design: docs/kernel/CX_SMP.md.
  */
 #ifndef ARCH_SMP_H
 #define ARCH_SMP_H
@@ -22,11 +22,12 @@
    interrupts on. Returns the CPUs running, the boot CPU included. */
 unsigned arch_smp_start(void);
 
-/* Run fn(arg) on parked CPU `index` and wait for it to finish, up to
-   `timeout_ns` (timer_now_ns). It runs in the park loop with interrupts
-   off, so it may not block, take a lock or log; it may enable interrupts
-   for a moment, as the timer's self-test does. 0 when it ran, -1 when the
-   CPU is not a parked AP or did not finish in time (it may still run it).
+/* Run fn(arg) on AP `index` and wait for it to finish, up to `timeout_ns`
+   (timer_now_ns). It runs in that CPU's idle thread (1.9e2: once nothing
+   else runs there) with interrupts off, so it may not block, take a lock
+   or log; it may enable interrupts for a moment, as the timer's self-test
+   does. 0 when it ran, -1 when the CPU is not a running AP or did not
+   finish in time (it may still run it).
    smp_call_start leaves the call and returns (0, or -1 refused);
    smp_call_wait waits for the one left (0, or -1 not in time). */
 int smp_call(unsigned index, void (*fn)(void *), void *arg, uint64_t timeout_ns);
@@ -58,5 +59,16 @@ uint32_t smp_tlb_shootdown(uint64_t root, uintptr_t va, uint32_t pages, uint64_t
 /* Serve whatever shootdowns are waiting for this CPU. Interrupts off; takes
    no lock. The IPI's handler calls it, and so does every spin. */
 void smp_serve(void);
+
+/* ---- the scheduler on every CPU (1.9e2) ----
+ *
+ * smp_kick interrupts CPU `index` (not this one) with the IPI vector, which
+ * ends its halt or brings it to a preemption point (cpu/sched.c resched).
+ * smp_idle_wait is an AP's idle thread's halt: a call left for it
+ * (smp_call) is run, or else the CPU is marked idle for the shootdown and
+ * halts until an interrupt; either way it returns, interrupts off as it
+ * was entered, having flushed whatever was skipped while it was idle. */
+void smp_kick(unsigned index);
+void smp_idle_wait(void);
 
 #endif

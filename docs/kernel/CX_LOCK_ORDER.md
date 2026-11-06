@@ -98,11 +98,22 @@ held and nothing else is (`lockorder_assert_switch`).
 Three things leave its lock early, because what they call ranks before it:
 - **the reaper** claims an exited thread under the lock (`THREAD_REAPING`)
   and frees it outside, since the free ends kernel waits (`kwait`) and
-  tells the process (`pids`);
-- **idling** gives the lock back with interrupts still off before the
-  halt, since the tick that ends it takes the lock;
+  tells the process (`pids`). Since 1.9e2 it also skips a thread still on
+  a CPU (`on_cpu`), and runs on the boot CPU only until 1.9e3;
+- **idling** is each CPU's idle thread since 1.9e2: it picks under the
+  lock, and when there is nothing gives it back with interrupts still off
+  before the halt, since the interrupt that ends it takes the lock;
 - **the timer** never calls into the scheduler holding it
   (`sched_next_due` takes it itself).
+
+Another thread's record is read under the lock (1.9e2): the id table grows
+by freeing its old array, which a thread made on another CPU can do at any
+moment. A thread reads its own record without it, through the per-CPU
+`cur` pointer, since nothing frees the record of a running thread. The
+getters (`thread_proc`, `thread_prio`, `thread_cpu_ns`, `thread_is_alive`,
+`thread_name_copy`, `thread_affinity`, `thread_cpu` and the rest) go
+through one helper, `look`, which takes the lock for any id but the
+caller's own.
 
 The checker's held list, the spinlock count of the test hooks and the
 running thread are each CPU's own (`struct cpu`, `cpu/percpu.h`, reached
@@ -196,4 +207,5 @@ scheduler's entries, `sched_yield_if_outranked` and
 `thread_block_prepare_until` have no test that they take the lock (each
 is called where nothing ranked after sched can be held); a switch without the sched lock is
 shown caught only by hand (every boot panics). The early releases of §2a
-are a design argument on one CPU: nothing can contend for the lock yet.
+are contended since 1.9e2; the getters on another thread are tested to
+take the lock (`ktest_sched_lock`), and the rest is a design argument.

@@ -1456,7 +1456,7 @@ static int t_smp_started(void) {
         return smp_fail("smp started: step ", 0, 2);
     for (unsigned i = 1; i < cpu_count(); i++) {
         struct cpu *c = cpu_at(i);
-        if (c->self != c || c->index != i || c->state != CPU_PARKED)
+        if (c->self != c || c->index != i || c->state != CPU_RUNNING)
             return smp_fail("smp started: step ", i, 3);
         if (!listed(c->hw_id)) return smp_fail("smp started: step ", i, 4);
         for (unsigned j = 0; j < i; j++)
@@ -1572,10 +1572,11 @@ static int t_smp_ap_timer(void) {
     return 1;
 }
 
-/* Parked is halted: 50 ms with nothing asked wakes no AP, and one call
-   wakes it once, by its one IPI. Calls the boot CPU, a CPU past the last
-   and a missing function are refused: -1, as a call never answered is, and
-   nothing left in a mailbox, which tells the two apart. */
+/* An idle AP is halted, in its idle thread (1.9e2): 50 ms with nothing
+   asked wakes no AP, and one call wakes it once, by its one IPI. Calls the
+   boot CPU, a CPU past the last and a missing function are refused: -1, as
+   a call never answered is, and nothing left in a mailbox, which tells the
+   two apart. */
 static void ap_nothing(void *arg) { (void)arg; }
 
 static int t_smp_parked(void) {
@@ -1592,7 +1593,7 @@ static int t_smp_parked(void) {
     for (unsigned i = 1; i < cpu_count(); i++) {
         if (smp_call(i, ap_nothing, 0, 100000000ull)) return smp_fail("smp parked: step ", i, 3);
         if (cpu_at(i)->wakes != wakes[i] + 1 || cpu_at(i)->irqs != irqs[i] + 1 ||
-            cpu_at(i)->state != CPU_PARKED) return smp_fail("smp parked: step ", i, 4);
+            cpu_at(i)->state != CPU_RUNNING) return smp_fail("smp parked: step ", i, 4);
     }
     return 1;
 }
@@ -1864,6 +1865,288 @@ static int t_tlb_no_deadlock(void) {
     return 1;
 }
 
+/* The boot CPU polls hardware with interrupts off, as a driver's bounded
+   wait does inside a syscall: an AP's shootdown is answered by the poll
+   (timer_timeout_expired serves), not left for its timeout. */
+static int t_tlb_poll_serves(void) {
+    if (cpu_count() < 2) return 1;
+    volatile uint32_t go = 1;
+    struct tlb_shoot s = { &go, 0, ~0u, 0, 0 };
+    uint32_t served = cpu_boot.tlb_served;
+    uint32_t irq = arch_irq_save();
+    if (smp_call_start(1, ap_shoot, &s)) { arch_irq_restore(irq); return smp_fail("tlb poll: step ", 1, 1); }
+    struct timeout to;
+    timer_timeout_start(&to, 2000);              /* interrupts off: the spin budget */
+    while (s.missing == ~0u && !timer_timeout_expired(&to)) { }
+    arch_irq_restore(irq);
+    if (smp_call_wait(1, 1000000000ull)) return smp_fail("tlb poll: step ", 1, 2);
+    if (s.missing) return smp_fail("tlb poll: step ", 1, 3);
+    if (cpu_boot.tlb_served == served) return smp_fail("tlb poll: step ", 0, 4);
+    return 1;
+}
+
+/* ---- the scheduler on every CPU (1.9e2, cpu/sched.c) ----
+ * Threads made here run on an AP by thread_create_on; each test waits for
+ * its own to be reaped, which the boot CPU does, before it returns. */
+
+static int smp_reaped(uint32_t n0) {
+    for (int i = 0; i < 3000; i++) {
+        if (sched_thread_count() == n0) return 1;
+        /* A failed test's thread may be ready on an AP left halted, never
+           asked: a call ends the halt, and its idle thread picks it then.
+           So a failure leaves nothing for the tests after it. */
+        if (i % 100 == 99)
+            for (unsigned c = 1; c < cpu_count(); c++) (void)smp_call(c, ap_nothing, 0, 10000000ull);
+        thread_sleep_ms(1);
+    }
+    return 0;
+}
+
+/* A wait of the boot CPU's that asks the event timer for nothing: no sleep
+   of its own arms a deadline that would hide one an AP's never reached. */
+static int spin_until(volatile uint32_t *flag, uint32_t want, uint64_t ms) {
+    uint64_t end = timer_now_ns() + ms * TIMER_NS_PER_TICK;
+    while (*flag != want && timer_now_ns() < end) arch_cpu_relax();
+    return *flag == want;
+}
+
+/* Each CPU has its idle thread, outside the id table and the count; an AP
+   with nothing to run runs it, and the boot CPU runs this thread. */
+static int t_sched_idle_threads(void) {
+    uint32_t n0 = sched_thread_count();
+    for (unsigned i = 0; i < cpu_count(); i++) {
+        struct cpu *c = cpu_at(i);
+        struct thread *t = c->idle_thread;
+        if (!t || !t->idle || t->affinity != 1u << i || t->id != THREAD_IDLE_ID + (int)i)
+            return smp_fail("sched idle: step ", i, 1);
+        if (thread_is_alive(t->id) || thread_cpu(t->id) != -1 || thread_set_affinity(t->id, 1u) != -1)
+            return smp_fail("sched idle: step ", i, 2);
+        if (i && (c->cur != t || t->on_cpu != i + 1 || c->thread != t->id))
+            return smp_fail("sched idle: step ", i, 3);
+    }
+    int me = thread_current_id();
+    if (cpu_boot.cur->id != me || thread_cpu(me) != 0 || cpu_boot.idle_thread->on_cpu)
+        return smp_fail("sched idle: step ", 0, 4);
+    if (sched_thread_count() != n0) return smp_fail("sched idle: step ", 0, 5);
+    return 1;
+}
+
+static volatile uint32_t where_cpu;
+static void where_thread(void) { where_cpu = cpu_this()->index + 1; }
+
+static uint32_t run_where(uint32_t mask) {
+    where_cpu = 0;
+    int id = mask ? thread_create_on("where", where_thread, mask) : thread_create("where", where_thread);
+    if (id < 0) return 0;
+    /* This thread keeps the boot CPU for a while first: only an AP could
+       run the new one meanwhile, which a thread made as before may not. */
+    if (!mask) {
+        uint64_t end = timer_now_ns() + 20 * TIMER_NS_PER_TICK;
+        while (!where_cpu && timer_now_ns() < end) arch_cpu_relax();
+    }
+    for (int k = 0; k < 500 && !where_cpu; k++) thread_sleep_ms(1);
+    return where_cpu;
+}
+
+/* A thread made as before stays on the boot CPU; one made for an AP runs
+   there; one for no CPU there is is refused and leaves nothing. */
+static int t_sched_placement(void) {
+    uint32_t n0 = sched_thread_count();
+    unsigned cpu = 0;
+    int step = 0;
+    if (run_where(0) != 1) step = 1;
+    for (unsigned i = 1; i < cpu_count() && !step; i++)
+        if (run_where(1u << i) != i + 1) { cpu = i; step = 2; }
+    if (!step && cpu_count() < 32 && thread_create_on("none", where_thread, ~0u << cpu_count()) != -1)
+        step = 3;
+    if (!smp_reaped(n0) && !step) step = 4;
+    return step ? smp_fail("sched placement: step ", cpu, step) : 1;
+}
+
+/* A thread blocked on an idle AP, woken from the boot CPU: the AP's halt
+   ends by the wake's IPI, not by a timer, which an idle AP has none of. */
+static volatile uint32_t wk_state;
+static void wake_thread(void) {
+    wk_state = 1;
+    thread_wait();
+    wk_state = 2;
+}
+
+static int t_sched_wake_ipi(void) {
+    if (cpu_count() < 2) return 1;
+    uint32_t n0 = sched_thread_count();
+    unsigned i = cpu_count() - 1;
+    wk_state = 0;
+    int id = thread_create_on("wake", wake_thread, 1u << i);
+    if (id < 0) return smp_fail("sched wake: step ", i, 1);
+    for (int k = 0; k < 500 && !thread_is_blocked(id); k++) thread_sleep_ms(1);
+    if (!thread_is_blocked(id) || wk_state != 1) return smp_fail("sched wake: step ", i, 2);
+    uint32_t ipis = cpu_at(i)->resched_ipis, wakes = cpu_at(i)->wakes;
+    thread_unblock(id);
+    int woke = spin_until(&wk_state, 2, 100);
+    if (!woke) { (void)smp_reaped(n0); return smp_fail("sched wake: step ", i, 3); }
+    if (cpu_at(i)->resched_ipis == ipis || cpu_at(i)->wakes == wakes)
+        return smp_fail("sched wake: step ", i, 4);
+    if (!smp_reaped(n0)) return smp_fail("sched wake: step ", i, 5);
+    return 1;
+}
+
+/* A sleep on an AP ends at its time: the deadline is the boot CPU's event
+   timer's, reached from the AP by the hint it forwards. The boot CPU spins
+   meanwhile, so nothing of its own sets the timer sooner. */
+static volatile uint32_t sl_done;
+static volatile uint64_t sl_took;
+static void ap_sleeper(void) {
+    uint64_t t0 = timer_now_ns();
+    thread_sleep_ms(20);
+    sl_took = timer_now_ns() - t0;
+    sl_done = 1;
+}
+
+static int t_sched_ap_sleep(void) {
+    if (cpu_count() < 2 || timer_source() != TIMER_SOURCE_APIC) return 1;
+    uint32_t n0 = sched_thread_count();
+    sl_done = 0; sl_took = 0;
+    if (thread_create_on("ap-sleep", ap_sleeper, 1u << 1) < 0) return smp_fail("sched ap sleep: step ", 1, 1);
+    if (!spin_until(&sl_done, 1, 500)) { (void)smp_reaped(n0); return smp_fail("sched ap sleep: step ", 1, 2); }
+    if (sl_took < 20 * TIMER_NS_PER_TICK || sl_took > 80 * TIMER_NS_PER_TICK) {
+        klog_child_u32("slept ms", (uint32_t)(sl_took / TIMER_NS_PER_TICK), LOG_COLOR_VALUE, "");
+        (void)smp_reaped(n0);
+        return smp_fail("sched ap sleep: step ", 1, 3);
+    }
+    if (!smp_reaped(n0)) return smp_fail("sched ap sleep: step ", 1, 4);
+    return 1;
+}
+
+/* Two threads on one AP that never yield: the second runs only because the
+   AP's own timer ends the first one's slice. */
+static volatile uint32_t sp_b_ran, sp_a_saw;
+static void spin_a(void) {
+    uint64_t end = arch_cycles64() + 1000000000ull;
+    while (!sp_b_ran && arch_cycles64() < end) arch_cpu_relax();
+    sp_a_saw = sp_b_ran ? 1 : 2;
+}
+static void spin_b(void) { sp_b_ran = 1; }
+
+static int t_sched_ap_slice(void) {
+    if (cpu_count() < 2 || timer_source() != TIMER_SOURCE_APIC) return 1;
+    uint32_t n0 = sched_thread_count();
+    unsigned i = 1;
+    sp_b_ran = sp_a_saw = 0;
+    sched_preempt_enable(5);
+    int a = thread_create_on("spin-a", spin_a, 1u << i);
+    int b = a < 0 ? -1 : thread_create_on("spin-b", spin_b, 1u << i);
+    int ok = b >= 0 && spin_until(&sp_a_saw, 1, 1500);
+    sched_preempt_disable();
+    int reaped = smp_reaped(n0);
+    if (!ok) return smp_fail("sched ap slice: step ", i, 1);
+    if (!reaped) return smp_fail("sched ap slice: step ", i, 2);
+    return 1;
+}
+
+/* A thread raised above the one an AP is running takes the AP at once, by
+   the IPI that asks it to switch: the slice is a second, so it is not the
+   slice's end that does it. */
+static volatile uint32_t hi_ran, lo_saw;
+static void busy_lo(void) {
+    uint64_t end = arch_cycles64() + 1000000000ull;
+    while (!hi_ran && arch_cycles64() < end) arch_cpu_relax();
+    lo_saw = hi_ran ? 1 : 2;
+}
+static void busy_hi(void) { hi_ran = cpu_this()->index + 1; }
+
+static int t_sched_outrank_ap(void) {
+    if (cpu_count() < 2) return 1;
+    uint32_t n0 = sched_thread_count();
+    unsigned i = 1;
+    hi_ran = lo_saw = 0;
+    sched_preempt_enable(1000);
+    int lo = thread_create_on("busy-lo", busy_lo, 1u << i);
+    int hi = lo < 0 ? -1 : thread_create_on("busy-hi", busy_hi, 1u << i);
+    int ok = 0;
+    if (hi >= 0) {
+        thread_sleep_ms(5);                       /* busy-lo is running, busy-hi waits */
+        ok = thread_cpu(lo) == (int)i && !hi_ran;
+        thread_set_prio(hi, PRIO_NORMAL + 2);
+        ok = ok && spin_until(&lo_saw, 1, 100) && hi_ran == i + 1;
+    }
+    sched_preempt_disable();
+    int reaped = smp_reaped(n0);
+    if (!ok) return smp_fail("sched outrank: step ", i, 1);
+    if (!reaped) return smp_fail("sched outrank: step ", i, 2);
+    return 1;
+}
+
+/* A thread woken between blocking and switching out is ready while still
+   on its CPU: no other CPU it may use takes it until it is off. Here it may
+   use AP 1 and AP 2; blocked on AP 1, it spins there while the boot CPU
+   wakes it and has AP 2 look again. AP 2 taking it would start it a second
+   time, from the frame it was made with. */
+static volatile uint32_t tw_entered, tw_prepared, tw_go;
+static void two_cpu_thread(void) {
+    if (__atomic_add_fetch(&tw_entered, 1u, __ATOMIC_SEQ_CST) > 1) return;
+    uint32_t irq = arch_irq_save();
+    thread_block_prepare(0);
+    tw_prepared = 1;
+    uint64_t end = arch_cycles64() + 1000000000ull;
+    while (!tw_go && arch_cycles64() < end) arch_cpu_relax();
+    /* Not woken (the test failed before its wake): it wakes itself, so it
+       ends rather than wait for the tests after it. */
+    if (thread_is_blocked(thread_current_id())) thread_unblock(thread_current_id());
+    arch_irq_restore(irq);
+    thread_block_finish();
+}
+
+static int t_sched_ready_on_cpu(void) {
+    if (cpu_count() < 3) return 1;
+    uint32_t n0 = sched_thread_count();
+    tw_entered = tw_prepared = tw_go = 0;
+    int id = thread_create_on("two-cpu", two_cpu_thread, (1u << 1) | (1u << 2));
+    int step = 0;
+    if (id < 0) step = 1;
+    else if (!spin_until(&tw_prepared, 1, 500) || thread_cpu(id) != 1) step = 2;
+    else {
+        thread_unblock(id);
+        (void)smp_call(2, ap_nothing, 0, 100000000ull);
+        uint64_t end = timer_now_ns() + 10 * TIMER_NS_PER_TICK;
+        while (timer_now_ns() < end) arch_cpu_relax();
+        if (tw_entered != 1 || thread_cpu(id) != 1) step = 3;
+    }
+    tw_go = 1;
+    int reaped = smp_reaped(n0);
+    if (step) return smp_fail("sched ready on cpu: step ", 2, step);
+    if (!reaped) return smp_fail("sched ready on cpu: step ", 2, 4);
+    return 1;
+}
+
+/* A running thread's affinity changed away from its CPU: it leaves at that
+   CPU's next preemption point and is handed to the one it may use. */
+static volatile uint32_t mv_stop, mv_last;
+static void mover(void) {
+    uint64_t end = arch_cycles64() + 1000000000ull;
+    while (!mv_stop && arch_cycles64() < end) mv_last = cpu_this()->index + 1;
+}
+
+static int t_sched_affinity_moves(void) {
+    if (cpu_count() < 3) return 1;
+    uint32_t n0 = sched_thread_count();
+    mv_stop = mv_last = 0;
+    sched_preempt_enable(1000);
+    int id = thread_create_on("mover", mover, 1u << 1);
+    int ok = 0;
+    if (id >= 0) {
+        ok = spin_until(&mv_last, 2, 100);
+        ok = ok && thread_affinity(id) == 1u << 1 && thread_set_affinity(id, 1u << 2) == 0;
+        ok = ok && spin_until(&mv_last, 3, 100) && thread_affinity(id) == 1u << 2;
+        mv_stop = 1;
+    }
+    sched_preempt_disable();
+    int reaped = smp_reaped(n0);
+    if (!ok) return smp_fail("sched affinity: step ", 1, 1);
+    if (!reaped) return smp_fail("sched affinity: step ", 1, 2);
+    return 1;
+}
+
 /* ---- arch/ktest_arch.h ---- */
 
 /* The double fault's IST stack (t_idt checks the gate names it): the wiring
@@ -1941,11 +2224,20 @@ static const struct ktest_arch_case cases[] = {
     { "every enabled MADT CPU runs, started by its own ID", t_smp_started },
     { "each AP: own GDT, TSS, GS, stacks; one IDT; PAT, MSRs", t_smp_ap_tables },
     { "an AP's own timer interrupts it, acknowledged",   t_smp_ap_timer },
-    { "a parked AP halts; a call wakes it once",          t_smp_parked },
+    { "an idle AP halts; a call wakes it once",           t_smp_parked },
     { "a changed kernel page is shot down on a busy AP",  t_tlb_kernel_busy },
     { "an idle AP is marked stale, not woken; flushes",   t_tlb_idle },
     { "a user space's change goes only where it runs",    t_tlb_user_targeted },
     { "shootdowns at each other or a spinner finish",     t_tlb_no_deadlock },
+    { "an interrupts-off poll answers an AP's shootdown", t_tlb_poll_serves },
+    { "each CPU runs its idle thread, outside the count",  t_sched_idle_threads },
+    { "a thread runs on the boot CPU, or the AP it is for", t_sched_placement },
+    { "a wake from the boot CPU ends an idle AP's halt",   t_sched_wake_ipi },
+    { "a sleep on an AP ends at its time",                 t_sched_ap_sleep },
+    { "an AP's own timer ends a thread's slice",           t_sched_ap_slice },
+    { "a thread raised takes a busy AP at once",           t_sched_outrank_ap },
+    { "an affinity changed moves a running thread",        t_sched_affinity_moves },
+    { "a thread woken before it is off its CPU stays there", t_sched_ready_on_cpu },
     { "an MSI vector reaches its handler, then nothing", t_msi_pool },
     { "syscall: EFER.SCE, STAR, LSTAR, FMASK; sysret's selectors", t_syscall_msrs },
     { "ring 3 starts at CPL 3, registers clear; SYS_EXIT", t_ring3_cpl },
