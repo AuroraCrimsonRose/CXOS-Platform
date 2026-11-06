@@ -49,7 +49,8 @@
 #include "arch/x86/cpufeat.h"    /* cpuid_read: Hyper-V's grant, read here */
 #include "cpu/percpu.h"
 #include "smp.h"                /* smp_stacks_of, smp_timer_hits */
-#include "arch/smp.h"           /* smp_call */
+#include "arch/smp.h"           /* smp_call, the shootdown */
+#include "sync/spinlock.h"      /* a lock spun on while a shootdown waits */
 #include "arch/x86/madt.h"
 #include "object/ktimer.h"
 #include "object/kwait.h"
@@ -1596,6 +1597,273 @@ static int t_smp_parked(void) {
     return 1;
 }
 
+/* ---- TLB shootdown (1.9e1, arch/smp.h) ----
+ * Each test changes a mapping an AP has just used and reads it again on
+ * the AP. Two frames, told apart by their first word, are what a stale and
+ * a fresh entry show. On fewer CPUs than a test needs it passes with
+ * nothing to compare, as the tests above do. */
+
+#define TLB_OLD 0x01D0000001D00000ull
+#define TLB_NEW 0x0E50000000E50000ull
+
+static int tlb_frames(paddr_t *a, paddr_t *b) {
+    *a = pmm_alloc();
+    *b = pmm_alloc();
+    if (!*a || !*b) {
+        if (*a) pmm_free(*a);
+        if (*b) pmm_free(*b);
+        return -1;
+    }
+    *(volatile uint64_t *)direct(*a) = TLB_OLD;
+    *(volatile uint64_t *)direct(*b) = TLB_NEW;
+    return 0;
+}
+
+/* The 4 KiB entry for `virt` under `root`, to be written by hand: the
+   control that shows a stale entry is there to be seen. */
+static volatile uint64_t *entry_in(paddr_t root, uint64_t virt) {
+    uint64_t *t = direct(root);
+    for (unsigned shift = 39; shift > 12; shift -= 9) {
+        uint64_t e = t[(virt >> shift) & 511u];
+        if (!(e & PTE64_PRESENT) || (e & PTE64_LARGE)) return 0;
+        t = direct(e & PTE64_ADDR);
+    }
+    return &t[PT_INDEX(virt)];
+}
+
+/* An AP reading a page over and over with interrupts on, so a shootdown's
+   IPI reaches it, until told to stop; then once more, after it saw the
+   stop. In `space` (0: the kernel's). */
+struct tlb_watch {
+    uintptr_t va;
+    paddr_t   space;
+    volatile uint64_t first, last;
+    volatile uint32_t reads, stop;
+};
+
+static void ap_watch(void *arg) {
+    struct tlb_watch *w = arg;
+    if (w->space) addr_space_switch(w->space);
+    w->first = *(volatile uint64_t *)w->va;
+    uint64_t end = arch_cycles64() + 4000000000ull;   /* a bound if never told */
+    arch_irq_enable();
+    while (!w->stop && arch_cycles64() < end) {
+        w->last = *(volatile uint64_t *)w->va;
+        __atomic_fetch_add(&w->reads, 1u, __ATOMIC_RELEASE);
+        arch_cpu_relax();
+    }
+    arch_irq_disable();
+    w->last = *(volatile uint64_t *)w->va;
+    if (w->space) addr_space_switch(addr_space_kernel());
+}
+
+static int tlb_reads_past(struct tlb_watch *w, uint32_t n) {
+    uint64_t end = timer_now_ns() + 500000000ull;
+    while (__atomic_load_n(&w->reads, __ATOMIC_ACQUIRE) < n) {
+        if (timer_now_ns() >= end) return 0;
+        arch_cpu_relax();
+    }
+    return 1;
+}
+
+static void tlb_watch_end(unsigned i, struct tlb_watch *w) {
+    w->stop = 1;
+    (void)smp_call_wait(i, 1000000000ull);
+}
+
+/* A kernel page an AP is using, rewritten: first by hand with no
+   shootdown, which the AP goes on missing (so this TLB does keep a stale
+   entry, and the rest of the test means something), then by
+   paging_map_kernel, after which the AP reads the new frame and has
+   served the request. */
+static int tlb_kernel_busy_steps(unsigned i, paddr_t a, paddr_t b) {
+    struct cpu *c = cpu_at(i);
+    paging_map_kernel(SCRATCH_VA, a, VM_WRITE);
+    volatile uint64_t *e = entry_in(addr_space_kernel(), SCRATCH_VA);
+    struct tlb_watch w = { .va = SCRATCH_VA };
+    if (!e || smp_call_start(i, ap_watch, &w)) { paging_unmap(SCRATCH_VA); return 1; }
+    int step = 0;
+    if (!tlb_reads_past(&w, 1))     step = 2;
+    else if (w.first != TLB_OLD)    step = 3;
+    if (!step) {
+        *e = pte64_encode(b, VM_WRITE, 0);
+        uint32_t r = w.reads;
+        if (!tlb_reads_past(&w, r + 1000)) step = 4;
+        else if (w.last != TLB_OLD)        step = 5;   /* no stale entry: the test sees nothing */
+    }
+    if (step) { tlb_watch_end(i, &w); paging_unmap(SCRATCH_VA); return step; }
+    uint32_t served = c->tlb_served;
+    paging_map_kernel(SCRATCH_VA, b, VM_WRITE);   /* present: shot down */
+    w.stop = 1;
+    if (smp_call_wait(i, 1000000000ull)) step = 6;
+    else if (w.last != TLB_NEW)          step = 7;
+    else if (c->tlb_served == served)    step = 8;
+    paging_unmap(SCRATCH_VA);
+    return step;
+}
+
+static int t_tlb_kernel_busy(void) {
+    for (unsigned i = 1; i < cpu_count(); i++) {
+        paddr_t a, b;
+        if (tlb_frames(&a, &b)) return smp_fail("tlb kernel busy: step ", i, 9);
+        int step = tlb_kernel_busy_steps(i, a, b);
+        pmm_free(a);
+        pmm_free(b);
+        if (step) return smp_fail("tlb kernel busy: step ", i, step);
+    }
+    return 1;
+}
+
+/* An idle AP is never interrupted for a shootdown: it is marked stale,
+   and flushes as it wakes, before it reads anything. */
+struct tlb_read { uintptr_t va; uint64_t seen; };
+
+static void ap_read_once(void *arg) {
+    struct tlb_read *r = arg;
+    r->seen = *(volatile uint64_t *)r->va;
+}
+
+static int tlb_idle_steps(unsigned i, paddr_t a, paddr_t b) {
+    struct cpu *c = cpu_at(i);
+    paging_map_kernel(SCRATCH_VA, a, VM_WRITE);
+    struct tlb_read r = { SCRATCH_VA, 0 };
+    int step = 0;
+    if (smp_call(i, ap_read_once, &r, 100000000ull) || r.seen != TLB_OLD) step = 1;
+    uint64_t end = timer_now_ns() + 100000000ull;
+    while (!step && !__atomic_load_n(&c->idle, __ATOMIC_ACQUIRE))
+        if (timer_now_ns() >= end) step = 2;
+    if (!step) {
+        uint32_t irqs = c->irqs, served = c->tlb_served, woke = c->tlb_woke_stale;
+        paging_map_kernel(SCRATCH_VA, b, VM_WRITE);   /* present, the AP idle */
+        if (c->irqs != irqs || c->tlb_served != served || !c->tlb_stale) step = 3;
+        else if (smp_call(i, ap_read_once, &r, 100000000ull)) step = 4;
+        else if (r.seen != TLB_NEW)                         step = 5;
+        else if (c->tlb_woke_stale != woke + 1 || c->irqs != irqs + 1) step = 6;
+    }
+    paging_unmap(SCRATCH_VA);
+    return step;
+}
+
+static int t_tlb_idle(void) {
+    for (unsigned i = 1; i < cpu_count(); i++) {
+        paddr_t a, b;
+        if (tlb_frames(&a, &b)) return smp_fail("tlb idle: step ", i, 7);
+        int step = tlb_idle_steps(i, a, b);
+        pmm_free(a);
+        pmm_free(b);
+        if (step) return smp_fail("tlb idle: step ", i, step);
+    }
+    return 1;
+}
+
+/* A user space's change goes to the CPU running it and to no other: AP 1
+   reads a user page in a space of its own while AP 2 reads a kernel word,
+   both busy; the page's frame is replaced. */
+static volatile uint64_t tlb_quiet = TLB_OLD;
+
+static int tlb_user_steps(paddr_t root, paddr_t a, paddr_t b) {
+    struct cpu *in = cpu_at(1), *out = cpu_at(2);
+    if (paging_map_user_in(root, 0x400000, a, 0)) return 1;
+    struct tlb_watch win = { .va = 0x400000, .space = root };
+    struct tlb_watch wout = { .va = (uintptr_t)&tlb_quiet };
+    if (smp_call_start(1, ap_watch, &win)) return 2;
+    if (smp_call_start(2, ap_watch, &wout)) { tlb_watch_end(1, &win); return 2; }
+    int step = 0;
+    if (!tlb_reads_past(&win, 1) || !tlb_reads_past(&wout, 1)) step = 3;
+    else if (win.first != TLB_OLD || in->space != root)       step = 4;
+    uint32_t sin = in->tlb_served, sout = out->tlb_served;
+    if (!step && paging_map_user_in(root, 0x400000, b, 0)) step = 5;   /* present: shot down */
+    tlb_watch_end(1, &win);
+    tlb_watch_end(2, &wout);
+    if (step) return step;
+    if (win.last != TLB_NEW)       return 6;
+    if (in->tlb_served == sin)     return 7;
+    if (out->tlb_served != sout)   return 8;   /* not in the space: never asked */
+    if (in->space != addr_space_kernel()) return 9;
+    return 0;
+}
+
+static int t_tlb_user_targeted(void) {
+    if (cpu_count() < 3) return 1;
+    paddr_t a, b, root;
+    if (tlb_frames(&a, &b)) return smp_fail("tlb user: step ", 0, 10);
+    if (addr_space_create(&root)) { pmm_free(a); pmm_free(b); return smp_fail("tlb user: step ", 0, 10); }
+    int step = tlb_user_steps(root, a, b);
+    /* The frame the space maps goes back with it; the other is ours. */
+    volatile uint64_t *e = entry_in(root, 0x400000);
+    paddr_t kept = e && (*e & PTE64_PRESENT) ? (*e & PTE64_ADDR) : 0;
+    addr_space_release(root);
+    if (kept != a) pmm_free(a);
+    if (kept != b) pmm_free(b);
+    if (step) return smp_fail("tlb user: step ", 1, step);
+    return 1;
+}
+
+/* No deadlock: two APs shooting down at each other at once, each waiting
+   with interrupts off, both finish (and the boot CPU, asked by both,
+   answers through the IPI); and an AP's shootdown aimed at the boot CPU
+   while it spins, interrupts off, on a lock that only finishing it frees,
+   finishes too. */
+struct tlb_shoot {
+    volatile uint32_t *go;
+    spinlock_t *release;
+    volatile uint32_t missing;
+    volatile uint32_t *ready;        /* the crossfire: how many have arrived */
+    uint32_t need;
+};
+
+/* For the crossfire, each AP turns interrupts off and waits for the other
+   before it shoots: then neither can take the other's IPI, and only the
+   serving in its own wait answers it. Without the barrier one AP woke from
+   its halt after the other had finished, and nothing ever crossed. */
+static void ap_shoot(void *arg) {
+    struct tlb_shoot *s = arg;
+    uint64_t end = arch_cycles64() + 2000000000ull;
+    uint32_t irq = arch_irq_save();
+    if (s->ready) {
+        __atomic_fetch_add(s->ready, 1u, __ATOMIC_SEQ_CST);
+        while (__atomic_load_n(s->ready, __ATOMIC_ACQUIRE) < s->need && arch_cycles64() < end)
+            arch_cpu_relax();
+    } else {
+        while (!*s->go && arch_cycles64() < end) arch_cpu_relax();
+    }
+    s->missing = smp_tlb_shootdown(SMP_TLB_KERNEL, SCRATCH_VA, 1, 300000000ull);
+    arch_irq_restore(irq);
+    if (s->release) __atomic_store_n(&s->release->locked, 0u, __ATOMIC_RELEASE);
+}
+
+static int t_tlb_no_deadlock(void) {
+    if (cpu_count() < 2) return 1;
+    volatile uint32_t go = 0;
+    if (cpu_count() >= 3) {
+        volatile uint32_t ready = 0;
+        struct tlb_shoot s1 = { &go, 0, ~0u, &ready, 2 }, s2 = { &go, 0, ~0u, &ready, 2 };
+        uint32_t boot = cpu_boot.tlb_served;
+        if (smp_call_start(1, ap_shoot, &s1)) return smp_fail("tlb no deadlock: step ", 1, 1);
+        if (smp_call_start(2, ap_shoot, &s2)) { go = 1; (void)smp_call_wait(1, 1000000000ull);
+                                                return smp_fail("tlb no deadlock: step ", 2, 1); }
+        go = 1;
+        int w1 = smp_call_wait(1, 2000000000ull), w2 = smp_call_wait(2, 2000000000ull);
+        if (w1 || w2) return smp_fail("tlb no deadlock: step ", w1 ? 1 : 2, 2);
+        if (s1.missing || s2.missing) return smp_fail("tlb no deadlock: step ", s1.missing ? 1 : 2, 3);
+        if (cpu_boot.tlb_served < boot + 2) return smp_fail("tlb no deadlock: step ", 0, 4);
+    }
+    spinlock_t held = SPINLOCK_INIT(LR_PAGEDB);
+    held.locked = 1;                 /* taken for the AP, which frees it once its shootdown ends */
+    struct tlb_shoot s = { &go, &held, ~0u, 0, 0 };
+    go = 1;
+    /* Interrupts off from before the call: the IPI cannot be taken, and
+       only the spin's serving answers it. */
+    uint32_t irq = arch_irq_save();
+    if (smp_call_start(1, ap_shoot, &s)) { arch_irq_restore(irq); return smp_fail("tlb no deadlock: step ", 1, 5); }
+    uint32_t f = spin_lock(&held);   /* spins, serving */
+    spin_unlock(&held, f);
+    arch_irq_restore(irq);
+    if (smp_call_wait(1, 1000000000ull)) return smp_fail("tlb no deadlock: step ", 1, 6);
+    if (s.missing) return smp_fail("tlb no deadlock: step ", 1, 7);
+    return 1;
+}
+
 /* ---- arch/ktest_arch.h ---- */
 
 /* The double fault's IST stack (t_idt checks the gate names it): the wiring
@@ -1674,6 +1942,10 @@ static const struct ktest_arch_case cases[] = {
     { "each AP: own GDT, TSS, GS, stacks; one IDT; PAT, MSRs", t_smp_ap_tables },
     { "an AP's own timer interrupts it, acknowledged",   t_smp_ap_timer },
     { "a parked AP halts; a call wakes it once",          t_smp_parked },
+    { "a changed kernel page is shot down on a busy AP",  t_tlb_kernel_busy },
+    { "an idle AP is marked stale, not woken; flushes",   t_tlb_idle },
+    { "a user space's change goes only where it runs",    t_tlb_user_targeted },
+    { "shootdowns at each other or a spinner finish",     t_tlb_no_deadlock },
     { "an MSI vector reaches its handler, then nothing", t_msi_pool },
     { "syscall: EFER.SCE, STAR, LSTAR, FMASK; sysret's selectors", t_syscall_msrs },
     { "ring 3 starts at CPL 3, registers clear; SYS_EXIT", t_ring3_cpl },

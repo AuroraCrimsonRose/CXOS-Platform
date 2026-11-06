@@ -104,14 +104,19 @@ int  paging_map_user  (uintptr_t virt, paddr_t phys, uint32_t vm);
    it at PHYS_WINDOW_BASE + phys. */
 volatile void *paging_map_phys(paddr_t phys, uint32_t len, uint32_t vm);
 
-/* Remove the mapping of one page in the active space. */
-void paging_unmap(uintptr_t virt);
+/* Remove the mapping of one page in the active space. Returns the frame it
+   mapped (0: none, or a borrowed one), which no CPU's TLB still holds by
+   then (1.9e1, arch/smp.h): a caller that owns the frame frees it after
+   this, never before, or another CPU could write to it once it is reused.
+   A mapping replaced by paging_map_kernel or paging_map_user_in is shot
+   down the same way. */
+paddr_t paging_unmap(uintptr_t virt);
 
 /* paging_map_user and paging_unmap in the space `root`, active or not: the
    memory object mappings of a process, unmapped by whichever thread ends it
    (memman/vmregion.c). */
-int  paging_map_user_in(paddr_t root, uintptr_t virt, paddr_t phys, uint32_t vm);
-void paging_unmap_in(paddr_t root, uintptr_t virt);
+int     paging_map_user_in(paddr_t root, uintptr_t virt, paddr_t phys, uint32_t vm);
+paddr_t paging_unmap_in(paddr_t root, uintptr_t virt);
 
 /* The physical address `virt` maps to in the active space, or 0 if unmapped. */
 paddr_t paging_get_phys(uintptr_t virt);

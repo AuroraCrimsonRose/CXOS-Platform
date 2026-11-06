@@ -25,6 +25,8 @@
 #include "arch/x86_64/pat.h"
 #include "boot/cxbi.h"
 #include "memman/pagedb.h"
+#include "arch/x86_64/smp.h"   /* addr_space_switch_on */
+#include "arch/smp.h"          /* the shootdown */
 #include "pmm.h"
 #include "panic.h"
 #include "logging.h"
@@ -56,6 +58,23 @@ static paddr_t new_table(void) {
 
 static inline void invlpg(uint64_t v) {
     __asm__ volatile ("invlpg (%0)" : : "r"(v) : "memory");
+}
+
+/* An entry that WAS present has changed (1.9e1): this CPU's TLB drops it
+   now, if its CR3 holds `root` or the page is in the kernel half; every
+   other CPU's that could hold it, before this returns (arch/smp.h). A
+   frame unmapped is given back only after, so no CPU writes to it once it
+   is someone else's. One that never answers is a panic: going on would
+   leave a CPU writing through a mapping its owner believes gone. An entry
+   that was not present needs nothing: the TLB holds no translation of a
+   page that is not present (Intel SDM vol. 3A 4.10.2.3). */
+static void entry_changed(paddr_t root, uint64_t virt, uint64_t old) {
+    if (!(old & PTE64_PRESENT)) return;
+    int kernel = virt >= USER_VLIMIT;
+    if (kernel || root == addr_space_current()) invlpg(virt);
+    uint32_t missing = smp_tlb_shootdown(kernel ? SMP_TLB_KERNEL : root, (uintptr_t)virt, 1,
+                                         SMP_TLB_TIMEOUT_NS);
+    if (missing) kpanic("TLB shootdown: a CPU never answered (paging.c)");
 }
 
 /* The page-table entry for `virt` under `root`, making the tables on the way
@@ -182,8 +201,9 @@ void paging_map_kernel(uintptr_t virt, paddr_t phys, uint32_t vm) {
     if (!pat_wc_ready()) vm &= ~VM_WC;   /* entry 4 is still write-back, or there is no table */
     uint64_t *e = walk(addr_space_current(), virt, 1, 0);
     if (!e) return;   /* out of memory: the page stays unmapped */
+    uint64_t old = *e;
     *e = pte64_encode(phys, vm, 0);
-    invlpg(virt);
+    entry_changed(addr_space_current(), virt, old);
 }
 
 /* At PHYS_WINDOW_BASE + phys, so the same frame always comes back at the
@@ -209,9 +229,10 @@ int paging_map_user_in(paddr_t root, uintptr_t virt, paddr_t phys, uint32_t vm) 
     if (virt >= USER_VLIMIT - PAGE_SIZE || (vm & ~VM_ALL)) return -1;
     uint64_t *e = walk(root, virt, 1, 1);
     if (!e) return -1;
+    uint64_t old = *e;
     *e = pte64_encode(phys, vm, 1);
-    /* another space's entries are not in the TLB: a switch to it flushes */
-    if (root == addr_space_current()) invlpg(virt);
+    /* another space's entries are in no TLB but those of CPUs running it */
+    entry_changed(root, virt, old);
     return 0;
 }
 
@@ -219,14 +240,17 @@ int paging_map_user(uintptr_t virt, paddr_t phys, uint32_t vm) {
     return paging_map_user_in(addr_space_current(), virt, phys, vm);
 }
 
-void paging_unmap_in(paddr_t root, uintptr_t virt) {
+paddr_t paging_unmap_in(paddr_t root, uintptr_t virt) {
     uint64_t *e = walk(root, virt, 0, 0);
-    if (!e) return;
+    if (!e) return 0;
+    uint64_t old = *e;
     *e = 0;
-    if (root == addr_space_current()) invlpg(virt);
+    entry_changed(root, virt, old);
+    /* borrowed frames are not the caller's to give back */
+    return (old & PTE64_PRESENT) && !(old & PTE64_BORROWED) ? (old & PTE64_ADDR) : 0;
 }
 
-void paging_unmap(uintptr_t virt) { paging_unmap_in(addr_space_current(), virt); }
+paddr_t paging_unmap(uintptr_t virt) { return paging_unmap_in(addr_space_current(), virt); }
 
 /* The leaf entry mapping `virt` in the active space, and the size it maps; 0
    if none. Every level must carry `need`, since the CPU takes the strictest
@@ -329,9 +353,17 @@ paddr_t addr_space_current(void) {
     return cr3 & PTE64_ADDR;
 }
 
-void addr_space_switch(paddr_t root) {
+/* Recorded before the load, with a fence between, the mirror of the
+   shootdown's (tables, fence, space): a sender either sees this CPU in
+   `root` and asks it, or this CPU's walks after the load see the new
+   tables. */
+void addr_space_switch_on(struct cpu *c, paddr_t root) {
+    __atomic_store_n(&c->space, (uint64_t)root, __ATOMIC_RELAXED);
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
     __asm__ volatile ("mov %0, %%cr3" : : "r"(root) : "memory");
 }
+
+void addr_space_switch(paddr_t root) { addr_space_switch_on(cpu_this(), root); }
 
 /* The tables an AP turns paging on with (1.9d, smp.c): the kernel half, as
    every space shares it, and `page`, the trampoline's, at its own address

@@ -61,6 +61,19 @@ static inline void spin_init(spinlock_t *l, uint32_t rank) {
 #define SPIN_CHECK_GIVE(l)  ((void)0)
 #endif
 
+/* 1.9e1: a CPU spinning here has interrupts off, so a TLB shootdown's IPI
+   cannot reach it; it serves the requests waiting for it between looks
+   instead (arch/smp.h), as Haiku's acquire_spinlock processes pending ICIs
+   (src/system/kernel/smp.cpp). Without it a sender holding this lock
+   and waiting for this CPU's answer would wait for good. Only while
+   spinning: an uncontended lock costs nothing more. */
+#if defined(CXK_HOST_TEST)
+#define SPIN_SERVE() ((void)0)
+#else
+#include "arch/smp.h"
+#define SPIN_SERVE() smp_serve()
+#endif
+
 static inline uint32_t spin_irq_save(void)          { return arch_irq_save(); }
 static inline void     spin_irq_restore(uint32_t f) { arch_irq_restore(f); }
 static inline void     spin_relax(void)             { arch_cpu_relax(); }
@@ -72,7 +85,7 @@ static inline uint32_t spin_lock(spinlock_t *l) {
     uint32_t f = spin_irq_save();
     SPIN_CHECK_TAKE(l);
     while (__atomic_exchange_n(&l->locked, 1u, __ATOMIC_ACQUIRE))
-        while (__atomic_load_n(&l->locked, __ATOMIC_RELAXED)) spin_relax();
+        while (__atomic_load_n(&l->locked, __ATOMIC_RELAXED)) { SPIN_SERVE(); spin_relax(); }
     SPIN_HELD_ADD(1u);
     return f;
 }

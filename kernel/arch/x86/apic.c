@@ -434,14 +434,20 @@ uint32_t apic_cpus(const struct madt_cpu **list, const struct madt_cpu_counts **
     return madt_cpu_n;
 }
 
+/* Interrupts off from the destination's write to the delivery: an
+   interrupt that sent an IPI of its own between the two writes (1.9e1: a
+   shootdown from a handler) would leave this one aimed at its CPU. */
 static int icr_send(uint32_t apic_id, uint32_t low) {
     if (!lapic_up) return -1;
+    uint32_t f = arch_irq_save();
     lapic_wr(LAPIC_ESR, 0);
     lapic_wr(LAPIC_ICR_HI, apic_id << 24);
     lapic_wr(LAPIC_ICR_LO, low);
-    for (uint32_t i = 0; i < ICR_POLLS; i++)
-        if (!(lapic_rd(LAPIC_ICR_LO) & ICR_PENDING)) return 0;
-    return -1;
+    int rc = -1;
+    for (uint32_t i = 0; i < ICR_POLLS && rc; i++)
+        if (!(lapic_rd(LAPIC_ICR_LO) & ICR_PENDING)) rc = 0;
+    arch_irq_restore(f);
+    return rc;
 }
 
 int lapic_send_init(uint32_t apic_id) {

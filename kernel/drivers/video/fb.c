@@ -109,9 +109,8 @@ static void copy_init(uint32_t bytes) {
         if (!p || paging_get_phys(FB_COPY_BASE + ((uintptr_t)i << 12)) != p) {
             if (p) pmm_free(p);
             while (i--) {
-                uintptr_t v = FB_COPY_BASE + ((uintptr_t)i << 12);
-                pmm_free(paging_get_phys(v));
-                paging_unmap(v);
+                paddr_t old = paging_unmap(FB_COPY_BASE + ((uintptr_t)i << 12));   /* then freed */
+                if (old) pmm_free(old);
             }
             return;
         }

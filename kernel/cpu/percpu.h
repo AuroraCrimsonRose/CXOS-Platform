@@ -51,6 +51,23 @@ struct cpu {
     volatile uint32_t calls_done;
     volatile uint32_t wakes;   /* times the park loop came out of a halt */
     volatile uint32_t irqs;    /* interrupts it took (none is routed to it) */
+    /* 1.9e1: TLB shootdown (arch/smp.h). The root its CR3 holds, written
+       before the load; the senders whose request it must serve, a bit per
+       CPU index; its own request, one at a time; idle while halted with
+       nothing to run, when a sender marks it stale instead of interrupting
+       it, and it flushes everything as it wakes. */
+    volatile uint64_t space;
+    volatile uint32_t tlb_from;
+    volatile uint32_t tlb_stale;
+    volatile uint32_t idle;
+    struct cpu_tlb_req {
+        uint64_t root;             /* SMP_TLB_KERNEL: the half every space shares */
+        uintptr_t va;
+        uint32_t pages;            /* past SMP_TLB_FULL_AT: everything */
+        volatile uint32_t left;    /* CPUs still to answer */
+    } tlb_out;
+    volatile uint32_t tlb_served;  /* requests it served, interrupted or spinning */
+    volatile uint32_t tlb_woke_stale;  /* wakes that flushed for a skipped request */
 };
 
 #define CPU_MAX      16        /* the rig has 8; Hyper-V is given up to 16 */

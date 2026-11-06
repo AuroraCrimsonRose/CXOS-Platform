@@ -27,6 +27,7 @@
 #include "sync/lockorder.h"    /* lockorder_stop */
 #include "cpu/percpu.h"        /* cpu_this, cpu_boot */
 #include "smp.h"               /* smp_ap_interrupt */
+#include "arch/smp.h"          /* smp_serve */
 
 struct idt_gate64 {
     uint16_t offset_low;
@@ -264,6 +265,13 @@ static void irq_dispatch(struct registers *r) {
        sample for the generator, which the boot CPU alone feeds. */
     if (cpu_this() != &cpu_boot) {
         smp_ap_interrupt((uint32_t)r->vector);
+        lapic_eoi();
+        return;
+    }
+    /* 1.9e1: an AP's shootdown, aimed at the boot CPU. Its own branch: past
+       the MSI pool, which the branch below would index beyond its end. */
+    if (r->vector == SMP_IPI_VECTOR) {
+        smp_serve();
         lapic_eoi();
         return;
     }

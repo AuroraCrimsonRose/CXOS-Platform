@@ -284,9 +284,7 @@ void ocache_sys_init(void) {
 
 void ocache_unmap(uintptr_t va, uint32_t pages) {
     for (uint32_t p = 0; p < pages; p++) {
-        uintptr_t v = va + p * OCACHE_PAGE;
-        paddr_t phys = paging_get_phys(v) & ~(paddr_t)0xFFF;
-        paging_unmap(v);
+        paddr_t phys = paging_unmap(va + p * OCACHE_PAGE);   /* unmapped everywhere first */
         if (phys) pmm_free(phys);
     }
 }

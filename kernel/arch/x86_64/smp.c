@@ -52,15 +52,123 @@ static void wait_ns(uint64_t ns) {
     while (timer_now_ns() < end) arch_cpu_relax();
 }
 
+/* ---- the TLB, on any CPU (arch/smp.h) ------------------------------------ */
+
+/* No page is global (pagetable.c sets no G bit), so a CR3 reload drops
+   the kernel half's entries with the rest. */
+static void tlb_flush_local(uintptr_t va, uint32_t pages) {
+    if (pages == 0 || pages > SMP_TLB_FULL_AT) {
+        uint64_t cr3;
+        __asm__ volatile ("mov %%cr3, %0; mov %0, %%cr3" : "=r"(cr3) : : "memory");
+        return;
+    }
+    for (uint32_t i = 0; i < pages; i++)
+        __asm__ volatile ("invlpg (%0)" : : "r"(va + (uintptr_t)i * PAGE_SIZE) : "memory");
+}
+
+/* Out of a halt: busy from here, and whatever a sender skipped while this
+   CPU was idle is flushed before it touches anything that may have moved.
+   The store, the fence and the read are the mirror of the sender's (stale,
+   fence, idle): one of the two sees the other, so a request is either
+   signalled or caught here, never missed. Until this runs, an idle CPU's
+   interrupt path touches only what is never unmapped: the kernel image,
+   its own stacks and struct cpu. */
+static void tlb_wake(struct cpu *c) {
+    __atomic_store_n(&c->idle, 0u, __ATOMIC_RELAXED);
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    if (__atomic_exchange_n(&c->tlb_stale, 0u, __ATOMIC_ACQUIRE)) {
+        tlb_flush_local(0, 0);
+        c->tlb_woke_stale++;
+    }
+}
+
+void smp_serve(void) {
+    struct cpu *me = cpu_this();
+    if (!__atomic_load_n(&me->tlb_from, __ATOMIC_RELAXED)) return;
+    uint32_t from = __atomic_exchange_n(&me->tlb_from, 0u, __ATOMIC_ACQUIRE);
+    uint32_t mine = 1u << me->index;
+    while (from) {
+        struct cpu *src = cpu_at((unsigned)__builtin_ctz(from));
+        from &= from - 1;
+        if (!src) continue;
+        const struct cpu_tlb_req *r = &src->tlb_out;
+        /* A space it has left since was flushed by the CR3 load. */
+        if (r->root == SMP_TLB_KERNEL || r->root == me->space) tlb_flush_local(r->va, r->pages);
+        me->tlb_served++;
+        __atomic_fetch_and(&src->tlb_out.left, ~mine, __ATOMIC_RELEASE);
+    }
+}
+
+/* One request per sender, in its own struct cpu, and a bit per sender in
+   each target's tlb_from: WRK's per-processor request packets
+   (KiIpiSendRequest, ke/amd64/flushtb.c) rather than one lock every
+   shootdown queues on. Targets by the CR3 each CPU holds, as XNU's
+   pmap_flush_tlbs reads cpu_active_cr3 (osfmk/x86_64/pmap.c), and an idle
+   one marked stale rather than interrupted, as XNU leaves idle CPUs to
+   "check as they go busy". The sender serves its own requests while it
+   waits, as Serenity's smp_broadcast_wait_sync does (Processor.cpp). */
+uint32_t smp_tlb_shootdown(uint64_t root, uintptr_t va, uint32_t pages, uint64_t timeout_ns) {
+    unsigned n = cpu_count();
+    if (n <= 1) return 0;
+    uint32_t f = arch_irq_save();
+    struct cpu *me = cpu_this();
+    struct cpu_tlb_req *req = &me->tlb_out;
+    req->root  = root;
+    req->va    = va;
+    req->pages = pages;
+    /* The tables' new entries are stored before any CPU's space or idle is
+       read: a CPU loading `root` after this walks the new tables. */
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    uint32_t targets = 0;
+    for (unsigned i = 0; i < n; i++) {
+        struct cpu *c = cpu_at(i);
+        if (c == me) continue;
+        if (root != SMP_TLB_KERNEL && __atomic_load_n(&c->space, __ATOMIC_RELAXED) != root) continue;
+        if (__atomic_load_n(&c->idle, __ATOMIC_RELAXED)) {
+            __atomic_store_n(&c->tlb_stale, 1u, __ATOMIC_RELAXED);
+            __atomic_thread_fence(__ATOMIC_SEQ_CST);
+            if (__atomic_load_n(&c->idle, __ATOMIC_RELAXED)) continue;   /* flushes as it wakes */
+        }
+        targets |= 1u << i;
+    }
+    __atomic_store_n(&req->left, targets, __ATOMIC_RELEASE);
+    uint32_t bit = 1u << me->index;
+    for (unsigned i = 0; i < n; i++) {
+        if (!(targets & (1u << i))) continue;
+        struct cpu *c = cpu_at(i);
+        __atomic_fetch_or(&c->tlb_from, bit, __ATOMIC_RELEASE);
+        (void)lapic_send_fixed(c->hw_id, SMP_IPI_VECTOR);   /* not accepted: it times out */
+    }
+    uint32_t left = targets;
+    if (targets) {
+        uint64_t end = timer_now_ns() + timeout_ns;
+        while ((left = __atomic_load_n(&req->left, __ATOMIC_ACQUIRE)) != 0) {
+            smp_serve();
+            if (timer_now_ns() >= end) break;
+            arch_cpu_relax();
+        }
+    }
+    /* Never answered: withdrawn, so a late answer cannot clear a bit of
+       the next request. (One already being served may still clear it; the
+       paging layer panics on any of this.) */
+    for (unsigned i = 0; left && i < n; i++)
+        if (left & (1u << i)) __atomic_fetch_and(&cpu_at(i)->tlb_from, ~bit, __ATOMIC_RELAXED);
+    arch_irq_restore(f);
+    return left;
+}
+
 /* ---- on the AP ----------------------------------------------------------- */
 
 /* Halted with interrupts on until something is asked of it. The check and
    the halt are one step: interrupts are off from the check to `sti; hlt`,
    and sti holds them off for one more instruction, so a wake IPI sent after
-   the check is taken in the halt and ends it, never lost before it. */
+   the check is taken in the halt and ends it, never lost before it. Idle
+   from just before the halt to tlb_wake: a shootdown meanwhile marks it
+   stale rather than waking it. */
 static __attribute__((noreturn)) void park(struct cpu *c) {
     for (;;) {
         arch_irq_disable();
+        tlb_wake(c);
         void (*fn)(void *) = __atomic_load_n(&c->call, __ATOMIC_ACQUIRE);
         if (fn) {
             fn(c->call_arg);
@@ -68,6 +176,7 @@ static __attribute__((noreturn)) void park(struct cpu *c) {
             __atomic_fetch_add(&c->calls_done, 1, __ATOMIC_RELEASE);
             continue;
         }
+        __atomic_store_n(&c->idle, 1u, __ATOMIC_RELAXED);
         arch_cpu_idle();          /* sti; hlt */
         c->wakes++;
     }
@@ -75,7 +184,7 @@ static __attribute__((noreturn)) void park(struct cpu *c) {
 
 void smp_ap_entry(struct cpu *c);
 void smp_ap_entry(struct cpu *c) {
-    addr_space_switch(addr_space_kernel());
+    addr_space_switch_on(c, addr_space_kernel());   /* GS is not this CPU's yet */
     const struct smp_ap_stacks *s = &stacks[c->index];
     if (arch_cpu_init_ap(c, s->ist_base, s->rsp0_top)) arch_cpu_halt_forever();
     lapic_ap_init();
@@ -87,6 +196,7 @@ void smp_ap_interrupt(uint32_t vector) {
     struct cpu *c = cpu_this();
     c->irqs++;
     if (vector == LAPIC_TIMER_VECTOR) timer_hits[c->index]++;
+    if (vector == SMP_IPI_VECTOR) smp_serve();
 }
 
 /* ---- on the boot CPU ----------------------------------------------------- */
@@ -233,20 +343,34 @@ unsigned arch_smp_start(void) {
     return cpu_count();
 }
 
-int smp_call(unsigned index, void (*fn)(void *), void *arg, uint64_t timeout_ns) {
+/* What calls_done was when each CPU's call was left (smp_call_wait). */
+static uint32_t call_done_before[CPU_MAX];
+
+int smp_call_start(unsigned index, void (*fn)(void *), void *arg) {
     struct cpu *c = cpu_at(index);
     if (!c || c == &cpu_boot || !parked(c) || !fn) return -1;
     if (__atomic_load_n(&c->call, __ATOMIC_ACQUIRE)) return -1;   /* one still pending */
-    uint32_t done = __atomic_load_n(&c->calls_done, __ATOMIC_ACQUIRE);
+    call_done_before[index] = __atomic_load_n(&c->calls_done, __ATOMIC_ACQUIRE);
     c->call_arg = arg;
     __atomic_store_n(&c->call, fn, __ATOMIC_RELEASE);
-    if (lapic_send_fixed(c->hw_id, SMP_IPI_VECTOR)) return -1;
+    return lapic_send_fixed(c->hw_id, SMP_IPI_VECTOR) ? -1 : 0;
+}
+
+int smp_call_wait(unsigned index, uint64_t timeout_ns) {
+    struct cpu *c = cpu_at(index);
+    if (!c || c == &cpu_boot) return -1;
     uint64_t end = timer_now_ns() + timeout_ns;
-    while (__atomic_load_n(&c->calls_done, __ATOMIC_ACQUIRE) == done) {
+    while (__atomic_load_n(&c->calls_done, __ATOMIC_ACQUIRE) == call_done_before[index]) {
         if (timer_now_ns() >= end) return -1;
+        if (!arch_irqs_enabled()) smp_serve();   /* the call may be shooting down at us */
         arch_cpu_relax();
     }
     return 0;
+}
+
+int smp_call(unsigned index, void (*fn)(void *), void *arg, uint64_t timeout_ns) {
+    if (smp_call_start(index, fn, arg)) return -1;
+    return smp_call_wait(index, timeout_ns);
 }
 
 const struct smp_ap_stacks *smp_stacks_of(unsigned index) {

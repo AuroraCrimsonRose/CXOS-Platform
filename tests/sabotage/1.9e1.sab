@@ -1,0 +1,121 @@
+# Phase 1.9e1's sabotages, run by `cxk test sabotage`.
+# Each must turn red exactly the self-tests named, at the reason named.
+# Format: docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage".
+# The verification boot's four CPUs (BootVerifier.X86_64Smp) are what the
+# user-space and crossfire tests need (three or more). A group's sabotages
+# land in different tests: busy, idle, user, no deadlock.
+# By hand, not here: an AP's IPI that serves nothing, which leaves the
+# boot CPU's shootdown waiting until the paging layer's panic (no test
+# can report it); the commit says what it did.
+
+# ---- what is sent, and to whom (paging.c, smp.c) ----
+
+[kernel-not-shot]
+# a changed kernel-half entry is flushed here only, never on the other CPUs
+expect = a changed kernel page is shot down on a busy AP @ tlb kernel busy: step 7
+expect = an idle AP is marked stale, not woken; flushes @ tlb idle: step 3
+group = a
+edit = kernel/arch/x86_64/paging.c
+<<<
+    uint32_t missing = smp_tlb_shootdown(kernel ? SMP_TLB_KERNEL : root, (uintptr_t)virt, 1,
+                                         SMP_TLB_TIMEOUT_NS);
+===
+    uint32_t missing = kernel ? 0 : smp_tlb_shootdown(root, (uintptr_t)virt, 1,
+                                                      SMP_TLB_TIMEOUT_NS);
+>>>
+
+[space-ignored]
+# a user space's change is sent to every CPU, whatever its CR3 holds
+expect = a user space's change goes only where it runs @ tlb user: step 8
+group = a
+edit = kernel/arch/x86_64/smp.c
+<<<
+        if (root != SMP_TLB_KERNEL && __atomic_load_n(&c->space, __ATOMIC_RELAXED) != root) continue;
+===
+>>>
+
+[sender-no-serve]
+# a sender waiting with interrupts off answers no one else's request
+expect = shootdowns at each other or a spinner finish @ tlb no deadlock: step 3
+group = a
+edit = kernel/arch/x86_64/smp.c
+<<<
+            smp_serve();
+            if (timer_now_ns() >= end) break;
+===
+            if (timer_now_ns() >= end) break;
+>>>
+
+[wake-no-flush]
+# an idle CPU marked stale wakes without flushing
+expect = an idle AP is marked stale, not woken; flushes @ tlb idle: step
+group = b
+edit = kernel/arch/x86_64/smp.c
+<<<
+        tlb_flush_local(0, 0);
+        c->tlb_woke_stale++;
+===
+        c->tlb_woke_stale++;
+>>>
+
+[user-overwrite-not-shot]
+# a user entry replaced in place is flushed nowhere, here included: a page
+# made read-only still takes the kernel's write through the stale entry
+expect = a user space's change goes only where it runs @ tlb user: step 6
+expect = CR0.WP: kernel obeys read-only
+group = b
+edit = kernel/arch/x86_64/paging.c
+<<<
+    /* another space's entries are in no TLB but those of CPUs running it */
+    entry_changed(root, virt, old);
+===
+    (void)old;
+>>>
+
+[spin-no-serve]
+# a CPU spinning on a lock, interrupts off, answers no shootdown
+expect = shootdowns at each other or a spinner finish @ tlb no deadlock: step 7
+group = b
+edit = kernel/sync/spinlock.h
+<<<
+#define SPIN_SERVE() smp_serve()
+===
+#define SPIN_SERVE() ((void)0)
+>>>
+
+[idle-woken]
+# an idle CPU is interrupted for every shootdown, never marked stale
+expect = an idle AP is marked stale, not woken; flushes @ tlb idle: step 3
+group = c
+edit = kernel/arch/x86_64/smp.c
+<<<
+        if (__atomic_load_n(&c->idle, __ATOMIC_RELAXED)) {
+            __atomic_store_n(&c->tlb_stale, 1u, __ATOMIC_RELAXED);
+            __atomic_thread_fence(__ATOMIC_SEQ_CST);
+            if (__atomic_load_n(&c->idle, __ATOMIC_RELAXED)) continue;   /* flushes as it wakes */
+        }
+===
+>>>
+
+[space-unrecorded]
+# a CR3 load is not recorded, so no sender knows which space a CPU is in
+expect = a user space's change goes only where it runs @ tlb user: step 4
+group = c
+edit = kernel/arch/x86_64/paging.c
+<<<
+    __atomic_store_n(&c->space, (uint64_t)root, __ATOMIC_RELAXED);
+===
+    (void)c;
+>>>
+
+[boot-ipi-no-serve]
+# the boot CPU takes an AP's shootdown IPI and serves nothing
+expect = shootdowns at each other or a spinner finish @ tlb no deadlock: step 3
+group = c
+edit = kernel/arch/x86_64/idt.c
+<<<
+    if (r->vector == SMP_IPI_VECTOR) {
+        smp_serve();
+===
+    if (r->vector == SMP_IPI_VECTOR) {
+>>>

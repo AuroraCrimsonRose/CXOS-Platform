@@ -1041,6 +1041,40 @@ Independent of the order above, and small enough to land whenever convenient:
      Left for 1.9e: threads on the APs, IPIs between running CPUs, TLB
      shootdown, the TSC's agreement. Self-tests 211. Sabotages:
      `tests/sabotage/1.9d.sab`, 14 of 14. No ABI change.
+   - **1.9e split** (2026-11-06), as 1.7 and 1.8 were: **1.9e1** the IPIs
+     between CPUs and the TLB shootdown, which must exist before a second
+     CPU runs anything that maps; **1.9e2** the scheduler on every CPU
+     (per-CPU run queues, an idle thread per CPU, the IPI that ends a
+     halt for a wake, a reaper that checks a thread is off every CPU, the
+     lockless per-thread reads 1.9b left); **1.9e3** what 1.9c left unlocked
+     (the file system layer, `sysfile`'s graveyard and waiters) and the
+     TSC's agreement between CPUs.
+   - **1.9e1 (2026-11-06), done:** every change to a present entry goes
+     through one funnel (`entry_changed`, `paging.c`): a local `invlpg`,
+     then `smp_tlb_shootdown` (`arch/x86_64/smp.c`). A kernel-half change
+     goes to every CPU; a user one only to CPUs whose recorded CR3 is that
+     space (`space`, stored before the load with a fence between; the
+     sender fences after the write and reads it, a Dekker pair). An
+     idle parked CPU is marked stale instead of interrupted and reloads
+     CR3 as it wakes (XNU's idle CPUs). One request per sender in its own
+     `struct cpu`, a mask of targets still to answer (WRK
+     `KiIpiSendRequest`), on vector 57, served by every CPU, the boot CPU
+     included. No deadlock: a sender serves while it waits (Serenity
+     `smp_broadcast_wait_sync`) and a lock's spin serves too (Haiku
+     `acquire_spinlock`). A CPU that never answers is withdrawn after
+     10 s and the paging layer panics. `paging_unmap` returns the frame,
+     freed after the shootdown; `kstack`, `fb` and `ocache` freed before
+     (fixed). Design: `docs/kernel/CX_SMP.md` §4. Tests: a kernel page
+     changed under a busy AP is read new there; an idle AP is marked,
+     not woken, and flushes on waking; a user space's change reaches the
+     CPU running it and never the one outside; two APs shooting at each
+     other with interrupts off, and a CPU spinning on a lock the sender
+     holds, all finish. Hand sabotage: an AP's IPI that serves nothing
+     ends the boot in the panic ("TLB shootdown: a CPU never answered").
+     Untested: the fence pairs, `icr_send`'s interrupts-off section, the
+     withdrawal after a timeout. Self-tests 215 (4 CPUs, 1 CPU,
+     `--cpu max`). Sabotages: `tests/sabotage/1.9e1.sab`, 9 of 9. No ABI
+     change.
 10. A documentation pass: the README and `safety/CX_SAFETY.md` §1 brought
     up to the branch as it stands.
 

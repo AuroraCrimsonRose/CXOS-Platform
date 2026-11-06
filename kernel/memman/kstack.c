@@ -62,9 +62,8 @@ uintptr_t kstack_alloc(uint32_t bytes, int owner, uintptr_t *base_out) {
         if (!frame) {
             /* undo the pages already mapped, so a failed allocation leaks nothing */
             for (uint32_t q = 0; q < p; q++) {
-                uintptr_t v = base + q * PAGE_SIZE;
-                pmm_free(paging_get_phys(v) & ~(paddr_t)0xFFF);
-                paging_unmap(v);
+                paddr_t old = paging_unmap(base + q * PAGE_SIZE);   /* unmapped everywhere, then freed */
+                if (old) pmm_free(old);
             }
             f = spin_lock(&slots_lock);
             slots[i].base = 0;
@@ -92,10 +91,11 @@ void kstack_free(uintptr_t base) {
     spin_unlock(&slots_lock, f);
     if (!ours) return;
 
+    /* Each frame given back only once no CPU's TLB still maps it (1.9e1):
+       freed first, another CPU could write to it after it was reused. */
     for (uintptr_t v = base; v < slot_start(i) + KSTACK_SLOT_SIZE; v += PAGE_SIZE) {
-        paddr_t phys = paging_get_phys(v);
-        if (phys) pmm_free(phys & ~(paddr_t)0xFFF);
-        paging_unmap(v);
+        paddr_t phys = paging_unmap(v);
+        if (phys) pmm_free(phys);
     }
     f = spin_lock(&slots_lock);
     slots[i].base = 0;

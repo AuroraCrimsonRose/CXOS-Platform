@@ -22,7 +22,13 @@ int arch_cpu_init_ap(struct cpu *c, const uintptr_t ist_lo[IST_STACKS], uintptr_
    half and `page` at its own address); addr_space_release frees it. */
 int paging_boot_root(paddr_t page, paddr_t *root);
 
-/* idt.c calls it for any interrupt an AP takes: counted, then the EOI. */
+/* paging.c: load `root` on CPU `c`, recording it first in c->space for the
+   shootdown's targeting (arch/smp.h). addr_space_switch is this for the
+   calling CPU; an AP calls it before its GS names its struct cpu. */
+void addr_space_switch_on(struct cpu *c, paddr_t root);
+
+/* idt.c calls it for any interrupt an AP takes: counted (the IPI's serves
+   the shootdowns waiting), then the EOI. */
 void smp_ap_interrupt(uint32_t vector);
 
 /* The self-tests' view (ktest_arch.c): each AP's stacks and how many of its
