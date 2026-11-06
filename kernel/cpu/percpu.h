@@ -83,6 +83,10 @@ struct cpu {
     volatile uint32_t in_switch;
     volatile uint64_t slice_end;
     volatile uint32_t resched_ipis;
+    /* 1.9e3: what the clock (timer_now_ns) takes off this CPU's TSC so it
+       reads the boot CPU's: 0 there, and on an AP what bring-up measured
+       (arch/smp.h, the TSC's agreement). Written only on this CPU. */
+    volatile int64_t  tsc_adjust;
 };
 
 #define CPU_MAX      16        /* the rig has 8; Hyper-V is given up to 16 */

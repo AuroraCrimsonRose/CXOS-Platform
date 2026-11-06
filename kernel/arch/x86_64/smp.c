@@ -158,6 +158,151 @@ uint32_t smp_tlb_shootdown(uint64_t root, uintptr_t va, uint32_t pages, uint64_t
     return left;
 }
 
+/* ---- the TSC's agreement (1.9e3; arch/smp.h) ------------------------------
+ * timer_now_ns reads the TSC on whichever CPU it runs, against one base the
+ * boot CPU took: an AP whose TSC is behind reads a time before that base,
+ * and a thread that moves to it sees its clock go back. So each AP, as it
+ * parks, is measured against the boot CPU and, if it is out, set right.
+ *
+ * XNU (osfmk/i386/mp.c, start_cpu) meets each AP at a two-sided barrier,
+ * reads both TSCs there, and logs or panics past TSC_sync_margin; Haiku
+ * (arch_x86/arch_cpu.cpp, arch_cpu_preboot_init_percpu) brings every CPU to
+ * one rendezvous and writes 0 to each one's TSC. Here a round trip,
+ * TSC_ROUNDS times: the boot CPU reads b0, asks, the AP reads its own and
+ * answers, the boot CPU reads b1. The AP read somewhere between b0 and b1,
+ * so its offset is its reading less their midpoint, give or take half the
+ * trip; the shortest trip is kept. Past that and XNU's margin, the offset
+ * goes into the AP's tsc_adjust (cpu/percpu.h), which the clock takes off
+ * every reading there, and the AP is measured again. Not Haiku's write: a
+ * TSC write is not to be counted on (QEMU's TCG ignored one in 1.9e3's
+ * test, and the rig's FX-8350 has no IA32_TSC_ADJUST); the offset needs
+ * nothing of the CPU. Every reading below is the clock's (clock_cycles). */
+#define TSC_ROUNDS     64u
+#define TSC_MARGIN     4096ll                /* cycles: XNU's TSC_sync_margin */
+#define TSC_WAIT_NS    1000000000ull         /* the boot CPU's wait for one answer */
+#define TSC_AP_SPINS   (1u << 28)            /* the AP's, counted: its clock may be the one out */
+#define TSC_ADJUST     0x40000000u
+#define TSC_DONE       0x80000000u
+
+static struct {
+    volatile uint32_t round;      /* the boot CPU's: what it asks; TSC_DONE ends */
+    volatile uint32_t answered;   /* the AP's: the last round it answered */
+    volatile uint64_t ap_tsc;     /* the AP's reading in that round */
+    volatile int64_t  adjust;     /* for a TSC_ADJUST round: what to take off */
+    int64_t           skew;       /* smp_tsc_agree's: added before the meeting */
+} meet;
+static uint32_t       meet_round;
+static struct smp_tsc tsc_start[CPU_MAX];
+
+static int64_t tsc_abs(int64_t v) { return v < 0 ? -v : v; }
+
+/* This CPU's TSC as the clock reads it. Interrupts off: no move between
+   the two. */
+static uint64_t clock_cycles(void) {
+    return arch_cycles64() - (uint64_t)cpu_this()->tsc_adjust;
+}
+
+/* On the AP, interrupts off, until the boot CPU is done or stops asking. */
+static void tsc_answer(void) {
+    struct cpu *me = cpu_this();
+    uint32_t seen = 0, idle = 0;
+    for (;;) {
+        uint32_t r = __atomic_load_n(&meet.round, __ATOMIC_ACQUIRE);
+        if (r == seen) {
+            if (++idle > TSC_AP_SPINS) return;
+            smp_serve();
+            arch_cpu_relax();
+            continue;
+        }
+        idle = 0;
+        seen = r;
+        if (r == TSC_DONE) return;
+        if (r & TSC_ADJUST) me->tsc_adjust += meet.adjust;
+        else meet.ap_tsc = clock_cycles();
+        __atomic_store_n(&meet.answered, r, __ATOMIC_RELEASE);
+    }
+}
+
+/* On the boot CPU, interrupts off: ask round r and wait for its answer. */
+static int tsc_ask(uint32_t r) {
+    __atomic_store_n(&meet.round, r, __ATOMIC_RELEASE);
+    uint64_t end = timer_now_ns() + TSC_WAIT_NS;
+    while (__atomic_load_n(&meet.answered, __ATOMIC_ACQUIRE) != r) {
+        if (timer_now_ns() >= end) return -1;
+        smp_serve();
+        arch_cpu_relax();
+    }
+    return 0;
+}
+
+static int tsc_measure(int64_t *off, uint64_t *err) {
+    uint64_t best = ~0ull;
+    for (uint32_t i = 0; i < TSC_ROUNDS; i++) {
+        uint32_t r = ++meet_round;
+        uint64_t b0 = clock_cycles();
+        if (tsc_ask(r)) return -1;
+        uint64_t b1 = clock_cycles();
+        uint64_t trip = b1 - b0;
+        if (trip < best) {
+            best = trip;
+            *off = (int64_t)(meet.ap_tsc - (b0 + trip / 2));
+        }
+    }
+    *err = best / 2 + 1;
+    return 0;
+}
+
+/* The boot CPU's side of one meeting, the AP in tsc_answer: 0 agreed (set
+   right or not), 1 still out after it was, -1 the AP stopped answering. */
+static int tsc_agree(struct smp_tsc *t) {
+    t->before = t->after = 0;
+    t->err = 0;
+    t->adjusted = 0;
+    int rc = -1;
+    if (tsc_measure(&t->before, &t->err)) goto done;
+    t->after = t->before;
+    if ((uint64_t)tsc_abs(t->before) > t->err + TSC_MARGIN) {
+        meet.adjust = t->before;
+        if (tsc_ask(++meet_round | TSC_ADJUST)) goto done;
+        t->adjusted = 1;
+        if (tsc_measure(&t->after, &t->err)) goto done;
+    }
+    rc = (uint64_t)tsc_abs(t->after) <= t->err + TSC_MARGIN ? 0 : 1;
+done:
+    __atomic_store_n(&meet.round, TSC_DONE, __ATOMIC_RELEASE);
+    return rc;
+}
+
+/* Before the AP is started or called: no round of a past meeting is left
+   for it to take as asked. */
+static void meet_reset(int64_t skew) {
+    meet_round = 0;
+    meet.answered = 0;
+    meet.adjust = 0;
+    meet.skew = skew;
+    __atomic_store_n(&meet.round, 0u, __ATOMIC_RELEASE);
+}
+
+const struct smp_tsc *smp_tsc_at_start(unsigned index) {
+    return index && index < cpu_count() ? &tsc_start[index] : 0;
+}
+
+static void tsc_call(void *arg) {
+    (void)arg;
+    cpu_this()->tsc_adjust -= meet.skew;   /* its clock reads skew ahead */
+    tsc_answer();
+}
+
+int smp_tsc_agree(unsigned index, int64_t skew, struct smp_tsc *out) {
+    meet_reset(skew);
+    if (smp_call_start(index, tsc_call, 0)) return -1;
+    uint32_t f = arch_irq_save();
+    int rc = tsc_agree(out);
+    arch_irq_restore(f);
+    if (smp_call_wait(index, TSC_WAIT_NS)) return -1;
+    return rc;
+}
+
 /* ---- on the AP ----------------------------------------------------------- */
 
 /* The idle thread's halt (1.9e2; it was the park loop of 1.9d). Entered
@@ -189,6 +334,7 @@ void smp_ap_entry(struct cpu *c) {
     if (arch_cpu_init_ap(c, s->ist_base, s->rsp0_top)) arch_cpu_halt_forever();
     lapic_ap_init();
     __atomic_store_n(&c->state, CPU_PARKED, __ATOMIC_RELEASE);
+    tsc_answer();   /* the boot CPU measures this one's TSC first (1.9e3) */
     /* Until the boot CPU has counted it in, no shootdown asks it: then
        everything it may hold is flushed, and it runs threads (1.9e2). */
     while (cpu_at(c->index) != c) arch_cpu_relax();
@@ -292,6 +438,7 @@ static int start_one(struct cpu *c) {
     }
     tramp_put(smp_tramp_stack, s->idle_top);
     tramp_put(smp_tramp_cpu, (uint64_t)(uintptr_t)c);
+    meet_reset(0);
     __atomic_store_n(&c->state, CPU_STARTING, __ATOMIC_RELEASE);
 
     int sent = lapic_send_init(c->hw_id) == 0;
@@ -333,6 +480,7 @@ unsigned arch_smp_start(void) {
     }
 
     int boot_listed = 0;
+    uint32_t tsc_set_right = 0;
     for (uint32_t i = 0; i < n; i++) {
         if (list[i].apic_id == cpu_boot.hw_id) { boot_listed = 1; continue; }
         struct cpu *c = cpu_next_slot();
@@ -344,8 +492,15 @@ unsigned arch_smp_start(void) {
             klog_u32("SMP", SEV_WARN, "no idle thread for the CPU at APIC ID ", c->hw_id, LOG_COLOR_VALUE, "");
             continue;
         }
-        if (start_one(c) == 0) cpu_join(c);
-        else sched_cpu_unprepare(c);
+        if (start_one(c) != 0) { sched_cpu_unprepare(c); continue; }
+        uint32_t f = arch_irq_save();
+        int tsc = tsc_agree(&tsc_start[c->index]);
+        arch_irq_restore(f);
+        if (tsc) klog_u32("SMP", SEV_WARN, tsc < 0 ? "no answer to the TSC's measure from APIC ID "
+                                                  : "the TSC still disagrees on APIC ID ",
+                          c->hw_id, LOG_COLOR_VALUE, "");
+        if (tsc_start[c->index].adjusted) tsc_set_right++;
+        cpu_join(c);
     }
 
     addr_space_release(boot_root);
@@ -357,6 +512,7 @@ unsigned arch_smp_start(void) {
     klog_u32("SMP", SEV_OK, "CPUs running, the others parked: ", cpu_count(), LOG_COLOR_VALUE, "");
     klog_child_u32("listed enabled", seen->enabled, LOG_COLOR_VALUE, "");
     klog_child_u32("listed disabled", seen->disabled, LOG_COLOR_VALUE, "");
+    klog_child_u32("TSCs set right to the boot CPU's", tsc_set_right, LOG_COLOR_VALUE, "");
     return cpu_count();
 }
 

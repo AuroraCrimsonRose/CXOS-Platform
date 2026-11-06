@@ -6,11 +6,18 @@
 
 #include "rtc.h"
 #include "drivers/iowin.h"
+#include "sync/spinlock.h"
 
 /* CMOS: write a register number to +0, then read it at +1 */
 static struct iowin cmos = IOWIN_PORTS(0x70, 2);
 #define CMOS_SELECT 0
 #define CMOS_DATA   1
+
+/* The index and the data port are one register read in two steps: a CPU that
+   selects between another's select and read hands it the wrong register. One
+   reader at a time (1.9e3): a syscall's clock read on any CPU, CXFS's times
+   under the storage lock. Nothing is taken under it. */
+static spinlock_t cmos_lock = SPINLOCK_INIT(LR_CMOS);
 
 /* CMOS register numbers */
 #define RTC_SECONDS 0x00
@@ -39,6 +46,7 @@ static uint8_t bcd_to_bin(uint8_t v) {
 }
 
 void rtc_read(struct rtc_time *out) {
+    uint32_t f = spin_lock(&cmos_lock);
     /* wait for any in-progress update to finish before reading */
     while (rtc_updating()) { }
 
@@ -74,6 +82,7 @@ void rtc_read(struct rtc_time *out) {
 
     /* status B: bit 2 = binary mode (else BCD), bit 1 = 24-hour (else 12) */
     uint8_t status_b = cmos_read(RTC_STATUS_B);
+    spin_unlock(&cmos_lock, f);
     int binary   = status_b & 0x04;
     int hour24   = status_b & 0x02;
 

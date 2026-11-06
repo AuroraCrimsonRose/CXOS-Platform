@@ -22,6 +22,7 @@
 #include "usb_storage.h"
 #endif
 #include "string.h"
+#include "sync/rspin.h"
 
 static struct disk disks[DISK_MAX];
 static unsigned ndisks = 0;
@@ -220,7 +221,7 @@ static int disk_check(const struct disk *d, uint64_t lba, uint32_t count,
     return DISK_OK;
 }
 
-int disk_read(uint8_t id, uint64_t lba, uint32_t count, void *buf) {
+static int read_locked(uint8_t id, uint64_t lba, uint32_t count, void *buf) {
     const struct disk *d = disk_find_by_id(id);
     int bad = disk_check(d, lba, count, buf);
     if (bad != DISK_OK) return bad;
@@ -248,7 +249,7 @@ int disk_read(uint8_t id, uint64_t lba, uint32_t count, void *buf) {
  * returning success, because a flush that silently does nothing is worse than
  * no flush at all - the caller then believes something it must not.
  */
-int disk_flush(uint8_t id) {
+static int flush_locked(uint8_t id) {
     const struct disk *d = disk_find_by_id(id);
     if (!d) return DISK_ERR_NO_DEVICE;
     switch (d->driver) {
@@ -270,7 +271,7 @@ void disk_restrict_writes(int home) {
 }
 int  disk_write_home(void)          { return write_home; }
 
-int disk_write(uint8_t id, uint64_t lba, uint32_t count, const void *buf) {
+static int write_locked(uint8_t id, uint64_t lba, uint32_t count, const void *buf) {
     const struct disk *d = disk_find_by_id(id);
     int bad = disk_check(d, lba, count, buf);
     if (bad != DISK_OK) return bad;
@@ -283,6 +284,35 @@ int disk_write(uint8_t id, uint64_t lba, uint32_t count, const void *buf) {
         lba += n; p += n * 512u; count -= n;
     }
     return 0;
+}
+
+/* ---- the storage lock (1.9e3) ---- disk.h */
+static struct rspin storage = RSPIN_INIT(LR_STORAGE);
+
+void storage_lock(void)   { rspin_lock(&storage); }
+void storage_unlock(void) { rspin_unlock(&storage); }
+int  storage_held(void)   { return rspin_held(&storage); }
+void storage_break(void)  { rspin_break(&storage); }
+
+int disk_read(uint8_t id, uint64_t lba, uint32_t count, void *buf) {
+    storage_lock();
+    int rc = read_locked(id, lba, count, buf);
+    storage_unlock();
+    return rc;
+}
+
+int disk_write(uint8_t id, uint64_t lba, uint32_t count, const void *buf) {
+    storage_lock();
+    int rc = write_locked(id, lba, count, buf);
+    storage_unlock();
+    return rc;
+}
+
+int disk_flush(uint8_t id) {
+    storage_lock();
+    int rc = flush_locked(id);
+    storage_unlock();
+    return rc;
 }
 
 /* human-readable text for a disk_err code */
@@ -363,8 +393,11 @@ int disk_panic_reset(uint8_t id) {
 int disk_test_interrupt(uint8_t id) {
     const struct disk *d = disk_find_by_id(id);
     if (!d) return DISK_ERR_NO_DEVICE;
+    int rc = DISK_ERR_NO_DEVICE;
+    storage_lock();
 #if CXK_HAVE_USB
-    if (d->driver == DISK_DRV_USB) return usb_storage_test_interrupt((uint8_t)d->unit);
+    if (d->driver == DISK_DRV_USB) rc = usb_storage_test_interrupt((uint8_t)d->unit);
 #endif
-    return DISK_ERR_NO_DEVICE;
+    storage_unlock();
+    return rc;
 }

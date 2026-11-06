@@ -29,6 +29,8 @@
 #include "smp.h"               /* smp_ap_interrupt */
 #include "arch/smp.h"          /* smp_serve */
 #include "timer.h"             /* timer_hints_take (1.9e2) */
+#include "disk.h"              /* storage_break (1.9e3) */
+#include "console.h"           /* log_break (1.9e3) */
 
 struct idt_gate64 {
     uint16_t offset_low;
@@ -183,6 +185,11 @@ static void panic_begin(void) {
 #if CXK_LOCK_CHECK
     lockorder_stop();   /* the crash path takes locks in whatever state it finds */
 #endif
+    /* A CPU that held either when another panicked would keep the crash
+       record and the screen from ever being written: the crash path goes
+       through them unlocked (sync/rspin.h). */
+    storage_break();
+    log_break();
     speaker_panic_tone();
     panic_pos = 0;
     if (fb_active()) fb_clear(fb_rgb(0xAA, 0, 0));

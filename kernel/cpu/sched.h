@@ -108,9 +108,12 @@ struct thread {
     uint8_t   idle;
 };
 
-/* Until the file system layer is locked (1.9e3), every thread runs on the
-   boot CPU unless it is given more (thread_set_affinity): syscall bodies,
-   the file system and logging still count on one CPU. */
+/* Every thread runs on the boot CPU unless it is given more
+   (thread_set_affinity). The file system and logging are locked since
+   1.9e3; what still counts on one CPU is the syscalls' direct use of user
+   memory (user_ptr after a check), which a sibling thread's unmap on
+   another CPU could pull out from under them: until 1.9e4 moves it all to
+   the recoverable copies, a process's threads share the boot CPU. */
 #define THREAD_ON_BOOT_CPU    1u
 #define THREAD_ON_ANY_CPU     0xFFFFFFFFu
 /* Idle threads are named past every thread id, and no table holds them. */
@@ -153,6 +156,8 @@ void thread_discard(int id);   /* a held thread that will never start is freed n
 int      sched_configure(uint32_t max_threads, uint32_t stack_bytes);
 uint32_t sched_thread_limit(void);
 uint32_t sched_thread_count(void);   /* slots in use, exited-but-unreaped included */
+/* The threads reaped on CPU `index` since boot (1.9e3: every CPU reaps). */
+uint32_t sched_reaped_on(unsigned index);
 uint32_t sched_stack_bytes(void);
 
 /* voluntarily give up the CPU to the next ready thread (cooperative). */

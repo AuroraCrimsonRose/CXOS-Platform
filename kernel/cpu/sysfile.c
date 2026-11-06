@@ -9,6 +9,8 @@
 #include "object/htab.h"
 #include "usermode.h"       /* user_ptr_readable / user_ptr_writable */
 #include "cxfs.h"
+#include "disk.h"           /* the storage lock */
+#include "sync/spinlock.h"
 #include "string.h"
 #include "memman/ocache.h"
 #include "panic.h"
@@ -86,6 +88,26 @@ static int of_match_fn(void *obj, void *ctx) {
 static uint32_t graveyard[MAX_OPEN_FILES];
 static int      graves;
 
+/* ---- the locks (1.9e3) -----------------------------------------------------
+ * A file syscall holds the storage lock (disk.h) for its whole call, which
+ * makes each one's look-then-change whole: an open's lookup and create, an
+ * unlink's checks and delete, a readdir's statics.
+ *
+ * What a release reaches without it - the last reference to an open file
+ * can go in the reaper on any CPU, or in a handle table's close - is under
+ * files_lock instead: the graveyard, the advisory locks and their waiters,
+ * and an unlink's "is it open" with its marking. Without that last one an
+ * unlink on one CPU and a last close on another could pass each other: the
+ * close reads `doomed` still 0 and frees the file, the unlink saw it open
+ * and marks nothing, and a name the caller was told is gone stays. Ranked
+ * after kwait and the handle tables (a handle travels under its table's
+ * lock), before sched (a release wakes waiters) and the caches. */
+static spinlock_t files_lock = SPINLOCK_INIT(LR_SYSFILE);
+
+uint32_t sysfile_test_hold(void)          { return spin_lock(&files_lock); }
+void     sysfile_test_release(uint32_t f) { spin_unlock(&files_lock, f); }
+
+/* Under files_lock. */
 static int entry_open(uint32_t id) {
     struct of_match m = { id, 0, 0 };
     return ocache_walk(&of_cache, of_match_fn, &m);
@@ -94,17 +116,27 @@ static int entry_open(uint32_t id) {
 /* Unlinked, and so invisible to lookups, but not deleted yet. */
 static int entry_doomed(uint32_t id) {
     struct of_match m = { id, 1, 0 };
-    if (ocache_walk(&of_cache, of_match_fn, &m)) return 1;
-    for (int i = 0; i < graves; i++)
-        if (graveyard[i] == id) return 1;
-    return 0;
+    int doomed = 0;
+    uint32_t f = spin_lock(&files_lock);
+    if (ocache_walk(&of_cache, of_match_fn, &m)) doomed = 1;
+    for (int i = 0; i < graves && !doomed; i++)
+        if (graveyard[i] == id) doomed = 1;
+    spin_unlock(&files_lock, f);
+    return doomed;
 }
 
 int sysfile_entry_doomed(uint32_t id) { return entry_doomed(id); }
 
+/* With the storage lock held, so an id taken off the graveyard is deleted
+   before any lookup can see it neither doomed nor gone. */
 static void bury_pending(void) {
-    while (graves > 0) {
-        uint32_t id = graveyard[--graves];
+    if (!storage_held()) kpanic("sysfile: a burial without the storage lock");
+    for (;;) {
+        uint32_t f = spin_lock(&files_lock);
+        int have = graves > 0;
+        uint32_t id = have ? graveyard[--graves] : 0;
+        spin_unlock(&files_lock, f);
+        if (!have) return;
         cxfs_delete_entry(id);
     }
 }
@@ -154,9 +186,7 @@ static struct file_lock *locks;
    that thread's own stack for as long as it waits, linked into `waiters`, so
    there is one per waiting thread and nothing sized by how many threads there
    could be. The deadlock check walks the list; a release wakes everyone on it.
-   Unlocked, like `locks` itself: only thread context touches either, and
-   the kernel is not preempted outside the preemption self-tests. One lock
-   for both, and for this file's other tables, arrives with SMP (1.9e). */
+   Both lists, and everything below that walks them, are under files_lock. */
 struct lock_wait {
     int      tid;
     int      seen;          /* visited by the current deadlock walk */
@@ -246,13 +276,16 @@ static int lock_apply(struct open_file *of, uint64_t start, uint64_t len, uint32
 /* Its handle is on the way to someone else: who holds each of its locks is
    no longer known. Under the sender's handle-table lock, so it only writes. */
 static void of_travel(struct kobj *o) {
+    uint32_t f = spin_lock(&files_lock);
     for (struct file_lock *l = locks; l; l = l->next)
         if (l->of == (struct open_file *)o) l->taker = TAKER_UNKNOWN;
+    spin_unlock(&files_lock, f);
 }
 
 /* Drop this open file's locks that lie wholly inside [start, start+len). A
    lock that only partly overlaps is left alone: ranges are not split, which is
-   also Serenity's rule, so unlock what was locked. (0, 0) drops them all. */
+   also Serenity's rule, so unlock what was locked. (0, 0) drops them all.
+   Under files_lock, as are lock_apply, lock_conflict and lock_cycle. */
 static void lock_drop(const struct open_file *of, uint64_t start, uint64_t len) {
     uint64_t end = len ? start + len : UINT64_MAX;
     int any = 0;
@@ -270,15 +303,19 @@ static void lock_drop(const struct open_file *of, uint64_t start, uint64_t len) 
 /* Releasing the slot is the whole lifetime rule: its locks go with it, and a
    doomed file whose last open this was is queued for deletion. It runs when
    the last reference goes, however the handles went - SYS_FILE_CLOSE,
-   SYS_HANDLE_CLOSE, or the reaper at exit. */
+   SYS_HANDLE_CLOSE, or the reaper at exit. All of it under files_lock, so
+   `doomed` is read after any unlink that saw this file open has marked it,
+   and two last closes of one doomed entry on two CPUs queue it once. */
 static void of_destroy(struct kobj *o) {
     struct open_file *f = (struct open_file *)o;
+    uint32_t fl = spin_lock(&files_lock);
     uint32_t entry  = f->entry;
     int      doomed = f->doomed;
     lock_drop(f, 0, 0);
     ocache_free(&of_cache, f);
     if (doomed && !entry_open(entry) && graves < MAX_OPEN_FILES)
         graveyard[graves++] = entry;
+    spin_unlock(&files_lock, fl);
 }
 
 static const struct kobj_ops file_ops = {
@@ -311,7 +348,9 @@ int sysfile_lock_count(void) {
 
 int sysfile_lock_waiting(void) {
     int n = 0;
+    uint32_t f = spin_lock(&files_lock);
     for (struct lock_wait *w = waiters; w; w = w->next) n++;
+    spin_unlock(&files_lock, f);
     return n;
 }
 
@@ -491,6 +530,7 @@ static int file_leave(struct open_file *f, int rc) {
 }
 
 int sys_file_open(uint64_t upath, uint32_t flags) {
+    STORAGE_LOCKED();
     uint32_t cwd = thread_current_cwd();
     char path[FILE_PATH_MAX];
     int rc;
@@ -544,6 +584,7 @@ int sys_file_open(uint64_t upath, uint32_t flags) {
 }
 
 int sys_file_close(int32_t h) {
+    STORAGE_LOCKED();
     struct open_file *f;
     uint32_t rights;
     int rc = file_enter(h, &f, &rights);
@@ -569,6 +610,7 @@ static int file_read(struct open_file *f, uint32_t rights, uint64_t buf, uint64_
 }
 
 int sys_file_read(int32_t h, uint64_t buf, uint64_t n) {
+    STORAGE_LOCKED();
     struct open_file *f;
     uint32_t rights;
     int rc = file_enter(h, &f, &rights);
@@ -600,6 +642,7 @@ static int file_write(struct open_file *f, uint32_t rights, uint64_t buf, uint64
 }
 
 int sys_file_write(int32_t h, uint64_t buf, uint64_t n) {
+    STORAGE_LOCKED();
     struct open_file *f;
     uint32_t rights;
     int rc = file_enter(h, &f, &rights);
@@ -630,6 +673,7 @@ static int file_seek(struct open_file *f, int64_t off, uint32_t origin, uint64_t
 }
 
 int sys_file_seek(int32_t h, int64_t off, uint32_t origin, uint64_t pos) {
+    STORAGE_LOCKED();
     struct open_file *f;
     uint32_t rights;
     int rc = file_enter(h, &f, &rights);
@@ -637,6 +681,7 @@ int sys_file_seek(int32_t h, int64_t off, uint32_t origin, uint64_t pos) {
 }
 
 int sys_file_tell(int32_t h, uint64_t pos) {
+    STORAGE_LOCKED();
     struct open_file *f;
     uint32_t rights;
     int rc = file_enter(h, &f, &rights);
@@ -652,6 +697,7 @@ static int file_truncate(struct open_file *f, uint32_t rights, uint64_t size) {
 }
 
 int sys_file_truncate(int32_t h, uint64_t size) {
+    STORAGE_LOCKED();
     struct open_file *f;
     uint32_t rights;
     int rc = file_enter(h, &f, &rights);
@@ -668,6 +714,7 @@ static int stat_out(uint32_t id, uint64_t st) {
 }
 
 int sys_file_stat(uint64_t upath, uint64_t st) {
+    STORAGE_LOCKED();
     char path[FILE_PATH_MAX];
     int rc;
     if ((rc = fs_enter()) < 0) return rc;
@@ -678,6 +725,7 @@ int sys_file_stat(uint64_t upath, uint64_t st) {
 }
 
 int sys_file_fstat(int32_t h, uint64_t st) {
+    STORAGE_LOCKED();
     struct open_file *f;
     uint32_t rights;
     int rc = file_enter(h, &f, &rights);
@@ -685,6 +733,7 @@ int sys_file_fstat(int32_t h, uint64_t st) {
 }
 
 int sys_file_readdir(uint64_t upath, uint32_t index, uint64_t st) {
+    STORAGE_LOCKED();
     char path[FILE_PATH_MAX];
     int rc;
     if ((rc = fs_enter()) < 0) return rc;
@@ -707,6 +756,7 @@ int sys_file_readdir(uint64_t upath, uint32_t index, uint64_t st) {
 }
 
 int sys_file_mkdir(uint64_t upath) {
+    STORAGE_LOCKED();
     uint32_t cwd = thread_current_cwd();
     char path[FILE_PATH_MAX];
     int rc;
@@ -720,6 +770,7 @@ int sys_file_mkdir(uint64_t upath) {
 }
 
 int sys_file_unlink(uint64_t upath) {
+    STORAGE_LOCKED();
     uint32_t cwd = thread_current_cwd();
     char path[FILE_PATH_MAX];
     int rc;
@@ -745,16 +796,21 @@ int sys_file_unlink(uint64_t upath) {
     if ((uint32_t)r == cwd) return E_INVALID_ARGS;         /* not your own cwd */
 
     /* Still open somewhere: the name goes now, the entry at the last
-       close (see "unlinked while open" above). */
-    if (entry_open((uint32_t)r)) {
+       close (see "unlinked while open" above). The look and the marking
+       under files_lock, which a last close takes too (see the locks). */
+    uint32_t fl = spin_lock(&files_lock);
+    int open = entry_open((uint32_t)r);
+    if (open) {
         struct of_match m = { (uint32_t)r, 0, 1 };
         ocache_walk(&of_cache, of_match_fn, &m);
-        return E_OK;
     }
+    spin_unlock(&files_lock, fl);
+    if (open) return E_OK;
     return (cxfs_delete_entry((uint32_t)r) == 0) ? E_OK : E_IO;
 }
 
 int sys_file_rename(uint64_t upath, uint64_t unewname) {
+    STORAGE_LOCKED();
     char path[FILE_PATH_MAX];
     char newname[FILE_NAME_MAX];
     int rc;
@@ -780,6 +836,7 @@ int sys_file_rename(uint64_t upath, uint64_t unewname) {
 }
 
 int sys_file_chdir(uint64_t upath) {
+    STORAGE_LOCKED();
     char path[FILE_PATH_MAX];
     int rc;
     if ((rc = fs_enter()) < 0) return rc;
@@ -794,6 +851,7 @@ int sys_file_chdir(uint64_t upath) {
 }
 
 int sys_file_getcwd(uint64_t buf, uint64_t cap) {
+    STORAGE_LOCKED();
     char path[FILE_PATH_MAX];
     int rc;
     if ((rc = fs_enter()) < 0) return rc;
@@ -817,6 +875,7 @@ int sys_file_getcwd(uint64_t buf, uint64_t cap) {
  * point; a caller told a write is durable when it is not is worse off
  * than one told nothing. */
 int sys_file_sync(void) {
+    STORAGE_LOCKED();
     int rc = fs_enter();
     if (rc < 0) return rc;
     return (cxfs_sync() == 0) ? E_OK : E_IO;
@@ -825,29 +884,48 @@ int sys_file_sync(void) {
 /* Without FLOCK_WAIT a conflict is E_BUSY at once. With it the thread
    sleeps until a release, then looks again, as Serenity's FlockBlocker
    does - unless waiting could never end, which is E_DEADLOCK. A
-   conversion that conflicts leaves the lock already held unchanged. */
+   conversion that conflicts leaves the lock already held unchanged.
+
+   Without the storage lock (the caller gave it back): a wait blocks. The
+   look and the block are kwait's pair (object/kwait.c): in the list and
+   BLOCKED before files_lock goes, so a release on another CPU from then on
+   finds this thread and wakes it, even before it has switched away. */
 static int file_lock(struct open_file *f, uint64_t start, uint64_t len, uint32_t flags) {
     uint32_t mode = flags & ~(uint32_t)FLOCK_WAIT;
     if (mode != FLOCK_SHARED && mode != FLOCK_EXCLUSIVE) return E_INVALID_ARGS;
     if (start > FILE_OFF_MAX || len > FILE_OFF_MAX) return E_OUT_OF_RANGE;
 
     int me = thread_current_id();
+    int rc = E_OK;
+    uint32_t fl = spin_lock(&files_lock);
     while (lock_conflict(f, f->entry, start, len, mode, locks)) {
-        if (!(flags & FLOCK_WAIT)) return E_BUSY;
+        if (!(flags & FLOCK_WAIT)) { rc = E_BUSY; break; }
         for (struct lock_wait *w = waiters; w; w = w->next) w->seen = 0;
-        if (lock_cycle(me, f, f->entry, start, len, mode)) return E_DEADLOCK;
+        if (lock_cycle(me, f, f->entry, start, len, mode)) { rc = E_DEADLOCK; break; }
 
         struct lock_wait self = { .tid = me, .of = f, .entry = f->entry,
                                   .start = start, .len = len, .mode = mode,
                                   .next = waiters };
         waiters = &self;
-        thread_wait();
+        thread_block_prepare(0);
+        spin_unlock(&files_lock, fl);
+        thread_block_finish();
+        fl = spin_lock(&files_lock);
         struct lock_wait **pp = &waiters;
         while (*pp != &self) pp = &(*pp)->next;
         *pp = self.next;
-        if (thread_killed()) return E_CANCELED;
+        if (thread_killed()) { rc = E_CANCELED; break; }
     }
-    return lock_apply(f, start, len, mode);
+    if (rc == E_OK) rc = lock_apply(f, start, len, mode);
+    spin_unlock(&files_lock, fl);
+    return rc;
+}
+
+/* The storage lock only for the way in (the mount, the burials, the
+   handle): the lock itself is files_lock's, and its wait blocks. */
+static int file_enter_unlocked(int32_t h, struct open_file **f, uint32_t *rights) {
+    STORAGE_LOCKED();
+    return file_enter(h, f, rights);
 }
 
 /* The range and mode arrive in a struct file_lock_args: two u64s and a mode
@@ -855,7 +933,7 @@ static int file_lock(struct open_file *f, uint64_t start, uint64_t len, uint32_t
 int sys_file_lock(int32_t h, uint64_t args) {
     struct open_file *f;
     uint32_t rights;
-    int rc = file_enter(h, &f, &rights);
+    int rc = file_enter_unlocked(h, &f, &rights);
     if (rc < 0) return rc;
     struct file_lock_args a;
     if (user_copy_in(&a, args, sizeof a) != 0) return file_leave(f, E_BAD_ADDRESS);
@@ -866,9 +944,11 @@ int sys_file_lock(int32_t h, uint64_t args) {
 int sys_file_unlock(int32_t h, uint64_t start, uint64_t len) {
     struct open_file *f;
     uint32_t rights;
-    int rc = file_enter(h, &f, &rights);
+    int rc = file_enter_unlocked(h, &f, &rights);
     if (rc < 0) return rc;
     if (start > FILE_OFF_MAX || len > FILE_OFF_MAX) return file_leave(f, E_OUT_OF_RANGE);
+    uint32_t fl = spin_lock(&files_lock);
     lock_drop(f, start, len);
+    spin_unlock(&files_lock, fl);
     return file_leave(f, E_OK);
 }

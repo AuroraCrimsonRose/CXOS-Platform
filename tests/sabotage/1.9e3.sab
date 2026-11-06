@@ -1,0 +1,118 @@
+# Phase 1.9e3's sabotages, run by `cxk test sabotage`.
+# Each must turn red exactly the self-tests named, at the reason named.
+# Format: docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage".
+# The verification boot's four CPUs (BootVerifier.X86_64Smp) are what the
+# tests of another CPU kept out need. A group's sabotages land in different
+# tests; one that unlocks a layer the APs now reap through boots alone, as
+# its races could redden what they reach.
+# By hand, not here: the crash path's storage_break and log_break (a panic
+# while another CPU holds either: no boot test panics on purpose); rspin's
+# panic on a lock given back by a CPU that does not hold it; of_destroy
+# reading doomed outside files_lock (the unlink-against-last-close race,
+# which no test orders yet). The commit says what each did.
+
+# ---- the storage lock (disk.c, cxfs.c) ----
+
+[cxfs-unlocked]
+# CXFS's entry points no longer take the storage lock
+expect = the storage lock keeps another CPU out, recursive @ storage lock: step 1
+group = solo-storage
+edit = kernel/drivers/storage/filesys/cxfs.c
+<<<
+#define LOCKED() STORAGE_LOCKED()
+===
+#define LOCKED() (void)0
+>>>
+
+# ---- the log lock (console.c, logging.c, syslog.c) ----
+
+[ring-unlocked]
+# a record goes into the system log's ring without the log lock
+expect = the log lock keeps another CPU out; the ring whole @ log lock: step 1
+group = solo-log
+edit = kernel/lib/string/syslog.c
+<<<
+void slog_record(const char *system, const char *subsystem, log_sev_t sev, const char *event) {
+    LOG_LOCKED();
+===
+void slog_record(const char *system, const char *subsystem, log_sev_t sev, const char *event) {
+>>>
+
+# ---- sysfile's files_lock ----
+
+[waiters-unlocked]
+# the lock waiters are counted without files_lock
+expect = sysfile's files lock keeps another CPU out @ files lock: step 1
+group = a
+edit = kernel/cpu/sysfile.c
+<<<
+    int n = 0;
+    uint32_t f = spin_lock(&files_lock);
+    for (struct lock_wait *w = waiters; w; w = w->next) n++;
+    spin_unlock(&files_lock, f);
+    return n;
+===
+    int n = 0;
+    for (struct lock_wait *w = waiters; w; w = w->next) n++;
+    return n;
+>>>
+
+# ---- the CMOS lock (rtc.c) ----
+
+[cmos-unlocked]
+# the RTC is read without the CMOS lock
+expect = the wall clock's CMOS reads take their lock @ cmos lock: step 1
+group = a
+edit = kernel/platform/pc/rtc.c
+<<<
+    uint32_t f = spin_lock(&cmos_lock);
+===
+    uint32_t f = 0;
+    (void)cmos_lock;
+>>>
+edit = kernel/platform/pc/rtc.c
+<<<
+    spin_unlock(&cmos_lock, f);
+===
+    (void)f;
+>>>
+
+# ---- the reaper on every CPU (sched.c) ----
+
+[reap-boot-only]
+# the reaper runs on the boot CPU alone again, as before 1.9e3
+expect = the APs reap exited threads, the boot CPU not needed @ reap on ap: step 2
+group = a
+edit = kernel/cpu/sched.c
+<<<
+static void sched_reap(void) {
+    for (;;) {
+===
+static void sched_reap(void) {
+    if (cpu_this() != &cpu_boot) return;
+    for (;;) {
+>>>
+
+# ---- the TSC's agreement (smp.c, timer.c) ----
+
+[tsc-never-set-right]
+# an AP found out is never given the offset
+expect = every CPU's TSC agrees, and one put out is set right @ smp tsc: step 3
+group = a
+edit = kernel/arch/x86_64/smp.c
+<<<
+        if (r & TSC_ADJUST) me->tsc_adjust += meet.adjust;
+===
+        if (r & TSC_ADJUST) (void)me;
+>>>
+
+[clock-ignores-offset]
+# the clock reads the raw TSC, the offset never taken off
+expect = every CPU's TSC agrees, and one put out is set right @ smp tsc: step 10
+group = b
+edit = kernel/drivers/char/timer.c
+<<<
+    uint64_t c = arch_cycles64() - (uint64_t)cpu_this()->tsc_adjust;
+===
+    uint64_t c = arch_cycles64();
+>>>

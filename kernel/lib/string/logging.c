@@ -89,6 +89,7 @@ static void prefix(const char *tag, log_sev_t sev, int on_screen) {
 }
 
 void klog(const char *tag, log_sev_t sev, const char *msg) {
+    LOG_LOCKED();
     prefix(tag, sev, !quiet || sev >= SEV_ERR);
     if (msg) out_s(msg, LOG_MSG_COL);
     out_nl();
@@ -98,6 +99,7 @@ void klog(const char *tag, log_sev_t sev, const char *msg) {
 /* klog without the screen, whatever the quiet state: a background process's
    line, which was never meant to be seen there. */
 void klog_offscreen(const char *tag, log_sev_t sev, const char *msg) {
+    LOG_LOCKED();
     prefix(tag, sev, 0);
     if (msg) out_s(msg, LOG_MSG_COL);
     out_nl();
@@ -107,6 +109,7 @@ void klog_offscreen(const char *tag, log_sev_t sev, const char *msg) {
 void klog_u32(const char *tag, log_sev_t sev,
               const char *label, uint32_t value, uint8_t value_attr,
               const char *suffix) {
+    LOG_LOCKED();
     prefix(tag, sev, !quiet || sev >= SEV_ERR);
     if (label)  out_s(label, LOG_MSG_COL);
     out_u32(value, value_attr);
@@ -157,6 +160,7 @@ static void child_record(const char *a, int has_value, uint32_t value, const cha
 }
 
 void klog_child(const char *msg) {
+    LOG_LOCKED();
     child_indent();
     if (msg) out_s(msg, LOG_MSG_COL);
     out_nl();
@@ -165,6 +169,7 @@ void klog_child(const char *msg) {
 
 void klog_child_u32(const char *label, uint32_t value, uint8_t value_attr,
                     const char *suffix) {
+    LOG_LOCKED();
     child_indent();
     if (label)  out_s(label, LOG_MSG_COL);
     out_u32(value, value_attr);

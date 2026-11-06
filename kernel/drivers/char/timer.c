@@ -54,9 +54,15 @@ static volatile uint64_t ev_count = 0;  /* expiry runs: timer_events */
 static uint64_t halt_due = TIMER_NEVER; /* timer_halt_until's */
 static int      idling = 0;             /* in timer_idle: no time slice to end */
 
+/* This CPU's TSC less its tsc_adjust (1.9e3, cpu/percpu.h): the boot CPU's
+   time on every CPU. Interrupts off between the two, so no move between
+   reading one CPU's offset and another's TSC. */
 uint64_t timer_now_ns(void) {
     if (!clock_tsc) return ticks64 * TIMER_NS_PER_TICK;
-    return ns_base + clock_scale(arch_cycles64() - tsc_base, ns_per_cycle);
+    uint32_t f = arch_irq_save();
+    uint64_t c = arch_cycles64() - (uint64_t)cpu_this()->tsc_adjust;
+    arch_irq_restore(f);
+    return ns_base + clock_scale(c - tsc_base, ns_per_cycle);
 }
 
 uint32_t timer_ticks(void) {

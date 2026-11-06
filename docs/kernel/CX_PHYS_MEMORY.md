@@ -92,8 +92,9 @@ lock:
 
 Not allocators, so left: the PCI, USB and disk tables (filled at boot),
 the ARP cache and the syslog ring (caches and rings that overwrite).
-Left for 1.9e: the file system layer as a whole, and `sysfile`'s graveyard
-and lock waiters, which take no lock yet.
+The file system layer as a whole, and `sysfile`'s graveyard and lock
+waiters, left for 1.9e, are locked since 1.9e3 (the storage lock and
+`files_lock`, `kernel/CX_SMP.md` §4b).
 
 ## 5. Enforced by the build
 

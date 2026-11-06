@@ -21,6 +21,15 @@
 #include "format.h"
 #include "serial.h"
 #include "arch/cpu_ops.h"   /* arch_cycles64 */
+#include "sync/rspin.h"
+
+/* The log lock (console.h). */
+static struct rspin log_rspin = RSPIN_INIT(LR_LOG);
+
+void log_lock(void)   { rspin_lock(&log_rspin); }
+void log_unlock(void) { rspin_unlock(&log_rspin); }
+int  log_held(void)   { return rspin_held(&log_rspin); }
+void log_break(void)  { rspin_break(&log_rspin); }
 
 #define TAB_WIDTH 4
 
@@ -115,6 +124,7 @@ void console_init(void) {
    (x0,y0,w,h). Safe to call only after fb_init() succeeded; otherwise a no-op
    (stays in VGA text mode). Clears the viewport and homes the cursor. */
 void console_use_fb(uint32_t x0, uint32_t y0, uint32_t w, uint32_t h) {
+    LOG_LOCKED();
     if (!fb_active()) return;
     use_fb = 1;
     vp_x = x0; vp_y = y0; vp_w = w; vp_h = h;
@@ -139,6 +149,7 @@ void console_use_fb(uint32_t x0, uint32_t y0, uint32_t w, uint32_t h) {
  * Whoever installs a font calls this. xfnt.c does not, on purpose: the font
  * layer has no business depending on a console. */
 void console_font_changed(void) {
+    LOG_LOCKED();
     if (!use_fb) return;
 
     uint32_t cw = fb_font_width();
@@ -161,15 +172,17 @@ int console_cols(void) { return cols; }
 int console_rows(void) { return rows; }
 
 void console_clear(void) {
+    LOG_LOCKED();
     be_clear(attr);
     cx = 0; cy = 0;
     be_set_cursor(0, 0);
 }
 
-void console_set_color(uint8_t a) { attr = a; }
+void console_set_color(uint8_t a) { LOG_LOCKED(); attr = a; }
 uint8_t console_get_color(void)   { return attr; }
 
 void console_newline(void) {
+    LOG_LOCKED();
     /* The serial tee lives here as well as in console_putc because the loggers
        (lib/string/logging.c, syslog.c) call console_newline() directly rather
        than printing '\n'. Teeing only in console_putc would run every log line
@@ -185,6 +198,7 @@ void console_newline(void) {
 }
 
 void console_putc(char c) {
+    LOG_LOCKED();
     if (c == '\n') { console_newline(); return; }   /* tees there, not here */
 
     serial_putc(c);
@@ -215,10 +229,12 @@ void console_putc(char c) {
 }
 
 void console_puts(const char *s) {
+    LOG_LOCKED();
     while (*s) console_putc(*s++);
 }
 
 void console_puts_color(const char *s, uint8_t a) {
+    LOG_LOCKED();
     uint8_t save = attr;
     attr = a;
     console_puts(s);
@@ -226,18 +242,21 @@ void console_puts_color(const char *s, uint8_t a) {
 }
 
 void console_put_u32(uint32_t v) {
+    LOG_LOCKED();
     char buf[11];
     fmt_u32(buf, v);
     console_puts(buf);
 }
 
 void console_put_i32(int32_t v) {
+    LOG_LOCKED();
     char buf[12];
     fmt_i32(buf, v);
     console_puts(buf);
 }
 
 void console_put_hex(uint32_t v, int width) {
+    LOG_LOCKED();
     char buf[9];
     if (width > 8) width = 8;     /* u32 is 8 hex digits max; guard buf[9] */
     console_puts("0x");
@@ -247,30 +266,37 @@ void console_put_hex(uint32_t v, int width) {
 
 /* ---- colored-number helpers (value in its own color, current restored) ---- */
 void console_put_u32_color(uint32_t v, uint8_t a) {
+    LOG_LOCKED();
     uint8_t save = attr; attr = a; console_put_u32(v); attr = save;
 }
 void console_put_i32_color(int32_t v, uint8_t a) {
+    LOG_LOCKED();
     uint8_t save = attr; attr = a; console_put_i32(v); attr = save;
 }
 void console_put_hex_color(uint32_t v, int width, uint8_t a) {
+    LOG_LOCKED();
     uint8_t save = attr; attr = a; console_put_hex(v, width); attr = save;
 }
 
 /* ---- label + value helpers (label in current color, value colored) ---- */
 void console_field_u32(const char *label, uint32_t v, uint8_t value_attr) {
+    LOG_LOCKED();
     console_puts(label);
     console_put_u32_color(v, value_attr);
 }
 void console_field_i32(const char *label, int32_t v, uint8_t value_attr) {
+    LOG_LOCKED();
     console_puts(label);
     console_put_i32_color(v, value_attr);
 }
 void console_field_hex(const char *label, uint32_t v, int width, uint8_t value_attr) {
+    LOG_LOCKED();
     console_puts(label);
     console_put_hex_color(v, width, value_attr);
 }
 
 void console_set_cursor(int x, int y) {
+    LOG_LOCKED();
     if (x < 0) x = 0;
     if (x >= cols) x = cols - 1;
     if (y < 0) y = 0;

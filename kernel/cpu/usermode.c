@@ -142,7 +142,18 @@ int syscall_console_write(uint64_t buf, uint64_t len64) {
        services) writes to the log, so it never prints over the shell. */
     struct proc *p = thread_proc(thread_current_id());
     if (p && p->background) { proc_out_write(p, s, len); return (int)len; }
-    for (uint32_t i = 0; i < len; i++) console_putc(s[i]);
+    /* Each piece copied in first, then written under the log lock (console.h)
+       so no other CPU's line lands inside it: a fault on the user's page
+       takes locks ranked before the log's. */
+    char piece[256];
+    for (uint32_t done = 0; done < len; ) {
+        uint32_t n = len - done < sizeof piece ? len - done : (uint32_t)sizeof piece;
+        if (user_copy_in(piece, buf + done, n) != 0) return done ? (int)done : -1;
+        log_lock();
+        for (uint32_t i = 0; i < n; i++) console_putc(piece[i]);
+        log_unlock();
+        done += n;
+    }
     return (int)len;
 }
 
@@ -151,15 +162,22 @@ int syscall_log_read(uint32_t i, uint64_t e) {
        background, and what the kernel said about all of them. */
     if (!(thread_current_caps() & GRANT_CONSOLE)) return E_ACCESS_DENIED;
     if (!user_ptr_writable(e, sizeof(struct log_entry))) return E_BAD_ADDRESS;
+    /* Copied out of the ring under the log lock (console.h), which another
+       CPU's line takes to write over the oldest entry; to user memory after
+       it, since a fault there takes locks ranked before it. */
+    struct log_entry out = { 0 };
+    log_lock();
     const struct slog_entry *le = slog_get(i);
+    if (le) {
+        out.seq = le->seq;
+        out.sev = le->sev;
+        for (int k = 0; k < LOG_SYSTEM_W; k++) out.system[k]    = le->system[k];
+        for (int k = 0; k < LOG_SYSTEM_W; k++) out.subsystem[k] = le->subsystem[k];
+        for (int k = 0; k < LOG_EVENT_W;  k++) out.event[k]     = le->event[k];
+    }
+    log_unlock();
     if (!le) return 0;
-    struct log_entry *out = (struct log_entry *)user_ptr(e);
-    out->seq = le->seq;
-    out->sev = le->sev;
-    for (int k = 0; k < LOG_SYSTEM_W; k++) out->system[k]    = le->system[k];
-    for (int k = 0; k < LOG_SYSTEM_W; k++) out->subsystem[k] = le->subsystem[k];
-    for (int k = 0; k < LOG_EVENT_W;  k++) out->event[k]     = le->event[k];
-    return 1;
+    return user_copy_out(e, &out, sizeof out) == 0 ? 1 : E_BAD_ADDRESS;
 }
 
 int syscall_getpid(void) { return thread_current_pid(); }

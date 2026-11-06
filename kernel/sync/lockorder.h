@@ -38,6 +38,7 @@
    pairs each place rests on, read off a boot. */
 enum lock_rank {
     LR_NONE = 0,       /* never valid: a lock made without a rank */
+    LR_STORAGE,        /* storage/hardware/disk.c, CXFS and the disks (1.9e3) */
     LR_IPC,            /* cpu/ipc.c ipc_lock          > htab, kwait */
     LR_FUTEX,          /* cpu/futex.c futex_lock      > vmregion, pids */
     LR_HTAB,           /* object/htab.c, one per handle table */
@@ -46,6 +47,7 @@ enum lock_rank {
     LR_KMEM,           /* object/kmem.c, per object   > pagedb */
     LR_KTIMER,         /* object/ktimer.c armed_lock  > kwait */
     LR_KWAIT,          /* object/kwait.c wait_lock     > sched */
+    LR_SYSFILE,        /* cpu/sysfile.c files_lock    > sched, ocache (1.9e3) */
     LR_SCHED,          /* cpu/sched.c sched_lock, held across a switch */
     LR_RANDOM,         /* drivers/char/random.c */
     LR_HEAP,           /* memman/heap.c heap_lock     > pagedb */
@@ -54,6 +56,9 @@ enum lock_rank {
     LR_DMA,            /* memman/dma.c */
     LR_KSTACK,         /* memman/kstack.c slots_lock: nothing under it */
     LR_PAGEDB,         /* memman/pagedb.c */
+    LR_CMOS,           /* platform/pc/rtc.c: the CMOS index and data ports (1.9e3) */
+    LR_LOG,            /* drivers/char/console.c: the screen, its serial tee
+                          and the system log's ring, under any lock (1.9e3) */
     LR_COUNT
 };
 

@@ -1048,7 +1048,7 @@ Independent of the order above, and small enough to land whenever convenient:
      halt for a wake, a reaper that checks a thread is off every CPU, the
      lockless per-thread reads 1.9b left); **1.9e3** what 1.9c left unlocked
      (the file system layer, `sysfile`'s graveyard and waiters) and the
-     TSC's agreement between CPUs.
+     TSC's agreement between CPUs (itself split: 1.9e4 below).
    - **1.9e1 (2026-11-06), done:** every change to a present entry goes
      through one funnel (`entry_changed`, `paging.c`): a local `invlpg`,
      then `smp_tlb_shootdown` (`arch/x86_64/smp.c`). A kernel-half change
@@ -1109,6 +1109,40 @@ Independent of the order above, and small enough to land whenever convenient:
      by the handoff. Self-tests 224
      (4 CPUs, 1 CPU, `--cpu max`). Sabotages: `tests/sabotage/1.9e2.sab`,
      8 of 8. No ABI change.
+   - **1.9e3 split** (2026-11-06): run with a process's threads free to
+     move and the reaper on every CPU, the boot failed 11 tests, and the
+     cause under most of them was not a lock: a syscall checks a user
+     range and then reads it directly (148 places), and a sibling thread
+     on another CPU can unmap it between the two. **1.9e3** keeps the
+     locks, the reaper on every CPU and the TSC's agreement; **1.9e4**
+     moves every user read and write to a recoverable copy, then lets a
+     process's threads leave the boot CPU, with those 11 tests as its
+     list (most assume one CPU's ordering: yield loops, a helper on the
+     same CPU).
+   - **1.9e3 (2026-11-06), done:** the storage lock (`disk.h`, first in the
+     order, CPU-recursive by `sync/rspin.h`) over every CXFS entry point,
+     disk transfer, crash-log save and file syscall; `sysfile`'s
+     `files_lock` over the graveyard, the advisory locks and their waiters
+     (blocking as `kobj_wait` does) and unlink's open check, read with the
+     last close's under it now; the log lock (`console.h`, last,
+     CPU-recursive) over the console, its serial tee and the ring, with
+     `SYS_LOG_READ` and `console_write` copying outside it; the CMOS lock;
+     both recursive locks broken by a panic. The reaper on every CPU. The
+     TSC's agreement: each AP measured against the boot CPU by 64 round
+     trips as it parks (XNU's two-sided meeting, its 4096-cycle margin)
+     and set right by a per-CPU offset the clock takes off (not Haiku's
+     TSC write, which QEMU's TCG ignored). Tests (`ktest_arch.c`): each
+     lock held on the boot CPU keeps an AP's thread in its call and lets
+     it through after; the ring whole under two CPUs; the APs reap with
+     the boot CPU spinning; an AP's TSC put out both ways is found and set
+     right, and its clock moves with its offset. Self-tests 230
+     (4 CPUs, 1 CPU, `--cpu max`). Sabotages: `tests/sabotage/1.9e3.sab`,
+     7 of 7. No ABI change.
+   - **1.9e4**: every user read and write through a recoverable copy
+     (`user_copy_in`/`out`, which `user_copy_bytes`'s fault recovery
+     covers), the 148 direct reads after a check gone; then a process's
+     threads made for any CPU (`THREAD_ON_BOOT_CPU` gone), and the 11
+     tests that assumed one CPU made to hold on four.
 10. A documentation pass: the README and `safety/CX_SAFETY.md` §1 brought
     up to the branch as it stands.
 

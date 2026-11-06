@@ -180,6 +180,32 @@ const struct disk *disk_get(unsigned i);            /* by table index */
 const struct disk *disk_find_by_id(uint8_t id);     /* by hex id */
 const struct disk *disk_find_by_name(const char *name);
 
+/* ---- the storage lock (1.9e3) ----------------------------------------------
+ * One lock for the disks, their drivers and CXFS above them: a controller's
+ * registers and buffers, CXFS's block buffers and its `vol`, and a file
+ * syscall's look-then-change all count on being the only one inside. Every
+ * disk_read, disk_write and disk_flush takes it, every public CXFS call
+ * takes it, and the file syscalls hold it across the whole call. It is a
+ * CPU-recursive spinlock (sync/rspin.h): those calls call each other, and
+ * nothing under it blocks (the drivers poll). Outermost in the lock order
+ * (LR_STORAGE): a CXFS read copies into user memory, whose fault takes the
+ * address space's lock, and a close goes through the handle table.
+ * Never held across a block: SYS_FILE_LOCK's wait gives it back first.
+ * One per volume and one per controller wait for the VFS (Phase 3).
+ * storage_break is the crash path's: the record goes to disk whatever the
+ * lock's state. */
+void storage_lock(void);
+void storage_unlock(void);
+int  storage_held(void);     /* by this CPU */
+void storage_break(void);
+
+/* The storage lock for the rest of the enclosing block, given back on every
+   way out of it (clang's cleanup attribute), so no early return can leave it
+   held. */
+static inline void storage_scope_end(int *unused) { (void)unused; storage_unlock(); }
+#define STORAGE_LOCKED() \
+    __attribute__((cleanup(storage_scope_end), unused)) int storage_scope_ = (storage_lock(), 0)
+
 /* unified block I/O - dispatches to the owning driver. returns a disk_err
    code (DISK_OK on success, negative DISK_ERR_* on failure). */
 int disk_read (uint8_t id, uint64_t lba, uint32_t count, void *buf);

@@ -6,7 +6,10 @@
 > local APIC (1.9d); a changed mapping is shot down on every CPU that could
 > hold it (§4, 1.9e1); and every CPU runs threads, from one scheduler, each
 > with its own idle thread (§4a, 1.9e2)** (`planning/CX_ROADMAP.md`, Phase 1
-> step 9). 1.9e3 locks what lets a process's threads leave the boot CPU.
+> step 9); and the file system layer, logging and the CMOS clock are
+> locked, the reaper runs on every CPU and the TSC agrees (§4b, 1.9e3).
+> 1.9e4 moves user memory to recoverable copies, and then a process's
+> threads leave the boot CPU.
 
 The rig is an FX-8350: eight cores, of which the kernel used one until
 1.9d started the other seven and left them idle, so that 1.9e changed the
@@ -233,12 +236,13 @@ CPU even if that one is halted.
 **Where threads run.** A thread is made for the boot CPU, as before
 (`THREAD_ON_BOOT_CPU`); `thread_create_on` makes one for a mask, and
 `thread_set_affinity` changes it. Only the self-tests ask for an AP so far:
-the file system layer and logging are not locked until 1.9e3, so a
-process's threads stay on the boot CPU until then.
+the file system layer and logging are locked since 1.9e3 (§4b), but a
+syscall still reads user memory directly after checking it (§4b), so a
+process's threads stay on the boot CPU until 1.9e4.
 
-**The reaper** frees only a thread on no CPU, and runs on the boot CPU
-only, since a free can end a process and close its handles through the
-file system layer (1.9e3). The `on_cpu` check is also implied by the
+**The reaper** frees only a thread on no CPU, on every CPU since 1.9e3: a
+free can end a process and close its handles through the file system
+layer, which is locked now (§4b). The `on_cpu` check is also implied by the
 handoff (an exited thread's CPU clears it in its last switch, before the
 lock comes back), and is kept as the reaper's own rule.
 
@@ -260,6 +264,63 @@ requests, as `spin_lock`'s spin already did.
 **Reading a thread.** A thread finds its own record through `struct cpu`'s
 `cur` (one GS load); another's only under the lock (§2a of the lock order:
 the id table can grow, and free its old array, on another CPU).
+
+## 4b. The locks of 1.9e3, and the TSC
+
+**What 1.9c left one CPU's.** The file system layer (CXFS, `sysfile`'s
+open files, graveyard and advisory locks) and logging (the console, its
+serial tee, the system log's ring) were serialized by running only on the
+boot CPU with interrupts off. Each now has a lock (`CX_LOCK_ORDER.md`):
+
+- **The storage lock** (`disk.h`, `LR_STORAGE`, first in the order): every
+  CXFS entry point, every `disk_read`/`write`/`flush`, the crash log's
+  saves, and each file syscall's body. CPU-recursive (`sync/rspin.h`): CXFS
+  calls CXFS. A spinlock, as everything under it busy-polls the disk: a
+  syscall's body already runs with interrupts off (FMASK), so holding one
+  over a transfer costs no more than 1.9c did.
+- **`files_lock`** (`sysfile.c`, `LR_SYSFILE`): the graveyard, the lock
+  list and its waiters, and unlink's open check with its marking, so a
+  last close on another CPU cannot slip between them. A waiter blocks as
+  `kobj_wait` does: prepared under the lock, then given back, then blocked,
+  so no release between is lost.
+- **The log lock** (`console.h`, `LR_LOG`, last): every console write and
+  every line, its ring record with it, so no CPU's line cuts another's.
+  CPU-recursive. `SYS_LOG_READ` copies out of a local copy and
+  `console_write` copies in 256 bytes at a time, so no user copy runs
+  under it. A line and its child lines are separate calls: another CPU's
+  line may fall between them (a caller that minds holds `log_lock`).
+- **The CMOS lock** (`rtc.c`, `LR_CMOS`): the index and data ports are one
+  read in two steps.
+
+The crash path breaks the two recursive locks (`panic_begin`): it runs
+through them unlocked rather than wait for a CPU that may never give one
+back.
+
+**The reaper** runs on every CPU, in each idle thread and after each
+switch (§4a).
+
+**The TSC's agreement.** `timer_now_ns` reads the TSC wherever it runs,
+against a base the boot CPU took. XNU (`osfmk/i386/mp.c`, `start_cpu`)
+measures each AP at a two-sided barrier and panics or logs past
+`TSC_sync_margin`; Haiku (`arch_cpu.cpp`, `arch_cpu_preboot_init_percpu`)
+brings the CPUs to one rendezvous and writes 0 to each TSC. Here each AP,
+as it parks, meets the boot CPU for 64 round trips: the boot CPU reads b0,
+asks, the AP reads its TSC, the boot CPU reads b1; the AP's offset is its
+reading less the midpoint, give or take half the shortest trip. Past that
+and XNU's margin (4096 cycles) the offset goes into the AP's `tsc_adjust`,
+which the clock takes off every reading there, and it is measured again.
+Not a TSC write: QEMU's TCG ignored one in this step's test, and the
+FX-8350 has no `IA32_TSC_ADJUST`. The boot log says how many APs were set
+right.
+
+**Why a process's threads still stay on the boot CPU.** A syscall checks a
+user range (`user_ptr_readable` and the rest) and then reads it directly:
+148 such reads, most in `usermode.c`. A sibling thread on another CPU can
+unmap the range between the check and the read, and the kernel faults;
+only `user_copy_bytes` recovers from a fault. 1.9e4 moves them to
+recoverable copies. Run with every thread free to move, this step's boot
+failed 11 tests, most of them tests that assume one CPU's ordering
+(yield loops): 1.9e4's list.
 
 ## 5. Tests
 
@@ -331,12 +392,28 @@ cannot redden the tests after it:
   by the other (the one test of the `on_cpu` check, §4a);
 - the getters on another thread take the scheduler's lock (ktest_hooks).
 
+1.9e3 (`ktest_arch.c`, four CPUs):
+
+- the storage lock, the log lock and `files_lock`, each held on the boot
+  CPU, keep an AP's thread in the call that takes it for 30 ms, and let it
+  through once given back; the storage lock is recursive and only its
+  outer take ordered; the CMOS lock is taken by a wall-clock read;
+- the system log's ring with two CPUs recording 200 each at once: every
+  record whole and numbered next, each CPU's in its order;
+- the APs reap: a thread ends on AP 1 and is freed while the boot CPU
+  spins with interrupts off, which reaps nothing;
+- every AP's TSC agrees with the boot CPU's, as bring-up left it and at a
+  meeting now; an AP's put 10^10 cycles ahead, then half the count behind,
+  is found out (the sign and at least half the size) and set right; its
+  clock then reads between two of the boot CPU's, and with its offset moved
+  by a second reads a second ahead.
+
 ## 6. Not done here
 
 - A run queue per CPU, and a balancer (§4a): when a profile says the
   scan costs (1.9f).
-- A process's threads on the APs, and the reaper on every CPU: once the
-  file system layer and logging are locked (1.9e3).
+- A process's threads on the APs: once user memory is read through
+  recoverable copies (1.9e4, §4b).
 - `thread_proc`'s process outlives the lock it was read under: a thread's
   process is held by the thread, so it holds for any caller that knows
   the thread lives, which is every caller today; nothing checks it.
@@ -353,6 +430,9 @@ cannot redden the tests after it:
 - The x2APIC: IDs past 0xFE are not started (none of the targets has one).
 - A CPU that fails to start is tested by nothing but the code's reading:
   QEMU and Hyper-V start every CPU they list.
-- The TSC's agreement between CPUs (XNU's `start_cpu` measures it): 1.9e3,
-  when time is read on more than one CPU. An AP's shootdown timeout reads
-  its own TSC, relative to itself, so it holds without the agreement.
+- The TSC measured once, at bring-up: a TSC that drifts later (not
+  invariant, or a CPU's slowed apart) is not caught. A recheck when the
+  rig shows one. An AP's shootdown timeout reads the clock, which agrees
+  now.
+- Untested: a TSC truly out at bring-up (QEMU's agree), so the bring-up
+  path's correction is the test's meeting run again.

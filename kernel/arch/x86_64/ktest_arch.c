@@ -55,6 +55,14 @@
 #include "object/ktimer.h"
 #include "object/kwait.h"
 #include "cxk_abi.h"            /* SIGNAL_TIMER_FIRED, E_TIMED_OUT */
+#include "disk.h"               /* the storage lock (1.9e3) */
+#include "console.h"            /* the log lock */
+#include "cxfs.h"
+#include "syslog.h"
+#include "sysfile.h"            /* files_lock */
+#include "platform/platform.h"  /* platform_wallclock: the CMOS lock */
+#include "format.h"
+#include "string.h"
 
 #define EFER_LME    (1ull << 8)
 #define EFER_LMA    (1ull << 10)
@@ -1572,6 +1580,64 @@ static int t_smp_ap_timer(void) {
     return 1;
 }
 
+/* The TSC agrees on every CPU (1.9e3): each AP as bring-up left it and at
+   a meeting now (steps 1, 2); then the last AP's is put out, ahead (3-5)
+   and behind (6-8), and the meeting finds it out and sets it right; after
+   which the clock it reads falls between two of the boot CPU's (9); its
+   clock moves with its offset (10); and the boot CPU and a CPU past the
+   last have no bring-up record (11). */
+#define TSC_TEST_MARGIN 4096u      /* arch/smp.h's */
+#define TSC_TEST_SLACK_NS 10000ull
+
+static int tsc_within(const struct smp_tsc *t) {
+    uint64_t a = (uint64_t)(t->after < 0 ? -t->after : t->after);
+    return a <= t->err + TSC_TEST_MARGIN;
+}
+
+static void ap_clock(void *arg) { *(uint64_t *)arg = timer_now_ns(); }
+
+#define TSC_TEST_SHIFT_NS 1000000000ull
+static void ap_clock_shifted(void *arg) {
+    int64_t cycles = (int64_t)timer_tsc_hz();   /* TSC_TEST_SHIFT_NS's */
+    cpu_this()->tsc_adjust -= cycles;
+    *(uint64_t *)arg = timer_now_ns();
+    cpu_this()->tsc_adjust += cycles;
+}
+
+static int t_smp_tsc(void) {
+    for (unsigned i = 1; i < cpu_count(); i++) {
+        const struct smp_tsc *s = smp_tsc_at_start(i);
+        if (!s || !tsc_within(s)) return smp_fail("smp tsc: step ", i, 1);
+        struct smp_tsc t;
+        if (smp_tsc_agree(i, 0, &t) != 0 || !tsc_within(&t)) return smp_fail("smp tsc: step ", i, 2);
+    }
+    if (cpu_count() < 2) return 1;
+    unsigned ap = cpu_count() - 1;
+    int64_t skew[2] = { 10000000000ll, -(int64_t)(arch_cycles64() / 2) };
+    for (int k = 0; k < 2; k++) {
+        struct smp_tsc t;
+        if (smp_tsc_agree(ap, skew[k], &t) != 0) return smp_fail("smp tsc: step ", ap, 3 + 3 * k);
+        int ahead = t.before > 0, want = skew[k] > 0;
+        uint64_t mag = (uint64_t)(t.before < 0 ? -t.before : t.before);
+        uint64_t half = (uint64_t)(skew[k] < 0 ? -skew[k] : skew[k]) / 2;
+        if (!t.adjusted || ahead != want || mag < half) return smp_fail("smp tsc: step ", ap, 4 + 3 * k);
+        if (!tsc_within(&t)) return smp_fail("smp tsc: step ", ap, 5 + 3 * k);
+    }
+    uint64_t on_ap = 0, b0 = timer_now_ns();
+    if (smp_call(ap, ap_clock, &on_ap, 2000000000ull)) return smp_fail("smp tsc: step ", ap, 9);
+    uint64_t b1 = timer_now_ns();
+    if (on_ap + TSC_TEST_SLACK_NS < b0 || on_ap > b1 + TSC_TEST_SLACK_NS) return smp_fail("smp tsc: step ", ap, 9);
+    /* The clock is what takes the offset off: with the AP's put a second's
+       cycles back, its clock reads a second or so ahead. */
+    b0 = timer_now_ns();
+    if (smp_call(ap, ap_clock_shifted, &on_ap, 2000000000ull)) return smp_fail("smp tsc: step ", ap, 10);
+    b1 = timer_now_ns();
+    if (on_ap < b1 + TSC_TEST_SHIFT_NS / 2 || on_ap > b0 + TSC_TEST_SHIFT_NS * 2)
+        return smp_fail("smp tsc: step ", ap, 10);
+    if (smp_tsc_at_start(0) || smp_tsc_at_start(cpu_count())) return smp_fail("smp tsc: step ", 0, 11);
+    return 1;
+}
+
 /* An idle AP is halted, in its idle thread (1.9e2): 50 ms with nothing
    asked wakes no AP, and one call wakes it once, by its one IPI. Calls the
    boot CPU, a CPU past the last and a missing function are refused: -1, as
@@ -2147,6 +2213,188 @@ static int t_sched_affinity_moves(void) {
     return 1;
 }
 
+/* ---- the locks of 1.9e3 ----
+ * Each held here, on the boot CPU, while a thread on an AP calls what takes
+ * it: the thread is still in the call after a while, and finishes once the
+ * lock is given back (the 1.5b2 rule). The boot CPU spins meanwhile
+ * (spin_until): a sleep would let the thread run here instead. */
+static volatile uint32_t lk_done, lk_go;
+static void lk_storage_call(void) { (void)cxfs_get_id(); }
+static void lk_log_call(void)     { slog_record("KTEST", "", SEV_INFO, "the log lock, from an AP"); }
+static void lk_files_call(void)   { (void)sysfile_lock_waiting(); }
+
+/* Made before the lock is held (making a thread takes locks ranked before
+   the log's), running before it is asked: 1 running, 2 through the call. */
+static void (*volatile lk_call)(void);
+static void lk_thread(void) {
+    lk_done = 1;
+    while (!lk_go) arch_cpu_relax();
+    lk_call();
+    lk_done = 2;
+}
+
+static void lk_storage_hold(void) { storage_lock(); }
+static void lk_storage_give(void) { storage_unlock(); }
+static void lk_log_hold(void)     { log_lock(); }
+static void lk_log_give(void)     { log_unlock(); }
+static uint32_t lk_files_flags;
+static void lk_files_hold(void)   { lk_files_flags = sysfile_test_hold(); }
+static void lk_files_give(void)   { sysfile_test_release(lk_files_flags); }
+
+/* 0, or the step that failed: 1 the thread got through the held lock, 2 it
+   never finished once the lock was given back, 3 it was never reaped. */
+static int lk_blocks(void (*hold)(void), void (*give)(void), void (*call)(void)) {
+    uint32_t n0 = sched_thread_count();
+    lk_done = lk_go = 0;
+    lk_call = call;
+    int id = thread_create_on("lock-ap", lk_thread, 1u << 1);
+    int step = id < 0 || !spin_until(&lk_done, 1, 1000) ? 2 : 0;
+    if (!step) {
+        hold();
+        lk_go = 1;
+        if (spin_until(&lk_done, 2, 30)) step = 1;
+        give();
+    }
+    lk_go = 1;
+    if (!step && !spin_until(&lk_done, 2, 1000)) step = 2;
+    if (!smp_reaped(n0) && !step) step = 3;
+    return step;
+}
+
+static int t_storage_lock(void) {
+    if (cpu_count() < 2) return 1;
+    int step = lk_blocks(lk_storage_hold, lk_storage_give, lk_storage_call);
+    if (step) return smp_fail("storage lock: step ", 1, step);
+    /* CPU-recursive: held through an inner take and give, until the outer */
+    storage_lock();
+    storage_lock();
+    int held2 = storage_held();
+    storage_unlock();
+    int held1 = storage_held();
+    storage_unlock();
+    if (!held2 || !held1 || storage_held()) return smp_fail("storage lock: step ", 0, 4);
+#if CXK_LOCK_CHECK
+    /* Only the outer take is in the lock order: under a test lock of its
+       rank, one CXFS call is one failure, the inner takes none. */
+    static spinlock_t lk_rank = SPINLOCK_INIT(LR_STORAGE);
+    uint32_t n = 0;
+    lockorder_test_arm();
+    uint32_t f = spin_lock(&lk_rank);
+    storage_lock();
+    (void)cxfs_get_id();
+    storage_unlock();
+    spin_unlock(&lk_rank, f);
+    uint32_t code = lockorder_test_disarm(&n);
+    if (code != LO_ORDER || n != 1) return smp_fail("storage lock: step ", 0, 5);
+#endif
+    return 1;
+}
+
+/* The log lock, then the ring with two CPUs recording at once: every
+   record whole, its sequence number the next, each CPU's in its order. */
+#define LK_LINES 200u
+static void lk_ring_line(char tag, uint32_t i) {
+    char ev[16];
+    ev[0] = tag;
+    ev[1 + fmt_u32(ev + 1, i)] = 0;
+    slog_record("KTEST", "ring", SEV_INFO, ev);
+}
+static void lk_ring_thread(void) {
+    while (!lk_go) arch_cpu_relax();
+    for (uint32_t i = 0; i < LK_LINES; i++) lk_ring_line('a', i);
+    lk_done = 1;
+}
+
+static int t_log_lock(void) {
+    if (cpu_count() < 2) return 1;
+    int step = lk_blocks(lk_log_hold, lk_log_give, lk_log_call);
+    if (step) return smp_fail("log lock: step ", 1, step);
+
+    uint32_t n0 = sched_thread_count(), t0 = slog_total();
+    lk_done = lk_go = 0;
+    if (thread_create_on("ring-ap", lk_ring_thread, 1u << 1) < 0) return smp_fail("log lock: step ", 1, 4);
+    lk_go = 1;
+    for (uint32_t i = 0; i < LK_LINES; i++) lk_ring_line('b', i);
+    int done = spin_until(&lk_done, 1, 2000);
+    if (!smp_reaped(n0) || !done) return smp_fail("log lock: step ", 1, 5);
+    if (slog_total() - t0 < 2 * LK_LINES) return smp_fail("log lock: step ", 0, 6);
+    /* Ours are the ring's, past t0, among whatever else was recorded */
+    uint32_t next[2] = { 0, 0 }, n = slog_count(), first = n - (slog_total() - t0);
+    for (uint32_t i = first; i < n; i++) {
+        const struct slog_entry *e = slog_get(i);
+        if (!e || e->seq != t0 + (i - first)) return smp_fail("log lock: step ", 0, 7);
+        if (strcmp(e->subsystem, "ring") != 0) continue;
+        int w = e->event[0] == 'a' ? 0 : e->event[0] == 'b' ? 1 : -1;
+        char want[16];
+        want[0] = e->event[0];
+        if (w >= 0) want[1 + fmt_u32(want + 1, next[w])] = 0;
+        if (w < 0 || strcmp(e->event, want) != 0 || strcmp(e->system, "KTEST") != 0)
+            return smp_fail("log lock: step ", 0, 8);
+        next[w]++;
+    }
+    if (next[0] != LK_LINES || next[1] != LK_LINES) return smp_fail("log lock: step ", 0, 9);
+    return 1;
+}
+
+static int t_files_lock(void) {
+    if (cpu_count() < 2) return 1;
+    int step = lk_blocks(lk_files_hold, lk_files_give, lk_files_call);
+    if (step) return smp_fail("files lock: step ", 1, step);
+    return 1;
+}
+
+/* The wall clock's CMOS reads take their lock: under a test lock of its
+   rank, one read is one failure. */
+static int t_cmos_lock(void) {
+#if CXK_LOCK_CHECK
+    static spinlock_t lk_rank = SPINLOCK_INIT(LR_CMOS);
+    struct datetime d;
+    uint32_t n = 0;
+    lockorder_test_arm();
+    uint32_t f = spin_lock(&lk_rank);
+    int rc = platform_wallclock(&d);
+    spin_unlock(&lk_rank, f);
+    uint32_t code = lockorder_test_disarm(&n);
+    if (rc != 0 || code != LO_ORDER || n != 1) return smp_fail("cmos lock: step ", 0, 1);
+    return 1;
+#else
+    return 0;   /* no checker to count with: fails, never skips */
+#endif
+}
+
+/* The APs reap (1.9e3): a thread ends on AP 1 while the boot CPU spins
+   with interrupts off, so it never switches and reaps nothing; an AP's idle
+   thread does, AP 1's or another woken meanwhile. */
+static uint32_t lk_ap_reaps(void) {
+    uint32_t n = 0;
+    for (unsigned i = 1; i < cpu_count(); i++) n += sched_reaped_on(i);
+    return n;
+}
+
+static void lk_short_thread(void) { lk_done = 1; }
+
+static int t_reap_on_ap(void) {
+    if (cpu_count() < 2) return 1;
+    uint32_t n0 = sched_thread_count(), r0 = lk_ap_reaps(), b0 = sched_reaped_on(0);
+    lk_done = 0;
+    uint32_t f = arch_irq_save();
+    int id = thread_create_on("reap-ap", lk_short_thread, 1u << 1);
+    int gone = 0;
+    uint64_t end = timer_now_ns() + 1000ull * 1000000u;
+    while (id >= 0 && timer_now_ns() < end && !(gone = sched_thread_count() == n0)) {
+        smp_serve();
+        arch_cpu_relax();
+    }
+    uint32_t b1 = sched_reaped_on(0);
+    arch_irq_restore(f);
+    int reaped = smp_reaped(n0);
+    if (id < 0 || !lk_done) return smp_fail("reap on ap: step ", 1, 1);
+    if (!gone) return smp_fail("reap on ap: step ", 1, 2);
+    if (lk_ap_reaps() == r0 || b1 != b0) return smp_fail("reap on ap: step ", 1, 3);
+    if (!reaped) return smp_fail("reap on ap: step ", 1, 4);
+    return 1;
+}
+
 /* ---- arch/ktest_arch.h ---- */
 
 /* The double fault's IST stack (t_idt checks the gate names it): the wiring
@@ -2224,6 +2472,7 @@ static const struct ktest_arch_case cases[] = {
     { "every enabled MADT CPU runs, started by its own ID", t_smp_started },
     { "each AP: own GDT, TSS, GS, stacks; one IDT; PAT, MSRs", t_smp_ap_tables },
     { "an AP's own timer interrupts it, acknowledged",   t_smp_ap_timer },
+    { "every CPU's TSC agrees, and one put out is set right", t_smp_tsc },
     { "an idle AP halts; a call wakes it once",           t_smp_parked },
     { "a changed kernel page is shot down on a busy AP",  t_tlb_kernel_busy },
     { "an idle AP is marked stale, not woken; flushes",   t_tlb_idle },
@@ -2237,6 +2486,11 @@ static const struct ktest_arch_case cases[] = {
     { "an AP's own timer ends a thread's slice",           t_sched_ap_slice },
     { "a thread raised takes a busy AP at once",           t_sched_outrank_ap },
     { "an affinity changed moves a running thread",        t_sched_affinity_moves },
+    { "the storage lock keeps another CPU out, recursive", t_storage_lock },
+    { "the log lock keeps another CPU out; the ring whole", t_log_lock },
+    { "sysfile's files lock keeps another CPU out",      t_files_lock },
+    { "the wall clock's CMOS reads take their lock",    t_cmos_lock },
+    { "the APs reap exited threads, the boot CPU not needed", t_reap_on_ap },
     { "a thread woken before it is off its CPU stays there", t_sched_ready_on_cpu },
     { "an MSI vector reaches its handler, then nothing", t_msi_pool },
     { "syscall: EFER.SCE, STAR, LSTAR, FMASK; sysret's selectors", t_syscall_msrs },

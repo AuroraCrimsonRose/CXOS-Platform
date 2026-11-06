@@ -7,6 +7,7 @@
 
 static const char *const names[LR_COUNT] = {
     [LR_NONE]         = "(no rank)",
+    [LR_STORAGE]      = "storage",
     [LR_IPC]          = "ipc",
     [LR_FUTEX]        = "futex",
     [LR_HTAB]         = "htab",
@@ -15,6 +16,7 @@ static const char *const names[LR_COUNT] = {
     [LR_KMEM]         = "kmem",
     [LR_KTIMER]       = "ktimer",
     [LR_KWAIT]        = "kwait",
+    [LR_SYSFILE]      = "sysfile",
     [LR_SCHED]        = "sched",
     [LR_RANDOM]       = "random",
     [LR_OCACHE]       = "ocache",
@@ -23,6 +25,8 @@ static const char *const names[LR_COUNT] = {
     [LR_DMA]          = "dma",
     [LR_KSTACK]       = "kstack",
     [LR_PAGEDB]       = "pagedb",
+    [LR_CMOS]         = "cmos",
+    [LR_LOG]          = "log",
 };
 
 const char *lockorder_name(uint32_t rank) {

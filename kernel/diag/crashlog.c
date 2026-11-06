@@ -11,6 +11,7 @@
 #include "cxfs.h"
 #include "logging.h"
 #include "syslog.h"
+#include "console.h"   /* log_lock (1.9e3) */
 #include "config.h"
 #include "format.h"
 #include "arch/cpu_ops.h"
@@ -301,11 +302,11 @@ void crashlog_note_fault(const char *line) {
 
 void crashlog_save_faults(void) {
     if (!fault_pending) return;
-    /* Interrupts off for the whole write, as a syscall's disk I/O runs (the
-       syscall gate is an interrupt gate), so no other thread's transfer can
-       start in the middle of this one. */
-    uint32_t f = arch_irq_save();
-    if (saving || !fault_pending) { arch_irq_restore(f); return; }
+    /* The storage lock (disk.h) for the whole write: no other transfer, on
+       this CPU or another, can start in the middle of this one, and the
+       static buffers here are this call's alone. */
+    storage_lock();
+    if (saving || !fault_pending) { storage_unlock(); return; }
     fault_pending = 0;
 
     for (uint32_t i = 0; i < XCRL_TEXT_MAX; i++) fault_rec[i] = 0;
@@ -319,7 +320,7 @@ void crashlog_save_faults(void) {
     put_slog_tail(fault_rec, &len);
     int r = crashlog_write_record(XCRL_KIND_FAULT, fault_rec, len);
     if (r == DISK_OK) faults_saved++;
-    arch_irq_restore(f);
+    storage_unlock();
 
     if (r == DISK_OK) klog_child("saved to the crash area (cxk rig crashlog)");
     else klog_u32("CRASHLOG", SEV_WARN, "user fault not saved, disk error ", (uint32_t)-r, LOG_COLOR_VALUE, "");
@@ -328,11 +329,11 @@ void crashlog_save_faults(void) {
 uint32_t crashlog_faults_saved(void) { return faults_saved; }
 
 void crashlog_faults_forget(void) {
-    uint32_t f = arch_irq_save();
+    storage_lock();
     fault_lines_len = 0;
     faults_noted = 0;
     fault_pending = 0;
-    arch_irq_restore(f);
+    storage_unlock();
 }
 
 int crashlog_area(uint8_t *disk, uint64_t *lba, uint64_t *sectors) {
@@ -366,10 +367,11 @@ int crashlog_save_bootlog(void) {
     uint64_t room = (area_sectors - XCRL_BOOTLOG_LBA - 1) * XCRL_SECTOR;
     if (room < cap) cap = (uint32_t)room;
 
-    /* Interrupts off for the whole save, as crashlog_save_faults: no other
-       thread's transfer can start in the middle of this one, and the ring
-       cannot move under the copy. */
-    uint32_t f = arch_irq_save();
+    /* The storage lock for the whole save, as crashlog_save_faults. The copy
+       of the ring under the log lock too (console.h), so no CPU's line moves
+       it; the log lock ranks after the storage lock, so it is taken second. */
+    storage_lock();
+    log_lock();
     uint32_t len = 0, total = slog_total(), n = slog_count();
     char num[12];
     put_bl(&len, "CXOS system log: ");
@@ -390,6 +392,7 @@ int crashlog_save_bootlog(void) {
         put_bl(&len, e->event);
         put_bl(&len, "\n");
     }
+    log_unlock();
 
     int r = DISK_OK;
     uint32_t secs = (len + XCRL_SECTOR - 1) / XCRL_SECTOR;
@@ -401,7 +404,7 @@ int crashlog_save_bootlog(void) {
     }
     if (r == DISK_OK) r = disk_flush(area_disk);
     if (r == DISK_OK) bootlog_saved_total = total;
-    arch_irq_restore(f);
+    storage_unlock();
     return r;
 }
 
@@ -417,10 +420,10 @@ static void wipe(uint8_t *p) {
 }
 
 static int seed_rd(uint8_t *h, uint8_t *t) {
-    uint32_t f = arch_irq_save();
+    storage_lock();
     int r = disk_read(area_disk, area_lba + XCRL_SEED_LBA, 1, h);
     if (r == DISK_OK) r = disk_read(area_disk, area_lba + XCRL_SEED_LBA + 1, 1, t);
-    arch_irq_restore(f);
+    storage_unlock();
     return r;
 }
 
@@ -449,11 +452,11 @@ int crashlog_seed_write(const uint8_t *seed) {
 
     /* Text first, header last, as the other records: a write cut short
        leaves a header whose CRC fails, never the old seed passing as new. */
-    uint32_t f = arch_irq_save();
+    storage_lock();
     int r = disk_write(area_disk, area_lba + XCRL_SEED_LBA + 1, 1, seed_text);
     if (r == DISK_OK) r = disk_write(area_disk, area_lba + XCRL_SEED_LBA, 1, seed_hdr);
     if (r == DISK_OK) r = disk_flush(area_disk);
-    arch_irq_restore(f);
+    storage_unlock();
 
     race_point(RP_SEED_WRITTEN);
     if (r == DISK_OK) r = seed_rd(back_hdr, back_text);
@@ -473,7 +476,7 @@ int crashlog_bootlog_stale(void) {
 
 /* ---- the hardware report ----------------------------------------------------
  * Its header and text at XCRL_HWREPORT_LBA (crashrec.h), written once a boot
- * by platform/pc/hwreport.c. Interrupts off for the writes, as the other
+ * by platform/pc/hwreport.c. The storage lock for the writes, as the other
  * saves: no other transfer can start in the middle of one. */
 static uint8_t hw_hdr[XCRL_SECTOR];
 
@@ -485,7 +488,7 @@ int crashlog_hwreport_write(const char *t, uint32_t len) {
     if (len > XCRL_HWREPORT_MAX) return DISK_ERR_PARAMS;
     uint32_t secs = (len + XCRL_SECTOR - 1) / XCRL_SECTOR;
     if (!hw_room(secs)) return DISK_ERR_NO_DEVICE;
-    uint32_t f = arch_irq_save();
+    storage_lock();
     int r = DISK_OK;
     if (secs) r = disk_write(area_disk, area_lba + XCRL_HWREPORT_LBA + 1, secs, t);
     if (r == DISK_OK) {
@@ -493,15 +496,15 @@ int crashlog_hwreport_write(const char *t, uint32_t len) {
         r = disk_write(area_disk, area_lba + XCRL_HWREPORT_LBA, 1, hw_hdr);
     }
     if (r == DISK_OK) r = disk_flush(area_disk);
-    arch_irq_restore(f);
+    storage_unlock();
     return r;
 }
 
 int crashlog_hwreport_read(char *buf, uint32_t cap, uint32_t *len) {
     if (!hw_room(1)) return DISK_ERR_NO_DEVICE;
-    uint32_t f = arch_irq_save();
+    storage_lock();
     int r = disk_read(area_disk, area_lba + XCRL_HWREPORT_LBA, 1, hw_hdr);
-    arch_irq_restore(f);
+    storage_unlock();
     if (r != DISK_OK) return r;
     uint16_t kind = 0;
     uint32_t n = 0;
@@ -509,9 +512,9 @@ int crashlog_hwreport_read(char *buf, uint32_t cap, uint32_t *len) {
         return CRASHLOG_HW_BAD;
     uint32_t secs = (n + XCRL_SECTOR - 1) / XCRL_SECTOR;
     if (secs * XCRL_SECTOR > cap || !hw_room(secs)) return CRASHLOG_HW_BAD;
-    f = arch_irq_save();
+    storage_lock();
     if (secs) r = disk_read(area_disk, area_lba + XCRL_HWREPORT_LBA + 1, secs, buf);
-    arch_irq_restore(f);
+    storage_unlock();
     if (r != DISK_OK) return r;
     if (xcrl_check_text(hw_hdr, buf, n) != XCRL_VALID) return CRASHLOG_HW_BAD;
     *len = n;

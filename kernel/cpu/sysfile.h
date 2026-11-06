@@ -70,4 +70,9 @@ int sysfile_lock_waiting(void);
    resolves paths for a program (exec_path) must treat it as absent too. */
 int sysfile_entry_doomed(uint32_t id);
 
+/* files_lock (1.9e3), held from a self-test to show another CPU's caller
+   waits for it: the flags to give to sysfile_test_release. */
+uint32_t sysfile_test_hold(void);
+void     sysfile_test_release(uint32_t f);
+
 #endif

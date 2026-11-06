@@ -19,6 +19,23 @@
 #include <stdint.h>
 #include "color.h"
 
+/* ---- the log lock (1.9e3) ----
+ * One lock for everything a line goes through: the cursor and the screen's
+ * cells, the serial tee, and the system log's ring (lib/string/syslog.c).
+ * Every console call below that writes takes it; klog and its relatives hold
+ * it for the whole line, the ring's record included, so a line from one CPU
+ * is never cut by another's. CPU-recursive (sync/rspin.h): a line is made of
+ * console calls. Last in the lock order (LR_LOG): a line may be logged under
+ * any other lock, and nothing is taken under it. log_break is the crash
+ * path's. */
+void log_lock(void);
+void log_unlock(void);
+int  log_held(void);
+void log_break(void);
+static inline void log_scope_end(int *unused) { (void)unused; log_unlock(); }
+#define LOG_LOCKED() \
+    __attribute__((cleanup(log_scope_end), unused)) int log_scope_ = (log_lock(), 0)
+
 /* initialize: clear the screen, home the cursor, set the default attribute. */
 void console_init(void);
 

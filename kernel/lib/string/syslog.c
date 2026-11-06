@@ -20,6 +20,7 @@ static void copy_field(char *dst, int cap, const char *src) {
 }
 
 void slog_record(const char *system, const char *subsystem, log_sev_t sev, const char *event) {
+    LOG_LOCKED();
     struct slog_entry *e = &ring[head % SLOG_RING];
     e->seq = total;
     e->sev = (uint8_t)sev;
@@ -31,6 +32,7 @@ void slog_record(const char *system, const char *subsystem, log_sev_t sev, const
 }
 
 void slog(const char *system, const char *subsystem, log_sev_t sev, const char *event) {
+    LOG_LOCKED();
     slog_record(system, subsystem, sev, event);
     slog_in_progress = 1;          /* klog mirrors to console; don't re-record */
     klog(system, sev, event);
@@ -48,6 +50,7 @@ const struct slog_entry *slog_get(uint32_t i) {
 }
 
 void slog_dump_console(void) {
+    LOG_LOCKED();
     uint32_t n = slog_count();
     console_puts_color("---- system log (oldest first) ----\n", VGA_ATTR(VGA_LIGHT_GREY, VGA_BLACK));
     for (uint32_t i = 0; i < n; i++) {

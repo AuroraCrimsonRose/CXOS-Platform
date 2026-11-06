@@ -34,6 +34,22 @@ int smp_call(unsigned index, void (*fn)(void *), void *arg, uint64_t timeout_ns)
 int smp_call_start(unsigned index, void (*fn)(void *), void *arg);
 int smp_call_wait(unsigned index, uint64_t timeout_ns);
 
+/* ---- the TSC's agreement (1.9e3) ----
+ *
+ * Every AP's TSC is measured against the boot CPU's as it parks, and set
+ * right if it is out by more than the measure's own error and a margin
+ * (XNU's, 4096 cycles), so the clock (timer_now_ns) reads the same on every
+ * CPU. `before` is the AP's TSC less the boot CPU's, in cycles, as first
+ * measured; `after` once set right (`before` when it was not); `err` the
+ * measure's half-width.
+ * smp_tsc_at_start is what bring-up found for AP `index` (0 for the boot
+ * CPU or one past the last). smp_tsc_agree meets a running AP again, as
+ * smp_call does, having first added `skew` cycles to its TSC (0: none): 0
+ * agreed, 1 still out after setting it right, -1 no meeting. */
+struct smp_tsc { int64_t before, after; uint64_t err; uint32_t adjusted; };
+const struct smp_tsc *smp_tsc_at_start(unsigned index);
+int smp_tsc_agree(unsigned index, int64_t skew, struct smp_tsc *out);
+
 /* ---- TLB shootdown (1.9e1) ----
  *
  * After a mapping that was present is changed or removed, no CPU may go on

@@ -415,7 +415,7 @@ static int thread_create_in(const char *name, void (*entry)(void), int held, str
     t->tls_base    = 0;
     t->cpu_ns      = 0;
     t->run_since   = 0;
-    t->affinity    = THREAD_ON_BOOT_CPU;   /* until 1.9e3: sched.h */
+    t->affinity    = THREAD_ON_BOOT_CPU;   /* until 1.9e4: sched.h */
     t->on_cpu      = 0;
     t->idle        = 0;
     /* Last, under the lock: from here the timer, or another CPU, may run it. */
@@ -576,7 +576,7 @@ static void switch_to(struct thread *next) {
  * interrupts off from the look on: a thread handed to this CPU after the
  * look comes with an IPI, which is then taken in the halt and ends it.
  * Idle time is the idle thread's (cpu_ns), WRK's rule, where before it was
- * no one's. Exited threads are reaped here too, on the boot CPU. */
+ * no one's. Exited threads are reaped here too, on every CPU (1.9e3). */
 static __attribute__((noreturn)) void idle_loop(void) {
     struct cpu *c = cpu_this();   /* an idle thread never moves */
     struct thread *me = c->idle_thread;
@@ -871,12 +871,15 @@ void yield(void) {
    second reaper takes it too) and freed after it, its resources' locks
    ranking before sched's.
 
-   On the boot CPU only, until 1.9e3: freeing a thread can end its process,
-   whose handles close through the file system layer, which is not yet
-   locked. An AP's exited threads wait for the boot CPU's next switch or
-   wake. */
+   On every CPU since 1.9e3: freeing a thread can end its process, whose
+   handles close through the file system layer, and that layer is locked
+   now (the storage lock, sysfile's files_lock). Until then an AP's exited
+   threads waited for the boot CPU's next switch or wake. */
+static uint32_t reaped_on[CPU_MAX];   /* sched_reaped_on */
+
+uint32_t sched_reaped_on(unsigned index) { return index < CPU_MAX ? reaped_on[index] : 0; }
+
 static void sched_reap(void) {
-    if (cpu_this() != &cpu_boot) return;
     for (;;) {
         struct thread *dead = 0;
         uint32_t f = spin_lock(&sched_lock);
@@ -889,6 +892,9 @@ static void sched_reap(void) {
         }
         spin_unlock(&sched_lock, f);
         if (!dead) return;
+        /* Counted first: the free gives the id back before it is done, and
+           whoever sees the count drop sees this too. */
+        __atomic_fetch_add(&reaped_on[cpu_this()->index], 1u, __ATOMIC_RELEASE);
         thread_free(dead);   /* its id is reusable */
     }
 }

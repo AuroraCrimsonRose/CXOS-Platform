@@ -42,14 +42,16 @@ cache registry `ocache-slots` under a cache's own lock.
 
 | Rank | Lock | Taken under it (seen at boot) |
 |---|---|---|
+| `LR_STORAGE` | `storage/hardware/disk.c` `storage` (1.9e3): CXFS and every disk transfer; CPU-recursive (`sync/rspin.h`) | htab, pids, sysfile, ocache, log (a syscall's file handles, a file closed, a line) |
 | `LR_IPC` | `cpu/ipc.c` `ipc_lock` | htab, kwait, sched |
 | `LR_FUTEX` | `cpu/futex.c` `futex_lock` | vmregion, pids (a user copy's demand fault), sched |
-| `LR_HTAB` | `object/htab.c`, per handle table | - |
+| `LR_HTAB` | `object/htab.c`, per handle table | sysfile (a handle closed: `of_destroy`) |
 | `LR_VMREGION` | `memman/vmregion.c`, per address space | pids, kmem, pagedb |
 | `LR_PIDS` | `cpu/proc.c` `pids_lock` | sched, ocache, ocache-slots, pagedb |
 | `LR_KMEM` | `object/kmem.c`, per memory object | pagedb |
 | `LR_KTIMER` | `object/ktimer.c` `armed_lock` | kwait |
 | `LR_KWAIT` | `object/kwait.c` `wait_lock` | sched |
+| `LR_SYSFILE` | `cpu/sysfile.c` `files_lock` (1.9e3): the graveyard, the advisory locks and their waiters, unlink's open check | sched, ocache, ocache-slots, pagedb (a waiter blocked, a lock record) |
 | `LR_SCHED` | `cpu/sched.c` `sched_lock` (1.9b) | ocache, ocache-slots (a thread id's slot) |
 | `LR_RANDOM` | `drivers/char/random.c` | - |
 | `LR_HEAP` | `memman/heap.c` `heap_lock` (new) | pagedb |
@@ -58,6 +60,8 @@ cache registry `ocache-slots` under a cache's own lock.
 | `LR_DMA` | `memman/dma.c` | - |
 | `LR_KSTACK` | `memman/kstack.c` `slots_lock` (1.9c) | - |
 | `LR_PAGEDB` | `memman/pagedb.c` | - |
+| `LR_CMOS` | `platform/pc/rtc.c` `cmos_lock` (1.9e3): the CMOS index and data ports | - |
+| `LR_LOG` | `drivers/char/console.c` (1.9e3): the screen, the serial tee and the system log's ring; CPU-recursive | - (last: a line may be logged under any lock) |
 
 Pairs not in the table's right column put no constraint on each other; the
 ranks between them are free. `LR_HEAP` sits before `LR_OCACHE` so that
@@ -72,6 +76,15 @@ one line per outer rank, so a new nesting shows up in the serial log before
 it shows up as a panic. The lock-order self-test's own locks are ranked as
 real ones and appear there too (`heap > ocache` is its heap-ranked lock
 held over `heap_allocs_live`, not a nesting in the heap).
+
+The two CPU-recursive locks (1.9e3, `sync/rspin.h`) are spinlocks with an
+owner and a depth, as Serenity's `Mutex::lock` counts `m_times_locked` and
+Haiku's `recursive_lock_lock` its `recursion`: a CXFS call makes CXFS calls,
+and a line is made of console calls. Only the outermost take is in the
+order; the inner ones only count. Each is broken, never waited for, by a
+panic (`storage_break`, `log_break` in `panic_begin`): a CPU that held one
+when another panicked would keep the crash record and the screen from
+being written.
 
 ## 2a. The scheduler's lock (1.9b)
 
@@ -188,6 +201,15 @@ across `heap_grow`'s frame allocation and mapping (pagedb, ranked after).
   already held, which is how a test on one CPU shows a path takes a lock
   (it cannot hold the lock and watch another thread wait, since the holder
   has interrupts off).
+- Boot (1.9e3, four CPUs): the storage lock, the log lock and sysfile's
+  `files_lock` each held on the boot CPU while a thread on an AP calls what
+  takes it (`cxfs_get_id`, `slog_record`, `sysfile_lock_waiting`): still in
+  the call after 30 ms, through it once given back; the storage lock
+  recursive (held through an inner take and give) and only its outer take
+  ordered (one failure under a test lock of its rank, for a CXFS call made
+  holding it already); the ring with both CPUs recording 200 each at once,
+  every record whole, its sequence number the next, each CPU's in order; a
+  wall-clock read one failure under a test lock of the CMOS rank.
 - Boot (`hooks: the scheduler takes its lock`, 1.9b): nine scheduler
   entries (unblock, start, a process's wake, the sleepers' wake, others
   ready, the next deadline, the active count, priority, TLS) each caught
