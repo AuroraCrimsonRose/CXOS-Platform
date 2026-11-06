@@ -74,4 +74,8 @@ void     pmm_unreserve(uint32_t count);
 paddr_t  pmm_alloc_reserved(void);
 uint32_t pmm_reserved_count(void);
 
+/* What a free page holds in a test-hook build (1.9c): pmm_free writes it
+   over every page it takes back, so a page given out unzeroed is seen. */
+#define PMM_POISON 0xA5A5A5A5A5A5A5A5ull
+
 #endif

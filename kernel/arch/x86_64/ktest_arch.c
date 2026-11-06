@@ -334,10 +334,15 @@ static int t_own_tables(void) {
            addr_space_current() != LOADER_PML4 && paging_kernel_obeys_readonly();
 }
 
+/* Frame `p` in the direct map. These tests are of x86-64's own tables and
+   layout, so they read it directly; code outside the architecture goes
+   through memman/physmap.h. */
+static void *direct(paddr_t p) { return (void *)(uintptr_t)(DIRECT_MAP_BASE + p); }
+
 /* All 256 kernel entries exist from boot, kernel-only; the user half is
    empty. */
 static int t_kernel_half(void) {
-    const uint64_t *pml4 = paging_temp_map(addr_space_kernel());
+    const uint64_t *pml4 = direct(addr_space_kernel());
     for (unsigned i = 0; i < PML4_KERNEL_LO; i++)
         if (pml4[i]) return 0;
     for (unsigned i = PML4_KERNEL_LO; i < PT64_ENTRIES; i++)
@@ -413,16 +418,16 @@ static int direct_map_leaf_ok(uint64_t e) {
 }
 
 static int t_direct_map_nx(void) {
-    const uint64_t *pml4 = paging_temp_map(addr_space_kernel());
+    const uint64_t *pml4 = direct(addr_space_kernel());
     unsigned leaves = 0;
     for (unsigned i = PML4_INDEX(DIRECT_MAP_BASE);
          i <= PML4_INDEX(DIRECT_MAP_BASE + DIRECT_MAP_SIZE - 1); i++) {
         if (!(pml4[i] & PTE64_PRESENT)) continue;
-        const uint64_t *pdpt = paging_temp_map(pml4[i] & PTE64_ADDR);
+        const uint64_t *pdpt = direct(pml4[i] & PTE64_ADDR);
         for (unsigned j = 0; j < PT64_ENTRIES; j++) {
             if (!(pdpt[j] & PTE64_PRESENT)) continue;
             if (pdpt[j] & PTE64_LARGE) return 0;        /* none are made */
-            const uint64_t *pd = paging_temp_map(pdpt[j] & PTE64_ADDR);
+            const uint64_t *pd = direct(pdpt[j] & PTE64_ADDR);
             for (unsigned k = 0; k < PT64_ENTRIES; k++) {
                 if (!(pd[k] & PTE64_PRESENT)) continue;
                 if (pd[k] & PTE64_LARGE) {
@@ -430,7 +435,7 @@ static int t_direct_map_nx(void) {
                     leaves++;
                     continue;
                 }
-                const uint64_t *pt = paging_temp_map(pd[k] & PTE64_ADDR);
+                const uint64_t *pt = direct(pd[k] & PTE64_ADDR);
                 for (unsigned m = 0; m < PT64_ENTRIES; m++) {
                     if (!(pt[m] & PTE64_PRESENT)) continue;
                     if (!direct_map_leaf_ok(pt[m])) return 0;
@@ -531,8 +536,8 @@ static int t_address_space(void) {
     uint32_t before = pmm_free_count();
     paddr_t root;
     if (addr_space_create(&root) != 0) return 0;
-    const uint64_t *mine = paging_temp_map(root);
-    const uint64_t *kern = paging_temp_map(addr_space_kernel());
+    const uint64_t *mine = direct(root);
+    const uint64_t *kern = direct(addr_space_kernel());
     int ok = 1;
     for (unsigned i = 0; i < PT64_ENTRIES; i++)
         if (mine[i] != (i < PML4_KERNEL_LO ? 0 : kern[i])) ok = 0;
@@ -559,11 +564,11 @@ static int t_address_space(void) {
 /* The 4 KiB entry mapping `virt` in the active space, read through the
    direct map; 0 if there is none. */
 static uint64_t entry_of(uint64_t virt) {
-    const uint64_t *t = paging_temp_map(addr_space_current());
+    const uint64_t *t = direct(addr_space_current());
     for (unsigned shift = 39; shift > 12; shift -= 9) {
         uint64_t e = t[(virt >> shift) & 511u];
         if (!(e & PTE64_PRESENT) || (e & PTE64_LARGE)) return 0;
-        t = paging_temp_map(e & PTE64_ADDR);
+        t = direct(e & PTE64_ADDR);
     }
     return t[PT_INDEX(virt)];
 }
@@ -1302,7 +1307,7 @@ static int t_usercopy(void) {
 static int t_ring3_preempted(void) {
     paddr_t sh = pmm_alloc();
     if (!sh) return 0;
-    volatile uint32_t *word = paging_temp_map(sh);
+    volatile uint32_t *word = direct(sh);
     word[0] = 0;                /* the word they wait for */
     word[1] = 0;                /* how many have started spinning */
     struct urun a, b;

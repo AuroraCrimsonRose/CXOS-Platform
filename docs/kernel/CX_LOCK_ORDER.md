@@ -3,7 +3,8 @@
 
 > **Status: 1.9a done (2026-11-05): every spinlock ranked, the checker in
 > test-hook builds, the heap's large path locked; 1.9b done (2026-11-05):
-> the scheduler's lock placed, the checker's state per CPU**
+> the scheduler's lock placed, the checker's state per CPU; 1.9c
+> (2026-11-06): the kernel stacks' lock (`LR_KSTACK`)**
 > (`planning/CX_ROADMAP.md`, Phase 1 step 9).
 
 On one CPU a spinlock never waits: taking one turns interrupts off, so
@@ -55,6 +56,7 @@ cache registry `ocache-slots` under a cache's own lock.
 | `LR_OCACHE` | `memman/ocache.c`, per cache | ocache-slots, pagedb |
 | `LR_OCACHE_SLOTS` | `memman/ocache.c` `slots_lock` | - |
 | `LR_DMA` | `memman/dma.c` | - |
+| `LR_KSTACK` | `memman/kstack.c` `slots_lock` (1.9c) | - |
 | `LR_PAGEDB` | `memman/pagedb.c` | - |
 
 Pairs not in the table's right column put no constraint on each other; the

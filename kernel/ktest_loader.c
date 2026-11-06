@@ -152,7 +152,7 @@ static int mock_charge(void *ctx, uint32_t pages) {
 }
 
 static struct cxex_load_ops mock_ops = {
-    0, USER_ADDR32_END, mock_get_page, mock_map_page, mock_charge
+    0, USER_ADDR32_END, mock_get_page, 0, mock_map_page, mock_charge
 };
 
 /* Run the loader over the image as currently built and return its result,

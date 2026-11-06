@@ -4,7 +4,8 @@
 /* Aurora Tejeda / CATX Systems */
 /*
  * What each CPU keeps of its own (1.9b): the thread it runs, the stack the
- * syscall entry moves to, and the lock checker's state.
+ * syscall entry moves to, the lock checker's state, and (1.9c) the frames
+ * it has mapped.
  *
  * One struct cpu per CPU, found through the architecture's per-CPU base
  * register (on x86-64 the GS base, swapped in on every entry from ring 3:
@@ -28,6 +29,7 @@
 #include <stdint.h>
 #include "arch/cpu_ops.h"
 #include "sync/lockorder.h"
+#include "memman/physmap.h"
 
 struct cpu {
     struct cpu *self;          /* CPU_SELF: what the base register points at */
@@ -39,6 +41,7 @@ struct cpu {
     int32_t     thread;        /* CPU_THREAD: the running thread's id (sched.c) */
     volatile uint32_t spin_held;   /* CPU_SPIN_HELD: spinlocks held (sync/spinlock.h, test hooks) */
     struct lockorder_held locks;   /* what this CPU holds (sync/lockorder.c) */
+    struct physmap_open   phys;    /* what this CPU has mapped (memman/physmap.c) */
 };
 
 #define CPU_SELF     0

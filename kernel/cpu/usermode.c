@@ -14,6 +14,7 @@
 #include "sched.h"
 #include "uid.h"
 #include "arch/paging.h"
+#include "memman/physmap.h"
 #include "pmm.h"
 #include "heap.h"
 #include "vmregion.h"
@@ -2959,6 +2960,27 @@ int usermode_flock_test(void) {
     step++;                                                                       /* 57 */
     if (syscall_dispatch(SYS_FILE_LOCK, (uint32_t)p, FT_LARGS, 0, 0, 0) != E_INVALID_ARGS) goto done;
 
+    /* --- 1.9c: each lock is an object of the lock cache, so a failed
+       allocation refuses the lock and keeps nothing, and the cap holds --- */
+    int held0 = sysfile_lock_count();
+    step++;                                                                       /* 58 */
+    if (ft_call(SYS_FILE_LOCK, p, 0, 0, 1, 100, FLOCK_SHARED) != E_OK
+        || sysfile_lock_count() != held0 + 1) goto done;
+    fault_arm(FAULT_OCACHE, 1);
+    int frc = ft_call(SYS_FILE_LOCK, p, 0, 0, 1, 200, FLOCK_SHARED);
+    int fired = fault_fired();
+    fault_disarm();
+    step++;
+    if (frc != E_NO_RESOURCES || !fired || sysfile_lock_count() != held0 + 1) goto done;
+    step++;                                                                       /* 60 */
+    int taken = 0;
+    while (taken < 2 * MAX_FILE_LOCKS
+           && ft_call(SYS_FILE_LOCK, p, 0, 0, 1, 1000 + (int64_t)taken, FLOCK_SHARED) == E_OK)
+        taken++;
+    if (sysfile_lock_count() != MAX_FILE_LOCKS || taken != MAX_FILE_LOCKS - held0 - 1) goto done;
+    step++;
+    if (ft_call(SYS_FILE_UNLOCK, p, 0, 0, 0, 0, 0) != E_OK || sysfile_lock_count() != held0) goto done;
+
     ok = 1;
 
 done:
@@ -4870,6 +4892,14 @@ extern uint8_t user_blob_touch_start[], user_blob_touch_end[];
 static uint8_t  mt_image[KT_BLOB_MAX + 3 * 8];
 static uint64_t mt_addrs[MMAP_MAX_REGIONS];
 
+/* The word at offset 8 of frame `page`, read through a short mapping. */
+static uint64_t mt_word8(paddr_t page) {
+    const volatile uint64_t *v = phys_map(page + 8);
+    uint64_t w = *v;
+    phys_unmap(v);
+    return w;
+}
+
 static int mt_create(uint64_t size, uint32_t flags) {
     return um_call(SYS_MEM_CREATE, 1u << 0, size, flags, 0, 0, 0);
 }
@@ -4989,7 +5019,7 @@ int usermode_mem_test(void) {
                   || paging_get_phys((uintptr_t)(addr + P)) != kmem_page_if_resident(mo, 2)
                   || paging_get_phys((uintptr_t)addr) != 0
                   || pmm_reserved_count() != res0 + 2
-                  || *(volatile uint64_t *)((uint8_t *)paging_temp_map(kmem_page_if_resident(mo, 2)) + 8) != MT_VALUE)
+                  || mt_word8(kmem_page_if_resident(mo, 2)) != MT_VALUE)
         goto done;
     step = 10; if (mt_info(m, OBJINFO_MEM, sizeof *mi) != (int)sizeof *mi || mi->resident != P) goto done;
 
@@ -5093,7 +5123,7 @@ int usermode_mem_test(void) {
     htab_close(tab, h); h = -1;
     page0 = kmem_page_if_resident(mo, 0);
     step = 19; if (!page0 || kmem_resident(mo) != 2|| mo->writers != 0 || !pmm_page_in_use(page0)
-                   || *(volatile uint64_t *)((uint8_t *)paging_temp_map(page0) + 8) != MT_VALUE) goto done;
+                   || mt_word8(page0) != MT_VALUE) goto done;
 
     /* 20: a store as the first touch of a read-only view is the process's
        fault, at that address, and maps nothing */

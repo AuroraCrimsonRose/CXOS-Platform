@@ -22,6 +22,7 @@
 #include "arch/paging.h"
 #include "arch/usermode.h"     /* enter_usermode */
 #include "pmm.h"
+#include "memman/physmap.h"
 #include "vmregion.h"
 #include "heap.h"
 #include "cxex.h"               /* cxex_parse_header: is this the executive */
@@ -177,6 +178,8 @@ static void proc_trampoline(void) {
     for (uint32_t i = 0; i < USER_STACK_PAGES; i++) {
         paddr_t p = pmm_alloc();
         if (!p) { klog("PROC", SEV_ERR, "no stack memory"); not_started(exec); }
+        /* a page off the free list holds what its last owner left */
+        phys_zero(p);
         if (paging_map_user(USER_STACK_TOP - (i + 1) * 0x1000u, p,
                             VM_WRITE) != 0) {
             klog("PROC", SEV_ERR, "user stack is not in the user half");

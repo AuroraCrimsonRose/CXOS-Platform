@@ -50,6 +50,11 @@ struct cxex_load_ops {
        physical address that map_page should map. NULL on failure. */
     void *(*get_page)(void *ctx, uint64_t *out_phys);
 
+    /* Done with the page get_page returned: it is not written again, and
+       the kernel's view of it ends (memman/physmap.h). Called once per page,
+       before map_page. May be NULL. */
+    void (*put_page)(void *ctx, void *page);
+
     /* Map physical page `phys` at page-aligned target virtual address `virt`
        with the given prot bits. Return 0 on success, non-zero on failure. */
     int (*map_page)(void *ctx, uint32_t virt, uint64_t phys, uint32_t prot);

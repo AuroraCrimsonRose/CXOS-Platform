@@ -260,12 +260,19 @@ int paging_is_user_writable(uintptr_t virt) {
     return leaf(virt, PTE64_USER | PTE64_WRITE, &size) != 0;
 }
 
-/* Every frame is in the direct map already: nothing to map or undo. */
-void *paging_temp_map(paddr_t phys) {
-    return (void *)(uintptr_t)(DIRECT_MAP_BASE + (phys & ~(paddr_t)0xFFF));
+/* Every frame of RAM is in the direct map already: no slot to fill or
+   clear. physmap.c has checked the frame is below RAM_REACH. */
+void *paging_phys_slot(uint32_t cpu, uint32_t slot, paddr_t frame) {
+    (void)cpu; (void)slot;
+    return (void *)(uintptr_t)(DIRECT_MAP_BASE + frame);
 }
 
-void paging_temp_unmap(void) { }
+void paging_phys_slot_clear(uint32_t cpu, uint32_t slot) { (void)cpu; (void)slot; }
+
+void *paging_map_ram(paddr_t phys, uint64_t len) {
+    (void)len;
+    return (void *)(uintptr_t)(DIRECT_MAP_BASE + phys);
+}
 
 int paging_kernel_obeys_readonly(void) {
     uint64_t cr0;

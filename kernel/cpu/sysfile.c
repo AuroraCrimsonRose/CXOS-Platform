@@ -130,10 +130,9 @@ static void bury_pending(void) {
  * A range is [start, start + len), and len 0 runs to the end of the file
  * however far it grows, so (0, 0) is the whole file.
  */
-#define MAX_FILE_LOCKS 64
 
 struct file_lock {
-    struct open_file *of;      /* NULL: slot free */
+    struct open_file *of;      /* the open file that holds it */
     uint32_t entry;
     uint64_t start;
     uint64_t len;
@@ -141,8 +140,12 @@ struct file_lock {
     int      taker;            /* the thread that took it; TAKER_UNKNOWN once
                                   its handle has travelled, for good (XNU does
                                   not confine a shared lock again either) */
+    struct file_lock *next;
 };
-static struct file_lock locks[MAX_FILE_LOCKS];
+/* Every lock held, newest first, each from its own cache (1.9c: every
+   allocation on ocache or the heap), at most MAX_FILE_LOCKS of them. */
+static struct ocache     lock_cache;
+static struct file_lock *locks;
 
 /* Not a thread id: thread 0 is the boot thread. */
 #define TAKER_UNKNOWN (-1)
@@ -153,7 +156,7 @@ static struct file_lock locks[MAX_FILE_LOCKS];
    could be. The deadlock check walks the list; a release wakes everyone on it.
    Unlocked, like `locks` itself: only thread context touches either, and
    the kernel is not preempted outside the preemption self-tests. One lock
-   for both arrives with preemption or SMP. */
+   for both, and for this file's other tables, arrives with SMP (1.9e). */
 struct lock_wait {
     int      tid;
     int      seen;          /* visited by the current deadlock walk */
@@ -178,16 +181,16 @@ static int ranges_overlap(uint64_t s1, uint64_t l1, uint64_t s2, uint64_t l2) {
 }
 
 /* The first lock held by ANOTHER open file that this request collides with,
-   starting the scan at `from`; -1 if none. */
-static int lock_conflict(const struct open_file *of, uint32_t entry, uint64_t start,
-                         uint64_t len, uint32_t mode, int from) {
-    for (int i = from; i < MAX_FILE_LOCKS; i++) {
-        const struct file_lock *l = &locks[i];
-        if (!l->of || l->of == of || l->entry != entry) continue;
+   starting the scan at `from`; NULL if none. */
+static const struct file_lock *lock_conflict(const struct open_file *of, uint32_t entry,
+                                             uint64_t start, uint64_t len, uint32_t mode,
+                                             const struct file_lock *from) {
+    for (const struct file_lock *l = from; l; l = l->next) {
+        if (l->of == of || l->entry != entry) continue;
         if (!ranges_overlap(l->start, l->len, start, len)) continue;
-        if (mode == FLOCK_EXCLUSIVE || l->mode == FLOCK_EXCLUSIVE) return i;
+        if (mode == FLOCK_EXCLUSIVE || l->mode == FLOCK_EXCLUSIVE) return l;
     }
-    return -1;
+    return NULL;
 }
 
 /* Would thread `me` waiting for this lock never wake? It would if some holder
@@ -201,9 +204,9 @@ static int lock_conflict(const struct open_file *of, uint32_t entry, uint64_t st
    its own. A real cycle through it hangs, never a false E_DEADLOCK. */
 static int lock_cycle(int me, const struct open_file *of, uint32_t entry, uint64_t start,
                       uint64_t len, uint32_t mode) {
-    for (int i = lock_conflict(of, entry, start, len, mode, 0); i >= 0;
-         i = lock_conflict(of, entry, start, len, mode, i + 1)) {
-        int h = locks[i].taker;
+    for (const struct file_lock *l = lock_conflict(of, entry, start, len, mode, locks); l;
+         l = lock_conflict(of, entry, start, len, mode, l->next)) {
+        int h = l->taker;
         if (h == me) return 1;
         struct lock_wait *w = waiter_of(h);
         if (!w || w->seen) continue;
@@ -219,32 +222,32 @@ static void lock_wake_all(void) {
 
 /* Take or convert a lock. The caller has checked there is no conflict. */
 static int lock_apply(struct open_file *of, uint64_t start, uint64_t len, uint32_t mode) {
-    int free_slot = -1;
-    for (int i = 0; i < MAX_FILE_LOCKS; i++) {
-        struct file_lock *l = &locks[i];
-        if (!l->of) { if (free_slot < 0) free_slot = i; continue; }
+    for (struct file_lock *l = locks; l; l = l->next)
         if (l->of == of && l->start == start && l->len == len) {
             int downgrade = (l->mode == FLOCK_EXCLUSIVE && mode == FLOCK_SHARED);
             l->mode = mode;
             if (downgrade) lock_wake_all();
             return E_OK;
         }
-    }
-    if (free_slot < 0) return E_NO_RESOURCES;
-    locks[free_slot].of    = of;
-    locks[free_slot].entry = of->entry;
-    locks[free_slot].start = start;
-    locks[free_slot].len   = len;
-    locks[free_slot].mode  = mode;
-    locks[free_slot].taker = thread_current_id();
+    if (ocache_live(&lock_cache) >= MAX_FILE_LOCKS) return E_NO_RESOURCES;
+    struct file_lock *l = ocache_alloc(&lock_cache);
+    if (!l) return E_NO_RESOURCES;
+    l->of    = of;
+    l->entry = of->entry;
+    l->start = start;
+    l->len   = len;
+    l->mode  = mode;
+    l->taker = thread_current_id();
+    l->next  = locks;
+    locks    = l;
     return E_OK;
 }
 
 /* Its handle is on the way to someone else: who holds each of its locks is
    no longer known. Under the sender's handle-table lock, so it only writes. */
 static void of_travel(struct kobj *o) {
-    for (int i = 0; i < MAX_FILE_LOCKS; i++)
-        if (locks[i].of == (struct open_file *)o) locks[i].taker = TAKER_UNKNOWN;
+    for (struct file_lock *l = locks; l; l = l->next)
+        if (l->of == (struct open_file *)o) l->taker = TAKER_UNKNOWN;
 }
 
 /* Drop this open file's locks that lie wholly inside [start, start+len). A
@@ -253,12 +256,12 @@ static void of_travel(struct kobj *o) {
 static void lock_drop(const struct open_file *of, uint64_t start, uint64_t len) {
     uint64_t end = len ? start + len : UINT64_MAX;
     int any = 0;
-    for (int i = 0; i < MAX_FILE_LOCKS; i++) {
-        struct file_lock *l = &locks[i];
-        if (l->of != of) continue;
+    for (struct file_lock **at = &locks; *at; ) {
+        struct file_lock *l = *at;
         uint64_t lend = l->len ? l->start + l->len : UINT64_MAX;
-        if (l->start < start || lend > end) continue;
-        l->of = NULL;
+        if (l->of != of || l->start < start || lend > end) { at = &l->next; continue; }
+        *at = l->next;
+        ocache_free(&lock_cache, l);
         any = 1;
     }
     if (any) lock_wake_all();
@@ -290,7 +293,9 @@ static const struct kobj_ops file_ops = {
 void sysfile_init(void) {
     if (ocache_init(&of_cache, "file", sizeof(struct open_file)) != 0)
         kpanic("sysfile_init: no open-file cache");
-    for (int i = 0; i < MAX_FILE_LOCKS; i++) locks[i].of = NULL;
+    if (ocache_init(&lock_cache, "file-lock", sizeof(struct file_lock)) != 0)
+        kpanic("sysfile_init: no file-lock cache");
+    locks = NULL;
     waiters = NULL;
     graves = 0;
     kobj_type_register(KOBJ_FILE, &file_ops);
@@ -298,6 +303,10 @@ void sysfile_init(void) {
 
 int sysfile_open_count(void) {
     return (int)ocache_live(&of_cache);
+}
+
+int sysfile_lock_count(void) {
+    return (int)ocache_live(&lock_cache);
 }
 
 int sysfile_lock_waiting(void) {
@@ -823,7 +832,7 @@ static int file_lock(struct open_file *f, uint64_t start, uint64_t len, uint32_t
     if (start > FILE_OFF_MAX || len > FILE_OFF_MAX) return E_OUT_OF_RANGE;
 
     int me = thread_current_id();
-    while (lock_conflict(f, f->entry, start, len, mode, 0) >= 0) {
+    while (lock_conflict(f, f->entry, start, len, mode, locks)) {
         if (!(flags & FLOCK_WAIT)) return E_BUSY;
         for (struct lock_wait *w = waiters; w; w = w->next) w->seen = 0;
         if (lock_cycle(me, f, f->entry, start, len, mode)) return E_DEADLOCK;

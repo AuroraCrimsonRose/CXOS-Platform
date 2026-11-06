@@ -42,4 +42,13 @@ int ktest_alloc_sweeps(void);
 int ktest_lock_order(void);
 int ktest_sched_lock(void);
 
+/* Physical memory (1.9c): a mapping nests, keeps the frame's offset and
+   holds interrupts off; an unmap out of order, an unmap of nothing, one
+   mapping too many, a frame out of reach and a switch with one open are
+   each caught; phys_zero clears a frame; a freed frame holds PMM_POISON
+   and a refused free leaves the page alone. Kernel stacks claim and give
+   back their slots under the kstack lock. */
+int ktest_physmap(void);
+int ktest_kstack_lock(void);
+
 #endif

@@ -4,12 +4,13 @@
 /* Aurora Tejeda / CATX Systems */
 /* xHCI scratchpad buffers, from the page allocator (see xhci_spad.h). The
    pages need no kernel mapping of their own: only the controller uses them,
-   so each is zeroed through the temporary mapping and left unmapped. All of
-   it is below 4 GB, as a controller without 64-bit addressing (HCCPARAMS1.AC64
-   clear) needs. */
+   so each is zeroed through a short mapping (memman/physmap.h) and left
+   unmapped. All of it is below 4 GB, as a controller without 64-bit
+   addressing (HCCPARAMS1.AC64 clear) needs. */
 
 #include "xhci_spad.h"
 #include "pmm.h"
+#include "memman/physmap.h"
 
 #define ENTRIES_PER_PAGE (PAGE_SIZE / sizeof(uint64_t))
 
@@ -17,24 +18,16 @@ static uint32_t array_pages(uint32_t count) {
     return (count + ENTRIES_PER_PAGE - 1) / ENTRIES_PER_PAGE;
 }
 
-static void zero_page(paddr_t p) {
-    volatile uint32_t *v = (volatile uint32_t *)paging_temp_map(p);
-    for (uint32_t i = 0; i < PAGE_SIZE / 4; i++) v[i] = 0;
-    paging_temp_unmap();
-}
-
 static void set_entry(paddr_t array, uint32_t i, uint64_t value) {
-    volatile uint64_t *v = (volatile uint64_t *)
-        paging_temp_map(array + (i / ENTRIES_PER_PAGE) * PAGE_SIZE);
+    volatile uint64_t *v = phys_map(array + (i / ENTRIES_PER_PAGE) * PAGE_SIZE);
     v[i % ENTRIES_PER_PAGE] = value;
-    paging_temp_unmap();
+    phys_unmap(v);
 }
 
 uint64_t xhci_spad_entry(paddr_t array, uint32_t i) {
-    volatile uint64_t *v = (volatile uint64_t *)
-        paging_temp_map(array + (i / ENTRIES_PER_PAGE) * PAGE_SIZE);
+    volatile uint64_t *v = phys_map(array + (i / ENTRIES_PER_PAGE) * PAGE_SIZE);
     uint64_t value = v[i % ENTRIES_PER_PAGE];
-    paging_temp_unmap();
+    phys_unmap(v);
     return value;
 }
 
@@ -53,12 +46,12 @@ int xhci_spad_build(uint32_t count, paddr_t *array) {
     uint32_t ap = array_pages(count);
     paddr_t arr = pmm_alloc_pages_low(ap);
     if (!arr) return -1;
-    for (uint32_t k = 0; k < ap; k++) zero_page(arr + k * PAGE_SIZE);
+    for (uint32_t k = 0; k < ap; k++) phys_zero(arr + k * PAGE_SIZE);
 
     for (uint32_t i = 0; i < count; i++) {
         paddr_t pg = pmm_alloc_pages_low(1);
         if (!pg) { release(arr, i, count); return -1; }
-        zero_page(pg);
+        phys_zero(pg);
         set_entry(arr, i, pg);
     }
     *array = arr;

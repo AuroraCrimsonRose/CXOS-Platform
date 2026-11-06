@@ -56,6 +56,11 @@ void sysfile_init(void);
    actually being released rather than leaked. */
 int sysfile_open_count(void);
 
+/* Advisory locks held, every file together, and how many there may be: for
+   the self-tests that each comes from the lock cache and goes back to it. */
+#define MAX_FILE_LOCKS 64
+int sysfile_lock_count(void);
+
 /* Threads waiting in a FLOCK_WAIT lock, for the self-tests: one that left
    the wait any way at all, a kill included, is off the list. */
 int sysfile_lock_waiting(void);

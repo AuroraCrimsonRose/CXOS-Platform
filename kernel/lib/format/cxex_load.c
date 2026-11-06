@@ -227,6 +227,7 @@ int cxex_load(const uint8_t *file, size_t len,
                 uint32_t dst_off = cp_lo - pg;
                 for (uint32_t j = 0; j < n; j++) dst[dst_off + j] = file[src_off + j];
             }
+            if (ops->put_page) ops->put_page(ops->ctx, dst);
 
             if (ops->map_page(ops->ctx, pg, phys, prot) != 0)
                 return CXEX_LOAD_MAP_FAIL;

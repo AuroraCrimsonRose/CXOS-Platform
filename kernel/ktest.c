@@ -16,6 +16,7 @@
 #include "ktest.h"
 #include "pmm.h"
 #include "arch/paging.h"
+#include "memman/physmap.h"
 #include "heap.h"
 #include "rsa.h"
 #include "console.h"
@@ -1372,10 +1373,10 @@ static int test_xhci_scratchpad(void) {
             }
     }
     for (uint32_t i = 0; i < SPAD_TEST_N && ok; i++) {
-        const volatile uint32_t *v = (const volatile uint32_t *)paging_temp_map(pages[i]);
+        const volatile uint32_t *v = phys_map(pages[i]);
         for (uint32_t w = 0; w < PAGE_SIZE / 4; w++)
             if (v[w]) { ok = 0; break; }
-        paging_temp_unmap();
+        phys_unmap(v);
         if (!ok) klog_u32("KTEST", SEV_FAIL, "scratchpad: page not zero, entry ", i,
                           LOG_COLOR_VALUE, "");
     }
@@ -1396,12 +1397,12 @@ static int test_xhci_scratchpad(void) {
  * checked here, and the boot failing when pmm.c or fb.c is pointed back at
  * them is the sabotage that shows nothing reads them. */
 
-/* 16 bits of low memory, through the scratch mapping: x86-64 does not keep the
+/* 16 bits of low memory, through a short mapping: x86-64 does not keep the
    loader's view of it at KERNEL_VBASE. `phys` must not straddle a page. */
 static uint16_t low_u16(paddr_t phys) {
-    const volatile uint8_t *page = paging_temp_map(phys & ~(paddr_t)0xFFF);
-    uint16_t v = *(const volatile uint16_t *)(page + (phys & 0xFFF));
-    paging_temp_unmap();
+    const volatile uint16_t *at = phys_map(phys);
+    uint16_t v = *at;
+    phys_unmap(at);
     return v;
 }
 
@@ -3511,6 +3512,8 @@ void ktest_run(void) {
     total++; passed += report("hooks: chaos yields replay from their seed", ktest_chaos());
     total++; passed += report("hooks: the lock order is checked",  ktest_lock_order());
     total++; passed += report("hooks: the scheduler takes its lock", ktest_sched_lock());
+    total++; passed += report("hooks: physical memory is mapped by the rules", ktest_physmap());
+    total++; passed += report("hooks: kernel stacks take their lock", ktest_kstack_lock());
     total++; passed += report("every allocation of six creations fails cleanly", ktest_alloc_sweeps());
     total++; passed += report("every syscall from ring 3: refusals take nothing", ktest_syscall_census());
     total++; passed += report("every allocation of 13 syscalls fails cleanly", ktest_syscall_sweeps());

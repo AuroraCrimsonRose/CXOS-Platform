@@ -52,6 +52,7 @@ enum lock_rank {
     LR_OCACHE,         /* memman/ocache.c, per cache  > ocache-slots, pagedb */
     LR_OCACHE_SLOTS,   /* memman/ocache.c slots_lock */
     LR_DMA,            /* memman/dma.c */
+    LR_KSTACK,         /* memman/kstack.c slots_lock: nothing under it */
     LR_PAGEDB,         /* memman/pagedb.c */
     LR_COUNT
 };

@@ -21,6 +21,7 @@
 #include "object/kthread.h"   /* kthread_end: a thread's handles */
 #include "sync/spinlock.h"   /* sched_lock */
 #include "sync/lockorder.h"  /* no lock but sched_lock across a switch */
+#include "memman/physmap.h"  /* nor a mapped frame */
 #include "percpu.h"          /* the running thread is the CPU's */
 
 
@@ -398,6 +399,8 @@ static void switch_to(int next) {
        this one, which the thread switched to gives back. */
     lockorder_assert_switch(&sched_lock, "thread switch holding");
 #endif
+    /* So is a frame mapped through memman/physmap.h, in every build. */
+    phys_assert_none("thread switch with a frame mapped:");
     uint64_t now = timer_now_ns();
     struct thread *prev = self();
     if (now > prev->run_since) prev->cpu_ns += now - prev->run_since;

@@ -118,12 +118,16 @@ paddr_t paging_get_phys(uintptr_t virt);
 int     paging_is_user(uintptr_t virt);           /* mapped and reachable from user mode */
 int     paging_is_user_writable(uintptr_t virt);  /* the above, and writable from user mode */
 
-/* Map an arbitrary physical frame into a reserved scratch page so the kernel
-   can read and write it; unmap when done. One frame at a time on x86-32; on
-   x86-64 it is the frame's place in the direct map, and unmapping does
-   nothing. */
-void *paging_temp_map(paddr_t phys);
-void  paging_temp_unmap(void);
+/* The architecture's half of memman/physmap.h, which is what everything
+   else calls. paging_phys_slot puts page-aligned `frame` (below RAM_REACH)
+   in slot `slot` of CPU `cpu` and returns where; paging_phys_slot_clear
+   empties the slot. Interrupts are off throughout, and slots are used and
+   cleared last in first out. x86-64: the frame's place in the direct map,
+   nothing to fill or clear; x86-32: one page per slot per CPU.
+   paging_map_ram maps RAM for the kernel for good (the page database). */
+void *paging_phys_slot(uint32_t cpu, uint32_t slot, paddr_t frame);
+void  paging_phys_slot_clear(uint32_t cpu, uint32_t slot);
+void *paging_map_ram(paddr_t phys, uint64_t len);
 
 /* ---- address spaces ----------------------------------------------------------
  * Each space shares the kernel half and has its own user half. */

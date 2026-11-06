@@ -7,6 +7,7 @@
 #include "memman/ocache.h"
 #include "memman/heap.h"
 #include "pmm.h"
+#include "memman/physmap.h"
 #include "job.h"
 #include "string.h"
 #include "cxk_abi.h"
@@ -88,8 +89,7 @@ paddr_t kmem_page(struct kmem *m, uint32_t index) {
         /* Zeroed before anyone can see it: a page off the free list may
            hold another process's memory. */
         p = pmm_alloc_reserved();
-        memset(paging_temp_map(p), 0, PAGE_SIZE);
-        paging_temp_unmap();
+        phys_zero(p);
         m->pages[index] = p;
         m->resident++;
     }

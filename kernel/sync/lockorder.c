@@ -21,6 +21,7 @@ static const char *const names[LR_COUNT] = {
     [LR_OCACHE_SLOTS] = "ocache-slots",
     [LR_HEAP]         = "heap",
     [LR_DMA]          = "dma",
+    [LR_KSTACK]       = "kstack",
     [LR_PAGEDB]       = "pagedb",
 };
 

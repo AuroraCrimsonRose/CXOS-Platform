@@ -20,6 +20,7 @@
 #include "pmm.h"
 #include "memman/buddy.h"
 #include "memman/pagedb.h"
+#include "memman/physmap.h"
 #include "boot/cxbi.h"
 #include "sync/spinlock.h"
 #include "panic.h"
@@ -116,7 +117,7 @@ static void place_database(uint64_t bytes) {
         const struct cxk_mmap_entry *e = cxbi_mmap(i);
         if (e->type != CXBI_MEM_USABLE) continue;
         uint64_t lo = up4k(e->base), hi = down4k(e->base + e->length);
-        if (hi > DIRECT_MAP_SIZE) hi = DIRECT_MAP_SIZE;
+        if (hi > RAM_REACH) hi = RAM_REACH;
         if (hi < lo + bytes || hi - bytes <= db_start) continue;
         uint64_t rlo, rhi;
         if (overlap(hi - bytes, hi, &rlo, &rhi)) continue;
@@ -132,12 +133,12 @@ void pmm_init(void) {
         const struct cxk_mmap_entry *e = cxbi_mmap(i);
         if (e->type == CXBI_MEM_USABLE && e->base + e->length > top) top = e->base + e->length;
     }
-    if (top > DIRECT_MAP_SIZE) top = DIRECT_MAP_SIZE;
+    if (top > RAM_REACH) top = RAM_REACH;
     uint64_t npages = down4k(top) / PAGE_SIZE;
     if (npages > PFN_LIMIT) npages = PFN_LIMIT;
 
     place_database(up4k(npages * sizeof(struct page)));
-    struct page *db = (struct page *)(uintptr_t)(DIRECT_MAP_BASE + db_start);
+    struct page *db = phys_map_lasting(db_start, db_bytes);
     if (buddy_init(&b, db, (uint32_t)npages, LOW_ZONE_END_PFN) != 0)
         kpanic("pmm: the low zone does not end on a block boundary");
 
@@ -189,6 +190,18 @@ int pmm_free_checked(paddr_t first, size_t count) {
     if (pfn > 0xFFFFFFFFu) return -1;
     uint32_t f = spin_lock(&lock);
     int rc = buddy_free(&b, (uint32_t)pfn, (uint32_t)count);
+#if CXK_TEST_HOOKS
+    /* Free pages hold PMM_POISON, so a frame handed on unzeroed shows on
+       every boot, not only when its last owner happened to leave something.
+       Only once the free is accepted (a refused one is still someone's),
+       and under the lock, before anyone can take the page again. */
+    if (rc == 0)
+        for (uint64_t i = 0; i < count; i++) {
+            uint64_t *v = phys_map(first + i * PAGE_SIZE);
+            for (uint32_t j = 0; j < PAGE_SIZE / sizeof *v; j++) v[j] = PMM_POISON;
+            phys_unmap(v);
+        }
+#endif
     spin_unlock(&lock, f);
     return rc == 0 ? 0 : -1;
 }

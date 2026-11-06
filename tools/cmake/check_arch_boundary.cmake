@@ -19,6 +19,13 @@
 #     The headers directly in kernel/arch/ are the interface every
 #     architecture implements, and are what generic code includes.
 #
+# Outside kernel/arch/ and kernel/test/ a file may not name the direct map
+# or the physical window (DIRECT_MAP_*, PHYS_WINDOW_*), nor the
+# architecture's half of memman/physmap.h (paging_phys_slot, paging_map_ram),
+# except memman/physmap.c itself: physical memory is reached through
+# phys_map, so a port without a direct map changes only the architecture
+# (roadmap 1.9c). Device registers go through paging_map_phys.
+#
 # Outside kernel/arch/, kernel/platform/ and kernel/test/ a file may not
 # include a platform's own headers, anything under platform/<name>/: generic
 # code reaches the machine's fixed devices through kernel/platform/*.h. The
@@ -35,6 +42,7 @@ set(asm_re   "(^|[^A-Za-z0-9_.])(__asm__|__asm|asm)[ \t]*(volatile|__volatile__|
 set(intr_re  "__builtin_ia32_|#[ \t]*include[ \t]*<[A-Za-z0-9_]*(intrin|cpuid)[.]h>")
 set(incl_re  "#[ \t]*include[ \t]*[\"<][^\">]*arch/[A-Za-z0-9_]+/")
 set(plat_re  "#[ \t]*include[ \t]*[\"<][^\">]*platform/[A-Za-z0-9_]+/")
+set(phys_re  "DIRECT_MAP_|PHYS_WINDOW_|paging_phys_slot|paging_map_ram")
 
 file(GLOB_RECURSE sources LIST_DIRECTORIES false "${KDIR}/*.c" "${KDIR}/*.h")
 file(GLOB_RECURSE asmfiles LIST_DIRECTORIES false "${KDIR}/*.asm" "${KDIR}/*.S" "${KDIR}/*.s")
@@ -56,6 +64,9 @@ foreach(f ${sources})
     if(NOT rel MATCHES "^platform/")
         list(APPEND rules plat)
     endif()
+    if(NOT rel STREQUAL "memman/physmap.c")
+        list(APPEND rules phys)
+    endif()
     foreach(rule ${rules})
         file(STRINGS "${f}" hits REGEX "${${rule}_re}")
         foreach(h ${hits})
@@ -66,6 +77,8 @@ foreach(f ${sources})
                 set(why "a CPU-specific intrinsic")
             elseif(rule STREQUAL "incl")
                 set(why "an architecture's private header")
+            elseif(rule STREQUAL "phys")
+                set(why "physical memory reached around memman/physmap.h")
             else()
                 set(why "a platform's own header")
             endif()

@@ -39,6 +39,10 @@ typedef uint64_t paddr_t;
 #define PHYS_WINDOW_BASE 0xFFFFC00000000000ull
 #define PHYS_WINDOW_SIZE 0x0000200000000000ull
 
+/* The most physical RAM the kernel can use: what the direct map holds.
+   Generic code names this, never the direct map (memman/physmap.h). */
+#define RAM_REACH        DIRECT_MAP_SIZE
+
 #define KVA_HEAP         0xFFFFE00000000000ull   /* growing up to KVA_OCACHE */
 #define KVA_OCACHE       0xFFFFE08000000000ull
 #define KVA_KSTACKS      0xFFFFE10000000000ull

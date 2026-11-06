@@ -25,6 +25,9 @@
 #include "sync/spinlock.h"
 #include "sync/lockorder.h"
 #include "cpu/percpu.h"
+#include "memman/physmap.h"
+#include "memman/pagedb.h"
+#include "arch/cpu_ops.h"
 
 static struct ocache hk_cache;
 
@@ -762,4 +765,166 @@ int ktest_sched_lock(void) {
 #else
 int ktest_lock_order(void) { return 0; }   /* no checker built in: fails, never skips */
 int ktest_sched_lock(void) { return 0; }
+#endif
+
+#if CXK_TEST_HOOKS
+/* ---- physical memory (memman/physmap.h, 1.9c) ----
+   Two frames of its own; the checker is armed around each failure, so a
+   failure is counted rather than a panic. Nothing returns with a mapping
+   open: each result is kept and checked after the unmaps. */
+static volatile int pm_ran;
+static void pm_helper(void) { pm_ran = 1; }
+
+/* A page of the kernel's image: never the allocator's, so freeing it is
+   refused, and it must come through that refusal as it was. */
+#define PM_MARK 0x1C9C1C9C1C9C1C9Cull
+static const volatile uint64_t pm_image_page[PAGE_SIZE / 8]
+    __attribute__((aligned(PAGE_SIZE))) = { PM_MARK };
+
+static int physmap_steps(paddr_t a, paddr_t b) {
+    uint32_t n = 0, code;
+    int irq0 = arch_irqs_enabled();
+    if (phys_map_depth() != 0) return 1;
+
+    /* open: interrupts off, the offset kept; nested, the same frame twice */
+    uint64_t *va = phys_map(a + 16);
+    int irq_in = arch_irqs_enabled();
+    uint32_t d1 = phys_map_depth();
+    va[0] = 0x1111;
+    uint64_t *vb = phys_map(b);
+    uint32_t d2 = phys_map_depth();
+    vb[0] = 0x2222;
+    uint64_t *va2 = phys_map(a);
+    uint64_t seen = va2[2];
+    phys_unmap(va2);
+    phys_unmap(vb);
+    phys_unmap(va);
+    if (irq_in) return 2;
+    if (((uintptr_t)va & (PAGE_SIZE - 1)) != 16) return 3;
+    if (d1 != 1 || d2 != 2) return 4;
+    if (seen != 0x1111) return 5;
+    if (phys_map_depth() != 0 || arch_irqs_enabled() != irq0) return 6;
+
+    /* not the most recent: counted, and nothing ended */
+    physmap_test_arm();
+    va = phys_map(a);
+    vb = phys_map(b);
+    phys_unmap(va);
+    uint32_t d_after = phys_map_depth();
+    phys_unmap(vb);
+    phys_unmap(va);
+    code = physmap_test_disarm(&n);
+    if (code != PM_NOT_LAST || n != 1 || d_after != 2) return 7;
+
+    /* nothing open */
+    physmap_test_arm();
+    phys_unmap(va);
+    code = physmap_test_disarm(&n);
+    if (code != PM_NONE_OPEN || n != 1) return 8;
+
+    /* one more than PHYS_MAP_DEPTH: refused, nothing kept */
+    void *v[PHYS_MAP_DEPTH + 1];
+    physmap_test_arm();
+    for (uint32_t i = 0; i <= PHYS_MAP_DEPTH; i++) v[i] = phys_map(a);
+    uint32_t full = phys_map_depth();
+    if (v[PHYS_MAP_DEPTH]) phys_unmap(v[PHYS_MAP_DEPTH]);   /* a broken refusal */
+    for (uint32_t i = PHYS_MAP_DEPTH; i-- > 0; ) phys_unmap(v[i]);
+    code = physmap_test_disarm(&n);
+    if (code != PM_DEPTH || n != 1 || v[PHYS_MAP_DEPTH] || full != PHYS_MAP_DEPTH) return 9;
+
+    /* past RAM_REACH: refused, nothing kept, interrupts as they were */
+    physmap_test_arm();
+    void *far = phys_map(RAM_REACH);
+    int irq_far = arch_irqs_enabled();
+    uint32_t d_far = phys_map_depth();
+    if (far) phys_unmap(far);   /* a broken refusal still leaves nothing open */
+    code = physmap_test_disarm(&n);
+    if (code != PM_REACH || n != 1 || far || d_far != 0 || irq_far != irq0) return 10;
+
+    /* a thread switch with one open (every switch until this thread runs
+       again counts) */
+    pm_ran = 0;
+    if (thread_create("physmap-switch", pm_helper) < 0) return 11;
+    physmap_test_arm();
+    va = phys_map(a);
+    yield();
+    phys_unmap(va);
+    code = physmap_test_disarm(&n);
+    if (code != PM_SWITCH || n < 1) return 12;
+    if (!hk_wait(&pm_ran, 2000)) return 13;
+
+    /* phys_zero clears all of a frame */
+    va = phys_map(a);
+    for (uint32_t i = 0; i < PAGE_SIZE / 8; i++) va[i] = ~0ull;
+    phys_unmap(va);
+    phys_zero(a);
+    uint64_t any = 0;
+    va = phys_map(a);
+    for (uint32_t i = 0; i < PAGE_SIZE / 8; i++) any |= va[i];
+    phys_unmap(va);
+    if (any) return 14;
+
+    /* a refused free leaves the page alone */
+    paddr_t img = (paddr_t)((uintptr_t)pm_image_page - KERNEL_VBASE);
+    if (pmm_free_checked(img, 1) != -1) return 15;
+    if (pm_image_page[0] != PM_MARK || pm_image_page[1] != 0) return 16;
+    return 0;
+}
+
+int ktest_physmap(void) {
+    uint32_t threads0 = sched_thread_count();
+    paddr_t a = pmm_alloc(), b = pmm_alloc();
+    int step = (a && b) ? physmap_steps(a, b) : 17;
+    physmap_test_disarm(0);
+    /* freed, a frame holds PMM_POISON in every word */
+    if (a) {
+        pmm_free(a);
+        const uint64_t *v = phys_map(a);
+        uint32_t bad = 0;
+        for (uint32_t i = 0; i < PAGE_SIZE / 8; i++) bad += v[i] != PMM_POISON;
+        phys_unmap(v);
+        if (bad && !step) step = 18;
+    }
+    if (b) pmm_free(b);
+    if (!hk_settle(threads0) && !step) step = 19;
+    if (step) klog_u32("KTEST", SEV_FAIL, "physmap: step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    return step == 0;
+}
+#else
+int ktest_physmap(void) { return 0; }   /* no checker to arm: fails, never skips */
+#endif
+
+#if CXK_LOCK_CHECK
+/* ---- kernel stacks (memman/kstack.c, 1.9c) ----
+   A slot is claimed and given back under the kstack lock, and the pages
+   are mapped and freed outside it. Under a test lock of the same rank each
+   taking is one failure: an alloc takes it twice (claim, publish), a free
+   twice (claim, release). */
+static spinlock_t lk_kstack = SPINLOCK_INIT(LR_KSTACK);
+
+int ktest_kstack_lock(void) {
+    uint32_t n = 0, code, f;
+    uintptr_t base = 0;
+    int step = 0;
+    lockorder_test_arm();
+    f = spin_lock(&lk_kstack);
+    uintptr_t top = kstack_alloc(8192, -1, &base);
+    spin_unlock(&lk_kstack, f);
+    code = lockorder_test_disarm(&n);
+    if (!top) step = 1;
+    else if (code != LO_ORDER || n != 2) step = 2;
+    if (top) {
+        lockorder_test_arm();
+        f = spin_lock(&lk_kstack);
+        kstack_free(base);
+        spin_unlock(&lk_kstack, f);
+        code = lockorder_test_disarm(&n);
+        if ((code != LO_ORDER || n != 2) && !step) step = 3;
+    }
+    if (lockorder_depth() != 0 && !step) step = 4;
+    if (step) klog_u32("KTEST", SEV_FAIL, "kstack lock: step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    return step == 0;
+}
+#else
+int ktest_kstack_lock(void) { return 0; }
 #endif

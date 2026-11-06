@@ -1,0 +1,167 @@
+# Phase 1.9c's sabotages, run by `cxk test sabotage`.
+# Each must turn red exactly the self-tests named, at the reason named.
+# Format: docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage".
+# The physmap entries each land in the one self-test, so none share a boot;
+# the kstack, file-lock and X entries ride along with them.
+# Sabotaged by hand, as each makes every boot panic rather than a test go
+# red: the loader never giving back the page it filled (cxex_load.c's
+# put_page), so the next mapping finds the stack full. Not here: poisoning
+# a refused free (ktest_arch's refused free of a kernel text page would
+# overwrite the kernel's own code). The commit lists what each did.
+
+# ---- the checker (memman/physmap.c) ----
+
+[unmap-not-last]
+# an unmap of an older mapping ends the newest instead
+expect = hooks: physical memory is mapped by the rules @ physmap: step 7
+group = a
+edit = kernel/memman/physmap.c
+<<<
+    if (mine.e[top].at != page) {
+        fail(PM_NOT_LAST, "unmapped, not the most recent:", page);
+        return;
+    }
+===
+>>>
+
+[unmap-none-open]
+# an unmap with nothing open passes silently
+expect = hooks: physical memory is mapped by the rules @ physmap: step 8
+group = b
+edit = kernel/memman/physmap.c
+<<<
+    if (mine.n == 0) { fail(PM_NONE_OPEN, "unmapped with none open:", page); return; }
+===
+    if (mine.n == 0) return;
+>>>
+
+[depth-one-more]
+# a ninth mapping is taken (the list made room for it)
+expect = hooks: physical memory is mapped by the rules @ physmap: step 9
+group = c
+edit = kernel/memman/physmap.h
+<<<
+    struct { paddr_t frame; uintptr_t at; uint32_t flags; } e[PHYS_MAP_DEPTH];
+===
+    struct { paddr_t frame; uintptr_t at; uint32_t flags; } e[PHYS_MAP_DEPTH + 1];
+>>>
+edit = kernel/memman/physmap.c
+<<<
+    if (mine.n >= PHYS_MAP_DEPTH) {
+===
+    if (mine.n >= PHYS_MAP_DEPTH + 1) {
+>>>
+
+[reach-unchecked]
+# a frame past the direct map is mapped anyway
+expect = hooks: physical memory is mapped by the rules @ physmap: step 10
+group = d
+edit = kernel/memman/physmap.c
+<<<
+    void *v = frame < RAM_REACH ? paging_phys_slot(cpu_this()->index, mine.n, frame) : 0;
+===
+    void *v = paging_phys_slot(cpu_this()->index, mine.n, frame);
+>>>
+
+[switch-unchecked]
+# a thread switch with a frame mapped goes unremarked
+expect = hooks: physical memory is mapped by the rules @ physmap: step 12
+group = e
+edit = kernel/cpu/sched.c
+<<<
+    phys_assert_none("thread switch with a frame mapped:");
+===
+>>>
+
+[irqs-on-while-mapped]
+# interrupts come back on as soon as the frame is mapped
+expect = hooks: physical memory is mapped by the rules @ physmap: step 2
+edit = kernel/memman/physmap.c
+<<<
+    uint32_t f = arch_irq_save();
+    paddr_t frame = phys & ~(paddr_t)(PAGE_SIZE - 1);
+===
+    uint32_t f = arch_irq_save();
+    arch_irq_restore(f);
+    paddr_t frame = phys & ~(paddr_t)(PAGE_SIZE - 1);
+>>>
+
+# ---- freed and handed-out frames ----
+
+[free-not-poisoned]
+# a freed frame keeps what its owner left
+expect = hooks: physical memory is mapped by the rules @ physmap: step 18
+group = f
+edit = kernel/memman/pagedb.c
+<<<
+    if (rc == 0)
+        for (uint64_t i = 0; i < count; i++) {
+===
+    if (rc == 0 && count == 0)
+        for (uint64_t i = 0; i < count; i++) {
+>>>
+
+[stack-not-zeroed]
+# a new process's stack pages come straight off the free list
+expect = x: memory: a new process's stack is zeroed @ step 52
+group = a
+edit = kernel/cpu/spawn.c
+<<<
+        phys_zero(p);
+===
+>>>
+
+# ---- kernel stacks take their lock (memman/kstack.c) ----
+
+[kstack-publish-unlocked]
+expect = hooks: kernel stacks take their lock @ kstack lock: step 2
+group = a
+edit = kernel/memman/kstack.c
+<<<
+    f = spin_lock(&slots_lock);
+    slots[i].owner = owner;
+    slots[i].base  = base;
+    live++;
+    spin_unlock(&slots_lock, f);
+===
+    slots[i].owner = owner;
+    slots[i].base  = base;
+    live++;
+>>>
+
+[kstack-release-unlocked]
+expect = hooks: kernel stacks take their lock @ kstack lock: step 3
+group = b
+edit = kernel/memman/kstack.c
+<<<
+    f = spin_lock(&slots_lock);
+    slots[i].base = 0;
+    live--;
+    spin_unlock(&slots_lock, f);
+===
+    slots[i].base = 0;
+    live--;
+>>>
+
+# ---- file locks come from an ocache (cpu/sysfile.c) ----
+
+[flock-no-cap]
+expect = advisory locks follow the open file @ failed at step 60
+group = c
+edit = kernel/cpu/sysfile.c
+<<<
+    if (ocache_live(&lock_cache) >= MAX_FILE_LOCKS) return E_NO_RESOURCES;
+===
+>>>
+
+[flock-dropped-not-freed]
+# the locks given back stay counted, so the pool stays full: the later
+# tests that take a file lock are refused one
+expect = advisory locks follow the open file @ failed at step 61
+expect = process kill: every wait, both safe points @ kill test failed at step 8
+expect = ipc: handles in messages @ ipc handles test failed at step 71
+edit = kernel/cpu/sysfile.c
+<<<
+        ocache_free(&lock_cache, l);
+===
+>>>

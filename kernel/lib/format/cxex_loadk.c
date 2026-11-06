@@ -16,6 +16,7 @@
 #include "cxex_load.h"
 #include "pmm.h"
 #include "arch/paging.h"
+#include "memman/physmap.h"
 #include "vmregion.h"
 #include "sched.h"
 #include "syspage.h"          /* USER_IMAGE_END */
@@ -24,12 +25,17 @@ static void *k_get_page(void *ctx, uint64_t *out_phys) {
     (void)ctx;
     paddr_t phys = pmm_alloc();
     if (!phys) return NULL;
-    /* reach the frame through the temp-map window (works for any frame, not just
-       boot-mapped low RAM); the loader writes the page's contents through it. */
-    uint8_t *v = (uint8_t *)paging_temp_map(phys);
+    /* reach the frame through a short mapping (memman/physmap.h), which
+       k_put_page ends once the loader has written the page's contents */
+    uint8_t *v = (uint8_t *)phys_map(phys);
     for (uint32_t i = 0; i < 4096u; i++) v[i] = 0;     /* arrive zeroed (BSS) */
     *out_phys = phys;
     return v;
+}
+
+static void k_put_page(void *ctx, void *page) {
+    (void)ctx;
+    phys_unmap(page);
 }
 
 static int k_map_page(void *ctx, uint32_t virt, uint64_t phys, uint32_t prot) {
@@ -63,6 +69,7 @@ const struct cxex_load_ops cxex_kernel_load_ops = {
     0,              /* ctx: current space for now */
     USER_IMAGE_END, /* va_limit: below the stack, arguments and system page (syspage.h) */
     k_get_page,
+    k_put_page,
     k_map_page,
     k_charge
 };

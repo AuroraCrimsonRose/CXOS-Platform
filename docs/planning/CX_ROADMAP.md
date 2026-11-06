@@ -982,6 +982,35 @@ Independent of the order above, and small enough to land whenever convenient:
      a reaper that checks a thread is off every CPU, IPIs to end a halt.
      Self-tests 204. Sabotages: `tests/sabotage/1.9b.sab`, 12 of 12. No
      ABI change.
+   - **1.9c (2026-11-06), done:** a frame is reached by its physical
+     address only through `kernel/memman/physmap.h`: `phys_map` /
+     `phys_unmap` (per CPU, nested last in first out up to 8, interrupts
+     off between), `phys_zero`, and `phys_map_lasting` for the page
+     database; the arch gives per-CPU slots, the direct map on x86-64.
+     An unmap out of order, an unmap of nothing, a ninth mapping, a frame
+     past `RAM_REACH` and a thread switch with one open each panic
+     (Serenity `quickmap_page`, Haiku `GetPageCurrentCPU`, WRK
+     `MiMapPageInHyperSpace`, XNU `PHYSMAP_PTOV_check`). The build refuses
+     the direct map's names outside the arch and `physmap.c`. Every
+     `paging_temp_map` user converted, and the ones that never unmapped
+     (the system page, the kernel's CXEX loader, through a new `put_page`
+     op) now do. Test-hook builds fill a freed frame with `PMM_POISON`;
+     the first boot with it found new processes' user stacks handed out
+     unzeroed (`spawn.c`), now cleared. Allocation paths: the kernel
+     stacks' slots took no lock (now `LR_KSTACK`), file locks were a
+     static array (now an `ocache`, capped at 64). Design:
+     `docs/kernel/CX_PHYS_MEMORY.md`. Tests: a boot test of the checker
+     (nesting, the offset, interrupts, each failure counted with it
+     armed, `phys_zero`, poisoning, a refused free left alone); a boot
+     test that a kernel stack's alloc and free each take its lock twice;
+     four file-lock steps (one object per lock, an allocation failure
+     refused cleanly, the cap, given back); an X test that a new
+     process's stack is zeroed. Hand sabotage: the loader not giving back
+     its page panics every boot (the switch check). Untested: a refused
+     free poisoned (its sabotage overwrites kernel text); the panic
+     path's unchecked mapping. Left for 1.9e: the file system layer and
+     `sysfile`'s graveyard and waiters, which take no lock. Self-tests
+     207. Sabotages: `tests/sabotage/1.9c.sab`, 12 of 12. No ABI change.
 10. A documentation pass: the README and `safety/CX_SAFETY.md` §1 brought
     up to the branch as it stands.
 

@@ -668,6 +668,24 @@ fn r_read(arg: u64) -> i32 {
     return 0;
 }
 
+// ==================== memory (roadmap 1.9c) ====================
+
+// 52: the main thread's stack arrives zeroed. spawn.c maps its 64 pages
+// below USER_ARGS_BASE from the page allocator, whose free pages hold 0xA5
+// in every byte in a test-hook build (PMM_POISON); the lowest 16 are never
+// reached by a program this shallow, so they still hold what they came with.
+const MAIN_STACK_BOTTOM: u64 = 0xBFFBF000;   // spawn.c: USER_STACK_TOP - 64 pages
+
+fn m_stack_zeroed(arg: u64) -> i32 {
+    let p: *u64 = MAIN_STACK_BOTTOM as *u64;
+    let i: u32 = 0;
+    while (i < 16 * 512) {
+        if (p[i] != 0) { return 52; }
+        i = i + 1;
+    }
+    return 0;
+}
+
 // The names are what the boot reports, after "x: ".
 fn all() -> void {
     test_run("threads: create refusals",               t_create_refused,           30000);
@@ -692,6 +710,7 @@ fn all() -> void {
     test_run("limits: thread stacks, both ends",       l_ustack,                   30000);
     test_run("limits: a process's handles",            l_handles,                  60000);
     test_run("random: random_read",                    r_read,                     30000);
+    test_run("memory: a new process's stack is zeroed", m_stack_zeroed,            30000);
 }
 
 fn _start() -> void { test_main(all); }

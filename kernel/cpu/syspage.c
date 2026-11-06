@@ -9,6 +9,7 @@
 #include "systable.h"
 #include "pmm.h"
 #include "arch/usermode.h"
+#include "memman/physmap.h"
 
 /* Every number the table can hold has a slot, and the slots fit the page. */
 _Static_assert(SYSCALL_TABLE_SIZE * SYSPAGE_STUB_SIZE <= 4096u,
@@ -23,9 +24,11 @@ void syspage_fill(uint8_t *page) {
 int syspage_map(uintptr_t at, paddr_t *phys_out) {
     paddr_t phys = pmm_alloc();
     if (!phys) return -1;
-    /* Filled through the temp-map window, as the loader fills an image page:
+    /* Filled through a short mapping, as the loader fills an image page:
        the user mapping below is never writable, not even for a moment. */
-    syspage_fill((uint8_t *)paging_temp_map(phys));
+    uint8_t *page = phys_map(phys);
+    syspage_fill(page);
+    phys_unmap(page);
     if (paging_map_user(at, phys, VM_EXEC) != 0) { pmm_free(phys); return -1; }
     if (phys_out) *phys_out = phys;
     return 0;
