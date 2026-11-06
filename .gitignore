@@ -103,3 +103,7 @@ repomix-output.*
 AGENTS.md
 .cursorrules
 tools/bootlog.txt
+
+# local-only: the rig's hardware report, and an unfiled review
+tools/rig.hw
+docs/reviews/2026-10-31/
