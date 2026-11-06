@@ -55,15 +55,23 @@
 #define IST_NMI           2
 #define IST_DEBUG         3
 #define IST_MACHINE_CHECK 4
+#define IST_STACKS        4     /* IST1..IST4 */
 
 void gdt64_init(void);
 
-/* For the bring-up self-tests: where the GDT is, descriptor n, the TSS
+/* Another CPU's (1.9d, smp.c): its own GDT and TSS at `index`, loaded on
+   the CPU calling, with the IST stacks starting at `ist_lo` (8 KiB each) and
+   `rsp0_top` the RSP0 it falls back to. -1 past CPU_MAX. */
+int  gdt64_init_cpu(unsigned index, const uintptr_t ist_lo[IST_STACKS], uintptr_t rsp0_top);
+#define GDT64_IST_STACK_SIZE 8192
+
+/* For the bring-up self-tests, of the calling CPU's: where the GDT is, descriptor n, the TSS
    descriptor's low quadword (its type says whether the TSS is busy, so whether
    ltr ran), and an IST stack's bounds. */
 uintptr_t gdt64_base(void);
 uint64_t  gdt64_descriptor(unsigned n);
 uint64_t  gdt64_tss_descriptor(void);
+uintptr_t gdt64_tss_base(void);
 void      gdt64_ist_stack(unsigned ist, uintptr_t *lo, uintptr_t *hi);
 
 /* RSP0, the stack an interrupt from ring 3 switches to and the syscall entry

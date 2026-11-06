@@ -48,5 +48,27 @@ uint32_t lapic_id(void);      /* this CPU's local APIC id - MSI destination */
 #define LAPIC_TIMER_VECTOR 56
 void lapic_timer_interrupt(struct registers *r);
 
+/* 1.9d: the IPI that wakes a parked CPU (arch/x86_64/smp.c), the next
+   vector, and what starting one needs: an INIT and a STARTUP aimed at one
+   local APIC ID (never a broadcast: the MADT says which exist), a fixed IPI,
+   and the AP's own local APIC brought up as the boot CPU's was, its timer
+   set up but not counting. Each returns 0, or -1 if the IPI was never
+   accepted (the delivery-status bit never cleared). */
+#define SMP_IPI_VECTOR 57
+int  lapic_send_init(uint32_t apic_id);
+int  lapic_send_startup(uint32_t apic_id, uint32_t page);
+int  lapic_send_fixed(uint32_t apic_id, uint8_t vector);
+void lapic_ap_init(void);
+uint32_t lapic_svr(void);
+uint32_t lapic_tpr(void);
+uint32_t lapic_lvt_timer(void);
+void lapic_timer_oneshot(uint32_t count, int unmask);
+
+/* The MADT's enabled processors, in its order (arch/x86/madt.h), read by
+   irq_controller_init. */
+struct madt_cpu;
+struct madt_cpu_counts;
+uint32_t apic_cpus(const struct madt_cpu **list, const struct madt_cpu_counts **counts);
+
 
 #endif

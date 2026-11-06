@@ -332,3 +332,22 @@ paddr_t addr_space_current(void) {
 void addr_space_switch(paddr_t root) {
     __asm__ volatile ("mov %0, %%cr3" : : "r"(root) : "memory");
 }
+
+/* The tables an AP turns paging on with (1.9d, smp.c): the kernel half, as
+   every space shares it, and `page`, the trampoline's, at its own address
+   and executable, as the instruction after the CR0 write is fetched from
+   it. The root comes from below 4 GiB: the trampoline loads CR3 from 32-bit
+   code. The kernel's own root cannot serve, its user half being empty by
+   rule (ktest_arch's t_kernel_half). The page is borrowed (VM_BORROWED), so
+   addr_space_release frees the tables and never the page. */
+int paging_boot_root(paddr_t page, paddr_t *root) {
+    paddr_t r = pmm_alloc_pages_low(1);
+    if (!r) return -1;
+    if (r >= 0x100000000ull) { pmm_free(r); return -1; }
+    pml4_init(table_at(r), table_at(kernel_root));
+    uint64_t *e = walk(r, page, 1, 0);
+    if (!e) { addr_space_release(r); return -1; }
+    *e = pte64_encode(page, VM_EXEC | VM_BORROWED, 0);
+    *root = r;
+    return 0;
+}

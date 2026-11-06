@@ -29,6 +29,7 @@ struct registers {
 #define SPURIOUS_VECTOR64 0xFF
 
 void idt64_init(void);
+void idt64_load(void);          /* the one table, on the calling CPU (an AP: smp.c) */
 
 /* A self-test arms a probe before it raises an exception on purpose. The probe
    sees every exception first and returns 1 if it dealt with it (the frame,

@@ -16,6 +16,7 @@
 #include "pat.h"
 #include "logging.h"
 #include "cpu/percpu.h"
+#include "smp.h"
 
 /* The CPU's own data behind GS (cpu/percpu.h), and ring 3's base, which
    swapgs swaps in, 0. Loading a selector into GS zeroes the base, so this
@@ -38,6 +39,22 @@ void arch_cpu_init(void) {
     pat_init();
     if (pat_wc_ready()) klog("PAT", SEV_OK, "entry 4 is write-combining");
     else                klog("PAT", SEV_WARN, "no page attribute table: the framebuffer stays cached by the MTRRs");
+}
+
+/* An AP's, in arch_cpu_init's order (1.9d, smp.c): its own GDT and TSS, its
+   struct cpu behind GS, its fallback RSP0, the one IDT; then what each CPU
+   holds in its own MSRs and the boot CPU set in its own: the PAT (CX_HW_
+   REPORT's "SMP must call pat_init on every AP", 1.8d) and the syscall
+   gate. The feature table is the boot CPU's, read once: the rig's eight
+   cores are one die. Its CR0 and CR4 came with the trampoline. */
+int arch_cpu_init_ap(struct cpu *c, const uintptr_t ist_lo[IST_STACKS], uintptr_t rsp0_top) {
+    if (gdt64_init_cpu(c->index, ist_lo, rsp0_top)) return -1;
+    cpu_local_bind(c);
+    arch_kernel_stack_set(rsp0_top);
+    idt64_load();
+    pat_init();
+    arch_syscall_gate_init();
+    return 0;
 }
 
 static int pat_ready;

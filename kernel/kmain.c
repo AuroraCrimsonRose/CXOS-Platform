@@ -58,6 +58,7 @@
 #include "cxfs.h"
 #include "pci.h"
 #include "ktest.h"
+#include "arch/smp.h"
 #include "kconfig.h"
 #include "klogo.h"
 #include "platform/platform.h"
@@ -382,6 +383,11 @@ void kmain_late(void) {
                  (uint32_t)(timer_evtimer_hz() / 1000u), LOG_COLOR_VALUE, "");
     else
         klog("TIMER", SEV_INFO, "the PIT stays the tick (1000 Hz)");
+
+    /* The other CPUs, parked (1.9d, arch/smp.h): after the local APIC and
+       the MADT, which name them, and the clock, which times their start;
+       before the drivers, so nothing is routed while they come up. */
+    (void)arch_smp_start();
 
     /* network: whichever NIC is on the bus (polled). netif_init() returns 0 if
        none is. It logs which driver bound, so this line no longer names one -

@@ -1011,6 +1011,36 @@ Independent of the order above, and small enough to land whenever convenient:
      path's unchecked mapping. Left for 1.9e: the file system layer and
      `sysfile`'s graveyard and waiters, which take no lock. Self-tests
      207. Sabotages: `tests/sabotage/1.9c.sab`, 12 of 12. No ABI change.
+   - **1.9d (2026-11-06), done:** every CPU the MADT lists as enabled is
+     started by the APIC ID it lists (`kernel/arch/x86/madt.c`, pure and
+     host-tested: disabled, duplicate and unreachable entries dropped),
+     one at a time: INIT, STARTUP, a second STARTUP only if needed, a
+     second to park, INIT again and its stacks freed if it never does
+     (Haiku `smp_boot_other_cpus`, XNU `intel_startCPU`; not Serenity's
+     broadcast). A trampoline at 0x8000 (`smp_tramp.asm`) goes real →
+     protected → long mode on a root of its own below 4 GiB
+     (`paging_boot_root`), the boot CPU's CR0 and CR4. Each AP: its own
+     GDT and TSS (`gdt64_init_cpu`, a table per CPU), `struct cpu` behind
+     GS (a table of 16), RSP0 and IST stacks, the one IDT, `pat_init`,
+     the syscall MSRs, its local APIC with the timer masked; then parked
+     in `sti; hlt`, woken only by `smp_call`'s IPI (vector 57). An AP's
+     interrupts are counted and acknowledged, nothing more. The
+     verification boot gives QEMU four CPUs at IDs 0, 1, 2, 4 and two
+     listed disabled (`BootVerifier.X86_64Smp`; `verify-boot --smp`).
+     Design: `docs/kernel/CX_SMP.md`. Tests: four host tests of the walk
+     (the rig's shape, QEMU's gaps, x2APIC and duplicates, the cap and
+     damage); boot tests that every enabled CPU runs by its own ID, that
+     each AP's tables, stacks, PAT, MSRs, control registers and local
+     APIC are as set (read on the AP), that its own timer interrupts it
+     twice, acknowledged, and that a parked AP halts and one call wakes
+     it once. Hand sabotages: the walk's enabled and duplicate filters
+     (host tests red); an AP without `cpu_local_bind` triple-faults, which
+     resets the whole machine every boot. Untested: a CPU that never parks
+     (QEMU starts every CPU it lists); the steps that an AP answers to its
+     own ID and shares the one IDT have no sabotage short of a reset.
+     Left for 1.9e: threads on the APs, IPIs between running CPUs, TLB
+     shootdown, the TSC's agreement. Self-tests 211. Sabotages:
+     `tests/sabotage/1.9d.sab`, 14 of 14. No ABI change.
 10. A documentation pass: the README and `safety/CX_SAFETY.md` §1 brought
     up to the branch as it stands.
 

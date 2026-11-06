@@ -41,6 +41,9 @@ public class QemuConfig
     /// feature check run (docs/kernel/CX_KERNEL_PLAN.md §2.3).</summary>
     public string? CpuModel { get; set; }
 
+    /// <summary>Value of -smp, or null for one CPU.</summary>
+    public string? Smp { get; set; }
+
     /// <summary>Attach the boot disk as a USB stick on this host controller
     /// instead of IDE, as the rig boots (roadmap step 4c). Null: IDE.</summary>
     public UsbHost? BootUsb { get; set; }
@@ -85,6 +88,11 @@ public static class QemuTool
         if (config.CpuModel is { Length: > 0 } cpu)
         {
             args.Add("-cpu"); args.Add(cpu);
+        }
+
+        if (config.Smp is { Length: > 0 } smp)
+        {
+            args.Add("-smp"); args.Add(smp);
         }
 
         if (config.EnableAudio)

@@ -14,6 +14,8 @@
 #include "acpi.h"
 #include "logging.h"
 #include "drivers/iowin.h"
+#include "madt.h"
+#include "cpu/percpu.h"   /* CPU_MAX */
 
 /* ---- local APIC registers (MMIO, 16-byte spaced) ------------------------ */
 #define LAPIC_ID        0x020
@@ -79,6 +81,10 @@ static unsigned ioapic_entries = 0;
 static int lapic_up = 0;
 static int apic_up = 0;
 
+static struct madt_cpu        madt_cpu_list[CPU_MAX];
+static uint32_t               madt_cpu_n;
+static struct madt_cpu_counts madt_cpu_seen;
+
 /* ISA IRQ -> global system interrupt. Identity unless the MADT says otherwise,
    and it very often does: IRQ 0 is routinely rerouted to GSI 2. Ignoring these
    overrides gives a machine whose timer interrupt never arrives. */
@@ -128,6 +134,8 @@ uint32_t irq_msi_data(uint8_t vector) {
 /* ---- MADT walk ----------------------------------------------------------- */
 static void parse_madt(struct madt_header *madt) {
     for (int i = 0; i < 16; i++) { iso_gsi[i] = (uint32_t)i; iso_flags[i] = 0; }
+    madt_cpu_n = madt_cpus((const uint8_t *)madt, madt->length,
+                           madt_cpu_list, CPU_MAX, &madt_cpu_seen);
 
     uint8_t *p = (uint8_t *)madt + sizeof(struct madt_header);
     uint8_t *end = (uint8_t *)madt + madt->length;
@@ -395,4 +403,85 @@ uint32_t arch_evtimer_left(void) {
 
 void lapic_timer_interrupt(struct registers *r) {
     if (lapic_timer_fn) lapic_timer_fn(r);
+}
+
+/* ---- 1.9d: the other CPUs ------------------------------------------------
+ *
+ * The interrupt command register: the destination's ID in the high word's
+ * top byte (xAPIC: 8 bits, so madt.c keeps none past 0xFE), the delivery
+ * mode and vector in the low word, whose write sends. Delivery status (bit
+ * 12) stays set until the target's local APIC has accepted the IPI. INIT,
+ * then STARTUP with the page the AP starts at, as the Intel SDM's MP
+ * initialisation sequence has it (vol. 3A 8.4.4) and Haiku's loader and
+ * XNU send them (smp_boot_other_cpus; i386_start_cpu). */
+#define LAPIC_ESR       0x280
+#define LAPIC_ICR_LO    0x300
+#define LAPIC_ICR_HI    0x310
+#define ICR_FIXED       0x000u
+#define ICR_INIT        0x500u
+#define ICR_STARTUP     0x600u
+#define ICR_PENDING     (1u << 12)
+#define ICR_ASSERT      (1u << 14)
+#define ICR_LEVEL       (1u << 15)
+/* A poll gives up after this many reads: an MMIO read exits to the host
+   under Hyper-V (a few microseconds), so this is well under a second
+   there and nothing on hardware, where it clears in a few hundred cycles. */
+#define ICR_POLLS       100000u
+
+uint32_t apic_cpus(const struct madt_cpu **list, const struct madt_cpu_counts **counts) {
+    if (list) *list = madt_cpu_list;
+    if (counts) *counts = &madt_cpu_seen;
+    return madt_cpu_n;
+}
+
+static int icr_send(uint32_t apic_id, uint32_t low) {
+    if (!lapic_up) return -1;
+    lapic_wr(LAPIC_ESR, 0);
+    lapic_wr(LAPIC_ICR_HI, apic_id << 24);
+    lapic_wr(LAPIC_ICR_LO, low);
+    for (uint32_t i = 0; i < ICR_POLLS; i++)
+        if (!(lapic_rd(LAPIC_ICR_LO) & ICR_PENDING)) return 0;
+    return -1;
+}
+
+int lapic_send_init(uint32_t apic_id) {
+    /* Asserted, then de-asserted: a Pentium 4 and later ignore the second,
+       an older local APIC needs it to leave the INIT state (Haiku sends both). */
+    if (icr_send(apic_id, ICR_INIT | ICR_LEVEL | ICR_ASSERT)) return -1;
+    return icr_send(apic_id, ICR_INIT | ICR_LEVEL);
+}
+
+int lapic_send_startup(uint32_t apic_id, uint32_t page) {
+    return icr_send(apic_id, ICR_STARTUP | (page & 0xFF));
+}
+
+int lapic_send_fixed(uint32_t apic_id, uint8_t vector) {
+    return icr_send(apic_id, ICR_FIXED | ICR_ASSERT | vector);
+}
+
+/* An AP's own local APIC, as irq_controller_init and arch_evtimer_init set
+   the boot CPU's: the global enable in the MSR, every priority accepted,
+   software-enabled with the spurious vector, and the timer divided by 16 on
+   its vector but stopped (count 0) and masked, as nothing on an AP runs it
+   until 1.9e. The registers are at the same address on every CPU, each
+   seeing its own. */
+void lapic_ap_init(void) {
+    uint64_t base_msr = rdmsr(IA32_APIC_BASE);
+    wrmsr(IA32_APIC_BASE, base_msr | APIC_BASE_ENABLE);
+    lapic_wr(LAPIC_TPR, 0);
+    lapic_wr(LAPIC_SVR, SVR_ENABLE | SPURIOUS_VECTOR);
+    lapic_wr(LAPIC_TIMER_INIT, 0);
+    lapic_wr(LAPIC_TIMER_DIV, TIMER_DIV_16);
+    lapic_wr(LAPIC_LVT_TIMER, LAPIC_TIMER_VECTOR | LVT_MASKED);
+}
+
+uint32_t lapic_svr(void)       { return lapic_rd(LAPIC_SVR); }
+uint32_t lapic_tpr(void)       { return lapic_rd(LAPIC_TPR); }
+uint32_t lapic_lvt_timer(void) { return lapic_rd(LAPIC_LVT_TIMER); }
+
+/* Unmask the timer for one count on the calling CPU (its self-test, smp.c),
+   or mask it again. */
+void lapic_timer_oneshot(uint32_t count, int unmask) {
+    lapic_wr(LAPIC_LVT_TIMER, LAPIC_TIMER_VECTOR | (unmask ? 0 : LVT_MASKED));
+    lapic_wr(LAPIC_TIMER_INIT, count);
 }

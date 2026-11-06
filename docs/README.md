@@ -33,6 +33,7 @@ Start with the roadmap.
 | [CX_DRIVERS.md](kernel/CX_DRIVERS.md) | The device tree, matching, user-space drivers, device classes |
 | [CX_LOCK_ORDER.md](kernel/CX_LOCK_ORDER.md) | Every spinlock's rank, the order read off a boot, the checker |
 | [CX_PHYS_MEMORY.md](kernel/CX_PHYS_MEMORY.md) | Reaching a frame by its physical address, the checker, poisoned free pages, the allocation paths |
+| [CX_SMP.md](kernel/CX_SMP.md) | The other CPUs: which the MADT lists, starting each by its APIC ID, its own tables, parked |
 
 ## Boot: `boot/`
 

@@ -48,6 +48,9 @@
 #include "arch/evtimer.h"        /* arch_cycles_constant */
 #include "arch/x86/cpufeat.h"    /* cpuid_read: Hyper-V's grant, read here */
 #include "cpu/percpu.h"
+#include "smp.h"                /* smp_stacks_of, smp_timer_hits */
+#include "arch/smp.h"           /* smp_call */
+#include "arch/x86/madt.h"
 #include "object/ktimer.h"
 #include "object/kwait.h"
 #include "cxk_abi.h"            /* SIGNAL_TIMER_FIRED, E_TIMED_OUT */
@@ -1422,6 +1425,177 @@ static int t_cpu_local(void) {
     return step == 0;
 }
 
+
+/* ---- 1.9d: the APs, started by the MADT's IDs and parked (smp.c) ----
+ *
+ * The verification boot gives QEMU four CPUs at APIC IDs 0, 1, 2 and 4 and
+ * lists two more disabled (BootVerifier.X86_64Smp), so a start by count,
+ * by index or of a disabled entry fails these. On one CPU they pass with
+ * nothing to compare. Every check of an AP's own state is read on the AP
+ * (smp_call), where cpu_this() and the registers are its. */
+
+static int smp_fail(const char *what, unsigned cpu, int step) {
+    klog_u32("KTEST", SEV_FAIL, what, (uint32_t)step, LOG_COLOR_VALUE, "");
+    klog_child_u32("on CPU", cpu, LOG_COLOR_VALUE, "");
+    return 0;
+}
+
+static int listed(uint32_t id) {
+    const struct madt_cpu *list;
+    uint32_t n = apic_cpus(&list, 0);
+    for (uint32_t i = 0; i < n; i++) if (list[i].apic_id == id) return 1;
+    return 0;
+}
+
+static int t_smp_started(void) {
+    const struct madt_cpu *list;
+    uint32_t n = apic_cpus(&list, 0);
+    if (cpu_count() != n) return smp_fail("smp started: step ", cpu_count(), 1);
+    if (cpu_at(0) != &cpu_boot || cpu_boot.hw_id != lapic_id() || !listed(cpu_boot.hw_id))
+        return smp_fail("smp started: step ", 0, 2);
+    for (unsigned i = 1; i < cpu_count(); i++) {
+        struct cpu *c = cpu_at(i);
+        if (c->self != c || c->index != i || c->state != CPU_PARKED)
+            return smp_fail("smp started: step ", i, 3);
+        if (!listed(c->hw_id)) return smp_fail("smp started: step ", i, 4);
+        for (unsigned j = 0; j < i; j++)
+            if (cpu_at(j)->hw_id == c->hw_id) return smp_fail("smp started: step ", i, 5);
+    }
+    /* and every listed ID is a running CPU's: none was started by another */
+    for (uint32_t k = 0; k < n; k++) {
+        int found = 0;
+        for (unsigned i = 0; i < cpu_count(); i++) if (cpu_at(i)->hw_id == list[k].apic_id) found = 1;
+        if (!found) return smp_fail("smp started: step ", k, 6);
+    }
+    return 1;
+}
+
+/* What an AP reads of itself. */
+struct ap_seen {
+    uint32_t  apic_id, svr, tpr, lvt;
+    uint64_t  gs, kgs, tss_desc, pat, efer, star, lstar, fmask, cr0, cr3, cr4;
+    struct dt_ptr gdt, idt;
+    uint16_t  tr;
+    uintptr_t tss, rsp0, kstack, ist_lo[IST_STACKS], ist_hi[IST_STACKS];
+    uint32_t  index;
+};
+
+static void ap_read(void *arg) {
+    struct ap_seen *s = arg;
+    s->apic_id = lapic_id();
+    s->svr = lapic_svr(); s->tpr = lapic_tpr(); s->lvt = lapic_lvt_timer();
+    s->gs = rdmsr(MSR_GS_BASE); s->kgs = rdmsr(MSR_KERNEL_GS_BASE);
+    __asm__ volatile ("sgdt %0" : "=m"(s->gdt));
+    __asm__ volatile ("sidt %0" : "=m"(s->idt));
+    __asm__ volatile ("str %0" : "=r"(s->tr));
+    s->tss_desc = gdt64_tss_descriptor();
+    s->tss = gdt64_tss_base();
+    for (unsigned k = 0; k < IST_STACKS; k++) gdt64_ist_stack(k + 1, &s->ist_lo[k], &s->ist_hi[k]);
+    s->pat = cpu_has(CPU_PAT) ? rdmsr(MSR_PAT) : 0;
+    s->efer = rdmsr(MSR_EFER); s->star = rdmsr(MSR_STAR);
+    s->lstar = rdmsr(MSR_LSTAR); s->fmask = rdmsr(MSR_FMASK);
+    __asm__ volatile ("mov %%cr0, %0" : "=r"(s->cr0));
+    __asm__ volatile ("mov %%cr3, %0" : "=r"(s->cr3));
+    __asm__ volatile ("mov %%cr4, %0" : "=r"(s->cr4));
+    s->rsp0 = gdt64_rsp0();
+    s->kstack = cpu_this()->kstack;
+    s->index = cpu_this()->index;
+}
+
+static int ap_tables_steps(unsigned i) {
+    struct cpu *c = cpu_at(i);
+    const struct smp_ap_stacks *st = smp_stacks_of(i);
+    struct ap_seen s = {0};
+    if (smp_call(i, ap_read, &s, 100000000ull)) return 1;
+    if (s.apic_id != c->hw_id) return 2;                     /* the CPU started by that ID */
+    if (s.gs != (uint64_t)(uintptr_t)c || s.index != i || (s.kgs >> 63)) return 3;
+    if (s.gdt.base == gdt64_base() || s.gdt.limit != 7 * 8 - 1) return 4;
+    if (s.tr != GDT64_TSS || ((s.tss_desc >> 40) & 0xFF) != 0x8B || s.tss == gdt64_tss_base()) return 5;
+    for (unsigned k = 0; k < IST_STACKS; k++) {
+        uintptr_t blo, bhi;
+        gdt64_ist_stack(k + 1, &blo, &bhi);
+        if (s.ist_lo[k] != st->ist_base[k] || s.ist_hi[k] != st->ist_base[k] + GDT64_IST_STACK_SIZE ||
+            s.ist_lo[k] == blo) return 6;
+    }
+    if (s.idt.base != idt64_base() || s.idt.limit != 256 * 16 - 1) return 7;
+    if (cpu_has(CPU_PAT) && s.pat != 0x0007040100070406ull) return 8;   /* PAT_CXK */
+    if (!(s.efer & EFER_SCE) || s.star != STAR_VALUE ||
+        s.lstar != (uint64_t)(uintptr_t)syscall64_entry || s.fmask != FMASK_VALUE) return 9;
+    uint64_t cr0, cr4;
+    __asm__ volatile ("mov %%cr0, %0" : "=r"(cr0));
+    __asm__ volatile ("mov %%cr4, %0" : "=r"(cr4));
+    if ((s.cr3 & PTE64_ADDR) != addr_space_kernel() || s.cr0 != cr0 || s.cr4 != cr4) return 10;
+    if (!(s.svr & (1u << 8)) || (s.svr & 0xFF) != 0xFF || s.tpr != 0 ||
+        (s.lvt & 0xFF) != LAPIC_TIMER_VECTOR || !(s.lvt & (1u << 16))) return 11;
+    if (s.rsp0 != st->rsp0_top || s.kstack != st->rsp0_top) return 12;
+    return 0;
+}
+
+static int t_smp_ap_tables(void) {
+    for (unsigned i = 1; i < cpu_count(); i++) {
+        int step = ap_tables_steps(i);
+        if (step) return smp_fail("smp ap tables: step ", i, step);
+    }
+    return 1;
+}
+
+/* An AP's own timer: two one-shot counts, each interrupting that CPU once
+   (the second only if the first was acknowledged at its local APIC). */
+struct ap_timer { uint32_t before, after, lvt; };
+
+static void ap_timer(void *arg) {
+    struct ap_timer *t = arg;
+    unsigned me = cpu_this()->index;
+    t->before = smp_timer_hits(me);
+    for (int round = 0; round < 2; round++) {
+        uint32_t want = t->before + (uint32_t)round + 1;
+        lapic_timer_oneshot(1000, 1);           /* 16 us at QEMU's 1 GHz */
+        uint64_t end = arch_cycles64() + 400000000ull;
+        arch_irq_enable();
+        while (smp_timer_hits(me) < want && arch_cycles64() < end) arch_cpu_relax();
+        arch_irq_disable();
+    }
+    lapic_timer_oneshot(0, 0);
+    t->lvt = lapic_lvt_timer();
+    t->after = smp_timer_hits(me);
+}
+
+static int t_smp_ap_timer(void) {
+    for (unsigned i = 1; i < cpu_count(); i++) {
+        struct ap_timer t = {0};
+        if (smp_call(i, ap_timer, &t, 2000000000ull)) return smp_fail("smp ap timer: step ", i, 1);
+        if (t.after != t.before + 2) return smp_fail("smp ap timer: step ", i, 2);
+        if (!(t.lvt & (1u << 16)))   /* masked again */ return smp_fail("smp ap timer: step ", i, 3);
+    }
+    if (smp_timer_hits(0) != 0) return smp_fail("smp ap timer: step ", 0, 4);   /* the boot CPU's never counted here */
+    return 1;
+}
+
+/* Parked is halted: 50 ms with nothing asked wakes no AP, and one call
+   wakes it once, by its one IPI. Calls the boot CPU, a CPU past the last
+   and a missing function are refused: -1, as a call never answered is, and
+   nothing left in a mailbox, which tells the two apart. */
+static void ap_nothing(void *arg) { (void)arg; }
+
+static int t_smp_parked(void) {
+    if (smp_call(0, ap_nothing, 0, 1000000ull) != -1 || cpu_boot.call ||
+        smp_call(cpu_count(), ap_nothing, 0, 1000000ull) != -1 ||
+        (cpu_count() > 1 && (smp_call(1, 0, &t_smp_parked, 1000000ull) != -1 ||
+                               cpu_at(1)->call_arg == (void *)&t_smp_parked)))
+        return smp_fail("smp parked: step ", 0, 1);
+    uint32_t wakes[CPU_MAX], irqs[CPU_MAX];
+    for (unsigned i = 1; i < cpu_count(); i++) { wakes[i] = cpu_at(i)->wakes; irqs[i] = cpu_at(i)->irqs; }
+    thread_sleep_ms(50);
+    for (unsigned i = 1; i < cpu_count(); i++)
+        if (cpu_at(i)->wakes != wakes[i] || cpu_at(i)->irqs != irqs[i]) return smp_fail("smp parked: step ", i, 2);
+    for (unsigned i = 1; i < cpu_count(); i++) {
+        if (smp_call(i, ap_nothing, 0, 100000000ull)) return smp_fail("smp parked: step ", i, 3);
+        if (cpu_at(i)->wakes != wakes[i] + 1 || cpu_at(i)->irqs != irqs[i] + 1 ||
+            cpu_at(i)->state != CPU_PARKED) return smp_fail("smp parked: step ", i, 4);
+    }
+    return 1;
+}
+
 /* ---- arch/ktest_arch.h ---- */
 
 /* The double fault's IST stack (t_idt checks the gate names it): the wiring
@@ -1496,6 +1670,10 @@ static const struct ktest_arch_case cases[] = {
     { "RSP0 follows the running thread",                t_rsp0_follows_thread },
     { "FS_BASE follows the running thread",             t_tls_follows_thread },
     { "GS is this CPU's; the IST vectors swap it in",   t_cpu_local },
+    { "every enabled MADT CPU runs, started by its own ID", t_smp_started },
+    { "each AP: own GDT, TSS, GS, stacks; one IDT; PAT, MSRs", t_smp_ap_tables },
+    { "an AP's own timer interrupts it, acknowledged",   t_smp_ap_timer },
+    { "a parked AP halts; a call wakes it once",          t_smp_parked },
     { "an MSI vector reaches its handler, then nothing", t_msi_pool },
     { "syscall: EFER.SCE, STAR, LSTAR, FMASK; sysret's selectors", t_syscall_msrs },
     { "ring 3 starts at CPL 3, registers clear; SYS_EXIT", t_ring3_cpl },

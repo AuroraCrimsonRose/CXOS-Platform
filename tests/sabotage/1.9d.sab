@@ -1,0 +1,196 @@
+# Phase 1.9d's sabotages, run by `cxk test sabotage`.
+# Each must turn red exactly the self-tests named, at the reason named.
+# Format: docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage".
+# The verification boot's four CPUs at APIC IDs 0, 1, 2 and 4, with two more
+# listed disabled (BootVerifier.X86_64Smp), are what the start sabotages
+# need. Paired sabotages land in different tests.
+# By hand, not here: the MADT walk's filters (test_madt.c, host tests, which
+# these files cannot judge), and an AP without cpu_local_bind, which resets
+# the machine every boot (cpu_this() on a GS of 0 triple-faults the AP, and
+# QEMU resets the whole machine for it). The commit lists what each did.
+
+# ---- which CPUs, by which ID (madt.c, smp.c) ----
+
+[madt-disabled-kept]
+# a disabled MADT entry is started too
+expect = every enabled MADT CPU runs, started by its own ID @ smp started: step 1
+group = a
+edit = kernel/arch/x86/madt.c
+<<<
+        if (!(flags & MADT_CPU_ENABLED)) { n.disabled++; continue; }
+===
+        (void)flags;
+>>>
+
+[ipi-by-index]
+# INIT and STARTUP aimed at the CPU's index, not its listed APIC ID
+expect = every enabled MADT CPU runs, started by its own ID @ smp started: step 1
+group = b
+edit = kernel/arch/x86_64/smp.c
+<<<
+    int sent = lapic_send_init(c->hw_id) == 0;
+===
+    int sent = lapic_send_init(c->index) == 0;
+>>>
+edit = kernel/arch/x86_64/smp.c
+<<<
+    sent = sent && lapic_send_startup(c->hw_id, SMP_TRAMP_PHYS >> 12) == 0;
+===
+    sent = sent && lapic_send_startup(c->index, SMP_TRAMP_PHYS >> 12) == 0;
+>>>
+edit = kernel/arch/x86_64/smp.c
+<<<
+    if (sent && !parked(c)) sent = lapic_send_startup(c->hw_id, SMP_TRAMP_PHYS >> 12) == 0;
+===
+    if (sent && !parked(c)) sent = lapic_send_startup(c->index, SMP_TRAMP_PHYS >> 12) == 0;
+>>>
+
+# ---- an AP's own state (cpu.c, smp.c, smp_tramp's words, apic.c) ----
+
+[ap-rsp0-unset]
+# the AP's RSP0 is never recorded as its kernel stack
+expect = each AP: own GDT, TSS, GS, stacks; one IDT; PAT, MSRs @ smp ap tables: step 12
+group = a
+edit = kernel/arch/x86_64/cpu.c
+<<<
+    arch_kernel_stack_set(rsp0_top);
+    idt64_load();
+===
+    idt64_load();
+>>>
+
+[ap-gdt-shared]
+# the AP rebuilds and loads the boot CPU's GDT and TSS (rewritten, so ltr
+# takes it) instead of its own
+expect = each AP: own GDT, TSS, GS, stacks; one IDT; PAT, MSRs @ smp ap tables: step 4
+edit = kernel/arch/x86_64/cpu.c
+<<<
+    if (gdt64_init_cpu(c->index, ist_lo, rsp0_top)) return -1;
+===
+    if (gdt64_init_cpu(0, ist_lo, rsp0_top)) return -1;
+>>>
+
+[ap-pat-skipped]
+# the AP keeps the power-on PAT
+expect = each AP: own GDT, TSS, GS, stacks; one IDT; PAT, MSRs @ smp ap tables: step 8
+group = c
+edit = kernel/arch/x86_64/cpu.c
+<<<
+    idt64_load();
+    pat_init();
+===
+    idt64_load();
+>>>
+
+[ap-syscall-skipped]
+# the AP's syscall MSRs are never written
+expect = each AP: own GDT, TSS, GS, stacks; one IDT; PAT, MSRs @ smp ap tables: step 9
+group = d
+edit = kernel/arch/x86_64/cpu.c
+<<<
+    pat_init();
+    arch_syscall_gate_init();
+    return 0;
+===
+    pat_init();
+    return 0;
+>>>
+
+[ap-ist-shared]
+# every AP's IST slots name the first AP's stacks
+expect = each AP: own GDT, TSS, GS, stacks; one IDT; PAT, MSRs @ smp ap tables: step 6
+group = e
+edit = kernel/arch/x86_64/smp.c
+<<<
+    if (arch_cpu_init_ap(c, s->ist_base, s->rsp0_top)) arch_cpu_halt_forever();
+===
+    if (arch_cpu_init_ap(c, stacks[1].ist_base, s->rsp0_top)) arch_cpu_halt_forever();
+>>>
+
+[ap-cr0-not-boot]
+# the trampoline gives the AP a CR0 without WP
+expect = each AP: own GDT, TSS, GS, stacks; one IDT; PAT, MSRs @ smp ap tables: step 10
+group = b
+edit = kernel/arch/x86_64/smp.c
+<<<
+    tramp_put(smp_tramp_cr0, cr0);
+===
+    tramp_put(smp_tramp_cr0, cr0 & ~(1ull << 16));
+>>>
+
+[ap-lvt-unset]
+# the AP's timer LVT is left at its reset value
+expect = each AP: own GDT, TSS, GS, stacks; one IDT; PAT, MSRs @ smp ap tables: step 11
+group = f
+edit = kernel/arch/x86/apic.c
+<<<
+    lapic_wr(LAPIC_TIMER_DIV, TIMER_DIV_16);
+    lapic_wr(LAPIC_LVT_TIMER, LAPIC_TIMER_VECTOR | LVT_MASKED);
+}
+===
+    lapic_wr(LAPIC_TIMER_DIV, TIMER_DIV_16);
+}
+>>>
+
+# ---- an AP's interrupts (idt.c, smp.c, apic.c) ----
+
+[ap-timer-counted-on-boot]
+# an AP's timer interrupt is counted as the boot CPU's
+expect = an AP's own timer interrupts it, acknowledged @ smp ap timer: step 2
+group = c
+edit = kernel/arch/x86_64/smp.c
+<<<
+    if (vector == LAPIC_TIMER_VECTOR) timer_hits[c->index]++;
+===
+    if (vector == LAPIC_TIMER_VECTOR) timer_hits[0]++;
+>>>
+
+[oneshot-never-masks]
+# a one-shot asked to stop leaves the LVT unmasked
+expect = an AP's own timer interrupts it, acknowledged @ smp ap timer: step 3
+group = f
+edit = kernel/arch/x86/apic.c
+<<<
+    lapic_wr(LAPIC_LVT_TIMER, LAPIC_TIMER_VECTOR | (unmask ? 0 : LVT_MASKED));
+===
+    (void)unmask;
+    lapic_wr(LAPIC_LVT_TIMER, LAPIC_TIMER_VECTOR);
+>>>
+
+[ap-no-eoi]
+# an AP never acknowledges: its first wake IPI blocks every later one
+expect = an AP's own timer interrupts it, acknowledged @ smp ap timer: step 1
+expect = a parked AP halts; a call wakes it once @ smp parked: step 3
+edit = kernel/arch/x86_64/idt.c
+<<<
+        smp_ap_interrupt((uint32_t)r->vector);
+        lapic_eoi();
+        return;
+===
+        smp_ap_interrupt((uint32_t)r->vector);
+        return;
+>>>
+
+# ---- parked (smp.c) ----
+
+[park-spins]
+# the park loop polls its mailbox with interrupts off instead of halting
+expect = a parked AP halts; a call wakes it once @ smp parked: step 2
+group = d
+edit = kernel/arch/x86_64/smp.c
+<<<
+        arch_cpu_idle();          /* sti; hlt */
+===
+        arch_cpu_relax();
+>>>
+
+[call-not-refused]
+# smp_call asks the boot CPU, a non-parked CPU and no function too
+expect = a parked AP halts; a call wakes it once @ smp parked: step 1
+group = e
+edit = kernel/arch/x86_64/smp.c
+<<<
+    if (!c || c == &cpu_boot || !parked(c) || !fn) return -1;
+===
+    if (!c) return -1;
+>>>

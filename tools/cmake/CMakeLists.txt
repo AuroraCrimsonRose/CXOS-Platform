@@ -177,6 +177,8 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/arch/x86_64/gdt.c
     ${SRC_DIR}/kernel/arch/x86_64/idt.c
     ${SRC_DIR}/kernel/arch/x86/apic.c
+    ${SRC_DIR}/kernel/arch/x86/madt.c
+    ${SRC_DIR}/kernel/arch/x86_64/smp.c
     ${SRC_DIR}/kernel/arch/x86/cpufeat.c
     ${SRC_DIR}/kernel/arch/x86/cpureport.c
     ${SRC_DIR}/kernel/arch/x86/ktest_x86.c
@@ -298,6 +300,7 @@ set(KERNEL_ASM_SRCS
     ${SRC_DIR}/kernel/arch/x86_64/isr.asm
     ${SRC_DIR}/kernel/arch/x86_64/switch.asm
     ${SRC_DIR}/kernel/arch/x86_64/usermode.asm
+    ${SRC_DIR}/kernel/arch/x86_64/smp_tramp.asm
 )
 
 # ---- linker script ----

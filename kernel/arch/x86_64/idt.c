@@ -25,6 +25,8 @@
 #include "platform/pc/speaker.h"
 #include "diag/crashlog.h"     /* the panic's record on the CRASH partition */
 #include "sync/lockorder.h"    /* lockorder_stop */
+#include "cpu/percpu.h"        /* cpu_this, cpu_boot */
+#include "smp.h"               /* smp_ap_interrupt */
 
 struct idt_gate64 {
     uint16_t offset_low;
@@ -51,9 +53,11 @@ struct idt_ptr64 {
 #define VEC_PAGE_FAULT    14
 #define VEC_MACHINE_CHECK 18
 
-#define STUB_COUNT        (LAPIC_TIMER_VECTOR + 1)
+#define STUB_COUNT        (SMP_IPI_VECTOR + 1)
 _Static_assert(LAPIC_TIMER_VECTOR == MSI_VECTOR_BASE + MSI_VECTOR_COUNT,
                "the local APIC timer's stub follows the MSI pool's (isr.asm)");
+_Static_assert(SMP_IPI_VECTOR == LAPIC_TIMER_VECTOR + 1,
+               "the wake IPI's stub follows the timer's (isr.asm)");
 
 extern const uint64_t isr64_stubs[STUB_COUNT];  /* isr.asm */
 extern void isr64_spurious(void);
@@ -105,6 +109,12 @@ void idt64_init(void) {
         set_gate(v, isr64_stubs[v], ist_of(v));
     set_gate(SPURIOUS_VECTOR64, (uint64_t)(uintptr_t)isr64_spurious, 0);
 
+    idt64_load();
+}
+
+/* One table for every CPU: a gate names code and an IST slot, and each CPU
+   reads the slot from its own TSS (gdt.c), so nothing in it is per CPU. */
+void idt64_load(void) {
     struct idt_ptr64 idtr = { sizeof(idt) - 1, (uint64_t)(uintptr_t)idt };
     __asm__ volatile ("lidt %0" : : "m"(idtr) : "memory");
 }
@@ -248,6 +258,15 @@ static inline void irq_eoi(uint64_t vector) {
 }
 
 static void irq_dispatch(struct registers *r) {
+    /* An AP runs no thread and has nothing routed to it until 1.9e: what it
+       takes (its wake IPI, its timer under test) is counted, acknowledged at
+       its own local APIC, and goes no further: no tick, no preemption, no
+       sample for the generator, which the boot CPU alone feeds. */
+    if (cpu_this() != &cpu_boot) {
+        smp_ap_interrupt((uint32_t)r->vector);
+        lapic_eoi();
+        return;
+    }
     /* The cycle counter at every interrupt, stored for the generator to hash
        later: a store, never a hash, here (random.h). */
     random_irq_sample((uint32_t)r->vector);

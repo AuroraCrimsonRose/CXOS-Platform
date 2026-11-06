@@ -264,6 +264,24 @@ public class BootVerdictTests
         Assert.Equal("shift=6,sleep=off", args[i + 1]);
     }
 
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
+    public void Verification_boots_start_APs_by_a_gapped_topology()
+    {
+        // 1.9d: APIC IDs 0, 1, 2, 4 and two disabled entries, so a kernel that
+        // starts CPUs by count or index rather than the MADT's IDs fails.
+        var args = QemuTool.BuildArguments(BootVerifier.ConfigFor("cxk_x86_64.img", "serial.log"));
+        int i = args.IndexOf("-smp");
+        Assert.True(i >= 0 && i + 1 < args.Count);
+        Assert.Equal("4,maxcpus=6,sockets=2,cores=3,threads=1", args[i + 1]);
+
+        var one = QemuTool.BuildArguments(BootVerifier.ConfigFor("cxk_x86_64.img", "serial.log", smp: "1"));
+        Assert.Equal("1", one[one.IndexOf("-smp") + 1]);
+
+        var narrow = QemuTool.BuildArguments(BootVerifier.ConfigFor("cxk_x86_64.img", "serial.log", arch: QemuArch.X86_32));
+        Assert.DoesNotContain("-smp", narrow);
+    }
+
     [Theory]
     [Trait(Categories.Key, Categories.Unit)]
     [InlineData(UsbHost.Xhci, "qemu-xhci")]
@@ -393,8 +411,9 @@ public class BootVerdictTests
 
         string narrow = QemuTool.CommandLine(BootVerifier.ConfigFor("cxk_x86_64.img", "serial.log", arch: QemuArch.X86_32));
         Assert.StartsWith("qemu-system-i386 ", narrow);
-        // the same verification boot otherwise: snapshot, headless, icount
-        Assert.Equal(plain.Replace($"-m {BootVerifier.X86_64MemoryMb}M ", "-m 256M ")["qemu-system-x86_64".Length..],
+        // the same verification boot otherwise, on one CPU: snapshot, headless, icount
+        Assert.Equal(plain.Replace($"-m {BootVerifier.X86_64MemoryMb}M ", "-m 256M ")
+                          .Replace($"-smp {BootVerifier.X86_64Smp} ", "")["qemu-system-x86_64".Length..],
                      narrow["qemu-system-i386".Length..]);
     }
 

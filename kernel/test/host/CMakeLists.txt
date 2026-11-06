@@ -33,6 +33,7 @@ set(KERNEL_SOURCES
     ${KDIR}/memman/buddy.c
     ${KDIR}/memman/vmtree.c
     ${KDIR}/arch/x86/cpufeat.c
+    ${KDIR}/arch/x86/madt.c
     ${KDIR}/arch/x86_64/pagetable.c
     ${KDIR}/drivers/iowin.c
     ${KDIR}/platform/pc/ps2kbd.c

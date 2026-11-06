@@ -36,6 +36,10 @@ public class VerifyBootCommand : Command<VerifyBootCommand.Settings>
         [Description("QEMU CPU model, e.g. pentium (minimal) or max (every feature). Default: QEMU's own")]
         public string? Cpu { get; set; }
 
+        [CommandOption("--smp")]
+        [Description("QEMU -smp value. Default: 4 CPUs at APIC IDs 0, 1, 2 and 4, with two more the MADT lists disabled (BootVerifier.X86_64Smp); 1 boots one")]
+        public string? Smp { get; set; }
+
         [CommandOption("--log")]
         [Description("Where to write the serial log. Default: beside the image, <image>.serial.log")]
         public string? LogPath { get; set; }
@@ -107,13 +111,13 @@ public class VerifyBootCommand : Command<VerifyBootCommand.Settings>
         byte[]? foreignHash = foreign is null ? null : CXEX.Tools.ForeignDisk.Create(foreign, File.ReadAllBytes(settings.ImagePath));
         long foreignSize = foreign is null ? 0 : new FileInfo(foreign).Length;
         Say(settings, $"[grey]booting[/] {Markup.Escape(settings.ImagePath)} [grey](snapshot, serial -> {Markup.Escape(log)})[/]");
-        Say(settings, $"[grey]{Markup.Escape(QemuTool.CommandLine(BootVerifier.ConfigFor(settings.ImagePath, log, settings.Cpu, usb: usb, foreignDisk: foreign, arch: arch)))}[/]");
+        Say(settings, $"[grey]{Markup.Escape(QemuTool.CommandLine(BootVerifier.ConfigFor(settings.ImagePath, log, settings.Cpu, usb: usb, foreignDisk: foreign, arch: arch, smp: settings.Smp)))}[/]");
 
         BootVerdict v;
         try
         {
             v = BootVerifier.Run(settings.ImagePath, log, TimeSpan.FromSeconds(settings.TimeoutSeconds), settings.Full,
-                                 line => Say(settings, $"[grey]{Markup.Escape(line)}[/]"), settings.Cpu, usb, foreign, arch);
+                                 line => Say(settings, $"[grey]{Markup.Escape(line)}[/]"), settings.Cpu, usb, foreign, arch, settings.Smp);
         }
         catch (System.ComponentModel.Win32Exception ex)
         {

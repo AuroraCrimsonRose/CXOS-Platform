@@ -3,8 +3,9 @@
 ; /kernel/arch/x86_64/isr.asm  -  the exception and interrupt entry stubs
 ; Aurora Tejeda / CATX Systems
 ;
-; One stub per vector 0-56: the exceptions 0-31, the legacy IRQs 32-47,
-; the MSI pool 48-55 and the local APIC timer at 56 (idt.h, apic.h). Each
+; One stub per vector 0-57: the exceptions 0-31, the legacy IRQs 32-47,
+; the MSI pool 48-55, the local APIC timer at 56 and the wake IPI at 57
+; (idt.h, apic.h). Each
 ; makes the frame uniform - a zero where the CPU pushes no error code, then
 ; the vector - saves the general
 ; registers and calls idt64_dispatch(struct registers *). Whatever the
@@ -86,7 +87,7 @@ ISR_ERR   30
 ISR_NOERR 31
 
 %assign i 32
-%rep 25
+%rep 26
 isr %+ i:
     push 0
     push i
@@ -179,7 +180,7 @@ section .rodata
 global isr64_stubs
 isr64_stubs:
 %assign i 0
-%rep 57
+%rep 58
     dq isr %+ i
 %assign i i + 1
 %endrep
