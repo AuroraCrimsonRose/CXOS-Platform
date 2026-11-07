@@ -1484,6 +1484,21 @@ static int t_smp_started(void) {
     return 1;
 }
 
+/* The trampoline's GDT (smp_tramp.asm): every descriptor is marked
+   accessed, or loading one with paging on writes to a page mapped read-only
+   and the AP triple-faults. TCG never faulted on that write; Hyper-V does
+   (1.9f). Read from the template, which every AP's copy is. */
+extern const uint8_t smp_tramp_gdt[];
+static int t_tramp_gdt_accessed(void) {
+    for (unsigned i = 1; i < 4; i++) {
+        uint64_t d = 0;
+        for (unsigned b = 0; b < 8; b++) d |= (uint64_t)smp_tramp_gdt[i * 8 + b] << (8 * b);
+        if (!(d & (1ull << 47))) return smp_fail("tramp gdt: step ", i, 1);   /* present */
+        if (!(d & (1ull << 40))) return smp_fail("tramp gdt: step ", i, 2);   /* accessed */
+    }
+    return 1;
+}
+
 /* What an AP reads of itself. */
 struct ap_seen {
     uint32_t  apic_id, svr, tpr, lvt;
@@ -1971,9 +1986,14 @@ static int t_tlb_modexp_serves(void) {
     uint32_t served = cpu_boot.tlb_served;
     uint32_t irq = arch_irq_save();
     if (smp_call_start(1, ap_shoot, &s)) { arch_irq_restore(irq); return smp_fail("tlb modexp: step ", 1, 1); }
-    uint64_t t0 = timer_now_ns();
-    bn_modexp(&m, &b, RSA_PROFILE_EXPONENT, &n);
-    uint64_t took = timer_now_ns() - t0;
+    /* Raised again until the shootdown's 300 ms have passed with interrupts
+       off: one is that long under icount, a few ms on Hyper-V (1.9f). */
+    uint64_t t0 = timer_now_ns(), took;
+    unsigned runs = 0;
+    do {
+        bn_modexp(&m, &b, RSA_PROFILE_EXPONENT, &n);
+        took = timer_now_ns() - t0;
+    } while (took < 300000000ull && ++runs < 1000u);
     arch_irq_restore(irq);
     if (smp_call_wait(1, 1000000000ull)) return smp_fail("tlb modexp: step ", 1, 2);
     if (s.missing) return smp_fail("tlb modexp: step ", 1, 3);
@@ -2079,6 +2099,11 @@ static int t_sched_wake_ipi(void) {
     if (id < 0) return smp_fail("sched wake: step ", i, 1);
     for (int k = 0; k < 500 && !thread_is_blocked(id); k++) thread_sleep_ms(1);
     if (!thread_is_blocked(id) || wk_state != 1) return smp_fail("sched wake: step ", i, 2);
+    /* BLOCKED is set before the AP switches away: wait for its halt, or the
+       wake can land while it is still on its way there and end no halt
+       (seen once 1.9f's counted lock lengthened that way). */
+    for (int k = 0; k < 500 && !__atomic_load_n(&cpu_at(i)->idle, __ATOMIC_RELAXED); k++) thread_sleep_ms(1);
+    if (!__atomic_load_n(&cpu_at(i)->idle, __ATOMIC_RELAXED)) return smp_fail("sched wake: step ", i, 6);
     uint32_t ipis = cpu_at(i)->resched_ipis, wakes = cpu_at(i)->wakes;
     thread_unblock(id);
     int woke = spin_until(&wk_state, 2, 100);
@@ -2641,6 +2666,7 @@ static const struct ktest_arch_case cases[] = {
     { "FS_BASE follows the running thread",             t_tls_follows_thread },
     { "GS is this CPU's; the IST vectors swap it in",   t_cpu_local },
     { "every enabled MADT CPU runs, started by its own ID", t_smp_started },
+    { "the AP trampoline's segments are all marked accessed", t_tramp_gdt_accessed },
     { "each AP: own GDT, TSS, GS, stacks; one IDT; PAT, MSRs", t_smp_ap_tables },
     { "an AP's own timer interrupts it, acknowledged",   t_smp_ap_timer },
     { "every CPU's TSC agrees, and one put out is set right", t_smp_tsc },

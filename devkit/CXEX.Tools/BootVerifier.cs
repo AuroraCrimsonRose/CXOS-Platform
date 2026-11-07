@@ -58,7 +58,7 @@ public sealed record BootVerdict(BootOutcome Outcome, string Reason, int? TestsP
     /// also needs the per-test <c>@ktest</c> lines behind it, agreeing with it
     /// (<see cref="SelfTestReport"/>): a summary alone fails.
     /// </summary>
-    public static BootVerdict Classify(string log, bool full, bool results = true)
+    public static BootVerdict Classify(string log, bool full, bool results = true, IReadOnlySet<string>? notJudged = null)
     {
         var panic = Panic.Match(log);
         if (panic.Success)
@@ -67,39 +67,53 @@ public sealed record BootVerdict(BootOutcome Outcome, string Reason, int? TestsP
             string tail = log.Substring(panic.Index, (end < 0 ? log.Length : Math.Min(log.Length, end + 200)) - panic.Index);
             return new BootVerdict(BootOutcome.Fail, "kernel panic: " + tail.Replace("\r", "").Trim(), null);
         }
+        int n;
+        string head;
         if (TestsFailed.IsMatch(log))
         {
-            var failed = results ? SelfTestReport.Parse(log).Results.Where(r => !r.Passed).Select(r => r.Name).ToList() : [];
-            return new BootVerdict(BootOutcome.Fail, failed.Count == 0
-                ? "the self-tests reported a failure"
-                : "the self-tests reported a failure: " + string.Join("; ", failed), null);
+            var report = results ? SelfTestReport.Parse(log) : null;
+            var failed = report?.Results.Where(r => !r.Passed).Select(r => r.Name).ToList() ?? [];
+            var judged = failed.Where(f => notJudged is null || !notJudged.Contains(f)).ToList();
+            // Only failures of tests this boot does not judge, and the end
+            // line agreeing with the results: judged as if they had passed,
+            // and named in the verdict, never silently (the stress boot).
+            if (failed.Count == 0 || judged.Count > 0 || report!.EndTotal is not int total
+                || report.EndPassed != total - failed.Count || report.Results.Count != total)
+                return new BootVerdict(BootOutcome.Fail, judged.Count == 0 && failed.Count == 0
+                    ? "the self-tests reported a failure"
+                    : "the self-tests reported a failure: " + string.Join("; ", judged.Count > 0 ? judged : failed), null);
+            n = total - failed.Count;
+            head = $"self-tests: {total - failed.Count} of {total} passed, the rest not judged here ({string.Join("; ", failed)})";
         }
+        else
+        {
+            var s = Summary.Match(log);
+            if (!s.Success)
+                return new BootVerdict(BootOutcome.Inconclusive, "no self-test summary yet", null);
 
-        var s = Summary.Match(log);
-        if (!s.Success)
-            return new BootVerdict(BootOutcome.Inconclusive, "no self-test summary yet", null);
-
-        int n = int.Parse(s.Groups[1].Value);
-        if (results && SelfTestReport.Parse(log).DisagreesWith(n) is string wrong)
-            return new BootVerdict(BootOutcome.Fail, $"self-tests: all {n} passed, but {wrong}", n);
+            n = int.Parse(s.Groups[1].Value);
+            head = $"self-tests: all {n} passed";
+            if (results && SelfTestReport.Parse(log).DisagreesWith(n) is string wrong)
+                return new BootVerdict(BootOutcome.Fail, $"{head}, but {wrong}", n);
+        }
         // The hardware report precedes the self-tests (kmain), so a summary
         // without a whole one behind it means the serial copy was lost or torn.
         if (results && HwProblem(log) is string hw)
-            return new BootVerdict(BootOutcome.Fail, $"self-tests: all {n} passed, but {hw}", n);
+            return new BootVerdict(BootOutcome.Fail, $"{head}, but {hw}", n);
         if (full && ExecutiveRefused.IsMatch(log))
-            return new BootVerdict(BootOutcome.Fail, $"self-tests: all {n} passed, but the executive was refused at load", n);
+            return new BootVerdict(BootOutcome.Fail, $"{head}, but the executive was refused at load", n);
         if (full && !ExecutiveUp.IsMatch(log))
-            return new BootVerdict(BootOutcome.Inconclusive, $"self-tests: all {n} passed, but the executive has not started", n);
+            return new BootVerdict(BootOutcome.Inconclusive, $"{head}, but the executive has not started", n);
         if (full && !ExecutiveBanner.IsMatch(log))
-            return new BootVerdict(BootOutcome.Inconclusive, $"self-tests: all {n} passed, the executive loaded, but its banner has not appeared", n);
+            return new BootVerdict(BootOutcome.Inconclusive, $"{head}, the executive loaded, but its banner has not appeared", n);
         if (full && GrantDenied.Match(log, ExecutiveUp.Match(log).Index) is { Success: true } denied)
-            return new BootVerdict(BootOutcome.Fail, $"self-tests: all {n} passed, but after the executive started, {denied.Groups[1].Value} was refused to pid {denied.Groups[2].Value}", n);
+            return new BootVerdict(BootOutcome.Fail, $"{head}, but after the executive started, {denied.Groups[1].Value} was refused to pid {denied.Groups[2].Value}", n);
         if (full && !ShellPrompt.IsMatch(log))
-            return new BootVerdict(BootOutcome.Inconclusive, $"self-tests: all {n} passed, the executive ran, but the shell's prompt has not appeared", n);
+            return new BootVerdict(BootOutcome.Inconclusive, $"{head}, the executive ran, but the shell's prompt has not appeared", n);
 
         return new BootVerdict(BootOutcome.Pass, full
-            ? $"self-tests: all {n} passed, and the executive and the shell ran"
-            : $"self-tests: all {n} passed", n);
+            ? $"{head}, and the executive and the shell ran"
+            : $"{head}", n);
     }
 
     /// <summary>Null when the log holds a whole hardware report (<see cref="HwReport"/>); otherwise what is wrong.</summary>
@@ -168,7 +182,28 @@ public static class BootVerifier
     /// (docs/kernel/CX_SMP.md). <c>--smp 1</c> boots one.</summary>
     public const string X86_64Smp = "4,maxcpus=6,sockets=2,cores=3,threads=1";
 
-    public static QemuConfig ConfigFor(string image, string serialLog, string? cpu = null, bool snapshot = true, UsbHost? usb = null, string? foreignDisk = null, QemuArch arch = QemuArch.X86_64, string? smp = null) => new()
+    /// <summary>The stress boot's CPUs (1.9f): eight, as the rig has, each a
+    /// host thread under multi-threaded TCG and with no -icount, which would
+    /// run them one at a time. Its timing is the host's, so it decides
+    /// nothing about cost (docs/kernel/CX_SMP.md §4a); it is there for
+    /// orderings one CPU at a time never makes.</summary>
+    public const string X86_64StressSmp = "8";
+    public const string StressAccel = "tcg,thread=multi";
+
+    /// <summary>The self-tests a stress boot does not judge: each bounds a time
+    /// by the virtual clock of <c>-icount</c>, which a stress boot has not, so
+    /// against the host's clock it measures the host (seen 2026-11-07: the
+    /// deadline spread and the slack window miss by the host timer's grain).
+    /// They still run,
+    /// are named in the verdict when they fail, and are judged by every other
+    /// boot.</summary>
+    public static readonly IReadOnlySet<string> StressNotJudged = new HashSet<string>
+    {
+        "deadlines are met at their time, not at a tick",
+        "slack: a timer fires at a later one's interrupt",
+    };
+
+    public static QemuConfig ConfigFor(string image, string serialLog, string? cpu = null, bool snapshot = true, UsbHost? usb = null, string? foreignDisk = null, QemuArch arch = QemuArch.X86_64, string? smp = null, bool stress = false) => new()
     {
         BootDisk = image,
         MachineType = "pc",
@@ -178,10 +213,11 @@ public static class BootVerifier
         Snapshot = snapshot,
         Headless = true,
         Serial = serialLog,
-        ICountShift = "6",
-        ICountNoSleep = true,
+        ICountShift = stress ? null : "6",
+        ICountNoSleep = !stress,
+        Accel = stress ? StressAccel : null,
         CpuModel = cpu,
-        Smp = arch == QemuArch.X86_64 ? (smp ?? X86_64Smp) : smp,
+        Smp = arch == QemuArch.X86_64 ? (smp ?? (stress ? X86_64StressSmp : X86_64Smp)) : smp,
         BootUsb = usb,
         ForeignDisk = foreignDisk,
         Arch = arch,
@@ -192,8 +228,8 @@ public static class BootVerifier
     /// time is up. Kills only the QEMU it started: killing by process name
     /// would take down any other emulator on the machine.
     /// </summary>
-    public static BootVerdict Run(string image, string serialLog, TimeSpan timeout, bool full, Action<string>? progress = null, string? cpu = null, UsbHost? usb = null, string? foreignDisk = null, QemuArch arch = QemuArch.X86_64, string? smp = null)
-        => Run(image, serialLog, timeout, log => BootVerdict.Classify(log, full, results: arch == QemuArch.X86_64), progress, cpu, snapshot: true, usb, foreignDisk, arch, smp);
+    public static BootVerdict Run(string image, string serialLog, TimeSpan timeout, bool full, Action<string>? progress = null, string? cpu = null, UsbHost? usb = null, string? foreignDisk = null, QemuArch arch = QemuArch.X86_64, string? smp = null, bool stress = false)
+        => Run(image, serialLog, timeout, log => BootVerdict.Classify(log, full, results: arch == QemuArch.X86_64, notJudged: stress ? StressNotJudged : null), progress, cpu, snapshot: true, usb, foreignDisk, arch, smp, stress);
 
     /// <summary>
     /// The same boot with the verdict decided by <paramref name="classify"/>,
@@ -202,7 +238,7 @@ public static class BootVerifier
     /// (<c>cxk verify-crashlog</c>). Only ever on a copy.
     /// </summary>
     public static BootVerdict Run(string image, string serialLog, TimeSpan timeout, Func<string, BootVerdict> classify,
-                                  Action<string>? progress, string? cpu, bool snapshot, UsbHost? usb = null, string? foreignDisk = null, QemuArch arch = QemuArch.X86_64, string? smp = null)
+                                  Action<string>? progress, string? cpu, bool snapshot, UsbHost? usb = null, string? foreignDisk = null, QemuArch arch = QemuArch.X86_64, string? smp = null, bool stress = false)
     {
         if (File.Exists(serialLog)) File.Delete(serialLog);
 
@@ -214,7 +250,7 @@ public static class BootVerifier
             RedirectStandardError = true,
             CreateNoWindow = true,
         };
-        foreach (string a in QemuTool.BuildArguments(ConfigFor(image, serialLog, cpu, snapshot, usb, foreignDisk, arch, smp))) psi.ArgumentList.Add(a);
+        foreach (string a in QemuTool.BuildArguments(ConfigFor(image, serialLog, cpu, snapshot, usb, foreignDisk, arch, smp, stress))) psi.ArgumentList.Add(a);
 
         using var qemu = Process.Start(psi)
             ?? throw new InvalidOperationException($"could not start {QemuTool.ExecutableFor(arch)}");

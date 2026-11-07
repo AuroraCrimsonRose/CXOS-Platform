@@ -20,9 +20,18 @@ internal static class HwSource
     public const string Help = "A serial log or a saved report (its @hw lines), or a disk whose CRASH partition holds the last boot's report: an image file, disk5, \\\\.\\PhysicalDrive5, /dev/sdb. Read-only";
 
     /// <summary>The report, or null with the reason already printed.</summary>
-    public static HwReport? Load(string arg)
+    public static HwReport? Load(string arg, bool profile = false)
     {
         string? text = null;
+        if (profile)
+        {
+            // the self-tests' profile goes to serial only (1.9f)
+            if (RawDisk.DevicePath(arg) is not null || !File.Exists(arg)) return Fail(arg, "a profile is read from a serial log, and this is not a file");
+            text = HwReport.ProfileFromSerial(File.ReadAllText(arg));
+            if (text is null) return Fail(arg, "it holds no profile (a test-hook boot prints one after the self-tests)");
+            if (HwReport.Check(text) is string bad) return Fail(arg, "the profile is damaged: " + bad);
+            return HwReport.Parse(text);
+        }
         if (RawDisk.DevicePath(arg) is null && File.Exists(arg))
         {
             bool disk;
@@ -72,11 +81,15 @@ public class HwShowCommand : Command<HwShowCommand.Settings>
         [CommandOption("--raw")]
         [Description("Print the report's text as the kernel wrote it")]
         public bool Raw { get; set; }
+
+        [CommandOption("--profile")]
+        [Description("The self-tests' profile in a serial log instead (1.9f): the counted locks' contention")]
+        public bool Profile { get; set; }
     }
 
     protected override int Execute(CommandContext context, Settings settings, CancellationToken cancellationToken)
     {
-        var r = HwSource.Load(settings.Source);
+        var r = HwSource.Load(settings.Source, settings.Profile);
         if (r is null) return 1;
         if (settings.Raw)
         {
@@ -120,6 +133,10 @@ public class HwDiffCommand : Command<HwDiffCommand.Settings>
         [Description("How far two measured rates may be apart and still be expected")]
         [DefaultValue(1.0)]
         public double RateTolerance { get; set; } = 1.0;
+
+        [CommandOption("--profile")]
+        [Description("Compare the self-tests' profiles in two serial logs instead (1.9f): every line set beside the other, all of them measures")]
+        public bool Profile { get; set; }
     }
 
     protected override ValidationResult Validate(CommandContext context, Settings settings) =>
@@ -127,8 +144,9 @@ public class HwDiffCommand : Command<HwDiffCommand.Settings>
 
     protected override int Execute(CommandContext context, Settings settings, CancellationToken cancellationToken)
     {
-        var a = HwSource.Load(settings.A);
-        var b = a is null ? null : HwSource.Load(settings.B);
+        var a = HwSource.Load(settings.A, settings.Profile);
+        var b = a is null ? null : HwSource.Load(settings.B, settings.Profile);
+        if (settings.Profile) settings.All = true;   // a profile is nothing but measures
         if (a is null || b is null) return 2;
 
         var diffs = HwDiff.Compare(a, b, settings.RateTolerance / 100);

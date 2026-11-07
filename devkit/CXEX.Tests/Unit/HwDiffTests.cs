@@ -367,4 +367,47 @@ public class HwDiffTests
             Directory.Delete(dir, recursive: true);
         }
     }
+
+    /// <summary>A profile as the self-tests print it (1.9f): two CPUs, a TSC at 1 GHz,
+    /// a stress window of 2e9 ticks.</summary>
+    private static readonly string[] Profile =
+    [
+        "@hw\tprofile\t2\t1000000000\t2000000000\t400",
+        "@hw\tlock\tsched\tboot\t0\t5000\t100\t900\t3000000\t40000",
+        "@hw\tlock\tsched\tboot\t1\t3000\t50\t400\t1000000\t25000",
+        "@hw\tlock\tsched\tstress\t0\t1000\t60\t500\t30000000\t-",
+        "@hw\tlock\tsched\tstress\t1\t1000\t40\t300\t10000000\t-",
+    ];
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
+    public void A_profile_is_told_from_the_machines_report_on_serial_and_each_is_found_alone()
+    {
+        string machine = HwReport.Seal(Qemu), profile = HwReport.Seal(Profile);
+        string log = "noise\r\n" + machine.Replace("\n", "\r\n") + "[OK] self-tests\r\n" + profile.Replace("\n", "\r\n");
+        Assert.Equal(machine, HwReport.TextFromSerial(log));
+        Assert.Equal(profile, HwReport.ProfileFromSerial(log));
+        Assert.Null(HwReport.ProfileFromSerial(machine));
+        Assert.Null(HwReport.TextFromSerial(profile));
+    }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
+    public void A_profile_differs_only_by_measures_and_says_what_contention_cost()
+    {
+        var a = Report(Profile);
+        var b = Report(Profile.Select(l => l.Replace("\t1000\t60\t", "\t1200\t90\t")));
+        var diffs = HwDiff.Compare(a, b);
+        Assert.Equal(2, diffs.Count);
+        Assert.All(diffs, d => Assert.True(d.Expected, d.Key));
+        Assert.Contains(diffs, d => d.Key == "lock sched stress cpu0" && d.Field == "contended" && d.A == "60" && d.B == "90");
+
+        var notes = HwDiff.Contention(a);
+        // boot: 150 of 8000 takes; 4 ms spinning; longest 40000 ticks = 40 µs
+        Assert.Contains("lock sched boot: 1.875% of 8000 takes contended, 1300 spins, 4 ms spinning in all, longest hold 40 µs", notes);
+        // stress: 100 of 2000; 4e7 of 2 CPUs x 2e9 ticks = 1%
+        Assert.Contains("lock sched stress: 5% of 2000 takes contended, 800 spins, 1% of 2 CPUs' time spinning", notes);
+        Assert.Empty(HwDiff.Contention(Report(Qemu)));
+        Assert.Contains(notes[0], HwDiff.Notes(a));
+    }
 }

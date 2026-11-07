@@ -44,6 +44,11 @@ public class QemuConfig
     /// <summary>Value of -smp, or null for one CPU.</summary>
     public string? Smp { get; set; }
 
+    /// <summary>Value of -accel, or null for QEMU's default. The stress boot
+    /// (1.9f) asks for <c>tcg,thread=multi</c>: a host thread per CPU, so the
+    /// guest's CPUs really run at once, which -icount never allows.</summary>
+    public string? Accel { get; set; }
+
     /// <summary>Attach the boot disk as a USB stick on this host controller
     /// instead of IDE, as the rig boots (roadmap step 4c). Null: IDE.</summary>
     public UsbHost? BootUsb { get; set; }
@@ -93,6 +98,11 @@ public static class QemuTool
         if (config.Smp is { Length: > 0 } smp)
         {
             args.Add("-smp"); args.Add(smp);
+        }
+
+        if (config.Accel is { Length: > 0 } accel)
+        {
+            args.Add("-accel"); args.Add(accel);
         }
 
         if (config.EnableAudio)

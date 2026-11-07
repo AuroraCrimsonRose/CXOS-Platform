@@ -291,6 +291,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/ktest_hooks.c
     ${SRC_DIR}/kernel/ktest_sweeps.c
     ${SRC_DIR}/kernel/ktest_races.c
+    ${SRC_DIR}/kernel/ktest_stress.c
     ${SRC_DIR}/kernel/ktest_random.c
 )
 

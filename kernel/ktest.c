@@ -75,6 +75,7 @@
 #include "ahci.h"
 #include "diag/crashrec.h"
 #include "sync/lockorder.h"
+#include "ktest_stress.h"
 
 
 /* ---- results a machine reads (roadmap 1.5d) ----
@@ -3554,6 +3555,10 @@ void ktest_run(void) {
     total++; passed += report("user copies validated at the copy",  test_user_copy_validation());
     total++; passed += report("user copy faults are recoverable",   test_user_copy_fault_recovery());
     total++; passed += report("CR0.WP: kernel obeys read-only",     test_cr0_write_protect());
+    total++; passed += report("lockstat: a contended take is counted", ktest_lockstat_count());
+    /* Last, so the profile after it covers the whole suite (1.9f). */
+    total++; passed += report("smp stress: a token round every CPU", ktest_smp_stress());
+    ktest_profile_report();
 
 #if CXK_LOCK_CHECK
     lockorder_report();   /* which locks nested under which, as the tests ran */

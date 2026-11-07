@@ -390,4 +390,10 @@ uint32_t thread_sleep_ms(uint32_t ms);
    interrupt handler - the same contract thread_unblock keeps. */
 void     sched_wake_sleepers(uint64_t now);
 
+/* 1.9f, test-hook builds: take and give sched_lock by the counted path
+   (sync/lockstat.h), for the contention count's own test. Interrupts off
+   from the take to the give; nothing else may be taken meanwhile. */
+uint32_t sched_lock_test_take(void);
+void     sched_lock_test_give(uint32_t f);
+
 #endif

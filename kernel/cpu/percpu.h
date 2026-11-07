@@ -30,6 +30,7 @@
 #include "arch/cpu_ops.h"
 #include "sync/lockorder.h"
 #include "memman/physmap.h"
+#include "sync/lockstat.h"
 
 struct thread;
 
@@ -87,6 +88,10 @@ struct cpu {
        reads the boot CPU's: 0 there, and on an AP what bring-up measured
        (arch/smp.h, the TSC's agreement). Written only on this CPU. */
     volatile int64_t  tsc_adjust;
+    /* 1.9f: the counted locks' contention on this CPU (sync/lockstat.h),
+       written only on this CPU with interrupts off; counted in test-hook
+       builds alone. */
+    struct lockstat lockstat[LOCKSTAT_N];
 };
 
 #define CPU_MAX      16        /* the rig has 8; Hyper-V is given up to 16 */

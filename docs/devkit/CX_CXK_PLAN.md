@@ -164,6 +164,18 @@ Exit 0 only when every step ran and passed, 1 when any failed, else 2.
   replayed exactly.
 - `cxk os run --gdb` starts QEMU paused with symbols loaded.
 
+### 3.5.1 The stress boot (1.9f)
+
+`cxk verify-boot --stress`: 8 CPUs (`-smp 8`) under QEMU's multi-threaded
+TCG (`-accel tcg,thread=multi`), and no `-icount`, which would run them one
+at a time. So the guest's CPUs really run at once, for the orderings one CPU
+at a time never makes, and its clock is the host's. Two self-tests bound a
+time by the virtual clock and measure the host instead
+(`BootVerifier.StressNotJudged`); a stress boot names any of them that
+fails, as not judged, and judges everything else as `verify-boot` does.
+They are judged by every other boot. `hw diff --profile` sets its profile
+beside another boot's (`hardware/CX_HW_REPORT.md` §8).
+
 ### 3.6 Machines
 
 `--cpu` presets drive the CPU-feature tests (`kernel/CX_KERNEL_PLAN.md`

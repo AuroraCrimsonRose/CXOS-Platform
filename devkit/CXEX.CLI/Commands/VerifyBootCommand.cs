@@ -40,6 +40,10 @@ public class VerifyBootCommand : Command<VerifyBootCommand.Settings>
         [Description("QEMU -smp value. Default: 4 CPUs at APIC IDs 0, 1, 2 and 4, with two more the MADT lists disabled (BootVerifier.X86_64Smp); 1 boots one")]
         public string? Smp { get; set; }
 
+        [CommandOption("--stress")]
+        [Description("The SMP stress boot (1.9f): 8 CPUs under QEMU's multi-threaded TCG, without -icount, so they run at once. Timing is the host's; --smp still overrides the count")]
+        public bool Stress { get; set; }
+
         [CommandOption("--log")]
         [Description("Where to write the serial log. Default: beside the image, <image>.serial.log")]
         public string? LogPath { get; set; }
@@ -111,13 +115,13 @@ public class VerifyBootCommand : Command<VerifyBootCommand.Settings>
         byte[]? foreignHash = foreign is null ? null : CXEX.Tools.ForeignDisk.Create(foreign, File.ReadAllBytes(settings.ImagePath));
         long foreignSize = foreign is null ? 0 : new FileInfo(foreign).Length;
         Say(settings, $"[grey]booting[/] {Markup.Escape(settings.ImagePath)} [grey](snapshot, serial -> {Markup.Escape(log)})[/]");
-        Say(settings, $"[grey]{Markup.Escape(QemuTool.CommandLine(BootVerifier.ConfigFor(settings.ImagePath, log, settings.Cpu, usb: usb, foreignDisk: foreign, arch: arch, smp: settings.Smp)))}[/]");
+        Say(settings, $"[grey]{Markup.Escape(QemuTool.CommandLine(BootVerifier.ConfigFor(settings.ImagePath, log, settings.Cpu, usb: usb, foreignDisk: foreign, arch: arch, smp: settings.Smp, stress: settings.Stress)))}[/]");
 
         BootVerdict v;
         try
         {
             v = BootVerifier.Run(settings.ImagePath, log, TimeSpan.FromSeconds(settings.TimeoutSeconds), settings.Full,
-                                 line => Say(settings, $"[grey]{Markup.Escape(line)}[/]"), settings.Cpu, usb, foreign, arch, settings.Smp);
+                                 line => Say(settings, $"[grey]{Markup.Escape(line)}[/]"), settings.Cpu, usb, foreign, arch, settings.Smp, settings.Stress);
         }
         catch (System.ComponentModel.Win32Exception ex)
         {

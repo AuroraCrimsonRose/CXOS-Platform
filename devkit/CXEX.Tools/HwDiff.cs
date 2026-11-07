@@ -80,6 +80,9 @@ public static class HwDiff
             case "pci": return ($"pci {F(0)}", PciFields, 1);
             case "clock": return ($"clock {F(0)}", F(0) == "pmtimer" ? ["port", "bits"] : ["value"], 1);
             case "truncated": return ("truncated", [], 0);
+            // the self-tests' profile (1.9f): its own report, not the machine's
+            case "profile": return ("profile", ["cpus", "tsc-hz", "stress-ticks", "passes"], 0);
+            case "lock": return ($"lock {F(0)} {F(1)} cpu{F(2)}", ["acquired", "contended", "spins", "wait-ticks", "max-hold"], 3);
             case "acpi":
                 return F(0) switch
                 {
@@ -155,6 +158,9 @@ public static class HwDiff
         if (a is null || b is null) return (false, "a field in one report only");
         switch (f.Section)
         {
+            case "profile":
+            case "lock":
+                return (true, "a measure: counts and ticks differ from boot to boot");
             case "boot" when name == "smbios":
             case "acpi" when name is "phys" or "rsdt" or "xsdt":
             case "madt" when name is "lapic-addr" or "addr":
@@ -196,6 +202,37 @@ public static class HwDiff
     {
         var v = f.Fields.FirstOrDefault(x => x.Name == $"bar{bar}").Value;
         return v is not null && Hex(v) is ulong x && (x & 1) == 0 && ((x >> 1) & 3) == 2;
+    }
+
+    /// <summary>
+    /// A profile's contention in a sentence per lock and window (1.9f,
+    /// docs/kernel/CX_SMP.md §4a): the share of takes that found the lock
+    /// held, and the share of the CPUs' time spent spinning for it (the
+    /// stress window's ticks times its CPUs); the longest hold in µs. What
+    /// the run-queue decision reads. Empty for a report with no profile line.
+    /// </summary>
+    public static IReadOnlyList<string> Contention(HwReport r)
+    {
+        var facts = Facts(r);
+        var prof = facts.FirstOrDefault(f => f.Section == "profile");
+        if (prof is null) return [];
+        ulong P(string name) => ulong.TryParse(prof.Fields.FirstOrDefault(x => x.Name == name).Value, out ulong v) ? v : 0;
+        ulong cpus = P("cpus"), hz = P("tsc-hz"), ticks = P("stress-ticks");
+        var notes = new List<string>();
+        foreach (var g in facts.Where(f => f.Section == "lock")
+                               .GroupBy(f => string.Join(' ', f.Key.Split(' ').Take(3))))
+        {
+            ulong Sum(string name) => (ulong)g.Sum(f => ulong.TryParse(f.Fields.FirstOrDefault(x => x.Name == name).Value, out ulong v) ? (decimal)v : 0);
+            ulong acq = Sum("acquired"), con = Sum("contended"), spins = Sum("spins"), wait = Sum("wait-ticks");
+            ulong hold = g.Max(f => ulong.TryParse(f.Fields.FirstOrDefault(x => x.Name == "max-hold").Value, out ulong v) ? v : 0);
+            string share = acq == 0 ? "no takes" : $"{Percent((double)con / acq)} of {acq} takes contended, {spins} spins";
+            string time = g.Key.EndsWith(" stress", StringComparison.Ordinal) && ticks > 0 && cpus > 0
+                ? $", {Percent((double)wait / ((double)ticks * cpus))} of {cpus} CPUs' time spinning"
+                : hz > 0 ? $", {(double)wait / hz * 1000:0.###} ms spinning in all" : "";
+            string longest = hold > 0 && hz > 0 ? $", longest hold {(double)hold / hz * 1e6:0.#} µs" : "";
+            notes.Add(string.Create(CultureInfo.InvariantCulture, $"{g.Key}: {share}{time}{longest}"));
+        }
+        return notes;
     }
 
     private static ulong? Hex(string s) =>
@@ -268,6 +305,7 @@ public static class HwDiff
                 }
             }
         }
+        notes.AddRange(Contention(r));
         if (ulong.TryParse(asked, out ulong ask) && ulong.TryParse(came, out ulong got) && ask > 0)
         {
             double off = Math.Abs((double)got - ask) / ask;

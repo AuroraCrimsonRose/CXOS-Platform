@@ -10,7 +10,9 @@
 > locked, the reaper runs on every CPU and the TSC agrees (§4b, 1.9e3).
 > User memory is read and written only through recoverable copies
 > (1.9e4a); what interrupts kept to one CPU is locked, and a process's
-> threads run on any CPU (§4c, 1.9e4b).
+> threads run on any CPU (§4c, 1.9e4b). 1.9f (2026-11-07): the stress
+> suite, `sched_lock`'s contention counted, and the APs started under
+> Hyper-V for the first time; the one run order stays (§4d).
 
 The rig is an FX-8350: eight cores, of which the kernel used one until
 1.9d started the other seven and left them idle, so that 1.9e changed the
@@ -206,7 +208,8 @@ ready queues behind one lock for every processor (`g_ready_queues`,
 core (`scheduler_thread.h`, `ThreadData::Enqueue`) and WRK one per
 processor (`KiSelectNextThread`, `base/ntos/ke/thredsup.c`). A scan under
 the thread limit is short, and per-CPU queues need a balancer and
-migration; they wait for a profile of the SMP stress suite (1.9f).
+migration; they waited for a profile of the SMP stress suite, which kept
+the one order (§4d, 1.9f).
 
 **An idle thread per CPU** (`sched_cpu_prepare`), WRK's `Prcb->IdleThread`
 (`KiSelectNextThread` falls back to it). It is outside the id table and
@@ -366,6 +369,60 @@ the CPU that ran it, which may trail the ENDED a test woke on.
 drops before the handles close. The contended-mutex X test takes 10 to
 114 s on four CPUs under icount (its limit is 300 s).
 
+## 4d. The stress suite and the count (1.9f)
+
+**The count.** Test builds take `sched_lock` through `spin_lock_counted`
+(`sync/spinlock.h`, `sched_take` in `cpu/sched.c`), which adds to the
+CPU's own `struct lockstat` (`sync/lockstat.h`, in `struct cpu`): takes,
+takes that found it held, spins on the held word, the TSC ticks spent
+spinning, and the longest hold. Kept per CPU, it needs no atomics, and the
+hold's start is per CPU too, since `sched_lock` is given back by the
+thread switched to, always on the CPU that took it. Haiku counts the same
+under `B_DEBUG_SPINLOCK_CONTENTION` (`smp.cpp`). A build without the
+hooks takes the lock as before. Its test (`ktest_lockstat_count`,
+`kernel/ktest_stress.c`): the boot CPU holds the lock 20 ms while AP 1
+takes it; the AP's take must be counted contended, with spins and most of
+the hold as its wait, and the boot CPU's longest hold at least its own.
+
+**The suite** (`ktest_smp_stress`, last of the self-tests): one thread
+per CPU, a token passed round them 200 times (every pass a wake made on
+one CPU for a thread on another, its IPI included), then 2000 yields each,
+all at once. Every pass must be made, no wait may reach its own 1 s
+deadline (a lost wake), and every thread is reaped. After it the kernel
+prints the profile, a report in the hardware report's form
+(`hardware/CX_HW_REPORT.md` §8), which `cxk hw diff --profile` sets
+beside another machine's. `cxk verify-boot --stress` boots it on eight
+CPUs under multi-threaded TCG (`devkit/CX_CXK_PLAN.md` §3.5.1).
+
+**Hyper-V's APs.** No AP had started under Hyper-V before this step: the
+far jump to the trampoline's 64-bit segment set the descriptor's accessed
+bit, a write to the trampoline page, which the AP's tables map read-only
+with CR0.WP on, so a page fault with no IDT, a triple fault (Hyper-V's
+event 18560). TCG never faults on that write. Every descriptor there is
+now marked accessed, as Linux's trampoline GDT is, and a self-test holds
+the template to it. The shootdown-under-modexp test raises its exponent
+until 300 ms have passed instead of once, which took 300 ms only under
+icount.
+
+**The numbers, and the decision.** Hyper-V Gen 1, 8 vCPUs, 5 GB, on the
+build host (2026-11-07), the TSC at 3.8 GHz:
+
+| scope | takes | contended | spins | spinning |
+|---|---|---|---|---|
+| the whole suite | 775 087 | 9.6 % | 10.9 M | 274 ms, all 8 CPUs together |
+| the stress test (80 ms) | 34 962 | 66 % | 4.3 M | 19 % of the 8 CPUs' time |
+
+The longest hold, 20 ms, is the count's own test. TCG's `--stress` run,
+for comparison only, had 32 % and 88 % contended and 45 % of its time
+spinning. **The one order stays.** Over everything the suite does on eight
+CPUs, the lock cost a quarter of a second of spinning; only the stress
+test, which does nothing but wake and yield with no other work to run,
+spends a fifth of its time on it, and that time is taken from no work.
+Per-CPU run queues and a balancer are planned when a workload with work to
+do shows the lock taking from it: the rig's eight cores are the next
+figure (its profile needs a way off a machine with no serial line,
+`hardware/CX_HW_REPORT.md` §9).
+
 ## 5. Tests
 
 Host (`test_madt.c`): the rig's MADT shape, QEMU's gapped one, x2APIC
@@ -454,11 +511,9 @@ cannot redden the tests after it:
 
 ## 6. Not done here
 
-- A run queue per CPU, and a balancer (§4a): when a profile says the
-  scan costs (1.9f). The profile is `sched_lock` contention counted in
-  test builds during the stress suite; only an 8-CPU run under Hyper-V or
-  on the rig decides it, never TCG's timing (`planning/CX_ROADMAP.md`,
-  1.9f plan).
+- A run queue per CPU, and a balancer (§4a): Hyper-V's 8-CPU profile kept
+  the one order (§4d); the rig's profile, and a workload with work to do,
+  are what would change it.
 - The network stack on any CPU: it runs on the boot CPU for each call
   (`ON_BOOT_CPU`, §4c) until it is locked or given a thread of its own.
 - Kernel threads (the drivers') still start on the boot
@@ -484,7 +539,8 @@ cannot redden the tests after it:
   withdrawal after a timeout.
 - The x2APIC: IDs past 0xFE are not started (none of the targets has one).
 - A CPU that fails to start is tested by nothing but the code's reading:
-  QEMU and Hyper-V start every CPU they list.
+  QEMU and Hyper-V start every CPU they list (Hyper-V only since 1.9f;
+  before it, a second vCPU triple-faulted the VM, §4d).
 - The TSC measured once, at bring-up: a TSC that drifts later (not
   invariant, or a CPU's slowed apart) is not caught. A recheck when the
   rig shows one. An AP's shootdown timeout reads the clock, which agrees

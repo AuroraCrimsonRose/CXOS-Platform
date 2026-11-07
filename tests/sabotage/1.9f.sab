@@ -1,0 +1,102 @@
+# Phase 1.9f's sabotages, run by `cxk test sabotage`.
+# Each must turn red exactly the self-tests named, at the reason named.
+# Format: docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage".
+# The first five each drop one part of sched_lock's contention count
+# (sync/spinlock.h spin_lock_counted, cpu/sched.c sched_take): the count's
+# own test, the boot CPU holding the lock while AP 1 takes it, sees each
+# go. All five are in one test, so each boots alone. The sixth loses a wake
+# that lands while its thread is still on its CPU, which the stress ring
+# makes all the time. The last leaves the trampoline's 64-bit segment
+# unaccessed, which only Hyper-V faults on.
+
+# ---- cpu/sched.c ----
+
+[sched-uncounted]
+# sched_lock taken past the count
+expect = lockstat: a contended take is counted @ lockstat count: step 5
+edit = kernel/cpu/sched.c
+<<<
+static inline uint32_t sched_take(void)       { return spin_lock_counted(&sched_lock, LOCKSTAT_SCHED); }
+===
+static inline uint32_t sched_take(void)       { return spin_lock(&sched_lock); }
+>>>
+
+# ---- sync/spinlock.h ----
+
+[contended-uncounted]
+# a take that found the lock held is not counted as one
+expect = lockstat: a contended take is counted @ lockstat count: step 6
+edit = kernel/sync/spinlock.h
+<<<
+        uint64_t t0 = arch_cycles64();
+        s->contended++;
+===
+        uint64_t t0 = arch_cycles64();
+>>>
+
+[spins-uncounted]
+# the spins on a held word are not counted
+expect = lockstat: a contended take is counted @ lockstat count: step 7
+edit = kernel/sync/spinlock.h
+<<<
+                s->spins++;
+                SPIN_SERVE();
+===
+                SPIN_SERVE();
+>>>
+
+[wait-untimed]
+# the time spent spinning is not added
+expect = lockstat: a contended take is counted @ lockstat count: step 8
+edit = kernel/sync/spinlock.h
+<<<
+        s->wait_tsc += arch_cycles64() - t0;
+===
+        (void)t0;
+>>>
+
+[hold-untimed]
+# the longest hold is never kept
+expect = lockstat: a contended take is counted @ lockstat count: step 9
+edit = kernel/sync/spinlock.h
+<<<
+    if (held > s->max_hold) s->max_hold = held;
+===
+    (void)held;
+>>>
+
+# ---- cpu/sched.c: the stress ring ----
+
+[wake-lost-on-cpu]
+# a wake of a thread blocked but not yet switched out is dropped: 1.9e2's
+# own test sees it first, the X runner's threads hang on it, and the ring
+# needs its waits' deadlines (seen 2026-11-07: 80 of them on 4 CPUs)
+expect = a thread woken before it is off its CPU stays there @ sched ready on cpu: step 4
+expect = x: *
+expect = x tests: the runner ran cleanly
+expect = smp stress: a token round every CPU @ smp stress: step 5
+edit = kernel/cpu/sched.c
+<<<
+    if (t && t->state == THREAD_BLOCKED) {
+        t->state = THREAD_READY;
+        kick(t, 1);
+    }
+===
+    if (t && t->state == THREAD_BLOCKED && !t->on_cpu) {
+        t->state = THREAD_READY;
+        kick(t, 1);
+    }
+>>>
+
+# ---- arch/x86_64/smp_tramp.asm ----
+
+[tramp-gdt-unaccessed]
+# the 64-bit code segment left unaccessed: Hyper-V's APs triple-fault on the
+# far jump (seen 2026-11-07); TCG does not, so only the rule's test sees it
+expect = the AP trampoline's segments are all marked accessed @ tramp gdt: step 2
+edit = kernel/arch/x86_64/smp_tramp.asm
+<<<
+    dq 0x00AF9B000000FFFF           ; 0x18: 64-bit code
+===
+    dq 0x00AF9A000000FFFF           ; 0x18: 64-bit code
+>>>

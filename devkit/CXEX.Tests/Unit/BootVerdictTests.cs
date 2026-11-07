@@ -141,6 +141,36 @@ public class BootVerdictTests
 
     [Fact]
     [Trait(Categories.Key, Categories.Unit)]
+    public void A_stress_boot_names_the_tests_it_does_not_judge_and_judges_the_rest()
+    {
+        static string Log(string end) =>
+            "\r\n@ktest\tbegin\r\n" +
+            "\r\n@ktest\tresult\t0\tpass\t1\tpaging maps\r\n" +
+            "[KTEST   ] - [FAIL] - slack: a timer fires at a later one's interrupt\r\n" +
+            "\r\n@ktest\tresult\t1\tfail\t11\tslack: a timer fires at a later one's interrupt\r\n" +
+            "\r\n@ktest\tresult\t2\tpass\t0\tCR0.WP\r\n" +
+            end +
+            "[KTEST   ] - [FAIL] - self-tests failed: 1 failure(s)\r\n";
+        string log = Log("\r\n@ktest\tend\t2\t3\r\n");
+
+        // judged everywhere but a stress boot
+        Assert.Equal(BootOutcome.Fail, BootVerdict.Classify(log, full: false).Outcome);
+        // under --stress, named and passed over; the boot's other checks still apply
+        var v = BootVerdict.Classify(log, full: false, notJudged: BootVerifier.StressNotJudged);
+        Assert.StartsWith("self-tests: 2 of 3 passed, the rest not judged here (slack: a timer fires at a later one's interrupt)", v.Reason);
+        Assert.Contains("hardware report is missing", v.Reason);
+        // a set that does not name it still fails it
+        var other = BootVerdict.Classify(log, full: false, notJudged: new HashSet<string> { "CR0.WP" });
+        Assert.Equal(BootOutcome.Fail, other.Outcome);
+        Assert.EndsWith("slack: a timer fires at a later one's interrupt", other.Reason);
+        // an end line that disagrees with the results is no pass of any kind
+        var torn = BootVerdict.Classify(Log("\r\n@ktest\tend\t1\t3\r\n"), full: false, notJudged: BootVerifier.StressNotJudged);
+        Assert.Equal(BootOutcome.Fail, torn.Outcome);
+        Assert.DoesNotContain("not judged", torn.Reason);
+    }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
     public void The_json_report_carries_every_result()
     {
         var log = Results(3, failAt: 1) + "[KTEST   ] - [FAIL] - self-tests failed: 1 failure(s)\n";

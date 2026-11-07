@@ -97,4 +97,43 @@ static inline void spin_unlock(spinlock_t *l, uint32_t f) {
     spin_irq_restore(f);
 }
 
+/* 1.9f: a lock whose contention is counted (sync/lockstat.h), into the
+   taking CPU's record `which`: the same lock as spin_lock, and in a build
+   without the test hooks exactly spin_lock. The count is made with
+   interrupts off, so the CPU cannot change under it; the hold is timed on
+   the CPU that gives the lock back, which is the one that took it. */
+#if CXK_TEST_HOOKS && !defined(CXK_HOST_TEST)
+static inline uint32_t spin_lock_counted(spinlock_t *l, unsigned which) {
+    uint32_t f = spin_irq_save();
+    SPIN_CHECK_TAKE(l);
+    struct lockstat *s = &cpu_this()->lockstat[which];
+    s->acquired++;
+    if (__atomic_exchange_n(&l->locked, 1u, __ATOMIC_ACQUIRE)) {
+        uint64_t t0 = arch_cycles64();
+        s->contended++;
+        do {
+            while (__atomic_load_n(&l->locked, __ATOMIC_RELAXED)) {
+                s->spins++;
+                SPIN_SERVE();
+                spin_relax();
+            }
+        } while (__atomic_exchange_n(&l->locked, 1u, __ATOMIC_ACQUIRE));
+        s->wait_tsc += arch_cycles64() - t0;
+    }
+    s->since = arch_cycles64();
+    SPIN_HELD_ADD(1u);
+    return f;
+}
+
+static inline void spin_unlock_counted(spinlock_t *l, uint32_t f, unsigned which) {
+    struct lockstat *s = &cpu_this()->lockstat[which];
+    uint64_t held = arch_cycles64() - s->since;
+    if (held > s->max_hold) s->max_hold = held;
+    spin_unlock(l, f);
+}
+#else
+#define spin_lock_counted(l, which)        ((void)(which), spin_lock(l))
+#define spin_unlock_counted(l, f, which)   ((void)(which), spin_unlock((l), (f)))
+#endif
+
 #endif

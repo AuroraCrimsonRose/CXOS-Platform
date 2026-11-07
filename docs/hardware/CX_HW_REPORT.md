@@ -275,7 +275,33 @@ stay findings, as §5 has them.
 **Untested:** whether the drivers named above work on the rig's parts;
 the 16 disabled MADT entries, until step 9 reads them.
 
-## 8. Next
+## 8. The self-tests' profile (1.9f)
+
+A test-hook boot prints a second report in the same form after its last
+self-test (`kernel/ktest_stress.c`, `ktest_profile_report`): what
+`sched_lock`'s contention cost, per CPU, so a QEMU run, a Hyper-V one and
+the rig's are set side by side the way their machines are
+(`kernel/CX_SMP.md` §4d). Its first line after the begin is `profile`,
+which is how `HwReport.TextFromSerial` passes over it and
+`ProfileFromSerial` finds it; it goes to serial only, never to the crash
+area.
+
+| Line | Fields |
+|---|---|
+| `profile` | CPUs; the TSC's rate (Hz); the stress test's window and the token passes it made (decimal) |
+| `lock sched boot <cpu>` | takes, takes that found it held, spins, TSC ticks spent spinning, the longest hold (ticks): everything since that CPU started |
+| `lock sched stress <cpu>` | the same in the stress test's window; the longest hold `-` (not kept per window) |
+
+`cxk hw show <log> --profile` lists it; `cxk hw diff a.log b.log --profile`
+sets two beside each other, every field a measure, so every difference is
+expected and all of them are listed. Both add a note per lock and window:
+the share of takes contended, and for the stress window the share of the
+CPUs' time spent spinning (`HwDiff.Contention`). Under TCG those figures
+are the emulator's, not the hardware's.
+
+## 9. Next
 
 - Step 9 (SMP) reads the MADT's CPU entries, with the rig's IDs above as
   its test case.
+- The rig may have no serial port, so its profile has no way off it yet:
+  a crash-area record of its own, if the rig's numbers are wanted.

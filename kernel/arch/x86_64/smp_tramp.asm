@@ -72,12 +72,20 @@ tr_long:
     call rax
     ud2                             ; smp_ap_entry never returns
 
+; Every descriptor is marked accessed (type 0x9B, 0x93). Loading one into a
+; segment register writes its accessed bit, and the far jump to 0x18 loads
+; it with paging on, where this page is mapped read-only (paging_boot_root)
+; and CR0.WP is set: a clear bit there is a page fault with no IDT, a triple
+; fault. QEMU's TCG never faulted on that write; Hyper-V does (1.9f). Linux's
+; trampoline GDT sets the bit for the same reason (trampoline_64.S, 0x9b).
 align 8
+global smp_tramp_gdt
+smp_tramp_gdt:
 tr_gdt:
     dq 0
-    dq 0x00CF9A000000FFFF           ; 0x08: 32-bit code, flat
-    dq 0x00CF92000000FFFF           ; 0x10: data, flat
-    dq 0x00AF9A000000FFFF           ; 0x18: 64-bit code
+    dq 0x00CF9B000000FFFF           ; 0x08: 32-bit code, flat
+    dq 0x00CF93000000FFFF           ; 0x10: data, flat
+    dq 0x00AF9B000000FFFF           ; 0x18: 64-bit code
 tr_gdtr:
     dw 4 * 8 - 1
     dd T(tr_gdt)

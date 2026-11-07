@@ -29,24 +29,42 @@ public sealed record HwReport(string Text, IReadOnlyList<HwLine> Lines)
     public bool Truncated => Lines.Any(l => l.Section == "truncated");
 
     /// <summary>
-    /// The report in a serial log: from its last <c>@hw begin</c> through the
-    /// first end line after it, rebuilt as the kernel's text. Null when the
-    /// log holds no begin line. The text may still fail <see cref="Check"/>.
+    /// The machine's report in a serial log: from its last <c>@hw begin</c>
+    /// through the first end line after it, rebuilt as the kernel's text, a
+    /// profile (<see cref="ProfileFromSerial"/>) passed over. Null when the
+    /// log holds no such begin line. The text may still fail <see cref="Check"/>.
     /// </summary>
-    public static string? TextFromSerial(string log)
+    public static string? TextFromSerial(string log) => LastFromSerial(log, profile: false);
+
+    /// <summary>
+    /// The self-tests' profile in a serial log (1.9f): a report in the same
+    /// form whose first line after the begin is <c>profile</c>, printed after
+    /// the suite with the counted locks' contention. The last one, as
+    /// <see cref="TextFromSerial"/> takes; null when there is none.
+    /// </summary>
+    public static string? ProfileFromSerial(string log) => LastFromSerial(log, profile: true);
+
+    private static string? LastFromSerial(string log, bool profile)
     {
-        var lines = new List<string>();
+        string? found = null;
+        List<string>? lines = null;
+        void Finish()
+        {
+            if (lines is null || lines.Count == 0) return;
+            bool isProfile = lines.Count > 1 && lines[1].StartsWith("@hw\tprofile", StringComparison.Ordinal);
+            if (isProfile == profile) found = string.Join('\n', lines) + "\n";
+        }
         foreach (string raw in log.Split('\n'))
         {
             var m = Tagged.Match(raw.TrimEnd('\r'));
             if (!m.Success) continue;
-            if (m.Value.StartsWith("@hw\tbegin", StringComparison.Ordinal)) lines.Clear();
+            if (m.Value.StartsWith("@hw\tbegin", StringComparison.Ordinal)) { Finish(); lines = []; }
+            if (lines is null) continue;
             lines.Add(m.Value);
+            if (m.Value.StartsWith("@hw\tend", StringComparison.Ordinal)) { Finish(); lines = null; }
         }
-        if (lines.Count == 0 || !lines[0].StartsWith("@hw\tbegin", StringComparison.Ordinal)) return null;
-        int end = lines.FindIndex(l => l.StartsWith("@hw\tend", StringComparison.Ordinal));
-        if (end >= 0) lines.RemoveRange(end + 1, lines.Count - end - 1);
-        return string.Join('\n', lines) + "\n";
+        Finish();   // cut off before its end line: taken as far as it goes
+        return found;
     }
 
     /// <summary>The report's text checked and split into lines; throws <see cref="FormatException"/> on one that fails <see cref="Check"/>.</summary>

@@ -96,9 +96,15 @@ static spinlock_t sched_lock = SPINLOCK_INIT(LR_SCHED);
 static inline uint32_t irq_save(void)          { return arch_irq_save(); }
 static inline void     irq_restore(uint32_t f) { arch_irq_restore(f); }
 
+/* Every take and give of sched_lock goes through these, so a test-hook
+   build counts its contention (sync/lockstat.h, 1.9f): the profile the
+   choice between this one order and a run queue per CPU waits on. */
+static inline uint32_t sched_take(void)       { return spin_lock_counted(&sched_lock, LOCKSTAT_SCHED); }
+static inline void     sched_give(uint32_t f) { spin_unlock_counted(&sched_lock, f, LOCKSTAT_SCHED); }
+
 /* Give sched_lock back and leave interrupts off, whatever the taker had:
    a halt or a reap must not be cut into by the tick that wants the lock. */
-static inline void sched_unlock_irqs_off(void) { spin_unlock(&sched_lock, irq_save()); }
+static inline void sched_unlock_irqs_off(void) { sched_give(irq_save()); }
 
 /* A thread's record for reading or writing one of its fields (1.9e2: the
    per-thread reads 1.9b left without the lock). The running thread's own
@@ -109,10 +115,10 @@ static inline void sched_unlock_irqs_off(void) { spin_unlock(&sched_lock, irq_sa
 #define LOOK_SELF 0xFFFFFFFFu   /* no flags word is all ones: no lock taken */
 static struct thread *look(int id, uint32_t *f) {
     if (id == current) { *f = LOOK_SELF; return self(); }
-    *f = spin_lock(&sched_lock);
+    *f = sched_take();
     return live(id);
 }
-static inline void look_done(uint32_t f) { if (f != LOOK_SELF) spin_unlock(&sched_lock, f); }
+static inline void look_done(uint32_t f) { if (f != LOOK_SELF) sched_give(f); }
 
 static uint32_t thread_limit = THREAD_LIMIT_DEFAULT;
 static uint32_t stack_bytes  = THREAD_STACK_DEFAULT;
@@ -282,7 +288,7 @@ void thread_note_self_exit(int32_t code) {
 }
 
 void thread_start(int id) {
-    uint32_t f = spin_lock(&sched_lock);
+    uint32_t f = sched_take();
     struct thread *t = th(id);
     /* Not this CPU's need_resched: only thread context starts a thread, and
        a higher one runs when the starter next yields (ring 3: the syscall
@@ -292,7 +298,7 @@ void thread_start(int id) {
         t->state = THREAD_READY;
         kick(t, 0);
     }
-    spin_unlock(&sched_lock, f);
+    sched_give(f);
 }
 
 int thread_set_arg(int id, void *arg, void (*drop)(void *arg)) {
@@ -336,10 +342,10 @@ static void thread_free(struct thread *t) {
     t->proc  = 0;
     /* Out of the table under the lock, which every walk of it holds; the
        record goes back after, when nothing can find it. */
-    uint32_t f = spin_lock(&sched_lock);
+    uint32_t f = sched_take();
     t->state = THREAD_UNUSED;
     idtab_take(&tids, t->id);
-    spin_unlock(&sched_lock, f);
+    sched_give(f);
     ocache_free(&thread_cache, t);
 }
 
@@ -368,9 +374,9 @@ static int thread_create_in(const char *name, void (*entry)(void), int held, str
        keeps its id until it is reaped, so its stacks are never clobbered. */
     struct thread *t = ocache_alloc(&thread_cache);
     if (!t) return -1;
-    uint32_t f = spin_lock(&sched_lock);
+    uint32_t f = sched_take();
     int slot = idtab_alloc(&tids, t, 1);
-    spin_unlock(&sched_lock, f);
+    sched_give(f);
     if (slot < 0) { ocache_free(&thread_cache, t); return -1; }
     t->id = slot;
 
@@ -386,9 +392,9 @@ static int thread_create_in(const char *name, void (*entry)(void), int held, str
     if (rc != E_OK) {
         if (stack_top) kstack_free(stack);
         if (p && !into) proc_put(p);
-        f = spin_lock(&sched_lock);
+        f = sched_take();
         idtab_take(&tids, slot);
-        spin_unlock(&sched_lock, f);
+        sched_give(f);
         ocache_free(&thread_cache, t);
         return rc;
     }
@@ -428,10 +434,10 @@ static int thread_create_in(const char *name, void (*entry)(void), int held, str
     t->on_cpu      = 0;
     t->idle        = 0;
     /* Last, under the lock: from here the timer, or another CPU, may run it. */
-    f = spin_lock(&sched_lock);
+    f = sched_take();
     t->state = held ? THREAD_HELD : THREAD_READY;
     if (!held) kick(t, 0);
-    spin_unlock(&sched_lock, f);
+    sched_give(f);
     return slot;
 }
 
@@ -592,7 +598,7 @@ static __attribute__((noreturn)) void idle_loop(void) {
     for (;;) {
         arch_irq_disable();
         sched_reap();
-        spin_lock(&sched_lock);
+        sched_take();
         __atomic_store_n(&c->need_resched, 0u, __ATOMIC_RELAXED);
         struct thread *next = next_runnable();
         if (next != me) {
@@ -611,7 +617,7 @@ void sched_cpu_enter(void) {
     struct cpu *c = cpu_this();
     struct thread *me = c->idle_thread;
     arch_irq_disable();
-    spin_lock(&sched_lock);
+    sched_take();
     me->on_cpu    = c->index + 1;
     me->state     = THREAD_RUNNING;
     me->run_since = timer_now_ns();
@@ -634,10 +640,10 @@ static inline int killing(const struct thread *t) { return t->proc && t->proc->k
    a kill between the two would find this thread still RUNNING, wake
    nobody, and leave it blocked for good once it got back. */
 static int block_unless_killed(void) {
-    uint32_t f = spin_lock(&sched_lock);
+    uint32_t f = sched_take();
     int go = !killing(self());
     if (go) self()->state = THREAD_BLOCKED;
-    spin_unlock(&sched_lock, f);
+    sched_give(f);
     return go;
 }
 
@@ -655,7 +661,7 @@ void thread_block(void) {
 int thread_killed(void) { return initialized && killing(self()); }
 
 void sched_wake_process(struct proc *p) {
-    uint32_t f = spin_lock(&sched_lock);
+    uint32_t f = sched_take();
     for (uint32_t i = 0; i < tids.cap; i++) {
         struct thread *t = th((int)i);
         if (!t || t->proc != p || t->state != THREAD_BLOCKED) continue;
@@ -663,7 +669,7 @@ void sched_wake_process(struct proc *p) {
         t->state    = THREAD_READY;
         kick(t, 0);
     }
-    spin_unlock(&sched_lock, f);
+    sched_give(f);
 }
 
 int thread_is_blocked(int id) {
@@ -676,10 +682,10 @@ int thread_is_blocked(int id) {
 
 /* RUNNING again, once woken and back. */
 static void running_again(void) {
-    uint32_t f = spin_lock(&sched_lock);
+    uint32_t f = sched_take();
     self()->sleeping = 0;
     self()->state    = THREAD_RUNNING;
-    spin_unlock(&sched_lock, f);
+    sched_give(f);
 }
 
 /* A BLOCKED thread's yield always switches away, to the idle thread if
@@ -694,13 +700,13 @@ void thread_wait(void) {
 }
 
 void thread_unblock(int id) {
-    uint32_t f = spin_lock(&sched_lock);
+    uint32_t f = sched_take();
     struct thread *t = th(id);
     if (t && t->state == THREAD_BLOCKED) {
         t->state = THREAD_READY;
         kick(t, 1);
     }
-    spin_unlock(&sched_lock, f);
+    sched_give(f);
 }
 
 /* ---- timed sleep ----
@@ -729,7 +735,7 @@ void thread_block_prepare_until(uint64_t deadline) {
        A 1 ms sleep is due at the very next tick, so the window was real.
        Not at all for a thread being killed: thread_block_finish then
        returns at once. The timer's hint takes no lock. */
-    uint32_t f = spin_lock(&sched_lock);
+    uint32_t f = sched_take();
     if (!killing(self())) {
         if (deadline < TIMER_NEVER) {
             self()->wake_ns  = deadline;
@@ -738,7 +744,7 @@ void thread_block_prepare_until(uint64_t deadline) {
         self()->state = THREAD_BLOCKED;
         if (deadline < TIMER_NEVER) timer_deadline_hint(deadline);
     }
-    spin_unlock(&sched_lock, f);
+    sched_give(f);
 }
 
 /* As thread_wait: the timer or a thread_unblock makes it READY, and the
@@ -753,7 +759,7 @@ void thread_block_finish(void) {
 
 void sched_wake_sleepers(uint64_t now) {
     if (!initialized) return;
-    uint32_t f = spin_lock(&sched_lock);
+    uint32_t f = sched_take();
     for (uint32_t i = 0; i < tids.cap; i++) {
         struct thread *t = th((int)i);
         if (!t || !t->sleeping) continue;
@@ -765,7 +771,7 @@ void sched_wake_sleepers(uint64_t now) {
             kick(t, 1);
         }
     }
-    spin_unlock(&sched_lock, f);
+    sched_give(f);
 }
 
 /* At any level, that this CPU could run: next_runnable would keep a higher
@@ -774,13 +780,13 @@ void sched_wake_sleepers(uint64_t now) {
 int sched_others_ready(void) {
     if (!initialized) return 0;
     int any = 0;
-    uint32_t f = spin_lock(&sched_lock);
+    uint32_t f = sched_take();
     struct cpu *c = cpu_this();
     for (uint32_t i = 0; i < tids.cap && !any; i++) {
         struct thread *t = th((int)i);
         any = t && t != c->cur && runnable_here(t, c);
     }
-    spin_unlock(&sched_lock, f);
+    sched_give(f);
     return any;
 }
 
@@ -808,13 +814,13 @@ void thread_set_base(int id, uint32_t level) {
 }
 
 void thread_set_prio(int id, uint32_t level) {
-    uint32_t f = spin_lock(&sched_lock);
+    uint32_t f = sched_take();
     struct thread *t = live(id);
     if (t) {
         t->prio = (uint8_t)level;
         kick(t, 1);
     }
-    spin_unlock(&sched_lock, f);
+    sched_give(f);
 }
 
 struct ipc_call *thread_in_call(int id) {
@@ -834,27 +840,27 @@ void thread_set_in_call(int id, struct ipc_call *c) {
 
 void sched_yield_if_outranked(void) {
     if (!initialized) return;
-    uint32_t f = spin_lock(&sched_lock);
+    uint32_t f = sched_take();
     struct cpu *c = cpu_this();
     int go = 0;
     for (uint32_t i = 0; i < tids.cap && !go; i++) {
         struct thread *t = th((int)i);
         go = t && t != c->cur && runnable_here(t, c) && t->prio > self()->prio;
     }
-    spin_unlock(&sched_lock, f);
+    sched_give(f);
     if (go) yield();
 }
 
 void yield(void) {
     if (!initialized) return;
-    uint32_t flags = spin_lock(&sched_lock);
+    uint32_t flags = sched_take();
     /* This pick answers any switch asked for (kick, the slice); left
        standing, the request would preempt whoever runs at the next interrupt,
        for nothing, and hide whether that interrupt's own wake asks for one. */
     __atomic_store_n(&cpu_this()->need_resched, 0u, __ATOMIC_RELAXED);
     struct thread *prev = self();
     struct thread *next = next_runnable();
-    if (next == prev) { spin_unlock(&sched_lock, flags); return; }   /* only one runnable thread */
+    if (next == prev) { sched_give(flags); return; }   /* only one runnable thread */
 
     if (prev->state == THREAD_RUNNING) prev->state = THREAD_READY;
     switch_to(next);
@@ -891,7 +897,7 @@ uint32_t sched_reaped_on(unsigned index) { return index < CPU_MAX ? reaped_on[in
 static void sched_reap(void) {
     for (;;) {
         struct thread *dead = 0;
-        uint32_t f = spin_lock(&sched_lock);
+        uint32_t f = sched_take();
         for (uint32_t i = 1; i < tids.cap && !dead; i++) {
             struct thread *t = th((int)i);
             if (t && t->state == THREAD_EXITED && !t->on_cpu) {
@@ -899,7 +905,7 @@ static void sched_reap(void) {
                 dead = t;
             }
         }
-        spin_unlock(&sched_lock, f);
+        sched_give(f);
         if (!dead) return;
         /* Counted first: the free gives the id back before it is done, and
            whoever sees the count drop sees this too. */
@@ -926,7 +932,7 @@ void thread_exit(void) {
     if (me->proc) proc_thread_stopped(me->proc, me->self_exit ? &me->exit_code : 0);
     /* Its locks were all taken and given back above; sched_lock now, given
        back by the thread switched to (its flags here, off, are no one's). */
-    spin_lock(&sched_lock);
+    sched_take();
     self()->state = THREAD_EXITED;
     /* stack is freed later by sched_reap, running in another thread's context
        (we can't free the stack we're still standing on). */
@@ -945,12 +951,12 @@ void thread_exit(void) {
 
 int sched_active_count(void) {
     int c = 0;
-    uint32_t f = spin_lock(&sched_lock);
+    uint32_t f = sched_take();
     for (uint32_t i = 0; i < tids.cap; i++) {
         struct thread *t = th((int)i);
         if (t && (t->state == THREAD_READY || t->state == THREAD_RUNNING)) c++;
     }
-    spin_unlock(&sched_lock, f);
+    sched_give(f);
     return c;
 }
 
@@ -1023,12 +1029,12 @@ uint64_t sched_next_due(int running) {
     uint64_t d = TIMER_NEVER;
     if (!initialized) return d;
     if (running && preempt_on) d = cpu_boot.slice_end;
-    uint32_t f = spin_lock(&sched_lock);
+    uint32_t f = sched_take();
     for (uint32_t i = 0; i < tids.cap; i++) {
         struct thread *t = th((int)i);
         if (t && t->sleeping && t->wake_ns < d) d = t->wake_ns;
     }
-    spin_unlock(&sched_lock, f);
+    sched_give(f);
     return d;
 }
 
@@ -1046,10 +1052,10 @@ void sched_preempt_point(void) {
     __atomic_store_n(&c->need_resched, 0u, __ATOMIC_RELAXED);
     if (!preempt_on || !initialized || c->in_switch) return;
 
-    uint32_t f = spin_lock(&sched_lock);
+    uint32_t f = sched_take();
     struct thread *prev = self();
     struct thread *next = next_runnable();
-    if (next == prev) { spin_unlock(&sched_lock, f); return; }
+    if (next == prev) { sched_give(f); return; }
 
     c->in_switch = 1;
     if (prev->state == THREAD_RUNNING) prev->state = THREAD_READY;
@@ -1057,7 +1063,7 @@ void sched_preempt_point(void) {
     c->in_switch = 0;
     context_switch(&prev->esp, next->esp);
     /* resumed as `prev` later, the lock handed over by whoever switched here */
-    spin_unlock(&sched_lock, f);
+    sched_give(f);
     sched_reap();   /* reclaim threads that exited while we were away */
 }
 
@@ -1075,7 +1081,7 @@ int thread_set_affinity(int id, uint32_t mask) {
     uint32_t online = cpu_count() >= 32 ? 0xFFFFFFFFu : (1u << cpu_count()) - 1u;
     mask &= online;
     if (!mask) return -1;
-    uint32_t f = spin_lock(&sched_lock);
+    uint32_t f = sched_take();
     struct thread *t = live(id);
     int rc = -1;
     if (t && !t->idle) {
@@ -1086,7 +1092,7 @@ int thread_set_affinity(int id, uint32_t mask) {
         if (t->on_cpu && !(mask & (1u << (t->on_cpu - 1)))) resched(cpu_at(t->on_cpu - 1));
         else kick(t, 1);
     }
-    spin_unlock(&sched_lock, f);
+    sched_give(f);
     return rc;
 }
 
@@ -1139,13 +1145,13 @@ const char *thread_name(int id) {
 }
 
 void thread_set_tls(int id, uint64_t base) {
-    uint32_t f = spin_lock(&sched_lock);
+    uint32_t f = sched_take();
     struct thread *t = id == current ? self() : live(id);
     if (t) {
         t->tls_base = base;
         if (id == current) arch_tls_base_set(base);
     }
-    spin_unlock(&sched_lock, f);
+    sched_give(f);
 }
 
 uint64_t thread_tls(int id) {
@@ -1302,3 +1308,9 @@ void thread_set_uid(int id, uint32_t uid) {
     if (uid == UID_SYSTEM && p->is_user) return;
     p->uid = uid;
 }
+#if CXK_TEST_HOOKS
+/* 1.9f: sched_lock itself, taken and given by the counted path, so the
+   contention count's test holds the one lock the count is for. */
+uint32_t sched_lock_test_take(void)       { return sched_take(); }
+void     sched_lock_test_give(uint32_t f) { sched_give(f); }
+#endif
