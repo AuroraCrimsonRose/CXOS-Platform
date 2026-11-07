@@ -17,8 +17,8 @@ The retired x86-32 system is kept as a reference on the `x86_32_DEV` and
 Phase 0 of the [roadmap](docs/planning/CX_ROADMAP.md) is done: the kernel
 object model, processes separate from threads, the architecture layer, the
 CXBI hand-over and crash log, the 64-bit kernel booting from the BIOS loader,
-and X for x86-64. Phase 1 is at its last step (1.10, this documentation pass);
-it brought:
+and X for x86-64. Phase 1 has one step left, 1.9f (the race tests as an SMP
+stress suite on 8 CPUs, Hyper-V, then the rig); so far it has brought:
 
 - process handles (wait, stop, kill, inspect), jobs, and detailed exit
   reasons;

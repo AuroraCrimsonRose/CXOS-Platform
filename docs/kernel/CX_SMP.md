@@ -455,7 +455,10 @@ cannot redden the tests after it:
 ## 6. Not done here
 
 - A run queue per CPU, and a balancer (§4a): when a profile says the
-  scan costs (1.9f).
+  scan costs (1.9f). The profile is `sched_lock` contention counted in
+  test builds during the stress suite; only an 8-CPU run under Hyper-V or
+  on the rig decides it, never TCG's timing (`planning/CX_ROADMAP.md`,
+  1.9f plan).
 - The network stack on any CPU: it runs on the boot CPU for each call
   (`ON_BOOT_CPU`, §4c) until it is locked or given a thread of its own.
 - Kernel threads (the drivers') still start on the boot

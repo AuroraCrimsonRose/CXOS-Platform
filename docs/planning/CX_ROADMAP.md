@@ -927,6 +927,29 @@ Independent of the order above, and small enough to land whenever convenient:
    **1.9e** the scheduler on every CPU: run queues, IPIs, TLB shootdown;
    **1.9f** the race tests of 6 as the SMP stress suite (`-smp 8` under
    multi-threaded TCG, Hyper-V), then the rig.
+   - **1.9f plan** (2026-11-07, Aurora agreed): the stress suite is also
+     the profile 1.9e2's run-order choice waits on (`kernel/CX_SMP.md`
+     §4a, §6). Test builds count `sched_lock` contention: acquisitions,
+     acquisitions that had to spin, spin iterations, and the longest hold
+     in TSC ticks, per CPU, printed as one fixed line at the end of the
+     suite (and in the hardware report's form, so `cxk hw diff` can set an
+     `-smp 8` QEMU run beside Hyper-V and the rig). The count's own test:
+     two CPUs forced through one contended acquisition must report a spin,
+     and a sabotage that drops the count goes red. **The decision rule:**
+     per-CPU run queues and a balancer are planned (a step of their own,
+     Haiku's `scheduler_thread.h` and WRK's per-processor ready lists the
+     references) only if the suite on 8 CPUs, under Hyper-V or on the rig,
+     shows contention that costs; otherwise the one order stays and
+     §4a says so with the numbers. TCG's figures alone decide nothing:
+     its CPUs are host threads and its timing is not the hardware's.
+     **Alongside:** the first host fuzz target (`safety/CX_SAFETY.md`
+     §3.2, §7): `cxfs_sb_validate` and the mount path that trusts what it
+     passes, built for the host under libFuzzer, ASan and UBSan with
+     `kernel/test/host`'s seam; a corpus in the tree seeded from real
+     images; every crash a regression test in the host suite. The
+     target's own check: a sabotage that removes one of
+     `cxfs_sb_validate`'s bounds is found by the fuzzer within a stated
+     budget (the figure set when it is first measured).
    - **1.9a (2026-11-05), done:** every spinlock carries a rank
      (`kernel/sync/lockorder.h`, 14 classes), given where it is made
      (`SPINLOCK_INIT(LR_x)`, `spin_init`); with `CXK_LOCK_CHECK` (on with
