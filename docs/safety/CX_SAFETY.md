@@ -18,14 +18,15 @@ As of 2026-11-07, Phase 1 step 1.9e4b (`x86_64-DEV` at `820ee56`).
 | Boot self-tests | 237, run on every boot of a test build (`kernel/ktest*.c`), each reported as one `@ktest` line that `cxk verify-boot --json` reads; a summary without agreeing lines fails. Booted on 4 CPUs, on 1 (`--smp 1`) and on `--cpu max` |
 | Ring-3 tests | 23 `test_run` lines in `os/apps/xtest.xfxn`, run from disk at boot as the X test runner (1.5d2) |
 | Host tests, C# | 392 xUnit tests in `devkit/CXEX.Tests` pass on Windows (13 more skip there with a reason): unit, adversarial (hostile CXEX, ELF and GPT inputs), differential. A fixed seed for every generator (`TestEnvironment.cs`) |
-| Kernel C on the host | 127 tests in `kernel/test/host` (§3.7), under AddressSanitizer and UBSan: the object header and handle table, the bitmap and buddy allocators, object caches, the page tables and VM tree, the lock-order checker, the RNG, the MADT and hardware-report formats, clock scaling, the crash record, SHA-256 and others |
+| Kernel C on the host | 130 tests in `kernel/test/host` (§3.7), under AddressSanitizer and UBSan: the object header and handle table, the bitmap and buddy allocators, object caches, the page tables and VM tree, the lock-order checker, the RNG, the MADT and hardware-report formats, clock scaling, the crash record, SHA-256, CXFS over RAM disks (`hostdisk.c`) and others |
 | Differential testing | The C# compiler is the oracle for `os/xc`: 13 Differential tests in the CI container, and the self-hosting fixed point. `SABOTAGE=1` must turn every comparison test red |
 | Sabotage | Every check is seen to fail. Since 1.5d each step's matrix is a `.sab` file under `tests/sabotage/` (21 so far), run by `cxk test sabotage`, which applies, rebuilds, requires exactly the named tests red, and restores |
 | One gate | `cxk test all`: the build, both boots, `dotnet test` and the container, in one summary (1.5d3) |
 | Failure and race hooks | In test builds (`kernel/diag/testhook.h`, 1.6a): fail the Nth allocation, live counts compared before and after, named race points, and seeded chaos at those points reproducible from a printed seed (1.7b) |
 | Runtime checks | In test builds the lock-order checker panics on a lock taken out of rank (1.9a, `CX_LOCK_ORDER.md`) and free pages are poisoned (`CX_PHYS_MEMORY.md` §3); in every build a freed object-cache slot is poisoned and checked for writes after free; user memory is reached only through the copy routines, and the build refuses a direct access elsewhere (1.9e4a) |
 | Determinism | The toolchain is pinned in `versions.json` and recorded per build; when the generated ABI header and prelude replaced the hand-kept ones, every package rebuilt byte-identical, and `AbiGeneratorTests` keeps them matching. Whole-image reproducibility is not checked by any test |
-| Fuzzing, property tests, model checking, proofs, coverage, mutation testing | None yet (§7) |
+| Fuzzing | One libFuzzer target, CXFS (§3.2, 1.9f): `cxfs_sb_validate` and the mounts that trust it, on the host under ASan and UBSan, with an oracle for blocks touched without reason; 327 inputs in the tree, replayed by the host suite; a fixed 20 000-input run in `dotnet test` |
+| Property tests, model checking, proofs, coverage, mutation testing | None yet (§7) |
 
 The tools still stop at example-based tests, with sabotage keeping each one
 honest and the hooks reaching the failure and race paths that examples alone
@@ -75,6 +76,71 @@ more rights than its source.
   kernel.
 - **The X compilers** are fuzzed with random valid programs; the C# compiler
   and `xc` must agree (`language/CX_X_PLAN.md` §6).
+
+#### 3.2.1 The CXFS target (built 1.9f, 2026-11-07)
+
+Attaching a disk is the whole attack on CXFS (`system/CX_FILESYSTEM.md` §9),
+so the first target is the disk itself. `kernel/test/host/fuzz_cxfs.c` runs
+the kernel's own `cxfs.c` over RAM disks (`hostdisk.c`: the registry's
+interface with `disk_check`'s bounds rule, the storage lock, uid and clock),
+and each input is a hostile device: its size, the LBA it is probed at, a
+point after which every transfer fails, and its contents (`cxfs_one.h`). It
+is mounted as the root volume (the manifest cache) and as a second volume
+beside a good root (`cxfs_mount_volume`, the boot-time path), then read
+everywhere, written, read back and deleted through.
+
+The sanitizers find memory errors; most of what `cxfs_sb_validate` stops is
+not one. A count past the manifest reads data blocks as entries, inside the
+device and inside the struct. So the target has an **oracle**: every
+transfer is checked against the volume `cxfs_sb_validate` accepted. Inside
+the device, whole blocks, nothing past block 0 of a refused volume, nothing
+mounted that it refuses, and each operation in the regions it has a reason
+to touch (entry reads the manifest; file reads the manifest and data;
+writers the bitmap, manifest and data; nothing the superblock). The good
+root beside a hostile volume is held to the same rules, and a file written
+reads back the same.
+
+```
+ninja -C build/hosttest cxfs_fuzz
+build/hosttest/cxfs_fuzz -max_len=65536 -timeout=10 build/fuzz-cxfs kernel/test/host/corpus/cxfs
+```
+
+(on Windows with clang's `lib/windows` on PATH, as for `khost_tests`).
+
+- **Corpus:** `kernel/test/host/corpus/cxfs`. The seeds are the volume the
+  installer formats on first boot of a `cxk os build` image (LBA 26624),
+  metadata blocks only: where it lies, whole-disk with the device exactly its
+  size, and the same with transfers failing after the 40th. To these were
+  added two inputs that showed the oracle being wrong and the fuzzer's
+  `-merge=1` of a 15-minute run (322 inputs, 636 edges, 5.3 MB of mostly zero
+  blocks). `test_cxfs.c` replays every one through the same `cxfs_one`, and
+  holds the real seed to mounting both ways and reading files back, so a
+  harness that stopped reaching the code cannot pass. A crash input goes in
+  `regress/cxfs` and is replayed the same way.
+- **Found:** nothing in CXFS: 314 324 inputs in 10 minutes (523 a second),
+  plus 5 before, all clean. The 2026-10-09 review's fixes (validation,
+  extents, names) held. Both early crashes were the oracle's own rules
+  (`device-smaller-than-volume`, `second-mount-refused-after-validation`),
+  now corpus inputs.
+- **In `dotnet test`:** `KernelHostTests` builds the target with the host
+  tests and runs it for 20 000 inputs from seed 1 over the tree's corpus
+  (about 30 s). One seed and one corpus give the same inputs every run, so
+  red is a finding to reproduce, not noise. Where clang cannot link a
+  libFuzzer program, CMake writes `cxfs_fuzz_missing.txt` and the run skips
+  with its reason.
+- **The target's own check, and its budget.** The sabotage removes the bound
+  `manifest_count <= manifest_blocks * 16` (the 2026-10-09 finding: entries
+  past the manifest read from, and written to, data blocks). From the real
+  seeds alone it was found by 10 seeds of 10, after 396, 2 117, 8 468,
+  9 390, 10 805, 14 396, 31 970, 60 048, 69 026 and 135 689 inputs
+  (median about 12 600; the slowest 296 s at about 460 a second). **The
+  budget is 300 000 inputs from the real seeds** (about ten minutes here),
+  twice the slowest seen; a bound that takes longer is a target that has
+  lost its reach. From the tree's corpus it is found at load (input
+  `manifest-count-past-blocks`, 24 inputs), so the host suite
+  (`cxfs_inputs_all_hold`) and the fixed run go red under it too, both
+  seen. `cxk test sabotage` judges boots only, so this sabotage is by hand
+  until it can run a fuzz budget.
 
 ### 3.3 Model checking with TLA+
 
@@ -183,7 +249,7 @@ its state. A new property is added when a design document relies on it.
 | CXFS survives a crash at any point | Crash-consistency harness; TLA+ commit model | Planned (Phase 3) |
 | A failed update rolls back by itself | TLA+ boot-counter model; QEMU test | Planned (Phase 3) |
 | `xc` compiles exactly what the C# compiler does | Differential tests; random programs; fixed point | Built (differential, fixed point); random programs planned |
-| Every parser survives hostile input | Fuzzing with sanitizers | Planned, per parser |
+| Every parser survives hostile input | Fuzzing with sanitizers | Built for CXFS's superblock and mounts (§3.2, 1.9f); planned for the rest, per parser |
 
 ## 6. Tools in the container
 
@@ -208,7 +274,7 @@ so it cannot slip without the slip being visible there.
 | 1.7 | The kernel RNG (ChaCha20, Fortuna-style pools); seeded chaos (random yields at race points), reproducible from a printed seed |
 | 1.8 | The hardware report: E820 map, ACPI tables and checksums, MADT and APIC IDs, PCI devices, CPUID, TSC and PM-timer calibration, in a fixed form to serial and the USB crash log; a `cxk` command diffs QEMU, Hyper-V and the rig. Before SMP, which relies on the MADT |
 | 1.9 | SMP readiness, SMP, then the 1.6 race-point tests as the SMP stress suite (`-smp 8` under MTTCG, Hyper-V for real parallelism) |
-| Ongoing, one item per step where it fits | libFuzzer targets on the host under ASan and UBSan (CXFS superblock and directories first, since attaching a disk is the attack; then CXEX, CXBI, packets), corpora in the tree, each crash a regression test; the ABI layout cross-check (C and X each print `sizeof`/`offsetof` for every ABI struct, compared); random X programs against both compilers and the IR interpreter; CsCheck in the host tests; the generated syscall fuzzer once 1.7 is in |
+| Ongoing, one item per step where it fits | libFuzzer targets on the host under ASan and UBSan (CXFS superblock and mounts first, since attaching a disk is the attack: built in 1.9f, §3.2.1; then CXEX, CXBI, packets), corpora in the tree, each crash a regression test; the ABI layout cross-check (C and X each print `sizeof`/`offsetof` for every ABI struct, compared); random X programs against both compilers and the IR interpreter; CsCheck in the host tests; the generated syscall fuzzer once 1.7 is in |
 | Before Phase 2 | TLA+ for IPC, the wait queue, futex, stop and kill; CBMC harnesses for rights, generations and user pointers; KASAN-style checker in debug kernels; mutation testing in the container |
 | Phase 3 | The crash-consistency harness and the CXFS v3 commit model |
 | Later | HACL\* replaces the RSA verifier; Frama-C proofs where CBMC's bounds are not enough; X contracts proved by SMT |

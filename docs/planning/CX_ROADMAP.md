@@ -950,7 +950,7 @@ Independent of the order above, and small enough to land whenever convenient:
      target's own check: a sabotage that removes one of
      `cxfs_sb_validate`'s bounds is found by the fuzzer within a stated
      budget (the figure set when it is first measured).
-   - **1.9f (2026-11-07), done except the rig and the fuzz target:**
+   - **1.9f (2026-11-07), done except the rig:**
      test builds count `sched_lock`'s contention per CPU
      (`sync/lockstat.h`, `spin_lock_counted`), proved by a self-test that
      holds the lock while AP 1 takes it; the stress suite
@@ -971,7 +971,19 @@ Independent of the order above, and small enough to land whenever convenient:
      240 self-tests (Hyper-V 2 and 8 vCPUs, QEMU 4 and 1, all pass; the
      stress boot 239 judged). Sabotages: `tests/sabotage/1.9f.sab`. No ABI
      change. Open: the rig's profile (no way off a serial-less machine yet,
-     `hardware/CX_HW_REPORT.md` §9); the CXFS fuzz target.
+     `hardware/CX_HW_REPORT.md` §9).
+     **The CXFS fuzz target, done** (`safety/CX_SAFETY.md` §3.2.1):
+     `kernel/test/host/fuzz_cxfs.c` runs the kernel's `cxfs.c` under
+     libFuzzer, ASan and UBSan over RAM disks (`hostdisk.c`), each input a
+     hostile device mounted as the root and as a second volume, with an
+     oracle for every block touched without reason; corpus
+     `kernel/test/host/corpus/cxfs`, seeded from the volume a built image's
+     first boot installs, replayed by the host suite (130 tests); a fixed
+     20 000-input run in `dotnet test`. Found nothing in CXFS in 314 324
+     inputs. The bound sabotage (`manifest_count` against
+     `manifest_blocks`) was found by 10 seeds of 10 from the real seeds,
+     within 396 to 135 689 inputs: **the budget is 300 000 inputs**. By hand,
+     since `cxk test sabotage` judges boots only.
    - **1.9a (2026-11-05), done:** every spinlock carries a rank
      (`kernel/sync/lockorder.h`, 14 classes), given where it is made
      (`SPINLOCK_INIT(LR_x)`, `spin_init`); with `CXK_LOCK_CHECK` (on with

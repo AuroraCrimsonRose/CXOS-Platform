@@ -19,3 +19,7 @@
 *.xoex  binary
 *.xkex  binary
 *.xbex  binary
+
+# fuzz inputs are bytes, whatever they happen to look like
+kernel/test/host/corpus/** binary
+kernel/test/host/regress/** binary

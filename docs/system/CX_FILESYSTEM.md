@@ -162,7 +162,7 @@ How an attacker could write it:
 | A CXFS disk or image from elsewhere: a USB stick, a downloaded image, a second drive | **Only the boot disk's own volumes mount in the kernel.** Any other CXFS volume mounts through the user-space instance of the same CXFS code (§6.1), as a foreign filesystem would. |
 | A program writing raw sectors under the filesystem | **No program gets raw access to a mounted volume.** `GRANT_DISK` today is all or nothing; it becomes a handle to one unmounted device, given only to disk tools. |
 | Someone with the machine off: edits the disk, then boots it | **`/System` is verified before it is parsed:** the hash tree (§6.8) is checked against the signed root, so tampered metadata is rejected rather than interpreted. Writable volumes get **authenticated metadata** with encryption (§6.12): without the key, an edit fails the check before any parsing. Until then, physical tampering with the data volume is a stated gap (`security/CX_SECURITY.md` §2). |
-| A bug in CXFS itself | **Fuzzed on the host:** CXFS builds for the DevKit, and every image the crash-consistency harness produces (§6.6) is also mutated and mounted. Every on-disk field is range-checked on read. |
+| A bug in CXFS itself | **Fuzzed on the host:** the superblock and the mounts since 1.9f (`safety/CX_SAFETY.md` §3.2.1); CXFS builds for the DevKit, and every image the crash-consistency harness produces (§6.6) is also mutated and mounted. Every on-disk field is range-checked on read. |
 
 **The VFS keeps the choice open.** A filesystem implements one operations
 table and does not know whether it runs in the kernel or as a service. If
