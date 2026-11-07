@@ -1,0 +1,66 @@
+# The FX-8350 rig's first 1.9f boot: four self-tests failed there and the
+# boot hung after the saved log ended. Run by `cxk test sabotage`.
+# Each must turn red exactly the self-tests named, at the reason named.
+# Format: docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage".
+# The first drops the boot log's progress line, which a serial-less machine
+# saves after every test (ktest.c kt_progress). The second shows the WC
+# test's read-back still fails a store that never happened, with the cache
+# lines flushed. The last two make the parked-AP and the ready-on-CPU tests
+# fail where the rig did, so the lines saying why are seen (by hand, in the
+# serial log: an expect matches only the first FAIL line). All four land in
+# different tests, so they share one boot.
+
+[progress-dropped]
+# the boot log's last line is not the progress note
+expect = the system log is saved to the crash area
+group = rig
+edit = kernel/diag/crashlog.c
+<<<
+    if (bootlog_note_what) {   /* last, so the ring's entries never push it out */
+===
+    if (0 && bootlog_note_what) {   /* last, so the ring's entries never push it out */
+>>>
+
+[wc-store-dropped]
+# nothing is stored through the write-combining page
+expect = a VM_WC page is PAT entry 4; the screen is mapped so @ wc pages: step 2
+group = rig
+edit = kernel/arch/x86_64/ktest_arch.c
+<<<
+    *(volatile uint64_t *)(uintptr_t)SCRATCH_VA = 0x5743574357435743ull;
+    __asm__ volatile ("sfence" ::: "memory");
+    flush_line(direct_va);
+===
+    __asm__ volatile ("sfence" ::: "memory");
+    flush_line(direct_va);
+>>>
+
+[parked-kicked]
+# AP 1 is sent an IPI while it should be left alone
+expect = an idle AP halts; a call wakes it once @ smp parked: step 2
+group = rig
+edit = kernel/arch/x86_64/ktest_arch.c
+<<<
+    thread_sleep_ms(50);
+    for (unsigned i = 1; i < cpu_count(); i++)
+        if (cpu_at(i)->wakes != wakes[i] || cpu_at(i)->irqs != irqs[i])
+===
+    thread_sleep_ms(50);
+    smp_kick(1);
+    thread_sleep_ms(5);
+    for (unsigned i = 1; i < cpu_count(); i++)
+        if (cpu_at(i)->wakes != wakes[i] || cpu_at(i)->irqs != irqs[i])
+>>>
+
+[reap-never]
+# the reap waits for a count it never reaches
+expect = a thread woken before it is off its CPU stays there @ sched ready on cpu: step 4
+group = rig
+edit = kernel/arch/x86_64/ktest_arch.c
+<<<
+    tw_go = 1;
+    int reaped = smp_reaped(n0);
+===
+    tw_go = 1;
+    int reaped = smp_reaped(n0 + 1000);
+>>>

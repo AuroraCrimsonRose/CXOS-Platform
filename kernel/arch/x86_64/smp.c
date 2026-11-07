@@ -346,6 +346,7 @@ void smp_ap_entry(struct cpu *c) {
 void smp_ap_interrupt(uint32_t vector) {
     struct cpu *c = cpu_this();
     c->irqs++;
+    c->last_vector = vector;
     if (vector == LAPIC_TIMER_VECTOR) timer_hits[c->index]++;
     if (vector == SMP_IPI_VECTOR) smp_serve();
 }

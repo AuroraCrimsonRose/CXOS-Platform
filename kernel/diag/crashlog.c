@@ -353,12 +353,21 @@ int crashlog_area(uint8_t *disk, uint64_t *lba, uint64_t *sectors) {
 static char     bootlog[XCRL_BOOTLOG_MAX];
 static uint8_t  bootlog_hdr[XCRL_SECTOR];
 static uint32_t bootlog_saved_total;
+static const char *bootlog_note_what;   /* crashlog_bootlog_note */
+static uint32_t    bootlog_note_n;
 
 static void put_bl(uint32_t *len, const char *s) {
     while (s && *s && *len < XCRL_BOOTLOG_MAX) bootlog[(*len)++] = *s++;
 }
 
 static const char *const sev_name[] = { "INFO", "OK  ", "WARN", "ERR ", "FAIL" };
+
+void crashlog_bootlog_note(uint32_t n, const char *what) {
+    storage_lock();
+    bootlog_note_n = n;
+    bootlog_note_what = what;
+    storage_unlock();
+}
 
 int crashlog_save_bootlog(void) {
     if (!have_area) return DISK_ERR_NO_DEVICE;
@@ -393,6 +402,14 @@ int crashlog_save_bootlog(void) {
         put_bl(&len, "\n");
     }
     log_unlock();
+    if (bootlog_note_what) {   /* last, so the ring's entries never push it out */
+        put_bl(&len, "progress: #");
+        num[fmt_u32(num, bootlog_note_n)] = 0; put_bl(&len, num);
+        put_bl(&len, " ");
+        put_bl(&len, bootlog_note_what);
+        put_bl(&len, "\n");
+        if (len > cap) len = cap;
+    }
 
     int r = DISK_OK;
     uint32_t secs = (len + XCRL_SECTOR - 1) / XCRL_SECTOR;

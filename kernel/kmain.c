@@ -495,6 +495,16 @@ void kmain_late(void) {
        address space + scheduler thread). It runs once we idle + yield below. */
     if (launch_exec) {
         klog("EXEC", SEV_INFO, "launching /System/Boot.xoex");
+#if CXK_ALLOW_DISK_WRITE
+        /* With no serial port, the log as far as the launch, on disk before
+           it: a launch that hangs leaves the self-tests' end and this line
+           (the idle loop's saves come only after it; ktest.c saves per test). */
+        if (!serial_active()) {
+            int k = usb_lock();
+            (void)crashlog_save_bootlog();
+            usb_unlock(k);
+        }
+#endif
         int xc = cxk_launch_executive("/System/Boot.xoex");
         if (xc >= 0) {
             klog_u32("EXEC", SEV_INFO, "executive launched, pid ", (uint32_t)xc, LOG_COLOR_VALUE, "");   /* "started" comes from spawn.c, once it is loaded */

@@ -57,6 +57,7 @@ struct cpu {
     volatile uint32_t calls_done;
     volatile uint32_t wakes;   /* times the park loop came out of a halt */
     volatile uint32_t irqs;    /* interrupts it took (none is routed to it) */
+    volatile uint32_t last_vector;   /* the last of them, for a failure to name */
     /* 1.9e1: TLB shootdown (arch/smp.h). The root its CR3 holds, written
        before the load; the senders whose request it must serve, a bit per
        CPU index; its own request, one at a time; idle while halted with

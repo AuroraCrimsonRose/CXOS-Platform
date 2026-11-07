@@ -69,6 +69,7 @@
 #include "xhci_spad.h"
 #include "boot/cxbi.h"
 #include "diag/crashlog.h"
+#include "usb.h"
 #include "memman/dma.h"
 #include "e1000.h"
 #include "rtl8169.h"
@@ -136,11 +137,28 @@ static void kt_end(int passed, int total) {
    so a clean boot is quiet and any problem stands out. Returns 1 if passed,
    0 if failed, so ktest_run can tally a summary. Every result, either way,
    also goes to serial as an @ktest line (above). */
+/* With no serial port (a rig), nothing reads the @ktest lines, and the idle
+   loop's saves of the log come only after the tests and the launch. So the
+   log is saved after every test, ending "progress: #n name" for the last one
+   finished: a boot that hangs in a test leaves on disk the one before it. */
+static void kt_progress(const char *name) {
+#if CXK_ALLOW_DISK_WRITE
+    if (serial_active()) return;
+    crashlog_bootlog_note(kt_index - 1, name);
+    int k = usb_lock();            /* the save writes with interrupts off: wait first */
+    (void)crashlog_save_bootlog();
+    usb_unlock(k);
+#else
+    (void)name;
+#endif
+}
+
 static int report(const char *name, int ok) {
     ok = ok != 0;
     if (!ok)
         klog("KTEST", SEV_FAIL, name);
     kt_result(name, ok);
+    kt_progress(name);
 
     return ok;
 }
@@ -1560,7 +1578,10 @@ static int test_bootlog_saved(void) {
 
     klog("KTEST", SEV_INFO, "boot log test line");
     klog_child("bootlog-child-marker");
-    if (crashlog_save_bootlog() != DISK_OK) return 0;
+    crashlog_bootlog_note(4242, "bootlog-progress-marker");
+    int saved = crashlog_save_bootlog();
+    crashlog_bootlog_note(0, 0);
+    if (saved != DISK_OK) return 0;
     if (crashlog_bootlog_stale()) return 0;                      /* nothing logged since */
 
     uint16_t kind = 0; uint32_t len = 0;
@@ -1581,6 +1602,10 @@ static int test_bootlog_saved(void) {
         found = mark[k] == 0;
     }
     if (!found) return 0;
+    /* and the progress note is its last line, after every entry */
+    static const char prog[] = "\nprogress: #4242 bootlog-progress-marker\n";
+    if (len < sizeof prog - 1) return 0;
+    for (uint32_t i = 0; prog[i]; i++) if (text[len - (sizeof prog - 1) + i] != prog[i]) return 0;
 
     if (disk_read(disk, lba, 1, h0after) != DISK_OK) return 0;
     for (uint32_t i = 0; i < XCRL_SECTOR; i++) if (h0[i] != h0after[i]) return 0;
@@ -3565,6 +3590,7 @@ void ktest_run(void) {
 #endif
     /* single summary line: green if all passed, red if any failed. */
     kt_end(passed, total);
+    crashlog_bootlog_note(0, 0);   /* the summary says the tests ended */
     if (passed == total) {
         klog_u32("KTEST", SEV_OK, "self-tests: all ",
                         (uint32_t)total,

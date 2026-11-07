@@ -69,6 +69,13 @@ int crashlog_area(uint8_t *disk, uint64_t *lba, uint64_t *sectors);
 int crashlog_save_bootlog(void);
 int crashlog_bootlog_stale(void);
 
+/* The line the boot-log saves end with, "progress: #n what", until it is
+   changed; `what` 0 drops it. For a machine with no serial port, whose log is
+   saved as it goes (ktest.c, kmain.c): what it last finished, when the saves
+   stop. Outside the ring, so it is never the entry the ring drops. `what`
+   must outlive the saves (a string literal). */
+void crashlog_bootlog_note(uint32_t n, const char *what);
+
 /* The random generator's seed file (crashrec.h, XCRL_SEED_LBA), for
    drivers/char/random.c. crashlog_seed_read: CRASHLOG_SEED_OK with the
    XCRL_SEED_LEN bytes in `out`, CRASHLOG_SEED_NONE (never written),

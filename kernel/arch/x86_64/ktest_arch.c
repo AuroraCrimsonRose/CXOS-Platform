@@ -616,24 +616,39 @@ static int t_pat(void) {
 }
 
 /* A VM_WC page is entry 4 (the PAT bit, PCD and PWT clear) and holds what is
-   written through it once fenced; and the screen is mapped so (fb.c). */
+   written through it once fenced; and the screen is mapped so (fb.c).
+   The frame is read back through the direct map, which is write-back: two
+   memory types on one frame. A write-combined store goes to memory past the
+   caches, so a line the direct map holds (the test build's poison, written
+   as pmm_alloc gave the frame) would read back instead: the likely reason
+   the FX-8350 rig failed this test, which QEMU (no caches) never could. So
+   the line is flushed before the store, and again after the fence for any
+   line fetched meanwhile. The step says which part failed. */
+static void flush_line(uintptr_t va) {
+    __asm__ volatile ("clflush (%0)\n\tmfence" :: "r"(va) : "memory");
+}
+
 static int t_wc_pages(void) {
     if (!pat_wc_ready()) return 1;
     paddr_t p = pmm_alloc();
     if (!p) return 0;
+    uintptr_t direct_va = (uintptr_t)(DIRECT_MAP_BASE + p);
     paging_map_kernel(SCRATCH_VA, p, VM_WRITE | VM_WC);
     uint64_t e = entry_of(SCRATCH_VA);
-    int ok = (e & (PTE64_PAT | PTE64_PCD | PTE64_PWT)) == PTE64_PAT;
+    int step = (e & (PTE64_PAT | PTE64_PCD | PTE64_PWT)) == PTE64_PAT ? 0 : 1;
+    flush_line(direct_va);
     *(volatile uint64_t *)(uintptr_t)SCRATCH_VA = 0x5743574357435743ull;
     __asm__ volatile ("sfence" ::: "memory");
-    ok = ok && *(volatile uint64_t *)(uintptr_t)(DIRECT_MAP_BASE + p) == 0x5743574357435743ull;
+    flush_line(direct_va);
+    if (!step && *(volatile uint64_t *)direct_va != 0x5743574357435743ull) step = 2;
     paging_unmap(SCRATCH_VA);
     pmm_free(p);
-    if (fb_active()) {
+    if (!step && fb_active()) {
         e = entry_of(fb_test_screen_virt());
-        ok = ok && (e & (PTE64_PAT | PTE64_PCD | PTE64_PWT)) == PTE64_PAT;
+        if ((e & (PTE64_PAT | PTE64_PCD | PTE64_PWT)) != PTE64_PAT) step = 3;
     }
-    return ok;
+    if (step) klog_u32("KTEST", SEV_FAIL, "wc pages: step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    return !step;
 }
 
 /* ---- step 5d: the heap, interrupts, the timer, threads ---- */
@@ -1665,6 +1680,18 @@ static int t_smp_tsc(void) {
    two apart. */
 static void ap_nothing(void *arg) { (void)arg; }
 
+/* What woke it: halts ended and interrupts taken since the test looked, and
+   the last vector. A halt ended with no interrupt counted is one that
+   smp_ap_interrupt never sees (an NMI, an SMI); a vector names its source. The FX-8350 rig's CPU 7 failed step 2. */
+static int parked_fail(unsigned i, int step, uint32_t wakes0, uint32_t irqs0) {
+    struct cpu *c = cpu_at(i);
+    (void)smp_fail("smp parked: step ", i, step);
+    klog_child_u32("halts ended: ", c->wakes - wakes0, LOG_COLOR_VALUE, "");
+    klog_child_u32("interrupts: ", c->irqs - irqs0, LOG_COLOR_VALUE, "");
+    klog_child_u32("last vector: ", c->last_vector, LOG_COLOR_VALUE, "");
+    return 0;
+}
+
 static int t_smp_parked(void) {
     if (smp_call(0, ap_nothing, 0, 1000000ull) != -1 || cpu_boot.call ||
         smp_call(cpu_count(), ap_nothing, 0, 1000000ull) != -1 ||
@@ -1675,11 +1702,12 @@ static int t_smp_parked(void) {
     for (unsigned i = 1; i < cpu_count(); i++) { wakes[i] = cpu_at(i)->wakes; irqs[i] = cpu_at(i)->irqs; }
     thread_sleep_ms(50);
     for (unsigned i = 1; i < cpu_count(); i++)
-        if (cpu_at(i)->wakes != wakes[i] || cpu_at(i)->irqs != irqs[i]) return smp_fail("smp parked: step ", i, 2);
+        if (cpu_at(i)->wakes != wakes[i] || cpu_at(i)->irqs != irqs[i])
+            return parked_fail(i, 2, wakes[i], irqs[i]);
     for (unsigned i = 1; i < cpu_count(); i++) {
         if (smp_call(i, ap_nothing, 0, 100000000ull)) return smp_fail("smp parked: step ", i, 3);
         if (cpu_at(i)->wakes != wakes[i] + 1 || cpu_at(i)->irqs != irqs[i] + 1 ||
-            cpu_at(i)->state != CPU_RUNNING) return smp_fail("smp parked: step ", i, 4);
+            cpu_at(i)->state != CPU_RUNNING) return parked_fail(i, 4, wakes[i], irqs[i]);
     }
     return 1;
 }
@@ -2238,7 +2266,18 @@ static int t_sched_ready_on_cpu(void) {
     tw_go = 1;
     int reaped = smp_reaped(n0);
     if (step) return smp_fail("sched ready on cpu: step ", 2, step);
-    if (!reaped) return smp_fail("sched ready on cpu: step ", 2, 4);
+    if (!reaped) {
+        /* The FX-8350 rig failed here, the test's own steps passed: what was
+           left 3 s on. Threads over the count before (this one, or another
+           test's), and this one's CPU (-1: not running), whether it is
+           blocked, how often it was entered. */
+        (void)smp_fail("sched ready on cpu: step ", 2, 4);
+        klog_child_u32("threads left over: ", sched_thread_count() - n0, LOG_COLOR_VALUE, "");
+        klog_child_u32("its cpu + 1: ", (uint32_t)(thread_cpu(id) + 1), LOG_COLOR_VALUE, "");
+        klog_child_u32("blocked: ", (uint32_t)thread_is_blocked(id), LOG_COLOR_VALUE, "");
+        klog_child_u32("entered: ", tw_entered, LOG_COLOR_VALUE, "");
+        return 0;
+    }
     return 1;
 }
 
