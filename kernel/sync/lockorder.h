@@ -45,9 +45,12 @@ enum lock_rank {
     LR_VMREGION,       /* memman/vmregion.c, per space > pids, kmem, pagedb */
     LR_PIDS,           /* cpu/proc.c pids_lock        > ocache, ocache-slots, pagedb */
     LR_KMEM,           /* object/kmem.c, per object   > pagedb */
+    LR_JOB,            /* cpu/job.c jobs_lock: the tree > kwait (1.9e4) */
     LR_KTIMER,         /* object/ktimer.c armed_lock  > kwait */
     LR_KWAIT,          /* object/kwait.c wait_lock     > sched */
     LR_SYSFILE,        /* cpu/sysfile.c files_lock    > sched, ocache (1.9e3) */
+    LR_INPUT,          /* drivers/input/keyboard.c kbd_lock  > sched (1.9e4) */
+    LR_PROC,           /* cpu/proc.c proc_lock: counts, end, stop > sched (1.9e4) */
     LR_SCHED,          /* cpu/sched.c sched_lock, held across a switch */
     LR_RANDOM,         /* drivers/char/random.c */
     LR_HEAP,           /* memman/heap.c heap_lock     > pagedb */

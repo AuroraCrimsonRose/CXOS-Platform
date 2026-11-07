@@ -1165,10 +1165,21 @@ Independent of the order above, and small enough to land whenever convenient:
      Self-tests 231 (4 CPUs, 1 CPU, `--cpu max`). Sabotages:
      `tests/sabotage/1.9e4a.sab`, 13 of 13 (and two by hand, each a panic
      in an earlier test). No ABI change.
-   - **1.9e4b**: the locks above (input, proc, job, framebuffer, a
-     process's output, the network stack); then a process's threads made
-     for any CPU (`THREAD_ON_BOOT_CPU` gone), and the 11 tests that
-     assumed one CPU made to hold on four.
+   - **1.9e4b (2026-11-07), done:** a thread made to run ring-3 code runs
+     on any CPU; kernel threads still start on the boot CPU
+     (`THREAD_ON_BOOT_CPU`, not audited). Locked: the processes' counts,
+     end and stops (`proc_lock`, the last thread out decided in one hold),
+     the job tree (`jobs_lock`), the keyboard buffer and waiter
+     (`kbd_lock`), a process's output, the framebuffer syscalls and font
+     install (log lock), a font's selection (storage lock), and the
+     `@ktest`/`@hw` serial lines (log lock). The network and power calls
+     move their caller to the boot CPU for the call (`ON_BOOT_CPU`,
+     transitional). A signature check serves shootdowns
+     (`bn_mod` → `smp_serve`). The tests that assumed one CPU wait for the
+     reap (`proc_live_settles`, `ir_gone` on ENDED). Six new SMP
+     self-tests (`CX_SMP.md` §4c). Self-tests 237 (4 CPUs, 1 CPU,
+     `--cpu max`). Sabotages: `tests/sabotage/1.9e4b.sab`, 11 of 11. No
+     ABI change.
 10. A documentation pass: the README and `safety/CX_SAFETY.md` §1 brought
     up to the branch as it stands.
 

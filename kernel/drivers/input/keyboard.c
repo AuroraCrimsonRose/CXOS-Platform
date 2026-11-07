@@ -11,6 +11,7 @@
 #include "usb_hid.h"
 #include "../../cpu/sched.h"   /* thread_block_prepare / thread_unblock */
 #include "arch/cpu_ops.h"
+#include "sync/spinlock.h"
 
 #define KBD_BUF_SIZE 128
 static volatile unsigned char kbuf[KBD_BUF_SIZE];
@@ -21,7 +22,14 @@ static volatile int  ktail = 0;   /* read index  (consumer: shell) */
    (a single shell/console owns the keyboard). The IRQ handler wakes it. */
 static volatile int  kwaiter = -1;
 
+/* The buffer, its indexes and the waiter (1.9e4): the interrupt fills it on
+   the boot CPU while a reader on another CPU empties it, and two readers
+   would otherwise take one key. A reader prepares its block under the lock,
+   so a key pushed between its look and its block wakes it. */
+static spinlock_t kbd_lock = SPINLOCK_INIT(LR_INPUT);
+
 static void kbuf_push(unsigned char c) {
+    uint32_t f = spin_lock(&kbd_lock);
     int next = (khead + 1) % KBD_BUF_SIZE;
     if (next != ktail) {          /* drop if full */
         kbuf[khead] = c;
@@ -31,9 +39,13 @@ static void kbuf_push(unsigned char c) {
            safe to call from an interrupt handler. */
         if (kwaiter >= 0) thread_unblock(kwaiter);
     }
+    spin_unlock(&kbd_lock, f);
 }
 
 void keyboard_inject(unsigned char c) { kbuf_push(c); }
+
+uint32_t keyboard_test_hold(void)          { return spin_lock(&kbd_lock); }
+void     keyboard_test_release(uint32_t f) { spin_unlock(&kbd_lock, f); }
 
 /* How long a blocked reader sleeps before it polls USB again: 100 Hz, far
    more than a keyboard needs and cheap enough to be invisible. A deadline of
@@ -47,9 +59,13 @@ char keyboard_getchar(void) {
        is asking for input anyway. Costs nothing when no HID device is attached. */
     usb_hid_poll();
 
-    if (ktail == khead) return 0;          /* empty */
-    char c = (char)kbuf[ktail];
-    ktail = (ktail + 1) % KBD_BUF_SIZE;
+    uint32_t f = spin_lock(&kbd_lock);
+    char c = 0;
+    if (ktail != khead) {                  /* not empty */
+        c = (char)kbuf[ktail];
+        ktail = (ktail + 1) % KBD_BUF_SIZE;
+    }
+    spin_unlock(&kbd_lock, f);
     return c;
 }
 
@@ -64,18 +80,21 @@ char keyboard_getchar_blocking(void) {
         char c = keyboard_getchar();
         if (c != 0) return c;
 
-        /* Descheduled until a key arrives and wakes us, with interrupts held
-           off from the look at the buffer to the block so a key landing
-           between them is not slept through. With a USB HID device it also
-           wakes to poll: the transfer runs here, in this thread, never in
-           an interrupt handler. */
-        uint32_t f = arch_irq_save();
+        /* Descheduled until a key arrives and wakes us, with the buffer's
+           lock held from the look at it to the block's preparation, so a key
+           landing between them, on any CPU, is not slept through. With a
+           USB HID device it also wakes to poll: the transfer runs here, in
+           this thread, never in an interrupt handler. */
+        uint32_t f = spin_lock(&kbd_lock);
         kwaiter = thread_current_id();
         int empty = (ktail == khead);
         if (empty) thread_block_prepare(usb_hid_present() ? KBD_USB_POLL_MS : 0);
-        arch_irq_restore(f);
+        spin_unlock(&kbd_lock, f);
         if (empty) thread_block_finish();
-        kwaiter = -1;
+        /* Only its own: a reader on another CPU may have named itself since. */
+        f = spin_lock(&kbd_lock);
+        if (kwaiter == thread_current_id()) kwaiter = -1;
+        spin_unlock(&kbd_lock, f);
         if (thread_killed()) return 0;   /* no key: the thread ends on its way out */
     }
 }

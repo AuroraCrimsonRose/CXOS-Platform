@@ -20,6 +20,7 @@
 #include "serial.h"
 #include "disk.h"
 #include "logging.h"
+#include "console.h"              /* the log lock over a report line */
 
 /* Whole sectors, so the save writes straight from it (zero past the end). */
 static char     report[XCRL_HWREPORT_MAX];
@@ -271,13 +272,14 @@ static void print_serial(void) {
     for (uint32_t at = 0; at < report_len; ) {
         uint32_t e = at;
         while (e < report_len && report[e] != '\n') e++;
-        /* A line at a time with interrupts off, as the @ktest lines: a klog
-           cannot split one, and a reader matches "@hw" anywhere in a line. */
-        uint32_t f = arch_irq_save();
+        /* A line at a time under the log lock, as the @ktest lines: no klog
+           on any CPU can split one, and a reader matches "@hw" anywhere in
+           a line (1.9e4b). */
+        log_lock();
         serial_puts("\r\n");
         for (uint32_t i = at; i < e; i++) serial_putc(report[i]);
         serial_puts("\r\n");
-        arch_irq_restore(f);
+        log_unlock();
         at = e + 1;
     }
 }

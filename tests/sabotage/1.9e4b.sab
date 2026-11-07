@@ -1,0 +1,191 @@
+# Phase 1.9e4b's sabotages, run by `cxk test sabotage`.
+# Each must turn red exactly the self-tests named, at the reason named.
+# Format: docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage".
+# Each takes one of the step's locks back out (or decides what it decides
+# outside it), and the test that holds that lock on the boot CPU while an
+# AP calls in sees the call get through. One takes the serve point out of
+# a signature check's arithmetic. The last two put a process's threads back
+# on the boot CPU alone.
+
+# ---- input/keyboard.c ----
+
+[input-unlocked]
+# a key goes into the buffer without its lock
+expect = the input buffer's lock keeps another CPU out @ input lock: step 1
+edit = kernel/drivers/input/keyboard.c
+<<<
+static void kbuf_push(unsigned char c) {
+    uint32_t f = spin_lock(&kbd_lock);
+===
+static void kbuf_push(unsigned char c) {
+    uint32_t f = 0;
+>>>
+edit = kernel/drivers/input/keyboard.c
+<<<
+        if (kwaiter >= 0) thread_unblock(kwaiter);
+    }
+    spin_unlock(&kbd_lock, f);
+===
+        if (kwaiter >= 0) thread_unblock(kwaiter);
+    }
+    (void)f;
+>>>
+
+# ---- cpu/job.c ----
+
+[job-check-outside]
+# a job's killed check made before its lock
+expect = the jobs' and processes' locks keep another CPU out @ jobs lock: step 1
+edit = kernel/cpu/job.c
+<<<
+int job_charge_thread(struct job *j) {
+    uint32_t f = spin_lock(&jobs_lock);
+    /* The check and the count in one hold, so a job_kill either finds the
+       thread counted (and kills it) or closed the job before the check. */
+    if (j->killed) {
+        spin_unlock(&jobs_lock, f);
+        return E_CANCELED;
+    }
+===
+int job_charge_thread(struct job *j) {
+    if (j->killed) return E_CANCELED;
+    uint32_t f = spin_lock(&jobs_lock);
+>>>
+
+# ---- cpu/proc.c ----
+
+[proc-stops-unlocked]
+# the armed stops counted without the processes' lock
+expect = the jobs' and processes' locks keep another CPU out @ proc lock: step 5
+edit = kernel/cpu/proc.c
+<<<
+    uint32_t f = spin_lock(&proc_lock);
+    for (struct proc *p = stops; p; p = p->stop_next) n++;
+    spin_unlock(&proc_lock, f);
+===
+    for (struct proc *p = stops; p; p = p->stop_next) n++;
+>>>
+
+[last-exit-before-lock]
+# the last thread out decided from a count read before the lock
+expect = two last threads at once: one ends it, its code @ last exit: step 5
+edit = kernel/cpu/proc.c
+<<<
+void proc_thread_stopped(struct proc *p, const int32_t *exit_code) {
+    uint32_t f = spin_lock(&proc_lock);
+    int left = --p->running;
+===
+void proc_thread_stopped(struct proc *p, const int32_t *exit_code) {
+    int was = p->running;
+    uint32_t f = spin_lock(&proc_lock);
+    int left = --p->running;
+>>>
+edit = kernel/cpu/proc.c
+<<<
+    if (left == 0 && exit_code && p->ended == PROC_RUNNING) {
+===
+    if (was == 1 && exit_code && p->ended == PROC_RUNNING) {
+>>>
+
+[stopped-unlocked]
+# a thread's stop counted without the processes' lock
+expect = two last threads at once: one ends it, its code @ last exit: step 3
+edit = kernel/cpu/proc.c
+<<<
+void proc_thread_stopped(struct proc *p, const int32_t *exit_code) {
+    uint32_t f = spin_lock(&proc_lock);
+    int left = --p->running;
+===
+void proc_thread_stopped(struct proc *p, const int32_t *exit_code) {
+    uint32_t f = 0;
+    int left = __atomic_sub_fetch(&p->running, 1, __ATOMIC_SEQ_CST);
+>>>
+edit = kernel/cpu/proc.c
+<<<
+        p->stop_ep = 0;
+    }
+    spin_unlock(&proc_lock, f);
+    if (left != 0) return;
+===
+        p->stop_ep = 0;
+    }
+    if (left != 0) return;
+>>>
+
+[output-unlocked]
+# a process's output written without the log lock
+expect = a process's output, drawing and fonts are locked @ process output: step 1
+edit = kernel/cpu/proc.c
+<<<
+void proc_out_write(struct proc *p, const char *s, uint32_t len) {
+    LOG_LOCKED();
+===
+void proc_out_write(struct proc *p, const char *s, uint32_t len) {
+>>>
+
+# ---- drivers/video/fb.c ----
+
+[pixel-unlocked]
+# a pixel drawn without the log lock the console draws under
+expect = a process's output, drawing and fonts are locked @ fb draw: step 1
+edit = kernel/drivers/video/fb.c
+<<<
+    LOG_LOCKED();   /* the console draws here too, under it */
+    fb_put_pixel(x, y, fb_pack(color));
+===
+    fb_put_pixel(x, y, fb_pack(color));
+>>>
+
+[font-unlocked]
+# a font chosen into font_buf without the storage lock first
+expect = a process's output, drawing and fonts are locked @ font select: step 1
+edit = kernel/drivers/video/fb.c
+<<<
+       (1.9e4). */
+    STORAGE_LOCKED();
+===
+       (1.9e4). */
+>>>
+
+# ---- lib/crypto/bignum.c ----
+
+[modexp-no-serve]
+# a signature's remainders leave an AP's shootdown waiting
+expect = a signature's arithmetic answers an AP's shootdown @ tlb modexp: step 3
+edit = kernel/lib/crypto/bignum.c
+<<<
+           served here, as a spin serves; with interrupts on the IPI does. */
+        if (!(i & 255) && !arch_irqs_enabled()) smp_serve();
+===
+           served here, as a spin serves; with interrupts on the IPI does. */
+>>>
+
+# ---- cpu/sched.c ----
+
+[user-thread-boot-cpu]
+# a process's second thread kept on the boot CPU
+expect = a ring-3 thread may run on any CPU @ user thread's CPUs: step 2
+edit = kernel/cpu/sched.c
+<<<
+    int id = thread_create_in(name, entry, 1, self()->proc, 0);
+    if (id < 0) return id;
+    if (thread_alloc_kstack(id) != 0 || thread_set_affinity(id, THREAD_ON_ANY_CPU) != 0) {
+===
+    int id = thread_create_in(name, entry, 1, self()->proc, 0);
+    if (id < 0) return id;
+    if (thread_alloc_kstack(id) != 0) {
+>>>
+
+[process-thread-boot-cpu]
+# a process's first thread kept on the boot CPU
+expect = a ring-3 thread may run on any CPU @ user thread's CPUs: step 4
+edit = kernel/cpu/sched.c
+<<<
+    int id = thread_create_in(name, entry, 1, 0, job);
+    if (id < 0) return id;
+    if (thread_alloc_kstack(id) != 0 || thread_set_affinity(id, THREAD_ON_ANY_CPU) != 0) {
+===
+    int id = thread_create_in(name, entry, 1, 0, job);
+    if (id < 0) return id;
+    if (thread_alloc_kstack(id) != 0) {
+>>>

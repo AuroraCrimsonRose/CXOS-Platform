@@ -516,6 +516,10 @@ static int spv_in_job(struct spawn_args *a, struct object_info_args *oi) {
     struct htab *tab = thread_htab(thread_current_id());
     int32_t jh = -1, ph = -1, d = -1;
     int step;
+    /* A job's counts drop as the process's threads are reaped, which on an
+       AP may trail the ENDED signal (1.9e4): each read of them waits for
+       the process's record to go first. */
+    uint32_t live0 = proc_live();
 
     /* 1: one page: not even the image fits */
     jl->memory = PAGE_SIZE; jl->threads = 0; jl->priority = 0;
@@ -526,7 +530,7 @@ static int spv_in_job(struct spawn_args *a, struct object_info_args *oi) {
                   || spv_info(oi, ph, OBJINFO_PROCESS, pi, sizeof *pi) != (int)sizeof *pi
                   || pi->ended != PROC_NOT_STARTED) goto done;
     htab_close(tab, ph); ph = -1;
-    step = 2; if (spv_info(oi, jh, OBJINFO_JOB, ji, sizeof *ji) != (int)sizeof *ji
+    step = 2; if (!proc_live_settles(live0) || spv_info(oi, jh, OBJINFO_JOB, ji, sizeof *ji) != (int)sizeof *ji
                   || ji->memory_limit != PAGE_SIZE || ji->memory_used != 0
                   || ji->memory_peak > PAGE_SIZE || ji->threads != 0 || ji->processes != 0
                   || ji->killed != 0) goto done;
@@ -539,7 +543,7 @@ static int spv_in_job(struct spawn_args *a, struct object_info_args *oi) {
         || spv_info(oi, ph, OBJINFO_PROCESS, pi, sizeof *pi) != (int)sizeof *pi
         || pi->ended != PROC_EXITED || pi->code != 0) goto done;
     htab_close(tab, ph); ph = -1;
-    step = 4; if (spv_info(oi, jh, OBJINFO_JOB, ji, sizeof *ji) != (int)sizeof *ji
+    step = 4; if (!proc_live_settles(live0) || spv_info(oi, jh, OBJINFO_JOB, ji, sizeof *ji) != (int)sizeof *ji
                   || ji->memory_used != 0 || ji->memory_peak <= PAGE_SIZE
                   || ji->memory_peak > jl->memory || ji->threads != 0 || ji->processes != 0) goto done;
 
@@ -866,7 +870,7 @@ int ktest_spawn_verifies_image(void) {
     ok = ok && syscall_object_info(user_addr(oi)) == (int)sizeof *ob
          && ob->rights == (HRIGHT_WAIT | HRIGHT_INSPECT | HRIGHT_KILL | HRIGHT_STOP | HRIGHT_DUPLICATE);
     if (ph > 0) htab_close(thread_htab(thread_current_id()), ph);
-    ok = ok && proc_live() == live0;
+    ok = ok && proc_live_settles(live0);
 
     /* ---- and in a job (ABI 16) ---- */
     if (ok) {
@@ -875,7 +879,7 @@ int ktest_spawn_verifies_image(void) {
             klog_u32("KTEST", SEV_ERR, "spawn into a job failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
             ok = 0;
         }
-        ok = ok && proc_live() == live0;
+        ok = ok && proc_live_settles(live0);
     }
 
     /* ---- with handles named (ABI 27) ---- */
@@ -885,7 +889,7 @@ int ktest_spawn_verifies_image(void) {
             klog_u32("KTEST", SEV_ERR, "spawn with handles failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
             ok = 0;
         }
-        ok = ok && proc_live() == live0;
+        ok = ok && proc_live_settles(live0);
     }
 
     /* ---- the keyboard's grant, foreground and background (1.7a) ---- */
@@ -895,7 +899,7 @@ int ktest_spawn_verifies_image(void) {
             klog_u32("KTEST", SEV_ERR, "spawn input grant failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
             ok = 0;
         }
-        ok = ok && proc_live() == live0;
+        ok = ok && proc_live_settles(live0);
     }
 
 done:
@@ -1052,6 +1056,7 @@ static int tht_run(struct spawn_args *a, struct object_info_args *oi, struct pro
     a->broker_endpoint = -1; a->caps = 0; a->job = 0;
     a->args = mode_len ? user_addr(args) : 0; a->args_len = mode_len;
     a->handles = 0; a->handle_count = 0;
+    uint32_t live0 = proc_live();
     int32_t ph = syscall_exec_path(user_addr(path), user_addr(a));
     if (ph <= 0) {
         klog_u32("KTEST", SEV_ERR, "program from disk refused, code -", (uint32_t)-ph, LOG_COLOR_VALUE, "");
@@ -1062,6 +1067,13 @@ static int tht_run(struct spawn_args *a, struct object_info_args *oi, struct pro
           && spv_info(oi, ph, OBJINFO_PROCESS, pi, sizeof *pi) == (int)sizeof *pi;
     if (!ok) (void)syscall_process_kill(ph);
     htab_close(tab, ph);
+    /* Its record is gone too: reaped on the CPU that ran it, which may trail
+       the end it signalled (1.9e4b). Left counted, the next test's baseline
+       took it in and then saw it go (the X runner's step 5). */
+    if (!proc_live_settles(live0)) {
+        klog("KTEST", SEV_ERR, "program from disk: its process outlived it");
+        ok = 0;
+    }
     return ok;
 }
 
@@ -1388,7 +1400,7 @@ done:
         r.passed += report(xt_names[i], 0);
     }
     /* 5: nothing left behind */
-    if (step == 0 && (usermode_faults() != f0 || futex_waiting() != w0 || proc_live() != live0)) step = 5;
+    if (step == 0 && (usermode_faults() != f0 || futex_waiting() != w0 || !proc_live_settles(live0))) step = 5;
     if (step != 0)
         klog_u32("KTEST", SEV_ERR, "x tests: the runner failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
     if (step == 3 && ended) {

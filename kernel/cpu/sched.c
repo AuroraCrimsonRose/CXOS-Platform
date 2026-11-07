@@ -241,10 +241,16 @@ int thread_create_sibling(int id, const char *name, void (*entry)(void)) {
     return t < 0 ? -1 : t;
 }
 
+/* A thread that will run ring-3 code goes to any CPU (1.9e4): its syscalls
+   copy user memory, and what they touch is locked. Set while it is HELD, so
+   no CPU picks it before. */
 int thread_create_process(const char *name, void (*entry)(void), struct job *job) {
     int id = thread_create_in(name, entry, 1, 0, job);
     if (id < 0) return id;
-    if (thread_alloc_kstack(id) != 0) { thread_discard(id); return -1; }
+    if (thread_alloc_kstack(id) != 0 || thread_set_affinity(id, THREAD_ON_ANY_CPU) != 0) {
+        thread_discard(id);
+        return -1;
+    }
     return id;
 }
 
@@ -252,7 +258,10 @@ int thread_create_user(const char *name, void (*entry)(void)) {
     if (!initialized || !self()->proc) return -1;
     int id = thread_create_in(name, entry, 1, self()->proc, 0);
     if (id < 0) return id;
-    if (thread_alloc_kstack(id) != 0) { thread_discard(id); return -1; }
+    if (thread_alloc_kstack(id) != 0 || thread_set_affinity(id, THREAD_ON_ANY_CPU) != 0) {
+        thread_discard(id);
+        return -1;
+    }
     return id;
 }
 
@@ -322,7 +331,7 @@ static void thread_free(struct thread *t) {
     }
     t->self_exit = 0;
     /* One that never ran stops here; one that ran stopped in thread_exit. */
-    if (t->state == THREAD_HELD) proc_thread_stopped(t->proc);
+    if (t->state == THREAD_HELD) proc_thread_stopped(t->proc, 0);
     proc_thread_gone(t->proc);
     t->proc  = 0;
     /* Out of the table under the lock, which every walk of it holds; the
@@ -415,7 +424,7 @@ static int thread_create_in(const char *name, void (*entry)(void), int held, str
     t->tls_base    = 0;
     t->cpu_ns      = 0;
     t->run_since   = 0;
-    t->affinity    = THREAD_ON_BOOT_CPU;   /* until 1.9e4: sched.h */
+    t->affinity    = THREAD_ON_BOOT_CPU;   /* a kernel thread's: sched.h */
     t->on_cpu      = 0;
     t->idle        = 0;
     /* Last, under the lock: from here the timer, or another CPU, may run it. */
@@ -904,20 +913,17 @@ void thread_exit(void) {
     /* Calls it received stop lifting it, before its id can be reused. */
     ipc_thread_exit(current);
     struct thread *me = self();
-    /* The last of a process's threads to end by SYS_THREAD_EXIT ends it with
-       its code; one before it leaves the rest running. Counted here, with
-       interrupts off, not in the call: two threads ending at once both saw
-       the other still running there. A process already ended another way
-       keeps that (proc_note_exit takes only the first). */
-    if (me->proc && me->self_exit && me->proc->running == 1)
-        proc_note_exit(me->proc, me->exit_code);
     /* Its handles first, then its process's: a waiter on the process finds
        every thread of it ended. */
     if (me->obj) kthread_end(me->obj, me->self_exit ? THR_EXITED : THR_WITH_PROCESS, me->exit_code,
                              cpu_ns_of(me), me->name);
     /* The last one out ends its process now and wakes the waiters: one may be
-       the only thread left to run, and it cannot wait for the reaper. */
-    if (self()->proc) proc_thread_stopped(self()->proc);
+       the only thread left to run, and it cannot wait for the reaper. The
+       last of a process's threads to end by SYS_THREAD_EXIT ends it with its
+       code, one before it leaves the rest running: decided where they are
+       counted (proc_thread_stopped), since two ending at once on two CPUs
+       each saw the other still running here. */
+    if (me->proc) proc_thread_stopped(me->proc, me->self_exit ? &me->exit_code : 0);
     /* Its locks were all taken and given back above; sched_lock now, given
        back by the thread switched to (its flags here, off, are no one's). */
     spin_lock(&sched_lock);
@@ -1090,6 +1096,21 @@ uint32_t thread_affinity(int id) {
     uint32_t m = t ? t->affinity : 0;
     look_done(f);
     return m;
+}
+
+uint32_t thread_onto_boot_cpu(void) {
+    int me = thread_current_id();
+    uint32_t was = thread_affinity(me);
+    if (was == THREAD_ON_BOOT_CPU) return was;
+    thread_set_affinity(me, THREAD_ON_BOOT_CPU);
+    /* The CPU picks again only at a preemption point, and a syscall's body
+       has none (interrupts off): give it one until it is the boot CPU. */
+    while (cpu_this()->index != 0) yield();
+    return was;
+}
+
+void thread_affinity_back(uint32_t was) {
+    if (was != THREAD_ON_BOOT_CPU) thread_set_affinity(thread_current_id(), was);
 }
 
 int thread_cpu(int id) {

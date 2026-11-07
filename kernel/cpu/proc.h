@@ -103,9 +103,11 @@ struct proc *proc_create(const struct proc *parent, struct job *job);
    (E_NO_RESOURCES); E_OK otherwise. When the last thread stops, every handle
    closes, the job's count drops and ENDED is signalled; when the last is
    gone (reaped), the address space is freed; the record follows its last
-   reference. */
+   reference. A thread that stops by SYS_THREAD_EXIT passes its code: if it
+   is the last, the process ends PROC_EXITED with it (unless it ended another
+   way first); others pass 0. */
 int  proc_thread_in(struct proc *p);
-void proc_thread_stopped(struct proc *p);
+void proc_thread_stopped(struct proc *p, const int32_t *exit_code);
 void proc_thread_gone(struct proc *p);
 
 /* A background process's console output, collected into lines for the log:
@@ -172,5 +174,14 @@ void proc_set_handle_limit(uint32_t n);
 uint32_t proc_handle_limit(void);
 
 uint32_t proc_live(void);
+/* For a self-test: proc_live() is `want` once any record above it has gone,
+   waited for at most 2 s. A record goes when its last thread is reaped,
+   which on an AP may trail the ENDED signal a test woke on (1.9e4). */
+int      proc_live_settles(uint32_t want);
+
+/* proc_lock (1.9e4), held from a self-test to show another CPU's caller
+   waits for it: the flags to give to proc_test_release. */
+uint32_t proc_test_hold(void);
+void     proc_test_release(uint32_t f);
 
 #endif

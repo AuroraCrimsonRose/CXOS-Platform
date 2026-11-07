@@ -12,7 +12,7 @@
 #include "sched.h"          /* sched_wake_process */
 #include "ipc.h"            /* ep_post_stop */
 #include "timer.h"          /* stop deadlines */
-#include "arch/cpu_ops.h"   /* arch_irq_save */
+#include "console.h"        /* LOG_LOCKED: a background process's output */
 #include "cxk_abi.h"
 #include "sync/spinlock.h"
 #include "panic.h"
@@ -32,12 +32,20 @@ static struct idtab  pids;   /* pid -> process */
    proc_create is part way through growing the table. */
 static spinlock_t    pids_lock = SPINLOCK_INIT(LR_PIDS);
 static uint32_t      handle_limit = HTAB_LIMIT_DEFAULT;   /* kernel.xkco max_handles */
-/* Processes with a stop deadline armed, linked through stop_next. Changed
-   only with interrupts off, since the tick walks it. A process is unlinked
-   before its last thread is through (proc_thread_stopped), so the list never
-   holds a reference: nothing on it can be freed. */
+/* Processes with a stop deadline armed, linked through stop_next. A process
+   is unlinked before its last thread is through (proc_thread_stopped), so
+   the list never holds a reference: nothing on it can be freed. */
 static struct proc  *stops;
+/* A process's thread counts, its end (`ended` and what goes with it) and its
+   stop (the list above, `stop_ep`), which interrupts alone kept whole on one
+   CPU (1.9e4). One lock for every process, ranked just before sched's:
+   only a killed thread's wake is taken under it, so a kill under pids_lock
+   and the tick on any CPU can both take it. As WRK's PspExitThread (ps/psdelete.c) counts ActiveThreads
+   down and takes the last one's status under the process lock, the last
+   thread out is decided and its code noted in one hold. */
+static spinlock_t    proc_lock = SPINLOCK_INIT(LR_PROC);
 
+/* proc_lock held. */
 static void stop_unlink(struct proc *p) {
     if (!p->stop_armed) return;
     for (struct proc **pp = &stops; *pp; pp = &(*pp)->stop_next)
@@ -131,17 +139,18 @@ struct proc *proc_create(const struct proc *parent, struct job *job) {
     return p;
 }
 
-/* Interrupts off from the check to the count, so a job_kill either finds the
-   thread counted (and kills it) or closed the job before the check. */
+/* The job's check and charge are one hold of its lock (job_charge_thread),
+   so a job_kill either finds the thread counted (and kills it) or closed the
+   job before the check. */
 int proc_thread_in(struct proc *p) {
-    uint32_t f = arch_irq_save();
-    int rc = p->job->killed ? E_CANCELED : job_charge_thread(p->job);
+    int rc = job_charge_thread(p->job);
     if (rc == E_OK) {
         kobj_ref(&p->hdr);
+        uint32_t f = spin_lock(&proc_lock);
         p->threads++;
         p->running++;
+        spin_unlock(&proc_lock, f);
     }
-    arch_irq_restore(f);
     return rc;
 }
 
@@ -149,21 +158,39 @@ int proc_thread_in(struct proc *p) {
    a waiter may be the only other thread, and the reaper runs only once
    something else is scheduled, so a wait for it waited forever. Interrupts
    off (thread_exit, or thread_free for a thread that never ran). */
-void proc_thread_stopped(struct proc *p) {
-    if (--p->running != 0) return;
+void proc_thread_stopped(struct proc *p, const int32_t *exit_code) {
+    uint32_t f = spin_lock(&proc_lock);
+    int left = --p->running;
+    /* The last thread to end by SYS_THREAD_EXIT ends its process with its
+       code; decided here, under the lock that counts them, since two
+       threads ending at once on two CPUs each saw the other still running
+       before it. A process already ended another way keeps that. */
+    if (left == 0 && exit_code && p->ended == PROC_RUNNING) {
+        p->ended    = PROC_EXITED;
+        p->end_code = *exit_code;
+    }
+    struct endpoint *ep = 0;
+    if (left == 0) {
+        /* Nobody is left to ask, or to force. */
+        stop_unlink(p);
+        ep = p->stop_ep;
+        p->stop_ep = 0;
+    }
+    spin_unlock(&proc_lock, f);
+    if (left != 0) return;
+    if (ep) ep_put(ep);
     /* Every object belongs to its handles, so a process that ends mid-write
        or with an endpoint open leaves nothing behind. */
     proc_out_flush(p);
     htab_close_all(&p->handles);
     p->broker = -1;
     for (uint32_t i = 0; i < SPAWN_HANDLES_MAX; i++) p->start[i] = -1;
-    /* Nobody is left to ask, or to force. */
-    stop_unlink(p);
-    if (p->stop_ep) { ep_put(p->stop_ep); p->stop_ep = 0; }
     /* Every way into ring 3 notes its way out; nothing noted, it never got
        there. Signalled last, so a waiter that wakes finds every handle the
        process held already closed. */
+    f = spin_lock(&proc_lock);
     if (p->ended == PROC_RUNNING) p->ended = PROC_NOT_STARTED;
+    spin_unlock(&proc_lock, f);
     kobj_signal(&p->hdr, SIGNAL_PROCESS_ENDED);
     /* After its own signal: a job's waiter that wakes finds each process in
        it ended too. */
@@ -176,39 +203,59 @@ void proc_thread_gone(struct proc *p) {
        so every way out that skipped that line leaked it. Freed here, once no
        thread can be standing in it. */
     job_uncharge_thread(p->job);
-    if (--p->threads == 0) release_space(p);
+    uint32_t f = spin_lock(&proc_lock);
+    int left = --p->threads;
+    spin_unlock(&proc_lock, f);
+    if (left == 0) release_space(p);
     kobj_unref(&p->hdr);
 }
 
+/* The first end noted is the one kept, so each is a check and a note in
+   one hold: a crash and a kill on two CPUs at once leave one of them, whole. */
 void proc_note_exit(struct proc *p, int32_t code) {
-    if (!p || p->ended != PROC_RUNNING) return;
-    p->ended    = PROC_EXITED;
-    p->end_code = code;
+    if (!p) return;
+    uint32_t f = spin_lock(&proc_lock);
+    if (p->ended == PROC_RUNNING) {
+        p->ended    = PROC_EXITED;
+        p->end_code = code;
+    }
+    spin_unlock(&proc_lock, f);
 }
 
 void proc_note_crash(struct proc *p, uint32_t vector, uint64_t ip, uint64_t addr) {
-    if (!p || p->ended != PROC_RUNNING) return;
-    p->ended      = PROC_CRASHED;
-    p->end_vector = vector;
-    p->end_ip     = ip;
-    p->end_addr   = addr;
+    if (!p) return;
+    uint32_t f = spin_lock(&proc_lock);
+    if (p->ended == PROC_RUNNING) {
+        p->ended      = PROC_CRASHED;
+        p->end_vector = vector;
+        p->end_ip     = ip;
+        p->end_addr   = addr;
+    }
+    spin_unlock(&proc_lock, f);
 }
 
-/* Interrupts off from the note to the last wake: a thread that checks
-   thread_killed and then blocks does both with interrupts off too, so it
-   either sees `killing` or is already BLOCKED and gets woken here. One that
-   has ended was noted already (proc_thread_stopped) and has no threads left
-   to wake, so it is left as it was. A stop's deadline ends a process the
-   same way, noted PROC_STOPPED. */
-static void proc_force(struct proc *p, uint32_t how, int by) {
-    uint32_t f = arch_irq_save();
+/* `killing` is set before the wake, which takes sched_lock: a thread that
+   checks it and then blocks does both under sched_lock (block_unless_killed,
+   thread_block_prepare), so on any CPU it either sees `killing` or is
+   already BLOCKED and gets woken here. One that has ended was noted already
+   (proc_thread_stopped) and has no threads left to wake, so it is left as
+   it was. A stop's deadline ends a process the same way, noted
+   PROC_STOPPED. proc_lock held (sched_lock ranks after it): the tick forces
+   a process it has just taken off the list, which only the lock keeps from
+   ending and being freed meanwhile. */
+static void force_locked(struct proc *p, uint32_t how, int by) {
     if (p->ended == PROC_RUNNING) {
         p->ended      = how;
         p->end_killer = (uint32_t)by;
     }
     p->killing = 1;
     sched_wake_process(p);
-    arch_irq_restore(f);
+}
+
+static void proc_force(struct proc *p, uint32_t how, int by) {
+    uint32_t f = spin_lock(&proc_lock);
+    force_locked(p, how, by);
+    spin_unlock(&proc_lock, f);
 }
 
 void proc_kill(struct proc *p, int killer) {
@@ -234,17 +281,26 @@ void proc_kill_within(struct job *top, int killer) {
     spin_unlock(&pids_lock, f);
 }
 
-/* Interrupts off throughout: the process's own thread may be replacing its
-   stop endpoint, and the tick reads the armed list. */
+/* The process's own thread may be replacing its stop endpoint, and the tick
+   on any CPU reads the armed list: both under proc_lock. The ask goes out
+   with the lock given back (ep_post_stop takes ipc_lock, which ranks
+   first), on a reference of its own; a process that ended meanwhile is not
+   armed, as its last thread unlinked it already. */
 void proc_stop(struct proc *p, int by, uint32_t ms) {
-    uint32_t f = arch_irq_save();
-    if (p->running == 0) { arch_irq_restore(f); return; }
-    if (!p->stop_ep || ep_post_stop(p->stop_ep, by, ms) != 0) {
-        arch_irq_restore(f);
+    uint32_t f = spin_lock(&proc_lock);
+    if (p->running == 0) { spin_unlock(&proc_lock, f); return; }
+    struct endpoint *ep = p->stop_ep;
+    if (ep) kobj_ref(&ep->hdr);
+    spin_unlock(&proc_lock, f);
+    int asked = ep && ep_post_stop(ep, by, ms) == 0;
+    if (ep) ep_put(ep);
+    if (!asked) {
         proc_force(p, PROC_STOPPED, by);
         return;
     }
     uint64_t due = timer_now_ns() + (uint64_t)ms * TIMER_NS_PER_TICK;
+    f = spin_lock(&proc_lock);
+    if (p->running == 0) { spin_unlock(&proc_lock, f); return; }
     if (!p->stop_armed) {
         p->stop_next  = stops;
         stops         = p;
@@ -255,27 +311,30 @@ void proc_stop(struct proc *p, int by, uint32_t ms) {
         p->stop_due = due;
         p->stop_by  = by;
     }
-    arch_irq_restore(f);
+    spin_unlock(&proc_lock, f);
     timer_deadline_hint(due);
 }
 
 void proc_set_stop_endpoint(struct proc *p, struct endpoint *ep) {
     if (ep) kobj_ref(&ep->hdr);
-    uint32_t f = arch_irq_save();
+    uint32_t f = spin_lock(&proc_lock);
     struct endpoint *old = p->stop_ep;
     p->stop_ep = ep;
-    arch_irq_restore(f);
+    spin_unlock(&proc_lock, f);
     if (old) ep_put(old);
 }
 
 uint64_t proc_stop_next_due(void) {
     uint64_t d = TIMER_NEVER;
+    uint32_t f = spin_lock(&proc_lock);
     for (struct proc *p = stops; p; p = p->stop_next)
         if (p->stop_due < d) d = p->stop_due;
+    spin_unlock(&proc_lock, f);
     return d;
 }
 
 void proc_stop_tick(uint64_t now) {
+    uint32_t f = spin_lock(&proc_lock);
     struct proc **pp = &stops;
     while (*pp) {
         struct proc *p = *pp;
@@ -283,15 +342,16 @@ void proc_stop_tick(uint64_t now) {
         *pp = p->stop_next;
         p->stop_next  = 0;
         p->stop_armed = 0;
-        proc_force(p, PROC_STOPPED, p->stop_by);
+        force_locked(p, PROC_STOPPED, p->stop_by);
     }
+    spin_unlock(&proc_lock, f);
 }
 
 uint32_t proc_stops_armed(void) {
     uint32_t n = 0;
-    uint32_t f = arch_irq_save();
+    uint32_t f = spin_lock(&proc_lock);
     for (struct proc *p = stops; p; p = p->stop_next) n++;
-    arch_irq_restore(f);
+    spin_unlock(&proc_lock, f);
     return n;
 }
 
@@ -311,7 +371,21 @@ uint32_t proc_handle_limit(void)        { return handle_limit; }
 
 uint32_t proc_live(void) { return kobj_live(KOBJ_PROCESS); }
 
+int proc_live_settles(uint32_t want) {
+    uint64_t end = timer_now_ns() + 2000ull * TIMER_NS_PER_TICK;
+    while (proc_live() > want && timer_now_ns() < end) yield();
+    return proc_live() == want;
+}
+
+uint32_t proc_test_hold(void)          { return spin_lock(&proc_lock); }
+void     proc_test_release(uint32_t f) { spin_unlock(&proc_lock, f); }
+
+/* Under the log lock (CPU-recursive), as the console's own writes are: two of
+   a process's threads writing on two CPUs would otherwise share one buffer
+   and its length unguarded (1.9e4). Both take kernel text only, never user
+   memory, which no one copies holding the log lock. */
 void proc_out_flush(struct proc *p) {
+    LOG_LOCKED();
     if (!p->outlen) return;
     char tag[12] = "pid ";
     tag[4 + fmt_u32(tag + 4, (uint32_t)p->pid)] = 0;
@@ -321,6 +395,7 @@ void proc_out_flush(struct proc *p) {
 }
 
 void proc_out_write(struct proc *p, const char *s, uint32_t len) {
+    LOG_LOCKED();
     for (uint32_t i = 0; i < len; i++) {
         char c = s[i];
         if (c == '\n') { proc_out_flush(p); continue; }

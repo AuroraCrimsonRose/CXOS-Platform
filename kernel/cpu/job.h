@@ -82,7 +82,7 @@ uint32_t job_prio_ceiling(const struct job *j);
    charge took, never more than is in use. */
 int  job_charge_mem(struct job *j, uint64_t bytes);
 void job_uncharge_mem(struct job *j, uint64_t bytes);
-int  job_charge_thread(struct job *j);
+int  job_charge_thread(struct job *j);   /* also E_CANCELED once `j` is killed */
 void job_uncharge_thread(struct job *j);
 
 /* A process joins `j` (proc_create), taking a reference, and leaves it when it
@@ -102,7 +102,16 @@ void job_kill(struct job *j, int killer);
 /* Drop a reference. */
 void job_put(struct job *j);
 
+/* Its limits and counts at one moment, for OBJINFO_JOB. */
+struct job_info;
+void job_snapshot(const struct job *j, struct job_info *ji);
+
 /* Jobs that exist now, the root included, for the self-tests. */
 uint32_t job_live(void);
+
+/* jobs_lock (1.9e4), held from a self-test to show another CPU's caller
+   waits for it: the flags to give to job_test_release. */
+uint32_t job_test_hold(void);
+void     job_test_release(uint32_t f);
 
 #endif

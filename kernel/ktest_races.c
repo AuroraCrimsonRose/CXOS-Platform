@@ -380,10 +380,18 @@ static int ir_ends(struct proc *p, uint32_t how, int32_t code, uint32_t ms) {
 }
 
 /* `p`'s threads all through thread_exit within `ms`: when, or 0. */
+/* Gone means ENDED, not just no thread running: the last thread drops the
+   count before it closes the process's handles, and signals ENDED after.
+   On one CPU nothing ran between; with the victim on an AP, a test that
+   woke on the count checked a pipe end still open (1.9e4b). */
+static int ir_ended(struct proc *p) {
+    return !p->running && (atomic_load(&p->hdr.signals) & SIGNAL_PROCESS_ENDED);
+}
+
 static uint64_t ir_gone(struct proc *p, uint32_t ms) {
     uint64_t end = timer_now_ns() + ms * MS;
-    while (p->running && timer_now_ns() < end) yield();
-    return p->running ? 0 : timer_now_ns();
+    while (!ir_ended(p) && timer_now_ns() < end) yield();
+    return ir_ended(p) ? timer_now_ns() : 0;
 }
 
 static int ir_recv(int32_t eh, uint64_t buf, uint64_t cap) {

@@ -9,8 +9,8 @@
 > step 9); and the file system layer, logging and the CMOS clock are
 > locked, the reaper runs on every CPU and the TSC agrees (§4b, 1.9e3).
 > User memory is read and written only through recoverable copies
-> (1.9e4a); 1.9e4b locks what interrupts still keep to one CPU, and then a
-> process's threads leave the boot CPU.
+> (1.9e4a); what interrupts kept to one CPU is locked, and a process's
+> threads run on any CPU (§4c, 1.9e4b).
 
 The rig is an FX-8350: eight cores, of which the kernel used one until
 1.9d started the other seven and left them idle, so that 1.9e changed the
@@ -236,10 +236,9 @@ CPU even if that one is halted.
 
 **Where threads run.** A thread is made for the boot CPU, as before
 (`THREAD_ON_BOOT_CPU`); `thread_create_on` makes one for a mask, and
-`thread_set_affinity` changes it. Only the self-tests ask for an AP so far:
-the file system layer and logging are locked since 1.9e3 (§4b), but a
-syscall still reads user memory directly after checking it (§4b), so a
-process's threads stay on the boot CPU until 1.9e4.
+`thread_set_affinity` changes it. Until 1.9e4b only the self-tests asked
+for an AP; since then a thread made to run ring-3 code runs on any CPU
+(§4c), and a kernel thread still starts on the boot CPU.
 
 **The reaper** frees only a thread on no CPU, on every CPU since 1.9e3: a
 free can end a process and close its handles through the file system
@@ -314,7 +313,7 @@ Not a TSC write: QEMU's TCG ignored one in this step's test, and the
 FX-8350 has no `IA32_TSC_ADJUST`. The boot log says how many APs were set
 right.
 
-**Why a process's threads still stay on the boot CPU.** A syscall checks a
+**Why a process's threads stayed on the boot CPU until 1.9e4b.** A syscall checks a
 user range (`user_ptr_readable` and the rest) and then reads it directly:
 148 such reads, most in `usermode.c`. A sibling thread on another CPU can
 unmap the range between the check and the read, and the kernel faults;
@@ -327,6 +326,45 @@ keyboard's buffer and waiter, the framebuffer against the console, a
 background process's output, and the network stack (1.9e4b). Run with
 every thread free to move, 1.9e3's boot failed 11 tests, most of them
 tests that assume one CPU's ordering (yield loops): 1.9e4b's list.
+
+## 4c. A process's threads on every CPU (1.9e4b)
+
+`thread_create_process` and `thread_create_user` give a thread
+`THREAD_ON_ANY_CPU` while it is still HELD, so no CPU picks it before. What
+interrupts-off alone kept whole is locked (ranks: `CX_LOCK_ORDER.md` §2):
+
+- **`proc_lock`** (`LR_PROC`, `cpu/proc.c`): every process's thread counts,
+  how it ended, and the armed stops. The last thread out is decided where
+  it is counted (`proc_thread_stopped(p, exit_code)`), in one hold, as WRK's
+  `PspExitThread` takes the last one's status under the process lock: two
+  last threads on two CPUs each saw the other running before.
+- **`jobs_lock`** (`LR_JOB`, `cpu/job.c`): one lock for the whole tree,
+  since a charge walks every job above and a kill every job below.
+  `job_charge_thread` checks `killed` and charges in one hold;
+  OBJINFO_JOB reads `job_snapshot`.
+- **`kbd_lock`** (`LR_INPUT`, `drivers/input/keyboard.c`): the buffer and
+  its waiter. A reader prepares its block under it, so a key pushed on
+  another CPU between the look and the block wakes it.
+- **The log lock** over a background process's output
+  (`proc_out_write`/`_flush`), the framebuffer syscalls' drawing (the
+  console draws under it) and a font's install; **the storage lock** over
+  a font's selection (`font_buf` is one buffer). `@ktest` and `@hw` lines
+  are written under the log lock too: interrupts off kept out only this
+  CPU's klog, and a baseline boot showed a line cut by another CPU's.
+- **The network and power calls** still count on one CPU: the stack yields
+  while it polls, so no spinlock covers it. `ON_BOOT_CPU()` moves the
+  caller to the boot CPU for the call's scope and back after
+  (`thread_onto_boot_cpu`, `TRANSITIONAL_CODE.md`).
+- **A signature check** runs inside a syscall with interrupts off and
+  takes seconds: `bn_mod` serves pending shootdowns every 256 bits
+  (`smp_serve`), or an AP's shootdown timed out waiting on it.
+
+Tests that read a count the reaper drops now wait for it
+(`proc_live_settles`): a record goes when its last thread is reaped, on
+the CPU that ran it, which may trail the ENDED a test woke on.
+`ktest_races.c`'s `ir_gone` waits for ENDED, not the running count, which
+drops before the handles close. The contended-mutex X test takes 10 to
+114 s on four CPUs under icount (its limit is 300 s).
 
 ## 5. Tests
 
@@ -418,8 +456,10 @@ cannot redden the tests after it:
 
 - A run queue per CPU, and a balancer (§4a): when a profile says the
   scan costs (1.9f).
-- A process's threads on the APs: once proc, jobs, input, the
-  framebuffer and the network stack are locked (1.9e4b, §4b).
+- The network stack on any CPU: it runs on the boot CPU for each call
+  (`ON_BOOT_CPU`, §4c) until it is locked or given a thread of its own.
+- Kernel threads (the drivers') still start on the boot
+  CPU: not audited as the syscalls were.
 - The futex reads its word with `futex_lock` held, so a fault on that
   page is demand-mapped under a spinlock (as the direct read before 1.9e4a
   was). Unverified whether that path can sleep; if it can, read under the

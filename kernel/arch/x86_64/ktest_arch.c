@@ -52,6 +52,8 @@
 #include "smp.h"                /* smp_stacks_of, smp_timer_hits */
 #include "arch/smp.h"           /* smp_call, the shootdown */
 #include "sync/spinlock.h"      /* a lock spun on while a shootdown waits */
+#include "bignum.h"             /* bn_modexp: a long interrupts-off computation */
+#include "rsa.h"                /* RSA_PROFILE_EXPONENT */
 #include "arch/x86/madt.h"
 #include "object/ktimer.h"
 #include "object/kwait.h"
@@ -61,6 +63,8 @@
 #include "cxfs.h"
 #include "syslog.h"
 #include "sysfile.h"            /* files_lock */
+#include "job.h"                /* jobs_lock (1.9e4) */
+#include "keyboard.h"           /* the input buffer's lock (1.9e4) */
 #include "platform/platform.h"  /* platform_wallclock: the CMOS lock */
 #include "format.h"
 #include "string.h"
@@ -1952,6 +1956,33 @@ static int t_tlb_poll_serves(void) {
     return 1;
 }
 
+/* The boot CPU raises a signature to its exponent with interrupts off, as
+   an image's check does inside a syscall: the remainders serve an AP's
+   shootdown (lib/crypto/bignum.c), which times out long before they end. */
+static int t_tlb_modexp_serves(void) {
+    if (cpu_count() < 2) return 1;
+    static bignum n, b, m;
+    uint8_t nb[256], sb[256];
+    for (int i = 0; i < 256; i++) { nb[i] = 0xFF; sb[i] = (uint8_t)(i * 7 + 1); }
+    bn_from_bytes(&n, nb, sizeof nb);
+    bn_from_bytes(&b, sb, sizeof sb);
+    volatile uint32_t go = 1;
+    struct tlb_shoot s = { &go, 0, ~0u, 0, 0 };
+    uint32_t served = cpu_boot.tlb_served;
+    uint32_t irq = arch_irq_save();
+    if (smp_call_start(1, ap_shoot, &s)) { arch_irq_restore(irq); return smp_fail("tlb modexp: step ", 1, 1); }
+    uint64_t t0 = timer_now_ns();
+    bn_modexp(&m, &b, RSA_PROFILE_EXPONENT, &n);
+    uint64_t took = timer_now_ns() - t0;
+    arch_irq_restore(irq);
+    if (smp_call_wait(1, 1000000000ull)) return smp_fail("tlb modexp: step ", 1, 2);
+    if (s.missing) return smp_fail("tlb modexp: step ", 1, 3);
+    if (cpu_boot.tlb_served == served) return smp_fail("tlb modexp: step ", 0, 4);
+    /* Shorter than the shootdown's 300 ms, and the test could not tell. */
+    if (took < 300000000ull) return smp_fail("tlb modexp: step ", 0, 5);
+    return 1;
+}
+
 /* ---- the scheduler on every CPU (1.9e2, cpu/sched.c) ----
  * Threads made here run on an AP by thread_create_on; each test waits for
  * its own to be reaped, which the boot CPU does, before it returns. */
@@ -2400,6 +2431,145 @@ static int t_reap_on_ap(void) {
 
 /* The double fault's IST stack (t_idt checks the gate names it): the wiring
    ktest_run asks every architecture about, by taking one. */
+
+/* ---- the locks of 1.9e4 ----
+ * As 1.9e3's: each held on the boot CPU while an AP's thread calls what
+ * takes it. The input buffer's, the jobs', the processes'; the log lock over
+ * a process's output and the framebuffer's syscalls, and the storage lock
+ * over a font's selection, which share what the console draws with. */
+static void lk_input_call(void) { keyboard_inject('q'); }
+/* A killed job's charge: refused, under the lock, from the check on. */
+static struct job *lk_job;
+static volatile int lk_job_rc;
+static void lk_job_call(void)   { lk_job_rc = job_charge_thread(lk_job); }
+static void lk_proc_call(void)  { (void)proc_stops_armed(); }
+static struct proc lk_out_proc;   /* only its output buffer is used */
+static void lk_out_call(void)   { proc_out_write(&lk_out_proc, "x", 1); }
+static void lk_pixel_call(void) { (void)sys_fb_put_pixel(0, 0, 0); }
+/* A name too long to be one: refused before any read, which would take the
+   storage lock by itself, so only the lock taken first holds the call. */
+static void lk_font_call(void)  {
+    (void)fb_font_select("ktest-a-name-far-too-long-to-be-any-font-on-cxfs-at-all-xxxxxxxx");
+}
+static uint32_t lk_input_flags, lk_job_flags, lk_proc_flags;
+static void lk_input_hold(void) { lk_input_flags = keyboard_test_hold(); }
+static void lk_input_give(void) { keyboard_test_release(lk_input_flags); }
+static void lk_job_hold(void)   { lk_job_flags = job_test_hold(); }
+static void lk_job_give(void)   { job_test_release(lk_job_flags); }
+static void lk_proc_hold(void)  { lk_proc_flags = proc_test_hold(); }
+static void lk_proc_give(void)  { proc_test_release(lk_proc_flags); }
+
+static int t_input_lock(void) {
+    if (cpu_count() < 2) return 1;
+    int step = lk_blocks(lk_input_hold, lk_input_give, lk_input_call);
+    if (step) return smp_fail("input lock: step ", 1, step);
+    /* and the key went in, whole, once */
+    if (keyboard_getchar() != 'q' || keyboard_getchar() != 0) return smp_fail("input lock: step ", 0, 4);
+    return 1;
+}
+
+static int t_job_proc_locks(void) {
+    if (cpu_count() < 2) return 1;
+    int rc;
+    lk_job = job_create(job_root(), 0, 0, 0, &rc);
+    if (!lk_job) return smp_fail("jobs lock: step ", 0, 1);
+    job_kill(lk_job, 0);
+    lk_job_rc = E_OK;
+    int step = lk_blocks(lk_job_hold, lk_job_give, lk_job_call);
+    if (!step && lk_job_rc != E_CANCELED) step = 4;
+    job_put(lk_job);
+    if (step) return smp_fail("jobs lock: step ", 1, step);
+    step = lk_blocks(lk_proc_hold, lk_proc_give, lk_proc_call);
+    if (step) return smp_fail("proc lock: step ", 1, step + 4);
+    return 1;
+}
+
+static int t_log_lock_draws(void) {
+    if (cpu_count() < 2) return 1;
+    lk_out_proc.outlen = 0;
+    int step = lk_blocks(lk_log_hold, lk_log_give, lk_out_call);
+    if (!step && lk_out_proc.outlen != 1) step = 4;
+    lk_out_proc.outlen = 0;
+    if (step) return smp_fail("process output: step ", 1, step);
+    /* No framebuffer, no drawing: the syscall answers before the lock. */
+    if (fb_active() && (step = lk_blocks(lk_log_hold, lk_log_give, lk_pixel_call)) != 0)
+        return smp_fail("fb draw: step ", 1, step);
+    step = lk_blocks(lk_storage_hold, lk_storage_give, lk_font_call);
+    if (step) return smp_fail("font select: step ", 1, step);
+    return 1;
+}
+
+/* The last of a process's threads out, decided under the lock that counts
+ * them: two threads of one process stop at once on two APs, each with its
+ * own exit code, released together from behind proc_lock. Exactly one is
+ * last, and the process ends EXITED with that one's code. Decided before
+ * the lock (as thread_exit did until 1.9e4), each saw the other still
+ * running and neither noted its code. */
+static struct proc *lx_proc;
+static volatile uint32_t lx_ready, lx_go, lx_done;
+static void lx_stop(int32_t code) {
+    __atomic_add_fetch(&lx_ready, 1u, __ATOMIC_SEQ_CST);
+    while (!lx_go) arch_cpu_relax();
+    proc_thread_stopped(lx_proc, &code);
+    __atomic_add_fetch(&lx_done, 1u, __ATOMIC_SEQ_CST);
+}
+static void lx_a(void) { lx_stop(11); }
+static void lx_b(void) { lx_stop(22); }
+
+static int t_proc_last_exit(void) {
+    if (cpu_count() < 3) return 1;
+    uint32_t n0 = sched_thread_count(), live0 = proc_live();
+    struct proc *p = proc_create(0, job_root());
+    if (!p) return smp_fail("last exit: step ", 0, 1);
+    int in = proc_thread_in(p) == E_OK;
+    in = proc_thread_in(p) == E_OK && in;
+    lx_proc = p;
+    lx_ready = lx_go = lx_done = 0;
+    int step = in ? 0 : 1;
+    if (!step && (thread_create_on("lastexit-a", lx_a, 1u << 1) < 0 ||
+                  thread_create_on("lastexit-b", lx_b, 1u << 2) < 0 ||
+                  !spin_until(&lx_ready, 2, 1000))) step = 2;
+    if (!step) {
+        lk_proc_hold();
+        lx_go = 1;
+        if (spin_until(&lx_done, 1, 30)) step = 3;   /* through a held proc_lock */
+        lk_proc_give();
+    }
+    lx_go = 1;
+    if (!step && !spin_until(&lx_done, 2, 1000)) step = 4;
+    if (!step && (p->ended != PROC_EXITED || (p->end_code != 11 && p->end_code != 22))) step = 5;
+    if (!step && !(atomic_load(&p->hdr.signals) & SIGNAL_PROCESS_ENDED)) step = 6;
+    /* Gone only once both are through: a thread still in the call leaks the
+       record rather than freeing it under it (the 1.3d rule). */
+    if (lx_done == 2) {
+        proc_thread_gone(p);
+        proc_thread_gone(p);
+        proc_put(p);
+        if (!step && !proc_live_settles(live0)) step = 7;
+    }
+    if (!smp_reaped(n0) && !step) step = 8;
+    if (step) return smp_fail("last exit: step ", 1, step);
+    return 1;
+}
+
+/* A thread made to run ring-3 code may run on any CPU; a kernel thread
+ * still only on the boot CPU (t_sched_placement). */
+static void lx_never(void) { }
+static int t_user_threads_any_cpu(void) {
+    if (cpu_count() < 2) return 1;
+    uint32_t online = cpu_count() >= 32 ? 0xFFFFFFFFu : (1u << cpu_count()) - 1u;
+    uint32_t live0 = proc_live();
+    int u = thread_create_user("anycpu-user", lx_never);
+    int step = u < 0 ? 1 : thread_affinity(u) != online ? 2 : 0;
+    if (u >= 0) thread_discard(u);
+    int q = thread_create_process("anycpu-proc", lx_never, job_root());
+    if (!step) step = q < 0 ? 3 : thread_affinity(q) != online ? 4 : 0;
+    if (q >= 0) thread_discard(q);
+    if (!step && !proc_live_settles(live0)) step = 5;
+    if (step) return smp_fail("user thread's CPUs: step ", 0, step);
+    return 1;
+}
+
 int ktest_arch_double_fault_stack(void) {
     return t_double_fault_ist();
 }
@@ -2480,6 +2650,7 @@ static const struct ktest_arch_case cases[] = {
     { "a user space's change goes only where it runs",    t_tlb_user_targeted },
     { "shootdowns at each other or a spinner finish",     t_tlb_no_deadlock },
     { "an interrupts-off poll answers an AP's shootdown", t_tlb_poll_serves },
+    { "a signature's arithmetic answers an AP's shootdown", t_tlb_modexp_serves },
     { "each CPU runs its idle thread, outside the count",  t_sched_idle_threads },
     { "a thread runs on the boot CPU, or the AP it is for", t_sched_placement },
     { "a wake from the boot CPU ends an idle AP's halt",   t_sched_wake_ipi },
@@ -2491,6 +2662,11 @@ static const struct ktest_arch_case cases[] = {
     { "the log lock keeps another CPU out; the ring whole", t_log_lock },
     { "sysfile's files lock keeps another CPU out",      t_files_lock },
     { "the wall clock's CMOS reads take their lock",    t_cmos_lock },
+    { "the input buffer's lock keeps another CPU out",   t_input_lock },
+    { "the jobs' and processes' locks keep another CPU out", t_job_proc_locks },
+    { "a process's output, drawing and fonts are locked", t_log_lock_draws },
+    { "two last threads at once: one ends it, its code",  t_proc_last_exit },
+    { "a ring-3 thread may run on any CPU",              t_user_threads_any_cpu },
     { "the APs reap exited threads, the boot CPU not needed", t_reap_on_ap },
     { "a thread woken before it is off its CPU stays there", t_sched_ready_on_cpu },
     { "an MSI vector reaches its handler, then nothing", t_msi_pool },

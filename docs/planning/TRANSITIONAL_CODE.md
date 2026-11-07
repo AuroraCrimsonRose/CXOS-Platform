@@ -60,6 +60,7 @@ interfaces and are not transitional.
 | `kernel/arch/x86/fpu.c` | FP and SSE left disabled | `fxsave`/`fxrstor` or lazy switching in `context_switch` | Before anything enables FP. The file explains why enabling it today would corrupt state. |
 | `kernel/drivers/input/keyboard.c` `kwaiter` | One blocked reader | A wait queue | A second process that reads the keyboard |
 | `kernel/drivers/net/netif.h` | Static IP configuration | DHCP | A network that is not QEMU's user-mode NAT |
+| `kernel/cpu/sched.c` `thread_onto_boot_cpu`, `ON_BOOT_CPU()` (1.9e4b) | The network and power syscalls move their caller to the boot CPU for the call: the stack yields while it polls, so no spinlock covers it | The network stack locked (a sleeping lock) or given a thread of its own, the calls made on any CPU | The network stack's SMP audit, or a second CPU's traffic that the boot CPU becomes the bottleneck for |
 | `kernel/lib/format/cxex_loadk.c` `ctx = 0` | Loads into the current address space | An explicit target space | Loading into a process other than the caller |
 | `kernel/drivers/video/fb.c` | Write-back caching on the framebuffer | Write-combining (PAT) | Framebuffer throughput matters |
 | `kernel/cpu/exec.c` unverified-image policy | Always refuses | An administrator's choice | User accounts exist |

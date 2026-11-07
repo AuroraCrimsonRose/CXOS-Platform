@@ -536,51 +536,61 @@ static int net_granted(void) {
 
 int syscall_net_status(void) {
     if (!net_granted()) return E_ACCESS_DENIED;
+    ON_BOOT_CPU();
     return sys_net_status();
 }
 
 int syscall_net_mac(uint64_t buf, uint64_t len) {
     if (!net_granted()) return E_ACCESS_DENIED;
+    ON_BOOT_CPU();
     return sys_net_mac(buf, len);
 }
 
 int syscall_net_get_config(uint64_t c) {
     if (!net_granted()) return E_ACCESS_DENIED;
+    ON_BOOT_CPU();
     return sys_net_get_config(c);
 }
 
 int syscall_net_set_ip(uint32_t addr) {
     if (!net_granted()) return E_ACCESS_DENIED;
+    ON_BOOT_CPU();
     return sys_net_set_ip(addr);
 }
 
 int syscall_net_set_mask(uint32_t addr) {
     if (!net_granted()) return E_ACCESS_DENIED;
+    ON_BOOT_CPU();
     return sys_net_set_mask(addr);
 }
 
 int syscall_net_set_gateway(uint32_t addr) {
     if (!net_granted()) return E_ACCESS_DENIED;
+    ON_BOOT_CPU();
     return sys_net_set_gateway(addr);
 }
 
 int syscall_net_set_dns(uint32_t addr) {
     if (!net_granted()) return E_ACCESS_DENIED;
+    ON_BOOT_CPU();
     return sys_net_set_dns(addr);
 }
 
 int syscall_net_ping(uint32_t dst, uint32_t seq, uint64_t rtt) {
     if (!net_granted()) return E_ACCESS_DENIED;
+    ON_BOOT_CPU();
     return sys_net_ping(dst, seq, rtt);
 }
 
 int syscall_net_send(uint64_t frame, uint64_t len) {
     if (!net_granted()) return E_ACCESS_DENIED;
+    ON_BOOT_CPU();
     return sys_net_send(frame, len);
 }
 
 int syscall_net_recv(uint64_t buf, uint64_t cap) {
     if (!net_granted()) return E_ACCESS_DENIED;
+    ON_BOOT_CPU();
     return sys_net_recv(buf, cap);
 }
 
@@ -606,18 +616,21 @@ static int power_granted(void) {
 
 int syscall_power_reboot(void) {
     if (!power_granted()) return E_ACCESS_DENIED;
+    ON_BOOT_CPU();
     power_reboot();                     /* does not return */
     return E_OK;
 }
 
 int syscall_power_shutdown(void) {
     if (!power_granted()) return E_ACCESS_DENIED;
+    ON_BOOT_CPU();
     power_shutdown();                   /* does not return: S5, or halt */
     return E_OK;
 }
 
 int syscall_power_sleep(uint32_t ms) {
     if (!power_granted()) return E_ACCESS_DENIED;
+    ON_BOOT_CPU();
     power_sleep(ms);
     return E_OK;
 }
@@ -782,17 +795,7 @@ int syscall_object_info(uint64_t a) {
                : oa.cap < sizeof(struct job_info) ? E_BUFFER_TOO_SMALL : E_OK;
         struct job_info ji = { 0 };
         if (rc == E_OK) {
-            /* One moment's account: the counts change with interrupts off. */
-            uint32_t f = arch_irq_save();
-            ji.memory_limit = j->mem_limit;
-            ji.memory_used  = j->mem_used;
-            ji.memory_peak  = j->mem_peak;
-            ji.thread_limit = j->thread_limit;
-            ji.threads      = j->threads;
-            ji.processes    = j->procs;
-            ji.killed       = (uint32_t)j->killed;
-            ji.priority_limit = j->prio_limit;
-            arch_irq_restore(f);
+            job_snapshot(j, &ji);   /* one moment's account, under the jobs' lock */
         }
         kobj_unref(o);
         if (rc != E_OK) return rc;
@@ -3571,7 +3574,7 @@ int usermode_process_test(void) {
     htab_close(tab, d);  d = -1;
     htab_close(tab, hc); hc = -1;
     htab_close(tab, hn); hn = -1;
-    step = 19; if (proc_by_pid(pid) != 0 || proc_live() != live0) goto done;
+    step = 19; if (proc_by_pid(pid) != 0 || !proc_live_settles(live0)) goto done;
     ok = 1;
 
 done:
@@ -3836,7 +3839,7 @@ int usermode_kill_test(void) {
     htab_close(tab, h); h = -1;
 
     /* 18: nothing left behind, and nothing ended any other way */
-    step = 18; if (proc_live() != live0 || usermode_faults() != faults0
+    step = 18; if (!proc_live_settles(live0) || usermode_faults() != faults0
                    || syscall_refused_count() != refused0) goto done;
     ok = 1;
 
@@ -4138,7 +4141,7 @@ int usermode_stop_test(void) {
     htab_close(tab, ha); ha = -1;
 
     /* 14: nothing left behind, and nothing ended any other way */
-    step = 14; if (proc_live() != live0 || usermode_faults() != faults0
+    step = 14; if (!proc_live_settles(live0) || usermode_faults() != faults0
                    || syscall_refused_count() != refused0 || proc_stops_armed() != 0
                    || ep_in_use_count() != eps0 + 1 || mine->stop_ep != 0) goto done;
     ok = 1;
@@ -4399,7 +4402,7 @@ int usermode_job_test(void) {
     htab_close(tab, k); k = -1;
     htab_close(tab, c); c = -1;
     htab_close(tab, j); j = -1;
-    step = 9; if (job_live() != jobs0 || proc_live() != live0 || usermode_faults() != faults0
+    step = 9; if (job_live() != jobs0 || !proc_live_settles(live0) || usermode_faults() != faults0
                   || syscall_refused_count() != refused0) goto done;
     ok = 1;
 
@@ -5187,7 +5190,7 @@ int usermode_mem_test(void) {
     const uint32_t all = HRIGHT_MAP | HRIGHT_MAP_WRITE | HRIGHT_MAP_EXEC | HRIGHT_SEAL |
                          HRIGHT_INSPECT | HRIGHT_DUPLICATE;
     uint32_t live0 = kobj_live(KOBJ_MEM), res0 = pmm_reserved_count();
-    uint32_t faults0 = usermode_faults();
+    uint32_t faults0 = usermode_faults(), procs0 = proc_live();
     int32_t m = -1, d = -1, t = -1, h = -1, s = -1, sd = -1;
     struct kmem *mo = 0;
     struct job *j = 0;
@@ -5349,7 +5352,10 @@ int usermode_mem_test(void) {
                    || pi->ended != PROC_EXITED || pi->code != 0) goto done;
     htab_close(tab, h); h = -1;
     page0 = kmem_page_if_resident(mo, 0);
-    step = 19; if (!page0 || kmem_resident(mo) != 2|| mo->writers != 0 || !pmm_page_in_use(page0)
+    /* Its writable view is dropped when it is reaped, which on an AP may
+       trail the end it signalled (1.9e4b, as step 22's). */
+    step = 19; if (!proc_live_settles(procs0) || !page0 || kmem_resident(mo) != 2
+                   || mo->writers != 0 || !pmm_page_in_use(page0)
                    || mt_word8(page0) != MT_VALUE) goto done;
 
     /* 20: a store as the first touch of a read-only view is the process's
@@ -5364,10 +5370,11 @@ int usermode_mem_test(void) {
     addr = 0;
 
     /* 22: the last handle frees the object, its pages and what it still had
-       reserved */
+       reserved. The processes' views hold it until each is reaped, which
+       the CPU that ran it does after the end is signalled (1.9e4b). */
     kobj_unref(&mo->hdr); mo = 0;
     htab_close(tab, m); m = -1;
-    step = 22; if (kobj_live(KOBJ_MEM) != live0 || pmm_page_in_use(page0)
+    step = 22; if (!proc_live_settles(procs0) || kobj_live(KOBJ_MEM) != live0 || pmm_page_in_use(page0)
                    || pmm_reserved_count() != res0) goto done;
 
     /* 23: as many regions as a process may hold, and not one more */
@@ -5662,7 +5669,7 @@ int usermode_ipc_test(void) {
     htab_close(tab, j); j = -1;
     kobj_unref(s7o); s7o = 0;
     htab_close(tab, s7); s7 = -1;
-    step = 13; if (proc_live() != live0 || usermode_faults() != faults0
+    step = 13; if (!proc_live_settles(live0) || usermode_faults() != faults0
                    || syscall_refused_count() != refused0 || kobj_live(KOBJ_SEND) != sends0
                    || kobj_live(KOBJ_REPLY) != calls0 || ep_in_use_count() != eps0 + 1
                    || job_live() != jobs0) goto done;
@@ -6064,7 +6071,7 @@ int usermode_ipc_handles_test(void) {
     kobj_unref(o2); o2 = 0;
     htab_close(tab, t1); t1 = -1;
     htab_close(tab, t2); t2 = -1;
-    step = 17; if (proc_live() != live0 || usermode_faults() != faults0
+    step = 17; if (!proc_live_settles(live0) || usermode_faults() != faults0
                    || syscall_refused_count() != refused0 || kobj_live(KOBJ_REPLY) != calls0
                    || kobj_live(KOBJ_TIMER) != timers0 || kobj_live(KOBJ_MEM) != mems0
                    || ep_in_use_count() != eps0 + 1
@@ -6129,10 +6136,13 @@ static int pr_set(uint32_t level) {
 /* A caller as it_caller makes one, in slot `i` with a byte of IT_REQ(i),
    given `level` while held and then started. The process handle, or <= 0.
    The blob is copied when a process first runs: one below the test thread
-   must have run before the next is made. */
+   must have run before the next is made. On the boot CPU, the test
+   thread's: what is tested is a wake or a start taking this CPU from a
+   thread below, which a caller run by another CPU never needs (1.9e4b). */
 static int32_t pr_caller(struct endpoint *ep, uint32_t i, uint32_t level, int *tid) {
     int32_t h = it_caller(ep, 0, 0, i, 1, IT_REPLY(i), IT_RCAP, 0, 0, tid);
     if (h <= 0) return h;
+    thread_set_affinity(*tid, THREAD_ON_BOOT_CPU);
     ipc_set_base(*tid, level);
     thread_start(*tid);
     return h;
@@ -6168,6 +6178,7 @@ static int32_t pr_middle(struct endpoint *ep1, struct endpoint *ep2, uint32_t le
         htab_close(thread_htab(thread_current_id()), h);
         return E_NO_RESOURCES;
     }
+    thread_set_affinity(*tid, THREAD_ON_BOOT_CPU);   /* as pr_caller's */
     struct ipc_recv_args *ra = (struct ipc_recv_args *)ktest_umem(PR_MRECV);
     ra->cap = 64; ra->buf = PR_MBUF; ra->info = PR_MINFO; ra->ep_handle = r;
     ra->handles = 0; ra->handle_cap = 0;
@@ -6359,7 +6370,7 @@ int usermode_prio_test(void) {
     for (int i = 0; i < 50 && !pr_woke_ns; i++) yield();
     step = 16; if (ts <= 0 || !woke || woke - t0 > 150ull * TIMER_NS_PER_TICK) goto done;
 
-    step = 17; if (ipc_serving_count() != 0 || proc_live() != live0 || usermode_faults() != faults0
+    step = 17; if (ipc_serving_count() != 0 || !proc_live_settles(live0) || usermode_faults() != faults0
                    || syscall_refused_count() != refused0 || kobj_live(KOBJ_REPLY) != calls0
                    || job_live() != jobs0 || ep_in_use_count() != eps0
                    || !pr_is(PRIO_NORMAL, PRIO_NORMAL)) goto done;

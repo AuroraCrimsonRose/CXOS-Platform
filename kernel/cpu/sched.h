@@ -108,12 +108,13 @@ struct thread {
     uint8_t   idle;
 };
 
-/* Every thread runs on the boot CPU unless it is given more
-   (thread_set_affinity). The file system and logging are locked since
-   1.9e3; what still counts on one CPU is the syscalls' direct use of user
-   memory (user_ptr after a check), which a sibling thread's unmap on
-   another CPU could pull out from under them: until 1.9e4 moves it all to
-   the recoverable copies, a process's threads share the boot CPU. */
+/* A thread made to run ring-3 code (thread_create_process, _user) runs on
+   any CPU since 1.9e4: its syscalls reach user memory only through the
+   recoverable copies (1.9e4a), and what they share is locked. A kernel
+   thread (thread_create, _sibling) still runs on the boot CPU unless given
+   more (thread_set_affinity, thread_create_on): the drivers' threads have
+   not been through that audit. Code that still counts on one CPU moves its
+   caller there for its length (ON_BOOT_CPU, below). */
 #define THREAD_ON_BOOT_CPU    1u
 #define THREAD_ON_ANY_CPU     0xFFFFFFFFu
 /* Idle threads are named past every thread id, and no table holds them. */
@@ -232,6 +233,17 @@ void sched_cpu_tick(void);
    it may no longer use leaves at that CPU's next preemption point. */
 int      thread_set_affinity(int id, uint32_t mask);
 uint32_t thread_affinity(int id);
+
+/* For code that still counts on one CPU (1.9e4: the network stack, which
+   yields while it polls, so no spinlock can cover it; the power calls): the
+   calling thread moves to the boot CPU and returns the affinity it had, for
+   thread_affinity_back. Transitional (TRANSITIONAL_CODE.md). ON_BOOT_CPU()
+   does both for the rest of a scope, as STORAGE_LOCKED() does a lock. */
+uint32_t thread_onto_boot_cpu(void);
+void     thread_affinity_back(uint32_t was);
+static inline void boot_cpu_scope_end(uint32_t *was) { thread_affinity_back(*was); }
+#define ON_BOOT_CPU() \
+    __attribute__((cleanup(boot_cpu_scope_end), unused)) uint32_t boot_cpu_was_ = thread_onto_boot_cpu()
 /* The CPU index it is running on, or -1. */
 int      thread_cpu(int id);
 /* Made like thread_create, but runnable only on `mask`'s CPUs from the start. */

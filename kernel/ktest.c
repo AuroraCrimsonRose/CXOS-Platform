@@ -85,7 +85,7 @@
  * Tagged and tab-separated like XNU's ktest_emit.c ("[KTEST]\tTESTBEGIN\t..."),
  * so `cxk verify-boot` reads each test's verdict, not just the summary. Never
  * on the screen, and never wrapped: serial_puts, not the console. Each line is
- * written with interrupts off, so a preempted klog can't split it; it starts
+ * written under the log lock, so no klog on any CPU can split it; it starts
  * with a newline of its own in case it lands after half of one, and a reader
  * matches "@ktest" anywhere in a line. The ms are the virtual clock's (icount)
  * since the last line: tests run back to back, so that is the test's time. */
@@ -93,11 +93,13 @@ static uint32_t kt_index;
 static uint64_t kt_last_ns;
 
 static void kt_line(const char *const *parts, unsigned n) {
-    uint32_t f = arch_irq_save();
+    /* Under the log lock, which klog holds for its whole line: interrupts
+       off kept out only this CPU's writers, and since 1.9e4b a process's
+       thread on an AP logs at any moment ("17O4" in a baseline boot). */
+    LOG_LOCKED();
     serial_puts("\r\n@ktest");
     for (unsigned i = 0; i < n; i++) { serial_putc('\t'); serial_puts(parts[i]); }
     serial_puts("\r\n");
-    arch_irq_restore(f);
 }
 
 static void kt_u32(char *b, uint32_t v) { b[fmt_u32(b, v)] = 0; }
@@ -672,6 +674,17 @@ static int test_heap(void) {
     return ok;
 }
 
+/* Until the threads a test started are gone and reaped (the count back to
+   `before`), at most `ms`. A ring-3 process's threads run on any CPU since
+   1.9e4, so a few yields here no longer mean they have run, let alone
+   ended; the reaper on their CPU frees them after its next switch. */
+static int settled_within(uint32_t before, uint32_t ms) {
+    uint64_t end = timer_now_ns() + (uint64_t)ms * TIMER_NS_PER_TICK;
+    while ((sched_thread_count() > before || sched_active_count() > 1) && timer_now_ns() < end)
+        yield();
+    return sched_thread_count() <= before && sched_active_count() == 1;
+}
+
 /* ---- cooperative scheduling: two threads that yield ---- */
 static volatile int coop_a_ran = 0, coop_b_ran = 0;
 static void coop_thread_a(void) { for (int i = 0; i < 3; i++) { coop_a_ran++; yield(); } }
@@ -809,10 +822,10 @@ static int test_ring3_processes(void) {
 
     /* 3b: cooperative ring-3 processes */
     uint32_t blen = (uint32_t)(user_blob_end - user_blob_start);
+    uint32_t n0 = sched_thread_count();
     process_create_ring3("user1", user_blob_start, blen, "");
     process_create_ring3("user2", user_blob_start, blen, "");
-    for (int i = 0; i < 12 && sched_active_count() > 1; i++) yield();
-    int coop_ok = (sched_active_count() == 1);
+    int coop_ok = settled_within(n0, 2000) && sched_active_count() == 1;
 
     /* 3c: preemptible ring-3 processes */
     uint32_t blen2 = (uint32_t)(user_blob_busy_end - user_blob_busy_start);
@@ -821,7 +834,8 @@ static int test_ring3_processes(void) {
     sched_preempt_enable(5);
     while (sched_active_count() > 1) { arch_cpu_relax(); }
     sched_preempt_disable();
-    int preempt_ok = (sched_active_count() == 1);
+    /* and reaped, by whichever CPU ran them, before the next test counts */
+    int preempt_ok = settled_within(n0, 2000);
 
     return coop_ok && preempt_ok && usermode_faults() == faults0
         && syscall_refused_count() == refused0;
@@ -832,6 +846,7 @@ static int test_identity(void) {
     uint32_t blen = (uint32_t)(user_blob_end - user_blob_start);
 
     /* 1. launching a user process as UID 0 must be REJECTED */
+    uint32_t n0 = sched_thread_count();
     int bad = process_create_ring3_as_user("baduser", user_blob_start, blen, 0, UID_SYSTEM);
     if (bad != -1) return 0;   /* should have been refused */
 
@@ -839,12 +854,12 @@ static int test_identity(void) {
     int uid7 = process_create_ring3_as_user("user7", user_blob_start, blen,"", 7);
     if (uid7 < 0) return 0;
 
-    /* drive it to completion so it reaps cleanly */
-    for (int i = 0; i < 12 && sched_active_count() > 1; i++) yield();
+    /* wait for it to end and be reaped, on whichever CPU ran it */
+    int settled = settled_within(n0, 2000);
 
     /* the launch-as-SYSTEM rejection above is the observable proof of the
        "user can never be UID 0" invariant. */
-    return sched_active_count() == 1;
+    return settled && sched_active_count() == 1;
 }
 
 /* An LBA past what the ATA driver can address must be refused, not truncated.
@@ -2343,12 +2358,12 @@ done_vm:
        so a leak here is tens of pages per spawn, not one. */
     for (int i = 0; i < 8 && sched_active_count() > 1; i++) yield();
     uint32_t free_before = pmm_free_count();
+    uint32_t n0 = sched_thread_count();
 
     uint32_t blen = (uint32_t)(user_blob_end - user_blob_start);
     if (process_create_ring3("lifecycle", user_blob_start, blen, "") < 0) return 0;
-    for (int i = 0; i < 64 && sched_active_count() > 1; i++) yield();
-    if (sched_active_count() != 1) { return 0; }
-    for (int i = 0; i < 8; i++) yield();              /* let sched_reap run */
+    /* ended and reaped, its space freed with its last thread (proc_thread_gone) */
+    if (!settled_within(n0, 2000) || sched_active_count() != 1) { return 0; }
 
     if (pmm_free_count() != free_before) return 0;
 

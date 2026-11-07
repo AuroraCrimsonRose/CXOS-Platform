@@ -4,7 +4,8 @@
 > **Status: 1.9a done (2026-11-05): every spinlock ranked, the checker in
 > test-hook builds, the heap's large path locked; 1.9b done (2026-11-05):
 > the scheduler's lock placed, the checker's state per CPU; 1.9c
-> (2026-11-06): the kernel stacks' lock (`LR_KSTACK`)**
+> (2026-11-06): the kernel stacks' lock (`LR_KSTACK`); 1.9e4b (2026-11-07):
+> the jobs', input and processes' locks (`LR_JOB`, `LR_INPUT`, `LR_PROC`)**
 > (`planning/CX_ROADMAP.md`, Phase 1 step 9).
 
 On one CPU a spinlock never waits: taking one turns interrupts off, so
@@ -47,11 +48,14 @@ cache registry `ocache-slots` under a cache's own lock.
 | `LR_FUTEX` | `cpu/futex.c` `futex_lock` | vmregion, pids (a user copy's demand fault), sched |
 | `LR_HTAB` | `object/htab.c`, per handle table | sysfile (a handle closed: `of_destroy`) |
 | `LR_VMREGION` | `memman/vmregion.c`, per address space | pids, kmem, pagedb |
-| `LR_PIDS` | `cpu/proc.c` `pids_lock` | sched, ocache, ocache-slots, pagedb |
+| `LR_PIDS` | `cpu/proc.c` `pids_lock` | proc, sched, ocache, ocache-slots, pagedb (a kill by pid) |
 | `LR_KMEM` | `object/kmem.c`, per memory object | pagedb |
+| `LR_JOB` | `cpu/job.c` `jobs_lock` (1.9e4b): the whole tree, its counts, limits and kills; one lock, since a charge walks up and a kill walks down | kwait (a killed job signalled) |
 | `LR_KTIMER` | `object/ktimer.c` `armed_lock` | kwait |
 | `LR_KWAIT` | `object/kwait.c` `wait_lock` | sched |
 | `LR_SYSFILE` | `cpu/sysfile.c` `files_lock` (1.9e3): the graveyard, the advisory locks and their waiters, unlink's open check | sched, ocache, ocache-slots, pagedb (a waiter blocked, a lock record) |
+| `LR_INPUT` | `drivers/input/keyboard.c` `kbd_lock` (1.9e4b): the input buffer and its waiter | sched (the waiter woken) |
+| `LR_PROC` | `cpu/proc.c` `proc_lock` (1.9e4b): every process's thread counts, how it ended, the armed stops | sched (a killed thread woken) |
 | `LR_SCHED` | `cpu/sched.c` `sched_lock` (1.9b) | ocache, ocache-slots (a thread id's slot) |
 | `LR_RANDOM` | `drivers/char/random.c` | - |
 | `LR_HEAP` | `memman/heap.c` `heap_lock` (new) | pagedb |
@@ -201,6 +205,14 @@ across `heap_grow`'s frame allocation and mapping (pagedb, ranked after).
   already held, which is how a test on one CPU shows a path takes a lock
   (it cannot hold the lock and watch another thread wait, since the holder
   has interrupts off).
+- Boot (1.9e4b, four CPUs, `ktest_arch.c`): the input, jobs' and
+  processes' locks each held on the boot CPU while an AP calls what takes
+  it (a key pushed, a thread charged, the armed stops counted): still in
+  the call while held, through it once given back. A process's output,
+  the framebuffer's drawing and a font's selection the same, under the
+  log and storage locks. Two last threads ending at once on two APs: one
+  ends the process, with its code. Each has a sabotage in
+  `tests/sabotage/1.9e4b.sab` (11, all caught).
 - Boot (1.9e3, four CPUs): the storage lock, the log lock and sysfile's
   `files_lock` each held on the boot CPU while a thread on an AP calls what
   takes it (`cxfs_get_id`, `slog_record`, `sysfile_lock_waiting`): still in

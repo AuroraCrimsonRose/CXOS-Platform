@@ -16,6 +16,11 @@ char keyboard_getchar(void);
    can tell them apart. Safe from an interrupt handler. */
 void keyboard_inject(unsigned char c);
 
+/* The buffer's lock (1.9e4), held from a self-test to show another CPU's
+   caller waits for it: the flags to give to keyboard_test_release. */
+uint32_t keyboard_test_hold(void);
+void     keyboard_test_release(uint32_t f);
+
 /* block until a character is available, then return it. A USB keyboard
    raises no IRQ 1, so with a HID device the wait also ends every 10 ms to
    poll it. */

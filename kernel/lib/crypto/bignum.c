@@ -5,6 +5,8 @@
 /* Fixed-size schoolbook big integers for RSA-2048 verification. */
 
 #include "bignum.h"
+#include "arch/cpu_ops.h"   /* arch_irqs_enabled */
+#include "arch/smp.h"       /* smp_serve: a long remainder answers shootdowns */
 
 /* recompute the `used` count (index+1 of the highest non-zero limb) */
 static void bn_normalize(bignum *a) {
@@ -133,6 +135,11 @@ void bn_mod(bignum *r, const bignum *a, const bignum *m) {
         if (bn_test_bit(a, i)) rem.limb[0] |= 1u;
         rem.used = (rem.used > 0) ? rem.used : 1;
         if (bn_cmp(&rem, m) >= 0) bn_sub(&rem, m);
+        /* An image's signature is checked inside a syscall, interrupts off,
+           and the ~18 remainders take seconds: long enough that an AP's
+           shootdown would time out waiting on this CPU (1.9e4b). So it is
+           served here, as a spin serves; with interrupts on the IPI does. */
+        if (!(i & 255) && !arch_irqs_enabled()) smp_serve();
     }
     bn_normalize(&rem);
     *r = rem;

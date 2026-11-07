@@ -343,6 +343,7 @@ void fb_draw_string_n(uint32_t x, uint32_t y, const char *s, uint32_t n,
 #include "../../../abi/cxk_abi.h" /* fb_geometry, E_* */
 #include "cxfs.h"                 /* SYS_FB_SET_FONT reads the font itself */
 #include "console.h"              /* the grid follows the font's cell */
+#include "disk.h"                 /* the storage lock over a font's selection */
 
 /* Staging for a font being loaded, sized to the largest file XFNT permits:
    header + 256 glyphs of 32 rows + a codepoint per slot. Static rather than a
@@ -376,6 +377,10 @@ static const char *const font_dirs[] = {
 int fb_font_select(const char *name) {
     static const char ext[] = ".xfnt";
     if (!name || !name[0]) return E_INVALID_ARGS;
+    /* font_buf is one buffer: the storage lock, first in the order and taken
+       by the reads below anyway, keeps a second CPU's selection out of it
+       (1.9e4). */
+    STORAGE_LOCKED();
 
     /* The composed filename is <name>.xfnt, and that is the name CXFS has to
        store, so the extension counts against the name field. Measuring `name`
@@ -421,6 +426,9 @@ int fb_font_select(const char *name) {
            stops at the first directory holding the NAME - a broken font in
            /System is an error, not a reason to fall through to /Shared and
            silently use a different one. */
+        /* Installed under the log lock: the console reads the glyphs to draw
+           every line, on any CPU. */
+        LOG_LOCKED();
         if (xfnt_install(font_buf, (uint32_t)got) != XFNT_E_OK) return E_INVALID_ARGS;
         console_font_changed();
         return 0;
@@ -451,24 +459,28 @@ int sys_fb_info(uint64_t ug) {
 
 int sys_fb_clear(uint32_t color) {
     if (!fb_active()) return E_NOT_FOUND;
+    LOG_LOCKED();   /* the console draws here too, under it */
     fb_clear(fb_pack(color));
     return 0;
 }
 
 int sys_fb_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color) {
     if (!fb_active()) return E_NOT_FOUND;
+    LOG_LOCKED();   /* the console draws here too, under it */
     fb_fill_rect(x, y, w, h, fb_pack(color));
     return 0;
 }
 
 int sys_fb_put_pixel(uint32_t x, uint32_t y, uint32_t color) {
     if (!fb_active()) return E_NOT_FOUND;
+    LOG_LOCKED();   /* the console draws here too, under it */
     fb_put_pixel(x, y, fb_pack(color));
     return 0;
 }
 
 int sys_fb_draw_line(uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1, uint32_t color) {
     if (!fb_active()) return E_NOT_FOUND;
+    LOG_LOCKED();   /* the console draws here too, under it */
     fb_draw_line((int)x0, (int)y0, (int)x1, (int)y1, fb_pack(color));
     return 0;
 }
@@ -498,7 +510,9 @@ int sys_fb_draw_text(uint32_t x, uint32_t y, uint64_t text, uint32_t fg, uint32_
         }
         uint32_t k = 0;
         while (k < m && piece[k]) k++;
+        log_lock();                          /* never across the copy above */
         fb_draw_string_n(x + n * font_cell_width(), y, piece, k, fb_pack(fg), fb_pack(bg));
+        log_unlock();
         n += k;
         if (k < m) break;                    /* the NUL */
     }
@@ -540,6 +554,7 @@ int sys_fb_set_font(uint64_t uname) {
        Not hypothetical: the shell restores a saved font at startup, so
        an unconditional clear meant every boot after the first `font`
        command erased the boot log the moment the shell came up. */
+    STORAGE_LOCKED();   /* the cell before and after is one selection's (1.9e4) */
     uint32_t cw = font_cell_width();
     uint32_t ch = font_cell_height();
     int rc = fb_font_select(name);

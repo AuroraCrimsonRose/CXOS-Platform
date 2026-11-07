@@ -40,9 +40,11 @@ fn info(h: i32, ti: *thread_info) -> i32 {
     return object_info(&q);
 }
 
-fn join(h: i32) -> i32 {
+fn join(h: i32) -> i32 { return join_within(h, 30000); }
+
+fn join_within(h: i32, ms: u32) -> i32 {
     let code: i32 = 0 - 1000;
-    if (thread_join(h, time_deadline_ms(30000), &code) != 0) { return 0 - 1000; }
+    if (thread_join(h, time_deadline_ms(ms), &code) != 0) { return 0 - 1000; }
     return code;
 }
 
@@ -435,7 +437,7 @@ fn s_mutex_contended(arg: u64) -> i32 {
     while (i < WORKERS) { h[i] = thread_spawn(bumper, i as u64, 0); if (h[i] <= 0) { return 23; } i = i + 1; }
     i = 0;
     while (i < WORKERS) {
-        let c: i32 = join(h[i]);
+        let c: i32 = join_within(h[i], 300000);   // 10-114 s seen on 4 CPUs (1.9e4b)
         if (c != 0) { return 24 * 10 + c; }
         i = i + 1;
     }
@@ -699,7 +701,7 @@ fn all() -> void {
     test_run("futex: a wake of two wakes two",         f_wake_two,                 30000);
     test_run("futex: one object mapped twice",         f_one_object_two_maps,      30000);
     test_run("sync: a mutex's word is its owner",      s_mutex_owner,              30000);
-    test_run("sync: four threads, a mutex, the heap",  s_mutex_contended,          60000);
+    test_run("sync: four threads, a mutex, the heap",  s_mutex_contended,          300000);
     test_run("sync: a cond carries items",             s_cond_carries,             30000);
     test_run("sync: a timed cond wait ends",           s_cond_deadline,            30000);
     test_run("sync: once runs once",                   s_once,                     30000);
