@@ -42,6 +42,24 @@ static paddr_t space_of(int pid) {
 
 static uint32_t page_up(uint32_t n) { return (n + PAGE_SIZE - 1u) & ~(PAGE_SIZE - 1u); }
 
+/* Room for `len` more bytes and, with `region`, one more region. Asked once
+   without the lock, to refuse before anything is made, and again under it,
+   where the answer counts: since 1.9e4b two threads of one process map on
+   two CPUs at once, and both passed a check made before either counted. */
+static int room(const struct vm_proc *p, uint32_t len, int region) {
+    if (p->mapped + len < p->mapped)            return E_OUT_OF_RANGE;
+    if (p->mapped + len > p->quota)             return E_NO_MEMORY;
+    if (region && p->count >= MMAP_MAX_REGIONS) return E_NO_RESOURCES;
+    return E_OK;
+}
+
+/* A stack's room: a wrapped sum is the same refusal as too much, which is
+   what vm_map_stack has always answered. */
+static int stack_room(const struct vm_proc *p, uint32_t len) {
+    int rc = room(p, len, 1);
+    return rc == E_OUT_OF_RANGE ? E_NO_MEMORY : rc;
+}
+
 static uint32_t default_quota = VM_DEFAULT_QUOTA;
 uint32_t vm_default_quota(void) { return default_quota; }
 void     vm_set_default_quota(uint32_t bytes) { if (bytes) default_quota = bytes; }
@@ -135,15 +153,22 @@ int vm_charge(int pid, uint32_t bytes) {
        ceiling itself. Two accounts kept by different arithmetic would disagree
        on exactly the inputs chosen to make them disagree. */
     uint32_t len = page_up(bytes);
-    if (len < bytes)                 return E_OUT_OF_RANGE;
-    if (p->mapped + len < p->mapped) return E_OUT_OF_RANGE;
-    if (p->mapped + len > p->quota)  return E_NO_MEMORY;
-    int rc = job_charge_mem(jb(pid), len);
+    if (len < bytes) return E_OUT_OF_RANGE;
+    int rc = room(p, len, 0);
     if (rc != E_OK) return rc;
+    race_point(RP_VM_ROOM);   /* a sibling thread may map or charge here */
 
-    p->mapped  += len;
-    p->charged += len;
-    return E_OK;
+    /* Checked, charged and counted in one hold, as vm_map counts a region
+       (the jobs' lock ranks after this one, CX_LOCK_ORDER.md). */
+    uint32_t f = spin_lock(&p->lock);
+    rc = room(p, len, 0);
+    if (rc == E_OK) rc = job_charge_mem(jb(pid), len);
+    if (rc == E_OK) {
+        p->mapped  += len;
+        p->charged += len;
+    }
+    spin_unlock(&p->lock, f);
+    return rc;
 }
 
 void vm_uncharge(int pid, uint32_t bytes) {
@@ -153,9 +178,11 @@ void vm_uncharge(int pid, uint32_t bytes) {
     /* Clamped rather than allowed to go negative: an over-refund would hand a
        process a quota larger than it was given, which is worse than losing
        track of a page. */
+    uint32_t f = spin_lock(&p->lock);
     if (len > p->charged) len = p->charged;
     p->mapped  -= len;
     p->charged -= len;
+    spin_unlock(&p->lock, f);
     job_uncharge_mem(jb(pid), len);
 }
 
@@ -197,14 +224,12 @@ int vm_map_object(int pid, struct vm_map_args *a, struct kmem *m, uint32_t right
         if ((a->prot & MPROT_EXEC)  && !(rights & HRIGHT_MAP_EXEC))  return E_ACCESS_DENIED;
     }
 
-    if (p->mapped + len < p->mapped) return E_OUT_OF_RANGE;
-    if (p->mapped + len > p->quota)  return E_NO_MEMORY;
-    if (p->count >= MMAP_MAX_REGIONS) return E_NO_RESOURCES;
+    int rc = room(p, len, 1);
+    if (rc != E_OK) return rc;
     if (fault_hit(FAULT_VMMAP)) return E_NO_MEMORY;
 
     /* The object, and its commit, before the region: a refusal here has
        taken nothing (kmem_create gives back what it charged). */
-    int rc;
     if (m) kobj_ref(&m->hdr);
     else if (!(m = kmem_create(len / PAGE_SIZE, jb(pid), &rc))) return rc;
     /* A writable view is counted on the object until it goes, so a seal
@@ -227,12 +252,14 @@ int vm_map_object(int pid, struct vm_map_args *a, struct kmem *m, uint32_t right
        unaligned or occupied hint falls back to placement rather than being
        rounded into something the caller did not ask for - `addr` reports
        the truth either way. */
+    race_point(RP_VM_ROOM);   /* a sibling thread may map or charge here */
     uint32_t f = spin_lock(&p->lock);
     uint64_t base = 0;
-    if ((a->flags & MMAP_HINT) && (a->addr & (PAGE_SIZE - 1u)) == 0 &&
+    rc = room(p, len, 1);
+    if (rc == E_OK && (a->flags & MMAP_HINT) && (a->addr & (PAGE_SIZE - 1u)) == 0 &&
         a->addr && range_free(p, a->addr, len))
         base = a->addr;
-    if (!base) base = vmtree_first_fit(p->root, VM_MMAP_BASE, VM_MMAP_TOP, len);
+    if (rc == E_OK && !base) base = vmtree_first_fit(p->root, VM_MMAP_BASE, VM_MMAP_TOP, len);
     if (base) {
         r->node.base = base;
         if (vmtree_insert(&p->root, &r->node) != 0) kpanic("vm_map: placed on a region");
@@ -244,7 +271,7 @@ int vm_map_object(int pid, struct vm_map_args *a, struct kmem *m, uint32_t right
         ocache_free(&region_cache, r);
         if (writer) kmem_writer_drop(m);
         kobj_unref(&m->hdr);
-        return E_NO_RESOURCES;
+        return rc != E_OK ? rc : E_NO_RESOURCES;
     }
 
     a->addr    = base;
@@ -286,12 +313,11 @@ int vm_map_stack(int pid, uint32_t len, uint64_t *base, uint64_t *top) {
     if (!vp(pid) || !vp(pid)->live) return E_INVALID_ARGS;
     struct vm_proc *p = vp(pid);
     if (len == 0 || (len & (PAGE_SIZE - 1u)) || len > MMAP_MAX_BYTES) return E_INVALID_ARGS;
-    if (p->mapped + len < p->mapped || p->mapped + len > p->quota) return E_NO_MEMORY;
-    if (p->count >= MMAP_MAX_REGIONS) return E_NO_RESOURCES;
+    int rc = stack_room(p, len);
+    if (rc != E_OK) return rc;
 
     /* As vm_map_object's anonymous case: the object and its commit first,
        so a refusal has taken nothing. */
-    int rc;
     struct kmem *m = kmem_create(len / PAGE_SIZE, jb(pid), &rc);
     if (!m) return rc;
     if ((rc = kmem_writer_add(m)) != E_OK) { kobj_unref(&m->hdr); return rc; }
@@ -304,8 +330,11 @@ int vm_map_stack(int pid, uint32_t len, uint64_t *base, uint64_t *top) {
     r->stack    = 1;
     r->node.len = (uint64_t)len + PAGE_SIZE;
 
+    race_point(RP_VM_ROOM);   /* a sibling thread may map or charge here */
     uint32_t f = spin_lock(&p->lock);
-    uint64_t at = vmtree_first_fit(p->root, VM_MMAP_BASE, VM_MMAP_TOP, (uint32_t)r->node.len);
+    uint64_t at = 0;
+    rc = stack_room(p, len);
+    if (rc == E_OK) at = vmtree_first_fit(p->root, VM_MMAP_BASE, VM_MMAP_TOP, (uint32_t)r->node.len);
     if (at) {
         r->node.base = at;
         if (vmtree_insert(&p->root, &r->node) != 0) kpanic("vm_map_stack: placed on a region");
@@ -313,7 +342,7 @@ int vm_map_stack(int pid, uint32_t len, uint64_t *base, uint64_t *top) {
         p->mapped += len;
     }
     spin_unlock(&p->lock, f);
-    if (!at) { region_free(r); return E_NO_RESOURCES; }
+    if (!at) { region_free(r); return rc != E_OK ? rc : E_NO_RESOURCES; }
     *base = at;
     *top  = at + r->node.len;
     return E_OK;

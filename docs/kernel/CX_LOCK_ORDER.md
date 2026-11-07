@@ -44,10 +44,10 @@ cache registry `ocache-slots` under a cache's own lock.
 | Rank | Lock | Taken under it (seen at boot) |
 |---|---|---|
 | `LR_STORAGE` | `storage/hardware/disk.c` `storage` (1.9e3): CXFS and every disk transfer; CPU-recursive (`sync/rspin.h`) | htab, pids, sysfile, ocache, log (a syscall's file handles, a file closed, a line) |
-| `LR_IPC` | `cpu/ipc.c` `ipc_lock` | htab, kwait, sched |
+| `LR_IPC` | `cpu/ipc.c` `ipc_lock` | htab, kwait, sched, ocache, ocache-slots, heap, pagedb (`ep_create` counts and makes under it) |
 | `LR_FUTEX` | `cpu/futex.c` `futex_lock` | vmregion, pids (a user copy's demand fault), sched |
 | `LR_HTAB` | `object/htab.c`, per handle table | sysfile (a handle closed: `of_destroy`) |
-| `LR_VMREGION` | `memman/vmregion.c`, per address space | pids, kmem, pagedb |
+| `LR_VMREGION` | `memman/vmregion.c`, per address space: the regions, `mapped` and `charged` | pids, kmem, job (`vm_charge` checks and charges in one hold), pagedb |
 | `LR_PIDS` | `cpu/proc.c` `pids_lock` | proc, sched, ocache, ocache-slots, pagedb (a kill by pid) |
 | `LR_KMEM` | `object/kmem.c`, per memory object | pagedb |
 | `LR_JOB` | `cpu/job.c` `jobs_lock` (1.9e4b): the whole tree, its counts, limits and kills; one lock, since a charge walks up and a kill walks down | kwait (a killed job signalled) |

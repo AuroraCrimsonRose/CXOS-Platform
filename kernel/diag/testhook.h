@@ -148,6 +148,8 @@ enum race_point {
     RP_QUEUE_WOKEN,            /* kqueue_wait: the queue seen ready, the wait lock not yet taken */
     RP_SPAWN_TAKE,             /* proc_start: the named handles checked by the syscall, not yet taken */
     RP_SEED_WRITTEN,           /* crashlog_seed_write: the seed written and flushed, not yet read back */
+    RP_VM_ROOM,                /* vm_map_object, vm_map_stack, vm_charge: room seen, the space's lock not yet taken */
+    RP_EP_CREATE,              /* ep_create: called, ipc_lock not yet taken for the quota */
     RP_COUNT
 };
 #define RP_ALL ((1u << RP_COUNT) - 1u)

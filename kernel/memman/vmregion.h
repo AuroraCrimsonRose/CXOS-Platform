@@ -74,7 +74,7 @@ struct vm_region {
    the functions below find it by pid. */
 struct vm_proc {
     int             live;
-    spinlock_t      lock;      /* root and count, against a fault */
+    spinlock_t      lock;      /* root, count, mapped and charged: a fault, a sibling thread */
     uint32_t        quota;     /* ceiling in bytes */
     uint32_t        mapped;    /* how much of it is in use: regions and charges */
     uint32_t        charged;   /* the part vm_charge took, charged to the job too */

@@ -3571,6 +3571,11 @@ void ktest_run(void) {
     total++; passed += report("queue: a waiter killed in the wait", ktest_queue_kill());
     total++; passed += report("proc: a refused vector ends every thread", ktest_proc_refused_vector());
     total++; passed += report("pipe: a reader and a writer killed in the wait", ktest_pipe_kill());
+    total++; passed += report("vm: a map over a quota a sibling filled", ktest_vm_room_map());
+    total++; passed += report("vm: a map past a region cap a sibling filled", ktest_vm_room_regions());
+    total++; passed += report("vm: a stack over a quota a sibling filled", ktest_vm_room_stack());
+    total++; passed += report("vm: a charge over a quota a sibling filled", ktest_vm_room_charge());
+    total++; passed += report("ipc: an endpoint over a quota a sibling filled", ktest_ep_quota());
     total++; passed += report("random: chacha20 gives RFC 8439's block", ktest_random_chacha());
     total++; passed += report("random: interrupts sampled, then hashed in", ktest_random_interrupts());
     total++; passed += report("random: random_read from ring 3", ktest_random_syscall());

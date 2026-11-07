@@ -65,4 +65,14 @@ int ktest_proc_refused_vector(void);
    refused, the writer's read gets what was there and then the end. */
 int ktest_pipe_kill(void);
 
+/* A quota checked before a sibling thread's map or create, at RP_VM_ROOM or
+   RP_EP_CREATE, and counted after it, under the lock: the call that checked
+   first is refused and takes nothing (vm_map_object's quota and region
+   cap, vm_map_stack, vm_charge and its job, ep_create). */
+int ktest_vm_room_map(void);
+int ktest_vm_room_regions(void);
+int ktest_vm_room_stack(void);
+int ktest_vm_room_charge(void);
+int ktest_ep_quota(void);
+
 #endif

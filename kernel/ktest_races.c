@@ -987,3 +987,193 @@ int ktest_pipe_kill(void) {
     if (!why && kobj_live(KOBJ_PIPE) != pipes0) why = "pipe kill: left a pipe";
     return rc_report(why);
 }
+
+/* ---- a quota checked before a sibling's map, and counted after it ----
+ * Since 1.9e4b two threads of one process run on two CPUs at once. Each of
+ * these makes the sibling's call at the point between the early check and
+ * the lock, as the other CPU would: the call that checked first must then
+ * be refused, by the count under the lock, and take nothing. */
+
+static int vr_pid, vr_rc;
+static struct vm_map_args vr_inner;
+
+static void vr_map(void *ctx) { (void)ctx; vr_rc = rc_map(vr_pid, &vr_inner, 0, 0); }
+
+/* The point armed for this thread's next arrival, the sibling's map there. */
+static int vr_arm(int pid) {
+    vr_pid = pid; vr_rc = 1;
+    return race_arm(RP_VM_ROOM, thread_current_id(), 1, RACE_CALL, vr_map, 0);
+}
+
+/* After the race: the point was reached, the sibling's map made, and only
+   its page counted. */
+static const char *vr_after(int pid, const char *unreached, const char *counted) {
+    uint32_t arrived = race_arrivals(RP_VM_ROOM);
+    race_release(RP_VM_ROOM);
+    if (!arrived)      return unreached;
+    if (vr_rc != E_OK) return "vm room: the sibling's map failed";
+    struct vm_usage vu;
+    if (vm_info(pid, &vu) != E_OK || vu.mapped != 4096) return counted;
+    return 0;
+}
+
+static const char *room_map_steps(int pid) {
+    struct live_counts before, after;
+    struct vm_map_args a;
+    /* Warm: the page tables a first map makes are not a leak below. */
+    if (rc_map(pid, &a, 0, 0) != E_OK) return "vm room map: setup map";
+    vm_unmap(pid, a.addr, a.granted);
+    live_take(&before, pid, 0);
+    if (vr_arm(pid) != 0) return "vm room map: setup arm";
+    int rc = rc_map(pid, &a, 0, 0);
+    const char *why = vr_after(pid, "vm room map: point not reached",
+                               "vm room map: over the quota");
+    if (rc == E_OK) vm_unmap(pid, a.addr, a.granted);
+    if (vr_rc == E_OK) vm_unmap(pid, vr_inner.addr, vr_inner.granted);
+    if (why) return why;
+    if (rc != E_NO_MEMORY) return "vm room map: not E_NO_MEMORY";
+    live_take(&after, pid, 0);
+    if (live_diff(&before, &after, 1)) return "vm room map: left something behind";
+    return 0;
+}
+
+int ktest_vm_room_map(void) {
+    int pid = thread_current_pid();
+    vm_proc_init(pid, 4096, -1);   /* room for one page */
+    const char *why = room_map_steps(pid);
+    race_release(RP_VM_ROOM);
+    vm_proc_reset(pid);
+    return rc_report(why);
+}
+
+static uint64_t vg_addr[MMAP_MAX_REGIONS];
+
+static const char *room_regions_steps(int pid, uint32_t *made) {
+    struct vm_map_args a;
+    /* One region short of the cap, so the early check passes. */
+    for (*made = 0; *made < MMAP_MAX_REGIONS - 1u; (*made)++) {
+        if (rc_map(pid, &a, 0, 0) != E_OK) return "vm room regions: setup map";
+        vg_addr[*made] = a.addr;
+    }
+    if (vr_arm(pid) != 0) return "vm room regions: setup arm";
+    int rc = rc_map(pid, &a, 0, 0);
+    uint32_t arrived = race_arrivals(RP_VM_ROOM);
+    race_release(RP_VM_ROOM);
+    if (rc == E_OK) vm_unmap(pid, a.addr, a.granted);
+    if (vr_rc == E_OK) vm_unmap(pid, vr_inner.addr, vr_inner.granted);
+    if (!arrived)             return "vm room regions: point not reached";
+    if (vr_rc != E_OK)        return "vm room regions: the sibling's map failed";
+    if (rc != E_NO_RESOURCES) return "vm room regions: past the cap";
+    return 0;
+}
+
+int ktest_vm_room_regions(void) {
+    int pid = thread_current_pid();
+    vm_proc_init(pid, vm_default_quota(), -1);
+    uint32_t made = 0;
+    const char *why = (uint64_t)MMAP_MAX_REGIONS * 4096u > vm_default_quota()
+                    ? "vm room regions: the quota is under the cap"
+                    : room_regions_steps(pid, &made);
+    race_release(RP_VM_ROOM);
+    for (uint32_t i = 0; i < made; i++) vm_unmap(pid, vg_addr[i], 4096);
+    vm_proc_reset(pid);
+    return rc_report(why);
+}
+
+static const char *room_stack_steps(int pid) {
+    struct live_counts before, after;
+    uint64_t base = 0, top = 0;
+    struct vm_map_args a;
+    if (rc_map(pid, &a, 0, 0) != E_OK) return "vm room stack: setup map";
+    vm_unmap(pid, a.addr, a.granted);
+    live_take(&before, pid, 0);
+    if (vr_arm(pid) != 0) return "vm room stack: setup arm";
+    int rc = vm_map_stack(pid, 4096, &base, &top);
+    const char *why = vr_after(pid, "vm room stack: point not reached",
+                               "vm room stack: over the quota");
+    if (rc == E_OK) vm_unmap_stack(pid, base);
+    if (vr_rc == E_OK) vm_unmap(pid, vr_inner.addr, vr_inner.granted);
+    if (why) return why;
+    if (rc != E_NO_MEMORY) return "vm room stack: not E_NO_MEMORY";
+    live_take(&after, pid, 0);
+    if (live_diff(&before, &after, 1)) return "vm room stack: left something behind";
+    return 0;
+}
+
+int ktest_vm_room_stack(void) {
+    int pid = thread_current_pid();
+    vm_proc_init(pid, 4096, -1);
+    const char *why = room_stack_steps(pid);
+    race_release(RP_VM_ROOM);
+    vm_proc_reset(pid);
+    return rc_report(why);
+}
+
+static const char *room_charge_steps(int pid) {
+    struct job *j = thread_proc(thread_current_id())->job;
+    struct job_info j0, j1;
+    job_snapshot(j, &j0);
+    if (vr_arm(pid) != 0) return "vm room charge: setup arm";
+    int rc = vm_charge(pid, 4096);
+    const char *why = vr_after(pid, "vm room charge: point not reached",
+                               "vm room charge: over the quota");
+    job_snapshot(j, &j1);
+    if (rc == E_OK) vm_uncharge(pid, 4096);
+    if (vr_rc == E_OK) vm_unmap(pid, vr_inner.addr, vr_inner.granted);
+    if (why) return why;
+    if (rc != E_NO_MEMORY) return "vm room charge: not E_NO_MEMORY";
+    /* The sibling's page, and nothing of the refused charge. */
+    if (j1.memory_used != j0.memory_used + 4096) return "vm room charge: the job charged";
+    return 0;
+}
+
+int ktest_vm_room_charge(void) {
+    int pid = thread_current_pid();
+    vm_proc_init(pid, 4096, -1);
+    const char *why = room_charge_steps(pid);
+    race_release(RP_VM_ROOM);
+    vm_proc_reset(pid);
+    return rc_report(why);
+}
+
+/* ---- an endpoint made by a sibling after the count ---- */
+
+static int32_t ec_inner;
+
+static void ec_make(void *ctx) { (void)ctx; ec_inner = ep_create(); }
+
+static const char *ep_quota_steps(int32_t *h, uint32_t *n) {
+    /* Made until refused, the last given back: room for exactly one. */
+    for (*n = 0; *n <= MAX_ENDPOINTS_PER_PROC; (*n)++) {
+        int32_t e = ep_create();
+        if (e < 0) break;
+        h[*n] = e;
+    }
+    if (*n == 0 || *n > MAX_ENDPOINTS_PER_PROC) return "ep quota: setup fill";
+    htab_close(thread_htab(thread_current_id()), h[--(*n)]);
+    ec_inner = 0;
+    if (race_arm(RP_EP_CREATE, thread_current_id(), 1, RACE_CALL, ec_make, 0) != 0)
+        return "ep quota: setup arm";
+    int32_t outer = ep_create();
+    uint32_t arrived = race_arrivals(RP_EP_CREATE);
+    race_release(RP_EP_CREATE);
+    if (ec_inner > 0) h[(*n)++] = ec_inner;
+    if (outer > 0)    h[(*n)++] = outer;
+    if (!arrived)                return "ep quota: point not reached";
+    if (ec_inner <= 0)           return "ep quota: the sibling's create failed";
+    if (outer != E_NO_RESOURCES) return "ep quota: over the quota";
+    return 0;
+}
+
+int ktest_ep_quota(void) {
+    int32_t h[MAX_ENDPOINTS_PER_PROC + 2];
+    uint32_t n = 0;
+    struct live_counts before, after;
+    live_take(&before, thread_current_pid(), 0);
+    const char *why = ep_quota_steps(h, &n);
+    race_release(RP_EP_CREATE);
+    for (uint32_t i = 0; i < n; i++) htab_close(thread_htab(thread_current_id()), h[i]);
+    live_take(&after, thread_current_pid(), 0);
+    if (!why && live_diff(&before, &after, 1)) why = "ep quota: left something behind";
+    return rc_report(why);
+}

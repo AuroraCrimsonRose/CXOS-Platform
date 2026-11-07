@@ -292,20 +292,27 @@ static int count_owned(void *obj, void *ctx) {
 
 int ep_create(void) {
     int me = thread_current_pid();   /* the quota is the process's */
+    race_point(RP_EP_CREATE);        /* a sibling thread may make one here */
 
+    /* Counted, checked and made in one hold, owner and all: since 1.9e4b two
+       threads of one process create on two CPUs at once, and both passed a
+       count taken before either had made its endpoint. The cache's locks
+       rank after ipc_lock (CX_LOCK_ORDER.md). */
+    uint32_t f = spin_lock(&ipc_lock);
     struct owned o = { me, 0 };
     ocache_walk(&ep_cache, count_owned, &o);
-    if (o.n >= MAX_ENDPOINTS_PER_PROC) return E_NO_RESOURCES;
-    if (ocache_live(&ep_cache) >= MAX_ENDPOINTS) return E_NO_RESOURCES;
-
-    struct endpoint *ep = ocache_alloc(&ep_cache);   /* zeroed: nothing queued */
-    if (!ep) return E_NO_MEMORY;
+    struct endpoint *ep = 0;
+    int rc = o.n >= MAX_ENDPOINTS_PER_PROC             ? E_NO_RESOURCES
+           : ocache_live(&ep_cache) >= MAX_ENDPOINTS   ? E_NO_RESOURCES
+           : !(ep = ocache_alloc(&ep_cache))           ? E_NO_MEMORY : E_OK;   /* zeroed: nothing queued */
+    if (ep) ep->owner_pid = me;
+    spin_unlock(&ipc_lock, f);
+    if (rc != E_OK) return rc;
     if (kobj_init(&ep->hdr, KOBJ_ENDPOINT) != 0) {               /* ipc_init not run */
         ocache_free(&ep_cache, ep);
         return E_INTERNAL;
     }
     ep->active    = 1;
-    ep->owner_pid = me;
 
     int32_t h = htab_install(thread_htab(thread_current_id()), &ep->hdr,
                              HRIGHT_RECV | HRIGHT_WAIT | HRIGHT_DUPLICATE, 0);

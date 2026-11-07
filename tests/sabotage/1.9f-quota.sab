@@ -1,0 +1,109 @@
+# The quota races found by the Phase 1 review, run by `cxk test sabotage`.
+# Each must turn red exactly the self-tests named, at the step named.
+# Format: docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage".
+
+# ---- each count checked again under the lock it is made under ----
+
+[map-no-recheck]
+# vm_map_object trusts its early check: the sibling's page and the caller's
+# both fit a one-page quota, and the 256th region is followed by a 257th
+expect = vm: a map over a quota a sibling filled @ vm room map: over the quota
+expect = vm: a map past a region cap a sibling filled @ vm room regions: past the cap
+group = g1
+edit = kernel/memman/vmregion.c
+<<<
+    uint64_t base = 0;
+    rc = room(p, len, 1);
+    if (rc == E_OK && (a->flags & MMAP_HINT)
+===
+    uint64_t base = 0;
+    if (rc == E_OK && (a->flags & MMAP_HINT)
+>>>
+
+[stack-no-recheck]
+# vm_map_stack trusts its early check
+expect = vm: a stack over a quota a sibling filled @ vm room stack: over the quota
+group = g1
+edit = kernel/memman/vmregion.c
+<<<
+    rc = stack_room(p, len);
+    if (rc == E_OK) at =
+===
+    if (rc == E_OK) at =
+>>>
+
+[charge-no-recheck]
+# vm_charge trusts its early check
+expect = vm: a charge over a quota a sibling filled @ vm room charge: over the quota
+group = g1
+edit = kernel/memman/vmregion.c
+<<<
+    rc = room(p, len, 0);
+    if (rc == E_OK) rc = job_charge_mem(jb(pid), len);
+===
+    if (rc == E_OK) rc = job_charge_mem(jb(pid), len);
+>>>
+
+[ep-count-before-point]
+# ep_create's old shape: counted before the sibling can make one, made after
+expect = ipc: an endpoint over a quota a sibling filled @ ep quota: over the quota
+group = g1
+edit = kernel/cpu/ipc.c
+<<<
+    race_point(RP_EP_CREATE);        /* a sibling thread may make one here */
+===
+    struct owned o0 = { me, 0 };
+    ocache_walk(&ep_cache, count_owned, &o0);
+    if (o0.n >= MAX_ENDPOINTS_PER_PROC) return E_NO_RESOURCES;
+    race_point(RP_EP_CREATE);        /* a sibling thread may make one here */
+    o0.n = -MAX_ENDPOINTS_PER_PROC;   /* the count below no longer refuses */
+>>>
+edit = kernel/cpu/ipc.c
+<<<
+    int rc = o.n >= MAX_ENDPOINTS_PER_PROC             ? E_NO_RESOURCES
+===
+    int rc = o.n + o0.n >= MAX_ENDPOINTS_PER_PROC      ? E_NO_RESOURCES
+>>>
+
+# ---- the parts of each recheck ----
+
+[map-recheck-no-region]
+# the recheck under the lock forgets the region cap
+expect = vm: a map past a region cap a sibling filled @ vm room regions: past the cap
+group = g2
+edit = kernel/memman/vmregion.c
+<<<
+    uint64_t base = 0;
+    rc = room(p, len, 1);
+===
+    uint64_t base = 0;
+    rc = room(p, len, 0);
+>>>
+
+[charge-job-first]
+# the job charged before the recheck, and kept when the recheck refuses
+expect = vm: a charge over a quota a sibling filled @ vm room charge: the job charged
+group = g2
+edit = kernel/memman/vmregion.c
+<<<
+    rc = room(p, len, 0);
+    if (rc == E_OK) rc = job_charge_mem(jb(pid), len);
+===
+    rc = job_charge_mem(jb(pid), len);
+    if (rc == E_OK) rc = room(p, len, 0);
+>>>
+
+[map-point-gone]
+# no point in vm_map_object: both map tests see it was not reached
+expect = vm: a map over a quota a sibling filled @ vm room map: point not reached
+expect = vm: a map past a region cap a sibling filled @ vm room regions: point not reached
+group = g3
+edit = kernel/memman/vmregion.c
+<<<
+    race_point(RP_VM_ROOM);   /* a sibling thread may map or charge here */
+    uint32_t f = spin_lock(&p->lock);
+    uint64_t base = 0;
+===
+    uint32_t f = spin_lock(&p->lock);
+    uint64_t base = 0;
+>>>
