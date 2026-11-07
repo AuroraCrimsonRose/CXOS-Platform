@@ -7,25 +7,42 @@ imaging).
 
 ## Status
 
-**This is the x86-64 line** (`x86_64-DEV`). CXOS is moving to 64-bit, with a
-BIOS-only AMD machine as the first real hardware
+**This is the x86-64 line** (`x86_64-DEV`), and x86-64 is the only kernel,
+image and compiler back end it builds. The first real hardware is a BIOS-only
+AMD machine
 ([`docs/hardware/CX_TARGET_HARDWARE.md`](docs/hardware/CX_TARGET_HARDWARE.md)).
-The design work is done and Phase 0 of the
-[roadmap](docs/planning/CX_ROADMAP.md) is starting: the kernel object model,
-processes separate from threads, the architecture layer, then the 64-bit
-kernel.
+The retired x86-32 system is kept as a reference on the `x86_32_DEV` and
+`x86_32_RELEASE` branches.
 
-Until the 64-bit kernel boots, the tree still builds and boots the inherited
-**x86-32** system, which is the baseline every change is tested against. It is
-retired as a target: the `x86_32_DEV` and `x86_32_RELEASE` branches keep it as
-a reference, and the 32-bit code leaves this branch once 64-bit passes the full
-boot.
+Phase 0 of the [roadmap](docs/planning/CX_ROADMAP.md) is done: the kernel
+object model, processes separate from threads, the architecture layer, the
+CXBI hand-over and crash log, the 64-bit kernel booting from the BIOS loader,
+and X for x86-64. Phase 1 is at its last step (1.10, this documentation pass);
+it brought:
 
-What the inherited system already does: signed executables verified before
-they run, ring 3 processes with their own address spaces, capabilities
-attenuated at spawn, CXFS with multiple volumes, an X userland with a shell and
-a windowed GUI, services run by a supervisor, kernel configuration in X Data,
-and an X compiler written in X that compiles itself to a fixed point.
+- process handles (wait, stop, kill, inspect), jobs, and detailed exit
+  reasons;
+- one wait queue for everything, and timers as handles (LAPIC timer and TSC);
+- IPC with queued calls, reply tokens, badges and handle transfer; pipes, and
+  handles passed explicitly at spawn; the shell running from disk;
+- user threads, futexes and thread-local storage;
+- input as a granted right, and a kernel RNG (ChaCha20, Fortuna-style pools);
+- a hardware report diffed across QEMU, Hyper-V and the rig (`cxk hw diff`);
+- SMP: a ranked lock order with a checker, per-CPU data, the APs started from
+  the MADT, TLB shootdown, the scheduler and ring-3 threads on every CPU, and
+  every syscall reaching user memory only through copies.
+
+Carried over from x86-32 and checked by every full boot: signed executables
+verified before they run, ring-3 processes with their own address spaces,
+capabilities attenuated at spawn, CXFS with multiple volumes, an X userland
+with a shell, services run by a supervisor, and kernel configuration in X
+Data. The X compiler written in X compiles itself to a fixed point. The
+shell's windowed GUI (`gui`) came over too; no boot test exercises it.
+
+Not yet: Phase 2's display server and driver model, the new storage layout of
+Phase 3, UEFI boot, and a run on the target rig. How correctness is checked
+today, and what is still missing (fuzzing, model checking, proofs), is in
+[`docs/safety/CX_SAFETY.md`](docs/safety/CX_SAFETY.md) §1.
 
 **Security:** under active hardening, not yet hardened. The plan is
 [`docs/security/CX_SECURITY.md`](docs/security/CX_SECURITY.md); what was found
@@ -52,8 +69,9 @@ and fixed on x86-32 is in
 Requirements, on every host:
 
 - **clang 23 or newer, and ld.lld.** The kernel is built with
-  `clang --target=x86_64-elf`, and X's x86-32 target with `i686-elf`; no
-  cross-GCC. Clang 18 through 22 do not work for `i686-elf`. `tools/ci/Dockerfile` pins a known-good toolchain.
+  `clang --target=x86_64-elf`; no cross-GCC. Clang 18 through 22 link through
+  `gcc` for this target and do not work. `tools/ci/Dockerfile` pins a
+  known-good toolchain.
 - **CMake and Ninja.** No MSVC, no Developer Command Prompt.
 - **NASM** for the boot chain and the kernel's assembly.
 - **QEMU**, the only emulator CXOS targets.
@@ -74,17 +92,22 @@ Republish whenever the DevKit changes; `cxk check-abi` names a stale one.
 | Build, signed with a test key | `cxk keygen tools/test` once, then `cxk os build --key test` |
 | Build a development kernel (runs unsigned programs; never ship it) | `cxk os build --dev` |
 | Run | `cxk run dist/CXK_x86_64/images/cxk_x86_64.img` |
-| Boot and check the self-tests | `cxk verify-boot dist/CXK_x86_64/images/cxk_x86_64.img --full -t 300` |
+| Boot and check the self-tests | `cxk verify-boot dist/CXK_x86_64/images/cxk_x86_64.img --full -t 600` (4 CPUs; `--json` gives each test's result) |
+| The same on one CPU | add `--smp 1` |
 | The same on a full CPU model | add `--cpu max` (no minimal x86-64 model passes yet: with `--cpu qemu64,-apic` two APIC self-tests fail) |
+| The same under Hyper-V (Gen 1, AMI BIOS) | `cxk verify-hyperv dist/CXK_x86_64/images/cxk_x86_64.img` |
 | The same booted from a USB stick, as the rig boots | add `--usb xhci` (or `ehci`, `ohci`) |
 | A machine's own drive with another CXOS on it, ahead of the image, comes out unchanged | add `--foreign-disk` |
-| A deliberate panic, and its crash log recovered by the next boot | `cxk verify-crashlog dist/CXK_x86_64/images/cxk_x86_64.img` (fails on x86-64 until its panic path writes the stack trace) |
+| A deliberate panic, and its crash log recovered by the next boot | `cxk verify-crashlog dist/CXK_x86_64/images/cxk_x86_64.img` (fails on x86-64 until its panic path writes the stack trace; the cross-boot seed check is `cxk verify-seed`) |
 | The same on a USB stick, the panic landing mid-transfer | add `--usb xhci` (or `ehci`, `ohci`) |
 | Read the crash log a panic left on a disk image or stick | `cxk rig crashlog <image or disk5>` (a disk needs an administrator prompt) |
 | Read the system log the last boot saved (USB summary, supervisor output) | `cxk rig bootlog disk5 -o bootlog.txt` (administrator prompt) |
 | Find the stick's disk number | `cxk rig disks` |
 | Copy a stick's CXOS part to an image | `cxk rig dump disk5 out.img` |
+| A machine's hardware report, and two compared | `cxk hw show`, `cxk hw diff` (a stick's saved report: `cxk rig hwreport`) |
 | Host tests | `dotnet test devkit/CXEX.slnx -c Release` |
+| Everything: the build, both boots, host tests, the container, one summary | `cxk test all` (about 30 minutes) |
+| A step's sabotage matrix: each check broken, rebuilt, required red | `cxk test sabotage tests/sabotage/<step>.sab` (`--dry-run` first; `--all`) |
 | CI, by hand | `tools/ci/Dockerfile` and `tools/ci/build.sh` |
 
 A release kernel refuses unsigned programs, so an unsigned release build boots

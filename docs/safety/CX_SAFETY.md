@@ -11,18 +11,26 @@
 
 ## 1. Where it stands
 
+As of 2026-11-07, Phase 1 step 1.9e4b (`x86_64-DEV` at `820ee56`).
+
 | Tool | Today |
 |---|---|
-| Boot self-tests | 47, run on every boot of a test build (`kernel/ktest*.c`) |
-| Host tests | 164 xUnit tests in `devkit/CXEX.Tests`: unit, adversarial (hostile CXEX, ELF and GPT inputs), differential |
-| Differential testing | The C# compiler is the oracle for `os/xc`; the self-hosting fixed point is checked |
-| Sabotage | Every check must be seen to fail; done by hand |
-| Determinism | Builds are byte-for-byte reproducible |
-| Kernel C on the host | Since 2026-10-16: `kernel/test/host`, under AddressSanitizer and UBSan, run by `dotnet test` (§3.7). Covers the bitmap and SHA-256 so far |
-| Fuzzing, model checking, proofs | None |
+| Boot self-tests | 237, run on every boot of a test build (`kernel/ktest*.c`), each reported as one `@ktest` line that `cxk verify-boot --json` reads; a summary without agreeing lines fails. Booted on 4 CPUs, on 1 (`--smp 1`) and on `--cpu max` |
+| Ring-3 tests | 23 `test_run` lines in `os/apps/xtest.xfxn`, run from disk at boot as the X test runner (1.5d2) |
+| Host tests, C# | 392 xUnit tests in `devkit/CXEX.Tests` pass on Windows (13 more skip there with a reason): unit, adversarial (hostile CXEX, ELF and GPT inputs), differential. A fixed seed for every generator (`TestEnvironment.cs`) |
+| Kernel C on the host | 127 tests in `kernel/test/host` (§3.7), under AddressSanitizer and UBSan: the object header and handle table, the bitmap and buddy allocators, object caches, the page tables and VM tree, the lock-order checker, the RNG, the MADT and hardware-report formats, clock scaling, the crash record, SHA-256 and others |
+| Differential testing | The C# compiler is the oracle for `os/xc`: 13 Differential tests in the CI container, and the self-hosting fixed point. `SABOTAGE=1` must turn every comparison test red |
+| Sabotage | Every check is seen to fail. Since 1.5d each step's matrix is a `.sab` file under `tests/sabotage/` (21 so far), run by `cxk test sabotage`, which applies, rebuilds, requires exactly the named tests red, and restores |
+| One gate | `cxk test all`: the build, both boots, `dotnet test` and the container, in one summary (1.5d3) |
+| Failure and race hooks | In test builds (`kernel/diag/testhook.h`, 1.6a): fail the Nth allocation, live counts compared before and after, named race points, and seeded chaos at those points reproducible from a printed seed (1.7b) |
+| Runtime checks | In test builds the lock-order checker panics on a lock taken out of rank (1.9a, `CX_LOCK_ORDER.md`) and free pages are poisoned (`CX_PHYS_MEMORY.md` §3); in every build a freed object-cache slot is poisoned and checked for writes after free; user memory is reached only through the copy routines, and the build refuses a direct access elsewhere (1.9e4a) |
+| Determinism | The toolchain is pinned in `versions.json` and recorded per build; when the generated ABI header and prelude replaced the hand-kept ones, every package rebuilt byte-identical, and `AbiGeneratorTests` keeps them matching. Whole-image reproducibility is not checked by any test |
+| Fuzzing, property tests, model checking, proofs, coverage, mutation testing | None yet (§7) |
 
-The discipline is unusually good. The tools stop at example-based tests: each
-test checks the cases someone thought of.
+The tools still stop at example-based tests, with sabotage keeping each one
+honest and the hooks reaching the failure and race paths that examples alone
+could not. Each test checks the cases someone thought of; nothing yet
+generates the cases no one did.
 
 ## 2. The ladder
 
@@ -117,7 +125,7 @@ carry most of this.
 
 ### 3.7 Kernel code tested on the host
 
-Today kernel code is tested only by booting. Code with no hardware
+Built 2026-10-16 (§1 has today's coverage). Code with no hardware
 dependency (handle tables, rights arithmetic, allocators, the buddy and slab
 logic, path handling, parsers) is also compiled for the host with clang and
 run as unit tests under AddressSanitizer and UndefinedBehaviorSanitizer,

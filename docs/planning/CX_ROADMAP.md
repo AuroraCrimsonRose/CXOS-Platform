@@ -1182,6 +1182,14 @@ Independent of the order above, and small enough to land whenever convenient:
      ABI change.
 10. A documentation pass: the README and `safety/CX_SAFETY.md` §1 brought
     up to the branch as it stands.
+   - **1.10 (2026-11-07), done:** the README's status says what Phases 0
+     and 1 built and what is not yet there, and its command table gains
+     `--smp 1`, `verify-hyperv`, `verify-seed`, `hw show`/`diff`,
+     `test all` and `test sabotage`; CX_SAFETY §1 gives today's counts
+     (237 self-tests, 23 ring-3 tests, 392 DevKit, 127 kernel-host,
+     13 Differential, 21 sabotage files), the hooks and runtime checks,
+     and says what is still none: fuzzing, property tests, model checking,
+     proofs, coverage, mutation testing. No code change.
 
 Alongside, one item per step where it fits (`safety/CX_SAFETY.md` §7):
 host fuzz targets (CXFS first, then CXEX, CXBI and packets), the ABI
