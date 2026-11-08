@@ -49,6 +49,7 @@
 
 #include "ipc.h"
 #include "keyboard.h"
+#include "inputdev.h"
 #include "mouse.h"
 #include "power.h"
 #include "netif.h"
@@ -525,13 +526,24 @@ static int input_granted(void) {
     return 0;
 }
 
+int syscall_input_open(void) {
+    if (!input_granted()) return E_ACCESS_DENIED;
+    return sys_input_open();
+}
+
+int syscall_input_events(int32_t h, uint64_t ev, uint32_t count) {
+    return sys_input_events(h, ev, count);   /* the handle is the authority */
+}
+
 int syscall_input_read(void) {
     if (!input_granted()) return E_ACCESS_DENIED;
+    if (input_held()) return E_BUSY;
     return (int)(unsigned char)keyboard_getchar_blocking();
 }
 
 int syscall_input_poll(void) {
     if (!input_granted()) return E_ACCESS_DENIED;
+    if (input_held()) return E_BUSY;
     return (int)(unsigned char)keyboard_getchar();   /* 0 if none waiting */
 }
 
@@ -605,6 +617,7 @@ int syscall_net_recv(uint64_t buf, uint64_t cap) {
 int syscall_mouse_read(uint64_t m) {
     /* the keyboard's gate: the pointer is input too */
     if (!input_granted()) return E_ACCESS_DENIED;
+    if (input_held()) return E_BUSY;
     struct mouse_state ms = { 0 };
     if (!user_ptr_writable(m, sizeof ms)) return E_BAD_ADDRESS;
     ms.x       = mouse_x();
@@ -728,6 +741,41 @@ int syscall_mem_seal(int32_t h, uint32_t seals) {
            : !(hi.rights & HRIGHT_SEAL)  ? E_ACCESS_DENIED
            : kmem_seal((struct kmem *)o, seals);
     kobj_unref(o);
+    return rc;
+}
+
+int syscall_mem_lend(int32_t h) {
+    /* Unprivileged, as a seal: HRIGHT_SEAL is the authority. */
+    struct htab_info hi;
+    struct htab *tab = thread_htab(thread_current_id());
+    struct kobj *o = htab_ref(tab, h, KOBJ_NONE, 0, &hi);
+    if (!o) return E_BAD_HANDLE;
+    int rc = o->type != KOBJ_MEM         ? E_WRONG_TYPE
+           : !(hi.rights & HRIGHT_SEAL)  ? E_ACCESS_DENIED : E_OK;
+    if (rc == E_OK) {
+        struct kobj *l = kmem_lend((struct kmem *)o, &rc);
+        if (l) {
+            rc = htab_install(tab, l, 0, 0);
+            kobj_unref(l);   /* the handle's reference keeps it; with none, it lifts */
+        }
+    }
+    kobj_unref(o);
+    return rc;
+}
+
+int syscall_mem_lease_check(int32_t lease, int32_t mem) {
+    struct htab_info hi;
+    struct htab *tab = thread_htab(thread_current_id());
+    struct kobj *l = htab_ref(tab, lease, KOBJ_NONE, 0, &hi);
+    if (!l) return E_BAD_HANDLE;
+    struct kobj *m = htab_ref(tab, mem, KOBJ_NONE, 0, &hi);
+    int rc = E_BAD_HANDLE;
+    if (m) {
+        rc = (l->type != KOBJ_LEASE || m->type != KOBJ_MEM) ? E_WRONG_TYPE
+           : kmem_lease_is_on(l, (struct kmem *)m) ? E_OK : E_INVALID_ARGS;
+        kobj_unref(m);
+    }
+    kobj_unref(l);
     return rc;
 }
 
@@ -6845,6 +6893,173 @@ done:
  * repainted from the copy, only when the last handle AND the last mapping
  * have gone. The pixels drawn are near the bottom-right corner and put
  * back. A boot in VGA text mode has nothing to test. 1 = pass, 0 = fail. */
+/* ---- input as a handle, and a buffer's lease (2.4) ----
+ * Through the dispatcher, as the screen's test. The rule under test: while a
+ * handle is held, a key reaches it and nobody who reads the old way. */
+#define IH_EV (TEST_CODE_VIRT + 0x400)   /* struct input_event[] */
+
+static int ih_events(int32_t h, uint32_t count) {
+    return syscall_dispatch(SYS_INPUT_EVENTS, (uint32_t)h, IH_EV, count, 0, 0);
+}
+static int ih_ready(int32_t h) {
+    return syscall_object_wait(h, SIGNAL_INPUT_READY, 0, 0);
+}
+
+int usermode_input_handle_test(void) {
+    struct dh_env e;
+    if (!dh_begin(&e)) return 0;
+    const struct input_event *ev = (const struct input_event *)ktest_umem(IH_EV);
+    uint32_t live0 = kobj_live(KOBJ_INPUT);
+    int32_t h = -1, h2 = -1;
+    int step = 0, ok = 0;
+
+    thread_set_caps(e.me, GRANT_INPUT);
+    for (int i = 0; i < 256 && syscall_dispatch(SYS_INPUT_POLL, 0, 0, 0, 0, 0) != 0; i++) { }
+
+    /* 1: nothing without the grant */
+    thread_set_caps(e.me, GRANT_OS_BASELINE & ~GRANT_INPUT);
+    h = syscall_dispatch(SYS_INPUT_OPEN, 0, 0, 0, 0, 0);
+    step = 1; if (h != E_ACCESS_DENIED || input_held()) goto done;
+    h = -1;
+    thread_set_caps(e.me, GRANT_INPUT);
+    /* 2: the handle, and it says what it is */
+    h = syscall_dispatch(SYS_INPUT_OPEN, 0, 0, 0, 0, 0);
+    step = 2; if (h <= 0 || !input_held() || kobj_live(KOBJ_INPUT) != live0 + 1) goto done;
+    /* 3: one holder, and the refused one leaves nothing */
+    h2 = syscall_dispatch(SYS_INPUT_OPEN, 0, 0, 0, 0, 0);
+    step = 3; if (h2 != E_BUSY || kobj_live(KOBJ_INPUT) != live0 + 1) goto done;
+    h2 = -1;
+    /* 4: the old calls refuse a holder of GRANT_INPUT while it is held
+       (the pointer before its address is looked at) */
+    step = 4; if (syscall_dispatch(SYS_INPUT_POLL, 0, 0, 0, 0, 0) != E_BUSY
+                  || syscall_dispatch(SYS_INPUT_READ, 0, 0, 0, 0, 0) != E_BUSY
+                  || syscall_dispatch(SYS_MOUSE_READ, 0, 0, 0, 0, 0) != E_BUSY) goto done;
+    /* 5: nothing waits yet */
+    step = 5; if (ih_ready(h) != E_TIMED_OUT || ih_events(h, 8) != 0) goto done;
+    /* 6: keys come to the handle, in order, and a code above 0x7F whole */
+    keyboard_inject('a');
+    keyboard_inject(KEY_UP);
+    step = 6; if (ih_ready(h) != E_OK || ih_events(h, 8) != 2
+                  || ev[0].kind != INPUT_EVENT_KEY || ev[0].code != 'a'
+                  || ev[1].kind != INPUT_EVENT_KEY || ev[1].code != KEY_UP) goto done;
+    /* 7: the signal goes with the last event */
+    step = 7; if (ih_ready(h) != E_TIMED_OUT || ih_events(h, 8) != 0) goto done;
+    /* 8: movements with the same buttons are one event, where it ended up;
+       a change of buttons is another */
+    int32_t x0 = mouse_x();
+    mouse_inject(2, 0, 0);
+    mouse_inject(3, 0, 0);
+    mouse_inject(0, 0, 1);
+    int32_t x1 = mouse_x();
+    step = 8; if (x1 == x0 || ih_events(h, 8) != 2
+                  || ev[0].kind != INPUT_EVENT_POINTER || ev[0].x != x1 || ev[0].buttons != 0
+                  || ev[1].kind != INPUT_EVENT_POINTER || ev[1].x != x1 || ev[1].buttons != 1) goto done;
+    mouse_inject(0, 0, 0);
+    if (ih_events(h, 8) != 1) goto done;
+    /* 9: refusals, with nothing taken */
+    keyboard_inject('b');
+    step = 9; if (ih_events(h, 0) != E_INVALID_ARGS
+                  || syscall_dispatch(SYS_INPUT_EVENTS, (uint32_t)h, 0xC0001000u, 1, 0, 0) != E_BAD_ADDRESS
+                  || syscall_dispatch(SYS_INPUT_EVENTS, 0x7FFFFF00u, IH_EV, 1, 0, 0) != E_BAD_HANDLE
+                  || ih_events(h, 1) != 1 || ev[0].code != 'b') goto done;
+    /* 10: at most INPUT_EVENTS_MAX in one call, and a full ring keeps the oldest */
+    for (uint32_t i = 0; i < 200; i++) keyboard_inject((unsigned char)(0x20 + (i & 0x3F)));
+    uint32_t taken = 0;
+    step = 10;
+    {
+        int n = ih_events(h, 1000);
+        if (n != (int)INPUT_EVENTS_MAX || ev[0].code != 0x20) goto done;
+        taken = (uint32_t)n;
+        while ((n = ih_events(h, 8)) > 0) taken += (uint32_t)n;
+        if (taken != 128) goto done;
+    }
+    /* 11: it cannot travel: a handle to the keys cannot be passed on */
+    step = 11; if (kobj_type_ops(KOBJ_INPUT)->transfer != 0) goto done;
+    /* 12: closed, the keys go back to the old calls */
+    htab_close(e.tab, h);
+    h = -1;
+    keyboard_inject('c');
+    step = 12; if (input_held() || kobj_live(KOBJ_INPUT) != live0
+                   || syscall_dispatch(SYS_INPUT_POLL, 0, 0, 0, 0, 0) != 'c') goto done;
+    step = 0;
+    ok = 1;
+
+done:
+    if (!ok) klog_u32("KTEST", SEV_ERR, "input handle test failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    if (h > 0) htab_close(e.tab, h);
+    dh_end(&e);
+    return ok;
+}
+
+int usermode_lease_test(void) {
+    struct dh_env e;
+    if (!dh_begin(&e)) return 0;
+    thread_set_caps(e.me, 0);
+    struct vm_map_args *va = (struct vm_map_args *)ktest_umem(MT_ARGS);
+    const struct object_basic *ob = (const struct object_basic *)ktest_umem(MT_INFO);
+    uint32_t mem0 = kobj_live(KOBJ_MEM), lease0 = kobj_live(KOBJ_LEASE);
+    int32_t m = -1, m2 = -1, ro = -1, l = -1;
+    uint64_t addr = 0;
+    int step = 0, ok = 0;
+
+    m = mt_create(PAGE_SIZE, 0);
+    m2 = mt_create(PAGE_SIZE, 0);
+    step = 1; if (m <= 0 || m2 <= 0) goto done;
+    /* 2: not while a writable mapping exists */
+    step = 2; if (mt_map(m, 0, PAGE_SIZE, MPROT_READ | MPROT_WRITE) != E_OK) goto done;
+    addr = va->addr;
+    if (syscall_dispatch(SYS_MEM_LEND, (uint32_t)m, 0, 0, 0, 0) != E_BUSY) goto done;
+    if (syscall_dispatch(SYS_VM_UNMAP, addr, PAGE_SIZE, 0, 0, 0) != E_OK) goto done;
+    /* 3: a handle without the right cannot */
+    ro = syscall_dispatch(SYS_HANDLE_DUPLICATE, (uint32_t)m, HRIGHT_MAP | HRIGHT_INSPECT, 0, 0, 0);
+    step = 3; if (ro <= 0 || syscall_dispatch(SYS_MEM_LEND, (uint32_t)ro, 0, 0, 0, 0) != E_ACCESS_DENIED) goto done;
+    /* 4: a lease, which says what it is */
+    l = syscall_dispatch(SYS_MEM_LEND, (uint32_t)m, 0, 0, 0, 0);
+    step = 4; if (l <= 0 || kobj_live(KOBJ_LEASE) != lease0 + 1
+                  || mt_info(l, OBJINFO_BASIC, sizeof *ob) != (int)sizeof *ob
+                  || ob->kind != OBJ_TYPE_LEASE) goto done;
+    /* 5: while it lives nobody can map it writable, its maker included */
+    step = 5; if (mt_map(m, 0, PAGE_SIZE, MPROT_READ | MPROT_WRITE) != E_BUSY) goto done;
+    /* 6: reading is what it is for */
+    step = 6; if (mt_map(m, 0, PAGE_SIZE, MPROT_READ) != E_OK) goto done;
+    addr = va->addr;
+    if (syscall_dispatch(SYS_VM_UNMAP, addr, PAGE_SIZE, 0, 0, 0) != E_OK) goto done;
+    /* 7: one at a time */
+    step = 7; if (syscall_dispatch(SYS_MEM_LEND, (uint32_t)m, 0, 0, 0, 0) != E_BUSY
+                  || kobj_live(KOBJ_LEASE) != lease0 + 1) goto done;
+    /* 8: nobody can make a second handle on it */
+    step = 8; if (syscall_dispatch(SYS_HANDLE_DUPLICATE, (uint32_t)l, 0, 0, 0, 0) != E_ACCESS_DENIED) goto done;
+    /* 9: it knows its object */
+    step = 9; if (syscall_dispatch(SYS_MEM_LEASE_CHECK, (uint32_t)l, (uint32_t)m, 0, 0, 0) != E_OK
+                  || syscall_dispatch(SYS_MEM_LEASE_CHECK, (uint32_t)l, (uint32_t)ro, 0, 0, 0) != E_OK
+                  || syscall_dispatch(SYS_MEM_LEASE_CHECK, (uint32_t)l, (uint32_t)m2, 0, 0, 0) != E_INVALID_ARGS
+                  || syscall_dispatch(SYS_MEM_LEASE_CHECK, (uint32_t)m, (uint32_t)m, 0, 0, 0) != E_WRONG_TYPE) goto done;
+    /* 10: it is not a seal: the other object is untouched, and ... */
+    step = 10; if (mt_map(m2, 0, PAGE_SIZE, MPROT_READ | MPROT_WRITE) != E_OK) goto done;
+    if (syscall_dispatch(SYS_VM_UNMAP, va->addr, PAGE_SIZE, 0, 0, 0) != E_OK) goto done;
+    /* 11: ... closing it lifts it */
+    htab_close(e.tab, l);
+    l = -1;
+    step = 11; if (kobj_live(KOBJ_LEASE) != lease0
+                   || mt_map(m, 0, PAGE_SIZE, MPROT_READ | MPROT_WRITE) != E_OK) goto done;
+    if (syscall_dispatch(SYS_VM_UNMAP, va->addr, PAGE_SIZE, 0, 0, 0) != E_OK) goto done;
+    step = 0;
+    ok = 1;
+
+done:
+    if (!ok) klog_u32("KTEST", SEV_ERR, "lease test failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    if (l > 0) htab_close(e.tab, l);
+    if (ro > 0) htab_close(e.tab, ro);
+    if (m > 0) htab_close(e.tab, m);
+    if (m2 > 0) htab_close(e.tab, m2);
+    dh_end(&e);
+    if (ok && (kobj_live(KOBJ_MEM) != mem0 || kobj_live(KOBJ_LEASE) != lease0)) {
+        klog_u32("KTEST", SEV_ERR, "lease test left objects, kind ", KOBJ_LEASE, LOG_COLOR_VALUE, "");
+        ok = 0;
+    }
+    return ok;
+}
+
 #define SC_INFO (TEST_CODE_VIRT + 0x400)   /* struct screen_info */
 
 static int sc_open(uint64_t at) { return syscall_dispatch(SYS_SCREEN_OPEN, at, 0, 0, 0, 0); }

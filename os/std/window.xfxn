@@ -1,0 +1,188 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// std/window.xfxn - a window, from the client's side (roadmap 2.4).
+// Aurora Tejeda / CATX Systems
+// Threads: one per window.
+//
+// A window has two buffers, memory objects the client made and the server
+// maps read-only. The client draws into one (win.s) and commits it:
+//
+//     unmap it writable -> SYS_MEM_LEND -> send the lease with the commit
+//
+// While the server holds the lease the kernel refuses any writable mapping
+// of that buffer, so what it composes cannot change under it. That is the
+// difference from Wayland, where a client is asked not to write to a buffer
+// the compositor holds. The next commit gives the other one back.
+//
+// The connection is a send handle in slot WIN_SLOT, badged by the server, and
+// put there by whoever started the program (the server: dsv_launch).
+
+import "wm.xfxn";
+
+const WIN_SLOT: u32 = 3;
+
+const DS_OP_WINDOW_NEW: u32 = 1;   // w, h, flags, title; handles: the two buffers
+const DS_OP_COMMIT: u32 = 2;       // win, buffer, nrects, rects; handle: the lease
+const DS_OP_WAIT: u32 = 3;         // answered when an event is ready
+const DS_OP_WINDOW_CLOSE: u32 = 4; // win
+
+const DS_RECTS_MAX: u32 = 4;
+
+struct ds_req {
+    op: u32,
+    win: u32,
+    w: u32,
+    h: u32,
+    flags: u32,
+    buffer: u32,
+    nrects: u32,
+    reserved: u32,
+    rects: [4]ds_rect,  // DS_RECTS_MAX
+    title: [32]u8       // WM_TITLE_LEN
+}
+
+struct ds_rep {
+    status: i32,
+    win: u32,
+    freed: u32,         // DS_OP_COMMIT: the buffer given back, or WM_NONE
+    reserved: u32,
+    ev: wm_event        // DS_OP_WAIT
+}
+
+struct win {
+    ep: i32,
+    id: u32,
+    width: u32,
+    height: u32,
+    back: u32,          // the buffer being drawn
+    mem: [2]i32,
+    s: ds_surface       // the back buffer, mapped writable; s.mem is not used
+}
+
+fn win_call(w: *win, req: *ds_req, rep: *ds_rep, handles: *ipc_handle, count: u32) -> i32 {
+    let a: ipc_call_args;
+    memzero((&a) as *u8, sizeof a);
+    a.ep_handle = w.ep;
+    a.req = req as u64;
+    a.req_len = sizeof *req;
+    a.reply = rep as u64;
+    a.reply_cap = sizeof *rep;
+    a.handles = handles as u64;
+    a.handle_count = count;
+    let n: i32 = ipc_call(&a);
+    if (n < 0) { return n; }
+    if ((n as u64) != (sizeof *rep)) { return E_INVALID_ARGS; }
+    return rep.status;
+}
+
+// Map the back buffer writable, as w.s.
+fn win_map_back(w: *win) -> i32 {
+    let a: vm_map_args;
+    memzero((&a) as *u8, sizeof a);
+    a.object = w.mem[w.back] as u32;
+    a.length = (w.width as u64) * (w.height as u64) * 4;
+    a.prot = MPROT_READ | MPROT_WRITE;
+    let rc: i32 = vm_map(&a);
+    if (rc != E_OK) { return rc; }
+    w.s.px = a.addr;
+    w.s.width = w.width;
+    w.s.height = w.height;
+    w.s.stride = w.width;
+    w.s.mem = 0 - 1;
+    return 0;
+}
+
+// The handle the server gave this program, or an error.
+fn win_connection() -> i32 { return args_handle(WIN_SLOT); }
+
+// A new window. Draw into w.s and win_commit. 0 or an error.
+fn win_open(w: *win, ep: i32, width: u32, height: u32, flags: u32, title: *u8) -> i32 {
+    memzero(w as *u8, sizeof *w);
+    w.ep = ep; w.width = width; w.height = height; w.mem[0] = 0; w.mem[1] = 0;
+    if (width == 0 || height == 0 || width > WM_DIM_MAX || height > WM_DIM_MAX) { return E_INVALID_ARGS; }
+    let bytes: u64 = (width as u64) * (height as u64) * 4;
+    let i: u32 = 0;
+    while (i < 2) {
+        w.mem[i] = mem_create(bytes, 0);
+        if (w.mem[i] <= 0) { let e: i32 = w.mem[i]; w.mem[i] = 0; win_free(w); return e; }
+        i = i + 1;
+    }
+    let req: ds_req;
+    let rep: ds_rep;
+    memzero((&req) as *u8, sizeof req);
+    req.op = DS_OP_WINDOW_NEW; req.w = width; req.h = height; req.flags = flags;
+    strcopy(&req.title[0], title, WM_TITLE_LEN);
+    let hs: [2]ipc_handle;
+    i = 0;
+    while (i < 2) {
+        hs[i].handle = w.mem[i];
+        hs[i].op = IPC_HANDLE_COPY;
+        hs[i].rights = HRIGHT_MAP | HRIGHT_INSPECT;
+        hs[i].reserved = 0;
+        i = i + 1;
+    }
+    let rc: i32 = win_call(w, &req, &rep, &hs[0], 2);
+    if (rc != 0) { win_free(w); return rc; }
+    w.id = rep.win;
+    w.back = 0;
+    rc = win_map_back(w);
+    if (rc != 0) { win_free(w); }
+    return rc;
+}
+
+fn win_free(w: *win) -> void {
+    if (w.s.px != 0) { vm_unmap(w.s.px, 0); w.s.px = 0; }
+    if (w.mem[0] > 0) { handle_close(w.mem[0]); w.mem[0] = 0; }
+    if (w.mem[1] > 0) { handle_close(w.mem[1]); w.mem[1] = 0; }
+}
+
+// Show the back buffer. rects[n] are what changed since the buffer on the
+// screen was drawn (n 0: all of it; at most DS_RECTS_MAX). The buffers then
+// swap: w.s is the other one. 0 or an error.
+fn win_commit_rects(w: *win, rects: *ds_rect, n: u32) -> i32 {
+    if (n > DS_RECTS_MAX) { return E_INVALID_ARGS; }
+    let req: ds_req;
+    let rep: ds_rep;
+    memzero((&req) as *u8, sizeof req);
+    req.op = DS_OP_COMMIT; req.win = w.id; req.buffer = w.back; req.nrects = n;
+    let i: u32 = 0;
+    while (i < n) { req.rects[i] = rects[i]; i = i + 1; }
+    // no lease while a writable mapping exists: ours goes first
+    vm_unmap(w.s.px, 0);
+    w.s.px = 0;
+    let lease: i32 = mem_lend(w.mem[w.back]);
+    if (lease <= 0) { return lease; }
+    let h: ipc_handle;
+    h.handle = lease;
+    h.op = IPC_HANDLE_MOVE;
+    h.rights = IPC_RIGHTS_SAME;
+    h.reserved = 0;
+    let rc: i32 = win_call(w, &req, &rep, &h, 1);
+    if (rc != 0) { return rc; }
+    w.back = 1 - w.back;
+    return win_map_back(w);
+}
+
+fn win_commit(w: *win) -> i32 { return win_commit_rects(w, 0 as *ds_rect, 0); }
+
+// The next event, blocking until there is one. 0 or an error (E_PEER_CLOSED:
+// the server has gone).
+fn win_wait(w: *win, ev: *wm_event) -> i32 {
+    let req: ds_req;
+    let rep: ds_rep;
+    memzero((&req) as *u8, sizeof req);
+    req.op = DS_OP_WAIT;
+    let rc: i32 = win_call(w, &req, &rep, 0 as *ipc_handle, 0);
+    if (rc != 0) { return rc; }
+    *ev = rep.ev;
+    return 0;
+}
+
+fn win_close(w: *win) -> void {
+    let req: ds_req;
+    let rep: ds_rep;
+    memzero((&req) as *u8, sizeof req);
+    req.op = DS_OP_WINDOW_CLOSE; req.win = w.id;
+    win_call(w, &req, &rep, 0 as *ipc_handle, 0);
+    win_free(w);
+}

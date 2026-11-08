@@ -40,7 +40,7 @@ domain kernel
 /// mismatch. Declared in versions.json as `cxex-abi` and checked against this
 /// line; bump both, and the DevKit's stamp, in the one commit that changes the
 /// contract.
-const CXK_ABI_VERSION: u32 = 34
+const CXK_ABI_VERSION: u32 = 35
 
 /// ---- syscall numbers ----
 /// lifecycle 0x00-0x0F (no capability required)
@@ -217,7 +217,7 @@ const HRIGHT_REGISTER: u32 = 0x1u
 const HRIGHT_MAP: u32 = 0x2u
 const HRIGHT_MAP_WRITE: u32 = 0x4u
 const HRIGHT_MAP_EXEC: u32 = 0x8u
-/// memory object: SYS_MEM_SEAL
+/// memory object: SYS_MEM_SEAL, SYS_MEM_LEND
 const HRIGHT_SEAL: u32 = 0x10u
 /// pipe: SYS_FILE_READ on its read end, SYS_FILE_WRITE on its write end. The
 /// bits are FOPEN_READ's and FOPEN_WRITE's, which a file's handle carries as
@@ -272,6 +272,8 @@ const SIGNAL_THREAD_ENDED: u32 = 0x1u
 /// interrupt: the device has interrupted since the last SYS_IRQ_ACK, which
 /// clears it
 const SIGNAL_IRQ_FIRED: u32 = 0x1u
+/// input: events wait. Cleared when SYS_INPUT_EVENTS takes the last.
+const SIGNAL_INPUT_READY: u32 = 0x1u
 /// A deadline that never comes (SYS_OBJECT_WAIT): a wait with no limit.
 /// Deadlines are nanoseconds on the monotonic clock, so this is 292 years
 /// after boot.
@@ -371,6 +373,17 @@ syscall SYS_FB_SET_FONT = 0x46 fn fb_set_font(name: *u8) -> i32
 /// E_BUSY while the object lives; E_NOT_FOUND with no framebuffer (VGA text
 /// mode); E_NOT_SUPPORTED for a framebuffer that does not start on a page.
 syscall SYS_SCREEN_OPEN = 0x47 fn screen_open(info: *screen_info) -> i32
+/// The keyboard and the pointer as one handle, for the display server
+/// (GRANT_INPUT). One holder at a time, and it cannot travel: while the handle
+/// lives every key and movement goes to it alone, and SYS_INPUT_READ,
+/// SYS_INPUT_POLL and SYS_MOUSE_READ are E_BUSY for everybody, so a program
+/// that holds GRANT_INPUT cannot read keys meant for a window.
+/// -> a handle with HRIGHT_READ and HRIGHT_WAIT. E_BUSY while one lives.
+syscall SYS_INPUT_OPEN = 0x48 fn input_open() -> i32
+/// ebx = input handle (HRIGHT_READ), ecx = *input_event[count], edx = count
+/// (at least 1; at most INPUT_EVENTS_MAX are written) -> the number written,
+/// oldest first, 0 if none wait. SIGNAL_INPUT_READY says some do. Never blocks.
+syscall SYS_INPUT_EVENTS = 0x49 fn input_events(h: i32, ev: *input_event, count: u32) -> i32
 /// process 0x70-0x7F (spawning is privileged; kill, stop and jobs need only the
 /// handle's right). Both return a process handle with HRIGHT_WAIT,
 /// HRIGHT_INSPECT, HRIGHT_KILL, HRIGHT_STOP and HRIGHT_DUPLICATE, not a pid: the process is freed once it has ended and
@@ -446,6 +459,16 @@ syscall SYS_MEM_CREATE = 0x83 fn mem_create(size: u64, flags: u32) -> i32
 /// MEM_SEAL_WRITE while a writable mapping of it exists; E_ACCESS_DENIED once
 /// it has MEM_SEAL_SEAL. A receiver reads them with OBJINFO_MEM.
 syscall SYS_MEM_SEAL = 0x84 fn mem_seal(h: i32, seals: u32) -> i32
+/// ebx = memory object handle (HRIGHT_SEAL) -> a lease handle: while the lease
+/// lives nobody can map the object writable (E_BUSY), so whoever holds it
+/// reads pixels that cannot change. A seal that comes off. The lease moves in
+/// IPC messages and cannot be copied; its last reference ending, by a close
+/// or its holder's death, lifts it. E_BUSY while a writable mapping exists or
+/// a lease lives; E_NOT_SUPPORTED except for SYS_MEM_CREATE's objects.
+syscall SYS_MEM_LEND = 0x85 fn mem_lend(h: i32) -> i32
+/// ebx = lease handle, ecx = memory object handle -> 0 if the lease is on that
+/// object, E_INVALID_ARGS if on another; E_WRONG_TYPE if either is not one.
+syscall SYS_MEM_LEASE_CHECK = 0x86 fn mem_lease_check(lease: i32, mem: i32) -> i32
 
 /// power 0x90-0x9F (privileged: GRANT_POWER). Each returns only if refused.
 syscall SYS_POWER_REBOOT = 0x90 fn reboot() -> i32
@@ -797,6 +820,8 @@ const OBJ_TYPE_PIPE: u32 = 13        /// a pipe end, read or write
 const OBJ_TYPE_THREAD: u32 = 14      /// a thread (SYS_THREAD_CREATE)
 const OBJ_TYPE_DEVICE: u32 = 15      /// a device a driver holds (SYS_DEVICE_OPEN)
 const OBJ_TYPE_IRQ: u32 = 16         /// a device's interrupt (SYS_DEVICE_IRQ)
+const OBJ_TYPE_INPUT: u32 = 17       /// the keyboard and pointer (SYS_INPUT_OPEN)
+const OBJ_TYPE_LEASE: u32 = 18       /// a memory object held unwritable (SYS_MEM_LEND)
 
 /// Pipe sizes (SYS_PIPE_CREATE). A write of PIPE_ATOMIC bytes or fewer goes
 /// into the pipe whole, never split around another writer's (POSIX PIPE_BUF).
@@ -1063,6 +1088,20 @@ struct screen_info {
     bpp: u32        /// 16 or 32
     format: u32     /// SCREEN_*
     size: u32       /// bytes of the memory object: pitch * height, whole pages
+}
+
+/// ---- input as a handle (SYS_INPUT_OPEN) ----
+const INPUT_EVENT_KEY: u32 = 1      /// code: the key, as SYS_INPUT_READ gives it
+/// x, y: where the pointer is now; buttons: bit 0 left, 1 right, 2 middle
+const INPUT_EVENT_POINTER: u32 = 2
+const INPUT_EVENTS_MAX: u32 = 32    /// events one SYS_INPUT_EVENTS writes at most
+struct input_event {
+    kind: u32       /// INPUT_EVENT_*
+    code: u32
+    x: i32
+    y: i32
+    buttons: u32
+    reserved: u32   /// 0
 }
 
 /// ---- capabilities (for spawn_args.caps) ----

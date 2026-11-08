@@ -48,7 +48,14 @@ memory object mapped write-combining, to one holder at a time
 (`kernel/drivers/video/fb.c`). While it is held the kernel's console draws
 into its RAM copy only; when the object's last reference goes, the screen
 comes back and is repainted from the copy. `panic_begin` takes it back for
-good. Input as handles is still to come (2.4).
+good.
+
+**Built (2.4):** `SYS_INPUT_OPEN` gives the keyboard and the pointer together
+as one handle, to one holder at a time, and that handle cannot be passed on
+(`kernel/drivers/input/inputdev.c`). While it is held every key and movement
+goes to it and the old calls refuse with `E_BUSY`; closing it gives them
+back. Movements with the same buttons merge into the latest unread one. Key
+releases are not reported yet.
 
 ## 4. The display server
 
@@ -70,6 +77,29 @@ good. Input as handles is still to come (2.4).
   The title shows the verified signer.
 - **Apps survive a compositor crash.** They hold their buffers and layers as
   handles; a restarted compositor takes them back.
+
+**Built (2.4):** `os/std/wm.xfxn` (windows, stack, frames, focus, routing;
+no system calls but the buffers' own, so it can be tested alone),
+`os/std/dserver.xfxn` (the loop and the protocol), `os/std/window.xfxn` (the
+client's side), `os/apps/displayd.xfxn`, `os/apps/wdemo.xfxn`.
+
+- *Commit, enforced.* A client has two buffers. `SYS_MEM_LEND` makes a
+  **lease** on a buffer that has no writable mapping: while the lease exists
+  nobody can map the buffer writable, its maker included. A commit unmaps,
+  lends, and moves the lease to the server by IPC; the server checks it is on
+  that buffer (`SYS_MEM_LEASE_CHECK`), and closing it at the next commit hands
+  the buffer back. Unlike a seal it ends, and the lease cannot be copied.
+  A lease is on anonymous memory only.
+- *Connecting.* A client is started by the server (`run +screen +spawn
+  +endpoint +disk displayd [client...]`) and finds a badged send handle in slot
+  3. There is no name service yet to find a server by.
+- *Frames* are the server's: a title bar that drags, a close box, a colour for
+  focus. Ctrl+N and Ctrl+Q are the server's keys and no client sees them.
+- *Not answering.* A client with an event unread and no call waiting for two
+  seconds goes grey, can still be moved, and its close box ends it. Any other
+  client's close box only asks.
+- *Not built:* frame pacing beyond one frame event per commit, surviving a
+  compositor crash, the signer in the title, renderers other than software.
 
 ## 5. Transparency and effects
 
@@ -98,6 +128,11 @@ good. Input as handles is still to come (2.4).
 - A key combination no app can intercept opens a screen only the system draws;
   consent prompts use it and nothing can draw over it.
 - Screen capture, full screen and overlays each need a capability.
+
+**Built (2.4):** keys go to the focused window only; the pointer goes to the
+window under it, or for as long as a button is down to the one the press
+landed in. A press raises and focuses. Global hotkeys, the trusted key
+combination and the capabilities are 2.6.
 
 ## 8. Drivers and the GPU path
 

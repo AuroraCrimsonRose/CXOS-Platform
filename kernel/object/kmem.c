@@ -64,9 +64,12 @@ static const struct kobj_ops mem_ops = {
     .destroy      = mem_destroy,
 };
 
+static const struct kobj_ops lease_ops;
+
 void kmem_sys_init(void) {
     if (ocache_init(&mem_cache, "memory", sizeof(struct kmem)) != 0 ||
-        kobj_type_register(KOBJ_MEM, &mem_ops) != 0)
+        kobj_type_register(KOBJ_MEM, &mem_ops) != 0 ||
+        kobj_type_register(KOBJ_LEASE, &lease_ops) != 0)
         kpanic("kmem_sys_init: no memory object cache");
 }
 
@@ -225,7 +228,7 @@ uint32_t kmem_resident(struct kmem *m) {
 
 int kmem_writer_add(struct kmem *m) {
     uint32_t f = spin_lock(&m->lock);
-    int rc = (m->seals & MEM_SEAL_WRITE) ? E_ACCESS_DENIED : E_OK;
+    int rc = (m->seals & MEM_SEAL_WRITE) ? E_ACCESS_DENIED : m->lent ? E_BUSY : E_OK;
     if (rc == E_OK) m->writers++;
     spin_unlock(&m->lock, f);
     return rc;
@@ -245,6 +248,55 @@ int kmem_seal(struct kmem *m, uint32_t seals) {
     if (rc == E_OK) m->seals |= seals;
     spin_unlock(&m->lock, f);
     return rc;
+}
+
+/* ---- leases (2.4) ----
+ * A window's buffer, while the display server shows it. A seal cannot do it:
+ * a seal never comes off, and a buffer goes back and forth for as long as the
+ * window lives. The authority to end it is the lease itself, a handle nobody
+ * can copy, so a client cannot end what it has handed over; and it ends with
+ * its last reference, so a dead server gives every buffer back. */
+struct klease {
+    struct kobj hdr;     /* first; KOBJ_LEASE */
+    struct kmem *m;      /* a reference, or 0 for one refused as it was made */
+};
+
+static void lease_destroy(struct kobj *o) {
+    struct klease *l = (struct klease *)o;
+    if (l->m) {
+        uint32_t f = spin_lock(&l->m->lock);
+        l->m->lent = 0;
+        spin_unlock(&l->m->lock, f);
+        kobj_unref(&l->m->hdr);
+    }
+    kfree(l);
+}
+
+static const struct kobj_ops lease_ops = {
+    .name         = "lease",
+    .rights_valid = 0,
+    .transfer     = 1,
+    .destroy      = lease_destroy,
+};
+
+struct kobj *kmem_lend(struct kmem *m, int *rc) {
+    if (m->kind != KMEM_ANON) { *rc = E_NOT_SUPPORTED; return 0; }
+    struct klease *l = kmalloc(sizeof *l);
+    if (!l) { *rc = E_NO_MEMORY; return 0; }
+    l->m = 0;
+    if (kobj_init(&l->hdr, KOBJ_LEASE) != 0) { kfree(l); *rc = E_NO_MEMORY; return 0; }
+    uint32_t f = spin_lock(&m->lock);
+    int r = (m->writers || m->lent) ? E_BUSY : E_OK;
+    if (r == E_OK) m->lent = 1;
+    spin_unlock(&m->lock, f);
+    if (r != E_OK) { kobj_unref(&l->hdr); *rc = r; return 0; }
+    kobj_ref(&m->hdr);
+    l->m = m;
+    return &l->hdr;
+}
+
+int kmem_lease_is_on(struct kobj *lease, struct kmem *m) {
+    return ((struct klease *)lease)->m == m;
 }
 
 uint32_t kmem_seals(struct kmem *m) {

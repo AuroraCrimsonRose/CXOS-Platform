@@ -33,6 +33,7 @@
 // a layer starts on the screen and may run off its right and bottom edges.
 
 import "mem.xfxn";
+import "string.xfxn";
 
 // ---- rectangles ----
 
@@ -281,9 +282,71 @@ fn ds_draw(dst: *ds_surface, src: *ds_surface, sx: u32, sy: u32, clip: *ds_rect,
     }
 }
 
+// ---- text ----
+
+// A bitmap font, as /System/Fonts holds them (kernel/lib/gfx/xfnt.h): rows
+// most significant bit first, a glyph's index being its code in the file's
+// first 256. 8 pixels wide at most.
+struct ds_font {
+    bits: *u8,
+    width: u32,
+    height: u32,
+    count: u32
+}
+
+const DS_FONT_BYTES_MAX: u32 = 16384;
+
+// Load one, every field checked against the file's length, as the kernel's
+// reader does: 0 or an error.
+fn ds_font_load(f: *ds_font, path: *u8) -> i32 {
+    f.bits = 0 as *u8;
+    let h: i32 = file_open(path, FOPEN_READ);
+    if (h <= 0) { return h; }
+    let addr: u64 = 0;
+    let m: i32 = ds_mem(DS_FONT_BYTES_MAX as u64, &addr);
+    if (m <= 0) { file_close(h); return m; }
+    let p: *u8 = addr as *u8;
+    let n: i32 = file_read(h, p, DS_FONT_BYTES_MAX as u64);
+    file_close(h);
+    if (n < 24 || p[0] != 88 || p[1] != 70 || p[2] != 78 || p[3] != 84) { return E_INVALID_ARGS; }
+    let bpr: u32 = p[7] as u32;
+    let width: u32 = p[8] as u32;
+    let height: u32 = p[9] as u32;
+    let count: u32 = (p[10] as u32) | ((p[11] as u32) << 8);
+    if (p[6] != 1 || bpr != 1 || width == 0 || width > 8 || height == 0 || height > 32) { return E_INVALID_ARGS; }
+    if (count == 0 || count > 256 || 24 + count * height > (n as u32)) { return E_INVALID_ARGS; }
+    f.bits = (addr + 24) as *u8;
+    f.width = width; f.height = height; f.count = count;
+    return 0;
+}
+
+// Text at (x, y) on a surface, set in one colour, stopping before `room`
+// pixels are used and at the surface's edges.
+fn ds_text(s: *ds_surface, f: *ds_font, x: u32, y: u32, room: u32, text: *u8, argb: u32) -> void {
+    let at: u32 = 0;
+    let i: u32 = 0;
+    while (text[i] != 0 && at + f.width <= room) {
+        let code: u32 = text[i] as u32;
+        if (code < f.count) {
+            let row: u32 = 0;
+            while (row < f.height) {
+                let bits: u32 = f.bits[code * f.height + row] as u32;
+                let col: u32 = 0;
+                while (col < f.width) {
+                    if ((bits & (0x80 >> col)) != 0) { ds_put(s, x + at + col, y + row, argb); }
+                    col = col + 1;
+                }
+                row = row + 1;
+            }
+        }
+        at = at + f.width;
+        i = i + 1;
+    }
+}
+
 // ---- the compositor ----
 
-const DS_LAYER_MAX: u32 = 16;
+const DS_LAYER_MAX: u32 = 64;
 
 struct ds_layer {
     s: *ds_surface,
@@ -297,7 +360,7 @@ struct ds_comp {
     n: u32,
     back: ds_surface,   // the frame, in RAM; never read from the screen
     damage: ds_damage,
-    l: [16]ds_layer     // DS_LAYER_MAX, bottom first
+    l: [64]ds_layer     // DS_LAYER_MAX, bottom first
 }
 
 // A compositor for a width x height screen: 0 or an error.
@@ -317,6 +380,18 @@ fn ds_layer_add(c: *ds_comp, s: *ds_surface, x: u32, y: u32, opaque: u32) -> u32
     c.l[i].s = s; c.l[i].x = x; c.l[i].y = y; c.l[i].visible = 1; c.l[i].opaque = opaque;
     c.n = c.n + 1;
     ds_damage_add(&c.damage, x, y, s.width, s.height);
+    return i;
+}
+
+// Rebuilding the stack: no layers, then ds_layer_put bottom up. Neither
+// damages anything; whoever changed the stack knows what that changed.
+fn ds_layers_clear(c: *ds_comp) -> void { c.n = 0; }
+
+fn ds_layer_put(c: *ds_comp, s: *ds_surface, x: u32, y: u32, opaque: u32) -> u32 {
+    if (c.n >= DS_LAYER_MAX) { return DS_LAYER_MAX; }
+    let i: u32 = c.n;
+    c.l[i].s = s; c.l[i].x = x; c.l[i].y = y; c.l[i].visible = 1; c.l[i].opaque = opaque;
+    c.n = c.n + 1;
     return i;
 }
 

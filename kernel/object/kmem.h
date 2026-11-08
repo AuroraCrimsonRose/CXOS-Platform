@@ -73,6 +73,7 @@ struct kmem {
     uint32_t     resident;   /* pages taken so far */
     uint32_t     writers;    /* writable mappings of it now */
     uint32_t     seals;      /* MEM_SEAL_*; only ever added */
+    uint32_t     lent;       /* 1 while a lease lives: no writable mapping (2.4) */
     paddr_t     *pages;      /* npages entries, 0 until touched (kmalloc) */
     struct job  *job;        /* charged npages pages; a reference (0: KMEM_DEVICE) */
     uint32_t     kind;       /* enum kmem_kind */
@@ -124,7 +125,8 @@ paddr_t kmem_page_if_resident(struct kmem *m, uint32_t index);
 uint32_t kmem_resident(struct kmem *m);
 
 /* A writable mapping of it is being made: E_ACCESS_DENIED if it is sealed
-   against writing, else E_OK and counted until kmem_writer_drop. */
+   against writing, E_BUSY while it is lent, else E_OK and counted until
+   kmem_writer_drop. */
 int  kmem_writer_add(struct kmem *m);
 void kmem_writer_drop(struct kmem *m);
 
@@ -135,5 +137,15 @@ int kmem_seal(struct kmem *m, uint32_t seals);
 
 /* Its seals now. */
 uint32_t kmem_seals(struct kmem *m);
+
+/* A lease on it (KOBJ_LEASE, one reference for the caller): until the lease's
+   last reference goes, no writable mapping of it can be made. 0 with *rc set:
+   E_BUSY while a writer is counted or a lease lives, E_NOT_SUPPORTED but for
+   KMEM_ANON, E_NO_MEMORY. The check and the taking are one step under the
+   object's lock, as a seal's are. */
+struct kobj *kmem_lend(struct kmem *m, int *rc);
+
+/* Is `lease` (a KOBJ_LEASE) on `m`? */
+int kmem_lease_is_on(struct kobj *lease, struct kmem *m);
 
 #endif

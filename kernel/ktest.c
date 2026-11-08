@@ -3549,6 +3549,9 @@ void ktest_run(void) {
     total++; passed += report("devices: open, held, registers as memory objects", usermode_devhost_test());
     total++; passed += report("devices: an interrupt as a handle", usermode_devhost_irq_test());
     total++; passed += report("devices: DMA buffers, retired until bus mastering is off", usermode_devhost_dma_test());
+    total++; passed += report("input: the keys as a handle, one holder", usermode_input_handle_test());
+    total++; passed += report("lease: a buffer stays unwritable while it is lent", usermode_lease_test());
+    total++; passed += report("display server: real screen, real keys, given back", ktest_display_server());
     total++; passed += report("screen: one holder, mapped write-combining, given back", usermode_screen_test());
     total++; passed += report("ipc: queued calls, reply tokens, badges", usermode_ipc_test());
     total++; passed += report("ipc: handles in messages", usermode_ipc_handles_test());

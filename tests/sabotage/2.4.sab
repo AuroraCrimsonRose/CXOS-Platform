@@ -1,0 +1,655 @@
+# Step 2.4, windows: the input handle, a buffer's lease, and the window
+# manager and its server, run by `cxk test sabotage`. Each must turn red
+# exactly the self-tests named, at the step named. Format:
+# docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage". The X tests report a code,
+# not a logged step, so theirs name the test alone.
+
+# ---- the keyboard and the pointer as a handle ----
+
+[input-no-grant]
+# a process without GRANT_INPUT takes the keyboard
+expect = input: the keys as a handle, one holder @ input handle test failed at step 1
+group = g1
+edit = kernel/cpu/usermode.c
+<<<
+int syscall_input_open(void) {
+    if (!input_granted()) return E_ACCESS_DENIED;
+===
+int syscall_input_open(void) {
+>>>
+
+[input-not-exclusive]
+# a second process takes the keyboard while it is held
+expect = input: the keys as a handle, one holder @ input handle test failed at step 3
+group = g2
+edit = kernel/drivers/input/inputdev.c
+<<<
+    if (busy) { kobj_unref(&k->hdr); return E_BUSY; }
+===
+    (void)busy;
+>>>
+
+[legacy-poll]
+# the old call still reads keys while somebody holds them
+expect = input: the keys as a handle, one holder @ input handle test failed at step 4
+group = g3
+edit = kernel/cpu/usermode.c
+<<<
+    if (input_held()) return E_BUSY;
+    return (int)(unsigned char)keyboard_getchar();   /* 0 if none waiting */
+===
+    return (int)(unsigned char)keyboard_getchar();   /* 0 if none waiting */
+>>>
+
+[legacy-read]
+# so does the blocking one (it answers instead of refusing: removing the check
+# outright would block for a key that never comes, and the boot would not end)
+expect = input: the keys as a handle, one holder @ input handle test failed at step 4
+group = g4
+edit = kernel/cpu/usermode.c
+<<<
+    if (input_held()) return E_BUSY;
+    return (int)(unsigned char)keyboard_getchar_blocking();
+===
+    if (input_held()) return E_OK;
+    return (int)(unsigned char)keyboard_getchar_blocking();
+>>>
+
+[legacy-mouse]
+# so does the pointer's
+expect = input: the keys as a handle, one holder @ input handle test failed at step 4
+group = g5
+edit = kernel/cpu/usermode.c
+<<<
+    if (input_held()) return E_BUSY;
+    struct mouse_state ms = { 0 };
+===
+    struct mouse_state ms = { 0 };
+>>>
+
+[key-not-diverted]
+# keys keep going to the old buffer: the holder never sees them
+expect = input: the keys as a handle, one holder @ input handle test failed at step 6
+expect = display server: real screen, real keys, given back @ display server failed at step 3
+group = g6
+edit = kernel/drivers/input/keyboard.c
+<<<
+    if (!input_post_key(c)) kbuf_push(c);
+===
+    (void)input_post_key; kbuf_push(c);
+>>>
+
+[signal-stays]
+# the handle says there are events when there are none
+expect = input: the keys as a handle, one holder @ input handle test failed at step 7
+group = g7
+edit = kernel/drivers/input/inputdev.c
+<<<
+    if (!k->count) kobj_signal_clear_locked(o, SIGNAL_INPUT_READY);
+===
+>>>
+
+[no-coalesce]
+# every movement is an event: a moving mouse fills the ring
+expect = input: the keys as a handle, one holder @ input handle test failed at step 8
+group = g8
+edit = kernel/drivers/input/inputdev.c
+<<<
+        if (last && last->kind == INPUT_EVENT_POINTER && last->buttons == buttons) *last = e;
+        else ring_push(k, &e);
+===
+        (void)last;
+        ring_push(k, &e);
+>>>
+
+[ring-newest]
+# a full ring loses the oldest: keys typed first are the ones that vanish
+expect = input: the keys as a handle, one holder @ input handle test failed at step 10
+group = g9
+edit = kernel/drivers/input/inputdev.c
+<<<
+    if (k->count == INPUT_RING) return;
+===
+    if (k->count == INPUT_RING) { k->head = (k->head + 1) % INPUT_RING; k->count--; }
+>>>
+
+[keys-lost-when-free]
+# with nobody holding the keyboard the keys vanish instead of reaching the old calls
+expect = input: the keys as a handle, one holder @ input handle test failed at step 12
+expect = the input buffer's lock keeps another CPU out
+expect = PS/2 keyboard and mouse reach the kernel
+expect = power and input syscalls
+group = g13
+edit = kernel/drivers/input/inputdev.c
+<<<
+    return k != 0;
+===
+    return 1;
+>>>
+
+[input-travels]
+# the keyboard's handle can be passed to another process
+expect = input: the keys as a handle, one holder @ input handle test failed at step 11
+group = g10
+edit = kernel/drivers/input/inputdev.c
+<<<
+    .transfer      = 0,
+===
+    .transfer      = 1,
+>>>
+
+# ---- a buffer's lease ----
+
+[lease-no-freeze]
+# a lent buffer can be mapped writable: the client can draw on what is shown
+expect = lease: a buffer stays unwritable while it is lent @ lease test failed at step 5
+expect = x: windows: a hostile client is refused
+group = g1
+edit = kernel/object/kmem.c
+<<<
+    int rc = (m->seals & MEM_SEAL_WRITE) ? E_ACCESS_DENIED : m->lent ? E_BUSY : E_OK;
+===
+    int rc = (m->seals & MEM_SEAL_WRITE) ? E_ACCESS_DENIED : E_OK;
+>>>
+
+[lend-with-writer]
+# lent while a writable mapping still exists: the freeze holds nothing
+expect = lease: a buffer stays unwritable while it is lent @ lease test failed at step 2
+group = g2
+edit = kernel/object/kmem.c
+<<<
+    int r = (m->writers || m->lent) ? E_BUSY : E_OK;
+===
+    int r = m->lent ? E_BUSY : E_OK;
+>>>
+
+[lend-twice]
+# two leases at once: the first to close lifts the freeze from the other
+expect = lease: a buffer stays unwritable while it is lent @ lease test failed at step 7
+group = g3
+edit = kernel/object/kmem.c
+<<<
+    int r = (m->writers || m->lent) ? E_BUSY : E_OK;
+===
+    int r = m->writers ? E_BUSY : E_OK;
+>>>
+
+[lend-no-right]
+# a handle that may only map can freeze the object
+expect = lease: a buffer stays unwritable while it is lent @ lease test failed at step 3
+group = g4
+edit = kernel/cpu/usermode.c
+<<<
+    int rc = o->type != KOBJ_MEM         ? E_WRONG_TYPE
+           : !(hi.rights & HRIGHT_SEAL)  ? E_ACCESS_DENIED : E_OK;
+    if (rc == E_OK) {
+        struct kobj *l = kmem_lend((struct kmem *)o, &rc);
+===
+    int rc = o->type != KOBJ_MEM         ? E_WRONG_TYPE : E_OK;
+    (void)hi;
+    if (rc == E_OK) {
+        struct kobj *l = kmem_lend((struct kmem *)o, &rc);
+>>>
+
+[lease-any-object]
+# a lease on anything vouches for any buffer
+expect = lease: a buffer stays unwritable while it is lent @ lease test failed at step 9
+expect = x: windows: a hostile client is refused
+group = g5
+edit = kernel/cpu/usermode.c
+<<<
+           : kmem_lease_is_on(l, (struct kmem *)m) ? E_OK : E_INVALID_ARGS;
+===
+           : E_OK;
+>>>
+
+[lease-dup]
+# a lease can be duplicated: closing one no longer ends it
+expect = lease: a buffer stays unwritable while it is lent @ lease test failed at step 8
+group = g6
+edit = kernel/object/kmem.c
+<<<
+    .rights_valid = 0,
+    .transfer     = 1,
+    .destroy      = lease_destroy,
+===
+    .rights_valid = HRIGHT_DUPLICATE,
+    .transfer     = 1,
+    .destroy      = lease_destroy,
+>>>
+edit = kernel/cpu/usermode.c
+<<<
+            rc = htab_install(tab, l, 0, 0);
+            kobj_unref(l);   /* the handle's reference keeps it; with none, it lifts */
+===
+            rc = htab_install(tab, l, HRIGHT_DUPLICATE, 0);
+            kobj_unref(l);   /* the handle's reference keeps it; with none, it lifts */
+>>>
+
+[lease-never-lifted]
+# closing a lease leaves the buffer frozen: a client can never draw again
+expect = lease: a buffer stays unwritable while it is lent @ lease test failed at step 11
+expect = x: windows: real clients, the whole way
+expect = x: windows: a hostile client is refused
+group = g7
+edit = kernel/object/kmem.c
+<<<
+        l->m->lent = 0;
+===
+>>>
+
+# ---- the window manager ----
+
+[key-wrong-window]
+# a key goes to the bottom window, not the focused one
+expect = x: windows: keys to the focused one only
+expect = x: windows: not answering, grey and ended
+expect = x: windows: real clients, the whole way
+group = g1
+edit = os/std/wm.xfxn
+<<<
+    wm_push(w, w.win[w.focus].client, WM_EV_KEY, w.focus, code as i32, 0, 0);
+===
+    wm_push(w, w.win[w.z[0]].client, WM_EV_KEY, w.z[0], code as i32, 0, 0);
+>>>
+
+[next-key-passes]
+# Ctrl+N also reaches a client
+expect = x: windows: keys to the focused one only
+group = g2
+edit = os/std/wm.xfxn
+<<<
+            wm_focus_set(w, bottom);
+        }
+        return;
+    }
+===
+            wm_focus_set(w, bottom);
+        }
+    }
+>>>
+
+[quit-passes]
+# Ctrl+Q also reaches a client
+expect = x: windows: keys to the focused one only
+group = g3
+edit = os/std/wm.xfxn
+<<<
+    if (code == WM_KEY_QUIT) { w.quit = 1; return; }
+===
+    if (code == WM_KEY_QUIT) { w.quit = 1; }
+>>>
+
+[press-no-raise]
+# a press does not bring its window up
+expect = x: windows: the stack, a press raises
+group = g1
+edit = os/std/wm.xfxn
+<<<
+        wm_raise(w, top);
+        wm_focus_set(w, top);
+===
+        wm_focus_set(w, top);
+>>>
+
+[press-no-focus]
+# a press does not give its window the keys
+expect = x: windows: the stack, a press raises
+group = g4
+edit = os/std/wm.xfxn
+<<<
+        wm_raise(w, top);
+        wm_focus_set(w, top);
+===
+        wm_raise(w, top);
+>>>
+
+[focus-colour]
+# the focused window's frame looks like any other
+expect = x: windows: the stack, a press raises
+group = g2
+edit = os/std/wm.xfxn
+<<<
+    if (w.focus == i) { bar = WM_COL_FOCUS; }
+===
+>>>
+
+[frame-opaque]
+# the frame's hole hides what is behind a translucent window
+expect = x: windows: transparency
+group = g9
+edit = os/std/wm.xfxn
+<<<
+        ds_layer_put(w.comp, &win.frame, win.x, win.y, 0);
+===
+        ds_layer_put(w.comp, &win.frame, win.x, win.y, 1);
+>>>
+
+[no-capture]
+# a drag out of a window is delivered to whatever it crosses
+expect = x: windows: the pointer, held by a press
+group = g2
+edit = os/std/wm.xfxn
+<<<
+        if (zone == WM_ZONE_CONTENT) { w.capture = top; }
+===
+>>>
+
+[drag-never-ends]
+# a released title bar goes on following the pointer
+expect = x: windows: a title bar drags
+group = g3
+edit = os/std/wm.xfxn
+<<<
+        if (released == 1) { w.drag = WM_NONE; return; }
+===
+>>>
+
+[commit-same-buffer]
+# the buffer on the screen can be committed again
+expect = x: windows: a commit's damage, bounded
+group = g1
+edit = os/std/wm.xfxn
+<<<
+    if (b > 1 || win.cur == b) { return WM_COMMIT_REFUSED; }
+===
+    if (b > 1) { return WM_COMMIT_REFUSED; }
+>>>
+
+[commit-bad-buffer]
+# a commit names a third buffer
+expect = x: windows: a commit's damage, bounded
+group = g2
+edit = os/std/wm.xfxn
+<<<
+    if (b > 1 || win.cur == b) { return WM_COMMIT_REFUSED; }
+===
+    if (win.cur == b) { return WM_COMMIT_REFUSED; }
+>>>
+
+[commit-damage-all]
+# a small commit redraws the whole window
+expect = x: windows: a commit's damage, bounded
+group = g3
+edit = os/std/wm.xfxn
+<<<
+    if (n == 0 || first == 1) {
+===
+    if (1 == 1 || n == 0 || first == 1) {
+>>>
+
+[commit-rect-unbounded]
+# a client's rectangle reaches past its window
+expect = x: windows: a commit's damage, bounded
+group = g4
+edit = os/std/wm.xfxn
+<<<
+ds_min(r.w, win.w - r.x), ds_min(r.h, win.h - r.y));
+===
+r.w, r.h);
+>>>
+
+[no-frame-event]
+# a client is never told its frame reached the screen
+expect = x: windows: a commit's damage, bounded
+group = g5
+edit = os/std/wm.xfxn
+<<<
+            wm_push(w, w.win[i].client, WM_EV_FRAME, i, 0, 0, 0);
+===
+>>>
+
+[alpha-ignored]
+# a translucent window is drawn opaque
+expect = x: windows: transparency
+group = g1
+edit = os/std/wm.xfxn
+<<<
+            if ((win.flags & WM_F_ALPHA) != 0) { opaque = 0; }
+===
+>>>
+
+[limit-off]
+# one client can have every window there is
+expect = x: windows: how many a client may have
+group = g1
+edit = os/std/wm.xfxn
+<<<
+    if (free == WM_NONE || mine >= WM_PER_CLIENT) { return E_NO_RESOURCES; }
+===
+    if (free == WM_NONE) { return E_NO_RESOURCES; }
+>>>
+
+[text-room]
+# a title runs out of the room it was given
+expect = x: windows: a title's pixels
+group = g1
+edit = os/std/display.xfxn
+<<<
+    while (text[i] != 0 && at + f.width <= room) {
+===
+    while (text[i] != 0) {
+>>>
+
+[drag-no-clip]
+# a window can be dragged off the screen
+expect = x: windows: a title bar drags
+group = g1
+edit = os/std/wm.xfxn
+<<<
+        if (w.px > w.grab_x) { nx = w.px - w.grab_x; }
+===
+        nx = w.px - w.grab_x;
+>>>
+
+# ---- a client that stops answering, or goes ----
+
+[hung-never]
+# a client that stops reading looks like one that is well
+expect = x: windows: not answering, grey and ended
+expect = x: windows: real clients, the whole way
+group = g2
+edit = os/std/wm.xfxn
+<<<
+            cl.hung = 1;
+===
+>>>
+
+[hung-on-idle]
+# a client with nothing to read counts as not answering
+expect = x: windows: not answering, grey and ended
+group = g6
+edit = os/std/wm.xfxn
+<<<
+cl.hung == 0 && cl.n > 0 && cl.waiter == 0
+===
+cl.hung == 0 && cl.waiter == 0
+>>>
+
+[hung-colour]
+# a hung client's frame looks like any other
+expect = x: windows: not answering, grey and ended
+expect = x: windows: real clients, the whole way
+group = g8
+edit = os/std/wm.xfxn
+<<<
+    if (w.client[win.client].hung == 1) { bar = WM_COL_HUNG; }
+===
+>>>
+
+[wait-no-unhang]
+# a client that starts reading again stays grey
+expect = x: windows: not answering, grey and ended
+group = g5
+edit = os/std/wm.xfxn
+<<<
+    if (cl.hung == 1) { cl.hung = 0; wm_repaint_client(w, c); }
+===
+>>>
+
+[close-box-no-kill]
+# a hung client's close box only asks it, and it will never answer
+expect = x: windows: not answering, grey and ended
+expect = x: windows: real clients, the whole way
+group = g3
+edit = os/std/wm.xfxn
+<<<
+    if (w.client[c].hung == 1) { w.client[c].kill = 1; return; }
+===
+>>>
+
+[close-not-asked]
+# a close box does nothing to a client that answers
+expect = x: windows: not answering, grey and ended
+expect = x: windows: real clients, the whole way
+group = g4
+edit = os/std/wm.xfxn
+<<<
+    wm_push(w, c, WM_EV_CLOSE, i, 0, 0, 0);
+===
+>>>
+
+[kill-not-applied]
+# the server forgets the client but the process goes on
+expect = x: windows: real clients, the whole way
+group = g5
+edit = os/std/dserver.xfxn
+<<<
+        if (s.w.client[c].used == 1 && s.w.client[c].kill == 1) {
+            if (s.proc[c] > 0) { process_kill(s.proc[c]); }
+===
+        if (s.w.client[c].used == 1 && s.w.client[c].kill == 1) {
+>>>
+
+[gone-keeps-window]
+# a client's windows outlive it
+expect = x: windows: a client gone takes its own
+expect = x: windows: real clients, the whole way
+group = g6
+edit = os/std/wm.xfxn
+<<<
+        if (w.win[i].used == 1 && w.win[i].client == c) { wm_window_destroy(w, i); }
+===
+>>>
+
+[gone-focus-stale]
+# the focus stays on a window that no longer exists
+expect = x: windows: a client gone takes its own
+group = g2
+edit = os/std/wm.xfxn
+<<<
+        if (w.zn > 0) { wm_focus_set(w, w.z[w.zn - 1]); }
+===
+>>>
+
+# ---- the server's protocol ----
+
+[server-no-lease-check]
+# any lease is taken for the window's buffer
+expect = x: windows: a hostile client is refused
+group = g2
+edit = os/std/dserver.xfxn
+<<<
+    let rc: i32 = mem_lease_check(dsv_inhandles[0], win.buf[req.buffer].mem);
+    if (rc != 0) { return rc; }
+===
+>>>
+
+[other-client-window]
+# a client can close a window that is not its own
+expect = x: windows: a hostile client is refused
+group = g3
+edit = os/std/dserver.xfxn
+<<<
+        if (req.op == DS_OP_WINDOW_CLOSE && count == 0 && wm_owns(&s.w, c, req.win) == 1) {
+===
+        if (req.op == DS_OP_WINDOW_CLOSE && count == 0) {
+>>>
+
+[commit-no-lease-needed]
+# a commit without a lease is taken
+expect = x: windows: a hostile client is refused
+group = g4
+edit = os/std/dserver.xfxn
+<<<
+    if (handles != 1 || wm_owns(&s.w, c, req.win) == 0) { return E_INVALID_ARGS; }
+===
+    if (wm_owns(&s.w, c, req.win) == 0) { return E_INVALID_ARGS; }
+>>>
+
+[oversize-accepted]
+# a message of any length is read as a request
+expect = x: windows: a hostile client is refused
+group = g6
+edit = os/std/dserver.xfxn
+<<<
+    if (c < WM_CLIENT_MAX && s.w.client[c].used == 1 && (n as u64) == sizeof(ds_req)) {
+===
+    if (c < WM_CLIENT_MAX && s.w.client[c].used == 1) {
+>>>
+
+[inbox-small]
+# a message bigger than the inbox stays on the endpoint and jams it
+expect = x: windows: a hostile client is refused
+group = g8
+edit = os/std/dserver.xfxn
+<<<
+    a.cap = IPC_MSG_MAX as u64;
+===
+    a.cap = 4096;
+>>>
+
+[small-buffer]
+# a buffer too small for the window it is offered for
+expect = x: windows: a hostile client is refused
+group = g11
+edit = os/std/dserver.xfxn
+<<<
+    if (mi.size < bytes) { return E_INVALID_ARGS; }
+===
+>>>
+
+[dim-unchecked]
+# a window of any size
+expect = x: windows: a hostile client is refused
+group = g10
+edit = os/std/dserver.xfxn
+<<<
+    if (req.w == 0 || req.h == 0 || req.w > WM_DIM_MAX || req.h > WM_DIM_MAX) { return E_INVALID_ARGS; }
+===
+    if (req.w == 0 || req.h == 0) { return E_INVALID_ARGS; }
+>>>
+
+[flag-unchecked]
+# a flag nobody defined
+expect = x: windows: a hostile client is refused
+group = g9
+edit = os/std/dserver.xfxn
+<<<
+    if ((req.flags & (0 - 1 - WM_F_ALPHA)) != 0) { return E_INVALID_ARGS; }
+===
+>>>
+
+[commit-no-unmap]
+# the client keeps its writable mapping when it commits
+expect = x: windows: real clients, the whole way
+expect = x: windows: a hostile client is refused
+group = g12
+edit = os/std/window.xfxn
+<<<
+    // no lease while a writable mapping exists: ours goes first
+    vm_unmap(w.s.px, 0);
+===
+    // no lease while a writable mapping exists: ours goes first
+>>>
+
+[server-no-input]
+# the display server never gets the keyboard
+expect = display server: real screen, real keys, given back @ display server failed at step 2
+group = g8
+edit = os/std/dserver.xfxn
+<<<
+        s.input = input_open();
+===
+        s.input = E_ACCESS_DENIED;
+>>>

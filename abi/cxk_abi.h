@@ -15,7 +15,7 @@
  * hash it was built against and the loader refuses one that differs, so a
  * program never runs against numbers or layouts it was not compiled for.
  */
-#define CXK_ABI_HASH { 0x99, 0xb8, 0x74, 0xff, 0xdc, 0x86, 0xcb, 0x74, 0xe9, 0x2d, 0xc3, 0x23, 0xc8, 0xf7, 0x52, 0xe9, 0x7d, 0x33, 0x88, 0xab, 0x7f, 0x1e, 0x31, 0xbc, 0xd4, 0xc0, 0x9b, 0x08, 0xd5, 0x5d, 0xed, 0x86 }
+#define CXK_ABI_HASH { 0x02, 0xd7, 0x4d, 0x2c, 0xad, 0x99, 0xab, 0xda, 0x88, 0x8f, 0xf3, 0x72, 0x72, 0x0c, 0x45, 0xa6, 0x27, 0xe5, 0x1e, 0xd6, 0x12, 0xb0, 0x81, 0x1c, 0xf8, 0x37, 0x49, 0x1c, 0x37, 0x8b, 0xe3, 0x8d }
 
 /*
  * CXK ABI v1 - the PUBLIC contract shared by the kernel, the .xoex executive,
@@ -44,7 +44,7 @@
  * line; bump both, and the DevKit's stamp, in the one commit that changes the
  * contract.
  */
-#define CXK_ABI_VERSION          34
+#define CXK_ABI_VERSION          35
 
 /*
  * ---- syscall numbers ----
@@ -308,7 +308,7 @@
 #define HRIGHT_MAP_WRITE         0x4u
 #define HRIGHT_MAP_EXEC          0x8u
 
-/* memory object: SYS_MEM_SEAL */
+/* memory object: SYS_MEM_SEAL, SYS_MEM_LEND */
 #define HRIGHT_SEAL              0x10u
 
 /*
@@ -400,6 +400,9 @@
  * clears it
  */
 #define SIGNAL_IRQ_FIRED         0x1u
+
+/* input: events wait. Cleared when SYS_INPUT_EVENTS takes the last. */
+#define SIGNAL_INPUT_READY       0x1u
 
 /*
  * A deadline that never comes (SYS_OBJECT_WAIT): a wait with no limit.
@@ -544,6 +547,23 @@
 #define SYS_SCREEN_OPEN          0x47
 
 /*
+ * The keyboard and the pointer as one handle, for the display server
+ * (GRANT_INPUT). One holder at a time, and it cannot travel: while the handle
+ * lives every key and movement goes to it alone, and SYS_INPUT_READ,
+ * SYS_INPUT_POLL and SYS_MOUSE_READ are E_BUSY for everybody, so a program
+ * that holds GRANT_INPUT cannot read keys meant for a window.
+ * -> a handle with HRIGHT_READ and HRIGHT_WAIT. E_BUSY while one lives.
+ */
+#define SYS_INPUT_OPEN           0x48
+
+/*
+ * ebx = input handle (HRIGHT_READ), ecx = *input_event[count], edx = count
+ * (at least 1; at most INPUT_EVENTS_MAX are written) -> the number written,
+ * oldest first, 0 if none wait. SIGNAL_INPUT_READY says some do. Never blocks.
+ */
+#define SYS_INPUT_EVENTS         0x49
+
+/*
  * process 0x70-0x7F (spawning is privileged; kill, stop and jobs need only the
  * handle's right). Both return a process handle with HRIGHT_WAIT,
  * HRIGHT_INSPECT, HRIGHT_KILL, HRIGHT_STOP and HRIGHT_DUPLICATE, not a pid: the process is freed once it has ended and
@@ -648,6 +668,22 @@
  * it has MEM_SEAL_SEAL. A receiver reads them with OBJINFO_MEM.
  */
 #define SYS_MEM_SEAL             0x84
+
+/*
+ * ebx = memory object handle (HRIGHT_SEAL) -> a lease handle: while the lease
+ * lives nobody can map the object writable (E_BUSY), so whoever holds it
+ * reads pixels that cannot change. A seal that comes off. The lease moves in
+ * IPC messages and cannot be copied; its last reference ending, by a close
+ * or its holder's death, lifts it. E_BUSY while a writable mapping exists or
+ * a lease lives; E_NOT_SUPPORTED except for SYS_MEM_CREATE's objects.
+ */
+#define SYS_MEM_LEND             0x85
+
+/*
+ * ebx = lease handle, ecx = memory object handle -> 0 if the lease is on that
+ * object, E_INVALID_ARGS if on another; E_WRONG_TYPE if either is not one.
+ */
+#define SYS_MEM_LEASE_CHECK      0x86
 
 /* power 0x90-0x9F (privileged: GRANT_POWER). Each returns only if refused. */
 #define SYS_POWER_REBOOT         0x90
@@ -1076,6 +1112,8 @@ struct clock_info {
 #define OBJ_TYPE_THREAD          14             /* a thread (SYS_THREAD_CREATE) */
 #define OBJ_TYPE_DEVICE          15             /* a device a driver holds (SYS_DEVICE_OPEN) */
 #define OBJ_TYPE_IRQ             16             /* a device's interrupt (SYS_DEVICE_IRQ) */
+#define OBJ_TYPE_INPUT           17             /* the keyboard and pointer (SYS_INPUT_OPEN) */
+#define OBJ_TYPE_LEASE           18             /* a memory object held unwritable (SYS_MEM_LEND) */
 
 /*
  * Pipe sizes (SYS_PIPE_CREATE). A write of PIPE_ATOMIC bytes or fewer goes
@@ -1410,6 +1448,22 @@ struct screen_info {
     uint32_t size;                              /* bytes of the memory object: pitch * height, whole pages */
 };
 
+/* ---- input as a handle (SYS_INPUT_OPEN) ---- */
+#define INPUT_EVENT_KEY          1              /* code: the key, as SYS_INPUT_READ gives it */
+
+/* x, y: where the pointer is now; buttons: bit 0 left, 1 right, 2 middle */
+#define INPUT_EVENT_POINTER      2
+#define INPUT_EVENTS_MAX         32             /* events one SYS_INPUT_EVENTS writes at most */
+
+struct input_event {
+    uint32_t kind;                              /* INPUT_EVENT_* */
+    uint32_t code;
+    int32_t x;
+    int32_t y;
+    uint32_t buttons;
+    uint32_t reserved;                          /* 0 */
+};
+
 /*
  * ---- capabilities (for spawn_args.caps) ----
  * A process's authority, as a bitmask: what it is ALLOWED TO DO. One bit per
@@ -1733,6 +1787,7 @@ CXK_ABI_STATIC_ASSERT(sizeof(struct stop_notice) == 16, "ABI layout: stop_notice
 CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_reply_args) == 32, "ABI layout: ipc_reply_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct fb_geometry) == 16, "ABI layout: fb_geometry");
 CXK_ABI_STATIC_ASSERT(sizeof(struct screen_info) == 24, "ABI layout: screen_info");
+CXK_ABI_STATIC_ASSERT(sizeof(struct input_event) == 24, "ABI layout: input_event");
 CXK_ABI_STATIC_ASSERT(sizeof(struct net_ip_config) == 16, "ABI layout: net_ip_config");
 CXK_ABI_STATIC_ASSERT(sizeof(struct vm_map_args) == 48, "ABI layout: vm_map_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct vm_usage) == 16, "ABI layout: vm_usage");

@@ -26,6 +26,7 @@
 #include "object/kpipe.h"    /* kpipe_sys_init */
 #include "object/kthread.h"  /* kthread_sys_init */
 #include "object/kmem.h"     /* kmem_sys_init */
+#include "drivers/input/inputdev.h" /* input_sys_init */
 
 static struct ocache proc_cache;
 static struct idtab  pids;   /* pid -> process */
@@ -106,6 +107,7 @@ void proc_sys_init(void) {
     kpipe_sys_init();
     kthread_sys_init();
     kmem_sys_init();
+    input_sys_init();
     devhost_sys_init();
     vm_sys_init();
     if (ocache_init(&proc_cache, "process", sizeof(struct proc)) != 0 ||

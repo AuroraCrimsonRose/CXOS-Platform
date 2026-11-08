@@ -43,6 +43,10 @@
 #include "systable.h"           /* syscall_object_wait, syscall_object_info */
 #include "timer.h"              /* timer_now_ns: a wait's deadline */
 #include "proc.h"               /* proc_live */
+#include "drivers/input/inputdev.h" /* input_held */
+#include "drivers/input/keyboard.h"
+#include "drivers/input/mouse.h"
+#include "fb.h"
 #include "diag/testhook.h"      /* race_arm at RP_SPAWN_TAKE, live_take */
 
 extern const struct cxex_load_ops cxex_kernel_load_ops;   /* cxex_loadk.c */
@@ -1311,6 +1315,75 @@ static void xt_feed(struct xt_run *r, const char *b, uint32_t n) {
     }
 }
 
+int ktest_display_server(void) {
+    if (!fb_active()) return 1;
+    static const char prog[] = "/Shared/Programs/displayd.xuex";
+    static const char ds_args[] = "displayd\0--empty";   /* both NULs count */
+    if (cxfs_resolve(prog, 0) < 0) return 1;       /* nothing staged - skip */
+    paddr_t frame = pmm_alloc();
+    if (!frame) return 0;
+    if (paging_map_user(SHP_VA, frame, VM_WRITE) != 0) { pmm_free(frame); return 0; }
+    struct spawn_args *a        = (struct spawn_args *)SHP_VA;
+    struct object_info_args *oi = (struct object_info_args *)(SHP_VA + 0x100);
+    struct process_info *pi     = (struct process_info *)(SHP_VA + 0x200);
+    char *path                  = (char *)(SHP_VA + 0x300);
+    char *argv                  = (char *)(SHP_VA + 0x380);
+    struct htab *tab = thread_htab(thread_current_id());
+    uint32_t caps = thread_current_caps();
+    uint32_t want = GRANT_SPAWN | GRANT_ENDPOINT | GRANT_FRAMEBUFFER | GRANT_INPUT | GRANT_CONSOLE | GRANT_DISK;
+    thread_set_caps(thread_current_id(), want);
+    for (uint32_t i = 0; i < sizeof prog; i++) path[i] = prog[i];
+    for (uint32_t i = 0; i < sizeof ds_args; i++) argv[i] = ds_args[i];
+    uint32_t live0 = proc_live();
+    int32_t ph = -1;
+    int step;
+
+    a->image = 0; a->image_len = 0; a->name = user_addr(path);
+    a->broker_endpoint = -1; a->caps = want; a->job = 0;
+    a->args = user_addr(argv); a->args_len = sizeof ds_args;
+    a->handles = 0; a->handle_count = 0;
+    ph = syscall_exec_path(user_addr(path), user_addr(a));
+    step = 1; if (ph <= 0) goto done;
+
+    /* 2: it has the screen and the keys */
+    uint64_t deadline = timer_now_ns() + 300000 * TIMER_NS_PER_TICK;
+    step = 2;
+    while (!(input_held() && fb_screen_held())) {
+        if (timer_now_ns() > deadline) goto done;
+        if (syscall_dispatch(SYS_SLEEP, 10, 0, 0, 0, 0) != E_OK) goto done;
+    }
+
+    /* 3: a key and a click at the drivers' entry points, then Ctrl+Q */
+    mouse_inject(1, 1, 1);
+    mouse_inject(0, 0, 0);
+    keyboard_inject('x');
+    keyboard_inject(17);
+    step = 3; if (syscall_object_wait(ph, SIGNAL_PROCESS_ENDED, deadline, 0) != E_OK) goto done;
+    /* 4: it ended as it was asked to */
+    step = 4; if (spv_info(oi, ph, OBJINFO_PROCESS, pi, sizeof *pi) != (int)sizeof *pi
+                  || pi->ended != PROC_EXITED || pi->code != 0) goto done;
+    /* 5: everything back, its two clients gone with it */
+    htab_close(tab, ph);
+    ph = -1;
+    step = 5; if (!proc_live_settles(live0) || input_held() || fb_screen_held()) goto done;
+    step = 0;
+
+done:
+    if (step != 0)
+        klog_u32("KTEST", SEV_ERR, "display server failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    if (ph > 0) {
+        /* gone before the next test, which wants the screen and the keys */
+        (void)syscall_process_kill(ph);
+        (void)syscall_object_wait(ph, SIGNAL_PROCESS_ENDED, timer_now_ns() + 10000 * TIMER_NS_PER_TICK, 0);
+        htab_close(tab, ph);
+        (void)proc_live_settles(live0);
+    }
+    thread_set_caps(thread_current_id(), caps);
+    paging_unmap(SHP_VA);
+    pmm_free(frame);
+    return step == 0;
+}
+
 int ktest_xtests(int (*report)(const char *, int), int *total) {
     *total = 0;
     if (!cxfs_is_mounted()) return 0;                                 /* nothing mounted - skip */
@@ -1336,7 +1409,7 @@ int ktest_xtests(int (*report)(const char *, int), int *total) {
     static const char prog[] = "/Shared/Programs/xtest.xuex";
     struct htab *tab = thread_htab(thread_current_id());
     uint32_t caps = thread_current_caps();
-    thread_set_caps(thread_current_id(), GRANT_SPAWN);
+    thread_set_caps(thread_current_id(), GRANT_SPAWN | GRANT_ENDPOINT);
     for (uint32_t i = 0; i < sizeof prog; i++) path[i] = prog[i];
     out[0] = out[1] = -1;
     int32_t ph = -1;
@@ -1348,7 +1421,8 @@ int ktest_xtests(int (*report)(const char *, int), int *total) {
     step = 1; if (syscall_pipe_create(0, user_addr(out)) != E_OK) goto done;
     sh[0] = (struct spawn_handle){ out[1], IPC_HANDLE_MOVE, IPC_RIGHTS_SAME, ARGS_STDOUT };
     a->image = 0; a->image_len = 0; a->name = user_addr(path);
-    a->broker_endpoint = -1; a->caps = 0; a->args = 0; a->args_len = 0; a->job = 0;
+    /* GRANT_SPAWN: the window tests start real clients */
+    a->broker_endpoint = -1; a->caps = GRANT_SPAWN | GRANT_ENDPOINT; a->args = 0; a->args_len = 0; a->job = 0;
     a->handles = user_addr(sh); a->handle_count = 1;
     ph = syscall_exec_path(user_addr(path), user_addr(a));
     if (ph <= 0) {

@@ -11,6 +11,7 @@
 
 #include <stdint.h>
 #include "mouse.h"
+#include "inputdev.h"
 
 static int      present;
 static int32_t  mx, my;                 /* absolute position, clamped */
@@ -33,6 +34,7 @@ void mouse_inject(int32_t dx, int32_t dy, uint32_t btns) {
        probe found nothing - otherwise a USB-only mouse reports as absent and
        the GUI ignores it. */
     present = 1;
+    input_post_pointer(mx, my, btns);
 }
 
 void mouse_attach(void) { present = 1; }

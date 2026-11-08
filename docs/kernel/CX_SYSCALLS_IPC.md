@@ -846,6 +846,20 @@ operations leave it.
   executable), mapped write-combining. One holder: `E_BUSY` while it is
   held or after a panic took it. Its last reference gives it back. While it
   is held the calls above draw into the kernel's copy only.
+- **Input as a handle** (`CXK_ABI_VERSION` 35, step 2.4): `SYS_INPUT_OPEN`
+  (0x48, `GRANT_INPUT`) returns the one input handle (`HRIGHT_READ`,
+  `HRIGHT_WAIT`; `E_BUSY` while held; not transferable, so an IPC move or a
+  spawn slot refuses it). `SYS_INPUT_EVENTS` (0x49, `h, *input_event, count`)
+  takes up to `INPUT_EVENTS_MAX`, 0 if none; `SIGNAL_INPUT_READY` says there
+  are some. While it is held `SYS_INPUT_READ`, `SYS_INPUT_POLL` and
+  `SYS_MOUSE_READ` return `E_BUSY`.
+- **Leases** (`CXK_ABI_VERSION` 35, step 2.4): `SYS_MEM_LEND` (0x85, a memory
+  handle with `HRIGHT_SEAL`) returns a lease with no rights: `E_BUSY` while the
+  object has a writable mapping or is already lent, `E_NOT_SUPPORTED` unless
+  anonymous. While the lease lives, mapping the object writable is `E_BUSY`. It
+  can be moved by IPC, not duplicated; its last reference ends it.
+  `SYS_MEM_LEASE_CHECK` (0x86, `lease, mem`) is `E_OK` when that lease is on
+  that object, `E_INVALID_ARGS` when it is not.
 - **Network** (`CXK_ABI_VERSION` 8): `SYS_NET_OP`, `net_op_args` and
   `NET_OP_*` go. `SYS_NET_STATUS` (0x50), `SYS_NET_MAC` (0x51, `buf, len`),
   `SYS_NET_GET_CONFIG` (0x52, `*net_ip_config` out, which replaces the u32[4]

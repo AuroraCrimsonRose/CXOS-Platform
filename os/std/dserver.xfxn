@@ -1,0 +1,311 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// std/dserver.xfxn - the display server's loop and protocol (roadmap 2.4).
+// Aurora Tejeda / CATX Systems
+// Threads: one.
+//
+// One wait on a queue: the endpoint clients call, the input handle, and each
+// client's process. Nothing a client does can hold it up. A call's answer is
+// never waited for (a reply does not block), a call waiting for an event is
+// only a held reply token, and a message of any size is received whole, so
+// one too large for the protocol is refused rather than left at the head of
+// the queue for ever.
+//
+// A client is connected by being started: dsv_launch mints a send handle
+// badged with its slot and puts it in the new process, so the badge says who
+// is calling and nobody can claim to be anybody else. There is no name
+// service to find the server by yet.
+
+import "window.xfxn";
+import "time.xfxn";
+
+const DSV_KEY_EP: u64 = 1;
+const DSV_KEY_INPUT: u64 = 2;
+const DSV_KEY_PROC: u64 = 100;  // + the client's slot
+const DSV_FRAME_MS: u64 = 16;
+
+struct dsv {
+    w: wm,
+    comp: ds_comp,
+    screen: ds_screen,
+    desktop: ds_surface,
+    cursor: ds_surface,
+    font: ds_font,
+    ep: i32,
+    input: i32,         // 0: a virtual screen, driven by wm_key and wm_pointer
+    queue: i32,
+    launched: u32,      // clients started, ever
+    proc: [16]i32,      // each client's process; WM_CLIENT_MAX
+    frames: u32,
+    pixels: u64
+}
+
+global dsv_inbox: [65536]u8;    // IPC_MSG_MAX, so that any message can be taken
+global dsv_inhandles: [16]i32;  // IPC_HANDLES_MAX
+
+// Everything but the screen's contents: 0 or an error. width 0 takes the real
+// screen and the input handle, which need their grants; otherwise a virtual
+// screen of that size. Paint s.desktop and s.cursor after this.
+fn dsv_init(s: *dsv, width: u32, height: u32, cursor_w: u32, cursor_h: u32) -> i32 {
+    memzero(s as *u8, sizeof *s);
+    let rc: i32 = 0;
+    if (width == 0) {
+        rc = ds_screen_open(&s.screen);
+        if (rc != 0) { return rc; }
+        s.input = input_open();
+        if (s.input <= 0) { let e: i32 = s.input; ds_screen_close(&s.screen); return e; }
+    } else {
+        rc = ds_screen_virtual(&s.screen, width, height, SCREEN_XRGB8888);
+        if (rc != 0) { return rc; }
+    }
+    rc = ds_comp_init(&s.comp, s.screen.width, s.screen.height);
+    if (rc == 0) { rc = ds_surface_new(&s.desktop, s.screen.width, s.screen.height); }
+    if (rc == 0) { rc = ds_surface_new(&s.cursor, cursor_w, cursor_h); }
+    if (rc != 0) { return rc; }
+    s.ep = ep_create();
+    if (s.ep <= 0) { return s.ep; }
+    s.queue = queue_create();
+    if (s.queue <= 0) { return s.queue; }
+    rc = queue_register(s.queue, s.ep, SIGNAL_EP_READABLE, DSV_KEY_EP);
+    if (rc == 0 && s.input > 0) { rc = queue_register(s.queue, s.input, SIGNAL_INPUT_READY, DSV_KEY_INPUT); }
+    if (rc != 0) { return rc; }
+    // Titles need GRANT_DISK, and a virtual screen is pinned without them.
+    let f: *ds_font = 0 as *ds_font;
+    if (width == 0 && (ds_font_load(&s.font, "/System/Fonts/console_16.xfnt") == 0)) { f = &s.font; }
+    wm_init(&s.w, &s.comp, &s.desktop, &s.cursor, f);
+    return 0;
+}
+
+// Start `path` as a client: its process handle's slot, or an error. args and
+// args_len are the argument blob, as spawn_args takes it.
+fn dsv_launch(s: *dsv, path: *u8, args: *u8, args_len: u32) -> i32 {
+    let c: u32 = wm_client_new(&s.w);
+    if (c == WM_NONE) { return E_NO_RESOURCES; }
+    let send: i32 = ep_mint(s.ep, (c + 1) as u64, HRIGHT_SEND);
+    if (send <= 0) { s.w.client[c].used = 0; return send; }
+    let sh: spawn_handle;
+    sh.handle = send; sh.op = IPC_HANDLE_MOVE; sh.rights = IPC_RIGHTS_SAME; sh.slot = WIN_SLOT;
+    let a: spawn_args;
+    memzero((&a) as *u8, sizeof a);
+    a.name = path as u64;
+    a.broker_endpoint = 0 - 1;
+    a.caps = GRANT_CONSOLE;
+    a.args = args as u64;
+    a.args_len = args_len as u64;
+    a.handles = (&sh) as u64;
+    a.handle_count = 1;
+    let ph: i32 = exec_path(path, &a);
+    if (ph <= 0) { handle_close(send); s.w.client[c].used = 0; return ph; }
+    let rc: i32 = queue_register(s.queue, ph, SIGNAL_PROCESS_ENDED, DSV_KEY_PROC + (c as u64));
+    if (rc != 0) { process_kill(ph); handle_close(ph); s.w.client[c].used = 0; return rc; }
+    s.proc[c] = ph;
+    s.launched = s.launched + 1;
+    return c as i32;
+}
+
+// A client has gone, or is being ended: nothing of it stays.
+fn dsv_drop_client(s: *dsv, c: u32) -> void {
+    if (s.proc[c] > 0) {
+        queue_unregister(s.queue, DSV_KEY_PROC + (c as u64));
+        handle_close(s.proc[c]);
+        s.proc[c] = 0;
+    }
+    wm_client_gone(&s.w, c);
+}
+
+fn dsv_reply(token: i32, rep: *ds_rep) -> void {
+    let a: ipc_reply_args;
+    memzero((&a) as *u8, sizeof a);
+    a.token = token;
+    a.data = rep as u64;
+    a.len = sizeof *rep;
+    // a token refused its reply stays open, so it goes; the caller has its error
+    if (ipc_reply(&a) != 0) { handle_close(token); }
+}
+
+fn dsv_close_handles(count: u32, from: u32) -> void {
+    let i: u32 = from;
+    while (i < count) {
+        if (dsv_inhandles[i] > 0) { handle_close(dsv_inhandles[i]); }
+        dsv_inhandles[i] = 0;
+        i = i + 1;
+    }
+}
+
+// A client's buffer, mapped read-only: 0 or an error.
+fn dsv_map(h: i32, width: u32, height: u32, out: *ds_surface) -> i32 {
+    let mi: mem_info;
+    let oi: object_info_args;
+    memzero((&oi) as *u8, sizeof oi);
+    oi.handle = h; oi.topic = OBJINFO_MEM; oi.buf = (&mi) as u64; oi.cap = sizeof mi;
+    let n: i32 = object_info(&oi);
+    if (n < 0) { return n; }
+    let bytes: u64 = (width as u64) * (height as u64) * 4;
+    if (mi.size < bytes) { return E_INVALID_ARGS; }
+    let a: vm_map_args;
+    memzero((&a) as *u8, sizeof a);
+    a.object = h as u32;
+    a.length = bytes;
+    a.prot = MPROT_READ;
+    let rc: i32 = vm_map(&a);
+    if (rc != E_OK) { return rc; }
+    out.px = a.addr; out.width = width; out.height = height; out.stride = width; out.mem = h;
+    return 0;
+}
+
+fn dsv_window_new(s: *dsv, c: u32, req: *ds_req, rep: *ds_rep, handles: u32) -> i32 {
+    if (handles != 2) { return E_INVALID_ARGS; }
+    if (req.w == 0 || req.h == 0 || req.w > WM_DIM_MAX || req.h > WM_DIM_MAX) { return E_INVALID_ARGS; }
+    if ((req.flags & (0 - 1 - WM_F_ALPHA)) != 0) { return E_INVALID_ARGS; }
+    let a: ds_surface;
+    let b: ds_surface;
+    let rc: i32 = dsv_map(dsv_inhandles[0], req.w, req.h, &a);
+    if (rc != 0) { return rc; }
+    rc = dsv_map(dsv_inhandles[1], req.w, req.h, &b);
+    if (rc != 0) { vm_unmap(a.px, 0); return rc; }
+    req.title[WM_TITLE_LEN - 1] = 0;
+    let id: i32 = wm_window_new(&s.w, c, req.w, req.h, req.flags, &req.title[0], &a, &b);
+    if (id < 0) { vm_unmap(a.px, 0); vm_unmap(b.px, 0); return id; }
+    dsv_inhandles[0] = 0;
+    dsv_inhandles[1] = 0;       // the window's now
+    rep.win = id as u32;
+    return 0;
+}
+
+fn dsv_commit(s: *dsv, c: u32, req: *ds_req, rep: *ds_rep, handles: u32) -> i32 {
+    if (handles != 1 || wm_owns(&s.w, c, req.win) == 0) { return E_INVALID_ARGS; }
+    if (req.buffer > 1 || req.nrects > DS_RECTS_MAX) { return E_INVALID_ARGS; }
+    let win: *wm_win = &s.w.win[req.win];
+    // the lease must be on the buffer it is said to be for, or the client
+    // could go on writing to the one that is shown
+    let rc: i32 = mem_lease_check(dsv_inhandles[0], win.buf[req.buffer].mem);
+    if (rc != 0) { return rc; }
+    let freed: u32 = wm_commit(&s.w, req.win, req.buffer, dsv_inhandles[0], &req.rects[0], req.nrects);
+    if (freed == WM_COMMIT_REFUSED) { return E_INVALID_ARGS; }
+    dsv_inhandles[0] = 0;       // the window's now
+    rep.freed = freed;
+    return 0;
+}
+
+// One message off the endpoint.
+fn dsv_receive(s: *dsv) -> void {
+    let info: ipc_msg_info;
+    let a: ipc_recv_args;
+    memzero((&a) as *u8, sizeof a);
+    a.ep_handle = s.ep;
+    a.buf = (&dsv_inbox[0]) as u64;
+    a.cap = IPC_MSG_MAX as u64;
+    a.info = (&info) as u64;
+    a.handles = (&dsv_inhandles[0]) as u64;
+    a.handle_cap = IPC_HANDLES_MAX;
+    let n: i32 = ipc_recv(&a);
+    if (n < 0 || info.reply <= 0) { return; }
+    let count: u32 = ds_min(info.handles, IPC_HANDLES_MAX);
+    let c: u32 = (info.badge as u32) - 1;
+    let rep: ds_rep;
+    memzero((&rep) as *u8, sizeof rep);
+    rep.status = E_INVALID_ARGS;
+    if (c < WM_CLIENT_MAX && s.w.client[c].used == 1 && (n as u64) == sizeof(ds_req)) {
+        // aligned for its fields: the inbox is the first thing in its page
+        let req: *ds_req = (&dsv_inbox[0]) as *ds_req;
+        if (req.op == DS_OP_WAIT) {
+            dsv_close_handles(count, 0);
+            wm_wait(&s.w, c, info.reply);
+            return;
+        }
+        if (req.op == DS_OP_WINDOW_NEW) { rep.status = dsv_window_new(s, c, req, &rep, count); }
+        if (req.op == DS_OP_COMMIT) { rep.status = dsv_commit(s, c, req, &rep, count); }
+        if (req.op == DS_OP_WINDOW_CLOSE && count == 0 && wm_owns(&s.w, c, req.win) == 1) {
+            wm_window_destroy(&s.w, req.win);
+            rep.status = 0;
+        }
+    }
+    // whatever a refused request carried, and anything it should not have
+    dsv_close_handles(count, 0);
+    dsv_reply(info.reply, &rep);
+}
+
+fn dsv_read_input(s: *dsv) -> void {
+    let ev: [32]input_event;   // INPUT_EVENTS_MAX
+    let n: i32 = input_events(s.input, &ev[0], INPUT_EVENTS_MAX);
+    let i: i32 = 0;
+    while (i < n) {
+        if (ev[i].kind == INPUT_EVENT_KEY) { wm_key(&s.w, ev[i].code); }
+        if (ev[i].kind == INPUT_EVENT_POINTER) { wm_pointer(&s.w, ev[i].x, ev[i].y, ev[i].buttons); }
+        i = i + 1;
+    }
+}
+
+// Compose what changed and answer whoever is waiting for an event.
+fn dsv_settle(s: *dsv) -> void {
+    wm_tick(&s.w, time_now_ms());
+    let c: u32 = 0;
+    while (c < WM_CLIENT_MAX) {
+        if (s.w.client[c].used == 1 && s.w.client[c].kill == 1) {
+            if (s.proc[c] > 0) { process_kill(s.proc[c]); }
+            dsv_drop_client(s, c);
+        }
+        c = c + 1;
+    }
+    if (s.comp.damage.n > 0) {
+        ds_compose(&s.comp);
+        s.pixels = s.pixels + ds_present(&s.comp, &s.screen);
+        s.frames = s.frames + 1;
+        wm_frames_done(&s.w);
+    }
+    c = 0;
+    while (c < WM_CLIENT_MAX) {
+        let cl: *wm_client = &s.w.client[c];
+        if (cl.used == 1 && cl.waiter > 0 && cl.n > 0) {
+            let rep: ds_rep;
+            memzero((&rep) as *u8, sizeof rep);
+            wm_take(&s.w, c, &rep.ev);
+            let token: i32 = cl.waiter;
+            cl.waiter = 0;
+            dsv_reply(token, &rep);
+        }
+        c = c + 1;
+    }
+}
+
+// One turn of the loop: wait up to a frame, deal with what came, settle.
+fn dsv_step(s: *dsv) -> void {
+    let evs: [16]queue_event;
+    let n: i32 = queue_wait(s.queue, &evs[0], 16, time_deadline_ms(DSV_FRAME_MS));
+    let i: i32 = 0;
+    while (i < n) {
+        let key: u64 = evs[i].key;
+        if (key == DSV_KEY_EP) { dsv_receive(s); queue_arm(s.queue, key); }
+        if (key == DSV_KEY_INPUT) { dsv_read_input(s); queue_arm(s.queue, key); }
+        if (key >= DSV_KEY_PROC) { dsv_drop_client(s, (key - DSV_KEY_PROC) as u32); }
+        i = i + 1;
+    }
+    // A USB keyboard is read by asking, and nothing signals that it has keys.
+    if (s.input > 0 && n <= 0) { dsv_read_input(s); }
+    dsv_settle(s);
+}
+
+// How many clients are connected.
+fn dsv_clients(s: *dsv) -> u32 {
+    let c: u32 = 0;
+    let n: u32 = 0;
+    while (c < WM_CLIENT_MAX) {
+        if (s.w.client[c].used == 1) { n = n + 1; }
+        c = c + 1;
+    }
+    return n;
+}
+
+// Every client ended, and the screen and the keys given back.
+fn dsv_shutdown(s: *dsv) -> void {
+    let c: u32 = 0;
+    while (c < WM_CLIENT_MAX) {
+        if (s.w.client[c].used == 1) {
+            if (s.proc[c] > 0) { process_kill(s.proc[c]); }
+            dsv_drop_client(s, c);
+        }
+        c = c + 1;
+    }
+    if (s.input > 0) { handle_close(s.input); s.input = 0; }
+    ds_screen_close(&s.screen);
+}

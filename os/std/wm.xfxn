@@ -1,0 +1,530 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// std/wm.xfxn - windows: stacking, frames, focus and where input goes (roadmap 2.4).
+// Aurora Tejeda / CATX Systems
+// Threads: one (the display server's).
+//
+// The window system's decisions, with nothing of the transport in them: the
+// server (std/dserver.xfxn) feeds this the keys, the pointer and the clients'
+// requests, and delivers what it queues; the tests feed it directly and look
+// at the screen.
+//
+// The rules (docs/system/CX_DISPLAY.md sections 4 and 7):
+//   - A key goes to the focused window and to nobody else.
+//   - The pointer goes to the window under it, in that window's coordinates,
+//     or to the window a press landed in until the button comes up.
+//   - A press focuses and raises. The title bar drags, the close box asks.
+//   - The server draws the frames, so a client that has stopped answering can
+//     still be moved and closed: its frame goes grey, and its close box ends it.
+//
+// As Serenity's WindowServer: a stack bottom first, server-drawn frames, and
+// the client's buffer composed as it was committed.
+
+import "display.xfxn";
+
+const WM_WIN_MAX: u32 = 16;
+const WM_CLIENT_MAX: u32 = 16;
+const WM_PER_CLIENT: u32 = 8;       // windows one client may have
+const WM_NONE: u32 = 0xFFFFFFFF;
+const WM_RING: u32 = 32;            // events waiting for one client
+const WM_TITLE_LEN: u32 = 32;
+const WM_DIM_MAX: u32 = 4096;       // a window's largest side
+
+const WM_TITLE_H: u32 = 20;
+const WM_EDGE: u32 = 2;
+const WM_CLOSE_W: u32 = 16;
+const WM_HANG_MS: u64 = 2000;       // events unread this long: not answering
+
+// Two keys the server keeps for itself until trusted UI (roadmap 2.6) has a
+// combination nothing can intercept: Ctrl+Q ends the session, Ctrl+N is the
+// next window, for a machine with no pointer.
+const WM_KEY_QUIT: u32 = 17;
+const WM_KEY_NEXT: u32 = 14;
+
+const WM_F_ALPHA: u32 = 1;          // the client's pixels carry alpha
+
+const WM_COL_FOCUS: u32 = 0xFF2F5F9F;
+const WM_COL_IDLE: u32 = 0xFF4A5058;
+const WM_COL_HUNG: u32 = 0xFF8C8C8C;
+const WM_COL_CLOSE: u32 = 0xFFB83A3A;
+const WM_COL_TEXT: u32 = 0xFFFFFFFF;
+
+// What a client is told (std/window.xfxn carries it).
+const WM_EV_KEY: u32 = 1;           // a: the key
+const WM_EV_POINTER: u32 = 2;       // a, b: in the window; c: buttons
+const WM_EV_FOCUS: u32 = 3;         // a: 1 gained, 0 lost
+const WM_EV_CLOSE: u32 = 4;         // its close box was pressed
+const WM_EV_FRAME: u32 = 5;         // what it committed is on the screen: draw the next
+
+struct wm_event {
+    kind: u32,
+    win: u32,
+    a: i32,
+    b: i32,
+    c: i32,
+    reserved: u32
+}
+
+struct wm_client {
+    used: u32,
+    waiter: i32,        // the reply token of its waiting call, or 0
+    head: u32,
+    n: u32,
+    since: u64,         // when the oldest event still unread became that
+    hung: u32,
+    kill: u32,          // the server is to end it
+    ring: [32]wm_event  // WM_RING
+}
+
+struct wm_win {
+    used: u32,
+    client: u32,
+    x: u32,             // the frame's top left
+    y: u32,
+    w: u32,             // the content's size
+    h: u32,
+    flags: u32,
+    cur: u32,           // the buffer on the screen: 0, 1 or WM_NONE
+    want_frame: u32,    // committed since the last frame was told
+    lease: [2]i32,      // what keeps a shown buffer unwritable; 0 if none
+    buf: [2]ds_surface, // the client's, mapped read-only; .mem is our handle
+    frame: ds_surface,  // server-drawn; the content's area is transparent
+    title: [32]u8       // WM_TITLE_LEN
+}
+
+struct wm {
+    comp: *ds_comp,
+    desktop: *ds_surface,
+    cursor: *ds_surface,
+    font: *ds_font,     // 0: titles are not drawn
+    sw: u32,
+    sh: u32,
+    now: u64,
+    z: [16]u32,         // indexes into win, bottom first; WM_WIN_MAX
+    zn: u32,
+    focus: u32,
+    capture: u32,       // the window a press landed in
+    drag: u32,          // the window being dragged
+    grab_x: u32,
+    grab_y: u32,
+    px: u32,
+    py: u32,
+    buttons: u32,
+    cursor_layer: u32,
+    quit: u32,
+    win: [16]wm_win,            // WM_WIN_MAX
+    client: [16]wm_client       // WM_CLIENT_MAX
+}
+
+// ---- the stack ----
+
+fn wm_frame_w(win: *wm_win) -> u32 { return win.w + 2 * WM_EDGE; }
+fn wm_frame_h(win: *wm_win) -> u32 { return win.h + WM_TITLE_H + WM_EDGE; }
+
+fn wm_damage_win(w: *wm, win: *wm_win) -> void {
+    ds_damage_add(&w.comp.damage, win.x, win.y, wm_frame_w(win), wm_frame_h(win));
+}
+
+// The compositor's layers, from the stack: the desktop, each window's frame
+// and content, the pointer. Whoever changed the stack damages what it changed.
+fn wm_restack(w: *wm) -> void {
+    ds_layers_clear(w.comp);
+    ds_layer_put(w.comp, w.desktop, 0, 0, 1);
+    let k: u32 = 0;
+    while (k < w.zn) {
+        let win: *wm_win = &w.win[w.z[k]];
+        ds_layer_put(w.comp, &win.frame, win.x, win.y, 0);
+        if (win.cur != WM_NONE) {
+            let opaque: u32 = 1;
+            if ((win.flags & WM_F_ALPHA) != 0) { opaque = 0; }
+            ds_layer_put(w.comp, &win.buf[win.cur], win.x + WM_EDGE, win.y + WM_TITLE_H, opaque);
+        }
+        k = k + 1;
+    }
+    w.cursor_layer = ds_layer_put(w.comp, w.cursor, w.px, w.py, 0);
+}
+
+fn wm_paint_frame(w: *wm, i: u32) -> void {
+    let win: *wm_win = &w.win[i];
+    let bar: u32 = WM_COL_IDLE;
+    if (w.focus == i) { bar = WM_COL_FOCUS; }
+    if (w.client[win.client].hung == 1) { bar = WM_COL_HUNG; }
+    let fw: u32 = wm_frame_w(win);
+    ds_fill(&win.frame, 0, 0, fw, wm_frame_h(win), bar);
+    ds_fill(&win.frame, WM_EDGE, WM_TITLE_H, win.w, win.h, 0);
+    if (fw > WM_CLOSE_W + 2 * WM_EDGE) {
+        ds_fill(&win.frame, fw - WM_EDGE - WM_CLOSE_W, WM_EDGE, WM_CLOSE_W, WM_TITLE_H - 2 * WM_EDGE, WM_COL_CLOSE);
+    }
+    if (w.font != (0 as *ds_font) && fw > WM_CLOSE_W + 16) {
+        ds_text(&win.frame, w.font, 6, 2, fw - WM_CLOSE_W - 12, &win.title[0], WM_COL_TEXT);
+    }
+    wm_damage_win(w, win);
+}
+
+fn wm_z_remove(w: *wm, i: u32) -> void {
+    let k: u32 = 0;
+    let at: u32 = 0;
+    while (k < w.zn) {
+        if (w.z[k] != i) { w.z[at] = w.z[k]; at = at + 1; }
+        k = k + 1;
+    }
+    w.zn = at;
+}
+
+fn wm_raise(w: *wm, i: u32) -> void {
+    if (w.zn > 0 && w.z[w.zn - 1] == i) { return; }
+    wm_z_remove(w, i);
+    w.z[w.zn] = i;
+    w.zn = w.zn + 1;
+    wm_restack(w);
+    wm_damage_win(w, &w.win[i]);
+}
+
+// ---- events ----
+
+// Queue one for a client. A movement replaces one still unread with the same
+// buttons; a full ring drops the newest, and only that client pays for it.
+fn wm_push(w: *wm, c: u32, kind: u32, win: u32, a: i32, b: i32, e: i32) -> void {
+    let cl: *wm_client = &w.client[c];
+    if (kind == WM_EV_POINTER && cl.n > 0) {
+        let last: *wm_event = &cl.ring[(cl.head + cl.n - 1) % WM_RING];
+        if (last.kind == WM_EV_POINTER && last.win == win && last.c == e) {
+            last.a = a; last.b = b;
+            return;
+        }
+    }
+    if (cl.n == WM_RING) { return; }
+    let ev: *wm_event = &cl.ring[(cl.head + cl.n) % WM_RING];
+    ev.kind = kind; ev.win = win; ev.a = a; ev.b = b; ev.c = e; ev.reserved = 0;
+    if (cl.n == 0) { cl.since = w.now; }
+    cl.n = cl.n + 1;
+}
+
+// The oldest event for a client: 1 and *ev, or 0.
+fn wm_take(w: *wm, c: u32, ev: *wm_event) -> u32 {
+    let cl: *wm_client = &w.client[c];
+    if (cl.n == 0) { return 0; }
+    let from: *wm_event = &cl.ring[cl.head];
+    ev.kind = from.kind; ev.win = from.win; ev.a = from.a;
+    ev.b = from.b; ev.c = from.c; ev.reserved = 0;
+    cl.head = (cl.head + 1) % WM_RING;
+    cl.n = cl.n - 1;
+    cl.since = w.now;
+    return 1;
+}
+
+// ---- focus ----
+
+fn wm_focus_set(w: *wm, i: u32) -> void {
+    if (w.focus == i) { return; }
+    let old: u32 = w.focus;
+    w.focus = i;
+    if (old != WM_NONE) {
+        wm_push(w, w.win[old].client, WM_EV_FOCUS, old, 0, 0, 0);
+        wm_paint_frame(w, old);
+    }
+    if (i != WM_NONE) {
+        wm_push(w, w.win[i].client, WM_EV_FOCUS, i, 1, 0, 0);
+        wm_paint_frame(w, i);
+    }
+}
+
+// The close box: asked of a client that answers, done to one that does not.
+fn wm_request_close(w: *wm, i: u32) -> void {
+    let c: u32 = w.win[i].client;
+    if (w.client[c].hung == 1) { w.client[c].kill = 1; return; }
+    wm_push(w, c, WM_EV_CLOSE, i, 0, 0, 0);
+}
+
+// ---- input ----
+
+fn wm_key(w: *wm, code: u32) -> void {
+    if (code == WM_KEY_QUIT) { w.quit = 1; return; }
+    if (code == WM_KEY_NEXT) {
+        if (w.zn > 1) {
+            let bottom: u32 = w.z[0];
+            wm_raise(w, bottom);
+            wm_focus_set(w, bottom);
+        }
+        return;
+    }
+    if (w.focus == WM_NONE) { return; }
+    wm_push(w, w.win[w.focus].client, WM_EV_KEY, w.focus, code as i32, 0, 0);
+}
+
+const WM_ZONE_NONE: u32 = 0;
+const WM_ZONE_CONTENT: u32 = 1;
+const WM_ZONE_TITLE: u32 = 2;
+const WM_ZONE_CLOSE: u32 = 3;
+const WM_ZONE_EDGE: u32 = 4;
+
+fn wm_zone(win: *wm_win, x: u32, y: u32) -> u32 {
+    let fw: u32 = wm_frame_w(win);
+    if (x < win.x || y < win.y || x - win.x >= fw || y - win.y >= wm_frame_h(win)) { return WM_ZONE_NONE; }
+    let fx: u32 = x - win.x;
+    let fy: u32 = y - win.y;
+    if (fy >= WM_TITLE_H) {
+        if (fx >= WM_EDGE && fx < WM_EDGE + win.w && fy < WM_TITLE_H + win.h) { return WM_ZONE_CONTENT; }
+        return WM_ZONE_EDGE;
+    }
+    if (fw > WM_CLOSE_W + 2 * WM_EDGE && fx >= fw - WM_EDGE - WM_CLOSE_W && fx < fw - WM_EDGE) { return WM_ZONE_CLOSE; }
+    return WM_ZONE_TITLE;
+}
+
+// The topmost window at a point, or WM_NONE.
+fn wm_top_at(w: *wm, x: u32, y: u32) -> u32 {
+    let k: u32 = w.zn;
+    while (k > 0) {
+        k = k - 1;
+        if (wm_zone(&w.win[w.z[k]], x, y) != WM_ZONE_NONE) { return w.z[k]; }
+    }
+    return WM_NONE;
+}
+
+fn wm_move(w: *wm, i: u32, x: u32, y: u32) -> void {
+    let win: *wm_win = &w.win[i];
+    if (win.x == x && win.y == y) { return; }
+    wm_damage_win(w, win);
+    win.x = x; win.y = y;
+    wm_restack(w);
+    wm_damage_win(w, win);
+}
+
+fn wm_pointer_to(w: *wm, i: u32, buttons: u32) -> void {
+    let win: *wm_win = &w.win[i];
+    let cx: i32 = (win.x + WM_EDGE) as i32;
+    let cy: i32 = (win.y + WM_TITLE_H) as i32;
+    wm_push(w, win.client, WM_EV_POINTER, i, (w.px as i32) - cx, (w.py as i32) - cy, buttons as i32);
+}
+
+fn wm_clamp(v: i32, max: u32) -> u32 {
+    if (v < 0) { return 0; }
+    if ((v as u32) >= max) { return max - 1; }
+    return v as u32;
+}
+
+fn wm_pointer(w: *wm, x: i32, y: i32, buttons: u32) -> void {
+    let was: u32 = w.buttons;
+    w.buttons = buttons;
+    w.px = wm_clamp(x, w.sw);
+    w.py = wm_clamp(y, w.sh);
+    ds_layer_move(w.comp, w.cursor_layer, w.px, w.py);
+    let pressed: u32 = 0;
+    let released: u32 = 0;
+    if ((buttons & 1) == 1 && (was & 1) == 0) { pressed = 1; }
+    if ((buttons & 1) == 0 && (was & 1) == 1) { released = 1; }
+
+    if (w.drag != WM_NONE) {
+        if (released == 1) { w.drag = WM_NONE; return; }
+        let nx: u32 = 0;
+        let ny: u32 = 0;
+        if (w.px > w.grab_x) { nx = w.px - w.grab_x; }
+        if (w.py > w.grab_y) { ny = w.py - w.grab_y; }
+        wm_move(w, w.drag, nx, ny);
+        return;
+    }
+
+    let top: u32 = wm_top_at(w, w.px, w.py);
+    if (pressed == 1 && top != WM_NONE) {
+        let zone: u32 = wm_zone(&w.win[top], w.px, w.py);
+        wm_raise(w, top);
+        wm_focus_set(w, top);
+        if (zone == WM_ZONE_CLOSE) { wm_request_close(w, top); return; }
+        if (zone == WM_ZONE_TITLE) {
+            w.drag = top;
+            w.grab_x = w.px - w.win[top].x;
+            w.grab_y = w.py - w.win[top].y;
+            return;
+        }
+        if (zone == WM_ZONE_CONTENT) { w.capture = top; }
+    }
+
+    if (w.capture != WM_NONE) {
+        wm_pointer_to(w, w.capture, buttons);
+        if (released == 1) { w.capture = WM_NONE; }
+        return;
+    }
+    if (top != WM_NONE && wm_zone(&w.win[top], w.px, w.py) == WM_ZONE_CONTENT) {
+        wm_pointer_to(w, top, buttons);
+    }
+}
+
+// ---- clients and windows ----
+
+fn wm_init(w: *wm, comp: *ds_comp, desktop: *ds_surface, cursor: *ds_surface, font: *ds_font) -> void {
+    memzero(w as *u8, sizeof *w);
+    w.comp = comp; w.desktop = desktop; w.cursor = cursor; w.font = font;
+    w.sw = comp.back.width; w.sh = comp.back.height;
+    w.focus = WM_NONE; w.capture = WM_NONE; w.drag = WM_NONE;
+    w.px = w.sw / 2; w.py = w.sh / 2;
+    wm_restack(w);
+    ds_damage_all(&comp.damage);
+}
+
+fn wm_client_new(w: *wm) -> u32 {
+    let c: u32 = 0;
+    while (c < WM_CLIENT_MAX) {
+        if (w.client[c].used == 0) {
+            memzero((&w.client[c]) as *u8, sizeof w.client[c]);
+            w.client[c].used = 1;
+            return c;
+        }
+        c = c + 1;
+    }
+    return WM_NONE;
+}
+
+// A new window for client c, on top and focused, showing nothing until its
+// first commit. s0 and s1 are its two buffers, already mapped; the window
+// takes them. The index, or an error; on an error the caller keeps them.
+fn wm_window_new(w: *wm, c: u32, width: u32, height: u32, flags: u32, title: *u8, s0: *ds_surface, s1: *ds_surface) -> i32 {
+    let i: u32 = 0;
+    let free: u32 = WM_NONE;
+    let mine: u32 = 0;
+    while (i < WM_WIN_MAX) {
+        if (w.win[i].used == 0) { if (free == WM_NONE) { free = i; } }
+        else if (w.win[i].client == c) { mine = mine + 1; }
+        i = i + 1;
+    }
+    if (free == WM_NONE || mine >= WM_PER_CLIENT) { return E_NO_RESOURCES; }
+    let win: *wm_win = &w.win[free];
+    memzero(win as *u8, sizeof *win);
+    win.w = width; win.h = height; win.flags = flags; win.client = c; win.cur = WM_NONE;
+    let rc: i32 = ds_surface_new(&win.frame, wm_frame_w(win), wm_frame_h(win));
+    if (rc != 0) { return rc; }
+    win.used = 1;
+    win.buf[0] = *s0;
+    win.buf[1] = *s1;
+    strcopy(&win.title[0], title, WM_TITLE_LEN);
+    win.title[WM_TITLE_LEN - 1] = 0;
+    // each new one a step down and right of the last, kept on the screen
+    let step: u32 = 24 + 28 * w.zn;
+    win.x = step % ds_max(w.sw / 2, 1);
+    win.y = step % ds_max(w.sh / 2, 1);
+    w.z[w.zn] = free;
+    w.zn = w.zn + 1;
+    wm_restack(w);
+    wm_paint_frame(w, free);
+    wm_focus_set(w, free);
+    return free as i32;
+}
+
+fn wm_window_destroy(w: *wm, i: u32) -> void {
+    let win: *wm_win = &w.win[i];
+    if (win.used == 0) { return; }
+    wm_damage_win(w, win);
+    if (win.lease[0] > 0) { handle_close(win.lease[0]); }
+    if (win.lease[1] > 0) { handle_close(win.lease[1]); }
+    wm_z_remove(w, i);
+    win.used = 0;
+    if (w.drag == i) { w.drag = WM_NONE; }
+    if (w.capture == i) { w.capture = WM_NONE; }
+    wm_restack(w);
+    // the stack no longer names these, so nothing composes from them now
+    ds_surface_free(&win.buf[0]);
+    ds_surface_free(&win.buf[1]);
+    ds_surface_free(&win.frame);
+    if (w.focus == i) {
+        w.focus = WM_NONE;
+        if (w.zn > 0) { wm_focus_set(w, w.z[w.zn - 1]); }
+    }
+}
+
+// Does client c have window i?
+fn wm_owns(w: *wm, c: u32, i: u32) -> u32 {
+    if (i >= WM_WIN_MAX || w.win[i].used == 0 || w.win[i].client != c) { return 0; }
+    return 1;
+}
+
+// A client has gone: every window of its, and a call it had waiting.
+fn wm_client_gone(w: *wm, c: u32) -> void {
+    let i: u32 = 0;
+    while (i < WM_WIN_MAX) {
+        if (w.win[i].used == 1 && w.win[i].client == c) { wm_window_destroy(w, i); }
+        i = i + 1;
+    }
+    if (w.client[c].waiter > 0) { handle_close(w.client[c].waiter); }
+    w.client[c].waiter = 0;
+    w.client[c].used = 0;
+}
+
+// Buffer b of window i is now what it shows, held by `lease` (the caller has
+// checked that the lease is on that buffer). Only the rectangles changed, in
+// the window's coordinates; none means all of it. -> the buffer given back
+// (WM_NONE if none was showing), or WM_NONE - 1 for a buffer that is showing.
+const WM_COMMIT_REFUSED: u32 = 0xFFFFFFFE;
+
+fn wm_commit(w: *wm, i: u32, b: u32, lease: i32, rects: *ds_rect, n: u32) -> u32 {
+    let win: *wm_win = &w.win[i];
+    if (b > 1 || win.cur == b) { return WM_COMMIT_REFUSED; }
+    let first: u32 = 0;
+    if (win.cur == WM_NONE) { first = 1; }
+    let freed: u32 = win.cur;
+    if (freed != WM_NONE) {
+        handle_close(win.lease[freed]);
+        win.lease[freed] = 0;
+    }
+    win.lease[b] = lease;
+    win.cur = b;
+    win.want_frame = 1;
+    wm_restack(w);
+    let ox: u32 = win.x + WM_EDGE;
+    let oy: u32 = win.y + WM_TITLE_H;
+    if (n == 0 || first == 1) {
+        ds_damage_add(&w.comp.damage, ox, oy, win.w, win.h);
+        return freed;
+    }
+    let k: u32 = 0;
+    while (k < n) {
+        let r: *ds_rect = &rects[k];
+        if (r.x < win.w && r.y < win.h) {
+            ds_damage_add(&w.comp.damage, ox + r.x, oy + r.y, ds_min(r.w, win.w - r.x), ds_min(r.h, win.h - r.y));
+        }
+        k = k + 1;
+    }
+    return freed;
+}
+
+// A frame reached the screen: tell whoever committed for it.
+fn wm_frames_done(w: *wm) -> void {
+    let i: u32 = 0;
+    while (i < WM_WIN_MAX) {
+        if (w.win[i].used == 1 && w.win[i].want_frame == 1) {
+            w.win[i].want_frame = 0;
+            wm_push(w, w.win[i].client, WM_EV_FRAME, i, 0, 0, 0);
+        }
+        i = i + 1;
+    }
+}
+
+fn wm_repaint_client(w: *wm, c: u32) -> void {
+    let i: u32 = 0;
+    while (i < WM_WIN_MAX) {
+        if (w.win[i].used == 1 && w.win[i].client == c) { wm_paint_frame(w, i); }
+        i = i + 1;
+    }
+}
+
+// A client has called for its next event, with this reply token.
+fn wm_wait(w: *wm, c: u32, token: i32) -> void {
+    let cl: *wm_client = &w.client[c];
+    if (cl.waiter > 0) { handle_close(cl.waiter); }
+    cl.waiter = token;
+    cl.since = w.now;
+    if (cl.hung == 1) { cl.hung = 0; wm_repaint_client(w, c); }
+}
+
+// The time: a client with events unread and no call waiting for WM_HANG_MS
+// is not answering.
+fn wm_tick(w: *wm, now: u64) -> void {
+    w.now = now;
+    let c: u32 = 0;
+    while (c < WM_CLIENT_MAX) {
+        let cl: *wm_client = &w.client[c];
+        if (cl.used == 1 && cl.hung == 0 && cl.n > 0 && cl.waiter == 0 && now - cl.since >= WM_HANG_MS) {
+            cl.hung = 1;
+            wm_repaint_client(w, c);
+        }
+        c = c + 1;
+    }
+}

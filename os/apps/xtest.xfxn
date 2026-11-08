@@ -21,6 +21,7 @@ import "heap.xfxn";
 import "io.xfxn";
 import "string.xfxn";
 import "display.xfxn";
+import "dserver.xfxn";
 
 const MS: u64 = 1000000;
 
@@ -845,6 +846,650 @@ fn d_screen_denied(arg: u64) -> i32 {
     return 0;
 }
 
+// ---- windows (2.4) ----
+
+const WX_DESK: u32 = 0x00102030;
+const WX_DESK_ARGB: u32 = 0xFF102030;
+
+global wx: dsv;
+global wx_live: u32;
+
+// A fresh server on a 320x240 virtual screen, a plain desktop, an invisible
+// pointer: 0 or an error.
+fn wx_up() -> i32 {
+    // a test that stopped early left its server: not this test's failure too
+    if (wx_live != 0) { wx_down(); }
+    let rc: i32 = dsv_init(&wx, 320, 240, 1, 1);
+    if (rc != 0) { return rc; }
+    wx_live = 1;
+    ds_fill(&wx.desktop, 0, 0, 320, 240, WX_DESK_ARGB);
+    return 0;
+}
+
+// Drop everything wx_up made, clients with it.
+fn wx_down() -> void {
+    wx_live = 0;
+    dsv_shutdown(&wx);
+    handle_close(wx.queue);
+    handle_close(wx.ep);
+    ds_comp_free(&wx.comp);
+    ds_surface_free(&wx.desktop);
+    ds_surface_free(&wx.cursor);
+}
+
+fn wx_draw() -> void { ds_compose(&wx.comp); ds_present(&wx.comp, &wx.screen); wm_frames_done(&wx.w); }
+fn wx_at(x: u32, y: u32) -> u32 { return ds_screen_pixel(&wx.screen, x, y) & 0xFFFFFF; }
+
+// A window for client c, its first commit already made in one colour. The
+// buffers are the test's own, so the lease is 0: the lease's rule is the
+// server's and is tested through it, below. Its index, or WM_NONE.
+fn wx_window(c: u32, w: u32, h: u32, flags: u32, argb: u32) -> u32 {
+    let a: ds_surface;
+    let b: ds_surface;
+    if (ds_surface_new(&a, w, h) != 0 || ds_surface_new(&b, w, h) != 0) { return WM_NONE; }
+    ds_fill(&a, 0, 0, w, h, argb);
+    ds_fill(&b, 0, 0, w, h, argb);
+    let id: i32 = wm_window_new(&wx.w, c, w, h, flags, "t", &a, &b);
+    if (id < 0) { return WM_NONE; }
+    if (wm_commit(&wx.w, id as u32, 0, 0, 0 as *ds_rect, 0) != WM_NONE) { return WM_NONE; }
+    return id as u32;
+}
+
+// The next event for client c, or kind 0 if none.
+fn wx_next(c: u32, ev: *wm_event) -> void {
+    ev.kind = 0;
+    wm_take(&wx.w, c, ev);
+}
+
+// Throw away what is queued for client c.
+fn wx_clear(c: u32) -> void {
+    let ev: wm_event;
+    while (wm_take(&wx.w, c, &ev) == 1) { }
+}
+
+fn wx_click(x: i32, y: i32) -> void {
+    wm_pointer(&wx.w, x, y, 1);
+    wm_pointer(&wx.w, x, y, 0);
+}
+
+// Two windows: A at (24,24), B at (52,52) over it, both 100x60.
+// A's content (26,44)-(125,103); B's (54,72)-(153,131); (80,90) is in both.
+fn wx_two(a: *u32, b: *u32, ca: *u32, cb: *u32) -> i32 {
+    ca[0] = wm_client_new(&wx.w);
+    cb[0] = wm_client_new(&wx.w);
+    a[0] = wx_window(ca[0], 100, 60, 0, 0xFFAA0000);
+    b[0] = wx_window(cb[0], 100, 60, 0, 0xFF00BB00);
+    if (a[0] == WM_NONE || b[0] == WM_NONE) { return 1; }
+    wx_draw();
+    wx_clear(ca[0]);
+    wx_clear(cb[0]);
+    return 0;
+}
+
+// 100: the stack: what is on top shows, a press raises and focuses
+fn w_stack(arg: u64) -> i32 {
+    let wr: i32 = wx_up();
+    if (wr != 0) { return 1000 + (0 - wr); }
+    let a: u32; let b: u32; let ca: u32; let cb: u32;
+    if (wx_two(&a, &b, &ca, &cb) != 0) { return 101; }
+    if (wx_at(30, 50) != 0xAA0000) { return 102; }
+    if (wx_at(140, 120) != 0x00BB00) { return 103; }
+    if (wx_at(80, 90) != 0x00BB00) { return 104; }
+    if (wx_at(300, 230) != WX_DESK) { return 105; }
+    if (wx.w.focus != b) { return 106; }
+    // the frame is the server's: B's bar focused, A's idle
+    if (wx_at(60, 54) != (WM_COL_FOCUS & 0xFFFFFF)) { return 107; }
+    if (wx_at(30, 26) != (WM_COL_IDLE & 0xFFFFFF)) { return 108; }
+    wx_click(30, 50);
+    wx_draw();
+    if (wx.w.focus != a || wx.w.z[1] != a) { return 109; }
+    if (wx_at(80, 90) != 0xAA0000) { return 110; }
+    if (wx_at(30, 26) != (WM_COL_FOCUS & 0xFFFFFF)) { return 111; }
+    wx_down();
+    return 0;
+}
+
+// 120: a key goes to the focused window and no other; the server's keys to none
+fn w_keys(arg: u64) -> i32 {
+    if (wx_up() != 0) { return 120; }
+    let a: u32; let b: u32; let ca: u32; let cb: u32;
+    if (wx_two(&a, &b, &ca, &cb) != 0) { return 121; }
+    let ev: wm_event;
+    wm_key(&wx.w, 97);
+    wx_next(cb, &ev);
+    if (ev.kind != WM_EV_KEY || ev.a != 97 || ev.win != b) { return 122; }
+    wx_next(ca, &ev);
+    if (ev.kind != 0) { return 123; }
+    // the focus moves with Ctrl+N, which nobody is told as a key
+    wm_key(&wx.w, WM_KEY_NEXT);
+    if (wx.w.focus != a) { return 124; }
+    wx_next(cb, &ev);
+    if (ev.kind != WM_EV_FOCUS || ev.a != 0) { return 125; }
+    wx_next(cb, &ev);
+    if (ev.kind != 0) { return 126; }
+    wx_next(ca, &ev);
+    if (ev.kind != WM_EV_FOCUS || ev.a != 1) { return 127; }
+    wx_next(ca, &ev);
+    if (ev.kind != 0) { return 128; }
+    wm_key(&wx.w, 98);
+    wx_next(ca, &ev);
+    if (ev.kind != WM_EV_KEY || ev.a != 98) { return 129; }
+    wx_next(cb, &ev);
+    if (ev.kind != 0) { return 130; }
+    // Ctrl+Q ends the session, and reaches no client
+    wm_key(&wx.w, WM_KEY_QUIT);
+    if (wx.w.quit != 1) { return 131; }
+    wx_next(ca, &ev);
+    if (ev.kind != 0) { return 132; }
+    wx_down();
+    return 0;
+}
+
+// 140: the pointer: in the window under it, in its coordinates; held to
+// the window a press landed in
+fn w_pointer(arg: u64) -> i32 {
+    if (wx_up() != 0) { return 140; }
+    let a: u32; let b: u32; let ca: u32; let cb: u32;
+    if (wx_two(&a, &b, &ca, &cb) != 0) { return 141; }
+    let ev: wm_event;
+    // over B's content
+    wm_pointer(&wx.w, 60, 80, 0);
+    wx_next(cb, &ev);
+    if (ev.kind != WM_EV_POINTER || ev.a != 6 || ev.b != 8 || ev.c != 0) { return 142; }
+    wx_next(ca, &ev);
+    if (ev.kind != 0) { return 143; }
+    // over nothing, and over a title: no window is told
+    wm_pointer(&wx.w, 300, 230, 0);
+    wm_pointer(&wx.w, 60, 54, 0);
+    wx_next(cb, &ev);
+    if (ev.kind != 0) { return 144; }
+    // a press in B's content, dragged off it: still B's, in B's coordinates
+    wm_pointer(&wx.w, 60, 80, 1);
+    wx_next(cb, &ev);
+    if (ev.kind != WM_EV_POINTER || ev.c != 1) { return 145; }
+    wm_pointer(&wx.w, 30, 50, 1);
+    wx_next(cb, &ev);
+    if (ev.kind != WM_EV_POINTER || ev.a != (30 - 54) || ev.b != (50 - 72)) { return 146; }
+    wx_next(ca, &ev);
+    if (ev.kind != 0) { return 147; }
+    wm_pointer(&wx.w, 30, 50, 0);
+    wx_next(cb, &ev);
+    if (ev.kind != WM_EV_POINTER || ev.c != 0) { return 148; }
+    // released, the next movement belongs to what is under it
+    wm_pointer(&wx.w, 31, 50, 0);
+    wx_next(ca, &ev);
+    if (ev.kind != WM_EV_POINTER || ev.a != 5) { return 149; }
+    wx_next(cb, &ev);
+    if (ev.kind != 0) { return 150; }
+    wx_down();
+    return 0;
+}
+
+// 160: the frame's title bar drags, and what was under it comes back
+fn w_drag(arg: u64) -> i32 {
+    if (wx_up() != 0) { return 160; }
+    let a: u32; let b: u32; let ca: u32; let cb: u32;
+    if (wx_two(&a, &b, &ca, &cb) != 0) { return 161; }
+    wm_pointer(&wx.w, 60, 54, 1);       // B's title bar, 8 in and 2 down
+    wx_clear(cb);
+    wm_pointer(&wx.w, 208, 164, 1);
+    wx_draw();
+    if (wx.w.win[b].x != 200 || wx.w.win[b].y != 162) { return 162; }
+    if (wx_at(80, 90) != 0xAA0000) { return 163; }       // A shows through
+    if (wx_at(140, 120) != WX_DESK) { return 164; }       // the desktop too
+    if (wx_at(210, 190) != 0x00BB00) { return 165; }
+    wm_pointer(&wx.w, 208, 164, 0);
+    wm_pointer(&wx.w, 260, 200, 0);     // released: no longer dragged
+    if (wx.w.win[b].x != 200) { return 166; }
+    // dragged past the corner, it stops on the screen
+    wm_pointer(&wx.w, 208, 164, 1);
+    wm_pointer(&wx.w, 2, 1, 1);
+    wm_pointer(&wx.w, 2, 1, 0);
+    if (wx.w.win[b].x != 0 || wx.w.win[b].y != 0) { return 167; }
+    wx_down();
+    return 0;
+}
+
+// 180: only what a commit says changed is composed, and a rectangle
+// cannot reach outside its window
+fn w_commit(arg: u64) -> i32 {
+    if (wx_up() != 0) { return 180; }
+    let c: u32 = wm_client_new(&wx.w);
+    let i: u32 = wx_window(c, 40, 30, 0, 0xFF808080);
+    if (i == WM_NONE) { return 181; }
+    wx_draw();
+    let win: *wm_win = &wx.w.win[i];
+    if (win.cur != 0) { return 182; }
+    ds_fill(&win.buf[1], 0, 0, 40, 30, 0xFF0000FF);
+    let r: [2]ds_rect;
+    ds_rect_set(&r[0], 2, 3, 4, 5);
+    ds_rect_set(&r[1], 39, 29, 0xFFFFFFF0, 0xFFFFFFF0);
+    // the buffer shown can be committed no second time, and 2 is no buffer
+    if (wm_commit(&wx.w, i, 0, 0, &r[0], 1) != WM_COMMIT_REFUSED) { return 183; }
+    if (wm_commit(&wx.w, i, 2, 0, &r[0], 1) != WM_COMMIT_REFUSED) { return 184; }
+    if (wm_commit(&wx.w, i, 1, 0, &r[0], 2) != 0) { return 185; }
+    if (win.cur != 1 || win.want_frame != 1) { return 186; }
+    let ox: u32 = win.x + WM_EDGE;
+    let oy: u32 = win.y + WM_TITLE_H;
+    // the huge rectangle stops at the window: what is damaged is inside it
+    let dk: u32 = 0;
+    let sawd: u32 = 0;
+    while (dk < wx.comp.damage.n) {
+        let dr: *ds_rect = &wx.comp.damage.r[dk];
+        if (dr.x + dr.w > ox + 40 || dr.y + dr.h > oy + 30) { sawd = 1; }
+        dk = dk + 1;
+    }
+    if (sawd != 0) { return 192; }
+    wx_draw();
+    if (wx_at(ox + 2, oy + 3) != 0x0000FF) { return 187; }
+    if (wx_at(ox + 39, oy + 29) != 0x0000FF) { return 188; }
+    if (wx_at(ox + 10, oy + 10) != 0x808080) { return 189; }   // not damaged, so not redrawn
+    if (wx_at(ox + 40, oy + 29) != (WM_COL_FOCUS & 0xFFFFFF)) { return 190; }   // its edge, intact
+    // told once, when it reached the screen
+    let ev: wm_event;
+    let frames: u32 = 0;
+    wx_next(c, &ev);
+    while (ev.kind != 0) { if (ev.kind == WM_EV_FRAME) { frames = frames + 1; } wx_next(c, &ev); }
+    if (frames != 2) { return 191; }                         // the first commit's and this
+    wx_down();
+    return 0;
+}
+
+// 200: transparency: a translucent window over the desktop; its hole in the frame
+fn w_alpha(arg: u64) -> i32 {
+    if (wx_up() != 0) { return 200; }
+    let c: u32 = wm_client_new(&wx.w);
+    if (wx_window(c, 40, 30, WM_F_ALPHA, 0x80404040) == WM_NONE) { return 201; }
+    wx_draw();
+    let win: *wm_win = &wx.w.win[0];
+    // 0x40 + 0x10 * 0x7F / 255 = 0x47, and the same for the other channels
+    let want: u32 = (ds_over(0x80404040, WX_DESK_ARGB)) & 0xFFFFFF;
+    if (want == WX_DESK || want == 0x404040) { return 202; }
+    if (wx_at(win.x + WM_EDGE + 5, win.y + WM_TITLE_H + 5) != want) { return 203; }
+    wx_down();
+    return 0;
+}
+
+// 220: a client that stops reading goes grey; its close box then ends it.
+// One that reads is only asked.
+fn w_hung(arg: u64) -> i32 {
+    if (wx_up() != 0) { return 220; }
+    let a: u32; let b: u32; let ca: u32; let cb: u32;
+    if (wx_two(&a, &b, &ca, &cb) != 0) { return 221; }
+    wm_tick(&wx.w, 1000);
+    wm_key(&wx.w, 97);                  // B has something to read now
+    wm_tick(&wx.w, 1000 + WM_HANG_MS - 1);
+    if (wx.w.client[cb].hung != 0) { return 222; }
+    // a press on the close box of one that answers asks it
+    wm_pointer(&wx.w, 144, 58, 1);      // B's close box, B on top
+    wm_pointer(&wx.w, 144, 58, 0);
+    let ev: wm_event;
+    if (wx.w.client[cb].kill != 0) { return 223; }
+    wx_next(cb, &ev);
+    while (ev.kind != 0 && ev.kind != WM_EV_CLOSE) { wx_next(cb, &ev); }
+    if (ev.kind != WM_EV_CLOSE) { return 224; }
+    wm_tick(&wx.w, 1000);
+    wm_key(&wx.w, 97);
+    wm_tick(&wx.w, 1000 + WM_HANG_MS);
+    wx_draw();
+    if (wx.w.client[cb].hung != 1) { return 225; }
+    if (wx_at(60, 54) != (WM_COL_HUNG & 0xFFFFFF)) { return 226; }
+    // a client with nothing to read has not stopped answering
+    if (wx.w.client[ca].hung != 0) { return 227; }
+    // it can still be moved
+    wm_pointer(&wx.w, 60, 54, 1);
+    wm_pointer(&wx.w, 70, 60, 1);
+    wm_pointer(&wx.w, 70, 60, 0);
+    if (wx.w.win[b].x != 62) { return 228; }
+    // and its close box ends it
+    wm_pointer(&wx.w, 154, 64, 1);      // moved 10 right, 8 down... the box follows
+    wm_pointer(&wx.w, 154, 64, 0);
+    if (wx.w.client[cb].kill != 1) { return 229; }
+    // waiting for an event again is answering
+    wx.w.client[cb].kill = 0;
+    wm_wait(&wx.w, cb, 0);
+    if (wx.w.client[cb].hung != 0) { return 230; }
+    wx_down();
+    return 0;
+}
+
+// 240: a client that goes takes its windows with it, and the focus moves on
+fn w_gone(arg: u64) -> i32 {
+    if (wx_up() != 0) { return 240; }
+    let a: u32; let b: u32; let ca: u32; let cb: u32;
+    if (wx_two(&a, &b, &ca, &cb) != 0) { return 241; }
+    wm_client_gone(&wx.w, cb);
+    wx_draw();
+    if (wx.w.zn != 1 || wx.w.focus != a) { return 242; }
+    if (wx_at(140, 120) != WX_DESK) { return 243; }
+    if (wx_at(80, 90) != 0xAA0000) { return 244; }
+    if (wx.w.client[cb].used != 0) { return 245; }
+    let ev: wm_event;
+    wx_next(ca, &ev);
+    if (ev.kind != WM_EV_FRAME && ev.kind != WM_EV_FOCUS) { return 246; }
+    wm_client_gone(&wx.w, ca);
+    wx_draw();
+    if (wx.w.focus != WM_NONE || wx_at(80, 90) != WX_DESK) { return 247; }
+    wm_key(&wx.w, 97);                  // nobody to tell: nothing goes wrong
+    wx_down();
+    return 0;
+}
+
+// 260: the limits: the windows a client may have, and the slot one frees
+fn w_limits(arg: u64) -> i32 {
+    if (wx_up() != 0) { return 260; }
+    let c: u32 = wm_client_new(&wx.w);
+    let i: u32 = 0;
+    while (i < WM_PER_CLIENT) {
+        if (wx_window(c, 8, 8, 0, 0xFFFFFFFF) == WM_NONE) { return 261; }
+        i = i + 1;
+    }
+    if (wx_window(c, 8, 8, 0, 0xFFFFFFFF) != WM_NONE) { return 262; }
+    // another client is not held to the first one's count
+    let d: u32 = wm_client_new(&wx.w);
+    if (wx_window(d, 8, 8, 0, 0xFFFFFFFF) == WM_NONE) { return 263; }
+    wx_down();
+    return 0;
+}
+
+// 280: a title, from a font: its pixels where the font says
+fn w_text(arg: u64) -> i32 {
+    let s: ds_surface;
+    if (ds_surface_new(&s, 32, 16) != 0) { return 280; }
+    // 2 glyphs of 8x2: glyph 1 is a bar on the left and a dot on the right
+    let bits: [4]u8;
+    bits[0] = 0; bits[1] = 0; bits[2] = 0xF0; bits[3] = 0x01;
+    let f: ds_font;
+    f.bits = &bits[0]; f.width = 8; f.height = 2; f.count = 2;
+    let text: [3]u8;
+    text[0] = 1; text[1] = 1; text[2] = 0;
+    ds_text(&s, &f, 4, 3, 32, &text[0], 0xFFFFFFFF);
+    if (ds_pixel(&s, 4, 3) != 0xFFFFFFFF || ds_pixel(&s, 7, 3) != 0xFFFFFFFF) { return 281; }
+    if (ds_pixel(&s, 8, 3) != 0 || ds_pixel(&s, 11, 4) != 0xFFFFFFFF) { return 282; }
+    if (ds_pixel(&s, 12, 3) != 0xFFFFFFFF) { return 283; }       // the second glyph
+    // room for one glyph: the second is not drawn
+    ds_fill(&s, 0, 0, 32, 16, 0);
+    ds_text(&s, &f, 4, 3, 8, &text[0], 0xFFFFFFFF);
+    if (ds_pixel(&s, 4, 3) != 0xFFFFFFFF || ds_pixel(&s, 12, 3) != 0) { return 284; }
+    ds_surface_free(&s);
+    return 0;
+}
+
+// ---- real clients, through the real protocol ----
+
+fn wx_blob(out: *u8, rgb: *u8, mode: *u8) -> u32 {
+    let n: u32 = strcopy(out, "wdemo", 16) + 1;
+    n = n + strcopy(&out[n], rgb, 16) + 1;
+    if (mode != (0 as *u8)) { n = n + strcopy(&out[n], mode, 16) + 1; }
+    return n;
+}
+
+fn wx_start(rgb: *u8, mode: *u8) -> i32 {
+    let blob: [64]u8;
+    let n: u32 = wx_blob(&blob[0], rgb, mode);
+    return dsv_launch(&wx, "/Shared/Programs/wdemo.xuex", &blob[0], n);
+}
+
+const WX_WAIT_MS: u64 = 25000;
+
+// Turn the loop until `n` windows are showing, or a long time has passed.
+fn wx_shown(n: u32) -> u32 {
+    let t0: u64 = time_now_ms();
+    while (time_now_ms() - t0 < WX_WAIT_MS) {
+        dsv_step(&wx);
+        let k: u32 = 0;
+        let up: u32 = 0;
+        while (k < wx.w.zn) { if (wx.w.win[wx.w.z[k]].cur != WM_NONE) { up = up + 1; } k = k + 1; }
+        if (up == n) { return 1; }
+    }
+    return 0;
+}
+
+// Turn the loop until the screen has this at (x, y).
+fn wx_until(x: u32, y: u32, rgb: u32) -> u32 {
+    let t0: u64 = time_now_ms();
+    while (time_now_ms() - t0 < WX_WAIT_MS) {
+        dsv_step(&wx);
+        if (wx_at(x, y) == rgb) { return 1; }
+    }
+    return 0;
+}
+
+// Turn the loop until n clients are left.
+fn wx_gone(n: u32) -> u32 {
+    let t0: u64 = time_now_ms();
+    while (dsv_clients(&wx) != n && time_now_ms() - t0 < WX_WAIT_MS) { dsv_step(&wx); }
+    if (dsv_clients(&wx) == n) { return 1; }
+    return 0;
+}
+
+// 300: two real programs, the whole way through: each key is drawn only by
+// the focused one, a close box asks one to go, and one that stops reading goes
+// grey and is ended. One test, because each program started is a signature
+// checked, which is a minute under emulation.
+global wx_real_ph: i32;
+
+fn wx_real_body() -> i32 {
+    if (wx_up() != 0) { return 300; }
+    let c0: i32 = wx_start("aa0000", 0 as *u8);
+    let c1: i32 = wx_start("00bb00", 0 as *u8);
+    if (c0 < 0 || c1 < 0) { return 301; }
+    if (wx_shown(2) == 0) { return 302; }
+    // windows are 160x100: (30,50) is only the lower one's, (200,165) the upper's
+    let top: u32 = wx.w.z[1];
+    let low: u32 = wx.w.z[0];
+    if (wx.w.focus != top || wx.w.win[top].x != 52 || wx.w.win[low].x != 24) { return 303; }
+    let up_x: u32 = 200;
+    let up_y: u32 = 165;
+    let low_was: u32 = wx_at(30, 50);
+    if (low_was != 0xAA0000 && low_was != 0x00BB00) { return 304; }
+
+    // a key: drawn by the focused one alone
+    wm_key(&wx.w, 0x61);
+    if (wx_until(up_x, up_y, 0x616161) == 0) { return 305; }
+    if (wx_at(30, 50) != low_was) { return 306; }
+    // the other one, then a key: drawn by it, the first unchanged
+    wm_key(&wx.w, WM_KEY_NEXT);
+    if (wx.w.focus != low) { return 307; }
+    wm_key(&wx.w, 0x62);
+    if (wx_until(30, 50, 0x626262) == 0) { return 308; }
+    if (wx_at(up_x, up_y) != 0x616161) { return 309; }
+    // a third commit from it: the buffer the first gave back can be drawn on again
+    wm_key(&wx.w, 0x63);
+    if (wx_until(30, 50, 0x636363) == 0) { return 310; }
+
+    // the close box asks; the program closes its window and exits
+    let lc: u32 = wx.w.win[low].client;
+    let x: u32 = wx.w.win[low].x + wm_frame_w(&wx.w.win[low]) - WM_EDGE - 4;
+    let y: u32 = wx.w.win[low].y + 5;
+    wx_real_ph = handle_duplicate(wx.proc[lc], HRIGHT_WAIT | HRIGHT_INSPECT | HRIGHT_KILL);
+    let ph: i32 = wx_real_ph;
+    if (ph <= 0) { return 311; }
+    wx_click(x as i32, y as i32);
+    if (wx_gone(1) == 0) { return 312; }
+    if (object_wait(ph, SIGNAL_PROCESS_ENDED, time_deadline_ms(30000), 0 as *u32) != 0) { return 313; }
+    let pi: process_info;
+    let oi: object_info_args;
+    memzero((&oi) as *u8, sizeof oi);
+    oi.handle = ph; oi.topic = OBJINFO_PROCESS; oi.buf = (&pi) as u64; oi.cap = sizeof pi;
+    if (object_info(&oi) < 0 || pi.ended != PROC_EXITED || pi.code != 0) { return 314; }
+    handle_close(ph);
+    wx_real_ph = 0;
+    if (wx_until(30, 50, WX_DESK) == 0) { return 315; }
+
+    // the other stops reading: with something to read it goes grey
+    let left: u32 = wx.w.z[0];
+    let hc: u32 = wx.w.win[left].client;
+    wm_key(&wx.w, 72);
+    wm_key(&wx.w, 0x64);
+    let t0: u64 = time_now_ms();
+    while (wx.w.client[hc].hung == 0 && time_now_ms() - t0 < WX_WAIT_MS) { dsv_step(&wx); }
+    if (wx.w.client[hc].hung != 1) { return 316; }
+    if (wx_until(wx.w.win[left].x + 10, wx.w.win[left].y + 3, WM_COL_HUNG & 0xFFFFFF) == 0) { return 317; }
+    // its close box ends it, asking nothing
+    x = wx.w.win[left].x + wm_frame_w(&wx.w.win[left]) - WM_EDGE - 4;
+    y = wx.w.win[left].y + 5;
+    wx_real_ph = handle_duplicate(wx.proc[hc], HRIGHT_WAIT | HRIGHT_INSPECT | HRIGHT_KILL);
+    ph = wx_real_ph;
+    if (ph <= 0) { return 318; }
+    wx_click(x as i32, y as i32);
+    if (wx_gone(0) == 0) { return 319; }
+    if (object_wait(ph, SIGNAL_PROCESS_ENDED, time_deadline_ms(30000), 0 as *u32) != 0) { return 320; }
+    memzero((&oi) as *u8, sizeof oi);
+    oi.handle = ph; oi.topic = OBJINFO_PROCESS; oi.buf = (&pi) as u64; oi.cap = sizeof pi;
+    if (object_info(&oi) < 0 || pi.ended == PROC_EXITED) { return 321; }
+    handle_close(ph);
+    wx_real_ph = 0;
+    if (wx_until(200, 165, WX_DESK) == 0) { return 322; }
+    wx_down();
+    return 0;
+}
+
+// Whichever way it stopped, its programs do not outlive it: the runner checks
+// that nothing is left, and one test's stray client is not the next one's.
+fn w_real(arg: u64) -> i32 {
+    wx_real_ph = 0;
+    let rc: i32 = wx_real_body();
+    if (wx_live != 0) { wx_down(); }
+    if (wx_real_ph > 0) {
+        process_kill(wx_real_ph);
+        object_wait(wx_real_ph, SIGNAL_PROCESS_ENDED, time_deadline_ms(30000), 0 as *u32);
+        handle_close(wx_real_ph);
+        wx_real_ph = 0;
+    }
+    return rc;
+}
+
+// The hostile client's thread: it runs the protocol by hand. 0 = all refused.
+global wx_hostile_ep: i32;
+global wx_hostile_rc: i32;
+global wx_hostile_done: i32;
+global wx_hostile_win: win;
+
+fn wx_call_raw(ep: i32, bytes: *u8, len: u64, h: *ipc_handle, count: u32, rep: *ds_rep) -> i32 {
+    let a: ipc_call_args;
+    memzero((&a) as *u8, sizeof a);
+    a.ep_handle = ep;
+    a.req = bytes as u64;
+    a.req_len = len;
+    a.reply = rep as u64;
+    a.reply_cap = sizeof *rep;
+    a.handles = h as u64;
+    a.handle_count = count;
+    let n: i32 = ipc_call(&a);
+    if (n < 0) { return n; }
+    return rep.status;
+}
+
+global wx_big: [65536]u8;
+
+fn wx_hostile_body() -> i32 {
+    let w: *win = &wx_hostile_win;
+    if (win_open(w, wx_hostile_ep, 40, 30, 0, "h") != 0) { return 1; }
+    let rep: ds_rep;
+    // a message too big for the protocol, whole 64 KiB, that starts like a
+    // real request for its own window: refused, not stuck, and not obeyed
+    let big: *ds_req = (&wx_big[0]) as *ds_req;
+    big.op = DS_OP_WINDOW_CLOSE;
+    big.win = w.id;
+    if (wx_call_raw(wx_hostile_ep, &wx_big[0], 65536, 0 as *ipc_handle, 0, &rep) != E_INVALID_ARGS) { return 2; }
+    // a window that is not its own, or none
+    let req: ds_req;
+    memzero((&req) as *u8, sizeof req);
+    req.op = DS_OP_WINDOW_CLOSE; req.win = 15;
+    if (wx_call_raw(wx_hostile_ep, (&req) as *u8, sizeof req, 0 as *ipc_handle, 0, &rep) != E_INVALID_ARGS) { return 3; }
+    // a buffer too small for the size it claims
+    // (two objects each time: the kernel refuses one handle named twice in a
+    // call, which would refuse these before the server saw them)
+    let hs: [2]ipc_handle;
+    hs[0].handle = mem_create(4096, 0); hs[0].op = IPC_HANDLE_COPY; hs[0].rights = HRIGHT_MAP | HRIGHT_INSPECT; hs[0].reserved = 0;
+    hs[1] = hs[0];
+    hs[1].handle = mem_create(4096, 0);
+    memzero((&req) as *u8, sizeof req);
+    req.op = DS_OP_WINDOW_NEW; req.w = 400; req.h = 400;
+    if (wx_call_raw(wx_hostile_ep, (&req) as *u8, sizeof req, &hs[0], 2, &rep) != E_INVALID_ARGS) { return 4; }
+    // too large a window; an unknown flag
+    // (on buffers that would have room for it)
+    hs[0].handle = mem_create(((WM_DIM_MAX + 1) as u64) * 4, 0);
+    hs[1].handle = mem_create(((WM_DIM_MAX + 1) as u64) * 4, 0);
+    req.w = WM_DIM_MAX + 1; req.h = 1;
+    if (wx_call_raw(wx_hostile_ep, (&req) as *u8, sizeof req, &hs[0], 2, &rep) != E_INVALID_ARGS) { return 5; }
+    req.w = 1; req.flags = 2;
+    if (wx_call_raw(wx_hostile_ep, (&req) as *u8, sizeof req, &hs[0], 2, &rep) != E_INVALID_ARGS) { return 6; }
+    // a lease on some other object, offered as the window's buffer
+    let other: i32 = mem_create(40 * 30 * 4, 0);
+    let lease: i32 = mem_lend(other);
+    if (lease <= 0) { return 7; }
+    let h: ipc_handle;
+    h.handle = lease; h.op = IPC_HANDLE_MOVE; h.rights = IPC_RIGHTS_SAME; h.reserved = 0;
+    memzero((&req) as *u8, sizeof req);
+    req.op = DS_OP_COMMIT; req.win = w.id; req.buffer = 0;
+    if (wx_call_raw(wx_hostile_ep, (&req) as *u8, sizeof req, &h, 1, &rep) != E_INVALID_ARGS) { return 8; }
+    // and a commit with no lease at all
+    if (wx_call_raw(wx_hostile_ep, (&req) as *u8, sizeof req, 0 as *ipc_handle, 0, &rep) != E_INVALID_ARGS) { return 9; }
+    // it refused those, and that refused lease came back as lifted
+    let a: vm_map_args;
+    memzero((&a) as *u8, sizeof a);
+    a.object = other as u32; a.length = 4096; a.prot = MPROT_READ | MPROT_WRITE;
+    if (vm_map(&a) != E_OK) { return 10; }
+    vm_unmap(a.addr, 0);
+
+    // a real commit: then the buffer on the screen cannot be mapped writable
+    ds_fill(&w.s, 0, 0, 40, 30, 0xFF123456);
+    if (win_commit(w) != 0) { return 11; }
+    memzero((&a) as *u8, sizeof a);
+    a.object = w.mem[0] as u32; a.length = 4096; a.prot = MPROT_READ | MPROT_WRITE;
+    if (vm_map(&a) != E_BUSY) { return 12; }
+    // the second commit gives the first back
+    ds_fill(&w.s, 0, 0, 40, 30, 0xFF654321);
+    if (win_commit(w) != 0) { return 13; }
+    if (w.back != 0) { return 14; }
+    win_close(w);
+    return 0;
+}
+
+fn wx_hostile(arg: u64) -> i32 {
+    wx_hostile_rc = wx_hostile_body();
+    wx_hostile_done = 1;
+    return 0;
+}
+
+// 360: a client that breaks the protocol is refused and the server carries on
+global wx_hostile_t: i32;
+
+fn wx_hostile_run() -> i32 {
+    if (wx_up() != 0) { return 360; }
+    let c: u32 = wm_client_new(&wx.w);
+    wx_hostile_ep = ep_mint(wx.ep, (c + 1) as u64, HRIGHT_SEND);
+    if (wx_hostile_ep <= 0) { return 361; }
+    wx_hostile_done = 0;
+    wx_hostile_t = thread_spawn(wx_hostile, 0, 0);
+    let t: i32 = wx_hostile_t;
+    if (t <= 0) { return 362; }
+    let t0: u64 = time_now_ms();
+    while (wx_hostile_done == 0 && time_now_ms() - t0 < WX_WAIT_MS) { dsv_step(&wx); }
+    if (wx_hostile_done == 0) { return 363; }
+    let tc: i32 = 0;
+    if (thread_join(t, time_deadline_ms(10000), &tc) != 0) { return 364; }
+    wx_hostile_t = 0;
+    if (wx_hostile_rc != 0) { return 370 + wx_hostile_rc; }
+    return 0;
+}
+
+// Its server goes either way, which frees a client thread still in a call.
+fn w_hostile(arg: u64) -> i32 {
+    wx_hostile_t = 0;
+    wx_hostile_ep = 0;
+    let rc: i32 = wx_hostile_run();
+    if (wx_hostile_ep > 0) { handle_close(wx_hostile_ep); }
+    if (wx_live != 0) { wx_down(); }
+    if (wx_hostile_t > 0) {
+        let tc: i32 = 0;
+        thread_join(wx_hostile_t, time_deadline_ms(10000), &tc);
+    }
+    return rc;
+}
+
 // The names are what the boot reports, after "x: ".
 fn all() -> void {
     test_run("threads: create refusals",               t_create_refused,           30000);
@@ -875,6 +1520,18 @@ fn all() -> void {
     test_run("display: reference frames, both formats", d_frames,                  60000);
     test_run("display: only the damage is presented",  d_damage_only,              60000);
     test_run("display: the screen needs its grant",    d_screen_denied,            30000);
+    test_run("windows: the stack, a press raises",     w_stack,                    30000);
+    test_run("windows: keys to the focused one only",  w_keys,                     30000);
+    test_run("windows: the pointer, held by a press",  w_pointer,                  30000);
+    test_run("windows: a title bar drags",             w_drag,                     30000);
+    test_run("windows: a commit's damage, bounded",    w_commit,                   30000);
+    test_run("windows: transparency",                  w_alpha,                    30000);
+    test_run("windows: not answering, grey and ended", w_hung,                     30000);
+    test_run("windows: a client gone takes its own",   w_gone,                     30000);
+    test_run("windows: how many a client may have",    w_limits,                   30000);
+    test_run("windows: a title's pixels",              w_text,                     30000);
+    test_run("windows: real clients, the whole way",   w_real,                     400000);
+    test_run("windows: a hostile client is refused",   w_hostile,                  120000);
 }
 
 fn _start() -> void { test_main(all); }

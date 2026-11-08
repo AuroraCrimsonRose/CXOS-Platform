@@ -45,4 +45,9 @@ int ktest_futex(void);
    -> how many passed; *total how many were reported (0 if nothing staged). */
 int ktest_xtests(int (*report)(const char *, int), int *total);
 
+/* displayd, started with the grants the shell would give it, on the real
+   screen with the real input handle (2.4): keys injected at the driver's
+   entry end it, and the screen and the keys come back. 1 = pass. */
+int ktest_display_server(void);
+
 #endif

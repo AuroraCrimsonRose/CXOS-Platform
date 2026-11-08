@@ -75,6 +75,8 @@ int syscall_fb_draw_line(uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1, uin
 int syscall_fb_draw_text(uint32_t x, uint32_t y, uint64_t text, uint32_t fg, uint32_t bg); /* SYS_FB_DRAW_TEXT */
 int syscall_fb_set_font(uint64_t name);         /* SYS_FB_SET_FONT */
 int syscall_screen_open(uint64_t info);         /* SYS_SCREEN_OPEN */
+int syscall_input_open(void);                   /* SYS_INPUT_OPEN */
+int syscall_input_events(int32_t h, uint64_t ev, uint32_t count); /* SYS_INPUT_EVENTS */
 int syscall_spawn(uint64_t a);                  /* SYS_SPAWN */
 int syscall_exec_path(uint64_t path, uint64_t a); /* SYS_EXEC_PATH */
 int syscall_process_kill(int32_t h);            /* SYS_PROCESS_KILL */
@@ -88,6 +90,8 @@ int syscall_vm_unmap(uint64_t addr, uint64_t length); /* SYS_VM_UNMAP */
 int syscall_vm_info(uint64_t u);                /* SYS_VM_INFO */
 int syscall_mem_create(uint64_t size, uint32_t flags); /* SYS_MEM_CREATE */
 int syscall_mem_seal(int32_t h, uint32_t seals); /* SYS_MEM_SEAL */
+int syscall_mem_lend(int32_t h);                /* SYS_MEM_LEND */
+int syscall_mem_lease_check(int32_t lease, int32_t mem); /* SYS_MEM_LEASE_CHECK */
 int syscall_power_reboot(void);                 /* SYS_POWER_REBOOT */
 int syscall_power_shutdown(void);               /* SYS_POWER_SHUTDOWN */
 int syscall_power_sleep(uint32_t ms);           /* SYS_POWER_SLEEP */
@@ -125,7 +129,7 @@ int syscall_dma_alloc(int32_t h, uint64_t size, uint64_t phys); /* SYS_DMA_ALLOC
  * before looking it up, and one that lands in a hole finds no decoder. */
 #define SYSCALL_ARGS            5
 #define SYSCALL_TABLE_SIZE      246
-#define SYSCALL_COUNT           104
+#define SYSCALL_COUNT           108
 
 /* An argument register is as wide as the machine's: 32 bits on x86-32, where a
  * u64 takes a register pair, and 64 on x86-64, where it takes one. */

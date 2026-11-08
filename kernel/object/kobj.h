@@ -52,6 +52,8 @@ enum kobj_type {
     KOBJ_THREAD   = 14,  /* thread: how one ended, for its handles (object/kthread.c) */
     KOBJ_DEVICE   = 15,  /* device a driver holds (drivers/devhost.c) */
     KOBJ_IRQ      = 16,  /* a held device's interrupt (drivers/devhost.c) */
+    KOBJ_INPUT    = 17,  /* the keyboard and pointer (drivers/input/inputdev.c) */
+    KOBJ_LEASE    = 18,  /* a memory object held unwritable (object/kmem.c) */
     KOBJ_TYPE_MAX
 };
 

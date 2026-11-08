@@ -1355,6 +1355,18 @@ language work in `language/CX_X_PLAN.md`.
    rule is tested, its caller on that screen is not), a CPU that cannot
    take the IPI, a panic in text mode, the USB variants.
 4. Windows, transparency, server-drawn frames, focus and input routing.
+   **Done (2.4, ABI 35):** the keyboard and pointer as one exclusive,
+   non-transferable handle (`SYS_INPUT_OPEN`, `SYS_INPUT_EVENTS`); a lease that
+   keeps a lent buffer unwritable until it ends (`SYS_MEM_LEND`,
+   `SYS_MEM_LEASE_CHECK`); `os/std/wm.xfxn`, `dserver.xfxn`, `window.xfxn`;
+   `displayd` rewritten and `wdemo` as a client. Fifteen self-tests, frames
+   checked on a virtual screen, two real client programs driven through the
+   protocol, a hostile one refused. Sabotages: `tests/sabotage/2.4.sab`.
+   `run` has grants `+spawn` and `+endpoint`. Not tested: on real hardware or
+   by hand on a screen, a lease on non-anonymous memory (no user handle can
+   ask), a client dying with a lease in flight beyond the close path, USB input
+   through the handle. Starting a client blocks the server's loop for as long
+   as the signature check takes.
 5. Retained layers and spring animations in the compositor.
 6. Trusted UI: the uninterceptible key combination, consent screens, signer
    in title bars, capabilities for capture and overlays.

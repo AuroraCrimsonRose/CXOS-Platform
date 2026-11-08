@@ -8,6 +8,7 @@
 
 #include <stdint.h>
 #include "keyboard.h"
+#include "inputdev.h"
 #include "usb_hid.h"
 #include "../../cpu/sched.h"   /* thread_block_prepare / thread_unblock */
 #include "arch/cpu_ops.h"
@@ -42,7 +43,11 @@ static void kbuf_push(unsigned char c) {
     spin_unlock(&kbd_lock, f);
 }
 
-void keyboard_inject(unsigned char c) { kbuf_push(c); }
+/* While the display server holds the input handle, a key goes to it and
+   never reaches the buffer anybody with GRANT_INPUT could read (2.4). */
+void keyboard_inject(unsigned char c) {
+    if (!input_post_key(c)) kbuf_push(c);
+}
 
 uint32_t keyboard_test_hold(void)          { return spin_lock(&kbd_lock); }
 void     keyboard_test_release(uint32_t f) { spin_unlock(&kbd_lock, f); }

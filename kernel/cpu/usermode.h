@@ -150,6 +150,8 @@ int  usermode_mem_test(void);       /* memory objects: first touch, strict commi
 int  usermode_devhost_test(void);     /* devices: open, held, BARs as memory objects (2.2) */
 int  usermode_devhost_irq_test(void); /* a device interrupt as a handle */
 int  usermode_devhost_dma_test(void); /* DMA buffers: below 4 GB, retired until the device is quiet */
+int  usermode_input_handle_test(void); /* the keys as a handle, one holder (2.4) */
+int  usermode_lease_test(void);        /* a buffer held unwritable while lent (2.4) */
 int  usermode_screen_test(void);       /* the screen as a memory object, one holder (2.3) */
 int  usermode_ipc_test(void);       /* queued calls, reply tokens, badges */
 int  usermode_ipc_handles_test(void);   /* handles in messages: moved, copied, refused */

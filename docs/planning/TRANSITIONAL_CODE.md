@@ -68,6 +68,7 @@ interfaces and are not transitional.
 | `/Shared/Config` at 0777 | Any program with `GRANT_DISK` can write any program's settings | `/User/<name>` at 0700 | Users exist (`CX_FILESYSTEM_LAYOUT.md` rule 6) |
 | `kernel/arch/x86_64/early_con.c` | COM1, polled, for `idt.c`'s panic report only: everything else logs through `logging.c` since step 5f1 | The serial driver, if it can be made safe to call from a panic | That driver exists |
 | The x86-64 kernel image as a plain ELF | Stage 2 loads it unsigned and unchecked | CXEX for x86-64, the signature check in the loader | `CX_BOOT.md` section 4 item 3 |
+| `SYS_INPUT_READ`, `SYS_INPUT_POLL`, `SYS_MOUSE_READ` | The shell and the console programs read keys through them; `E_BUSY` while the input handle is held (2.4) | The input handle, through the display server or a console that holds it | When the shell no longer owns the keyboard: a console client of the display server |
 
 ## Test-only
 
