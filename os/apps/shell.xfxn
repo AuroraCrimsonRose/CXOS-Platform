@@ -671,6 +671,9 @@ fn run_candidate(dir: *u8, name: *u8, ext: u32) -> *u8 {
 fn run_grant(word: *u8, n: u32) -> u32 {
     if (n == 4 && strneq(word, "disk", 4) != 0) { return GRANT_DISK; }
     if (n == 3 && strneq(word, "net", 3) != 0) { return GRANT_NET; }
+    // the screen itself, for a display server (displayd): while it holds the
+    // screen the console is not shown, and comes back when it ends
+    if (n == 6 && strneq(word, "screen", 6) != 0) { return GRANT_FRAMEBUFFER; }
     return 0;
 }
 
@@ -735,7 +738,7 @@ fn run_start(arg: *u8, stage: u32, inh: i32, outh: i32, bg: u32) -> i32 {
         let n: u32 = 0;
         while (arg[1 + n] != 0 && arg[1 + n] != ' ') { n += 1; }
         let g: u32 = run_grant(&arg[1], n);
-        if (g == 0) { puts("run: unknown grant (one of +disk, +net)\n"); return E_INVALID_ARGS; }
+        if (g == 0) { puts("run: unknown grant (one of +disk, +net, +screen)\n"); return E_INVALID_ARGS; }
         caps |= g;
         arg = &arg[1 + n];
         while (arg[0] == ' ') { arg = &arg[1]; }
@@ -838,7 +841,7 @@ fn cmd_run(arg: *u8) -> void {
         while (e > 0 && arg[e - 1] == ' ') { e -= 1; }
     }
     arg[e] = 0;
-    if (arg[0] == 0) { puts("usage: run [+disk] [+net] <path> [args...] [| ...] [&]\n"); return; }
+    if (arg[0] == 0) { puts("usage: run [+disk] [+net] [+screen] <path> [args...] [| ...] [&]\n"); return; }
 
     // Cut the line at each '|', then trim each program's words.
     let k: u32 = 1;
@@ -971,7 +974,7 @@ fn _start() -> void {
     register("append", cmd_append, "add text to the end of a file");
     register("stat",   cmd_stat,   "show an entry's metadata");
     register("edit",   cmd_edit,   "full-screen text editor");
-    register("run",    cmd_run,    "run a signed program and wait (searches /System and /Shared); +disk +net grant more; a | b pipes; & to not wait");
+    register("run",    cmd_run,    "run a signed program and wait (searches /System and /Shared); +disk +net +screen grant more; a | b pipes; & to not wait");
     register("mkdir",  cmd_mkdir,  "create a directory");
     register("rm",     cmd_rm,     "delete a file or empty directory");
     register("mv",     cmd_mv,     "rename an entry");

@@ -1,0 +1,522 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// std/display.xfxn - the display server's software renderer (roadmap 2.3).
+// Aurora Tejeda / CATX Systems
+// Threads: one thread per compositor. Nothing here is locked.
+//
+//   import "display.xfxn";
+//
+// The parts of docs/system/CX_DISPLAY.md section 4 that need no windows yet:
+//
+//   SURFACES   - pixels in RAM, 32 bits of premultiplied alpha, 0xAARRGGBB,
+//                each a memory object of its own so it can be shared later.
+//                The one pixel format the protocol has (section 9);
+//                converted only when written to the screen.
+//   DAMAGE     - the rectangles that changed since the last frame, clipped to
+//                the screen, overlapping ones merged, collapsed to their
+//                bounding box when there are more than DS_DAMAGE_MAX.
+//   COMPOSITOR - layers bottom to top, each a surface at a position, opaque or
+//                blended (source-over, premultiplied). It redraws only the
+//                damage, into a back buffer in RAM, starting at the topmost
+//                opaque layer that covers a rectangle whole: what lies under
+//                it is never drawn.
+//   SCREENS    - where a frame goes: the real one (SYS_SCREEN_OPEN, which
+//                needs GRANT_FRAMEBUFFER) or a VIRTUAL one, a memory object of
+//                the same layout, for tests and CI. Presenting converts the
+//                back buffer's damaged rectangles to the screen's format and
+//                writes them; nothing ever reads the real screen, which on the
+//                rig is uncached and slow to read (kernel/drivers/video/fb.c).
+//
+// Serenity's WindowServer is the model (Compositor::compose: damage into a
+// back buffer, then flush only the damage; its opaque and transparent
+// regions kept apart so hidden content is skipped). Coordinates are unsigned:
+// a layer starts on the screen and may run off its right and bottom edges.
+
+import "mem.xfxn";
+
+// ---- rectangles ----
+
+struct ds_rect {
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32
+}
+
+fn ds_rect_set(r: *ds_rect, x: u32, y: u32, w: u32, h: u32) -> void {
+    r.x = x; r.y = y; r.w = w; r.h = h;
+}
+
+fn ds_min(a: u32, b: u32) -> u32 { if (a < b) { return a; } return b; }
+fn ds_max(a: u32, b: u32) -> u32 { if (a > b) { return a; } return b; }
+
+// Clip r to a w x h area: 1 if anything is left, else 0 (and r is empty).
+fn ds_rect_clip(r: *ds_rect, w: u32, h: u32) -> u32 {
+    if (r.w == 0 || r.h == 0 || r.x >= w || r.y >= h) { r.w = 0; r.h = 0; return 0; }
+    if (r.w > w - r.x) { r.w = w - r.x; }
+    if (r.h > h - r.y) { r.h = h - r.y; }
+    return 1;
+}
+
+// out = a's overlap with b: 1 if they overlap, else 0 (and out is empty).
+fn ds_rect_and(out: *ds_rect, a: *ds_rect, b: *ds_rect) -> u32 {
+    let x0: u32 = ds_max(a.x, b.x);
+    let y0: u32 = ds_max(a.y, b.y);
+    let x1: u32 = ds_min(a.x + a.w, b.x + b.w);
+    let y1: u32 = ds_min(a.y + a.h, b.y + b.h);
+    if (x1 <= x0 || y1 <= y0) { ds_rect_set(out, 0, 0, 0, 0); return 0; }
+    ds_rect_set(out, x0, y0, x1 - x0, y1 - y0);
+    return 1;
+}
+
+// Do a and b overlap or share an edge? Touching ones merge too: their union
+// wastes nothing.
+fn ds_rect_meets(a: *ds_rect, b: *ds_rect) -> u32 {
+    if (a.x + a.w < b.x || b.x + b.w < a.x) { return 0; }
+    if (a.y + a.h < b.y || b.y + b.h < a.y) { return 0; }
+    return 1;
+}
+
+// a becomes the smallest rectangle holding a and b.
+fn ds_rect_grow(a: *ds_rect, b: *ds_rect) -> void {
+    let x0: u32 = ds_min(a.x, b.x);
+    let y0: u32 = ds_min(a.y, b.y);
+    let x1: u32 = ds_max(a.x + a.w, b.x + b.w);
+    let y1: u32 = ds_max(a.y + a.h, b.y + b.h);
+    ds_rect_set(a, x0, y0, x1 - x0, y1 - y0);
+}
+
+// Does a hold b whole?
+fn ds_rect_holds(a: *ds_rect, b: *ds_rect) -> u32 {
+    if (b.x < a.x || b.y < a.y) { return 0; }
+    if (b.x + b.w > a.x + a.w || b.y + b.h > a.y + a.h) { return 0; }
+    return 1;
+}
+
+// ---- damage ----
+
+const DS_DAMAGE_MAX: u32 = 8;
+
+struct ds_damage {
+    n: u32,
+    width: u32,         // the screen's: every rectangle is clipped to it
+    height: u32,
+    r: [8]ds_rect       // DS_DAMAGE_MAX; no two overlap or touch
+}
+
+fn ds_damage_init(d: *ds_damage, width: u32, height: u32) -> void {
+    d.n = 0; d.width = width; d.height = height;
+}
+
+fn ds_damage_clear(d: *ds_damage) -> void { d.n = 0; }
+
+// The whole screen.
+fn ds_damage_all(d: *ds_damage) -> void {
+    ds_rect_set(&d.r[0], 0, 0, d.width, d.height);
+    d.n = 1;
+    if (d.width == 0 || d.height == 0) { d.n = 0; }
+}
+
+// Remove entry i, keeping the rest in order.
+fn ds_damage_drop(d: *ds_damage, i: u32) -> void {
+    while (i + 1 < d.n) {
+        ds_rect_set(&d.r[i], d.r[i + 1].x, d.r[i + 1].y, d.r[i + 1].w, d.r[i + 1].h);
+        i = i + 1;
+    }
+    d.n = d.n - 1;
+}
+
+// Add a changed rectangle. Clipped to the screen; one already covered adds
+// nothing; one that meets others swallows them, again and again until it
+// meets none; past DS_DAMAGE_MAX everything becomes one bounding box.
+fn ds_damage_add(d: *ds_damage, x: u32, y: u32, w: u32, h: u32) -> void {
+    let nr: ds_rect;
+    ds_rect_set(&nr, x, y, w, h);
+    if (ds_rect_clip(&nr, d.width, d.height) == 0) { return; }
+    let merged: u32 = 1;
+    while (merged == 1) {
+        merged = 0;
+        let i: u32 = 0;
+        while (i < d.n) {
+            if (ds_rect_holds(&d.r[i], &nr) == 1) { return; }
+            if (ds_rect_meets(&d.r[i], &nr) == 1) {
+                ds_rect_grow(&nr, &d.r[i]);
+                ds_damage_drop(d, i);
+                merged = 1;
+            } else {
+                i = i + 1;
+            }
+        }
+    }
+    if (d.n == DS_DAMAGE_MAX) {
+        let i: u32 = 0;
+        while (i < d.n) { ds_rect_grow(&nr, &d.r[i]); i = i + 1; }
+        d.n = 0;
+    }
+    ds_rect_set(&d.r[d.n], nr.x, nr.y, nr.w, nr.h);
+    d.n = d.n + 1;
+}
+
+// Pixels the damage covers (no two of its rectangles overlap).
+fn ds_damage_area(d: *ds_damage) -> u64 {
+    let a: u64 = 0;
+    let i: u32 = 0;
+    while (i < d.n) { a = a + (d.r[i].w as u64) * (d.r[i].h as u64); i = i + 1; }
+    return a;
+}
+
+// ---- memory for pixels ----
+
+// A memory object of `bytes`, mapped read-write: its handle, with the address
+// in *addr, or an error (and nothing left behind).
+fn ds_mem(bytes: u64, addr: *u64) -> i32 {
+    let m: i32 = mem_create(bytes, 0);
+    if (m <= 0) { return m; }
+    let a: vm_map_args;
+    memzero((&a) as *u8, sizeof a);
+    a.object = m as u32;
+    a.length = bytes;
+    a.prot = MPROT_READ | MPROT_WRITE;
+    let rc: i32 = vm_map(&a);
+    if (rc != E_OK) { handle_close(m); return rc; }
+    addr[0] = a.addr;
+    return m;
+}
+
+// ---- surfaces ----
+
+struct ds_surface {
+    px: u64,        // the first pixel's address
+    width: u32,
+    height: u32,
+    stride: u32,    // pixels from one row to the next
+    mem: i32        // its memory object
+}
+
+// A width x height surface, every pixel 0 (transparent): 0 or an error.
+fn ds_surface_new(s: *ds_surface, width: u32, height: u32) -> i32 {
+    s.px = 0; s.mem = -1; s.width = 0; s.height = 0; s.stride = 0;
+    if (width == 0 || height == 0) { return E_INVALID_ARGS; }
+    let addr: u64 = 0;
+    let m: i32 = ds_mem((width as u64) * (height as u64) * 4, &addr);
+    if (m <= 0) { return m; }
+    s.px = addr; s.mem = m; s.width = width; s.height = height; s.stride = width;
+    return 0;
+}
+
+fn ds_surface_free(s: *ds_surface) -> void {
+    if (s.px != 0) { vm_unmap(s.px, 0); }
+    if (s.mem > 0) { handle_close(s.mem); }
+    s.px = 0; s.mem = -1;
+}
+
+fn ds_row(s: *ds_surface, y: u32) -> *u32 {
+    return (s.px + (y as u64) * (s.stride as u64) * 4) as *u32;
+}
+
+fn ds_pixel(s: *ds_surface, x: u32, y: u32) -> u32 {
+    if (x >= s.width || y >= s.height) { return 0; }
+    let row: *u32 = ds_row(s, y);
+    return row[x];
+}
+
+fn ds_put(s: *ds_surface, x: u32, y: u32, argb: u32) -> void {
+    if (x >= s.width || y >= s.height) { return; }
+    let row: *u32 = ds_row(s, y);
+    row[x] = argb;
+}
+
+// Replace a rectangle's pixels with one value (premultiplied), clipped.
+fn ds_fill(s: *ds_surface, x: u32, y: u32, w: u32, h: u32, argb: u32) -> void {
+    let r: ds_rect;
+    ds_rect_set(&r, x, y, w, h);
+    if (ds_rect_clip(&r, s.width, s.height) == 0) { return; }
+    let j: u32 = 0;
+    while (j < r.h) {
+        let row: *u32 = ds_row(s, r.y + j);
+        let i: u32 = 0;
+        while (i < r.w) { row[r.x + i] = argb; i = i + 1; }
+        j = j + 1;
+    }
+}
+
+// One channel of source-over: s + d * (255 - sa) / 255, rounded.
+fn ds_over_ch(s: u32, d: u32, inv: u32) -> u32 {
+    return s + (d * inv + 127) / 255;
+}
+
+// src over dst, both premultiplied 0xAARRGGBB.
+fn ds_over(src: u32, dst: u32) -> u32 {
+    let sa: u32 = src >> 24;
+    if (sa == 255) { return src; }
+    if (src == 0) { return dst; }
+    let inv: u32 = 255 - sa;
+    let a: u32 = ds_over_ch(sa, dst >> 24, inv);
+    let r: u32 = ds_over_ch((src >> 16) & 255, (dst >> 16) & 255, inv);
+    let g: u32 = ds_over_ch((src >> 8) & 255, (dst >> 8) & 255, inv);
+    let b: u32 = ds_over_ch(src & 255, dst & 255, inv);
+    return (a << 24) | (r << 16) | (g << 8) | b;
+}
+
+// Draw the part of src that falls in `clip`, with src's top-left at (sx, sy)
+// on dst: copied if opaque is 1, else blended over what is there. `clip` is
+// in dst's coordinates and already inside it.
+fn ds_draw(dst: *ds_surface, src: *ds_surface, sx: u32, sy: u32, clip: *ds_rect, opaque: u32) -> void {
+    let at: ds_rect;
+    ds_rect_set(&at, sx, sy, src.width, src.height);
+    let r: ds_rect;
+    if (ds_rect_and(&r, &at, clip) == 0) { return; }
+    let j: u32 = 0;
+    while (j < r.h) {
+        let d: *u32 = ds_row(dst, r.y + j);
+        let s: *u32 = ds_row(src, r.y + j - sy);
+        let i: u32 = 0;
+        let ox: u32 = r.x - sx;
+        if (opaque == 1) {
+            while (i < r.w) { d[r.x + i] = s[ox + i]; i = i + 1; }
+        } else {
+            while (i < r.w) { d[r.x + i] = ds_over(s[ox + i], d[r.x + i]); i = i + 1; }
+        }
+        j = j + 1;
+    }
+}
+
+// ---- the compositor ----
+
+const DS_LAYER_MAX: u32 = 16;
+
+struct ds_layer {
+    s: *ds_surface,
+    x: u32,
+    y: u32,
+    visible: u32,
+    opaque: u32     // 1: every pixel's alpha is 255, so what is under it is hidden
+}
+
+struct ds_comp {
+    n: u32,
+    back: ds_surface,   // the frame, in RAM; never read from the screen
+    damage: ds_damage,
+    l: [16]ds_layer     // DS_LAYER_MAX, bottom first
+}
+
+// A compositor for a width x height screen: 0 or an error.
+fn ds_comp_init(c: *ds_comp, width: u32, height: u32) -> i32 {
+    c.n = 0;
+    ds_damage_init(&c.damage, width, height);
+    return ds_surface_new(&c.back, width, height);
+}
+
+fn ds_comp_free(c: *ds_comp) -> void { ds_surface_free(&c.back); c.n = 0; }
+
+// A layer on top of the rest: its index, or DS_LAYER_MAX when full. Its
+// area is damaged.
+fn ds_layer_add(c: *ds_comp, s: *ds_surface, x: u32, y: u32, opaque: u32) -> u32 {
+    if (c.n >= DS_LAYER_MAX) { return DS_LAYER_MAX; }
+    let i: u32 = c.n;
+    c.l[i].s = s; c.l[i].x = x; c.l[i].y = y; c.l[i].visible = 1; c.l[i].opaque = opaque;
+    c.n = c.n + 1;
+    ds_damage_add(&c.damage, x, y, s.width, s.height);
+    return i;
+}
+
+fn ds_layer_damage(c: *ds_comp, i: u32) -> void {
+    if (c.l[i].visible == 1) {
+        ds_damage_add(&c.damage, c.l[i].x, c.l[i].y, c.l[i].s.width, c.l[i].s.height);
+    }
+}
+
+// Move a layer: where it was and where it is are both damaged.
+fn ds_layer_move(c: *ds_comp, i: u32, x: u32, y: u32) -> void {
+    if (i >= c.n) { return; }
+    if (c.l[i].x == x && c.l[i].y == y) { return; }
+    ds_layer_damage(c, i);
+    c.l[i].x = x; c.l[i].y = y;
+    ds_layer_damage(c, i);
+}
+
+fn ds_layer_show(c: *ds_comp, i: u32, visible: u32) -> void {
+    if (i >= c.n || c.l[i].visible == visible) { return; }
+    ds_layer_damage(c, i);
+    c.l[i].visible = visible;
+    ds_layer_damage(c, i);
+}
+
+// Does layer i hide all of r?
+fn ds_layer_hides(c: *ds_comp, i: u32, r: *ds_rect) -> u32 {
+    if (c.l[i].visible != 1 || c.l[i].opaque != 1) { return 0; }
+    let at: ds_rect;
+    ds_rect_set(&at, c.l[i].x, c.l[i].y, c.l[i].s.width, c.l[i].s.height);
+    return ds_rect_holds(&at, r);
+}
+
+// One damaged rectangle into the back buffer: from the topmost layer that
+// hides it whole (none: from transparent black), up.
+fn ds_compose_rect(c: *ds_comp, r: *ds_rect) -> void {
+    let first: u32 = 0;
+    let k: u32 = c.n;
+    while (k > 0) {
+        k = k - 1;
+        if (ds_layer_hides(c, k, r) == 1) { first = k; k = 0; }
+    }
+    if (first == 0 && (c.n == 0 || ds_layer_hides(c, 0, r) == 0)) {
+        ds_fill(&c.back, r.x, r.y, r.w, r.h, 0);
+    }
+    let i: u32 = first;
+    while (i < c.n) {
+        if (c.l[i].visible == 1) {
+            ds_draw(&c.back, c.l[i].s, c.l[i].x, c.l[i].y, r, c.l[i].opaque);
+        }
+        i = i + 1;
+    }
+}
+
+// Every damaged rectangle into the back buffer. The damage stays, for
+// ds_present; clear it after.
+fn ds_compose(c: *ds_comp) -> void {
+    let i: u32 = 0;
+    while (i < c.damage.n) { ds_compose_rect(c, &c.damage.r[i]); i = i + 1; }
+}
+
+// ---- screens ----
+
+struct ds_screen {
+    px: u64,        // the first pixel's address, mapped
+    width: u32,
+    height: u32,
+    pitch: u32,     // bytes from one row to the next
+    bpp: u32,
+    format: u32,    // SCREEN_*
+    size: u32,      // bytes mapped
+    mem: i32        // the memory object: the screen's, or a virtual one's
+}
+
+fn ds_screen_clear(sc: *ds_screen) -> void {
+    sc.px = 0; sc.width = 0; sc.height = 0; sc.pitch = 0; sc.bpp = 0;
+    sc.format = 0; sc.size = 0; sc.mem = -1;
+}
+
+// The real screen, mapped: 0 or an error (E_ACCESS_DENIED without
+// GRANT_FRAMEBUFFER, E_BUSY while another display server holds it,
+// E_NOT_FOUND in VGA text mode). While it is open the kernel's console no
+// longer reaches the screen; ds_screen_close gives it back.
+fn ds_screen_open(sc: *ds_screen) -> i32 {
+    ds_screen_clear(sc);
+    let info: screen_info;
+    memzero((&info) as *u8, sizeof info);
+    let m: i32 = screen_open(&info);
+    if (m <= 0) { return m; }
+    if (info.format != SCREEN_RGB565 && info.format != SCREEN_XRGB8888) {
+        handle_close(m);
+        return E_NOT_SUPPORTED;
+    }
+    let a: vm_map_args;
+    memzero((&a) as *u8, sizeof a);
+    a.object = m as u32;
+    a.length = info.size as u64;
+    a.prot = MPROT_READ | MPROT_WRITE;
+    let rc: i32 = vm_map(&a);
+    if (rc != E_OK) { handle_close(m); return rc; }
+    sc.px = a.addr; sc.width = info.width; sc.height = info.height;
+    sc.pitch = info.pitch; sc.bpp = info.bpp; sc.format = info.format;
+    sc.size = info.size; sc.mem = m;
+    return 0;
+}
+
+// A virtual screen, laid out as a real one would be: 0 or an error.
+fn ds_screen_virtual(sc: *ds_screen, width: u32, height: u32, format: u32) -> i32 {
+    ds_screen_clear(sc);
+    let bpp: u32 = 32;
+    if (format == SCREEN_RGB565) { bpp = 16; }
+    else if (format != SCREEN_XRGB8888) { return E_INVALID_ARGS; }
+    if (width == 0 || height == 0) { return E_INVALID_ARGS; }
+    let pitch: u32 = ((width * (bpp / 8)) + 3) & 0xFFFFFFFC;
+    let size: u32 = ((pitch * height) + 4095) & 0xFFFFF000;
+    let addr: u64 = 0;
+    let m: i32 = ds_mem(size as u64, &addr);
+    if (m <= 0) { return m; }
+    sc.px = addr; sc.width = width; sc.height = height; sc.pitch = pitch;
+    sc.bpp = bpp; sc.format = format; sc.size = size; sc.mem = m;
+    return 0;
+}
+
+// Unmapped and closed: the real screen goes back to the kernel.
+fn ds_screen_close(sc: *ds_screen) -> void {
+    if (sc.px != 0) { vm_unmap(sc.px, 0); }
+    if (sc.mem > 0) { handle_close(sc.mem); }
+    ds_screen_clear(sc);
+}
+
+// A premultiplied pixel as the screen stores it. The frame is composed over
+// an opaque bottom layer, so its alpha is dropped, not divided out.
+fn ds_pack(format: u32, argb: u32) -> u32 {
+    if (format == SCREEN_XRGB8888) { return argb & 0x00FFFFFF; }
+    let r: u32 = (argb >> 19) & 31;
+    let g: u32 = (argb >> 10) & 63;
+    let b: u32 = (argb >> 3) & 31;
+    return (r << 11) | (g << 5) | b;
+}
+
+// The back buffer's rectangle r, onto the screen. r is inside both.
+fn ds_present_rect(sc: *ds_screen, back: *ds_surface, r: *ds_rect) -> void {
+    let j: u32 = 0;
+    while (j < r.h) {
+        let s: *u32 = ds_row(back, r.y + j);
+        let at: u64 = sc.px + ((r.y + j) as u64) * (sc.pitch as u64);
+        let i: u32 = 0;
+        if (sc.format == SCREEN_XRGB8888) {
+            let d: *u32 = (at + (r.x as u64) * 4) as *u32;
+            while (i < r.w) { d[i] = s[r.x + i] & 0x00FFFFFF; i = i + 1; }
+        } else {
+            let d: *u16 = (at + (r.x as u64) * 2) as *u16;
+            while (i < r.w) { d[i] = ds_pack(SCREEN_RGB565, s[r.x + i]) as u16; i = i + 1; }
+        }
+        j = j + 1;
+    }
+}
+
+// The compositor's damage, onto the screen, and the damage cleared: the
+// pixels written. Only what changed is written.
+fn ds_present(c: *ds_comp, sc: *ds_screen) -> u64 {
+    let n: u64 = 0;
+    let i: u32 = 0;
+    while (i < c.damage.n) {
+        let r: ds_rect;
+        ds_rect_set(&r, c.damage.r[i].x, c.damage.r[i].y, c.damage.r[i].w, c.damage.r[i].h);
+        if (ds_rect_clip(&r, ds_min(sc.width, c.back.width), ds_min(sc.height, c.back.height)) == 1) {
+            ds_present_rect(sc, &c.back, &r);
+            n = n + (r.w as u64) * (r.h as u64);
+        }
+        i = i + 1;
+    }
+    ds_damage_clear(&c.damage);
+    return n;
+}
+
+// The pixel at (x, y) as the screen holds it, 0 off the screen. For virtual
+// screens: reading the real one is slow, and nothing needs to.
+fn ds_screen_pixel(sc: *ds_screen, x: u32, y: u32) -> u32 {
+    if (x >= sc.width || y >= sc.height) { return 0; }
+    let at: u64 = sc.px + (y as u64) * (sc.pitch as u64);
+    if (sc.format == SCREEN_XRGB8888) {
+        let d: *u32 = (at + (x as u64) * 4) as *u32;
+        return d[0];
+    }
+    let h: *u16 = (at + (x as u64) * 2) as *u16;
+    return h[0] as u32;
+}
+
+// FNV-1a over the frame's visible bytes, row by row (not the padding past a
+// row's last pixel): a reference image's fingerprint, for virtual screens.
+fn ds_screen_hash(sc: *ds_screen) -> u32 {
+    let h: u32 = 2166136261;
+    let row_bytes: u32 = sc.width * (sc.bpp / 8);
+    let y: u32 = 0;
+    while (y < sc.height) {
+        let b: *u8 = (sc.px + (y as u64) * (sc.pitch as u64)) as *u8;
+        let i: u32 = 0;
+        while (i < row_bytes) { h = (h ^ (b[i] as u32)) * 16777619; i = i + 1; }
+        y = y + 1;
+    }
+    return h;
+}

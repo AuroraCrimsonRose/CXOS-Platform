@@ -1289,6 +1289,20 @@ language work in `language/CX_X_PLAN.md`.
    starts over if a remap moved it (`ktest_futex_remapped`). Four
    self-tests. Sabotages: `tests/sabotage/2.2.sab`.
 3. The display server: back buffer, damage, virtual screen for CI.
+   **Done (2.3, ABI 34):** `SYS_SCREEN_OPEN` (0x47, `GRANT_FRAMEBUFFER`)
+   gives the screen to one holder as a memory object (`KMEM_SCREEN`,
+   mapped write-combining, never executable); the screen's last reference
+   gives it back and the kernel repaints its console from its copy. While
+   it is held, the console and the `SYS_FB_*` calls draw into the copy
+   only; `panic_begin` takes the screen back for good
+   (`fb_panic_takeover`; that the panic path calls it is not tested).
+   `os/std/display.xfxn`: damage (clipped, merged, one bounding box past
+   eight), premultiplied source-over, layers composed from the topmost one
+   that hides the rectangle, a virtual screen (XRGB8888 or RGB565) that
+   frames are checked on: spot pixels worked out by hand and the frame's
+   FNV-1a fingerprint. `os/apps/displayd.xfxn` is the server's first form
+   (`run +screen displayd`; Esc gives the screen back). Windows and input
+   as handles are 2.4. Six self-tests. Sabotages: `tests/sabotage/2.3.sab`.
 4. Windows, transparency, server-drawn frames, focus and input routing.
 5. Retained layers and spring animations in the compositor.
 6. Trusted UI: the uninterceptible key combination, consent screens, signer

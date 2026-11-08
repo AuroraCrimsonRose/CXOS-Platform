@@ -102,6 +102,23 @@ int sys_fb_draw_line(uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1, uint32_
 int sys_fb_draw_text(uint32_t x, uint32_t y, uint64_t text, uint32_t fg, uint32_t bg);
 int sys_fb_set_font(uint64_t uname);
 
+/* ---- the screen given away (2.3) -------------------------------------------
+ * SYS_SCREEN_OPEN's handler, once GRANT_FRAMEBUFFER is checked: the screen as
+ * a KMEM_SCREEN memory object (object/kmem.h), one at a time. While it lives
+ * the kernel draws into its copy only. */
+int sys_screen_open(uint64_t uinfo);
+
+/* The object's last reference went (kmem.c): the copy goes back on the
+   screen, and the kernel draws there again. Takes the log lock. */
+void fb_screen_release(void);
+
+/* The panic path's, before it draws: the kernel's drawing reaches the screen
+   from here on, whoever holds it. Takes no lock. */
+void fb_panic_takeover(void);
+
+/* Is the screen held, so that the kernel's drawing stops at its copy? */
+int fb_screen_held(void);
+
 #if CXK_TEST_HOOKS
 /* The self-tests' view past the copy in RAM (fb.c): whether there is one,
    the screen itself read and written alone, where it is mapped, and how many
@@ -111,6 +128,8 @@ uint32_t  fb_test_screen_pixel(uint32_t x, uint32_t y);
 void      fb_test_screen_poke(uint32_t x, uint32_t y, uint32_t color);
 uintptr_t fb_test_screen_virt(void);
 uint32_t  fb_test_disagree(uint32_t x, uint32_t y, uint32_t w, uint32_t h);
+/* Undo fb_panic_takeover, so a test of it can put things back. */
+void      fb_test_untake(void);
 #endif
 
 #endif

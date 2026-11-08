@@ -42,6 +42,11 @@
  * reference on their device. A DMA object's pages outlive its last
  * reference while the device is open (kmem_dma_release): the device may
  * still be writing them.
+ *
+ * KMEM_SCREEN (2.3) is the framebuffer's pages, given to the display server
+ * (drivers/video/fb.h, SYS_SCREEN_OPEN): present from the start, the
+ * allocator's never, mapped write-combining, charged to nobody, and at most
+ * one at a time. Its last reference gives the screen back to the kernel.
  */
 #ifndef CXK_KMEM_H
 #define CXK_KMEM_H
@@ -58,6 +63,7 @@ enum kmem_kind {
     KMEM_ANON = 0,   /* pages on first touch, committed, the object's own */
     KMEM_DEVICE,     /* a device's registers: fixed, uncached, nobody's to free */
     KMEM_DMA,        /* contiguous below 4 GB, present now, freed after the device */
+    KMEM_SCREEN,     /* the framebuffer: fixed, write-combining, one at a time (2.3) */
 };
 
 struct kmem {
@@ -70,7 +76,7 @@ struct kmem {
     paddr_t     *pages;      /* npages entries, 0 until touched (kmalloc) */
     struct job  *job;        /* charged npages pages; a reference (0: KMEM_DEVICE) */
     uint32_t     kind;       /* enum kmem_kind */
-    paddr_t      phys;       /* KMEM_DEVICE, KMEM_DMA: the first page's address */
+    paddr_t      phys;       /* KMEM_DEVICE, KMEM_DMA, KMEM_SCREEN: the first page's address */
     struct kdevice *dev;     /* KMEM_DEVICE, KMEM_DMA: a reference */
     struct kmem *qnext;      /* KMEM_DMA: in its device's list of retired buffers */
 };
@@ -88,6 +94,11 @@ struct kmem *kmem_create(uint32_t npages, struct job *job, int *rc);
    records; E_OUT_OF_RANGE: npages past MMAP_MAX_BYTES / PAGE_SIZE). */
 struct kmem *kmem_create_device(paddr_t base, uint32_t npages, struct kdevice *dev, int *rc);
 
+/* The screen's `npages` pages from `base`, charged to nobody, holding no
+   device. fb.c makes it once it has the screen; its destroy calls
+   fb_screen_release. 0 with *rc set as kmem_create_device. */
+struct kmem *kmem_create_screen(paddr_t base, uint32_t npages, int *rc);
+
 /* A DMA buffer of `npages` (1 to DMA_ALLOC_MAX / PAGE_SIZE) zeroed pages in
    one run below 4 GB, charged to `job`, with a reference on `dev`; the
    first page's address in m->phys. 0 with *rc set: E_NO_MEMORY past the
@@ -99,7 +110,7 @@ struct kmem *kmem_create_dma(uint32_t npages, struct job *job, struct kdevice *d
 void kmem_dma_release(struct kmem *m);
 
 /* The page-table flags its kind adds to a mapping: VM_UNCACHED for a
-   device's registers, 0 otherwise. */
+   device's registers, VM_WC for the screen, 0 otherwise. */
 uint32_t kmem_map_flags(const struct kmem *m);
 
 /* The page at `index` (< npages), taken and zeroed if this is its first

@@ -20,6 +20,7 @@ import "sync.xfxn";
 import "heap.xfxn";
 import "io.xfxn";
 import "string.xfxn";
+import "display.xfxn";
 
 const MS: u64 = 1000000;
 
@@ -688,6 +689,162 @@ fn m_stack_zeroed(arg: u64) -> i32 {
     return 0;
 }
 
+// ---- the display server's renderer (std/display.xfxn, roadmap 2.3) ----
+
+// 60-67: damage is clipped, merged and collapsed, and counts its area
+fn dsx_find(d: *ds_damage, x: u32, y: u32, w: u32, h: u32) -> u32 {
+    let i: u32 = 0;
+    while (i < d.n) {
+        if (d.r[i].x == x && d.r[i].y == y && d.r[i].w == w && d.r[i].h == h) { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn d_damage(arg: u64) -> i32 {
+    let d: ds_damage;
+    ds_damage_init(&d, 100, 100);
+    ds_damage_add(&d, 10, 10, 10, 10);
+    ds_damage_add(&d, 12, 12, 2, 2);                      // covered: nothing
+    if (d.n != 1 || dsx_find(&d, 10, 10, 10, 10) == 0) { return 60; }
+    ds_damage_add(&d, 80, 80, 5, 5);                      // apart
+    ds_damage_add(&d, 15, 15, 10, 10);                    // overlaps the first
+    if (d.n != 2 || dsx_find(&d, 10, 10, 15, 15) == 0 || dsx_find(&d, 80, 80, 5, 5) == 0) { return 61; }
+    ds_damage_add(&d, 95, 95, 20, 20);                    // clipped to the screen
+    ds_damage_add(&d, 200, 0, 5, 5);                      // off it
+    ds_damage_add(&d, 0, 0, 0, 5);                        // empty
+    if (d.n != 3 || dsx_find(&d, 95, 95, 5, 5) == 0) { return 62; }
+    if (ds_damage_area(&d) != 225 + 25 + 25) { return 63; }
+    // one that meets two swallows both
+    ds_damage_init(&d, 100, 100);
+    ds_damage_add(&d, 0, 0, 10, 10);
+    ds_damage_add(&d, 20, 0, 10, 10);
+    ds_damage_add(&d, 5, 0, 20, 5);
+    if (d.n != 1 || dsx_find(&d, 0, 0, 30, 10) == 0) { return 64; }
+    // touching edges merge: nothing is wasted
+    ds_damage_add(&d, 30, 0, 5, 10);
+    if (d.n != 1 || dsx_find(&d, 0, 0, 35, 10) == 0) { return 65; }
+    // past DS_DAMAGE_MAX, one bounding box
+    ds_damage_init(&d, 100, 100);
+    let i: u32 = 0;
+    while (i < DS_DAMAGE_MAX) { ds_damage_add(&d, i * 12, 0, 10, 10); i = i + 1; }
+    if (d.n != DS_DAMAGE_MAX) { return 66; }
+    ds_damage_add(&d, 0, 50, 10, 10);
+    if (d.n != 1 || dsx_find(&d, 0, 0, 94, 60) == 0) { return 67; }
+    return 0;
+}
+
+// 70-72: source-over, premultiplied
+fn d_blend(arg: u64) -> i32 {
+    if (ds_over(0x80800000, 0xFF336699) != 0xFF99334C) { return 70; }
+    if (ds_over(0, 0xFF336699) != 0xFF336699 || ds_over(0xFF123456, 0xFF336699) != 0xFF123456) { return 71; }
+    if (ds_over(0x40404040, 0) != 0x40404040) { return 72; }
+    return 0;
+}
+
+// The reference scene on a 64 x 48 virtual screen: an opaque desktop with a
+// red bar, a half-transparent red square over it, and a white square that
+// runs off the bottom-right corner.
+global dsx_desk: ds_surface;
+global dsx_over: ds_surface;
+global dsx_tip: ds_surface;
+
+fn dsx_scene(c: *ds_comp, sc: *ds_screen, format: u32) -> i32 {
+    if (ds_screen_virtual(sc, 64, 48, format) != 0) { return 1; }
+    if (ds_comp_init(c, 64, 48) != 0) { return 1; }
+    if (ds_surface_new(&dsx_desk, 64, 48) != 0 || ds_surface_new(&dsx_over, 16, 16) != 0
+        || ds_surface_new(&dsx_tip, 4, 4) != 0) { return 1; }
+    ds_fill(&dsx_desk, 0, 0, 64, 48, 0xFF336699);
+    ds_fill(&dsx_desk, 8, 8, 16, 8, 0xFFFF0000);
+    ds_fill(&dsx_over, 0, 0, 16, 16, 0x80800000);
+    ds_fill(&dsx_tip, 0, 0, 4, 4, 0xFFFFFFFF);
+    ds_layer_add(c, &dsx_desk, 0, 0, 1);
+    ds_layer_add(c, &dsx_over, 24, 16, 0);
+    ds_layer_add(c, &dsx_tip, 62, 46, 1);
+    return 0;
+}
+
+fn dsx_scene_free(c: *ds_comp, sc: *ds_screen) -> void {
+    ds_surface_free(&dsx_desk);
+    ds_surface_free(&dsx_over);
+    ds_surface_free(&dsx_tip);
+    ds_comp_free(c);
+    ds_screen_close(sc);
+}
+
+// One format's frame: the pixels worked out by hand, then the whole frame's
+// fingerprint against the reference (printed when it differs, so a deliberate
+// change can be pinned again).
+fn dsx_frame(format: u32, desk: u32, red: u32, ov: u32, white: u32, want: u32, base: i32) -> i32 {
+    let c: ds_comp;
+    let sc: ds_screen;
+    if (dsx_scene(&c, &sc, format) != 0) { dsx_scene_free(&c, &sc); return base; }
+    ds_compose(&c);
+    let n: u64 = ds_present(&c, &sc);
+    let rc: i32 = 0;
+    if (n != 64 * 48 || c.damage.n != 0) { rc = base + 1; }
+    else if (ds_screen_pixel(&sc, 0, 0) != desk || ds_screen_pixel(&sc, 10, 10) != red
+             || ds_screen_pixel(&sc, 30, 20) != ov || ds_screen_pixel(&sc, 63, 47) != white
+             || ds_screen_pixel(&sc, 61, 47) != desk) { rc = base + 2; }
+    else if (ds_screen_hash(&sc) != want) {
+        puts("display: frame fingerprint ");
+        print_hex(ds_screen_hash(&sc));
+        newline();
+        rc = base + 3;
+    }
+    dsx_scene_free(&c, &sc);
+    return rc;
+}
+
+// 80-83, 85-88
+fn d_frames(arg: u64) -> i32 {
+    let rc: i32 = dsx_frame(SCREEN_XRGB8888, 0x00336699, 0x00FF0000, 0x0099334C, 0x00FFFFFF, 0x99166225, 80);
+    if (rc != 0) { return rc; }
+    return dsx_frame(SCREEN_RGB565, 0x3333, 0xF800, 0x9989, 0xFFFF, 0xF343F115, 85);
+}
+
+// 90-94: after a frame, only the damage reaches the screen: everything else
+// keeps the poison written over it
+fn d_damage_only(arg: u64) -> i32 {
+    let c: ds_comp;
+    let sc: ds_screen;
+    if (dsx_scene(&c, &sc, SCREEN_XRGB8888) != 0) { dsx_scene_free(&c, &sc); return 90; }
+    ds_compose(&c);
+    ds_present(&c, &sc);
+    let p: *u32 = sc.px as *u32;
+    let i: u32 = 0;
+    while (i < sc.size / 4) { p[i] = 0xA5A5A5A5; i = i + 1; }
+    ds_layer_move(&c, 1, 8, 24);                           // the square, left and down
+    let rc: i32 = 0;
+    if (c.damage.n != 1 || dsx_find(&c.damage, 8, 16, 32, 24) == 0) { rc = 91; }
+    ds_compose(&c);
+    if (rc == 0 && ds_present(&c, &sc) != 32 * 24) { rc = 92; }
+    let poison: u32 = 0;
+    let y: u32 = 0;
+    while (y < 48) {
+        let x: u32 = 0;
+        while (x < 64) { if (ds_screen_pixel(&sc, x, y) == 0xA5A5A5A5) { poison = poison + 1; } x = x + 1; }
+        y = y + 1;
+    }
+    if (rc == 0 && poison != 64 * 48 - 32 * 24) { rc = 93; }
+    if (rc == 0 && (ds_screen_pixel(&sc, 10, 26) != 0x0099334C || ds_screen_pixel(&sc, 30, 20) != 0x00336699)) { rc = 94; }
+    // a rectangle inside the half-transparent square is composed from the
+    // opaque desktop under it, not from the square: once, not blended twice
+    ds_damage_add(&c.damage, 10, 30, 2, 2);
+    ds_compose(&c);
+    ds_present(&c, &sc);
+    if (rc == 0 && ds_screen_pixel(&sc, 10, 30) != 0x0099334C) { rc = 95; }
+    dsx_scene_free(&c, &sc);
+    return rc;
+}
+
+// 96: the real screen needs GRANT_FRAMEBUFFER, which the runner does not give
+fn d_screen_denied(arg: u64) -> i32 {
+    let sc: ds_screen;
+    if (ds_screen_open(&sc) != E_ACCESS_DENIED || sc.mem != -1) { return 96; }
+    return 0;
+}
+
 // The names are what the boot reports, after "x: ".
 fn all() -> void {
     test_run("threads: create refusals",               t_create_refused,           30000);
@@ -713,6 +870,11 @@ fn all() -> void {
     test_run("limits: a process's handles",            l_handles,                  60000);
     test_run("random: random_read",                    r_read,                     30000);
     test_run("memory: a new process's stack is zeroed", m_stack_zeroed,            30000);
+    test_run("display: damage clipped, merged, bounded", d_damage,                  30000);
+    test_run("display: source-over, premultiplied",    d_blend,                    30000);
+    test_run("display: reference frames, both formats", d_frames,                  60000);
+    test_run("display: only the damage is presented",  d_damage_only,              60000);
+    test_run("display: the screen needs its grant",    d_screen_denied,            30000);
 }
 
 fn _start() -> void { test_main(all); }

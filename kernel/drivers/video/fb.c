@@ -53,6 +53,19 @@ static uint32_t  height = 0;
 static uint32_t  bpp = 0;       /* 16 or 32 */
 static uint32_t  pitch = 0;     /* bytes per scanline */
 
+/* ---- the screen given away (2.3, SYS_SCREEN_OPEN) ---------------------------
+ * While the display server holds the screen as a memory object, the kernel
+ * draws only into its copy: `flush` writes nothing to the screen. Both flags
+ * change under the log lock, which every drawing call is made under (the
+ * console's, SYS_FB_*'s), so a flush is never half before and half after.
+ *   held  - a KMEM_SCREEN object lives; cleared by its destroy, which puts the
+ *           copy back on the screen.
+ *   taken - a panic took the screen back (fb_panic_takeover); never cleared,
+ *           so a holder still running elsewhere does not get it again.
+ * Read without the lock on the panic path, which runs with the log broken. */
+static volatile int held  = 0;
+static volatile int taken = 0;
+
 /* The pixel layouts fb_rgb packs: 5-6-5 at 16 bpp and 8-8-8 at 32, red
    highest. A mode in any other order (BGR, as UEFI GOP often gives) would
    draw every colour wrong, so it is refused rather than used. */
@@ -89,9 +102,13 @@ static int clip(uint32_t *x, uint32_t *y, uint32_t *w, uint32_t *h) {
     return 1;
 }
 
+/* Does the kernel's drawing go on to the screen? Not when the copy IS the
+   screen (nothing more to write), nor while the display server holds it. */
+static int to_screen(void) { return back != fb && !(held && !taken); }
+
 /* Write the copy's rectangle to the screen, row by row. */
 static void flush(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
-    if (back == fb || !clip(&x, &y, &w, &h)) return;
+    if (!to_screen() || !clip(&x, &y, &w, &h)) return;
     uint32_t bb = bpp / 8, off = y * pitch + x * bb;
     for (uint32_t r = 0; r < h; r++, off += pitch)
         copy_fwd(fb + off, back + off, w * bb);
@@ -199,7 +216,7 @@ static uint32_t load(const uint8_t *base, uint32_t x, uint32_t y) {
 void fb_put_pixel(uint32_t x, uint32_t y, uint32_t color) {
     if (!active || x >= width || y >= height) return;
     store(back, x, y, color);
-    if (back != fb) store(fb, x, y, color);
+    if (to_screen()) store(fb, x, y, color);
 }
 
 /* From the copy: the screen is never read (above). */
@@ -562,3 +579,63 @@ int sys_fb_set_font(uint64_t uname) {
     if (font_cell_width() != cw || font_cell_height() != ch) console_clear();
     return 0;
 }
+
+/* ---- the screen given away (2.3) -------------------------------------------
+ * SYS_SCREEN_OPEN: the framebuffer's pages as a KMEM_SCREEN memory object,
+ * for the display server (docs/system/CX_DISPLAY.md section 3). The kernel
+ * keeps drawing, into its copy alone, so the console a release shows is
+ * current. Refused without a copy: then the kernel draws on the screen
+ * itself and would draw over the holder. */
+#include "object/kmem.h"
+#include "object/htab.h"
+#include "sched.h"
+
+int sys_screen_open(uint64_t uinfo) {
+    if (!fb_active()) return E_NOT_FOUND;
+    if (!user_ptr_writable(uinfo, sizeof(struct screen_info))) return E_BAD_ADDRESS;
+    if ((fb_phys & 0xFFFu) || back == fb) return E_NOT_SUPPORTED;
+    uint32_t pages = (pitch * height + 0xFFFu) >> 12;
+    struct screen_info si = { 0 };
+    si.width  = width;
+    si.height = height;
+    si.pitch  = pitch;
+    si.bpp    = bpp;
+    si.format = bpp == 32 ? SCREEN_XRGB8888 : SCREEN_RGB565;
+    si.size   = pages << 12;
+
+    log_lock();
+    int busy = held || taken;
+    if (!busy) held = 1;
+    log_unlock();
+    if (busy) return E_BUSY;
+
+    int rc;
+    struct kmem *m = kmem_create_screen((paddr_t)fb_phys, pages, &rc);
+    if (!m) { fb_screen_release(); return rc; }
+    /* The object's last reference releases the screen, so every way out
+       from here goes through it. */
+    if (user_copy_out(uinfo, &si, sizeof si) != 0) { kobj_unref(&m->hdr); return E_BAD_ADDRESS; }
+    int32_t h = htab_install(thread_htab(thread_current_id()), &m->hdr,
+                             HRIGHT_MAP | HRIGHT_MAP_WRITE | HRIGHT_INSPECT | HRIGHT_DUPLICATE, 0);
+    kobj_unref(&m->hdr);
+    return h;
+}
+
+void fb_screen_release(void) {
+    log_lock();
+    held = 0;
+    flush(0, 0, width, height);
+    log_unlock();
+}
+
+void fb_panic_takeover(void) { taken = 1; }
+
+int fb_screen_held(void) { return held && !taken; }
+
+#if CXK_TEST_HOOKS
+void fb_test_untake(void) {
+    log_lock();
+    taken = 0;
+    log_unlock();
+}
+#endif

@@ -227,6 +227,7 @@ volatile void *paging_map_phys(paddr_t phys, uint32_t len, uint32_t vm) {
    (usermode.asm). Linux leaves the same page out of TASK_SIZE_MAX. */
 int paging_map_user_in(paddr_t root, uintptr_t virt, paddr_t phys, uint32_t vm) {
     if (virt >= USER_VLIMIT - PAGE_SIZE || (vm & ~VM_ALL)) return -1;
+    if (!pat_wc_ready()) vm &= ~VM_WC;   /* as paging_map_kernel: the screen (2.3) */
     uint64_t *e = walk(root, virt, 1, 1);
     if (!e) return -1;
     uint64_t old = *e;
@@ -277,6 +278,12 @@ paddr_t paging_get_phys(uintptr_t virt) {
 int paging_is_uncached(uintptr_t virt) {
     uint64_t size, e = leaf(virt, 0, &size);
     return e && (e & (PTE64_PCD | PTE64_PWT)) == (PTE64_PCD | PTE64_PWT);
+}
+
+int paging_is_wc(uintptr_t virt) {
+    uint64_t size, e = leaf(virt, 0, &size);
+    uint64_t pat = size == PAGE_SIZE ? PTE64_PAT : PTE64_PAT_LARGE;
+    return e && (e & (pat | PTE64_PCD | PTE64_PWT)) == pat;
 }
 
 int paging_is_user(uintptr_t virt) {

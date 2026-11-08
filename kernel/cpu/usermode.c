@@ -467,7 +467,7 @@ int syscall_file_unlock(int32_t h, uint64_t start, uint64_t len) {
     return sys_file_unlock(h, start, len);
 }
 
-/* The seven framebuffer calls share one gate, as the power calls do. */
+/* The eight framebuffer calls share one gate, as the power calls do. */
 static int fb_granted(void) {
     if (thread_current_caps() & GRANT_FRAMEBUFFER) return 1;
     klog_u32("GRANT", SEV_WARN, "framebuffer DENIED for pid ", (uint32_t)thread_current_pid(), LOG_COLOR_VALUE, " (no GRANT_FRAMEBUFFER)");
@@ -507,6 +507,11 @@ int syscall_fb_draw_text(uint32_t x, uint32_t y, uint64_t text, uint32_t fg, uin
 int syscall_fb_set_font(uint64_t name) {
     if (!fb_granted()) return E_ACCESS_DENIED;
     return sys_fb_set_font(name);
+}
+
+int syscall_screen_open(uint64_t info) {
+    if (!fb_granted()) return E_ACCESS_DENIED;
+    return sys_screen_open(info);
 }
 
 /* The three input calls share one gate. There is one keyboard and one
@@ -6829,5 +6834,125 @@ done:
     thread_set_caps(me, caps0);
     ipc_set_base(me, base0);
     unmap_user_page(TEST_CODE_VIRT, phys);
+    return ok;
+}
+
+/* ---- the screen as a memory object (Phase 2.3) ------------------------------
+ * SYS_SCREEN_OPEN through the dispatcher, as the devices' tests are: the
+ * grant, the description, one holder, a mapping write-combining onto the
+ * screen itself, the kernel's drawing kept to its copy while it is held
+ * (and let through after a panic's takeover), and the screen given back,
+ * repainted from the copy, only when the last handle AND the last mapping
+ * have gone. The pixels drawn are near the bottom-right corner and put
+ * back. A boot in VGA text mode has nothing to test. 1 = pass, 0 = fail. */
+#define SC_INFO (TEST_CODE_VIRT + 0x400)   /* struct screen_info */
+
+static int sc_open(uint64_t at) { return syscall_dispatch(SYS_SCREEN_OPEN, at, 0, 0, 0, 0); }
+
+int usermode_screen_test(void) {
+    if (!fb_active()) return 1;
+    struct dh_env e;
+    if (!dh_begin(&e)) return 0;
+    thread_set_caps(e.me, 0);
+    const struct screen_info *si = (const struct screen_info *)ktest_umem(SC_INFO);
+    const struct object_basic *ob = (const struct object_basic *)ktest_umem(MT_INFO);
+    const struct mem_info *mi = (const struct mem_info *)ktest_umem(MT_INFO);
+    struct job *job = thread_proc(e.me)->job;
+    uint32_t mem0 = kobj_live(KOBJ_MEM);
+    uint32_t w = fb_width(), h = fb_height(), bb = fb_bpp() / 8;
+    uint32_t x = w - 2, y = h - 2, x2 = w - 3;
+    uint32_t keep = fb_get_pixel(x, y), keep2 = fb_get_pixel(x2, y);
+    uint32_t c1 = keep ^ 0x1Fu, c2 = keep ^ 0x7E0u, c3 = keep ^ 0xF800u, v = keep2 ^ 0x1Fu;
+    uint32_t size = (fb_pitch() * h + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+    uint32_t fphys = 0, fsize = 0;
+    fb_get_region(&fphys, &fsize);
+    int32_t s = -1, s2 = -1;
+    uint64_t addr = 0;
+    int step = 0, ok = 0, untake = 0;
+
+    /* 1: nothing without the grant */
+    step = 1; if (sc_open(SC_INFO) != E_ACCESS_DENIED) goto done;
+    thread_set_caps(e.me, GRANT_FRAMEBUFFER);
+    /* 2: a bad pointer refused, with nothing taken */
+    step = 2; if (sc_open(0xC0001000u) != E_BAD_ADDRESS || fb_screen_held()
+                  || kobj_live(KOBJ_MEM) != mem0) goto done;
+
+    /* 3: the screen, described as it is */
+    s = sc_open(SC_INFO);
+    step = 3; if (s <= 0 || !fb_screen_held() || si->width != w || si->height != h
+                  || si->pitch != fb_pitch() || si->bpp != fb_bpp()
+                  || si->format != (fb_bpp() == 32 ? SCREEN_XRGB8888 : SCREEN_RGB565)
+                  || si->size != size) goto done;
+    /* 4: one holder (a second handle, if one came, closed at once) */
+    s2 = sc_open(SC_INFO);
+    step = 4; if (s2 != E_BUSY) goto done;
+    s2 = -1;
+    /* 5: a memory object of the screen's pages, all present, charged to nobody */
+    uint64_t used0 = job->mem_used;
+    step = 5; if (mt_info(s, OBJINFO_BASIC, sizeof *ob) != (int)sizeof *ob
+                  || ob->kind != OBJ_TYPE_MEM
+                  || ob->rights != (HRIGHT_MAP | HRIGHT_MAP_WRITE | HRIGHT_INSPECT | HRIGHT_DUPLICATE)
+                  || mt_info(s, OBJINFO_MEM, sizeof *mi) != (int)sizeof *mi
+                  || mi->size != size || mi->resident != size
+                  || job->mem_used != used0) goto done;
+
+    /* 6: never executable */
+    step = 6; if (mt_map(s, 0, PAGE_SIZE, MPROT_READ | MPROT_EXEC) != E_ACCESS_DENIED) goto done;
+    /* 7: mapped whole, onto the screen, cached as the kernel's own view of it
+       (write-combining where the CPU has a PAT, which QEMU's has) */
+    if (mt_map(s, 0, size, MPROT_READ | MPROT_WRITE) != E_OK) goto done;
+    addr = ((const struct vm_map_args *)ktest_umem(MT_ARGS))->addr;
+    uint64_t at = addr + (uint64_t)y * fb_pitch() + (uint64_t)x2 * bb;
+    uint8_t byte;
+    step = 7; if (user_copy_in(&byte, at, 1) != 0
+                  || paging_get_phys((uintptr_t)at) != (paddr_t)fphys + (at - addr)
+                  || paging_is_uncached((uintptr_t)at)
+                  || paging_is_wc((uintptr_t)at) != paging_is_wc(fb_test_screen_virt())) goto done;
+
+    /* 8: the kernel's drawing stops at its copy */
+    fb_put_pixel(x, y, c1);
+    step = 8; if (fb_get_pixel(x, y) != c1 || fb_test_screen_pixel(x, y) != keep) goto done;
+    /* 9: the holder's writes are the screen's */
+    step = 9; if (user_copy_out(at, &v, bb) != 0 || fb_test_screen_pixel(x2, y) != v) goto done;
+
+    /* 10: a panic's takeover lets the kernel's drawing through, held or not,
+       and nobody else gets the screen */
+    fb_panic_takeover();
+    untake = 1;
+    fb_put_pixel(x, y, c2);
+    step = 10; if (fb_screen_held() || fb_test_screen_pixel(x, y) != c2 || sc_open(SC_INFO) != E_BUSY) goto done;
+    fb_test_untake();
+    untake = 0;
+    fb_put_pixel(x, y, c3);
+    step = 11; if (!fb_screen_held() || fb_test_screen_pixel(x, y) != c2) goto done;
+
+    /* 12: every handle closed, a duplicate's too: the mapping still holds it */
+    s2 = dh_dup(s, HRIGHT_MAP | HRIGHT_INSPECT);
+    step = 12; if (s2 <= 0) goto done;
+    dh_close(e.tab, &s);
+    dh_close(e.tab, &s2);
+    step = 13; if (!fb_screen_held() || sc_open(SC_INFO) != E_BUSY || kobj_live(KOBJ_MEM) != mem0 + 1) goto done;
+    /* 14: the mapping gone, so is the object: the copy back on the screen,
+       the holder's pixel with it */
+    vm_unmap(e.pid, addr, 0);
+    addr = 0;
+    step = 14; if (fb_screen_held() || kobj_live(KOBJ_MEM) != mem0
+                   || fb_test_screen_pixel(x, y) != c3 || fb_test_screen_pixel(x2, y) != keep2
+                   || fb_test_disagree(0, 0, w, h) != 0) goto done;
+    /* 15: and it opens again */
+    s = sc_open(SC_INFO);
+    step = 15; if (s <= 0) goto done;
+    ok = 1;
+
+done:
+    if (!ok) klog_u32("KTEST", SEV_ERR, "screen test failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    if (untake) fb_test_untake();
+    if (addr) vm_unmap(e.pid, addr, 0);
+    dh_close(e.tab, &s2);
+    dh_close(e.tab, &s);
+    dh_end(&e);
+    fb_put_pixel(x, y, keep);
+    fb_put_pixel(x2, y, keep2);
+    if (ok && (kobj_live(KOBJ_MEM) != mem0 || fb_screen_held() || fb_test_disagree(0, 0, w, h) != 0)) ok = 0;
     return ok;
 }

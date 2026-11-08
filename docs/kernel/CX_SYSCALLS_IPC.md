@@ -840,6 +840,12 @@ operations leave it.
   `SYS_FB_SET_FONT` (0x46, a name). One `GRANT_FRAMEBUFFER` gate; each
   answers `E_NOT_FOUND` with no framebuffer. `os/std/gfx.xfxn` calls the
   generated wrappers.
+- **The screen** (`CXK_ABI_VERSION` 34, step 2.3): `SYS_SCREEN_OPEN` (0x47,
+  `*screen_info` out, the same gate) returns a memory-object handle over the
+  screen (`HRIGHT_MAP`, `MAP_WRITE`, `INSPECT`, `DUPLICATE`; never
+  executable), mapped write-combining. One holder: `E_BUSY` while it is
+  held or after a panic took it. Its last reference gives it back. While it
+  is held the calls above draw into the kernel's copy only.
 - **Network** (`CXK_ABI_VERSION` 8): `SYS_NET_OP`, `net_op_args` and
   `NET_OP_*` go. `SYS_NET_STATUS` (0x50), `SYS_NET_MAC` (0x51, `buf, len`),
   `SYS_NET_GET_CONFIG` (0x52, `*net_ip_config` out, which replaces the u32[4]

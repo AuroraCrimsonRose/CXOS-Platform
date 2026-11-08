@@ -192,6 +192,7 @@ static void panic_begin(void) {
     log_break();
     speaker_panic_tone();
     panic_pos = 0;
+    fb_panic_takeover();   /* from the display server, if it holds the screen */
     if (fb_active()) fb_clear(fb_rgb(0xAA, 0, 0));
     early_puts("\n");   /* the banner starts a line of its own on COM1 */
 }

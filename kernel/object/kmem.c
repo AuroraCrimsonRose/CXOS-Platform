@@ -13,6 +13,7 @@
 #include "cxk_abi.h"
 #include "panic.h"
 #include "drivers/devhost.h"
+#include "fb.h"
 
 _Static_assert(KOBJ_MEM == OBJ_TYPE_MEM, "object_basic.kind is the kernel type");
 
@@ -29,6 +30,14 @@ static void mem_destroy(struct kobj *o) {
         kfree(m->pages);
         ocache_free(&mem_cache, m);
         devhost_put(dev);
+        return;
+    }
+    if (m->kind == KMEM_SCREEN) {
+        /* Nothing maps it now (every mapping held a reference): the kernel
+           may have the screen back. */
+        kfree(m->pages);
+        ocache_free(&mem_cache, m);
+        fb_screen_release();
         return;
     }
     if (m->kind == KMEM_DMA) {
@@ -122,7 +131,7 @@ static struct kmem *fixed_create(paddr_t base, uint32_t npages, uint32_t kind,
     m->job      = 0;
     m->kind     = kind;
     m->phys     = base;
-    devhost_get(dev);
+    if (dev) devhost_get(dev);   /* the screen's has none */
     m->dev      = dev;
     m->qnext    = 0;
     return m;
@@ -131,6 +140,13 @@ static struct kmem *fixed_create(paddr_t base, uint32_t npages, uint32_t kind,
 struct kmem *kmem_create_device(paddr_t base, uint32_t npages, struct kdevice *dev, int *rc) {
     if (npages == 0 || npages > MMAP_MAX_BYTES / PAGE_SIZE) { *rc = E_OUT_OF_RANGE; return 0; }
     struct kmem *m = fixed_create(base, npages, KMEM_DEVICE, dev);
+    *rc = m ? E_OK : E_NO_MEMORY;
+    return m;
+}
+
+struct kmem *kmem_create_screen(paddr_t base, uint32_t npages, int *rc) {
+    if (npages == 0 || npages > MMAP_MAX_BYTES / PAGE_SIZE) { *rc = E_OUT_OF_RANGE; return 0; }
+    struct kmem *m = fixed_create(base, npages, KMEM_SCREEN, 0);
     *rc = m ? E_OK : E_NO_MEMORY;
     return m;
 }
@@ -172,7 +188,8 @@ void kmem_dma_release(struct kmem *m) {
 }
 
 uint32_t kmem_map_flags(const struct kmem *m) {
-    return m->kind == KMEM_DEVICE ? VM_UNCACHED : 0;
+    return m->kind == KMEM_DEVICE ? VM_UNCACHED
+         : m->kind == KMEM_SCREEN ? VM_WC : 0;
 }
 
 paddr_t kmem_page(struct kmem *m, uint32_t index) {

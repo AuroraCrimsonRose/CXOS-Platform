@@ -3548,6 +3548,7 @@ void ktest_run(void) {
     total++; passed += report("devices: open, held, registers as memory objects", usermode_devhost_test());
     total++; passed += report("devices: an interrupt as a handle", usermode_devhost_irq_test());
     total++; passed += report("devices: DMA buffers, retired until bus mastering is off", usermode_devhost_dma_test());
+    total++; passed += report("screen: one holder, mapped write-combining, given back", usermode_screen_test());
     total++; passed += report("ipc: queued calls, reply tokens, badges", usermode_ipc_test());
     total++; passed += report("ipc: handles in messages", usermode_ipc_handles_test());
     total++; passed += report("ipc: priority through calls", usermode_prio_test());

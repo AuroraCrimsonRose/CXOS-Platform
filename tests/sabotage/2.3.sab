@@ -1,0 +1,161 @@
+# Step 2.3, the screen as a memory object and the display server's first
+# form, run by `cxk test sabotage`. Each must turn red exactly the self-tests
+# named, at the step named. Format: docs/devkit/CX_CXK_PLAN.md,
+# "cxk test sabotage". The X tests report a code, not a logged step, so
+# theirs name the test alone.
+
+# ---- the screen: who may have it ----
+
+[grant-ignored]
+# a process without GRANT_FRAMEBUFFER takes the screen
+expect = screen: one holder, mapped write-combining, given back @ screen test failed at step 1
+expect = x: display: the screen needs its grant
+group = g1
+edit = kernel/cpu/usermode.c
+<<<
+int syscall_screen_open(uint64_t info) {
+    if (!fb_granted()) return E_ACCESS_DENIED;
+===
+int syscall_screen_open(uint64_t info) {
+>>>
+
+[not-exclusive]
+# a second process takes the screen while it is held
+expect = screen: one holder, mapped write-combining, given back @ screen test failed at step 4
+group = g2
+edit = kernel/drivers/video/fb.c
+<<<
+    int busy = held || taken;
+===
+    int busy = 0;
+>>>
+
+[exec-right]
+# the screen's handle can map it executable
+expect = screen: one holder, mapped write-combining, given back @ screen test failed at step 5
+group = g4
+edit = kernel/drivers/video/fb.c
+<<<
+                             HRIGHT_MAP | HRIGHT_MAP_WRITE | HRIGHT_INSPECT | HRIGHT_DUPLICATE, 0);
+===
+                             HRIGHT_MAP | HRIGHT_MAP_WRITE | HRIGHT_MAP_EXEC | HRIGHT_INSPECT | HRIGHT_DUPLICATE, 0);
+>>>
+
+[screen-cached]
+# the holder's mapping of the screen is write-back, not write-combining
+expect = screen: one holder, mapped write-combining, given back @ screen test failed at step 7
+group = g3
+edit = kernel/object/kmem.c
+<<<
+         : m->kind == KMEM_SCREEN ? VM_WC : 0;
+===
+         : 0;
+>>>
+
+# ---- the kernel's drawing while it is held, and after ----
+
+[draw-through]
+# the kernel's console draws over the holder's frame
+expect = screen: one holder, mapped write-combining, given back @ screen test failed at step 8
+group = g5
+edit = kernel/drivers/video/fb.c
+<<<
+static int to_screen(void) { return back != fb && !(held && !taken); }
+===
+static int to_screen(void) { return back != fb; }
+>>>
+
+[takeover-noop]
+# a panic leaves the screen to its holder: nothing of it is seen
+expect = screen: one holder, mapped write-combining, given back @ screen test failed at step 10
+edit = kernel/drivers/video/fb.c
+<<<
+void fb_panic_takeover(void) { taken = 1; }
+===
+void fb_panic_takeover(void) { }
+>>>
+
+[release-no-repaint]
+# given back, the screen keeps the holder's last frame over the console
+expect = screen: one holder, mapped write-combining, given back @ screen test failed at step 14
+edit = kernel/drivers/video/fb.c
+<<<
+    held = 0;
+    flush(0, 0, width, height);
+===
+    held = 0;
+>>>
+
+[destroy-no-release]
+# the screen's memory object dies and the kernel never has it back
+expect = screen: one holder, mapped write-combining, given back @ screen test failed at step 14
+edit = kernel/object/kmem.c
+<<<
+        ocache_free(&mem_cache, m);
+        fb_screen_release();
+        return;
+===
+        ocache_free(&mem_cache, m);
+        return;
+>>>
+
+# ---- the server's library (std/display.xfxn) ----
+
+[damage-touching-apart]
+# rectangles that share an edge are kept apart (the moved layer's old and
+# new places only touch, so its damage stays two)
+expect = x: display: damage clipped, merged, bounded
+expect = x: display: only the damage is presented @ step 91
+edit = os/std/display.xfxn
+<<<
+    if (a.x + a.w < b.x || b.x + b.w < a.x) { return 0; }
+===
+    if (a.x + a.w <= b.x || b.x + b.w <= a.x) { return 0; }
+>>>
+
+[present-everything]
+# every frame writes the whole screen, not its damage
+expect = x: display: only the damage is presented
+group = g2
+edit = os/std/display.xfxn
+<<<
+        ds_rect_set(&r, c.damage.r[i].x, c.damage.r[i].y, c.damage.r[i].w, c.damage.r[i].h);
+===
+        ds_rect_set(&r, 0, 0, sc.width, sc.height);
+>>>
+
+[pack-565-green]
+# RGB565's green taken a bit too high
+expect = x: display: reference frames, both formats
+group = g3
+edit = os/std/display.xfxn
+<<<
+    let g: u32 = (argb >> 10) & 63;
+===
+    let g: u32 = (argb >> 11) & 63;
+>>>
+
+[translucent-hides]
+# a half-transparent layer counts as hiding what is under it: what was
+# composed before is blended again
+expect = x: display: only the damage is presented
+group = g4
+edit = os/std/display.xfxn
+<<<
+    if (c.l[i].visible != 1 || c.l[i].opaque != 1) { return 0; }
+===
+    if (c.l[i].visible != 1) { return 0; }
+>>>
+
+[blend-truncates]
+# source-over truncates instead of rounding
+expect = x: display: source-over, premultiplied
+expect = x: display: reference frames, both formats
+expect = x: display: only the damage is presented
+group = g5
+edit = os/std/display.xfxn
+<<<
+    return s + (d * inv + 127) / 255;
+===
+    return s + (d * inv) / 255;
+>>>

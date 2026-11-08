@@ -1,7 +1,7 @@
 # Display
 ### CX Design Spec: Aurora Tejeda / CATX Systems
 
-> **Status: DESIGN.** The display server, compositor, animations, trusted UI
+> **Status: DESIGN; the screen object and the first server built (2.3).** The display server, compositor, animations, trusted UI
 > and the path to Vulkan. Compared against NT5, Haiku, Serenity, Redox and
 > macOS.
 
@@ -42,6 +42,13 @@ user-space compositor owns the screen, the kernel only manages hardware.
   and go in `TRANSITIONAL_CODE.md`.
 - Keyboard and mouse become handles held only by the display server.
 - The kernel can always take the screen back to show a panic.
+
+**Built (2.3):** `SYS_SCREEN_OPEN` gives the screen, as a `KMEM_SCREEN`
+memory object mapped write-combining, to one holder at a time
+(`kernel/drivers/video/fb.c`). While it is held the kernel's console draws
+into its RAM copy only; when the object's last reference goes, the screen
+comes back and is repainted from the copy. `panic_begin` takes it back for
+good. Input as handles is still to come (2.4).
 
 ## 4. The display server
 
@@ -123,6 +130,12 @@ accessibility structure in the protocol.
 
 A virtual screen backend runs the server without hardware; frames compare
 against saved reference images in the Linux CI.
+
+**Built (2.3):** `ds_screen_virtual` in `os/std/display.xfxn` is that
+backend, in both formats. The boot's X tests compose a fixed scene onto it
+and check pixels worked out by hand, then the whole frame's FNV-1a
+fingerprint (the "reference image"; a deliberate change prints the new one
+to pin). The same test checks that only the damage is written.
 
 ## 11. Order
 

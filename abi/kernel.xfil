@@ -40,7 +40,7 @@ domain kernel
 /// mismatch. Declared in versions.json as `cxex-abi` and checked against this
 /// line; bump both, and the DevKit's stamp, in the one commit that changes the
 /// contract.
-const CXK_ABI_VERSION: u32 = 33
+const CXK_ABI_VERSION: u32 = 34
 
 /// ---- syscall numbers ----
 /// lifecycle 0x00-0x0F (no capability required)
@@ -359,6 +359,18 @@ syscall SYS_FB_DRAW_TEXT = 0x45 fn fb_draw_text(x: u32, y: u32, text: *u8, fg: u
 /// The font is validated as an XFNT before anything is installed; a bad one
 /// leaves the current font working. Returns 0, or E_INVALID_ARGS / E_NOT_FOUND.
 syscall SYS_FB_SET_FONT = 0x46 fn fb_set_font(name: *u8) -> i32
+/// The screen itself, for the display server (docs/system/CX_DISPLAY.md sec 3):
+/// a memory object over the framebuffer's pages, mapped write-combining, with
+/// HRIGHT_MAP, HRIGHT_MAP_WRITE, HRIGHT_INSPECT and HRIGHT_DUPLICATE (never
+/// HRIGHT_MAP_EXEC). Pixels are as screen_info.format says; nothing converts
+/// them. One holder at a time: while the object lives, the kernel's drawing
+/// (the console, the SYS_FB_* calls) goes only to its copy in RAM, and when
+/// the object's last reference goes, the kernel puts that copy back on the
+/// screen. A panic takes the screen back whoever holds it.
+/// ebx = *screen_info -> a memory-object handle, the info filled in.
+/// E_BUSY while the object lives; E_NOT_FOUND with no framebuffer (VGA text
+/// mode); E_NOT_SUPPORTED for a framebuffer that does not start on a page.
+syscall SYS_SCREEN_OPEN = 0x47 fn screen_open(info: *screen_info) -> i32
 /// process 0x70-0x7F (spawning is privileged; kill, stop and jobs need only the
 /// handle's right). Both return a process handle with HRIGHT_WAIT,
 /// HRIGHT_INSPECT, HRIGHT_KILL, HRIGHT_STOP and HRIGHT_DUPLICATE, not a pid: the process is freed once it has ended and
@@ -1038,6 +1050,19 @@ struct fb_geometry {
     height: u32
     bpp: u32        /// 16 or 32
     pitch: u32      /// bytes per scanline
+}
+
+/// ---- the screen (SYS_SCREEN_OPEN) ----
+/// A pixel's layout in the screen's memory, red highest in both.
+const SCREEN_RGB565: u32 = 1     /// 16 bits: 5 red, 6 green, 5 blue
+const SCREEN_XRGB8888: u32 = 2   /// 32 bits: 0x00RRGGBB
+struct screen_info {
+    width: u32
+    height: u32
+    pitch: u32      /// bytes from one row to the next
+    bpp: u32        /// 16 or 32
+    format: u32     /// SCREEN_*
+    size: u32       /// bytes of the memory object: pitch * height, whole pages
 }
 
 /// ---- capabilities (for spawn_args.caps) ----

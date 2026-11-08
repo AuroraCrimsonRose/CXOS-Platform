@@ -156,6 +156,7 @@ static int decode_fb_put_pixel(const uintptr_t *a) { return syscall_fb_put_pixel
 static int decode_fb_draw_line(const uintptr_t *a) { return syscall_fb_draw_line((uint32_t)a[0], (uint32_t)a[1], (uint32_t)a[2], (uint32_t)a[3], (uint32_t)a[4]); }
 static int decode_fb_draw_text(const uintptr_t *a) { return syscall_fb_draw_text((uint32_t)a[0], (uint32_t)a[1], (uint64_t)a[2], (uint32_t)a[3], (uint32_t)a[4]); }
 static int decode_fb_set_font(const uintptr_t *a) { return syscall_fb_set_font((uint64_t)a[0]); }
+static int decode_screen_open(const uintptr_t *a) { return syscall_screen_open((uint64_t)a[0]); }
 static int decode_spawn(const uintptr_t *a) { return syscall_spawn((uint64_t)a[0]); }
 static int decode_exec_path(const uintptr_t *a) { return syscall_exec_path((uint64_t)a[0], (uint64_t)a[1]); }
 static int decode_process_kill(const uintptr_t *a) { return syscall_process_kill((int32_t)a[0]); }
@@ -312,6 +313,7 @@ const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_FB_DRAW_LINE] = decode_fb_draw_line,
     [SYS_FB_DRAW_TEXT] = decode_fb_draw_text,
     [SYS_FB_SET_FONT] = decode_fb_set_font,
+    [SYS_SCREEN_OPEN] = decode_screen_open,
     [SYS_NET_STATUS] = decode_net_status,
     [SYS_NET_MAC] = decode_net_mac,
     [SYS_NET_GET_CONFIG] = decode_net_get_config,

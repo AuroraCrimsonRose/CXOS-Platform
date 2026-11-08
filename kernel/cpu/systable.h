@@ -74,6 +74,7 @@ int syscall_fb_put_pixel(uint32_t x, uint32_t y, uint32_t color); /* SYS_FB_PUT_
 int syscall_fb_draw_line(uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1, uint32_t color); /* SYS_FB_DRAW_LINE */
 int syscall_fb_draw_text(uint32_t x, uint32_t y, uint64_t text, uint32_t fg, uint32_t bg); /* SYS_FB_DRAW_TEXT */
 int syscall_fb_set_font(uint64_t name);         /* SYS_FB_SET_FONT */
+int syscall_screen_open(uint64_t info);         /* SYS_SCREEN_OPEN */
 int syscall_spawn(uint64_t a);                  /* SYS_SPAWN */
 int syscall_exec_path(uint64_t path, uint64_t a); /* SYS_EXEC_PATH */
 int syscall_process_kill(int32_t h);            /* SYS_PROCESS_KILL */
@@ -124,7 +125,7 @@ int syscall_dma_alloc(int32_t h, uint64_t size, uint64_t phys); /* SYS_DMA_ALLOC
  * before looking it up, and one that lands in a hole finds no decoder. */
 #define SYSCALL_ARGS            5
 #define SYSCALL_TABLE_SIZE      246
-#define SYSCALL_COUNT           103
+#define SYSCALL_COUNT           104
 
 /* An argument register is as wide as the machine's: 32 bits on x86-32, where a
  * u64 takes a register pair, and 64 on x86-64, where it takes one. */

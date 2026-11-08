@@ -15,7 +15,7 @@
  * hash it was built against and the loader refuses one that differs, so a
  * program never runs against numbers or layouts it was not compiled for.
  */
-#define CXK_ABI_HASH { 0x8e, 0x0b, 0x75, 0x40, 0xe1, 0x44, 0xe0, 0x0b, 0xf0, 0x29, 0x82, 0x06, 0x33, 0xd0, 0xc9, 0x8c, 0x91, 0xab, 0x13, 0x00, 0x39, 0x23, 0x91, 0xe3, 0x60, 0x7d, 0x4b, 0xba, 0x50, 0x0e, 0x4d, 0xdb }
+#define CXK_ABI_HASH { 0x99, 0xb8, 0x74, 0xff, 0xdc, 0x86, 0xcb, 0x74, 0xe9, 0x2d, 0xc3, 0x23, 0xc8, 0xf7, 0x52, 0xe9, 0x7d, 0x33, 0x88, 0xab, 0x7f, 0x1e, 0x31, 0xbc, 0xd4, 0xc0, 0x9b, 0x08, 0xd5, 0x5d, 0xed, 0x86 }
 
 /*
  * CXK ABI v1 - the PUBLIC contract shared by the kernel, the .xoex executive,
@@ -44,7 +44,7 @@
  * line; bump both, and the DevKit's stamp, in the one commit that changes the
  * contract.
  */
-#define CXK_ABI_VERSION          33
+#define CXK_ABI_VERSION          34
 
 /*
  * ---- syscall numbers ----
@@ -527,6 +527,21 @@
  * leaves the current font working. Returns 0, or E_INVALID_ARGS / E_NOT_FOUND.
  */
 #define SYS_FB_SET_FONT          0x46
+
+/*
+ * The screen itself, for the display server (docs/system/CX_DISPLAY.md sec 3):
+ * a memory object over the framebuffer's pages, mapped write-combining, with
+ * HRIGHT_MAP, HRIGHT_MAP_WRITE, HRIGHT_INSPECT and HRIGHT_DUPLICATE (never
+ * HRIGHT_MAP_EXEC). Pixels are as screen_info.format says; nothing converts
+ * them. One holder at a time: while the object lives, the kernel's drawing
+ * (the console, the SYS_FB_* calls) goes only to its copy in RAM, and when
+ * the object's last reference goes, the kernel puts that copy back on the
+ * screen. A panic takes the screen back whoever holds it.
+ * ebx = *screen_info -> a memory-object handle, the info filled in.
+ * E_BUSY while the object lives; E_NOT_FOUND with no framebuffer (VGA text
+ * mode); E_NOT_SUPPORTED for a framebuffer that does not start on a page.
+ */
+#define SYS_SCREEN_OPEN          0x47
 
 /*
  * process 0x70-0x7F (spawning is privileged; kill, stop and jobs need only the
@@ -1380,6 +1395,22 @@ struct fb_geometry {
 };
 
 /*
+ * ---- the screen (SYS_SCREEN_OPEN) ----
+ * A pixel's layout in the screen's memory, red highest in both.
+ */
+#define SCREEN_RGB565            1              /* 16 bits: 5 red, 6 green, 5 blue */
+#define SCREEN_XRGB8888          2              /* 32 bits: 0x00RRGGBB */
+
+struct screen_info {
+    uint32_t width;
+    uint32_t height;
+    uint32_t pitch;                             /* bytes from one row to the next */
+    uint32_t bpp;                               /* 16 or 32 */
+    uint32_t format;                            /* SCREEN_* */
+    uint32_t size;                              /* bytes of the memory object: pitch * height, whole pages */
+};
+
+/*
  * ---- capabilities (for spawn_args.caps) ----
  * A process's authority, as a bitmask: what it is ALLOWED TO DO. One bit per
  * class of privileged primitive, checked by the syscall dispatcher before the
@@ -1701,6 +1732,7 @@ CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_msg_info) == 40, "ABI layout: ipc_msg_in
 CXK_ABI_STATIC_ASSERT(sizeof(struct stop_notice) == 16, "ABI layout: stop_notice");
 CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_reply_args) == 32, "ABI layout: ipc_reply_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct fb_geometry) == 16, "ABI layout: fb_geometry");
+CXK_ABI_STATIC_ASSERT(sizeof(struct screen_info) == 24, "ABI layout: screen_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct net_ip_config) == 16, "ABI layout: net_ip_config");
 CXK_ABI_STATIC_ASSERT(sizeof(struct vm_map_args) == 48, "ABI layout: vm_map_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct vm_usage) == 16, "ABI layout: vm_usage");

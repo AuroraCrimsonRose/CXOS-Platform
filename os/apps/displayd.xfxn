@@ -1,0 +1,136 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// apps/displayd.xfxn - the display server, first form (roadmap 2.3).
+// Aurora Tejeda / CATX Systems
+// Threads: one.
+//
+//   run +screen displayd        (from the shell; Esc gives the screen back)
+//
+// Takes the screen from the kernel (SYS_SCREEN_OPEN, GRANT_FRAMEBUFFER),
+// composes a desktop, a translucent panel and the pointer into a back buffer
+// in RAM, and writes only what changed to the screen (std/display.xfxn).
+// Frames are paced at 60 Hz by a sleep until a driver reports vertical blank
+// (docs/system/CX_DISPLAY.md section 4); with no damage nothing is composed,
+// so an idle screen costs a wake-up a frame and nothing more.
+//
+// There are no windows yet (roadmap 2.4): the keys and the pointer come from
+// the shell's GRANT_INPUT, as any foreground program's do. When it ends, the
+// screen's last reference goes and the kernel repaints its console.
+
+import "display.xfxn";
+import "io.xfxn";
+import "fmt.xfxn";
+
+const DD_ESC: i32 = 27;
+const DD_CURSOR_W: u32 = 11;
+const DD_CURSOR_H: u32 = 16;
+
+global dd_comp: ds_comp;
+global dd_screen: ds_screen;
+global dd_desktop: ds_surface;
+global dd_panel: ds_surface;
+global dd_cursor: ds_surface;
+
+// A vertical gradient with a faint grid every 32 pixels: opaque.
+fn dd_paint_desktop(s: *ds_surface) -> void {
+    let y: u32 = 0;
+    while (y < s.height) {
+        let t: u32 = (y * 255) / s.height;
+        let r: u32 = 0x20 + (t * 0x20) / 255;
+        let g: u32 = 0x30 + (t * 0x30) / 255;
+        let b: u32 = 0x48 + (t * 0x38) / 255;
+        let c: u32 = 0xFF000000 | (r << 16) | (g << 8) | b;
+        ds_fill(s, 0, y, s.width, 1, c);
+        if (y % 32 == 0) { ds_fill(s, 0, y, s.width, 1, 0xFF2A3A54); }
+        y = y + 1;
+    }
+    let x: u32 = 0;
+    while (x < s.width) { ds_fill(s, x, 0, 1, s.height, 0xFF2A3A54); x = x + 32; }
+}
+
+// Half-transparent, premultiplied: alpha 0xA0, a light grey, a darker border.
+fn dd_paint_panel(s: *ds_surface) -> void {
+    ds_fill(s, 0, 0, s.width, s.height, 0xA0707880);
+    ds_fill(s, 0, 0, s.width, 2, 0xA0303438);
+    ds_fill(s, 0, s.height - 2, s.width, 2, 0xA0303438);
+    ds_fill(s, 0, 0, 2, s.height, 0xA0303438);
+    ds_fill(s, s.width - 2, 0, 2, s.height, 0xA0303438);
+}
+
+// An arrow: a black outline, white inside, transparent around it.
+fn dd_paint_cursor(s: *ds_surface) -> void {
+    let y: u32 = 0;
+    while (y < DD_CURSOR_H) {
+        let x: u32 = 0;
+        let last: u32 = ds_min(y, DD_CURSOR_W - 1);
+        while (x <= last) {
+            let c: u32 = 0xFFFFFFFF;
+            if (x == 0 || x == last || y == DD_CURSOR_H - 1) { c = 0xFF000000; }
+            ds_put(s, x, y, c);
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+}
+
+fn dd_fail(what: *u8, rc: i32) -> void {
+    puts("displayd: ");
+    puts(what);
+    puts(": error -");
+    print_u32((0 - rc) as u32);
+    newline();
+    exit(1);
+}
+
+fn _start() -> void {
+    let rc: i32 = ds_screen_open(&dd_screen);
+    if (rc != 0) { dd_fail("no screen (run it as `run +screen displayd`)", rc); }
+    let w: u32 = dd_screen.width;
+    let h: u32 = dd_screen.height;
+
+    rc = ds_comp_init(&dd_comp, w, h);
+    if (rc == 0) { rc = ds_surface_new(&dd_desktop, w, h); }
+    if (rc == 0) { rc = ds_surface_new(&dd_panel, w / 2, h / 3); }
+    if (rc == 0) { rc = ds_surface_new(&dd_cursor, DD_CURSOR_W, DD_CURSOR_H); }
+    if (rc != 0) { ds_screen_close(&dd_screen); dd_fail("no memory for the frame", rc); }
+    dd_paint_desktop(&dd_desktop);
+    dd_paint_panel(&dd_panel);
+    dd_paint_cursor(&dd_cursor);
+
+    ds_layer_add(&dd_comp, &dd_desktop, 0, 0, 1);
+    ds_layer_add(&dd_comp, &dd_panel, w / 4, h / 3, 0);
+    let cur: u32 = ds_layer_add(&dd_comp, &dd_cursor, w / 2, h / 2, 0);
+
+    let m: mouse_state;
+    let seq: u32 = 0xFFFFFFFF;
+    let frames: u32 = 0;
+    let pixels: u64 = 0;
+    if (mouse_read(&m) != 1) { ds_layer_show(&dd_comp, cur, 0); }
+    let running: u32 = 1;
+    while (running == 1) {
+        let k: i32 = input_poll();
+        if (k == DD_ESC) { running = 0; }
+        if (mouse_read(&m) == 1 && m.seq != seq) {
+            seq = m.seq;
+            let mx: u32 = 0;
+            let my: u32 = 0;
+            if (m.x > 0) { mx = m.x as u32; }
+            if (m.y > 0) { my = m.y as u32; }
+            ds_layer_move(&dd_comp, cur, mx, my);
+        }
+        if (dd_comp.damage.n > 0) {
+            ds_compose(&dd_comp);
+            pixels = pixels + ds_present(&dd_comp, &dd_screen);
+            frames = frames + 1;
+        }
+        sleep_ms(16);
+    }
+
+    ds_screen_close(&dd_screen);
+    puts("displayd: ");
+    print_u32(frames);
+    puts(" frames, ");
+    print_u64(pixels);
+    puts(" pixels written\n");
+    exit(0);
+}
