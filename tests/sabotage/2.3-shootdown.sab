@@ -1,0 +1,26 @@
+# The 2.3 review fix, the shootdown's generation, run by `cxk test
+# sabotage`. Each must turn red exactly the self-tests named, at the step
+# named. Format: docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage".
+
+[any-generation]
+# a late answer clears its bit in whatever request is out now
+expect = a late shootdown answer counts for no later request @ tlb late answer: step 3
+group = g1
+edit = kernel/arch/x86_64/smp.c
+<<<
+        while ((uint32_t)(st >> 32) == gen && (st & mine))
+===
+        while (st & mine)
+>>>
+
+[no-new-generation]
+# the next request keeps the generation of the one that timed out: AP 1,
+# held through it, answers it late, and is never asked again
+expect = a late shootdown answer counts for no later request @ tlb late answer: step 4
+group = g2
+edit = kernel/arch/x86_64/smp.c
+<<<
+    uint64_t gen = ((__atomic_load_n(&req->state, __ATOMIC_RELAXED) >> 32) + 1u) << 32;
+===
+    uint64_t gen = (__atomic_load_n(&req->state, __ATOMIC_RELAXED) >> 32) << 32;
+>>>

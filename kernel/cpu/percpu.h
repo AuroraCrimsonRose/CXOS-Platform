@@ -71,7 +71,10 @@ struct cpu {
         uint64_t root;             /* SMP_TLB_KERNEL: the half every space shares */
         uintptr_t va;
         uint32_t pages;            /* past SMP_TLB_FULL_AT: everything */
-        volatile uint32_t left;    /* CPUs still to answer */
+        /* The request's generation in the high half, the CPUs still to
+           answer in the low: an answer clears its bit only while the
+           generation is still the one it served. */
+        volatile uint64_t state;
     } tlb_out;
     volatile uint32_t tlb_served;  /* requests it served, interrupted or spinning */
     volatile uint32_t tlb_woke_stale;  /* wakes that flushed for a skipped request */

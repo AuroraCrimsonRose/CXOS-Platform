@@ -92,13 +92,32 @@ void smp_serve(void) {
         struct cpu *src = cpu_at((unsigned)__builtin_ctz(from));
         from &= from - 1;
         if (!src) continue;
-        const struct cpu_tlb_req *r = &src->tlb_out;
+        struct cpu_tlb_req *r = &src->tlb_out;
+        /* At least the request that set the bit, whose sender stored its
+           state before the bit; a later one if that one timed out since. */
+        uint64_t st = __atomic_load_n(&r->state, __ATOMIC_ACQUIRE);
+        uint32_t gen = (uint32_t)(st >> 32);
         /* A space it has left since was flushed by the CR3 load. */
         if (r->root == SMP_TLB_KERNEL || r->root == me->space) tlb_flush_local(r->va, r->pages);
         me->tlb_served++;
-        __atomic_fetch_and(&src->tlb_out.left, ~mine, __ATOMIC_RELEASE);
+#if CXK_TEST_HOOKS
+        void (*hook)(uint32_t) = smp_tlb_serve_hook;
+        if (hook) hook(gen);
+#endif
+        /* Answered into the generation served and no other: a sender that
+           timed out may have a new request out, whose fields this did not
+           read. (Fields read while they were being rewritten are answered
+           into the old generation, which nobody counts any more, and the
+           new request's own bit brings this CPU back for it.) */
+        while ((uint32_t)(st >> 32) == gen && (st & mine))
+            if (__atomic_compare_exchange_n(&r->state, &st, st & ~(uint64_t)mine, 0,
+                                            __ATOMIC_RELEASE, __ATOMIC_ACQUIRE)) break;
     }
 }
+
+#if CXK_TEST_HOOKS
+void (*volatile smp_tlb_serve_hook)(uint32_t gen);
+#endif
 
 /* One request per sender, in its own struct cpu, and a bit per sender in
    each target's tlb_from: WRK's per-processor request packets
@@ -114,6 +133,9 @@ uint32_t smp_tlb_shootdown(uint64_t root, uintptr_t va, uint32_t pages, uint64_t
     uint32_t f = arch_irq_save();
     struct cpu *me = cpu_this();
     struct cpu_tlb_req *req = &me->tlb_out;
+    /* Only this CPU starts its requests, so the generation is its own to
+       move; servers only clear bits under it. */
+    uint64_t gen = ((__atomic_load_n(&req->state, __ATOMIC_RELAXED) >> 32) + 1u) << 32;
     req->root  = root;
     req->va    = va;
     req->pages = pages;
@@ -132,7 +154,7 @@ uint32_t smp_tlb_shootdown(uint64_t root, uintptr_t va, uint32_t pages, uint64_t
         }
         targets |= 1u << i;
     }
-    __atomic_store_n(&req->left, targets, __ATOMIC_RELEASE);
+    __atomic_store_n(&req->state, gen | targets, __ATOMIC_RELEASE);
     uint32_t bit = 1u << me->index;
     for (unsigned i = 0; i < n; i++) {
         if (!(targets & (1u << i))) continue;
@@ -143,17 +165,21 @@ uint32_t smp_tlb_shootdown(uint64_t root, uintptr_t va, uint32_t pages, uint64_t
     uint32_t left = targets;
     if (targets) {
         uint64_t end = timer_now_ns() + timeout_ns;
-        while ((left = __atomic_load_n(&req->left, __ATOMIC_ACQUIRE)) != 0) {
+        while ((left = (uint32_t)__atomic_load_n(&req->state, __ATOMIC_ACQUIRE)) != 0) {
             smp_serve();
             if (timer_now_ns() >= end) break;
             arch_cpu_relax();
         }
     }
-    /* Never answered: withdrawn, so a late answer cannot clear a bit of
-       the next request. (One already being served may still clear it; the
-       paging layer panics on any of this.) */
-    for (unsigned i = 0; left && i < n; i++)
-        if (left & (1u << i)) __atomic_fetch_and(&cpu_at(i)->tlb_from, ~bit, __ATOMIC_RELAXED);
+    /* Never answered: withdrawn from those that have not taken it. One
+       already serving it answers into this generation or none, never into
+       the next request's, whose bit stays until that one is served. Read
+       again after, so an answer that came meanwhile counts. */
+    if (left) {
+        for (unsigned i = 0; i < n; i++)
+            if (left & (1u << i)) __atomic_fetch_and(&cpu_at(i)->tlb_from, ~bit, __ATOMIC_RELAXED);
+        left = (uint32_t)__atomic_load_n(&req->state, __ATOMIC_ACQUIRE);
+    }
     arch_irq_restore(f);
     return left;
 }

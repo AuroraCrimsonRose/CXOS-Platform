@@ -41,4 +41,11 @@ struct smp_ap_stacks {
 const struct smp_ap_stacks *smp_stacks_of(unsigned index);
 uint32_t smp_timer_hits(unsigned index);
 
+#if CXK_TEST_HOOKS
+/* Called by smp_serve on whichever CPU serves, interrupts off, after the
+   flush and before the answer, with the generation served: the late-answer
+   test holds an AP there. Null when no test has set it. */
+extern void (*volatile smp_tlb_serve_hook)(uint32_t gen);
+#endif
+
 #endif

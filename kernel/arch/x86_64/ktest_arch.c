@@ -2031,6 +2031,81 @@ static int t_tlb_modexp_serves(void) {
     return 1;
 }
 
+#if CXK_TEST_HOOKS
+/* A late answer: AP 1 takes the boot CPU's request and is held, between
+   its flush and its answer, until that request has timed out and the next
+   is out. Its answer then must not count for the next one, which it never
+   read: that one stays unanswered (AP 1 is held again, in serving it)
+   until it too times out. Then a third, with nothing held, is answered. */
+struct tlb_late {
+    volatile uint32_t entered, calls, done, stop;
+    uint32_t gen[2];
+};
+static struct tlb_late *tlb_late_now;
+
+static void tlb_late_hook(uint32_t gen) {
+    struct tlb_late *l = tlb_late_now;
+    if (!l || cpu_this()->index != 1) return;
+    uint32_t k = l->calls;
+    if (k >= 2) return;
+    l->gen[k] = gen;
+    __atomic_store_n(&l->entered, k + 1, __ATOMIC_RELEASE);
+    uint64_t end = timer_now_ns() + 1000000000ull;   /* a bound if never let go */
+    if (k == 0)        /* until the sender's next request is out */
+        while ((uint32_t)(__atomic_load_n(&cpu_boot.tlb_out.state, __ATOMIC_ACQUIRE) >> 32) == gen
+               && timer_now_ns() < end) arch_cpu_relax();
+    else               /* until the sender has given up on that one too */
+        while (!__atomic_load_n(&l->done, __ATOMIC_ACQUIRE) && timer_now_ns() < end) arch_cpu_relax();
+    __atomic_store_n(&l->calls, k + 1, __ATOMIC_RELEASE);
+}
+
+static void ap_busy(void *arg) {
+    struct tlb_late *l = arg;
+    uint64_t end = arch_cycles64() + 8000000000ull;
+    arch_irq_enable();
+    while (!__atomic_load_n(&l->stop, __ATOMIC_ACQUIRE) && arch_cycles64() < end) arch_cpu_relax();
+    arch_irq_disable();
+}
+
+static int tlb_late_steps(struct tlb_late *l) {
+    struct cpu *c = cpu_at(1);
+    uint32_t served = c->tlb_served;
+    uint32_t r1 = smp_tlb_shootdown(SMP_TLB_KERNEL, SCRATCH_VA, 1, 50000000ull);
+    if (r1 != 2u) return 1;                             /* AP 1 held: it alone is missing */
+    if (__atomic_load_n(&l->entered, __ATOMIC_ACQUIRE) != 1) return 2;
+    uint32_t r2 = smp_tlb_shootdown(SMP_TLB_KERNEL, SCRATCH_VA, 1, 200000000ull);
+    __atomic_store_n(&l->done, 1u, __ATOMIC_RELEASE);
+    if (r2 != 2u) return 3;                             /* the late answer counted for it */
+    uint64_t end = timer_now_ns() + 3000000000ull;
+    while (__atomic_load_n(&l->calls, __ATOMIC_ACQUIRE) < 2)
+        if (timer_now_ns() >= end) return 4;
+    if (l->gen[1] != l->gen[0] + 1) return 5;           /* the second hold was the next request's */
+    uint32_t r3 = smp_tlb_shootdown(SMP_TLB_KERNEL, SCRATCH_VA, 1, 300000000ull);
+    if (r3) return 6;
+    if (c->tlb_served < served + 3) return 7;
+    return 0;
+}
+
+static int t_tlb_late_answer(void) {
+    if (cpu_count() < 2) return 1;
+    static struct tlb_late l;
+    l = (struct tlb_late){ 0 };
+    if (smp_call_start(1, ap_busy, &l)) return smp_fail("tlb late answer: step ", 1, 8);
+    /* Busy, not idle: idle, it would be marked stale and never asked. */
+    uint64_t end = timer_now_ns() + 100000000ull;
+    while (__atomic_load_n(&cpu_at(1)->idle, __ATOMIC_ACQUIRE) && timer_now_ns() < end) { }
+    tlb_late_now = &l;
+    smp_tlb_serve_hook = tlb_late_hook;
+    int step = tlb_late_steps(&l);
+    __atomic_store_n(&l.done, 1u, __ATOMIC_RELEASE);
+    smp_tlb_serve_hook = 0;
+    __atomic_store_n(&l.stop, 1u, __ATOMIC_RELEASE);
+    if (smp_call_wait(1, 4000000000ull) && !step) step = 9;
+    tlb_late_now = 0;
+    return step ? smp_fail("tlb late answer: step ", 1, step) : 1;
+}
+#endif
+
 /* ---- the scheduler on every CPU (1.9e2, cpu/sched.c) ----
  * Threads made here run on an AP by thread_create_on; each test waits for
  * its own to be reaped, which the boot CPU does, before it returns. */
@@ -2716,6 +2791,9 @@ static const struct ktest_arch_case cases[] = {
     { "shootdowns at each other or a spinner finish",     t_tlb_no_deadlock },
     { "an interrupts-off poll answers an AP's shootdown", t_tlb_poll_serves },
     { "a signature's arithmetic answers an AP's shootdown", t_tlb_modexp_serves },
+#if CXK_TEST_HOOKS
+    { "a late shootdown answer counts for no later request", t_tlb_late_answer },
+#endif
     { "each CPU runs its idle thread, outside the count",  t_sched_idle_threads },
     { "a thread runs on the boot CPU, or the AP it is for", t_sched_placement },
     { "a wake from the boot CPU ends an idle AP's halt",   t_sched_wake_ipi },
