@@ -24,7 +24,9 @@ int ktest_lockstat_count(void);
    CPU. Its counts are the profile's `stress` lines. */
 int ktest_smp_stress(void);
 
-/* The profile, on serial, after the suite's last test. */
-void ktest_profile_report(void);
+/* The profile, after the suite's last test: on serial, and in the crash area
+   (XCRL_KIND_PROFILE) for a machine with none. Passes when the record reads
+   back as the text printed; a self-test of its own, so the boot says so. */
+int ktest_profile_report(void);
 
 #endif

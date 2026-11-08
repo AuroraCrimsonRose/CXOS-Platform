@@ -25,19 +25,30 @@ internal static class HwSource
         string? text = null;
         if (profile)
         {
-            // the self-tests' profile goes to serial only (1.9f)
-            if (RawDisk.DevicePath(arg) is not null || !File.Exists(arg)) return Fail(arg, "a profile is read from a serial log, and this is not a file");
-            text = HwReport.ProfileFromSerial(File.ReadAllText(arg));
-            if (text is null) return Fail(arg, "it holds no profile (a test-hook boot prints one after the self-tests)");
+            // the self-tests' profile: on serial, and in the crash area for a
+            // machine with no serial port (the rig)
+            if (RawDisk.DevicePath(arg) is null && File.Exists(arg) && !IsDisk(arg))
+            {
+                text = HwReport.ProfileFromSerial(File.ReadAllText(arg));
+                if (text is null) return Fail(arg, "it holds no profile (a test-hook boot prints one after the self-tests)");
+            }
+            else
+            {
+                CrashAreaReading p;
+                using (var disk = RigDisk.Open(arg))
+                {
+                    if (disk is null) return null;
+                    p = CrashLog.ReadProfile(disk);
+                }
+                if (p.State != CrashAreaState.Record) return Fail(arg, p.Detail);
+                text = p.Text;
+            }
             if (HwReport.Check(text) is string bad) return Fail(arg, "the profile is damaged: " + bad);
             return HwReport.Parse(text);
         }
         if (RawDisk.DevicePath(arg) is null && File.Exists(arg))
         {
-            bool disk;
-            using (var fs = new FileStream(arg, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-                disk = CrashLog.FindArea(fs) is not null;
-            if (!disk)
+            if (!IsDisk(arg))
             {
                 text = HwReport.TextFromSerial(File.ReadAllText(arg));
                 if (text is null) return Fail(arg, "it holds no \"@hw begin\" line, and it is not a disk with a CRASH partition");
@@ -56,6 +67,13 @@ internal static class HwSource
         }
         if (HwReport.Check(text) is string wrong) return Fail(arg, "the report is damaged: " + wrong);
         return HwReport.Parse(text);
+    }
+
+    /// <summary>An image file with a CRASH partition, not a log or a saved report.</summary>
+    private static bool IsDisk(string file)
+    {
+        using var fs = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        return CrashLog.FindArea(fs) is not null;
     }
 
     private static HwReport? Fail(string arg, string why)
@@ -83,7 +101,7 @@ public class HwShowCommand : Command<HwShowCommand.Settings>
         public bool Raw { get; set; }
 
         [CommandOption("--profile")]
-        [Description("The self-tests' profile in a serial log instead (1.9f): the counted locks' contention")]
+        [Description("The self-tests' profile instead (1.9f), from a serial log or a disk's CRASH partition: the counted locks' contention")]
         public bool Profile { get; set; }
     }
 
@@ -135,7 +153,7 @@ public class HwDiffCommand : Command<HwDiffCommand.Settings>
         public double RateTolerance { get; set; } = 1.0;
 
         [CommandOption("--profile")]
-        [Description("Compare the self-tests' profiles in two serial logs instead (1.9f): every line set beside the other, all of them measures")]
+        [Description("Compare the self-tests' profiles instead (1.9f), each from a serial log or a disk: every line set beside the other, all of them measures")]
         public bool Profile { get; set; }
     }
 

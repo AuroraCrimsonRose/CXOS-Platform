@@ -310,6 +310,12 @@ public class HwDiffTests
         Assert.Equal(CrashLog.BootLogLba, Define("XCRL_BOOTLOG_LBA"));
         Assert.Equal(CrashLog.BootLogMax, Define("XCRL_BOOTLOG_MAX"));
         Assert.Equal(CrashLog.SeedLba, Define("XCRL_SEED_LBA"));
+        Assert.Equal(CrashLog.KindProfile, Define("XCRL_KIND_PROFILE"));
+        Assert.Equal(CrashLog.ProfileLba, Define("XCRL_PROFILE_LBA"));
+        Assert.Equal(CrashLog.ProfileMax, Define("XCRL_PROFILE_MAX"));
+        // the places do not overlap, and all fit the partition the build makes (2048 sectors)
+        Assert.True(CrashLog.HwReportLba + 1 + CrashLog.HwReportMax / 512 <= CrashLog.ProfileLba);
+        Assert.True(CrashLog.ProfileLba + 1 + CrashLog.ProfileMax / 512 <= 2048);
     }
 
     [Fact]
@@ -410,4 +416,72 @@ public class HwDiffTests
         Assert.Empty(HwDiff.Contention(Report(Qemu)));
         Assert.Contains(notes[0], HwDiff.Notes(a));
     }
-}
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
+    public void A_profile_reads_back_from_its_own_sectors_apart_from_the_report()
+    {
+        var img = Image();
+        Assert.Equal(CrashAreaState.Empty, CrashLog.ReadProfile(new MemoryStream(img)).State);
+
+        byte[] machine = Encoding.ASCII.GetBytes(HwReport.Seal(Qemu)), profile = Encoding.ASCII.GetBytes(HwReport.Seal(Profile));
+        Put(img, CrashLog.HwReportLba, CrashLog.KindHwReport, machine);
+        Assert.Equal(CrashAreaState.Empty, CrashLog.ReadProfile(new MemoryStream(img)).State);   // a report is not a profile
+        Put(img, CrashLog.ProfileLba, CrashLog.KindProfile, profile);
+
+        var p = CrashLog.ReadProfile(new MemoryStream(img));
+        Assert.Equal(CrashAreaState.Record, p.State);
+        Assert.Equal(Encoding.ASCII.GetString(profile), p.Text);
+        Assert.Equal(Encoding.ASCII.GetString(machine), CrashLog.ReadHwReport(new MemoryStream(img)).Text);   // its neighbour untouched
+
+        var torn = (byte[])img.Clone();
+        torn[(4096 + CrashLog.ProfileLba + 1) * 512 + 20] ^= 1;
+        Assert.Equal(CrashAreaState.Invalid, CrashLog.ReadProfile(new MemoryStream(torn)).State);
+
+        var wrong = Image();
+        Put(wrong, CrashLog.ProfileLba, CrashLog.KindHwReport, machine);
+        var w = CrashLog.ReadProfile(new MemoryStream(wrong));
+        Assert.Equal(CrashAreaState.Invalid, w.State);
+        Assert.Contains("kind 6", w.Detail);
+
+        Assert.Throws<ArgumentException>(() => CrashLog.Seal(CrashLog.KindProfile, new byte[CrashLog.ProfileMax + 1]));
+    }
+
+    [Fact]
+    [Trait(Categories.Key, Categories.Unit)]
+    public void Cxk_reads_the_profile_off_a_disk_as_off_serial()
+    {
+        string cxk = Requires.Cxk();
+        string dir = Path.Combine(Path.GetTempPath(), "cxk-prof-" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string profile = HwReport.Seal(Profile);
+            var img = Image();
+            Put(img, CrashLog.HwReportLba, CrashLog.KindHwReport, Encoding.ASCII.GetBytes(HwReport.Seal(Qemu)));
+            Put(img, CrashLog.ProfileLba, CrashLog.KindProfile, Encoding.ASCII.GetBytes(profile));
+            string image = Path.Combine(dir, "a.img"), serial = Path.Combine(dir, "b.serial.log");
+            File.WriteAllBytes(image, img);
+            File.WriteAllText(serial, "[OK  ] noise\r\n" + HwReport.Seal(Qemu).Replace("\n", "\r\n") + "[OK] self-tests\r\n"
+                + HwReport.Seal(Profile.Select(l => l.Replace("\t1000\t60\t", "\t1200\t90\t"))).Replace("\n", "\r\n"));
+
+            var raw = HostBuild.Run(cxk, ["hw", "show", image, "--profile", "--raw"]);
+            Assert.True(raw.ExitCode == 0, raw.StdOut + raw.StdErr);
+            Assert.Equal(profile.TrimEnd('\n'), raw.StdOut.ReplaceLineEndings("\n").TrimEnd('\n'));
+
+            // disk beside serial: the measures differ, which is no finding
+            var diff = HostBuild.Run(cxk, ["hw", "diff", image, serial, "--profile"]);
+            Assert.True(diff.ExitCode == 0, diff.StdOut + diff.StdErr);
+            Assert.Contains("60 -> 90", diff.StdOut);
+
+            // a disk that never booted a test-hook kernel says so
+            File.WriteAllBytes(Path.Combine(dir, "none.img"), Image());
+            var none = HostBuild.Run(cxk, ["hw", "show", Path.Combine(dir, "none.img"), "--profile"]);
+            Assert.Equal(1, none.ExitCode);
+            Assert.Contains("no profile saved", Regex.Replace(none.StdOut, @"\s+", " "));   // the console wraps it
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }}

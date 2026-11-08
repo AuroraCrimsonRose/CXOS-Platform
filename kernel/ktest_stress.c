@@ -16,6 +16,8 @@
 #include "arch/smp.h"
 #include "arch/cpu_ops.h"
 #include "diag/hwfmt.h"
+#include "diag/crashlog.h"       /* the profile's record (XCRL_KIND_PROFILE) */
+#include "disk.h"
 
 #define MS 1000000ull
 
@@ -194,6 +196,7 @@ int ktest_smp_stress(void) {
  * `boot` is everything counted since the CPU started; `stress` the stress
  * test's share alone (the longest hold is not kept per window). */
 static char prof[4096];
+static char prof_back[sizeof prof];
 
 static void lock_line(struct hw_out *o, const char *scope, unsigned cpu,
                       const struct lockstat *s, const struct lockstat *base) {
@@ -210,7 +213,7 @@ static void lock_line(struct hw_out *o, const char *scope, unsigned cpu,
     hw_done(o);
 }
 
-void ktest_profile_report(void) {
+int ktest_profile_report(void) {
     struct hw_out o;
     unsigned n = cpu_count();
     hw_open(&o, prof, sizeof prof);
@@ -229,6 +232,7 @@ void ktest_profile_report(void) {
         lock_line(&o, "stress", i, st_ran ? &st_after[i] : &none, st_ran ? &st_before[i] : &none);
     }
     uint32_t len = hw_close(&o);
+    for (uint32_t i = len; i < sizeof prof; i++) prof[i] = 0;   /* whole sectors */
     for (uint32_t at = 0; at < len; ) {
         uint32_t e = at;
         while (e < len && prof[e] != '\n') e++;
@@ -239,10 +243,23 @@ void ktest_profile_report(void) {
         log_unlock();
         at = e + 1;
     }
+    /* Then to the crash area, for a machine with no serial port (the rig),
+       and read back: what `cxk hw show <disk> --profile` will find. */
+    if (o.over) return st_fail("profile: cut short, out of room: step ", 1);
+    int r = crashlog_profile_write(prof, len);
+    if (r != DISK_OK) return st_fail("profile: not saved, disk error ", (uint32_t)-r);
+    uint32_t got = 0;
+    r = crashlog_profile_read(prof_back, sizeof prof_back, &got);
+    if (r != DISK_OK)   /* CRASHLOG_HW_BAD, or a disk error made positive */
+        return st_fail("profile: no record read back: ", (uint32_t)(r < 0 ? -r : r));
+    if (got != len) return st_fail("profile: read back, length ", got);
+    for (uint32_t i = 0; i < len; i++)
+        if (prof_back[i] != prof[i]) return st_fail("profile: read back, differs at ", i);
+    return 1;
 }
 
 #else   /* no hooks: nothing is counted, and the tests fail rather than skip */
 int  ktest_lockstat_count(void) { return st_fail("lockstat count: step ", 0); }
 int  ktest_smp_stress(void)     { return st_fail("smp stress: step ", 0); }
-void ktest_profile_report(void) {}
+int  ktest_profile_report(void)  { return st_fail("profile: step ", 0); }
 #endif

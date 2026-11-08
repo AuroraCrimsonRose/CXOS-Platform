@@ -1,0 +1,25 @@
+# The self-tests' profile, saved to the crash area for a machine with no
+# serial port (the rig), where `cxk hw show <disk> --profile` reads it.
+# Run by `cxk test sabotage`. Each must turn red exactly the self-test
+# named, at the reason named. Format: docs/devkit/CX_CXK_PLAN.md,
+# "cxk test sabotage". Both land in the same test, so each boots alone.
+
+[profile-never-written]
+# the profile is printed but never reaches the disk
+expect = profile: printed, saved to the crash area @ profile: no record read back
+edit = kernel/ktest_stress.c
+<<<
+    int r = crashlog_profile_write(prof, len);
+===
+    int r = DISK_OK; (void)crashlog_profile_write;
+>>>
+
+[profile-wrong-kind]
+# the profile's record is sealed as a hardware report, which its reader refuses
+expect = profile: printed, saved to the crash area @ profile: no record read back
+edit = kernel/diag/crashlog.c
+<<<
+    return rec_write(XCRL_PROFILE_LBA, XCRL_KIND_PROFILE, t, len);
+===
+    return rec_write(XCRL_PROFILE_LBA, XCRL_KIND_HWREPORT, t, len);
+>>>

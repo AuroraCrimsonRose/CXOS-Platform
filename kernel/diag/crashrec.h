@@ -67,6 +67,14 @@
 #define XCRL_HWREPORT_LBA   384u
 #define XCRL_HWREPORT_MAX   (128u * XCRL_SECTOR)           /* 64 KB */
 
+/* The self-tests' profile (ktest_stress.c, CX_HW_REPORT.md section 8), past
+   the hardware report: a header at XCRL_PROFILE_LBA and the profile's `@hw`
+   lines after it. Written once a test-hook boot, after the stress suite;
+   `cxk hw show <disk> --profile` reads it from a machine with no serial port. */
+#define XCRL_KIND_PROFILE   7u
+#define XCRL_PROFILE_LBA    520u
+#define XCRL_PROFILE_MAX    (16u * XCRL_SECTOR)            /* 8 KB */
+
 /* The most text a record of this kind may carry. */
 uint32_t xcrl_max_len(uint16_t kind);
 

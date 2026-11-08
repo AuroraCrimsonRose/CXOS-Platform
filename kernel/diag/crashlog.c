@@ -491,49 +491,67 @@ int crashlog_bootlog_stale(void) {
     return have_area && slog_total() != bootlog_saved_total;
 }
 
-/* ---- the hardware report ----------------------------------------------------
- * Its header and text at XCRL_HWREPORT_LBA (crashrec.h), written once a boot
- * by platform/pc/hwreport.c. The storage lock for the writes, as the other
- * saves: no other transfer can start in the middle of one. */
-static uint8_t hw_hdr[XCRL_SECTOR];
+/* ---- the hardware report and the profile ------------------------------------
+ * Each a header and text at its own place (crashrec.h): the report at
+ * XCRL_HWREPORT_LBA, written once a boot by platform/pc/hwreport.c; the
+ * self-tests' profile at XCRL_PROFILE_LBA, by ktest_stress.c. The storage
+ * lock for the writes, as the other saves: no other transfer can start in
+ * the middle of one. */
+static uint8_t rec_hdr[XCRL_SECTOR];
 
-static int hw_room(uint32_t secs) {
-    return have_area && area_sectors > XCRL_HWREPORT_LBA + secs;
+static int rec_room(uint32_t lba, uint32_t secs) {
+    return have_area && area_sectors > lba + secs;
 }
 
-int crashlog_hwreport_write(const char *t, uint32_t len) {
-    if (len > XCRL_HWREPORT_MAX) return DISK_ERR_PARAMS;
+static int rec_write(uint32_t lba, uint16_t kind, const char *t, uint32_t len) {
+    if (len > xcrl_max_len(kind)) return DISK_ERR_PARAMS;
     uint32_t secs = (len + XCRL_SECTOR - 1) / XCRL_SECTOR;
-    if (!hw_room(secs)) return DISK_ERR_NO_DEVICE;
+    if (!rec_room(lba, secs)) return DISK_ERR_NO_DEVICE;
     storage_lock();
     int r = DISK_OK;
-    if (secs) r = disk_write(area_disk, area_lba + XCRL_HWREPORT_LBA + 1, secs, t);
+    if (secs) r = disk_write(area_disk, area_lba + lba + 1, secs, t);
     if (r == DISK_OK) {
-        xcrl_seal(hw_hdr, XCRL_KIND_HWREPORT, t, len);
-        r = disk_write(area_disk, area_lba + XCRL_HWREPORT_LBA, 1, hw_hdr);
+        xcrl_seal(rec_hdr, kind, t, len);
+        r = disk_write(area_disk, area_lba + lba, 1, rec_hdr);
     }
     if (r == DISK_OK) r = disk_flush(area_disk);
     storage_unlock();
     return r;
 }
 
-int crashlog_hwreport_read(char *buf, uint32_t cap, uint32_t *len) {
-    if (!hw_room(1)) return DISK_ERR_NO_DEVICE;
+static int rec_read(uint32_t lba, uint16_t want, char *buf, uint32_t cap, uint32_t *len) {
+    if (!rec_room(lba, 1)) return DISK_ERR_NO_DEVICE;
     storage_lock();
-    int r = disk_read(area_disk, area_lba + XCRL_HWREPORT_LBA, 1, hw_hdr);
+    int r = disk_read(area_disk, area_lba + lba, 1, rec_hdr);
     storage_unlock();
     if (r != DISK_OK) return r;
     uint16_t kind = 0;
     uint32_t n = 0;
-    if (xcrl_check_header(hw_hdr, &kind, &n) != XCRL_VALID || kind != XCRL_KIND_HWREPORT)
+    if (xcrl_check_header(rec_hdr, &kind, &n) != XCRL_VALID || kind != want)
         return CRASHLOG_HW_BAD;
     uint32_t secs = (n + XCRL_SECTOR - 1) / XCRL_SECTOR;
-    if (secs * XCRL_SECTOR > cap || !hw_room(secs)) return CRASHLOG_HW_BAD;
+    if (secs * XCRL_SECTOR > cap || !rec_room(lba, secs)) return CRASHLOG_HW_BAD;
     storage_lock();
-    if (secs) r = disk_read(area_disk, area_lba + XCRL_HWREPORT_LBA + 1, secs, buf);
+    if (secs) r = disk_read(area_disk, area_lba + lba + 1, secs, buf);
     storage_unlock();
     if (r != DISK_OK) return r;
-    if (xcrl_check_text(hw_hdr, buf, n) != XCRL_VALID) return CRASHLOG_HW_BAD;
+    if (xcrl_check_text(rec_hdr, buf, n) != XCRL_VALID) return CRASHLOG_HW_BAD;
     *len = n;
     return DISK_OK;
+}
+
+int crashlog_hwreport_write(const char *t, uint32_t len) {
+    return rec_write(XCRL_HWREPORT_LBA, XCRL_KIND_HWREPORT, t, len);
+}
+
+int crashlog_hwreport_read(char *buf, uint32_t cap, uint32_t *len) {
+    return rec_read(XCRL_HWREPORT_LBA, XCRL_KIND_HWREPORT, buf, cap, len);
+}
+
+int crashlog_profile_write(const char *t, uint32_t len) {
+    return rec_write(XCRL_PROFILE_LBA, XCRL_KIND_PROFILE, t, len);
+}
+
+int crashlog_profile_read(char *buf, uint32_t cap, uint32_t *len) {
+    return rec_read(XCRL_PROFILE_LBA, XCRL_KIND_PROFILE, buf, cap, len);
 }

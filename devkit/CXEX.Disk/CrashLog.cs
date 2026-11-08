@@ -58,6 +58,12 @@ public static class CrashLog
     public const ushort KindHwReport = 6;
     public const int HwReportLba = 384;
     public const int HwReportMax = 128 * 512;
+    /// <summary>The self-tests' profile a test-hook boot writes after its stress suite
+    /// (XCRL_KIND_PROFILE, XCRL_PROFILE_LBA, XCRL_PROFILE_MAX; CX_HW_REPORT.md section 8),
+    /// in the hardware report's form.</summary>
+    public const ushort KindProfile = 7;
+    public const int ProfileLba = 520;
+    public const int ProfileMax = 16 * 512;
     public const int Sector = 512;
     public const int TextMax = 32 * Sector;
     public const int Sectors = 1 + TextMax / Sector;
@@ -82,7 +88,7 @@ public static class CrashLog
     /// <summary>The 512-byte header for <paramref name="text"/>.</summary>
     public static byte[] Seal(ushort kind, ReadOnlySpan<byte> text)
     {
-        int max = kind switch { KindBootLog => BootLogMax, KindHwReport => HwReportMax, _ => TextMax };
+        int max = kind switch { KindBootLog => BootLogMax, KindHwReport => HwReportMax, KindProfile => ProfileMax, _ => TextMax };
         if (text.Length > max) throw new ArgumentException($"a record of kind {kind} holds at most {max} bytes");
         var h = new byte[Sector];
         BitConverter.TryWriteBytes(h.AsSpan(0), Magic);
@@ -160,6 +166,13 @@ public static class CrashLog
     public static CrashAreaReading ReadHwReport(Stream disk) =>
         ReadTextAt(disk, HwReportLba, KindHwReport, HwReportMax, "hardware report",
                    "no hardware report saved: the disk has not booted a kernel that writes one (1.8a on)");
+
+    /// <summary>The self-tests' profile the last test-hook boot saved at
+    /// <see cref="ProfileLba"/> (XCRL_KIND_PROFILE): the rig's, which never reaches
+    /// a serial port. Checked as a record here, as a report by <c>HwReport.Check</c>.</summary>
+    public static CrashAreaReading ReadProfile(Stream disk) =>
+        ReadTextAt(disk, ProfileLba, KindProfile, ProfileMax, "profile",
+                   "no profile saved: the disk has not booted a test-hook kernel that writes one (1.9f on)");
 
     /// <summary>A record of one kind at <paramref name="lba"/> in the crash
     /// partition, past the crash record: the header, then its text.</summary>

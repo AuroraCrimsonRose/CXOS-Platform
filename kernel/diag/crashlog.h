@@ -99,6 +99,10 @@ int crashlog_seed_write(const uint8_t *seed);
 #define CRASHLOG_HW_BAD         4
 int crashlog_hwreport_write(const char *text, uint32_t len);
 int crashlog_hwreport_read(char *buf, uint32_t cap, uint32_t *len);
+/* The self-tests' profile (XCRL_PROFILE_LBA; ktest_stress.c): the same
+   contract as the hardware report's, at its own place and kind. */
+int crashlog_profile_write(const char *text, uint32_t len);
+int crashlog_profile_read(char *buf, uint32_t cap, uint32_t *len);
 
 /* Write a record of `kind` with `len` bytes of `text` to the area: the text,
    then the header, then a flush. A disk_err code. `text` must hold whole

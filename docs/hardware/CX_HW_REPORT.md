@@ -79,7 +79,8 @@ stops). A firmware length is never believed past the table.
   time with interrupts off.
 - **The crash area**, as XCRL kind 6 at sector 384 (`diag/crashrec.h`), after
   the boot log and before the area's end: the rig may have no serial port,
-  and its stick is the only place a report can be carried off on.
+  and its stick is the only place a report can be carried off on. The
+  self-tests' profile has its own record after it (§8).
 
 `cxk verify-boot` fails a boot whose self-tests passed when the serial log
 holds no whole report (`HwReport.Check`, `devkit/CXEX.Tools/HwReport.cs`,
@@ -283,8 +284,11 @@ self-test (`kernel/ktest_stress.c`, `ktest_profile_report`): what
 the rig's are set side by side the way their machines are
 (`kernel/CX_SMP.md` §4d). Its first line after the begin is `profile`,
 which is how `HwReport.TextFromSerial` passes over it and
-`ProfileFromSerial` finds it; it goes to serial only, never to the crash
-area.
+`ProfileFromSerial` finds it. It goes to serial and to the crash area, as
+XCRL kind 7 at sector 520 (up to 8 KB, after the hardware report), so the
+rig, which may have no serial port, keeps one. The save is a self-test of
+its own, "profile: printed, saved to the crash area": the record is read
+back and must equal the text printed (`tests/sabotage/1.9f-profile.sab`).
 
 | Line | Fields |
 |---|---|
@@ -292,8 +296,9 @@ area.
 | `lock sched boot <cpu>` | takes, takes that found it held, spins, TSC ticks spent spinning, the longest hold (ticks): everything since that CPU started |
 | `lock sched stress <cpu>` | the same in the stress test's window; the longest hold `-` (not kept per window) |
 
-`cxk hw show <log> --profile` lists it; `cxk hw diff a.log b.log --profile`
-sets two beside each other, every field a measure, so every difference is
+`cxk hw show <source> --profile` lists it, from a serial log or a disk
+(an image, `diskN`: the rig's stick, read elevated); `cxk hw diff a b
+--profile` sets two beside each other, either from either, every field a measure, so every difference is
 expected and all of them are listed. Both add a note per lock and window:
 the share of takes contended, and for the stress window the share of the
 CPUs' time spent spinning (`HwDiff.Contention`). Under TCG those figures
@@ -303,5 +308,5 @@ are the emulator's, not the hardware's.
 
 - Step 9 (SMP) reads the MADT's CPU entries, with the rig's IDs above as
   its test case.
-- The rig may have no serial port, so its profile has no way off it yet:
-  a crash-area record of its own, if the rig's numbers are wanted.
+- The rig's profile: boot it, then `cxk hw show diskN --profile` and
+  `cxk hw diff diskN <qemu serial log> --profile`.

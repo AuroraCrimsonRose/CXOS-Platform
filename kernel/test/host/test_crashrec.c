@@ -52,7 +52,7 @@ KH_TEST(xcrl_refuses_torn_and_foreign) {
     memcpy(bad, hdr, sizeof bad); bad[6] = XCRL_KIND_FAULT;      /* a user-fault record */
     KH_CHECK_EQ(xcrl_check_header(bad, &fkind, 0), XCRL_VALID);
     KH_CHECK_EQ(fkind, XCRL_KIND_FAULT);
-    memcpy(bad, hdr, sizeof bad); bad[6] = 7;                    /* unknown kind */
+    memcpy(bad, hdr, sizeof bad); bad[6] = XCRL_KIND_PROFILE + 1;   /* unknown kind */
     KH_CHECK_EQ(xcrl_check_header(bad, 0, 0), XCRL_BAD_KIND);
     memcpy(bad, hdr, sizeof bad); bad[10] = 0x01;                /* 64 KB + 46: too long */
     KH_CHECK_EQ(xcrl_check_header(bad, 0, 0), XCRL_BAD_LEN);
@@ -89,6 +89,23 @@ KH_TEST(xcrl_boot_log_has_its_own_cap) {
     memcpy(bad, hdr, sizeof bad); bad[6] = XCRL_KIND_CRASH;
     KH_CHECK_EQ(xcrl_check_header(bad, 0, 0), XCRL_BAD_LEN);
     memcpy(bad, hdr, sizeof bad); bad[8] = 1; bad[10] = 0x02;        /* 128 KB + 1 */
+    KH_CHECK_EQ(xcrl_check_header(bad, 0, 0), XCRL_BAD_LEN);
+}
+
+KH_TEST(xcrl_profile_has_its_own_cap) {
+    uint8_t hdr[XCRL_SECTOR]; uint32_t len = 0; uint16_t kind = 0;
+    xcrl_seal(hdr, XCRL_KIND_PROFILE, "@hw\tprofile\n", 12);
+    KH_CHECK_EQ(xcrl_check_header(hdr, &kind, &len), XCRL_VALID);
+    KH_CHECK_EQ(kind, XCRL_KIND_PROFILE);
+    KH_CHECK_EQ(len, 12u);
+    KH_CHECK_EQ(xcrl_max_len(XCRL_KIND_PROFILE), XCRL_PROFILE_MAX);
+
+    /* both sides of the cap: at it valid, one past it too long */
+    uint8_t bad[XCRL_SECTOR];
+    memcpy(bad, hdr, sizeof bad);
+    bad[8] = (uint8_t)XCRL_PROFILE_MAX; bad[9] = (uint8_t)(XCRL_PROFILE_MAX >> 8);
+    KH_CHECK_EQ(xcrl_check_header(bad, 0, 0), XCRL_VALID);
+    bad[8] = (uint8_t)(XCRL_PROFILE_MAX + 1);
     KH_CHECK_EQ(xcrl_check_header(bad, 0, 0), XCRL_BAD_LEN);
 }
 

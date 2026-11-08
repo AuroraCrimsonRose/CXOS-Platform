@@ -3588,7 +3588,7 @@ void ktest_run(void) {
     total++; passed += report("lockstat: a contended take is counted", ktest_lockstat_count());
     /* Last, so the profile after it covers the whole suite (1.9f). */
     total++; passed += report("smp stress: a token round every CPU", ktest_smp_stress());
-    ktest_profile_report();
+    total++; passed += report("profile: printed, saved to the crash area", ktest_profile_report());
 
 #if CXK_LOCK_CHECK
     lockorder_report();   /* which locks nested under which, as the tests ran */
