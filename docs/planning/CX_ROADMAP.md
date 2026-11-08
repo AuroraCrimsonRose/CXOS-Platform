@@ -49,6 +49,11 @@ order, and every decision with its reason.
 | **The compositor runs retained layers and animations.** | Smooth animation even when an app is busy; the largest visible difference from the others. |
 | **The first native GPU is AMD.** | The rig's GPU is a FirePro W5000. |
 | **Novel features are kept only where they solve a real problem** (§5). | Several first ideas were novelty for its own sake; the trimmed list is what survives. |
+| **The panic screen is friendly, and carries its essentials as a QR code** (Aurora, 2026-11-08; Phase 2 step 3a, before 2.4). | The rig may have no serial port, and x86-64's `kpanic` is still the minimal one (`TRANSITIONAL_CODE.md`), so a crash there leaves almost nothing. The screen says what happened in plain language, gives a stop code and crash number, and shows a short symbolised trace; the QR code lets anyone send the details without typing them. |
+| **`setcheck.xuex` writes only when asked** (Aurora, 2026-11-08): behind a flag, off by default, on in the verification boots that test settings durability. | A boot that writes unasked changes a release image (which then fails its `SHA256SUMS`), wears the rig's disk, and hides any other write at boot. |
+| **`x86_64-RELEASE` gets a ruleset** (Aurora, 2026-11-08): no deletion, no force-push, changes by PR only; no required checks (Actions is not used). | "PR only" is the rule already; nothing enforced it. |
+| **X's safety model (`language/CX_X_PLAN.md` §5) is accepted, in stages** (Aurora, 2026-11-08): no undefined behaviour outside `unsafe`, `unsafe` blocks and checked conversions first; linear handles after 2.4; contracts at run time later, proofs much later. Each lands in both compilers with a Differential fact. | The first three are cheap and give the X tests a contract; linear handles are the largest compiler job and pay off once windows add handle types; leaked handles are this codebase's known failure. |
+| **Kernel-stack slots stay 64 KB until stack depth is measured** (Aurora, 2026-11-08). A high-water-mark test (stacks filled with a pattern, the deepest use reported) comes first; 32 KB (512 threads) is the likely size after it. | 16 KB is what Linux uses, but nothing here has measured its deepest paths (USB, filesystem, IPC), an overflow is a double fault, and nothing needs 1024 threads yet. |
 
 ---
 
@@ -1303,6 +1308,33 @@ language work in `language/CX_X_PLAN.md`.
    FNV-1a fingerprint. `os/apps/displayd.xfxn` is the server's first form
    (`run +screen displayd`; Esc gives the screen back). Windows and input
    as handles are 2.4. Six self-tests. Sabotages: `tests/sabotage/2.3.sab`.
+   **3a. The panic screen** (Aurora, 2026-11-08: sooner rather than later;
+   after the 2.3 review's shootdown fix, before 2.4). It replaces
+   x86-64's minimal `kpanic` (`TRANSITIONAL_CODE.md`):
+   - A plain-language headline and advice, a stop code (a name such as
+     `KERNEL_PAGE_FAULT` and a short code), the crash number, and a short
+     symbolised trace. The full record (trace, registers, log tail) goes
+     to the crash area as before, which makes `verify-crashlog` pass on
+     x86-64 again (the record has no "Stack trace" today).
+   - **A QR code holding the essentials as plain ASCII** (byte mode, error
+     correction M): stop code, crash ID, version and ABI, the reason,
+     CPU/thread/pid, `rip` and the key registers, a trace of about five
+     frames, the log's last lines. About 0.7–1.2 KB, so one code (version
+     25 or below). The log stays in the crash area for `cxk rig bootlog`.
+   - **Drawn only when the screen has room:** `room = min(right column,
+     height left)`, `px = min(8, room / (modules + 8))` with a 4-module
+     quiet zone; the code is drawn only at `px >= 3`. Otherwise the text
+     layout stands alone and its advice says to note the stop code and
+     crash number. 1024×768 and up show it; 640×480 does not.
+   - The encoder is Nayuki's `qrcodegen` (MIT), vendored unmodified under
+     `vendor/`, with static buffers (a panic may run on the double-fault
+     stack). Check the licence and add the `THIRD-PARTY-NOTICES.md` row.
+   - It draws over the display server: the panic path's `panic_begin`
+     call is tested here at last.
+   - Tests: the fit rule's edges (exactly 3 px fits, 2 does not); a ktest
+     encoding a fixed record against a fingerprint; a host test decoding
+     it (ZXing.Net, Apache-2.0) so a sabotage proves the code readable;
+     a forced panic in QEMU, screendumped and decoded on the host.
 4. Windows, transparency, server-drawn frames, focus and input routing.
 5. Retained layers and spring animations in the compositor.
 6. Trusted UI: the uninterceptible key combination, consent screens, signer
@@ -1381,4 +1413,4 @@ signing log (ecosystem phase), handles across machines (dropped).
 
 - What replaces each `docs/x86_32/` document as its area is reworked.
 - ~~The ink polarity question in `devkit/CX_DEVKIT_DESIGN.md` §5.1.~~ Moot since 2026-10-16: fonts come from published BDF sources, which have no ink to interpret (`system/CX_FONTS.md`).
-- Whether `setcheck.xuex` should write on every boot.
+- ~~Whether `setcheck.xuex` should write on every boot.~~ Decided 2026-11-08: only when asked (§1).
