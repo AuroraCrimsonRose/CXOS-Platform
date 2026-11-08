@@ -304,9 +304,18 @@ the share of takes contended, and for the stress window the share of the
 CPUs' time spent spinning (`HwDiff.Contention`). Under TCG those figures
 are the emulator's, not the hardware's.
 
+**The rig's first profile** (2026-11-07, off its stick): 8 CPUs, the TSC at
+4 000 067 987 Hz, a stress window of 283 446 928 ticks (71 ms), 1600
+passes. Notes: the whole suite 9.609 % of 951 315 takes contended, 417 ms
+spinning, the longest hold 20 ms (the count's own test, on cpu0); the
+stress window 83.861 % of 35 634 takes contended, 46.644 % of the 8 CPUs'
+time spinning. cpu5 to cpu7's whole-boot lines nearly equal their stress
+lines: those APs run little else. What it decided: `kernel/CX_SMP.md` §4d.
+
 ## 9. Next
 
 - Step 9 (SMP) reads the MADT's CPU entries, with the rig's IDs above as
   its test case.
-- The rig's profile: boot it, then `cxk hw show diskN --profile` and
-  `cxk hw diff diskN <qemu serial log> --profile`.
+- The rig's profile beside QEMU's `--stress` one: `cxk hw diff diskN
+  <serial log> --profile`. The rig's own figures and what they decided
+  are in `kernel/CX_SMP.md` §4d.

@@ -419,9 +419,30 @@ CPUs, the lock cost a quarter of a second of spinning; only the stress
 test, which does nothing but wake and yield with no other work to run,
 spends a fifth of its time on it, and that time is taken from no work.
 Per-CPU run queues and a balancer are planned when a workload with work to
-do shows the lock taking from it: the rig's eight cores are the next
-figure (its profile needs a way off a machine with no serial line,
-`hardware/CX_HW_REPORT.md` §9).
+do shows the lock taking from it.
+
+**The rig's figure.** The FX-8350, 8 cores, the TSC at 4.0 GHz
+(2026-11-07, read off its stick with `cxk hw show diskN --profile`,
+`hardware/CX_HW_REPORT.md` §8):
+
+| scope | takes | contended | spins | spinning |
+|---|---|---|---|---|
+| the whole suite | 951 315 | 9.6 % | 8.8 M | 417 ms, all 8 CPUs together |
+| the stress test (71 ms) | 35 634 | 84 % | 3.3 M | 47 % of the 8 CPUs' time |
+
+Over the suite, as Hyper-V: the same share contended. In the stress test,
+real cores spend more than twice Hyper-V's share spinning. A contended
+take waited about 35 000 ticks (9 µs) on average, and 35 634 takes in a
+window where the lock was almost never free put the average hold near
+2 µs (the longest on an AP, 2.5 to 6.6 µs; cpu0's 20 ms is again the
+count's own test). **The one order still stays**, since the stress test
+is a worst case with no work to take time from. The figure changes what
+comes first: the hold. Two microseconds is long for a scheduler's
+critical section, and on this CPU every take also moves the lock's line
+between modules; shortening what runs under `sched_lock` helps whichever
+design follows, so it is measured and cut before the queues are split.
+The QEMU `--stress` profile beside this one (`cxk hw diff diskN <log>
+--profile`) is still to be taken.
 
 ## 5. Tests
 
@@ -511,9 +532,10 @@ cannot redden the tests after it:
 
 ## 6. Not done here
 
-- A run queue per CPU, and a balancer (§4a): Hyper-V's 8-CPU profile kept
-  the one order (§4d); the rig's profile, and a workload with work to do,
-  are what would change it.
+- A run queue per CPU, and a balancer (§4a): Hyper-V's and the rig's
+  8-CPU profiles kept the one order (§4d); a workload with work to do is
+  what would change it. First, the time `sched_lock` is held (about 2 µs a
+  take on the rig): measured, then cut.
 - The network stack on any CPU: it runs on the boot CPU for each call
   (`ON_BOOT_CPU`, §4c) until it is locked or given a thread of its own.
 - Kernel threads (the drivers') still start on the boot
