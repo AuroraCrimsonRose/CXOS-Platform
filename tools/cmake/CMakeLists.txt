@@ -255,6 +255,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/platform/pc/hwreport.c
     ${SRC_DIR}/kernel/platform/pc/ktest_pc.c
     ${SRC_DIR}/kernel/drivers/bus/pci.c
+    ${SRC_DIR}/kernel/drivers/devtree.c
     ${SRC_DIR}/kernel/drivers/storage/hardware/ata.c
     ${SRC_DIR}/kernel/drivers/storage/hardware/ahci.c
     ${SRC_DIR}/kernel/drivers/storage/hardware/disk.c
@@ -293,6 +294,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/ktest_races.c
     ${SRC_DIR}/kernel/ktest_stress.c
     ${SRC_DIR}/kernel/ktest_random.c
+    ${SRC_DIR}/kernel/ktest_devtree.c
 )
 
 # ---- KERNEL ASM SOURCES (elf64 objects; append new ones here) ----

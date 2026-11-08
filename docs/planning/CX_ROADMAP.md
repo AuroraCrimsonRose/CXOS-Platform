@@ -1259,6 +1259,20 @@ language work in `language/CX_X_PLAN.md`.
 
 1. Device tree and scored matching; today's drivers converted with no change
    in behaviour.
+   - **2.1 (2026-11-07), done:** `drivers/devtree.{h,c}` (`CX_DRIVERS.md`
+     §3.1): one tree of the root, the platform bus (the legacy ATA
+     channels), every PCI function and every USB device under its
+     controller. Drivers declare a match table and `DRIVER_DECLARE`
+     themselves into `.cxk_drivers`; a match scores by the fields it
+     names (device > vendor > interface > subclass > class), a declined
+     start falls to the next-best, and drivers bind in groups at the
+     boot's old points, by `order` within a group, under a group limit
+     (netif: one NIC). All nine drivers converted: e1000, rtl8169, ATA,
+     AHCI, xHCI, EHCI, OHCI, USB HID, USB storage; each singleton keeps
+     its one try, so behaviour is unchanged. Lock `LR_DEVTREE` (a leaf).
+     Five self-tests (250). Alongside, the Phase 1 review's first fix:
+     `user_fetch_u32` checks the page (passively, under the futex lock)
+     before the copy. Sabotages: `tests/sabotage/2.1.sab`.
 2. Driver-host primitives: register ranges as memory objects, interrupts as
    handles, DMA buffers.
 3. The display server: back buffer, damage, virtual screen for CI.

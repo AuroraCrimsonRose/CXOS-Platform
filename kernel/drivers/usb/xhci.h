@@ -20,8 +20,9 @@
 #ifndef XHCI_H
 #define XHCI_H
 
-/* probe PCI for an xHCI controller and bring it up, enumerating what is
-   attached. Returns how many came up, 0 if none. */
-int xhci_init(void);
+/* The controllers that came up. Each is bound by the device tree
+   (DG_USB_HOST, usb_init), which brings it up and enumerates what is
+   attached. */
+unsigned xhci_count(void);
 
 #endif

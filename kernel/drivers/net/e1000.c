@@ -6,6 +6,7 @@
 
 #include "e1000.h"
 #include "pci.h"
+#include "drivers/devtree.h"
 #include "arch/paging.h"
 #include "logging.h"
 #include "drivers/iowin.h"
@@ -207,35 +208,16 @@ static void init_tx(void) {
     mmio_wr(E1000_TIPG, 0x0060200A);   /* recommended IPG */
 }
 
-/* The 8254x parts this driver actually implements. The e1000e (82574) and igb
-   families share the class code and nothing else that matters, so matching on
-   vendor alone would claim them and drive a completely different register
-   layout while reporting success. */
-static int is_e1000_device(uint16_t id) {
-    switch (id) {
-        case 0x100E:  /* 82540EM - what QEMU emulates */
-        case 0x100F:  /* 82545EM                      */
-        case 0x1010:  /* 82546EB                      */
-        case 0x1026:  /* 82545GM                      */
-        case 0x1004:  /* 82543GC                      */
-        case 0x1028:  /* 82546GB                      */
-            return 1;
-        default:
-            return 0;
-    }
-}
+/* One NIC, one try. The driver is a singleton with its DMA window at a
+   fixed address, and the first start claims both; the first e1000 on the
+   bus was the only one ever tried, and still is. */
+static int tried = 0;
 
-int e1000_init(void) {
+static int e1000_bind(struct dev_node *n) {
+    if (tried) return 0;
+    tried = 1;
     present = 0;
-
-    /* find an Ethernet NIC (class 0x02, subclass 0x00) that's Intel (8086) */
-    const struct pci_device *dev = 0;
-    for (unsigned i = 0; ; i++) {
-        const struct pci_device *d = pci_find(0x02, 0x00, -1, i);
-        if (!d) break;
-        if (d->vendor_id == 0x8086 && is_e1000_device(d->device_id)) { dev = d; break; }
-    }
-    if (!dev) return 0;
+    const struct pci_device *dev = n->pci;
 
     pci_enable_bus_master(dev);
 
@@ -277,6 +259,28 @@ int e1000_init(void) {
     present = 1;
     return 1;
 }
+
+/* The 8254x parts this driver actually implements, as an Ethernet controller
+   (class 0x02, subclass 0x00). The e1000e (82574) and igb families share the
+   class code and nothing else that matters, so matching on vendor alone would
+   claim them and drive a completely different register layout while
+   reporting success. */
+#define E1000_ID(dev) \
+    { DEVBUS_PCI, DM_VENDOR | DM_DEVICE | DM_CLASS | DM_SUB, { 0x8086, (dev), 0x02, 0x00, 0 }, 0 }
+static const struct dev_match e1000_ids[] = {
+    E1000_ID(0x100E),   /* 82540EM - what QEMU emulates */
+    E1000_ID(0x100F),   /* 82545EM                      */
+    E1000_ID(0x1010),   /* 82546EB                      */
+    E1000_ID(0x1026),   /* 82545GM                      */
+    E1000_ID(0x1004),   /* 82543GC                      */
+    E1000_ID(0x1028),   /* 82546GB                      */
+};
+/* Order 0: before the RTL8111 when a machine has both, as netif's probe
+   order always put it. */
+static const struct driver e1000_driver = {
+    "e1000", DG_NET, 0, sizeof e1000_ids / sizeof e1000_ids[0], e1000_ids, e1000_bind, 0,
+};
+DRIVER_DECLARE(e1000_driver);
 
 int e1000_present(void) { return present; }
 

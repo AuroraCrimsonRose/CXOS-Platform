@@ -7,6 +7,7 @@
 
 #include "ohci.h"
 #include "usb.h"
+#include "drivers/devtree.h"
 #include "memman/dma.h"
 #include "pci.h"
 #include "arch/paging.h"
@@ -159,6 +160,7 @@ _Static_assert(sizeof(struct ohci_td) == 16, "a TD is 16 bytes");
 /* Everything one controller needs; a usb_device's `hc` points at its
    controller's. */
 struct ohci_hc {
+    uint16_t node;                  /* its device-tree node: its devices' parent */
     struct iowin regs;              /* BAR 0: the 4 KB operational registers */
     unsigned nports;
     uint8_t next_address;           /* USB addresses are per bus */
@@ -461,7 +463,7 @@ static void enumerate_port(struct ohci_hc *c, unsigned p) {
 
     enum usb_speed sp = (st & RH_LSDA) ? USB_SPEED_LOW : USB_SPEED_FULL;
 
-    struct usb_device *dev = usb_alloc_device(&ohci_ops, c, (uint8_t)p, sp);
+    struct usb_device *dev = usb_alloc_device(&ohci_ops, c, c->node, (uint8_t)p, sp);
     if (!dev) { klog("OHCI", SEV_WARN, "device table full"); return; }
     usb_enumerate(dev);
 }
@@ -755,17 +757,26 @@ void ohci_report(void) {
     }
 }
 
-int ohci_init(void) {
-    nhcs = 0;
-    /* class 0x0C serial bus, subclass 0x03 USB, prog-if 0x10 = OHCI. Every
-       one of them: each is the companion for a different set of ports. */
-    for (unsigned k = 0; nhcs < OHCI_MAX_HCS; k++) {
-        const struct pci_device *dev = pci_find(0x0C, 0x03, 0x10, k);
-        if (!dev) break;
-        struct ohci_hc *c = &hcs[nhcs];
-        for (unsigned i = 0; i < sizeof(*c); i++) ((uint8_t *)c)[i] = 0;
-        c->next_address = 1;
-        if (ohci_start(c, dev, nhcs)) nhcs++;
-    }
-    return (int)nhcs;
+/* Bound by the device tree (drivers/devtree.h): every controller of class
+   0x0C serial bus, subclass 0x03 USB, prog-if 0x10. Each has its own
+   ports. Last: the companion for the ports EHCI released. */
+static int ohci_bind(struct dev_node *n) {
+    if (nhcs >= OHCI_MAX_HCS) return 0;
+    struct ohci_hc *c = &hcs[nhcs];
+    for (unsigned i = 0; i < sizeof(*c); i++) ((uint8_t *)c)[i] = 0;
+    c->next_address = 1;
+    c->node = n->id;
+    if (!ohci_start(c, n->pci, nhcs)) return 0;
+    nhcs++;
+    return 1;
 }
+
+static const struct dev_match ohci_ids[] = {
+    { DEVBUS_PCI, DM_CLASS | DM_SUB | DM_PROG, { 0, 0, 0x0C, 0x03, 0x10 }, 0 },
+};
+static const struct driver ohci_driver = {
+    "ohci", DG_USB_HOST, 2, 1, ohci_ids, ohci_bind, 0,
+};
+DRIVER_DECLARE(ohci_driver);
+
+unsigned ohci_count(void) { return nhcs; }

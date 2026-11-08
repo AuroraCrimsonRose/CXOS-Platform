@@ -7,6 +7,7 @@
 
 #include "rtl8169.h"
 #include "pci.h"
+#include "drivers/devtree.h"
 #include "arch/paging.h"
 #include "logging.h"
 #include "drivers/iowin.h"
@@ -140,24 +141,6 @@ static inline void wr32(uint32_t o, uint32_t v) { iowin_write32(&regs, o, v); }
 
 static void busy_delay(volatile uint32_t n) { while (n--) { } }
 
-/* ---- PCI probe ----------------------------------------------------------
- * Realtek ships several device IDs across the family. 8168 is what an RTL8111
- * on a desktop board reports and is the case that matters here; the others are
- * accepted because they are the same descriptor model and refusing them would
- * be an arbitrary restriction. */
-static int is_realtek_nic(uint16_t device_id) {
-    switch (device_id) {
-        case 0x8168:   /* RTL8111/8168 - PCIe, the common motherboard part */
-        case 0x8161:   /* RTL8168 variant                                  */
-        case 0x8136:   /* RTL8101/8102 fast ethernet, same rings           */
-        case 0x8169:   /* RTL8169 - original PCI gigabit                   */
-        case 0x8167:   /* RTL8110SC/8169SC - PCI                           */
-            return 1;
-        default:
-            return 0;
-    }
-}
-
 /* Pick the register BAR. The PCIe parts (8168/8111/8136) put MMIO at BAR2 and
  * leave BAR0 as an I/O port window; the older PCI parts (8169/8167) use BAR1.
  * Rather than branch on the device ID - the mapping is not perfectly consistent
@@ -215,16 +198,15 @@ static void init_rings(void) {
     tx_cur = 0;
 }
 
-int rtl8169_init(void) {
-    present = 0;
+/* One NIC, one try, as e1000's: the first start claims the singleton's
+   state and its DMA window. */
+static int tried = 0;
 
-    const struct pci_device *dev = 0;
-    for (unsigned i = 0; ; i++) {
-        const struct pci_device *d = pci_find(0x02, 0x00, -1, i);   /* class 2/0 = Ethernet */
-        if (!d) break;
-        if (d->vendor_id == 0x10EC && is_realtek_nic(d->device_id)) { dev = d; break; }
-    }
-    if (!dev) return 0;      /* not an error: most machines do not have one */
+static int rtl8169_bind(struct dev_node *n) {
+    if (tried) return 0;
+    tried = 1;
+    present = 0;
+    const struct pci_device *dev = n->pci;
 
     klog_u32("RTL8169", SEV_INFO, "found Realtek NIC, device ", dev->device_id,
              LOG_COLOR_VALUE, "");
@@ -310,6 +292,27 @@ int rtl8169_init(void) {
     present = 1;
     return 1;
 }
+
+/* Realtek ships several device IDs across the family, as an Ethernet
+   controller (class 0x02, subclass 0x00). 8168 is what an RTL8111 on a
+   desktop board reports and is the case that matters here; the others are
+   accepted because they are the same descriptor model and refusing them
+   would be an arbitrary restriction. */
+#define RTL_ID(dev) \
+    { DEVBUS_PCI, DM_VENDOR | DM_DEVICE | DM_CLASS | DM_SUB, { 0x10EC, (dev), 0x02, 0x00, 0 }, 0 }
+static const struct dev_match rtl8169_ids[] = {
+    RTL_ID(0x8168),   /* RTL8111/8168 - PCIe, the common motherboard part */
+    RTL_ID(0x8161),   /* RTL8168 variant                                  */
+    RTL_ID(0x8136),   /* RTL8101/8102 fast ethernet, same rings           */
+    RTL_ID(0x8169),   /* RTL8169 - original PCI gigabit                   */
+    RTL_ID(0x8167),   /* RTL8110SC/8169SC - PCI                           */
+};
+/* Order 1: after the e1000, as netif's probe order always put it. */
+static const struct driver rtl8169_driver = {
+    "rtl8169", DG_NET, 1, sizeof rtl8169_ids / sizeof rtl8169_ids[0], rtl8169_ids,
+    rtl8169_bind, 0,
+};
+DRIVER_DECLARE(rtl8169_driver);
 
 int rtl8169_present(void) { return present; }
 

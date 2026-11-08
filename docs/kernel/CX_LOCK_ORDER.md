@@ -65,6 +65,7 @@ cache registry `ocache-slots` under a cache's own lock.
 | `LR_KSTACK` | `memman/kstack.c` `slots_lock` (1.9c) | - |
 | `LR_PAGEDB` | `memman/pagedb.c` | - |
 | `LR_CMOS` | `platform/pc/rtc.c` `cmos_lock` (1.9e3): the CMOS index and data ports | - |
+| `LR_DEVTREE` | `drivers/devtree.c` `devtree_lock` (2.1): the node table; a driver starts with it released | - |
 | `LR_LOG` | `drivers/char/console.c` (1.9e3): the screen, the serial tee and the system log's ring; CPU-recursive | - (last: a line may be logged under any lock) |
 
 Pairs not in the table's right column put no constraint on each other; the

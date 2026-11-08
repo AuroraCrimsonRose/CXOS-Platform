@@ -110,12 +110,18 @@ static const char *unmapped_steps(int pid) {
     }
     /* With the read's failure ignored, the wait answers at once or at the
        deadline, never blocks for good. */
+    uint32_t faults0 = usercopy_faults_recovered();
     rc = rc_wait(a.addr, UN_EXPECT, timer_now_ns() + 50 * MS, 0, 0);
+    uint32_t faulted = usercopy_faults_recovered() - faults0;
     uint32_t arrived = race_arrivals(RP_FUTEX_READ);
     race_release(RP_FUTEX_READ);
     if (!arrived) { vm_unmap(pid, a.addr, a.granted); return "futex unmapped: point not reached"; }
     if (un_rc != E_OK)          return "futex unmapped: the unmap failed";
     if (rc != E_BAD_ADDRESS)    return "futex unmapped: not E_BAD_ADDRESS";
+    /* Refused by user_fetch_u32's page check, before the copy. The copy's
+       recovery gives the same E_BAD_ADDRESS, so the recovered-fault count
+       tells them apart (as in test_user_copy_validation). */
+    if (faulted)                return "futex unmapped: copy faulted";
     if (futex_waiting() != w0)  return "futex unmapped: left a waiter";
     live_take(&after, pid, 0);
     if (live_diff(&before, &after, 1)) return "futex unmapped: left something behind";

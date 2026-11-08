@@ -7,6 +7,7 @@
 
 #include "xhci.h"
 #include "usb.h"
+#include "drivers/devtree.h"
 #include "memman/dma.h"
 #include "pci.h"
 #include "arch/paging.h"
@@ -159,6 +160,7 @@ _Static_assert(INTBUF_OFF + 0x1000 == XDMA_PAGES * 0x1000, "xHCI DMA layout over
 /* Everything one controller needs; a usb_device's `hc` points at its
    controller's. */
 struct xhci_hc {
+    uint16_t node;                  /* its device-tree node: its devices' parent */
     struct iowin cap_regs, op_regs, rt_regs, db_regs;
     unsigned nports;
     unsigned ctx_size;
@@ -865,7 +867,7 @@ static void enumerate_port(struct xhci_hc *c, unsigned port1) {
         return;
     }
 
-    struct usb_device *dev = usb_alloc_device(&xhci_ops, c, (uint8_t)port1, sp);
+    struct usb_device *dev = usb_alloc_device(&xhci_ops, c, c->node, (uint8_t)port1, sp);
     if (!dev) { klog("xHCI", SEV_WARN, "device table full"); return; }
     usb_enumerate(dev);
 }
@@ -1058,16 +1060,26 @@ static int xhci_start(struct xhci_hc *c, const struct pci_device *dev, unsigned 
     return 1;
 }
 
-int xhci_init(void) {
-    nhcs = 0;
-    /* class 0x0C serial bus, subclass 0x03 USB, prog-if 0x30 = xHCI. Every
-       one of them: each has its own ports. */
-    for (unsigned k = 0; nhcs < XHCI_MAX_HCS; k++) {
-        const struct pci_device *dev = pci_find(0x0C, 0x03, 0x30, k);
-        if (!dev) break;
-        struct xhci_hc *c = &hcs[nhcs];
-        for (unsigned i = 0; i < sizeof(*c); i++) ((uint8_t *)c)[i] = 0;
-        if (xhci_start(c, dev, nhcs)) nhcs++;
-    }
-    return (int)nhcs;
+/* Bound by the device tree (drivers/devtree.h): every controller of class
+   0x0C serial bus, subclass 0x03 USB, prog-if 0x30. Each has its own
+   ports. First: xHCI handles every speed by itself, so where a port could be
+   driven by either, it claims it (usb.c). */
+static int xhci_bind(struct dev_node *n) {
+    if (nhcs >= XHCI_MAX_HCS) return 0;
+    struct xhci_hc *c = &hcs[nhcs];
+    for (unsigned i = 0; i < sizeof(*c); i++) ((uint8_t *)c)[i] = 0;
+    c->node = n->id;
+    if (!xhci_start(c, n->pci, nhcs)) return 0;
+    nhcs++;
+    return 1;
 }
+
+static const struct dev_match xhci_ids[] = {
+    { DEVBUS_PCI, DM_CLASS | DM_SUB | DM_PROG, { 0, 0, 0x0C, 0x03, 0x30 }, 0 },
+};
+static const struct driver xhci_driver = {
+    "xhci", DG_USB_HOST, 0, 1, xhci_ids, xhci_bind, 0,
+};
+DRIVER_DECLARE(xhci_driver);
+
+unsigned xhci_count(void) { return nhcs; }

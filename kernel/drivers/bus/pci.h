@@ -6,9 +6,10 @@
  * PCI bus driver (legacy configuration mechanism #1: ports 0xCF8/0xCFC).
  *
  * Enumerates the PCI bus at init, caching each device's identity and BARs, and
- * provides config-space read/write so device drivers (AHCI, USB, NIC) can find
- * and program their controllers. Pure port I/O - no DMA, no MMIO, no higher-half
- * concerns. This is a *bus* driver: it discovers the devices other drivers own.
+ * provides config-space read/write so device drivers (AHCI, USB, NIC) can
+ * program the controllers the device tree gives them. Pure port I/O - no DMA,
+ * no MMIO, no higher-half concerns. This is a *bus* driver: it discovers the
+ * devices other drivers own.
  */
 
 #ifndef PCI_H
@@ -46,10 +47,8 @@ unsigned pci_device_count(void);
 /* get device by enumeration index (0 .. pci_device_count()-1), or 0. */
 const struct pci_device *pci_get(unsigned index);
 
-/* find the `index`-th device matching (class, subclass, prog_if). Pass prog_if
-   0xFF to match any prog-if. Returns 0 if not found. */
-const struct pci_device *pci_find(uint8_t class_code, uint8_t subclass,
-                                  uint8_t prog_if, unsigned index);
+/* No pci_find: a driver is given its device by the device tree
+   (drivers/devtree.h), never searches the bus for it. */
 
 /* ---- BARs ---------------------------------------------------------------
  * Decoded rather than raw. Every driver was masking bar[n] by hand, and the

@@ -19,8 +19,8 @@
 
 #define ATA_SECTOR_SIZE 512
 
-/* probe the drives; call once at boot. */
-void ata_init(void);
+/* No init call: the device tree binds the legacy channels (the platform
+   node "pc-ata", DG_STORAGE, kmain.c), probing the drives once. */
 
 /* read `count` sectors starting at LBA `lba` from `drive` into `buffer`.
    buffer must be at least count*512 bytes. returns 0 on success, -1 on error. */
@@ -35,7 +35,7 @@ int ata_write(uint8_t drive, uint32_t lba, uint8_t count, const void *buffer);
    caller can ASK for durability rather than depend on which driver it got. */
 int ata_flush(uint8_t drive);
 
-/* is the given drive present? (set by ata_init) */
+/* is the given drive present? (set when the channels are bound) */
 int ata_present(uint8_t drive);
 
 /* IDENTIFY info captured at probe time (valid only if ata_present(drive)). */

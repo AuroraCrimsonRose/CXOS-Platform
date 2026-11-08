@@ -1,7 +1,8 @@
 # Drivers
 ### CX Design Spec: Aurora Tejeda / CATX Systems
 
-> **Status: DESIGN.** How CXOS finds devices, binds drivers, and runs them.
+> **Status: DESIGN; §4 step 1 BUILT (2.1, `kernel/drivers/devtree.h`).** How
+> CXOS finds devices, binds drivers, and runs them.
 > Compared against NT (WRK), XNU (IOKit, DriverKit), Haiku, Serenity and Redox.
 
 ---
@@ -72,7 +73,9 @@ must be signed and trusted; isolation is built and tested under QEMU.
 ## 4. Order
 
 1. Device tree, registry and scored matching; convert e1000, rtl8169, AHCI,
-   ATA, USB and HID with no change in behaviour.
+   ATA, USB and HID with no change in behaviour. **Done (2.1):** the drivers
+   no longer search the bus (§1's `pci_find` calls are gone); the tree
+   lives in the kernel until the Process Manager can show it.
 2. Class contracts for block, network and input; network moves to interrupts.
 3. Driver-host primitives (needs memory objects and the wait queue).
 4. First user-space driver: Bochs display; then input; then the NIC.

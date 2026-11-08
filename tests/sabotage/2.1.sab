@@ -1,0 +1,114 @@
+# Step 2.1, the device tree and scored matching, run by `cxk test sabotage`.
+# Each must turn red exactly the self-tests named, at the step named.
+# Format: docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage".
+
+# ---- the rules, on the tests' own nodes ----
+
+[score-flat]
+# every field weighs the same: three class fields outscore vendor and device
+expect = devtree: the most specific driver wins @ devtree specific: class not below vendor
+expect = devtree: start order, then the group limit @ devtree order: not by order
+group = g2
+edit = kernel/drivers/devtree.c
+<<<
+#define W_CLASS   2u
+#define W_SUB     4u
+#define W_PROG    8u
+#define W_VENDOR 16u
+#define W_DEVICE 32u
+#define W_NAME   64u
+===
+#define W_CLASS   1u
+#define W_SUB     1u
+#define W_PROG    1u
+#define W_VENDOR 1u
+#define W_DEVICE 1u
+#define W_NAME   1u
+>>>
+
+[no-fallback]
+# a decline marks every driver tried: the next-best is never offered
+expect = devtree: a declined start falls to the next @ devtree fallback: not bound
+group = g1
+edit = kernel/drivers/devtree.c
+<<<
+            pick->tried |= 1u << pick_drv;
+===
+            pick->tried = ~0u;
+>>>
+
+[order-ignored]
+# the first node with any driver starts first, whatever its driver's order
+expect = devtree: start order, then the group limit @ devtree order: not by order
+group = g1
+edit = kernel/drivers/devtree.c
+<<<
+            if (!pick || drv[j]->order < drv[pick_drv]->order) { pick = n; pick_drv = j; }
+===
+            if (!pick) { pick = n; pick_drv = j; }
+>>>
+
+[limit-off-by-one]
+# the group binds one past its limit
+expect = devtree: start order, then the group limit @ devtree limit: not one bound
+group = g3
+edit = kernel/drivers/devtree.c
+<<<
+        if (limit && group_held(group) >= limit) { spin_unlock(&devtree_lock, f); break; }
+===
+        if (limit && group_held(group) > limit) { spin_unlock(&devtree_lock, f); break; }
+>>>
+
+[gone-no-remove]
+# a gone node's driver is never told
+expect = devtree: a gone node is removed and freed @ devtree gone: remove not run once
+group = g3
+edit = kernel/drivers/devtree.c
+<<<
+    if (d && d->remove) d->remove(n);
+===
+    (void)d;
+>>>
+
+[gone-not-freed]
+# a gone node keeps its slot
+# (and stays bindable: the next tests bind the leaked nodes too)
+expect = devtree: a gone node is removed and freed @ devtree gone: node not freed
+expect = devtree: a declined start falls to the next @ devtree fallback: not bound
+expect = devtree: start order, then the group limit @ devtree order: not two bound
+edit = kernel/drivers/devtree.c
+<<<
+    n->state = DEV_FREE;
+    n->drv = 0;
+===
+    n->state = DEV_UNBOUND;
+    n->drv = 0;
+>>>
+
+# ---- the boot's tree ----
+
+[driver-not-declared]
+# a driver left out of .cxk_drivers is never offered a device
+expect = devtree: the boot bound by the rules @ devtree boot: drivers not nine
+group = g3
+edit = kernel/drivers/usb/usb_storage.c
+<<<
+DRIVER_DECLARE(storage_driver);
+===
+static const struct driver *const kept_storage = &storage_driver;
+const struct driver *usb_storage_kept(void) { return kept_storage; }
+>>>
+
+# ---- alongside: the Phase 1 review's user_fetch_u32 ----
+
+[fetch-no-page-check]
+# user_fetch_u32 goes straight to the copy: the hardware is its only check
+expect = futex: a word unmapped after its fault-in @ futex unmapped: copy faulted
+group = g2
+edit = kernel/cpu/usercopy.c
+<<<
+    if (!page_ok(uaddr, 0)) return E_BAD_ADDRESS;
+    if (ucopy_gone(uaddr, sizeof *v)) return E_BAD_ADDRESS;
+===
+    if (ucopy_gone(uaddr, sizeof *v)) return E_BAD_ADDRESS;
+>>>

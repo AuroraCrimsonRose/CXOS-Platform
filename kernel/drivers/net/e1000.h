@@ -20,9 +20,8 @@
 
 #include <stdint.h>
 
-/* probe PCI for an e1000 NIC and initialize it (rings, MAC, link).
-   returns 1 on success, 0 if no NIC found / init failed. */
-int e1000_init(void);
+/* No init call: the device tree binds the first e1000 on the bus
+   (DG_NET, netif_init) and brings it up (rings, MAC, link). */
 
 int e1000_present(void);                 /* was a NIC found + initialized? */
 const uint8_t *e1000_mac(void);          /* 6-byte MAC address */

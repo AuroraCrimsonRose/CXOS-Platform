@@ -6,6 +6,7 @@
 
 #include "ahci.h"
 #include "pci.h"
+#include "drivers/devtree.h"
 #include "arch/paging.h"
 #include "timer.h"
 #include "console.h"
@@ -119,7 +120,6 @@ static int port_present[AHCI_MAX_PORTS];
 static uint64_t port_sectors[AHCI_MAX_PORTS];
 static char     port_model[AHCI_MAX_PORTS][41];
 static uint8_t  port_ssd[AHCI_MAX_PORTS];
-static int      ndisks = 0;
 
 /* ---- v5 DMA memory --------------------------------------------------------
  * AHCI hardware does DMA: it reads/writes RAM by PHYSICAL address, ignoring
@@ -349,17 +349,20 @@ static void port_identify(int p) {
     for (int i = 39; i >= 0 && port_model[p][i] == ' '; i--) port_model[p][i] = '\0';
 }
 
-int ahci_init(void) {
-    ndisks = 0;
+/* One controller, one try: the first AHCI controller on the bus was the only
+   one ever driven (the port tables are the driver's, not the controller's),
+   and still is. 1 once the HBA is taken, with or without disks on it. */
+static int tried = 0;
+
+static int ahci_bind(struct dev_node *n) {
+    if (tried) return 0;
+    tried = 1;
+    const struct pci_device *dev = n->pci;
     for (int i = 0; i < AHCI_MAX_PORTS; i++) {
         port_present[i] = 0;
         port_sectors[i] = 0;
         port_model[i][0] = '\0';
     }
-
-    /* find an AHCI controller: class 0x01, subclass 0x06, prog-if 0x01 */
-    const struct pci_device *dev = pci_find(0x01, 0x06, 0x01, 0);
-    if (!dev) return 0;
 
     /* ABAR is BAR5; mask off the low flag bits to get the physical base */
     uint32_t abar = dev->bar[5] & 0xFFFFFFF0u;
@@ -416,7 +419,6 @@ int ahci_init(void) {
         port_present[p] = 1;
         port_identify(p);
         if (port_present[p]) {
-            ndisks++;
             /* bridge into the unified disk registry (same step ATA needs) so
                the filesystem layer can find AHCI disks. unit = port number. */
             enum disk_media media = port_ssd[p] ? DISK_MEDIA_SSD : DISK_MEDIA_HDD;
@@ -431,8 +433,19 @@ int ahci_init(void) {
         }
     }
 
-    return ndisks;
+    return 1;
 }
+
+/* An AHCI controller: class 0x01 mass storage, subclass 0x06 SATA, prog-if
+   0x01 AHCI. Order 1: after the legacy ATA channels, which took the lower
+   disk indices first and still do. */
+static const struct dev_match ahci_ids[] = {
+    { DEVBUS_PCI, DM_CLASS | DM_SUB | DM_PROG, { 0, 0, 0x01, 0x06, 0x01 }, 0 },
+};
+static const struct driver ahci_driver = {
+    "ahci", DG_STORAGE, 1, 1, ahci_ids, ahci_bind, 0,
+};
+DRIVER_DECLARE(ahci_driver);
 
 int ahci_present(int port) {
     if (port < 0 || port >= AHCI_MAX_PORTS) return 0;

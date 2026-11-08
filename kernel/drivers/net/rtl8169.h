@@ -35,9 +35,8 @@
 
 #include <stdint.h>
 
-/* probe PCI for an RTL8111/8168/8169 and initialize it (rings, MAC, link).
-   returns 1 on success, 0 if no NIC found / init failed. */
-int rtl8169_init(void);
+/* No init call: the device tree binds the first RTL8111/8168/8169 on the
+   bus (DG_NET, netif_init) and brings it up (rings, MAC, link). */
 
 int rtl8169_present(void);                 /* was a NIC found + initialized? */
 const uint8_t *rtl8169_mac(void);          /* 6-byte MAC address */

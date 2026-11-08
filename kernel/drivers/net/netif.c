@@ -12,17 +12,18 @@
  *
  * The driver is chosen once at init and reached through a small vtable, so the
  * stack above (ARP/IP/ICMP) never learns which card it is talking to. Adding a
- * third NIC is a new ops struct and one line in the probe order. */
+ * third NIC is its driver's DRIVER_DECLARE (drivers/devtree.h), a new ops
+ * struct and one line in `nics`. */
 
 #include "netif.h"
 #include "e1000.h"
 #include "rtl8169.h"
+#include "drivers/devtree.h"
 #include "logging.h"
 
 /* The operations a NIC must provide to be usable as the bound interface. */
 struct netif_ops {
     const char    *name;
-    int          (*init)(void);
     int          (*present)(void);
     const uint8_t *(*mac)(void);
     int          (*send)(const void *frame, uint16_t len);
@@ -30,15 +31,17 @@ struct netif_ops {
 };
 
 static const struct netif_ops nic_e1000 = {
-    "e1000",  e1000_init,  e1000_present,  e1000_mac,  e1000_send,  e1000_receive,
+    "e1000",  e1000_present,  e1000_mac,  e1000_send,  e1000_receive,
 };
 static const struct netif_ops nic_rtl8169 = {
-    "rtl8111", rtl8169_init, rtl8169_present, rtl8169_mac, rtl8169_send, rtl8169_receive,
+    "rtl8111", rtl8169_present, rtl8169_mac, rtl8169_send, rtl8169_receive,
 };
 
-/* Probe order. e1000 first only because it is the tested one; they are mutually
-   exclusive in practice, so the order is not load-bearing. */
-static const struct netif_ops *const probe_order[] = { &nic_e1000, &nic_rtl8169 };
+/* The drivers that may be bound. Which one is, is the device tree's choice
+   (DG_NET): e1000 first only because it is the tested one (its `order`);
+   they are mutually exclusive in practice, so the order is not
+   load-bearing. */
+static const struct netif_ops *const nics[] = { &nic_e1000, &nic_rtl8169 };
 
 static const struct netif_ops *nic = 0;
 
@@ -65,19 +68,15 @@ int netif_init(void) {
     set4(cfg.dns1,    1, 1, 1, 1);     /* Cloudflare primary */
     set4(cfg.dns2,    1, 0, 0, 1);     /* Cloudflare secondary */
 
-    /* Bring a NIC up. This was the missing link: netif_init only ever asked
-       e1000_present(), which reports a flag that e1000_init() sets at its very
-       end - and nothing called e1000_init(), so the interface could never come
-       up even with the card sitting on the bus.
-
-       Each driver's init() returns 0 when its chip is simply not on the bus,
-       which is the normal case for whichever one is not installed - not an
-       error, and not worth logging. */
+    /* Bring a NIC up: the device tree starts the drivers of DG_NET in their
+       order, the next on a decline, and binds one NIC at most - this layer
+       drives one (the limit). A driver whose chip is not on the bus is
+       simply not bound: the normal case for whichever one is not installed,
+       not an error, and not worth logging. */
+    (void)devtree_bind_group(DG_NET, 1);
     nic = 0;
-    for (unsigned i = 0; i < sizeof(probe_order) / sizeof(probe_order[0]); i++) {
-        const struct netif_ops *cand = probe_order[i];
-        if (cand->present() || cand->init()) { nic = cand; break; }
-    }
+    for (unsigned i = 0; i < sizeof(nics) / sizeof(nics[0]); i++)
+        if (nics[i]->present()) { nic = nics[i]; break; }
 
     if (nic) klog("NETIF", SEV_OK, nic->name);
     else     klog("NETIF", SEV_WARN, "no supported NIC found (e1000 or RTL8111/8168)");

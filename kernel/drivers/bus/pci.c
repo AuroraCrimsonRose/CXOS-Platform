@@ -125,20 +125,6 @@ const struct pci_device *pci_get(unsigned index) {
     return (index < ndevices) ? &devices[index] : 0;
 }
 
-const struct pci_device *pci_find(uint8_t class_code, uint8_t subclass,
-                                  uint8_t prog_if, unsigned index) {
-    unsigned match = 0;
-    for (unsigned i = 0; i < ndevices; i++) {
-        struct pci_device *d = &devices[i];
-        if (d->class_code == class_code && d->subclass == subclass &&
-            (prog_if == 0xFF || d->prog_if == prog_if)) {
-            if (match == index) return d;
-            match++;
-        }
-    }
-    return 0;
-}
-
 /* Config space is written a DWORD at a time by the hardware interface, so a
    16-bit field has to be merged into its containing dword. Writing the dword
    with the other half zeroed would clear a neighbouring register. */

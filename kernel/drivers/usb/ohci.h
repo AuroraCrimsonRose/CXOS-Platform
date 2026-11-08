@@ -20,9 +20,10 @@
 #ifndef OHCI_H
 #define OHCI_H
 
-/* probe PCI for an OHCI controller and bring it up, enumerating what is
-   attached. Returns how many came up, 0 if none. */
-int ohci_init(void);
+/* The controllers that came up. Each is bound by the device tree
+   (DG_USB_HOST, usb_init), which brings it up and enumerates what is
+   attached. */
+unsigned ohci_count(void);
 
 /* Hot-plug: look at every root port once, enumerating a device that connected
    since the last look and dropping one that went away. A device EHCI hands

@@ -7,6 +7,7 @@
 
 #include "ehci.h"
 #include "usb.h"
+#include "drivers/devtree.h"
 #include "memman/dma.h"
 #include "pci.h"
 #include "arch/paging.h"
@@ -161,6 +162,7 @@ _Static_assert(sizeof(struct ehci_qh) % 32 == 0, "QH stride must stay 32-byte al
 /* Everything one controller needs. A usb_device's `hc` points at its
    controller's, so the transfer functions below never have to guess. */
 struct ehci_hc {
+    uint16_t node;                  /* its device-tree node: its devices' parent */
     struct iowin cap_regs;
     struct iowin op_regs;
     unsigned nports;
@@ -731,7 +733,7 @@ static void enumerate_port(struct ehci_hc *c, unsigned p) {
         timer_sleep(RESET_RECOVERY_MS);
 
         /* High speed confirmed. Everything from here is the core's job. */
-        struct usb_device *dev = usb_alloc_device(&ehci_ops, c, (uint8_t)p, USB_SPEED_HIGH);
+        struct usb_device *dev = usb_alloc_device(&ehci_ops, c, c->node, (uint8_t)p, USB_SPEED_HIGH);
         if (!dev) {
             klog("EHCI", SEV_WARN, "device table full");
             return;
@@ -877,17 +879,27 @@ void ehci_poll_ports(void) {
     }
 }
 
-int ehci_init(void) {
-    nhcs = 0;
-    /* class 0x0C serial bus, subclass 0x03 USB, prog-if 0x20 = EHCI. Every
-       one of them: each has its own ports. */
-    for (unsigned k = 0; nhcs < EHCI_MAX_HCS; k++) {
-        const struct pci_device *dev = pci_find(0x0C, 0x03, 0x20, k);
-        if (!dev) break;
-        struct ehci_hc *c = &hcs[nhcs];
-        for (unsigned i = 0; i < sizeof(*c); i++) ((uint8_t *)c)[i] = 0;
-        c->next_address = 1;
-        if (ehci_start(c, dev, nhcs)) nhcs++;
-    }
-    return (int)nhcs;
+/* Bound by the device tree (drivers/devtree.h): every controller of class
+   0x0C serial bus, subclass 0x03 USB, prog-if 0x20. Each has its own
+   ports. After xHCI, before OHCI: EHCI hands its low- and full-speed ports to
+   the companion, which must not have taken them first. */
+static int ehci_bind(struct dev_node *n) {
+    if (nhcs >= EHCI_MAX_HCS) return 0;
+    struct ehci_hc *c = &hcs[nhcs];
+    for (unsigned i = 0; i < sizeof(*c); i++) ((uint8_t *)c)[i] = 0;
+    c->next_address = 1;
+    c->node = n->id;
+    if (!ehci_start(c, n->pci, nhcs)) return 0;
+    nhcs++;
+    return 1;
 }
+
+static const struct dev_match ehci_ids[] = {
+    { DEVBUS_PCI, DM_CLASS | DM_SUB | DM_PROG, { 0, 0, 0x0C, 0x03, 0x20 }, 0 },
+};
+static const struct driver ehci_driver = {
+    "ehci", DG_USB_HOST, 1, 1, ehci_ids, ehci_bind, 0,
+};
+DRIVER_DECLARE(ehci_driver);
+
+unsigned ehci_count(void) { return nhcs; }

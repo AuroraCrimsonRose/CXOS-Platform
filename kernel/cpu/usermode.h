@@ -81,8 +81,9 @@ int  user_copy_in(void *kdst, uint64_t usrc, uint32_t len);
    inside `cap`. */
 int  user_copy_str(char *kdst, uint64_t usrc, uint32_t cap);
 
-/* One aligned word, recoverably, with no page-table walk in front: for the
-   futex, which reads it under its own lock. 0, or E_BAD_ADDRESS. */
+/* One aligned word, recoverably: for the futex, which reads it under its own
+   lock. The page check in front faults nothing in (the caller has), so a
+   page gone since is refused before the copy. 0, or E_BAD_ADDRESS. */
 int  user_fetch_u32(uint64_t uaddr, uint32_t *v);
 
 /* The primitive behind both, in usermode.asm: 0 = copied, 1 = faulted and

@@ -19,9 +19,10 @@
 #ifndef EHCI_H
 #define EHCI_H
 
-/* probe PCI for an EHCI controller and bring it up, enumerating what is
-   attached. Returns how many came up, 0 if none. */
-int ehci_init(void);
+/* The controllers that came up. Each is bound by the device tree
+   (DG_USB_HOST, usb_init), which brings it up and enumerates what is
+   attached. */
+unsigned ehci_count(void);
 
 /* Ports released to a companion controller (low- and full-speed devices). */
 unsigned ehci_released(void);

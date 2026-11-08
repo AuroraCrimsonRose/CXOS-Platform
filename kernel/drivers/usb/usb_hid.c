@@ -6,6 +6,7 @@
 
 #include "usb_hid.h"
 #include "usb.h"
+#include "drivers/devtree.h"
 #include "keyboard.h"
 #include "mouse.h"
 #include "logging.h"
@@ -225,3 +226,17 @@ void usb_hid_poll(void) {
 
 int usb_hid_present(void) { return any_present; }
 int usb_hid_keyboards(void) { return keyboards; }
+
+/* ---- the device tree's view (drivers/devtree.h) ----
+   Any HID interface; usb_hid_attach declines what it cannot drive (no boot
+   interface, no interrupt endpoint), as it always did. */
+static int hid_bind(struct dev_node *n) { return usb_hid_attach(n->usb); }
+static void hid_remove(struct dev_node *n) { (void)usb_hid_detach(n->usb); }
+
+static const struct dev_match hid_ids[] = {
+    { DEVBUS_USB, DM_CLASS, { 0, 0, USB_CLASS_HID, 0, 0 }, 0 },
+};
+static const struct driver hid_driver = {
+    "usb-hid", DG_USB_CLASS, 0, 1, hid_ids, hid_bind, hid_remove,
+};
+DRIVER_DECLARE(hid_driver);

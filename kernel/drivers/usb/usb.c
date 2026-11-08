@@ -10,6 +10,7 @@
 #include "xhci.h"
 #include "usb_storage.h"
 #include "usb_hid.h"
+#include "drivers/devtree.h"
 #include "logging.h"
 #include "timer.h"
 #include "format.h"
@@ -30,7 +31,8 @@ const char *usb_speed_name(enum usb_speed s) {
 }
 
 struct usb_device *usb_alloc_device(const struct usb_hc_ops *ops, void *hc,
-                                    uint8_t port, enum usb_speed speed) {
+                                    uint16_t parent_node, uint8_t port,
+                                    enum usb_speed speed) {
     for (unsigned i = 0; i < USB_MAX_DEVICES; i++) {
         if (devices[i].in_use) continue;
         struct usb_device *d = &devices[i];
@@ -38,6 +40,7 @@ struct usb_device *usb_alloc_device(const struct usb_hc_ops *ops, void *hc,
         d->in_use = 1;
         d->ops = ops;
         d->hc = hc;
+        d->parent_node = parent_node;
         d->port = port;
         d->speed = speed;
         d->max_packet0 = 0;      /* attach() fills this in */
@@ -185,10 +188,10 @@ int usb_enumerate(struct usb_device *dev) {
     if (dev->ep_int_in)
         klog_child_u32("  int in  ", dev->ep_int_in, LOG_COLOR_VALUE, "");
 
-    /* Offer it to the class drivers. Mass storage is the only one so far; HID
-       would hook in here the same way. A device nobody claims is still
+    /* Into the device tree, and offered to the USB class drivers there (mass
+       storage, HID: DG_USB_CLASS). A device nobody claims is still
        enumerated and listed, just not driven. */
-    if (!usb_storage_attach(dev)) usb_hid_attach(dev);
+    (void)devtree_usb_attach(dev);
     return 1;
 }
 
@@ -213,10 +216,12 @@ void usb_init(void) {
     /* xHCI first, deliberately. On hardware carrying both, xHCI handles every
        speed by itself while EHCI needs companions - so where a port could be
        driven by either, the better controller should claim it. On this era of
-       AMD hardware they are separate silicon and both will come up. */
-    n_xhci = xhci_init();
-    n_ehci = ehci_init();
-    n_ohci = ohci_init();
+       AMD hardware they are separate silicon and both will come up. That order is
+       now the drivers' own, their `order` in DG_USB_HOST (devtree.h). */
+    (void)devtree_bind_group(DG_USB_HOST, 0);
+    n_xhci = (int)xhci_count();
+    n_ehci = (int)ehci_count();
+    n_ohci = (int)ohci_count();
 
     if (!n_xhci && !n_ehci && !n_ohci) return;   /* no controllers: say nothing, this is the norm */
 
@@ -302,7 +307,8 @@ struct usb_device *usb_find(const void *hc, uint8_t port) {
 void usb_port_gone(struct usb_device *dev) {
     klog_u32(dev->ops->name, SEV_INFO, "port ", dev->port, LOG_COLOR_VALUE, ": device removed");
     if (dev->if_class == USB_CLASS_MASS_STORAGE) return;   /* still a registered disk */
-    usb_hid_detach(dev);
+    devtree_gone(dev->node);   /* its driver's remove: HID's detach */
+    dev->node = 0;
     usb_free_device(dev);
 }
 

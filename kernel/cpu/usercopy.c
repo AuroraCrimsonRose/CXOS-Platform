@@ -147,8 +147,15 @@ int user_copy_str(char *kdst, uint64_t usrc, uint32_t cap) {
     return E_OUT_OF_RANGE;
 }
 
+/* The page check is the passive one, page_ok's: a walk of the tables that
+   faults nothing in, so it is safe under the futex's lock, where vm_fault is
+   not. The caller faulted the word in before taking the lock (futex.c's
+   word_ok); a page gone since is refused here, before the copy, as every
+   other copy refuses one (Phase 1 review: it went straight to the copy, so
+   the hardware was its only check). */
 int user_fetch_u32(uint64_t uaddr, uint32_t *v) {
     if ((uaddr & 3u) || uaddr >= USER_VLIMIT) return E_BAD_ADDRESS;
+    if (!page_ok(uaddr, 0)) return E_BAD_ADDRESS;
     if (ucopy_gone(uaddr, sizeof *v)) return E_BAD_ADDRESS;
     return user_copy_bytes(v, user_ptr(uaddr), sizeof *v) != 0 ? E_BAD_ADDRESS : 0;
 }

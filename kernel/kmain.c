@@ -52,6 +52,7 @@
 #include "usermode.h"
 #include "ata.h"
 #include "ahci.h"
+#include "drivers/devtree.h"
 #include "install.h"
 #include "launch.h"
 #include "disk.h"
@@ -345,6 +346,10 @@ void kmain_late(void) {
        controllers. Must come before AHCI (which is discovered via PCI). */
     pci_init();
     klog_u32("PCI", SEV_OK, "enumerated, devices: ", (uint32_t)pci_device_count(), LOG_COLOR_VALUE, "");
+    /* The device tree: a node per PCI function and the platform's fixed
+       hardware. The drivers bind to it in groups below, at the points the
+       boot always started them (drivers/devtree.h, Phase 2.1). */
+    devtree_init();
     /* list what was found - class 0x02 subclass 0x00 with vendor 0x8086 is the
        e1000 the network stack looks for. Prints vendor:device and class:subclass
        so a missing or differently-classed NIC is obvious from the boot log. */
@@ -396,14 +401,12 @@ void kmain_late(void) {
     if (netif_init()) klog("NET", SEV_OK, "online");
     else              klog("NET", SEV_WARN, "no NIC found - networking offline");
 
-    /* storage: probe ATA + AHCI drives into the disk registry. AHCI is found via
-       PCI; on a machine without one, ahci_init returns 0 harmlessly. */
-    ata_init();
-    /* Returns the number of ports it found, which is not what the boot log
-       reports - that comes from disk_count(), the registry, so a port that
-       was found but could not be registered is not counted twice. Dropped on
-       purpose; ahci.c warns per port if the registry refuses one. */
-    (void)ahci_init();
+    /* storage: the legacy ATA channels, then the AHCI controller, into the
+       disk registry (their `order` in DG_STORAGE). The count bound is not what
+       the boot log reports - that comes from disk_count(), the registry, so a
+       port that was found but could not be registered is not counted twice.
+       Dropped on purpose; each driver warns per drive the registry refuses. */
+    (void)devtree_bind_group(DG_STORAGE, 0);
 
     /* USB AFTER the internal drives, and the order is load-bearing rather than
        stylistic. mount_cxfs() treats disk index 0 as the boot disk and never
@@ -413,6 +416,7 @@ void kmain_late(void) {
        machine had just booted from. Internal storage must claim the low indices
        before anything removable can. */
     usb_init();
+    devtree_report();
     klog_u32("STORAGE", SEV_OK, "online, disks: ", (uint32_t)disk_count(), LOG_COLOR_VALUE, "");
 
     /* Before the first write: which disks may be written at all. */

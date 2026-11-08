@@ -20,9 +20,9 @@
 
 #define AHCI_MAX_PORTS 32
 
-/* probe PCI for an AHCI controller, init it, and detect disks on its ports.
-   returns the number of SATA disks found (0 if no controller / no disks). */
-int ahci_init(void);
+/* No init call: the device tree binds the first AHCI controller on the bus
+   (DG_STORAGE, kmain.c), which takes the HBA and registers the SATA disks on
+   its ports. */
 
 /* is there a SATA disk on this port? */
 int ahci_present(int port);

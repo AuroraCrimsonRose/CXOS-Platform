@@ -6,6 +6,7 @@
 
 #include "usb_storage.h"
 #include "usb.h"
+#include "drivers/devtree.h"
 #include "disk.h"
 #include "logging.h"
 #include "timer.h"
@@ -472,3 +473,17 @@ int usb_storage_test_interrupt(uint8_t unit) {
     return dev->ops->bulk(dev, dev->ep_in, abandon_buf, u->block_size) < 0
          ? DISK_ERR_FAULT : DISK_OK;
 }
+
+/* ---- the device tree's view (drivers/devtree.h) ----
+   Any mass-storage interface; usb_storage_attach declines what is not
+   bulk-only, and says so, as it always did. No remove: an unplugged disk
+   stays registered (usb.c, usb_port_gone). */
+static int storage_bind(struct dev_node *n) { return usb_storage_attach(n->usb); }
+
+static const struct dev_match storage_ids[] = {
+    { DEVBUS_USB, DM_CLASS, { 0, 0, USB_CLASS_MASS_STORAGE, 0, 0 }, 0 },
+};
+static const struct driver storage_driver = {
+    "usb-storage", DG_USB_CLASS, 0, 1, storage_ids, storage_bind, 0,
+};
+DRIVER_DECLARE(storage_driver);

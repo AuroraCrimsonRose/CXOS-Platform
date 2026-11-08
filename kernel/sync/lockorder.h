@@ -60,6 +60,7 @@ enum lock_rank {
     LR_KSTACK,         /* memman/kstack.c slots_lock: nothing under it */
     LR_PAGEDB,         /* memman/pagedb.c */
     LR_CMOS,           /* platform/pc/rtc.c: the CMOS index and data ports (1.9e3) */
+    LR_DEVTREE,        /* drivers/devtree.c: the node table; nothing under it but the log (2.1) */
     LR_LOG,            /* drivers/char/console.c: the screen, its serial tee
                           and the system log's ring, under any lock (1.9e3) */
     LR_COUNT

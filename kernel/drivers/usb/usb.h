@@ -30,6 +30,8 @@
 
 #include <stdint.h>
 
+struct dev_node;   /* drivers/devtree.h */
+
 #define USB_MAX_DEVICES 16
 
 /* Speeds as the USB spec orders them. LOW and FULL are here even though EHCI
@@ -120,6 +122,12 @@ struct usb_device {
     uint16_t ep_int_mps;
     uint8_t  ep_int_interval;  /* bInterval, in frames or 2^(n-1) microframes */
 
+    /* In the device tree (drivers/devtree.h): its controller's node, set at
+       allocation, and its own, made when it is enumerated (0 until then, or
+       if the table was full). */
+    uint16_t parent_node;
+    struct dev_node *node;
+
     uint8_t  in_use;
 };
 
@@ -198,9 +206,11 @@ struct usb_setup {
 
 /* ---- core API ----------------------------------------------------------- */
 
-/* Claim a device slot for a controller to fill in. Returns 0 when full. */
+/* Claim a device slot for a controller to fill in, under the controller's
+   device-tree node `parent_node`. Returns 0 when full. */
 struct usb_device *usb_alloc_device(const struct usb_hc_ops *ops, void *hc,
-                                    uint8_t port, enum usb_speed speed);
+                                    uint16_t parent_node, uint8_t port,
+                                    enum usb_speed speed);
 void usb_free_device(struct usb_device *dev);
 
 /* Drive a newly attached device all the way to configured, and log it. Calls

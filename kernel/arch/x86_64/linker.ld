@@ -30,6 +30,12 @@ SECTIONS
     {
         __rodata_start = .;
         *(.rodata .rodata.*)
+        /* Every DRIVER_DECLARE (drivers/devtree.h): kept, though nothing
+           names an entry, and read only through these two symbols. */
+        . = ALIGN(8);
+        __drivers_start = .;
+        KEEP(*(.cxk_drivers))
+        __drivers_end = .;
     }
 
     .data ALIGN(4K) : AT(ADDR(.data) - KERNEL_VBASE)

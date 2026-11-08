@@ -49,6 +49,7 @@
 #include "ktest_sweeps.h"
 #include "ktest_races.h"
 #include "ktest_random.h"
+#include "ktest_devtree.h"
 #include "xfnt.h"
 #include "font.h"
 #include "fb.h"
@@ -3576,6 +3577,11 @@ void ktest_run(void) {
     total++; passed += report("vm: a stack over a quota a sibling filled", ktest_vm_room_stack());
     total++; passed += report("vm: a charge over a quota a sibling filled", ktest_vm_room_charge());
     total++; passed += report("ipc: an endpoint over a quota a sibling filled", ktest_ep_quota());
+    total++; passed += report("devtree: the most specific driver wins", ktest_devtree_specific());
+    total++; passed += report("devtree: a declined start falls to the next", ktest_devtree_fallback());
+    total++; passed += report("devtree: start order, then the group limit", ktest_devtree_order());
+    total++; passed += report("devtree: a gone node is removed and freed", ktest_devtree_gone());
+    total++; passed += report("devtree: the boot bound by the rules", ktest_devtree_boot());
     total++; passed += report("random: chacha20 gives RFC 8439's block", ktest_random_chacha());
     total++; passed += report("random: interrupts sampled, then hashed in", ktest_random_interrupts());
     total++; passed += report("random: random_read from ring 3", ktest_random_syscall());

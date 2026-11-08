@@ -18,6 +18,7 @@
 #include "ata.h"
 #include "timer.h"
 #include "disk.h"
+#include "drivers/devtree.h"
 #include "logging.h"
 #include "drivers/iowin.h"
 
@@ -151,7 +152,11 @@ static void ata_probe(uint8_t drive) {
     }
 }
 
-void ata_init(void) {
+/* The legacy channels at their fixed ports, the platform node "pc-ata"
+   (devtree.c): always probed, so always bound, whether or not a drive
+   answers. */
+static int ata_bind(struct dev_node *n) {
+    (void)n;
     for (uint8_t drive = 0; drive < ATA_DRIVE_COUNT; drive++)
         ata_probe(drive);
 
@@ -170,7 +175,18 @@ void ata_init(void) {
             klog_u32("ATA", SEV_WARN, "disk registry full, drive not registered: ",
                      (uint32_t)drive, LOG_COLOR_VALUE, "");
     }
+    return 1;
 }
+
+/* Order 0: the internal drives take the lowest disk indices, the legacy
+   channels first (kmain.c). */
+static const struct dev_match ata_ids[] = {
+    { DEVBUS_PLATFORM, DM_NAME, { 0, 0, 0, 0, 0 }, "pc-ata" },
+};
+static const struct driver ata_driver = {
+    "ata", DG_STORAGE, 0, 1, ata_ids, ata_bind, 0,
+};
+DRIVER_DECLARE(ata_driver);
 
 int ata_present(uint8_t drive) {
     if (drive >= ATA_DRIVE_COUNT) return 0;

@@ -29,6 +29,7 @@ static const char *const names[LR_COUNT] = {
     [LR_KSTACK]       = "kstack",
     [LR_PAGEDB]       = "pagedb",
     [LR_CMOS]         = "cmos",
+    [LR_DEVTREE]      = "devtree",
     [LR_LOG]          = "log",
 };
 
