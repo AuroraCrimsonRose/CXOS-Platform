@@ -49,6 +49,15 @@ void keyboard_inject(unsigned char c) {
     if (!input_post_key(c)) kbuf_push(c);
 }
 
+/* Under the lock, as a reader's choice of how long to sleep is: it either saw
+   the device, or is prepared to block by the time this wakes it. A USB key
+   cannot wake it: nothing fetches USB reports but a reader. */
+void keyboard_usb_arrived(void) {
+    uint32_t f = spin_lock(&kbd_lock);
+    if (kwaiter >= 0) thread_unblock(kwaiter);
+    spin_unlock(&kbd_lock, f);
+}
+
 uint32_t keyboard_test_hold(void)          { return spin_lock(&kbd_lock); }
 void     keyboard_test_release(uint32_t f) { spin_unlock(&kbd_lock, f); }
 

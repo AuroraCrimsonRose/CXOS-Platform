@@ -192,6 +192,7 @@ int usb_hid_attach(struct usb_device *dev) {
     dev->ops->control(dev, 0x21, HID_REQ_SET_IDLE, 0, 0, 0, 0);
 
     any_present = 1;
+    keyboard_usb_arrived();     /* the shell is usually asleep by now */
     keyboards += kbd;
     klog("USBHID", SEV_OK, kbd ? "keyboard online (boot protocol)"
                                : "mouse online (boot protocol)");

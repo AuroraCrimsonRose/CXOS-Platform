@@ -16,6 +16,10 @@ char keyboard_getchar(void);
    can tell them apart. Safe from an interrupt handler. */
 void keyboard_inject(unsigned char c);
 
+/* A USB HID device has come. A reader asleep from before it, with nothing
+   that would ever have woken it to poll, looks again. */
+void keyboard_usb_arrived(void);
+
 /* The buffer's lock (1.9e4), held from a self-test to show another CPU's
    caller waits for it: the flags to give to keyboard_test_release. */
 uint32_t keyboard_test_hold(void);

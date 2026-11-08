@@ -1,0 +1,12 @@
+# The rig's dead USB keyboard, run by `cxk test sabotage`. Format:
+# docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage".
+
+[no-wake-on-arrival]
+# a reader asleep before the keyboard came sleeps on, and no USB key ever arrives
+expect = USB keyboard: found after its reader went to sleep @ usb keyboard test failed at step 3
+group = g1
+edit = kernel/drivers/usb/usb_hid.c
+<<<
+    keyboard_usb_arrived();     /* the shell is usually asleep by now */
+===
+>>>

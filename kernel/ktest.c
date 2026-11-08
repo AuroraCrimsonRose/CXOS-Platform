@@ -72,6 +72,7 @@
 #include "boot/cxbi.h"
 #include "diag/crashlog.h"
 #include "usb.h"
+#include "usb_hid.h"
 #include "memman/dma.h"
 #include "e1000.h"
 #include "rtl8169.h"
@@ -2300,6 +2301,71 @@ static int test_bounded_strings(void) {
 static volatile uint32_t lifecycle_ticker = 0;
 static volatile int      lifecycle_run    = 0;
 
+/* ---- a USB keyboard that comes after its reader went to sleep ----
+   The boot starts the shell before the USB ports are looked at, so the shell
+   is normally asleep for a key with no USB device to poll: found on the rig,
+   where the keyboard came online and no key ever arrived. A fake keyboard,
+   one report of 'a', and a reader that is already asleep. */
+static volatile int hw_got;
+static volatile int hw_sent;
+
+static int hw_control(struct usb_device *d, uint8_t t, uint8_t r, uint16_t v, uint16_t i,
+                      void *data, uint16_t len) {
+    (void)d; (void)t; (void)r; (void)v; (void)i; (void)data; (void)len;
+    return 0;
+}
+
+static int hw_poll(struct usb_device *d, uint8_t ep, void *data, uint32_t len) {
+    (void)d; (void)ep;
+    if (hw_sent) return 0;
+    hw_sent = 1;
+    memset(data, 0, len);
+    ((uint8_t *)data)[2] = 0x04;       /* the usage id of 'a' */
+    return (int)len;
+}
+
+static const struct usb_hc_ops hw_ops = { .name = "ktest-hid", .control = hw_control, .interrupt_poll = hw_poll };
+static struct usb_device hw_dev;
+
+static void hw_reader(void) { hw_got = (unsigned char)keyboard_getchar_blocking(); }
+
+static int ktest_usb_kbd_after_reader(void) {
+    if (usb_hid_present()) {           /* a real one is here already: no reader is asleep without it */
+        klog("KTEST", SEV_WARN, "USB keyboard after its reader NOT checked: a HID device is attached");
+        return 1;
+    }
+    while (keyboard_getchar()) { }
+    hw_got = -1;
+    hw_sent = 0;
+    memset(&hw_dev, 0, sizeof hw_dev);
+    hw_dev.ops = &hw_ops;
+    hw_dev.if_class = USB_CLASS_HID;
+    hw_dev.if_subclass = 1;            /* boot interface */
+    hw_dev.if_protocol = 1;            /* keyboard */
+    hw_dev.ep_int_in = 0x81;
+
+    int t = thread_create("hw_reader", hw_reader);
+    if (t < 0) return 0;
+    thread_sleep_ms(50);               /* asleep, with no device to poll */
+    int step = 1;
+    if (hw_got == -1) {
+        step = 2;
+        if (usb_hid_attach(&hw_dev)) {
+            step = 3;
+            for (int i = 0; i < 400 && hw_got == -1; i++) thread_sleep_ms(5);
+            if (hw_got == 'a') step = 0;
+        }
+    }
+    (void)usb_hid_detach(&hw_dev);
+    for (int i = 0; i < 400 && thread_is_alive(t); i++) {
+        keyboard_inject('z');          /* a reader the device never reached */
+        thread_sleep_ms(5);
+    }
+    while (keyboard_getchar()) { }
+    if (step != 0) klog_u32("KTEST", SEV_ERR, "usb keyboard test failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    return step == 0 && !usb_hid_present() && !thread_is_alive(t);
+}
+
 static void lifecycle_counter_thread(void) {
     /* Runs until the test says stop, with a guard so a scheduler that never
        returns here cannot hang the boot either way. */
@@ -3551,6 +3617,7 @@ void ktest_run(void) {
     total++; passed += report("devices: DMA buffers, retired until bus mastering is off", usermode_devhost_dma_test());
     total++; passed += report("input: the keys as a handle, one holder", usermode_input_handle_test());
     total++; passed += report("lease: a buffer stays unwritable while it is lent", usermode_lease_test());
+    total++; passed += report("USB keyboard: found after its reader went to sleep", ktest_usb_kbd_after_reader());
     total++; passed += report("display server: real screen, real keys, given back", ktest_display_server());
     total++; passed += report("screen: one holder, mapped write-combining, given back", usermode_screen_test());
     total++; passed += report("ipc: queued calls, reply tokens, badges", usermode_ipc_test());
