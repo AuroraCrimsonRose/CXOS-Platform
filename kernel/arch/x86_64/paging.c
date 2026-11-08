@@ -274,6 +274,11 @@ paddr_t paging_get_phys(uintptr_t virt) {
     return (e & PTE64_ADDR & ~(size - 1)) | (virt & (size - 1));
 }
 
+int paging_is_uncached(uintptr_t virt) {
+    uint64_t size, e = leaf(virt, 0, &size);
+    return e && (e & (PTE64_PCD | PTE64_PWT)) == (PTE64_PCD | PTE64_PWT);
+}
+
 int paging_is_user(uintptr_t virt) {
     uint64_t size;
     return leaf(virt, PTE64_USER, &size) != 0;

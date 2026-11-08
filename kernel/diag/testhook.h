@@ -121,7 +121,7 @@ struct live_counts {
     uint32_t pages_free, pages_reserved;
     uint32_t heap_bytes, heap_blocks;
     uint32_t kstacks, threads, procs, jobs;
-    uint32_t types[16];                    /* kobj_live per type, below KOBJ_TYPE_MAX */
+    uint32_t types[24];                    /* kobj_live per type, below KOBJ_TYPE_MAX */
     uint32_t ncache;
     struct { const struct ocache *c; uint32_t live; } cache[LIVE_CACHES];
     int      pid;                          /* -1: no process */

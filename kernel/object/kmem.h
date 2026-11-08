@@ -33,6 +33,15 @@
  * counted under the lock, so a seal and a new mapping cannot both win (Linux
  * memfd's F_SEAL_WRITE, which is refused while a shared writable mapping
  * exists).
+ *
+ * KINDS (2.2). Most objects are KMEM_ANON, as above. A driver's are not
+ * (drivers/devhost.h): KMEM_DEVICE is a device's registers, every page
+ * present from the start, none of them the allocator's, mapped uncached and
+ * never freed; KMEM_DMA is one run of pages below 4 GB, all present and
+ * charged at once, whose physical address the device is given. Both hold a
+ * reference on their device. A DMA object's pages outlive its last
+ * reference while the device is open (kmem_dma_release): the device may
+ * still be writing them.
  */
 #ifndef CXK_KMEM_H
 #define CXK_KMEM_H
@@ -43,6 +52,13 @@
 #include "arch/paging.h"
 
 struct job;
+struct kdevice;   /* drivers/devhost.h */
+
+enum kmem_kind {
+    KMEM_ANON = 0,   /* pages on first touch, committed, the object's own */
+    KMEM_DEVICE,     /* a device's registers: fixed, uncached, nobody's to free */
+    KMEM_DMA,        /* contiguous below 4 GB, present now, freed after the device */
+};
 
 struct kmem {
     struct kobj  hdr;        /* first; KOBJ_MEM */
@@ -52,7 +68,11 @@ struct kmem {
     uint32_t     writers;    /* writable mappings of it now */
     uint32_t     seals;      /* MEM_SEAL_*; only ever added */
     paddr_t     *pages;      /* npages entries, 0 until touched (kmalloc) */
-    struct job  *job;        /* charged npages pages; a reference */
+    struct job  *job;        /* charged npages pages; a reference (0: KMEM_DEVICE) */
+    uint32_t     kind;       /* enum kmem_kind */
+    paddr_t      phys;       /* KMEM_DEVICE, KMEM_DMA: the first page's address */
+    struct kdevice *dev;     /* KMEM_DEVICE, KMEM_DMA: a reference */
+    struct kmem *qnext;      /* KMEM_DMA: in its device's list of retired buffers */
 };
 
 void kmem_sys_init(void);
@@ -62,6 +82,25 @@ void kmem_sys_init(void);
    0 with *rc set: E_NO_MEMORY past the job's limit, past what memory can
    promise, or when the kernel has no room for its records. */
 struct kmem *kmem_create(uint32_t npages, struct job *job, int *rc);
+
+/* A device's registers: `npages` pages from `base`, with a reference on
+   `dev`, charged to nobody. 0 with *rc set (E_NO_MEMORY: no room for the
+   records; E_OUT_OF_RANGE: npages past MMAP_MAX_BYTES / PAGE_SIZE). */
+struct kmem *kmem_create_device(paddr_t base, uint32_t npages, struct kdevice *dev, int *rc);
+
+/* A DMA buffer of `npages` (1 to DMA_ALLOC_MAX / PAGE_SIZE) zeroed pages in
+   one run below 4 GB, charged to `job`, with a reference on `dev`; the
+   first page's address in m->phys. 0 with *rc set: E_NO_MEMORY past the
+   job's limit, or with no such run free past the kernel's margin. */
+struct kmem *kmem_create_dma(uint32_t npages, struct job *job, struct kdevice *dev, int *rc);
+
+/* A retired DMA buffer's pages, charge and records, once its device can no
+   longer reach them (drivers/devhost.c, as the device closes). */
+void kmem_dma_release(struct kmem *m);
+
+/* The page-table flags its kind adds to a mapping: VM_UNCACHED for a
+   device's registers, 0 otherwise. */
+uint32_t kmem_map_flags(const struct kmem *m);
 
 /* The page at `index` (< npages), taken and zeroed if this is its first
    touch. Never fails: the page was reserved when the object was made. */

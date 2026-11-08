@@ -229,19 +229,22 @@ void irq_uninstall_handler(int irq) {
     if (irq >= 0 && irq < 16) irq_routines[irq] = 0;
 }
 
+/* A slot is taken by a compare-and-swap: since 2.2 a process asks for one
+   (SYS_DEVICE_IRQ) from any CPU, and two asking at once must not both be
+   given it. */
 int irq_alloc_msi_vector(irq_handler_t handler) {
     for (int i = 0; i < MSI_VECTOR_COUNT; i++) {
-        if (!msi_routines[i]) {
-            msi_routines[i] = handler;
+        irq_handler_t none = 0;
+        if (__atomic_compare_exchange_n(&msi_routines[i], &none, handler, 0,
+                                        __ATOMIC_ACQ_REL, __ATOMIC_RELAXED))
             return MSI_VECTOR_BASE + i;
-        }
     }
     return -1;
 }
 
 void irq_free_msi_vector(int vector) {
     int i = vector - MSI_VECTOR_BASE;
-    if (i >= 0 && i < MSI_VECTOR_COUNT) msi_routines[i] = 0;
+    if (i >= 0 && i < MSI_VECTOR_COUNT) __atomic_store_n(&msi_routines[i], 0, __ATOMIC_RELEASE);
 }
 
 void set_user_fault_hook(void (*hook)(struct registers *)) { user_fault_hook = hook; }
@@ -303,9 +306,13 @@ static void irq_dispatch(struct registers *r) {
     }
     if (r->vector >= MSI_VECTOR_BASE) {
         /* An MSI still takes an EOI, at the local APIC that delivered it. */
-        irq_handler_t h = msi_routines[r->vector - MSI_VECTOR_BASE];
+        irq_handler_t h = __atomic_load_n(&msi_routines[r->vector - MSI_VECTOR_BASE],
+                                          __ATOMIC_ACQUIRE);
         if (h) h(r);
         irq_eoi(r->vector);
+        /* A handler may have woken a thread that should run now: a driver's
+           interrupt thread (2.2), at real-time priority. */
+        sched_preempt_point();
         return;
     }
     irq_handler_t h = irq_routines[r->vector - IRQ_VECTOR_BASE];

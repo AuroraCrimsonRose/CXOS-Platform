@@ -155,14 +155,17 @@ void pmm_init(void) {
    under the lock. Never more than the free pages. */
 static uint32_t reserved;
 
-static paddr_t alloc_run(size_t count, int low_only) {
+static paddr_t alloc_run(size_t count, int low_only, uint32_t margin) {
     if (fault_hit(FAULT_PMM)) return 0;
     unsigned order = buddy_order_for(count > 0xFFFFFFFFu ? 0 : (uint32_t)count);
     if (order >= BUDDY_ORDERS) return 0;
     uint32_t f = spin_lock(&lock);
     /* the whole block counts, though the rest of it goes back below: it is
        off the free list for that moment */
-    if (buddy_free_count(&b) < reserved + (1u << order)) { spin_unlock(&lock, f); return 0; }
+    if (buddy_free_count(&b) < (uint64_t)reserved + margin + (1u << order)) {
+        spin_unlock(&lock, f);
+        return 0;
+    }
     uint32_t pfn = buddy_alloc(&b, order, low_only);
     /* a run that is not a power of two gives the rest of its block back */
     if (pfn != BUDDY_NONE && count < (1u << order))
@@ -171,9 +174,10 @@ static paddr_t alloc_run(size_t count, int low_only) {
     return pfn == BUDDY_NONE ? 0 : (paddr_t)pfn * PAGE_SIZE;
 }
 
-paddr_t pmm_alloc(void)                      { return alloc_run(1, 0); }
-paddr_t pmm_alloc_pages(size_t count)        { return alloc_run(count, 0); }
-paddr_t pmm_alloc_pages_low(size_t count)    { return alloc_run(count, 1); }
+paddr_t pmm_alloc(void)                      { return alloc_run(1, 0, 0); }
+paddr_t pmm_alloc_pages(size_t count)        { return alloc_run(count, 0, 0); }
+paddr_t pmm_alloc_pages_low(size_t count)    { return alloc_run(count, 1, 0); }
+paddr_t pmm_alloc_pages_low_user(size_t count) { return alloc_run(count, 1, PMM_COMMIT_MARGIN); }
 
 int pmm_page_in_use(paddr_t page) {
     uint64_t pfn = page / PAGE_SIZE;

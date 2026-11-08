@@ -35,6 +35,9 @@
 #include "object/kthread.h"   /* OBJINFO_THREAD */
 #include "futex.h"             /* SYS_FUTEX_* */
 #include "object/kqueue.h"    /* SYS_QUEUE_* */
+#include "drivers/devtree.h"   /* the devhost tests: node states, a test driver */
+#include "drivers/devhost.h"   /* devhost_retired */
+#include "drivers/bus/pci.h"
 #include "sync/atomic.h"
 #include "sysrec.h"
 #include "systable.h"         /* the handlers, decoders and table (generated) */
@@ -5406,6 +5409,435 @@ done:
     vm_proc_reset(pid);
     unmap_user_page(TEST_CODE_VIRT, phys);
     if (ok && kobj_live(KOBJ_MEM) != live0) ok = 0;
+    return ok;
+}
+
+/* ---- driver-host primitives (Phase 2.2) ------------------------------------
+ * Through the dispatcher over a user mapping, as the memory-object test is,
+ * on QEMU's teaching device "edu" (hw/misc/edu.c), which verify-boot
+ * attaches: an ID register, a register that reads back the inverse of what
+ * was written, an interrupt raised by a register write, and a DMA engine
+ * with a 4 KiB buffer of its own. A boot without one (the rig) runs what
+ * needs no device and says it skipped the rest. The registers are touched
+ * by this thread directly, 32 bits at a time as the device requires, once a
+ * user copy has made the page present (a ring-0 touch of a missing user
+ * page is the kernel's own fault). 1 = pass, 0 = fail. */
+#define EDU_VENDOR  0x1234u
+#define EDU_DEVICE  0x11E8u
+#define EDU_BAR0    0x100000u  /* 1 MiB of registers */
+#define EDU_ID      0x00u      /* 0x010000ED: version 1.0 */
+#define EDU_LIVE    0x04u      /* reads back the inverse of what was written */
+#define EDU_ISTATUS 0x24u
+#define EDU_IRAISE  0x60u      /* ORs into ISTATUS and interrupts */
+#define EDU_IACK    0x64u
+#define EDU_DMA_SRC 0x80u
+#define EDU_DMA_DST 0x88u
+#define EDU_DMA_CNT 0x90u
+#define EDU_DMA_CMD 0x98u      /* 1 start (clear when done), 2 to RAM, 4 interrupt when done */
+#define EDU_DMA_IRQ 0x100u     /* the ISTATUS bit a DMA's interrupt sets */
+#define EDU_BUF     0x40000u   /* the device's own buffer, 4 KiB */
+
+#define DH_INFO (TEST_CODE_VIRT + 0x400)   /* struct device_desc */
+#define DH_PHYS (TEST_CODE_VIRT + 0x480)   /* SYS_DMA_ALLOC's *phys */
+#define DH_SEEN (TEST_CODE_VIRT + 0x4C0)   /* SYS_OBJECT_WAIT's *seen */
+#define DH_BUF  (TEST_CODE_VIRT + 0x500)   /* 64 bytes */
+
+static int dh_info(uint32_t id) { return syscall_dispatch(SYS_DEVICE_INFO, id, DH_INFO, 0, 0, 0); }
+static int dh_open(uint32_t id) { return syscall_dispatch(SYS_DEVICE_OPEN, id, 0, 0, 0, 0); }
+static int dh_bar(int32_t h, uint32_t bar) { return syscall_dispatch(SYS_DEVICE_BAR, (uint32_t)h, bar, 0, 0, 0); }
+static int dh_irq(int32_t h) { return syscall_dispatch(SYS_DEVICE_IRQ, (uint32_t)h, 0, 0, 0, 0); }
+static int dh_ack(int32_t h) { return syscall_dispatch(SYS_IRQ_ACK, (uint32_t)h, 0, 0, 0, 0); }
+static int dh_dma(int32_t h, uint64_t size, uint64_t phys) {
+    return um_call(SYS_DMA_ALLOC, 1u << 1, (uint32_t)h, size, phys, 0, 0);
+}
+static int dh_dup(int32_t h, uint32_t rights) {
+    return syscall_dispatch(SYS_HANDLE_DUPLICATE, (uint32_t)h, rights, 0, 0, 0);
+}
+/* Node `id`'s state as SYS_DEVICE_INFO gives it, 0 if refused. */
+static uint32_t dh_state(uint32_t id) {
+    const struct device_desc *di = (const struct device_desc *)ktest_umem(DH_INFO);
+    return dh_info(id) == E_OK ? di->state : 0;
+}
+/* The edu device's id, found as a driver would find it, or -1. */
+static int dh_find_edu(void) {
+    const struct device_desc *di = (const struct device_desc *)ktest_umem(DH_INFO);
+    for (uint32_t id = 0; id < DEVICE_MAX; id++)
+        if (dh_info(id) == E_OK && di->bus == DEVICE_BUS_PCI &&
+            di->vendor == EDU_VENDOR && di->device == EDU_DEVICE)
+            return (int)id;
+    return -1;
+}
+/* The first page of the BAR object `b` mapped read-write and present: its
+   address, or 0. The copy reads one byte, which edu answers with nothing (it
+   takes only 32-bit accesses there). */
+static uint64_t dh_map_regs(int32_t b) {
+    if (mt_map(b, 0, PAGE_SIZE, MPROT_READ | MPROT_WRITE) != E_OK) return 0;
+    uint64_t a = ((const struct vm_map_args *)ktest_umem(MT_ARGS))->addr;
+    uint8_t byte;
+    return user_copy_in(&byte, a, 1) == 0 ? a : 0;
+}
+static uint32_t edu_rd(uint64_t regs, uint32_t off) {
+    return *(volatile uint32_t *)ktest_umem(regs + off);
+}
+static void edu_wr(uint64_t regs, uint32_t off, uint32_t v) {
+    *(volatile uint32_t *)ktest_umem(regs + off) = v;
+}
+static uint32_t dh_command(int id) {
+    const struct pci_device *p = devtree_get((unsigned)id)->pci;
+    return pci_config_read32(p->bus, p->slot, p->func, 0x04);
+}
+static int dh_msi_on(int id) {
+    const struct pci_device *p = devtree_get((unsigned)id)->pci;
+    uint8_t cap = pci_find_capability(p, PCI_CAP_ID_MSI);
+    return cap && (pci_config_read16(p->bus, p->slot, p->func, (uint8_t)(cap + 2)) & 1u);
+}
+/* MSI vectors free now: each taken, counted, and given back. */
+static void dh_nop_isr(struct registers *r) { (void)r; }
+static int dh_free_vectors(void) {
+    int v[64], n = 0;
+    while (n < 64 && (v[n] = irq_alloc_msi_vector(dh_nop_isr)) >= 0) n++;
+    for (int i = 0; i < n; i++) irq_free_msi_vector(v[i]);
+    return n;
+}
+/* A kernel driver for edu, of the self-tests' group, so a node a kernel
+   driver holds can be shown to refuse an open. */
+static int dh_drv_start(struct dev_node *n) { (void)n; return 1; }
+static const struct dev_match dh_drv_match[] = {
+    { DEVBUS_PCI, DM_VENDOR | DM_DEVICE, { EDU_VENDOR, EDU_DEVICE, 0, 0, 0 }, 0 },
+};
+static const struct driver dh_drv = {
+    "edu-test", DG_TEST, 0, 1, dh_drv_match, dh_drv_start, 0,
+};
+static const struct driver *const dh_drvs[] = { &dh_drv };
+
+/* Each test's setting up: a user page, a memory account, GRANT_DRIVER. */
+struct dh_env { int pid, me; uint32_t caps0; paddr_t page; struct htab *tab; };
+static int dh_begin(struct dh_env *e) {
+    e->pid = thread_current_pid();
+    e->me = thread_current_id();
+    if (vm_quota_of(e->pid)) return 0;   /* an account here would be clobbered */
+    e->page = map_user_page(TEST_CODE_VIRT);
+    if (!e->page) return 0;
+    vm_proc_init(e->pid, vm_default_quota(), -1);
+    e->caps0 = thread_current_caps();
+    e->tab = thread_htab(e->me);
+    thread_set_caps(e->me, GRANT_DRIVER);
+    return 1;
+}
+static void dh_end(struct dh_env *e) {
+    thread_set_caps(e->me, e->caps0);
+    vm_proc_reset(e->pid);
+    unmap_user_page(TEST_CODE_VIRT, e->page);
+}
+static void dh_close(struct htab *tab, int32_t *h) {
+    if (*h > 0) htab_close(tab, *h);
+    *h = -1;
+}
+
+/* Finding and opening; a BAR as a memory object, mapped and used; a device
+   held until its last reference goes, then given back quiet. */
+int usermode_devhost_test(void) {
+    struct dh_env e;
+    if (!dh_begin(&e)) return 0;
+    const struct device_desc *di = (const struct device_desc *)ktest_umem(DH_INFO);
+    const struct object_basic *ob = (const struct object_basic *)ktest_umem(MT_INFO);
+    const struct mem_info *mi = (const struct mem_info *)ktest_umem(MT_INFO);
+    struct job *job = thread_proc(e.me)->job;
+    uint32_t dev0 = kobj_live(KOBJ_DEVICE), mem0 = kobj_live(KOBJ_MEM);
+    int32_t d = -1, dn = -1, b = -1, t = -1;
+    uint64_t regs = 0;
+    int step = 0, ok = 0, free_id = -1;
+    for (unsigned id = DEVICE_MAX; id-- > 0 && free_id < 0; )
+        if (!devtree_get(id)) free_id = (int)id;
+
+    /* 1: nothing without the grant */
+    thread_set_caps(e.me, 0);
+    step = 1; if (dh_info(0) != E_ACCESS_DENIED || dh_open(0) != E_ACCESS_DENIED) goto done;
+    thread_set_caps(e.me, GRANT_DRIVER);
+
+    /* 2: the ids' bounds and the buffer; the root describes itself */
+    step = 2; if (dh_info(DEVICE_MAX) != E_OUT_OF_RANGE || dh_open(DEVICE_MAX) != E_OUT_OF_RANGE
+                  || syscall_dispatch(SYS_DEVICE_INFO, 0, 0xC0001000u, 0, 0, 0) != E_BAD_ADDRESS
+                  || free_id < 0 || dh_info((uint32_t)free_id) != E_NOT_FOUND
+                  || dh_open((uint32_t)free_id) != E_NOT_FOUND
+                  || dh_info(0) != E_OK || di->id != 0 || di->parent != 0
+                  || di->bus != DEVICE_BUS_ROOT) goto done;
+    /* 3: only a PCI function */
+    step = 3; if (dh_open(0) != E_NOT_SUPPORTED || kobj_live(KOBJ_DEVICE) != dev0) goto done;
+
+    int edu = dh_find_edu();
+    if (edu < 0) {
+        klog("KTEST", SEV_WARN, "devhost: no edu device; the device steps are skipped");
+        ok = 1;
+        goto done;
+    }
+    /* 4: the device as the tree has it: unbound, where PCI put it */
+    const struct pci_device *pd = devtree_get((unsigned)edu)->pci;
+    step = 4; if (dh_info((uint32_t)edu) != E_OK || di->state != DEVICE_STATE_UNBOUND
+                  || di->class_code != pd->class_code || di->subclass != pd->subclass
+                  || di->location != ((uint32_t)pd->bus << 16 | (uint32_t)pd->slot << 8 | pd->func)
+                  || di->id != (uint32_t)edu) goto done;
+    /* 5: a kernel driver's node is refused, and given back by its driver */
+    step = 5; if (devtree_bind_with(dh_drvs, 1, DG_TEST, 0, edu) != 1
+                  || dh_state((uint32_t)edu) != DEVICE_STATE_BOUND
+                  || dh_open((uint32_t)edu) != E_BUSY) goto done;
+    devtree_unbind((struct dev_node *)devtree_get((unsigned)edu));
+    step = 6; if (dh_state((uint32_t)edu) != DEVICE_STATE_UNBOUND) goto done;
+
+    /* 7: open: held, bus mastering on, and a second open refused */
+    d = dh_open((uint32_t)edu);
+    step = 7; if (d <= 0 || dh_state((uint32_t)edu) != DEVICE_STATE_HELD
+                  || dh_open((uint32_t)edu) != E_BUSY || !(dh_command(edu) & 0x4u)
+                  || mt_info(d, OBJINFO_BASIC, sizeof *ob) != (int)sizeof *ob
+                  || ob->kind != OBJ_TYPE_DEVICE
+                  || ob->rights != (HRIGHT_BAR | HRIGHT_IRQ | HRIGHT_DMA | HRIGHT_DUPLICATE)
+                  || kobj_live(KOBJ_DEVICE) != dev0 + 1) goto done;
+
+    /* 8: BAR refusals, each its own error: the handle, its type, the right,
+       the index, a BAR the device lacks */
+    t = syscall_dispatch(SYS_TIMER_CREATE, 0, 0, 0, 0, 0);
+    dn = dh_dup(d, HRIGHT_IRQ | HRIGHT_DMA);
+    step = 8; if (t <= 0 || dn <= 0 || dh_bar(9999, 0) != E_BAD_HANDLE || dh_bar(t, 0) != E_WRONG_TYPE
+                  || dh_bar(dn, 0) != E_ACCESS_DENIED || dh_bar(d, 6) != E_OUT_OF_RANGE
+                  || dh_bar(d, 1) != E_NOT_FOUND || kobj_live(KOBJ_MEM) != mem0) goto done;
+
+    /* 9: BAR 0: the registers whole, all present, charged to nobody */
+    uint64_t used0 = job->mem_used;
+    b = dh_bar(d, 0);
+    step = 9; if (b <= 0 || mt_info(b, OBJINFO_BASIC, sizeof *ob) != (int)sizeof *ob
+                  || ob->kind != OBJ_TYPE_MEM
+                  || ob->rights != (HRIGHT_MAP | HRIGHT_MAP_WRITE | HRIGHT_INSPECT | HRIGHT_DUPLICATE)
+                  || mt_info(b, OBJINFO_MEM, sizeof *mi) != (int)sizeof *mi
+                  || mi->size != EDU_BAR0 || mi->resident != EDU_BAR0
+                  || job->mem_used != used0) goto done;
+
+    /* 10: never executable; mapped uncached, onto the BAR; the device answers */
+    step = 10; if (mt_map(b, 0, PAGE_SIZE, MPROT_READ | MPROT_EXEC) != E_ACCESS_DENIED) goto done;
+    regs = dh_map_regs(b);
+    struct pci_bar bar0;
+    step = 11; if (!regs || !pci_bar_get(pd, 0, &bar0) || !paging_is_uncached((uintptr_t)regs)
+                   || paging_get_phys((uintptr_t)regs) != (paddr_t)bar0.base
+                   || edu_rd(regs, EDU_ID) != 0x010000EDu) goto done;
+    edu_wr(regs, EDU_LIVE, 0x12345678u);
+    step = 12; if (edu_rd(regs, EDU_LIVE) != ~0x12345678u) goto done;
+
+    /* 13: the device's handles closed: the BAR's object still holds it */
+    dh_close(e.tab, &d);
+    dh_close(e.tab, &dn);
+    step = 13; if (dh_state((uint32_t)edu) != DEVICE_STATE_HELD || dh_open((uint32_t)edu) != E_BUSY
+                   || kobj_live(KOBJ_DEVICE) != dev0 + 1) goto done;
+    /* 14: the mapping and the object gone, so is the device: unbound, bus
+       mastering off, and it opens again */
+    vm_unmap(e.pid, regs, 0);
+    regs = 0;
+    dh_close(e.tab, &b);
+    step = 14; if (kobj_live(KOBJ_DEVICE) != dev0 || dh_state((uint32_t)edu) != DEVICE_STATE_UNBOUND
+                   || (dh_command(edu) & 0x4u)) goto done;
+    d = dh_open((uint32_t)edu);
+    step = 15; if (d <= 0) goto done;
+    ok = 1;
+
+done:
+    if (!ok) klog_u32("KTEST", SEV_ERR, "devhost test failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    if (regs) vm_unmap(e.pid, regs, 0);
+    dh_close(e.tab, &b);
+    dh_close(e.tab, &dn);
+    dh_close(e.tab, &d);
+    dh_close(e.tab, &t);
+    dh_end(&e);
+    if (ok && (kobj_live(KOBJ_DEVICE) != dev0 || kobj_live(KOBJ_MEM) != mem0)) ok = 0;
+    return ok;
+}
+
+/* A device's interrupt as a handle: bound by MSI, waited for, counted and
+   acknowledged; its vector given back. */
+int usermode_devhost_irq_test(void) {
+    struct dh_env e;
+    if (!dh_begin(&e)) return 0;
+    const struct object_basic *ob = (const struct object_basic *)ktest_umem(MT_INFO);
+    const uint32_t *seen = (const uint32_t *)ktest_umem(DH_SEEN);
+    uint32_t irq0 = kobj_live(KOBJ_IRQ);
+    int32_t d = -1, dn = -1, b = -1, t = -1, i = -1, ia = -1;
+    uint64_t regs = 0;
+    int step = 0, ok = 0;
+    int edu = dh_find_edu();
+    if (edu < 0) { ok = 1; goto done; }   /* the first test said so */
+    int free0 = dh_free_vectors();
+    d = dh_open((uint32_t)edu);
+    b = dh_bar(d, 0);
+    regs = dh_map_regs(b);
+    t = syscall_dispatch(SYS_TIMER_CREATE, 0, 0, 0, 0, 0);
+    dn = dh_dup(d, HRIGHT_BAR | HRIGHT_DMA);
+    step = 1; if (d <= 0 || b <= 0 || !regs || t <= 0 || dn <= 0) goto done;
+
+    /* 2: refusals: the handle, its type, the right; an ack on a non-interrupt */
+    step = 2; if (dh_irq(9999) != E_BAD_HANDLE || dh_irq(t) != E_WRONG_TYPE
+                  || dh_irq(dn) != E_ACCESS_DENIED || dh_ack(t) != E_WRONG_TYPE
+                  || dh_ack(d) != E_WRONG_TYPE || kobj_live(KOBJ_IRQ) != irq0) goto done;
+
+    /* 3: bound: one vector taken, MSI on, a second bind refused; nothing yet */
+    i = dh_irq(d);
+    step = 3; if (i <= 0 || dh_irq(d) != E_BUSY || dh_free_vectors() != free0 - 1 || !dh_msi_on(edu)
+                  || mt_info(i, OBJINFO_BASIC, sizeof *ob) != (int)sizeof *ob
+                  || ob->kind != OBJ_TYPE_IRQ
+                  || ob->rights != (HRIGHT_WAIT | HRIGHT_ACK | HRIGHT_DUPLICATE)
+                  || pt_wait(i, SIGNAL_IRQ_FIRED, 0, DH_SEEN) != E_TIMED_OUT
+                  || dh_ack(i) != 0) goto done;
+    ia = dh_dup(i, HRIGHT_WAIT);
+    step = 4; if (ia <= 0 || dh_ack(ia) != E_ACCESS_DENIED
+                  || pt_wait(i, 0x2u, 0, DH_SEEN) != E_INVALID_ARGS) goto done;
+
+    /* 5: the device interrupts: the wait ends with the signal; the ack
+       counts one and clears it */
+    edu_wr(regs, EDU_IRAISE, 1u);
+    step = 5; if (pt_wait(i, SIGNAL_IRQ_FIRED, 1000, DH_SEEN) != 0 || !(*seen & SIGNAL_IRQ_FIRED)
+                  || edu_rd(regs, EDU_ISTATUS) != 1u) goto done;
+    edu_wr(regs, EDU_IACK, 1u);
+    step = 6; if (dh_ack(i) != 1 || pt_wait(i, SIGNAL_IRQ_FIRED, 0, DH_SEEN) != E_TIMED_OUT
+                  || dh_ack(i) != 0) goto done;
+
+    /* 7: two before an ack are two */
+    edu_wr(regs, EDU_IRAISE, 2u);
+    step = 7; if (pt_wait(i, SIGNAL_IRQ_FIRED, 1000, DH_SEEN) != 0) goto done;
+    edu_wr(regs, EDU_IRAISE, 4u);
+    thread_sleep_ms(20);
+    edu_wr(regs, EDU_IACK, 6u);
+    step = 8; if (dh_ack(i) != 2 || edu_rd(regs, EDU_ISTATUS) != 0) goto done;
+
+    /* 9: the last handle closed: MSI off, the vector back, bound again */
+    dh_close(e.tab, &ia);
+    dh_close(e.tab, &i);
+    step = 9; if (kobj_live(KOBJ_IRQ) != irq0 || dh_msi_on(edu) || dh_free_vectors() != free0) goto done;
+    i = dh_irq(d);
+    step = 10; if (i <= 0 || !dh_msi_on(edu)) goto done;
+    ok = 1;
+
+done:
+    if (!ok) klog_u32("KTEST", SEV_ERR, "devhost interrupt test failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    if (regs) vm_unmap(e.pid, regs, 0);
+    dh_close(e.tab, &ia);
+    dh_close(e.tab, &i);
+    dh_close(e.tab, &b);
+    dh_close(e.tab, &dn);
+    dh_close(e.tab, &d);
+    dh_close(e.tab, &t);
+    dh_end(&e);
+    if (ok && kobj_live(KOBJ_IRQ) != irq0) ok = 0;
+    return ok;
+}
+
+/* DMA buffers: below 4 GB, charged, reached by the device both ways (the
+   second with its interrupt); a buffer let go while the device is open keeps
+   its pages until the device is quiet. */
+int usermode_devhost_dma_test(void) {
+    struct dh_env e;
+    if (!dh_begin(&e)) return 0;
+    const struct object_basic *ob = (const struct object_basic *)ktest_umem(MT_INFO);
+    const struct mem_info *mi = (const struct mem_info *)ktest_umem(MT_INFO);
+    const uint64_t *pphys = (const uint64_t *)ktest_umem(DH_PHYS);
+    struct job *job = thread_proc(e.me)->job;
+    const uint32_t P = PAGE_SIZE;
+    uint32_t dev0 = kobj_live(KOBJ_DEVICE), mem0 = kobj_live(KOBJ_MEM);
+    int32_t d = -1, dn = -1, b = -1, t = -1, i = -1, m = -1;
+    uint64_t regs = 0, buf = 0, pa = 0, used0 = job->mem_used;
+    uint8_t pat[64], got[64];
+    int step = 0, ok = 0;
+    for (int k = 0; k < 64; k++) pat[k] = (uint8_t)(0xA5u ^ (uint32_t)k * 7u);
+    int edu = dh_find_edu();
+    if (edu < 0) { ok = 1; goto done; }
+    d = dh_open((uint32_t)edu);
+    b = dh_bar(d, 0);
+    regs = dh_map_regs(b);
+    i = dh_irq(d);
+    t = syscall_dispatch(SYS_TIMER_CREATE, 0, 0, 0, 0, 0);
+    dn = dh_dup(d, HRIGHT_BAR | HRIGHT_IRQ);
+    step = 1; if (d <= 0 || b <= 0 || !regs || i <= 0 || t <= 0 || dn <= 0) goto done;
+    uint32_t mem1 = kobj_live(KOBJ_MEM);
+
+    /* 2: refusals make nothing: the type, the right, the size both ways,
+       the address it is written to */
+    step = 2; if (dh_dma(t, P, DH_PHYS) != E_WRONG_TYPE || dh_dma(dn, P, DH_PHYS) != E_ACCESS_DENIED
+                  || dh_dma(d, 0, DH_PHYS) != E_INVALID_ARGS
+                  || dh_dma(d, DMA_ALLOC_MAX + 1ull, DH_PHYS) != E_OUT_OF_RANGE
+                  || dh_dma(d, (1ull << 32) | P, DH_PHYS) != E_OUT_OF_RANGE
+                  || dh_dma(d, P, 0xC0001000u) != E_BAD_ADDRESS
+                  || kobj_live(KOBJ_MEM) != mem1 || job->mem_used != used0) goto done;
+
+    /* 3: two pages less a little: one run below 4 GB, in use, present, charged */
+    m = dh_dma(d, 2u * P - 5u, DH_PHYS);
+    pa = *pphys;
+    step = 3; if (m <= 0 || !pa || (pa & (P - 1u)) || pa + 2u * P > 0x100000000ull
+                  || !pmm_page_in_use((paddr_t)pa) || !pmm_page_in_use((paddr_t)pa + P)
+                  || job->mem_used != used0 + 2u * P
+                  || mt_info(m, OBJINFO_BASIC, sizeof *ob) != (int)sizeof *ob
+                  || ob->rights != (HRIGHT_MAP | HRIGHT_MAP_WRITE | HRIGHT_INSPECT | HRIGHT_DUPLICATE)
+                  || mt_info(m, OBJINFO_MEM, sizeof *mi) != (int)sizeof *mi
+                  || mi->size != 2u * P || mi->resident != 2u * P) goto done;
+
+    /* 4: mapped cached, onto those pages, zeroed */
+    step = 4; if (mt_map(m, 0, 2u * P, MPROT_READ | MPROT_WRITE) != E_OK) goto done;
+    buf = ((const struct vm_map_args *)ktest_umem(MT_ARGS))->addr;
+    step = 5; if (user_copy_in(got, buf, 1) != 0 || user_copy_in(got, buf + P, sizeof got) != 0
+                  || paging_is_uncached((uintptr_t)buf)
+                  || paging_get_phys((uintptr_t)buf) != (paddr_t)pa
+                  || paging_get_phys((uintptr_t)(buf + P)) != (paddr_t)pa + P) goto done;
+    for (int k = 0; k < 64; k++) if (got[k]) goto done;
+
+    /* 6: the device reads the first page into its buffer */
+    if (user_copy_out(buf, pat, sizeof pat) != 0) goto done;
+    edu_wr(regs, EDU_DMA_SRC, (uint32_t)pa);
+    edu_wr(regs, EDU_DMA_DST, EDU_BUF);
+    edu_wr(regs, EDU_DMA_CNT, sizeof pat);
+    edu_wr(regs, EDU_DMA_CMD, 1u);
+    for (int k = 0; k < 200 && (edu_rd(regs, EDU_DMA_CMD) & 1u); k++) thread_sleep_ms(10);
+    step = 6; if (edu_rd(regs, EDU_DMA_CMD) & 1u) goto done;
+    /* 7: and writes it to the second, interrupting when done */
+    edu_wr(regs, EDU_DMA_SRC, EDU_BUF);
+    edu_wr(regs, EDU_DMA_DST, (uint32_t)(pa + P));
+    edu_wr(regs, EDU_DMA_CNT, sizeof pat);
+    edu_wr(regs, EDU_DMA_CMD, 1u | 2u | 4u);
+    step = 7; if (pt_wait(i, SIGNAL_IRQ_FIRED, 3000, DH_SEEN) != 0
+                  || !(edu_rd(regs, EDU_ISTATUS) & EDU_DMA_IRQ)) goto done;
+    edu_wr(regs, EDU_IACK, EDU_DMA_IRQ);
+    step = 8; if (dh_ack(i) != 1 || user_copy_in(got, buf + P, sizeof got) != 0) goto done;
+    for (int k = 0; k < 64; k++) if (got[k] != pat[k]) goto done;
+
+    /* 9: the buffer let go while the device is open: retired, its pages
+       still in use and still charged */
+    struct kobj *ko = htab_ref(e.tab, d, KOBJ_DEVICE, 0, 0);
+    struct kdevice *kd = (struct kdevice *)ko;
+    if (ko) kobj_unref(ko);   /* the handle keeps it */
+    vm_unmap(e.pid, buf, 0);
+    buf = 0;
+    dh_close(e.tab, &m);
+    step = 9; if (!kd || devhost_retired(kd) != 1 || kobj_live(KOBJ_MEM) != mem1
+                  || !pmm_page_in_use((paddr_t)pa) || !pmm_page_in_use((paddr_t)pa + P)
+                  || job->mem_used != used0 + 2u * P) goto done;
+
+    /* 10: the device closed: bus mastering off, then the pages and the charge back */
+    vm_unmap(e.pid, regs, 0);
+    regs = 0;
+    dh_close(e.tab, &i);
+    dh_close(e.tab, &b);
+    dh_close(e.tab, &dn);
+    dh_close(e.tab, &d);
+    step = 10; if (kobj_live(KOBJ_DEVICE) != dev0 || (dh_command(edu) & 0x4u)
+                   || pmm_page_in_use((paddr_t)pa) || pmm_page_in_use((paddr_t)pa + P)
+                   || job->mem_used != used0) goto done;
+    ok = 1;
+
+done:
+    if (!ok) klog_u32("KTEST", SEV_ERR, "devhost DMA test failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    if (buf) vm_unmap(e.pid, buf, 0);
+    if (regs) vm_unmap(e.pid, regs, 0);
+    dh_close(e.tab, &m);
+    dh_close(e.tab, &i);
+    dh_close(e.tab, &b);
+    dh_close(e.tab, &dn);
+    dh_close(e.tab, &d);
+    dh_close(e.tab, &t);
+    dh_end(&e);
+    if (ok && (kobj_live(KOBJ_DEVICE) != dev0 || kobj_live(KOBJ_MEM) != mem0)) ok = 0;
     return ok;
 }
 

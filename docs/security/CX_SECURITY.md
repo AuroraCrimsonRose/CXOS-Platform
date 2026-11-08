@@ -63,7 +63,11 @@ unless named; each handle records the grant it came from, so authority can be
 traced and revoked (`kernel/CX_KERNEL_PLAN.md` §2.1, `kernel/CX_SYSCALLS_IPC.md`).
 The `GRANT_*` bits remain as a coarse outer limit.
 `GRANT_DISK` and `GRANT_IOPORT` become handles to one device or one port
-range.
+range. Built for devices in 2.2: `GRANT_IOPORT` is now `GRANT_DRIVER`, which
+gates only finding and opening a PCI function (`SYS_DEVICE_INFO`,
+`SYS_DEVICE_OPEN`); its registers, interrupt and DMA buffers are reached
+through the device handle's rights (`kernel/CX_DRIVERS.md` §3.2). With no
+IOMMU that grant is full trust, so it is in no baseline.
 
 ### 3.2 The kernel
 

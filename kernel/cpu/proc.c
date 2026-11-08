@@ -22,6 +22,7 @@
 #include "object/ktimer.h"   /* ktimer_sys_init */
 #include "object/kqueue.h"   /* kqueue_sys_init */
 #include "object/knotify.h"  /* knotify_sys_init */
+#include "drivers/devhost.h"  /* devhost_sys_init */
 #include "object/kpipe.h"    /* kpipe_sys_init */
 #include "object/kthread.h"  /* kthread_sys_init */
 #include "object/kmem.h"     /* kmem_sys_init */
@@ -105,6 +106,7 @@ void proc_sys_init(void) {
     kpipe_sys_init();
     kthread_sys_init();
     kmem_sys_init();
+    devhost_sys_init();
     vm_sys_init();
     if (ocache_init(&proc_cache, "process", sizeof(struct proc)) != 0 ||
         kobj_type_register(KOBJ_PROCESS, &proc_ops) != 0)

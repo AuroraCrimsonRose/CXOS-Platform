@@ -25,6 +25,7 @@ int ktest_futex_deadline(void);
    waiter in one is woken through the other's mapping, and not through a
    mapping of another object at the same offset. */
 int ktest_futex_shared(void);
+int ktest_futex_remapped(void);   /* a word remapped between its key and its read (2.2) */
 
 /* A token closed by another thread of its server while the reply reads
    its bytes: a readable reply still reaches the caller; an unreadable one

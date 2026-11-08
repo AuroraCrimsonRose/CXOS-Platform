@@ -10,6 +10,8 @@
 #include "logging.h"
 #include "format.h"
 #include "sync/spinlock.h"
+#include "cxk_abi.h"
+#include "panic.h"
 
 static struct dev_node nodes[DEVTREE_MAX];
 static spinlock_t devtree_lock = SPINLOCK_INIT(LR_DEVTREE);
@@ -209,6 +211,19 @@ unsigned devtree_bind_group(uint8_t group, unsigned limit) {
     return devtree_bind_with(__drivers_start, devtree_drivers(), group, limit, -1);
 }
 
+void devtree_unbind(struct dev_node *n) {
+    uint32_t f = spin_lock(&devtree_lock);
+    const struct driver *d = n->state == DEV_BOUND ? n->drv : 0;
+    spin_unlock(&devtree_lock, f);
+    if (!d) return;
+    if (d->remove) d->remove(n);
+    f = spin_lock(&devtree_lock);
+    n->state = DEV_UNBOUND;
+    n->drv = 0;
+    n->tried = 0;
+    spin_unlock(&devtree_lock, f);
+}
+
 void devtree_gone(struct dev_node *n) {
     if (!n) return;
     uint32_t f = spin_lock(&devtree_lock);
@@ -238,6 +253,34 @@ int devtree_usb_attach(struct usb_device *dev) {
 
 const struct dev_node *devtree_get(unsigned id) {
     return id < DEVTREE_MAX && nodes[id].state != DEV_FREE ? &nodes[id] : 0;
+}
+
+int devtree_copy(unsigned id, struct dev_node *out) {
+    if (id >= DEVTREE_MAX) return 0;
+    uint32_t f = spin_lock(&devtree_lock);
+    int ok = nodes[id].state != DEV_FREE;
+    if (ok) *out = nodes[id];
+    spin_unlock(&devtree_lock, f);
+    return ok;
+}
+
+struct dev_node *devtree_hold(unsigned id, int *rc) {
+    if (id >= DEVTREE_MAX) { *rc = E_NOT_FOUND; return 0; }
+    struct dev_node *n = &nodes[id];
+    uint32_t f = spin_lock(&devtree_lock);
+    *rc = n->state == DEV_FREE     ? E_NOT_FOUND
+        : n->bus != DEVBUS_PCI     ? E_NOT_SUPPORTED
+        : n->state != DEV_UNBOUND  ? E_BUSY : E_OK;
+    if (*rc == E_OK) n->state = DEV_HELD;
+    spin_unlock(&devtree_lock, f);
+    return *rc == E_OK ? n : 0;
+}
+
+void devtree_release(struct dev_node *n) {
+    uint32_t f = spin_lock(&devtree_lock);
+    if (n->state != DEV_HELD) kpanic("devtree_release: the node is not held");
+    n->state = DEV_UNBOUND;
+    spin_unlock(&devtree_lock, f);
 }
 
 const struct dev_node *devtree_find_pci(const struct pci_device *d) {

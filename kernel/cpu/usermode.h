@@ -147,6 +147,9 @@ int  usermode_queue_test(void);     /* queue objects: register once, wait for ma
 int  usermode_notify_test(void);    /* notifications: bits that combine, signallers */
 int  usermode_pipe_test(void);      /* pipes: a ring between two ends */
 int  usermode_mem_test(void);       /* memory objects: first touch, strict commit */
+int  usermode_devhost_test(void);     /* devices: open, held, BARs as memory objects (2.2) */
+int  usermode_devhost_irq_test(void); /* a device interrupt as a handle */
+int  usermode_devhost_dma_test(void); /* DMA buffers: below 4 GB, retired until the device is quiet */
 int  usermode_ipc_test(void);       /* queued calls, reply tokens, badges */
 int  usermode_ipc_handles_test(void);   /* handles in messages: moved, copied, refused */
 int  usermode_prio_test(void);          /* priorities, and priority through calls */

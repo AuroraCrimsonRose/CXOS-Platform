@@ -1,0 +1,149 @@
+# Step 2.2, the driver-host primitives (and the review's futex_wait fix),
+# run by `cxk test sabotage`. Each must turn red exactly the self-tests
+# named, at the step named. Format: docs/devkit/CX_CXK_PLAN.md,
+# "cxk test sabotage".
+
+# ---- finding and opening ----
+
+[grant-ignored]
+# a process without GRANT_DRIVER finds and opens devices
+expect = devices: open, held, registers as memory objects @ devhost test failed at step 1
+group = g1
+edit = kernel/drivers/devhost.c
+<<<
+    if (thread_current_caps() & GRANT_DRIVER) return 1;
+===
+    return 1;
+>>>
+
+[hold-not-exclusive]
+# a node a kernel driver has (or a process holds) opens all the same
+expect = devices: open, held, registers as memory objects @ devhost test failed at step 5
+edit = kernel/drivers/devtree.c
+<<<
+        : n->state != DEV_UNBOUND  ? E_BUSY : E_OK;
+===
+        : E_OK;
+>>>
+
+# ---- registers ----
+
+[bar-cached]
+# a BAR's pages mapped write-back, like RAM
+expect = devices: open, held, registers as memory objects @ devhost test failed at step 11
+group = g2
+edit = kernel/object/kmem.c
+<<<
+    return m->kind == KMEM_DEVICE ? VM_UNCACHED : 0;
+===
+    (void)m;
+    return 0;
+>>>
+
+[bar-executable]
+# a BAR's handle may map its registers executable
+expect = devices: open, held, registers as memory objects @ devhost test failed at step 9
+group = g3
+edit = kernel/drivers/devhost.c
+<<<
+    int32_t mh = htab_install(thread_htab(thread_current_id()), &m->hdr,
+                              HRIGHT_MAP | HRIGHT_MAP_WRITE | HRIGHT_INSPECT | HRIGHT_DUPLICATE, 0);
+===
+    int32_t mh = htab_install(thread_htab(thread_current_id()), &m->hdr,
+                              HRIGHT_MAP | HRIGHT_MAP_WRITE | HRIGHT_MAP_EXEC | HRIGHT_INSPECT | HRIGHT_DUPLICATE, 0);
+>>>
+
+[bus-master-left-on]
+# the device closed with its bus mastering still on: it could go on writing
+expect = devices: open, held, registers as memory objects @ devhost test failed at step 14
+expect = devices: DMA buffers, retired until bus mastering is off @ devhost DMA test failed at step 10
+edit = kernel/drivers/devhost.c
+<<<
+    cmd &= ~PCI_CMD_BUS_MASTER;
+    if (!(d->command & PCI_CMD_MEMORY)) cmd &= ~PCI_CMD_MEMORY;
+===
+    if (!(d->command & PCI_CMD_MEMORY)) cmd &= ~PCI_CMD_MEMORY;
+>>>
+
+# ---- the interrupt ----
+
+[isr-silent]
+# the interrupt counts but signals nothing: a waiter sleeps through it
+expect = devices: an interrupt as a handle @ devhost interrupt test failed at step 5
+expect = devices: DMA buffers, retired until bus mastering is off @ devhost DMA test failed at step 7
+edit = kernel/drivers/devhost.c
+<<<
+        k->count++;
+        kobj_signal_locked(&k->hdr, SIGNAL_IRQ_FIRED);
+===
+        k->count++;
+>>>
+
+[ack-keeps-signal]
+# the ack counts but leaves the signal set: the next wait ends at once
+expect = devices: an interrupt as a handle @ devhost interrupt test failed at step 6
+group = g1
+edit = kernel/drivers/devhost.c
+<<<
+        k->count = 0;
+        kobj_signal_clear_locked(o, SIGNAL_IRQ_FIRED);
+===
+        k->count = 0;
+>>>
+
+[irq-not-exclusive]
+# a second interrupt handle binds another vector over the first
+expect = devices: an interrupt as a handle @ devhost interrupt test failed at step 3
+expect = devices: DMA buffers, retired until bus mastering is off @ devhost DMA test failed at step 1
+# and the leaked handle keeps edu held past the tests: the boot tree sees it mid-bind
+expect = devtree: the boot bound by the rules @ devtree boot: a node mid-bind
+edit = kernel/drivers/devhost.c
+<<<
+    if (!__atomic_compare_exchange_n(&d->irq_taken, &none, 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+===
+    if (__atomic_exchange_n(&d->irq_taken, 1, __ATOMIC_ACQ_REL) && none) {
+>>>
+
+# ---- DMA ----
+
+[dma-uncharged]
+# a DMA buffer costs its job nothing
+expect = devices: DMA buffers, retired until bus mastering is off @ devhost DMA test failed at step 3
+edit = kernel/object/kmem.c
+<<<
+    if (npages == 0 || npages > DMA_ALLOC_MAX / PAGE_SIZE) { *rc = E_OUT_OF_RANGE; return 0; }
+    int r = job_charge_mem(job, (uint64_t)npages * PAGE_SIZE);
+===
+    if (npages == 0 || npages > DMA_ALLOC_MAX / PAGE_SIZE) { *rc = E_OUT_OF_RANGE; return 0; }
+    int r = job_charge_mem(job, 0);
+>>>
+
+[dma-no-quarantine]
+# a buffer's pages freed at its last reference, while the device may still write them
+expect = devices: DMA buffers, retired until bus mastering is off @ devhost DMA test failed at step 9
+group = g2
+edit = kernel/drivers/devhost.c
+<<<
+    struct kmem *head = __atomic_load_n(&d->retired, __ATOMIC_RELAXED);
+    do {
+        m->qnext = head;
+    } while (!__atomic_compare_exchange_n(&d->retired, &head, m, 1,
+                                          __ATOMIC_RELEASE, __ATOMIC_RELAXED));
+    devhost_put(d);
+===
+    kmem_dma_release(m);
+    devhost_put(d);
+>>>
+
+# ---- the review's fix: futex_wait keys before its read ----
+
+[futex-no-rekey]
+# the key taken before the read is kept though the address now maps another object
+expect = futex: a word remapped between its key and its read @ futex remapped: the wake found no waiter
+group = g1
+edit = kernel/cpu/futex.c
+<<<
+        if (!key_eq(&now, &me.key)) {
+===
+        if (0) {
+>>>

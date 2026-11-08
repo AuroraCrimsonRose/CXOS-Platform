@@ -41,7 +41,11 @@
      GRANT_SPAWN        spawn
      GRANT_POWER        power (reboot/shutdown)
      GRANT_ENDPOINT     ep_create (may own an IPC endpoint -> broker)
-     GRANT_IOPORT       (reserved v1) raw port I/O / driver tier
+     GRANT_DRIVER       SYS_DEVICE_INFO / SYS_DEVICE_OPEN: a PCI function's
+                        registers, interrupt and DMA (2.2). With no IOMMU a
+                        device's DMA reaches all memory, so this is full
+                        trust; in no baseline. The rest of SYS_DEVICE_* and
+                        SYS_DMA_ALLOC need only the device handle's rights
      GRANT_FRAMEBUFFER  SYS_FB_*: draw to the framebuffer (in baseline for
                         now; split to a display-server tier later)
      GRANT_REALTIME     SYS_THREAD_SET_PRIORITY to PRIO_REALTIME and up: a
@@ -62,7 +66,7 @@
    for a missing check and found a misleading definition instead - this said
    "map / unmap / sbrk" as though it controlled them. Kept rather than removed,
    because removing a grant bit is an ABI change and the value is already
-   published; marked reserved, the way GRANT_IOPORT already is. If memory ever
+   published; marked reserved, the way GRANT_IOPORT was (now GRANT_DRIVER). If memory ever
    does become a gated resource, this is the bit to use and the comment on
    syscall_vm_map is the decision to revisit first. */
 

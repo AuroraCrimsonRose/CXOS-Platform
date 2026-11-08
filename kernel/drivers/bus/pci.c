@@ -9,6 +9,7 @@
 #include "logging.h"
 #include "arch/irq.h"   /* irq_msi_* */
 #include "arch/paging.h"
+#include "sync/spinlock.h"
 
 /* configuration mechanism #1: the address dword at +0, the data dword at +4 */
 static struct iowin pci_cfg = IOWIN_PORTS(0xCF8, 8);
@@ -25,15 +26,27 @@ static uint32_t pci_addr(uint8_t bus, uint8_t slot, uint8_t func, uint8_t off) {
                     | ((uint32_t)off & 0xFC));
 }
 
+/* The address and the data are two port accesses: another CPU's address
+   between them would read or write the wrong register of the wrong device.
+   Drivers in processes (2.2) reach config space from any CPU, through
+   SYS_DEVICE_*, so the pair is one step under a lock. Nothing is taken
+   under it. */
+static spinlock_t pci_lock = SPINLOCK_INIT(LR_PCI);
+
 uint32_t pci_config_read32(uint8_t bus, uint8_t slot, uint8_t func, uint8_t off) {
+    uint32_t f = spin_lock(&pci_lock);
     iowin_write32(&pci_cfg, PCI_CONFIG_ADDR, pci_addr(bus, slot, func, off));
-    return iowin_read32(&pci_cfg, PCI_CONFIG_DATA);
+    uint32_t v = iowin_read32(&pci_cfg, PCI_CONFIG_DATA);
+    spin_unlock(&pci_lock, f);
+    return v;
 }
 
 void pci_config_write32(uint8_t bus, uint8_t slot, uint8_t func,
                         uint8_t off, uint32_t value) {
+    uint32_t f = spin_lock(&pci_lock);
     iowin_write32(&pci_cfg, PCI_CONFIG_ADDR, pci_addr(bus, slot, func, off));
     iowin_write32(&pci_cfg, PCI_CONFIG_DATA, value);
+    spin_unlock(&pci_lock, f);
 }
 
 uint16_t pci_config_read16(uint8_t bus, uint8_t slot, uint8_t func, uint8_t off) {

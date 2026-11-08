@@ -612,12 +612,17 @@ its sources and why there is no fallback: `security/CX_RANDOM.md`.
 `fs_mkdir_at`, `file_stat`, `file_set_size`, `file_sync`, `dir_read`,
 `file_lock`, `file_unlock`.
 
-**Drivers** (Phase 2, `kernel/CX_DRIVERS.md`):
-`interrupt_bind(resource)` (an interrupt handle; waiting on it waits for the
-interrupt), `interrupt_ack`, `ioport_bind(resource, range)`,
-`mmio_map(resource, range)` (a memory object over device registers),
-`dma_alloc(size, below_4g)` (a pinned memory object with its physical
-addresses).
+**Drivers** (Phase 2, `kernel/CX_DRIVERS.md`). **Built (2.2, ABI 33),**
+0xF0-0xF5: `device_info(id, *device_desc)` and `device_open(id)` (both
+`GRANT_DRIVER`; a device handle with `HRIGHT_BAR`, `HRIGHT_IRQ`,
+`HRIGHT_DMA`), `device_bar(dev, index)` (a memory object over that BAR's
+registers, mapped uncached), `device_irq(dev)` (an interrupt handle, by MSI;
+waiting for `SIGNAL_IRQ_FIRED` waits for the interrupt), `irq_ack(irq)` (the
+count since the last, and the signal cleared), `dma_alloc(dev, size, *phys)`
+(a memory object of one run below 4 GB, with its physical address; let go
+while the device is open, its pages wait for bus mastering to go off). Each
+call's errors are in `abi/kernel.xfil`. Still to come: `ioport_bind`, the
+line interrupts (ACPI, `kernel/CX_DRIVERS.md` §5), IOMMU-bounded DMA.
 
 **System:**
 `random_read`, `log_write` (to the kernel log, replacing `SYS_CONSOLE_WRITE`),

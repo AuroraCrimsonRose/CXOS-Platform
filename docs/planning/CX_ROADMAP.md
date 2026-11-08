@@ -1274,7 +1274,20 @@ language work in `language/CX_X_PLAN.md`.
      `user_fetch_u32` checks the page (passively, under the futex lock)
      before the copy. Sabotages: `tests/sabotage/2.1.sab`.
 2. Driver-host primitives: register ranges as memory objects, interrupts as
-   handles, DMA buffers.
+   handles, DMA buffers. **Done (2.2, ABI 33):** `kernel/drivers/devhost.h`,
+   `SYS_DEVICE_INFO`/`OPEN`/`BAR`/`IRQ`, `SYS_IRQ_ACK`, `SYS_DMA_ALLOC`
+   (`kernel/CX_DRIVERS.md` §4 step 3). `GRANT_IOPORT` became
+   `GRANT_DRIVER`, in no baseline (no IOMMU: full trust); it gates the
+   open, the handle's rights the rest. A device is `DEV_HELD` while any BAR
+   object, its interrupt or a DMA buffer refers to it; BARs map uncached and
+   never executable, whole pages only; MSI only; a DMA buffer let go while
+   the device is open waits for bus mastering to go off before its pages
+   are freed. PCI configuration access is now under `LR_PCI`; the MSI
+   vector pool is lock-free and an MSI ends with a preemption point. Tested
+   on QEMU's `edu`, which verify-boot attaches. Alongside, the review's
+   second fix: `futex_wait` keys the word again after its locked read and
+   starts over if a remap moved it (`ktest_futex_remapped`). Four
+   self-tests. Sabotages: `tests/sabotage/2.2.sab`.
 3. The display server: back buffer, damage, virtual screen for CI.
 4. Windows, transparency, server-drawn frames, focus and input routing.
 5. Retained layers and spring animations in the compositor.

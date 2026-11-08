@@ -58,6 +58,7 @@ enum dev_state {
     DEV_UNBOUND,          /* no driver has it (none matched, or all declined) */
     DEV_BINDING,          /* claimed by a binder, its start running */
     DEV_BOUND,
+    DEV_HELD,             /* a process holds it (SYS_DEVICE_OPEN, drivers/devhost.h) */
 };
 
 /* The groups, in the order the boot binds them (kmain.c). */
@@ -148,6 +149,10 @@ struct dev_node *devtree_add(uint16_t parent, uint8_t bus, const struct dev_ids 
 /* The device is gone: its driver's remove, then the node is freed. Children
    are not walked: today's USB devices have none. */
 void devtree_gone(struct dev_node *n);
+/* The driver lets the node go and the node stays: its remove, then
+   DEV_UNBOUND with nothing tried, for the next binder or a process
+   (SYS_DEVICE_OPEN). Nothing if it is not DEV_BOUND. */
+void devtree_unbind(struct dev_node *n);
 
 /* A USB device just enumerated: its node, under its controller's
    (dev->parent_node), then the USB class drivers bound to it. 1 if a driver
@@ -155,6 +160,16 @@ void devtree_gone(struct dev_node *n);
 int devtree_usb_attach(struct usb_device *dev);
 
 const struct dev_node *devtree_get(unsigned id);   /* 0 if free */
+/* A copy of node `id` taken under the lock, for SYS_DEVICE_INFO: 1, or 0 if
+   the id is free. */
+int devtree_copy(unsigned id, struct dev_node *out);
+/* A process takes node `id` for its own driver (drivers/devhost.c): the
+   node, DEV_UNBOUND until now and DEV_HELD from here, so neither a kernel
+   binder nor a second open can take it. 0 with *rc E_NOT_FOUND (no node),
+   E_BUSY (bound, binding or held) or E_NOT_SUPPORTED (not a PCI function). */
+struct dev_node *devtree_hold(unsigned id, int *rc);
+/* Back to DEV_UNBOUND, once the process's device is quiet. */
+void devtree_release(struct dev_node *n);
 const struct dev_node *devtree_find_pci(const struct pci_device *d);
 unsigned devtree_count(void);                      /* nodes in use */
 unsigned devtree_bound(void);                      /* of them, bound */

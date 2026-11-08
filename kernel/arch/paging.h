@@ -122,6 +122,7 @@ paddr_t paging_unmap_in(paddr_t root, uintptr_t virt);
 paddr_t paging_get_phys(uintptr_t virt);
 int     paging_is_user(uintptr_t virt);           /* mapped and reachable from user mode */
 int     paging_is_user_writable(uintptr_t virt);  /* the above, and writable from user mode */
+int     paging_is_uncached(uintptr_t virt);       /* mapped, and uncached (VM_UNCACHED) */
 
 /* The architecture's half of memman/physmap.h, which is what everything
    else calls. paging_phys_slot puts page-aligned `frame` (below RAM_REACH)

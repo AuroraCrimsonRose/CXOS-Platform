@@ -61,6 +61,7 @@ enum lock_rank {
     LR_PAGEDB,         /* memman/pagedb.c */
     LR_CMOS,           /* platform/pc/rtc.c: the CMOS index and data ports (1.9e3) */
     LR_DEVTREE,        /* drivers/devtree.c: the node table; nothing under it but the log (2.1) */
+    LR_PCI,            /* drivers/bus/pci.c: a config address and its data; nothing under it (2.2) */
     LR_LOG,            /* drivers/char/console.c: the screen, its serial tee
                           and the system log's ring, under any lock (1.9e3) */
     LR_COUNT

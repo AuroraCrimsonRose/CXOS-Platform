@@ -50,6 +50,8 @@ enum kobj_type {
     KOBJ_MEM      = 12,  /* memory object: pages on first touch (object/kmem.c) */
     KOBJ_PIPE     = 13,  /* pipe end: half of a ring of bytes (object/kpipe.c) */
     KOBJ_THREAD   = 14,  /* thread: how one ended, for its handles (object/kthread.c) */
+    KOBJ_DEVICE   = 15,  /* device a driver holds (drivers/devhost.c) */
+    KOBJ_IRQ      = 16,  /* a held device's interrupt (drivers/devhost.c) */
     KOBJ_TYPE_MAX
 };
 

@@ -45,7 +45,7 @@ cache registry `ocache-slots` under a cache's own lock.
 |---|---|---|
 | `LR_STORAGE` | `storage/hardware/disk.c` `storage` (1.9e3): CXFS and every disk transfer; CPU-recursive (`sync/rspin.h`) | htab, pids, sysfile, ocache, log (a syscall's file handles, a file closed, a line) |
 | `LR_IPC` | `cpu/ipc.c` `ipc_lock` | htab, kwait, sched, ocache, ocache-slots, heap, pagedb (`ep_create` counts and makes under it) |
-| `LR_FUTEX` | `cpu/futex.c` `futex_lock` | vmregion, pids (a user copy's demand fault), sched |
+| `LR_FUTEX` | `cpu/futex.c` `futex_lock` | vmregion (its key again, after the read: 2.2), pids (a user copy's demand fault), sched |
 | `LR_HTAB` | `object/htab.c`, per handle table | sysfile (a handle closed: `of_destroy`) |
 | `LR_VMREGION` | `memman/vmregion.c`, per address space: the regions, `mapped` and `charged` | pids, kmem, job (`vm_charge` checks and charges in one hold), pagedb |
 | `LR_PIDS` | `cpu/proc.c` `pids_lock` | proc, sched, ocache, ocache-slots, pagedb (a kill by pid) |
@@ -66,6 +66,7 @@ cache registry `ocache-slots` under a cache's own lock.
 | `LR_PAGEDB` | `memman/pagedb.c` | - |
 | `LR_CMOS` | `platform/pc/rtc.c` `cmos_lock` (1.9e3): the CMOS index and data ports | - |
 | `LR_DEVTREE` | `drivers/devtree.c` `devtree_lock` (2.1): the node table; a driver starts with it released | - |
+| `LR_PCI` | `drivers/bus/pci.c` `pci_lock` (2.2): a configuration address and its data, which two CPUs (a driver process's open and a kernel driver) would otherwise interleave | - |
 | `LR_LOG` | `drivers/char/console.c` (1.9e3): the screen, the serial tee and the system log's ring; CPU-recursive | - (last: a line may be logged under any lock) |
 
 Pairs not in the table's right column put no constraint on each other; the

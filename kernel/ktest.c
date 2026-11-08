@@ -3545,6 +3545,9 @@ void ktest_run(void) {
     total++; passed += report("notifications: bits that combine, signallers", usermode_notify_test());
     total++; passed += report("pipes: two ends over a ring", usermode_pipe_test());
     total++; passed += report("memory objects: first touch, strict commit", usermode_mem_test());
+    total++; passed += report("devices: open, held, registers as memory objects", usermode_devhost_test());
+    total++; passed += report("devices: an interrupt as a handle", usermode_devhost_irq_test());
+    total++; passed += report("devices: DMA buffers, retired until bus mastering is off", usermode_devhost_dma_test());
     total++; passed += report("ipc: queued calls, reply tokens, badges", usermode_ipc_test());
     total++; passed += report("ipc: handles in messages", usermode_ipc_handles_test());
     total++; passed += report("ipc: priority through calls", usermode_prio_test());
@@ -3564,6 +3567,7 @@ void ktest_run(void) {
     total++; passed += report("futex: a word unmapped after its fault-in", ktest_futex_unmapped());
     total++; passed += report("futex: a wake as the deadline comes", ktest_futex_deadline());
     total++; passed += report("futex: one word through two processes", ktest_futex_shared());
+    total++; passed += report("futex: a word remapped between its key and its read", ktest_futex_remapped());
     total++; passed += report("ipc: a token closed as its reply is read", ktest_ipc_reply_close());
     total++; passed += report("ipc: IPC_MSG_MAX each way", ktest_ipc_msg_max());
     total++; passed += report("ipc: an endpoint closed under its call", ktest_ipc_from_detach());

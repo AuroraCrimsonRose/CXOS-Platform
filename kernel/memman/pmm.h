@@ -43,6 +43,11 @@ void    pmm_free_pages(paddr_t first_page, size_t count);
    (the rig's OHCI controller is one; CX_KERNEL_PLAN section 9.3). Asking is
    part of every DMA allocation. */
 paddr_t pmm_alloc_pages_low(size_t count);
+/* The same for a process (a driver's DMA buffer, SYS_DMA_ALLOC): refused
+   unless PMM_COMMIT_MARGIN pages stay free beyond what is reserved, as
+   pmm_reserve refuses, so a process asking for DMA memory cannot take the
+   pages the kernel keeps for itself. */
+paddr_t pmm_alloc_pages_low_user(size_t count);
 
 /* 1 when the page is not the allocator's to give: handed out, or never
    given to it (the first MiB, the kernel image, the allocator's own

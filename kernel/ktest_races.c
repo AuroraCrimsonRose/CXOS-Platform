@@ -272,6 +272,67 @@ int ktest_futex_shared(void) {
     return rc_report(why);
 }
 
+/* ---- a word remapped between its key and its read ----
+   Object A at the address when the wait keys it, object B there when it
+   reads; the wake at the deadline goes through the address, so it finds
+   the waiter only if the wait keyed B (2.2: the review's stranded waiter). */
+
+#define RM_AT (VM_MMAP_BASE + 0x300000u)
+
+static struct { int pid, remap_rc, woke; uint64_t len; struct kmem *b; } rm;
+
+static void rm_remap(void *ctx) {
+    (void)ctx;
+    struct vm_map_args a;
+    vm_unmap(rm.pid, RM_AT, rm.len);
+    rm.remap_rc = rc_map(rm.pid, &a, rm.b, RM_AT);
+    /* present, so the locked read (a passive page check) reads B's word */
+    if (rm.remap_rc == E_OK) vm_fault(rm.pid, RM_AT, 0, 0);
+}
+static void rm_wake(void *ctx) { (void)ctx; rm.woke = futex_wake(RM_AT, 1); }
+
+static const char *remapped_steps(int pid, struct kmem *a_obj) {
+    struct vm_map_args a;
+    if (rc_map(pid, &a, a_obj, RM_AT) != E_OK) return "futex remapped: setup map";
+    uint32_t w0 = futex_waiting();
+    rm.pid = pid; rm.len = a.granted; rm.remap_rc = 1; rm.woke = -1;
+    if (race_arm(RP_FUTEX_READ, thread_current_id(), 1, RACE_CALL, rm_remap, 0) != 0
+        || race_arm(RP_FUTEX_WOKEN, thread_current_id(), 1, RACE_CALL, rm_wake, 0) != 0)
+        return "futex remapped: setup arm";
+    int rc = rc_wait(RM_AT, 0, timer_now_ns() + 20 * MS, 0, 0);
+    uint32_t read = race_arrivals(RP_FUTEX_READ), woken = race_arrivals(RP_FUTEX_WOKEN);
+    race_release(RP_FUTEX_READ);
+    race_release(RP_FUTEX_WOKEN);
+    if (!read || !woken)        return "futex remapped: point not reached";
+    if (rm.remap_rc != E_OK)    return "futex remapped: the remap failed";
+    if (rm.woke != 1)           return "futex remapped: the wake found no waiter";
+    if (rc != E_OK)             return "futex remapped: woken waiter not E_OK";
+    if (futex_waiting() != w0)  return "futex remapped: left a waiter";
+    return 0;
+}
+
+int ktest_futex_remapped(void) {
+    int pid = thread_current_pid();
+    struct live_counts before, after;
+    vm_proc_init(pid, vm_default_quota(), -1);
+    sh_warm(pid, RM_AT);
+    live_take(&before, pid, 0);
+    int rc;
+    struct kmem *a_obj = kmem_create(1, job_root(), &rc);
+    rm.b = a_obj ? kmem_create(1, job_root(), &rc) : 0;
+    const char *why = rm.b ? remapped_steps(pid, a_obj) : "futex remapped: setup objects";
+    race_release(RP_FUTEX_READ);
+    race_release(RP_FUTEX_WOKEN);
+    vm_unmap(pid, RM_AT, PAGE_SIZE);
+    if (rm.b) kobj_unref(&rm.b->hdr);
+    if (a_obj) kobj_unref(&a_obj->hdr);
+    rm.b = 0;
+    live_take(&after, pid, 0);
+    if (!why && live_diff(&before, &after, 1)) why = "futex remapped: left something behind";
+    vm_proc_reset(pid);
+    return rc_report(why);
+}
+
 /* ==== IPC and queues (1.6c2) ====
    The callers are ring-3 processes (usermode_calls_process: two
    SYS_THREAD_IDs, then the call), the server is the test thread through

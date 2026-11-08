@@ -21,7 +21,11 @@
  * the lock to find it, so a wake between the check and the block finds the
  * waiter already queued and BLOCKED (thread_block_prepare_until). The word is
  * faulted in before the lock (user_ptr_readable) and read under it with the
- * recoverable copy, so a word unmapped in between is E_BAD_ADDRESS.
+ * recoverable copy, so a word unmapped in between is E_BAD_ADDRESS. The key
+ * is taken before the lock and again after the read, under it: a word
+ * remapped in between (another object now at the address) is keyed afresh
+ * and read again, or the waiter would sleep on the old object's word, where
+ * a wake through the new mapping never looks.
  *
  * A waker takes the waiters it wakes off the queue and marks them, so its
  * count is exact and a waiter whose time ran out at the same moment still
@@ -89,15 +93,29 @@ int futex_wait(uint64_t uaddr, uint32_t expected, uint64_t deadline) {
     int rc = word_ok(uaddr);
     if (rc != E_OK) return rc;
     struct futex_waiter me = { .next = 0, .tid = thread_current_id(), .woken = 0 };
-    key_of(uaddr, &me.key);
     if (deadline > TIMER_NEVER) deadline = TIMER_NEVER;
+    uint32_t f, v;
+again:
+    key_of(uaddr, &me.key);
     race_point(RP_FUTEX_READ);
 
-    uint32_t f = spin_lock(&futex_lock);
-    uint32_t v;
+    f = spin_lock(&futex_lock);
     if (user_fetch_u32(uaddr, &v) != 0)                     rc = E_BAD_ADDRESS;
     else if (v != expected)                                     rc = E_SHOULD_WAIT;
     else {
+        /* The word read is the key's only if the address still maps there:
+           a remap since key_of would queue this on the old object's word,
+           where no wake through the new one finds it. Keyed again after
+           the read, under the lock a waker takes, so the two agree. */
+        struct futex_key now;
+        key_of(uaddr, &now);
+        if (!key_eq(&now, &me.key)) {
+            spin_unlock(&futex_lock, f);
+            key_drop(&now);
+            key_drop(&me.key);
+            goto again;
+        }
+        key_drop(&now);   /* me.key holds the same object */
         struct futex_waiter **pp = bucket(&me.key);
         while (*pp) pp = &(*pp)->next;
         *pp = &me;

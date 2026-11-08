@@ -402,7 +402,7 @@ int vm_fault(int pid, uint64_t addr, int write, int exec) {
         uint64_t page = addr & ~(uint64_t)(PAGE_SIZE - 1u);
         uint32_t index = (uint32_t)((r->off + (page - r->node.base - r->guard)) / PAGE_SIZE);
         paddr_t phys = kmem_page(r->mem, index);
-        ok = paging_map_user_in(space_of(pid), (uintptr_t)page, phys, vm_flags(r->prot)) == 0;
+        ok = paging_map_user_in(space_of(pid), (uintptr_t)page, phys, vm_flags(r->prot) | kmem_map_flags(r->mem)) == 0;
     }
     spin_unlock(&p->lock, f);
     return ok;

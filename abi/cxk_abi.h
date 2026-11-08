@@ -15,7 +15,7 @@
  * hash it was built against and the loader refuses one that differs, so a
  * program never runs against numbers or layouts it was not compiled for.
  */
-#define CXK_ABI_HASH { 0x3f, 0x2f, 0xec, 0xee, 0xbb, 0xec, 0x10, 0x5c, 0x34, 0xb0, 0x11, 0x43, 0x41, 0x8c, 0xff, 0x47, 0x83, 0x13, 0x20, 0x1b, 0x36, 0x0c, 0xf0, 0x5b, 0x25, 0x45, 0x45, 0x7f, 0x0e, 0x75, 0x1c, 0x50 }
+#define CXK_ABI_HASH { 0x8e, 0x0b, 0x75, 0x40, 0xe1, 0x44, 0xe0, 0x0b, 0xf0, 0x29, 0x82, 0x06, 0x33, 0xd0, 0xc9, 0x8c, 0x91, 0xab, 0x13, 0x00, 0x39, 0x23, 0x91, 0xe3, 0x60, 0x7d, 0x4b, 0xba, 0x50, 0x0e, 0x4d, 0xdb }
 
 /*
  * CXK ABI v1 - the PUBLIC contract shared by the kernel, the .xoex executive,
@@ -44,7 +44,7 @@
  * line; bump both, and the DevKit's stamp, in the one commit that changes the
  * contract.
  */
-#define CXK_ABI_VERSION          32
+#define CXK_ABI_VERSION          33
 
 /*
  * ---- syscall numbers ----
@@ -319,6 +319,18 @@
 #define HRIGHT_READ              0x1u
 #define HRIGHT_WRITE             0x2u
 
+/* device: SYS_DEVICE_BAR, a memory object over one of its register ranges */
+#define HRIGHT_BAR               0x1u
+
+/* device: SYS_DEVICE_IRQ, its interrupt as a handle */
+#define HRIGHT_IRQ               0x2u
+
+/* device: SYS_DMA_ALLOC, memory it reaches by bus-master DMA */
+#define HRIGHT_DMA               0x4u
+
+/* interrupt: SYS_IRQ_ACK */
+#define HRIGHT_ACK               0x1u
+
 /*
  * Generic rights, which mean the same on every type, count down from the top
  * bit; a type's own count up from the bottom. A handle without
@@ -382,6 +394,12 @@
 
 /* thread: it has ended, by SYS_THREAD_EXIT or with its process */
 #define SIGNAL_THREAD_ENDED      0x1u
+
+/*
+ * interrupt: the device has interrupted since the last SYS_IRQ_ACK, which
+ * clears it
+ */
+#define SIGNAL_IRQ_FIRED         0x1u
 
 /*
  * A deadline that never comes (SYS_OBJECT_WAIT): a wait with no limit.
@@ -759,6 +777,72 @@
 #define SYS_RANDOM_READ          0xE0
 
 /*
+ * drivers 0xF0-0xFF (kernel/CX_DRIVERS.md sec 3.2). A user-space driver holds
+ * its own hardware and nothing else: a device handle, and from it memory
+ * objects over the device's registers, its interrupt as a handle, and DMA
+ * buffers. Finding and opening a device needs GRANT_DRIVER; the rest needs
+ * only the handle's rights, so a supervisor opens a device and hands the
+ * handle to the driver it starts. With no IOMMU (the rig has none) a device
+ * can DMA anywhere, so GRANT_DRIVER is trust in whoever drives it.
+ * ebx = device id (below DEVICE_MAX), ecx = *device_desc (GRANT_DRIVER) -> 0,
+ * filled in. E_NOT_FOUND: no device has that id now; E_OUT_OF_RANGE: past
+ * DEVICE_MAX. The tree is walked by trying every id.
+ */
+#define SYS_DEVICE_INFO          0xF0
+
+/*
+ * ebx = device id (GRANT_DRIVER) -> a device handle with HRIGHT_BAR,
+ * HRIGHT_IRQ, HRIGHT_DMA and HRIGHT_DUPLICATE. Only a PCI function no driver
+ * has (DEVICE_STATE_UNBOUND): E_BUSY when a kernel driver or another open has
+ * it, E_NOT_SUPPORTED on any other bus. Its memory decode and bus mastering
+ * are turned on. It stays held until its last reference goes (its handles,
+ * its interrupt's, its DMA buffers'); then bus mastering and MSI are turned
+ * off, and only then are its buffers' pages freed.
+ */
+#define SYS_DEVICE_OPEN          0xF1
+
+/*
+ * ebx = device handle (HRIGHT_BAR), ecx = BAR index (0-5) -> a memory object
+ * handle with HRIGHT_MAP, HRIGHT_MAP_WRITE, HRIGHT_INSPECT and
+ * HRIGHT_DUPLICATE: the BAR's registers, which SYS_VM_MAP maps uncached.
+ * Nothing is charged: the pages are the device's. E_NOT_FOUND: no such BAR,
+ * or the upper half of a 64-bit one; E_NOT_SUPPORTED: an I/O BAR, or one
+ * whose base or size is not whole pages (a page of it would show another
+ * device's registers); E_OUT_OF_RANGE: an index above 5, or a BAR larger
+ * than MMAP_MAX_BYTES.
+ */
+#define SYS_DEVICE_BAR           0xF2
+
+/*
+ * ebx = device handle (HRIGHT_IRQ) -> an interrupt handle with HRIGHT_WAIT,
+ * HRIGHT_ACK and HRIGHT_DUPLICATE. The device interrupts by MSI, which the
+ * kernel sets up (never MSI-X, whose table sits in a BAR the driver maps).
+ * Each interrupt sets SIGNAL_IRQ_FIRED: wait on it, or register it with a
+ * queue. E_NOT_SUPPORTED: no MSI capability, or no local APIC; E_BUSY: the
+ * device's interrupt has a handle already; E_NO_RESOURCES: no vector free.
+ */
+#define SYS_DEVICE_IRQ           0xF3
+
+/*
+ * ebx = interrupt handle (HRIGHT_ACK) -> how many interrupts came since the
+ * last ack (0 or more), with SIGNAL_IRQ_FIRED cleared. An MSI is an edge:
+ * nothing is masked while the driver works, and one that comes after the ack
+ * sets the signal again.
+ */
+#define SYS_IRQ_ACK              0xF4
+
+/*
+ * ebx = device handle (HRIGHT_DMA), ecx/edx = size in bytes (1 to
+ * DMA_ALLOC_MAX, rounded up to a page), esi = *u64 -> a memory object handle
+ * with HRIGHT_MAP, HRIGHT_MAP_WRITE, HRIGHT_INSPECT and HRIGHT_DUPLICATE, and
+ * its physical address in *phys: one run of zeroed pages below 4 GB, all
+ * present now, charged to the caller's job. Freed only once the device can no
+ * longer reach it: a buffer whose last reference goes while its device is
+ * open keeps its pages until the device closes.
+ */
+#define SYS_DMA_ALLOC            0xF5
+
+/*
  * ---- error codes (negative; returned in eax) ----
  * One list, shared by syscalls and services (docs/kernel/CX_SYSCALLS_IPC.md sec 6).
  */
@@ -975,6 +1059,8 @@ struct clock_info {
 #define OBJ_TYPE_MEM             12             /* a memory object */
 #define OBJ_TYPE_PIPE            13             /* a pipe end, read or write */
 #define OBJ_TYPE_THREAD          14             /* a thread (SYS_THREAD_CREATE) */
+#define OBJ_TYPE_DEVICE          15             /* a device a driver holds (SYS_DEVICE_OPEN) */
+#define OBJ_TYPE_IRQ             16             /* a device's interrupt (SYS_DEVICE_IRQ) */
 
 /*
  * Pipe sizes (SYS_PIPE_CREATE). A write of PIPE_ATOMIC bytes or fewer goes
@@ -1088,6 +1174,37 @@ struct thread_info {
  * FUTEX_WAITERS). The kernel reads only whether the word is `expected`.
  */
 #define FUTEX_WAITERS            0x80000000u
+
+/* ---- drivers (SYS_DEVICE_*, SYS_IRQ_ACK, SYS_DMA_ALLOC) ---- */
+#define DEVICE_MAX               320            /* ids are 0 to DEVICE_MAX - 1 */
+#define DMA_ALLOC_MAX            0x00400000u    /* 4 MiB: one contiguous run of pages */
+#define DEVICE_BUS_ROOT          0
+#define DEVICE_BUS_PLATFORM      1              /* fixed legacy hardware */
+#define DEVICE_BUS_PCI           2
+#define DEVICE_BUS_USB           3
+#define DEVICE_STATE_UNBOUND     1              /* no driver: SYS_DEVICE_OPEN can take it */
+#define DEVICE_STATE_BINDING     2              /* a kernel driver is starting on it */
+#define DEVICE_STATE_BOUND       3              /* a kernel driver has it */
+#define DEVICE_STATE_HELD        4              /* a process has it open */
+
+/*
+ * SYS_DEVICE_INFO: one node of the device tree. The ids are the bus's:
+ * PCI's vendor, device, class, subclass and interface; USB's vendor and
+ * product, with the interface's class. A PCI function's `location` is
+ * bus << 16 | slot << 8 | function; 0 on the other buses.
+ */
+struct device_desc {
+    uint32_t id;
+    uint32_t parent;                            /* the root is its own parent */
+    uint32_t bus;                               /* DEVICE_BUS_* */
+    uint32_t state;                             /* DEVICE_STATE_* */
+    uint32_t vendor;
+    uint32_t device;
+    uint32_t class_code;                        /* not `class`: kept clear of a keyword */
+    uint32_t subclass;
+    uint32_t interface;
+    uint32_t location;
+};
 
 /*
  * OBJINFO_MEM: a memory object's size, how much of it has been touched, and
@@ -1282,7 +1399,12 @@ struct fb_geometry {
 #define GRANT_SPAWN              0x0010u
 #define GRANT_POWER              0x0020u
 #define GRANT_ENDPOINT           0x0040u
-#define GRANT_IOPORT             0x0080u
+
+/*
+ * SYS_DEVICE_INFO and SYS_DEVICE_OPEN: the hardware itself. In no baseline:
+ * with no IOMMU, a driver's DMA reaches all of memory.
+ */
+#define GRANT_DRIVER             0x0080u
 #define GRANT_FRAMEBUFFER        0x0100u
 
 /* SYS_THREAD_SET_PRIORITY to PRIO_REALTIME and up */
@@ -1566,6 +1688,7 @@ CXK_ABI_STATIC_ASSERT(sizeof(struct queue_event) == 16, "ABI layout: queue_event
 CXK_ABI_STATIC_ASSERT(sizeof(struct job_limits) == 16, "ABI layout: job_limits");
 CXK_ABI_STATIC_ASSERT(sizeof(struct thread_create_args) == 48, "ABI layout: thread_create_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct thread_info) == 56, "ABI layout: thread_info");
+CXK_ABI_STATIC_ASSERT(sizeof(struct device_desc) == 40, "ABI layout: device_desc");
 CXK_ABI_STATIC_ASSERT(sizeof(struct mem_info) == 24, "ABI layout: mem_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct job_info) == 48, "ABI layout: job_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct process_info) == 40, "ABI layout: process_info");

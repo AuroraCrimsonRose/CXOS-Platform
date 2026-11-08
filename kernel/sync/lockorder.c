@@ -30,6 +30,7 @@ static const char *const names[LR_COUNT] = {
     [LR_PAGEDB]       = "pagedb",
     [LR_CMOS]         = "cmos",
     [LR_DEVTREE]      = "devtree",
+    [LR_PCI]          = "pci",
     [LR_LOG]          = "log",
 };
 
@@ -173,15 +174,29 @@ void lockorder_assert_switch(const void *sched_lock, const char *where) {
     held.n = 1;
 }
 
-/* One line per outer rank that nested anything: "ipc > htab kwait". */
+/* `s` at `p`, as much as fits before `end` (which stays free for the 0). */
+static char *put_in(char *p, char *end, const char *s) {
+    while (*s && p < end) *p++ = *s++;
+    return p;
+}
+
+/* One line per outer rank that nested anything: "ipc > htab kwait". Room
+   for every rank's name (the (none) line names nearly all of them); a name
+   past it is cut, never written beyond the line (2.2: "pci" took a 160-byte
+   line over its end and the stack with it). */
+#define REPORT_NAME_MAX 16u
 void lockorder_report(void) {
-    char line[160];
+    char line[LR_COUNT * (REPORT_NAME_MAX + 1u) + 16u];
+    char *end = line + sizeof line - 1;
     for (uint32_t i = 0; i < LR_COUNT; i++) {
         if (!lockorder_seen[i]) continue;
-        char *p = put(line, i == LR_NONE ? "(none)" : lockorder_name(i));
-        p = put(p, " >");
+        char *p = put_in(line, end, i == LR_NONE ? "(none)" : lockorder_name(i));
+        p = put_in(p, end, " >");
         for (uint32_t j = 1; j < LR_COUNT; j++)
-            if (lockorder_seen[i] & (1u << j)) { p = put(p, " "); p = put(p, lockorder_name(j)); }
+            if (lockorder_seen[i] & (1u << j)) {
+                p = put_in(p, end, " ");
+                p = put_in(p, end, lockorder_name(j));
+            }
         *p = 0;
         klog_offscreen("LOCKS", SEV_INFO, line);
     }

@@ -13,6 +13,10 @@ public class QemuConfig
     public bool EnableAudio { get; set; } = true;
     public bool EnableNetworking { get; set; } = true;
 
+    /// <summary>QEMU's teaching device "edu" (hw/misc/edu.c), with DMA reaching
+    /// all of 4 GB: the driver-host self-tests' device (kernel step 2.2).</summary>
+    public bool EduDevice { get; set; }
+
     /// <summary>Write a pcap of the NIC's traffic here.</summary>
     public string? NetTracePath { get; set; }
 
@@ -156,6 +160,11 @@ public static class QemuTool
 
         // Applies to every drive, so it follows the -drive options.
         if (config.Snapshot) args.Add("-snapshot");
+
+        if (config.EduDevice)
+        {
+            args.Add("-device"); args.Add("edu,dma_mask=0xffffffff");
+        }
 
         if (config.EnableNetworking)
         {

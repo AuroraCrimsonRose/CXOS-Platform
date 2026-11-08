@@ -210,6 +210,7 @@ public static class BootVerifier
         MemoryMb = arch == QemuArch.X86_64 ? X86_64MemoryMb : 256,
         EnableAudio = false,
         EnableNetworking = false,
+        EduDevice = arch == QemuArch.X86_64,
         Snapshot = snapshot,
         Headless = true,
         Serial = serialLog,

@@ -254,6 +254,18 @@ static int decode_random_read(const uintptr_t *a) {
     return syscall_random_read((uint64_t)a[0], (uint64_t)a[1]);
 #endif
 }
+static int decode_device_info(const uintptr_t *a) { return syscall_device_info((uint32_t)a[0], (uint64_t)a[1]); }
+static int decode_device_open(const uintptr_t *a) { return syscall_device_open((uint32_t)a[0]); }
+static int decode_device_bar(const uintptr_t *a) { return syscall_device_bar((int32_t)a[0], (uint32_t)a[1]); }
+static int decode_device_irq(const uintptr_t *a) { return syscall_device_irq((int32_t)a[0]); }
+static int decode_irq_ack(const uintptr_t *a) { return syscall_irq_ack((int32_t)a[0]); }
+static int decode_dma_alloc(const uintptr_t *a) {
+#if SYSCALL_PAIRS
+    return syscall_dma_alloc((int32_t)a[0], (uint64_t)((uint64_t)a[1] | (uint64_t)a[2] << 32), (uint64_t)a[3]);
+#else
+    return syscall_dma_alloc((int32_t)a[0], (uint64_t)a[1], (uint64_t)a[2]);
+#endif
+}
 
 const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_EXIT] = decode_exit,
@@ -353,4 +365,10 @@ const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_THREAD_SET_TLS] = decode_thread_set_tls,
     [SYS_THREAD_SET_NAME] = decode_thread_set_name,
     [SYS_RANDOM_READ] = decode_random_read,
+    [SYS_DEVICE_INFO] = decode_device_info,
+    [SYS_DEVICE_OPEN] = decode_device_open,
+    [SYS_DEVICE_BAR] = decode_device_bar,
+    [SYS_DEVICE_IRQ] = decode_device_irq,
+    [SYS_IRQ_ACK] = decode_irq_ack,
+    [SYS_DMA_ALLOC] = decode_dma_alloc,
 };

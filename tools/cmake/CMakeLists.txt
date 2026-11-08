@@ -256,6 +256,7 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/platform/pc/ktest_pc.c
     ${SRC_DIR}/kernel/drivers/bus/pci.c
     ${SRC_DIR}/kernel/drivers/devtree.c
+    ${SRC_DIR}/kernel/drivers/devhost.c
     ${SRC_DIR}/kernel/drivers/storage/hardware/ata.c
     ${SRC_DIR}/kernel/drivers/storage/hardware/ahci.c
     ${SRC_DIR}/kernel/drivers/storage/hardware/disk.c

@@ -1,7 +1,8 @@
 # Drivers
 ### CX Design Spec: Aurora Tejeda / CATX Systems
 
-> **Status: DESIGN; §4 step 1 BUILT (2.1, `kernel/drivers/devtree.h`).** How
+> **Status: DESIGN; §4 steps 1 and 3 BUILT (2.1, `kernel/drivers/devtree.h`;
+> 2.2, `kernel/drivers/devhost.h`).** How
 > CXOS finds devices, binds drivers, and runs them.
 > Compared against NT (WRK), XNU (IOKit, DriverKit), Haiku, Serenity and Redox.
 
@@ -78,6 +79,20 @@ must be signed and trusted; isolation is built and tested under QEMU.
    lives in the kernel until the Process Manager can show it.
 2. Class contracts for block, network and input; network moves to interrupts.
 3. Driver-host primitives (needs memory objects and the wait queue).
+   **Done (2.2):** `SYS_DEVICE_*` and `SYS_DMA_ALLOC`
+   (`kernel/CX_SYSCALLS_IPC.md`, the drivers section). A process with
+   `GRANT_DRIVER` opens a PCI function no kernel driver holds; the node is
+   `DEV_HELD` while anything refers to it. Each memory BAR is a memory
+   object over its pages, mapped uncached, never executable, charged to
+   nobody; a BAR that is not whole pages is refused (a page of it would show
+   another device's registers). The interrupt is MSI only (MSI-X's table is
+   in a BAR the driver maps) and a handle: each interrupt counts and sets
+   `SIGNAL_IRQ_FIRED`, `SYS_IRQ_ACK` returns the count and clears it. DMA
+   buffers are one run below 4 GB, charged to the job; with no IOMMU a
+   buffer let go while the device is open is retired to it, and its pages
+   are freed only once bus mastering is off (Fuchsia's BTI quarantine).
+   Tested on QEMU's `edu` device, which verify-boot attaches. The device's
+   thread at real-time priority and the `*dma` type wait for step 4 and X.
 4. First user-space driver: Bochs display; then input; then the NIC.
 5. IOMMU under QEMU (AMD-Vi).
 6. Hot-plug and power.

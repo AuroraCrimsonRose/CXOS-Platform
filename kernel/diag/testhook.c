@@ -22,7 +22,7 @@
 #include "arch/cpu_ops.h"      /* arch_irq_save */
 #include "cpu/percpu.h"         /* cpu_spin_held */
 
-_Static_assert(KOBJ_TYPE_MAX <= 16, "live_counts.types holds every object type");
+_Static_assert(KOBJ_TYPE_MAX <= 24, "live_counts.types holds every object type");
 
 #if CXK_TEST_HOOKS
 
