@@ -66,8 +66,7 @@ interfaces and are not transitional.
 | `kernel/drivers/video/fb.c` `SYS_FB_*` (0x40-0x46) | The kernel draws for any `GRANT_FRAMEBUFFER` program, and its console draws on the screen (into its copy only while `SYS_SCREEN_OPEN` has given the screen away, 2.3) | Programs draw into windows of the display server; the kernel draws only early boot, recovery and the panic | The server's windows (2.4) and a server started at boot |
 | `kernel/cpu/exec.c` unverified-image policy | Always refuses | An administrator's choice | User accounts exist |
 | `/Shared/Config` at 0777 | Any program with `GRANT_DISK` can write any program's settings | `/User/<name>` at 0700 | Users exist (`CX_FILESYSTEM_LAYOUT.md` rule 6) |
-| `kernel/arch/x86_64/early_con.c` | COM1, polled, for `idt.c`'s `kpanic` only: everything else logs through `logging.c` since step 5f1 | The panic path below, on the serial driver | It goes with `idt.c`'s `kpanic` |
-| `kernel/arch/x86_64/idt.c` `kpanic` | The banner, the reason and a halt, on COM1 | The panic screen, its stack trace and the crash log (`kernel/diag/`) | Those running on x86-64 |
+| `kernel/arch/x86_64/early_con.c` | COM1, polled, for `idt.c`'s panic report only: everything else logs through `logging.c` since step 5f1 | The serial driver, if it can be made safe to call from a panic | That driver exists |
 | The x86-64 kernel image as a plain ELF | Stage 2 loads it unsigned and unchecked | CXEX for x86-64, the signature check in the loader | `CX_BOOT.md` section 4 item 3 |
 
 ## Test-only

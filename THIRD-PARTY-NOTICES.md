@@ -9,6 +9,8 @@ Each component keeps its own.
 | Component | Where | Licence | Use |
 |---|---|---|---|
 | Terminus Font 4.49.1, `ter-u16n.bdf`, by Dimitar Toshkov Zhekov | `vendor/terminus/` | `OFL-1.1` (`vendor/terminus/OFL.txt`, `LICENSES/OFL-1.1.txt`), Reserved Font Name "Terminus Font" | Vendored unmodified since 2026-10-16. The build converts it to `console_16.xfnt`, the 8×16 console font, cut to IBM code page 437. That file is a Modified Version under the OFL (converted and subset), so it is named "Console", never Terminus. Source: terminus-font-4.49.1.tar.gz from SourceForge, SHA-256 `d961c1b781627bf417f9b340693d64fc219e0113ad3a3af1a3424c7aa373ef79`. |
+| QR Code generator library (C), `qrcodegen.c` and `qrcodegen.h`, by Project Nayuki | `vendor/qrcodegen/` | `MIT` (the text is in `vendor/qrcodegen/Readme.markdown`, `LICENSES/MIT.txt`) | Vendored unmodified since 2026-11-08 and compiled into the kernel, where it encodes the panic screen's QR code. The only shims are the headers it includes, `kernel/lib/qr/`. Source: github.com/nayuki/QR-Code-generator, commit `bcfe1b018cec5f1f91b5705eca5bb4cdd34e9f8d`, `c/` and `Readme.markdown`. SHA-256: `qrcodegen.c` `6a2b9cc65176f2345dde260c74b6d352627e8a0a6385d086ae0e9c5d0913c70c`, `qrcodegen.h` `e82df4bff37d18b5863b9e7486fe6bda1b6cda8c3b9ecebfec473907265cb589`, `Readme.markdown` `eea862d8e975c6df197b050e5bd6c93b70c046952ac704b4ee1d213f2393f52a`. |
+| ZXing.Net 0.16.11 | NuGet package reference of `devkit/CXEX.Tests` only | `Apache-2.0` | Test only, never part of CXOS or the DevKit: `PanicScreenTests` reads the panic screen's QR code with it. |
 
 Removed on the same day: `assets/fonts/cx_term/` (`term_8`, `term_16`), the
 console fonts drawn for CXOS. Not third-party; CXOS now uses published fonts

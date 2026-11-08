@@ -1335,6 +1335,25 @@ language work in `language/CX_X_PLAN.md`.
      encoding a fixed record against a fingerprint; a host test decoding
      it (ZXing.Net, Apache-2.0) so a sabotage proves the code readable;
      a forced panic in QEMU, screendumped and decoded on the host.
+
+   **Done (3a):** `kernel/diag/panicrep.c` writes the report and the code's
+   text and encodes it, portable and tested on the host;
+   `panicscreen.c` draws it; `ksym.c` names addresses from a table
+   `cxk ksyms` generates in a two-pass link (the table is rodata after
+   `.text`, so no function moves). The kernel keeps frame pointers now, and
+   `panic_stack_walk` checks every frame is mapped before reading it. A
+   panic owns the machine through one gate: the first CPU in wins, the
+   others stop on an IPI (`smp_panic_stop`), and a panic during the panic
+   only reports on COM1 and halts. `verify-crashlog` passes on x86-64
+   again. `cxk verify-crashlog --screendump` writes the screen through
+   QEMU's QMP, and `PanicScreenTests` reads it with ZXing.Net while
+   another CPU paints over the screen and it is held as the display server
+   holds it. `2.3a.sab` 10 of 10; by hand, judged by the decoder or the
+   boot: no takeover, no CPU stop, no stop check, an unreadable code, an
+   unmapped frame, a symbol reader without its range check. Untested: the
+   nested-panic path (`panic_again`), a 640×480 boot end to end (the fit
+   rule is tested, its caller on that screen is not), a CPU that cannot
+   take the IPI, a panic in text mode, the USB variants.
 4. Windows, transparency, server-drawn frames, focus and input routing.
 5. Retained layers and spring animations in the compositor.
 6. Trusted UI: the uninterceptible key combination, consent screens, signer

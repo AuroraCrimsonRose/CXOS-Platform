@@ -50,6 +50,7 @@
 #include "ktest_races.h"
 #include "ktest_random.h"
 #include "ktest_devtree.h"
+#include "ktest_panic.h"
 #include "xfnt.h"
 #include "font.h"
 #include "fb.h"
@@ -3587,6 +3588,10 @@ void ktest_run(void) {
     total++; passed += report("devtree: start order, then the group limit", ktest_devtree_order());
     total++; passed += report("devtree: a gone node is removed and freed", ktest_devtree_gone());
     total++; passed += report("devtree: the boot bound by the rules", ktest_devtree_boot());
+    total++; passed += report("panic: the QR code's fit rule at its edges", ktest_panic_fit());
+    total++; passed += report("panic: the fixed record encodes to its fingerprint", ktest_panic_qr());
+    total++; passed += report("panic: the symbol table is this link's", ktest_panic_ksym());
+    total++; passed += report("panic: a stack walk names its callers", ktest_panic_walk());
     total++; passed += report("random: chacha20 gives RFC 8439's block", ktest_random_chacha());
     total++; passed += report("random: interrupts sampled, then hashed in", ktest_random_interrupts());
     total++; passed += report("random: random_read from ring 3", ktest_random_syscall());

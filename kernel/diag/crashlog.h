@@ -41,6 +41,10 @@ void crashlog_putc(char c);
    negative when not (no area, a disk error, or a panic inside this one). */
 int crashlog_panic_save(void);
 
+/* The system log's newest entries, oldest of them first, as text the panic's
+   QR code carries; as many whole lines as fit in `cap`. Returns the length. */
+uint32_t crashlog_log_tail(char *buf, uint32_t cap);
+
 /* Did `cxk verify-crashlog` ask this boot to panic on purpose? */
 int crashlog_test_requested(void);
 

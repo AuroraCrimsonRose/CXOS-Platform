@@ -215,6 +215,10 @@ static uint32_t str_len(const char *s) {
 }
 
 /* As many of the latest system-log entries as fit, oldest first. */
+static void copy_to(char *buf, uint32_t *len, uint32_t cap, const char *s) {
+    while (*s && *len < cap) buf[(*len)++] = *s++;
+}
+
 static void put_slog_tail(char *buf, uint32_t *len) {
     static const char head[] = "---- system log, latest entries ----\n";
     uint32_t n = slog_count();
@@ -240,6 +244,29 @@ static void put_slog_tail(char *buf, uint32_t *len) {
         put_to(buf, len, e->event);
         put_to(buf, len, "\n");
     }
+}
+
+uint32_t crashlog_log_tail(char *buf, uint32_t cap) {
+    uint32_t n = slog_count(), start = n, need = 0;
+    while (start > 0) {
+        const struct slog_entry *e = slog_get(start - 1);
+        if (!e) break;
+        uint32_t w = str_len(e->system) + 1 + str_len(e->subsystem) + 2 + str_len(e->event) + 1;
+        if (need + w > cap) break;
+        need += w;
+        start--;
+    }
+    uint32_t len = 0;
+    for (uint32_t i = start; i < n; i++) {
+        const struct slog_entry *e = slog_get(i);
+        if (!e) break;
+        copy_to(buf, &len, cap, e->system);
+        if (e->subsystem[0]) { copy_to(buf, &len, cap, "/"); copy_to(buf, &len, cap, e->subsystem); }
+        copy_to(buf, &len, cap, ": ");
+        copy_to(buf, &len, cap, e->event);
+        copy_to(buf, &len, cap, "\n");
+    }
+    return len;
 }
 
 int crashlog_panic_save(void) {

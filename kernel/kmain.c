@@ -66,6 +66,7 @@
 #include "logging.h"
 #include "boot/cxbi.h"
 #include "diag/crashlog.h"
+#include "diag/panicscreen.h"
 
 /* Which disks this boot may write (CXK_AUTO_INSTALL, config.h). Before
    anything writes: the filesystem, the install and the crash log all come
@@ -478,6 +479,7 @@ void kmain_late(void) {
        self-tests, so this boot is an ordinary one up to here. */
     if (crashlog_test_requested()) {
         crashlog_test_interrupt();
+        panic_test_prepare();
         kpanic("deliberate panic: a crash-log test asked for one");
     }
 

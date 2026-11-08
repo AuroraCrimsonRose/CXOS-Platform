@@ -37,6 +37,10 @@ public class VerifyCrashlogCommand : Command<VerifyCrashlogCommand.Settings>
         [Description("QEMU CPU model. Default: QEMU's own")]
         public string? Cpu { get; set; }
 
+        [CommandOption("--screendump")]
+        [Description("Write the panic screen to this file, as a PPM, once the first boot has panicked")]
+        public string? Screendump { get; set; }
+
         [CommandOption("--usb")]
         [Description("Boot the copy as a USB stick on this host controller: xhci, ehci or ohci. The first boot then leaves a transfer half done before it panics, and the save must reset the stick. Default: IDE")]
         public string? Usb { get; set; }
@@ -73,7 +77,7 @@ public class VerifyCrashlogCommand : Command<VerifyCrashlogCommand.Settings>
             }
 
             AnsiConsole.MarkupLine($"[grey]boot 1: armed, expecting a panic (serial -> {Markup.Escape(log1)})[/]");
-            var v1 = BootVerifier.Run(copy, log1, timeout, BootVerdict.ClassifyRequestedPanic, null, settings.Cpu, snapshot: false, usb);
+            var v1 = BootVerifier.Run(copy, log1, timeout, BootVerdict.ClassifyRequestedPanic, null, settings.Cpu, snapshot: false, usb, screendump: settings.Screendump);
             if (v1.Outcome != BootOutcome.Pass) return Verdict(v1.Outcome, "boot 1: " + v1.Reason, log1);
 
             CrashAreaReading saved;

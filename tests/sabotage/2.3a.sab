@@ -1,0 +1,104 @@
+# Step 2.3a, the panic screen, run by `cxk test sabotage`. Each must turn red
+# exactly the self-test named. The sabotages only a reader of the screen can
+# catch (no takeover, no CPU stop, an unreadable code) are not here: this
+# format judges boots, and those are judged by PanicScreenTests.
+# Format: docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage".
+
+[fit-floor-too-low]
+# a code at 2 px per module is drawn, and no phone reads it
+expect = panic: the QR code's fit rule at its edges @ panic fit: under 3 px was drawn
+edit = kernel/diag/panicrep.c
+<<<
+    return px < PANIC_QR_PX_MIN ? 0 : px;
+===
+    return px < 2 ? 0 : px;
+>>>
+
+[fit-floor-too-high]
+# exactly 3 px fits; refusing it hides the code on screens that could show it
+expect = panic: the QR code's fit rule at its edges @ panic fit: exactly 3 px did not fit
+edit = kernel/diag/panicrep.c
+<<<
+    return px < PANIC_QR_PX_MIN ? 0 : px;
+===
+    return px < 4 ? 0 : px;
+>>>
+
+[fit-no-cap]
+expect = panic: the QR code's fit rule at its edges @ panic fit: not capped at 8 px
+edit = kernel/diag/panicrep.c
+<<<
+    if (px > PANIC_QR_PX_MAX) px = PANIC_QR_PX_MAX;
+===
+>>>
+
+[qr-other-ecc]
+# the wrong error-correction level makes a different, smaller code
+expect = panic: the fixed record encodes to its fingerprint @ panic qr: wrong size of code
+edit = kernel/diag/panicrep.c
+<<<
+    if (!qrcodegen_encodeBinary(tmp, len, qr, qrcodegen_Ecc_MEDIUM,
+===
+    if (!qrcodegen_encodeBinary(tmp, len, qr, qrcodegen_Ecc_LOW,
+>>>
+
+[qr-text-changed]
+expect = panic: the fixed record encodes to its fingerprint @ panic qr: text fingerprint
+edit = kernel/diag/panicrep.c
+<<<
+    w_lit(&w, "CXOS crash report\nstop: ");
+===
+    w_lit(&w, "CXOS crash record\nstop: ");
+>>>
+
+[qr-module-lies]
+# the text is right and the code's size is right, but a module read back wrong
+expect = panic: the fixed record encodes to its fingerprint @ panic qr: module fingerprint
+edit = kernel/diag/panicrep.c
+<<<
+    return qrcodegen_getModule(qr, (int)x, (int)y) ? 1 : 0;
+===
+    return qrcodegen_getModule(qr, (int)y, (int)x) ? 1 : 0;
+>>>
+
+[ksym-off-by-one]
+# every address is named one byte late
+expect = panic: the symbol table is this link's @ ksym: kpanic is not at its address
+edit = kernel/diag/ksym.c
+<<<
+                     (uint32_t)(addr - lo), off_out);
+===
+                     (uint32_t)(addr - lo - 1), off_out);
+>>>
+
+[walk-wrong-slot]
+# reads the saved frame pointer as the return address: the chain ends at once
+expect = panic: a stack walk names its callers @ walk: the chain was cut short
+edit = kernel/arch/x86_64/idt.c
+<<<
+        uint64_t next = frame[0], pc = frame[1];
+===
+        uint64_t next = frame[0], pc = frame[0];
+>>>
+
+[walk-skips-a-frame]
+expect = panic: a stack walk names its callers @ walk: the frames are not the callers
+edit = kernel/arch/x86_64/idt.c
+<<<
+        pcs[n++] = pc;
+        if (next <= rbp) break;            /* a stack grows one way */
+        rbp = next;
+===
+        pcs[n++] = pc;
+        if (next <= rbp) break;            /* a stack grows one way */
+        rbp = *(const uint64_t *)(uintptr_t)next;
+>>>
+
+[walk-misaligned]
+expect = panic: a stack walk names its callers @ walk: followed a misaligned frame
+edit = kernel/arch/x86_64/idt.c
+<<<
+    if ((fp & 7) || fp < 0xFFFF800000000000ull || fp > 0xFFFFFFFFFFFFFFE0ull) return 0;
+===
+    if (fp < 0xFFFF800000000000ull || fp > 0xFFFFFFFFFFFFFFE0ull) return 0;
+>>>

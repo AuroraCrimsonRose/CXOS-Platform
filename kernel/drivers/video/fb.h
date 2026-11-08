@@ -129,6 +129,9 @@ void      fb_test_screen_poke(uint32_t x, uint32_t y, uint32_t color);
 uintptr_t fb_test_screen_virt(void);
 uint32_t  fb_test_disagree(uint32_t x, uint32_t y, uint32_t w, uint32_t h);
 /* Undo fb_panic_takeover, so a test of it can put things back. */
+/* As though a display server held the screen, for the crash test: the kernel
+   draws only into its copy until a panic takes the screen back. */
+void      fb_test_hold(void);
 void      fb_test_untake(void);
 #endif
 

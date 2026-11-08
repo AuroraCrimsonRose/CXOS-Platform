@@ -104,6 +104,7 @@ set(KERNEL_INCLUDES
     -I${SRC_DIR}/kernel/drivers/storage/hardware
     -I${SRC_DIR}/kernel/drivers/storage/filesys
     -I${SRC_DIR}/kernel/drivers/net
+    -I${SRC_DIR}/vendor/qrcodegen
 )
 
 # ---- the kernel's own version, from the one registry ----
@@ -154,7 +155,10 @@ file(WRITE ${BUILD_DIR}/cxk_version.h
 # Neither is in the build today, deliberately: fpu.c explains that enabling FP
 # needs FPU state saved on context switch first. Leaving x87 on means wiring
 # them in is a source-list change, not a flags change.
+# -fno-omit-frame-pointer: a panic names its callers by walking the chain
+# (arch/x86_64/idt.c, panic_stack_walk).
 set(KCFLAGS --target=${CXK_TARGET} -ffreestanding -fno-pic -fno-stack-protector
+            -fno-omit-frame-pointer
             -mcmodel=kernel -mno-red-zone
             -mno-sse -mno-sse2 -mno-mmx -mno-implicit-float
             -Wall -Wextra -Werror -Wshorten-64-to-32 ${CXK_DEFS}
@@ -167,6 +171,10 @@ set(KERNEL_C_SRCS
     ${SRC_DIR}/kernel/diag/crashrec.c
     ${SRC_DIR}/kernel/diag/hwfmt.c
     ${SRC_DIR}/kernel/diag/crashlog.c
+    ${SRC_DIR}/kernel/diag/panicrep.c
+    ${SRC_DIR}/kernel/diag/panicscreen.c
+    ${SRC_DIR}/kernel/diag/ksym.c
+    ${SRC_DIR}/kernel/ktest_panic.c
     ${SRC_DIR}/kernel/diag/testhook.c
     ${SRC_DIR}/kernel/sync/lockorder.c
     ${SRC_DIR}/kernel/ktest.c
@@ -377,6 +385,20 @@ foreach(src ${KERNEL_C_SRCS})
     list(APPEND KERNEL_OBJS ${obj})
 endforeach()
 
+# ---- the QR encoder, vendored unmodified (vendor/qrcodegen) ----
+# Its hosted headers (<assert.h>, <stdlib.h>) come from kernel/lib/qr, on this
+# one file's include path, and its warnings are not ours to fix.
+set(QRCODEGEN_OBJ ${BUILD_DIR}/k_qrcodegen.o)
+add_custom_command(
+    OUTPUT ${QRCODEGEN_OBJ}
+    COMMAND ${KCC} ${KCFLAGS} -w -I${SRC_DIR}/kernel/lib/qr -MD -MF ${QRCODEGEN_OBJ}.d
+            ${SRC_DIR}/vendor/qrcodegen/qrcodegen.c -o ${QRCODEGEN_OBJ}
+    DEPENDS ${SRC_DIR}/vendor/qrcodegen/qrcodegen.c
+    DEPFILE ${QRCODEGEN_OBJ}.d
+    COMMENT "CC  qrcodegen.c (vendor)"
+)
+list(APPEND KERNEL_OBJS ${QRCODEGEN_OBJ})
+
 # ---- generate assemble rules for each kernel ASM source ----
 foreach(src ${KERNEL_ASM_SRCS})
     get_filename_component(name ${src} NAME_WE)
@@ -466,10 +488,49 @@ add_custom_command(
 )
 
 # ---- link the kernel (top 2 GiB) ----
+# ---- two links: the symbol table a panic names its callers with ----
+# The first link, with an empty table, exists to give `cxk ksyms` the
+# addresses. The table is read-only data, after .text in the linker script, so
+# putting it in cannot move a function; a self-test holds that
+# (kernel/ktest_panic.c, "the symbol table is this link's").
+execute_process(COMMAND ${CXK} ksyms --help
+                OUTPUT_QUIET ERROR_QUIET RESULT_VARIABLE CXK_KSYMS_RC)
+if(NOT CXK_KSYMS_RC EQUAL 0)
+    message(FATAL_ERROR "this cxk (${CXK}) has no `ksyms` command, which the kernel now needs. "
+                        "Republish cxk from devkit/ - see README.md, Building.")
+endif()
+set(KSYM_NONE_OBJ ${BUILD_DIR}/k_ksym_none.o)
+set(KSYMS_C       ${BUILD_DIR}/ksyms.c)
+set(KSYMS_OBJ     ${BUILD_DIR}/k_ksyms.o)
+set(KERNEL_PASS1  ${BUILD_DIR}/kernel.pass1.elf)
+add_custom_command(
+    OUTPUT ${KSYM_NONE_OBJ}
+    COMMAND ${KCC} ${KCFLAGS} ${SRC_DIR}/tools/cmake/ksym_none.c -o ${KSYM_NONE_OBJ}
+    DEPENDS ${SRC_DIR}/tools/cmake/ksym_none.c
+    COMMENT "CC  ksym_none.c"
+)
+add_custom_command(
+    OUTPUT ${KERNEL_PASS1}
+    COMMAND ${CMAKE_LD} -m elf_x86_64 -nostdlib -T ${LINKER} -o ${KERNEL_PASS1} ${KERNEL_OBJS} ${KSYM_NONE_OBJ}
+    DEPENDS ${KERNEL_OBJS} ${KSYM_NONE_OBJ} ${LINKER} ${ARCH_CHECK_STAMP}
+    COMMENT "Linking the kernel for its symbols"
+)
+add_custom_command(
+    OUTPUT ${KSYMS_C}
+    COMMAND ${CXK} ksyms ${KERNEL_PASS1} -o ${KSYMS_C}
+    DEPENDS ${KERNEL_PASS1} ${CXK}
+    COMMENT "KSYMS the kernel's symbol table"
+)
+add_custom_command(
+    OUTPUT ${KSYMS_OBJ}
+    COMMAND ${KCC} ${KCFLAGS} ${KSYMS_C} -o ${KSYMS_OBJ}
+    DEPENDS ${KSYMS_C}
+    COMMENT "CC  ksyms.c"
+)
 add_custom_command(
     OUTPUT ${KERNEL_ELF}
-    COMMAND ${CMAKE_LD} -m elf_x86_64 -nostdlib -T ${LINKER} -o ${KERNEL_ELF} ${KERNEL_OBJS}
-    DEPENDS ${KERNEL_OBJS} ${LINKER} ${ARCH_CHECK_STAMP}
+    COMMAND ${CMAKE_LD} -m elf_x86_64 -nostdlib -T ${LINKER} -o ${KERNEL_ELF} ${KERNEL_OBJS} ${KSYMS_OBJ}
+    DEPENDS ${KERNEL_OBJS} ${KSYMS_OBJ} ${LINKER} ${ARCH_CHECK_STAMP}
     COMMENT "Linking the kernel (top 2 GiB)"
 )
 # The disk carries the same link with no symbol table: stage 2 reads the whole
@@ -481,8 +542,8 @@ add_custom_command(
 # signature check in the loader, come with it (docs/boot/CX_BOOT.md section 4).
 add_custom_command(
     OUTPUT ${KERNEL_DISK_ELF}
-    COMMAND ${CMAKE_LD} -m elf_x86_64 -nostdlib --strip-all -T ${LINKER} -o ${KERNEL_DISK_ELF} ${KERNEL_OBJS}
-    DEPENDS ${KERNEL_OBJS} ${LINKER} ${KERNEL_ELF}
+    COMMAND ${CMAKE_LD} -m elf_x86_64 -nostdlib --strip-all -T ${LINKER} -o ${KERNEL_DISK_ELF} ${KERNEL_OBJS} ${KSYMS_OBJ}
+    DEPENDS ${KERNEL_OBJS} ${KSYMS_OBJ} ${LINKER} ${KERNEL_ELF}
     COMMENT "Linking the kernel for the disk (no symbols)"
 )
 

@@ -66,6 +66,9 @@ public class QemuConfig
     /// <summary>Which kernel the image carries, so which QEMU boots it. Both
     /// are the same PC; the 64-bit one has a CPU that can enter long mode.</summary>
     public QemuArch Arch { get; set; } = QemuArch.X86_64;
+
+    /// <summary>When set, QEMU listens for QMP on this local TCP port, for a screendump.</summary>
+    public int? QmpPort { get; set; }
 }
 
 /// <summary>The CPU architectures CXK is built for (roadmap Phase 0 step 5).</summary>
@@ -187,6 +190,7 @@ public static class QemuTool
         }
 
         if (config.Headless) { args.Add("-display"); args.Add("none"); }
+        if (config.QmpPort is int qmp) { args.Add("-qmp"); args.Add($"tcp:127.0.0.1:{qmp},server=on,wait=off"); }
 
         if (!string.IsNullOrEmpty(config.ICountShift))
         {

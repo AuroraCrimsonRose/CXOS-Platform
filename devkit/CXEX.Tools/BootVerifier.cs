@@ -239,7 +239,7 @@ public static class BootVerifier
     /// (<c>cxk verify-crashlog</c>). Only ever on a copy.
     /// </summary>
     public static BootVerdict Run(string image, string serialLog, TimeSpan timeout, Func<string, BootVerdict> classify,
-                                  Action<string>? progress, string? cpu, bool snapshot, UsbHost? usb = null, string? foreignDisk = null, QemuArch arch = QemuArch.X86_64, string? smp = null, bool stress = false)
+                                  Action<string>? progress, string? cpu, bool snapshot, UsbHost? usb = null, string? foreignDisk = null, QemuArch arch = QemuArch.X86_64, string? smp = null, bool stress = false, string? screendump = null)
     {
         if (File.Exists(serialLog)) File.Delete(serialLog);
 
@@ -251,7 +251,9 @@ public static class BootVerifier
             RedirectStandardError = true,
             CreateNoWindow = true,
         };
-        foreach (string a in QemuTool.BuildArguments(ConfigFor(image, serialLog, cpu, snapshot, usb, foreignDisk, arch, smp, stress))) psi.ArgumentList.Add(a);
+        var config = ConfigFor(image, serialLog, cpu, snapshot, usb, foreignDisk, arch, smp, stress);
+        if (screendump is not null) config.QmpPort = Qmp.FreePort();
+        foreach (string a in QemuTool.BuildArguments(config)) psi.ArgumentList.Add(a);
 
         using var qemu = Process.Start(psi)
             ?? throw new InvalidOperationException($"could not start {QemuTool.ExecutableFor(arch)}");
@@ -275,6 +277,16 @@ public static class BootVerifier
                 {
                     Thread.Sleep(1000);
                     verdict = classify(ReadShared(serialLog));
+                }
+                if (verdict.Outcome == BootOutcome.Pass && screendump is not null)
+                {
+                    // The screen is drawn before the record is saved, and the
+                    // record before the line the verdict rests on, so it is whole.
+                    try { Qmp.Screendump(config.QmpPort!.Value, screendump, TimeSpan.FromSeconds(30)); }
+                    catch (Exception e) when (e is IOException or System.Net.Sockets.SocketException or System.Text.Json.JsonException)
+                    {
+                        verdict = new BootVerdict(BootOutcome.Fail, "the screendump failed: " + e.Message, null);
+                    }
                 }
                 if (verdict.Outcome != BootOutcome.Inconclusive) break;
                 if (qemu.HasExited)

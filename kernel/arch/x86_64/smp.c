@@ -83,8 +83,17 @@ static void tlb_wake(struct cpu *c) {
     }
 }
 
+/* A panic on another CPU (smp_panic_stop): index + 1 of the CPU reporting. */
+static uint32_t stop_owner;
+static uint32_t stopped;
+
 void smp_serve(void) {
     struct cpu *me = cpu_this();
+    uint32_t owner = __atomic_load_n(&stop_owner, __ATOMIC_ACQUIRE);
+    if (owner && owner != me->index + 1) {
+        __atomic_fetch_add(&stopped, 1u, __ATOMIC_RELEASE);
+        for (;;) __asm__ volatile ("cli; hlt");
+    }
     if (!__atomic_load_n(&me->tlb_from, __ATOMIC_RELAXED)) return;
     uint32_t from = __atomic_exchange_n(&me->tlb_from, 0u, __ATOMIC_ACQUIRE);
     uint32_t mine = 1u << me->index;
@@ -118,6 +127,27 @@ void smp_serve(void) {
 #if CXK_TEST_HOOKS
 void (*volatile smp_tlb_serve_hook)(uint32_t gen);
 #endif
+
+void smp_panic_stop(void) {
+    struct cpu *me = cpu_this();
+    __atomic_store_n(&stop_owner, me->index + 1, __ATOMIC_RELEASE);
+    if (!apic_active()) return;            /* then there is one CPU */
+    uint32_t others = 0;
+    for (unsigned i = 0; ; i++) {
+        struct cpu *c = cpu_at(i);
+        if (!c) break;
+        if (c == me) continue;
+        (void)lapic_send_fixed(c->hw_id, SMP_IPI_VECTOR);
+        others++;
+    }
+    /* Long enough for a CPU that can take the interrupt, and never forever:
+       one spinning with interrupts off and not serving may never answer, and
+       the report matters more than a clean stop. */
+    for (uint32_t spins = 0; spins < 2000000u; spins++) {
+        if (__atomic_load_n(&stopped, __ATOMIC_ACQUIRE) >= others) break;
+        arch_cpu_relax();
+    }
+}
 
 /* One request per sender, in its own struct cpu, and a bit per sender in
    each target's tlb_from: WRK's per-processor request packets

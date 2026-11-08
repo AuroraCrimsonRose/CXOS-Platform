@@ -76,6 +76,11 @@ uint32_t smp_tlb_shootdown(uint64_t root, uintptr_t va, uint32_t pages, uint64_t
    no lock. The IPI's handler calls it, and so does every spin. */
 void smp_serve(void);
 
+/* The panic's: every other CPU halts at its next smp_serve, and this returns
+   once they have, or after a bounded wait for one that cannot be reached.
+   Lock-free and allocates nothing. */
+void smp_panic_stop(void);
+
 /* ---- the scheduler on every CPU (1.9e2) ----
  *
  * smp_kick interrupts CPU `index` (not this one) with the IPI vector, which

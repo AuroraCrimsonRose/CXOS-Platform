@@ -55,6 +55,9 @@ app.Configure(config =>
     config.AddCommand<VerifyHyperVCommand>("verify-hyperv")
         .WithDescription("Boots a VHDX copy of an image in a Hyper-V Gen 1 VM (AMI BIOS, IDE) and reports PASS/FAIL from COM1, as verify-boot does.");
 
+    config.AddCommand<KsymsCommand>("ksyms")
+        .WithDescription("Writes an ELF64 kernel's function symbols as C, for the table a panic names its callers with.");
+
     config.AddCommand<VerifyCrashlogCommand>("verify-crashlog")
         .WithDescription("Boots a copy of an image twice: the first panics on request and must save its crash log, the second must recover it to /System/crash.log and clear the area.");
 

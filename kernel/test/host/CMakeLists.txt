@@ -40,6 +40,9 @@ set(KERNEL_SOURCES
     ${KDIR}/lib/math/kmath.c
     ${KDIR}/diag/crashrec.c
     ${KDIR}/diag/hwfmt.c
+    ${KDIR}/diag/panicrep.c
+    ${KDIR}/diag/ksym.c
+    ${KDIR}/../vendor/qrcodegen/qrcodegen.c
     ${KDIR}/sync/lockorder.c
     ${KDIR}/drivers/storage/filesys/cxfs.c
     ${KDIR}/lib/time/datetime.c
@@ -81,11 +84,24 @@ endforeach()
 file(CONFIGURE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/cxfs_inputs.h CONTENT "${CXFS_LIST}")
 list(LENGTH CXFS_REGRESS CXFS_NREGRESS)
 
+# Vendored and unmodified, so its warnings are not ours to fix.
+set_source_files_properties(${KDIR}/../vendor/qrcodegen/qrcodegen.c PROPERTIES COMPILE_OPTIONS "-w")
+
 file(GLOB TEST_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/test_*.c)
 
 add_executable(khost_tests ${CMAKE_CURRENT_SOURCE_DIR}/runner.c ${TEST_SOURCES} ${KERNEL_SOURCES} ${CXFS_HARNESS})
 
-target_include_directories(khost_tests PRIVATE ${KDIR} ${KDIR}/../abi ${CMAKE_CURRENT_BINARY_DIR})
+target_include_directories(khost_tests PRIVATE ${KDIR} ${KDIR}/../abi ${KDIR}/../vendor/qrcodegen ${CMAKE_CURRENT_BINARY_DIR})
+
+# The fixed QR record, for the DevKit's real reader (PanicScreenTests).
+add_executable(panic_qr_dump ${CMAKE_CURRENT_SOURCE_DIR}/panic_qr_dump.c
+               ${KDIR}/diag/panicrep.c ${KDIR}/../vendor/qrcodegen/qrcodegen.c)
+target_include_directories(panic_qr_dump PRIVATE ${KDIR} ${KDIR}/../vendor/qrcodegen)
+target_compile_definitions(panic_qr_dump PRIVATE CXK_HOST_TEST)
+set_property(TARGET panic_qr_dump PROPERTY C_STANDARD 11)
+if(WIN32)
+    target_compile_definitions(panic_qr_dump PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
 # A 2 MB window instead of the kernel's 64 MB, so a test can fill it.
 target_compile_definitions(khost_tests PRIVATE CXK_HOST_TEST OCACHE_SLOTS=64
     CXFS_NREGRESS=${CXFS_NREGRESS})

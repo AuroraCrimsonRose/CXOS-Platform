@@ -633,6 +633,8 @@ void fb_panic_takeover(void) { taken = 1; }
 int fb_screen_held(void) { return held && !taken; }
 
 #if CXK_TEST_HOOKS
+void fb_test_hold(void) { held = 1; }
+
 void fb_test_untake(void) {
     log_lock();
     taken = 0;

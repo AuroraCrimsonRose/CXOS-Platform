@@ -215,6 +215,10 @@ real machine as QEMU gets.
   also be seen: the kernel logs each disk it leaves read-only by size, and a
   boot that never names this one is INCONCLUSIVE, as is a disk that cannot be
   read back afterwards.
+  `--screendump <file>` also writes the panic screen as a PPM, through QEMU's
+  QMP, for `PanicScreenTests` to read. `cxk ksyms` turns a kernel ELF's function
+  symbols into the C table a panic names its callers with (`kernel/diag/ksym.h`);
+  the build runs it between its two links.
 
 ### 3.8 Later
 

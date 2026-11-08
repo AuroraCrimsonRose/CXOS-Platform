@@ -71,7 +71,7 @@ public class KernelHostTests
     /// <summary>Configures and builds kernel/test/host, skipping with the reason
     /// when the toolchain is missing. Returns the repository, the build
     /// directory, and what PATH needs for the sanitizer runtime.</summary>
-    private static (string Repo, string Bin, string? ExtraPath) Build()
+    internal static (string Repo, string Bin, string? ExtraPath) Build()
     {
         string repo = Requires.Repo();
         var missing = new[] { "clang", "cmake", "ninja" }.Where(t => !TestEnv.HasTool(t)).ToList();
@@ -103,9 +103,9 @@ public class KernelHostTests
         return (repo, bin, extraPath);
     }
 
-    private sealed record Result(int Code, string Out, string Err);
+    internal sealed record Result(int Code, string Out, string Err);
 
-    private static Result Run(string exe, IEnumerable<string> args, string cwd, string? prependPath)
+    internal static Result Run(string exe, IEnumerable<string> args, string cwd, string? prependPath)
     {
         var psi = new ProcessStartInfo
         {
