@@ -4,6 +4,8 @@
 [buffer-of-four]
 # the buffer is short of the packet again: the report overruns and is lost
 expect = USB mouse: a report longer than three bytes moves it @ usb mouse test failed at step 1
+expect = USB mouse: 16-bit X and Y, from its report descriptor @ usb mouse test failed at step 1
+expect = USB mouse: numbered reports and 12-bit fields @ usb mouse test failed at step 1
 group = g1
 edit = kernel/drivers/usb/usb_hid.c
 <<<
@@ -15,6 +17,8 @@ edit = kernel/drivers/usb/usb_hid.c
 [short-report-dropped]
 # a report shorter than the packet no longer counts
 expect = USB mouse: a report longer than three bytes moves it @ usb mouse test failed at step 2
+expect = USB mouse: 16-bit X and Y, from its report descriptor @ usb mouse test failed at step 1
+expect = USB mouse: numbered reports and 12-bit fields @ usb mouse test failed at step 1
 group = g2
 edit = kernel/drivers/usb/usb_hid.c
 <<<
@@ -25,4 +29,72 @@ edit = kernel/drivers/usb/usb_hid.c
     if (n < 8) return;
 
     if (!h->told) {
+>>>
+
+[layout-ignored]
+# the descriptor is read and the boot format is decoded anyway: X's top byte as Y
+expect = USB mouse: 16-bit X and Y, from its report descriptor @ usb mouse test failed at step 1
+expect = USB mouse: numbered reports and 12-bit fields @ usb mouse test failed at step 1
+group = g3
+edit = kernel/drivers/usb/usb_hid.c
+<<<
+    if (h->layout) {
+        const uint8_t *r = rpt;
+===
+    if (0) {
+        const uint8_t *r = rpt;
+>>>
+
+[boot-protocol-with-layout]
+# a mouse read by its descriptor is put in the protocol that descriptor does not describe
+expect = USB mouse: 16-bit X and Y, from its report descriptor @ usb mouse test failed at step 3
+expect = USB mouse: numbered reports and 12-bit fields @ usb mouse test failed at step 4
+group = g4
+edit = kernel/drivers/usb/usb_hid.c
+<<<
+                      h->layout ? HID_PROTOCOL_REPORT : HID_PROTOCOL_BOOT,
+===
+                      HID_PROTOCOL_BOOT,
+>>>
+
+[field-not-signed]
+# a field's sign is dropped: left and up become huge moves right and down
+expect = USB mouse: 16-bit X and Y, from its report descriptor @ usb mouse test failed at step 1
+expect = USB mouse: numbered reports and 12-bit fields @ usb mouse test failed at step 1
+group = g5
+edit = kernel/drivers/usb/usb_hid.c
+<<<
+    if (size < 32 && (v >> (size - 1)) & 1) v |= ~0u << size;
+===
+>>>
+
+[report-offset-carried]
+# a new report number does not restart the bit count
+expect = USB mouse: numbered reports and 12-bit fields @ usb mouse test failed at step 1
+group = g6
+edit = kernel/drivers/usb/usb_hid.c
+<<<
+                bit = 0;                    /* each report counts from its own start */
+===
+>>>
+
+[other-report-taken]
+# a report with another number is read as movement
+expect = USB mouse: numbered reports and 12-bit fields @ usb mouse test failed at step 2
+group = g7
+edit = kernel/drivers/usb/usb_hid.c
+<<<
+            if (rpt[0] != h->report_id) return;     /* some other report of its */
+===
+>>>
+
+[constant-field-counted]
+# padding is not counted, so everything after it is read from the wrong bits
+expect = USB mouse: 16-bit X and Y, from its report descriptor @ usb mouse test failed at step 1
+group = g8
+edit = kernel/drivers/usb/usb_hid.c
+<<<
+                    bit += size;
+===
+                    if (data) bit += size;
 >>>

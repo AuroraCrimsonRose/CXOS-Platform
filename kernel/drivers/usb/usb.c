@@ -99,6 +99,7 @@ static void read_configuration(struct usb_device *dev) {
             const struct usb_interface_descriptor *id =
                 (const struct usb_interface_descriptor *)&cfg[off];
             if (!dev->if_class && !in_first_interface) {
+                dev->if_number = id->b_interface_number;
                 dev->if_class = id->b_interface_class;
                 dev->if_subclass = id->b_interface_subclass;
                 dev->if_protocol = id->b_interface_protocol;

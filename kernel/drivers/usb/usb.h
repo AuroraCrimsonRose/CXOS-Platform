@@ -106,6 +106,7 @@ struct usb_device {
        its real class on the interface instead - which every USB flash drive
        does, so these are the fields worth looking at. */
     uint8_t  configuration;   /* bConfigurationValue, already selected        */
+    uint8_t  if_number;       /* bInterfaceNumber, what class requests name   */
     uint8_t  if_class;        /* 0x08 = mass storage, 0x03 = HID              */
     uint8_t  if_subclass;     /* 0x06 = SCSI transparent command set          */
     uint8_t  if_protocol;     /* 0x50 = bulk-only transport                   */

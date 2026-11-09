@@ -2366,41 +2366,56 @@ static int ktest_usb_kbd_after_reader(void) {
     return step == 0 && !usb_hid_present() && !thread_is_alive(t);
 }
 
-/* ---- a USB mouse that sends more than the three bytes we read ----
-   Found on the rig: the mouse attached, the cursor drew, and it never moved. A
-   report longer than the buffer offered is an overrun, and the controller
-   returns nothing for it, which is what this fake does. Its packet is 8 bytes;
-   its second report is 3, which is short of the buffer and still a report. */
-static volatile int ms_step;
+/* ---- a USB mouse, as the rig's behaved ----
+   The rig's attached, drew a cursor and never moved: a report longer than the
+   buffer offered is an overrun, and the controller returns nothing for it,
+   which is what this fake does. Then it moved, sideways only: it sends X and Y
+   as 16 bits each, in the layout its report descriptor gives. Each report here
+   says what it should have done to the pointer. */
+struct ms_report {
+    uint8_t n, b[8];
+    int dx, dy;
+    uint32_t btns;
+};
+static const struct ms_report *ms_reports;
+static int ms_count, ms_next, ms_protocol;
+static const uint8_t *ms_desc;
+static int ms_desc_len;
 
-static int ms_poll(struct usb_device *d, uint8_t ep, void *data, uint32_t len) {
-    (void)ep;
-    uint8_t *r = data;
-    if (len < d->ep_int_mps) return -1;
-    if (ms_step == 0) {
-        ms_step = 1;
-        memset(r, 0, len);
-        r[0] = 1; r[1] = 5; r[2] = 0xFD;   /* left button, right 5, up 3 */
-        return (int)d->ep_int_mps;
+static int ms_control(struct usb_device *d, uint8_t t, uint8_t r, uint16_t v, uint16_t i,
+                      void *data, uint16_t len) {
+    (void)d; (void)t; (void)i;
+    if (r == 0x06 && v == 0x2200 && ms_desc) {
+        int n = ms_desc_len < (int)len ? ms_desc_len : (int)len;
+        memcpy(data, ms_desc, (size_t)n);
+        return n;
     }
-    if (ms_step == 1) {
-        ms_step = 2;
-        r[0] = 0; r[1] = 0xFB; r[2] = 3;   /* released, and back where it was */
-        return 3;
-    }
+    if (r == 0x0B) ms_protocol = v;
     return 0;
 }
 
-static const struct usb_hc_ops ms_ops = { .name = "ktest-mouse", .control = hw_control, .interrupt_poll = ms_poll };
+static int ms_poll(struct usb_device *d, uint8_t ep, void *data, uint32_t len) {
+    (void)ep;
+    if (len < d->ep_int_mps) return -1;
+    if (ms_next >= ms_count) return 0;
+    const struct ms_report *r = &ms_reports[ms_next++];
+    memcpy(data, r->b, r->n);
+    return r->n;
+}
+
+static const struct usb_hc_ops ms_ops = { .name = "ktest-mouse", .control = ms_control, .interrupt_poll = ms_poll };
 static struct usb_device ms_dev;
 
-static int ktest_usb_mouse_long_report(void) {
+/* 0 when every report did what it said and the protocol is the one expected;
+   otherwise the 1-based report that did not, or count + 1 for the protocol. */
+static int ms_run(const struct ms_report *reports, int count,
+                  const uint8_t *desc, int desc_len, int protocol) {
     if (usb_hid_present()) {
-        klog("KTEST", SEV_WARN, "USB mouse report length NOT checked: a HID device is attached");
+        klog("KTEST", SEV_WARN, "USB mouse reports NOT checked: a HID device is attached");
         return 1;
     }
-    int32_t x = mouse_x(), y = mouse_y();
-    ms_step = 0;
+    ms_reports = reports; ms_count = count; ms_next = 0;
+    ms_desc = desc; ms_desc_len = desc_len; ms_protocol = -1;
     memset(&ms_dev, 0, sizeof ms_dev);
     ms_dev.ops = &ms_ops;
     ms_dev.if_class = USB_CLASS_HID;
@@ -2409,16 +2424,63 @@ static int ktest_usb_mouse_long_report(void) {
     ms_dev.ep_int_in = 0x81;
     ms_dev.ep_int_mps = 8;
     if (!usb_hid_attach(&ms_dev)) return 0;
-    int step = 1;
-    usb_hid_poll();
-    if (mouse_x() == x + 5 && mouse_y() == y - 3 && mouse_buttons() == 1) {
-        step = 2;
+    int x = mouse_x(), y = mouse_y(), step = 0;
+    for (int i = 0; i < count && !step; i++) {
         usb_hid_poll();
-        if (mouse_x() == x && mouse_y() == y && mouse_buttons() == 0) step = 0;
+        x += reports[i].dx;
+        y += reports[i].dy;
+        if (mouse_x() != x || mouse_y() != y || mouse_buttons() != reports[i].btns) step = i + 1;
     }
+    if (!step && ms_protocol != protocol) step = count + 1;
     (void)usb_hid_detach(&ms_dev);
-    if (step != 0) klog_u32("KTEST", SEV_ERR, "usb mouse test failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
-    return step == 0 && !usb_hid_present();
+    if (step) {
+        klog_u32("KTEST", SEV_ERR, "usb mouse test failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    }
+    return !step && !usb_hid_present();
+}
+
+/* No usable descriptor: the boot report, and the whole packet still offered. */
+static int ktest_usb_mouse_long_report(void) {
+    static const struct ms_report r[] = {
+        { 8, { 1, 5, 0xFD }, 5, -3, 1 },
+        { 3, { 0, 0xFB, 3 }, -5, 3, 0 },   /* shorter than the buffer: still a report */
+    };
+    return ms_run(r, 2, 0, 0, 0);
+}
+
+/* The rig's: three buttons, padding, X and Y of 16 bits each. */
+static int ktest_usb_mouse_16_bit(void) {
+    static const uint8_t d[] = {
+        0x05,0x01, 0x09,0x02, 0xA1,0x01, 0x09,0x01, 0xA1,0x00,
+        0x05,0x09, 0x19,0x01, 0x29,0x03, 0x15,0x00, 0x25,0x01, 0x95,0x03, 0x75,0x01, 0x81,0x02,
+        0x95,0x01, 0x75,0x05, 0x81,0x03,
+        0x05,0x01, 0x09,0x30, 0x09,0x31, 0x16,0x01,0x80, 0x26,0xFF,0x7F, 0x75,0x10, 0x95,0x02, 0x81,0x06,
+        0xC0, 0xC0,
+    };
+    static const struct ms_report r[] = {
+        { 5, { 1, 0xFB, 0xFF, 0x07, 0x00 }, -5, 7, 1 },
+        { 5, { 0, 0x05, 0x00, 0xF9, 0xFF }, 5, -7, 0 },
+    };
+    return ms_run(r, 2, d, (int)sizeof d, 1);
+}
+
+/* Numbered reports, a consumer-control report declared first, X and Y of 12
+   bits sharing a byte. A report with another number is not movement. */
+static int ktest_usb_mouse_numbered(void) {
+    static const uint8_t d[] = {
+        0x05,0x0C, 0x09,0x01, 0xA1,0x01, 0x85,0x01, 0x75,0x10, 0x95,0x01,
+        0x15,0x00, 0x26,0xFF,0x03, 0x19,0x00, 0x2A,0xFF,0x03, 0x81,0x00, 0xC0,
+        0x05,0x01, 0x09,0x02, 0xA1,0x01, 0x85,0x02, 0x09,0x01, 0xA1,0x00,
+        0x05,0x09, 0x19,0x01, 0x29,0x08, 0x15,0x00, 0x25,0x01, 0x95,0x08, 0x75,0x01, 0x81,0x02,
+        0x05,0x01, 0x09,0x30, 0x09,0x31, 0x16,0x01,0xF8, 0x26,0xFF,0x07, 0x75,0x0C, 0x95,0x02, 0x81,0x06,
+        0xC0, 0xC0,
+    };
+    static const struct ms_report r[] = {
+        { 5, { 2, 1, 0x2C, 0x81, 0xF3 }, 300, -200, 1 },
+        { 5, { 1, 0, 9, 9, 9 }, 0, 0, 1 },
+        { 5, { 2, 0, 0xD4, 0x8E, 0x0C }, -300, 200, 0 },
+    };
+    return ms_run(r, 3, d, (int)sizeof d, 1);
 }
 
 static void lifecycle_counter_thread(void) {
@@ -3674,6 +3736,8 @@ void ktest_run(void) {
     total++; passed += report("lease: a buffer stays unwritable while it is lent", usermode_lease_test());
     total++; passed += report("USB keyboard: found after its reader went to sleep", ktest_usb_kbd_after_reader());
     total++; passed += report("USB mouse: a report longer than three bytes moves it", ktest_usb_mouse_long_report());
+    total++; passed += report("USB mouse: 16-bit X and Y, from its report descriptor", ktest_usb_mouse_16_bit());
+    total++; passed += report("USB mouse: numbered reports and 12-bit fields", ktest_usb_mouse_numbered());
     total++; passed += report("display server: real screen, real keys, given back", ktest_display_server());
     total++; passed += report("screen: one holder, mapped write-combining, given back", usermode_screen_test());
     total++; passed += report("ipc: queued calls, reply tokens, badges", usermode_ipc_test());
