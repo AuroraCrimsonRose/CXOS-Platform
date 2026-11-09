@@ -142,9 +142,9 @@ expect = x: display: only the damage is presented
 group = g4
 edit = os/std/display.xfxn
 <<<
-    if (c.l[i].visible != 1 || c.l[i].opaque != 1) { return 0; }
+    if (l.visible != 1 || l.opaque != 1 || l.alpha != 255 || l.plain != 1) { return 0; }
 ===
-    if (c.l[i].visible != 1) { return 0; }
+    if (l.visible != 1 || l.alpha != 255 || l.plain != 1) { return 0; }
 >>>
 
 [blend-truncates]

@@ -862,6 +862,8 @@ fn wx_up() -> i32 {
     let rc: i32 = dsv_init(&wx, 320, 240, 1, 1);
     if (rc != 0) { return rc; }
     wx_live = 1;
+    // what is true shows at once; the animation tests turn this off
+    wx.w.reduce = 1;
     ds_fill(&wx.desktop, 0, 0, 320, 240, WX_DESK_ARGB);
     return 0;
 }
@@ -1297,6 +1299,16 @@ fn wx_real_body() -> i32 {
     // a third commit from it: the buffer the first gave back can be drawn on again
     wm_key(&wx.w, 0x63);
     if (wx_until(30, 50, 0x636363) == 0) { return 310; }
+    // a retained layer from a real program: L shows it and sends it across, and
+    // again brings it back; the window's own pixels are not redrawn for it
+    let lx: u32 = wx.w.win[low].x + WM_EDGE;
+    let ly: u32 = wx.w.win[low].y + WM_TITLE_H + 22;
+    wm_key(&wx.w, 76);
+    if (wx_until(lx + 148, ly, 0xF0C020) == 0) { return 316; }
+    if (wx_at(lx + 12, ly) != 0x636363) { return 317; }
+    wm_key(&wx.w, 76);
+    if (wx_until(lx + 12, ly, 0xF0C020) == 0) { return 318; }
+    if (wx_until(lx + 148, ly, 0x636363) == 0) { return 319; }
 
     // the close box asks; the program closes its window and exits
     let lc: u32 = wx.w.win[low].client;
@@ -1444,6 +1456,53 @@ fn wx_hostile_body() -> i32 {
     ds_fill(&w.s, 0, 0, 40, 30, 0xFF654321);
     if (win_commit(w) != 0) { return 13; }
     if (w.back != 0) { return 14; }
+
+    // layers: its buffer offered with a lease on some other object
+    let lay: win_layer;
+    if (win_layer_open(&lay, 8, 8) != 0) { return 15; }
+    vm_unmap(lay.s.px, 0);
+    let wrong: i32 = mem_create(4096, 0);
+    let hl: [2]ipc_handle;
+    hl[0].handle = lay.mem; hl[0].op = IPC_HANDLE_COPY; hl[0].rights = HRIGHT_MAP | HRIGHT_INSPECT; hl[0].reserved = 0;
+    hl[1].handle = mem_lend(wrong); hl[1].op = IPC_HANDLE_MOVE; hl[1].rights = IPC_RIGHTS_SAME; hl[1].reserved = 0;
+    memzero((&req) as *u8, sizeof req);
+    req.op = DS_OP_LAYER_NEW; req.win = w.id; req.layer = SC_NONE; req.w = 8; req.h = 8;
+    if (wx_call_raw(wx_hostile_ep, (&req) as *u8, sizeof req, &hl[0], 2, &rep) != E_INVALID_ARGS) { return 16; }
+    handle_close(wrong);
+    // one handle where two are due
+    if (wx_call_raw(wx_hostile_ep, (&req) as *u8, sizeof req, &hl[0], 1, &rep) != E_INVALID_ARGS) { return 17; }
+    // larger than its buffer
+    hl[1].handle = mem_lend(lay.mem);
+    req.w = 800; req.h = 800;
+    if (wx_call_raw(wx_hostile_ep, (&req) as *u8, sizeof req, &hl[0], 2, &rep) != E_INVALID_ARGS) { return 18; }
+    // on somebody's window that is not its own
+    hl[1].handle = mem_lend(lay.mem);
+    req.w = 8; req.h = 8; req.win = 15;
+    if (wx_call_raw(wx_hostile_ep, (&req) as *u8, sizeof req, &hl[0], 2, &rep) != E_INVALID_ARGS) { return 19; }
+    // a layer that is not there, and numbers nobody could mean
+    memzero((&req) as *u8, sizeof req);
+    req.op = DS_OP_LAYER_SET; req.win = w.id; req.layer = 3; req.props.mask = WM_LP_POS;
+    if (wx_call_raw(wx_hostile_ep, (&req) as *u8, sizeof req, 0 as *ipc_handle, 0, &rep) != E_INVALID_ARGS) { return 20; }
+    req.op = DS_OP_LAYER_FREE;
+    if (wx_call_raw(wx_hostile_ep, (&req) as *u8, sizeof req, 0 as *ipc_handle, 0, &rep) != E_INVALID_ARGS) { return 21; }
+    // a real one: while it is on the screen the buffer cannot be written
+    if (win_layer_open(&lay, 8, 8) != 0) { return 22; }
+    ds_fill(&lay.s, 0, 0, 8, 8, 0xFFABCDEF);
+    if (win_layer_add(w, &lay, SC_NONE, 0) != 0) { return 23; }
+    memzero((&a) as *u8, sizeof a);
+    a.object = lay.mem as u32; a.length = 4096; a.prot = MPROT_READ | MPROT_WRITE;
+    if (vm_map(&a) != E_BUSY) { return 24; }
+    let lp: ds_lprops;
+    memzero((&lp) as *u8, sizeof lp);
+    lp.mask = WM_LP_ALPHA; lp.alpha = 256;
+    if (win_layer_set(w, lay.id, &lp) != E_INVALID_ARGS) { return 25; }
+    // and given back when it goes
+    let keep: i32 = handle_duplicate(lay.mem, HRIGHT_MAP | HRIGHT_MAP_WRITE | HRIGHT_INSPECT);
+    if (win_layer_free(w, &lay) != 0) { return 26; }
+    a.object = keep as u32;
+    if (vm_map(&a) != E_OK) { return 27; }
+    vm_unmap(a.addr, 0);
+    handle_close(keep);
     win_close(w);
     return 0;
 }
@@ -1490,6 +1549,657 @@ fn w_hostile(arg: u64) -> i32 {
     return rc;
 }
 
+// ---- springs and retained layers (2.5) ----
+
+// 400: a spring goes where it is sent, by time and not by frames, and a new
+// target keeps its velocity
+fn a_spring(arg: u64) -> i32 {
+    let s: ds_spring;
+    sp_rest(&s, 0);
+    sp_step(&s, 16, 0);
+    if (s.active != 0 || s.moved != 0 || s.x != 0) { return 400; }
+    sp_to(&s, 100, SP_K, SP_C);
+    sp_step(&s, 16, 0);
+    if (s.active != 1 || s.moved != 1 || s.x <= 0 || sp_int(&s) >= 100) { return 401; }
+    // sixteen frames of a millisecond are one of sixteen
+    let t: ds_spring;
+    sp_rest(&t, 0);
+    sp_to(&t, 100, SP_K, SP_C);
+    let i: u32 = 0;
+    while (i < 16) { sp_step(&t, 1, 0); i = i + 1; }
+    if (t.x != s.x || t.v != s.v) { return 402; }
+    // sent back mid-flight: same place, same speed, and still going forward
+    let v: i64 = s.v;
+    let x: i64 = s.x;
+    if (v <= 0) { return 403; }
+    sp_to(&s, 0, SP_K, SP_C);
+    if (s.v != v || s.x != x || s.active != 1 || s.to != 0) { return 404; }
+    sp_step(&s, 1, 0);
+    if (s.x <= x) { return 405; }
+    // it arrives exactly, stops, and in about the time it should
+    sp_to(&s, 100, SP_K, SP_C);
+    let n: u32 = 0;
+    while (s.active == 1 && n < 500) { sp_step(&s, 16, 0); n = n + 1; }
+    if (s.active != 0 || s.x != (100 << 16) || s.v != 0 || s.moved != 1) { return 406; }
+    if (n * 16 > 2000) { return 407; }
+    sp_step(&s, 16, 0);
+    if (s.moved != 0) { return 408; }
+    // less damping overshoots
+    sp_rest(&t, 0);
+    sp_to(&t, 100, SP_K, 5);
+    let most: i64 = 0;
+    n = 0;
+    while (t.active == 1 && n < 1000) { sp_step(&t, 16, 0); most = ds_lmax(most, t.x); n = n + 1; }
+    if (most <= (100 << 16) || t.x != (100 << 16)) { return 409; }
+    // k 0: there at the next step, not before
+    sp_rest(&t, 0);
+    sp_to(&t, 50, 0, 0);
+    if (t.x != 0 || t.active != 1) { return 410; }
+    sp_step(&t, 0, 0);
+    if (t.x != (50 << 16) || t.active != 0 || t.moved != 1) { return 411; }
+    // reduce motion: there at the next step, whatever it asked for
+    sp_rest(&t, 0);
+    sp_to(&t, 50, SP_K, SP_C);
+    sp_step(&t, 1, 1);
+    if (t.x != (50 << 16) || t.active != 0) { return 412; }
+    // a long stall is worth SP_MS_MAX at most
+    sp_rest(&t, 0);
+    sp_to(&t, 100, SP_K, SP_C);
+    sp_rest(&s, 0);
+    sp_to(&s, 100, SP_K, SP_C);
+    sp_step(&t, 100000, 0);
+    sp_step(&s, SP_MS_MAX, 0);
+    if (t.x != s.x || t.v != s.v) { return 413; }
+    // a spring too weak to arrive is made to, in the end
+    sp_rest(&t, 0);
+    sp_to(&t, 1000, 1, SP_C_MAX);
+    n = 0;
+    while (t.active == 1 && n < 100) { sp_step(&t, SP_MS_MAX, 0); n = n + 1; }
+    if (t.active != 0 || t.x != (1000 << 16) || n * SP_MS_MAX > SP_AGE_MAX + SP_MS_MAX) { return 414; }
+    // overshoot stays inside what an opacity and a scale can be
+    sp_rest(&t, 300);
+    if (sp_alpha(&t) != 255) { return 415; }
+    sp_rest(&t, 0 - 20);
+    if (sp_alpha(&t) != 0 || sp_scale(&t) != 0) { return 416; }
+    sp_rest(&t, 1000);
+    if (sp_scale(&t) != 65536) { return 417; }
+    return 0;
+}
+
+const AX_DESK: u32 = 0xFF102030;
+const AX_BLUE: u32 = 0xFF0000FF;
+const AX_RED: u32 = 0xFFFF0000;
+
+global ax_c: ds_comp;
+global ax_sc: ds_screen;
+global ax_desk: ds_surface;
+global ax_sq: ds_surface;
+
+fn ax_up() -> i32 {
+    if (ds_screen_virtual(&ax_sc, 64, 48, SCREEN_XRGB8888) != 0) { return 1; }
+    if (ds_comp_init(&ax_c, 64, 48) != 0) { return 1; }
+    if (ds_surface_new(&ax_desk, 64, 48) != 0 || ds_surface_new(&ax_sq, 8, 8) != 0) { return 1; }
+    ds_fill(&ax_desk, 0, 0, 64, 48, AX_DESK);
+    ds_fill(&ax_sq, 0, 0, 4, 8, AX_BLUE);       // left half blue
+    ds_fill(&ax_sq, 4, 0, 4, 8, AX_RED);        // right half red
+    return 0;
+}
+
+fn ax_down() -> void {
+    ds_surface_free(&ax_desk);
+    ds_surface_free(&ax_sq);
+    ds_comp_free(&ax_c);
+    ds_screen_close(&ax_sc);
+}
+
+// The desktop and the square, solid, at (x, y).
+fn ax_layer(x: i32, y: i32) -> *ds_layer {
+    ds_layers_clear(&ax_c);
+    ds_layer_put(&ax_c, &ax_desk, 0, 0, 1);
+    return &ax_c.l[ds_layer_put(&ax_c, &ax_sq, x, y, 1)];
+}
+
+fn ax_frame() -> void {
+    ds_damage_all(&ax_c.damage);
+    ds_compose(&ax_c);
+    ds_present(&ax_c, &ax_sc);
+}
+
+fn ax_is(x: u32, y: u32, argb: u32) -> u32 {
+    if (ds_screen_pixel(&ax_sc, x, y) == (argb & 0xFFFFFF)) { return 1; }
+    return 0;
+}
+
+// 420: a layer can be off any edge, faded, scaled, turned and clipped, and
+// only one that truly hides what is under it is allowed to
+fn a_draw_body() -> i32 {
+    let l: *ds_layer = ax_layer(0 - 2, 0 - 2);
+    ax_frame();
+    if (ax_is(0, 0, AX_BLUE) == 0 || ax_is(1, 1, AX_BLUE) == 0 || ax_is(2, 2, AX_RED) == 0
+        || ax_is(5, 5, AX_RED) == 0 || ax_is(6, 6, AX_DESK) == 0) { return 420; }
+    // off the other edges
+    l = ax_layer(60, 44);
+    ax_frame();
+    if (ax_is(60, 44, AX_BLUE) == 0 || ax_is(63, 47, AX_BLUE) == 0 || ax_is(59, 44, AX_DESK) == 0) { return 421; }
+    // off altogether
+    l = ax_layer(0 - 8, 0);
+    ax_frame();
+    if (ax_is(0, 0, AX_DESK) == 0 || ds_screen_hash(&ax_sc) == 0) { return 422; }
+    let e: ds_rect;
+    if (ds_extent(l, 64, 48, &e) != 0) { return 423; }
+    l = ax_layer(64, 0);
+    if (ds_extent(l, 64, 48, &e) != 0) { return 424; }
+    // a move across the edge damages what it left and where it went
+    l = ax_layer(0 - 4, 0);
+    ds_damage_clear(&ax_c.damage);
+    ds_layer_move(&ax_c, 1, 4, 0);
+    if (ax_c.damage.n != 1 || ds_damage_area(&ax_c.damage) != 96) { return 425; }
+    // half faded: 0xFF0000FF at 128 is 0x80000080, over the desktop 0x081098
+    l = ax_layer(10, 10);
+    l.alpha = 128;
+    ax_frame();
+    if (ax_is(10, 10, 0x081098) == 0) { return 426; }
+    let r: ds_rect;
+    ds_rect_set(&r, 10, 10, 2, 2);
+    if (ds_layer_hides(&ax_c, 1, &r) != 0) { return 427; }
+    l.alpha = 0;
+    ax_frame();
+    if (ax_is(10, 10, AX_DESK) == 0) { return 428; }
+    // twice the size
+    l = ax_layer(10, 10);
+    if (ds_layer_hides(&ax_c, 1, &r) != 1) { return 429; }
+    l.plain = 0; l.a = 131072; l.d = 131072;
+    if (ds_layer_hides(&ax_c, 1, &r) != 0) { return 430; }
+    ax_frame();
+    if (ax_is(9, 9, AX_DESK) == 0 || ax_is(10, 10, AX_BLUE) == 0 || ax_is(17, 17, AX_BLUE) == 0
+        || ax_is(18, 18, AX_RED) == 0 || ax_is(25, 25, AX_RED) == 0 || ax_is(26, 26, AX_DESK) == 0) { return 431; }
+    if (ds_extent(l, 64, 48, &e) != 1 || e.x != 10 || e.y != 10 || e.w != 16 || e.h != 16) { return 432; }
+    // a quarter turn: x' = x - v, y' = y + u
+    l = ax_layer(40, 10);
+    l.plain = 0; l.a = 0; l.b = 0 - 65536; l.c = 65536; l.d = 0;
+    ax_frame();
+    if (ax_is(36, 11, AX_BLUE) == 0 || ax_is(36, 16, AX_RED) == 0 || ax_is(40, 11, AX_DESK) == 0
+        || ax_is(32, 11, AX_BLUE) == 0 || ax_is(31, 11, AX_DESK) == 0) { return 433; }
+    if (ds_extent(l, 64, 48, &e) != 1 || e.x != 32 || e.y != 10 || e.w != 8 || e.h != 8) { return 434; }
+    // collapsed to nothing: not drawn, and no division by nothing
+    l = ax_layer(20, 20);
+    l.plain = 0; l.a = 512; l.d = 512;
+    ax_frame();
+    if (ax_is(20, 20, AX_DESK) == 0) { return 435; }
+    l = ax_layer(20, 20);
+    l.plain = 0; l.a = 0; l.d = 0;
+    ax_frame();
+    if (ax_is(20, 20, AX_DESK) == 0) { return 436; }
+    // every row the same: an area on the screen, and no inverse to draw it with
+    l = ax_layer(20, 20);
+    l.plain = 0; l.a = 65536; l.b = 65536; l.c = 65536; l.d = 65536;
+    ax_frame();
+    if (ax_is(20, 20, AX_DESK) == 0) { return 442; }
+    // the clip
+    l = ax_layer(10, 10);
+    ds_rect_set(&l.clip, 0, 0, 12, 48);
+    ax_frame();
+    if (ax_is(11, 11, AX_BLUE) == 0 || ax_is(12, 12, AX_DESK) == 0) { return 437; }
+    if (ds_layer_hides(&ax_c, 1, &r) != 1) { return 438; }
+    ds_rect_set(&r, 10, 10, 4, 2);              // across the clip's edge
+    if (ds_layer_hides(&ax_c, 1, &r) != 0) { return 440; }
+    return 0;
+}
+
+fn a_draw(arg: u64) -> i32 {
+    if (ax_up() != 0) { return 441; }
+    let rc: i32 = a_draw_body();
+    ax_down();
+    return rc;
+}
+
+// A layer of one colour on window w: its id, or an error.
+fn ay_layer(w: u32, parent: u32, width: u32, height: u32, argb: u32) -> i32 {
+    let s: ds_surface;
+    let rc: i32 = ds_surface_new(&s, width, height);
+    if (rc != 0) { return rc; }
+    ds_fill(&s, 0, 0, width, height, argb);
+    let id: i32 = wm_layer_new(&wx.w, w, parent, &s, 0, 0);
+    if (id < 0) { ds_surface_free(&s); }
+    return id;
+}
+
+// Everything on the springs, one frame at a time, until it has all arrived.
+fn ay_settle() -> u32 {
+    let n: u32 = 0;
+    while (wm_any_active(&wx.w) == 1 && n < 500) {
+        wm_tick(&wx.w, wx.w.now + 16);
+        // each frame in software is minutes of a test under emulation; every
+        // fourth still shows what a frame leaves behind for the next to clean
+        if ((n & 3) == 0) { wx_draw(); }
+        n = n + 1;
+    }
+    wx_draw();
+    if (n == 500) { return 0; }
+    return 1;
+}
+
+fn ay_props(p: *ds_lprops, mask: u32) -> void {
+    memzero(p as *u8, sizeof *p);
+    p.mask = mask;
+}
+
+fn ay_at(w: u32, id: u32, x: i32, y: i32) -> i32 {
+    let p: ds_lprops;
+    ay_props(&p, WM_LP_POS);
+    p.x = x; p.y = y;
+    return wm_layer_set(&wx.w, w, id, &p);
+}
+
+const AY_C: u32 = 0xFF204060;
+const AY_RED: u32 = 0xFFFF0000;
+const AY_WHITE: u32 = 0xFFFFFFFF;
+
+// The tree: 440. The first window is at (24, 24), its content at (26, 44).
+fn a_tree_body() -> i32 {
+    if (wx_up() != 0) { return 440; }
+    let c: u32 = wm_client_new(&wx.w);
+    let w: u32 = wx_window(c, 100, 60, 0, AY_C);
+    if (w == WM_NONE) { return 441; }
+    wx_draw();
+    let id: i32 = ay_layer(w, SC_NONE, 10, 10, AY_RED);
+    if (id < 0) { return 442; }
+    wx_draw();
+    if (wx_at(26, 44) != (AY_RED & 0xFFFFFF) || wx_at(36, 54) != (AY_C & 0xFFFFFF)) { return 443; }
+    // moved at once: at the next frame, and where it was is clean
+    if (ay_at(w, id as u32, 20, 10) != 0) { return 444; }
+    wm_tick(&wx.w, wx.w.now + 1);
+    if (wx.comp.damage.n == 0) { return 445; }
+    wx_draw();
+    if (wx_at(46, 54) != (AY_RED & 0xFFFFFF) || wx_at(26, 44) != (AY_C & 0xFFFFFF)) { return 446; }
+    // a child goes with its parent, and is drawn over it
+    let kid: i32 = ay_layer(w, id as u32, 4, 4, AY_WHITE);
+    if (kid < 0 || ay_at(w, kid as u32, 2, 3) != 0) { return 447; }
+    wm_tick(&wx.w, wx.w.now + 1);
+    wx_draw();
+    if (wx_at(48, 57) != 0xFFFFFF) { return 448; }
+    if (ay_at(w, id as u32, 30, 10) != 0) { return 449; }
+    wm_tick(&wx.w, wx.w.now + 1);
+    wx_draw();
+    if (wx_at(58, 57) != 0xFFFFFF || wx_at(48, 57) != (AY_C & 0xFFFFFF)) { return 450; }
+    // the parent at twice the size takes the child's place and size with it
+    let p: ds_lprops;
+    ay_props(&p, WM_LP_SCALE);
+    p.scale = 2000;
+    if (wm_layer_set(&wx.w, w, id as u32, &p) != 0) { return 451; }
+    wm_tick(&wx.w, wx.w.now + 1);
+    wx_draw();
+    if (wx_at(60, 60) != 0xFFFFFF || wx_at(67, 67) != 0xFFFFFF
+        || wx_at(68, 60) != (AY_RED & 0xFFFFFF) || wx_at(59, 60) != (AY_RED & 0xFFFFFF)) { return 452; }
+    // the parent's anchor: scaled about its middle, its corner moves out
+    ay_props(&p, WM_LP_ANCHOR);
+    p.ax = 5; p.ay = 5;
+    if (wm_layer_set(&wx.w, w, id as u32, &p) != 0) { return 453; }
+    wm_tick(&wx.w, wx.w.now + 1);
+    wx_draw();
+    // the layer was (56,54) for 20x20; about (61,59) it is (51,49) for 20x20
+    if (wx_at(51, 49) != (AY_RED & 0xFFFFFF) || wx_at(50, 49) != (AY_C & 0xFFFFFF)) { return 454; }
+    ay_props(&p, WM_LP_ANCHOR);
+    if (wm_layer_set(&wx.w, w, id as u32, &p) != 0) { return 455; }
+    // the parent half faded fades the child too
+    ay_props(&p, WM_LP_ALPHA);
+    p.alpha = 128;
+    if (wm_layer_set(&wx.w, w, id as u32, &p) != 0) { return 456; }
+    wm_tick(&wx.w, wx.w.now + 1);
+    wx_draw();
+    let under: u32 = ds_over(ds_fade(AY_RED, 128), AY_C);
+    if (wx_at(61, 61) != (ds_over(ds_fade(AY_WHITE, 128), under) & 0xFFFFFF)) { return 457; }
+    // hidden, and shown again
+    ay_props(&p, WM_LP_VISIBLE);
+    p.visible = 0;
+    if (wm_layer_set(&wx.w, w, id as u32, &p) != 0) { return 458; }
+    wx_draw();
+    if (wx_at(61, 61) != (AY_C & 0xFFFFFF)) { return 459; }
+    p.visible = 1;
+    if (wm_layer_set(&wx.w, w, id as u32, &p) != 0) { return 460; }
+    wx_draw();
+    // a parent freed takes its children with it, and leaves nothing on the screen
+    if (wm_layer_free(&wx.w, w, id as u32) != 0) { return 461; }
+    if (wx.w.sc.n[kid as u32].used != 0 || wx.w.sc.n[id as u32].used != 0) { return 462; }
+    wx_draw();
+    if (wx_at(61, 61) != (AY_C & 0xFFFFFF)) { return 463; }
+    if (wx.w.win[w].head != SC_NONE || wx.w.win[w].tail != SC_NONE) { return 464; }
+
+    // a layer cannot reach outside its window's content, any way it is pushed
+    let edge_r: u32 = wx_at(126, 49);
+    let edge_l: u32 = wx_at(25, 49);
+    let below: u32 = wx_at(50, 105);
+    let desk_at: u32 = wx_at(140, 49);
+    let out: i32 = ay_layer(w, SC_NONE, 30, 10, AY_RED);
+    if (out < 0 || ay_at(w, out as u32, 90, 5) != 0) { return 465; }
+    wm_tick(&wx.w, wx.w.now + 1);
+    wx_draw();
+    if (wx_at(125, 49) != (AY_RED & 0xFFFFFF) || wx_at(126, 49) != edge_r || wx_at(140, 49) != desk_at) { return 466; }
+    if (ay_at(w, out as u32, 0 - 20, 5) != 0) { return 467; }
+    wm_tick(&wx.w, wx.w.now + 1);
+    wx_draw();
+    if (wx_at(26, 49) != (AY_RED & 0xFFFFFF) || wx_at(25, 49) != edge_l) { return 468; }
+    if (ay_at(w, out as u32, 5, 55) != 0) { return 469; }
+    wm_tick(&wx.w, wx.w.now + 1);
+    wx_draw();
+    if (wx_at(32, 103) != (AY_RED & 0xFFFFFF) || wx_at(50, 105) != below) { return 470; }
+    // and not by being scaled up over everything
+    ay_props(&p, WM_LP_SCALE);
+    p.scale = WM_SCALE_MAX;
+    if (wm_layer_set(&wx.w, w, out as u32, &p) != 0) { return 471; }
+    wm_tick(&wx.w, wx.w.now + 1);
+    wx_draw();
+    if (wx_at(140, 49) != desk_at || wx_at(126, 49) != edge_r || wx_at(25, 49) != edge_l) { return 472; }
+    if (wm_layer_free(&wx.w, w, out as u32) != 0) { return 473; }
+    wx_draw();
+
+    // what a client may not ask for; each refusal changes nothing
+    let v: i32 = ay_layer(w, SC_NONE, 4, 4, AY_RED);
+    if (v < 0) { return 474; }
+    let b: u32 = wx_window(c, 20, 20, 0, AY_C);
+    if (b == WM_NONE) { return 475; }
+    ay_props(&p, WM_LP_POS);
+    if (wm_layer_set(&wx.w, b, v as u32, &p) != E_INVALID_ARGS) { return 476; }
+    if (wm_layer_set(&wx.w, w, SC_NODE_MAX, &p) != E_INVALID_ARGS) { return 477; }
+    if (wm_layer_set(&wx.w, w, SC_NODE_MAX - 1, &p) != E_INVALID_ARGS) { return 478; }
+    if (wm_layer_free(&wx.w, b, v as u32) != E_INVALID_ARGS) { return 479; }
+    ay_props(&p, 64);
+    if (wm_layer_set(&wx.w, w, v as u32, &p) != E_INVALID_ARGS) { return 480; }
+    ay_props(&p, WM_LP_POS);
+    p.x = WM_POS_MAX + 1;
+    if (wm_layer_set(&wx.w, w, v as u32, &p) != E_INVALID_ARGS) { return 481; }
+    p.x = 0 - WM_POS_MAX - 1;
+    if (wm_layer_set(&wx.w, w, v as u32, &p) != E_INVALID_ARGS) { return 482; }
+    p.x = 0; p.y = WM_POS_MAX + 1;
+    if (wm_layer_set(&wx.w, w, v as u32, &p) != E_INVALID_ARGS) { return 483; }
+    p.y = 0; p.k = SP_K_MAX + 1; p.c = 1;
+    if (wm_layer_set(&wx.w, w, v as u32, &p) != E_INVALID_ARGS) { return 484; }
+    p.k = 1; p.c = SP_C_MAX + 1;
+    if (wm_layer_set(&wx.w, w, v as u32, &p) != E_INVALID_ARGS) { return 485; }
+    p.k = 1; p.c = 0;                   // no damping would never arrive
+    if (wm_layer_set(&wx.w, w, v as u32, &p) != E_INVALID_ARGS) { return 486; }
+    ay_props(&p, WM_LP_SCALE);
+    p.scale = WM_SCALE_MAX + 1;
+    if (wm_layer_set(&wx.w, w, v as u32, &p) != E_INVALID_ARGS) { return 487; }
+    ay_props(&p, WM_LP_ALPHA);
+    p.alpha = 256;
+    if (wm_layer_set(&wx.w, w, v as u32, &p) != E_INVALID_ARGS) { return 488; }
+    ay_props(&p, WM_LP_VISIBLE);
+    p.visible = 2;
+    if (wm_layer_set(&wx.w, w, v as u32, &p) != E_INVALID_ARGS) { return 489; }
+    ay_props(&p, WM_LP_MATRIX);
+    p.m[2] = WM_MATRIX_MAX + 1;
+    if (wm_layer_set(&wx.w, w, v as u32, &p) != E_INVALID_ARGS) { return 490; }
+    ay_props(&p, WM_LP_ANCHOR);
+    p.ay = WM_POS_MAX + 1;
+    if (wm_layer_set(&wx.w, w, v as u32, &p) != E_INVALID_ARGS) { return 491; }
+    let n: *sc_node = &wx.w.sc.n[v as u32];
+    if (n.x.active != 0 || n.sc.active != 0 || n.al.active != 0 || n.visible != 1 || n.ay != 0 || n.m[2] != 0) { return 492; }
+    // a parent of somebody else's, or of another window's
+    if (ay_layer(b, v as u32, 4, 4, AY_RED) != E_INVALID_ARGS) { return 493; }
+    if (ay_layer(w, SC_NODE_MAX - 1, 4, 4, AY_RED) != E_INVALID_ARGS) { return 494; }
+
+    // how deep: the root is one, and four is the deepest
+    let deep: i32 = v;
+    let k: u32 = 1;
+    while (k < SC_DEPTH_MAX) {
+        deep = ay_layer(w, deep as u32, 4, 4, AY_RED);
+        if (deep < 0) { return 495; }
+        k = k + 1;
+    }
+    if (ay_layer(w, deep as u32, 4, 4, AY_RED) != E_INVALID_ARGS) { return 496; }
+    // how many: it has four; twelve more, and no more than that
+    k = 4;
+    while (k < WM_LAYERS_PER_CLIENT) {
+        if (ay_layer(b, SC_NONE, 4, 4, AY_RED) < 0) { return 497; }
+        k = k + 1;
+    }
+    if (ay_layer(w, SC_NONE, 4, 4, AY_RED) != E_NO_RESOURCES) { return 498; }
+    // and a window takes all its layers with it
+    wm_client_gone(&wx.w, c);
+    k = 0;
+    while (k < SC_NODE_MAX) {
+        if (wx.w.sc.n[k].used != 0) { return 499; }
+        k = k + 1;
+    }
+    return 0;
+}
+
+fn a_tree(arg: u64) -> i32 {
+    let rc: i32 = a_tree_body();
+    if (wx_live != 0) { wx_down(); }
+    return rc;
+}
+
+// 500: a window opens, closes and leaves as the eye expects, and what is true
+// (who has it, where a click goes) does not wait for the picture
+fn a_windows_body() -> i32 {
+    if (wx_up() != 0) { return 500; }
+    wx.w.reduce = 0;
+    wm_tick(&wx.w, 1000);
+    let c: u32 = wm_client_new(&wx.w);
+    let w: u32 = wx_window(c, 100, 60, 0, AY_C);
+    if (w == WM_NONE) { return 501; }
+    let win: *wm_win = &wx.w.win[w];
+    let cx: u32 = 76;
+    let cy: u32 = 74;
+    wx_draw();
+    if (wx_at(cx, cy) != WX_DESK) { return 502; }
+    // it answers to input from the first moment
+    if (wm_top_at(&wx.w, cx, cy) != w || wx.w.focus != w) { return 503; }
+    // a frame in: part way, and no more damage than the window's own area
+    wm_tick(&wx.w, 1016);
+    if (wx.comp.damage.n == 0 || ds_damage_area(&wx.comp.damage) > (wm_frame_w(win) as u64) * (wm_frame_h(win) as u64)) { return 504; }
+    wx_draw();
+    if (wx_at(cx, cy) == WX_DESK || wx_at(cx, cy) == (AY_C & 0xFFFFFF)) { return 505; }
+    if (ay_settle() == 0) { return 506; }
+    if (wx_at(cx, cy) != (AY_C & 0xFFFFFF)) { return 507; }
+    // the corners too: full size, nothing left of the way it grew
+    if (wx_at(26, 44) != (AY_C & 0xFFFFFF) || wx_at(125, 103) != (AY_C & 0xFFFFFF)) { return 508; }
+    // nothing moving: no damage, so no composition
+    wm_tick(&wx.w, wx.w.now + 16);
+    if (wx.comp.damage.n != 0) { return 509; }
+
+    // closing: nobody's at once, input goes through it, but it stays while it fades
+    let m: i32 = mem_create(4096, 0);
+    let lease: i32 = mem_lend(m);
+    if (lease <= 0) { return 510; }
+    win.lease[1] = lease;
+    wm_window_destroy(&wx.w, w);
+    if (win.used != 1 || win.ghost != 1 || win.client != WM_NONE) { return 511; }
+    if (wm_owns(&wx.w, c, w) != 0 || wx.w.focus != WM_NONE || wm_top_at(&wx.w, cx, cy) != WM_NONE) { return 512; }
+    wm_tick(&wx.w, wx.w.now + 16);
+    wx_draw();
+    if (wx_at(cx, cy) == WX_DESK || wx_at(cx, cy) == (AY_C & 0xFFFFFF)) { return 513; }
+    if (win.used != 1) { return 514; }
+    // and what it held is still held while it can still be drawn
+    let a: vm_map_args;
+    memzero((&a) as *u8, sizeof a);
+    a.object = m as u32; a.length = 4096; a.prot = MPROT_READ | MPROT_WRITE;
+    if (vm_map(&a) != E_BUSY) { return 515; }
+    if (ay_settle() == 0) { return 516; }
+    if (win.used != 0 || wx_at(cx, cy) != WX_DESK || wx_at(26, 44) != WX_DESK) { return 517; }
+    if (vm_map(&a) != E_OK) { return 518; }
+    vm_unmap(a.addr, 0);
+    handle_close(m);
+
+    // a closing window does not count against its client or take up the last slot
+    let c2: u32 = wm_client_new(&wx.w);
+    let k: u32 = 0;
+    while (k < WM_PER_CLIENT) {
+        if (wx_window(c, 8, 8, 0, AY_C) == WM_NONE) { return 519; }
+        if (wx_window(c2, 8, 8, 0, AY_C) == WM_NONE) { return 520; }
+        k = k + 1;
+    }
+    wm_window_destroy(&wx.w, wx.w.z[0]);        // c's; every slot is still taken
+    if (wx_window(c, 8, 8, 0, AY_C) == WM_NONE) { return 521; }
+    k = 0;
+    while (k < WM_WIN_MAX) {
+        if (wx.w.win[k].used == 1 && wx.w.win[k].ghost == 1) { return 522; }
+        k = k + 1;
+    }
+    return 0;
+}
+
+fn a_windows(arg: u64) -> i32 {
+    let rc: i32 = a_windows_body();
+    if (wx_live != 0) { wx_down(); }
+    return rc;
+}
+
+// 530: minimise and back, and the workspaces. The first window is at (24,24)
+// and the second at (52,52); a point only the second covers is (150,110).
+fn a_system_body() -> i32 {
+    if (wx_up() != 0) { return 530; }
+    wx.w.reduce = 0;
+    wm_tick(&wx.w, 1000);
+    let c: u32 = wm_client_new(&wx.w);
+    let a: u32 = wx_window(c, 100, 60, 0, 0xFF00AA00);
+    let b: u32 = wx_window(c, 100, 60, 0, 0xFF0000BB);
+    if (a == WM_NONE || b == WM_NONE) { return 531; }
+    if (ay_settle() == 0) { return 532; }
+    if (wx_at(150, 110) != 0x0000BB || wx_at(30, 50) != 0x00AA00) { return 533; }
+    let ev: wm_event;
+    wx_clear(c);
+
+    // minimised: at once out of input's way, told, and the picture follows
+    wm_key(&wx.w, WM_KEY_MINIMISE);
+    if (wx.w.win[b].min != 1 || wx.w.focus != a) { return 534; }
+    if (wm_top_at(&wx.w, 150, 110) != WM_NONE) { return 535; }
+    wx_next(c, &ev);
+    if (ev.kind != WM_EV_FOCUS || ev.win != b || ev.a != 0) { return 536; }
+    wx_clear(c);
+    wm_tick(&wx.w, wx.w.now + 16);
+    wx_draw();
+    if (wx_at(150, 110) == WX_DESK) { return 537; }
+    if (ay_settle() == 0) { return 538; }
+    if (wx_at(150, 110) != WX_DESK) { return 539; }
+    // and left out of the frame, not drawn at nothing
+    let k: u32 = 0;
+    while (k < wx.comp.n) {
+        if (wx.comp.l[k].s == (&wx.w.win[b].frame)) { return 540; }
+        k = k + 1;
+    }
+    // the next-window key raises the bottom one, which is now a; then b comes back
+    wm_key(&wx.w, WM_KEY_NEXT);
+    if (wx.w.win[b].min != 1) { return 541; }
+    wm_key(&wx.w, WM_KEY_NEXT);
+    if (wx.w.win[b].min != 0 || wx.w.focus != b || wm_top_at(&wx.w, 150, 110) != b) { return 542; }
+    if (ay_settle() == 0) { return 543; }
+    if (wx_at(150, 110) != 0x0000BB) { return 544; }
+    // whole again, not shrunk or off to one side
+    if (wx_at(54, 72) != 0x0000BB) { return 545; }
+
+    // the next workspace: focus and clicks change now, the view slides
+    wm_key(&wx.w, WM_KEY_WORKSPACE);
+    if (wx.w.ws != 1 || wx.w.focus != WM_NONE || wm_top_at(&wx.w, 150, 110) != WM_NONE) { return 546; }
+    wm_tick(&wx.w, wx.w.now + 32);
+    wx_draw();
+    let at: i32 = sp_int(&wx.w.ws_pos);
+    if (at <= 0 || at >= 320) { return 547; }
+    if (ay_settle() == 0) { return 548; }
+    if (sp_int(&wx.w.ws_pos) != 320 || wx_at(150, 110) != WX_DESK) { return 549; }
+    k = 0;
+    while (k < wx.comp.n) {
+        if (wx.comp.l[k].s == (&wx.w.win[b].frame)) { return 550; }
+        k = k + 1;
+    }
+    // a window opened here is here
+    let d: u32 = wx_window(c, 20, 20, 0, 0xFF777777);
+    if (d == WM_NONE || wx.w.win[d].ws != 1 || wx.w.focus != d) { return 551; }
+    if (ay_settle() == 0) { return 552; }
+    // round the rest of the way
+    wm_key(&wx.w, WM_KEY_WORKSPACE);
+    wm_key(&wx.w, WM_KEY_WORKSPACE);
+    wm_key(&wx.w, WM_KEY_WORKSPACE);
+    if (wx.w.ws != 0 || wx.w.focus != b) { return 553; }
+    if (ay_settle() == 0) { return 554; }
+    if (wx_at(150, 110) != 0x0000BB) { return 555; }
+    // the window sent on goes, and the one under it has the focus
+    wm_key(&wx.w, WM_KEY_SEND);
+    if (wx.w.win[b].ws != 1 || wx.w.focus != a || wm_top_at(&wx.w, 150, 110) != WM_NONE) { return 556; }
+    if (ay_settle() == 0) { return 557; }
+    if (wx_at(150, 110) != WX_DESK || wx_at(30, 50) != 0x00AA00) { return 558; }
+    return 0;
+}
+
+fn a_system(arg: u64) -> i32 {
+    let rc: i32 = a_system_body();
+    if (wx_live != 0) { wx_down(); }
+    return rc;
+}
+
+// 560: reduce motion is the compositor's, and nobody gets round it
+fn a_reduce_body() -> i32 {
+    if (wx_up() != 0) { return 560; }           // wx_up turns it on
+    wm_tick(&wx.w, 1000);
+    let c: u32 = wm_client_new(&wx.w);
+    let w: u32 = wx_window(c, 100, 60, 0, AY_C);
+    if (w == WM_NONE) { return 561; }
+    if (wm_any_active(&wx.w) != 0) { return 562; }
+    wx_draw();
+    if (wx_at(76, 74) != (AY_C & 0xFFFFFF)) { return 563; }
+    // a layer asked to spring arrives at the next frame all the same
+    let id: i32 = ay_layer(w, SC_NONE, 10, 10, AY_RED);
+    if (id < 0) { return 564; }
+    let p: ds_lprops;
+    ay_props(&p, WM_LP_POS | WM_LP_ALPHA | WM_LP_SCALE);
+    p.x = 40; p.y = 20; p.alpha = 100; p.scale = 500; p.k = SP_K; p.c = SP_C;
+    if (wm_layer_set(&wx.w, w, id as u32, &p) != 0) { return 565; }
+    wm_tick(&wx.w, wx.w.now + 1);
+    let n: *sc_node = &wx.w.sc.n[id as u32];
+    if (wm_any_active(&wx.w) != 0 || sp_int(&n.x) != 40 || sp_int(&n.al) != 100 || sp_int(&n.sc) != 500) { return 566; }
+    wx_draw();
+    // turned off, it springs; turned on mid-flight, it arrives
+    wm_key(&wx.w, WM_KEY_MOTION);
+    if (wx.w.reduce != 0) { return 567; }
+    ay_props(&p, WM_LP_POS);
+    p.x = 80; p.y = 20; p.k = SP_K; p.c = SP_C;
+    if (wm_layer_set(&wx.w, w, id as u32, &p) != 0) { return 568; }
+    wm_tick(&wx.w, wx.w.now + 16);
+    if (n.x.active != 1 || sp_int(&n.x) == 80 || sp_int(&n.x) == 40) { return 569; }
+    wm_key(&wx.w, WM_KEY_MOTION);
+    if (wx.w.reduce != 1) { return 570; }
+    wm_tick(&wx.w, wx.w.now + 1);
+    if (n.x.active != 0 || sp_int(&n.x) != 80) { return 571; }
+    // a window closes at once, with nothing left to fade
+    wm_window_destroy(&wx.w, w);
+    if (wx.w.win[w].used != 0) { return 572; }
+    return 0;
+}
+
+fn a_reduce(arg: u64) -> i32 {
+    let rc: i32 = a_reduce_body();
+    if (wx_live != 0) { wx_down(); }
+    return rc;
+}
+
+// 580: the server's own loop, on its own clock: it animates, then stops
+fn a_loop_body() -> i32 {
+    if (wx_up() != 0) { return 580; }
+    wx.w.reduce = 0;
+    let c: u32 = wm_client_new(&wx.w);
+    let w: u32 = wx_window(c, 100, 60, 0, AY_C);
+    if (w == WM_NONE) { return 581; }
+    let t0: u64 = time_now_ms();
+    while (wm_any_active(&wx.w) == 1 && time_now_ms() - t0 < WX_WAIT_MS) { dsv_step(&wx); }
+    if (wm_any_active(&wx.w) == 1) { return 582; }
+    if (wx.frames < 2) { return 583; }
+    dsv_step(&wx);                      // whatever the last one left
+    if (wx_at(76, 74) != (AY_C & 0xFFFFFF)) { return 584; }
+    let f0: u32 = wx.frames;
+    let k: u32 = 0;
+    while (k < 5) { dsv_step(&wx); k = k + 1; }
+    if (wx.frames != f0) { return 585; }
+    return 0;
+}
+
+fn a_loop(arg: u64) -> i32 {
+    let rc: i32 = a_loop_body();
+    if (wx_live != 0) { wx_down(); }
+    return rc;
+}
+
 // The names are what the boot reports, after "x: ".
 fn all() -> void {
     test_run("threads: create refusals",               t_create_refused,           30000);
@@ -1532,6 +2242,13 @@ fn all() -> void {
     test_run("windows: a title's pixels",              w_text,                     30000);
     test_run("windows: real clients, the whole way",   w_real,                     400000);
     test_run("windows: a hostile client is refused",   w_hostile,                  120000);
+    test_run("springs: time, velocity, arrival",       a_spring,                   30000);
+    test_run("layers: off the edges, faded, turned",   a_draw,                     30000);
+    test_run("layers: a tree, kept to its window",     a_tree,                     120000);
+    test_run("animation: open and close",              a_windows,                  300000);
+    test_run("animation: minimise and workspaces",     a_system,                   300000);
+    test_run("animation: reduce motion for everybody", a_reduce,                   30000);
+    test_run("animation: the loop runs, then stops",   a_loop,                     120000);
 }
 
 fn _start() -> void { test_main(all); }

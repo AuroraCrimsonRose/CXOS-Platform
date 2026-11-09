@@ -122,6 +122,30 @@ client's side), `os/apps/displayd.xfxn`, `os/apps/wdemo.xfxn`.
 - X Visual's layout engine produces the layer tree.
 - No damage means no composition: an idle screen costs no CPU.
 
+**Built (2.5):** `os/std/scene.xfxn` holds the springs (Q16.16, semi-implicit
+Euler at fixed 1 ms substeps, so the result depends on time and not on the
+frame rate; a stall counts for 250 ms at most, and a spring still running at
+10 s is put where it was going) and the retained tree (64 nodes, depth 4, 16
+per client). `ds_layer` has a signed position, an opacity, a 2×2 matrix drawn
+nearest-neighbour through its inverse, and a clip. A new target keeps the
+velocity. A client asks through `win_layer_add`, `win_layer_set` and
+`win_layer_free`; every number is checked in `wm_layer_set`, and a client's
+layers are clipped to its own content box.
+
+What input acts on changes at once; the springs only carry the picture. A
+window's x, y and workspace are true from the moment they change, and a
+closing window is a ghost: no client, no input, no focus, its buffers and
+leases held until the fade ends, and reaped early when a slot or a node is
+needed. With no spring active `wm_animate` does nothing at all.
+
+Limits: a layer's buffer does not change (new pixels are a new layer); no
+filtering; reduce motion is a flag (`displayd --reduce-motion`, Ctrl+R) and is
+not saved anywhere until Settings exists; the USB keyboard is still polled, so
+the server's loop wakes every 16 ms and composes nothing. Until the trusted UI
+(step 6) the server holds Ctrl+N (next window, or back from minimised), Ctrl+B
+(minimise), Ctrl+W (next workspace), Ctrl+E (send the window on) and Ctrl+R, as
+it holds Ctrl+Q.
+
 ## 7. Input and trusted UI
 
 - Input goes only to the focused window. Global hotkeys need a capability.

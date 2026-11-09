@@ -15,6 +15,11 @@
 // looked for in /Shared/Programs.
 //
 // `displayd --empty` starts nobody and waits for Ctrl+Q.
+// `displayd --reduce-motion [client ...]` starts with motion reduced for every
+// client (Ctrl+R turns it on and off).
+//
+// Ctrl+N next window (and back from minimised), Ctrl+B minimise, Ctrl+W next
+// workspace, Ctrl+E send this window to the next.
 //
 // Ctrl+Q ends the session, as does the last client going. When it ends, the
 // screen's and the keyboard's last references go: the kernel repaints its
@@ -98,12 +103,18 @@ fn _start() -> void {
     let argc: u32 = 0;
     if (args_read(&ai) == 0) { argc = ai.count; }
     let empty: u32 = 0;
-    if (argc > 1 && strlen((ai.base + ((ai.base as *u32)[2] as u64)) as *u8) == 7
-        && strneq((ai.base + ((ai.base as *u32)[2] as u64)) as *u8, "--empty", 7) != 0) {
+    let first: u32 = 1;
+    let page: *u32 = ai.base as *u32;
+    if (argc > 1 && strlen((ai.base + (page[2] as u64)) as *u8) == 15
+        && strneq((ai.base + (page[2] as u64)) as *u8, "--reduce-motion", 15) != 0) {
+        dd.w.reduce = 1;
+        first = 2;
+    }
+    if (argc > first && strlen((ai.base + (page[1 + first] as u64)) as *u8) == 7
+        && strneq((ai.base + (page[1 + first] as u64)) as *u8, "--empty", 7) != 0) {
         empty = 1;
-    } else if (argc > 1) {
-        let page: *u32 = ai.base as *u32;
-        let i: u32 = 1;
+    } else if (argc > first) {
+        let i: u32 = first;
         while (i < argc) {
             dd_launch((ai.base + (page[1 + i] as u64)) as *u8);
             i = i + 1;

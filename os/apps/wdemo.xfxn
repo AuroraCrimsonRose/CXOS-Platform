@@ -17,10 +17,22 @@
 //
 // The key H stops it reading events for good, which is what a client that
 // has hung looks like to the server.
+//
+// The key L shows a retained layer, a small square, and sends it to the other
+// side of the window on a spring; F fades it in or out, S scales it. Pressed
+// again mid-flight it turns round with the speed it has. The server does the
+// animating: this program is asleep in win_wait.
 
 import "window.xfxn";
 
 global wd_win: win;
+global wd_layer: win_layer;
+global wd_have_layer: u32;
+global wd_right: u32;
+global wd_faded: u32;
+global wd_big: u32;
+
+const WD_SQUARE: u32 = 24;
 
 fn wd_hex(s: *u8) -> u32 {
     let v: u32 = 0;
@@ -69,6 +81,46 @@ fn wd_paint(rgb: u32, alpha: u32) -> i32 {
     return win_commit(&wd_win);
 }
 
+// Show the square, and send it across. 0 or an error.
+fn wd_layer_go(p: *ds_lprops) -> i32 {
+    if (wd_have_layer == 0) {
+        let rc: i32 = win_layer_open(&wd_layer, WD_SQUARE, WD_SQUARE);
+        if (rc != 0) { return rc; }
+        ds_fill(&wd_layer.s, 0, 0, WD_SQUARE, WD_SQUARE, 0xFFF0C020);
+        rc = win_layer_add(&wd_win, &wd_layer, SC_NONE, 0);
+        if (rc != 0) { return rc; }
+        wd_have_layer = 1;
+    }
+    p.k = SP_K;
+    p.c = 22;       // under-damped, so that it is seen to be a spring
+    return win_layer_set(&wd_win, wd_layer.id, p);
+}
+
+// A key for the layer: 0, or an error.
+fn wd_layer_key(code: i32) -> i32 {
+    let p: ds_lprops;
+    memzero((&p) as *u8, sizeof p);
+    if (code == 76) {
+        wd_right = 1 - wd_right;
+        p.mask = WM_LP_POS;
+        p.x = (wd_right * (wd_win.width - WD_SQUARE)) as i32;
+        p.y = 10;
+    }
+    if (code == 70) {
+        wd_faded = 1 - wd_faded;
+        p.mask = WM_LP_ALPHA;
+        p.alpha = 255 - wd_faded * 200;
+    }
+    if (code == 83) {
+        wd_big = 1 - wd_big;
+        p.mask = WM_LP_SCALE | WM_LP_ANCHOR;
+        p.ax = (WD_SQUARE / 2) as i32;
+        p.ay = (WD_SQUARE / 2) as i32;
+        p.scale = 1000 + wd_big * 800;
+    }
+    return wd_layer_go(&p);
+}
+
 fn _start() -> void {
     let ep: i32 = win_connection();
     if (ep <= 0) { exit(2); }
@@ -89,7 +141,10 @@ fn _start() -> void {
         if (ev.kind == WM_EV_KEY && ev.a == 72) {
             while (1 == 1) { sleep_ms(1000); }
         }
-        if (ev.kind == WM_EV_KEY) {
+        if (ev.kind == WM_EV_KEY && (ev.a == 76 || ev.a == 70 || ev.a == 83)) {
+            rc = wd_layer_key(ev.a);
+            if (rc != 0) { exit(6); }
+        } else if (ev.kind == WM_EV_KEY) {
             rgb = wd_key_colour(ev.a as u32);
             rc = wd_paint(rgb, alpha);
             if (rc != 0) { exit(5); }

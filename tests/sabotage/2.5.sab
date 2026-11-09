@@ -1,0 +1,495 @@
+# Step 2.5, retained layers and springs, and the review fix before it (a
+# thread already on an AP when preemption comes on), run by `cxk test
+# sabotage`. Each must turn red exactly the self-tests named. Format:
+# docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage". The X tests report a code,
+# not a logged step, so theirs name the test alone. A group holds at most one
+# sabotage per test.
+
+# ---- the review fix ----
+
+[preempt-no-kick]
+# preemption comes on and nobody tells the APs
+expect = preemption reaches a thread already on an AP @ sched enable running ap: step 3
+group = g1
+edit = kernel/cpu/sched.c
+<<<
+    for (unsigned i = 1; i < cpu_count(); i++) smp_kick(i);
+===
+>>>
+
+[preempt-kick-ignored]
+# the AP is told and does nothing about it
+expect = preemption reaches a thread already on an AP @ sched enable running ap: step 3
+group = g2
+edit = kernel/arch/x86_64/idt.c
+<<<
+        if (r->vector == SMP_IPI_VECTOR) sched_cpu_kicked();
+===
+>>>
+
+# ---- springs ----
+
+[spring-retarget-stops]
+# a new target throws the velocity away
+expect = x: springs: time, velocity, arrival
+group = g1
+edit = os/std/scene.xfxn
+<<<
+    s.to = (target as i64) << 16;
+    s.age = 0;
+===
+    s.to = (target as i64) << 16;
+    s.v = 0;
+    s.age = 0;
+>>>
+
+[spring-no-stall-cap]
+# a long stall is integrated in full
+expect = x: springs: time, velocity, arrival
+group = g2
+edit = os/std/scene.xfxn
+<<<
+    let n: u32 = ds_min(ms, SP_MS_MAX);
+===
+    let n: u32 = ms;
+>>>
+
+[spring-no-age-cap]
+# a spring too weak to arrive goes on for ever
+expect = x: springs: time, velocity, arrival
+group = g3
+edit = os/std/scene.xfxn
+<<<
+        if (s.age >= SP_AGE_MAX || (sp_abs
+===
+        if ((sp_abs
+>>>
+
+[spring-no-jump]
+# k 0 is taken for a spring with no force
+expect = x: springs: time, velocity, arrival
+group = g4
+edit = os/std/scene.xfxn
+<<<
+    if (k == 0) { s.jump = 1; return; }
+===
+>>>
+
+# ---- drawing ----
+
+[hides-ignores-alpha]
+# a faded layer is taken to hide what is under it
+expect = x: layers: off the edges, faded, turned
+group = g1
+edit = os/std/display.xfxn
+<<<
+    if (l.visible != 1 || l.opaque != 1 || l.alpha != 255 || l.plain != 1) { return 0; }
+===
+    if (l.visible != 1 || l.opaque != 1 || l.plain != 1) { return 0; }
+>>>
+
+[hides-ignores-matrix]
+# a scaled layer is taken to hide its old rectangle
+expect = x: layers: off the edges, faded, turned
+group = g2
+edit = os/std/display.xfxn
+<<<
+    if (l.visible != 1 || l.opaque != 1 || l.alpha != 255 || l.plain != 1) { return 0; }
+===
+    if (l.visible != 1 || l.opaque != 1 || l.alpha != 255) { return 0; }
+>>>
+
+[hides-ignores-clip]
+# a clipped layer is taken to hide what it does not draw
+expect = x: layers: off the edges, faded, turned
+group = g3
+edit = os/std/display.xfxn
+<<<
+    if (ds_rect_holds(&l.clip, r) == 0) { return 0; }
+===
+>>>
+
+[plain-no-fade]
+# a layer with no matrix ignores its opacity
+expect = x: layers: off the edges, faded, turned
+group = g4
+edit = os/std/display.xfxn
+<<<
+            while (i < r.w) { d[r.x + i] = ds_over(ds_fade(s[ox + i], l.alpha), d[r.x + i]); i = i + 1; }
+===
+            while (i < r.w) { d[r.x + i] = ds_over(s[ox + i], d[r.x + i]); i = i + 1; }
+>>>
+
+[inverse-wrong]
+# the inverse has a sign wrong: a rotation samples the wrong side
+expect = x: layers: off the edges, faded, turned
+group = g5
+edit = os/std/display.xfxn
+<<<
+    let ib: i64 = (0 - (b << 32)) / det;
+===
+    let ib: i64 = (b << 32) / det;
+>>>
+
+[collapsed-divides]
+# a matrix with no inverse is divided by: the server's fault
+expect = x: layers: off the edges, faded, turned
+expect = x tests: the runner ran cleanly
+expect = x: *
+group = alone1
+edit = os/std/display.xfxn
+<<<
+    if (det > (0 - DS_DET_MIN) && det < DS_DET_MIN) { return; }
+===
+>>>
+
+[extent-ignores-clip]
+# a layer's clip does not limit where it draws
+expect = x: layers: off the edges, faded, turned
+expect = x: layers: a tree, kept to its window
+group = alone2
+edit = os/std/display.xfxn
+<<<
+    x1 = ds_lmin(x1, ds_lmin((l.clip.x as i64) + (l.clip.w as i64), width as i64));
+===
+    x1 = ds_lmin(x1, width as i64);
+>>>
+
+# ---- the tree, and what a client may ask of it ----
+
+[set-any-window]
+# a layer is changed through a window it is not on
+expect = x: layers: a tree, kept to its window
+group = g1
+edit = os/std/wm.xfxn
+<<<
+fn wm_layer_set(w: *wm, i: u32, id: u32, p: *ds_lprops) -> i32 {
+    if (sc_owns(&w.sc, i, id) == 0) { return E_INVALID_ARGS; }
+===
+fn wm_layer_set(w: *wm, i: u32, id: u32, p: *ds_lprops) -> i32 {
+>>>
+
+[set-unknown-bits]
+# a mask with bits nobody defined is accepted
+expect = x: layers: a tree, kept to its window
+group = g2
+edit = os/std/wm.xfxn
+<<<
+    if ((p.mask & (0 - 1 - WM_LP_ALL)) != 0) { return E_INVALID_ARGS; }
+===
+>>>
+
+[set-any-spring]
+# a spring that would never arrive is accepted
+expect = x: layers: a tree, kept to its window
+group = g3
+edit = os/std/wm.xfxn
+<<<
+    if (p.k > SP_K_MAX || p.c > SP_C_MAX || (p.k != 0 && p.c == 0)) { return E_INVALID_ARGS; }
+===
+>>>
+
+[set-any-position]
+# a position off the end of the arithmetic is accepted
+expect = x: layers: a tree, kept to its window
+group = g4
+edit = os/std/wm.xfxn
+<<<
+    if ((p.mask & WM_LP_POS) != 0 && (wm_in(p.x, WM_POS_MAX) == 0 || wm_in(p.y, WM_POS_MAX) == 0)) { return E_INVALID_ARGS; }
+===
+>>>
+
+[set-any-scale]
+expect = x: layers: a tree, kept to its window
+group = g5
+edit = os/std/wm.xfxn
+<<<
+    if ((p.mask & WM_LP_SCALE) != 0 && p.scale > WM_SCALE_MAX) { return E_INVALID_ARGS; }
+===
+>>>
+
+[set-any-alpha]
+expect = x: layers: a tree, kept to its window
+expect = x: windows: a hostile client is refused
+group = g6
+edit = os/std/wm.xfxn
+<<<
+    if ((p.mask & WM_LP_ALPHA) != 0 && p.alpha > 255) { return E_INVALID_ARGS; }
+===
+>>>
+
+[set-any-anchor]
+expect = x: layers: a tree, kept to its window
+group = g7
+edit = os/std/wm.xfxn
+<<<
+    if ((p.mask & WM_LP_ANCHOR) != 0 && (wm_in(p.ax, WM_POS_MAX) == 0 || wm_in(p.ay, WM_POS_MAX) == 0)) { return E_INVALID_ARGS; }
+===
+>>>
+
+[set-any-visible]
+expect = x: layers: a tree, kept to its window
+group = g8
+edit = os/std/wm.xfxn
+<<<
+    if ((p.mask & WM_LP_VISIBLE) != 0 && p.visible > 1) { return E_INVALID_ARGS; }
+===
+>>>
+
+[set-any-matrix]
+expect = x: layers: a tree, kept to its window
+group = g9
+edit = os/std/wm.xfxn
+<<<
+            if (wm_in(p.m[k], WM_MATRIX_MAX) == 0) { return E_INVALID_ARGS; }
+===
+>>>
+
+[tree-no-depth-limit]
+expect = x: layers: a tree, kept to its window
+group = g10
+edit = os/std/scene.xfxn
+<<<
+        if (depth > SC_DEPTH_MAX) { return E_INVALID_ARGS; }
+===
+>>>
+
+[tree-no-client-limit]
+# one client takes every node there is
+expect = x: layers: a tree, kept to its window
+group = g11
+edit = os/std/wm.xfxn
+<<<
+    if (wm_layers_of(w, win.client) >= WM_LAYERS_PER_CLIENT) { return E_NO_RESOURCES; }
+===
+>>>
+
+[free-any-window]
+# freeing a layer that is not there walks a list for ever: the server hangs
+expect = x: windows: a hostile client is refused
+expect = x tests: the runner ran cleanly
+expect = x: *
+group = g12
+edit = os/std/wm.xfxn
+<<<
+fn wm_layer_free(w: *wm, i: u32, id: u32) -> i32 {
+    if (sc_owns(&w.sc, i, id) == 0) { return E_INVALID_ARGS; }
+===
+fn wm_layer_free(w: *wm, i: u32, id: u32) -> i32 {
+>>>
+
+[parent-any-window]
+# a layer is hung under another window's
+expect = x: layers: a tree, kept to its window
+group = g13
+edit = os/std/scene.xfxn
+<<<
+        if (sc_owns(sc, owner, parent) == 0) { return E_INVALID_ARGS; }
+===
+>>>
+
+[client-layers-unclipped]
+# a client's layer draws outside its window
+expect = x: layers: a tree, kept to its window
+group = g14
+edit = os/std/wm.xfxn
+<<<
+        sc_emit(w.comp, &w.sc, k, &content, &clip);
+===
+        sc_emit(w.comp, &w.sc, k, &content, 0 as *ds_rect);
+>>>
+
+[matrix-no-fade]
+# a scaled layer ignores its opacity
+expect = x: layers: a tree, kept to its window
+expect = x: animation: open and close
+group = g15
+edit = os/std/display.xfxn
+<<<
+                else { row[r.x + i] = ds_over(ds_fade(p, l.alpha), row[r.x + i]); }
+===
+                else { row[r.x + i] = ds_over(p, row[r.x + i]); }
+>>>
+
+# ---- what the system animates ----
+
+[close-no-ghost]
+# a window goes at once, with nothing to fade
+expect = x: animation: open and close
+group = g1
+edit = os/std/wm.xfxn
+<<<
+    if (w.reduce == 1) { wm_window_reap(w, i); return; }
+===
+    if (w.reduce != 7) { wm_window_reap(w, i); return; }
+>>>
+
+[ghost-takes-input]
+# a closing window still catches clicks, and being given the focus, faults
+# the server on its client number
+expect = x: animation: open and close
+expect = x tests: the runner ran cleanly
+expect = x: *
+group = alone6
+edit = os/std/wm.xfxn
+<<<
+    if (win.ghost == 1 || win.min == 1 || win.ws != w.ws) { return 0; }
+===
+    if (win.min == 1 || win.ws != w.ws) { return 0; }
+>>>
+
+[ghost-keeps-slot]
+# a closing window takes the last slot from a real one
+expect = x: animation: open and close
+group = g3
+edit = os/std/wm.xfxn
+<<<
+    if (free == WM_NONE) { free = wm_reap_ghost(w); }
+===
+>>>
+
+[moving-not-damaged]
+# what moves is not repainted
+expect = x: windows: real clients, the whole way
+expect = x: layers: a tree, kept to its window
+expect = x: animation: open and close
+expect = x: animation: minimise and workspaces
+expect = x: animation: the loop runs, then stops
+group = alone3
+edit = os/std/wm.xfxn
+<<<
+        if (w.comp.l[i].anim == 1) { ds_layer_damage(w.comp, i); }
+===
+        if (w.comp.l[i].anim == 2) { ds_layer_damage(w.comp, i); }
+>>>
+
+[idle-composes]
+# a still screen goes on composing
+expect = x: animation: open and close
+expect = x: animation: the loop runs, then stops
+group = alone4
+edit = os/std/wm.xfxn
+<<<
+    if (wm_any_active(w) == 0) { return; }
+    wm_restack(w);
+===
+    wm_restack(w);
+>>>
+edit = os/std/wm.xfxn
+<<<
+    return sp_moving(&win.sa) | sp_moving(&win.al) | sp_moving(&win.dx) | sp_moving(&win.dy) | sp_moving(&w.ws_pos);
+===
+    return 1;
+>>>
+
+[minimised-takes-input]
+# a minimised window still has the focus and the clicks
+expect = x: animation: minimise and workspaces
+group = g1
+edit = os/std/wm.xfxn
+<<<
+    if (win.ghost == 1 || win.min == 1 || win.ws != w.ws) { return 0; }
+===
+    if (win.ghost == 1 || win.ws != w.ws) { return 0; }
+>>>
+
+[hidden-stays-in-frame]
+# a minimised window stays in the stack, drawn at nothing, for ever
+expect = x: animation: minimise and workspaces
+group = g2
+edit = os/std/wm.xfxn
+<<<
+    if (going == 0 && (win.min == 1 || win.ws != w.ws)) { return; }
+===
+    if (anim == 0 && (win.min == 1 || win.ws != w.ws)) { return; }
+>>>
+
+[workspace-jumps]
+# the view goes straight to the next workspace
+expect = x: animation: minimise and workspaces
+group = g3
+edit = os/std/wm.xfxn
+<<<
+    sp_to(&w.ws_pos, (n * w.sw) as i32, SP_K, SP_C);
+===
+    sp_to(&w.ws_pos, (n * w.sw) as i32, 0, 0);
+>>>
+
+[send-keeps-focus]
+# a window sent away keeps the focus
+expect = x: animation: minimise and workspaces
+group = g4
+edit = os/std/wm.xfxn
+<<<
+    sp_to(&win.dx, 0, SP_K, SP_C);
+    wm_let_go(w, i);
+===
+    sp_to(&win.dx, 0, SP_K, SP_C);
+>>>
+
+[reduce-skips-layers]
+# reduce motion stops the system's animations and not a client's
+expect = x: animation: reduce motion for everybody
+group = g1
+edit = os/std/wm.xfxn
+<<<
+        if (w.sc.n[i].used == 1) { sc_step(&w.sc.n[i], ms, w.reduce); }
+===
+        if (w.sc.n[i].used == 1) { sc_step(&w.sc.n[i], ms, 0); }
+>>>
+
+[reduce-key-dead]
+expect = x: animation: reduce motion for everybody
+group = g2
+edit = os/std/wm.xfxn
+<<<
+    if (code == WM_KEY_MOTION) { w.reduce = 1 - w.reduce; return; }
+===
+    if (code == WM_KEY_MOTION) { return; }
+>>>
+
+# ---- a client through the server ----
+
+[layer-no-lease-check]
+# a lease on some other object is taken for the buffer's
+expect = x: windows: a hostile client is refused
+group = g1
+edit = os/std/dserver.xfxn
+<<<
+    rc = mem_lease_check(dsv_inhandles[1], b.mem);
+    if (rc != 0) { vm_unmap(b.px, 0); return rc; }
+    let id: i32 = wm_layer_new
+===
+    let id: i32 = wm_layer_new
+>>>
+
+[layer-no-owner-check]
+# a layer is added to somebody else's window
+expect = x: windows: a hostile client is refused
+group = g2
+edit = os/std/dserver.xfxn
+<<<
+    if (handles != 2 || wm_owns(&s.w, c, req.win) == 0) { return E_INVALID_ARGS; }
+    if (req.w == 0 || req.h == 0 || req.w > WM_DIM_MAX || req.h > WM_DIM_MAX) { return E_INVALID_ARGS; }
+    if ((req.flags & (0 - 1 - WM_F_ALPHA)) != 0) { return E_INVALID_ARGS; }
+    let b: ds_surface;
+===
+    if (handles != 2) { return E_INVALID_ARGS; }
+    if (req.w == 0 || req.h == 0 || req.w > WM_DIM_MAX || req.h > WM_DIM_MAX) { return E_INVALID_ARGS; }
+    if ((req.flags & (0 - 1 - WM_F_ALPHA)) != 0) { return E_INVALID_ARGS; }
+    let b: ds_surface;
+>>>
+
+[layers-never-drawn]
+# a client's layers are kept and never shown
+expect = x: windows: real clients, the whole way
+expect = x: layers: a tree, kept to its window
+group = alone5
+edit = os/std/wm.xfxn
+<<<
+    if (win.head == SC_NONE) { return; }
+    // a client's layers are clipped
+===
+    if (win.head != 0xFFFFFFFE) { return; }
+    // a client's layers are clipped
+>>>

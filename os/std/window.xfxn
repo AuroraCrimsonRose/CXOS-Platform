@@ -25,6 +25,9 @@ const DS_OP_WINDOW_NEW: u32 = 1;   // w, h, flags, title; handles: the two buffe
 const DS_OP_COMMIT: u32 = 2;       // win, buffer, nrects, rects; handle: the lease
 const DS_OP_WAIT: u32 = 3;         // answered when an event is ready
 const DS_OP_WINDOW_CLOSE: u32 = 4; // win
+const DS_OP_LAYER_NEW: u32 = 5;    // win, layer (the parent), w, h, flags; handles: the buffer, its lease
+const DS_OP_LAYER_SET: u32 = 6;    // win, layer, props
+const DS_OP_LAYER_FREE: u32 = 7;   // win, layer
 
 const DS_RECTS_MAX: u32 = 4;
 
@@ -38,7 +41,9 @@ struct ds_req {
     nrects: u32,
     reserved: u32,
     rects: [4]ds_rect,  // DS_RECTS_MAX
-    title: [32]u8       // WM_TITLE_LEN
+    title: [32]u8,      // WM_TITLE_LEN
+    layer: u32,
+    props: ds_lprops
 }
 
 struct ds_rep {
@@ -176,6 +181,82 @@ fn win_wait(w: *win, ev: *wm_event) -> i32 {
     if (rc != 0) { return rc; }
     *ev = rep.ev;
     return 0;
+}
+
+// ---- retained layers (roadmap 2.5) ----
+
+// A layer is drawn once and given away: its buffer is lent to the server for
+// as long as the layer lasts, and from then on it is moved, scaled and faded
+// by asking. The server animates it, so this program can be busy or asleep.
+struct win_layer {
+    id: u32,
+    width: u32,
+    height: u32,
+    mem: i32,
+    s: ds_surface       // mapped writable until win_layer_add
+}
+
+// A layer's buffer to draw into, as l.s. 0 or an error.
+fn win_layer_open(l: *win_layer, width: u32, height: u32) -> i32 {
+    memzero(l as *u8, sizeof *l);
+    if (width == 0 || height == 0 || width > WM_DIM_MAX || height > WM_DIM_MAX) { return E_INVALID_ARGS; }
+    let bytes: u64 = (width as u64) * (height as u64) * 4;
+    l.mem = mem_create(bytes, 0);
+    if (l.mem <= 0) { let e: i32 = l.mem; l.mem = 0; return e; }
+    let a: vm_map_args;
+    memzero((&a) as *u8, sizeof a);
+    a.object = l.mem as u32;
+    a.length = bytes;
+    a.prot = MPROT_READ | MPROT_WRITE;
+    let rc: i32 = vm_map(&a);
+    if (rc != E_OK) { handle_close(l.mem); l.mem = 0; return rc; }
+    l.s.px = a.addr; l.s.width = width; l.s.height = height; l.s.stride = width; l.s.mem = 0 - 1;
+    l.width = width; l.height = height;
+    return 0;
+}
+
+// Hand a drawn layer to the server: under the layer parent, or SC_NONE for
+// directly in the window. Flags as a window's. 0 or an error.
+fn win_layer_add(w: *win, l: *win_layer, parent: u32, flags: u32) -> i32 {
+    vm_unmap(l.s.px, 0);
+    l.s.px = 0;
+    let lease: i32 = mem_lend(l.mem);
+    if (lease <= 0) { return lease; }
+    let req: ds_req;
+    let rep: ds_rep;
+    memzero((&req) as *u8, sizeof req);
+    req.op = DS_OP_LAYER_NEW; req.win = w.id; req.layer = parent;
+    req.w = l.width; req.h = l.height; req.flags = flags;
+    let hs: [2]ipc_handle;
+    hs[0].handle = l.mem; hs[0].op = IPC_HANDLE_COPY;
+    hs[0].rights = HRIGHT_MAP | HRIGHT_INSPECT; hs[0].reserved = 0;
+    hs[1].handle = lease; hs[1].op = IPC_HANDLE_MOVE;
+    hs[1].rights = IPC_RIGHTS_SAME; hs[1].reserved = 0;
+    let rc: i32 = win_call(w, &req, &rep, &hs[0], 2);
+    if (rc != 0) { return rc; }
+    l.id = rep.win;
+    return 0;
+}
+
+// Move, scale, fade or transform a layer. 0 or an error.
+fn win_layer_set(w: *win, id: u32, p: *ds_lprops) -> i32 {
+    let req: ds_req;
+    let rep: ds_rep;
+    memzero((&req) as *u8, sizeof req);
+    req.op = DS_OP_LAYER_SET; req.win = w.id; req.layer = id;
+    req.props = *p;
+    return win_call(w, &req, &rep, 0 as *ipc_handle, 0);
+}
+
+// A layer goes, and everything under it. 0 or an error.
+fn win_layer_free(w: *win, l: *win_layer) -> i32 {
+    let req: ds_req;
+    let rep: ds_rep;
+    memzero((&req) as *u8, sizeof req);
+    req.op = DS_OP_LAYER_FREE; req.win = w.id; req.layer = l.id;
+    let rc: i32 = win_call(w, &req, &rep, 0 as *ipc_handle, 0);
+    if (l.mem > 0) { handle_close(l.mem); l.mem = 0; }
+    return rc;
 }
 
 fn win_close(w: *win) -> void {

@@ -1367,7 +1367,10 @@ language work in `language/CX_X_PLAN.md`.
    ask), a client dying with a lease in flight beyond the close path, USB input
    through the handle. Starting a client blocks the server's loop for as long
    as the signature check takes.
-5. Retained layers and spring animations in the compositor.
+5. Retained layers and spring animations in the compositor. **Done (2.5)**
+   (`os/std/scene.xfxn`, `CX_DISPLAY.md` §6, `2.5.sab` 42 of 42). Not tested:
+   any of it by hand on a screen, its frame rate on real hardware (each scaled
+   or faded pixel is X code), several monitors (there is one screen).
 6. Trusted UI: the uninterceptible key combination, consent screens, signer
    in title bars, capabilities for capture and overlays.
 7. Bochs display, then virtio-gpu 2D. The Process Manager.

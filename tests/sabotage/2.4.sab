@@ -259,14 +259,9 @@ expect = x: windows: keys to the focused one only
 group = g2
 edit = os/std/wm.xfxn
 <<<
-            wm_focus_set(w, bottom);
-        }
-        return;
-    }
+    if (code == WM_KEY_NEXT) { wm_next(w); return; }
 ===
-            wm_focus_set(w, bottom);
-        }
-    }
+    if (code == WM_KEY_NEXT) { wm_next(w); }
 >>>
 
 [quit-passes]
@@ -320,9 +315,9 @@ expect = x: windows: transparency
 group = g9
 edit = os/std/wm.xfxn
 <<<
-        ds_layer_put(w.comp, &win.frame, win.x, win.y, 0);
+    sc_put(w.comp, &win.frame, &wo, 0, 0, 0, 0 as *ds_rect);
 ===
-        ds_layer_put(w.comp, &win.frame, win.x, win.y, 1);
+    sc_put(w.comp, &win.frame, &wo, 0, 0, 1, 0 as *ds_rect);
 >>>
 
 [no-capture]
@@ -405,7 +400,7 @@ expect = x: windows: transparency
 group = g1
 edit = os/std/wm.xfxn
 <<<
-            if ((win.flags & WM_F_ALPHA) != 0) { opaque = 0; }
+        if ((win.flags & WM_F_ALPHA) != 0) { opaque = 0; }
 ===
 >>>
 
@@ -415,9 +410,8 @@ expect = x: windows: how many a client may have
 group = g1
 edit = os/std/wm.xfxn
 <<<
-    if (free == WM_NONE || mine >= WM_PER_CLIENT) { return E_NO_RESOURCES; }
+    if (mine >= WM_PER_CLIENT) { return E_NO_RESOURCES; }
 ===
-    if (free == WM_NONE) { return E_NO_RESOURCES; }
 >>>
 
 [text-room]
@@ -535,11 +529,15 @@ edit = os/std/wm.xfxn
 [gone-focus-stale]
 # the focus stays on a window that no longer exists
 expect = x: windows: a client gone takes its own
-group = g2
+expect = x: windows: real clients, the whole way
+expect = x: animation: minimise and workspaces
+group = gone-alone
 edit = os/std/wm.xfxn
 <<<
-        if (w.zn > 0) { wm_focus_set(w, w.z[w.zn - 1]); }
+        if (w.win[i].used == 0 || w.win[i].ghost == 1) { w.focus = WM_NONE; }
+        wm_focus_set(w, wm_top_shown(w));
 ===
+        if (w.win[i].used == 0 || w.win[i].ghost == 1) { w.focus = WM_NONE; }
 >>>
 
 # ---- the server's protocol ----
@@ -615,8 +613,10 @@ expect = x: windows: a hostile client is refused
 group = g10
 edit = os/std/dserver.xfxn
 <<<
+    if (handles != 2) { return E_INVALID_ARGS; }
     if (req.w == 0 || req.h == 0 || req.w > WM_DIM_MAX || req.h > WM_DIM_MAX) { return E_INVALID_ARGS; }
 ===
+    if (handles != 2) { return E_INVALID_ARGS; }
     if (req.w == 0 || req.h == 0) { return E_INVALID_ARGS; }
 >>>
 
@@ -626,8 +626,12 @@ expect = x: windows: a hostile client is refused
 group = g9
 edit = os/std/dserver.xfxn
 <<<
+    if (handles != 2) { return E_INVALID_ARGS; }
+    if (req.w == 0 || req.h == 0 || req.w > WM_DIM_MAX || req.h > WM_DIM_MAX) { return E_INVALID_ARGS; }
     if ((req.flags & (0 - 1 - WM_F_ALPHA)) != 0) { return E_INVALID_ARGS; }
 ===
+    if (handles != 2) { return E_INVALID_ARGS; }
+    if (req.w == 0 || req.h == 0 || req.w > WM_DIM_MAX || req.h > WM_DIM_MAX) { return E_INVALID_ARGS; }
 >>>
 
 [commit-no-unmap]

@@ -1,0 +1,315 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// std/scene.xfxn - springs and retained layers (roadmap 2.5).
+// Aurora Tejeda / CATX Systems
+// Threads: one per compositor. Nothing here is locked.
+//
+// docs/system/CX_DISPLAY.md section 6. A client hands the server a tree of
+// layers, each with a buffer, a position, an opacity, a scale and a transform,
+// and says where each should go. The server moves them every frame, so a busy
+// client still animates and a scroll needs no redraw.
+//
+//   SPRINGS - a damped spring in fixed point, stepped a millisecond at a time,
+//             so where it is depends on how long it has run and not on how
+//             many frames that took. Sent somewhere new mid-flight, it keeps
+//             its velocity.
+//   NODES   - the tree. Flattened into the compositor's layers on every change
+//             (std/display.xfxn draws those); a node's children are drawn over
+//             it, in the order they were added.
+
+import "display.xfxn";
+
+// ---- springs ----
+
+const SP_MS_MAX: u32 = 250;         // a stall costs this much of a jump, at most
+const SP_AGE_MAX: u32 = 10000;      // any spring has arrived by now
+const SP_EPS_X: i64 = 1024;         // near enough: 1/64 of a unit
+const SP_EPS_V: i64 = 16384;        // and slow enough: 1/4 of a unit a second
+const SP_K_MAX: u32 = 40000;        // stable at one step a millisecond
+const SP_C_MAX: u32 = 1000;
+const SP_K: u32 = 300;              // the system's own: just under critical
+const SP_C: u32 = 34;
+
+// Values are Q16.16 of a unit the user picks: pixels, thousandths of a scale,
+// or an opacity of 0-255.
+struct ds_spring {
+    x: i64,
+    v: i64,             // per second
+    to: i64,
+    k: u32,             // stiffness
+    c: u32,             // damping
+    age: u32,           // ms since it was last sent anywhere
+    active: u32,        // 1: not there yet
+    jump: u32,          // 1: go straight there at the next step
+    moved: u32          // 1: the last step changed it
+}
+
+// At rest at a value.
+fn sp_rest(s: *ds_spring, value: i32) -> void {
+    s.x = (value as i64) << 16;
+    s.to = s.x;
+    s.v = 0;
+    s.k = SP_K; s.c = SP_C; s.age = 0;
+    s.active = 0; s.jump = 0; s.moved = 0;
+}
+
+// Off to a new value from where it is, at the speed it is going. k 0: straight
+// there at the next step, with no motion. k and c are the caller's to check.
+fn sp_to(s: *ds_spring, target: i32, k: u32, c: u32) -> void {
+    s.to = (target as i64) << 16;
+    s.age = 0;
+    s.active = 1;
+    s.jump = 0;
+    if (k == 0) { s.jump = 1; return; }
+    s.k = k; s.c = c;
+}
+
+fn sp_arrive(s: *ds_spring) -> void {
+    s.x = s.to; s.v = 0; s.active = 0; s.jump = 0;
+}
+
+fn sp_abs(a: i64) -> i64 { if (a < 0) { return 0 - a; } return a; }
+
+// ms milliseconds on. reduce 1: reduce motion, so it arrives now, whatever it
+// was asked for: the compositor enforces this for every client.
+fn sp_step(s: *ds_spring, ms: u32, reduce: u32) -> void {
+    s.moved = 0;
+    if (s.active == 0) { return; }
+    s.moved = 1;
+    if (reduce == 1 || s.jump == 1) { sp_arrive(s); return; }
+    let n: u32 = ds_min(ms, SP_MS_MAX);
+    let i: u32 = 0;
+    while (i < n) {
+        // semi-implicit Euler: the velocity first, then the position with it
+        let a: i64 = (s.k as i64) * (s.to - s.x) - (s.c as i64) * s.v;
+        s.v = s.v + a / 1000;
+        s.x = s.x + s.v / 1000;
+        s.age = s.age + 1;
+        if (s.age >= SP_AGE_MAX || (sp_abs(s.to - s.x) <= SP_EPS_X && sp_abs(s.v) <= SP_EPS_V)) {
+            sp_arrive(s);
+            return;
+        }
+        i = i + 1;
+    }
+}
+
+fn sp_moving(s: *ds_spring) -> u32 { return s.active | s.moved; }
+
+// Where it is, to the nearest unit.
+fn sp_int(s: *ds_spring) -> i32 { return ((s.x + 32768) >> 16) as i32; }
+
+// Thousandths as a Q16.16 scale; a spring past zero is a scale of zero.
+fn sp_scale(s: *ds_spring) -> i64 {
+    return ds_lmin(ds_lmax(s.x / 1000, 0), DS_M_MAX);
+}
+
+// An opacity: springs overshoot, opacities do not.
+fn sp_alpha(s: *ds_spring) -> u32 {
+    return ds_lmin(ds_lmax(sp_int(s) as i64, 0), 255) as u32;
+}
+
+// ---- a node's place on the screen ----
+
+struct sc_world {
+    x: i64,             // Q16.16
+    y: i64,
+    a: i64,             // [a b; c d], Q16.16
+    b: i64,
+    c: i64,
+    d: i64,
+    alpha: u32,
+    anim: u32           // something above or at this node is moving
+}
+
+const SC_POS_SAT: i64 = 2147418112;     // DS_POS_MAX in Q16.16
+
+fn sc_sat(v: i64, max: i64) -> i64 { return ds_lmin(ds_lmax(v, 0 - max), max); }
+fn sc_mul(a: i64, b: i64) -> i64 { return sc_sat((a * b) >> 16, DS_M_MAX); }
+
+fn sc_round(v: i64) -> i32 { return (sc_sat(v + 32768, SC_POS_SAT) >> 16) as i32; }
+
+fn sc_world_root(p: *sc_world) -> void {
+    p.x = 0; p.y = 0;
+    p.a = DS_FX_ONE as i64; p.b = 0; p.c = 0; p.d = DS_FX_ONE as i64;
+    p.alpha = 255; p.anim = 0;
+}
+
+// A child at (px, py) in its parent's space, transformed about its anchor
+// (ax, ay) by the matrix m times the scale s. All Q16.16.
+fn sc_world_child(out: *sc_world, p: *sc_world, px: i64, py: i64, ax: i64, ay: i64, s: i64, m: *i32, alpha: u32, anim: u32) -> void {
+    let la: i64 = sc_mul(m[0] as i64, s);
+    let lb: i64 = sc_mul(m[1] as i64, s);
+    let lc: i64 = sc_mul(m[2] as i64, s);
+    let ld: i64 = sc_mul(m[3] as i64, s);
+    let tx: i64 = px + ax - ((la * ax + lb * ay) >> 16);
+    let ty: i64 = py + ay - ((lc * ax + ld * ay) >> 16);
+    out.x = sc_sat(p.x + ((p.a * tx + p.b * ty) >> 16), SC_POS_SAT);
+    out.y = sc_sat(p.y + ((p.c * tx + p.d * ty) >> 16), SC_POS_SAT);
+    out.a = sc_sat(sc_mul(p.a, la) + sc_mul(p.b, lc), DS_M_MAX);
+    out.b = sc_sat(sc_mul(p.a, lb) + sc_mul(p.b, ld), DS_M_MAX);
+    out.c = sc_sat(sc_mul(p.c, la) + sc_mul(p.d, lc), DS_M_MAX);
+    out.d = sc_sat(sc_mul(p.c, lb) + sc_mul(p.d, ld), DS_M_MAX);
+    out.alpha = (p.alpha * alpha + 127) / 255;
+    out.anim = p.anim | anim;
+}
+
+// A surface as a layer, at (ox, oy) in world space wo. clip 0: only the screen.
+fn sc_put(c: *ds_comp, s: *ds_surface, wo: *sc_world, ox: i64, oy: i64, opaque: u32, clip: *ds_rect) -> void {
+    let x: i64 = wo.x + ((wo.a * ox + wo.b * oy) >> 16);
+    let y: i64 = wo.y + ((wo.c * ox + wo.d * oy) >> 16);
+    let i: u32 = ds_layer_put(c, s, 0, 0, opaque);
+    if (i >= DS_LAYER_MAX) { return; }
+    let l: *ds_layer = &c.l[i];
+    l.x = sc_round(x);
+    l.y = sc_round(y);
+    l.a = wo.a as i32; l.b = wo.b as i32; l.c = wo.c as i32; l.d = wo.d as i32;
+    l.plain = 0;
+    if (wo.a == (DS_FX_ONE as i64) && wo.d == (DS_FX_ONE as i64) && wo.b == 0 && wo.c == 0) { l.plain = 1; }
+    l.alpha = wo.alpha;
+    l.anim = wo.anim;
+    if (clip != (0 as *ds_rect)) { ds_rect_set(&l.clip, clip.x, clip.y, clip.w, clip.h); }
+}
+
+// Where a width x height area in world space wo lands on a sw x sh screen.
+fn sc_box(wo: *sc_world, width: u32, height: u32, sw: u32, sh: u32, r: *ds_rect) -> void {
+    let s: ds_surface;
+    s.px = 0; s.width = width; s.height = height; s.stride = width; s.mem = 0 - 1;
+    let l: ds_layer;
+    l.s = &s;
+    l.x = sc_round(wo.x); l.y = sc_round(wo.y);
+    l.a = wo.a as i32; l.b = wo.b as i32; l.c = wo.c as i32; l.d = wo.d as i32;
+    l.plain = 0;
+    ds_rect_set(&l.clip, 0, 0, sw, sh);
+    ds_extent(&l, sw, sh, r);
+}
+
+// ---- nodes ----
+
+const SC_NODE_MAX: u32 = 64;
+const SC_DEPTH_MAX: u32 = 4;        // a root is depth 1
+const SC_NONE: u32 = 0xFFFFFFFF;
+
+struct sc_node {
+    used: u32,
+    owner: u32,         // whose tree: the caller's number for it
+    parent: u32,        // SC_NONE: a root
+    first: u32,         // children, drawn in this order
+    last: u32,
+    next: u32,          // the next sibling
+    depth: u32,
+    visible: u32,
+    opaque: u32,
+    lease: i32,         // what keeps the buffer unwritable; 0 if none
+    buf: ds_surface,    // mapped read-only; .mem is ours
+    x: ds_spring,       // pixels, in the parent's space
+    y: ds_spring,
+    sc: ds_spring,      // thousandths
+    al: ds_spring,      // 0-255
+    ax: i32,            // the anchor, in pixels of its own
+    ay: i32,
+    m: [4]i32           // Q16.16; the identity to begin with
+}
+
+struct scene {
+    n: [64]sc_node      // SC_NODE_MAX
+}
+
+fn sc_owns(sc: *scene, owner: u32, id: u32) -> u32 {
+    if (id >= SC_NODE_MAX || sc.n[id].used == 0 || sc.n[id].owner != owner) { return 0; }
+    return 1;
+}
+
+// A node at the end of the list head/tail: its id, or an error. It takes s and
+// lease only when it succeeds.
+fn sc_new(sc: *scene, head: *u32, tail: *u32, owner: u32, parent: u32, s: *ds_surface, lease: i32, opaque: u32) -> i32 {
+    let depth: u32 = 1;
+    if (parent != SC_NONE) {
+        if (sc_owns(sc, owner, parent) == 0) { return E_INVALID_ARGS; }
+        depth = sc.n[parent].depth + 1;
+        if (depth > SC_DEPTH_MAX) { return E_INVALID_ARGS; }
+    }
+    let i: u32 = 0;
+    while (i < SC_NODE_MAX && sc.n[i].used == 1) { i = i + 1; }
+    if (i == SC_NODE_MAX) { return E_NO_RESOURCES; }
+    let n: *sc_node = &sc.n[i];
+    memzero(n as *u8, sizeof *n);
+    n.used = 1; n.owner = owner; n.parent = parent; n.depth = depth;
+    n.first = SC_NONE; n.last = SC_NONE; n.next = SC_NONE;
+    n.visible = 1; n.opaque = opaque; n.lease = lease;
+    n.buf = *s;
+    sp_rest(&n.x, 0); sp_rest(&n.y, 0); sp_rest(&n.sc, 1000); sp_rest(&n.al, 255);
+    n.m[0] = DS_FX_ONE; n.m[3] = DS_FX_ONE;
+    let h: *u32 = head;
+    let t: *u32 = tail;
+    if (parent != SC_NONE) { h = &sc.n[parent].first; t = &sc.n[parent].last; }
+    if (t[0] == SC_NONE) { h[0] = i; } else { sc.n[t[0]].next = i; }
+    t[0] = i;
+    return i as i32;
+}
+
+// A node and everything under it, its buffers and leases given back. Whoever
+// held it in a list has already taken it out.
+fn sc_free_tree(sc: *scene, id: u32) -> void {
+    let n: *sc_node = &sc.n[id];
+    let k: u32 = n.first;
+    while (k != SC_NONE) {
+        let after: u32 = sc.n[k].next;
+        sc_free_tree(sc, k);
+        k = after;
+    }
+    if (n.lease > 0) { handle_close(n.lease); }
+    ds_surface_free(&n.buf);
+    n.used = 0;
+}
+
+// Take a node out of its list and free it.
+fn sc_free(sc: *scene, head: *u32, tail: *u32, id: u32) -> void {
+    let h: *u32 = head;
+    let t: *u32 = tail;
+    let parent: u32 = sc.n[id].parent;
+    if (parent != SC_NONE) { h = &sc.n[parent].first; t = &sc.n[parent].last; }
+    let before: u32 = SC_NONE;
+    let k: u32 = h[0];
+    while (k != id) { before = k; k = sc.n[k].next; }
+    if (before == SC_NONE) { h[0] = sc.n[id].next; } else { sc.n[before].next = sc.n[id].next; }
+    if (t[0] == id) { t[0] = before; }
+    sc_free_tree(sc, id);
+}
+
+// All of a list.
+fn sc_free_all(sc: *scene, head: *u32, tail: *u32) -> void {
+    let k: u32 = head[0];
+    while (k != SC_NONE) {
+        let after: u32 = sc.n[k].next;
+        sc_free_tree(sc, k);
+        k = after;
+    }
+    head[0] = SC_NONE;
+    tail[0] = SC_NONE;
+}
+
+fn sc_step(n: *sc_node, ms: u32, reduce: u32) -> void {
+    sp_step(&n.x, ms, reduce);
+    sp_step(&n.y, ms, reduce);
+    sp_step(&n.sc, ms, reduce);
+    sp_step(&n.al, ms, reduce);
+}
+
+fn sc_moving(n: *sc_node) -> u32 {
+    return sp_moving(&n.x) | sp_moving(&n.y) | sp_moving(&n.sc) | sp_moving(&n.al);
+}
+
+// A node and its children as layers, in world space under p.
+fn sc_emit(c: *ds_comp, sc: *scene, id: u32, p: *sc_world, clip: *ds_rect) -> void {
+    let n: *sc_node = &sc.n[id];
+    if (n.visible == 0) { return; }
+    let wo: sc_world;
+    sc_world_child(&wo, p, n.x.x, n.y.x, (n.ax as i64) << 16, (n.ay as i64) << 16,
+                   sp_scale(&n.sc), &n.m[0], sp_alpha(&n.al), sc_moving(n));
+    sc_put(c, &n.buf, &wo, 0, 0, n.opaque, clip);
+    let k: u32 = n.first;
+    while (k != SC_NONE) {
+        sc_emit(c, sc, k, &wo, clip);
+        k = sc.n[k].next;
+    }
+}

@@ -19,8 +19,13 @@
 //
 // As Serenity's WindowServer: a stack bottom first, server-drawn frames, and
 // the client's buffer composed as it was committed.
+//
+// Since 2.5 (section 6) what the eye sees can lag what is true. A window's
+// x and y, and which workspace it is on, change at once and are what input is
+// tested against; its springs only carry the picture there. A window closing
+// stays as a ghost for as long as it fades, with no client and no input.
 
-import "display.xfxn";
+import "scene.xfxn";
 
 const WM_WIN_MAX: u32 = 16;
 const WM_CLIENT_MAX: u32 = 16;
@@ -40,6 +45,44 @@ const WM_HANG_MS: u64 = 2000;       // events unread this long: not answering
 // next window, for a machine with no pointer.
 const WM_KEY_QUIT: u32 = 17;
 const WM_KEY_NEXT: u32 = 14;
+const WM_KEY_MINIMISE: u32 = 2;     // Ctrl+B; Ctrl+N brings it back
+const WM_KEY_WORKSPACE: u32 = 23;   // Ctrl+W: the next workspace
+const WM_KEY_SEND: u32 = 5;         // Ctrl+E: this window to the next workspace
+const WM_KEY_MOTION: u32 = 18;      // Ctrl+R: reduce motion, on and off
+
+const WM_WORKSPACES: u32 = 4;
+const WM_OPEN_SCALE: i32 = 920;     // thousandths: where a window grows from
+const WM_MIN_SCALE: i32 = 100;      // and what minimising shrinks it to
+
+const WM_LAYERS_PER_CLIENT: u32 = 16;
+const WM_POS_MAX: i32 = 16383;      // a layer's position, either way
+const WM_SCALE_MAX: u32 = 16000;    // thousandths
+const WM_MATRIX_MAX: i32 = 1048576; // 16.0
+
+// What a ds_lprops sets.
+const WM_LP_POS: u32 = 1;
+const WM_LP_SCALE: u32 = 2;
+const WM_LP_ALPHA: u32 = 4;
+const WM_LP_ANCHOR: u32 = 8;
+const WM_LP_MATRIX: u32 = 16;
+const WM_LP_VISIBLE: u32 = 32;
+const WM_LP_ALL: u32 = 63;
+
+// A change to a layer. Position, scale and opacity go by a spring of stiffness
+// k and damping c, or at once if k is 0; the rest at once.
+struct ds_lprops {
+    mask: u32,
+    k: u32,
+    c: u32,
+    visible: u32,
+    x: i32,
+    y: i32,
+    scale: u32,         // thousandths
+    alpha: u32,         // 0-255
+    ax: i32,            // the point that stays put under the scale and matrix
+    ay: i32,
+    m: [4]i32           // [a b; c d], Q16.16
+}
 
 const WM_F_ALPHA: u32 = 1;          // the client's pixels carry alpha
 
@@ -89,7 +132,16 @@ struct wm_win {
     lease: [2]i32,      // what keeps a shown buffer unwritable; 0 if none
     buf: [2]ds_surface, // the client's, mapped read-only; .mem is our handle
     frame: ds_surface,  // server-drawn; the content's area is transparent
-    title: [32]u8       // WM_TITLE_LEN
+    title: [32]u8,      // WM_TITLE_LEN
+    ghost: u32,         // closed, and fading: nobody's, and takes no input
+    min: u32,           // minimised
+    ws: u32,            // its workspace
+    head: u32,          // its layers (scene nodes), or SC_NONE
+    tail: u32,
+    sa: ds_spring,      // the picture's scale, thousandths
+    al: ds_spring,      // its opacity
+    dx: ds_spring,      // how far it is from where the window is
+    dy: ds_spring
 }
 
 struct wm {
@@ -112,6 +164,10 @@ struct wm {
     buttons: u32,
     cursor_layer: u32,
     quit: u32,
+    reduce: u32,        // reduce motion, for everybody
+    ws: u32,            // the workspace on the screen
+    ws_pos: ds_spring,  // where the view is, in pixels across the workspaces
+    sc: scene,
     win: [16]wm_win,            // WM_WIN_MAX
     client: [16]wm_client       // WM_CLIENT_MAX
 }
@@ -131,17 +187,51 @@ fn wm_restack(w: *wm) -> void {
     ds_layers_clear(w.comp);
     ds_layer_put(w.comp, w.desktop, 0, 0, 1);
     let k: u32 = 0;
-    while (k < w.zn) {
-        let win: *wm_win = &w.win[w.z[k]];
-        ds_layer_put(w.comp, &win.frame, win.x, win.y, 0);
-        if (win.cur != WM_NONE) {
-            let opaque: u32 = 1;
-            if ((win.flags & WM_F_ALPHA) != 0) { opaque = 0; }
-            ds_layer_put(w.comp, &win.buf[win.cur], win.x + WM_EDGE, win.y + WM_TITLE_H, opaque);
-        }
-        k = k + 1;
+    while (k < w.zn) { wm_emit(w, &w.win[w.z[k]]); k = k + 1; }
+    w.cursor_layer = ds_layer_put(w.comp, w.cursor, w.px as i32, w.py as i32, 0);
+}
+
+fn wm_win_moving(w: *wm, win: *wm_win) -> u32 {
+    return sp_moving(&win.sa) | sp_moving(&win.al) | sp_moving(&win.dx) | sp_moving(&win.dy) | sp_moving(&w.ws_pos);
+}
+
+// A window, its frame, its buffer and its layers, as compositor layers. One
+// minimised or on another workspace is left out once its springs have stopped
+// (not merely once they stop moving it: the last step's damage was taken from
+// where it was, and nothing runs afterwards to take it out).
+fn wm_emit(w: *wm, win: *wm_win) -> void {
+    let anim: u32 = wm_win_moving(w, win);
+    let going: u32 = win.sa.active | win.al.active | win.dx.active | win.dy.active | w.ws_pos.active;
+    if (going == 0 && (win.min == 1 || win.ws != w.ws)) { return; }
+    let m: [4]i32;
+    m[0] = DS_FX_ONE; m[1] = 0; m[2] = 0; m[3] = DS_FX_ONE;
+    let root: sc_world;
+    sc_world_root(&root);
+    let wo: sc_world;
+    let view: i64 = (((win.ws as i64) * (w.sw as i64)) << 16) - w.ws_pos.x;
+    sc_world_child(&wo, &root, ((win.x as i64) << 16) + win.dx.x + view, ((win.y as i64) << 16) + win.dy.x,
+                   (wm_frame_w(win) as i64) << 15, (wm_frame_h(win) as i64) << 15,
+                   sp_scale(&win.sa), &m[0], sp_alpha(&win.al), anim);
+    sc_put(w.comp, &win.frame, &wo, 0, 0, 0, 0 as *ds_rect);
+    let cx: i64 = (WM_EDGE as i64) << 16;
+    let cy: i64 = (WM_TITLE_H as i64) << 16;
+    if (win.cur != WM_NONE) {
+        let opaque: u32 = 1;
+        if ((win.flags & WM_F_ALPHA) != 0) { opaque = 0; }
+        sc_put(w.comp, &win.buf[win.cur], &wo, cx, cy, opaque, 0 as *ds_rect);
     }
-    w.cursor_layer = ds_layer_put(w.comp, w.cursor, w.px, w.py, 0);
+    if (win.head == SC_NONE) { return; }
+    // a client's layers are clipped to its own content: nothing it asks for
+    // can reach the frame or another window
+    let content: sc_world;
+    sc_world_child(&content, &wo, cx, cy, 0, 0, DS_FX_ONE as i64, &m[0], 255, 0);
+    let clip: ds_rect;
+    sc_box(&content, win.w, win.h, w.sw, w.sh, &clip);
+    let k: u32 = win.head;
+    while (k != SC_NONE) {
+        sc_emit(w.comp, &w.sc, k, &content, &clip);
+        k = w.sc.n[k].next;
+    }
 }
 
 fn wm_paint_frame(w: *wm, i: u32) -> void {
@@ -240,15 +330,12 @@ fn wm_request_close(w: *wm, i: u32) -> void {
 
 fn wm_key(w: *wm, code: u32) -> void {
     if (code == WM_KEY_QUIT) { w.quit = 1; return; }
-    if (code == WM_KEY_NEXT) {
-        if (w.zn > 1) {
-            let bottom: u32 = w.z[0];
-            wm_raise(w, bottom);
-            wm_focus_set(w, bottom);
-        }
-        return;
-    }
+    if (code == WM_KEY_NEXT) { wm_next(w); return; }
+    if (code == WM_KEY_MOTION) { w.reduce = 1 - w.reduce; return; }
+    if (code == WM_KEY_WORKSPACE) { wm_workspace(w, (w.ws + 1) % WM_WORKSPACES); return; }
     if (w.focus == WM_NONE) { return; }
+    if (code == WM_KEY_MINIMISE) { wm_minimise(w, w.focus); return; }
+    if (code == WM_KEY_SEND) { wm_send(w, w.focus); return; }
     wm_push(w, w.win[w.focus].client, WM_EV_KEY, w.focus, code as i32, 0, 0);
 }
 
@@ -271,14 +358,92 @@ fn wm_zone(win: *wm_win, x: u32, y: u32) -> u32 {
     return WM_ZONE_TITLE;
 }
 
+// Can input reach it?
+fn wm_shown(w: *wm, win: *wm_win) -> u32 {
+    if (win.ghost == 1 || win.min == 1 || win.ws != w.ws) { return 0; }
+    return 1;
+}
+
 // The topmost window at a point, or WM_NONE.
 fn wm_top_at(w: *wm, x: u32, y: u32) -> u32 {
     let k: u32 = w.zn;
     while (k > 0) {
         k = k - 1;
-        if (wm_zone(&w.win[w.z[k]], x, y) != WM_ZONE_NONE) { return w.z[k]; }
+        if (wm_shown(w, &w.win[w.z[k]]) == 1 && wm_zone(&w.win[w.z[k]], x, y) != WM_ZONE_NONE) { return w.z[k]; }
     }
     return WM_NONE;
+}
+
+// The topmost window input can reach, or WM_NONE.
+fn wm_top_shown(w: *wm) -> u32 {
+    let k: u32 = w.zn;
+    while (k > 0) {
+        k = k - 1;
+        if (wm_shown(w, &w.win[w.z[k]]) == 1) { return w.z[k]; }
+    }
+    return WM_NONE;
+}
+
+// Nothing may go on pointing at a window input can no longer reach.
+fn wm_let_go(w: *wm, i: u32) -> void {
+    if (w.drag == i) { w.drag = WM_NONE; }
+    if (w.capture == i) { w.capture = WM_NONE; }
+    if (w.focus == i) {
+        // only a window that still has a client is told it lost focus
+        if (w.win[i].used == 0 || w.win[i].ghost == 1) { w.focus = WM_NONE; }
+        wm_focus_set(w, wm_top_shown(w));
+    }
+}
+
+fn wm_minimise(w: *wm, i: u32) -> void {
+    let win: *wm_win = &w.win[i];
+    win.min = 1;
+    sp_to(&win.sa, WM_MIN_SCALE, SP_K, SP_C);
+    sp_to(&win.al, 0, SP_K, SP_C);
+    sp_to(&win.dy, (w.sh - win.y) as i32, SP_K, SP_C);
+    wm_let_go(w, i);
+}
+
+fn wm_restore(w: *wm, i: u32) -> void {
+    let win: *wm_win = &w.win[i];
+    win.min = 0;
+    sp_to(&win.sa, 1000, SP_K, SP_C);
+    sp_to(&win.al, 255, SP_K, SP_C);
+    sp_to(&win.dy, 0, SP_K, SP_C);
+}
+
+// The bottom window of this workspace comes to the top, from minimised if it was.
+fn wm_next(w: *wm) -> void {
+    let k: u32 = 0;
+    while (k < w.zn) {
+        let i: u32 = w.z[k];
+        if (w.win[i].ghost == 0 && w.win[i].ws == w.ws) {
+            if (w.win[i].min == 1) { wm_restore(w, i); }
+            wm_raise(w, i);
+            wm_focus_set(w, i);
+            return;
+        }
+        k = k + 1;
+    }
+}
+
+fn wm_workspace(w: *wm, n: u32) -> void {
+    w.ws = n;
+    sp_to(&w.ws_pos, (n * w.sw) as i32, SP_K, SP_C);
+    w.drag = WM_NONE;
+    w.capture = WM_NONE;
+    wm_focus_set(w, wm_top_shown(w));
+}
+
+// Window i to the next workspace, sliding away from where it was.
+fn wm_send(w: *wm, i: u32) -> void {
+    let win: *wm_win = &w.win[i];
+    let n: u32 = (win.ws + 1) % WM_WORKSPACES;
+    let from: i32 = ((win.ws as i32) - (n as i32)) * (w.sw as i32);
+    win.ws = n;
+    sp_rest(&win.dx, from);
+    sp_to(&win.dx, 0, SP_K, SP_C);
+    wm_let_go(w, i);
 }
 
 fn wm_move(w: *wm, i: u32, x: u32, y: u32) -> void {
@@ -308,7 +473,7 @@ fn wm_pointer(w: *wm, x: i32, y: i32, buttons: u32) -> void {
     w.buttons = buttons;
     w.px = wm_clamp(x, w.sw);
     w.py = wm_clamp(y, w.sh);
-    ds_layer_move(w.comp, w.cursor_layer, w.px, w.py);
+    ds_layer_move(w.comp, w.cursor_layer, w.px as i32, w.py as i32);
     let pressed: u32 = 0;
     let released: u32 = 0;
     if ((buttons & 1) == 1 && (was & 1) == 0) { pressed = 1; }
@@ -357,6 +522,7 @@ fn wm_init(w: *wm, comp: *ds_comp, desktop: *ds_surface, cursor: *ds_surface, fo
     w.sw = comp.back.width; w.sh = comp.back.height;
     w.focus = WM_NONE; w.capture = WM_NONE; w.drag = WM_NONE;
     w.px = w.sw / 2; w.py = w.sh / 2;
+    sp_rest(&w.ws_pos, 0);
     wm_restack(w);
     ds_damage_all(&comp.damage);
 }
@@ -386,10 +552,21 @@ fn wm_window_new(w: *wm, c: u32, width: u32, height: u32, flags: u32, title: *u8
         else if (w.win[i].client == c) { mine = mine + 1; }
         i = i + 1;
     }
-    if (free == WM_NONE || mine >= WM_PER_CLIENT) { return E_NO_RESOURCES; }
+    if (mine >= WM_PER_CLIENT) { return E_NO_RESOURCES; }
+    // a window still fading must not be why a new one is refused
+    if (free == WM_NONE) { free = wm_reap_ghost(w); }
+    if (free == WM_NONE) { return E_NO_RESOURCES; }
     let win: *wm_win = &w.win[free];
     memzero(win as *u8, sizeof *win);
     win.w = width; win.h = height; win.flags = flags; win.client = c; win.cur = WM_NONE;
+    win.ws = w.ws; win.head = SC_NONE; win.tail = SC_NONE;
+    sp_rest(&win.sa, 1000); sp_rest(&win.al, 255); sp_rest(&win.dx, 0); sp_rest(&win.dy, 0);
+    if (w.reduce == 0) {
+        sp_rest(&win.sa, WM_OPEN_SCALE);
+        sp_rest(&win.al, 0);
+        sp_to(&win.sa, 1000, SP_K, SP_C);
+        sp_to(&win.al, 255, SP_K, SP_C);
+    }
     let rc: i32 = ds_surface_new(&win.frame, wm_frame_w(win), wm_frame_h(win));
     if (rc != 0) { return rc; }
     win.used = 1;
@@ -409,7 +586,8 @@ fn wm_window_new(w: *wm, c: u32, width: u32, height: u32, flags: u32, title: *u8
     return free as i32;
 }
 
-fn wm_window_destroy(w: *wm, i: u32) -> void {
+// Everything of a window goes, now.
+fn wm_window_reap(w: *wm, i: u32) -> void {
     let win: *wm_win = &w.win[i];
     if (win.used == 0) { return; }
     wm_damage_win(w, win);
@@ -417,17 +595,36 @@ fn wm_window_destroy(w: *wm, i: u32) -> void {
     if (win.lease[1] > 0) { handle_close(win.lease[1]); }
     wm_z_remove(w, i);
     win.used = 0;
-    if (w.drag == i) { w.drag = WM_NONE; }
-    if (w.capture == i) { w.capture = WM_NONE; }
     wm_restack(w);
     // the stack no longer names these, so nothing composes from them now
+    sc_free_all(&w.sc, &win.head, &win.tail);
     ds_surface_free(&win.buf[0]);
     ds_surface_free(&win.buf[1]);
     ds_surface_free(&win.frame);
-    if (w.focus == i) {
-        w.focus = WM_NONE;
-        if (w.zn > 0) { wm_focus_set(w, w.z[w.zn - 1]); }
+    wm_let_go(w, i);
+}
+
+// A ghost's slot back, the first one's: its index, or WM_NONE if there are none.
+fn wm_reap_ghost(w: *wm) -> u32 {
+    let i: u32 = 0;
+    while (i < WM_WIN_MAX) {
+        if (w.win[i].used == 1 && w.win[i].ghost == 1) { wm_window_reap(w, i); return i; }
+        i = i + 1;
     }
+    return WM_NONE;
+}
+
+// A window closes: it stops being anybody's now, and fades before it goes.
+fn wm_window_destroy(w: *wm, i: u32) -> void {
+    let win: *wm_win = &w.win[i];
+    if (win.used == 0 || win.ghost == 1) { return; }
+    if (w.reduce == 1) { wm_window_reap(w, i); return; }
+    win.ghost = 1;
+    win.client = WM_NONE;
+    win.want_frame = 0;
+    sp_to(&win.sa, WM_OPEN_SCALE, SP_K, SP_C);
+    sp_to(&win.al, 0, SP_K, SP_C);
+    wm_let_go(w, i);
 }
 
 // Does client c have window i?
@@ -514,10 +711,154 @@ fn wm_wait(w: *wm, c: u32, token: i32) -> void {
     if (cl.hung == 1) { cl.hung = 0; wm_repaint_client(w, c); }
 }
 
-// The time: a client with events unread and no call waiting for WM_HANG_MS
-// is not answering.
+// ---- animation ----
+
+fn wm_any_active(w: *wm) -> u32 {
+    if (w.ws_pos.active == 1) { return 1; }
+    let i: u32 = 0;
+    while (i < WM_WIN_MAX) {
+        let win: *wm_win = &w.win[i];
+        if (win.used == 1 && (win.sa.active | win.al.active | win.dx.active | win.dy.active) == 1) { return 1; }
+        i = i + 1;
+    }
+    i = 0;
+    while (i < SC_NODE_MAX) {
+        let n: *sc_node = &w.sc.n[i];
+        if (n.used == 1 && (n.x.active | n.y.active | n.sc.active | n.al.active) == 1) { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// Where everything that is moving is, as damage.
+fn wm_damage_moving(w: *wm) -> void {
+    let i: u32 = 0;
+    while (i < w.comp.n) {
+        if (w.comp.l[i].anim == 1) { ds_layer_damage(w.comp, i); }
+        i = i + 1;
+    }
+}
+
+// ms milliseconds on. With nothing moving this does nothing at all, which is
+// what lets an idle screen cost no composition. Otherwise what moves is
+// damaged where it was and where it now is.
+fn wm_animate(w: *wm, ms: u32) -> void {
+    if (wm_any_active(w) == 0) { return; }
+    wm_restack(w);
+    wm_damage_moving(w);
+    sp_step(&w.ws_pos, ms, w.reduce);
+    let i: u32 = 0;
+    while (i < WM_WIN_MAX) {
+        let win: *wm_win = &w.win[i];
+        if (win.used == 1) {
+            sp_step(&win.sa, ms, w.reduce);
+            sp_step(&win.al, ms, w.reduce);
+            sp_step(&win.dx, ms, w.reduce);
+            sp_step(&win.dy, ms, w.reduce);
+            if (win.ghost == 1 && win.al.active == 0 && win.sa.active == 0) { wm_window_reap(w, i); }
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while (i < SC_NODE_MAX) {
+        if (w.sc.n[i].used == 1) { sc_step(&w.sc.n[i], ms, w.reduce); }
+        i = i + 1;
+    }
+    wm_restack(w);
+    wm_damage_moving(w);
+}
+
+// ---- layers ----
+
+fn wm_damage_content(w: *wm, win: *wm_win) -> void {
+    ds_damage_add(&w.comp.damage, win.x + WM_EDGE, win.y + WM_TITLE_H, win.w, win.h);
+}
+
+fn wm_layers_of(w: *wm, c: u32) -> u32 {
+    let n: u32 = 0;
+    let i: u32 = 0;
+    while (i < SC_NODE_MAX) {
+        if (w.sc.n[i].used == 1 && w.win[w.sc.n[i].owner].client == c) { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
+}
+
+// A layer of window i, showing the surface s, under another of its layers or
+// (SC_NONE) directly in its content. It takes s and lease only on success:
+// the layer's id, or an error.
+fn wm_layer_new(w: *wm, i: u32, parent: u32, s: *ds_surface, lease: i32, flags: u32) -> i32 {
+    let win: *wm_win = &w.win[i];
+    if (wm_layers_of(w, win.client) >= WM_LAYERS_PER_CLIENT) { return E_NO_RESOURCES; }
+    let opaque: u32 = 1;
+    if ((flags & WM_F_ALPHA) != 0) { opaque = 0; }
+    let id: i32 = sc_new(&w.sc, &win.head, &win.tail, i, parent, s, lease, opaque);
+    if (id == E_NO_RESOURCES && wm_reap_ghost(w) != WM_NONE) {
+        id = sc_new(&w.sc, &win.head, &win.tail, i, parent, s, lease, opaque);
+    }
+    if (id < 0) { return id; }
+    wm_restack(w);
+    wm_damage_content(w, win);
+    return id;
+}
+
+fn wm_in(v: i32, max: i32) -> u32 {
+    if (v < (0 - max) || v > max) { return 0; }
+    return 1;
+}
+
+// Apply a change to a layer of window i: 0 or an error, and an error changes
+// nothing. A client's numbers are all checked here.
+fn wm_layer_set(w: *wm, i: u32, id: u32, p: *ds_lprops) -> i32 {
+    if (sc_owns(&w.sc, i, id) == 0) { return E_INVALID_ARGS; }
+    if ((p.mask & (0 - 1 - WM_LP_ALL)) != 0) { return E_INVALID_ARGS; }
+    if (p.k > SP_K_MAX || p.c > SP_C_MAX || (p.k != 0 && p.c == 0)) { return E_INVALID_ARGS; }
+    if ((p.mask & WM_LP_POS) != 0 && (wm_in(p.x, WM_POS_MAX) == 0 || wm_in(p.y, WM_POS_MAX) == 0)) { return E_INVALID_ARGS; }
+    if ((p.mask & WM_LP_SCALE) != 0 && p.scale > WM_SCALE_MAX) { return E_INVALID_ARGS; }
+    if ((p.mask & WM_LP_ALPHA) != 0 && p.alpha > 255) { return E_INVALID_ARGS; }
+    if ((p.mask & WM_LP_ANCHOR) != 0 && (wm_in(p.ax, WM_POS_MAX) == 0 || wm_in(p.ay, WM_POS_MAX) == 0)) { return E_INVALID_ARGS; }
+    if ((p.mask & WM_LP_VISIBLE) != 0 && p.visible > 1) { return E_INVALID_ARGS; }
+    if ((p.mask & WM_LP_MATRIX) != 0) {
+        let k: u32 = 0;
+        while (k < 4) {
+            if (wm_in(p.m[k], WM_MATRIX_MAX) == 0) { return E_INVALID_ARGS; }
+            k = k + 1;
+        }
+    }
+    let n: *sc_node = &w.sc.n[id];
+    if ((p.mask & WM_LP_POS) != 0) { sp_to(&n.x, p.x, p.k, p.c); sp_to(&n.y, p.y, p.k, p.c); }
+    if ((p.mask & WM_LP_SCALE) != 0) { sp_to(&n.sc, p.scale as i32, p.k, p.c); }
+    if ((p.mask & WM_LP_ALPHA) != 0) { sp_to(&n.al, p.alpha as i32, p.k, p.c); }
+    if ((p.mask & (WM_LP_ANCHOR | WM_LP_MATRIX | WM_LP_VISIBLE)) != 0) {
+        if ((p.mask & WM_LP_ANCHOR) != 0) { n.ax = p.ax; n.ay = p.ay; }
+        if ((p.mask & WM_LP_VISIBLE) != 0) { n.visible = p.visible; }
+        if ((p.mask & WM_LP_MATRIX) != 0) {
+            n.m[0] = p.m[0]; n.m[1] = p.m[1]; n.m[2] = p.m[2]; n.m[3] = p.m[3];
+        }
+        wm_restack(w);
+        wm_damage_content(w, &w.win[i]);
+    }
+    return 0;
+}
+
+// A layer of window i goes, with everything under it: 0 or an error.
+fn wm_layer_free(w: *wm, i: u32, id: u32) -> i32 {
+    if (sc_owns(&w.sc, i, id) == 0) { return E_INVALID_ARGS; }
+    let win: *wm_win = &w.win[i];
+    sc_free(&w.sc, &win.head, &win.tail, id);
+    wm_restack(w);
+    wm_damage_content(w, win);
+    return 0;
+}
+
+// The time. Springs go on by what has passed, and a client with events unread
+// and no call waiting for WM_HANG_MS is not answering.
 fn wm_tick(w: *wm, now: u64) -> void {
+    let ms: u64 = 0;
+    if (now > w.now) { ms = now - w.now; }
     w.now = now;
+    if (ms > (SP_MS_MAX as u64)) { ms = SP_MS_MAX as u64; }
+    wm_animate(w, ms as u32);
     let c: u32 = 0;
     while (c < WM_CLIENT_MAX) {
         let cl: *wm_client = &w.client[c];

@@ -172,6 +172,26 @@ fn dsv_window_new(s: *dsv, c: u32, req: *ds_req, rep: *ds_rep, handles: u32) -> 
     return 0;
 }
 
+// A layer: the buffer and the lease that keeps it unwritable, for as long as
+// the layer lasts. The buffer has no second copy to swap with: a client that
+// wants new pixels adds a new layer.
+fn dsv_layer_new(s: *dsv, c: u32, req: *ds_req, rep: *ds_rep, handles: u32) -> i32 {
+    if (handles != 2 || wm_owns(&s.w, c, req.win) == 0) { return E_INVALID_ARGS; }
+    if (req.w == 0 || req.h == 0 || req.w > WM_DIM_MAX || req.h > WM_DIM_MAX) { return E_INVALID_ARGS; }
+    if ((req.flags & (0 - 1 - WM_F_ALPHA)) != 0) { return E_INVALID_ARGS; }
+    let b: ds_surface;
+    let rc: i32 = dsv_map(dsv_inhandles[0], req.w, req.h, &b);
+    if (rc != 0) { return rc; }
+    rc = mem_lease_check(dsv_inhandles[1], b.mem);
+    if (rc != 0) { vm_unmap(b.px, 0); return rc; }
+    let id: i32 = wm_layer_new(&s.w, req.win, req.layer, &b, dsv_inhandles[1], req.flags);
+    if (id < 0) { vm_unmap(b.px, 0); return id; }
+    dsv_inhandles[0] = 0;
+    dsv_inhandles[1] = 0;       // the layer's now
+    rep.win = id as u32;
+    return 0;
+}
+
 fn dsv_commit(s: *dsv, c: u32, req: *ds_req, rep: *ds_rep, handles: u32) -> i32 {
     if (handles != 1 || wm_owns(&s.w, c, req.win) == 0) { return E_INVALID_ARGS; }
     if (req.buffer > 1 || req.nrects > DS_RECTS_MAX) { return E_INVALID_ARGS; }
@@ -218,6 +238,13 @@ fn dsv_receive(s: *dsv) -> void {
         if (req.op == DS_OP_WINDOW_CLOSE && count == 0 && wm_owns(&s.w, c, req.win) == 1) {
             wm_window_destroy(&s.w, req.win);
             rep.status = 0;
+        }
+        if (req.op == DS_OP_LAYER_NEW) { rep.status = dsv_layer_new(s, c, req, &rep, count); }
+        if (req.op == DS_OP_LAYER_SET && count == 0 && wm_owns(&s.w, c, req.win) == 1) {
+            rep.status = wm_layer_set(&s.w, req.win, req.layer, &req.props);
+        }
+        if (req.op == DS_OP_LAYER_FREE && count == 0 && wm_owns(&s.w, c, req.win) == 1) {
+            rep.status = wm_layer_free(&s.w, req.win, req.layer);
         }
     }
     // whatever a refused request carried, and anything it should not have
@@ -298,6 +325,7 @@ fn dsv_clients(s: *dsv) -> u32 {
 
 // Every client ended, and the screen and the keys given back.
 fn dsv_shutdown(s: *dsv) -> void {
+    s.w.reduce = 1;             // nothing is left to fade for
     let c: u32 = 0;
     while (c < WM_CLIENT_MAX) {
         if (s.w.client[c].used == 1) {
@@ -306,6 +334,7 @@ fn dsv_shutdown(s: *dsv) -> void {
         }
         c = c + 1;
     }
+    while (wm_reap_ghost(&s.w) != WM_NONE) { }
     if (s.input > 0) { handle_close(s.input); s.input = 0; }
     ds_screen_close(&s.screen);
 }

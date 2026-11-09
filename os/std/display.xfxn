@@ -29,8 +29,11 @@
 //
 // Serenity's WindowServer is the model (Compositor::compose: damage into a
 // back buffer, then flush only the damage; its opaque and transparent
-// regions kept apart so hidden content is skipped). Coordinates are unsigned:
-// a layer starts on the screen and may run off its right and bottom edges.
+// regions kept apart so hidden content is skipped). Rectangles are on the
+// screen and unsigned; a layer's position is signed, since an animation can
+// take it off any edge. A layer also has an opacity, a 2x2 transform and a
+// clip (std/scene.xfxn makes those from a tree). Sampling is nearest-neighbour:
+// the software renderer's quality.
 
 import "mem.xfxn";
 import "string.xfxn";
@@ -259,27 +262,14 @@ fn ds_over(src: u32, dst: u32) -> u32 {
     return (a << 24) | (r << 16) | (g << 8) | b;
 }
 
-// Draw the part of src that falls in `clip`, with src's top-left at (sx, sy)
-// on dst: copied if opaque is 1, else blended over what is there. `clip` is
-// in dst's coordinates and already inside it.
-fn ds_draw(dst: *ds_surface, src: *ds_surface, sx: u32, sy: u32, clip: *ds_rect, opaque: u32) -> void {
-    let at: ds_rect;
-    ds_rect_set(&at, sx, sy, src.width, src.height);
-    let r: ds_rect;
-    if (ds_rect_and(&r, &at, clip) == 0) { return; }
-    let j: u32 = 0;
-    while (j < r.h) {
-        let d: *u32 = ds_row(dst, r.y + j);
-        let s: *u32 = ds_row(src, r.y + j - sy);
-        let i: u32 = 0;
-        let ox: u32 = r.x - sx;
-        if (opaque == 1) {
-            while (i < r.w) { d[r.x + i] = s[ox + i]; i = i + 1; }
-        } else {
-            while (i < r.w) { d[r.x + i] = ds_over(s[ox + i], d[r.x + i]); i = i + 1; }
-        }
-        j = j + 1;
-    }
+// A premultiplied pixel at an opacity of alpha/255.
+fn ds_fade(p: u32, alpha: u32) -> u32 {
+    if (alpha == 255) { return p; }
+    let a: u32 = (((p >> 24) & 255) * alpha + 127) / 255;
+    let r: u32 = (((p >> 16) & 255) * alpha + 127) / 255;
+    let g: u32 = (((p >> 8) & 255) * alpha + 127) / 255;
+    let b: u32 = ((p & 255) * alpha + 127) / 255;
+    return (a << 24) | (r << 16) | (g << 8) | b;
 }
 
 // ---- text ----
@@ -346,21 +336,36 @@ fn ds_text(s: *ds_surface, f: *ds_font, x: u32, y: u32, room: u32, text: *u8, ar
 
 // ---- the compositor ----
 
-const DS_LAYER_MAX: u32 = 64;
+const DS_LAYER_MAX: u32 = 128;
+const DS_FX_ONE: i32 = 65536;       // 1.0 in a layer's matrix (Q16.16)
+const DS_POS_MAX: i32 = 32767;      // the furthest a layer's position goes
+const DS_M_MAX: i64 = 1048576;      // 16.0: the largest entry of a matrix
+// A layer whose matrix has a determinant smaller than this (Q32.32: an area
+// of 1/1024) has collapsed and is not drawn. With DS_M_MAX and DS_POS_MAX it
+// is what keeps ds_draw_xf's products inside an i64.
+const DS_DET_MIN: i64 = 4194304;
 
 struct ds_layer {
     s: *ds_surface,
-    x: u32,
-    y: u32,
+    x: i32,         // where the surface's top left lands
+    y: i32,
     visible: u32,
-    opaque: u32     // 1: every pixel's alpha is 255, so what is under it is hidden
+    opaque: u32,    // 1: every pixel's alpha is 255, so what is under it is hidden
+    alpha: u32,     // 0-255: the whole layer's opacity
+    plain: u32,     // 1: the matrix is the identity
+    anim: u32,      // 1: moving now, so each frame damages where it is
+    a: i32,         // screen = (x, y) + [a b; c d] * surface, Q16.16
+    b: i32,
+    c: i32,
+    d: i32,
+    clip: ds_rect   // nothing is drawn outside this; on the screen
 }
 
 struct ds_comp {
     n: u32,
     back: ds_surface,   // the frame, in RAM; never read from the screen
     damage: ds_damage,
-    l: [64]ds_layer     // DS_LAYER_MAX, bottom first
+    l: [128]ds_layer    // DS_LAYER_MAX, bottom first
 }
 
 // A compositor for a width x height screen: 0 or an error.
@@ -372,37 +377,144 @@ fn ds_comp_init(c: *ds_comp, width: u32, height: u32) -> i32 {
 
 fn ds_comp_free(c: *ds_comp) -> void { ds_surface_free(&c.back); c.n = 0; }
 
-// A layer on top of the rest: its index, or DS_LAYER_MAX when full. Its
-// area is damaged.
-fn ds_layer_add(c: *ds_comp, s: *ds_surface, x: u32, y: u32, opaque: u32) -> u32 {
-    if (c.n >= DS_LAYER_MAX) { return DS_LAYER_MAX; }
-    let i: u32 = c.n;
-    c.l[i].s = s; c.l[i].x = x; c.l[i].y = y; c.l[i].visible = 1; c.l[i].opaque = opaque;
-    c.n = c.n + 1;
-    ds_damage_add(&c.damage, x, y, s.width, s.height);
-    return i;
+fn ds_lmin(a: i64, b: i64) -> i64 { if (a < b) { return a; } return b; }
+fn ds_lmax(a: i64, b: i64) -> i64 { if (a > b) { return a; } return b; }
+
+// The part of a layer's bounding box inside a width x height screen and its
+// clip: 1, or 0 if nothing is (and r is empty). The box of a parallelogram is
+// the sum of its edges' extents.
+fn ds_extent(l: *ds_layer, width: u32, height: u32, r: *ds_rect) -> u32 {
+    let sw: i64 = l.s.width as i64;
+    let sh: i64 = l.s.height as i64;
+    let x0: i64 = l.x as i64;
+    let y0: i64 = l.y as i64;
+    let x1: i64 = x0 + sw;
+    let y1: i64 = y0 + sh;
+    if (l.plain == 0) {
+        let ax: i64 = (l.a as i64) * sw;
+        let bx: i64 = (l.b as i64) * sh;
+        let cy: i64 = (l.c as i64) * sw;
+        let dy: i64 = (l.d as i64) * sh;
+        x1 = x0 + ((ds_lmax(ax, 0) + ds_lmax(bx, 0) + 65535) >> 16);
+        y1 = y0 + ((ds_lmax(cy, 0) + ds_lmax(dy, 0) + 65535) >> 16);
+        x0 = x0 + ((ds_lmin(ax, 0) + ds_lmin(bx, 0)) >> 16);
+        y0 = y0 + ((ds_lmin(cy, 0) + ds_lmin(dy, 0)) >> 16);
+    }
+    x0 = ds_lmax(x0, l.clip.x as i64);
+    y0 = ds_lmax(y0, l.clip.y as i64);
+    x1 = ds_lmin(x1, ds_lmin((l.clip.x as i64) + (l.clip.w as i64), width as i64));
+    y1 = ds_lmin(y1, ds_lmin((l.clip.y as i64) + (l.clip.h as i64), height as i64));
+    if (x1 <= x0 || y1 <= y0) { ds_rect_set(r, 0, 0, 0, 0); return 0; }
+    ds_rect_set(r, x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32);
+    return 1;
+}
+
+// A layer with a matrix, sampled at each pixel's centre through the inverse.
+// r is inside dst, the layer's extent and whatever is being composed.
+fn ds_draw_xf(dst: *ds_surface, l: *ds_layer, r: *ds_rect) -> void {
+    let a: i64 = l.a as i64;
+    let b: i64 = l.b as i64;
+    let c: i64 = l.c as i64;
+    let d: i64 = l.d as i64;
+    let det: i64 = a * d - b * c;
+    if (det > (0 - DS_DET_MIN) && det < DS_DET_MIN) { return; }
+    let ia: i64 = (d << 32) / det;
+    let ib: i64 = (0 - (b << 32)) / det;
+    let ic: i64 = (0 - (c << 32)) / det;
+    let id: i64 = (a << 32) / det;
+    let sw: i64 = l.s.width as i64;
+    let sh: i64 = l.s.height as i64;
+    let copy: u32 = 0;
+    if (l.opaque == 1 && l.alpha == 255) { copy = 1; }
+    let j: u32 = 0;
+    while (j < r.h) {
+        let row: *u32 = ds_row(dst, r.y + j);
+        let dx: i64 = (((r.x as i64) - (l.x as i64)) << 16) + 32768;
+        let dy: i64 = ((((r.y + j) as i64) - (l.y as i64)) << 16) + 32768;
+        let u: i64 = (ia * dx + ib * dy) >> 16;
+        let v: i64 = (ic * dx + id * dy) >> 16;
+        let i: u32 = 0;
+        while (i < r.w) {
+            let su: i64 = u >> 16;
+            let sv: i64 = v >> 16;
+            if (su >= 0 && su < sw && sv >= 0 && sv < sh) {
+                let from: *u32 = ds_row(l.s, sv as u32);
+                let p: u32 = from[su as u32];
+                if (copy == 1) { row[r.x + i] = p; }
+                else { row[r.x + i] = ds_over(ds_fade(p, l.alpha), row[r.x + i]); }
+            }
+            u = u + ia;
+            v = v + ic;
+            i = i + 1;
+        }
+        j = j + 1;
+    }
+}
+
+// The part of a layer that falls in `clip` (which is inside dst): copied if
+// it is solid, else blended over what is there.
+fn ds_draw(dst: *ds_surface, l: *ds_layer, clip: *ds_rect) -> void {
+    let e: ds_rect;
+    let r: ds_rect;
+    if (l.alpha == 0 || ds_extent(l, dst.width, dst.height, &e) == 0) { return; }
+    if (ds_rect_and(&r, &e, clip) == 0) { return; }
+    if (l.plain == 0) { ds_draw_xf(dst, l, &r); return; }
+    let ox: u32 = ((r.x as i64) - (l.x as i64)) as u32;
+    let oy: u32 = ((r.y as i64) - (l.y as i64)) as u32;
+    let copy: u32 = 0;
+    if (l.opaque == 1 && l.alpha == 255) { copy = 1; }
+    let j: u32 = 0;
+    while (j < r.h) {
+        let d: *u32 = ds_row(dst, r.y + j);
+        let s: *u32 = ds_row(l.s, oy + j);
+        let i: u32 = 0;
+        if (copy == 1) {
+            while (i < r.w) { d[r.x + i] = s[ox + i]; i = i + 1; }
+        } else if (l.alpha == 255) {
+            while (i < r.w) { d[r.x + i] = ds_over(s[ox + i], d[r.x + i]); i = i + 1; }
+        } else {
+            while (i < r.w) { d[r.x + i] = ds_over(ds_fade(s[ox + i], l.alpha), d[r.x + i]); i = i + 1; }
+        }
+        j = j + 1;
+    }
 }
 
 // Rebuilding the stack: no layers, then ds_layer_put bottom up. Neither
 // damages anything; whoever changed the stack knows what that changed.
 fn ds_layers_clear(c: *ds_comp) -> void { c.n = 0; }
 
-fn ds_layer_put(c: *ds_comp, s: *ds_surface, x: u32, y: u32, opaque: u32) -> u32 {
+// Solid or blended, full opacity, no transform, clipped only by the screen:
+// its index, or DS_LAYER_MAX when full.
+fn ds_layer_put(c: *ds_comp, s: *ds_surface, x: i32, y: i32, opaque: u32) -> u32 {
     if (c.n >= DS_LAYER_MAX) { return DS_LAYER_MAX; }
     let i: u32 = c.n;
-    c.l[i].s = s; c.l[i].x = x; c.l[i].y = y; c.l[i].visible = 1; c.l[i].opaque = opaque;
+    let l: *ds_layer = &c.l[i];
+    l.s = s; l.x = x; l.y = y; l.visible = 1; l.opaque = opaque;
+    l.alpha = 255; l.plain = 1; l.anim = 0;
+    l.a = DS_FX_ONE; l.b = 0; l.c = 0; l.d = DS_FX_ONE;
+    ds_rect_set(&l.clip, 0, 0, c.damage.width, c.damage.height);
     c.n = c.n + 1;
     return i;
 }
 
 fn ds_layer_damage(c: *ds_comp, i: u32) -> void {
-    if (c.l[i].visible == 1) {
-        ds_damage_add(&c.damage, c.l[i].x, c.l[i].y, c.l[i].s.width, c.l[i].s.height);
+    if (c.l[i].visible != 1) { return; }
+    let e: ds_rect;
+    if (ds_extent(&c.l[i], c.back.width, c.back.height, &e) == 1) {
+        ds_damage_add(&c.damage, e.x, e.y, e.w, e.h);
     }
 }
 
+// A layer on top of the rest: its index, or DS_LAYER_MAX when full. Its
+// area is damaged.
+fn ds_layer_add(c: *ds_comp, s: *ds_surface, x: i32, y: i32, opaque: u32) -> u32 {
+    let i: u32 = ds_layer_put(c, s, x, y, opaque);
+    if (i < DS_LAYER_MAX) { ds_layer_damage(c, i); }
+    return i;
+}
+
 // Move a layer: where it was and where it is are both damaged.
-fn ds_layer_move(c: *ds_comp, i: u32, x: u32, y: u32) -> void {
+fn ds_layer_move(c: *ds_comp, i: u32, x: i32, y: i32) -> void {
     if (i >= c.n) { return; }
     if (c.l[i].x == x && c.l[i].y == y) { return; }
     ds_layer_damage(c, i);
@@ -417,12 +529,16 @@ fn ds_layer_show(c: *ds_comp, i: u32, visible: u32) -> void {
     ds_layer_damage(c, i);
 }
 
-// Does layer i hide all of r?
+// Does layer i hide all of r? Only a solid layer at full opacity, square to
+// the screen, whose clip lets all of r through.
 fn ds_layer_hides(c: *ds_comp, i: u32, r: *ds_rect) -> u32 {
-    if (c.l[i].visible != 1 || c.l[i].opaque != 1) { return 0; }
-    let at: ds_rect;
-    ds_rect_set(&at, c.l[i].x, c.l[i].y, c.l[i].s.width, c.l[i].s.height);
-    return ds_rect_holds(&at, r);
+    let l: *ds_layer = &c.l[i];
+    if (l.visible != 1 || l.opaque != 1 || l.alpha != 255 || l.plain != 1) { return 0; }
+    if (ds_rect_holds(&l.clip, r) == 0) { return 0; }
+    if ((l.x as i64) > (r.x as i64) || (l.y as i64) > (r.y as i64)) { return 0; }
+    if ((l.x as i64) + (l.s.width as i64) < (r.x as i64) + (r.w as i64)) { return 0; }
+    if ((l.y as i64) + (l.s.height as i64) < (r.y as i64) + (r.h as i64)) { return 0; }
+    return 1;
 }
 
 // One damaged rectangle into the back buffer: from the topmost layer that
@@ -439,9 +555,7 @@ fn ds_compose_rect(c: *ds_comp, r: *ds_rect) -> void {
     }
     let i: u32 = first;
     while (i < c.n) {
-        if (c.l[i].visible == 1) {
-            ds_draw(&c.back, c.l[i].s, c.l[i].x, c.l[i].y, r, c.l[i].opaque);
-        }
+        if (c.l[i].visible == 1) { ds_draw(&c.back, &c.l[i], r); }
         i = i + 1;
     }
 }
