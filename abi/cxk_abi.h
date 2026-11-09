@@ -15,7 +15,7 @@
  * hash it was built against and the loader refuses one that differs, so a
  * program never runs against numbers or layouts it was not compiled for.
  */
-#define CXK_ABI_HASH { 0x02, 0xd7, 0x4d, 0x2c, 0xad, 0x99, 0xab, 0xda, 0x88, 0x8f, 0xf3, 0x72, 0x72, 0x0c, 0x45, 0xa6, 0x27, 0xe5, 0x1e, 0xd6, 0x12, 0xb0, 0x81, 0x1c, 0xf8, 0x37, 0x49, 0x1c, 0x37, 0x8b, 0xe3, 0x8d }
+#define CXK_ABI_HASH { 0x74, 0x0d, 0x10, 0xd5, 0x23, 0xb5, 0x6e, 0x41, 0x42, 0x57, 0xff, 0xf3, 0xa4, 0xee, 0xea, 0xb1, 0xd2, 0x32, 0x32, 0xb6, 0xd9, 0x2b, 0xa9, 0xb4, 0x74, 0x5a, 0xec, 0x18, 0x23, 0x22, 0x46, 0x0e }
 
 /*
  * CXK ABI v1 - the PUBLIC contract shared by the kernel, the .xoex executive,
@@ -44,7 +44,7 @@
  * line; bump both, and the DevKit's stamp, in the one commit that changes the
  * contract.
  */
-#define CXK_ABI_VERSION          35
+#define CXK_ABI_VERSION          36
 
 /*
  * ---- syscall numbers ----
@@ -1311,7 +1311,19 @@ struct process_info {
     uint32_t vector;                            /* PROC_CRASHED: the exception, or PROC_VECTOR_REFUSED */
     uint32_t killer;                            /* PROC_KILLED, PROC_STOPPED: the pid that asked, as it was then */
     uint32_t reserved;                          /* 0 */
+    uint64_t signer;                            /* the first 8 bytes of SHA-256 of the key that signed it; 0 if none */
+    uint32_t trust;                             /* PROC_TRUST_*: what the kernel found when it verified the image */
+    uint32_t reserved2;                         /* 0 */
 };
+
+/*
+ * process_info.trust. UNSIGNED is only ever seen on a --dev build, which is
+ * the only one that runs such an image.
+ */
+#define PROC_TRUST_UNSIGNED      0
+#define PROC_TRUST_UNVERIFIED    1              /* signed, by a key this machine does not know */
+#define PROC_TRUST_PUBLISHER     2              /* signed by a key in /System/KeyVault */
+#define PROC_TRUST_PLATFORM      3              /* signed by the key built into the kernel */
 
 /*
  * process_info.vector: not an exception but a system call from outside the
@@ -1453,6 +1465,13 @@ struct screen_info {
 
 /* x, y: where the pointer is now; buttons: bit 0 left, 1 right, 2 middle */
 #define INPUT_EVENT_POINTER      2
+
+/*
+ * The secure attention combination, Ctrl+Alt+Del. No other field means
+ * anything. A full ring cannot lose it, it comes before any waiting event,
+ * and presses not yet read are one event.
+ */
+#define INPUT_EVENT_ATTENTION    3
 #define INPUT_EVENTS_MAX         32             /* events one SYS_INPUT_EVENTS writes at most */
 
 struct input_event {
@@ -1776,7 +1795,7 @@ CXK_ABI_STATIC_ASSERT(sizeof(struct thread_info) == 56, "ABI layout: thread_info
 CXK_ABI_STATIC_ASSERT(sizeof(struct device_desc) == 40, "ABI layout: device_desc");
 CXK_ABI_STATIC_ASSERT(sizeof(struct mem_info) == 24, "ABI layout: mem_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct job_info) == 48, "ABI layout: job_info");
-CXK_ABI_STATIC_ASSERT(sizeof(struct process_info) == 40, "ABI layout: process_info");
+CXK_ABI_STATIC_ASSERT(sizeof(struct process_info) == 56, "ABI layout: process_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct object_info_args) == 24, "ABI layout: object_info_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct object_basic) == 20, "ABI layout: object_basic");
 CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_handle) == 16, "ABI layout: ipc_handle");

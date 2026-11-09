@@ -40,7 +40,7 @@ domain kernel
 /// mismatch. Declared in versions.json as `cxex-abi` and checked against this
 /// line; bump both, and the DevKit's stamp, in the one commit that changes the
 /// contract.
-const CXK_ABI_VERSION: u32 = 35
+const CXK_ABI_VERSION: u32 = 36
 
 /// ---- syscall numbers ----
 /// lifecycle 0x00-0x0F (no capability required)
@@ -976,7 +976,16 @@ struct process_info {
     vector: u32         /// PROC_CRASHED: the exception, or PROC_VECTOR_REFUSED
     killer: u32         /// PROC_KILLED, PROC_STOPPED: the pid that asked, as it was then
     reserved: u32       /// 0
+    signer: u64         /// the first 8 bytes of SHA-256 of the key that signed it; 0 if none
+    trust: u32          /// PROC_TRUST_*: what the kernel found when it verified the image
+    reserved2: u32      /// 0
 }
+/// process_info.trust. UNSIGNED is only ever seen on a --dev build, which is
+/// the only one that runs such an image.
+const PROC_TRUST_UNSIGNED: u32 = 0
+const PROC_TRUST_UNVERIFIED: u32 = 1    /// signed, by a key this machine does not know
+const PROC_TRUST_PUBLISHER: u32 = 2     /// signed by a key in /System/KeyVault
+const PROC_TRUST_PLATFORM: u32 = 3      /// signed by the key built into the kernel
 /// process_info.vector: not an exception but a system call from outside the
 /// system page, which ends the process the way a fault does
 const PROC_VECTOR_REFUSED: u32 = 256u
@@ -1094,6 +1103,10 @@ struct screen_info {
 const INPUT_EVENT_KEY: u32 = 1      /// code: the key, as SYS_INPUT_READ gives it
 /// x, y: where the pointer is now; buttons: bit 0 left, 1 right, 2 middle
 const INPUT_EVENT_POINTER: u32 = 2
+/// The secure attention combination, Ctrl+Alt+Del. No other field means
+/// anything. A full ring cannot lose it, it comes before any waiting event,
+/// and presses not yet read are one event.
+const INPUT_EVENT_ATTENTION: u32 = 3
 const INPUT_EVENTS_MAX: u32 = 32    /// events one SYS_INPUT_EVENTS writes at most
 struct input_event {
     kind: u32       /// INPUT_EVENT_*

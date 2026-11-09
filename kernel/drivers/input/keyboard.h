@@ -16,6 +16,10 @@ char keyboard_getchar(void);
    can tell them apart. Safe from an interrupt handler. */
 void keyboard_inject(unsigned char c);
 
+/* The secure attention combination was pressed (Ctrl+Alt+Del). Interrupt
+   context, or a poll. Not a key: it never reaches the old key buffer. */
+void keyboard_attention(void);
+
 /* A USB HID device has come. A reader asleep from before it, with nothing
    that would ever have woken it to poll, looks again. */
 void keyboard_usb_arrived(void);
@@ -45,5 +49,6 @@ char keyboard_getchar_blocking(void);
 #define KEY_HOME      0x88   /* jump to start of line */
 #define KEY_END       0x89   /* jump to end of line */
 #define KEY_CTRL_C    0x03   /* Ctrl+C (ETX) - used as "abort" */
+#define KEY_ATTENTION 0x100  /* ps2kbd_decode's Ctrl+Alt+Del; never in the buffer */
 
 #endif

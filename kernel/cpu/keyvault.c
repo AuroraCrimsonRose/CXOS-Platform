@@ -6,6 +6,7 @@
 
 #include "keyvault.h"
 #include "cxex_verify.h"
+#include "sha256.h"
 #include "trusted_key.h"
 #include "cxfs.h"
 #include "logging.h"
@@ -70,7 +71,8 @@ static int in_vault(const uint8_t *key, uint16_t keylen) {
     return vault_hit;
 }
 
-int keyvault_trust_of(const uint8_t *file, size_t len) {
+int keyvault_trust_of(const uint8_t *file, size_t len, uint64_t *signer) {
+    if (signer) *signer = 0;
     /* INTEGRITY first, always, and against the key the image itself carries.
        Nothing below this line is worth asking until the bytes are known to be
        what the signer signed. */
@@ -80,6 +82,16 @@ int keyvault_trust_of(const uint8_t *file, size_t len) {
     uint16_t keylen = 0;
     const uint8_t *key = cxex_signer_key(file, len, &keylen);
     if (!key) return CXEX_VERIFY_BAD_KEY;
+
+    /* Of the key itself, not the image's own fingerprint field: this is what
+       a title bar will name, so it is what the signature was checked with. */
+    if (signer) {
+        uint8_t fp[32];
+        sha256(key, keylen, fp);
+        uint64_t id = 0;
+        for (int i = 0; i < 8; i++) id = (id << 8) | fp[i];
+        *signer = id;
+    }
 
     /* IDENTITY, most trusted first. The platform key is compared here rather
        than looked up in the vault because it is not in the vault - it is

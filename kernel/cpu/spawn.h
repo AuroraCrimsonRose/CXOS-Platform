@@ -38,7 +38,8 @@ struct spawn_hset {
 int proc_start(const void *image, uint32_t image_len, uint32_t caps,
                struct endpoint *broker, uint32_t broker_grant,
                const char *args, uint32_t args_len, int32_t *handle,
-               const struct spawn_hset *hs, struct job *job);
+               const struct spawn_hset *hs, struct job *job,
+               uint32_t trust, uint64_t signer);
 
 /* SYS_SPAWN handler (called after the GRANT_SPAWN check). Returns a handle on
    the new process, or a negative ABI error. */

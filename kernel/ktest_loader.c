@@ -1353,6 +1353,21 @@ int ktest_display_server(void) {
         if (syscall_dispatch(SYS_SLEEP, 10, 0, 0, 0, 0) != E_OK) goto done;
     }
 
+    /* 6: the combination, from the drivers' entry point, puts the system's
+       screen on the real screen: its colour in a corner no row is drawn in */
+    keyboard_attention();
+    {
+        uint32_t want = fb_rgb(0x14, 0x28, 0x3C) & 0xFFFFFF;    /* WM_TS_COL_SYSTEM */
+        uint64_t until = timer_now_ns() + 60000 * TIMER_NS_PER_TICK;
+        step = 6;
+        while ((fb_test_screen_pixel(fb_width() - 1, fb_height() - 1) & 0xFFFFFF) != want) {
+            if (timer_now_ns() > until) goto done;
+            if (syscall_dispatch(SYS_SLEEP, 10, 0, 0, 0, 0) != E_OK) goto done;
+        }
+    }
+    /* Esc, and the windows have the keys again */
+    keyboard_inject(27);
+
     /* 3: a key and a click at the drivers' entry points, then Ctrl+Q */
     mouse_inject(1, 1, 1);
     mouse_inject(0, 0, 0);
@@ -1365,7 +1380,12 @@ int ktest_display_server(void) {
     /* 5: everything back, its two clients gone with it */
     htab_close(tab, ph);
     ph = -1;
-    step = 5; if (!proc_live_settles(live0) || input_held() || fb_screen_held()) goto done;
+    /* The server painted its system screen, so it has a screen's worth of
+       pages to give back: longer than one settle under icount, not forever. */
+    step = 5;
+    int settled = 0;
+    for (int i = 0; i < 10 && !settled; i++) settled = proc_live_settles(live0);
+    if (!settled || input_held() || fb_screen_held()) goto done;
     step = 0;
 
 done:

@@ -72,6 +72,8 @@ struct proc {
     uint64_t    end_ip;     /* PROC_CRASHED */
     uint64_t    end_addr;   /* PROC_CRASHED by a page fault */
     uint32_t    end_killer; /* PROC_KILLED, PROC_STOPPED: the pid that asked */
+    uint32_t    trust;      /* PROC_TRUST_*: as its image was found to be */
+    uint64_t    signer;     /* of the key that signed it, or 0 (keyvault.h) */
     /* Set by proc_kill: its threads leave at their next safe point, and none
        of them blocks again (cpu/sched.h, thread_killed). */
     int         killing;

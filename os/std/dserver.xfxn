@@ -30,6 +30,8 @@ struct dsv {
     screen: ds_screen,
     desktop: ds_surface,
     cursor: ds_surface,
+    trusted: ds_surface,    // the system's own screen
+    mark: ds_surface,       // that the screen is being read
     font: ds_font,
     ep: i32,
     input: i32,         // 0: a virtual screen, driven by wm_key and wm_pointer
@@ -61,6 +63,8 @@ fn dsv_init(s: *dsv, width: u32, height: u32, cursor_w: u32, cursor_h: u32) -> i
     rc = ds_comp_init(&s.comp, s.screen.width, s.screen.height);
     if (rc == 0) { rc = ds_surface_new(&s.desktop, s.screen.width, s.screen.height); }
     if (rc == 0) { rc = ds_surface_new(&s.cursor, cursor_w, cursor_h); }
+    if (rc == 0) { rc = ds_surface_new(&s.trusted, s.screen.width, s.screen.height); }
+    if (rc == 0) { rc = ds_surface_new(&s.mark, WM_MARK_SIZE, WM_MARK_SIZE); }
     if (rc != 0) { return rc; }
     s.ep = ep_create();
     if (s.ep <= 0) { return s.ep; }
@@ -72,7 +76,7 @@ fn dsv_init(s: *dsv, width: u32, height: u32, cursor_w: u32, cursor_h: u32) -> i
     // Titles need GRANT_DISK, and a virtual screen is pinned without them.
     let f: *ds_font = 0 as *ds_font;
     if (width == 0 && (ds_font_load(&s.font, "/System/Fonts/console_16.xfnt") == 0)) { f = &s.font; }
-    wm_init(&s.w, &s.comp, &s.desktop, &s.cursor, f);
+    wm_init(&s.w, &s.comp, &s.desktop, &s.cursor, f, &s.trusted, &s.mark);
     return 0;
 }
 
@@ -100,6 +104,12 @@ fn dsv_launch(s: *dsv, path: *u8, args: *u8, args_len: u32) -> i32 {
     if (rc != 0) { process_kill(ph); handle_close(ph); s.w.client[c].used = 0; return rc; }
     s.proc[c] = ph;
     s.launched = s.launched + 1;
+    // the kernel's word for who signed it; failing that it stays [Unknown]
+    let pi: process_info;
+    let oi: object_info_args;
+    memzero((&oi) as *u8, sizeof oi);
+    oi.handle = ph; oi.topic = OBJINFO_PROCESS; oi.buf = (&pi) as u64; oi.cap = sizeof pi;
+    if (object_info(&oi) >= 0) { wm_client_signer(&s.w, c, pi.trust, pi.signer); }
     return c as i32;
 }
 
@@ -132,8 +142,8 @@ fn dsv_close_handles(count: u32, from: u32) -> void {
     }
 }
 
-// A client's buffer, mapped read-only: 0 or an error.
-fn dsv_map(h: i32, width: u32, height: u32, out: *ds_surface) -> i32 {
+// A client's memory, mapped for what prot says: 0 or an error.
+fn dsv_map_for(h: i32, width: u32, height: u32, prot: u32, out: *ds_surface) -> i32 {
     let mi: mem_info;
     let oi: object_info_args;
     memzero((&oi) as *u8, sizeof oi);
@@ -146,17 +156,23 @@ fn dsv_map(h: i32, width: u32, height: u32, out: *ds_surface) -> i32 {
     memzero((&a) as *u8, sizeof a);
     a.object = h as u32;
     a.length = bytes;
-    a.prot = MPROT_READ;
+    a.prot = prot;
     let rc: i32 = vm_map(&a);
     if (rc != E_OK) { return rc; }
     out.px = a.addr; out.width = width; out.height = height; out.stride = width; out.mem = h;
     return 0;
 }
 
+// A client's buffer, mapped read-only: 0 or an error.
+fn dsv_map(h: i32, width: u32, height: u32, out: *ds_surface) -> i32 {
+    return dsv_map_for(h, width, height, MPROT_READ, out);
+}
+
 fn dsv_window_new(s: *dsv, c: u32, req: *ds_req, rep: *ds_rep, handles: u32) -> i32 {
     if (handles != 2) { return E_INVALID_ARGS; }
     if (req.w == 0 || req.h == 0 || req.w > WM_DIM_MAX || req.h > WM_DIM_MAX) { return E_INVALID_ARGS; }
-    if ((req.flags & (0 - 1 - WM_F_ALPHA)) != 0) { return E_INVALID_ARGS; }
+    if ((req.flags & (0 - 1 - WM_F_ALPHA - WM_F_OVERLAY)) != 0) { return E_INVALID_ARGS; }
+    if ((req.flags & WM_F_OVERLAY) != 0 && (s.w.client[c].caps & WM_CAP_OVERLAY) == 0) { return E_ACCESS_DENIED; }
     let a: ds_surface;
     let b: ds_surface;
     let rc: i32 = dsv_map(dsv_inhandles[0], req.w, req.h, &a);
@@ -207,6 +223,29 @@ fn dsv_commit(s: *dsv, c: u32, req: *ds_req, rep: *ds_rep, handles: u32) -> i32 
     return 0;
 }
 
+// What is on the screen, into memory the client gave. It is composed first:
+// the last frame may still be the system's own screen, damaged away but not
+// yet drawn over.
+fn dsv_capture(s: *dsv, c: u32, handles: u32) -> i32 {
+    if (handles != 1) { return E_INVALID_ARGS; }
+    if ((s.w.client[c].caps & WM_CAP_CAPTURE) == 0) { return E_ACCESS_DENIED; }
+    if (s.w.ts != WM_TS_NONE) { return E_BUSY; }
+    let to: ds_surface;
+    let rc: i32 = dsv_map_for(dsv_inhandles[0], s.screen.width, s.screen.height, MPROT_READ | MPROT_WRITE, &to);
+    if (rc != 0) { return rc; }
+    wm_captured(&s.w);
+    dsv_compose(s);
+    let back: *ds_surface = &s.comp.back;
+    let y: u32 = 0;
+    while (y < back.height) {
+        let row: u64 = (y as u64) * (back.stride as u64) * 4;
+        memcpy((to.px + (y as u64) * (back.width as u64) * 4) as *u8, (back.px + row) as *u8, back.width * 4);
+        y = y + 1;
+    }
+    vm_unmap(to.px, 0);
+    return 0;
+}
+
 // One message off the endpoint.
 fn dsv_receive(s: *dsv) -> void {
     let info: ipc_msg_info;
@@ -246,6 +285,12 @@ fn dsv_receive(s: *dsv) -> void {
         if (req.op == DS_OP_LAYER_FREE && count == 0 && wm_owns(&s.w, c, req.win) == 1) {
             rep.status = wm_layer_free(&s.w, req.win, req.layer);
         }
+        if (req.op == DS_OP_CONSENT && count == 0) {
+            let asked: i32 = wm_ask(&s.w, c, req.flags, info.reply);
+            if (asked == 1) { return; }     // answered when the user has
+            rep.status = asked;
+        }
+        if (req.op == DS_OP_CAPTURE) { rep.status = dsv_capture(s, c, count); }
     }
     // whatever a refused request carried, and anything it should not have
     dsv_close_handles(count, 0);
@@ -259,8 +304,17 @@ fn dsv_read_input(s: *dsv) -> void {
     while (i < n) {
         if (ev[i].kind == INPUT_EVENT_KEY) { wm_key(&s.w, ev[i].code); }
         if (ev[i].kind == INPUT_EVENT_POINTER) { wm_pointer(&s.w, ev[i].x, ev[i].y, ev[i].buttons); }
+        if (ev[i].kind == INPUT_EVENT_ATTENTION) { wm_attention(&s.w); }
         i = i + 1;
     }
+}
+
+fn dsv_compose(s: *dsv) -> void {
+    if (s.comp.damage.n == 0) { return; }
+    ds_compose(&s.comp);
+    s.pixels = s.pixels + ds_present(&s.comp, &s.screen);
+    s.frames = s.frames + 1;
+    wm_frames_done(&s.w);
 }
 
 // Compose what changed and answer whoever is waiting for an event.
@@ -274,15 +328,19 @@ fn dsv_settle(s: *dsv) -> void {
         }
         c = c + 1;
     }
-    if (s.comp.damage.n > 0) {
-        ds_compose(&s.comp);
-        s.pixels = s.pixels + ds_present(&s.comp, &s.screen);
-        s.frames = s.frames + 1;
-        wm_frames_done(&s.w);
-    }
+    dsv_compose(s);
     c = 0;
     while (c < WM_CLIENT_MAX) {
         let cl: *wm_client = &s.w.client[c];
+        if (cl.used == 1 && cl.ask_done == 1) {
+            let ans: ds_rep;
+            memzero((&ans) as *u8, sizeof ans);
+            ans.status = cl.ask_status;
+            let at: i32 = cl.ask_token;
+            cl.ask_token = 0;
+            cl.ask_done = 0;
+            if (at > 0) { dsv_reply(at, &ans); }
+        }
         if (cl.used == 1 && cl.waiter > 0 && cl.n > 0) {
             let rep: ds_rep;
             memzero((&rep) as *u8, sizeof rep);

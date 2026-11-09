@@ -232,7 +232,8 @@ static void proc_trampoline(void) {
 int proc_start(const void *image, uint32_t image_len, uint32_t caps,
                struct endpoint *broker, uint32_t broker_grant,
                const char *args, uint32_t args_len, int32_t *handle,
-               const struct spawn_hset *hs, struct job *job) {
+               const struct spawn_hset *hs, struct job *job,
+               uint32_t trust, uint64_t signer) {
     if (image_len == 0 || image_len > PROC_MAX_IMAGE) return E_OUT_OF_RANGE;
     if (args_len > USER_ARGS_MAX)                     return E_OUT_OF_RANGE;
     if (!args) args_len = 0;
@@ -278,6 +279,8 @@ int proc_start(const void *image, uint32_t image_len, uint32_t caps,
        in the background, asked for or inherited from its parent (proc.c),
        never holds GRANT_INPUT: the keys are for what the user is looking at. */
     if (caps & SPAWN_BACKGROUND) thread_proc(tid)->background = 1;
+    thread_proc(tid)->trust  = trust;     /* before it runs, and never again */
+    thread_proc(tid)->signer = signer;
     uint32_t held = caps & ~SPAWN_BACKGROUND;
     if (thread_proc(tid)->background) held &= ~GRANT_INPUT;
     thread_set_caps(tid, held);

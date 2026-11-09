@@ -1,7 +1,7 @@
 # Display
 ### CX Design Spec: Aurora Tejeda / CATX Systems
 
-> **Status: DESIGN; the screen object and the first server built (2.3).** The display server, compositor, animations, trusted UI
+> **Status: the server, layers and springs, and the trusted UI are built (2.3 to 2.6).** The display server, compositor, animations, trusted UI
 > and the path to Vulkan. Compared against NT5, Haiku, Serenity, Redox and
 > macOS.
 
@@ -99,7 +99,7 @@ client's side), `os/apps/displayd.xfxn`, `os/apps/wdemo.xfxn`.
   seconds goes grey, can still be moved, and its close box ends it. Any other
   client's close box only asks.
 - *Not built:* frame pacing beyond one frame event per commit, surviving a
-  compositor crash, the signer in the title, renderers other than software.
+  compositor crash, renderers other than software.
 
 ## 5. Transparency and effects
 
@@ -155,8 +155,46 @@ it holds Ctrl+Q.
 
 **Built (2.4):** keys go to the focused window only; the pointer goes to the
 window under it, or for as long as a button is down to the one the press
-landed in. A press raises and focuses. Global hotkeys, the trusted key
-combination and the capabilities are 2.6.
+landed in. A press raises and focuses.
+
+**Built (2.6):**
+
+- *The combination.* Ctrl+Alt+Del is recognised in the kernel's two keyboard
+  decoders (PS/2, USB), because above them a key is an ASCII-like code and the
+  combination cannot be seen. It travels as `INPUT_EVENT_ATTENTION`, a flag
+  beside the input ring and delivered ahead of it, so a keyboard flood or a
+  server that has stopped reading cannot lose it. It goes only to the holder
+  of the input handle, and is never a key.
+- *The system's screen.* While it is up the compositor's stack holds that one
+  surface and nothing else: no client layer exists to draw over it, keys and
+  the pointer reach only the server, and a press in progress is ended first so
+  no client is left holding a button. It lists the programs running; a number
+  ends one, Esc goes back.
+- *Consent.* `DS_OP_CONSENT` asks for one capability and is answered when the
+  user has, on the same screen, naming the asker's signer. It does not take
+  keys for its first 500 ms, counted from the first clock tick it is up for,
+  so a key already on its way answers nothing. A refusal is kept for the life
+  of the client, one ask per client is outstanding, and the rest wait in
+  order. The combination does not take a question down. Waiting on the user is
+  not counted as hanging.
+- *Capabilities,* per client and asked for at the moment of use:
+  `WM_CAP_CAPTURE` (`DS_OP_CAPTURE`, into the caller's memory, composing first
+  so that stale pixels of the system's screen cannot be read, and refused while
+  that screen is up) and `WM_CAP_OVERLAY` (`WM_F_OVERLAY`: above ordinary
+  windows, never focused, never pressed, not in the Ctrl+N order). A red mark
+  is on the screen for two seconds after any capture, and it is in the frame
+  captured.
+- *The signer,* from the kernel (`process_info.trust` and `.signer`, the first
+  eight bytes of the SHA-256 of the key that actually verified the image), in
+  the title bar before the client's own title and in its own colour:
+  `[System]`, `[Publisher xxxxxxxx]`, `[Unknown xxxxxxxx]`, `[Unsigned]`. A
+  long title cannot push it away. A `--dev` build reports what it found, not
+  the platform trust it admits an unsigned image at.
+- *Not built,* and why: global hotkeys and full screen, because neither feature
+  exists to guard; publishers' names, because there are no publishers (the
+  fingerprint stands in). Whoever holds the input handle receives the
+  combination: that it is the real server rests on who is given `GRANT_INPUT`,
+  which this step does not change.
 
 ## 8. Drivers and the GPU path
 

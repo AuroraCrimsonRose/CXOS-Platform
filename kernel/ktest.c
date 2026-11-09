@@ -12,6 +12,7 @@
  */
 
 #include <stdint.h>
+#include "sha256.h"
 #include "config.h"
 #include "ktest.h"
 #include "pmm.h"
@@ -1255,11 +1256,19 @@ static int test_cxex_signature(void) {
        "platform": this image is a .xuex, and a .xuex signed by a publisher is
        a legitimate thing that must still pass every integrity check here. */
     if (cxex_verify_self(img, (size_t)e.size) != CXEX_VERIFY_OK) goto done;
-    if (keyvault_trust_of(img, (size_t)e.size) < 0)              goto done;
+    uint64_t signer = 0;
+    if (keyvault_trust_of(img, (size_t)e.size, &signer) < 0)     goto done;
 
     uint16_t pklen = 0;
     const uint8_t *pk = cxex_signer_key(img, (size_t)e.size, &pklen);
     if (!pk || pklen == 0) goto done;
+
+    /* The signer a title bar will name is this key's, and it is not nothing. */
+    uint8_t keyhash[32];
+    sha256(pk, pklen, keyhash);
+    uint64_t want_signer = 0;
+    for (int i = 0; i < 8; i++) want_signer = (want_signer << 8) | keyhash[i];
+    if (signer == 0 || signer != want_signer) goto done;
 
     struct cxex_header h;
     struct cxex_sig sig;

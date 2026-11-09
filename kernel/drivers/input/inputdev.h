@@ -23,6 +23,10 @@ int  input_post_key(unsigned char c);
    reader sees where the pointer is rather than everywhere it went. */
 void input_post_pointer(int32_t x, int32_t y, uint32_t buttons);
 
+/* The secure attention combination. Goes to the holder if there is one, and
+   otherwise nowhere; it is never a key. */
+void input_post_attention(void);
+
 /* Does anybody hold the handle? The calls that read input the old way are
    refused while one does. */
 int  input_held(void);

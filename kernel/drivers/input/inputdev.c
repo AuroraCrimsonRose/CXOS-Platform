@@ -39,6 +39,7 @@ struct kinput {
     struct kobj hdr;     /* first; KOBJ_INPUT */
     uint32_t head;       /* the oldest; under the wait lock */
     uint32_t count;
+    uint32_t attention;  /* the combination, unread: beside the ring, not in it */
     struct input_event ring[INPUT_RING];
 };
 
@@ -103,6 +104,18 @@ void input_post_pointer(int32_t x, int32_t y, uint32_t buttons) {
     kwait_unlock(f);
 }
 
+/* A flag and not a ring entry, so that a program flooding the keyboard, or a
+   server not reading, cannot have it dropped as a full ring drops a key. */
+void input_post_attention(void) {
+    uint32_t f = kwait_lock();
+    struct kinput *k = holder;
+    if (k) {
+        k->attention = 1;
+        kobj_signal_locked(&k->hdr, SIGNAL_INPUT_READY);
+    }
+    kwait_unlock(f);
+}
+
 int input_held(void) {
     uint32_t f = kwait_lock();
     int held = holder != 0;
@@ -144,6 +157,12 @@ int sys_input_events(int32_t h, uint64_t ev, uint32_t count) {
     struct input_event got[INPUT_EVENTS_MAX];
     uint32_t n = 0;
     uint32_t f = kwait_lock();
+    if (k->attention) {         /* count is at least 1 */
+        struct input_event e = { 0 };
+        e.kind = INPUT_EVENT_ATTENTION;
+        got[n++] = e;
+        k->attention = 0;
+    }
     while (n < count && k->count) {
         got[n++] = k->ring[k->head];
         k->head = (k->head + 1) % INPUT_RING;

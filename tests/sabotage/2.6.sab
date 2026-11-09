@@ -1,0 +1,531 @@
+# Step 2.6, the trusted UI, run by `cxk test sabotage`. Each must turn red
+# exactly the self-tests named. Format: docs/devkit/CX_CXK_PLAN.md, "cxk test
+# sabotage". The X tests report a code, not a logged step, so theirs name the
+# test alone. A group holds at most one sabotage per test.
+
+# ---- the combination, in the kernel ----
+
+[attention-forgotten]
+# posted, signalled, and not remembered
+expect = input: the keys as a handle, one holder @ input handle test failed at step 13
+expect = display server: real screen, real keys, given back @ display server failed at step 6
+group = g1
+edit = kernel/drivers/input/inputdev.c
+<<<
+        k->attention = 1;
+===
+>>>
+
+[attention-no-wake]
+# remembered, and the reader is never told
+expect = input: the keys as a handle, one holder @ input handle test failed at step 13
+group = g2
+edit = kernel/drivers/input/inputdev.c
+<<<
+        k->attention = 1;
+        kobj_signal_locked(&k->hdr, SIGNAL_INPUT_READY);
+===
+        k->attention = 1;
+>>>
+
+[attention-full-ring]
+# a keyboard flood drops it as it would drop a key
+expect = input: the keys as a handle, one holder @ input handle test failed at step 14
+group = g3
+edit = kernel/drivers/input/inputdev.c
+<<<
+        k->attention = 1;
+===
+        if (k->count < INPUT_RING) k->attention = 1;
+>>>
+
+[attention-stays]
+# read, and read again
+# (the real server may read it and the keys behind it in one batch and quit
+# as asked, so only the handle test can say)
+expect = input: the keys as a handle, one holder @ input handle test failed at step 15
+group = g4
+edit = kernel/drivers/input/inputdev.c
+<<<
+        k->attention = 0;
+===
+>>>
+
+[attention-is-a-key-unheld]
+# nobody holds the keys, and it turns into one
+expect = input: the keys as a handle, one holder @ input handle test failed at step 17
+group = g5
+edit = kernel/drivers/input/keyboard.c
+<<<
+void keyboard_attention(void) { input_post_attention(); }
+===
+void keyboard_attention(void) { input_post_attention(); if (!input_held()) keyboard_inject('!'); }
+>>>
+
+[server-ignores-attention]
+# the event arrives and the real server does nothing with it
+expect = display server: real screen, real keys, given back @ display server failed at step 6
+group = g5
+edit = os/std/dserver.xfxn
+<<<
+        if (ev[i].kind == INPUT_EVENT_ATTENTION) { wm_attention(&s.w); }
+===
+>>>
+
+# ---- who signed it, from the kernel ----
+
+[signer-not-of-the-key]
+# a fingerprint, but of the wrong bytes
+expect = cxex signature + tamper
+group = g1
+edit = kernel/cpu/keyvault.c
+<<<
+        sha256(key, keylen, fp);
+===
+        sha256(file, keylen, fp);
+>>>
+
+[trust-not-stored]
+expect = x: trusted: a launched client's signer
+group = g1
+edit = kernel/cpu/spawn.c
+<<<
+    thread_proc(tid)->trust  = trust;
+===
+    (void)trust;
+>>>
+
+[signer-not-stored]
+expect = x: trusted: a launched client's signer
+group = g2
+edit = kernel/cpu/spawn.c
+<<<
+    thread_proc(tid)->signer = signer;
+===
+    (void)signer;
+>>>
+
+[info-no-trust]
+expect = x: trusted: a launched client's signer
+group = g3
+edit = kernel/cpu/usermode.c
+<<<
+            pi.trust  = p->trust;
+===
+>>>
+
+[info-no-signer]
+expect = x: trusted: a launched client's signer
+group = g4
+edit = kernel/cpu/usermode.c
+<<<
+            pi.signer = p->signer;
+===
+>>>
+
+[exec-says-unsigned]
+# exec hands on something other than what it found
+expect = x: trusted: a launched client's signer
+group = g5
+edit = kernel/cpu/exec.c
+<<<
+                         seen, signer);
+===
+                         PROC_TRUST_UNSIGNED, signer);
+>>>
+
+[launch-ignores-signer]
+# the server never asks, and the frame says Unknown
+expect = x: trusted: a launched client's signer
+group = g6
+edit = os/std/dserver.xfxn
+<<<
+    if (object_info(&oi) >= 0) { wm_client_signer(&s.w, c, pi.trust, pi.signer); }
+    return c as i32;
+===
+    return c as i32;
+>>>
+
+# ---- the system's screen ----
+
+[ts-windows-show]
+# the screen goes up and the windows stay in the stack
+expect = x: trusted: Ctrl+Alt+Del covers everything
+expect = x: trusted: consent, asked and answered
+expect = x: trusted: an overlay stays above, inert
+group = g11
+edit = os/std/wm.xfxn
+<<<
+        ds_layer_put(w.comp, w.trusted, 0, 0, 1);
+        return;
+===
+        ds_layer_put(w.comp, w.trusted, 0, 0, 1);
+>>>
+
+[ts-keys-reach-windows]
+expect = x: trusted: Ctrl+Alt+Del covers everything
+expect = x: trusted: consent, asked and answered
+expect = x: trusted: capture through the protocol
+group = g12
+edit = os/std/wm.xfxn
+<<<
+    if (w.ts != WM_TS_NONE) { wm_ts_key(w, code); return; }
+===
+>>>
+
+[ts-pointer-reaches-windows]
+expect = x: trusted: Ctrl+Alt+Del covers everything
+group = g1
+edit = os/std/wm.xfxn
+<<<
+    if (w.ts != WM_TS_NONE) { return; }     // no client is told, and it is keys only
+===
+>>>
+
+[ts-press-left-held]
+# the screen comes up on a client that thinks the button is still down
+expect = x: trusted: Ctrl+Alt+Del covers everything
+group = g2
+edit = os/std/wm.xfxn
+<<<
+        wm_pointer_to(w, w.capture, 0);
+        w.capture = WM_NONE;
+===
+        w.capture = WM_NONE;
+>>>
+
+[ts-attention-takes-consent-down]
+# the combination replaces a question that was waiting
+expect = x: trusted: consent, asked and answered
+group = g3
+edit = os/std/wm.xfxn
+<<<
+fn wm_attention(w: *wm) -> void {
+    if (w.ts != WM_TS_NONE) { return; }
+===
+fn wm_attention(w: *wm) -> void {
+>>>
+
+[ts-number-kills-another]
+expect = x: trusted: Ctrl+Alt+Del covers everything
+group = g4
+edit = os/std/wm.xfxn
+<<<
+        if (c != WM_NONE) { w.client[c].kill = 1; }
+===
+        if (c != WM_NONE) { w.client[0].kill = 1; w.client[1].kill = 1; w.client[2].kill = 1; }
+>>>
+
+[ts-esc-stays]
+expect = display server: real screen, real keys, given back @ display server failed at step 3
+expect = x: trusted: Ctrl+Alt+Del covers everything
+expect = x: trusted: capture through the protocol
+group = g3
+edit = os/std/wm.xfxn
+<<<
+    if (code == WM_KEY_ESC) { wm_ts_next(w); return; }
+===
+>>>
+
+# ---- consent ----
+
+[consent-never-arms]
+# a key already on its way answers it
+expect = x: trusted: consent, asked and answered
+group = g1
+edit = os/std/wm.xfxn
+<<<
+        if (w.ts_armed == 0) { return; }
+===
+>>>
+
+[consent-arms-early]
+expect = x: trusted: consent, asked and answered
+group = g2
+edit = os/std/wm.xfxn
+<<<
+        else if (now - w.ts_t0 >= WM_CONSENT_ARM_MS) { w.ts_armed = 1; }
+===
+        else if (now - w.ts_t0 >= 1) { w.ts_armed = 1; }
+>>>
+
+[consent-grants-everything]
+expect = x: trusted: consent, asked and answered
+expect = x: trusted: capture through the protocol
+group = g4
+edit = os/std/wm.xfxn
+<<<
+    if (allow == 1) { cl.caps = cl.caps | cl.ask; cl.ask_status = 0; }
+===
+    if (allow == 1) { cl.caps = cl.caps | WM_CAPS_ALL; cl.ask_status = 0; }
+>>>
+
+[refusal-forgotten]
+# so a program can ask until the user gives in
+expect = x: trusted: consent, asked and answered
+group = g5
+edit = os/std/wm.xfxn
+<<<
+    else { cl.denied = cl.denied | cl.ask; cl.ask_status = E_ACCESS_DENIED; }
+===
+    else { cl.ask_status = E_ACCESS_DENIED; }
+>>>
+
+[refusal-says-yes]
+expect = x: trusted: consent, asked and answered
+expect = x: trusted: capture through the protocol
+group = g6
+edit = os/std/wm.xfxn
+<<<
+    else { cl.denied = cl.denied | cl.ask; cl.ask_status = E_ACCESS_DENIED; }
+===
+    else { cl.denied = cl.denied | cl.ask; cl.ask_status = 0; }
+>>>
+
+[consent-second-ask]
+expect = x: trusted: consent, asked and answered
+group = g7
+edit = os/std/wm.xfxn
+<<<
+    if (cl.ask != 0 || cl.ask_done == 1) { return E_BUSY; }
+===
+>>>
+
+[consent-any-cap]
+expect = x: trusted: consent, asked and answered
+group = g8
+edit = os/std/wm.xfxn
+<<<
+    if (cap != WM_CAP_CAPTURE && cap != WM_CAP_OVERLAY) { return E_INVALID_ARGS; }
+===
+>>>
+
+[consent-wait-is-a-hang]
+expect = x: trusted: consent, asked and answered
+group = g9
+edit = os/std/wm.xfxn
+<<<
+cl.waiter == 0 && cl.ask == 0 &&
+===
+cl.waiter == 0 &&
+>>>
+
+[consent-outlives-asker]
+expect = x: trusted: consent, asked and answered
+group = g10
+edit = os/std/wm.xfxn
+<<<
+    if (w.ts == WM_TS_CONSENT && w.ts_client == c) { wm_ts_next(w); }
+    else if
+===
+    if
+>>>
+
+# ---- overlays ----
+
+[overlay-under-windows]
+expect = x: trusted: an overlay stays above, inert
+group = g1
+edit = os/std/wm.xfxn
+<<<
+    if (wm_overlay(&w.win[i]) == 0) {
+        while (at > 0
+===
+    if (1 == 0) {
+        while (at > 0
+>>>
+
+[overlay-can-be-pressed]
+expect = x: trusted: an overlay stays above, inert
+group = g2
+edit = os/std/wm.xfxn
+<<<
+    if (wm_overlay(win) == 1) { return 0; }     // something on top, not something to press
+===
+>>>
+
+[overlay-in-the-order]
+expect = x: trusted: an overlay stays above, inert
+group = g3
+edit = os/std/wm.xfxn
+<<<
+w.win[i].ws == w.ws && wm_overlay(&w.win[i]) == 0) {
+===
+w.win[i].ws == w.ws) {
+>>>
+
+[overlay-takes-focus]
+expect = x: trusted: an overlay stays above, inert
+group = g4
+edit = os/std/wm.xfxn
+<<<
+    if (wm_overlay(win) == 0) { wm_focus_set(w, free); }
+===
+    wm_focus_set(w, free);
+>>>
+
+# ---- capture, and the capabilities ----
+
+[capture-without-the-cap]
+expect = x: trusted: capture through the protocol
+group = g1
+edit = os/std/dserver.xfxn
+<<<
+    if ((s.w.client[c].caps & WM_CAP_CAPTURE) == 0) { return E_ACCESS_DENIED; }
+===
+>>>
+
+[capture-of-the-system-screen]
+expect = x: trusted: capture through the protocol
+group = g2
+edit = os/std/dserver.xfxn
+<<<
+    if (s.w.ts != WM_TS_NONE) { return E_BUSY; }
+===
+>>>
+
+[capture-stale-frame]
+# the back buffer still holds the system's screen
+expect = x: trusted: capture through the protocol
+group = g5
+edit = os/std/dserver.xfxn
+<<<
+    wm_captured(&s.w);
+    dsv_compose(s);
+===
+    wm_captured(&s.w);
+>>>
+
+[capture-no-handle]
+expect = x: trusted: capture through the protocol
+group = g7
+edit = os/std/dserver.xfxn
+<<<
+    if (handles != 1) { return E_INVALID_ARGS; }
+    if ((s.w.client[c].caps & WM_CAP_CAPTURE)
+===
+    if ((s.w.client[c].caps & WM_CAP_CAPTURE)
+>>>
+
+[consent-takes-a-handle]
+expect = x: trusted: capture through the protocol
+group = g8
+edit = os/std/dserver.xfxn
+<<<
+        if (req.op == DS_OP_CONSENT && count == 0) {
+===
+        if (req.op == DS_OP_CONSENT) {
+>>>
+
+[overlay-without-the-cap]
+expect = x: trusted: capture through the protocol
+group = g9
+edit = os/std/dserver.xfxn
+<<<
+(req.flags & WM_F_OVERLAY) != 0 && (s.w.client[c].caps & WM_CAP_OVERLAY) == 0
+===
+1 == 0
+>>>
+
+[window-unknown-flag]
+expect = x: windows: a hostile client is refused
+expect = x: trusted: capture through the protocol
+group = g10
+edit = os/std/dserver.xfxn
+<<<
+(req.flags & (0 - 1 - WM_F_ALPHA - WM_F_OVERLAY)) != 0
+===
+1 == 0
+>>>
+
+[capture-too-small]
+# written past the end of what it was given
+expect = x: windows: a hostile client is refused
+expect = x: trusted: capture through the protocol
+group = g13
+edit = os/std/dserver.xfxn
+<<<
+    if (mi.size < bytes) { return E_INVALID_ARGS; }
+===
+>>>
+
+[mark-never-shown]
+expect = x: trusted: capture through the protocol
+group = g11
+edit = os/std/wm.xfxn
+<<<
+    if (w.marked == 1) { ds_layer_put(w.comp, w.mark, (w.sw - WM_MARK_SIZE - 8) as i32, 4, 1); }
+===
+>>>
+
+[mark-never-goes]
+expect = x: trusted: capture through the protocol
+group = g14
+edit = os/std/wm.xfxn
+<<<
+    if (w.marked == 1 && now - w.capture_at >= WM_CAPTURE_SHOW_MS) {
+        w.marked = 0;
+===
+    if (w.marked == 1 && now - w.capture_at >= WM_CAPTURE_SHOW_MS) {
+>>>
+
+[mark-goes-early]
+expect = x: trusted: capture through the protocol
+group = g15
+edit = os/std/wm.xfxn
+<<<
+now - w.capture_at >= WM_CAPTURE_SHOW_MS
+===
+now - w.capture_at >= WM_CAPTURE_SHOW_MS / 2
+>>>
+
+# ---- the name in the frame ----
+
+[signer-colour-lost]
+expect = x: trusted: the signer in the title bar
+group = g1
+edit = os/std/wm.xfxn
+<<<
+        cl.signer_col = WM_COL_SIGNER_SYSTEM;
+===
+>>>
+
+[signer-under-the-title]
+# the client's own words drawn over the name
+expect = x: trusted: the signer in the title bar
+group = g2
+edit = os/std/wm.xfxn
+<<<
+ds_text(&win.frame, w.font, 6 + used, 2, room - used, &win.title[0], WM_COL_TEXT);
+===
+ds_text(&win.frame, w.font, 6, 2, room - used, &win.title[0], WM_COL_TEXT);
+>>>
+
+[signer-unsigned-unsaid]
+expect = x: trusted: the signer in the title bar
+group = g3
+edit = os/std/wm.xfxn
+<<<
+    if (trust == PROC_TRUST_UNSIGNED) { strcopy(s, "[Unsigned]", WM_SIGNER_LEN); return; }
+===
+>>>
+
+[signer-publisher-unsaid]
+expect = x: trusted: the signer in the title bar
+group = g4
+edit = os/std/wm.xfxn
+<<<
+    if (trust == PROC_TRUST_PUBLISHER) { n = strcopy(s, "[Publisher ", WM_SIGNER_LEN); }
+    else { n = strcopy(s, "[Unknown ", WM_SIGNER_LEN); }
+===
+    n = strcopy(s, "[Unknown ", WM_SIGNER_LEN);
+>>>
+
+[signer-blank-until-told]
+expect = x: trusted: the signer in the title bar
+group = g5
+edit = os/std/wm.xfxn
+<<<
+            strcopy(&w.client[c].signer[0], "[Unknown]", WM_SIGNER_LEN);
+===
+>>>

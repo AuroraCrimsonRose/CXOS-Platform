@@ -838,6 +838,8 @@ int syscall_object_info(uint64_t a) {
             pi.ip     = done ? p->end_ip : 0;
             pi.addr   = done ? p->end_addr : 0;
             pi.killer = done ? p->end_killer : 0;
+            pi.trust  = p->trust;
+            pi.signer = p->signer;
         }
         kobj_unref(o);
         if (rc != E_OK) return rc;
@@ -6973,6 +6975,30 @@ int usermode_input_handle_test(void) {
         while ((n = ih_events(h, 8)) > 0) taken += (uint32_t)n;
         if (taken != 128) goto done;
     }
+    /* 13: the combination wakes a reader, and is one event of its own kind */
+    keyboard_attention();
+    step = 13; if (ih_ready(h) != E_OK || ih_events(h, 8) != 1
+                   || ev[0].kind != INPUT_EVENT_ATTENTION || ih_ready(h) != E_TIMED_OUT) goto done;
+    /* 14: a ring already full cannot lose it, and it comes before all of it */
+    for (uint32_t i = 0; i < 200; i++) keyboard_inject('k');
+    keyboard_attention();
+    keyboard_attention();
+    step = 14; if (ih_events(h, 1) != 1 || ev[0].kind != INPUT_EVENT_ATTENTION) goto done;
+    /* 15: presses not yet read were one, and the keys are all still there */
+    {
+        uint32_t keys = 0;
+        int n;
+        step = 15;
+        while ((n = ih_events(h, 8)) > 0) {
+            for (int i = 0; i < n; i++) if (ev[i].kind != INPUT_EVENT_KEY) goto done;
+            keys += (uint32_t)n;
+        }
+        if (keys != 128) goto done;
+    }
+    /* 16: with the ring empty, the signal stays until the combination is read */
+    keyboard_attention();
+    step = 16; if (ih_ready(h) != E_OK || ih_ready(h) != E_OK
+                   || ih_events(h, 1) != 1 || ih_ready(h) != E_TIMED_OUT) goto done;
     /* 11: it cannot travel: a handle to the keys cannot be passed on */
     step = 11; if (kobj_type_ops(KOBJ_INPUT)->transfer != 0) goto done;
     /* 12: closed, the keys go back to the old calls */
@@ -6981,6 +7007,9 @@ int usermode_input_handle_test(void) {
     keyboard_inject('c');
     step = 12; if (input_held() || kobj_live(KOBJ_INPUT) != live0
                    || syscall_dispatch(SYS_INPUT_POLL, 0, 0, 0, 0, 0) != 'c') goto done;
+    /* 17: with nobody holding it the combination goes nowhere: never a key */
+    keyboard_attention();
+    step = 17; if (syscall_dispatch(SYS_INPUT_POLL, 0, 0, 0, 0, 0) != 0) goto done;
     step = 0;
     ok = 1;
 

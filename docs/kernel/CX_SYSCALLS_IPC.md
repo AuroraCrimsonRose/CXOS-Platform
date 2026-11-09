@@ -853,6 +853,13 @@ operations leave it.
   takes up to `INPUT_EVENTS_MAX`, 0 if none; `SIGNAL_INPUT_READY` says there
   are some. While it is held `SYS_INPUT_READ`, `SYS_INPUT_POLL` and
   `SYS_MOUSE_READ` return `E_BUSY`.
+- **The attention event and the signer** (`CXK_ABI_VERSION` 36, step 2.6):
+  `INPUT_EVENT_ATTENTION` is Ctrl+Alt+Del, held in a flag beside the ring and
+  returned first by `SYS_INPUT_EVENTS`; presses not yet read are one event.
+  `process_info` gains `signer` (first 8 bytes of the SHA-256 of the key that
+  verified the image, 0 for none) and `trust` (`PROC_TRUST_UNSIGNED`,
+  `_UNVERIFIED`, `_PUBLISHER`, `_PLATFORM`): what verification found, set
+  before the process runs and never again.
 - **Leases** (`CXK_ABI_VERSION` 35, step 2.4): `SYS_MEM_LEND` (0x85, a memory
   handle with `HRIGHT_SEAL`) returns a lease with no rights: `E_BUSY` while the
   object has a writable mapping or is already lent, `E_NOT_SUPPORTED` unless

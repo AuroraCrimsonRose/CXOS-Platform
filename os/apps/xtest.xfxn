@@ -877,6 +877,8 @@ fn wx_down() -> void {
     ds_comp_free(&wx.comp);
     ds_surface_free(&wx.desktop);
     ds_surface_free(&wx.cursor);
+    ds_surface_free(&wx.trusted);
+    ds_surface_free(&wx.mark);
 }
 
 fn wx_draw() -> void { ds_compose(&wx.comp); ds_present(&wx.comp, &wx.screen); wm_frames_done(&wx.w); }
@@ -1217,6 +1219,429 @@ fn w_text(arg: u64) -> i32 {
     return 0;
 }
 
+// ---- capture, through the protocol (2.6) ----
+global wx_cap_ep: i32;
+global wx_cap_rc: i32;
+global wx_cap_done: i32;
+global wx_cap_stage: u32;
+global wx_cap_win: win;
+global wx_cap_o: win;
+
+fn wx_cap_wait(stage: u32) -> i32 {
+    let t0: u64 = time_now_ms();
+    while (wx_cap_stage != stage) {
+        if (time_now_ms() - t0 > 30000) { return 1; }
+        sleep_ms(1);
+    }
+    return 0;
+}
+
+// What the capture in mem says is at x,y.
+fn wx_cap_px(addr: u64, x: u32, y: u32) -> u32 {
+    let p: *u32 = (addr + ((y as u64) * 320 + (x as u64)) * 4) as *u32;
+    return p[0] & 0xFFFFFF;
+}
+
+fn wx_cap_body() -> i32 {
+    let w: *win = &wx_cap_win;
+    if (win_open(w, wx_cap_ep, 40, 30, 0, "c") != 0) { return 1; }
+    ds_fill(&w.s, 0, 0, 40, 30, 0xFF00C0C0);
+    if (win_commit(w) != 0) { return 2; }
+    let mem: i32 = mem_create(320 * 240 * 4, 0);
+    if (mem <= 0) { return 3; }
+    // nothing without being given it
+    if (win_capture(w, mem) != E_ACCESS_DENIED) { return 4; }
+    if (win_open(&wx_cap_o, wx_cap_ep, 20, 20, WM_F_OVERLAY, "o") != E_ACCESS_DENIED) { return 5; }
+    // a flag nobody has defined is not read as one
+    if (win_open(&wx_cap_o, wx_cap_ep, 20, 20, 4, "o") != E_INVALID_ARGS) { return 6; }
+    // the user allows the first and refuses the second
+    if (win_consent(w, WM_CAP_CAPTURE) != 0) { return 7; }
+    if (win_consent(w, WM_CAP_OVERLAY) != E_ACCESS_DENIED) { return 8; }
+    if (win_consent(w, WM_CAP_OVERLAY) != E_ACCESS_DENIED) { return 9; }
+    if (win_open(&wx_cap_o, wx_cap_ep, 20, 20, WM_F_OVERLAY, "o") != E_ACCESS_DENIED) { return 10; }
+    // the call's shape: a handle where none is due; none, or too small, where one is
+    let req: ds_req;
+    let rep: ds_rep;
+    let h: ipc_handle;
+    h.handle = mem; h.op = IPC_HANDLE_COPY; h.rights = HRIGHT_MAP | HRIGHT_MAP_WRITE | HRIGHT_INSPECT; h.reserved = 0;
+    memzero((&req) as *u8, sizeof req);
+    req.op = DS_OP_CONSENT; req.flags = WM_CAP_CAPTURE;
+    if (wx_call_raw(wx_cap_ep, (&req) as *u8, sizeof req, &h, 1, &rep) != E_INVALID_ARGS) { return 11; }
+    req.op = DS_OP_CAPTURE;
+    if (wx_call_raw(wx_cap_ep, (&req) as *u8, sizeof req, 0 as *ipc_handle, 0, &rep) != E_INVALID_ARGS) { return 12; }
+    let small: i32 = mem_create(4096, 0);
+    if (win_capture(w, small) != E_INVALID_ARGS) { return 13; }
+    handle_close(small);
+    // memory it may not write through is not written through
+    h.rights = HRIGHT_MAP | HRIGHT_INSPECT;
+    if (wx_call_raw(wx_cap_ep, (&req) as *u8, sizeof req, &h, 1, &rep) == 0) { return 14; }
+    // and a real one
+    if (win_capture(w, mem) != 0) { return 15; }
+    let a: vm_map_args;
+    memzero((&a) as *u8, sizeof a);
+    a.object = mem as u32; a.length = 320 * 240 * 4; a.prot = MPROT_READ;
+    if (vm_map(&a) != E_OK) { return 16; }
+    if (wx_cap_px(a.addr, 30, 50) != 0x00C0C0 || wx_cap_px(a.addr, 300, 230) != WX_DESK) { return 17; }
+    // the mark is up before the pixels are read: it is in what was read
+    if (wx_cap_px(a.addr, 320 - WM_MARK_SIZE - 8 + 2, 6) != (WM_COL_MARK & 0xFFFFFF)) { return 23; }
+    // the system's screen cannot be read while it is up...
+    wx_cap_stage = 1;
+    if (wx_cap_wait(2) != 0) { return 18; }
+    if (win_capture(w, mem) != E_BUSY) { return 19; }
+    wx_cap_stage = 3;
+    // ...nor in the frame left behind it, taken before anything has drawn over
+    if (wx_cap_wait(4) != 0) { return 20; }
+    if (win_capture(w, mem) != 0) { return 21; }
+    if (wx_cap_px(a.addr, 0, 0) != WX_DESK || wx_cap_px(a.addr, 300, 230) != WX_DESK) { return 22; }
+    vm_unmap(a.addr, 0);
+    handle_close(mem);
+    return 0;
+}
+
+fn wx_cap_thread(arg: u64) -> i32 {
+    wx_cap_rc = wx_cap_body();
+    wx_cap_done = 1;
+    return 0;
+}
+
+global wx_cap_t: i32;
+
+// 520
+fn wx_cap_run() -> i32 {
+    if (wx_up() != 0) { return 520; }
+    let c: u32 = wm_client_new(&wx.w);
+    wx_cap_ep = ep_mint(wx.ep, (c + 1) as u64, HRIGHT_SEND);
+    if (wx_cap_ep <= 0) { return 521; }
+    wx_cap_done = 0;
+    wx_cap_stage = 0;
+    wx_cap_t = thread_spawn(wx_cap_thread, 0, 0);
+    if (wx_cap_t <= 0) { return 522; }
+    let t0: u64 = time_now_ms();
+    while (wx_cap_done == 0 && time_now_ms() - t0 < WX_WAIT_MS) {
+        dsv_step(&wx);
+        if (wx.w.ts == WM_TS_CONSENT && wx.w.ts_armed == 1) {
+            if (wx.w.client[c].ask == WM_CAP_CAPTURE) { wm_key(&wx.w, 121); } else { wm_key(&wx.w, 110); }
+        }
+        if (wx_cap_stage == 1) { wm_attention(&wx.w); wx_cap_stage = 2; }
+        if (wx_cap_stage == 3) {
+            // back to the windows, with nothing composed since, and the
+            // client's call in the queue before the loop next turns
+            wm_key(&wx.w, WM_KEY_ESC);
+            wx_cap_stage = 4;
+            sleep_ms(300);
+        }
+    }
+    if (wx_cap_done == 0) { return 523; }
+    let tc: i32 = 0;
+    if (thread_join(wx_cap_t, time_deadline_ms(10000), &tc) != 0) { return 524; }
+    wx_cap_t = 0;
+    if (wx_cap_rc != 0) { return 530 + wx_cap_rc; }
+    // the mark's time is the test's own: a frame here can take a second
+    let t: u64 = wx.w.now + 1;
+    wm_tick(&wx.w, t);
+    wm_captured(&wx.w);
+    wx_draw();
+    if (wx_at(320 - WM_MARK_SIZE - 8 + 2, 6) != (WM_COL_MARK & 0xFFFFFF)) { return 525; }
+    // it goes when the screen has not been read for a while, and not before
+    wm_tick(&wx.w, t + WM_CAPTURE_SHOW_MS - 1);
+    wx_draw();
+    if (wx_at(320 - WM_MARK_SIZE - 8 + 2, 6) != (WM_COL_MARK & 0xFFFFFF)) { return 526; }
+    wm_tick(&wx.w, t + WM_CAPTURE_SHOW_MS);
+    wx_draw();
+    if (wx_at(320 - WM_MARK_SIZE - 8 + 2, 6) != WX_DESK) { return 527; }
+    return 0;
+}
+
+fn w_capture(arg: u64) -> i32 {
+    wx_cap_t = 0;
+    wx_cap_ep = 0;
+    let rc: i32 = wx_cap_run();
+    if (wx_cap_ep > 0) { handle_close(wx_cap_ep); }
+    if (wx_live != 0) { wx_down(); }
+    if (wx_cap_t > 0) {
+        let tc: i32 = 0;
+        thread_join(wx_cap_t, time_deadline_ms(10000), &tc);
+        wx_cap_t = 0;
+    }
+    return rc;
+}
+
+// 590: a real program: what the kernel verified is what its frame will name
+fn w_signed(arg: u64) -> i32 {
+    if (wx_up() != 0) { return 590; }
+    let c: i32 = wx_start("aa0000", 0 as *u8);
+    if (c < 0) { wx_down(); return 591; }
+    let pi: process_info;
+    let oi: object_info_args;
+    memzero((&oi) as *u8, sizeof oi);
+    oi.handle = wx.proc[c as u32]; oi.topic = OBJINFO_PROCESS; oi.buf = (&pi) as u64; oi.cap = sizeof pi;
+    let n: i32 = object_info(&oi);
+    let rc: i32 = 0;
+    let name: *u8 = &wx.w.client[c as u32].signer[0];
+    if (n < 0) { rc = 592; }
+    else if (pi.trust == PROC_TRUST_PLATFORM) {
+        if (pi.signer == 0) { rc = 593; }
+        if (streq(name, "[System]") != 1) { rc = 594; }
+    }
+    else if (pi.trust == PROC_TRUST_UNSIGNED) {     // a --dev build
+        if (pi.signer != 0) { rc = 595; }
+        if (streq(name, "[Unsigned]") != 1) { rc = 596; }
+    }
+    else { rc = 597; }
+    wx_down();
+    return rc;
+}
+
+// ---- the system's own screen (2.6) ----
+
+// 0 if nothing on the whole screen is anything but the system screen's own:
+// the background, or the band along the top, in a test with no font.
+fn wx_only_trusted(bg: u32) -> u32 {
+    let y: u32 = 0;
+    while (y < 240) {
+        let x: u32 = 0;
+        while (x < 320) {
+            let want: u32 = bg & 0xFFFFFF;
+            if (y < WM_TS_BAND) { want = WM_TS_COL_TEXT & 0xFFFFFF; }
+            if (wx_at(x, y) != want) { return 1; }
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+    return 0;
+}
+
+fn wx_no_events(c: u32) -> u32 {
+    let ev: wm_event;
+    wx_next(c, &ev);
+    if (ev.kind == 0) { return 1; }
+    return 0;
+}
+
+// 400: Ctrl+Alt+Del: nothing of a client shows and nothing reaches one
+fn w_attention(arg: u64) -> i32 {
+    if (wx_up() != 0) { return 400; }
+    let a: u32; let b: u32; let ca: u32; let cb: u32;
+    if (wx_two(&a, &b, &ca, &cb) != 0) { return 401; }
+    // held down in A's content when the combination comes
+    wx_click(30, 50);
+    wx_draw();
+    wx_clear(ca); wx_clear(cb);
+    wm_pointer(&wx.w, 30, 50, 1);
+    wx_clear(ca);
+    wm_attention(&wx.w);
+    if (wx.w.ts != WM_TS_SYSTEM) { return 402; }
+    // told that the press is over, once, and nothing further
+    let ev: wm_event;
+    wx_next(ca, &ev);
+    if (ev.kind != WM_EV_POINTER || ev.c != 0) { return 403; }
+    if (wx_no_events(ca) == 0) { return 404; }
+    wx_draw();
+    if (wx_only_trusted(WM_TS_COL_SYSTEM) != 0) { return 405; }
+    // keys and the pointer go to nobody
+    wm_key(&wx.w, 97);
+    wm_key(&wx.w, WM_KEY_NEXT);
+    wm_key(&wx.w, WM_KEY_QUIT);
+    wm_pointer(&wx.w, 140, 120, 1);
+    wm_pointer(&wx.w, 140, 120, 0);
+    if (wx.w.quit != 0 || wx.w.focus != a) { return 406; }
+    if (wx_no_events(ca) == 0 || wx_no_events(cb) == 0) { return 407; }
+    // a client committing while it is up changes none of it
+    if (wm_commit(&wx.w, b, 1, 0, 0 as *ds_rect, 0) != 0) { return 408; }
+    wx_draw();
+    if (wx_only_trusted(WM_TS_COL_SYSTEM) != 0) { return 409; }
+    wx_clear(cb);
+    // pressed again: one screen, not two
+    wm_attention(&wx.w);
+    if (wx.w.ts != WM_TS_SYSTEM) { return 410; }
+    // a number ends that program, and only that
+    wm_key(&wx.w, 49);
+    if (wx.w.client[ca].kill != 1 || wx.w.client[cb].kill != 0) { return 411; }
+    wx.w.client[ca].kill = 0;
+    wm_key(&wx.w, 57);          // the ninth: there is none
+    if (wx.w.client[ca].kill != 0 || wx.w.client[cb].kill != 0) { return 412; }
+    // Esc: the windows come back, all of them, and take input
+    wm_key(&wx.w, WM_KEY_ESC);
+    if (wx.w.ts != WM_TS_NONE) { return 413; }
+    wx_draw();
+    if (wx_at(30, 50) != 0xAA0000 || wx_at(300, 230) != WX_DESK) { return 414; }
+    if (wx_at(0, 0) != WX_DESK) { return 415; }
+    wm_key(&wx.w, 97);
+    wx_next(ca, &ev);
+    if (ev.kind != WM_EV_KEY || ev.a != 97) { return 416; }
+    wx_down();
+    return 0;
+}
+
+// 430: consent: asked on the system's screen, in order, and not answered early
+fn w_consent(arg: u64) -> i32 {
+    if (wx_up() != 0) { return 430; }
+    let a: u32; let b: u32; let ca: u32; let cb: u32;
+    if (wx_two(&a, &b, &ca, &cb) != 0) { return 431; }
+    wm_tick(&wx.w, 1000);
+    // what cannot be asked for
+    if (wm_ask(&wx.w, ca, 0, 0) != E_INVALID_ARGS) { return 432; }
+    if (wm_ask(&wx.w, ca, WM_CAPS_ALL, 0) != E_INVALID_ARGS) { return 433; }
+    if (wm_ask(&wx.w, ca, 4, 0) != E_INVALID_ARGS || wx.w.ts != WM_TS_NONE) { return 434; }
+    // it goes up, a second from the same client is busy, another waits
+    if (wm_ask(&wx.w, ca, WM_CAP_CAPTURE, 0) != 1) { return 435; }
+    if (wx.w.ts != WM_TS_CONSENT || wx.w.ts_client != ca) { return 436; }
+    if (wm_ask(&wx.w, ca, WM_CAP_OVERLAY, 0) != E_BUSY) { return 437; }
+    if (wm_ask(&wx.w, cb, WM_CAP_OVERLAY, 0) != 1 || wx.w.ts_client != ca) { return 438; }
+    wx_draw();
+    if (wx_only_trusted(WM_TS_COL_CONSENT) != 0) { return 439; }
+    // a key already on its way answers nothing, however long the clock was stopped
+    wm_key(&wx.w, 121);
+    if (wx.w.ts != WM_TS_CONSENT || wx.w.client[ca].caps != 0) { return 440; }
+    wm_tick(&wx.w, 1100);       // the first tick it was up for starts it
+    wm_tick(&wx.w, 1599);
+    wm_key(&wx.w, 121);
+    if (wx.w.client[ca].caps != 0 || wx.w.client[ca].ask_done != 0) { return 441; }
+    wm_tick(&wx.w, 1600);
+    // the combination does not take it down, and other keys are not answers
+    wm_attention(&wx.w);
+    wm_key(&wx.w, 97);
+    wm_key(&wx.w, 13);
+    if (wx.w.ts != WM_TS_CONSENT || wx.w.ts_client != ca || wx.w.client[ca].ask_done != 0) { return 442; }
+    // allowed: that one thing, and the next in the queue goes up, unarmed
+    wm_key(&wx.w, 121);
+    if (wx.w.client[ca].caps != WM_CAP_CAPTURE || wx.w.client[ca].ask_done != 1 || wx.w.client[ca].ask_status != 0) { return 443; }
+    if (wx.w.client[cb].caps != 0 || wx.w.ts != WM_TS_CONSENT || wx.w.ts_client != cb) { return 444; }
+    wm_key(&wx.w, 121);
+    if (wx.w.client[cb].caps != 0 || wx.w.client[cb].ask_done != 0) { return 445; }
+    wx.w.client[ca].ask_done = 0;
+    wm_tick(&wx.w, 1700);
+    wm_tick(&wx.w, 2200);
+    // refused: and the windows come back
+    wm_key(&wx.w, 110);
+    if (wx.w.client[cb].caps != 0 || wx.w.client[cb].ask_status != E_ACCESS_DENIED || wx.w.ts != WM_TS_NONE) { return 446; }
+    wx.w.client[cb].ask_done = 0;
+    wx_draw();
+    if (wx_at(30, 50) != 0xAA0000) { return 447; }
+    // refused once it is not asked again, and what was allowed needs no asking
+    if (wm_ask(&wx.w, cb, WM_CAP_OVERLAY, 0) != E_ACCESS_DENIED || wx.w.ts != WM_TS_NONE) { return 448; }
+    if (wm_ask(&wx.w, ca, WM_CAP_CAPTURE, 0) != 0 || wx.w.ts != WM_TS_NONE) { return 449; }
+    // waiting on the user is not hanging, however long the user takes
+    wm_key(&wx.w, 97);          // an event it has not read
+    if (wx.w.client[wx.w.win[wx.w.focus].client].n == 0) { return 450; }
+    let cf: u32 = wx.w.win[wx.w.focus].client;
+    wx.w.client[cf].denied = 0;
+    wx.w.client[cf].caps = 0;
+    if (wm_ask(&wx.w, cf, WM_CAP_OVERLAY, 0) != 1) { return 451; }
+    wm_tick(&wx.w, 9000);
+    wm_tick(&wx.w, 19000);
+    if (wx.w.client[cf].hung != 0) { return 452; }
+    // the asker goes: the screen with it, and the windows that are left show
+    wm_client_gone(&wx.w, cf);
+    if (wx.w.ts != WM_TS_NONE) { return 453; }
+    wx_draw();
+    if (wx_at(300, 230) != WX_DESK) { return 454; }
+    wx_down();
+    return 0;
+}
+
+// 470: an overlay stays above and takes nothing
+fn w_overlay(arg: u64) -> i32 {
+    if (wx_up() != 0) { return 470; }
+    let a: u32; let b: u32; let ca: u32; let cb: u32;
+    if (wx_two(&a, &b, &ca, &cb) != 0) { return 471; }
+    let co: u32 = wm_client_new(&wx.w);
+    let o: u32 = wx_window(co, 100, 60, WM_F_OVERLAY, 0xFF0000CC);
+    if (o == WM_NONE) { return 472; }
+    // it is third in the stack, and did not take the focus
+    if (wx.w.zn != 3 || wx.w.z[2] != o || wx.w.focus != b) { return 473; }
+    wx_draw();
+    // at 80,80: over B's content; the point is the overlay's content
+    let ox: u32 = wx.w.win[o].x + WM_EDGE + 10;
+    let oy: u32 = wx.w.win[o].y + WM_TITLE_H + 10;
+    if (wx_at(ox, oy) != 0x0000CC) { return 474; }
+    // a new ordinary window goes under it, and takes the focus
+    let cn: u32 = wm_client_new(&wx.w);
+    let n: u32 = wx_window(cn, 40, 30, 0, 0xFF00CCCC);
+    if (n == WM_NONE) { return 475; }
+    if (wx.w.z[3] != o || wx.w.z[2] != n || wx.w.focus != n) { return 476; }
+    // raising another still leaves it on top
+    wx_click(30, 50);
+    wx_draw();
+    if (wx.w.z[3] != o || wx.w.focus != a) { return 477; }
+    if (wx_at(ox, oy) != 0x0000CC) { return 478; }
+    // a press on it goes to what is beneath, and the overlay hears nothing
+    wx_clear(co);
+    wx_clear(ca); wx_clear(cb); wx_clear(cn);
+    wx_click(ox as i32, oy as i32);
+    if (wx.w.z[3] != o || wx.w.focus == o) { return 479; }
+    if (wx_no_events(co) == 0) { return 480; }
+    // keys never, and it is not in the order Ctrl+N goes through
+    wm_key(&wx.w, 97);
+    if (wx_no_events(co) == 0) { return 481; }
+    let k: u32 = 0;
+    while (k < 6) {
+        wm_key(&wx.w, WM_KEY_NEXT);
+        if (wx.w.focus == o || wx.w.z[3] != o) { return 482; }
+        k = k + 1;
+    }
+    // with nothing else left to go to, Ctrl+N still does not go to it
+    wm_client_gone(&wx.w, ca);
+    wm_client_gone(&wx.w, cb);
+    wm_client_gone(&wx.w, cn);
+    wm_key(&wx.w, WM_KEY_NEXT);
+    if (wx.w.focus == o) { return 484; }
+    // the system's screen is above it, as above everything
+    wm_attention(&wx.w);
+    wx_draw();
+    if (wx_only_trusted(WM_TS_COL_SYSTEM) != 0) { return 483; }
+    wx_down();
+    return 0;
+}
+
+// 500: who signed it, in the frame, ahead of what it calls itself
+fn w_signer(arg: u64) -> i32 {
+    if (wx_up() != 0) { return 500; }
+    // 8x2 glyphs: all of them a solid bar, so any text shows where it reaches
+    let bits: [512]u8;
+    let i: u32 = 0;
+    while (i < 512) { bits[i] = 0xFF; i = i + 1; }
+    let f: ds_font;
+    f.bits = &bits[0]; f.width = 8; f.height = 2; f.count = 256;
+    wx.w.font = &f;
+    let c: u32 = wm_client_new(&wx.w);
+    // the name on a new client is no one's until the kernel has said
+    if (streq(&wx.w.client[c].signer[0], "[Unknown]") != 1) { return 501; }
+    wm_client_signer(&wx.w, c, PROC_TRUST_PLATFORM, 0x1122334455667788);
+    if (streq(&wx.w.client[c].signer[0], "[System]") != 1) { return 502; }
+    let d: u32 = wm_client_new(&wx.w);
+    wm_client_signer(&wx.w, d, PROC_TRUST_PUBLISHER, 0xA1B2C3D455667788);
+    if (streq(&wx.w.client[d].signer[0], "[Publisher a1b2c3d4]") != 1) { return 503; }
+    wm_client_signer(&wx.w, d, PROC_TRUST_UNVERIFIED, 0x0F00000000000000);
+    if (streq(&wx.w.client[d].signer[0], "[Unknown 0f000000]") != 1) { return 504; }
+    wm_client_signer(&wx.w, d, PROC_TRUST_UNSIGNED, 0);
+    if (streq(&wx.w.client[d].signer[0], "[Unsigned]") != 1) { return 505; }
+    // a window of a platform client: the signer's colour from the first glyph
+    let a: u32 = wx_window(c, 200, 40, 0, 0xFF101010);
+    if (a == WM_NONE) { return 506; }
+    wm_client_signer(&wx.w, c, PROC_TRUST_PLATFORM, 1);
+    wm_paint_frame(&wx.w, a);
+    wx_draw();
+    let win: *wm_win = &wx.w.win[a];
+    if (ds_pixel(&win.frame, 6, 2) != WM_COL_SIGNER_SYSTEM) { return 507; }
+    // the eighth glyph is still the signer's, then a blank, then the title's
+    if (ds_pixel(&win.frame, 6 + 8 * 7, 2) != WM_COL_SIGNER_SYSTEM) { return 508; }
+    if (ds_pixel(&win.frame, 6 + 8 * 9, 2) != WM_COL_TEXT) { return 509; }
+    // a title that fills the bar cannot take the signer's place
+    strcopy(&win.title[0], "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX", WM_TITLE_LEN);
+    wm_paint_frame(&wx.w, a);
+    if (ds_pixel(&win.frame, 6, 2) != WM_COL_SIGNER_SYSTEM) { return 510; }
+    // the close box is still the server's
+    if (ds_pixel(&win.frame, wm_frame_w(win) - WM_EDGE - 2, 4) != WM_COL_CLOSE) { return 511; }
+    // anyone else's name is in the other colour
+    wm_client_signer(&wx.w, c, PROC_TRUST_PUBLISHER, 1);
+    wm_paint_frame(&wx.w, a);
+    if (ds_pixel(&win.frame, 6, 2) != WM_COL_SIGNER_OTHER) { return 512; }
+    wx.w.font = 0 as *ds_font;
+    wx_down();
+    return 0;
+}
+
 // ---- real clients, through the real protocol ----
 
 fn wx_blob(out: *u8, rgb: *u8, mode: *u8) -> u32 {
@@ -1426,7 +1851,7 @@ fn wx_hostile_body() -> i32 {
     hs[1].handle = mem_create(((WM_DIM_MAX + 1) as u64) * 4, 0);
     req.w = WM_DIM_MAX + 1; req.h = 1;
     if (wx_call_raw(wx_hostile_ep, (&req) as *u8, sizeof req, &hs[0], 2, &rep) != E_INVALID_ARGS) { return 5; }
-    req.w = 1; req.flags = 2;
+    req.w = 1; req.flags = 4;           // the first bit nothing has defined
     if (wx_call_raw(wx_hostile_ep, (&req) as *u8, sizeof req, &hs[0], 2, &rep) != E_INVALID_ARGS) { return 6; }
     // a lease on some other object, offered as the window's buffer
     let other: i32 = mem_create(40 * 30 * 4, 0);
@@ -2242,6 +2667,12 @@ fn all() -> void {
     test_run("windows: a title's pixels",              w_text,                     30000);
     test_run("windows: real clients, the whole way",   w_real,                     400000);
     test_run("windows: a hostile client is refused",   w_hostile,                  120000);
+    test_run("trusted: Ctrl+Alt+Del covers everything", w_attention,               30000);
+    test_run("trusted: consent, asked and answered",   w_consent,                  30000);
+    test_run("trusted: an overlay stays above, inert", w_overlay,                  30000);
+    test_run("trusted: the signer in the title bar",   w_signer,                   30000);
+    test_run("trusted: capture through the protocol",  w_capture,                  120000);
+    test_run("trusted: a launched client's signer",    w_signed,                   400000);
     test_run("springs: time, velocity, arrival",       a_spring,                   30000);
     test_run("layers: off the edges, faded, turned",   a_draw,                     30000);
     test_run("layers: a tree, kept to its window",     a_tree,                     120000);

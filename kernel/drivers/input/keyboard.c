@@ -45,6 +45,8 @@ static void kbuf_push(unsigned char c) {
 
 /* While the display server holds the input handle, a key goes to it and
    never reaches the buffer anybody with GRANT_INPUT could read (2.4). */
+void keyboard_attention(void) { input_post_attention(); }
+
 void keyboard_inject(unsigned char c) {
     if (!input_post_key(c)) kbuf_push(c);
 }

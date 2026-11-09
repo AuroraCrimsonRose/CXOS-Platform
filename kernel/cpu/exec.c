@@ -81,7 +81,9 @@ int cxex_exec_as(const uint8_t *file, size_t len, uint32_t caps, struct endpoint
        signature check refused it. Parsing the header first instead would make
        a text file report "malformed" rather than "refused", which is the
        loader volunteering its opinion of bytes nobody has vouched for. */
-    int trust = exec_admit(keyvault_trust_of(file, len));
+    uint64_t signer = 0;
+    int found = keyvault_trust_of(file, len, &signer);
+    int trust = exec_admit(found);
     if (trust < 0) return CXEX_EXEC_VERIFY_FAILED;
 
     /* POLICY: only OS/SYSTEM/USER executables run in ring 3, and the tier
@@ -105,7 +107,11 @@ int cxex_exec_as(const uint8_t *file, size_t len, uint32_t caps, struct endpoint
        no special-casing. */
     /* Saturated, not truncated: proc_start refuses an oversized image. */
     uint32_t ulen = len > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)len;
-    int pid = proc_start(file, ulen, caps, broker, broker_grant, args, args_len, handle, hs, job);
+    /* What was found, not what was admitted: a --dev build admits an unsigned
+       image at platform trust, and must not be able to say so to a title bar. */
+    uint32_t seen = found < 0 ? PROC_TRUST_UNSIGNED : (uint32_t)found + PROC_TRUST_UNVERIFIED;
+    int pid = proc_start(file, ulen, caps, broker, broker_grant, args, args_len, handle, hs, job,
+                         seen, signer);
     return pid;   /* >= 0 pid, or a negative error */
 }
 

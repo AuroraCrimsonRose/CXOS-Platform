@@ -40,9 +40,8 @@ const WM_EDGE: u32 = 2;
 const WM_CLOSE_W: u32 = 16;
 const WM_HANG_MS: u64 = 2000;       // events unread this long: not answering
 
-// Two keys the server keeps for itself until trusted UI (roadmap 2.6) has a
-// combination nothing can intercept: Ctrl+Q ends the session, Ctrl+N is the
-// next window, for a machine with no pointer.
+// Keys the server keeps for itself, which no client sees: Ctrl+Q ends the
+// session, Ctrl+N is the next window, for a machine with no pointer.
 const WM_KEY_QUIT: u32 = 17;
 const WM_KEY_NEXT: u32 = 14;
 const WM_KEY_MINIMISE: u32 = 2;     // Ctrl+B; Ctrl+N brings it back
@@ -85,6 +84,35 @@ struct ds_lprops {
 }
 
 const WM_F_ALPHA: u32 = 1;          // the client's pixels carry alpha
+const WM_F_OVERLAY: u32 = 2;        // above every ordinary window; takes no input
+
+// ---- the system's own screen, consent (section 7) ----
+// What a client must be given before it may do these.
+const WM_CAP_CAPTURE: u32 = 1;      // read what is on the screen
+const WM_CAP_OVERLAY: u32 = 2;      // windows above all the others
+const WM_CAPS_ALL: u32 = 3;
+
+const WM_TS_NONE: u32 = 0;
+const WM_TS_SYSTEM: u32 = 1;        // Ctrl+Alt+Del
+const WM_TS_CONSENT: u32 = 2;       // a client's request, asked of the user
+
+const WM_TS_COL_SYSTEM: u32 = 0xFF14283C;
+const WM_TS_COL_CONSENT: u32 = 0xFF3C2414;
+const WM_TS_COL_TEXT: u32 = 0xFFFFFFFF;
+const WM_TS_BAND: u32 = 4;          // a white band along the top of either
+
+// A consent screen takes no answer for this long after it comes up, so a key
+// already on its way, typed at the window behind, cannot be what answers it.
+const WM_CONSENT_ARM_MS: u64 = 500;
+const WM_CAPTURE_SHOW_MS: u64 = 2000;   // the mark stays this long after a capture
+const WM_MARK_SIZE: u32 = 12;
+const WM_COL_MARK: u32 = 0xFFE02020;
+
+const WM_KEY_ESC: u32 = 27;
+
+const WM_SIGNER_LEN: u32 = 24;
+const WM_COL_SIGNER_SYSTEM: u32 = 0xFFA0E8A0;
+const WM_COL_SIGNER_OTHER: u32 = 0xFFF0D060;
 
 const WM_COL_FOCUS: u32 = 0xFF2F5F9F;
 const WM_COL_IDLE: u32 = 0xFF4A5058;
@@ -116,6 +144,15 @@ struct wm_client {
     since: u64,         // when the oldest event still unread became that
     hung: u32,
     kill: u32,          // the server is to end it
+    caps: u32,          // WM_CAP_*, as the user has allowed
+    denied: u32,        // WM_CAP_*, as the user has refused; not asked again
+    ask: u32,           // the WM_CAP_ being asked for, or 0
+    ask_seq: u32,       // the order the asks came in
+    ask_token: i32,     // the reply token of that call
+    ask_done: u32,      // answered: the server is to reply
+    ask_status: i32,
+    signer: [24]u8,     // WM_SIGNER_LEN; as the kernel verified it, never the client's word
+    signer_col: u32,
     ring: [32]wm_event  // WM_RING
 }
 
@@ -149,6 +186,16 @@ struct wm {
     desktop: *ds_surface,
     cursor: *ds_surface,
     font: *ds_font,     // 0: titles are not drawn
+    trusted: *ds_surface,   // the screen only the system draws
+    mark: *ds_surface,      // that the screen is being read
+    ts: u32,            // WM_TS_*: what is on the screen instead of the windows
+    ts_client: u32,     // WM_TS_CONSENT: who is asking
+    ts_armed: u32,      // it may be answered
+    ts_clock: u32,      // ts_t0 has been set
+    ts_t0: u64,
+    ask_next: u32,
+    marked: u32,        // the mark is up
+    capture_at: u64,    // when the screen was last read
     sw: u32,
     sh: u32,
     now: u64,
@@ -183,11 +230,18 @@ fn wm_damage_win(w: *wm, win: *wm_win) -> void {
 
 // The compositor's layers, from the stack: the desktop, each window's frame
 // and content, the pointer. Whoever changed the stack damages what it changed.
+// On the system's own screen that is the whole of it: nothing of a client's is
+// a layer, so there is nothing that could be drawn over it or show through.
 fn wm_restack(w: *wm) -> void {
     ds_layers_clear(w.comp);
+    if (w.ts != WM_TS_NONE) {
+        ds_layer_put(w.comp, w.trusted, 0, 0, 1);
+        return;
+    }
     ds_layer_put(w.comp, w.desktop, 0, 0, 1);
     let k: u32 = 0;
     while (k < w.zn) { wm_emit(w, &w.win[w.z[k]]); k = k + 1; }
+    if (w.marked == 1) { ds_layer_put(w.comp, w.mark, (w.sw - WM_MARK_SIZE - 8) as i32, 4, 1); }
     w.cursor_layer = ds_layer_put(w.comp, w.cursor, w.px as i32, w.py as i32, 0);
 }
 
@@ -246,7 +300,13 @@ fn wm_paint_frame(w: *wm, i: u32) -> void {
         ds_fill(&win.frame, fw - WM_EDGE - WM_CLOSE_W, WM_EDGE, WM_CLOSE_W, WM_TITLE_H - 2 * WM_EDGE, WM_COL_CLOSE);
     }
     if (w.font != (0 as *ds_font) && fw > WM_CLOSE_W + 16) {
-        ds_text(&win.frame, w.font, 6, 2, fw - WM_CLOSE_W - 12, &win.title[0], WM_COL_TEXT);
+        // who signed it first and in its own colour: the title is the client's
+        // own words, and however long they are they cannot push this away
+        let cl: *wm_client = &w.client[win.client];
+        let room: u32 = fw - WM_CLOSE_W - 12;
+        let used: u32 = (strlen(&cl.signer[0]) + 1) * w.font.width;
+        ds_text(&win.frame, w.font, 6, 2, room, &cl.signer[0], cl.signer_col);
+        if (room > used) { ds_text(&win.frame, w.font, 6 + used, 2, room - used, &win.title[0], WM_COL_TEXT); }
     }
     wm_damage_win(w, win);
 }
@@ -261,11 +321,40 @@ fn wm_z_remove(w: *wm, i: u32) -> void {
     w.zn = at;
 }
 
-fn wm_raise(w: *wm, i: u32) -> void {
-    if (w.zn > 0 && w.z[w.zn - 1] == i) { return; }
-    wm_z_remove(w, i);
-    w.z[w.zn] = i;
+fn wm_overlay(win: *wm_win) -> u32 {
+    if ((win.flags & WM_F_OVERLAY) != 0) { return 1; }
+    return 0;
+}
+
+// Window i on top of its own kind: overlays are all above everything else.
+fn wm_z_put(w: *wm, i: u32) -> void {
+    let at: u32 = w.zn;
+    if (wm_overlay(&w.win[i]) == 0) {
+        while (at > 0 && wm_overlay(&w.win[w.z[at - 1]]) == 1) { at = at - 1; }
+    }
+    let k: u32 = w.zn;
+    while (k > at) { w.z[k] = w.z[k - 1]; k = k - 1; }
+    w.z[at] = i;
     w.zn = w.zn + 1;
+}
+
+// Is window i the top of its own kind already?
+fn wm_on_top(w: *wm, i: u32) -> u32 {
+    let k: u32 = w.zn;
+    while (k > 0) {
+        k = k - 1;
+        if (wm_overlay(&w.win[w.z[k]]) == wm_overlay(&w.win[i])) {
+            if (w.z[k] == i) { return 1; }
+            return 0;
+        }
+    }
+    return 0;
+}
+
+fn wm_raise(w: *wm, i: u32) -> void {
+    if (wm_on_top(w, i) == 1) { return; }
+    wm_z_remove(w, i);
+    wm_z_put(w, i);
     wm_restack(w);
     wm_damage_win(w, &w.win[i]);
 }
@@ -329,6 +418,7 @@ fn wm_request_close(w: *wm, i: u32) -> void {
 // ---- input ----
 
 fn wm_key(w: *wm, code: u32) -> void {
+    if (w.ts != WM_TS_NONE) { wm_ts_key(w, code); return; }
     if (code == WM_KEY_QUIT) { w.quit = 1; return; }
     if (code == WM_KEY_NEXT) { wm_next(w); return; }
     if (code == WM_KEY_MOTION) { w.reduce = 1 - w.reduce; return; }
@@ -361,6 +451,7 @@ fn wm_zone(win: *wm_win, x: u32, y: u32) -> u32 {
 // Can input reach it?
 fn wm_shown(w: *wm, win: *wm_win) -> u32 {
     if (win.ghost == 1 || win.min == 1 || win.ws != w.ws) { return 0; }
+    if (wm_overlay(win) == 1) { return 0; }     // something on top, not something to press
     return 1;
 }
 
@@ -417,7 +508,7 @@ fn wm_next(w: *wm) -> void {
     let k: u32 = 0;
     while (k < w.zn) {
         let i: u32 = w.z[k];
-        if (w.win[i].ghost == 0 && w.win[i].ws == w.ws) {
+        if (w.win[i].ghost == 0 && w.win[i].ws == w.ws && wm_overlay(&w.win[i]) == 0) {
             if (w.win[i].min == 1) { wm_restore(w, i); }
             wm_raise(w, i);
             wm_focus_set(w, i);
@@ -473,6 +564,7 @@ fn wm_pointer(w: *wm, x: i32, y: i32, buttons: u32) -> void {
     w.buttons = buttons;
     w.px = wm_clamp(x, w.sw);
     w.py = wm_clamp(y, w.sh);
+    if (w.ts != WM_TS_NONE) { return; }     // no client is told, and it is keys only
     ds_layer_move(w.comp, w.cursor_layer, w.px as i32, w.py as i32);
     let pressed: u32 = 0;
     let released: u32 = 0;
@@ -516,9 +608,12 @@ fn wm_pointer(w: *wm, x: i32, y: i32, buttons: u32) -> void {
 
 // ---- clients and windows ----
 
-fn wm_init(w: *wm, comp: *ds_comp, desktop: *ds_surface, cursor: *ds_surface, font: *ds_font) -> void {
+fn wm_init(w: *wm, comp: *ds_comp, desktop: *ds_surface, cursor: *ds_surface, font: *ds_font,
+           trusted: *ds_surface, mark: *ds_surface) -> void {
     memzero(w as *u8, sizeof *w);
     w.comp = comp; w.desktop = desktop; w.cursor = cursor; w.font = font;
+    w.trusted = trusted; w.mark = mark;
+    ds_fill(mark, 0, 0, mark.width, mark.height, WM_COL_MARK);
     w.sw = comp.back.width; w.sh = comp.back.height;
     w.focus = WM_NONE; w.capture = WM_NONE; w.drag = WM_NONE;
     w.px = w.sw / 2; w.py = w.sh / 2;
@@ -533,6 +628,9 @@ fn wm_client_new(w: *wm) -> u32 {
         if (w.client[c].used == 0) {
             memzero((&w.client[c]) as *u8, sizeof w.client[c]);
             w.client[c].used = 1;
+            // until the kernel has said who signed it
+            strcopy(&w.client[c].signer[0], "[Unknown]", WM_SIGNER_LEN);
+            w.client[c].signer_col = WM_COL_SIGNER_OTHER;
             return c;
         }
         c = c + 1;
@@ -578,11 +676,10 @@ fn wm_window_new(w: *wm, c: u32, width: u32, height: u32, flags: u32, title: *u8
     let step: u32 = 24 + 28 * w.zn;
     win.x = step % ds_max(w.sw / 2, 1);
     win.y = step % ds_max(w.sh / 2, 1);
-    w.z[w.zn] = free;
-    w.zn = w.zn + 1;
+    wm_z_put(w, free);
     wm_restack(w);
     wm_paint_frame(w, free);
-    wm_focus_set(w, free);
+    if (wm_overlay(win) == 0) { wm_focus_set(w, free); }
     return free as i32;
 }
 
@@ -642,7 +739,197 @@ fn wm_client_gone(w: *wm, c: u32) -> void {
     }
     if (w.client[c].waiter > 0) { handle_close(w.client[c].waiter); }
     w.client[c].waiter = 0;
+    if (w.client[c].ask_token > 0) { handle_close(w.client[c].ask_token); }
+    w.client[c].ask_token = 0;
+    w.client[c].ask = 0;
+    w.client[c].ask_done = 0;
     w.client[c].used = 0;
+    if (w.ts == WM_TS_CONSENT && w.ts_client == c) { wm_ts_next(w); }
+    else if (w.ts == WM_TS_SYSTEM) { wm_ts_paint(w); }
+}
+
+// Who signed client c, as the kernel found it when it loaded the image.
+fn wm_client_signer(w: *wm, c: u32, trust: u32, signer: u64) -> void {
+    let cl: *wm_client = &w.client[c];
+    let s: *u8 = &cl.signer[0];
+    cl.signer_col = WM_COL_SIGNER_OTHER;
+    if (trust == PROC_TRUST_PLATFORM) {
+        strcopy(s, "[System]", WM_SIGNER_LEN);
+        cl.signer_col = WM_COL_SIGNER_SYSTEM;
+        return;
+    }
+    if (trust == PROC_TRUST_UNSIGNED) { strcopy(s, "[Unsigned]", WM_SIGNER_LEN); return; }
+    let n: u32 = 0;
+    if (trust == PROC_TRUST_PUBLISHER) { n = strcopy(s, "[Publisher ", WM_SIGNER_LEN); }
+    else { n = strcopy(s, "[Unknown ", WM_SIGNER_LEN); }
+    let top: u32 = (signer >> 32) as u32;
+    let k: u32 = 0;
+    while (k < 8) {
+        let d: u32 = (top >> (28 - 4 * k)) & 15;
+        if (d < 10) { s[n + k] = (48 + d) as u8; } else { s[n + k] = (87 + d) as u8; }
+        k = k + 1;
+    }
+    s[n + 8] = 93;      // ]
+    s[n + 9] = 0;
+}
+
+// ---- the system's own screen ----
+// No client draws here and no key or press reaches one while it is up.
+
+fn wm_ts_row(w: *wm, y: u32, text: *u8) -> void {
+    if (w.font != (0 as *ds_font)) { ds_text(w.trusted, w.font, 24, y, w.sw - 48, text, WM_TS_COL_TEXT); }
+}
+
+// The nth (from 0) connected client, or WM_NONE.
+fn wm_ts_nth(w: *wm, n: u32) -> u32 {
+    let c: u32 = 0;
+    let seen: u32 = 0;
+    while (c < WM_CLIENT_MAX) {
+        if (w.client[c].used == 1) {
+            if (seen == n) { return c; }
+            seen = seen + 1;
+        }
+        c = c + 1;
+    }
+    return WM_NONE;
+}
+
+// The first title client c has, or a word for none.
+fn wm_ts_title(w: *wm, c: u32) -> *u8 {
+    let i: u32 = 0;
+    while (i < WM_WIN_MAX) {
+        if (w.win[i].used == 1 && w.win[i].client == c) { return &w.win[i].title[0]; }
+        i = i + 1;
+    }
+    return "(no window)";
+}
+
+fn wm_ts_paint(w: *wm) -> void {
+    let bg: u32 = WM_TS_COL_SYSTEM;
+    if (w.ts == WM_TS_CONSENT) { bg = WM_TS_COL_CONSENT; }
+    ds_fill(w.trusted, 0, 0, w.sw, w.sh, bg);
+    ds_fill(w.trusted, 0, 0, w.sw, WM_TS_BAND, WM_TS_COL_TEXT);
+    wm_ts_row(w, 16, "CXOS system screen");
+    if (w.ts == WM_TS_CONSENT) {
+        let cl: *wm_client = &w.client[w.ts_client];
+        wm_ts_row(w, 56, &cl.signer[0]);
+        if (cl.ask == WM_CAP_CAPTURE) { wm_ts_row(w, 76, "asks to read everything on the screen."); }
+        if (cl.ask == WM_CAP_OVERLAY) { wm_ts_row(w, 76, "asks to draw on top of every other window."); }
+        wm_ts_row(w, 116, "Y to allow, N to refuse.");
+    } else {
+        wm_ts_row(w, 36, "Only the system can draw this screen. Esc goes back.");
+        wm_ts_row(w, 56, "A number ends that program.");
+        let n: u32 = 0;
+        while (n < 9) {
+            let c: u32 = wm_ts_nth(w, n);
+            if (c != WM_NONE) {
+                let line: [64]u8;
+                line[0] = (49 + n) as u8;
+                line[1] = 32;
+                let at: u32 = 2 + strcopy(&line[2], &w.client[c].signer[0], WM_SIGNER_LEN);
+                line[at] = 32;
+                strcopy(&line[at + 1], wm_ts_title(w, c), WM_TITLE_LEN);
+                wm_ts_row(w, 88 + 20 * n, &line[0]);
+            }
+            n = n + 1;
+        }
+    }
+    ds_damage_all(&w.comp.damage);
+}
+
+// Nothing goes on being pressed or dragged behind the system's screen.
+fn wm_ts_cover(w: *wm) -> void {
+    if (w.ts != WM_TS_NONE) { return; }
+    w.drag = WM_NONE;
+    if (w.capture != WM_NONE) {
+        wm_pointer_to(w, w.capture, 0);
+        w.capture = WM_NONE;
+    }
+}
+
+// The oldest ask still unanswered goes up; with none, the windows come back.
+fn wm_ts_next(w: *wm) -> void {
+    let best: u32 = WM_NONE;
+    let c: u32 = 0;
+    while (c < WM_CLIENT_MAX) {
+        let cl: *wm_client = &w.client[c];
+        if (cl.used == 1 && cl.ask != 0 && (best == WM_NONE || cl.ask_seq < w.client[best].ask_seq)) { best = c; }
+        c = c + 1;
+    }
+    if (best != WM_NONE) {
+        wm_ts_cover(w);
+        w.ts = WM_TS_CONSENT;
+        w.ts_client = best;
+        w.ts_armed = 0;
+        w.ts_clock = 0;
+        wm_restack(w);
+        wm_ts_paint(w);
+        return;
+    }
+    if (w.ts == WM_TS_NONE) { return; }
+    w.ts = WM_TS_NONE;
+    wm_restack(w);
+    ds_damage_all(&w.comp.damage);
+}
+
+// Ctrl+Alt+Del. Already on a screen only the system draws, it has its answer.
+fn wm_attention(w: *wm) -> void {
+    if (w.ts != WM_TS_NONE) { return; }
+    wm_ts_cover(w);
+    w.ts = WM_TS_SYSTEM;
+    wm_restack(w);
+    wm_ts_paint(w);
+}
+
+fn wm_ts_answer(w: *wm, allow: u32) -> void {
+    let cl: *wm_client = &w.client[w.ts_client];
+    if (allow == 1) { cl.caps = cl.caps | cl.ask; cl.ask_status = 0; }
+    else { cl.denied = cl.denied | cl.ask; cl.ask_status = E_ACCESS_DENIED; }
+    cl.ask = 0;
+    cl.ask_done = 1;
+    cl.since = w.now;
+    wm_ts_next(w);
+}
+
+fn wm_ts_key(w: *wm, code: u32) -> void {
+    if (w.ts == WM_TS_CONSENT) {
+        if (w.ts_armed == 0) { return; }
+        if (code == 121 || code == 89) { wm_ts_answer(w, 1); }
+        else if (code == 110 || code == 78 || code == WM_KEY_ESC) { wm_ts_answer(w, 0); }
+        return;
+    }
+    if (code == WM_KEY_ESC) { wm_ts_next(w); return; }
+    if (code >= 49 && code <= 57) {
+        let c: u32 = wm_ts_nth(w, code - 49);
+        if (c != WM_NONE) { w.client[c].kill = 1; }
+    }
+}
+
+// Client c asks for WM_CAP_ cap, in a call whose reply token is this. 1: it is
+// on its way to the user and the token is kept; 0: it already has it; or an
+// error, and in both of those the caller answers. Asked once and refused, it
+// is refused from then on without troubling the user.
+fn wm_ask(w: *wm, c: u32, cap: u32, token: i32) -> i32 {
+    let cl: *wm_client = &w.client[c];
+    if (cap != WM_CAP_CAPTURE && cap != WM_CAP_OVERLAY) { return E_INVALID_ARGS; }
+    if ((cl.caps & cap) != 0) { return 0; }
+    if ((cl.denied & cap) != 0) { return E_ACCESS_DENIED; }
+    if (cl.ask != 0 || cl.ask_done == 1) { return E_BUSY; }
+    cl.ask = cap;
+    cl.ask_token = token;
+    cl.ask_seq = w.ask_next;
+    w.ask_next = w.ask_next + 1;
+    if (w.ts == WM_TS_NONE) { wm_ts_next(w); }
+    return 1;
+}
+
+// The screen was read just now: the mark goes up and stays a while.
+fn wm_captured(w: *wm) -> void {
+    w.capture_at = w.now;
+    if (w.marked == 1) { return; }
+    w.marked = 1;
+    wm_restack(w);
+    ds_damage_add(&w.comp.damage, w.sw - WM_MARK_SIZE - 8, 4, WM_MARK_SIZE, WM_MARK_SIZE);
 }
 
 // Buffer b of window i is now what it shows, held by `lease` (the caller has
@@ -859,10 +1146,22 @@ fn wm_tick(w: *wm, now: u64) -> void {
     w.now = now;
     if (ms > (SP_MS_MAX as u64)) { ms = SP_MS_MAX as u64; }
     wm_animate(w, ms as u32);
+    // counted from the first tick it was up for, so that a screen raised
+    // before the clock first ran is not already old
+    if (w.ts == WM_TS_CONSENT && w.ts_armed == 0) {
+        if (w.ts_clock == 0) { w.ts_clock = 1; w.ts_t0 = now; }
+        else if (now - w.ts_t0 >= WM_CONSENT_ARM_MS) { w.ts_armed = 1; }
+    }
+    if (w.marked == 1 && now - w.capture_at >= WM_CAPTURE_SHOW_MS) {
+        w.marked = 0;
+        wm_restack(w);
+        ds_damage_add(&w.comp.damage, w.sw - WM_MARK_SIZE - 8, 4, WM_MARK_SIZE, WM_MARK_SIZE);
+    }
     let c: u32 = 0;
     while (c < WM_CLIENT_MAX) {
         let cl: *wm_client = &w.client[c];
-        if (cl.used == 1 && cl.hung == 0 && cl.n > 0 && cl.waiter == 0 && now - cl.since >= WM_HANG_MS) {
+        // waiting on the user is not the same as not answering
+        if (cl.used == 1 && cl.hung == 0 && cl.n > 0 && cl.waiter == 0 && cl.ask == 0 && now - cl.since >= WM_HANG_MS) {
             cl.hung = 1;
             wm_repaint_client(w, c);
         }

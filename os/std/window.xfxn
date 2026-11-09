@@ -28,6 +28,8 @@ const DS_OP_WINDOW_CLOSE: u32 = 4; // win
 const DS_OP_LAYER_NEW: u32 = 5;    // win, layer (the parent), w, h, flags; handles: the buffer, its lease
 const DS_OP_LAYER_SET: u32 = 6;    // win, layer, props
 const DS_OP_LAYER_FREE: u32 = 7;   // win, layer
+const DS_OP_CONSENT: u32 = 8;      // flags: the WM_CAP_ asked for; answered once the user has
+const DS_OP_CAPTURE: u32 = 9;      // handle: memory for width x height x 4 of the screen
 
 const DS_RECTS_MAX: u32 = 4;
 
@@ -95,6 +97,29 @@ fn win_map_back(w: *win) -> i32 {
     w.s.stride = w.width;
     w.s.mem = 0 - 1;
     return 0;
+}
+
+// Ask the user for WM_CAP_ cap: 0 once allowed, E_ACCESS_DENIED if refused.
+// Blocks for as long as the user takes.
+fn win_consent(w: *win, cap: u32) -> i32 {
+    let req: ds_req;
+    let rep: ds_rep;
+    memzero((&req) as *u8, sizeof req);
+    req.op = DS_OP_CONSENT;
+    req.flags = cap;
+    return win_call(w, &req, &rep, 0 as *ipc_handle, 0);
+}
+
+// The whole screen into mem, which is writable and big enough: 0 or an error.
+// Needs WM_CAP_CAPTURE, and the user is shown a mark while it is happening.
+fn win_capture(w: *win, mem: i32) -> i32 {
+    let req: ds_req;
+    let rep: ds_rep;
+    memzero((&req) as *u8, sizeof req);
+    req.op = DS_OP_CAPTURE;
+    let h: ipc_handle;
+    h.handle = mem; h.op = IPC_HANDLE_COPY; h.rights = HRIGHT_MAP | HRIGHT_MAP_WRITE | HRIGHT_INSPECT; h.reserved = 0;
+    return win_call(w, &req, &rep, &h, 1);
 }
 
 // The handle the server gave this program, or an error.

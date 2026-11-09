@@ -1372,7 +1372,13 @@ language work in `language/CX_X_PLAN.md`.
    any of it by hand on a screen, its frame rate on real hardware (each scaled
    or faded pixel is X code), several monitors (there is one screen).
 6. Trusted UI: the uninterceptible key combination, consent screens, signer
-   in title bars, capabilities for capture and overlays.
+   in title bars, capabilities for capture and overlays. **Done (2.6, ABI 36)**
+   (`CX_DISPLAY.md` §7, `2.6.sab` 49 of 49). Ctrl+Alt+Del pressed on PS/2 and
+   USB keyboards under QEMU, seen on the screen, by hand. Not tested: any of it
+   on the rig or by a person; the PS/2 and USB callers have no boot test (the
+   decoders have host tests); a `[Publisher]` signer from a real vault key
+   (only formatted from a value); the consent screen's text. Not built: global
+   hotkeys and full screen (nothing to guard yet), publishers' names.
 7. Bochs display, then virtio-gpu 2D. The Process Manager.
 
 ### Phase 3: storage and the system tree

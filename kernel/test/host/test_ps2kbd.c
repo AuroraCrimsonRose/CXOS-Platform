@@ -60,6 +60,33 @@ KH_TEST(ps2kbd_ctrl_letter_is_its_control_code) {
     KH_CHECK_EQ(o[4], 19u); KH_CHECK_EQ(o[5], 's'); KH_CHECK_EQ(o[6], 0u);
 }
 
+KH_TEST(ps2kbd_ctrl_alt_del_is_the_attention_key) {
+    struct ps2kbd_state s = { 0 };
+    /* Ctrl, Alt, the extended Delete */
+    KH_CHECK_EQ(RUN(&s, 0x1D, 0x38, 0xE0, 0x53)[0], (unsigned)KEY_ATTENTION);
+    /* held: its make code repeats and says nothing more */
+    KH_CHECK_EQ(RUN(&s, 0xE0, 0x53, 0xE0, 0x53)[0], 0u);
+    /* up and down again is another press */
+    KH_CHECK_EQ(RUN(&s, 0xE0, 0xD3, 0xE0, 0x53)[0], (unsigned)KEY_ATTENTION);
+    KH_CHECK_EQ(RUN(&s, 0xE0, 0xD3)[0], 0u);
+    /* the keypad's Delete, and the right-hand Ctrl and Alt */
+    struct ps2kbd_state r = { 0 };
+    KH_CHECK_EQ(RUN(&r, 0xE0, 0x1D, 0xE0, 0x38, 0x53)[0], (unsigned)KEY_ATTENTION);
+    /* the keypad's, released and pressed again, is another press */
+    KH_CHECK_EQ(RUN(&r, 0xD3, 0x53)[0], (unsigned)KEY_ATTENTION);
+}
+
+KH_TEST(ps2kbd_attention_needs_all_three_held) {
+    struct ps2kbd_state s = { 0 };
+    KH_CHECK_EQ(RUN(&s, 0xE0, 0x53, 0xE0, 0xD3)[0], 0u);         /* Delete alone */
+    KH_CHECK_EQ(RUN(&s, 0x1D, 0xE0, 0x53, 0xE0, 0xD3)[0], 0u);   /* Ctrl only */
+    KH_CHECK_EQ(RUN(&s, 0x9D, 0x38, 0xE0, 0x53, 0xE0, 0xD3)[0], 0u); /* Alt only */
+    /* Ctrl released before Delete */
+    KH_CHECK_EQ(RUN(&s, 0x1D, 0x9D, 0xE0, 0x53, 0xE0, 0xD3)[0], 0u);
+    /* Alt released, the right-hand one's break code */
+    KH_CHECK_EQ(RUN(&s, 0x1D, 0xE0, 0xB8, 0xE0, 0x53)[0], 0u);
+}
+
 KH_TEST(ps2kbd_extended_keys) {
     struct ps2kbd_state s = {0};
     const unsigned *o = RUN(&s, 0xE0, 0x48, 0xE0, 0xC8, 0xE0, 0x50, 0xE0, 0x4B,

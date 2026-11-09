@@ -124,6 +124,7 @@ static void poll_keyboard(struct hid_device *h) {
     uint8_t mods = rpt[0];
     int shift = (mods & 0x02) || (mods & 0x20);
     int ctrl  = (mods & 0x01) || (mods & 0x10);
+    int alt   = (mods & 0x04) || (mods & 0x40);
 
     for (int i = 2; i < 8; i++) {
         uint8_t u = rpt[i];
@@ -133,6 +134,9 @@ static void poll_keyboard(struct hid_device *h) {
         int was_held = 0;
         for (int j = 0; j < 6; j++) if (h->prev_keys[j] == u) { was_held = 1; break; }
         if (was_held) continue;
+
+        /* Delete, or the keypad's. As PS/2's: nothing above can tell them apart. */
+        if (ctrl && alt && (u == 0x4C || u == 0x63)) { keyboard_attention(); continue; }
 
         unsigned char c = usage_special(u, shift);
         if (!c && u < 0x68) c = (unsigned char)(shift ? usage_upper[u] : usage_lower[u]);

@@ -34,6 +34,8 @@ static const char map_upper[128] = {
 #define SC_RSHIFT 0x36
 #define SC_CAPS   0x3A
 #define SC_CTRL   0x1D   /* left control (and right, via 0xE0 prefix) */
+#define SC_ALT    0x38   /* left alt (and right, via 0xE0 prefix) */
+#define SC_DEL    0x53   /* the keypad's; Delete itself is this after 0xE0 */
 
 /* extended-key scancodes (arrive after a 0xE0 prefix byte) */
 #define SC_EXT_UP    0x48
@@ -44,6 +46,13 @@ static const char map_upper[128] = {
 #define SC_EXT_PGDN  0x51
 #define SC_EXT_HOME  0x47
 #define SC_EXT_END   0x4F
+
+/* Delete went down. A held key repeats its make code, so only the first. */
+static unsigned del_pressed(struct ps2kbd_state *s) {
+    int first = !s->del;
+    s->del = 1;
+    return (first && s->ctrl && s->alt) ? KEY_ATTENTION : 0;
+}
 
 unsigned ps2kbd_decode(struct ps2kbd_state *s, uint8_t sc) {
     /* 0xE0 = extended-key prefix; the next byte is the real (extended) code */
@@ -65,6 +74,8 @@ unsigned ps2kbd_decode(struct ps2kbd_state *s, uint8_t sc) {
         /* extended key RELEASE (high bit set): just clear nothing, ignore */
         if (sc & 0x80) {
             if (code == SC_CTRL) s->ctrl = 0;   /* right-ctrl release */
+            else if (code == SC_ALT) s->alt = 0;
+            else if (code == SC_DEL) s->del = 0;
             return 0;
         }
 
@@ -79,6 +90,8 @@ unsigned ps2kbd_decode(struct ps2kbd_state *s, uint8_t sc) {
             case SC_EXT_HOME:  return KEY_HOME;
             case SC_EXT_END:   return KEY_END;
             case SC_CTRL:      s->ctrl = 1;        return 0;  /* right ctrl */
+            case SC_ALT:       s->alt = 1;         return 0;  /* right alt */
+            case SC_DEL:       return del_pressed(s);
             default: return 0;
         }
     }
@@ -88,6 +101,8 @@ unsigned ps2kbd_decode(struct ps2kbd_state *s, uint8_t sc) {
         uint8_t code = sc & 0x7F;
         if (code == SC_LSHIFT || code == SC_RSHIFT) s->shift = 0;
         else if (code == SC_CTRL)                   s->ctrl = 0;
+        else if (code == SC_ALT)                    s->alt = 0;
+        else if (code == SC_DEL)                    s->del = 0;
         return 0;
     }
 
@@ -95,6 +110,8 @@ unsigned ps2kbd_decode(struct ps2kbd_state *s, uint8_t sc) {
     if (sc == SC_LSHIFT || sc == SC_RSHIFT) { s->shift = 1; return 0; }
     if (sc == SC_CAPS)                       { s->caps ^= 1;  return 0; }
     if (sc == SC_CTRL)                       { s->ctrl = 1; return 0; }
+    if (sc == SC_ALT)                        { s->alt = 1;  return 0; }
+    if (sc == SC_DEL)                        return del_pressed(s);
 
     if (sc >= 128) return 0;
 
@@ -128,7 +145,8 @@ static struct ps2kbd_state state;
 static void ps2kbd_irq(struct registers *r) {
     (void)r;
     unsigned key = ps2kbd_decode(&state, i8042_data());
-    if (key) keyboard_inject((unsigned char)key);
+    if (key == KEY_ATTENTION) keyboard_attention();
+    else if (key) keyboard_inject((unsigned char)key);
 }
 
 void ps2kbd_init(void) {

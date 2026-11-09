@@ -149,7 +149,8 @@ nothing (`x86_32/formats/CX_KEY_FORMAT.md`). Added:
 From `system/CX_DISPLAY.md`: a key combination no app can intercept that
 always reaches the system; consent screens and password prompts drawn only by
 the system; the signer in every title bar. A password is never typed into an
-app's window to raise privilege.
+app's window to raise privilege. **Built (2.6)** except password prompts, which
+wait for accounts: `CX_DISPLAY.md` §7.
 
 ### 3.8 Accounts, secrets and data at rest
 

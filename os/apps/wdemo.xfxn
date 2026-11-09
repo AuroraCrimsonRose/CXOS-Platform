@@ -16,7 +16,9 @@
 //   alpha    the window is translucent: alpha 0x80, premultiplied
 //
 // The key H stops it reading events for good, which is what a client that
-// has hung looks like to the server.
+// has hung looks like to the server. C asks to read the screen and reads it
+// once; O asks for an overlay and opens one. Either goes green if it was
+// allowed and red if it was refused.
 //
 // The key L shows a retained layer, a small square, and sends it to the other
 // side of the window on a spring; F fades it in or out, S scales it. Pressed
@@ -121,6 +123,29 @@ fn wd_layer_key(code: i32) -> i32 {
     return wd_layer_go(&p);
 }
 
+global wd_overlay: win;
+
+// Key C: ask, and read the screen once (640x480 is not assumed: 16 MiB is
+// enough for 2048x2048). 0x00C000 allowed, 0xC00000 refused.
+fn wd_capture_key() -> u32 {
+    if (win_consent(&wd_win, WM_CAP_CAPTURE) != 0) { return 0xC00000; }
+    let mem: i32 = mem_create(16 * 1024 * 1024, 0);
+    if (mem <= 0) { return 0xC00000; }
+    let rc: i32 = win_capture(&wd_win, mem);
+    handle_close(mem);
+    if (rc != 0) { return 0xC00000; }
+    return 0x00C000;
+}
+
+// Key O: ask, and open a small window above all the others.
+fn wd_overlay_key() -> u32 {
+    if (win_consent(&wd_win, WM_CAP_OVERLAY) != 0) { return 0xC00000; }
+    if (win_open(&wd_overlay, wd_win.ep, 80, 40, WM_F_OVERLAY, "overlay") != 0) { return 0xC00000; }
+    ds_fill(&wd_overlay.s, 0, 0, 80, 40, 0xFFE0A000);
+    if (win_commit(&wd_overlay) != 0) { return 0xC00000; }
+    return 0x00C000;
+}
+
 fn _start() -> void {
     let ep: i32 = win_connection();
     if (ep <= 0) { exit(2); }
@@ -144,6 +169,10 @@ fn _start() -> void {
         if (ev.kind == WM_EV_KEY && (ev.a == 76 || ev.a == 70 || ev.a == 83)) {
             rc = wd_layer_key(ev.a);
             if (rc != 0) { exit(6); }
+        } else if (ev.kind == WM_EV_KEY && (ev.a == 67 || ev.a == 79)) {
+            if (ev.a == 67) { rgb = wd_capture_key(); } else { rgb = wd_overlay_key(); }
+            rc = wd_paint(rgb, alpha);
+            if (rc != 0) { exit(7); }
         } else if (ev.kind == WM_EV_KEY) {
             rgb = wd_key_colour(ev.a as u32);
             rc = wd_paint(rgb, alpha);

@@ -41,6 +41,7 @@ enum cx_trust {
     CX_TRUST_UNVERIFIED = 0,   /* valid signature, key we do not know */
     CX_TRUST_PUBLISHER  = 1,   /* key is in the vault */
     CX_TRUST_PLATFORM   = 2    /* the key baked into this kernel */
+    /* exec.c turns one into PROC_TRUST_* by adding PROC_TRUST_UNVERIFIED */
 };
 
 /* Establish integrity against the image's own carried key, then say how far
@@ -49,8 +50,11 @@ enum cx_trust {
    Returns a cx_trust level, or a NEGATIVE cxex_verify_result if the image does
    not verify at all - including CXEX_VERIFY_UNSIGNED for one with no signature
    block. Callers must tell the two apart by sign: "unsigned" and "signed by
-   someone we do not know" are different facts and deserve different answers. */
-int keyvault_trust_of(const uint8_t *file, size_t len);
+   someone we do not know" are different facts and deserve different answers.
+   signer, if not NULL, gets the first 8 bytes of the SHA-256 of the key the
+   signature was checked against (big-endian) whenever the answer is a level,
+   and 0 otherwise. */
+int keyvault_trust_of(const uint8_t *file, size_t len, uint64_t *signer);
 
 /* Name of a trust level, for logging. */
 const char *keyvault_trust_name(int level);
