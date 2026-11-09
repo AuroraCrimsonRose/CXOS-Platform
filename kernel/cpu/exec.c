@@ -17,7 +17,9 @@
    here at the handoff; a valid signature does not itself grant authority. */
 uint32_t caps_for(uint16_t type_code, int trusted) {
     if (!trusted) return 0;
-    if (type_code == CXEX_TYPE_OS)     return GRANT_OS_BASELINE;      /* the broker */
+    /* the broker: the baseline, and GRANT_DRIVER to hand to whoever starts
+       drivers (2.7a; cpu/caps.h) */
+    if (type_code == CXEX_TYPE_OS)     return GRANT_OS_BASELINE | GRANT_DRIVER;
     if (type_code == CXEX_TYPE_SYSTEM) return GRANT_SYSTEM_BASELINE;  /* OS-owned */
     if (type_code == CXEX_TYPE_USER)   return 0;                      /* an app */
     return 0;

@@ -208,6 +208,27 @@ landed in. A press raises and focuses.
    Needs threads, futex, `mmap`, TLS and a C runtime.
 5. **Native AMD** for the W5000 (GCN 1.0), much later.
 
+**Built (2.7a), the Bochs display:** the first driver in a process
+(`os/std/bochsdrv.xfxn`; `run +driver bochs [<width> <height> [16|32]]`). It
+holds the PCI function as a handle and writes the mode registers through BAR 2
+(no I/O ports: the device shows them there too), reading them back, since the
+device clamps a mode without saying so. It sets modes and does not draw: the
+pixels stay the kernel's to hand out (section 3), so the driver then tells the
+kernel the new geometry with `SYS_SCREEN_MODE`, and puts the old mode back in
+the registers if the kernel refuses. The kernel takes the driver's word for
+the layout and checks only that drawing to it is safe (the whole mode inside
+the BAR the screen is in), then maps the screen and its copy at the new size,
+clears, and lays the console out again; the panic screen follows because it
+reads the same geometry. XNU's framebuffers tell the kernel console the same
+way (`IOFramebuffer::setupForCurrentConfig`, `setConsoleInfo`), and Haiku's
+call `frame_buffer_update`.
+
+*Not built:* a mode change while a display server holds the screen (it is
+`E_BUSY`: end `displayd`, set the mode, start it again; the server reads the
+screen's size when it opens it); modes from the monitor's EDID; scaling and
+several monitors; the driver as a service the supervisor starts and binds
+(`kernel/CX_DRIVERS.md` section 3), which waits for the class contracts.
+
 **Vulkan is the only GPU API.** OpenGL, if needed, through Zink. Shaders from
 the X Graphics Language compiled to SPIR-V. **Explicit sync from day one:**
 fences are waitable handles and buffers move with explicit fences.
@@ -243,6 +264,6 @@ After kernel Phase 1 steps 1–3:
 3. Windows: commit and hand-back, frames, focus, input, transparency.
 4. Layer trees, springs, system animations, reduce motion.
 5. Trusted UI.
-6. Bochs, then virtio-gpu 2D; monitors and scaling.
+6. Bochs (built, 2.7a), then virtio-gpu 2D; monitors and scaling.
 7. After x86-64: Venus and the Vulkan back end; blur.
 8. Native AMD.

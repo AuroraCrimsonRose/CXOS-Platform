@@ -270,15 +270,7 @@ void kmain_late(void) {
        few early lines above (quiet by default) predate fb and stay on VGA. */
     if (fb_init() == 0) {
         fb_up = 1;
-        uint32_t W = fb_width(), H = fb_height();
-        fb_clear(fb_rgb(0, 0, 0));
-
-        uint32_t logo_area = W / 3;                       /* right third */
-        uint32_t text_w    = W - logo_area;
-        uint32_t lsz       = ((logo_area < H ? logo_area : H) * 4) / 5;
-        klogo_draw(text_w + (logo_area - lsz) / 2, (H - lsz) / 2, lsz);
-
-        console_use_fb(8, 8, text_w - 16, H - 16);        /* boot log -> left */
+        console_screen_layout();                          /* logo right, boot log left */
     }
 #endif
 

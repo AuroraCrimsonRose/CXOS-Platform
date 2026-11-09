@@ -52,6 +52,10 @@ static uint32_t  width = 0;
 static uint32_t  height = 0;
 static uint32_t  bpp = 0;       /* 16 or 32 */
 static uint32_t  pitch = 0;     /* bytes per scanline */
+/* Pages mapped at FB_VIRT_BASE (the screen) and at FB_COPY_BASE (the copy).
+   Set at boot; after it only fb_mode_set changes them, as the one holder. */
+static uint32_t  fb_pages = 0;
+static uint32_t  copy_pages = 0;
 
 /* ---- the screen given away (2.3, SYS_SCREEN_OPEN) ---------------------------
  * While the display server holds the screen as a memory object, the kernel
@@ -133,6 +137,7 @@ static void copy_init(uint32_t bytes) {
         }
     }
     back = (uint8_t *)(uintptr_t)FB_COPY_BASE;
+    copy_pages = pages;
     uint64_t *q = (uint64_t *)back;
     for (uint32_t i = 0; i < (pages << 12) / 8; i++) q[i] = 0;
     flush(0, 0, width, height);
@@ -172,6 +177,7 @@ int fb_init(void) {
                    VM_WRITE | VM_WC);
     }
     fb = (uint8_t *)(uintptr_t)(FB_VIRT_BASE + off);
+    fb_pages = pages;
 
     copy_init(pitch * height);
     active = 1;
@@ -626,6 +632,88 @@ void fb_screen_release(void) {
     held = 0;
     flush(0, 0, width, height);
     log_unlock();
+}
+
+/* ---- the mode changed (2.7a, SYS_SCREEN_MODE) -------------------------------
+ * A display driver in a process has set another mode on the hardware and says
+ * what it is. The kernel cannot see the mode, so it is the driver's word that
+ * is taken for the layout; what is checked is that drawing to it is safe: the
+ * whole mode lies in the `room` the screen's BAR has from the screen's first
+ * byte on (devhost.c finds it). XNU's framebuffers tell the kernel console the
+ * same way (IOFramebuffer::setupForCurrentConfig hands PE_Video to
+ * setConsoleInfo), and Haiku's drivers call frame_buffer_update
+ * (src/system/kernel/debug/frame_buffer_console.cpp) so the debugger can draw.
+ *
+ * The change is made as the screen's one holder (`held`), which keeps
+ * SYS_SCREEN_OPEN and a second change out and the kernel's drawing in the
+ * copy. Pages are mapped before the geometry changes and unmapped after it,
+ * and never under the log lock (it is last in the order), so every geometry
+ * a drawing call can see has all its pages. A panic in the middle draws with
+ * whichever geometry is current. */
+static int mode_grow(uint32_t pages) {
+    uint32_t f = fb_pages, c = copy_pages;
+    int ok = 1;
+    for (; ok && f < pages; f++) {
+        paging_map_kernel(FB_VIRT_BASE + ((uintptr_t)f << 12),
+                          (paddr_t)fb_phys + ((paddr_t)f << 12), VM_WRITE | VM_WC);
+        if (paging_get_phys(FB_VIRT_BASE + ((uintptr_t)f << 12)) != (paddr_t)fb_phys + ((paddr_t)f << 12)) ok = 0;
+    }
+    for (; ok && c < pages; c++) {
+        paddr_t p = pmm_alloc();
+        if (p) paging_map_kernel(FB_COPY_BASE + ((uintptr_t)c << 12), p, VM_WRITE);
+        if (!p || paging_get_phys(FB_COPY_BASE + ((uintptr_t)c << 12)) != p) {
+            if (p) pmm_free(p);
+            ok = 0;
+            break;
+        }
+    }
+    if (ok) { fb_pages = f; copy_pages = c; return 1; }
+    /* nothing has drawn on the new pages: the geometry is still the old one */
+    while (f > fb_pages) (void)paging_unmap(FB_VIRT_BASE + ((uintptr_t)--f << 12));
+    while (c > copy_pages) {
+        paddr_t old = paging_unmap(FB_COPY_BASE + ((uintptr_t)--c << 12));   /* then freed */
+        if (old) pmm_free(old);
+    }
+    return 0;
+}
+
+static void mode_shrink(uint32_t pages) {
+    while (fb_pages > pages) (void)paging_unmap(FB_VIRT_BASE + ((uintptr_t)--fb_pages << 12));
+    while (copy_pages > pages) {
+        paddr_t old = paging_unmap(FB_COPY_BASE + ((uintptr_t)--copy_pages << 12));   /* then freed */
+        if (old) pmm_free(old);
+    }
+}
+
+int fb_mode_set(uint64_t room, const struct screen_info *si) {
+    if (!fb_active()) return E_NOT_FOUND;
+    if ((fb_phys & 0xFFFu) || back == fb) return E_NOT_SUPPORTED;
+    uint32_t bb = si->format == SCREEN_XRGB8888 ? 4u : si->format == SCREEN_RGB565 ? 2u : 0u;
+    if (!bb || si->width < SCREEN_WIDTH_MIN || si->height < SCREEN_HEIGHT_MIN) return E_INVALID_ARGS;
+    if ((uint64_t)si->pitch < (uint64_t)si->width * bb || si->pitch % bb) return E_INVALID_ARGS;
+    uint64_t bytes = (uint64_t)si->pitch * si->height;
+    if (bytes > room || bytes > SCREEN_BYTES_MAX) return E_OUT_OF_RANGE;
+
+    log_lock();
+    int busy = held || taken;
+    if (!busy) held = 1;
+    log_unlock();
+    if (busy) return E_BUSY;
+
+    uint32_t pages = (uint32_t)((bytes + 0xFFFu) >> 12);
+    if (!mode_grow(pages)) { fb_screen_release(); return E_NO_MEMORY; }
+
+    log_lock();
+    width  = si->width;
+    height = si->height;
+    pitch  = si->pitch;
+    bpp    = bb * 8;
+    console_screen_layout();    /* cleared and laid out, in the copy */
+    log_unlock();
+
+    mode_shrink(pages);
+    fb_screen_release();        /* and the copy goes on the screen */
+    return E_OK;
 }
 
 void fb_panic_takeover(void) { taken = 1; }

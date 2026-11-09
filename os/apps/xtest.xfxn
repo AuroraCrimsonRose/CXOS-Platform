@@ -22,6 +22,7 @@ import "io.xfxn";
 import "string.xfxn";
 import "display.xfxn";
 import "dserver.xfxn";
+import "bochsdrv.xfxn";
 
 const MS: u64 = 1000000;
 
@@ -2626,6 +2627,71 @@ fn a_loop(arg: u64) -> i32 {
 }
 
 // The names are what the boot reports, after "x: ".
+// ---- the Bochs display's driver (2.7a) ----
+
+fn bx_reg(regs: u64, index: u32) -> u32 { return mmio_r16(regs, BOCHS_DISPI + index * 2); }
+fn bx_poke(regs: u64, index: u32, v: u32) -> void { mmio_w16(regs, BOCHS_DISPI + index * 2, v); }
+
+fn b_sim_steps(regs: u64) -> i32 {
+    let b: bochs;
+    // nothing answers; too old a version; no video memory
+    if (bochs_attach(&b, regs) != E_NOT_SUPPORTED) { return 601; }
+    bx_poke(regs, BOCHS_R_ID, 0xB0C1);
+    bx_poke(regs, BOCHS_R_VRAM_64K, 256);
+    if (bochs_attach(&b, regs) != E_NOT_SUPPORTED) { return 602; }
+    bx_poke(regs, BOCHS_R_ID, 0xB0D0);       // and one past the versions there are
+    if (bochs_attach(&b, regs) != E_NOT_SUPPORTED) { return 632; }
+    bx_poke(regs, BOCHS_R_ID, 0xB0C5);
+    bx_poke(regs, BOCHS_R_VRAM_64K, 0);
+    if (bochs_attach(&b, regs) != E_NOT_SUPPORTED) { return 603; }
+    bx_poke(regs, BOCHS_R_VRAM_64K, 256);
+    if (bochs_attach(&b, regs) != 0 || b.id != 0xB0C5 || b.vram != 16777216) { return 604; }
+    // the display off: no mode to report
+    let si: screen_info;
+    if (bochs_get(&b, &si) != E_NOT_SUPPORTED) { return 605; }
+    // each refusal its own, one thing wrong at a time, and nothing written
+    if (bochs_set(&b, 800, 600, 24) != E_NOT_SUPPORTED) { return 606; }
+    if (bochs_set(&b, 804, 600, 32) != E_INVALID_ARGS) { return 607; }
+    if (bochs_set(&b, 632, 480, 32) != E_INVALID_ARGS) { return 608; }
+    if (bochs_set(&b, 640, 479, 32) != E_INVALID_ARGS) { return 609; }
+    if (bochs_set(&b, 2048, 2049, 32) != E_OUT_OF_RANGE) { return 610; }
+    if (bx_reg(regs, BOCHS_R_XRES) != 0 || bx_reg(regs, BOCHS_R_ENABLE) != 0) { return 611; }
+    // exactly the memory it has
+    if (bochs_set(&b, 2048, 2048, 32) != 0) { return 612; }
+    if (bx_reg(regs, BOCHS_R_XRES) != 2048 || bx_reg(regs, BOCHS_R_YRES) != 2048
+        || bx_reg(regs, BOCHS_R_BPP) != 32 || bx_reg(regs, BOCHS_R_VIRT_W) != 2048
+        || bx_reg(regs, BOCHS_R_VIRT_H) != 2048 || bx_reg(regs, BOCHS_R_X_OFF) != 0
+        || bx_reg(regs, BOCHS_R_Y_OFF) != 0 || bx_reg(regs, BOCHS_R_ENABLE) != 0x41) { return 613; }
+    if (bochs_get(&b, &si) != 0 || si.width != 2048 || si.height != 2048 || si.pitch != 8192
+        || si.bpp != 32 || si.format != SCREEN_XRGB8888 || si.size != 16777216) { return 614; }
+    // the smallest, at 16 bits
+    if (bochs_set(&b, 640, 480, 16) != 0) { return 615; }
+    if (bochs_get(&b, &si) != 0 || si.width != 640 || si.height != 480 || si.pitch != 1280
+        || si.bpp != 16 || si.format != SCREEN_RGB565 || si.size != 614400) { return 616; }
+    // The kernel refuses (there is no device handle to show it): the old mode
+    // is back in the registers, its rows as wide as they were.
+    bx_poke(regs, BOCHS_R_VIRT_W, 1024);
+    if (bochs_set_screen(&b, 800, 600, 32) != E_BAD_HANDLE) { return 617; }
+    if (bx_reg(regs, BOCHS_R_XRES) != 640 || bx_reg(regs, BOCHS_R_YRES) != 480
+        || bx_reg(regs, BOCHS_R_BPP) != 16 || bx_reg(regs, BOCHS_R_VIRT_W) != 1024
+        || bx_reg(regs, BOCHS_R_ENABLE) != 0x41) { return 618; }
+    // and a mode it would refuse anyway never reaches the registers
+    if (bochs_set_screen(&b, 800, 600, 24) != E_NOT_SUPPORTED || bx_reg(regs, BOCHS_R_VIRT_W) != 1024) { return 619; }
+    return 0;
+}
+
+// 600: the driver on a page of RAM laid out as the device's registers: it
+// reaches its device only through the mapping it is given, so it cannot tell
+fn b_sim(arg: u64) -> i32 {
+    let regs: u64 = 0;
+    let m: i32 = ds_mem(4096, &regs);
+    if (m <= 0) { return 600; }
+    let rc: i32 = b_sim_steps(regs);
+    vm_unmap(regs, 0);
+    handle_close(m);
+    return rc;
+}
+
 fn all() -> void {
     test_run("threads: create refusals",               t_create_refused,           30000);
     test_run("threads: workers joined with codes",     t_workers_joined,           30000);
@@ -2680,6 +2746,7 @@ fn all() -> void {
     test_run("animation: minimise and workspaces",     a_system,                   300000);
     test_run("animation: reduce motion for everybody", a_reduce,                   30000);
     test_run("animation: the loop runs, then stops",   a_loop,                     120000);
+    test_run("bochs: the driver on a simulated device",   b_sim,                      30000);
 }
 
 fn _start() -> void { test_main(all); }

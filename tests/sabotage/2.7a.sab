@@ -1,0 +1,354 @@
+# Step 2.7a, the Bochs display's driver and SYS_SCREEN_MODE, run by `cxk test
+# sabotage`. Each must turn red exactly the self-tests named. Format:
+# docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage". The X test reports a code,
+# not a logged step, so its sabotages name the test alone. A group holds at
+# most one sabotage per test.
+
+# ---- who may say what the screen's mode is ----
+
+[mode-any-device]
+# any device's handle will do, whether or not the screen is in it
+expect = screen: a mode its driver sets, then the boot's again @ screen mode test failed at step 3
+group = g1
+edit = kernel/drivers/devhost.c
+<<<
+        rc = room ? fb_mode_set(room, &si) : E_NOT_SUPPORTED;
+===
+        rc = fb_mode_set(room ? room : SCREEN_BYTES_MAX, &si);
+>>>
+
+[mode-no-right]
+# a handle without the right to the registers
+expect = screen: a mode its driver sets, then the boot's again @ screen mode test failed at step 2
+group = g2
+edit = kernel/drivers/devhost.c
+<<<
+    struct kdevice *d = device_ref(h, HRIGHT_BAR, &rc);
+    if (!d) return rc;
+    struct screen_info si;
+===
+    struct kdevice *d = device_ref(h, HRIGHT_BAR | HRIGHT_DMA, &rc);
+    if (!d) return rc;
+    struct screen_info si;
+>>>
+
+# ---- what a mode may be ----
+
+[mode-format]
+# a format that is none of SCREEN_* is drawn in as 16 bits
+expect = screen: a mode its driver sets, then the boot's again @ screen mode test failed at step 5
+group = g3
+edit = kernel/drivers/video/fb.c
+<<<
+    uint32_t bb = si->format == SCREEN_XRGB8888 ? 4u : si->format == SCREEN_RGB565 ? 2u : 0u;
+===
+    uint32_t bb = si->format == SCREEN_XRGB8888 ? 4u : 2u;
+>>>
+
+[mode-min-width]
+# narrower than the console and the panic screen are laid out for
+expect = screen: a mode its driver sets, then the boot's again @ screen mode test failed at step 5
+group = g4
+edit = kernel/drivers/video/fb.c
+<<<
+    if (!bb || si->width < SCREEN_WIDTH_MIN || si->height < SCREEN_HEIGHT_MIN) return E_INVALID_ARGS;
+===
+    if (!bb || si->height < SCREEN_HEIGHT_MIN) return E_INVALID_ARGS;
+>>>
+
+[mode-min-height]
+expect = screen: a mode its driver sets, then the boot's again @ screen mode test failed at step 5
+group = g5
+edit = kernel/drivers/video/fb.c
+<<<
+    if (!bb || si->width < SCREEN_WIDTH_MIN || si->height < SCREEN_HEIGHT_MIN) return E_INVALID_ARGS;
+===
+    if (!bb || si->width < SCREEN_WIDTH_MIN) return E_INVALID_ARGS;
+>>>
+
+[mode-pitch-short]
+# a row shorter than its pixels: rows drawn over each other
+expect = screen: a mode its driver sets, then the boot's again @ screen mode test failed at step 5
+group = g6
+edit = kernel/drivers/video/fb.c
+<<<
+    if ((uint64_t)si->pitch < (uint64_t)si->width * bb || si->pitch % bb) return E_INVALID_ARGS;
+===
+    if (si->pitch % bb) return E_INVALID_ARGS;
+>>>
+
+[mode-pitch-ragged]
+# a row that is not whole pixels
+expect = screen: a mode its driver sets, then the boot's again @ screen mode test failed at step 5
+group = g7
+edit = kernel/drivers/video/fb.c
+<<<
+    if ((uint64_t)si->pitch < (uint64_t)si->width * bb || si->pitch % bb) return E_INVALID_ARGS;
+===
+    if ((uint64_t)si->pitch < (uint64_t)si->width * bb) return E_INVALID_ARGS;
+>>>
+
+[mode-past-bar]
+# the one check that keeps the kernel's drawing inside the device: a row
+# more than the BAR has room for is mapped and drawn to
+expect = screen: a mode its driver sets, then the boot's again @ screen mode test failed at step 6
+group = g8
+edit = kernel/drivers/video/fb.c
+<<<
+    if (bytes > room || bytes > SCREEN_BYTES_MAX) return E_OUT_OF_RANGE;
+===
+    if ((void)room, bytes > SCREEN_BYTES_MAX) return E_OUT_OF_RANGE;
+>>>
+
+[mode-while-held]
+# set under a display server that has the old screen mapped
+expect = screen: a mode its driver sets, then the boot's again @ screen mode test failed at step 7
+expect = bochs: the program sets a mode, then the boot's again @ bochs program failed at step 2
+group = g13
+edit = kernel/drivers/video/fb.c
+<<<
+    if (busy) return E_BUSY;
+
+    uint32_t pages = (uint32_t)((bytes + 0xFFFu) >> 12);
+===
+    uint32_t pages = (uint32_t)((bytes + 0xFFFu) >> 12);
+>>>
+
+# ---- what a mode set does ----
+
+[mode-bpp-kept]
+# the size changes and the depth does not
+expect = screen: a mode its driver sets, then the boot's again @ screen mode test failed at step 8
+expect = bochs: the program sets a mode, then the boot's again @ bochs program failed at step 1
+group = g14
+edit = kernel/drivers/video/fb.c
+<<<
+    bpp    = bb * 8;
+===
+>>>
+
+[mode-no-layout]
+# the console keeps the grid it had for the old screen
+expect = screen: a mode its driver sets, then the boot's again @ screen mode test failed at step 8
+group = g9
+edit = kernel/drivers/video/fb.c
+<<<
+    console_screen_layout();    /* cleared and laid out, in the copy */
+===
+>>>
+
+[mode-no-shrink]
+# a smaller mode keeps the larger one's pages mapped
+expect = screen: a mode its driver sets, then the boot's again @ screen mode test failed at step 8
+group = g10
+edit = kernel/drivers/video/fb.c
+<<<
+    mode_shrink(pages);
+    fb_screen_release();        /* and the copy goes on the screen */
+===
+    mode_shrink(fb_pages > copy_pages ? fb_pages : copy_pages);
+    fb_screen_release();        /* and the copy goes on the screen */
+>>>
+
+[mode-not-shown]
+# let go of, and the copy never written to the screen
+expect = screen: a mode its driver sets, then the boot's again @ screen mode test failed at step 8
+group = g11
+edit = kernel/drivers/video/fb.c
+<<<
+    mode_shrink(pages);
+    fb_screen_release();        /* and the copy goes on the screen */
+===
+    mode_shrink(pages);
+    log_lock();
+    held = 0;
+    log_unlock();
+>>>
+
+[mode-copy-leak]
+# a smaller mode unmaps the copy's pages and never frees them
+expect = screen: a mode its driver sets, then the boot's again @ screen mode test failed at step 12
+group = g12
+edit = kernel/drivers/video/fb.c
+<<<
+        paddr_t old = paging_unmap(FB_COPY_BASE + ((uintptr_t)--copy_pages << 12));   /* then freed */
+        if (old) pmm_free(old);
+===
+        paddr_t old = paging_unmap(FB_COPY_BASE + ((uintptr_t)--copy_pages << 12));   /* then freed */
+        (void)old;
+>>>
+
+# ---- the driver, on a simulated device ----
+
+[drv-old-version]
+# a version with no linear framebuffer is driven
+expect = x: bochs: the driver on a simulated device
+group = g1
+edit = os/std/bochsdrv.xfxn
+<<<
+    if (b.id < BOCHS_ID_LFB || b.id > BOCHS_ID_MAX || b.vram == 0) { return E_NOT_SUPPORTED; }
+===
+    if (b.id > BOCHS_ID_MAX || b.vram == 0) { return E_NOT_SUPPORTED; }
+>>>
+
+[drv-new-version]
+# whatever answers above the versions there are is driven
+expect = x: bochs: the driver on a simulated device
+group = g8
+edit = os/std/bochsdrv.xfxn
+<<<
+    if (b.id < BOCHS_ID_LFB || b.id > BOCHS_ID_MAX || b.vram == 0) { return E_NOT_SUPPORTED; }
+===
+    if (b.id < BOCHS_ID_LFB || b.vram == 0) { return E_NOT_SUPPORTED; }
+>>>
+
+[drv-no-memory]
+# a device that reports no video memory
+expect = x: bochs: the driver on a simulated device
+group = g2
+edit = os/std/bochsdrv.xfxn
+<<<
+    if (b.id < BOCHS_ID_LFB || b.id > BOCHS_ID_MAX || b.vram == 0) { return E_NOT_SUPPORTED; }
+===
+    if (b.id < BOCHS_ID_LFB || b.id > BOCHS_ID_MAX) { return E_NOT_SUPPORTED; }
+>>>
+
+[drv-depth]
+# a depth the kernel does not draw in
+expect = x: bochs: the driver on a simulated device
+group = g3
+edit = os/std/bochsdrv.xfxn
+<<<
+    if (bpp != 16 && bpp != 32) { return E_NOT_SUPPORTED; }
+===
+    if (bpp != 16 && bpp != 24 && bpp != 32) { return E_NOT_SUPPORTED; }
+>>>
+
+[drv-width-8]
+# a width the device would round down without saying
+expect = x: bochs: the driver on a simulated device
+group = g4
+edit = os/std/bochsdrv.xfxn
+<<<
+    if (width < SCREEN_WIDTH_MIN || height < SCREEN_HEIGHT_MIN || (width & 7) != 0) { return E_INVALID_ARGS; }
+===
+    if (width < SCREEN_WIDTH_MIN || height < SCREEN_HEIGHT_MIN) { return E_INVALID_ARGS; }
+>>>
+
+[drv-min]
+# smaller than the kernel takes: programmed first, refused after
+expect = x: bochs: the driver on a simulated device
+group = g5
+edit = os/std/bochsdrv.xfxn
+<<<
+    if (width < SCREEN_WIDTH_MIN || height < SCREEN_HEIGHT_MIN || (width & 7) != 0) { return E_INVALID_ARGS; }
+===
+    if (height < SCREEN_HEIGHT_MIN || (width & 7) != 0) { return E_INVALID_ARGS; }
+>>>
+
+[drv-vram]
+# more than the video memory holds
+expect = x: bochs: the driver on a simulated device
+group = g6
+edit = os/std/bochsdrv.xfxn
+<<<
+    if ((width as u64) * ((bpp / 8) as u64) * (height as u64) > (b.vram as u64)) { return E_OUT_OF_RANGE; }
+===
+>>>
+
+[drv-pitch]
+# a row taken to be as wide as what is shown
+expect = x: bochs: the driver on a simulated device
+group = g7
+edit = os/std/bochsdrv.xfxn
+<<<
+    m.pitch = bochs_r(b, BOCHS_R_VIRT_W) * (bpp / 8);
+===
+    m.pitch = bochs_r(b, BOCHS_R_XRES) * (bpp / 8);
+>>>
+
+# ---- the driver, on the simulated device and as the program on QEMU's ----
+
+[drv-no-depth-write]
+# the depth never written: only reading back tells
+expect = x: bochs: the driver on a simulated device
+expect = bochs: the program sets a mode, then the boot's again @ bochs program failed at step 1
+group = g9
+edit = os/std/bochsdrv.xfxn
+<<<
+    bochs_w(b, BOCHS_R_BPP, bpp);
+===
+>>>
+
+[drv-banked]
+# the display on without its linear framebuffer
+expect = x: bochs: the driver on a simulated device
+expect = bochs: the program sets a mode, then the boot's again @ bochs program failed at step 1
+group = g10
+edit = os/std/bochsdrv.xfxn
+<<<
+    bochs_w(b, BOCHS_R_Y_OFF, 0);
+    bochs_w(b, BOCHS_R_ENABLE, BOCHS_ENABLED | BOCHS_LFB);
+===
+    bochs_w(b, BOCHS_R_Y_OFF, 0);
+    bochs_w(b, BOCHS_R_ENABLE, BOCHS_ENABLED);
+>>>
+
+[drv-no-restore]
+# the kernel refuses, and the registers keep the mode it refused
+expect = x: bochs: the driver on a simulated device
+expect = bochs: the program sets a mode, then the boot's again @ bochs program failed at step 2
+group = g11
+edit = os/std/bochsdrv.xfxn
+<<<
+    if (rc != 0 && had == 0) {
+===
+    if (rc != 0 && had == 0 && width == 0) {
+>>>
+
+[drv-kernel-untold]
+# the registers change and the kernel is never told
+expect = x: bochs: the driver on a simulated device
+expect = bochs: the program sets a mode, then the boot's again @ bochs program failed at step 1
+group = g12
+edit = os/std/bochsdrv.xfxn
+<<<
+        if (rc == 0) { rc = screen_mode(b.dev, &m); }
+===
+>>>
+
+# ---- the program ----
+
+[prog-ignores-failure]
+# a refused mode, and it exits as though it had been set
+expect = bochs: the program sets a mode, then the boot's again @ bochs program failed at step 2
+group = g1
+edit = os/apps/bochs.xfxn
+<<<
+        if (rc != 0) { bo_fail("the mode", rc); }
+===
+>>>
+
+[prog-depth-default]
+# no depth said, and it is not 32
+expect = bochs: the program sets a mode, then the boot's again @ bochs program failed at step 1
+group = g2
+edit = os/apps/bochs.xfxn
+<<<
+        let bpp: u32 = 32;
+===
+        let bpp: u32 = 16;
+>>>
+
+[prog-args-swapped]
+# the height read as the width
+expect = bochs: the program sets a mode, then the boot's again @ bochs program failed at step 1
+group = g3
+edit = os/apps/bochs.xfxn
+<<<
+        let width: u32 = dec_u32((ai.base + (page[2] as u64)) as *u8);
+        let height: u32 = dec_u32((ai.base + (page[3] as u64)) as *u8);
+===
+        let width: u32 = dec_u32((ai.base + (page[3] as u64)) as *u8);
+        let height: u32 = dec_u32((ai.base + (page[2] as u64)) as *u8);
+>>>

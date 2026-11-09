@@ -20,6 +20,7 @@
 #include "systable.h"
 #include "logging.h"
 #include "cxk_abi.h"
+#include "fb.h"
 #include "panic.h"
 
 _Static_assert(KOBJ_DEVICE == OBJ_TYPE_DEVICE, "object_basic.kind is the kernel type");
@@ -314,4 +315,32 @@ int syscall_dma_alloc(int32_t h, uint64_t size, uint64_t phys) {
         return E_BAD_ADDRESS;
     }
     return mh;
+}
+
+/* SYS_SCREEN_MODE (2.7a): the display's driver says what mode it has set.
+   The handle is the authority: whoever may map a device's registers may set
+   its mode, so nothing more is asked than that the screen lies in one of this
+   device's BARs. What a mode may be is fb_mode_set's to decide, given the
+   room that BAR has from the screen's first byte on. */
+int syscall_screen_mode(int32_t h, uint64_t uinfo) {
+    int rc;
+    struct kdevice *d = device_ref(h, HRIGHT_BAR, &rc);
+    if (!d) return rc;
+    struct screen_info si;
+    uint32_t phys = 0;
+    uint64_t room = 0;
+    if (user_copy_in(&si, uinfo, sizeof si) != 0) {
+        rc = E_BAD_ADDRESS;
+    } else if (!fb_get_region(&phys, 0)) {
+        rc = E_NOT_FOUND;
+    } else {
+        for (int i = 0; i < 6 && !room; i++) {
+            const struct pci_bar *b = &d->bar[i];
+            if (b->valid && !b->is_io && b->base <= phys && phys - b->base < b->size)
+                room = b->base + b->size - phys;
+        }
+        rc = room ? fb_mode_set(room, &si) : E_NOT_SUPPORTED;
+    }
+    kobj_unref(&d->hdr);
+    return rc;
 }

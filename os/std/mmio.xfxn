@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// std/mmio.xfxn - a device's registers, one access at a time (roadmap 2.7a).
+// Aurora Tejeda / CATX Systems
+// Threads: any; nothing here is shared.
+//
+// A driver reaches its device's registers through a mapping of one of the
+// device's BARs (SYS_DEVICE_BAR, then SYS_VM_MAP, which maps it uncached).
+// Every read and write of a register goes through one of these, so that each
+// is one access of the register's own width, in program order.
+//
+// That holds today because the X compiler loads and stores exactly where the
+// source says and never merges, repeats or drops one. It is a property of the
+// compiler, not of the language: the `*mmio` address type (CX_X_PLAN.md,
+// sec. 7 of the order) is what will make it a rule, and when it lands these
+// are the only functions that change.
+
+fn mmio_r8(base: u64, off: u32) -> u32 {
+    let p: *u8 = (base + (off as u64)) as *u8;
+    return p[0] as u32;
+}
+
+fn mmio_w8(base: u64, off: u32, v: u32) -> void {
+    let p: *u8 = (base + (off as u64)) as *u8;
+    p[0] = v as u8;
+}
+
+fn mmio_r16(base: u64, off: u32) -> u32 {
+    let p: *u16 = (base + (off as u64)) as *u16;
+    return p[0] as u32;
+}
+
+fn mmio_w16(base: u64, off: u32, v: u32) -> void {
+    let p: *u16 = (base + (off as u64)) as *u16;
+    p[0] = v as u16;
+}
+
+fn mmio_r32(base: u64, off: u32) -> u32 {
+    let p: *u32 = (base + (off as u64)) as *u32;
+    return p[0];
+}
+
+fn mmio_w32(base: u64, off: u32, v: u32) -> void {
+    let p: *u32 = (base + (off as u64)) as *u32;
+    p[0] = v;
+}

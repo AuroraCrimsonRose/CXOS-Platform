@@ -40,7 +40,7 @@ domain kernel
 /// mismatch. Declared in versions.json as `cxex-abi` and checked against this
 /// line; bump both, and the DevKit's stamp, in the one commit that changes the
 /// contract.
-const CXK_ABI_VERSION: u32 = 36
+const CXK_ABI_VERSION: u32 = 37
 
 /// ---- syscall numbers ----
 /// lifecycle 0x00-0x0F (no capability required)
@@ -626,6 +626,23 @@ syscall SYS_IRQ_ACK = 0xF4 fn irq_ack(h: i32) -> i32
 /// longer reach it: a buffer whose last reference goes while its device is
 /// open keeps its pages until the device closes.
 syscall SYS_DMA_ALLOC = 0xF5 fn dma_alloc(h: i32, size: u64, phys: *u64) -> i32
+/// A display driver has changed the screen's mode, and says so: the kernel's
+/// own drawing (the console, the panic screen, the SYS_FB_* calls) and
+/// SYS_SCREEN_OPEN follow the new geometry from here on, and the console is
+/// cleared and laid out again. The kernel cannot see the hardware's mode, so
+/// it takes the driver's word for the layout and checks only that it is safe
+/// to draw to: the mode must lie whole inside the BAR the screen is in.
+/// ebx = a device handle (HRIGHT_BAR) of the device whose BAR holds the
+/// screen, ecx = *screen_info (width, height, pitch and format are read; bpp
+/// and size are not) -> 0. E_NOT_SUPPORTED: not the screen's device, or a
+/// screen SYS_SCREEN_OPEN would refuse; E_NOT_FOUND: no framebuffer;
+/// E_INVALID_ARGS: a format that is not SCREEN_*, smaller than
+/// SCREEN_WIDTH_MIN by SCREEN_HEIGHT_MIN, or a pitch that is not whole pixels
+/// or shorter than a row; E_OUT_OF_RANGE: pitch * height past the end of the
+/// BAR, or over SCREEN_BYTES_MAX; E_BUSY: the screen is held (SYS_SCREEN_OPEN)
+/// or a panic has it; E_NO_MEMORY: no room for the kernel's copy, and nothing
+/// has changed.
+syscall SYS_SCREEN_MODE = 0xF6 fn screen_mode(h: i32, info: *screen_info) -> i32
 
 /// ---- error codes (negative; returned in eax) ----
 /// One list, shared by syscalls and services (docs/kernel/CX_SYSCALLS_IPC.md sec 6).
@@ -1090,6 +1107,11 @@ struct fb_geometry {
 /// A pixel's layout in the screen's memory, red highest in both.
 const SCREEN_RGB565: u32 = 1     /// 16 bits: 5 red, 6 green, 5 blue
 const SCREEN_XRGB8888: u32 = 2   /// 32 bits: 0x00RRGGBB
+/// SYS_SCREEN_MODE's limits: the smallest screen the console and the panic
+/// screen are laid out for, and the most bytes a mode may take.
+const SCREEN_WIDTH_MIN: u32 = 640
+const SCREEN_HEIGHT_MIN: u32 = 480
+const SCREEN_BYTES_MAX: u32 = 0x04000000u    /// 64 MiB
 struct screen_info {
     width: u32
     height: u32

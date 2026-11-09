@@ -67,7 +67,10 @@ range. Built for devices in 2.2: `GRANT_IOPORT` is now `GRANT_DRIVER`, which
 gates only finding and opening a PCI function (`SYS_DEVICE_INFO`,
 `SYS_DEVICE_OPEN`); its registers, interrupt and DMA buffers are reached
 through the device handle's rights (`kernel/CX_DRIVERS.md` §3.2). With no
-IOMMU that grant is full trust, so it is in no baseline.
+IOMMU that grant is full trust, so it is in no baseline. Since 2.7a the
+executive is started with it and gives it to the shell alone, which passes it
+to a program only on `run +driver`; the supervisor and its services do not
+have it. That stands until the supervisor binds drivers to devices itself.
 
 ### 3.2 The kernel
 

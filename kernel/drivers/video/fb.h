@@ -108,6 +108,14 @@ int sys_fb_set_font(uint64_t uname);
  * the kernel draws into its copy only. */
 int sys_screen_open(uint64_t uinfo);
 
+/* SYS_SCREEN_MODE's work, once devhost.c has found the screen's BAR in the
+   caller's device: `room` is that BAR's bytes from the screen's first byte
+   on. The kernel draws in `si`'s geometry from here on, the console cleared
+   and laid out again. 0, or the error the system call documents; on an error
+   nothing has changed. Takes the log lock; may allocate. */
+struct screen_info;
+int fb_mode_set(uint64_t room, const struct screen_info *si);
+
 /* The object's last reference went (kmem.c): the copy goes back on the
    screen, and the kernel draws there again. Takes the log lock. */
 void fb_screen_release(void);

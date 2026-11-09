@@ -7200,3 +7200,196 @@ done:
     if (ok && (kobj_live(KOBJ_MEM) != mem0 || fb_screen_held() || fb_test_disagree(0, 0, w, h) != 0)) ok = 0;
     return ok;
 }
+
+/* ---- the screen's mode, told by its driver (2.7a) ----------------------------
+ * SYS_SCREEN_MODE through the dispatcher, on QEMU's standard VGA (the Bochs
+ * display, hw/display/vga-pci.c): this test is the driver, setting each mode
+ * through the registers in BAR 2 before it says so, so that the screen shows
+ * what the kernel believes. Who may say it, what a mode may be on both sides
+ * of each bound, the screen held, then a smaller mode, the largest the BAR
+ * has room for, and the boot's own again: the kernel's geometry, the console's
+ * layout, the pages mapped for the screen and its copy, and the screen as
+ * SYS_SCREEN_OPEN then gives it. A boot with no Bochs display (the rig) has
+ * nothing to set a mode on and says it skipped. 1 = pass, 0 = fail. */
+#define BGA_VENDOR 0x1234u
+#define BGA_DEVICE 0x1111u
+#define BGA_REGS   0x500u    /* the DISPI registers in BAR 2, 16 bits each */
+enum { BGA_ID, BGA_XRES, BGA_YRES, BGA_BPP, BGA_ENABLE, BGA_BANK, BGA_VIRT_W, BGA_VIRT_H, BGA_X_OFF, BGA_Y_OFF };
+#define SM_INFO (TEST_CODE_VIRT + 0x440)   /* struct screen_info */
+
+static uint16_t bga_rd(uint64_t regs, uint32_t i) {
+    return *(volatile uint16_t *)ktest_umem(regs + BGA_REGS + i * 2);
+}
+static void bga_wr(uint64_t regs, uint32_t i, uint32_t v) {
+    *(volatile uint16_t *)ktest_umem(regs + BGA_REGS + i * 2) = (uint16_t)v;
+}
+static void bga_mode(uint64_t regs, uint32_t w, uint32_t h, uint32_t bpp) {
+    bga_wr(regs, BGA_ENABLE, 0);
+    bga_wr(regs, BGA_XRES, w);
+    bga_wr(regs, BGA_YRES, h);
+    bga_wr(regs, BGA_BPP, bpp);
+    bga_wr(regs, BGA_VIRT_W, w);
+    bga_wr(regs, BGA_VIRT_H, h);
+    bga_wr(regs, BGA_X_OFF, 0);
+    bga_wr(regs, BGA_Y_OFF, 0);
+    bga_wr(regs, BGA_ENABLE, 0x41);   /* enabled, linear framebuffer */
+}
+static int sm_set(int32_t d, uint32_t w, uint32_t h, uint32_t pitch, uint32_t format) {
+    struct screen_info *si = (struct screen_info *)ktest_umem(SM_INFO);
+    si->width = w; si->height = h; si->pitch = pitch; si->format = format;
+    si->bpp = 0; si->size = 0;
+    return syscall_dispatch(SYS_SCREEN_MODE, (uint32_t)d, SM_INFO, 0, 0, 0);
+}
+static int sm_is(uint32_t w, uint32_t h, uint32_t pitch, uint32_t bpp) {
+    return fb_width() == w && fb_height() == h && fb_pitch() == pitch && fb_bpp() == bpp;
+}
+/* Are exactly `pages` pages mapped for the screen and for its copy? */
+static int sm_pages(uint32_t pages) {
+    uintptr_t scr = fb_test_screen_virt(), copy = (uintptr_t)KVA_FB_COPY;
+    return paging_get_phys(scr + ((uintptr_t)(pages - 1) << 12)) != 0
+        && paging_get_phys(scr + ((uintptr_t)pages << 12)) == 0
+        && paging_get_phys(copy + ((uintptr_t)(pages - 1) << 12)) != 0
+        && paging_get_phys(copy + ((uintptr_t)pages << 12)) == 0;
+}
+
+int usermode_screen_mode_test(void) {
+    if (!fb_active()) return 1;
+    struct dh_env e;
+    if (!dh_begin(&e)) return 0;
+    thread_set_caps(e.me, GRANT_DRIVER | GRANT_FRAMEBUFFER);
+    const struct device_desc *di = (const struct device_desc *)ktest_umem(DH_INFO);
+    const struct screen_info *si = (const struct screen_info *)ktest_umem(SC_INFO);
+    int bga = -1;
+    for (uint32_t id = 0; id < DEVICE_MAX && bga < 0; id++)
+        if (dh_info(id) == E_OK && di->bus == DEVICE_BUS_PCI &&
+            di->vendor == BGA_VENDOR && di->device == BGA_DEVICE)
+            bga = (int)id;
+    if (bga < 0) {
+        klog("KTEST", SEV_WARN, "screen mode: no Bochs display; skipped");
+        dh_end(&e);
+        return 1;
+    }
+    const uint32_t w0 = fb_width(), h0 = fb_height(), p0 = fb_pitch(), bpp0 = fb_bpp();
+    const uint32_t f0 = bpp0 == 32 ? SCREEN_XRGB8888 : SCREEN_RGB565;
+    const uint32_t pages0 = (p0 * h0 + PAGE_SIZE - 1) / PAGE_SIZE;
+    const uint32_t c = 0x00ABCDEFu;
+    uint32_t fphys = 0;
+    fb_get_region(&fphys, 0);
+    uint32_t mem0 = kobj_live(KOBJ_MEM), dev0 = kobj_live(KOBJ_DEVICE);
+    int32_t d = -1, b = -1, t = -1, dn = -1, s = -1, eh = -1;
+    uint64_t regs = 0, addr = 0, room = 0;
+    int step = 0, ok = 0;
+
+    /* 1: the device, its registers, and the mode the boot left in them */
+    d = dh_open((uint32_t)bga);
+    if (d > 0) b = dh_bar(d, 2);
+    if (b > 0) regs = dh_map_regs(b);
+    struct pci_bar bar0;
+    step = 1; if (d <= 0 || b <= 0 || !regs || !pci_bar_get(devtree_get((unsigned)bga)->pci, 0, &bar0)
+                  || fphys < bar0.base || fphys - bar0.base >= bar0.size
+                  || (bga_rd(regs, BGA_ID) & 0xFFF0u) != 0xB0C0u
+                  || bga_rd(regs, BGA_XRES) != w0 || bga_rd(regs, BGA_YRES) != h0
+                  || bga_rd(regs, BGA_BPP) != bpp0) goto done;
+    room = bar0.base + bar0.size - fphys;
+    if (room > SCREEN_BYTES_MAX) room = SCREEN_BYTES_MAX;
+
+    /* 2: who may say it: the handle, its type, the right */
+    t = syscall_dispatch(SYS_TIMER_CREATE, 0, 0, 0, 0, 0);
+    dn = dh_dup(d, HRIGHT_IRQ | HRIGHT_DMA);
+    step = 2; if (t <= 0 || dn <= 0 || sm_set(9999, w0, h0, p0, f0) != E_BAD_HANDLE
+                  || sm_set(t, w0, h0, p0, f0) != E_WRONG_TYPE
+                  || sm_set(dn, w0, h0, p0, f0) != E_ACCESS_DENIED) goto done;
+    /* 3: a device the screen is not in */
+    int edu = dh_find_edu();
+    if (edu >= 0) {
+        eh = dh_open((uint32_t)edu);
+        step = 3; if (eh <= 0 || sm_set(eh, w0, h0, p0, f0) != E_NOT_SUPPORTED) goto done;
+        dh_close(e.tab, &eh);
+    }
+    /* 4: a bad pointer */
+    step = 4; if (syscall_dispatch(SYS_SCREEN_MODE, (uint32_t)d, 0xC0001000u, 0, 0, 0) != E_BAD_ADDRESS) goto done;
+    /* 5: what a mode may not be, one thing wrong at a time (640 x 480 x 32
+       with a pitch of 2560 is right: step 8 sets it) */
+    step = 5; if (sm_set(d, 640, 480, 2560, 0) != E_INVALID_ARGS
+                  || sm_set(d, 640, 480, 2560, 3) != E_INVALID_ARGS
+                  || sm_set(d, 639, 480, 2560, SCREEN_XRGB8888) != E_INVALID_ARGS
+                  || sm_set(d, 640, 479, 2560, SCREEN_XRGB8888) != E_INVALID_ARGS
+                  || sm_set(d, 640, 480, 2556, SCREEN_XRGB8888) != E_INVALID_ARGS
+                  || sm_set(d, 640, 480, 2562, SCREEN_XRGB8888) != E_INVALID_ARGS
+                  || !sm_is(w0, h0, p0, bpp0)) goto done;
+    /* 6: one row more than the BAR has room for (step 10 sets the one that fits) */
+    uint32_t hh = (uint32_t)(room / 4096u);
+    step = 6; if (sm_set(d, 1024, hh + 1, 4096, SCREEN_XRGB8888) != E_OUT_OF_RANGE
+                  || !sm_is(w0, h0, p0, bpp0)) goto done;
+    /* 7: not while the screen is held */
+    s = sc_open(SC_INFO);
+    step = 7; if (s <= 0 || sm_set(d, 640, 480, 2560, SCREEN_XRGB8888) != E_BUSY
+                  || !sm_is(w0, h0, p0, bpp0)) goto done;
+    dh_close(e.tab, &s);
+
+    /* 8: a smaller mode: the kernel's geometry, the console laid out in it,
+       the screen showing the copy, and no page mapped past its end */
+    bga_mode(regs, 640, 480, 32);
+    step = 8; if (sm_set(d, 640, 480, 2560, SCREEN_XRGB8888) != E_OK || !sm_is(640, 480, 2560, 32)
+                  || fb_screen_held() || !sm_pages(300)
+                  || console_cols() != (int)((640 - 640 / 3 - 16) / fb_font_width())
+                  || console_rows() != (int)((480 - 16) / fb_font_height())
+                  || fb_test_disagree(0, 0, 640, 480) != 0) goto done;
+    /* 9: SYS_SCREEN_OPEN gives the new screen, and the kernel's last pixel is
+       where the mode puts it */
+    fb_put_pixel(639, 479, c);
+    s = sc_open(SC_INFO);
+    step = 9; if (s <= 0 || si->width != 640 || si->height != 480 || si->pitch != 2560
+                  || si->bpp != 32 || si->format != SCREEN_XRGB8888 || si->size != 300u * PAGE_SIZE
+                  || mt_map(s, 0, si->size, MPROT_READ | MPROT_WRITE) != E_OK) goto done;
+    addr = ((const struct vm_map_args *)ktest_umem(MT_ARGS))->addr;
+    uint64_t off = 479u * 2560u + 639u * 4u;
+    uint32_t px = 0;
+    if (user_copy_in(&px, addr + off, 4) != 0 || px != c
+        || paging_get_phys((uintptr_t)(addr + off)) != (paddr_t)fphys + off) goto done;
+    vm_unmap(e.pid, addr, 0);
+    addr = 0;
+    dh_close(e.tab, &s);
+    if (fb_screen_held()) goto done;
+
+    /* 10-12: the largest mode the BAR has room for, then the boot's own
+       again, twice: the second time round leaves the page count as the first
+       did (the first makes the windows' page tables) */
+    uint32_t free1 = 0;
+    for (int round = 0; round < 2 && hh >= 480 && hh <= 8192; round++) {
+        uint64_t bytes = (uint64_t)hh * 4096u;
+        bga_mode(regs, 1024, hh, 32);
+        step = 10; if (sm_set(d, 1024, hh, 4096, SCREEN_XRGB8888) != E_OK || !sm_is(1024, hh, 4096, 32)
+                       || !sm_pages((uint32_t)(bytes / PAGE_SIZE))) goto done;
+        fb_put_pixel(1023, hh - 1, c);
+        if (fb_test_screen_pixel(1023, hh - 1) != c
+            || paging_get_phys(fb_test_screen_virt() + (uintptr_t)bytes - 4) != (paddr_t)fphys + bytes - 4
+            || fb_test_disagree(0, hh - 16, 1024, 16) != 0) goto done;
+        bga_mode(regs, w0, h0, bpp0);
+        step = 11; if (sm_set(d, w0, h0, p0, f0) != E_OK || !sm_is(w0, h0, p0, bpp0)
+                       || !sm_pages(pages0) || fb_test_disagree(0, 0, w0, h0) != 0) goto done;
+        step = 12; if (round == 0) free1 = pmm_free_count();
+        else if (pmm_free_count() != free1) goto done;
+    }
+    ok = 1;
+
+done:
+    if (addr) vm_unmap(e.pid, addr, 0);
+    dh_close(e.tab, &s);
+    if (d > 0 && regs && !sm_is(w0, h0, p0, bpp0)) {
+        bga_mode(regs, w0, h0, bpp0);
+        if (sm_set(d, w0, h0, p0, f0) != E_OK) ok = 0;
+    }
+    /* said only now, in the boot's mode: a narrower console cuts the line short */
+    if (!ok) klog_u32("KTEST", SEV_ERR, "screen mode test failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    if (regs) vm_unmap(e.pid, regs, 0);
+    dh_close(e.tab, &eh);
+    dh_close(e.tab, &dn);
+    dh_close(e.tab, &t);
+    dh_close(e.tab, &b);
+    dh_close(e.tab, &d);
+    if (ok && (kobj_live(KOBJ_MEM) != mem0 || kobj_live(KOBJ_DEVICE) != dev0 || fb_screen_held()
+               || dh_state((uint32_t)bga) != DEVICE_STATE_UNBOUND || !sm_is(w0, h0, p0, bpp0))) ok = 0;
+    dh_end(&e);
+    return ok;
+}

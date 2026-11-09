@@ -17,6 +17,7 @@
 #include "console.h"
 #include "platform/platform.h"
 #include "fb.h"
+#include "klogo.h"
 #include "color.h"
 #include "format.h"
 #include "serial.h"
@@ -131,6 +132,24 @@ void console_use_fb(uint32_t x0, uint32_t y0, uint32_t w, uint32_t h) {
     console_font_changed();
     cx = 0; cy = 0;
     be_clear(attr);
+}
+
+/* The whole screen laid out: black, the CX logo in the right third, the log in
+   the left region, cleared. At boot once the framebuffer is up, and again
+   whenever the screen's mode changes (fb_mode_set): what was on it was drawn
+   for another geometry. A panic repaints the whole screen itself. */
+void console_screen_layout(void) {
+    LOG_LOCKED();
+    if (!fb_active()) return;
+    uint32_t W = fb_width(), H = fb_height();
+    fb_clear(fb_rgb(0, 0, 0));
+
+    uint32_t logo_area = W / 3;                       /* right third */
+    uint32_t text_w    = W - logo_area;
+    uint32_t lsz       = ((logo_area < H ? logo_area : H) * 4) / 5;
+    klogo_draw(text_w + (logo_area - lsz) / 2, (H - lsz) / 2, lsz);
+
+    console_use_fb(8, 8, text_w - 16, H - 16);        /* the log -> left */
 }
 
 /* Recompute the grid after the active font's cell changed.

@@ -47,6 +47,9 @@
 #include "drivers/input/keyboard.h"
 #include "drivers/input/mouse.h"
 #include "fb.h"
+#include "console.h"
+#include "drivers/devtree.h"        /* the Bochs display's node (2.7a) */
+#include "drivers/bus/pci.h"
 #include "diag/testhook.h"      /* race_arm at RP_SPAWN_TAKE, live_take */
 
 extern const struct cxex_load_ops cxex_kernel_load_ops;   /* cxex_loadk.c */
@@ -1507,4 +1510,136 @@ done:
     r.passed += report("x tests: the runner ran cleanly", step == 0);
     *total = r.total;
     return r.passed;
+}
+
+/* ---- the Bochs display's driver, as the program (2.7a) -----------------------
+ * /Shared/Programs/bochs.xuex itself, started as the shell's `run +driver
+ * bochs <width> <height> [bpp]` starts it, on QEMU's standard VGA: a mode
+ * set, a mode refused while the screen is held, and the boot's own mode set
+ * again. Each is judged by how the program ended, by the kernel's geometry,
+ * and by the device's registers read here through a mapping of the kernel's
+ * own, so that what the program printed is not what is believed. A boot with
+ * no Bochs display (the rig) has nothing to run it on and says it skipped.
+ * 1 = pass, 0 = fail. */
+#define BP_DISPI 0x500u     /* the mode registers in BAR 2, 16 bits each */
+enum { BP_XRES = 1, BP_YRES, BP_BPP, BP_ENABLE, BP_BANK, BP_VIRT_W, BP_VIRT_H };
+
+/* v in decimal at `at`, its NUL included: the bytes written. */
+static uint32_t bp_dec(char *at, uint32_t v) {
+    char d[10];
+    uint32_t n = 0, k = 0;
+    do { d[n++] = (char)('0' + v % 10); v /= 10; } while (v);
+    while (n) at[k++] = d[--n];
+    at[k++] = 0;
+    return k;
+}
+
+/* Run it with `argv` (argv[0] and every NUL counted in argv_len), wait for it
+   and for what it held to be given back: its exit code, or -1 if it did not
+   start, did not end in time, or did not end by exiting. */
+static int bp_run(const char *argv_in, uint32_t argv_len, uint32_t live0) {
+    static const char prog[] = "/Shared/Programs/bochs.xuex";
+    struct spawn_args *a        = (struct spawn_args *)SHP_VA;
+    struct object_info_args *oi = (struct object_info_args *)(SHP_VA + 0x100);
+    struct process_info *pi     = (struct process_info *)(SHP_VA + 0x200);
+    char *path                  = (char *)(SHP_VA + 0x300);
+    char *argv                  = (char *)(SHP_VA + 0x380);
+    struct htab *tab = thread_htab(thread_current_id());
+    for (uint32_t i = 0; i < sizeof prog; i++) path[i] = prog[i];
+    for (uint32_t i = 0; i < argv_len; i++) argv[i] = argv_in[i];
+    a->image = 0; a->image_len = 0; a->name = user_addr(path);
+    a->broker_endpoint = -1; a->caps = GRANT_DRIVER | GRANT_CONSOLE; a->job = 0;
+    a->args = user_addr(argv); a->args_len = argv_len;
+    a->handles = 0; a->handle_count = 0;
+    int32_t ph = syscall_exec_path(user_addr(path), user_addr(a));
+    if (ph <= 0) return -1;
+    int code = -1;
+    if (syscall_object_wait(ph, SIGNAL_PROCESS_ENDED, timer_now_ns() + 300000 * TIMER_NS_PER_TICK, 0) != E_OK) {
+        (void)syscall_process_kill(ph);
+        (void)syscall_object_wait(ph, SIGNAL_PROCESS_ENDED, timer_now_ns() + 10000 * TIMER_NS_PER_TICK, 0);
+    } else if (spv_info(oi, ph, OBJINFO_PROCESS, pi, sizeof *pi) == (int)sizeof *pi
+               && pi->ended == PROC_EXITED && pi->code >= 0) {
+        code = pi->code;
+    }
+    htab_close(tab, ph);
+    int settled = 0;
+    for (int i = 0; i < 10 && !settled; i++) settled = proc_live_settles(live0);
+    return settled ? code : -1;
+}
+
+static int bp_is(volatile uint16_t *r, uint32_t w, uint32_t h, uint32_t pitch, uint32_t bpp) {
+    return fb_width() == w && fb_height() == h && fb_pitch() == pitch && fb_bpp() == bpp
+        && r[BP_XRES] == w && r[BP_YRES] == h && r[BP_BPP] == bpp && !fb_screen_held();
+}
+
+int ktest_bochs_program(void) {
+    if (!fb_active()) return 1;
+    if (cxfs_resolve("/Shared/Programs/bochs.xuex", 0) < 0) return 1;       /* nothing staged - skip */
+    const struct pci_device *pd = 0;
+    for (unsigned id = 0; id < DEVICE_MAX && !pd; id++) {
+        const struct dev_node *n = devtree_get(id);
+        if (n && n->pci && n->ids.vendor == 0x1234u && n->ids.device == 0x1111u) pd = n->pci;
+    }
+    if (!pd) {
+        klog("KTEST", SEV_WARN, "bochs: no Bochs display; skipped");
+        return 1;
+    }
+    struct pci_bar bar0, bar2;
+    uint32_t fphys = 0;
+    fb_get_region(&fphys, 0);
+    if (!pci_bar_get(pd, 0, &bar0) || !pci_bar_get(pd, 2, &bar2) || bar2.is_io || !bar2.base
+        || fphys < bar0.base || fphys - bar0.base >= bar0.size) return 0;
+    volatile uint8_t *regs = (volatile uint8_t *)paging_map_phys((paddr_t)bar2.base, 0x1000, VM_WRITE | VM_UNCACHED);
+    if (!regs) return 0;
+    volatile uint16_t *r = (volatile uint16_t *)(regs + BP_DISPI);
+    paddr_t frame = pmm_alloc();
+    if (!frame) return 0;
+    if (paging_map_user(SHP_VA, frame, VM_WRITE) != 0) { pmm_free(frame); return 0; }
+    uint32_t caps = thread_current_caps();
+    thread_set_caps(thread_current_id(), GRANT_SPAWN | GRANT_DRIVER | GRANT_CONSOLE);
+    const uint32_t w0 = fb_width(), h0 = fb_height(), p0 = fb_pitch(), bpp0 = fb_bpp();
+    uint32_t live0 = proc_live();
+    char back[48] = "bochs";
+    uint32_t back_len = 6;
+    back_len += bp_dec(back + back_len, w0);
+    back_len += bp_dec(back + back_len, h0);
+    back_len += bp_dec(back + back_len, bpp0);
+    int step, code;
+
+    /* 1: a mode: the program's word, the kernel's geometry, the registers */
+    static const char set[] = "bochs\0" "800\0" "600";
+    code = bp_run(set, sizeof set, live0);
+    step = 1; if (code != 0 || !bp_is(r, 800, 600, 3200, 32)) goto done;
+    /* 2: refused while the screen is held, as a display server holds it: the
+       program says so, and the registers hold the mode they held */
+    static const char small[] = "bochs\0" "640\0" "480\0" "16";
+    fb_test_hold();
+    code = bp_run(small, sizeof small, live0);
+    fb_screen_release();
+    step = 2; if (code != 1 || !bp_is(r, 800, 600, 3200, 32)) goto done;
+    /* 3: the boot's own mode again */
+    code = bp_run(back, back_len, live0);
+    step = 3; if (code != 0 || !bp_is(r, w0, h0, p0, bpp0)) goto done;
+    step = 0;
+
+done:
+    if (!bp_is(r, w0, h0, p0, bpp0)) {
+        /* the tests after this one are on the same screen: the boot's mode
+           goes back by this test's own hand, whatever the program did */
+        struct screen_info si = { .width = w0, .height = h0, .pitch = p0,
+                                  .format = bpp0 == 32 ? SCREEN_XRGB8888 : SCREEN_RGB565 };
+        r[BP_ENABLE] = 0;
+        r[BP_XRES] = (uint16_t)w0; r[BP_YRES] = (uint16_t)h0; r[BP_BPP] = (uint16_t)bpp0;
+        r[BP_VIRT_W] = (uint16_t)w0; r[BP_VIRT_H] = (uint16_t)h0;
+        r[BP_ENABLE] = 0x41;
+        r[BP_VIRT_W] = (uint16_t)(p0 / (bpp0 / 8));
+        (void)fb_mode_set(bar0.base + bar0.size - fphys, &si);
+    }
+    /* said only now, in the boot's mode: a narrower console cuts the line short */
+    if (step != 0)
+        klog_u32("KTEST", SEV_ERR, "bochs program failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    thread_set_caps(thread_current_id(), caps);
+    paging_unmap(SHP_VA);
+    pmm_free(frame);
+    return step == 0;
 }

@@ -44,8 +44,12 @@
      GRANT_DRIVER       SYS_DEVICE_INFO / SYS_DEVICE_OPEN: a PCI function's
                         registers, interrupt and DMA (2.2). With no IOMMU a
                         device's DMA reaches all memory, so this is full
-                        trust; in no baseline. The rest of SYS_DEVICE_* and
-                        SYS_DMA_ALLOC need only the device handle's rights
+                        trust; in no baseline. The executive is started
+                        with it beside its baseline (exec.c) and hands it
+                        to the shell alone, which passes it on only when
+                        asked (`run +driver`, 2.7a). The rest of
+                        SYS_DEVICE_*, SYS_DMA_ALLOC and SYS_SCREEN_MODE
+                        need only the device handle's rights
      GRANT_FRAMEBUFFER  SYS_FB_*: draw to the framebuffer (in baseline for
                         now; split to a display-server tier later)
      GRANT_REALTIME     SYS_THREAD_SET_PRIORITY to PRIO_REALTIME and up: a

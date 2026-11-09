@@ -1380,6 +1380,16 @@ language work in `language/CX_X_PLAN.md`.
    (only formatted from a value); the consent screen's text. Not built: global
    hotkeys and full screen (nothing to guard yet), publishers' names.
 7. Bochs display, then virtio-gpu 2D. The Process Manager.
+   **2.7a, the Bochs display: done (ABI 37)** (`CX_DISPLAY.md` section 8,
+   `2.7a.sab`): the first driver in a process, `os/std/bochsdrv.xfxn`, run
+   as `run +driver bochs [<width> <height> [16|32]]`, and `SYS_SCREEN_MODE`,
+   by which it tells the kernel the screen's new geometry. The executive
+   holds `GRANT_DRIVER` and gives it to the shell alone. Not tested: a device
+   that does not take a mode (a page of RAM always reads back what was
+   written), a mode change racing a panic, any of it on real hardware (the
+   rig has no Bochs display). Not built: a change while `displayd` holds the
+   screen, EDID, X's `*mmio` type (the registers go through
+   `os/std/mmio.xfxn`). 2.7b is virtio-gpu 2D, 2.7c the Process Manager.
 
 ### Phase 3: storage and the system tree
 

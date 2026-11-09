@@ -80,7 +80,11 @@ static void executive_main(void) {
     struct spawn_args sa;
     sa.image = 0; sa.image_len = 0;
     sa.name = UADDR("shell");    sa.broker_endpoint = ep;
-    sa.caps = GRANT_OS_BASELINE;   /* privileged shell (attenuated to executive's caps) */
+    /* The privileged shell (attenuated to the executive's caps). GRANT_DRIVER
+       is in no baseline: the shell is the one program handed it, to pass on
+       when it is asked to (`run +driver`), until the supervisor binds drivers
+       to devices itself (kernel/CX_DRIVERS.md sec. 3). */
+    sa.caps = GRANT_OS_BASELINE | GRANT_DRIVER;
     /* No arguments for the shell - but say so rather than leaving the fields
        as whatever was on the stack. The kernel validates args against
        args_len, so a stale pointer here is a spawn that fails with E_BAD_ADDRESS

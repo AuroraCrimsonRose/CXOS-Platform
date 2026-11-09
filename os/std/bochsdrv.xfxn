@@ -1,0 +1,220 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// std/bochsdrv.xfxn - the Bochs display's driver (roadmap 2.7a).
+// Aurora Tejeda / CATX Systems
+// Threads: one per struct bochs; nothing else is shared.
+//
+// The Bochs display is the graphics adapter QEMU calls its standard VGA
+// (PCI 1234:1111, hw/display/vga-pci.c) and the one Bochs itself has. Its
+// mode is a handful of 16-bit registers, the "DISPI" interface, which the
+// PCI device also shows in BAR 2 at offset 0x500, so no I/O port is needed.
+// The pixels are BAR 0. This is the first driver that runs in a process
+// (kernel/CX_DRIVERS.md sec. 4, step 4): it holds the device as a handle
+// (SYS_DEVICE_OPEN), maps its registers (SYS_DEVICE_BAR), and has no other
+// way to the hardware.
+//
+// It sets modes; it does not draw. The screen's pixels stay where they were:
+// with the kernel, which hands them to one display server at a time
+// (SYS_SCREEN_OPEN) and takes them back in a panic. So after a mode is set
+// the kernel is told (SYS_SCREEN_MODE), and if it refuses, the old mode goes
+// back into the registers: the screen and the kernel never disagree for
+// longer than that.
+//
+// Serenity's driver is the reference for the register order
+// (Kernel/Devices/GPU/Bochs/GraphicsAdapter.cpp and its display connectors);
+// Haiku's is its "vesa" driver's Bochs path.
+//
+// Not here: modes from the monitor's EDID (BAR 2 holds it at offset 0), 8, 15
+// and 24 bits a pixel (the kernel draws in 16 and 32 only), panning and
+// double buffering through the virtual size.
+
+import "mmio.xfxn";
+import "mem.xfxn";
+
+const BOCHS_VENDOR: u32 = 0x1234;
+const BOCHS_DEVICE: u32 = 0x1111;
+const BOCHS_BAR_REGS: u32 = 2;
+const BOCHS_DISPI: u32 = 0x500;         // the DISPI registers in BAR 2
+
+// The registers, by index; each is 16 bits at BOCHS_DISPI + 2 * index.
+const BOCHS_R_ID: u32 = 0;
+const BOCHS_R_XRES: u32 = 1;
+const BOCHS_R_YRES: u32 = 2;
+const BOCHS_R_BPP: u32 = 3;
+const BOCHS_R_ENABLE: u32 = 4;
+const BOCHS_R_BANK: u32 = 5;
+const BOCHS_R_VIRT_W: u32 = 6;
+const BOCHS_R_VIRT_H: u32 = 7;
+const BOCHS_R_X_OFF: u32 = 8;
+const BOCHS_R_Y_OFF: u32 = 9;
+const BOCHS_R_VRAM_64K: u32 = 10;       // video memory, in 64 KiB
+
+const BOCHS_ID_LFB: u32 = 0xB0C2;       // the first version with a linear framebuffer at 32 bits
+const BOCHS_ID_MAX: u32 = 0xB0CF;
+const BOCHS_ENABLED: u32 = 0x01;
+const BOCHS_LFB: u32 = 0x40;            // the linear framebuffer, not the banked window
+
+struct bochs {
+    dev: i32,       // the device's handle; -1 for registers handed to bochs_attach
+    mem: i32,       // BAR 2's memory object, or -1
+    regs: u64,      // BAR 2's first page, mapped
+    id: u32,        // the DISPI version, 0xB0C2 and up
+    vram: u32       // video memory in bytes
+}
+
+fn bochs_r(b: *bochs, index: u32) -> u32 { return mmio_r16(b.regs, BOCHS_DISPI + index * 2); }
+fn bochs_w(b: *bochs, index: u32, v: u32) -> void { mmio_w16(b.regs, BOCHS_DISPI + index * 2, v); }
+
+// The Bochs display's id in the device tree, E_NOT_FOUND if the machine has
+// none, or E_ACCESS_DENIED without GRANT_DRIVER.
+fn bochs_find() -> i32 {
+    let d: device_desc;
+    let id: u32 = 0;
+    while (id < DEVICE_MAX) {
+        let rc: i32 = device_info(id, &d);
+        if (rc == E_ACCESS_DENIED) { return rc; }
+        if (rc == E_OK && d.bus == DEVICE_BUS_PCI && d.vendor == BOCHS_VENDOR && d.device == BOCHS_DEVICE) {
+            return id as i32;
+        }
+        id = id + 1;
+    }
+    return E_NOT_FOUND;
+}
+
+// Registers at `regs` (a page laid out as BAR 2's first), whatever is behind
+// them: the device's, or a test's page of RAM standing in for one. 0, or
+// E_NOT_SUPPORTED when what answers is not a Bochs display this can drive.
+fn bochs_attach(b: *bochs, regs: u64) -> i32 {
+    b.dev = -1; b.mem = -1; b.regs = regs;
+    b.id = bochs_r(b, BOCHS_R_ID);
+    b.vram = bochs_r(b, BOCHS_R_VRAM_64K) * 65536;
+    if (b.id < BOCHS_ID_LFB || b.id > BOCHS_ID_MAX || b.vram == 0) { return E_NOT_SUPPORTED; }
+    return 0;
+}
+
+// The device behind the handle `dev` (HRIGHT_BAR), which stays the caller's:
+// whoever opened it closes it. 0 or an error, with nothing left mapped.
+fn bochs_open(b: *bochs, dev: i32) -> i32 {
+    b.dev = -1; b.mem = -1; b.regs = 0; b.id = 0; b.vram = 0;
+    let m: i32 = device_bar(dev, BOCHS_BAR_REGS);
+    if (m <= 0) { return m; }
+    let a: vm_map_args;
+    memzero((&a) as *u8, sizeof a);
+    a.object = m as u32;
+    a.length = 4096;
+    a.prot = MPROT_READ | MPROT_WRITE;
+    let rc: i32 = vm_map(&a);
+    if (rc != E_OK) { handle_close(m); return rc; }
+    rc = bochs_attach(b, a.addr);
+    if (rc != 0) {
+        vm_unmap(a.addr, 0);
+        handle_close(m);
+        b.regs = 0;
+        return rc;
+    }
+    b.dev = dev;
+    b.mem = m;
+    return 0;
+}
+
+// The registers unmapped. The device's handle is the caller's to close; the
+// mode stays as it is.
+fn bochs_close(b: *bochs) -> void {
+    if (b.mem > 0) {
+        vm_unmap(b.regs, 0);
+        handle_close(b.mem);
+    }
+    b.dev = -1; b.mem = -1; b.regs = 0;
+}
+
+// The mode in the registers now, as SYS_SCREEN_MODE takes it: 0, or
+// E_NOT_SUPPORTED when it is one the kernel does not draw in (not 16 or 32
+// bits, or the display off).
+fn bochs_get(b: *bochs, m: *screen_info) -> i32 {
+    m.width = 0; m.height = 0; m.pitch = 0; m.bpp = 0; m.format = 0; m.size = 0;
+    let bpp: u32 = bochs_r(b, BOCHS_R_BPP);
+    if ((bochs_r(b, BOCHS_R_ENABLE) & BOCHS_ENABLED) == 0) { return E_NOT_SUPPORTED; }
+    if (bpp == 32) { m.format = SCREEN_XRGB8888; }
+    else if (bpp == 16) { m.format = SCREEN_RGB565; }
+    else { return E_NOT_SUPPORTED; }
+    m.width = bochs_r(b, BOCHS_R_XRES);
+    m.height = bochs_r(b, BOCHS_R_YRES);
+    m.bpp = bpp;
+    // a row is the virtual width's, which may be wider than what is shown
+    m.pitch = bochs_r(b, BOCHS_R_VIRT_W) * (bpp / 8);
+    m.size = ((m.pitch * m.height) + 4095) & 0xFFFFF000;
+    return 0;
+}
+
+// May this device show width x height at bpp bits? 0, or why not:
+// E_NOT_SUPPORTED for a depth the kernel does not draw in, E_INVALID_ARGS for
+// a size below the kernel's smallest or a width the device would round (it
+// keeps widths to multiples of 8), E_OUT_OF_RANGE for more than a register
+// holds or the video memory has.
+fn bochs_check(b: *bochs, width: u32, height: u32, bpp: u32) -> i32 {
+    if (bpp != 16 && bpp != 32) { return E_NOT_SUPPORTED; }
+    if (width < SCREEN_WIDTH_MIN || height < SCREEN_HEIGHT_MIN || (width & 7) != 0) { return E_INVALID_ARGS; }
+    if (width > 0xFFF8 || height > 0xFFFF) { return E_OUT_OF_RANGE; }
+    if ((width as u64) * ((bpp / 8) as u64) * (height as u64) > (b.vram as u64)) { return E_OUT_OF_RANGE; }
+    return 0;
+}
+
+// The registers written for one mode. The display is off while its size
+// changes: the device takes a new size only then.
+fn bochs_program(b: *bochs, width: u32, height: u32, bpp: u32) -> void {
+    bochs_w(b, BOCHS_R_ENABLE, 0);
+    bochs_w(b, BOCHS_R_XRES, width);
+    bochs_w(b, BOCHS_R_YRES, height);
+    bochs_w(b, BOCHS_R_BPP, bpp);
+    bochs_w(b, BOCHS_R_VIRT_W, width);
+    bochs_w(b, BOCHS_R_VIRT_H, height);
+    bochs_w(b, BOCHS_R_X_OFF, 0);
+    bochs_w(b, BOCHS_R_Y_OFF, 0);
+    bochs_w(b, BOCHS_R_ENABLE, BOCHS_ENABLED | BOCHS_LFB);
+}
+
+// Does the device show exactly this mode? It clamps what it is asked for to
+// what it can do without saying so; only reading back tells.
+fn bochs_shows(b: *bochs, width: u32, height: u32, bpp: u32) -> u32 {
+    if (bochs_r(b, BOCHS_R_XRES) != width || bochs_r(b, BOCHS_R_YRES) != height) { return 0; }
+    if (bochs_r(b, BOCHS_R_BPP) != bpp || bochs_r(b, BOCHS_R_VIRT_W) != width) { return 0; }
+    if ((bochs_r(b, BOCHS_R_ENABLE) & (BOCHS_ENABLED | BOCHS_LFB)) != (BOCHS_ENABLED | BOCHS_LFB)) { return 0; }
+    return 1;
+}
+
+// The hardware's mode set, and nothing else: the kernel is not told. 0, an
+// error of bochs_check's with nothing written, or E_IO when the device did
+// not take the mode (what it shows then is whatever it chose).
+fn bochs_set(b: *bochs, width: u32, height: u32, bpp: u32) -> i32 {
+    let rc: i32 = bochs_check(b, width, height, bpp);
+    if (rc != 0) { return rc; }
+    bochs_program(b, width, height, bpp);
+    if (bochs_shows(b, width, height, bpp) == 0) { return E_IO; }
+    return 0;
+}
+
+// The screen's mode changed: the hardware's, then the kernel's view of it
+// (SYS_SCREEN_MODE), which clears and lays out its console in the new mode.
+// 0 or an error; on an error the mode the registers held before is back in
+// them, so the screen is as the kernel believes. E_BUSY while a display
+// server holds the screen.
+fn bochs_set_screen(b: *bochs, width: u32, height: u32, bpp: u32) -> i32 {
+    let rc: i32 = bochs_check(b, width, height, bpp);
+    if (rc != 0) { return rc; }
+    let prev: screen_info;
+    let had: i32 = bochs_get(b, &prev);
+    bochs_program(b, width, height, bpp);
+    rc = E_IO;
+    if (bochs_shows(b, width, height, bpp) == 1) {
+        let m: screen_info;
+        rc = bochs_get(b, &m);
+        if (rc == 0) { rc = screen_mode(b.dev, &m); }
+    }
+    if (rc != 0 && had == 0) {
+        bochs_program(b, prev.width, prev.height, prev.bpp);
+        // The old mode's rows may have been wider than what it showed, and
+        // turning the display on makes them the width shown: widen them after.
+        if (prev.pitch != prev.width * (prev.bpp / 8)) { bochs_w(b, BOCHS_R_VIRT_W, prev.pitch / (prev.bpp / 8)); }
+    }
+    return rc;
+}

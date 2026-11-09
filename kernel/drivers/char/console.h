@@ -45,6 +45,10 @@ void console_init(void);
    rest holds other graphics (e.g. the boot logo). */
 void console_use_fb(uint32_t x0, uint32_t y0, uint32_t w, uint32_t h);
 
+/* The whole screen laid out for the kernel: the logo on the right, the log on
+   the left, cleared. A no-op without a framebuffer. */
+void console_screen_layout(void);
+
 /* clear the screen to the current background and home the cursor. */
 void console_clear(void);
 

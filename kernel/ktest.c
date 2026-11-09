@@ -3749,6 +3749,8 @@ void ktest_run(void) {
     total++; passed += report("USB mouse: numbered reports and 12-bit fields", ktest_usb_mouse_numbered());
     total++; passed += report("display server: real screen, real keys, given back", ktest_display_server());
     total++; passed += report("screen: one holder, mapped write-combining, given back", usermode_screen_test());
+    total++; passed += report("screen: a mode its driver sets, then the boot's again", usermode_screen_mode_test());
+    total++; passed += report("bochs: the program sets a mode, then the boot's again", ktest_bochs_program());
     total++; passed += report("ipc: queued calls, reply tokens, badges", usermode_ipc_test());
     total++; passed += report("ipc: handles in messages", usermode_ipc_handles_test());
     total++; passed += report("ipc: priority through calls", usermode_prio_test());

@@ -15,7 +15,7 @@
  * hash it was built against and the loader refuses one that differs, so a
  * program never runs against numbers or layouts it was not compiled for.
  */
-#define CXK_ABI_HASH { 0x74, 0x0d, 0x10, 0xd5, 0x23, 0xb5, 0x6e, 0x41, 0x42, 0x57, 0xff, 0xf3, 0xa4, 0xee, 0xea, 0xb1, 0xd2, 0x32, 0x32, 0xb6, 0xd9, 0x2b, 0xa9, 0xb4, 0x74, 0x5a, 0xec, 0x18, 0x23, 0x22, 0x46, 0x0e }
+#define CXK_ABI_HASH { 0xd9, 0xb8, 0xdf, 0xed, 0xe6, 0xe1, 0x82, 0x85, 0xec, 0xdb, 0xfc, 0x2d, 0xfd, 0x87, 0x6b, 0xa3, 0x7d, 0x36, 0x3b, 0x72, 0x6c, 0x0f, 0xcd, 0x4a, 0x12, 0x7c, 0x92, 0x55, 0x67, 0x62, 0xe6, 0xf0 }
 
 /*
  * CXK ABI v1 - the PUBLIC contract shared by the kernel, the .xoex executive,
@@ -44,7 +44,7 @@
  * line; bump both, and the DevKit's stamp, in the one commit that changes the
  * contract.
  */
-#define CXK_ABI_VERSION          36
+#define CXK_ABI_VERSION          37
 
 /*
  * ---- syscall numbers ----
@@ -894,6 +894,26 @@
 #define SYS_DMA_ALLOC            0xF5
 
 /*
+ * A display driver has changed the screen's mode, and says so: the kernel's
+ * own drawing (the console, the panic screen, the SYS_FB_* calls) and
+ * SYS_SCREEN_OPEN follow the new geometry from here on, and the console is
+ * cleared and laid out again. The kernel cannot see the hardware's mode, so
+ * it takes the driver's word for the layout and checks only that it is safe
+ * to draw to: the mode must lie whole inside the BAR the screen is in.
+ * ebx = a device handle (HRIGHT_BAR) of the device whose BAR holds the
+ * screen, ecx = *screen_info (width, height, pitch and format are read; bpp
+ * and size are not) -> 0. E_NOT_SUPPORTED: not the screen's device, or a
+ * screen SYS_SCREEN_OPEN would refuse; E_NOT_FOUND: no framebuffer;
+ * E_INVALID_ARGS: a format that is not SCREEN_*, smaller than
+ * SCREEN_WIDTH_MIN by SCREEN_HEIGHT_MIN, or a pitch that is not whole pixels
+ * or shorter than a row; E_OUT_OF_RANGE: pitch * height past the end of the
+ * BAR, or over SCREEN_BYTES_MAX; E_BUSY: the screen is held (SYS_SCREEN_OPEN)
+ * or a panic has it; E_NO_MEMORY: no room for the kernel's copy, and nothing
+ * has changed.
+ */
+#define SYS_SCREEN_MODE          0xF6
+
+/*
  * ---- error codes (negative; returned in eax) ----
  * One list, shared by syscalls and services (docs/kernel/CX_SYSCALLS_IPC.md sec 6).
  */
@@ -1450,6 +1470,14 @@ struct fb_geometry {
  */
 #define SCREEN_RGB565            1              /* 16 bits: 5 red, 6 green, 5 blue */
 #define SCREEN_XRGB8888          2              /* 32 bits: 0x00RRGGBB */
+
+/*
+ * SYS_SCREEN_MODE's limits: the smallest screen the console and the panic
+ * screen are laid out for, and the most bytes a mode may take.
+ */
+#define SCREEN_WIDTH_MIN         640
+#define SCREEN_HEIGHT_MIN        480
+#define SCREEN_BYTES_MAX         0x04000000u    /* 64 MiB */
 
 struct screen_info {
     uint32_t width;

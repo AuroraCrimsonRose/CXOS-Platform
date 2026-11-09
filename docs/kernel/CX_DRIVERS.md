@@ -94,6 +94,15 @@ must be signed and trusted; isolation is built and tested under QEMU.
    Tested on QEMU's `edu` device, which verify-boot attaches. The device's
    thread at real-time priority and the `*dma` type wait for step 4 and X.
 4. First user-space driver: Bochs display; then input; then the NIC.
+   **The Bochs display is built (2.7a)** (`os/std/bochsdrv.xfxn`,
+   `system/CX_DISPLAY.md` section 8): it reaches the device only through its
+   handle and a mapping of BAR 2, so its test hands it a page of RAM laid out
+   as the registers (section 3, item 7), and a second test runs it on QEMU's
+   device. Registers go through `os/std/mmio.xfxn`, one access each; X's
+   `*mmio` type, planned to come first, has not been built. It is started by
+   hand (`run +driver bochs`): the executive now holds `GRANT_DRIVER` and
+   gives it to the shell alone. Binding by the supervisor from a signed
+   manifest, restart, and the thread at real-time priority are still to come.
 5. IOMMU under QEMU (AMD-Vi).
 6. Hot-plug and power.
 7. New drivers in X.

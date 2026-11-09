@@ -1,0 +1,87 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// apps/bochs.xfxn - the Bochs display's driver, run by hand (roadmap 2.7a).
+// Aurora Tejeda / CATX Systems
+// Threads: one.
+//
+//   run +driver bochs                        what the display is showing
+//   run +driver bochs <width> <height> [16|32]    another mode (32 bits unless said)
+//
+// The driver is std/bochsdrv.xfxn; this finds the device, opens it, and asks.
+// The device is held only while this runs: the mode it sets stays, in the
+// registers and in the kernel, after the handle has gone.
+//
+// A mode cannot change while a display server holds the screen (the kernel
+// answers "in use"): end displayd, set the mode, start it again. The widths
+// the device takes are multiples of 8.
+
+import "bochsdrv.xfxn";
+import "io.xfxn";
+import "fmt.xfxn";
+
+fn bo_fail(what: *u8, rc: i32) -> void {
+    puts("bochs: ");
+    puts(what);
+    if (rc == E_ACCESS_DENIED) { puts(": not allowed (run it as `run +driver bochs`)"); }
+    else if (rc == E_NOT_FOUND) { puts(": this machine has no Bochs display"); }
+    else if (rc == E_BUSY) { puts(": in use (a display server holds the screen, or another driver the device)"); }
+    else if (rc == E_NOT_SUPPORTED) { puts(": only 16 and 32 bits a pixel"); }
+    else if (rc == E_INVALID_ARGS) { puts(": at least 640 by 480, and a width that is a multiple of 8"); }
+    else if (rc == E_OUT_OF_RANGE) { puts(": more than the display's memory holds"); }
+    else if (rc == E_IO) { puts(": the display did not take the mode"); }
+    else { puts(": error -"); print_u32((0 - rc) as u32); }
+    newline();
+    exit(1);
+}
+
+fn bo_show(b: *bochs) -> void {
+    let m: screen_info;
+    puts("bochs: version ");
+    print_hex(b.id);
+    puts(", ");
+    print_u32(b.vram / 1024);
+    puts(" KiB");
+    if (bochs_get(b, &m) == 0) {
+        puts(", showing ");
+        print_u32(m.width);
+        puts(" x ");
+        print_u32(m.height);
+        puts(" x ");
+        print_u32(m.bpp);
+    } else {
+        puts(", in a mode the kernel does not draw in");
+    }
+    newline();
+}
+
+fn _start() -> void {
+    let ai: args_info;
+    let argc: u32 = 0;
+    if (args_read(&ai) == 0) { argc = ai.count; }
+    let page: *u32 = ai.base as *u32;
+    if (argc != 1 && argc != 3 && argc != 4) {
+        puts("usage: run +driver bochs [<width> <height> [16|32]]\n");
+        exit(2);
+    }
+
+    let id: i32 = bochs_find();
+    if (id < 0) { bo_fail("no device", id); }
+    let dev: i32 = device_open(id as u32);
+    if (dev <= 0) { bo_fail("the device would not open", dev); }
+    let b: bochs;
+    let rc: i32 = bochs_open(&b, dev);
+    if (rc != 0) { bo_fail("its registers", rc); }
+
+    if (argc >= 3) {
+        let width: u32 = dec_u32((ai.base + (page[2] as u64)) as *u8);
+        let height: u32 = dec_u32((ai.base + (page[3] as u64)) as *u8);
+        let bpp: u32 = 32;
+        if (argc == 4) { bpp = dec_u32((ai.base + (page[4] as u64)) as *u8); }
+        rc = bochs_set_screen(&b, width, height, bpp);
+        if (rc != 0) { bo_fail("the mode", rc); }
+    }
+    bo_show(&b);
+    bochs_close(&b);
+    handle_close(dev);
+    exit(0);
+}

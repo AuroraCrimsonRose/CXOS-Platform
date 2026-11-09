@@ -853,6 +853,20 @@ operations leave it.
   takes up to `INPUT_EVENTS_MAX`, 0 if none; `SIGNAL_INPUT_READY` says there
   are some. While it is held `SYS_INPUT_READ`, `SYS_INPUT_POLL` and
   `SYS_MOUSE_READ` return `E_BUSY`.
+- **The screen's mode** (`CXK_ABI_VERSION` 37, step 2.7a): `SYS_SCREEN_MODE`
+  (0xF6, `h, *screen_info`) is how a display driver in a process says it has
+  set another mode. `h` is a device handle with `HRIGHT_BAR` whose device has
+  the screen in one of its BARs (`E_NOT_SUPPORTED` otherwise); `width`,
+  `height`, `pitch` and `format` are read. The kernel cannot see the
+  hardware's mode and takes the driver's word for it, checking only that the
+  mode is safe to draw to: a known format, at least `SCREEN_WIDTH_MIN` by
+  `SCREEN_HEIGHT_MIN`, a pitch of whole pixels no shorter than a row
+  (`E_INVALID_ARGS`), and all of it inside the BAR and `SCREEN_BYTES_MAX`
+  (`E_OUT_OF_RANGE`). `E_BUSY` while the screen is held or a panic has it.
+  On success the console is cleared and laid out again, and
+  `SYS_SCREEN_OPEN` gives the new screen. The executive is started with
+  `GRANT_DRIVER` beside its baseline and gives it to the shell alone, whose
+  `run +driver` passes it on.
 - **The attention event and the signer** (`CXK_ABI_VERSION` 36, step 2.6):
   `INPUT_EVENT_ATTENTION` is Ctrl+Alt+Del, held in a flag beside the ring and
   returned first by `SYS_INPUT_EVENTS`; presses not yet read are one event.

@@ -678,6 +678,9 @@ fn run_grant(word: *u8, n: u32) -> u32 {
     if (n == 5 && strneq(word, "spawn", 5) != 0) { return GRANT_SPAWN; }
     // to make endpoints: a server needs one to be called on
     if (n == 8 && strneq(word, "endpoint", 8) != 0) { return GRANT_ENDPOINT; }
+    // to open a device and drive it (bochs): with no IOMMU a device can reach
+    // all of memory, so this is trust in the program
+    if (n == 6 && strneq(word, "driver", 6) != 0) { return GRANT_DRIVER; }
     return 0;
 }
 
@@ -742,7 +745,7 @@ fn run_start(arg: *u8, stage: u32, inh: i32, outh: i32, bg: u32) -> i32 {
         let n: u32 = 0;
         while (arg[1 + n] != 0 && arg[1 + n] != ' ') { n += 1; }
         let g: u32 = run_grant(&arg[1], n);
-        if (g == 0) { puts("run: unknown grant (one of +disk, +net, +screen, +spawn, +endpoint)\n"); return E_INVALID_ARGS; }
+        if (g == 0) { puts("run: unknown grant (one of +disk, +net, +screen, +spawn, +endpoint, +driver)\n"); return E_INVALID_ARGS; }
         caps |= g;
         arg = &arg[1 + n];
         while (arg[0] == ' ') { arg = &arg[1]; }
@@ -845,7 +848,7 @@ fn cmd_run(arg: *u8) -> void {
         while (e > 0 && arg[e - 1] == ' ') { e -= 1; }
     }
     arg[e] = 0;
-    if (arg[0] == 0) { puts("usage: run [+disk] [+net] [+screen] [+spawn] [+endpoint] <path> [args...] [| ...] [&]\n"); return; }
+    if (arg[0] == 0) { puts("usage: run [+disk] [+net] [+screen] [+spawn] [+endpoint] [+driver] <path> [args...] [| ...] [&]\n"); return; }
 
     // Cut the line at each '|', then trim each program's words.
     let k: u32 = 1;

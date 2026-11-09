@@ -49,5 +49,8 @@ int ktest_xtests(int (*report)(const char *, int), int *total);
    screen with the real input handle (2.4): keys injected at the driver's
    entry end it, and the screen and the keys come back. 1 = pass. */
 int ktest_display_server(void);
+/* /Shared/Programs/bochs.xuex on QEMU's standard VGA: a mode set, one refused
+   while the screen is held, and the boot's own again (2.7a). */
+int ktest_bochs_program(void);
 
 #endif
