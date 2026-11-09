@@ -237,6 +237,22 @@ after the EOI. A thread switched out still ready is offered to the other
 CPUs the same way, so one moved by `thread_set_affinity` reaches its new
 CPU even if that one is halted.
 
+**A wake can lose its kick (accepted).** `kick` asks one CPU and reads what
+that CPU is running now. Two threads made ready close together can both pick
+the same CPU, the one running the lowest thread: the second finds
+`need_resched` already set, so no IPI goes, and that CPU's one pick runs the
+better of the two. The other stays READY though a second CPU may be running
+something below it, and nothing kicks for it again: only a thread switched
+out still ready is offered round. `sched_preempt_point` also clears the flag
+and does nothing while preemption is off. The wake is late, never lost: the
+thread is in the one order and every pick scans all of it, so it runs at that
+second CPU's next pick. That is the end of its slice, or its next block or
+yield where there is no slice (preemption off; an AP under the PIT, §6). So a
+priority holds across CPUs to within a slice, not at once. A kick repeated
+after a pick would close the gap, at the cost of a scan on every switch while
+`sched_lock` is already the contended lock (§4d); no workload has yet shown
+the delay.
+
 **Where threads run.** A thread is made for the boot CPU, as before
 (`THREAD_ON_BOOT_CPU`); `thread_create_on` makes one for a mask, and
 `thread_set_affinity` changes it. Until 1.9e4b only the self-tests asked
