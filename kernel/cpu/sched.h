@@ -227,6 +227,7 @@ int  sched_cpu_prepare(struct cpu *c);
 void sched_cpu_unprepare(struct cpu *c);
 __attribute__((noreturn)) void sched_cpu_enter(void);
 void sched_cpu_tick(void);
+void sched_cpu_kicked(void);    /* an AP's IPI: a slice for a thread without one */
 
 /* The CPUs a thread may run on, a bit per CPU index, limited to those
    running; -1 if none of them is, or no such thread. One running on a CPU

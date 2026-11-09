@@ -974,6 +974,13 @@ void sched_preempt_enable(uint32_t quantum_ticks) {
     cpu_boot.slice_end = timer_now_ns() + slice_ns;
     preempt_on = 1;
     timer_deadline_hint(cpu_boot.slice_end);
+    /* A thread already running on an AP went through slice_begin with
+       preemption off: its timer is stopped and nothing would end its slice.
+       Each AP arms its own (sched_cpu_kicked). A switch there either sees
+       preempt_on or is followed by this interrupt. smp_call would not do: only
+       an idle CPU runs a call. */
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    for (unsigned i = 1; i < cpu_count(); i++) smp_kick(i);
 }
 
 void sched_preempt_disable(void) {
@@ -985,7 +992,7 @@ void sched_preempt_disable(void) {
    boot CPU's goes on as the event timer has it. */
 static void slice_begin(struct cpu *c, const struct thread *next, uint64_t now) {
     if (c == &cpu_boot) return;
-    if (next->idle || !preempt_on) { timer_local_stop(); return; }
+    if (next->idle || !preempt_on) { c->slice_end = 0; timer_local_stop(); return; }
     c->slice_end = now + slice_ns;
     timer_local_arm(c->slice_end);
 }
@@ -996,11 +1003,24 @@ static void slice_begin(struct cpu *c, const struct thread *next, uint64_t now) 
    that may have moved (arch/smp.h). */
 void sched_cpu_tick(void) {
     struct cpu *c = cpu_this();
-    if (c->cur == c->idle_thread || !preempt_on) return;
+    if (c->cur == c->idle_thread) return;
+    if (!preempt_on) { c->slice_end = 0; return; }      /* its timer stops here */
     uint64_t now = timer_now_ns();
     if (now < c->slice_end) { timer_local_arm(c->slice_end); return; }
     c->slice_end = now + slice_ns;
     if (!c->in_switch) __atomic_store_n(&c->need_resched, 1u, __ATOMIC_RELAXED);
+    timer_local_arm(c->slice_end);
+}
+
+/* An AP's IPI: if a thread is running here with no slice, because preemption
+   came on after its switch, it has one from now. slice_end is in the future
+   only while this CPU's timer is running for it. */
+void sched_cpu_kicked(void) {
+    struct cpu *c = cpu_this();
+    if (c->cur == c->idle_thread || !preempt_on) return;
+    uint64_t now = timer_now_ns();
+    if (now < c->slice_end) return;
+    c->slice_end = now + slice_ns;
     timer_local_arm(c->slice_end);
 }
 

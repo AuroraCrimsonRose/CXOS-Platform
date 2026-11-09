@@ -2246,8 +2246,9 @@ static int t_sched_ap_sleep(void) {
 
 /* Two threads on one AP that never yield: the second runs only because the
    AP's own timer ends the first one's slice. */
-static volatile uint32_t sp_b_ran, sp_a_saw;
+static volatile uint32_t sp_b_ran, sp_a_saw, sp_a_up;
 static void spin_a(void) {
+    sp_a_up = 1;
     uint64_t end = arch_cycles64() + 1000000000ull;
     while (!sp_b_ran && arch_cycles64() < end) arch_cpu_relax();
     sp_a_saw = sp_b_ran ? 1 : 2;
@@ -2267,6 +2268,29 @@ static int t_sched_ap_slice(void) {
     int reaped = smp_reaped(n0);
     if (!ok) return smp_fail("sched ap slice: step ", i, 1);
     if (!reaped) return smp_fail("sched ap slice: step ", i, 2);
+    return 1;
+}
+
+/* The same two, but the first is already running when preemption comes on:
+   its timer was stopped at the switch, so the enable has to reach it. */
+static int t_sched_enable_running_ap(void) {
+    if (cpu_count() < 2 || timer_source() != TIMER_SOURCE_APIC) return 1;
+    uint32_t n0 = sched_thread_count();
+    unsigned i = 1;
+    sp_b_ran = sp_a_saw = sp_a_up = 0;
+    sched_preempt_disable();
+    int a = thread_create_on("spin-a", spin_a, 1u << i);
+    int up = a >= 0 && spin_until(&sp_a_up, 1, 500);
+    int b = up ? thread_create_on("spin-b", spin_b, 1u << i) : -1;
+    int waited = b >= 0 && !sp_b_ran;
+    sched_preempt_enable(5);
+    int ok = waited && spin_until(&sp_a_saw, 1, 1500);
+    sched_preempt_disable();
+    int reaped = smp_reaped(n0);
+    if (!up) return smp_fail("sched enable running ap: step ", i, 1);
+    if (!waited) return smp_fail("sched enable running ap: step ", i, 2);
+    if (!ok) return smp_fail("sched enable running ap: step ", i, 3);
+    if (!reaped) return smp_fail("sched enable running ap: step ", i, 4);
     return 1;
 }
 
@@ -2799,6 +2823,7 @@ static const struct ktest_arch_case cases[] = {
     { "a wake from the boot CPU ends an idle AP's halt",   t_sched_wake_ipi },
     { "a sleep on an AP ends at its time",                 t_sched_ap_sleep },
     { "an AP's own timer ends a thread's slice",           t_sched_ap_slice },
+    { "preemption reaches a thread already on an AP",      t_sched_enable_running_ap },
     { "a thread raised takes a busy AP at once",           t_sched_outrank_ap },
     { "an affinity changed moves a running thread",        t_sched_affinity_moves },
     { "the storage lock keeps another CPU out, recursive", t_storage_lock },

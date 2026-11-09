@@ -402,6 +402,7 @@ static void irq_dispatch(struct registers *r) {
         smp_ap_interrupt((uint32_t)r->vector);
         lapic_eoi();
         if (r->vector == LAPIC_TIMER_VECTOR) sched_cpu_tick();
+        if (r->vector == SMP_IPI_VECTOR) sched_cpu_kicked();
         sched_preempt_point();
         return;
     }
