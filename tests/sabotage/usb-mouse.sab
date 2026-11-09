@@ -1,0 +1,28 @@
+# The rig's USB mouse that never moved, run by `cxk test sabotage`. Format:
+# docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage".
+
+[buffer-of-four]
+# the buffer is short of the packet again: the report overruns and is lost
+expect = USB mouse: a report longer than three bytes moves it @ usb mouse test failed at step 1
+group = g1
+edit = kernel/drivers/usb/usb_hid.c
+<<<
+    int n = dev->ops->interrupt_poll(dev, dev->ep_int_in, rpt, want);
+===
+    int n = dev->ops->interrupt_poll(dev, dev->ep_int_in, rpt, 4);
+>>>
+
+[short-report-dropped]
+# a report shorter than the packet no longer counts
+expect = USB mouse: a report longer than three bytes moves it @ usb mouse test failed at step 2
+group = g2
+edit = kernel/drivers/usb/usb_hid.c
+<<<
+    if (n < 3) return;
+
+    if (!h->told) {
+===
+    if (n < 8) return;
+
+    if (!h->told) {
+>>>

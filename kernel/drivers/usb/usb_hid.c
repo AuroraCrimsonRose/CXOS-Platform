@@ -29,6 +29,7 @@ struct hid_device {
     uint8_t is_keyboard;
     uint8_t prev_keys[6];     /* for edge detection - see poll_keyboard */
     uint8_t prev_mods;
+    uint8_t told;             /* the mouse's first report is in the log */
 };
 
 static struct hid_device hids[MAX_HID];
@@ -140,15 +141,33 @@ static void poll_keyboard(struct hid_device *h) {
     h->prev_mods = mods;
 }
 
-/* Mouse, 3 bytes: buttons, then SIGNED X and Y deltas. Y is positive DOWNWARD,
-   which already matches screen coordinates - no inversion. */
+/* Mouse: buttons, then SIGNED X and Y deltas. Y is positive DOWNWARD, which
+   already matches screen coordinates - no inversion.
+
+   Three bytes are what we read, but the device may send up to a whole packet
+   (a wheel, spare buttons, padding), so the buffer offered is a whole packet.
+   A report longer than the buffer is an overrun, and on OHCI that halts the
+   endpoint: every report was lost, and the pointer never moved at all. */
+#define HID_REPORT_MAX 64           /* what interrupt_poll takes, on all three */
+
 static void poll_mouse(struct hid_device *h) {
-    uint8_t rpt[4];
-    for (int i = 0; i < 4; i++) rpt[i] = 0;
+    uint8_t rpt[HID_REPORT_MAX];
+    for (int i = 0; i < HID_REPORT_MAX; i++) rpt[i] = 0;
 
     struct usb_device *dev = h->dev;
-    int n = dev->ops->interrupt_poll(dev, dev->ep_int_in, rpt, 4);
+    uint32_t want = dev->ep_int_mps & 0x7FFu;
+    if (want == 0) want = 8;
+    if (want > HID_REPORT_MAX) want = HID_REPORT_MAX;
+    int n = dev->ops->interrupt_poll(dev, dev->ep_int_in, rpt, want);
     if (n < 3) return;
+
+    if (!h->told) {                 /* what this mouse really sends, for a rig's log */
+        h->told = 1;
+        klog_u32("USBHID", SEV_INFO, "mouse's first report, bytes ", (uint32_t)n, LOG_COLOR_VALUE, "");
+        klog_u32("USBHID", SEV_INFO, "-> its first four, low byte first ",
+                 (uint32_t)rpt[0] | (uint32_t)rpt[1] << 8 | (uint32_t)rpt[2] << 16 | (uint32_t)rpt[3] << 24,
+                 LOG_COLOR_VALUE, "");
+    }
 
     int8_t dx = (int8_t)rpt[1];
     int8_t dy = (int8_t)rpt[2];

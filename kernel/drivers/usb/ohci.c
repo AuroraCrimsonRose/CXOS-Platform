@@ -172,7 +172,7 @@ struct ohci_hc {
     uint8_t *xfer_buf;
 
     struct {
-        uint8_t addr, ep, armed, len;
+        uint8_t addr, ep, armed, len, told;
     } int_eps[MAX_INT_EPS];
     int int_list_live;
     uint16_t seen;                  /* ports already found connected and tried */
@@ -488,7 +488,7 @@ static int int_slot_for(struct ohci_hc *c, uint8_t addr, uint8_t ep) {
     for (int i = 0; i < MAX_INT_EPS; i++)
         if (c->int_eps[i].armed && c->int_eps[i].addr == addr && c->int_eps[i].ep == ep) return i;
     for (int i = 0; i < MAX_INT_EPS; i++)
-        if (!c->int_eps[i].armed) { c->int_eps[i].addr = addr; c->int_eps[i].ep = ep; return i; }
+        if (!c->int_eps[i].armed) { c->int_eps[i].addr = addr; c->int_eps[i].ep = ep; c->int_eps[i].told = 0; return i; }
     return -1;
 }
 
@@ -552,6 +552,10 @@ static int ohci_interrupt_poll(struct usb_device *dev, uint8_t ep,
 
     uint32_t head = ied->head_td;
     if (head & 1u) {                       /* halted - clear and re-arm */
+        if (!c->int_eps[i].told) {         /* once: it can happen on every report */
+            c->int_eps[i].told = 1;
+            klog_u32("OHCI", SEV_WARN, "interrupt endpoint halted, condition ", TD_CC(t->control), LOG_COLOR_VALUE, "");
+        }
         ied->head_td = 0;
         arm_interrupt(c, dev, i, ep, len);
         return -1;

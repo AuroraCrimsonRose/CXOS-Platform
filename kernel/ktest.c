@@ -2366,6 +2366,61 @@ static int ktest_usb_kbd_after_reader(void) {
     return step == 0 && !usb_hid_present() && !thread_is_alive(t);
 }
 
+/* ---- a USB mouse that sends more than the three bytes we read ----
+   Found on the rig: the mouse attached, the cursor drew, and it never moved. A
+   report longer than the buffer offered is an overrun, and the controller
+   returns nothing for it, which is what this fake does. Its packet is 8 bytes;
+   its second report is 3, which is short of the buffer and still a report. */
+static volatile int ms_step;
+
+static int ms_poll(struct usb_device *d, uint8_t ep, void *data, uint32_t len) {
+    (void)ep;
+    uint8_t *r = data;
+    if (len < d->ep_int_mps) return -1;
+    if (ms_step == 0) {
+        ms_step = 1;
+        memset(r, 0, len);
+        r[0] = 1; r[1] = 5; r[2] = 0xFD;   /* left button, right 5, up 3 */
+        return (int)d->ep_int_mps;
+    }
+    if (ms_step == 1) {
+        ms_step = 2;
+        r[0] = 0; r[1] = 0xFB; r[2] = 3;   /* released, and back where it was */
+        return 3;
+    }
+    return 0;
+}
+
+static const struct usb_hc_ops ms_ops = { .name = "ktest-mouse", .control = hw_control, .interrupt_poll = ms_poll };
+static struct usb_device ms_dev;
+
+static int ktest_usb_mouse_long_report(void) {
+    if (usb_hid_present()) {
+        klog("KTEST", SEV_WARN, "USB mouse report length NOT checked: a HID device is attached");
+        return 1;
+    }
+    int32_t x = mouse_x(), y = mouse_y();
+    ms_step = 0;
+    memset(&ms_dev, 0, sizeof ms_dev);
+    ms_dev.ops = &ms_ops;
+    ms_dev.if_class = USB_CLASS_HID;
+    ms_dev.if_subclass = 1;            /* boot interface */
+    ms_dev.if_protocol = 2;            /* mouse */
+    ms_dev.ep_int_in = 0x81;
+    ms_dev.ep_int_mps = 8;
+    if (!usb_hid_attach(&ms_dev)) return 0;
+    int step = 1;
+    usb_hid_poll();
+    if (mouse_x() == x + 5 && mouse_y() == y - 3 && mouse_buttons() == 1) {
+        step = 2;
+        usb_hid_poll();
+        if (mouse_x() == x && mouse_y() == y && mouse_buttons() == 0) step = 0;
+    }
+    (void)usb_hid_detach(&ms_dev);
+    if (step != 0) klog_u32("KTEST", SEV_ERR, "usb mouse test failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    return step == 0 && !usb_hid_present();
+}
+
 static void lifecycle_counter_thread(void) {
     /* Runs until the test says stop, with a guard so a scheduler that never
        returns here cannot hang the boot either way. */
@@ -3618,6 +3673,7 @@ void ktest_run(void) {
     total++; passed += report("input: the keys as a handle, one holder", usermode_input_handle_test());
     total++; passed += report("lease: a buffer stays unwritable while it is lent", usermode_lease_test());
     total++; passed += report("USB keyboard: found after its reader went to sleep", ktest_usb_kbd_after_reader());
+    total++; passed += report("USB mouse: a report longer than three bytes moves it", ktest_usb_mouse_long_report());
     total++; passed += report("display server: real screen, real keys, given back", ktest_display_server());
     total++; passed += report("screen: one holder, mapped write-combining, given back", usermode_screen_test());
     total++; passed += report("ipc: queued calls, reply tokens, badges", usermode_ipc_test());
