@@ -440,14 +440,18 @@ public class BootVerdictTests
         Assert.True(BootVerifier.X86_64MemoryMb > 4096);
         // the driver-host self-tests' device (2.2), DMA reaching all of 4 GB
         Assert.Contains("-device edu,dma_mask=0xffffffff ", plain);
+        // the virtio-gpu driver's tests' device (2.7b), beside the standard VGA
+        Assert.Contains("-device virtio-gpu-pci,id=vgpu0 ", plain);
 
         string narrow = QemuTool.CommandLine(BootVerifier.ConfigFor("cxk_x86_64.img", "serial.log", arch: QemuArch.X86_32));
         Assert.StartsWith("qemu-system-i386 ", narrow);
         // the same verification boot otherwise, on one CPU and without the
         // edu device (the 32-bit line has no driver host): snapshot, headless, icount
         Assert.DoesNotContain("edu", narrow);
+        Assert.DoesNotContain("virtio-gpu", narrow);
         Assert.Equal(plain.Replace($"-m {BootVerifier.X86_64MemoryMb}M ", "-m 256M ")
                           .Replace("-device edu,dma_mask=0xffffffff ", "")
+                          .Replace("-device virtio-gpu-pci,id=vgpu0 ", "")
                           .Replace($"-smp {BootVerifier.X86_64Smp} ", "")["qemu-system-x86_64".Length..],
                      narrow["qemu-system-i386".Length..]);
     }

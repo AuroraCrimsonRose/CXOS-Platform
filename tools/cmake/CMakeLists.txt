@@ -604,6 +604,7 @@ cx_x_program(XTEST_XUEX      ${SRC_DIR}/os/apps/xtest.xfxn        user   xuex ${
 cx_x_program(DISPLAYD_XUEX   ${SRC_DIR}/os/apps/displayd.xfxn     user   xuex ${SRC_DIR}/os/std)
 cx_x_program(WDEMO_XUEX      ${SRC_DIR}/os/apps/wdemo.xfxn        user   xuex ${SRC_DIR}/os/std)
 cx_x_program(BOCHS_XUEX      ${SRC_DIR}/os/apps/bochs.xfxn        user   xuex ${SRC_DIR}/os/std)
+cx_x_program(VIRTGPU_XUEX    ${SRC_DIR}/os/apps/virtgpu.xfxn      user   xuex ${SRC_DIR}/os/std)
 cx_x_program(SUPERVISOR_XSEX ${SRC_DIR}/os/apps/supervisor.xfxn   system xsex ${SRC_DIR}/os/std)
 cx_x_program(TOKDUMP_XUEX    ${SRC_DIR}/os/xc/tokdump.xfxn        user   xuex ${XC_INCS})
 cx_x_program(ASTDUMP_XUEX    ${SRC_DIR}/os/xc/astdump.xfxn        user   xuex ${XC_INCS})
@@ -689,6 +690,7 @@ set(CXK_STAGED_PROGRAMS
     --stage Shared/Programs/displayd.xuex=${DISPLAYD_XUEX}
     --stage Shared/Programs/wdemo.xuex=${WDEMO_XUEX}
     --stage Shared/Programs/bochs.xuex=${BOCHS_XUEX}
+    --stage Shared/Programs/virtgpu.xuex=${VIRTGPU_XUEX}
     --stage Shared/Programs/tokdump.xuex=${TOKDUMP_XUEX}
     --stage Shared/Programs/astdump.xuex=${ASTDUMP_XUEX}
     --stage Shared/Programs/semadump.xuex=${SEMADUMP_XUEX}
@@ -732,7 +734,7 @@ add_custom_command(
             ${CXK_STAGED_PROGRAMS} ${CXK_STAGED_SHARED}
     DEPENDS ${BOOT_BIN} ${STAGE2_BIN} ${KERNEL_DISK_ELF} ${EXEC_XOEX} ${DISK_APP_XUEX}
             ${SUPERVISOR_XSEX} ${TOKDUMP_XUEX} ${ASTDUMP_XUEX} ${SEMADUMP_XUEX} ${XC_XUEX}
-            ${SETCHECK_XUEX} ${SHELL_XSEX} ${UPPER_XUEX} ${THREADS_XUEX} ${FUTEX_XUEX} ${XTEST_XUEX} ${DISPLAYD_XUEX} ${WDEMO_XUEX} ${BOCHS_XUEX} ${PRELUDE_XFXN} ${XC_SRCS} ${STD_SRCS}
+            ${SETCHECK_XUEX} ${SHELL_XSEX} ${UPPER_XUEX} ${THREADS_XUEX} ${FUTEX_XUEX} ${XTEST_XUEX} ${DISPLAYD_XUEX} ${WDEMO_XUEX} ${BOCHS_XUEX} ${VIRTGPU_XUEX} ${PRELUDE_XFXN} ${XC_SRCS} ${STD_SRCS}
             ${SERVICE_XOSV} ${KERNEL_XKCO} ${CONSOLE16_XFNT} ${CXK}
     COMMENT "Building the CXK disk (XBPT: boot + stage + system)"
 )

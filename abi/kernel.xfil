@@ -40,7 +40,7 @@ domain kernel
 /// mismatch. Declared in versions.json as `cxex-abi` and checked against this
 /// line; bump both, and the DevKit's stamp, in the one commit that changes the
 /// contract.
-const CXK_ABI_VERSION: u32 = 37
+const CXK_ABI_VERSION: u32 = 38
 
 /// ---- syscall numbers ----
 /// lifecycle 0x00-0x0F (no capability required)
@@ -643,6 +643,14 @@ syscall SYS_DMA_ALLOC = 0xF5 fn dma_alloc(h: i32, size: u64, phys: *u64) -> i32
 /// or a panic has it; E_NO_MEMORY: no room for the kernel's copy, and nothing
 /// has changed.
 syscall SYS_SCREEN_MODE = 0xF6 fn screen_mode(h: i32, info: *screen_info) -> i32
+/// A device's PCI configuration space, read only: a driver finds there what
+/// the device tree does not say (its capabilities; where virtio-pci keeps
+/// each group of registers). Nothing is written through this: the BARs, the
+/// command register and the interrupt stay the kernel's to set.
+/// ebx = device handle (HRIGHT_BAR), ecx = offset, edx = *bytes, esi = how
+/// many (1 to DEVICE_CONFIG_BYTES - offset) -> 0. E_INVALID_ARGS: none asked
+/// for; E_OUT_OF_RANGE: past the 256 bytes every PCI function has.
+syscall SYS_DEVICE_CONFIG = 0xF7 fn device_config(h: i32, offset: u32, buf: *u8, len: u32) -> i32
 
 /// ---- error codes (negative; returned in eax) ----
 /// One list, shared by syscalls and services (docs/kernel/CX_SYSCALLS_IPC.md sec 6).
@@ -927,6 +935,7 @@ const FUTEX_WAITERS: u32 = 0x80000000u
 /// ---- drivers (SYS_DEVICE_*, SYS_IRQ_ACK, SYS_DMA_ALLOC) ----
 const DEVICE_MAX: u32 = 320               /// ids are 0 to DEVICE_MAX - 1
 const DMA_ALLOC_MAX: u32 = 0x00400000u    /// 4 MiB: one contiguous run of pages
+const DEVICE_CONFIG_BYTES: u32 = 256        /// what SYS_DEVICE_CONFIG reads of
 const DEVICE_BUS_ROOT: u32 = 0
 const DEVICE_BUS_PLATFORM: u32 = 1        /// fixed legacy hardware
 const DEVICE_BUS_PCI: u32 = 2

@@ -16,6 +16,9 @@ public class QemuConfig
     /// <summary>QEMU's teaching device "edu" (hw/misc/edu.c), with DMA reaching
     /// all of 4 GB: the driver-host self-tests' device (kernel step 2.2).</summary>
     public bool EduDevice { get; set; }
+    /// <summary>A virtio-gpu beside the standard VGA: a second display, which the
+    /// virtio-gpu driver's tests drive (roadmap 2.7b). The console stays on the VGA.</summary>
+    public bool VirtioGpu { get; set; }
 
     /// <summary>Write a pcap of the NIC's traffic here.</summary>
     public string? NetTracePath { get; set; }
@@ -167,6 +170,11 @@ public static class QemuTool
         if (config.EduDevice)
         {
             args.Add("-device"); args.Add("edu,dma_mask=0xffffffff");
+        }
+
+        if (config.VirtioGpu)
+        {
+            args.Add("-device"); args.Add("virtio-gpu-pci,id=vgpu0");
         }
 
         if (config.EnableNetworking)

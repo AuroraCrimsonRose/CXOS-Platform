@@ -867,6 +867,13 @@ operations leave it.
   `SYS_SCREEN_OPEN` gives the new screen. The executive is started with
   `GRANT_DRIVER` beside its baseline and gives it to the shell alone, whose
   `run +driver` passes it on.
+- **A device's configuration space** (`CXK_ABI_VERSION` 38, step 2.7b):
+  `SYS_DEVICE_CONFIG` (0xF7, `h, offset, *buf, len`) copies bytes of the
+  device's first 256 of PCI configuration space to the caller. `h` is a device
+  handle with `HRIGHT_BAR`. Read only: a driver that could write the command
+  register or a BAR could move its device over someone else's memory.
+  `E_INVALID_ARGS` for no bytes, `E_OUT_OF_RANGE` past `DEVICE_CONFIG_BYTES`,
+  `E_BAD_ADDRESS` for the buffer.
 - **The attention event and the signer** (`CXK_ABI_VERSION` 36, step 2.6):
   `INPUT_EVENT_ATTENTION` is Ctrl+Alt+Del, held in a flag beside the ring and
   returned first by `SYS_INPUT_EVENTS`; presses not yet read are one event.

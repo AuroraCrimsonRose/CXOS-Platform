@@ -1,0 +1,374 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// std/virtio.xfxn - virtio over PCI, for a driver in a process (roadmap 2.7b).
+// Aurora Tejeda / CATX Systems
+// Threads: one per device; nothing else is shared.
+//
+// virtio is the family of devices a virtual machine offers its guest
+// (OASIS, "Virtual I/O Device (VIRTIO) Version 1.2"). Every one of them is
+// driven the same way, and that way is all this file knows:
+//
+//   - WHERE THE REGISTERS ARE is in the PCI configuration space (section
+//     4.1.4): vendor capabilities that each name a BAR, an offset and a
+//     length for the common configuration, the notifications, the interrupt
+//     status and the device's own configuration. virtio_parse reads them
+//     from the 256 bytes SYS_DEVICE_CONFIG gives.
+//   - STARTING (section 3.1.1): reset, acknowledge, say which features are
+//     wanted, and check the device agreed. Only "version 1" is asked for:
+//     the modern interface, little-endian throughout.
+//   - A QUEUE (section 2.7, the split virtqueue): a descriptor table, a ring
+//     of chains the driver offers and a ring of chains the device has used,
+//     in memory the device reaches by DMA (SYS_DMA_ALLOC).
+//
+// Interrupts are not used. A virtio PCI device interrupts by MSI-X only and
+// the kernel hands a driver MSI only (kernel/CX_DRIVERS.md sec. 4, step 3),
+// so a driver here asks and then looks at the used ring until the answer is
+// there (virtq_done). That is right for a device that answers at once and
+// wrong for one that speaks first; the first such driver has to settle it.
+//
+// Every register and every byte of a ring goes through std/mmio.xfxn: the
+// device reads and writes that memory behind the program's back.
+//
+// Serenity's is Kernel/Bus/VirtIO (Transport/PCIe, Queue.cpp); Haiku's
+// src/add-ons/kernel/bus_managers/virtio and busses/virtio/virtio_pci.
+
+import "mmio.xfxn";
+import "mem.xfxn";
+
+const VIRTIO_VENDOR: u32 = 0x1AF4;
+const VIRTIO_DEVICE_BASE: u32 = 0x1040;     // + the device's type: the modern ids
+
+// A capability's cfg_type.
+const VIRTIO_CAP_COMMON: u32 = 1;
+const VIRTIO_CAP_NOTIFY: u32 = 2;
+const VIRTIO_CAP_ISR: u32 = 3;
+const VIRTIO_CAP_DEVICE: u32 = 4;
+
+// The common configuration's registers, by offset.
+const VIRTIO_C_DFEATURE_SEL: u32 = 0;
+const VIRTIO_C_DFEATURE: u32 = 4;
+const VIRTIO_C_GFEATURE_SEL: u32 = 8;
+const VIRTIO_C_GFEATURE: u32 = 12;
+const VIRTIO_C_NUM_QUEUES: u32 = 18;
+const VIRTIO_C_STATUS: u32 = 20;
+const VIRTIO_C_Q_SELECT: u32 = 22;
+const VIRTIO_C_Q_SIZE: u32 = 24;
+const VIRTIO_C_Q_ENABLE: u32 = 28;
+const VIRTIO_C_Q_NOTIFY_OFF: u32 = 30;
+const VIRTIO_C_Q_DESC: u32 = 32;
+const VIRTIO_C_Q_AVAIL: u32 = 40;
+const VIRTIO_C_Q_USED: u32 = 48;
+const VIRTIO_COMMON_BYTES: u32 = 56;
+
+const VIRTIO_S_ACK: u32 = 1;
+const VIRTIO_S_DRIVER: u32 = 2;
+const VIRTIO_S_DRIVER_OK: u32 = 4;
+const VIRTIO_S_FEATURES_OK: u32 = 8;
+const VIRTIO_S_FAILED: u32 = 128;
+
+const VIRTQ_F_NEXT: u32 = 1;        // the chain goes on at `next`
+const VIRTQ_F_WRITE: u32 = 2;       // the device writes this buffer
+const VIRTQ_SIZE_MAX: u32 = 64;     // what one page of rings holds here
+
+// Where a device's registers are, as its capabilities say: for each group
+// the BAR, the offset in it and the length; a length of 0 is "not there".
+struct virtio_caps {
+    common_bar: u32, common_off: u32, common_len: u32,
+    notify_bar: u32, notify_off: u32, notify_len: u32,
+    notify_mul: u32,    // a queue's notify address is notify_off + its own offset * this
+    isr_bar: u32, isr_off: u32, isr_len: u32,
+    device_bar: u32, device_off: u32, device_len: u32
+}
+
+struct virtio {
+    dev: i32,           // the device's handle; -1 for registers handed to virtio_attach
+    common: u64,        // each group's address, mapped; 0 for none
+    notify: u64,
+    isr: u64,
+    device: u64,
+    notify_len: u32,
+    notify_mul: u32,
+    device_len: u32,
+    map: [4]u64,        // what virtio_open mapped, to unmap
+    queues: u32         // how many the device has
+}
+
+struct virtq {
+    index: u32,
+    size: u32,          // descriptors: a power of two
+    desc: u64,          // the three parts' addresses
+    avail: u64,
+    used: u64,
+    notify_at: u64,     // where this queue's notification is written
+    offered: u32,       // chains offered, ever (the avail ring's idx)
+    taken: u32,         // used entries read, ever
+    mem: i32,           // the rings' memory; -1 for memory handed to virtq_layout
+    addr: u64,
+    phys: u64
+}
+
+fn virtio_u32(cfg: *u8, at: u32) -> u32 {
+    return (cfg[at] as u32) | ((cfg[at + 1] as u32) << 8) | ((cfg[at + 2] as u32) << 16) | ((cfg[at + 3] as u32) << 24);
+}
+
+// The capabilities in `cfg`, the 256 bytes of a function's configuration
+// space: 0, or E_NOT_SUPPORTED when the common configuration or the
+// notifications are not described (a legacy-only device, or not virtio).
+// The first capability of each kind is the one used (section 4.1.4). What
+// the device says is not trusted: a list that loops or leaves the space
+// ends, and a capability that names no memory BAR is skipped.
+fn virtio_parse(cfg: *u8, c: *virtio_caps) -> i32 {
+    memzero(c as *u8, sizeof *c);
+    if ((cfg[6] & 0x10) == 0) { return E_NOT_SUPPORTED; }      // status: a capability list
+    let p: u32 = (cfg[0x34] as u32) & 0xFC;
+    let guard: u32 = 0;
+    while (p >= 0x40 && p <= 256 - 16 && guard < 48) {
+        if (cfg[p] == 0x09 && (cfg[p + 2] as u32) >= 16 && (cfg[p + 4] as u32) <= 5) {
+            let kind: u32 = cfg[p + 3] as u32;
+            let bar: u32 = cfg[p + 4] as u32;
+            let off: u32 = virtio_u32(cfg, p + 8);
+            let len: u32 = virtio_u32(cfg, p + 12);
+            if (kind == VIRTIO_CAP_COMMON && c.common_len == 0) {
+                c.common_bar = bar; c.common_off = off; c.common_len = len;
+            } else if (kind == VIRTIO_CAP_NOTIFY && c.notify_len == 0 && (cfg[p + 2] as u32) >= 20 && p <= 256 - 20) {
+                c.notify_bar = bar; c.notify_off = off; c.notify_len = len;
+                c.notify_mul = virtio_u32(cfg, p + 16);
+            } else if (kind == VIRTIO_CAP_ISR && c.isr_len == 0) {
+                c.isr_bar = bar; c.isr_off = off; c.isr_len = len;
+            } else if (kind == VIRTIO_CAP_DEVICE && c.device_len == 0) {
+                c.device_bar = bar; c.device_off = off; c.device_len = len;
+            }
+        }
+        p = (cfg[p + 1] as u32) & 0xFC;
+        guard = guard + 1;
+    }
+    if (c.common_len < VIRTIO_COMMON_BYTES || c.notify_len < 2) { return E_NOT_SUPPORTED; }
+    return 0;
+}
+
+// `len` bytes at `off` of the device's BAR `bar`, mapped: the address in
+// *at and the mapping's start in *base, or an error. The BAR's memory object
+// is closed again: the mapping keeps it.
+fn virtio_map(dev: i32, bar: u32, off: u32, len: u32, at: *u64, base: *u64) -> i32 {
+    let m: i32 = device_bar(dev, bar);
+    if (m <= 0) { return m; }
+    let a: vm_map_args;
+    memzero((&a) as *u8, sizeof a);
+    let first: u32 = off & 0xFFFFF000;
+    a.object = m as u32;
+    a.offset = first as u64;
+    a.length = (((off - first) + len + 4095) & 0xFFFFF000) as u64;
+    a.prot = MPROT_READ | MPROT_WRITE;
+    let rc: i32 = vm_map(&a);
+    handle_close(m);
+    if (rc != E_OK) { return rc; }
+    base[0] = a.addr;
+    at[0] = a.addr + ((off - first) as u64);
+    return 0;
+}
+
+// Registers at these addresses, whatever is behind them: the device's, or a
+// test's pages of RAM standing in for one.
+fn virtio_attach(v: *virtio, common: u64, notify: u64, notify_len: u32, notify_mul: u32, device: u64, device_len: u32) -> void {
+    memzero(v as *u8, sizeof *v);
+    v.dev = -1;
+    v.common = common;
+    v.notify = notify; v.notify_len = notify_len; v.notify_mul = notify_mul;
+    v.device = device; v.device_len = device_len;
+}
+
+fn virtio_close(v: *virtio) -> void {
+    // Reset first: the device lets go of every queue, so it has stopped
+    // reading and writing the driver's memory before that memory is let go.
+    if (v.common != 0) { mmio_w8(v.common, VIRTIO_C_STATUS, 0); }
+    let i: u32 = 0;
+    while (i < 4) {
+        if (v.map[i] != 0) { vm_unmap(v.map[i], 0); v.map[i] = 0; }
+        i = i + 1;
+    }
+    v.common = 0; v.notify = 0; v.isr = 0; v.device = 0;
+}
+
+// The device behind the handle `dev` (HRIGHT_BAR), which stays the caller's:
+// its capabilities read and its registers mapped. 0 or an error, with
+// nothing left mapped. Not started yet.
+fn virtio_open(v: *virtio, dev: i32) -> i32 {
+    memzero(v as *u8, sizeof *v);
+    v.dev = -1;
+    let cfg: [256]u8;
+    let rc: i32 = device_config(dev, 0, &cfg[0], 256);
+    if (rc != E_OK) { return rc; }
+    let c: virtio_caps;
+    rc = virtio_parse(&cfg[0], &c);
+    if (rc != 0) { return rc; }
+    rc = virtio_map(dev, c.common_bar, c.common_off, c.common_len, &v.common, &v.map[0]);
+    if (rc == 0) { rc = virtio_map(dev, c.notify_bar, c.notify_off, c.notify_len, &v.notify, &v.map[1]); }
+    if (rc == 0 && c.isr_len != 0) { rc = virtio_map(dev, c.isr_bar, c.isr_off, c.isr_len, &v.isr, &v.map[2]); }
+    if (rc == 0 && c.device_len != 0) { rc = virtio_map(dev, c.device_bar, c.device_off, c.device_len, &v.device, &v.map[3]); }
+    if (rc != 0) {
+        // mapped, and never started: nothing to reset
+        v.common = 0;
+        virtio_close(v);
+        return rc;
+    }
+    v.notify_len = c.notify_len; v.notify_mul = c.notify_mul; v.device_len = c.device_len;
+    v.dev = dev;
+    return 0;
+}
+
+fn virtio_status(v: *virtio) -> u32 { return mmio_r8(v.common, VIRTIO_C_STATUS); }
+
+fn virtio_fail(v: *virtio, rc: i32) -> i32 {
+    mmio_w8(v.common, VIRTIO_C_STATUS, virtio_status(v) | VIRTIO_S_FAILED);
+    return rc;
+}
+
+// The device started as far as "features agreed": reset, acknowledged, and
+// the features in `want` (bits 0 to 31; version 1 is always asked for)
+// accepted. Its queues are set up next, then virtio_go. 0, E_NOT_SUPPORTED
+// for a device without version 1 or without a wanted feature, E_IO for one
+// that does not come out of reset or does not agree.
+fn virtio_start(v: *virtio, want: u32) -> i32 {
+    mmio_w8(v.common, VIRTIO_C_STATUS, 0);
+    let tries: u32 = 0;
+    while (virtio_status(v) != 0) {
+        if (tries == 100) { return E_IO; }
+        sleep_ms(1);
+        tries = tries + 1;
+    }
+    mmio_w8(v.common, VIRTIO_C_STATUS, VIRTIO_S_ACK);
+    mmio_w8(v.common, VIRTIO_C_STATUS, VIRTIO_S_ACK | VIRTIO_S_DRIVER);
+    mmio_w32(v.common, VIRTIO_C_DFEATURE_SEL, 0);
+    let low: u32 = mmio_r32(v.common, VIRTIO_C_DFEATURE);
+    mmio_w32(v.common, VIRTIO_C_DFEATURE_SEL, 1);
+    let high: u32 = mmio_r32(v.common, VIRTIO_C_DFEATURE);
+    if ((high & 1) == 0 || (low & want) != want) { return virtio_fail(v, E_NOT_SUPPORTED); }
+    mmio_w32(v.common, VIRTIO_C_GFEATURE_SEL, 0);
+    mmio_w32(v.common, VIRTIO_C_GFEATURE, want);
+    mmio_w32(v.common, VIRTIO_C_GFEATURE_SEL, 1);
+    mmio_w32(v.common, VIRTIO_C_GFEATURE, 1);           // bit 32: version 1
+    mmio_w8(v.common, VIRTIO_C_STATUS, VIRTIO_S_ACK | VIRTIO_S_DRIVER | VIRTIO_S_FEATURES_OK);
+    if ((virtio_status(v) & VIRTIO_S_FEATURES_OK) == 0) { return virtio_fail(v, E_IO); }
+    v.queues = mmio_r16(v.common, VIRTIO_C_NUM_QUEUES);
+    return 0;
+}
+
+// The queues are set up: the device may use them.
+fn virtio_go(v: *virtio) -> void {
+    mmio_w8(v.common, VIRTIO_C_STATUS, VIRTIO_S_ACK | VIRTIO_S_DRIVER | VIRTIO_S_FEATURES_OK | VIRTIO_S_DRIVER_OK);
+}
+
+// ---- queues ----
+
+// Bytes of ring memory a queue of `size` descriptors takes: the table, the
+// offered ring after it, the used ring after that on a 4-byte boundary.
+fn virtq_avail_off(size: u32) -> u32 { return size * 16; }
+fn virtq_used_off(size: u32) -> u32 { return (size * 16 + 6 + size * 2 + 3) & 0xFFFFFFFC; }
+fn virtq_bytes(size: u32) -> u32 { return virtq_used_off(size) + 6 + size * 8; }
+
+// A queue's three parts laid out in the zeroed memory at `addr`
+// (virtq_bytes(size) of it), with nothing offered and nothing taken.
+fn virtq_layout(q: *virtq, index: u32, size: u32, addr: u64, phys: u64) -> void {
+    memzero(q as *u8, sizeof *q);
+    q.index = index; q.size = size;
+    q.addr = addr; q.phys = phys; q.mem = -1;
+    q.desc = addr;
+    q.avail = addr + (virtq_avail_off(size) as u64);
+    q.used = addr + (virtq_used_off(size) as u64);
+}
+
+// `bytes` of memory the device reaches, zeroed and mapped: its handle, with
+// its address and where the device finds it, or an error. `hint` is where
+// it would like to be mapped (0 for anywhere); *addr says where it is.
+fn virtio_dma(v: *virtio, bytes: u32, hint: u64, addr: *u64, phys: *u64) -> i32 {
+    let m: i32 = dma_alloc(v.dev, bytes as u64, phys);
+    if (m <= 0) { return m; }
+    let a: vm_map_args;
+    memzero((&a) as *u8, sizeof a);
+    a.object = m as u32;
+    a.length = bytes as u64;
+    a.prot = MPROT_READ | MPROT_WRITE;
+    if (hint != 0) { a.addr = hint; a.flags = MMAP_HINT; }
+    let rc: i32 = vm_map(&a);
+    if (rc != E_OK) { handle_close(m); return rc; }
+    memzero(a.addr as *u8, bytes);
+    addr[0] = a.addr;
+    return m;
+}
+
+// Queue `index` of a started device, with at most `want` descriptors (a
+// power of two): its rings allocated and the device told where they are. 0,
+// E_NOT_FOUND for a queue the device does not have, or an error.
+fn virtq_setup(v: *virtio, q: *virtq, index: u32, want: u32) -> i32 {
+    if (index >= v.queues) { return E_NOT_FOUND; }
+    mmio_w16(v.common, VIRTIO_C_Q_SELECT, index);
+    let size: u32 = mmio_r16(v.common, VIRTIO_C_Q_SIZE);
+    if (size == 0) { return E_NOT_FOUND; }
+    if (want > VIRTQ_SIZE_MAX) { want = VIRTQ_SIZE_MAX; }
+    while (size > want) { size = size / 2; }
+    if (size == 0 || (size & (size - 1)) != 0) { return E_NOT_SUPPORTED; }
+    // where it is told of an offer, checked before anything is allocated
+    let noff: u32 = mmio_r16(v.common, VIRTIO_C_Q_NOTIFY_OFF) * v.notify_mul;
+    if (noff > v.notify_len - 2) { return E_NOT_SUPPORTED; }
+    let addr: u64 = 0;
+    let phys: u64 = 0;
+    let m: i32 = virtio_dma(v, virtq_bytes(size), 0, &addr, &phys);
+    if (m <= 0) { return m; }
+    virtq_layout(q, index, size, addr, phys);
+    q.mem = m;
+    q.notify_at = v.notify + (noff as u64);
+    mmio_w16(v.common, VIRTIO_C_Q_SIZE, size);
+    let p: u64 = phys;
+    mmio_w32(v.common, VIRTIO_C_Q_DESC, p as u32);
+    mmio_w32(v.common, VIRTIO_C_Q_DESC + 4, (p >> 32) as u32);
+    p = phys + (virtq_avail_off(size) as u64);
+    mmio_w32(v.common, VIRTIO_C_Q_AVAIL, p as u32);
+    mmio_w32(v.common, VIRTIO_C_Q_AVAIL + 4, (p >> 32) as u32);
+    p = phys + (virtq_used_off(size) as u64);
+    mmio_w32(v.common, VIRTIO_C_Q_USED, p as u32);
+    mmio_w32(v.common, VIRTIO_C_Q_USED + 4, (p >> 32) as u32);
+    mmio_w16(v.common, VIRTIO_C_Q_ENABLE, 1);
+    return 0;
+}
+
+// The rings' memory let go. Only after virtio_close: until the device is
+// reset it may still write there.
+fn virtq_free(q: *virtq) -> void {
+    if (q.mem > 0) {
+        vm_unmap(q.addr, 0);
+        handle_close(q.mem);
+    }
+    q.mem = -1; q.addr = 0; q.desc = 0; q.avail = 0; q.used = 0;
+}
+
+// Descriptor `i`: a buffer at `phys` (where the device finds it), `len`
+// bytes, with VIRTQ_F_* and, with VIRTQ_F_NEXT, the descriptor after it.
+fn virtq_desc(q: *virtq, i: u32, phys: u64, len: u32, flags: u32, next: u32) -> void {
+    let at: u32 = (i & (q.size - 1)) * 16;
+    mmio_w32(q.desc, at, phys as u32);
+    mmio_w32(q.desc, at + 4, (phys >> 32) as u32);
+    mmio_w32(q.desc, at + 8, len);
+    mmio_w16(q.desc, at + 12, flags);
+    mmio_w16(q.desc, at + 14, next);
+}
+
+// The chain that starts at descriptor `head` offered to the device, and the
+// device told. The ring's slot is written before its count: the device may
+// look as soon as the count changes.
+fn virtq_offer(q: *virtq, head: u32) -> void {
+    mmio_w16(q.avail, 4 + (q.offered & (q.size - 1)) * 2, head);
+    q.offered = q.offered + 1;
+    mmio_w16(q.avail, 2, q.offered & 0xFFFF);
+    mmio_w16(q.notify_at, 0, q.index);
+}
+
+// Has the device finished a chain? 1 with its head in *head and the bytes
+// the device wrote in *len, or 0.
+fn virtq_done(q: *virtq, head: *u32, len: *u32) -> u32 {
+    if (mmio_r16(q.used, 2) == (q.taken & 0xFFFF)) { return 0; }
+    let at: u32 = 4 + (q.taken & (q.size - 1)) * 8;
+    head[0] = mmio_r32(q.used, at);
+    len[0] = mmio_r32(q.used, at + 4);
+    q.taken = q.taken + 1;
+    return 1;
+}

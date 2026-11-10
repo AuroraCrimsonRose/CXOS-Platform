@@ -1,0 +1,407 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// std/virtiogpu.xfxn - the virtio-gpu display's driver, 2D (roadmap 2.7b).
+// Aurora Tejeda / CATX Systems
+// Threads: one per struct vgpu; nothing else is shared.
+//
+// A virtio-gpu display (OASIS virtio 1.2, section 5.7) has no framebuffer of
+// its own. The driver keeps the pixels in its own memory, tells the device
+// where that memory is (a "resource" with backing pages), and after drawing
+// asks the device to copy a rectangle in and show it. So, unlike the Bochs
+// display, nothing appears until it is asked for: every change is two
+// commands (vgpu_update), and this file is the one that sends them.
+//
+// One command at a time, on the control queue, waited for by looking at the
+// used ring (std/virtio.xfxn says why there are no interrupts). A display
+// server's frame is a handful of rectangles, and the device answers at once.
+//
+// The screen is not the kernel's here. The kernel draws on what the firmware
+// set up and cannot reach this memory, so nothing goes through
+// SYS_SCREEN_OPEN or SYS_SCREEN_MODE and the console stays where it was; a
+// panic shows there and on the serial line, never on this display
+// (CX_DISPLAY.md section 8).
+//
+// What the device says is not trusted: a display's size is checked before
+// anything is allocated from it, and a reply is read only at fixed places in
+// a page of the driver's own.
+//
+// Serenity's is Kernel/Devices/GPU/VirtIO (GPU3DDevice's 2D half and
+// GraphicsAdapter.cpp); Haiku's is src/add-ons/kernel/drivers/graphics/virtio.
+//
+// Not here: the cursor queue (the display server draws its cursor), several
+// scanouts at once, EDID, 3D, blobs, a display that changes size while it is
+// shown.
+
+import "virtio.xfxn";
+
+const VGPU_DEVICE: u32 = 0x1050;        // VIRTIO_DEVICE_BASE + 16
+const VGPU_QUEUE_CTRL: u32 = 0;
+const VGPU_QUEUE_SIZE: u32 = 16;
+
+const VGPU_GET_DISPLAY_INFO: u32 = 0x0100;
+const VGPU_RESOURCE_CREATE_2D: u32 = 0x0101;
+const VGPU_RESOURCE_UNREF: u32 = 0x0102;
+const VGPU_SET_SCANOUT: u32 = 0x0103;
+const VGPU_RESOURCE_FLUSH: u32 = 0x0104;
+const VGPU_TRANSFER_TO_HOST_2D: u32 = 0x0105;
+const VGPU_RESOURCE_ATTACH_BACKING: u32 = 0x0106;
+
+const VGPU_OK_NODATA: u32 = 0x1100;
+const VGPU_OK_DISPLAY_INFO: u32 = 0x1101;
+const VGPU_ERR_RESOURCE_ID: u32 = 0x1203;
+const VGPU_ERR_PARAMETER: u32 = 0x1205;
+
+// bytes in memory B, G, R, X: what the rest of the system calls XRGB8888
+const VGPU_FORMAT_B8G8R8X8: u32 = 2;
+
+const VGPU_HDR_BYTES: u32 = 24;
+const VGPU_SCANOUTS: u32 = 16;
+const VGPU_DISPLAY_BYTES: u32 = 408;    // the header and 16 of 24 bytes
+
+// The command page: the request, then the reply. A request's largest is
+// attach-backing with VGPU_RUNS_MAX entries (32 + 16 of 16).
+const VGPU_REPLY: u32 = 2048;
+const VGPU_REPLY_BYTES: u32 = 2048;
+
+const VGPU_RUNS_MAX: u32 = 16;          // of DMA_ALLOC_MAX each: 64 MiB, MMAP_MAX_BYTES
+const VGPU_SPINS: u32 = 20000;          // looks at the ring before it starts to sleep
+const VGPU_WAIT_MS: u32 = 5000;
+
+struct vgpu {
+    v: virtio,
+    ctrl: virtq,
+    dev: i32,           // the handle vgpu_open_first opened, or -1
+    cmd_mem: i32,       // the command page; -1 for one handed to vgpu_attach
+    cmd: u64,
+    cmd_phys: u64,
+    wait_ms: u32,       // how long a command may take
+    dead: u32,          // the device stopped answering sensibly: nothing more is sent
+    last: u32,          // the type of the last reply
+    scanout: u32,       // from vgpu_get_display
+    mode_w: u32,
+    mode_h: u32,
+    res: u32,           // the resource shown; 0 for none
+    next_res: u32,
+    width: u32,
+    height: u32,
+    pitch: u32,
+    size: u32,
+    px: u64,            // the pixels, one span of addresses
+    runs: u32,
+    run_mem: [16]i32,
+    run_addr: [16]u64,
+    run_phys: [16]u64,
+    run_len: [16]u32
+}
+
+// ---- requests: each writes one at b and returns its length ----
+
+fn vgpu_hdr(b: u64, kind: u32) -> void {
+    mmio_w32(b, 0, kind);
+    let i: u32 = 4;
+    while (i < VGPU_HDR_BYTES) { mmio_w32(b, i, 0); i = i + 4; }
+}
+
+fn vgpu_rect(b: u64, at: u32, x: u32, y: u32, w: u32, h: u32) -> void {
+    mmio_w32(b, at, x);
+    mmio_w32(b, at + 4, y);
+    mmio_w32(b, at + 8, w);
+    mmio_w32(b, at + 12, h);
+}
+
+fn vgpu_req_display(b: u64) -> u32 {
+    vgpu_hdr(b, VGPU_GET_DISPLAY_INFO);
+    return VGPU_HDR_BYTES;
+}
+
+fn vgpu_req_create(b: u64, res: u32, format: u32, w: u32, h: u32) -> u32 {
+    vgpu_hdr(b, VGPU_RESOURCE_CREATE_2D);
+    mmio_w32(b, 24, res);
+    mmio_w32(b, 28, format);
+    mmio_w32(b, 32, w);
+    mmio_w32(b, 36, h);
+    return 40;
+}
+
+fn vgpu_req_unref(b: u64, res: u32) -> u32 {
+    vgpu_hdr(b, VGPU_RESOURCE_UNREF);
+    mmio_w32(b, 24, res);
+    mmio_w32(b, 28, 0);
+    return 32;
+}
+
+fn vgpu_req_scanout(b: u64, scanout: u32, res: u32, x: u32, y: u32, w: u32, h: u32) -> u32 {
+    vgpu_hdr(b, VGPU_SET_SCANOUT);
+    vgpu_rect(b, 24, x, y, w, h);
+    mmio_w32(b, 40, scanout);
+    mmio_w32(b, 44, res);
+    return 48;
+}
+
+fn vgpu_req_flush(b: u64, res: u32, x: u32, y: u32, w: u32, h: u32) -> u32 {
+    vgpu_hdr(b, VGPU_RESOURCE_FLUSH);
+    vgpu_rect(b, 24, x, y, w, h);
+    mmio_w32(b, 40, res);
+    mmio_w32(b, 44, 0);
+    return 48;
+}
+
+fn vgpu_req_transfer(b: u64, res: u32, x: u32, y: u32, w: u32, h: u32, offset: u64) -> u32 {
+    vgpu_hdr(b, VGPU_TRANSFER_TO_HOST_2D);
+    vgpu_rect(b, 24, x, y, w, h);
+    mmio_w32(b, 40, offset as u32);
+    mmio_w32(b, 44, (offset >> 32) as u32);
+    mmio_w32(b, 48, res);
+    mmio_w32(b, 52, 0);
+    return 56;
+}
+
+fn vgpu_req_backing(b: u64, res: u32, runs: u32, phys: *u64, len: *u32) -> u32 {
+    vgpu_hdr(b, VGPU_RESOURCE_ATTACH_BACKING);
+    mmio_w32(b, 24, res);
+    mmio_w32(b, 28, runs);
+    let i: u32 = 0;
+    while (i < runs) {
+        let at: u32 = 32 + i * 16;
+        mmio_w32(b, at, phys[i] as u32);
+        mmio_w32(b, at + 4, (phys[i] >> 32) as u32);
+        mmio_w32(b, at + 8, len[i]);
+        mmio_w32(b, at + 12, 0);
+        i = i + 1;
+    }
+    return 32 + runs * 16;
+}
+
+// ---- commands ----
+
+// The request of `len` bytes in the command page sent, and waited for. 0 when
+// the reply is of type `want` and at least `need` bytes; E_IO when it is not
+// (g.last says what it was); E_TIMED_OUT when none came. After a timeout or
+// an answer to some other chain the queue cannot be believed, and every later
+// command fails at once.
+fn vgpu_call(g: *vgpu, len: u32, want: u32, need: u32) -> i32 {
+    if (g.dead != 0) { return E_IO; }
+    g.last = 0;
+    mmio_w32(g.cmd, VGPU_REPLY, 0);
+    virtq_desc(&g.ctrl, 0, g.cmd_phys, len, VIRTQ_F_NEXT, 1);
+    virtq_desc(&g.ctrl, 1, g.cmd_phys + (VGPU_REPLY as u64), VGPU_REPLY_BYTES, VIRTQ_F_WRITE, 0);
+    virtq_offer(&g.ctrl, 0);
+    let head: u32 = 0;
+    let wrote: u32 = 0;
+    let spins: u32 = 0;
+    let slept: u32 = 0;
+    while (virtq_done(&g.ctrl, &head, &wrote) == 0) {
+        if (spins < VGPU_SPINS) {
+            spins = spins + 1;
+        } else {
+            if (slept >= g.wait_ms) { g.dead = 1; return E_TIMED_OUT; }
+            sleep_ms(1);
+            slept = slept + 1;
+        }
+    }
+    if (head != 0) { g.dead = 1; return E_IO; }
+    if (wrote < VGPU_HDR_BYTES) { return E_IO; }
+    g.last = mmio_r32(g.cmd, VGPU_REPLY);
+    if (g.last != want || wrote < need) { return E_IO; }
+    return 0;
+}
+
+fn vgpu_ok(g: *vgpu, len: u32) -> i32 { return vgpu_call(g, len, VGPU_OK_NODATA, VGPU_HDR_BYTES); }
+
+// Can a display of this size be shown? 0, or E_OUT_OF_RANGE: smaller than
+// the kernel's smallest screen, or more pixels than the backing can hold.
+// The size may be the device's word, so nothing is multiplied before it is
+// known to fit.
+fn vgpu_fits(w: u32, h: u32) -> i32 {
+    if (w < SCREEN_WIDTH_MIN || h < SCREEN_HEIGHT_MIN) { return E_OUT_OF_RANGE; }
+    if (w > 16384 || h > 16384) { return E_OUT_OF_RANGE; }
+    if ((w as u64) * (h as u64) * 4 > (VGPU_RUNS_MAX as u64) * (DMA_ALLOC_MAX as u64)) { return E_OUT_OF_RANGE; }
+    return 0;
+}
+
+// Which display to use, and its size: the first the device says is on, in
+// g.scanout, g.mode_w and g.mode_h. 0, E_NOT_FOUND for no display that can be
+// shown, or the error of the command.
+fn vgpu_get_display(g: *vgpu) -> i32 {
+    let rc: i32 = vgpu_call(g, vgpu_req_display(g.cmd), VGPU_OK_DISPLAY_INFO, VGPU_DISPLAY_BYTES);
+    if (rc != 0) { return rc; }
+    let i: u32 = 0;
+    while (i < VGPU_SCANOUTS) {
+        let at: u32 = VGPU_REPLY + VGPU_HDR_BYTES + i * 24;
+        let w: u32 = mmio_r32(g.cmd, at + 8);
+        let h: u32 = mmio_r32(g.cmd, at + 12);
+        if (mmio_r32(g.cmd, at + 16) != 0 && vgpu_fits(w, h) == 0) {
+            g.scanout = i; g.mode_w = w; g.mode_h = h;
+            return 0;
+        }
+        i = i + 1;
+    }
+    return E_NOT_FOUND;
+}
+
+// ---- what is shown ----
+
+fn vgpu_free_runs(g: *vgpu) -> void {
+    while (g.runs > 0) {
+        g.runs = g.runs - 1;
+        vm_unmap(g.run_addr[g.runs], 0);
+        handle_close(g.run_mem[g.runs]);
+    }
+    g.px = 0;
+}
+
+// `bytes` of memory for the device, in as many runs as a run's limit makes
+// and one span of addresses for the program: 0 or an error, with nothing
+// held. The span is found by mapping it once and letting go; nothing else in
+// this thread maps meanwhile, and a run that lands elsewhere is an error.
+fn vgpu_alloc_runs(g: *vgpu, bytes: u32) -> i32 {
+    let a: vm_map_args;
+    memzero((&a) as *u8, sizeof a);
+    a.object = MOBJ_ANON;
+    a.length = bytes as u64;
+    a.prot = MPROT_READ | MPROT_WRITE;
+    let rc: i32 = vm_map(&a);
+    if (rc != E_OK) { return rc; }
+    let span: u64 = a.addr;
+    vm_unmap(span, 0);
+    let done: u32 = 0;
+    while (done < bytes) {
+        if (g.runs == VGPU_RUNS_MAX) { vgpu_free_runs(g); return E_OUT_OF_RANGE; }
+        let n: u32 = bytes - done;
+        if (n > DMA_ALLOC_MAX) { n = DMA_ALLOC_MAX; }
+        let want: u64 = span + (done as u64);
+        let addr: u64 = 0;
+        let phys: u64 = 0;
+        let m: i32 = virtio_dma(&g.v, n, want, &addr, &phys);
+        if (m <= 0) { vgpu_free_runs(g); return m; }
+        g.run_mem[g.runs] = m; g.run_addr[g.runs] = addr;
+        g.run_phys[g.runs] = phys; g.run_len[g.runs] = n;
+        g.runs = g.runs + 1;
+        if (addr != want) { vgpu_free_runs(g); return E_NO_MEMORY; }
+        done = done + n;
+    }
+    g.px = span;
+    return 0;
+}
+
+// Nothing shown, the resource gone, its memory let go. The device has
+// dropped the backing with the resource, so it no longer reads the memory.
+fn vgpu_hide(g: *vgpu) -> void {
+    if (g.res != 0) {
+        vgpu_ok(g, vgpu_req_scanout(g.cmd, g.scanout, 0, 0, 0, 0, 0));
+        vgpu_ok(g, vgpu_req_unref(g.cmd, g.res));
+    }
+    vgpu_free_runs(g);
+    g.res = 0; g.width = 0; g.height = 0; g.pitch = 0; g.size = 0;
+}
+
+// A rectangle of the pixels at g.px sent to the device and shown. 0, or the
+// error of a command (E_IO for a rectangle outside the resource).
+fn vgpu_update(g: *vgpu, x: u32, y: u32, w: u32, h: u32) -> i32 {
+    let offset: u64 = (y as u64) * (g.pitch as u64) + (x as u64) * 4;
+    let rc: i32 = vgpu_ok(g, vgpu_req_transfer(g.cmd, g.res, x, y, w, h, offset));
+    if (rc != 0) { return rc; }
+    return vgpu_ok(g, vgpu_req_flush(g.cmd, g.res, x, y, w, h));
+}
+
+// width x height shown on g.scanout, from zeroed memory at g.px that the
+// caller draws in and sends with vgpu_update. What was shown before goes
+// first. 0 or an error, with nothing shown.
+fn vgpu_show(g: *vgpu, width: u32, height: u32) -> i32 {
+    let rc: i32 = vgpu_fits(width, height);
+    if (rc != 0) { return rc; }
+    vgpu_hide(g);
+    let bytes: u32 = ((width * 4 * height) + 4095) & 0xFFFFF000;
+    rc = vgpu_alloc_runs(g, bytes);
+    if (rc != 0) { return rc; }
+    g.next_res = g.next_res + 1;
+    g.res = g.next_res;
+    g.width = width; g.height = height; g.pitch = width * 4; g.size = bytes;
+    rc = vgpu_ok(g, vgpu_req_create(g.cmd, g.res, VGPU_FORMAT_B8G8R8X8, width, height));
+    if (rc == 0) { rc = vgpu_ok(g, vgpu_req_backing(g.cmd, g.res, g.runs, &g.run_phys[0], &g.run_len[0])); }
+    if (rc == 0) { rc = vgpu_ok(g, vgpu_req_scanout(g.cmd, g.scanout, g.res, 0, 0, width, height)); }
+    if (rc == 0) { rc = vgpu_update(g, 0, 0, width, height); }
+    if (rc != 0) { vgpu_hide(g); }
+    return rc;
+}
+
+// ---- the device ----
+
+// A control queue and a command page already somewhere, whatever is behind
+// them: the device's, or a test's memory with a thread answering in it.
+fn vgpu_attach(g: *vgpu, wait_ms: u32) -> void {
+    g.dev = -1; g.cmd_mem = -1; g.cmd = 0; g.cmd_phys = 0;
+    g.wait_ms = wait_ms; g.dead = 0; g.last = 0;
+    g.scanout = 0; g.mode_w = 0; g.mode_h = 0;
+    g.res = 0; g.next_res = 0; g.width = 0; g.height = 0; g.pitch = 0; g.size = 0;
+    g.px = 0; g.runs = 0;
+}
+
+// The device reset, then its memory let go, in that order: until the reset it
+// may still read and write there. Closes the handle if vgpu_open_first opened it.
+fn vgpu_close(g: *vgpu) -> void {
+    virtio_close(&g.v);
+    g.dead = 1;         // nothing answers now: vgpu_hide must not ask
+    g.res = 0;
+    vgpu_hide(g);
+    virtq_free(&g.ctrl);
+    if (g.cmd_mem > 0) {
+        vm_unmap(g.cmd, 0);
+        handle_close(g.cmd_mem);
+    }
+    g.cmd_mem = -1; g.cmd = 0;
+    if (g.dev > 0) { handle_close(g.dev); }
+    g.dev = -1;
+}
+
+// The device behind the handle `dev` (HRIGHT_BAR, HRIGHT_DMA), which stays
+// the caller's: started, with its control queue and the display it offers
+// known. 0 or an error, with nothing left mapped and the device reset.
+fn vgpu_open(g: *vgpu, dev: i32) -> i32 {
+    vgpu_attach(g, VGPU_WAIT_MS);
+    memzero((&g.ctrl) as *u8, sizeof g.ctrl);
+    g.ctrl.mem = -1;
+    let rc: i32 = virtio_open(&g.v, dev);
+    if (rc != 0) { return rc; }
+    rc = virtio_start(&g.v, 0);
+    if (rc == 0) { rc = virtq_setup(&g.v, &g.ctrl, VGPU_QUEUE_CTRL, VGPU_QUEUE_SIZE); }
+    if (rc == 0) {
+        g.cmd_mem = virtio_dma(&g.v, 4096, 0, &g.cmd, &g.cmd_phys);
+        if (g.cmd_mem <= 0) { rc = g.cmd_mem; g.cmd_mem = -1; }
+    }
+    if (rc == 0) {
+        virtio_go(&g.v);
+        rc = vgpu_get_display(g);
+    }
+    if (rc != 0) { vgpu_close(g); }
+    return rc;
+}
+
+// The first virtio-gpu in the device tree's id, E_NOT_FOUND if the machine
+// has none, or E_ACCESS_DENIED without GRANT_DRIVER.
+fn vgpu_find() -> i32 {
+    let d: device_desc;
+    let id: u32 = 0;
+    while (id < DEVICE_MAX) {
+        let rc: i32 = device_info(id, &d);
+        if (rc == E_ACCESS_DENIED) { return rc; }
+        if (rc == E_OK && d.bus == DEVICE_BUS_PCI && d.vendor == VIRTIO_VENDOR && d.device == VGPU_DEVICE) {
+            return id as i32;
+        }
+        id = id + 1;
+    }
+    return E_NOT_FOUND;
+}
+
+// The machine's virtio-gpu found, opened and started: vgpu_close gives it
+// back, handle and all. 0 or an error.
+fn vgpu_open_first(g: *vgpu) -> i32 {
+    let id: i32 = vgpu_find();
+    if (id < 0) { return id; }
+    let dev: i32 = device_open(id as u32);
+    if (dev <= 0) { return dev; }
+    let rc: i32 = vgpu_open(g, dev);
+    if (rc != 0) { handle_close(dev); return rc; }
+    g.dev = dev;
+    return 0;
+}

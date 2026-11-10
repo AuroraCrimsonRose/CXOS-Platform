@@ -94,6 +94,11 @@ must be signed and trusted; isolation is built and tested under QEMU.
    Tested on QEMU's `edu` device, which verify-boot attaches. The device's
    thread at real-time priority and the `*dma` type wait for step 4 and X.
 4. First user-space driver: Bochs display; then input; then the NIC.
+   **virtio-gpu is built too (2.7b)** (`os/std/virtio.xfxn`,
+   `os/std/virtiogpu.xfxn`, `system/CX_DISPLAY.md` section 8): polled, since
+   virtio PCI interrupts by MSI-X and step 3 gives MSI only. It added
+   `SYS_DEVICE_CONFIG`, a read-only look at the device's 256 bytes of PCI
+   configuration space, since virtio's capabilities say where its registers are.
    **The Bochs display is built (2.7a)** (`os/std/bochsdrv.xfxn`,
    `system/CX_DISPLAY.md` section 8): it reaches the device only through its
    handle and a mapping of BAR 2, so its test hands it a page of RAM laid out

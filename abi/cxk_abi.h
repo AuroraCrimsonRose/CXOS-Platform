@@ -15,7 +15,7 @@
  * hash it was built against and the loader refuses one that differs, so a
  * program never runs against numbers or layouts it was not compiled for.
  */
-#define CXK_ABI_HASH { 0xd9, 0xb8, 0xdf, 0xed, 0xe6, 0xe1, 0x82, 0x85, 0xec, 0xdb, 0xfc, 0x2d, 0xfd, 0x87, 0x6b, 0xa3, 0x7d, 0x36, 0x3b, 0x72, 0x6c, 0x0f, 0xcd, 0x4a, 0x12, 0x7c, 0x92, 0x55, 0x67, 0x62, 0xe6, 0xf0 }
+#define CXK_ABI_HASH { 0xea, 0xc9, 0x91, 0xad, 0x50, 0xa0, 0xa0, 0xb1, 0x48, 0x07, 0xee, 0x96, 0xe0, 0x85, 0x1e, 0x1a, 0x95, 0xc9, 0xf0, 0x59, 0xee, 0x6f, 0x62, 0xf5, 0x7b, 0x4f, 0x18, 0xc8, 0x1e, 0x8d, 0xd3, 0xf1 }
 
 /*
  * CXK ABI v1 - the PUBLIC contract shared by the kernel, the .xoex executive,
@@ -44,7 +44,7 @@
  * line; bump both, and the DevKit's stamp, in the one commit that changes the
  * contract.
  */
-#define CXK_ABI_VERSION          37
+#define CXK_ABI_VERSION          38
 
 /*
  * ---- syscall numbers ----
@@ -914,6 +914,17 @@
 #define SYS_SCREEN_MODE          0xF6
 
 /*
+ * A device's PCI configuration space, read only: a driver finds there what
+ * the device tree does not say (its capabilities; where virtio-pci keeps
+ * each group of registers). Nothing is written through this: the BARs, the
+ * command register and the interrupt stay the kernel's to set.
+ * ebx = device handle (HRIGHT_BAR), ecx = offset, edx = *bytes, esi = how
+ * many (1 to DEVICE_CONFIG_BYTES - offset) -> 0. E_INVALID_ARGS: none asked
+ * for; E_OUT_OF_RANGE: past the 256 bytes every PCI function has.
+ */
+#define SYS_DEVICE_CONFIG        0xF7
+
+/*
  * ---- error codes (negative; returned in eax) ----
  * One list, shared by syscalls and services (docs/kernel/CX_SYSCALLS_IPC.md sec 6).
  */
@@ -1251,6 +1262,7 @@ struct thread_info {
 /* ---- drivers (SYS_DEVICE_*, SYS_IRQ_ACK, SYS_DMA_ALLOC) ---- */
 #define DEVICE_MAX               320            /* ids are 0 to DEVICE_MAX - 1 */
 #define DMA_ALLOC_MAX            0x00400000u    /* 4 MiB: one contiguous run of pages */
+#define DEVICE_CONFIG_BYTES      256            /* what SYS_DEVICE_CONFIG reads of */
 #define DEVICE_BUS_ROOT          0
 #define DEVICE_BUS_PLATFORM      1              /* fixed legacy hardware */
 #define DEVICE_BUS_PCI           2

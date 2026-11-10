@@ -272,6 +272,7 @@ static int decode_dma_alloc(const uintptr_t *a) {
 #endif
 }
 static int decode_screen_mode(const uintptr_t *a) { return syscall_screen_mode((int32_t)a[0], (uint64_t)a[1]); }
+static int decode_device_config(const uintptr_t *a) { return syscall_device_config((int32_t)a[0], (uint32_t)a[1], (uint64_t)a[2], (uint32_t)a[3]); }
 
 const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_EXIT] = decode_exit,
@@ -383,4 +384,5 @@ const syscall_decoder syscall_table[SYSCALL_TABLE_SIZE] = {
     [SYS_IRQ_ACK] = decode_irq_ack,
     [SYS_DMA_ALLOC] = decode_dma_alloc,
     [SYS_SCREEN_MODE] = decode_screen_mode,
+    [SYS_DEVICE_CONFIG] = decode_device_config,
 };

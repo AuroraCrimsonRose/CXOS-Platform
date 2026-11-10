@@ -37,6 +37,7 @@
 
 import "mem.xfxn";
 import "string.xfxn";
+import "virtiogpu.xfxn";
 
 // ---- rectangles ----
 
@@ -375,7 +376,20 @@ fn ds_comp_init(c: *ds_comp, width: u32, height: u32) -> i32 {
     return ds_surface_new(&c.back, width, height);
 }
 
-fn ds_comp_free(c: *ds_comp) -> void { ds_surface_free(&c.back); c.n = 0; }
+// A compositor whose back buffer is memory that is someone else's: a
+// virtio-gpu's backing, which the device reads only when asked, so a frame
+// half composed is never seen and there is no need of a second full screen.
+fn ds_comp_on(c: *ds_comp, px: u64, width: u32, height: u32) -> void {
+    c.n = 0;
+    ds_damage_init(&c.damage, width, height);
+    c.back.px = px; c.back.width = width; c.back.height = height;
+    c.back.stride = width; c.back.mem = -1;
+}
+
+fn ds_comp_free(c: *ds_comp) -> void {
+    if (c.back.mem > 0) { ds_surface_free(&c.back); }
+    c.n = 0;
+}
 
 fn ds_lmin(a: i64, b: i64) -> i64 { if (a < b) { return a; } return b; }
 fn ds_lmax(a: i64, b: i64) -> i64 { if (a > b) { return a; } return b; }
@@ -577,12 +591,13 @@ struct ds_screen {
     bpp: u32,
     format: u32,    // SCREEN_*
     size: u32,      // bytes mapped
-    mem: i32        // the memory object: the screen's, or a virtual one's
+    mem: i32,       // the memory object: the screen's, or a virtual one's
+    gpu: *vgpu      // a virtio-gpu display, which shows only what it is sent; or 0
 }
 
 fn ds_screen_clear(sc: *ds_screen) -> void {
     sc.px = 0; sc.width = 0; sc.height = 0; sc.pitch = 0; sc.bpp = 0;
-    sc.format = 0; sc.size = 0; sc.mem = -1;
+    sc.format = 0; sc.size = 0; sc.mem = -1; sc.gpu = 0 as *vgpu;
 }
 
 // The real screen, mapped: 0 or an error (E_ACCESS_DENIED without
@@ -612,6 +627,21 @@ fn ds_screen_open(sc: *ds_screen) -> i32 {
     return 0;
 }
 
+// The machine's virtio-gpu display, in place of the real screen: `g` is the
+// driver's state, which the screen keeps until ds_screen_close. 0 or an error
+// (E_ACCESS_DENIED without GRANT_DRIVER, E_NOT_FOUND on a machine with none).
+// The kernel's console stays where it was, on the screen the firmware set up.
+fn ds_screen_gpu(sc: *ds_screen, g: *vgpu) -> i32 {
+    ds_screen_clear(sc);
+    let rc: i32 = vgpu_open_first(g);
+    if (rc != 0) { return rc; }
+    rc = vgpu_show(g, g.mode_w, g.mode_h);
+    if (rc != 0) { vgpu_close(g); return rc; }
+    sc.px = g.px; sc.width = g.width; sc.height = g.height; sc.pitch = g.pitch;
+    sc.bpp = 32; sc.format = SCREEN_XRGB8888; sc.size = g.size; sc.gpu = g;
+    return 0;
+}
+
 // A virtual screen, laid out as a real one would be: 0 or an error.
 fn ds_screen_virtual(sc: *ds_screen, width: u32, height: u32, format: u32) -> i32 {
     ds_screen_clear(sc);
@@ -631,6 +661,7 @@ fn ds_screen_virtual(sc: *ds_screen, width: u32, height: u32, format: u32) -> i3
 
 // Unmapped and closed: the real screen goes back to the kernel.
 fn ds_screen_close(sc: *ds_screen) -> void {
+    if (sc.gpu != 0 as *vgpu) { vgpu_close(sc.gpu); ds_screen_clear(sc); return; }
     if (sc.px != 0) { vm_unmap(sc.px, 0); }
     if (sc.mem > 0) { handle_close(sc.mem); }
     ds_screen_clear(sc);
@@ -673,7 +704,9 @@ fn ds_present(c: *ds_comp, sc: *ds_screen) -> u64 {
         let r: ds_rect;
         ds_rect_set(&r, c.damage.r[i].x, c.damage.r[i].y, c.damage.r[i].w, c.damage.r[i].h);
         if (ds_rect_clip(&r, ds_min(sc.width, c.back.width), ds_min(sc.height, c.back.height)) == 1) {
-            ds_present_rect(sc, &c.back, &r);
+            if (sc.px != c.back.px) { ds_present_rect(sc, &c.back, &r); }
+            // A device that stops answering loses the picture, not the server.
+            if (sc.gpu != 0 as *vgpu) { vgpu_update(sc.gpu, r.x, r.y, r.w, r.h); }
             n = n + (r.w as u64) * (r.h as u64);
         }
         i = i + 1;

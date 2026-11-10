@@ -154,6 +154,7 @@ int  usermode_input_handle_test(void); /* the keys as a handle, one holder (2.4)
 int  usermode_lease_test(void);        /* a buffer held unwritable while lent (2.4) */
 int  usermode_screen_test(void);       /* the screen as a memory object, one holder (2.3) */
 int  usermode_screen_mode_test(void);  /* the screen's mode, told by its driver (2.7a) */
+int  usermode_device_config_test(void);  /* a device's PCI config space (2.7b) */
 int  usermode_ipc_test(void);       /* queued calls, reply tokens, badges */
 int  usermode_ipc_handles_test(void);   /* handles in messages: moved, copied, refused */
 int  usermode_prio_test(void);          /* priorities, and priority through calls */

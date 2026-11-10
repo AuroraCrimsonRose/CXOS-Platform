@@ -211,6 +211,7 @@ public static class BootVerifier
         EnableAudio = false,
         EnableNetworking = false,
         EduDevice = arch == QemuArch.X86_64,
+        VirtioGpu = arch == QemuArch.X86_64,
         Snapshot = snapshot,
         Headless = true,
         Serial = serialLog,

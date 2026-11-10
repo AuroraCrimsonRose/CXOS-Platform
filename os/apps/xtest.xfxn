@@ -23,6 +23,7 @@ import "string.xfxn";
 import "display.xfxn";
 import "dserver.xfxn";
 import "bochsdrv.xfxn";
+import "virtiogpu.xfxn";
 
 const MS: u64 = 1000000;
 
@@ -2692,6 +2693,352 @@ fn b_sim(arg: u64) -> i32 {
     return rc;
 }
 
+// ---- virtio and virtio-gpu, on RAM and a thread that answers (2.7b) ----
+
+const VS_MODE: u32 = 0;         // what the thread does with the next request
+const VS_STOP: u32 = 4;
+const VS_SEEN: u32 = 8;         // requests it has answered
+const VS_LEN0: u32 = 12;        // the chain's first descriptor, as it found it
+const VS_FLAGS0: u32 = 16;
+const VS_NEXT0: u32 = 20;
+const VS_LEN1: u32 = 24;
+const VS_FLAGS1: u32 = 28;
+const VS_REQ: u32 = 64;         // the request's first 512 bytes
+const VS_CTRL: u32 = 4096;      // the page the rings are in; the command page after it
+const VS_CMD: u32 = 8192;
+
+const VS_OK: u32 = 0;
+const VS_DISPLAYS: u32 = 1;     // scanout 0 off, 1 on at 1024 x 768
+const VS_ERROR: u32 = 2;        // VGPU_ERR_PARAMETER
+const VS_SHORT: u32 = 3;        // eight bytes of reply
+const VS_WRONG_HEAD: u32 = 4;
+const VS_SILENT: u32 = 5;
+const VS_TOO_SMALL: u32 = 6;    // scanout 0 on at 320 x 200, 1 on at 70000 x 70000
+const VS_NONE_ON: u32 = 7;
+const VS_SHORT_DISPLAY: u32 = 8;
+
+global vs_q: virtq;
+
+fn vs_put_display(reply: u64, i: u32, w: u32, h: u32, on: u32) -> void {
+    let at: u32 = VGPU_HDR_BYTES + i * 24;
+    mmio_w32(reply, at + 8, w);
+    mmio_w32(reply, at + 12, h);
+    mmio_w32(reply, at + 16, on);
+}
+
+// The device: it reads what the driver offered as a device would, from the
+// rings and the descriptors, and answers as VS_MODE says.
+fn vs_device(ctl: u64) -> i32 {
+    let q: *virtq = &vs_q;
+    let done: u32 = 0;
+    while (mmio_r32(ctl, VS_STOP) == 0) {
+        if (mmio_r16(q.avail, 2) == (done & 0xFFFF)) { sleep_ms(1); continue; }
+        let mode: u32 = mmio_r32(ctl, VS_MODE);
+        let head: u32 = mmio_r16(q.avail, 4 + (done & (q.size - 1)) * 2);
+        let d0: u32 = head * 16;
+        let req: u64 = (mmio_r32(q.desc, d0) as u64) | ((mmio_r32(q.desc, d0 + 4) as u64) << 32);
+        let next: u32 = mmio_r16(q.desc, d0 + 14);
+        let d1: u32 = next * 16;
+        let reply: u64 = (mmio_r32(q.desc, d1) as u64) | ((mmio_r32(q.desc, d1 + 4) as u64) << 32);
+        mmio_w32(ctl, VS_LEN0, mmio_r32(q.desc, d0 + 8));
+        mmio_w32(ctl, VS_FLAGS0, mmio_r16(q.desc, d0 + 12));
+        mmio_w32(ctl, VS_NEXT0, next);
+        mmio_w32(ctl, VS_LEN1, mmio_r32(q.desc, d1 + 8));
+        mmio_w32(ctl, VS_FLAGS1, mmio_r16(q.desc, d1 + 12));
+        let i: u32 = 0;
+        while (i < 512) { mmio_w32(ctl, VS_REQ + i, mmio_r32(req, i)); i = i + 4; }
+        let wrote: u32 = VGPU_HDR_BYTES;
+        let kind: u32 = VGPU_OK_NODATA;
+        if (mode == VS_DISPLAYS || mode == VS_TOO_SMALL || mode == VS_NONE_ON || mode == VS_SHORT_DISPLAY) {
+            kind = VGPU_OK_DISPLAY_INFO;
+            wrote = VGPU_DISPLAY_BYTES;
+            if (mode == VS_SHORT_DISPLAY) { wrote = VGPU_DISPLAY_BYTES - 1; }
+            i = 0;
+            while (i < VGPU_DISPLAY_BYTES) { mmio_w32(reply, i, 0); i = i + 4; }
+            if (mode == VS_DISPLAYS) {
+                vs_put_display(reply, 0, 1920, 1080, 0);
+                vs_put_display(reply, 1, 1024, 768, 1);
+            }
+            if (mode == VS_TOO_SMALL) {
+                vs_put_display(reply, 0, 320, 200, 1);
+                vs_put_display(reply, 1, 70000, 70000, 1);
+            }
+        }
+        if (mode == VS_ERROR) { kind = VGPU_ERR_PARAMETER; }
+        if (mode == VS_SHORT) { wrote = 8; }
+        done = done + 1;
+        mmio_w32(ctl, VS_SEEN, done);
+        if (mode == VS_SILENT) { continue; }
+        mmio_w32(reply, 0, kind);
+        let slot: u32 = 4 + ((done - 1) & (q.size - 1)) * 8;
+        if (mode == VS_WRONG_HEAD) { head = head + 1; }
+        mmio_w32(q.used, slot, head);
+        mmio_w32(q.used, slot + 4, wrote);
+        mmio_w16(q.used, 2, done & 0xFFFF);
+    }
+    return 0;
+}
+
+// A capability at `p` of the 256 bytes `c`, chained to the one at `next`.
+fn vs_cap(c: *u8, p: u32, next: u32, len: u32, kind: u32, bar: u32, off: u32, bytes: u32) -> void {
+    c[p] = 0x09; c[p + 1] = next as u8; c[p + 2] = len as u8; c[p + 3] = kind as u8; c[p + 4] = bar as u8;
+    let i: u32 = 0;
+    while (i < 4) {
+        c[p + 8 + i] = ((off >> (i * 8)) & 0xFF) as u8;
+        c[p + 12 + i] = ((bytes >> (i * 8)) & 0xFF) as u8;
+        i = i + 1;
+    }
+}
+
+fn v_parse_steps(c: *u8) -> i32 {
+    let got: virtio_caps;
+    memzero(c, 256);
+    if (virtio_parse(c, &got) != E_NOT_SUPPORTED) { return 700; }     // no capability list
+    c[6] = 0x10; c[0x34] = 0x40;
+    vs_cap(c, 0x40, 0x54, 16, VIRTIO_CAP_COMMON, 4, 0x1000, 56);
+    vs_cap(c, 0x54, 0x68, 20, VIRTIO_CAP_NOTIFY, 2, 0x3000, 0x1000);
+    c[0x54 + 16] = 4;
+    vs_cap(c, 0x68, 0x78, 16, VIRTIO_CAP_ISR, 4, 0x2000, 4);
+    vs_cap(c, 0x78, 0x88, 16, VIRTIO_CAP_DEVICE, 1, 0x4000, 40);
+    // a second device group, which must not replace the first; and a
+    // capability of another kind in the way
+    vs_cap(c, 0x88, 0x98, 16, VIRTIO_CAP_DEVICE, 3, 0x9000, 80);
+    vs_cap(c, 0x98, 0, 16, VIRTIO_CAP_COMMON, 0, 0, 56);
+    c[0x98] = 0x11;
+    if (virtio_parse(c, &got) != 0) { return 701; }
+    if (got.common_bar != 4 || got.common_off != 0x1000 || got.common_len != 56) { return 702; }
+    if (got.notify_bar != 2 || got.notify_off != 0x3000 || got.notify_len != 0x1000 || got.notify_mul != 4) { return 703; }
+    if (got.isr_bar != 4 || got.isr_off != 0x2000 || got.isr_len != 4) { return 704; }
+    if (got.device_bar != 1 || got.device_off != 0x4000 || got.device_len != 40) { return 705; }
+    // a list that loops ends, and with no notifications it is not usable
+    c[0x41] = 0x40;
+    if (virtio_parse(c, &got) != E_NOT_SUPPORTED) { return 706; }
+    c[0x41] = 0x54;
+    // a list that runs off the end of the space: what is out there is not read
+    let keep: u8 = c[0x55];
+    vs_cap(c, 0xF8, 0, 16, VIRTIO_CAP_DEVICE, 1, 0x7000, 40);
+    c[0x55] = 0xF8;
+    if (virtio_parse(c, &got) != 0 || got.device_len != 0) { return 707; }
+    c[0x55] = keep;
+    // a capability that names no memory BAR is skipped
+    c[0x54 + 4] = 6;
+    if (virtio_parse(c, &got) != E_NOT_SUPPORTED) { return 708; }
+    c[0x54 + 4] = 2;
+    // a common configuration too short to hold its registers
+    c[0x40 + 12] = 55;
+    if (virtio_parse(c, &got) != E_NOT_SUPPORTED) { return 709; }
+    c[0x40 + 12] = 56;
+    // a notify capability cut short has no multiplier
+    c[0x54 + 2] = 16;
+    if (virtio_parse(c, &got) != E_NOT_SUPPORTED) { return 710; }
+    c[0x54 + 2] = 20;
+    if (virtio_parse(c, &got) != 0) { return 711; }
+    return 0;
+}
+
+fn v_ring_steps(ring: u64) -> i32 {
+    if (virtq_avail_off(16) != 256 || virtq_used_off(16) != 296 || virtq_bytes(16) != 430) { return 720; }
+    if (virtq_used_off(2) != 44) { return 721; }
+    let q: virtq;
+    virtq_layout(&q, 3, 16, ring, 0x12340000);
+    let notify: u64 = ring + 2048;
+    q.notify_at = notify;
+    if (q.desc != ring || q.avail != ring + 256 || q.used != ring + 296) { return 722; }
+    let head: u32 = 9;
+    let len: u32 = 9;
+    if (virtq_done(&q, &head, &len) != 0 || head != 9) { return 723; }
+    virtq_desc(&q, 5, 0x123456789A, 77, VIRTQ_F_NEXT, 6);
+    if (mmio_r32(ring, 80) != 0x3456789A || mmio_r32(ring, 84) != 0x12 || mmio_r32(ring, 88) != 77
+        || mmio_r16(ring, 92) != VIRTQ_F_NEXT || mmio_r16(ring, 94) != 6) { return 724; }
+    // twenty offers go round a ring of sixteen: the slot wraps, the count does not
+    let i: u32 = 0;
+    while (i < 20) {
+        virtq_offer(&q, (i + i / 16) & 15);
+        if (mmio_r16(q.avail, 2) != i + 1) { return 725; }
+        if (mmio_r16(q.avail, 4 + (i & 15) * 2) != ((i + i / 16) & 15)) { return 726; }
+        if (mmio_r16(notify, 0) != 3) { return 727; }
+        i = i + 1;
+    }
+    // what the device has used, one at a time, round the end too
+    i = 0;
+    while (i < 20) {
+        let slot: u32 = 4 + (i & 15) * 8;
+        mmio_w32(q.used, slot, i & 15);
+        mmio_w32(q.used, slot + 4, 100 + i);
+        if (virtq_done(&q, &head, &len) != 0) { return 728; }
+        mmio_w16(q.used, 2, i + 1);
+        if (virtq_done(&q, &head, &len) != 1 || head != (i & 15) || len != 100 + i) { return 729; }
+        i = i + 1;
+    }
+    // the 16-bit count wrapping past 0xFFFF
+    q.offered = 0xFFFF; q.taken = 0xFFFF;
+    mmio_w16(q.used, 2, 0xFFFF);
+    if (virtq_done(&q, &head, &len) != 0) { return 730; }
+    mmio_w16(q.used, 2, 0);
+    if (virtq_done(&q, &head, &len) != 1 || q.taken != 0x10000) { return 731; }
+    if (virtq_done(&q, &head, &len) != 0) { return 733; }
+    virtq_offer(&q, 1);
+    if (mmio_r16(q.avail, 2) != 0) { return 732; }
+    return 0;
+}
+
+fn v_start_steps(regs: u64) -> i32 {
+    let v: virtio;
+    virtio_attach(&v, regs, regs + 2048, 64, 2, 0, 0);
+    // RAM: the device's features read back as written, so one value serves
+    // both halves of the 64: no version 1 in the second
+    mmio_w32(regs, VIRTIO_C_DFEATURE, 0);
+    mmio_w16(regs, VIRTIO_C_NUM_QUEUES, 2);
+    if (virtio_start(&v, 0) != E_NOT_SUPPORTED) { return 740; }
+    if ((virtio_status(&v) & VIRTIO_S_FAILED) == 0) { return 741; }
+    // version 1, without a feature that was wanted
+    mmio_w32(regs, VIRTIO_C_DFEATURE, 1);
+    if (virtio_start(&v, 2) != E_NOT_SUPPORTED) { return 742; }
+    mmio_w32(regs, VIRTIO_C_DFEATURE, 3);
+    if (virtio_start(&v, 2) != 0) { return 743; }
+    if (virtio_status(&v) != (VIRTIO_S_ACK | VIRTIO_S_DRIVER | VIRTIO_S_FEATURES_OK)) { return 744; }
+    if (v.queues != 2) { return 745; }
+    if (mmio_r32(regs, VIRTIO_C_GFEATURE_SEL) != 1 || mmio_r32(regs, VIRTIO_C_GFEATURE) != 1) { return 746; }
+    virtio_go(&v);
+    if ((virtio_status(&v) & VIRTIO_S_DRIVER_OK) == 0) { return 747; }
+    return 0;
+}
+
+fn vs_is(ctl: u64, at: u32, want: u32) -> u32 {
+    if (mmio_r32(ctl, VS_REQ + at) == want) { return 1; }
+    return 0;
+}
+
+fn v_gpu_cases(g: *vgpu, ctl: u64) -> i32 {
+    // the chain: a request the device reads, then a reply it writes
+    mmio_w32(ctl, VS_MODE, VS_DISPLAYS);
+    if (vgpu_get_display(g) != 0) { return 752; }
+    if (mmio_r32(ctl, VS_LEN0) != 24 || mmio_r32(ctl, VS_FLAGS0) != VIRTQ_F_NEXT || mmio_r32(ctl, VS_NEXT0) != 1
+        || mmio_r32(ctl, VS_LEN1) != VGPU_REPLY_BYTES || mmio_r32(ctl, VS_FLAGS1) != VIRTQ_F_WRITE) { return 753; }
+    if (vs_is(ctl, 0, 0x100) == 0) { return 754; }
+    // the first display that is on, not the first there is
+    if (g.scanout != 1 || g.mode_w != 1024 || g.mode_h != 768) { return 755; }
+    // sizes the device has no business offering
+    mmio_w32(ctl, VS_MODE, VS_TOO_SMALL);
+    if (vgpu_get_display(g) != E_NOT_FOUND) { return 756; }
+    mmio_w32(ctl, VS_MODE, VS_NONE_ON);
+    if (vgpu_get_display(g) != E_NOT_FOUND) { return 757; }
+    mmio_w32(ctl, VS_MODE, VS_SHORT_DISPLAY);
+    if (vgpu_get_display(g) != E_IO) { return 758; }
+
+    // each request, field by field
+    mmio_w32(ctl, VS_MODE, VS_OK);
+    if (vgpu_ok(g, vgpu_req_create(g.cmd, 7, VGPU_FORMAT_B8G8R8X8, 800, 600)) != 0) { return 760; }
+    if (mmio_r32(ctl, VS_LEN0) != 40 || vs_is(ctl, 0, 0x101) == 0 || vs_is(ctl, 24, 7) == 0 || vs_is(ctl, 28, 2) == 0
+        || vs_is(ctl, 32, 800) == 0 || vs_is(ctl, 36, 600) == 0) { return 761; }
+    if (vgpu_ok(g, vgpu_req_scanout(g.cmd, 1, 7, 2, 3, 800, 600)) != 0) { return 762; }
+    if (mmio_r32(ctl, VS_LEN0) != 48 || vs_is(ctl, 0, 0x103) == 0 || vs_is(ctl, 24, 2) == 0 || vs_is(ctl, 28, 3) == 0
+        || vs_is(ctl, 32, 800) == 0 || vs_is(ctl, 36, 600) == 0 || vs_is(ctl, 40, 1) == 0 || vs_is(ctl, 44, 7) == 0) { return 763; }
+    if (vgpu_ok(g, vgpu_req_flush(g.cmd, 7, 1, 2, 3, 4)) != 0) { return 764; }
+    if (mmio_r32(ctl, VS_LEN0) != 48 || vs_is(ctl, 0, 0x104) == 0 || vs_is(ctl, 24, 1) == 0 || vs_is(ctl, 28, 2) == 0
+        || vs_is(ctl, 32, 3) == 0 || vs_is(ctl, 36, 4) == 0 || vs_is(ctl, 40, 7) == 0) { return 765; }
+    if (vgpu_ok(g, vgpu_req_transfer(g.cmd, 7, 1, 2, 3, 4, 0x1200000034)) != 0) { return 766; }
+    if (mmio_r32(ctl, VS_LEN0) != 56 || vs_is(ctl, 0, 0x105) == 0 || vs_is(ctl, 24, 1) == 0 || vs_is(ctl, 36, 4) == 0
+        || vs_is(ctl, 40, 0x34) == 0 || vs_is(ctl, 44, 0x12) == 0 || vs_is(ctl, 48, 7) == 0) { return 767; }
+    if (vgpu_ok(g, vgpu_req_unref(g.cmd, 7)) != 0) { return 768; }
+    if (mmio_r32(ctl, VS_LEN0) != 32 || vs_is(ctl, 0, 0x102) == 0 || vs_is(ctl, 24, 7) == 0) { return 769; }
+    g.run_phys[0] = 0x1234567000; g.run_len[0] = 0x400000;
+    g.run_phys[1] = 0x89000; g.run_len[1] = 0x2000;
+    if (vgpu_ok(g, vgpu_req_backing(g.cmd, 7, 2, &g.run_phys[0], &g.run_len[0])) != 0) { return 770; }
+    if (mmio_r32(ctl, VS_LEN0) != 64 || vs_is(ctl, 0, 0x106) == 0 || vs_is(ctl, 24, 7) == 0 || vs_is(ctl, 28, 2) == 0
+        || vs_is(ctl, 32, 0x34567000) == 0 || vs_is(ctl, 36, 0x12) == 0 || vs_is(ctl, 40, 0x400000) == 0
+        || vs_is(ctl, 48, 0x89000) == 0 || vs_is(ctl, 52, 0) == 0 || vs_is(ctl, 56, 0x2000) == 0) { return 771; }
+    // an update: the transfer, then the flush
+    g.res = 7; g.pitch = 3200;
+    let before: u32 = mmio_r32(ctl, VS_SEEN);
+    if (vgpu_update(g, 10, 20, 30, 40) != 0) { return 772; }
+    if (mmio_r32(ctl, VS_SEEN) != before + 2 || vs_is(ctl, 0, 0x104) == 0) { return 773; }
+    mmio_w32(ctl, VS_MODE, VS_ERROR);
+    before = mmio_r32(ctl, VS_SEEN);
+    // a refused transfer: where its rectangle starts in the pixels, and no flush after it
+    if (vgpu_update(g, 10, 20, 30, 40) != E_IO || g.last != VGPU_ERR_PARAMETER) { return 774; }
+    if (mmio_r32(ctl, VS_SEEN) != before + 1 || vs_is(ctl, 40, 20 * 3200 + 40) == 0 || vs_is(ctl, 48, 7) == 0) { return 775; }
+
+    // the display server's present sends what it wrote, and only that
+    let sc: ds_screen;
+    let cp: ds_comp;
+    if (ds_screen_virtual(&sc, 64, 48, SCREEN_XRGB8888) != 0 || ds_comp_init(&cp, 64, 48) != 0) { return 785; }
+    sc.gpu = g; g.res = 9; g.pitch = sc.pitch;
+    ds_damage_clear(&cp.damage);
+    ds_damage_add(&cp.damage, 4, 8, 10, 12);
+    mmio_w32(ctl, VS_MODE, VS_OK);
+    before = mmio_r32(ctl, VS_SEEN);
+    if (ds_present(&cp, &sc) != 120) { return 786; }
+    if (mmio_r32(ctl, VS_SEEN) != before + 2 || vs_is(ctl, 0, 0x104) == 0 || vs_is(ctl, 24, 4) == 0 || vs_is(ctl, 28, 8) == 0
+        || vs_is(ctl, 32, 10) == 0 || vs_is(ctl, 36, 12) == 0 || vs_is(ctl, 40, 9) == 0) { return 787; }
+    // a screen that is the back buffer: nothing to copy (a copy would strip
+    // the alpha), and the device is told all the same
+    let own: u64 = sc.px;
+    sc.px = cp.back.px;
+    ds_put(&cp.back, 5, 9, 0xFF112233);
+    ds_damage_add(&cp.damage, 4, 8, 10, 12);
+    before = mmio_r32(ctl, VS_SEEN);
+    if (ds_present(&cp, &sc) != 120 || ds_pixel(&cp.back, 5, 9) != 0xFF112233) { return 788; }
+    if (mmio_r32(ctl, VS_SEEN) != before + 2) { return 789; }
+    sc.px = own;
+    sc.gpu = 0 as *vgpu;
+    ds_screen_close(&sc);
+    ds_comp_free(&cp);
+
+    // sizes, before anything is asked of the device
+    if (vgpu_fits(639, 480) != E_OUT_OF_RANGE || vgpu_fits(640, 479) != E_OUT_OF_RANGE) { return 776; }
+    if (vgpu_fits(640, 480) != 0 || vgpu_fits(4096, 4096) != 0) { return 777; }
+    if (vgpu_fits(4097, 4096) != E_OUT_OF_RANGE || vgpu_fits(0x10000, 0x10000) != E_OUT_OF_RANGE) { return 778; }
+
+    // replies that cannot be believed
+    mmio_w32(ctl, VS_MODE, VS_SHORT);
+    if (vgpu_ok(g, 24) != E_IO || g.dead != 0 || g.last != 0) { return 780; }
+    mmio_w32(ctl, VS_MODE, VS_WRONG_HEAD);
+    if (vgpu_ok(g, 24) != E_IO || g.dead != 1) { return 781; }
+    before = mmio_r32(ctl, VS_SEEN);
+    if (vgpu_ok(g, 24) != E_IO) { return 782; }
+    sleep_ms(50);
+    if (mmio_r32(ctl, VS_SEEN) != before) { return 783; }
+    // a device that says nothing
+    g.dead = 0;
+    g.wait_ms = 20;
+    mmio_w32(ctl, VS_MODE, VS_SILENT);
+    if (vgpu_ok(g, 24) != E_TIMED_OUT || g.dead != 1) { return 784; }
+    return 0;
+}
+
+fn v_gpu_steps(ctl: u64) -> i32 {
+    let g: vgpu;
+    vgpu_attach(&g, 3000);
+    g.cmd = ctl + (VS_CMD as u64); g.cmd_phys = g.cmd;
+    virtq_layout(&g.ctrl, 0, 16, ctl + (VS_CTRL as u64), ctl + (VS_CTRL as u64));
+    g.ctrl.notify_at = ctl + 2048;
+    memcpy((&vs_q) as *u8, (&g.ctrl) as *u8, sizeof vs_q);
+    let t: i32 = thread_spawn(vs_device, ctl, 0);
+    if (t <= 0) { return 750; }
+    let rc: i32 = v_gpu_cases(&g, ctl);
+    mmio_w32(ctl, VS_STOP, 1);
+    let code: i32 = 0;
+    if (thread_join(t, time_deadline_ms(10000), &code) != 0 && rc == 0) { return 751; }
+    return rc;
+}
+
+fn v_sim(arg: u64) -> i32 {
+    let page: u64 = 0;
+    let m: i32 = ds_mem(4096 * 4, &page);
+    if (m <= 0) { return 790; }
+    let rc: i32 = v_parse_steps(page as *u8);
+    memzero(page as *u8, 4096);
+    if (rc == 0) { rc = v_ring_steps(page); }
+    memzero(page as *u8, 4096);
+    if (rc == 0) { rc = v_start_steps(page); }
+    memzero(page as *u8, 4096 * 4);
+    if (rc == 0) { rc = v_gpu_steps(page); }
+    vm_unmap(page, 0);
+    handle_close(m);
+    return rc;
+}
+
 fn all() -> void {
     test_run("threads: create refusals",               t_create_refused,           30000);
     test_run("threads: workers joined with codes",     t_workers_joined,           30000);
@@ -2747,6 +3094,7 @@ fn all() -> void {
     test_run("animation: reduce motion for everybody", a_reduce,                   30000);
     test_run("animation: the loop runs, then stops",   a_loop,                     120000);
     test_run("bochs: the driver on a simulated device",   b_sim,                      30000);
+    test_run("virtio-gpu: the driver on a simulated device", v_sim,                  30000);
 }
 
 fn _start() -> void { test_main(all); }

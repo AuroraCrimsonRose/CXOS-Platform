@@ -15,6 +15,8 @@
 // looked for in /Shared/Programs.
 //
 // `displayd --empty` starts nobody and waits for Ctrl+Q.
+// `displayd --virtio-gpu [...]`, which comes first and needs +driver as well,
+// shows on the machine's virtio-gpu display and not on the screen.
 // `displayd --reduce-motion [client ...]` starts with motion reduced for every
 // client (Ctrl+R turns it on and off).
 //
@@ -94,21 +96,27 @@ fn dd_launch(name: *u8) -> void {
 }
 
 fn _start() -> void {
-    let rc: i32 = dsv_init(&dd, 0, 0, DD_CURSOR_W, DD_CURSOR_H);
-    if (rc != 0) { dd_fail("no screen or no keyboard (run it as `run +screen +spawn +endpoint +disk displayd`)", rc); }
-    dd_paint_desktop(&dd.desktop);
-    dd_paint_cursor(&dd.cursor);
-
     let ai: args_info;
     let argc: u32 = 0;
     if (args_read(&ai) == 0) { argc = ai.count; }
     let empty: u32 = 0;
     let first: u32 = 1;
     let page: *u32 = ai.base as *u32;
-    if (argc > 1 && strlen((ai.base + (page[2] as u64)) as *u8) == 15
-        && strneq((ai.base + (page[2] as u64)) as *u8, "--reduce-motion", 15) != 0) {
-        dd.w.reduce = 1;
+    let screen: u32 = 0;
+    if (argc > 1 && strlen((ai.base + (page[2] as u64)) as *u8) == 12
+        && strneq((ai.base + (page[2] as u64)) as *u8, "--virtio-gpu", 12) != 0) {
+        screen = DSV_VIRTIO_GPU;
         first = 2;
+    }
+    let rc: i32 = dsv_init(&dd, screen, 0, DD_CURSOR_W, DD_CURSOR_H);
+    if (rc != 0) { dd_fail("no screen or no keyboard (run it as `run +screen +spawn +endpoint +disk displayd`)", rc); }
+    dd_paint_desktop(&dd.desktop);
+    dd_paint_cursor(&dd.cursor);
+
+    if (argc > first && strlen((ai.base + (page[1 + first] as u64)) as *u8) == 15
+        && strneq((ai.base + (page[1 + first] as u64)) as *u8, "--reduce-motion", 15) != 0) {
+        dd.w.reduce = 1;
+        first = first + 1;
     }
     if (argc > first && strlen((ai.base + (page[1 + first] as u64)) as *u8) == 7
         && strneq((ai.base + (page[1 + first] as u64)) as *u8, "--empty", 7) != 0) {

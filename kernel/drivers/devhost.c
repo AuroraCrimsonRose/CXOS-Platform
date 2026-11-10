@@ -344,3 +344,27 @@ int syscall_screen_mode(int32_t h, uint64_t uinfo) {
     kobj_unref(&d->hdr);
     return rc;
 }
+
+/* SYS_DEVICE_CONFIG (2.7b): the device's configuration space, read only. A
+   virtio-pci driver cannot start without it: the capabilities there say
+   which BAR, and where in it, each group of its registers is. Reading is
+   harmless to the device's neighbours (it is this function's own space);
+   writing is not offered, since the BARs, the command register and the
+   interrupt's setup are what the kernel's own checks rest on. */
+int syscall_device_config(int32_t h, uint32_t offset, uint64_t ubuf, uint32_t len) {
+    int rc;
+    struct kdevice *d = device_ref(h, HRIGHT_BAR, &rc);
+    if (!d) return rc;
+    uint8_t buf[DEVICE_CONFIG_BYTES];
+    rc = len == 0                                                       ? E_INVALID_ARGS
+       : offset >= DEVICE_CONFIG_BYTES || len > DEVICE_CONFIG_BYTES - offset ? E_OUT_OF_RANGE
+       : !user_ptr_writable(ubuf, len)                                  ? E_BAD_ADDRESS : E_OK;
+    if (rc == E_OK) {
+        const struct pci_device *p = d->pci;
+        for (uint32_t i = 0; i < len; i++)
+            buf[i] = pci_config_read8(p->bus, p->slot, p->func, (uint8_t)(offset + i));
+        if (user_copy_out(ubuf, buf, len) != 0) rc = E_BAD_ADDRESS;
+    }
+    kobj_unref(&d->hdr);
+    return rc;
+}

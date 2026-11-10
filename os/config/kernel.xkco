@@ -26,7 +26,7 @@ max_handles = 1024
 
 // The memory a process may map with SYS_VM_MAP unless its parent gives it
 // less, in MiB: 1 to 64. A process can never be given more than its parent.
-memory_quota_mib = 16
+memory_quota_mib = 64
 
 // Chaos, for testing only: at every race point the kernel's self-tests use,
 // yield this many times in a thousand arrivals (0 to 1000; 0 is off), so

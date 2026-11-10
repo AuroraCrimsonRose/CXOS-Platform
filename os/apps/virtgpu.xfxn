@@ -1,0 +1,156 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// apps/virtgpu.xfxn - the virtio-gpu display's driver, run by hand (roadmap 2.7b).
+// Aurora Tejeda / CATX Systems
+// Threads: one.
+//
+//   run +driver virtgpu                  the display the device offers
+//   run +driver virtgpu show [seconds]   colour bars on it, then the device reset
+//   run +driver virtgpu test             the driver against the real device
+//
+// The driver is std/virtiogpu.xfxn. `test` is what a boot runs: its exit code
+// is 0, or the number of the step that went wrong (10 and up); 1 is "could
+// not start at all". The device's own refusals are part of it, since they are
+// the only way to see from inside the guest that it read what it was sent.
+
+import "virtiogpu.xfxn";
+import "io.xfxn";
+import "fmt.xfxn";
+import "time.xfxn";
+import "string.xfxn";
+
+fn vg_fail(what: *u8, rc: i32) -> void {
+    puts("virtgpu: ");
+    puts(what);
+    if (rc == E_ACCESS_DENIED) { puts(": not allowed (run it as `run +driver virtgpu`)"); }
+    else if (rc == E_NOT_FOUND) { puts(": this machine has no virtio-gpu display"); }
+    else if (rc == E_BUSY) { puts(": another driver holds the device"); }
+    else if (rc == E_TIMED_OUT) { puts(": the device did not answer"); }
+    else if (rc == E_IO) { puts(": the device refused"); }
+    else { puts(": error -"); print_u32((0 - rc) as u32); }
+    newline();
+    exit(1);
+}
+
+// Bars across the top half, a ramp of grey below: a screendump tells at a
+// glance whether the rows and the colours are right.
+fn vg_draw(g: *vgpu) -> void {
+    let y: u32 = 0;
+    while (y < g.height) {
+        let row: *u32 = (g.px + (y as u64) * (g.pitch as u64)) as *u32;
+        let x: u32 = 0;
+        while (x < g.width) {
+            let c: u32 = 0;
+            if (y < g.height / 2) {
+                let bar: u32 = x * 4 / g.width;
+                if (bar == 0) { c = 0x00FF0000; }
+                else if (bar == 1) { c = 0x0000FF00; }
+                else if (bar == 2) { c = 0x000000FF; }
+                else { c = 0x00FFFFFF; }
+            } else {
+                let v: u32 = x * 256 / g.width;
+                c = (v << 16) | (v << 8) | v;
+            }
+            row[x] = c;
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+}
+
+fn vg_show_line(g: *vgpu) -> void {
+    puts("virtgpu: showing ");
+    print_u32(g.width);
+    puts(" x ");
+    print_u32(g.height);
+    puts(" on scanout ");
+    print_u32(g.scanout);
+    puts(", in ");
+    print_u32(g.runs);
+    puts(" run(s)");
+    newline();
+}
+
+fn vg_steps(g: *vgpu) -> i32 {
+    // the display: a size the device believes in, on a scanout that is on
+    if (vgpu_fits(g.mode_w, g.mode_h) != 0) { return 11; }
+    let w: u32 = g.mode_w;
+    let h: u32 = g.mode_h;
+    if (vgpu_show(g, w, h) != 0) { return 12; }
+    vg_draw(g);
+    if (vgpu_update(g, 0, 0, w, h) != 0) { return 13; }
+    // one rectangle, away from the corner
+    if (vgpu_update(g, 8, 16, 32, 24) != 0) { return 14; }
+    // the device's own refusals: it is reading what it is sent
+    let res: u32 = g.res;
+    if (vgpu_update(g, w - 4, 0, 8, 8) != E_IO || g.last != VGPU_ERR_PARAMETER) { return 15; }
+    if (vgpu_ok(g, vgpu_req_flush(g.cmd, res + 77, 0, 0, 8, 8)) != E_IO || g.last != VGPU_ERR_RESOURCE_ID) { return 16; }
+    // another size: the old resource has gone, the new one works
+    if (vgpu_show(g, 800, 600) != 0 || g.res == res || g.runs == 0) { return 17; }
+    if (vgpu_ok(g, vgpu_req_flush(g.cmd, res, 0, 0, 8, 8)) != E_IO || g.last != VGPU_ERR_RESOURCE_ID) { return 18; }
+    if (vgpu_update(g, 0, 0, 800, 600) != 0) { return 18; }
+    // an amount that needs more than one run, in one span of addresses
+    if (vgpu_show(g, 2048, 1152) != 0 || g.runs < 3) { return 20; }
+    let last: *u32 = (g.px + (g.size as u64) - 4) as *u32;
+    last[0] = 0x00123456;
+    if (last[0] != 0x00123456 || vgpu_update(g, 0, 0, 2048, 1152) != 0) { return 20; }
+    vgpu_hide(g);
+    if (g.runs != 0 || g.px != 0) { return 21; }
+    return 0;
+}
+
+// The reset vgpu_close does is seen by the kernel, which reads the status
+// register for itself when this has gone.
+fn vg_test() -> i32 {
+    let g: vgpu;
+    if (vgpu_open_first(&g) != 0) { return 10; }
+    let rc: i32 = vg_steps(&g);
+    vgpu_close(&g);
+    return rc;
+}
+
+fn _start() -> void {
+    let ai: args_info;
+    let argc: u32 = 0;
+    if (args_read(&ai) == 0) { argc = ai.count; }
+    let page: *u32 = ai.base as *u32;
+    let verb: *u8 = "";
+    if (argc > 1) { verb = (ai.base + (page[2] as u64)) as *u8; }
+
+    if (argc == 2 && strlen(verb) == 4 && strneq(verb, "test", 4) != 0) {
+        exit(vg_test());
+    }
+    let show: u32 = 0;
+    let seconds: u32 = 10;
+    if (argc >= 2 && strlen(verb) == 4 && strneq(verb, "show", 4) != 0) {
+        show = 1;
+        if (argc == 3) { seconds = dec_u32((ai.base + (page[3] as u64)) as *u8); }
+    }
+    if (argc > 3 || (argc >= 2 && show == 0)) {
+        puts("usage: run +driver virtgpu [show [<seconds>] | test]\n");
+        exit(2);
+    }
+
+    let g: vgpu;
+    let rc: i32 = vgpu_open_first(&g);
+    if (rc != 0) { vg_fail("no display", rc); }
+    if (show == 1) {
+        rc = vgpu_show(&g, g.mode_w, g.mode_h);
+        if (rc != 0) { vg_fail("the mode", rc); }
+        vg_draw(&g);
+        rc = vgpu_update(&g, 0, 0, g.width, g.height);
+        if (rc != 0) { vg_fail("the picture", rc); }
+        vg_show_line(&g);
+        sleep_ms(seconds * 1000);
+    } else {
+        puts("virtgpu: scanout ");
+        print_u32(g.scanout);
+        puts(" offers ");
+        print_u32(g.mode_w);
+        puts(" x ");
+        print_u32(g.mode_h);
+        newline();
+    }
+    vgpu_close(&g);
+    exit(0);
+}

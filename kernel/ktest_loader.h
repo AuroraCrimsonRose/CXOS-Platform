@@ -52,5 +52,6 @@ int ktest_display_server(void);
 /* /Shared/Programs/bochs.xuex on QEMU's standard VGA: a mode set, one refused
    while the screen is held, and the boot's own again (2.7a). */
 int ktest_bochs_program(void);
+int ktest_virtgpu_program(void);
 
 #endif

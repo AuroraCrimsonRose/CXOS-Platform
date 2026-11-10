@@ -44,15 +44,19 @@ struct dsv {
 
 global dsv_inbox: [65536]u8;    // IPC_MSG_MAX, so that any message can be taken
 global dsv_inhandles: [16]i32;  // IPC_HANDLES_MAX
+global dsv_gpu: vgpu;           // the driver's state when the display is a virtio-gpu
+const DSV_VIRTIO_GPU: u32 = 0xFFFFFFFF;
 
 // Everything but the screen's contents: 0 or an error. width 0 takes the real
-// screen and the input handle, which need their grants; otherwise a virtual
-// screen of that size. Paint s.desktop and s.cursor after this.
+// screen and the input handle, which need their grants; DSV_VIRTIO_GPU the
+// virtio-gpu display and the input handle (GRANT_DRIVER as well); otherwise a
+// virtual screen of that size. Paint s.desktop and s.cursor after this.
 fn dsv_init(s: *dsv, width: u32, height: u32, cursor_w: u32, cursor_h: u32) -> i32 {
     memzero(s as *u8, sizeof *s);
     let rc: i32 = 0;
-    if (width == 0) {
-        rc = ds_screen_open(&s.screen);
+    if (width == 0 || width == DSV_VIRTIO_GPU) {
+        if (width == 0) { rc = ds_screen_open(&s.screen); }
+        else { rc = ds_screen_gpu(&s.screen, &dsv_gpu); }
         if (rc != 0) { return rc; }
         s.input = input_open();
         if (s.input <= 0) { let e: i32 = s.input; ds_screen_close(&s.screen); return e; }
@@ -60,7 +64,8 @@ fn dsv_init(s: *dsv, width: u32, height: u32, cursor_w: u32, cursor_h: u32) -> i
         rc = ds_screen_virtual(&s.screen, width, height, SCREEN_XRGB8888);
         if (rc != 0) { return rc; }
     }
-    rc = ds_comp_init(&s.comp, s.screen.width, s.screen.height);
+    if (s.screen.gpu != 0 as *vgpu) { ds_comp_on(&s.comp, s.screen.px, s.screen.width, s.screen.height); }
+    else { rc = ds_comp_init(&s.comp, s.screen.width, s.screen.height); }
     if (rc == 0) { rc = ds_surface_new(&s.desktop, s.screen.width, s.screen.height); }
     if (rc == 0) { rc = ds_surface_new(&s.cursor, cursor_w, cursor_h); }
     if (rc == 0) { rc = ds_surface_new(&s.trusted, s.screen.width, s.screen.height); }
@@ -75,7 +80,7 @@ fn dsv_init(s: *dsv, width: u32, height: u32, cursor_w: u32, cursor_h: u32) -> i
     if (rc != 0) { return rc; }
     // Titles need GRANT_DISK, and a virtual screen is pinned without them.
     let f: *ds_font = 0 as *ds_font;
-    if (width == 0 && (ds_font_load(&s.font, "/System/Fonts/console_16.xfnt") == 0)) { f = &s.font; }
+    if ((width == 0 || width == DSV_VIRTIO_GPU) && (ds_font_load(&s.font, "/System/Fonts/console_16.xfnt") == 0)) { f = &s.font; }
     wm_init(&s.w, &s.comp, &s.desktop, &s.cursor, f, &s.trusted, &s.mark);
     return 0;
 }

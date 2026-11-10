@@ -1,0 +1,428 @@
+# Step 2.7b, virtio-gpu 2D and SYS_DEVICE_CONFIG, run by `cxk test sabotage`.
+# Each must turn red exactly the self-tests named. Format:
+# docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage". A group holds at most one
+# sabotage per test. `@` is a line of the boot's log: the simulated device's
+# test logs its code, the program's its exit code.
+
+# ---- SYS_DEVICE_CONFIG ----
+
+[cfg-right]
+expect = device: its PCI configuration space, read only @ device config test failed at step 5
+group = g1
+edit = kernel/drivers/devhost.c
+<<<
+    struct kdevice *d = device_ref(h, HRIGHT_BAR, &rc);
+    if (!d) return rc;
+    uint8_t buf[DEVICE_CONFIG_BYTES];
+===
+    struct kdevice *d = device_ref(h, HRIGHT_DMA, &rc);
+    if (!d) return rc;
+    uint8_t buf[DEVICE_CONFIG_BYTES];
+>>>
+
+[cfg-no-bytes]
+expect = device: its PCI configuration space, read only @ device config test failed at step 6
+group = g2
+edit = kernel/drivers/devhost.c
+<<<
+    rc = len == 0                                                       ? E_INVALID_ARGS
+       : offset >= DEVICE_CONFIG_BYTES
+===
+    rc = offset >= DEVICE_CONFIG_BYTES
+>>>
+
+[cfg-bound-wraps]
+# offset + len wraps, so a huge length passes the bound
+expect = device: its PCI configuration space, read only @ device config test failed at step 6
+group = g3
+edit = kernel/drivers/devhost.c
+<<<
+len > DEVICE_CONFIG_BYTES - offset ? E_OUT_OF_RANGE
+===
+offset + len > DEVICE_CONFIG_BYTES ? E_OUT_OF_RANGE
+>>>
+
+[cfg-offset]
+# the offset is taken and ignored
+expect = device: its PCI configuration space, read only @ device config test failed at step 3
+group = g4
+edit = kernel/drivers/devhost.c
+<<<
+            buf[i] = pci_config_read8(p->bus, p->slot, p->func, (uint8_t)(offset + i));
+===
+            buf[i] = pci_config_read8(p->bus, p->slot, p->func, (uint8_t)i);
+>>>
+
+[cfg-one-too-many]
+expect = device: its PCI configuration space, read only @ device config test failed at step 3
+group = g5
+edit = kernel/drivers/devhost.c
+<<<
+        if (user_copy_out(ubuf, buf, len) != 0) rc = E_BAD_ADDRESS;
+===
+        if (user_copy_out(ubuf, buf, len < DEVICE_CONFIG_BYTES ? len + 1 : len) != 0) rc = E_BAD_ADDRESS;
+>>>
+
+[cfg-pointer]
+# neither the check nor the copy's own failure says so
+expect = device: its PCI configuration space, read only @ device config test failed at step 7
+group = g6
+edit = kernel/drivers/devhost.c
+<<<
+       : !user_ptr_writable(ubuf, len)                                  ? E_BAD_ADDRESS : E_OK;
+===
+       : E_OK;
+>>>
+edit = kernel/drivers/devhost.c
+<<<
+        if (user_copy_out(ubuf, buf, len) != 0) rc = E_BAD_ADDRESS;
+===
+        (void)user_copy_out(ubuf, buf, len);
+>>>
+
+# ---- the driver against the real device ----
+
+[real-queue-off]
+# the queue is set up and never enabled: nothing is ever answered
+expect = virtio-gpu: the program against the real device @ virtio-gpu program exited with 10
+group = g1
+edit = os/std/virtio.xfxn
+<<<
+    mmio_w16(v.common, VIRTIO_C_Q_ENABLE, 1);
+===
+>>>
+
+[real-map-offset]
+# a group's offset in its BAR is dropped: the notifications go elsewhere
+expect = virtio-gpu: the program against the real device @ virtio-gpu program exited with 10
+group = g2
+edit = os/std/virtio.xfxn
+<<<
+    a.offset = first as u64;
+===
+    a.offset = 0;
+>>>
+
+[real-no-backing]
+expect = virtio-gpu: the program against the real device @ virtio-gpu program exited with 12
+group = g3
+edit = os/std/virtiogpu.xfxn
+<<<
+    if (rc == 0) { rc = vgpu_ok(g, vgpu_req_backing(g.cmd, g.res, g.runs, &g.run_phys[0], &g.run_len[0])); }
+===
+>>>
+
+[real-no-unref]
+# hiding leaves the old resource at the device
+expect = virtio-gpu: the program against the real device @ virtio-gpu program exited with 18
+group = g4
+edit = os/std/virtiogpu.xfxn
+<<<
+        vgpu_ok(g, vgpu_req_unref(g.cmd, g.res));
+===
+>>>
+
+[real-run-limit]
+# a run larger than SYS_DMA_ALLOC gives
+expect = virtio-gpu: the program against the real device @ virtio-gpu program exited with 20
+group = g5
+edit = os/std/virtiogpu.xfxn
+<<<
+        if (n > DMA_ALLOC_MAX) { n = DMA_ALLOC_MAX; }
+===
+>>>
+
+[real-span]
+# each run goes wherever the kernel likes, and the check that they are in one
+# span is dropped too: the backing is right, the addresses are not
+# (it faults drawing where the span should have been)
+expect = virtio-gpu: the program against the real device
+group = g8
+edit = os/std/virtiogpu.xfxn
+<<<
+        if (addr != want) { vgpu_free_runs(g); return E_NO_MEMORY; }
+===
+>>>
+edit = os/std/virtiogpu.xfxn
+<<<
+        let m: i32 = virtio_dma(&g.v, n, want, &addr, &phys);
+===
+        let m: i32 = virtio_dma(&g.v, n, want + 0x10000000, &addr, &phys);
+>>>
+
+[real-no-reset]
+# closing leaves the device running; the kernel sees its status register
+expect = virtio-gpu: the program against the real device @ virtio-gpu program failed at step 2
+group = g9
+edit = os/std/virtio.xfxn
+<<<
+    if (v.common != 0) { mmio_w8(v.common, VIRTIO_C_STATUS, 0); }
+===
+>>>
+
+# ---- the transport, on RAM ----
+
+[parse-first-wins]
+expect = x: virtio-gpu: the driver on a simulated device @ failed at step 705
+group = g1
+edit = os/std/virtio.xfxn
+<<<
+            } else if (kind == VIRTIO_CAP_DEVICE && c.device_len == 0) {
+===
+            } else if (kind == VIRTIO_CAP_DEVICE) {
+>>>
+
+[parse-off-end]
+expect = x: virtio-gpu: the driver on a simulated device @ failed at step 707
+group = g2
+edit = os/std/virtio.xfxn
+<<<
+    while (p >= 0x40 && p <= 256 - 16 && guard < 48) {
+===
+    while (p >= 0x40 && guard < 48) {
+>>>
+
+[parse-bar]
+expect = x: virtio-gpu: the driver on a simulated device @ failed at step 708
+group = g3
+edit = os/std/virtio.xfxn
+<<<
+        if (cfg[p] == 0x09 && (cfg[p + 2] as u32) >= 16 && (cfg[p + 4] as u32) <= 5) {
+===
+        if (cfg[p] == 0x09 && (cfg[p + 2] as u32) >= 16) {
+>>>
+
+[parse-common-short]
+expect = x: virtio-gpu: the driver on a simulated device @ failed at step 709
+group = g4
+edit = os/std/virtio.xfxn
+<<<
+    if (c.common_len < VIRTIO_COMMON_BYTES || c.notify_len < 2) { return E_NOT_SUPPORTED; }
+===
+    if (c.common_len == 0 || c.notify_len < 2) { return E_NOT_SUPPORTED; }
+>>>
+
+[parse-notify-short]
+expect = x: virtio-gpu: the driver on a simulated device @ failed at step 710
+group = g5
+edit = os/std/virtio.xfxn
+<<<
+            } else if (kind == VIRTIO_CAP_NOTIFY && c.notify_len == 0 && (cfg[p + 2] as u32) >= 20 && p <= 256 - 20) {
+===
+            } else if (kind == VIRTIO_CAP_NOTIFY && c.notify_len == 0) {
+>>>
+
+[ring-slot]
+# wraps too soon: an overrun instead would race the real device on the used
+# ring, and the real driver always offers head 0, so an early wrap is harmless to it
+expect = x: virtio-gpu: the driver on a simulated device @ failed at step 726
+group = g6
+edit = os/std/virtio.xfxn
+<<<
+    mmio_w16(q.avail, 4 + (q.offered & (q.size - 1)) * 2, head);
+===
+    mmio_w16(q.avail, 4 + (q.offered & (q.size / 2 - 1)) * 2, head);
+>>>
+
+[ring-no-notify]
+expect = virtio-gpu: the program against the real device @ virtio-gpu program exited with 10
+expect = x: virtio-gpu: the driver on a simulated device @ failed at step 727
+group = g7
+edit = os/std/virtio.xfxn
+<<<
+    mmio_w16(q.notify_at, 0, q.index);
+===
+>>>
+
+[ring-count-wrap]
+expect = x: virtio-gpu: the driver on a simulated device @ failed at step 733
+group = g8
+edit = os/std/virtio.xfxn
+<<<
+    if (mmio_r16(q.used, 2) == (q.taken & 0xFFFF)) { return 0; }
+===
+    if (mmio_r16(q.used, 2) == q.taken) { return 0; }
+>>>
+
+[start-version]
+expect = x: virtio-gpu: the driver on a simulated device @ failed at step 740
+group = g9
+edit = os/std/virtio.xfxn
+<<<
+    if ((high & 1) == 0 || (low & want) != want) { return virtio_fail(v, E_NOT_SUPPORTED); }
+===
+    if ((low & want) != want) { return virtio_fail(v, E_NOT_SUPPORTED); }
+>>>
+
+[start-want]
+expect = x: virtio-gpu: the driver on a simulated device @ failed at step 742
+group = g10
+edit = os/std/virtio.xfxn
+<<<
+    if ((high & 1) == 0 || (low & want) != want) { return virtio_fail(v, E_NOT_SUPPORTED); }
+===
+    if ((high & 1) == 0) { return virtio_fail(v, E_NOT_SUPPORTED); }
+>>>
+
+[start-no-failed]
+expect = x: virtio-gpu: the driver on a simulated device @ failed at step 741
+group = g11
+edit = os/std/virtio.xfxn
+<<<
+    mmio_w8(v.common, VIRTIO_C_STATUS, virtio_status(v) | VIRTIO_S_FAILED);
+===
+>>>
+
+[start-no-version-sent]
+expect = x: virtio-gpu: the driver on a simulated device @ failed at step 746
+group = g12
+edit = os/std/virtio.xfxn
+<<<
+    mmio_w32(v.common, VIRTIO_C_GFEATURE, 1);           // bit 32: version 1
+===
+    mmio_w32(v.common, VIRTIO_C_GFEATURE, 0);
+>>>
+
+# ---- the driver, on a thread that answers ----
+
+[gpu-off-scanout]
+expect = x: virtio-gpu: the driver on a simulated device @ failed at step 755
+group = g13
+edit = os/std/virtiogpu.xfxn
+<<<
+        if (mmio_r32(g.cmd, at + 16) != 0 && vgpu_fits(w, h) == 0) {
+===
+        if (vgpu_fits(w, h) == 0) {
+>>>
+
+[gpu-unchecked-size]
+expect = x: virtio-gpu: the driver on a simulated device @ failed at step 756
+group = g14
+edit = os/std/virtiogpu.xfxn
+<<<
+        if (mmio_r32(g.cmd, at + 16) != 0 && vgpu_fits(w, h) == 0) {
+===
+        if (mmio_r32(g.cmd, at + 16) != 0) {
+>>>
+
+[gpu-short-display]
+expect = x: virtio-gpu: the driver on a simulated device @ failed at step 758
+group = g15
+edit = os/std/virtiogpu.xfxn
+<<<
+    if (g.last != want || wrote < need) { return E_IO; }
+===
+    if (g.last != want) { return E_IO; }
+>>>
+
+[gpu-any-reply]
+expect = virtio-gpu: the program against the real device @ virtio-gpu program exited with 15
+expect = x: virtio-gpu: the driver on a simulated device @ failed at step 774
+group = g16
+edit = os/std/virtiogpu.xfxn
+<<<
+    if (g.last != want || wrote < need) { return E_IO; }
+===
+    if (wrote < need) { return E_IO; }
+>>>
+
+[gpu-short-reply]
+expect = x: virtio-gpu: the driver on a simulated device @ failed at step 780
+group = g17
+edit = os/std/virtiogpu.xfxn
+<<<
+    if (wrote < VGPU_HDR_BYTES) { return E_IO; }
+===
+>>>
+
+[gpu-wrong-head]
+expect = x: virtio-gpu: the driver on a simulated device @ failed at step 781
+group = g18
+edit = os/std/virtiogpu.xfxn
+<<<
+    if (head != 0) { g.dead = 1; return E_IO; }
+===
+>>>
+
+[gpu-dead-speaks]
+expect = x: virtio-gpu: the driver on a simulated device @ failed at step 783
+group = g19
+edit = os/std/virtiogpu.xfxn
+<<<
+    if (g.dead != 0) { return E_IO; }
+    g.last = 0;
+===
+    g.last = 0;
+>>>
+
+[gpu-timeout-alive]
+expect = x: virtio-gpu: the driver on a simulated device @ failed at step 784
+group = g20
+edit = os/std/virtiogpu.xfxn
+<<<
+            if (slept >= g.wait_ms) { g.dead = 1; return E_TIMED_OUT; }
+===
+            if (slept >= g.wait_ms) { return E_TIMED_OUT; }
+>>>
+
+[gpu-transfer-offset]
+expect = x: virtio-gpu: the driver on a simulated device @ failed at step 775
+group = g21
+edit = os/std/virtiogpu.xfxn
+<<<
+    let offset: u64 = (y as u64) * (g.pitch as u64) + (x as u64) * 4;
+===
+    let offset: u64 = (y as u64) * (g.pitch as u64);
+>>>
+
+[gpu-flush-anyway]
+expect = x: virtio-gpu: the driver on a simulated device @ failed at step 775
+group = g22
+edit = os/std/virtiogpu.xfxn
+<<<
+    let rc: i32 = vgpu_ok(g, vgpu_req_transfer(g.cmd, g.res, x, y, w, h, offset));
+    if (rc != 0) { return rc; }
+    return vgpu_ok(g, vgpu_req_flush(g.cmd, g.res, x, y, w, h));
+===
+    vgpu_ok(g, vgpu_req_transfer(g.cmd, g.res, x, y, w, h, offset));
+    return vgpu_ok(g, vgpu_req_flush(g.cmd, g.res, x, y, w, h));
+>>>
+
+[gpu-backing-high]
+expect = x: virtio-gpu: the driver on a simulated device @ failed at step 771
+group = g23
+edit = os/std/virtiogpu.xfxn
+<<<
+        mmio_w32(b, at + 4, (phys[i] >> 32) as u32);
+===
+        mmio_w32(b, at + 4, 0);
+>>>
+
+[gpu-fits-bytes]
+expect = x: virtio-gpu: the driver on a simulated device @ failed at step 778
+group = g24
+edit = os/std/virtiogpu.xfxn
+<<<
+    if ((w as u64) * (h as u64) * 4 > (VGPU_RUNS_MAX as u64) * (DMA_ALLOC_MAX as u64)) { return E_OUT_OF_RANGE; }
+===
+>>>
+
+[present-not-sent]
+# the server draws in the backing and never tells the device
+expect = x: virtio-gpu: the driver on a simulated device @ failed at step 787
+group = g25
+edit = os/std/display.xfxn
+<<<
+            if (sc.gpu != 0 as *vgpu) { vgpu_update(sc.gpu, r.x, r.y, r.w, r.h); }
+===
+>>>
+
+[present-copies-itself]
+expect = x: virtio-gpu: the driver on a simulated device @ failed at step 788
+group = g26
+edit = os/std/display.xfxn
+<<<
+            if (sc.px != c.back.px) { ds_present_rect(sc, &c.back, &r); }
+===
+            ds_present_rect(sc, &c.back, &r);
+>>>

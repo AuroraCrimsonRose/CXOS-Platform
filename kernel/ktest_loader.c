@@ -1537,15 +1537,14 @@ static uint32_t bp_dec(char *at, uint32_t v) {
 /* Run it with `argv` (argv[0] and every NUL counted in argv_len), wait for it
    and for what it held to be given back: its exit code, or -1 if it did not
    start, did not end in time, or did not end by exiting. */
-static int bp_run(const char *argv_in, uint32_t argv_len, uint32_t live0) {
-    static const char prog[] = "/Shared/Programs/bochs.xuex";
+static int bp_run_path(const char *prog, uint32_t prog_len, const char *argv_in, uint32_t argv_len, uint32_t live0) {
     struct spawn_args *a        = (struct spawn_args *)SHP_VA;
     struct object_info_args *oi = (struct object_info_args *)(SHP_VA + 0x100);
     struct process_info *pi     = (struct process_info *)(SHP_VA + 0x200);
     char *path                  = (char *)(SHP_VA + 0x300);
     char *argv                  = (char *)(SHP_VA + 0x380);
     struct htab *tab = thread_htab(thread_current_id());
-    for (uint32_t i = 0; i < sizeof prog; i++) path[i] = prog[i];
+    for (uint32_t i = 0; i < prog_len; i++) path[i] = prog[i];
     for (uint32_t i = 0; i < argv_len; i++) argv[i] = argv_in[i];
     a->image = 0; a->image_len = 0; a->name = user_addr(path);
     a->broker_endpoint = -1; a->caps = GRANT_DRIVER | GRANT_CONSOLE; a->job = 0;
@@ -1565,6 +1564,11 @@ static int bp_run(const char *argv_in, uint32_t argv_len, uint32_t live0) {
     int settled = 0;
     for (int i = 0; i < 10 && !settled; i++) settled = proc_live_settles(live0);
     return settled ? code : -1;
+}
+
+static int bp_run(const char *argv_in, uint32_t argv_len, uint32_t live0) {
+    static const char prog[] = "/Shared/Programs/bochs.xuex";
+    return bp_run_path(prog, sizeof prog, argv_in, argv_len, live0);
 }
 
 static int bp_is(volatile uint16_t *r, uint32_t w, uint32_t h, uint32_t pitch, uint32_t bpp) {
@@ -1638,6 +1642,75 @@ done:
     /* said only now, in the boot's mode: a narrower console cuts the line short */
     if (step != 0)
         klog_u32("KTEST", SEV_ERR, "bochs program failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    thread_set_caps(thread_current_id(), caps);
+    paging_unmap(SHP_VA);
+    pmm_free(frame);
+    return step == 0;
+}
+
+/* 2.7b: the virtio-gpu driver against the real device, as `virtgpu test`. The
+   picture is QEMU's to see, not the guest's, so what is judged here is the
+   program's exit code (which rests on the device's own replies and refusals),
+   that what it held came back, and that the device's status register, read
+   through a mapping of the kernel's own, says the program reset it. A boot
+   with no virtio-gpu (the rig) says it skipped. 1 = pass, 0 = fail. */
+#define VP_STATUS 20u   /* the common configuration's device status */
+
+int ktest_virtgpu_program(void) {
+    if (cxfs_resolve("/Shared/Programs/virtgpu.xuex", 0) < 0) return 1;     /* nothing staged - skip */
+    unsigned id = DEVICE_MAX;
+    const struct pci_device *pd = 0;
+    for (unsigned i = 0; i < DEVICE_MAX && !pd; i++) {
+        const struct dev_node *n = devtree_get(i);
+        if (n && n->pci && n->ids.vendor == 0x1AF4u && n->ids.device == 0x1050u) { pd = n->pci; id = i; }
+    }
+    if (!pd) {
+        klog("KTEST", SEV_WARN, "virtio-gpu: no device; skipped");
+        return 1;
+    }
+    /* the common configuration, found by the kernel's own walk of the list:
+       a program that misread it is not believed about where it is */
+    uint32_t bar_no = 6, off = 0;
+    for (uint32_t p = pci_config_read8(pd->bus, pd->slot, pd->func, 0x34) & 0xFCu, guard = 0;
+         p >= 0x40 && guard < 48;
+         p = pci_config_read8(pd->bus, pd->slot, pd->func, (uint8_t)(p + 1)) & 0xFCu, guard++) {
+        if (pci_config_read8(pd->bus, pd->slot, pd->func, (uint8_t)p) == 0x09
+            && pci_config_read8(pd->bus, pd->slot, pd->func, (uint8_t)(p + 3)) == 1) {
+            bar_no = pci_config_read8(pd->bus, pd->slot, pd->func, (uint8_t)(p + 4));
+            for (uint32_t i = 0; i < 4; i++)
+                off |= (uint32_t)pci_config_read8(pd->bus, pd->slot, pd->func, (uint8_t)(p + 8 + i)) << (i * 8);
+            break;
+        }
+    }
+    struct pci_bar bar;
+    if (bar_no > 5 || !pci_bar_get(pd, (int)bar_no, &bar) || bar.is_io || !bar.base) return 0;
+    uint64_t at = bar.base + off;
+    volatile uint8_t *regs = (volatile uint8_t *)paging_map_phys((paddr_t)(at & ~0xFFFull), 0x1000, VM_WRITE | VM_UNCACHED);
+    if (!regs) return 0;
+    volatile uint8_t *status = regs + (at & 0xFFFu) + VP_STATUS;
+    paddr_t frame = pmm_alloc();
+    if (!frame) return 0;
+    if (paging_map_user(SHP_VA, frame, VM_WRITE) != 0) { pmm_free(frame); return 0; }
+    uint32_t caps = thread_current_caps();
+    thread_set_caps(thread_current_id(), GRANT_SPAWN | GRANT_DRIVER | GRANT_CONSOLE);
+    uint32_t live0 = proc_live();
+    uint32_t mem0 = kobj_live(KOBJ_MEM), dev0 = kobj_live(KOBJ_DEVICE);
+    static const char prog[] = "/Shared/Programs/virtgpu.xuex";
+    static const char argv[] = "virtgpu\0" "test";
+
+    *status = 0;
+    int code = bp_run_path(prog, sizeof prog, argv, sizeof argv, live0);
+    int step = 1;
+    if (code != 0) {
+        klog_u32("KTEST", SEV_ERR, "virtio-gpu program exited with ", (uint32_t)code, LOG_COLOR_VALUE, "");
+        goto done;
+    }
+    step = 2; if (*status != 0) goto done;
+    step = 3; if (kobj_live(KOBJ_MEM) != mem0 || kobj_live(KOBJ_DEVICE) != dev0
+                  || devtree_get(id)->state != DEVICE_STATE_UNBOUND) goto done;
+    step = 0;
+done:
+    if (step != 0) klog_u32("KTEST", SEV_ERR, "virtio-gpu program failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
     thread_set_caps(thread_current_id(), caps);
     paging_unmap(SHP_VA);
     pmm_free(frame);

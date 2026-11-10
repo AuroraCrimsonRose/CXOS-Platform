@@ -7393,3 +7393,69 @@ done:
     dh_end(&e);
     return ok;
 }
+
+/* SYS_DEVICE_CONFIG (2.7b): 256 bytes of a device's PCI configuration space,
+   read only, for the handle's holder. 1 = pass, 0 = fail. */
+#define DC_BUF (TEST_CODE_VIRT + 0x600)    /* 256 bytes and two past them */
+static int dc_read(int32_t h, uint32_t off, uint32_t len) {
+    return um_call(SYS_DEVICE_CONFIG, 1u << 2, (uint32_t)h, off, DC_BUF, len, 0);
+}
+int usermode_device_config_test(void) {
+    struct dh_env e;
+    if (!dh_begin(&e)) return 0;
+    thread_set_caps(e.me, GRANT_DRIVER);
+    int edu = dh_find_edu();
+    if (edu < 0) {
+        klog("KTEST", SEV_WARN, "device config: no edu device; skipped");
+        dh_end(&e);
+        return 1;
+    }
+    const struct pci_device *p = devtree_get((unsigned)edu)->pci;
+    volatile uint8_t *buf = (volatile uint8_t *)ktest_umem(DC_BUF);
+    uint32_t mem0 = kobj_live(KOBJ_MEM), dev0 = kobj_live(KOBJ_DEVICE);
+    int32_t d = -1, t = -1, dn = -1;
+    int step = 0, ok = 0;
+
+    d = dh_open((uint32_t)edu);
+    t = syscall_dispatch(SYS_TIMER_CREATE, 0, 0, 0, 0, 0);
+    if (d > 0) dn = dh_dup(d, HRIGHT_IRQ | HRIGHT_DMA);
+    step = 1; if (d <= 0 || t <= 0 || dn <= 0) goto done;
+    /* 2: the whole space, each byte what the bus says (not the status word,
+       which changes by itself) */
+    step = 2; if (dc_read(d, 0, 256) != E_OK) goto done;
+    if (buf[0] != 0x34 || buf[1] != 0x12 || buf[2] != 0xE8 || buf[3] != 0x11) goto done;
+    for (uint32_t i = 0; i < 256; i++)
+        if (i != 6 && i != 7 && buf[i] != pci_config_read8(p->bus, p->slot, p->func, (uint8_t)i)) goto done;
+    /* 3: a part, from an offset, and not a byte more than was asked for */
+    buf[2] = 0xA5; buf[3] = 0x5A;
+    step = 3; if (dc_read(d, 2, 2) != E_OK || buf[0] != 0xE8 || buf[1] != 0x11
+                  || buf[2] != 0xA5 || buf[3] != 0x5A) goto done;
+    /* 4: the last byte may be read */
+    buf[0] = 0x77; buf[1] = 0x77;
+    step = 4; if (dc_read(d, 255, 1) != E_OK || buf[1] != 0x77
+                  || buf[0] != pci_config_read8(p->bus, p->slot, p->func, 255)) goto done;
+    /* 5: who may ask: the handle, its type, the right */
+    step = 5; if (dc_read(9999, 0, 4) != E_BAD_HANDLE || dc_read(t, 0, 4) != E_WRONG_TYPE
+                  || dc_read(dn, 0, 4) != E_ACCESS_DENIED) goto done;
+    /* 6: what may not be asked, one thing wrong at a time */
+    step = 6; if (dc_read(d, 0, 0) != E_INVALID_ARGS
+                  || dc_read(d, 256, 1) != E_OUT_OF_RANGE
+                  || dc_read(d, 255, 2) != E_OUT_OF_RANGE
+                  || dc_read(d, 0, 257) != E_OUT_OF_RANGE
+                  || dc_read(d, 0xFFFFFFFFu, 2) != E_OUT_OF_RANGE
+                  || dc_read(d, 1, 0xFFFFFFFFu) != E_OUT_OF_RANGE) goto done;
+    /* 7: a pointer that is not the program's to write */
+    step = 7; if (um_call(SYS_DEVICE_CONFIG, 1u << 2, (uint32_t)d, 0, 0xC0001000u, 4, 0) != E_BAD_ADDRESS
+                  || um_call(SYS_DEVICE_CONFIG, 1u << 2, (uint32_t)d, 0, 0, 4, 0) != E_BAD_ADDRESS) goto done;
+    ok = 1;
+
+done:
+    if (!ok) klog_u32("KTEST", SEV_ERR, "device config test failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    dh_close(e.tab, &dn);
+    dh_close(e.tab, &t);
+    dh_close(e.tab, &d);
+    if (ok && (kobj_live(KOBJ_MEM) != mem0 || kobj_live(KOBJ_DEVICE) != dev0
+               || dh_state((uint32_t)edu) != DEVICE_STATE_UNBOUND)) ok = 0;
+    dh_end(&e);
+    return ok;
+}

@@ -124,13 +124,14 @@ int syscall_device_irq(int32_t h);              /* SYS_DEVICE_IRQ */
 int syscall_irq_ack(int32_t h);                 /* SYS_IRQ_ACK */
 int syscall_dma_alloc(int32_t h, uint64_t size, uint64_t phys); /* SYS_DMA_ALLOC */
 int syscall_screen_mode(int32_t h, uint64_t info); /* SYS_SCREEN_MODE */
+int syscall_device_config(int32_t h, uint32_t offset, uint64_t buf, uint32_t len); /* SYS_DEVICE_CONFIG */
 
 /* Registers a syscall carries after its number, and the table's slots: one per
  * number up to the largest. syscall_dispatch refuses a number past the end
  * before looking it up, and one that lands in a hole finds no decoder. */
 #define SYSCALL_ARGS            5
-#define SYSCALL_TABLE_SIZE      247
-#define SYSCALL_COUNT           109
+#define SYSCALL_TABLE_SIZE      248
+#define SYSCALL_COUNT           110
 
 /* An argument register is as wide as the machine's: 32 bits on x86-32, where a
  * u64 takes a register pair, and 64 on x86-64, where it takes one. */

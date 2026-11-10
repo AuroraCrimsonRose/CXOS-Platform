@@ -1389,7 +1389,15 @@ language work in `language/CX_X_PLAN.md`.
    written), a mode change racing a panic, any of it on real hardware (the
    rig has no Bochs display). Not built: a change while `displayd` holds the
    screen, EDID, X's `*mmio` type (the registers go through
-   `os/std/mmio.xfxn`). 2.7b is virtio-gpu 2D, 2.7c the Process Manager.
+   `os/std/mmio.xfxn`).
+   **2.7b, virtio-gpu 2D: done (ABI 38)** (`CX_DISPLAY.md` section 8,
+   `2.7b.sab`): `os/std/virtio.xfxn` (the transport, polled) and
+   `os/std/virtiogpu.xfxn`, `SYS_DEVICE_CONFIG` (0xF7, read only), `run +driver
+   virtgpu`, and `displayd --virtio-gpu`, whose present sends each damaged
+   rectangle. The image's `memory_quota_mib` is 64 since this step. A panic does not show on this display (the kernel cannot draw
+   there): decision in `CX_DISPLAY.md`. Not tested: any of it on real hardware;
+   the picture itself except by a screendump by hand. 2.7c is the Process
+   Manager.
 
 ### Phase 3: storage and the system tree
 

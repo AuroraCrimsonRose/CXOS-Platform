@@ -236,6 +236,54 @@ fences are waitable handles and buffers move with explicit fences.
 Drivers follow Haiku's split: a tiny kernel part, the rest in user space
 (`kernel/CX_DRIVERS.md`).
 
+### virtio-gpu 2D (built, step 2.7b)
+
+`os/std/virtio.xfxn` is virtio over PCI: the capabilities that say where the
+registers are (read through `SYS_DEVICE_CONFIG`), the start-up handshake, the
+split virtqueue. `os/std/virtiogpu.xfxn` is the display on top of it. It has
+no framebuffer: the pixels are the driver's own DMA memory, handed to the
+device as a resource's backing, and nothing shows until the driver sends a
+transfer and a flush for the rectangle that changed. So `ds_present` is the
+hook: on a `ds_screen` with a `gpu`, each damaged rectangle it has written is
+then sent (`vgpu_update`).
+
+Decisions:
+
+- **Polled.** A virtio PCI device interrupts by MSI-X only and the kernel
+  offers MSI only, so one command at a time, and the driver looks at the used
+  ring. It suits a device that answers at once. A device that speaks first
+  (the network, input) has to settle interrupts.
+- **The driver lives in the display server** (`displayd --virtio-gpu`, with
+  `+driver`), as a library. The server already owns the screen; a driver
+  process between them would be an IPC round trip per rectangle for no
+  boundary that protects anything today.
+- **The screen is not the kernel's.** `SYS_SCREEN_OPEN` and
+  `SYS_SCREEN_MODE` are not used, and the kernel cannot draw on this display.
+  The console stays on what the firmware set up, and **a panic shows there and
+  on the serial line, never here**: the virtio display freezes on its last
+  frame. On a machine whose only display is a virtio-gpu with no VGA side
+  there is no panic screen at all. `virtio-vga` would give one (a reset returns
+  it to VGA), and is not built.
+- **The backing is the compositor's back buffer** (`ds_comp_on`): the device
+  reads it only when told to, so a half-composed frame is never seen and a
+  second full screen is not needed. `displayd` holds three full screens: 25 MiB
+  at 1920 x 1080, which is why the image's `memory_quota_mib` went from 16 to
+  its limit, 64, at this step. 16 MiB stopped it at 1280 x 800 with a fourth.
+- **Memory in runs.** `SYS_DMA_ALLOC` gives at most 4 MiB at once, so the
+  backing is several runs, attached as several entries and mapped next to each
+  other by `MMAP_HINT` in one span of addresses (a run that lands elsewhere is
+  an error). Up to 16 runs, 64 MiB.
+- **The device's word is checked**: a display's size before anything is
+  allocated from it, replies only at fixed places in the driver's own page,
+  and after a timeout or an answer to the wrong chain the queue is not trusted
+  again.
+
+Verification boots attach `virtio-gpu-pci` beside the VGA. `run +driver
+virtgpu [show [<seconds>] | test]` runs it by hand. Not tested: anything on
+real hardware, a device that changes the display's size. Not built: the cursor
+queue, more than one scanout, EDID, 3D.
+
+
 ## 9. Fixed now because they are painful later
 
 Logical coordinates with a scale factor (Serenity `MultiScaleBitmaps`);
