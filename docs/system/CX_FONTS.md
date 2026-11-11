@@ -57,25 +57,45 @@
    publishes only a variable font, the converter instantiates those four on
    the host.
 
-   | Role | Faces |
+   **The defaults (Aurora, 2026-11-11), replacing item 4's Noto:**
+
+   | Role | Default |
    |---|---|
-   | UI (default first) | Noto Sans, Inter, Source Sans 3, IBM Plex Sans, Open Sans |
-   | Serif | Noto Serif, Source Serif 4, IBM Plex Serif |
-   | Monospace | Noto Sans Mono, Fira Code, JetBrains Mono, Cascadia Code, Source Code Pro, IBM Plex Mono |
+   | Primary system UI | IBM Plex Sans |
+   | Headings and branding (the system's own titles; not for body text: no italics, weights 300-700 only) | Space Grotesk |
+   | Terminal and developer tools | IBM Plex Mono (no ligatures) |
+   | Accessibility alternative (one setting swaps the UI face, and the terminal's to Atkinson Hyperlegible Mono) | Atkinson Hyperlegible Next |
+   | Documents (serif; to confirm) | IBM Plex Serif |
+
+   **Shipped as choices, many of them:** the user picks any face for each
+   role.
+
+   | Role | Choices |
+   |---|---|
+   | UI | Noto Sans, Inter, Source Sans 3, Open Sans |
+   | Serif | Noto Serif, Source Serif 4 |
+   | Monospace | Noto Sans Mono, Fira Code, JetBrains Mono, Cascadia Code, Source Code Pro |
    | Same metrics as the commercial fonts (documents made elsewhere) | Liberation Sans, Serif, Mono (Arial, Times New Roman, Courier New); Carlito (Calibri); Caladea (Cambria) |
    | Bitmap | Terminus (the console, built); GNU Unifont (item 2) |
+   | Other scripts | Noto's families, and Plex's own (Arabic, Hebrew, Devanagari, Thai, KR, JP): fallback where the chosen face has no glyph |
+
+   Plex reserves its name, I believe: if so the converted faces ship under
+   ours ("CX Sans", "CX Mono" or the like), credited in the notices; check
+   every face's reserved names when it is vendored. The terminal draws the
+   box-drawing and block characters (U+2500-259F) itself, whatever the
+   face, since a monospace face may lack them and drawn ones join exactly.
 
    Not shipped: Arial, Helvetica, Times New Roman, Segoe UI, Calibri,
    Consolas and the like, which are licensed for their vendors' systems
    only. Roboto and DejaVu are not OFL and would need decision 3 widened.
-   The image carries a core (the defaults: Noto Sans, Noto Serif, Noto Sans
-   Mono, Terminus); the rest become packages once Phase 3 has them, until
-   then staged only if the image's size allows (measure first).
+   The image carries the defaults and Terminus always, and as many of the
+   choices as its size allows (measured in 2.8a′); whatever does not fit
+   becomes a package once Phase 3 has them.
    Needed with it: faces found by family, weight and style in
    `/System/Fonts`, the toolkit's font handle asking by those and a size,
    and the user's default UI, document and terminal faces as a setting.
-   The terminal keeps Terminus as its default and offers the monospace
-   faces. **Ligatures** (Fira Code's, JetBrains Mono's and Cascadia Code's
+   The console keeps Terminus; the terminal app defaults to IBM Plex Mono
+   and offers the other monospace faces and Terminus. **Ligatures** (Fira Code's, JetBrains Mono's and Cascadia Code's
    `->`, `!=`) need a sequence-to-glyph table carried in XFNT v2 and a
    lookup when text is laid out: a step after 2.8a′; without it those faces
    still draw, unjoined.

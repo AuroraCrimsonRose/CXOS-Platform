@@ -1447,8 +1447,10 @@ language work in `language/CX_X_PLAN.md`.
      framebuffer (`SYS_FB_*`, `SYS_MOUSE_READ`) and so bypasses displayd:
      **retired** (keep any drawing worth having; `cxos.xfxn` moved onto
      windows or dropped; listed in `TRANSITIONAL_CODE.md` meanwhile).
-   - **2.8a′, scalable fonts** (`system/CX_FONTS.md` §3 item 4: Noto Sans,
-     Serif and Mono, OFL-1.1). **Our own outline format, so the OS never
+   - **2.8a′, scalable fonts** (`system/CX_FONTS.md` §3 item 5; defaults
+     IBM Plex Sans for the UI, Space Grotesk for headings, IBM Plex Mono for
+     the terminal, Atkinson Hyperlegible Next for accessibility, with many
+     more shipped as choices; all OFL-1.1). **Our own outline format, so the OS never
      parses TrueType** (Aurora, 2026-11-11): `cxk font build` reads the TTF
      on the host, where a parser bug costs a build and not a machine, and
      writes XFNT v2, a kind field beside v1's bitmap: per glyph its advance,
@@ -1461,10 +1463,10 @@ language work in `language/CX_X_PLAN.md`.
      feeding it bad files; fonts load only from `/System`. The rasteriser
      (X, over `fixed.xfxn`): flatten, fill with antialiased coverage,
      cache glyphs per size. A C# rasteriser of the same algorithm in the
-     DevKit is the oracle, as the C# compiler is for `os/xc`. The converted
-     font is a Modified Version: it gets our own face name if Noto reserves
-     one (check the licence when it is vendored). A UI scale setting comes
-     with it. The terminal keeps Terminus by default. A choice of faces,
+     DevKit is the oracle, as the C# compiler is for `os/xc`. A converted
+     font is a Modified Version: it gets our own face name where its
+     licence reserves one (Plex, probably; check each when it is vendored). A UI scale setting comes
+     with it. The terminal defaults to Plex Mono. A choice of faces,
      proportional and monospace, with a core in the image and the rest as
      packages later: `CX_FONTS.md` §3 item 5 (ligatures a later step).
      Open: `CX_FONTS.md` puts the
