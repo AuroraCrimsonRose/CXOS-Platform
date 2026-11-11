@@ -47,9 +47,10 @@
    the Build / Port / Embed rule when the display server is built.
    **2026-11-11 (roadmap 2.8a′):** built, as XFNT v2 outlines. TrueType is
    converted on the host by `cxk font build`, and the OS reads only our own
-   fixed-record format, never a TrueType file. Where the rasteriser runs
-   (the display server, as above, or the client toolkit, since windows are
-   client-drawn) is decided in 2.8a.
+   fixed-record format, never a TrueType file. **Where the rasteriser runs:
+   the client toolkit** (decided 2.8a, `system/CX_TOOLKIT.md` §2), since
+   windows are client-drawn; displayd links the same library for its frames
+   and trusted screens.
 5. **A choice of faces, proportional and monospace** (Aurora, 2026-11-11).
    All OFL-1.1, each licence read when it is vendored (reserved names
    included: a converted face that reserves its name ships under one of

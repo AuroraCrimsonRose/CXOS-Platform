@@ -1453,6 +1453,13 @@ language work in `language/CX_X_PLAN.md`.
      a switch plus a draw callback for custom ones, no inheritance until
      something needs it. Text goes through a font handle and a size from
      the first day, so outline fonts (2.8a′) change no widget.
+     **Designed 2026-11-11** (`system/CX_TOOLKIT.md`; the survey kept the
+     leaning): built in five sub-steps, **2.8a1** the core and the simple
+     controls with gallery v1, **2.8a2** key codes and modifiers (ABI),
+     commands, keybinds, text field, clipboard, input methods, **2.8a3**
+     scroll view, list, tree, table, tabs, menus, tooltip, dialog, text
+     grid, **2.8a4** localisation and bidi, **2.8a5** inspector,
+     automation and the boot checks.
      **Design goals** (Aurora, 2026-11-11), where other systems are weak:
      (1) one toolkit, no legacy layers beside it; (2) logical units and a
      scale per window from the first day, snapped to device pixels, so
@@ -1545,10 +1552,9 @@ language work in `language/CX_X_PLAN.md`.
      Icons with it (`system/CX_ICONS.md`): Phosphor's symbols as XFNT v2
      glyphs by name, on the same rasteriser; colour and file-type icons
      with the first system apps.
-     Open: `CX_FONTS.md` puts the
-     rasteriser in the display server, but windows are client-drawn
-     surfaces, so the toolkit is where text is drawn; decide in 2.8a and
-     update `CX_FONTS.md`.
+     Decided in 2.8a's design (2026-11-11, `system/CX_TOOLKIT.md` §2): the
+     rasteriser runs in the client toolkit, since windows are client-drawn;
+     displayd links the same library. `CX_FONTS.md` updated.
    - **2.8b, the terminal** (`os/apps`): a window with the text grid; the
      shell runs under it with its standard input and output as pipes. The
      shell today takes the keyboard (`GRANT_INPUT`) when it has no stdin
