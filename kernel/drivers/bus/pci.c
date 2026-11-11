@@ -161,6 +161,13 @@ void pci_enable_bus_master(const struct pci_device *d) {
 int pci_bar_get(const struct pci_device *d, int index, struct pci_bar *out) {
     if (!d || !out || index < 0 || index > 5) return 0;
     for (unsigned i = 0; i < sizeof(*out); i++) ((uint8_t *)out)[i] = 0;
+    /* Only a type-0 header has six BARs. Type 1 (PCI-to-PCI) has two, then the
+       bus numbers and the windows; type 2 (CardBus) one, then its own layout.
+       Probing those would write all-ones into a bridge's windows. Bit 7 says
+       only that the device has more functions. */
+    uint8_t type = (uint8_t)(d->header_type & 0x7Fu);
+    int bars = type == 0 ? 6 : type == 1 ? 2 : type == 2 ? 1 : 0;
+    if (index >= bars) return 0;
 
     uint8_t off = (uint8_t)(0x10 + index * 4);
     uint32_t raw = pci_config_read32(d->bus, d->slot, d->func, off);

@@ -63,7 +63,8 @@ struct pci_bar {
     uint8_t  valid;      /* 0 = unimplemented BAR                             */
 };
 
-/* Decode BAR `index` (0..5). Returns 1 if the BAR is implemented. Probes the
+/* Decode BAR `index` (0..5). Returns 1 if the BAR is implemented, 0 for an
+   index past the header type's BARs (type 0 has six, 1 two, 2 one). Probes the
    size, which briefly disables the device's decode - safe at init, not while
    the device is running. */
 int pci_bar_get(const struct pci_device *d, int index, struct pci_bar *out);

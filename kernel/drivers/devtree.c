@@ -264,12 +264,23 @@ int devtree_copy(unsigned id, struct dev_node *out) {
     return ok;
 }
 
+/* A bridge is never a process's to drive. Its registers past 0x10 are the bus
+   numbers and the windows every device behind it is reached through: the BAR
+   probe would close them for a moment, and its Bus Master bit gates their DMA.
+   Class 0x06 is every bridge, host and ISA included; a header other than type 0
+   (1 is PCI-to-PCI, 2 CardBus) has no six BARs to probe. Bit 7 of the header
+   type only says the device has more functions. */
+static int devtree_bridge(const struct pci_device *p) {
+    return p->class_code == 0x06 || (p->header_type & 0x7Fu) != 0;
+}
+
 struct dev_node *devtree_hold(unsigned id, int *rc) {
     if (id >= DEVTREE_MAX) { *rc = E_NOT_FOUND; return 0; }
     struct dev_node *n = &nodes[id];
     uint32_t f = spin_lock(&devtree_lock);
     *rc = n->state == DEV_FREE     ? E_NOT_FOUND
         : n->bus != DEVBUS_PCI     ? E_NOT_SUPPORTED
+        : devtree_bridge(n->pci)   ? E_NOT_SUPPORTED
         : n->state != DEV_UNBOUND  ? E_BUSY : E_OK;
     if (*rc == E_OK) n->state = DEV_HELD;
     spin_unlock(&devtree_lock, f);

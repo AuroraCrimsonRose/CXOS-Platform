@@ -166,7 +166,8 @@ int devtree_copy(unsigned id, struct dev_node *out);
 /* A process takes node `id` for its own driver (drivers/devhost.c): the
    node, DEV_UNBOUND until now and DEV_HELD from here, so neither a kernel
    binder nor a second open can take it. 0 with *rc E_NOT_FOUND (no node),
-   E_BUSY (bound, binding or held) or E_NOT_SUPPORTED (not a PCI function). */
+   E_BUSY (bound, binding or held) or E_NOT_SUPPORTED (not a PCI function, or
+   a bridge: class 0x06, or any header but type 0). */
 struct dev_node *devtree_hold(unsigned id, int *rc);
 /* Back to DEV_UNBOUND, once the process's device is quiet. */
 void devtree_release(struct dev_node *n);

@@ -164,7 +164,10 @@ landed in. A press raises and focuses.
   combination cannot be seen. It travels as `INPUT_EVENT_ATTENTION`, a flag
   beside the input ring and delivered ahead of it, so a keyboard flood or a
   server that has stopped reading cannot lose it. It goes only to the holder
-  of the input handle, and is never a key.
+  of the input handle, and is never a key. Since ABI 40 that handle needs the
+  screen's grant (`+screen`) as well as the keyboard's: every foreground
+  program has the keyboard's, and before this the first to ask after the
+  display server ended took the combination with the handle.
 - *The system's screen.* While it is up the compositor's stack holds that one
   surface and nothing else: no client layer exists to draw over it, keys and
   the pointer reach only the server, and a press in progress is ended first so

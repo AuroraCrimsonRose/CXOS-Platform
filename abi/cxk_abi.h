@@ -15,7 +15,7 @@
  * hash it was built against and the loader refuses one that differs, so a
  * program never runs against numbers or layouts it was not compiled for.
  */
-#define CXK_ABI_HASH { 0xe2, 0x37, 0x9c, 0x44, 0x4a, 0x86, 0x45, 0x59, 0x84, 0xe4, 0x88, 0x5a, 0x33, 0x19, 0x56, 0x88, 0xa4, 0x3f, 0x45, 0x27, 0xe0, 0x61, 0xae, 0x30, 0x68, 0xf4, 0x4c, 0x01, 0x08, 0x6a, 0xbc, 0x33 }
+#define CXK_ABI_HASH { 0x33, 0xe4, 0x5d, 0x77, 0xef, 0x0f, 0xce, 0x1c, 0xa7, 0x70, 0xfc, 0x6a, 0x48, 0x2d, 0xb0, 0xd5, 0xd0, 0x24, 0x96, 0xd7, 0x41, 0x54, 0xc0, 0xf5, 0xbb, 0xcf, 0xba, 0x12, 0xa6, 0x8e, 0x78, 0x89 }
 
 /*
  * CXK ABI v1 - the PUBLIC contract shared by the kernel, the .xoex executive,
@@ -44,7 +44,7 @@
  * line; bump both, and the DevKit's stamp, in the one commit that changes the
  * contract.
  */
-#define CXK_ABI_VERSION          39
+#define CXK_ABI_VERSION          40
 
 /*
  * ---- syscall numbers ----
@@ -548,7 +548,12 @@
 
 /*
  * The keyboard and the pointer as one handle, for the display server
- * (GRANT_INPUT). One holder at a time, and it cannot travel: while the handle
+ * (GRANT_INPUT and GRANT_FRAMEBUFFER both). The secure attention key
+ * (Ctrl+Alt+Del) goes to its holder alone, so it is for a program the user
+ * gave the screen to: one that could already paint the whole screen gains no
+ * trust from it, while an ordinary program, which holds GRANT_INPUT whenever
+ * it runs in the foreground, cannot take it once the display server has
+ * gone. One holder at a time, and it cannot travel: while the handle
  * lives every key and movement goes to it alone, and SYS_INPUT_READ,
  * SYS_INPUT_POLL and SYS_MOUSE_READ are E_BUSY for everybody, so a program
  * that holds GRANT_INPUT cannot read keys meant for a window.
@@ -859,7 +864,9 @@
  * ebx = device id (GRANT_DRIVER) -> a device handle with HRIGHT_BAR,
  * HRIGHT_IRQ, HRIGHT_DMA and HRIGHT_DUPLICATE. Only a PCI function no driver
  * has (DEVICE_STATE_UNBOUND): E_BUSY when a kernel driver or another open has
- * it, E_NOT_SUPPORTED on any other bus. Its memory decode and bus mastering
+ * it, E_NOT_SUPPORTED on any other bus and for a bridge (class 0x06, or a
+ * header other than type 0): its windows reach every device behind it, and
+ * its bus mastering gates their DMA. Its memory decode and bus mastering
  * are turned on. It stays held until its last reference goes (its handles,
  * its interrupt's, its DMA buffers'); then bus mastering and MSI are turned
  * off, and only then are its buffers' pages freed.
@@ -871,7 +878,8 @@
  * handle with HRIGHT_MAP, HRIGHT_MAP_WRITE, HRIGHT_INSPECT and
  * HRIGHT_DUPLICATE: the BAR's registers, which SYS_VM_MAP maps uncached.
  * Nothing is charged: the pages are the device's. E_NOT_FOUND: no such BAR,
- * or the upper half of a 64-bit one; E_NOT_SUPPORTED: an I/O BAR, or one
+ * the upper half of a 64-bit one, or one the firmware never placed (base
+ * 0); E_NOT_SUPPORTED: an I/O BAR, or one
  * whose base or size is not whole pages (a page of it would show another
  * device's registers); E_OUT_OF_RANGE: an index above 5, or a BAR larger
  * than MMAP_MAX_BYTES.
@@ -1600,6 +1608,8 @@ struct input_event {
  * with no IOMMU, a driver's DMA reaches all of memory.
  */
 #define GRANT_DRIVER             0x0080u
+
+/* SYS_FB_* and SYS_SCREEN_OPEN: the screen; with GRANT_INPUT, SYS_INPUT_OPEN */
 #define GRANT_FRAMEBUFFER        0x0100u
 
 /* SYS_THREAD_SET_PRIORITY to PRIO_REALTIME and up */

@@ -40,7 +40,7 @@ domain kernel
 /// mismatch. Declared in versions.json as `cxex-abi` and checked against this
 /// line; bump both, and the DevKit's stamp, in the one commit that changes the
 /// contract.
-const CXK_ABI_VERSION: u32 = 39
+const CXK_ABI_VERSION: u32 = 40
 
 /// ---- syscall numbers ----
 /// lifecycle 0x00-0x0F (no capability required)
@@ -374,7 +374,12 @@ syscall SYS_FB_SET_FONT = 0x46 fn fb_set_font(name: *u8) -> i32
 /// mode); E_NOT_SUPPORTED for a framebuffer that does not start on a page.
 syscall SYS_SCREEN_OPEN = 0x47 fn screen_open(info: *screen_info) -> i32
 /// The keyboard and the pointer as one handle, for the display server
-/// (GRANT_INPUT). One holder at a time, and it cannot travel: while the handle
+/// (GRANT_INPUT and GRANT_FRAMEBUFFER both). The secure attention key
+/// (Ctrl+Alt+Del) goes to its holder alone, so it is for a program the user
+/// gave the screen to: one that could already paint the whole screen gains no
+/// trust from it, while an ordinary program, which holds GRANT_INPUT whenever
+/// it runs in the foreground, cannot take it once the display server has
+/// gone. One holder at a time, and it cannot travel: while the handle
 /// lives every key and movement goes to it alone, and SYS_INPUT_READ,
 /// SYS_INPUT_POLL and SYS_MOUSE_READ are E_BUSY for everybody, so a program
 /// that holds GRANT_INPUT cannot read keys meant for a window.
@@ -603,7 +608,9 @@ syscall SYS_DEVICE_INFO = 0xF0 fn device_info(id: u32, d: *device_desc) -> i32
 /// ebx = device id (GRANT_DRIVER) -> a device handle with HRIGHT_BAR,
 /// HRIGHT_IRQ, HRIGHT_DMA and HRIGHT_DUPLICATE. Only a PCI function no driver
 /// has (DEVICE_STATE_UNBOUND): E_BUSY when a kernel driver or another open has
-/// it, E_NOT_SUPPORTED on any other bus. Its memory decode and bus mastering
+/// it, E_NOT_SUPPORTED on any other bus and for a bridge (class 0x06, or a
+/// header other than type 0): its windows reach every device behind it, and
+/// its bus mastering gates their DMA. Its memory decode and bus mastering
 /// are turned on. It stays held until its last reference goes (its handles,
 /// its interrupt's, its DMA buffers'); then bus mastering and MSI are turned
 /// off, and only then are its buffers' pages freed.
@@ -612,7 +619,8 @@ syscall SYS_DEVICE_OPEN = 0xF1 fn device_open(id: u32) -> i32
 /// handle with HRIGHT_MAP, HRIGHT_MAP_WRITE, HRIGHT_INSPECT and
 /// HRIGHT_DUPLICATE: the BAR's registers, which SYS_VM_MAP maps uncached.
 /// Nothing is charged: the pages are the device's. E_NOT_FOUND: no such BAR,
-/// or the upper half of a 64-bit one; E_NOT_SUPPORTED: an I/O BAR, or one
+/// the upper half of a 64-bit one, or one the firmware never placed (base
+/// 0); E_NOT_SUPPORTED: an I/O BAR, or one
 /// whose base or size is not whole pages (a page of it would show another
 /// device's registers); E_OUT_OF_RANGE: an index above 5, or a BAR larger
 /// than MMAP_MAX_BYTES.
@@ -1207,6 +1215,7 @@ const GRANT_ENDPOINT: u32 = 0x0040u
 /// SYS_DEVICE_INFO and SYS_DEVICE_OPEN: the hardware itself. In no baseline:
 /// with no IOMMU, a driver's DMA reaches all of memory.
 const GRANT_DRIVER: u32 = 0x0080u
+/// SYS_FB_* and SYS_SCREEN_OPEN: the screen; with GRANT_INPUT, SYS_INPUT_OPEN
 const GRANT_FRAMEBUFFER: u32 = 0x0100u
 /// SYS_THREAD_SET_PRIORITY to PRIO_REALTIME and up
 const GRANT_REALTIME: u32 = 0x0200u

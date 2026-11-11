@@ -894,6 +894,18 @@ operations leave it.
   for `SYS_SPAWN`, which is given bytes). `device_desc` gains `driver`, the
   name of the kernel driver bound to the node. Each field is read at its own
   moment: the list is for a person, and nothing is held still for it.
+- **The Phase 2 review's two mediums** (`CXK_ABI_VERSION` 40, review
+  2026-11-11): no layout changes, two meanings. `SYS_INPUT_OPEN` needs
+  `GRANT_FRAMEBUFFER` beside `GRANT_INPUT`. Every foreground `run` program
+  holds `GRANT_INPUT`, and the handle carries the secure attention key, so
+  once the display server had ended any of them could take the key the
+  trusted UI is reached by. A program given the screen could already paint a
+  fake one, so the screen's grant is the right one to require. `SYS_DEVICE_OPEN`
+  is `E_NOT_SUPPORTED` for a bridge (class 0x06, or a header other than type
+  0): the BAR probe would have closed its windows for a moment, and closing
+  the device would have turned off its bus mastering, which gates the DMA of
+  everything behind it. `SYS_DEVICE_BAR` is `E_NOT_FOUND` for a BAR whose
+  base is 0, which the firmware never placed.
 - **The attention event and the signer** (`CXK_ABI_VERSION` 36, step 2.6):
   `INPUT_EVENT_ATTENTION` is Ctrl+Alt+Del, held in a flag beside the ring and
   returned first by `SYS_INPUT_EVENTS`; presses not yet read are one event.

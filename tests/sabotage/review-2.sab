@@ -1,0 +1,80 @@
+# The Phase 2 review's two mediums (docs/reviews/2026-11-11/PHASE2_REVIEW.md,
+# findings 1 and 2; ABI 40), run by `cxk test sabotage`. Each must turn red
+# exactly the self-tests named. Format: docs/devkit/CX_CXK_PLAN.md, "cxk test
+# sabotage". A group holds at most one sabotage per test.
+
+# ---- 1: no bridge to a process, no BAR at page 0 ----
+
+[bridge-class]
+# a bridge's class is not looked at
+expect = devices: open, held, registers as memory objects @ devhost test failed at step 103
+group = g1
+edit = kernel/drivers/devtree.c
+<<<
+    return p->class_code == 0x06 || (p->header_type & 0x7Fu) != 0;
+===
+    return (p->header_type & 0x7Fu) != 0;
+>>>
+
+[bridge-header]
+# a type-1 or type-2 header opens if its class is not a bridge's
+expect = devices: open, held, registers as memory objects @ devhost test failed at step 106
+edit = kernel/drivers/devtree.c
+<<<
+    return p->class_code == 0x06 || (p->header_type & 0x7Fu) != 0;
+===
+    return p->class_code == 0x06;
+>>>
+
+[bridge-header-bit7]
+# the "more functions" bit taken for a header type
+expect = devices: open, held, registers as memory objects @ devhost test failed at step 106
+edit = kernel/drivers/devtree.c
+<<<
+    return p->class_code == 0x06 || (p->header_type & 0x7Fu) != 0;
+===
+    return p->class_code == 0x06 || p->header_type != 0;
+>>>
+
+[bar-any-header]
+# six BARs read whatever the header type
+expect = devices: open, held, registers as memory objects @ devhost test failed at step 107
+edit = kernel/drivers/bus/pci.c
+<<<
+    if (index >= bars) return 0;
+===
+    (void)bars;
+>>>
+
+[bar-header-bit7]
+# the "more functions" bit taken for a header type, in the BAR count
+expect = devices: open, held, registers as memory objects @ devhost test failed at step 107
+edit = kernel/drivers/bus/pci.c
+<<<
+    uint8_t type = (uint8_t)(d->header_type & 0x7Fu);
+===
+    uint8_t type = d->header_type;
+>>>
+
+[bar-base-zero]
+# a BAR the firmware never placed, mapped from page 0
+expect = devices: open, held, registers as memory objects @ devhost test failed at step 108
+edit = kernel/drivers/devhost.c
+<<<
+       : !b->valid || !b->size || !b->base               ? E_NOT_FOUND
+===
+       : !b->valid || !b->size                           ? E_NOT_FOUND
+>>>
+
+# ---- 2: the input handle is the screen holder's ----
+
+[input-without-screen]
+# the keyboard's grant alone takes the handle, and the attention key with it
+expect = input: the keys as a handle, one holder @ input handle test failed at step 101
+group = g1
+edit = kernel/cpu/usermode.c
+<<<
+    if (!input_granted() || !fb_granted()) return E_ACCESS_DENIED;
+===
+    if (!input_granted()) return E_ACCESS_DENIED;
+>>>

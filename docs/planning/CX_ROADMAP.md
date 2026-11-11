@@ -1408,6 +1408,21 @@ language work in `language/CX_X_PLAN.md`.
    been decided), per-driver interrupt rate, DMA use and restart count
    (`CX_DRIVERS.md` section 3, item 8), idle time and per-CPU load, threads within
    a process.
+   **The Phase 2 review** (`docs/reviews/2026-11-11/PHASE2_REVIEW.md`, local):
+   findings 1 and 2 fixed (ABI 40, `review-2.sab` 7 of 7): `SYS_DEVICE_OPEN`
+   refuses a bridge (class 0x06, or any header but type 0), `pci_bar_get`
+   reads only the header type's BARs, `SYS_DEVICE_BAR` refuses base 0, and
+   `SYS_INPUT_OPEN` needs `GRANT_FRAMEBUFFER` beside `GRANT_INPUT`. Not taken:
+   restoring a firmware-set Bus Master bit on close, since the departed
+   driver may have left the device aimed at the DMA pages freed then.
+   Finding 3 was already fixed in 2.7c's commit (both sabotages re-run, red).
+   Open, the lows: command-register writes clear the write-1-to-clear status
+   bits (`pci.c`, `devhost.c`); the screen's address held in 32 bits
+   (`devhost.c`); the HID report descriptor's 256-byte buffer and `uint16_t`
+   bit offsets; consent answered by a text key; `CX_SMP.md` §4a's lost-kick
+   bound understated; 2.7c's `parent` a reusable pid; a thread's last slice
+   not counted at exit. Untested: type 1's and 2's BAR limits past BAR 0
+   (edu has one BAR).
 
 ### Phase 3: storage and the system tree
 

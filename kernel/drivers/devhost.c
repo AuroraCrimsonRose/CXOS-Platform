@@ -67,6 +67,11 @@ static void device_destroy(struct kobj *o) {
     const struct pci_device *p = d->pci;
     pci_msi_disable(p);
     uint32_t cmd = pci_config_read32(p->bus, p->slot, p->func, 0x04);
+    /* Bus Master goes off even if the firmware had left it on: the driver
+       that is gone may have left the device programmed with addresses in the
+       DMA buffers freed below, and with the bit on it could still write there.
+       A bridge, where the bit gates every device behind it, is never opened
+       (devtree_hold). Memory decode goes back to how it was found. */
     cmd &= ~PCI_CMD_BUS_MASTER;
     if (!(d->command & PCI_CMD_MEMORY)) cmd &= ~PCI_CMD_MEMORY;
     pci_config_write32(p->bus, p->slot, p->func, 0x04, cmd);
@@ -225,8 +230,11 @@ int syscall_device_bar(int32_t h, uint32_t bar) {
     struct kdevice *d = device_ref(h, HRIGHT_BAR, &rc);
     if (!d) return rc;
     const struct pci_bar *b = bar < 6 ? &d->bar[bar] : 0;
+    /* A base of 0 is a BAR the firmware never placed: a 64-bit one reads back
+       as its type bits alone, so pci_bar_get calls it valid. Mapping it would
+       be physical page 0 onward. */
     rc = !b                                              ? E_OUT_OF_RANGE
-       : !b->valid || !b->size                           ? E_NOT_FOUND
+       : !b->valid || !b->size || !b->base               ? E_NOT_FOUND
        : b->is_io                                        ? E_NOT_SUPPORTED
        : (b->base | b->size) & (PAGE_SIZE - 1u)          ? E_NOT_SUPPORTED : E_OK;
     struct kmem *m = 0;

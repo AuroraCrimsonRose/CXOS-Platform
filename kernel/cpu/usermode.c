@@ -543,8 +543,12 @@ static int input_granted(void) {
     return 0;
 }
 
+/* The handle also takes the secure attention key, so it needs the screen's
+   grant as well: an ordinary foreground program holds GRANT_INPUT, and once
+   the display server had gone it could otherwise take the key the trusted UI
+   is reached by. A program given the screen could fake that UI already. */
 int syscall_input_open(void) {
-    if (!input_granted()) return E_ACCESS_DENIED;
+    if (!input_granted() || !fb_granted()) return E_ACCESS_DENIED;
     return sys_input_open();
 }
 
@@ -5636,6 +5640,23 @@ int usermode_devhost_test(void) {
                   || di->bus != DEVICE_BUS_ROOT) goto done;
     /* 3: only a PCI function */
     step = 3; if (dh_open(0) != E_NOT_SUPPORTED || kobj_live(KOBJ_DEVICE) != dev0) goto done;
+    /* 3b: and never a bridge (class 0x06; every machine has a host bridge),
+       which is left as it was: no BAR probe, its command register untouched */
+    {
+        uint32_t bridges = 0;
+        for (uint32_t id = 0; id < DEVICE_MAX; id++) {
+            const struct dev_node *nd = devtree_get(id);
+            if (!nd || !nd->pci || nd->pci->class_code != 0x06) continue;
+            bridges++;
+            uint32_t cmd0 = dh_command((int)id);
+            uint32_t st0 = dh_state(id);
+            int32_t bh = dh_open(id);
+            step = 103;
+            if (bh != E_NOT_SUPPORTED || dh_state(id) != st0 || dh_command((int)id) != cmd0
+                || kobj_live(KOBJ_DEVICE) != dev0) { dh_close(e.tab, &bh); goto done; }
+        }
+        if (bridges == 0) goto done;
+    }
 
     int edu = dh_find_edu();
     if (edu < 0) {
@@ -5656,6 +5677,40 @@ int usermode_devhost_test(void) {
     devtree_unbind((struct dev_node *)devtree_get((unsigned)edu));
     step = 6; if (dh_state((uint32_t)edu) != DEVICE_STATE_UNBOUND) goto done;
 
+    /* 6b: the header type decides as well as the class: type 1 or 2 is a
+       bridge's layout whatever the class says, while bit 7 only says there are
+       more functions. edu's entry in the PCI table says so for a moment. */
+    {
+        struct pci_device *wp = (struct pci_device *)pd;
+        uint8_t ht0 = wp->header_type;
+        wp->header_type = 0x01; int32_t r1 = dh_open((uint32_t)edu);
+        if (r1 > 0) dh_close(e.tab, &r1);
+        wp->header_type = 0x82; int32_t r2 = dh_open((uint32_t)edu);
+        if (r2 > 0) dh_close(e.tab, &r2);
+        wp->header_type = (uint8_t)(ht0 | 0x80u); int32_t r3 = dh_open((uint32_t)edu);
+        wp->header_type = ht0;
+        int r3ok = r3 > 0;
+        dh_close(e.tab, &r3);
+        step = 106; if (r1 != E_NOT_SUPPORTED || r2 != E_NOT_SUPPORTED || !r3ok
+                        || dh_state((uint32_t)edu) != DEVICE_STATE_UNBOUND
+                        || kobj_live(KOBJ_DEVICE) != dev0) goto done;
+    }
+    /* 6c: pci_bar_get reads only the BARs the header type has: none for a
+       type it does not know, all six for type 0 with bit 7 set, and the first
+       two for type 1. (Type 1's and 2's limits past BAR 0 cannot be seen on
+       edu, which has BAR 0 alone.) */
+    {
+        struct pci_device fake = *pd;
+        struct pci_bar fb0;
+        fake.header_type = 0x7F;
+        int none = pci_bar_get(&fake, 0, &fb0);
+        fake.header_type = 0x80;
+        int multi = pci_bar_get(&fake, 0, &fb0) && fb0.valid && fb0.size == EDU_BAR0;
+        fake.header_type = 0x01;
+        int type1 = pci_bar_get(&fake, 0, &fb0) && fb0.valid && fb0.size == EDU_BAR0;
+        step = 107; if (none || !multi || !type1) goto done;
+    }
+
     /* 7: open: held, bus mastering on, and a second open refused */
     d = dh_open((uint32_t)edu);
     step = 7; if (d <= 0 || dh_state((uint32_t)edu) != DEVICE_STATE_HELD
@@ -5672,6 +5727,21 @@ int usermode_devhost_test(void) {
     step = 8; if (t <= 0 || dn <= 0 || dh_bar(9999, 0) != E_BAD_HANDLE || dh_bar(t, 0) != E_WRONG_TYPE
                   || dh_bar(dn, 0) != E_ACCESS_DENIED || dh_bar(d, 6) != E_OUT_OF_RANGE
                   || dh_bar(d, 1) != E_NOT_FOUND || kobj_live(KOBJ_MEM) != mem0) goto done;
+    /* 8b: a BAR the firmware never placed is no BAR: a 64-bit one with
+       nothing in it reads back as its type bits, so base 0, and mapping it
+       would be physical page 0 onward. The device's BAR 0 says so a moment. */
+    {
+        struct htab_info hi;
+        struct kobj *o = htab_ref(e.tab, d, KOBJ_NONE, 0, &hi);
+        struct kdevice *kd = o && o->type == KOBJ_DEVICE ? (struct kdevice *)o : 0;
+        uint64_t base0 = kd ? kd->bar[0].base : 0;
+        int32_t bz = -1;
+        if (kd) { kd->bar[0].base = 0; bz = dh_bar(d, 0); kd->bar[0].base = base0; }
+        if (o) kobj_unref(o);
+        int bz_rc = bz;
+        dh_close(e.tab, &bz);
+        step = 108; if (!kd || bz_rc != E_NOT_FOUND || kobj_live(KOBJ_MEM) != mem0) goto done;
+    }
 
     /* 9: BAR 0: the registers whole, all present, charged to nobody */
     uint64_t used0 = job->mem_used;
@@ -6940,7 +7010,13 @@ int usermode_input_handle_test(void) {
     h = syscall_dispatch(SYS_INPUT_OPEN, 0, 0, 0, 0, 0);
     step = 1; if (h != E_ACCESS_DENIED || input_held()) goto done;
     h = -1;
+    /* 1b: nor with the keyboard's grant alone, which every foreground program
+       has: the handle carries the attention key, and is the screen holder's */
     thread_set_caps(e.me, GRANT_INPUT);
+    h = syscall_dispatch(SYS_INPUT_OPEN, 0, 0, 0, 0, 0);
+    step = 101; if (h != E_ACCESS_DENIED || input_held() || kobj_live(KOBJ_INPUT) != live0) goto done;
+    h = -1;
+    thread_set_caps(e.me, GRANT_INPUT | GRANT_FRAMEBUFFER);
     /* 2: the handle, and it says what it is */
     h = syscall_dispatch(SYS_INPUT_OPEN, 0, 0, 0, 0, 0);
     step = 2; if (h <= 0 || !input_held() || kobj_live(KOBJ_INPUT) != live0 + 1) goto done;
