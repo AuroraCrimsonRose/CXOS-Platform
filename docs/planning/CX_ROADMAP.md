@@ -1598,6 +1598,32 @@ language work in `language/CX_X_PLAN.md`.
      bindings, documents, samples, a stability policy (versions, how long a
      deprecated call lives, how an app says what it needs) and conformance
      tests in the verification boots.
+9. **X Shell** (Aurora, 2026-11-11; brought forward from Phase B), the first
+   thing built in the terminal. One language for typing and for scripts.
+   Needs 2.8b's line editing, history, interrupt and job control, and X's
+   slices and overflow traps (`language/CX_X_PLAN.md` §9 item 3), since an
+   interpreter is all strings and buffers. The x86-32 design's tiers come
+   back (`x86_32/planning/CX_ROADMAP.md`, "The one exception: shell scripts
+   take a tier"): `.xssh` a System-owned script, `.xush` a User-owned one,
+   one language. Where it aims to be better:
+   1. **No ambient authority:** a script declares the grants it needs at its
+      top, in `run`'s syntax (`+screen`, `+inspect`), and runs with those
+      only; a downloaded script cannot quietly read files or reach the
+      network.
+   2. **Structured pipes:** commands pass typed records (X Data's types)
+      with text as the fallback, so `procman | where cpu > 50 | sort mem`
+      parses no text (PowerShell and Nushell are the precedent).
+   3. **No word splitting or surprise globbing;** quoting rules that fit in
+      a paragraph.
+   4. **Errors stop a script by default;** `try` handles one, as X's planned
+      `try` does.
+   5. **Completion and help from the command registry** the launcher and
+      palette use (2.8a goal 8).
+   6. **Tested as the compiler is:** the parser fuzzed on the host, every
+      check sabotaged.
+   Survey first: Serenity's Shell, Haiku's use of bash, PowerShell's
+   pipeline, Nushell. Its look (syntax) is sketched with Aurora before the
+   parser is written.
 
 ### Phase 3: storage and the system tree
 
@@ -1619,7 +1645,7 @@ language work in `language/CX_X_PLAN.md`.
 ### Phase B: the minimum viable OS
 
 Carried from x86-32, now on 64-bit: X Data (done), FAT32 on the VFS (as a
-user-space filesystem), X Shell and a terminal, the Process Manager, basic
+user-space filesystem), the Process Manager (X Shell and the terminal moved to 2.8b and 2.9), basic
 apps. Networking as a user-space service: UDP and DHCP, then DNS, then TCP,
 then IPv6, per-app permission, and connect by name with TLS
 (`system/CX_NETWORK.md`). Audio (`system/CX_AUDIO.md`) joins here.
