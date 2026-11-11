@@ -14,14 +14,14 @@
 |---|---|---|
 | CPU | AMD FX-8350 | Piledriver, family 15h, 8 cores, 2012. Long mode, NX, AVX, FMA, AES-NI. |
 | Board | MSI MS-7641 v3.0 | MSI's 760GM series: AMD 760G with SB710 southbridge *(expected)* |
-| RAM | 8 GB DDR3 | |
+| RAM | 4 GB DDR3 | It had 8 GB earlier; 4 GB now (Aurora, 2026-11-11), which the E820 map agrees with: 3.98 GiB usable (`CX_HW_REPORT.md`) |
 | GPU | AMD FirePro W5000 | GCN 1.0, "Southern Islands" (Pitcairn) |
 | Firmware | BIOS | No UEFI |
 
 ## 2. What it decides
 
-- **64-bit.** 8 GB and a 64-bit CPU: a 32-bit kernel would waste half the
-  memory or need PAE. x86-64 is the primary target (roadmap §1).
+- **64-bit.** A 64-bit CPU, with 752 MiB of the 4 GB placed above 4 GiB: a 32-bit kernel
+  would lose it or need PAE. x86-64 is the primary target (roadmap §1).
 - **BIOS boot is first-class.** The BIOS loader goes from real mode to long
   mode itself (`boot/CX_BOOT.md`).
 - **SMP matters.** Eight cores are a reason to do SMP soon after 64-bit.

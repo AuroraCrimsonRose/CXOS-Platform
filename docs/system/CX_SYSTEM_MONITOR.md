@@ -69,5 +69,6 @@ development PC is AMD.
 4. SPD, the Super I/O chip and `Tctl` on the rig; alerts.
 5. Fan control, then the GPU.
 
-Note: the rig is recorded with 8 GB, but its E820 map gives 3.98 GiB usable
-(`hardware/CX_HW_REPORT.md`). SMBIOS and SPD will say which is right.
+The rig has 4 GB (it had 8 earlier), and its E820 map agrees: 3.98 GiB
+usable (`hardware/CX_HW_REPORT.md`). SMBIOS's slot list will show which
+slots are empty.

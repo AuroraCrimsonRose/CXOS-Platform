@@ -180,7 +180,7 @@ beside another boot's (`hardware/CX_HW_REPORT.md` §8).
 
 `--cpu` presets drive the CPU-feature tests (`kernel/CX_KERNEL_PLAN.md`
 §2.3): `min` (baseline x86-64), `max`, and `rig`. QEMU's `Opteron_G5` model is
-Piledriver, so `--machine rig` gives that CPU, 8 GB and AHCI, as close to the
+Piledriver, so `--machine rig` gives that CPU, 4 GB and AHCI, as close to the
 real machine as QEMU gets.
 
 ### 3.7 The rig
