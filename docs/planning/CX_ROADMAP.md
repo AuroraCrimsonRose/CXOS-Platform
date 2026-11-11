@@ -1435,9 +1435,18 @@ language work in `language/CX_X_PLAN.md`.
      widget and committed as rectangles, one theme (colours, metrics, the
      XFNT font), text clipped to its box, and the first widgets: label,
      button, text field, list, scroll view, and a fixed-cell text grid (the
-     terminal's). Built only as far as its first programs need: the
-     terminal takes the grid and the scroll view; buttons, lists and text
-     fields come with the second program, the Process Manager's window.
+     terminal's). **The base set is built before the terminal** (Aurora,
+     2026-11-11, replacing "only as far as its first programs need"), so no
+     app draws its own controls: label, button, text field (with selection,
+     the clipboard and the input-method interface), check box, radio, switch,
+     slider, progress bar, list, tree, table, tabs, scroll view, menu and
+     context menu, tooltip, the dialog with its standard buttons, and layout
+     containers (rows, columns, grid, spacing from the design system); the
+     text grid with them. **A widget gallery app** shows every widget in
+     every state, light and dark, at 100, 150 and 200% scale and in the
+     pseudo-locale: it is the step's witness, the automation checks
+     (goal 9) run over it in the verification boots, and each is sabotaged.
+     Serenity's WidgetGallery and GTK's widget-factory are the precedent.
      Leaning (Aurora agreed, 2026-11-11; the survey may overturn it):
      **retained** widgets (state in the widget, damage per widget, a tree
      for focus and later accessibility), a fixed set of kinds dispatched by

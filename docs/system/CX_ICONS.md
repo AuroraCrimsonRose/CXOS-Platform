@@ -43,6 +43,17 @@
   family of file glyphs), and the extension (`PDF`, `RS`) drawn at runtime in
   the UI face. A new type is a row in a table; every extension works; the
   label is sharp at any size.
+- **System files** get their own drawn icons, not the template: programs
+  (`.xuex`, `.xsex`, with the trust badge below), scripts (`.xssh`,
+  `.xush`), kernel packages (`.xkpk`), fonts (`.xfnt`), CXFS disk images,
+  and the boot and configuration files, each marked as CXOS's own.
+- **Placeholders until they are drawn** (Aurora, 2026-11-11): the template
+  works on day one with no drawing at all, since the host generates it. A
+  plain rounded document shape in the category's colour, the extension in
+  the UI face, and a Phosphor file glyph; system files use the same with a
+  CXOS mark; app icons are a rounded square in a colour derived from the
+  app's name with its first letter. Each placeholder is replaced by name,
+  so no app or file changes when the real drawing lands.
 - **Previews** replace the icon at larger sizes for images, video, fonts and
   documents, made by the isolated decoders (roadmap Phase B, media): no
   thumbnail is parsed inside the file manager.
