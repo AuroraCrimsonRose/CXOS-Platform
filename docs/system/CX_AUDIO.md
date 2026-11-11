@@ -39,8 +39,44 @@
    the server, so samples are not copied.
 6. **Testing:** null and virtual devices in CI; mixed output compared bit for
    bit against saved references.
-7. **Codecs are ported:** Opus, FLAC, Vorbis first; MP3's patents have
-   expired; AAC and H.264 deferred.
+7. **Codecs are our own** (Aurora, 2026-11-11, replacing "ported"):
+   royalty-free formats only, every decoder written here, each in its own
+   process with no grants, as the roadmap's Phase B media plan says. Opus,
+   FLAC and Vorbis first; MP3 (its patents have expired); AAC and H.264 are
+   out, not deferred.
+8. **A graph inside, a small API outside.** The server routes, mixes and
+   applies effects as a graph (item 1, the patchbay below); apps see the
+   media plan's small calls: play, record with consent, a stream at a
+   latency.
+
+### 2a. Where CXOS aims to be better (Aurora, 2026-11-11)
+
+1. **No glitches under load.** The server's work each period is real-time
+   with a guaranteed budget; every underrun is charged to the stream that
+   missed its deadline and shown in the Process Manager.
+2. **Per-app volume and routing:** any app to any device, remembered per
+   app, with rules ("headphones plugged in: move these apps").
+3. **Routing built in:** virtual devices and a patchbay, so sending one
+   app's sound elsewhere needs no third-party driver (VoiceMeeter,
+   BlackHole, Loopback elsewhere). Recording another app needs its grant
+   and the consent screen (item 4).
+4. **Pro latency without a second stack** (no ASIO beside it, no JACK):
+   latency per stream (item 2) lets a DAW and a browser share the system.
+5. **Bit-perfect without locking the device:** untouched passthrough when
+   one stream matches the device's rate and needs no processing; mixing
+   resumes when a second sound starts.
+6. **Hearing safety and loudness:** optional system-wide levelling to EBU
+   R128, new streams faded in, a limiter, a headphone exposure meter.
+7. **Restarts lose nothing:** if the server or a driver restarts, clients
+   keep their streams and reconnect without noticing.
+8. **One clock for sound and picture:** audio timestamps and the
+   compositor's frame clock (roadmap 2.8e) share a time base, so video is in
+   lip sync; a device's own latency (Bluetooth later) is reported into it.
+9. **Accessibility:** mono downmix, balance, alert sounds also shown as a
+   screen flash.
+10. **Measured in the tests:** a loopback virtual device measures round-trip
+    latency and counts underruns in the verification boots, beside item 6's
+    bit-exact references, and both are sabotaged.
 
 ## 3. Dependencies and order
 
