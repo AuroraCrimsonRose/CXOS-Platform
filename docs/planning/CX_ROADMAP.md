@@ -1443,6 +1443,28 @@ language work in `language/CX_X_PLAN.md`.
      a switch plus a draw callback for custom ones, no inheritance until
      something needs it. Text goes through a font handle and a size from
      the first day, so outline fonts (2.8a′) change no widget.
+     **Design goals** (Aurora, 2026-11-11), where other systems are weak:
+     (1) one toolkit, no legacy layers beside it; (2) logical units and a
+     scale per window from the first day, snapped to device pixels, so
+     fractional and mixed scales stay sharp; (3) a UI that does not freeze:
+     animation runs in the compositor's springs, and file and network calls
+     come back as events, never blocking the UI thread; (4) accessibility in
+     the widget tree (role, name, state on every widget; keyboard navigation
+     everywhere; high contrast, reduced motion, the Atkinson switch);
+     (5) unforgeable windows: the server-drawn frame names the verified
+     signer, and an indicator shows a held capture grant; (6) the file
+     picker as a capability: a system dialog that hands back a handle to the
+     chosen file only; (7) the clipboard read only on a user's paste or
+     consent; (8) every app's commands registered with the toolkit, one
+     system-wide command palette, consistent shortcuts; (9) a standard
+     inspector (tree, bounds, damage) and an automation API over the
+     accessibility tree, so UI tests run in verification boots on the
+     virtual screen and are sabotaged like the rest. And a design system the
+     toolkit enforces: a 4/8 px spacing scale, one radius, one shadow, one
+     accent, light and dark, grayscale antialiasing, kerning and tabular
+     figures. 1-4 and the design system are 2.8a (costly to retrofit); 8-9
+     come with the terminal and the Process Manager; 5-7 follow the
+     programs that need them (6 needs Phase 3's files).
      `os/std/gui.xfxn`, the older toolkit that draws straight to the
      framebuffer (`SYS_FB_*`, `SYS_MOUSE_READ`) and so bypasses displayd:
      **retired** (keep any drawing worth having; `cxos.xfxn` moved onto

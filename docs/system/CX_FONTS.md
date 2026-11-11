@@ -74,6 +74,25 @@
    with no grants, whose output is accepted only if the XFNT checker passes
    it. The checker, not the converter, is the trust boundary.
 
+   **One file per family** (Aurora, 2026-11-11). Size is free (outlines).
+   Weight is a variable axis: one set of outlines plus each master's
+   changes, blended by the OS to any weight the file declares. Width and
+   optical size can be further axes when a source has them. The converter
+   checks the masters are compatible (same points, same contour order) and
+   stores every point's change explicitly, so the OS only multiplies and adds
+   and never infers untouched points as TrueType's `gvar` makes a reader do.
+   The OS checks again: equal point counts across masters, axis values
+   clamped to the declared range, each change bounded so no blended point
+   leaves the glyph's box. Italic is a second design in the same file, each
+   design variable in weight, since a true italic is drawn, not slanted; a
+   computed slant is a fallback, off by default. A family published only as
+   separate fixed instances whose outlines do not match is stored as those
+   instances in the one file, and a request takes the nearest. A request is
+   family, weight, italic and size; the font picker shows a family with a
+   weight slider and an italic switch. The glyph cache rounds weights to
+   steps (25). Kerning is the default master's at first, blended later.
+   The C# oracle blends as the X rasteriser does.
+
    **Shipped as choices, many of them:** the user picks any face for each
    role.
 
