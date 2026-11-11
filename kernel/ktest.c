@@ -3753,6 +3753,8 @@ void ktest_run(void) {
     total++; passed += report("bochs: the program sets a mode, then the boot's again", ktest_bochs_program());
     total++; passed += report("device: its PCI configuration space, read only", usermode_device_config_test());
     total++; passed += report("virtio-gpu: the program against the real device", ktest_virtgpu_program());
+    total++; passed += report("processes: listed for GRANT_INSPECT, and the device tree", usermode_process_query_test());
+    total++; passed += report("procman: the program against the kernel's count", ktest_procman_program());
     total++; passed += report("ipc: queued calls, reply tokens, badges", usermode_ipc_test());
     total++; passed += report("ipc: handles in messages", usermode_ipc_handles_test());
     total++; passed += report("ipc: priority through calls", usermode_prio_test());

@@ -76,7 +76,10 @@ must be signed and trusted; isolation is built and tested under QEMU.
 1. Device tree, registry and scored matching; convert e1000, rtl8169, AHCI,
    ATA, USB and HID with no change in behaviour. **Done (2.1):** the drivers
    no longer search the bus (§1's `pci_find` calls are gone); the tree
-   lives in the kernel until the Process Manager can show it.
+   lives in the kernel until the Process Manager can show it. **It can
+   since 2.7c:** `run +inspect procman devices` lists every node with its
+   bus, state, ids, place and the kernel driver bound to it, read through
+   `SYS_DEVICE_INFO` under `GRANT_INSPECT`, which looks and cannot open.
 2. Class contracts for block, network and input; network moves to interrupts.
 3. Driver-host primitives (needs memory objects and the wait queue).
    **Done (2.2):** `SYS_DEVICE_*` and `SYS_DMA_ALLOC`

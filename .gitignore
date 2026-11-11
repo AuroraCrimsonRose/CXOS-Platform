@@ -107,5 +107,6 @@ tools/bootlog.txt
 # local-only: the rig's hardware report, and an unfiled review
 tools/rig.hw
 docs/reviews/2026-10-31/
+docs/reviews/2026-11-11/
 /rig_bootlog.txt
 /rig_crashlog.txt

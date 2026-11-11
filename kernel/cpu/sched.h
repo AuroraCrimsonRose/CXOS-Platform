@@ -292,6 +292,9 @@ uint64_t thread_tls(int id);
 /* Name the calling thread: `name` (NUL-terminated, shorter than
    THREAD_NAME_MAX) is copied. */
 void     thread_set_own_name(const char *name);
+/* The CPU time of every thread p has had, in ns: the ended ones' as they
+   left it, the others' so far (thread_cpu_ns). */
+uint64_t thread_proc_cpu_ns(const struct proc *p);
 /* The CPU time thread `id` has had, in ns, the running slice included; 0 for
    no such thread. Into `name` (THREAD_NAME_MAX bytes), its name. Interrupts
    off, or a lock that keeps the thread from being reaped (OBJINFO_THREAD

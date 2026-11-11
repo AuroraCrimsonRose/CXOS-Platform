@@ -15,7 +15,7 @@
  * hash it was built against and the loader refuses one that differs, so a
  * program never runs against numbers or layouts it was not compiled for.
  */
-#define CXK_ABI_HASH { 0xea, 0xc9, 0x91, 0xad, 0x50, 0xa0, 0xa0, 0xb1, 0x48, 0x07, 0xee, 0x96, 0xe0, 0x85, 0x1e, 0x1a, 0x95, 0xc9, 0xf0, 0x59, 0xee, 0x6f, 0x62, 0xf5, 0x7b, 0x4f, 0x18, 0xc8, 0x1e, 0x8d, 0xd3, 0xf1 }
+#define CXK_ABI_HASH { 0xe2, 0x37, 0x9c, 0x44, 0x4a, 0x86, 0x45, 0x59, 0x84, 0xe4, 0x88, 0x5a, 0x33, 0x19, 0x56, 0x88, 0xa4, 0x3f, 0x45, 0x27, 0xe0, 0x61, 0xae, 0x30, 0x68, 0xf4, 0x4c, 0x01, 0x08, 0x6a, 0xbc, 0x33 }
 
 /*
  * CXK ABI v1 - the PUBLIC contract shared by the kernel, the .xoex executive,
@@ -44,7 +44,7 @@
  * line; bump both, and the DevKit's stamp, in the one commit that changes the
  * contract.
  */
-#define CXK_ABI_VERSION          38
+#define CXK_ABI_VERSION          39
 
 /*
  * ---- syscall numbers ----
@@ -612,6 +612,18 @@
 #define SYS_PROCESS_STOP_ENDPOINT 0x74
 
 /*
+ * What is running, for a program that shows it (the Process Manager):
+ * ebx = a pid to start from, ecx = *process_stat (GRANT_INSPECT) -> 0, filled
+ * in with the first process at or after that pid that has not ended. Walk
+ * them all by asking again from the answer's pid + 1, until E_NOT_FOUND:
+ * none at or after it. It reads and changes nothing: no handle comes of it,
+ * so a holder can neither end nor wait for what it sees. The answer is one
+ * moment's; a process seen may be gone by the next call, and its pid another's.
+ * E_BAD_ADDRESS: not writable memory of the caller's.
+ */
+#define SYS_PROCESS_QUERY        0x78
+
+/*
  * Jobs: a group of processes under one memory and thread budget, ended
  * together. Every process is in one, for life: the job its spawn named
  * (spawn_args.job), or its spawner's. A charge is made to the job and every
@@ -831,11 +843,13 @@
  * drivers 0xF0-0xFF (kernel/CX_DRIVERS.md sec 3.2). A user-space driver holds
  * its own hardware and nothing else: a device handle, and from it memory
  * objects over the device's registers, its interrupt as a handle, and DMA
- * buffers. Finding and opening a device needs GRANT_DRIVER; the rest needs
+ * buffers. Opening a device needs GRANT_DRIVER (finding one, that or
+ * GRANT_INSPECT); the rest needs
  * only the handle's rights, so a supervisor opens a device and hands the
  * handle to the driver it starts. With no IOMMU (the rig has none) a device
  * can DMA anywhere, so GRANT_DRIVER is trust in whoever drives it.
- * ebx = device id (below DEVICE_MAX), ecx = *device_desc (GRANT_DRIVER) -> 0,
+ * ebx = device id (below DEVICE_MAX), ecx = *device_desc (GRANT_DRIVER or
+ * GRANT_INSPECT) -> 0,
  * filled in. E_NOT_FOUND: no device has that id now; E_OUT_OF_RANGE: past
  * DEVICE_MAX. The tree is walked by trying every id.
  */
@@ -1263,6 +1277,7 @@ struct thread_info {
 #define DEVICE_MAX               320            /* ids are 0 to DEVICE_MAX - 1 */
 #define DMA_ALLOC_MAX            0x00400000u    /* 4 MiB: one contiguous run of pages */
 #define DEVICE_CONFIG_BYTES      256            /* what SYS_DEVICE_CONFIG reads of */
+#define DEVICE_DRIVER_MAX        16             /* a driver's name, NUL included */
 #define DEVICE_BUS_ROOT          0
 #define DEVICE_BUS_PLATFORM      1              /* fixed legacy hardware */
 #define DEVICE_BUS_PCI           2
@@ -1289,6 +1304,11 @@ struct device_desc {
     uint32_t subclass;
     uint32_t interface;
     uint32_t location;
+    /*
+     * the kernel driver that has it (DEVICE_STATE_BOUND, _BINDING), by its
+     * name; empty otherwise. NUL-terminated.
+     */
+    char driver[DEVICE_DRIVER_MAX];
 };
 
 /*
@@ -1312,6 +1332,37 @@ struct job_info {
     uint32_t killed;                            /* 1 once SYS_JOB_KILL has reached it */
     uint32_t priority_limit;                    /* its own job_limits.priority */
     uint32_t reserved;                          /* 0 */
+};
+
+/* ---- the processes there are (SYS_PROCESS_QUERY; GRANT_INSPECT) ---- */
+#define PROC_NAME_MAX            32
+#define PSTAT_USER               0x1u           /* it runs ring-3 code (the kernel's own process does not) */
+#define PSTAT_BACKGROUND         0x2u           /* its console output goes to the log (SPAWN_BACKGROUND) */
+
+struct process_stat {
+    /*
+     * nanoseconds its threads have run on a CPU, those that have ended
+     * included (thread_info.cpu_ns says what is counted)
+     */
+    uint64_t cpu_ns;
+    uint64_t signer;                            /* as process_info.signer */
+    uint64_t memory;                            /* bytes of its quota in use (vm_usage.mapped) */
+    uint64_t memory_quota;                      /* bytes it may map */
+    uint32_t pid;
+    uint32_t parent;                            /* the pid that started it, as it was then; 0: the kernel */
+    uint32_t threads;                           /* that have not ended */
+    uint32_t handles;                           /* open in its table */
+    uint32_t caps;                              /* GRANT_*: what it may do */
+    uint32_t trust;                             /* PROC_TRUST_* */
+    uint32_t flags;                             /* PSTAT_* */
+    uint32_t job;                               /* its job's kernel id: processes in one job agree */
+    /*
+     * a program's: the file it was started from, by SYS_EXEC_PATH or at
+     * boot, as the kernel read it from the directory, not what the program
+     * says of itself; empty when it came as bytes (SYS_SPAWN). Without
+     * PSTAT_USER: the kernel thread it was made for. NUL-terminated.
+     */
+    char name[PROC_NAME_MAX];
 };
 
 /* process_info.ended: how it ended, once SIGNAL_PROCESS_ENDED is set. */
@@ -1559,6 +1610,13 @@ struct input_event {
  * Never held by a background process: the kernel drops it from one at spawn
  */
 #define GRANT_INPUT              0x0400u
+
+/*
+ * SYS_PROCESS_QUERY, and SYS_DEVICE_INFO without GRANT_DRIVER: to see what is
+ * running and what hardware there is, and to change neither. In no baseline:
+ * what a machine runs is its user's business, not every program's.
+ */
+#define GRANT_INSPECT            0x0800u
 #define GRANT_OS_BASELINE        (GRANT_CONSOLE | GRANT_MEM | GRANT_DISK | GRANT_SPAWN | GRANT_POWER | GRANT_ENDPOINT | GRANT_FRAMEBUFFER | GRANT_NET | GRANT_REALTIME | GRANT_INPUT)
 
 /*
@@ -1832,9 +1890,10 @@ CXK_ABI_STATIC_ASSERT(sizeof(struct queue_event) == 16, "ABI layout: queue_event
 CXK_ABI_STATIC_ASSERT(sizeof(struct job_limits) == 16, "ABI layout: job_limits");
 CXK_ABI_STATIC_ASSERT(sizeof(struct thread_create_args) == 48, "ABI layout: thread_create_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct thread_info) == 56, "ABI layout: thread_info");
-CXK_ABI_STATIC_ASSERT(sizeof(struct device_desc) == 40, "ABI layout: device_desc");
+CXK_ABI_STATIC_ASSERT(sizeof(struct device_desc) == 56, "ABI layout: device_desc");
 CXK_ABI_STATIC_ASSERT(sizeof(struct mem_info) == 24, "ABI layout: mem_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct job_info) == 48, "ABI layout: job_info");
+CXK_ABI_STATIC_ASSERT(sizeof(struct process_stat) == 96, "ABI layout: process_stat");
 CXK_ABI_STATIC_ASSERT(sizeof(struct process_info) == 56, "ABI layout: process_info");
 CXK_ABI_STATIC_ASSERT(sizeof(struct object_info_args) == 24, "ABI layout: object_info_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct object_basic) == 20, "ABI layout: object_basic");

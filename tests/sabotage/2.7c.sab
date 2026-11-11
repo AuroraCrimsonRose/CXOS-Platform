@@ -1,0 +1,245 @@
+# Step 2.7c, SYS_PROCESS_QUERY, GRANT_INSPECT and the Process Manager, run by
+# `cxk test sabotage`. Each must turn red exactly the self-tests named. Format:
+# docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage". A group holds at most one
+# sabotage per test; most of these reach both the kernel's test and the
+# program's, so they boot alone.
+
+# ---- who may look ----
+
+[query-no-grant]
+# the list for anyone
+expect = processes: listed for GRANT_INSPECT, and the device tree @ process query test failed at step 1
+expect = procman: the program against the kernel's count @ procman program failed at step 2
+edit = kernel/cpu/usermode.c
+<<<
+    if (!(thread_current_caps() & GRANT_INSPECT)) {
+        klog_u32("GRANT", SEV_WARN, "inspect DENIED for pid ", (uint32_t)thread_current_pid(),
+===
+    if (0) {
+        klog_u32("GRANT", SEV_WARN, "inspect DENIED for pid ", (uint32_t)thread_current_pid(),
+>>>
+
+[query-driver-grant]
+# the driver's grant is not the grant to look
+expect = processes: listed for GRANT_INSPECT, and the device tree @ process query test failed at step 1
+group = g1
+edit = kernel/cpu/usermode.c
+<<<
+    if (!(thread_current_caps() & GRANT_INSPECT)) {
+        klog_u32("GRANT", SEV_WARN, "inspect DENIED for pid ", (uint32_t)thread_current_pid(),
+===
+    if (!(thread_current_caps() & (GRANT_INSPECT | GRANT_DRIVER))) {
+        klog_u32("GRANT", SEV_WARN, "inspect DENIED for pid ", (uint32_t)thread_current_pid(),
+>>>
+
+[info-no-grant]
+# the device tree for anyone: the driver host's own test sees it too
+expect = processes: listed for GRANT_INSPECT, and the device tree @ process query test failed at step 1
+expect = devices: open, held, registers as memory objects @ devhost test failed at step 1
+edit = kernel/drivers/devhost.c
+<<<
+    if (!(thread_current_caps() & GRANT_INSPECT) && !driver_granted()) return E_ACCESS_DENIED;
+===
+    if (0) return E_ACCESS_DENIED;
+>>>
+
+[inspect-cannot-look]
+# the tree only for a driver, as before this step
+expect = processes: listed for GRANT_INSPECT, and the device tree @ process query test failed at step 8
+expect = procman: the program against the kernel's count @ procman test exited with 20
+edit = kernel/drivers/devhost.c
+<<<
+    if (!(thread_current_caps() & GRANT_INSPECT) && !driver_granted()) return E_ACCESS_DENIED;
+===
+    if (!driver_granted()) return E_ACCESS_DENIED;
+>>>
+
+[inspect-opens]
+# looking becomes driving
+expect = processes: listed for GRANT_INSPECT, and the device tree @ process query test failed at step 8
+expect = procman: the program against the kernel's count @ procman test exited with 23
+edit = kernel/drivers/devhost.c
+<<<
+int syscall_device_open(uint32_t id) {
+    if (!driver_granted()) return E_ACCESS_DENIED;
+===
+int syscall_device_open(uint32_t id) {
+    if (!(thread_current_caps() & GRANT_INSPECT) && !driver_granted()) return E_ACCESS_DENIED;
+>>>
+
+# ---- what the walk gives ----
+
+[query-from-start]
+# every question answered from the first pid
+expect = processes: listed for GRANT_INSPECT, and the device tree @ process query test failed at step 2
+expect = procman: the program against the kernel's count @ procman test exited with 11
+edit = kernel/cpu/usermode.c
+<<<
+    struct proc *p = proc_next(from);
+    if (!p) return E_NOT_FOUND;
+    struct process_stat st;
+===
+    struct proc *p = proc_next(0);
+    (void)from;
+    if (!p) return E_NOT_FOUND;
+    struct process_stat st;
+>>>
+
+[ended-listed]
+# a process that has ended, still in the list while a handle keeps its record
+expect = processes: listed for GRANT_INSPECT, and the device tree @ process query test failed at step 6
+group = g2
+edit = kernel/cpu/proc.c
+<<<
+        if (p && !(atomic_load(&p->hdr.signals) & SIGNAL_PROCESS_ENDED) && kobj_ref_if_live(&p->hdr)) found = p;
+===
+        if (p && kobj_ref_if_live(&p->hdr)) found = p;
+>>>
+
+[ref-from-nothing]
+# a reference taken on a record whose last one has gone
+expect = processes: listed for GRANT_INSPECT, and the device tree @ process query test failed at step 7
+group = g4
+edit = kernel/object/kobj.c
+<<<
+        if (n == 0) return 0;
+===
+        if (n == 0x7FFFFFFFu) return 0;
+>>>
+
+# ---- what a row says ----
+
+[caps-hidden]
+expect = processes: listed for GRANT_INSPECT, and the device tree @ process query test failed at step 3
+expect = procman: the program against the kernel's count @ procman test exited with 14
+edit = kernel/cpu/proc.c
+<<<
+    st->caps         = p->caps;
+===
+    st->caps         = 0;
+>>>
+
+[parent-wrong]
+expect = processes: listed for GRANT_INSPECT, and the device tree @ process query test failed at step 6
+expect = procman: the program against the kernel's count @ procman test exited with 13
+edit = kernel/cpu/proc.c
+<<<
+    p->parent = parent ? parent->pid : 0;
+===
+    p->parent = parent ? parent->pid + 1 : 0;
+>>>
+
+[name-uncut]
+# a name longer than the field, not ended
+expect = processes: listed for GRANT_INSPECT, and the device tree @ process query test failed at step 6
+group = g3
+edit = kernel/cpu/proc.c
+<<<
+    if (name) for (; i + 1u < PROC_NAME_MAX && name[i]; i++) p->name[i] = name[i];
+===
+    if (name) for (; i < PROC_NAME_MAX && name[i]; i++) p->name[i] = name[i];
+>>>
+
+[exec-name-lost]
+# a program started from a file, with no name
+expect = procman: the program against the kernel's count @ procman test exited with 13
+group = g1
+edit = kernel/cpu/spawn.c
+<<<
+                          &hs, job, e.name);
+===
+                          &hs, job, 0);
+>>>
+
+[kthread-unnamed]
+# a kernel thread's process with no name
+expect = processes: listed for GRANT_INSPECT, and the device tree @ process query test failed at step 9
+group = g5
+edit = kernel/cpu/sched.c
+<<<
+    if (p && !into) proc_set_name(p, name);
+===
+    if (0 && p && !into) proc_set_name(p, name);
+>>>
+
+[ended-time-lost]
+# a thread that ends takes its CPU time with it
+expect = processes: listed for GRANT_INSPECT, and the device tree @ process query test failed at step 9
+edit = kernel/cpu/sched.c
+<<<
+    if (me->proc) me->proc->cpu_done_ns += cpu_ns_of(me);
+===
+    if (me->proc) me->proc->cpu_done_ns += 0;
+>>>
+
+[driver-unnamed]
+# a bound node that does not say which driver has it
+expect = processes: listed for GRANT_INSPECT, and the device tree @ process query test failed at step 8
+edit = kernel/drivers/devhost.c
+<<<
+    if ((n.state == DEV_BOUND || n.state == DEV_BINDING) && n.drv && n.drv->name)
+===
+    if (0 && n.drv && n.drv->name)
+>>>
+
+# ---- the program ----
+
+[denied-says-ok]
+# refused, and the test mode does not say so
+expect = procman: the program against the kernel's count @ procman program failed at step 2
+group = g2
+edit = os/apps/procman.xfxn
+<<<
+        if (pm_is(mode, "test") == 1) { exit(1); }
+===
+        if (pm_is(mode, "test") == 1) { exit(3); }
+>>>
+
+[fail-exit-zero]
+# refused, and the list ends as if it had been shown
+expect = procman: the program against the kernel's count @ procman program failed at step 2
+group = g3
+edit = os/apps/procman.xfxn
+<<<
+    else { puts("error -"); print_u32((0 - rc) as u32); }
+    newline();
+    exit(1);
+===
+    else { puts("error -"); print_u32((0 - rc) as u32); }
+    newline();
+    exit(0);
+>>>
+
+[count-short]
+# the program's own count of processes, one short
+expect = procman: the program against the kernel's count @ procman test exited with 15
+group = g4
+edit = os/std/sysview.xfxn
+<<<
+        if (rc == E_NOT_FOUND) { return n; }
+        if (rc != 0) { return rc; }
+        n = n + 1;
+        from = st.pid + 1;
+===
+        if (rc == E_NOT_FOUND) { return n - 1; }
+        if (rc != 0) { return rc; }
+        n = n + 1;
+        from = st.pid + 1;
+>>>
+
+[dev-walk-skips]
+# the device walk missing a node
+expect = procman: the program against the kernel's count @ procman test exited with 20
+group = g5
+edit = os/std/sysview.xfxn
+<<<
+        n = n + 1;
+        from = (id as u32) + 1;
+    }
+    return n;
+===
+        n = n + 1;
+        from = (id as u32) + 2;
+    }
+    return n;
+>>>

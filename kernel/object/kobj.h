@@ -105,6 +105,11 @@ int kobj_init(struct kobj *o, enum kobj_type t);
 /* Take and drop a reference. Dropping the last one destroys the object. */
 void kobj_ref(struct kobj *o);
 void kobj_unref(struct kobj *o);
+/* A reference for a finder that holds the lock its table is left under: 1,
+   taken, or 0 when the last one has gone already and the object is on its
+   way out (its destroy hook waits for that lock to leave the table). The
+   only way to a reference from a pointer nothing vouches for. */
+int  kobj_ref_if_live(struct kobj *o);
 
 /* A handle was created for, or closed on, this object. Each handle holds a
    reference, so these adjust both counts. */

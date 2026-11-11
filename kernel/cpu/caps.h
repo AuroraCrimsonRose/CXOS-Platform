@@ -54,6 +54,12 @@
                         now; split to a display-server tier later)
      GRANT_REALTIME     SYS_THREAD_SET_PRIORITY to PRIO_REALTIME and up: a
                         thread there that never blocks starves the rest
+     GRANT_INSPECT      SYS_PROCESS_QUERY, and SYS_DEVICE_INFO without
+                        GRANT_DRIVER (2.7c): what is running and what
+                        hardware there is, read only. No handle comes of
+                        either, so it ends, waits for and opens nothing.
+                        In no baseline; held and handed on as GRANT_DRIVER
+                        is (`run +inspect`)
      GRANT_INPUT        SYS_INPUT_READ / SYS_INPUT_POLL / SYS_MOUSE_READ;
                         dropped from every background process at spawn
      GRANT_OS_BASELINE  a broker executive's baseline authority

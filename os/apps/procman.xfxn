@@ -1,0 +1,293 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// apps/procman.xfxn - the Process Manager, on the console (roadmap 2.7c).
+// Aurora Tejeda / CATX Systems
+// Threads: one.
+//
+//   run +inspect procman                  the processes, once
+//   run +inspect procman watch [n]        n samples a second apart (10 unless
+//                                         said), each with the CPU share since
+//                                         the one before
+//   run +inspect procman devices          the device tree
+//   run +inspect procman test <parent> <processes> <devices>
+//                                         what a boot runs (below)
+//
+// It reads and changes nothing: GRANT_INSPECT gives no handle on what it
+// shows, so there is no "end this process" here. The views are std/sysview.xfxn.
+//
+// GRANTS is a letter for each grant held: Console Disk Net Spawn Power
+// Endpoint driVer Framebuffer Realtime Input inspeXt.
+//
+// `test` is given what the kernel knows (the pid that started this, how many
+// processes there are with this one, how many device nodes) and checks its
+// own view against it. Its exit code is 0, or the number of the step that
+// went wrong (10 and up); 1 is "not allowed".
+
+import "sysview.xfxn";
+import "io.xfxn";
+import "fmt.xfxn";
+import "time.xfxn";
+import "string.xfxn";
+import "mem.xfxn";
+
+const PM_PIDS: u32 = 256;           // CPU time is remembered for pids below this
+global pm_before: [256]u64;         // by pid: its cpu_ns at the sample before
+global pm_seen: [256]u8;            // by pid: 1 if pm_before is this process's
+
+fn pm_arg(n: u32) -> *u8 {
+    let ai: args_info;
+    if (args_read(&ai) != 0 || n >= ai.count) { return 0 as *u8; }
+    let page: *u32 = ai.base as *u32;
+    return (ai.base + (page[1 + n] as u64)) as *u8;
+}
+
+fn pm_is(s: *u8, word: *u8) -> u32 {
+    if (s == (0 as *u8)) { return 0; }
+    if (strlen(s) != strlen(word)) { return 0; }
+    if (strneq(s, word, strlen(word)) != 0) { return 1; }
+    return 0;
+}
+
+fn pm_fail(rc: i32) -> void {
+    puts("procman: ");
+    if (rc == E_ACCESS_DENIED) { puts("not allowed (run it as `run +inspect procman`)"); }
+    else { puts("error -"); print_u32((0 - rc) as u32); }
+    newline();
+    exit(1);
+}
+
+// `s` and then spaces to `width` columns, with one more after it.
+fn pm_left(s: *u8, width: u32) -> void {
+    let n: u32 = strlen(s);
+    puts(s);
+    while (n < width) { putc(32); n = n + 1; }
+    putc(32);
+}
+
+// `v` at the right of `width` columns, with a space after it.
+fn pm_right(v: u64, width: u32) -> void {
+    let b: [21]u8;
+    let n: u32 = u64_to_dec(&b[0], sizeof b, v);
+    while (n < width) { putc(32); n = n + 1; }
+    puts(&b[0]);
+    putc(32);
+}
+
+// Tenths of a percent as "12.3", at the right of 6 columns.
+fn pm_share(tenths: u32) -> void {
+    let b: [12]u8;
+    let n: u32 = u32_to_dec(&b[0], sizeof b, tenths / 10);
+    while (n < 4) { putc(32); n = n + 1; }
+    puts(&b[0]);
+    putc(46);
+    putc((48 + tenths % 10) as u8);
+    putc(32);
+}
+
+// v in hex, `digits` of them, no prefix.
+fn pm_hex(v: u32, digits: u32) -> void {
+    let i: u32 = digits;
+    while (i > 0) {
+        i = i - 1;
+        let d: u32 = (v >> (i * 4)) & 15;
+        if (d < 10) { putc((48 + d) as u8); } else { putc((87 + d) as u8); }
+    }
+}
+
+// The processes, once. `wall_ns` is the time since the sample before, 0 for
+// the first: with it each row has its share of a CPU over that time.
+// Returns how many there were, or an error.
+fn pm_processes(wall_ns: u64) -> i32 {
+    let st: process_stat;
+    let grants: [12]u8;
+    let from: u32 = 0;
+    let n: i32 = 0;
+    puts(" PID PARENT THR HANDLES  MEM KiB   CPU ms ");
+    if (wall_ns != 0) { puts(" CPU % "); }
+    puts("TRUST      GRANTS      NAME\n");
+    while (1 == 1) {
+        let rc: i32 = sv_proc_next(from, &st);
+        if (rc == E_NOT_FOUND) { break; }
+        if (rc != 0) { return rc; }
+        pm_right(st.pid as u64, 4);
+        pm_right(st.parent as u64, 6);
+        pm_right(st.threads as u64, 3);
+        pm_right(st.handles as u64, 7);
+        pm_right(st.memory / 1024, 8);
+        pm_right(st.cpu_ns / NS_PER_MS, 8);
+        if (wall_ns != 0) {
+            let used: u64 = 0;
+            if (st.pid < PM_PIDS && pm_seen[st.pid] == 1 && st.cpu_ns >= pm_before[st.pid]) {
+                used = st.cpu_ns - pm_before[st.pid];
+            }
+            pm_share(sv_share(used, wall_ns));
+        }
+        if (st.pid < PM_PIDS) { pm_before[st.pid] = st.cpu_ns; pm_seen[st.pid] = 2; }
+        // a kernel thread's process came from no image: nothing was signed
+        if ((st.flags & PSTAT_USER) == 0) { pm_left("-", 10); } else { pm_left(sv_trust_name(st.trust), 10); }
+        sv_grants(&grants[0], st.caps);
+        pm_left(&grants[0], 11);
+        // a kernel thread's process in brackets, as it is no file's
+        if ((st.flags & PSTAT_USER) == 0) { putc(91); puts(sv_proc_name(&st)); putc(93); }
+        else { puts(sv_proc_name(&st)); }
+        newline();
+        n = n + 1;
+        from = st.pid + 1;
+    }
+    // what was not seen this time is another process if its pid comes back
+    let i: u32 = 0;
+    while (i < PM_PIDS) {
+        if (pm_seen[i] == 2) { pm_seen[i] = 1; } else { pm_seen[i] = 0; }
+        i = i + 1;
+    }
+    return n;
+}
+
+fn pm_watch(samples: u32) -> void {
+    let last: u64 = 0;
+    let i: u32 = 0;
+    while (i < samples) {
+        let now: u64 = time_now_ns();
+        let wall: u64 = 0;
+        if (i > 0) { wall = now - last; }
+        last = now;
+        let n: i32 = pm_processes(wall);
+        if (n < 0) { pm_fail(n); }
+        print_u32(n as u32);
+        puts(" processes\n");
+        i = i + 1;
+        if (i < samples) { sleep_ms(1000); newline(); }
+    }
+}
+
+fn pm_devices() -> void {
+    let d: device_desc;
+    let from: u32 = 0;
+    let n: u32 = 0;
+    puts("  ID PARENT BUS      STATE    VEN:DEV   CLASS    AT       DRIVER\n");
+    while (1 == 1) {
+        let id: i32 = sv_dev_next(from, &d);
+        if (id == E_NOT_FOUND) { break; }
+        if (id < 0) { pm_fail(id); }
+        pm_right(d.id as u64, 4);
+        pm_right(d.parent as u64, 6);
+        pm_left(sv_bus_name(d.bus), 8);
+        pm_left(sv_state_name(d.state), 8);
+        pm_hex(d.vendor, 4); putc(58); pm_hex(d.device, 4); putc(32);
+        pm_hex(d.class_code, 2); putc(46); pm_hex(d.subclass, 2); putc(46); pm_hex(d.interface, 2); putc(32);
+        if (d.bus == DEVICE_BUS_PCI) {
+            pm_hex(d.location >> 16, 2); putc(58); pm_hex((d.location >> 8) & 255, 2); putc(46);
+            pm_hex(d.location & 255, 1); puts("  ");
+        } else {
+            puts("-        ");
+        }
+        puts(&d.driver[0]);
+        newline();
+        n = n + 1;
+        from = (id as u32) + 1;
+    }
+    print_u32(n);
+    puts(" nodes\n");
+}
+
+// What a boot runs. 0, or the step that went wrong.
+fn pm_test(parent: u32, processes: u32, devices: u32) -> i32 {
+    let st: process_stat;
+    let me: process_stat;
+    let d: device_desc;
+    let from: u32 = 0;
+    let n: u32 = 0;
+    let mine: u32 = 0;
+    let last: u32 = 0;
+    // 10-13: the walk goes up through the pids, ends, and counts what the
+    // kernel counted; one row of it is this program
+    while (1 == 1) {
+        let rc: i32 = sv_proc_next(from, &st);
+        if (rc == E_NOT_FOUND) { break; }
+        if (rc != 0) { return 10; }
+        if (st.pid < from || (n > 0 && st.pid <= last)) { return 11; }
+        if (st.name[PROC_NAME_MAX - 1] != 0) { return 11; }
+        if (pm_is(&st.name[0], "procman.xuex") == 1 && st.parent == parent) {
+            mine = mine + 1;
+            memcpy((&me) as *u8, (&st) as *u8, sizeof st);
+        }
+        last = st.pid;
+        n = n + 1;
+        from = st.pid + 1;
+    }
+    if (n != processes) { return 12; }
+    if (mine != 1) { return 13; }
+    // 14: what the kernel says of this program is what is true of it: a ring-3
+    // process of one thread, holding what it was started with, and
+    // with memory and CPU time to its name
+    if ((me.flags & PSTAT_USER) == 0 || me.threads != 1) { return 14; }
+    if (me.caps != (GRANT_INSPECT | GRANT_CONSOLE)) { return 14; }
+    if (me.memory == 0 || me.memory > me.memory_quota || me.job == 0) { return 14; }
+    // 15: asked for by its pid, it is the same process; a pid nothing has is
+    // not found, and neither is one past them all
+    if (sv_proc_get(me.pid, &st) != 0 || st.pid != me.pid || st.job != me.job || st.parent != parent) { return 15; }
+    if (sv_proc_next(last + 1, &st) != E_NOT_FOUND || sv_proc_next(4294967295, &st) != E_NOT_FOUND) { return 15; }
+    if (sv_proc_count() != (processes as i32)) { return 15; }
+    // 16: its CPU time only grows, and grows while it runs
+    let t0: u64 = me.cpu_ns;
+    let spin: u64 = time_now_ns();
+    let turns: u32 = 0;
+    while (time_now_ns() - spin < 20 * NS_PER_MS) { turns = turns + 1; }
+    if (sv_proc_get(me.pid, &st) != 0 || st.cpu_ns < t0 + 10 * NS_PER_MS) { return 16; }
+    // 17: what started it is in the list too: a kernel thread's process, which
+    // is not a program
+    if (sv_proc_get(parent, &st) != 0 || (st.flags & PSTAT_USER) != 0) { return 17; }
+    // 20-22: the device tree: as many nodes as the kernel has, the root first
+    // and its own parent, every other node under one that exists
+    if (sv_dev_count() != (devices as i32)) { return 20; }
+    if (sv_dev_next(0, &d) != 0 || d.id != 0 || d.parent != 0 || d.bus != DEVICE_BUS_ROOT) { return 21; }
+    from = 1;
+    while (1 == 1) {
+        let id: i32 = sv_dev_next(from, &d);
+        if (id == E_NOT_FOUND) { break; }
+        if (id < 0 || d.id != (id as u32)) { return 22; }
+        let up: device_desc;
+        if (device_info(d.parent, &up) != 0) { return 22; }
+        if (d.driver[DEVICE_DRIVER_MAX - 1] != 0) { return 22; }
+        if (d.state != DEVICE_STATE_BOUND && d.state != DEVICE_STATE_BINDING && d.driver[0] != 0) { return 22; }
+        from = (id as u32) + 1;
+    }
+    // 23: looking is all: no device opens without GRANT_DRIVER
+    if (device_open(0) != E_ACCESS_DENIED) { return 23; }
+    return 0;
+}
+
+fn _start() -> void {
+    let mode: *u8 = pm_arg(1);
+    // asked before anything is printed: a refusal is not a table's heading
+    let first: process_stat;
+    if (sv_proc_next(0, &first) == E_ACCESS_DENIED) {
+        if (pm_is(mode, "test") == 1) { exit(1); }
+        pm_fail(E_ACCESS_DENIED);
+    }
+    if (pm_is(mode, "test") == 1) {
+        let a: *u8 = pm_arg(2);
+        let b: *u8 = pm_arg(3);
+        let c: *u8 = pm_arg(4);
+        if (c == (0 as *u8)) { exit(2); }
+        exit(pm_test(dec_u32(a), dec_u32(b), dec_u32(c)));
+    }
+    if (pm_is(mode, "devices") == 1) {
+        pm_devices();
+        exit(0);
+    }
+    if (pm_is(mode, "watch") == 1) {
+        let samples: u32 = 10;
+        let s: *u8 = pm_arg(2);
+        if (s != (0 as *u8)) { samples = dec_u32(s); }
+        if (samples == 0 || samples > 3600) { puts("usage: run +inspect procman watch [1-3600]\n"); exit(2); }
+        pm_watch(samples);
+        exit(0);
+    }
+    if (mode != (0 as *u8)) {
+        puts("usage: run +inspect procman [watch [n] | devices]\n");
+        exit(2);
+    }
+    pm_watch(1);
+    exit(0);
+}

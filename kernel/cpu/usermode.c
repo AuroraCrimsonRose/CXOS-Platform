@@ -350,6 +350,23 @@ int syscall_exec_path(uint64_t path, uint64_t a) {
     return sys_exec_path(path, a);
 }
 
+/* The gate is all the authority there is: the answer names no object, so
+   nothing can be done with it but read it. */
+int syscall_process_query(uint32_t from, uint64_t ust) {
+    if (!(thread_current_caps() & GRANT_INSPECT)) {
+        klog_u32("GRANT", SEV_WARN, "inspect DENIED for pid ", (uint32_t)thread_current_pid(),
+                 LOG_COLOR_VALUE, " (no GRANT_INSPECT)");
+        return E_ACCESS_DENIED;
+    }
+    if (!user_ptr_writable(ust, sizeof(struct process_stat))) return E_BAD_ADDRESS;
+    struct proc *p = proc_next(from);
+    if (!p) return E_NOT_FOUND;
+    struct process_stat st;
+    proc_stat(p, &st);
+    proc_put(p);
+    return user_copy_out(ust, &st, sizeof st) == 0 ? E_OK : E_BAD_ADDRESS;
+}
+
 /* The eighteen file calls share one gate, as the network calls do. */
 static int disk_granted(void) {
     if (thread_current_caps() & GRANT_DISK) return 1;
@@ -7456,6 +7473,162 @@ done:
     dh_close(e.tab, &d);
     if (ok && (kobj_live(KOBJ_MEM) != mem0 || kobj_live(KOBJ_DEVICE) != dev0
                || dh_state((uint32_t)edu) != DEVICE_STATE_UNBOUND)) ok = 0;
+    dh_end(&e);
+    return ok;
+}
+
+/* A process of two threads, one of which runs for 30 ms and ends: what it
+   ran is its process's still (step 9 below). */
+static volatile int pq_stage, pq_quit;
+static void pq_child(void) {
+    uint64_t s = timer_now_ns();
+    while (timer_now_ns() - s < 30ull * 1000000ull) { }
+    pq_stage = 1;
+}
+static void pq_parent(void) {
+    if (thread_create_sibling(thread_current_id(), "pqchild", pq_child) < 0) { pq_stage = -1; return; }
+    for (int i = 0; i < 5000 && pq_stage == 0; i++) (void)thread_sleep_ms(1);
+    for (int i = 0; i < 20; i++) (void)thread_sleep_ms(1);   /* the child is through thread_exit */
+    pq_stage = pq_stage == 1 ? 2 : -1;
+    while (!pq_quit) (void)thread_sleep_ms(1);
+}
+
+/* SYS_PROCESS_QUERY and the device tree under GRANT_INSPECT (2.7c): what is
+   running, to read and nothing more. 1 = pass, 0 = fail. */
+#define PQ_STAT (TEST_CODE_VIRT + 0x700)   /* struct process_stat */
+static int pq_ask(uint32_t from) { return syscall_dispatch(SYS_PROCESS_QUERY, from, PQ_STAT, 0, 0, 0); }
+/* The processes not ended, counted by the kernel's own walk. */
+static uint32_t pq_count(void) {
+    uint32_t n = 0;
+    for (uint32_t from = 0; ; n++) {
+        struct proc *p = proc_next(from);
+        if (!p) break;
+        from = (uint32_t)p->pid + 1;
+        proc_put(p);
+    }
+    return n;
+}
+int usermode_process_query_test(void) {
+    struct dh_env e;
+    if (!dh_begin(&e)) return 0;
+    const struct process_stat *st = (const struct process_stat *)ktest_umem(PQ_STAT);
+    const struct device_desc *di = (const struct device_desc *)ktest_umem(DH_INFO);
+    struct proc *mine = thread_proc(e.me);
+    uint32_t live0 = kobj_live(KOBJ_PROCESS), refs0 = atomic_load(&mine->hdr.refs);
+    struct proc *made = 0;
+    int step = 0, ok = 0;
+
+    /* 1: nothing without the grant, and the driver's grant is not it */
+    thread_set_caps(e.me, 0);
+    step = 1; if (pq_ask(0) != E_ACCESS_DENIED || dh_info(0) != E_ACCESS_DENIED) goto done;
+    thread_set_caps(e.me, GRANT_DRIVER);
+    if (pq_ask(0) != E_ACCESS_DENIED) goto done;
+    thread_set_caps(e.me, GRANT_INSPECT);
+
+    /* 2: where the answer goes, and a pid past them all */
+    step = 2; if (syscall_dispatch(SYS_PROCESS_QUERY, 0, 0xC0001000u, 0, 0, 0) != E_BAD_ADDRESS
+                  || syscall_dispatch(SYS_PROCESS_QUERY, 0, 0, 0, 0, 0) != E_BAD_ADDRESS
+                  || pq_ask(PROC_PID_MAX) != E_NOT_FOUND || pq_ask(0xFFFFFFFFu) != E_NOT_FOUND) goto done;
+
+    /* 3: this process, as the kernel has it */
+    step = 3; if (pq_ask((uint32_t)e.pid) != E_OK || st->pid != (uint32_t)e.pid
+                  || st->caps != GRANT_INSPECT || (st->flags & PSTAT_USER) != (mine->is_user ? PSTAT_USER : 0)
+                  || st->threads != (uint32_t)mine->running || st->handles != htab_count(e.tab)
+                  || st->job != mine->job->hdr.koid || st->parent != (uint32_t)mine->parent
+                  || st->trust != mine->trust || st->signer != mine->signer
+                  || st->memory != mine->vm.mapped || st->memory_quota != mine->vm.quota
+                  || st->memory_quota == 0) goto done;
+    for (uint32_t i = 0; i < PROC_NAME_MAX; i++) if (st->name[i] != mine->name[i]) goto done;
+
+    /* 4: its CPU time grows while it runs, and is its threads' */
+    uint64_t t0 = st->cpu_ns, spin = timer_now_ns();
+    while (timer_now_ns() - spin < 20ull * 1000000ull) { }
+    step = 4; if (pq_ask((uint32_t)e.pid) != E_OK || st->cpu_ns < t0 + 10ull * 1000000ull
+                  || st->cpu_ns > thread_proc_cpu_ns(mine)) goto done;
+
+    /* 5: the walk goes up through the pids and counts what the kernel counts */
+    uint32_t n = 0, last = 0;
+    step = 5;
+    for (uint32_t from = 0; ; n++) {
+        int rc = pq_ask(from);
+        if (rc == E_NOT_FOUND) break;
+        if (rc != E_OK || st->pid < from || (n && st->pid <= last) || n > PROC_PID_MAX) goto done;
+        last = st->pid;
+        from = last + 1;
+    }
+    if (n == 0 || n != pq_count()) goto done;
+
+    /* 6: a process just made is in it, by its file's name cut to fit, under
+       the pid that made it; one that has ended is not */
+    made = proc_create(mine, 0);
+    step = 6; if (!made) goto done;
+    proc_set_name(made, "a-name-longer-than-the-thirty-one-bytes-it-has");
+    if (pq_ask((uint32_t)made->pid) != E_OK || st->pid != (uint32_t)made->pid
+        || st->parent != (uint32_t)e.pid || st->threads != 0 || st->cpu_ns != 0
+        || st->name[0] != 'a' || st->name[PROC_NAME_MAX - 2] != 'o' || st->name[PROC_NAME_MAX - 1] != 0
+        || pq_count() != n + 1) goto done;
+    proc_set_name(made, 0);
+    if (pq_ask((uint32_t)made->pid) != E_OK || st->name[0] != 0 || st->name[5] != 0) goto done;
+    kobj_signal(&made->hdr, SIGNAL_PROCESS_ENDED);
+    int rc6 = pq_ask((uint32_t)made->pid);
+    if ((rc6 != E_NOT_FOUND && (rc6 != E_OK || st->pid <= (uint32_t)made->pid)) || pq_count() != n) goto done;
+
+    /* 7: a reference only from an object that still has one */
+    struct kobj gone = { 0 };
+    step = 7; if (kobj_ref_if_live(&gone) != 0 || atomic_load(&gone.refs) != 0) goto done;
+    uint32_t r = atomic_load(&made->hdr.refs);
+    if (kobj_ref_if_live(&made->hdr) != 1 || atomic_load(&made->hdr.refs) != r + 1) goto done;
+    kobj_unref(&made->hdr);
+
+    /* 8: the device tree is to be read with this grant, and not opened; a
+       node says which kernel driver has it, and only then */
+    step = 8; if (dh_info(0) != E_OK || di->bus != DEVICE_BUS_ROOT || dh_open(0) != E_ACCESS_DENIED) goto done;
+    uint32_t bound = 0;
+    for (uint32_t id = 0; id < DEVICE_MAX; id++) {
+        const struct dev_node *nd = devtree_get(id);
+        if (!nd) { if (dh_info(id) != E_NOT_FOUND) goto done; continue; }
+        if (dh_info(id) != E_OK || di->id != id || di->driver[DEVICE_DRIVER_MAX - 1] != 0) goto done;
+        if (di->state == DEVICE_STATE_BOUND && nd->drv) {
+            bound++;
+            for (uint32_t i = 0; i + 1u < DEVICE_DRIVER_MAX; i++) {
+                if (di->driver[i] != nd->drv->name[i]) goto done;
+                if (!nd->drv->name[i]) break;
+            }
+            if (di->driver[0] == 0) goto done;
+        } else if (di->state == DEVICE_STATE_UNBOUND || di->state == DEVICE_STATE_HELD) {
+            if (di->driver[0] != 0) goto done;
+        }
+    }
+    if (bound == 0) goto done;   /* every boot has a kernel driver on something */
+
+    /* 9: a kernel thread's process, by its name, with the thread it has left;
+       the time of the one that ended is still counted */
+    pq_stage = 0; pq_quit = 0;
+    int ht = thread_create("pqparent", pq_parent);
+    step = 9; if (ht < 0) goto done;
+    uint32_t hp = (uint32_t)thread_pid(ht);
+    for (int i = 0; i < 10000 && pq_stage >= 0 && pq_stage < 2; i++) (void)thread_sleep_ms(1);
+    /* The child's 30 ms beyond what the parent ran itself: an absolute bound
+       does not tell them apart, since under -icount the parent's own work
+       (its sibling's creation, ~50 sleeps) comes to ~40 ms. Read first, so
+       anything the parent runs after only adds to both sides. */
+    uint64_t parent_ns = thread_cpu_ns(ht);
+    int seen = pq_stage == 2 && pq_ask(hp) == E_OK && st->pid == hp && st->parent == (uint32_t)e.pid
+            && st->threads == 1 && (st->flags & PSTAT_USER) == 0
+            && st->cpu_ns >= parent_ns + 20ull * 1000000ull && st->cpu_ns < 1000ull * 1000000ull
+            && st->name[0] == 'p' && st->name[7] == 't' && st->name[8] == 0;
+    pq_quit = 1;
+    if (!proc_live_settles(live0 + 1) || !seen) goto done;
+    ok = 1;
+
+done:
+    if (!ok) klog_u32("KTEST", SEV_ERR, "process query test failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    pq_quit = 1;
+    if (made) proc_put(made);
+    if (ok && (kobj_live(KOBJ_PROCESS) != live0 || atomic_load(&mine->hdr.refs) != refs0)) {
+        klog("KTEST", SEV_ERR, "process query test left a process or a reference behind");
+        ok = 0;
+    }
     dh_end(&e);
     return ok;
 }

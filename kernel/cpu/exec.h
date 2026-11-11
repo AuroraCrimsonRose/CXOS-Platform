@@ -25,7 +25,7 @@ struct job;        /* cpu/job.h */
 
 /* Verify, load, and run a CXEX image in ring 3 until it exits.
    Returns the image's exit code (>=0), or a negative cxex_exec error. */
-int cxex_exec(const uint8_t *file, size_t len);
+int cxex_exec(const uint8_t *file, size_t len, const char *name);
 
 /* Same verification and type policy, but the CALLER supplies the authority and
    the broker rather than caps_for() deciding.
@@ -46,7 +46,7 @@ int cxex_exec(const uint8_t *file, size_t len);
 struct spawn_hset;
 int cxex_exec_as(const uint8_t *file, size_t len, uint32_t caps, struct endpoint *broker,
                  uint32_t broker_grant, const char *args, uint32_t args_len, int32_t *handle,
-                 const struct spawn_hset *hs, struct job *job);
+                 const struct spawn_hset *hs, struct job *job, const char *name);
 
 /* Turn a keyvault_trust_of result into the trust an image is admitted at, or a
    negative refusal. Identity on a release kernel; a DEV_UNSIGNED build also

@@ -131,6 +131,7 @@ struct proc *proc_create(const struct proc *parent, struct job *job) {
         return 0;
     }
     p->pid    = pid;
+    p->parent = parent ? parent->pid : 0;
     p->uid    = parent ? parent->uid : UID_SYSTEM;
     p->cwd    = parent ? parent->cwd : 0;
     p->background = parent ? parent->background : 0;   /* never handed back */
@@ -368,6 +369,48 @@ struct proc *proc_by_pid(int pid) {
     struct proc *p = (struct proc *)idtab_get(&pids, pid);
     spin_unlock(&pids_lock, f);
     return p;
+}
+
+void proc_set_name(struct proc *p, const char *name) {
+    uint32_t i = 0;
+    if (name) for (; i + 1u < PROC_NAME_MAX && name[i]; i++) p->name[i] = name[i];
+    while (i < PROC_NAME_MAX) p->name[i++] = 0;
+}
+
+/* The table keeps a record until its destroy hook takes it out, under
+   pids_lock, after the last reference went: so what is found here is memory
+   still, and kobj_ref_if_live says whether it is still a process. */
+struct proc *proc_next(uint32_t from) {
+    struct proc *found = 0;
+    uint32_t f = spin_lock(&pids_lock);
+    for (uint32_t pid = from; pid < PROC_PID_MAX && !found; pid++) {
+        struct proc *p = (struct proc *)idtab_get(&pids, (int)pid);
+        /* Ended is the signal, not `ended`: a note of how waits for the last
+           thread (proc_note_end), and the self-tests' own process is noted
+           by every ring-3 blob it runs and goes on. */
+        if (p && !(atomic_load(&p->hdr.signals) & SIGNAL_PROCESS_ENDED) && kobj_ref_if_live(&p->hdr)) found = p;
+    }
+    spin_unlock(&pids_lock, f);
+    return found;
+}
+
+/* Each field as it is at its own moment: nothing here is held still, and a
+   list for a person to read does not need it to be. */
+void proc_stat(struct proc *p, struct process_stat *st) {
+    for (uint32_t i = 0; i < sizeof *st; i++) ((uint8_t *)st)[i] = 0;
+    st->cpu_ns       = thread_proc_cpu_ns(p);
+    st->signer       = p->signer;
+    st->memory       = p->vm.live ? p->vm.mapped : 0;
+    st->memory_quota = p->vm.live ? p->vm.quota : 0;
+    st->pid          = (uint32_t)p->pid;
+    st->parent       = (uint32_t)p->parent;
+    st->threads      = p->running > 0 ? (uint32_t)p->running : 0;
+    st->handles      = htab_count(&p->handles);
+    st->caps         = p->caps;
+    st->trust        = p->trust;
+    st->flags        = (p->is_user ? PSTAT_USER : 0) | (p->background ? PSTAT_BACKGROUND : 0);
+    st->job          = p->job ? p->job->hdr.koid : 0;
+    for (uint32_t i = 0; i < PROC_NAME_MAX; i++) st->name[i] = p->name[i];   /* cut and ended by proc_set_name */
 }
 
 void proc_set_handle_limit(uint32_t n) { handle_limit = n; }

@@ -74,6 +74,12 @@ struct proc {
     uint32_t    end_killer; /* PROC_KILLED, PROC_STOPPED: the pid that asked */
     uint32_t    trust;      /* PROC_TRUST_*: as its image was found to be */
     uint64_t    signer;     /* of the key that signed it, or 0 (keyvault.h) */
+    /* For whoever lists the processes (proc_next, SYS_PROCESS_QUERY): the pid
+       that made it, the file it came from (proc_set_name; empty if none), and
+       the CPU time of its threads that have ended (sched.c, under sched_lock). */
+    int         parent;
+    char        name[PROC_NAME_MAX];
+    uint64_t    cpu_done_ns;
     /* Set by proc_kill: its threads leave at their next safe point, and none
        of them blocks again (cpu/sched.h, thread_killed). */
     int         killing;
@@ -98,6 +104,17 @@ void proc_sys_init(void);
    root job without one). The caller holds the one reference; proc_thread_in
    gives one to each thread. NULL if out of pids or memory. */
 struct proc *proc_create(const struct proc *parent, struct job *job);
+
+/* What it is called from now on: `name` cut to PROC_NAME_MAX - 1 bytes, or
+   nothing for NULL. Before its first thread runs. */
+void proc_set_name(struct proc *p, const char *name);
+
+/* The first process with a pid at or after `from` that has not ended, with a
+   reference (proc_put), or NULL: none. */
+struct proc *proc_next(uint32_t from);
+
+/* p as SYS_PROCESS_QUERY reports it. */
+void proc_stat(struct proc *p, struct process_stat *st);
 
 /* A thread now names `p` (a reference), stops running, or no longer names it.
    Joining is charged to p's job (cpu/job.h) until the thread is gone, and

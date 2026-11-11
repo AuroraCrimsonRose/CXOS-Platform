@@ -1,0 +1,139 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 Aurora Tejeda (trading as CATX Systems)
+// std/sysview.xfxn - what is running and what hardware there is (roadmap 2.7c).
+// Aurora Tejeda / CATX Systems
+// Threads: any; nothing here is shared.
+//
+// The Process Manager's eyes: the processes (SYS_PROCESS_QUERY) and the
+// device tree (SYS_DEVICE_INFO), read with GRANT_INSPECT, and the words for
+// what the numbers mean. It only reads: neither call gives a handle, so
+// nothing here can end a process or open a device.
+//
+// Both lists are walked a call at a time and nothing holds them still, so a
+// walk is a moment for each row, not one moment for all of them: a process
+// may start or end between two calls. A caller that wants a count and a list
+// to agree takes both from one walk.
+
+import "string.xfxn";
+import "fmt.xfxn";
+
+// The first process at or after `from`: 0 with *st filled in, E_NOT_FOUND
+// when there is none, E_ACCESS_DENIED without the grant.
+fn sv_proc_next(from: u32, st: *process_stat) -> i32 { return process_query(from, st); }
+
+// The process with exactly this pid: 0, or E_NOT_FOUND.
+fn sv_proc_get(pid: u32, st: *process_stat) -> i32 {
+    let rc: i32 = process_query(pid, st);
+    if (rc != 0) { return rc; }
+    if (st.pid != pid) { return E_NOT_FOUND; }
+    return 0;
+}
+
+// How many there are now, or an error.
+fn sv_proc_count() -> i32 {
+    let st: process_stat;
+    let n: i32 = 0;
+    let from: u32 = 0;
+    while (1 == 1) {
+        let rc: i32 = process_query(from, &st);
+        if (rc == E_NOT_FOUND) { return n; }
+        if (rc != 0) { return rc; }
+        n = n + 1;
+        from = st.pid + 1;
+    }
+    return n;
+}
+
+// The first device node at or after `from`: its id with *d filled in,
+// E_NOT_FOUND when there is none, E_ACCESS_DENIED without a grant.
+fn sv_dev_next(from: u32, d: *device_desc) -> i32 {
+    let id: u32 = from;
+    while (id < DEVICE_MAX) {
+        let rc: i32 = device_info(id, d);
+        if (rc == 0) { return id as i32; }
+        if (rc != E_NOT_FOUND) { return rc; }
+        id = id + 1;
+    }
+    return E_NOT_FOUND;
+}
+
+// How many nodes the tree has now, the root and the buses among them, or an
+// error.
+fn sv_dev_count() -> i32 {
+    let d: device_desc;
+    let n: i32 = 0;
+    let from: u32 = 0;
+    while (1 == 1) {
+        let id: i32 = sv_dev_next(from, &d);
+        if (id == E_NOT_FOUND) { return n; }
+        if (id < 0) { return id; }
+        n = n + 1;
+        from = (id as u32) + 1;
+    }
+    return n;
+}
+
+// A process's grants, a letter each in a fixed place and '-' for one it does
+// not hold, so that a column of them lines up: Console, Disk, Net, Spawn,
+// Power, Endpoint, driVer, Framebuffer, Realtime, Input, inspeXt. 11 letters
+// and a NUL: `buf` holds at least SV_GRANTS_LEN bytes.
+const SV_GRANTS_LEN: u32 = 12;
+fn sv_grant_at(buf: *u8, i: u32, caps: u32, bit: u32, letter: u8) -> void {
+    if ((caps & bit) != 0) { buf[i] = letter; } else { buf[i] = 45; }
+}
+fn sv_grants(buf: *u8, caps: u32) -> void {
+    sv_grant_at(buf, 0, caps, GRANT_CONSOLE, 67);
+    sv_grant_at(buf, 1, caps, GRANT_DISK, 68);
+    sv_grant_at(buf, 2, caps, GRANT_NET, 78);
+    sv_grant_at(buf, 3, caps, GRANT_SPAWN, 83);
+    sv_grant_at(buf, 4, caps, GRANT_POWER, 80);
+    sv_grant_at(buf, 5, caps, GRANT_ENDPOINT, 69);
+    sv_grant_at(buf, 6, caps, GRANT_DRIVER, 86);
+    sv_grant_at(buf, 7, caps, GRANT_FRAMEBUFFER, 70);
+    sv_grant_at(buf, 8, caps, GRANT_REALTIME, 82);
+    sv_grant_at(buf, 9, caps, GRANT_INPUT, 73);
+    sv_grant_at(buf, 10, caps, GRANT_INSPECT, 88);
+    buf[11] = 0;
+}
+
+fn sv_trust_name(trust: u32) -> *u8 {
+    if (trust == PROC_TRUST_PLATFORM) { return "platform"; }
+    if (trust == PROC_TRUST_PUBLISHER) { return "publisher"; }
+    if (trust == PROC_TRUST_UNVERIFIED) { return "unverified"; }
+    if (trust == PROC_TRUST_UNSIGNED) { return "unsigned"; }
+    return "?";
+}
+
+fn sv_bus_name(bus: u32) -> *u8 {
+    if (bus == DEVICE_BUS_ROOT) { return "root"; }
+    if (bus == DEVICE_BUS_PLATFORM) { return "platform"; }
+    if (bus == DEVICE_BUS_PCI) { return "pci"; }
+    if (bus == DEVICE_BUS_USB) { return "usb"; }
+    return "?";
+}
+
+fn sv_state_name(state: u32) -> *u8 {
+    if (state == DEVICE_STATE_UNBOUND) { return "free"; }
+    if (state == DEVICE_STATE_BINDING) { return "starting"; }
+    if (state == DEVICE_STATE_BOUND) { return "kernel"; }
+    if (state == DEVICE_STATE_HELD) { return "process"; }
+    return "?";
+}
+
+// What a process is called in a list: its name, or what it is when it has
+// none (a program started from bytes).
+fn sv_proc_name(st: *process_stat) -> *u8 {
+    if (st.name[0] != 0) { return &st.name[0]; }
+    if ((st.flags & PSTAT_USER) == 0) { return "kernel"; }
+    return "(unnamed)";
+}
+
+// The share of one CPU that `cpu_ns` of running is of `wall_ns` of time, in
+// tenths of a percent: 1000 is one CPU busy throughout, and a process with
+// threads on several CPUs can pass it. 0 for no time at all.
+fn sv_share(cpu_ns: u64, wall_ns: u64) -> u32 {
+    if (wall_ns == 0) { return 0; }
+    let t: u64 = (cpu_ns / 1000) * 1000 / (wall_ns / 1000 + 1);
+    if (t > 99999) { return 99999; }
+    return t as u32;
+}

@@ -1396,8 +1396,18 @@ language work in `language/CX_X_PLAN.md`.
    virtgpu`, and `displayd --virtio-gpu`, whose present sends each damaged
    rectangle. The image's `memory_quota_mib` is 64 since this step. A panic does not show on this display (the kernel cannot draw
    there): decision in `CX_DISPLAY.md`. Not tested: any of it on real hardware;
-   the picture itself except by a screendump by hand. 2.7c is the Process
-   Manager.
+   the picture itself except by a screendump by hand.
+   **2.7c, the Process Manager on the console: done (ABI 39)**
+   (`kernel/CX_SYSCALLS_IPC.md`, "What is running, to read"; `2.7c.sab`):
+   `SYS_PROCESS_QUERY` (0x78) and `GRANT_INSPECT`, which also reads the
+   device tree; a process has a name (its file's), the pid that started it
+   and the CPU time of all its threads; `os/std/sysview.xfxn` and
+   `run +inspect procman [watch [n] | devices]`. It only reads. Not built:
+   a window under `displayd` (the list is on the console), ending a process
+   from it (no handle comes of the query: whose authority that is has not
+   been decided), per-driver interrupt rate, DMA use and restart count
+   (`CX_DRIVERS.md` section 3, item 8), idle time and per-CPU load, threads within
+   a process.
 
 ### Phase 3: storage and the system tree
 

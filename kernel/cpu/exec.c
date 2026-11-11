@@ -17,9 +17,10 @@
    here at the handoff; a valid signature does not itself grant authority. */
 uint32_t caps_for(uint16_t type_code, int trusted) {
     if (!trusted) return 0;
-    /* the broker: the baseline, and GRANT_DRIVER to hand to whoever starts
-       drivers (2.7a; cpu/caps.h) */
-    if (type_code == CXEX_TYPE_OS)     return GRANT_OS_BASELINE | GRANT_DRIVER;
+    /* the broker: the baseline, GRANT_DRIVER to hand to whoever starts
+       drivers (2.7a) and GRANT_INSPECT for whoever shows the system (2.7c;
+       cpu/caps.h) */
+    if (type_code == CXEX_TYPE_OS)     return GRANT_OS_BASELINE | GRANT_DRIVER | GRANT_INSPECT;
     if (type_code == CXEX_TYPE_SYSTEM) return GRANT_SYSTEM_BASELINE;  /* OS-owned */
     if (type_code == CXEX_TYPE_USER)   return 0;                      /* an app */
     return 0;
@@ -75,7 +76,7 @@ static int min_trust_for(uint16_t type_code) {
 
 int cxex_exec_as(const uint8_t *file, size_t len, uint32_t caps, struct endpoint *broker,
                  uint32_t broker_grant, const char *args, uint32_t args_len, int32_t *handle,
-                 const struct spawn_hset *hs, struct job *job) {
+                 const struct spawn_hset *hs, struct job *job, const char *name) {
     /* INTEGRITY FIRST, before this code forms any opinion about the image.
        keyvault_trust_of establishes that the bytes are what the signer signed,
        and only then says who that was - so a negative here means unsigned,
@@ -113,11 +114,11 @@ int cxex_exec_as(const uint8_t *file, size_t len, uint32_t caps, struct endpoint
        image at platform trust, and must not be able to say so to a title bar. */
     uint32_t seen = found < 0 ? PROC_TRUST_UNSIGNED : (uint32_t)found + PROC_TRUST_UNVERIFIED;
     int pid = proc_start(file, ulen, caps, broker, broker_grant, args, args_len, handle, hs, job,
-                         seen, signer);
+                         seen, signer, name);
     return pid;   /* >= 0 pid, or a negative error */
 }
 
-int cxex_exec(const uint8_t *file, size_t len) {
+int cxex_exec(const uint8_t *file, size_t len, const char *name) {
     /* The kernel launching something by itself: nobody to attenuate from, so
        the image's own tier decides. A root executive has no broker (NULL).
        The header is parsed twice on this path - once here for the tier, once
@@ -126,5 +127,5 @@ int cxex_exec(const uint8_t *file, size_t len) {
        verify-and-check sequence to save it. */
     struct cxex_header h;
     if (cxex_parse_header(file, len, &h) != 0) return CXEX_EXEC_LOAD_FAILED;
-    return cxex_exec_as(file, len, caps_for(h.type_code, 1 /* verified */), NULL, 0, NULL, 0, NULL, NULL, NULL);
+    return cxex_exec_as(file, len, caps_for(h.type_code, 1 /* verified */), NULL, 0, NULL, 0, NULL, NULL, NULL, name);
 }

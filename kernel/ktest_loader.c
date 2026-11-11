@@ -1537,7 +1537,8 @@ static uint32_t bp_dec(char *at, uint32_t v) {
 /* Run it with `argv` (argv[0] and every NUL counted in argv_len), wait for it
    and for what it held to be given back: its exit code, or -1 if it did not
    start, did not end in time, or did not end by exiting. */
-static int bp_run_path(const char *prog, uint32_t prog_len, const char *argv_in, uint32_t argv_len, uint32_t live0) {
+static int bp_run_caps(const char *prog, uint32_t prog_len, const char *argv_in, uint32_t argv_len, uint32_t live0,
+                       uint32_t child_caps) {
     struct spawn_args *a        = (struct spawn_args *)SHP_VA;
     struct object_info_args *oi = (struct object_info_args *)(SHP_VA + 0x100);
     struct process_info *pi     = (struct process_info *)(SHP_VA + 0x200);
@@ -1547,7 +1548,7 @@ static int bp_run_path(const char *prog, uint32_t prog_len, const char *argv_in,
     for (uint32_t i = 0; i < prog_len; i++) path[i] = prog[i];
     for (uint32_t i = 0; i < argv_len; i++) argv[i] = argv_in[i];
     a->image = 0; a->image_len = 0; a->name = user_addr(path);
-    a->broker_endpoint = -1; a->caps = GRANT_DRIVER | GRANT_CONSOLE; a->job = 0;
+    a->broker_endpoint = -1; a->caps = child_caps; a->job = 0;
     a->args = user_addr(argv); a->args_len = argv_len;
     a->handles = 0; a->handle_count = 0;
     int32_t ph = syscall_exec_path(user_addr(path), user_addr(a));
@@ -1564,6 +1565,10 @@ static int bp_run_path(const char *prog, uint32_t prog_len, const char *argv_in,
     int settled = 0;
     for (int i = 0; i < 10 && !settled; i++) settled = proc_live_settles(live0);
     return settled ? code : -1;
+}
+
+static int bp_run_path(const char *prog, uint32_t prog_len, const char *argv_in, uint32_t argv_len, uint32_t live0) {
+    return bp_run_caps(prog, prog_len, argv_in, argv_len, live0, GRANT_DRIVER | GRANT_CONSOLE);
 }
 
 static int bp_run(const char *argv_in, uint32_t argv_len, uint32_t live0) {
@@ -1711,6 +1716,68 @@ int ktest_virtgpu_program(void) {
     step = 0;
 done:
     if (step != 0) klog_u32("KTEST", SEV_ERR, "virtio-gpu program failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
+    thread_set_caps(thread_current_id(), caps);
+    paging_unmap(SHP_VA);
+    pmm_free(frame);
+    return step == 0;
+}
+
+/* 2.7c: the Process Manager, as the program. `procman test` is told what the
+   kernel counts (the pid starting it, the processes there will be with it
+   running, the device nodes) and checks its own view against that, so its
+   word is held to the kernel's. Then: without the grant it is refused and
+   says so, and the list a person asks for runs to its end. Nothing it held
+   stays behind. 1 = pass, 0 = fail. */
+int ktest_procman_program(void) {
+    static const char prog[] = "/Shared/Programs/procman.xuex";
+    if (cxfs_resolve(prog, 0) < 0) return 1;       /* nothing staged - skip */
+    paddr_t frame = pmm_alloc();
+    if (!frame) return 0;
+    if (paging_map_user(SHP_VA, frame, VM_WRITE) != 0) { pmm_free(frame); return 0; }
+    uint32_t caps = thread_current_caps();
+    thread_set_caps(thread_current_id(), GRANT_SPAWN | GRANT_INSPECT | GRANT_CONSOLE);
+    uint32_t live0 = proc_live();
+    uint32_t mem0 = kobj_live(KOBJ_MEM), dev0 = kobj_live(KOBJ_DEVICE);
+    uint32_t procs = 0, nodes = 0;
+    for (uint32_t from = 0; ; procs++) {
+        struct proc *p = proc_next(from);
+        if (!p) break;
+        from = (uint32_t)p->pid + 1;
+        proc_put(p);
+    }
+    for (unsigned id = 0; id < DEVICE_MAX; id++) if (devtree_get(id)) nodes++;
+
+    char argv[64] = "procman\0" "test";
+    uint32_t argv_len = 13;
+    argv_len += bp_dec(argv + argv_len, (uint32_t)thread_current_pid());
+    argv_len += bp_dec(argv + argv_len, procs + 1);
+    argv_len += bp_dec(argv + argv_len, nodes);
+    int step, code;
+
+    /* 1: its view against the kernel's */
+    code = bp_run_caps(prog, sizeof prog, argv, argv_len, live0, GRANT_INSPECT | GRANT_CONSOLE);
+    step = 1;
+    if (code != 0) {
+        klog_u32("KTEST", SEV_ERR, "procman test exited with ", (uint32_t)code, LOG_COLOR_VALUE, "");
+        goto done;
+    }
+    /* 2: without the grant: refused, and it says so */
+    code = bp_run_caps(prog, sizeof prog, argv, argv_len, live0, GRANT_CONSOLE);
+    step = 2; if (code != 1) goto done;
+    static const char plain[] = "procman";
+    code = bp_run_caps(prog, sizeof prog, plain, sizeof plain, live0, GRANT_CONSOLE);
+    if (code != 1) goto done;
+    /* 3: the list itself, and the devices */
+    code = bp_run_caps(prog, sizeof prog, plain, sizeof plain, live0, GRANT_INSPECT | GRANT_CONSOLE);
+    step = 3; if (code != 0) goto done;
+    static const char devs[] = "procman\0" "devices";
+    code = bp_run_caps(prog, sizeof prog, devs, sizeof devs, live0, GRANT_INSPECT | GRANT_CONSOLE);
+    if (code != 0) goto done;
+    /* 4: nothing of it is left */
+    step = 4; if (kobj_live(KOBJ_MEM) != mem0 || kobj_live(KOBJ_DEVICE) != dev0) goto done;
+    step = 0;
+done:
+    if (step != 0) klog_u32("KTEST", SEV_ERR, "procman program failed at step ", (uint32_t)step, LOG_COLOR_VALUE, "");
     thread_set_caps(thread_current_id(), caps);
     paging_unmap(SHP_VA);
     pmm_free(frame);

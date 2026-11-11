@@ -385,6 +385,9 @@ static int thread_create_in(const char *name, void (*entry)(void), int held, str
     /* Its process: the one it joins, or a new one that inherits the
        creator's uid and cwd and nothing else, in `job` or the creator's. */
     struct proc *p = into ? into : proc_create(self()->proc, job);
+    /* Named after its first thread until something better is known of it
+       (proc_start: the file a program came from). */
+    if (p && !into) proc_set_name(p, name);
     uintptr_t stack = 0;
     uintptr_t stack_top = p ? kstack_alloc(stack_bytes, slot, &stack) : 0;
     /* Its job's say last: it may be killed, or have no thread to spare. */
@@ -934,6 +937,9 @@ void thread_exit(void) {
        back by the thread switched to (its flags here, off, are no one's). */
     sched_take();
     self()->state = THREAD_EXITED;
+    /* Its time stays with its process, which outlives it (thread_proc_cpu_ns
+       stops counting an EXITED thread under this same lock). */
+    if (me->proc) me->proc->cpu_done_ns += cpu_ns_of(me);
     /* stack is freed later by sched_reap, running in another thread's context
        (we can't free the stack we're still standing on). */
 
@@ -1205,6 +1211,18 @@ uint64_t thread_cpu_ns(int id) {
     struct thread *t = look(id, &f);
     uint64_t ns = t ? cpu_ns_of(t) : 0;
     look_done(f);
+    return ns;
+}
+
+uint64_t thread_proc_cpu_ns(const struct proc *p) {
+    uint64_t ns = 0;
+    uint32_t f = sched_take();
+    for (uint32_t i = 0; i < tids.cap; i++) {
+        const struct thread *t = th((int)i);
+        if (t && t->proc == p && t->state != THREAD_UNUSED && t->state != THREAD_EXITED) ns += cpu_ns_of(t);
+    }
+    ns += p->cpu_done_ns;
+    sched_give(f);
     return ns;
 }
 

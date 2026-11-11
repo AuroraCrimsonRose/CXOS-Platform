@@ -158,8 +158,10 @@ static int driver_granted(void) {
     return 0;
 }
 
+/* Looking is less than driving: GRANT_INSPECT reads the tree too (2.7c), and
+   gets no further, since SYS_DEVICE_OPEN asks for GRANT_DRIVER alone. */
 int syscall_device_info(uint32_t id, uint64_t d) {
-    if (!driver_granted()) return E_ACCESS_DENIED;
+    if (!(thread_current_caps() & GRANT_INSPECT) && !driver_granted()) return E_ACCESS_DENIED;
     if (id >= DEVICE_MAX) return E_OUT_OF_RANGE;
     if (!user_ptr_writable(d, sizeof(struct device_desc))) return E_BAD_ADDRESS;
     struct dev_node n;
@@ -170,6 +172,8 @@ int syscall_device_info(uint32_t id, uint64_t d) {
         .class_code = n.ids.cls, .subclass = n.ids.sub, .interface = n.ids.prog,
         .location = n.pci ? ((uint32_t)n.pci->bus << 16 | (uint32_t)n.pci->slot << 8 | n.pci->func) : 0,
     };
+    if ((n.state == DEV_BOUND || n.state == DEV_BINDING) && n.drv && n.drv->name)
+        for (uint32_t i = 0; i + 1u < DEVICE_DRIVER_MAX && n.drv->name[i]; i++) di.driver[i] = n.drv->name[i];
     return user_copy_out(d, &di, sizeof di) == 0 ? E_OK : E_BAD_ADDRESS;
 }
 

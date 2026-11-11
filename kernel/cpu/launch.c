@@ -50,7 +50,7 @@ int cxk_launch_executive(const char *path) {
     int rd = cxfs_read_path(path, buf, (uint32_t)e.size);
     if (rd != (int)e.size) { kfree(buf);           return CXK_LAUNCH_READ_ERR; }
 
-    int rc = cxex_exec(buf, (size_t)e.size);       /* verify -> space -> load -> ring 3 */
+    int rc = cxex_exec(buf, (size_t)e.size, e.name);       /* verify -> space -> load -> ring 3 */
     kfree(buf);
     return rc;
 }

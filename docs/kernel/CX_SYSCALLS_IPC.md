@@ -874,6 +874,26 @@ operations leave it.
   register or a BAR could move its device over someone else's memory.
   `E_INVALID_ARGS` for no bytes, `E_OUT_OF_RANGE` past `DEVICE_CONFIG_BYTES`,
   `E_BAD_ADDRESS` for the buffer.
+- **What is running, to read** (`CXK_ABI_VERSION` 39, step 2.7c):
+  `SYS_PROCESS_QUERY` (0x78, `from, *process_stat`) fills in the first process
+  with a pid at or after `from` that has not ended, or answers `E_NOT_FOUND`;
+  a walk asks again from the answer's pid + 1. It needs `GRANT_INSPECT`, a new
+  grant in no baseline, which also reads the device tree (`SYS_DEVICE_INFO`)
+  without `GRANT_DRIVER`. **No handle comes of either call**, so the grant
+  ends, waits for and opens nothing: seeing a process is not authority over
+  it, which stays with the handle its starter holds. This is NT's
+  `NtQuerySystemInformation(SystemProcessInformation)` (WRK
+  `base/ntos/ex/sysinfo.c`), a snapshot by value, behind a grant instead of
+  open to all; Zircon's way, enumeration through a handle on the root job,
+  would have made the Process Manager a holder of authority over everything
+  it lists. A `process_stat` carries the pid and the pid that started it,
+  live threads, open handles, memory in use and its quota, the CPU time of
+  all its threads (ended ones included), its grants, trust and signer, its
+  job's kernel id, and its name: the file's, as the kernel read it from the
+  directory at `SYS_EXEC_PATH`, never what the program says of itself (empty
+  for `SYS_SPAWN`, which is given bytes). `device_desc` gains `driver`, the
+  name of the kernel driver bound to the node. Each field is read at its own
+  moment: the list is for a person, and nothing is held still for it.
 - **The attention event and the signer** (`CXK_ABI_VERSION` 36, step 2.6):
   `INPUT_EVENT_ATTENTION` is Ctrl+Alt+Del, held in a flag beside the ring and
   returned first by `SYS_INPUT_EVENTS`; presses not yet read are one event.

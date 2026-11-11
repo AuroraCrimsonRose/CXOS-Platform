@@ -40,7 +40,7 @@ domain kernel
 /// mismatch. Declared in versions.json as `cxex-abi` and checked against this
 /// line; bump both, and the DevKit's stamp, in the one commit that changes the
 /// contract.
-const CXK_ABI_VERSION: u32 = 38
+const CXK_ABI_VERSION: u32 = 39
 
 /// ---- syscall numbers ----
 /// lifecycle 0x00-0x0F (no capability required)
@@ -417,6 +417,15 @@ syscall SYS_PROCESS_STOP = 0x73 fn process_stop(h: i32, deadline_ms: u32) -> i32
 /// there. It replaces any endpoint registered before and lasts until the
 /// process ends.
 syscall SYS_PROCESS_STOP_ENDPOINT = 0x74 fn process_stop_endpoint(h: i32) -> i32
+/// What is running, for a program that shows it (the Process Manager):
+/// ebx = a pid to start from, ecx = *process_stat (GRANT_INSPECT) -> 0, filled
+/// in with the first process at or after that pid that has not ended. Walk
+/// them all by asking again from the answer's pid + 1, until E_NOT_FOUND:
+/// none at or after it. It reads and changes nothing: no handle comes of it,
+/// so a holder can neither end nor wait for what it sees. The answer is one
+/// moment's; a process seen may be gone by the next call, and its pid another's.
+/// E_BAD_ADDRESS: not writable memory of the caller's.
+syscall SYS_PROCESS_QUERY = 0x78 fn process_query(from: u32, st: *process_stat) -> i32
 /// Jobs: a group of processes under one memory and thread budget, ended
 /// together. Every process is in one, for life: the job its spawn named
 /// (spawn_args.job), or its spawner's. A charge is made to the job and every
@@ -581,11 +590,13 @@ syscall SYS_RANDOM_READ = 0xE0 fn random_read(buf: *u8, len: u64) -> i32
 /// drivers 0xF0-0xFF (kernel/CX_DRIVERS.md sec 3.2). A user-space driver holds
 /// its own hardware and nothing else: a device handle, and from it memory
 /// objects over the device's registers, its interrupt as a handle, and DMA
-/// buffers. Finding and opening a device needs GRANT_DRIVER; the rest needs
+/// buffers. Opening a device needs GRANT_DRIVER (finding one, that or
+/// GRANT_INSPECT); the rest needs
 /// only the handle's rights, so a supervisor opens a device and hands the
 /// handle to the driver it starts. With no IOMMU (the rig has none) a device
 /// can DMA anywhere, so GRANT_DRIVER is trust in whoever drives it.
-/// ebx = device id (below DEVICE_MAX), ecx = *device_desc (GRANT_DRIVER) -> 0,
+/// ebx = device id (below DEVICE_MAX), ecx = *device_desc (GRANT_DRIVER or
+/// GRANT_INSPECT) -> 0,
 /// filled in. E_NOT_FOUND: no device has that id now; E_OUT_OF_RANGE: past
 /// DEVICE_MAX. The tree is walked by trying every id.
 syscall SYS_DEVICE_INFO = 0xF0 fn device_info(id: u32, d: *device_desc) -> i32
@@ -936,6 +947,7 @@ const FUTEX_WAITERS: u32 = 0x80000000u
 const DEVICE_MAX: u32 = 320               /// ids are 0 to DEVICE_MAX - 1
 const DMA_ALLOC_MAX: u32 = 0x00400000u    /// 4 MiB: one contiguous run of pages
 const DEVICE_CONFIG_BYTES: u32 = 256        /// what SYS_DEVICE_CONFIG reads of
+const DEVICE_DRIVER_MAX: u32 = 16         /// a driver's name, NUL included
 const DEVICE_BUS_ROOT: u32 = 0
 const DEVICE_BUS_PLATFORM: u32 = 1        /// fixed legacy hardware
 const DEVICE_BUS_PCI: u32 = 2
@@ -959,6 +971,9 @@ struct device_desc {
     subclass: u32
     interface: u32
     location: u32
+    /// the kernel driver that has it (DEVICE_STATE_BOUND, _BINDING), by its
+    /// name; empty otherwise. NUL-terminated.
+    driver: char[DEVICE_DRIVER_MAX]
 }
 /// OBJINFO_MEM: a memory object's size, how much of it has been touched, and
 /// its seals.
@@ -978,6 +993,32 @@ struct job_info {
     killed: u32         /// 1 once SYS_JOB_KILL has reached it
     priority_limit: u32 /// its own job_limits.priority
     reserved: u32       /// 0
+}
+
+/// ---- the processes there are (SYS_PROCESS_QUERY; GRANT_INSPECT) ----
+const PROC_NAME_MAX: u32 = 32
+const PSTAT_USER: u32 = 0x1u         /// it runs ring-3 code (the kernel's own process does not)
+const PSTAT_BACKGROUND: u32 = 0x2u   /// its console output goes to the log (SPAWN_BACKGROUND)
+struct process_stat {
+    /// nanoseconds its threads have run on a CPU, those that have ended
+    /// included (thread_info.cpu_ns says what is counted)
+    cpu_ns: u64
+    signer: u64         /// as process_info.signer
+    memory: u64         /// bytes of its quota in use (vm_usage.mapped)
+    memory_quota: u64   /// bytes it may map
+    pid: u32
+    parent: u32         /// the pid that started it, as it was then; 0: the kernel
+    threads: u32        /// that have not ended
+    handles: u32        /// open in its table
+    caps: u32           /// GRANT_*: what it may do
+    trust: u32          /// PROC_TRUST_*
+    flags: u32          /// PSTAT_*
+    job: u32            /// its job's kernel id: processes in one job agree
+    /// a program's: the file it was started from, by SYS_EXEC_PATH or at
+    /// boot, as the kernel read it from the directory, not what the program
+    /// says of itself; empty when it came as bytes (SYS_SPAWN). Without
+    /// PSTAT_USER: the kernel thread it was made for. NUL-terminated.
+    name: char[PROC_NAME_MAX]
 }
 
 /// process_info.ended: how it ended, once SIGNAL_PROCESS_ENDED is set.
@@ -1172,6 +1213,10 @@ const GRANT_REALTIME: u32 = 0x0200u
 /// SYS_INPUT_READ, SYS_INPUT_POLL, SYS_MOUSE_READ: the keyboard and the pointer.
 /// Never held by a background process: the kernel drops it from one at spawn
 const GRANT_INPUT: u32 = 0x0400u
+/// SYS_PROCESS_QUERY, and SYS_DEVICE_INFO without GRANT_DRIVER: to see what is
+/// running and what hardware there is, and to change neither. In no baseline:
+/// what a machine runs is its user's business, not every program's.
+const GRANT_INSPECT: u32 = 0x0800u
 const GRANT_OS_BASELINE: u32 = GRANT_CONSOLE | GRANT_MEM | GRANT_DISK | GRANT_SPAWN | GRANT_POWER | GRANT_ENDPOINT | GRANT_FRAMEBUFFER | GRANT_NET | GRANT_REALTIME | GRANT_INPUT
 
 /// Not a grant: a restriction, carried in spawn_args.caps's top bit. The child's

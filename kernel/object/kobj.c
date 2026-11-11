@@ -50,6 +50,14 @@ void kobj_ref(struct kobj *o) {
         kobj_panic("kobj_ref on an object with no references");
 }
 
+int kobj_ref_if_live(struct kobj *o) {
+    for (;;) {
+        uint32_t n = atomic_load(&o->refs);
+        if (n == 0) return 0;
+        if (atomic_cas(&o->refs, n, n + 1)) return 1;
+    }
+}
+
 void kobj_unref(struct kobj *o) {
     uint32_t before = atomic_fetch_sub(&o->refs, 1);
     if (before == 0) {

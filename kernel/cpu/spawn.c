@@ -233,7 +233,7 @@ int proc_start(const void *image, uint32_t image_len, uint32_t caps,
                struct endpoint *broker, uint32_t broker_grant,
                const char *args, uint32_t args_len, int32_t *handle,
                const struct spawn_hset *hs, struct job *job,
-               uint32_t trust, uint64_t signer) {
+               uint32_t trust, uint64_t signer, const char *name) {
     if (image_len == 0 || image_len > PROC_MAX_IMAGE) return E_OUT_OF_RANGE;
     if (args_len > USER_ARGS_MAX)                     return E_OUT_OF_RANGE;
     if (!args) args_len = 0;
@@ -281,6 +281,7 @@ int proc_start(const void *image, uint32_t image_len, uint32_t caps,
     if (caps & SPAWN_BACKGROUND) thread_proc(tid)->background = 1;
     thread_proc(tid)->trust  = trust;     /* before it runs, and never again */
     thread_proc(tid)->signer = signer;
+    proc_set_name(thread_proc(tid), name);
     uint32_t held = caps & ~SPAWN_BACKGROUND;
     if (thread_proc(tid)->background) held &= ~GRANT_INPUT;
     thread_set_caps(tid, held);
@@ -482,7 +483,7 @@ static int spawn_with(struct spawn_args a, const char *kargs) {
 
     int32_t ph = 0;
     int pid = cxex_exec_as(kimg, (size_t)a.image_len, granted, bep, bgrant, kargs, kargs ? (uint32_t)a.args_len : 0u, &ph,
-                           &hs, job);
+                           &hs, job, 0);
     kfree(kimg);        /* proc_start took its own copy for the new address space */
     ep_put(bep);        /* the child holds its own handle on it now */
     job_put(job);       /* and the child its own reference on the job */
@@ -605,7 +606,7 @@ static int exec_path_with(uint64_t upath, struct spawn_args a, const char *kargs
 
     int32_t ph = 0;
     int rc = cxex_exec_as(buf, (size_t)e.size, granted, bep, bgrant, kargs, kargs ? (uint32_t)a.args_len : 0u, &ph,
-                          &hs, job);
+                          &hs, job, e.name);
     kfree(buf);   /* proc_start took its own copy for the new address space */
     ep_put(bep);
     job_put(job);
