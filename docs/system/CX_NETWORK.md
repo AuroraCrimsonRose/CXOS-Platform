@@ -215,6 +215,44 @@ What is ours is the protocol built from them.
 4. **Not invented here:** ciphers and the handshake pattern. The code is
    ours; the designs are published.
 
+### 4d. The development link: netboot, netconsole, debugger, wake (Aurora, 2026-11-11)
+
+These run before and beneath the network service, so they live in the
+kernel and the loader, as a small polled path for the e1000 and the 8111,
+kept apart from the user-space drivers: a crashed network service does not
+take them down, and they work during a panic.
+
+1. **Netboot:** `boot/CX_BOOT.md` §5.
+2. **Netconsole.** The kernel log, from its ring buffer, as UDP records with
+   sequence numbers. Where it goes, first match:
+   1. a configured address (`netconsole=192.168.1.20:6666`, as Linux's);
+   2. after a netboot, the boot server, from CXBI: no configuration;
+   3. otherwise the IPv6 link-local all-nodes multicast address, which works
+      as soon as the link is up, with no router, DHCP or address setup;
+      `cxk console` lists every CXOS machine it hears and picks one.
+
+   **Pull mode:** the machine also listens. `cxk console <ip>` (a name through
+   mDNS once the service runs) replays the ring from the start, like
+   `dmesg`, then follows it. A gap in the sequence is a lost packet, which the
+   host asks for again, so a late host still gets the whole boot.
+
+   **Input** makes it a full serial console, and a shell on the machine: it
+   is accepted only from a host paired once, over a Noise session (§4c's
+   design), off by default, and absent from the shipped build. Output alone
+   is unauthenticated; the kernel log holds no secrets (a check enforces
+   it).
+3. **Kernel debugger over UDP** through the same path (Windows' KDNET is the
+   precedent), paired like the console's input.
+4. **Wake-on-LAN:** `cxk rig wake` (the 8111 supports it). With netboot and
+   the netconsole, `cxk` builds, wakes, boots and reads the rig with no hands.
+5. **Tested:** `cxk verify-boot` can read the netconsole instead of the serial
+   log, so the rig gets QEMU's checks; sabotages drop a record (the gap must
+   show) and send input from an unpaired host (it must be refused).
+
+Later: remote desktop through the compositor (roadmap 2.8e) over the
+paired link; multicast imaging (the Windows Deployment Services precedent);
+an SMB client, much later.
+
 ## 5. Order
 
 Needs Phase 1 (memory objects, IPC v3, the wait queue) and Phase 2's
@@ -232,6 +270,10 @@ user-space drivers. Then, in Phase B:
 8. The system HTTP client, change notices, data policy, encrypted DNS,
    per-app capture.
 9. The update and download protocol (§4c), with Phase 3's packages.
+
+The development link (§4d) does not wait for the service: the netconsole's
+send path and Wake-on-LAN can come as soon as they are wanted for the rig,
+then netboot, then the paired input and the debugger.
 
 Later: Happy Eyeballs v3, prefix delegation, VPN (WireGuard, per app), the post-quantum hybrid, QUIC and HTTP/3,
 firewall rules beyond per-app, Wi-Fi (the rig has none).

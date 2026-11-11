@@ -97,3 +97,23 @@ One loader, two front ends (BIOS, UEFI), one shared core in C.
 4. UEFI part 2 on the shared core.
 5. The CXFS reader, boot entries, rollback and the menu, with the layered
    system tree.
+
+## 5. Network boot and the development link (Aurora, 2026-11-11)
+
+Design, nothing built. The network side is in `system/CX_NETWORK.md` §4d.
+
+1. **CX Netboot, a third front end beside BIOS and UEFI.** The NIC's PXE ROM
+   (the rig's Realtek 8111 has one; PXE works under BIOS) gets an address by
+   DHCP and fetches a small first stage of ours by TFTP. That stage uses the
+   ROM's UNDI calls to fetch the signed image through §4c's chunked transfer,
+   checks the signature (§3 item 4), fills CXBI with the boot server's
+   address and the DHCP lease, and enters the kernel. TFTP carries only the
+   first stage. iPXE is GPL and is not used.
+2. **The host side is `cxk netboot serve`:** ProxyDHCP (it answers only the
+   boot question and leaves addresses to the network's own DHCP server),
+   TFTP and the image.
+3. **Tested under QEMU** (its built-in TFTP server and PXE ROMs):
+   `cxk verify-boot` gains a netboot mode; a sabotage alters the image on the
+   wire, and the first stage must refuse it.
+4. **Uses:** the rig's build-and-boot loop without USB sticks, network
+   install, recovery, diskless machines later.
