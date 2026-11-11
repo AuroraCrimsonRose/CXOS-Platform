@@ -1563,9 +1563,12 @@ language work in `language/CX_X_PLAN.md`.
      on the frame, remembered per app as a setting. The compositor owns the
      stacking, in three layers: normal, the user's always-on-top windows,
      and the system's own (the trusted strip, consent screens, the
-     Ctrl+Alt+Del screen) above both. An app cannot put itself on top (on
-     Windows `HWND_TOPMOST` is a pop-up's tool); it may offer it, and the
-     user confirms. Picture-in-picture video is the toolkit's form of it.
+     Ctrl+Alt+Del screen) above both. System apps (platform-signed) carry
+     it as a built-in option, as Task Manager's "Always on top" (the
+     Process Manager first). Any other app is pinned only by the user, from
+     the frame or the key; it can neither set nor offer it (on Windows
+     `HWND_TOPMOST` is a pop-up's tool). Picture-in-picture video is the
+     toolkit's form of it.
      Survey first: Haiku's Deskbar, Serenity's Taskbar and Assistant,
      Windows' Start, macOS's Spotlight and Dock. The terminal comes first;
      the launcher and taskbar follow it in this step or the next.
