@@ -1423,6 +1423,35 @@ language work in `language/CX_X_PLAN.md`.
    bound understated; 2.7c's `parent` a reusable pid; a thread's last slice
    not counted at exit. Untested: type 1's and 2's BAR limits past BAR 0
    (edu has one BAR).
+8. **The toolkit, a terminal, and the GUI as the default session** (Aurora,
+   2026-11-11: taken before Phase 3, the one exception to "keep in order").
+   Base apps are built on a shared toolkit, not each drawing pixels the way
+   `wdemo` does. Survey Haiku's Interface Kit (`BWindow`/`BView`,
+   `src/kits/interface`), SerenityOS LibGUI (`Widget`, layouts) and NT's
+   user32 window classes before 2.8a's design; cite by file.
+   - **2.8a, the client toolkit** (`os/std`, over `window.xfxn` and
+     `display.xfxn`): an event loop over `win_wait`, damage collected per
+     widget and committed as rectangles, one theme (colours, metrics, the
+     XFNT font), text clipped to its box, and the first widgets: label,
+     button, text field, list, scroll view, and a fixed-cell text grid (the
+     terminal's). Retained or immediate is decided in the step. To decide:
+     `os/std/gui.xfxn`, the older toolkit that draws straight to the
+     framebuffer (`SYS_FB_*`, `SYS_MOUSE_READ`; used by `cxos.xfxn`):
+     ported onto windows, or retired.
+   - **2.8b, the terminal** (`os/apps`): a window with the text grid; the
+     shell runs under it with its standard input and output as pipes. The
+     shell today takes the keyboard (`GRANT_INPUT`) when it has no stdin
+     handle; under a terminal it reads the pipe, and the terminal turns
+     window key events into bytes. Needed with it: line editing over a
+     pipe, scrollback, resize, and a way to interrupt a program (no Ctrl-C
+     or `kill` in the shell yet).
+   - **2.8c, the default session:** the executive starts displayd and a
+     terminal instead of the console shell, and falls back to the console
+     shell when displayd cannot start or ends. Esc / Ctrl+Alt+Del behaviour
+     is kept. `cxk verify-boot --full` looks for the shell's `cxk> ` on
+     serial; under a terminal it goes to a pipe, so the boot verdict needs
+     another witness (a serial mirror, or a kernel-visible "session up").
+   - **2.8d, the rig:** 2.5 to 2.8 on the FX-8350 (none of it has run there).
 
 ### Phase 3: storage and the system tree
 
