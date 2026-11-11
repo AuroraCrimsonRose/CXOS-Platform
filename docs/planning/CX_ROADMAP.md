@@ -1434,10 +1434,40 @@ language work in `language/CX_X_PLAN.md`.
      widget and committed as rectangles, one theme (colours, metrics, the
      XFNT font), text clipped to its box, and the first widgets: label,
      button, text field, list, scroll view, and a fixed-cell text grid (the
-     terminal's). Retained or immediate is decided in the step. To decide:
+     terminal's). Built only as far as its first programs need: the
+     terminal takes the grid and the scroll view; buttons, lists and text
+     fields come with the second program, the Process Manager's window.
+     Leaning (Aurora agreed, 2026-11-11; the survey may overturn it):
+     **retained** widgets (state in the widget, damage per widget, a tree
+     for focus and later accessibility), a fixed set of kinds dispatched by
+     a switch plus a draw callback for custom ones, no inheritance until
+     something needs it. Text goes through a font handle and a size from
+     the first day, so outline fonts (2.8a′) change no widget.
      `os/std/gui.xfxn`, the older toolkit that draws straight to the
-     framebuffer (`SYS_FB_*`, `SYS_MOUSE_READ`; used by `cxos.xfxn`):
-     ported onto windows, or retired.
+     framebuffer (`SYS_FB_*`, `SYS_MOUSE_READ`) and so bypasses displayd:
+     **retired** (keep any drawing worth having; `cxos.xfxn` moved onto
+     windows or dropped; listed in `TRANSITIONAL_CODE.md` meanwhile).
+   - **2.8a′, scalable fonts** (`system/CX_FONTS.md` §3 item 4: Noto Sans,
+     Serif and Mono, OFL-1.1). **Our own outline format, so the OS never
+     parses TrueType** (Aurora, 2026-11-11): `cxk font build` reads the TTF
+     on the host, where a parser bug costs a build and not a machine, and
+     writes XFNT v2, a kind field beside v1's bitmap: per glyph its advance,
+     its bounds and its contours as quadratic segments in fixed point, plus
+     the codepoint table. The host does everything hard: `cmap` formats,
+     composite glyphs flattened, CFF's cubics turned into quadratics (so
+     either Noto build will do), hinting dropped. The OS side reads fixed
+     records and checks every offset, count and coordinate against the file
+     and the em box, the CXFS superblock check's standard, with sabotages
+     feeding it bad files; fonts load only from `/System`. The rasteriser
+     (X, over `fixed.xfxn`): flatten, fill with antialiased coverage,
+     cache glyphs per size. A C# rasteriser of the same algorithm in the
+     DevKit is the oracle, as the C# compiler is for `os/xc`. The converted
+     font is a Modified Version: it gets our own face name if Noto reserves
+     one (check the licence when it is vendored). A UI scale setting comes
+     with it. The terminal keeps Terminus. Open: `CX_FONTS.md` puts the
+     rasteriser in the display server, but windows are client-drawn
+     surfaces, so the toolkit is where text is drawn; decide in 2.8a and
+     update `CX_FONTS.md`.
    - **2.8b, the terminal** (`os/apps`): a window with the text grid; the
      shell runs under it with its standard input and output as pipes. The
      shell today takes the keyboard (`GRANT_INPUT`) when it has no stdin

@@ -45,3 +45,8 @@
    with the widest script coverage, drawn by an outline rasteriser in the
    display server (`system/CX_DISPLAY.md`). Which rasteriser is decided under
    the Build / Port / Embed rule when the display server is built.
+   **2026-11-11 (roadmap 2.8a′):** built, as XFNT v2 outlines. TrueType is
+   converted on the host by `cxk font build`, and the OS reads only our own
+   fixed-record format, never a TrueType file. Where the rasteriser runs
+   (the display server, as above, or the client toolkit, since windows are
+   client-drawn) is decided in 2.8a.
