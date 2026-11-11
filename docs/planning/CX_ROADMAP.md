@@ -1558,6 +1558,14 @@ language work in `language/CX_X_PLAN.md`.
      and recent files beneath; never ads or web results. A taskbar of
      running windows. The trusted strip (clock, camera, microphone and
      capture indicators) is drawn by the compositor, so no app can fake it.
+     **Always on top** (Aurora, 2026-11-11): any window, set by the user
+     from the frame's menu or Super+Ctrl+T (PowerToys' key), shown by a pin
+     on the frame, remembered per app as a setting. The compositor owns the
+     stacking, in three layers: normal, the user's always-on-top windows,
+     and the system's own (the trusted strip, consent screens, the
+     Ctrl+Alt+Del screen) above both. An app cannot put itself on top (on
+     Windows `HWND_TOPMOST` is a pop-up's tool); it may offer it, and the
+     user confirms. Picture-in-picture video is the toolkit's form of it.
      Survey first: Haiku's Deskbar, Serenity's Taskbar and Assistant,
      Windows' Start, macOS's Spotlight and Dock. The terminal comes first;
      the launcher and taskbar follow it in this step or the next.
