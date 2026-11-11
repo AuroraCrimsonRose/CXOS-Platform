@@ -1624,6 +1624,58 @@ language work in `language/CX_X_PLAN.md`.
    Survey first: Serenity's Shell, Haiku's use of bash, PowerShell's
    pipeline, Nushell. Its look (syntax) is sketched with Aurora before the
    parser is written.
+10. **X Visual** (`.xfxv`; Aurora, 2026-11-11; the x86-32 design,
+    `x86_32/planning/CX_ROADMAP.md`, "X Visual"), after 2.8's screens are
+    written in plain X: the toolkit is the layout engine, and the gallery,
+    the terminal and the Process Manager are where "find what hurts" is
+    learnt. One language for structure, style and behaviour, indentation
+    instead of tags, **single-file components**. What it should be:
+    1. **Compiled, not interpreted:** to X Native toolkit calls at build
+       time; no runtime engine, no web view. A misspelt property or a wrong
+       type is a compile error.
+    2. **Reactivity worked out by the compiler:** a component declares its
+       state; the compiler knows which parts of the view read which state
+       and emits exactly those updates to the retained widgets (Svelte's
+       approach), with no virtual tree to diff.
+    3. **Style from the design system:** spacing, colours by role, radius
+       and type sizes are tokens (`s2`, `text.muted`), so light, dark, high
+       contrast and scale follow for free; styles are scoped to their
+       component, with no cascade. A raw pixel value needs an explicit
+       escape.
+    4. **The platform's rules enforced at compile time:** user-visible text
+       is a localisation key (`t"files-selected"`), an interactive element
+       without an accessible name is an error, a shortcut binds to a
+       registered command, a transition becomes a compositor spring.
+    5. **Plain X underneath:** handlers are X functions in the same file or
+       imported; a component is usable from plain X and the other way
+       round.
+    6. **Tooling:** a canonical formatter (indentation makes it one
+       answer), live preview in the DevKit, components shown in the widget
+       gallery.
+    7. **Built as X is:** in the C# compiler first, ported to `os/xc`, held
+       to it by Differential facts.
+    The indentation trade-off (worse for generated content and deep diffs)
+    is accepted, as the x86-32 plan said. Needed in 2.8a now so no rewrite
+    follows: every widget property settable by name, and a widget tree
+    buildable from a description, which the accessibility tree and the
+    inspector want anyway.
+
+    ```
+    component FileRow
+      prop file: FileInfo
+      state selected: bool = false
+
+      view
+        row gap: s2, pad: s2
+          icon file.icon, size: 20
+          label file.name, grow: 1
+          label t"size-kib"(file.kib), style: muted
+        on click -> selected = !selected
+        on double-click -> open(file)
+
+      style
+        muted: color text.muted
+    ```
 
 ### Phase 3: storage and the system tree
 
