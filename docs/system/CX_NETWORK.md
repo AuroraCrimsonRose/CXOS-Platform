@@ -112,6 +112,58 @@ NIC driver  ⇄  shared rings  ⇄  network service  ⇄  per-socket rings / IPC
 10. **Offloads where the NIC has them:** checksum offload (both the e1000 and
     the 8111 have it); segmentation offload later.
 
+### 4a. More, and the open questions settled (Aurora, 2026-11-11)
+
+**TLS is our own,** written in X, not ported: the userland is X, so a C
+library such as BearSSL would be rewritten anyway, and "build our own
+reader" (roadmap Phase B, media) applies to the protocol too.
+
+- TLS 1.3 first; a TLS 1.2 client with modern cipher suites only, for servers
+  without 1.3. No SSL, no TLS 1.0 or 1.1, no RSA key exchange, no CBC.
+- X25519 key exchange, with the post-quantum hybrid (X25519 + ML-KEM-768)
+  once the base is done; ChaCha20-Poly1305 and AES-GCM (AES-NI on the
+  FX-8350, since table-based AES is not constant-time); certificate
+  signatures ECDSA P-256 and P-384, Ed25519, RSA-PSS and PKCS#1 v1.5.
+- Cryptography is the riskiest code to write ourselves: every primitive is
+  tested against Wycheproof's vectors (Apache-2.0, vendored as data) and
+  NIST's; secret-dependent branches and memory accesses are checked for;
+  every check is sabotaged.
+- Certificates (X.509 and ASN.1 DER, a classic source of parser bugs) are
+  parsed in their own process with no grants, behind a checker, as the media
+  decoders are.
+- The trust store is Mozilla's CA list (data, vendored with its licence);
+  certificate transparency is checked once the logs' list is vendored too.
+
+**The first version is in X** (§4 item 6): the service waits for X's
+bounds-checked slices and overflow traps rather than being written in C and
+moved.
+
+**Further points:**
+
+1. **A system HTTP client** (HTTP/1.1 and HTTP/2; QUIC and HTTP/3 later) with
+   caching, proxies and cookies kept per app, so apps do not each carry one
+   (macOS's URLSession is the precedent).
+2. **Per-app packet capture:** every packet passes through the service, so
+   one app's traffic can be captured (pcapng, for the host's tools), behind
+   its own grant and the consent screen, with an indicator while it runs.
+3. **Listening is declared:** inbound connections are refused unless the
+   app's package declares that it listens; the Process Manager shows which
+   app listens on which port.
+4. **Local network permission** (the iOS precedent), separate from the
+   internet; mDNS and DNS-SD service discovery provided by the system, so an
+   app sees only what it was allowed to.
+5. **Data policy per app:** "unmetered networks only", "never in the
+   background", and usage per app per network.
+6. **Network change notices** (Network.framework's path monitor): an app is
+   told when the route, the interface or metering changes, instead of
+   hanging on a dead connection.
+7. **Authenticated time:** NTP with Network Time Security (RFC 8915), since
+   checking a certificate's dates needs a clock nobody on the network can
+   set.
+8. **Encrypted DNS:** DNS over HTTPS beside §4 item 9's DNS over TLS;
+   DNSSEC validation as a setting.
+9. **VPN per app:** WireGuard (Later, below), able to carry chosen apps only.
+
 ## 5. Order
 
 Needs Phase 1 (memory objects, IPC v3, the wait queue) and Phase 2's
@@ -123,14 +175,15 @@ user-space drivers. Then, in Phase B:
 3. TCP.
 4. IPv6 with SLAAC and DHCPv6.
 5. Per-app network permission and attribution in the Process Manager.
-6. Connect by name; TLS from the system.
+6. Declared listening (§4a item 3), local network permission and mDNS.
+7. Our own TLS (§4a), the certificate process, NTS time; connect by name.
+8. The system HTTP client, change notices, data policy, encrypted DNS,
+   per-app capture.
 
-Later: VPN (WireGuard), firewall rules beyond per-app, Wi-Fi (the rig has
-none).
+Later: VPN (WireGuard, per app), the post-quantum hybrid, QUIC and HTTP/3,
+firewall rules beyond per-app, Wi-Fi (the rig has none).
 
 ## 6. Open questions
 
-- **TLS:** write it, or port a small audited library (BearSSL, for instance)
-  under the Build / Port / Embed rule.
-- Whether the first version is in C, moved to X later, or waits for X's
-  slices and starts in X.
+- Both earlier questions are settled in §4a (TLS our own; the first version
+  in X).
