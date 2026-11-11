@@ -1509,6 +1509,21 @@ language work in `language/CX_X_PLAN.md`.
      serial; under a terminal it goes to a pipe, so the boot verdict needs
      another witness (a serial mirror, or a kernel-visible "session up").
    - **2.8d, the rig:** 2.5 to 2.8 on the FX-8350 (none of it has run there).
+   - **2.8e, the compositor API, public and stable** (Aurora, 2026-11-11),
+     after the toolkit, its first user. What 2.4-2.5 built, for anyone: windows,
+     retained layers and their properties, springs run by the compositor
+     (state the target, the compositor animates), a frame clock (the next
+     frame's time, and when each commit reached the screen), layers whose
+     pixels come from a lease (video, without a copy), and named, versioned
+     effects (blur, shadow, rounded clip), not arbitrary shaders. No private
+     path: the system's own UI uses the same calls. **One protocol, one
+     definition:** an IDL file beside `abi/kernel.xfil` from which `cxk`
+     generates the client library and checks compatibility as `check-abi`
+     does; versioned whole, never a set of optional extensions (Wayland's
+     fragmentation is the thing avoided). With it the SDK: generated
+     bindings, documents, samples, a stability policy (versions, how long a
+     deprecated call lives, how an app says what it needs) and conformance
+     tests in the verification boots.
 
 ### Phase 3: storage and the system tree
 
@@ -1528,6 +1543,24 @@ user-space filesystem), X Shell and a terminal, the Process Manager, basic
 apps. Networking as a user-space service: UDP and DHCP, then DNS, then TCP,
 then IPv6, per-app permission, and connect by name with TLS
 (`system/CX_NETWORK.md`). Audio (`system/CX_AUDIO.md`) joins here.
+
+**Media** (Aurora, 2026-11-11), with audio; images earlier, when the toolkit
+wants icons. **Royalty-free formats only, every reader our own:** no vendored
+codec library, and no format that needs a patent licence (H.264, HEVC and AAC
+are out). Images: PNG (with our own inflate), JPEG, QOI. Audio: PCM/WAV, FLAC,
+Opus, MP3 (its patents have expired). Video: AV1, VP9. Containers: Ogg,
+WebM/Matroska, ISO BMFF (MP4) for the royalty-free codecs in it. **Decoding
+never runs in the app:** every decoder and container reader is its own process
+with no grants, handing raw frames back through leases, and its output is
+checked before it is shown (Android's Stagefright and iOS's BlastDoor are why;
+they isolated decoding after the fact). Tested against the formats' published
+conformance files (PngSuite, the AV1 and Opus test vectors and the like, under
+`vendor/` with their licences), and sabotaged like the rest. A small pipeline,
+not a general graph: source, decoder, sink, one clock for audio and video;
+apps ask for "play", "decode a frame" and "capture with consent" (the 2.6
+consent screen, an indicator while it lasts). Video in X on the CPU will be
+slow until there is hardware decode: images and audio first, video playback a
+later milestone.
 
 ### Later
 
