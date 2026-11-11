@@ -1397,7 +1397,8 @@ language work in `language/CX_X_PLAN.md`.
    rectangle. The image's `memory_quota_mib` is 64 since this step. A panic does not show on this display (the kernel cannot draw
    there): decision in `CX_DISPLAY.md`. Not tested: any of it on real hardware;
    the picture itself except by a screendump by hand.
-   **2.7c, the Process Manager on the console: done (ABI 39)**
+   **2.7c, the Process Manager on the console: done (ABI 39)** (its
+   performance tab, sensors and system info: `system/CX_SYSTEM_MONITOR.md`)
    (`kernel/CX_SYSCALLS_IPC.md`, "What is running, to read"; `2.7c.sab`):
    `SYS_PROCESS_QUERY` (0x78) and `GRANT_INSPECT`, which also reads the
    device tree; a process has a name (its file's), the pid that started it

@@ -63,6 +63,7 @@ Start with the roadmap.
 | [CX_NETWORK.md](system/CX_NETWORK.md) | The network stack as a user-space service, per-app permission, connect by name, TLS |
 | [CX_FONTS.md](system/CX_FONTS.md) | Published fonts only, standard character sets, the console font, the GUI fonts |
 | [CX_ICONS.md](system/CX_ICONS.md) | Phosphor for the UI's symbols, CXOS's own drawing, one icon format the OS reads, file-type icons from a template |
+| [CX_SYSTEM_MONITOR.md](system/CX_SYSTEM_MONITOR.md) | The Process Manager's performance tab: CPU, memory, sensors, disks, network; each item toggled; read-only sensors behind narrow grants; SMBIOS first |
 | [CX_ACCESSIBILITY.md](system/CX_ACCESSIBILITY.md) | The accessibility tree as the widget tree, tested in boots; assistive technology as its own grant; compositor zoom, filters and flash damping; the speech engine (open) |
 | [CX_FILESYSTEM.md](system/CX_FILESYSTEM.md) | The layout, the VFS layer, CXFS v3, foreign filesystems in user space, one cache |
 

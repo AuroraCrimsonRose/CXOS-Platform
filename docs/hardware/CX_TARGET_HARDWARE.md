@@ -68,10 +68,17 @@
 
 **The AX210 (Aurora, 2026-11-11).** Aurora has three Cudy WE3000S cards; one
 is in the Ryzen 7 5800XT development PC, where Windows shows the Bluetooth
-behind a USB 2.0 hub on the internal header (`05E3:0608`). Whether one goes
-in the rig (a free PCIe x1 slot and a USB 2.0 header) is to confirm. The
-chip has no Bluetooth path over PCIe: without the header cable Bluetooth is
-gone and Wi-Fi still works.
+behind a USB 2.0 hub on the internal header (`05E3:0608`). The rig has one
+too: its hardware report lists an Intel AX210 at PCI `02:00.0`
+(`CX_HW_REPORT.md`). The chip has no Bluetooth path over PCIe: without the
+header cable Bluetooth is gone and Wi-Fi still works.
+
+**Tested on the rig only** (Aurora, 2026-11-11): QEMU has no Wi-Fi device,
+and neither USB nor PCI passthrough is used. The driver and Bluetooth are
+brought up on the FX-8350, over netboot and the netconsole
+(`boot/CX_BOOT.md` §5); the 802.11 management and the supplicant run in the
+DevKit's network simulator like the rest of the stack (`system/CX_NETWORK.md`
+§4 item 5).
 
 - **Wi-Fi:** a user-space driver (`kernel/CX_DRIVERS.md`) written here.
   Intel publishes no programming manual; the references are OpenBSD's

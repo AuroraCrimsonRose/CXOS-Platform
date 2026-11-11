@@ -111,7 +111,9 @@ must be signed and trusted; isolation is built and tested under QEMU.
    hand (`run +driver bochs`): the executive now holds `GRANT_DRIVER` and
    gives it to the shell alone. Binding by the supervisor from a signed
    manifest, restart, and the thread at real-time priority are still to come.
-5. IOMMU under QEMU (AMD-Vi).
+5. IOMMU under QEMU: AMD-Vi (`-device amd-iommu`) and Intel's VT-d
+   (`-device intel-iommu`, on the `q35` machine `cxk` already boots), so the
+   DMA fence is tested against both designs; the rig has none.
 6. Hot-plug and power.
 7. New drivers in X.
 
