@@ -164,6 +164,57 @@ moved.
    DNSSEC validation as a setting.
 9. **VPN per app:** WireGuard (Later, below), able to carry chosen apps only.
 
+### 4b. IPv6 (Aurora, 2026-11-11)
+
+1. **IPv6-only networks work:** "IPv6-only preferred" (DHCP option 108,
+   RFC 8925) is honoured; the NAT64 prefix is discovered (RFC 7050, RFC 8781);
+   the service runs a small translator (464XLAT's CLAT, RFC 6877), so an
+   IPv4-only app or literal address still connects. iOS and Android are the
+   precedent.
+2. **Stable private addresses** (RFC 7217): the long-lived address differs
+   per network and never comes from the MAC; temporary addresses (§4 item 9)
+   stay for outgoing connections.
+3. **Happy Eyeballs v3** (the IETF draft): uses DNS HTTPS/SVCB records, which
+   also carry QUIC and Encrypted Client Hello hints.
+4. **Prefix delegation** (DHCPv6-PD), so a CXOS machine can route for VMs or
+   containers later without NAT.
+5. **Tested on every kind of network:** the simulated network (§4 item 5)
+   runs IPv4-only, dual-stack and IPv6-only with NAT64; a regression on any
+   of them fails.
+
+### 4c. The update and download protocol (Aurora, 2026-11-11)
+
+Our own protocol, for the OS's updates and application downloads from
+CATX's service. Being obscure is not where its security comes from
+(Kerckhoffs's principle): that is published cryptography and signed content.
+What is ours is the protocol built from them.
+
+1. **The content carries the security.** Every package and every update list
+   is signed with offline keys (the `.xuex` signing); nothing is used before
+   its signature is checked. The update list follows TUF's design (The Update
+   Framework): separate keys for root, targets, snapshot and timestamp, with
+   protection against rollback to an old version and against a frozen list.
+   A mirror, a cache or a broken connection can therefore never install
+   anything.
+2. **The connection: CX Update Protocol** instead of TLS.
+   - A Noise framework handshake (`Noise_IK`, as WireGuard), written here;
+     the server's static key is in the OS image, so there are no certificate
+     authorities and no certificates.
+   - X25519 with ML-KEM-768 (post-quantum hybrid), ChaCha20-Poly1305.
+   - **Silent to scanners:** the server answers nothing unless the first
+     packet is a valid handshake.
+   - Over UDP, with our own resumable transfer: files split into chunks named
+     by their hash, fetched in parallel, each checked on arrival.
+   - Falls back to TCP, then to plain HTTPS on port 443 for networks that
+     block the rest; the content is signed, so the fallback loses nothing.
+   - Optional device keys for downloads limited to registered machines.
+   - Messages are fixed records described in `.xfil`, read through a
+     checker; the protocol is versioned.
+3. **The server is ours too:** C#, in the DevKit, sharing the protocol code
+   and the simulator tests; every check is sabotaged.
+4. **Not invented here:** ciphers and the handshake pattern. The code is
+   ours; the designs are published.
+
 ## 5. Order
 
 Needs Phase 1 (memory objects, IPC v3, the wait queue) and Phase 2's
@@ -173,17 +224,21 @@ user-space drivers. Then, in Phase B:
    ICMP; UDP and DHCP. The kernel's network code is deleted.
 2. The DNS service.
 3. TCP.
-4. IPv6 with SLAAC and DHCPv6.
+4. IPv6 with SLAAC and DHCPv6, stable private addresses, NAT64 and the
+   CLAT (§4b).
 5. Per-app network permission and attribution in the Process Manager.
 6. Declared listening (§4a item 3), local network permission and mDNS.
 7. Our own TLS (§4a), the certificate process, NTS time; connect by name.
 8. The system HTTP client, change notices, data policy, encrypted DNS,
    per-app capture.
+9. The update and download protocol (§4c), with Phase 3's packages.
 
-Later: VPN (WireGuard, per app), the post-quantum hybrid, QUIC and HTTP/3,
+Later: Happy Eyeballs v3, prefix delegation, VPN (WireGuard, per app), the post-quantum hybrid, QUIC and HTTP/3,
 firewall rules beyond per-app, Wi-Fi (the rig has none).
 
 ## 6. Open questions
 
 - Both earlier questions are settled in §4a (TLS our own; the first version
   in X).
+- MASQUE (IP over HTTP/3, RFC 9484) as a second VPN type beside WireGuard,
+  after QUIC: not yet decided.
