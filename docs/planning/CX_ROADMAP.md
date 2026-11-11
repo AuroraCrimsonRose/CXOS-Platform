@@ -1491,6 +1491,9 @@ language work in `language/CX_X_PLAN.md`.
      with it. The terminal defaults to Plex Mono. A choice of faces,
      proportional and monospace, with a core in the image and the rest as
      packages later: `CX_FONTS.md` §3 item 5 (ligatures a later step).
+     Icons with it (`system/CX_ICONS.md`): Phosphor's symbols as XFNT v2
+     glyphs by name, on the same rasteriser; colour and file-type icons
+     with the first system apps.
      Open: `CX_FONTS.md` puts the
      rasteriser in the display server, but windows are client-drawn
      surfaces, so the toolkit is where text is drawn; decide in 2.8a and
