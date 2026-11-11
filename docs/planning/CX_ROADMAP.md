@@ -1450,7 +1450,8 @@ language work in `language/CX_X_PLAN.md`.
      animation runs in the compositor's springs, and file and network calls
      come back as events, never blocking the UI thread; (4) accessibility in
      the widget tree (role, name, state on every widget; keyboard navigation
-     everywhere; high contrast, reduced motion, the Atkinson switch);
+     everywhere; high contrast, reduced motion, the Atkinson switch; the
+     whole plan: `system/CX_ACCESSIBILITY.md`);
      (5) unforgeable windows: the server-drawn frame names the verified
      signer, and an indicator shows a held capture grant; (6) the file
      picker as a capability: a system dialog that hands back a handle to the
