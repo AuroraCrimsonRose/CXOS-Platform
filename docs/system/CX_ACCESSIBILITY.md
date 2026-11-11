@@ -54,10 +54,19 @@
 
 ## 3. Open
 
-- **The speech engine.** eSpeak NG is GPL-3 and does not fit. Either our own
-  (formant or diphone: intelligible, robotic), keeping to "our own readers",
-  or a permissive one: Flite (BSD-style), or Piper (MIT, neural, far better
-  voices, heavy, each voice licensed apart). Aurora decides.
+- **The speech engine: decided (Aurora, 2026-11-11).** The userland is X,
+  so no engine's code can be vendored; what is taken is data, whose licence
+  is read when it is vendored. Two voices, both our own engine:
+  1. **The system voice:** our own formant synthesiser after Klatt's
+     published 1980 design, with the CMU Pronouncing Dictionary (BSD-style)
+     and published letter-to-sound rules for words it lacks. Small and fast:
+     it runs in the boot menu, recovery and the installer, and stays clear
+     at the very high rates experienced screen-reader users choose.
+  2. **A natural voice, optional, later:** our own small neural inference
+     with Kokoro's weights (Apache-2.0), as a package; SVOX Pico's voice data
+     (Apache-2.0) is a lighter middle choice.
+  Not used: eSpeak NG (GPL-3), Piper (its pronunciation is eSpeak NG's),
+  Mimic 3 (AGPL), Coqui XTTS (non-commercial), MaryTTS and RHVoice (LGPL).
 - **Braille:** translation tables and display drivers are our own (the
   common libraries are LGPL or GPL).
 - **Captions** need a caption track in the media pipeline; live captions
