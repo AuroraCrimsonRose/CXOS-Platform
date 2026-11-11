@@ -1481,6 +1481,31 @@ language work in `language/CX_X_PLAN.md`.
      mirror fails, and is sabotaged. The text field takes input through an
      input-method interface from the first day (keyboard layouts, dead keys,
      composition), so CJK input needs no retrofit.
+     **Keybinds** (Aurora, 2026-11-11). Ctrl is for app commands, Super for
+     the system. Every shortcut is a registered command (goal 8): menus and
+     the palette show it, a clash is refused when an app registers, and the
+     user rebinds anything in one place, except three fixed keys:
+     Ctrl+Alt+Del (the trusted screen), Super+Ctrl+Enter (the screen reader,
+     so no setting can lock a user out) and Ctrl+Alt+F2 (the console
+     fallback). Apps can never capture the system's keys (Super, Alt+Tab,
+     Alt+F4, the fixed three) whatever the user binds them to; a fullscreen
+     game may capture Super with consent, never Alt+Tab or the fixed three.
+     Defaults, system: Super (tap) the launcher; Super+Enter a terminal;
+     Alt+Tab / Alt+Shift+Tab switch windows; **Alt+F4 closes the window**:
+     a close request the app answers (it may ask to save), and a window that
+     does not answer within a few seconds gets the system's "not
+     responding: wait or end it" dialog; on the desktop it opens the
+     shut-down dialog. Super+arrows snap and maximise; Super+D the desktop;
+     Super+L lock; Super+Shift+S and PrtSc a screenshot through the
+     compositor (trusted screens never in it); Ctrl+Shift+Esc the Process
+     Manager; Super+, settings; Super+Plus/Minus zoom. Apps: Ctrl+C X V A,
+     Ctrl+Z and Ctrl+Shift+Z, Ctrl+S O N W Q F T, Ctrl+Tab, F2, F5,
+     Ctrl+Shift+P the app's palette. The terminal copies with Ctrl+C only
+     when text is selected, else interrupts; Ctrl+Shift+C/V always copy and
+     paste. Letters follow the layout; a layout without Latin letters falls
+     back to the US positions for shortcuts. A verification-boot check
+     fails if two commands in the shipped apps share a key, and is
+     sabotaged. A broken binding set is reset from the trusted screen.
      `os/std/gui.xfxn`, the older toolkit that draws straight to the
      framebuffer (`SYS_FB_*`, `SYS_MOUSE_READ`) and so bypasses displayd:
      **retired** (keep any drawing worth having; `cxos.xfxn` moved onto
@@ -1527,6 +1552,15 @@ language work in `language/CX_X_PLAN.md`.
      is kept. `cxk verify-boot --full` looks for the shell's `cxk> ` on
      serial; under a terminal it goes to a pipe, so the boot verdict needs
      another witness (a serial mirror, or a kernel-visible "session up").
+     **The desktop** (Aurora, 2026-11-11): a launcher opened by Super that
+     searches first (apps, files, settings and every app's registered
+     commands, so it is also the system command palette), with pinned apps
+     and recent files beneath; never ads or web results. A taskbar of
+     running windows. The trusted strip (clock, camera, microphone and
+     capture indicators) is drawn by the compositor, so no app can fake it.
+     Survey first: Haiku's Deskbar, Serenity's Taskbar and Assistant,
+     Windows' Start, macOS's Spotlight and Dock. The terminal comes first;
+     the launcher and taskbar follow it in this step or the next.
    - **2.8d, the rig:** 2.5 to 2.8 on the FX-8350 (none of it has run there).
    - **2.8e, the compositor API, public and stable** (Aurora, 2026-11-11),
      after the toolkit, its first user. What 2.4-2.5 built, for anyone: windows,
