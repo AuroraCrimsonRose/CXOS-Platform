@@ -1609,6 +1609,12 @@ language work in `language/CX_X_PLAN.md`.
 3. The new layout: read-only signed `/System` layers, `/Local`, per-app
    folders, the known-folders API, layered settings.
 4. Packages as signed images; updates as layers; loader rollback.
+5. **The file browser** (Aurora, 2026-11-11), once 1-3 give it directory
+   handles, CXFS v3 attributes, the type registry and the known folders: on
+   the toolkit, sharing its views with the file picker (2.8a goal 6), file
+   icons from the template (`system/CX_ICONS.md` §3), previews from the
+   isolated decoders when Phase B brings them, snapshots shown as versions.
+   Survey first: Haiku's Tracker, Serenity's FileManager, Windows Explorer.
 
 ### Phase B: the minimum viable OS
 

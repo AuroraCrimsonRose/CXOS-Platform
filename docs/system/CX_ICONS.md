@@ -1,7 +1,7 @@
 # Icons
 ### CX Design Spec: Aurora Tejeda / CATX Systems
 
-> **Status: DECIDED 2026-11-11, nothing built.** An open set for the UI's
+> **Status: DECIDED 2026-11-11 (the set, Phosphor or Carbon, chosen on screen), nothing built.** An open set for the UI's
 > symbols, CXOS's own drawing for what makes it recognisable, and one icon
 > format of our own that the OS reads. Built with the toolkit (roadmap 2.8a
 > and 2.8a′).
@@ -12,11 +12,19 @@
 
 | Decision | Reason |
 |---|---|
-| **UI symbols come from an open set: Phosphor** (MIT), vendored unmodified under `vendor/`. | A toolkit needs hundreds of symbols, drawn alike; that is a specialist's years, as with fonts (`CX_FONTS.md`). Phosphor has six styles (thin, light, regular, bold, fill, duotone), so an icon's weight can follow the text's (`CX_FONTS.md` §3 item 5, weight as an axis). Other sets may ship as choices. |
+| **UI symbols come from an open set: Phosphor** (MIT) **or IBM's Carbon icons** (Apache-2.0), both vendored unmodified under `vendor/`; **Aurora chooses after seeing both** in the widget gallery (2026-11-11). | A toolkit needs hundreds of symbols, drawn alike; that is a specialist's years, as with fonts (`CX_FONTS.md`). Phosphor has six styles (thin, light, regular, bold, fill, duotone), so an icon's weight can follow the text's (`CX_FONTS.md` §3 item 5, weight as an axis). Other sets may ship as choices. |
 | **Icon licences: permissive only** (MIT, ISC, Apache-2.0, CC0), each with its row in `THIRD-PARTY-NOTICES.md`, Apache's NOTICE carried with it. | Fonts are OFL-only; icons are mostly not OFL. Share-alike sets (GPL Papirus, CC-BY-SA Adwaita, LGPL Breeze) are left out. |
 | **CXOS draws its own:** the logo, the system apps' icons, the document and folder shapes, cursors, and the few dozen icons seen all the time. | Where the system's look lives, and a bounded amount of drawing. |
 | **No third-party brand logos as file icons** (Python's, Rust's and the like). | They are trademarks whatever an icon set's licence says. |
 | **The OS reads only our own format,** never SVG. | SVG is a large parsing surface (scripts, external references, filters). The host converts a safe subset with `cxk`; the OS reads fixed records through a checker, the trust boundary, as for fonts. |
+
+**Phosphor or Carbon** (Aurora, 2026-11-11). Carbon is IBM's set for its
+design system, the same house as IBM Plex, so it matches the UI face's
+shapes; it is drawn on a 32 px grid in one weight, with hand-tuned 16 and
+20 px versions, and Apache-2.0's NOTICE travels with it. Phosphor has six
+weights that can follow the text's. Both are converted at 2.8a′; the widget
+gallery (roadmap 2.8a) gets a switch between them, and the choice is made
+on that screen. The other ships as a choice.
 
 ## 2. The format
 
