@@ -1464,7 +1464,10 @@ language work in `language/CX_X_PLAN.md`.
      DevKit is the oracle, as the C# compiler is for `os/xc`. The converted
      font is a Modified Version: it gets our own face name if Noto reserves
      one (check the licence when it is vendored). A UI scale setting comes
-     with it. The terminal keeps Terminus. Open: `CX_FONTS.md` puts the
+     with it. The terminal keeps Terminus by default. A choice of faces,
+     proportional and monospace, with a core in the image and the rest as
+     packages later: `CX_FONTS.md` §3 item 5 (ligatures a later step).
+     Open: `CX_FONTS.md` puts the
      rasteriser in the display server, but windows are client-drawn
      surfaces, so the toolkit is where text is drawn; decide in 2.8a and
      update `CX_FONTS.md`.

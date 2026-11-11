@@ -50,3 +50,32 @@
    fixed-record format, never a TrueType file. Where the rasteriser runs
    (the display server, as above, or the client toolkit, since windows are
    client-drawn) is decided in 2.8a.
+5. **A choice of faces, proportional and monospace** (Aurora, 2026-11-11).
+   All OFL-1.1, each licence read when it is vendored (reserved names
+   included: a converted face that reserves its name ships under one of
+   ours). Regular, Bold, Italic and Bold Italic first; where a family
+   publishes only a variable font, the converter instantiates those four on
+   the host.
+
+   | Role | Faces |
+   |---|---|
+   | UI (default first) | Noto Sans, Inter, Source Sans 3, IBM Plex Sans, Open Sans |
+   | Serif | Noto Serif, Source Serif 4, IBM Plex Serif |
+   | Monospace | Noto Sans Mono, Fira Code, JetBrains Mono, Cascadia Code, Source Code Pro, IBM Plex Mono |
+   | Same metrics as the commercial fonts (documents made elsewhere) | Liberation Sans, Serif, Mono (Arial, Times New Roman, Courier New); Carlito (Calibri); Caladea (Cambria) |
+   | Bitmap | Terminus (the console, built); GNU Unifont (item 2) |
+
+   Not shipped: Arial, Helvetica, Times New Roman, Segoe UI, Calibri,
+   Consolas and the like, which are licensed for their vendors' systems
+   only. Roboto and DejaVu are not OFL and would need decision 3 widened.
+   The image carries a core (the defaults: Noto Sans, Noto Serif, Noto Sans
+   Mono, Terminus); the rest become packages once Phase 3 has them, until
+   then staged only if the image's size allows (measure first).
+   Needed with it: faces found by family, weight and style in
+   `/System/Fonts`, the toolkit's font handle asking by those and a size,
+   and the user's default UI, document and terminal faces as a setting.
+   The terminal keeps Terminus as its default and offers the monospace
+   faces. **Ligatures** (Fira Code's, JetBrains Mono's and Cascadia Code's
+   `->`, `!=`) need a sequence-to-glyph table carried in XFNT v2 and a
+   lookup when text is laid out: a step after 2.8a′; without it those faces
+   still draw, unjoined.
