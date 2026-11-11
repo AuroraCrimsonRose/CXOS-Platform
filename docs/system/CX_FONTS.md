@@ -67,6 +67,13 @@
    | Accessibility alternative (one setting swaps the UI face, and the terminal's to Atkinson Hyperlegible Mono) | Atkinson Hyperlegible Next |
    | Documents (serif; to confirm) | IBM Plex Serif |
 
+   **Every face here, defaults and choices, ships in our own format,** XFNT
+   (v2 for outlines): no TTF or OTF file is in the image, and nothing in the
+   OS reads one. A font a user adds later is converted too: on a host by
+   `cxk font build`, or on CXOS by a converter running as its own process
+   with no grants, whose output is accepted only if the XFNT checker passes
+   it. The checker, not the converter, is the trust boundary.
+
    **Shipped as choices, many of them:** the user picks any face for each
    role.
 
