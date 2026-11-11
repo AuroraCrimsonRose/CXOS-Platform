@@ -1466,6 +1466,21 @@ language work in `language/CX_X_PLAN.md`.
      figures. 1-4 and the design system are 2.8a (costly to retrofit); 8-9
      come with the terminal and the Process Manager; 5-7 follow the
      programs that need them (6 needs Phase 3's files).
+     **Localisation and text input** (2026-11-11), surveyed with the rest
+     (Haiku's input_server and locale kit, Serenity's LibGUI, Windows' TSF):
+     every user-visible string is a message looked up by key, never by its
+     English text, with placeholders and plural choices after Mozilla's
+     Fluent design (Apache-2.0 spec). Translators write a text source per
+     language; `cxk` compiles it to a string table of fixed records, read
+     through a checker; lookup falls back to English. Plural rules, date,
+     number and currency formats come from Unicode's CLDR (data, vendored and
+     converted). Right-to-left text: our own Unicode bidirectional algorithm
+     (UAX #9), run against Unicode's conformance files, with mirrored
+     layouts. A pseudo-locale (accented, 40% longer, mirrored) runs in the
+     verification boots, so a hard-coded string, a clipped label or a broken
+     mirror fails, and is sabotaged. The text field takes input through an
+     input-method interface from the first day (keyboard layouts, dead keys,
+     composition), so CJK input needs no retrofit.
      `os/std/gui.xfxn`, the older toolkit that draws straight to the
      framebuffer (`SYS_FB_*`, `SYS_MOUSE_READ`) and so bypasses displayd:
      **retired** (keep any drawing worth having; `cxos.xfxn` moved onto

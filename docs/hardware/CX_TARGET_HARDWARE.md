@@ -64,6 +64,29 @@
 | Audio | HD Audio with a Realtek codec | new (`system/CX_AUDIO.md`) |
 | Display | the W5000's video BIOS gives VBE | the existing framebuffer path works today |
 | GPU acceleration | GCN 1.0 | much later; see below |
+| Wi-Fi and Bluetooth (an add-in card) | Cudy WE3000S: Intel AX210, Wi-Fi 6E on PCIe (`8086:2725`), Bluetooth as a USB device (`8087:0032`) through the card's cable to a USB 2.0 header | new; see below |
+
+**The AX210 (Aurora, 2026-11-11).** Aurora has three Cudy WE3000S cards; one
+is in the Ryzen 7 5800XT development PC, where Windows shows the Bluetooth
+behind a USB 2.0 hub on the internal header (`05E3:0608`). Whether one goes
+in the rig (a free PCIe x1 slot and a USB 2.0 header) is to confirm. The
+chip has no Bluetooth path over PCIe: without the header cable Bluetooth is
+gone and Wi-Fi still works.
+
+- **Wi-Fi:** a user-space driver (`kernel/CX_DRIVERS.md`) written here.
+  Intel publishes no programming manual; the references are OpenBSD's
+  `iwx` (ISC), its port in Haiku
+  (`src/add-ons/kernel/drivers/network/wlan/iaxwifi200/`) and Linux's
+  `iwlwifi` (GPL-2.0 or BSD-3-Clause). The 802.11 management, our own
+  WPA2/WPA3 supplicant (SAE included) and regulatory limits are the larger
+  work (`system/CX_NETWORK.md`).
+- **Bluetooth:** a USB device, so it sits on the existing USB stack (the
+  rig's EHCI with OHCI companions is enough for it), then the HCI and the
+  Bluetooth protocols. After Wi-Fi.
+- **Open (Aurora to decide): the firmware.** Both halves need Intel's
+  firmware, a redistributable binary that runs on the card, not the CPU.
+  It would be vendored under `vendor/` as data with its licence read: the
+  one closed piece in the image.
 
 ## 4. The GPU
 

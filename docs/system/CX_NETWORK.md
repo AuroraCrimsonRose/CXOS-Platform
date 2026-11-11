@@ -276,7 +276,9 @@ send path and Wake-on-LAN can come as soon as they are wanted for the rig,
 then netboot, then the paired input and the debugger.
 
 Later: Happy Eyeballs v3, prefix delegation, VPN (WireGuard, per app), the post-quantum hybrid, QUIC and HTTP/3,
-firewall rules beyond per-app, Wi-Fi (the rig has none).
+firewall rules beyond per-app, Wi-Fi on the Intel AX210 (Aurora's Cudy
+WE3000S cards; `hardware/CX_TARGET_HARDWARE.md` §3), with our own WPA2/WPA3
+supplicant and a random MAC per network.
 
 ## 6. Open questions
 
