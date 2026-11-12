@@ -45,74 +45,22 @@ static struct hid_device hids[MAX_HID];
 static int any_present = 0;
 static int keyboards = 0;
 
-/* ---- HID usage id -> the codes keyboard.c already produces ---------------
- * Usage ids are NOT ASCII and NOT PS/2 scancodes; they are their own numbering,
- * dense from 0x04 for 'a'. Two tables, unshifted and shifted, indexed directly
- * by usage id. Zero means "nothing printable", which the caller skips. */
-static const char usage_lower[0x68] = {
-    /* 0x00 */ 0, 0, 0, 0,
-    /* 0x04 */ 'a','b','c','d','e','f','g','h','i','j','k','l','m',
-               'n','o','p','q','r','s','t','u','v','w','x','y','z',
-    /* 0x1E */ '1','2','3','4','5','6','7','8','9','0',
-    /* 0x28 */ '\n', 0x1B, '\b', '\t', ' ',
-    /* 0x2D */ '-','=','[',']','\\',
-    /* 0x32 */ 0,           /* non-US # */
-    /* 0x33 */ ';','\'','`',',','.','/',
-    /* 0x39 */ 0,           /* caps lock */
-    /* 0x3A */ 0,0,0,0,0,0,0,0,0,0,0,0,   /* F1-F12 */
-    /* 0x46 */ 0,0,0,       /* print screen, scroll lock, pause */
-    /* 0x49 */ 0,           /* insert */
-    /* 0x4A */ 0,0,0,0,0,0,0,0,  /* home..up, handled as specials below */
-    /* 0x52 */ 0,
-    /* 0x53 */ 0,           /* num lock */
-    /* 0x54 */ '/','*','-','+','\n',
-    /* 0x59 */ '1','2','3','4','5','6','7','8','9','0','.',
-    /* 0x64 */ 0,0,0,0,
-};
-
-static const char usage_upper[0x68] = {
-    /* 0x00 */ 0, 0, 0, 0,
-    /* 0x04 */ 'A','B','C','D','E','F','G','H','I','J','K','L','M',
-               'N','O','P','Q','R','S','T','U','V','W','X','Y','Z',
-    /* 0x1E */ '!','@','#','$','%','^','&','*','(',')',
-    /* 0x28 */ '\n', 0x1B, '\b', '\t', ' ',
-    /* 0x2D */ '_','+','{','}','|',
-    /* 0x32 */ 0,
-    /* 0x33 */ ':','"','~','<','>','?',
-    /* 0x39 */ 0,
-    /* 0x3A */ 0,0,0,0,0,0,0,0,0,0,0,0,
-    /* 0x46 */ 0,0,0,
-    /* 0x49 */ 0,
-    /* 0x4A */ 0,0,0,0,0,0,0,0,
-    /* 0x52 */ 0,
-    /* 0x53 */ 0,
-    /* 0x54 */ '/','*','-','+','\n',
-    /* 0x59 */ '1','2','3','4','5','6','7','8','9','0','.',
-    /* 0x64 */ 0,0,0,0,
-};
-
-/* Arrow and navigation keys have no ASCII, and keyboard.h already defines codes
-   for them that the shell's line editor understands. */
-static unsigned char usage_special(uint8_t usage, int shift) {
-    switch (usage) {
-        case 0x4A: return KEY_HOME;
-        case 0x4B: return KEY_PGUP;
-        case 0x4D: return KEY_END;
-        case 0x4E: return KEY_PGDN;
-        case 0x4F: return KEY_RIGHT;
-        case 0x50: return KEY_LEFT;
-        case 0x51: return shift ? KEY_SHIFT_DN : KEY_DOWN;
-        case 0x52: return shift ? KEY_SHIFT_UP : KEY_UP;
-        default:   return 0;
-    }
-}
-
 /* ---- the reports --------------------------------------------------------
  * Keyboard, 8 bytes: modifiers, reserved, then up to six usage ids of the keys
  * CURRENTLY HELD. It is a state snapshot, not an event - a key held down
  * reappears in every report. So a keystroke is the difference between this
  * report and the last one, which is what prev_keys is for. Treating each report
- * as an event would repeat every held key at the poll rate. */
+ * as an event would repeat every held key at the poll rate.
+ *
+ * Usage ids are what keyboard_key takes (2.8a2): the modifier byte's bit i is
+ * usage 0xE0 + i. Modifiers going down come first and modifiers coming up
+ * last, so a report that brings Ctrl and C together is Ctrl+C, and one that
+ * lets go of Ctrl as C goes down is a plain c. */
+static int in_report(const uint8_t *keys, uint8_t u) {
+    for (int j = 0; j < 6; j++) if (keys[j] == u) return 1;
+    return 0;
+}
+
 static void poll_keyboard(struct hid_device *h) {
     uint8_t rpt[8];
     for (int i = 0; i < 8; i++) rpt[i] = 0;
@@ -122,35 +70,20 @@ static void poll_keyboard(struct hid_device *h) {
     if (n < 8) return;               /* nothing new, or a runt report */
 
     uint8_t mods = rpt[0];
-    int shift = (mods & 0x02) || (mods & 0x20);
-    int ctrl  = (mods & 0x01) || (mods & 0x10);
-    int alt   = (mods & 0x04) || (mods & 0x40);
+    const uint8_t *keys = &rpt[2];
+    /* 1 = rollover error: too many keys held to say which; nothing changes */
+    for (int i = 0; i < 6; i++) if (keys[i] == 1) return;
 
-    for (int i = 2; i < 8; i++) {
-        uint8_t u = rpt[i];
-        if (u == 0 || u == 1) continue;      /* 1 = rollover error */
+    for (int b = 0; b < 8; b++)
+        if ((mods & (1u << b)) && !(h->prev_mods & (1u << b))) keyboard_key(0xE0u + (uint32_t)b, 1);
+    for (int i = 0; i < 6; i++)
+        if (h->prev_keys[i] > 1 && !in_report(keys, h->prev_keys[i])) keyboard_key(h->prev_keys[i], 0);
+    for (int i = 0; i < 6; i++)
+        if (keys[i] > 1 && !in_report(h->prev_keys, keys[i])) keyboard_key(keys[i], 1);
+    for (int b = 0; b < 8; b++)
+        if (!(mods & (1u << b)) && (h->prev_mods & (1u << b))) keyboard_key(0xE0u + (uint32_t)b, 0);
 
-        /* only report keys that were NOT held in the previous report */
-        int was_held = 0;
-        for (int j = 0; j < 6; j++) if (h->prev_keys[j] == u) { was_held = 1; break; }
-        if (was_held) continue;
-
-        /* Delete, or the keypad's. As PS/2's: nothing above can tell them apart. */
-        if (ctrl && alt && (u == 0x4C || u == 0x63)) { keyboard_attention(); continue; }
-
-        unsigned char c = usage_special(u, shift);
-        if (!c && u < 0x68) c = (unsigned char)(shift ? usage_upper[u] : usage_lower[u]);
-        if (!c) continue;
-
-        /* Ctrl+letter collapses to a control code, the same convention the PS/2
-           path uses - Ctrl+C must reach the shell as 0x03. */
-        if (ctrl && c >= 'a' && c <= 'z') c = (unsigned char)(c - 'a' + 1);
-        else if (ctrl && c >= 'A' && c <= 'Z') c = (unsigned char)(c - 'A' + 1);
-
-        keyboard_inject(c);
-    }
-
-    for (int i = 0; i < 6; i++) h->prev_keys[i] = rpt[i + 2];
+    for (int i = 0; i < 6; i++) h->prev_keys[i] = keys[i];
     h->prev_mods = mods;
 }
 

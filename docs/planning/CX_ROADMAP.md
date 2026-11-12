@@ -1460,6 +1460,15 @@ language work in `language/CX_X_PLAN.md`.
      scroll view, list, tree, table, tabs, menus, tooltip, dialog, text
      grid, **2.8a4** localisation and bidi, **2.8a5** inspector,
      automation and the boot checks.
+     **2.8a2 done 2026-11-12** (ABI 41; `system/CX_TOOLKIT.md` §7, §9):
+     key events with USB codes, modifiers, releases and the character
+     apart, from PS/2 and USB through one keymap; the system's keys moved to
+     Super, Alt+Tab, Alt+F4 and the three fixed keys (Ctrl+Alt+Delete,
+     Ctrl+Alt+F2, Super+Ctrl+Enter), so Ctrl is the apps'; commands with
+     one key each, clashes and the system's keys refused; the text field
+     with selection and undo; the clipboard in the server, set or read only
+     by the focused client in the second after a press, one read a press;
+     the input-method interface and the dead-key method.
      **Design goals** (Aurora, 2026-11-11), where other systems are weak:
      (1) one toolkit, no legacy layers beside it; (2) logical units and a
      scale per window from the first day, snapped to device pixels, so

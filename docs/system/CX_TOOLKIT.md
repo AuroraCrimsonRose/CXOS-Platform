@@ -143,21 +143,64 @@ the end-to-end test.
   a press captures the node until release, so a button activates only if
   released over itself (the usual rule; from memory, not read in a tree). Hover
   sets and clears a flag.
-- **Keys** go to the focused node, then up the parents until one takes it;
-  what nothing takes goes to the ui's command table (2.8a2).
+- **Keys** go to the focused node; what it does not take goes to the
+  dialog manager and then the ui's command table (2.8a2; below).
 - **Focus:** the focus order is the tree order of nodes that are visible,
   enabled and focusable (Serenity's ordered list). Tab and Shift+Tab move
   it, wrapping; arrow keys move within a radio group, list or menu.
   Activate is Space on buttons, check boxes, switches; Enter is the
   dialog's default button; Esc its cancel. Every widget a pointer can use,
   the keyboard can (`CX_ACCESSIBILITY.md` §2 item 2): checked in 2.8a5.
-- **Today's key events** are one character per press (`WM_EV_KEY`, a: the
-  code from `SYS_INPUT_READ`), with no release and no modifiers apart from
-  what Ctrl folds into a control code. Enough for 2.8a1 (Tab is 9, Shift+Tab
-  is not reachable yet). **2.8a2 changes the ABI**: `input_event` and
-  `WM_EV_KEY` carry a key code, the modifiers, press or release and the
-  character apart, which the keybinds (Super, Ctrl+Shift+Z, Alt+Tab)
-  need.
+- **Key events (2.8a2, ABI 41).** `input_event` and `WM_EV_KEY` carry a
+  **key code**, the **modifiers** and the **character** apart, for presses
+  and releases (`CX_SYSCALLS_IPC.md`, `input_event`). Codes are USB HID
+  usages (page 7, `KC_*`), so PS/2 set-1 scancodes are translated and a USB
+  report needs nothing. Serenity's `KeyEvent` (Kernel/API/KeyCode.h) has the
+  same parts (key, scancode, code point, a flags word with the modifiers and
+  `Is_Press`); we keep one word of mods with the flags in it: `KEYMOD_SHIFT
+  CTRL ALT SUPER` (held), `CAPS NUM` (locks), `KEYEV_RELEASE`, `KEYEV_REPEAT`
+  (typematic). The modifier keys are events themselves. `ch` is the code
+  point the key types under the kernel's US layout, or 0 (releases, Enter,
+  Tab, Backspace, Esc, arrows); Ctrl, Alt and Super do not change it, so an
+  app sees Ctrl+S as `KC_S`, `'s'`, `KEYMOD_CTRL`. Caps Lock turns letters
+  only, and only with nothing or Shift held (as Serenity's
+  `get_char_from_character_map`, Kernel/Devices/Input/Management.cpp). Num
+  Lock starts on; off, the keypad keys are the navigation keys' codes. A
+  held modifier's typematic repeats give no event. One keymap state serves
+  every keyboard (PS/2 and USB alike); USB has no typematic yet.
+- **The system's keys** are the window server's (`wm_system_key`) or the
+  kernel's, and never reach a client, pressed, held or let go: **Super**
+  alone or with anything (the launcher's from 2.8c; Super+B minimise, W
+  next workspace, E send, R reduce motion), **Alt+Tab** (Shift allowed, held
+  it goes on round), **Alt+F4** (asks the window to close, as its close box
+  does), and the **three fixed keys**: Ctrl+Alt+Delete (the kernel's
+  attention, once a press: the trusted screen), Ctrl+Alt+F2 (end the
+  session, back to the console), Super+Ctrl+Enter (the screen reader,
+  counted as asked until 2.8c has one). The old Ctrl+Q/N/B/W/E/R are gone:
+  they were keys an app needs. The trusted screen takes presses only, and
+  only without Ctrl, Alt or Super, by code (Y, N or Esc, Esc for the next,
+  1 to 9 to end a client).
+- **Dispatch in the toolkit:** `tk_key(ui, code, ch, mods)`. A release is
+  nobody's. A press goes to the input method if a text field has the
+  focus (§9), then to the focused widget (only with no Ctrl, Alt or Super
+  held), then to the dialog manager (Tab, Shift+Tab, Enter: the default
+  button, Esc: the button flagged `TK_F_CANCEL`), then to the command table;
+  what is left reaches the app as `TK_EV_KEY` with all three parts.
+- **Commands** (design goal 8). A command is a name and at most one key
+  (`tk_command(ui, name, key, mods)`, its number; `tk_bind` to move it,
+  key 0 to unbind; `tk_set_command(ui, widget, cmd)` so a button runs one).
+  A key runs a command only with exactly its modifiers held (locks do not
+  count). **A clash is refused** (`E_ALREADY_EXISTS`) and the binding
+  that was there stays: Haiku's `BWindow::AddShortcut`
+  (src/kits/interface/Window.cpp) silently replaces the old shortcut, which
+  is how two commands come to fight over a key unseen. **The system's keys
+  are refused** (`E_ACCESS_DENIED`; `tk_key_reserved`, and a boot test sweeps
+  every code and modifier so the server's and the toolkit's lists cannot
+  drift). A key that types (none or only Shift, except F1 to F12) and a
+  modifier alone are `E_INVALID_ARGS`. Every ui starts with the standard
+  six: copy, cut, paste, select-all, undo, redo on Ctrl+C X V A Z and
+  Ctrl+Shift+Z; a focused text field does them itself, otherwise they come
+  to the app as `TK_EV_COMMAND` like the app's own.
 
 ## 8. The theme and the design system
 
@@ -177,6 +220,60 @@ setting and can be forced per ui (the gallery does).
 | **2.8a3** | scroll view, list, tree, table, tabs, menu and context menu, tooltip, the dialog with standard buttons, the text grid | gallery pages |
 | **2.8a4** | localisation: message keys, `cxk` string tables (a Fluent subset), CLDR plural rules, the pseudo-locale, our UAX #9 run against Unicode's conformance files, mirrored layouts | pseudo-locale gallery boot |
 | **2.8a5** | the inspector and the automation API over the tree; boot checks (an interactive widget with no name, one focus cannot reach, clipped text, two commands on one key); high contrast; `gui.xfxn` retired | each check sabotaged |
+
+**2.8a2, as built (2026-11-12).**
+
+- **Text field** (`TK_TEXTFIELD`): one line of UTF-8, at most 255 bytes,
+  in a pool of eight fields a ui. Offsets are bytes on a character's first
+  byte, so the arrows, Backspace and Delete step whole characters; Home and
+  End; Shift extends the selection; the pointer puts the caret between
+  characters and a drag selects. Typing replaces the selection; only whole
+  characters that fit go in. One level of undo: a run of typed characters
+  is one change, and undo again after an undo is refused (redo puts it
+  back). The text is drawn through UTF-8 to code page 437 (the v1 bitmap
+  font's), so the Latin-1 letters it has are shown and anything else is
+  `?`, until 2.8a′'s fonts. The node's text is the field's accessible name;
+  the field's own text is `tk_field_text`.
+- **The clipboard** (design goal 7) is the server's: text, at most
+  `WM_CLIP_MAX` (4096) bytes, `DS_OP_CLIP_SET` and `DS_OP_CLIP_GET` with a
+  page. Only the **focused window's client** may set or read it, and only
+  within `WM_GESTURE_MS` (one second) of being **handed a press** (it
+  takes a key press, not a release or a repeat, or a pointer button going
+  down, not one held); a read **spends** the press, so one paste a press.
+  This is the browsers' transient activation (from memory). Serenity's
+  ClipboardServer (LibGUI/Clipboard.h) lets any client fetch at any time,
+  which is what goal 7 is against. The toolkit asks for a read only for
+  the paste command (`ui.clip_want`, served by `toolkit_window.xfxn` with
+  `win_clip`), and puts what comes back through `tk_paste_text`, which
+  makes line breaks and tabs spaces and drops other control characters and
+  bytes that are not UTF-8.
+- **Input methods** see a focused field's keys before the field
+  (`tk_im_key`; `tk_set_im(ui, TK_IM_NONE or TK_IM_DEAD)`); a method keeps
+  its pre-edit text in the field, shown underlined at the caret, and
+  commits through the field's insert. The **dead-key method** has Haiku's
+  five accents (its keymaps' acute, grave, circumflex, diaeresis, tilde:
+  `BKeymap::IsDeadSecondKey`, src/kits/shared/Keymap.cpp), on the keys
+  US-International puts them: ' ` ^ ~ ". The next key decides: a letter
+  the accent goes on gives the one Latin-1 character (á é í ó ú ý ç, à è ì
+  ò ù, â ê î ô û, ã õ ñ, ä ë ï ö ü ÿ, and the capitals Latin-1 has);
+  Space or the same accent gives the accent; Esc or Backspace drops it; a
+  key with no character, or with Ctrl or Alt, gives the accent and then
+  goes on; another accent gives the first and waits with the second;
+  anything else gives the accent and then itself. A modifier key alone
+  changes nothing; a move of the focus drops it. Haiku applies its dead
+  keys in the input_server, for every app at once
+  (`KeyboardDevice::_ControlThread`,
+  src/add-ons/input_server/devices/keyboard/KeyboardInputDevice.cpp); ours
+  is in the toolkit, per ui, so a method can be per field later.
+- **The gallery** has a text-field row (dead keys on), and its own keys are
+  commands now (Ctrl+D dark, Ctrl+1 2 3 scale), so a focused field types
+  them as letters.
+- **Witness:** the headless tests (`tt_commands` 4800, `tt_field` 4900,
+  `tt_dead` 5000), the server's (`w_system_keys` 5100, `w_keys_agree`
+  5150, `w_clipboard` 5200), the gallery replay typing with a dead key and
+  copying and pasting through the server (4614-4624), the kernel's
+  (`test_ps2kbd.c` in the host tests, the input handle's steps 18 and 19),
+  and `tests/sabotage/2.8a2.sab`.
 
 The gallery (`os/apps/gallery.xfxn`) shows every widget in every state
 (normal, hovered, pressed, focused, disabled, checked, mixed), light and

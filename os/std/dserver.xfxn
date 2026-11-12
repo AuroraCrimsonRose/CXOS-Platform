@@ -259,6 +259,21 @@ fn dsv_capture(s: *dsv, c: u32, handles: u32) -> i32 {
     return 0;
 }
 
+// The clipboard (wm_clip_set, wm_clip_get), through a page of the client's:
+// read for a copy of req.w bytes, written for a paste.
+fn dsv_clip(s: *dsv, c: u32, req: *ds_req, handles: u32) -> i32 {
+    if (handles != 1) { return E_INVALID_ARGS; }
+    let page: ds_surface;
+    let prot: u32 = MPROT_READ;
+    if (req.op == DS_OP_CLIP_GET) { prot = MPROT_READ | MPROT_WRITE; }
+    let rc: i32 = dsv_map_for(dsv_inhandles[0], WM_CLIP_MAX / 4, 1, prot, &page);
+    if (rc != 0) { return rc; }
+    if (req.op == DS_OP_CLIP_SET) { rc = wm_clip_set(&s.w, c, page.px as *u8, req.w); }
+    else { rc = wm_clip_get(&s.w, c, page.px as *u8); }
+    vm_unmap(page.px, 0);
+    return rc;
+}
+
 // One message off the endpoint.
 fn dsv_receive(s: *dsv) -> void {
     let info: ipc_msg_info;
@@ -304,6 +319,7 @@ fn dsv_receive(s: *dsv) -> void {
             rep.status = asked;
         }
         if (req.op == DS_OP_CAPTURE) { rep.status = dsv_capture(s, c, count); }
+        if (req.op == DS_OP_CLIP_SET || req.op == DS_OP_CLIP_GET) { rep.status = dsv_clip(s, c, req, count); }
     }
     // whatever a refused request carried, and anything it should not have
     dsv_close_handles(count, 0);
@@ -315,7 +331,7 @@ fn dsv_read_input(s: *dsv) -> void {
     let n: i32 = input_events(s.input, &ev[0], INPUT_EVENTS_MAX);
     let i: i32 = 0;
     while (i < n) {
-        if (ev[i].kind == INPUT_EVENT_KEY) { wm_key(&s.w, ev[i].code); }
+        if (ev[i].kind == INPUT_EVENT_KEY) { wm_key(&s.w, ev[i].code, ev[i].ch, ev[i].mods); }
         if (ev[i].kind == INPUT_EVENT_POINTER) { wm_pointer(&s.w, ev[i].x, ev[i].y, ev[i].buttons); }
         if (ev[i].kind == INPUT_EVENT_ATTENTION) { wm_attention(&s.w); }
         i = i + 1;

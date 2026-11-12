@@ -40,7 +40,7 @@ domain kernel
 /// mismatch. Declared in versions.json as `cxex-abi` and checked against this
 /// line; bump both, and the DevKit's stamp, in the one commit that changes the
 /// contract.
-const CXK_ABI_VERSION: u32 = 40
+const CXK_ABI_VERSION: u32 = 41
 
 /// ---- syscall numbers ----
 /// lifecycle 0x00-0x0F (no capability required)
@@ -1180,7 +1180,15 @@ struct screen_info {
 }
 
 /// ---- input as a handle (SYS_INPUT_OPEN) ----
-const INPUT_EVENT_KEY: u32 = 1      /// code: the key, as SYS_INPUT_READ gives it
+/// A key went down, came up, or repeats (roadmap 2.8a2). code: which key, a
+/// KC_* (the USB HID usage, page 7, whatever the keyboard); mods: the KEYMOD_*
+/// in force after it, with KEYEV_RELEASE or KEYEV_REPEAT; ch: the character
+/// it types under the layout (the kernel's US one until layouts move out),
+/// a Unicode code point, printable only, 0 for none and on every release.
+/// Ctrl, Alt and Super do not change ch: a shortcut is matched on code and
+/// mods, and text takes ch only with none of them held. Modifier keys come
+/// as events of their own.
+const INPUT_EVENT_KEY: u32 = 1
 /// x, y: where the pointer is now; buttons: bit 0 left, 1 right, 2 middle
 const INPUT_EVENT_POINTER: u32 = 2
 /// The secure attention combination, Ctrl+Alt+Del. No other field means
@@ -1190,12 +1198,100 @@ const INPUT_EVENT_ATTENTION: u32 = 3
 const INPUT_EVENTS_MAX: u32 = 32    /// events one SYS_INPUT_EVENTS writes at most
 struct input_event {
     kind: u32       /// INPUT_EVENT_*
-    code: u32
+    code: u32       /// KEY: KC_*
     x: i32
     y: i32
     buttons: u32
+    mods: u32       /// KEY: KEYMOD_* | KEYEV_*
+    ch: u32         /// KEY: the character, or 0
     reserved: u32   /// 0
 }
+
+/// input_event.mods: held, then locks, then what the event is
+const KEYMOD_SHIFT: u32 = 0x1u
+const KEYMOD_CTRL: u32 = 0x2u
+const KEYMOD_ALT: u32 = 0x4u
+const KEYMOD_SUPER: u32 = 0x8u
+const KEYMOD_HELD: u32 = 0xFu       /// the four a shortcut is made of
+const KEYMOD_CAPS: u32 = 0x10u      /// Caps Lock is on
+const KEYMOD_NUM: u32 = 0x20u       /// Num Lock is on
+const KEYEV_RELEASE: u32 = 0x100u
+const KEYEV_REPEAT: u32 = 0x200u    /// pressed again while held (typematic)
+
+/// Key codes: the USB HID keyboard usages (HID Usage Tables, page 7). A PS/2
+/// keyboard's scancodes are translated to them, so nothing above the driver
+/// can tell the two apart. Letters are KC_A + n, digits KC_1 .. KC_9, KC_0.
+const KC_A: u32 = 0x04
+const KC_B: u32 = 0x05
+const KC_C: u32 = 0x06
+const KC_D: u32 = 0x07
+const KC_E: u32 = 0x08
+const KC_F: u32 = 0x09
+const KC_G: u32 = 0x0A
+const KC_H: u32 = 0x0B
+const KC_I: u32 = 0x0C
+const KC_J: u32 = 0x0D
+const KC_K: u32 = 0x0E
+const KC_L: u32 = 0x0F
+const KC_M: u32 = 0x10
+const KC_N: u32 = 0x11
+const KC_O: u32 = 0x12
+const KC_P: u32 = 0x13
+const KC_Q: u32 = 0x14
+const KC_R: u32 = 0x15
+const KC_S: u32 = 0x16
+const KC_T: u32 = 0x17
+const KC_U: u32 = 0x18
+const KC_V: u32 = 0x19
+const KC_W: u32 = 0x1A
+const KC_X: u32 = 0x1B
+const KC_Y: u32 = 0x1C
+const KC_Z: u32 = 0x1D
+const KC_1: u32 = 0x1E
+const KC_9: u32 = 0x26
+const KC_0: u32 = 0x27
+const KC_ENTER: u32 = 0x28
+const KC_ESC: u32 = 0x29
+const KC_BACKSPACE: u32 = 0x2A
+const KC_TAB: u32 = 0x2B
+const KC_SPACE: u32 = 0x2C
+const KC_MINUS: u32 = 0x2D
+const KC_EQUAL: u32 = 0x2E
+const KC_QUOTE: u32 = 0x34
+const KC_GRAVE: u32 = 0x35
+const KC_COMMA: u32 = 0x36
+const KC_PERIOD: u32 = 0x37
+const KC_SLASH: u32 = 0x38
+const KC_CAPS: u32 = 0x39
+const KC_F1: u32 = 0x3A
+const KC_F2: u32 = 0x3B
+const KC_F4: u32 = 0x3D
+const KC_F5: u32 = 0x3E
+const KC_F12: u32 = 0x45
+const KC_PRINT: u32 = 0x46
+const KC_PAUSE: u32 = 0x48
+const KC_INSERT: u32 = 0x49
+const KC_HOME: u32 = 0x4A
+const KC_PGUP: u32 = 0x4B
+const KC_DELETE: u32 = 0x4C
+const KC_END: u32 = 0x4D
+const KC_PGDN: u32 = 0x4E
+const KC_RIGHT: u32 = 0x4F
+const KC_LEFT: u32 = 0x50
+const KC_DOWN: u32 = 0x51
+const KC_UP: u32 = 0x52
+const KC_NUMLOCK: u32 = 0x53
+const KC_KP_ENTER: u32 = 0x58
+const KC_KP_PERIOD: u32 = 0x63
+const KC_MENU: u32 = 0x65
+const KC_LCTRL: u32 = 0xE0
+const KC_LSHIFT: u32 = 0xE1
+const KC_LALT: u32 = 0xE2
+const KC_LSUPER: u32 = 0xE3
+const KC_RCTRL: u32 = 0xE4
+const KC_RSHIFT: u32 = 0xE5
+const KC_RALT: u32 = 0xE6
+const KC_RSUPER: u32 = 0xE7
 
 /// ---- capabilities (for spawn_args.caps) ----
 /// A process's authority, as a bitmask: what it is ALLOWED TO DO. One bit per

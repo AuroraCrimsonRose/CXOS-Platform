@@ -177,13 +177,13 @@ fn tt_focus(arg: u64) -> i32 {
     tk_add(&tt_ui, root, TK_PROGRESS, "F");
     if (e == 0 || tt_show(4) != 0) { return 4200; }
     if (tk_focused(&tt_ui) != 0) { return 4201; }
-    tk_key(&tt_ui, TK_KEY_TAB);
+    tk_key(&tt_ui, KC_TAB, 0, 0);
     if (tk_focused(&tt_ui) != a) { return 4202; }
-    tk_key(&tt_ui, TK_KEY_TAB);
+    tk_key(&tt_ui, KC_TAB, 0, 0);
     if (tk_focused(&tt_ui) != d) { return 4203; }          // not B, not C
-    tk_key(&tt_ui, TK_KEY_TAB);
+    tk_key(&tt_ui, KC_TAB, 0, 0);
     if (tk_focused(&tt_ui) != e) { return 4204; }
-    tk_key(&tt_ui, TK_KEY_TAB);
+    tk_key(&tt_ui, KC_TAB, 0, 0);
     if (tk_focused(&tt_ui) != a) { return 4205; }          // wrapped
     if ((tk_flags(&tt_ui, a) & TK_F_FOCUS) == 0) { return 4206; }
     // a focused widget that is turned off loses the focus
@@ -195,7 +195,7 @@ fn tt_focus(arg: u64) -> i32 {
     // nothing that can take it: Tab leaves it nowhere
     tk_init(&tt_ui, 4, 0 as *ds_font);
     tk_add(&tt_ui, tk_root(&tt_ui), TK_LABEL, "only");
-    tk_key(&tt_ui, TK_KEY_TAB);
+    tk_key(&tt_ui, KC_TAB, 0, 0);
     if (tk_focused(&tt_ui) != 0) { return 4209; }
     tk_free(&tt_ui);
     return 0;
@@ -268,8 +268,8 @@ fn tt_pointer(arg: u64) -> i32 {
     tt_event(&ev);
     if (ev.kind != TK_EV_NONE) { return 4307; }
     // Space and Enter on the focused button
-    tk_key(&tt_ui, TK_KEY_SPACE);
-    tk_key(&tt_ui, TK_KEY_ENTER);
+    tk_key(&tt_ui, KC_SPACE, 32, 0);
+    tk_key(&tt_ui, KC_ENTER, 0, 0);
     tt_event(&ev);
     if (ev.kind != TK_EV_ACTIVATE || ev.id != b) { return 4308; }
     tt_event(&ev);
@@ -294,9 +294,9 @@ fn tt_pointer(arg: u64) -> i32 {
     if ((tk_flags(&tt_ui, r1) & TK_F_CHECKED) != 0 || (tk_flags(&tt_ui, r2) & TK_F_CHECKED) == 0) { return 4314; }
     if ((tk_flags(&tt_ui, other) & TK_F_CHECKED) == 0) { return 4315; }
     // the arrows move the choice within the group, wrapping, never to x
-    tk_key(&tt_ui, TK_KEY_RIGHT);
+    tk_key(&tt_ui, KC_RIGHT, 0, 0);
     if ((tk_flags(&tt_ui, r3) & TK_F_CHECKED) == 0 || (tk_flags(&tt_ui, r2) & TK_F_CHECKED) != 0) { return 4316; }
-    tk_key(&tt_ui, TK_KEY_RIGHT);
+    tk_key(&tt_ui, KC_RIGHT, 0, 0);
     if ((tk_flags(&tt_ui, r1) & TK_F_CHECKED) == 0 || tk_focused(&tt_ui) != r1) { return 4317; }
     if ((tk_flags(&tt_ui, other) & TK_F_CHECKED) == 0) { return 4318; }
     while (tk_next(&tt_ui, &ev) == 1) { }
@@ -312,21 +312,25 @@ fn tt_pointer(arg: u64) -> i32 {
     tk_pointer(&tt_ui, (sb.x + sb.w - 1) as i32, y, 0);
     if (tk_value(&tt_ui, s) != 100) { return 4320; }
     while (tk_next(&tt_ui, &ev) == 1) { }
-    tk_key(&tt_ui, TK_KEY_RIGHT);
+    tk_key(&tt_ui, KC_RIGHT, 0, 0);
     if (tk_value(&tt_ui, s) != 100) { return 4321; }
     tt_event(&ev);
     if (ev.kind != TK_EV_NONE) { return 4322; }             // no change, no event
-    tk_key(&tt_ui, TK_KEY_LEFT);
+    tk_key(&tt_ui, KC_LEFT, 0, 0);
     tt_event(&ev);
     if (tk_value(&tt_ui, s) != 90 || ev.kind != TK_EV_CHANGE || ev.value != 90) { return 4323; }
-    tk_key(&tt_ui, TK_KEY_HOME);
-    tk_key(&tt_ui, TK_KEY_LEFT);
+    tk_key(&tt_ui, KC_HOME, 0, 0);
+    tk_key(&tt_ui, KC_LEFT, 0, 0);
     if (tk_value(&tt_ui, s) != 0) { return 4324; }
     // a key nothing takes goes to the app
     while (tk_next(&tt_ui, &ev) == 1) { }
-    if (tk_key(&tt_ui, 113) != 0) { return 4325; }
+    if (tk_key(&tt_ui, KC_Q, 113, 0) != 0) { return 4325; }
     tt_event(&ev);
-    if (ev.kind != TK_EV_KEY || ev.code != 113) { return 4326; }
+    if (ev.kind != TK_EV_KEY || ev.code != KC_Q || ev.ch != 113 || ev.mods != 0) { return 4326; }
+    // a release goes to nobody, and is no event
+    if (tk_key(&tt_ui, KC_Q, 113, KEYEV_RELEASE) != 0) { return 4327; }
+    tt_event(&ev);
+    if (ev.kind != TK_EV_NONE) { return 4328; }
     tk_free(&tt_ui);
     return 0;
 }
@@ -472,7 +476,7 @@ fn tt_paint(arg: u64) -> i32 {
     tk_paint(&tt_ui, &d);
     if (ds_pixel(&tt_ui.canvas, kb.x + kb.w / 2, kb.y) != tt_ui.theme.ring) { return 4518; }
     // unchecked: the accent is gone
-    tk_key(&tt_ui, TK_KEY_SPACE);
+    tk_key(&tt_ui, KC_SPACE, 32, 0);
     tk_paint(&tt_ui, &d);
     if (ds_pixel(&tt_ui.canvas, bx + 2, by + 2) == tt_ui.theme.accent) { return 4519; }
     tk_set_dark(&tt_ui, 1);
@@ -482,6 +486,408 @@ fn tt_paint(arg: u64) -> i32 {
     tk_box_of(&tt_ui, lab, &lb);
     if (lb.w == 0 || ds_pixel(&tt_ui.canvas, lb.x + 2, lb.y + 2) != tt_ui.theme.text) { return 4521; }
     if (ds_pixel(&tt_ui.canvas, lb.x + lb.w + 2, lb.y + 2) != tt_ui.theme.surface) { return 4522; }
+    tk_free(&tt_ui);
+    return 0;
+}
+
+// ---- 2.8a2: commands, the text field, the clipboard, dead keys ----
+
+// The key that types ASCII c on a US keyboard, and whether Shift is held.
+fn tt_ascii(c: u32, code: *u32, mods: *u32) -> void {
+    *mods = 0;
+    *code = 0;
+    if (c >= 97 && c <= 122) { *code = KC_A + (c - 97); }
+    else if (c >= 65 && c <= 90) { *code = KC_A + (c - 65); *mods = KEYMOD_SHIFT; }
+    else if (c >= 49 && c <= 57) { *code = KC_1 + (c - 49); }
+    else if (c == 48) { *code = KC_0; }
+    else if (c == 32) { *code = KC_SPACE; }
+    else if (c == 39) { *code = KC_QUOTE; }
+    else if (c == 34) { *code = KC_QUOTE; *mods = KEYMOD_SHIFT; }
+    else if (c == 96) { *code = KC_GRAVE; }
+    else if (c == 126) { *code = KC_GRAVE; *mods = KEYMOD_SHIFT; }
+    else if (c == 94) { *code = KC_1 + 5; *mods = KEYMOD_SHIFT; }
+    else if (c == 46) { *code = KC_PERIOD; }
+}
+
+// Type an ASCII string, a press for each character.
+fn tt_type(s: *u8) -> void {
+    let k: u32 = 0;
+    while (s[k] != 0) {
+        let code: u32 = 0;
+        let mods: u32 = 0;
+        tt_ascii(s[k] as u32, &code, &mods);
+        tk_key(&tt_ui, code, s[k] as u32, mods);
+        k = k + 1;
+    }
+}
+
+// A press of code with mods held and no character.
+fn tt_press(code: u32, mods: u32) -> u32 { return tk_key(&tt_ui, code, 0, mods); }
+
+// A press with Ctrl of a letter key: its character is the letter's.
+fn tt_ctrl(letter: u32, more: u32) -> u32 {
+    return tk_key(&tt_ui, KC_A + (letter - 97), letter, KEYMOD_CTRL | more);
+}
+
+// 1 if field id holds exactly s.
+fn tt_text_is(id: u32, s: *u8) -> u32 {
+    let t: *u8 = tk_field_text(&tt_ui, id);
+    if (t == (0 as *u8)) { return 0; }
+    if (streq(t, s) != 0) { return 1; }
+    return 0;
+}
+
+// 1 if field id holds exactly the n bytes at b.
+fn tt_bytes_are(id: u32, b: *u8, n: u32) -> u32 {
+    let t: *u8 = tk_field_text(&tt_ui, id);
+    if (t == (0 as *u8) || strlen(t) != n) { return 0; }
+    if (memeq(t, b, n) != 0) { return 1; }
+    return 0;
+}
+
+fn tt_drain() -> void {
+    let ev: tk_event;
+    while (tk_next(&tt_ui, &ev) == 1) { }
+}
+
+// 4800: commands: the standard ones are there; a clash is refused and the
+// binding stays; the system's keys and keys that type are refused; a key
+// runs exactly its command; a widget runs one; the dialog manager's keys.
+fn tt_commands(arg: u64) -> i32 {
+    tk_init(&tt_ui, 4, 0 as *ds_font);
+    let root: u32 = tk_root(&tt_ui);
+    let ok: u32 = tk_add(&tt_ui, root, TK_BUTTON, "OK");
+    let no: u32 = tk_add(&tt_ui, root, TK_BUTTON, "Cancel");
+    let save_btn: u32 = tk_add(&tt_ui, root, TK_BUTTON, "Save");
+    tk_set_flags(&tt_ui, ok, TK_F_DEFAULT, 0);
+    tk_set_flags(&tt_ui, no, TK_F_CANCEL, 0);
+    if (save_btn == 0 || tt_show(4) != 0) { return 4800; }
+    if (tk_command_find(&tt_ui, "copy") != TK_CMD_COPY || tk_command_find(&tt_ui, "redo") != TK_CMD_REDO) { return 4801; }
+    let save: i32 = tk_command(&tt_ui, "save", KC_S, KEYMOD_CTRL);
+    if (save != 7) { return 4802; }
+    let s: u32 = save as u32;
+    // clashes: the key, or the name; and the standard ones' keys too
+    if (tk_command(&tt_ui, "save-as", KC_S, KEYMOD_CTRL) != E_ALREADY_EXISTS) { return 4803; }
+    if (tk_command(&tt_ui, "save", KC_S, KEYMOD_CTRL | KEYMOD_SHIFT) != E_ALREADY_EXISTS) { return 4804; }
+    if (tk_command(&tt_ui, "copy-2", KC_C, KEYMOD_CTRL) != E_ALREADY_EXISTS) { return 4805; }
+    // the system's keys, whatever else is held
+    if (tk_command(&tt_ui, "a", KC_S, KEYMOD_SUPER) != E_ACCESS_DENIED) { return 4806; }
+    if (tk_command(&tt_ui, "a", KC_S, KEYMOD_SUPER | KEYMOD_CTRL) != E_ACCESS_DENIED) { return 4807; }
+    if (tk_command(&tt_ui, "a", KC_LSUPER, 0) != E_ACCESS_DENIED) { return 4808; }
+    if (tk_command(&tt_ui, "a", KC_TAB, KEYMOD_ALT) != E_ACCESS_DENIED) { return 4809; }
+    if (tk_command(&tt_ui, "a", KC_TAB, KEYMOD_ALT | KEYMOD_SHIFT) != E_ACCESS_DENIED) { return 4810; }
+    if (tk_command(&tt_ui, "a", KC_F4, KEYMOD_ALT) != E_ACCESS_DENIED) { return 4811; }
+    if (tk_command(&tt_ui, "a", KC_F2, KEYMOD_CTRL | KEYMOD_ALT) != E_ACCESS_DENIED) { return 4812; }
+    if (tk_command(&tt_ui, "a", KC_DELETE, KEYMOD_CTRL | KEYMOD_ALT) != E_ACCESS_DENIED) { return 4813; }
+    if (tk_command(&tt_ui, "a", KC_DELETE, KEYMOD_CTRL | KEYMOD_ALT | KEYMOD_SHIFT) != E_ACCESS_DENIED) { return 4814; }
+    if (tk_command(&tt_ui, "a", KC_KP_PERIOD, KEYMOD_CTRL | KEYMOD_ALT) != E_ACCESS_DENIED) { return 4815; }
+    if (tk_command(&tt_ui, "a", KC_ENTER, KEYMOD_SUPER | KEYMOD_CTRL) != E_ACCESS_DENIED) { return 4816; }
+    // keys that type, a modifier alone, a key with a press's flags
+    if (tk_command(&tt_ui, "a", KC_S, 0) != E_INVALID_ARGS) { return 4817; }
+    if (tk_command(&tt_ui, "a", KC_S, KEYMOD_SHIFT) != E_INVALID_ARGS) { return 4818; }
+    if (tk_command(&tt_ui, "a", KC_LCTRL, KEYMOD_CTRL) != E_INVALID_ARGS) { return 4819; }
+    if (tk_command(&tt_ui, "a", KC_S, KEYMOD_CTRL | KEYEV_REPEAT) != E_INVALID_ARGS) { return 4820; }
+    // but an F-key alone, Alt with a letter, and none at all are fine
+    let refresh: i32 = tk_command(&tt_ui, "refresh", KC_F5, 0);
+    if (refresh != 8) { return 4821; }
+    if (tk_command(&tt_ui, "alt-f", KC_F, KEYMOD_ALT) != 9) { return 4822; }
+    if (tk_command(&tt_ui, "unbound", 0, 0) != 10) { return 4823; }
+    // a refused rebinding keeps the key it had
+    if (tk_bind(&tt_ui, s, KC_F5, 0) != E_ALREADY_EXISTS) { return 4824; }
+    if (tk_bind(&tt_ui, s, KC_F4, KEYMOD_ALT) != E_ACCESS_DENIED) { return 4825; }
+    tt_drain();
+    let ev: tk_event;
+    if (tt_ctrl(115, 0) != 1) { return 4826; }
+    tt_event(&ev);
+    if (ev.kind != TK_EV_COMMAND || ev.value != save || ev.id != 0) { return 4827; }
+    // exactly its mods: Ctrl+Shift+S is not it; a release runs nothing
+    if (tt_ctrl(115, KEYMOD_SHIFT) != 0) { return 4828; }
+    tt_event(&ev);
+    if (ev.kind != TK_EV_KEY || ev.mods != (KEYMOD_CTRL | KEYMOD_SHIFT)) { return 4829; }
+    tk_key(&tt_ui, KC_S, 115, KEYMOD_CTRL | KEYEV_RELEASE);
+    tt_event(&ev);
+    if (ev.kind != TK_EV_NONE) { return 4830; }
+    // what is held as a lock is not held: Caps Lock on still runs it
+    tk_key(&tt_ui, KC_S, 83, KEYMOD_CTRL | KEYMOD_CAPS | KEYMOD_NUM);
+    tt_event(&ev);
+    if (ev.kind != TK_EV_COMMAND || ev.value != save) { return 4831; }
+    // moved to F12; Ctrl+S is then nobody's, and unbound it runs from no key
+    if (tk_bind(&tt_ui, s, KC_F12, 0) != 0) { return 4832; }
+    tt_ctrl(115, 0);
+    tt_event(&ev);
+    if (ev.kind != TK_EV_KEY) { return 4833; }
+    tt_press(KC_F12, 0);
+    tt_event(&ev);
+    if (ev.kind != TK_EV_COMMAND || ev.value != save) { return 4834; }
+    if (tk_bind(&tt_ui, s, 0, 0) != 0) { return 4835; }
+    tt_press(KC_F12, 0);
+    tt_event(&ev);
+    if (ev.kind != TK_EV_KEY) { return 4836; }
+    // the key it gave up is free for another
+    if (tk_command(&tt_ui, "save-2", KC_S, KEYMOD_CTRL) != 11) { return 4837; }
+    // a widget runs its command, and says which it was
+    if (tk_set_command(&tt_ui, save_btn, s) != 0) { return 4838; }
+    if (tk_set_command(&tt_ui, save_btn, 99) != E_INVALID_ARGS) { return 4839; }
+    tt_click(save_btn);
+    tt_event(&ev);
+    if (ev.kind != TK_EV_COMMAND || ev.value != save || ev.id != save_btn) { return 4840; }
+    // no text field has the focus: copy is the app's to do
+    tt_ctrl(99, 0);
+    tt_event(&ev);
+    if (ev.kind != TK_EV_COMMAND || ev.value != (TK_CMD_COPY as i32)) { return 4841; }
+    // Esc presses the cancel button, Enter the default one, Shift+Tab goes back
+    tt_drain();
+    tt_press(KC_ESC, 0);
+    tt_event(&ev);
+    if (ev.kind != TK_EV_ACTIVATE || ev.id != no) { return 4842; }
+    tk_focus(&tt_ui, no);
+    tt_press(KC_TAB, KEYMOD_SHIFT);
+    if (tk_focused(&tt_ui) != ok) { return 4843; }
+    tt_press(KC_TAB, KEYMOD_SHIFT);
+    if (tk_focused(&tt_ui) != save_btn) { return 4844; }        // wrapped
+    tt_press(KC_KP_ENTER, 0);
+    tt_event(&ev);
+    if (ev.kind != TK_EV_COMMAND || ev.id != save_btn) { return 4845; }  // the focused one first
+    // the table fills, and says so
+    let name: [8]u8;
+    let k: u32 = 0;
+    let rc: i32 = 0;
+    while (k < TK_CMDS_MAX + 2) {
+        name[0] = 120; name[1] = (48 + k / 10) as u8; name[2] = (48 + k % 10) as u8; name[3] = 0;
+        rc = tk_command(&tt_ui, &name[0], 0, 0);
+        if (rc < 0) { break; }
+        k = k + 1;
+    }
+    if (rc != E_NO_RESOURCES || tt_ui.cmd_n != TK_CMDS_MAX) { return 4846; }
+    tk_free(&tt_ui);
+    return 0;
+}
+
+// 4900: the text field: typing, the caret and selection by keys and by the
+// pointer, characters of more than a byte as one, the limit, undo, and the
+// clipboard asked for only by copy, cut and paste.
+fn tt_field(arg: u64) -> i32 {
+    let rc: i32 = tt_make_font();
+    if (rc != 0) { return 4900 + rc; }
+    tk_init(&tt_ui, 4, &tt_font);
+    let root: u32 = tk_root(&tt_ui);
+    let f: u32 = tk_add(&tt_ui, root, TK_TEXTFIELD, "Name");
+    let b: u32 = tk_add(&tt_ui, root, TK_BUTTON, "B");
+    if (b == 0 || tt_show(4) != 0) { return 4905; }
+    if (tk_role(&tt_ui, f) != TK_ROLE_TEXTFIELD || tt_text_is(f, "") == 0) { return 4906; }
+    tk_key(&tt_ui, KC_TAB, 0, 0);
+    if (tk_focused(&tt_ui) != f) { return 4907; }
+    tt_type("hello");
+    let ev: tk_event;
+    tt_event(&ev);
+    if (ev.kind != TK_EV_CHANGE || ev.id != f || ev.value != 1) { return 4908; }
+    tt_drain();
+    if (tt_text_is(f, "hello") == 0) { return 4909; }
+    // Ctrl with a letter types nothing; it is the app's
+    tt_ctrl(113, 0);
+    tt_event(&ev);
+    if (ev.kind != TK_EV_KEY || tt_text_is(f, "hello") == 0) { return 4910; }
+    // two left, one more with Shift: the third letter, either way round
+    let a: u32 = 0;
+    let z: u32 = 0;
+    tt_press(KC_LEFT, 0); tt_press(KC_LEFT, 0); tt_press(KC_LEFT, KEYMOD_SHIFT);
+    tk_field_selection(&tt_ui, f, &a, &z);
+    if (a != 2 || z != 3) { return 4911; }
+    tt_type("X");
+    if (tt_text_is(f, "heXlo") == 0) { return 4912; }
+    tk_field_selection(&tt_ui, f, &a, &z);
+    if (a != 3 || z != 3) { return 4913; }
+    // Right with a selection goes to its end and drops it
+    tt_press(KC_LEFT, KEYMOD_SHIFT); tt_press(KC_LEFT, KEYMOD_SHIFT);
+    tt_press(KC_RIGHT, 0);
+    tk_field_selection(&tt_ui, f, &a, &z);
+    if (a != 3 || z != 3) { return 4914; }
+    // Home, Shift+End: all of it; Backspace takes the selection
+    tt_press(KC_HOME, 0); tt_press(KC_END, KEYMOD_SHIFT);
+    tk_field_selection(&tt_ui, f, &a, &z);
+    if (a != 0 || z != 5) { return 4915; }
+    tt_press(KC_BACKSPACE, 0);
+    if (tt_text_is(f, "") == 0) { return 4916; }
+    // Delete takes what is after the caret, Backspace what is before
+    tt_type("abc");
+    tt_press(KC_HOME, 0); tt_press(KC_DELETE, 0);
+    if (tt_text_is(f, "bc") == 0) { return 4917; }
+    tt_press(KC_END, 0); tt_press(KC_BACKSPACE, 0);
+    if (tt_text_is(f, "b") == 0) { return 4918; }
+    // a character of two bytes is one step and one deletion
+    let e2: [4]u8;
+    e2[0] = 0xC3; e2[1] = 0xA9; e2[2] = 120; e2[3] = 0;     // e acute, x
+    if (tk_set_field_text(&tt_ui, f, &e2[0]) != 0) { return 4919; }
+    tt_press(KC_HOME, 0); tt_press(KC_RIGHT, 0);
+    tk_field_selection(&tt_ui, f, &a, &z);
+    if (a != 2) { return 4920; }
+    tt_press(KC_BACKSPACE, 0);
+    if (tt_text_is(f, "x") == 0) { return 4921; }
+    // text that is not UTF-8 is refused
+    e2[0] = 0xC3; e2[1] = 0;
+    if (tk_set_field_text(&tt_ui, f, &e2[0]) != E_INVALID_ARGS) { return 4922; }
+    e2[0] = 0xED; e2[1] = 0xA0; e2[2] = 0x80; e2[3] = 0;   // a surrogate
+    if (tk_set_field_text(&tt_ui, f, &e2[0]) != E_INVALID_ARGS || tt_text_is(f, "x") == 0) { return 4923; }
+    // undo: a run of typing is one change, and redo puts it back
+    tt_press(KC_END, 0);
+    tt_type("yz");
+    tt_ctrl(122, 0);
+    if (tt_text_is(f, "x") == 0) { return 4924; }
+    tt_ctrl(122, KEYMOD_SHIFT);
+    if (tt_text_is(f, "xyz") == 0) { return 4925; }
+    // nothing asked of the clipboard yet: not even by Ctrl+A
+    tt_ctrl(97, 0);
+    if (tk_clip_take(&tt_ui) != TK_CLIP_NONE) { return 4926; }
+    tk_field_selection(&tt_ui, f, &a, &z);
+    if (a != 0 || z != 3) { return 4927; }
+    // copy asks to set it, with the selection
+    tt_ctrl(99, 0);
+    if (tk_clip_take(&tt_ui) != TK_CLIP_SET || tt_ui.clip_n != 3 || memeq(&tt_ui.clip[0], "xyz", 3) == 0) { return 4928; }
+    if (tk_clip_take(&tt_ui) != TK_CLIP_NONE) { return 4929; }          // asked once
+    // cut too, and takes it out (the y alone)
+    tt_press(KC_END, 0); tt_press(KC_LEFT, 0); tt_press(KC_LEFT, KEYMOD_SHIFT);
+    tt_ctrl(120, 0);
+    if (tk_clip_take(&tt_ui) != TK_CLIP_SET || tt_ui.clip_n != 1 || tt_ui.clip[0] != 121) { return 4930; }
+    if (tt_text_is(f, "xz") == 0) { return 4931; }
+    // with no selection, copy asks nothing
+    tt_ctrl(99, 0);
+    if (tk_clip_take(&tt_ui) != TK_CLIP_NONE) { return 4932; }
+    // paste only asks; what comes back goes in, tidied
+    tt_ctrl(118, 0);
+    if (tk_clip_take(&tt_ui) != TK_CLIP_GET || tt_text_is(f, "xz") == 0) { return 4933; }
+    let p: [8]u8;
+    p[0] = 65; p[1] = 9; p[2] = 66; p[3] = 1; p[4] = 0xFF; p[5] = 0xC3; p[6] = 0xA9; p[7] = 10;
+    if (tk_paste_text(&tt_ui, &p[0], 8) != 6) { return 4934; }
+    let want: [9]u8;
+    want[0] = 120; want[1] = 65; want[2] = 32; want[3] = 66; want[4] = 0xC3; want[5] = 0xA9;
+    want[6] = 32; want[7] = 122; want[8] = 0;
+    if (tt_bytes_are(f, &want[0], 8) == 0) { return 4935; }
+    // the limit: whole characters only
+    let full: [256]u8;
+    memset(&full[0], 97, 254);
+    full[254] = 0;
+    if (tk_set_field_text(&tt_ui, f, &full[0]) != 0) { return 4936; }
+    p[0] = 0xC3; p[1] = 0xA9;
+    if (tk_paste_text(&tt_ui, &p[0], 2) != 0) { return 4937; }        // one byte of room
+    tt_type("b");
+    tt_type("c");
+    tk_field_selection(&tt_ui, f, &a, &z);
+    if (a != 255 || strlen(tk_field_text(&tt_ui, f)) != 255) { return 4938; }
+    // the pointer: a click puts the caret between characters, a drag selects
+    tk_set_field_text(&tt_ui, f, "abcdef");
+    let fb: ds_rect;
+    tk_box_of(&tt_ui, f, &fb);
+    let tx: i32 = (fb.x + tk_dev(&tt_ui, TK_RING) + tk_dev(&tt_ui, TK_FIELD_PADX)) as i32;
+    let ty: i32 = (fb.y + fb.h / 2) as i32;
+    tk_pointer(&tt_ui, tx + 2 * 8 + 3, ty, 1);
+    tk_field_selection(&tt_ui, f, &a, &z);
+    if (a != 2 || z != 2) { return 4939; }
+    tk_pointer(&tt_ui, tx + 4 * 8 + 1, ty, 1);
+    tk_pointer(&tt_ui, tx + 4 * 8 + 1, ty, 0);
+    tk_field_selection(&tt_ui, f, &a, &z);
+    if (a != 2 || z != 4) { return 4940; }
+    // drawn: the selection in the accent, the rest in the text colour, the
+    // caret after the last character
+    let d: ds_damage;
+    tk_paint(&tt_ui, &d);
+    let gy: u32 = (fb.y + fb.h / 2) as u32;
+    if (ds_pixel(&tt_ui.canvas, (tx + 2 * 8 + 4) as u32, gy) != tt_ui.theme.on_accent) { return 4941; }
+    if (ds_pixel(&tt_ui.canvas, (tx + 1 * 8 + 4) as u32, gy) != tt_ui.theme.text) { return 4942; }
+    tt_press(KC_END, 0);
+    tk_paint(&tt_ui, &d);
+    if (ds_pixel(&tt_ui.canvas, (tx + 6 * 8) as u32, gy) != tt_ui.theme.text) { return 4943; }
+    if (ds_pixel(&tt_ui.canvas, (tx + 6 * 8 + 3) as u32, gy) != tt_ui.theme.raised) { return 4944; }
+    // so many fields and no more
+    let k: u32 = 1;
+    while (k < TK_FIELDS_MAX) { tk_add(&tt_ui, root, TK_TEXTFIELD, "more"); k = k + 1; }
+    if (tk_add(&tt_ui, root, TK_TEXTFIELD, "one too many") != 0) { return 4945; }
+    tk_free(&tt_ui);
+    return 0;
+}
+
+// The field's text against bytes: 1 if it is them.
+fn tt_dead_is(f: *u8, n: u32, id: u32) -> u32 { return tt_bytes_are(id, f, n); }
+
+// 5000: the dead-key method: each accent on each letter it goes on, capitals
+// too; Space or the same accent alone; Esc and Backspace drop it; a key that
+// is not a character gives the accent and goes on; Shift on its own changes
+// nothing; another accent waits in its place; a move of the focus drops it.
+fn tt_dead(arg: u64) -> i32 {
+    tk_init(&tt_ui, 4, 0 as *ds_font);
+    let root: u32 = tk_root(&tt_ui);
+    let f: u32 = tk_add(&tt_ui, root, TK_TEXTFIELD, "Name");
+    let g: u32 = tk_add(&tt_ui, root, TK_TEXTFIELD, "Other");
+    if (g == 0 || tt_show(4) != 0) { return 5000; }
+    tk_focus(&tt_ui, f);
+    // with no method an accent is itself at once
+    tt_type("'");
+    if (tt_text_is(f, "'") == 0) { return 5001; }
+    if (tk_set_im(&tt_ui, TK_IM_DEAD) != 0 || tk_set_im(&tt_ui, 7) != E_INVALID_ARGS) { return 5002; }
+    let w: [16]u8;
+    // the accent waits, and is shown at the caret
+    tk_set_field_text(&tt_ui, f, "");
+    tt_type("'");
+    if (tt_text_is(f, "") == 0 || tt_ui.field[0].dead != 39 || tk_field_caret_col(&tt_ui.field[0]) != 1) { return 5003; }
+    tt_type("e");
+    w[0] = 0xC3; w[1] = 0xA9;
+    if (tt_dead_is(&w[0], 2, f) == 0) { return 5004; }
+    // all five, and capitals
+    tk_set_field_text(&tt_ui, f, "");
+    tt_type("`a^o~n\"u'E\"y'c");
+    w[0] = 0xC3; w[1] = 0xA0;       // a grave
+    w[2] = 0xC3; w[3] = 0xB4;       // o circumflex
+    w[4] = 0xC3; w[5] = 0xB1;       // n tilde
+    w[6] = 0xC3; w[7] = 0xBC;       // u diaeresis
+    w[8] = 0xC3; w[9] = 0x89;       // E acute
+    w[10] = 0xC3; w[11] = 0xBF;     // y diaeresis
+    w[12] = 0xC3; w[13] = 0xA7;     // c cedilla
+    if (tt_dead_is(&w[0], 14, f) == 0) { return 5005; }
+    // Space, or the accent again: the accent; on what it does not go on:
+    // the accent, then that
+    tk_set_field_text(&tt_ui, f, "");
+    tt_type("' ''~e\"Y");
+    if (tt_text_is(f, "''~e\"Y") == 0) { return 5006; }
+    // Esc and Backspace drop it, and do nothing else
+    tt_type("'");
+    tt_press(KC_ESC, 0);
+    tt_type("'");
+    tt_press(KC_BACKSPACE, 0);
+    if (tt_text_is(f, "''~e\"Y") == 0 || tt_ui.field[0].dead != 0) { return 5007; }
+    // an arrow: the accent, and the caret moves on from after it
+    tk_set_field_text(&tt_ui, f, "ab");
+    tt_type("'");
+    tt_press(KC_LEFT, 0);
+    let a: u32 = 0;
+    let z: u32 = 0;
+    tk_field_selection(&tt_ui, f, &a, &z);
+    if (tt_text_is(f, "ab'") == 0 || z != 2) { return 5008; }
+    // Shift pressed on its own between them changes nothing
+    tk_set_field_text(&tt_ui, f, "");
+    tt_type("'");
+    tk_key(&tt_ui, KC_LSHIFT, 0, KEYMOD_SHIFT);
+    tk_key(&tt_ui, KC_E, 69, KEYMOD_SHIFT);
+    w[0] = 0xC3; w[1] = 0x89;
+    if (tt_dead_is(&w[0], 2, f) == 0) { return 5009; }
+    // another accent: the first, and the second waits
+    tk_set_field_text(&tt_ui, f, "");
+    tt_type("'`a");
+    w[0] = 39; w[1] = 0xC3; w[2] = 0xA0;
+    if (tt_dead_is(&w[0], 3, f) == 0) { return 5010; }
+    // with Ctrl: the accent, then the command
+    tk_set_field_text(&tt_ui, f, "");
+    tt_type("^");
+    tt_ctrl(97, 0);
+    let s: u32 = 0;
+    tk_field_selection(&tt_ui, f, &s, &z);
+    if (tt_text_is(f, "^") == 0 || s != 0 || z != 1) { return 5011; }
+    // the focus moves (not by a key, which would give the accent first):
+    // dropped, in neither field
+    tk_set_field_text(&tt_ui, f, "");
+    tt_type("'");
+    tk_focus(&tt_ui, g);
+    if (tk_focused(&tt_ui) != g || tt_text_is(f, "") == 0 || tt_ui.field[0].dead != 0) { return 5012; }
+    tt_type("u");
+    if (tt_text_is(g, "u") == 0) { return 5013; }
     tk_free(&tt_ui);
     return 0;
 }

@@ -74,13 +74,15 @@ static void ring_push(struct kinput *k, const struct input_event *e) {
     kobj_signal_locked(&k->hdr, SIGNAL_INPUT_READY);
 }
 
-int input_post_key(unsigned char c) {
+int input_post_key(uint32_t code, uint32_t mods, uint32_t ch) {
     uint32_t f = kwait_lock();
     struct kinput *k = holder;
     if (k) {
         struct input_event e = { 0 };
         e.kind = INPUT_EVENT_KEY;
-        e.code = c;
+        e.code = code;
+        e.mods = mods;
+        e.ch = ch;
         ring_push(k, &e);
     }
     kwait_unlock(f);

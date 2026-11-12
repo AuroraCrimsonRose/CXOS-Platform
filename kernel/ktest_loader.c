@@ -1197,7 +1197,7 @@ done:
  * own, kept by the runner, well inside it.
  */
 
-#define XT_MAX     64                 /* tests one run may name */
+#define XT_MAX     128                /* tests one run may name */
 #define XT_NAME    47                 /* bytes of a name kept (test.xfxn's TEST_NAME_MAX) */
 #define XT_LINE    160
 
@@ -1371,11 +1371,11 @@ int ktest_display_server(void) {
     /* Esc, and the windows have the keys again */
     keyboard_inject(27);
 
-    /* 3: a key and a click at the drivers' entry points, then Ctrl+Q */
+    /* 3: a key and a click at the drivers' entry points, then Ctrl+Alt+F2 */
     mouse_inject(1, 1, 1);
     mouse_inject(0, 0, 0);
     keyboard_inject('x');
-    keyboard_inject(17);
+    keyboard_inject_key(KC_F2, KEYMOD_CTRL | KEYMOD_ALT);
     step = 3; if (syscall_object_wait(ph, SIGNAL_PROCESS_ENDED, deadline, 0) != E_OK) goto done;
     /* 4: it ended as it was asked to */
     step = 4; if (spv_info(oi, ph, OBJINFO_PROCESS, pi, sizeof *pi) != (int)sizeof *pi

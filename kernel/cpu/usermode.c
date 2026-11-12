@@ -7031,12 +7031,38 @@ int usermode_input_handle_test(void) {
                   || syscall_dispatch(SYS_MOUSE_READ, 0, 0, 0, 0, 0) != E_BUSY) goto done;
     /* 5: nothing waits yet */
     step = 5; if (ih_ready(h) != E_TIMED_OUT || ih_events(h, 8) != 0) goto done;
-    /* 6: keys come to the handle, in order, and a code above 0x7F whole */
+    /* 6: keys come to the handle, in order, as the key and the character
+       apart (2.8a2): a has both, Up only a code */
     keyboard_inject('a');
     keyboard_inject(KEY_UP);
     step = 6; if (ih_ready(h) != E_OK || ih_events(h, 8) != 2
-                  || ev[0].kind != INPUT_EVENT_KEY || ev[0].code != 'a'
-                  || ev[1].kind != INPUT_EVENT_KEY || ev[1].code != KEY_UP) goto done;
+                  || ev[0].kind != INPUT_EVENT_KEY || ev[0].code != KC_A || ev[0].ch != 'a'
+                  || (ev[0].mods & (KEYMOD_HELD | KEYEV_RELEASE)) != 0
+                  || ev[1].kind != INPUT_EVENT_KEY || ev[1].code != KC_UP || ev[1].ch != 0) goto done;
+    /* 18: from the drivers' entry point, a press and a release each, the
+       modifiers their own events and in force for the key, Ctrl leaving the
+       letter as it is, and Ctrl+Alt+Del the combination, never a key */
+    keyboard_key(KC_LCTRL, 1);
+    keyboard_key(KC_S, 1);
+    keyboard_key(KC_S, 0);
+    keyboard_key(KC_LCTRL, 0);
+    step = 18; if (ih_events(h, 8) != 4
+                   || ev[0].code != KC_LCTRL || (ev[0].mods & KEYMOD_HELD) != KEYMOD_CTRL
+                   || ev[1].code != KC_S || ev[1].ch != 's' || (ev[1].mods & (KEYMOD_HELD | KEYEV_RELEASE)) != KEYMOD_CTRL
+                   || ev[2].code != KC_S || ev[2].ch != 0 || (ev[2].mods & KEYEV_RELEASE) == 0
+                   || ev[3].code != KC_LCTRL || (ev[3].mods & (KEYMOD_HELD | KEYEV_RELEASE)) != KEYEV_RELEASE) goto done;
+    keyboard_key(KC_LCTRL, 1);
+    keyboard_key(KC_LALT, 1);
+    keyboard_key(KC_DELETE, 1);
+    keyboard_key(KC_DELETE, 0);
+    keyboard_key(KC_LALT, 0);
+    keyboard_key(KC_LCTRL, 0);
+    step = 19;
+    {
+        int n = ih_events(h, 8);   /* the combination first, then the five keys around it */
+        if (n != 6 || ev[0].kind != INPUT_EVENT_ATTENTION) goto done;
+        for (int i = 1; i < n; i++) if (ev[i].kind != INPUT_EVENT_KEY || (ev[i].code == KC_DELETE && (ev[i].mods & KEYEV_RELEASE) == 0)) goto done;
+    }
     /* 7: the signal goes with the last event */
     step = 7; if (ih_ready(h) != E_TIMED_OUT || ih_events(h, 8) != 0) goto done;
     /* 8: movements with the same buttons are one event, where it ended up;
@@ -7056,14 +7082,14 @@ int usermode_input_handle_test(void) {
     step = 9; if (ih_events(h, 0) != E_INVALID_ARGS
                   || syscall_dispatch(SYS_INPUT_EVENTS, (uint32_t)h, 0xC0001000u, 1, 0, 0) != E_BAD_ADDRESS
                   || syscall_dispatch(SYS_INPUT_EVENTS, 0x7FFFFF00u, IH_EV, 1, 0, 0) != E_BAD_HANDLE
-                  || ih_events(h, 1) != 1 || ev[0].code != 'b') goto done;
+                  || ih_events(h, 1) != 1 || ev[0].ch != 'b') goto done;
     /* 10: at most INPUT_EVENTS_MAX in one call, and a full ring keeps the oldest */
     for (uint32_t i = 0; i < 200; i++) keyboard_inject((unsigned char)(0x20 + (i & 0x3F)));
     uint32_t taken = 0;
     step = 10;
     {
         int n = ih_events(h, 1000);
-        if (n != (int)INPUT_EVENTS_MAX || ev[0].code != 0x20) goto done;
+        if (n != (int)INPUT_EVENTS_MAX || ev[0].ch != 0x20) goto done;
         taken = (uint32_t)n;
         while ((n = ih_events(h, 8)) > 0) taken += (uint32_t)n;
         if (taken != 128) goto done;

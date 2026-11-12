@@ -31,6 +31,8 @@ const DS_OP_LAYER_SET: u32 = 6;    // win, layer, props
 const DS_OP_LAYER_FREE: u32 = 7;   // win, layer
 const DS_OP_CONSENT: u32 = 8;      // flags: the WM_CAP_ asked for; answered once the user has
 const DS_OP_CAPTURE: u32 = 9;      // handle: memory for width x height x 4 of the screen
+const DS_OP_CLIP_SET: u32 = 10;    // w: bytes; handle: memory holding them (WM_CLIP_MAX)
+const DS_OP_CLIP_GET: u32 = 11;    // handle: memory for WM_CLIP_MAX; -> the bytes
 
 const DS_RECTS_MAX: u32 = 4;
 
@@ -118,6 +120,21 @@ fn win_capture(w: *win, mem: i32) -> i32 {
     let rep: ds_rep;
     memzero((&req) as *u8, sizeof req);
     req.op = DS_OP_CAPTURE;
+    let h: ipc_handle;
+    h.handle = mem; h.op = IPC_HANDLE_COPY; h.rights = HRIGHT_MAP | HRIGHT_MAP_WRITE | HRIGHT_INSPECT; h.reserved = 0;
+    return win_call(w, &req, &rep, &h, 1);
+}
+
+// The clipboard, through a page of this program's (mem, WM_CLIP_MAX bytes,
+// made once by the caller). A copy of n bytes already in it: 0 or an error.
+// A paste into it: the bytes, or an error; E_ACCESS_DENIED unless this
+// window has the focus and a press was just taken (wm_clip_get).
+fn win_clip(w: *win, op: u32, mem: i32, n: u32) -> i32 {
+    let req: ds_req;
+    let rep: ds_rep;
+    memzero((&req) as *u8, sizeof req);
+    req.op = op;
+    req.w = n;
     let h: ipc_handle;
     h.handle = mem; h.op = IPC_HANDLE_COPY; h.rights = HRIGHT_MAP | HRIGHT_MAP_WRITE | HRIGHT_INSPECT; h.reserved = 0;
     return win_call(w, &req, &rep, &h, 1);

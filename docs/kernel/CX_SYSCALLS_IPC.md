@@ -853,6 +853,15 @@ operations leave it.
   takes up to `INPUT_EVENTS_MAX`, 0 if none; `SIGNAL_INPUT_READY` says there
   are some. While it is held `SYS_INPUT_READ`, `SYS_INPUT_POLL` and
   `SYS_MOUSE_READ` return `E_BUSY`.
+- **Key events with codes** (`CXK_ABI_VERSION` 41, step 2.8a2): an
+  `INPUT_EVENT_KEY` is a press or a release: `code` a USB HID usage
+  (`KC_*`), `ch` the code point it types under the kernel's US layout or 0,
+  `mods` the `KEYMOD_*` held and locked with `KEYEV_RELEASE` or
+  `KEYEV_REPEAT`. `input_event` is `{kind, code, x, y, buttons, mods, ch,
+  reserved}`, 32 bytes. Ctrl+Alt+Delete is the attention and no event.
+  With the handle not held, presses still reach `SYS_INPUT_READ` as one
+  byte each, as before (the console's codes). Why, and what Serenity does:
+  `system/CX_TOOLKIT.md` §7.
 - **The screen's mode** (`CXK_ABI_VERSION` 37, step 2.7a): `SYS_SCREEN_MODE`
   (0xF6, `h, *screen_info`) is how a display driver in a process says it has
   set another mode. `h` is a device handle with `HRIGHT_BAR` whose device has

@@ -30,7 +30,7 @@ fn _start() -> void {
         tk_win_next(&ga_win, &ev);
         if (ev.kind == TK_EV_CLOSE) { tk_win_close(&ga_win); exit(0); }
         if (ev.kind == TK_EV_GONE) { exit(5); }
-        if (ev.kind == TK_EV_KEY && gp_key(&ga_ui, ev.code) == 1) {
+        if (ev.kind == TK_EV_COMMAND && gp_command(&ga_ui, ev.value as u32) == 1) {
             if (tk_win_reopen(&ga_win, ep, "Widget gallery", 0) != 0) { exit(6); }
         }
     }

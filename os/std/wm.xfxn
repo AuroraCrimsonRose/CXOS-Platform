@@ -40,14 +40,29 @@ const WM_EDGE: u32 = 2;
 const WM_CLOSE_W: u32 = 16;
 const WM_HANG_MS: u64 = 2000;       // events unread this long: not answering
 
-// Keys the server keeps for itself, which no client sees: Ctrl+Q ends the
-// session, Ctrl+N is the next window, for a machine with no pointer.
-const WM_KEY_QUIT: u32 = 17;
-const WM_KEY_NEXT: u32 = 14;
-const WM_KEY_MINIMISE: u32 = 2;     // Ctrl+B; Ctrl+N brings it back
-const WM_KEY_WORKSPACE: u32 = 23;   // Ctrl+W: the next workspace
-const WM_KEY_SEND: u32 = 5;         // Ctrl+E: this window to the next workspace
-const WM_KEY_MOTION: u32 = 18;      // Ctrl+R: reduce motion, on and off
+// Keys the server keeps for itself, which no client sees (roadmap Phase 2
+// item 8, Keybinds: Ctrl is the apps', Super the system's). Matched on the
+// key and the held modifiers, never on the character, so they work in every
+// layout. Super with anything, Super alone, Alt+Tab and Alt+F4 never reach a
+// client, bound or not, press and release alike; nor do the fixed three:
+// Ctrl+Alt+Del (the trusted screen, INPUT_EVENT_ATTENTION from the kernel),
+// Ctrl+Alt+F2 (the console: the session ends and the shell has the keyboard)
+// and Super+Ctrl+Enter (the screen reader; there is none yet, so it is
+// counted in reader_asked).
+const WM_KEY_NEXT: u32 = 0x2B;      // Alt+Tab (KC_TAB): the next window, for a machine with no pointer
+const WM_KEY_CLOSE: u32 = 0x3D;     // Alt+F4 (KC_F4): ask the focused window to close
+const WM_KEY_CONSOLE: u32 = 0x3B;   // Ctrl+Alt+F2 (KC_F2)
+const WM_KEY_MINIMISE: u32 = 0x05;  // Super+B (KC_B); Alt+Tab brings it back
+const WM_KEY_WORKSPACE: u32 = 0x1A; // Super+W: the next workspace
+const WM_KEY_SEND: u32 = 0x08;      // Super+E: this window to the next workspace
+const WM_KEY_MOTION: u32 = 0x15;    // Super+R: reduce motion, on and off
+
+// The clipboard (roadmap goal 7): text, held by the server. Written by the
+// focused window's client, and read by it only within WM_GESTURE_MS of its
+// taking a press of a key or a button from its queue (the user's paste is
+// such a press, whatever key it is bound to), once per press.
+const WM_CLIP_MAX: u32 = 4096;
+const WM_GESTURE_MS: u64 = 1000;
 
 const WM_WORKSPACES: u32 = 4;
 const WM_OPEN_SCALE: i32 = 920;     // thousandths: where a window grows from
@@ -108,7 +123,6 @@ const WM_CAPTURE_SHOW_MS: u64 = 2000;   // the mark stays this long after a capt
 const WM_MARK_SIZE: u32 = 12;
 const WM_COL_MARK: u32 = 0xFFE02020;
 
-const WM_KEY_ESC: u32 = 27;
 
 const WM_SIGNER_LEN: u32 = 24;
 const WM_COL_SIGNER_SYSTEM: u32 = 0xFFA0E8A0;
@@ -121,7 +135,7 @@ const WM_COL_CLOSE: u32 = 0xFFB83A3A;
 const WM_COL_TEXT: u32 = 0xFFFFFFFF;
 
 // What a client is told (std/window.xfxn carries it).
-const WM_EV_KEY: u32 = 1;           // a: the key
+const WM_EV_KEY: u32 = 1;           // a: the key (KC_*), b: the character or 0, c: KEYMOD_* | KEYEV_*
 const WM_EV_POINTER: u32 = 2;       // a, b: in the window; c: buttons
 const WM_EV_FOCUS: u32 = 3;         // a: 1 gained, 0 lost
 const WM_EV_CLOSE: u32 = 4;         // its close box was pressed
@@ -153,6 +167,9 @@ struct wm_client {
     ask_status: i32,
     signer: [24]u8,     // WM_SIGNER_LEN; as the kernel verified it, never the client's word
     signer_col: u32,
+    gesture: u32,       // a press taken and not yet spent on a clipboard read
+    gesture_at: u64,    // when it was taken
+    taken_buttons: u32, // the buttons in the last pointer event it took
     ring: [32]wm_event  // WM_RING
 }
 
@@ -212,7 +229,10 @@ struct wm {
     buttons: u32,
     cursor_layer: u32,
     quit: u32,
+    reader_asked: u32,  // Super+Ctrl+Enter, pressed this many times
     reduce: u32,        // reduce motion, for everybody
+    clip: [4096]u8,     // WM_CLIP_MAX
+    clip_n: u32,
     ws: u32,            // the workspace on the screen
     ws_pos: ds_spring,  // where the view is, in pixels across the workspaces
     sc: scene,
@@ -390,7 +410,47 @@ fn wm_take(w: *wm, c: u32, ev: *wm_event) -> u32 {
     cl.head = (cl.head + 1) % WM_RING;
     cl.n = cl.n - 1;
     cl.since = w.now;
+    // a press it has now been handed: what lets it read the clipboard
+    let press: u32 = 0;
+    if (ev.kind == WM_EV_KEY && ((ev.c as u32) & (KEYEV_RELEASE | KEYEV_REPEAT)) == 0) { press = 1; }
+    if (ev.kind == WM_EV_POINTER) {
+        if (((ev.c as u32) & ~cl.taken_buttons) != 0) { press = 1; }    // a button went down, not one held
+        cl.taken_buttons = ev.c as u32;
+    }
+    if (press == 1) { cl.gesture = 1; cl.gesture_at = w.now; }
     return 1;
+}
+
+// ---- the clipboard ----
+
+// The focused window's client, or WM_NONE.
+fn wm_focus_client(w: *wm) -> u32 {
+    if (w.focus == WM_NONE || w.ts != WM_TS_NONE) { return WM_NONE; }
+    return w.win[w.focus].client;
+}
+
+fn wm_gesture_live(w: *wm, c: u32) -> u32 {
+    let cl: *wm_client = &w.client[c];
+    if (cl.gesture == 0 || w.now - cl.gesture_at > WM_GESTURE_MS) { return 0; }
+    return 1;
+}
+
+// Client c copies n bytes: 0 or an error.
+fn wm_clip_set(w: *wm, c: u32, p: *u8, n: u32) -> i32 {
+    if (n > WM_CLIP_MAX) { return E_INVALID_ARGS; }
+    if (wm_focus_client(w) != c || wm_gesture_live(w, c) == 0) { return E_ACCESS_DENIED; }
+    memcpy(&w.clip[0], p, n);
+    w.clip_n = n;
+    return 0;
+}
+
+// Client c pastes into out (room for WM_CLIP_MAX): the bytes, or an error.
+// Spends the press: one paste per press.
+fn wm_clip_get(w: *wm, c: u32, out: *u8) -> i32 {
+    if (wm_focus_client(w) != c || wm_gesture_live(w, c) == 0) { return E_ACCESS_DENIED; }
+    w.client[c].gesture = 0;
+    memcpy(out, &w.clip[0], w.clip_n);
+    return w.clip_n as i32;
 }
 
 // ---- focus ----
@@ -418,16 +478,66 @@ fn wm_request_close(w: *wm, i: u32) -> void {
 
 // ---- input ----
 
-fn wm_key(w: *wm, code: u32) -> void {
-    if (w.ts != WM_TS_NONE) { wm_ts_key(w, code); return; }
-    if (code == WM_KEY_QUIT) { w.quit = 1; return; }
-    if (code == WM_KEY_NEXT) { wm_next(w); return; }
-    if (code == WM_KEY_MOTION) { w.reduce = 1 - w.reduce; return; }
-    if (code == WM_KEY_WORKSPACE) { wm_workspace(w, (w.ws + 1) % WM_WORKSPACES); return; }
+// A key that is the system's: 1, and it is done (on a press); 0 for a client.
+fn wm_system_key(w: *wm, code: u32, mods: u32) -> u32 {
+    let held: u32 = mods & KEYMOD_HELD;
+    let press: u32 = 0;
+    if ((mods & (KEYEV_RELEASE | KEYEV_REPEAT)) == 0) { press = 1; }
+    if (code == KC_LSUPER || code == KC_RSUPER) { return 1; }  // the launcher's, from 2.8c
+    if (held == (KEYMOD_CTRL | KEYMOD_ALT) && code == WM_KEY_CONSOLE) {
+        if (press == 1) { w.quit = 1; }
+        return 1;
+    }
+    if (held == (KEYMOD_SUPER | KEYMOD_CTRL) && (code == KC_ENTER || code == KC_KP_ENTER)) {
+        if (press == 1) { w.reader_asked = w.reader_asked + 1; }
+        return 1;
+    }
+    if ((held & KEYMOD_SUPER) != 0) {
+        if (press == 0 || held != KEYMOD_SUPER) { return 1; }
+        if (code == WM_KEY_MOTION) { w.reduce = 1 - w.reduce; }
+        if (code == WM_KEY_WORKSPACE) { wm_workspace(w, (w.ws + 1) % WM_WORKSPACES); }
+        if (w.focus != WM_NONE && code == WM_KEY_MINIMISE) { wm_minimise(w, w.focus); }
+        if (w.focus != WM_NONE && code == WM_KEY_SEND) { wm_send(w, w.focus); }
+        return 1;
+    }
+    if ((held & ~KEYMOD_SHIFT) == KEYMOD_ALT && code == WM_KEY_NEXT) {
+        if ((mods & KEYEV_RELEASE) == 0) { wm_next(w); }  // held, it goes on round
+        return 1;
+    }
+    if (held == KEYMOD_ALT && code == WM_KEY_CLOSE) {
+        if (press == 1 && w.focus != WM_NONE) { wm_request_close(w, w.focus); }
+        return 1;
+    }
+    return 0;
+}
+
+// A key from the keyboard: code KC_*, ch the character or 0, mods KEYMOD_* |
+// KEYEV_*, as SYS_INPUT_EVENTS gives them.
+fn wm_key(w: *wm, code: u32, ch: u32, mods: u32) -> void {
+    if (w.ts != WM_TS_NONE) {
+        // the system's screen takes presses only, and does nothing else meanwhile
+        if ((mods & (KEYEV_RELEASE | KEYEV_REPEAT)) == 0 && (mods & KEYMOD_HELD & ~KEYMOD_SHIFT) == 0) { wm_ts_key(w, code); }
+        return;
+    }
+    if (wm_system_key(w, code, mods) == 1) { return; }
     if (w.focus == WM_NONE) { return; }
-    if (code == WM_KEY_MINIMISE) { wm_minimise(w, w.focus); return; }
-    if (code == WM_KEY_SEND) { wm_send(w, w.focus); return; }
-    wm_push(w, w.win[w.focus].client, WM_EV_KEY, w.focus, code as i32, 0, 0);
+    wm_push(w, w.win[w.focus].client, WM_EV_KEY, w.focus, code as i32, ch as i32, mods as i32);
+}
+
+// For tests and the virtual screen: a press of the key that types ch on a US
+// keyboard (a letter, a digit, Enter as 13, Esc as 27), with these mods.
+fn wm_press(w: *wm, ch: u32, mods: u32) -> void {
+    let code: u32 = 0;
+    let c: u32 = ch;
+    if (ch >= 97 && ch <= 122) { code = KC_A + (ch - 97); }
+    else if (ch >= 65 && ch <= 90) { code = KC_A + (ch - 65); }
+    else if (ch >= 49 && ch <= 57) { code = KC_1 + (ch - 49); }
+    else if (ch == 48) { code = KC_0; }
+    else if (ch == 32) { code = KC_SPACE; }
+    else if (ch == 13 || ch == 10) { code = KC_ENTER; c = 0; }
+    else if (ch == 27) { code = KC_ESC; c = 0; }
+    else if (ch == 9) { code = KC_TAB; c = 0; }
+    wm_key(w, code, c, mods);
 }
 
 const WM_ZONE_NONE: u32 = 0;
@@ -895,13 +1005,13 @@ fn wm_ts_answer(w: *wm, allow: u32) -> void {
 fn wm_ts_key(w: *wm, code: u32) -> void {
     if (w.ts == WM_TS_CONSENT) {
         if (w.ts_armed == 0) { return; }
-        if (code == 121 || code == 89) { wm_ts_answer(w, 1); }
-        else if (code == 110 || code == 78 || code == WM_KEY_ESC) { wm_ts_answer(w, 0); }
+        if (code == KC_Y) { wm_ts_answer(w, 1); }
+        else if (code == KC_N || code == KC_ESC) { wm_ts_answer(w, 0); }
         return;
     }
-    if (code == WM_KEY_ESC) { wm_ts_next(w); return; }
-    if (code >= 49 && code <= 57) {
-        let c: u32 = wm_ts_nth(w, code - 49);
+    if (code == KC_ESC) { wm_ts_next(w); return; }
+    if (code >= KC_1 && code <= KC_9) {
+        let c: u32 = wm_ts_nth(w, code - KC_1);
         if (c != WM_NONE) { w.client[c].kill = 1; }
     }
 }

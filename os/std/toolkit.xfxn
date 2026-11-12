@@ -42,8 +42,10 @@ const TK_BUTTON: u32 = 12;          // first of the ones that take input
 const TK_CHECK: u32 = 13;
 const TK_RADIO: u32 = 14;           // group: which radios are exclusive
 const TK_SWITCH: u32 = 15;
-const TK_SLIDER: u32 = 16;          // last of the ones that take input
+const TK_SLIDER: u32 = 16;          // last of the run of ones that take input
 const TK_PROGRESS: u32 = 17;
+const TK_TEXTFIELD: u32 = 18;       // one line of text (2.8a2); takes input too
+const TK_KIND_LAST: u32 = 18;
 
 // ---- flags ----
 
@@ -59,7 +61,8 @@ const TK_F_FILL: u32 = 256;         // stretched across its parent's axis
 const TK_F_DEFAULT: u32 = 512;      // the button Enter presses
 const TK_F_MUTED: u32 = 1024;       // secondary text
 const TK_F_SHOW_RING: u32 = 2048;   // drawn as if focused (a gallery's state)
-const TK_F_APP: u32 = 4031;         // what tk_set_flags may change: all but FOCUS
+const TK_F_CANCEL: u32 = 4096;      // the button Esc presses
+const TK_F_APP: u32 = 8127;         // what tk_set_flags may change: all but FOCUS
 const TK_F_LAYOUT: u32 = 385;       // HIDDEN | GROW | FILL: a change lays out again
 const TK_F_USED: u32 = 0x80000000;
 
@@ -74,28 +77,44 @@ const TK_ROLE_RADIO: u32 = 6;
 const TK_ROLE_SWITCH: u32 = 7;
 const TK_ROLE_SLIDER: u32 = 8;
 const TK_ROLE_PROGRESS: u32 = 9;
+const TK_ROLE_TEXTFIELD: u32 = 10;
 
 // ---- what the app is told ----
 
 const TK_EV_NONE: u32 = 0;
 const TK_EV_ACTIVATE: u32 = 1;      // id: a button was pressed
 const TK_EV_CHANGE: u32 = 2;        // id, value: a check, radio, switch or slider changed
-const TK_EV_KEY: u32 = 3;           // code: a key no widget took
+const TK_EV_KEY: u32 = 3;           // code, ch, mods: a press no widget or command took
 const TK_EV_CLOSE: u32 = 4;         // the window's close box (toolkit_window.xfxn)
 const TK_EV_GONE: u32 = 5;          // value: the server has gone, or a commit failed
+const TK_EV_COMMAND: u32 = 6;       // value: a command ran (id: the widget, or 0 for a key)
 
-// ---- keys, as WM_EV_KEY gives them today (one code per press) ----
+// ---- keys: codes are KC_* (USB usages), mods KEYMOD_* | KEYEV_*, from
+// the ABI (2.8a2); a key is a press or a release with its character ----
 
-const TK_KEY_TAB: u32 = 9;
-const TK_KEY_ENTER: u32 = 13;
-const TK_KEY_NL: u32 = 10;
-const TK_KEY_SPACE: u32 = 32;
-const TK_KEY_UP: u32 = 0x80;
-const TK_KEY_DOWN: u32 = 0x81;
-const TK_KEY_LEFT: u32 = 0x82;
-const TK_KEY_RIGHT: u32 = 0x83;
-const TK_KEY_HOME: u32 = 0x88;
-const TK_KEY_END: u32 = 0x89;
+const TK_MODS_CAS: u32 = 14;        // KEYMOD_CTRL | KEYMOD_ALT | KEYMOD_SUPER
+
+// ---- commands: a name, and a key that runs it (CX_TOOLKIT.md §7) ----
+
+const TK_CMDS_MAX: u32 = 64;
+const TK_CMD_COPY: u32 = 1;         // the toolkit's own, made by tk_reset
+const TK_CMD_CUT: u32 = 2;
+const TK_CMD_PASTE: u32 = 3;
+const TK_CMD_SELECT_ALL: u32 = 4;
+const TK_CMD_UNDO: u32 = 5;
+const TK_CMD_REDO: u32 = 6;
+
+// ---- text fields, the clipboard, input methods ----
+
+const TK_FIELDS_MAX: u32 = 8;
+const TK_FIELD_BYTES: u32 = 255;    // UTF-8, without its terminator
+const TK_FIELD_W: i32 = 200;
+const TK_FIELD_PADX: i32 = 6;
+const TK_CLIP_NONE: u32 = 0;
+const TK_CLIP_SET: u32 = 1;         // copy ui.clip[0, clip_n) to the clipboard
+const TK_CLIP_GET: u32 = 2;         // a paste: give what is there to tk_paste_text
+const TK_IM_NONE: u32 = 0;          // keys are their characters
+const TK_IM_DEAD: u32 = 1;          // ' ` ^ ~ " wait for the letter they go on
 
 // ---- the design system, in logical units ----
 
@@ -185,14 +204,41 @@ struct tk_node {
     dx: u32,            // its box in device pixels, each edge rounded on its own
     dy: u32,
     dw: u32,
-    dh: u32
+    dh: u32,
+    cmd: u32,           // the command it runs when pressed, or 0
+    field: u32          // text fields: its slot in ui.field
 }
 
 struct tk_event {
     kind: u32,
     id: u32,
     value: i32,
-    code: u32
+    code: u32,
+    ch: u32,            // TK_EV_KEY: the character, or 0
+    mods: u32           // TK_EV_KEY: KEYMOD_*
+}
+
+struct tk_cmd {
+    name: u32,          // its offset in the arena
+    key: u32,           // KC_*, or 0 for none
+    mods: u32           // what must be held with it: exactly these
+}
+
+// A line of text. Offsets are bytes, always on a character's first byte.
+struct tk_field {
+    node: u32,
+    len: u32,
+    caret: u32,
+    anchor: u32,        // the selection is anchor to caret, either way round
+    scroll: u32,        // the first character shown
+    buf: [256]u8,       // TK_FIELD_BYTES + 1
+    undo: [256]u8,      // what it was before the last change
+    undo_len: u32,
+    undo_caret: u32,
+    has_undo: u32,
+    redo: u32,          // undo was the last thing done: undo again swaps back
+    typing: u32,        // the last change was a typed character (they are one)
+    dead: u32           // TK_IM_DEAD: the accent waiting, or 0
 }
 
 struct tk_ui {
@@ -218,7 +264,15 @@ struct tk_ui {
     arena_used: u32,
     ev: [32]tk_event,       // TK_EVENTS_MAX
     ev_head: u32,
-    ev_n: u32
+    ev_n: u32,
+    cmd: [64]tk_cmd,        // TK_CMDS_MAX; command n is cmd[n - 1]
+    cmd_n: u32,
+    field: [8]tk_field,     // TK_FIELDS_MAX
+    field_n: u32,
+    im: u32,                // TK_IM_*
+    clip_want: u32,         // TK_CLIP_*: for whoever has the window
+    clip: [256]u8,
+    clip_n: u32
 }
 
 // ---- units ----
@@ -265,6 +319,7 @@ fn tk_node_new(ui: *tk_ui, kind: u32) -> u32 {
     n.kind = kind;
     n.parent = TK_NONE; n.first = TK_NONE; n.last = TK_NONE; n.next = TK_NONE;
     n.text = TK_NONE;
+    n.field = TK_NONE;
     n.vmax = 100;
     n.step = 1;
     return i;
@@ -278,8 +333,18 @@ fn tk_reset(ui: *tk_ui) -> void {
     ui.arena_used = 0;
     ui.focus = TK_NONE; ui.hover = TK_NONE; ui.capture = TK_NONE;
     ui.ev_head = 0; ui.ev_n = 0;
+    ui.field_n = 0;
+    ui.clip_want = TK_CLIP_NONE; ui.clip_n = 0;
     ui.root = tk_node_new(ui, TK_COLUMN);
     ui.relayout = 1;
+    // the standard commands, numbered TK_CMD_*, on the keys every app has
+    ui.cmd_n = 0;
+    tk_command(ui, "copy", KC_C, KEYMOD_CTRL);
+    tk_command(ui, "cut", KC_X, KEYMOD_CTRL);
+    tk_command(ui, "paste", KC_V, KEYMOD_CTRL);
+    tk_command(ui, "select-all", KC_A, KEYMOD_CTRL);
+    tk_command(ui, "undo", KC_Z, KEYMOD_CTRL);
+    tk_command(ui, "redo", KC_Z, KEYMOD_CTRL | KEYMOD_SHIFT);
 }
 
 // A ui at `scale` quarters with this font (0 for none). No canvas yet: give
@@ -324,7 +389,7 @@ fn tk_is_container(kind: u32) -> u32 {
 }
 
 fn tk_takes_input(kind: u32) -> u32 {
-    if (kind >= TK_BUTTON && kind <= TK_SLIDER) { return 1; }
+    if ((kind >= TK_BUTTON && kind <= TK_SLIDER) || kind == TK_TEXTFIELD) { return 1; }
     return 0;
 }
 
@@ -345,7 +410,8 @@ fn tk_store(ui: *tk_ui, text: *u8) -> u32 {
 fn tk_add(ui: *tk_ui, parent: u32, kind: u32, text: *u8) -> u32 {
     let p: u32 = tk_index(ui, parent);
     if (p == TK_NONE || tk_is_container(ui.node[p].kind) == 0) { return 0; }
-    if (kind < TK_COLUMN || kind > TK_PROGRESS || (kind > TK_STACK && kind < TK_LABEL)) { return 0; }
+    if (kind < TK_COLUMN || kind > TK_KIND_LAST || (kind > TK_STACK && kind < TK_LABEL)) { return 0; }
+    if (kind == TK_TEXTFIELD && ui.field_n >= TK_FIELDS_MAX) { return 0; }
     let at: u32 = TK_NONE;
     if (text != (0 as *u8)) {
         at = tk_store(ui, text);
@@ -354,6 +420,14 @@ fn tk_add(ui: *tk_ui, parent: u32, kind: u32, text: *u8) -> u32 {
     let i: u32 = tk_node_new(ui, kind);
     if (i == TK_NONE) { return 0; }
     ui.node[i].text = at;
+    if (kind == TK_TEXTFIELD) {
+        // its text starts empty; the node's text is its name, not shown
+        let f: *tk_field = &ui.field[ui.field_n];
+        memzero(f as *u8, sizeof *f);
+        f.node = i;
+        ui.node[i].field = ui.field_n;
+        ui.field_n = ui.field_n + 1;
+    }
     ui.node[i].parent = p;
     if (ui.node[p].last == TK_NONE) { ui.node[p].first = i; }
     else { ui.node[ui.node[p].last].next = i; }
@@ -506,6 +580,7 @@ fn tk_role(ui: *tk_ui, id: u32) -> u32 {
     if (k == TK_RADIO) { return TK_ROLE_RADIO; }
     if (k == TK_SWITCH) { return TK_ROLE_SWITCH; }
     if (k == TK_SLIDER) { return TK_ROLE_SLIDER; }
+    if (k == TK_TEXTFIELD) { return TK_ROLE_TEXTFIELD; }
     return TK_ROLE_PROGRESS;
 }
 
@@ -524,6 +599,8 @@ fn tk_push(ui: *tk_ui, kind: u32, i: u32, value: i32, code: u32) -> void {
     ui.ev[at].id = tk_id(ui, i);
     ui.ev[at].value = value;
     ui.ev[at].code = code;
+    ui.ev[at].ch = 0;
+    ui.ev[at].mods = 0;
     ui.ev_n = ui.ev_n + 1;
 }
 
@@ -534,6 +611,102 @@ fn tk_next(ui: *tk_ui, ev: *tk_event) -> u32 {
     ui.ev_head = (ui.ev_head + 1) % TK_EVENTS_MAX;
     ui.ev_n = ui.ev_n - 1;
     return 1;
+}
+
+// ---- UTF-8 (text is UTF-8; the bitmap font is code page 437) ----
+
+// The character at s[at] of n bytes: its length (1 to 4) and *cp, or 0 if
+// the bytes there are not UTF-8 (overlong, a surrogate, past U+10FFFF, cut).
+fn tk_utf8_at(s: *u8, n: u32, at: u32, cp: *u32) -> u32 {
+    if (at >= n) { return 0; }
+    let b: u32 = s[at] as u32;
+    if (b < 0x80) { *cp = b; return 1; }
+    let len: u32 = 0;
+    let v: u32 = 0;
+    let lo: u32 = 0x80;     // the second byte's range, for the special leads
+    let hi: u32 = 0xBF;
+    if (b >= 0xC2 && b <= 0xDF) { len = 2; v = b & 0x1F; }
+    else if (b >= 0xE0 && b <= 0xEF) {
+        len = 3; v = b & 0x0F;
+        if (b == 0xE0) { lo = 0xA0; }
+        if (b == 0xED) { hi = 0x9F; }
+    }
+    else if (b >= 0xF0 && b <= 0xF4) {
+        len = 4; v = b & 0x07;
+        if (b == 0xF0) { lo = 0x90; }
+        if (b == 0xF4) { hi = 0x8F; }
+    }
+    else { return 0; }
+    if (at + len > n) { return 0; }
+    let k: u32 = 1;
+    while (k < len) {
+        let c: u32 = s[at + k] as u32;
+        if (k == 1 && (c < lo || c > hi)) { return 0; }
+        if (c < 0x80 || c > 0xBF) { return 0; }
+        v = (v << 6) | (c & 0x3F);
+        k = k + 1;
+    }
+    *cp = v;
+    return len;
+}
+
+// cp as UTF-8 into out (room for 4): its length.
+fn tk_utf8_put(cp: u32, out: *u8) -> u32 {
+    if (cp < 0x80) { out[0] = cp as u8; return 1; }
+    if (cp < 0x800) {
+        out[0] = (0xC0 | (cp >> 6)) as u8;
+        out[1] = (0x80 | (cp & 0x3F)) as u8;
+        return 2;
+    }
+    if (cp < 0x10000) {
+        out[0] = (0xE0 | (cp >> 12)) as u8;
+        out[1] = (0x80 | ((cp >> 6) & 0x3F)) as u8;
+        out[2] = (0x80 | (cp & 0x3F)) as u8;
+        return 3;
+    }
+    out[0] = (0xF0 | (cp >> 18)) as u8;
+    out[1] = (0x80 | ((cp >> 12) & 0x3F)) as u8;
+    out[2] = (0x80 | ((cp >> 6) & 0x3F)) as u8;
+    out[3] = (0x80 | (cp & 0x3F)) as u8;
+    return 4;
+}
+
+// How many characters n bytes are: a byte that is not UTF-8 is one.
+fn tk_utf8_count(s: *u8, n: u32) -> u32 {
+    let at: u32 = 0;
+    let count: u32 = 0;
+    while (at < n) {
+        let cp: u32 = 0;
+        let l: u32 = tk_utf8_at(s, n, at, &cp);
+        if (l == 0) { l = 1; }
+        at = at + l;
+        count = count + 1;
+    }
+    return count;
+}
+
+// The glyph for a character: ASCII is itself, the Latin-1 letters code page
+// 437 has are theirs, anything else is '?'.
+fn tk_cp437(cp: u32) -> u32 {
+    if (cp < 0x80) { return cp; }
+    if (cp == 0xC7) { return 0x80; }   if (cp == 0xFC) { return 0x81; }
+    if (cp == 0xE9) { return 0x82; }   if (cp == 0xE2) { return 0x83; }
+    if (cp == 0xE4) { return 0x84; }   if (cp == 0xE0) { return 0x85; }
+    if (cp == 0xE5) { return 0x86; }   if (cp == 0xE7) { return 0x87; }
+    if (cp == 0xEA) { return 0x88; }   if (cp == 0xEB) { return 0x89; }
+    if (cp == 0xE8) { return 0x8A; }   if (cp == 0xEF) { return 0x8B; }
+    if (cp == 0xEE) { return 0x8C; }   if (cp == 0xEC) { return 0x8D; }
+    if (cp == 0xC4) { return 0x8E; }   if (cp == 0xC5) { return 0x8F; }
+    if (cp == 0xC9) { return 0x90; }   if (cp == 0xE6) { return 0x91; }
+    if (cp == 0xC6) { return 0x92; }   if (cp == 0xF4) { return 0x93; }
+    if (cp == 0xF6) { return 0x94; }   if (cp == 0xF2) { return 0x95; }
+    if (cp == 0xFB) { return 0x96; }   if (cp == 0xF9) { return 0x97; }
+    if (cp == 0xFF) { return 0x98; }   if (cp == 0xD6) { return 0x99; }
+    if (cp == 0xDC) { return 0x9A; }   if (cp == 0xE1) { return 0xA0; }
+    if (cp == 0xED) { return 0xA1; }   if (cp == 0xF3) { return 0xA2; }
+    if (cp == 0xFA) { return 0xA3; }   if (cp == 0xF1) { return 0xA4; }
+    if (cp == 0xD1) { return 0xA5; }
+    return 63;
 }
 
 // ---- text metrics ----
@@ -552,7 +725,7 @@ fn tk_char_h(ui: *tk_ui) -> u32 {
 fn tk_text_lw(ui: *tk_ui, i: u32) -> i32 {
     let s: *u8 = tk_text_of(ui, i);
     if (s == (0 as *u8)) { return 0; }
-    let d: u32 = strlen(s) * tk_char_w(ui);
+    let d: u32 = tk_utf8_count(s, strlen(s)) * tk_char_w(ui);
     if (ui.node[i].kind == TK_HEADING && d > 0) { d = d + 1; }
     return tk_logical(ui, d);
 }
@@ -588,6 +761,7 @@ fn tk_measure_leaf(ui: *tk_ui, i: u32) -> void {
     }
     else if (k == TK_SLIDER) { w = TK_SLIDER_W + 2 * TK_RING; h = TK_SLIDER_H + 2 * TK_RING; }
     else if (k == TK_PROGRESS) { w = TK_SLIDER_W; h = TK_PROG_H; }
+    else if (k == TK_TEXTFIELD) { w = TK_FIELD_W + 2 * TK_RING; h = TK_CTRL_H + 2 * TK_RING; }
     n.pw = w;
     n.ph = h;
 }
@@ -1014,14 +1188,27 @@ fn tk_seg(ui: *tk_ui, c: *ds_rect, ax: i32, ay: i32, bx: i32, by: i32, t: i32, a
 
 // Text from (x, y), the bitmap font magnified by the ui's glyph factor.
 fn tk_text(ui: *tk_ui, c: *ds_rect, x: i32, y: i32, s: *u8, argb: u32, bold: u32) -> void {
+    if (s == (0 as *u8)) { return; }
+    tk_text_n(ui, c, x, y, s, strlen(s), argb, bold);
+}
+
+// n bytes of UTF-8 as text: one glyph a character (a byte that is not
+// UTF-8 is one, as '?').
+fn tk_text_n(ui: *tk_ui, c: *ds_rect, x: i32, y: i32, s: *u8, n: u32, argb: u32, bold: u32) -> void {
     if (s == (0 as *u8) || ui.font == (0 as *ds_font)) { return; }
     let f: *ds_font = ui.font;
     let g: i32 = ui.glyph as i32;
     let cw: i32 = (f.width as i32) * g;
+    let at: u32 = 0;
     let k: u32 = 0;
-    while (s[k] != 0) {
-        let code: u32 = s[k] as u32;
+    while (at < n) {
+        let cp: u32 = 63;
+        let l: u32 = tk_utf8_at(s, n, at, &cp);
+        if (l == 0) { l = 1; cp = 63; }
+        at = at + l;
+        let code: u32 = tk_cp437(cp);
         let gx: i32 = x + (k as i32) * cw;
+        k = k + 1;
         if (gx >= ((c.x + c.w) as i32)) { return; }
         if (code < f.count && gx + cw > (c.x as i32)) {
             let row: u32 = 0;
@@ -1044,7 +1231,6 @@ fn tk_text(ui: *tk_ui, c: *ds_rect, x: i32, y: i32, s: *u8, argb: u32, bold: u32
                 row = row + 1;
             }
         }
-        k = k + 1;
     }
 }
 
@@ -1087,7 +1273,7 @@ fn tk_draw_button(ui: *tk_ui, n: *tk_node, i: u32, c: *ds_rect) -> void {
     // the text, centred, clipped to the inside of the button
     let s: *u8 = tk_text_of(ui, i);
     if (s != (0 as *u8)) {
-        let tw: i32 = ((strlen(s) * tk_char_w(ui)) as i32);
+        let tw: i32 = ((tk_utf8_count(s, strlen(s)) * tk_char_w(ui)) as i32);
         let th: i32 = tk_char_h(ui) as i32;
         let inside: ds_rect;
         let mine: ds_rect;
@@ -1214,6 +1400,102 @@ fn tk_draw_progress(ui: *tk_ui, n: *tk_node, c: *ds_rect) -> void {
     if (fw > 0) { tk_shape(ui, c, x, y, fw, h, h / 2, 0, on); }
 }
 
+// Where a field's text goes: its first column's x, its row's y, and how
+// many characters fit.
+fn tk_field_geom(ui: *tk_ui, n: *tk_node, tx: *i32, ty: *i32, cap: *u32) -> void {
+    let m: i32 = tk_len(ui, TK_RING);
+    let pad: i32 = tk_len(ui, TK_FIELD_PADX);
+    let cw: i32 = tk_char_w(ui) as i32;
+    *tx = (n.dx as i32) + m + pad;
+    *ty = (n.dy as i32) + ((n.dh as i32) - (tk_char_h(ui) as i32)) / 2;
+    let room: i32 = (n.dw as i32) - 2 * m - 2 * pad;
+    let fit: i32 = 1;
+    if (cw > 0 && room / cw > 1) { fit = room / cw; }
+    *cap = fit as u32;
+}
+
+// The caret's column: characters before it, the accent waiting included.
+fn tk_field_caret_col(f: *tk_field) -> u32 {
+    let col: u32 = tk_utf8_count(&f.buf[0], f.caret);
+    if (f.dead != 0) { col = col + 1; }
+    return col;
+}
+
+// Keep the caret in sight: the first character shown moves if it must.
+fn tk_field_scroll(ui: *tk_ui, n: *tk_node, f: *tk_field) -> void {
+    let tx: i32 = 0; let ty: i32 = 0; let cap: u32 = 1;
+    tk_field_geom(ui, n, &tx, &ty, &cap);
+    let col: u32 = tk_field_caret_col(f);
+    if (col < f.scroll) { f.scroll = col; }
+    if (col > f.scroll + cap - 1) { f.scroll = col - (cap - 1); }
+}
+
+// One character of a field at column col (from the first shown).
+fn tk_field_glyph(ui: *tk_ui, c: *ds_rect, tx: i32, ty: i32, col: u32, s: *u8, l: u32, fg: u32, bg: u32, under: u32) -> void {
+    let cw: i32 = tk_char_w(ui) as i32;
+    let ch: i32 = tk_char_h(ui) as i32;
+    let gx: i32 = tx + (col as i32) * cw;
+    if (bg != 0) { tk_box(ui, c, gx, ty, cw, ch, bg); }
+    tk_text_n(ui, c, gx, ty, s, l, fg, 0);
+    if (under == 1) { tk_box(ui, c, gx, ty + ch - tk_len(ui, 1), cw, tk_len(ui, 1), fg); }
+}
+
+// A text field: a box, its text from the first character shown, the
+// selection in the accent, the accent waiting underlined, and the caret.
+fn tk_draw_field(ui: *tk_ui, n: *tk_node, c: *ds_rect) -> void {
+    let f: *tk_field = &ui.field[n.field];
+    let m: i32 = tk_len(ui, TK_RING);
+    let x: i32 = (n.dx as i32) + m;
+    let y: i32 = (n.dy as i32) + m;
+    let w: i32 = (n.dw as i32) - 2 * m;
+    let h: i32 = (n.dh as i32) - 2 * m;
+    let r: i32 = tk_len(ui, TK_RADIUS);
+    let bg: u32 = ui.theme.raised;
+    let edge: u32 = ui.theme.border;
+    let fg: u32 = ui.theme.text;
+    if (tk_on(n, TK_F_FOCUS) == 1) { edge = ui.theme.accent; }
+    if (tk_on(n, TK_F_DISABLED) == 1) { bg = ui.theme.off_bg; edge = ui.theme.off_bg; fg = ui.theme.off_text; }
+    tk_shape(ui, c, x, y, w, h, r, 0, edge);
+    tk_shape(ui, c, x + 1, y + 1, w - 2, h - 2, tk_imax(r - 1, 0), 0, bg);
+    let inside: ds_rect;
+    let mine: ds_rect;
+    ds_rect_set(&mine, (x + 1) as u32, (y + 1) as u32, (tk_imax(w - 2, 0)) as u32, (tk_imax(h - 2, 0)) as u32);
+    if (ds_rect_and(&inside, &mine, c) == 0) { tk_draw_ring(ui, n, c); return; }
+    tk_field_scroll(ui, n, f);
+    let tx: i32 = 0; let ty: i32 = 0; let cap: u32 = 1;
+    tk_field_geom(ui, n, &tx, &ty, &cap);
+    let a: u32 = f.anchor; let b: u32 = f.caret;
+    if (a > b) { a = f.caret; b = f.anchor; }
+    let pre: [4]u8;
+    let pre_n: u32 = 0;
+    if (f.dead != 0) { pre_n = tk_utf8_put(f.dead, &pre[0]); }
+    // every character in order, the accent at the caret; columns before
+    // the first shown are skipped
+    let col: u32 = 0;
+    let at: u32 = 0;
+    while (at <= f.len) {
+        if (at == f.caret && pre_n > 0) {
+            if (col >= f.scroll) { tk_field_glyph(ui, &inside, tx, ty, col - f.scroll, &pre[0], pre_n, fg, 0, 1); }
+            col = col + 1;
+        }
+        if (at == f.len) { break; }
+        let cp: u32 = 0;
+        let l: u32 = tk_utf8_at(&f.buf[0], f.len, at, &cp);
+        if (l == 0) { l = 1; }
+        if (col >= f.scroll) {
+            if (at >= a && at < b) { tk_field_glyph(ui, &inside, tx, ty, col - f.scroll, &f.buf[at], l, ui.theme.on_accent, ui.theme.accent, 0); }
+            else { tk_field_glyph(ui, &inside, tx, ty, col - f.scroll, &f.buf[at], l, fg, 0, 0); }
+        }
+        col = col + 1;
+        at = at + l;
+    }
+    if (tk_on(n, TK_F_FOCUS) == 1) {
+        let cx: i32 = tx + ((tk_field_caret_col(f) - f.scroll) as i32) * (tk_char_w(ui) as i32);
+        tk_box(ui, &inside, cx, ty, tk_len(ui, 1), tk_char_h(ui) as i32, fg);
+    }
+    tk_draw_ring(ui, n, c);
+}
+
 fn tk_draw_node(ui: *tk_ui, i: u32, c: *ds_rect) -> void {
     let n: *tk_node = &ui.node[i];
     let k: u32 = n.kind;
@@ -1227,6 +1509,7 @@ fn tk_draw_node(ui: *tk_ui, i: u32, c: *ds_rect) -> void {
     else if (k == TK_SWITCH) { tk_draw_switch(ui, n, i, c); }
     else if (k == TK_SLIDER) { tk_draw_slider(ui, n, c); }
     else if (k == TK_PROGRESS) { tk_draw_progress(ui, n, c); }
+    else if (k == TK_TEXTFIELD) { tk_draw_field(ui, n, c); }
 }
 
 // Draw i and its children inside clip, each kept to its own box.
@@ -1290,6 +1573,8 @@ fn tk_focus_set(ui: *tk_ui, i: u32) -> void {
     if (ui.focus == i) { return; }
     if (ui.focus != TK_NONE) {
         ui.node[ui.focus].flags = ui.node[ui.focus].flags & ~TK_F_FOCUS;
+        // an accent still waiting is dropped with the focus
+        if (ui.node[ui.focus].kind == TK_TEXTFIELD) { ui.field[ui.node[ui.focus].field].dead = 0; }
         tk_damage_node(ui, ui.focus);
     }
     ui.focus = i;
@@ -1311,6 +1596,23 @@ fn tk_focus_next(ui: *tk_ui) -> void {
         i = tk_after(ui, i);
         steps = steps + 1;
     }
+}
+
+// Shift+Tab: the one before, wrapping.
+fn tk_focus_prev(ui: *tk_ui) -> void {
+    let before: u32 = TK_NONE;     // the last focusable one ahead of the focus
+    let last: u32 = TK_NONE;
+    let found: u32 = 0;
+    let i: u32 = ui.root;
+    while (i != TK_NONE) {
+        if (i == ui.focus) { found = 1; before = last; }
+        if (tk_focusable(ui, i) == 1) { last = i; }
+        i = tk_after(ui, i);
+    }
+    // nothing before the focus, or no focus: the last one
+    let to: u32 = before;
+    if (found == 0 || to == TK_NONE) { to = last; }
+    if (to != TK_NONE) { tk_focus_set(ui, to); }
 }
 
 fn tk_focused(ui: *tk_ui) -> u32 { return tk_id(ui, ui.focus); }
@@ -1345,6 +1647,7 @@ fn tk_radio_pick(ui: *tk_ui, i: u32) -> void {
 fn tk_activate(ui: *tk_ui, i: u32) -> void {
     let n: *tk_node = &ui.node[i];
     if ((n.flags & TK_F_DISABLED) != 0) { return; }
+    if (n.kind == TK_BUTTON && n.cmd != 0) { tk_run(ui, n.cmd, i); return; }
     if (n.kind == TK_BUTTON) { tk_push(ui, TK_EV_ACTIVATE, i, 0, 0); return; }
     if (n.kind == TK_CHECK || n.kind == TK_SWITCH) {
         // a mixed box becomes checked; otherwise it turns over
@@ -1408,44 +1711,523 @@ fn tk_radio_step(ui: *tk_ui, i: u32, back: u32) -> u32 {
     return first;
 }
 
-// A key: 1 if a widget or the ui took it, else 0 (and the app is told).
-fn tk_key(ui: *tk_ui, code: u32) -> u32 {
-    if (code == TK_KEY_TAB) { tk_focus_next(ui); return 1; }
+// A key the focused widget may take (no Ctrl, Alt or Super held): 1 if it did.
+fn tk_widget_key(ui: *tk_ui, code: u32, ch: u32, mods: u32) -> u32 {
     let f: u32 = ui.focus;
-    if (f != TK_NONE) {
-        let n: *tk_node = &ui.node[f];
-        if (code == TK_KEY_SPACE && n.kind != TK_SLIDER) { tk_activate(ui, f); return 1; }
-        if ((code == TK_KEY_ENTER || code == TK_KEY_NL) && n.kind == TK_BUTTON) { tk_activate(ui, f); return 1; }
-        if (n.kind == TK_SLIDER) {
-            if (code == TK_KEY_LEFT || code == TK_KEY_DOWN) { tk_slider_to(ui, f, n.value - n.step); return 1; }
-            if (code == TK_KEY_RIGHT || code == TK_KEY_UP) { tk_slider_to(ui, f, n.value + n.step); return 1; }
-            if (code == TK_KEY_HOME) { tk_slider_to(ui, f, n.vmin); return 1; }
-            if (code == TK_KEY_END) { tk_slider_to(ui, f, n.vmax); return 1; }
-        }
-        if (n.kind == TK_RADIO) {
-            let back: u32 = 2;
-            if (code == TK_KEY_LEFT || code == TK_KEY_UP) { back = 1; }
-            if (code == TK_KEY_RIGHT || code == TK_KEY_DOWN) { back = 0; }
-            if (back != 2) {
-                let to: u32 = tk_radio_step(ui, f, back);
-                if (to != TK_NONE) { tk_focus_set(ui, to); tk_radio_pick(ui, to); }
-                return 1;
-            }
+    if (f == TK_NONE || (mods & TK_MODS_CAS) != 0) { return 0; }
+    let n: *tk_node = &ui.node[f];
+    if (n.kind == TK_TEXTFIELD) { return tk_field_key(ui, f, code, ch, mods); }
+    if (code == KC_SPACE && n.kind != TK_SLIDER) { tk_activate(ui, f); return 1; }
+    if ((code == KC_ENTER || code == KC_KP_ENTER) && n.kind == TK_BUTTON) { tk_activate(ui, f); return 1; }
+    if (n.kind == TK_SLIDER) {
+        if (code == KC_LEFT || code == KC_DOWN) { tk_slider_to(ui, f, n.value - n.step); return 1; }
+        if (code == KC_RIGHT || code == KC_UP) { tk_slider_to(ui, f, n.value + n.step); return 1; }
+        if (code == KC_HOME) { tk_slider_to(ui, f, n.vmin); return 1; }
+        if (code == KC_END) { tk_slider_to(ui, f, n.vmax); return 1; }
+    }
+    if (n.kind == TK_RADIO) {
+        let back: u32 = 2;
+        if (code == KC_LEFT || code == KC_UP) { back = 1; }
+        if (code == KC_RIGHT || code == KC_DOWN) { back = 0; }
+        if (back != 2) {
+            let to: u32 = tk_radio_step(ui, f, back);
+            if (to != TK_NONE) { tk_focus_set(ui, to); tk_radio_pick(ui, to); }
+            return 1;
         }
     }
-    if (code == TK_KEY_ENTER || code == TK_KEY_NL) {
-        // the dialog manager's rule: Enter presses the default button
-        let k: u32 = 0;
-        while (k < ui.used) {
-            if (ui.node[k].kind == TK_BUTTON && (ui.node[k].flags & TK_F_DEFAULT) != 0 && tk_focusable(ui, k) == 1) {
-                tk_activate(ui, k);
-                return 1;
-            }
-            k = k + 1;
-        }
-    }
-    tk_push(ui, TK_EV_KEY, TK_NONE, 0, code);
     return 0;
+}
+
+// The button with flag (DEFAULT or CANCEL) that can be pressed: pressed, 1.
+fn tk_press_flagged(ui: *tk_ui, flag: u32) -> u32 {
+    let k: u32 = 0;
+    while (k < ui.used) {
+        if (ui.node[k].kind == TK_BUTTON && (ui.node[k].flags & flag) != 0 && tk_focusable(ui, k) == 1) {
+            tk_activate(ui, k);
+            return 1;
+        }
+        k = k + 1;
+    }
+    return 0;
+}
+
+// A key from the window: code KC_*, ch its character or 0, mods KEYMOD_* |
+// KEYEV_* (as WM_EV_KEY gives them). 1 if the ui took it; else 0, and a
+// press goes to the app as TK_EV_KEY. Releases are taken by nobody.
+//
+// In order: the input method (a text field has the focus), the focused
+// widget, the dialog manager (Tab, Shift+Tab, Enter, Esc), the commands.
+fn tk_key(ui: *tk_ui, code: u32, ch: u32, mods: u32) -> u32 {
+    if ((mods & KEYEV_RELEASE) != 0) { return 0; }
+    let held: u32 = mods & KEYMOD_HELD;
+    if (ui.focus != TK_NONE && ui.node[ui.focus].kind == TK_TEXTFIELD && ui.im != TK_IM_NONE) {
+        if (tk_im_key(ui, ui.focus, code, ch, held) == 1) { return 1; }
+    }
+    if (tk_widget_key(ui, code, ch, held) == 1) { return 1; }
+    if ((held & TK_MODS_CAS) == 0) {
+        if (code == KC_TAB) {
+            if ((held & KEYMOD_SHIFT) != 0) { tk_focus_prev(ui); } else { tk_focus_next(ui); }
+            return 1;
+        }
+        if ((code == KC_ENTER || code == KC_KP_ENTER) && tk_press_flagged(ui, TK_F_DEFAULT) == 1) { return 1; }
+        if (code == KC_ESC && tk_press_flagged(ui, TK_F_CANCEL) == 1) { return 1; }
+    }
+    let cmd: u32 = tk_command_for(ui, code, held);
+    if (cmd != 0) { tk_run(ui, cmd, TK_NONE); return 1; }
+    let at: u32 = (ui.ev_head + ui.ev_n) % TK_EVENTS_MAX;
+    let room: u32 = 0;
+    if (ui.ev_n < TK_EVENTS_MAX) { room = 1; }
+    tk_push(ui, TK_EV_KEY, TK_NONE, 0, code);
+    if (room == 1) { ui.ev[at].ch = ch; ui.ev[at].mods = mods; }
+    return 0;
+}
+
+// ---- commands ----
+
+// Is key with held a system key, the window server's or the kernel's,
+// which no app may have (CX_TOOLKIT.md §7)? 1 if so.
+fn tk_key_reserved(key: u32, held: u32) -> u32 {
+    if ((held & KEYMOD_SUPER) != 0 || key == KC_LSUPER || key == KC_RSUPER) { return 1; }
+    if ((held & ~KEYMOD_SHIFT) == KEYMOD_ALT && key == KC_TAB) { return 1; }
+    if (held == KEYMOD_ALT && key == KC_F4) { return 1; }
+    if (held == (KEYMOD_CTRL | KEYMOD_ALT) && key == KC_F2) { return 1; }
+    if ((held & (KEYMOD_CTRL | KEYMOD_ALT)) == (KEYMOD_CTRL | KEYMOD_ALT) && (key == KC_DELETE || key == KC_KP_PERIOD)) { return 1; }
+    return 0;
+}
+
+// May command cmd (0 for a new one) be bound to key with mods? 0, or
+// E_INVALID_ARGS (not a key a command can have: one that types, or no Ctrl
+// or Alt and not F1 to F12), E_ACCESS_DENIED (the system's), or
+// E_ALREADY_EXISTS (another command has it; a binding is never taken over).
+fn tk_bind_check(ui: *tk_ui, cmd: u32, key: u32, mods: u32) -> i32 {
+    if (key == 0) { return 0; }
+    if ((mods & ~KEYMOD_HELD) != 0 || key > KC_RSUPER) { return E_INVALID_ARGS; }
+    if (tk_key_reserved(key, mods) == 1) { return E_ACCESS_DENIED; }
+    if (key >= KC_LCTRL) { return E_INVALID_ARGS; }
+    let fkey: u32 = 0;
+    if (key >= KC_F1 && key <= KC_F12) { fkey = 1; }
+    if (fkey == 0 && (mods & (KEYMOD_CTRL | KEYMOD_ALT)) == 0) { return E_INVALID_ARGS; }
+    let k: u32 = 0;
+    while (k < ui.cmd_n) {
+        if (k + 1 != cmd && ui.cmd[k].key == key && ui.cmd[k].mods == mods) { return E_ALREADY_EXISTS; }
+        k = k + 1;
+    }
+    return 0;
+}
+
+// A new command, named, run by key with exactly mods held (key 0: by no
+// key). Its number (from 1), or E_INVALID_ARGS, E_ACCESS_DENIED,
+// E_ALREADY_EXISTS (as tk_bind_check, or the name is taken), E_NO_RESOURCES.
+fn tk_command(ui: *tk_ui, name: *u8, key: u32, mods: u32) -> i32 {
+    if (name == (0 as *u8) || name[0] == 0) { return E_INVALID_ARGS; }
+    if (tk_command_find(ui, name) != 0) { return E_ALREADY_EXISTS; }
+    let rc: i32 = tk_bind_check(ui, 0, key, mods);
+    if (rc != 0) { return rc; }
+    if (ui.cmd_n >= TK_CMDS_MAX) { return E_NO_RESOURCES; }
+    let at: u32 = tk_store(ui, name);
+    if (at == TK_NONE) { return E_NO_RESOURCES; }
+    let c: *tk_cmd = &ui.cmd[ui.cmd_n];
+    c.name = at; c.key = key; c.mods = mods;
+    ui.cmd_n = ui.cmd_n + 1;
+    return ui.cmd_n as i32;
+}
+
+// Bind command cmd to another key (0 unbinds it): 0, or as tk_bind_check,
+// or E_INVALID_ARGS for no such command. Refused, it keeps the key it had.
+fn tk_bind(ui: *tk_ui, cmd: u32, key: u32, mods: u32) -> i32 {
+    if (cmd == 0 || cmd > ui.cmd_n) { return E_INVALID_ARGS; }
+    let rc: i32 = tk_bind_check(ui, cmd, key, mods);
+    if (rc != 0) { return rc; }
+    ui.cmd[cmd - 1].key = key;
+    ui.cmd[cmd - 1].mods = mods & KEYMOD_HELD;
+    if (key == 0) { ui.cmd[cmd - 1].mods = 0; }
+    return 0;
+}
+
+// The command named so, or 0.
+fn tk_command_find(ui: *tk_ui, name: *u8) -> u32 {
+    let k: u32 = 0;
+    while (k < ui.cmd_n) {
+        if (streq(&ui.arena[ui.cmd[k].name], name) != 0) { return k + 1; }
+        k = k + 1;
+    }
+    return 0;
+}
+
+fn tk_command_name(ui: *tk_ui, cmd: u32) -> *u8 {
+    if (cmd == 0 || cmd > ui.cmd_n) { return 0 as *u8; }
+    return &ui.arena[ui.cmd[cmd - 1].name];
+}
+
+// The command a press runs, or 0.
+fn tk_command_for(ui: *tk_ui, code: u32, held: u32) -> u32 {
+    if (code == 0) { return 0; }
+    let k: u32 = 0;
+    while (k < ui.cmd_n) {
+        if (ui.cmd[k].key == code && ui.cmd[k].mods == held) { return k + 1; }
+        k = k + 1;
+    }
+    return 0;
+}
+
+// A widget that runs a command when pressed (0: none): 0 or E_INVALID_ARGS.
+fn tk_set_command(ui: *tk_ui, id: u32, cmd: u32) -> i32 {
+    let i: u32 = tk_index(ui, id);
+    if (i == TK_NONE || cmd > ui.cmd_n) { return E_INVALID_ARGS; }
+    ui.node[i].cmd = cmd;
+    return 0;
+}
+
+// Run a command, from a key (from = TK_NONE) or a widget: a focused text
+// field does the standard ones itself; anything else is the app's.
+fn tk_run(ui: *tk_ui, cmd: u32, from: u32) -> void {
+    let f: u32 = ui.focus;
+    if (cmd <= TK_CMD_REDO && f != TK_NONE && ui.node[f].kind == TK_TEXTFIELD) {
+        tk_field_command(ui, f, cmd);
+        return;
+    }
+    tk_push(ui, TK_EV_COMMAND, from, cmd as i32, 0);
+}
+
+// ---- text fields ----
+
+fn tk_field_prev(f: *tk_field, at: u32) -> u32 {
+    if (at == 0) { return 0; }
+    at = at - 1;
+    while (at > 0 && ((f.buf[at] as u32) & 0xC0) == 0x80) { at = at - 1; }
+    return at;
+}
+
+fn tk_field_next(f: *tk_field, at: u32) -> u32 {
+    if (at >= f.len) { return f.len; }
+    at = at + 1;
+    while (at < f.len && ((f.buf[at] as u32) & 0xC0) == 0x80) { at = at + 1; }
+    return at;
+}
+
+// The selection's two ends, the first first.
+fn tk_field_sel(f: *tk_field, a: *u32, b: *u32) -> void {
+    if (f.anchor <= f.caret) { *a = f.anchor; *b = f.caret; }
+    else { *a = f.caret; *b = f.anchor; }
+}
+
+// Its text changed: drawn again, and the app told (value: its length).
+fn tk_field_changed(ui: *tk_ui, i: u32) -> void {
+    tk_damage_node(ui, i);
+    tk_push(ui, TK_EV_CHANGE, i, ui.field[ui.node[i].field].len as i32, 0);
+}
+
+// Keep what it is now for undo. Characters typed one after another are one
+// change: only the first of them saves.
+fn tk_field_save(f: *tk_field, typing: u32) -> void {
+    if (typing == 0 || f.typing == 0 || f.has_undo == 0 || f.redo == 1) {
+        memcpy(&f.undo[0], &f.buf[0], f.len);
+        f.undo_len = f.len;
+        f.undo_caret = f.caret;
+        f.has_undo = 1;
+    }
+    f.typing = typing;
+    f.redo = 0;
+}
+
+// Take out bytes [a, b): the caret and anchor go to a.
+fn tk_field_remove(f: *tk_field, a: u32, b: u32) -> void {
+    if (b > a) {
+        memmove(&f.buf[a], &f.buf[b], f.len - b);
+        f.len = f.len - (b - a);
+    }
+    f.buf[f.len] = 0;
+    f.caret = a; f.anchor = a;
+}
+
+// Put n bytes of UTF-8 in place of the selection: as many whole characters
+// as there is room for (the caret after them). The bytes inserted.
+fn tk_field_insert(ui: *tk_ui, i: u32, s: *u8, n: u32, typing: u32) -> u32 {
+    let f: *tk_field = &ui.field[ui.node[i].field];
+    let a: u32 = 0; let b: u32 = 0;
+    tk_field_sel(f, &a, &b);
+    let room: u32 = TK_FIELD_BYTES - (f.len - (b - a));
+    let take: u32 = 0;
+    while (take < n) {
+        let cp: u32 = 0;
+        let l: u32 = tk_utf8_at(s, n, take, &cp);
+        if (l == 0 || take + l > room) { break; }
+        take = take + l;
+    }
+    if (take == 0 && a == b) { return 0; }
+    tk_field_save(f, typing);
+    tk_field_remove(f, a, b);
+    memmove(&f.buf[a + take], &f.buf[a], f.len - a);
+    memcpy(&f.buf[a], s, take);
+    f.len = f.len + take;
+    f.buf[f.len] = 0;
+    f.caret = a + take; f.anchor = f.caret;
+    tk_field_changed(ui, i);
+    return take;
+}
+
+fn tk_field_insert_cp(ui: *tk_ui, i: u32, cp: u32) -> void {
+    let b: [4]u8;
+    let n: u32 = tk_utf8_put(cp, &b[0]);
+    tk_field_insert(ui, i, &b[0], n, 1);
+}
+
+// The caret to `to`; with extend the anchor stays, so the selection grows.
+fn tk_field_move(ui: *tk_ui, i: u32, to: u32, extend: u32) -> void {
+    let f: *tk_field = &ui.field[ui.node[i].field];
+    f.caret = to;
+    if (extend == 0) { f.anchor = to; }
+    f.typing = 0;
+    tk_damage_node(ui, i);
+}
+
+// Delete the selection, or else the bytes [a, b): 1 if anything went.
+fn tk_field_delete(ui: *tk_ui, i: u32, a: u32, b: u32) -> u32 {
+    let f: *tk_field = &ui.field[ui.node[i].field];
+    let sa: u32 = 0; let sb: u32 = 0;
+    tk_field_sel(f, &sa, &sb);
+    if (sa != sb) { a = sa; b = sb; }
+    if (a == b) { return 0; }
+    tk_field_save(f, 0);
+    tk_field_remove(f, a, b);
+    tk_field_changed(ui, i);
+    return 1;
+}
+
+// A key for focused field i, with no Ctrl, Alt or Super: 1 if it took it.
+fn tk_field_key(ui: *tk_ui, i: u32, code: u32, ch: u32, held: u32) -> u32 {
+    let f: *tk_field = &ui.field[ui.node[i].field];
+    let extend: u32 = 0;
+    if ((held & KEYMOD_SHIFT) != 0) { extend = 1; }
+    let a: u32 = 0; let b: u32 = 0;
+    tk_field_sel(f, &a, &b);
+    if (code == KC_LEFT) {
+        if (extend == 0 && a != b) { tk_field_move(ui, i, a, 0); }
+        else { tk_field_move(ui, i, tk_field_prev(f, f.caret), extend); }
+        return 1;
+    }
+    if (code == KC_RIGHT) {
+        if (extend == 0 && a != b) { tk_field_move(ui, i, b, 0); }
+        else { tk_field_move(ui, i, tk_field_next(f, f.caret), extend); }
+        return 1;
+    }
+    if (code == KC_HOME) { tk_field_move(ui, i, 0, extend); return 1; }
+    if (code == KC_END) { tk_field_move(ui, i, f.len, extend); return 1; }
+    if (code == KC_BACKSPACE) { tk_field_delete(ui, i, tk_field_prev(f, f.caret), f.caret); return 1; }
+    if (code == KC_DELETE) { tk_field_delete(ui, i, f.caret, tk_field_next(f, f.caret)); return 1; }
+    if (ch >= 0x20 && ch != 0x7F && (ch < 0x80 || ch > 0x9F) && ch < 0x110000) {
+        tk_field_insert_cp(ui, i, ch);
+        return 1;
+    }
+    return 0;
+}
+
+// Copy the selection to ui.clip and ask for it to go to the clipboard: 1 if
+// there was one.
+fn tk_field_copy(ui: *tk_ui, f: *tk_field) -> u32 {
+    let a: u32 = 0; let b: u32 = 0;
+    tk_field_sel(f, &a, &b);
+    if (a == b) { return 0; }
+    memcpy(&ui.clip[0], &f.buf[a], b - a);
+    ui.clip_n = b - a;
+    ui.clip_want = TK_CLIP_SET;
+    return 1;
+}
+
+// Swap the text with what undo kept.
+fn tk_field_swap(f: *tk_field) -> void {
+    let t: [256]u8;
+    let tn: u32 = f.len;
+    let tc: u32 = f.caret;
+    memcpy(&t[0], &f.buf[0], f.len);
+    memcpy(&f.buf[0], &f.undo[0], f.undo_len);
+    f.len = f.undo_len;
+    f.buf[f.len] = 0;
+    f.caret = f.undo_caret; f.anchor = f.caret;
+    memcpy(&f.undo[0], &t[0], tn);
+    f.undo_len = tn;
+    f.undo_caret = tc;
+    f.typing = 0;
+}
+
+// A standard command, done to field i.
+fn tk_field_command(ui: *tk_ui, i: u32, cmd: u32) -> void {
+    let f: *tk_field = &ui.field[ui.node[i].field];
+    if (cmd == TK_CMD_COPY) { tk_field_copy(ui, f); return; }
+    if (cmd == TK_CMD_CUT) {
+        if (tk_field_copy(ui, f) == 1) { tk_field_delete(ui, i, 0, 0); }
+        return;
+    }
+    // the clipboard is read only here, for a paste (CX_TOOLKIT.md §9)
+    if (cmd == TK_CMD_PASTE) { ui.clip_want = TK_CLIP_GET; return; }
+    if (cmd == TK_CMD_SELECT_ALL) { f.anchor = 0; f.caret = f.len; f.typing = 0; tk_damage_node(ui, i); return; }
+    if (cmd == TK_CMD_UNDO && f.has_undo == 1 && f.redo == 0) { tk_field_swap(f); f.redo = 1; tk_field_changed(ui, i); return; }
+    if (cmd == TK_CMD_REDO && f.redo == 1) { tk_field_swap(f); f.redo = 0; tk_field_changed(ui, i); return; }
+}
+
+// What the clipboard had, for the paste asked for (TK_CLIP_GET): put in the
+// focused field. Line breaks and tabs become spaces; other control
+// characters and bytes that are not UTF-8 are left out. The bytes inserted.
+fn tk_paste_text(ui: *tk_ui, s: *u8, n: u32) -> u32 {
+    let i: u32 = ui.focus;
+    if (i == TK_NONE || ui.node[i].kind != TK_TEXTFIELD) { return 0; }
+    let t: [256]u8;
+    let tn: u32 = 0;
+    let at: u32 = 0;
+    while (at < n && tn < TK_FIELD_BYTES) {
+        let cp: u32 = 0;
+        let l: u32 = tk_utf8_at(s, n, at, &cp);
+        if (l == 0) { at = at + 1; continue; }
+        at = at + l;
+        if (cp == 9 || cp == 10 || cp == 13) { cp = 32; }
+        if (cp < 0x20 || cp == 0x7F || (cp >= 0x80 && cp <= 0x9F)) { continue; }
+        if (tn + l > TK_FIELD_BYTES) { break; }
+        tn = tn + tk_utf8_put(cp, &t[tn]);
+    }
+    return tk_field_insert(ui, i, &t[0], tn, 0);
+}
+
+// What the window holder is asked to do with the clipboard (TK_CLIP_*),
+// once: the ask is cleared.
+fn tk_clip_take(ui: *tk_ui) -> u32 {
+    let w: u32 = ui.clip_want;
+    ui.clip_want = TK_CLIP_NONE;
+    return w;
+}
+
+// A field's text (UTF-8, terminated), or 0 for an id that is not one.
+fn tk_field_text(ui: *tk_ui, id: u32) -> *u8 {
+    let i: u32 = tk_index(ui, id);
+    if (i == TK_NONE || ui.node[i].kind != TK_TEXTFIELD) { return 0 as *u8; }
+    return &ui.field[ui.node[i].field].buf[0];
+}
+
+// A field's selection, as byte offsets: 0, or E_INVALID_ARGS.
+fn tk_field_selection(ui: *tk_ui, id: u32, a: *u32, b: *u32) -> i32 {
+    let i: u32 = tk_index(ui, id);
+    if (i == TK_NONE || ui.node[i].kind != TK_TEXTFIELD) { return E_INVALID_ARGS; }
+    tk_field_sel(&ui.field[ui.node[i].field], a, b);
+    return 0;
+}
+
+// Set a field's text (it must be UTF-8 and fit): 0, or E_INVALID_ARGS.
+// The caret goes to the end; undo forgets.
+fn tk_set_field_text(ui: *tk_ui, id: u32, text: *u8) -> i32 {
+    let i: u32 = tk_index(ui, id);
+    if (i == TK_NONE || ui.node[i].kind != TK_TEXTFIELD || text == (0 as *u8)) { return E_INVALID_ARGS; }
+    let n: u32 = strlen(text);
+    if (n > TK_FIELD_BYTES) { return E_INVALID_ARGS; }
+    let at: u32 = 0;
+    while (at < n) {
+        let cp: u32 = 0;
+        let l: u32 = tk_utf8_at(text, n, at, &cp);
+        if (l == 0) { return E_INVALID_ARGS; }
+        at = at + l;
+    }
+    let f: *tk_field = &ui.field[ui.node[i].field];
+    memcpy(&f.buf[0], text, n);
+    f.len = n; f.buf[n] = 0;
+    f.caret = n; f.anchor = n; f.scroll = 0;
+    f.has_undo = 0; f.redo = 0; f.typing = 0; f.dead = 0;
+    tk_damage_node(ui, i);
+    return 0;
+}
+
+// ---- input methods: they see a field's keys first (CX_TOOLKIT.md §9) ----
+
+// The method for every field: TK_IM_*. 0, or E_INVALID_ARGS.
+fn tk_set_im(ui: *tk_ui, im: u32) -> i32 {
+    if (im > TK_IM_DEAD) { return E_INVALID_ARGS; }
+    ui.im = im;
+    let k: u32 = 0;
+    while (k < ui.field_n) {
+        if (ui.field[k].dead != 0) { ui.field[k].dead = 0; tk_damage_node(ui, ui.field[k].node); }
+        k = k + 1;
+    }
+    return 0;
+}
+
+// The five dead keys (Haiku's keymaps have the same five).
+fn tk_is_accent(ch: u32) -> u32 {
+    if (ch == 39 || ch == 96 || ch == 94 || ch == 126 || ch == 34) { return 1; }
+    return 0;
+}
+
+// An accent on a letter, as one Latin-1 character, or 0 if there is none.
+fn tk_compose(accent: u32, base: u32) -> u32 {
+    let upper: u32 = 0;
+    let l: u32 = base;
+    if (base >= 65 && base <= 90) { upper = 1; l = base + 32; }
+    let c: u32 = 0;
+    if (accent == 39) {
+        if (l == 97) { c = 0xE1; } if (l == 101) { c = 0xE9; } if (l == 105) { c = 0xED; }
+        if (l == 111) { c = 0xF3; } if (l == 117) { c = 0xFA; } if (l == 121) { c = 0xFD; }
+        if (l == 99) { c = 0xE7; }
+    }
+    if (accent == 96) {
+        if (l == 97) { c = 0xE0; } if (l == 101) { c = 0xE8; } if (l == 105) { c = 0xEC; }
+        if (l == 111) { c = 0xF2; } if (l == 117) { c = 0xF9; }
+    }
+    if (accent == 94) {
+        if (l == 97) { c = 0xE2; } if (l == 101) { c = 0xEA; } if (l == 105) { c = 0xEE; }
+        if (l == 111) { c = 0xF4; } if (l == 117) { c = 0xFB; }
+    }
+    if (accent == 126) {
+        if (l == 97) { c = 0xE3; } if (l == 111) { c = 0xF5; } if (l == 110) { c = 0xF1; }
+    }
+    if (accent == 34) {
+        if (l == 97) { c = 0xE4; } if (l == 101) { c = 0xEB; } if (l == 105) { c = 0xEF; }
+        if (l == 111) { c = 0xF6; } if (l == 117) { c = 0xFC; } if (l == 121) { c = 0xFF; }
+    }
+    if (c == 0 || upper == 0) { return c; }
+    if (c == 0xFF) { return 0; }       // no capital y with diaeresis in Latin-1
+    return c - 32;
+}
+
+// The method's look at a key for field i: 1 if it took it. The dead-key
+// method holds an accent (shown underlined at the caret) until the next
+// key: a letter it goes on becomes the one character; Space or the same
+// accent again gives the accent; Esc or Backspace drops it; anything else
+// gives the accent and then is itself.
+fn tk_im_key(ui: *tk_ui, i: u32, code: u32, ch: u32, held: u32) -> u32 {
+    if (ui.im != TK_IM_DEAD) { return 0; }
+    if ((code >= KC_LCTRL && code <= KC_RSUPER) || code == KC_CAPS || code == KC_NUMLOCK) { return 0; }
+    let f: *tk_field = &ui.field[ui.node[i].field];
+    if (f.dead == 0) {
+        if ((held & TK_MODS_CAS) == 0 && tk_is_accent(ch) == 1) {
+            f.dead = ch;
+            tk_damage_node(ui, i);
+            return 1;
+        }
+        return 0;
+    }
+    let acc: u32 = f.dead;
+    f.dead = 0;
+    tk_damage_node(ui, i);
+    if (code == KC_ESC || code == KC_BACKSPACE) { return 1; }
+    if ((held & TK_MODS_CAS) != 0 || ch == 0) { tk_field_insert_cp(ui, i, acc); return 0; }
+    if (ch == 32 || ch == acc) { tk_field_insert_cp(ui, i, acc); return 1; }
+    let c: u32 = tk_compose(acc, ch);
+    if (c != 0) { tk_field_insert_cp(ui, i, c); return 1; }
+    tk_field_insert_cp(ui, i, acc);
+    if (tk_is_accent(ch) == 1) { f.dead = ch; return 1; }
+    tk_field_insert_cp(ui, i, ch);
+    return 1;
+}
+
+// The character offset under device x in field i.
+fn tk_field_at(ui: *tk_ui, i: u32, x: i32) -> u32 {
+    let n: *tk_node = &ui.node[i];
+    let f: *tk_field = &ui.field[n.field];
+    let tx: i32 = 0; let ty: i32 = 0; let cap: u32 = 1;
+    tk_field_geom(ui, n, &tx, &ty, &cap);
+    let cw: i32 = tk_imax(tk_char_w(ui) as i32, 1);
+    let col: u32 = f.scroll;
+    if (x > tx) { col = col + (((x - tx) + cw / 2) / cw) as u32; }
+    let at: u32 = 0;
+    let k: u32 = 0;
+    while (k < col && at < f.len) { at = tk_field_next(f, at); k = k + 1; }
+    return at;
 }
 
 // The widget that takes input under device (x, y): the last drawn wins.
@@ -1492,12 +2274,18 @@ fn tk_pointer(ui: *tk_ui, x: i32, y: i32, buttons: u32) -> void {
         tk_set_bit(ui, hit, TK_F_PRESSED, 1);
         tk_focus_set(ui, hit);
         if (ui.node[hit].kind == TK_SLIDER) { tk_slider_to(ui, hit, tk_slider_at(ui, hit, x)); }
+        if (ui.node[hit].kind == TK_TEXTFIELD) {
+            // the caret where it was pressed; a drag selects from there
+            ui.field[ui.node[hit].field].dead = 0;
+            tk_field_move(ui, hit, tk_field_at(ui, hit, x), 0);
+        }
         return;
     }
     let cap: u32 = ui.capture;
     if (cap == TK_NONE) { return; }
     if (now == 1) {
         if (ui.node[cap].kind == TK_SLIDER) { tk_slider_to(ui, cap, tk_slider_at(ui, cap, x)); }
+        if (ui.node[cap].kind == TK_TEXTFIELD) { tk_field_move(ui, cap, tk_field_at(ui, cap, x), 1); }
         // pressed only while over itself
         let over: u32 = 0;
         if (hit == cap) { over = 1; }

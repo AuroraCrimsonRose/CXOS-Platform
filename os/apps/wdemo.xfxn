@@ -163,6 +163,12 @@ fn _start() -> void {
     let ev: wm_event;
     while (win_wait(&wd_win, &ev) == 0) {
         if (ev.kind == WM_EV_CLOSE) { win_close(&wd_win); exit(0); }
+        // a key's character, presses only (2.8a2: releases and
+        // the modifiers come too); then ev.a is what it was before
+        if (ev.kind == WM_EV_KEY) {
+            if (((ev.c as u32) & KEYEV_RELEASE) != 0 || ev.b == 0) { continue; }
+            ev.a = ev.b;
+        }
         if (ev.kind == WM_EV_KEY && ev.a == 72) {
             while (1 == 1) { sleep_ms(1000); }
         }

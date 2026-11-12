@@ -9,6 +9,8 @@
 #include <stdint.h>
 #include "keyboard.h"
 #include "inputdev.h"
+#include "keymap.h"
+#include "cxk_abi.h"
 #include "usb_hid.h"
 #include "../../cpu/sched.h"   /* thread_block_prepare / thread_unblock */
 #include "arch/cpu_ops.h"
@@ -47,8 +49,40 @@ static void kbuf_push(unsigned char c) {
    never reaches the buffer anybody with GRANT_INPUT could read (2.4). */
 void keyboard_attention(void) { input_post_attention(); }
 
+/* One state for every keyboard: a modifier held on one applies to a key on
+   another, as on any system that merges them. Under kbd_lock. */
+static struct keymap_state kmap;
+static int kmap_ready;
+
+/* An event to the handle's holder, else the old key to the buffer. */
+static void deliver(const struct key_out *o) {
+    if (input_post_key(o->code, o->mods, o->ch)) return;
+    if (o->legacy && (o->mods & KEYEV_RELEASE) == 0) kbuf_push((unsigned char)o->legacy);
+}
+
+void keyboard_key(uint32_t usage, int down) {
+    struct key_out o;
+    uint32_t f = spin_lock(&kbd_lock);
+    if (!kmap_ready) { keymap_init(&kmap); kmap_ready = 1; }
+    int ev = keymap_feed(&kmap, usage, down, &o);
+    spin_unlock(&kbd_lock, f);
+    if (o.attention) { keyboard_attention(); return; }
+    if (ev) deliver(&o);
+}
+
+/* The press that types c, with no state: one event, as a driver's would be. */
 void keyboard_inject(unsigned char c) {
-    if (!input_post_key(c)) kbuf_push(c);
+    uint32_t usage, mods;
+    struct key_out o;
+    if (!keymap_from_legacy(c, &usage, &mods)) return;
+    keymap_compose(usage, mods, &o);
+    deliver(&o);
+}
+
+void keyboard_inject_key(uint32_t usage, uint32_t mods) {
+    struct key_out o;
+    keymap_compose(usage, mods, &o);
+    deliver(&o);
 }
 
 /* Under the lock, as a reader's choice of how long to sleep is: it either saw

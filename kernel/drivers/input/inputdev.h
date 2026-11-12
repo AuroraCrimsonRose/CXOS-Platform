@@ -16,7 +16,7 @@ void input_sys_init(void);
 
 /* A key from a keyboard: 1 if the handle's holder took it, 0 if there is no
    holder and the caller keeps it. Interrupts may be off. */
-int  input_post_key(unsigned char c);
+int  input_post_key(uint32_t code, uint32_t mods, uint32_t ch);
 
 /* The pointer is at (x, y) with these buttons. Nothing if there is no holder.
    A movement replaces one still unread with the same buttons, so a slow

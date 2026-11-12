@@ -94,7 +94,9 @@ client's side), `os/apps/displayd.xfxn`, `os/apps/wdemo.xfxn`.
   +endpoint +disk displayd [client...]`) and finds a badged send handle in slot
   3. There is no name service yet to find a server by.
 - *Frames* are the server's: a title bar that drags, a close box, a colour for
-  focus. Ctrl+N and Ctrl+Q are the server's keys and no client sees them.
+  focus. The system's keys (every Super key, Alt+Tab, Alt+F4, Ctrl+Alt+F2,
+  Super+Ctrl+Enter; `system/CX_TOOLKIT.md` §7) are the server's and no client
+  sees them, pressed, held or let go.
 - *Not answering.* A client with an event unread and no call waiting for two
   seconds goes grey, can still be moved, and its close box ends it. Any other
   client's close box only asks.
@@ -142,9 +144,12 @@ Limits: a layer's buffer does not change (new pixels are a new layer); no
 filtering; reduce motion is a flag (`displayd --reduce-motion`, Ctrl+R) and is
 not saved anywhere until Settings exists; the USB keyboard is still polled, so
 the server's loop wakes every 16 ms and composes nothing. Until the trusted UI
-(step 6) the server holds Ctrl+N (next window, or back from minimised), Ctrl+B
-(minimise), Ctrl+W (next workspace), Ctrl+E (send the window on) and Ctrl+R, as
-it holds Ctrl+Q.
+(step 6) the server holds Alt+Tab (next window, or back from minimised), Super+B
+(minimise), Super+W (next workspace), Super+E (send the window on) and Super+R,
+as it holds Ctrl+Alt+F2 (end the session). They were Ctrl+N, B, W, E, R and Q
+until 2.8a2, which gave the Ctrl keys back to apps. The server also holds the
+clipboard (2.8a2: `DS_OP_CLIP_SET`, `DS_OP_CLIP_GET`; who may use it, and
+when: `system/CX_TOOLKIT.md` §9).
 
 ## 7. Input and trusted UI
 
@@ -184,7 +189,7 @@ landed in. A press raises and focuses.
   `WM_CAP_CAPTURE` (`DS_OP_CAPTURE`, into the caller's memory, composing first
   so that stale pixels of the system's screen cannot be read, and refused while
   that screen is up) and `WM_CAP_OVERLAY` (`WM_F_OVERLAY`: above ordinary
-  windows, never focused, never pressed, not in the Ctrl+N order). A red mark
+  windows, never focused, never pressed, not in the Alt+Tab order). A red mark
   is on the screen for two seconds after any capture, and it is in the frame
   captured.
 - *The signer,* from the kernel (`process_info.trust` and `.signer`, the first

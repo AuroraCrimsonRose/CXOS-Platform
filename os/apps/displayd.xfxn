@@ -14,16 +14,17 @@
 // std/wm.xfxn, the loop and protocol std/dserver.xfxn. A bare client name is
 // looked for in /Shared/Programs.
 //
-// `displayd --empty` starts nobody and waits for Ctrl+Q.
+// `displayd --empty` starts nobody and waits for Ctrl+Alt+F2.
 // `displayd --virtio-gpu [...]`, which comes first and needs +driver as well,
 // shows on the machine's virtio-gpu display and not on the screen.
 // `displayd --reduce-motion [client ...]` starts with motion reduced for every
-// client (Ctrl+R turns it on and off).
+// client (Super+R turns it on and off).
 //
-// Ctrl+N next window (and back from minimised), Ctrl+B minimise, Ctrl+W next
-// workspace, Ctrl+E send this window to the next.
+// Alt+Tab next window (and back from minimised), Alt+F4 close it, Super+B
+// minimise, Super+W next workspace, Super+E send this window to the next.
+// Every Super key is the server's (2.8a2).
 //
-// Ctrl+Q ends the session, as does the last client going. When it ends, the
+// Ctrl+Alt+F2 ends the session, as does the last client going. When it ends, the
 // screen's and the keyboard's last references go: the kernel repaints its
 // console and the shell has its keys back.
 

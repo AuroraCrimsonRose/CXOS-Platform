@@ -11,10 +11,20 @@
 /* return the next character typed, or 0 if none available */
 char keyboard_getchar(void);
 
-/* Push a key into the input buffer. Every keyboard driver does: PS/2
-   (platform/pc/ps2kbd.c, from IRQ 1) and USB HID alike, so nothing above here
-   can tell them apart. Safe from an interrupt handler. */
+/* A key (a USB HID usage, KC_*) went down or came up. Every keyboard driver
+   says only this: PS/2 (platform/pc/ps2kbd.c, from IRQ 1) and USB HID alike,
+   so nothing above here can tell them apart. keymap.c makes it an event for
+   the input handle's holder, or the old buffer's character. Safe from an
+   interrupt handler. */
+void keyboard_key(uint32_t usage, int down);
+
+/* For tests: the press that types the old buffer's character c (a control
+   code is Ctrl+letter, KEY_SHIFT_UP is Shift+Up), as one event with no state
+   kept, so no release follows. A c no US key types is dropped. */
 void keyboard_inject(unsigned char c);
+
+/* For tests: a press of usage with mods held (KEYMOD_*), one event. */
+void keyboard_inject_key(uint32_t usage, uint32_t mods);
 
 /* The secure attention combination was pressed (Ctrl+Alt+Del). Interrupt
    context, or a poll. Not a key: it never reaches the old key buffer. */

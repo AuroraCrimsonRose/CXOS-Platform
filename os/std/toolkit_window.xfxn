@@ -122,6 +122,32 @@ fn tk_win_reopen(tw: *tk_win, ep: i32, title: *u8, flags: u32) -> i32 {
     return tk_win_open(tw, tw.ui, ep, title, flags);
 }
 
+// Do what the ui asked of the clipboard (a copy, or the read for a paste),
+// in a page made for it. The server refuses one not made in the second
+// after a key or button this window was given; a refusal does nothing.
+fn tk_win_clip(tw: *tk_win) -> void {
+    let want: u32 = tk_clip_take(tw.ui);
+    if (want == TK_CLIP_NONE) { return; }
+    let mem: i32 = mem_create(WM_CLIP_MAX as u64, 0);
+    if (mem <= 0) { return; }
+    let a: vm_map_args;
+    memzero((&a) as *u8, sizeof a);
+    a.object = mem as u32;
+    a.length = WM_CLIP_MAX as u64;
+    a.prot = MPROT_READ | MPROT_WRITE;
+    if (vm_map(&a) != E_OK) { handle_close(mem); return; }
+    let p: *u8 = a.addr as *u8;
+    if (want == TK_CLIP_SET) {
+        memcpy(p, &tw.ui.clip[0], tw.ui.clip_n);
+        win_clip(&tw.w, DS_OP_CLIP_SET, mem, tw.ui.clip_n);
+    } else {
+        let n: i32 = win_clip(&tw.w, DS_OP_CLIP_GET, mem, 0);
+        if (n > 0) { tk_paste_text(tw.ui, p, n as u32); }
+    }
+    vm_unmap(a.addr, 0);
+    handle_close(mem);
+}
+
 // The next thing for the app, blocking: widgets' events, keys nobody took,
 // TK_EV_CLOSE, or TK_EV_GONE with the error in value. Drawing happens in
 // here, between events.
@@ -135,7 +161,10 @@ fn tk_win_next(tw: *tk_win, ev: *tk_event) -> void {
         if (rc != 0) { ev.kind = TK_EV_GONE; ev.id = 0; ev.value = rc; ev.code = 0; return; }
         if (we.kind == WM_EV_FRAME) { tw.in_flight = 0; }
         else if (we.kind == WM_EV_CLOSE) { ev.kind = TK_EV_CLOSE; ev.id = 0; ev.value = 0; ev.code = 0; return; }
-        else if (we.kind == WM_EV_KEY) { tk_key(tw.ui, we.a as u32); }
-        else if (we.kind == WM_EV_POINTER) { tk_pointer(tw.ui, we.a, we.b, we.c as u32); }
+        else if (we.kind == WM_EV_KEY) {
+            tk_key(tw.ui, we.a as u32, we.b as u32, we.c as u32);
+            tk_win_clip(tw);
+        }
+        else if (we.kind == WM_EV_POINTER) { tk_pointer(tw.ui, we.a, we.b, we.c as u32); tk_win_clip(tw); }
     }
 }

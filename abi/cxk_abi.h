@@ -15,7 +15,7 @@
  * hash it was built against and the loader refuses one that differs, so a
  * program never runs against numbers or layouts it was not compiled for.
  */
-#define CXK_ABI_HASH { 0x33, 0xe4, 0x5d, 0x77, 0xef, 0x0f, 0xce, 0x1c, 0xa7, 0x70, 0xfc, 0x6a, 0x48, 0x2d, 0xb0, 0xd5, 0xd0, 0x24, 0x96, 0xd7, 0x41, 0x54, 0xc0, 0xf5, 0xbb, 0xcf, 0xba, 0x12, 0xa6, 0x8e, 0x78, 0x89 }
+#define CXK_ABI_HASH { 0x12, 0x81, 0x40, 0x6e, 0x9c, 0x07, 0x7b, 0x09, 0x58, 0xcd, 0xca, 0x43, 0x5b, 0x3d, 0x0c, 0x17, 0xbf, 0x52, 0x2a, 0xd3, 0x23, 0x49, 0xe1, 0x3a, 0x4c, 0x9e, 0xfc, 0x32, 0xef, 0x77, 0xd9, 0xd8 }
 
 /*
  * CXK ABI v1 - the PUBLIC contract shared by the kernel, the .xoex executive,
@@ -44,7 +44,7 @@
  * line; bump both, and the DevKit's stamp, in the one commit that changes the
  * contract.
  */
-#define CXK_ABI_VERSION          40
+#define CXK_ABI_VERSION          41
 
 /*
  * ---- syscall numbers ----
@@ -1559,8 +1559,18 @@ struct screen_info {
     uint32_t size;                              /* bytes of the memory object: pitch * height, whole pages */
 };
 
-/* ---- input as a handle (SYS_INPUT_OPEN) ---- */
-#define INPUT_EVENT_KEY          1              /* code: the key, as SYS_INPUT_READ gives it */
+/*
+ * ---- input as a handle (SYS_INPUT_OPEN) ----
+ * A key went down, came up, or repeats (roadmap 2.8a2). code: which key, a
+ * KC_* (the USB HID usage, page 7, whatever the keyboard); mods: the KEYMOD_*
+ * in force after it, with KEYEV_RELEASE or KEYEV_REPEAT; ch: the character
+ * it types under the layout (the kernel's US one until layouts move out),
+ * a Unicode code point, printable only, 0 for none and on every release.
+ * Ctrl, Alt and Super do not change ch: a shortcut is matched on code and
+ * mods, and text takes ch only with none of them held. Modifier keys come
+ * as events of their own.
+ */
+#define INPUT_EVENT_KEY          1
 
 /* x, y: where the pointer is now; buttons: bit 0 left, 1 right, 2 middle */
 #define INPUT_EVENT_POINTER      2
@@ -1575,12 +1585,102 @@ struct screen_info {
 
 struct input_event {
     uint32_t kind;                              /* INPUT_EVENT_* */
-    uint32_t code;
+    uint32_t code;                              /* KEY: KC_* */
     int32_t x;
     int32_t y;
     uint32_t buttons;
+    uint32_t mods;                              /* KEY: KEYMOD_* | KEYEV_* */
+    uint32_t ch;                                /* KEY: the character, or 0 */
     uint32_t reserved;                          /* 0 */
 };
+
+/* input_event.mods: held, then locks, then what the event is */
+#define KEYMOD_SHIFT             0x1u
+#define KEYMOD_CTRL              0x2u
+#define KEYMOD_ALT               0x4u
+#define KEYMOD_SUPER             0x8u
+#define KEYMOD_HELD              0xFu           /* the four a shortcut is made of */
+#define KEYMOD_CAPS              0x10u          /* Caps Lock is on */
+#define KEYMOD_NUM               0x20u          /* Num Lock is on */
+#define KEYEV_RELEASE            0x100u
+#define KEYEV_REPEAT             0x200u         /* pressed again while held (typematic) */
+
+/*
+ * Key codes: the USB HID keyboard usages (HID Usage Tables, page 7). A PS/2
+ * keyboard's scancodes are translated to them, so nothing above the driver
+ * can tell the two apart. Letters are KC_A + n, digits KC_1 .. KC_9, KC_0.
+ */
+#define KC_A                     0x04
+#define KC_B                     0x05
+#define KC_C                     0x06
+#define KC_D                     0x07
+#define KC_E                     0x08
+#define KC_F                     0x09
+#define KC_G                     0x0A
+#define KC_H                     0x0B
+#define KC_I                     0x0C
+#define KC_J                     0x0D
+#define KC_K                     0x0E
+#define KC_L                     0x0F
+#define KC_M                     0x10
+#define KC_N                     0x11
+#define KC_O                     0x12
+#define KC_P                     0x13
+#define KC_Q                     0x14
+#define KC_R                     0x15
+#define KC_S                     0x16
+#define KC_T                     0x17
+#define KC_U                     0x18
+#define KC_V                     0x19
+#define KC_W                     0x1A
+#define KC_X                     0x1B
+#define KC_Y                     0x1C
+#define KC_Z                     0x1D
+#define KC_1                     0x1E
+#define KC_9                     0x26
+#define KC_0                     0x27
+#define KC_ENTER                 0x28
+#define KC_ESC                   0x29
+#define KC_BACKSPACE             0x2A
+#define KC_TAB                   0x2B
+#define KC_SPACE                 0x2C
+#define KC_MINUS                 0x2D
+#define KC_EQUAL                 0x2E
+#define KC_QUOTE                 0x34
+#define KC_GRAVE                 0x35
+#define KC_COMMA                 0x36
+#define KC_PERIOD                0x37
+#define KC_SLASH                 0x38
+#define KC_CAPS                  0x39
+#define KC_F1                    0x3A
+#define KC_F2                    0x3B
+#define KC_F4                    0x3D
+#define KC_F5                    0x3E
+#define KC_F12                   0x45
+#define KC_PRINT                 0x46
+#define KC_PAUSE                 0x48
+#define KC_INSERT                0x49
+#define KC_HOME                  0x4A
+#define KC_PGUP                  0x4B
+#define KC_DELETE                0x4C
+#define KC_END                   0x4D
+#define KC_PGDN                  0x4E
+#define KC_RIGHT                 0x4F
+#define KC_LEFT                  0x50
+#define KC_DOWN                  0x51
+#define KC_UP                    0x52
+#define KC_NUMLOCK               0x53
+#define KC_KP_ENTER              0x58
+#define KC_KP_PERIOD             0x63
+#define KC_MENU                  0x65
+#define KC_LCTRL                 0xE0
+#define KC_LSHIFT                0xE1
+#define KC_LALT                  0xE2
+#define KC_LSUPER                0xE3
+#define KC_RCTRL                 0xE4
+#define KC_RSHIFT                0xE5
+#define KC_RALT                  0xE6
+#define KC_RSUPER                0xE7
 
 /*
  * ---- capabilities (for spawn_args.caps) ----
@@ -1915,7 +2015,7 @@ CXK_ABI_STATIC_ASSERT(sizeof(struct stop_notice) == 16, "ABI layout: stop_notice
 CXK_ABI_STATIC_ASSERT(sizeof(struct ipc_reply_args) == 32, "ABI layout: ipc_reply_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct fb_geometry) == 16, "ABI layout: fb_geometry");
 CXK_ABI_STATIC_ASSERT(sizeof(struct screen_info) == 24, "ABI layout: screen_info");
-CXK_ABI_STATIC_ASSERT(sizeof(struct input_event) == 24, "ABI layout: input_event");
+CXK_ABI_STATIC_ASSERT(sizeof(struct input_event) == 32, "ABI layout: input_event");
 CXK_ABI_STATIC_ASSERT(sizeof(struct net_ip_config) == 16, "ABI layout: net_ip_config");
 CXK_ABI_STATIC_ASSERT(sizeof(struct vm_map_args) == 48, "ABI layout: vm_map_args");
 CXK_ABI_STATIC_ASSERT(sizeof(struct vm_usage) == 16, "ABI layout: vm_usage");

@@ -1,0 +1,336 @@
+# Step 2.8a2, key events with codes and modifiers, commands and their keys,
+# the text field, the clipboard and the dead-key input method, run by
+# `cxk test sabotage`. Each must turn red exactly the self-tests named.
+# Format: docs/devkit/CX_CXK_PLAN.md, "cxk test sabotage". A group holds at
+# most one sabotage per test.
+
+# ---- the kernel's keys ----
+
+[keymap-lctrl-not-held]
+# the left Ctrl is a key but no modifier: Ctrl+S arrives as a bare s
+expect = input: the keys as a handle, one holder @ input handle test failed at step 18
+group = g1
+edit = kernel/drivers/input/keymap.c
+<<<
+        case KC_LCTRL:  case KC_RCTRL:  return KEYMOD_CTRL;
+===
+        case KC_RCTRL:  return KEYMOD_CTRL;
+>>>
+
+[attention-is-a-key]
+# Ctrl+Alt+Del posted as a Delete, and no attention
+expect = input: the keys as a handle, one holder @ input handle test failed at step 19
+group = g2
+edit = kernel/drivers/input/keymap.c
+<<<
+        out->attention = !was;
+        return 0;
+===
+        out->attention = 0;
+        return 1;
+>>>
+
+[dserver-drops-mods]
+# the display server hands keys to the window manager with no modifiers:
+# Ctrl+Alt+F2 is an F2, and the real screen is never given back
+expect = display server: real screen, real keys, given back @ display server failed at step 3
+group = g1
+edit = os/std/dserver.xfxn
+<<<
+wm_key(&s.w, ev[i].code, ev[i].ch, ev[i].mods);
+===
+wm_key(&s.w, ev[i].code, ev[i].ch, 0);
+>>>
+
+# ---- the window manager's system keys ----
+
+[alt-f4-closes-nothing]
+expect = x: windows: the system's keys are nobody else's @ failed at step 5107
+group = g1
+edit = os/std/wm.xfxn
+<<<
+        if (press == 1 && w.focus != WM_NONE) { wm_request_close(w, w.focus); }
+===
+>>>
+
+[super-release-leaks]
+# a Super let go reaches the focused window (the binding sweep asks of
+# presses only, which this leaves the system's)
+expect = x: windows: the system's keys are nobody else's @ failed at step 5105
+group = g4
+edit = os/std/wm.xfxn
+<<<
+    if (code == KC_LSUPER || code == KC_RSUPER) { return 1; }  // the launcher's, from 2.8c
+===
+    if ((code == KC_LSUPER || code == KC_RSUPER) && (mods & KEYEV_RELEASE) == 0) { return 1; }
+>>>
+
+# ---- the clipboard ----
+
+[clip-set-no-press]
+expect = x: windows: the clipboard needs a press @ failed at step 5202
+group = g1
+edit = os/std/wm.xfxn
+<<<
+    if (wm_focus_client(w) != c || wm_gesture_live(w, c) == 0) { return E_ACCESS_DENIED; }
+    memcpy(&w.clip[0], p, n);
+===
+    if (wm_focus_client(w) != c) { return E_ACCESS_DENIED; }
+    memcpy(&w.clip[0], p, n);
+>>>
+
+[press-not-spent]
+# one press, any number of pastes
+expect = x: windows: the clipboard needs a press @ failed at step 5209
+group = g2
+edit = os/std/wm.xfxn
+<<<
+    w.client[c].gesture = 0;
+===
+>>>
+
+[release-is-a-press]
+expect = x: windows: the clipboard needs a press @ failed at step 5210
+group = g3
+edit = os/std/wm.xfxn
+<<<
+    if (ev.kind == WM_EV_KEY && ((ev.c as u32) & (KEYEV_RELEASE | KEYEV_REPEAT)) == 0) { press = 1; }
+===
+    if (ev.kind == WM_EV_KEY) { press = 1; }
+>>>
+
+[press-never-stale]
+expect = x: windows: the clipboard needs a press @ failed at step 5213
+group = g5
+edit = os/std/wm.xfxn
+<<<
+    if (cl.gesture == 0 || w.now - cl.gesture_at > WM_GESTURE_MS) { return 0; }
+===
+    if (cl.gesture == 0) { return 0; }
+>>>
+
+[paste-ignores-focus]
+expect = x: windows: the clipboard needs a press @ failed at step 5214
+group = g4
+edit = os/std/wm.xfxn
+<<<
+fn wm_clip_get(w: *wm, c: u32, out: *u8) -> i32 {
+    if (wm_focus_client(w) != c || wm_gesture_live(w, c) == 0) { return E_ACCESS_DENIED; }
+===
+fn wm_clip_get(w: *wm, c: u32, out: *u8) -> i32 {
+    if (wm_gesture_live(w, c) == 0) { return E_ACCESS_DENIED; }
+>>>
+
+[window-never-copies]
+# the toolkit's copy never reaches the window server
+expect = x: gallery: the window holds what was drawn @ failed at step 4621
+group = g4
+edit = os/std/toolkit_window.xfxn
+<<<
+        win_clip(&tw.w, DS_OP_CLIP_SET, mem, tw.ui.clip_n);
+===
+>>>
+
+[window-never-pastes]
+# not with caret-not-drawn: with no font, the caret is what shows the paste
+expect = x: gallery: the window holds what was drawn @ failed at step 4623
+group = g5
+edit = os/std/toolkit_window.xfxn
+<<<
+        if (n > 0) { tk_paste_text(tw.ui, p, n as u32); }
+===
+>>>
+
+# ---- commands and their keys ----
+
+[clash-accepted]
+# a second command takes a key another has
+expect = x: toolkit: commands and their keys @ failed at step 4803
+group = g1
+edit = os/std/toolkit.xfxn
+<<<
+        if (k + 1 != cmd && ui.cmd[k].key == key && ui.cmd[k].mods == mods) { return E_ALREADY_EXISTS; }
+===
+>>>
+
+[alt-f4-bindable]
+expect = x: toolkit: commands and their keys @ failed at step 4811
+expect = x: windows: system keys no app can bind
+group = g2
+edit = os/std/toolkit.xfxn
+<<<
+    if (held == KEYMOD_ALT && key == KC_F4) { return 1; }
+===
+>>>
+
+[super-only-alone]
+# Super is the system's only on its own: Super+Ctrl+S may be bound
+expect = x: toolkit: commands and their keys @ failed at step 4807
+expect = x: windows: system keys no app can bind
+group = g3
+edit = os/std/toolkit.xfxn
+<<<
+    if ((held & KEYMOD_SUPER) != 0 || key == KC_LSUPER || key == KC_RSUPER) { return 1; }
+===
+    if (held == KEYMOD_SUPER || key == KC_LSUPER || key == KC_RSUPER) { return 1; }
+>>>
+
+[mods-superset-match]
+# Ctrl+Shift+S runs the Ctrl+S command
+expect = x: toolkit: commands and their keys @ failed at step 4828
+group = g4
+edit = os/std/toolkit.xfxn
+<<<
+        if (ui.cmd[k].key == code && ui.cmd[k].mods == held) { return k + 1; }
+===
+        if (ui.cmd[k].key == code && (held & ui.cmd[k].mods) == ui.cmd[k].mods) { return k + 1; }
+>>>
+
+[releases-taken]
+# a release goes through as a press would
+expect = x: toolkit: pointer and keys @ failed at step 4328
+expect = x: toolkit: commands and their keys @ failed at step 4830
+group = g5
+edit = os/std/toolkit.xfxn
+<<<
+    if ((mods & KEYEV_RELEASE) != 0) { return 0; }
+    let held: u32 = mods & KEYMOD_HELD;
+===
+    let held: u32 = mods & KEYMOD_HELD;
+>>>
+
+[shift-tab-forward]
+expect = x: toolkit: commands and their keys @ failed at step 4843
+group = g6
+edit = os/std/toolkit.xfxn
+<<<
+            if ((held & KEYMOD_SHIFT) != 0) { tk_focus_prev(ui); } else { tk_focus_next(ui); }
+===
+            tk_focus_next(ui);
+>>>
+
+# ---- the text field ----
+
+[field-takes-ctrl]
+# the focused field types Ctrl+S as an s, and Ctrl+C as a c
+expect = x: toolkit: the text field @ failed at step 4910
+expect = x: toolkit: dead keys @ failed at step 5011
+expect = x: gallery: the window holds what was drawn @ failed at step 4621
+group = g2
+edit = os/std/toolkit.xfxn
+<<<
+    if (f == TK_NONE || (mods & TK_MODS_CAS) != 0) { return 0; }
+===
+    if (f == TK_NONE) { return 0; }
+>>>
+
+[selection-kept]
+# typing over a selection inserts before it (the gallery types over one too)
+expect = x: toolkit: the text field @ failed at step 4912
+expect = x: gallery: the window holds what was drawn @ failed at step 4619
+group = g7
+edit = os/std/toolkit.xfxn
+<<<
+    tk_field_save(f, typing);
+    tk_field_remove(f, a, b);
+===
+    tk_field_save(f, typing);
+>>>
+
+[undo-per-key]
+# every key typed is its own undo
+expect = x: toolkit: the text field @ failed at step 4924
+group = g3
+edit = os/std/toolkit.xfxn
+<<<
+    if (typing == 0 || f.typing == 0 || f.has_undo == 0 || f.redo == 1) {
+===
+    if (1 == 1) {
+>>>
+
+[next-splits-utf8]
+# Right steps one byte, into the middle of a character
+expect = x: toolkit: the text field @ failed at step 4920
+group = g4
+edit = os/std/toolkit.xfxn
+<<<
+    while (at < f.len && ((f.buf[at] as u32) & 0xC0) == 0x80) { at = at + 1; }
+    return at;
+===
+    return at;
+>>>
+
+[paste-keeps-controls]
+expect = x: toolkit: the text field @ failed at step 4934
+group = g5
+edit = os/std/toolkit.xfxn
+<<<
+        if (cp < 0x20 || cp == 0x7F || (cp >= 0x80 && cp <= 0x9F)) { continue; }
+        if (tn + l > TK_FIELD_BYTES) { break; }
+===
+        if (tn + l > TK_FIELD_BYTES) { break; }
+>>>
+
+[caret-not-drawn]
+expect = x: toolkit: the text field @ failed at step 4943
+group = g6
+edit = os/std/toolkit.xfxn
+<<<
+        tk_box(ui, &inside, cx, ty, tk_len(ui, 1), tk_char_h(ui) as i32, fg);
+===
+>>>
+
+# ---- the dead-key method ----
+
+[no-capitals]
+# an accent on a capital gives the small letter
+expect = x: toolkit: dead keys @ failed at step 5005
+group = g1
+edit = os/std/toolkit.xfxn
+<<<
+    if (c == 0 || upper == 0) { return c; }
+===
+    return c;
+>>>
+
+[space-not-the-accent]
+# Space after an accent gives the accent and a space
+expect = x: toolkit: dead keys @ failed at step 5006
+group = g3
+edit = os/std/toolkit.xfxn
+<<<
+    if (ch == 32 || ch == acc) { tk_field_insert_cp(ui, i, acc); return 1; }
+===
+    if (ch == acc) { tk_field_insert_cp(ui, i, acc); return 1; }
+>>>
+
+[esc-commits]
+expect = x: toolkit: dead keys @ failed at step 5007
+group = g4
+edit = os/std/toolkit.xfxn
+<<<
+    if (code == KC_ESC || code == KC_BACKSPACE) { return 1; }
+===
+    if (code == KC_BACKSPACE) { return 1; }
+>>>
+
+[focus-keeps-accent]
+expect = x: toolkit: dead keys @ failed at step 5012
+group = g5
+edit = os/std/toolkit.xfxn
+<<<
+        if (ui.node[ui.focus].kind == TK_TEXTFIELD) { ui.field[ui.node[ui.focus].field].dead = 0; }
+===
+>>>
+
+[shift-spends-accent]
+# Shift pressed for a capital gives the accent alone
+expect = x: toolkit: dead keys @ failed at step 5009
+group = g6
+edit = os/std/toolkit.xfxn
+<<<
+    if ((code >= KC_LCTRL && code <= KC_RSUPER) || code == KC_CAPS || code == KC_NUMLOCK) { return 0; }
+    let f: *tk_field = &ui.field[ui.node[i].field];
+===
+    let f: *tk_field = &ui.field[ui.node[i].field];
+>>>

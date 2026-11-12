@@ -37,6 +37,7 @@ set(KERNEL_SOURCES
     ${KDIR}/arch/x86_64/pagetable.c
     ${KDIR}/drivers/iowin.c
     ${KDIR}/platform/pc/ps2kbd.c
+    ${KDIR}/drivers/input/keymap.c
     ${KDIR}/lib/math/kmath.c
     ${KDIR}/diag/crashrec.c
     ${KDIR}/diag/hwfmt.c
